@@ -116,8 +116,8 @@ float FTWaveSince(float behindCm)
 
 // The second world's own sky deck: its brightness against the scene's (the nine-point mean) overhead and at the
 // horizon; and the depth (cm) past which a pixel is the true sky, not the far sea or backdrop.
-static const float kFTWaveDeckTop = 0.25;
-static const float kFTWaveDeckHorizon = 0.4;
+static const float kFTWaveDeckTop = 0.16;
+static const float kFTWaveDeckHorizon = 0.22;
 static const float kFTWaveTrueSkyDepth = 1e7;
 // 1: the pass shows its working instead (r the second world's share, g log10 of the depth / 10, b the composed light's
 // lens and the true sky's deck).
@@ -232,8 +232,13 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 		segA = float2(hOut.x, hIn.x);
 		segB = float2(hIn.y, hOut.y);
 	}
-	// A fixed interleaved-gradient dither (no frame term: the pass may run where nothing resolves a moving one).
-	float jitter = frac(52.9829189 * frac(0.06711056 * pix.x + 0.00583715 * pix.y));
+	// An interleaved-gradient dither stepped each frame: the pass runs before depth of field, so the temporal upscaler
+	// after it resolves the steps into a smooth volume instead of a fixed speckle.
+	float2 jp = pix + 5.588238 * float(View.StateFrameIndexMod8);
+	float jitter = frac(52.9829189 * frac(0.06711056 * jp.x + 0.00583715 * jp.y));
+	// Once the front has run on past the eye it thins out: 8 m beyond it the ink starts to go, 25 m beyond it is gone, so
+	// the leaving front does not stand as a black hedge along the sea's horizon in the settled view.
+	float recede = 1.0 - smoothstep(800.0, 2500.0, r - length(o3));
 	float T = 1.0;
 	float3 L = float3(0.0, 0.0, 0.0);
 	[unroll]
@@ -245,7 +250,7 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 		if (b > a && T > 0.02)
 		{
 			float shape = W.VNoise3((camPos + rd * (0.5 * (a + b))) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
-			int steps = int(clamp((b - a) / 35.0, 5.0, 12.0));
+			int steps = int(clamp((b - a) / 45.0, 4.0, 10.0));
 			float ds = (b - a) / float(steps);
 			[loop]
 			for (int i = 0; i < steps; ++i)
@@ -253,8 +258,12 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 				float ti = a + (float(i) + jitter) * ds;
 				float3 p = camPos + rd * ti;
 				float hs = sky ? 1e6 : max(rayLen - ti, 0.0) * cosN;
-				float h = min(hs, max(p.z - ground, 0.0));
-				float sg = FTWaveInkSigma(p, origin, r, w, t, shape, rBall, h);
+				// Below the ground under the origin (the sea, a dock) the height is the one over the surface the ray meets,
+				// so the core on the water stays a sheet and does not stand as a wall up to the ground's level.
+				float h = p.z < ground ? hs : min(hs, p.z - ground);
+				// The first 2.5 m from the eye stay thin, so the core crossing the eye is a dark sweep and not a frame of
+				// solid black between two clear ones (a whole-screen pop).
+				float sg = FTWaveInkSigma(p, origin, r, w, t, shape, rBall, h) * recede * smoothstep(30.0, 250.0, ti);
 				if (sg > 1e-4)
 				{
 					float a1 = 1.0 - exp(-sg * ds);
@@ -281,9 +290,15 @@ float FTWaveVeil(float tau, float3 p, float t)
 		return 0.0;
 	}
 	FTWaveFns W;
-	float billow = 0.6 * W.VNoise3(p / 180.0 + float3(0.0, 0.0, 0.3 * t), 89u) + 0.4 * W.VNoise3(p / 60.0 + float3(0.0, 0.4 * t, 0.0), 90u);
+	// Each octave in its own turned frame and warped by the broad one, so no value-noise cell lines up into a visible grid.
+	const float3x3 turn = float3x3(0.00, 0.80, 0.60, -0.80, 0.36, -0.48, -0.60, -0.48, 0.64);
+	float3 q0 = mul(turn, p / 220.0) + float3(0.0, 0.0, 0.3 * t);
+	float warp = W.VNoise3(q0 * 0.5 + 7.0, 88u) - 0.5;
+	float3 q1 = mul(turn, q0 * 2.3) + warp * 1.6 + float3(0.0, 0.4 * t, 0.0);
+	float3 q2 = mul(turn, q1 * 2.1) + float3(0.5 * t, 0.0, 0.0);
+	float billow = 0.55 * W.VNoise3(q0 + warp * 1.2, 89u) + 0.3 * W.VNoise3(q1, 90u) + 0.15 * W.VNoise3(q2, 87u);
 	float life = lerp(0.5, 0.8, billow);
-	return 0.75 * smoothstep(0.0, 0.06, tau) * (1.0 - smoothstep(0.15, life, tau)) * smoothstep(0.2, 0.7, billow + 0.15);
+	return 0.7 * smoothstep(0.0, 0.06, tau) * (1.0 - smoothstep(0.15, life, tau)) * smoothstep(0.1, 0.85, billow + 0.1);
 }
 
 // Front B: one level of blots, cells S wide round plane point q (cm on a surface's own plane, or pixels on the sky).
@@ -491,6 +506,14 @@ float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float raw
 	}
 	fogLum = 0.8 * gains.y * fogLum / 9.0;
 	float fog = m > 0.0 ? FTWaveGroundFog(CamPos.z, pointZ, sky ? 10000.0 : rayLen, WGround, 40.0, 1.0 / 2500.0, 0.6) : 0.0;
+	// The sea (its plane stands at the datum, well under the streets the wave starts on): in the second world near-black
+	// water keeping only a faint cold sheen of what it reflects, the ground fog thin over it, so the horizon is a dark strip.
+	if (!sky && m > 0.0 && WorldPos.z < WGround - 150.0 && rawDepth > 3000.0)
+	{
+		float sea = saturate(m) * smoothstep(3000.0, 6000.0, rawDepth);
+		src *= lerp(1.0, 0.2, sea);
+		fog *= lerp(1.0, 0.25, sea);
+	}
 
 	// The second world's sky, its own overcast (WGain.w) until the cloud layer has changed behind it: a layer reshaped
 	// while in view never settles its reconstruction. The true sky only (not the far sea and backdrop past SkyDepth): a
@@ -596,8 +619,11 @@ float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float raw
 		}
 		if (r > 0.0 && forward && vAhead < 0.0)
 		{
-			float3 vp = sky ? CamPos + rd * 10000.0 : WorldPos;
-			float veil = FTWaveVeil(FTWaveSince(-vAhead), vp, WTime);
+			// The sky takes the veil on a near shell (25 m), so its billows are broad soft shapes and not a fine mottle,
+			// and it comes up over 0.3 s from the crossing at half strength, so the eye's crossing is no whole-sky step.
+			float tauV = FTWaveSince(-vAhead);
+			float3 vp = sky ? CamPos + rd * 2500.0 : WorldPos;
+			float veil = FTWaveVeil(tauV, vp, WTime) * (sky ? 0.5 * smoothstep(0.0, 0.3, tauV) : 1.0);
 			c = lerp(c, fogLum * 0.35 * float3(0.92, 0.96, 1.0), veil);
 		}
 		// The ink itself, in the volume: the drop at the origin through the prelude (a black bloom 8 to 45 cm), then the
