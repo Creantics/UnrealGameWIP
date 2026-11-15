@@ -815,6 +815,17 @@ ftcore::ArenaBlowRuling FFTStoneBearerHost::RuleBlow(void* User, const ftcore::A
 	{
 		return Host->RuleLeadBlow(Blow);
 	}
+	if (Blow.target == Host->Slot && Blow.source == ftcore::kArenaAlly)
+	{
+		// The partner's body's blow (-ArenaPartner): the boss's armour as the lead's blow meets it (StoneBearer::onHit:
+		// nothing on the pedestal, else its weight's taken scale and no poise while its poise is frozen); no crit judged,
+		// no part hit, no stack answered.
+		const bool bHeld = Host->Boss.invulnerable();
+		ftcore::ArenaBlowRuling Ruling;
+		Ruling.damage = bHeld ? 0.f : Host->Boss.takenScale();
+		Ruling.poise = bHeld || Host->Boss.poiseFrozen() ? 0.f : 1.f;
+		return Ruling;
+	}
 	if (Blow.source == Host->Slot && Blow.target == ftcore::kArenaPlayer)
 	{
 		return Host->RuleBossBlow(Blow);

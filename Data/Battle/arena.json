@@ -1,6 +1,7 @@
 {
   "version": 1,
   "bpm": 150,
+  "partner": { "poise": 0.5, "breakWeight": 0.5 },
   "fighters": [
     {
       "id": "default",

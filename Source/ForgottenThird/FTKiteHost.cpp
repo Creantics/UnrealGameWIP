@@ -141,7 +141,16 @@ FFTKiteNote& FFTKiteHost::Note(FFTKiteNote::EKind Kind, double At)
 ftcore::ArenaBlowRuling FFTKiteHost::RuleBlow(void* User, const ftcore::ArenaBlow& Blow)
 {
 	FFTKiteHost* Host = static_cast<FFTKiteHost*>(User);
-	if (!Host || !Host->IsActive() || Blow.target != Host->Slot || Blow.source != ftcore::kArenaPlayer)
+	if (!Host || !Host->IsActive() || Blow.target != Host->Slot)
+	{
+		return ftcore::ArenaBlowRuling();
+	}
+	if (Blow.source == ftcore::kArenaAlly)
+	{
+		// The partner's body's blow (-ArenaPartner): the bars rule it as they rule the lead's; it judges no crit.
+		return Host->Bars(Blow);
+	}
+	if (Blow.source != ftcore::kArenaPlayer)
 	{
 		return ftcore::ArenaBlowRuling();
 	}

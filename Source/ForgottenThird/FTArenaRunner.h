@@ -20,6 +20,7 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/PartnerBrain.h"
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaCamera.h"
@@ -327,6 +328,11 @@ public:
 	// The fight is one the story handed off (set by each Begin): Restart rolls its story step back.
 	bool IsStoryFight() const { return bStoryFight; }
 	uint8 GetSessionLead() const { return SessionLead; }
+	// The lead the player does not control, and whether the session has it in this fight (def.inFight): the one
+	// source of truth for "a partner is here" (the hallucination's partnerPresent reads it; without a partner body
+	// the session fights one lead).
+	uint8 OtherLead() const { return SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA; }
+	bool PartnerInSession() const { return Session != nullptr && Session->Get().inFight(OtherLead()) && !Fight.lone(); }
 	// The party places (0 to 2) of the lead and the carrying run's ally, for the HUD's marks.
 	uint8 GetLeadSeat() const { return LeadSeat; }
 	uint8 GetAllySeat() const { return AllySeat; }
@@ -464,6 +470,26 @@ private:
 	ftcore::Vec2 AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
 	void MoveAlly();
 	void PlaceAlly(float Alpha);
+	// -ArenaPartner: the brain set on the fight (BeginPartner), the figures' swap on a takeover, the walk to the ally's
+	// goal, both leads' health for the session, and the 20 s report windows with the end's checks.
+	void BeginPartner();
+	void TakeOverBodies(const ftcore::ArenaOutput& Out);
+	void SwapLeadFigures();
+	void WalkPartner(const ftcore::ArenaOutput& Out);
+	void FeedLeadHealths();
+	void TrackPartner(const ftcore::ArenaOutput& Out);
+	void LogPartnerWindow();
+	void LogPartnerChecks(bool bWon, bool bLost);
+	void CheckPartnerRetry();
+	void BringPartnerIn();
+	void SwitchLeadBodies();
+	void PutPartnerOut();
+	// The partner's body acts: -ArenaPartner, not held out (a fight begun Lone keeps it out, the session with one lead
+	// too, until the partner call brings it in), and the fight not Lone.
+	bool PartnerBody() const { return bPartner && !bPartnerHeldOut && !Fight.lone(); }
+	void ArmSwapCheck(bool bSwitch = false);
+	void TrackSwapCheck(const ftcore::ArenaInput& In);
+	void CheckSwapInput();
 	void LogCarry() const;
 	// Setting the table (-ArenaTable, a carrying run's): its switches, its reset (each attempt), its step after the
 	// fight's, its ring drawn, its log line and its ring's removal.
@@ -667,6 +693,7 @@ private:
 	bool bSessionDefeated = false;
 	int32 LonePartnerCalls = 0;         // Count presses the session accepted while Lone: the lead calling the partner in
 	int32 LonePartnerEnds = 0;          // endLone(PartnerCalled) calls that ended it (the check: one per call, at most one)
+	bool bNoLoneCall = false;          // probe (-ArenaNoLoneCall): the autopilot never presses the Count while Lone
 	float LoneGiftAt = -1.f;            // probe (-ArenaLoneGiftAt=S): one gift press at fight time S (-1: none)
 	bool bLoneGiftDone = false;
 	// The probe's self-check: the lead's health handed to the slot just before the probe's press (setLeadHealth), and
@@ -1002,6 +1029,61 @@ private:
 	const FFTLeadLook* AllyLook = nullptr;
 	double AllyHitTime = -1e9;
 	int32 CarrySharedOffers = 0;
+	// -ArenaPartner (outside Shipping; off by default, so ordinary play never has it): the other lead stands in the ring
+	// as the partner, its body driven by Core's PartnerBrain through the fight (ArenaFight::setPartner) with the tuning
+	// of Data/Battle/partner_brain.json. Unless the fight is Lone, both leads are then in the session's fight and both
+	// leads' health is fed every step before any press; the player's fall with the partner up is a takeover (bodies,
+	// figures, looks and the session lead swap), both down the defeat. B toggles the order: STAY CLOSE and SPREAD.
+	bool bPartner = false;
+	bool bPartnerSpread = true;          // the order: Spread (ArenaInput::partnerOrder 1) or StayClose (0)
+	bool bFiguresSwapped = false;        // PlayerFigure and AllyFigure have swapped an odd number of times this fight
+	uint8 StartLead = 0;                 // the session lead the fight began with (a restart goes back to it)
+	const FFTLeadLook* PlayerLook = nullptr; // the look PlayerFigure wears (swaps with AllyLook on a takeover)
+	ftcore::PartnerBrain AllyBrain;
+	ftcore::PartnerTuning AllyTuning;
+	// The report windows (TrackPartner): attack seconds this window, the totals at its start, its counts.
+	double PartnerPrevTime = 0.0;
+	double PartnerWinStart = 0.0;
+	double PartnerWinLead = 0.0;
+	double PartnerWinAlly = 0.0;
+	int32 PartnerWinDamage0 = 0, PartnerWinLeadDamage0 = 0, PartnerWinBoss0 = 0, PartnerWinAimed0 = 0;
+	int32 PartnerWinLeadFalls = 0, PartnerWinAllyFalls = 0, PartnerWinTakeovers = 0, PartnerWinRises = 0;
+	int32 PartnerWindows = 0, PartnerWindowsHeld = 0;
+	double PartnerWorstOver = -1e9;      // the most a window's partner attack time stood over (or under: < 0) its limit
+	// The fight's counts: falls of the player's body and of the partner's (a takeover's AllyDowned is the same fall),
+	// takeovers the host swapped, rises, the session's takeovers, steps where the session's controlled lead was not the
+	// runner's, and the order's presses.
+	int32 PartnerLeadFalls = 0, PartnerAllyFalls = 0, PartnerTakeovers = 0, PartnerRises = 0;
+	int32 PartnerSessionTookOver = 0, PartnerLeadMismatch = 0, PartnerOrders = 0;
+	// A fight begun Lone with -ArenaPartner (bPartnerLoneStart): the partner is out (bPartnerHeldOut: no setPartner, no
+	// ally body, one lead in the session) until the lead's partner call ends the carry; then the session's joinFight
+	// brings it in at the step's close and the fight takes it on tick.joined (BringPartnerIn). A Release (or any other)
+	// end keeps it out to the fight's end; a retry is Lone again, so it is out again (PutPartnerOut). Steps where
+	// Core's partner acted while out (a leak); joins asked, landed and refused; steps where the session's word on the
+	// partner (inFight(OtherLead())) and the fight's (Out.ally.partnerOn) disagreed.
+	bool bPartnerLoneStart = false;
+	bool bPartnerHeldOut = false;
+	int32 PartnerHeldLeaks = 0;
+	int32 PartnerJoinAsks = 0, PartnerJoinsLanded = 0, PartnerJoinsRefused = 0, PartnerJoinDisagree = 0;
+	double PartnerJoinedAt = -1.0;
+	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
+	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and
+	// the camera. Asked by the probe, switched by the session, swapped by the fight, refused by the fight.
+	float SwitchAt = -1.f;
+	bool bSwitchAsked = false;
+	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0;
+	// The partner's blows: the session ruled them (RuleSessionBlow's partner path), their Hit events, their joins.
+	int32 PartnerBlowsRuled = 0, PartnerHitEvents = 0, PartnerJoins = 0;
+	// After a takeover or a lead switch: the figures' places once drawn, the steps since with a move input (and the
+	// sum of those moves), the check's counts. The controller reads the input (FTInputBindings on the
+	// PlayerController), the fight moves Bodies.player, and PlayerFigure (swapped to the partner's actor) is drawn
+	// there: the move must show on the new body. After a takeover the old body lies still; after a switch the partner
+	// brain walks it, so there the new body's way must follow the summed input instead (SwapWorstAlign, the cosine).
+	bool bSwapCheckArmed = false, bSwapCheckPlaced = false, bSwapIsSwitch = false;
+	FVector SwapNewAt = FVector::ZeroVector, SwapOldAt = FVector::ZeroVector;
+	FVector2D SwapMoveSum = FVector2D::ZeroVector;
+	int32 SwapMoveSteps = 0, SwapSteps = 0, SwapChecks = 0, SwapChecksPassed = 0, SwapSwitchChecks = 0;
+	double SwapWorstNew = 1e9, SwapWorstOld = 0.0, SwapWorstAlign = 1.0;
 	// Setting the table (BeginTable): on, the autopilot sets it at full Load, the Load filled for a capture; the
 	// places it counts, its clock and ring, and the counts for the TABLE line.
 	bool bTable = false;
