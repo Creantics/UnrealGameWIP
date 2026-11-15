@@ -9,6 +9,12 @@ namespace {
 constexpr std::size_t K(UiMarkKind k) { return static_cast<std::size_t>(k); }
 constexpr UiPromptMask kAllPrompts = static_cast<UiPromptMask>((1u << kUiPromptCount) - 1u);
 
+UiPromptReasons allWhy(PressReason r) {
+    UiPromptReasons why{};
+    why.fill(r);
+    return why;
+}
+
 ArenaHudFrame fullFrame() {
     ArenaHudFrame f;
     f.lead.hpMax = 100;
@@ -424,4 +430,53 @@ TEST_CASE("ui luma floor lifts dark colours and keeps light ones") {
     CHECK(uiContrast(UiColor{up.r, up.g, up.b, 1.f}, black, black) >= (0.45f + 0.05f) / 0.05f - 0.1f);
     const UiColor light{0.95f, 0.93f, 0.9f, 1.f};
     CHECK(uiLumaFloor(light, 0.45f) == light);
+}
+
+TEST_CASE("ui budget: a refused prompt is drawn only for 1.5 s after a press of its key, and a usable one stands") {
+    const UiPrompt heal = UiPrompt::Heal;
+    const UiPrompt pair = UiPrompt::Pair;
+    const UiPromptMask healBit = uiPromptBit(heal);
+    const UiPromptMask pairBit = uiPromptBit(pair);
+    UiPromptReasons why = allWhy(PressReason::Ok);
+    why[static_cast<std::size_t>(heal)] = PressReason::Full;
+    why[static_cast<std::size_t>(pair)] = PressReason::Closed;
+    UiRefusedRows st;
+    // Idle: neither refused row stands; the usable ones do.
+    uiRefusedStep(st, why, 0, 0.016f);
+    CHECK(uiRefusedShowing(st) == 0);
+    CHECK(uiPromptsStanding(why, st) == static_cast<UiPromptMask>(kAllPrompts & ~healBit & ~pairBit));
+    // A press of HEAL while FULL: its row shows, the PARTNER row (CLOSED) still does not.
+    uiRefusedStep(st, why, healBit, 0.016f);
+    CHECK(uiRefusedShowing(st) == healBit);
+    CHECK((uiPromptsStanding(why, st) & healBit) == healBit);
+    CHECK((uiPromptsStanding(why, st) & pairBit) == 0);
+    CHECK(st.left[static_cast<std::size_t>(heal)] == doctest::Approx(kUiRefusedShow));
+    // It holds just under 1.5 s, then goes.
+    for (int i = 0; i < 93; ++i) uiRefusedStep(st, why, 0, 0.016f); // 1.488 s
+    CHECK(uiRefusedShowing(st) == healBit);
+    uiRefusedStep(st, why, 0, 0.016f);
+    uiRefusedStep(st, why, 0, 0.016f);
+    CHECK(uiRefusedShowing(st) == 0);
+    CHECK((uiPromptsStanding(why, st) & healBit) == 0);
+    // A second press starts it again; the PARTNER row follows the same rule.
+    uiRefusedStep(st, why, static_cast<UiPromptMask>(healBit | pairBit), 0.016f);
+    CHECK(uiRefusedShowing(st) == static_cast<UiPromptMask>(healBit | pairBit));
+    // The heal turns usable: it stands as any other, no longer as a refusal.
+    why[static_cast<std::size_t>(heal)] = PressReason::Ok;
+    uiRefusedStep(st, why, 0, 0.016f);
+    CHECK((uiRefusedShowing(st) & healBit) == 0);
+    CHECK((uiPromptsStanding(why, st) & healBit) == healBit);
+    // A press of a usable key shows no refusal; Absent stays absent; Busy is not refused and stands.
+    uiRefusedStep(st, why, healBit, 0.016f);
+    CHECK((uiRefusedShowing(st) & healBit) == 0);
+    UiPromptReasons gone = allWhy(PressReason::Absent);
+    UiRefusedRows st2;
+    uiRefusedStep(st2, gone, kAllPrompts, 0.016f);
+    CHECK(uiRefusedShowing(st2) == 0);
+    CHECK(uiPromptsStanding(gone, st2) == 0);
+    UiPromptReasons busy = allWhy(PressReason::Busy);
+    uiRefusedStep(st2, busy, kAllPrompts, 0.016f);
+    CHECK(uiRefusedShowing(st2) == 0);
+    CHECK(uiPromptsStanding(busy, st2) == kAllPrompts);
+    CHECK(kUiRefusedInk >= 0.8f);
 }

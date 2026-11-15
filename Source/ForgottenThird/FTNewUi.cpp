@@ -179,6 +179,7 @@ const FTUiText kWhyClosedUi(TEXT("arena.prompt.why.closed"));
 const FTUiText kWhyRefusedUi(TEXT("arena.prompt.why.refused"));
 const FTUiText* const kWhyUi[] = {nullptr, nullptr, nullptr, &kWhyDownUi, &kWhyBrokenUi, &kWhyOverloadedUi, &kWhyStaminaUi,
 	&kWhyEmptyUi, &kWhyCooldownUi, &kWhyFullUi, &kWhyClosedUi, &kWhyRefusedUi};
+static_assert(UFTArenaRunner::PromptPressCount == static_cast<int32>(ftcore::kUiPromptCount), "one press count per prompt");
 static_assert(UE_ARRAY_COUNT(kWhyUi) == ftcore::kPressReasonCount, "one word per PressReason, in its order");
 static_assert(static_cast<int>(ftcore::PressReason::Down) == 3 && static_cast<int>(ftcore::PressReason::Refused) == 11,
 	"the words follow PressReason's order");
@@ -1614,6 +1615,7 @@ enum class EUiStateShot : uint8
 	Release,
 	Defeat,
 	Hit,
+	Refused,
 };
 bool IsLoneShot(EUiStateShot S)
 {
@@ -1645,6 +1647,7 @@ EUiStateShot UiStateShot()
 			: V == TEXT("release")                    ? EUiStateShot::Release
 			: V == TEXT("defeat")                     ? EUiStateShot::Defeat
 			: V == TEXT("hit")                        ? EUiStateShot::Hit
+			: V == TEXT("refused")                    ? EUiStateShot::Refused
 													  : EUiStateShot::None;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena UI: -UiStateShot=%s %s."), *V, S == EUiStateShot::None ? TEXT("is not a state; ignored") : TEXT("held"));
 		return S;
@@ -1901,7 +1904,6 @@ public:
 			Ld.load = Shot == EUiStateShot::Marks ? Ld.releaseAt * 6 / 10 : (Ld.releaseAt + Ld.loadCap) / 2;
 			Ld.releaseReady = Shot == EUiStateShot::Release;
 			Ld.overloaded = false;
-			Ld.debt = 90;
 		}
 		if (Shot == EUiStateShot::Hit && Frame.lead.hpMax > 0)
 		{
@@ -1985,13 +1987,13 @@ public:
 		TickLone(*Runner, Fight, DeltaTime);
 		TickHall(*Runner, Fight, DeltaTime);
 		TickParty(*Runner, Fight, DeltaTime);
-		TickBudget(Fight, Changed, DeltaTime);
+		TickBudget(*Runner, Fight, Changed, DeltaTime);
 		TickLabels(*Runner);
 	}
 
 	// The element budget (Core): the data asks for marks, the budget grants them in priority order, and what is not granted
 	// is not drawn. At rest only the party rows and the prompts; never more than the cap in action.
-	void TickBudget(const ftcore::ArenaFight& Fight, uint32 Changed, float DeltaTime)
+	void TickBudget(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, uint32 Changed, float DeltaTime)
 	{
 		using ftcore::UiMarkKind;
 		const ftcore::ArenaHudFrame& Now = View.now;
@@ -2001,10 +2003,31 @@ public:
 		In.changed = Changed;
 		// Each prompt's answer from the rules (Core's uiPromptReasons: the fight's own presses, and the gift slot's as the
 		// session gives them): a prompt whose action is not in this fight is not drawn (uiPromptsPresent, the rules' query);
-		// every other stands in its row, and one whose press would be refused now is dimmed with its reason. Over that the
+		// every other stands in its row, but one whose press would be refused now is not drawn while idle: only a press of
+		// its key while refused shows it, for kUiRefusedShow s at kUiRefusedInk with its reason (uiRefusedStep). Over that the
 		// teaching policy, the player's Basic controls setting (uiPromptsTaught, not a rule): by default the controls stand
 		// while the first-use teaching holds them and go when it ends; Always keeps them, Never shows none.
 		Why = ftcore::uiPromptReasons(Fight, GiftWhy[0], GiftWhy[1]);
+		// The presses since the last tick, by prompt (the runner's counts).
+		ftcore::UiPromptMask Pressed = 0;
+		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
+		{
+			const uint32 N = Runner.GetPromptPresses(I);
+			if (N != PromptPressSeen[I])
+			{
+				PromptPressSeen[I] = N;
+				Pressed |= ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I));
+			}
+		}
+		if (UiStateShot() == EUiStateShot::Refused)
+		{
+			// The still: HEAL pressed at full health, its row held showing FULL.
+			constexpr size_t Heal = static_cast<size_t>(ftcore::UiPrompt::Heal);
+			Why[Heal] = ftcore::PressReason::Full;
+			Pressed |= ftcore::uiPromptBit(ftcore::UiPrompt::Heal);
+		}
+		ftcore::uiRefusedStep(RefusedRows, Why, Pressed, DeltaTime);
+		RefusedShowing = ftcore::uiRefusedShowing(RefusedRows);
 		ftcore::UiPromptMask Teaching = 0;
 		for (int32 I = static_cast<int32>(ftcore::UiPrompt::Attack); I < static_cast<int32>(ftcore::kUiPromptCount); ++I)
 		{
@@ -2017,7 +2040,7 @@ public:
 		}
 		// Before the budget: a row nothing reaches on the device (no key and no NO KEY), or on a key a lower row shows,
 		// would draw nothing, so it takes no row.
-		const ftcore::UiPromptMask Standing = ftcore::uiPromptsTaught(ftcore::uiPromptsPresent(Why), BasicPolicy, Teaching);
+		const ftcore::UiPromptMask Standing = ftcore::uiPromptsTaught(ftcore::uiPromptsStanding(Why, RefusedRows), BasicPolicy, Teaching);
 		In.prompts = ftcore::uiPromptsDrawable(Standing, PromptKeyed, PromptSameKeyBelow);
 		PromptDimmed = ftcore::uiPromptsDimmed(Why, PromptNoKey);
 		In.resultOpen = bResult;
@@ -2937,9 +2960,10 @@ private:
 	// Low is not told by colour alone: the low colour, and a pulse between 60 and 100 percent at 1 Hz.
 	float LowPulse() const { return 0.8f + 0.2f * FMath::Cos(UE_TWO_PI * Time); }
 
-	// A value line that turns low (uiDangerSet): ink when not low; low, the low colour pulsing, or, where the world keeps
-	// red to marks and underlines, the line stays ink at full strength and a 2 px red line the track's full length carries
-	// the pulse, 5 px below the line's bottom edge.
+	// A value line that turns low (uiDangerSet): ink when not low. Low, in every world a 2 px line in the low colour the
+	// track's full length carries the pulse, 5 px below the line's bottom edge (one geometry for the family); the line
+	// itself takes the world's low ink: the low colour pulsing, or, where the world keeps red to marks and underlines,
+	// ink at full strength.
 	void LowValueLine(float X0, float X1, float Y, float To01, float Width, std::uint32_t Seed, float S, bool bLow, float A, float Taper) const
 	{
 		const FUiWorldRow& R = Shown();
@@ -2951,7 +2975,6 @@ private:
 		FLinearColor C = R.LowLine;
 		C.A *= A * (R.bLowUnder ? 1.f : LowPulse());
 		ValueLine(X0, X1, Y, 0.f, To01, Width, Seed, S, C, Taper);
-		if (R.bLowUnder)
 		{
 			FLinearColor U = R.LowUnder;
 			U.A *= A * LowPulse();
@@ -2982,21 +3005,12 @@ private:
 
 	// An hp line: the hp in the stroke over a hairline track (the track only where the hp is not, so it never reads as a
 	// second line), what was just lost rubbed out to a broken trace, low under a quarter.
-	// Where the world underlines a low line (the Unwritten) the track is the line's own stroke the full length at TrackInk,
-	// the value over it at full ink from the same left edge as the name.
+	// In every world the track is the line's own stroke the full length at TrackInk, the value over it at full ink from
+	// the same left edge as the name.
 	void HpLine(float X0, float Len, float Y, float Hp, float Was, float Width, std::uint32_t Seed, float S, float A) const
 	{
 		const float YS = SnapLine(Y, Width, S); // the track and the rub on the value line's own middle
-		if (Shown().bLowUnder)
-		{
-			ValueLine(X0, X0 + Len, YS, 0.f, 1.f, Width, Seed + 1u, S, Tok(UiToken::Ink, Hud::TrackInk * A), 0.f);
-		}
-		else
-		{
-			ftcore::UiStrokeStyle Hair = StrokeStyle(1.f, Seed, S, 0.f);
-			Hair.wobble = 0.3f * S;
-			HLine(X0, X0 + Len, YS, Hp, 1.f, Hair, Tok(UiToken::Ink, 0.8f * A));
-		}
+		ValueLine(X0, X0 + Len, YS, 0.f, 1.f, Width, Seed + 1u, S, Tok(UiToken::Ink, Hud::TrackInk * A), 0.f);
 		LowValueLine(X0, X0 + Len, YS, Hp, Width, Seed + 1u, S, Hp < Hud::LowHp, A, Hud::ValueTaper);
 		if (Was > Hp + 0.004f)
 		{
@@ -3065,8 +3079,8 @@ private:
 	{
 		FPartyRows R;
 		const float GuardBase0 = Size.Y - EdgesAt(Size, S).bottom;
-		// Where a low hp line is underlined, the guard row's top (its word's caps) stands GuardClear under the underline.
-		const float HpGap = Shown().bLowUnder ? Hud::LowUnderGap + Hud::LowUnderW + Hud::GuardClear : 8.f;
+		// The guard row's top (its line and its word's caps) stands GuardClear under the low hp line's underline.
+		const float HpGap = Hud::LowUnderGap + Hud::LowUnderW + Hud::GuardClear;
 		const float HpY0 = GuardBase0 - 0.62f * NoteAsc - (HpGap + 0.5f * Hud::LeadHpW) * S;
 		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
 		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
@@ -3119,7 +3133,7 @@ private:
 		const float PBase = Rows.PBase;
 
 		HpLine(X0, Len, HpY, Frac(L.hp, L.hpMax), HpLost.Was, Hud::LeadHpW, 201, S, A);
-		if (GuardShown() && Shown().bLowUnder)
+		if (GuardShown())
 		{
 			// Only while under full: the hp line's family, the same left edge, stroke, track and taper at GuardW, GUARD at its
 			// right end in the labels' size, as POISE sits by its line.
@@ -3128,13 +3142,6 @@ private:
 			ValueLine(X0, X0 + Len, GY, 0.f, 1.f, Hud::GuardW, 205, S, Tok(UiToken::Ink, Hud::TrackInk * A), 0.f);
 			LowValueLine(X0, X0 + Len, GY, G, Hud::GuardW, 205, S, G < Hud::LowHp, A, Hud::ValueTaper);
 			P.Text(X0 + Len + 12.f * S, CapTop(GY, NoteAsc), GuardWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
-		}
-		else if (GuardShown())
-		{
-			// GUARD in the labels' size at the row's left, its line from past the word to the hp line's end.
-			const float G = FMath::Clamp(L.stamina01, 0.f, 1.f);
-			P.Text(X0, GuardBase - NoteAsc, GuardWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
-			LowValueLine(X0 + GuardWordW + 12.f * S, X0 + Len, CapMid(GuardBase, NoteAsc), G, Hud::GuardW, 205, S, G < Hud::LowHp, A, 0.f);
 		}
 		if (L.debt >= 0)
 		{
@@ -3619,11 +3626,12 @@ private:
 	// The prompts, bottom right: each in its own row counted up from the bottom margin, which it never leaves (Core's
 	// uiPromptRow: HEAL, GIFT, PARTNER, then the basic controls ATTACK, GUARD, DODGE and JUMP); right-aligned, its word
 	// and its key cap. Every prompt whose action is in this fight stands in its row (Core's uiPromptsPresent, the basic
-	// controls as the player's teaching policy keeps them, uiPromptsTaught, then the grant); one is gone only when its
-	// action is not in this fight (no gift slot, a move the kit lacks) or, for a basic control, the policy hides it. One
-	// whose press would be refused now (Core's uiPromptsDimmed) is drawn at 40 percent ink, its key cap too, its reason
-	// word (the rules' PressReason: COOLDOWN, FULL, BROKEN...) after its word, before its key cap, at label size; one whose
-	// action the import left unbound shows NO KEY in its key box, dimmed the same. Nothing behind them but the bottom
+	// controls as the player's teaching policy keeps them, uiPromptsTaught, then the grant); one is gone when its action
+	// is not in this fight (no gift slot, a move the kit lacks), or, for a basic control, the policy hides it, or while its
+	// press would be refused now. A press of a refused prompt's key shows its row for kUiRefusedShow s at kUiRefusedInk,
+	// its key cap too, its reason word (the rules' PressReason: COOLDOWN, FULL, CLOSED...) after its word, before its key
+	// cap, at label size (Core's uiRefusedStep); one whose action the import left unbound shows NO KEY in its key box, at
+	// 40 percent ink. Nothing behind them but the bottom
 	// shade. A gift row is ink like the rest: gold is the lead's own power and a gift is not. The GIFT row is the one that
 	// may hold two: with both gifts GIFT GUARD keeps the margin and GIFT HEAL stands to its left, GiftGap px from GIFT
 	// GUARD's word (or its reason); either alone takes the margin.
@@ -3647,7 +3655,9 @@ private:
 			{
 				continue; // nothing reaches it on this device: not drawn
 			}
-			const FLinearColor C = ((PromptDimmed >> I) & 1u) ? Tok(UiToken::Ink, 0.4f) : Tok(UiToken::Ink);
+			const FLinearColor C = ((RefusedShowing >> I) & 1u) ? Tok(UiToken::Ink, ftcore::kUiRefusedInk)
+				: ((PromptDimmed >> I) & 1u)                       ? Tok(UiToken::Ink, 0.4f)
+																	: Tok(UiToken::Ink);
 			const float Row = static_cast<float>(ftcore::uiPromptRow(static_cast<ftcore::UiPrompt>(I)));
 			const float MidY = Size.Y - E.bottom - (0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
 			const float CapW = KeyCapW(PromptKeyW[I], S);
@@ -4308,6 +4318,9 @@ private:
 	ftcore::UiPromptMask PromptKeyed = 0; // the prompts something reaches on the device in use (a key, a route, NO KEY)
 	ftcore::UiPromptMask PromptNoKey = 0; // the prompts whose action the import left unbound on the device: NO KEY
 	ftcore::UiPromptMask PromptDimmed = 0; // the prompts drawn dimmed this tick (Core's uiPromptsDimmed)
+	ftcore::UiRefusedRows RefusedRows;        // each refused prompt's moment after a press of its key (Core's uiRefusedStep)
+	ftcore::UiPromptMask RefusedShowing = 0; // the prompts showing their refusal this tick
+	uint32 PromptPressSeen[ftcore::kUiPromptCount] = {}; // the runner's press counts as last read
 	std::array<ftcore::UiPromptMask, ftcore::kUiPromptCount> PromptSameKeyBelow{}; // per prompt, the lower ones on its key
 	ftcore::UiPromptReasons Why{};    // each prompt's answer from the rules this tick
 	ftcore::PressReason GiftWhy[2] = {ftcore::PressReason::Absent, ftcore::PressReason::Absent}; // Gift Heal's, Gift Guard's

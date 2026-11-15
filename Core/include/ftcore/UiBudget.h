@@ -142,6 +142,23 @@ FTCORE_API UiPromptMask uiPromptsTaught(UiPromptMask present, ShowBasicControls 
 // so its key box says NO KEY). Busy is not dimmed: that press waits in the buffer and is taken.
 FTCORE_API UiPromptMask uiPromptsDimmed(const UiPromptReasons& why, UiPromptMask noKey);
 
+// A refused prompt is not drawn while idle: standing dimmed rows are clutter. A press of its key while the rules refuse
+// it shows its row for kUiRefusedShow s at kUiRefusedInk, its key cap and its reason word (FULL, CLOSED, COOLDOWN,
+// WAIT...) with it, then it goes. A prompt whose press turns usable stands in its row as any other: its appearing is the
+// cue that it is back. Absent stays absent; Busy is not refused (that press waits in the buffer and is taken).
+inline constexpr float kUiRefusedShow = 1.5f;
+inline constexpr float kUiRefusedInk = 0.8f;
+struct UiRefusedRows {
+    std::array<float, kUiPromptCount> left{}; // seconds each refused row still shows
+};
+// One tick: each prompt in `pressed` (its key went down this tick) whose answer is refused shows for kUiRefusedShow
+// from this press; every other counts down by dt, and one whose answer is no longer refused stops at once.
+FTCORE_API void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& why, UiPromptMask pressed, float dt);
+// The prompts showing their refusal now (drawn at kUiRefusedInk, their reason word after them).
+FTCORE_API UiPromptMask uiRefusedShowing(const UiRefusedRows& st);
+// The prompts that may stand: present (uiPromptsPresent), less each refused one not showing its refusal.
+FTCORE_API UiPromptMask uiPromptsStanding(const UiPromptReasons& why, const UiRefusedRows& st);
+
 // One prompt per row (two in the GIFT row), one row per key, and only rows something reaches on the device. A prompt
 // nothing reaches on the device (not in `keyed`: no key, no route, and not an unbound action's NO KEY) is dropped. So is
 // one whose key a lower present prompt already shows (`sameKeyBelow[p]`: the lower prompts bound to p's key; NO KEY is
