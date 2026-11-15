@@ -4174,16 +4174,16 @@ private:
 		if (HitA > 0.f && (Shown().bHitBanded || ForceHitBanded()))
 		{
 			const FUiWorldRow& R = Shown();
-			const FLinearColor Band = R.bHitBanded ? R.HitFlash : FLinearColor(0.f, 0.f, 0.f, 1.f);
+			const FLinearColor BandC = R.bHitBanded ? R.HitFlash : FLinearColor(0.f, 0.f, 0.f, 1.f);
 			if (!bReduceFlashes)
 			{
 				const float D = ftcore::kUiHitBandDepth * S;
 				const float Pk = ftcore::kUiHitBandPeak * HitA;
 				const float Ramp = 1.f - ftcore::kUiHitBandFlat;
-				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, Band);
-				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, Band);
-				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, Band);
-				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, Band);
+				Mesh.Band(0.f, 0.f, Size.X, D, true, false, Ramp, Pk, BandC);
+				Mesh.Band(0.f, Size.Y - D, Size.X, Size.Y, true, true, Ramp, Pk, BandC);
+				Mesh.Band(0.f, 0.f, D, Size.Y, false, false, Ramp, Pk, BandC);
+				Mesh.Band(Size.X - D, 0.f, Size.X, Size.Y, false, true, Ramp, Pk, BandC);
 			}
 			// The hairline: whole device pixels, its edges on pixel boundaries, so it never doubles or blurs at 125 percent.
 			const float Px = Mesh.PxSize();
@@ -4192,8 +4192,8 @@ private:
 			const float InX = Mesh.SnapX((ftcore::kUiHitLineIn - 0.5f * ftcore::kUiHitLineW) * S);
 			const float Rgt = Mesh.SnapX(Size.X) - InX;
 			const float Bot = Mesh.SnapY(Size.Y) - In;
-			FLinearColor Line = R.HitLine;
-			Line.A = HitA;
+			FLinearColor HairC = R.HitLine;
+			HairC.A = HitA;
 			FLinearColor Dark = Table().Edge;
 			Dark.A = 0.85f * HitA;
 			// The dark edges first (a frame 1 px wider on each side), then the line over them.
@@ -4205,7 +4205,7 @@ private:
 				Mesh.Rect(Rr - Th, T + Th, Rr, B - Th, C, bTop);
 			};
 			Frame(InX - Px, In - Px, Rgt + Px, Bot + Px, W + 2.f * Px, Dark, true);
-			Frame(InX, In, Rgt, Bot, W, Line, true);
+			Frame(InX, In, Rgt, Bot, W, HairC, true);
 		}
 		else if (HitA > 0.f)
 		{
