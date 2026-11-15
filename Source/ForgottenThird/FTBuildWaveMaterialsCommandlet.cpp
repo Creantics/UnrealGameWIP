@@ -18,11 +18,12 @@
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionMultiply.h"
-#include "Materials/MaterialExpressionPreSkinnedPosition.h"
+#include "Materials/MaterialExpressionLocalPosition.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
 #include "Materials/MaterialExpressionStaticBool.h"
 #include "Materials/MaterialExpressionStaticSwitch.h"
+#include "Materials/MaterialExpressionVertexInterpolator.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialFunction.h"
@@ -245,7 +246,13 @@ UMaterialFunction* BuildStateFunction(UPackage* Package, UMaterialParameterColle
 		AddInput(Node, TEXT("WorldPos"), WorldPos);
 	}
 	AddInput(Custom, TEXT("Normal"), AddFunctionExpression<UMaterialExpressionVertexNormalWS>(Function, -900, 160));
-	AddInput(CharacterCustom, TEXT("LocalPos"), AddFunctionExpression<UMaterialExpressionPreSkinnedPosition>(Function, -900, 560));
+	// The pre-skinned position is vertex-shader only: it reaches the pixel shader through an interpolator.
+	UMaterialExpressionLocalPosition* PreSkinned = AddFunctionExpression<UMaterialExpressionLocalPosition>(Function, -1100, 560);
+	PreSkinned->LocalOrigin = ELocalPositionOrigin::InstancePreSkinning;
+	PreSkinned->IncludedOffsets = EPositionIncludedOffsets::ExcludeOffsets;
+	UMaterialExpressionVertexInterpolator* ToPixel = AddFunctionExpression<UMaterialExpressionVertexInterpolator>(Function, -900, 560);
+	ToPixel->Input.Connect(0, PreSkinned);
+	AddInput(CharacterCustom, TEXT("LocalPos"), ToPixel);
 	const FCollectionInput FromCollection[] = {
 		{TEXT("WOrigin"), FTWorldWave::Origin},
 		{TEXT("WOriginScreen"), FTWorldWave::OriginScreen},
@@ -483,7 +490,7 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		return false;
 	}
 	// Character on: a static true into the call's Character input (the character state; State.ush, FTWaveCharacter).
-	const auto SetCharacter = [Material, X, Y, bCharacter](UMaterialExpressionMaterialFunctionCall* Call)
+	const auto SetCharacter = [Material, X, Y, bCharacter, Tag](UMaterialExpressionMaterialFunctionCall* Call)
 	{
 		if (!bCharacter)
 		{
@@ -502,15 +509,25 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 				return;
 			}
 		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s has no Character input (rebuild it with -run=FTBuildWaveMaterials); %s takes the surface state."), Tag,
+			StateFunctionPath, *Material->GetName());
 	};
+	UMaterialExpressionMaterialFunctionCall* Existing = nullptr;
 	for (UMaterialExpression* Expression : Material->GetExpressionCollection().Expressions)
 	{
-		UMaterialExpressionMaterialFunctionCall* Existing = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
-		if (Existing && Existing->MaterialFunction && Existing->MaterialFunction->GetPathName() == Function->GetPathName())
+		UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(Expression);
+		if (Call && Call->MaterialFunction && Call->MaterialFunction->GetPathName() == Function->GetPathName())
 		{
-			SetCharacter(Existing);
-			return true;
+			Existing = Call;
+			break;
 		}
+	}
+	if (Existing)
+	{
+		// A call saved before the function gained an input lists the old inputs until it is refreshed.
+		Existing->UpdateFromFunctionResource();
+		SetCharacter(Existing);
+		return true;
 	}
 	UMaterialExpressionMaterialFunctionCall* Call = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y);
 	if (!Call->SetMaterialFunction(Function) || Call->FunctionInputs.Num() < 3 || Call->FunctionOutputs.Num() < 3)
