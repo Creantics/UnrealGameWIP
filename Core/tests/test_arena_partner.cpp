@@ -2163,7 +2163,7 @@ PartnerCameraView behindLead(Vec2 lead, Vec2 facing) {
 TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given against given (report)") {
     const ArenaTable t = shippedTable();
     const char* names[kPartnerIdleCount] = {"none", "noBudget", "noTarget", "moving",
-                                            "staggered", "called", "pause", "other"};
+                                            "staggered", "pause", "other"};
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}})
         for (const bool camera : {false, true}) {
             CAPTURE(order);
@@ -2187,11 +2187,13 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             double pairSpent = 0;
             Vec2 lastGoal = r.bodies.ally, lastAt = r.bodies.ally;
             int goalJumps = 0, repositions = 0;
-            double walked = 0, leadAttack = 0, partnerBlow = 0, lastStart = 0, longestGap = 0;
+            double walked = 0, leadAttack = 0, partnerBlow = 0, lastStart = 0, longestGap = 0, onScreen = 0;
             bool wasReposition = false;
             while (!r.fight.over() && r.fight.time() < 20.f) {
                 r.in.partnerCamera = camera ? behindLead(r.bodies.player, facing) : PartnerCameraView{};
+                const PartnerCameraView seen = behindLead(r.bodies.player, facing); // on-screen time, given or not
                 r.tick();
+                if (partnerInFrame(seen, 0.f, r.bodies.ally)) onScreen += kDt;
                 const PartnerIntent& pi = r.brain.intent();
                 if (pi.blowStart) {
                     longestGap = std::max(longestGap, double(r.fight.time()) - lastStart);
@@ -2232,7 +2234,60 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                       << " s + paired counters " << pairSpent
                                       << " s, the governor's allowance 0.6 x lead + 2 = " << 0.6 * leadAttack + 2.0
                                       << " s");
+            MESSAGE("    on screen " << onScreen / T << ", goal jumps per 10 s " << 10.0 * goalJumps / T
+                                     << ", off-frame starts " << r.brain.offFrameStarts());
             CHECK(r.brain.framed() == camera);
-            if (camera) CHECK(s.partnerStrings >= 1);
+            if (camera) {
+                CHECK(s.partnerStrings >= 1);
+                // On screen at least 0.8 of the fight (measured 0.97 StayClose, 0.94 Spread), and its goal jumps
+                // under 35 times in 10 s (measured 28 StayClose, 21 Spread).
+                CHECK(onScreen / T >= 0.8);
+                CHECK(10.0 * goalJumps / T <= 35.0);
+            }
+        }
+}
+
+TEST_CASE("arena partner: a play camera given but not whole is exactly not given, cameraOn off or on") {
+    const auto broken = [](int k) {
+        PartnerCameraView v = behindLead(Vec2{0.f, 0.f}, Vec2{1.f, 0.f});
+        switch (k) {
+        case 0: v.aspect = 0.f; break;
+        case 1: v.pos.x = std::numeric_limits<float>::quiet_NaN(); break;
+        case 2: v.up = v.forward; break;                                     // up along forward
+        case 3: v.up = {1.5f * v.up.x, 1.5f * v.up.y, 1.5f * v.up.z}; break; // up not unit
+        case 4: v.verticalFovDegrees = 0.f; break;
+        default: v.bodyHeight = 0.f; break;
+        }
+        return v;
+    };
+    for (const bool cameraOn : {false, true})
+        for (int k = 0; k < 6; ++k) {
+            CAPTURE(cameraOn);
+            CAPTURE(k);
+            REQUIRE_FALSE(partnerCameraWhole(broken(k)));
+            PRig a, b;
+            for (PRig* r : {&a, &b}) {
+                r->enemy(biterKind(20, 3.f, 2.f), Vec2{3.f, 0.5f});
+                r->bodies.ally = Vec2{-2.f, 1.f};
+                r->go(true, 100, 7);
+                r->walk = true;
+                r->in.cameraOn = cameraOn;
+                r->in.cameraPos = Vec2{-4.f, 0.f};
+                r->in.cameraFacing = Vec2{1.f, 0.f};
+            }
+            b.in.partnerCamera = broken(k);
+            for (int i = 0; i < 240; ++i) {
+                a.tick();
+                b.tick();
+                CAPTURE(i);
+                REQUIRE(a.out->ally.goal.x == b.out->ally.goal.x);
+                REQUIRE(a.out->ally.goal.y == b.out->ally.goal.y);
+                REQUIRE(a.out->ally.act == b.out->ally.act);
+                REQUIRE(a.out->ally.stationed == b.out->ally.stationed);
+                REQUIRE_FALSE(b.brain.framed());
+                REQUIRE(a.brain.hash() == b.brain.hash());
+                REQUIRE(a.fight.hp() == b.fight.hp());
+                REQUIRE(a.fight.allyHp() == b.fight.allyHp());
+            }
         }
 }

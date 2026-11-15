@@ -435,18 +435,27 @@ the pieces.
   rolling window over; the slack left is one slot of the budget ring. A blow whose string ends early
   (target felled, a guard) leaves it running: no new string until it ends (`Wait`, why `Committed`).
 * **The partner's camera (`ArenaInput::partnerCamera`, `ftcore/PartnerCamera.h`).** The play camera,
-  fed every tick, in the fight's metres with z up: `pos`, `forward` and `up` (unit, at right angles),
-  `verticalFovDegrees` (an Unreal camera's FOV is horizontal: vertical = 2 atan(tan(fov / 2) / aspect)),
-  `aspect` (width over height), and the body it frames: `groundZ` (the floor's height) and
-  `bodyHeight` (1.8 by default), both in the same metres. Not given (the default), the partner runs
-  as before, with no stationing. Given and whole, ArenaFight turns stationing on and the brain picks
-  only stations where the partner's feet, middle and head are inside the frame shrunk by
-  `frustumMargin` (10%) on every side and outside the keep-outs round the camera's lines to the lead
-  and to its target. With none for `frustumGiveUpSeconds` (3 s) it falls back to the station it used
-  before and says so (`PartnerIntent::frameFallback`, `PartnerBrain::fallbackSeconds()`). Every step the
-  intent names why the partner is not acting (`PartnerIntent::idle`), and `idleSeconds(reason)` sums them
-  over the fight. `PartnerInput::called` (waiting on an action the player called) is not yet fed by
-  ArenaFight.
+  fed every tick, in the fight's metres with z up: `pos`, `forward` and `up` (each unit within 0.01,
+  `up` more than 1 degree off `forward`; it need not be at right angles), `verticalFovDegrees` (1..170;
+  an Unreal camera's FOV is horizontal: vertical = 2 atan(tan(fov / 2) / aspect)), `aspect` (width over
+  height, 0.2..5), and the body it frames: `groundZ` (the floor's height) and `bodyHeight` (0.5..4, 1.8
+  by default), both in the same metres. `partnerCameraWhole` is the one test of all that, used by the
+  brain and by ArenaFight alike. Not given, or given but not whole, is exactly not given: the partner
+  runs as before, with the `cameraOn` stationing when the host sets that and none when it does not.
+  Given and whole, ArenaFight turns stationing on from the camera's own place and forward (over
+  `cameraOn`, `cameraPos` and `cameraFacing`), and the brain picks only stations where the partner's
+  feet, middle and head are inside the frame shrunk by `kPartnerFrustumMargin` (0.10 of the whole
+  screen's width and height kept clear on each side, so |ndc| <= 1 - 2 x 0.10 = 0.8; the default of
+  `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and outside the
+  keep-outs round the camera's lines to the lead and to its target. With none valid it holds the last
+  station it had for `frustumGiveUpSeconds` (3 s, counted from the last valid station whatever the
+  target), then falls back to rules 10-11's station and says so on every step it stays fallen back,
+  strings, guards and repositions included (`PartnerIntent::frameFallback`,
+  `PartnerBrain::fallbackSeconds()`). Rule 14's engage starts a string from where the partner stands only
+  inside the frame, unless no valid station was found that step; such a start is reported
+  (`PartnerIntent::offFrame`, `PartnerBrain::offFrameStarts()`). Every step the intent names why the
+  partner is not acting (`PartnerIntent::idle`), and `idleSeconds(reason)` sums them over the fight.
+  There is no "called" reason: ArenaFight never holds the partner for an action the player called.
 
 ## What the Unreal wrapper needs
 

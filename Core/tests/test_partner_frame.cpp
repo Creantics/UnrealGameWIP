@@ -138,7 +138,9 @@ struct Script {
         if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
             if (len(minus(i.point, lastGoal)) > 0.5f) ++goalChanges;
             lastGoal = i.point;
-            if (i.framed && !i.frameFallback && !partnerInFrame(view, 0.1f, i.point)) ++offFrameGoals;
+            // Rule 13's grace (no valid station this step, the last one held) may have left the frame.
+            const bool grace = i.framed && !i.frameFallback && b.save().noFrame > 0.0;
+            if (i.framed && !i.frameFallback && !grace && !partnerInFrame(view, 0.1f, i.point)) ++offFrameGoals;
             if (i.framed && !i.frameFallback && inKeepOut(i.point, i.enemy)) ++keptOut;
         }
         maxEngage = std::max(maxEngage, b.save().engageFor);
@@ -208,7 +210,7 @@ TEST_CASE("partner frame: baseline (report)") {
 
 namespace {
 const std::array<std::string, kPartnerIdleCount> kIdleNames = {"none",      "noBudget", "noTarget", "moving",
-                                                               "staggered", "called",   "pause",    "other"};
+                                                               "staggered", "pause",    "other"};
 
 void report(const std::string& name, Script& s) {
     MESSAGE(name << ": first act " << s.firstAct << " s, on screen " << s.onScreen / s.elapsed << ", starts " << s.starts
@@ -347,6 +349,10 @@ TEST_CASE("partner frame: every station it walks to is in the shrunk frame and o
                         CHECK(s.framedSteps > 0);
                         CHECK(s.offFrameGoals == 0);
                         CHECK(s.keptOut == 0);
+                        // With the camera given it stays on screen (measured 0.87..1.0 here) and its goal changes
+                        // under 20 times in 10 s (measured up to 16, Spread with the camera orbiting).
+                        CHECK(s.onScreen / s.elapsed >= 0.8);
+                        CHECK(10.0 * s.goalChanges / s.elapsed <= 20.0);
                     }
 }
 
@@ -427,6 +433,25 @@ TEST_CASE("partner frame: in reach with its next blow in the budget it acts with
                 CHECK(framed.longestIdle < today.longestIdle);
                 CHECK(framed.starts > today.starts);
             }
+    // The leash wins over the engage clock: the lead runs off past leashMeters at any moment, and the partner goes
+    // back to it at once, counted as Moving.
+    for (const double dt : {1.0 / 60.0, 0.25}) {
+        Script base(PartnerOrder::StayClose, true, false, 5, slow);
+        base.useCamera();
+        base.windups = false; // no guard to win first
+        for (int k = 0; k < 40; ++k) {
+            CAPTURE(dt);
+            CAPTURE(k);
+            base.run(0.5, dt);
+            Script c = base;
+            c.in.leadPos = {-9.f, 0.f};
+            c.stepOnce(dt);
+            const PartnerIntent& i = c.b.intent();
+            REQUIRE(i.why == PartnerWhy::Leash);
+            REQUIRE(i.act == PartnerAct::MoveTo);
+            REQUIRE(i.idle == PartnerIdle::Moving);
+        }
+    }
 }
 
 TEST_CASE("partner frame: idle seconds sum to the time stepped, each to its reason") {
@@ -441,15 +466,13 @@ TEST_CASE("partner frame: idle seconds sum to the time stepped, each to its reas
                 CHECK(sum == doctest::Approx(20.0).epsilon(1e-9));
                 CHECK(s.b.idleSeconds(PartnerIdle::None) > 0.0);
             }
-    // Called, staggered (hurt, and down), no target.
+    // Held (canAct false, not hurt: other), staggered (hurt, and down), no target.
     PartnerBrain b;
     REQUIRE(b.begin(PartnerTuning{}, 1));
     PartnerInput in;
     in.canAct = false;
-    in.called = true;
-    CHECK(b.step(0.25, in).idle == PartnerIdle::Called);
-    CHECK(b.step(0.25, in).idle == PartnerIdle::Called);
-    in.called = false;
+    CHECK(b.step(0.25, in).idle == PartnerIdle::Other);
+    CHECK(b.step(0.25, in).idle == PartnerIdle::Other);
     in.doing = PartnerDoing::Hurt;
     CHECK(b.step(0.25, in).idle == PartnerIdle::Staggered);
     in.canAct = true;
@@ -458,7 +481,7 @@ TEST_CASE("partner frame: idle seconds sum to the time stepped, each to its reas
     CHECK(b.step(0.25, in).idle == PartnerIdle::Staggered);
     in.health = 1.f;
     for (int k = 0; k < 4; ++k) CHECK(b.step(0.25, in).idle == PartnerIdle::NoTarget);
-    CHECK(b.idleSeconds(PartnerIdle::Called) == doctest::Approx(0.5));
+    CHECK(b.idleSeconds(PartnerIdle::Other) == doctest::Approx(0.5));
     CHECK(b.idleSeconds(PartnerIdle::Staggered) == doctest::Approx(0.5));
     CHECK(b.idleSeconds(PartnerIdle::NoTarget) == doctest::Approx(1.0));
     CHECK(b.idleSeconds(static_cast<PartnerIdle>(kPartnerIdleCount)) == 0.0);
@@ -535,3 +558,4 @@ TEST_CASE("partner frame: today against framed (report)") {
         report(std::string("orbit 30/s spread governed ") + (cam ? "framed" : "today"), o);
     }
 }
+

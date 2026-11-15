@@ -2815,12 +2815,14 @@ struct ArenaFightImpl {
         pl.pairBrain = 0.f;
         pin.enemies = std::span<const PartnerEnemyView>(views.data(), n);
         // Stationing (rules 8-12): only with the host's camera. The ring less the ally's body is where it may stand.
-        // The full camera (partnerCamera given) turns it on too, from its own place and forward, for rules 13-16.
+        // The full camera (partnerCamera given and whole) turns it on too, from its own place and forward, for rules
+        // 13-16. Given but not whole is exactly not given.
         PartnerStationView& st = pin.station;
         const PartnerCameraView& cam = in.partnerCamera;
-        st.on = in.cameraOn || cam.given;
+        const bool whole = partnerCameraWhole(cam);
+        st.on = in.cameraOn || whole;
         if (st.on) {
-            if (cam.given) {
+            if (whole) {
                 st.cameraPos = {cam.pos.x, cam.pos.y};
                 st.cameraForward = {cam.forward.x, cam.forward.y};
                 st.camera = cam;
