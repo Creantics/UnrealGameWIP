@@ -220,15 +220,15 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			return Member.Name.Equals(Lead, ESearchCase::IgnoreCase);
 		}));
-		// A party slot without attacks is never the lead: the first look that has them starts instead.
+		// A party member that is not playable (its kit's data flag) is never the lead: the first playable look starts instead.
 		if (!IsPlayableLead(PartyLooks[LeadIndex]))
 		{
 			const int32 Playable = PartyLooks.IndexOfByPredicate([this](const FFTLeadLook& Member)
 			{
 				return IsPlayableLead(Member);
 			});
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: %s has no attacks and can't be the lead; starting as %s."),
-				*PartyLooks[LeadIndex].Name, Playable >= 0 ? *PartyLooks[Playable].Name : TEXT("him anyway (no look has attacks)"));
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: %s is a party member only (not playable) and can't be the lead; starting as %s."),
+				*PartyLooks[LeadIndex].Name, Playable >= 0 ? *PartyLooks[Playable].Name : TEXT("that look anyway (no look is playable)"));
 			LeadIndex = Playable >= 0 ? Playable : LeadIndex;
 		}
 		WearLook(PartyLooks[LeadIndex]);
@@ -2642,7 +2642,7 @@ void AFTExploreCharacter::HandleSwitchLead()
 	{
 		return;
 	}
-	// The next look the player may play; a party slot without attacks is passed over.
+	// The next look the player may play; a party member that is not playable is passed over, with its reason logged.
 	int32 Next = LeadIndex;
 	for (int32 Step = 1; Step < PartyLooks.Num(); ++Step)
 	{
@@ -2652,6 +2652,7 @@ void AFTExploreCharacter::HandleSwitchLead()
 			Next = Try;
 			break;
 		}
+		UE_LOG(LogForgottenThird, Log, TEXT("FTExploreCharacter: lead switch passes over %s: a party member only (not playable)."), *PartyLooks[Try].Name);
 	}
 	if (Next == LeadIndex)
 	{

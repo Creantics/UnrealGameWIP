@@ -158,7 +158,8 @@ UiPartyWhy uiPartyWhyOf(LeadSwitch r) {
     case LeadSwitch::Ok:
     case LeadSwitch::Same: return UiPartyWhy::Ok;
     case LeadSwitch::NotInFight:
-    case LeadSwitch::Lone: return UiPartyWhy::NotHere;
+    case LeadSwitch::Lone:
+    case LeadSwitch::NotPlayable: return UiPartyWhy::NotHere;
     case LeadSwitch::Down: return UiPartyWhy::Down;
     case LeadSwitch::FightOver: return UiPartyWhy::FightOver;
     case LeadSwitch::Cooldown: return UiPartyWhy::Wait;

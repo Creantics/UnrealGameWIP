@@ -21,6 +21,7 @@ enum class LeadSwitch : std::uint8_t {
     FightOver,  // the fight is lost (a defeat) or finished as won
     Cooldown,   // too soon after the last accepted switch (leadSwitchCooldownSeconds)
     Lone,       // a Lone Carry is on and that lead is not the Lone one
+    NotPlayable, // that lead is a party member only (FightSessionDef::playable; the kit's data flag)
 };
 
 // What a join (FightSession::joinFight: a lead not in the fight comes in) gets at the step's close

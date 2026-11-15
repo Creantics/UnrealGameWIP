@@ -138,6 +138,10 @@
 //   for def.leadSwitchCooldownSeconds (1 s by default) after an accepted one; a takeover by a fall is never blocked
 //   by it and does not start it. While a Lone Carry is on, a switch to any lead but the Lone one is refused Lone,
 //   and the request leaves the carry on.
+//   A lead the def marks not playable (def.playable, by lead; true by default) never takes control: when the
+//   controlled lead falls and only that lead stands, it is a defeat (tick.defeated, no tookOver), and a switch to
+//   it, asked in a step or waiting in a checkpoint, is refused NotPlayable (leadSwitchReason). A switch asked
+//   before begin opens the fight on it only if it is playable.
 //   A lead the def marks cannotFall (per fight, per lead; false by default) never goes down in that fight: a
 //   blow that would take it to 0 or below leaves it at 1 hp (blowOnLead does the sum for the host) and raises
 //   tick.heldUp once, on the next tick. With every lead in the fight marked, health never loses the fight: what
@@ -258,6 +262,11 @@ struct FightSessionDef {
     std::array<bool, 2> inFight{true, true};
     // The leads that cannot fall in this fight, by lead: a blow leaves them at 1 hp and raises tick.heldUp.
     std::array<bool, 2> cannotFall{false, false};
+    // The leads the player may drive, by lead: the kits' data flag (ArenaFighter::playable, the one arenaPlayable
+    // returns; the host fills it). A lead that is not playable is a party member only: control never passes to it
+    // (no takeover: the controlled lead's fall with only it standing is a defeat) and a switch to it, asked or
+    // waiting in a checkpoint, is refused. Part of the def, not the state: a checkpoint does not carry it.
+    std::array<bool, 2> playable{true, true};
     // The third slot as the fight begins (and at each retry, before the checkpoint's own state goes back):
     // Companion gives gifts; Vacant or Hostile gives none (a press is refused Vacant or Hostile).
     SlotState thirdSlot = SlotState::Companion;
@@ -453,7 +462,7 @@ public:
         def_ = def;
         const FighterId asked = switchReq_; // a switch asked before begin: the new fight opens on it
         const FightSessionCheck c = restart(start);
-        if (isLead(asked) && inFight_[asked]) activeLead_ = asked;
+        if (isLead(asked) && inFight_[asked] && def_.playable[asked]) activeLead_ = asked;
         start_ = now_;
         startCp_ = FightCheckpoint{}; // whole: nothing of an earlier fight stays (stateHash reads every field)
         phaseCp_ = FightCheckpoint{};
@@ -821,11 +830,13 @@ public:
     }
     // What a switch to `lead` asked now gets at this step's close, unless a fall or rise lands on this step first
     // (then the close's answer, judged after them, wins): the close calls this same function after its rises and
-    // falls. For the HUD's party menu. In order: NotInFight, FightOver (a defeat, or finish(true)), Down, Same,
+    // falls. For the HUD's party menu. In order: NotInFight, NotPlayable (def.playable), FightOver (a defeat, or
+    // finish(true)), Down, Same,
     // Lone (a Lone Carry is on and `lead` is not the Lone lead; the request never ends the carry), Cooldown
     // (within def.leadSwitchCooldownSeconds of the last accepted switch), else Ok.
     LeadSwitch leadSwitchReason(FighterId lead) const {
         if (!isLead(lead) || !inFight_[lead]) return LeadSwitch::NotInFight;
+        if (!def_.playable[lead]) return LeadSwitch::NotPlayable; // permanent: it wins over every reason after it
         if (defeated_ || won_) return LeadSwitch::FightOver;
         if (down_[lead]) return LeadSwitch::Down;
         if (lead == activeLead_) return LeadSwitch::Same;
@@ -1516,8 +1527,14 @@ private:
             return;
         }
         if (down_[activeLead_]) {
+            const FighterId other = aStands ? kLeadA : kLeadB;
+            if (!def_.playable[other]) { // only a party member stands: no takeover, the defeat
+                defeated_ = true;
+                defeatedDue_ = true;
+                return;
+            }
             const FighterId from = activeLead_;
-            activeLead_ = aStands ? kLeadA : kLeadB;
+            activeLead_ = other;
             tookOverDue_ = activeLead_;
             controlMoved(from);
         }

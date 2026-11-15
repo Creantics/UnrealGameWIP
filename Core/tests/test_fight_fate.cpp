@@ -414,6 +414,93 @@ TEST_CASE("fight fate: a retry opens on the switch its checkpoint carried, if th
     }
 }
 
+namespace {
+FightSessionDef partyOnly(FighterId lead) {
+    FightSessionDef d = noSwitchCooldown();
+    d.playable[lead] = false;
+    return d;
+}
+} // namespace
+
+TEST_CASE("fight fate: a lead not playable never takes control: the controlled lead's fall with only it standing is a defeat") {
+    FightSession s;
+    REQUIRE(s.begin(partyOnly(kLeadB), 0.0).ok());
+    s.tick(kFrame);
+    s.setLeadHealth(kLeadA, 0.f);
+    const FightTick& t = s.tick(kFrame);
+    CHECK(t.leadsFell == kBitA);
+    CHECK(t.tookOver == kNoFighter);
+    CHECK(t.defeated);
+    CHECK(s.defeated());
+    CHECK(s.activeLead() == kLeadA);
+    CHECK_FALSE(s.down(kLeadB)); // the party member still stands
+    // The same fall with both playable is the takeover, as before.
+    FightSession p;
+    REQUIRE(p.begin(noSwitchCooldown(), 0.0).ok());
+    p.tick(kFrame);
+    p.setLeadHealth(kLeadA, 0.f);
+    const FightTick& u = p.tick(kFrame);
+    CHECK(u.tookOver == kLeadB);
+    CHECK_FALSE(u.defeated);
+    // The party member's own fall, the controlled lead up: no defeat, control stays.
+    FightSession q;
+    REQUIRE(q.begin(partyOnly(kLeadB), 0.0).ok());
+    q.tick(kFrame);
+    q.setLeadHealth(kLeadB, 0.f);
+    const FightTick& v = q.tick(kFrame);
+    CHECK(v.leadsFell == kBitB);
+    CHECK_FALSE(v.defeated);
+    CHECK(q.activeLead() == kLeadA);
+}
+
+TEST_CASE("fight fate: a switch to a lead not playable is refused NotPlayable, asked or waiting in a restored checkpoint") {
+    {
+        FightSession s;
+        REQUIRE(s.begin(partyOnly(kLeadB), 0.0).ok());
+        s.tick(kFrame);
+        CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotPlayable);
+        REQUIRE(s.setActiveLead(kLeadB)); // taken: the close refuses it, with its word
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.switched == kNoFighter);
+        CHECK(t.switchRefused == kLeadB);
+        CHECK(t.switchRefusal == LeadSwitch::NotPlayable);
+        CHECK(s.activeLead() == kLeadA);
+        // The permanent reason wins over the others: down, and the fight over.
+        s.setLeadHealth(kLeadB, 0.f);
+        s.tick(kFrame);
+        CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotPlayable);
+        s.setLeadHealth(kLeadA, 0.f);
+        s.tick(kFrame);
+        REQUIRE(s.defeated());
+        CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotPlayable);
+    }
+    {   // waiting at a phase checkpoint: refused at the tick, and again after the retry restores it
+        FightSession s;
+        REQUIRE(s.begin(partyOnly(kLeadB), 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.checkpointPhase(1));
+        CHECK(s.checkpoint().switchRequested == kLeadB);
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.switchRefused == kLeadB);
+        CHECK(t.switchRefusal == LeadSwitch::NotPlayable);
+        CHECK(s.retry().at == CheckpointAt::Phase);
+        CHECK(s.activeLead() == kLeadA);
+        CHECK(s.switchRequested() == kNoFighter);
+        const FightTick& u = s.tick(kFrame);
+        CHECK(u.switched == kNoFighter);
+        CHECK(u.switchRefused == kLeadB);
+        CHECK(u.switchRefusal == LeadSwitch::NotPlayable);
+        CHECK(s.tick(kFrame).switchRefused == kNoFighter); // once
+    }
+    {   // asked before begin: the fight does not open on it
+        FightSession s;
+        REQUIRE(s.setActiveLead(kLeadB));
+        REQUIRE(s.begin(partyOnly(kLeadB), 0.0).ok());
+        CHECK(s.activeLead() == kLeadA);
+    }
+}
+
 TEST_CASE("fight fate: of two switch requests in one step the last wins, and the earlier raises no event") {
     const Closed c = closeStep(false, {switchTo(kLeadB), switchTo(kLeadA)});
     CHECK(c.switched == kNoFighter); // the last asked for the lead already in control
