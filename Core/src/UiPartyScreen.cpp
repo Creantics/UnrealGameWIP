@@ -64,6 +64,10 @@ UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in, float dt)
     s.partnerHere = in.partnerHere;
     // The partner gone from the fight while the cursor rests on its row: back to the lead's, so nothing is picked.
     if (s.open && !uiPartyRowSelectable(s.cursor, s.explore, s.partnerHere)) s.cursor = UiPartyRow::Lead;
+    // The controlled lead changed under the open screen without its confirm (Tab, a takeover): the rows traded, so the
+    // cursor goes to the new lead's row and a release sends nothing.
+    if (s.open && in.lead >= 0 && s.lead >= 0 && in.lead != s.lead) s.cursor = UiPartyRow::Lead;
+    s.lead = in.lead;
     if (!in.live) {
         // Taken away: shut with no pick; a key still down when input returns is no press, and its release no map.
         if (s.open) closeScreen(s, out, UiPartyRow::Lead);
@@ -161,6 +165,10 @@ UiPartyWhy uiPartyWhyOf(LeadSwitch r) {
     }
     return UiPartyWhy::Unknown;
 }
+
+UiPartyWhy uiPartyLeadWhy(LeadSwitch session, bool body) { return body ? uiPartyWhyOf(session) : UiPartyWhy::NotHere; }
+
+bool uiPartyPartnerHere(UiPartyWhy w) { return w != UiPartyWhy::NotHere; }
 
 UiPartyRowView uiPartyRowView(const UiPartyScreen& s, UiPartyRow r, UiPartyWhy why, float nameW) {
     UiPartyRowView v;

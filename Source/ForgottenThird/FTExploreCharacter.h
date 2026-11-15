@@ -182,11 +182,14 @@ public:
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
 	// The party screen under the new UI (FT::NewUiEnabled; its explore layer draws it while open) and its rows'
-	// PartyLooks entries as of its opening (-1: none): the partner is the first other playable look, the Third the
-	// first look the player may not play.
+	// PartyLooks entries (-1: none), found at begin play and after every lead change: the partner is the first other
+	// playable look, the Third the first look the player may not play.
 	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
 	int32 GetPartnerIndex() const { return PartnerIndex; }
 	int32 GetThirdIndex() const { return ThirdIndex; }
+	// Whether the partner's row has a lead to switch to (else it reads NOT HERE and never takes the cursor): the one
+	// truth the screen's step (UiPartyInput::partnerHere) and its drawing read.
+	bool IsPartnerHere() const { return PartyLooks.IsValidIndex(PartnerIndex) && PartnerIndex != LeadIndex; }
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }

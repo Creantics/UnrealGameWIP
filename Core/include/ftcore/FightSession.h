@@ -24,8 +24,15 @@
 //   It fills from its joined counts, capped at the cap (no chair gain), and a Lift spends from it. keptParried and
 //   keptBlocked (parried damage x keptParryShare, blocked damage x keptBlockShare) store as the host's do, for a
 //   partner that defends: the arena's scripted partner does not yet, so no host calls them. setKeptDown(true) (the
-//   partner is down): it stores and spends nothing and counts 0 toward a Lift, until the next begin. The session
+//   partner is down): it stores and spends nothing and counts 0 toward a Lift, until setKeptDown(false), the kept lead
+//   rising (a step's close that sees it stand) or the next begin. The session
 //   feeds it to the count itself; its changes still come in `loads`, marked kept (already applied).
+//   It follows the partner: def.keptLead names the lead it keeps as the fight begins, and whenever control moves to
+//   the lead it keeps (an accepted switch, a takeover, a retry's carried switch) the gauges trade. The new controlled
+//   lead's kept Load goes to the host's gauge (tick.handedLoad, which the host puts in its gauge); the kept gauge
+//   takes the old lead's Load as the host last fed it (setLoad), with that lead's count stores the host has not
+//   applied yet folded in (they come in `loads` marked kept), capped at the kept cap, and down if that lead is down.
+//   keptLead(), keptLoad(), partnerLead() and leadLoad(f) read the gauges as they stand now.
 // * The Lone Carry (def.loneLead a lead; LoneCarry.h): that lead is Lone from begin until a gift is given (giveGift's
 //   given; a press refused for any reason leaves it Lone), endLone(PartnerCalled) or finish, then not for the rest
 //   of the fight; begin makes it Lone again. While Lone: setTable is refused (TableError::Lone, for any setter),
@@ -181,7 +188,8 @@ struct FightSessionDef {
     LockTuning lock{};
     bool hasBoss = false;
     BossScriptDef boss{};
-    // The kept gauge (see above; only with lift): the lead whose Load the session keeps (kNoFighter: none), its
+    // The kept gauge (see above; only with lift): the lead whose Load the session keeps as the fight begins (it then
+    // follows the partner; kNoFighter: none), its
     // Named chairs (0..kMaxPlaces) and the shares of a parried (0..2) and a blocked (0..1) blow it stores.
     FighterId keptLead = kNoFighter;
     int keptNamed = 1;
@@ -296,6 +304,8 @@ struct FightCheckpoint {
     GiftSlot gift{};                      // the whole slot: tally, threads, cooldowns, heals given, its state
     std::array<PlaceTable, kMaxFighters> places{}; // each fighter's places
     int keptLoad = 0;                     // the kept gauge's Load
+    FighterId keptLead = kNoFighter;      // and the lead it keeps (it follows the partner)
+    int leadLoad = -1; // the controlled lead's Load as the host last fed it or a trade handed it (-1: none), kept gauge on
     bool keptDown = false;
     bool lone = false;                    // the Lone Carry: on, ended, why, and this fight's lone Releases
     bool loneEnded = false;
@@ -333,6 +343,7 @@ struct FightTick {
     FighterId joined = kNoFighter;          // the lead joinFight brought into the fight at a step's close
     FighterId joinRefused = kNoFighter;     // the lead joinFight asked for and did not bring in
     LeadJoin joinRefusal = LeadJoin::Ok;    // and why (Ok when nothing was refused)
+    int handedLoad = -1; // the kept gauge's trade at a lead change: the new controlled lead's Load for the host's gauge (-1: none)
     bool defeated = false;                  // once: every lead in the fight down when a step closes
     CheckpointAt checkpoint = CheckpointAt::None; // the latest taken since the last tick: write the host's part now
     std::uint8_t checkpoints = 0; // every one taken since the last tick: bit (1 << CheckpointAt), start first
@@ -462,7 +473,9 @@ public:
         places_ = cp.places;
         kept_ = cp.keptLoad;
         keptDown_ = cp.keptDown;
-        if (keptOn_) count_.setLoad(def_.keptLead, keptDown_ ? 0 : kept_);
+        if (isLead(cp.keptLead)) keptLead_ = cp.keptLead;
+        if (keptOn_) count_.setLoad(keptLead_, keptDown_ ? 0 : kept_);
+        if (keptOn_ && isLead(activeLead_) && activeLead_ != keptLead_) count_.setLoad(activeLead_, cp.leadLoad);
         lone_ = cp.lone;
         loneEnded_ = cp.loneEnded;
         loneEndedBy_ = cp.loneEndedBy;
@@ -484,9 +497,11 @@ public:
         if (cp.switchRequested != kNoFighter) {
             const LeadSwitch why = leadSwitchReason(cp.switchRequested);
             if (why == LeadSwitch::Ok) {
+                const FighterId from = activeLead_;
                 activeLead_ = cp.switchRequested;
                 switchAt_ = now_;
                 switchedDue_ = cp.switchRequested;
+                tradeKept(from);
             } else if (why != LeadSwitch::Same) {
                 switchRefusedDue_ = cp.switchRequested;
                 switchRefusalDue_ = why;
@@ -511,8 +526,10 @@ private:
         c.cap = validBlowCap(def_.blowCap);
         blowCap_ = c.cap ? def_.blowCap : 0.f;
         keptOn_ = count_.liftOn() && c.kept && def_.keptLead != kNoFighter;
+        keptLead_ = def_.keptLead;
         kept_ = 0;
         keptDown_ = false;
+        handedDue_ = -1;
         c.lone = def_.loneLead == kNoFighter || loneStanceAccepted(def_.loneLead, def_.loneTuning);
         lone_ = c.lone && def_.loneLead != kNoFighter;
         leadHealth_ = {kHealthUnknown, kHealthUnknown};
@@ -528,7 +545,7 @@ private:
             const int cap = pt.baseCarry + pt.perPlace * (c.kept ? def_.keptNamed : 0);
             keptCap_ = cap < kMaxLoad ? cap : kMaxLoad;
         }
-        if (keptOn_) count_.setLoad(def_.keptLead, 0);
+        if (keptOn_) count_.setLoad(keptLead_, 0);
         // The save-wide gift tally and threads carry over from a won fight; after one not finished as won (a
         // lost or abandoned attempt, retried) they go back to how that fight began.
         if (!won_) gift_.restoreFightStart();
@@ -668,6 +685,7 @@ public:
         tick_.joined = joinedDue_;
         tick_.joinRefused = joinRefusedDue_;
         tick_.joinRefusal = joinRefusalDue_;
+        tick_.handedLoad = handedDue_;
         tick_.defeated = defeatedDue_;
         tick_.checkpoints = cpDue_;
         tick_.checkpoint = (cpDue_ & (1u << static_cast<unsigned>(CheckpointAt::Phase))) != 0 ? CheckpointAt::Phase
@@ -683,6 +701,7 @@ public:
         joinedDue_ = kNoFighter;
         joinRefusedDue_ = kNoFighter;
         joinRefusalDue_ = LeadJoin::Ok;
+        handedDue_ = -1;
         defeatedDue_ = false;
         cpDue_ = 0;
         return tick_;
@@ -775,7 +794,7 @@ public:
         for (std::size_t i = 0; i < pendingLoads_; ++i)
             h.add(loadsIn_[i].lead).add(loadsIn_[i].amount).add(loadsIn_[i].kind).add(loadsIn_[i].kept);
         for (const EnemyMark& m : marks_) h.add(m.bonus).add(m.until).add(m.used);
-        h.add(keptOn_).add(kept_).add(keptDown_).add(keptCap_).add(blowCap_);
+        h.add(keptOn_).add(kept_).add(keptDown_).add(keptCap_).add(keptLead_).add(handedDue_).add(blowCap_);
         h.add(lone_).add(loneEnded_).add(loneEndedBy_).add(loneBeganDue_).add(loneEndDue_);
         h.add(loneReleases_).add(loneFolded_).add(lonePooled_);
         h.add(leadHealth_).add(won_).add(start_).add(inFight_).add(down_).add(stepDown_).add(defeated_);
@@ -789,7 +808,7 @@ public:
             h.add(cp->inFight).add(cp->joinRequested).add(cp->joinHealth);
             cp->gift.hashState(h);
             for (const PlaceTable& p : cp->places) p.hashState(h);
-            h.add(cp->keptLoad).add(cp->keptDown).add(cp->lone).add(cp->loneEnded).add(cp->loneEndedBy);
+            h.add(cp->keptLoad).add(cp->keptLead).add(cp->leadLoad).add(cp->keptDown).add(cp->lone).add(cp->loneEnded).add(cp->loneEndedBy);
             h.add(cp->loneReleases).add(cp->lonePooled);
             if (hasBoss_) cp->boss.hashState(h);
             const FightHostCheckpoint& host = cp->host;
@@ -953,7 +972,7 @@ public:
     // A blow by `striker`, judged on the count before its damage; an OnCount (or Lift) blow is a shared blow at once.
     CountHit judgeBlow(FighterId striker) {
         if (lone_ && striker != def_.loneLead) return CountHit{}; // nobody joins a Lone lead: Alone, x1
-        if (keptOn_) count_.setLoad(def_.keptLead, keptDown_ ? 0 : kept_);
+        if (keptOn_) count_.setLoad(keptLead_, keptDown_ ? 0 : kept_);
         const CountHit h = count_.judgeBlow(striker, now_);
         takeJoin();
         if (sharedBlow(h)) shareBlow();
@@ -962,7 +981,7 @@ public:
     // A fighter's Load now, for the Lift (def.lift); negative: no gauge. Feed it before judging its blows.
     // For the kept lead it sets the kept gauge (0..its cap).
     void setLoad(FighterId f, int load) {
-        if (keptOn_ && f == def_.keptLead) {
+        if (keptOn_ && f == keptLead_) {
             kept_ = load < 0 ? 0 : (load > keptCap_ ? keptCap_ : load);
             count_.setLoad(f, keptDown_ ? 0 : kept_);
             return;
@@ -972,18 +991,31 @@ public:
     // The blow cap (0: none) and a blow's scale kept under it.
     float blowCap() const { return blowCap_; }
     float capBlow(float scale) const { return capBlowScale(scale, blowCap_); }
-    // The kept gauge: whether the session keeps `f`'s Load, that Load, its cap.
-    bool keepsLoad(FighterId f) const { return keptOn_ && f == def_.keptLead; }
-    FighterId keptLead() const { return keptOn_ ? def_.keptLead : kNoFighter; }
+    // The kept gauge: whether the session keeps `f`'s Load, that Load, its cap. The lead it keeps follows the
+    // partner (the gauges trade when control moves to it: see the kept gauge above).
+    bool keepsLoad(FighterId f) const { return keptOn_ && f == keptLead_; }
+    FighterId keptLead() const { return keptOn_ ? keptLead_ : kNoFighter; }
     int keptLoad() const { return keptOn_ ? kept_ : 0; }
     int keptCap() const { return keptOn_ ? keptCap_ : 0; }
+    // A lead's Load as the session holds it now: the kept gauge's for the kept lead, else what the host last fed
+    // (setLoad, or a trade's handed Load; 0 with no gauge or for a non-lead).
+    int leadLoad(FighterId f) const {
+        if (keepsLoad(f)) return kept_;
+        return isLead(f) ? count_.loadOf(f) : 0;
+    }
+    // The lead not controlled now: the other lead when it is in the fight, else kNoFighter.
+    FighterId partnerLead() const {
+        const FighterId other = activeLead_ == kLeadA ? kLeadB : kLeadA;
+        return inFight_[other] ? other : kNoFighter;
+    }
     // The kept lead parried (blocked) a blow of `damage`: it stores damage x keptParryShare (keptBlockShare), rounded,
     // up to its cap. Returns what it stored (0 with no kept gauge).
     // The kept lead is down (true) or up again: down, its Load stays where it was but is neither stored, spent nor
-    // counted toward a Lift.
+    // counted toward a Lift. A trade takes the gauge down with a down lead, and the session puts it up again when the
+    // kept lead rises (a step's close that sees it stand).
     void setKeptDown(bool down) {
         keptDown_ = down;
-        if (keptOn_) count_.setLoad(def_.keptLead, down ? 0 : kept_);
+        if (keptOn_) count_.setLoad(keptLead_, down ? 0 : kept_);
     }
     bool keptDown() const { return keptDown_; }
     int keptParried(int damage) { return keptStore(damage, def_.keptParryShare, CountLoadKind::ParryStore); }
@@ -1216,8 +1248,8 @@ private:
         if (room <= 0 || !(raw > 0.0)) return 0;
         const int stored = raw < static_cast<double>(room) ? static_cast<int>(raw) : room;
         kept_ += stored;
-        count_.setLoad(def_.keptLead, kept_);
-        pushLoad(def_.keptLead, stored, kind, true);
+        count_.setLoad(keptLead_, kept_);
+        pushLoad(keptLead_, stored, kind, true);
         return stored;
     }
     void deferLocks() {
@@ -1276,11 +1308,34 @@ private:
             switchedDue_ = kNoFighter;
             return;
         }
+        const FighterId from = activeLead_;
         activeLead_ = asked;
         switchAt_ = now_; // the cooldown runs from here
         switchedDue_ = asked;
         switchRefusedDue_ = kNoFighter;
         switchRefusalDue_ = LeadSwitch::Ok;
+        tradeKept(from);
+    }
+    // Control moved from `from` to activeLead_: when the kept gauge kept the new lead, the gauges trade (see the
+    // kept gauge above). The new lead's kept Load is handed to the host (tick.handedLoad) and stands as its fed Load;
+    // the kept gauge takes `from`'s fed Load with its count stores the host has not applied yet (marked kept now, so
+    // the host leaves them), capped at the kept cap, down if `from` is down.
+    void tradeKept(FighterId from) {
+        if (!keptOn_ || keptLead_ != activeLead_ || !isLead(from) || from == activeLead_) return;
+        const int handed = kept_;
+        int held = count_.loadOf(from);
+        for (std::size_t i = 0; i < pendingLoads_; ++i) {
+            CountLoadChange& c = loadsIn_[i];
+            if (c.lead != from || c.kept) continue;
+            if (c.kind == CountLoadKind::CountStore) held += c.amount; // a Lift's spend is in the count already
+            c.kept = true;
+        }
+        keptLead_ = from;
+        kept_ = held < 0 ? 0 : (held > keptCap_ ? keptCap_ : held);
+        keptDown_ = down_[from];
+        count_.setLoad(from, keptDown_ ? 0 : kept_);
+        count_.setLoad(activeLead_, handed);
+        handedDue_ = handed;
     }
     void settleFalls() {
         if (defeated_) {
@@ -1290,7 +1345,11 @@ private:
         bool fell = false;
         for (const FighterId lead : {kLeadA, kLeadB}) {
             const std::uint8_t bit = static_cast<std::uint8_t>(1u << lead);
-            if (stepDown_[lead] && !down_[lead]) roseDue_ = static_cast<std::uint8_t>(roseDue_ | bit);
+            if (stepDown_[lead] && !down_[lead]) {
+                roseDue_ = static_cast<std::uint8_t>(roseDue_ | bit);
+                // A kept lead that a trade took down (the fallen lead after a takeover) stores again once it stands.
+                if (keptOn_ && lead == keptLead_ && keptDown_) setKeptDown(false);
+            }
             if (!stepDown_[lead] && down_[lead]) {
                 fellDue_ = static_cast<std::uint8_t>(fellDue_ | bit);
                 fell = true;
@@ -1306,8 +1365,10 @@ private:
             return;
         }
         if (down_[activeLead_]) {
+            const FighterId from = activeLead_;
             activeLead_ = aStands ? kLeadA : kLeadB;
             tookOverDue_ = activeLead_;
+            tradeKept(from);
         }
     }
     // A start checkpoint is never taken in a state that is already a defeat: the step closes first, and on a
@@ -1335,6 +1396,10 @@ private:
         cp.gift = gift_;
         cp.places = places_;
         cp.keptLoad = kept_;
+        cp.keptLead = keptLead_;
+        cp.leadLoad = keptOn_ && isLead(activeLead_) && activeLead_ != keptLead_ && count_.hasGauge(activeLead_)
+                          ? count_.loadOf(activeLead_)
+                          : -1;
         cp.keptDown = keptDown_;
         cp.lone = lone_;
         cp.loneEnded = loneEnded_;
@@ -1377,6 +1442,8 @@ private:
     int pendingLoadsDropped_ = 0;
     std::array<EnemyMark, kMaxMarkedEnemies> marks_{};
     bool keptOn_ = false;
+    FighterId keptLead_ = kNoFighter; // the lead the kept gauge keeps now (def.keptLead at begin; it follows the partner)
+    int handedDue_ = -1;              // the trade's handed Load for the next tick (-1: none)
     int kept_ = 0;
     bool keptDown_ = false;
     int keptCap_ = 0;

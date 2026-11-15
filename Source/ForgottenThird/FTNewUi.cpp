@@ -60,10 +60,13 @@ extern CORE_API TFunction<void(int32)>* GGameThreadMallocHook;
 
 namespace
 {
+#if !UE_BUILD_SHIPPING
+// Outside Shipping only: a Shipping build always has the new UI (FT::NewUiEnabled) and has no such variable.
 TAutoConsoleVariable<int32> CVarNewUi(TEXT("ft.NewUi"), 1,
 	TEXT("1 (the default): the new game UI (Slate, drawn from Core view-models) in place of the Canvas HUD's parts it ")
-	TEXT("replaces. 0: the old Canvas HUD, as -FTOldUi on the command line gives outside Shipping (which wins over this). ")
-	TEXT("Read when a map's HUD begins: a change applies from the next map."));
+	TEXT("replaces. 0: the old Canvas HUD, as -FTOldUi on the command line also gives (which wins over this). Not in ")
+	TEXT("Shipping, which always has the new UI. Read when a map's HUD begins: a change applies from the next map."));
+#endif
 
 using ftcore::UiTextRole;
 using ftcore::UiToken;
@@ -4627,7 +4630,7 @@ public:
 		ScreenShown = C->GetPartyScreen();
 		const TArray<FFTLeadLook>& Looks = C->PartyLooks;
 		const auto LookName = [&Looks](int32 I) -> const FString& { return Looks.IsValidIndex(I) ? Looks[I].Name : NoName(); };
-		bPartnerHere = Looks.IsValidIndex(C->GetPartnerIndex());
+		bPartnerHere = C->IsPartnerHere(); // the same truth the screen's step reads
 		bThirdHere = Looks.IsValidIndex(C->GetThirdIndex());
 		bFollowing = !C->IsPartyHidden();
 		BuildName(LeadRow, LookName(C->GetLeadIndex()), kLeadUi, LeadNameFont, bFonts);
@@ -4758,12 +4761,12 @@ namespace FT
 bool NewUiEnabled()
 {
 	// The one switch every HUD asks (FTArenaHUD, FTStoryHUD, FTExploreHUD) and the party
-	// screen's input (FTArenaRunner, FTExploreCharacter). The new UI is the default. Outside Shipping, -FTOldUi
-	// brings the old Canvas HUD back for one more round and wins over ft.NewUi, and -FTNewUi (which turned the new UI on
-	// before it was the default) is a no-op: it still parses (noted in the log once) and changes nothing. A Shipping
-	// build parses neither flag, so -FTOldUi there never picks the old HUD; ft.NewUi 0 still does.
+	// screen's input (FTArenaRunner, FTExploreCharacter). A Shipping build always has the new UI: it parses no flag and
+	// has no ft.NewUi. Outside Shipping the new UI is the default: -FTOldUi brings the old Canvas HUD back for one more
+	// round and wins over ft.NewUi, ft.NewUi decides otherwise, and -FTNewUi (which turned the new UI on before it was
+	// the default) is a no-op: it still parses (noted in the log once) and changes nothing.
 #if UE_BUILD_SHIPPING
-	return CVarNewUi.GetValueOnGameThread() != 0;
+	return true;
 #else
 	static const bool bOldUi = []()
 	{

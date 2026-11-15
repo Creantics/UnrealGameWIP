@@ -1175,3 +1175,99 @@ TEST_CASE("gifts: gifts.json is the defaults; the importer keeps defaults for mi
         CHECK(t.healsPerFight == d.healsPerFight); // refused: the defaults
     }
 }
+
+TEST_CASE("count lift: the kept gauge follows the partner: a switch and a takeover trade the gauges") {
+    FightSession s;
+    REQUIRE(s.begin(keptDef(), 0.0).ok()); // B kept, cap 60; A controlled, its gauge the host's
+    s.setLoad(kLeadA, 30);
+    CHECK(s.keptParried(20) == 20);
+    FightTick t = s.tick(0.0);
+    CHECK(t.handedLoad == -1);
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.partnerLead() == kLeadB);
+    CHECK(s.keptLead() == kLeadB);
+    CHECK(s.leadLoad(kLeadA) == 30);
+    CHECK(s.leadLoad(kLeadB) == 20);
+
+    // A switch to B: B's kept 20 goes to the host's gauge, the kept gauge takes A's 30 and keeps A from now on.
+    REQUIRE(s.setActiveLead(kLeadB));
+    t = s.tick(0.0);
+    CHECK(t.switched == kLeadB);
+    CHECK(t.handedLoad == 20);
+    CHECK(s.activeLead() == kLeadB);
+    CHECK(s.partnerLead() == kLeadA);
+    CHECK(s.keptLead() == kLeadA);
+    CHECK(s.keepsLoad(kLeadA));
+    CHECK_FALSE(s.keepsLoad(kLeadB));
+    CHECK(s.keptLoad() == 30);       // the partner's Load is the old lead's
+    CHECK(s.leadLoad(kLeadA) == 30);
+    CHECK(s.leadLoad(kLeadB) == 20); // the controlled lead's is the new lead's
+    CHECK(s.tick(0.0).handedLoad == -1); // once
+
+    // The host feeds its gauge (now B's); a parry the partner makes stores on A's.
+    s.setLoad(kLeadB, 25);
+    CHECK(s.keptParried(5) == 5);
+    CHECK(s.leadLoad(kLeadA) == 35);
+    CHECK(s.leadLoad(kLeadB) == 25);
+
+    // B falls: A takes over and the gauges trade back; the kept gauge holds B's 25, down.
+    s.setLeadHealth(kLeadB, 0.f);
+    t = s.tick(0.0);
+    CHECK(t.tookOver == kLeadA);
+    CHECK(t.handedLoad == 35);
+    CHECK(s.activeLead() == kLeadA);
+    CHECK(s.partnerLead() == kLeadB);
+    CHECK(s.keptLead() == kLeadB);
+    CHECK(s.keptLoad() == 25);
+    CHECK(s.keptDown());
+    CHECK(s.keptParried(10) == 0); // a down partner stores nothing
+    CHECK(s.leadLoad(kLeadA) == 35);
+    CHECK(s.leadLoad(kLeadB) == 25);
+
+    // B stands again: the kept gauge is up and stores once more.
+    s.setLeadHealth(kLeadB, 0.5f);
+    t = s.tick(0.0);
+    CHECK(t.leadsRose != 0);
+    CHECK(s.keptLead() == kLeadB);
+    CHECK_FALSE(s.keptDown());
+    CHECK(s.keptParried(10) == 10);
+    CHECK(s.leadLoad(kLeadB) == 35);
+}
+
+TEST_CASE("count lift: a trade folds the old lead's count store the host has not applied into the kept gauge") {
+    FightSession s;
+    REQUIRE(s.begin(keptDef(), 0.0).ok());
+    s.setLoad(kLeadA, 30);
+    CHECK(s.keptParried(20) == 20);
+    s.tick(0.0);
+    toNow(s);
+    REQUIRE(s.setActiveLead(kLeadB)); // asked in the step a window joins: the close trades the gauges
+    CHECK(joinBoth(s).outcome == CountOutcome::OnCount);
+    CHECK(s.keptLoad() == 30); // B kept: 20 + 10
+    const FightTick t = s.tick(0.0);
+    CHECK(t.switched == kLeadB);
+    CHECK(t.handedLoad == 30);
+    CHECK(s.keptLead() == kLeadA);
+    CHECK(s.keptLoad() == 40); // A's 30 fed and its 10 stored, which the host did not apply
+    bool aStore = false;
+    for (const CountLoadChange& c : t.loads) {
+        CHECK(c.kept); // every change is the session's now: the host applies none to its gauge (B's)
+        aStore = aStore || (c.lead == kLeadA && c.kind == CountLoadKind::CountStore && c.amount == 10);
+    }
+    CHECK(aStore);
+}
+
+TEST_CASE("count lift: no kept gauge, no trade") {
+    FightSession s;
+    REQUIRE(s.begin(liftDef(), 0.0).ok());
+    s.setLoad(kLeadA, 30);
+    s.setLoad(kLeadB, 50);
+    REQUIRE(s.setActiveLead(kLeadB));
+    const FightTick t = s.tick(0.0);
+    CHECK(t.switched == kLeadB);
+    CHECK(t.handedLoad == -1);
+    CHECK(s.keptLead() == kNoFighter);
+    CHECK(s.leadLoad(kLeadA) == 30);
+    CHECK(s.leadLoad(kLeadB) == 50);
+    CHECK(s.partnerLead() == kLeadA);
+}

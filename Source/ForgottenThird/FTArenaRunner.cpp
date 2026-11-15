@@ -1846,8 +1846,8 @@ void UFTArenaRunner::BeginSession()
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerJoinedAt = -1.0;
-	bSwitchAsked = bSwitchAskOpen = false;
-	SwitchAsks = SwitchesSeen = SwitchesDone = SwitchesRefused = SwitchAsksRefused = 0;
+	bSwitchAsked = bSwitchAskOpen = bSwitchAskedThisStep = false;
+	SwitchAsks = SwitchesSeen = SwitchesDone = SwitchesRefused = SwitchAsksRefused = SwitchAsksSame = 0;
 	bSwapCheckArmed = bSwapCheckPlaced = false;
 	SwapMoveSteps = SwapSteps = SwapChecks = SwapChecksPassed = 0;
 	SwapWorstNew = 1e9;
@@ -2062,18 +2062,20 @@ ftcore::GiftError UFTArenaRunner::GetThirdSlotRefusal() const
 
 ftcore::UiPartyWhy UFTArenaRunner::GetLeadSwitchReason(const uint8 Lead) const
 {
-	// No body for the other lead in this ring: NOT HERE, the host's own knowledge (the session's inFight agrees).
-	if (Lead != SessionLead && !PartnerBody())
+	if (!Session)
 	{
-		return ftcore::UiPartyWhy::NotHere;
+		return ftcore::UiPartyWhy::Unknown;
 	}
-	// ftcore::FightSession::leadSwitchReason(Lead), the close's own predicate, as the row's word (ftcore::uiPartyWhyOf).
-	return Session ? ftcore::uiPartyWhyOf(Session->Get().leadSwitchReason(Lead)) : ftcore::UiPartyWhy::Unknown;
+	// THE one host-side condition: a lead with no body in this ring cannot be controlled (NOT HERE). The rest is
+	// ftcore::FightSession::leadSwitchReason(Lead), the close's own predicate, as the row's word.
+	const bool bBody = Lead == SessionLead || PartnerBody();
+	return ftcore::uiPartyLeadWhy(Session->Get().leadSwitchReason(Lead), bBody);
 }
 
 void UFTArenaRunner::StepPartyScreen(ftcore::UiPartyInput In, const float DeltaSeconds)
 {
-	In.partnerHere = GetLeadSwitchReason(OtherLead()) != ftcore::UiPartyWhy::NotHere;
+	In.partnerHere = ftcore::uiPartyPartnerHere(GetLeadSwitchReason(OtherLead()));
+	In.lead = static_cast<int>(SessionLead); // a lead change under the open screen puts the cursor on Lead
 	const bool bProbe = ProbePartyInput(In);
 	const ftcore::UiPartyOut Out = ftcore::uiPartyScreenStep(PartyScreen, In, DeltaSeconds);
 	if (Out.picked() && Out.pick == ftcore::UiPartyRow::Partner)
@@ -2096,6 +2098,14 @@ bool UFTArenaRunner::ProbePartyInput(ftcore::UiPartyInput& In) const
 bool UFTArenaRunner::AskLeadSwitch(const TCHAR* From)
 {
 	const uint8 Partner = OtherLead();
+	// One ask per step: the session resolves one request at the close, so a second press in the same step (Tab and
+	// the screen's release in one frame) sends, counts and calls nothing.
+	if (bSwitchAskedThisStep)
+	{
+		UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: %.2f: a second lead switch asked this step (%s); one ask per step."), Fight.time(), From);
+		return false;
+	}
+	bSwitchAskedThisStep = true;
 	// No partner body in this fight (ordinary play, a Lone Carry): nothing to switch to, so nothing is sent; the call
 	// reads SWITCH: NOT HERE (the party screen's row never takes the cursor then, so only Tab gets here).
 	if (!PartnerBody())
@@ -2411,6 +2421,7 @@ void UFTArenaRunner::FeedSession()
 	const float Held = Fight.heldTime();
 	// The lead's health every step: the session's fall feed (0 is down) and the gift Heal's NotHurt.
 	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
+	FeedSessionLoads(); // the gauge as it stands at the close: a trade there keeps the old lead's from it
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
 	SessionHeld = Held;
 	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
@@ -2423,6 +2434,14 @@ void UFTArenaRunner::FeedSession()
 	{
 		SwitchLeadBodies(); // a switch with both up resolved at this close (the begin's own request names SessionLead)
 	}
+	if (Tick.handedLoad >= 0 && Session->Get().activeLead() == SessionLead)
+	{
+		// The session traded the gauges at this lead change (its kept gauge follows the partner): the fight's gauge now
+		// holds the new lead's Load, and the session keeps the old lead's.
+		const int32 Was = Fight.tradeLoad(Tick.handedLoad);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the gauges trade: lead %d carries %d Load (the gauge held %d); lead %d keeps %d."), Fight.time(),
+			static_cast<int32>(SessionLead), Fight.load(), Was, static_cast<int32>(Session->Get().keptLead()), Session->Get().keptLoad());
+	}
 	if (PartnerBody())
 	{
 		// The fight swapped the bodies on its TookOver (TakeOverBodies) and the session moves its control the same
@@ -2433,8 +2452,11 @@ void UFTArenaRunner::FeedSession()
 		PartnerLeadMismatch += (!Session->Get().defeated() && Session->Get().activeLead() != SessionLead) ? 1 : 0;
 		PartnerLeadMismatch += Tick.switchRefused != ftcore::kNoFighter && !bSwitchAskOpen ? 1 : 0;
 		SwitchAsksRefused += Tick.switchRefused != ftcore::kNoFighter && bSwitchAskOpen ? 1 : 0;
+		// An ask the close resolved as Same (a takeover the same step already gave that lead control) reports neither.
+		SwitchAsksSame += bSwitchAskOpen && Tick.switched == ftcore::kNoFighter && Tick.switchRefused == ftcore::kNoFighter ? 1 : 0;
 	}
 	bSwitchAskOpen = false; // this close resolved any request waiting
+	bSwitchAskedThisStep = false;
 	SessionRises += Tick.leadsRose != 0 ? 1 : 0;
 	bSessionDefeated = bSessionDefeated || Tick.defeated;
 	if (Tick.switched != ftcore::kNoFighter)
@@ -2477,11 +2499,15 @@ void UFTArenaRunner::FeedSessionLoads()
 	{
 		return;
 	}
-	const uint8 Partner = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
-	Session->Get().setLoad(SessionLead, Fight.load());
-	if (!Session->Get().keepsLoad(Partner))
+	// The fight's gauge is the lead the session does not keep: the controlled one, and between the fight's takeover
+	// (TakeOverBodies) and the session's close, still the fallen lead's until the session trades the gauges.
+	ftcore::FightSession& S = Session->Get();
+	const uint8 GaugeLead = S.keepsLoad(SessionLead) ? OtherLead() : SessionLead;
+	const uint8 Other = GaugeLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+	S.setLoad(GaugeLead, Fight.load());
+	if (!S.keepsLoad(Other))
 	{
-		Session->Get().setLoad(Partner, PartnerLoad); // a probe's fixed Load (the session keeps the partner's otherwise)
+		S.setLoad(Other, PartnerLoad); // a probe's fixed Load (the session keeps the partner's otherwise)
 	}
 }
 
@@ -2565,12 +2591,24 @@ void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
 
 int32 UFTArenaRunner::GetPartnerLoad() const
 {
-	return Session ? Session->Get().keptLoad() : 0;
+	// The partner is the lead not controlled now, read from the session; its kept gauge follows the partner.
+	if (!Session)
+	{
+		return 0;
+	}
+	const ftcore::FightSession& S = Session->Get();
+	const ftcore::FighterId Partner = S.partnerLead();
+	return S.keepsLoad(Partner) ? S.leadLoad(Partner) : 0;
 }
 
 int32 UFTArenaRunner::GetPartnerLoadCap() const
 {
-	return Session ? Session->Get().keptCap() : 0;
+	if (!Session)
+	{
+		return 0;
+	}
+	const ftcore::FightSession& S = Session->Get();
+	return S.keepsLoad(S.partnerLead()) ? S.keptCap() : 0;
 }
 
 float UFTArenaRunner::GetEnemyMarkBonus(int32 Slot) const
@@ -3138,7 +3176,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			break;
 		case ftcore::ArenaEventType::AllyDowned:
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the ally is down at %.2f s."), Fight.time());
-			// The partner down: its kept gauge stores and spends nothing for the rest of the fight.
+			// The partner down: its kept gauge stores and spends nothing until it stands (the session's close puts it up).
 			if (Session && Session->Get().keepsLoad(Session->Get().keptLead()))
 			{
 				Session->Get().setKeptDown(true);
@@ -6752,10 +6790,13 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	if (bPartner && (SwitchAsks > 0 || SwitchesSeen > 0))
 	{
 		// A switch with both up: every one the session made, the fight made (bodies, figures, lead), none refused; every
-		// ask switched or was refused by the session's rules (a player's ask in the cooldown or on a body down).
-		const bool bSwitchOk = SwitchesRefused == 0 && SwitchesDone == SwitchesSeen && SwitchesSeen + SwitchAsksRefused >= SwitchAsks;
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner switch %s (asked %d, the session switched %d, refused by its rules %d, the fight swapped %d, refused %d; leadSwitches %d)."),
-			bSwitchOk ? TEXT("PASS") : TEXT("FAIL"), SwitchAsks, SwitchesSeen, SwitchAsksRefused, SwitchesDone, SwitchesRefused, Fight.stats().leadSwitches);
+		// ask switched, was refused by the session's rules (a player's ask in the cooldown or on a body down) or found
+		// control already there (Same). Asks are one per step (AskLeadSwitch), so Tab and a screen release count once.
+		const bool bSwitchOk = SwitchesRefused == 0 && SwitchesDone == SwitchesSeen &&
+							   SwitchesSeen + SwitchAsksRefused + SwitchAsksSame >= SwitchAsks;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner switch %s (asked %d, the session switched %d, refused by its rules %d, already there %d, the fight swapped %d, refused %d; leadSwitches %d)."),
+			bSwitchOk ? TEXT("PASS") : TEXT("FAIL"), SwitchAsks, SwitchesSeen, SwitchAsksRefused, SwitchAsksSame, SwitchesDone, SwitchesRefused,
+			Fight.stats().leadSwitches);
 	}
 	if (bPartnerHeldOut)
 	{

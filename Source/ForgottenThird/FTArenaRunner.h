@@ -252,7 +252,9 @@ public:
 	float GetEnemyMarkBonus(int32 Slot) const;
 	double GetEnemyMarkUntil(int32 Slot) const;
 	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
-	// Load it stored this fight and its last change (-1e9 when none).
+	// Load it stored this fight and its last change (-1e9 when none). The partner is the lead not controlled now
+	// (FightSession::partnerLead): the session's kept gauge follows it through a switch or a takeover, and the fight's
+	// gauge takes the new controlled lead's Load (FightTick::handedLoad, ArenaFight::tradeLoad).
 	int32 GetPartnerLoad() const;
 	int32 GetPartnerLoadCap() const;
 	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }
@@ -348,9 +350,11 @@ public:
 	// the cursor, the release confirms. Open: the look and the target flick are held, the left stick still moves the
 	// lead.
 	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
-	// Why a switch to session lead Lead would be refused now, the party row's word (FightSession::leadSwitchReason). The
-	// other lead with no body in this fight (PartnerBody false: ordinary play, a Lone Carry) is NOT HERE from the host's
-	// own knowledge too, whatever the session says; the session agrees today (its inFight has the controlled lead alone).
+	// Why a switch to session lead Lead would be refused now, the party row's word (ftcore::uiPartyLeadWhy over
+	// FightSession::leadSwitchReason). THE one host-side condition ahead of the session: a lead with no body in this
+	// fight cannot be controlled, so the other lead with no body (PartnerBody false: ordinary play, a Lone Carry, a
+	// join not landed yet) is NOT HERE whatever the session says. Everything else is the session's word. Unknown with
+	// no session.
 	ftcore::UiPartyWhy GetLeadSwitchReason(uint8 Lead) const;
 	// The last switch the session refused at a step's close (FightTick::switchRefused), as a count that rises with each
 	// and its word: the HUD's SWITCH: <WORD> call.
@@ -941,7 +945,9 @@ private:
 	// session whenever the partner has a body in this fight (PartnerBody); the session's tick.switched then swaps the
 	// bodies, the figures, the seats and the camera (SwitchLeadBodies). With no body nothing is sent and the HUD's call
 	// reads SWITCH: NOT HERE; the session refuses the rest at the step's close, and a switch never ends a Lone Carry.
-	// From names the press for the log. True when the session took the request.
+	// From names the press for the log. One ask per step: a second press in the same step (Tab and the screen's
+	// release in one frame) sends and counts nothing, since the session resolves one request at the close. True when
+	// the session took the request (the step's first ask).
 	bool AskLeadSwitch(const TCHAR* From);
 	// The party screen's step: In with the partner's row's presence (GetLeadSwitchReason, the row's own word), the
 	// -ArenaSwitchAt probe's drive where it runs (ProbePartyInput), and a pick of the partner's row sent by AskLeadSwitch.
@@ -1104,11 +1110,13 @@ private:
 	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and
 	// the camera. Asked by the probe, switched by the session, swapped by the fight, refused by the fight.
 	// Every host request the session took counts in SwitchAsks (AskLeadSwitch); one still open at a step's close and
-	// refused there (cooldown, a body down) counts in SwitchAsksRefused, a player's answer, not a mismatch.
+	// refused there (cooldown, a body down) counts in SwitchAsksRefused, a player's answer, not a mismatch; one the close
+	// resolved as Same (control already on that lead: a takeover the same step) counts in SwitchAsksSame.
 	float SwitchAt = -1.f;
 	bool bSwitchAsked = false;
 	bool bSwitchAskOpen = false;
-	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0, SwitchAsksRefused = 0;
+	bool bSwitchAskedThisStep = false; // AskLeadSwitch's one ask per step (cleared at the step's close, as bSwitchAskOpen)
+	int32 SwitchAsks = 0, SwitchesSeen = 0, SwitchesDone = 0, SwitchesRefused = 0, SwitchAsksRefused = 0, SwitchAsksSame = 0;
 	// The partner's blows: the session ruled them (RuleSessionBlow's partner path), their Hit events, their joins.
 	int32 PartnerBlowsRuled = 0, PartnerHitEvents = 0, PartnerJoins = 0;
 	// After a takeover or a lead switch: the figures' places once drawn, the steps since with a move input (and the

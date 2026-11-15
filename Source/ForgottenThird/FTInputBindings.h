@@ -1,17 +1,21 @@
 #pragma once
 
 // The player's walking and fighting bindings (ftcore::InputBindings): the defaults, with the player's overrides from
-// Saved/InputBindings.json read over them (a refused file is logged and the defaults stand). Readers ask for the key of
-// an action on each device and whether a held action is pressed once to toggle.
+// Saved/InputBindings.json read over them (a refused file is logged once and the bindings in use stand). Readers ask
+// for the key of an action on each device and whether a held action is pressed once to toggle.
 //
 // The file is read at first use and again whenever ReloadIfChanged finds it added, removed or edited: the player
 // controller asks as its input is set up (each map), when the game window gets the focus back and as the pause menu
-// closes. A reload rebuilds everything built from the bindings in place and moves Generation(), so a reader that keeps
-// something it built from them (the fight HUD's prompt keys, the explore pawn's and the controller's mapping contexts)
-// rebuilds when it moves.
+// closes. A reload that takes the file (or finds it gone) rebuilds everything built from the bindings in place and
+// moves Generation(); a refused file changes nothing. Who follows it:
+// * the arena reads Key() each frame, so it follows at once; the fight HUD's prompt keys and the controls lines
+//   (HintLine, UnboundLine) rebuild when the generation moves;
+// * the explore pawn maps its keys on its own context (MapBoundKeys) and maps them again when the generation moves;
+// * the player controller maps the table's keys it uses, the backlog's on the story context and Pause's on its own
+//   (MapTableKeys), and maps them again when the generation moves. Its other story keys are fixed, not the table's.
 //
-// The arena, the explore character and the pause key read it; the quick-time and Beat screens keep their action
-// buttons (FTActionButtons.h), menus their own keys.
+// The arena, the explore character, the backlog and the pause key read it; the quick-time and Beat screens keep their
+// action buttons (FTActionButtons.h), menus their own keys.
 
 #include "CoreMinimal.h"
 #include "Engine/GameInstance.h"
@@ -34,6 +38,7 @@
 
 #include <array>
 #include <string>
+#include <string_view>
 
 namespace FTInputBindings
 {
@@ -55,10 +60,15 @@ struct FBindingsStore
 	// The bindings' generation, their change signal: each load moves it, so it is never 0 once loaded.
 	uint32 Generation = 0;
 	bool bLoaded = false;
-	// The file as the last load found it (bFileThere false: there was none), for ReloadIfChanged.
+	// The file as the last load that took it found it (bFileThere false: there was none), for ReloadIfChanged. A
+	// refused file is not recorded here, so it is read again while it differs.
 	bool bFileThere = false;
 	FDateTime FileTime;
 	int64 FileSize = -1;
+	// The last refused file's stamp, so its warning is logged once.
+	bool bRefusedLogged = false;
+	FDateTime RefusedTime;
+	int64 RefusedSize = -1;
 };
 
 inline FBindingsStore& BindingsStore()
@@ -74,45 +84,9 @@ inline void NoteChanged()
 	++BindingsStore().Generation;
 }
 
-// (Re)reads Saved/InputBindings.json over the defaults, rebuilds the key table, and moves the generation (which drops
-// the controls lines HintLine and UnboundLine keep). The hook for a rebinding screen: it writes the file, then calls
-// this. Reads the file: never per frame.
-inline void Reload()
+// Builds the engine key table from the bindings.
+inline void BuildKeys(FBindingsStore& Store)
 {
-	FBindingsStore& Store = BindingsStore();
-	const FString Path = GetFilePath();
-	// The stat first, so a refused file is not re-read (and re-logged) at every check.
-	const FFileStatData Stat = IFileManager::Get().GetStatData(*Path);
-	Store.bFileThere = Stat.bIsValid && !Stat.bIsDirectory;
-	Store.FileTime = Store.bFileThere ? Stat.ModificationTime : FDateTime::MinValue();
-	Store.FileSize = Store.bFileThere ? Stat.FileSize : -1;
-	const bool bWasLoaded = Store.bLoaded;
-	Store.bLoaded = true;
-	Store.Bindings = ftcore::defaultInputBindings();
-	Store.Unbound = ftcore::InputUnbound();
-	FString Text;
-	if (FFileHelper::LoadFileToString(Text, *Path))
-	{
-		std::string Error;
-		if (!ftcore::importInputBindings(FT::ToUtf8(Text), Store.Bindings, &Error, &Store.Unbound))
-		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s refused (%s); using the defaults."), *Path, *FT::ToFString(Error));
-			Store.Bindings = ftcore::defaultInputBindings();
-			Store.Unbound = ftcore::InputUnbound();
-		}
-		const ftcore::InputUnbound& Left = Store.Unbound;
-		for (size_t D = 0; D < ftcore::kInputDeviceCount && Left.count > 0; ++D)
-		{
-			for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
-			{
-				if (Left.left[D][A])
-				{
-					UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s unbound on the %s: your own key sits on its default; choose a key."),
-						*FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))), D == 0 ? TEXT("keyboard") : TEXT("pad"));
-				}
-			}
-		}
-	}
 	for (size_t D = 0; D < ftcore::kInputDeviceCount; ++D)
 	{
 		for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
@@ -127,12 +101,88 @@ inline void Reload()
 			}
 		}
 	}
+}
+
+// (Re)reads Saved/InputBindings.json over the defaults (ftcore::loadInputBindings: into a temporary, swapped in only
+// when the file is accepted), rebuilds the key table, and moves the generation (which drops the controls lines
+// HintLine and UnboundLine keep). No file means the defaults. A refused file (invalid, half-written, unreadable)
+// changes nothing: the bindings, the keys, the generation and the file stamp of the last load all stay, so the next
+// ReloadIfChanged reads it again; it is logged once per refused file (its time stamp and size). At the first load a
+// refused file leaves the defaults. The hook for a rebinding screen: it writes the file, then calls this. True when
+// the bindings were (re)built. Reads the file: never per frame.
+inline bool Reload()
+{
+	FBindingsStore& Store = BindingsStore();
+	const FString Path = GetFilePath();
+	const FFileStatData Stat = IFileManager::Get().GetStatData(*Path);
+	const bool bThere = Stat.bIsValid && !Stat.bIsDirectory;
+	const FDateTime Time = bThere ? Stat.ModificationTime : FDateTime::MinValue();
+	const int64 Size = bThere ? Stat.FileSize : -1;
+	std::string Error;
+	ftcore::InputBindingsLoad Got = ftcore::InputBindingsLoad::Refused;
+	if (!bThere)
+	{
+		Got = ftcore::loadInputBindings(false, std::string_view(), Store.Bindings, Store.Unbound, &Error);
+	}
+	else
+	{
+		FString Text;
+		if (FFileHelper::LoadFileToString(Text, *Path))
+		{
+			const std::string Utf8 = FT::ToUtf8(Text);
+			Got = ftcore::loadInputBindings(true, Utf8, Store.Bindings, Store.Unbound, &Error);
+		}
+		else
+		{
+			Error = "the file could not be read";
+		}
+	}
+	const bool bWasLoaded = Store.bLoaded;
+	if (Got == ftcore::InputBindingsLoad::Refused)
+	{
+		if (!Store.bRefusedLogged || Store.RefusedTime != Time || Store.RefusedSize != Size)
+		{
+			Store.bRefusedLogged = true;
+			Store.RefusedTime = Time;
+			Store.RefusedSize = Size;
+			UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s refused (%s); %s stand, and the file is read again when it changes."), *Path,
+				*FT::ToFString(Error), bWasLoaded ? TEXT("the bindings in use") : TEXT("the defaults"));
+		}
+		if (bWasLoaded)
+		{
+			return false;
+		}
+		// The first load: the store holds the defaults it starts with; build their keys (the file stamp stays unloaded).
+		Store.bLoaded = true;
+		BuildKeys(Store);
+		NoteChanged();
+		return true;
+	}
+	Store.bLoaded = true;
+	Store.bFileThere = bThere;
+	Store.FileTime = Time;
+	Store.FileSize = Size;
+	Store.bRefusedLogged = false;
+	const ftcore::InputUnbound& Left = Store.Unbound;
+	for (size_t D = 0; D < ftcore::kInputDeviceCount && Left.count > 0; ++D)
+	{
+		for (size_t A = 0; A < ftcore::kInputActionCount; ++A)
+		{
+			if (Left.left[D][A])
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("InputBindings: %s unbound on the %s: your own key sits on its default; choose a key."),
+					*FT::ToFString(ftcore::inputActionKey(static_cast<ftcore::InputAction>(A))), D == 0 ? TEXT("keyboard") : TEXT("pad"));
+			}
+		}
+	}
+	BuildKeys(Store);
 	if (bWasLoaded)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("InputBindings: %s %s; the bindings are read again."), *Path,
-			Store.bFileThere ? TEXT("changed") : TEXT("is gone"));
+			bThere ? TEXT("changed") : TEXT("is gone"));
 	}
 	NoteChanged();
+	return true;
 }
 
 // The store, loaded (the first use reads the file). Per frame this is one flag check.
@@ -146,8 +196,9 @@ inline const FBindingsStore& Loaded()
 	return Store;
 }
 
-// Reloads when the file was added, removed or edited (its time stamp or size moved) since the last load; true when it
-// did. One stat of the file: call it at a map's start or on a focus change, never per frame.
+// Reloads when the file was added, removed or edited (its time stamp or size moved) since the last load it accepted;
+// true when the bindings were rebuilt (a refused file rebuilds nothing, and is tried again at the next call). One stat
+// of the file (and a read while it differs): call it at a map's start or on a focus change, never per frame.
 inline bool ReloadIfChanged()
 {
 	const FBindingsStore& Store = BindingsStore();
@@ -162,8 +213,7 @@ inline bool ReloadIfChanged()
 	{
 		return false;
 	}
-	Reload();
-	return true;
+	return Reload();
 }
 
 inline const ftcore::InputBindings& Get()

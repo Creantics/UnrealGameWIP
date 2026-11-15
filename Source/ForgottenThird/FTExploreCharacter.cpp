@@ -227,6 +227,7 @@ void AFTExploreCharacter::BeginPlay()
 		}
 		WearLook(PartyLooks[LeadIndex]);
 	}
+	FindPartyRows(); // the party screen's rows, again whenever the lead changes (SwitchLeadTo)
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
 	// -LocoPulse=<s> drops the movement input for -LocoRest=<s> seconds (default 2) after every s seconds
 	// of it, for starts and stops; with -LocoFace=<deg> the body turns on the spot by that much in each
@@ -1055,6 +1056,11 @@ void AFTExploreCharacter::TickPartyScreen(const APlayerController* PC, float Del
 	ftcore::UiPartyInput In;
 	In.live = PC != nullptr && !FTInputBindings::LostFocus();
 	In.explore = true;
+	// The rows' truth, the same the screen draws (IsPartnerHere): with no other playable look the partner's row reads
+	// NOT HERE and a flick skips it, so a release never picks it. The rows are kept current (FindPartyRows at begin
+	// play and after every lead change), so this frame's step sees them before it opens.
+	In.partnerHere = IsPartnerHere();
+	In.lead = LeadIndex;
 	if (In.live)
 	{
 		In.partyDown = FTInputBindings::IsDown(*PC, InputAction::Party);
@@ -1080,7 +1086,11 @@ void AFTExploreCharacter::TickPartyScreen(const APlayerController* PC, float Del
 	switch (Out.pick)
 	{
 	case ftcore::UiPartyRow::Partner:
-		SwitchLeadTo(PartnerIndex);
+		// Guarded as well: only a partner that is here (a valid other look) is ever sent.
+		if (IsPartnerHere())
+		{
+			SwitchLeadTo(PartnerIndex);
+		}
 		break;
 	case ftcore::UiPartyRow::Follow:
 		HandleToggleParty();
@@ -2626,6 +2636,7 @@ void AFTExploreCharacter::SwitchLeadTo(int32 Index)
 	}
 	UnCrouch();
 	LeadIndex = Index;
+	FindPartyRows(); // the old lead takes the partner's row
 	const FFTLeadLook& Look = PartyLooks[LeadIndex];
 	WearLook(Look);
 	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())

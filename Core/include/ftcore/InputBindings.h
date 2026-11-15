@@ -150,6 +150,14 @@ struct InputUnbound {
 };
 FTCORE_API bool importInputBindings(std::string_view text, InputBindings& out, std::string* error = nullptr,
                                     InputUnbound* unbound = nullptr);
+// What the host's (re)load of the player's file did (loadInputBindings).
+enum class InputBindingsLoad : std::uint8_t { Defaults, Read, Refused };
+// The host's (re)load: no file (fileThere false) is the defaults with nothing unbound; a file is its overrides read
+// over the defaults (importInputBindings into a temporary that starts from the defaults, so nothing of the table now
+// carries into it). Only an accepted file or no file writes `bindings` and `unbound`: a refused one (invalid, or a
+// half-written file cut short) leaves both exactly as they were, returns Refused and says why in `error`.
+FTCORE_API InputBindingsLoad loadInputBindings(bool fileThere, std::string_view text, InputBindings& bindings,
+                                               InputUnbound& unbound, std::string* error = nullptr);
 // The partner's order has no pad button and no route until the pad's layout is ruled for it: inputAllReachable lets
 // it go unbound on the pad. The two gifts have D-pad buttons (ruled 2026-11-14) but may still go unbound there, so a
 // version-1 file's NO KEY gifts, saved again, read back.

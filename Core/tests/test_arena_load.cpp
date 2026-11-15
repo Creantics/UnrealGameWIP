@@ -611,6 +611,27 @@ TEST_CASE("arena carry: spendLoad removes what there is and reports it once") {
     CHECK(rig.find(ArenaEventType::LoadSpent)->amount == 20);
 }
 
+TEST_CASE("arena carry: tradeLoad puts the new lead's Load in the gauge quietly, clamped to the cap") {
+    Rig rig({dummyKind()});
+    rig.fight.setLoadCap(60);
+    rig.fight.giveLoad(20);
+    rig.tick();
+    const int overloads = rig.fight.stats().overloads;
+    CHECK(rig.fight.tradeLoad(45) == 20);
+    CHECK(rig.fight.load() == 45);
+    CHECK(rig.fight.tradeLoad(90) == 45); // to the cap, overloaded with no Overloaded
+    CHECK(rig.fight.load() == 60);
+    CHECK(rig.fight.overloaded());
+    CHECK(rig.fight.tradeLoad(-5) == 60);
+    CHECK(rig.fight.load() == 0);
+    rig.tick();
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::LoadSpent) == 0);
+    CHECK(rig.count(ArenaEventType::Overloaded) == 0);
+    CHECK(rig.count(ArenaEventType::LoadStored) == 1); // the giveLoad's only
+    CHECK(rig.fight.stats().overloads == overloads);
+}
+
 // ---- the default fight is unchanged ----
 
 namespace {

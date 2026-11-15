@@ -205,8 +205,9 @@ private:
 	// Pause: Esc / pad Start. Backs out of the topmost layer first (the settings overlay, the pause menu
 	// itself, then OnBack's listeners), else opens the pause menu.
 	void CreatePauseInput();
-	// Maps Pause's keys from FTInputBindings (unmapping the old ones first) and notes their generation.
-	void MapPauseKeys();
+	// Maps every key this controller takes from FTInputBindings (the backlog's, Pause's), unmapping the old ones
+	// first, and notes their generation; PlayerTick calls it again whenever the generation moves.
+	void MapTableKeys();
 	void BindPauseInput(UEnhancedInputComponent& Input);
 	void HandlePause();
 
@@ -246,7 +247,7 @@ private:
 	TObjectPtr<UInputAction> PauseAction;
 	bool bPauseInput = false;
 	bool bPauseMenuInput = false;
-	uint32 PauseKeyGeneration = 0; // the bindings' generation Pause's keys were mapped from (FTInputBindings::Generation)
+	uint32 TableKeyGeneration = 0; // the bindings' generation the table's keys were mapped from (FTInputBindings::Generation)
 	bool bHadFocus = true;         // the app's focus at the last PlayerTick, for the regain edge
 	bool bBackClaimed = false;
 

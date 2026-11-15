@@ -2632,6 +2632,15 @@ struct ArenaFightImpl {
         return take;
     }
 
+    // The host's tradeLoad: the gauge takes the Load it is handed, quietly.
+    int tradeLoad(int load) {
+        const int held = pl.gauge.value;
+        pl.gauge.value = std::clamp(load, 0, fight.capNow());
+        out.player.load = pl.gauge.value;
+        out.player.overloaded = overloadedNow();
+        return held;
+    }
+
     // The host's setLoadCap: the Load stays; reaching the new cap overloads once.
     void setLoadCap(int cap) {
         const bool was = overloadedNow();
@@ -3683,6 +3692,10 @@ bool ArenaFight::lone() const { return lone_; }
 int ArenaFight::spendLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
     return ArenaFightImpl(*this).spendLoad(amount);
+}
+int ArenaFight::tradeLoad(int load) {
+    if (phase_ != ArenaPhase::Fighting) return -1;
+    return ArenaFightImpl(*this).tradeLoad(load);
 }
 int ArenaFight::hostHeal(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;

@@ -13,8 +13,10 @@
 // in a fight, which has no map; in explore it opens once held kUiPartyHold, and a shorter press is the map.
 // Move: one row per flick of the right stick or the mouse, up or down; the Third's row never takes the cursor, nor the
 // partner's while no partner is in the fight (`partnerHere` false: the row reads NOT HERE), and a flick past the first
-// or last row it may take stays. A cursor on the partner's row when the partner goes goes back to the lead's. A flick counts only after the stick or the mouse has come back to rest, so
-// a stick already pushed as the screen opens moves nothing.
+// or last row it may take stays. A cursor on the partner's row when the partner goes goes back to the lead's, and so
+// does any cursor when the controlled lead changes under the open screen without its confirm (Tab, a takeover by a
+// fall: UiPartyInput::lead moves), so a release then sends nothing. A flick counts only after the stick or the mouse
+// has come back to rest, so a stick already pushed as the screen opens moves nothing.
 // Confirm: letting go of Party (both keys up) shuts the screen on the cursor's row; under the Toggle hold mode the
 // opening press's release does nothing and the next press shuts it. The cursor opens on the controlled lead, so
 // opening and letting go picks nothing.
@@ -56,6 +58,7 @@ struct UiPartyInput {
     float stickY = 0.f;     // the right stick's vertical, up positive
     float mouseY = 0.f;     // the mouse's vertical move this tick, up positive
     bool partnerHere = true; // false: no partner in this fight (its row NOT HERE), so its row never takes the cursor
+    int lead = -1;           // the controlled lead (the host's id; -1: not said); a change while open puts the cursor on Lead
 };
 
 struct UiPartyScreen {
@@ -70,6 +73,7 @@ struct UiPartyScreen {
     bool stickArmed = false;        // the stick is back at rest: its next push past kUiPartyStickOut is a flick
     bool mouseArmed = false;
     bool partnerHere = true;        // as of the last step (UiPartyInput::partnerHere)
+    int lead = -1;                  // as of the last step (UiPartyInput::lead)
 };
 
 struct UiPartyOut {
@@ -111,6 +115,11 @@ FTCORE_API bool uiPartyRefused(UiPartyWhy w);
 // NotInFight and Lone NOT HERE, FightOver FIGHT OVER, Cooldown WAIT. Each answer has its case, so a new one fails
 // the Core build (-Wswitch) until it has a word.
 FTCORE_API UiPartyWhy uiPartyWhyOf(LeadSwitch r);
+// A lead row's word as the host gives it: the session's answer (uiPartyWhyOf), except that a lead with no body in this
+// fight is NOT HERE whatever the session says (the one host-side condition: a lead with no body cannot be controlled).
+// The partner's row takes the cursor exactly when this is not NotHere (UiPartyInput::partnerHere, uiPartyPartnerHere).
+FTCORE_API UiPartyWhy uiPartyLeadWhy(LeadSwitch session, bool body);
+FTCORE_API bool uiPartyPartnerHere(UiPartyWhy w);
 
 // The open screen's rows as drawn (the HUD measures the names and draws; the closed block keeps its own inks, and the
 // HUD eases from those to these as the screen opens).

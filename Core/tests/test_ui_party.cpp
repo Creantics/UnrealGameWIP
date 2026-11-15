@@ -680,3 +680,189 @@ TEST_CASE("ui party: the probe's script picks the partner once from a screen tha
         }
     }
 }
+
+namespace {
+
+// The host's feed for the partner's row from a real session: its word (uiPartyLeadWhy on the session's answer and the
+// body the host has for that lead) and so its presence, the controlled lead from the session, as FTArenaRunner's
+// StepPartyScreen gives them.
+struct SessionFeed {
+    UiPartyWhy why = UiPartyWhy::Unknown;
+    bool here = false;
+};
+SessionFeed feedFrom(const FightSession& s, bool body) {
+    const FighterId partner = s.activeLead() == kLeadA ? kLeadB : kLeadA;
+    SessionFeed f;
+    f.why = uiPartyLeadWhy(s.leadSwitchReason(partner), body);
+    f.here = uiPartyPartnerHere(f.why);
+    return f;
+}
+UiPartyInput sessionIn(const Pad& p, const FightSession& s, const SessionFeed& f) {
+    UiPartyInput i = p.in();
+    i.partnerHere = f.here;
+    i.lead = static_cast<int>(s.activeLead());
+    return i;
+}
+// Opens the screen, flicks up once and lets go: the cursor's row after the flick, and whether the release picked the
+// partner.
+struct Tried {
+    UiPartyRow cursor = UiPartyRow::Lead;
+    UiPartyRowView partner;
+    bool picked = false;
+};
+Tried tryPartner(const FightSession& s, const SessionFeed& f) {
+    Pad p;
+    UiPartyScreen screen;
+    uiPartyScreenStep(screen, sessionIn(p, s, f), kDt);
+    p.party = true;
+    uiPartyScreenStep(screen, sessionIn(p, s, f), kDt);
+    p.stick = 0.9f;
+    uiPartyScreenStep(screen, sessionIn(p, s, f), kDt);
+    Tried t;
+    t.cursor = screen.cursor;
+    t.partner = uiPartyRowView(screen, UiPartyRow::Partner, f.why, 100.f);
+    p.stick = 0.f;
+    p.party = false;
+    const UiPartyOut o = uiPartyScreenStep(screen, sessionIn(p, s, f), kDt);
+    t.picked = o.picked() && o.pick == UiPartyRow::Partner;
+    return t;
+}
+
+} // namespace
+
+TEST_CASE("ui party: the partner's row from a real session: in the fight with a body, joined this step, Lone, down") {
+    constexpr double frame = 1.0 / 60.0;
+    SUBCASE("in the fight with a body: Ok, the cursor takes it at full ink and the release picks it") {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(frame);
+        const SessionFeed f = feedFrom(s, true);
+        CHECK(f.why == UiPartyWhy::Ok);
+        CHECK(f.here);
+        const Tried t = tryPartner(s, f);
+        CHECK(t.cursor == UiPartyRow::Partner);
+        CHECK(t.partner.ink == doctest::Approx(1.f));
+        CHECK(t.partner.underlineW == doctest::Approx(100.f));
+        CHECK(t.picked);
+        // The host's rule: the same session with no body for the partner is NOT HERE, never the cursor's.
+        const SessionFeed none = feedFrom(s, false);
+        CHECK(none.why == UiPartyWhy::NotHere);
+        CHECK_FALSE(tryPartner(s, none).picked);
+    }
+    SUBCASE("joined this step: NOT HERE before the close, Ok once the join has landed and the carry ended") {
+        FightSessionDef d;
+        d.inFight = {true, false};
+        d.loneLead = kLeadA;
+        FightSession s;
+        REQUIRE(s.begin(d, 0.0).ok());
+        s.tick(frame);
+        // The host's body for the partner: in the session's fight and not Lone (FTArenaRunner::PartnerBody).
+        const auto body = [&s] { return s.inFight(kLeadB) && !s.lone(); };
+        REQUIRE(s.joinFight(kLeadB, 1.f));
+        s.endLone(LoneEnd::PartnerCalled);
+        const SessionFeed before = feedFrom(s, body());
+        CHECK(before.why == UiPartyWhy::NotHere); // NotInFight until the close
+        CHECK_FALSE(before.here);
+        CHECK(tryPartner(s, before).cursor == UiPartyRow::Lead);
+        CHECK_FALSE(tryPartner(s, before).picked);
+        REQUIRE(s.tick(frame).joined == kLeadB);
+        const SessionFeed after = feedFrom(s, body());
+        CHECK(after.why == UiPartyWhy::Ok);
+        CHECK(after.here);
+        CHECK(tryPartner(s, after).picked);
+    }
+    SUBCASE("Lone: NOT HERE from the session (and from the host, with no body), never the cursor's") {
+        FightSessionDef d;
+        d.loneLead = kLeadA;
+        FightSession s;
+        REQUIRE(s.begin(d, 0.0).ok());
+        s.tick(frame);
+        REQUIRE(s.lone());
+        for (const bool body : {true, false}) {
+            CAPTURE(body);
+            const SessionFeed f = feedFrom(s, body);
+            CHECK(f.why == UiPartyWhy::NotHere);
+            CHECK_FALSE(f.here);
+            const Tried t = tryPartner(s, f);
+            CHECK(t.cursor == UiPartyRow::Lead);
+            CHECK(t.partner.underlineW == 0.f);
+            CHECK_FALSE(t.picked);
+        }
+    }
+    SUBCASE("down: DOWN, the row takes the cursor dimmed and still picks; the close refuses it") {
+        FightSession s;
+        REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+        s.tick(frame);
+        s.setLeadHealth(kLeadB, 0.f);
+        s.tick(frame);
+        REQUIRE(s.down(kLeadB));
+        const SessionFeed f = feedFrom(s, true);
+        CHECK(f.why == UiPartyWhy::Down);
+        CHECK(f.here);
+        const Tried t = tryPartner(s, f);
+        CHECK(t.cursor == UiPartyRow::Partner);
+        CHECK(t.partner.ink == doctest::Approx(kUiPartyRefusedInk));
+        CHECK(t.partner.underlineW == doctest::Approx(100.f));
+        REQUIRE(t.picked);
+        REQUIRE(s.setActiveLead(kLeadB));
+        const FightTick& tick = s.tick(frame);
+        CHECK(tick.switchRefused == kLeadB);
+        CHECK(uiPartyWhyOf(tick.switchRefusal) == UiPartyWhy::Down);
+    }
+}
+
+TEST_CASE("ui party: a takeover under the open screen puts the cursor on the new lead, so the release sends nothing") {
+    constexpr double frame = 1.0 / 60.0;
+    FightSession s;
+    REQUIRE(s.begin(FightSessionDef{}, 0.0).ok());
+    s.tick(frame);
+    Pad p;
+    UiPartyScreen screen;
+    const auto stepIt = [&] { return uiPartyScreenStep(screen, sessionIn(p, s, feedFrom(s, true)), kDt); };
+    stepIt();
+    p.party = true;
+    CHECK(stepIt().opened);
+    p.stick = 0.9f;
+    stepIt();
+    REQUIRE(screen.cursor == UiPartyRow::Partner);
+    p.stick = 0.f;
+    stepIt();
+    // The controlled lead falls with the partner up: the session hands control over without the screen's confirm.
+    s.setLeadHealth(kLeadA, 0.f);
+    REQUIRE(s.tick(frame).tookOver == kLeadB);
+    stepIt();
+    CHECK(screen.cursor == UiPartyRow::Lead);
+    p.party = false;
+    const UiPartyOut o = stepIt();
+    CHECK(o.closed);
+    CHECK_FALSE(o.picked());
+}
+
+TEST_CASE("ui party: a lead change while open moves the cursor to Lead; the first lead said, or a closed screen, moves nothing") {
+    Pad p;
+    UiPartyScreen s = fresh(p);
+    const auto stepLead = [&s, &p](int lead) {
+        UiPartyInput i = p.in();
+        i.lead = lead;
+        return uiPartyScreenStep(s, i, kDt);
+    };
+    // Not said (-1) before, then said: no change.
+    p.party = true;
+    stepLead(-1);
+    p.stick = 0.9f;
+    stepLead(0);
+    REQUIRE(s.cursor == UiPartyRow::Partner);
+    p.stick = 0.f;
+    stepLead(0);
+    CHECK(s.cursor == UiPartyRow::Partner);
+    // Tab swapped the roles while the cursor rests on the partner: back to the lead, the release picks nothing.
+    stepLead(1);
+    CHECK(s.cursor == UiPartyRow::Lead);
+    p.party = false;
+    CHECK_FALSE(stepLead(1).picked());
+    // A change while shut: the next opening starts on the lead anyway, and nothing moves.
+    stepLead(0);
+    p.party = true;
+    CHECK(stepLead(0).opened);
+    CHECK(s.cursor == UiPartyRow::Lead);
+}
