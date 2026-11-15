@@ -2247,6 +2247,43 @@ TEST_CASE("per-lead load: a retry from the start reports the controlled lead's L
     CHECK(s.tick(kFrame).leadLoadNow == kNoLeadValue);
 }
 
+TEST_CASE("per-lead load: a retry reads the controlled lead's heal charges from the host's part, as Load") {
+    // The host's fight spent a charge after the last feed (3) and before the phase checkpoint: it writes 2.
+    const auto run = [](int hostHealsA) {
+        FightSession s;
+        REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+        feedPerLead(s);
+        REQUIRE(s.leadHeals(kLeadA) == 3);
+        REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+        s.tick(kFrame);
+        REQUIRE(s.checkpointPhase(1));
+        FightHostCheckpoint host;
+        host.heals = {hostHealsA, 0}; // the lead without control: never read
+        REQUIRE(s.setHostCheckpoint(host, CheckpointAt::Phase));
+        s.tick(kFrame);
+        s.setLeadHeals(kLeadA, 0); // the attempt spends the rest
+        s.setLeadHealth(kLeadA, 0.f);
+        s.setLeadHealth(kLeadB, 0.f);
+        REQUIRE(s.tick(kFrame).defeated);
+        REQUIRE(s.retry().at == CheckpointAt::Phase);
+        REQUIRE(s.activeLead() == kLeadA);
+        const int stored = s.leadHeals(kLeadA);
+        const int other = s.leadHeals(kLeadB);
+        const int now = s.tick(kFrame).leadHealsNow;
+        return std::array<int, 3>{stored, other, now};
+    };
+    const auto spent = run(2);
+    CHECK(spent[0] == 2); // the charge spent before the checkpoint does not come back
+    CHECK(spent[1] == 1); // the other lead's stored count, from the session's checkpoint
+    CHECK(spent[2] == 2);
+    const auto unwritten = run(kNoLeadValue); // not written: the session's stored count stands
+    CHECK(unwritten[0] == 3);
+    CHECK(unwritten[2] == 3);
+    CHECK(run(500)[0] == kMaxLeadHeals); // kept to what the fight can hold
+    CHECK(run(-7)[0] == 0);
+    CHECK(run(0)[0] == 0);
+}
+
 TEST_CASE("per-lead load: a retry from a phase checkpoint puts each lead's values and the kept gauge's lead back") {
     FightSession s;
     REQUIRE(s.begin(perLeadDef(), 0.0).ok());

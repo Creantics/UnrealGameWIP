@@ -1466,6 +1466,8 @@ struct FightSessionTestAccess {
             {"host hp B", [](FightSession&, FightCheckpoint& c) { ++c.host.hp[kLeadB]; }},
             {"host load A", [](FightSession&, FightCheckpoint& c) { ++c.host.load[kLeadA]; }},
             {"host load B", [](FightSession&, FightCheckpoint& c) { ++c.host.load[kLeadB]; }},
+            {"host heals A", [](FightSession&, FightCheckpoint& c) { ++c.host.heals[kLeadA]; }},
+            {"host heals B", [](FightSession&, FightCheckpoint& c) { ++c.host.heals[kLeadB]; }},
             {"host draws", [](FightSession&, FightCheckpoint& c) { ++c.host.draws; }},
             {"host partner", [](FightSession&, FightCheckpoint& c) { ++c.host.partner.rhythm; }},
             {"host order", [](FightSession&, FightCheckpoint& c) { c.host.order = PartnerOrder::Spread; }},

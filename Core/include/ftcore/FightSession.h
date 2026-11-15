@@ -56,16 +56,19 @@
 //   the kept gauge starts on the lead without control (the arena's set-up), that stays so after every swap, so
 //   every change not kept that a tick reports is for the controlled lead and the host applies it to its gauge as
 //   before; otherwise a change not kept for the other lead is the host's to keep for that lead (or drop), as before.
-//   On the swap step the Load rules read the new value: overload, the Release (its opening Load and its spend) and
-//   the Load cap are the host fight's and judge its one gauge, so from the fight step after the host applies
-//   leadLoadNow they judge the new lead's Load, never the old lead's (an overload the old lead was in is not the
-//   new lead's: the host's setter re-judges overloaded() from the new value). The Lone multipliers and the Lone
+//   The Load rules (overload, the Release's opening Load and its spend, the Load cap) are the host fight's and judge
+//   its one gauge. The session reports leadLoadNow and leadHealsNow on the step control moves; the host applies
+//   them to its fight before the fight's next step; the rules read the new lead's values from that step on, never
+//   the old lead's. (The fight's setters that take them, one re-judging overload from the new value, are the host
+//   lane's to add.) The Lone multipliers and the Lone
 //   cap never meet a swap: while a Lone Carry is on a switch is refused Lone and the only other lead is out of the
 //   fight or joining it (a join reports the controlled lead's own values), so a Lone Carry never trades Load.
 //   A checkpoint holds each lead's stored values and the kept gauge's lead; a retry puts them back, except that
-//   the controlled lead's Load is the host's part as written (host.load of the checkpoint's activeLead), since the
-//   host's gauge is the truth for it. The host may read leadLoad(activeLead()) right after retry() (the same value
-//   the next tick reports).
+//   the controlled lead's Load and heal charges are the host's part as written (host.load and host.heals of the
+//   checkpoint's activeLead; heals kNoLeadValue: not written, the stored count stands), since the host's fight is
+//   the truth for them: a charge spent after the last feed and before the checkpoint does not return on a retry.
+//   The host may read leadLoad(activeLead()) and leadHeals(activeLead()) right after retry() (the same values the
+//   next tick reports).
 // * The Lone Carry (def.loneLead a lead; LoneCarry.h): that lead is Lone from begin until a gift is given (giveGift's
 //   given; a press refused for any reason leaves it Lone), endLone(PartnerCalled) or finish, then not for the rest
 //   of the fight; begin makes it Lone again. While Lone: setTable is refused (TableError::Lone, for any setter),
@@ -190,6 +193,7 @@
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <span>
 
 namespace ftcore {
@@ -286,8 +290,10 @@ struct CountLoadChange {
 };
 // Two joiners per window: a tick between joins holds at most a few.
 inline constexpr std::size_t kMaxCountLoadChanges = 8;
-// A lead's stored heal charges are kept to 0..this (setLeadHeals).
+// A lead's stored heal charges are kept to 0..this (setLeadHeals, and the host's part at a retry). The host's fight
+// holds its charges in a std::uint8_t (ArenaFight::healCharges), so every stored count fits it.
 inline constexpr int kMaxLeadHeals = 99;
+static_assert(kMaxLeadHeals <= std::numeric_limits<std::uint8_t>::max(), "heal charges must fit the fight's type");
 // tick.leadLoadNow and tick.leadHealsNow when control did not move on the step.
 inline constexpr int kNoLeadValue = -1;
 
@@ -319,6 +325,9 @@ inline constexpr double kNeverSwitched = -1.0e300;
 struct FightHostCheckpoint {
     std::array<int, 2> hp{};         // each lead's hp, by lead (the host's own scale)
     std::array<int, 2> load{};       // each lead's Load gauge; a retry reads only the controlled lead's (see Per-lead Load)
+    // Each lead's heal charges as the host's fight held them; a retry reads only the controlled lead's, as for load
+    // (kept to 0..kMaxLeadHeals). kNoLeadValue (the default): not written, the session's stored count stands.
+    std::array<int, 2> heals{kNoLeadValue, kNoLeadValue};
     std::uint64_t draws = 0;         // the fight's draw state (at the fight's start: its seed)
     PartnerBrainSave partner{};      // the partner's brain as it stood (save(); a fallen lead's down time is in it)
     PartnerOrder order = PartnerOrder::StayClose; // the order button
@@ -521,6 +530,10 @@ public:
         // The host's gauge as it wrote it is the controlled lead's Load (see Per-lead Load).
         if (cp.hostWritten && isLead(cp.activeLead) && !keepsLoad(cp.activeLead))
             leadLoad_[cp.activeLead] = clampLoad(cp.host.load[cp.activeLead]);
+        // And its heal charges as the host wrote them, when it did: a charge spent after the last feed and before
+        // the checkpoint stays spent.
+        if (cp.hostWritten && isLead(cp.activeLead) && cp.host.heals[cp.activeLead] != kNoLeadValue)
+            leadHeals_[cp.activeLead] = clampHeals(cp.host.heals[cp.activeLead]);
         if (keptOn_) count_.setLoad(keptLead_, keptDown_ ? 0 : kept_);
         lone_ = cp.lone;
         loneEnded_ = cp.loneEnded;
@@ -870,7 +883,7 @@ public:
             h.add(cp->loneReleases).add(cp->lonePooled);
             if (hasBoss_) cp->boss.hashState(h);
             const FightHostCheckpoint& host = cp->host;
-            h.add(host.hp).add(host.load).add(host.draws).add(host.partner.hash()).add(host.order);
+            h.add(host.hp).add(host.load).add(host.heals).add(host.draws).add(host.partner.hash()).add(host.order);
             h.add(host.bossHp).add(host.bossPhase).add(host.currency);
         }
         return h.value;
@@ -1057,7 +1070,7 @@ public:
     // A lead's heal charges now (0..kMaxLeadHeals): the host feeds the controlled lead's every step.
     void setLeadHeals(FighterId lead, int charges) {
         if (!isLead(lead)) return;
-        leadHeals_[lead] = charges < 0 ? 0 : (charges > kMaxLeadHeals ? kMaxLeadHeals : charges);
+        leadHeals_[lead] = clampHeals(charges);
     }
     // The blow cap (0: none) and a blow's scale kept under it.
     float blowCap() const { return blowCap_; }
@@ -1378,6 +1391,7 @@ private:
         controlMoved(from);
     }
     static int clampLoad(int load) { return load < 0 ? 0 : (load > kMaxLoad ? kMaxLoad : load); }
+    static int clampHeals(int charges) { return charges < 0 ? 0 : (charges > kMaxLeadHeals ? kMaxLeadHeals : charges); }
     // Control moved from `from` to activeLead_ (a switch, a takeover, a retry's carried switch): see Per-lead Load.
     // The losing lead's unreported changes the host would apply go to its stored Load (marked kept); the kept gauge
     // moves off the new controlled lead onto the losing one, unclipped; the next tick reports the new lead's values.

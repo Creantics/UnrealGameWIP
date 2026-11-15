@@ -28,7 +28,8 @@
 //   inside it, rising to edgePushSpeed at the edge and past it (edgeDistance 0 or less, -inf included), so a sprint
 //   cannot cross it. No wall, no message. An edgeInward that is zero (or not finite) where the edge pushes: the
 //   last good inward, else straight toward the dive area's centre when the host gives one; with neither, the body
-//   holds its x and y (envOk false). Never no push.
+//   holds its x and y (envOk false). Never no push. Any finite edgeInward, however long, is scaled by its largest
+//   part before it is normalised (as the look is), so it never overflows to a zero direction.
 // - Breath: used 1 s a second under water, sprintBreathRate while sprinting; refilled at the surface or in an air
 //   pocket (empty to full in refillSeconds). warning from warningSeconds left while it is being used; at 0 the
 //   vitality drains drainPerSecond (for the part of the step past empty).
@@ -39,7 +40,8 @@
 //   so one huge step moves at most a quarter second's worth and the clamps still hold. So the results of steps
 //   longer than kSwimMaxStep depend on the frame rate (the dropped time is lost).
 // - Guards: a bad env (position, surface or bed not finite, the bed not under the surface) moves nothing and changes
-//   no state, but time passes: breath is used (or refills) as on a good step, and under water kSwimBadEnvRescue
+//   no state, but time passes: breath is used (or refills) as on a good step, except that its airPocket is not
+//   trusted (under water it does not refill on a bad step), and under water kSwimBadEnvRescue
 //   (2 s) of it without a break is a rescue. The position is the env's if finite, else the last valid one since the
 //   last reset; with none, the env's own, untouched, and positionValid false (the host must not move the body). A
 //   crouch or jump pressed on a bad step is kept until a good step uses it. A column not finite, negative, or off
@@ -263,6 +265,17 @@ private:
     static bool diveOpen(SwimState st, bool jumpDown, const SwimEnv& env, float column) {
         return st == SwimState::Surface && !jumpDown && env.deepAllowed && column >= kSwimDeepMin;
     }
+    // A finite v's horizontal part as a unit vector (z 0), scaled by its largest part first so a huge v cannot
+    // overflow to infinity (and a zero direction). False when that part is under 1e-4 m long.
+    static bool unitXY(SwimVec v, SwimVec& out) {
+        const float m = std::fmax(absf(v.x), absf(v.y));
+        if (!(m > 0.f)) return false;
+        const float qx = v.x / m, qy = v.y / m;
+        const float len = std::sqrt(qx * qx + qy * qy); // 1..sqrt(2)
+        if (!(m * len > 1e-4f)) return false;          // m * len may round to +inf: still long enough
+        out = {qx / len, qy / len, 0.f};
+        return true;
+    }
     SwimTuning tuning_{};
     bool tuningOk_ = true;
     SwimState state_ = SwimState::Surface;
@@ -340,8 +353,9 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         state_ = SwimState::Rescued;
     };
 
-    // A bad env: nothing moves and no state changes, but time passes (breath; under water, the rescue after
-    // kSwimBadEnvRescue). The position: the env's if finite, else the last valid, else the env's own (not valid).
+    // A bad env: nothing moves and no state changes, but time passes (breath, its air pocket not trusted; under
+    // water, the rescue after kSwimBadEnvRescue). The position: the env's if finite, else the last valid, else the
+    // env's own (not valid).
     if (!finite(env.position) || !std::isfinite(env.surfaceZ) || !std::isfinite(env.bedZ) ||
         !(env.bedZ < env.surfaceZ)) {
         s.envOk = false;
@@ -357,7 +371,7 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         pendJump_ = pendJump_ || jumpPress;
         if (state_ == SwimState::Rescued) return finish();
         const bool under = state_ != SwimState::Surface;
-        breathe(!under || env.airPocket);
+        breathe(!under);
         if (under) {
             badFor_ += dt;
             if (badFor_ + 1e-6f >= kSwimBadEnvRescue || vitality_ <= 0.f) rescue();
@@ -378,12 +392,11 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         !std::isnan(env.edgeDistance) && env.edgeDistance != std::numeric_limits<float>::infinity();
     const bool inwardOk = finite(env.edgeInward);
     if (!edgeUsable || !inwardOk) s.envOk = false;
-    if (inwardOk) {
-        const float h = std::sqrt(env.edgeInward.x * env.edgeInward.x + env.edgeInward.y * env.edgeInward.y);
-        if (h > 1e-4f) {
-            lastInward_ = {env.edgeInward.x / h, env.edgeInward.y / h, 0.f};
-            hasInward_ = true;
-        }
+    SwimVec inward;
+    const bool inwardHas = inwardOk && unitXY(env.edgeInward, inward);
+    if (inwardHas) {
+        lastInward_ = inward;
+        hasInward_ = true;
     }
 
     // Rescued: left where the env puts it until the host's reset.
@@ -473,13 +486,10 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
             else if (env.edgeDistance < t.edgeRampMetres) share = 1.f - env.edgeDistance / t.edgeRampMetres;
             if (share > 0.f) {
                 // This step's inward, else the last good one, else toward the dive area's centre, else hold x, y.
-                const float h = inwardOk ? std::sqrt(env.edgeInward.x * env.edgeInward.x +
-                                                     env.edgeInward.y * env.edgeInward.y)
-                                         : 0.f;
                 SwimVec dir;
                 bool have = false;
-                if (h > 1e-4f) {
-                    dir = {env.edgeInward.x / h, env.edgeInward.y / h, 0.f};
+                if (inwardHas) {
+                    dir = inward;
                     have = true;
                 } else if (hasInward_) {
                     dir = lastInward_;

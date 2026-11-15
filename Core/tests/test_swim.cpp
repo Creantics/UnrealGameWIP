@@ -770,7 +770,7 @@ TEST_CASE("swim: under a bad env time passes: breath runs down and 2 s of it wit
         for (int i = 0; i < 15; ++i) CHECK_FALSE(u.step(SwimInput{}, fb, kDt).rescue);
         CHECK(u.state() != SwimState::Rescued);
     }
-    { // In an air pocket breath refills; at no breath vitality drains and can end it sooner.
+    { // An air pocket on a bad env is not trusted: under water the breath is used, no refill.
         Swim u;
         SwimEnv f = diveToUnder(u, deep());
         f.position.z = -5.f;
@@ -779,8 +779,14 @@ TEST_CASE("swim: under a bad env time passes: breath runs down and 2 s of it wit
         fb.bedZ = 1.f;
         fb.airPocket = true;
         const float before = u.breath();
-        u.step(SwimInput{}, fb, kDt);
-        CHECK(u.breath() > before);
+        CHECK_FALSE(u.step(SwimInput{}, fb, kDt).envOk);
+        CHECK(u.breath() < before);
+        CHECK_FALSE(u.last().refilling);
+        SwimEnv fp = f; // the same pocket on a good env refills
+        fp.airPocket = true;
+        const float mid = u.breath();
+        u.step(SwimInput{}, fp, kDt);
+        CHECK(u.breath() > mid);
         CHECK(u.last().refilling);
     }
     { // At the surface a bad env is no rescue, however long.
@@ -934,6 +940,42 @@ TEST_CASE("swim: edge inputs: NaN or +inf distance is no push, a bad inward the 
     CHECK(z.envOk);
     CHECK(z.pushBack == 1.f);
     CHECK(z.position.x == doctest::Approx(-4.f * kDt));
+}
+
+TEST_CASE("swim: a huge finite inward is scaled before it is normalised: never a zero push, kept as last good") {
+    const float big = std::numeric_limits<float>::max();
+    Swim s;
+    SwimEnv e = diveToUnder(s, deep());
+    e.position = {0.f, 0.f, -5.f};
+    e.edgeDistance = 0.f; // the full push
+    e.edgeInward = {0.f, -big, 0.f};
+    const SwimStep& a = s.step(SwimInput{}, e, kDt);
+    CHECK(a.envOk);
+    CHECK(a.pushBack == 1.f);
+    CHECK(a.position.x == 0.f);
+    CHECK(a.position.y == doctest::Approx(-4.f * kDt));
+    e.edgeInward = {}; // zero: the last good one, which the huge one set (-y), not a zero vector
+    const SwimStep& b = s.step(SwimInput{}, e, kDt);
+    CHECK(b.pushBack == 1.f);
+    CHECK(b.position.x == 0.f);
+    CHECK(b.position.y == doctest::Approx(-4.f * kDt));
+    const float d = 4.f * kDt / std::sqrt(2.f);
+    for (const SwimVec in : {SwimVec{big, big, 0.f}, SwimVec{3e38f, 3e38f, -big}}) {
+        e.edgeInward = in; // its x and y parts overflow if squared as they are; z is ignored
+        const SwimStep& r = s.step(SwimInput{}, e, kDt);
+        CHECK(r.envOk);
+        CHECK(r.position.x == doctest::Approx(d));
+        CHECK(r.position.y == doctest::Approx(d));
+        CHECK(std::isfinite(r.velocity.x));
+    }
+    e.edgeInward = {-big, big, 0.f};
+    const SwimStep& c = s.step(SwimInput{}, e, kDt);
+    CHECK(c.position.x == doctest::Approx(-d));
+    CHECK(c.position.y == doctest::Approx(d));
+    e.edgeInward = {1e-30f, 0.f, 0.f}; // too short to trust: the last good one (-x, +y)
+    const SwimStep& t = s.step(SwimInput{}, e, kDt);
+    CHECK(t.position.x == doctest::Approx(-d));
+    CHECK(t.position.y == doctest::Approx(d));
 }
 
 TEST_CASE("swim: a zero inward at the edge pushes along the last good one, else toward the centre, never no push") {
