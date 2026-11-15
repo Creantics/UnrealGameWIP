@@ -1076,7 +1076,13 @@ TEST_CASE("fight fate: a fight replayed from a phase checkpoint with the same in
     again.run(lost, 60);
     REQUIRE(again.s.defeated());
     again.retry(CheckpointAt::Phase);
-    CHECK(again.s.strikeCount().loadOf(kLeadB) == again.s.leadLoad(kLeadB)); // the count reads the Load it read then
+    // The count's gauges are the ones the checkpoint read: the fallen kept lead's at 0, the controlled lead's fed.
+    REQUIRE(again.s.checkpoint().countLoad[kLeadA] == 0);
+    REQUIRE(again.s.checkpoint().countLoad[kLeadB] > 0);
+    for (const FighterId lead : {kLeadA, kLeadB}) {
+        CHECK(again.s.strikeCount().rawLoad(lead) == again.s.checkpoint().countLoad[lead]);
+        CHECK(again.s.strikeCount().hasGauge(lead));
+    }
     const std::vector<Seen> got = again.run(after, frames);
     REQUIRE(got.size() == want.size());
     std::size_t firstDiff = want.size();
@@ -2121,6 +2127,41 @@ TEST_CASE("per-lead load: a switch reports the new lead's own Load and charges; 
     CHECK(s.leadHeals(kLeadA) == 3);
 }
 
+TEST_CASE("per-lead load: heal, then switch on the same step, switch back: no free charge (and a Release's Load stays spent)") {
+    FightSession s;
+    REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+    feedPerLead(s);
+    s.tick(kFrame);
+    s.setLoad(kLeadA, 80); // the step's feed
+    s.setLeadHeals(kLeadA, 3);
+    REQUIRE(s.spendLeadHeal(kLeadA)); // after the feed, on the step of the switch: a heal and a Release
+    s.spendLeadLoad(kLeadA, 30);
+    REQUIRE(s.setActiveLead(kLeadB));
+    const FightTick& t = s.tick(kFrame);
+    REQUIRE(t.switched == kLeadB);
+    CHECK(s.leadHeals(kLeadA) == 2);
+    CHECK(s.leadLoad(kLeadA) == 50);
+    CHECK(s.keptLoad() == 50);
+    s.setLoad(kLeadB, 25);
+    s.setLeadHeals(kLeadB, 1);
+    REQUIRE(s.setActiveLead(kLeadA));
+    const FightTick& back = s.tick(kFrame);
+    REQUIRE(back.switched == kLeadA);
+    CHECK(back.leadHealsNow == 2);
+    CHECK(back.leadLoadNow == 50);
+    // The kept lead's Load spends its kept gauge; a spend past 0 stops at 0; no charge left: refused.
+    s.spendLeadLoad(kLeadB, 10);
+    CHECK(s.keptLoad() == 15);
+    CHECK(s.leadLoad(kLeadB) == 15);
+    s.spendLeadLoad(kLeadA, 500);
+    CHECK(s.leadLoad(kLeadA) == 0);
+    CHECK(s.strikeCount().loadOf(kLeadA) == 0);
+    s.setLeadHeals(kLeadA, 0);
+    CHECK_FALSE(s.spendLeadHeal(kLeadA));
+    CHECK(s.leadHeals(kLeadA) == 0);
+    CHECK_FALSE(s.spendLeadHeal(kNoFighter));
+}
+
 TEST_CASE("per-lead load: a takeover reports the standing lead's own; the fallen lead's kept gauge is down until it stands") {
     FightSession s;
     REQUIRE(s.begin(perLeadDef(), 0.0).ok());
@@ -2286,6 +2327,69 @@ TEST_CASE("per-lead load: a retry reads the controlled lead's heal charges from 
     CHECK(run(0)[0] == 0);
 }
 
+TEST_CASE("per-lead load: a retry reads the controlled lead's Load from the host's part; not written, the stored Load stands") {
+    const auto run = [](int hostLoadA) {
+        FightSession s;
+        REQUIRE(s.begin(perLeadDef(), 0.0).ok());
+        feedPerLead(s);
+        REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+        s.tick(kFrame);
+        REQUIRE(s.checkpointPhase(1));
+        FightHostCheckpoint host;
+        host.load = {hostLoadA, 7}; // the lead without control: never read
+        REQUIRE(s.setHostCheckpoint(host, CheckpointAt::Phase));
+        s.tick(kFrame);
+        s.setLoad(kLeadA, 10); // the attempt spends most of it
+        s.setLeadHealth(kLeadA, 0.f);
+        s.setLeadHealth(kLeadB, 0.f);
+        REQUIRE(s.tick(kFrame).defeated);
+        REQUIRE(s.retry().at == CheckpointAt::Phase);
+        REQUIRE(s.activeLead() == kLeadA);
+        const int count = s.strikeCount().rawLoad(kLeadA);
+        const int now = s.tick(kFrame).leadLoadNow;
+        return std::array<int, 4>{s.leadLoad(kLeadA), s.keptLoad(), count, now};
+    };
+    const auto written = run(55);
+    CHECK(written[0] == 55);
+    CHECK(written[1] == 25); // the kept lead's, from the session's checkpoint
+    CHECK(written[2] == 55); // the count reads the host's value for the controlled lead
+    CHECK(written[3] == 55);
+    const auto unwritten = run(kNoLeadValue); // FightHostCheckpoint{}'s default: the session's stored Load stands
+    CHECK(unwritten[0] == 80);
+    CHECK(unwritten[2] == 80);
+    CHECK(unwritten[3] == 80);
+    CHECK(FightHostCheckpoint{}.load == std::array<int, 2>{kNoLeadValue, kNoLeadValue});
+    CHECK(run(500)[0] == kMaxLoad);
+    CHECK(run(-7)[0] == 0);
+}
+
+TEST_CASE("per-lead load: a retry puts back a gauge-less lead without a gauge, though it was fed after the checkpoint") {
+    FightSessionDef d = noSwitchCooldown();
+    d.inFight = {true, false};
+    FightSession s;
+    REQUIRE(s.begin(d, 0.0).ok());
+    s.setLoad(kLeadA, 45);
+    REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+    REQUIRE(s.checkpoint().countLoad[kLeadA] == 45);
+    REQUIRE(s.checkpoint().countLoad[kLeadB] == -1); // never fed: no gauge
+    s.tick(kFrame);
+    s.setLoad(kLeadA, 45);
+    s.setLoad(kLeadB, 30); // the absent lead fed, then joins
+    REQUIRE(s.joinFight(kLeadB, 0.5f));
+    s.tick(kFrame);
+    REQUIRE(s.strikeCount().hasGauge(kLeadB));
+    s.setLeadHealth(kLeadA, 0.f);
+    s.setLeadHealth(kLeadB, 0.f);
+    REQUIRE(s.tick(kFrame).defeated);
+    REQUIRE(s.retry().at == CheckpointAt::FightStart);
+    for (const FighterId lead : {kLeadA, kLeadB}) {
+        CHECK(s.strikeCount().rawLoad(lead) == s.checkpoint().countLoad[lead]);
+        CHECK(s.strikeCount().hasGauge(lead) == (s.checkpoint().countLoad[lead] >= 0));
+    }
+    CHECK_FALSE(s.strikeCount().hasGauge(kLeadB));
+    CHECK(s.strikeCount().rawLoad(kLeadA) == 45);
+}
+
 TEST_CASE("per-lead load: a retry from a phase checkpoint puts each lead's values and the kept gauge's lead back") {
     FightSession s;
     REQUIRE(s.begin(perLeadDef(), 0.0).ok());
@@ -2413,7 +2517,9 @@ TEST_CASE("per-lead load: a fight with one lead in it never reports a value") {
     REQUIRE(s.begin(d, 0.0).ok());
     s.setLoad(kLeadA, 30);
     s.setLeadHeals(kLeadA, 2);
-    REQUIRE(s.setHostCheckpoint(FightHostCheckpoint{}) == CheckpointAt::FightStart);
+    FightHostCheckpoint host;
+    host.load = {0, 0};
+    REQUIRE(s.setHostCheckpoint(host) == CheckpointAt::FightStart);
     for (int i = 0; i < 5; ++i) {
         const FightTick& t = s.tick(kFrame);
         CHECK(t.leadLoadNow == kNoLeadValue);

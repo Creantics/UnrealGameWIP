@@ -1382,7 +1382,6 @@ struct FightSessionTestAccess {
             {"keptCap", [](FightSession& s) { ++s.keptCap_; }},
             {"blowCap", [](FightSession& s) { s.blowCap_ += 1.f; }},
             {"keptLead", [](FightSession& s) { s.keptLead_ = kLeadB; }},
-            {"leadLoad A", [](FightSession& s) { ++s.leadLoad_[kLeadA]; }},
             {"leadLoad B", [](FightSession& s) { ++s.leadLoad_[kLeadB]; }},
             {"leadHeals A", [](FightSession& s) { ++s.leadHeals_[kLeadA]; }},
             {"leadHeals B", [](FightSession& s) { ++s.leadHeals_[kLeadB]; }},
@@ -1451,6 +1450,8 @@ struct FightSessionTestAccess {
             {"leadLoad B", [](FightSession&, FightCheckpoint& c) { ++c.leadLoad[kLeadB]; }},
             {"leadHeals A", [](FightSession&, FightCheckpoint& c) { ++c.leadHeals[kLeadA]; }},
             {"leadHeals B", [](FightSession&, FightCheckpoint& c) { ++c.leadHeals[kLeadB]; }},
+            {"countLoad A", [](FightSession&, FightCheckpoint& c) { ++c.countLoad[kLeadA]; }},
+            {"countLoad B", [](FightSession&, FightCheckpoint& c) { ++c.countLoad[kLeadB]; }},
             {"lone", [](FightSession&, FightCheckpoint& c) { c.lone = !c.lone; }},
             {"loneEnded", [](FightSession&, FightCheckpoint& c) { c.loneEnded = !c.loneEnded; }},
             {"loneEndedBy", [](FightSession&, FightCheckpoint& c) { c.loneEndedBy = LoneEnd::Gift; }},
@@ -1517,6 +1518,7 @@ struct FightSessionTestAccess {
             [](FightSession& s) { s.tickLoads_ = 3; },
             [](FightSession& s) { s.held_[1].blow = 5; },
             [](FightSession& s) { s.loadsIn_[1].amount = 5; },
+            [](FightSession& s) { ++s.leadLoad_[kLeadA]; }, // the kept lead's stored slot (lead A is kept here)
         };
         for (const Edit e : left) {
             FightSession s;

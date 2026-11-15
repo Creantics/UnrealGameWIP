@@ -164,6 +164,7 @@ enum class WorldWaveRefusal : std::uint8_t {
     BadShape,      // another value (prelude, fastRadius, easeTime, the band, insideRamp, collisionDelay, tongueLead)
                    // negative or non-finite, a NaN followSeconds, or followMaxSpeed zero, negative or non-finite
     NotResident,   // the host says what the wave crosses into is not loaded (beginWorldWave's resident)
+                   // NotResident refuses only the wave's start (streaming not ready); it is not a WorldTag or WaveClass.
 };
 // "None", "BadOrigin", ..., "not_resident" (a log's name for the reason).
 FTCORE_API const char* worldWaveRefusalName(WorldWaveRefusal refusal);
@@ -190,6 +191,10 @@ struct WorldWaveState {
     float frontSpeed = 0.f;      // m/s: the rate of the shaders' reach (radius + tongueLead * band) at the last step
 };
 
+// The origin a wave measures from: the state's once a followed point has moved it, else params.origin (so a state
+// never stepped, or stepped only on bad parameters, still gives the right one).
+FTCORE_API WaveVec3 worldWaveOrigin(const WorldWaveState& state, const WorldWaveParams& params);
+
 struct WorldWaveStep {
     WorldWaveFrame frame;
     std::uint8_t cues = 0;  // WorldWaveCue bits fired by this step
@@ -214,7 +219,9 @@ FTCORE_API WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, doubl
 // originNow: the point the origin follows (see followSeconds), or null. Until the origin latches it moves toward a
 // finite originNow by at most followMaxSpeed over the part of the step before the latch; a non-finite one is ignored.
 // Null, the step is today's: the origin is params.origin. The state's frontSpeed is the reach's rate at this step, 0
-// when the clock is held (the same time as the last step), before the front moves and once it has settled.
+// when the clock is held (the same time as the last step), before the front moves, once it has settled, and on a step
+// that returns early (bad parameters or time, a time before the start). Every step seeds the state's origin from
+// params.origin until a followed point has moved it.
 FTCORE_API WorldWaveStep updateWorldWave(WorldWaveState& state, const WorldWaveParams& params, double time,
                                          const WaveVec3& viewer, const WaveVec3* originNow = nullptr);
 // Which side of the front a point is on (see the note above).
@@ -296,8 +303,14 @@ struct WorldWaveThingStep {
 };
 
 // One step for a tracked thing, after updateWorldWave for the same time. pawnInFootprint: a lead or the player overlaps
-// the thing's footprint now. It measures from params.origin: when the origin follows, pass params with the state's
-// origin.
+// the thing's footprint now. It measures from `origin`: the state's overload passes the state's origin in use (a
+// followed one too, as the shader constants and the cues use); the overload without one passes params.origin.
+FTCORE_API WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWaveParams& params,
+                                                   const WaveVec3& origin, const WorldWaveFrame& frame, double time,
+                                                   bool pawnInFootprint);
+FTCORE_API WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWaveState& state,
+                                                   const WorldWaveParams& params, const WorldWaveFrame& frame,
+                                                   double time, bool pawnInFootprint);
 FTCORE_API WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWaveParams& params,
                                                    const WorldWaveFrame& frame, double time, bool pawnInFootprint);
 

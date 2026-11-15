@@ -382,6 +382,7 @@ void CutscenePlayer::begin(const CutscenePlan& plan, bool autoPlay, bool inPlace
     planTime_ = 0.0;
     cueFirst_ = 0;
     cueNext_ = 0;
+    cueRead_ = 0;
     if (plan_.empty()) phase_ = CutscenePhase::Done;
     else phase_ = blendInTime_ > 0.f ? CutscenePhase::BlendIn : CutscenePhase::Playing;
 }

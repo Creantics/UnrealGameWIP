@@ -14,7 +14,7 @@
 //       player.update(gameSeconds);                                      // the blends and the shots
 //       player.tickReal(realSeconds);                                    // input grace, autoplay cap
 //       on a skip press: player.press();
-//       each of the cuesThisUpdate() wave cues from firstCueThisUpdate(): start its wave (CutsceneWaveCue)
+//       each of the wave cues player.takeWaveCues() gives: start its wave (CutsceneWaveCue)
 //       const ftcore::CutsceneShot& shot = player.currentShot();
 //       ftcore::CameraPose pose = ftcore::cutsceneCamera(shot, player.shotProgress(), spot, subject, subject2);
 //       if (player.blending()) pose = ftcore::lerpPose(fromPose, pose, player.blendWeight());
@@ -245,10 +245,21 @@ public:
     double planTime() const { return planTime_; }
     // The wave cues crossed since the last update began: waveCue(first) .. waveCue(first + count - 1), in time order,
     // each once in a run. A cue is crossed on the update whose shots reach its time; the end of the shots, and a skip,
-    // cross every cue still ahead. update() starts a new window and skip() adds to it, so read these once a frame,
-    // after update, tickReal and press.
-    std::uint32_t firstCueThisUpdate() const { return cueFirst_; }
-    std::uint32_t cuesThisUpdate() const { return cueNext_ - cueFirst_; }
+    // cross every cue still ahead. update() starts a new window and skip() adds to it; neither window reaches back past
+    // the last takeWaveCues, so a cue a frame has taken is never in a later one.
+    std::uint32_t firstCueThisUpdate() const { return cueFirst_ > cueRead_ ? cueFirst_ : cueRead_; }
+    std::uint32_t cuesThisUpdate() const { return cueNext_ - firstCueThisUpdate(); }
+    // The host's read: the cues crossed since the last take (or begin), waveCue(first) .. waveCue(first + count - 1),
+    // each given once in a run whatever the order of update, tickReal, press and the take in a frame.
+    struct CueWindow {
+        std::uint32_t first = 0;
+        std::uint32_t count = 0;
+    };
+    CueWindow takeWaveCues() {
+        const CueWindow w{cueRead_, cueNext_ - cueRead_};
+        cueRead_ = cueNext_;
+        return w;
+    }
 
     // True while the current shot blends in from the previous one (a Blend shot after the first,
     // within its blend time).
@@ -281,6 +292,7 @@ private:
     double planTime_ = 0.0;
     std::uint32_t cueFirst_ = 0; // the window of cues crossed: cueFirst_ .. cueNext_ - 1
     std::uint32_t cueNext_ = 0;  // the next cue not yet crossed
+    std::uint32_t cueRead_ = 0;  // the next cue not yet taken (takeWaveCues)
     CutscenePhase phase_ = CutscenePhase::Idle;
     std::uint32_t index_ = 0;
     double shotTime_ = 0.0;

@@ -182,6 +182,10 @@ WorldWaveFrame evaluateWorldWave(const WorldWaveParams& params, double time) {
     return frame;
 }
 
+WaveVec3 worldWaveOrigin(const WorldWaveState& state, const WorldWaveParams& params) {
+    return state.originMoved ? state.origin : params.origin;
+}
+
 WorldWaveStep updateWorldWave(WorldWaveState& state, const WorldWaveParams& params, double time,
                               const WaveVec3& viewer, const WaveVec3* originNow) {
     WorldWaveStep step;
@@ -189,9 +193,11 @@ WorldWaveStep updateWorldWave(WorldWaveState& state, const WorldWaveParams& para
     if (state.hasLast && (!std::isfinite(time) || time < state.lastTime)) time = state.lastTime;
     step.time = std::isfinite(time) ? time : state.lastTime;
     step.frame.direction = params.direction;
-    if (!std::isfinite(time) || checkWorldWaveParams(params) != WorldWaveRefusal::None) return step;
-    // The origin in use: params.origin until a followed point has moved it.
+    // Every return below leaves these right: no reach moves on a step that returns early, and the origin in use is
+    // params.origin until a followed point has moved it.
+    state.frontSpeed = 0.f;
     if (!state.originMoved) state.origin = params.origin;
+    if (!std::isfinite(time) || checkWorldWaveParams(params) != WorldWaveRefusal::None) return step;
     step.frame = evaluateWorldWave(params, time);
     if (time < params.startTime) return step;
 
@@ -307,9 +313,10 @@ WorldWaveShaderConstants worldWaveShaderConstants(const WorldWaveParams& params,
 WorldWaveShaderConstants worldWaveShaderConstants(const WorldWaveState& state, const WorldWaveParams& params,
                                                   const WorldWaveFrame& frame) {
     WorldWaveShaderConstants c = worldWaveShaderConstants(params, frame);
-    c.originCm[0] = state.origin.x * 100.f;
-    c.originCm[1] = state.origin.y * 100.f;
-    c.originCm[2] = state.origin.z * 100.f;
+    const WaveVec3 o = worldWaveOrigin(state, params);
+    c.originCm[0] = o.x * 100.f;
+    c.originCm[1] = o.y * 100.f;
+    c.originCm[2] = o.z * 100.f;
     c.frontSpeedCm = state.frontSpeed * 100.f;
     return c;
 }
@@ -359,6 +366,18 @@ WorldTagState worldTagState(WorldTag tag, const WaveClass& where, WaveDirection 
 
 WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWaveParams& params,
                                         const WorldWaveFrame& frame, double time, bool pawnInFootprint) {
+    return updateWorldWaveThing(thing, params, params.origin, frame, time, pawnInFootprint);
+}
+
+WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWaveState& state,
+                                        const WorldWaveParams& params, const WorldWaveFrame& frame, double time,
+                                        bool pawnInFootprint) {
+    return updateWorldWaveThing(thing, params, worldWaveOrigin(state, params), frame, time, pawnInFootprint);
+}
+
+WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWaveParams& params,
+                                        const WaveVec3& origin, const WorldWaveFrame& frame, double time,
+                                        bool pawnInFootprint) {
     // Steps at exact multiples of a frame time land a hair under passTime + delay; this keeps them on the frame due.
     constexpr double kTimeSlack = 1e-6;
     const bool forward = params.direction == WaveDirection::Forward;
@@ -375,7 +394,7 @@ WorldWaveThingStep updateWorldWaveThing(WorldWaveThing& thing, const WorldWavePa
 
     // A non-finite pivot or footprint is never reached (NaN would compare false everywhere; this says so).
     const bool placed = waveFinite(thing.pivot) && waveNonNegative(thing.radius);
-    const float d = placed ? waveDistance(params.origin, thing.pivot) : std::numeric_limits<float>::max();
+    const float d = placed ? waveDistance(origin, thing.pivot) : std::numeric_limits<float>::max();
     const float r = std::isfinite(time) && time >= params.startTime && placed ? frame.radius : 0.f;
     const float reach = arriving && r > 0.f ? r + params.tongueLead * frame.bandWidth : r;
     if (!thing.arrived && r > 0.f && reach > d - thing.radius) {

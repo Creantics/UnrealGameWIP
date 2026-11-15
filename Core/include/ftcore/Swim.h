@@ -201,6 +201,9 @@ struct SwimStep {
     // A crouch press on this step would start a dive (the dive's own test, diveOpen): Surface, no jump down, a good
     // env, deepAllowed and a column of at least kSwimDeepMin. Never in Rescued. On the step a press dives, true.
     bool canDive = false;
+    // A jump press made the swimmer rise this step: Diving or Under to Surfacing (and on to Surface when it gets there
+    // on the same step). False when the swimmer only swims up through the surface (surfaced alone).
+    bool rose = false;
     bool surfaced = false;    // to Surface this step (not by a rescue)
     SwimVec position;         // where the body goes (under water: clamped to the bed's clearance and the surface)
     bool positionValid = true; // false: no valid position yet since the reset (position is the env's own): do not move
@@ -450,6 +453,7 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         }
     } else if ((state_ == SwimState::Diving || state_ == SwimState::Under) && jumpPress) {
         state_ = SwimState::Surfacing;
+        s.rose = true;
     }
 
     // The move.

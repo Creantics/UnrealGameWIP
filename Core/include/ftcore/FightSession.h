@@ -31,7 +31,9 @@
 //   lead; the session stores both values per lead. setLoad(lead, load) stores a lead's Load (0..kMaxLoad: no cap
 //   below the fight's own, which is at most kMaxLoad) and setLeadHeals(lead, charges) its charges (0..kMaxLeadHeals).
 //   The host calls both for the controlled lead every step, before it judges blows and before the tick, and for
-//   each lead once when it sets the fight up (begin sets every stored value to 0). leadLoad(lead) and
+//   each lead once when it sets the fight up (begin sets every stored value to 0). A heal charge or Load its
+//   fight spends after that feed and before the tick (a heal, a Release) it spends through spendLeadHeal and
+//   spendLeadLoad, so a switch or takeover on that tick keeps the spent value. leadLoad(lead) and
 //   leadHeals(lead) read them; the kept lead's Load is the kept gauge (keptLoad).
 //   When control moves (an accepted switch, a takeover by a fall, a retry's carried switch) the lead that had it
 //   keeps the host's last feed (plus the fold below) and the next tick carries the newly controlled lead's own
@@ -324,7 +326,9 @@ inline constexpr double kNeverSwitched = -1.0e300;
 // (setHostCheckpoint) when a checkpoint is taken and applies it from retry()'s checkpoint.
 struct FightHostCheckpoint {
     std::array<int, 2> hp{};         // each lead's hp, by lead (the host's own scale)
-    std::array<int, 2> load{};       // each lead's Load gauge; a retry reads only the controlled lead's (see Per-lead Load)
+    // Each lead's Load gauge; a retry reads only the controlled lead's (see Per-lead Load), kept to 0..kMaxLoad.
+    // kNoLeadValue (the default): not written, the session's stored Load stands.
+    std::array<int, 2> load{kNoLeadValue, kNoLeadValue};
     // Each lead's heal charges as the host's fight held them; a retry reads only the controlled lead's, as for load
     // (kept to 0..kMaxLeadHeals). kNoLeadValue (the default): not written, the session's stored count stands.
     std::array<int, 2> heals{kNoLeadValue, kNoLeadValue};
@@ -528,23 +532,20 @@ public:
         keptLead_ = keptOn_ ? cp.keptLead : kNoFighter;
         leadLoad_ = cp.leadLoad;
         leadHeals_ = cp.leadHeals;
-        // The host's gauge as it wrote it is the controlled lead's Load (see Per-lead Load).
-        if (cp.hostWritten && isLead(cp.activeLead) && !keepsLoad(cp.activeLead))
-            leadLoad_[cp.activeLead] = clampLoad(cp.host.load[cp.activeLead]);
+        // The host's gauge as it wrote it, when it did, is the controlled lead's Load (see Per-lead Load).
+        const bool hostLoad = cp.hostWritten && isLead(cp.activeLead) && !keepsLoad(cp.activeLead) &&
+                              cp.host.load[cp.activeLead] != kNoLeadValue;
+        if (hostLoad) leadLoad_[cp.activeLead] = clampLoad(cp.host.load[cp.activeLead]);
         // And its heal charges as the host wrote them, when it did: a charge spent after the last feed and before
         // the checkpoint stays spent.
         if (cp.hostWritten && isLead(cp.activeLead) && cp.host.heals[cp.activeLead] != kNoLeadValue)
             leadHeals_[cp.activeLead] = clampHeals(cp.host.heals[cp.activeLead]);
         if (keptOn_) count_.setLoad(keptLead_, keptDown_ ? 0 : kept_);
-        // With both leads in the fight a move of control feeds the count the new lead's Load, so the count's
-        // gauges come back as the checkpoint read them, the controlled lead's as the host wrote it (a one-lead
-        // fight leaves the count to the host's feed, as before).
-        if (cp.inFight[kLeadA] && cp.inFight[kLeadB]) {
-            for (const FighterId lead : {kLeadA, kLeadB})
-                if (!keepsLoad(lead)) count_.setLoad(lead, cp.countLoad[lead]);
-            if (cp.hostWritten && isLead(cp.activeLead) && !keepsLoad(cp.activeLead) && count_.hasGauge(cp.activeLead))
-                count_.setLoad(cp.activeLead, leadLoad_[cp.activeLead]);
-        }
+        // The count's gauges come back as the checkpoint read them (a lead never fed stays without one), the
+        // controlled lead's, when it has one, as the host wrote it.
+        for (const FighterId lead : {kLeadA, kLeadB})
+            if (!keepsLoad(lead)) count_.setLoad(lead, cp.countLoad[lead]);
+        if (hostLoad && count_.hasGauge(cp.activeLead)) count_.setLoad(cp.activeLead, leadLoad_[cp.activeLead]);
         lone_ = cp.lone;
         loneEnded_ = cp.loneEnded;
         loneEndedBy_ = cp.loneEndedBy;
@@ -874,7 +875,10 @@ public:
             h.add(loadsIn_[i].lead).add(loadsIn_[i].amount).add(loadsIn_[i].kind).add(loadsIn_[i].kept);
         for (const EnemyMark& m : marks_) h.add(m.bonus).add(m.until).add(m.used);
         h.add(keptOn_).add(kept_).add(keptDown_).add(keptCap_).add(blowCap_);
-        h.add(keptLead_).add(leadLoad_).add(leadHeals_).add(leadLoadDue_).add(leadHealsDue_).add(leadNowDue_);
+        // The kept lead's stored slot is never read (leadLoad gives the kept gauge, and a move of control onto that
+        // lead writes the slot first), so it is left out.
+        h.add(keptLead_).add(keepsLoad(kLeadA) ? 0 : leadLoad_[kLeadA]).add(keepsLoad(kLeadB) ? 0 : leadLoad_[kLeadB]);
+        h.add(leadHeals_).add(leadLoadDue_).add(leadHealsDue_).add(leadNowDue_);
         h.add(lone_).add(loneEnded_).add(loneEndedBy_).add(loneBeganDue_).add(loneEndDue_);
         h.add(loneReleases_).add(loneFolded_).add(lonePooled_);
         h.add(leadHealth_).add(won_).add(start_).add(inFight_).add(down_).add(stepDown_).add(defeated_);
@@ -1081,6 +1085,20 @@ public:
     void setLeadHeals(FighterId lead, int charges) {
         if (!isLead(lead)) return;
         leadHeals_[lead] = clampHeals(charges);
+    }
+    // The spends the host's fight makes between its feed and the tick go through these, so the stored values are
+    // current when control moves on that tick (a switch or a takeover keeps what the session holds). A heal
+    // charge: false (nothing spent) at 0. A Release's or any other Load spend: down to 0; for the kept lead it
+    // spends the kept gauge. Either is fed to the count as a feed would be.
+    bool spendLeadHeal(FighterId lead) {
+        if (!isLead(lead) || leadHeals_[lead] <= 0) return false;
+        --leadHeals_[lead];
+        return true;
+    }
+    void spendLeadLoad(FighterId lead, int amount) {
+        if (!isLead(lead) || amount <= 0) return;
+        const int had = leadLoad(lead);
+        setLoad(lead, had > amount ? had - amount : 0);
     }
     // The blow cap (0: none) and a blow's scale kept under it.
     float blowCap() const { return blowCap_; }
@@ -1486,7 +1504,7 @@ private:
         cp.keptLoad = kept_;
         cp.keptDown = keptDown_;
         cp.keptLead = keptLead_;
-        cp.leadLoad = leadLoad_;
+        cp.leadLoad = {leadLoad(kLeadA), leadLoad(kLeadB)}; // the kept lead's is the kept gauge's, current
         cp.leadHeals = leadHeals_;
         cp.countLoad = {count_.rawLoad(kLeadA), count_.rawLoad(kLeadB)};
         cp.lone = lone_;

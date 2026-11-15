@@ -1170,6 +1170,47 @@ TEST_CASE("a skip crosses every cue still ahead, after the ones this frame's upd
     CHECK(d.cuesThisUpdate() == 4u);
 }
 
+TEST_CASE("a skip or press before the frame's update gives no cue twice: takeWaveCues reads since the last take") {
+    const CutscenePlan plan = cuedShots();
+    CutscenePlayer a;
+    a.begin(plan);
+    a.update(0.1); // frame 1: crosses the first cue
+    CutscenePlayer::CueWindow w = a.takeWaveCues();
+    CHECK(w.first == 0u);
+    REQUIRE(w.count == 1u);
+    CHECK(a.cuesThisUpdate() == 0u); // taken: the window no longer reaches back to it
+    CHECK(a.skip());                 // frame 2: the skip comes before the update
+    CHECK(a.firstCueThisUpdate() == 1u);
+    CHECK(a.cuesThisUpdate() == 3u);
+    w = a.takeWaveCues();
+    CHECK(w.first == 1u);
+    CHECK(w.count == 3u);
+    CHECK(a.plan().waveCue(w.first).mark() == "mark_b");
+    a.update(0.1);
+    CHECK(a.takeWaveCues().count == 0u);
+    CHECK(a.cuesThisUpdate() == 0u);
+
+    // The same with press, past the input grace, and a frame the host did not take: its cues come with the next take.
+    CutscenePlayer b;
+    b.begin(plan);
+    b.update(0.1);
+    b.tickReal(1.0);
+    REQUIRE(b.takeWaveCues().count == 1u);
+    b.update(1.5); // crosses the second cue; not taken this frame
+    REQUIRE(b.press());
+    w = b.takeWaveCues();
+    CHECK(w.first == 1u);
+    CHECK(w.count == 3u);
+    b.update(0.1);
+    CHECK(b.takeWaveCues().count == 0u);
+    // A new begin gives them again from the first.
+    b.begin(plan);
+    b.update(10.0);
+    w = b.takeWaveCues();
+    CHECK(w.first == 0u);
+    CHECK(w.count == 4u);
+}
+
 TEST_CASE("crossing wave cues does not allocate") {
     const CutscenePlan plan = cuedShots();
     CutscenePlayer player;

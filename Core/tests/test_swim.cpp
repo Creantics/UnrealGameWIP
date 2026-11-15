@@ -1293,6 +1293,7 @@ TEST_CASE("swim: canDive is what a crouch press does, at every step of a scripte
     bool held = false;
     int checked = 0, open = 0, shut = 0;
     bool rescuedShut = false, divedOpen = false, slackOpen = false;
+    bool keptDived = false;
     for (int i = 0; i < 340; ++i) {
         SwimInput in = go({1.f, 0.f, -0.5f}); // under water it swims down and stays under (the surface ignores it)
         SwimEnv env = e;
@@ -1302,12 +1303,13 @@ TEST_CASE("swim: canDive is what a crouch press does, at every step of a scripte
             env.bedZ = -2.5f; // too shallow
             env.column = 2.5f;
         } else if (i >= 60 && i < 62) {
-            env.surfaceZ = kNaN; // a bad env: a press is kept for a good step, none dives
-        } else if (i >= 62 && i < 70) {
-            in.jump = true; // a jump down at the surface wins
+            env.surfaceZ = kNaN; // a bad env: the press made on it is kept for the good step after, none dives
+        } else if (i >= 64 && i < 72) {
+            in.jump = true; // under water a jump rises; at the surface a jump down wins over a press
         } else if (i >= 300 && i < 320) {
             env.column = 2.f; // off surface minus bed: taken as 10, so a press dives
         }
+        if (i == 60) in.crouch = true;             // pressed on a bad env step: kept
         if (i == 80 || i == 200) in.crouch = true; // the dives
         if (i == 150) in.jump = true;              // back to the surface
         if (i == 260) s.setVitality(0.f);          // under water: the next step is a rescue
@@ -1337,6 +1339,12 @@ TEST_CASE("swim: canDive is what a crouch press does, at every step of a scripte
             if (i >= 300 && i < 320 && before == SwimState::Surface) slackOpen = slackOpen || r.canDive;
         }
         if (r.dived) divedOpen = r.canDive;
+        if (i == 60 || i == 61) CHECK_FALSE(r.dived); // the bad steps: the press waits
+        if (i == 62) {
+            CHECK(before == SwimState::Surface);
+            CHECK(r.dived); // the first good step uses the kept press, no crouch down on it
+            keptDived = r.dived;
+        }
         if (before != SwimState::Surface) CHECK_FALSE(r.canDive);
         held = in.crouch;
         if (r.positionValid) e.position = r.position;
@@ -1346,5 +1354,59 @@ TEST_CASE("swim: canDive is what a crouch press does, at every step of a scripte
     CHECK(shut > 0);
     CHECK(rescuedShut);
     CHECK(divedOpen);
+    CHECK(keptDived);
     CHECK(slackOpen);
+}
+
+TEST_CASE("swim: rose is set on the step a jump press makes the swimmer rise; swimming up through the surface is not") {
+    { // A press under water: rose on that step only, not on the later step that reaches the surface.
+        Swim s;
+        SwimEnv e = diveToUnder(s, deep());
+        const SwimStep& r = s.step(jump(), e, kDt);
+        CHECK(r.rose);
+        CHECK(r.state == SwimState::Surfacing);
+        e.position = r.position;
+        bool surfaced = false;
+        for (int i = 0; i < 200 && !surfaced; ++i) {
+            const SwimStep& u = s.step(SwimInput{}, e, kDt);
+            CHECK_FALSE(u.rose);
+            surfaced = u.surfaced;
+            e.position = u.position;
+        }
+        CHECK(surfaced);
+    }
+    { // A press just under the surface: up to the surface on the press's own step, rose and surfaced together.
+        Swim s;
+        SwimEnv e = diveToUnder(s, deep());
+        e.position.z = -0.01f;
+        const SwimStep& r = s.step(jump(), e, kDt);
+        CHECK(r.rose);
+        CHECK(r.surfaced);
+        CHECK(r.state == SwimState::Surface);
+    }
+    { // A press while still diving rises too.
+        Swim s;
+        SwimEnv e = deep();
+        REQUIRE(s.step(crouch(), e, kDt).dived);
+        e.position = s.last().position;
+        const SwimStep& r = s.step(jump(), e, kDt);
+        CHECK(r.from == SwimState::Diving);
+        CHECK(r.rose);
+    }
+    { // Swimming up through the surface with the look: surfaced, never rose.
+        Swim s;
+        SwimEnv e = diveToUnder(s, deep());
+        bool surfaced = false;
+        for (int i = 0; i < 600 && !surfaced; ++i) {
+            const SwimStep& u = s.step(go({0.f, 0.f, 1.f}), e, kDt);
+            CHECK_FALSE(u.rose);
+            surfaced = u.surfaced;
+            e.position = u.position;
+        }
+        CHECK(surfaced);
+    }
+    { // At the surface a jump is no rise.
+        Swim s;
+        CHECK_FALSE(s.step(jump(), deep(), kDt).rose);
+    }
 }
