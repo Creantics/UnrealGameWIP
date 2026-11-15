@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "about": "Garment morphs driven by joint flexion. Every dressed piece that has a listed morph gets its weight each frame; pieces without it are skipped. Flexion: signed angle about the lateral component-space axis between the bone-to-child direction in the reference pose and now, with the parent turned back to its reference orientation. Weight 0 up to start_deg, 1 from end_deg, smoothstep between.",
+  "correctives": [
+    { "morph": "FT_TrouserCrouch_L", "side": "L", "bone": "thigh_l", "child": "calf_l", "lateral": "x", "start_deg": 35, "end_deg": 95,
+      "about": "Seat and back of the thigh settled in the crouch; the range is provisional until measured on the crouch clip." },
+    { "morph": "FT_TrouserCrouch_R", "side": "R", "bone": "thigh_r", "child": "calf_r", "lateral": "x", "start_deg": 35, "end_deg": 95 }
+  ]
+}

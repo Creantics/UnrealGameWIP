@@ -11,6 +11,7 @@
 #include "UObject/UnrealType.h"
 
 #include "ForgottenThird.h"
+#include "FTPoseCorrectiveComponent.h"
 #include "FTText.h"
 #include "ftcore/GarmentFront.h"
 #include "ftcore/LookBody.h"
@@ -298,6 +299,7 @@ int32 FTLook::SetFront(const FFTLeadLook& Look, const FFTWornFronts& Fronts, USk
 		Piece->EmptyOverrideMaterials();
 		Piece->SetLeaderPoseComponent(&Body, /*bForceUpdate=*/true);
 		Piece->RecreateClothingActors();
+		UFTPoseCorrectiveComponent::Bind(Body, *Piece, Who); // the other half may carry other morphs
 		for (int32 S = 0; S < Fronts.SwapFrom.Num() && S < Fronts.SwapTo.Num(); ++S)
 		{
 			SwapSlots(*Piece, Fronts.SwapFrom[S], Fronts.SwapTo[S]);
@@ -402,6 +404,7 @@ int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 		Piece->RegisterComponent();
 		Cloth += PieceMesh->GetMeshClothingAssets().Num() > 0;
 		Piece->SetLeaderPoseComponent(&Body);
+		UFTPoseCorrectiveComponent::Bind(Body, *Piece, Who);
 		OutPieces.Add(Piece);
 	}
 	return Cloth;
