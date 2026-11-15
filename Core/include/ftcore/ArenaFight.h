@@ -813,7 +813,8 @@ struct ArenaInput {
     bool cameraOn = false;
     Vec2 cameraPos{};
     // The play camera in full for the partner's frame rules (PartnerBrain rules 13-16; ftcore/PartnerCamera.h), in
-    // the fight's metres with z up. Not given (the default): cameraOn above decides, as before. Given: stationing is
+    // the fight's metres with z up. Not given, or given but not whole (partnerCameraWhole; the default is not given):
+    // cameraOn above decides, as before. Given and whole: stationing is
     // on whatever cameraOn says, the station view takes this camera's place and forward on the ground (cameraPos and
     // cameraFacing unused), and the brain keeps its stations in this camera's frame.
     PartnerCameraView partnerCamera{};
