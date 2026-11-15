@@ -659,6 +659,13 @@ bool AFTArenaFighter::CanSideDash() const
 		Anim->HasTraversalClip(UFTLocomotionAnimInstance::FirstDashClip + 2);
 }
 
+float AFTArenaFighter::GetReadyAlpha() const
+{
+	const UFTLocomotionAnimInstance* Anim =
+		SkinKind == ESkin::Lead && Skin ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	return Anim ? Anim->GetReadyAlpha() : 0.f;
+}
+
 bool AFTArenaFighter::RollWithClip(const FFTArenaPose& Pose)
 {
 	UFTLocomotionAnimInstance* Anim = SkinKind == ESkin::Lead ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
@@ -992,6 +999,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 				Anim->ResetFeet(); // down: nothing held stays to drag the legs when it stands
 			}
 			Anim->SetFootLock(Pose.bFootLock && !Pose.bLying && !Pose.bDodging);
+			Anim->SetReady(Pose.bReady && !Pose.bLying && !Pose.bDodging && !Pose.bAttacking && !Pose.bAir && Pose.LeanBack <= 0.f,
+				Pose.ReadyStance);
 			// The jump's clips: take-off, rise and fall while in the air, the land clip at touch-down, fitted to the
 			// kit's clock: the take-off's air span to Core's air time, entered for its push-off over the startup, and a
 			// standing landing's dip played fast and handed back to the idle kLandHandBack before the landing lock

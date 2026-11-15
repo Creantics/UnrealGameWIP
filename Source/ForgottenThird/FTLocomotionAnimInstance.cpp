@@ -1027,6 +1027,9 @@ void UFTLocomotionAnimInstance::Step(float DeltaSeconds)
 		In.face = bPushedFace;
 		In.faceYaw = PushedFaceYaw;
 	}
+	// The ready stance's clock: in on the ground while wanted, out otherwise.
+	ReadySpeed = In.groundSpeed * 0.01f;
+	ReadyAlpha = PushedReadyStance ? ftcore::readyStanceStep(ReadyAlpha, bPushedReady && !In.falling, DeltaSeconds, *PushedReadyStance) : 0.f;
 	const float Yaw = static_cast<float>(Owner->GetActorRotation().Yaw);
 	In.turnRate = bHasYaw && DeltaSeconds > 0.f ? FMath::FindDeltaAngleDegrees(LastYaw, Yaw) / DeltaSeconds : 0.f;
 	// Only over time that passes: a character with root motion poses again with no time passed once its move
@@ -1607,6 +1610,17 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		// Under an upper-body strike the legs keep their locomotion, the air pose with it.
 		LimbWeight[1] *= (1.f - TravWeight) * (1.f - ActWeight * (1.f - UpperShare));
 	}
+	// The ready stance, by its share (giving way to a traversal or an action as the bends do): its trunk lean and
+	// chest turn into the spine's bend, the elbows left to it.
+	static const bool bNoReady = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoReady"));
+	Ready = bNoReady ? nullptr : Instance->PushedReadyStance;
+	ReadyShare = Ready ? ftcore::readyStanceShare(Instance->ReadyAlpha, Instance->ReadySpeed, *Ready) * (1.f - TravWeight) * (1.f - ActWeight) : 0.f;
+	if (ReadyShare > 0.f)
+	{
+		SpineBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(Ready->turn * ReadyShare))
+			* FQuat(Right, FMath::DegreesToRadians(Ready->lean * ReadyShare)) * SpineBend;
+		ElbowHold *= 1.f - ReadyShare;
+	}
 	// A traversal clip's trunk pitched on top of it (SetTraversalTrunkPitch), by the clip's weight.
 	if (TravWeight > 0.f && Instance->PushedTrunkPitch != 0.f)
 	{
@@ -1636,6 +1650,62 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	RootMoved = bHaveLastRoot ? static_cast<float>(FVector::Dist(ToWorld.GetTranslation(), LastRoot)) : 0.f;
 	LastRoot = ToWorld.GetTranslation();
 	bHaveLastRoot = true;
+}
+
+void FFTLocomotionAnimProxy::PoseReady(FCSPose<FCompactPose>& CS, const FBoneContainer& Container)
+{
+	FVector F = LegForward.GetSafeNormal2D();
+	if (F.IsNearlyZero())
+	{
+		F = FVector::ForwardVector;
+	}
+	const FVector Right(-F.Y, F.X, 0.0);
+	const float W = ReadyShare;
+	// The feet's mean height, component space.
+	auto FeetZ = [this, &CS, &Container]()
+	{
+		double Sum = 0.0;
+		int32 N = 0;
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const FBoneReference& Foot = Limb[NumArmBones + Side * 3 + 2];
+			if (Foot.IsValidToEvaluate(Container))
+			{
+				Sum += CS.GetComponentSpaceTransform(Foot.GetCompactPoseIndex(Container)).GetTranslation().Z;
+				++N;
+			}
+		}
+		return N > 0 ? Sum / N : 0.0;
+	};
+	const double Before = FeetZ();
+	// Each bone turned about its own origin in the body's axes, parent first (the bones under it follow): fwd about
+	// the right axis (+ the far end of a hanging bone forward), out about the forward axis and twist about up, both
+	// mirrored per side (+ away from the midline, + the front toward it).
+	for (int32 I = 0; I < NumLimbs; ++I)
+	{
+		const ftcore::ReadyTurn& T = Ready->bones[I];
+		if ((T.fwd == 0.f && T.out == 0.f && T.twist == 0.f) || !Limb[I].IsValidToEvaluate(Container))
+		{
+			continue;
+		}
+		const float Side = ftcore::readyBoneSide(static_cast<ftcore::ReadyBone>(I)) == 0 ? -1.f : 1.f;
+		const FQuat Turn = FQuat(FVector::UpVector, FMath::DegreesToRadians(-Side * T.twist * W))
+			* FQuat(F, FMath::DegreesToRadians(Side * T.out * W)) * FQuat(Right, FMath::DegreesToRadians(-T.fwd * W));
+		const FCompactPoseBoneIndex Index = Limb[I].GetCompactPoseIndex(Container);
+		FTransform X = CS.GetComponentSpaceTransform(Index);
+		X.SetRotation((Turn * X.GetRotation()).GetNormalized());
+		CS.SetComponentSpaceTransform(Index, X);
+	}
+	// The pelvis moved forward (or back) and down by what the bent knees lifted the feet: the soles stay on the floor.
+	const double Rise = FeetZ() - Before;
+	const FVector Move = F * (Ready->pelvisForward * W) - FVector::UpVector * Rise;
+	if (PelvisBone.IsValidToEvaluate(Container) && !Move.IsNearlyZero(0.01))
+	{
+		const FCompactPoseBoneIndex PelvisI = PelvisBone.GetCompactPoseIndex(Container);
+		FTransform P = CS.GetComponentSpaceTransform(PelvisI);
+		P.AddToTranslation(Move);
+		CS.SetComponentSpaceTransform(PelvisI, P);
+	}
 }
 
 void FFTLocomotionAnimProxy::HoldFeet(FCSPose<FCompactPose>& CS, const FBoneContainer& Container)
@@ -2008,7 +2078,8 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 		bLegs = BallBone[I].IsValidToEvaluate(Container) && Limb[NumArmBones + I * 3].IsValidToEvaluate(Container)
 			&& Limb[NumArmBones + I * 3 + 1].IsValidToEvaluate(Container) && Limb[NumArmBones + I * 3 + 2].IsValidToEvaluate(Container);
 	}
-	if (!bSpine && !bNeck && !bElbows && !bAim && !bLegs)
+	const bool bReady = Ready && ReadyShare > 0.001f;
+	if (!bSpine && !bNeck && !bElbows && !bAim && !bLegs && !bReady)
 	{
 		return true;
 	}
@@ -2037,6 +2108,10 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	if (bNeck)
 	{
 		Bend(Neck, NumNeck, NeckValid, HeadBend);
+	}
+	if (bReady)
+	{
+		PoseReady(CS, Container);
 	}
 	if (bLegs)
 	{

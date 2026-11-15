@@ -408,6 +408,34 @@ float arenaPartnerYaw(const ArenaPartnerYawRules& yawRules, const ArenaLeadFrame
     return 0.f;
 }
 
+bool arenaHiddenBehind(ArenaPoint3 eye, ArenaPoint3 point, Vec2 at, float radius, float baseZ, float topZ) {
+    if (!(radius > 0.f) || !(topZ > baseZ) || !finite(eye.x) || !finite(eye.y) || !finite(eye.z) || !finite(point.x) ||
+        !finite(point.y) || !finite(point.z) || !finite(at.x) || !finite(at.y))
+        return false;
+    const auto within = [&](float z) { return z >= baseZ && z <= topZ; };
+    const float ex = eye.x - at.x, ey = eye.y - at.y;
+    const float dx = point.x - eye.x, dy = point.y - eye.y, dz = point.z - eye.z;
+    const float c = ex * ex + ey * ey - radius * radius;
+    if (c <= 0.f && within(eye.z)) return false; // the eye inside the body
+    // Where the line is over the body's footprint, t in [t0, t1] of the way from the eye to the point.
+    const float a = dx * dx + dy * dy;
+    float t0 = 0.f, t1 = 1.f;
+    if (a < 1e-8f) {
+        if (c > 0.f) return false; // straight up or down, beside the body
+    } else {
+        const float b = 2.f * (ex * dx + ey * dy);
+        const float disc = b * b - 4.f * a * c;
+        if (disc < 0.f) return false;
+        const float root = std::sqrt(disc);
+        t0 = std::max(0.f, (-b - root) / (2.f * a));
+        t1 = std::min(1.f, (-b + root) / (2.f * a));
+        if (t0 > t1) return false;
+    }
+    // Over the footprint, the line's height runs from z(t0) to z(t1): hidden when that span meets the body's.
+    const float z0 = eye.z + dz * t0, z1 = eye.z + dz * t1;
+    return std::max(z0, z1) >= baseZ && std::min(z0, z1) <= topZ;
+}
+
 ArenaFrustum arenaPoseFrustum(const ArenaCameraPose& pose, Vec2 at, float aspect) {
     ArenaFrustum f;
     const View v = viewOf(pose, aspect);

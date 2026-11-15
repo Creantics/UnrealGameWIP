@@ -1912,7 +1912,7 @@ void UFTArenaRunner::BeginSession()
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
-	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = 0;
+	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = PartnerClearSteps = 0;
 	PartnerPlaySeconds = 0.f;
 	PartnerStillFor = PartnerStillLongest = 0.f;
 	bPartnerStillAt = false;
@@ -3162,7 +3162,30 @@ void UFTArenaRunner::StepFight()
 		if (ftcore::partnerCameraWhole(In.partnerCamera))
 		{
 			++PartnerFrustumSteps;
-			PartnerSeenSteps += ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally) ? 1 : 0;
+			const bool bSeen = ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally);
+			PartnerSeenSteps += bSeen ? 1 : 0;
+			// On screen and not behind the locked target: hidden when the lines from the lens to its middle and to its
+			// head both pass through the target's drawn cylinder.
+			bool bHidden = false;
+			const std::uint8_t Locked = Fight.lock();
+			if (bSeen && Locked < Fight.def().enemies.size() && Locked < Bodies.enemies.size())
+			{
+				const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[Locked];
+				const float Scale = Foe.look.skinned() ? Foe.look.scale : 1.f;
+				const float Base = In.partnerCamera.groundZ + (Foe.look.skinned() ? Foe.look.hover : 0.f);
+				const float Top = Base + ftcore::arenaEnemyHeight(Foe) * Scale;
+				const ftcore::PartnerVec3& Eye = In.partnerCamera.pos;
+				const ftcore::ArenaPoint3 From{Eye.x, Eye.y, Eye.z};
+				const float Feet = In.partnerCamera.groundZ;
+				const float Tall = In.partnerCamera.bodyHeight;
+				const auto Behind = [&](float Z)
+				{
+					return ftcore::arenaHiddenBehind(From, {Bodies.ally.x, Bodies.ally.y, Feet + Z}, Bodies.enemies[Locked],
+						Foe.bodyRadius * Scale, Base, Top);
+				};
+				bHidden = Behind(Tall * 0.55f) && Behind(Tall * 0.95f);
+			}
+			PartnerClearSteps += bSeen && !bHidden ? 1 : 0;
 		}
 		PartnerPlaySeconds += StepSeconds;
 		// Standing still: not swinging or guarding and moved under 1 cm since the last step; the longest such run.
@@ -4121,6 +4144,10 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(0.85f, 0.95f, 1.f), 0.45f);
 		}
 		Pose.Tint = FMath::Lerp(Pose.Tint, FLinearColor(1.f, 0.2f, 0.15f), ArenaModePulse(Now, PlayerHitTime, kArenaHitTint));
+		// The ready stance while locked on and standing or stepping in a live fight.
+		Pose.bReady = !Fight.over() && Fight.lock() != ftcore::kArenaNobody && !Pose.bAir
+			&& (P.action == ftcore::ArenaAction::Idle || P.action == ftcore::ArenaAction::Move);
+		Pose.ReadyStance = ReadyStanceFor(0, PlayerLook);
 		PlayerFigure->ApplyPose(Pose);
 		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last), and
 		// the gun's reload overlay by the fight's own progress.
@@ -4979,6 +5006,23 @@ float UFTArenaRunner::LockAimHeight(int32 Target, float Base, float Top) const
 	return ftcore::arenaLockAimHeight(Base, Top, Tell, Weak);
 }
 
+void UFTArenaRunner::LogLeadFrameShot(const TCHAR* Shot) const
+{
+#if !UE_BUILD_SHIPPING
+	if (!bLeadShotSampled)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead frame at view %s: not held (no lock on a tall target)."), Shot);
+		return;
+	}
+	const ftcore::ArenaLeadShares& S = LeadShotShares;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead frame at view %s: %s (feet %.3f, head %.3f, left %.3f, right %.3f, ahead %d, visible %d)."),
+		Shot, ftcore::arenaLeadInFrame(ftcore::kArenaLeadFrame, S) ? TEXT("kept") : TEXT("BROKE the rule"), S.feet, S.head, S.left, S.right,
+		S.ahead ? 1 : 0, ftcore::arenaLeadVisible(S) ? 1 : 0);
+#else
+	(void)Shot;
+#endif
+}
+
 #if !UE_BUILD_SHIPPING
 void UFTArenaRunner::SampleLeadFrame()
 {
@@ -5016,6 +5060,8 @@ void UFTArenaRunner::SampleLeadFrame()
 		S.left = FMath::Min(S.left, X);
 		S.right = FMath::Max(S.right, X);
 	}
+	bLeadShotSampled = LockTarget >= 0;
+	LeadShotShares = S;
 	if (LockTarget < 0)
 	{
 		return; // only a tall target's hold is the check's (a short one keeps the lead by the framing already)
@@ -7102,7 +7148,39 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	{
 		Pose.Tint = FLinearColor(1.f, 0.2f, 0.2f);
 	}
+	// The ready stance whenever the fight is live and it is not swinging or guarding.
+	Pose.bReady = !Fight.over() && !Pose.bLying && !Pose.bAttacking && !Pose.bGuard;
+	Pose.ReadyStance = ReadyStanceFor(1, AllyLook);
 	AllyFigure->ApplyPose(Pose);
+}
+
+const ftcore::ReadyStance* UFTArenaRunner::ReadyStanceFor(int32 Figure, const FFTLeadLook* Look)
+{
+	if (!bReadyStancesRead)
+	{
+		bReadyStancesRead = true;
+		ReadyStances = ftcore::readyStanceDefaults();
+		ftcore::ReadyStanceSet Read = ReadyStances;
+		TArray<uint8> Bytes;
+		std::string Error;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Anim/ready_stance.json");
+		if (FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importReadyStances(FT::BytesAsText(Bytes), Read, &Error))
+		{
+			ReadyStances = Read;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Anim/ready_stance.json; the ready stance uses its built-in tables.\n%s"),
+				*FT::ToFString(Error));
+		}
+	}
+	const int32 I = Figure == 0 ? 0 : 1;
+	if (!ReadyOf[I] || ReadyLookOf[I] != Look)
+	{
+		ReadyLookOf[I] = Look;
+		ReadyOf[I] = ftcore::readyStanceFor(ReadyStances, Look ? FT::ToUtf8(Look->Name) : std::string());
+	}
+	return ReadyOf[I];
 }
 
 // ---- The partner (-ArenaPartner): Core's PartnerBrain drives the other lead's body ----
@@ -7786,9 +7864,9 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	}
 	if (bPartner)
 	{
-		// In play: the partner on the screen at least 70% of the steps it was up (ftcore::partnerInFrame at
-		// ftcore::kPartnerFrustumMargin) and at least four actions per 20 s of the fight, each lasting kPartnerActMin s
-		// or more and carried out. Under kPartnerPlayMinSteps measured steps: not covered. Then the brain's own report:
+		// In play: the partner on the screen, and not behind the locked target (ftcore::arenaHiddenBehind), at least 70% of
+		// the steps it was up (ftcore::partnerInFrame at ftcore::kPartnerFrustumMargin) and at least four actions per 20 s
+		// of the fight, each lasting kPartnerActMin s or more and carried out. Under kPartnerPlayMinSteps measured steps: not covered. Then the brain's own report:
 		// the seconds it spent on each idle reason (None is the time it acted) and the strings it began off the frame.
 		FlushPartnerAction();
 		constexpr int32 kPartnerPlayMinSteps = 200;
@@ -7807,10 +7885,12 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 		}
 		else
 		{
+			// The pass is on the share on screen and not behind the locked target; the plain on-screen share is printed too.
 			const float Seen = static_cast<float>(PartnerSeenSteps) / static_cast<float>(PartnerFrustumSteps);
+			const float Clear = static_cast<float>(PartnerClearSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Per20 = PartnerPlaySeconds > 0.f ? static_cast<float>(PartnerActions) * 20.f / PartnerPlaySeconds : 0.f;
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen %.0f%% of %d steps, wanted 70%%; %d actions in %.1f s, %.1f per 20 s, wanted 4; brain: %s)."),
-				Seen >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Seen * 100.f, PartnerFrustumSteps, PartnerActions, PartnerPlaySeconds, Per20, *Brain);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; %d actions in %.1f s, %.1f per 20 s, wanted 4; brain: %s)."),
+				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, PartnerActions, PartnerPlaySeconds, Per20, *Brain);
 
 		}
 	}

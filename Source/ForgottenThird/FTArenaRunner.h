@@ -31,6 +31,7 @@
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/Places.h"
+#include "ftcore/ReadyStance.h"
 #include "ftcore/TableRing.h"
 #include "ftcore/TableSet.h"
 #include "ftcore/BeatChoreo.h"
@@ -205,6 +206,11 @@ public:
 	// The result offers to fight again.
 	bool CanFightAgain() const { return bFightAgain; }
 	AFTArenaFighter* GetPlayerFigure() const { return PlayerFigure; }
+	// The partner's figure in a carrying run; null without one.
+	AFTArenaFighter* GetAllyFigure() const { return AllyFigure; }
+	// Logs the lead's place in the rendered frame as last sampled for "lead in frame" (its shares and whether it kept
+	// the rule), tagged with a view's name: -ArenaShotAt's views say which frames broke the rule. Not in Shipping.
+	void LogLeadFrameShot(const TCHAR* Shot) const;
 	// The zone the fight is held in, for the HUD's edge cue: its walls, the world's look (0 the plain zone, 1 Solhaven,
 	// 2 the Lattice, 3 the Unwritten), where the player stands (metres) and the height of the ground there (cm).
 	const ftcore::ArenaZone& GetZone() const { return Fit.zone; }
@@ -1118,6 +1124,8 @@ private:
 	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.
 	void SampleLeadFrame();
 	int32 LeadFrameFrames = 0, LeadFrameKept = 0, LeadFrameVisible = 0;
+	ftcore::ArenaLeadShares LeadShotShares; // the last frame sampled on a tall target (bLeadShotSampled), for LogLeadFrameShot
+	bool bLeadShotSampled = false;
 	float LeadFeetLeast = 1.f, LeadHeadMost = 0.f, LeadSideWorst = 0.f;
 	int32 TellFrames = 0, TellInPlace = 0, TellPinned = 0, TellEdge = 0;
 #endif
@@ -1182,6 +1190,13 @@ private:
 	bool bFiguresSwapped = false;        // PlayerFigure and AllyFigure have swapped an odd number of times this fight
 	uint8 StartLead = 0;                 // the session lead the fight began with (a restart goes back to it)
 	const FFTLeadLook* PlayerLook = nullptr; // the look PlayerFigure wears (swaps with AllyLook on a takeover)
+	// The ready stances (Data/Anim/ready_stance.json, read at the first ask) and each figure's (0 the player's, 1 the
+	// ally's), by the look it wears: the look's name maps to a stance, looked up again only when the look changes.
+	ftcore::ReadyStanceSet ReadyStances;
+	bool bReadyStancesRead = false;
+	const FFTLeadLook* ReadyLookOf[2] = {nullptr, nullptr};
+	const ftcore::ReadyStance* ReadyOf[2] = {nullptr, nullptr};
+	const ftcore::ReadyStance* ReadyStanceFor(int32 Figure, const FFTLeadLook* Look);
 	ftcore::PartnerBrain AllyBrain;
 	ftcore::PartnerTuning AllyTuning;
 	// The report windows (TrackPartner): attack seconds this window, the totals at its start, its counts.
@@ -1212,7 +1227,9 @@ private:
 	int32 PartnerOnSteps = 0, PartnerStationedSteps = 0, PartnerCameraSteps = 0;
 	// "Arena check: partner in play": the steps the partner (up, in the fight) stood inside the play camera's frustum
 	// (ftcore::partnerInFrame on ArenaInput::partnerCamera), and its distinct actions (a new intent other than Wait, or a new string).
-	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0;
+	// PartnerClearSteps: of the steps on screen, those it was not hidden behind the locked target from the lens
+	// (ftcore::arenaHiddenBehind on both its middle and its head).
+	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0, PartnerClearSteps = 0;
 	float PartnerPlaySeconds = 0.f;
 	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
 	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;

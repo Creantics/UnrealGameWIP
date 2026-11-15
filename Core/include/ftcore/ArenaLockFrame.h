@@ -177,5 +177,11 @@ FTCORE_API bool arenaInFrustum(const ArenaFrustum& f, ArenaPoint3 p, float margi
 // of arenaPoseFrustum over a floor at z 0, with the partner `bodyHeight` tall. Not given when that frustum is off.
 FTCORE_API PartnerCameraView arenaPoseCamera(const ArenaCameraPose& pose, Vec2 at, float aspect, float bodyHeight);
 
+// A point hidden behind a body from the lens ("partner in play" counts the partner hidden when its middle and its head
+// both are): the straight line from `eye` to `point` (m) passes through the body's upright cylinder (centre `at`,
+// `radius`, from baseZ up to topZ) on its way. A point inside the cylinder is hidden; an eye inside it hides nothing
+// (it is not looking past the body). False for a bad cylinder (radius not above 0, topZ not above baseZ) or input.
+FTCORE_API bool arenaHiddenBehind(ArenaPoint3 eye, ArenaPoint3 point, Vec2 at, float radius, float baseZ, float topZ);
+
 
 } // namespace ftcore

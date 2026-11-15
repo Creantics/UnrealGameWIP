@@ -172,6 +172,7 @@ add_library(ftcore STATIC
     src/AttackMove.cpp
     src/FootHold.cpp
     src/FieldUnstick.cpp
+    src/ReadyStance.cpp
     src/ArenaZone.cpp
     src/ArrowLane.cpp
     src/StickFlick.cpp
@@ -487,6 +488,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena_soft.cpp
         tests/test_arena_impact.cpp
         tests/test_arena_lock_frame.cpp
+        tests/test_ready_stance.cpp
         tests/test_arena_look.cpp
         tests/test_arena_boss_break.cpp
         tests/test_arena_partner.cpp

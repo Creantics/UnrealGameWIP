@@ -505,3 +505,30 @@ TEST_CASE("arena lock frame: the pose's partner camera is whole and the brain's 
     CHECK(inside > 50);
     CHECK(agreed == tried);
 }
+
+TEST_CASE("arena lock frame: a point hidden behind a body from the lens") {
+    // A body 0.5 m round, 2 m tall, at (5, 0); the eye at (0, 0, 1.6).
+    const ArenaPoint3 eye{0.f, 0.f, 1.6f};
+    const Vec2 at{5.f, 0.f};
+    const auto hidden = [&](ArenaPoint3 p) { return arenaHiddenBehind(eye, p, at, 0.5f, 0.f, 2.f); };
+    CHECK(hidden({8.f, 0.f, 1.f}));       // straight behind
+    CHECK(hidden({8.f, 0.3f, 1.7f}));     // behind, a little off the middle
+    CHECK_FALSE(hidden({8.f, 1.5f, 1.f})); // behind but well to the side: seen past it
+    CHECK_FALSE(hidden({3.f, 0.f, 1.f})); // in front of it
+    CHECK_FALSE(hidden({8.f, 0.f, 4.5f})); // high over its top
+    CHECK(hidden({5.2f, 0.f, 1.f}));      // inside it
+    CHECK_FALSE(hidden({4.6f, 1.f, 1.f})); // beside it, nearer than its middle
+    // Over the top from a high lens: the line clears the head.
+    CHECK_FALSE(arenaHiddenBehind({0.f, 0.f, 6.f}, {8.f, 0.f, 1.f}, at, 0.5f, 0.f, 2.f));
+    // From a low lens the same point is hidden.
+    CHECK(arenaHiddenBehind({0.f, 0.f, 0.5f}, {8.f, 0.f, 1.f}, at, 0.5f, 0.f, 2.f));
+    // A hovering body: a line under it passes.
+    CHECK_FALSE(arenaHiddenBehind({0.f, 0.f, 0.3f}, {8.f, 0.f, 0.3f}, at, 0.5f, 1.f, 3.f));
+    // The eye inside the body hides nothing; straight down beside it neither; bad cylinders neither.
+    CHECK_FALSE(arenaHiddenBehind({5.f, 0.f, 1.f}, {8.f, 0.f, 1.f}, at, 0.5f, 0.f, 2.f));
+    CHECK_FALSE(arenaHiddenBehind({7.f, 0.f, 5.f}, {7.f, 0.f, 0.f}, at, 0.5f, 0.f, 2.f));
+    CHECK(arenaHiddenBehind({5.1f, 0.f, 5.f}, {5.1f, 0.f, -1.f}, at, 0.5f, 0.f, 2.f));
+    CHECK_FALSE(arenaHiddenBehind(eye, {8.f, 0.f, 1.f}, at, 0.f, 0.f, 2.f));
+    CHECK_FALSE(arenaHiddenBehind(eye, {8.f, 0.f, 1.f}, at, 0.5f, 2.f, 2.f));
+    CHECK_FALSE(arenaHiddenBehind(eye, {8.f, 0.f, std::nanf("")}, at, 0.5f, 0.f, 2.f));
+}

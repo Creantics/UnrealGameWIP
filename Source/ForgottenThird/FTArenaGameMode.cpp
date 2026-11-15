@@ -191,6 +191,8 @@ void AFTArenaGameMode::StartPlay()
 		bShotClose = FParse::Param(Cmd, TEXT("ArenaShotClose"));
 		bShotSide = FParse::Param(Cmd, TEXT("ArenaShotSide"));
 		bShotWorld = FParse::Param(Cmd, TEXT("ArenaShotWorld"));
+		bShotQuarter = FParse::Param(Cmd, TEXT("ArenaShotQuarter"));
+		bShotAlly = FParse::Param(Cmd, TEXT("ArenaShotAlly"));
 #if !UE_BUILD_SHIPPING
 		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
 #endif
@@ -1042,13 +1044,23 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	if (NextShotAt < ShotAt.Num() && ShotsTaken > 0 && static_cast<double>(Runner->GetFight().time()) >= ShotAt[NextShotAt])
 	{
 		// -ArenaShotSide: 3.4 m off the lead's right and 0.9 m above its hips, a frame before the view. -ArenaShotWorld:
-		// the same off the world's +Y instead, so the lead's turns show (the side view turns with it).
+		// the same off the world's +Y instead, so the lead's turns show (the side view turns with it). -ArenaShotQuarter:
+		// swung 45 degrees toward the body's front. -ArenaShotAlly: of the partner (the lead when there is none).
 		const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
+		if (bShotAlly && Runner->GetAllyFigure())
+		{
+			Lead = Runner->GetAllyFigure();
+		}
 		if (bShotSide && !bSideAimed && Lead)
 		{
 			// Up with the jump's lift, so the head stays in the view at the top of the arc.
 			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0 + Lead->GetJumpLift());
-			const FVector Side = bShotWorld ? FVector(0.0, 1.0, 0.0) : Lead->GetActorRightVector().GetSafeNormal2D();
+			FVector Side = bShotWorld ? FVector(0.0, 1.0, 0.0) : Lead->GetActorRightVector().GetSafeNormal2D();
+			if (bShotQuarter)
+			{
+				const FVector Front = bShotWorld ? FVector(1.0, 0.0, 0.0) : Lead->GetActorForwardVector().GetSafeNormal2D();
+				Side = (Side + Front).GetSafeNormal2D();
+			}
 			bSideAimed = AimStrikeCamera(At + Side * 340.0 + FVector(0.0, 0.0, 90.0), At);
 			if (bSideAimed)
 			{
@@ -1056,7 +1068,15 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 			}
 		}
 		bSideAimed = false;
-		TakeShot(*FString::Printf(TEXT("t_%05.2f"), ShotAt[NextShotAt]), false);
+		const FString Name = FString::Printf(TEXT("t_%05.2f"), ShotAt[NextShotAt]);
+		Runner->LogLeadFrameShot(*Name);
+		{
+			const AFTArenaFighter* Player = Runner->GetPlayerFigure();
+			const AFTArenaFighter* Ally = Runner->GetAllyFigure();
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: ready stance at view %s: lead %.2f, partner %.2f"), *Name,
+				Player ? Player->GetReadyAlpha() : 0.f, Ally ? Ally->GetReadyAlpha() : 0.f);
+		}
+		TakeShot(*Name, false);
 		++NextShotAt;
 		return true;
 	}
