@@ -319,7 +319,8 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 }
 
 // Front A behind the core: the pigment dispersing, grey veils over the new world for 0.5-0.8 s after the edge passed, in
-// slow world-space billows. Returns the veil's share at a scene point (or the sky's crossing).
+// slow world-space billows. Returns the veil's share at a scene point (or the sky's crossing): 0.2 in the billows' gaps
+// to 0.6 in their cores at the peak, so no patch is ever veiled flat.
 float FTWaveVeil(float tau, float3 p, float t)
 {
 	if (tau <= 0.0 || tau > 0.85)
@@ -335,7 +336,7 @@ float FTWaveVeil(float tau, float3 p, float t)
 	float3 q2 = mul(turn, q1 * 2.1) + float3(0.5 * t, 0.0, 0.0);
 	float billow = 0.55 * W.VNoise3(q0 + warp * 1.2, 89u) + 0.3 * W.VNoise3(q1, 90u) + 0.15 * W.VNoise3(q2, 87u);
 	float life = lerp(0.5, 0.8, billow);
-	return 0.7 * smoothstep(0.0, 0.06, tau) * (1.0 - smoothstep(0.15, life, tau)) * smoothstep(0.1, 0.85, billow + 0.1);
+	return smoothstep(0.0, 0.06, tau) * (1.0 - smoothstep(0.15, life, tau)) * lerp(0.2, 0.6, smoothstep(0.15, 0.85, billow));
 }
 
 // Front B: one level of blots, cells S wide round plane point q (cm on a surface's own plane, or pixels on the sky).
@@ -678,7 +679,11 @@ float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float raw
 			float tauV = FTWaveSince(-vAhead);
 			float3 vp = sky ? CamPos + rd * 2500.0 : WorldPos;
 			float veil = FTWaveVeil(tauV, vp, WTime) * (sky ? 0.5 * smoothstep(0.0, 0.3, tauV) : 1.0);
-			c = lerp(c, fogLum * 0.35 * float3(0.92, 0.96, 1.0), veil);
+			// The pigment greys and darkens the pixel's own colour (60% toward its own luminance, cool, times 0.7) and never
+			// lifts it toward a tone of its own: a grey taken from the frame, still mostly the sunlit first world just after
+			// the edge, turned dark cloth to flat pale plaster. Linear in c, so the surface's shading and texture stay.
+			float lumV = dot(c, float3(0.2126, 0.7152, 0.0722));
+			c = lerp(c, lerp(c, lumV * float3(0.92, 0.96, 1.0), 0.6) * 0.7, veil);
 		}
 		// The ink itself, in the volume: the drop at the origin through the prelude (a black bloom 8 to 45 cm), then the
 		// core and its plumes on the front. Near things are swallowed before far ones: the march stops at the scene.
