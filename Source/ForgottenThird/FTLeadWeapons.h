@@ -79,6 +79,8 @@ inline constexpr const TCHAR* GauntletPieces[NumGauntletPieces] = {
 	TEXT("SKM_DevinGauntlet_R_Glove"), TEXT("SKM_DevinGauntlet_R_Strap"), TEXT("SKM_DevinGauntlet_R_Bracer"),
 	TEXT("SKM_DevinGauntlet_L_Glove"), TEXT("SKM_DevinGauntlet_L_Strap"), TEXT("SKM_DevinGauntlet_L_Bracer"),
 };
+// Where the right and left bracers are in GauntletPieces (a look's GauntletBracerR/L replaces them).
+inline constexpr int32 GauntletBracerIndex[2] = {2, 5};
 
 struct FPiece
 {
@@ -208,8 +210,9 @@ private:
 	// The reload and flinch layers after the strike's (StrikeWeight, 0..1, keeps its share of the arms).
 	void PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight);
 	void AttachProps();
-	// The look's GauntletMorphs, kept from Begin for AttachProps.
+	// The look's GauntletMorphs and bracers (empty: the kit's own), kept from Begin for AttachProps.
 	TArray<FName> GauntletMorphs;
+	FSoftObjectPath GauntletBracer[2];
 	UStaticMeshComponent* AttachProp(const FTWeaponProps::FPiece& Piece);
 	void SpawnEffects();
 	UFTVfxComponent* MakeEffect(const TCHAR* Effect, USceneComponent* Parent, FName Socket);

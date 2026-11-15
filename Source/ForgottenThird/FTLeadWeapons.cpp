@@ -220,6 +220,8 @@ void FFTLeadWeapons::Begin(AActor* Owner, USkeletalMeshComponent* Body, const FF
 	{
 		GauntletMorphs.Add(FName(*Morph));
 	}
+	GauntletBracer[0] = Look.GauntletBracerR;
+	GauntletBracer[1] = Look.GauntletBracerL;
 	AttachProps();
 	SpawnEffects();
 	Restart();
@@ -360,6 +362,17 @@ void FFTLeadWeapons::AttachProps()
 		for (const TCHAR* Name : FTWeaponProps::GauntletPieces)
 		{
 			Paths.Emplace(FString::Printf(TEXT("%s/%s.%s"), FTWeaponProps::GauntletFolder, Name, Name));
+		}
+		// The look's bracers, where it names them (fitted over its sleeve), in place of the kit's bare-skin ones.
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const int32 At = FTWeaponProps::GauntletBracerIndex[Side];
+			if (!GauntletBracer[Side].IsNull())
+			{
+				Paths[At] = GauntletBracer[Side];
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s (%s)."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+				*Paths[At].GetAssetName(), GauntletBracer[Side].IsNull() ? TEXT("the kit's, bare-skin fit") : TEXT("the look's"));
 		}
 		TArray<TObjectPtr<USkeletalMeshComponent>> Added;
 		FTLook::AddPieces(*Figure.Get(), *Skin.Get(), Paths, Added, Prefix());

@@ -129,6 +129,12 @@ struct FFTLeadLook
 	// takes it by leader pose; a name no worn mesh has does nothing.
 	UPROPERTY(EditAnywhere, Category = "Look")
 	TArray<FString> GauntletMorphs;
+	// The gauntlet bracers this look wears (right, left): the variant fitted over its sleeve (a tucked cuff) where the
+	// look's jacket has GauntletMorphs; empty is the kit's own bracer, fitted to bare skin (FTWeaponProps::GauntletPieces).
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath GauntletBracerR;
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath GauntletBracerL;
 	// The character model the look is (an id from Data/Assets/models.json). The story director puts the look on
 	// screen for a scene whose cast speaker is cast as this model (Data/Voice/speakers.json). Empty: never cast.
 	UPROPERTY(EditAnywhere, Category = "Look")
