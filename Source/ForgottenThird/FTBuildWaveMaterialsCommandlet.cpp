@@ -31,6 +31,7 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "UObject/Linker.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
@@ -378,6 +379,7 @@ UMaterial* BuildTwin(const TCHAR* MasterPath)
 	}
 	const FString Path = TwinPackage(MasterPath);
 	UPackage* Package = CreatePackage(*Path);
+	Package->MarkAsFullyLoaded(); // built here and saved over the old file (Main's note)
 	UMaterial* Twin = DuplicateObject<UMaterial>(Master, Package, FName(FPackageName::GetShortName(Path)));
 	Twin->SetFlags(RF_Public | RF_Standalone | RF_Transactional);
 	Twin->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
@@ -657,23 +659,41 @@ UFTBuildWaveMaterialsCommandlet::UFTBuildWaveMaterialsCommandlet()
 int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
-	// Start from nothing under the wave's folder: replace every file up front, before anything loads the old assets.
-	// The look's collection is never deleted; the wave's parameters are added to it in place.
-	TArray<FString> Packages = {FTWorldWave::CutFunctionPath, FTWorldWave::StateFunctionPath, FTWorldWave::PostMaterialPath,
-		FTWorldWave::OldInkMaterialPath};
+	// Every wave asset is built new in memory and saved over its file; no file is deleted before its replacement is saved,
+	// so a run that fails part way leaves the old asset on disk, never a missing one. The look's collection is never
+	// rebuilt; the wave's parameters are added to it in place.
+	TArray<FString> Packages = {FTWorldWave::CutFunctionPath, FTWorldWave::StateFunctionPath, FTWorldWave::PostMaterialPath};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
 	{
 		Packages.Add(TwinPackage(Master));
 	}
+	// Some may be loaded already: once the character masters wear the state, a lead mesh a constructor finds at start-up
+	// pulls MF_WorldWaveState in, and its loader holds the file open, so the save couldn't move the new file over it.
+	// Every loaded one lets go of its file first. The asset itself is rebuilt in place below (a new object over the same
+	// name keeps its address, so the loaded masters' calls see the rebuilt one).
+	FlushAsyncLoading();
+	TArray<UObject*> Loaded;
 	for (const FString& Package : Packages)
 	{
-		const FString File = WavePackageFile(Package);
-		if (IFileManager::Get().FileExists(*File) && !IFileManager::Get().Delete(*File, false, true))
+		if (UPackage* Found = FindPackage(nullptr, *Package))
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("%s: couldn't replace %s."), kTag, *File);
-			return 1;
+			Loaded.Add(Found);
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: %s was loaded at start; its file is let go and the asset rebuilt in place."), kTag,
+				*Package);
 		}
 	}
+	if (Loaded.Num() > 0)
+	{
+		ResetLoaders(Loaded);
+	}
+	// A package made here counts as fully loaded, so a master that imports it later takes the new asset in memory rather
+	// than loading the old file into it.
+	const auto WavePackage = [](const TCHAR* Path)
+	{
+		UPackage* Package = CreatePackage(Path);
+		Package->MarkAsFullyLoaded();
+		return Package;
+	};
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(WavePackageFile(FTWorldWave::PostMaterialPath)), true);
 
 	UMaterialParameterCollection* Look = FTWorldWave::LoadOrBuild();
@@ -684,17 +704,17 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
-	UMaterialFunction* Cut = BuildCutFunction(CreatePackage(FTWorldWave::CutFunctionPath), Look);
+	UMaterialFunction* Cut = BuildCutFunction(WavePackage(FTWorldWave::CutFunctionPath), Look);
 	if (!Save(Cut))
 	{
 		return 1;
 	}
-	UMaterialFunction* State = BuildStateFunction(CreatePackage(FTWorldWave::StateFunctionPath), Look);
+	UMaterialFunction* State = BuildStateFunction(WavePackage(FTWorldWave::StateFunctionPath), Look);
 	if (!Save(State))
 	{
 		return 1;
 	}
-	UMaterial* Post = BuildPostMaterial(CreatePackage(FTWorldWave::PostMaterialPath), Look);
+	UMaterial* Post = BuildPostMaterial(WavePackage(FTWorldWave::PostMaterialPath), Look);
 	TArray<UMaterial*> Built = {Post};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
 	{
@@ -723,6 +743,12 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	if (!bOk)
 	{
 		return 1;
+	}
+	// The retired ink material has no replacement; it goes only once everything above is saved.
+	const FString OldInk = WavePackageFile(FTWorldWave::OldInkMaterialPath);
+	if (IFileManager::Get().FileExists(*OldInk) && !IFileManager::Get().Delete(*OldInk, false, true))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("%s: couldn't remove the retired %s; nothing uses it."), kTag, *OldInk);
 	}
 	// -Flags: the surface masters already on disk take an explicit static false on their state call's Character input in
 	// place (what SetCharacter now wires on every build), so none leans on the function's Preview alone.
