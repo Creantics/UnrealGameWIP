@@ -4,6 +4,9 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
+#include <limits>
+
 using namespace ftcore;
 
 namespace {
@@ -15,7 +18,6 @@ constexpr float kDt = 0.05f;
 UiSwimIn under(float breath) {
     UiSwimIn in;
     in.swimming = true;
-    in.under = true;
     in.canRise = true;
     in.breath = breath;
     in.warning = breath <= in.warningSeconds;
@@ -30,7 +32,6 @@ UiSwimIn under(float breath) {
 // At the surface in deep water: breath not in use, a dive allowed.
 UiSwimIn surface(float breath) {
     UiSwimIn in = under(breath);
-    in.under = false;
     in.canRise = false;
     in.canDive = true;
     in.warning = false;
@@ -358,6 +359,89 @@ TEST_CASE("ui swim: DIVE and RISE stand whenever each applies until first used, 
     CHECK_FALSE(uiSwimStep(later, fresh, surface(45.f), kDt));
     CHECK(uiFirstUseAlpha(fresh, UiFirstUseItem::Dive) == 0.f);
     CHECK(fresh.count[at(UiFirstUseItem::Dive)] == 0);
+}
+
+TEST_CASE("ui swim: a NaN or infinite frame counts as none") {
+    const float bad[] = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                         -std::numeric_limits<float>::infinity()};
+    for (const float dt : bad) {
+        CAPTURE(dt);
+        UiSwim s;
+        UiFirstUse fu = taught();
+        run(s, fu, under(5.f), 0.5f);
+        uiSwimStep(s, fu, rescued(), kDt);
+        REQUIRE(s.fade == UiSwimFade::Out);
+        const UiSwim before = s;
+        uiSwimStep(s, fu, rescued(), dt);
+        CHECK(s.fade == UiSwimFade::Out);
+        CHECK(s.fadeT == before.fadeT);
+        CHECK(s.ring == before.ring);
+        CHECK(std::isfinite(uiSwimFadeAlpha(s)));
+        run(s, fu, rescued(), 0.4f); // the fade goes on from where it was
+        CHECK(s.fade == UiSwimFade::Black);
+        run(s, fu, surface(45.f), 1.f);
+        CHECK(s.fade == UiSwimFade::Clear);
+        // The heartbeat and the ring stay finite through one.
+        run(s, fu, under(5.f), 0.5f);
+        uiSwimStep(s, fu, under(5.f), dt);
+        CHECK(std::isfinite(s.phase));
+        CHECK(std::isfinite(s.ring));
+        CHECK(s.heart);
+    }
+}
+
+TEST_CASE("ui swim: a rescue while the picture comes back goes to black from the alpha it has reached") {
+    UiSwim s;
+    UiFirstUse fu = taught();
+    run(s, fu, under(0.f), 0.5f);
+    run(s, fu, rescued(), 0.6f);
+    REQUIRE(s.fade == UiSwimFade::Black);
+    run(s, fu, surface(45.f), 0.25f);
+    REQUIRE(s.fade == UiSwimFade::In);
+    run(s, fu, surface(45.f), 0.3f);
+    REQUIRE(s.fade == UiSwimFade::In);
+    const float alpha = uiSwimFadeAlpha(s);
+    CHECK(alpha > 0.1f);
+    CHECK(alpha < 0.9f);
+    uiSwimStep(s, fu, rescued(), 0.f);
+    CHECK(s.fade == UiSwimFade::Out);
+    CHECK(uiSwimFadeAlpha(s) == doctest::Approx(alpha).epsilon(1e-4));
+    float last = uiSwimFadeAlpha(s);
+    for (int i = 0; i < 10 && s.fade == UiSwimFade::Out; ++i) {
+        uiSwimStep(s, fu, rescued(), kDt);
+        CHECK(uiSwimFadeAlpha(s) >= last); // rising on to black, no pop
+        CHECK(uiSwimFadeAlpha(s) - last < 0.5f);
+        last = uiSwimFadeAlpha(s);
+    }
+    CHECK(s.fade == UiSwimFade::Black);
+    // The inverse is the ease's own, at the ends too.
+    for (const float y : {0.f, 0.25f, 0.5f, 0.75f, 1.f}) CHECK(uiSwimEase(uiSwimEaseInverse(y)) == doctest::Approx(y).epsilon(1e-4));
+}
+
+TEST_CASE("ui swim: DIVE and RISE used on the first frame they apply are counted (a use is a use)") {
+    UiSwim s;
+    UiFirstUse fu = taught();
+    UiSwimIn dive = under(45.f); // never shown: the press dived on the step DIVE first applied
+    dive.dived = true;
+    CHECK(uiSwimStep(s, fu, dive, kDt));
+    CHECK(fu.count[at(UiFirstUseItem::Dive)] == 1);
+    UiSwim r;
+    UiFirstUse fr = taught();
+    UiSwimIn rise = under(45.f);
+    rise.canRise = false;
+    rise.rose = true;
+    CHECK(uiSwimStep(r, fr, rise, kDt));
+    CHECK(fr.count[at(UiFirstUseItem::Rise)] == 1);
+    // Taught already: nothing more to count.
+    UiSwim r2;
+    CHECK_FALSE(uiSwimStep(r2, fr, rise, kDt));
+    CHECK(fr.count[at(UiFirstUseItem::Rise)] == 1);
+    // Never: still nothing counted.
+    UiFirstUse none = taught();
+    UiSwim n;
+    dive.teach = ShowBasicControls::Never;
+    CHECK_FALSE(uiSwimStep(n, none, dive, kDt));
+    CHECK(none.count[at(UiFirstUseItem::Dive)] == 0);
 }
 
 TEST_CASE("ui swim: stepping allocates nothing") {

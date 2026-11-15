@@ -4,6 +4,9 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
+#include <limits>
+
 using namespace ftcore;
 
 namespace {
@@ -188,6 +191,59 @@ TEST_CASE("ui world change: the sweep carries Ink, InkDim and Accent together; e
     REQUIRE_FALSE(s.running);
     for (const UiToken token : swept)
         CHECK(uiWorldChangeColor(s, st, pal, token, 1.f) == uiColor(st, UiWorld::Lattice, pal, token)); // done
+}
+
+TEST_CASE("ui world change: a NaN or infinite frame counts as none") {
+    const float bad[] = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                         -std::numeric_limits<float>::infinity()};
+    for (const float dt : bad) {
+        CAPTURE(dt);
+        UiWorldChange s;
+        run(s, at(kSol), 0.2f);
+        uiWorldChangeStep(s, at(kLat), kDt);
+        REQUIRE(s.running);
+        const float t = s.t;
+        uiWorldChangeStep(s, at(kLat), dt);
+        CHECK(s.running);
+        CHECK(s.t == t);
+        CHECK(std::isfinite(uiWorldChangeMix(s, 0.5f)));
+        run(s, at(kLat), 0.4f); // the envelope goes on and ends
+        CHECK_FALSE(s.running);
+        CHECK(s.shown == kLat);
+    }
+}
+
+TEST_CASE("ui world change: a second change inside the sweep starts its own when the first ends, settled or not") {
+    constexpr std::int8_t kUnw = static_cast<std::int8_t>(UiWorld::Unwritten);
+    for (int settled = 0; settled < 2; ++settled) {
+        CAPTURE(settled);
+        UiWorldChange s;
+        run(s, at(kSol), 0.2f);
+        uiWorldChangeStep(s, at(kLat), kDt);
+        REQUIRE(s.running);
+        uiWorldChangeStep(s, at(kUnw), kDt); // the next wave reaches the camera mid-sweep
+        CHECK(s.shown == kLat);
+        // ... and settles before the sweep ends (or is still moving).
+        int frames = 0;
+        while (s.running && s.from == kSol && frames < 30) {
+            uiWorldChangeStep(s, at(kUnw, true, settled == 0), kDt);
+            ++frames;
+        }
+        CHECK(s.running); // a fresh sweep on the old one's last frame
+        CHECK(s.from == kLat);
+        CHECK(s.shown == kUnw);
+        CHECK(uiWorldChangeMix(s, 0.f) == 0.f); // from the Lattice ink, no jump
+        run(s, at(kUnw, true, false), 0.4f);
+        CHECK_FALSE(s.running);
+        CHECK(s.shown == kUnw); // the rows wear the world the camera is in
+    }
+    // Off: still nothing; with nothing drawn at the end the ink changes unseen.
+    UiWorldChange q;
+    run(q, at(kSol), 0.2f);
+    uiWorldChangeStep(q, at(kLat), kDt);
+    for (int i = 0; i < 30 && q.running; ++i) uiWorldChangeStep(q, at(kUnw, true, false, false), kDt);
+    CHECK_FALSE(q.running);
+    CHECK(q.shown == kUnw);
 }
 
 TEST_CASE("ui world change: stepping allocates nothing") {
