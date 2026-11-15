@@ -24,7 +24,7 @@
 // negative dt counts as 0, a non-finite or zero-length joint is held or skipped (see apply).
 //
 // No heap allocation anywhere: the state holds fixed arrays for kInertialMaxJoints joints (about
-// 140 KB, so keep it as a member, not on the stack). Joints past the capacity are passed through
+// 136 KiB, so keep it as a member or in a pool, not on the stack). Joints past the capacity are passed through
 // from the new clip unblended. Header only: Core/src has a matching Unreal wrapper per source file,
 // and this needs none.
 
@@ -41,6 +41,7 @@ inline constexpr double kInertialMinTime = 1e-4;   // the shortest curve, second
 inline constexpr double kInertialMinOffset = 1e-6; // a translation offset below this (cm) is none
 inline constexpr double kInertialMinAngle = 1e-7;  // a rotation offset below this (rad) is none
 inline constexpr double kInertialEndSlack = 1e-9;  // elapsed within this of the end time ends it
+inline constexpr double kInertialMinDt = 1e-6;     // a begin dt below this gives no velocity (noise)
 
 // One joint's local pose: rotation then translation (parent space, cm).
 struct InertialJoint {
@@ -149,21 +150,24 @@ public:
     //  - prevPose, prevPrevPose: the last two outputs (prevPose the latest, dtPrev seconds later).
     //  - newPose: the new clip at the switch; newPrevPose: the new clip dtNew seconds earlier (its
     //    velocity is taken out of the offset's rate). An empty newPrevPose, a non-finite joint in it
-    //    or dtNew <= 0 counts the new clip as still for that joint.
+    //    or dtNew below kInertialMinDt counts the new clip as still for that joint (dtPrev below it
+    //    likewise gives the old side no velocity: a finite difference over a tiny step is noise).
+    //    A rotation term whose angle changed by more than pi over its step (the offset crossing
+    //    180 degrees, where the measured angle wraps) counts as 0.
     //  - from = Continue takes the old output from the blender's own last two outputs instead of
     //    prevPose and prevPrevPose, but only when apply ran since the last begin, the history holds
     //    two outputs and its joint count equals this begin's; otherwise the given poses are used.
     //    Returns true when it continued.
-    // Joints up to min(newPose, prevPose, kInertialMaxJoints) get an offset. blendSeconds not
+    // Joints up to min(newPose, prevPose, kInertialMaxJoints) get an offset. blendTime not
     // finite or <= 0 ends any blend: the next apply outputs the new clip. A joint whose old or new
     // pose is not finite or has a zero rotation gets no offset; a non-finite prevPrevPose joint or
     // dtPrev gives the old side a velocity of 0.
     bool begin(std::span<const InertialJoint> prevPose, std::span<const InertialJoint> prevPrevPose, double dtPrev,
                std::span<const InertialJoint> newPose, std::span<const InertialJoint> newPrevPose, double dtNew,
-               double blendSeconds, InertialFrom from = InertialFrom::Given) {
+               double blendTime, InertialFrom from = InertialFrom::Given) {
         using namespace inertial_detail;
-        if (!std::isfinite(dtPrev) || dtPrev < 0.0) dtPrev = 0.0;
-        if (!std::isfinite(dtNew) || dtNew < 0.0) dtNew = 0.0;
+        if (!std::isfinite(dtPrev) || dtPrev < kInertialMinDt) dtPrev = 0.0;
+        if (!std::isfinite(dtNew) || dtNew < kInertialMinDt) dtNew = 0.0;
         std::size_t nNew = newPose.size();
         if (nNew > kMax) nNew = kMax;
         const bool chained =
@@ -190,8 +194,8 @@ public:
         end_ = 0.0;
         blend_ = 0.0;
         active_ = false;
-        if (!std::isfinite(blendSeconds) || blendSeconds <= 0.0 || n == 0) return chained;
-        blend_ = blendSeconds;
+        if (!std::isfinite(blendTime) || blendTime <= 0.0 || n == 0) return chained;
+        blend_ = blendTime;
         offsets_ = n;
 
         for (std::size_t i = 0; i < n; ++i) {
@@ -226,7 +230,7 @@ public:
                         rate += (len - back) / dtNew;
                     }
                     dir_[i] = u;
-                    tc.init(len, rate, blendSeconds);
+                    tc.init(len, rate, blendTime);
                 }
             }
 
@@ -244,11 +248,17 @@ public:
                     const TwistVec u{q0.x / s, q0.y / s, q0.z / s};
                     double rate = 0.0;
                     TwistQuat other;
-                    if (oldMoves && normalized(pp.rotation, other)) rate += (angle - twistAbout(other, qn, u)) / dtPrev;
-                    if (newMoves && normalized(newPrevPose[i].rotation, other))
-                        rate += (angle - twistAbout(qp, other, u)) / dtNew;
+                    // A change of more than pi over a step is the wrap at 180 degrees, not motion.
+                    if (oldMoves && normalized(pp.rotation, other)) {
+                        const double change = angle - twistAbout(other, qn, u);
+                        if (std::fabs(change) <= kPi) rate += change / dtPrev;
+                    }
+                    if (newMoves && normalized(newPrevPose[i].rotation, other)) {
+                        const double change = angle - twistAbout(qp, other, u);
+                        if (std::fabs(change) <= kPi) rate += change / dtNew;
+                    }
                     axis_[i] = u;
-                    rc.init(angle, rate, blendSeconds);
+                    rc.init(angle, rate, blendTime);
                 }
             }
             if (tc.t1 > end_) end_ = tc.t1;
@@ -341,6 +351,7 @@ public:
 
 private:
     static constexpr std::size_t kMax = static_cast<std::size_t>(kInertialMaxJoints);
+    static constexpr double kPi = 3.14159265358979323846;
 
     InertialCurve move_[kMax];
     InertialCurve turn_[kMax];

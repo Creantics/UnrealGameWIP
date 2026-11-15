@@ -12,7 +12,9 @@ When the body switches clips (idle, run, strike, hit, land) the pose either pops
 - **Translations.** A direction and a length. Only the length decays.
 - **Limits, by design:**
   - a relative velocity that would grow the offset (pointing away from the new pose) is taken as 0, so the offset never grows;
-  - only the part of the relative velocity along a translation's offset is kept, and for a rotation only the turn about the offset's axis.
+  - only the part of the relative velocity along a translation's offset is kept, and for a rotation only the turn about the offset's axis. At a non-collinear switch the output's velocity therefore steps by the dropped part. With `dv` the old velocity minus the new and `u` the offset's direction, the step is `dv - (dv . u) u` while the offset closes, and `dv` itself when it would grow. It is never more than `|dv|`;
+  - a `dtPrev` or `dtNew` under 1 microsecond gives that side no velocity, since a finite difference over so small a step is noise;
+  - a rotation term whose angle changed by more than pi over its step (the offset crossing 180 degrees, where the measured angle wraps) counts as 0.
 - **Capacity.** `kInertialMaxJoints = 512`, meant to cover the leads' body skeletons. The repo records no bone count, so check it when wiring this up. Joints past it are copied from the new clip unblended; every joint of `outPose` up to the shorter span is written.
 - **Units.** Seconds, centimetres, radians. A non-finite or negative dt counts as 0, and every divide is guarded.
 
@@ -30,7 +32,7 @@ class InertialBlend {
 public:
     bool begin(std::span<const InertialJoint> prevPose, std::span<const InertialJoint> prevPrevPose, double dtPrev,
                std::span<const InertialJoint> newPose, std::span<const InertialJoint> newPrevPose, double dtNew,
-               double blendSeconds, InertialFrom from = InertialFrom::Given);
+               double blendTime, InertialFrom from = InertialFrom::Given);
     void apply(std::span<const InertialJoint> newPose, double dt, std::span<InertialJoint> outPose);
     bool active() const;
     double elapsed() const;
@@ -45,7 +47,7 @@ public:
 
 - **`begin`**
   - `prevPose` and `prevPrevPose` are the last two outputs, `prevPose` the latest, taken `dtPrev` seconds apart.
-  - `newPose` is the new clip at the switch. `newPrevPose` is the new clip sampled `dtNew` seconds earlier; its velocity is taken out of the offset's rate. An empty `newPrevPose`, a bad joint in it, or `dtNew <= 0` counts the new clip as still.
+  - `newPose` is the new clip at the switch. `newPrevPose` is the new clip sampled `dtNew` seconds earlier; its velocity is taken out of the offset's rate. An empty `newPrevPose`, a bad joint in it, or `dtNew` under 1e-6 s counts the new clip as still.
   - `from`:
     - `Given` (the default) uses `prevPose` and `prevPrevPose`.
     - `Continue` uses the blender's own last two outputs, so a switch in the middle of a blend starts from the blended output.
@@ -62,7 +64,7 @@ public:
   - A curve cut short ends the blend early. A blend asked for under 0.1 ms lasts the 0.1 ms.
   - From then on the output is `newPose` exactly.
   - A switch with no offset anywhere is not active at all.
-- **Memory.** The state is about 140 KB of fixed arrays. Keep it as a member, not on the stack.
+- **Memory.** One blender is about 136 KiB of fixed arrays. Keep it as a member or in a pool, not on the stack. Pool one blender per animated character on screen, handed out when the character is drawn, rather than one per character in the world.
 
 ## Calling it from Unreal (not yet wired)
 
@@ -102,6 +104,9 @@ Each holds the compact pose's local transforms in cm and radians, with quaternio
 - **History.** A joint count that grows on a dt = 0 frame leaves no stale history: a chained `begin` after it gets no false velocity.
 - **Capacity and spans.** With more joints than the capacity, every joint is written (those past it unblended). Spans of different lengths are handled: a shorter output, a longer output (its tail untouched) and a shorter `prevPose`.
 - **Rotations take the short way.** A 350 degree offset decays from -10 degrees.
-- **Bad input.** Non-finite and zero dt, bad `dtPrev` and `dtNew`, bad blend times and bad joints are all safe.
+- **Near 180 degrees.** A 179.9 degree offset whose old pose crossed 180 within the step drops that term (no fake 376 rad/s) and keeps the new clip's 0.05 rad/s; T is not cut.
+- **Tiny steps.** A `dtPrev` and `dtNew` of 1e-9 or 5e-7 s give no velocity, and T is not cut.
+- **A non-collinear switch.** The velocity step equals the part of `dv` across the offset, and is at most `|dv|`.
+- **Bad input.** Non-finite and zero dt, bad `dtPrev`, NaN, negative and zero `dtNew` each on its own, a `newPrevPose` shorter than `newPose` (the rest count as still), bad blend times and bad joints are all safe.
 - **Frame rate.** 30, 60 and 120 steps per second agree at the same times within 1e-6, with a moving new clip.
 - **Allocation.** `begin` and `apply` do not allocate. The test requires the allocation hook to be installed.

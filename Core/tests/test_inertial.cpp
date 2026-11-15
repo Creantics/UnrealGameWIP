@@ -542,6 +542,100 @@ TEST_CASE("inertial: 30, 60 and 120 steps per second agree at the same times") {
     }
 }
 
+TEST_CASE("inertial: an offset near 180 degrees: the wrap is not read as a rate") {
+    const double dt = 1.0 / 60.0, blend = 0.3;
+    // Offset 179.9 degrees about u. The old pose closes it at 0.5 rad/s, so a frame earlier it was
+    // 180.38 degrees, measured as -179.62 (a fake +376 rad/s, dropped). The new clip closes it at
+    // 0.05 rad/s, which does not cross 180 within the step: that rate is kept.
+    const TwistVec u{0.3, -1.0, 0.6};
+    const TwistQuat base = aboutAxis(1.0, 0.2, 0.0, 0.7);
+    const double th0 = 179.9 * kPi / 180.0, w = -0.5, wn = 0.05;
+    Pose prev{}, prevPrev{}, nw{}, nwPrev{};
+    for (int i = 0; i < kJ; ++i) {
+        prev[i].rotation = mul(aboutAxis(u.x, u.y, u.z, th0), base);
+        prevPrev[i].rotation = mul(aboutAxis(u.x, u.y, u.z, th0 - w * dt), base);
+        nw[i].rotation = base;
+        nwPrev[i].rotation = mul(aboutAxis(u.x, u.y, u.z, -wn * dt), base);
+    }
+    auto b = makeBlend();
+    b->begin(prev, prevPrev, dt, nw, nwPrev, dt, blend);
+    CHECK(b->rotationCurve(0).x0 == doctest::Approx(th0));
+    CHECK(b->rotationCurve(0).v0 == doctest::Approx(-wn).epsilon(1e-3));
+    CHECK(b->rotationCurve(0).t1 == doctest::Approx(blend));
+    Pose out{};
+    b->apply(nw, 0.0, out);
+    CHECK(poseGap(out, prev) < 1e-4);
+}
+
+TEST_CASE("inertial: a dt under a microsecond gives no velocity") {
+    const double blend = 0.3;
+    Pose prev{}, prevPrev{}, nw{};
+    for (int i = 0; i < kJ; ++i) {
+        nw[i].rotation = aboutAxis(0.0, 1.0, 0.0, 0.2);
+        prev[i].rotation = mul(aboutAxis(1.0, 0.0, 0.0, 0.5), nw[i].rotation);
+        prevPrev[i].rotation = mul(aboutAxis(1.0, 0.0, 0.0, 0.5 + 1e-7), nw[i].rotation); // noise
+        prev[i].translation = TwistVec{10.0, 0.0, 0.0};
+        prevPrev[i].translation = TwistVec{10.0 + 1e-6, 0.0, 0.0};
+    }
+    for (const double tiny : {1e-9, 5e-7}) {
+        auto b = makeBlend();
+        b->begin(prev, prevPrev, tiny, nw, prevPrev, tiny, blend);
+        CHECK(b->translationCurve(0).v0 == 0.0);
+        CHECK(b->rotationCurve(0).v0 == 0.0);
+        CHECK(b->translationCurve(0).t1 == doctest::Approx(blend));
+        CHECK(b->rotationCurve(0).t1 == doctest::Approx(blend));
+    }
+}
+
+TEST_CASE("inertial: bad dtNew on its own, and a short newPrevPose") {
+    const double dt = 1.0 / 60.0;
+    const MovingSwitch s{-50.0, 200.0, -1.5, 2.0};
+    const Pose prev = s.oldAt(0.0), prevPrev = s.oldAt(-dt), nw = s.newAt(0.0), nwPrev = s.newAt(-dt);
+    // With the new clip counted still, the rate is the old side's alone: -50 cm/s, -1.5 rad/s.
+    for (const double bad : {std::nan(""), -dt, 0.0}) {
+        auto b = makeBlend();
+        b->begin(prev, prevPrev, dt, nw, nwPrev, bad, 0.4);
+        CHECK(b->translationCurve(0).v0 == doctest::Approx(-50.0).epsilon(1e-6));
+        CHECK(b->rotationCurve(0).v0 == doctest::Approx(-1.5).epsilon(1e-6));
+    }
+    auto c = makeBlend();
+    const std::span<const InertialJoint> twoPrev(nwPrev.data(), 2);
+    c->begin(prev, prevPrev, dt, nw, twoPrev, dt, 0.4);
+    for (std::size_t i = 0; i < 2; ++i) CHECK(c->translationCurve(i).v0 == doctest::Approx(-250.0).epsilon(1e-6));
+    for (std::size_t i = 2; i < 4; ++i) {
+        CHECK(c->translationCurve(i).v0 == doctest::Approx(-50.0).epsilon(1e-6));
+        CHECK(c->rotationCurve(i).v0 == doctest::Approx(-1.5).epsilon(1e-6));
+    }
+}
+
+TEST_CASE("inertial: a non-collinear switch: the velocity step is the dropped perpendicular part") {
+    // Bound: the output's velocity at the switch is v_new + (dv . u) u when the offset closes (dv the
+    // old minus the new velocity, u the offset's direction), else v_new. The step from the old
+    // velocity is minus dv's part across u, or -dv: never more than |dv|.
+    const double dt = 1.0 / 60.0, h = 1e-5;
+    const TwistVec vOld{-30.0, 40.0, 0.0}, vNew{0.0, 0.0, 25.0};
+    Pose prev{}, prevPrev{}, nw{}, nwPrev{};
+    for (int i = 0; i < kJ; ++i) {
+        prev[i].translation = TwistVec{20.0, 0.0, 0.0}; // the offset along +x
+        prevPrev[i].translation = TwistVec{20.0 - vOld.x * dt, -vOld.y * dt, -vOld.z * dt};
+        nw[i].translation = TwistVec{0.0, 0.0, 0.0};
+        nwPrev[i].translation = TwistVec{-vNew.x * dt, -vNew.y * dt, -vNew.z * dt};
+    }
+    auto b = makeBlend();
+    b->begin(prev, prevPrev, dt, nw, nwPrev, dt, 0.4);
+    Pose next = nw;
+    for (int i = 0; i < kJ; ++i) next[i].translation = TwistVec{vNew.x * h, vNew.y * h, vNew.z * h};
+    Pose out{};
+    b->apply(next, h, out);
+    const TwistVec vOut{(out[0].translation.x - 20.0) / h, out[0].translation.y / h, out[0].translation.z / h};
+    const TwistVec dv{vOld.x - vNew.x, vOld.y - vNew.y, vOld.z - vNew.z}; // (-30, 40, -25), closing along x
+    const double step = dist(vOut, vOld);
+    const double across = std::sqrt(dv.y * dv.y + dv.z * dv.z);
+    CHECK(vOut.x == doctest::Approx(-30.0).epsilon(1e-3)); // along the offset: kept
+    CHECK(step == doctest::Approx(across).epsilon(1e-3));  // across it: dropped, the step
+    CHECK(step <= std::sqrt(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z));
+}
+
 TEST_CASE("inertial: begin and apply do not allocate") {
     REQUIRE(ftcore_test::allocHookInstalled()); // the count below means nothing without the hook
     const double dt = 1.0 / 60.0;
