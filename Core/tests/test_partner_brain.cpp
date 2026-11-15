@@ -2,6 +2,8 @@
 #include "AllocCounter.h"
 #include "TestAssets.h"
 #include <doctest/doctest.h>
+#include <iterator>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -143,6 +145,8 @@ struct Fight {
     bool partnerAims = true;  // 3 of each 10 at the partner (false: every one at the lead)
     bool leadFights = true;   // false: the lead never attacks
     bool staggered = false;   // the boss staggered throughout (no windups)
+    double swapAt = -1.0;     // >= 0: the roles swap at this time (rolesSwapped, the bodies change places)
+    std::size_t swapStep = 0; // the step it swapped on
     std::vector<double> partnerStep, leadStep; // each step's attack seconds
     void clear() {
         leadAttack = 0.0;
@@ -195,6 +199,14 @@ struct Fight {
             }
             boss[0].leadAttacking = leadOn;
             in.leadAttacking = leadOn;
+            if (swapAt >= 0.0 && swapStep == 0 && now + 1e-9 >= swapAt) {
+                // The brain now drives the other body: idle, where the lead stood; the lead takes the old one.
+                brain.rolesSwapped();
+                std::swap(in.pos, in.leadPos);
+                host.blowLeft = host.hurtLeft = 0.0;
+                host.guarding = false;
+                swapStep = static_cast<std::size_t>(k);
+            }
             host.feed(in);
             const PartnerIntent& it = brain.step(dt, in);
             intents.push_back(it);
@@ -279,15 +291,11 @@ TEST_CASE("partner brain: partner_brain.json is the defaults; the importer keeps
              R"({"version":1,"extra":1})",
              R"({"version":1,"leashMeters":0.5})",
              R"({"version":1,"leashMeters":11})",
-             R"({"version":1,"returnMeters":5})",
              R"({"version":1,"reachMeters":5})",
-             R"({"version":1,"standoffMeters":2})",
              R"({"version":1,"blowsMin":0})",
-             R"({"version":1,"blowsMin":4})",
              R"({"version":1,"blowsMax":7})",
              R"({"version":1,"blowsMax":2.5})",
              R"({"version":1,"blowSeconds":0})",
-             R"({"version":1,"pauseMin":2.5})",
              R"({"version":1,"pauseMax":11})",
              R"({"version":1,"guardWarning":-0.1})",
              R"({"version":1,"guardChance":1.1})",
@@ -302,6 +310,51 @@ TEST_CASE("partner brain: partner_brain.json is the defaults; the importer keeps
         CHECK_FALSE(importPartnerBrain(bad, t, &err));
         CHECK_FALSE(err.empty());
         CHECK(t.leashMeters == d.leashMeters);
+    }
+    // A broken cross-field pair: both its fields take their defaults, every other field is kept, a note says so.
+    struct PairCase {
+        const char* json;
+        const char* note; // the start of the one note
+    };
+    const PairCase pairs[] = {
+        {R"({"version":1,"returnMeters":5,"guardChance":0.9})", "returnMeters, leashMeters"},
+        {R"({"version":1,"standoffMeters":2,"guardChance":0.9})", "standoffMeters, reachMeters"},
+        {R"({"version":1,"blowsMin":4,"guardChance":0.9})", "blowsMin, blowsMax"},
+        {R"({"version":1,"pauseMin":2.5,"guardChance":0.9})", "pauseMin, pauseMax"},
+        {R"({"version":1,"leashMeters":2.5,"returnMeters":2,"guardChance":0.9})", "leashMeters, personalSpaceMeters"},
+        {R"({"version":1,"stationGiveUpSeconds":8,"guardChance":0.9})", "stationGiveUpSeconds, stationAnySeconds"},
+    };
+    for (const PairCase& c : pairs) {
+        CAPTURE(c.json);
+        std::vector<std::string> notes;
+        REQUIRE(importPartnerBrain(c.json, t, &err, &notes));
+        REQUIRE(notes.size() == 1u);
+        CHECK(notes[0].rfind(c.note, 0) == 0);
+        CHECK(t.guardChance == 0.9f); // kept
+        if (std::string(c.note).rfind("leash", 0) != 0) CHECK(t.leashMeters == d.leashMeters);
+        if (std::string(c.note).rfind("leash", 0) != 0) CHECK(t.returnMeters == d.returnMeters);
+        CHECK(t.standoffMeters == d.standoffMeters);
+        CHECK(t.blowsMin == d.blowsMin);
+        CHECK(t.pauseMin == d.pauseMin);
+        CHECK(t.stationGiveUpSeconds == d.stationGiveUpSeconds);
+        CHECK(validPartnerTuning(t));
+    }
+    {
+        // A reset that breaks another pair: leash 4.5 is under personal space 4 + 1, so that pair goes back (leash 4),
+        // which leaves returnMeters 4.2 over the leash: that pair goes back too.
+        std::vector<std::string> notes;
+        REQUIRE(importPartnerBrain(R"({"version":1,"leashMeters":4.5,"returnMeters":4.2,"personalSpaceMeters":4})", t,
+                                   &err, &notes));
+        CHECK(notes.size() == 2u);
+        CHECK(t.leashMeters == d.leashMeters);
+        CHECK(t.returnMeters == d.returnMeters);
+        CHECK(t.personalSpaceMeters == d.personalSpaceMeters);
+        CHECK(validPartnerTuning(t));
+    }
+    {
+        std::vector<std::string> notes{"stale"};
+        REQUIRE(importPartnerBrain(R"({"version":1,"leashMeters":6})", t, &err, &notes));
+        CHECK(notes.empty()); // a clean file: no notes
     }
     // Bad tuning on begin: false, and the defaults run.
     PartnerBrain b;
@@ -1581,6 +1634,22 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.t.budgetWindowSeconds += 1.f; },
         [](PartnerBrainSave& s) { s.t.budgetShare -= 0.1f; },
         [](PartnerBrainSave& s) { s.t.budgetAllowanceSeconds += 1.f; },
+        [](PartnerBrainSave& s) { s.t.personalSpaceMeters += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.wedgeHalfDegrees += 1.f; },
+        [](PartnerBrainSave& s) { s.t.wedgeBeyondMeters += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.wedgeClearMeters += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.closeArcMin += 1.f; },
+        [](PartnerBrainSave& s) { s.t.closeArcMax += 1.f; },
+        [](PartnerBrainSave& s) { s.t.closeLeadMeters += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.spreadArcMin += 1.f; },
+        [](PartnerBrainSave& s) { s.t.spreadArcMax -= 1.f; },
+        [](PartnerBrainSave& s) { s.t.sideHoldSeconds += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.followMin += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.followMax += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.stationTolerance += 0.1f; },
+        [](PartnerBrainSave& s) { s.t.stationGiveUpSeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.t.stationAnySeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.t.targetHoldSeconds += 0.5f; },
         [](PartnerBrainSave& s) { s.rhythm += 1; },
         [](PartnerBrainSave& s) { s.defence += 1; },
         [](PartnerBrainSave& s) { s.rhythmDraws += 1; },
@@ -1620,8 +1689,21 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.out.punish = !s.out.punish; },
         [](PartnerBrainSave& s) { s.out.rise = !s.out.rise; },
         [](PartnerBrainSave& s) { s.out.riseHealth += 0.25f; },
+        [](PartnerBrainSave& s) { s.out.stationed = !s.out.stationed; },
         [](PartnerBrainSave& s) { s.begun = !s.begun; },
+        [](PartnerBrainSave& s) { s.side = 1; },
+        [](PartnerBrainSave& s) { s.sideKey += 1; },
+        [](PartnerBrainSave& s) { s.sideFor += 0.5; },
+        [](PartnerBrainSave& s) { s.swaps += 1; },
+        [](PartnerBrainSave& s) { s.sideTarget += 2; },
+        [](PartnerBrainSave& s) { s.offStation += 0.5; },
+        [](PartnerBrainSave& s) { s.targetFor += 0.5; },
+        [](PartnerBrainSave& s) { s.targetReached = !s.targetReached; },
     };
+    // One row per field: the 35 tunables; rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and
+    // y); begun; side, sideKey, sideFor, swaps, sideTarget, offStation, targetFor, targetReached (8).
+    static_assert(sizeof(PartnerTuning) == 35 * sizeof(float), "a new tunable needs a row here");
+    CHECK(std::size(edits) == 35u + 20u + 4u + 16u + 1u + 8u);
     int i = 0;
     for (const Edit e : edits) {
         CAPTURE(i++);
@@ -1636,4 +1718,194 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
     PartnerBrainSave z = base;
     z.now = -0.0;
     CHECK(z.hash() == base.hash());
+}
+
+namespace {
+bool acts(const PartnerIntent& it) { return it.act == PartnerAct::Attack || it.act == PartnerAct::MoveTo; }
+} // namespace
+
+TEST_CASE("partner brain: rolesSwapped: the new body acts within 0.5 s, mid-string or mid-pause, where carrying on would idle") {
+    const double dt = 1.0 / 60.0;
+    for (const bool inPause : {false, true}) {
+        for (const std::uint32_t seed : {3u, 7u, 42u, 2026u}) {
+            CAPTURE(inPause);
+            CAPTURE(seed);
+            Scene s(seed);
+            Host h;
+            int k = 0;
+            // Into a string (and, for the pause case, on until its pause begins).
+            for (; k < 600; ++k) {
+                h.feed(s.in);
+                h.apply(s.step(dt), s.b, s.in, dt);
+                if (inPause ? s.b.pausing() : (s.b.stringing() && s.b.committedLeft() > 0.3)) break;
+            }
+            REQUIRE(k < 600);
+            const std::uint32_t draws = s.b.rhythmDraws();
+            PartnerBrain carried;
+            carried.load(s.b.save()); // the same brain, never told
+            s.b.rolesSwapped();
+            CHECK(s.b.swaps() == 1u);
+            CHECK_FALSE(s.b.stringing());
+            CHECK_FALSE(s.b.pausing());
+            CHECK(s.b.committedLeft() == 0.0);
+            CHECK(s.b.target() == -1);
+            // The bodies change places: the brain's is the old lead's, idle, 1.5 m off the target's edge (in reach).
+            std::swap(s.in.pos, s.in.leadPos);
+            Host fresh, old = h;
+            PartnerInput other = s.in;
+            double first = -1.0, firstCarried = -1.0;
+            for (int j = 0; j < 60; ++j) {
+                fresh.feed(s.in);
+                const PartnerIntent& it = s.step(dt);
+                if (first < 0.0 && acts(it)) first = j * dt;
+                fresh.apply(it, s.b, s.in, dt);
+                // The carried brain on the same new body: it runs out the old string or pause first.
+                old.feed(other);
+                other.enemies = std::span<const V>(s.e.data(), s.n);
+                const PartnerIntent& c = carried.step(dt, other);
+                if (firstCarried < 0.0 && acts(c) && c.blowStart) firstCarried = j * dt;
+                old.apply(c, carried, other, dt);
+            }
+            MESSAGE("first act after the swap ", first, " s; carried on, the first new blow ", firstCarried, " s");
+            CHECK(first >= 0.0);
+            CHECK(first <= 0.5);
+            CHECK((firstCarried < 0.0 || firstCarried > 0.5)); // without it the new body would wait
+            CHECK(fresh.strings >= 1);                          // a fresh string from the new position
+            CHECK(s.b.rhythmDraws() >= draws + 2u);             // drawn afresh
+        }
+    }
+}
+
+TEST_CASE("partner brain: rolesSwapped keeps the budget ring: every 20 s window holds across the swap") {
+    struct Case {
+        bool partnerAims;
+        double period;
+    };
+    const Case cases[] = {{true, 5.0}, {false, 5.0}, {false, 2.0}};
+    for (const Case& c : cases) {
+        for (const double at : {11.0, 23.37, 40.0}) {
+            for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+                for (const std::uint32_t seed : {1u, 42u, 2026u}) {
+                    CAPTURE(c.partnerAims);
+                    CAPTURE(c.period);
+                    CAPTURE(at);
+                    CAPTURE(static_cast<int>(order));
+                    CAPTURE(seed);
+                    Fight f;
+                    f.partnerAims = c.partnerAims;
+                    f.period = c.period;
+                    f.swapAt = at;
+                    REQUIRE(f.run(1.0 / 60.0, order, seed, true));
+                    REQUIRE(f.swapStep > 0);
+                    CHECK(f.brain.swaps() == 1u);
+                    CHECK(worstExcess(f.partnerStep, f.leadStep, 1200) <= 1e-3);
+                    CHECK(f.host.overlaps == 0);
+                    // It fights on after the swap.
+                    int after = 0;
+                    for (std::size_t i = f.swapStep; i < f.intents.size(); ++i)
+                        after += f.intents[i].newString ? 1 : 0;
+                    CHECK(after >= 3);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("partner brain: rolesSwapped is in save, load and the hash") {
+    const double dt = 1.0 / 60.0;
+    Scene s(11);
+    Host h;
+    for (int k = 0; k < 150; ++k) {
+        h.feed(s.in);
+        h.apply(s.step(dt), s.b, s.in, dt);
+    }
+    PartnerBrain unswapped;
+    unswapped.load(s.b.save());
+    s.b.rolesSwapped();
+    CHECK(s.b.hash() != unswapped.hash());
+    CHECK(s.b.save().swaps == 1u);
+    // A brain loaded from the swapped save does exactly what the swapped one does from there.
+    PartnerBrain copy;
+    copy.load(s.b.save());
+    CHECK(copy.hash() == s.b.hash());
+    CHECK(copy.swaps() == 1u);
+    std::swap(s.in.pos, s.in.leadPos);
+    PartnerInput in2 = s.in;
+    Host h1, h2;
+    bool same1 = true;
+    for (int k = 0; k < 600; ++k) {
+        h1.feed(s.in);
+        const PartnerIntent& a = s.step(dt);
+        h1.apply(a, s.b, s.in, dt);
+        h2.feed(in2);
+        in2.enemies = std::span<const V>(s.e.data(), s.n);
+        const PartnerIntent& b = copy.step(dt, in2);
+        h2.apply(b, copy, in2, dt);
+        same1 = same1 && same(a, b) && s.b.hash() == copy.hash();
+    }
+    CHECK(same1);
+    // Before begin it does nothing.
+    PartnerBrain idle;
+    idle.rolesSwapped();
+    CHECK(idle.swaps() == 0u);
+}
+
+TEST_CASE("partner brain: rolesSwapped with the budget spent: a MoveTo within 0.5 s, Budget holds, then an Attack when the budget allows") {
+    const double dt = 1.0 / 60.0;
+    for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose}) {
+        CAPTURE(static_cast<int>(order));
+        PartnerTuning t; // the budget as shipped: 0.6 x the lead's attack time plus 2 s, any 20 s
+        PartnerBrain b;
+        REQUIRE(b.begin(t, 9));
+        std::array<V, 1> e{};
+        e[0].pos = {2.5f, 0.f};
+        e[0].radius = 0.5f;
+        PartnerInput in;
+        in.order = order;
+        in.leadPos = {-1.f, 0.f}; // out of reach (3 m from the edge)
+        in.leadTarget = 0;
+        in.leadAttacking = false; // the lead never attacks: the allowance is all it has
+        in.pos = {1.2f, 0.f};     // in reach
+        Host h;
+        std::vector<double> partner, lead;
+        std::vector<PartnerIntent> its;
+        const auto stepOnce = [&]() {
+            h.feed(in);
+            in.enemies = std::span<const V>(e.data(), 1);
+            const PartnerIntent it = b.step(dt, in);
+            h.apply(it, b, in, dt);
+            const PartnerBrainSave sv = b.save();
+            partner.push_back(std::clamp(sv.committedEnd - (sv.now - dt), 0.0, dt));
+            lead.push_back(0.0);
+            its.push_back(it);
+            return it;
+        };
+        // Spend it: strings until the budget holds one.
+        int k = 0;
+        for (; k < 1800; ++k)
+            if (stepOnce().why == PartnerWhy::Budget) break;
+        REQUIRE(k < 1800);
+        // Let any blow begun run out, then swap: the new body is the lead's, out of reach.
+        for (int j = 0; j < 120; ++j) stepOnce();
+        b.rolesSwapped();
+        std::swap(in.pos, in.leadPos);
+        h.blowLeft = h.hurtLeft = 0.0;
+        const std::size_t at = its.size();
+        for (int j = 0; j < 1800; ++j) stepOnce();
+        double move = -1.0, hold = -1.0, attack = -1.0;
+        for (std::size_t i = at; i < its.size(); ++i) {
+            const double when = static_cast<double>(i - at) * dt;
+            if (move < 0.0 && its[i].act == PartnerAct::MoveTo) move = when;
+            if (hold < 0.0 && its[i].why == PartnerWhy::Budget) hold = when;
+            if (attack < 0.0 && its[i].act == PartnerAct::Attack && its[i].newString) attack = when;
+        }
+        MESSAGE("after the swap: MoveTo " << move << " s, Budget " << hold << " s, Attack " << attack << " s");
+        CHECK(move >= 0.0);
+        CHECK(move <= 0.5);
+        CHECK(hold > move);      // in reach, the budget holds it
+        CHECK(attack > hold);    // and lets it go once the window frees
+        CHECK(attack <= 20.0);
+        CHECK(worstExcess(partner, lead, 1200, 0.6, 2.0) <= 1e-3);
+        CHECK(h.overlaps == 0);
+    }
 }
