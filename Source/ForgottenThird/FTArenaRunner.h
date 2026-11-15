@@ -1402,6 +1402,7 @@ private:
 	FFTLeadWeapons AllyWeapons;
 public:
 	const FFTLeadWeapons& GetAllyWeapons() const { return AllyWeapons; }
+	FFTLeadWeapons& GetAllyWeapons() { return AllyWeapons; } // a capture view's freeze (-ArenaShotAllyStrikes)
 private:
 	void TrackAllyWeapons(const ftcore::ArenaOutput& Out);
 	bool bAllyStruck = false;  // the ally was in a blow last step ...

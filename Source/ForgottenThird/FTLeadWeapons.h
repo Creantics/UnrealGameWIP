@@ -40,8 +40,9 @@
 //   - spell_ward at the feet while a magic lead guards.
 // The magic kit (ftcore::ArenaWeapon::Magic, "weapon": "magic" in arena.json: its cast, spell effects and ward) is the
 // third party slot's: a party member only (playable false) that fights as the partner, its lights bolts from the
-// casting hand, its heavy a short burst, its guard the ward. Data/Anim/beat_clips.json's lead_cast has no asset yet;
-// the bolt leaves the casting hand whatever the body plays. Core's arena tests pin what it plays.
+// casting hand, its guard the ward. Its heavy is data only: the partner brain throws lights, and nothing spawns
+// spell_burst (its system stays unbuilt until a heavy is ruled for the partner). Data/Anim/beat_clips.json's lead_cast
+// has no asset yet; the bolt leaves the casting hand whatever the body plays. Core's arena tests pin what it plays.
 // Each start logs one line, "<Arena|Field>: weapon fx <effect> at <fight time>". Run checks, one line each:
 // "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment, only on capture runs
 // (-ArenaShot= or -ExploreWeaponShot=) (the angle between the

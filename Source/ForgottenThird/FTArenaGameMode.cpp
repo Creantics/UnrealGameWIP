@@ -133,6 +133,10 @@ constexpr double kArenaFrontDistance = 55.0;
 constexpr double kArenaGunDistance = 60.0;
 constexpr double kArenaArmsDistance = 140.0;
 constexpr float kArenaCloseFov = 55.f;
+// -ArenaShotAllyStrikes: the partner's close views, cm off the casting hand, the hit point or (its side views) the
+// partner, and the side views' aim above its feet (low, so the ward on the ground is in the frame).
+constexpr double kArenaAllyCloseDistance = 100.0;
+constexpr double kArenaAllySideAim = 35.0;
 constexpr double kArenaCloseSettle = 0.6;
 // A -ArenaShot run gives up this long after the first view (wall seconds).
 constexpr double kArenaShotGiveUp = 200.0;
@@ -195,6 +199,7 @@ void AFTArenaGameMode::StartPlay()
 		bShotAlly = FParse::Param(Cmd, TEXT("ArenaShotAlly"));
 #if !UE_BUILD_SHIPPING
 		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
+		bShotAllyStrikes = FParse::Param(Cmd, TEXT("ArenaShotAllyStrikes")); // a capture flag too
 #endif
 		bShotSide = bShotSide || bShotWorld;
 	}
@@ -1065,15 +1070,19 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		}
 		if (bShotSide && !bSideAimed && Lead)
 		{
-			// Up with the jump's lift, so the head stays in the view at the top of the arc.
-			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0 + Lead->GetJumpLift());
+			// Up with the jump's lift, so the head stays in the view at the top of the arc. The partner's with
+			// -ArenaShotAllyStrikes: 1 m off, low, the ward at its feet in the frame.
+			const bool bAllyClose = bShotAllyStrikes && Lead == Runner->GetAllyFigure();
+			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, (bAllyClose ? kArenaAllySideAim : 80.0) + Lead->GetJumpLift());
 			FVector Side = bShotWorld ? FVector(0.0, 1.0, 0.0) : Lead->GetActorRightVector().GetSafeNormal2D();
 			if (bShotQuarter)
 			{
 				const FVector Front = bShotWorld ? FVector(1.0, 0.0, 0.0) : Lead->GetActorForwardVector().GetSafeNormal2D();
 				Side = (Side + Front).GetSafeNormal2D();
 			}
-			bSideAimed = AimStrikeCamera(At + Side * 340.0 + FVector(0.0, 0.0, 90.0), At);
+			const FVector Off = bAllyClose ? (Side * 0.95 + FVector(0.0, 0.0, 0.3)).GetSafeNormal() * kArenaAllyCloseDistance
+				: Side * 340.0 + FVector(0.0, 0.0, 90.0);
+			bSideAimed = AimStrikeCamera(At + Off, At);
 			if (bSideAimed)
 			{
 				return true;
@@ -1104,13 +1113,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	// uncounted too). Attacks that went by while another view held the fight are skipped.
 	if (StrikeShots < ShotStrikes && ShotsTaken > 0)
 	{
-		FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+		FFTLeadWeapons& Weapons = StrikeWeapons();
 		StrikesSeen = FMath::Min(StrikesSeen, Weapons.GetActiveCount()); // the fight begun again
 		if (Weapons.GetActiveCount() > StrikesSeen)
 		{
 			// The frame is on the clock the figures are drawn by; until it is reached, the fight's clock is kept from
 			// passing it (Tick), so it lands on the mark.
-			const double Due = Weapons.GetViewTime(StrikeShots % 2 == 0);
+			bStrikeViewImpact = StrikeShots % 2 == 0;
+			const double Due = Weapons.GetViewTime(bStrikeViewImpact);
 			const double Drawn = Runner->GetDrawnTime();
 			if (Drawn < Due - kArenaStrikeSlack)
 			{
@@ -1228,9 +1238,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	return false;
 }
 
+FFTLeadWeapons& AFTArenaGameMode::StrikeWeapons()
+{
+	return bShotAllyStrikes ? Runner->GetAllyWeapons() : Runner->GetLeadWeapons();
+}
+
 bool AFTArenaGameMode::StrikeShot()
 {
-	FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+	FFTLeadWeapons& Weapons = StrikeWeapons();
 	switch (StrikePhase)
 	{
 	case 1:
@@ -1248,7 +1263,12 @@ bool AFTArenaGameMode::StrikeShot()
 		{
 			LogFramed(*StrikeName, TEXT("the pistol's muzzle"), At);
 		}
-		StrikePhase = bShotClose && StrikeCamera ? 5 : 4;
+		if (bShotAllyStrikes)
+		{
+			LogFramed(*StrikeName, TEXT("the hit point"), Weapons.GetAimPoint());
+		}
+		// The front and forearms views are the lead's (its body square to the camera); the partner's views stop here.
+		StrikePhase = bShotClose && StrikeCamera && !bShotAllyStrikes ? 5 : 4;
 		return true;
 	}
 	case 5:
@@ -1432,6 +1452,39 @@ bool AFTArenaGameMode::AimStrikeCamera(const FVector& From, const FVector& At)
 
 bool AFTArenaGameMode::AimAtStrike()
 {
+	if (bShotAllyStrikes)
+	{
+		// The partner's cast: mid-flight from behind and beside the casting hand, looking along the aim at the bolt's
+		// middle; its landing from 1 m short of the hit point, on the partner's side, looking at it.
+		const AFTArenaFighter* Ally = Runner->GetAllyFigure();
+		const FFTLeadWeapons& Weapons = Runner->GetAllyWeapons();
+		FName Bone;
+		FVector Hand;
+		bool bLeft = false;
+		if (!Ally || !Weapons.GetStrikeLimb(Bone, Hand, bLeft))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: view %s: the partner has no body to frame; the view stays on the follow camera."), *StrikeName);
+			return false;
+		}
+		const FVector Hit = Weapons.GetAimPoint();
+		FVector Aim = (Hit - Hand).GetSafeNormal();
+		if (Aim.IsNearlyZero())
+		{
+			Aim = Ally->GetActorForwardVector().GetSafeNormal2D();
+		}
+		const FVector Side = FVector::CrossProduct(FVector::UpVector, Aim).GetSafeNormal() * (bLeft ? -1.0 : 1.0);
+		const FVector Back = (-Aim * 0.8 + Side * 0.5 + FVector(0.0, 0.0, 0.3)).GetSafeNormal() * kArenaAllyCloseDistance;
+		const FVector From = bStrikeViewImpact ? Hit + Back : Hand + Back;
+		const FVector At = bStrikeViewImpact ? Hit : (Hand + Hit) * 0.5;
+		if (!AimStrikeCamera(From, At))
+		{
+			return false;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s: partner close camera, %s view, %.0f cm off the %s."), *StrikeName,
+			bStrikeViewImpact ? TEXT("landing") : TEXT("mid-flight"), kArenaAllyCloseDistance,
+			bStrikeViewImpact ? TEXT("hit point") : *Bone.ToString());
+		return true;
+	}
 	const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
 	FName Bone;
 	FVector At;

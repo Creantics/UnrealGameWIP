@@ -91,6 +91,11 @@
 // from 1.4 m ahead of the lead on the striking side. A lead with a pistol also gets <prefix>_1_holstered.png and
 // <prefix>_1_drawn.png after the ring view, 60 cm off its right side (the pistol put in its holster for the first). Each
 // close view logs where the hand (and the pistol's muzzle) fall in the frame.
+// -ArenaShotAllyStrikes (with -ArenaPartner; not in a shipping build) points -ArenaShotStrikes's views at the partner's
+// blows instead of the player's (its own effects frozen the same way). With -ArenaShotClose each is 1 m off: a cast's
+// mid-flight view from behind and beside the casting hand, looking along its aim; its landing view from 1 m short of
+// the hit point, on the partner's side, looking at it (no front or forearms views). With -ArenaShotAlly and
+// -ArenaShotSide, -ArenaShotAt's side views of the partner are 1 m off it too, framed low for the ward at its feet.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -194,6 +199,8 @@ private:
 	bool AimStrikeCamera(const FVector& From, const FVector& At);
 	// The camera on the striking limb, 1 m off on its side; false when the lead has no body.
 	bool AimAtStrike();
+	// The weapons -ArenaShotStrikes's views are of: the partner's with -ArenaShotAllyStrikes, else the lead's.
+	FFTLeadWeapons& StrikeWeapons();
 	// One log line: where At falls in the frame (0..1 across and down) and how far it is from the camera.
 	void LogFramed(const TCHAR* View, const TCHAR* What, const FVector& At) const;
 	// -ArenaBossCam: places the camera once the boss stands, then logs its yaw each time it has turned 10 degrees.
@@ -267,6 +274,8 @@ private:
 	int32 ShotStrikes = 0;
 	int32 StrikeShots = 0;
 	int32 StrikesSeen = 0;
+	bool bShotAllyStrikes = false; // -ArenaShotAllyStrikes: the strike views are of the partner's blows, 1 m off
+	bool bStrikeViewImpact = false; // the strike view under way is a landing (impact) view, not a mid-flight one
 	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 5 (-ArenaShotClose)
 	// the camera to go in front of the striking limb; 6 that view (<name>_front) to be taken; 2 the close camera to go to
 	// both forearms; 3 that view to be taken; 4 back to the fight. Its name (s<k>_<clip>).
