@@ -194,6 +194,8 @@ struct PRig {
     bool step = false;
     bool walk = false;
     bool autopilot = false;
+    bool pairOnParry = false; // the autopilot's partner presses the pair on the tick after each parry, as a host does
+    bool pairDue = false;
 
     explicit PRig(const ArenaFighter& fighter = ruleFighter()) {
         def.fighter = fighter;
@@ -229,11 +231,14 @@ struct PRig {
             in = fight.autopilot();
             in.partnerOrder = order;
             in.partnerCamera = camera;
+            if (pairOnParry) in.pair = pairDue;
+            pairDue = false;
         }
         out = &fight.tick(kDt, in, bodies);
         for (const ArenaEvent& e : out->events) {
             log.push_back(Logged{e, fight.time(), out->enemies[0].aim});
             if (e.type == ArenaEventType::TookOver) std::swap(bodies.player, bodies.ally);
+            if (pairOnParry && e.type == ArenaEventType::Parried) pairDue = true;
         }
         if (step) arenaStep(fight, bodies, kDt);
         if (walk && out->ally.partnerOn) walkAlly();
@@ -2177,7 +2182,9 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             r.tuning = shippedTuning();
             r.in.partnerOrder = order;
             r.goShipped(true, 1);
+            r.pairOnParry = true;
             Vec2 facing = r.fight.playerStartFacing();
+            double pairSpent = 0;
             Vec2 lastGoal = r.bodies.ally, lastAt = r.bodies.ally;
             int goalJumps = 0, repositions = 0;
             double walked = 0, leadAttack = 0, partnerBlow = 0, lastStart = 0, longestGap = 0;
@@ -2199,6 +2206,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                 lastAt = r.bodies.ally;
                 if (r.out->player.action == ArenaAction::Light || r.out->player.action == ArenaAction::Heavy) leadAttack += kDt;
                 if (r.out->ally.part != ArenaPart::None) partnerBlow += kDt;
+                pairSpent += r.out->ally.pairSeconds;
                 // A host camera turns after the lead at about 3 rad/s, not on the tick its facing snaps.
                 const Vec2 f = r.out->player.facing;
                 const float k = std::min(1.f, 3.f * kDt);
@@ -2221,6 +2229,7 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
             MESSAGE("    goal jumps " << goalJumps << ", walked " << walked << " m, longest gap between blow starts "
                                       << longestGap << " s, repositions " << repositions << "; lead attacking "
                                       << leadAttack << " s, partner blows running " << partnerBlow
+                                      << " s + paired counters " << pairSpent
                                       << " s, the governor's allowance 0.6 x lead + 2 = " << 0.6 * leadAttack + 2.0
                                       << " s");
             CHECK(r.brain.framed() == camera);
