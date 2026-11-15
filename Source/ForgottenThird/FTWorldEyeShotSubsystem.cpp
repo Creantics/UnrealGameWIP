@@ -2,7 +2,10 @@
 
 #include "FTExploreCharacter.h"
 
+#include "Animation/SkeletalMeshActor.h"
 #include "Camera/CameraActor.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Camera/CameraComponent.h"
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
@@ -231,6 +234,44 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadGoEarly="), GoEarly);
 		bGoJump = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadGoJump"));
 	}
+#if !UE_BUILD_SHIPPING
+	// -WorldEyeExtra=<skeletal mesh>@x,y,z,yaw;...: a skeletal mesh actor stood there (plan frame, metres; the feet at z),
+	// in its reference pose with its own materials. A stand-in character for a still: the wave's audit takes it like any
+	// other skeletal actor (an enemy behind the front, say). Not in a shipped build.
+	{
+		FString Extra;
+		TArray<FString> Items;
+		if (FParse::Value(FCommandLine::Get(), TEXT("WorldEyeExtra="), Extra, false) && Extra.ParseIntoArray(Items, TEXT(";")) > 0)
+		{
+			for (const FString& Item : Items)
+			{
+				FString MeshPath, Where;
+				TArray<FString> P;
+				if (!Item.Split(TEXT("@"), &MeshPath, &Where) || Where.ParseIntoArray(P, TEXT(",")) < 3)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeExtra item \"%s\" is not <mesh>@x,y,z[,yaw]; skipped."), *Item);
+					continue;
+				}
+				USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *MeshPath);
+				if (!Mesh)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("WorldEyeShot: -WorldEyeExtra: no skeletal mesh %s; skipped."), *MeshPath);
+					continue;
+				}
+				const ftcore::MassingVec ExtraM = ftcore::massingEnginePoint(Side, FCString::Atod(*P[0]), FCString::Atod(*P[1]), FCString::Atod(*P[2]));
+				const FVector ExtraAt(ExtraM.x * 100.0, ExtraM.y * 100.0, ExtraM.z * 100.0);
+				const FRotator Turn(0.0, P.Num() > 3 ? FCString::Atod(*P[3]) : 0.0, 0.0);
+				FActorSpawnParameters Params;
+				Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				if (ASkeletalMeshActor* Stand = InWorld.SpawnActor<ASkeletalMeshActor>(ExtraAt, Turn, Params))
+				{
+					Stand->GetSkeletalMeshComponent()->SetSkeletalMesh(Mesh);
+					UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: extra %s stood at engine %s, yaw %.1f."), *Mesh->GetName(), *ExtraAt.ToString(), Turn.Yaw);
+				}
+			}
+		}
+	}
+#endif
 	SideM = Side;
 	// -WorldEyeList=<file>: more eyes after this one in the same run, one a line as
 	// name|eye x,y,z|at x,y,z|lens mm|lead x,y,z or -|go x,y or -|early s  (plan frame; a line starting with # is skipped).
@@ -536,6 +577,14 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		bShot = true;
 		return;
 	}
+	// Where the wave's front meets the lead's body against the ground under its feet, at the still's own frame.
+	if (const UFTWorldWaveSubsystem* Wave = World ? World->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr)
+	{
+		if (const APawn* LeadPawn = Player->GetPawn())
+		{
+			Wave->LogBodyBoundary(*LeadPawn);
+		}
+	}
 	// -WorldEyeExecAtShot="cmd;cmd": console commands run on the settled frame of every still (a one-frame diagnostic
 	// such as r.LumenScene.DumpStats, which -ExecCmds would fire on the first frame after the map's load).
 	{
@@ -550,6 +599,15 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: at the shot, ran '%s'."), *Cmd.TrimStartAndEnd());
 			}
 		}
+	}
+	// -WorldEyeViewport: the still is the viewport itself, with the temporal filter's history (a HighResShot renders a
+	// fresh view with none, so per-frame dither the filter resolves in play shows in it raw); its size is the window's.
+	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeViewport")))
+	{
+		FScreenshotRequest::RequestScreenshot(File, false, false);
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: viewport still (temporal history kept) after %.1f s settled."), Waited);
+		bShot = true;
+		return;
 	}
 	Viewport->Exec(World, *FString::Printf(TEXT("HighResShot %s filename=\"%s\""), *Size, *File), *GLog);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: shooting after %.1f s settled."), Waited);
@@ -698,6 +756,43 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: window collection %s %.2f %s."), Names[S], Value, bSet ? TEXT("written") : TEXT("not written"));
 			}
 		}
+	}
+	// Dev only: -WorldEyeCard=<x,y,z> (plan metres, as -WorldEye) lays a grey card on the ground there, -WorldEyeCardSize=<m>
+	// a side (default 1): M_WorldSurface at 0.18 albedo, 0.9 rough, no mottle and no weather, 1 cm thick, casting nothing,
+	// so a still shows the light's own colour in sun and shade beside the road's.
+	double CardX = 0.0, CardY = 0.0, CardZ = 0.0;
+	if (ParseTriple(TEXT("WorldEyeCard="), CardX, CardY, CardZ))
+	{
+		double CardSide = 1000.0, CardM = 1.0;
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), CardSide);
+		FParse::Value(FCommandLine::Get(), TEXT("WorldEyeCardSize="), CardM);
+		const ftcore::MassingVec CardAt = ftcore::massingEnginePoint(CardSide, CardX, CardY, CardZ);
+		UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Rendering/M_WorldSurface.M_WorldSurface"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AStaticMeshActor* Card = (Cube && Base)
+			? World.SpawnActor<AStaticMeshActor>(FVector(CardAt.x * 100.0, CardAt.y * 100.0, CardAt.z * 100.0 + 1.0), FRotator::ZeroRotator, Spawn)
+			: nullptr;
+		if (Card)
+		{
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, Card);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+			Grey->SetScalarParameterValue(TEXT("Roughness"), 0.9f);
+			Grey->SetScalarParameterValue(TEXT("Metallic"), 0.f);
+			Grey->SetScalarParameterValue(TEXT("Variation"), 0.f);
+			Grey->SetScalarParameterValue(TEXT("Weather"), 0.f);
+			Grey->SetScalarParameterValue(TEXT("Street"), 0.f);
+			UStaticMeshComponent* Mesh = Card->GetStaticMeshComponent();
+			Mesh->SetMobility(EComponentMobility::Movable);
+			Mesh->SetStaticMesh(Cube);
+			Mesh->SetMaterial(0, Grey);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Mesh->SetCastShadow(false);
+			Card->SetActorScale3D(FVector(CardM, CardM, 0.01));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: grey card %s at %.1f, %.1f, %.1f m (%.2f m)."), Card ? TEXT("laid") : TEXT("not laid"),
+			CardAt.x, CardAt.y, CardAt.z, CardM);
 	}
 	if (FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight")))
 	{

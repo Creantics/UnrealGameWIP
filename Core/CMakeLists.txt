@@ -390,6 +390,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_water_bodies.cpp
         tests/test_wet_prints.cpp
         tests/test_water_exits.cpp
+        tests/test_water_dive.cpp
         tests/test_road_decals.cpp
         tests/test_stand_ins.cpp
         tests/test_tree_meshes.cpp

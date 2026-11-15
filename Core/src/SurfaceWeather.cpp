@@ -330,6 +330,8 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\tfloat FaceW = TopF;\n";
     h += "\tfloat Mid = 1.0 - smoothstep(" + num(kMidFrom) + ", " + num(kMidTo) + ", Foot);\n";
     h += "\tfloat PolishTop = 0.0;\n";             // share of the way to wheelTopRough (polished stone tops)
+    h += "\tfloat AsWheel = 0.0;\n";               // asphalt: the wheel band's weight and the tar seal's, for its final range
+    h += "\tfloat AsSeal = 0.0;\n";
     h += "\tfloat LitW = 0.0;\n";                  // kerb litter's cover and colour, over the tone
     h += "\tfloat3 LitC = float3(0.0, 0.0, 0.0);\n";
     if (relief) {
@@ -362,12 +364,60 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     // With the detail tile the aggregate's near terms (AgF) give way to the tile; its far tone lift stays.
     h += std::string("\t\tfloat AgF = ") + (detail ? "0.0" : "Fine") + ";\n";
     h += "\t\tSlopeW += float2(Ax - A0, Ay - A0) / 0.35 * " + num(st.aggregateSlope) + " * AgF;\n";
-    // Exposed stone chips: light flecks where the binder wore off (rougher), fading to their mean further out.
-    h += "\t\tfloat Chip = smoothstep(0.62, 0.8, 0.6 * A0 + 0.4 * SNz.N(Pw / " + num(st.aggregateM * 0.45f) + " + 5.0));\n";
-    h += "\t\tTone *= 1.0 + 0.3 * (A0 - 0.5) * AgF + lerp(0.25, 1.4 * Chip, AgF) * 0.5;\n";
-    h += "\t\tRoughMul *= 1.0 + 0.1 * Chip * AgF;\n";
+    if (!detail) {
+        // Exposed stone chips: light flecks where the binder wore off (rougher), fading to their mean further out. With
+        // the tile they are its own (and their far lift would only brighten the whole road).
+        h += "\t\tfloat Chip = smoothstep(0.62, 0.8, 0.6 * A0 + 0.4 * SNz.N(Pw / " + num(st.aggregateM * 0.45f) + " + 5.0));\n";
+        h += "\t\tTone *= 1.0 + 0.3 * (A0 - 0.5) * AgF + lerp(0.25, 1.4 * Chip, AgF) * 0.5;\n";
+        h += "\t\tRoughMul *= 1.0 + 0.1 * Chip * AgF;\n";
+    }
     h += "\t\tfloat DTop = 0.0;\n";  // the tile's exposed stone top
-    if (detail) {
+    if (detail && st.detailHexM > 0.0f) {
+        // Anti-repetition: the tile is read three times on a triangular lattice of detailHexM, each lattice vertex
+        // giving its own turn and offset into the tile, blended by sharpened barycentric weights; the blend's lost
+        // contrast is put back about the means (variance-preserving, by 1/sqrt(sum w^2)). Each vertex goes to the
+        // sample slot of its lattice colour ((a + 2b) mod 3), so a slot keeps its vertex across every triangle edge
+        // and only a zero-weight one swaps: implicit mips stay seam-free with no screen derivatives (ray-tracing safe).
+        // With the relief's camera distance (RlL, m) the three reads give way to one straight read far off.
+        const bool hexFade = relief && st.detailHexFarM > 0.0f;
+        h += streetHexUvHlsl(st, "SNz", "\t\t", hexFade ? "RlL" : "");
+        h += "\t\tfloat DLr = 0.0;\n\t\tfloat2 DSg = float2(0.0, 0.0);\n\t\tfloat DRr = 0.0;\n\t\tfloat DAo = 0.0;\n";
+        const std::string In = hexFade ? "\t\t\t" : "\t\t";
+        if (hexFade) h += "\t\t[branch] if (HxNear > 0.0)\n\t\t{\n";
+        for (int j = 0; j < 3; ++j) {
+            const std::string J = std::to_string(j);
+            h += In + "DLr += HxWt" + J + " * dot(Texture2DSample(DetAlb, DetAlbSampler, DUv" + J +
+                 ").rgb, float3(0.2126, 0.7152, 0.0722));\n";
+            h += In + "float3 DNm" + J + " = UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUv" + J + ")).xyz;\n";
+            // The tile's slope (du, dv) turned back to the world: the transpose of the sample's turn.
+            h += In + "float2 DGt" + J + " = float2(-DNm" + J + ".x, DNm" + J + ".y) / max(DNm" + J + ".z, 0.2);\n";
+            h += In + "DSg += HxWt" + J + " * float2(HxC" + J + " * DGt" + J + ".x + HxSn" + J + " * DGt" + J + ".y, -HxSn" + J +
+                 " * DGt" + J + ".x + HxC" + J + " * DGt" + J + ".y);\n";
+            h += In + "float3 DRa" + J + " = Texture2DSample(DetRA, DetRASampler, DUv" + J + ").rgb;\n";
+            h += In + "DRr += HxWt" + J + " * DRa" + J + ".r;\n";
+            h += In + "DAo += HxWt" + J + " * DRa" + J + ".g;\n";
+            h += In + "DTop += HxWt" + J + " * DRa" + J + ".b;\n";
+        }
+        if (hexFade) {
+            h += "\t\t}\n";
+            // The far read: straight on the plan, so its slope needs no turn back.
+            h += "\t\t[branch] if (HxFar > 0.0)\n\t\t{\n";
+            h += "\t\t\tDLr += HxFar * dot(Texture2DSample(DetAlb, DetAlbSampler, DUvF).rgb, float3(0.2126, 0.7152, 0.0722));\n";
+            h += "\t\t\tfloat3 DNmF = UnpackNormalMap(Texture2DSample(DetNrm, DetNrmSampler, DUvF)).xyz;\n";
+            h += "\t\t\tDSg += HxFar * float2(-DNmF.x, DNmF.y) / max(DNmF.z, 0.2);\n";
+            h += "\t\t\tfloat3 DRaF = Texture2DSample(DetRA, DetRASampler, DUvF).rgb;\n";
+            h += "\t\t\tDRr += HxFar * DRaF.r;\n";
+            h += "\t\t\tDAo += HxFar * DRaF.g;\n";
+            h += "\t\t\tDTop += HxFar * DRaF.b;\n";
+            h += "\t\t}\n";
+        }
+        h += "\t\tDLr = max(1.0 + (DLr / " + num(st.detailAlbedoMean) + " - 1.0) * HxVar, 0.0);\n";
+        h += "\t\tTone *= lerp(1.0, DLr, " + num(st.detailTone) + ");\n";
+        h += "\t\tSlopeW += DSg * HxVar * " + num(st.detailSlope) + ";\n";
+        h += "\t\tDRr = max(1.0 + (DRr / " + num(st.detailRoughMean) + " - 1.0) * HxVar, 0.0);\n";
+        h += "\t\tRoughMul *= lerp(1.0, DRr, " + num(st.detailRough) + ");\n";
+        h += "\t\tDetAO = lerp(1.0, DAo, " + num(st.detailAO) + ");\n";
+    } else if (detail) {
         // The baked tile on the world's plan (image-down along world +y): albedo ratio to its mean, true slope from a
         // DirectX map (x = -dh/du, y = +dh/dv), roughness ratio and cavity AO. Texture2DSample, so a ray-tracing hit
         // takes its mip from the ray cone.
@@ -403,8 +453,9 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tif (Tilted)\n\t\t{\n";
     h += "\t\t\tfloat EdgeBand = smoothstep(0.3, 0.45, GutD) * (1.0 - smoothstep(0.8, 1.0, GutD)) + (1.0 - smoothstep(0.0, 0.4, Sy - GutD));\n";
     h += "\t\t\tTone *= 1.0 + " + num(st.wornEdge) + " * EdgeBand;\n";
-    h += "\t\t\tRoughMul *= 1.0 - " + num(st.gutterDampPolish) + " * (1.0 - smoothstep(" + num(st.gutterDampM * 0.6f) + ", " +
-         num(st.gutterDampM) + ", GutD));\n";
+    h += "\t\t\tfloat Damp = 1.0 - smoothstep(" + num(st.gutterDampM * 0.6f) + ", " + num(st.gutterDampM) + ", GutD);\n";
+    h += "\t\t\tRoughMul *= 1.0 - " + num(st.gutterDampPolish) + " * Damp;\n";
+    h += "\t\t\tAsWheel = Damp;\n";  // the damp strip keeps its sheen past the matt clamp, as a wheel band does
     // Kerb litter: pale silt drifted against the kerb, and blossom petals (one at most a cell, an ellipse turned at
     // random, fresh pink or aged brown); far off, their mean cover.
     h += "\t\t\tfloat LitB = 1.0 - smoothstep(0.0, " + num(st.litterM) + ", GutD);\n";
@@ -436,7 +487,11 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Joint = (1.0 - smoothstep(JW, JW + Foot, JD)) * saturate(2.0 * JW / (2.0 * JW + Foot));\n";
     // Sealed cracks (tar, wide enough to hold from 20 m) and open hairlines (dark, near only).
     h += "\t\tfloat CrackV = SNz.N(Pw / " + num(st.crackScaleM) + " + 41.0);\n";
-    h += "\t\tfloat CrackGate = smoothstep(0.5, 0.62, SNz.N(Pw / " + num(st.crackScaleM * 3.f) + " + 3.1));\n";
+    // Street class: side lanes more cracked than a main road (the gate's threshold lowered by 0.08 per doubling).
+    h += "\t\tfloat CrackCls = Wd <= 0.0 ? 1.0 : lerp(" + num(st.crackSideMul) + ", " + num(st.crackMainMul) + ", smoothstep(" +
+         num(st.sideLaneM) + ", " + num(st.mainRoadM) + ", Wd));\n";
+    h += "\t\tfloat CrackLo = 0.5 - 0.08 * log2(CrackCls);\n";
+    h += "\t\tfloat CrackGate = smoothstep(CrackLo, CrackLo + 0.12, SNz.N(Pw / " + num(st.crackScaleM * 3.f) + " + 3.1));\n";
     h += "\t\tfloat CrackF = Foot / " + num(st.crackScaleM) + ";\n";
     h += "\t\tfloat Crack = (1.0 - smoothstep(0.006, 0.006 + CrackF, abs(CrackV - 0.5))) * saturate(0.012 / (0.012 + CrackF)) * CrackGate;\n";
     h += "\t\tfloat HairV = SNz.N(Pw / 0.9 + 77.0);\n";
@@ -446,6 +501,8 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\t\tfloat Seal = max(Joint, Crack);\n";
     h += "\t\tTone *= lerp(1.0, " + num(st.sealDarken) + ", Seal) * (1.0 - 0.6 * Hair);\n";
     h += "\t\tRoughMul *= lerp(1.0, 0.75, Seal) * (1.0 + 0.2 * Hair);\n";
+    h += "\t\tAsWheel = saturate(max(AsWheel, Wheel));\n";
+    h += "\t\tAsSeal = Seal;\n";
     h += "\t}\n";
     // Footways: grey concrete pavers in running bond along the run, sanded joints, per-paver tone, grime and gum, and
     // pavers that soak unevenly (the wet gloss breaks up paver by paver).
@@ -616,6 +673,16 @@ void streetHlsl(std::string& h, const SurfaceWeatherSpec& spec, const StreetSurf
     h += "\tAlb *= Tone;\n";
     h += "\tRgh = saturate(Rgh * RoughMul);\n";
     h += "\tRgh = lerp(Rgh, " + num(st.wheelTopRough) + ", saturate(PolishTop));\n";
+    // The asphalt's final range: one material in sun and shade, so no term may push the binder pale or the stone tips
+    // cream (luminance clamped, hue kept); matt off the wheel paths, a little polished in the bands (more on the stone
+    // peaks), tar seal glossy. Before the litter (petals keep their own colour) and the weather.
+    h += "\tif (SK == 1)\n\t{\n";
+    h += "\t\tfloat AsL = dot(Alb, float3(0.2126, 0.7152, 0.0722));\n";
+    h += "\t\tAlb *= clamp(AsL, " + num(st.asphaltAlbedoLo) + ", " + num(st.asphaltAlbedoHi) + ") / max(AsL, 1e-4);\n";
+    h += "\t\tfloat AsR = clamp(Rgh, " + num(st.asphaltRoughLo) + ", " + num(st.asphaltRoughHi) + ");\n";
+    h += "\t\tAsR = lerp(AsR, lerp(" + num(st.wheelBandRough) + ", " + num(st.wheelBandRoughTop) + ", saturate(PolishTop / max(AsWheel, 1e-3))), AsWheel);\n";
+    h += "\t\tRgh = lerp(AsR, " + num(st.sealRough) + ", saturate(AsSeal));\n";
+    h += "\t}\n";
     h += "\tAlb = lerp(Alb, LitC, LitW);\n";
     h += "\tRgh = lerp(Rgh, 0.7, LitW);\n";
     if (relief) h += "\tRgh = lerp(Rgh, max(Rgh, RlRw), RlC);\n";
@@ -820,6 +887,55 @@ float streetNoise(float x, float y) {
 const char* streetLatticeHlsl() {
     return "float L(int2 c) { uint h = (uint(c.x) * 73856093u) ^ (uint(c.y) * 19349663u); h ^= h >> 13; h *= 1274126177u; "
            "h ^= h >> 16; return float(h & 0xFFFFFFu) / 16777215.0; }";
+}
+
+float streetCrackClass(float widthM, const StreetSurfaceSpec& st) {
+    if (!(widthM > 0.0f)) return 1.0f;
+    return lerp(st.crackSideMul, st.crackMainMul, smoothstep(st.sideLaneM, st.mainRoadM, widthM));
+}
+
+std::string streetHexUvHlsl(const StreetSurfaceSpec& st, const std::string& noise, const std::string& indent,
+                            const std::string& distM) {
+    // The tile read three times on a triangular lattice of detailHexM (see the street layer's tile branch).
+    const std::string& I = indent;
+    const bool fade = !distM.empty() && st.detailHexFarM > 0.0f;
+    std::string h;
+    h += I + "float2 DP = Pw / " + num(st.detailTileM) + ";\n";
+    h += I + "float2 HxP = Pw / " + num(st.detailHexM) + ";\n";
+    h += I + "float2 HxS = float2(HxP.x - 0.57735027 * HxP.y, 1.15470054 * HxP.y);\n";
+    h += I + "float2 HxFl = floor(HxS);\n";
+    h += I + "int2 HxB = int2(HxFl);\n";
+    h += I + "float2 HxF = HxS - HxFl;\n";
+    h += I + "float HxZ = 1.0 - HxF.x - HxF.y;\n";
+    h += I + "float HxU = step(HxZ, 0.0);\n";  // 1 in the rhombus's upper triangle
+    h += I + "int HxK = HxB.x + 2 * HxB.y;\n";
+    h += I + "HxK -= 3 * int(floor(float(HxK) / 3.0));\n";
+    // Weights of the triangle's vertices by their place: the corner (base or base + (1,1)), base + (1,0), base + (0,1).
+    h += I + "float3 HxW = float3(abs(HxZ), lerp(HxF.x, 1.0 - HxF.y, HxU), lerp(HxF.y, 1.0 - HxF.x, HxU));\n";
+    h += I + "HxW = pow(max(HxW, 0.0), " + num(st.detailHexSharp) + ");\n";
+    h += I + "HxW /= max(HxW.x + HxW.y + HxW.z, 1e-5);\n";
+    h += I + "float HxVar = clamp(rsqrt(max(dot(HxW, HxW), 1e-4)), 1.0, 1.7320508);\n";
+    for (int j = 0; j < 3; ++j) {
+        const std::string J = std::to_string(j);
+        h += I + "int HxR" + J + " = (" + J + " - HxK + 3) % 3;\n";
+        h += I + "int2 HxV" + J + " = HxB + (HxR" + J + " == 0 ? int2(int(HxU), int(HxU)) : (HxR" + J +
+             " == 1 ? int2(1, 0) : int2(0, 1)));\n";
+        h += I + "float HxWt" + J + " = HxR" + J + " == 0 ? HxW.x : (HxR" + J + " == 1 ? HxW.y : HxW.z);\n";
+        h += I + "float HxA" + J + " = " + num(6.2831853f * st.detailHexTurn) + " * " + noise + ".L(HxV" + J + " + int2(13, 97));\n";
+        h += I + "float HxC" + J + " = cos(HxA" + J + ");\n" + I + "float HxSn" + J + " = sin(HxA" + J + ");\n";
+        h += I + "float2 DUv" + J + " = float2(HxC" + J + " * DP.x - HxSn" + J + " * DP.y, HxSn" + J + " * DP.x + HxC" + J +
+             " * DP.y) + float2(" + noise + ".L(HxV" + J + "), " + noise + ".L(HxV" + J + " + int2(71, 29)));\n";
+    }
+    if (fade) {
+        // Far off, one straight read (the header's note): the blend on the camera distance, the weights scaled by it.
+        h += I + "float HxNear = 1.0 - smoothstep(" + num(st.detailHexFarM * 0.8f) + ", " + num(st.detailHexFarM) + ", " + distM +
+             ");\n";
+        h += I + "float HxFar = 1.0 - HxNear;\n";
+        h += I + "float2 DUvF = DP;\n";
+        h += I + "HxWt0 *= HxNear;\n" + I + "HxWt1 *= HxNear;\n" + I + "HxWt2 *= HxNear;\n";
+        h += I + "HxVar = lerp(1.0, HxVar, HxNear);\n";
+    }
+    return h;
 }
 
 std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeatherOptions& options,

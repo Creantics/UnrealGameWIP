@@ -19,6 +19,9 @@
 //
 // -LampPoolLamps=<n> and -LampPoolShops=<n> shrink the pool (never past kMaxLamps, kMaxShops); -LampPoolRadius=<m>
 // sets the reach.
+//
+// Dev only, default off: -LampShadows=<n> casts shadows from the n lamps nearest the camera (the pick's order), and
+// -LampShadows=all (or a bare -LampShadows) from every pooled lamp; shop lights never cast. For the lamp-shadow trial.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -92,6 +95,7 @@ private:
 	float ReachCm = kReachMetres * 100.f;
 	float LampCandelaOverride = 0.f, LampReachOverride = 0.f, ShopCandelaOverride = 0.f, ShopReachOverride = 0.f;
 	float SincePick = 0.f;
+	int32 ShadowLamps = 0; // -LampShadows: 0 none, a count of the nearest, or kMaxLamps for all
 	bool bActive = false;
 	bool bForced = false;
 	bool bPoolMade = false;

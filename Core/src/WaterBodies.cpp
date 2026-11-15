@@ -93,6 +93,12 @@ float WaterBody::bedAt(Vec2 p) const {
     return level - waterSectionDepth(fromWall, level - shelfBed, shelf, batter, level - bed);
 }
 
+bool WaterBody::divesAt(Vec2 p) const {
+    if (!swimDeep || !covers(p)) return false;
+    if (!hasDiveArea) return true;
+    return p.x >= diveMin.x && p.x <= diveMax.x && p.y >= diveMin.y && p.y <= diveMax.y;
+}
+
 WaterBody waterBodyFromCanal(const RoadWater& canal) {
     WaterBody body;
     body.kind = WaterKind::Canal;
@@ -147,6 +153,9 @@ WaterBody waterBodyToEngine(const WaterBody& planBody, float side) {
     body.sinYaw = -planBody.sinYaw; // y turned over: an angle turns the other way
     body.flow.y = -planBody.flow.y;
     for (std::size_t i = 0; i < planBody.pointCount; ++i) body.points[i] = point(planBody.points[i]);
+    // The dive area's corners: y turned over swaps which is the low one.
+    body.diveMin = {planBody.diveMin.x - side * 0.5f, side * 0.5f - planBody.diveMax.y};
+    body.diveMax = {planBody.diveMax.x - side * 0.5f, side * 0.5f - planBody.diveMin.y};
     return body;
 }
 
@@ -165,6 +174,10 @@ bool WaterBodies::add(const WaterBody& body) {
     }
     if (!std::isfinite(body.shelfBed) || !std::isfinite(body.shelf) || !std::isfinite(body.batter) || body.shelf < 0.f ||
         body.batter < 0.f)
+        return false;
+    // A dive area is a real box: finite corners, min under max on both axes.
+    if (body.hasDiveArea && !(std::isfinite(body.diveMin.x) && std::isfinite(body.diveMin.y) && std::isfinite(body.diveMax.x) &&
+                              std::isfinite(body.diveMax.y) && body.diveMin.x < body.diveMax.x && body.diveMin.y < body.diveMax.y))
         return false;
     const float axis = std::hypot(body.cosYaw, body.sinYaw);
     if (!(axis > 0.f)) return false;
@@ -304,6 +317,41 @@ WaterCamera WaterBodies::camera(Vec2 p, float z, float t, float margin) const {
         }
     }
     return cam;
+}
+
+WaterDive WaterBodies::dive(Vec2 p) const {
+    WaterDive d;
+    d.body = bodyAt(p);
+    if (d.body < 0) return d;
+    const WaterBody& b = bodies_[static_cast<std::size_t>(d.body)];
+    if (!b.swimDeep) return d;
+    d.allowed = b.divesAt(p);
+    if (b.hasDiveArea) {
+        struct Side {
+            float inside; // m in from this side (negative past it)
+            Vec2 inward;
+            Vec2 past;    // a point kWaterDiveSideProbe m past the side's middle
+        };
+        const float midX = (b.diveMin.x + b.diveMax.x) * 0.5f;
+        const float midY = (b.diveMin.y + b.diveMax.y) * 0.5f;
+        const Side sides[4] = {
+            {p.x - b.diveMin.x, {1.f, 0.f}, {b.diveMin.x - kWaterDiveSideProbe, midY}},
+            {b.diveMax.x - p.x, {-1.f, 0.f}, {b.diveMax.x + kWaterDiveSideProbe, midY}},
+            {p.y - b.diveMin.y, {0.f, 1.f}, {midX, b.diveMin.y - kWaterDiveSideProbe}},
+            {b.diveMax.y - p.y, {0.f, -1.f}, {midX, b.diveMax.y + kWaterDiveSideProbe}},
+        };
+        for (const Side& s : sides) {
+            if (!b.covers(s.past)) continue; // a wall or a bank: the swimmer is stopped there, not pushed
+            if (s.inside < d.edgeDistance) {
+                d.edgeDistance = s.inside;
+                d.edgeInward = s.inward;
+            }
+        }
+    } else if (b.shape == WaterShape::HalfPlane && b.buoyLine > 0.f) {
+        d.edgeDistance = b.buoyLine - b.out(p);
+        d.edgeInward = {-b.cosYaw, -b.sinYaw};
+    }
+    return d;
 }
 
 float waterWadeFactor(float depth) {

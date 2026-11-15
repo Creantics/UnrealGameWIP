@@ -26,6 +26,8 @@
 //     (roadCanalBuild) lays its floor by the same function.
 //   - The ways out of a canal (WaterExit: a ladder or a flight of steps on a wall, from the road net's canal rows) are
 //     kept with the bodies; nearestExit finds the one to make for or to climb.
+//   - A body may be dived in (swimDeep) inside its dive area; dive() gives the free swim (ftcore::Swim) whether a dive
+//     is allowed and the outer edge that pushes a swimmer back under water.
 //
 // One frame throughout (the caller's: plan or engine), metres and seconds. waterBodyToEngine takes a body from the plan
 // frame to the engine's (y turned over). Nothing here allocates.
@@ -101,6 +103,12 @@ struct WaterBody {
     float buoyLine = 0.f; // m out from a half-plane's edge where the current back begins; 0: none
     std::uint8_t pointCount = 0;
     std::array<Vec2, kWaterMaxPoints> points{};
+    // Free swim under water (ftcore::Swim): a dive is allowed where swimDeep is set and p lies in the dive area, a box
+    // along the frame's axes (diveMin..diveMax, its edge included; hasDiveArea false: the whole body). The column a
+    // dive needs (kSwimDeepMin) is Swim's to check, not the body's.
+    bool swimDeep = false;
+    bool hasDiveArea = false;
+    Vec2 diveMin{}, diveMax{};
 
     // Whether p lies in the footprint (its edge included).
     FTCORE_API bool covers(Vec2 p) const;
@@ -108,6 +116,19 @@ struct WaterBody {
     FTCORE_API float out(Vec2 p) const;
     // The bed under p (its section; `bed` for the other shapes and outside the footprint).
     FTCORE_API float bedAt(Vec2 p) const;
+    // Whether a dive is allowed at p: swimDeep, p in the footprint and in the dive area (the whole body without one).
+    FTCORE_API bool divesAt(Vec2 p) const;
+};
+
+inline constexpr float kWaterDiveSideProbe = 1.f; // m past a dive area's side where open water makes it an outer edge
+
+// The free swim's view of the water at p (WaterBodies::dive): whether a dive is allowed, and the outer edge under
+// water that pushes a swimmer back (Swim's edgeDistance and edgeInward).
+struct WaterDive {
+    int body = -1;               // the body that is the water at p, -1: none
+    bool allowed = false;        // that body's divesAt(p)
+    float edgeDistance = 1.0e9f; // m inside the outer edge (0 or less: at or past it); 1e9: no edge
+    Vec2 edgeInward{};           // unit, horizontal, back into the basin; zero: no edge
 };
 
 enum class WaterExitKind : std::uint8_t { Ladder, Steps };
@@ -195,6 +216,11 @@ public:
     // An eye at (p, z): under when a body covers p, z is below its surface plus `margin` and not under its bed. Of
     // several, the one it is deepest in.
     FTCORE_API WaterCamera camera(Vec2 p, float z, float t, float margin = 0.f) const;
+    // The free swim at p in the body that is the water there (bodyAt). Only a swimDeep body has an outer edge: its dive
+    // area's sides with open water past them (kWaterDiveSideProbe m out still in the body; a side on a wall or a bank
+    // pushes nothing, the wall stops the swimmer), the nearest of them; for a half-plane with no dive area, its buoy
+    // line. Past a side (left the area under water) the distance is negative and the push full: Swim never ejects.
+    FTCORE_API WaterDive dive(Vec2 p) const;
 
 private:
     std::size_t count_ = 0;

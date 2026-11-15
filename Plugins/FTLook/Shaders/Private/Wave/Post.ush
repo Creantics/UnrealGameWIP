@@ -122,6 +122,8 @@ static const float kFTWaveTrueSkyDepth = 1e7;
 // 1: the pass shows its working instead (r the second world's share, g log10 of the depth / 10, b the composed light's
 // lens and the true sky's deck).
 #define FT_WAVE_DEBUG 0
+// The custom stencil value of the post's catch-all (FTWorldWave::kCatchStencil, the same number).
+static const float kFTWaveCatchStencil = 223.0;
 
 // The scene colour at a viewport UV.
 float3 FTWaveScene(float2 vuv)
@@ -234,11 +236,40 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 	}
 	// An interleaved-gradient dither stepped each frame: the pass runs before depth of field, so the temporal upscaler
 	// after it resolves the steps into a smooth volume instead of a fixed speckle.
-	float2 jp = pix + 5.588238 * float(View.StateFrameIndexMod8);
-	float jitter = frac(52.9829189 * frac(0.06711056 * jp.x + 0.00583715 * jp.y));
+	// The pattern stays put and each pixel's offset steps by the golden ratio a frame, so every pixel runs evenly through
+	// its offsets (shifting the pattern itself left a faint diagonal mesh in the plumes' thin filaments).
+	float jitter = frac(frac(52.9829189 * frac(0.06711056 * pix.x + 0.00583715 * pix.y))
+		+ 0.618034 * float(View.StateFrameIndex & 1023u));
 	// Once the front has run on past the eye it thins out: 8 m beyond it the ink starts to go, 25 m beyond it is gone, so
 	// the leaving front does not stand as a black hedge along the sea's horizon in the settled view.
 	float recede = 1.0 - smoothstep(800.0, 2500.0, r - length(o3));
+	// The height band the ink can fill (FTWaveInkSigma's shell keeps to h < 450): the stretch of the ray within 450 cm
+	// over the street's ground, and the last 450/cosN cm before the surface it meets. The march keeps to that band's hull,
+	// so its steps go where the ink can be; the prelude's drop at the origin fills a ball, so it marches the whole shell.
+	float bandLo = -1e9;
+	float bandHi = 1e9;
+	if (rBall <= 0.0)
+	{
+		bandLo = 1e9;
+		bandHi = -1e9;
+		if (abs(rd.z) > 1e-4)
+		{
+			float tG = (ground - camPos.z) / rd.z;
+			float tTop = (ground + 450.0 - camPos.z) / rd.z;
+			bandLo = min(tG, tTop);
+			bandHi = max(tG, tTop);
+		}
+		else if (camPos.z >= ground && camPos.z < ground + 450.0)
+		{
+			bandLo = -1e9;
+			bandHi = 1e9;
+		}
+		if (!sky)
+		{
+			bandLo = min(bandLo, rayLen - 450.0 / cosN);
+			bandHi = max(bandHi, rayLen);
+		}
+	}
 	float T = 1.0;
 	float3 L = float3(0.0, 0.0, 0.0);
 	[unroll]
@@ -247,10 +278,16 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 		float2 seg = k == 0 ? segA : segB;
 		float a = max(seg.x, 0.0);
 		float b = min(seg.y, rayLen);
+		// The per-ray shape is taken on the whole piece of shell, before the band trims it (only for a piece the march walks).
+		float mid = 0.5 * (a + b);
+		a = max(a, bandLo);
+		b = min(b, bandHi);
 		if (b > a && T > 0.02)
 		{
-			float shape = W.VNoise3((camPos + rd * (0.5 * (a + b))) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
-			int steps = int(clamp((b - a) / 45.0, 4.0, 10.0));
+			float shape = W.VNoise3((camPos + rd * mid) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
+			// Steps of about 25 cm: under the core's 40-110 cm height and 40-100 cm thickness, so no step steps over it
+			// (longer steps left it as a dither the temporal upscaler couldn't fill in, a screen-door hatch in the band).
+			int steps = int(clamp(ceil((b - a) / 25.0), 4.0, 64.0));
 			float ds = (b - a) / float(steps);
 			[loop]
 			for (int i = 0; i < steps; ++i)
@@ -282,7 +319,8 @@ float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, flo
 }
 
 // Front A behind the core: the pigment dispersing, grey veils over the new world for 0.5-0.8 s after the edge passed, in
-// slow world-space billows. Returns the veil's share at a scene point (or the sky's crossing).
+// slow world-space billows. Returns the veil's share at a scene point (or the sky's crossing): 0.2 in the billows' gaps
+// to 0.6 in their cores at the peak, so no patch is ever veiled flat.
 float FTWaveVeil(float tau, float3 p, float t)
 {
 	if (tau <= 0.0 || tau > 0.85)
@@ -298,7 +336,7 @@ float FTWaveVeil(float tau, float3 p, float t)
 	float3 q2 = mul(turn, q1 * 2.1) + float3(0.5 * t, 0.0, 0.0);
 	float billow = 0.55 * W.VNoise3(q0 + warp * 1.2, 89u) + 0.3 * W.VNoise3(q1, 90u) + 0.15 * W.VNoise3(q2, 87u);
 	float life = lerp(0.5, 0.8, billow);
-	return 0.7 * smoothstep(0.0, 0.06, tau) * (1.0 - smoothstep(0.15, life, tau)) * smoothstep(0.1, 0.85, billow + 0.1);
+	return smoothstep(0.0, 0.06, tau) * (1.0 - smoothstep(0.15, life, tau)) * lerp(0.2, 0.6, smoothstep(0.15, 0.85, billow));
 }
 
 // Front B: one level of blots, cells S wide round plane point q (cm on a surface's own plane, or pixels on the sky).
@@ -399,7 +437,8 @@ float4 FTWaveBlots(float s, float2 q, float cmPerPx, float pxScale, bool sky, fl
 // the front's own look by WOrigin.w. src: the scene colour; rawDepth: SceneDepth (cm); sceneNormal: the world normal.
 float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float rawDepth, float3 sceneNormal, float3 WorldPos,
 	float3 CamPos, float4 WOrigin, float4 WOriginScreen, float4 WFoot, float4 WTip, float WRadius, float WBand, float WPrelude,
-	float WDirection, float WTime, float WGround, float4 WGain, float4 WKeep0, float SkyDepth)
+	float WDirection, float WTime, float WGround, float4 WGain, float4 WKeep0, float SkyDepth, float customDepth,
+	float customStencil)
 {
 	FTWaveFns W;
 	float2 pix = GetPixelPosition(Parameters);
@@ -568,6 +607,22 @@ float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float raw
 		src = lerp(src, blot.rgb, blot.a);
 	}
 
+	// The catch-all: a worn piece whose master takes no character state (stencil kFTWaveCatchStencil from the audit) gets
+	// it here, by the same share m: near grey, half the light (the base's 0.5 and the grime's mean), and for front A the
+	// thin matt line at the cut. Every worn piece of an audited character renders custom depth (wave-aware ones with 222),
+	// so the custom depth buffer holds the nearest worn surface: cloth over skin reads 222 and is left to its own
+	// material. The depth test only rejects what is not that character (a wall or prop in front): 1 cm or 0.05%.
+	if (!sky && m > 0.0 && abs(customStencil - kFTWaveCatchStencil) < 0.5 && abs(customDepth - rawDepth) < max(1.0, 0.0005 * rawDepth))
+	{
+		float lumC = dot(src, FTWaveLuma);
+		float3 state = lerp(lumC.xxx, src, 0.07) * float3(0.97, 0.99, 1.03) * (0.5 * 0.875);
+		src = lerp(src, state, saturate(m));
+		if (style == 1 && r > 0.0)
+		{
+			src *= lerp(1.0, 0.1, 1.0 - smoothstep(0.4, 0.7, abs(ahead)));
+		}
+	}
+
 	float3 c = FTWaveGrade(src, m, gains, fog, fogLum);
 
 	// The composed light (WKeep0: xyz cm, w the lens's radius cm): the one lamp left burning in the second world, weak
@@ -624,7 +679,11 @@ float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float raw
 			float tauV = FTWaveSince(-vAhead);
 			float3 vp = sky ? CamPos + rd * 2500.0 : WorldPos;
 			float veil = FTWaveVeil(tauV, vp, WTime) * (sky ? 0.5 * smoothstep(0.0, 0.3, tauV) : 1.0);
-			c = lerp(c, fogLum * 0.35 * float3(0.92, 0.96, 1.0), veil);
+			// The pigment greys and darkens the pixel's own colour (60% toward its own luminance, cool, times 0.7) and never
+			// lifts it toward a tone of its own: a grey taken from the frame, still mostly the sunlit first world just after
+			// the edge, turned dark cloth to flat pale plaster. Linear in c, so the surface's shading and texture stay.
+			float lumV = dot(c, float3(0.2126, 0.7152, 0.0722));
+			c = lerp(c, lerp(c, lumV * float3(0.92, 0.96, 1.0), 0.6) * 0.7, veil);
 		}
 		// The ink itself, in the volume: the drop at the origin through the prelude (a black bloom 8 to 45 cm), then the
 		// core and its plumes on the front. Near things are swallowed before far ones: the march stops at the scene.

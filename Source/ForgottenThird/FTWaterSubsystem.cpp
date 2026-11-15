@@ -65,6 +65,10 @@ FFTWaterBodyRow FFTWaterBodyRow::From(const ftcore::WaterBody& Body)
 	{
 		Row.Points.Add(FVector2D(Body.points[I].x, Body.points[I].y));
 	}
+	Row.bSwimDeep = Body.swimDeep;
+	Row.bHasDiveArea = Body.hasDiveArea;
+	Row.DiveMin = FVector2D(Body.diveMin.x, Body.diveMin.y);
+	Row.DiveMax = FVector2D(Body.diveMax.x, Body.diveMax.y);
 	return Row;
 }
 
@@ -91,6 +95,10 @@ ftcore::WaterBody FFTWaterBodyRow::ToBody() const
 	{
 		Body.points[static_cast<std::size_t>(I)] = {static_cast<float>(Points[I].X), static_cast<float>(Points[I].Y)};
 	}
+	Body.swimDeep = bSwimDeep;
+	Body.hasDiveArea = bHasDiveArea;
+	Body.diveMin = {static_cast<float>(DiveMin.X), static_cast<float>(DiveMin.Y)};
+	Body.diveMax = {static_cast<float>(DiveMax.X), static_cast<float>(DiveMax.Y)};
 	return Body;
 }
 

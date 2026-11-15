@@ -213,8 +213,22 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
                              "return C;", "C = lerp(Under, C, Blend);", "WSoak", "Kd == 6", "Kd == 7", "Kd == 10", "Kd == 11",
                              "NormalOut = Nrm;", "AxisX", "AxisY", "VN", "KindAll >= 16;",
                              "Mask = max(Body * Left, Spray) * (1.0 - Crack);",
-                             // The paint reads the road's own tile at the same place (exposed tops, cavity), else means.
-                             "HasDetail > 0.5 ? Texture2DSample(DetRA, DetRASampler, Pw / 1.000000).rgb", "float LE = Edge - 0.012000;",
+                             // The paint reads the road's own tile at the same place through the road's hex UVs (stone
+                             // peaks, cavity), else the tile's means.
+                             "float3 Tl = float3(0.8920, 0.9120, 0.2350);", "if (HasDetail > 0.5)",
+                             "Tl += HxWt0 * Texture2DSample(DetRA, DetRASampler, DUv0).rgb + HxWt1 *",
+                             // ... fading to one straight read far off on the camera distance, as the road does.
+                             "float HxCamM = length(CamPos - WorldPos.xyz) / 100.0;",
+                             "float HxNear = 1.0 - smoothstep(24.0, 30.0, HxCamM);", "[branch] if (HxNear > 0.0)",
+                             "[branch] if (HxFar > 0.0)", "Tl += HxFar * Texture2DSample(DetRA, DetRASampler, DUvF).rgb;",
+                             "float HxA0 = ", "D.L(HxV0 + int2(13, 97))", "float LE = Edge - 0.012000;",
+                             // The road's stand-in under the soft kinds is the asphalt tint, matt.
+                             "float3(0.093, 0.092, 0.09);", "float UnderR = Paved ? 0.8 : 0.88;",
+                             // Sealed cracks and a cut patch's seal: black and glossy; alligator cracking on wide plates.
+                             "R = 0.35;", "R = lerp(Newer ? 0.8 : 0.9, 0.35, Seal);", "if (Size.y >= 0.55 * Size.x)",
+                             "float Net = 1.0 - smoothstep(0.03, 0.07, F2 - F1);",
+                             // The paint's own cracks sparse (one per 1.5 m cell at most): no transverse seams.
+                             "float Lc = floor(Lo / 1.5);",
                              // A cut patch: square edge, tar seal all round.
                              "bool Cut = Pick < 0.85;", "Mask = 0.5 + In * 400.0;"}) {
         CHECK_MESSAGE(std::strstr(code, name) != nullptr, name);
@@ -223,7 +237,10 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
     CHECK(std::strstr(code, "Pw / 0.05 + 9.0") == nullptr);
     CHECK(std::strstr(code, "Pw / 0.03 + 2.0") == nullptr);
     // Spliced once: the gutter width and the street numbers are numbers, and the same pointer comes back.
-    for (const char* key : {"GUTTER_M", "PAVED_K", "LANE_M", "WHEEL_OFF_M", "CRACK_M", "PAINT_PAD", "DETAIL_M", "LATTICE_FN"}) {
+    CHECK(std::strstr(code, "Pw / 1.000000).rgb") == nullptr);  // no straight read: the hex one
+    CHECK(std::strstr(code, "Lo / 0.3") == nullptr);
+    for (const char* key : {"GUTTER_M", "PAVED_K", "LANE_M", "WHEEL_OFF_M", "CRACK_M", "PAINT_PAD", "DETAIL_M", "LATTICE_FN",
+                            "HEX_RA", "TILE_MEANS"}) {
         CHECK_MESSAGE(std::strstr(code, key) == nullptr, key);
     }
     // The noise's corners are the street layer's integer lattice hash (no torn cell edges), matching the road under it.
@@ -232,6 +249,50 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
     // The paint's crack field is the surface master's, cell for cell.
     CHECK(std::strstr(code, "D.N(Pw / 3.000000 + 41.0)") != nullptr);
     CHECK(roadDecalHlsl() == code);
+}
+
+TEST_CASE("road decals: street class sets crack and patch density; a third of asphalt cracks are alligator plates") {
+    // One long slab each: a 3 m side lane and an 8 m main-road half, the same area (so the same draws per m2).
+    auto slabOf = [](double wide, double length) {
+        RoadSolid s;
+        s.shape = RoadShape::Cube;
+        s.box.kind = "asphalt";
+        s.box.sx = length;
+        s.box.sy = wide;
+        s.box.z0 = 3.9;
+        s.box.z1 = 4.0;
+        return s;
+    };
+    RoadDecalSpec spec;
+    spec.density = 4.0;
+    std::size_t side = 0, mainRd = 0, alligator = 0, single = 0;
+    for (int k = 0; k < 6; ++k) {
+        const RoadSolid a[] = {slabOf(3.0, 160.0 + k)};
+        const RoadSolid b[] = {slabOf(8.0, 60.0 + 0.375 * k)};
+        std::vector<RoadDecal> oa, ob;
+        RoadDecalCounts ca, cb;
+        roadDecals(a, 1, spec, oa, ca);
+        roadDecals(b, 1, spec, ob, cb);
+        for (const std::vector<RoadDecal>* v : {&oa, &ob}) {
+            for (const RoadDecal& d : *v) {
+                if (d.kind == RoadDecalKind::Crack || d.kind == RoadDecalKind::Patch) ++(v == &oa ? side : mainRd);
+                if (d.kind != RoadDecalKind::Crack) continue;
+                // Never ambiguous: a single crack is at most half as wide as long, alligator at least 0.55.
+                CHECK((d.sy <= 0.5 * d.sx + 1e-9 || d.sy >= 0.55 * d.sx));
+                ++(d.sy >= 0.55 * d.sx ? alligator : single);
+            }
+        }
+    }
+    // Same area: the side lane gets about 2 / 0.7 times the main road's.
+    CHECK(side > 2 * mainRd);
+    CHECK(alligator > 0);
+    CHECK(single > alligator);
+    StreetSurfaceSpec st;
+    CHECK(streetCrackClass(0.0f, st) == doctest::Approx(1.0f));
+    CHECK(streetCrackClass(3.0f, st) == doctest::Approx(st.crackSideMul));
+    CHECK(streetCrackClass(8.0f, st) == doctest::Approx(st.crackMainMul));
+    CHECK(streetCrackClass(4.5f, st) < st.crackSideMul);
+    CHECK(streetCrackClass(4.5f, st) > st.crackMainMul);
 }
 
 TEST_CASE("road decals: bays get oil, gutters get drains, street kinds by tint") {
