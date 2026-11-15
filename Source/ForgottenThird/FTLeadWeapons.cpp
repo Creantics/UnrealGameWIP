@@ -839,7 +839,7 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 	}
 }
 
-double FFTLeadWeapons::FlightOf(const ftcore::ArenaFighterDef& Kit, uint8 Move)
+double FFTLeadWeapons::FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move)
 {
 	switch (Kit.weapon)
 	{
