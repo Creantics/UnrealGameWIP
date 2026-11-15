@@ -125,8 +125,10 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     // the regular break-out came to count weight: the default fighter's third light (22 poise) weighs 2.2, so the
     // breaker (seeds 1-3) counts one more upright blow, the duelist (seeds 1-3) breaks out sooner (10.3 s to 8.8 s)
     // and the hulk (seed 2) breaks out once where it broke out never (16.6 s to 15.5 s). No
-    // fight here steps back or starts unseen (one enemy, one token, the autopilot facing it).
-    CHECK(h.h == 5845169181718845176ull);
+    // fight here steps back or starts unseen (one enemy, one token, the autopilot facing it). Re-measured for the
+    // paired counter's 3 s cooldown (rule b): the autopilot pairs every parry, so a second pair inside 3 s is refused
+    // and those fights end on other blows.
+    CHECK(h.h == 7216787019674830117ull);
 }
 
 // ---- the boss break value ----
@@ -625,6 +627,10 @@ TEST_CASE("arena boss break: every stagger that ends with the value at or over t
         ArenaDef def = bossDef(t, id, true);
         def.enemies[0].hp = 100000;
         def.enemies[0].poise = 25.f;
+        // This test is the stagger-to-break hand-off, not the paired counter's tuning: the pair takes the whole thin
+        // poise and has no cooldown here, as before rule (b) (45% and 3 s, pinned by its own tests).
+        def.fighter.pairBossPoise = 1.f;
+        def.fighter.pairCooldown = 0.f;
         Rig r(def);
         r.step();
         bool pairNext = false;

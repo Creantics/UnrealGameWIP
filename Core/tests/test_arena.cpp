@@ -8250,12 +8250,13 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
 } // namespace
 
 TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the host's own fight") {
-    // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1.
+    // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1. Re-pinned for
+    // the paired counter's 3 s cooldown (rule b): a pair inside it is refused, so the fight runs 14.4 s, not 17.4 s.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 17.4 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 82/150, 22 hits, 2 taken, 0 blocks, 3 parries, 0 ripostes, 2 evades, 0 guard breaks, "
-          "4 staggers, 0 heals, 1 releases, 0 overloads, 5/6 reads right, dealt 520, took 68, 0 restarts.");
+          "Arena: VICTORY at standalone beat 0 step 0 after 14.4 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 116/150, 22 hits, 1 taken, 0 blocks, 3 parries, 1 ripostes, 1 evades, 0 guard breaks, "
+          "3 staggers, 0 heals, 0 releases, 0 overloads, 4/6 reads right, dealt 520, took 34, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
     CHECK(r.hitsOn[1] == 17);
     // The best run is the skirmisher's 2 of 2 (weight 3): Devin's 2nd blow fills its count and breaks its poise with
@@ -8268,16 +8269,17 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
 }
 
 TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's break-out (weight fills it first)") {
-    // Every seed runs past 15 s. The skirmisher still staggers on the blow that fills its count, but Devin's heavy
-    // lights fill the hulk's count of 7 in 4 blows while its poise holds, so it breaks out every seed.
+    // Every seed runs past 14 s. The skirmisher still staggers on the blow that fills its count, but Devin's heavy
+    // lights fill the hulk's count of 7 in 4 blows while its poise holds, so it breaks out every seed: once, or twice
+    // where the paired counter's 3 s cooldown (rule b) refuses a pair and the count fills again (seeds 3, 6 and 8).
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
         CAPTURE(seed);
         CHECK(r.phase == ArenaPhase::Victory);
-        CHECK(r.stats.time > 15.f);
+        CHECK(r.stats.time > 14.f);
         CHECK(r.stats.flinches > 0);
         CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
-        CHECK(r.stats.breakOuts == 1);
+        CHECK(r.stats.breakOuts == (seed == 3 || seed == 6 || seed == 8 ? 2 : 1));
         CHECK(r.stats.breakDue == r.stats.breakOuts + r.stats.stepBacks);
         CHECK(arenaFeatureChecks(r.stats).breakOutDue);
         CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::Pass);
