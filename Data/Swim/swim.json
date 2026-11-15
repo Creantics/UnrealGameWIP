@@ -13,5 +13,6 @@
   "refillSeconds": 2,
   "rescueVitality": 0.25,
   "edgeRampMetres": 8,
-  "edgePushSpeed": 4
+  "edgePushSpeed": 4,
+  "columnCatchUpSpeed": 4
 }

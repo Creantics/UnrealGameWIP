@@ -79,6 +79,14 @@ struct Ground {
         if (along <= 0.f || along >= length + margin) return false;
         return std::fabs(stCross(axis, d)) * cosH - along * sinH < margin;
     }
+    // How far inside the grown wedge p is (0 on its edge or outside it): the side distance or the far end's.
+    float wedgeDepth(Vec2 p) const {
+        if (!inWedge(p, t->wedgeClearMeters)) return 0.f;
+        const Vec2 d = stSub(p, cam);
+        const float along = stDot(d, axis);
+        const float side = t->wedgeClearMeters - (std::fabs(stCross(axis, d)) * cosH - along * sinH);
+        return std::max(0.f, std::min(side, length + t->wedgeClearMeters - along));
+    }
     bool arenaOk(Vec2 p) const { return radius <= 0.f || dist(p, centre) <= radius + 1e-4f; }
     bool roomOk(Vec2 p) const { return reviving || dist(p, lead) >= t->personalSpaceMeters - 1e-4f; }
     bool legal(Vec2 p) const { return arenaOk(p) && roomOk(p) && !inWedge(p, t->wedgeClearMeters); }
@@ -99,9 +107,11 @@ struct Ground {
         return stAlong(p, axis, length + t->wedgeClearMeters + 1e-3f - stDot(stSub(p, cam), axis));
     }
     // p when it is legal and within maxLead of the lead; else the best of a fixed set of candidates (p moved out
-    // of the wedge, out of personal space and into the arena, and rings round the lead): legal within maxLead, the
-    // nearest p; legal, the least past maxLead; clear of the wedge in the arena but crowding the lead (the arena
-    // leaves no other room), the furthest from the lead; then in the arena, the nearest p.
+    // of the wedge, out of personal space and into the arena, and rings round the lead), in the ruled order of the
+    // winners: the arena first (never outside), then personal space, then the wedge, then the cap. Legal within
+    // maxLead, the nearest p; legal, the least past maxLead; outside personal space but in the wedge (nothing
+    // outside both is left), the least far into it; in neither (the arena leaves no room outside personal space),
+    // the furthest from the lead.
     Vec2 resolve(Vec2 p, float maxLead) const {
         if (legal(p) && dist(p, lead) <= maxLead + 1e-4f) return p;
         Vec2 best = intoArena(p);
@@ -111,21 +121,26 @@ struct Ground {
             if (!stFinite(q) || !arenaOk(q)) return;
             const bool clear = !inWedge(q, t->wedgeClearMeters), room = roomOk(q);
             const float toLead = dist(q, lead), toP = dist(q, p);
+            // Crowding the lead: the furthest from it (to 2 cm), then the least far into the wedge.
             int tier = 3;
-            float a = toP;
-            if (clear && room && toLead <= maxLead + 1e-4f) tier = 0;
-            else if (clear && room) {
+            float a = -0.02f * std::floor(toLead / 0.02f), b = 100.f * wedgeDepth(q) + toP;
+            if (clear && room && toLead <= maxLead + 1e-4f) {
+                tier = 0;
+                a = b = toP;
+            } else if (clear && room) {
                 tier = 1;
                 a = toLead - maxLead;
-            } else if (clear) {
+                b = toP;
+            } else if (room) {
                 tier = 2;
-                a = -toLead;
+                a = wedgeDepth(q);
+                b = toP;
             }
-            if (tier < bt || (tier == bt && (a < ba - 1e-5f || (a <= ba + 1e-5f && toP < bb)))) {
+            if (tier < bt || (tier == bt && (a < ba - 1e-5f || (a <= ba + 1e-5f && b < bb)))) {
                 best = q;
                 bt = tier;
                 ba = a;
-                bb = toP;
+                bb = b;
             }
         };
         consider(p);
@@ -237,9 +252,11 @@ Spot followOn(const Ground& g, const PartnerTuning& t, PartnerOrder order, Vec2 
     return best;
 }
 
-// Rule 10's side (and 11's): the side with a station in its arc; both, the nearer the partner. Chosen afresh for a new
-// key (target and order, or no target); else held sideHoldSeconds unless its own side has none and the other has.
-Vec2 pickSide(PartnerBrainSave& s, int key, const Spot& minus, const Spot& plus) {
+// Rule 10's side (and 11's): the side with a station in its arc; both, the nearer the partner. Chosen afresh when the
+// order changes (key: the order; the named exception, a re-pick at once). A new target (or none) keeps the side, and
+// its timer, while that side's station for it is in its arc; else it re-picks. Otherwise held sideHoldSeconds unless
+// its own side has none in its arc and the other has.
+Vec2 pickSide(PartnerBrainSave& s, int key, int target, const Spot& minus, const Spot& plus) {
     const auto ok = [](const Spot& x) { return x.tier == 0; };
     const auto prefer = [&]() -> std::int8_t {
         if (ok(minus) != ok(plus)) return ok(minus) ? std::int8_t{-1} : std::int8_t{1};
@@ -248,7 +265,17 @@ Vec2 pickSide(PartnerBrainSave& s, int key, const Spot& minus, const Spot& plus)
     if (s.side == 0 || s.sideKey != key) {
         s.side = prefer();
         s.sideKey = key;
+        s.sideTarget = target;
         s.sideFor = 0.0;
+    } else if (s.sideTarget != target) {
+        s.sideTarget = target;
+        if (!ok(s.side < 0 ? minus : plus)) {
+            const std::int8_t p = prefer();
+            if (p != s.side) {
+                s.side = p;
+                s.sideFor = 0.0;
+            }
+        }
     } else {
         const bool forced = !ok(s.side < 0 ? minus : plus) && ok(s.side < 0 ? plus : minus);
         if (forced || s.sideFor + 1e-9 >= static_cast<double>(s.t.sideHoldSeconds)) {
@@ -260,6 +287,30 @@ Vec2 pickSide(PartnerBrainSave& s, int key, const Spot& minus, const Spot& plus)
         }
     }
     return (s.side < 0 ? minus : plus).p;
+}
+
+int orderKey(PartnerOrder o) { return o == PartnerOrder::Spread ? 2 : 1; }
+
+// The starvation fallback's goal (rule 12 given up, out of reach): the nearest point of the target's ring in the
+// arena, outside personal space and (StayClose) within the cap, or false.
+bool inReachSpot(const Ground& g, const PartnerTuning& t, const PartnerEnemyView& e, PartnerOrder order, Vec2 pos,
+                 Vec2& out) {
+    const float ring = e.radius + 0.5f * t.reachMeters;
+    const float cap = order == PartnerOrder::StayClose ? closeCap(t) : kStFar;
+    bool found = false;
+    float best = kStFar;
+    const auto consider = [&](Vec2 q) {
+        if (!stFinite(q) || !g.arenaOk(q) || !g.roomOk(q) || dist(q, g.lead) > cap) return;
+        const float d = dist(q, pos);
+        if (d < best) {
+            best = d;
+            out = q;
+            found = true;
+        }
+    };
+    consider(toward(e.pos, pos, ring));
+    for (int k = 0; k < 36; ++k) consider(stAlong(e.pos, stTurn(Vec2{1.f, 0.f}, 10.f * static_cast<float>(k)), ring));
+    return found;
 }
 
 } // namespace
@@ -280,7 +331,9 @@ bool validPartnerTuning(const PartnerTuning& t) {
            pbWithin(t.spreadArcMin, 0.f, 180.f) && pbWithin(t.spreadArcMax, t.spreadArcMin, 180.f) &&
            pbWithin(t.sideHoldSeconds, 0.f, 10.f) && pbWithin(t.followMin, 0.5f, 10.f) &&
            pbWithin(t.followMax, t.followMin, 10.f) && pbWithin(t.stationTolerance, 0.05f, 2.f) &&
-           t.stationTolerance <= 0.5f * t.reachMeters;
+           t.stationTolerance <= 0.5f * t.reachMeters && t.leashMeters >= t.personalSpaceMeters + 1.f &&
+           pbWithin(t.stationGiveUpSeconds, 0.5f, 30.f) && pbWithin(t.stationAnySeconds, t.stationGiveUpSeconds, 60.f) &&
+           pbWithin(t.targetHoldSeconds, 0.f, 10.f);
 }
 
 static_assert(kMaxPartnerStep == kMaxFightStep, "the brain's step bound is the fight's");
@@ -304,6 +357,7 @@ std::uint64_t PartnerBrainSave::hash() const {
     h.add(t.personalSpaceMeters).add(t.wedgeHalfDegrees).add(t.wedgeBeyondMeters).add(t.wedgeClearMeters);
     h.add(t.closeArcMin).add(t.closeArcMax).add(t.closeLeadMeters).add(t.spreadArcMin).add(t.spreadArcMax);
     h.add(t.sideHoldSeconds).add(t.followMin).add(t.followMax).add(t.stationTolerance);
+    h.add(t.stationGiveUpSeconds).add(t.stationAnySeconds).add(t.targetHoldSeconds);
     h.add(rhythm).add(defence).add(rhythmDraws).add(defenceDraws).add(phase).add(target).add(blows).add(pause);
     h.add(clock).add(returning).add(drawn).add(lengths).add(begunBlows).add(committedEnd);
     h.add(spentPartner).add(spentLead).add(slot).add(now).add(down).add(downFor);
@@ -311,6 +365,7 @@ std::uint64_t PartnerBrainSave::hash() const {
     h.add(out.act).add(out.why).add(out.point.x).add(out.point.y).add(out.enemy).add(out.blows).add(out.newString).add(out.blowStart).add(out.blowIndex);
     h.add(out.partnerBlow).add(out.breakValue).add(out.extendsStagger).add(out.punish).add(out.rise).add(out.riseHealth);
     h.add(out.stationed).add(begun).add(side).add(sideKey).add(sideFor).add(swaps);
+    h.add(sideTarget).add(offStation).add(targetFor).add(targetReached);
     return h.value;
 }
 
@@ -413,7 +468,11 @@ void PartnerBrain::rolesSwapped() {
     s_.watch = {};
     s_.side = 0;
     s_.sideKey = 0;
+    s_.sideTarget = -1;
     s_.sideFor = 0.0;
+    s_.offStation = 0.0;
+    s_.targetFor = 0.0;
+    s_.targetReached = false;
     s_.out = PartnerIntent{};
     ++s_.swaps;
 }
@@ -450,6 +509,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             s_.watch = {};
             s_.side = 0;
             s_.sideFor = 0.0;
+            s_.offStation = 0.0;
+            s_.targetFor = 0.0;
+            s_.targetReached = false;
         } else {
             s_.downFor += dt;
         }
@@ -465,13 +527,14 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
 
     // Rules 8-12: the ground for this step, when the host feeds a whole station view.
     if (s_.side != 0) s_.sideFor += dt;
+    if (s_.target >= 0) s_.targetFor += dt;
     Ground g;
     const bool st = makeGround(in, t, g);
     out.stationed = st;
     const auto stationFor = [&](int tgt) {
         const View& v = in.enemies[static_cast<std::size_t>(tgt)];
-        const int key = (tgt + 1) * 2 + (in.order == PartnerOrder::Spread ? 1 : 0);
-        return pickSide(s_, key, stationOn(g, t, v, in.order, in.pos, -1.f), stationOn(g, t, v, in.order, in.pos, 1.f));
+        return pickSide(s_, orderKey(in.order), tgt, stationOn(g, t, v, in.order, in.pos, -1.f),
+                        stationOn(g, t, v, in.order, in.pos, 1.f));
     };
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
@@ -593,6 +656,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         const View& e = in.enemies[static_cast<std::size_t>(s_.target)];
         if (st) { // rule 12: back to the station
             const Vec2 p = stationFor(s_.target);
+            if (dist(in.pos, p) <= t.stationTolerance && edge(in.pos, e) <= t.reachMeters) s_.offStation = 0.0;
+            else s_.offStation += dt;
             if (dist(in.pos, p) > t.stationTolerance) {
                 out.act = edge(in.pos, e) < t.standoffMeters ? PartnerAct::StepBack : PartnerAct::MoveTo;
                 out.enemy = s_.target;
@@ -606,13 +671,25 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         return out;
     }
 
-    // Ready: pick, close in, or start a string.
-    const int tgt = chooseTarget(in);
+    // Ready: pick (a Spread target kept targetHoldSeconds unless it falls, leaves reach once reached, or stops being
+    // standing), close in, or start a string.
+    int tgt = chooseTarget(in);
+    if (in.order == PartnerOrder::Spread && s_.target >= 0 && tgt != s_.target &&
+        static_cast<std::size_t>(s_.target) < n && s_.targetFor + 1e-9 < static_cast<double>(t.targetHoldSeconds)) {
+        const View& was = in.enemies[static_cast<std::size_t>(s_.target)];
+        if (standing(was) && !(s_.targetReached && edge(in.pos, was) > t.reachMeters)) tgt = s_.target;
+    }
+    if (tgt != s_.target) {
+        s_.targetFor = 0.0;
+        s_.targetReached = false;
+    }
     s_.target = tgt;
+    if (tgt >= 0 && edge(in.pos, in.enemies[static_cast<std::size_t>(tgt)]) <= t.reachMeters) s_.targetReached = true;
     if (tgt < 0) {
         out.why = PartnerWhy::NoTarget;
         if (st) { // rule 11
-            const Vec2 p = pickSide(s_, 1, followOn(g, t, in.order, in.pos, -1.f), followOn(g, t, in.order, in.pos, 1.f));
+            const Vec2 p = pickSide(s_, orderKey(in.order), -1, followOn(g, t, in.order, in.pos, -1.f),
+                                    followOn(g, t, in.order, in.pos, 1.f));
             if (dist(in.pos, p) > t.stationTolerance) {
                 out.act = PartnerAct::MoveTo;
                 out.point = p;
@@ -623,18 +700,30 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     const View& e = in.enemies[static_cast<std::size_t>(tgt)];
     if (st) { // rule 12: a string starts only from its station
         const Vec2 p = stationFor(tgt);
-        if (dist(in.pos, p) > t.stationTolerance) {
-            out.act = PartnerAct::MoveTo;
-            out.why = PartnerWhy::Approach;
-            out.enemy = tgt;
-            out.point = p;
-            return out;
-        }
-        if (edge(in.pos, e) > t.reachMeters) { // no station in reach: wait at the resolved point
-            out.why = PartnerWhy::Approach;
-            out.enemy = tgt;
-            out.point = p;
-            return out;
+        const bool inReach = edge(in.pos, e) <= t.reachMeters;
+        const bool there = dist(in.pos, p) <= t.stationTolerance;
+        if (there && inReach) {
+            s_.offStation = 0.0; // stationed: the fallback's timers start again
+        } else {
+            s_.offStation += dt;
+            // The fallback (no station it can reach, or one that runs from it): in reach, after stationGiveUpSeconds
+            // from where it stands when that is outside the wedge and personal space; after stationAnySeconds from
+            // anywhere outside personal space. Out of reach (or inside personal space) after the first: to the
+            // nearest in-reach point outside personal space.
+            const double off = s_.offStation;
+            const bool giveUp = off + 1e-9 >= static_cast<double>(t.stationGiveUpSeconds);
+            const bool any = off + 1e-9 >= static_cast<double>(t.stationAnySeconds);
+            const bool fromHere =
+                inReach && g.roomOk(in.pos) && ((giveUp && !g.inWedge(in.pos, 0.f)) || any);
+            if (!fromHere) {
+                Vec2 goal = p;
+                if (giveUp && (!inReach || !g.roomOk(in.pos))) inReachSpot(g, t, e, in.order, in.pos, goal);
+                out.why = PartnerWhy::Approach;
+                out.enemy = tgt;
+                out.point = goal;
+                if (dist(in.pos, goal) > t.stationTolerance) out.act = PartnerAct::MoveTo; // else wait there
+                return out;
+            }
         }
     } else if (edge(in.pos, e) > t.reachMeters) {
         Vec2 p = toward(e.pos, in.pos, e.radius + 0.5f * t.reachMeters);
@@ -686,8 +775,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     return out;
 }
 
-bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* error) {
+bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* error, std::vector<std::string>* notes) {
     out = PartnerTuning{};
+    if (notes) notes->clear();
     std::vector<std::string> errors;
     const auto finish = [&]() {
         if (errors.empty()) return true;
@@ -741,7 +831,8 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
                                             "budgetAllowanceSeconds", "personalSpaceMeters", "wedgeHalfDegrees",
                                             "wedgeBeyondMeters", "wedgeClearMeters", "closeArcMin", "closeArcMax",
                                             "closeLeadMeters", "spreadArcMin", "spreadArcMax", "sideHoldSeconds",
-                                            "followMin", "followMax", "stationTolerance"};
+                                            "followMin", "followMax", "stationTolerance", "stationGiveUpSeconds",
+                                            "stationAnySeconds", "targetHoldSeconds"};
     real("leashMeters", t.leashMeters, 1, 10);
     real("returnMeters", t.returnMeters, 0.5, 10);
     real("reachMeters", t.reachMeters, 0.5, 4);
@@ -774,16 +865,81 @@ bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* 
     real("followMin", t.followMin, 0.5, 10);
     real("followMax", t.followMax, 0.5, 10);
     real("stationTolerance", t.stationTolerance, 0.05, 2);
+    real("stationGiveUpSeconds", t.stationGiveUpSeconds, 0.5, 30);
+    real("stationAnySeconds", t.stationAnySeconds, 0.5, 60);
+    real("targetHoldSeconds", t.targetHoldSeconds, 0, 10);
 
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);
         if (std::find(std::begin(kKeys), std::end(kKeys), k) == std::end(kKeys))
             errors.push_back(std::string(k) + ": unknown field");
     }
-    if (errors.empty() && !validPartnerTuning(t))
-        errors.push_back("partner brain: returnMeters over leashMeters, standoffMeters over reachMeters, stationTolerance over half "
-                         "reachMeters, or a max under its min");
     if (!errors.empty()) return finish();
+    // Cross-field pairs: a broken pair puts both its fields back to their defaults (noted) and keeps every other
+    // field; repeated until none is broken (a reset can break another pair: leashMeters is in two).
+    const PartnerTuning d;
+    struct Pair {
+        const char* a;
+        const char* b;
+        const char* rule;
+    };
+    const auto broken = [](const PartnerTuning& x, int i) {
+        switch (i) {
+        case 0: return x.returnMeters > x.leashMeters;
+        case 1: return x.leashMeters < x.personalSpaceMeters + 1.f;
+        case 2: return x.standoffMeters > x.reachMeters;
+        case 3: return x.stationTolerance > 0.5f * x.reachMeters;
+        case 4: return x.blowsMax < x.blowsMin;
+        case 5: return x.pauseMax < x.pauseMin;
+        case 6: return x.closeArcMax < x.closeArcMin;
+        case 7: return x.spreadArcMax < x.spreadArcMin;
+        case 8: return x.followMax < x.followMin;
+        default: return x.stationAnySeconds < x.stationGiveUpSeconds;
+        }
+    };
+    const auto reset = [&](PartnerTuning& x, int i) {
+        switch (i) {
+        case 0: x.returnMeters = d.returnMeters; x.leashMeters = d.leashMeters; break;
+        case 1: x.leashMeters = d.leashMeters; x.personalSpaceMeters = d.personalSpaceMeters; break;
+        case 2: x.standoffMeters = d.standoffMeters; x.reachMeters = d.reachMeters; break;
+        case 3: x.stationTolerance = d.stationTolerance; x.reachMeters = d.reachMeters; break;
+        case 4: x.blowsMin = d.blowsMin; x.blowsMax = d.blowsMax; break;
+        case 5: x.pauseMin = d.pauseMin; x.pauseMax = d.pauseMax; break;
+        case 6: x.closeArcMin = d.closeArcMin; x.closeArcMax = d.closeArcMax; break;
+        case 7: x.spreadArcMin = d.spreadArcMin; x.spreadArcMax = d.spreadArcMax; break;
+        case 8: x.followMin = d.followMin; x.followMax = d.followMax; break;
+        default: x.stationGiveUpSeconds = d.stationGiveUpSeconds; x.stationAnySeconds = d.stationAnySeconds; break;
+        }
+    };
+    static constexpr Pair kPairs[] = {
+        {"returnMeters", "leashMeters", "returnMeters at most leashMeters"},
+        {"leashMeters", "personalSpaceMeters", "leashMeters at least personalSpaceMeters + 1"},
+        {"standoffMeters", "reachMeters", "standoffMeters at most reachMeters"},
+        {"stationTolerance", "reachMeters", "stationTolerance at most half reachMeters"},
+        {"blowsMin", "blowsMax", "blowsMin at most blowsMax"},
+        {"pauseMin", "pauseMax", "pauseMin at most pauseMax"},
+        {"closeArcMin", "closeArcMax", "closeArcMin at most closeArcMax"},
+        {"spreadArcMin", "spreadArcMax", "spreadArcMin at most spreadArcMax"},
+        {"followMin", "followMax", "followMin at most followMax"},
+        {"stationGiveUpSeconds", "stationAnySeconds", "stationGiveUpSeconds at most stationAnySeconds"},
+    };
+    constexpr int kPairCount = static_cast<int>(sizeof kPairs / sizeof kPairs[0]);
+    for (int pass = 0; pass < kPairCount + 1; ++pass) {
+        bool any = false;
+        for (int i = 0; i < kPairCount; ++i) {
+            if (!broken(t, i)) continue;
+            any = true;
+            reset(t, i);
+            if (notes)
+                notes->push_back(std::string(kPairs[i].a) + ", " + kPairs[i].b + ": expected " + kPairs[i].rule +
+                                 ", both defaults used");
+        }
+        if (!any) break;
+    }
+    if (!validPartnerTuning(t)) { // never: the defaults hold every pair
+        errors.push_back("partner brain: the fields still disagree");
+        return finish();
+    }
     out = t;
     return true;
 }

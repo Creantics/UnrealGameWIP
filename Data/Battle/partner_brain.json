@@ -31,5 +31,8 @@
   "sideHoldSeconds": 2.0,
   "followMin": 2.0,
   "followMax": 2.5,
-  "stationTolerance": 0.5
+  "stationTolerance": 0.5,
+  "stationGiveUpSeconds": 3.0,
+  "stationAnySeconds": 6.0,
+  "targetHoldSeconds": 1.5
 }

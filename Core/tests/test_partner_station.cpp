@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <limits>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace ftcore;
 
@@ -418,7 +420,7 @@ TEST_CASE("partner station: save and load carry the side and its timer; the hash
     CHECK(other.hash() != saved.hash());
 }
 
-TEST_CASE("partner station: partner_brain.json carries the defaults; the importer refuses bad stationing fields") {
+TEST_CASE("partner station: partner_brain.json carries the defaults; the importer refuses bad stationing fields and resets broken pairs") {
     std::string text;
     REQUIRE(ftcore_test::readProjectData("Battle/partner_brain.json", text));
     PartnerTuning t;
@@ -446,22 +448,62 @@ TEST_CASE("partner station: partner_brain.json carries the defaults; the importe
              R"({"version":1,"wedgeHalfDegrees":70})",
              R"({"version":1,"wedgeBeyondMeters":-1})",
              R"({"version":1,"wedgeClearMeters":3})",
-             R"({"version":1,"closeArcMin":100})",
              R"({"version":1,"closeArcMax":200})",
              R"({"version":1,"closeLeadMeters":0.5})",
              R"({"version":1,"spreadArcMin":181})",
-             R"({"version":1,"spreadArcMax":100})",
              R"({"version":1,"sideHoldSeconds":11})",
-             R"({"version":1,"followMin":3})",
              R"({"version":1,"followMax":0.4})",
              R"({"version":1,"stationTolerance":0})",
              R"({"version":1,"stationTolerance":"0.5"})",
-             R"({"version":1,"reachMeters":0.8,"standoffMeters":0.5,"stationTolerance":0.5})", // over half the reach
          }) {
         CAPTURE(bad);
         CHECK_FALSE(importPartnerBrain(bad, t, &err));
         CHECK_FALSE(err.empty());
         CHECK(t.wedgeHalfDegrees == d.wedgeHalfDegrees);
+    }
+    for (const char* bad : {R"({"version":1,"stationGiveUpSeconds":0.4})", R"({"version":1,"stationAnySeconds":61})",
+                            R"({"version":1,"targetHoldSeconds":-1})", R"({"version":1,"targetHoldSeconds":11})"}) {
+        CAPTURE(bad);
+        CHECK_FALSE(importPartnerBrain(bad, t, &err));
+    }
+    CHECK(d.stationGiveUpSeconds == 3.f);
+    CHECK(d.stationAnySeconds == 6.f);
+    CHECK(d.targetHoldSeconds == 1.5f);
+    CHECK(t.stationGiveUpSeconds == d.stationGiveUpSeconds);
+    // Cross-field pairs: each arc's min over its max, the follow pair, the tolerance over half the reach: that pair
+    // goes back to its defaults (noted), the rest is kept.
+    struct PairCase {
+        const char* json;
+        const char* note;
+    };
+    const PairCase pairs[] = {
+        {R"({"version":1,"closeArcMin":100,"sideHoldSeconds":0.5})", "closeArcMin, closeArcMax"},
+        {R"({"version":1,"spreadArcMax":100,"sideHoldSeconds":0.5})", "spreadArcMin, spreadArcMax"},
+        {R"({"version":1,"followMin":3,"sideHoldSeconds":0.5})", "followMin, followMax"},
+        {R"({"version":1,"reachMeters":0.8,"standoffMeters":0.5,"stationTolerance":0.5,"sideHoldSeconds":0.5})",
+         "stationTolerance, reachMeters"},
+    };
+    for (const PairCase& c : pairs) {
+        CAPTURE(c.json);
+        std::vector<std::string> notes;
+        REQUIRE(importPartnerBrain(c.json, t, &err, &notes));
+        REQUIRE(notes.size() == 1u);
+        CHECK(notes[0].rfind(c.note, 0) == 0);
+        CHECK(t.sideHoldSeconds == 0.5f);
+        CHECK(t.closeArcMin == d.closeArcMin);
+        CHECK(t.closeArcMax == d.closeArcMax);
+        CHECK(t.spreadArcMax == d.spreadArcMax);
+        CHECK(t.followMin == d.followMin);
+        CHECK(t.stationTolerance == d.stationTolerance);
+        CHECK(t.reachMeters == d.reachMeters);
+        CHECK(validPartnerTuning(t));
+    }
+    {
+        std::vector<std::string> notes;
+        REQUIRE(importPartnerBrain(R"({"version":1,"reachMeters":0.8,"standoffMeters":0.5,"stationTolerance":0.4})", t,
+                                   &err, &notes));
+        CHECK(notes.empty()); // standoff within the reach, tolerance within half of it
+        CHECK(t.reachMeters == 0.8f);
     }
     REQUIRE(importPartnerBrain(R"({"version":1,"closeArcMin":40,"closeArcMax":70,"sideHoldSeconds":0.5})", t, &err));
     CHECK(t.closeArcMin == 40.f);
@@ -610,5 +652,388 @@ TEST_CASE("partner station: with the camera orbiting 30 degrees a second a walki
         CHECK(changes <= 6); // a full orbit and a third: no flicker
         MESSAGE("orbit: changes " << changes << " (forced " << forced << "), min gap " << minGap << " s, first start "
                                   << firstStart << " s, starts " << starts);
+    }
+}
+
+namespace {
+// The starvation fallback's hosts. `drift`: the whole fight (lead, camera, target) moves by the partner's step, so its
+// station runs from it exactly as fast as it walks (it never gets nearer). `wallR` > 0: a wall round the target that
+// the partner cannot enter (every station is inside it; it slides along its edge). `walk` false: it never moves. Returns
+// the first string's start time (-1: none in `seconds`), with the spot it started from in `at`.
+float starve(Pit& p, float seconds, bool walk, bool drift, float wallR, Vec2& at) {
+    const float dt = 1.f / 60.f;
+    for (int k = 0; k < static_cast<int>(seconds * 60.f); ++k) {
+        const float now = static_cast<float>(k) * dt;
+        const PartnerIntent i = p.step(dt);
+        if (i.act == PartnerAct::Attack && i.newString) {
+            at = p.in.pos;
+            return now;
+        }
+        if (!walk || (i.act != PartnerAct::MoveTo && i.act != PartnerAct::StepBack)) continue;
+        const Vec2 d = minus(i.point, p.in.pos);
+        const float l = len(d), st = std::fmin(l, 4.f * dt);
+        if (l <= 1e-6f) continue;
+        const Vec2 m{d.x / l * st, d.y / l * st};
+        Vec2 next{p.in.pos.x + m.x, p.in.pos.y + m.y};
+        const Vec2 in = minus(next, p.e[0].pos);
+        if (wallR > 0.f && len(in) < wallR) // the wall: it slides along it
+            next = {p.e[0].pos.x + in.x / len(in) * wallR, p.e[0].pos.y + in.y / len(in) * wallR};
+        p.in.pos = next;
+        if (drift) {
+            p.in.leadPos = {p.in.leadPos.x + m.x, p.in.leadPos.y + m.y};
+            p.in.station.cameraPos = {p.in.station.cameraPos.x + m.x, p.in.station.cameraPos.y + m.y};
+            p.e[0].pos = {p.e[0].pos.x + m.x, p.e[0].pos.y + m.y};
+        }
+    }
+    return -1.f;
+}
+} // namespace
+
+TEST_CASE("partner station: a station it cannot reach never starves it: from where it stands after 3 s outside the wedge, after 6 s anywhere outside personal space") {
+    const float dt = 1.f / 60.f;
+    // In reach, outside personal space: (2.5, 2.2) outside the wedge, (0.9, 1.4) inside it (the camera behind).
+    struct Case {
+        Vec2 start;
+        bool inWedgeSpot;
+    };
+    const Case cases[] = {{{2.5f, 2.2f}, false}, {{0.9f, 1.4f}, true}};
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+        for (const Case& c : cases) {
+            for (const int host : {0, 1}) { // 0: a station that runs from it every step; 1: it cannot move at all
+                CAPTURE(order == PartnerOrder::StayClose);
+                CAPTURE(c.start.x);
+                CAPTURE(host);
+                Pit p(order);
+                p.in.pos = c.start;
+                REQUIRE(inWedge(c.start, p.cam(), p.in.leadPos) == c.inWedgeSpot);
+                Vec2 at{};
+                const float first = starve(p, 10.f, host == 0, host == 0, 0.f, at);
+                const float due = c.inWedgeSpot ? 6.f : 3.f;
+                CHECK(first >= due - dt - 1e-4f);
+                CHECK(first <= due + dt + 1e-4f);
+                CHECK(len(minus(at, p.in.leadPos)) >= 1.6f - 1e-3f);
+                CHECK(len(minus(at, p.e[0].pos)) - p.e[0].radius <= 1.8f + 1e-4f);
+                if (first < 6.f - dt) CHECK_FALSE(inWedge(at, p.cam(), p.in.leadPos));
+            }
+        }
+    }
+    // The timers at their most: no string in 20 s.
+    for (const Case& c : cases) {
+        PartnerTuning t;
+        t.stationGiveUpSeconds = 30.f;
+        t.stationAnySeconds = 60.f;
+        Pit p(PartnerOrder::Spread, t);
+        p.in.pos = c.start;
+        Vec2 at{};
+        CHECK(starve(p, 20.f, false, false, 0.f, at) < 0.f);
+    }
+    // Inside personal space it never starts from there: (0.8, 0.8) is in reach but 1.13 m from the lead.
+    {
+        Pit p(PartnerOrder::Spread);
+        p.in.pos = {0.8f, 0.8f};
+        Vec2 at{};
+        CHECK(starve(p, 10.f, false, false, 0.f, at) < 0.f);
+    }
+}
+
+TEST_CASE("partner station: every station inside a wall: it stops at the wall, then strings start from there by 6 s") {
+    const float dt = 1.f / 60.f;
+    int early = 0;
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+        for (const Vec2 start : {Vec2{-2.5f, 1.5f}, Vec2{-2.5f, -1.5f}, Vec2{1.5f, -3.f}, Vec2{0.5f, 3.5f}}) {
+            for (int a = 120; a <= 240; a += 30) {
+                CAPTURE(order == PartnerOrder::StayClose);
+                CAPTURE(start.x);
+                CAPTURE(start.y);
+                CAPTURE(a);
+                Pit p(order);
+                p.camAt(static_cast<float>(a));
+                p.in.pos = start;
+                Vec2 at{};
+                // The wall: 2.1 m round the target's centre; its stations are 1.4 m out, its reach 2.3 m.
+                const float first = starve(p, 10.f, true, false, 2.1f, at);
+                REQUIRE(first >= 0.f);
+                CHECK(first >= 3.f - dt - 1e-4f);
+                CHECK(first <= 6.f + dt + 1e-4f);
+                CHECK(len(minus(at, p.in.leadPos)) >= 1.6f - 1e-3f);
+                CHECK(len(minus(at, p.e[0].pos)) - p.e[0].radius <= 1.8f + 1e-4f);
+                if (first < 6.f - dt) {
+                    ++early;
+                    CHECK_FALSE(inWedge(at, p.cam(), p.in.leadPos));
+                }
+            }
+        }
+    }
+    CHECK(early > 0);
+}
+
+TEST_CASE("partner station: out of reach once 3 s have run it goes to the nearest in-reach point, outside personal space") {
+    // A station inside a wall that stops it 2.6 m from the target's centre (out of reach, 2.3 m): after 3 s the goal
+    // is the nearest point of the reach ring in the arena, outside personal space; the host then lets it through.
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+        CAPTURE(order == PartnerOrder::StayClose);
+        Pit p(order);
+        p.in.pos = {2.5f, 2.6f}; // out of reach, beside the target
+        const float dt = 1.f / 60.f;
+        Vec2 goal{}, station{};
+        bool seen = false;
+        for (int k = 0; k < 400 && !seen; ++k) {
+            const PartnerIntent i = p.step(dt);
+            if (k == 0) station = i.point;
+            REQUIRE(i.act == PartnerAct::MoveTo);
+            CHECK(i.why == PartnerWhy::Approach);
+            if (static_cast<float>(k) * dt >= 3.f + dt) {
+                goal = i.point;
+                seen = true;
+            }
+        }
+        REQUIRE(seen);
+        CHECK(len(minus(goal, p.e[0].pos)) == doctest::Approx(1.4f).epsilon(1e-3)); // on the ring, in reach
+        CHECK(len(minus(goal, p.in.leadPos)) >= 1.6f - 1e-3f);
+        CHECK(len(minus(goal, p.in.pos)) <= 1.25f); // the nearest: straight in, or near it
+        if (order == PartnerOrder::Spread) CHECK(len(minus(goal, station)) > 0.5f); // not the station (the far side)
+        p.in.pos = goal;
+        const PartnerIntent j = p.step(dt);
+        CHECK(j.act == PartnerAct::Attack); // there, outside the wedge: it starts
+        CHECK(j.newString);
+    }
+}
+
+namespace {
+// The grid of rings round the lead the brain's resolver tries (personal space + 0.05 .. + 2.4, every 11.25 degrees):
+// does any of it lie in the arena, outside personal space and the grown wedge?
+bool roomOnGrid(const Pit& p, float arenaR, float half, float beyond, float clear) {
+    for (const float r : {0.05f, 0.5f, 1.f, 1.6f, 2.4f})
+        for (int k = 0; k < 32; ++k) {
+            const float a = 11.25f * static_cast<float>(k) * kRad;
+            const Vec2 q{p.in.leadPos.x + (1.6f + r) * std::cos(a), p.in.leadPos.y + (1.6f + r) * std::sin(a)};
+            if (arenaR > 0.f && len(minus(q, p.in.station.arenaCentre)) > arenaR) continue;
+            if (inWedge(q, p.cam(), p.in.leadPos, clear, half, beyond)) continue;
+            return true;
+        }
+    return false;
+}
+} // namespace
+
+TEST_CASE("partner station: when rules collide the arena wins, then personal space, then the wedge, then the arc") {
+    SUBCASE("a wedge whose only ways out in the arena are inside personal space: the goal is outside it, in the wedge") {
+        PartnerTuning t;
+        t.wedgeHalfDegrees = 60.f; // the camera a metre behind: its edges pass 0.87 m from the lead
+        t.wedgeBeyondMeters = 5.f;
+        int inside = 0;
+        for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+            for (int a = 0; a < 360; a += 15) {
+                for (const Vec2 start : {Vec2{-0.5f, 2.f}, Vec2{0.5f, -2.f}, Vec2{3.f, 2.5f}}) {
+                    CAPTURE(order == PartnerOrder::StayClose);
+                    CAPTURE(a);
+                    CAPTURE(start.x);
+                    Pit p(order, t);
+                    p.camAt(static_cast<float>(a), 1.f);
+                    p.in.station.arenaCentre = {0.5f, 0.f};
+                    p.in.station.arenaRadius = 1.7f;
+                    p.in.pos = start;
+                    const PartnerIntent i = p.step();
+                    if (i.act != PartnerAct::MoveTo) { // within the tolerance of a goal out of reach: it waits
+                        CHECK(i.why == PartnerWhy::Approach);
+                        continue;
+                    }
+                    const Vec2 goal = i.point;
+                    CHECK(len(minus(goal, p.in.station.arenaCentre)) <= 1.7f + 1e-3f); // the arena first
+                    CHECK(len(minus(goal, p.in.leadPos)) >= 1.6f - 1e-3f);             // then personal space
+                    if (roomOnGrid(p, 1.7f, 60.f, 5.f, 0.5f)) {
+                        CHECK_FALSE(inWedge(goal, p.cam(), p.in.leadPos, 0.49f, 60.f, 5.f)); // then the wedge
+                    } else {
+                        ++inside;
+                        if (a == 180) CHECK(inWedge(goal, p.cam(), p.in.leadPos, 0.f, 60.f, 5.f));
+                    }
+                }
+            }
+        }
+        MESSAGE("goals personal space kept in the wedge: " << inside);
+        CHECK(inside >= 6); // the camera behind (and near it): the collision happened
+    }
+    SUBCASE("a wall behind the station: the goal stays in the arena, off the arc") {
+        for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+            CAPTURE(order == PartnerOrder::StayClose);
+            Pit p(order);
+            p.in.station.arenaRadius = 3.f; // Spread's arc (the far side, x >= 3.2) is all past it
+            p.in.pos = {-1.f, 2.5f};
+            const PartnerIntent i = p.step();
+            REQUIRE(i.act == PartnerAct::MoveTo);
+            CHECK(len(i.point) <= 3.f + 1e-3f);
+            checkGoal(p, i.point);
+            if (order == PartnerOrder::Spread) CHECK(angleAt(p.e[0].pos, p.in.leadPos, i.point) < 120.f);
+            // Walking it, it stations (or falls back) and strings start; it never leaves the arena.
+            int starts = 0;
+            walk(p, 8.f, [](float) {},
+                 [&](float, const PartnerIntent& j) {
+                     if (j.act == PartnerAct::MoveTo) CHECK(len(j.point) <= 3.f + 1e-3f);
+                     starts += j.act == PartnerAct::Attack && j.newString ? 1 : 0;
+                 });
+            CHECK(len(p.in.pos) <= 3.f + 1e-3f);
+            CHECK(starts >= 1);
+        }
+    }
+    SUBCASE("a target beside the lead: no station is in the arc and outside personal space; personal space wins") {
+        for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+            CAPTURE(order == PartnerOrder::StayClose);
+            Pit p(order);
+            p.e[0].pos = {0.f, 0.9f}; // its ring (1.2 m) is within 1.5 m of the lead from 0 to 90 degrees
+            p.e[0].radius = 0.3f;
+            p.in.pos = {2.f, 2.5f};
+            const PartnerIntent i = p.step();
+            REQUIRE(i.act == PartnerAct::MoveTo);
+            checkGoal(p, i.point); // outside personal space (and the wedge, which has room here)
+            // Walking it, strings start (from a station off the arc, or the fallback) and every goal keeps the rules.
+            int starts = 0;
+            walk(p, 8.f, [](float) {},
+                 [&](float, const PartnerIntent& j) {
+                     if (j.act == PartnerAct::MoveTo) checkGoal(p, j.point);
+                     starts += j.act == PartnerAct::Attack && j.newString ? 1 : 0;
+                 });
+            CHECK(starts >= 1);
+        }
+    }
+}
+
+TEST_CASE("partner station: Spread keeps a target 1.5 s; a fall, or leaving reach once reached, frees it at once") {
+    const double dt = 1.0 / 60.0;
+    // Two enemies; once the first is chosen the lead attacks it, so the second (free) is preferred.
+    const auto setup = [](Pit& p, Vec2 pos) {
+        p.n = 2;
+        p.e[1].pos = {1.f, 5.f};
+        p.e[1].radius = 0.5f;
+        p.in.pos = pos;
+        p.in.leadTarget = -1;
+    };
+    SUBCASE("held 1.5 s") {
+        Pit p(PartnerOrder::Spread);
+        setup(p, {-3.f, -3.f}); // out of reach of both, still (no strings)
+        p.step(dt);
+        REQUIRE(p.b.target() == 0);
+        p.e[0].leadAttacking = true;
+        double switched = -1.0;
+        for (int k = 1; k < 200 && switched < 0.0; ++k) {
+            p.step(dt);
+            if (p.b.target() == 1) switched = k * dt;
+        }
+        CHECK(switched >= 1.5 - 1e-6);
+        CHECK(switched <= 1.5 + 2 * dt);
+    }
+    SUBCASE("a fall frees it at once") {
+        Pit p(PartnerOrder::Spread);
+        setup(p, {-3.f, -3.f});
+        p.step(dt);
+        p.e[0].leadAttacking = true;
+        for (int k = 0; k < 30; ++k) p.step(dt);
+        REQUIRE(p.b.target() == 0);
+        p.e[0].state = V::State::Down;
+        p.step(dt);
+        CHECK(p.b.target() == 1);
+    }
+    SUBCASE("leaving reach once reached frees it at once; never reached, it is held") {
+        for (const bool reached : {true, false}) {
+            CAPTURE(reached);
+            Pit p(PartnerOrder::Spread);
+            setup(p, reached ? Vec2{2.5f, 1.9f} : Vec2{-3.f, -3.f}); // (2.5, 1.9): in reach, off the arc (90 degrees)
+            p.step(dt);
+            REQUIRE(p.b.target() == 0);
+            p.e[0].leadAttacking = true;
+            for (int k = 0; k < 20; ++k) p.step(dt);
+            REQUIRE(p.b.target() == 0);
+            p.e[0].pos = {9.f, -4.f}; // far: out of reach
+            p.step(dt);
+            CHECK(p.b.target() == (reached ? 1 : 0));
+        }
+    }
+    SUBCASE("the hold is in save, load and the hash") {
+        Pit p(PartnerOrder::Spread);
+        setup(p, {-3.f, -3.f});
+        for (int k = 0; k < 30; ++k) p.step(dt);
+        const PartnerBrainSave sv = p.b.save();
+        CHECK(sv.targetFor == doctest::Approx(29 * dt));
+        CHECK_FALSE(sv.targetReached);
+        PartnerBrain c;
+        c.load(sv);
+        CHECK(c.hash() == p.b.hash());
+    }
+}
+
+TEST_CASE("partner station: a new target keeps the side while its station there is legal; an order change re-picks at once") {
+    const double dt = 1.0 / 60.0;
+    const auto start = [](Pit& p) {
+        p.n = 2;
+        p.e[1].pos = {2.6f, 0.4f};
+        p.e[1].radius = 0.5f;
+        p.in.pos = {1.5f, 3.5f};
+        for (int k = 0; k < 30; ++k) p.step(1.0 / 60.0);
+    };
+    SUBCASE("kept: the held side's station for the new target is in its arc") {
+        Pit p(PartnerOrder::StayClose);
+        start(p);
+        const PartnerBrainSave before = p.b.save();
+        REQUIRE(before.side != 0);
+        p.in.pos = {1.5f, -3.5f}; // now nearer the other side: a re-pick would take it
+        p.in.leadTarget = 1;
+        const PartnerIntent i = p.step(dt);
+        REQUIRE(i.enemy == 1);
+        CHECK(p.b.save().side == before.side);
+        CHECK(p.b.save().sideFor == doctest::Approx(before.sideFor + dt)); // its timer runs on
+        CHECK(p.b.save().sideTarget == 1);
+    }
+    SUBCASE("re-picked: an arena that leaves the held side no station for the new target") {
+        Pit p(PartnerOrder::StayClose);
+        start(p);
+        const PartnerBrainSave before = p.b.save();
+        const Vec2 held = p.step(dt).point;
+        REQUIRE(held.y > 0.f);
+        p.in.station.arenaCentre = {2.6f, -4.f}; // reaches y = 0.1 at most: the +y stations are past it
+        p.in.station.arenaRadius = 4.1f;
+        p.in.leadTarget = 1;
+        const PartnerIntent i = p.step(dt);
+        CHECK(p.b.save().side == -before.side);
+        CHECK(p.b.save().sideFor == 0.0);
+        CHECK(i.point.y < 0.1f);
+    }
+    SUBCASE("an order change re-picks at once, inside the hold") {
+        Pit p(PartnerOrder::StayClose);
+        start(p);
+        REQUIRE(p.b.save().sideFor < 2.0);
+        p.in.order = PartnerOrder::Spread;
+        p.step(dt);
+        CHECK(p.b.save().sideFor == 0.0);
+        CHECK(p.b.save().sideKey == 2);
+    }
+}
+
+TEST_CASE("partner station: rolesSwapped with stationing on: the first intent is a MoveTo to the station a fresh brain picks") {
+    for (const PartnerOrder order : {PartnerOrder::StayClose, PartnerOrder::Spread}) {
+        CAPTURE(order == PartnerOrder::StayClose);
+        Pit p(order);
+        p.in.pos = {-2.5f, 1.5f};
+        PartnerIntent i = p.step();
+        REQUIRE(i.act == PartnerAct::MoveTo);
+        p.in.pos = i.point; // on its station: a string starts
+        i = p.step();
+        REQUIRE(i.why == PartnerWhy::Start);
+        p.in.doing = PartnerDoing::Attacking;
+        p.step();
+        REQUIRE(p.b.stringing());
+        // The bodies change places; the camera follows the new lead.
+        p.b.rolesSwapped();
+        std::swap(p.in.pos, p.in.leadPos);
+        p.in.doing = PartnerDoing::Idle;
+        p.camAt(180.f);
+        Pit fresh(order);
+        fresh.in = p.in;
+        const PartnerIntent f = fresh.step();
+        const PartnerIntent g = p.step();
+        CHECK(g.stationed);
+        CHECK(g.act == f.act);
+        CHECK(g.why == f.why);
+        CHECK(g.point.x == doctest::Approx(f.point.x));
+        CHECK(g.point.y == doctest::Approx(f.point.y));
+        CHECK(g.act == PartnerAct::MoveTo);
+        checkGoal(p, g.point);
     }
 }

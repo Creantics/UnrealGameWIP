@@ -10,7 +10,10 @@
 //      no target), and never further than leashMeters from the lead: past it the intent is MoveTo back, until within
 //      returnMeters (no flicker at the edge); closing on its target it never aims past returnMeters from the lead
 //      (so a target in reach only from 3..4 m out is not attacked). A Down enemy is never a target and does not count as standing. The target
-//      is chosen when a string starts and kept to its end.
+//      is chosen when a string starts and kept to its end. Spread keeps a chosen target at least targetHoldSeconds
+//      (1.5) before another may take it, unless it falls (Down or absent) or, once it has been within reach, it
+//      leaves reach. StayClose has no hold: the lead's target is its target, so the lead changing target (or having
+//      none) is the target no longer being attackable, and it follows at once.
 //   2. Rhythm. A light string of blowsMin..blowsMax blows, then a pause of pauseMin..pauseMax s, both drawn (seeded)
 //      when the string starts. The host says how long each blow of a string lasts (blowSeconds, the i-th light) and
 //      keeps to it: a blow once started always runs out (no host can cancel one). The string's clock is those
@@ -52,18 +55,27 @@
 // Stationing (rules 8-12): where the partner stands, so its blows are seen from the side and it never crowds the lead
 // or blocks the camera. Opt-in: only while the host sets PartnerInput::station.on with a whole finite view (camera,
 // lead facing, arena); off, every rule above is as it was (intent.stationed false). All on the ground plane.
+// When the rules collide the winners are, in order: the arena ring (a goal is never outside it), then personal space
+// (8), then the camera wedge (9), then the arc and StayClose's cap (10). So a wedge edge that lies inside personal
+// space gives a goal outside personal space even if it is in the wedge; a wall (the ring) behind a station pulls it in
+// whatever the arc says; a target beside the lead, where no station is both in the arc and outside personal space,
+// gives a goal outside personal space and off the arc. Only when the ring leaves no room outside personal space is a
+// goal inside it: then as far from the lead as the ring allows, out of the wedge where that ties.
 //   8. Personal space: no goal is within personalSpaceMeters (1.6) of the lead, centre to centre, except while the
 //      host says it revives the lead, or when the arena leaves no other room (then as far from the lead as it can get).
+//      The cross-field check: leashMeters at least personalSpaceMeters + 1, so StayClose always has room for a goal.
 //   9. Camera wedge: no goal is inside the wedge from the camera to wedgeBeyondMeters (1.0) past the lead,
 //      wedgeHalfDegrees (25) either side of the camera-to-lead line (the camera on the lead: its forward; neither:
 //      no wedge). A goal inside it moves to the nearer wedge edge plus wedgeClearMeters (0.5); every goal stationing
-//      emits keeps that clearance. A goal outside the arena (arenaCentre, arenaRadius; 0: unbounded) is pulled in.
+//      emits keeps that clearance unless the arena or personal space leaves none outside it (the order above). A goal outside the arena (arenaCentre, arenaRadius; 0: unbounded) is pulled in.
 //  10. Stations, on the circle round the target at its radius + half the reach (in reach), by the angle at the
 //      target between the lead and the station: StayClose closeArcMin..Max (60-90) and within closeLeadMeters (3.5,
 //      at most leashMeters - 0.5) of the lead; Spread spreadArcMin..Max (120-180), any distance. Of the two sides, the one
 //      with a station outside the wedge (and personal space and the arena); both: the one nearer the partner. A side
 //      once chosen is kept sideHoldSeconds (2.0) unless the wedge (or 8, or the arena) leaves it no station in its
-//      arc. No station in the arc: the nearest legal point of the circle on that side; none on the circle: the arc's
+//      arc. A new target (or none, the follow point) keeps the side and its timer while that side's station for the
+//      new target is in its arc, and re-picks only when it is not. The named exception: an order change (StayClose
+//      to Spread or back) re-picks at once. No station in the arc: the nearest legal point of the circle on that side; none on the circle: the arc's
 //      middle, resolved by 8 and 9 (and if that is out of reach, it waits there and never starts a string).
 //      StayClose's leash still rules: no station goal (on the circle, resolved or a follow point) is past that cap,
 //      so a lead drifting a little never trips the leash and its return; stationing replaces
@@ -72,7 +84,14 @@
 //  11. No target: stand followMin..followMax (2.0-2.5) behind the lead (by its facing; zero facing: the camera's
 //      line) and to one side, outside the wedge, the side kept as in 10.
 //  12. A string starts only within stationTolerance (0.5) of its station (blows are seen from the side, not from
-//      behind the lead); out of it the intent is MoveTo the station (Approach). During a pause it goes back to the
+//      behind the lead); out of it the intent is MoveTo the station (Approach). The fallback, so a station it cannot
+//      reach (one that runs from it, a spot it is blocked from) never starves it: with its target within reach and not
+//      stationed for stationGiveUpSeconds (3.0), it may start a string from where it stands if that spot is outside
+//      the camera wedge itself (no clearance) and outside personal space; after stationAnySeconds (6.0), from any spot
+//      in reach outside personal space. Out of reach (or inside personal space) once the first has run, it goes to the nearest in-reach point of
+//      the target's ring in the arena, outside personal space (and within StayClose's cap). The time counts while it
+//      tries to station (Ready or a pause, with a target); being within the tolerance and in reach resets it, as do
+//      going Down and rolesSwapped(). During a pause it goes back to the
 //      station (StepBack when nearer than standoffMeters to the target's edge, else MoveTo). Later blows of a string
 //      are not held to it; guarding, the budget and the rest are unchanged.
 // Two seeded streams (rhythm, defence), drawn at events only: the same seed and script give the same draws at any step.
@@ -87,7 +106,8 @@
 //     "budgetWindowSeconds": 20, "budgetShare": 0.6, "budgetAllowanceSeconds": 2.0, "personalSpaceMeters": 1.6,
 //     "wedgeHalfDegrees": 25, "wedgeBeyondMeters": 1.0, "wedgeClearMeters": 0.5, "closeArcMin": 60, "closeArcMax": 90,
 //     "closeLeadMeters": 3.5, "spreadArcMin": 120, "spreadArcMax": 180, "sideHoldSeconds": 2.0, "followMin": 2.0,
-//     "followMax": 2.5, "stationTolerance": 0.5 }
+//     "followMax": 2.5, "stationTolerance": 0.5, "stationGiveUpSeconds": 3.0, "stationAnySeconds": 6.0,
+//     "targetHoldSeconds": 1.5 }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -99,6 +119,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ftcore {
 
@@ -220,11 +241,21 @@ struct PartnerTuning {
     float followMin = 2.f;            // rule 11, no target: behind the lead (0.5..10)
     float followMax = 2.5f;           // (followMin..10)
     float stationTolerance = 0.5f;    // rule 12: a string starts within this of its station (0.05..2, <= reach/2)
+    float stationGiveUpSeconds = 3.f; // rule 12's fallback: not stationed this long, from where it stands (0.5..30)
+    float stationAnySeconds = 6.f;    // rule 12's fallback: and this long, from anywhere outside personal space
+                                      // (stationGiveUpSeconds..60)
+    float targetHoldSeconds = 1.5f;   // rule 1, Spread: a chosen target is kept at least this long (0..10)
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
-// Reads Data/Battle/partner_brain.json; on any error `out` is the defaults and false.
-FTCORE_API bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* error = nullptr);
+// Reads Data/Battle/partner_brain.json. A field out of its range, of the wrong type or unknown, a bad version or a
+// file that does not parse: `out` is the defaults and false (`error` says why). A cross-field pair broken (returnMeters
+// over leashMeters, leashMeters under personalSpaceMeters + 1, standoffMeters over reachMeters, stationTolerance over
+// half reachMeters, each min over its max: blows, pause, both arcs, follow, stationGiveUpSeconds over
+// stationAnySeconds): both fields of that pair take their defaults, every other field is kept, it is reported in
+// `notes`, and the import succeeds.
+FTCORE_API bool importPartnerBrain(std::string_view json, PartnerTuning& out, std::string* error = nullptr,
+                                   std::vector<std::string>* notes = nullptr);
 
 // Rule 7, and its only home: a partner blow's hp damage from its raw damage and the lead's light damage (the part
 // over 60% of the lead's light is halved, with the default tuning).
@@ -276,6 +307,10 @@ struct PartnerBrainSave {
     int sideKey = 0;
     double sideFor = 0.0;
     std::uint32_t swaps = 0; // rolesSwapped() calls
+    int sideTarget = -1;     // the target the side was last used for (-1: none, the follow point)
+    double offStation = 0.0; // rule 12's fallback: seconds trying to station since it last was stationed
+    double targetFor = 0.0;  // rule 1: how long the current target has been held
+    bool targetReached = false; // the current target has been within reach since it was chosen
 
     // FNV-1a over every field (StateHash.h): two brains with the same hash do the same from here.
     FTCORE_API std::uint64_t hash() const;
