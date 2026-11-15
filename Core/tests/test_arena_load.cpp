@@ -901,6 +901,36 @@ TEST_CASE("lone carry: a Release begun while Lone keeps its x1.3 when Lone ends 
     }
 }
 
+TEST_CASE("lone carry: the Release's x1.3 scales its damage only; the poise and the boss break value it takes do not") {
+    ArenaEnemyKind boss = dummyKind();
+    boss.boss = true;
+    boss.breakMove = -1;
+    boss.hp = 100000;
+    boss.poise = 10000.f; // never staggered: the poise lost reads whole
+    int dealt[2] = {-1, -1};
+    float poiseLost[2] = {0.f, 0.f};
+    float breakValue[2] = {0.f, 0.f};
+    for (const bool lone : {false, true}) {
+        CAPTURE(lone);
+        Rig rig({boss});
+        rig.fight.setLone(lone);
+        rig.fight.giveLoad(50);
+        rig.tick();
+        REQUIRE(rig.release());
+        rig.run(40);
+        const int at = lone ? 1 : 0;
+        dealt[at] = releaseDealt(rig);
+        poiseLost[at] = boss.poise - rig.fight.enemyPoise(0);
+        breakValue[at] = rig.fight.enemyBreakValue(0);
+    }
+    CHECK(dealt[0] == 20);
+    CHECK(dealt[1] == 26); // 20 x 1.3
+    CHECK(poiseLost[0] > 0.f);
+    CHECK(poiseLost[1] == doctest::Approx(poiseLost[0]));
+    CHECK(breakValue[0] > 0.f);
+    CHECK(breakValue[1] == doctest::Approx(breakValue[0]));
+}
+
 TEST_CASE("lone carry: the Release's x1.3 is one more factor under the single-blow cap") {
     struct Case {
         float cap;

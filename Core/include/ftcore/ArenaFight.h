@@ -1387,7 +1387,8 @@ public:
     // The Lone Carry (LoneCarry.h), off by default and kept across begin() and restart(). While on: the cap is the
     // tuning's (loadCap() reads it; setLoadCap's own cap is kept for when it ends), stores gain x its gain in place
     // of the chairs', a Release begun while Lone deals x its release for its whole swing (after the blow hook, kept
-    // under `blowCap`, the host's single-blow cap: 0 none; loneReleaseScale), an enemy blow's
+    // under `blowCap`, the host's single-blow cap: 0 none; loneReleaseScale; its hp damage only: the poise and a
+    // boss's break value it takes are a plain Release's), an enemy blow's
     // hp on the player (a hit, a guard's chip) is x its taken (after the hook; a parry or a block stores from the
     // hook's damage), the chairs' heal charges are left out at begin and restart, and take half never happens. A
     // change follows setLoadCap's rule: reaching the cap it now reads overloads once. A refused tuning turns it off.
