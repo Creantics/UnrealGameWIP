@@ -1364,11 +1364,6 @@ public:
     // Removes min(amount, load()) now and returns it; reports LoadSpent (amount = what was removed), at once inside
     // the blow hook, else ahead of the next tick's events. 0, and nothing, for amount <= 0 or outside Fighting.
     FTCORE_API int spendLoad(int amount);
-    // The host's trade at a lead change (FightSession tick.handedLoad): the player's gauge now holds `load`, clamped
-    // to 0..loadCap(), the Load the new controlled lead carried. Quiet: no event, nothing in the stats, no Overloaded
-    // (the Load was carried, not stored now). load(), overloaded() and output().player show it at once. Returns what
-    // the gauge held; -1, and nothing, outside Fighting.
-    FTCORE_API int tradeLoad(int load);
     // Blocks store Load: the fighter's blockLoadShare of the blocked damage (after the hook's scale, before
     // guardAbsorb); a guard break still stores; a parry stores its own and no block Load. Off by default.
     FTCORE_API void setCarry(bool blocksStore);

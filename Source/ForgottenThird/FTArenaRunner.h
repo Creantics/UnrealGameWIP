@@ -252,9 +252,8 @@ public:
 	float GetEnemyMarkBonus(int32 Slot) const;
 	double GetEnemyMarkUntil(int32 Slot) const;
 	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
-	// Load it stored this fight and its last change (-1e9 when none). The partner is the lead not controlled now
-	// (FightSession::partnerLead): the session's kept gauge follows it through a switch or a takeover, and the fight's
-	// gauge takes the new controlled lead's Load (FightTick::handedLoad, ArenaFight::tradeLoad).
+	// Load it stored this fight and its last change (-1e9 when none). The kept lead is fixed at the fight's start
+	// (FightSession::keptLead) until the session keeps Load per lead (see GetPartnerLoad's TODO).
 	int32 GetPartnerLoad() const;
 	int32 GetPartnerLoadCap() const;
 	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }

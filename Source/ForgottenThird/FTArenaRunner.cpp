@@ -2421,7 +2421,6 @@ void UFTArenaRunner::FeedSession()
 	const float Held = Fight.heldTime();
 	// The lead's health every step: the session's fall feed (0 is down) and the gift Heal's NotHurt.
 	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
-	FeedSessionLoads(); // the gauge as it stands at the close: a trade there keeps the old lead's from it
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
 	SessionHeld = Held;
 	SessionTakeovers += Tick.tookOver != ftcore::kNoFighter ? 1 : 0;
@@ -2433,14 +2432,6 @@ void UFTArenaRunner::FeedSession()
 	if (PartnerBody() && Tick.switched == OtherLead())
 	{
 		SwitchLeadBodies(); // a switch with both up resolved at this close (the begin's own request names SessionLead)
-	}
-	if (Tick.handedLoad >= 0 && Session->Get().activeLead() == SessionLead)
-	{
-		// The session traded the gauges at this lead change (its kept gauge follows the partner): the fight's gauge now
-		// holds the new lead's Load, and the session keeps the old lead's.
-		const int32 Was = Fight.tradeLoad(Tick.handedLoad);
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the gauges trade: lead %d carries %d Load (the gauge held %d); lead %d keeps %d."), Fight.time(),
-			static_cast<int32>(SessionLead), Fight.load(), Was, static_cast<int32>(Session->Get().keptLead()), Session->Get().keptLoad());
 	}
 	if (PartnerBody())
 	{
@@ -2499,15 +2490,11 @@ void UFTArenaRunner::FeedSessionLoads()
 	{
 		return;
 	}
-	// The fight's gauge is the lead the session does not keep: the controlled one, and between the fight's takeover
-	// (TakeOverBodies) and the session's close, still the fallen lead's until the session trades the gauges.
-	ftcore::FightSession& S = Session->Get();
-	const uint8 GaugeLead = S.keepsLoad(SessionLead) ? OtherLead() : SessionLead;
-	const uint8 Other = GaugeLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
-	S.setLoad(GaugeLead, Fight.load());
-	if (!S.keepsLoad(Other))
+	const uint8 Partner = SessionLead == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+	Session->Get().setLoad(SessionLead, Fight.load());
+	if (!Session->Get().keepsLoad(Partner))
 	{
-		S.setLoad(Other, PartnerLoad); // a probe's fixed Load (the session keeps the partner's otherwise)
+		Session->Get().setLoad(Partner, PartnerLoad); // a probe's fixed Load (the session keeps the partner's otherwise)
 	}
 }
 
@@ -2591,24 +2578,14 @@ void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
 
 int32 UFTArenaRunner::GetPartnerLoad() const
 {
-	// The partner is the lead not controlled now, read from the session; its kept gauge follows the partner.
-	if (!Session)
-	{
-		return 0;
-	}
-	const ftcore::FightSession& S = Session->Get();
-	const ftcore::FighterId Partner = S.partnerLead();
-	return S.keepsLoad(Partner) ? S.leadLoad(Partner) : 0;
+	// TODO(load per lead): read Session->Get().leadLoad(OtherLead()) once the session keeps Load per lead; today the
+	// kept gauge is the lead fixed at the fight's start (keptLead) and does not follow a switch or a takeover.
+	return Session ? Session->Get().keptLoad() : 0;
 }
 
 int32 UFTArenaRunner::GetPartnerLoadCap() const
 {
-	if (!Session)
-	{
-		return 0;
-	}
-	const ftcore::FightSession& S = Session->Get();
-	return S.keepsLoad(S.partnerLead()) ? S.keptCap() : 0;
+	return Session ? Session->Get().keptCap() : 0;
 }
 
 float UFTArenaRunner::GetEnemyMarkBonus(int32 Slot) const
@@ -3176,7 +3153,7 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 			break;
 		case ftcore::ArenaEventType::AllyDowned:
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: the ally is down at %.2f s."), Fight.time());
-			// The partner down: its kept gauge stores and spends nothing until it stands (the session's close puts it up).
+			// The partner down: its kept gauge stores and spends nothing for the rest of the fight.
 			if (Session && Session->Get().keepsLoad(Session->Get().keptLead()))
 			{
 				Session->Get().setKeptDown(true);
