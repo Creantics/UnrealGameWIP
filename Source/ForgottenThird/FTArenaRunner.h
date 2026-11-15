@@ -252,8 +252,8 @@ public:
 	float GetEnemyMarkBonus(int32 Slot) const;
 	double GetEnemyMarkUntil(int32 Slot) const;
 	// The partner lead's Load (-ArenaCountLift; the session keeps it): now, its cap (0 / 0 when none is kept), the
-	// Load it stored this fight and its last change (-1e9 when none). The kept lead is fixed at the fight's start
-	// (FightSession::keptLead) until the session keeps Load per lead (see GetPartnerLoad's TODO).
+	// Load it stored this fight and its last change (-1e9 when none). The kept gauge follows control
+	// (FightSession::keptLead): it is always on the lead without control, so it is the partner's.
 	int32 GetPartnerLoad() const;
 	int32 GetPartnerLoadCap() const;
 	int32 GetPartnerLoadStored() const { return PartnerLoadStored; }
@@ -791,8 +791,28 @@ private:
 	int32 PartnerLoad = -1;      // -ArenaPartnerLoad=N: the scripted partner's fixed Load (a probe; -1: no gauge)
 	double KiteLockUntil = -1e9; // the kite's lock end last opened
 	int32 KiteUnlocks = 0;
-	// Feeds the lead's Load to the session (the scripted partner has no gauge).
+	// Feeds the lead's Load to the session (the scripted partner has no gauge). In a partner run (bPerLead) it feeds
+	// FeedLeadValues instead.
 	void FeedSessionLoads();
+	// Per-lead Load and heal charges (a partner run, -ArenaPartner): each lead owns both, and the fight's one gauge and
+	// one charge count are FedLead's, the lead the last of the session's leadLoadNow / leadHealsNow gave them (the
+	// controlled lead, but for the step a takeover or the begin's own switch moves control: FedLead moves only when the
+	// session reports the new lead's values). FeedLeadValues feeds FedLead's every step (before blows are judged and
+	// before the session's tick), never the kept lead's; a probe's -ArenaPartnerLoad is set once, at the begin.
+	// ApplyLeadValues puts the reported values in the fight right after the tick, before its Load changes and the
+	// fight's next step. One-lead fights never take this path (the session never reports them): as before.
+	void FeedLeadValues();
+	void ApplyLeadValues(const ftcore::FightTick& Tick, int32 FedLoad, int32 FedHeals);
+	bool bPerLead = false;
+	uint8 FedLead = 0;
+	// The "per-lead Load" check: the runner's own ledger of the lead without control (its values as it lost control,
+	// or the begin's for the partner, plus the kept Load changes the session reported for it since; -1: none), checked
+	// against the values the session reports when control comes back to it. bOwnDeparted: the ledger is from that
+	// lead's own departure (a switch back), not the begin's.
+	int32 OwnLoad[2] = {-1, -1};
+	int32 OwnHeals[2] = {-1, -1};
+	bool bOwnDeparted[2] = {false, false};
+	int32 LeadMoves = 0, LeadMovesChecked = 0, LeadReturnsChecked = 0, LeadValueMisses = 0;
 	// After a session tick: applies its Load changes, notes a Lift and opens the kite's seam on an unlock.
 	void ApplyCountLift(const ftcore::FightTick& Tick);
 	ftcore::ArenaBodies Bodies;
@@ -1129,6 +1149,10 @@ private:
 	// resolved as Same (control already on that lead: a takeover the same step) counts in SwitchAsksSame.
 	float SwitchAt = -1.f;
 	bool bSwitchAsked = false;
+	// -ArenaSwitchBackAt=<s> (dev runs, after -ArenaSwitchAt): one more ask, back to the first lead, at that fight time
+	// (the same send path, AskLeadSwitch), so the per-lead Load check sees a switch and a switch back.
+	float SwitchBackAt = -1.f;
+	bool bSwitchBackAsked = false;
 	// The hand-off (SwapLeadFigures): the HUD's names follow the figures (a takeover's at its move's start); the
 	// takeover's move is due at HandoffMoveAt (Now), its input ignored to TakeoverInputUntil (fight time).
 	bool bNamesSwapped = false;

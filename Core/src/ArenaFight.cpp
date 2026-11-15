@@ -2661,6 +2661,18 @@ struct ArenaFightImpl {
         capChanged(was);
     }
 
+    // The host's setLoad: the lead's own Load, silent but for the overload it reaches.
+    void setLoad(int value) {
+        const bool was = overloadedNow();
+        pl.gauge.value = fi.attacks ? std::clamp(value, 0, fight.capNow()) : 0;
+        out.player.load = pl.gauge.value;
+        if (!overloadedNow()) { // an Overloaded not reported yet was the old value's, not this lead's
+            pl.capFilled = false;
+            pl.giftFilled = false;
+        }
+        capChanged(was);
+    }
+
     // The host's setLone: the Load stays; reaching the cap it now reads overloads once.
     void setLone(bool on, const LoneTuning& t, float blowCap) {
         const bool was = overloadedNow();
@@ -3706,6 +3718,13 @@ bool ArenaFight::lone() const { return lone_; }
 int ArenaFight::spendLoad(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
     return ArenaFightImpl(*this).spendLoad(amount);
+}
+void ArenaFight::setLoad(int value) {
+    if (phase_ == ArenaPhase::Fighting) ArenaFightImpl(*this).setLoad(value);
+}
+void ArenaFight::setHealCharges(int charges) {
+    if (phase_ == ArenaPhase::Fighting)
+        player_.charges = static_cast<std::uint8_t>(std::clamp(charges, 0, static_cast<int>(healMax_)));
 }
 int ArenaFight::hostHeal(int amount) {
     if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;

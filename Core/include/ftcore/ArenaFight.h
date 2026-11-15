@@ -1381,6 +1381,17 @@ public:
     // Removes min(amount, load()) now and returns it; reports LoadSpent (amount = what was removed), at once inside
     // the blow hook, else ahead of the next tick's events. 0, and nothing, for amount <= 0 or outside Fighting.
     FTCORE_API int spendLoad(int amount);
+    // Per-lead values (a party fight's switch, takeover, join or retry hands control to a lead with its own Load and
+    // heal charges): setLoad makes the gauge hold `value`, clamped to 0..loadCap() (the fight's own cap, never a kept
+    // lead's cap), 0 for a kit with no attacks. No LoadStored or LoadSpent: the value is the lead's, not a gain or a
+    // spend. overloaded() is judged afresh from the new value at once; reaching the cap from below counts and reports
+    // Overloaded once (as setLoadCap does); set below the cap it reads not overloaded, drops an Overloaded not
+    // reported yet (the old value's; the fill stays counted), and a later fill reports again. Set to the cap while
+    // already overloaded it reports nothing new.
+    // setHealCharges makes healCharges() `charges`, clamped to 0..healChargesMax(). Both do nothing outside Fighting;
+    // begin() and restart() reset both, so the host sets them after.
+    FTCORE_API void setLoad(int value);
+    FTCORE_API void setHealCharges(int charges);
     // Blocks store Load: the fighter's blockLoadShare of the blocked damage (after the hook's scale, before
     // guardAbsorb); a guard break still stores; a parry stores its own and no block Load. Off by default.
     FTCORE_API void setCarry(bool blocksStore);

@@ -1849,7 +1849,7 @@ void UFTArenaRunner::BeginSession()
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerJoinedAt = -1.0;
-	bSwitchAsked = bSwitchAskOpen = bSwitchAskedThisStep = false;
+	bSwitchAsked = bSwitchAskOpen = bSwitchAskedThisStep = bSwitchBackAsked = false;
 	SwitchAsks = SwitchesSeen = SwitchesDone = SwitchesRefused = SwitchAsksRefused = SwitchAsksSame = 0;
 	bSwapCheckArmed = bSwapCheckPlaced = false;
 	SwapMoveSteps = SwapSteps = SwapChecks = SwapChecksPassed = 0;
@@ -1965,6 +1965,32 @@ void UFTArenaRunner::BeginSession()
 			// A begin keeps the last fight's controlled lead, so ask for this one's. That is a request: the first tick's
 			// close resolves it (activeLead moves there, reported as tick.switched), before anything reads the lead.
 			Session->Get().setActiveLead(SessionLead);
+		}
+		// Per-lead Load and heal charges (a partner run): the begin stores 0 for every value, so both leads take the
+		// fight's charges, and each lead the session does not keep its Load (the controlled lead's gauge, a probe's
+		// fixed partner Load); the kept lead's is the kept gauge, 0 at the begin. A retry is a begin (Restart), so it
+		// seeds the same way: the arena runner takes no session checkpoint, so it has no host part to write.
+		bPerLead = bPartner;
+		FedLead = SessionLead;
+		OwnLoad[0] = OwnLoad[1] = OwnHeals[0] = OwnHeals[1] = -1;
+		bOwnDeparted[0] = bOwnDeparted[1] = false;
+		LeadMoves = LeadMovesChecked = LeadReturnsChecked = LeadValueMisses = 0;
+		if (bPerLead)
+		{
+			ftcore::FightSession& S = Session->Get();
+			const uint8 Other = OtherLead();
+			S.setLeadHeals(SessionLead, Fight.healCharges());
+			S.setLeadHeals(Other, Fight.healCharges());
+			if (!S.keepsLoad(SessionLead))
+			{
+				S.setLoad(SessionLead, Fight.load());
+			}
+			if (!S.keepsLoad(Other))
+			{
+				S.setLoad(Other, FMath::Max(PartnerLoad, 0));
+			}
+			OwnLoad[Other] = S.leadLoad(Other);
+			OwnHeals[Other] = S.leadHeals(Other);
 		}
 		// The game instance's story state takes the session's story writes (bound again after every Begin), but only
 		// for a fight the story handed off (ftcore::fightTakesStory): a standalone, demo or practice fight stays unbound.
@@ -2315,6 +2341,12 @@ void UFTArenaRunner::PressSession(const ftcore::ArenaInput& In)
 		bSwitchAsked = true;
 		AskLeadSwitch(TEXT("-ArenaSwitchAt"));
 	}
+	if (SwitchBackAt >= 0.f && bSwitchAsked && !bSwitchBackAsked && PartnerBody() && SessionLead != StartLead && Fight.time() >= SwitchBackAt)
+	{
+		// Back to the first lead (either UI: the one send path), for the per-lead Load check's return.
+		bSwitchBackAsked = true;
+		AskLeadSwitch(TEXT("-ArenaSwitchBackAt"));
+	}
 	if (In.guard != bSessionGuard)
 	{
 		bSessionGuard = In.guard;
@@ -2422,6 +2454,14 @@ void UFTArenaRunner::FeedSession()
 		}
 	}
 	const float Held = Fight.heldTime();
+	// FedLead's Load and heal charges as the fight holds them now (the step's blows already fed them in the hook).
+	int32 FedLoad = -1, FedHeals = -1;
+	if (bPerLead)
+	{
+		FeedLeadValues();
+		FedLoad = Fight.load();
+		FedHeals = Fight.healCharges();
+	}
 	// The lead's health every step: the session's fall feed (0 is down) and the gift Heal's NotHurt.
 	Session->Get().setLeadHealth(SessionLead, static_cast<float>(Fight.hp()) / static_cast<float>(FMath::Max(Fight.def().fighter.hp, 1)));
 	const ftcore::FightTick& Tick = Session->Tick(FMath::Max(0.f, Held - SessionHeld));
@@ -2472,6 +2512,10 @@ void UFTArenaRunner::FeedSession()
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: the Lone Carry began: Release x%.2f, Load gain x%.2f, cap %d, taken x%.2f."), Bargain.release,
 			Bargain.loadGain, Bargain.loadCap, Bargain.damageTaken);
 	}
+	if (bPerLead)
+	{
+		ApplyLeadValues(Tick, FedLoad, FedHeals); // before the tick's Load changes and the fight's next step
+	}
 	ApplyCountLift(Tick);
 	for (const ftcore::HeldBonus& Bonus : Tick.bonuses)
 	{
@@ -2489,6 +2533,11 @@ void UFTArenaRunner::FeedSession()
 
 void UFTArenaRunner::FeedSessionLoads()
 {
+	if (bPerLead)
+	{
+		FeedLeadValues(); // the lead the fight's gauge is for; the away lead's (a probe's fixed Load among them) stays the session's
+		return;
+	}
 	if (!bCountLift || !Session)
 	{
 		return;
@@ -2499,6 +2548,78 @@ void UFTArenaRunner::FeedSessionLoads()
 	{
 		Session->Get().setLoad(Partner, PartnerLoad); // a probe's fixed Load (the session keeps the partner's otherwise)
 	}
+}
+
+void UFTArenaRunner::FeedLeadValues()
+{
+	if (!Session)
+	{
+		return;
+	}
+	ftcore::FightSession& S = Session->Get();
+	if (!S.keepsLoad(FedLead))
+	{
+		S.setLoad(FedLead, Fight.load());
+	}
+	S.setLeadHeals(FedLead, Fight.healCharges());
+}
+
+void UFTArenaRunner::ApplyLeadValues(const ftcore::FightTick& Tick, int32 FedLoad, int32 FedHeals)
+{
+	const ftcore::FightSession& S = Session->Get();
+	const bool bReported = Tick.leadLoadNow >= 0 || Tick.leadHealsNow >= 0;
+	const uint8 From = FedLead;
+	const uint8 To = S.activeLead();
+	const bool bToLead = To == ftcore::kLeadA || To == ftcore::kLeadB;
+	const bool bMoved = bReported && bToLead && To != From;
+	if (bMoved)
+	{
+		// The lead losing the fight's gauge keeps its last feed (the session's own rule), plus the fold below.
+		OwnLoad[From] = FedLoad;
+		OwnHeals[From] = FedHeals;
+		bOwnDeparted[From] = true;
+	}
+	// The kept changes this step: a store or a Lift spend on the away lead's kept gauge (before a swap, so in the
+	// value it brings back) and the fold of the losing lead's changes at a swap. The controlled lead has no ledger.
+	for (const ftcore::CountLoadChange& C : Tick.loads)
+	{
+		if (!C.kept || (C.lead != ftcore::kLeadA && C.lead != ftcore::kLeadB) || OwnLoad[C.lead] < 0)
+		{
+			continue;
+		}
+		const int32 Signed = C.kind == ftcore::CountLoadKind::LiftSpend ? -C.amount : C.amount;
+		OwnLoad[C.lead] = FMath::Clamp(OwnLoad[C.lead] + Signed, 0, ftcore::kMaxLoad);
+	}
+	if (Tick.leadLoadNow >= 0)
+	{
+		Fight.setLoad(Tick.leadLoadNow); // clamped to the fight's own cap; overloaded() judged from it
+	}
+	if (Tick.leadHealsNow >= 0)
+	{
+		Fight.setHealCharges(Tick.leadHealsNow);
+	}
+	if (bReported && bToLead)
+	{
+		FedLead = To;
+	}
+	if (!bMoved)
+	{
+		return;
+	}
+	++LeadMoves;
+	if (OwnLoad[To] >= 0)
+	{
+		++LeadMovesChecked;
+		LeadReturnsChecked += bOwnDeparted[To] ? 1 : 0;
+		const bool bOk = Tick.leadLoadNow == OwnLoad[To] && Tick.leadHealsNow == OwnHeals[To] && Fight.load() == Tick.leadLoadNow
+			&& static_cast<int32>(Fight.healCharges()) == Tick.leadHealsNow;
+		LeadValueMisses += bOk ? 0 : 1;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: control to lead %d with its own Load %d (expected %d, the gauge %d) and heal charges %d (expected %d, the fight %d); lead %d left with %d and %d%s."),
+			Fight.time(), static_cast<int32>(To), Tick.leadLoadNow, OwnLoad[To], Fight.load(), Tick.leadHealsNow, OwnHeals[To],
+			static_cast<int32>(Fight.healCharges()), static_cast<int32>(From), FedLoad, FedHeals, bOwnDeparted[To] ? TEXT(", a return") : TEXT(""));
+	}
+	OwnLoad[To] = OwnHeals[To] = -1;
+	bOwnDeparted[To] = false;
 }
 
 void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
@@ -2581,8 +2702,7 @@ void UFTArenaRunner::ApplyCountLift(const ftcore::FightTick& Tick)
 
 int32 UFTArenaRunner::GetPartnerLoad() const
 {
-	// TODO(load per lead): read Session->Get().leadLoad(OtherLead()) once the session keeps Load per lead; today the
-	// kept gauge is the lead fixed at the fight's start (keptLead) and does not follow a switch or a takeover.
+	// The kept gauge follows control (keptLead), so it is the partner's: leadLoad(OtherLead()) reads the same.
 	return Session ? Session->Get().keptLoad() : 0;
 }
 
@@ -6483,6 +6603,8 @@ void UFTArenaRunner::BeginPartner()
 	bPartner = FParse::Param(FCommandLine::Get(), TEXT("ArenaPartner"));
 	SwitchAt = -1.f;
 	FParse::Value(FCommandLine::Get(), TEXT("ArenaSwitchAt="), SwitchAt);
+	SwitchBackAt = -1.f;
+	FParse::Value(FCommandLine::Get(), TEXT("ArenaSwitchBackAt="), SwitchBackAt);
 #endif
 	if (!bPartner)
 	{
@@ -7010,6 +7132,16 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner switch %s (asked %d, the session switched %d, refused by its rules %d, already there %d, the fight swapped %d, refused %d; leadSwitches %d)."),
 			bSwitchOk ? TEXT("PASS") : TEXT("FAIL"), SwitchAsks, SwitchesSeen, SwitchAsksRefused, SwitchAsksSame, SwitchesDone, SwitchesRefused,
 			Fight.stats().leadSwitches);
+	}
+	if (bPerLead && LeadMoves > 0)
+	{
+		// Per-lead Load: every control move brought the new lead its own Load and heal charges exactly (as it left
+		// them, plus the kept changes since; the begin's for the partner), and the fight's gauge and charges took them.
+		// Covered only with a switch and a switch back (-ArenaSwitchAt with -ArenaSwitchBackAt, or two takeovers).
+		const bool bCovered = LeadMovesChecked >= 2 && LeadReturnsChecked >= 1;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: per-lead Load %s (%d control moves, %d checked, %d returns, %d differed)."),
+			LeadValueMisses > 0 ? TEXT("FAIL") : (bCovered ? TEXT("PASS") : TEXT("not covered")), LeadMoves, LeadMovesChecked,
+			LeadReturnsChecked, LeadValueMisses);
 	}
 	if (bPartnerHeldOut)
 	{

@@ -259,6 +259,71 @@ TEST_CASE("arena carry: the Load cap follows the named places; the Release opens
     }
 }
 
+TEST_CASE("arena carry: setLoad holds a lead's own value above 60, clamps to the fight's cap, and judges the overload afresh") {
+    Rig rig({dummyKind()});
+    REQUIRE(rig.fight.loadCap() == kMaxLoad);
+    rig.fight.setLoad(80); // above the kept lead's old cap of 60: the fight's own cap rules
+    CHECK(rig.fight.load() == 80);
+    CHECK_FALSE(rig.fight.overloaded());
+    rig.fight.setLoad(250);
+    CHECK(rig.fight.load() == kMaxLoad);
+    CHECK(rig.fight.overloaded());
+    CHECK(rig.fight.stats().overloads == 1);
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1); // reported once, on the next tick
+    rig.fight.setLoad(kMaxLoad); // still at the cap: no second overload
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 1);
+    rig.fight.setLoad(kMaxLoad - 1); // the edge: one under the cap is not overloaded
+    CHECK(rig.fight.load() == kMaxLoad - 1);
+    CHECK_FALSE(rig.fight.overloaded());
+    CHECK(rig.fight.output().player.load == kMaxLoad - 1);
+    rig.fight.setLoad(kMaxLoad); // reaching it again overloads again
+    CHECK(rig.fight.overloaded());
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::Overloaded) == 2);
+    rig.fight.setLoad(-5);
+    CHECK(rig.fight.load() == 0);
+    rig.tick();
+    CHECK(rig.count(ArenaEventType::LoadStored) == 0); // a set is the lead's value, not a gain or a spend
+    CHECK(rig.count(ArenaEventType::LoadSpent) == 0);
+    {   // a fill not reported yet is the old value's: set under the cap before the tick, no Overloaded comes
+        Rig pending({dummyKind()});
+        pending.fight.giveLoad(kMaxLoad);
+        REQUIRE(pending.fight.overloaded());
+        pending.fight.setLoad(30);
+        pending.tick();
+        CHECK(pending.count(ArenaEventType::Overloaded) == 0);
+        CHECK(pending.fight.stats().overloads == 1); // counted when it filled
+        CHECK(pending.fight.load() == 30);
+    }
+    {   // under a lowered cap the clamp is that cap, and the edge is that cap
+        Rig low({dummyKind()});
+        low.fight.setLoadCap(60);
+        low.fight.setLoad(80);
+        CHECK(low.fight.load() == 60);
+        CHECK(low.fight.overloaded());
+        low.fight.setLoad(59);
+        CHECK_FALSE(low.fight.overloaded());
+    }
+}
+
+TEST_CASE("arena carry: setHealCharges holds a lead's own charges, clamped to 0..healChargesMax; restart resets them") {
+    Rig rig({dummyKind()});
+    const int full = rig.fight.healChargesMax();
+    REQUIRE(full == ruleFighter().healCharges);
+    rig.fight.setHealCharges(1);
+    CHECK(rig.fight.healCharges() == 1);
+    rig.fight.setHealCharges(full + 5);
+    CHECK(rig.fight.healCharges() == full);
+    rig.fight.setHealCharges(-1);
+    CHECK(rig.fight.healCharges() == 0);
+    rig.fight.setLoad(40);
+    rig.fight.restart(); // a retry resets both; the host sets the lead's values after
+    CHECK(rig.fight.healCharges() == full);
+    CHECK(rig.fight.load() == 0);
+}
+
 TEST_CASE("arena carry: setLoadCap clamps to 1..100 and never moves the Load (S3)") {
     Rig rig({dummyKind()});
     rig.fight.giveLoad(30);
