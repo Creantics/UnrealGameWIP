@@ -199,6 +199,11 @@ struct PRig {
     bool autopilot = false;
     bool pairOnParry = false; // the autopilot's partner presses the pair on the tick after each parry, as a host does
     bool pairDue = false;
+    // The last walkAlly: where its own walk took the ally (before the push-out), how far the push-out then moved it,
+    // and whether a body already overlapped it before it walked (an enemy moved into it, not it into the enemy).
+    Vec2 walked{};
+    float pushed = 0.f;
+    bool pushedByEnemy = false;
 
     explicit PRig(const ArenaFighter& fighter = ruleFighter()) {
         def.fighter = fighter;
@@ -252,11 +257,16 @@ struct PRig {
         }
     }
     void walkAlly() {
+        pushedByEnemy = false;
+        for (std::size_t i = 0; i < fight.enemyCount(); ++i)
+            if (fight.enemyAlive(i) && length(sub(bodies.ally, bodies.enemies[i])) < 0.4f + def.enemies[i].bodyRadius - 1e-4f)
+                pushedByEnemy = true;
         const Vec2 d = sub(out->ally.goal, bodies.ally);
         const float far = length(d);
         const float most = def.fighter.moveSpeed * kDt;
         if (far > most) bodies.ally = Vec2{bodies.ally.x + d.x * most / far, bodies.ally.y + d.y * most / far};
         else bodies.ally = out->ally.goal;
+        walked = bodies.ally;
         for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
             if (!fight.enemyAlive(i)) continue;
             const float least = 0.4f + def.enemies[i].bodyRadius;
@@ -267,6 +277,7 @@ struct PRig {
             bodies.ally = Vec2{bodies.enemies[i].x + dir.x * least, bodies.enemies[i].y + dir.y * least};
         }
         bodies.ally = fight.ring().clamp(bodies.ally, 0.4f);
+        pushed = length(sub(bodies.ally, walked));
     }
     void run(float seconds) {
         const int n = static_cast<int>(std::lround(seconds / kDt));
@@ -2452,6 +2463,11 @@ struct IdleLead {
     double T = 0, leadAttack = 0, partnerBlow = 0, longestStill = 0, longestInPlace = 0, onScreen = 0, jumpsPer10 = 0;
     double facingOff = 0, circlingTime = 0, shortestCircling = 0, shortestHold = 0;
     int skirmishMoves = 0, circlingReversals = 0, rulesReversals = 0;
+    // The host's push-outs, measured apart from its own walk (a push is a run of ticks the push-out moved it): how
+    // many, split by who moved into whom; the most one moved it in all and the fastest tick; the reversals its body
+    // made only with a push in the tick (its own walk that tick no reversal), counted as forced.
+    int pushes = 0, pushesEnemyInto = 0, pushesWalkInto = 0, pushReversals = 0;
+    double pushMost = 0, pushFastest = 0, pushMostEnemy = 0, pushMostWalk = 0; // ... the most by each cause
 };
 
 IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::uint32_t seed = 1, bool quiet = false) {
@@ -2488,6 +2504,8 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
         std::array<bool, kWin> dirOn{};
         int slot = 0, reversals = 0, circlingReversals = 0, forcedReversals = 0, blowReversals = 0;
         double holdFrom = -1.0, shortestCircling = 1e9, circlingTime = 0, shortestHold = 1e9;
+        bool pushing = false, runByEnemy = false;
+        double pushRun = 0;
         while (!r.fight.over() && r.fight.time() < 20.f) {
             const std::uint8_t keep = r.in.partnerOrder;
             r.in = r.fight.autopilot();
@@ -2506,10 +2524,41 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
             wasWalk = walkNow;
             lastGoal = r.out->ally.goal;
             {
-                const Vec2 v = sub(r.bodies.ally, lastAt);
+                // Pushes: a run of ticks the push-out moved it more than 0.1 mm.
+                const bool pushedNow = r.pushed > 1e-4f;
+                if (pushedNow) {
+                    if (!pushing) {
+                        ++o.pushes;
+                        ++(r.pushedByEnemy ? o.pushesEnemyInto : o.pushesWalkInto);
+                        runByEnemy = r.pushedByEnemy;
+                        pushRun = 0;
+                    }
+                    pushRun += r.pushed;
+                    o.pushMost = std::max(o.pushMost, pushRun);
+                    double& most = runByEnemy ? o.pushMostEnemy : o.pushMostWalk;
+                    most = std::max(most, pushRun);
+                    o.pushFastest = std::max(o.pushFastest, static_cast<double>(r.pushed) / kDt);
+                }
+                pushing = pushedNow;
+                // Its headings: its own walk this tick (the push-out's part measured apart, above).
+                const Vec2 v = sub(r.walked, lastAt);
                 const float sp = length(v) / static_cast<float>(kDt);
                 bool anyOn = false;
                 for (int i = 0; i < kWin; ++i) anyOn = anyOn || dirOn[static_cast<std::size_t>(i)];
+                if (pushedNow) { // a reversal of its body only with the push in it
+                    const Vec2 w = sub(r.bodies.ally, lastAt);
+                    if (length(w) / static_cast<float>(kDt) > 0.5f) {
+                        const Vec2 d{w.x / length(w), w.y / length(w)};
+                        bool turnedAll = false, turnedOwn = false;
+                        for (int i = 0; i < kWin; ++i)
+                            if (dirOn[static_cast<std::size_t>(i)]) {
+                                const Vec2 h = dirs[static_cast<std::size_t>(i)];
+                                turnedAll = turnedAll || d.x * h.x + d.y * h.y < 0.f;
+                                turnedOwn = turnedOwn || (sp > 0.5f && v.x * h.x + v.y * h.y < 0.f);
+                            }
+                        if (turnedAll && !turnedOwn) ++o.pushReversals;
+                    }
+                }
                 if (sp > 0.5f) {
                     const Vec2 d{v.x / length(v), v.y / length(v)};
                     if (!anyOn && holdFrom < 0.0) holdFrom = r.fight.time();
@@ -2520,9 +2569,10 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
                             turned = true;
                     if (turned) {
                         const double hold = r.fight.time() - holdFrom;
-                        // Forced: a wind-up at it (its guard or a step back from the rules). A blow: its own lunge.
+                        // Forced: a wind-up at it (its guard or a step back from the rules), or a body in its held
+                        // line (ArenaAllyOut::bodyTurn). A blow: its own lunge.
                         // Circling: else, with its attack held for the budget or walking its own goal.
-                        const bool forced = pi.act == PartnerAct::Guard || pi.act == PartnerAct::StepBack;
+                        const bool forced = pi.act == PartnerAct::Guard || pi.act == PartnerAct::StepBack || r.out->ally.bodyTurn;
                         const bool blow = pi.act == PartnerAct::Attack || r.out->ally.part != ArenaPart::None;
                         ++reversals;
                         if (!forced) shortestHold = std::min(shortestHold, hold);
@@ -2582,6 +2632,9 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
                 << ": circling " << circlingReversals << " in " << circlingTime << " s held (" << 10.0 * circlingReversals / circlingTime
                 << " per 10 s), shortest hold " << shortestCircling << " s; forced by a wind-up " << forcedReversals
                 << ", its own blows " << blowReversals << ", else " << reversals - circlingReversals - forcedReversals - blowReversals);
+        if (!quiet) MESSAGE("    pushes " << o.pushes << " (" << 10.0 * o.pushes / T << " per 10 s; an enemy into it " << o.pushesEnemyInto
+                << ", it into a body " << o.pushesWalkInto << "), most in one push " << o.pushMost << " m, fastest "
+                << o.pushFastest << " m/s; reversals only with a push in the tick (forced) " << o.pushReversals);
         o.T = T;
         o.leadAttack = leadAttack;
         o.partnerBlow = partnerBlow;
@@ -2623,8 +2676,9 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
 // the time on screen and the longest stretch in one place; the shortest hold before a reversal not forced. Run once.
 constexpr int kSixSeeds = 6;
 struct SixSeeds {
-    std::array<double, kSixSeeds> rules{}, circling{}, inPlace{}, onScreen{};
-    double hold = 1e9;
+    std::array<double, kSixSeeds> rules{}, circling{}, inPlace{}, onScreen{}, pushes{}, circlingHold{};
+    double hold = 1e9, pushMost = 0, pushFastest = 0, pushMostEnemy = 0, pushMostWalk = 0;
+    int enemyInto = 0, walkInto = 0, pushReversals = 0;
     static double mean(const std::array<double, kSixSeeds>& a) {
         double m = 0;
         for (const double v : a) m += v;
@@ -2648,6 +2702,15 @@ const SixSeeds& sixSeeds(std::uint8_t order, bool circling) {
             s.inPlace[i] = r.longestInPlace;
             s.onScreen[i] = r.onScreen;
             s.hold = std::min(s.hold, r.shortestHold);
+            s.circlingHold[i] = r.shortestCircling;
+            s.pushes[i] = 10.0 * r.pushes / r.T;
+            s.pushMost = std::max(s.pushMost, r.pushMost);
+            s.pushFastest = std::max(s.pushFastest, r.pushFastest);
+            s.pushMostEnemy = std::max(s.pushMostEnemy, r.pushMostEnemy);
+            s.pushMostWalk = std::max(s.pushMostWalk, r.pushMostWalk);
+            s.enemyInto += r.pushesEnemyInto;
+            s.walkInto += r.pushesWalkInto;
+            s.pushReversals += r.pushReversals;
         }
         done[k] = true;
     }
@@ -2660,25 +2723,30 @@ TEST_CASE("arena partner: rules 10-13 and 17 over six fight seeds, a lead that n
             const SixSeeds& s = sixSeeds(order, circling);
             std::ostringstream seeds;
             for (std::size_t i = 0; i < static_cast<std::size_t>(kSixSeeds); ++i)
-                seeds << " | " << i + 1 << ": " << s.circling[i] << ", " << s.inPlace[i] << " s, " << s.onScreen[i];
+                seeds << " | " << i + 1 << ": " << s.circling[i] << ", " << s.inPlace[i] << " s, " << s.onScreen[i] << ", "
+                      << s.circlingHold[i] << " s";
             MESSAGE((std::string(order == 0 ? "StayClose" : "Spread") + (circling ? ", circling on" : ", circling off"))
                     << " over " << kSixSeeds << " seeds: rules reversals per 10 s mean " << SixSeeds::mean(s.rules)
                     << " worst " << SixSeeds::most(s.rules) << "; circling mean " << SixSeeds::mean(s.circling)
                     << " worst " << SixSeeds::most(s.circling) << "; shortest hold " << s.hold << " s; on screen mean "
                     << SixSeeds::mean(s.onScreen) << " worst " << SixSeeds::least(s.onScreen) << "; in one place mean "
                     << SixSeeds::mean(s.inPlace) << " worst " << SixSeeds::most(s.inPlace) << " s;"
-                    << " per seed (circling, in one place, on screen)" << seeds.str());
+                    << " per seed (circling, in one place, on screen, shortest circling hold)" << seeds.str());
+            MESSAGE("    pushes per 10 s mean " << SixSeeds::mean(s.pushes) << " worst " << SixSeeds::most(s.pushes)
+                    << " (an enemy into it " << s.enemyInto << ", it into a body " << s.walkInto << ", all seeds); most in one push "
+                    << s.pushMost << " m (an enemy into it " << s.pushMostEnemy << ", it into a body " << s.pushMostWalk << "), fastest "
+                    << s.pushFastest << " m/s; reversals only with a push (forced) " << s.pushReversals);
         }
 }
 
 // Rule 17 circling on, the ruled bars over seeds 1-6: at most 6.5 reversals per 10 s while circling, at most 1.5 s in
 // one place, at least 0.8 of the time on screen. The six-seed MEAN meets each bar (hard); each bar's WORST seed is its
 // own test below. Means (circling, in one place, on screen):
-//   here  StayClose 6.33, 1.23 s, 0.853; Spread 4.29, 1.42 s, 0.842
+//   here  StayClose 2.78, 1.11 s, 0.850; Spread 1.02, 1.40 s, 0.843
 //   main  StayClose 3.66, 1.35 s, 0.839; Spread 4.65, 1.29 s, 0.819
 TEST_CASE("arena partner: rule 17 circling, the six-seed means meet the bars: at most 6.5 reversals per 10 s, 1.5 s in one place, 0.8 on screen") {
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
-        CAPTURE(order);
+        CAPTURE(int(order));
         const SixSeeds& s = sixSeeds(order, true);
         CHECK(SixSeeds::mean(s.circling) <= 6.5);
         CHECK(SixSeeds::mean(s.inPlace) <= 1.5);
@@ -2689,22 +2757,19 @@ TEST_CASE("arena partner: rule 17 circling, the six-seed means meet the bars: at
 // Each bar's worst seed, one test per bar and order: known short where it falls short today (the value in its
 // message), so each turns the suite red the day it passes and becomes a hard check then. Worst seeds (circling, in one
 // place, on screen):
-//   here  StayClose 8.17, 1.68 s, 0.793; Spread 6.04, 2.00 s, 0.813
+//   here  StayClose 5.45, 1.28 s, 0.830; Spread 2.14, 2.00 s, 0.804
 //   main  StayClose 5.92, 1.67 s, 0.789; Spread 7.41, 1.72 s, 0.719
-TEST_CASE("arena partner: rule 17 circling, StayClose's worst seed: at most 6.5 reversals per 10 s (known short)" *
-          doctest::should_fail()) {
+TEST_CASE("arena partner: rule 17 circling, StayClose's worst seed: at most 6.5 reversals per 10 s") {
     const SixSeeds& s = sixSeeds(0, true);
     MESSAGE("worst seed " << SixSeeds::most(s.circling));
     CHECK(SixSeeds::most(s.circling) <= 6.5);
 }
-TEST_CASE("arena partner: rule 17 circling, StayClose's worst seed: at most 1.5 s in one place (known short)" *
-          doctest::should_fail()) {
+TEST_CASE("arena partner: rule 17 circling, StayClose's worst seed: at most 1.5 s in one place") {
     const SixSeeds& s = sixSeeds(0, true);
     MESSAGE("worst seed " << SixSeeds::most(s.inPlace) << " s");
     CHECK(SixSeeds::most(s.inPlace) <= 1.5);
 }
-TEST_CASE("arena partner: rule 17 circling, StayClose's worst seed: at least 0.8 on screen (known short)" *
-          doctest::should_fail()) {
+TEST_CASE("arena partner: rule 17 circling, StayClose's worst seed: at least 0.8 on screen") {
     const SixSeeds& s = sixSeeds(0, true);
     MESSAGE("worst seed " << SixSeeds::least(s.onScreen));
     CHECK(SixSeeds::least(s.onScreen) >= 0.8);
@@ -2714,6 +2779,8 @@ TEST_CASE("arena partner: rule 17 circling, Spread's worst seed: at most 6.5 rev
     MESSAGE("worst seed " << SixSeeds::most(s.circling));
     CHECK(SixSeeds::most(s.circling) <= 6.5);
 }
+// Spread's worst seed (4, 2.0 s): the brain's Wait with its budget spent, through the skirmish's dwell
+// (skirmishEvery); the walk stands only where the brain's goal does.
 TEST_CASE("arena partner: rule 17 circling, Spread's worst seed: at most 1.5 s in one place (known short)" *
           doctest::should_fail()) {
     const SixSeeds& s = sixSeeds(1, true);
@@ -2742,29 +2809,56 @@ TEST_CASE("arena partner: rule 17 off (the shipped default), a lead that never a
     }
 }
 
-// Known short (reported, the bar kept): rule 17's circling turns at most 3 times in 10 s, none held under 0.4 s. Today
-// (StayClose / Spread, seed 1): 7.0 / 5.0 reversals per 10 s while circling, shortest hold 0.083 / 0.17 s, mostly its straight
-// walk sliding round enemy bodies and rules 10-13 stations turning invalid.
-TEST_CASE("arena partner: rule 17's circling: at most 3 reversals per 10 s, no hold under 0.4 s (known short)" *
-          doctest::should_fail()) {
+// Known short (reported, the bar kept): rule 17's circling turns at most 3 times in 10 s. Today (StayClose / Spread,
+// seed 1): 3.07 / 0.97 reversals per 10 s while circling.
+TEST_CASE("arena partner: rule 17's circling: at most 3 reversals per 10 s (known short)" * doctest::should_fail()) {
     const ArenaTable t = shippedTable();
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
-        CAPTURE(order);
+        CAPTURE(int(order));
         const IdleLead r = idleLead(t, order, true);
         REQUIRE(r.circlingTime > 0.0);
+        MESSAGE("reversals per 10 s " << 10.0 * r.circlingReversals / r.circlingTime);
         CHECK(10.0 * r.circlingReversals / r.circlingTime <= 3.0);
-        CHECK(r.shortestCircling >= 0.4);
     }
 }
 
-// The floor under that bar's hold (seed 1): no hold under 0.015 s. (Its reversals per 10 s: the six-seed means above.)
-TEST_CASE("arena partner: rule 17's circling no worse than today: no hold under 0.015 s") {
-    const ArenaTable t = shippedTable();
+// The walk's heading rule: no circling reversal within 0.4 s of its last, on any of the six seeds. Today, StayClose
+// 0.68 / 1.60 / 0.42 / 0.42 / 0.87 / 1.05 s, Spread 0.42 / none / 0.80 / none / 0.42 / 0.98 s.
+TEST_CASE("arena partner: rule 17's circling: no hold under 0.4 s, on each of six seeds") {
     for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
-        CAPTURE(order);
-        const IdleLead r = idleLead(t, order, true);
-        REQUIRE(r.circlingTime > 0.0);
-        CHECK(r.shortestCircling >= 0.015);
+        CAPTURE(int(order));
+        const SixSeeds& s = sixSeeds(order, true);
+        for (std::size_t i = 0; i < s.circlingHold.size(); ++i) {
+            CAPTURE(i + 1);
+            CHECK(s.circlingHold[i] >= 0.4);
+        }
+    }
+}
+
+// The walk's shape (round bodies, the heading rule) is rule 17's circling walks' only: every other walk (its rules'
+// stations, a pull back to the lead, an approach) is the brain's point, as before it, a body on its line or not (the
+// host pushes it out). Still scenes: the lead standing, dummies that never swing. (The circling walks start only in
+// the camera's frame: their holds are the six-seed test's above.)
+TEST_CASE("arena partner: outside circling its walk is the brain's point, a body on its line or not") {
+    for (const bool body : {false, true}) {
+        CAPTURE(body);
+        PRig r;
+        r.enemy(dummyKind(), Vec2{0.f, -25.f});
+        if (body) r.enemy(dummyKind(), Vec2{0.05f, -8.f}); // on its line to the lead
+        r.bodies.player = Vec2{0.f, -26.f}; // StayClose with no target of the lead's: it walks back to the lead
+        r.in.partnerOrder = 0;
+        r.walk = true;
+        r.go(true);
+        int walking = 0, off = 0;
+        for (int k = 0; k < 6 * 60; ++k) {
+            r.tick();
+            const PartnerIntent& i = r.brain.intent();
+            if (i.act != PartnerAct::MoveTo) continue;
+            ++walking;
+            if (r.out->ally.goal.x != i.point.x || r.out->ally.goal.y != i.point.y) ++off;
+        }
+        REQUIRE(walking > 0);
+        CHECK(off == 0);
     }
 }
 
@@ -2858,6 +2952,7 @@ GroupPin groupFightPin(std::uint8_t order, bool camera) {
 // state hash at the end equal the values recorded from main at 102219cb, but for StayClose's intents, which the
 // ally-blow cut (865e5c61) changes: there a damaging hit cuts its blows (3 without the camera, 1 with it); and but
 // for the camera's rows, which rule 13's side hold (kPartnerSideHoldSeconds) changes, its clock in the state hash too.
+// The walk's shape (round bodies, the heading rule) is rule 17's circling's only, so changes none of them.
 // Main's values are kept beside them. Spread without the camera equals main to the bit.
 TEST_CASE("arena partner: rule 17 off, the shipped group fight's intents and state hash are pinned (main's beside them)") {
     CHECK_FALSE(shippedTuning().circling);
