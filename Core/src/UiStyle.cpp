@@ -193,6 +193,17 @@ UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette) {
     return d;
 }
 
+UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette) {
+    const UiColor danger = uiColor(s, world, palette, UiToken::Danger);
+    UiDangerSet d;
+    d.lowUnderlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
+    d.hitFlash = d.lowUnderlined ? uiColor(s, world, palette, UiToken::Backing) : danger;
+    d.lowLine = d.lowUnderlined ? uiColor(s, world, palette, UiToken::Ink) : danger;
+    d.lowUnderline = danger;
+    d.cueMark = uiMarkColor(s, world, palette, danger);
+    return d;
+}
+
 float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale) {
     const float h = std::max(height, 1.f);
     const float scale = std::clamp(textScale, 1.f, 2.f);

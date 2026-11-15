@@ -228,6 +228,12 @@ struct FUiWorldRow
 	FLinearColor DangerLine; // its underline, drawn only where bDangerUnderline
 	bool bMarksAccent2 = false;    // the marks wear accent2: each carries a 1 px ink rim, and the Load is a line
 	bool bDangerUnderline = false; // a danger word is ink over a danger underline
+	// The rest of the danger colour's places (uiDangerSet); no painter path reads the danger token itself.
+	FLinearColor HitFlash; // the hit's edge flash
+	FLinearColor LowLine;  // a low hp or guard line
+	FLinearColor LowUnder; // the 1 px line under it, drawn only where bLowUnder
+	bool bLowUnder = false;
+	FLinearColor CueMark;  // the call cue's danger triangle (a mark: rimmed where bMarksAccent2)
 };
 
 // Data/UI/style.json once (the built-in style when it is missing or refused), and every world's colours.
@@ -271,6 +277,12 @@ const FUiTable& Table()
 			R.DangerLine = LinOf(D.underline);
 			R.bMarksAccent2 = T.Style.rules[W].marksAccent2;
 			R.bDangerUnderline = D.underlined;
+			const ftcore::UiDangerSet DS = ftcore::uiDangerSet(T.Style, World, Pal);
+			R.HitFlash = LinOf(DS.hitFlash);
+			R.LowLine = LinOf(DS.lowLine);
+			R.LowUnder = LinOf(DS.lowUnderline);
+			R.bLowUnder = DS.lowUnderlined;
+			R.CueMark = LinOf(DS.cueMark);
 		}
 		T.Edge = LinOf(T.Style.edge);
 		return T;
@@ -325,7 +337,8 @@ constexpr float kContourGrow = 1.5f;    // px past the core's edge at 1080p wher
 constexpr float kContourFeather = 2.f;  // px over which it falls to nothing
 constexpr float kContourAlpha = 0.67f;  // of the edge colour's alpha (0.9): about 60 percent
 constexpr float kContourSoft = 0.5f;    // a word's outer contour pixel, of its inner one
-constexpr float kRimPx = 1.f;           // an accent2 mark's ink rim, px at 1080p
+constexpr float kRimPx = 1.f;           // an accent2 mark's ink rim, px at 1080p (whole device pixels, at least 1)
+constexpr float kCrispFeather = 0.8f;   // device px: the soft edge of a core, a rim and its knock-out
 constexpr float kShadowEach = 0.205f;   // each of a HUD glyph's four shadow passes: 1 - (1 - 0.205)^4 = 60 percent inside
 
 float ContourK(float CoreAlpha)
@@ -852,6 +865,9 @@ public:
 	{
 		Transform = Geometry.GetAccumulatedRenderTransform();
 		S = InS;
+		DevScale = FMath::Max(Geometry.Scale, 0.01f);
+		Px = 1.f / DevScale;
+		DevOrigin = FVector2f(Transform.GetTranslation());
 		for (FPart& P : Parts)
 		{
 			P.Verts.Reset();
@@ -865,6 +881,22 @@ public:
 			UV = Proxy ? FVector2f(Proxy->StartUV + Proxy->SizeUV * 0.5f) : FVector2f(0.5f, 0.5f);
 		}
 	}
+
+	// One device pixel in local units (1 at 1080p and 100 percent; 0.75 at 1440p).
+	float PxSize() const { return Px; }
+
+	// A width given in px at 1080p as a whole number of device pixels, at least one, in local units: a crisp line never
+	// lands on 1.25 or 1.33 px and blurs.
+	float WholePx(float W1080) const { return WholeDev(W1080 * S); }
+	float WholeDev(float WLocal) const { return FMath::Max(1.f, FMath::RoundToFloat(WLocal / Px)) * Px; }
+
+	// A local x or y moved onto the nearest device pixel boundary.
+	float SnapX(float X) const { return (FMath::RoundToFloat(X * DevScale + DevOrigin.X) - DevOrigin.X) * Px; }
+	float SnapY(float Y) const { return (FMath::RoundToFloat(Y * DevScale + DevOrigin.Y) - DevOrigin.Y) * Px; }
+
+	// A line's centre y for a line WidthLocal wide (a whole number of device pixels) whose top and bottom edges both sit
+	// on device pixel boundaries.
+	float SnapLineY(float Y, float WidthLocal) const { return SnapY(Y - 0.5f * WidthLocal) + 0.5f * WidthLocal; }
 
 	// The rim's knock-out: the edge colour at the rim's alpha over the core's own footprint, so the rim shows only as a
 	// ring and a core below full alpha dims toward dark, never paling over the ink under it.
@@ -884,14 +916,16 @@ public:
 		{
 			return;
 		}
-		const float RimW = Rim ? kRimPx * S : 0.f;
+		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
 		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW, kContourFeather * S, bClosed);
 		if (Rim)
 		{
-			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, 0.8f * S, bClosed);
-			Ribbon(Parts[Under], St, Knock(*Rim), 1.f, 0.f, 0.8f, bClosed);
+			// The rim, the knock-out and the core all fade over the same 0.8 device px, so the knock-out's fade ends inside
+			// the rim's solid row and the rim keeps its whole pixel.
+			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, kCrispFeather * Px, bClosed);
+			Ribbon(Parts[Under], St, Knock(*Rim), 1.f, 0.f, kCrispFeather * Px, bClosed);
 		}
-		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, bClosed);
+		Ribbon(Parts[Core], St, C, 1.f, 0.f, kCrispFeather * Px, bClosed);
 	}
 
 	// A value line (health, guard, poise, a timer): its core with a crisp 1 px dark edge along both sides (about 60 percent,
@@ -902,14 +936,14 @@ public:
 		{
 			return;
 		}
-		const float RimW = Rim ? kRimPx * S : 0.f;
-		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), 1.f * S + RimW, 0.8f * S, false);
+		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
+		Ribbon(Parts[Under], St, Table().Edge, kContourAlpha * ContourK(C.A), WholePx(1.f) + RimW, kCrispFeather * Px, false);
 		if (Rim)
 		{
-			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, 0.8f * S, false);
-			Ribbon(Parts[Under], St, Knock(*Rim), 1.f, 0.f, 0.8f, false);
+			Ribbon(Parts[Under], St, *Rim, 1.f, RimW, kCrispFeather * Px, false);
+			Ribbon(Parts[Under], St, Knock(*Rim), 1.f, 0.f, kCrispFeather * Px, false);
 		}
-		Ribbon(Parts[Core], St, C, 1.f, 0.f, 0.8f, false);
+		Ribbon(Parts[Core], St, C, 1.f, 0.f, kCrispFeather * Px, false);
 	}
 
 	// A filled convex shape (a dot, a lozenge, a small triangle), edged like the lines.
@@ -919,14 +953,14 @@ public:
 		{
 			return;
 		}
-		const float RimW = Rim ? kRimPx * S : 0.f;
+		const float RimW = Rim ? WholePx(kRimPx) : 0.f;
 		Convex(Parts[Under], Pts, N, Table().Edge, kContourAlpha * ContourK(C.A), kContourGrow * S + RimW, kContourFeather * S);
 		if (Rim)
 		{
-			Convex(Parts[Under], Pts, N, *Rim, 1.f, RimW, 0.8f * S);
-			Convex(Parts[Under], Pts, N, Knock(*Rim), 1.f, 0.f, 0.8f);
+			Convex(Parts[Under], Pts, N, *Rim, 1.f, RimW, kCrispFeather * Px);
+			Convex(Parts[Under], Pts, N, Knock(*Rim), 1.f, 0.f, kCrispFeather * Px);
 		}
-		Convex(Parts[Core], Pts, N, C, 1.f, 0.f, 0.8f);
+		Convex(Parts[Core], Pts, N, C, 1.f, 0.f, kCrispFeather * Px);
 	}
 
 	void Dot(float CX, float CY, float R, const FLinearColor& C, const FLinearColor* Rim = nullptr)
@@ -1083,7 +1117,7 @@ private:
 			const float H = Pt.halfWidth + Grow;
 			const float Inner = FMath::Max(0.f, H - Feather * 0.5f);
 			const float Outer = H + Feather * 0.5f;
-			const float Alpha = C.A * AlphaK * Pt.alpha * FMath::Min(1.f, 2.f * H); // a line under 1 px thins in alpha
+			const float Alpha = C.A * AlphaK * Pt.alpha * FMath::Min(1.f, 2.f * H / Px); // a line under 1 device px thins in alpha
 			const FVector2f O(Pt.x, Pt.y);
 			const FVector2f V0 = O - Nrm * Outer;
 			const FVector2f V1 = O - Nrm * Inner;
@@ -1141,6 +1175,9 @@ private:
 	TArray<SlateIndex> AllIdx;
 	FSlateRenderTransform Transform;
 	float S = 1.f;
+	float Px = 1.f;       // one device pixel in local units
+	float DevScale = 1.f; // device pixels per local unit
+	FVector2f DevOrigin = FVector2f(0.f, 0.f);
 	FSlateResourceHandle Handle;
 	FVector2f UV = FVector2f(0.5f, 0.5f);
 	bool bHandle = false;
@@ -1457,10 +1494,6 @@ ftcore::UiStrokeStyle ValueStyle(float Width, std::uint32_t Seed, float S, float
 	return St;
 }
 
-// A value line's middle moved so its edges fall on whole pixels: its full width then covers whole rows, never a soft
-// half row each side.
-float SnapLine(float Y, float WidthPx) { return FMath::RoundToFloat(Y - 0.5f * WidthPx) + 0.5f * WidthPx; }
-
 float Frac(int32 Value, int32 Max) { return Max > 0 ? FMath::Clamp(static_cast<float>(Value) / Max, 0.f, 1.f) : 0.f; }
 
 // The text's top that centres its capitals on MidY (the serif's capitals are 0.62 of its ascent), and the middle of the
@@ -1530,7 +1563,8 @@ ftcore::UiFirstUseMode FirstUseMode()
 // DOWN under the cursor and SWITCH: DOWN in the call slot; party_lone: the screen open on a Lone Carry (ALONE in the state
 // slot), the partner row NOT HERE; marks: the Load at 60 percent of the Release's threshold, the debt at 90 and the
 // boss's weak point open; release: the Load past the threshold (RELEASE, the name brightened) with its shimmer held
-// halfway; defeat: the result card's defeat word. With ft.NewUi.World these show each world's marks and danger words.
+// halfway; defeat: the result card's defeat word; hit: the lead taking a hit, the edge flash held at its peak and the
+// lead's hp low (a fifth), so its low line shows. With ft.NewUi.World these show each world's marks and danger words.
 // A held state never counts a showing or writes the save.
 enum class EUiStateShot : uint8
 {
@@ -1548,6 +1582,7 @@ enum class EUiStateShot : uint8
 	Marks,
 	Release,
 	Defeat,
+	Hit,
 };
 bool IsLoneShot(EUiStateShot S)
 {
@@ -1578,6 +1613,7 @@ EUiStateShot UiStateShot()
 			: V == TEXT("marks")                      ? EUiStateShot::Marks
 			: V == TEXT("release")                    ? EUiStateShot::Release
 			: V == TEXT("defeat")                     ? EUiStateShot::Defeat
+			: V == TEXT("hit")                        ? EUiStateShot::Hit
 													  : EUiStateShot::None;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena UI: -UiStateShot=%s %s."), *V, S == EUiStateShot::None ? TEXT("is not a state; ignored") : TEXT("held"));
 		return S;
@@ -1835,6 +1871,10 @@ public:
 			Ld.releaseReady = Shot == EUiStateShot::Release;
 			Ld.overloaded = false;
 			Ld.debt = 90;
+		}
+		if (Shot == EUiStateShot::Hit && Frame.lead.hpMax > 0)
+		{
+			Frame.lead.hp = Frame.lead.hpMax / 5; // low, under the quarter
 		}
 		Frame.third.giftGuardReady = GiftWhy[1] == ftcore::PressReason::Ok;
 		const uint32 Changed = ftcore::updateArenaHudView(View, Frame);
@@ -2571,6 +2611,7 @@ private:
 		case EUiStateShot::Marks:
 		case EUiStateShot::Release:
 		case EUiStateShot::Defeat:
+		case EUiStateShot::Hit:
 			break;
 		}
 	}
@@ -2811,10 +2852,19 @@ private:
 		{
 			return;
 		}
-		const float YS = SnapLine(Y, Width * S);
-		ftcore::uiStrokeLine(Line, X0, YS, X1, YS, ValueStyle(Width, Seed, S, Taper), From01, To01);
+		const float WD = DevWidth(Width, S);
+		const float YS = SnapLine(Y, Width, S);
+		ftcore::uiStrokeLine(Line, X0, YS, X1, YS, ValueStyle(WD, Seed, S, Taper), From01, To01);
 		Mesh.ValueStroke(Line, C, Rim);
 	}
+
+	// Width px at 1080p (at scale S) as a whole number of device pixels, still in px at 1080p: 1 px is 1.33 at 1440p and
+	// would blur, so it draws as one device pixel there, and 3 px as four.
+	float DevWidth(float Width, float S) const { return Mesh.WholeDev(Width * S) / FMath::Max(S, 0.01f); }
+
+	// A value line's middle moved so its top and bottom edges fall on device pixel boundaries: its full width then covers
+	// whole rows, never a soft half row each side.
+	float SnapLine(float Y, float Width, float S) const { return Mesh.SnapLineY(Y, Mesh.WholeDev(Width * S)); }
 
 	// A whole ring, joined without a seam.
 	void Ring(float CX, float CY, float R, float Width, std::uint32_t Seed, float S, const FLinearColor& C, const FLinearColor* Rim = nullptr) const
@@ -2834,15 +2884,45 @@ private:
 		Mesh.Stroke(Line, C, bClosed);
 	}
 
-	void Danger(float CX, float CY, float Size, const FLinearColor& C) const
+	// The call cue's danger triangle, Size px across (15 px at 1080p): a small mark, so in a world whose marks wear accent2
+	// it is accent2 with the ink rim like the others.
+	void Danger(float CX, float CY, float Size, float A) const
 	{
+		const FUiWorldRow& R = Shown();
+		FLinearColor C = R.CueMark;
+		C.A *= A;
+		FLinearColor Rim = R.Token[static_cast<size_t>(UiToken::Ink)];
+		Rim.A *= A;
 		const FVector2f Pts[3] = {FVector2f(CX, CY - Size * 0.55f), FVector2f(CX + Size * 0.55f, CY + Size * 0.45f), FVector2f(CX - Size * 0.55f, CY + Size * 0.45f)};
-		Mesh.Fill(Pts, 3, C);
+		Mesh.Fill(Pts, 3, C, R.bMarksAccent2 ? &Rim : nullptr);
 	}
 
-	// Low is not told by colour alone: danger red, and a pulse between 60 and 100 percent at 1 Hz.
+	// Low is not told by colour alone: the low colour, and a pulse between 60 and 100 percent at 1 Hz.
 	float LowPulse() const { return 0.8f + 0.2f * FMath::Cos(UE_TWO_PI * Time); }
-	FLinearColor LowTok(bool bLow, float A) const { return bLow ? Tok(UiToken::Danger, A * LowPulse()) : Tok(UiToken::Ink, A); }
+
+	// A value line that turns low (uiDangerSet): ink when not low; low, the low colour pulsing, or, where the world keeps
+	// red to marks and underlines, the line stays ink at full strength and a 1 px red line under the value carries the
+	// pulse, two device pixels below the line's bottom edge.
+	void LowValueLine(float X0, float X1, float Y, float To01, float Width, std::uint32_t Seed, float S, bool bLow, float A, float Taper) const
+	{
+		const FUiWorldRow& R = Shown();
+		if (!bLow)
+		{
+			ValueLine(X0, X1, Y, 0.f, To01, Width, Seed, S, Tok(UiToken::Ink, A), Taper);
+			return;
+		}
+		FLinearColor C = R.LowLine;
+		C.A *= A * (R.bLowUnder ? 1.f : LowPulse());
+		ValueLine(X0, X1, Y, 0.f, To01, Width, Seed, S, C, Taper);
+		if (R.bLowUnder)
+		{
+			FLinearColor U = R.LowUnder;
+			U.A *= A * LowPulse();
+			const float Bottom = SnapLine(Y, Width, S) + 0.5f * Mesh.WholeDev(Width * S);
+			const float UY = Bottom + Mesh.WholeDev(2.f * S) + 0.5f * Mesh.WholeDev(Hud::DangerUnderW * S);
+			ValueLine(X0, X1, UY, 0.f, To01, Hud::DangerUnderW, Seed + 7u, S, U, 0.f);
+		}
+	}
 
 	// A danger word (uiDangerWord) with its top at Top (Asc its face's ascent, W its measured width), the glyphs at A. Where
 	// the world underlines danger words the glyphs are ink and a 1 px danger line runs under their width, just below the
@@ -2867,11 +2947,11 @@ private:
 	// second line), what was just lost rubbed out to a broken trace, low under a quarter.
 	void HpLine(float X0, float Len, float Y, float Hp, float Was, float Width, std::uint32_t Seed, float S, float A) const
 	{
-		const float YS = SnapLine(Y, Width * S); // the track and the rub on the value line's own middle
+		const float YS = SnapLine(Y, Width, S); // the track and the rub on the value line's own middle
 		ftcore::UiStrokeStyle Hair = StrokeStyle(1.f, Seed, S, 0.f);
 		Hair.wobble = 0.3f * S;
 		HLine(X0, X0 + Len, YS, Hp, 1.f, Hair, Tok(UiToken::Ink, 0.8f * A));
-		ValueLine(X0, X0 + Len, YS, 0.f, Hp, Width, Seed + 1u, S, LowTok(Hp < Hud::LowHp, A));
+		LowValueLine(X0, X0 + Len, YS, Hp, Width, Seed + 1u, S, Hp < Hud::LowHp, A, Hud::ValueTaper);
 		if (Was > Hp + 0.004f)
 		{
 			ftcore::UiStrokeStyle Rub = StrokeStyle(1.6f, Seed + 2u, S, 0.f);
@@ -2996,7 +3076,7 @@ private:
 			// GUARD in the labels' size at the row's left, its line from past the word to the hp line's end.
 			const float G = FMath::Clamp(L.stamina01, 0.f, 1.f);
 			P.Text(X0, GuardBase - NoteAsc, GuardWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
-			ValueLine(X0 + GuardWordW + 12.f * S, X0 + Len, CapMid(GuardBase, NoteAsc), 0.f, G, Hud::GuardW, 205, S, LowTok(G < Hud::LowHp, A), 0.f);
+			LowValueLine(X0 + GuardWordW + 12.f * S, X0 + Len, CapMid(GuardBase, NoteAsc), G, Hud::GuardW, 205, S, G < Hud::LowHp, A, 0.f);
 		}
 		if (L.debt >= 0)
 		{
@@ -3027,25 +3107,31 @@ private:
 			P.Text(X0, NameTop, LeadName, LeadNameFont, NameC);
 			if (LoadName.fill > 0.001f)
 			{
-				const float LoadY = HpY - (0.5f * Hud::LeadHpW + 4.f + 0.5f * Hud::LoadW) * S;
+				const float LoadY = SnapLine(HpY - (0.5f * Hud::LeadHpW + 4.f + 0.5f * Hud::LoadW) * S, Hud::LoadW, S);
 				const float LoadX1 = X0 + LeadNameW;
 				const FMarkTok M = MarkTok(A);
-				ValueLine(X0, LoadX1, LoadY, 0.f, LoadName.fill, Hud::LoadW, 207, S, M.C, 0.f, M.RimOrNull());
+				const bool bTick = LoadName.fill < 0.999f;
+				// The tick on device pixels: its right edge, its width (two px at 1080p, whole device pixels) and its top and
+				// bottom, so it stays one crisp block as it moves; the line's fill ends at the same snapped edge.
+				const float TX = Mesh.SnapX(X0 + LeadNameW * LoadName.fill);
+				const float Fill = bTick && LeadNameW > 0.f ? FMath::Clamp((TX - X0) / LeadNameW, 0.f, 1.f) : LoadName.fill;
+				ValueLine(X0, LoadX1, LoadY, 0.f, Fill, Hud::LoadW, 207, S, M.C, 0.f, M.RimOrNull());
 				const FLinearColor Acc = Tok(UiToken::Accent, A);
-				if (LoadName.fill < 0.999f)
+				if (bTick)
 				{
-					const float TX = X0 + LeadNameW * LoadName.fill;
+					const float TW = Mesh.WholePx(2.f);
 					const float TH = (0.5f * Hud::LoadW + 3.f) * S;
-					const FVector2f Tick[4] = {FVector2f(TX - 2.f * S, LoadY - TH), FVector2f(TX, LoadY - TH), FVector2f(TX, LoadY + TH),
-						FVector2f(TX - 2.f * S, LoadY + TH)};
+					const float TY0 = Mesh.SnapY(LoadY - TH);
+					const float TY1 = Mesh.SnapY(LoadY + TH);
+					const FVector2f Tick[4] = {FVector2f(TX - TW, TY0), FVector2f(TX, TY0), FVector2f(TX, TY1), FVector2f(TX - TW, TY1)};
 					Mesh.Fill(Tick, 4, Acc);
 				}
 				if (LoadName.shimmer >= 0.f)
 				{
 					const float Band = 0.22f;
 					const float B0 = -Band + (1.f + Band) * LoadName.shimmer;
-					const float From = FMath::Clamp(B0, 0.f, LoadName.fill);
-					const float To = FMath::Clamp(B0 + Band, 0.f, LoadName.fill);
+					const float From = FMath::Clamp(B0, 0.f, Fill);
+					const float To = FMath::Clamp(B0 + Band, 0.f, Fill);
 					ValueLine(X0, LoadX1, LoadY, From, To, Hud::LoadW, 208, S, Acc, 0.f);
 				}
 			}
@@ -3249,7 +3335,7 @@ private:
 		const float Hp = B.present ? Frac(B.hp, B.hpMax) : Frac(T.hp, T.hpMax);
 
 		const float HpW = B.present ? 7.f : 3.8f;
-		const float YL = SnapLine(Y, HpW * S); // the track and the rub on the value line's own middle
+		const float YL = SnapLine(Y, HpW, S); // the track and the rub on the value line's own middle
 		ftcore::UiStrokeStyle Hair = StrokeStyle(1.f, 99, S, 0.f);
 		Hair.wobble = 0.3f * S;
 		HLine(X0, X0 + Len, YL, Hp, 1.f, Hair, Tok(UiToken::Ink, 0.8f * A));
@@ -3361,7 +3447,7 @@ private:
 				}
 				else
 				{
-					Danger(TX - 20.f * S, MidY, 15.f * S, Tok(UiToken::Danger, TA));
+					Danger(TX - 20.f * S, MidY, 15.f * S, TA);
 				}
 			}
 			P.Text(TX, Top, Word, CallFont, Tok(UiToken::Ink, TA));
@@ -3470,7 +3556,7 @@ private:
 		const float OLen = 300.f * S;
 		const float OX = Size.X * 0.5f - OLen * 0.5f;
 		const float OHp = Frac(T.hp, T.hpMax);
-		const float OYL = SnapLine(OY, Hud::FoeHpW * S);
+		const float OYL = SnapLine(OY, Hud::FoeHpW, S);
 		HLine(OX, OX + OLen, OYL, OHp, 1.f, StrokeStyle(1.f, 105, S, 0.f), Tok(UiToken::Ink, 0.3f * A));
 		ValueLine(OX, OX + OLen, OYL, 0.f, OHp, Hud::FoeHpW, 106, S, Tok(UiToken::Ink, A));
 		ValueLine(OX, OX + OLen, OY + 10.f * S, 0.f, FMath::Clamp(T.poise01, 0.f, 1.f), Hud::PoiseW, 107, S, Tok(UiToken::Ink, 0.7f * A));
@@ -3807,7 +3893,7 @@ private:
 				BreakK = 1.f;
 			}
 		}
-		HitA = Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
+		HitA = UiStateShot() == EUiStateShot::Hit ? 1.f : Pulse(Now, Runner.GetPlayerHitTime(), kHitEdgeLife);
 		ParryA = Pulse(Now, Runner.GetParryTime(), kParryEdgeLife);
 		bResult = Fight.over();
 		if (bResult)
@@ -3996,12 +4082,14 @@ private:
 	{
 		const float S = P.S;
 		const float CX = Size.X * 0.5f;
-		// A hit: a brief flash of the danger colour in from the screen's edges (under 0.4 s), each edge a soft lens falloff with
-		// no inner edge or line anywhere.
+		// A hit: a brief flash in from the screen's edges (under 0.4 s), each edge a soft lens falloff with no inner edge or
+		// line anywhere. Its colour is the world's (uiDangerSet): the danger colour, or where red is kept to marks a cold dark
+		// closing in, a little stronger since a darkening reads less than a colour.
 		if (HitA > 0.f)
 		{
-			const FLinearColor C = Tok(UiToken::Danger, 1.f);
-			const float Pk = 0.3f * HitA * HitA;
+			const FUiWorldRow& R = Shown();
+			const FLinearColor C = R.HitFlash;
+			const float Pk = (R.bLowUnder ? 0.45f : 0.3f) * HitA * HitA;
 			const float D = 120.f * S;
 			Mesh.Vignette(CX, 0.f, Size.X * 0.7f, D, Pk, &C);
 			Mesh.Vignette(CX, Size.Y, Size.X * 0.7f, D, Pk, &C);

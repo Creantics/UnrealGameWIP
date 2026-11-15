@@ -313,6 +313,56 @@ TEST_CASE("ui style: the Unwritten's red is on marks only, and its danger word i
     CHECK_FALSE(importUiStyle(R"({"palettes": {"protan": {"danger_underline": true}}})", t, &err));
 }
 
+TEST_CASE("ui style: every colour the Unwritten's HUD can draw is red only on a mark or an underline") {
+    // Red: the red channel more than 1.5 times each other one (the blood red, the danger salmon; not the greys, the
+    // gold or the edge).
+    const auto isRed = [](UiColor c) { return c.r > 0.2f && c.r > 1.5f * c.g && c.r > 1.5f * c.b; };
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle shipped;
+    REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
+    const UiWorld unw = UiWorld::Unwritten;
+    const UiPalette p = UiPalette::Default; // the colour-vision palettes move danger on purpose (ruled to stay)
+    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
+        // The tokens: only accent2 (the marks' red) and danger (fed to marks and underlines below) are red.
+        for (std::size_t t = 0; t < kUiTokenCount; ++t) {
+            const UiToken tk = static_cast<UiToken>(t);
+            CAPTURE(t);
+            if (tk == UiToken::Accent2 || tk == UiToken::Danger) {
+                CHECK(isRed(uiColor(s, unw, p, tk)));
+            } else {
+                CHECK_FALSE(isRed(uiColor(s, unw, p, tk)));
+            }
+        }
+        CHECK_FALSE(isRed(s.edge));
+        // Marks may be red; text, flashes and value lines may not.
+        const UiColor ink = uiColor(s, unw, p, UiToken::Ink);
+        CHECK(isRed(uiMarkColor(s, unw, p, ink)));
+        const UiDangerWord w = uiDangerWord(s, unw, p);
+        CHECK(w.underlined);
+        CHECK_FALSE(isRed(w.word));
+        CHECK(isRed(w.underline));
+        const UiDangerSet d = uiDangerSet(s, unw, p);
+        CHECK_FALSE(isRed(d.hitFlash));
+        CHECK(d.hitFlash == uiColor(s, unw, p, UiToken::Backing));
+        CHECK_FALSE(isRed(d.lowLine));
+        CHECK(d.lowLine == ink);
+        CHECK(d.lowUnderlined);
+        CHECK(isRed(d.lowUnderline));
+        CHECK(d.cueMark == uiColor(s, unw, p, UiToken::Accent2)); // a small mark: the marks' red
+        // The other worlds keep danger on the flash, the low line and the triangle, with no underline.
+        for (const UiWorld wo : {UiWorld::Solhaven, UiWorld::Lattice}) {
+            const UiDangerSet o = uiDangerSet(s, wo, p);
+            const UiColor danger = uiColor(s, wo, p, UiToken::Danger);
+            CHECK(o.hitFlash == danger);
+            CHECK(o.lowLine == danger);
+            CHECK(o.cueMark == danger);
+            CHECK_FALSE(o.lowUnderlined);
+        }
+    }
+}
+
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
     UiStyle s;
     std::string err;

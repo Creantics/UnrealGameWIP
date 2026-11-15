@@ -174,6 +174,21 @@ struct UiDangerWord {
 };
 FTCORE_API UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette);
 
+// Every other place the fight HUD may put the danger colour; the painter reads the danger token nowhere but here and
+// through uiDangerWord. In a world with UiWorldRules::dangerUnderline the red stays on small marks and the 1 px
+// underline: the hit's edge flash is the world's backing (a cold dark vignette), a low hp or guard line keeps the ink
+// and carries a 1 px danger underline under its lit length (the pulse moves onto it), and the call cue's triangle, a
+// small mark, wears the mark colour (uiMarkColor). Elsewhere the flash, the low line and the triangle are danger, with
+// no underline.
+struct UiDangerSet {
+    UiColor hitFlash;     // the edge flash when the lead is hit
+    UiColor lowLine;      // a low value line
+    UiColor lowUnderline; // the line under it, drawn only when lowUnderlined
+    bool lowUnderlined = false;
+    UiColor cueMark;      // the call cue's danger triangle
+};
+FTCORE_API UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette);
+
 // A role's size in pixels for a viewport `height` px tall at the player's text scale (1.0..2.0, clamped), never below
 // the floors.
 FTCORE_API float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale);
