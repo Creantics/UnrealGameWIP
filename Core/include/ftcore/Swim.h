@@ -268,7 +268,7 @@ private:
     // A finite v's horizontal part as a unit vector (z 0), scaled by its largest part first so a huge v cannot
     // overflow to infinity (and a zero direction). False when that part is under 1e-4 m long.
     static bool unitXY(SwimVec v, SwimVec& out) {
-        const float m = std::fmax(absf(v.x), absf(v.y));
+        const float m = std::fmax(swim_detail::absf(v.x), swim_detail::absf(v.y));
         if (!(m > 0.f)) return false;
         const float qx = v.x / m, qy = v.y / m;
         const float len = std::sqrt(qx * qx + qy * qy); // 1..sqrt(2)
