@@ -2,6 +2,8 @@
 
 #include "ftcore/WorldWave.h"
 
+#include "ftcore/Cutscene.h"
+
 #include "AllocCounter.h"
 
 #include <cmath>
@@ -151,6 +153,76 @@ TEST_CASE("WorldWaveParams: ink is the default front, no kept lights; a bad keep
     bad = p;
     bad.front = static_cast<WaveFront>(7);
     CHECK(checkWorldWaveParams(bad) == WorldWaveRefusal::BadShape);
+}
+
+TEST_CASE("WorldWaveParams: the world it brings is the Unwritten unless the definition names another") {
+    const WorldWaveParams plain;
+    REQUIRE(plain.toWorld != nullptr);
+    CHECK(std::string(plain.toWorld) == "unwritten");
+    const WorldWaveParams street = streetWaveParams();
+    REQUIRE(street.toWorld != nullptr);
+    CHECK(std::string(street.toWorld) == std::string(kWaveDefaultToWorld));
+    WorldWaveParams other = street;
+    other.toWorld = "lattice";
+    CHECK(std::string(other.toWorld) == "lattice");
+    CHECK(checkWorldWaveParams(other) == WorldWaveRefusal::None);  // Core does not judge the id
+}
+
+TEST_CASE("worldWaveWorldId: the three worlds as static-storage ids, anything else refused") {
+    const char* sol = worldWaveWorldId("solhaven");
+    const char* lat = worldWaveWorldId("lattice");
+    const char* unw = worldWaveWorldId("unwritten");
+    REQUIRE(sol != nullptr);
+    REQUIRE(lat != nullptr);
+    REQUIRE(unw != nullptr);
+    CHECK(std::string(sol) == "solhaven");
+    CHECK(std::string(lat) == "lattice");
+    CHECK(unw == kWaveDefaultToWorld);
+    // The same pointer whatever buffer the id came from.
+    char buffer[16] = "lattice";
+    CHECK(worldWaveWorldId(std::string_view(buffer, 7)) == lat);
+    CHECK(worldWaveWorldId("") == nullptr);
+    CHECK(worldWaveWorldId("Lattice") == nullptr);
+    CHECK(worldWaveWorldId("lattic") == nullptr);
+    CHECK(worldWaveWorldId("lattice ") == nullptr);
+    CHECK(worldWaveWorldId("nowhere") == nullptr);
+}
+
+TEST_CASE("worldWaveParamsForCue: the cue's world copied as a static id, never a pointer into the cue") {
+    CutsceneWaveCue cue;
+    REQUIRE(cue.setWorld("lattice"));
+    cue.reverse = true;
+    WorldWaveParams p;
+    REQUIRE(worldWaveParamsForCue(cue, p));
+    REQUIRE(p.toWorld != nullptr);
+    CHECK(p.toWorld == worldWaveWorldId("lattice"));
+    const char* begin = reinterpret_cast<const char*>(&cue);
+    CHECK_FALSE((p.toWorld >= begin && p.toWorld < begin + sizeof(cue)));
+    CHECK(p.direction == WaveDirection::Reverse);
+    const WorldWaveParams street = streetWaveParams();
+    CHECK(p.slowSpeed == street.slowSpeed);
+    CHECK(p.tongueLead == street.tongueLead);
+    CHECK(checkWorldWaveParams(p) == WorldWaveRefusal::None);
+    // The id outlives the cue's buffer being rewritten.
+    REQUIRE(cue.setWorld("solhaven"));
+    CHECK(std::string(p.toWorld) == "lattice");
+
+    CutsceneWaveCue plain; // the defaults: street, the Unwritten, forward
+    WorldWaveParams q;
+    REQUIRE(worldWaveParamsForCue(plain, q));
+    CHECK(q.toWorld == kWaveDefaultToWorld);
+    CHECK(q.direction == WaveDirection::Forward);
+
+    WorldWaveParams untouched;
+    untouched.slowSpeed = 3.f;
+    CutsceneWaveCue badWorld;
+    REQUIRE(badWorld.setWorld("nowhere"));
+    CHECK_FALSE(worldWaveParamsForCue(badWorld, untouched));
+    CutsceneWaveCue badPreset;
+    REQUIRE(badPreset.setPreset("alley"));
+    CHECK_FALSE(worldWaveParamsForCue(badPreset, untouched));
+    CHECK(untouched.slowSpeed == 3.f);
+    CHECK(untouched.toWorld == kWaveDefaultToWorld);
 }
 
 TEST_CASE("worldWaveShaderConstants: centimetres, the front's value, the keeps, reach and span from the tongues") {
@@ -1233,4 +1305,49 @@ TEST_CASE("updateWorldWave zeroes frontSpeed on its early returns; the state's c
     CHECK(early.origin.y == later.origin.y);
     CHECK(early.origin.z == later.origin.z);
     sameConstants(worldWaveShaderConstants(early, later, e.frame), worldWaveShaderConstants(later, e.frame));
+}
+
+TEST_CASE("WorldWaveClock: game time until held, the held time while held") {
+    WorldWaveClock clock;
+    CHECK(clock.now(12.5) == doctest::Approx(12.5));
+    clock.hold(3.0);
+    CHECK(clock.now(12.5) == doctest::Approx(3.0));
+    CHECK(clock.now(20.0) == doctest::Approx(3.0));
+}
+
+TEST_CASE("WorldWaveClock: a release with a wave set goes on from the held time, no jump") {
+    WorldWaveClock clock;
+    clock.hold(3.0);
+    clock.release(10.0, true);
+    CHECK_FALSE(clock.held);
+    CHECK(clock.now(10.0) == doctest::Approx(3.0));
+    CHECK(clock.now(11.5) == doctest::Approx(4.5));
+}
+
+TEST_CASE("WorldWaveClock: a second release while the wave runs keeps the offset") {
+    WorldWaveClock clock;
+    clock.hold(3.0);
+    clock.release(10.0, true);
+    clock.release(11.0, true);
+    CHECK(clock.now(11.0) == doctest::Approx(4.0));
+    clock.settle(true);
+    CHECK(clock.now(12.0) == doctest::Approx(5.0));
+}
+
+TEST_CASE("WorldWaveClock: a release with no wave is game time; the offset ends when no wave is set") {
+    WorldWaveClock plain;
+    plain.hold(3.0);
+    plain.release(10.0, false);
+    CHECK(plain.now(10.0) == doctest::Approx(10.0));
+
+    WorldWaveClock clock;
+    clock.hold(3.0);
+    clock.release(10.0, true);
+    clock.settle(false);
+    CHECK(clock.now(10.0) == doctest::Approx(10.0));
+
+    WorldWaveClock heldNoWave;
+    heldNoWave.hold(3.0);
+    heldNoWave.settle(false);
+    CHECK(heldNoWave.now(10.0) == doctest::Approx(3.0));
 }

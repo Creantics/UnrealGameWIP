@@ -815,49 +815,14 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 		switch (E.type)
 		{
 		case ftcore::ArenaEventType::AttackStarted:
-		{
-			if (E.source != ftcore::kArenaPlayer)
+			if (E.source == Source)
 			{
-				break;
-			}
-			const FightClip Want = ftcore::arenaPlayerStrike(Kit, E.move);
-			if (Want == FightClip::Stance)
-			{
-				break;
-			}
-			Strike = Want;
-			if (!bClips)
-			{
-				break;
-			}
-			// A strike cut short and fading: the new one starts clean.
-			if (FadeSince >= 0.0)
-			{
-				Animator.reset();
-				FadeSince = -1.0;
-			}
-			// Its impact as the attack goes active.
-			const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, E.move);
-			const double KeyAt = Attack ? T + static_cast<double>(Attack->startup) : -1.0;
-			FightClip Played = FightClip::Stance;
-			if (Want == FightClip::Counter || Want == FightClip::Finisher)
-			{
-				// Long clips (a second of wind-up) on a riposte's short startup: faster, so less of the wind-up is skipped.
-				Played = Animator.play(Want, T, KeyAt, kQuickClipRate) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
-			}
-			else
-			{
-				Played = Animator.playStrike(Want, T, KeyAt);
-			}
-			if (Played != FightClip::Stance)
-			{
-				Strike = Played;
+				StartStrike(E.move, T);
 			}
 			break;
-		}
 		case ftcore::ArenaEventType::Hit:
 			// The fist's spark on the hit point (a shot's or cast's impact plays as it arrives, in Track).
-			if (E.source == ftcore::kArenaPlayer && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+			if (E.source == Source && bImpacts && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 			{
 				ImpactAt = AimPoint;
 				ImpactDue = T;
@@ -874,6 +839,68 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 	}
 }
 
+double FFTLeadWeapons::FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move)
+{
+	switch (Kit.weapon)
+	{
+	case ftcore::ArenaWeapon::Guns:
+		return ftcore::arenaPlayerStrike(Kit, Move) == FightClip::WeaponRight ? kTracerTime : 0.0;
+	case ftcore::ArenaWeapon::Magic:
+		return kBoltTime;
+	default:
+		return 0.0;
+	}
+}
+
+void FFTLeadWeapons::StartStrike(uint8 Move, double T)
+{
+	// The blow before (a string's) ends here: its clip counted whole when it got into its recovery.
+	if (bStrikeClip)
+	{
+		ClipsCompleted += LastPart == ftcore::ArenaPart::Recovery ? 1 : 0;
+		bStrikeClip = false;
+	}
+	if (!IsOn())
+	{
+		return;
+	}
+	const FightClip Want = ftcore::arenaPlayerStrike(Kit, Move);
+	if (Want == FightClip::Stance)
+	{
+		return;
+	}
+	Strike = Want;
+	if (!bClips)
+	{
+		return;
+	}
+	// A strike cut short and fading: the new one starts clean.
+	if (FadeSince >= 0.0)
+	{
+		Animator.reset();
+		FadeSince = -1.0;
+	}
+	// Its impact as the attack goes active.
+	const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, Move);
+	const double KeyAt = Attack ? T + static_cast<double>(Attack->startup) : -1.0;
+	FightClip Played = FightClip::Stance;
+	if (Want == FightClip::Counter || Want == FightClip::Finisher)
+	{
+		// Long clips (a second of wind-up) on a riposte's short startup: faster, so less of the wind-up is skipped.
+		Played = Animator.play(Want, T, KeyAt, kQuickClipRate) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
+	}
+	else
+	{
+		Played = Animator.playStrike(Want, T, KeyAt);
+	}
+	if (Played != FightClip::Stance)
+	{
+		Strike = Played;
+		bStrikeClip = true;
+		++ClipsStarted;
+	}
+}
+
 void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 {
 	if (!IsOn())
@@ -881,6 +908,11 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		return;
 	}
 	const bool bAttacking = IsAttack(P.action);
+	if (!bAttacking && IsAttack(LastAction) && bStrikeClip)
+	{
+		ClipsCompleted += LastPart == ftcore::ArenaPart::Recovery ? 1 : 0;
+		bStrikeClip = false;
+	}
 	const bool bWentActive = bAttacking && P.part == ftcore::ArenaPart::Active
 		&& (LastPart != ftcore::ArenaPart::Active || LastMove != P.move || LastAction != P.action);
 	if (bWentActive)
@@ -938,8 +970,11 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				Vfx->SetParameters(static_cast<float>(FMath::Max(Path.Size(), 1.0) / Reach), 1.f);
 			}
 			Play(Travel, T);
-			ImpactAt = AimPoint;
-			ImpactDue = T + Flight;
+			if (bImpacts)
+			{
+				ImpactAt = AimPoint;
+				ImpactDue = T + Flight;
+			}
 		}
 	}
 	if (ImpactDue >= 0.0 && T + 1e-6 >= ImpactDue)
@@ -1129,6 +1164,49 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 	Instance->SetArmAim(Side, AimPoint, W, Axis, Reach);
 }
 
+void FFTLeadWeapons::SetAimAtBody(const FVector& Surface, double Bottom, double Top, const FVector& Ranged)
+{
+	SetAim(Ranged, true);
+	const USkeletalMeshComponent* Body = Skin.Get();
+	if (Kit.weapon != ftcore::ArenaWeapon::Gauntlets || !Body)
+	{
+		return;
+	}
+	// The limb's chain, root first: the arm from the shoulder to the knuckles, a kick's leg from the hip to the ball.
+	static const FName ArmChain[2][4] = {
+		{FName(TEXT("upperarm_l")), FName(TEXT("lowerarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l"))},
+		{FName(TEXT("upperarm_r")), FName(TEXT("lowerarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r"))}};
+	static const FName LegChain[2][4] = {
+		{FName(TEXT("thigh_l")), FName(TEXT("calf_l")), FName(TEXT("foot_l")), FName(TEXT("ball_l"))},
+		{FName(TEXT("thigh_r")), FName(TEXT("calf_r")), FName(TEXT("foot_r")), FName(TEXT("ball_r"))}};
+	static const FName Head(TEXT("head"));
+	const bool bKick = Strike == FightClip::KickLeft || Strike == FightClip::KickRight;
+	const int32 Side = bKick ? (Strike == FightClip::KickLeft ? 0 : 1) : (StrikesLeft() ? 0 : 1);
+	const FName* Chain = bKick ? LegChain[Side] : ArmChain[Side];
+	FVector Joint[4];
+	for (int32 I = 0; I < 4; ++I)
+	{
+		if (!Body->DoesSocketExist(Chain[I]))
+		{
+			return; // not a body with these bones: the chest as before
+		}
+		Joint[I] = Body->GetSocketLocation(Chain[I]);
+	}
+	const double Reach = FVector::Dist(Joint[0], Joint[1]) + FVector::Dist(Joint[1], Joint[2]) + FVector::Dist(Joint[2], Joint[3]);
+	// The strike height: the shoulder's, or the middle of the hip-to-knee line; within the body, never over the head.
+	double Z = bKick ? (Joint[0].Z + Joint[1].Z) * 0.5 : Joint[0].Z;
+	Z = FMath::Clamp(Z, FMath::Min(Bottom, Top), FMath::Max(Bottom, Top));
+	if (Body->DoesSocketExist(Head))
+	{
+		Z = FMath::Min(Z, Body->GetSocketLocation(Head).Z);
+	}
+	const FVector OnBody(Surface.X, Surface.Y, Z);
+	const FVector Arm = OnBody - Joint[0];
+	const double Length = Arm.Size();
+	AimPoint = Length > Reach && Length > 1e-3 ? Joint[0] + Arm * (Reach / Length) : OnBody;
+	ContactPull = FVector::Dist(AimPoint, OnBody);
+}
+
 void FFTLeadWeapons::LogAim()
 {
 	const USkeletalMeshComponent* Body = Skin.Get();
@@ -1174,8 +1252,9 @@ void FFTLeadWeapons::LogAim()
 		bAimed ? TEXT(", at the target") : TEXT(", straight ahead"));
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets && Body->DoesSocketExist(Knuckle))
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point"), Prefix(),
-			FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint));
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point (%.0f cm up; reach pulled it %.1f cm off the body)"),
+			Prefix(), FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint), AimPoint.Z - Body->GetComponentLocation().Z,
+			ContactPull);
 	}
 }
 
@@ -1238,6 +1317,8 @@ void FFTLeadWeapons::Restart()
 	LastMove = 0;
 	ActiveCount = 0;
 	LastActiveTime = -1e9;
+	ClipsStarted = ClipsCompleted = 0;
+	bStrikeClip = false;
 	bWarding = false;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;
@@ -1290,6 +1371,8 @@ void FFTLeadWeapons::Reset()
 	Strike = FightClip::Stance;
 	ActiveCount = 0;
 	LastActiveTime = -1e9;
+	ClipsStarted = ClipsCompleted = 0;
+	bStrikeClip = false;
 	bWarding = false;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;

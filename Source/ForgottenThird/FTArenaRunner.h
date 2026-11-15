@@ -25,11 +25,13 @@
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaGun.h"
+#include "ftcore/ArenaLockFrame.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
 #include "ftcore/Places.h"
+#include "ftcore/ReadyStance.h"
 #include "ftcore/TableRing.h"
 #include "ftcore/TableSet.h"
 #include "ftcore/BeatChoreo.h"
@@ -204,6 +206,11 @@ public:
 	// The result offers to fight again.
 	bool CanFightAgain() const { return bFightAgain; }
 	AFTArenaFighter* GetPlayerFigure() const { return PlayerFigure; }
+	// The partner's figure in a carrying run; null without one.
+	AFTArenaFighter* GetAllyFigure() const { return AllyFigure; }
+	// Logs the lead's place in the rendered frame as last sampled for "lead in frame" (its shares and whether it kept
+	// the rule), tagged with a view's name: -ArenaShotAt's views say which frames broke the rule. Not in Shipping.
+	void LogLeadFrameShot(const TCHAR* Shot) const;
 	// The zone the fight is held in, for the HUD's edge cue: its walls, the world's look (0 the plain zone, 1 Solhaven,
 	// 2 the Lattice, 3 the Unwritten), where the player stands (metres) and the height of the ground there (cm).
 	const ftcore::ArenaZone& GetZone() const { return Fit.zone; }
@@ -236,6 +243,23 @@ public:
 	// When enemy Index was last hit (far in the past when never).
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
+	// Where the last blow on the lead came from, from the lead toward the striker in the camera's ground frame as it was
+	// drawn then: X to the camera's right, Y ahead, a unit vector (the hit flash's side). False before any blow this
+	// fight, and when the last blow had no enemy behind it (a hazard): no side then.
+	bool GetLastHitFrom(FVector2D& RightAhead, double& At) const
+	{
+		RightAhead = LastHitFrom;
+		At = LastHitAt;
+		return LastHitAt > -1e8 && !LastHitFrom.IsZero();
+	}
+	// The lock's aim point (the telegraph, else the weak point, else the chest of a tall target) above the frame this
+	// frame: true, with EdgeShare its place on the screen's top edge (X 0 left to 1 right, Y 0 the top). The UI draws
+	// the marker there.
+	bool GetLockAimAbove(FVector2D& EdgeShare) const
+	{
+		EdgeShare = FVector2D(LockAimX, 0.0);
+		return bLockAimAbove;
+	}
 	double GetAllyHitTime() const { return AllyHitTime; }
 	double GetParryTime() const { return ParryTime; }
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
@@ -462,6 +486,32 @@ private:
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// The lock's frame on a tall target (ftcore/ArenaLockFrame.h): the rig at pitch 0 (the zone's and the aim's), the
+	// share of its offset the boom's wall probe leaves, the frame's aspect, the lead's body, and the height (m over the
+	// lead's floor) the lock aims at on the target.
+	ftcore::ArenaCameraPose LockRig() const;
+	float BoomWallShare() const;
+	float LockAspect() const;
+	ftcore::ArenaLeadBody LeadBody() const;
+	float LockAimHeight(int32 Target, float Base, float Top) const;
+	float LockLow = 0.f;          // 0..1: the low lens's share (eased at ftcore::kArenaLow.rate toward LowFit)
+	bool bShortArmLogged = false; // the arm under ftcore::kArenaHeadKeptArm was logged this fight
+	bool bLowRig = false;         // the low rig was last given to the boom
+	float LowSideSign = 1.f;      // the low shoulder's side (ftcore::arenaLowSide: +1 right, -1 left)
+	float LowSideNow = 1.2f;      // m: the low shoulder as eased toward that side
+	float LowFit = 1.f;           // the low share the arm allows (ftcore::arenaLowFit), for the arm, aspect and head below
+	float LowFitArm = -1.f, LowFitAspect = 0.f, LowFitHead = 0.f;
+	float PartnerYawNow = 0.f;    // degrees: the partner's soft turn (ftcore::arenaPartnerYaw), eased
+	float PartnerYawGoal = 0.f;
+	float LastLookInputAt = -1e9f; // fight time of the last look input (the stick or the mouse): the soft turn waits
+	bool bLockAimAbove = false;   // the lock's aim point is above the frame this frame (GetLockAimAbove)
+	float LockAimX = 0.5f;
+	// The lens this frame solved (the arm as the boom's probe leaves it) and that camera as the brain reads it: the next step's feed.
+	ftcore::ArenaCameraPose CameraLensNow;
+	ftcore::PartnerCameraView FedCamera;
+	bool bFedCamera = false;
+	int32 LockTarget = -1;        // the tall target held to the lead's rule this frame; -1 none
+	bool bLeadHeld = false;       // the last frame held the lead's rule (the next frame's sample measures it)
 	// The lead's cylinder (Core's ReloadStarted, Reloaded and DryPress events): where the reload clip, the dry-press flinch
 	// and their sounds attach once they exist. For now they only log.
 	void OnLeadReload(bool bStarted, int32 Amount);
@@ -1034,6 +1084,8 @@ private:
 	double EnemyHitTime[ftcore::kMaxArenaEnemies];
 	uint8 LastPart[ftcore::kMaxArenaEnemies] = {};
 	double PlayerHitTime = -1e9;
+	FVector2D LastHitFrom = FVector2D::ZeroVector;
+	double LastHitAt = -1e9;
 	double ParryTime = -1e9;
 	double ReleaseTime = -1e9;
 	int32 ReleaseSpent = 0;
@@ -1046,8 +1098,9 @@ private:
 	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurn) on top of CameraYaw, which stays on the lock's
 	// line. It goes into CameraYaw once nothing is followed (ftcore::arenaFrameYawStep), so the view never jumps.
 	float FrameTurn = 0.f;
-	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read.
-	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}); }
+	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read (the partner's soft turn
+	// included, as the drawn camera and the control rotation have it).
+	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}) + PartnerYawNow; }
 	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
 	ftcore::ArenaFrameRules FrameRules() const
 	{
@@ -1074,6 +1127,19 @@ private:
 	float FrameBandFoe[4] = {};
 	float FrameBandGap[4] = {};
 	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
+	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
+	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.
+	void SampleLeadFrame();
+	void ResetLeadFrameChecks();
+	int32 LeadFrameFrames = 0, LeadFrameKept = 0, LeadFrameVisible = 0;
+	ftcore::ArenaLeadShares LeadShotShares; // the last frame sampled on a tall target (bLeadShotSampled), for LogLeadFrameShot
+	bool bLeadShotSampled = false;
+	float LeadFeetLeast = 1.f, LeadHeadMost = 0.f, LeadSideWorst = 0.f;
+	// The three samples that missed the rule most (how far past it, a share of the frame; 1 + for one behind the
+	// camera) and their fight times, worst first.
+	float LeadMissWorst[3] = {0.f, 0.f, 0.f};
+	float LeadMissAt[3] = {-1.f, -1.f, -1.f};
+	int32 TellFrames = 0, TellInPlace = 0, TellPinned = 0, TellEdge = 0;
 #endif
 
 	// Impact feedback. The jolt, the camera shake the run forces (-ArenaCameraShake=<0..1>; below 0: the setting), the
@@ -1136,6 +1202,13 @@ private:
 	bool bFiguresSwapped = false;        // PlayerFigure and AllyFigure have swapped an odd number of times this fight
 	uint8 StartLead = 0;                 // the session lead the fight began with (a restart goes back to it)
 	const FFTLeadLook* PlayerLook = nullptr; // the look PlayerFigure wears (swaps with AllyLook on a takeover)
+	// The ready stances (Data/Anim/ready_stance.json, read at the first ask) and each figure's (0 the player's, 1 the
+	// ally's), by the look it wears: the look's name maps to a stance, looked up again only when the look changes.
+	ftcore::ReadyStanceSet ReadyStances;
+	bool bReadyStancesRead = false;
+	const FFTLeadLook* ReadyLookOf[2] = {nullptr, nullptr};
+	const ftcore::ReadyStance* ReadyOf[2] = {nullptr, nullptr};
+	const ftcore::ReadyStance* ReadyStanceFor(int32 Figure, const FFTLeadLook* Look);
 	ftcore::PartnerBrain AllyBrain;
 	ftcore::PartnerTuning AllyTuning;
 	// The report windows (TrackPartner): attack seconds this window, the totals at its start, its counts.
@@ -1164,6 +1237,25 @@ private:
 	int32 PartnerJoinAsks = 0, PartnerJoinsLanded = 0, PartnerJoinsRefused = 0, PartnerJoinDisagree = 0;
 	// Stationing: steps the partner was on (and fed the camera), and of them the steps stationing ran.
 	int32 PartnerOnSteps = 0, PartnerStationedSteps = 0, PartnerCameraSteps = 0;
+	// "Arena check: partner in play": the steps the partner (up, in the fight) stood inside the play camera's frustum
+	// (ftcore::partnerInFrame on ArenaInput::partnerCamera), and its distinct actions (a new intent other than Wait, or a new string).
+	// PartnerClearSteps: of the steps on screen, those it was not hidden behind the locked target from the lens
+	// (ftcore::arenaHiddenBehind on both its middle and its head).
+	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0, PartnerClearSteps = 0;
+	float PartnerPlaySeconds = 0.f;
+	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
+	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;
+	ftcore::Vec2 PartnerStillAt{};
+	bool bPartnerStillAt = false;
+	// The act in progress for that count: from when, to the last step seen, where the partner stood at its start, and
+	// whether it was carried out (FlushPartnerAction counts it).
+	float PartnerActFrom = -1.f, PartnerActTo = -1.f;
+	ftcore::Vec2 PartnerActAt{};
+	bool PartnerActDone = false;
+	void FlushPartnerAction();
+	float PartnerHeight() const;
+
+	uint8 PartnerLastAct = 0xFF, PartnerIdleWhy = 0xFF;
 	double PartnerJoinedAt = -1.0;
 	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
 	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and
@@ -1312,6 +1404,25 @@ private:
 	FFTKiteVfx KiteFx;
 	// The lead's weapon on the player's figure (begun as it is spawned, when it wears a look).
 	FFTLeadWeapons LeadWeapons;
+	// The partner's body's weapon (-ArenaPartner): the same strike clips, props and effects its look plays when it is
+	// the lead, driven from the ally's blows (TrackAllyWeapons); begun on the ally figure, ended on a swap.
+	FFTLeadWeapons AllyWeapons;
+public:
+	const FFTLeadWeapons& GetAllyWeapons() const { return AllyWeapons; }
+private:
+	void TrackAllyWeapons(const ftcore::ArenaOutput& Out);
+	bool bAllyStruck = false;  // the ally was in a blow last step ...
+	uint8 AllyStruckBlow = 0;  // ... this one ...
+	float AllyStruckTime = 0.f; // ... this far in
+	bool bAllyStrikeCut = false; // its blow's clip was cut (it was hit, or its target is down) until its next blow
+	int32 AllyTargetDeadLast = -1; // the blow's target when it was already dead the step before (the killing blow is not cut)
+	TWeakObjectPtr<AFTArenaFighter> AllyWeaponsFailed; // the ally figure its driver could not begin on: not tried again
+	// A partner shot's or cast's impact waits for its flight (FFTLeadWeapons::kTracerTime, kBoltTime).
+	ftcore::ArenaEvent PartnerImpactWaiting{};
+	double PartnerImpactDue = -1.0;
+	void PlayWaitingPartnerImpact(double T);
+	// The partner's strike clips over the fight: started, and played into their recovery uncut (whole); summed across swaps.
+	int32 PartnerClipsStarted = 0, PartnerClipsWhole = 0;
 	// The direction from the lead to its aim target, set each step with the aim; the figure turns to it while
 	// it attacks.
 	ftcore::Vec2 LeadAimDir{1.f, 0.f};

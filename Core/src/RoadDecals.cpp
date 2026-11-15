@@ -172,11 +172,23 @@ void roadDecals(const RoadSolid* solids, std::size_t count, const RoadDecalSpec&
         };
         double du = 0.0, dw = 0.0;
 
-        // Cracks: long and thin, any way round.
-        const std::size_t cracks = draw.count(dens * area / 100.0 * (pavement ? spec.crackPavement : spec.crackAsphalt));
+        // Street class (as the street layer reads it): side lanes more cracked and patched than a main road.
+        const StreetSurfaceSpec street{};
+        const double across = b.riseW != 0.0 ? b.sy : (std::max(b.sx, b.sy) > 2.0 * std::min(b.sx, b.sy) ? std::min(b.sx, b.sy) : 0.0);
+        const double cls = pavement ? 1.0 : static_cast<double>(streetCrackClass(static_cast<float>(across), street));
+        // Cracks: long and thin, any way round (at most half as wide as long); a third on asphalt are alligator
+        // cracking, a plate at least 0.55 as wide as long (the shader tells them apart by that).
+        const std::size_t cracks = draw.count(dens * area / 100.0 * (pavement ? spec.crackPavement : spec.crackAsphalt) * cls);
         for (std::size_t n = 0; n < cracks; ++n) {
             anywhere(du, dw);
-            const double len = draw.between(0.8, 3.2), wide = draw.between(0.35, 1.0);
+            const bool alligator = !pavement && draw.next() < 0.33;
+            double len = draw.between(0.8, 3.2), wide = draw.between(0.35, 1.0);
+            if (alligator) {
+                len = 0.8 + 0.45 * len;
+                wide = len * (0.6 + 0.3 * (wide - 0.35) / 0.65);
+            } else {
+                wide = std::min(wide, 0.5 * len);
+            }
             const double turn = draw.between(-90.0, 90.0);
             emit.place(slab, RoadDecalKind::Crack, du, dw, len, wide, turn, static_cast<float>(draw.next()));
         }
@@ -199,7 +211,7 @@ void roadDecals(const RoadSolid* solids, std::size_t count, const RoadDecalSpec&
             continue;
         }
         // Patches: square to the road, a little askew.
-        const std::size_t patches = draw.count(dens * area / 100.0 * spec.patchAsphalt);
+        const std::size_t patches = draw.count(dens * area / 100.0 * spec.patchAsphalt * cls);
         for (std::size_t n = 0; n < patches; ++n) {
             anywhere(du, dw);
             emit.place(slab, RoadDecalKind::Patch, du, dw, draw.between(1.0, 3.2), draw.between(0.8, 2.0), draw.between(-4.0, 4.0),
@@ -401,8 +413,8 @@ int Kd = Paved ? KindAll - PAVED_K : KindAll;
 float Foot = max(length(fwidth(WorldPos.xyz)) / 100.0, 1e-4);
 float2 Pw = WorldPos.xy / 100.0;
 float3 Nrm = normalize(VN);
-float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(0.104, 0.103, 0.101);
-float UnderR = Paved ? 0.8 : 0.85;
+float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(0.093, 0.092, 0.09);
+float UnderR = Paved ? 0.8 : 0.88;
 float Grain = D.N(M * 23.0 + O);
 float3 C = Under;
 float Mask = 0.0;
@@ -423,7 +435,30 @@ if (Kd == 0)
 	float Taper = smoothstep(0.0, 0.3 * Size.x, E.x) * smoothstep(0.0, 0.05, E.y);
 	Mask = max(Main, Branch) * Taper * 1.4;
 	C = float3(0.022, 0.021, 0.02) * (0.85 + 0.3 * Grain);
-	R = 0.6;
+	R = 0.35;
+	// Alligator cracking instead on a plate at least 0.55 as wide as long (the scatter makes a third of the asphalt's
+	// so; a single crack's is at most half): a polygon network 8-20 cm across (the cells' edges), sealed the same, in
+	// an irregular patch fading to its rim.
+	if (Size.y >= 0.55 * Size.x)
+	{
+		float2 Ac = M / lerp(0.08, 0.2, D.H(O + 15.1));
+		float2 Ai = floor(Ac);
+		float F1 = 9.0;
+		float F2 = 9.0;
+		for (int Ay = -1; Ay <= 1; ++Ay)
+		{
+			for (int Ax = -1; Ax <= 1; ++Ax)
+			{
+				float2 Cc = Ai + float2(Ax, Ay);
+				float Dv = length(Ac - Cc - float2(D.H(Cc + O), D.H(Cc + O + 2.3)));
+				F2 = min(F2, max(F1, Dv));
+				F1 = min(F1, Dv);
+			}
+		}
+		float Net = 1.0 - smoothstep(0.03, 0.07, F2 - F1);
+		float Patch = (0.75 - length(M / (0.5 * Size)) - (D.F(M * 1.4 + O) - 0.5) * 0.5);
+		Mask = Net * smoothstep(0.0, 0.15, Patch) * 1.4;
+	}
 }
 else if (Kd == 1)
 {
@@ -489,7 +524,7 @@ else if (Kd == 3)
 		float Seal = 1.0 - smoothstep(SealW, SealW + 0.003, In);
 		C = Body * (0.92 + 0.16 * Grain) * (0.95 + 0.1 * D.F(M * 1.3 + O));
 		C = lerp(C, float3(0.03, 0.029, 0.028) * (0.85 + 0.3 * Grain), Seal);
-		R = lerp(Newer ? 0.8 : 0.9, 0.55, Seal);
+		R = lerp(Newer ? 0.8 : 0.9, 0.35, Seal);
 		// The cut's step: the patch stands a millimetre proud, falling over its outer 4 mm.
 		float Lt = saturate(In / 0.004);
 		float2 G = E.x < E.y ? float2(-sign(M.x), 0.0) : float2(0.0, -sign(M.y));
@@ -586,7 +621,12 @@ else
 		MW = exp(-pow(Q / 0.3, 2.0));
 	}
 	// The tile under it: exposed stone top (b) and cavity (from the AO in g); a stand-in without the tile: its means.
-	float3 Tl = HasDetail > 0.5 ? Texture2DSample(DetRA, DetRASampler, Pw / DETAIL_M).rgb : float3(0.85, 0.9, 0.22);
+	// The road's tile (b: its stone peaks) at the same place, read through the road's own hex UVs.
+	float3 Tl = float3(TILE_MEANS);
+	if (HasDetail > 0.5)
+	{
+HEX_RA
+	}
 	float Cav = saturate((0.97 - Tl.g) / 0.2);
 	float Expo = saturate(0.85 * Tl.b + 0.15 * (1.0 - Cav));
 	// Wear: the line's age, a slow fade along it, the wheel paths. It takes the tops first: the more wear, the lower the
@@ -601,20 +641,22 @@ else
 	float Body = smoothstep(-EdgeW, EdgeW, LE);
 	float SprayW = lerp(0.005, 0.01, D.N(Pw / 0.5 + 2.0));
 	float Spray = 0.3 * (1.0 - smoothstep(0.0, SprayW, -LE)) * lerp(0.7, 0.4 + 0.6 * D.N(Pw / 0.0015 + 7.0), Fine);
-	// Fine cracks across the line every 20-40 cm (one per 0.3 m cell, jittered, a little slanted and wandering), with
-	// dirt in them; a third run only part way across from one edge.
+	// Fine cracks across the line, sparse: one per 1.5 m cell at most (half the cells have none), jittered, a little
+	// slanted and wandering, with dirt in them; two thirds run only part way across from one edge. (A regular run of them
+	// read as transverse seams.)
 	bool LongU = Size.x >= Size.y;
 	float Lo = LongU ? M.x : M.y;
 	float Cr = LongU ? M.y : M.x;
 	float CrW = 0.5 * (LongU ? Size.y : Size.x) - PAINT_PAD;
 	float TC = 0.0;
-	float Lc = floor(Lo / 0.3);
+	float Lc = floor(Lo / 1.5);
 	for (int Ck = -1; Ck <= 1; ++Ck)
 	{
 		float2 Ks = float2(Lc + Ck, O.x);
-		float At = (Lc + Ck + 0.5 + (D.H(Ks) - 0.5) * 0.33) * 0.3 + (D.H(Ks + 3.1) - 0.5) * 0.25 * Cr +
+		float At = (Lc + Ck + 0.5 + (D.H(Ks) - 0.5) * 0.6) * 1.5 + (D.H(Ks + 3.1) - 0.5) * 0.25 * Cr +
 			(D.N(float2(Cr / 0.012, Lc + Ck) + O) - 0.5) * 0.004;
-		float Part = D.H(Ks + 5.7) < 0.33 ? step(Cr * sign(D.H(Ks + 6.1) - 0.5), (D.H(Ks + 7.3) - 0.3) * CrW) : 1.0;
+		float Part = D.H(Ks + 5.7) < 0.67 ? step(Cr * sign(D.H(Ks + 6.1) - 0.5), (D.H(Ks + 7.3) - 0.3) * CrW) : 1.0;
+		Part *= step(0.5, D.H(Ks + 9.7));
 		float CW = 0.0004 + 0.0004 * D.H(Ks + 8.9);
 		TC = max(TC, (1.0 - smoothstep(CW, CW + Foot, abs(Lo - At))) * saturate(2.0 * CW / (2.0 * CW + Foot)) * Part);
 	}
@@ -645,6 +687,37 @@ float WetIn = saturate(Wetness);
         h.replace(h.find(lattice), lattice.size(), streetLatticeHlsl());
         const SurfaceWeatherSpec spec{};
         const StreetSurfaceSpec street{};
+        {
+            // The paint's read of the road's tile: the road's hex UVs (the same lattice and hash), or its straight read.
+            std::string ra;
+            if (street.detailHexM > 0.0f && street.detailHexFarM > 0.0f) {
+                // The road's fade too (CamPos, cm): three reads near, one straight read far off, blended on the same
+                // camera distance, so the paint's wear stays on the stones the road shows.
+                ra = "\t\tfloat HxCamM = length(CamPos - WorldPos.xyz) / 100.0;\n";
+                ra += streetHexUvHlsl(street, "D", "\t\t", "HxCamM");
+                ra += "\t\tTl = float3(0.0, 0.0, 0.0);\n";
+                ra += "\t\t[branch] if (HxNear > 0.0)\n\t\t{\n";
+                ra += "\t\t\tTl += HxWt0 * Texture2DSample(DetRA, DetRASampler, DUv0).rgb + HxWt1 * Texture2DSample(DetRA, "
+                      "DetRASampler, DUv1).rgb + HxWt2 * Texture2DSample(DetRA, DetRASampler, DUv2).rgb;\n";
+                ra += "\t\t}\n";
+                ra += "\t\t[branch] if (HxFar > 0.0)\n\t\t{\n";
+                ra += "\t\t\tTl += HxFar * Texture2DSample(DetRA, DetRASampler, DUvF).rgb;\n";
+                ra += "\t\t}\n";
+            } else if (street.detailHexM > 0.0f) {
+                ra = streetHexUvHlsl(street, "D", "\t\t");
+                ra += "\t\tTl = HxWt0 * Texture2DSample(DetRA, DetRASampler, DUv0).rgb + HxWt1 * Texture2DSample(DetRA, "
+                      "DetRASampler, DUv1).rgb + HxWt2 * Texture2DSample(DetRA, DetRASampler, DUv2).rgb;\n";
+            } else {
+                ra = "\t\tTl = Texture2DSample(DetRA, DetRASampler, Pw / DETAIL_M).rgb;\n";
+            }
+            const std::string key = "HEX_RA\n";
+            h.replace(h.find(key), key.size(), ra);
+            char means[96];
+            std::snprintf(means, sizeof means, "%.4f, %.4f, %.4f", static_cast<double>(street.detailRoughMean),
+                          static_cast<double>(street.detailAOMean), static_cast<double>(street.detailPeakMean));
+            const std::string mk = "TILE_MEANS";
+            h.replace(h.find(mk), mk.size(), means);
+        }
         const struct {
             const char* key;
             double value;

@@ -49,6 +49,7 @@
 //   2 Core  float3 0 (the same)
 
 #include "CoreMinimal.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Misc/PackageName.h"
 
@@ -101,6 +102,35 @@ inline constexpr const TCHAR* ScalarNames[] = {Radius, BandWidth, Prelude, Direc
 // The custom primitive data slots (FCustomPrimitiveData holds 36 floats; the window and decal data use the low ones).
 inline constexpr int32 kTagSlot = 30;
 inline constexpr int32 kLocalSlot = 31;
+// The custom stencil value reserved for the post's catch-all: a worn or held piece whose master takes no character state
+// (MetaHuman skin, eyes, teeth, grooms, anything a future asset brings) renders custom depth with this value, and
+// PP_WorldWave gives its pixels the character state there (Post.ush kFTWaveCatchStencil, the same number). Needs
+// r.CustomDepth 3 (stencil), the project's setting (Config/DefaultEngine.ini); UFTWorldWaveSubsystem::AuditWorn only
+// checks it and warns (raising it at run time stalled a frame about 8 s).
+inline constexpr int32 kCatchStencil = 223;
+// The custom stencil value of a worn piece that is wave-aware (every slot's master has FTWaveAware 1). It renders custom
+// depth too, so the custom depth buffer keeps the NEAREST worn surface at each pixel: cloth over skin reads 222 there and
+// the post leaves it alone (its own material gives it the state), while skin seen bare reads 223 and is converted.
+inline constexpr int32 kAwareStencil = 222;
+// The marker every master built with the state carries (AddState): a scalar parameter whose default is 1 on a master that
+// takes the character state and 0 on any other. It is wired into the state call's emissive input times zero (no change to
+// the output) so a cook keeps it as a referenced parameter. The audit reads this default (the material's cached
+// parameters), one code path in the editor and the game; a master without it is not wave-aware.
+inline constexpr const TCHAR* AwareParameter = TEXT("FTWaveAware");
+// Whether Material's master takes the character state, by its FTWaveAware default (an instance's override is ignored).
+// The audit caches the answer per master (UFTWorldWaveSubsystem::AwareMarker).
+inline bool WaveAware(const UMaterialInterface& Material, float* OutValue = nullptr)
+{
+	static const FHashedMaterialParameterInfo Info{FName(AwareParameter)};
+	const UMaterial* Master = Material.GetMaterial();
+	float Value = 0.f;
+	const bool bFound = Master && Master->GetScalarParameterDefaultValue(Info, Value);
+	if (OutValue)
+	{
+		*OutValue = bFound ? Value : -1.f;
+	}
+	return bFound && Value > 0.5f;
+}
 inline constexpr const TCHAR* TagParameter = TEXT("WorldWaveTag");
 inline constexpr const TCHAR* LocalParameter = TEXT("WorldWaveLocalRadius");
 
@@ -172,7 +202,13 @@ bool AddCut(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y);
 // Wires MF_WorldWaveState into a master being built: whatever feeds its BaseColor, Roughness and Emissive goes through
 // the state function first (an unconnected input takes the master's constant: 0.5 roughness, no emissive). Call it last,
 // after AddCut, before PostEditChange. Logs and leaves the master as it was when the function is missing; returns
-// whether the state went in.
-bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y);
+// whether the state went in. bCharacter: the character state (no leaks or puddles, grime that moves with the body, the
+// thin line at the cut for front A); on a master that already has the state it is switched on there. A cloth master's
+// fuzz colour (SubsurfaceColor) goes through a second call of the state as its BaseColor.
+bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCharacter = false);
+
+// Whether the master's MF_WorldWaveState call has its Character input on: a static bool whose value is true. False for
+// a master with no state call, an unconnected input, a static false, or any other expression wired there (logged).
+bool CharacterOn(const UMaterial& Material);
 #endif
 } // namespace FTWorldWave

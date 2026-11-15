@@ -1,5 +1,6 @@
 #include "FTExploreCharacter.h"
 #include "FTPartyVan.h"
+#include "FTSwimUnits.h"
 #include "FTWaterSubsystem.h"
 #include "ftcore/MassingPlan.h"
 
@@ -170,6 +171,9 @@ void AFTExploreCharacter::BeginPlay()
 			FParse::Value(FCommandLine::Get(), TEXT("LeadGoAfter="), LeadGoAfter);
 			LeadGoAfter = FMath::Max(LeadGoAfter, 0.f);
 			bLeadGoJump = FParse::Param(FCommandLine::Get(), TEXT("LeadGoJump"));
+			// -LeadGoDive: swimming in a dive area the lead dives once, swims the route under water along it, and
+			// rises when the route ends.
+			bLeadGoDive = FParse::Param(FCommandLine::Get(), TEXT("LeadGoDive"));
 			FParse::Value(FCommandLine::Get(), TEXT("LeadGoQuit="), LeadGoQuit);
 		}
 		FParse::Value(FCommandLine::Get(), TEXT("LeadGoPace="), LeadGoPace);
@@ -1181,9 +1185,20 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 	{
 		Body = ftcore::FieldBody::Rolling;
 	}
+	else if ((bSwimming || bSwimRescue) && !SwimFlagsNow.attack)
+	{
+		Body = ftcore::FieldBody::Seated; // swimming (ftcore::Swim's flags): no weapon
+	}
 	else if (GetCharacterMovement()->IsFalling())
 	{
 		Body = ftcore::FieldBody::Falling;
+	}
+	// The swim stows the weapons while its flags say so, and hands them back when it ends.
+	const bool bStow = (bSwimming || bSwimRescue) && !SwimFlagsNow.weaponsOut;
+	if (bStow != bSwimHolstered)
+	{
+		bSwimHolstered = bStow;
+		Weapons.SetHolstered(bStow);
 	}
 	Strike.setBody(Body);
 	TickAim(DeltaSeconds, Body);
@@ -1687,6 +1702,12 @@ void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
 	{
 		return;
 	}
+	// Under water the stick goes to the free swim (TickSwimDeep), which moves along the camera's look in 3D.
+	if (bSwimUnder || bSwimRescue)
+	{
+		SwimMoveAxis = Axis;
+		return;
+	}
 	const FRotator Yaw(0.0, Controller->GetControlRotation().Yaw, 0.0);
 	AddMovementInput(FRotationMatrix(Yaw).GetUnitAxis(EAxis::X), Axis.Y);
 	AddMovementInput(FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y), Axis.X);
@@ -1733,6 +1754,11 @@ void AFTExploreCharacter::HandleJump()
 	// Crouched, jump stands the body up; standing in front of a low wall or a ledge, it goes over or up; otherwise it jumps.
 	// Held in the air, it catches a ledge within reach (Tick).
 	bJumpHeld = true;
+	// Under water the held jump is the free swim's (its press rises to the surface); nothing else takes it.
+	if (bSwimUnder || bSwimRescue)
+	{
+		return;
+	}
 	// Mid-slide, the press is kept a moment for TickSlide, which cancels the slide into a jump once Core allows it.
 	if (SlideNow.sliding())
 	{
@@ -2582,6 +2608,11 @@ void AFTExploreCharacter::HandleInteract()
 		V->SetExitHeld(true);
 		return;
 	}
+	// Swimming, interact only where the swim allows it (its flags); never while a rescue carries the lead.
+	if (bSwimRescue || (bSwimming && !SwimFlagsNow.interact))
+	{
+		return;
+	}
 	for (TActorIterator<AFTPartyVan> It(GetWorld()); It; ++It)
 	{
 		if (It->TryEnter(this))
@@ -2637,6 +2668,17 @@ void AFTExploreCharacter::SwitchLeadTo(int32 Index)
 		return;
 	}
 	UnCrouch();
+	// A swim pose saved for the old look's mesh is its own: put that rest back before the new look is worn, so the new
+	// look's rest is saved afresh on the next posed step (never the old look's offset and turn on the new mesh).
+	if (bSwimMeshSaved)
+	{
+		if (USkeletalMeshComponent* Body = GetMesh())
+		{
+			Body->SetRelativeLocationAndRotation(SwimMeshLoc, SwimMeshRot);
+		}
+		bSwimMeshSaved = false;
+		SwimPitch = 0.f;
+	}
 	LeadIndex = Index;
 	FindPartyRows(); // the old lead takes the partner's row
 	const FFTLeadLook& Look = PartyLooks[LeadIndex];
@@ -2857,7 +2899,8 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	// (TickTraversal, TickSlide).
 	// An attack's turn is TickWeapon's.
 	// While aiming, TickAim turns the body to the camera's aim.
-	const UFTLocomotionAnimInstance* Steered = bTraversing || Strike.attacking() || Aim.aiming() ? nullptr : LocoAnim;
+	// Under water (and through a rescue) TickSwimDeep turns the body to its swim.
+	const UFTLocomotionAnimInstance* Steered = bTraversing || Strike.attacking() || Aim.aiming() || bSwimUnder || bSwimRescue ? nullptr : LocoAnim;
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{
 		// The step holds over a pose with no time passed, so a frame with none (the actor's time dilated to 0)
@@ -3024,7 +3067,8 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 				GetActorLocation().Y, GetActorLocation().Z, ANSI_TO_TCHAR(ftcore::waterModeName(WaterNow.mode)));
 		}
 		const FVector Way = (LeadGoTo - GetActorLocation()).GetSafeNormal2D();
-		if (FVector::Dist2D(LeadGoTo, GetActorLocation()) > 30.0 && !bWaterClimbing)
+		// Under water the free swim takes the route itself (TickSwimDeep).
+		if (FVector::Dist2D(LeadGoTo, GetActorLocation()) > 30.0 && !bWaterClimbing && !bSwimUnder && !bSwimRescue)
 		{
 			AddMovementInput(Way, LeadGoPace);
 			LeadGoStuck = GetVelocity().Size2D() < 15.0 ? LeadGoStuck + DeltaSeconds : 0.f;
@@ -3047,6 +3091,18 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		}
 	}
 #endif
+	// Taken out of play (a fight's figure stands in and the body is hidden, a scene holds the lead, no controller): the
+	// water waits. Nothing steps the swim, its breath, a climb out or a rescue (each picks up where it stopped), and
+	// nothing forces the flying mode on a parked body; a body that was swimming stops where it is (flying braking is 0
+	// under water, so a kept velocity would carry it through the whole scene).
+	if (!Controller || IsHidden() || ScenePlaying())
+	{
+		if (bSwimming || bWaterClimbing || bSwimRescue)
+		{
+			Move->Velocity = FVector::ZeroVector;
+		}
+		return;
+	}
 	// A climb out of the water: up the wall's face, then onto its top.
 	if (bWaterClimbing)
 	{
@@ -3063,6 +3119,13 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			Move->SetMovementMode(MOVE_Walking);
 			UE_LOG(LogForgottenThird, Display, TEXT("Water: climbed out onto (%.0f, %.0f, %.0f) cm."), At.X, At.Y, At.Z);
 		}
+		StirWater(DeltaSeconds);
+		return;
+	}
+	// Out of breath and vitality under water: carried to the way out, a placed move.
+	if (bSwimRescue)
+	{
+		TickSwimRescue(DeltaSeconds);
 		StirWater(DeltaSeconds);
 		return;
 	}
@@ -3108,7 +3171,17 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 			: WaterNow.mode == ftcore::WaterMode::DeepWade ? TEXT("wading deep") : TEXT("swimming"),
 			WaterNow.column, WaterNow.submerged * 100.f, WaterNow.speedFactor, GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z);
 	}
-	const bool bSwimNow = WaterNow.mode == ftcore::WaterMode::Swim && !bTraversing;
+	// Set down out of the water column while dived (a fight or a scene ended on dry ground, or on a pier inside a body's
+	// footprint): the swim ends this frame, its state and pose reset below, its vitality kept. Out of the column: inside a
+	// body with the feet at or over its surface (the depth test), or outside every body and every dive area.
+	const bool bFeetDry = WaterNow.body >= 0 && WaterNow.immersion <= 0.f;
+	if (bSwimUnder && !bOut &&
+		(bFeetDry || (WaterNow.body < 0 && System->Bodies().dive(FTSwimUnits::ToPlan(GetActorLocation())).body < 0)))
+	{
+		bSwimUnder = false;
+	}
+	// Under water the lead swims on whatever the column under it (ftcore::Swim never ejects it).
+	const bool bSwimNow = (WaterNow.mode == ftcore::WaterMode::Swim || (bSwimUnder && !bOut)) && !bTraversing;
 	if (bSwimNow && !bSwimming)
 	{
 		bSwimming = true;
@@ -3131,15 +3204,24 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 	else if (!bSwimNow && bSwimming)
 	{
 		bSwimming = false;
+		bSwimUnder = false;
 		Move->MaxFlySpeed = SwimSavedFly;
 		Move->BrakingDecelerationFlying = SwimSavedBrake;
 		if (Move->MovementMode == MOVE_Flying)
 		{
 			Move->SetMovementMode(MOVE_Falling);
 		}
+		PoseSwim(0.f, 1.f); // upright at once (a full step of the ease)
+		// Taken out from under water (a scene, the van): at the surface again, its vitality kept.
+		if (SwimBody.state() != ftcore::SwimState::Surface && SwimBody.state() != ftcore::SwimState::Rescued)
+		{
+			const float Vitality = SwimBody.vitality();
+			SwimBody.reset();
+			SwimBody.setVitality(Vitality);
+		}
 	}
-	// At a ladder, pushing at its wall: up it (the jump at any other wall is the fallback).
-	if (WaterNow.mode != ftcore::WaterMode::Dry && TryLadderClimb(false))
+	// At a ladder, pushing at its wall: up it (the jump at any other wall is the fallback). Not from under water.
+	if (!bSwimUnder && WaterNow.mode != ftcore::WaterMode::Dry && TryLadderClimb(false))
 	{
 		StirWater(DeltaSeconds);
 		return;
@@ -3149,6 +3231,12 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		if (Move->MovementMode != MOVE_Flying)
 		{
 			Move->SetMovementMode(MOVE_Flying);
+		}
+		// Dived (or diving, or rising): the free swim moves the body. At the surface it only watches for a dive.
+		if (System && TickSwimDeep(*System, DeltaSeconds))
+		{
+			StirWater(DeltaSeconds);
+			return;
 		}
 		// Held at the surface: the feet eased to the swimmer's draft, never thrown up out of the water.
 		const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
@@ -3164,6 +3252,356 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		}
 	}
 	StirWater(DeltaSeconds);
+}
+
+void AFTExploreCharacter::LoadSwimTuning()
+{
+	if (bSwimTuningTried)
+	{
+		return;
+	}
+	bSwimTuningTried = true;
+	TArray<uint8> Bytes;
+	const FString File = FPaths::ProjectDir() / TEXT("Data/Swim/swim.json");
+	ftcore::SwimTuning Tuning;
+	std::string Error;
+	std::vector<std::string> Notes;
+	if (IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File)
+		&& ftcore::importSwimTuning(FT::BytesAsText(Bytes), Tuning, &Error, &Notes))
+	{
+		SwimBody.reset(FTSwimUnits::TuningForRef(Tuning));
+		for (const std::string& Note : Notes)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Swim: %s"), *FT::ToFString(Note));
+		}
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Swim: no usable Data/Swim/swim.json; the built-in tuning.\n%s"), *FT::ToFString(Error));
+		SwimBody.reset(FTSwimUnits::TuningForRef(ftcore::SwimTuning{}));
+	}
+	const ftcore::SwimTuning& T = SwimBody.tuning();
+	UE_LOG(LogForgottenThird, Display, TEXT("Swim: %s tuning: %.1f m/s (sprint %.1f), breath %.0f s (warning at %.0f s), dive %.1f m, edge push %.1f m/s over %.0f m."),
+		SwimBody.tuningOk() ? TEXT("the") : TEXT("refused, the built-in"), T.swimSpeed, T.sprintSpeed, T.breathSeconds, T.warningSeconds,
+		T.diveDepth, T.edgePushSpeed, T.edgeRampMetres);
+}
+
+bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds)
+{
+	using namespace FTSwimUnits;
+	LoadSwimTuning();
+	UWorld* World = GetWorld();
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	const FVector At = GetActorLocation();
+	const double Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const ftcore::WaterBodies& Water = System.Bodies();
+	const ftcore::Vec2 P = ToPlan(At);
+	// Only a playable lead dives (the Third never does); found again when the lead changes.
+	if (SwimLeadChecked != LeadIndex)
+	{
+		SwimLeadChecked = LeadIndex;
+		bSwimLeadDives = PartyLooks.IsValidIndex(LeadIndex) && IsPlayableLead(PartyLooks[LeadIndex]);
+	}
+	const ftcore::WaterDive Dive = Water.dive(P);
+	const int BodyIndex = Dive.body >= 0 ? Dive.body : WaterNow.body;
+	if (BodyIndex < 0)
+	{
+		bSwimUnder = false;
+		return false;
+	}
+
+	// The water at the lead (m): the surface over it, the bed under it (the ground a trace down finds, else the body's
+	// own bed), the dive area and its outer edge.
+	ftcore::SwimEnv Env;
+	Env.position = RefFromActor(At, Half);
+	Env.surfaceZ = Water.surfaceOf(static_cast<std::size_t>(BodyIndex), P, System.WaterTime());
+	float BedZ = Water.body(static_cast<std::size_t>(BodyIndex)).bedAt(P);
+	if (World)
+	{
+		FHitResult Bed;
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(FTSwimBed), false, this);
+		if (World->LineTraceSingleByChannel(Bed, At, At - FVector(0.0, 0.0, Half + 1500.0), ECC_Visibility, Query))
+		{
+			BedZ = ToMetres(Bed.ImpactPoint.Z);
+		}
+	}
+	Env.bedZ = FMath::Min(BedZ, Env.surfaceZ - 0.01f);
+	Env.column = Env.surfaceZ - Env.bedZ;
+	Env.deepAllowed = Dive.allowed && bSwimLeadDives;
+	Env.airPocket = false; // the strip's basin has none
+	Env.edgeDistance = Dive.edgeDistance;
+	Env.edgeInward = {Dive.edgeInward.x, Dive.edgeInward.y, 0.f};
+
+	// What the player asks: the camera's look, the stick (under water HandleMove keeps it here), sprint, and the held
+	// crouch and jump (Swim takes their presses).
+	ftcore::SwimInput In;
+	const FRotator View = Controller ? Controller->GetControlRotation() : GetActorRotation();
+	In.look = DirectionToSwim(View.Vector());
+	In.forward = static_cast<float>(SwimMoveAxis.Y);
+	In.right = static_cast<float>(SwimMoveAxis.X);
+	In.sprint = bRunOn;
+	// The crouch key's real state, and only while the player steers: TickHeldKeys latches bCrouchKeyWas true while input
+	// is taken (a menu, a scene, a fight), which Swim would read as a dive press.
+	In.crouch = TakesInput() && bCrouchKeyWas;
+	In.jump = bJumpHeld;
+	SwimMoveAxis = FVector2D::ZeroVector;
+#if !UE_BUILD_SHIPPING // -LeadGoDive: the scripted walk dives once, swims its route under water and rises at its end
+	if (bLeadGo && bLeadGoDive)
+	{
+		const ftcore::SwimState Now = SwimBody.state();
+		// The presses: down every other frame until taken (Swim's buttons are edge-triggered, and the held key's state
+		// is not known here).
+		const bool bPressFrame = (GFrameCounter & 1) != 0;
+		if (!bLeadGoDived && Now == ftcore::SwimState::Surface && SwimBody.last().canDive)
+		{
+			In.crouch = bPressFrame;
+		}
+		else if (Now == ftcore::SwimState::Under || Now == ftcore::SwimState::Diving)
+		{
+			// Along the route, held about 2.5 m under the surface (or over the bed where it is shallower).
+			const double Flat = FVector::Dist2D(LeadGoTo, At);
+			const double CruiseZ = ToCm(FMath::Max(Env.surfaceZ - 2.5f, Env.bedZ + 1.f)) - (ToCm(ftcore::kWaterSwimDraft) - Half);
+			const FVector Way = FVector(LeadGoTo.X - At.X, LeadGoTo.Y - At.Y, (CruiseZ - At.Z) * 2.0).GetSafeNormal();
+			if (!Way.IsNearlyZero())
+			{
+				In.look = DirectionToSwim(Way);
+			}
+			In.forward = Flat > 30.0 ? LeadGoPace : 0.f;
+			In.right = 0.f;
+			if (!bLeadGoRose && LeadGoNext.Num() == 0 && Flat <= 55.0 && Now == ftcore::SwimState::Under)
+			{
+				In.jump = bPressFrame;
+			}
+		}
+	}
+#endif
+
+	const bool bWasUnder = bSwimUnder;
+	// A hitch: Swim clamps its step to kSwimMaxStep and drops the rest, so the movement below carries only that step too.
+	const ftcore::SwimStep& S = SwimBody.step(In, Env, FMath::Min(DeltaSeconds, ftcore::kSwimMaxStep));
+#if !UE_BUILD_SHIPPING
+	bLeadGoDived = bLeadGoDived || S.dived;
+	bLeadGoRose = bLeadGoRose || S.state == ftcore::SwimState::Surfacing;
+#endif
+	SwimFlagsNow = S.flags;
+	bSwimUnder = S.state == ftcore::SwimState::Diving || S.state == ftcore::SwimState::Under || S.state == ftcore::SwimState::Surfacing;
+	if (S.dived)
+	{
+		bSwimWarned = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: dived at (%.0f, %.0f, %.0f) cm, column %.1f m, %.0f m inside the outer edge, breath %.0f s."), At.X, At.Y,
+			At.Z, Env.column, FMath::Min(Env.edgeDistance, 9999.f), S.breath);
+	}
+	if (S.diveRefused)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: no dive at (%.0f, %.0f) cm: %s."), At.X, At.Y,
+			!bSwimLeadDives ? TEXT("this lead does not dive") : !Dive.allowed ? TEXT("not in a dive area") : TEXT("the water is too shallow"));
+	}
+	if (S.warning && !bSwimWarned)
+	{
+		bSwimWarned = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: breath warning, %.1f s left at (%.0f, %.0f, %.0f) cm."), S.breath, At.X, At.Y, At.Z);
+	}
+	if (S.surfaced)
+	{
+		bSwimWarned = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: surfaced at (%.0f, %.0f) cm, breath %.0f%%, vitality %.0f%%."), At.X, At.Y, S.breathShare * 100.f,
+			S.vitality * 100.f);
+	}
+	if (!S.envOk || !S.inputOk)
+	{
+		UE_LOG(LogForgottenThird, Verbose, TEXT("Swim: a value was replaced (env %s, input %s) at (%.0f, %.0f, %.0f) cm."), S.envOk ? TEXT("ok") : TEXT("bad"),
+			S.inputOk ? TEXT("ok") : TEXT("bad"), At.X, At.Y, At.Z);
+	}
+	if (S.rescue)
+	{
+		bSwimUnder = false;
+		BeginSwimRescue(System);
+		return true;
+	}
+
+	if (!bSwimUnder)
+	{
+		// At the surface (or back at it): the surface hold's speed and braking again, the body upright.
+		if (bWasUnder)
+		{
+			Move->MaxFlySpeed = ftcore::kWaterSwimSpeed * 100.f;
+			Move->BrakingDecelerationFlying = 350.f;
+		}
+		PoseSwim(0.f, DeltaSeconds);
+		return false;
+	}
+
+	// Under water: the movement carries the body at the swim's velocity (its sweep stops it at a wall or the bed), with
+	// room for a sprint plus the edge's push and no braking of its own.
+	const ftcore::SwimTuning& T = SwimBody.tuning();
+	Move->MaxFlySpeed = (T.sprintSpeed + T.edgePushSpeed) * 100.f;
+	Move->BrakingDecelerationFlying = 0.f;
+	const FVector Velocity = PositionValid(S) ? VelocityToEngine(S.velocity) : FVector::ZeroVector;
+	// The movement integrates the whole frame: over a hitch the velocity is scaled so the frame moves only Swim's step
+	// (its surface, bed and edge clamps hold).
+	Move->Velocity = DeltaSeconds > S.dt && DeltaSeconds > 0.f ? Velocity * (S.dt / DeltaSeconds) : Velocity;
+	// The body turns to its way across, and pitches along it: head first along the travel, upright (a slight lean) in
+	// a glide or a rise with no stroke.
+	const double Across = Velocity.Size2D();
+	if (Across > 20.0 && DeltaSeconds > 0.f)
+	{
+		const FRotator Was = GetActorRotation();
+		const float Yaw = FMath::FixedTurn(static_cast<float>(Was.Yaw), static_cast<float>(Velocity.Rotation().Yaw), 270.f * DeltaSeconds);
+		SetActorRotation(FRotator(0.0, Yaw, 0.0));
+	}
+	const bool bStroke = Velocity.Size() > 30.0 && (In.forward != 0.f || In.right != 0.f || S.state != ftcore::SwimState::Under);
+	const float Elevation = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Velocity.Z, FMath::Max(Across, 1.0))));
+	PoseSwim(bStroke ? FMath::Clamp(-(90.f - Elevation), -170.f, 0.f) : -15.f, DeltaSeconds);
+	return true;
+}
+
+void AFTExploreCharacter::PoseSwim(float TargetPitch, float DeltaSeconds)
+{
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!Body)
+	{
+		return;
+	}
+	if (!bSwimMeshSaved)
+	{
+		if (FMath::IsNearlyZero(TargetPitch))
+		{
+			return; // upright and not posed: nothing to do
+		}
+		SwimMeshLoc = Body->GetRelativeLocation();
+		SwimMeshRot = Body->GetRelativeRotation();
+		bSwimMeshSaved = true;
+		SwimPitch = 0.f;
+	}
+	// The dive's and the surfacing's 0.4 s blend: an ease of rate 5.
+	SwimPitch = FMath::FInterpTo(SwimPitch, TargetPitch, DeltaSeconds, 5.f);
+	if (FMath::IsNearlyZero(TargetPitch) && FMath::Abs(SwimPitch) < 0.5f)
+	{
+		Body->SetRelativeLocationAndRotation(SwimMeshLoc, SwimMeshRot);
+		bSwimMeshSaved = false;
+		SwimPitch = 0.f;
+		return;
+	}
+	// About the capsule's centre (the actor's origin), on the actor's own right axis: the mesh's rest offset and its
+	// facing turned together.
+	const FQuat Pitch = FRotator(SwimPitch, 0.0, 0.0).Quaternion();
+	Body->SetRelativeLocationAndRotation(Pitch.RotateVector(SwimMeshLoc), Pitch * SwimMeshRot.Quaternion());
+}
+
+void AFTExploreCharacter::BeginSwimRescue(const UFTWaterSubsystem& System)
+{
+	using namespace FTSwimUnits;
+	UWorld* World = GetWorld();
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	const FVector At = GetActorLocation();
+	const double Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const ftcore::WaterBodies& Water = System.Bodies();
+	const ftcore::Vec2 P = ToPlan(At);
+	bSwimRescue = true;
+	SwimRescueTime = 0.f;
+	SwimRescueFrom = At;
+	float Surface = WaterNow.surface;
+	Water.surfaceHeight(P, System.WaterTime(), Surface);
+	SwimRescueUp = FVector(At.X, At.Y, ActorFromRef({P.x, P.y, Surface}, Half).Z);
+	// To the nearest way out within 40 m (on its bank, a step past its top)...
+	const TCHAR* Kind = TEXT("the surface");
+	SwimRescueTo = SwimRescueUp;
+	const int Exit = Water.nearestExit(P, 40.f);
+	if (Exit >= 0)
+	{
+		const ftcore::WaterExit& E = Water.exit(static_cast<std::size_t>(Exit));
+		SwimRescueTo = FVector(ToCm(E.top.x + E.out.x * 0.6f), ToCm(E.top.y + E.out.y * 0.6f), ToCm(E.topZ) + Half + 2.0);
+		Kind = TEXT("the nearest way out");
+	}
+	else if (World)
+	{
+		// ... else the nearest dry ground: rings of 16 looks down at 4, 8, 16, 32 and 64 m, the first ring with walkable
+		// ground that is no water's (a one-off search, at the rescue only).
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(FTSwimRescue), false, this);
+		bool bFound = false;
+		for (const double Radius : {400.0, 800.0, 1600.0, 3200.0, 6400.0})
+		{
+			double Best = TNumericLimits<double>::Max();
+			for (int32 I = 0; I < 16; ++I)
+			{
+				const double A = UE_DOUBLE_TWO_PI * I / 16.0;
+				// From 4 m over the surface: a quay or a bank, never a roof.
+				const FVector Look(At.X + Radius * FMath::Cos(A), At.Y + Radius * FMath::Sin(A), ToCm(Surface));
+				FHitResult Ground;
+				if (!World->LineTraceSingleByChannel(Ground, Look + FVector(0.0, 0.0, 400.0), Look - FVector(0.0, 0.0, 500.0), ECC_Visibility, Query)
+					|| Ground.ImpactNormal.Z < 0.7 || Ground.bStartPenetrating
+					|| Water.overWater(ToPlan(Ground.ImpactPoint), ToMetres(Ground.ImpactPoint.Z)))
+				{
+					continue;
+				}
+				const double Gap = FVector::Dist2D(Ground.ImpactPoint, At);
+				if (Gap < Best)
+				{
+					Best = Gap;
+					SwimRescueTo = Ground.ImpactPoint + FVector(0.0, 0.0, Half + 2.0);
+					bFound = true;
+				}
+			}
+			if (bFound)
+			{
+				Kind = TEXT("the nearest dry ground");
+				break;
+			}
+		}
+	}
+	Move->StopMovementImmediately();
+	Move->SetMovementMode(MOVE_Flying);
+	UE_LOG(LogForgottenThird, Display, TEXT("Swim: out of breath and vitality at (%.0f, %.0f, %.0f) cm; rescued to %s at (%.0f, %.0f, %.0f) cm."), At.X, At.Y, At.Z,
+		Kind, SwimRescueTo.X, SwimRescueTo.Y, SwimRescueTo.Z);
+}
+
+void AFTExploreCharacter::TickSwimRescue(float DeltaSeconds)
+{
+	// A placed carry: up to the surface (0.8 s), then over to the way out (1.4 s), rising first so it clears the wall.
+	constexpr float Rise = 0.8f;
+	constexpr float Carry = 1.4f;
+	SwimRescueTime += DeltaSeconds;
+	FVector At;
+	if (SwimRescueTime < Rise)
+	{
+		At = FMath::Lerp(SwimRescueFrom, SwimRescueUp, FMath::SmoothStep(0.f, 1.f, SwimRescueTime / Rise));
+	}
+	else
+	{
+		const float A = FMath::Min((SwimRescueTime - Rise) / Carry, 1.f);
+		At = FMath::Lerp(SwimRescueUp, SwimRescueTo, FMath::SmoothStep(0.3f, 1.f, A));
+		At.Z = FMath::Lerp(SwimRescueUp.Z, SwimRescueTo.Z, FMath::SmoothStep(0.f, 0.5f, A));
+	}
+	SetActorLocation(At, false, nullptr, ETeleportType::TeleportPhysics);
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	Move->Velocity = FVector::ZeroVector;
+	PoseSwim(0.f, DeltaSeconds);
+	if (SwimRescueTime < Rise + Carry)
+	{
+		return;
+	}
+	// There: the swim starts again at the surface with a full breath and the rescue's vitality; on dry ground the lead
+	// is out of the water (it lands from just over the ground).
+	bSwimRescue = false;
+	bSwimWarned = false;
+	SwimBody.reset();
+	SwimFlagsNow = SwimBody.last().flags;
+	PoseSwim(0.f, 1.f);
+	const bool bAshore = !SwimRescueTo.Equals(SwimRescueUp, 1.0);
+	if (bAshore)
+	{
+		bSwimming = false;
+		Move->MaxFlySpeed = SwimSavedFly;
+		Move->BrakingDecelerationFlying = SwimSavedBrake;
+		Move->SetMovementMode(MOVE_Falling);
+	}
+	else
+	{
+		Move->MaxFlySpeed = ftcore::kWaterSwimSpeed * 100.f;
+		Move->BrakingDecelerationFlying = 350.f;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Swim: rescued, %s at (%.0f, %.0f, %.0f) cm, vitality %.0f%%."), bAshore ? TEXT("ashore") : TEXT("at the surface"),
+		At.X, At.Y, At.Z, SwimBody.vitality() * 100.f);
 }
 
 void AFTExploreCharacter::StirWater(float DeltaSeconds)

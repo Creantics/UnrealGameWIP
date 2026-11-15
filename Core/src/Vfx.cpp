@@ -543,6 +543,7 @@ void readEmitter(Reader& r, VfxEmitter& d) {
     readCurve(r, "angularVelocity", d.angularVelocity);
     r.getEnum("blend", d.blend, {{"alpha", VfxBlend::Alpha}, {"additive", VfxBlend::Additive}});
     r.get("lit", d.lit);
+    r.get("nearFade", d.nearFade);
     r.getEnum("sprite", d.sprite, {{"soft", VfxSprite::Soft}, {"puff", VfxSprite::Puff}, {"spark", VfxSprite::Spark}});
     r.get("stretch", d.stretch);
     r.get("stretchMax", d.stretchMax);
@@ -1091,6 +1092,8 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
 
     p.additive = e.blend == VfxBlend::Additive;
     p.lit = e.lit && !p.additive;
+    p.nearFade = e.nearFade && !p.additive && !p.lit;
+    if (e.nearFade && !p.nearFade) p.gaps.push_back("nearFade: alpha unlit sprites only (not faded)");
     p.sprite = e.sprite;
 
     // Typical and largest start speed, for the velocity stretch.

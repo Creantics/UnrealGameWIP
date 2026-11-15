@@ -41,3 +41,6 @@ Content/Fab/
 
 # The Solhaven strip is built by FTBuildMassingWorld from the plan's tables (docs/WORLDS.md): a build product
 Content/Maps/World_Solhaven_Strip.umap
+
+# The massing builder's sloped-mesh cache (FTBuildMassingWorld -MeshCache): rebuilt from the tables, local only
+Content/WorldCache/

@@ -7,7 +7,7 @@
 //       [-WorldEyeSize=2560x1440] [-WorldEyeDelay=8] [-WorldEyeNight [-WorldEyeNightSun=<share>] [-WorldEyeNightSky=<share>]
 //       [-WorldEyeNightEV=<ev>] [-WorldEyeNightEVRange=<ev>] [-WorldEyeNightLamp=<cd>] [-WorldEyeNightLampRadius=<m>] [-WorldEyeNightShop=<cd>]
 //       [-WorldEyeNightShopRadius=<m>] [-WorldEyeNightGlow=1]] [-WorldEyeGpuMs=<frames>] [-WorldEyePlainWalls]
-//       [-WorldEyeSunHour=<hours>] [-WindowParallax=<0..1>]
+//       [-WorldEyeSunHour=<hours>] [-WindowParallax=<0..1>] [-WorldEyeCard=<x,y,z> [-WorldEyeCardSize=<m>]]
 //       [-WorldEyeWalkTo=<x,y,z> [-WorldEyeWalkSpeed=1.4] [-WorldEyeWalkFps=60]]
 //       [-WorldEyeFocal=<mm>] [-WorldEyeFocus=<x,y,z>|<m>] [-WorldEyeAperture=<f>] [-WorldEyeBlur=0.5]
 // Any of -WorldEyeFocal, -WorldEyeFocus or -WorldEyeAperture switches to the vista camera standard: a cine camera on a
@@ -29,7 +29,8 @@
 // auto exposure to -WorldEyeNightEV +- -WorldEyeNightEVRange (EV100) and sets the night's white balance. On a map whose lights are data (AFTNightLights) the lamp pool lights the lamps
 // and shops nearest the eye instead (UFTLampPoolSubsystem::ForceNight, at the same candelas and reach). -WorldEyeGpuMs logs the GPU's frame time, averaged over that many frames once
 // the view has settled, before the still. -WorldEyePlainWalls puts each window instance's surface instance (MIW_<id> to
-// MI_Surface_<id>) back on the meshes, for a like-for-like timing.
+// MI_Surface_<id>) back on the meshes, for a like-for-like timing. -WorldEyeCard (dev only) lays a 0.18 grey card on the
+// ground at a plan point, to read the sun's and the shade's colour against the road's.
 //
 // The eye and the point it looks at are in the plan frame of a square -WorldEyeSide metres across, the frame the
 // massing tables use (ftcore::massingEnginePoint), z in metres. -WorldEyeLens is the focal length in millimetres on a

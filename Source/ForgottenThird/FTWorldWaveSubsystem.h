@@ -23,11 +23,11 @@
 //     0.001 up and down), so the change reads as the world's, not the eye's;
 //   - traces a 12 x 7 grid of view rays for the share of the view the second world has (ftcore::worldWaveViewShare),
 //     follows it at a limited rate (stepWaveCover) and blends the look actors' sun, sky light, fog and clouds from the
-//     first world's look to the Unwritten's (looks.json) by it, never ahead of the ground; the post-process's gains
+//     first world's look to the second's (the definition's toWorld in looks.json, the Unwritten by default) by it, never ahead of the ground; the post-process's gains
 //     (waveGains) keep the unreached side in its own light. StopWave puts the first world's look back;
 //   - the surfaces behind the front take the second world's state in their own materials (MF_WorldWaveState: near grey,
 //     a stop down, damp, grimed and leak-stained, their light dead but for the wave definition's kept lights, ftcore::WorldWaveParams::keep);
-//   - logs each cue (no sound yet);
+//   - logs each cue (no sound yet) and raises it on OnCue;
 //   - steps every tracked thing (ftcore::updateWorldWaveThing): its visibility, its collision (collisionDelay after the
 //     front passes it) and a held arrival's own front (custom primitive data FTWorldWave::kLocalSlot). An arrival that
 //     would come in round the player or a lead (AFTExploreCharacter) waits, not drawn and not solid, until its footprint
@@ -55,7 +55,9 @@
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/EngineTypes.h"
+#include "Engine/TimerHandle.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "UObject/ObjectKey.h"
 
 #include "ftcore/SceneLook.h"
 #include "ftcore/WorldWave.h"
@@ -71,6 +73,10 @@ class UMaterialParameterCollection;
 class UPrimitiveComponent;
 class UStaticMesh;
 
+// A wave cue as it fires (Prelude, FrontPassedListener: the front has passed the listener, Settled), with the seconds since
+// the wave's start. Raised on the game thread in the post-actor tick, after the cue's log line.
+DECLARE_MULTICAST_DELEGATE_TwoParams(FFTWorldWaveCueEvent, ftcore::WorldWaveCue /*Cue*/, double /*SecondsSinceStart*/);
+
 UCLASS()
 class FORGOTTENTHIRD_API UFTWorldWaveSubsystem : public UWorldSubsystem
 {
@@ -85,6 +91,9 @@ public:
 	// A wave from Origin (world cm) starting at StartTime on the wave clock. A wave already set is replaced; the tracked
 	// things start it from the state the side beyond its front has.
 	void StartWave(const FVector& Origin, double StartTime, bool bReverse);
+	// The same with a whole definition (a cutscene cue's, ftcore::worldWaveParamsForCue): its preset, the world it
+	// brings and its direction; its origin and start time are replaced by Origin and StartTime.
+	void StartWave(const FVector& Origin, double StartTime, const ftcore::WorldWaveParams& Definition);
 	// Ends the wave: the collection cleared, the volume off, the fog and the exposure back, every tracked thing as the
 	// first world has it.
 	void StopWave();
@@ -93,11 +102,36 @@ public:
 	// brings, from Core's classifyWorldWave on the state the shaders' constants come from (worldWaveShaderConstants).
 	// With no wave, the side beyond the front (Old, band 0). For gameplay: enemies, sound, the lead changing with the front.
 	ftcore::WaveClass WhichWorldAt(const FVector& WorldCm) const;
+	// The same by the SHADER rule (ftcore::classifyWorldWaveShader on the constants written to MPC_Look this frame): the
+	// tongues change pixels up to a band's width ahead of the outer edge, so a point there is Band here while WhichWorldAt
+	// still says Old. With no wave, Old, band 0. For the HUD and effects that must agree with what is drawn.
+	ftcore::WaveClass WhichWorldAtShader(const FVector& WorldCm) const;
+	bool IsInShaderBand(const FVector& WorldCm) const { return WhichWorldAtShader(WorldCm).side == ftcore::WaveSide::Band; }
+
+	// The wave set now (last StartWave; read with HasWave): its origin (world cm), its direction, and the ids of the two
+	// worlds it changes between (looks.json ids: the map's look at the start, empty for the shared look, and the wave
+	// definition's toWorld). Forward brings ToWorld over FromWorld; Reverse runs the same pair back.
+	const FVector& GetOriginCm() const { return OriginCm; }
+	ftcore::WaveDirection GetDirection() const { return Params.direction; }
+	bool IsReverse() const { return Params.direction == ftcore::WaveDirection::Reverse; }
+	const FString& GetFromWorld() const { return FromWorld; }
+	const FString& GetToWorld() const { return ToWorld; }
+
+	// Each cue as it fires (see FFTWorldWaveCueEvent). Bind with AddUObject / AddRaw and remove on teardown.
+	FFTWorldWaveCueEvent OnCue;
 
 	// The proof dressing round Origin (world cm) within Radius (cm); returns how many things it tracks now.
 	int32 Dress(const FVector& Origin, double Radius);
 
-	// Holds the wave clock at Seconds (a fixed-step capture); ReleaseClock goes back to game time.
+	// Logs where the front meets a lead's body against where it meets the ground under its feet: the materials' own field
+	// (FTWaveSecond's ragged edge, tongues and jitter, ported to the CPU, with the radius, band and age the collection gets
+	// this frame) along the line from the origin through the body's axis, at the ground's, feet's, chest's and head's
+	// heights; each crossing against the ground's, in cm, and how far each lies from the body's axis. Nothing without a
+	// wave or a skeletal body.
+	void LogBodyBoundary(const AActor& Lead) const;
+
+	// Holds the wave clock at Seconds (a fixed-step capture). ReleaseClock goes back to game time; with a wave set, game
+	// time plus the offset that continues from the held time (no jump in the front), which lasts until no wave is set.
 	void SetClock(double Seconds);
 	void ReleaseClock();
 	double GetClock() const;
@@ -131,6 +165,62 @@ private:
 	void EnsureVolume(UWorld& World);
 	void SetExposureHold(bool bHold);
 	void GatherPawns(UWorld& World);
+	// The audit's characters: every actor with a skeletal mesh, not attached to another, within the wave's whole reach
+	// (maxRadius plus the widest band) of its origin, and every lead. Gathered at StartWave over the world once; actors
+	// spawned while a state is live are taken at the next re-audit.
+	bool IsAuditRoot(const AActor& Actor) const;
+	void AddAuditRoot(AActor& Actor);
+	// One audit of a character (the root and every actor attached to it, at any depth: its body, each piece, shoes,
+	// glasses, grooms, held weapons). A slot is wave-aware when its master's FTWaveAware default is 1 (FTWorldWave::
+	// WaveAware, the same in the editor and a cooked build). Every primitive with a slot renders custom depth: stencil
+	// FTWorldWave::kAwareStencil when every slot is wave-aware (the post leaves it), FTWorldWave::kCatchStencil when any
+	// is not (PP_WorldWave gives its pixels the character state; r.CustomDepth must be 3, the project's setting). A primitive's own
+	// settings are recorded the first time they are changed, and RestoreWorn puts them back. A primitive that already
+	// renders custom depth with another stencil is left (its other slots counted unconverted, logged once). A master not
+	// wave-aware is logged once a run; a primitive that mixes both kinds takes 223 (its wave-aware slots then take the
+	// state twice: logged once, as the stencil is per primitive). The summary line is logged when anything changed.
+	struct FAuditCount
+	{
+		int32 Actors = 0;
+		int32 Slots = 0;
+		int32 Other = 0;       // slots not wave-aware
+		int32 Catch = 0;       // primitives at 223
+		int32 Aware = 0;       // primitives at 222
+		int32 Unconverted = 0; // slots on a primitive with someone else's stencil
+		int32 Changed = 0;     // primitives whose custom depth or stencil this audit set
+	};
+	FAuditCount AuditWorn(const AActor& Root);
+	// Every audit root again (from StartWave, and every AuditPeriod seconds on a world timer while a wave is set, its
+	// settled state included; never per frame): a weapon drawn, a jacket state shown or a material swapped is corrected.
+	void ReAudit();
+	void OnActorSpawned(AActor* Actor);
+	// Puts every primitive the audit changed back as it was; stops the re-audit.
+	void RestoreWorn();
+	// r.CustomDepth at 3 (the stencil, the project's setting), checked only: false when it is lower (the setting
+	// overridden, the console say), warned once; the audit then tags nothing, as the catch-all could not work.
+	bool EnsureStencil();
+	// The FTWaveAware marker of a slot's master (-1 none), read once per master for the life of the wave state.
+	float AwareMarker(const UMaterialInterface& Material);
+	struct FWornDepth
+	{
+		TWeakObjectPtr<UPrimitiveComponent> Component;
+		bool bRender = false; // its own custom depth and stencil before the audit set them
+		int32 Stencil = 0;
+		uint32 Pass = 0;      // the last re-audit that saw it on a root (one not seen is put back)
+	};
+	static constexpr float AuditPeriod = 0.5f;
+	TArray<TWeakObjectPtr<AActor>> AuditRoots;
+	TArray<TWeakObjectPtr<AActor>> Spawned; // since the last re-audit
+	TMap<FObjectKey, FWornDepth> WornDepth;
+	TMap<FObjectKey, float> AwareMarkers;
+	uint32 AuditPass = 0;
+	bool bStencilRefused = false;  // r.CustomDepth was found below 3 (warned once)
+	FTimerHandle AuditTimer;
+	FDelegateHandle SpawnHandle;
+	// The audit's scratch, reserved once (no allocation in a re-audit once the arrays have grown).
+	TArray<const AActor*> AuditActors;
+	TArray<UMaterialInterface*> AuditUsed;
+	TSet<FObjectKey> AuditLogged; // the masters and primitives already logged
 	bool PawnInFootprint(const FTracked& Item, const APawn* PlayerPawn) const;
 	// A thing as one side of the front has it (drawn and solid on its own world's side), its wave state reset.
 	void ResetThing(FTracked& Item, bool bOldSide);
@@ -157,14 +247,17 @@ private:
 	ftcore::WorldWaveState State;
 	ftcore::WorldWaveFrame Frame;
 	FVector OriginCm = FVector::ZeroVector;
+	FString FromWorld; // the map's look id when the wave started (empty: the shared look)
+	FString ToWorld;   // Params.toWorld, for the getters
 	// The ground under the origin (one trace at StartWave): the prelude streak's foot.
 	FVector StreakFootCm = FVector::ZeroVector;
 	bool bWave = false;
 	bool bStepping = false;   // a set wave still moving; false once it has settled
 	double SettledAt = -1.0;  // wave-clock time the radius reached its end, -1 before
+	float CollectionAge = 0.f; // the age (s) the last Step gave the collection's WorldWaveTime; LogBodyBoundary's field uses it
 	bool bExposureHeld = false;
-	bool bHoldClock = false;
-	double HeldClock = 0.0;
+	ftcore::WorldWaveClock Clock; // SetClock's hold and ReleaseClock's offset (Core/include/ftcore/WorldWave.h)
+
 
 	// The switches' dressing and wave, run on the first frame once every actor has begun play (OnWorldBeginPlay comes
 	// before the actors' BeginPlay).
