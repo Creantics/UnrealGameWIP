@@ -123,7 +123,9 @@
 //      the one it last held (whatever the target, while that spot stays legal and out of the target's keep-out);
 //      after frustumGiveUpSeconds (3.0) with none (or at once when it holds none) it falls back to rules 10-11's
 //      station until a valid one is found, and says so on every step it stays fallen back, strings, guards and
-//      repositions included (intent.frameFallback, and fallbackSeconds()).
+//      repositions included (intent.frameFallback, and fallbackSeconds()). The 3 s run on every step: the station held
+//      is checked on string and guard steps too, so the fallback comes at 3 s whatever it is doing, and never early
+//      for a station that stayed valid. Sooner only when the target's keep-out comes over the spot held.
 //      Standing (its last step no MoveTo or StepBack) within twice stationTolerance of its goal, it counts as there
 //      while its own place is in frame and outside both keep-outs, so a drifting station does not start and stop it.
 //  14. Engage. With its target within reach and its next blow within the budget, it starts an action within
@@ -131,7 +133,8 @@
 //      (in reach, the budget fitting, not acting) since its last action began. At engageSeconds a pause ends, and a
 //      string starts from where it stands (ahead of rule 12's 3 s and 6 s and rule 13's wait) when that spot is
 //      outside personal space and outside both keep-outs, and in the frame unless no valid station was found that step
-//      (then reported: intent.offFrame, offFrameStarts()); otherwise it keeps moving. The leash and the budget win:
+//      (this step's search alone, with no wait for one; then reported: intent.offFrame, offFrameStarts()); otherwise
+//      it keeps moving. The leash and the budget win:
 //      it never starts a blow that does not fit (then the idle reason says NoBudget).
 //  15. StayClose without the lead's target (no lock): the enemy the lead is attacking, else the nearest standing
 //      enemy within closeLeadMeters + reachMeters of the lead; so it never stands idle by a fighting lead. Spread,
