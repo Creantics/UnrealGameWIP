@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -102,31 +103,60 @@ TEST_CASE("swim: the defaults are valid and match Data/Swim/swim.json") {
     CHECK(kSwimDeepMin == 3.f);
 }
 
-TEST_CASE("swim: the importer reads fields, keeps defaults for missing ones, refuses bad ones with every error") {
+TEST_CASE("swim: the importer reads fields; missing, bad and out-of-range ones take their defaults and are noted") {
     SwimTuning t;
-    REQUIRE(importSwimTuning(R"({"version":1,"swimSpeed":2.5,"breathSeconds":60})", t));
+    std::string err;
+    std::vector<std::string> notes;
+    const auto noted = [&](const char* what) {
+        for (const std::string& n : notes)
+            if (n.find(what) != std::string::npos) return true;
+        return false;
+    };
+    REQUIRE(importSwimTuning(R"({"version":1,"swimSpeed":2.5,"breathSeconds":60})", t, &err, &notes));
     CHECK(t.swimSpeed == 2.5f);
     CHECK(t.breathSeconds == 60.f);
-    CHECK(t.sprintSpeed == 3.2f);
-    std::string err;
+    CHECK(t.sprintSpeed == 3.2f); // missing: the default, and noted
+    CHECK(notes.size() == 11u);
+    CHECK(noted("sprintSpeed: missing, the default 3.2 used"));
+    CHECK(noted("edgePushSpeed: missing, the default 4 used"));
+    CHECK_FALSE(noted("swimSpeed"));
+    // Out of range or not a number: its default, noted; an unknown key skipped, noted; still ok.
+    REQUIRE(importSwimTuning(R"({"version":1,"swimSpeed":"fast","buoyancy":-1,"breathSeconds":60,"gills":true})", t, &err, &notes));
+    CHECK(err.empty());
+    CHECK(t.swimSpeed == 2.2f);
+    CHECK(t.buoyancy == 0.2f);
+    CHECK(t.breathSeconds == 60.f);
+    CHECK(noted("swimSpeed: expected a number in 0.5..6, the default 2.2 used"));
+    CHECK(noted("buoyancy: expected a number in 0..2, the default 0.2 used"));
+    CHECK(noted("gills: unknown field, skipped"));
+    // The whole file from Data: no notes.
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Swim/swim.json", text));
+    REQUIRE(importSwimTuning(text, t, &err, &notes));
+    CHECK(notes.empty());
+    // Only a file that cannot be read fails, with the defaults.
     t.swimSpeed = 1.f;
-    CHECK_FALSE(importSwimTuning(R"({"version":2,"swimSpeed":"fast","buoyancy":-1,"gills":true})", t, &err));
-    CHECK(t.swimSpeed == SwimTuning{}.swimSpeed); // the defaults on error
+    CHECK_FALSE(importSwimTuning(R"({"version":2,"swimSpeed":3})", t, &err, &notes));
+    CHECK(t.swimSpeed == SwimTuning{}.swimSpeed);
     CHECK(err.find("version: expected 1") != std::string::npos);
-    CHECK(err.find("swimSpeed: expected a number in 0.5..6") != std::string::npos);
-    CHECK(err.find("buoyancy: expected a number in 0..2") != std::string::npos);
-    CHECK(err.find("gills: unknown field") != std::string::npos);
     CHECK_FALSE(importSwimTuning("[1]", t, &err));
     CHECK(err.find("expected an object") != std::string::npos);
     CHECK_FALSE(importSwimTuning("{", t, &err));
     CHECK(err.find("swim file") != std::string::npos);
-    // The cross-field rules.
-    CHECK_FALSE(importSwimTuning(R"({"version":1,"swimSpeed":3,"sprintSpeed":2.5})", t, &err));
-    CHECK(err.find("sprintSpeed: expected at least swimSpeed") != std::string::npos);
-    CHECK_FALSE(importSwimTuning(R"({"version":1,"breathSeconds":8,"warningSeconds":9})", t, &err));
-    CHECK(err.find("warningSeconds: expected at most breathSeconds") != std::string::npos);
-    CHECK_FALSE(importSwimTuning(R"({"version":1,"edgePushSpeed":3.2})", t, &err));
-    CHECK(err.find("edgePushSpeed: expected above sprintSpeed") != std::string::npos);
+    // The cross-field rules: the later field back to its default, noted.
+    REQUIRE(importSwimTuning(R"({"version":1,"swimSpeed":3,"sprintSpeed":2.5})", t, &err, &notes));
+    CHECK(t.swimSpeed == 3.f);
+    CHECK(t.sprintSpeed == 3.2f);
+    CHECK(noted("sprintSpeed: expected at least swimSpeed"));
+    REQUIRE(importSwimTuning(R"({"version":1,"breathSeconds":8,"warningSeconds":9})", t, &err, &notes));
+    CHECK(t.warningSeconds == 10.f);
+    CHECK(noted("warningSeconds: expected at most breathSeconds"));
+    CHECK(noted("every default used")); // the default 10 s is still over 8 s
+    CHECK(t.breathSeconds == 45.f);
+    REQUIRE(importSwimTuning(R"({"version":1,"edgePushSpeed":3.2})", t, &err, &notes));
+    CHECK(t.edgePushSpeed == 4.f);
+    CHECK(noted("edgePushSpeed: expected above sprintSpeed"));
+    CHECK(validSwimTuning(t));
 }
 
 TEST_CASE("swim: a refused tuning becomes the defaults; validSwimTuning checks every range") {
@@ -176,8 +206,10 @@ TEST_CASE("swim: a crouch at the surface dives where the water is deep, else it 
         CAPTURE(column);
         Swim s; // the column's minimum
         SwimEnv e = deep();
+        e.bedZ = -column;
         e.column = column;
         const SwimStep& r = s.step(crouch(), e, kDt);
+        CHECK(r.envOk);
         CHECK(r.dived == (column >= kSwimDeepMin));
         CHECK(r.diveRefused == (column < kSwimDeepMin));
     }
@@ -442,7 +474,7 @@ TEST_CASE("swim: breath refills in 2 s at the surface or in an air pocket") {
     CHECK_FALSE(r.draining);
 }
 
-TEST_CASE("swim: vitality 0 under water is a rescue: Surface, full breath, 25% vitality") {
+TEST_CASE("swim: vitality 0 under water is a rescue: Rescued, left in place, until the host's reset at the exit") {
     Swim s;
     SwimEnv e = diveToUnder(s, deep());
     e.position = {2.f, 3.f, -5.f};
@@ -452,26 +484,50 @@ TEST_CASE("swim: vitality 0 under water is a rescue: Surface, full breath, 25% v
     s.setVitality(0.004f); // 0.25 s of drain takes 0.0125
     const SwimStep& r = s.step(go({1.f, 0.f, 0.f}), e, 0.25f);
     CHECK(r.rescue);
-    CHECK(r.state == SwimState::Surface);
+    CHECK(r.state == SwimState::Rescued);
     CHECK(r.from == SwimState::Under);
     CHECK_FALSE(r.surfaced);
-    CHECK(r.vitality == 0.25f);
-    CHECK(r.breath == 45.f);
+    CHECK(r.vitality == 0.f);
     CHECK_FALSE(r.draining);
     CHECK(r.position.x == 2.f); // the host carries the lead; Swim does not move it
     CHECK(r.position.z == -5.f);
     CHECK(len(r.velocity) == 0.f);
+    // Left in place: no refill (not even at the surface or in an air pocket), no dive, no move from input.
+    SwimEnv pocket = e;
+    pocket.airPocket = true;
+    for (int i = 0; i < 20; ++i) {
+        CAPTURE(i);
+        SwimInput in = go({0.f, 0.f, 1.f}, 1.f, 0.5f, true);
+        in.crouch = i % 2 == 0;
+        in.jump = i % 3 == 0;
+        const SwimStep& q = s.step(in, i % 2 == 0 ? pocket : deep(), 0.25f);
+        CHECK(q.state == SwimState::Rescued);
+        CHECK_FALSE(q.rescue); // raised once
+        CHECK_FALSE(q.dived);
+        CHECK_FALSE(q.diveRefused);
+        CHECK_FALSE(q.refilling);
+        CHECK(q.breath == 0.f);
+        CHECK(q.vitality == 0.f);
+        CHECK(len(q.velocity) == 0.f);
+        CHECK(q.position.x == (i % 2 == 0 ? 2.f : 0.f)); // where the env puts it
+    }
+    // The host's reset at the exit: Surface, full breath, the rescue's vitality.
+    s.reset();
+    CHECK(s.state() == SwimState::Surface);
+    CHECK(s.breath() == 45.f);
     CHECK(s.vitality() == 0.25f);
-    CHECK_FALSE(s.step(SwimInput{}, deep(), kDt).rescue); // once
+    CHECK(s.step(SwimInput{}, deep(), kDt).state == SwimState::Surface);
+    s.reset(); // a later reset (not ending a rescue): full vitality
+    CHECK(s.vitality() == 1.f);
     // Vitality set to 0 at the surface is no rescue; the first step under water is.
     Swim u;
     u.setVitality(0.f);
     CHECK_FALSE(u.step(SwimInput{}, deep(), kDt).rescue);
     CHECK(u.step(crouch(), deep(), kDt).rescue);
-    CHECK(u.state() == SwimState::Surface);
+    CHECK(u.state() == SwimState::Rescued);
     // setVitality guards.
     u.setVitality(kNaN);
-    CHECK(u.vitality() == 0.25f);
+    CHECK(u.vitality() == 0.f);
     u.setVitality(3.f);
     CHECK(u.vitality() == 1.f);
     u.setVitality(-1.f);
@@ -565,31 +621,321 @@ TEST_CASE("swim: bad inputs are replaced, never trusted") {
     CHECK(s.last().position.z == doctest::Approx(-5.f + 0.2f * kSwimMaxStep));
 }
 
-TEST_CASE("swim: a bad env changes nothing") {
+TEST_CASE("swim: a bad env changes nothing; the env's position if finite, else the last") {
     Swim s;
     SwimEnv e = diveToUnder(s, deep());
     e.position.z = -5.f;
     const SwimStep& good = s.step(SwimInput{}, e, kDt);
     const SwimVec at = good.position;
     const float b = s.breath();
-    SwimEnv bads[6];
+    SwimEnv bads[5];
     for (SwimEnv& x : bads) x = e;
     bads[0].position.x = kNaN;
     bads[1].surfaceZ = kInf;
     bads[2].bedZ = kNaN;
-    bads[3].column = kNaN;
-    bads[4].bedZ = 0.f; // bed at the surface
-    bads[5].bedZ = 1.f; // bed over it
-    for (const SwimEnv& x : bads) {
-        const SwimStep& r = s.step(jump(), x, kDt);
+    bads[3].bedZ = 0.f; // bed at the surface
+    bads[4].bedZ = 1.f; // bed over it
+    for (int i = 0; i < 5; ++i) {
+        CAPTURE(i);
+        SwimInput in = go({0.f, 0.f, 1.f});
+        in.jump = i % 2 == 0;
+        const SwimStep& r = s.step(in, bads[i], kDt);
         CHECK_FALSE(r.envOk);
         CHECK(r.state == SwimState::Under);
-        CHECK(r.position.z == at.z);
+        CHECK(r.position.z == (i == 0 ? at.z : e.position.z));
+        CHECK(r.position.x == (i == 0 ? at.x : e.position.x));
         CHECK(r.breath == b);
         CHECK(s.state() == SwimState::Under);
         CHECK(s.breath() == b);
     }
     CHECK(s.step(SwimInput{}, e, kDt).envOk);
+}
+
+TEST_CASE("swim: a bad column is reported and replaced by surface minus bed; the step goes on") {
+    for (const float col : {kNaN, kInf, -1.f, 9.9f, 10.06f, 2.f}) {
+        CAPTURE(col);
+        // At the surface: a dive goes by surface minus bed (10 m), not the column.
+        Swim s;
+        SwimEnv e = deep();
+        e.column = col;
+        const SwimStep& r = s.step(crouch(), e, kDt);
+        CHECK_FALSE(r.envOk);
+        CHECK(r.dived);
+        CHECK(r.state == SwimState::Diving);
+        CHECK(r.position.z == doctest::Approx(-0.22f));
+        // A shallow pool (2 m) whatever the column claims: refused.
+        Swim u;
+        SwimEnv p = deep();
+        p.bedZ = -2.f;
+        p.column = col == 2.f ? 10.f : col;
+        const SwimStep& q = u.step(crouch(), p, kDt);
+        CHECK_FALSE(q.envOk);
+        CHECK(q.diveRefused);
+    }
+    // Within 0.05 m it is fine.
+    Swim s;
+    SwimEnv e = deep();
+    e.column = 10.04f;
+    CHECK(s.step(crouch(), e, kDt).envOk);
+    e.column = 9.96f;
+    CHECK(s.step(SwimInput{}, e, kDt).envOk);
+}
+
+TEST_CASE("swim: edge inputs: NaN or +inf distance, or a bad inward, is no push and reported; 0 or less (-inf too) is the full push") {
+    Swim s;
+    SwimEnv e = diveToUnder(s, deep());
+    e.position.z = -5.f;
+    e.edgeInward = {-1.f, 0.f, 0.f};
+    for (const float d : {kNaN, kInf}) {
+        e.edgeDistance = d;
+        const SwimStep& r = s.step(SwimInput{}, e, kDt);
+        CHECK_FALSE(r.envOk);
+        CHECK(r.pushBack == 0.f);
+        CHECK(r.position.x == 0.f);
+        CHECK(r.state == SwimState::Under);
+        CHECK(r.position.z == doctest::Approx(-5.f + 0.2f * kDt)); // the step went on
+    }
+    for (const SwimVec in : {SwimVec{kNaN, 0.f, 0.f}, SwimVec{-1.f, kInf, 0.f}}) {
+        e.edgeDistance = -1.f;
+        e.edgeInward = in;
+        const SwimStep& r = s.step(SwimInput{}, e, kDt);
+        CHECK_FALSE(r.envOk);
+        CHECK(r.pushBack == 0.f);
+        CHECK(r.position.x == 0.f);
+    }
+    e.edgeInward = {-1.f, 0.f, 0.f};
+    for (const float d : {-kInf, -1e30f, -3.f, 0.f}) {
+        CAPTURE(d);
+        e.edgeDistance = d;
+        const SwimStep& r = s.step(SwimInput{}, e, kDt);
+        CHECK(r.envOk);
+        CHECK(r.pushBack == 1.f);
+        CHECK(r.position.x == doctest::Approx(-4.f * kDt));
+    }
+    e.edgeInward = {}; // zero inward: no push, not an error
+    e.edgeDistance = 0.f;
+    const SwimStep& z = s.step(SwimInput{}, e, kDt);
+    CHECK(z.envOk);
+    CHECK(z.pushBack == 0.f);
+}
+
+TEST_CASE("swim: a huge or tiny finite look normalises; never a silent zero") {
+    struct Case {
+        SwimVec look;
+        SwimVec unit;
+    };
+    const float h = 0.70710678f;
+    for (const Case c : {Case{{1e30f, 0.f, -1e30f}, {h, 0.f, -h}}, Case{{3e38f, 3e38f, 0.f}, {h, h, 0.f}},
+                         Case{{1e-30f, 0.f, -1e-30f}, {h, 0.f, -h}}, Case{{-1e38f, 1.f, 0.f}, {-1.f, 0.f, 0.f}}}) {
+        CAPTURE(c.look.x);
+        Swim s;
+        SwimEnv e = diveToUnder(s, deep());
+        e.position.z = -5.f;
+        const SwimStep& r = s.step(go(c.look), e, kDt);
+        CHECK(r.inputOk);
+        CHECK(len(r.velocity) == doctest::Approx(2.2f));
+        CHECK(r.velocity.x == doctest::Approx(2.2f * c.unit.x));
+        CHECK(r.velocity.y == doctest::Approx(2.2f * c.unit.y));
+        CHECK(r.velocity.z == doctest::Approx(2.2f * c.unit.z));
+    }
+    // Zero or not finite: the last good look, inputOk false.
+    Swim s;
+    SwimEnv e = diveToUnder(s, deep());
+    e.position.z = -5.f;
+    s.step(go({0.f, 1.f, 0.f}), e, kDt);
+    for (const SwimVec bad : {SwimVec{}, SwimVec{kInf, 0.f, 0.f}, SwimVec{kNaN, 1.f, 0.f}}) {
+        const SwimStep& r = s.step(go(bad), e, kDt);
+        CHECK_FALSE(r.inputOk);
+        CHECK(r.velocity.y == doctest::Approx(2.2f));
+        CHECK(len(r.velocity) == doctest::Approx(2.2f));
+    }
+}
+
+TEST_CASE("swim: crouch and jump are edge-triggered; both down at the surface: the jump wins") {
+    { // A held refused crouch: diveRefused once per press.
+        Swim s;
+        SwimEnv e = deep();
+        e.deepAllowed = false;
+        CHECK(s.step(crouch(), e, kDt).diveRefused);
+        for (int i = 0; i < 5; ++i) CHECK_FALSE(s.step(crouch(), e, kDt).diveRefused);
+        s.step(SwimInput{}, e, kDt); // released
+        CHECK(s.step(crouch(), e, kDt).diveRefused);
+    }
+    { // A crouch held from the dive through the surfacing does not dive again.
+        Swim s;
+        SwimEnv e = deep();
+        REQUIRE(s.step(crouch(), e, kDt).dived);
+        e.position = s.last().position;
+        for (int i = 0; i < 10; ++i) e.position = s.step(crouch(), e, kDt).position;
+        REQUIRE(s.state() == SwimState::Under);
+        SwimInput up = crouch();
+        up.jump = true;
+        e.position = s.step(up, e, kDt).position;
+        REQUIRE(s.state() == SwimState::Surfacing);
+        up.jump = false;
+        for (int i = 0; i < 30 && s.state() != SwimState::Surface; ++i) e.position = s.step(up, e, kDt).position;
+        REQUIRE(s.state() == SwimState::Surface);
+        for (int i = 0; i < 5; ++i) {
+            const SwimStep& r = s.step(crouch(), e, kDt);
+            CHECK_FALSE(r.dived);
+            CHECK(r.state == SwimState::Surface);
+        }
+        s.step(SwimInput{}, e, kDt);
+        CHECK(s.step(crouch(), e, kDt).dived); // a new press dives
+    }
+    { // Both pressed on the same step at the surface: no dive, no refusal.
+        Swim s;
+        SwimEnv e = deep();
+        SwimInput both = crouch();
+        both.jump = true;
+        const SwimStep& r = s.step(both, e, kDt);
+        CHECK_FALSE(r.dived);
+        CHECK_FALSE(r.diveRefused);
+        CHECK(r.state == SwimState::Surface);
+        // A jump held, then a crouch pressed: the jump still down, so it still wins.
+        s.step(SwimInput{}, e, kDt);
+        s.step(jump(), e, kDt);
+        CHECK_FALSE(s.step(both, e, kDt).dived);
+    }
+    { // A jump press rises once; held, it changes nothing more; held at the surface it beats a crouch press.
+        Swim s;
+        SwimEnv e = deep();
+        REQUIRE(s.step(crouch(), e, kDt).dived);
+        e.position = s.last().position;
+        for (int i = 0; i < 10; ++i) e.position = s.step(crouch(), e, kDt).position; // held: to Under at 1 m
+        REQUIRE(s.state() == SwimState::Under);
+        SwimInput c = crouch();
+        c.jump = true; // pressed now
+        e.position = s.step(c, e, kDt).position;
+        CHECK(s.state() == SwimState::Surfacing);
+        e.position = s.step(c, e, kDt).position; // held: no new change
+        CHECK(s.state() == SwimState::Surfacing);
+        for (int i = 0; i < 30 && s.state() != SwimState::Surface; ++i) e.position = s.step(c, e, kDt).position;
+        REQUIRE(s.state() == SwimState::Surface);
+        SwimInput j = jump(); // the jump still held, the crouch released and pressed again: the jump wins
+        s.step(j, e, kDt);
+        CHECK_FALSE(s.step(c, e, kDt).dived);
+        s.step(SwimInput{}, e, kDt);
+        REQUIRE(s.step(crouch(), e, kDt).dived); // a clean press dives
+        e.position = s.last().position;
+        e.position = s.step(crouch(), e, kDt).position;
+        REQUIRE(s.state() == SwimState::Diving);
+        e.position = s.step(c, e, kDt).position; // a jump pressed while diving: surfacing
+        CHECK(s.state() == SwimState::Surfacing);
+    }
+}
+
+TEST_CASE("swim: once under water deepAllowed false or a shallow column never ejects; only a new dive needs them") {
+    Swim s;
+    SwimEnv e = diveToUnder(s, deep());
+    e.position.z = -1.5f;
+    e.deepAllowed = false;
+    for (int i = 0; i < 10; ++i) {
+        const SwimStep& r = s.step(go({1.f, 0.f, 0.f}), e, kDt);
+        CHECK(r.state == SwimState::Under);
+        CHECK(r.envOk);
+    }
+    SwimEnv shallow = e; // the column shrinks under kSwimDeepMin
+    shallow.bedZ = -2.f;
+    shallow.column = 2.f;
+    shallow.deepAllowed = true;
+    for (int i = 0; i < 10; ++i) CHECK(s.step(go({1.f, 0.f, 0.f}), shallow, kDt).state == SwimState::Under);
+    // Up to the surface there; a new dive is refused.
+    e = shallow;
+    for (int i = 0; i < 20 && s.state() != SwimState::Surface; ++i) {
+        SwimInput in;
+        in.jump = i == 0;
+        e.position = s.step(in, e, kDt).position;
+    }
+    REQUIRE(s.state() == SwimState::Surface);
+    const SwimStep& r = s.step(crouch(), e, kDt);
+    CHECK(r.diveRefused);
+    CHECK_FALSE(r.dived);
+}
+
+TEST_CASE("swim: one huge step from just under the surface going up, or just above the bed going down, ends clamped") {
+    for (const float dt : {10.f, 1e6f}) {
+        CAPTURE(dt);
+        {
+            Swim s;
+            SwimEnv e = diveToUnder(s, deep());
+            e.position.z = -0.05f;
+            const SwimStep& r = s.step(go({0.f, 0.f, 1.f}, 1.f, 0.f, true), e, dt);
+            CHECK(r.dt == kSwimMaxStep);
+            CHECK(r.position.z == 0.f);
+            CHECK(r.state == SwimState::Surface); // the hand-over
+            CHECK(r.surfaced);
+        }
+        {
+            Swim s;
+            SwimEnv e = diveToUnder(s, deep());
+            e.position.z = -9.65f;
+            const float b = s.breath();
+            const SwimStep& r = s.step(go({0.f, 0.f, -1.f}, 1.f, 0.f, true), e, dt);
+            CHECK(r.position.z == doctest::Approx(-9.7f)); // 0.3 m off the bed, never through
+            CHECK(r.position.z >= -9.7f - 1e-5f);
+            CHECK(r.state == SwimState::Under);
+            CHECK(r.breath == doctest::Approx(b - 2.f * kSwimMaxStep)); // the rest of the step dropped
+        }
+        { // A dive on one huge step stops at its target.
+            Swim s;
+            const SwimStep& r = s.step(crouch(), deep(), dt);
+            CHECK(r.position.z == doctest::Approx(-0.55f)); // 0.25 s at 2.2 m/s
+            CHECK(r.position.z >= -1.f);
+        }
+    }
+}
+
+TEST_CASE("swim: the dive stops at its target, no overshoot carried on") {
+    for (const float dt : {0.1f, 0.25f, 1.f / 30.f}) {
+        CAPTURE(dt);
+        Swim s;
+        SwimEnv e = deep();
+        for (int i = 0; i < 100 && s.state() != SwimState::Under; ++i) {
+            SwimInput in;
+            in.crouch = i == 0;
+            e.position = s.step(in, e, dt).position;
+        }
+        REQUIRE(s.state() == SwimState::Under);
+        CHECK(e.position.z == -1.f);
+    }
+}
+
+TEST_CASE("swim: the same 10 s script at 30, 60 and 144 steps a second ends within 0.05 m and 0.05 s of breath") {
+    struct End {
+        SwimVec pos;
+        float breath;
+        SwimState state;
+    };
+    const auto run = [](int rate) {
+        Swim s;
+        SwimEnv e = deep();
+        const float dt = 1.f / float(rate);
+        for (int k = 0; k < 10 * rate; ++k) {
+            const float t = float(k) * dt + 0.5f * dt; // the middle of the step
+            SwimInput in;
+            if (t < 0.5f) in.crouch = true;                                 // dive (0.45 s to 1 m)
+            else if (t < 1.f) in = SwimInput{};                             // settle at the dive's end
+            else if (t < 4.f) in = go({1.f, 0.4f, -0.5f});                  // along a slanted look, down
+            else if (t < 6.f) in = go({0.3f, 1.f, -0.2f}, 1.f, 0.f, true); // sprint
+            else if (t < 8.f) in = SwimInput{};                             // idle: drift up
+            else in = go({-1.f, 0.f, 0.1f}, 0.7f, 0.5f);                    // swim on, both axes
+            e.position = s.step(in, e, dt).position;
+        }
+        return End{s.last().position, s.breath(), s.state()};
+    };
+    const End a = run(30), b = run(60), c = run(144);
+    for (const End* x : {&a, &b}) {
+        CHECK(x->state == SwimState::Under);
+        CHECK(std::fabs(x->pos.x - c.pos.x) <= 0.05f);
+        CHECK(std::fabs(x->pos.y - c.pos.y) <= 0.05f);
+        CHECK(std::fabs(x->pos.z - c.pos.z) <= 0.05f);
+        CHECK(std::fabs(x->breath - c.breath) <= 0.05f);
+    }
+    CHECK(c.state == SwimState::Under);
+    CHECK(c.pos.z < -1.f); // the script stayed under water
+    MESSAGE("30 Hz " << a.pos.x << "," << a.pos.y << "," << a.pos.z << " breath " << a.breath << "; 144 Hz " << c.pos.x
+                     << "," << c.pos.y << "," << c.pos.z << " breath " << c.breath);
 }
 
 TEST_CASE("swim: reset brings back the surface, a full breath and full vitality") {

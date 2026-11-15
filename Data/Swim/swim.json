@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "_comment": "Underwater swim tunables. Metres, seconds and metres per second, Z up; the host converts from centimetres. Ranges in Core/include/ftcore/Swim.h.",
   "swimSpeed": 2.2,
   "sprintSpeed": 3.2,
   "buoyancy": 0.2,

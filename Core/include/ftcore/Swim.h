@@ -1,26 +1,40 @@
 // Underwater free swim for an explore lead: dive, swim in 3D along the look, breath, the rescue and the outer edge.
+// Units: metres and seconds, Z up (Unreal's axes: x forward, y right). The host converts from centimetres both ways.
 // Plain C++20, no Unreal headers, no allocation in step(). Header-only (inline), so it needs no wrapper in the Unreal
 // module. The host calls step() once a frame while the lead is in deep water, moves the body to the step's position
-// and reads the flags. Metres, seconds, z up; Unreal's axes (x forward, y right). Data/Swim/swim.json is read by
-// importSwimTuning.
+// and reads the flags. Data/Swim/swim.json is read by importSwimTuning.
 //
 // The rules:
-// - Surface: the host's own surface swim moves the body (Swim passes the position through, no edge push); breath
-//   refills. A crouch dives (Diving) where the env allows it: deepAllowed and a column of at least kSwimDeepMin;
-//   else diveRefused.
-// - Diving: straight down at swimSpeed to diveDepth under the surface (or the bed's clearance), then Under.
+// - Surface: the host's own surface swim moves the body (Swim passes the position through untouched: no clamp, no
+//   edge push); breath refills. A crouch press dives (Diving) where the env allows it: deepAllowed and a column of
+//   at least kSwimDeepMin; else diveRefused (once per press).
+// - Crouch and jump are edge-triggered: a state change needs a press (up last step, down this one), so a crouch held
+//   through a surfacing does not dive again and a held refused crouch reports diveRefused once. Both down on the same
+//   step at the surface: the jump wins (no dive; the jump is the host's).
+// - Diving: straight down at swimSpeed to diveDepth under the surface (or the bed's clearance), clamped there (the
+//   rest of that step is not carried on), then Under.
 // - Under: along the look in full 3D, the move axes on it (forward on the look, right on its horizontal right) at
 //   swimSpeed, sprintSpeed while sprinting with a move input; with no move input it drifts up at buoyancy. Reaching
 //   the surface hands back to Surface (surfaced).
-// - A jump in Diving or Under: Surfacing, straight up at swimSpeed to the surface, then Surface (surfaced).
-// - Every state: held bedClearance off the bed and stopped at the surface.
+// - A jump press in Diving or Under: Surfacing, straight up at swimSpeed to the surface, then Surface (surfaced).
+// - Diving, Under and Surfacing: held bedClearance off the bed and stopped at the surface.
+// - Once under water the lead is never ejected: deepAllowed turning false, or the column shrinking under
+//   kSwimDeepMin, changes nothing for Diving, Under or Surfacing; only a new dive needs them.
 // - Under water (Diving, Under, Surfacing) the outer edge pushes back toward edgeInward: 0 from edgeRampMetres
-//   inside it, rising to edgePushSpeed at the edge and past it, so a sprint cannot cross it. No wall, no message.
+//   inside it, rising to edgePushSpeed at the edge and past it (edgeDistance 0 or less, -inf included), so a sprint
+//   cannot cross it. No wall, no message.
 // - Breath: used 1 s a second under water, sprintBreathRate while sprinting; refilled at the surface or in an air
 //   pocket (empty to full in refillSeconds). warning from warningSeconds left while it is being used; at 0 the
 //   vitality drains drainPerSecond (for the part of the step past empty).
-// - Vitality 0 under water: rescue. The host carries the lead to the nearest exit; Swim is reset (Surface, full
-//   breath) at rescueVitality.
+// - Vitality 0 under water: rescue (raised on that step) and the state is Rescued: the body is left where the env
+//   puts it, no breath refill, no dive, no move from input, until the host has carried the lead to the nearest exit
+//   and calls reset() there (Surface, full breath, vitality rescueVitality).
+// - The step: dt over kSwimMaxStep is clamped to it; the time past it is dropped (no move, breath or drain for it),
+//   so one huge step moves at most a quarter second's worth and the clamps still hold.
+// - Guards: a bad env (position, surface or bed not finite, the bed not under the surface) changes nothing (the
+//   position is the env's if finite, else the last). A column not finite, negative, or off surface minus bed by
+//   more than 0.05 m, and an edgeDistance that is NaN or +inf or an edgeInward not finite, set envOk false: the
+//   column is taken as surface minus bed, the edge gives no push, and the step goes on. A bad input is replaced.
 #pragma once
 
 #include "ftcore/Json.h"
@@ -28,16 +42,19 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ftcore {
 
-enum class SwimState : std::uint8_t { Surface, Diving, Under, Surfacing };
+enum class SwimState : std::uint8_t { Surface, Diving, Under, Surfacing, Rescued };
 
-inline constexpr float kSwimDeepMin = 3.0f;  // a dive needs a water column at least this deep (m)
-inline constexpr float kSwimMaxStep = 0.25f; // a longer step is clamped to this (s)
+inline constexpr float kSwimDeepMin = 3.0f;       // a dive needs a water column at least this deep (m)
+inline constexpr float kSwimMaxStep = 0.25f;      // a longer step is clamped to this (s); the rest is dropped
+inline constexpr float kSwimColumnSlack = 0.05f;  // the column may differ from surface minus bed by this (m)
 
 struct SwimVec {
     float x = 0.f, y = 0.f, z = 0.f;
@@ -48,15 +65,15 @@ struct SwimTuning {
     float swimSpeed = 2.2f;       // m/s (0.5..6)
     float sprintSpeed = 3.2f;     // m/s (swimSpeed..8)
     float buoyancy = 0.2f;        // m/s up under water with no move input (0..2)
-    float bedClearance = 0.3f;    // held this far off the bed (0..2)
-    float diveDepth = 1.0f;       // a dive ends this far under the surface (0.2..3)
-    float breathSeconds = 45.f;   // a full breath (5..300)
-    float sprintBreathRate = 2.f; // breath used per second while sprinting (1..5)
-    float warningSeconds = 10.f;  // the warning from this much breath left (0..breathSeconds)
+    float bedClearance = 0.3f;    // m held off the bed (0..2)
+    float diveDepth = 1.0f;       // m: a dive ends this far under the surface (0.2..3)
+    float breathSeconds = 45.f;   // s: a full breath (5..300)
+    float sprintBreathRate = 2.f; // breath seconds used per second while sprinting (1..5)
+    float warningSeconds = 10.f;  // s: the warning from this much breath left (0..breathSeconds)
     float drainPerSecond = 0.05f; // vitality share lost per second with no breath (0.01..1)
-    float refillSeconds = 2.f;    // empty to full at the surface or in an air pocket (0.1..30)
+    float refillSeconds = 2.f;    // s: empty to full at the surface or in an air pocket (0.1..30)
     float rescueVitality = 0.25f; // the vitality share a rescued lead is left at (0.01..1)
-    float edgeRampMetres = 8.f;   // the edge's push rises over this distance (0.5..50)
+    float edgeRampMetres = 8.f;   // m: the edge's push rises over this distance (0.5..50)
     float edgePushSpeed = 4.f;    // m/s inward at the edge (above sprintSpeed..12)
 };
 
@@ -88,6 +105,7 @@ inline constexpr Range kRanges[] = {
 inline bool inRange(float v, float lo, float hi) { return std::isfinite(v) && v >= lo && v <= hi; }
 inline bool finite(const SwimVec& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+inline float absf(float v) { return v < 0.f ? -v : v; }
 inline std::string text(float v) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%g", double(v));
@@ -104,24 +122,25 @@ inline bool validSwimTuning(const SwimTuning& t) {
 
 // What the player asks this frame. A bad value is replaced (SwimStep::inputOk false), never trusted.
 struct SwimInput {
-    SwimVec look{1.f, 0.f, 0.f}; // the camera's look (normalised here; zero or not finite: the last good one)
+    SwimVec look{1.f, 0.f, 0.f}; // the camera's look (normalised here, any finite length; zero or not finite: the
+                                 // last good one)
     float forward = 0.f;         // move axes, -1..1 (outside: clamped; not finite: 0); longer than 1 together: scaled
     float right = 0.f;
     bool sprint = false;
-    bool crouch = false; // at the surface: dive
-    bool jump = false;   // diving or under: rise to the surface
+    bool crouch = false; // held; its press at the surface dives
+    bool jump = false;   // held; its press diving or under rises to the surface
 };
 
-// The water at the lead this frame (the world lane's WaterBody rows and the character).
+// The water at the lead this frame (the host's WaterBody rows and the character), in metres, Z up.
 struct SwimEnv {
     SwimVec position;            // the lead's body reference point
     float surfaceZ = 0.f;        // the water surface over the lead
     float bedZ = -10.f;          // the bed under it (below surfaceZ)
-    float column = 10.f;         // the water column's depth here (a dive needs kSwimDeepMin)
+    float column = 10.f;         // the water column's depth here: surfaceZ - bedZ (a dive needs kSwimDeepMin)
     bool deepAllowed = false;    // the body is swimDeep and the point is inside its dive area
     bool airPocket = false;      // the lead's head is in an air pocket (breath refills under water)
-    float edgeDistance = 1.0e9f; // metres inside the outer edge (0 or less: at or past it; not finite: far)
-    SwimVec edgeInward;          // horizontal, back into the basin (zero or not finite: no push)
+    float edgeDistance = 1.0e9f; // metres inside the outer edge (0 or less, -inf included: at or past it)
+    SwimVec edgeInward;          // horizontal, back into the basin (zero: no push)
 };
 
 // What the lead may do while swimming, in every state: the character reads them.
@@ -136,9 +155,9 @@ struct SwimStep {
     SwimState state = SwimState::Surface; // after this step
     SwimState from = SwimState::Surface;  // before it
     bool dived = false;       // Surface to Diving this step
-    bool diveRefused = false; // a crouch at the surface where no dive is allowed
+    bool diveRefused = false; // a crouch press at the surface where no dive is allowed
     bool surfaced = false;    // to Surface this step (not by a rescue)
-    SwimVec position;         // where the body goes (clamped to the bed's clearance and the surface)
+    SwimVec position;         // where the body goes (under water: clamped to the bed's clearance and the surface)
     SwimVec velocity;         // m/s: the move this step (the asked one when dt is 0)
     float dt = 0.f;           // the step used (0..kSwimMaxStep)
     bool sprinting = false;   // under, sprint held with a move input
@@ -148,33 +167,35 @@ struct SwimStep {
     bool warning = false;     // breath in use with warningSeconds or less left
     bool draining = false;    // no breath left under water: vitality drains
     float vitality = 1.f;     // the share left (0..1)
-    bool rescue = false;      // vitality reached 0 under water: carry the lead to the nearest exit (Swim is reset)
+    bool rescue = false;      // vitality reached 0 under water this step: carry the lead to the nearest exit, then reset
     float pushBack = 0.f;     // the outer edge's share applied this step (0..1)
     SwimFlags flags;
     bool inputOk = true;      // false: an input value was replaced (not finite, out of range)
-    bool envOk = true;        // false: the env was unusable (not finite, bed not under the surface): nothing changed
+    bool envOk = true;        // false: an env value was unusable (see the guards at the top)
 };
 
 class Swim {
 public:
     // A tuning validSwimTuning refuses is replaced by the defaults (tuningOk() false).
     explicit Swim(const SwimTuning& t = SwimTuning{}) { reset(t); }
-    // Surface, a full breath and full vitality.
+    // Surface, a full breath; vitality full, or rescueVitality when it ends a rescue (state Rescued). The body's
+    // position is the env's on the next step. Held buttons are kept (a crouch held through it is not a press).
     void reset(const SwimTuning& t) {
         tuningOk_ = validSwimTuning(t);
         tuning_ = tuningOk_ ? t : SwimTuning{};
         reset();
     }
     void reset() {
+        vitality_ = state_ == SwimState::Rescued ? tuning_.rescueVitality : 1.f;
         state_ = SwimState::Surface;
         breath_ = tuning_.breathSeconds;
-        vitality_ = 1.f;
         look_ = {1.f, 0.f, 0.f};
         right_ = {0.f, 1.f, 0.f};
         step_ = SwimStep{};
         step_.breath = breath_;
+        step_.vitality = vitality_;
     }
-    // dt: seconds (negative or not finite: 0; over kSwimMaxStep: clamped).
+    // dt: seconds (negative or not finite: 0; over kSwimMaxStep: clamped, the rest dropped).
     const SwimStep& step(const SwimInput& in, const SwimEnv& env, float dt);
 
     SwimState state() const { return state_; }
@@ -196,10 +217,13 @@ private:
     float vitality_ = 1.f;
     SwimVec look_{1.f, 0.f, 0.f};  // the last good look, unit
     SwimVec right_{0.f, 1.f, 0.f}; // the last good horizontal right (up x look), unit
+    bool crouchHeld_ = false;      // the buttons last step, for the presses
+    bool jumpHeld_ = false;
     SwimStep step_{};
 };
 
 inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float dt) {
+    using swim_detail::absf;
     using swim_detail::clampf;
     using swim_detail::finite;
     const SwimTuning& t = tuning_;
@@ -209,25 +233,53 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
     if (!std::isfinite(dt) || dt < 0.f) dt = 0.f;
     if (dt > kSwimMaxStep) dt = kSwimMaxStep;
     s.dt = dt;
-
-    // The env: nothing changes on a bad one (the last position stays).
-    if (!finite(env.position) || !std::isfinite(env.surfaceZ) || !std::isfinite(env.bedZ) ||
-        !std::isfinite(env.column) || env.bedZ >= env.surfaceZ) {
-        s.envOk = false;
+    const bool crouchPress = in.crouch && !crouchHeld_;
+    const bool jumpPress = in.jump && !jumpHeld_;
+    crouchHeld_ = in.crouch;
+    jumpHeld_ = in.jump;
+    const auto finish = [&]() -> const SwimStep& {
         s.state = state_;
-        s.position = step_.position;
         s.breath = breath_;
         s.breathShare = breath_ / t.breathSeconds;
         s.vitality = vitality_;
         step_ = s;
         return step_;
+    };
+
+    // The env: nothing changes on a bad one (the env's position if finite, else the last).
+    if (!finite(env.position) || !std::isfinite(env.surfaceZ) || !std::isfinite(env.bedZ) ||
+        !(env.bedZ < env.surfaceZ)) {
+        s.envOk = false;
+        s.position = finite(env.position) ? env.position : step_.position;
+        return finish();
+    }
+    const float span = env.surfaceZ - env.bedZ;
+    float column = env.column;
+    if (!std::isfinite(column) || column < 0.f || absf(column - span) > kSwimColumnSlack) {
+        s.envOk = false;
+        column = span;
+    }
+    bool edgeUsable = true;
+    if (std::isnan(env.edgeDistance) || env.edgeDistance == std::numeric_limits<float>::infinity() ||
+        !finite(env.edgeInward)) {
+        s.envOk = false;
+        edgeUsable = false;
+    }
+
+    // Rescued: left where the env puts it until the host's reset.
+    if (state_ == SwimState::Rescued) {
+        s.position = env.position;
+        return finish();
     }
 
     // The input.
     if (finite(in.look)) {
-        const float len = std::sqrt(in.look.x * in.look.x + in.look.y * in.look.y + in.look.z * in.look.z);
-        if (len > 1e-4f) {
-            look_ = {in.look.x / len, in.look.y / len, in.look.z / len};
+        // Scaled by its largest part first, so a huge (or tiny) finite look normalises without overflow.
+        const float m = std::fmax(absf(in.look.x), std::fmax(absf(in.look.y), absf(in.look.z)));
+        if (m > 0.f) {
+            const SwimVec q{in.look.x / m, in.look.y / m, in.look.z / m};
+            const float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z); // 1..sqrt(3)
+            look_ = {q.x / len, q.y / len, q.z / len};
             const float h = std::sqrt(look_.x * look_.x + look_.y * look_.y);
             if (h > 1e-4f) right_ = {-look_.y / h, look_.x / h, 0.f}; // straight up or down: the last right
         } else {
@@ -253,15 +305,15 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
     }
     const bool moving = fwd != 0.f || rgt != 0.f;
 
-    // The asked state changes.
-    if (state_ == SwimState::Surface && in.crouch) {
-        if (env.deepAllowed && env.column >= kSwimDeepMin) {
+    // The asked state changes: presses only; at the surface a jump down wins over a crouch press.
+    if (state_ == SwimState::Surface && crouchPress && !in.jump) {
+        if (env.deepAllowed && column >= kSwimDeepMin) {
             state_ = SwimState::Diving;
             s.dived = true;
         } else {
             s.diveRefused = true;
         }
-    } else if ((state_ == SwimState::Diving || state_ == SwimState::Under) && in.jump) {
+    } else if ((state_ == SwimState::Diving || state_ == SwimState::Under) && jumpPress) {
         state_ = SwimState::Surfacing;
     }
 
@@ -269,6 +321,7 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
     SwimVec v;
     switch (state_) {
     case SwimState::Surface:
+    case SwimState::Rescued:
         break;
     case SwimState::Diving:
         v.z = -t.swimSpeed;
@@ -287,37 +340,39 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         }
         break;
     }
-    if (state_ != SwimState::Surface) {
-        float share = 0.f;
-        if (!std::isfinite(env.edgeDistance)) share = 0.f;
-        else if (env.edgeDistance <= 0.f) share = 1.f;
-        else if (env.edgeDistance < t.edgeRampMetres) share = 1.f - env.edgeDistance / t.edgeRampMetres;
-        const float h = finite(env.edgeInward)
-                            ? std::sqrt(env.edgeInward.x * env.edgeInward.x + env.edgeInward.y * env.edgeInward.y)
-                            : 0.f;
-        if (share > 0.f && h > 1e-4f) {
-            s.pushBack = share;
-            v.x += env.edgeInward.x / h * share * t.edgePushSpeed;
-            v.y += env.edgeInward.y / h * share * t.edgePushSpeed;
+    if (state_ == SwimState::Surface) {
+        s.position = env.position; // the host's surface swim: passed through untouched
+        s.velocity = SwimVec{};
+    } else {
+        if (edgeUsable) {
+            float share = 0.f;
+            if (env.edgeDistance <= 0.f) share = 1.f;
+            else if (env.edgeDistance < t.edgeRampMetres) share = 1.f - env.edgeDistance / t.edgeRampMetres;
+            const float h = std::sqrt(env.edgeInward.x * env.edgeInward.x + env.edgeInward.y * env.edgeInward.y);
+            if (share > 0.f && h > 1e-4f) {
+                s.pushBack = share;
+                v.x += env.edgeInward.x / h * share * t.edgePushSpeed;
+                v.y += env.edgeInward.y / h * share * t.edgePushSpeed;
+            }
         }
-    }
-    s.position = {env.position.x + v.x * dt, env.position.y + v.y * dt, env.position.z + v.z * dt};
-    const float floorZ = env.bedZ + t.bedClearance < env.surfaceZ ? env.bedZ + t.bedClearance : env.surfaceZ;
-    s.position.z = clampf(s.position.z, floorZ, env.surfaceZ);
-    s.velocity = dt > 0.f ? SwimVec{(s.position.x - env.position.x) / dt, (s.position.y - env.position.y) / dt,
-                                    (s.position.z - env.position.z) / dt}
-                          : v;
-
-    // The state changes the position brings.
-    constexpr float kEps = 1e-4f;
-    if (state_ == SwimState::Diving) {
-        const float target = env.surfaceZ - t.diveDepth > floorZ ? env.surfaceZ - t.diveDepth : floorZ;
-        if (s.position.z <= target + kEps) state_ = SwimState::Under;
-    }
-    if ((state_ == SwimState::Under || state_ == SwimState::Surfacing) && s.position.z >= env.surfaceZ - kEps &&
-        s.position.z <= env.surfaceZ + kEps) {
-        state_ = SwimState::Surface;
-        s.surfaced = true;
+        s.position = {env.position.x + v.x * dt, env.position.y + v.y * dt, env.position.z + v.z * dt};
+        const float floorZ = env.bedZ + t.bedClearance < env.surfaceZ ? env.bedZ + t.bedClearance : env.surfaceZ;
+        s.position.z = clampf(s.position.z, floorZ, env.surfaceZ);
+        if (state_ == SwimState::Diving) { // clamped at its target, the rest of the step not carried on
+            const float target = env.surfaceZ - t.diveDepth > floorZ ? env.surfaceZ - t.diveDepth : floorZ;
+            if (s.position.z <= target + 1e-4f) {
+                if (env.position.z >= target) s.position.z = target; // from above it: stop there, no overshoot
+                state_ = SwimState::Under;
+            }
+        }
+        s.velocity = dt > 0.f ? SwimVec{(s.position.x - env.position.x) / dt, (s.position.y - env.position.y) / dt,
+                                        (s.position.z - env.position.z) / dt}
+                              : v;
+        if ((state_ == SwimState::Under || state_ == SwimState::Surfacing) &&
+            s.position.z >= env.surfaceZ - 1e-4f) {
+            state_ = SwimState::Surface;
+            s.surfaced = true;
+        }
     }
 
     // Breath and vitality.
@@ -345,72 +400,77 @@ inline const SwimStep& Swim::step(const SwimInput& in, const SwimEnv& env, float
         s.velocity = SwimVec{};
         s.pushBack = 0.f;
         s.sprinting = false;
-        state_ = SwimState::Surface;
-        breath_ = t.breathSeconds;
-        vitality_ = t.rescueVitality;
         s.warning = false;
         s.draining = false;
+        state_ = SwimState::Rescued;
     }
-    s.state = state_;
-    s.breath = breath_;
-    s.breathShare = breath_ / t.breathSeconds;
-    s.vitality = vitality_;
-    step_ = s;
-    return step_;
+    return finish();
 }
 
-// Reads Data/Swim/swim.json: {"version":1, and any SwimTuning field by name}; each field is optional (its default
-// kept). On any error `out` is the defaults, false is returned and `error` lists every problem.
-inline bool importSwimTuning(std::string_view json, SwimTuning& out, std::string* error = nullptr) {
+// Reads Data/Swim/swim.json: {"version":1, "_comment": "...", and any SwimTuning field by name}, metres and
+// seconds. A field left out takes its default; a value that is not a number or is out of its range takes its
+// default; an unknown key is skipped; each is reported in `notes` and the import still succeeds. A cross-field
+// limit broken (sprintSpeed under swimSpeed, warningSeconds over breathSeconds, edgePushSpeed not above
+// sprintSpeed) puts the later field back to its default, and the whole tuning to the defaults if that is still not
+// valid (noted). Only a file that does not parse, is not an object or is not version 1 fails: `out` is the
+// defaults, false is returned and `error` says why.
+inline bool importSwimTuning(std::string_view json, SwimTuning& out, std::string* error = nullptr,
+                             std::vector<std::string>* notes = nullptr) {
     out = SwimTuning{};
-    std::vector<std::string> errors;
-    const auto finish = [&]() {
-        if (errors.empty()) return true;
+    if (error) error->clear();
+    if (notes) notes->clear();
+    const auto fail = [&](std::string why) {
         out = SwimTuning{};
-        if (error) {
-            error->clear();
-            for (const std::string& e : errors) {
-                if (!error->empty()) *error += '\n';
-                *error += e;
-            }
-        }
+        if (error) *error = std::move(why);
         return false;
+    };
+    const auto note = [&](std::string n) {
+        if (notes) notes->push_back(std::move(n));
     };
     JsonDocument doc;
     std::string err;
-    if (!doc.parse(json, &err)) {
-        errors.push_back("swim file: " + err);
-        return finish();
-    }
+    if (!doc.parse(json, &err)) return fail("swim file: " + err);
     const JsonValue root = doc.root();
-    if (!root.isObject()) {
-        errors.push_back("swim file: expected an object");
-        return finish();
-    }
-    if (const JsonValue v = root["version"]; !(v.isInteger() && v.integer() == 1)) errors.push_back("version: expected 1");
+    if (!root.isObject()) return fail("swim file: expected an object");
+    if (const JsonValue v = root["version"]; !(v.isInteger() && v.integer() == 1)) return fail("version: expected 1");
+    const SwimTuning d;
     SwimTuning t;
     for (const swim_detail::Range& r : swim_detail::kRanges) {
         const JsonValue v = root[r.name];
-        if (v.isAbsent()) continue;
+        const std::string fallback = ", the default " + swim_detail::text(d.*r.field) + " used";
+        if (v.isAbsent()) {
+            note(std::string(r.name) + ": missing" + fallback);
+            continue;
+        }
         const float f = v.isNumber() ? float(v.number()) : 0.f;
         if (!v.isNumber() || !swim_detail::inRange(f, r.lo, r.hi))
-            errors.push_back(std::string(r.name) + ": expected a number in " + swim_detail::text(r.lo) + ".." +
-                             swim_detail::text(r.hi));
+            note(std::string(r.name) + ": expected a number in " + swim_detail::text(r.lo) + ".." +
+                 swim_detail::text(r.hi) + fallback);
         else
             t.*r.field = f;
     }
     for (std::uint32_t i = 0; i < root.size(); ++i) {
         const std::string_view k = root.key(i);
-        bool known = k == "version";
+        bool known = k == "version" || k == "_comment";
         for (const swim_detail::Range& r : swim_detail::kRanges) known = known || k == r.name;
-        if (!known) errors.push_back(std::string(k) + ": unknown field");
+        if (!known) note(std::string(k) + ": unknown field, skipped");
     }
-    if (errors.empty()) {
-        if (t.sprintSpeed < t.swimSpeed) errors.push_back("sprintSpeed: expected at least swimSpeed");
-        if (t.warningSeconds > t.breathSeconds) errors.push_back("warningSeconds: expected at most breathSeconds");
-        if (t.edgePushSpeed <= t.sprintSpeed) errors.push_back("edgePushSpeed: expected above sprintSpeed");
+    if (t.sprintSpeed < t.swimSpeed) {
+        note("sprintSpeed: expected at least swimSpeed, the default used");
+        t.sprintSpeed = d.sprintSpeed;
     }
-    if (!errors.empty()) return finish();
+    if (t.warningSeconds > t.breathSeconds) {
+        note("warningSeconds: expected at most breathSeconds, the default used");
+        t.warningSeconds = d.warningSeconds;
+    }
+    if (t.edgePushSpeed <= t.sprintSpeed) {
+        note("edgePushSpeed: expected above sprintSpeed, the default used");
+        t.edgePushSpeed = d.edgePushSpeed;
+    }
+    if (!validSwimTuning(t)) {
+        note("swim file: the fields still disagree, every default used");
+        t = d;
+    }
     out = t;
     return true;
 }
