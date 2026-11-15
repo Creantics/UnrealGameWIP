@@ -1402,6 +1402,7 @@ private:
 	bool bAllyStruck = false;  // the ally was in a blow last step ...
 	uint8 AllyStruckBlow = 0;  // ... this one ...
 	float AllyStruckTime = 0.f; // ... this far in
+	bool bAllyStrikeCut = false; // its blow's clip was cut (it was hit, or its target is down) until its next blow
 	// The partner's strike clips over the fight: started, and played into their recovery uncut (whole); summed across swaps.
 	int32 PartnerClipsStarted = 0, PartnerClipsWhole = 0;
 	// The direction from the lead to its aim target, set each step with the aim; the figure turns to it while

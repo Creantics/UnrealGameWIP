@@ -822,7 +822,7 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 			break;
 		case ftcore::ArenaEventType::Hit:
 			// The fist's spark on the hit point (a shot's or cast's impact plays as it arrives, in Track).
-			if (E.source == Source && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+			if (E.source == Source && bImpacts && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 			{
 				ImpactAt = AimPoint;
 				ImpactDue = T;
@@ -957,8 +957,11 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				Vfx->SetParameters(static_cast<float>(FMath::Max(Path.Size(), 1.0) / Reach), 1.f);
 			}
 			Play(Travel, T);
-			ImpactAt = AimPoint;
-			ImpactDue = T + Flight;
+			if (bImpacts)
+			{
+				ImpactAt = AimPoint;
+				ImpactDue = T + Flight;
+			}
 		}
 	}
 	if (ImpactDue >= 0.0 && T + 1e-6 >= ImpactDue)

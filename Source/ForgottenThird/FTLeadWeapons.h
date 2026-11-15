@@ -149,6 +149,9 @@ struct FFTLeadWeapons
 	// Whose events and state these are: the player's (the default) or the partner's body (ftcore::kArenaAlly). Core
 	// gives the partner's blows no AttackStarted, so its host calls StartStrike as each blow begins.
 	void SetSource(uint8 InSource) { Source = InSource; }
+	// Off: no impact of its own (the fist's spark, a shot's or cast's arrival); the host plays the blow's impact (the
+	// partner's, UFTArenaRunner::PartnerImpact), so it is drawn once. The strike clips, muzzle and travel stay.
+	void SetImpacts(bool bOn) { bImpacts = bOn; }
 	// A move's strike clip from its start at T, keyed so its impact lands as it goes active (what AttackStarted plays).
 	void StartStrike(uint8 Move, double T);
 	// The blows whose strike clip played into their recovery uncut (whole), and the blows that started a clip.
@@ -242,6 +245,7 @@ private:
 	const TCHAR* Prefix() const;
 
 	uint8 Source = ftcore::kArenaPlayer;
+	bool bImpacts = true;
 	bool bStrikeClip = false; // the blow under way plays a strike clip
 	int32 ClipsStarted = 0;
 	int32 ClipsCompleted = 0;

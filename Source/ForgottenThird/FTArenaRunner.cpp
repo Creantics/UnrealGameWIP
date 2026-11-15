@@ -6096,7 +6096,7 @@ void UFTArenaRunner::Restart()
 	ResetTable();
 	LeadWeapons.Restart();
 	AllyWeapons.Restart();
-	bAllyStruck = false;
+	bAllyStruck = bAllyStrikeCut = false;
 	BeginStoneBearer();
 	// The boss is whole again (its carried piece too) unless the run asks for it split.
 	if (AFTArenaFighter* Boss = StoneBearerSlot >= 0 ? EnemyFigures[StoneBearerSlot].Get() : nullptr)
@@ -7172,11 +7172,16 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 	if (!bPartner || !bAllyOn || !Ally || !AllyLook)
 	{
 		bAllyStruck = false;
+		if (AllyWeapons.IsOn())
+		{
+			AllyWeapons.Track(ftcore::ArenaPlayerOut{}, static_cast<double>(Fight.heldTime())); // out of play: a clip fades
+		}
 		return;
 	}
 	if (!AllyWeapons.IsOn())
 	{
 		AllyWeapons.SetSource(ftcore::kArenaAlly);
+		AllyWeapons.SetImpacts(false); // PartnerImpact plays its blows' impact
 		AllyWeapons.Begin(Ally, *AllyLook, Def.fighter); // again on the same figure: nothing
 		if (!AllyWeapons.IsOn())
 		{
@@ -7193,8 +7198,26 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 	const bool bNewBlow = A.attacking && (!bAllyStruck || Move != AllyStruckBlow || A.stateTime + 1e-4f < AllyStruckTime);
 	if (bNewBlow)
 	{
+		bAllyStrikeCut = false;
 		AllyWeapons.StartStrike(Move, T - static_cast<double>(A.stateTime));
 	}
+	// Cut: a blow that lands on it (its hitstun) or its target down ends the clip (it fades); Core lets the blow itself
+	// run out.
+	if (A.attacking && !bAllyStrikeCut)
+	{
+		for (const ftcore::ArenaEvent& E : Out.events)
+		{
+			if ((E.type == ftcore::ArenaEventType::AllyHit && E.amount > 0) || E.type == ftcore::ArenaEventType::AllyDowned)
+			{
+				bAllyStrikeCut = true;
+			}
+		}
+		if (A.target >= 0 && A.target < MaxEnemies && Out.enemies[static_cast<size_t>(A.target)].brain == ftcore::ArenaBrain::Dead)
+		{
+			bAllyStrikeCut = true;
+		}
+	}
+	const bool bSwinging = A.attacking && !bAllyStrikeCut;
 	bAllyStruck = A.attacking;
 	AllyStruckBlow = Move;
 	AllyStruckTime = A.stateTime;
@@ -7210,8 +7233,8 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 		AllyWeapons.SetAim(Chest + FVector(A.facing.x, A.facing.y, 0.0) * 100.0, false);
 	}
 	ftcore::ArenaPlayerOut P;
-	P.action = A.attacking ? ftcore::ArenaAction::Light : A.guarding ? ftcore::ArenaAction::Guard : ftcore::ArenaAction::Idle;
-	P.part = A.attacking ? A.part : ftcore::ArenaPart::None;
+	P.action = bSwinging ? ftcore::ArenaAction::Light : A.guarding ? ftcore::ArenaAction::Guard : ftcore::ArenaAction::Idle;
+	P.part = bSwinging ? A.part : ftcore::ArenaPart::None;
 	P.move = Move;
 	P.facing = A.facing;
 	AllyWeapons.Track(P, T);
@@ -7425,7 +7448,7 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 	PartnerClipsStarted += AllyWeapons.GetClipsStarted();
 	PartnerClipsWhole += AllyWeapons.GetClipsCompleted();
 	AllyWeapons.End(); // begun again on the new ally figure by TrackAllyWeapons
-	bAllyStruck = false;
+	bAllyStruck = bAllyStrikeCut = false;
 	Swap(PlayerFigure, AllyFigure);
 	Swap(PlayerLook, AllyLook);
 	// The HUD's rows follow the figures: the controlled lead's seat and name are the lead row's (the rows trade places
