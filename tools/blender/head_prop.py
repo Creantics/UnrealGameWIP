@@ -1476,7 +1476,7 @@ def run_transplant(head, out, opt):
     """New roots for one groom (roots=, a groom_strands.py dump) where its root density falls short, each with a donor
     strand to copy: groom_strands.py's "graft" op then copies the donor onto the new root. Two places: the front (in
     front of the ears, |x| up to 1.15 IPD, from the sheet's line to "gmax" mm (35) above it), filled to the groom's
-    own front density (the larger of its fringe and temple zones' densities), and the back (the nape-to-occiput zone
+    own front density (the larger of its fringe and temple zones' densities) times "front_mult" (1.0), and the back (the nape-to-occiput zone
     and up to the crown's lower edge, "back" mm behind the ears), filled to "back_target" times (1.0) its own
     nape-to-occiput density. A skin point is sampled at the target density and kept with the chance that brings the
     local density (roots within "r" mm, 4) up to the target; its donor is one of the "k" (8) nearest existing roots,
@@ -1494,7 +1494,7 @@ def run_transplant(head, out, opt):
     fwd, up, left = head["fwd"], head["up"], head["left"]
     gmax, rr, kn = fopt(opt, "gmax", 35) * MM, fopt(opt, "r", 4) * MM, int(fopt(opt, "k", 8))
     dens = before["density_per_cm2"]
-    t_front = max(dens["fringe"], dens["temples"])
+    t_front = fopt(opt, "front_mult", 1.0) * max(dens["fringe"], dens["temples"])
     t_back = fopt(opt, "back_target", 1.0) * dens["nape-occiput"]
 
     def gap(Pp):  # height over the sheet's line at the point's own x (m)
