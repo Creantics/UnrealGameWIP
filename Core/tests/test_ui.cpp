@@ -74,6 +74,10 @@ TEST_CASE("ui style: the built-in style and Data/UI/style.json pass the accessib
         CHECK(a.b == doctest::Approx(b.b).epsilon(0.003));
     }
     CHECK(std::string_view(s.plate[0].data()) == "bronze");
+    for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+        CHECK(s.rules[w].marksAccent2 == d.rules[w].marksAccent2);
+        CHECK(s.rules[w].dangerUnderline == d.rules[w].dangerUnderline);
+    }
     CHECK(s.layers.hairlines);
     CHECK_FALSE(s.layers.worldAnchored);
 }
@@ -240,6 +244,73 @@ TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while
     UiFade g;
     for (int i = 0; i < 20; ++i) uiFadeStep(g, false, 0.1f, t);
     CHECK(g.alpha == doctest::Approx(0.4f));
+}
+
+TEST_CASE("ui style: the Unwritten's red is on marks only, and its danger word is ink with a red underline") {
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle s;
+    REQUIRE_MESSAGE(importUiStyle(text, s, &err), err);
+    const UiWorld unw = UiWorld::Unwritten;
+    // Only the Unwritten sets the rules.
+    CHECK(s.rules[static_cast<std::size_t>(unw)].marksAccent2);
+    CHECK(s.rules[static_cast<std::size_t>(unw)].dangerUnderline);
+    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Solhaven)].marksAccent2);
+    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Solhaven)].dangerUnderline);
+    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Lattice)].marksAccent2);
+    CHECK_FALSE(s.rules[static_cast<std::size_t>(UiWorld::Lattice)].dangerUnderline);
+    const UiColor red{176.f / 255.f, 30.f / 255.f, 35.f / 255.f, 1.f}; // #B01E23
+    const UiColor usual = s.loadGold;
+    for (const UiPalette p : {UiPalette::Default, UiPalette::Protan, UiPalette::Deutan, UiPalette::Tritan,
+                              UiPalette::HighContrast}) {
+        CAPTURE(static_cast<int>(p));
+        // A mark wears accent2 in the Unwritten and its own colour elsewhere.
+        const UiColor mark = uiMarkColor(s, unw, p, usual);
+        CHECK(mark == uiColor(s, unw, p, UiToken::Accent2));
+        CHECK(mark.r == doctest::Approx(red.r).epsilon(0.003));
+        CHECK(mark.g == doctest::Approx(red.g).epsilon(0.003));
+        CHECK(mark.b == doctest::Approx(red.b).epsilon(0.003));
+        CHECK(uiMarkColor(s, UiWorld::Solhaven, p, usual) == usual);
+        CHECK(uiMarkColor(s, UiWorld::Lattice, p, usual) == usual);
+        // A danger word: ink glyphs over a danger underline in the Unwritten; danger glyphs, no underline elsewhere.
+        const UiDangerWord u = uiDangerWord(s, unw, p);
+        CHECK(u.underlined);
+        CHECK(u.word == uiColor(s, unw, p, UiToken::Ink));
+        CHECK(u.underline == uiColor(s, unw, p, UiToken::Danger));
+        const UiDangerWord sol = uiDangerWord(s, UiWorld::Solhaven, p);
+        CHECK_FALSE(sol.underlined);
+        CHECK(sol.word == uiColor(s, UiWorld::Solhaven, p, UiToken::Danger));
+        // No text token of the Unwritten wears the red.
+        for (const UiToken tk : {UiToken::Ink, UiToken::InkDim, UiToken::Accent})
+            CHECK_FALSE(uiColor(s, unw, p, tk) == uiColor(s, unw, p, UiToken::Accent2));
+    }
+    // In the default palette the Unwritten's ally, weak point and backing are cold neutrals (no channel more than
+    // 0.1 from another), and its accent is brighter than its ink and passes the text rule on the backing and the edge.
+    const UiColor white{1.f, 1.f, 1.f, 1.f};
+    for (const UiToken tk : {UiToken::Ally, UiToken::WeakPoint, UiToken::Backing, UiToken::Accent}) {
+        const UiColor c = uiColor(s, unw, UiPalette::Default, tk);
+        CHECK(std::fabs(c.r - c.g) <= 0.1f);
+        CHECK(std::fabs(c.g - c.b) <= 0.1f);
+        CHECK(std::fabs(c.r - c.b) <= 0.1f);
+        CHECK(c.b >= c.r); // cold: blue at least as strong as red
+    }
+    const UiColor ink = uiColor(s, unw, UiPalette::Default, UiToken::Ink);
+    const UiColor accent = uiColor(s, unw, UiPalette::Default, UiToken::Accent);
+    UiColor back = uiColor(s, unw, UiPalette::Default, UiToken::Backing);
+    back.a = s.backingDefault;
+    CHECK(accent.r + accent.g + accent.b > ink.r + ink.g + ink.b);
+    CHECK(uiContrast(accent, back, white) >= 4.5f);
+    CHECK(uiContrast(accent, s.edge, white) >= 4.5f);
+    // A world object that leaves the keys out has the rules off.
+    UiStyle t;
+    REQUIRE_MESSAGE(importUiStyle(R"({"worlds": {"unwritten": {"ink": "#DCE1E5"}}})", t, &err), err);
+    CHECK_FALSE(t.rules[static_cast<std::size_t>(unw)].marksAccent2);
+    CHECK_FALSE(t.rules[static_cast<std::size_t>(unw)].dangerUnderline);
+    CHECK(uiMarkColor(t, unw, UiPalette::Default, usual) == usual);
+    // The keys take booleans only, and only in a world.
+    CHECK_FALSE(importUiStyle(R"({"worlds": {"unwritten": {"marks_accent2": "yes"}}})", t, &err));
+    CHECK_FALSE(importUiStyle(R"({"palettes": {"protan": {"danger_underline": true}}})", t, &err));
 }
 
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
