@@ -3307,8 +3307,10 @@ void UFTArenaRunner::StepFight()
 	if (Kite.IsActive())
 	{
 		Kite.AfterTick(Out.events);
+		// The puff at the height the lead's blow lands (last step's aim: a fist's contact point, a shot's chest point).
+		const FVector LeadAt = PlayerFigure ? PlayerFigure->GetChest() : ToWorld(Bodies.player);
 		KiteFx.Feed(Out.events, Kite, Fight, ToWorld(Bodies.enemies[static_cast<size_t>(KiteSlot)]),
-			PlayerFigure ? PlayerFigure->GetChest() : ToWorld(Bodies.player));
+			FVector(LeadAt.X, LeadAt.Y, PlayerFigure ? LeadWeapons.GetAimPoint().Z : LeadAt.Z));
 	}
 	if (bKindCritHook)
 	{
@@ -3368,7 +3370,17 @@ void UFTArenaRunner::StepFight()
 			{
 				LeadAimDir = ftcore::Vec2{To.x / Len, To.y / Len};
 			}
-			LeadWeapons.SetAim(FVector(At.X, At.Y, Enemy ? Enemy->GetChest().Z : LeadChest.Z), true);
+			// A melee blow at the point of the body its fist or foot can reach; a shot or a cast at the chest.
+			const FVector Ranged(At.X, At.Y, Enemy ? Enemy->GetChest().Z : LeadChest.Z);
+			if (Enemy)
+			{
+				const double Feet = Enemy->GetActorLocation().Z;
+				LeadWeapons.SetAimAtBody(At, Feet, Feet + Enemy->GetHeight(), Ranged);
+			}
+			else
+			{
+				LeadWeapons.SetAim(Ranged, true);
+			}
 		}
 		else
 		{
@@ -7297,12 +7309,16 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 	bAllyStruck = A.attacking;
 	AllyStruckBlow = Move;
 	AllyStruckTime = A.stateTime;
-	// Its aim: the target's chest, else straight ahead.
+	// Its aim: a melee blow at the point of the target's body it can reach, a shot or a cast at the chest; else
+	// straight ahead.
 	const FVector Chest = Ally->GetActorLocation() + FVector(0.0, 0.0, 40.0);
 	const AFTArenaFighter* Target = A.target >= 0 && A.target < MaxEnemies ? EnemyFigures[A.target].Get() : nullptr;
 	if (Target)
 	{
-		AllyWeapons.SetAim(Target->GetChest(), true);
+		const size_t Slot = static_cast<size_t>(A.target);
+		const FVector Surface = ToWorld(ftcore::fieldHitPoint(Bodies.ally, Bodies.enemies[Slot], Fight.def().enemies[Slot].bodyRadius));
+		const double Feet = Target->GetActorLocation().Z;
+		AllyWeapons.SetAimAtBody(Surface, Feet, Feet + Target->GetHeight(), Target->GetChest());
 	}
 	else
 	{

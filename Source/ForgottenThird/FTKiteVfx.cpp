@@ -170,7 +170,7 @@ void FFTKiteVfx::StopOne(EEffect Effect)
 }
 
 void FFTKiteVfx::Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host, const ftcore::ArenaFight& Fight, const FVector& KiteGround,
-	const FVector& LeadChest)
+	const FVector& LeadHit)
 {
 	if (!bSpawned || !Host.IsActive())
 	{
@@ -207,11 +207,11 @@ void FFTKiteVfx::Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host
 			}
 			else if (Fx[Hit].IsValid())
 			{
-				FVector Toward = LeadChest - KiteGround;
+				FVector Toward = LeadHit - KiteGround;
 				Toward.Z = 0.0;
 				const double Reach = FMath::Min(static_cast<double>(Kind.bodyRadius) * 100.0, Toward.Size());
 				const FVector Edge = KiteGround + Toward.GetSafeNormal() * Reach;
-				Fx[Hit]->SetWorldLocation(FVector(Edge.X, Edge.Y, LeadChest.Z));
+				Fx[Hit]->SetWorldLocation(FVector(Edge.X, Edge.Y, LeadHit.Z));
 				Play(Hit, T);
 			}
 		}

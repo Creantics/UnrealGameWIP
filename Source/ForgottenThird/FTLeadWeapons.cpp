@@ -1164,6 +1164,49 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 	Instance->SetArmAim(Side, AimPoint, W, Axis, Reach);
 }
 
+void FFTLeadWeapons::SetAimAtBody(const FVector& Surface, double Bottom, double Top, const FVector& Ranged)
+{
+	SetAim(Ranged, true);
+	const USkeletalMeshComponent* Body = Skin.Get();
+	if (Kit.weapon != ftcore::ArenaWeapon::Gauntlets || !Body)
+	{
+		return;
+	}
+	// The limb's chain, root first: the arm from the shoulder to the knuckles, a kick's leg from the hip to the ball.
+	static const FName ArmChain[2][4] = {
+		{FName(TEXT("upperarm_l")), FName(TEXT("lowerarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l"))},
+		{FName(TEXT("upperarm_r")), FName(TEXT("lowerarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r"))}};
+	static const FName LegChain[2][4] = {
+		{FName(TEXT("thigh_l")), FName(TEXT("calf_l")), FName(TEXT("foot_l")), FName(TEXT("ball_l"))},
+		{FName(TEXT("thigh_r")), FName(TEXT("calf_r")), FName(TEXT("foot_r")), FName(TEXT("ball_r"))}};
+	static const FName Head(TEXT("head"));
+	const bool bKick = Strike == FightClip::KickLeft || Strike == FightClip::KickRight;
+	const int32 Side = bKick ? (Strike == FightClip::KickLeft ? 0 : 1) : (StrikesLeft() ? 0 : 1);
+	const FName* Chain = bKick ? LegChain[Side] : ArmChain[Side];
+	FVector Joint[4];
+	for (int32 I = 0; I < 4; ++I)
+	{
+		if (!Body->DoesSocketExist(Chain[I]))
+		{
+			return; // not a body with these bones: the chest as before
+		}
+		Joint[I] = Body->GetSocketLocation(Chain[I]);
+	}
+	const double Reach = FVector::Dist(Joint[0], Joint[1]) + FVector::Dist(Joint[1], Joint[2]) + FVector::Dist(Joint[2], Joint[3]);
+	// The strike height: the shoulder's, or the middle of the hip-to-knee line; within the body, never over the head.
+	double Z = bKick ? (Joint[0].Z + Joint[1].Z) * 0.5 : Joint[0].Z;
+	Z = FMath::Clamp(Z, FMath::Min(Bottom, Top), FMath::Max(Bottom, Top));
+	if (Body->DoesSocketExist(Head))
+	{
+		Z = FMath::Min(Z, Body->GetSocketLocation(Head).Z);
+	}
+	const FVector OnBody(Surface.X, Surface.Y, Z);
+	const FVector Arm = OnBody - Joint[0];
+	const double Length = Arm.Size();
+	AimPoint = Length > Reach && Length > 1e-3 ? Joint[0] + Arm * (Reach / Length) : OnBody;
+	ContactPull = FVector::Dist(AimPoint, OnBody);
+}
+
 void FFTLeadWeapons::LogAim()
 {
 	const USkeletalMeshComponent* Body = Skin.Get();
@@ -1209,8 +1252,9 @@ void FFTLeadWeapons::LogAim()
 		bAimed ? TEXT(", at the target") : TEXT(", straight ahead"));
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets && Body->DoesSocketExist(Knuckle))
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point"), Prefix(),
-			FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint));
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point (%.0f cm up; reach pulled it %.1f cm off the body)"),
+			Prefix(), FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint), AimPoint.Z - Body->GetComponentLocation().Z,
+			ContactPull);
 	}
 }
 
