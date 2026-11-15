@@ -559,29 +559,33 @@ TEST_CASE("partner frame: two kinds of action in every 20 s with the budget free
             }
 }
 
-TEST_CASE("partner frame: determinism, and a save and load mid-fight carries on to the bit") {
-    for (const double dt : {1.0 / 60.0, 0.25}) {
-        CAPTURE(dt);
-        Script a(PartnerOrder::Spread, true, false, 9), b(PartnerOrder::Spread, true, false, 9);
-        a.useCamera();
-        b.useCamera();
-        a.orbit = b.orbit = 30.f;
-        a.run(10.0, dt);
-        b.run(10.0, dt);
-        CHECK(a.out.value == b.out.value);
-        CHECK(a.b.hash() == b.b.hash());
-        CHECK(a.b.framed());
-        Script c = a; // the same script, its brain loaded from a's save
-        c.b = PartnerBrain{};
-        c.b.load(a.b.save());
-        CHECK(c.b.hash() == a.b.hash());
-        a.run(10.0, dt);
-        c.run(10.0, dt);
-        CHECK(c.out.value == a.out.value);
-        CHECK(c.b.hash() == a.b.hash());
-        for (std::size_t k = 0; k < kPartnerIdleCount; ++k)
-            CHECK(c.b.idleSeconds(static_cast<PartnerIdle>(k)) == a.b.idleSeconds(static_cast<PartnerIdle>(k)));
-    }
+TEST_CASE("partner frame: determinism, and a save and load mid-fight carries on to the bit (rule 17 off and on)") {
+    for (const bool circling : {false, true})
+        for (const double dt : {1.0 / 60.0, 0.25}) {
+            CAPTURE(circling);
+            CAPTURE(dt);
+            PartnerTuning tu;
+            tu.circling = circling;
+            Script a(PartnerOrder::Spread, true, false, 9, tu), b(PartnerOrder::Spread, true, false, 9, tu);
+            a.useCamera();
+            b.useCamera();
+            a.orbit = b.orbit = 30.f;
+            a.run(10.0, dt);
+            b.run(10.0, dt);
+            CHECK(a.out.value == b.out.value);
+            CHECK(a.b.hash() == b.b.hash());
+            CHECK(a.b.framed());
+            Script c = a; // the same script, its brain loaded from a's save
+            c.b = PartnerBrain{};
+            c.b.load(a.b.save());
+            CHECK(c.b.hash() == a.b.hash());
+            a.run(10.0, dt);
+            c.run(10.0, dt);
+            CHECK(c.out.value == a.out.value);
+            CHECK(c.b.hash() == a.b.hash());
+            for (std::size_t k = 0; k < kPartnerIdleCount; ++k)
+                CHECK(c.b.idleSeconds(static_cast<PartnerIdle>(k)) == a.b.idleSeconds(static_cast<PartnerIdle>(k)));
+        }
 }
 
 TEST_CASE("partner frame: today against framed (report)") {
@@ -676,3 +680,60 @@ TEST_CASE("partner frame: the 3 s grace counts from the last valid station acros
     MESSAGE("grace, still cases: strings and guards in it " << stillActs << ", re-picks " << stillRepicks);
 }
 
+
+namespace {
+struct FramePin {
+    std::uint64_t intents, state;
+};
+// The orbit script (Spread's 0.8-on-screen case's setup), framed throughout, with the tuning `Script` is given.
+FramePin orbitPin(PartnerOrder order, bool free, bool lock, double dt) {
+    Script s(order, true, free, 5);
+    if (!lock) {
+        s.in.leadTarget = -1;
+        s.leadOnE0 = true;
+    }
+    s.useCamera();
+    s.orbit = 30.f;
+    s.run(20.0, dt);
+    REQUIRE(s.b.framed());
+    return {s.out.value, s.b.hash()};
+}
+} // namespace
+// With rule 17 off (the shipped default) a framed brain is main's to the bit: every step's intent and the state
+// hash at the end of the orbit (both orders, the free and the locked lead, both steps) equal the values recorded
+// from main at 102219cb, before rule 17's switch.
+TEST_CASE("partner frame: rule 17 off, the framed orbit's intents and state hash are main's (102219cb)") {
+    CHECK_FALSE(PartnerTuning{}.circling);
+    struct Row {
+        PartnerOrder order;
+        bool free, lock, fine;
+        std::uint64_t intents, state;
+    };
+    const Row rows[] = {
+        {PartnerOrder::StayClose, false, false, false, 265514111919678174ull, 267639759532034892ull},
+        {PartnerOrder::StayClose, false, false, true, 13494321442008997399ull, 17156234905785402287ull},
+        {PartnerOrder::StayClose, false, true, false, 8697168510642720180ull, 1221592041938500472ull},
+        {PartnerOrder::StayClose, false, true, true, 303441118715888387ull, 6727766592074957145ull},
+        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 3996803732724869128ull},
+        {PartnerOrder::StayClose, true, false, true, 17652568905509306018ull, 16222199093469650799ull},
+        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 4361275200455314555ull},
+        {PartnerOrder::StayClose, true, true, true, 13298922241904239483ull, 526139214294223443ull},
+        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 1762510326365600415ull},
+        {PartnerOrder::Spread, false, false, true, 2849074323208619076ull, 10684946757628589948ull},
+        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 1762510326365600415ull},
+        {PartnerOrder::Spread, false, true, true, 11340955196540186759ull, 18266217942116871286ull},
+        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 7453824002278148186ull},
+        {PartnerOrder::Spread, true, false, true, 3162916615266793425ull, 18348585300907830234ull},
+        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 7453824002278148186ull},
+        {PartnerOrder::Spread, true, true, true, 10578977463318667820ull, 17647298366914853837ull},
+    };
+    for (const Row& w : rows) {
+        CAPTURE(int(w.order));
+        CAPTURE(w.free);
+        CAPTURE(w.lock);
+        CAPTURE(w.fine);
+        const FramePin p = orbitPin(w.order, w.free, w.lock, w.fine ? 1.0 / 60.0 : 0.25);
+        CHECK(p.intents == w.intents);
+        CHECK(p.state == w.state);
+    }
+}

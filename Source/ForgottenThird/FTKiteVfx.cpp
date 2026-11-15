@@ -17,7 +17,7 @@
 
 #include <string_view>
 
-namespace
+namespace FTKiteVfx
 {
 // The json's key for each effect, and its default system.
 constexpr const char* kEffectKeys[] = {"tell", "open", "crit", "hit"};
@@ -27,15 +27,15 @@ float ReadFloat(const ftcore::JsonValue& V, const char* Key, float Fallback)
 {
 	return static_cast<float>(V[Key].number(static_cast<double>(Fallback)));
 }
-} // namespace
+} // namespace FTKiteVfx
 
 void FFTKiteVfx::ReadTuning()
 {
-	static_assert(UE_ARRAY_COUNT(kEffectKeys) == EffectCount && UE_ARRAY_COUNT(kEffectDefaults) == EffectCount, "one key and default per effect");
+	static_assert(UE_ARRAY_COUNT(FTKiteVfx::kEffectKeys) == EffectCount && UE_ARRAY_COUNT(FTKiteVfx::kEffectDefaults) == EffectCount, "one key and default per effect");
 	for (int32 E = 0; E < EffectCount; ++E)
 	{
 		Looks[E] = FLook();
-		Looks[E].Effect = FName(kEffectDefaults[E]);
+		Looks[E].Effect = FName(FTKiteVfx::kEffectDefaults[E]);
 	}
 	TArray<uint8> Bytes;
 	const FString Path = FPaths::ProjectDir() / DataPath;
@@ -55,15 +55,15 @@ void FFTKiteVfx::ReadTuning()
 	const ftcore::JsonValue Effects = Root["effects"];
 	for (int32 E = 0; E < EffectCount; ++E)
 	{
-		const ftcore::JsonValue V = Effects[kEffectKeys[E]];
+		const ftcore::JsonValue V = Effects[FTKiteVfx::kEffectKeys[E]];
 		FLook& Look = Looks[E];
 		const std::string_view Name = V["effect"].string();
 		if (!Name.empty())
 		{
 			Look.Effect = FName(*FT::ToFString(Name));
 		}
-		Look.SpeedScale = ReadFloat(V, "speedScale", Look.SpeedScale);
-		Look.ShapeScale = ReadFloat(V, "shapeScale", Look.ShapeScale);
+		Look.SpeedScale = FTKiteVfx::ReadFloat(V, "speedScale", Look.SpeedScale);
+		Look.ShapeScale = FTKiteVfx::ReadFloat(V, "shapeScale", Look.ShapeScale);
 	}
 	const std::string_view Bone = Root["socket"].string();
 	if (!Bone.empty())
@@ -75,7 +75,7 @@ void FFTKiteVfx::ReadTuning()
 	{
 		TellMove.assign(Move.data(), Move.size());
 	}
-	Lift = FMath::Max(ReadFloat(Root, "lift", Lift), 0.f);
+	Lift = FMath::Max(FTKiteVfx::ReadFloat(Root, "lift", Lift), 0.f);
 }
 
 void FFTKiteVfx::Spawn(AFTArenaFighter* Figure)

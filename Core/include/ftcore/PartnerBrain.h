@@ -106,7 +106,7 @@
 //      going Down and rolesSwapped(). During a pause it goes back to the
 //      station (StepBack when nearer than standoffMeters to the target's edge, else MoveTo). Later blows of a string
 //      are not held to it; guarding, the budget and the rest are unchanged.
-// The play camera (rules 13-16): only while the host also gives PartnerStationView::camera (whole and finite, see
+// The play camera (rules 13-17): only while the host also gives PartnerStationView::camera (whole and finite, see
 // PartnerCameraView) with stationing on. Not given, every rule above is as it was, to the bit: the intents, the save's
 // hash and every golden. Once given in a fight the brain is "framed" (sticky until begin or load).
 //  13. Frustum stationing. A station (rule 10's ring round the target, half the reach off its edge, and as a second
@@ -146,6 +146,25 @@
 //      that is legal (in its arc or not: fallen back, the frame offers nothing better) and at least half
 //      repositionMeters away (why Reposition). With the strings (about every 3-4 s) that is two kinds of action in
 //      every 20 s with the budget free. No new moves: strings, guards and walking are the kit it has.
+//  17. Never still (framed, PartnerTuning::circling on, any enemy standing). Off (the default): none of it runs, its
+//      state is not touched or hashed, and the brain's outputs are those of the brain before it (the host turns a
+//      waiting partner to its target). While its attack is held (why Budget, a pause, a windup at it it did
+//      not guard, no target, or closing in with the budget out), it walks a goal of its own, in the frame: a new
+//      station of rule 13 at least repositionMeters away, else at least max(1 m, half that) (rule 13's held station
+//      and grace are only read); none: a side-step round its target, either way, turned at least 40 degrees and far
+//      enough for a 1 m stride, inside its reach and its standoff, legal, out of the target's keep-out (StayClose:
+//      inside the close cap); out of the frame with the budget out and none of those: a place on the lead's ring, out
+//      of the keep-out of the enemy it faces. A goal is kept until reached (0.2 m), while legal, in frame and on the
+//      same target. A new one: every 2-4 s (seeded draw, its own stream) with the budget out; whenever it has stood
+//      1.0 s; and whenever it has been 0.8 s within 0.5 m of one place (shuffles count; a blow, a guard or no enemy
+//      standing restarts that clock), so it is never 1.5 s in one place (the ruling). With the budget out, in reach
+//      and in the frame, its rules' short walk (under 1 m) to its station is held as a wait, and its rules' longer
+//      walk or step back is kept to its end as one stride, so it does not flip between walking and standing. A
+//      stagger counts toward its stand-still. It faces its target, else the nearest enemy standing, on every step
+//      (intent.enemy; the host turns to it). Walking only: it deals nothing and spends no budget; the idle reason is
+//      as before (NoBudget stays NoBudget). It never dodges (no dodge in any lead's kit; rule 3's guard is its
+//      defence). Reported: intent.skirmish, skirmishSeconds(), skirmishMoves(), guardsBegun(). Not given a camera,
+//      rules 13-17 do not run.
 // Idle reasons (with or without a camera): every step's intent carries why it is not acting (PartnerIdle), and the
 // brain counts the seconds of each over the fight (idleSeconds; None is the time it acts, so they sum to the time
 // stepped since begin). They are a report: in save and load, never in the hash, and they steer nothing.
@@ -163,7 +182,7 @@
 //     "closeLeadMeters": 3.5, "spreadArcMin": 120, "spreadArcMax": 180, "sideHoldSeconds": 2.0, "followMin": 2.0,
 //     "followMax": 2.5, "stationTolerance": 0.5, "stationGiveUpSeconds": 3.0, "stationAnySeconds": 6.0,
 //     "targetHoldSeconds": 1.5, "frustumMargin": 0.1, "frustumGiveUpSeconds": 3.0, "engageSeconds": 2.0,
-//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5 }
+//     "repositionEverySeconds": 8.0, "repositionMeters": 1.5, "circling": false }
 
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
@@ -276,6 +295,7 @@ struct PartnerIntent {
     bool framed = false;      // rule 13 ran this step (the camera given): point, when set, is a valid station ...
     bool frameFallback = false; // ... unless this: no valid station for frustumGiveUpSeconds, rules 10-11's instead
     bool offFrame = false;      // a report: this string starts from off the frame, no valid station found (rule 14)
+    bool skirmish = false;      // rule 17: this step walks its never-still goal (point), facing enemy
     PartnerIdle idle = PartnerIdle::Other; // a report: never in the hash
 };
 
@@ -325,6 +345,10 @@ struct PartnerTuning {
     float engageSeconds = 2.f;           // rule 14 (0.25..10)
     float repositionEverySeconds = 8.f;  // rule 16 (2..20)
     float repositionMeters = 1.5f;       // rule 16: at least this far (0.5..6)
+    // Rule 17 (framed): with its attack held it keeps moving round its target. Off (the default until its turns hold
+    // the ruled limits): it stands ready where its rules put it and the host turns it to its target; rule 17's state
+    // is neither touched nor hashed, so the hash and outputs are the brain's before rule 17.
+    bool circling = false;
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
@@ -412,6 +436,23 @@ struct PartnerBrainSave {
     std::array<double, kPartnerIdleCount> idleSeconds{};
     double fallbackSeconds = 0.0;
     std::uint32_t offFrameStarts = 0; // strings begun from off the frame (rule 14's last resort)
+    // Rule 17 (framed): its own seeded stream, the goal walked, and the clocks.
+    std::uint32_t skirmish = 1;
+    std::uint32_t skirmishDraws = 0;
+    bool skirmishOn = false;       // walking skirmishGoal
+    Vec2 skirmishGoal{};
+    double stillFor = 0.0;         // seconds standing with its attack held
+    Vec2 placeAt{};                // where its stretch in one place began (held)
+    double placeFor = 0.0;         // seconds within kPlace of placeAt, held
+    double skirmishFor = 0.0;      // since the last goal
+    double skirmishEvery = 0.0;    // the drawn 2-4 s
+    std::int8_t skirmishDir = 1;   // the next side-step's way round
+    std::int8_t skirmishKind = 0;  // 0 its own goal; 1, 2 its rules' MoveTo, StepBack held (the budget out)
+    int skirmishOf = -1;           // the target the goal was taken for
+    // The report (rule 17, never hashed).
+    double skirmishSeconds = 0.0;  // seconds walking its goals
+    std::uint32_t skirmishMoves = 0; // goals chosen
+    std::uint32_t guardsBegun = 0;   // guards begun (framed)
 
     // FNV-1a over every field that steers play (StateHash.h): two brains with the same hash do the same from here.
     // The report is left out; rules 13-16's fields count only once framed or with one of their tunables off its
@@ -456,6 +497,9 @@ public:
     }
     double fallbackSeconds() const { return s_.fallbackSeconds; } // rule 13's fallback, seconds
     std::uint32_t offFrameStarts() const { return s_.offFrameStarts; } // rule 14's off-frame starts
+    double skirmishSeconds() const { return s_.skirmishSeconds; }      // rule 17: seconds walking its goals
+    std::uint32_t skirmishMoves() const { return s_.skirmishMoves; }  // rule 17: goals chosen
+    std::uint32_t guardsBegun() const { return s_.guardsBegun; }      // guards begun, framed
     bool framed() const { return s_.framed; }
 
     // Its whole state, for a checkpoint: load(save()) gives a brain that does exactly the same from there.
@@ -473,6 +517,7 @@ private:
     void account(double dt, double partner, bool lead);
     void spend(float seconds);
     void endString(bool staggered);
+    void skirmishStep(double dt, const PartnerInput& in); // rule 17, after decide, framed
     // seen: bit i set when enemy i stands in the frame (framed only; 0 otherwise).
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;
 
