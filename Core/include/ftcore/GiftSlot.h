@@ -253,6 +253,9 @@ public:
         case GiftError::NoGift:
         case GiftError::NoneLeft: return refuse(r, e);
         }
+        // pressError refused a target that is not a lead (BadTarget) and a gift out of range (NoGift), so neither
+        // reaches here; said again so the per-lead and per-gift writes below are bounded where the compiler sees them.
+        if (!isLead(target) || static_cast<std::size_t>(selected_) >= kGiftKinds) return refuse(r, GiftError::BadTarget);
         const std::size_t g = static_cast<std::size_t>(selected_);
         if (selected_ == Gift::Count) {
             if (count == nullptr || count->call(kThirdSlot, t) != CountError::None)

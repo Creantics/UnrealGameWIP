@@ -14,6 +14,7 @@
 //       player.update(gameSeconds);                                      // the blends and the shots
 //       player.tickReal(realSeconds);                                    // input grace, autoplay cap
 //       on a skip press: player.press();
+//       each of the wave cues player.takeWaveCues() gives: start its wave (CutsceneWaveCue)
 //       const ftcore::CutsceneShot& shot = player.currentShot();
 //       ftcore::CameraPose pose = ftcore::cutsceneCamera(shot, player.shotProgress(), spot, subject, subject2);
 //       if (player.blending()) pose = ftcore::lerpPose(fromPose, pose, player.blendWeight());
@@ -100,16 +101,55 @@ struct CutsceneShot {
 // Lower-case letters, digits and _, 1..15 characters.
 FTCORE_API bool isCutsceneId(std::string_view id);
 
+// Where a cued wave starts: a stage mark, or a subject's bone (the host reads the bone's socket and passes it to
+// updateWorldWave as the point the origin follows).
+enum class WaveCueOrigin : std::uint8_t { Mark, Bone };
+
+// A world wave the cutscene starts at `time` seconds on the plan clock (CutscenePlayer::planTime: 0 when the first shot
+// begins). Ids only: the wave's preset, the world it brings, and the mark, or the subject and its bone.
+struct CutsceneWaveCue {
+    static constexpr std::uint32_t kIdCapacity = CutsceneShot::kIdCapacity;
+
+    float time = 0.f; // 0..the plan's totalDuration()
+    char presetId[kIdCapacity] = "street";
+    char toWorld[kIdCapacity] = "unwritten";
+    char markId[kIdCapacity] = {};    // Mark only
+    char subjectId[kIdCapacity] = {}; // Bone only
+    char boneId[kIdCapacity] = {};    // Bone only
+    std::uint8_t presetLength = 6, toWorldLength = 9, markLength = 0, subjectLength = 0, boneLength = 0;
+    bool reverse = false;
+    WaveCueOrigin origin = WaveCueOrigin::Mark;
+
+    std::string_view preset() const { return {presetId, presetLength}; }
+    std::string_view world() const { return {toWorld, toWorldLength}; }
+    std::string_view mark() const { return {markId, markLength}; }
+    std::string_view subject() const { return {subjectId, subjectLength}; }
+    std::string_view bone() const { return {boneId, boneLength}; }
+
+    // Each copies `id`; false (and unchanged) when it does not fit or is not a valid id. An empty id clears the mark,
+    // the subject or the bone; the preset and the world cannot be empty.
+    FTCORE_API bool setPreset(std::string_view id);
+    FTCORE_API bool setWorld(std::string_view id);
+    FTCORE_API bool setMark(std::string_view id);
+    FTCORE_API bool setSubject(std::string_view id);
+    FTCORE_API bool setBone(std::string_view id);
+    // The ids, read back from the buffers, are valid ids (the mark for Mark, the subject and the bone for Bone), and
+    // the time is finite and not negative.
+    FTCORE_API bool valid() const;
+};
+
 class CutscenePlan {
 public:
     static constexpr std::uint32_t kMaxShots = 16;
     // In place: seconds spent easing in from the gameplay camera, and back out to it.
     static constexpr float kDefaultBlend = 0.8f;
     static constexpr float kMaxBlend = 5.f;
+    static constexpr std::uint32_t kMaxWaveCues = 4;
 
-    // No shots, default blend times.
+    // No shots, no wave cues, default blend times.
     void clear() {
         count_ = 0;
+        cueCount_ = 0;
         blendIn_ = kDefaultBlend;
         blendOut_ = kDefaultBlend;
     }
@@ -126,8 +166,17 @@ public:
     float blendIn() const { return blendIn_; }
     float blendOut() const { return blendOut_; }
 
+    // Adds a copy of `cue`, kept in time order (a cue at the same time as another goes after it). False, and nothing
+    // added, when the plan holds kMaxWaveCues, the cue is not valid(), or its time is beyond totalDuration(): add the
+    // shots first (a plan with no shots takes no cue).
+    FTCORE_API bool addWaveCue(const CutsceneWaveCue& cue);
+    std::uint32_t waveCueCount() const { return cueCount_; }
+    const CutsceneWaveCue& waveCue(std::uint32_t i) const { return cues_[i]; }
+
 private:
     CutsceneShot shots_[kMaxShots];
+    CutsceneWaveCue cues_[kMaxWaveCues];
+    std::uint32_t cueCount_ = 0;
     std::uint32_t count_ = 0;
     float blendIn_ = kDefaultBlend;
     float blendOut_ = kDefaultBlend;
@@ -189,6 +238,29 @@ public:
     double elapsed() const { return elapsed_; }
     double realElapsed() const { return realElapsed_; }
 
+    // The plan clock the wave cues are timed on: seconds of shots played (the blends between shots are inside the
+    // shots), 0 while blending in, held while blending out, and the plan's totalDuration() after a skip. Never goes
+    // back. While the shots play it runs with the game clock, so a cue's wave starts at
+    // gameNow - (planTime() - cue.time).
+    double planTime() const { return planTime_; }
+    // The wave cues crossed since the last update began: waveCue(first) .. waveCue(first + count - 1), in time order,
+    // each once in a run. A cue is crossed on the update whose shots reach its time; the end of the shots, and a skip,
+    // cross every cue still ahead. update() starts a new window and skip() adds to it; neither window reaches back past
+    // the last takeWaveCues, so a cue a frame has taken is never in a later one.
+    std::uint32_t firstCueThisUpdate() const { return cueFirst_ > cueRead_ ? cueFirst_ : cueRead_; }
+    std::uint32_t cuesThisUpdate() const { return cueNext_ - firstCueThisUpdate(); }
+    // The host's read: the cues crossed since the last take (or begin), waveCue(first) .. waveCue(first + count - 1),
+    // each given once in a run whatever the order of update, tickReal, press and the take in a frame.
+    struct CueWindow {
+        std::uint32_t first = 0;
+        std::uint32_t count = 0;
+    };
+    CueWindow takeWaveCues() {
+        const CueWindow w{cueRead_, cueNext_ - cueRead_};
+        cueRead_ = cueNext_;
+        return w;
+    }
+
     // True while the current shot blends in from the previous one (a Blend shot after the first,
     // within its blend time).
     FTCORE_API bool blending() const;
@@ -213,8 +285,14 @@ private:
     // Leaves the shots with `from` of the cutscene on screen: BlendOut, or Done when there is
     // nothing to blend out.
     void leave(float from);
+    // Crosses the cues at or before the plan clock; every cue still ahead when `all`.
+    void crossCues(bool all);
 
     CutscenePlan plan_;
+    double planTime_ = 0.0;
+    std::uint32_t cueFirst_ = 0; // the window of cues crossed: cueFirst_ .. cueNext_ - 1
+    std::uint32_t cueNext_ = 0;  // the next cue not yet crossed
+    std::uint32_t cueRead_ = 0;  // the next cue not yet taken (takeWaveCues)
     CutscenePhase phase_ = CutscenePhase::Idle;
     std::uint32_t index_ = 0;
     double shotTime_ = 0.0;
