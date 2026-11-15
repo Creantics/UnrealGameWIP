@@ -220,6 +220,7 @@ FTCORE_API WorldWaveShaderConstants worldWaveShaderConstants(const WorldWavePara
 // brings, beyond the reach the side it leaves, the span between them the band (its value (reach - d) / span). Agrees with
 // classifyWorldWave everywhere but the tongues' lead ahead of the outer edge, which the shaders draw as band and the
 // classification keeps on the side the wave leaves.
+// The HLSL must match this mirror: FTWaveSecond in Plugins/FTLook/Shaders/Private/Wave/Common.ush (the doctest checks only the mirror).
 FTCORE_API WaveClass classifyWorldWaveShader(const WorldWaveShaderConstants& constants, const WaveVec3& point);
 
 // Which world a placed thing belongs to. The values are the ones the materials read (see the host's slot constants).

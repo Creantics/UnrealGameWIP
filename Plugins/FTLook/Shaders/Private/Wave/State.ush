@@ -102,7 +102,7 @@ void FTWaveSurface(float3 wp, float3 n, float4 origin, float active, float r, fl
 	float4 keep1, inout float3 base, inout float rough, inout float3 emis)
 {
 	// No wave (the collection's WorldWaveOriginScreen.w 0, uniform over the draw): one test and the master's own values.
-	if (active < 0.5)
+	[branch] if (active < 0.5)
 	{
 		return;
 	}
