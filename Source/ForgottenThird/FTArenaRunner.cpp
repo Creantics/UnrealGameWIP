@@ -1508,7 +1508,7 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	{
 		// The HUD's Guard press count: the key's state taken as it is, so a key pressed in the pause and held after it
 		// counts no press.
-		bGuardWasDown = PC && FTInputBindings::IsDown(*PC, InputAction::Guard);
+		bGuardWasDown = PC && FTInputBindings::IsDown(*PC, ftcore::InputAction::Guard);
 		bGuardHeld = false;
 		GuardInput.reset();
 		bInterceptHeld = false;
