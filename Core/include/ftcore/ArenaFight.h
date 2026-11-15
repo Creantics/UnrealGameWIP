@@ -562,6 +562,11 @@ struct ArenaFighter {
     // the player's own time (a hit pause holds it). Full at begin() and restart().
     std::uint8_t rounds = 0;
     float reload = 1.2f;
+    // As the partner (ArenaDef::partnerKit): the brain's reach and standoff for this kit, in metres off the target's
+    // edge (PartnerTuning::reachMeters, standoffMeters; arena.json "partnerReach" 0.5..4, "partnerStandoff"
+    // 0..partnerReach). 0: unset, the tuning's own. A ranged partner kit sets them; a close-in one leaves them 0.
+    float partnerReach = 0.f;
+    float partnerStandoff = 0.f;
 };
 
 // Whether the player may take this kit as the lead: the kit's own data flag (arena.json "playable"), never inferred

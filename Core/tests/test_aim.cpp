@@ -134,10 +134,10 @@ TEST_CASE("aim: what each lead's aimed attack does") {
     CHECK(aimKindOfMove(t.fighter("duy"), 0) == AimKind::Focus);
     CHECK(aimKindOfMove(t.fighter("duy"), kArenaHeavyMove) == AimKind::Focus);
     CHECK(aimKindOfMove(t.fighter("devin"), 0) == AimKind::Focus);
-    CHECK(aimKindOf(t.fighter("third")) == AimKind::Focus); // no weapon of his own
+    CHECK(aimKindOf(t.fighter("third")) == AimKind::Cast); // the party member's bolts
     CHECK(aimKindOf(t.fighter("devin")) == AimKind::Focus);
     ArenaFighter magic;
-    magic.weapon = ArenaWeapon::Magic; // no lead uses it; the kind stays for old data
+    magic.weapon = ArenaWeapon::Magic; // the Third's kind, on a bare kit
     CHECK(aimKindOf(magic) == AimKind::Cast);
 }
 

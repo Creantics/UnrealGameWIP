@@ -220,7 +220,7 @@ struct PRig {
     void goShipped(bool partner, std::uint32_t seed) {
         ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
         if (!ownPartnerKit) def.partnerKit = def.fighter;
-        fight.setAlly(def.fighter.hp, 0.4f);
+        fight.setAlly(def.partnerKit.hp, 0.4f); // the ally's own kit (the lead's when the test set none)
         if (partner) fight.setPartner(&brain, &tuning);
         fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, seed);
         bodies.player = fight.playerStart();
@@ -3341,13 +3341,16 @@ TEST_CASE("arena partner: per-lead kits: the switch refusal order: the permanent
 TEST_CASE("arena partner: per-lead kits: a fall with only a non-playable partner standing is a Defeat, no takeover") {
     // Replaces the pin "a partner kit with no attacks taken over by a switch or a takeover (today)": handing the
     // player the party-only lead's body was a bug against the user's ruling.
+    // Both with a partner kit that has no attacks and with one that has (the shipped party member fights).
+    for (const bool attacks : {false, true})
     for (const bool playable : {false, true}) {
+        CAPTURE(attacks);
         CAPTURE(playable);
         PRig r;
         r.ownPartnerKit = true;
         r.def.partnerKit = kitB();
-        r.def.partnerKit.weapon = ArenaWeapon::None;
-        r.def.partnerKit.attacks = false;
+        r.def.partnerKit.weapon = attacks ? ArenaWeapon::Magic : ArenaWeapon::None;
+        r.def.partnerKit.attacks = attacks;
         r.def.partnerKit.playable = playable;
         r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
         r.bodies.player = Vec2{1.f, 0.f};
@@ -3358,7 +3361,7 @@ TEST_CASE("arena partner: per-lead kits: a fall with only a non-playable partner
             CHECK(r.fight.stats().takeovers == 1);
             CHECK(r.fight.phase() == ArenaPhase::Fighting);
             CHECK(r.fight.swapped());
-            CHECK_FALSE(r.fight.def().fighter.attacks);
+            CHECK(r.fight.def().fighter.attacks == attacks);
         } else {
             CHECK(r.fight.stats().takeovers == 0);
             CHECK(r.fight.phase() == ArenaPhase::Defeat);
@@ -3367,6 +3370,74 @@ TEST_CASE("arena partner: per-lead kits: a fall with only a non-playable partner
             CHECK(r.fight.allyHp() > 0);           // the party member still stands
         }
     }
+}
+
+TEST_CASE("arena partner: per-lead kits: the shipped party member's kit fights and is never the player's") {
+    const ArenaTable t = shippedTable();
+    const ArenaFighter& third = t.fighter("third");
+    REQUIRE(t.findFighter("third") == &third);
+    CHECK(third.attacks);
+    CHECK_FALSE(arenaPlayable(third));
+    CHECK(third.weapon == ArenaWeapon::Magic);
+    CHECK(third.lightCount == t.fighter("duy").lightCount);
+    for (std::uint8_t k = 0; k < third.lightCount; ++k) { // the bolt: Duy's beat, from further off
+        CHECK(third.light[k].total() == doctest::Approx(t.fighter("duy").light[k].total()));
+        CHECK(third.light[k].range > t.fighter("duy").light[k].range);
+    }
+    CHECK(third.heavy.range < third.light[0].range);           // the burst: short ...
+    CHECK(third.heavy.total() > t.fighter("duy").heavy.total()); // ... slower ...
+    CHECK(third.heavy.poiseDamage > t.fighter("duy").heavy.poiseDamage); // ... and more poise
+    CHECK(third.partnerReach > 0.f);
+    CHECK(third.partnerStandoff > 0.f);
+    CHECK(third.partnerStandoff <= third.partnerReach);
+    for (const char* id : {"default", "devin", "duy"}) { // the close-in kits leave the brain's own
+        CAPTURE(std::string(id));
+        CHECK(t.fighter(id).partnerReach == 0.f);
+        CHECK(t.fighter(id).partnerStandoff == 0.f);
+    }
+    // As the partner it lands blows, the switch to it is refused, and the player's fall is a Defeat, no takeover.
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = third;
+    r.enemy(biterKind(150, 3.f, 5.f), Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{1.f, 0.f};
+    r.bodies.ally = Vec2{0.f, 3.f};
+    r.go(true, 120, 1, Vec2{-1.f, 0.f});
+    CHECK_FALSE(r.fight.switchLeads());
+    CHECK(r.fight.switchRefusal() == ArenaSwitchRefusal::NotPlayable);
+    r.run(3.f);
+    CHECK(r.fight.phase() == ArenaPhase::Defeat);
+    CHECK(r.fight.stats().takeovers == 0);
+    CHECK_FALSE(r.fight.swapped());
+    CHECK(r.fight.allyHp() > 0);
+}
+
+TEST_CASE("arena partner: per-lead kits: partnerReach and partnerStandoff parse, default 0, and are checked") {
+    // The shipped table with the party member's two keys replaced by `keys`.
+    std::string shipped;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", shipped));
+    const std::string kShipped = R"("partnerReach": 3.2, "partnerStandoff": 1.8,)";
+    const std::size_t at = shipped.find(kShipped);
+    REQUIRE(at != std::string::npos);
+    const auto load = [&](const char* keys, std::string* err) {
+        std::string text = shipped;
+        text.replace(at, kShipped.size(), keys);
+        ArenaTable t;
+        const bool ok = importArenaTable(text, t, err);
+        return std::make_pair(ok, ok ? t.fighter("third") : ArenaFighter{});
+    };
+    std::string err;
+    auto got = load(R"("partnerReach":3,"partnerStandoff":1.5,)", &err);
+    REQUIRE_MESSAGE(got.first, err);
+    CHECK(got.second.partnerReach == doctest::Approx(3.f));
+    CHECK(got.second.partnerStandoff == doctest::Approx(1.5f));
+    got = load(R"("hp":100,)", &err);
+    REQUIRE_MESSAGE(got.first, err);
+    CHECK(got.second.partnerReach == 0.f);
+    CHECK(got.second.partnerStandoff == 0.f);
+    CHECK_FALSE(load(R"("partnerReach":0.3,)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":4.5,)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":2,"partnerStandoff":2.5,)", &err).first);
 }
 
 TEST_CASE("arena partner: per-lead kits: the shipped leads' playable flags") {
@@ -3501,9 +3572,10 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                     << s.bossAimedPartner << ", hit " << r.count(ArenaEventType::AllyHit) << ", blocked "
                     << r.count(ArenaEventType::AllyBlocked) << "; ally downed " << r.count(ArenaEventType::AllyDowned) << ", takeovers " << s.takeovers << "; walked " << walked
                     << " m; acts " << actText);
-            if (std::string(p.partner) == "third") {
-                CHECK(s.partnerBlows == 0);
-                CHECK(s.partnerDamage == 0);
+            if (std::string(p.partner) == "third") { // the party member's kit fights (bolts), with no kit time
+                CHECK(s.partnerBlows >= 1);
+                CHECK(s.partnerDamage > 0);
+                CHECK(s.partnerNoKitSeconds == 0.f);
             }
         }
     }

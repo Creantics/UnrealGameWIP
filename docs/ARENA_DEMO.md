@@ -339,10 +339,12 @@ log's "face bones" line is a warning for a boss, which has no human head).
 
 Pick the lead with `-ArenaLead=Devin` or `-ArenaLead=Duy` (the name of a `PartyLooks` entry in the local
 `Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets; Duy kicks, and fires his pistol only
-while aiming). The third party slot is a support slot with no attack kit (`"weapon": "none", "attacks": false` in
-`arena.json`): it is never the lead, so `-ArenaLead=Third` is refused with a warning and the first lead with attacks
-plays. The magic kit (`"weapon": "magic"`: a cast clip, `spell_bolt`, `spell_impact`, `spell_ward`) stays in the code
-and its Core tests for a future fighter kind; no shipped fighter uses it. Without the flag the lead is the first such look (Devin in the main checkout).
+while aiming). The third party slot is a party member only (`"playable": false` in `arena.json`) that fights as the
+partner with the magic kit (`"weapon": "magic"`): its lights are bolts from the casting hand (`spell_bolt`, then
+`spell_impact` at the hit point), its heavy a short burst, its guard the ward (`spell_ward`). It sets its own partner
+reach and standoff (`"partnerReach"`, `"partnerStandoff"`, metres off the target's edge; 0 or absent, as on Devin and
+Duy, is the partner brain's own). It is never the lead, so `-ArenaLead=Third` is refused with a warning and the first
+playable lead plays. Without the flag the lead is the first such look (Devin in the main checkout).
 
 ```
 UnrealEditor.exe ForgottenThird.uproject /Game/Maps/Demo_Arena -game -windowed -ResX=1600 -ResY=900 -ArenaStage=stone_ring -ArenaLead=Devin
