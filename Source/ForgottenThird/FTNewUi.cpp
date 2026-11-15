@@ -2,6 +2,7 @@
 
 #include "FTArenaFighter.h"
 #include "FTArenaRunner.h"
+#include "FTExploreCharacter.h"
 #include "ForgottenThird.h"
 #include "FTInputBindings.h"
 #include "FTSettingsSubsystem.h"
@@ -14,6 +15,7 @@
 #include "ftcore/UiEventMarks.h"
 #include "ftcore/UiFirstUse.h"
 #include "ftcore/UiLone.h"
+#include "ftcore/UiPartyScreen.h"
 #include "ftcore/Settings.h"
 #include "ftcore/InputBindings.h"
 #include "ftcore/UiStroke.h"
@@ -58,10 +60,13 @@ extern CORE_API TFunction<void(int32)>* GGameThreadMallocHook;
 
 namespace
 {
+#if !UE_BUILD_SHIPPING
+// Outside Shipping only: a Shipping build always has the new UI (FT::NewUiEnabled) and has no such variable.
 TAutoConsoleVariable<int32> CVarNewUi(TEXT("ft.NewUi"), 1,
 	TEXT("1 (the default): the new game UI (Slate, drawn from Core view-models) in place of the Canvas HUD's parts it ")
-	TEXT("replaces. 0: the old Canvas HUD, as -FTOldUi on the command line gives (which wins over this). ")
-	TEXT("Read when a map's HUD begins: a change applies from the next map."));
+	TEXT("replaces. 0: the old Canvas HUD, as -FTOldUi on the command line also gives (which wins over this). Not in ")
+	TEXT("Shipping, which always has the new UI. Read when a map's HUD begins: a change applies from the next map."));
+#endif
 
 using ftcore::UiTextRole;
 using ftcore::UiToken;
@@ -106,6 +111,19 @@ const FTUiText kLoneEndedPartnerUi(TEXT("arena.lone.ended_partner"));
 // Escrow wait running).
 const FTUiText kTooSoonUi(TEXT("arena.call.too_soon"));
 const FTUiText kWaitUi(TEXT("arena.wait"));
+// The party screen's words (ftcore/UiPartyScreen.h): the Third's row name in a fight, a refused lead row's word after its
+// name (DOWN is the prompts' and WAIT the state slot's), the refused switch's call prefix (SWITCH: DOWN), the Third's
+// gift words (READY, a cooldown's seconds) and its whole slot refused, and explore's follow row.
+const FTUiText kThirdUi(TEXT("arena.party.third"));
+const FTUiText kNotHereUi(TEXT("arena.party.not_here"));
+const FTUiText kFightOverUi(TEXT("arena.party.fight_over"));
+const FTUiText kSwitchUi(TEXT("arena.party.switch"));
+const FTUiText kReadyUi(TEXT("arena.party.ready"));
+const FTUiText kSecondsUi(TEXT("arena.party.seconds"));
+const FTUiText kVacantUi(TEXT("arena.party.vacant"));
+const FTUiText kHostileUi(TEXT("arena.party.hostile"));
+const FTUiText kFollowUi(TEXT("arena.party.follow"));
+const FTUiText kWaitHereUi(TEXT("arena.party.wait_here"));
 // The Read row's move names, by the tell the move shows (arenaTellName).
 const char* const kReadTells[9] = {"strike", "overhead", "backhand", "charge", "thrust", "slash", "sweep", "slam", "shot"};
 const FTUiText kReadStrikeUi(TEXT("arena.read.strike"));
@@ -130,8 +148,8 @@ const FTUiText kPromptUi[] = {kHealUi, kGiftHealUi, kGiftGuardUi, kPartnerUi, kA
 static_assert(UE_ARRAY_COUNT(kPromptUi) == ftcore::kUiPromptCount, "one word per prompt, in UiPrompt order");
 // Each prompt's key: the controls line's entry with this label, or (no label) the entry that carries this action, else
 // that action's own keys (inputActionKeys). HEAL is the lead's own heal (input.heal: H, on a pad D-pad up). The gifts are
-// left out of the controls line, so they take their own keys: G and Y; on a pad they have no button or route until the
-// pad's layout is ruled (inputPadPending), so none there. A rebinding that puts two rows on one key
+// left out of the controls line, so they take their own keys: G and Y; on a pad D-pad left and right (a version-1
+// bindings file leaves them NO KEY where its D-pad keeps crouch or switch lead). A rebinding that puts two rows on one key
 // keeps the lowest (uiPromptsDrawable). An action the bindings import left unbound shows NO KEY in its key box, dimmed
 // (inputPromptKey on FTInputBindings::Unbound), and keeps its row. There is no RELOAD prompt: the rules have no reload
 // press (the reload is automatic), so the row comes back only with that press.
@@ -1275,6 +1293,17 @@ constexpr float LoneTitleGap = 14.f;
 constexpr float LoneColGap = 48.f;
 constexpr float LoneLineGap = 6.f;
 constexpr float LoneShadeK = 1.5f; // the bottom shade's height while the card shows, over the card's top from the bottom edge
+// The party screen, opened in place over the party block (no panel): each name rises PartyLift px over its hp line (the
+// lines stay, the live read-out); the Third's row stands PartyRowGap px over the partner's capitals. Each row's ink and
+// marks are Core's (ftcore::uiPartyRowView): the cursor's name at full ink with the reply underline across the whole
+// name, PartyUnder px under its foot; every other lead row at kUiPartyOtherInk, a refused one at PartyRefusedInk with
+// its word, the Third at kUiPartyThirdInk; never gold. The controlled lead's name has a dot hung before it
+// (uiPartyDot). It opens and shuts over PartyOpenTime s.
+constexpr float PartyLift = 10.f;
+constexpr float PartyUnder = 8.f;
+constexpr float PartyRowGap = 22.f;
+constexpr float PartyRefusedInk = ftcore::kUiPartyRefusedInk;
+constexpr float PartyOpenTime = 0.1f;
 } // namespace Hud
 
 // What was just lost: held a moment, then rubbed away toward the value (a hit rubs the line, it does not snap).
@@ -1315,6 +1344,19 @@ ftcore::UiStrokeStyle StrokeStyle(float Width, std::uint32_t Seed, float S, floa
 	return St;
 }
 
+// The cursor's mark, left-aligned at X0: the party screen's runs W px (its name's measured width), the dialogue's
+// selected reply's is the short one.
+void CursorUnderline(FLineMesh& Mesh, ftcore::UiStroke& Line, float X0, float Y, float W, float S, const FLinearColor& C)
+{
+	ftcore::uiStrokeLine(Line, X0, Y, X0 + W, Y, StrokeStyle(7.f, 101, S, 0.1f), 0.f, 1.f);
+	Mesh.Stroke(Line, C);
+}
+constexpr float kReplyUnderline = 48.f; // px at 1080 ("short")
+void ReplyUnderline(FLineMesh& Mesh, ftcore::UiStroke& Line, float X0, float Y, float S, const FLinearColor& C)
+{
+	CursorUnderline(Mesh, Line, X0, Y, kReplyUnderline * S, S, C);
+}
+
 // A line that carries a value: straight (no drift across it, so its width reads true), the brush's taper only at its two
 // ends, its thinnest point never under Hud::MinValueLine px.
 ftcore::UiStrokeStyle ValueStyle(float Width, std::uint32_t Seed, float S, float Taper = Hud::ValueTaper)
@@ -1335,6 +1377,23 @@ float Frac(int32 Value, int32 Max) { return Max > 0 ? FMath::Clamp(static_cast<f
 // capitals on a baseline.
 float CapTop(float MidY, float Asc) { return MidY - 0.69f * Asc; }
 float CapMid(float Base, float Asc) { return Base - 0.31f * Asc; }
+
+// The party screen's row marks from Core's view: the cursor's underline under the name's foot at Base and, on the
+// controlled lead's row, the dot before the name, both at full ink times K (the opening's ease) and A.
+void PartyMarks(FLineMesh& Mesh, ftcore::UiStroke& Line, const ftcore::UiPartyRowView& V, float X0, float Base, float NameAsc,
+	float S, float K, float A)
+{
+	const FLinearColor C = Tok(UiToken::Ink, K * A);
+	if (V.underlineW > 0.f)
+	{
+		CursorUnderline(Mesh, Line, X0, Base + Hud::PartyUnder * S, V.underlineW, S, C);
+	}
+	if (V.dot)
+	{
+		const ftcore::UiPartyDot D = ftcore::uiPartyDot(X0, CapMid(Base, NameAsc), 0.62f * NameAsc);
+		Mesh.Dot(D.x, D.y, D.r, C);
+	}
+}
 
 // Elements made inside Fn are clipped to the rectangle (local units).
 template <typename FnT>
@@ -1374,7 +1433,11 @@ ftcore::UiFirstUseMode FirstUseMode()
 // percent if at full), so the GIFT row holds both; no_key: the gift shot with Gift Heal left unbound on the device in use,
 // as the bindings import leaves a new action whose default key the player gave to something else, so GIFT HEAL stands
 // dimmed with NO KEY in its key box beside a lit GIFT GUARD; too_soon: TOO SOON in the call slot; wait: WAIT with its line
-// at 60 percent. A held state never counts a showing or writes the save.
+// at 60 percent; party: the party screen open with its cursor on the partner, the partner row taken as the rules would
+// take it (ordinary play holds the controlled lead alone, so there it reads NOT HERE and never takes the cursor; with
+// -ArenaPartner, -ArenaSwitchAt shows the real screen and switch); party_refused: the partner row
+// DOWN under the cursor and SWITCH: DOWN in the call slot; party_lone: the screen open on a Lone Carry (ALONE in the state
+// slot), the partner row NOT HERE. A held state never counts a showing or writes the save.
 enum class EUiStateShot : uint8
 {
 	None,
@@ -1385,8 +1448,15 @@ enum class EUiStateShot : uint8
 	NoKey,
 	TooSoon,
 	Wait,
+	Party,
+	PartyRefused,
+	PartyLone,
 };
-bool IsLoneShot(EUiStateShot S) { return S == EUiStateShot::LoneCard || S == EUiStateShot::LoneAlone || S == EUiStateShot::LoneEnded; }
+bool IsLoneShot(EUiStateShot S)
+{
+	return S == EUiStateShot::LoneCard || S == EUiStateShot::LoneAlone || S == EUiStateShot::LoneEnded || S == EUiStateShot::PartyLone;
+}
+bool IsPartyShot(EUiStateShot S) { return S == EUiStateShot::Party || S == EUiStateShot::PartyRefused || S == EUiStateShot::PartyLone; }
 
 EUiStateShot UiStateShot()
 {
@@ -1405,6 +1475,9 @@ EUiStateShot UiStateShot()
 			: V == TEXT("no_key")                     ? EUiStateShot::NoKey
 			: V == TEXT("too_soon")                   ? EUiStateShot::TooSoon
 			: V == TEXT("wait")                       ? EUiStateShot::Wait
+			: V == TEXT("party")                      ? EUiStateShot::Party
+			: V == TEXT("party_refused")              ? EUiStateShot::PartyRefused
+			: V == TEXT("party_lone")                 ? EUiStateShot::PartyLone
 													  : EUiStateShot::None;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena UI: -UiStateShot=%s %s."), *V, S == EUiStateShot::None ? TEXT("is not a state; ignored") : TEXT("held"));
 		return S;
@@ -1598,10 +1671,25 @@ public:
 			RowSwap = ftcore::UiRowSwap{}; // a new fight's first seats are where the rows start, not a switch
 			return;
 		}
+		const ftcore::ArenaFight& Fight = Runner->GetFight();
+		// A retry puts each lead back in its own figure (the runner's Restart): its first seats, not a switch.
+		if (Fight.stats().restarts != RestartsSeen)
+		{
+			RestartsSeen = Fight.stats().restarts;
+			RowSwap = ftcore::UiRowSwap{};
+			bRebuild = true;
+		}
+		// A lead switch or a takeover traded the seats (the runner's SwapLeadFigures): each hp trail follows its lead to
+		// its new row, and every string built from the controlled lead (its name, its prompts' keys and words) is built
+		// again for the new one.
+		if (RowSwap.lead != 0xFF && Runner->GetLeadSeat() != RowSwap.lead)
+		{
+			Swap(HpLost, PartnerLost);
+			bRebuild = true;
+		}
 		const bool bRebuildNow = bRebuild;
 		bRebuild = false;
 		AimA = Runner->GetAimAlpha();
-		const ftcore::ArenaFight& Fight = Runner->GetFight();
 		ftcore::ArenaHudFrame Frame = View.now;
 		Frame.lead.lead = Runner->GetLeadSeat();
 		ftcore::fillArenaHudLead(Fight, Frame.lead);
@@ -1707,6 +1795,7 @@ public:
 		TickFirstUse(*Runner, Fight, DeltaTime);
 		TickLone(*Runner, Fight, DeltaTime);
 		TickHall(*Runner, Fight, DeltaTime);
+		TickParty(*Runner, Fight, DeltaTime);
 		TickBudget(Fight, Changed, DeltaTime);
 		TickLabels(*Runner);
 	}
@@ -1745,10 +1834,11 @@ public:
 		In.resultOpen = bResult;
 		In.want = ftcore::uiMarkWants(Now, In.prompts);
 		// A live Qte is a timed press like a windup: it counts as a tell, so the budget never drops it. So does TOO SOON while
-		// it stands, the call slot's other word of the player's own.
+		// it stands, the call slot's other word of the player's own, and SWITCH: <WORD> in its place (one word at a time).
 		const bool bQteLive = Now.lead.qte.live;
 		const bool bTooSoonLive = TooSoonLeft > 0.f;
-		uint8 Tells = static_cast<uint8>((bQteLive ? 1 : 0) + (bTooSoonLive ? 1 : 0));
+		const bool bSwitchLive = SwitchLeft > 0.f && !SwitchText.IsEmpty();
+		uint8 Tells = static_cast<uint8>((bQteLive ? 1 : 0) + (bTooSoonLive || bSwitchLive ? 1 : 0));
 		uint8 FoeLines = 0;
 		bool bBossActs = false;
 		for (int32 I = 0; I < UFTArenaRunner::MaxEnemies; ++I)
@@ -1839,7 +1929,9 @@ public:
 				}
 			}
 		}
-		bTooSoonOn = bTooSoonLive && TellsLeft > 0; // after the windups: a foe's blow outranks a word about the player's timing
+		// After the windups: a foe's blow outranks a word about the player's timing. The newer refusal, a switch's, first.
+		bSwitchOn = bSwitchLive && TellsLeft > 0;
+		bTooSoonOn = !bSwitchOn && bTooSoonLive && TellsLeft > 0;
 		if (G.allowed(UiMarkKind::Cards) == 0)
 		{
 			ReadN = 0;
@@ -2026,6 +2118,29 @@ private:
 		WaitWordW = TextWidth(WaitWord, NoteFont);
 		TooSoonWord = kTooSoonUi.Get().ToUpper();
 		TooSoonMid = InkMid(TooSoonWord, CallFont);
+		// The party screen's words: a refused lead row's at label size after the name (DOWN as the prompts', WAIT as the
+		// state slot's), the Third's row, and the refused switch's call prefix (its text measured again in the new face).
+		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPartyWhyCount); ++I)
+		{
+			PartyWhyWord[I].Reset();
+		}
+		PartyWhyWord[static_cast<int32>(ftcore::UiPartyWhy::Down)] = kWhyDownUi.Get().ToUpper();
+		PartyWhyWord[static_cast<int32>(ftcore::UiPartyWhy::NotHere)] = kNotHereUi.Get().ToUpper();
+		PartyWhyWord[static_cast<int32>(ftcore::UiPartyWhy::FightOver)] = kFightOverUi.Get().ToUpper();
+		PartyWhyWord[static_cast<int32>(ftcore::UiPartyWhy::Wait)] = WaitWord;
+		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiPartyWhyCount); ++I)
+		{
+			PartyWhyW[I] = TextWidth(PartyWhyWord[I], NoteFont);
+		}
+		ThirdName = kThirdUi.Get().ToUpper();
+		ThirdNameW = TextWidth(ThirdName, PartnerNameFont);
+		GiftReadyWord = kReadyUi.Get().ToUpper();
+		GiftVacantWord = kVacantUi.Get().ToUpper();
+		GiftHostileWord = kHostileUi.Get().ToUpper();
+		GiftSecondsFmt = kSecondsUi.Get();
+		ThirdKey = MAX_uint32; // its line built again in the new words
+		SwitchPrefix = kSwitchUi.Get().ToUpper();
+		BuildSwitchText();
 		// The Lone Carry's card: the title in the lead name's size, the heads and lines in the labels'.
 		LoneTitle = kLoneTitleUi.Get().ToUpper();
 		LoneGainHead = kLoneGainUi.Get().ToUpper();
@@ -2324,11 +2439,16 @@ private:
 			Lone.ended = ftcore::UiLoneWord::EndedGift;
 			Lone.endedLeft = ftcore::kUiLoneEndedShow;
 			break;
+		case EUiStateShot::PartyLone:
+			Lone.alone = true;
+			break;
 		case EUiStateShot::None:
 		case EUiStateShot::Gift:
 		case EUiStateShot::NoKey:
 		case EUiStateShot::TooSoon:
 		case EUiStateShot::Wait:
+		case EUiStateShot::Party:
+		case EUiStateShot::PartyRefused:
 			break;
 		}
 	}
@@ -2362,6 +2482,121 @@ private:
 		default:
 			break;
 		}
+	}
+
+	// The party screen (Core's UiPartyScreen; the runner steps it and sends the switch): its rows open over the party
+	// block. The partner row's word is the rules' (GetLeadSwitchReason: the session's leadSwitchReason, the step's close's
+	// own predicate); the Third's line is the gift slot's (GetThirdSlotRefusal and GetThirdSlot for the slot, GetGiftReason
+	// for each gift; the count and the seconds from GetGiftHealsLeft and GetGiftGuardReadyIn). A switch the session refused
+	// (GetSwitchRefusedSerial) puts SWITCH: <WORD> in the call slot for kUiPartySwitchShow, in TOO SOON's place. Strings
+	// are built when what they show changes, never per frame.
+	void TickParty(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, float DeltaTime)
+	{
+		using ftcore::UiPartyWhy;
+		const bool bFight = !Fight.over();
+		PartyShown = Runner.GetPartyScreen();
+		const uint8 Other = Runner.GetSessionLead() == ftcore::kLeadA ? ftcore::kLeadB : ftcore::kLeadA;
+		PartnerWhy = Runner.GetLeadSwitchReason(Other);
+		UiPartyWhy Refused = UiPartyWhy::Unknown;
+		const uint32 Serial = Runner.GetSwitchRefusedSerial();
+		if (Serial != SwitchSerialSeen)
+		{
+			SwitchSerialSeen = Serial;
+			Refused = Runner.GetSwitchRefusedWhy();
+		}
+		const EUiStateShot Shot = UiStateShot();
+		const bool bShot = bFight && IsPartyShot(Shot);
+		if (bShot)
+		{
+			PartyShown.open = true;
+			PartyShown.explore = false;
+			PartyShown.cursor = Shot == EUiStateShot::PartyLone ? ftcore::UiPartyRow::Lead : ftcore::UiPartyRow::Partner;
+			PartnerWhy = Shot == EUiStateShot::Party ? UiPartyWhy::Ok : Shot == EUiStateShot::PartyRefused ? UiPartyWhy::Down : UiPartyWhy::NotHere;
+			PartyShown.partnerHere = PartnerWhy != UiPartyWhy::NotHere; // the held state's partner, as the screen would take it
+			if (Shot == EUiStateShot::PartyRefused)
+			{
+				Refused = UiPartyWhy::Down;
+			}
+		}
+		if (ftcore::uiPartyRefused(Refused))
+		{
+			if (Refused != SwitchWhy)
+			{
+				SwitchWhy = Refused;
+				BuildSwitchText();
+			}
+			SwitchLeft = ftcore::kUiPartySwitchShow;
+		}
+		else
+		{
+			SwitchLeft = FMath::Max(0.f, SwitchLeft - DeltaTime);
+		}
+		if (!bFight)
+		{
+			SwitchLeft = 0.f;
+		}
+		PartyOpenK = bShot ? 1.f : FMath::Clamp(PartyOpenK + (PartyShown.open ? DeltaTime : -DeltaTime) / Hud::PartyOpenTime, 0.f, 1.f);
+		if (PartyShown.open)
+		{
+			PartyDrawn = PartyShown; // a closing screen fades with the rows it had
+		}
+
+		// The Third's row: drawn only with a gift slot (a session). The slot refused is one word; else GIFT HEAL n (its
+		// reason word after the count when refused) and GIFT GUARD READY (its reason word, or its seconds while it cools,
+		// in READY's place), each only while the rules have it in this fight.
+		bThirdRow = Runner.GetSession() != nullptr;
+		if (!bThirdRow)
+		{
+			return;
+		}
+		const ftcore::GiftError SlotWhy = Runner.GetThirdSlotRefusal();
+		const ftcore::SlotState Slot = Runner.GetThirdSlot();
+		const bool bVacant = SlotWhy == ftcore::GiftError::Vacant || (SlotWhy == ftcore::GiftError::None && Slot == ftcore::SlotState::Vacant);
+		const bool bHostile = SlotWhy == ftcore::GiftError::Hostile || (SlotWhy == ftcore::GiftError::None && Slot == ftcore::SlotState::Hostile);
+		const uint32 SlotWord = bVacant ? 1u : (bHostile ? 2u : 0u);
+		const int32 Heals = FMath::Max(0, View.now.third.giftHeals);
+		const bool bGuardCools = GiftWhy[1] == ftcore::PressReason::Cooldown;
+		const int32 GuardS = bGuardCools ? FMath::Max(1, static_cast<int32>(FMath::CeilToFloat(static_cast<float>(Runner.GetGiftGuardReadyIn())))) : 0;
+		const uint32 Key = (SlotWord << 30) | (static_cast<uint32>(GiftWhy[0]) << 24) | (static_cast<uint32>(GiftWhy[1]) << 18)
+			| (static_cast<uint32>(FMath::Min(Heals, 255)) << 10) | static_cast<uint32>(FMath::Min(GuardS, 1023));
+		if (Key == ThirdKey)
+		{
+			return;
+		}
+		ThirdKey = Key;
+		ThirdText.Reset();
+		if (SlotWord != 0u)
+		{
+			ThirdText = SlotWord == 1u ? GiftVacantWord : GiftHostileWord;
+			return;
+		}
+		if (GiftWhy[0] != ftcore::PressReason::Absent)
+		{
+			ThirdText = PromptWord[static_cast<int32>(ftcore::UiPrompt::GiftHeal)] + TEXT(" ") + FString::FromInt(Heals);
+			const FString& HealWhy = WhyWord[static_cast<int32>(GiftWhy[0])];
+			if (!HealWhy.IsEmpty())
+			{
+				ThirdText += TEXT(" ") + HealWhy;
+			}
+		}
+		if (GiftWhy[1] != ftcore::PressReason::Absent)
+		{
+			if (!ThirdText.IsEmpty())
+			{
+				ThirdText += TEXT(" · "); // a middle dot between the gifts
+			}
+			const FString& GuardWhy = WhyWord[static_cast<int32>(GiftWhy[1])];
+			ThirdText += PromptWord[static_cast<int32>(ftcore::UiPrompt::GiftGuard)] + TEXT(" ")
+				+ (bGuardCools ? FString::Format(*GiftSecondsFmt, {GuardS}) : GuardWhy.IsEmpty() ? GiftReadyWord : GuardWhy);
+		}
+	}
+
+	// SWITCH: <WORD> for the refusal shown (SwitchWhy), measured in the call slot's face.
+	void BuildSwitchText()
+	{
+		const FString& Word = PartyWhyWord[static_cast<size_t>(SwitchWhy) % ftcore::kUiPartyWhyCount];
+		SwitchText = Word.IsEmpty() ? FString() : SwitchPrefix + TEXT(" ") + Word;
+		SwitchMid = InkMid(SwitchText, CallFont);
 	}
 
 	// The card's lines from the terms it shows: each line's words and Core's figure, the left column's width. Built as the
@@ -2425,8 +2660,9 @@ private:
 	}
 
 	// The top line comes and goes with the boss (the budget's boss fade); a plain target's line goes at rest. A target with
-	// no display name (a kind with no arena.name key) still has its line, drawn alone without a name: its body carries no
-	// hp block of its own (the foe marks leave the target to the top line), so without it its hp would show nowhere.
+	// no display name (a kind with no arena.name key) keeps its line, drawn alone without a name. That is intended, not a
+	// gap: its body carries no hp block of its own (the foe marks leave the target to the top line), so without the line
+	// its hp would show nowhere.
 	bool TopShown() const
 	{
 		const ftcore::ArenaHudBoss& B = View.now.boss;
@@ -2548,10 +2784,15 @@ private:
 	// the RELEASE key cap, centred on its word's capitals, clears the line), and the partner's line 22 px over the name's
 	// capitals. On a lead switch the two rows trade places over kUiRowSwap (the lead's row comes down from the partner's
 	// place, the partner's goes up from the lead's), so the eye follows each name to its new seat.
+	// The party screen opens the block in place: each name rises PartyLift over its line (the lines, the live read-out,
+	// stay), the partner's row stands even with no partner (NOT HERE), and the Third's row comes in PartyRowGap px over
+	// the partner's capitals.
 	struct FPartyRows
 	{
-		float GuardBase = 0.f, HpY = 0.f, NameBase = 0.f, PY = 0.f, PBase = 0.f;
+		float GuardBase = 0.f, HpY = 0.f, NameBase = 0.f, PY = 0.f, PBase = 0.f, TBase = 0.f;
 		bool bPartner = false;
+		bool bThird = false; // the party screen's Third row (open, with a gift slot)
+		float Open = 0.f;    // the screen's opening, eased (0 shut, 1 open)
 		float Top = 0.f; // the block's top, without a hit's dip: the higher name's box
 	};
 
@@ -2563,19 +2804,27 @@ private:
 		const float NameBase0 = HpY0 - (0.5f * Hud::LeadHpW + 12.f) * S;
 		const float PY0 = NameBase0 - 0.62f * LeadNameAsc - (22.f + 0.5f * Hud::PartnerHpW) * S; // the partner's line's middle
 		const float SwapDy = FMath::SmoothStep(0.f, 1.f, RowSwap.left01) * (PY0 - HpY0);
+		R.Open = FMath::SmoothStep(0.f, 1.f, PartyOpenK);
+		const float Lift = Hud::PartyLift * S * R.Open;
 		R.GuardBase = GuardBase0 + SwapDy;
 		R.HpY = HpY0 + SwapDy;
-		const float NameRest = NameBase0 + SwapDy;
+		const float NameRest = NameBase0 + SwapDy - Lift;
 		R.NameBase = NameRest + 3.f * S * LeadDip; // a hit drops the name, and its slot with it
 		const ftcore::ArenaHudPartner& Pa = View.now.partner;
-		R.bPartner = Pa.present && Budget.out.allowed(ftcore::UiMarkKind::Party) > 0;
+		R.bPartner = (Pa.present && Budget.out.allowed(ftcore::UiMarkKind::Party) > 0) || R.Open > 0.f;
 		R.PY = PY0 - SwapDy; // 22 px over the lead's name at rest (the lead's dip does not move it)
-		const float PRest = R.PY - (0.5f * Hud::PartnerHpW + 8.f) * S; // the partner's name, 8 px over its line
+		const float PRest = R.PY - (0.5f * Hud::PartnerHpW + 8.f) * S - Lift; // the partner's name, 8 px over its line
 		R.PBase = PRest + 3.f * S * PartnerDip;
+		R.bThird = R.Open > 0.f && bThirdRow;
+		R.TBase = PRest - 0.62f * PartnerNameAsc - Hud::PartyRowGap * S;
 		R.Top = NameRest - LeadNameAsc;
 		if (R.bPartner)
 		{
 			R.Top = FMath::Min(R.Top, PRest - PartnerNameAsc);
+		}
+		if (R.bThird)
+		{
+			R.Top = FMath::Min(R.Top, FMath::Lerp(PRest - PartnerNameAsc, R.TBase - PartnerNameAsc, R.Open));
 		}
 		return R;
 	}
@@ -2615,9 +2864,13 @@ private:
 			P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, LowTok(L.debt >= 80, 0.7f * A));
 		}
 
-		// The Load fills the name in gold from the left. Past the Release threshold the whole name brightens.
+		// The Load fills the name in gold from the left. Past the Release threshold the whole name brightens. On the party
+		// screen the name takes its row's ink (full on the cursor, kUiPartyOtherInk off it); its hp line, the Load's gold and
+		// the state slot stay as they are, the live read-out.
+		const float K = Rows.Open;
+		const ftcore::UiPartyRowView LeadView = ftcore::uiPartyRowView(PartyDrawn, ftcore::UiPartyRow::Lead, ftcore::UiPartyWhy::Ok, LeadNameW);
 		const float NameTop = NameBase - LeadNameAsc;
-		P.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Ink, A));
+		P.Text(X0, NameTop, LeadName, LeadNameFont, Tok(UiToken::Ink, FMath::Lerp(1.f, LeadView.ink, K) * A));
 		const FLinearColor Gold0 = LinOf(St.loadGold, A);
 		const FLinearColor Bright = LinOf(St.loadBright, A);
 		const FLinearColor Gold = Gold0 + (Bright - Gold0) * LoadName.bright;
@@ -2679,24 +2932,66 @@ private:
 		case ftcore::UiLeadWord::None:
 			break;
 		}
+		// The party screen's marks on the controlled lead's row: the cursor's underline across the name when it rests
+		// there, and the dot before the name always.
+		if (K > 0.f)
+		{
+			PartyMarks(Mesh, Line, LeadView, X0, NameBase, LeadNameAsc, S, K, A);
+		}
 
-		// The partner's row, whenever the fight has a partner.
+		// The partner's row, whenever the fight has a partner, and on the party screen always. Open, it takes its row's
+		// ink (Core's): full on the cursor with the underline across the name, kUiPartyOtherInk off it; a switch the rules
+		// would refuse now dims the row to PartyRefusedInk with the reason after the name at label size (NOT HERE with no
+		// partner at all), the cursor's underline still under the name. Never gold.
 		if (!bPartner)
 		{
 			return;
 		}
-		HpLine(X0, PLen, PY, Frac(Pa.hp, Pa.hpMax), PartnerLost.Was, Hud::PartnerHpW, 211, S, A);
-		P.Text(X0, PBase - PartnerNameAsc, PartnerName, PartnerNameFont, Tok(UiToken::Ink, Hud::PartnerInk * A));
-		// A shared blow: SHARED in the partner's slot, right of the name on its baseline, for a second, then fading.
+		const ftcore::UiPartyWhy PWhy = Pa.present ? PartnerWhy : ftcore::UiPartyWhy::NotHere;
+		const bool bPRefused = K > 0.f && ftcore::uiPartyRefused(PWhy);
+		const ftcore::UiPartyRowView PView = ftcore::uiPartyRowView(PartyDrawn, ftcore::UiPartyRow::Partner, PWhy, PartnerNameW);
+		const float PInk = FMath::Lerp(Hud::PartnerInk, PView.ink, K);
+		if (Pa.present)
+		{
+			HpLine(X0, PLen, PY, Frac(Pa.hp, Pa.hpMax), PartnerLost.Was, Hud::PartnerHpW, 211, S,
+				A * (bPRefused ? FMath::Lerp(1.f, Hud::PartyRefusedInk, K) : 1.f));
+		}
+		P.Text(X0, PBase - PartnerNameAsc, PartnerName, PartnerNameFont, Tok(UiToken::Ink, PInk * A));
+		float PSlotX = X0 + PartnerNameW + 16.f * S;
+		if (bPRefused)
+		{
+			const int32 Wi = static_cast<int32>(PWhy);
+			P.Text(PSlotX, PBase - NoteAsc, PartyWhyWord[Wi], NoteFont, Tok(UiToken::Ink, Hud::PartyRefusedInk * K * A));
+			PSlotX += PartyWhyW[Wi] + 16.f * S;
+		}
+		if (K > 0.f)
+		{
+			PartyMarks(Mesh, Line, PView, X0, PBase, PartnerNameAsc, S, K, A);
+		}
+		// A shared blow: SHARED in the partner's slot, right of the name (and of a refused row's word) on its baseline, for
+		// a second, then fading.
 		bool bShared = false;
 		EachMark(ftcore::UiEventMark::Shared, [&](const ftcore::UiLiveMark&, const ftcore::UiMarkPose& Po)
 		{
 			if (!bShared)
 			{
 				bShared = true;
-				P.Text(X0 + PartnerNameW + 16.f * S, PBase - NoteAsc, SharedWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * Po.alpha * A));
+				P.Text(PSlotX, PBase - NoteAsc, SharedWord, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * Po.alpha * A));
 			}
 		});
+
+		// The Third's row, on the party screen with a gift slot: its name at the partner's size at kUiPartyThirdInk, no hp
+		// line, never the cursor; its gift line after it at label size.
+		if (Rows.bThird)
+		{
+			const ftcore::UiPartyRowView TView = ftcore::uiPartyRowView(PartyDrawn, ftcore::UiPartyRow::Third, ftcore::UiPartyWhy::Unknown, ThirdNameW);
+			const FLinearColor TC = Tok(UiToken::Ink, TView.ink * K * A);
+			P.Text(X0, Rows.TBase - PartnerNameAsc, ThirdName, PartnerNameFont, TC);
+			if (!ThirdText.IsEmpty())
+			{
+				P.Text(X0 + ThirdNameW + 16.f * S, Rows.TBase - NoteAsc, ThirdText, NoteFont, TC);
+			}
+		}
 	}
 
 	// The Lone Carry card's rows under its title: the heads and the longer column's lines (none for the title alone).
@@ -2914,10 +3209,15 @@ private:
 			SlotTop += CallAsc + 42.f * S;
 		}
 		// TOO SOON: a refusal made too early, in ink as a call word, for a second. It goes under whatever the slot holds
-		// (the call word, a Qte, the Read row), so nothing live moves for it.
+		// (the call word, a Qte, the Read row), so nothing live moves for it. A refused lead switch's SWITCH: <WORD> takes
+		// the same place for kUiPartySwitchShow.
 		const auto TooSoon = [&](float At)
 		{
-			if (bTooSoonOn)
+			if (bSwitchOn)
+			{
+				P.Text(CX - SwitchMid, At, SwitchText, CallFont, Tok(UiToken::Ink));
+			}
+			else if (bTooSoonOn)
 			{
 				P.Text(CX - TooSoonMid, At, TooSoonWord, CallFont, Tok(UiToken::Ink));
 			}
@@ -3646,6 +3946,28 @@ private:
 	float TooSoonLeft = 0.f;
 	bool bTooEarlyWas = false;
 	bool bTooSoonOn = false;
+	// The party screen: the runner's screen as of this tick (or a -UiStateShot's), the partner row's answer from the
+	// rules, the opening's ease, each refused lead row's word (by UiPartyWhy; empty: none), the Third's row (its name and
+	// its gift line, rebuilt when ThirdKey changes, and its words), and the refused switch's call (its prefix, the
+	// refusal shown, its text and ink middle in the call face, its time left, the runner's count as of the last tick and
+	// whether the budget drew it).
+	ftcore::UiPartyScreen PartyShown;
+	ftcore::UiPartyScreen PartyDrawn; // the screen as last open: its rows' inks and marks while it fades shut
+	ftcore::UiPartyWhy PartnerWhy = ftcore::UiPartyWhy::Unknown;
+	float PartyOpenK = 0.f;
+	FString PartyWhyWord[ftcore::kUiPartyWhyCount];
+	float PartyWhyW[ftcore::kUiPartyWhyCount] = {};
+	bool bThirdRow = false;
+	FString ThirdName, ThirdText, GiftReadyWord, GiftVacantWord, GiftHostileWord, GiftSecondsFmt;
+	float ThirdNameW = 0.f;
+	uint32 ThirdKey = MAX_uint32;
+	FString SwitchPrefix, SwitchText;
+	ftcore::UiPartyWhy SwitchWhy = ftcore::UiPartyWhy::Unknown;
+	float SwitchMid = 0.f;
+	float SwitchLeft = 0.f;
+	uint32 SwitchSerialSeen = 0;
+	int RestartsSeen = 0; // ArenaStats::restarts at the last live frame: a retry's seats are no switch
+	bool bSwitchOn = false;
 	bool bWaiting = false;
 	ftcore::UiWaitLine WaitLine;
 	float Wait01 = 0.f;
@@ -3949,9 +4271,7 @@ public:
 				}
 				if (I == Selected)
 				{
-					const float UY = Y + LineH / 1.15f; // the glyph cell's foot, above the next row
-					ftcore::uiStrokeLine(Line, X0, UY, X0 + kReplyUnderline * S, UY, StrokeStyle(7.f, 101, S, 0.1f), 0.f, 1.f);
-					Mesh.Stroke(Line, C);
+					ReplyUnderline(Mesh, Line, X0, Y + LineH / 1.15f, S, C); // at the glyph cell's foot, above the next row
 				}
 			}
 		}
@@ -4239,7 +4559,6 @@ private:
 	uint32 OptionsFor = MAX_uint32;
 	float OptionTextW[ftcore::kDialogueViewOptions] = {}; // each reply's width, for a lock's reason after it
 	FString LockText[ftcore::kDialogueViewOptions]; // each locked reply's reason (empty: none given)
-	static constexpr float kReplyUnderline = 48.f;  // the selected reply's underline, px at 1080 ("short")
 	// The conversation's gradient.
 	float ConvDim = 0.f;      // its level now (eases up, never down, within a conversation)
 	float ConvNeed = 0.f;     // the highest level the conversation's pictures have asked for
@@ -4255,15 +4574,200 @@ private:
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line; // the underline being drawn (Core fills it, the mesh takes it)
 };
+
+// The party screen in explore (the new UI, FT::NewUiEnabled): explore has no new-UI party block to open in place, so
+// the fight HUD's party rows stand alone, bottom left, while the explore character's screen is open, in the same
+// fonts, shade and marks, each row's ink and marks from Core's uiPartyRowView as PaintParty's, fading over
+// PartyOpenTime. From the bottom margin up: FOLLOW or WAIT HERE (what picking the row does to the followers) at label
+// size; the lead's name at the lead's size with the current lead's dot before it; the partner's at the partner's size
+// (with no other playable look PARTNER at PartyRefusedInk with NOT HERE); the Third's name alone at kUiPartyThirdInk
+// (no gift slot out of a fight), not drawn without one. The cursor's row at full ink with the underline across its name
+// or word, the others at kUiPartyOtherInk. Each row stands PartyRowGap px over the capitals of the one under it.
+class SFTExploreParty : public SLeafWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SFTExploreParty) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&, TFunction<const AFTExploreCharacter*()> InGetLead)
+	{
+		GetLead = MoveTemp(InGetLead);
+		SetVisibility(EVisibility::HitTestInvisible);
+		if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			std::atomic<bool>* Flush = &TextRuns.bFlush;
+			FontRelease = FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().AddLambda(
+				[Flush](const FSlateFontCache&) { Flush->store(true); });
+		}
+	}
+
+	virtual ~SFTExploreParty() override
+	{
+		if (FontRelease.IsValid() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().Remove(FontRelease);
+		}
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1920.0, 1080.0); }
+
+	virtual void Tick(const FGeometry& Geometry, const double, const float DeltaTime) override
+	{
+		const AFTExploreCharacter* C = GetLead ? GetLead() : nullptr;
+		const bool bOpen = C && C->GetPartyScreen().open;
+		OpenK = FMath::Clamp(OpenK + (bOpen ? DeltaTime : -DeltaTime) / Hud::PartyOpenTime, 0.f, 1.f);
+		if (!bOpen)
+		{
+			return; // a closing screen fades with the rows it had
+		}
+		const float H = Geometry.GetLocalSize().Y;
+		const bool bFonts = H != BuiltHeight;
+		if (bFonts)
+		{
+			BuiltHeight = H;
+			BuildFonts(H);
+		}
+		ScreenShown = C->GetPartyScreen();
+		const TArray<FFTLeadLook>& Looks = C->PartyLooks;
+		const auto LookName = [&Looks](int32 I) -> const FString& { return Looks.IsValidIndex(I) ? Looks[I].Name : NoName(); };
+		bPartnerHere = C->IsPartnerHere(); // the same truth the screen's step reads
+		bThirdHere = Looks.IsValidIndex(C->GetThirdIndex());
+		bFollowing = !C->IsPartyHidden();
+		BuildName(LeadRow, LookName(C->GetLeadIndex()), kLeadUi, LeadNameFont, bFonts);
+		BuildName(PartnerRow, LookName(C->GetPartnerIndex()), kPartnerUi, PartnerNameFont, bFonts);
+		BuildName(ThirdRow, LookName(C->GetThirdIndex()), kThirdUi, PartnerNameFont, bFonts);
+	}
+
+	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
+		const FWidgetStyle&, bool) const override
+	{
+		if (OpenK <= 0.f || BuiltHeight <= 0.f)
+		{
+			return Layer;
+		}
+		FTextRuns* Runs = UiTextCacheOn() ? &TextRuns : nullptr;
+		if (Runs)
+		{
+			Runs->BeginFrame();
+		}
+		const FVector2f Size = Geometry.GetLocalSize();
+		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f), true, Runs};
+		const float S = P.S;
+		const float K = FMath::SmoothStep(0.f, 1.f, OpenK);
+		const float X0 = Hud::Margin * S;
+		const float Gap = Hud::PartyRowGap * S;
+		const float FollowBase = Size.Y - Hud::Margin * S;
+		const float LeadBase = FollowBase - 0.62f * NoteAsc - Gap;
+		const float PartnerBase = LeadBase - 0.62f * LeadNameAsc - Gap;
+		const float ThirdBase = PartnerBase - 0.62f * PartnerNameAsc - Gap;
+		const auto Ink = [K](float Alpha) { return Tok(UiToken::Ink, Alpha * K); };
+		const auto RowView = [this](ftcore::UiPartyRow Row, ftcore::UiPartyWhy Why, float W) { return ftcore::uiPartyRowView(ScreenShown, Row, Why, W); };
+		Mesh.Begin(Geometry, S);
+		// The fight HUD's one shade under the party.
+		Mesh.Band(0.f, Size.Y - Hud::BottomShadeH * S, Size.X, Size.Y, true, true, 1.f, Hud::BottomShade * K, Tok(UiToken::Backing, 1.f));
+		const ftcore::UiPartyRowView FView = RowView(ftcore::UiPartyRow::Follow, ftcore::UiPartyWhy::Unknown, bFollowing ? WaitHereW : FollowW);
+		P.Text(X0, FollowBase - NoteAsc, bFollowing ? WaitHereWord : FollowWord, NoteFont, Ink(FView.ink));
+		PartyMarks(Mesh, Line, FView, X0, FollowBase, NoteAsc, S, K, 1.f);
+		const ftcore::UiPartyRowView LView = RowView(ftcore::UiPartyRow::Lead, ftcore::UiPartyWhy::Ok, LeadRow.W);
+		P.Text(X0, LeadBase - LeadNameAsc, LeadRow.Text, LeadNameFont, Ink(LView.ink));
+		PartyMarks(Mesh, Line, LView, X0, LeadBase, LeadNameAsc, S, K, 1.f);
+		const ftcore::UiPartyWhy PWhy = bPartnerHere ? ftcore::UiPartyWhy::Unknown : ftcore::UiPartyWhy::NotHere;
+		const ftcore::UiPartyRowView PView = RowView(ftcore::UiPartyRow::Partner, PWhy, PartnerRow.W);
+		P.Text(X0, PartnerBase - PartnerNameAsc, PartnerRow.Text, PartnerNameFont, Ink(PView.ink));
+		if (!bPartnerHere)
+		{
+			P.Text(X0 + PartnerRow.W + 16.f * S, PartnerBase - NoteAsc, NotHereWord, NoteFont, Ink(Hud::PartyRefusedInk));
+		}
+		PartyMarks(Mesh, Line, PView, X0, PartnerBase, PartnerNameAsc, S, K, 1.f);
+		if (bThirdHere)
+		{
+			const ftcore::UiPartyRowView TView = RowView(ftcore::UiPartyRow::Third, ftcore::UiPartyWhy::Unknown, ThirdRow.W);
+			P.Text(X0, ThirdBase - PartnerNameAsc, ThirdRow.Text, PartnerNameFont, Ink(TView.ink));
+		}
+		Mesh.Flush(Out, Layer + 1);
+		return Layer + 5;
+	}
+
+private:
+	// A row's name: the look's own in capitals, without a look a plain word; built when the look or the fonts change.
+	struct FRowName
+	{
+		FString Seen;
+		FString Text;
+		float W = 0.f;
+		bool bBuilt = false;
+	};
+
+	static const FString& NoName()
+	{
+		static const FString Empty;
+		return Empty;
+	}
+
+	static void BuildName(FRowName& R, const FString& Src, const FString& Fallback, const FSlateFontInfo& F, bool bForce)
+	{
+		if (bForce || !R.bBuilt || !R.Seen.Equals(Src, ESearchCase::CaseSensitive))
+		{
+			R.bBuilt = true;
+			R.Seen = Src;
+			R.Text = (Src.IsEmpty() ? Fallback : Src).ToUpper();
+			R.W = TextWidth(R.Text, F);
+		}
+	}
+
+	void BuildFonts(float H)
+	{
+		const TSharedRef<FSlateFontMeasure> FM = FontMeasure();
+		const auto Asc = [&FM](const FSlateFontInfo& F) { return FM->GetMaxCharacterHeight(F) + FM->GetBaseline(F); };
+		const auto Spaced = [](FSlateFontInfo F)
+		{
+			F.LetterSpacing = 220;
+			return F;
+		};
+		LeadNameFont = Spaced(FontPx(UiTextRole::Title, H, Hud::LeadPx));
+		LeadNameAsc = Asc(LeadNameFont);
+		PartnerNameFont = Spaced(FontPx(UiTextRole::Title, H, Hud::PartnerPx));
+		PartnerNameAsc = Asc(PartnerNameFont);
+		NoteFont = FontPx(UiTextRole::Label, H, Hud::NotePx);
+		NoteAsc = Asc(NoteFont);
+		FollowWord = kFollowUi.Get().ToUpper();
+		WaitHereWord = kWaitHereUi.Get().ToUpper();
+		NotHereWord = kNotHereUi.Get().ToUpper();
+		FollowW = TextWidth(FollowWord, NoteFont);
+		WaitHereW = TextWidth(WaitHereWord, NoteFont);
+	}
+
+	TFunction<const AFTExploreCharacter*()> GetLead;
+	float OpenK = 0.f;
+	float BuiltHeight = 0.f;
+	ftcore::UiPartyScreen ScreenShown; // as of the last tick it stood open: a closing screen fades with the rows it had
+	bool bPartnerHere = false;
+	bool bThirdHere = false;
+	bool bFollowing = true;
+	FRowName LeadRow, PartnerRow, ThirdRow;
+	FSlateFontInfo LeadNameFont, PartnerNameFont, NoteFont;
+	float LeadNameAsc = 0.f, PartnerNameAsc = 0.f, NoteAsc = 0.f;
+	FString FollowWord, WaitHereWord, NotHereWord;
+	float FollowW = 0.f, WaitHereW = 0.f;
+	mutable FTextRuns TextRuns;
+	FDelegateHandle FontRelease;
+	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line; // the underline being drawn (Core fills it, the mesh takes it)
+};
 }
 
 namespace FT
 {
 bool NewUiEnabled()
 {
-	// The one switch every HUD asks (FTArenaHUD, FTStoryHUD). The new UI is the default. -FTOldUi brings the old Canvas
-	// HUD back for one more round and wins over ft.NewUi. -FTNewUi, which turned the new UI on before it was the
-	// default, is a no-op now: it still parses (noted in the log once) and changes nothing.
+	// The one switch every HUD asks (FTArenaHUD, FTStoryHUD, FTExploreHUD) and the party
+	// screen's input (FTArenaRunner, FTExploreCharacter). A Shipping build always has the new UI: it parses no flag and
+	// has no ft.NewUi. Outside Shipping the new UI is the default: -FTOldUi brings the old Canvas HUD back for one more
+	// round and wins over ft.NewUi, ft.NewUi decides otherwise, and -FTNewUi (which turned the new UI on before it was
+	// the default) is a no-op: it still parses (noted in the log once) and changes nothing.
+#if UE_BUILD_SHIPPING
+	return true;
+#else
 	static const bool bOldUi = []()
 	{
 		if (FParse::Param(FCommandLine::Get(), TEXT("FTNewUi")))
@@ -4273,6 +4777,7 @@ bool NewUiEnabled()
 		return FParse::Param(FCommandLine::Get(), TEXT("FTOldUi"));
 	}();
 	return !bOldUi && CVarNewUi.GetValueOnGameThread() != 0;
+#endif
 }
 
 TSharedRef<SWidget> MakeArenaHudWidget(TFunction<const UFTArenaRunner*()> GetRunner)
@@ -4283,5 +4788,10 @@ TSharedRef<SWidget> MakeArenaHudWidget(TFunction<const UFTArenaRunner*()> GetRun
 TSharedRef<SWidget> MakeDialogueWidget(TFunction<const AFTStoryDirector*()> GetDirector)
 {
 	return SNew(SFTDialogue, MoveTemp(GetDirector));
+}
+
+TSharedRef<SWidget> MakeExplorePartyWidget(TFunction<const AFTExploreCharacter*()> GetLead)
+{
+	return SNew(SFTExploreParty, MoveTemp(GetLead));
 }
 }

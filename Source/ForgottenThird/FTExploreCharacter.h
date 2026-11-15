@@ -20,7 +20,9 @@
 // (leader pose) and face shapes; grooms bind to the piece they were built for (see FTLook.h).
 //
 // With a party in config (PartyLooks) the pawn wears one member's look and the rest follow it
-// (AFTExploreDirector): Tab or RB switches to the next member, P or LB hides or shows the followers.
+// (AFTExploreDirector). Under the new UI (FT::NewUiEnabled, the default) the party screen takes P and the map key's
+// hold (its last row shows or hides the followers), and Tab alone switches. Under -FTOldUi, as before: Tab or RB
+// switches to the next member, P or LB (or the map key held) hides or shows the followers.
 // StartLead and bStartSolo set the start (-ExploreLead=<Name> and -ExploreSolo for -game runs); the
 // player's last choice is kept across a fight (UFTGameInstance).
 //
@@ -94,6 +96,7 @@
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
 #include "ftcore/Swim.h"
+#include "ftcore/UiPartyScreen.h"
 #include "ftcore/WaterBodies.h"
 #include "ftcore/WetPrints.h"
 #include "FTLook.h"
@@ -104,6 +107,7 @@
 class AFTExploreDirector;
 class UAnimSequence;
 class AFTPartyVan;
+class APlayerController;
 class UCameraComponent;
 class UDecalComponent;
 class UInputAction;
@@ -179,6 +183,15 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
+	// The party screen under the new UI (FT::NewUiEnabled; its explore layer draws it while open) and its rows'
+	// PartyLooks entries (-1: none), found at begin play and after every lead change: the partner is the first other
+	// playable look, the Third the first look the player may not play.
+	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
+	int32 GetPartnerIndex() const { return PartnerIndex; }
+	int32 GetThirdIndex() const { return ThirdIndex; }
+	// Whether the partner's row has a lead to switch to (else it reads NOT HERE and never takes the cursor): the one
+	// truth the screen's step (UiPartyInput::partnerHere) and its drawing read.
+	bool IsPartnerHere() const { return PartyLooks.IsValidIndex(PartnerIndex) && PartnerIndex != LeadIndex; }
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
@@ -210,6 +223,9 @@ protected:
 
 private:
 	void CreateInputObjects();
+	// Maps the context's keys from FTInputBindings (unmapping the old ones first) and notes their generation; Tick calls
+	// it again when the bindings' generation moves (a reload).
+	void MapBoundKeys();
 	UInputAction* MakeAction(const TCHAR* Name, bool bAxis2D);
 
 	void HandleMove(const FInputActionValue& Value);
@@ -230,6 +246,13 @@ private:
 	// Whether the game takes the player's keys this frame: on foot, no menu, pause or scene.
 	bool TakesInput();
 	void HandleToggleMap();
+	// The party screen (ftcore::UiPartyScreen, under the new UI only): Party's own key down, or the map key held
+	// kUiPartyHold, opens it (a shorter map press is the map); a flick moves the cursor; letting go picks. The partner's
+	// row switches to that lead, FOLLOW / WAIT HERE toggles the followers. PC null: input is taken away, which shuts it.
+	void TickPartyScreen(const APlayerController* PC, float DeltaSeconds);
+	void FindPartyRows();
+	// Wears PartyLooks[Index] as the lead (not from the van or mid-traversal; a crouch ends).
+	void SwitchLeadTo(int32 Index);
 	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
 	void BeginWeapon(const FFTLeadLook& Look);
 	// Reads Data/Battle/arena.json into WeaponTable once (logged, built-in kits when missing or refused).
@@ -322,6 +345,7 @@ private:
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
+	uint32 KeyGeneration = 0; // the bindings' generation Context's keys were mapped from (FTInputBindings::Generation)
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
@@ -467,6 +491,12 @@ private:
 	bool bRunOn = false;
 	float MapHeld = 0.f;
 	bool bMapHoldUsed = false;
+	// The new UI's party screen, read once with the input objects: it takes the Party action and the map key's hold, and
+	// SwitchLead stays on the keyboard alone.
+	bool bNewUiParty = false;
+	ftcore::UiPartyScreen PartyScreen;
+	int32 PartnerIndex = -1;
+	int32 ThirdIndex = -1;
 	bool bAimRulesTried = false;
 	ftcore::AttackMoveRules AttackMoveTable;
 	ftcore::FieldUnstick Unstick;

@@ -714,3 +714,47 @@ TEST_CASE("input bindings: no action of either context may take the backlog's ke
     InputBindings both = defaultInputBindings();
     CHECK_FALSE(importInputBindings(R"({"version": 2, "keys": {"partner_order": "B", "backlog": "B"}})", both, &error));
 }
+
+TEST_CASE("input bindings: the host's reload keeps the table it has when the file is refused, and starts from the defaults when it is read") {
+    // The table now: the player's own (Guard on K, held Guard toggled), as an earlier load left it.
+    InputBindings now = defaultInputBindings();
+    REQUIRE(rebindInput(now, InputAction::Guard, InputDevice::Keys, "K"));
+    now.hold[static_cast<std::size_t>(InputAction::Guard)] = HoldMode::Toggle;
+    REQUIRE(validateInputBindings(now));
+    InputUnbound unbound;
+    unbound.left[0][static_cast<std::size_t>(InputAction::GiftHeal)] = true;
+    unbound.count = 1;
+    const InputBindings before = now;
+
+    // A half-written file (the save cut short) and one that is not bindings at all: refused, the table and the unbound
+    // list exactly as they were, and why in the error.
+    const std::string whole = encodeInputBindings(defaultInputBindings());
+    for (const std::string& text : {whole.substr(0, whole.size() / 2), std::string("{\"version\": 9}"), std::string()}) {
+        CAPTURE(text);
+        std::string error;
+        CHECK(loadInputBindings(true, text, now, unbound, &error) == InputBindingsLoad::Refused);
+        CHECK_FALSE(error.empty());
+        CHECK(std::string(inputKey(now, InputAction::Guard, InputDevice::Keys)) == "K");
+        CHECK(now.hold == before.hold);
+        CHECK(encodeInputBindings(now) == encodeInputBindings(before));
+        CHECK(unbound.count == 1);
+        CHECK(unbound.left[0][static_cast<std::size_t>(InputAction::GiftHeal)]);
+    }
+
+    // A good file read after it: its overrides over the defaults, nothing of the old table carried (the Guard's key
+    // and its toggle back to the defaults where the file names neither), and the unbound list the file's own.
+    std::string error;
+    REQUIRE(loadInputBindings(true, R"({"version": 2, "keys": {"jump": "J"}})", now, unbound, &error) == InputBindingsLoad::Read);
+    const InputBindings defaults = defaultInputBindings();
+    CHECK(std::string(inputKey(now, InputAction::Jump, InputDevice::Keys)) == "J");
+    CHECK(std::string(inputKey(now, InputAction::Guard, InputDevice::Keys)) == inputKey(defaults, InputAction::Guard, InputDevice::Keys));
+    CHECK(now.hold == defaults.hold);
+    CHECK(unbound.count == 0);
+
+    // No file: the defaults, nothing unbound.
+    REQUIRE(rebindInput(now, InputAction::Guard, InputDevice::Keys, "K"));
+    unbound.count = 3;
+    CHECK(loadInputBindings(false, std::string_view(), now, unbound) == InputBindingsLoad::Defaults);
+    CHECK(encodeInputBindings(now) == encodeInputBindings(defaults));
+    CHECK(unbound.count == 0);
+}
