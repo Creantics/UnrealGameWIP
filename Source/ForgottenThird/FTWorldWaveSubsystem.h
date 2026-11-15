@@ -55,7 +55,9 @@
 #include "CoreMinimal.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Engine/EngineTypes.h"
+#include "Engine/TimerHandle.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "UObject/ObjectKey.h"
 
 #include "ftcore/SceneLook.h"
 #include "ftcore/WorldWave.h"
@@ -159,17 +161,54 @@ private:
 	void EnsureVolume(UWorld& World);
 	void SetExposureHold(bool bHold);
 	void GatherPawns(UWorld& World);
-	// Every material a lead wears (its body, each piece, shoes, glasses, grooms, held weapons and their pieces: every
-	// primitive on the pawn and on the actors attached to it, at any depth) whose master does not take the world wave's
-	// state (MF_WorldWaveState in its functions; with Character on, in the editor) is logged once a run, by its master's
-	// path: that piece would keep its own world across the front. Returns how many slots were left unconverted. A stowed
-	// weapon not attached to the lead is outside the audit (its summary line says so).
-	// Every primitive with such a slot is tagged for the post's catch-all (custom depth, stencil FTWorldWave::kCatchStencil;
-	// r.CustomDepth raised to 3 if lower), so PP_WorldWave gives it the character state; the summary counts the slots left
-	// unconverted (neither wave-aware nor on a tagged primitive: 0 when every piece is covered) and names any primitive
-	// that mixes wave-aware and other slots, as its wave-aware ones are then graded twice.
-	int32 AuditWorn(const AActor& Lead);
-	TSet<FString> AuditLogged; // the masters (and material paths) already logged
+	// The audit's characters: every actor with a skeletal mesh, not attached to another, within the wave's whole reach
+	// (maxRadius plus the widest band) of its origin, and every lead. Gathered at StartWave over the world once; actors
+	// spawned while a state is live are taken at the next re-audit.
+	bool IsAuditRoot(const AActor& Actor) const;
+	void AddAuditRoot(AActor& Actor);
+	// One audit of a character (the root and every actor attached to it, at any depth: its body, each piece, shoes,
+	// glasses, grooms, held weapons). A slot is wave-aware when its master's FTWaveAware default is 1 (FTWorldWave::
+	// WaveAware, the same in the editor and a cooked build). Every primitive with a slot renders custom depth: stencil
+	// FTWorldWave::kAwareStencil when every slot is wave-aware (the post leaves it), FTWorldWave::kCatchStencil when any
+	// is not (PP_WorldWave gives its pixels the character state; r.CustomDepth raised to 3 if lower). A primitive's own
+	// settings are recorded the first time they are changed, and RestoreWorn puts them back. A primitive that already
+	// renders custom depth with another stencil is left (its other slots counted unconverted, logged once). A master not
+	// wave-aware is logged once a run; a primitive that mixes both kinds takes 223 (its wave-aware slots then take the
+	// state twice: logged once, as the stencil is per primitive). The summary line is logged when anything changed.
+	struct FAuditCount
+	{
+		int32 Actors = 0;
+		int32 Slots = 0;
+		int32 Other = 0;       // slots not wave-aware
+		int32 Catch = 0;       // primitives at 223
+		int32 Aware = 0;       // primitives at 222
+		int32 Unconverted = 0; // slots on a primitive with someone else's stencil
+		int32 Changed = 0;     // primitives whose custom depth or stencil this audit set
+	};
+	FAuditCount AuditWorn(const AActor& Root);
+	// Every audit root again (from StartWave, and every AuditPeriod seconds on a world timer while a wave is set, its
+	// settled state included; never per frame): a weapon drawn, a jacket state shown or a material swapped is corrected.
+	void ReAudit();
+	void OnActorSpawned(AActor* Actor);
+	// Puts every primitive the audit changed back as it was, and r.CustomDepth if the audit raised it; stops the re-audit.
+	void RestoreWorn();
+	struct FWornDepth
+	{
+		TWeakObjectPtr<UPrimitiveComponent> Component;
+		bool bRender = false; // its own custom depth and stencil before the audit set them
+		int32 Stencil = 0;
+	};
+	static constexpr float AuditPeriod = 0.5f;
+	TArray<TWeakObjectPtr<AActor>> AuditRoots;
+	TArray<TWeakObjectPtr<AActor>> Spawned; // since the last re-audit
+	TArray<FWornDepth> WornDepth;
+	int32 CustomDepthBefore = -1; // r.CustomDepth before the audit raised it; -1 untouched
+	FTimerHandle AuditTimer;
+	FDelegateHandle SpawnHandle;
+	// The audit's scratch, reserved once (no allocation in a re-audit once the arrays have grown).
+	TArray<const AActor*> AuditActors;
+	TArray<UMaterialInterface*> AuditUsed;
+	TSet<FObjectKey> AuditLogged; // the masters and primitives already logged
 	bool PawnInFootprint(const FTracked& Item, const APawn* PlayerPawn) const;
 	// A thing as one side of the front has it (drawn and solid on its own world's side), its wave state reset.
 	void ResetThing(FTracked& Item, bool bOldSide);

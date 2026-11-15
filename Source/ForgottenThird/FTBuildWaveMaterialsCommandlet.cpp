@@ -527,6 +527,29 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s has no Character input (rebuild it with -run=FTBuildWaveMaterials); %s takes the surface state."), Tag,
 			StateFunctionPath, *Material->GetName());
 	};
+	// The runtime's marker (FTWorldWave::AwareParameter): a scalar parameter, wired to nothing, whose default the audit reads
+	// from the material's cached parameters in the editor and a cooked build alike: 1 with the character state, 0 without.
+	// Like the flag, one already there is switched on for a character and never off here.
+	const auto SetMarker = [Material, X, Y, bCharacter]()
+	{
+		const FName Name(AwareParameter);
+		for (UMaterialExpression* Expression : Material->GetExpressionCollection().Expressions)
+		{
+			if (UMaterialExpressionScalarParameter* Marker = Cast<UMaterialExpressionScalarParameter>(Expression); Marker && Marker->ParameterName == Name)
+			{
+				if (bCharacter)
+				{
+					Marker->DefaultValue = 1.f;
+				}
+				return;
+			}
+		}
+		UMaterialExpressionScalarParameter* Marker = AddExpression<UMaterialExpressionScalarParameter>(Material, X - 300, Y + 360);
+		Marker->ParameterName = Name;
+		Marker->DefaultValue = bCharacter ? 1.f : 0.f;
+		Marker->Group = FName(TEXT("WorldWave"));
+		Marker->Desc = TEXT("The world wave's runtime marker: 1 when this master takes the character state. Read by the audit; wired to nothing.");
+	};
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	const auto IsState = [Function](const UMaterialExpression* Expression)
 	{
@@ -580,6 +603,7 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 		Existing->UpdateFromFunctionResource();
 		SetCharacter(Existing);
 		RouteFuzz();
+		SetMarker();
 		return true;
 	}
 	UMaterialExpressionMaterialFunctionCall* Call = AddExpression<UMaterialExpressionMaterialFunctionCall>(Material, X, Y);
@@ -617,6 +641,7 @@ bool AddState(const TCHAR* Tag, UMaterial* Material, int32 X, int32 Y, bool bCha
 	Route(Inputs->EmissiveColor, 2);
 	SetCharacter(Call);
 	RouteFuzz();
+	SetMarker();
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: %s: world-wave state wired in%s."), Tag, *Material->GetName(),
 		bCharacter ? TEXT(" (character)") : TEXT(""));
 	return true;
@@ -701,24 +726,23 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	};
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FTWorldWave::WavePackageFile(FTWorldWave::PostMaterialPath)), true);
 
-	UMaterialParameterCollection* Look = FTWorldWave::LoadOrBuild();
+	// Everything is built in memory first, then checked, then saved in one loop: a compile error saves nothing, not even the
+	// functions or the collection, so the files on disk stay one matching set.
+	UMaterialParameterCollection* Look = FTWorldWave::Load();
 	if (!Look)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s is missing or couldn't be saved (build it with -run=FTBuildLookMaterials)."), FTWorldWave::kTag,
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: %s is missing (build it with -run=FTBuildLookMaterials)."), FTWorldWave::kTag,
 			FTWorldWave::CollectionPath);
 		return 1;
 	}
+	const bool bLookChanged = FTWorldWave::AddParametersTo(*Look) > 0;
+	if (bLookChanged)
+	{
+		Look->PostEditChange();
+	}
 
 	UMaterialFunction* Cut = FTWorldWave::BuildCutFunction(WavePackage(FTWorldWave::CutFunctionPath), Look);
-	if (!FTWorldWave::Save(Cut))
-	{
-		return 1;
-	}
 	UMaterialFunction* State = FTWorldWave::BuildStateFunction(WavePackage(FTWorldWave::StateFunctionPath), Look);
-	if (!FTWorldWave::Save(State))
-	{
-		return 1;
-	}
 	UMaterial* Post = FTWorldWave::BuildPostMaterial(WavePackage(FTWorldWave::PostMaterialPath), Look);
 	TArray<UMaterial*> Built = {Post};
 	for (const TCHAR* Master : FTWorldWave::PropMasters)
@@ -746,10 +770,16 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("%s: %d compile errors; nothing saved, the files on disk are as they were."), FTWorldWave::kTag, Errors);
 		return 1;
 	}
-	bool bOk = true;
-	for (UMaterial* Material : Built)
+	TArray<UObject*> ToSave = {Cut, State};
+	if (bLookChanged)
 	{
-		bOk &= FTWorldWave::Save(Material);
+		ToSave.Insert(Look, 0);
+	}
+	ToSave.Append(Built);
+	bool bOk = true;
+	for (UObject* Asset : ToSave)
+	{
+		bOk &= FTWorldWave::Save(Asset);
 	}
 	if (!bOk)
 	{
@@ -792,9 +822,20 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 			Flagged.Add(Material);
 		}
 		FAssetCompilingManager::Get().FinishAllCompilation();
+		// All checked before any is saved, as above.
+		int32 FlagErrors = 0;
 		for (UMaterial* Material : Flagged)
 		{
-			if (FT::CompileErrors(FTWorldWave::kTag, Material) > 0 || !FTWorldWave::Save(Material))
+			FlagErrors += FT::CompileErrors(FTWorldWave::kTag, Material);
+		}
+		if (FlagErrors > 0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: -Flags: %d compile errors; no surface master saved."), FTWorldWave::kTag, FlagErrors);
+			return 1;
+		}
+		for (UMaterial* Material : Flagged)
+		{
+			if (!FTWorldWave::Save(Material))
 			{
 				return 1;
 			}
@@ -823,13 +864,15 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 				continue;
 			}
 			const bool bWasOn = CharacterOn(*Material);
+			// The runtime's marker as the audit reads it, before the edit (a marker at 0 is switched on without adding one).
+			const bool bWasAware = FTWorldWave::WaveAware(*Material);
 			const int32 Before = Material->GetExpressionCollection().Expressions.Num();
 			if (!FTWorldWave::AddState(FTWorldWave::kTag, Material, 300, 1300, true))
 			{
 				return 1;
 			}
-			// Unchanged only when the flag was on and nothing was added (a cloth master's fuzz call is an addition).
-			if (bWasOn && CharacterOn(*Material) && Material->GetExpressionCollection().Expressions.Num() == Before)
+			// Unchanged only when the flag and the marker were on and nothing was added (a cloth master's fuzz call is one).
+			if (bWasOn && bWasAware && CharacterOn(*Material) && Material->GetExpressionCollection().Expressions.Num() == Before)
 			{
 				UE_LOG(LogForgottenThird, Display, TEXT("%s: -Worn: %s already takes the character state."), FTWorldWave::kTag, *Path);
 				continue;
@@ -839,9 +882,19 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 			Changed.Add(Material);
 		}
 		FAssetCompilingManager::Get().FinishAllCompilation();
+		int32 WornErrors = 0;
 		for (UMaterial* Material : Changed)
 		{
-			if (FT::CompileErrors(FTWorldWave::kTag, Material) > 0 || !FTWorldWave::Save(Material))
+			WornErrors += FT::CompileErrors(FTWorldWave::kTag, Material);
+		}
+		if (WornErrors > 0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("%s: -Worn: %d compile errors; no worn master saved."), FTWorldWave::kTag, WornErrors);
+			return 1;
+		}
+		for (UMaterial* Material : Changed)
+		{
+			if (!FTWorldWave::Save(Material))
 			{
 				return 1;
 			}

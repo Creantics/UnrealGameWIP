@@ -606,10 +606,12 @@ float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float raw
 		src = lerp(src, blot.rgb, blot.a);
 	}
 
-	// The catch-all: a worn piece whose master takes no character state (tagged kFTWaveCatchStencil by the audit, only
-	// where that piece is the surface seen) gets it here, by the same share m: near grey, half the light (the base's 0.5
-	// and the grime's mean), and for front A the thin matt line at the cut. Wave-aware pieces are never tagged.
-	if (!sky && m > 0.0 && abs(customStencil - kFTWaveCatchStencil) < 0.5 && abs(customDepth - rawDepth) < max(2.0, 0.005 * rawDepth))
+	// The catch-all: a worn piece whose master takes no character state (stencil kFTWaveCatchStencil from the audit) gets
+	// it here, by the same share m: near grey, half the light (the base's 0.5 and the grime's mean), and for front A the
+	// thin matt line at the cut. Every worn piece of an audited character renders custom depth (wave-aware ones with 222),
+	// so the custom depth buffer holds the nearest worn surface: cloth over skin reads 222 and is left to its own
+	// material. The depth test only rejects what is not that character (a wall or prop in front): 1 cm or 0.05%.
+	if (!sky && m > 0.0 && abs(customStencil - kFTWaveCatchStencil) < 0.5 && abs(customDepth - rawDepth) < max(1.0, 0.0005 * rawDepth))
 	{
 		float lumC = dot(src, FTWaveLuma);
 		float3 state = lerp(lumC.xxx, src, 0.07) * float3(0.97, 0.99, 1.03) * (0.5 * 0.875);

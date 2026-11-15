@@ -44,7 +44,9 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "HAL/PlatformTime.h"
 #include "SceneView.h"
+#include "TimerManager.h"
 #include "UObject/UObjectIterator.h"
 #include "UnrealClient.h"
 #include "WorldCollision.h"
@@ -350,6 +352,11 @@ void UFTWorldWaveSubsystem::Initialize(FSubsystemCollectionBase& InCollection)
 #endif
 	Pawns.Reserve(16);
 	Fogs.Reserve(8);
+	AuditRoots.Reserve(64);
+	Spawned.Reserve(32);
+	WornDepth.Reserve(256);
+	AuditActors.Reserve(16);
+	AuditUsed.Reserve(32);
 	// No tick bound yet: a map with no wave pays nothing (BindTick binds it for a boot switch or a wave).
 }
 
@@ -369,7 +376,9 @@ void UFTWorldWaveSubsystem::BindTick(bool bOn)
 void UFTWorldWaveSubsystem::Deinitialize()
 {
 	BindTick(false);
-	// The world is going: nothing to put back but the state.
+	// The world is going: the worn pieces' custom depth and r.CustomDepth (global, it outlives the map) go back, then the
+	// state.
+	RestoreWorn();
 	bWave = false;
 	bBootPending = false;
 	Tracked.Empty();
@@ -585,7 +594,18 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no look subsystem or no \"%s\" look in looks.json; the sky stays as it is."), *ToWorld);
 	}
+	// The audit's characters: the leads, then every other skeletal actor within the wave's reach (one pass over the
+	// world here; later spawns come through the spawn handler).
+	AuditRoots.Reset();
+	Spawned.Reset();
 	GatherPawns(*World);
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (IsAuditRoot(**It))
+		{
+			AddAuditRoot(**It);
+		}
+	}
 	// Before the front moves everything is on the side beyond it: the first world for Forward, the second for Reverse.
 	for (FTracked& Item : Tracked)
 	{
@@ -598,8 +618,31 @@ void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, b
 	}
 	bWave = true;
 	BindTick(true);
-	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: a %s wave from %s (cm) at %.3f s on the wave clock (now %.3f); %d things tracked, %d fogs, %d leads."),
-		bReverse ? TEXT("reverse") : TEXT("forward"), *Origin.ToString(), StartTime, GetClock(), Tracked.Num(), Fogs.Num(), Pawns.Num());
+	// The worn pieces' custom depth now, then again every AuditPeriod while the wave (or its settled state) is shown.
+	ReAudit();
+	World->GetTimerManager().SetTimer(AuditTimer, this, &UFTWorldWaveSubsystem::ReAudit, AuditPeriod, true);
+	if (!SpawnHandle.IsValid())
+	{
+		SpawnHandle = World->AddOnActorSpawnedHandler(FOnActorSpawned::FDelegate::CreateUObject(this, &UFTWorldWaveSubsystem::OnActorSpawned));
+	}
+#if !UE_BUILD_SHIPPING
+	// -WorldWaveAuditBench=<n>: the re-audit's cost, as n audits of the first lead (every piece already set, so each is a
+	// re-audit's steady state); n 30 stands for 30 characters dressed like it.
+	int32 Bench = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("WorldWaveAuditBench="), Bench) && Bench > 0 && Pawns.Num() > 0 && Pawns[0].IsValid())
+	{
+		const double Begin = FPlatformTime::Seconds();
+		for (int32 K = 0; K < Bench; ++K)
+		{
+			AuditWorn(*Pawns[0].Get());
+		}
+		const double Ms = (FPlatformTime::Seconds() - Begin) * 1000.0;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: audit bench: %d audits of %s in %.3f ms (%.4f ms each), once every %.1f s."), Bench,
+			*Pawns[0]->GetName(), Ms, Ms / Bench, AuditPeriod);
+	}
+#endif
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: a %s wave from %s (cm) at %.3f s on the wave clock (now %.3f); %d things tracked, %d fogs, %d leads, %d characters audited."),
+		bReverse ? TEXT("reverse") : TEXT("forward"), *Origin.ToString(), StartTime, GetClock(), Tracked.Num(), Fogs.Num(), Pawns.Num(), AuditRoots.Num());
 }
 
 ftcore::WaveClass UFTWorldWaveSubsystem::WhichWorldAt(const FVector& WorldCm) const
@@ -649,6 +692,8 @@ void UFTWorldWaveSubsystem::StopWave()
 		RestoreLook(*World);
 		ClearCollection(*World);
 	}
+	// No state left to show: the worn pieces' custom depth back as it was.
+	RestoreWorn();
 	if (bWas)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: ended; the first world back."));
@@ -1017,39 +1062,139 @@ void UFTWorldWaveSubsystem::GatherPawns(UWorld& World)
 	for (TActorIterator<AFTExploreCharacter> It(&World); It; ++It)
 	{
 		Pawns.Add(*It);
-		AuditWorn(**It);
+		AddAuditRoot(**It);
+	}
+}
+
+bool UFTWorldWaveSubsystem::IsAuditRoot(const AActor& Actor) const
+{
+	if (Actor.GetAttachParentActor() || !Actor.FindComponentByClass<USkeletalMeshComponent>())
+	{
+		return false; // an attached one is audited with what it hangs from
+	}
+	if (Actor.IsA<AFTExploreCharacter>())
+	{
+		return true;
+	}
+	// The wave's whole reach: the radius at its end and the widest band beyond it (the tongues' lead).
+	const double Band = static_cast<double>(FMath::Max(Params.bandAtOrigin, Params.bandAtFar));
+	const double Reach = (static_cast<double>(Params.maxRadius) + Band * (1.0 + static_cast<double>(Params.tongueLead))) * 100.0;
+	return FVector::DistSquared(Actor.GetActorLocation(), OriginCm) <= Reach * Reach;
+}
+
+void UFTWorldWaveSubsystem::AddAuditRoot(AActor& Actor)
+{
+	for (const TWeakObjectPtr<AActor>& Root : AuditRoots)
+	{
+		if (Root.Get() == &Actor)
+		{
+			return;
+		}
+	}
+	AuditRoots.Add(&Actor);
+}
+
+void UFTWorldWaveSubsystem::OnActorSpawned(AActor* Actor)
+{
+	// Taken at the next re-audit (its components and materials are set up by then).
+	if (Actor && bWave)
+	{
+		Spawned.Add(Actor);
+	}
+}
+
+void UFTWorldWaveSubsystem::ReAudit()
+{
+	if (!bWave)
+	{
+		return;
+	}
+	const double Begin = FPlatformTime::Seconds();
+	for (const TWeakObjectPtr<AActor>& New : Spawned)
+	{
+		if (AActor* Actor = New.Get(); Actor && IsAuditRoot(*Actor))
+		{
+			AddAuditRoot(*Actor);
+		}
+	}
+	Spawned.Reset();
+	AuditRoots.RemoveAllSwap([](const TWeakObjectPtr<AActor>& Root) { return !Root.IsValid(); });
+	FAuditCount Total;
+	for (const TWeakObjectPtr<AActor>& Root : AuditRoots)
+	{
+		if (const AActor* Actor = Root.Get())
+		{
+			const FAuditCount One = AuditWorn(*Actor);
+			Total.Actors += One.Actors;
+			Total.Catch += One.Catch;
+			Total.Aware += One.Aware;
+			Total.Unconverted += One.Unconverted;
+			Total.Changed += One.Changed;
+		}
+	}
+	if (Total.Changed > 0)
+	{
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("WorldWave: re-audit: %d characters (%d actors), %d primitives at %d, %d at %d, %d slots unconverted, %d changed; %.3f ms."),
+			AuditRoots.Num(), Total.Actors, Total.Catch, FTWorldWave::kCatchStencil, Total.Aware, FTWorldWave::kAwareStencil, Total.Unconverted,
+			Total.Changed, (FPlatformTime::Seconds() - Begin) * 1000.0);
+	}
+}
+
+void UFTWorldWaveSubsystem::RestoreWorn()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(AuditTimer);
+		if (SpawnHandle.IsValid())
+		{
+			World->RemoveOnActorSpawnedHandler(SpawnHandle);
+		}
+	}
+	SpawnHandle.Reset();
+	int32 Restored = 0;
+	for (const FWornDepth& Entry : WornDepth)
+	{
+		if (UPrimitiveComponent* Primitive = Entry.Component.Get(); IsValid(Primitive))
+		{
+			Primitive->SetCustomDepthStencilValue(Entry.Stencil);
+			Primitive->SetRenderCustomDepth(Entry.bRender);
+			++Restored;
+		}
+	}
+	WornDepth.Reset();
+	AuditRoots.Reset();
+	Spawned.Reset();
+	if (CustomDepthBefore >= 0)
+	{
+		if (IConsoleVariable* Mode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth")))
+		{
+			Mode->Set(CustomDepthBefore, ECVF_SetByCode);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth back to %d; %d worn pieces' custom depth as it was."), CustomDepthBefore, Restored);
+		CustomDepthBefore = -1;
+	}
+	else if (Restored > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %d worn pieces' custom depth as it was."), Restored);
 	}
 }
 
 namespace
 {
-// Whether a master takes the world wave's state: MF_WorldWaveState among its functions (the cached data a cooked build
-// keeps too). In the editor, bCharacter says whether the call's Character input is on (the body's state, not the
-// ground's); in a cooked build it is taken as on.
-bool TakesWaveState(const UMaterial& Master, bool& bCharacter)
+// Whether a master has MF_WorldWaveState among its functions (the cached data a cooked build keeps too): only for the
+// log's wording; the audit's test is the FTWaveAware marker.
+bool HasStateFunction(const UMaterial& Master)
 {
-	bCharacter = false;
 	const FString StatePath = FString(FTWorldWave::StateFunctionPath) + TEXT(".") + FPackageName::GetShortName(FTWorldWave::StateFunctionPath);
-	bool bFound = false;
 	for (const FMaterialFunctionInfo& Info : Master.GetCachedExpressionData().FunctionInfos)
 	{
 		if (Info.Function && Info.Function->GetPathName() == StatePath)
 		{
-			bFound = true;
-			break;
+			return true;
 		}
 	}
-	if (!bFound)
-	{
-		return false;
-	}
-#if WITH_EDITOR
-	// The flag's value, not only that something is wired: every master now takes an explicit static bool there.
-	bCharacter = FTWorldWave::CharacterOn(Master);
-#else
-	bCharacter = true;
-#endif
-	return true;
+	return false;
 }
 
 void GatherWorn(const AActor& Actor, TArray<const AActor*>& Out)
@@ -1059,15 +1204,14 @@ void GatherWorn(const AActor& Actor, TArray<const AActor*>& Out)
 		return;
 	}
 	Out.Add(&Actor);
-	TArray<AActor*> Attached;
-	Actor.GetAttachedActors(Attached, /*bResetArray*/ true, /*bRecursivelyIncludeAttachedActors*/ false);
-	for (const AActor* Child : Attached)
+	Actor.ForEachAttachedActors([&Out](AActor* Child)
 	{
 		if (Child)
 		{
 			GatherWorn(*Child, Out);
 		}
-	}
+		return true;
+	});
 }
 // The materials' field on the CPU: FTWaveSecond's edge (Plugins/FTLook/Shaders/Private/Wave/Common.ush, FTWaveFns::Edge
 // with its Tongue lobes and jitter), ported line for line in float as the shader runs it. Kept by hand beside the HLSL;
@@ -1194,18 +1338,18 @@ void UFTWorldWaveSubsystem::LogBodyBoundary(const AActor& Lead) const
 		*FromAxis(1), *FromAxis(2), *FromAxis(3));
 }
 
-int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
+UFTWorldWaveSubsystem::FAuditCount UFTWorldWaveSubsystem::AuditWorn(const AActor& Root)
 {
-	TArray<const AActor*> Actors;
-	GatherWorn(Lead, Actors);
-	int32 Slots = 0, Bad = 0, Logged = 0, Tagged = 0, Unconverted = 0;
-	TArray<UMaterialInterface*> Used;
-	for (const AActor* Actor : Actors)
+	FAuditCount Count;
+	AuditActors.Reset();
+	GatherWorn(Root, AuditActors);
+	Count.Actors = AuditActors.Num();
+	for (const AActor* Actor : AuditActors)
 	{
 		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
 		for (UPrimitiveComponent* Primitive : Primitives)
 		{
-			// Hidden ones too: a jacket's other state or a stowed weapon is shown later and must already be wave-aware. Not the
+			// Hidden ones too: a jacket's other state or a stowed weapon is shown later and must already be set. Not the
 			// editor's own helpers (the camera's proxy mesh): no worn piece, never drawn in the game.
 			if (!Primitive || Primitive->IsEditorOnly())
 			{
@@ -1217,80 +1361,124 @@ int32 UFTWorldWaveSubsystem::AuditWorn(const AActor& Lead)
 				continue;
 			}
 #endif
-			Used.Reset();
-			Primitive->GetUsedMaterials(Used);
+			AuditUsed.Reset();
+			Primitive->GetUsedMaterials(AuditUsed);
 			int32 Aware = 0, Other = 0;
-			for (UMaterialInterface* Material : Used)
+			for (UMaterialInterface* Material : AuditUsed)
 			{
 				if (!Material)
 				{
 					continue;
 				}
-				++Slots;
-				const UMaterial* Master = Material->GetMaterial();
-				bool bCharacter = false;
-				if (Master && TakesWaveState(*Master, bCharacter) && bCharacter)
+				++Count.Slots;
+				float Marker = -1.f;
+				if (FTWorldWave::WaveAware(*Material, &Marker))
 				{
 					++Aware;
+					const UMaterial* Master = Material->GetMaterial();
+					if (Master && !AuditLogged.Contains(FObjectKey(Master)))
+					{
+						AuditLogged.Add(FObjectKey(Master));
+						UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: master %s has %s %.0f (wave-aware)."), *Root.GetName(), *Master->GetPathName(),
+							FTWorldWave::AwareParameter, Marker);
+					}
 					continue;
 				}
-				++Bad;
 				++Other;
-				const FString Key = Master ? Master->GetPathName() : Material->GetPathName();
-				if (AuditLogged.Contains(Key))
+				const UMaterial* Master = Material->GetMaterial();
+				const UObject* Key = Master ? static_cast<const UObject*>(Master) : static_cast<const UObject*>(Material);
+				if (AuditLogged.Contains(FObjectKey(Key)))
 				{
 					continue;
 				}
-				AuditLogged.Add(Key);
-				++Logged;
+				AuditLogged.Add(FObjectKey(Key));
 				UE_LOG(LogForgottenThird, Warning,
-					TEXT("WorldWave: %s wears %s on %s (%s, %s) whose master %s %s; that piece keeps its own world across the front."),
-					*Lead.GetName(), *Material->GetPathName(), *Primitive->GetName(), *Primitive->GetClass()->GetName(), *Actor->GetName(),
-					*Key, Master && TakesWaveState(*Master, bCharacter) ? TEXT("takes the ground's state, not the body's (Character off)")
-																		  : TEXT("takes no world-wave state"));
+					TEXT("WorldWave: %s wears %s on %s (%s, %s) whose master %s %s; the post's catch-all gives that piece the character state."),
+					*Root.GetName(), *Material->GetPathName(), *Primitive->GetName(), *Primitive->GetClass()->GetName(), *Actor->GetName(),
+					*Key->GetPathName(),
+					Marker >= 0.f ? *FString::Printf(TEXT("has %s %.0f"), FTWorldWave::AwareParameter, Marker)
+					: Master && HasStateFunction(*Master) ? TEXT("takes the world-wave state but has no marker (rebuild it)")
+														   : TEXT("takes no world-wave state"));
 			}
-			if (Other == 0)
+			if (Aware + Other == 0)
 			{
 				continue;
 			}
-			// The post's catch-all (Post.ush): the piece renders custom depth with the reserved stencil, and its pixels take
-			// the character state there. Translucent slots write no custom depth, so they stay as they are.
-			if (!Primitive->bRenderCustomDepth || Primitive->CustomDepthStencilValue != FTWorldWave::kCatchStencil)
+			Count.Other += Other;
+			// Every worn primitive renders custom depth, so the buffer keeps the nearest worn surface: 222 all wave-aware (the
+			// post leaves it), 223 any other (the post gives it the state). The stencil is per primitive, so a mixed one
+			// takes 223 and its wave-aware slots take the state twice.
+			const int32 Wanted = Other > 0 ? FTWorldWave::kCatchStencil : FTWorldWave::kAwareStencil;
+			const int32 Now = Primitive->CustomDepthStencilValue;
+			const bool bOurs = Primitive->bRenderCustomDepth && (Now == FTWorldWave::kCatchStencil || Now == FTWorldWave::kAwareStencil);
+			if (!bOurs)
 			{
-				if (Primitive->bRenderCustomDepth && Primitive->CustomDepthStencilValue != 0)
+				if (Primitive->bRenderCustomDepth && Now != 0)
 				{
-					// Someone else's stencil on this piece: left alone, so it stays unconverted and is counted so.
-					Unconverted += Other;
-					UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s: %s already renders custom depth with stencil %d; not tagged for the catch-all."),
-						*Lead.GetName(), *Primitive->GetName(), Primitive->CustomDepthStencilValue);
+					// Someone else's stencil on this piece: left alone, its other slots counted unconverted (logged once).
+					Count.Unconverted += Other;
+					if (!AuditLogged.Contains(FObjectKey(Primitive)))
+					{
+						AuditLogged.Add(FObjectKey(Primitive));
+						UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s: %s already renders custom depth with stencil %d; left as it is."),
+							*Root.GetName(), *Primitive->GetName(), Now);
+					}
 					continue;
 				}
-				Primitive->SetCustomDepthStencilValue(FTWorldWave::kCatchStencil);
+				// Its own settings, the first time they change (a piece set back by someone since keeps its first record).
+				bool bRecorded = false;
+				for (const FWornDepth& Entry : WornDepth)
+				{
+					if (Entry.Component.Get() == Primitive)
+					{
+						bRecorded = true;
+						break;
+					}
+				}
+				if (!bRecorded)
+				{
+					FWornDepth& Entry = WornDepth.AddDefaulted_GetRef();
+					Entry.Component = Primitive;
+					Entry.bRender = Primitive->bRenderCustomDepth;
+					Entry.Stencil = Now;
+				}
+				Primitive->SetCustomDepthStencilValue(Wanted);
 				Primitive->SetRenderCustomDepth(true);
+				++Count.Changed;
 			}
-			++Tagged;
-			if (Aware > 0 && !AuditLogged.Contains(Primitive->GetPathName()))
+			else if (Now != Wanted)
 			{
-				AuditLogged.Add(Primitive->GetPathName());
+				Primitive->SetCustomDepthStencilValue(Wanted); // a slot changed kind since the last audit
+				++Count.Changed;
+			}
+			++(Wanted == FTWorldWave::kCatchStencil ? Count.Catch : Count.Aware);
+			if (Aware > 0 && Other > 0 && !AuditLogged.Contains(FObjectKey(Primitive)))
+			{
+				AuditLogged.Add(FObjectKey(Primitive));
 				UE_LOG(LogForgottenThird, Warning,
-					TEXT("WorldWave: %s: %s (%s) mixes %d wave-aware and %d other slots; tagged for the catch-all, so its wave-aware slots take the character state twice."),
-					*Lead.GetName(), *Primitive->GetName(), *Actor->GetName(), Aware, Other);
+					TEXT("WorldWave: %s: %s (%s) mixes %d wave-aware and %d other slots; stencil %d, so its wave-aware slots take the character state twice."),
+					*Root.GetName(), *Primitive->GetName(), *Actor->GetName(), Aware, Other, FTWorldWave::kCatchStencil);
 			}
 		}
 	}
-	if (Tagged > 0)
+	if (Count.Changed > 0)
 	{
 		// The stencil needs r.CustomDepth 3 (2 or lower allocates no stencil, and the catch-all would see none).
 		if (IConsoleVariable* Mode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth")); Mode && Mode->GetInt() < 3)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth %d -> 3 for the catch-all's stencil."), Mode->GetInt());
+			if (CustomDepthBefore < 0)
+			{
+				CustomDepthBefore = Mode->GetInt();
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: r.CustomDepth %d -> 3 for the worn pieces' stencil."), Mode->GetInt());
 			Mode->Set(3, ECVF_SetByCode);
 		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware; %d primitives at stencil %d (the catch-all), ")
+			TEXT("%d at %d (wave-aware), %d changed now, %d slots unconverted; the pieces attached to it at any depth."),
+			*Root.GetName(), Count.Actors, Count.Slots, Count.Other, Count.Catch, FTWorldWave::kCatchStencil, Count.Aware, FTWorldWave::kAwareStencil,
+			Count.Changed, Count.Unconverted);
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware (%d newly logged), %d primitives tagged for the post's ")
-		TEXT("catch-all (stencil %d), %d slots unconverted; attached pieces only, so a stowed weapon not attached to the lead is outside this audit."),
-		*Lead.GetName(), Actors.Num(), Slots, Bad, Logged, Tagged, FTWorldWave::kCatchStencil, Unconverted);
-	return Unconverted;
+	return Count;
 }
 
 bool UFTWorldWaveSubsystem::PawnInFootprint(const FTracked& Item, const APawn* PlayerPawn) const
