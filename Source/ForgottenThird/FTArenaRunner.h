@@ -25,6 +25,7 @@
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaGun.h"
+#include "ftcore/ArenaLockFrame.h"
 #include "ftcore/ArenaLook.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
@@ -236,6 +237,14 @@ public:
 	// When enemy Index was last hit (far in the past when never).
 	double GetEnemyHitTime(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyHitTime[Index] : -1e9; }
 	double GetPlayerHitTime() const { return PlayerHitTime; }
+	// Where the last enemy blow on the lead came from, seen from the camera as it was drawn then: X to the right, Y
+	// ahead, a unit vector on the ground (the hit flash's side). False before any.
+	bool GetLastHitFrom(FVector2D& RightAhead, double& At) const
+	{
+		RightAhead = LastHitFrom;
+		At = LastHitAt;
+		return LastHitAt > -1e8;
+	}
 	double GetAllyHitTime() const { return AllyHitTime; }
 	double GetParryTime() const { return ParryTime; }
 	// The last Release (when it began and the Load it spent) and the last time the Load overloaded.
@@ -457,6 +466,18 @@ private:
 	void TrackParts(const ftcore::ArenaOutput& Out);
 	void PlaceFigures(float Alpha);
 	void SteerCamera(float DeltaSeconds);
+	// The lock's frame on a tall target (ftcore/ArenaLockFrame.h): the rig at pitch 0 as the lens has it, the frame's
+	// aspect, the lead's body, and the height (m over the lead's floor) the lock aims at on the target.
+	ftcore::ArenaCameraPose LockRig(float ArmNow) const;
+	float LockAspect() const;
+	ftcore::ArenaLeadBody LeadBody() const;
+	float LockAimHeight(int32 Target, float Base, float Top) const;
+	float LockLow = 0.f;          // 0..1: the low lens's share (eased at ftcore::kArenaLow.rate)
+	bool bLowRig = false;         // the low rig was last given to the boom
+	float PartnerYawNow = 0.f;    // degrees: the partner's soft turn (ftcore::arenaPartnerYaw), eased
+	float PartnerYawGoal = 0.f;
+	int32 LockTarget = -1;        // the tall target held to the lead's rule this frame; -1 none
+	bool bLeadHeld = false;       // the last frame held the lead's rule (the next frame's sample measures it)
 	// The lead's cylinder (Core's ReloadStarted, Reloaded and DryPress events): where the reload clip, the dry-press flinch
 	// and their sounds attach once they exist. For now they only log.
 	void OnLeadReload(bool bStarted, int32 Amount);
@@ -1027,6 +1048,8 @@ private:
 	double EnemyHitTime[ftcore::kMaxArenaEnemies];
 	uint8 LastPart[ftcore::kMaxArenaEnemies] = {};
 	double PlayerHitTime = -1e9;
+	FVector2D LastHitFrom = FVector2D::ZeroVector;
+	double LastHitAt = -1e9;
 	double ParryTime = -1e9;
 	double ReleaseTime = -1e9;
 	int32 ReleaseSpent = 0;
@@ -1067,6 +1090,12 @@ private:
 	float FrameBandFoe[4] = {};
 	float FrameBandGap[4] = {};
 	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
+	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
+	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.
+	void SampleLeadFrame();
+	int32 LeadFrameFrames = 0, LeadFrameKept = 0, LeadFrameVisible = 0;
+	float LeadFeetLeast = 1.f, LeadHeadMost = 0.f, LeadSideWorst = 0.f;
+	int32 TellFrames = 0, TellInPlace = 0, TellPinned = 0, TellEdge = 0;
 #endif
 
 	// Impact feedback. The jolt, the camera shake the run forces (-ArenaCameraShake=<0..1>; below 0: the setting), the
@@ -1157,6 +1186,11 @@ private:
 	int32 PartnerJoinAsks = 0, PartnerJoinsLanded = 0, PartnerJoinsRefused = 0, PartnerJoinDisagree = 0;
 	// Stationing: steps the partner was on (and fed the camera), and of them the steps stationing ran.
 	int32 PartnerOnSteps = 0, PartnerStationedSteps = 0, PartnerCameraSteps = 0;
+	// "Arena check: partner in play": the steps the partner (up, in the fight) stood inside the play camera's frustum
+	// (its chest, ArenaInput::frustum), and its distinct actions (a new intent other than Wait, or a new string).
+	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0;
+	float PartnerPlaySeconds = 0.f;
+	uint8 PartnerLastAct = 0xFF, PartnerIdleWhy = 0xFF;
 	double PartnerJoinedAt = -1.0;
 	// The lead switch with both up (the party menu's setActiveLead; -ArenaSwitchAt=<s> asks one at that fight time in a
 	// dev run): the session's tick.switched to the other lead swaps the bodies (Fight.switchLeads), the figures and

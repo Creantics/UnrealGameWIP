@@ -733,6 +733,18 @@ struct ArenaPoint3 {
     float z = 0.f;
 };
 
+// The play camera's whole frustum (ArenaInput::frustum; ftcore::arenaPoseFrustum makes one from a pose, and
+// ftcore::arenaInFrustum tests a point against it): the lens (m: x, y on the floor plane, z up from it), its unit
+// forward and up, the vertical field of view (degrees) and the frame's width per unit of height.
+struct ArenaFrustum {
+    bool on = false; // the host's camera is known this tick
+    ArenaPoint3 pos{};
+    ArenaPoint3 forward{1.f, 0.f, 0.f};
+    ArenaPoint3 up{0.f, 0.f, 1.f};
+    float vfov = 0.f;
+    float aspect = 0.f;
+};
+
 // A gun kit's round leaves the lead this high over the floor (m): a pitched shot's line starts here.
 inline constexpr float kArenaShotHeight = 1.4f;
 // A pitched round that would meet the body under the crosshair (ArenaInput::aimBody) within this far (m, along its
@@ -797,6 +809,9 @@ struct ArenaInput {
     // camera, every test that does not ask): no stationing, the partner as before.
     bool cameraOn = false;
     Vec2 cameraPos{};
+    // The same camera's whole frustum (appended): for the partner's in-frame stationing and the host's count of the
+    // steps the partner is seen. off (the default): not known.
+    ArenaFrustum frustum{};
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
