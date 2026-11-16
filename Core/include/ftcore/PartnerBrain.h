@@ -198,6 +198,15 @@
 //      inside a standing tall body (its radius + kPartnerSteerClear) is put out on that circle, and a straight line
 //      that would cross one goes round it the shorter way, by a point on that circle.
 //      Not tall (or no height given): none of it applies.
+//  19. The close camera (PartnerStationView::close given, with stationing on; PartnerCloseStation.h): with a target,
+//      its station between actions is partnerCloseStation's, ahead of the lead on a flank of the target inside the
+//      close lens: in Pause at the host's kit band, in Ready pulled in to [reach / 2, reach - stationTolerance] so a
+//      string can start there; framed, only where the 3D frame sees it too. Under it the partner is in frame by its
+//      middle and head alone (partnerInFrameClose; feet not tested), for every frame test of the partner while it is
+//      given. None legal: the rules above, as before.
+//      Under it rule 16's reposition, rule 13's held-station clock and rule 17 step aside; rule 18's walk steering
+//      and the fight's pairing stay. Its flank hold is in the save, hashed only once given (closeUsed). Not given: none of
+//      it runs, to the bit.
 // No kit (PartnerInput::kitAttacks false, a lead whose kit has no attacks): it never starts a string or its next blow
 // and no other lead's kit stands in (why and idle NoKit); it still stations, guards, faces its target and, rule 17 on,
 // moves as with its attack held. True (the default) is the brain as before.
@@ -224,6 +233,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/PartnerCamera.h" // PartnerVec3, PartnerCameraView
+#include "ftcore/PartnerCloseStation.h" // rule 19
 #include "ftcore/Explore.h"
 
 #include <array>
@@ -285,6 +295,7 @@ struct PartnerStationView {
     Vec2 arenaCentre{};
     float arenaRadius = 0.f; // where the partner may stand (its body's margin taken off); 0: unbounded
     PartnerCameraView camera{}; // rules 13-16; not given by default
+    PartnerCloseView close{};   // rule 19 (the close camera); not given by default
 };
 
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
@@ -428,6 +439,10 @@ FTCORE_API PartnerTuning mainEquivalentTuning(PartnerTuning t);
 // Rule 13's frame test alone: a partner standing at p (its capsule, the camera's groundZ and bodyHeight) is inside the
 // camera's frustum shrunk by `margin` (0..0.4) of the screen on every side. A camera not given or not whole: false.
 FTCORE_API bool partnerInFrame(const PartnerCameraView& camera, float margin, Vec2 p);
+// Rule 19's measure under the close camera: as partnerInFrame, but the partner's middle (waist) and head only; its
+// feet are not tested (a lens 1.7 m up pitched up leaves the ground near it below the frame). The host's in-frame
+// count uses this while the close camera is given, partnerInFrame otherwise.
+FTCORE_API bool partnerInFrameClose(const PartnerCameraView& camera, float margin, Vec2 p);
 // Reads Data/Battle/partner_brain.json. A field out of its range, of the wrong type or unknown, a bad version or a
 // file that does not parse: `out` is the defaults and false (`error` says why). A cross-field pair broken (returnMeters
 // over leashMeters, leashMeters under personalSpaceMeters + 1, standoffMeters over reachMeters, stationTolerance over
@@ -509,6 +524,8 @@ struct PartnerBrainSave {
     std::uint8_t tallGrowOn = 0;   // rule 18: the targets growing StayClose's cap now, a bit each (with hysteresis)
     bool holdsFramed = false;      // framed with the framing holds on (a tall enemy in the fight, or rule 17's
                                    // circling) since begin (sticky): bottom margin and side hold steer, hashed from then
+    bool closeUsed = false;        // rule 19: the close camera was given since begin (sticky; its hold hashed from then)
+    PartnerCloseHold closeHold{};  // rule 19: the flank held (PartnerCloseStation.h)
     static_assert(kMaxPartnerEnemies <= 8 && kMaxArenaEnemies <= 8, "tallGrowOn: a bit per target in 8 bits");
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};

@@ -2895,6 +2895,7 @@ struct ArenaFightImpl {
             st.leadFacing = pl.facing;
             st.arenaCentre = fight.ring_.centre;
             st.arenaRadius = std::max(1e-3f, fight.ring_.radius - fight.allyRadius_); // never 0 (unbounded)
+            st.close = in.partnerClose; // rule 19: the close camera (not given: the classic rules)
         }
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
