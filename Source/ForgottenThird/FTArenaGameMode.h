@@ -79,6 +79,8 @@
 // picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
 // -ArenaShotAt=<s>,<s>,... adds a view <prefix>_t_<s>.png at each of those fight times (uncounted: the six views and the
 // quit are unchanged), so two runs of the same fight (an OFF/ON pair) are shot at the same moments.
+// -ArenaShotHit=<s>,<s>,... (capture only) adds views <prefix>_hit_<ms>.png at those ages of the first hit the player
+// takes after the ring view (0 = the frame it lands), the fight running on: the hit flash as it really plays.
 // -ArenaWorldView (without -ArenaOverview) adds instead one clean first view, <prefix>_0_world.png: a low wide look
 // across the zone at the scene round it, HUD off, nothing drawn, for judging the world's look.
 // -ArenaShotStrikes=<n> adds a view <prefix>_s<k>_<clip>.png 0.04 s after each of the player's first n attacks goes active
@@ -277,6 +279,23 @@ private:
 	// -ArenaShotAt: extra views at these fight times (seconds, ascending), and the next one due.
 	TArray<double> ShotAt;
 	int32 NextShotAt = 0;
+	// -ArenaShotHit (capture only, never in a shipping build): views <prefix>_hit_<ms>.png at these ages (s, ascending)
+	// of the first hit the player takes after the ring view, on the HUD's clock (age 0 is the frame the hit lands), the
+	// fight running on; the next one due, the hit's stamp and its age, and whether the strip is under way.
+	TArray<double> ShotHit;
+	int32 NextShotHit = 0;
+	// -ArenaShotHitStrip=<n> (capture only, n 12 at most): instead of set ages, a view every frame from the arming on: a
+	// ring of the last ShotStripRing as <prefix>_strip_pre_<frame % ring>.png until the hit lands (the log names their
+	// frames), then <prefix>_strip_<frame>.png to n frames past it. Gives up 900 frames after arming with no hit.
+	int32 ShotStripPost = 0;
+	static constexpr int32 ShotStripRing = 3; // views kept before the hit
+	int32 ShotStripFrame = 0;
+	int32 ShotStripHitFrame = -1;
+	double ShotHitStamp = -1e9;
+	double ShotHitAge = 0.0;
+	bool bShotHitArmed = false;
+	bool bShotHitRunning = false;
+	void HitStrip(float DeltaSeconds);
 	// -ArenaShotStrikes: how many of the player's attacks to view, the views taken and the attacks already seen.
 	int32 ShotStrikes = 0;
 	int32 StrikeShots = 0;

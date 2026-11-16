@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The look is this table plus the stroke painters (Core UiStroke). Each world has its own ink and accent. The unwritten ink is a cold grey and its ink_dim is scaled from it as the other worlds' are (luminance x 0.6975); its accent is a cold neutral a step brighter than the ink, and its backing, ally and weak_point are cold neutrals, so its dark blood red (accent2) is the one colour in its HUD. That red fails the 4.5:1 text rule, so text never wears it: marks_accent2 puts it on marks only (value lines, the current lead's dot, the weak-point mark), and danger_underline draws a danger word in ink with the danger red as its underline. A world that leaves either key out has it off. The other lattice and unwritten values are provisional until those worlds' UI passes.",
+  "note": "The game UI's style table (Core/include/ftcore/UiStyle.h). Colours are sRGB hex. Text px are at 1080p before the player's text scale; nothing draws below min_text_px at 1080p or min_text_px_absolute at any height. Import checks contrast on the backing over a white picture that text on its hairline edge reads 4.5:1 over white, and that danger, ally and weak_point each have their own cue shape. The look is this table plus the stroke painters (Core UiStroke). Each world has its own ink and accent. The unwritten ink is a cold grey and its ink_dim is scaled from it as the other worlds' are (luminance x 0.6975); its accent is a cold neutral a step brighter than the ink, and its backing and ally are cold neutrals. One danger red (E60012) in every world: red means harm to the player (the hit cue, the lost hp, the low underline, the call triangle) and nothing else; each colour-vision palette moves danger to luminance about 0.18 at its own hue. The weak point is Mark (pale gold) in every world. The red fails the text rule, so danger_underline (on in every world) draws a danger word in ink with the red as its underline, and import measures danger 3:1 against the value track's black body and white fill instead; marks_accent2 (off everywhere) would put accent2 on marks. A world that leaves either key out has it off. The other lattice and unwritten values are provisional until those worlds' UI passes.",
   "layers": { "hairlines": true, "plates": false, "world_anchored": false, "letterbox": true },
   "line_weight": 3,
   "backing_default": 0.75,
@@ -14,15 +14,15 @@
   "min_text_px": 18,
   "min_text_px_absolute": 14,
   "worlds": {
-    "solhaven":  { "ink": "#F3EEE6", "ink_dim": "#D2CBBF", "backing": "#0A0806", "track": "#FFFFFF73", "accent": "#E9B36B", "accent2": "#C9643C", "danger": "#FF7A5C", "ally": "#8FD3B4", "weak_point": "#FFE08A", "plate": "bronze" },
-    "lattice":   { "ink": "#EEF4F6", "ink_dim": "#C4D1D6", "backing": "#05090C", "track": "#FFFFFF73", "accent": "#8FD6E8", "accent2": "#A88BE0", "danger": "#FF7A86", "ally": "#9BE3B0", "weak_point": "#FFE08A", "plate": "form_slip" },
-    "unwritten": { "ink": "#DCE1E5", "ink_dim": "#BBC0C3", "backing": "#080A0C", "track": "#FFFFFF73", "accent": "#F4F6F8", "accent2": "#B01E23", "danger": "#FF7A66", "ally": "#A3ADB5", "weak_point": "#C9D1D7", "plate": "torn_page", "marks_accent2": true, "danger_underline": true }
+    "solhaven":  { "ink": "#F3EEE6", "ink_dim": "#D2CBBF", "backing": "#0A0806", "track": "#FFFFFF73", "accent": "#E9B36B", "accent2": "#C9643C", "danger": "#E60012", "ally": "#8FD3B4", "weak_point": "#FFE08A", "plate": "bronze", "danger_underline": true },
+    "lattice":   { "ink": "#EEF4F6", "ink_dim": "#C4D1D6", "backing": "#05090C", "track": "#FFFFFF73", "accent": "#8FD6E8", "accent2": "#A88BE0", "danger": "#E60012", "ally": "#9BE3B0", "weak_point": "#FFE08A", "plate": "form_slip", "danger_underline": true },
+    "unwritten": { "ink": "#DCE1E5", "ink_dim": "#BBC0C3", "backing": "#080A0C", "track": "#FFFFFF73", "accent": "#F4F6F8", "accent2": "#B01E23", "danger": "#E60012", "ally": "#A3ADB5", "weak_point": "#FFE08A", "plate": "torn_page", "danger_underline": true }
   },
   "palettes": {
-    "protan":        { "danger": "#F0A030", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
-    "deutan":        { "danger": "#F0A030", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
-    "tritan":        { "danger": "#FF7A4A", "ally": "#40C8B0", "weak_point": "#F5A0C8" },
-    "high_contrast": { "ink": "#FFFFFF", "ink_dim": "#FFFFFF", "backing": "#000000", "track": "#FFFFFF99", "danger": "#FF8A00", "ally": "#00E0FF", "weak_point": "#FFFF00" }
+    "protan":        { "danger": "#AC6400", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
+    "deutan":        { "danger": "#AC6400", "ally": "#7CC4F0", "weak_point": "#F5EE70" },
+    "tritan":        { "danger": "#DA3A00", "ally": "#40C8B0", "weak_point": "#F5A0C8" },
+    "high_contrast": { "ink": "#FFFFFF", "ink_dim": "#FFFFFF", "backing": "#000000", "track": "#FFFFFF99", "danger": "#B46000", "ally": "#00E0FF", "weak_point": "#FFFF00" }
   },
   "text": {
     "title":    { "font": "serif_sc_bold", "px": 40, "tracking": 0.08, "upper": false },

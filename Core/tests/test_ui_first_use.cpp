@@ -280,6 +280,37 @@ TEST_CASE("ui first use: the Lone Carry's card counts its first three showings i
     CHECK_FALSE(uiFirstUseShow(seen, c));
 }
 
+TEST_CASE("ui first use: LOAD in the state slot is a label in its own slot, three times a save, unseen by older saves") {
+    const UiFirstUseItem c = UiFirstUseItem::LoadLabel;
+    CHECK_FALSE(uiFirstUseControl(c));
+    CHECK_FALSE(uiFirstUseCountsOnUse(c));
+    CHECK(uiFirstUseTimes(c) == kUiFirstUseLabelTimes);
+    CHECK(uiFirstUseSlot(c) == 12u);
+    // A counted save with every older item at its most reads it as never shown.
+    const std::uint32_t before = kUiFirstUseCounted | 0xFFFFFFu;
+    CHECK(uiFirstUseSavedCount(before, c) == 0);
+    UiFirstUse s;
+    uiFirstUseBegin(s, before, UiFirstUseMode::Saved);
+    for (std::uint8_t time = 1; time <= kUiFirstUseLabelTimes; ++time) {
+        CAPTURE(time);
+        CHECK_FALSE(uiFirstUseCue(s, c, false)); // nothing drawn: nothing counted
+        CHECK(uiFirstUseCue(s, c, true));  // LOAD starts to be drawn: counted, the host saves
+        CHECK(s.count[at(c)] == time);
+        CHECK(uiFirstUseAlpha(s, c) == 1.f);
+        run(s, kUiFirstUseHold - 0.1f);
+        CHECK(uiFirstUseAlpha(s, c) == 1.f); // four seconds at full
+        run(s, kUiFirstUseFade + 0.2f);
+        CHECK(uiFirstUseAlpha(s, c) == 0.f);
+        CHECK_FALSE(uiFirstUseCue(s, c, true)); // still drawn: not again
+        uiFirstUseCue(s, c, false);
+    }
+    CHECK_FALSE(uiFirstUseCue(s, c, true)); // a fourth Load: the slot stays empty
+    CHECK(uiFirstUseAlpha(s, c) == 0.f);
+    const std::uint32_t saved = uiFirstUseSaved(s);
+    CHECK(((saved >> 24) & 3u) == 3u); // slot 12
+    CHECK(uiFirstUseSavedCount(saved, UiFirstUseItem::WeakPointLabel) == 3); // the rest kept
+}
+
 TEST_CASE("ui first use: the swim's DIVE and RISE are controls in their own slots, unseen by older saves") {
     const UiFirstUseItem swim[] = {UiFirstUseItem::Dive, UiFirstUseItem::Rise};
     for (const UiFirstUseItem c : swim) {

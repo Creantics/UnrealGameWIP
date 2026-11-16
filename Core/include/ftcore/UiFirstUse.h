@@ -28,8 +28,10 @@ enum class UiFirstUseItem : std::uint8_t {
     Attack, Guard, Dodge, Jump, // controls: until a second after the first use, then fade
     LoneCard,                   // the Lone Carry's card in full (UiLone.h, which times it): counted as a label is
     Dive, Rise,                 // explore's swim controls (UiSwim.h): controls, taught by the explore HUD
+    LoadLabel,                  // LOAD in the lead's state slot: a label; after its three times the slot is empty
+                                // until RELEASE
 };
-inline constexpr std::size_t kUiFirstUseCount = 8;
+inline constexpr std::size_t kUiFirstUseCount = 9;
 inline constexpr std::uint8_t kUiFirstUseLabelTimes = 3; // a label shows the first three times in a save
 inline constexpr float kUiFirstUseHold = 4.f;   // a label's full-ink seconds
 inline constexpr float kUiFirstUseFade = 1.f;   // a label's or a control's fade
@@ -85,11 +87,12 @@ constexpr unsigned uiFirstUseSlot(UiFirstUseItem item) {
     case UiFirstUseItem::LoneCard: return 9;
     case UiFirstUseItem::Dive: return 10;
     case UiFirstUseItem::Rise: return 11;
+    case UiFirstUseItem::LoadLabel: return 12;
     }
     return 0; // a retired slot: nothing
 }
-inline constexpr unsigned kUiFirstUseTopSlot = 11; // the highest slot any save has written, a retired one included
-static_assert(kUiFirstUseCount == 8, "a new item takes a slot past kUiFirstUseTopSlot in uiFirstUseSlot");
+inline constexpr unsigned kUiFirstUseTopSlot = 12; // the highest slot any save has written, a retired one included
+static_assert(kUiFirstUseCount == 9, "a new item takes a slot past kUiFirstUseTopSlot in uiFirstUseSlot");
 static_assert(2 * kUiFirstUseTopSlot + 1 < 31, "two bits per slot below the layout bit");
 // The item's count in a saved value of either layout.
 FTCORE_API std::uint8_t uiFirstUseSavedCount(std::uint32_t saved, UiFirstUseItem item);

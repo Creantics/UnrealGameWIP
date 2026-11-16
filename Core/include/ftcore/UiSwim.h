@@ -188,13 +188,14 @@ inline bool uiSwimStep(UiSwim& s, UiFirstUse& firstUse, const UiSwimIn& in, floa
         }
     }
 
-    // DIVE and RISE: shown whenever each applies until first used (FirstFights only). Showing counts nothing; the first
-    // use counts (uiFirstUseCountsOnUse), and that is the only change the host saves. A use counts even on the frame
-    // the prompt would first have applied, before it was ever drawn (ruled: a use is a use).
+    // DIVE and RISE: shown whenever each applies until first used (FirstFights only, never while the rescue fades).
+    // Showing counts nothing; the first use counts (uiFirstUseCountsOnUse), and that is the only change the host saves.
+    // A use counts whenever it happens, before the prompt was ever drawn or under the fade (ruled: a use is a use).
     bool changed = false;
-    if (in.teach == ShowBasicControls::FirstFights && in.swimming && s.fade == UiSwimFade::Clear) {
-        if (in.canDive || in.dived) uiFirstUseShow(firstUse, UiFirstUseItem::Dive);
-        if (in.canRise || in.rose) uiFirstUseShow(firstUse, UiFirstUseItem::Rise);
+    if (in.teach == ShowBasicControls::FirstFights && in.swimming) {
+        const bool clear = s.fade == UiSwimFade::Clear;
+        if ((clear && in.canDive) || in.dived) uiFirstUseShow(firstUse, UiFirstUseItem::Dive);
+        if ((clear && in.canRise) || in.rose) uiFirstUseShow(firstUse, UiFirstUseItem::Rise);
         if (in.dived) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Dive) || changed;
         if (in.rose) changed = uiFirstUseUsed(firstUse, UiFirstUseItem::Rise) || changed;
     }

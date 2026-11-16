@@ -203,6 +203,31 @@ void AFTArenaGameMode::StartPlay()
 		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
 		bShotAllyStrikes = FParse::Param(Cmd, TEXT("ArenaShotAllyStrikes")); // a capture flag too
 		FParse::Value(Cmd, TEXT("ArenaShotWard="), ShotWardAt); // and this
+		FString HitAges;
+		if (FParse::Value(Cmd, TEXT("ArenaShotHit="), HitAges, false)) // a capture switch, read once: never in a shipping build
+		{
+			TArray<FString> Ages;
+			HitAges.ParseIntoArray(Ages, TEXT(","));
+			for (const FString& Age : Ages)
+			{
+				const double Seconds = FCString::Atod(*Age);
+				if (Seconds >= 0.0 && Seconds <= 2.0)
+				{
+					ShotHit.Add(Seconds);
+				}
+			}
+			ShotHit.Sort();
+		}
+		if (FParse::Value(Cmd, TEXT("ArenaShotHitStrip="), ShotStripPost) && ShotStripPost > 0)
+		{
+			ShotStripPost = FMath::Min(ShotStripPost, 12); // the strip stops at the hit plus 12 views
+			ShotHit.Reset();
+			ShotHit.Add(0.0); // one entry, so the strip runs; the frames are its own
+		}
+		else
+		{
+			ShotStripPost = 0;
+		}
 #endif
 		bShotSide = bShotSide || bShotWorld;
 	}
@@ -984,6 +1009,7 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 		FightClockCap = 0.0;
 	}
 	Runner->TickFight(FightDelta, bHold);
+	HitStrip(DeltaSeconds);
 	if (bStoryStaged && !bStoryHandedBack)
 	{
 #if !UE_BUILD_SHIPPING
@@ -1069,6 +1095,10 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		(bPartner ? Runner->GetAllyWeapons() : Runner->GetLeadWeapons()).RaiseWard(kArenaShotWardHold);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: capture: the %s's ward raised at %.2f s for %.1f s (-ArenaShotWard)."),
 			bPartner ? TEXT("partner") : TEXT("lead"), Runner->GetFight().time(), kArenaShotWardHold);
+	}
+	if (bShotHitRunning)
+	{
+		return false; // -ArenaShotHit's strip under way: the fight runs on and no other view takes the frame
 	}
 	if (ShotWall < ShotHoldUntil)
 	{
@@ -1733,6 +1763,88 @@ bool AFTArenaGameMode::EdgeShot()
 	EdgePhase = 3;
 	ShotHoldUntil = ShotWall + 1.0;
 	return true;
+}
+
+// After the fight's step, so the frame a hit lands on is age 0 for the HUD as well (uiHitWatchStep sees the new stamp on
+// that frame's draw). The views never hold the fight: the strip is the flash as it plays.
+void AFTArenaGameMode::HitStrip(float DeltaSeconds)
+{
+#if !UE_BUILD_SHIPPING
+	if (ShotPrefix.IsEmpty() || NextShotHit >= ShotHit.Num())
+	{
+		return;
+	}
+	const double Stamp = Runner->GetPlayerHitTime();
+	if (!bShotHitArmed)
+	{
+		// Armed once the ring view is in, against the stamp then (a hit before it is not the strip's).
+		if (ShotsTaken > 0)
+		{
+			bShotHitArmed = true;
+			ShotHitStamp = Stamp;
+			bShotHitRunning = ShotStripPost > 0;
+		}
+		if (!bShotHitRunning)
+		{
+			return;
+		}
+	}
+	if (ShotStripPost > 0)
+	{
+		// The every-frame strip: before the hit only a ring of the last ShotStripRing views (strip_pre_<frame % ring>, each
+		// overwritten), from the frame the stamp moves on (logged as the hit's) every view as strip_<frame>, to the hit
+		// plus ShotStripPost (12 at most), then stop.
+		if (ShotStripHitFrame < 0 && Stamp != ShotHitStamp && Stamp >= 0.0)
+		{
+			ShotStripHitFrame = ShotStripFrame;
+			ShotHitStamp = Stamp;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip hit lands on frame %d (engine frame %llu); strip_pre_* hold frames %d to %d."),
+				ShotStripHitFrame, static_cast<unsigned long long>(GFrameCounter), FMath::Max(0, ShotStripHitFrame - ShotStripRing),
+				ShotStripHitFrame - 1);
+		}
+		const double Hold = ShotHoldUntil;
+		const FString Name = ShotStripHitFrame >= 0 ? FString::Printf(TEXT("strip_%05d"), ShotStripFrame)
+													: FString::Printf(TEXT("strip_pre_%d"), ShotStripFrame % ShotStripRing);
+		TakeShot(*Name, false);
+		ShotHoldUntil = Hold;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: strip view %d as %s (engine frame %llu, step %.4f s)."), ShotStripFrame, *Name,
+			static_cast<unsigned long long>(GFrameCounter), DeltaSeconds);
+		++ShotStripFrame;
+		const bool bDone = ShotStripHitFrame >= 0 ? ShotStripFrame > ShotStripHitFrame + ShotStripPost : ShotStripFrame >= 900;
+		if (bDone)
+		{
+			NextShotHit = ShotHit.Num();
+			bShotHitRunning = false;
+		}
+		return;
+	}
+	if (!bShotHitRunning)
+	{
+		if (Stamp == ShotHitStamp || Stamp < 0.0)
+		{
+			ShotHitStamp = Stamp;
+			return;
+		}
+		bShotHitRunning = true;
+		ShotHitStamp = Stamp;
+		ShotHitAge = 0.0;
+	}
+	else
+	{
+		ShotHitAge += DeltaSeconds;
+	}
+	// Due on the first frame at or past the age (less a quarter frame, so 0.1 s at 60 Hz does not slip a whole frame).
+	if (ShotHitAge + 0.25 * DeltaSeconds >= ShotHit[NextShotHit])
+	{
+		const double Hold = ShotHoldUntil;
+		TakeShot(*FString::Printf(TEXT("hit_%03d"), FMath::RoundToInt(ShotHit[NextShotHit] * 1000.0)), false);
+		ShotHoldUntil = Hold;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: hit view %d of %d at hit age %.3f s (asked %.3f s)."), NextShotHit + 1, ShotHit.Num(),
+			ShotHitAge, ShotHit[NextShotHit]);
+		++NextShotHit;
+		bShotHitRunning = NextShotHit < ShotHit.Num();
+	}
+#endif
 }
 
 void AFTArenaGameMode::TakeShot(const TCHAR* Name, bool bCounted)
