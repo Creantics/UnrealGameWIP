@@ -76,8 +76,10 @@ struct ArenaCloseRules {
     float contactEdgeX = 0.55f;  // and its body's near outline (the lead's side) at least this far across
     float contactPitchMin = 15.f; // degrees: the look-up at a full contact share, held to this band
     float contactPitchMax = 25.f;
-    float standOffPitchMax = 12.f; // degrees: the most look-up off contact, any target size (above it a partner on the
-                                   // ground leaves the frame's bottom edge)
+    float standOffPitchMax = 12.f; // degrees: the most look-up off contact, any target size (the higher the look, the
+                                   // less of the ground near the lens is in the frame)
+    float standOffTopY = 0.9f;     // share of the frame's height: off contact the target's top (or its weak point) is
+                                   // kept at or under this, by the least look-up that does it (arenaCloseStandOffPitch)
 };
 inline constexpr ArenaCloseRules kArenaClose{};
 
@@ -202,6 +204,18 @@ FTCORE_API float arenaCloseContactYaw(float frameTurn, float swing, float share)
 // The pitch at a contact share: off contact `pitch` (the melee pitch) capped at standOffPitchMax, in contact held into
 // contactPitchMin..contactPitchMax, blended by the share. A NaN or non-positive share reads as 0; a NaN pitch stays NaN.
 FTCORE_API float arenaCloseContactPitch(const ArenaCloseRules& rules, float pitch, float share);
+// The same with the two ends apart: `offPitch` (the stand-off pitch) capped at standOffPitchMax at share 0, and
+// `contactPitch` (the lock's own look-up) held into the contact band at share 1. A NaN contactPitch, or a NaN or
+// non-positive share, gives the capped offPitch; a NaN offPitch stays NaN.
+FTCORE_API float arenaCloseContactPitch(const ArenaCloseRules& rules, float offPitch, float contactPitch, float share);
+
+// Stand-off framing: the least view pitch, from floorPitch up, that puts the point `point` (the target's top, or its
+// weak point when it has one; relative to the pivot, as arenaFramePoint) at or under standOffTopY of the frame's height
+// in `rig` (its yaw as drawn, low share 0), never over standOffPitchMax. floorPitch itself when the point is already
+// there (or behind the lens, or an input is NaN); standOffPitchMax when even that leaves it above. A floorPitch over
+// the cap gives the cap.
+FTCORE_API float arenaCloseStandOffPitch(const ArenaCloseRules& rules, const ArenaLookLimits& limits, const ArenaCameraPose& rig,
+                                         float aspect, ArenaPoint3 point, float floorPitch);
 
 // A point in the lens's own ground frame (the capture logs' partner position): `ahead` m along the view's yaw from
 // the lens (under 0: behind the camera) and `right` m to its right, from the lens where arenaCameraLens puts it.

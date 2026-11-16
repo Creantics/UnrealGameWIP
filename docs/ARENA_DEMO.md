@@ -181,8 +181,9 @@ of the way in from one side (its spine at 30-35% of the width, tested far, half 
 beside it, and the camera is never pulled out: the arm stays 2.6 m. *Range:* a melee share, 1 at 2.5 m or nearer and 0
 at 5 m or further (a smoothstep between), eased over 0.3 s and held still for a dodge's first 0.15 s, raises the pivot
 by 0.25 m, widens the fov from 60 to 68, turns the target to 0.64 of the width (0.6 far) and looks up toward the target's
-head (at most +6 degrees on a normal enemy, +28 on one 7 m tall or more, and never over +12 outside contact, so a
-partner on the ground stays over the bottom edge). The lead's rule relaxes with it so the look-up
+head (at most +6 degrees on a normal enemy, +28 on one 7 m tall or more). Outside contact the far pitch is the least
+look-up from the preset's -2 that keeps the target's top (its weak point when it has one) at or under 90% of the frame's
+height, never over +12: a normal enemy at 5 m takes none, the 7 m boss about +12 at 6-8 m and +11.6 at 10 m. The lead's rule relaxes with it so the look-up
 is kept: its 0.6 m point may sink to 10% under the bottom edge and, on a tall target, rises toward the shoulders (never
 nearer the head than 0.35 m). *Shoulder:* picked when the lock is taken or changes, or when a wall leaves the boom under
 80% of its arm (asked again no sooner than every 0.5 s), and never mid-attack: a side a wall blocks loses, then the side
@@ -197,10 +198,10 @@ blends over 0.5 s (held still mid-attack and in a dodge's first moment, and a he
 none while aiming; entering it asks for the shoulder again with each side tried at its swing, and no partner turn runs
 in it. A normal-sized target keeps the melee shape. The log says `Arena: close shoulder ...` at each pick, `Arena: close frame at view ...`
 at each review still (the distance, the lead's spine, the target's place, how much of it the lead covers, the partner's
-place in the lens's ground frame) and `Arena: lock to ...` at each lock; the check lines give the partner turn's share,
+place in the lens's ground frame, in frame when its head and waist both are, the feet not tested) and `Arena: lock to ...` at each lock; the check lines give the partner turn's share,
 the shoulder swaps and the held frames with a wall-shortened boom (and how many of them have the spine under 28%), and
 the contact frames (left out of the frame check), the most swing and the swaps made in contact; each review still adds
-the contact share, the swing, the pitch, the arm and the target body's outline across the width. Under both presets a check line gives where the partner stood from the drawn lens on held
+the contact share, the swing, the pitch with the stand-off pitch solved and the point it kept (top or weak point), the arm and the target body's outline across the width. Under both presets a check line gives where the partner stood from the drawn lens on held
 frames (in frame, behind the lens, off either side, over or under, and its mean place while out of the frame), and
 `-ArenaRollAt=<s,s,...>` (not in a shipping build) has the autopilot press dodge at those fight times, so a dodge strip
 is shot at the same roll time under every lens. Known limits: the aim stance stays over the right shoulder (from the left it blends across); a

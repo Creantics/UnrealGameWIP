@@ -1632,7 +1632,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	// The lock camera's eased state starts each fight at rest: no partner turn, no low lens.
 	PartnerYawNow = PartnerYawGoal = 0.f;
 	CloseMelee = CloseTall = 0.f;
-	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = 0.f;
+	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = StandOffPitchNow = 0.f;
+	bStandOffWeak = false;
 	bContactPicked = false;
 	CloseShoulder = CloseShoulderWant = 1.f;
 	CloseShoulderFor = CloseTargetNow = -1;
@@ -5416,12 +5417,18 @@ void UFTArenaRunner::LogCloseFrameShot(const TCHAR* Shot) const
 	const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
 	const ftcore::ArenaFramePoint F = ftcore::arenaFramePoint(Lens, Aspect, Mate);
 	const ftcore::ArenaLensGround G = ftcore::arenaLensGround(Lens, Mate);
-	const bool bMateIn = bMateOn && F.ahead && F.x >= 0.f && F.x <= 1.f;
+	// In frame under the close lens: the partner's head and waist both inside the frame (its feet are not tested).
+	const auto Inside = [](const ftcore::ArenaFramePoint& P) { return P.ahead && P.x >= 0.f && P.x <= 1.f && P.y >= 0.f && P.y <= 1.f; };
+	const ftcore::ArenaFramePoint MateHead = ftcore::arenaFramePoint(Lens, Aspect, ftcore::ArenaPoint3{Mate.x, Mate.y, CloseMateHead});
+	const ftcore::ArenaFramePoint MateWaist = ftcore::arenaFramePoint(Lens, Aspect, ftcore::ArenaPoint3{Mate.x, Mate.y, CloseMateWaist});
+	const bool bMateIn = bMateOn && Inside(MateHead) && Inside(MateWaist);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: close frame at view %s: distance %.2f m, melee %.2f, shoulder %+.2f, fov %.1f; lead spine x %.3f (left %.3f, right %.3f); target x %.3f, overlap %.3f of its width; partner %s x %.3f (%.2f m ahead of the lens, %.2f m right), turn %.1f (-1: not measured); contact %.2f, swing %.1f, pitch %.1f, arm %.2f; target body x %.3f to %.3f (%s)."),
+		TEXT("Arena: close frame at view %s: distance %.2f m, melee %.2f, shoulder %+.2f, fov %.1f; lead spine x %.3f (left %.3f, right %.3f); target x %.3f, overlap %.3f of its width; partner %s x %.3f (%.2f m ahead of the lens, %.2f m right), head y %.3f, waist y %.3f, turn %.1f (-1: not measured); contact %.2f, swing %.1f, pitch %.1f (stand-off %.1f on its %s), arm %.2f; target body x %.3f to %.3f (%s)."),
 		Shot, CloseDistanceNow, CloseMelee, CloseShoulder, Lens.fov, 0.5f * (S.left + S.right), S.left, S.right, TargetX, Overlap,
-		!bMateOn ? TEXT("off") : (bMateIn ? TEXT("in frame") : TEXT("out of frame")), F.ahead ? F.x : -1.f, G.ahead, G.right, PartnerYawNow,
-		CloseContact, ContactYawNow, CameraPitch, Lens.arm, Span.left, Span.right, Span.ahead ? TEXT("ahead") : TEXT("not ahead"));
+		!bMateOn ? TEXT("off") : (bMateIn ? TEXT("in frame") : TEXT("out of frame")), F.ahead ? F.x : -1.f, G.ahead, G.right,
+		MateHead.ahead ? MateHead.y : -1.f, MateWaist.ahead ? MateWaist.y : -1.f, PartnerYawNow,
+		CloseContact, ContactYawNow, CameraPitch, StandOffPitchNow, bStandOffWeak ? TEXT("weak point") : TEXT("top"), Lens.arm,
+		Span.left, Span.right, Span.ahead ? TEXT("ahead") : TEXT("not ahead"));
 }
 #endif
 
@@ -5758,13 +5765,26 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		}
 		if (bCloseShape)
 		{
-			// The close lens in melee range looks up toward the target's head (ftcore::arenaCloseMeleePitch) from the shaped
-			// pivot; the far pitch is the lock's own (the aim pitch on a tall target). The lead's rule holds it below.
-			WantPitch = ftcore::arenaCloseMeleePitch(ftcore::kArenaClose, ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall,
+			// Stand-off: the least look-up from the preset's own pitch that keeps the target's top (its weak point when it
+			// has one) under the frame's top margin, never over +12 (ftcore::arenaCloseStandOffPitch, on the lens as drawn).
+			// In melee range the lens looks up toward the target's head from there (ftcore::arenaCloseMeleePitch). In
+			// contact the lock's own look-up (the aim pitch on a tall target) is held to 15-25 degrees, blended in by the
+			// contact share (ftcore::arenaCloseContactPitch), and the cut is raised to allow it. The lead's rule holds it below.
+			ftcore::ArenaPoint3 Top{To.x, To.y, Tall};
+			FVector Weak;
+			const AFTArenaFighter* Lead = PlayerFigure.Get();
+			bStandOffWeak = Lead && GetBossWeakPoint(Target, Weak);
+			if (bStandOffWeak)
+			{
+				const FVector Rel = (Weak - Lead->GetActorLocation()) / 100.0;
+				Top = ftcore::ArenaPoint3{static_cast<float>(Rel.X), static_cast<float>(Rel.Y), static_cast<float>(Rel.Z)};
+			}
+			StandOffPitchNow = ftcore::arenaCloseStandOffPitch(ftcore::kArenaClose, ftcore::kArenaLook, LensRig, Aspect, Top, Rig.lockPitch);
+			const float Off = ftcore::arenaCloseMeleePitch(ftcore::kArenaClose, ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall,
+				CloseMelee, StandOffPitchNow);
+			const float Held = ftcore::arenaCloseMeleePitch(ftcore::kArenaClose, ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall,
 				CloseMelee, WantPitch);
-			// Off contact the look-up is capped at +12 for any target (a ground partner stays in frame); in contact it is
-			// held to 15-25 degrees (ftcore::arenaCloseContactPitch), and the cut is raised to allow it.
-			WantPitch = ftcore::arenaCloseContactPitch(ftcore::kArenaClose, WantPitch, CloseContact);
+			WantPitch = ftcore::arenaCloseContactPitch(ftcore::kArenaClose, Off, Held, CloseContact);
 		}
 #if !UE_BUILD_SHIPPING
 		if (AimCheckPhase == 2 || AimCheckPhase == 3)

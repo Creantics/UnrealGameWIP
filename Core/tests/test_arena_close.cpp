@@ -514,3 +514,67 @@ TEST_CASE("close frame: the contact yaw blends the drawn turn from the frame's t
     CHECK(arenaCloseContactPitch(kArenaClose, 28.f, 1.f) == 25.f);
     CHECK(std::isnan(arenaCloseContactPitch(kArenaClose, kNaN, 1.f)));
 }
+
+TEST_CASE("close frame: stand-off takes the least look-up that keeps the target's top under the frame's top margin") {
+    const ArenaCloseRules& R = kArenaClose;
+    const CameraPreset cp = closeCameraPreset();
+    const float floorPitch = cp.rig.lockPitch;
+    const auto standOff = [&](float shoulder, float d, float h, float& yAt, float& yBelow) {
+        const ArenaCloseShape s = arenaCloseShape(R, cp, 0.f, 0.f, shoulder, 1.8f);
+        const ArenaCameraPose rig0 = closeRig(0.f, 0.f, shoulder, 1.8f);
+        const float back = arenaEyeBack(rig0.arm, rig0.up, arenaSplitPitch(kArenaLook, floorPitch).boom);
+        const ArenaCameraPose rig = closeRig(0.f, 0.f, shoulder, 1.8f, arenaFrameTurnAt(kArenaFrame, s.side, d, s.screenX, s.fov, back));
+        const ArenaPoint3 top{d, 0.f, h};
+        const float p = arenaCloseStandOffPitch(R, kArenaLook, rig, kAspect, top, floorPitch);
+        yAt = arenaFramePoint(arenaPoseAtPitch(kArenaLook, rig, p), kAspect, top).y;
+        yBelow = arenaFramePoint(arenaPoseAtPitch(kArenaLook, rig, p - 0.1f), kAspect, top).y;
+        return p;
+    };
+    for (const float shoulder : {1.f, -1.f}) {
+        for (const float h : {1.8f, 2.4f, 3.5f, 5.f, 7.f}) {
+            for (const float d : {4.f, 5.f, 6.f, 8.f, 10.f, 14.f}) {
+                CAPTURE(shoulder);
+                CAPTURE(h);
+                CAPTURE(d);
+                float yAt = 0.f, yBelow = 0.f;
+                const float p = standOff(shoulder, d, h, yAt, yBelow);
+                CHECK(p >= floorPitch);
+                CHECK(p <= R.standOffPitchMax);
+                if (p < R.standOffPitchMax - 1e-3f) CHECK(yAt <= R.standOffTopY + 1e-3f); // the top is kept...
+                if (p > floorPitch + 0.1f) CHECK(yBelow > R.standOffTopY);                // ...by the least look-up
+            }
+        }
+    }
+    float yAt = 0.f, yBelow = 0.f;
+    // A normal enemy at stand-off range is whole at the preset's own pitch: no look-up at all.
+    CHECK(standOff(1.f, 5.f, 1.8f, yAt, yBelow) == floorPitch);
+    CHECK(standOff(-1.f, 5.f, 2.4f, yAt, yBelow) == floorPitch);
+    // The 7 m tall boss's top needs the whole +12 at 6-8 m (it stays above the margin there) and about +11.6 at 10 m.
+    CHECK(standOff(1.f, 6.f, 7.f, yAt, yBelow) == R.standOffPitchMax);
+    CHECK(standOff(1.f, 8.f, 7.f, yAt, yBelow) == R.standOffPitchMax);
+    const float titan10 = standOff(1.f, 10.f, 7.f, yAt, yBelow);
+    CHECK(titan10 > 10.5f);
+    CHECK(titan10 < R.standOffPitchMax);
+    // Edge inputs: the floor (held to the cap), and nothing to look at behind the lens.
+    const ArenaCameraPose rig = closeRig(0.f, 0.f, 1.f, 1.8f);
+    CHECK(arenaCloseStandOffPitch(R, kArenaLook, rig, kAspect, ArenaPoint3{8.f, 0.f, 7.f}, 20.f) == R.standOffPitchMax);
+    CHECK(arenaCloseStandOffPitch(R, kArenaLook, rig, kAspect, ArenaPoint3{kNaN, 0.f, 7.f}, floorPitch) == floorPitch);
+    CHECK(arenaCloseStandOffPitch(R, kArenaLook, rig, kAspect, ArenaPoint3{8.f, 0.f, 7.f}, kNaN) >= 0.f);
+    CHECK(arenaCloseStandOffPitch(R, kArenaLook, rig, kNaN, ArenaPoint3{8.f, 0.f, 7.f}, floorPitch) == floorPitch);
+    CHECK(arenaCloseStandOffPitch(R, kArenaLook, rig, kAspect, ArenaPoint3{-9.f, 0.f, 7.f}, floorPitch) == floorPitch);
+}
+
+TEST_CASE("close frame: the contact pitch takes its two ends apart, a low stand-off pitch and the lock's own look-up") {
+    const ArenaCloseRules& R = kArenaClose;
+    CHECK(arenaCloseContactPitch(R, 3.f, 28.f, 0.f) == 3.f);
+    CHECK(arenaCloseContactPitch(R, 3.f, 28.f, 1.f) == 25.f);
+    CHECK(arenaCloseContactPitch(R, 3.f, 10.f, 1.f) == 15.f);
+    CHECK(arenaCloseContactPitch(R, 3.f, 28.f, 0.5f) == doctest::Approx(14.f));
+    CHECK(arenaCloseContactPitch(R, 20.f, 28.f, 0.f) == 12.f);
+    CHECK(arenaCloseContactPitch(R, 3.f, kNaN, 1.f) == 3.f);
+    CHECK(arenaCloseContactPitch(R, 3.f, 28.f, kNaN) == 3.f);
+    CHECK(std::isnan(arenaCloseContactPitch(R, kNaN, 28.f, 1.f)));
+    // The one-pitch form is the two-ended one with both ends the same.
+    for (const float p : {-3.f, 6.f, 12.f, 20.f, 28.f})
+        for (const float s : {0.f, 0.3f, 1.f}) CHECK(arenaCloseContactPitch(R, p, s) == arenaCloseContactPitch(R, p, p, s));
+}

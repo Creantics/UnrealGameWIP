@@ -544,6 +544,10 @@ private:
 	bool bContactPicked = false;
 	float ContactYawNow = 0.f;    // degrees (ftcore::arenaCloseContactYaw): 0 exactly off contact
 	float CloseCutTall = 0.f;     // 0..1 (ftcore::arenaCloseCutTallness)
+	float StandOffPitchNow = 0.f; // degrees (ftcore::arenaCloseStandOffPitch): the least look-up that keeps the target's top in
+	bool bStandOffWeak = false;   // and whether it kept the weak point instead of the top
+	static constexpr float CloseMateHead = 1.6f;  // m: the partner's head and waist heights the close still log tests
+	static constexpr float CloseMateWaist = 1.0f;
 	ftcore::ArenaStickBasis StickBasis; // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close swap)
 #if !UE_BUILD_SHIPPING
 	void LogCloseFrameShot(const TCHAR* Shot) const;

@@ -246,11 +246,38 @@ float arenaCloseContactYaw(float frameTurn, float swing, float share) {
 }
 
 float arenaCloseContactPitch(const ArenaCloseRules& rules, float pitch, float share) {
-    if (!finite(pitch)) return pitch;
-    const float standOff = std::min(pitch, rules.standOffPitchMax);
-    if (!finite(share) || !(share > 0.f)) return standOff;
-    const float held = std::min(rules.contactPitchMax, std::max(rules.contactPitchMin, pitch));
+    return arenaCloseContactPitch(rules, pitch, pitch, share);
+}
+
+float arenaCloseContactPitch(const ArenaCloseRules& rules, float offPitch, float contactPitch, float share) {
+    if (!finite(offPitch)) return offPitch;
+    const float standOff = std::min(offPitch, rules.standOffPitchMax);
+    if (!finite(share) || !(share > 0.f) || !finite(contactPitch)) return standOff;
+    const float held = std::min(rules.contactPitchMax, std::max(rules.contactPitchMin, contactPitch));
     return lerp(standOff, held, clamp01(share));
+}
+
+float arenaCloseStandOffPitch(const ArenaCloseRules& rules, const ArenaLookLimits& limits, const ArenaCameraPose& rig, float aspect,
+                              ArenaPoint3 point, float floorPitch) {
+    const float cap = arenaClampViewPitch(limits, rules.standOffPitchMax);
+    const float lo = std::min(cap, arenaClampViewPitch(limits, finite(floorPitch) ? floorPitch : 0.f));
+    if (!finite(aspect) || !(aspect > 0.f) || !finite(point.x) || !finite(point.y) || !finite(point.z)) return lo;
+    // The point's height in the frame falls as the view pitches up (the lens moving with the boom): bisect it.
+    const auto pointY = [&](float p, bool& ahead) {
+        const ArenaFramePoint q = arenaFramePoint(arenaPoseAtPitch(limits, rig, p), aspect, point);
+        ahead = q.ahead;
+        return q.y;
+    };
+    bool ahead = false;
+    if (pointY(lo, ahead) <= rules.standOffTopY || !ahead) return lo;
+    if (pointY(cap, ahead) > rules.standOffTopY && ahead) return cap;
+    float a = lo, b = cap;
+    for (int i = 0; i < 24; ++i) {
+        const float m = 0.5f * (a + b);
+        if (pointY(m, ahead) > rules.standOffTopY && ahead) a = m;
+        else b = m;
+    }
+    return b;
 }
 
 ArenaLensGround arenaLensGround(const ArenaCameraPose& pose, ArenaPoint3 at) {
