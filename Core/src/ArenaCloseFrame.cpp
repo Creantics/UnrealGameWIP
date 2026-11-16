@@ -94,6 +94,15 @@ float arenaCloseShoulderStep(const ArenaCloseRules& rules, float now, float want
     return now < to ? std::min(to, now + step) : std::max(to, now - step);
 }
 
+bool arenaCloseSwapping(float now, float want) {
+    const float to = want < 0.f ? -1.f : 1.f;
+    return finite(now) && now != to;
+}
+
+float arenaCloseStickBasis(float basis, float viewYaw, bool swapping, bool stickHeld) {
+    return swapping && stickHeld && finite(basis) ? basis : viewYaw;
+}
+
 float arenaClosePartnerYaw(const ArenaCloseRules& rules, const ArenaLeadFrameRules& leadRules, const ArenaCameraPose& pose, float aspect,
                            const ArenaLeadBody& body, ArenaPoint3 partner, ArenaPoint3 target, float shoulder, float margin) {
     if (!finite(partner.x) || !finite(partner.y) || !finite(partner.z) || !finite(target.x) || !finite(target.y) || !finite(target.z))

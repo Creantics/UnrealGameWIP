@@ -228,6 +228,40 @@ TEST_CASE("close frame: a shoulder swap takes 0.4 s, at a constant rate, never p
     CHECK(arenaCloseShoulderStep(kArenaClose, 0.3f, 1.f, kNaN) == 0.3f);
 }
 
+TEST_CASE("close frame: through a shoulder swap a held stick keeps its basis; neutral or the blend's end hands it back") {
+    CHECK_FALSE(arenaCloseSwapping(1.f, 1.f));
+    CHECK_FALSE(arenaCloseSwapping(-1.f, -1.f));
+    CHECK_FALSE(arenaCloseSwapping(1.f, 0.f)); // 0 counts as right
+    CHECK(arenaCloseSwapping(0.4f, -1.f));
+    CHECK_FALSE(arenaCloseSwapping(kNaN, 1.f));
+    // A swap right to left while the view's yaw swings 2 degrees a frame: the held stick's basis stays at 10.
+    float s = 1.f;
+    float basis = arenaCloseStickBasis(kNaN, 10.f, false, true);
+    CHECK(basis == 10.f);
+    float view = 10.f;
+    int frames = 0;
+    for (; frames < 6; ++frames) {
+        s = arenaCloseShoulderStep(kArenaClose, s, -1.f, 1.f / 60.f);
+        view += 2.f;
+        basis = arenaCloseStickBasis(basis, view, arenaCloseSwapping(s, -1.f), true);
+        CHECK(basis == 10.f);
+    }
+    // An attack freezes the blend (no step): still swapping, still held.
+    basis = arenaCloseStickBasis(basis, view + 2.f, arenaCloseSwapping(arenaCloseShoulderStep(kArenaClose, s, -1.f, 0.f), -1.f), true);
+    CHECK(basis == 10.f);
+    // Let go mid-blend: the view's yaw; pushed again, held from there.
+    basis = arenaCloseStickBasis(basis, view, true, false);
+    CHECK(basis == view);
+    const float latched = view;
+    view += 2.f;
+    basis = arenaCloseStickBasis(basis, view, true, true);
+    CHECK(basis == latched);
+    // The blend ends: the view's yaw again, the stick still held.
+    while (arenaCloseSwapping(s, -1.f)) s = arenaCloseShoulderStep(kArenaClose, s, -1.f, 1.f / 60.f);
+    basis = arenaCloseStickBasis(basis, view, arenaCloseSwapping(s, -1.f), true);
+    CHECK(basis == view);
+}
+
 TEST_CASE("close frame: the partner yaw turns up to 12 degrees toward the partner, keeping the lead and the target") {
     const float d = 4.f;
     const ArenaPoint3 target{d, 0.f, 1.f};

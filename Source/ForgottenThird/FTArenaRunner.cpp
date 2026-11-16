@@ -1610,6 +1610,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CloseHeightNow = 0.f;
 #if !UE_BUILD_SHIPPING
 	CloseSwaps = CloseYawFrames = CloseYawOn = 0;
+	CloseWallFrames = CloseWallLow = 0;
 	CloseYawSum = CloseYawMost = 0.f;
 	MateFrames = MateIn = MateBehind = MateLeft = MateRight = MateOffY = 0;
 	MateOutAhead = MateOutRight = 0.f;
@@ -1814,7 +1815,11 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		Forward = Right = 0.f;
 	}
 	// Along the view as drawn (the lock's framing turn included), so the lead goes where the stick points on the screen.
-	Stick = ftcore::arenaStickToWorld(ViewYaw(), Forward, Right);
+	// Through a close shoulder swap a held stick keeps the basis it had until it is let go or the blend ends
+	// (ftcore::arenaCloseStickBasis), so a held direction never turns under the player; classic never swaps.
+	const bool bSwapping = bCloseShape && ftcore::arenaCloseSwapping(CloseShoulder, CloseShoulderWant);
+	StickBasis = ftcore::arenaCloseStickBasis(StickBasis, ViewYaw(), bSwapping, Forward != 0.f || Right != 0.f);
+	Stick = ftcore::arenaStickToWorld(StickBasis, Forward, Right);
 
 	// The view: the mouse and the right stick turn the camera unless something is locked; locked, a flick of
 	// the right stick switches the target.
@@ -5204,7 +5209,8 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 	{
 		PickCloseShoulder(Target);
 	}
-	CloseShoulder = ftcore::arenaCloseShoulderStep(R, CloseShoulder, CloseShoulderWant, DeltaSeconds);
+	// A swap's blend holds still through an attack: frozen where it is until the attack ends.
+	CloseShoulder = ftcore::arenaCloseShoulderStep(R, CloseShoulder, CloseShoulderWant, bMidAttack ? 0.f : DeltaSeconds);
 	// The cut is LeadBody's (it knows the lead's height); the rest goes on the rig and the preset the frame reads.
 	const ftcore::ArenaCloseShape Shape = ftcore::arenaCloseShape(R, CloseBase, CloseMelee, CloseTall, CloseShoulder, 0.f);
 	Fit.camera.pivot = Shape.pivot;
@@ -5751,6 +5757,13 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		CloseYawOn += FMath::Abs(PartnerYawNow) > 0.25f ? 1 : 0;
 		CloseYawSum += FMath::Abs(PartnerYawNow);
 		CloseYawMost = FMath::Max(CloseYawMost, FMath::Abs(PartnerYawNow));
+		if (WallShare < 0.98f)
+		{
+			++CloseWallFrames;
+			const ftcore::ArenaLeadShares Sh = ftcore::arenaLeadShares(Lens, Aspect, Body);
+			const float Spine = 0.5f * (Sh.left + Sh.right);
+			CloseWallLow += Sh.ahead && (CloseShoulder < 0.f ? 1.f - Spine : Spine) < 0.28f ? 1 : 0;
+		}
 	}
 #endif
 	LockTarget = bHold && bTallLock ? Target : -1;
@@ -5964,6 +5977,8 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens partner turn on %d of %d held frames, mean %.2f, most %.2f degrees; shoulder swaps %d, ends %+.2f."),
 			CloseYawOn, CloseYawFrames, CloseYawFrames > 0 ? CloseYawSum / static_cast<float>(CloseYawFrames) : 0.f, CloseYawMost, CloseSwaps, CloseShoulder);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens wall-shortened (boom under 98%%) on %d of %d held frames, %d of them with the lead's spine under 28%% of the width."),
+			CloseWallFrames, CloseYawFrames, CloseWallLow);
 	}
 	if (bFrameCheck)
 	{

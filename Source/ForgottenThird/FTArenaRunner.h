@@ -533,6 +533,7 @@ private:
 	int32 CloseTargetNow = -1;    // the target followed this frame, its distance and height (the shot log)
 	float CloseDistanceNow = -1.f;
 	float CloseHeightNow = 0.f;
+	float StickBasis = 0.f;       // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close shoulder swap)
 #if !UE_BUILD_SHIPPING
 	void LogCloseFrameShot(const TCHAR* Shot) const;
 	int32 CloseSwaps = 0;         // shoulder picks that changed the side
@@ -540,6 +541,9 @@ private:
 	int32 CloseYawOn = 0;
 	float CloseYawSum = 0.f;
 	float CloseYawMost = 0.f;
+	// Held close frames with the boom wall-shortened (under 98% of its arm), and of them the ones with the lead's spine
+	// under 28% of the width (mirrored on the left shoulder).
+	int32 CloseWallFrames = 0, CloseWallLow = 0;
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
 	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;

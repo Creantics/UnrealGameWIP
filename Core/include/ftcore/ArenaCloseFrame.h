@@ -112,6 +112,14 @@ FTCORE_API float arenaCloseShoulderPick(const ArenaCloseRules& rules, float room
 // One step of dt s of the shoulder (-1..1) toward `want` (its sign) at a full swap per swapSeconds, never past it.
 FTCORE_API float arenaCloseShoulderStep(const ArenaCloseRules& rules, float now, float want, float dt);
 
+// True while the shoulder (-1..1) has not reached `want`'s side (its sign; 0 counts as right): a swap is blending.
+FTCORE_API bool arenaCloseSwapping(float now, float want);
+
+// The stick's basis yaw (degrees) through a shoulder swap: while the swap blends and the stick is held off neutral it
+// stays at `basis` (the yaw it had before), so a held direction never turns under the player; with the stick at
+// neutral, or once the blend ends, it is the view's yaw again. A basis that is not finite gives the view's yaw.
+FTCORE_API float arenaCloseStickBasis(float basis, float viewYaw, bool swapping, bool stickHeld);
+
 // The close partner yaw (degrees, + right): the smallest turn in 0.25 degree steps, up to partnerYawMax, that puts
 // the partner's point (relative to the pivot, as arenaFramePoint) inside the frame's width less `margin` each side,
 // while the lead keeps `leadRules` and the target's point stays in targetMin..targetMax of the width (mirrored when
