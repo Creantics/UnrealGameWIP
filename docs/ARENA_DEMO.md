@@ -181,7 +181,8 @@ of the way in from one side (its spine at 30-35% of the width, tested far, half 
 beside it, and the camera is never pulled out: the arm stays 2.6 m. *Range:* a melee share, 1 at 2.5 m or nearer and 0
 at 5 m or further (a smoothstep between), eased over 0.3 s and held still for a dodge's first 0.15 s, raises the pivot
 by 0.25 m, widens the fov from 60 to 68, turns the target to 0.64 of the width (0.6 far) and looks up toward the target's
-head (at most +6 degrees on a normal enemy, +28 on one 7 m tall or more). The lead's rule relaxes with it so the look-up
+head (at most +6 degrees on a normal enemy, +28 on one 7 m tall or more, and never over +12 outside contact, so a
+partner on the ground stays over the bottom edge). The lead's rule relaxes with it so the look-up
 is kept: its 0.6 m point may sink to 10% under the bottom edge and, on a tall target, rises toward the shoulders (never
 nearer the head than 0.35 m). *Shoulder:* picked when the lock is taken or changes, or when a wall leaves the boom under
 80% of its arm (asked again no sooner than every 0.5 s), and never mid-attack: a side a wall blocks loses, then the side

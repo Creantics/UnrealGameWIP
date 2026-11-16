@@ -246,9 +246,11 @@ float arenaCloseContactYaw(float frameTurn, float swing, float share) {
 }
 
 float arenaCloseContactPitch(const ArenaCloseRules& rules, float pitch, float share) {
-    if (!finite(share) || !(share > 0.f) || !finite(pitch)) return pitch;
+    if (!finite(pitch)) return pitch;
+    const float standOff = std::min(pitch, rules.standOffPitchMax);
+    if (!finite(share) || !(share > 0.f)) return standOff;
     const float held = std::min(rules.contactPitchMax, std::max(rules.contactPitchMin, pitch));
-    return lerp(pitch, held, clamp01(share));
+    return lerp(standOff, held, clamp01(share));
 }
 
 ArenaLensGround arenaLensGround(const ArenaCameraPose& pose, ArenaPoint3 at) {

@@ -5750,7 +5750,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			// pivot; the far pitch is the lock's own (the aim pitch on a tall target). The lead's rule holds it below.
 			WantPitch = ftcore::arenaCloseMeleePitch(ftcore::kArenaClose, ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall,
 				CloseMelee, WantPitch);
-			// In contact the look-up is held to 15-25 degrees (ftcore::arenaCloseContactPitch); the cut is raised to allow it.
+			// Off contact the look-up is capped at +12 for any target (a ground partner stays in frame); in contact it is
+			// held to 15-25 degrees (ftcore::arenaCloseContactPitch), and the cut is raised to allow it.
 			WantPitch = ftcore::arenaCloseContactPitch(ftcore::kArenaClose, WantPitch, CloseContact);
 		}
 #if !UE_BUILD_SHIPPING

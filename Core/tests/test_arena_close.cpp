@@ -505,5 +505,12 @@ TEST_CASE("close frame: the contact yaw blends the drawn turn from the frame's t
     CHECK(arenaCloseContactPitch(kArenaClose, 20.f, 1.f) == 20.f);
     CHECK(arenaCloseContactPitch(kArenaClose, 10.f, 0.5f) == doctest::Approx(12.5f));
     CHECK(arenaCloseContactPitch(kArenaClose, 10.f, kNaN) == 10.f);
+    // Off contact the look-up is capped at +12 for any target (a ground partner stays over the bottom edge).
+    CHECK(arenaCloseContactPitch(kArenaClose, 28.f, 0.f) == 12.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, 28.f, kNaN) == 12.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, 12.f, 0.f) == 12.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, -3.f, 0.f) == -3.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, 28.f, 0.5f) == doctest::Approx(18.5f));
+    CHECK(arenaCloseContactPitch(kArenaClose, 28.f, 1.f) == 25.f);
     CHECK(std::isnan(arenaCloseContactPitch(kArenaClose, kNaN, 1.f)));
 }

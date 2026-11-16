@@ -76,6 +76,8 @@ struct ArenaCloseRules {
     float contactEdgeX = 0.55f;  // and its body's near outline (the lead's side) at least this far across
     float contactPitchMin = 15.f; // degrees: the look-up at a full contact share, held to this band
     float contactPitchMax = 25.f;
+    float standOffPitchMax = 12.f; // degrees: the most look-up off contact, any target size (above it a partner on the
+                                   // ground leaves the frame's bottom edge)
 };
 inline constexpr ArenaCloseRules kArenaClose{};
 
@@ -197,8 +199,8 @@ FTCORE_API float arenaCloseCutTallness(const ArenaCloseRules& rules, float targe
 // to `swing` (share 1), eased by a smoothstep of the share. Share 0 or a NaN input: exactly 0.
 FTCORE_API float arenaCloseContactYaw(float frameTurn, float swing, float share);
 
-// The pitch at a contact share: `pitch` (the melee pitch) held into contactPitchMin..contactPitchMax, blended in by
-// the share. Share 0 or a NaN input: `pitch` to the bit.
+// The pitch at a contact share: off contact `pitch` (the melee pitch) capped at standOffPitchMax, in contact held into
+// contactPitchMin..contactPitchMax, blended by the share. A NaN or non-positive share reads as 0; a NaN pitch stays NaN.
 FTCORE_API float arenaCloseContactPitch(const ArenaCloseRules& rules, float pitch, float share);
 
 // A point in the lens's own ground frame (the capture logs' partner position): `ahead` m along the view's yaw from
