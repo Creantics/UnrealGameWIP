@@ -160,6 +160,7 @@ add_library(ftcore STATIC
     src/CountLiftData.cpp
     src/LoneCarry.cpp
     src/PartnerBrain.cpp
+    src/PartnerCloseStation.cpp
     src/GiftSlot.cpp
     src/LeadSwitch.cpp
     src/Hallucination.cpp
@@ -355,6 +356,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_partner_station.cpp
         tests/test_partner_frame.cpp
         tests/test_partner_tall_boss.cpp
+        tests/test_partner_close_station.cpp
         tests/test_combat_inputs.cpp
         tests/test_table_ring.cpp
         tests/test_boss_script.cpp
@@ -443,6 +445,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_settings.cpp
         tests/test_skin_detail.cpp
         tests/test_garment_detail.cpp
+        tests/test_look_review.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
