@@ -875,7 +875,8 @@ TEST_CASE("dusk table: the strip-centre key it predicts from blocks 1116e/f fall
     const float ev1820 = nightExposureRange(look, f1820, e1820, -10.f, 20.f).minEV100;
     const float k1810 = 65.f * std::pow(65.f / 21.f, -5.5f - ev1810);
     const float k1820 = 55.5f * std::pow(55.5f / 12.2f, -3.5f - ev1820);
-    const float keys[] = {101.f, k1800, k1805, k1810, k1820, 39.4f};
+    // The table's own span only; the ends either side are the code's (the sweep below), not hard-coded reads.
+    const float keys[] = {k1800, k1805, k1810, k1820};
     INFO("18:00 " << k1800 << " (r " << r1800 << "), 18:05 " << k1805 << " (r " << r1805 << "), 18:10 " << k1810
                   << " (EV " << ev1810 << "), 18:20 " << k1820 << " (EV " << ev1820 << "); e " << e1810 << ", "
                   << sunElevationDeg(spec, 18.25) << ", " << e1820 << ", " << sunElevationDeg(spec, 18.0 + 25.0 / 60.0)
@@ -888,6 +889,42 @@ TEST_CASE("dusk table: the strip-centre key it predicts from blocks 1116e/f fall
     CHECK(k1805 == doctest::Approx(68.f).epsilon(0.1));
     CHECK(k1810 == doctest::Approx(60.f).epsilon(0.1));
     CHECK(k1820 == doctest::Approx(48.f).epsilon(0.1));
+}
+
+TEST_CASE("dusk: every minute from 17:30 to 18:30, from the code: the key never rises, the camera only closes") {
+    // nightSceneKey (the old tone's model) holds its dayKey clamp through this whole hour, so it can only say the key
+    // never rises; the fall itself is the knot prediction above. What the code alone does guarantee, minute by minute:
+    // once the blend moves, the exposure floor only climbs (the camera only closes); from the 18:10 knot on it never steps
+    // more than 0.6 EV in a minute; the real-time lift never jumps by more than x1.35 in a minute. Known and left for the
+    // later night block (fault 2, 18:00 -> 18:10): between the blend's start (-2 deg, 18:08.6) and the 18:10 knot the floor
+    // climbs from the day's -10 at about 3.3 EV a minute; it binds only if the free meter is under it there.
+    const NightLook look;
+    const NightKeyModel model;
+    const WorldClockSpec spec;
+    float lastKey = 1e9f, lastMin = -1e9f, lastLift = -1.f, worstEV = 0.f, worstLift = 1.f;
+    bool keyHolds = true, closes = true;
+    for (int i = 0; i <= 60; ++i) {
+        const double h = 17.5 + i / 60.0;
+        const float e = sunElevationDeg(spec, h);
+        const float n = nightAmount(spec, h);
+        const NightFrame f = nightFrameAt(look, n, e);
+        const float key = nightSceneKey(look, model, n, e);
+        if (key > lastKey * (1.f + 1e-5f)) keyHolds = false;
+        const float mn = nightExposureRange(look, f, e, -10.f, 20.f).minEV100;
+        if (f.exposureBlend > 0.f && lastMin > -1e8f) {
+            if (mn < lastMin - 1e-4f) closes = false;
+            if (e <= look.duskMinDeg[0]) worstEV = std::max(worstEV, mn - lastMin);
+        }
+        if (lastLift > 0.f) worstLift = std::max(worstLift, std::max(f.skyScaleRealTime / lastLift, lastLift / f.skyScaleRealTime));
+        lastKey = key;
+        lastMin = f.exposureBlend > 0.f ? mn : lastMin;
+        lastLift = f.skyScaleRealTime;
+    }
+    INFO("worst floor step " << worstEV << " EV/min, worst lift step x" << worstLift << "/min");
+    CHECK(keyHolds);
+    CHECK(closes);
+    CHECK(worstEV <= 0.6f);
+    CHECK(worstLift <= 1.35f);
 }
 
 TEST_CASE("nightExposureRange: the day's at blend 0, the night's exactly at 1, the dusk table's floor between") {

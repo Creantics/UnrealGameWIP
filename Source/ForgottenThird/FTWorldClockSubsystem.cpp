@@ -51,7 +51,7 @@ TAutoConsoleVariable<int32> CVarDayShade(TEXT("r.FT.DayShade"), 1,
 ftcore::DayShadeLook ReadDayShade()
 {
 	ftcore::DayShadeLook Look;
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	FParse::Value(Cmd, TEXT("DayShadeSky="), Look.skyScale);
 	FParse::Value(Cmd, TEXT("DayShadeContrast="), Look.shadowContrast);
 	FParse::Value(Cmd, TEXT("DayShadeBoost="), Look.diffuseBoost);
@@ -79,7 +79,7 @@ const ftcore::DayShadeLook& FTDayShade::Look()
 
 bool FTDayShade::Enabled()
 {
-	static const bool bOff = FParse::Param(FCommandLine::Get(), TEXT("NoDayShade"));
+	static const bool bOff = FParse::Param(FTLookSwitches(), TEXT("NoDayShade"));
 	return !bOff && CVarDayShade.GetValueOnGameThread() != 0;
 }
 
@@ -99,8 +99,8 @@ const ftcore::DayShadeFade& FTDayShade::Fade()
 	static const ftcore::DayShadeFade Spec = []
 	{
 		ftcore::DayShadeFade F;
-		FParse::Value(FCommandLine::Get(), TEXT("DayShadeFadeHigh="), F.highDeg);
-		FParse::Value(FCommandLine::Get(), TEXT("DayShadeFadeLow="), F.lowDeg);
+		FParse::Value(FTLookSwitches(), TEXT("DayShadeFadeHigh="), F.highDeg);
+		FParse::Value(FTLookSwitches(), TEXT("DayShadeFadeLow="), F.lowDeg);
 		return F;
 	}();
 	return Spec;
@@ -145,7 +145,7 @@ bool FTDayShade::WritePost(UWorld& World, const ftcore::DayShadeFrame& Frame, bo
 
 float FTDayShade::StillAmount()
 {
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	FString Shot;
 	float Ignored = 0.f;
 	if (!FParse::Value(Cmd, TEXT("WorldEyeShot="), Shot) || Shot.IsEmpty() || FParse::Value(Cmd, TEXT("TimeOfDay="), Ignored) ||
@@ -177,7 +177,7 @@ bool UFTWorldClockSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
 	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) &&
-		!FParse::Param(FCommandLine::Get(), TEXT("NoDayClock")) && Super::ShouldCreateSubsystem(Outer);
+		!FParse::Param(FTLookSwitches(), TEXT("NoDayClock")) && Super::ShouldCreateSubsystem(Outer);
 }
 
 void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
@@ -187,7 +187,7 @@ void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	FTJoint::ApplyCommandLine(InWorld);
 	// -Season=<0..3 or spring, summer, autumn, winter>: the plants' season (FTSeason.h).
 	FTSeason::ApplyCommandLine(InWorld);
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	float Fixed = -1.f;
 	const bool bFixed = FParse::Value(Cmd, TEXT("TimeOfDay="), Fixed);
 	const FTCHARToUTF8 Map(*InWorld.GetMapName());
@@ -450,7 +450,7 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 		static const float Parallax = []
 		{
 			float Value = -1.f;
-			FParse::Value(FCommandLine::Get(), TEXT("WindowParallax="), Value);
+			FParse::Value(FTLookSwitches(), TEXT("WindowParallax="), Value);
 			return Value;
 		}();
 		if (Parallax >= 0.f)
@@ -461,8 +461,8 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 		static const FVector2f ShopLevels = []
 		{
 			FVector2f Value(-1.f, -1.f);
-			FParse::Value(FCommandLine::Get(), TEXT("ShopDayLevel="), Value.X);
-			FParse::Value(FCommandLine::Get(), TEXT("ShopNightLevel="), Value.Y);
+			FParse::Value(FTLookSwitches(), TEXT("ShopDayLevel="), Value.X);
+			FParse::Value(FTLookSwitches(), TEXT("ShopNightLevel="), Value.Y);
 			return Value;
 		}();
 		if (ShopLevels.X >= 0.f)
@@ -499,7 +499,9 @@ void UFTWorldClockSubsystem::WriteWetness()
 	const UFTLookSubsystem* Look = World ? World->GetSubsystem<UFTLookSubsystem>() : nullptr;
 	if (Params && Look)
 	{
-		Params->SetScalarParameterValue(TEXT("Wetness"), Look->GetLook().wetness * WetShare);
+		// -WorldEyeWet=<0..1> holds the ground at that wetness (a wet or dry proof of the same hour).
+		static const float WetOverride = FTWorldEyeWet();
+		Params->SetScalarParameterValue(TEXT("Wetness"), WetOverride >= 0.f ? WetOverride : Look->GetLook().wetness * WetShare);
 	}
 }
 

@@ -85,7 +85,8 @@ bool UFTWorldEyeShotSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
 	FString Shot;
-	return World && World->WorldType == EWorldType::Game && FParse::Value(FCommandLine::Get(), TEXT("WorldEyeShot="), Shot) &&
+	// Through the look switches' gate: no still, so none of the -WorldEye* readers below, in Shipping.
+	return World && World->WorldType == EWorldType::Game && FParse::Value(FTLookSwitches(), TEXT("WorldEyeShot="), Shot) &&
 		!Shot.IsEmpty() && Super::ShouldCreateSubsystem(Outer);
 }
 
@@ -735,7 +736,10 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		UMaterialParameterCollection* LookCollection = LoadObject<UMaterialParameterCollection>(
 			nullptr, *(LookPath + TEXT(".") + FPackageName::GetShortName(LookPath)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		UMaterialParameterCollectionInstance* LookParams = LookCollection ? World.GetParameterCollectionInstance(LookCollection) : nullptr;
-		const float Wet = Look ? Look->GetLook().wetness * ftcore::nightFrame(FTNight::Look(), bWetNight ? 1.f : 0.f).wetShare : 0.f;
+		// -WorldEyeWet=<0..1>: that wetness instead (a wet and a dry proof of one hour).
+		const float WetOverride = FTWorldEyeWet();
+		const float Wet = WetOverride >= 0.f ? WetOverride
+			: Look ? Look->GetLook().wetness * ftcore::nightFrame(FTNight::Look(), bWetNight ? 1.f : 0.f).wetShare : 0.f;
 		const bool bWet = Look && LookParams && LookParams->SetScalarParameterValue(TEXT("Wetness"), Wet);
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: wetness %.3f %s."), Wet, bWet ? TEXT("written") : TEXT("not written (no look or MPC_Look)"));
 		// A day still: no lights, full daylight in the rooms (a dusk hour's and the night's own writes go over this).

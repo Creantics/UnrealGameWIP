@@ -69,6 +69,7 @@
 #include "FTSceneLook.h"
 #include "FTWorldClockSubsystem.h"
 
+#include "ftcore/HeroCorner.h"
 #include "ftcore/Json.h"
 #include "ftcore/MassingDress.h"
 #include "ftcore/MassingLayout.h"
@@ -1826,6 +1827,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// head (tagged FTScene::NightLampHeadTag); and with -Windows a spill point out of each shopfront: data in the map's
 	// AFTNightLights, which the runtime's lamp pool lights at night.
 	const bool bNightLamps = FParse::Param(*Params, TEXT("NightLamps"));
+	// -HeroCorner: the hero corner's step 1 (ftcore/HeroCorner.h): five shop bays appended to the boxes, fronting the lane
+	// on their west faces (lit 1, 3 and 4), the lane's granite setts, the eave, the lanterns and strings from
+	// Content/Props/HeroCorner when imported, and a lamp slot at half a street lamp under each string's middle.
+	const bool bHeroCorner = FParse::Param(*Params, TEXT("HeroCorner"));
+	ftcore::HeroCornerLayout Hero;
+	size_t HeroFirst = 0;
 	// Round 5 roads (FTBuildRoads.h): -Roads=<csv>, -Vehicles, -RoadDoors=<csv>, -LaneLamps=x0,y0,x1,y1, -RoadSeed=<n>.
 	const FTBuildRoads::FOptions RoadOptions = FTBuildRoads::ParseOptions(*Params);
 	std::vector<ftcore::RoadSpec> RoadSpecs;
@@ -1897,6 +1904,25 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
+	HeroFirst = Boxes.size();
+	if (bHeroCorner)
+	{
+		ftcore::heroCornerLayout(ftcore::HeroCornerSpec{}, Hero);
+		for (const ftcore::MassingBox& Bay : Hero.bays)
+		{
+			Boxes.push_back(Bay);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d shop bays appended (%s .. %s), lane %.0f..%.0f x %.0f..%.0f, "
+			"%d lanterns, %d strings."), ftcore::kHeroBays, *Utf8(Hero.bays[0].id), *Utf8(Hero.bays[ftcore::kHeroBays - 1].id), Hero.pave.cx - 0.5 * Hero.pave.sx,
+			Hero.pave.cx + 0.5 * Hero.pave.sx, Hero.pave.cy - 0.5 * Hero.pave.sy, Hero.pave.cy + 0.5 * Hero.pave.sy, static_cast<int32>(Hero.lanternCount),
+			ftcore::kHeroStrings);
+	}
+	// The hero corner's bay index of box I, or -1.
+	const auto HeroBayOf = [&](size_t I) -> int
+	{
+		int Index = -1;
+		return bHeroCorner && I >= HeroFirst && I < Boxes.size() && ftcore::heroCornerBay(Boxes[I].id, &Index) ? Index : -1;
+	};
 	if (!FTBuildRoads::Prepare(RoadOptions, ftcore::MassingGround{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
 			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY}, Boxes, RoadSpecs, RoadBuilds))
 	{
@@ -2725,6 +2751,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		Replaced[I] = Replaced[I] || LotBuild.Replaced[I];
 	}
+	// The hero corner's bays stay boxes whatever a lot or kit row says (they stand in for the missing V5/V6 kit).
+	for (size_t I = HeroFirst; bHeroCorner && I < Boxes.size(); ++I)
+	{
+		if (HeroBayOf(I) >= 0 && Replaced[I])
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: %s was given to a lot or kit mesh; it stays a box."), *Utf8(Boxes[I].id));
+			Replaced[I] = false;
+			if (I < LotBuild.Replaced.size())
+			{
+				LotBuild.Replaced[I] = false;
+			}
+		}
+	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
 	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its cell
@@ -3082,9 +3121,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// has one (a kerb along a sloping street, a pad on sloping ground: ftcore::massingCubePose). It stays out of the boxes
 	// table.
 	// An instance of its cell: Kind says how it collides (Walk for what is walked on), Cull how far it is drawn.
-	const auto LayCube = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
+	const auto LayCubeWearing = [&](const ftcore::MassingBox& Box, UMaterialInterface* Material, EFTCellKind Kind, EFTCellCull Cull)
 	{
-		UMaterialInterface* const CubeMats[1] = {bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))]};
+		UMaterialInterface* const CubeMats[1] = {Material};
 		const double Height = FMath::Max(Box.z1 - Box.z0, ftcore::kMassingMinHeight);
 		const ftcore::MassingCubePose Pose = ftcore::massingCubePose(Box, Height);
 		FFTCellOptions CubeOpts;
@@ -3094,6 +3133,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			FTransform(FRotator(Pose.pitch, Pose.yaw, Pose.roll), Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift)),
 				FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z)),
 			{}, Kind, CubeOpts);
+	};
+	const auto LayCube = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
+	{
+		LayCubeWearing(Box, bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))], Kind, Cull);
 	};
 	// A dressing box that takes room from the props: a kerb, or a quay's rail, post or bollard.
 	const auto Dress = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
@@ -3114,6 +3157,108 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: stand-ins: %d crane and boat boxes built as %d frame pieces in place of solids."),
 			StandInBoxes, static_cast<int32>(StandIns.size()));
+	}
+	// -HeroCorner: the lane's setts (walked on, the props kept off it), the eave, the lanterns and their strings, and the
+	// strings' lamp slots. A surface or mesh that isn't built or imported yet is logged and left out.
+	if (bHeroCorner)
+	{
+		const auto LoadSurface = [](const TCHAR* Id) -> UMaterialInterface*
+		{
+			const FString Package = FTScene::SurfaceInstancePackage(Id);
+			return LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		};
+		UMaterialInterface* const Setts = LoadSurface(TEXT("solhaven_granite_sett"));
+		UMaterialInterface* const Timber = LoadSurface(TEXT("solhaven_oak_plank"));
+		LayCubeWearing(Hero.pave, Setts ? Setts : (bSurfaces ? WearLook(LookSet, Hero.pave) : Finish[static_cast<int32>(ftcore::massingFinish(Hero.pave))]),
+			EFTCellKind::Walk, EFTCellCull::None);
+		Taken.push_back(ftcore::massingBoxFoot(Hero.pave));
+		LayCubeWearing(Hero.eave, Timber ? Timber : (bSurfaces ? WearLook(LookSet, Hero.eave) : Finish[static_cast<int32>(ftcore::massingFinish(Hero.eave))]),
+			EFTCellKind::Solid, EFTCellCull::None);
+		// The meshes (tools/hero_corner_props.py, FTImportProp -Dest=/Game/Props/HeroCorner): each one's origin is its hook
+		// (a lantern's top), its foot (a post) or its facade end (a cable, running along +X). Their paper slots wear the
+		// night glow.
+		const auto HeroMesh = [&](const TCHAR* Name) -> UStaticMesh*
+		{
+			UStaticMesh* Mesh = LoadMesh(FString(TEXT("/Game/Props/HeroCorner/")) + Name);
+			if (!Mesh)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: /Game/Props/HeroCorner/%s isn't imported; left out."), Name);
+			}
+			return Mesh;
+		};
+		int32 HeroPieces = 0;
+		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double PlanTurn, const TCHAR* Label)
+		{
+			if (!Mesh)
+			{
+				return;
+			}
+			TArray<UMaterialInterface*, TInlineAllocator<8>> Mats;
+			for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
+			{
+				const bool bGlow = Slot.MaterialSlotName.ToString().Contains(TEXT("paper")) || GlowSlots.Contains(Slot.MaterialSlotName);
+				Mats.Add(NightGlow && bGlow ? NightGlow : nullptr);
+			}
+			FFTCellOptions Opts;
+			Opts.Cull = EFTCellCull::Prop;
+			Opts.bCastShadow = false;
+			Opts.Label = FString::Printf(TEXT("%s-%d"), Label, HeroPieces + 1);
+			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(PlanTurn), 0.0), Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z))),
+				{}, EFTCellKind::NoCollide, Opts);
+			++HeroPieces;
+		};
+		UStaticMesh* const Large = HeroMesh(TEXT("SM_HC_LanternLarge"));
+		UStaticMesh* const Small = HeroMesh(TEXT("SM_HC_LanternSmall"));
+		UStaticMesh* const Post = HeroMesh(TEXT("SM_HC_StringPost"));
+		for (size_t L = 0; L < Hero.lanternCount; ++L)
+		{
+			const ftcore::HeroLantern& Lantern = Hero.lanterns[L];
+			PlaceHero(Lantern.large ? Large : Small, Lantern.hook, 0.0, Lantern.large ? TEXT("HC-LANTERN") : TEXT("HC-STRINGLANTERN"));
+		}
+		// The cables: a thin cube per span of the Core's polyline, so the sag is the tested one.
+		UMaterialInterface* const Steel = LoadSurface(TEXT("solhaven_painted_steel"));
+		UMaterialInterface* const CableMats[1] = {Steel ? Steel : Finish[static_cast<int32>(ftcore::massingFinish(Hero.eave))]};
+		constexpr double kCableThickM = 0.012;
+		int32 CableSpans = 0;
+		for (int32 S = 0; S < ftcore::kHeroStrings; ++S)
+		{
+			PlaceHero(Post, Hero.postFoot[S], 0.0, TEXT("HC-POST"));
+			for (int32 K = 0; K + 1 < ftcore::kHeroCablePoints; ++K)
+			{
+				const ftcore::HeroPoint& A = Hero.cable[S][K];
+				const ftcore::HeroPoint& B = Hero.cable[S][K + 1];
+				const FVector From = Cm(ftcore::massingEnginePoint(Side, A.x, A.y, A.z));
+				const FVector To = Cm(ftcore::massingEnginePoint(Side, B.x, B.y, B.z));
+				const FVector Along = To - From;
+				FFTCellOptions Opts;
+				Opts.Cull = EFTCellCull::Prop;
+				Opts.Label = FString::Printf(TEXT("HC-CABLE-%d-%d"), S + 1, K + 1);
+				Cells.Add(Cube, CableMats, FTransform(FRotationMatrix::MakeFromX(Along).Rotator(), 0.5 * (From + To),
+					FVector(Along.Size() / 100.0 + 0.005, kCableThickM, kCableThickM)), {}, EFTCellKind::NoCollide, Opts);
+				++CableSpans;
+			}
+		}
+		HeroPieces += CableSpans;
+		int32 HeroLamps = 0;
+		if (bNightLamps && LampParts.Lights)
+		{
+			UFTNightLightData& Data = *LampParts.Lights->Data;
+			while (Data.LampGain.Num() < Data.LampAt.Num())
+			{
+				Data.LampGain.Add(1.f);
+			}
+			for (int32 S = 0; S < ftcore::kHeroStrings; ++S)
+			{
+				const ftcore::HeroPoint& At = Hero.stringLamp[S];
+				Data.LampAt.Add(FVector3f(Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z))));
+				Data.LampGain.Add(Hero.stringLampGain);
+				++HeroLamps;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: setts %s, eave %s, %d lantern/post/cable pieces, %d lamp slots at %.2f of "
+			"a street lamp%s."), Setts ? TEXT("MI_Surface_solhaven_granite_sett") : TEXT("MISSING (the look's paving)"),
+			Timber ? TEXT("oak plank") : TEXT("the look's"), HeroPieces, HeroLamps, Hero.stringLampGain,
+			bNightLamps ? TEXT("") : TEXT(" (no -NightLamps, so none)"));
 	}
 	// Per box face (box * 4 + face), whether its middle fronts a street: the frontage reads it; the windows' shop fronts
 	// follow it.
@@ -3405,9 +3550,24 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -NightLamps with -Windows: a spill point out of each shopfront (ftcore::massingShopLights) in the night lights' data.
 	int32 ShopLights = 0, ShopFaces = 0;
 	std::vector<ftcore::MassingShopLight> ShopAt;
+	// The hero corner's bays front the lane, which no street table holds: their shop face is set here.
+	if (bHeroCorner && bWindows)
+	{
+		if (FrontFaces.size() < Boxes.size() * 4)
+		{
+			FrontFaces.resize(Boxes.size() * 4, 0);
+		}
+		for (size_t I = HeroFirst; I < Boxes.size(); ++I)
+		{
+			if (HeroBayOf(I) >= 0)
+			{
+				FrontFaces[I * 4 + ftcore::kHeroShopFace] = 1;
+			}
+		}
+	}
 	if (bWindows)
 	{
-		int32 Windows = 0, StreetFaces = 0;
+		int32 Windows = 0, StreetFaces = 0, HeroBays = 0, HeroLit = 0;
 		int32 FacadeTypes[ftcore::kWindowTypes] = {};
 		FTShopInteriors::FPlacer ShopRooms(Package, Params); // -ShopHoles: kerb bits and shop interiors
 		for (size_t I = 0; I < Boxes.size(); ++I)
@@ -3430,9 +3590,21 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			{
 				SetFacadeR5Data(Cells, Piece, Built[I], Data, FacadeTypes);
 			}
-			ShopRooms.Place(Cells, Piece, Built[I], Data, PropStreets, Sections.sharedUpTo, Side);
+			// A hero bay: its shopfront modelled, every bay lit or every bay dark (a dark one spills nothing).
+			const int HeroBay = HeroBayOf(I);
+			const bool bHeroDark = HeroBay >= 0 && !Hero.bayLit[HeroBay];
+			if (HeroBay >= 0)
+			{
+				ShopRooms.Place(Cells, Piece, Built[I], Data, PropStreets, Sections.sharedUpTo, Side, 1 << ftcore::kHeroShopFace, bHeroDark ? 0.f : 1.f);
+				++HeroBays;
+				HeroLit += bHeroDark ? 0 : 1;
+			}
+			else
+			{
+				ShopRooms.Place(Cells, Piece, Built[I], Data, PropStreets, Sections.sharedUpTo, Side);
+			}
 			++Windows;
-			if (bNightLamps)
+			if (bNightLamps && !bHeroDark)
 			{
 				ShopAt.clear();
 				ftcore::massingShopLights(Built[I], Data, ftcore::kMassingShopLightSpacing, ShopAt);
@@ -3450,6 +3622,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			"none on %d sloped boxes or the %d boxes kit meshes stand in for."), Windows, StreetFaces,
 			FrontFaces.empty() ? TEXT(" (no -Frontage, so no street faces)") : TEXT(""), WindowSloped, WindowReplaced);
 		ShopRooms.Log();
+		if (bHeroCorner)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d of %d bays windowed, %d lit%s."), HeroBays, ftcore::kHeroBays, HeroLit,
+				ShopRooms.IsOn() ? TEXT("") : TEXT(" (shop interiors off: pass -ShopHoles -FacadeR5)"));
+		}
 		if (bFacadeR5)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: r5 facades: %d apartment, %d walkway, %d shophouse, %d office."),

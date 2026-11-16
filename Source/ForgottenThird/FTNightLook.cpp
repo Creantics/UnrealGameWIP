@@ -75,7 +75,7 @@ void ReadList(const TCHAR* Cmd, const TCHAR* Key, float* Out, int32 Count)
 ftcore::NightLook Read()
 {
 	ftcore::NightLook L;
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	ReadNumber(Cmd, TEXT("NightMoon="), L.moonShare);
 	// An explicit deep fill keeps it constant through the night (the floor fit off), so older scripts keep their meaning.
 	if (ReadNumber(Cmd, TEXT("NightSky="), L.skyFill))
@@ -162,7 +162,7 @@ ftcore::DuskLook ReadDusk()
 			"exposure bias %.2f EV, lights on from %.1f to %.1f degrees, daylight from %.1f to %.1f."), UTF8_TO_TCHAR(Row->status.c_str()), D.stillDeg,
 			D.startDeg, D.peakDeg, D.endDeg, D.exposureBias, D.lightsOnDeg, D.lightsFullDeg, D.dayEndDeg, D.dayFullDeg);
 	}
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	FParse::Value(Cmd, TEXT("DuskPeak="), D.peakDeg);
 	FParse::Value(Cmd, TEXT("DuskStart="), D.startDeg);
 	FParse::Value(Cmd, TEXT("DuskEnd="), D.endDeg);
@@ -215,7 +215,7 @@ float FTNight::ProofShopNight()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("proofShopNight", -1.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassProofNight="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassProofNight="), Level);
 		return Level;
 	}();
 	return Value;
@@ -227,7 +227,7 @@ float FTNight::InteriorDay()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("interiorDay", 1.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassInteriorDay="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassInteriorDay="), Level);
 		return FMath::Max(Level, 0.f);
 	}();
 	return Value;
@@ -238,7 +238,7 @@ float FTNight::BayLampLumens()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("bayLampLumens", 40.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassBayLumens="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassBayLumens="), Level);
 		return FMath::Max(Level, 0.f);
 	}();
 	return Value;
@@ -249,7 +249,7 @@ float FTNight::BayLampDayLumens()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("bayLampDayLumens", 3000.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassBayDayLumens="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassBayDayLumens="), Level);
 		return FMath::Max(Level, 0.f);
 	}();
 	return Value;

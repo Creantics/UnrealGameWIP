@@ -347,6 +347,12 @@ TEST_CASE("joints: per-surface depths by id substring") {
     CHECK(surfaceJointFor("solhaven_board_concrete").unitsU == doctest::Approx(0.f));
     CHECK(surfaceJointFor("solhaven_asphalt").unitsU == doctest::Approx(0.f));
     CHECK_FALSE(surfaceJointFor("solhaven_paving_slab").bond);
+    // The hero corner's granite setts: 20 x 10 cm in running bond on a 120 cm tile, 1 cm deep joints.
+    const SurfaceJointSurface sett = surfaceJointFor("solhaven_granite_sett");
+    CHECK(sett.depthCm == doctest::Approx(1.0f));
+    CHECK(sett.unitsU == doctest::Approx(6.f));
+    CHECK(sett.unitsV == doctest::Approx(12.f));
+    CHECK(sett.bond);
 }
 
 TEST_CASE("joints: the HLSL: no derivatives, the march behind the switch, every input named") {

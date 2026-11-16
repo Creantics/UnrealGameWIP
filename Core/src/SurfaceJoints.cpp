@@ -238,6 +238,7 @@ SurfaceJointSurface surfaceJointFor(std::string_view surfaceId) noexcept {
         {"soot_brick", 1.2f, 4.f, 13.f, true},      {"breeze_block", 0.8f, 3.f, 5.f, false},
         {"ceramic_tile", 0.3f, 8.f, 8.f, false},    {"paving_slab", 0.65f, 4.f, 4.f, false},
         {"tactile_paving", 0.5f, 4.f, 4.f, false},  {"board_concrete", 0.2f, 0.f, 0.f, false},
+        {"granite_sett", 1.0f, 6.f, 12.f, true},
     };
     for (const Entry& e : kEntries)
         if (surfaceId.find(e.key) != std::string_view::npos) return {e.depthCm, 0.6f, 0.92f, e.unitsU, e.unitsV, e.bond};

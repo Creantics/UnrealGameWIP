@@ -12,6 +12,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "ftcore/HeroCorner.h"
 
 namespace
 {
@@ -44,7 +45,7 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		return;
 	}
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	FParse::Value(Cmd, TEXT("LampPoolLamps="), WantLamps);
 	FParse::Value(Cmd, TEXT("LampPoolShops="), WantShops);
 	float ReachMetres = kReachMetres;
@@ -171,6 +172,10 @@ void UFTLampPoolSubsystem::CreatePool()
 	Lamps.Picker.build(Xy.GetData(), static_cast<size_t>(LampCount), kPickerCellCm);
 	Lamps.Scale.SetNumUninitialized(LampCount);
 	ftcore::nightLampScales(FTNight::Look(), Xy.GetData(), static_cast<size_t>(LampCount), 100.f, Lamps.Scale.GetData());
+	for (int32 I = 0; I < LampCount; ++I)
+	{
+		Lamps.Scale[I] *= ftcore::lampSlotGain(D->LampGain.GetData(), static_cast<size_t>(D->LampGain.Num()), static_cast<size_t>(I));
+	}
 	Xy.Reset();
 	for (int32 I = 0; I < ShopCount; ++I)
 	{

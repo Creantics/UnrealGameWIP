@@ -77,6 +77,7 @@ add_library(ftcore STATIC
     src/BenchPath.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
+    src/HeroCorner.cpp
     src/GlassSurface.cpp
     src/DayShade.cpp
     src/Backdrop.cpp
@@ -386,6 +387,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_bench_path.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
+        tests/test_hero_corner.cpp
         tests/test_glass_surface.cpp
         tests/test_backdrop_seat.cpp
         tests/test_day_shade.cpp
