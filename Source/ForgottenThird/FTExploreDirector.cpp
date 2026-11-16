@@ -363,6 +363,17 @@ AFTExploreSpot* AFTExploreDirector::GetSpot(int32 Id) const
 	return Spots.IsValidIndex(Id) ? Spots[Id].Get() : nullptr;
 }
 
+bool AFTExploreDirector::GetFocusLocation(FVector& Out) const
+{
+	const AFTExploreSpot* Spot = GetSpot(Focus);
+	if (!Spot)
+	{
+		return false;
+	}
+	Out = Spot->GetActorLocation();
+	return true;
+}
+
 void AFTExploreDirector::CacheText()
 {
 	const int32 Objectives = static_cast<int32>(Exploration.objectiveCount());

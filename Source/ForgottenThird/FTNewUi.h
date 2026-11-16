@@ -18,6 +18,7 @@
 class SWidget;
 class UFTArenaRunner;
 class AFTExploreCharacter;
+class AFTExploreDirector;
 class AFTStoryDirector;
 
 namespace FT
@@ -37,4 +38,8 @@ TSharedRef<SWidget> MakeDialogueWidget(TFunction<const AFTStoryDirector*()> GetD
 // Explore's party screen (the fight HUD's party rows, standing alone while the character's screen is open), reading the
 // given character each tick (null: nothing drawn).
 TSharedRef<SWidget> MakeExplorePartyWidget(TFunction<const AFTExploreCharacter*()> GetLead);
+
+// Explore's HUD (the r19 language out of a fight): the party's names over their thin lines, the objective under them,
+// the prompt at the focused spot and the notices at the right edge; nothing drawn while either getter gives null.
+TSharedRef<SWidget> MakeExploreHudWidget(TFunction<const AFTExploreDirector*()> GetDirector, TFunction<const AFTExploreCharacter*()> GetLead);
 }

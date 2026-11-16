@@ -2,6 +2,8 @@
 
 #include "FTArenaFighter.h"
 #include "FTArenaRunner.h"
+#include "FTCutsceneDirector.h"
+#include "FTExploreDirector.h"
 #include "FTExploreCharacter.h"
 #include "ForgottenThird.h"
 #include "FTInputBindings.h"
@@ -13,6 +15,7 @@
 #include "ftcore/ArenaFight.h"
 #include "ftcore/UiBudget.h"
 #include "ftcore/UiEventMarks.h"
+#include "ftcore/UiExplore.h"
 #include "ftcore/UiFirstUse.h"
 #include "ftcore/UiLone.h"
 #include "ftcore/UiPartyScreen.h"
@@ -681,7 +684,7 @@ struct FPainter
 	}
 
 	// Shade with no edge: stacked boxes growing outward, so the middle reaches Peak and the rim fades to nothing.
-	void Soft(float CX, float CY, float W, float H, float Peak, float Alpha = 1.f) const
+	void Soft(float CX, float CY, float W, float H, float Peak, float Alpha = 1.f, const FLinearColor* Tint = nullptr) const
 	{
 		// Many thin, round-ended (anti-aliased) bands so no step or corner reads: the backing must never show as an object.
 		static const FSlateRoundedBoxBrush Round(FLinearColor::White, 256.f);
@@ -694,7 +697,7 @@ struct FPainter
 		{
 			return;
 		}
-		const FLinearColor C = Tok(UiToken::Backing, 0.f) + FLinearColor(0.f, 0.f, 0.f, Each);
+		const FLinearColor C = (Tint ? FLinearColor(Tint->R, Tint->G, Tint->B, 0.f) : Tok(UiToken::Backing, 0.f)) + FLinearColor(0.f, 0.f, 0.f, Each);
 		for (int32 I = 0; I < Bands; ++I)
 		{
 			// Bands spaced by the inverse of a smoothstep over the outer part: an even middle, a soft fall, no cone.
@@ -4803,6 +4806,54 @@ private:
 
 bool IsLowSurrogateUnit(TCHAR C) { return C >= 0xDC00 && C <= 0xDFFF; }
 
+// The subtitle's metrics: the block's foot over the screen's bottom, the line height over the face's, the gap after an
+// inline speaker (px at 1080).
+constexpr float kSubBottom = 96.f;
+constexpr float kSubLineK = 1.15f;
+constexpr float kSubSpeakerGap = 18.f;
+
+// The brightest tenth of the game viewport's picture inside a rectangle of a widget Size big. Read only at the end of
+// the viewport's draw (the Slate layers are not in the picture yet), never per frame; false when nothing could be read.
+bool PictureBrightest(const FBox2f& Rc, const FVector2f& Size, ftcore::UiColor& Out)
+{
+	FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+	const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+	if (Rc.Max.X <= Rc.Min.X || Rc.Max.Y <= Rc.Min.Y || VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f)
+	{
+		return false;
+	}
+	const float KX = VS.X / Size.X;
+	const float KY = VS.Y / Size.Y;
+	const FIntRect R(FMath::Clamp(FMath::FloorToInt(Rc.Min.X * KX), 0, VS.X - 1), FMath::Clamp(FMath::FloorToInt(Rc.Min.Y * KY), 0, VS.Y - 1),
+		FMath::Clamp(FMath::CeilToInt(Rc.Max.X * KX), 1, VS.X), FMath::Clamp(FMath::CeilToInt(Rc.Max.Y * KY), 1, VS.Y));
+	TArray<FColor> Px;
+	if (R.Width() <= 0 || R.Height() <= 0 || !VP->ReadPixels(Px, FReadSurfaceDataFlags(), R) || Px.Num() == 0)
+	{
+		return false;
+	}
+	ftcore::UiLumaHistogram Hist;
+	for (const FColor& Q : Px)
+	{
+		ftcore::uiLumaAdd(Hist, ftcore::UiColor{Q.R / 255.f, Q.G / 255.f, Q.B / 255.f, 1.f});
+	}
+	Out = ftcore::uiLumaBrightest(Hist, 0.1f);
+	return Out.r + Out.g + Out.b > 0.f; // all black is no picture yet
+}
+
+// The band behind a subtitle block (2026-11-16 ruling): black at Peak (Core kUiSubtitleBand) under the whole block,
+// fading to nothing on every side, so it never reads as a plate. Painted only where uiSubtitleBand asked for it.
+void PaintSubtitleBand(const FPainter& P, float CX, float Top, float Bottom, float Widest, float LineH, float Peak)
+{
+	if (Peak <= 0.f || Bottom <= Top)
+	{
+		return;
+	}
+	static const FLinearColor Black(0.f, 0.f, 0.f, 1.f);
+	// Soft's even middle is its inner 0.55: the block and a margin of most of a line sit inside it.
+	const float Pad = 0.8f * LineH;
+	P.Soft(CX, 0.5f * (Top + Bottom), (Widest + 2.f * Pad) / 0.55f, (Bottom - Top + Pad) / 0.55f, Peak, 1.f, &Black);
+}
+
 #if !UE_BUILD_SHIPPING
 // -UiChoiceShot placeholders (non-shipping stills only; the script has no choice beats yet). The last cannot be taken.
 const TCHAR* const kFakeOptions[3] = {TEXT("1   First option"), TEXT("2   Second option"), TEXT("3   A locked option")};
@@ -4857,7 +4908,7 @@ public:
 		HiddenFor = 0.f;
 		Shown = D;
 		const FVector2f Size = Geometry.GetLocalSize();
-		const float Scale = D->GetSubtitleScale();
+		const float Scale = FMath::Clamp(D->GetSubtitleScale(), 1.f, 2.f); // the text scale setting's range
 		if (WrappedSerial != D->GetBeatSerial() || WrappedBeat != View.beatRevision || WrappedSize != Size || WrappedScale != Scale)
 		{
 			Rewrap(*D, Size, Scale);
@@ -4877,6 +4928,21 @@ public:
 			ArriveAt[I] = Time;
 		}
 		SeenRevealed = FMath::Max(SeenRevealed, Revealed);
+		// The page (two lines) the reveal stands in; the block, for the read of the picture under it.
+		{
+			const int32 RevealedUnit = CpToUnit.Num() > 0 ? CpToUnit[FMath::Clamp(Revealed, 0, CpToUnit.Num() - 1)] : 0;
+			PageFirst = static_cast<int32>(ftcore::uiSubtitlePage(Fit, static_cast<std::uint32_t>(RevealedUnit)) * ftcore::kUiSubtitleLines);
+			PageRows = FMath::Clamp(Lines.Num() - PageFirst, 0, static_cast<int32>(ftcore::kUiSubtitleLines));
+			const float S = FMath::Max(0.25f, Size.Y / 1080.f);
+			const float Bottom = Size.Y - kSubBottom * S;
+			float Widest = 0.f;
+			for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
+			{
+				Widest = FMath::Max(Widest, LineW[I] + (I == PageFirst ? SpeakerW : 0.f));
+			}
+			SubWidest = Widest;
+			SubRead = FBox2f(FVector2f(Size.X * 0.5f - 0.5f * Widest, Bottom - LineH * PageRows), FVector2f(Size.X * 0.5f + 0.5f * Widest, Bottom));
+		}
 
 		// The options: the beat's own, or (non-shipping -UiChoiceShot, for stills while the script has no choices)
 		// three placeholders under any finished line.
@@ -4921,7 +4987,7 @@ public:
 			EvenWant = Floor;
 			if (OptionRows > 0)
 			{
-				const float SubTop = Size.Y - 96.f * S - LineH * Lines.Num(); // the subtitle's block, as painted
+				const float SubTop = Size.Y - kSubBottom * S - LineH * PageRows; // the subtitle's block, as painted
 				EvenWant = FMath::Min(Floor, SubTop - LineH * 0.4f - LineH * 1.05f * OptionRows - 1.5f * LineH);
 			}
 			EvenTop = EvenTop < 0.f ? Floor : FMath::Min(EvenTop, Floor);
@@ -4939,6 +5005,8 @@ public:
 		}
 		const float Target = ConvTarget();
 		ConvDim = FMath::Min(Target, ConvDim + FMath::Max(Target - ConvDim, 0.02f) * FMath::Min(1.f, DeltaTime * 10.f));
+		// The gradient stands behind the replies only (2026-11-16: a plain line has no backing but the measured band).
+		GradK = FMath::Clamp(GradK + (OptionRows > 0 ? DeltaTime : -DeltaTime) / 0.25f, 0.f, 1.f);
 	}
 
 	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
@@ -4955,7 +5023,7 @@ public:
 			{
 				const FVector2f Size = Geometry.GetLocalSize();
 				Mesh.Begin(Geometry, FMath::Max(0.25f, Size.Y / 1080.f));
-				PaintLowGradient(Mesh, Size, ConvDim * Hold, EvenTop);
+				PaintLowGradient(Mesh, Size, ConvDim * Hold * GradK, EvenTop);
 				Mesh.Flush(Out, Layer + 1);
 			}
 			return Layer;
@@ -4964,12 +5032,13 @@ public:
 		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f)};
 		const float S = P.S;
 		const FString& Text = D->GetText();
-		// The subtitle's block, where it always stands; the replies stand above it.
-		const float Bottom = Size.Y - 96.f * S;
-		const float Top = Bottom - LineH * Lines.Num();
+		// The subtitle's block (the page on show), where it always stands; the replies stand above it.
+		const float Bottom = Size.Y - kSubBottom * S;
+		const float Top = Bottom - LineH * PageRows;
 		const float CX = Size.X * 0.5f;
 		Mesh.Begin(Geometry, S);
-		PaintLowGradient(Mesh, Size, ConvDim, EvenTop);
+		PaintLowGradient(Mesh, Size, ConvDim * GradK, EvenTop);
+		PaintSubtitleBand(P, CX, Top, Bottom, SubWidest, LineH, SubBand * (1.f - GradK));
 		// The keys, once, under the block at the prompt size (never under the 18 px floor); gone after a few quiet seconds,
 		// back on any input.
 		if (HintA > 0.f)
@@ -4980,21 +5049,22 @@ public:
 		const FLinearColor Body = View.kind == ftcore::DialogueViewKind::Direction ? Tok(UiToken::InkDim) : Tok(UiToken::Ink);
 		const int32 RevealedUnits = CpToUnit.Num() > 0 ? CpToUnit[FMath::Min(static_cast<int32>(View.revealedChars), CpToUnit.Num() - 1)] : 0;
 		float LastRight = CX;
-		for (int32 I = 0; I < Lines.Num(); ++I)
+		const FLinearColor SpeakerC = Table().Row[static_cast<size_t>(ShownWorld())].Fill; // the speaker in the world's fill
+		for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
 		{
-			const float Lead = I == 0 ? SpeakerW : 0.f;
+			const float Lead = I == PageFirst ? SpeakerW : 0.f; // the speaker heads each page
 			float X = CX - (LineW[I] + Lead) * 0.5f;
-			const float Y = Top + LineH * I;
-			if (I == 0 && !SpeakerUpper.IsEmpty())
+			const float Y = Top + LineH * (I - PageFirst);
+			if (I == PageFirst && !SpeakerUpper.IsEmpty())
 			{
-				P.Text(X, Y + SpeakerDy, SpeakerUpper, SpeakerFont, Tok(UiToken::Accent));
+				P.Text(X, Y + SpeakerDy, SpeakerUpper, SpeakerFont, SpeakerC);
 			}
 			X += Lead;
 			const int32 End = FMath::Min(Lines[I].Y, RevealedUnits);
 			PaintArriving(P, X, Y, Text, Lines[I].X, End, Body);
 			LastRight = X + LineW[I];
 		}
-		if (OptionRows > 0 && (bReadWanted || ConvDim < ConvTarget() - 0.005f || EvenTop > EvenWant + 1.f) && OptWait < 0.5f)
+		if (OptionRows > 0 && (bReadWanted || ConvDim < ConvTarget() - 0.005f || EvenTop > EvenWant + 1.f || GradK < 0.99f) && OptWait < 0.5f)
 		{
 			// New options wait until the gradient is read and in place (its level and its reach behind them), so they
 			// never show over a lighter one or bare scene; half a second at most.
@@ -5009,9 +5079,9 @@ public:
 			const float RowH = LineH * 1.05f;
 			const float OptTop = Top - LineH * 0.4f - RowH * OptionRows;
 			float X0 = CX;
-			for (int32 I = 0; I < Lines.Num(); ++I)
+			for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
 			{
-				X0 = FMath::Min(X0, CX - (LineW[I] + (I == 0 ? SpeakerW : 0.f)) * 0.5f);
+				X0 = FMath::Min(X0, CX - (LineW[I] + (I == PageFirst ? SpeakerW : 0.f)) * 0.5f);
 			}
 			std::uint32_t Takeable = 0;
 			for (int32 I = 0; I < OptionRows; ++I)
@@ -5043,7 +5113,7 @@ public:
 		else if (View.continuePrompt)
 		{
 			const float A = 0.55f + 0.45f * FMath::Sin(Time * 5.f);
-			P.Chevron(LastRight + 22.f * S, Top + LineH * (Lines.Num() - 1) + LineH * 0.45f, 18.f * S, Tok(UiToken::Accent, A));
+			P.Chevron(LastRight + 22.f * S, Top + LineH * FMath::Max(PageRows - 1, 0) + LineH * 0.45f, 18.f * S, Tok(UiToken::Accent, A));
 		}
 		Mesh.Flush(Out, Layer + 1);
 		return Layer + 3;
@@ -5058,6 +5128,7 @@ private:
 		{
 			ConvDim = 0.f;
 			ConvNeed = 0.f;
+			SubBand = 0.f;
 			EvenTop = -1.f;
 			bReadWanted = false;
 		}
@@ -5080,6 +5151,16 @@ private:
 			bReadWanted = false;
 			ReadTries = 0;
 			ConvNeed = FMath::Max(ConvNeed, Need);
+			// The subtitle's band: the off-white over the brightest tenth under the block; within a conversation it only
+			// comes in, never flickers out between beats.
+			ftcore::UiColor Pic;
+			if (PictureBrightest(SubRead, DimSize, Pic))
+			{
+				const ftcore::UiColor Ink = ftcore::uiColor(Table().Style, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
+				float Bare = 0.f, Banded = 0.f;
+				SubBand = FMath::Max(SubBand, ftcore::uiSubtitleBand(Ink, Pic, &Bare, &Banded));
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: subtitle contrast %.2f over the picture (%.2f over the band); band %.2f."), Bare, Banded, SubBand);
+			}
 		}
 	}
 
@@ -5224,13 +5305,12 @@ private:
 		HintText = kStoryHintUi;
 		HintW = TextWidth(HintText, HintFont);
 		const TSharedRef<FSlateFontMeasure> M = FontMeasure();
-		LineH = M->GetMaxCharacterHeight(TextFont) * 1.15f;
+		LineH = M->GetMaxCharacterHeight(TextFont) * kSubLineK;
 		OptionAsc = M->GetMaxCharacterHeight(OptionFont) + M->GetBaseline(OptionFont); // the baseline under a row's top
 		const bool bSpeakerUpper = Table().Style.text[static_cast<size_t>(UiTextRole::Speaker)].upper;
 		SpeakerUpper = View.kind != ftcore::DialogueViewKind::Line ? FString() : bSpeakerUpper ? D.GetSpeaker().ToUpper() : D.GetSpeaker();
-		SpeakerW = SpeakerUpper.IsEmpty() ? 0.f : TextWidth(SpeakerUpper, SpeakerFont) + 18.f * S;
+		SpeakerW = SpeakerUpper.IsEmpty() ? 0.f : TextWidth(SpeakerUpper, SpeakerFont) + kSubSpeakerGap * S;
 		SpeakerDy = (M->GetMaxCharacterHeight(TextFont) - M->GetMaxCharacterHeight(SpeakerFont)) * 0.62f;
-		MaxW = FMath::Min(Size.X - 160.f * S, 1500.f * S);
 
 		const FString& T = D.GetText();
 		CpToUnit.Reset();
@@ -5243,48 +5323,17 @@ private:
 		}
 		CpToUnit.Add(T.Len());
 
-		// Greedy by spaces; a word wider than a line stands alone.
+		// Core's fit: 42 characters a line at most, broken at spaces (a longer word stands alone), shown two lines a page.
+		static_assert(sizeof(TCHAR) == sizeof(char16_t), "the subtitle's fit reads UTF-16");
+		ftcore::uiSubtitleFit(std::u16string_view(reinterpret_cast<const char16_t*>(*T), static_cast<size_t>(T.Len())), Fit);
 		Lines.Reset();
 		LineW.Reset();
-		const auto Width = [&](int32 From, int32 To) // [From, To)
-		{ return To > From ? static_cast<float>(M->Measure(FStringView(T), From, To - 1, TextFont).X) : 0.f; };
-		int32 Start = 0;
-		int32 Break = -1;
-		float Avail = MaxW - SpeakerW;
-		for (int32 I = 0; I <= T.Len(); ++I)
+		for (int32 I = 0; I < static_cast<int32>(Fit.count); ++I)
 		{
-			const bool bEnd = I == T.Len();
-			if (!bEnd && T[I] != TEXT(' ') && T[I] != TEXT('\n'))
-			{
-				continue;
-			}
-			if (Width(Start, I) > Avail && Break > Start)
-			{
-				Lines.Add(FIntPoint(Start, Break));
-				Start = Break + 1;
-				Avail = MaxW;
-				I = Break; // re-run from the new line's start
-				Break = -1;
-				continue;
-			}
-			if (bEnd)
-			{
-				Lines.Add(FIntPoint(Start, T.Len()));
-				break;
-			}
-			if (T[I] == TEXT('\n'))
-			{
-				Lines.Add(FIntPoint(Start, I));
-				Start = I + 1;
-				Avail = MaxW;
-				Break = -1;
-				continue;
-			}
-			Break = I;
-		}
-		for (const FIntPoint& L : Lines)
-		{
-			LineW.Add(Width(L.X, L.Y));
+			const int32 B = static_cast<int32>(Fit.line[static_cast<size_t>(I)].begin);
+			const int32 E = static_cast<int32>(Fit.line[static_cast<size_t>(I)].end);
+			Lines.Add(FIntPoint(B, E));
+			LineW.Add(E > B ? static_cast<float>(M->Measure(FStringView(T), B, E - 1, TextFont).X) : 0.f);
 		}
 	}
 
@@ -5310,10 +5359,16 @@ private:
 	float SpeakerDy = 0.f;
 	float LineH = 0.f;
 	float OptionAsc = 0.f; // the reply face's ascent: a row's top to its baseline
-	float MaxW = 0.f;
 	TArray<int32> CpToUnit;
-	TArray<FIntPoint> Lines; // [start, end) in UTF-16 units
+	ftcore::UiSubtitleFit Fit; // Core's breaks of the beat's line
+	TArray<FIntPoint> Lines; // [start, end) in UTF-16 units, as Fit
 	TArray<float> LineW;
+	int32 PageFirst = 0; // the first line of the page on show
+	int32 PageRows = 0;  // its lines (two at most)
+	float SubWidest = 0.f; // the page's widest line, the speaker's lead in
+	FBox2f SubRead = FBox2f(ForceInit); // the page's block, for the read of the picture under it
+	float SubBand = 0.f; // the band's black now (0 or Core kUiSubtitleBand); only comes in within a conversation
+	float GradK = 0.f;   // the low gradient's share: 1 while replies show
 	// Line arrival.
 	uint32 ArrivalSerial = MAX_uint32;
 	TArray<float> ArriveAt; // by codepoint: the widget time it came out (sized once per beat)
@@ -5519,6 +5574,556 @@ private:
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line; // the underline being drawn (Core fills it, the mesh takes it)
 };
+
+// The explore HUD (the new UI, FT::NewUiEnabled; 2026-11-16 ruling, item A): the r19 HUD's language out of a fight. Top
+// left, the party stack: each member's name in capitals over a thin line in the world's fill with its square end cap
+// (no figures: explore carries no hurt state); under the stack the objective, one line in small caps, quieting to 40
+// percent after 4 s without change (Core uiObjectiveStep). The prompt stands at the focused spot on screen: its key in a
+// 1 device px ring and one verb, never centred; with the spot off screen there is none. Notices at the right edge, one
+// at a time, 2.5 s each, a queue of 3 (Core UiNoticeQueue). No plate under any word: the words' own soft contour.
+// Non-shipping: -UiExploreFake fills every piece with placeholders (and a two-line subtitle, in the dialogue's metrics,
+// over the measured band of uiSubtitleBand); -UiExploreShot=<file prefix> takes the still after -UiExploreShotDelay= s
+// (10) and quits; -UiExploreShotYaw= turns the view first; -UiSubScale= sets the placeholder subtitle's text scale.
+#if !UE_BUILD_SHIPPING
+const TCHAR* const kFakeObjective = TEXT("Find a way across the canal");
+const TCHAR* const kFakeNotice = TEXT("Map updated");
+const TCHAR* const kFakePrompt = TEXT("E  Open the gate");
+const TCHAR* const kFakeLine = TEXT("Stay close. The lamps along this street went out an hour ago.");
+#endif
+
+class SFTExploreHud : public SLeafWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SFTExploreHud) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&, TFunction<const AFTExploreDirector*()> InGetDirector, TFunction<const AFTExploreCharacter*()> InGetLead)
+	{
+		GetDirector = MoveTemp(InGetDirector);
+		GetLead = MoveTemp(InGetLead);
+		SetVisibility(EVisibility::HitTestInvisible);
+#if !UE_BUILD_SHIPPING
+		const TCHAR* Cmd = FCommandLine::Get();
+		bFake = FParse::Param(Cmd, TEXT("UiExploreFake"));
+		bShot = FParse::Value(Cmd, TEXT("UiExploreShot="), ShotPrefix) && !ShotPrefix.IsEmpty();
+		FParse::Value(Cmd, TEXT("UiExploreShotDelay="), ShotDelay);
+		bShotYaw = FParse::Value(Cmd, TEXT("UiExploreShotYaw="), ShotYaw);
+		bSweep = FParse::Param(Cmd, TEXT("UiExploreShotSweep")); // turn a full circle, shoot the view worst for the subtitle
+		FParse::Value(Cmd, TEXT("UiSubScale="), FakeSubScale);
+		FakeSubScale = FMath::Clamp(FakeSubScale, 1.f, 2.f);
+		if (bFake)
+		{
+			FakeLine = kFakeLine;
+		}
+#endif
+	}
+
+	virtual ~SFTExploreHud() override
+	{
+		if (bReadBound && GEngine && GEngine->GameViewport)
+		{
+			GEngine->GameViewport->OnEndDraw().RemoveAll(this);
+		}
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1920.0, 1080.0); }
+
+	virtual void Tick(const FGeometry& Geometry, const double, const float DeltaTime) override
+	{
+		Time += DeltaTime;
+		const AFTExploreDirector* D = GetDirector ? GetDirector() : nullptr;
+		const AFTExploreCharacter* C = GetLead ? GetLead() : nullptr;
+		Size = Geometry.GetLocalSize();
+		bOn = D && C && !C->GetPartyScreen().open; // the party screen has the left side while it is open
+		TickShot(C);
+		if (!bOn)
+		{
+			return;
+		}
+		const float H = Size.Y;
+		if (H != BuiltHeight || FakeSubScale != BuiltSubScale)
+		{
+			BuiltHeight = H;
+			BuiltSubScale = FakeSubScale;
+			BuildFonts(H);
+		}
+		// The cutscene in place has the screen.
+		const AFTCutsceneDirector* Cut = D->GetCutsceneDirector();
+		bCutscene = Cut && Cut->IsPlayingInPlace();
+
+		// The party stack's names.
+		const TArray<FFTLeadLook>& Looks = C->PartyLooks;
+		const auto LookName = [&Looks](int32 I) -> const FString& { return Looks.IsValidIndex(I) ? Looks[I].Name : NoName(); };
+		bPartnerHere = C->IsPartnerHere();
+		BuildName(LeadRow, LookName(C->GetLeadIndex()), kLeadUi, LeadFont);
+		BuildName(PartnerRow, LookName(C->GetPartnerIndex()), kPartnerUi, PartnerFont);
+
+		// The objective: the story step's, a world's line, or the demo's current one.
+		const FString* Obj = &NoName();
+		if (D->IsStoryWalk())
+		{
+			Obj = &D->GetFieldObjective();
+		}
+		else if (D->IsWorldMode() || D->IsOverworld())
+		{
+			Obj = &D->GetWorldLine();
+		}
+		else
+		{
+			Obj = &D->GetObjectiveText(D->GetExploration().currentObjective());
+		}
+#if !UE_BUILD_SHIPPING
+		static const FString FakeObj(kFakeObjective);
+		Obj = bFake ? &FakeObj : Obj;
+#endif
+		if (!ObjectiveSeen.Equals(*Obj, ESearchCase::CaseSensitive))
+		{
+			ObjectiveSeen = *Obj; // copied once per change of the words
+			++ObjectiveSerial;
+			ObjW = 0.f;
+		}
+		if (ObjW <= 0.f && !ObjectiveSeen.IsEmpty())
+		{
+			ObjW = TextWidth(ObjectiveSeen, ObjFont); // once per change (or new fonts)
+		}
+		ftcore::uiObjectiveStep(ObjFade, ObjectiveSerial, DeltaTime);
+
+		// Notices: a new one each time the director's notice restarts its age (the same words again are a new notice).
+		const FString* Note = &D->GetNotice();
+		double NoteAge = D->GetNoticeAge();
+#if !UE_BUILD_SHIPPING
+		static const FString FakeNote(kFakeNotice);
+		if (bFake)
+		{
+			Note = &FakeNote;
+			NoteAge = FMath::Fmod(static_cast<double>(Time), 2.0); // a fresh one every 2 s: the queue always shows one
+		}
+#endif
+		if (!Note->IsEmpty() && NoteAge < LastNoticeAge)
+		{
+			const std::uint8_t Slot = ftcore::uiNoticePush(Notices);
+			NoticeText[Slot] = *Note;
+		}
+		LastNoticeAge = Note->IsEmpty() ? 1e9 : NoteAge;
+		ftcore::uiNoticeStep(Notices, DeltaTime);
+
+		// The prompt at its spot, from the director's "<key>  <words>": the key in the ring, the first word the verb.
+		bPrompt = false;
+		const FString* Prompt = &D->GetPrompt();
+		FVector At = FVector::ZeroVector;
+		bool bAt = D->GetFocusLocation(At);
+#if !UE_BUILD_SHIPPING
+		static const FString FakePrompt(kFakePrompt);
+		if (bFake)
+		{
+			Prompt = &FakePrompt;
+			const FRotator Yaw(0.f, C->GetControlRotation().Yaw, 0.f);
+			At = C->GetActorLocation() + Yaw.RotateVector(FVector(450.f, 140.f, 60.f));
+			bAt = true;
+		}
+#endif
+		if (!Prompt->IsEmpty() && bAt)
+		{
+			if (!PromptSeen.Equals(*Prompt, ESearchCase::CaseSensitive))
+			{
+				PromptSeen = *Prompt;
+				SplitPrompt(PromptSeen);
+			}
+			bPrompt = Project(C, At, PromptAt);
+		}
+	}
+
+	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
+		const FWidgetStyle&, bool) const override
+	{
+		if (!bOn || bCutscene || BuiltHeight <= 0.f)
+		{
+			return Layer;
+		}
+		const FVector2f Sz = Geometry.GetLocalSize();
+		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Sz.Y / 1080.f)};
+		const float S = P.S;
+		const FUiWorldRow& R = Shown();
+		Mesh.Begin(Geometry, S);
+
+		// The party stack, top left: name, then its thin line (full: no value shown) with the cap at its end.
+		const float X0 = Hud::Margin * S;
+		float Y = Hud::Margin * S;
+		const auto Member = [&](const FRowName& Row, const FSlateFontInfo& Font, float Asc, float Ink, float LineLen, float LineW)
+		{
+			P.Text(X0, Y, Row.Text, Font, Tok(UiToken::Ink, Ink));
+			const float Base = Y + Asc;
+			const float LineY = Base + (0.5f * LineW + 8.f) * S;
+			const float WD = Mesh.WholeDev(LineW * S);
+			const float YS = Mesh.SnapLineY(LineY, WD);
+			ftcore::uiStrokeLine(Line, X0, YS, X0 + LineLen * S, YS, ValueStyle(WD / S, 301, S), 0.f, 1.f);
+			Mesh.ValueStroke(Line, R.Fill);
+			const float Side = Mesh.WholeDev((LineW + Table().Style.lines.capGrow) * S);
+			const float L = Mesh.SnapX(ftcore::uiCapX(X0, LineLen * S, 1.f, Side) - 0.5f * Side);
+			const float T = Mesh.SnapLineY(YS, Side) - 0.5f * Side;
+			const FVector2f Pts[4] = {FVector2f(L, T), FVector2f(L + Side, T), FVector2f(L + Side, T + Side), FVector2f(L, T + Side)};
+			Mesh.Fill(Pts, 4, Tok(UiToken::Ink));
+			Y = LineY + 0.5f * WD + 18.f * S;
+		};
+		Member(LeadRow, LeadFont, LeadAsc, 1.f, Hud::LeadLine, Hud::PartnerHpW);
+		if (bPartnerHere)
+		{
+			Member(PartnerRow, PartnerFont, PartnerAsc, Hud::PartnerInk, Hud::PartnerLine, Hud::GuardW);
+		}
+
+		// The objective under the stack.
+		ObjRect = FBox2f(FVector2f(X0, Y + 10.f * S), FVector2f(X0 + ObjW, Y + 10.f * S + ObjAsc));
+		P.Text(X0, Y + 10.f * S, ObjectiveSeen, ObjFont, Tok(UiToken::Ink, ObjFade.alpha));
+
+		// The notice at the right edge, right-aligned.
+		const int32 ShownSlot = ftcore::uiNoticeShown(Notices);
+		NoteRect = FBox2f(ForceInit);
+		if (ShownSlot >= 0)
+		{
+			const FString& N = NoticeText[ShownSlot];
+			const float W = TextWidth(N, NoteFont); // measured while one stands: a few words, no allocation
+			const float NX = Sz.X - Hud::Margin * S - W;
+			const float NY = Sz.Y * 0.38f;
+			NoteRect = FBox2f(FVector2f(NX, NY), FVector2f(NX + W, NY + NoteAsc));
+			P.Text(NX, NY, N, NoteFont, Tok(UiToken::Ink, ftcore::uiNoticeAlpha(Notices)));
+		}
+
+		// The prompt: the key in a 1 device px ring centred on the spot, the verb after it.
+		if (bPrompt)
+		{
+			const float Rr = 0.5f * Hud::KeyCapH * S;
+			const float CX = FMath::Clamp(PromptAt.X, Hud::Margin * S + Rr, Sz.X - Hud::Margin * S - Rr - VerbW - 12.f * S);
+			const float CY = FMath::Clamp(PromptAt.Y, Hud::Margin * S + Rr, Sz.Y - (kSubBottom + 140.f) * S);
+			constexpr int32 N = 64;
+			FVector2f Pts[N + 1];
+			for (int32 I = 0; I <= N; ++I)
+			{
+				const float A = 2.f * UE_PI * static_cast<float>(I) / N;
+				Pts[I] = FVector2f(CX + Rr * FMath::Cos(A), CY + Rr * FMath::Sin(A));
+			}
+			PolyStroke(Line, Pts, N + 1, 0.5f * Mesh.PxSize());
+			Mesh.Stroke(Line, Tok(UiToken::Ink), true);
+			P.Text(CX - 0.5f * KeyW, CapTop(CY, KeyAsc), KeyText, KeyFont, Tok(UiToken::Ink));
+			P.Text(CX + Rr + 12.f * S, CapTop(CY, VerbAsc), VerbText, VerbFont, Tok(UiToken::Ink));
+		}
+
+#if !UE_BUILD_SHIPPING
+		// The placeholder subtitle: the dialogue's block and metrics, the speaker in the world's fill, over the band only
+		// where the measured contrast asks for it.
+		if (bFake && Fit.count > 0)
+		{
+			const int32 Rows = FMath::Min<int32>(Fit.count, ftcore::kUiSubtitleLines);
+			const float Bottom = Sz.Y - kSubBottom * S;
+			const float Top = Bottom - SubLineH * Rows;
+			const float CX = Sz.X * 0.5f;
+			float Widest = 0.f;
+			for (int32 I = 0; I < Rows; ++I)
+			{
+				Widest = FMath::Max(Widest, SubLineW[I] + (I == 0 ? SpeakerW : 0.f));
+			}
+			SubRect = FBox2f(FVector2f(CX - 0.5f * Widest, Top), FVector2f(CX + 0.5f * Widest, Bottom));
+			PaintSubtitleBand(P, CX, Top, Bottom, Widest, SubLineH, SubBand);
+			for (int32 I = 0; I < Rows; ++I)
+			{
+				const float Lead = I == 0 ? SpeakerW : 0.f;
+				const float X = CX - (SubLineW[I] + Lead) * 0.5f;
+				const float LY = Top + SubLineH * I;
+				if (I == 0)
+				{
+					P.Text(X, LY + SpeakerDy, SpeakerText, SpeakerFont, R.Fill);
+				}
+				P.Text(X + Lead, LY, FakeLine, SubFont, Tok(UiToken::Ink), static_cast<int32>(Fit.line[I].begin), static_cast<int32>(Fit.line[I].end));
+			}
+		}
+#endif
+		Mesh.Flush(Out, Layer + 1);
+		return Layer + 5;
+	}
+
+private:
+	struct FRowName
+	{
+		FString Seen;
+		FString Text;
+		bool bBuilt = false;
+	};
+
+	static const FString& NoName()
+	{
+		static const FString Empty;
+		return Empty;
+	}
+
+	static void BuildName(FRowName& Row, const FString& Src, const FString& Fallback, const FSlateFontInfo&)
+	{
+		if (!Row.bBuilt || !Row.Seen.Equals(Src, ESearchCase::CaseSensitive))
+		{
+			Row.bBuilt = true;
+			Row.Seen = Src;
+			Row.Text = (Src.IsEmpty() ? Fallback : Src).ToUpper();
+		}
+	}
+
+	void BuildFonts(float H)
+	{
+		const TSharedRef<FSlateFontMeasure> FM = FontMeasure();
+		const auto Asc = [&FM](const FSlateFontInfo& F) { return static_cast<float>(FM->GetMaxCharacterHeight(F) + FM->GetBaseline(F)); };
+		const auto Spaced = [](FSlateFontInfo F, int32 Tracking)
+		{
+			F.LetterSpacing = Tracking;
+			return F;
+		};
+		LeadFont = Spaced(FontPx(UiTextRole::Title, H, Hud::LeadPx), Hud::NameTracking);
+		LeadAsc = Asc(LeadFont);
+		PartnerFont = Spaced(FontPx(UiTextRole::Title, H, Hud::PartnerPx), Hud::NameTracking);
+		PartnerAsc = Asc(PartnerFont);
+		ObjFont = Spaced(FontPx(UiTextRole::Label, H, Hud::RowPx), Hud::SpacedTracking / 2); // small caps (the label face)
+		ObjAsc = Asc(ObjFont);
+		NoteFont = Spaced(FontPx(UiTextRole::Label, H, Hud::RowPx), Hud::SpacedTracking / 2);
+		NoteAsc = Asc(NoteFont);
+		KeyFont = FontPx(UiTextRole::Label, H, Hud::KeyPx);
+		KeyAsc = Asc(KeyFont);
+		VerbFont = Spaced(FontPx(UiTextRole::Label, H, Hud::RowPx), Hud::SpacedTracking);
+		VerbAsc = Asc(VerbFont);
+		ObjW = 0.f;
+		PromptSeen.Reset(); // measured again in the new fonts
+#if !UE_BUILD_SHIPPING
+		if (bFake)
+		{
+			// The placeholder subtitle in the dialogue's faces at its text scale, broken by Core's 42-character fit.
+			const float S = FMath::Max(0.25f, H / 1080.f);
+			SubFont = FontFor(UiTextRole::Subtitle, H, FakeSubScale);
+			SpeakerFont = FontFor(UiTextRole::Speaker, H, FakeSubScale);
+			SubLineH = FM->GetMaxCharacterHeight(SubFont) * kSubLineK;
+			SpeakerDy = (FM->GetMaxCharacterHeight(SubFont) - FM->GetMaxCharacterHeight(SpeakerFont)) * 0.62f;
+			const AFTExploreCharacter* C = GetLead ? GetLead() : nullptr;
+			const FString Name = C && C->PartyLooks.IsValidIndex(C->GetLeadIndex()) ? C->PartyLooks[C->GetLeadIndex()].Name : kLeadUi.Get();
+			const bool bUpper = Table().Style.text[static_cast<size_t>(UiTextRole::Speaker)].upper;
+			SpeakerText = bUpper ? Name.ToUpper() : Name;
+			SpeakerW = TextWidth(SpeakerText, SpeakerFont) + kSubSpeakerGap * S;
+			ftcore::uiSubtitleFit(std::u16string_view(reinterpret_cast<const char16_t*>(*FakeLine), static_cast<size_t>(FakeLine.Len())), Fit);
+			for (int32 I = 0; I < FMath::Min<int32>(Fit.count, ftcore::kUiSubtitleLines); ++I)
+			{
+				const int32 B = static_cast<int32>(Fit.line[I].begin);
+				const int32 E = static_cast<int32>(Fit.line[I].end);
+				SubLineW[I] = E > B ? static_cast<float>(FM->Measure(FStringView(FakeLine), B, E - 1, SubFont).X) : 0.f;
+			}
+		}
+#endif
+	}
+
+	// "<key>  <words>": the key alone (one token before two spaces), the verb its first word, in capitals.
+	void SplitPrompt(const FString& Src)
+	{
+		int32 Gap = Src.Find(TEXT("  "));
+		FString Key = Gap > 0 ? Src.Left(Gap) : FString();
+		FString Rest = Gap > 0 ? Src.Mid(Gap + 2).TrimStart() : Src;
+		int32 Space = INDEX_NONE;
+		Rest.FindChar(TEXT(' '), Space);
+		VerbText = (Space > 0 ? Rest.Left(Space) : Rest).ToUpper();
+		KeyText = Key.IsEmpty() ? FString(TEXT("E")) : Key.ToUpper();
+		VerbW = TextWidth(VerbText, VerbFont);
+		KeyW = TextWidth(KeyText, KeyFont);
+	}
+
+	// The spot on screen in the widget's units; false when it is behind the view or off the screen.
+	bool Project(const AFTExploreCharacter* C, const FVector& At, FVector2f& OutPt) const
+	{
+		const APlayerController* PC = C ? Cast<APlayerController>(C->GetController()) : nullptr;
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+		FVector2D Screen;
+		if (!PC || VS.X <= 0 || VS.Y <= 0 || !PC->ProjectWorldLocationToScreen(At, Screen, false))
+		{
+			return false;
+		}
+		OutPt = FVector2f(static_cast<float>(Screen.X) * Size.X / VS.X, static_cast<float>(Screen.Y) * Size.Y / VS.Y);
+		return OutPt.X >= 0.f && OutPt.Y >= 0.f && OutPt.X <= Size.X && OutPt.Y <= Size.Y;
+	}
+
+	// Non-shipping stills: the turn, the reads of the picture under the words, the still, the exit.
+	void TickShot(const AFTExploreCharacter* C)
+	{
+		(void)C;
+#if !UE_BUILD_SHIPPING
+		if (!bFake && !bShot)
+		{
+			return;
+		}
+		APlayerController* SweepPC = C && C->GetWorld() ? C->GetWorld()->GetFirstPlayerController() : nullptr;
+		if (bSweep && !bSweepDone && SweepPC && Time > 1.f)
+		{
+			if (SweepStepAt < 0.f)
+			{
+				FRotator Rot = SweepPC->GetControlRotation();
+				if (SweepStep == 0)
+				{
+					SweepBase = Rot.Yaw;
+				}
+				Rot.Yaw = SweepBase + kSweepDeg * static_cast<float>(SweepStep);
+				SweepPC->SetControlRotation(Rot);
+				SweepStepAt = Time;
+			}
+			else if (!bSweepPending && Time - SweepStepAt > 0.4f)
+			{
+				bSweepPending = true; // the next read belongs to this step's view
+				bReadWanted = true;
+			}
+			if (SweepStep >= kSweepSteps)
+			{
+				FRotator Rot = SweepPC->GetControlRotation();
+				Rot.Yaw = SweepWorstYaw;
+				SweepPC->SetControlRotation(Rot);
+				bSweepDone = true;
+				SubBand = 0.f; // the band is judged again over the view that is shot
+				ShotDelay = Time + 3.f;
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: explore sweep: worst subtitle view at yaw %.0f (bare %.2f)."),
+					SweepWorstYaw, SweepWorst);
+			}
+		}
+		if (bShotYaw && !bYawDone && C && Time > 1.f)
+		{
+			if (APlayerController* PC = C->GetWorld() ? C->GetWorld()->GetFirstPlayerController() : nullptr)
+			{
+				FRotator Rot = PC->GetControlRotation();
+				Rot.Yaw = ShotYaw;
+				PC->SetControlRotation(Rot);
+				bYawDone = true;
+			}
+		}
+		if (!bReadBound && GEngine && GEngine->GameViewport)
+		{
+			GEngine->GameViewport->OnEndDraw().AddSP(this, &SFTExploreHud::ReadAtEndDraw);
+			bReadBound = true;
+		}
+		// Read the picture under the words twice a second, at the end of the game viewport's draw: the Slate layers are not
+		// in it yet, so the reads are of the bare scene.
+		bReadWanted = bReadWanted || Time - LastRead > 0.5f;
+		if (bShot && !bShotTaken && (!bSweep || bSweepDone) && Time >= ShotDelay)
+		{
+			bShotTaken = true;
+			const FString File = ShotPrefix + TEXT(".png");
+			FScreenshotRequest::RequestScreenshot(File, true, false);
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: explore still %s (world %d, subtitle scale %.1f)."), *File,
+				static_cast<int32>(ShownWorld()), FakeSubScale);
+		}
+		if (bShotTaken && Time >= ShotDelay + 2.f && !bExitAsked)
+		{
+			bExitAsked = true;
+			FPlatformMisc::RequestExit(false, TEXT("UiExploreShot"));
+		}
+#endif
+	}
+
+#if !UE_BUILD_SHIPPING
+	void ReadAtEndDraw()
+	{
+		if (!bReadWanted || FScreenshotRequest::IsScreenshotRequested() || !bOn)
+		{
+			return;
+		}
+		bReadWanted = false;
+		LastRead = Time;
+		const ftcore::UiStyle& St = Table().Style;
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
+		const ftcore::UiColor None{0.f, 0.f, 0.f, 0.f};
+		ftcore::UiColor Pic;
+		float SubRatio = -1.f, SubWith = -1.f, ObjRatio = -1.f, NoteRatio = -1.f;
+		if (PictureBrightest(SubRect, Size, Pic))
+		{
+			const float Want = ftcore::uiSubtitleBand(Ink, Pic, &SubRatio, &SubWith);
+			SubBand = FMath::Max(SubBand, Want); // only rises within the run: no flicker
+		}
+		if (bSweepPending)
+		{
+			if (SubRatio >= 0.f && SubRatio < SweepWorst)
+			{
+				SweepWorst = SubRatio;
+				SweepWorstYaw = SweepBase + kSweepDeg * static_cast<float>(SweepStep);
+			}
+			bSweepPending = false;
+			SweepStepAt = -1.f;
+			++SweepStep;
+		}
+		if (PictureBrightest(ObjRect, Size, Pic))
+		{
+			ObjRatio = ftcore::uiContrast(Ink, None, Pic);
+		}
+		if (PictureBrightest(NoteRect, Size, Pic))
+		{
+			NoteRatio = ftcore::uiContrast(Ink, None, Pic);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: explore contrast (bare ink over the brightest tenth): subtitle %.2f (band %.2f: %.2f), objective %.2f, notice %.2f."),
+			SubRatio, SubBand, SubWith, ObjRatio, NoteRatio);
+	}
+#endif
+
+	TFunction<const AFTExploreDirector*()> GetDirector;
+	TFunction<const AFTExploreCharacter*()> GetLead;
+	float Time = 0.f;
+	FVector2f Size = FVector2f::ZeroVector;
+	bool bOn = false;
+	bool bCutscene = false;
+	float BuiltHeight = 0.f;
+	float BuiltSubScale = -1.f;
+	bool bPartnerHere = false;
+	FRowName LeadRow, PartnerRow;
+	FSlateFontInfo LeadFont, PartnerFont, ObjFont, NoteFont, KeyFont, VerbFont;
+	float LeadAsc = 0.f, PartnerAsc = 0.f, ObjAsc = 0.f, NoteAsc = 0.f, KeyAsc = 0.f, VerbAsc = 0.f;
+	// The objective.
+	FString ObjectiveSeen;
+	uint32 ObjectiveSerial = 0;
+	float ObjW = 0.f;
+	ftcore::UiObjectiveFade ObjFade;
+	// The notices.
+	ftcore::UiNoticeQueue Notices;
+	FString NoticeText[ftcore::kUiNoticeQueue];
+	double LastNoticeAge = 1e9;
+	// The prompt.
+	bool bPrompt = false;
+	FVector2f PromptAt = FVector2f::ZeroVector;
+	FString PromptSeen, KeyText, VerbText;
+	float KeyW = 0.f, VerbW = 0.f;
+	// The reads (non-shipping stills).
+	mutable FBox2f ObjRect = FBox2f(ForceInit);
+	mutable FBox2f NoteRect = FBox2f(ForceInit);
+	mutable FBox2f SubRect = FBox2f(ForceInit);
+	float SubBand = 0.f;
+	bool bReadBound = false;
+	bool bReadWanted = false;
+	float LastRead = -1.f;
+	// The placeholder subtitle and the stills.
+	float FakeSubScale = 1.f;
+	bool bFake = false;
+#if !UE_BUILD_SHIPPING
+	bool bShot = false;
+	bool bShotTaken = false;
+	bool bExitAsked = false;
+	FString ShotPrefix;
+	float ShotDelay = 10.f;
+	bool bShotYaw = false;
+	bool bYawDone = false;
+	static constexpr int32 kSweepSteps = 12;
+	static constexpr float kSweepDeg = 30.f;
+	bool bSweep = false;
+	bool bSweepDone = false;
+	bool bSweepPending = false;
+	int32 SweepStep = 0;
+	float SweepStepAt = -1.f;
+	float SweepBase = 0.f;
+	float SweepWorst = 1000.f;
+	float SweepWorstYaw = 0.f;
+	float ShotYaw = 0.f;
+	FString FakeLine;
+	ftcore::UiSubtitleFit Fit;
+	FSlateFontInfo SubFont, SpeakerFont;
+	FString SpeakerText;
+	float SubLineH = 0.f, SpeakerDy = 0.f, SpeakerW = 0.f;
+	float SubLineW[ftcore::kUiSubtitleLines] = {};
+#endif
+	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line;
+};
 }
 
 namespace FT
@@ -5558,5 +6163,10 @@ TSharedRef<SWidget> MakeDialogueWidget(TFunction<const AFTStoryDirector*()> GetD
 TSharedRef<SWidget> MakeExplorePartyWidget(TFunction<const AFTExploreCharacter*()> GetLead)
 {
 	return SNew(SFTExploreParty, MoveTemp(GetLead));
+}
+
+TSharedRef<SWidget> MakeExploreHudWidget(TFunction<const AFTExploreDirector*()> GetDirector, TFunction<const AFTExploreCharacter*()> GetLead)
+{
+	return SNew(SFTExploreHud, MoveTemp(GetDirector), MoveTemp(GetLead));
 }
 }
