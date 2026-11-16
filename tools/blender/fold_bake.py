@@ -34,10 +34,26 @@ SPEC.json (lengths in metres, in the blend's world space):
                                         much wider than the pinned outline holds them, so the spare width hangs in folds
                                         running down the sheet (gathered or draped cloth), not in shrink's pillow buckles
      "seed": null,                      grid only: folds laid into the sheet before the solver runs, so it relaxes them instead
-                                        of buckling at random: {"u": [fold centres along the sheet's u axis, m],
-                                        "amp_mm": [height off the surface, one per fold], "sigma": fold half-width (m),
-                                        "v_top": height where the folds start (0), "v_full": height where they are full}.
-                                        The seeded shape is also the springs' rest shape (ease_u then spreads it)
+                                        of buckling at random: {"folds": [{"a": [u, v], "b": [u, v] (the fold's line in the
+                                        sheet's u, v axes, m; it fades in from a over "fade_in" of its length, 0.35, and
+                                        breaks off past b over "end" m, 0.012), "amp_mm": height off the surface,
+                                        "sigma": half-width (m)}, ...], "curl_mm": a lift of the hem below "curl_below" (m),
+                                        rising over "curl_width" (m, 0.025) to the edge}. The seeded shape is also the
+                                        springs' rest shape (ease_u then spreads it)
+     "hem": null,                       grid only: a turned, stitched hem along the cloth's real edges (found by bisecting the
+                                        cast rays, so it follows the edge, not the grid's steps), added after the solver:
+                                        {"width": m, "raise_mm": its thickness, "round_mm": 1.5 (the rolled edge),
+                                        "stitch_at": m in from the edge, "stitch_mm": groove depth, "stitch_sigma": m,
+                                        "period": m from one stitch to the next}
+     "min_island": 0.0,                 grid only: drop cast pieces smaller than this share of the sheet's faces (stray bits
+                                        where the rays hit a lower layer of the cloth)
+     "normal_blur": 0.0,                grid only: Gaussian sigma (m) of the normals the sheet is lifted, seeded, hemmed and
+                                        clamped along. The cast normals are the game mesh's face normals, so a fold laid along
+                                        them tears at every facet edge; blurred over about a fold's width they do not
+     "jump": null,                      grid only: the longest quad edge (m) kept as cloth; longer is a step or a gap
+                                        (3 x cell when null)
+     "snap_edge": false,                grid only: move the sheet's outline vertices onto the bisected edge points, so the
+                                        outline follows the cloth's edge, not the grid's steps
      "coll_dist": 0.003,                the cloth's collision distance (m); keep it under "lift" on a seeded sheet
      "collide": true,                   false: the sheet ignores the collider and the game mesh (pins, rest shape and the
                                         max_disp clamp alone hold it; for a seeded sheet the solver only relaxes)
@@ -106,10 +122,27 @@ SEED = S.get("seed")
 if SEED is not None:
     if S.get("hi", "grid") != "grid":
         fail("seed needs hi grid")
-    if (not isinstance(SEED, dict) or not all(k in SEED for k in ("u", "amp_mm", "sigma", "v_top", "v_full"))
-            or len(SEED["u"]) != len(SEED["amp_mm"]) or not SEED["u"] or not SEED["sigma"] > 0
-            or not all(0 <= a <= 30 for a in SEED["amp_mm"]) or SEED["v_top"] == SEED["v_full"]):
-        fail("seed must be {u, amp_mm (0..30 each, one per u), sigma > 0, v_top != v_full}")
+    def fold_ok(f):
+        return (isinstance(f, dict) and all(k in f for k in ("a", "b", "amp_mm", "sigma")) and len(f["a"]) == 2
+                and len(f["b"]) == 2 and f["a"] != f["b"] and 0 <= f["amp_mm"] <= 30 and f["sigma"] > 0
+                and 0 < f.get("fade_in", 0.35) <= 1 and f.get("end", 0.012) > 0)
+    if (not isinstance(SEED, dict) or not all(fold_ok(f) for f in SEED.get("folds", []))
+            or not 0 <= SEED.get("curl_mm", 0) <= 15 or not SEED.get("curl_width", 0.025) > 0):
+        fail("seed must be {folds: [{a, b, amp_mm 0..30, sigma > 0, fade_in 0..1, end > 0}], curl_mm 0..15, curl_width > 0}")
+HEM = S.get("hem")
+if HEM is not None:
+    if S.get("hi", "grid") != "grid":
+        fail("hem needs hi grid")
+    if (not isinstance(HEM, dict) or not HEM.get("width", 0) > 0 or not 0 <= HEM.get("raise_mm", 2.5) <= 10
+            or not HEM.get("round_mm", 1.5) > 0 or not HEM.get("stitch_sigma", 0.001) > 0 or not HEM.get("period", 0.006) > 0):
+        fail("hem must be {width > 0, raise_mm 0..10, round_mm > 0, stitch_sigma > 0, period > 0, ...}")
+NBLUR, JUMP = S.get("normal_blur", 0.0), S.get("jump")
+if (not isinstance(NBLUR, (int, float)) or not 0 <= NBLUR <= 0.2 or (JUMP is not None and not (isinstance(JUMP, (int, float)) and JUMP > 0))
+        or ((NBLUR or JUMP is not None or S.get("snap_edge")) and S.get("hi", "grid") != "grid")):
+    fail("normal_blur 0..0.2, jump > 0 or null, snap_edge: hi grid only")
+MIN_ISLAND = S.get("min_island", 0.0)
+if not isinstance(MIN_ISLAND, (int, float)) or not 0 <= MIN_ISLAND < 1:
+    fail("min_island must be 0..1")
 if FREE_BELOW is not None and not isinstance(FREE_BELOW, (int, float)):
     fail("free_below must be a height in metres or null")
 if S["garment"] not in bpy.data.objects or bpy.data.objects[S["garment"]].type != "MESH":
@@ -272,20 +305,41 @@ if S.get("hi", "grid") == "grid":
     dirv = Vector([0, 0, 0])
     dirv[ax] = -1.0
     idx = -np.ones((len(vs), len(us)), int)
+    miss = np.zeros((len(vs), len(us)), bool)
     pts, nrm = [], []
     for j, vv in enumerate(vs):
         for i, uu in enumerate(us):
             o = Vector([0, 0, 0])
             o[u_ax], o[v_ax], o[ax] = uu, vv, top
             hit, n, fi, dist = tree.ray_cast(o, dirv)
-            if hit is None or hit[ax] < R.get("min", -9) or n[ax] < 0.3:
+            if hit is None:
+                miss[j, i] = True  # no cloth here: the cell next to it holds a real edge
+                continue
+            if hit[ax] < R.get("min", -9):
+                miss[j, i] = True  # past the region (the far side of the garment): an edge of this sheet too
+                continue
+            if n[ax] < 0.3:
                 continue
             idx[j, i] = len(pts)
-            pts.append(np.array(hit) + np.array(n) * lift)
+            pts.append(np.array(hit))
             nrm.append(np.array(n))
     if not pts:
         fail("no ray from the grid hit %s inside the region" % S["garment"])
     pts, nrm = np.array(pts), np.array(nrm)
+    if NBLUR > 0:  # normalised convolution over the grid's hit cells, separable Gaussian
+        k = int(np.ceil(3 * NBLUR / cell))
+        ker = np.exp(-0.5 * (np.arange(-k, k + 1) * cell / NBLUR) ** 2)
+        has = idx >= 0
+        G = np.zeros((len(vs), len(us), 4))
+        G[has, :3], G[has, 3] = nrm, 1.0
+        for axis in (0, 1):
+            G = np.apply_along_axis(lambda r: np.convolve(r, ker, mode="same"), axis, G)
+        nb = G[has, :3] / G[has, 3:4]
+        nb /= np.linalg.norm(nb, axis=1, keepdims=True)
+        rep["normal_blur_deg_p50_p99"] = [round(float(x), 1) for x in np.percentile(
+            np.degrees(np.arccos(np.clip((nb * nrm).sum(1), -1, 1))), [50, 99])]
+        nrm = nb
+    pts = pts + nrm * lift
     faces = []
     for j in range(len(vs) - 1):
         for i in range(len(us) - 1):
@@ -293,7 +347,7 @@ if S.get("hi", "grid") == "grid":
             if min(q) < 0:
                 continue
             e = np.linalg.norm(pts[q] - pts[q[1:] + q[:1]], axis=1)
-            if e.max() < cell * 3:  # no face across a step or a gap in the cloth
+            if e.max() < (JUMP or cell * 3):  # no face across a step or a gap in the cloth
                 faces.append(q)
     if not faces:
         fail("the cast grid made no faces (cell too coarse for the region)")
@@ -301,6 +355,27 @@ if S.get("hi", "grid") == "grid":
     fn = np.cross(pts[fa[:, 1]] - pts[fa[:, 0]], pts[fa[:, 3]] - pts[fa[:, 0]])
     if (fn * nrm[fa[:, 0]]).sum() < 0:  # face the sheet the way the surface it was cast on faces
         faces = fa[:, ::-1].tolist()
+    if MIN_ISLAND > 0:  # the sheet's connected pieces; drop the small ones
+        par = list(range(len(pts)))
+
+        def root(x):
+            while par[x] != x:
+                par[x] = par[par[x]]
+                x = par[x]
+            return x
+        for q in faces:
+            r0 = root(q[0])
+            for x in q[1:]:
+                rx = root(x)
+                if rx != r0:
+                    par[rx] = r0
+        lab = [root(q[0]) for q in faces]
+        size = {}
+        for l in lab:
+            size[l] = size.get(l, 0) + 1
+        big = {l for l, c in size.items() if c >= MIN_ISLAND * len(faces)}
+        rep["islands"] = [len(size), len(big)]
+        faces = [q for q, l in zip(faces, lab) if l in big]
     used = np.unique(np.array(faces).ravel())
     remap = -np.ones(len(pts), int)
     remap[used] = np.arange(len(used))
@@ -308,6 +383,71 @@ if S.get("hi", "grid") == "grid":
     # the bottom edge of the cloth: a vertex with no grid point under it (a hem, not a cut up the side)
     open_below = {int(remap[idx[j, i]]) for j in range(len(vs)) for i in range(len(us))
                   if idx[j, i] >= 0 and remap[idx[j, i]] >= 0 and (j == 0 or idx[j - 1, i] < 0)}
+    # The cloth's real edges, between a kept grid point and a grid point whose ray found no cloth: bisected along that
+    # cell side to a fraction of a cell, so a hem drawn from them follows the edge, not the grid's steps. Then walked into
+    # chains, each point with its arc length (the stitches' phase).
+    from mathutils.kdtree import KDTree as _KD
+    EP = []
+    if HEM is not None or (SEED is not None and SEED.get("curl_mm", 0)):
+        def cast_at(uu, vv):
+            o = Vector([0, 0, 0])
+            o[u_ax], o[v_ax], o[ax] = uu, vv, top
+            h_, n_, f_, d_ = tree.ray_cast(o, dirv)
+            return (h_, n_) if h_ is not None and h_[ax] >= R.get("min", -9) and n_[ax] >= 0.3 else None
+        for j in range(len(vs)):
+            for i in range(len(us)):
+                if idx[j, i] < 0 or remap[idx[j, i]] < 0:
+                    continue
+                for dj, di in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    jj, ii = j + dj, i + di
+                    if not (0 <= jj < len(vs) and 0 <= ii < len(us)) or not miss[jj, ii]:
+                        continue
+                    a_, b_, best = 0.0, 1.0, None
+                    for _ in range(8):
+                        m_ = 0.5 * (a_ + b_)
+                        r_ = cast_at(us[i] + m_ * di * cell, vs[j] + m_ * dj * cell)
+                        if r_ is None:
+                            b_ = m_
+                        else:
+                            a_, best = m_, r_
+                    best = best or cast_at(us[i], vs[j])
+                    if best:
+                        EP.append(np.array(best[0]) + np.array(best[1]) * lift)
+    EP = np.array(EP).reshape(-1, 3)
+    ES = np.zeros(len(EP))
+    if len(EP):
+        kde = _KD(len(EP))
+        for k, q in enumerate(EP):
+            kde.insert(q, k)
+        kde.balance()
+        seen = np.zeros(len(EP), bool)
+        arc, chains = 0.0, 0
+        for k0 in range(len(EP)):
+            if seen[k0]:
+                continue
+            k, chains = k0, chains + 1
+            seen[k], ES[k] = True, arc
+            while True:
+                nxt = next(((kk, dd) for q, kk, dd in kde.find_n(EP[k], 8) if not seen[kk] and dd < cell * 3), None)
+                if nxt is None:
+                    break
+                k, arc = nxt[0], arc + nxt[1]
+                seen[k], ES[k] = True, arc
+            arc += 1.0
+        rep["edge"] = {"points": int(len(EP)), "chains": chains}
+
+        def edge_near(P):
+            out = [kde.find(q) for q in P]
+            return np.array([o[2] for o in out]), np.array([o[1] for o in out], int)
+    if S.get("snap_edge") and len(EP):  # the outline onto the bisected edge, where one is within a cell and a half
+        cnt0 = np.bincount(remap[np.array(faces)].ravel(), minlength=len(pts))
+        sn = 0
+        for k in np.nonzero(cnt0 < 4)[0]:
+            q, kk, dd = kde.find(pts[k])
+            if dd < cell * 1.5:
+                pts[k] = np.array(q)
+                sn += 1
+        rep["snapped"] = sn
     me = bpy.data.meshes.new("fold_grid")
     me.from_pydata(pts.tolist(), [], remap[np.array(faces)].tolist())
     me.shade_smooth()  # flat-shaded quads bake as facets
@@ -354,6 +494,7 @@ else:
     nv = len(hi.data.vertices)
     nrm = None
     open_below = None
+    EP = np.zeros((0, 3))
 pin = hi.vertex_groups.new(name="fold_pin")
 Z0 = np.empty(nv * 3)
 hi.data.vertices.foreach_get("co", Z0)
@@ -393,17 +534,26 @@ else:
     N0 = nrm
 PB = P0  # the sheet the solver starts from: the cast, or the cast with seeded folds
 if SEED is not None:
-    tz = np.clip((P0[:, v_ax] - SEED["v_top"]) / (SEED["v_full"] - SEED["v_top"]), 0.0, 1.0)
-    ramp = tz * tz * (3 - 2 * tz)
     h = np.zeros(nv)
-    for c, a in zip(SEED["u"], SEED["amp_mm"]):
-        h += a / 1000.0 * np.exp(-0.5 * ((P0[:, u_ax] - c) / SEED["sigma"]) ** 2)
-    h *= ramp
+    UV = P0[:, [u_ax, v_ax]]
+    for fo in SEED.get("folds", []):
+        A, D = np.array(fo["a"], float), np.array(fo["b"], float) - np.array(fo["a"], float)
+        L = float(np.linalg.norm(D))
+        Q = UV - A
+        t = (Q @ D) / (L * L)  # 0 at a, 1 at b
+        dp = np.abs(Q[:, 0] * D[1] - Q[:, 1] * D[0]) / L  # off the fold's line
+        x = np.clip(t / fo.get("fade_in", 0.35), 0.0, 1.0)
+        w = np.where(t > 1.0, np.exp(-0.5 * ((t - 1.0) * L / fo.get("end", 0.012)) ** 2), x * x * (3 - 2 * x))
+        h += fo["amp_mm"] / 1000.0 * np.exp(-0.5 * (dp / fo["sigma"]) ** 2) * w
+    if SEED.get("curl_mm", 0) and len(EP):
+        e_, k_ = edge_near(P0)
+        c_ = np.clip(1.0 - e_ / SEED.get("curl_width", 0.025), 0.0, 1.0) ** 2 * (P0[:, 2] < SEED.get("curl_below", 9))
+        h += SEED["curl_mm"] / 1000.0 * c_
     h[pinned] = 0.0  # the outline stays where it was cast
     PB = P0 + N0 * h[:, None]
     hi.data.vertices.foreach_set("co", PB.ravel())
     hi.data.update()
-    rep["seed"] = {"folds": len(SEED["u"]), "max_mm": round(float(h.max() * 1000), 1)}
+    rep["seed"] = {"folds": len(SEED.get("folds", [])), "max_mm": round(float(h.max() * 1000), 1)}
 
 if S.get("collider"):
     col = bpy.data.objects[S["collider"]]
@@ -456,6 +606,18 @@ dn = np.clip(dn, -mx, mx)
 tl = np.linalg.norm(dt, axis=1)
 dt *= (np.minimum(tl, mx * 0.5) / np.maximum(tl, 1e-9))[:, None]
 P2 = P0 + dn[:, None] * N0 + dt
+if HEM is not None and len(EP):
+    # the turned hem: a band "width" in from the real edge, rolled over "round_mm" at the edge, raised "raise_mm", with a
+    # dashed stitch groove along it ("period" apart, phase from the edge's arc length)
+    e_, k_ = edge_near(P0)
+    rnd = np.sqrt(1.0 - (1.0 - np.clip(e_ / (HEM.get("round_mm", 1.5) / 1000.0), 0.0, 1.0)) ** 2)
+    x = np.clip((HEM["width"] - e_) / 0.002, 0.0, 1.0)
+    band = HEM.get("raise_mm", 2.5) / 1000.0 * rnd * x * x * (3 - 2 * x)
+    dash = np.clip((0.5 - 0.5 * np.cos(2 * np.pi * ES[k_] / HEM.get("period", 0.006))) * 1.6, 0.0, 1.0)
+    groove = (HEM.get("stitch_mm", 0.6) / 1000.0 * dash
+              * np.exp(-0.5 * ((e_ - HEM.get("stitch_at", 0.008)) / HEM.get("stitch_sigma", 0.001)) ** 2))
+    P2 = P2 + N0 * (band - groove)[:, None]
+    rep["hem"] = {"verts": int((band > 1e-5).sum()), "stitch_verts": int((groove > 1e-5).sum())}
 hi.data.vertices.foreach_set("co", P2.ravel())
 hi.data.update()
 fr = np.array(moving, int)
