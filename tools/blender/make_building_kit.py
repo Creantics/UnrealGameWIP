@@ -722,7 +722,8 @@ def p_shop_koshi(W=5.4, wall="jpk_wall_stucco"):
             B(A, a, yy, z, b, yy + 0.035, z + 0.05, "jpk_timber")
     B(A, ex0, 0.0, 0.0, ex1, 0.38, 0.05, "jpk_trim")  # threshold
     B(A, ex0, 0.0, 2.3, ex1, 0.38, 2.32, "jpk_timber")
-    # noren rail and three curtain panels with slits
+    # noren rail and a short split curtain over the entrance only: three panels with slits, the door opening's top third
+    # (a 0.65 m drop), a plain pale band across their foot
     cyl(A, (ex0 + 0.05, -0.12, 2.22), (ex1 - 0.05, -0.12, 2.22), 0.015, "jpk_timber", seg=6)
     for (a, b) in ((ex0, ex1 - 0.15),):
         B(A, a, -0.15, 2.18, a + 0.03, 0.0, 2.25, "jpk_metal")
@@ -730,7 +731,8 @@ def p_shop_koshi(W=5.4, wall="jpk_wall_stucco"):
     pw = (ex1 - ex0 - 0.1 - 0.04) / 3
     for k in range(3):
         a = ex0 + 0.05 + k * (pw + 0.02)
-        B(A, a, -0.13, 1.35, a + pw, -0.115, 2.2, "jpk_cloth")
+        B(A, a, -0.13, 1.55, a + pw, -0.115, 2.2, "jpk_cloth")
+        B(A, a, -0.133, 1.61, a + pw, -0.129, 1.68, "jpk_trim")
     return (A, [(0, -0.15, 0, W, 0.25, H)],
             {"R": (W, 0, 0), "T": (0, 0, H), "EAVE": (0, 0, H)})
 
