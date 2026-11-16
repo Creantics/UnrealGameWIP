@@ -50,6 +50,9 @@ struct ShopFrontSpec {
     float zoomLeast = 0.8f;                     // a bay's crop of its picture: zoom zoomLeast..1, shifted inside it
     float valance = 0.32f;                      // m: a cafe's striped valance under the fascia
     float signMargin = 0.06f;                   // m: a sign panel's margin in the fascia
+    // Every sign a mark of strokes (Solhaven's lettering is invented), never a word in the 5 x 7 face; each keeps its
+    // style's panel or board. Off by default (the r5 signs as they were).
+    bool marksOnly = false;
 };
 
 // One bay's choices.
@@ -65,6 +68,7 @@ struct ShopBay {
     std::uint32_t colour = 0;   // the riser's (and a tile's) colour, 0..3
     std::uint32_t word = 0;     // index into shopSignWord
     ShopSignStyle style = ShopSignStyle::PanelWord;
+    bool marks = false;         // its sign shows a mark of strokes, not its word (style Strokes, or the spec's marksOnly)
     std::uint32_t ink = 0;      // the sign's ink or panel colour index, 0..kShopInkCount-1
 };
 

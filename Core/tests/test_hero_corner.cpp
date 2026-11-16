@@ -474,6 +474,48 @@ TEST_CASE("hero corner: one shop slot per lit bay, deep and high in the room, pi
     }
 }
 
+TEST_CASE("hero corner: shop slots carry their own aim; a back slot faces into its room near level, off by default") {
+    HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    MassingShopLight fronts[kHeroBays];
+    HeroShopSlot slots[kHeroShopSlots];
+    // By default the slots are the front lights, one per lit bay, at the spec's one pitch and gain.
+    const int n = heroCornerShopLights(spec, fronts);
+    REQUIRE(heroCornerShopSlots(spec, slots) == n);
+    for (int k = 0; k < n; ++k) {
+        CHECK(slots[k].at.x == doctest::Approx(fronts[k].x));
+        CHECK(slots[k].at.y == doctest::Approx(fronts[k].y));
+        CHECK(slots[k].at.z == doctest::Approx(fronts[k].z));
+        CHECK(slots[k].at.faceIndex == fronts[k].faceIndex);
+        CHECK(slots[k].pitch == doctest::Approx(spec.shopLightPitch));
+        CHECK(slots[k].gain == doctest::Approx(spec.shopLightGain));
+        CHECK_FALSE(slots[k].back);
+    }
+    CHECK(slots[0].bay == 0);
+    CHECK(slots[1].bay == 2);
+    CHECK(slots[2].bay == 3);
+    // A back slot on the glazed bay (4) and on a dark bay (5): only the lit one gets it.
+    spec.shopBack[3] = true;
+    spec.shopBack[4] = true;
+    REQUIRE(heroCornerShopSlots(spec, slots) == n + 1);
+    const HeroShopSlot& b = slots[n];
+    CHECK(b.back);
+    CHECK(b.bay == 3);
+    CHECK(b.at.y == doctest::Approx(l.bays[3].cy));
+    // Inside the room (past its front, 0.12 m behind the face), nearer the front than the front slot, so its near-level
+    // cone crosses the room to the back wall (the probe's, 2.5 m behind the face).
+    CHECK(b.at.x > 908.0 + 0.12);
+    CHECK(b.at.x < fronts[2].x);
+    CHECK(b.at.x < 908.0 + 2.5 - 1.5);
+    CHECK(b.at.z < 4.18 + 2.45 - 0.07);
+    CHECK(b.at.face == doctest::Approx(0.0));
+    CHECK(b.at.faceIndex == 0);
+    CHECK(b.pitch < 0.f);
+    CHECK(b.pitch > -25.f);
+    CHECK(b.gain > 0.f);
+}
+
 TEST_CASE("hero corner: the quay masts in the corner's view become rail pieces; the rest stay masts") {
     const ftcore::HeroCornerSpec spec;
     std::vector<ftcore::StandInPoint> pts(4);

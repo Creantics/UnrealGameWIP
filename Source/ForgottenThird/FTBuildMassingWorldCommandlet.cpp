@@ -1883,6 +1883,44 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	ParseRgb(TEXT("HeroLanternColour="), HeroTune.lanternColour);
 	ParseRgb(TEXT("HeroLanternBase="), HeroTune.lanternBase);
 	HeroTune.largeScale = FMath::Clamp(HeroTune.largeScale, 0.5, 2.0);
+	// Tune 3's own (2026-11-16): -HeroShopBack=<bays> (1-based, comma list: 4 is the glazed bay) gives those lit bays a
+	// second shop slot facing into the room near level (ftcore::heroCornerShopSlots), at -HeroShopBackIn=<m>,
+	// -HeroShopBackUp=<m>, -HeroShopBackPitch=<deg> and -HeroShopBackGain=<x> (times -HeroShopScale); none by default.
+	{
+		FString Back;
+		TArray<FString> Bays;
+		if (FParse::Value(*Params, TEXT("HeroShopBack="), Back, false) && Back.ParseIntoArray(Bays, TEXT(","), true) > 0)
+		{
+			for (const FString& Bay : Bays)
+			{
+				const int32 B = FCString::Atoi(*Bay) - 1;
+				if (B >= 0 && B < ftcore::kHeroBays)
+				{
+					HeroTune.shopBack[B] = true;
+				}
+			}
+		}
+	}
+	FParse::Value(*Params, TEXT("HeroShopBackIn="), HeroTune.shopBackIn);
+	FParse::Value(*Params, TEXT("HeroShopBackUp="), HeroTune.shopBackUp);
+	FParse::Value(*Params, TEXT("HeroShopBackPitch="), HeroTune.shopBackPitch);
+	FParse::Value(*Params, TEXT("HeroShopBackGain="), HeroTune.shopBackGain);
+	// The lantern paper's shape of light (M_NightLamp's LampEdge, LampEdgePower, LampRibs, LampRibWidth; 0 edge and 0
+	// ribs, the defaults, are the flat glow as before): -HeroLanternEdge=<0..1> darkens the body toward its silhouette
+	// by (1 - N.V)^-HeroLanternEdgePow=<p>, -HeroLanternRibs=<0..1> darkens the bamboo ribs (-HeroLanternRibPitch=<m> apart on
+	// the 0.6 m lantern, scaled to each mesh's height; 0.04 sits on the mesh's own ridges; -HeroLanternRibWidth=<0..1> of
+	// that pitch wide), faded out as a rib nears two pixels.
+	float HeroLanternEdge = 0.f, HeroLanternEdgePow = 2.f, HeroLanternRibs = 0.f, HeroLanternRibPitch = 0.04f, HeroLanternRibWidth = 0.15f;
+	FParse::Value(*Params, TEXT("HeroLanternEdge="), HeroLanternEdge);
+	FParse::Value(*Params, TEXT("HeroLanternEdgePow="), HeroLanternEdgePow);
+	FParse::Value(*Params, TEXT("HeroLanternRibs="), HeroLanternRibs);
+	FParse::Value(*Params, TEXT("HeroLanternRibPitch="), HeroLanternRibPitch);
+	FParse::Value(*Params, TEXT("HeroLanternRibWidth="), HeroLanternRibWidth);
+	HeroLanternEdge = FMath::Clamp(HeroLanternEdge, 0.f, 1.f);
+	HeroLanternEdgePow = FMath::Clamp(HeroLanternEdgePow, 0.25f, 8.f);
+	HeroLanternRibs = FMath::Clamp(HeroLanternRibs, 0.f, 1.f);
+	HeroLanternRibPitch = FMath::Clamp(HeroLanternRibPitch, 0.005f, 0.5f);
+	HeroLanternRibWidth = FMath::Clamp(HeroLanternRibWidth, 0.02f, 0.9f);
 	if (bHeroSubLevel && bHeroOnly)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -HeroSubLevel (the strip) and -HeroCornerOnly (the corner) are two runs."));
@@ -3334,25 +3372,49 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		// The lanterns' paper: the night lamp head master at the spec's amber and strength, so the paper's ribs and form
 		// read at a metre (the street lamps' own heads keep the master's defaults).
 		const ftcore::HeroCornerSpec& HeroSpec = HeroTune;
-		UMaterialInterface* LanternGlow = NightGlow;
-		if (NightGlow)
+		UStaticMesh* const Large = HeroMesh(TEXT("SM_HC_LanternLarge"));
+		UStaticMesh* const Small = HeroMesh(TEXT("SM_HC_LanternSmall"));
+		// One paper instance per lantern mesh: the ribs' pitch and origin come from the mesh's own bounds (hero_corner_props.py
+		// draws a lantern of height h from its hook's top at 0 down to its tassel at -1.1 h, 12 ribs over the paper from
+		// -0.925 h to -0.125 h, so a rib every h / 15 from -0.925 h), the same for the large and the small.
+		const auto MakePaper = [&](UStaticMesh* Mesh, const TCHAR* Name) -> UMaterialInterface*
 		{
-			UMaterialInstanceConstant* Paper = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_HC_LanternPaper"), RF_Public);
+			if (!NightGlow)
+			{
+				return nullptr;
+			}
+			UMaterialInstanceConstant* Paper = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
 			Paper->SetParentEditorOnly(NightGlow);
 			Paper->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampBase")),
 				FLinearColor(HeroSpec.lanternBase[0], HeroSpec.lanternBase[1], HeroSpec.lanternBase[2]));
 			Paper->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampColor")),
 				FLinearColor(HeroSpec.lanternColour[0], HeroSpec.lanternColour[1], HeroSpec.lanternColour[2]));
 			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampStrength")), HeroSpec.lanternGlow);
+			const FBox Box = Mesh ? Mesh->GetBoundingBox() : FBox(FVector(0.0), FVector(0.0));
+			const double H = Box.GetSize().Z / 1.1; // the lantern's height (cm), tassel left out
+			const float Pitch = static_cast<float>(HeroLanternRibPitch * 100.0 * H / 60.0);
+			const float Origin = static_cast<float>(Box.Max.Z - 0.925 * H);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampEdge")), HeroLanternEdge);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampEdgePower")), HeroLanternEdgePow);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibs")), H > 1.0 ? HeroLanternRibs : 0.f);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibPitch")), FMath::Max(Pitch, 0.1f));
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibOrigin")), Origin);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibWidth")), HeroLanternRibWidth);
 			Paper->PostEditChange();
-			LanternGlow = Paper;
-		}
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %s: glow %.2f, edge %.2f power %.2f, ribs %.2f every %.2f cm "
+				"from %.1f cm (mesh %.1f cm tall), width %.2f."), Name, HeroSpec.lanternGlow, HeroLanternEdge, HeroLanternEdgePow,
+				H > 1.0 ? HeroLanternRibs : 0.f, Pitch, Origin, H, HeroLanternRibWidth);
+			return Paper;
+		};
+		UMaterialInterface* const LargePaper = MakePaper(Large, TEXT("MI_HC_LanternPaper"));
+		UMaterialInterface* const SmallPaper = MakePaper(Small, TEXT("MI_HC_LanternPaperSmall"));
 		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double PlanTurn, const TCHAR* Label, double Scale = 1.0)
 		{
 			if (!Mesh)
 			{
 				return;
 			}
+			UMaterialInterface* const LanternGlow = Mesh == Small ? SmallPaper : LargePaper;
 			TArray<UMaterialInterface*, TInlineAllocator<8>> Mats;
 			for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
 			{
@@ -3367,8 +3429,6 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				FVector(Scale)), {}, EFTCellKind::NoCollide, Opts);
 			++HeroPieces;
 		};
-		UStaticMesh* const Large = HeroMesh(TEXT("SM_HC_LanternLarge"));
-		UStaticMesh* const Small = HeroMesh(TEXT("SM_HC_LanternSmall"));
 		UStaticMesh* const Post = HeroMesh(TEXT("SM_HC_StringPost"));
 		for (size_t L = 0; L < Hero.lanternCount; ++L)
 		{
@@ -3743,16 +3803,24 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (bHeroContent && bNightLamps)
 	{
 		const ftcore::HeroCornerSpec& ShopSpec = HeroTune;
-		ftcore::MassingShopLight HeroShops[ftcore::kHeroBays];
-		const int HeroShopCount = ftcore::heroCornerShopLights(ShopSpec, HeroShops);
+		ftcore::HeroShopSlot HeroShops[ftcore::kHeroShopSlots];
+		const int HeroShopCount = ftcore::heroCornerShopSlots(ShopSpec, HeroShops);
+		TArray<FString> Backs;
 		for (int L = 0; L < HeroShopCount; ++L)
 		{
-			NightShop(*LampParts.Lights->Data, Side, HeroShops[L], ShopSpec.shopLightPitch, ShopSpec.shopLightGain * HeroShopScale);
+			const ftcore::HeroShopSlot& S = HeroShops[L];
+			NightShop(*LampParts.Lights->Data, Side, S.at, S.pitch, S.gain * HeroShopScale);
+			if (S.back)
+			{
+				Backs.Add(FString::Printf(TEXT("bay %d at %.2f m in, %.2f m up, pitched %.0f, gain %.2f"), S.bay + 1, S.at.x - ShopSpec.laneX1,
+					S.at.z - ShopSpec.ground, S.pitch, S.gain * HeroShopScale));
+			}
 		}
 		ShopLights += HeroShopCount;
 		ShopFaces += HeroShopCount;
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d shop slots, one inside each lit room, pitched %.0f, gain %.2f."),
-			HeroShopCount, ShopSpec.shopLightPitch, ShopSpec.shopLightGain * HeroShopScale);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d shop slots, one inside each lit room, pitched %.0f, gain %.2f; "
+			"back slots: %s."), HeroShopCount - Backs.Num(), ShopSpec.shopLightPitch, ShopSpec.shopLightGain * HeroShopScale,
+			Backs.Num() ? *FString::Join(Backs, TEXT("; ")) : TEXT("none"));
 	}
 	if (bWindows)
 	{

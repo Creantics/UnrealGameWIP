@@ -107,6 +107,13 @@ struct HeroCornerSpec {
     double shopLightIn = 1.2, shopLightUp = 2.3;
     float shopLightPitch = -35.f;
     float shopLightGain = 1.5f;
+    // A lit bay may take a second slot facing in (east), pitched near level from just behind its front, so its room's
+    // back wall takes the light (the front slot faces out: on a glazed bay it lights only the front and the floor). Off
+    // in every bay by default.
+    bool shopBack[kHeroBays] = {false, false, false, false, false};
+    double shopBackIn = 0.5, shopBackUp = 2.3;
+    float shopBackPitch = -10.f;
+    float shopBackGain = 1.0f;
     // The quay's lamp masts in the camera's view (both banks of the canal beside the lane, to its far end) have no lamp
     // in the pool: inside this plan box each gives way to a rail piece (heroCornerClearMasts).
     double mastClearX0 = 890.0, mastClearX1 = 903.0, mastClearY0 = 505.0, mastClearY1 = 640.0;
@@ -238,6 +245,19 @@ FTCORE_API void heroCornerLots(const HeroCornerSpec& spec, HeroLots& out);
 // front, shopLightIn inside the room behind its shop face and shopLightUp over the ground, facing west (out onto the
 // lane). Returns how many (at most kHeroBays).
 FTCORE_API int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroBays]);
+
+// Every shop slot with its own aim: each lit bay's front slot (heroCornerShopLights, at shopLightPitch and shopLightGain)
+// and, where shopBack is set on a lit bay, its back slot shopBackIn inside the shop face and shopBackUp over the ground,
+// facing east (into the room) at shopBackPitch and shopBackGain. Fronts first in bay order, then backs. Returns how many.
+constexpr int kHeroShopSlots = 2 * kHeroBays;
+struct HeroShopSlot {
+    MassingShopLight at;
+    float pitch = 0.f;
+    float gain = 0.f;
+    int bay = 0;
+    bool back = false;
+};
+FTCORE_API int heroCornerShopSlots(const HeroCornerSpec& spec, HeroShopSlot out[kHeroShopSlots]);
 
 // The plan points a still's luma probe reads (the build writes them out, so the probe never keeps its own copy of the
 // layout): each large lantern's body; per lit bay the shop face either side of its entrance at 1.0 and 2.0 m, the lane

@@ -276,6 +276,37 @@ int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroB
     return n;
 }
 
+int heroCornerShopSlots(const HeroCornerSpec& spec, HeroShopSlot out[kHeroShopSlots]) {
+    int n = 0;
+    for (int i = 0; i < kHeroBays; ++i) {
+        if (!spec.bayLit[i]) continue;
+        HeroShopSlot& s = out[n++];
+        s.at.x = spec.laneX1 + spec.shopLightIn;
+        s.at.y = spec.bayY0 + spec.bayWidth * (i + 0.5);
+        s.at.z = spec.ground + spec.shopLightUp;
+        s.at.face = 180.0;
+        s.at.faceIndex = kHeroShopFace;
+        s.pitch = spec.shopLightPitch;
+        s.gain = spec.shopLightGain;
+        s.bay = i;
+        s.back = false;
+    }
+    for (int i = 0; i < kHeroBays; ++i) {
+        if (!spec.bayLit[i] || !spec.shopBack[i]) continue;
+        HeroShopSlot& s = out[n++];
+        s.at.x = spec.laneX1 + spec.shopBackIn;
+        s.at.y = spec.bayY0 + spec.bayWidth * (i + 0.5);
+        s.at.z = spec.ground + spec.shopBackUp;
+        s.at.face = 0.0;
+        s.at.faceIndex = 0;
+        s.pitch = spec.shopBackPitch;
+        s.gain = spec.shopBackGain;
+        s.bay = i;
+        s.back = true;
+    }
+    return n;
+}
+
 int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& points) {
     int n = 0;
     for (StandInPoint& p : points) {
