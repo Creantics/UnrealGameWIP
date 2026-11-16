@@ -151,13 +151,84 @@ std::size_t uiSubtitlePage(const UiSubtitleFit& fit, std::uint32_t revealed) {
 }
 
 float uiSubtitleBand(UiColor ink, UiColor picture, float* ratio, float* withBand) {
+    const UiColor black{0.f, 0.f, 0.f, 1.f};
     const UiColor none{0.f, 0.f, 0.f, 0.f};
-    const UiColor band{0.f, 0.f, 0.f, kUiSubtitleBand};
     const float bare = uiContrast(ink, none, picture);
-    const float banded = uiContrast(ink, band, picture);
+    const float band = uiLeastBacking(ink, black, picture, kUiSubtitleMinContrast, 0.f, kUiSubtitleBandMax);
     if (ratio) *ratio = bare;
-    if (withBand) *withBand = banded;
-    return bare >= kUiSubtitleMinContrast ? 0.f : kUiSubtitleBand;
+    if (withBand) *withBand = uiContrast(ink, UiColor{0.f, 0.f, 0.f, band}, picture);
+    return band;
+}
+
+// --- A small line's guard ---------------------------------------------------------------------------------------
+
+namespace {
+
+// The ink over the contour (judged by its mean) over the picture under a black shade.
+float guarded(UiColor ink, UiColor pic, float spread, float alpha, float shade) {
+    const UiColor under{pic.r * (1.f - shade), pic.g * (1.f - shade), pic.b * (1.f - shade), 1.f};
+    return uiContrast(ink, UiColor{0.f, 0.f, 0.f, uiContourMean(spread, alpha)}, under);
+}
+
+} // namespace
+
+float uiContourMean(float spread, float alpha) {
+    const float s = std::clamp(spread, 0.f, kUiContourWindow);
+    const float outer = std::clamp(kUiContourWindow - s, 0.f, 1.f);
+    return clamp01(alpha) * (s + outer * kUiContourOuter) / kUiContourWindow;
+}
+
+UiLineGuard uiLineGuard(UiColor ink, UiColor picture, float target, float restSpread, float restAlpha) {
+    const UiColor pic{picture.r, picture.g, picture.b, 1.f};
+    UiLineGuard g;
+    g.bare = uiContrast(ink, UiColor{0.f, 0.f, 0.f, 0.f}, pic);
+    const float rest = std::clamp(restAlpha, 0.f, kUiContourAlphaMax);
+    float spread = std::clamp(std::round(restSpread), 1.f, kUiContourSpreadMax);
+    g.spread = spread;
+    g.alpha = rest;
+    g.ratio = guarded(ink, pic, spread, rest, 0.f);
+    if (g.ratio >= target) return g;
+    for (; spread <= kUiContourSpreadMax; spread += 1.f) {
+        if (guarded(ink, pic, spread, kUiContourAlphaMax, 0.f) < target) continue;
+        float lo = rest, hi = kUiContourAlphaMax; // contrast rises with the alpha: bisect the least that reaches the target
+        if (guarded(ink, pic, spread, lo, 0.f) >= target) hi = lo;
+        for (int i = 0; i < 20 && hi > lo; ++i) {
+            const float m = 0.5f * (lo + hi);
+            (guarded(ink, pic, spread, m, 0.f) >= target ? hi : lo) = m;
+        }
+        g.spread = spread;
+        g.alpha = hi;
+        g.ratio = guarded(ink, pic, spread, hi, 0.f);
+        return g;
+    }
+    // The contour at its cap falls short: the least shade under the line (the cap when even that falls short).
+    g.spread = kUiContourSpreadMax;
+    g.alpha = kUiContourAlphaMax;
+    float lo = 0.f, hi = kUiLineShadeMax;
+    if (guarded(ink, pic, g.spread, g.alpha, hi) >= target) {
+        for (int i = 0; i < 20; ++i) {
+            const float m = 0.5f * (lo + hi);
+            (guarded(ink, pic, g.spread, g.alpha, m) >= target ? hi : lo) = m;
+        }
+    }
+    g.shade = hi;
+    g.ratio = guarded(ink, pic, g.spread, g.alpha, hi);
+    return g;
+}
+
+float uiQuietFloor(UiColor ink, UiColor picture, float target, float quiet) {
+    const UiColor pic{picture.r, picture.g, picture.b, 1.f};
+    const auto at = [&](float a) {
+        return guarded(UiColor{ink.r, ink.g, ink.b, ink.a * a}, pic, kUiContourSpreadMax, kUiContourAlphaMax, 0.f);
+    };
+    float lo = clamp01(quiet), hi = 1.f;
+    if (at(lo) >= target) return lo;
+    if (at(hi) < target) return hi;
+    for (int i = 0; i < 20; ++i) {
+        const float m = 0.5f * (lo + hi);
+        (at(m) >= target ? hi : lo) = m;
+    }
+    return hi;
 }
 
 } // namespace ftcore

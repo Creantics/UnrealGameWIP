@@ -776,6 +776,29 @@ struct FPainter
 
 	void Text(float X, float Y, const FString& Str, const FSlateFontInfo& Font, const FLinearColor& C, int32 Start = 0, int32 End = -1) const
 	{
+		TextIn(X, Y, Str, Font, C, Start, End, 0.f);
+	}
+
+	// A word over a measured contour (Core uiLineGuard): the font's edge G.spread px wide at 1080 (whole device px, never
+	// under its resting width) at G.alpha; a guard at or under the resting contour draws as Text.
+	void TextGuarded(float X, float Y, const FString& Str, const FSlateFontInfo& Font, const FLinearColor& C, const ftcore::UiLineGuard& G) const
+	{
+		const int32 Base = Font.OutlineSettings.OutlineSize;
+		const int32 Want = FMath::Max(Base, FMath::RoundToInt(G.spread * FMath::Max(1.f, S))); // px at 1080, scaled
+		if (Base <= 0 || bShadow || (Want == Base && G.alpha <= Font.OutlineSettings.OutlineColor.A))
+		{
+			TextIn(X, Y, Str, Font, C, 0, -1, 0.f);
+			return;
+		}
+		FSlateFontInfo F = Font;
+		F.OutlineSettings.OutlineSize = Want;
+		F.OutlineSettings.OutlineColor.A = FMath::Max(G.alpha, Font.OutlineSettings.OutlineColor.A);
+		// Slate sets an outlined glyph down and right by its outline's width: set the wider one back by the growth.
+		TextIn(X, Y, Str, F, C, 0, -1, static_cast<float>(Want - Base));
+	}
+
+	void TextIn(float X, float Y, const FString& Str, const FSlateFontInfo& Font, const FLinearColor& C, int32 Start, int32 End, float Grow) const
+	{
 		if (Str.IsEmpty() || C.A <= 0.f)
 		{
 			return;
@@ -827,9 +850,9 @@ struct FPainter
 			OuterF.OutlineSettings.bSeparateFillAlpha = true;
 			// Slate sets an outlined glyph down and right by the outline's growth (measured: 1 px); set the wider pass back so it rings
 			// the letter evenly instead of reading as a drop shadow.
-			Draw(4, OuterF, FLinearColor(C.R, C.G, C.B, 0.004f), 1.f); // a near-zero face: Slate culls a fully clear one
+			Draw(4, OuterF, FLinearColor(C.R, C.G, C.B, 0.004f), 1.f + Grow); // a near-zero face: Slate culls a fully clear one
 		}
-		Draw(InnerF.OutlineSettings.bSeparateFillAlpha ? 6 : 5, InnerF, C, 0.f);
+		Draw(InnerF.OutlineSettings.bSeparateFillAlpha ? 6 : 5, InnerF, C, Grow);
 	}
 
 	// A meter in the style's painter. Ring and Stroke are drawn as Line until their painters land with the pick.
@@ -4837,7 +4860,7 @@ constexpr float kSubSpeakerGap = 18.f;
 
 // The brightest tenth of the game viewport's picture inside a rectangle of a widget Size big. Read only at the end of
 // the viewport's draw (the Slate layers are not in the picture yet), never per frame; false when nothing could be read.
-bool PictureBrightest(const FBox2f& Rc, const FVector2f& Size, ftcore::UiColor& Out)
+bool PictureBrightest(const FBox2f& Rc, const FVector2f& Size, ftcore::UiColor& Out, TArray<FColor>* Buf = nullptr)
 {
 	FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
 	const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
@@ -4849,7 +4872,8 @@ bool PictureBrightest(const FBox2f& Rc, const FVector2f& Size, ftcore::UiColor& 
 	const float KY = VS.Y / Size.Y;
 	const FIntRect R(FMath::Clamp(FMath::FloorToInt(Rc.Min.X * KX), 0, VS.X - 1), FMath::Clamp(FMath::FloorToInt(Rc.Min.Y * KY), 0, VS.Y - 1),
 		FMath::Clamp(FMath::CeilToInt(Rc.Max.X * KX), 1, VS.X), FMath::Clamp(FMath::CeilToInt(Rc.Max.Y * KY), 1, VS.Y));
-	TArray<FColor> Px;
+	TArray<FColor> Local;
+	TArray<FColor>& Px = Buf ? *Buf : Local; // a kept buffer: the explore HUD's reads keep theirs
 	if (R.Width() <= 0 || R.Height() <= 0 || !VP->ReadPixels(Px, FReadSurfaceDataFlags(), R) || Px.Num() == 0)
 	{
 		return false;
@@ -4863,8 +4887,9 @@ bool PictureBrightest(const FBox2f& Rc, const FVector2f& Size, ftcore::UiColor& 
 	return Out.r + Out.g + Out.b > 0.f; // all black is no picture yet
 }
 
-// The band behind a subtitle block (2026-11-16 ruling): black at Peak (Core kUiSubtitleBand) under the whole block,
-// fading to nothing on every side, so it never reads as a plate. Painted only where uiSubtitleBand asked for it.
+// The band behind a subtitle block (2026-11-16 ruling): black at Peak (the least Core uiSubtitleBand measured, up to
+// kUiSubtitleBandMax) under the whole block, fading to nothing on every side, so it never reads as a plate. Painted only
+// where uiSubtitleBand asked for it. The explore HUD lays the same shade under a small line whose contour fell short.
 void PaintSubtitleBand(const FPainter& P, float CX, float Top, float Bottom, float Widest, float LineH, float Peak)
 {
 	if (Peak <= 0.f || Bottom <= Top)
@@ -5390,7 +5415,7 @@ private:
 	int32 PageRows = 0;  // its lines (two at most)
 	float SubWidest = 0.f; // the page's widest line, the speaker's lead in
 	FBox2f SubRead = FBox2f(ForceInit); // the page's block, for the read of the picture under it
-	float SubBand = 0.f; // the band's black now (0 or Core kUiSubtitleBand); only comes in within a conversation
+	float SubBand = 0.f; // the band's black now (0 or the least Core uiSubtitleBand measured); only comes in within a conversation
 	float GradK = 0.f;   // the low gradient's share: 1 while replies show
 	// Line arrival.
 	uint32 ArrivalSerial = MAX_uint32;
@@ -5603,16 +5628,24 @@ private:
 // (no figures: explore carries no hurt state); under the stack the objective, one line in small caps, quieting to 40
 // percent after 4 s without change (Core uiObjectiveStep). The prompt stands at the focused spot on screen: its key in a
 // 1 device px ring and one verb, never centred; with the spot off screen there is none. Notices at the right edge, one
-// at a time, 2.5 s each, a queue of 3 (Core UiNoticeQueue). No plate under any word: the words' own soft contour.
+// at a time, 2.5 s each, a queue of 3 (Core UiNoticeQueue). No plate under any word: the words' own soft contour, measured
+// (the (A) fix, 2026-11-16): each line's contour is raised in spread and alpha, the least that holds it over the brightest
+// tenth of the bare scene under it (Core uiLineGuard: 4.5:1, 3:1 for the names), and at its cap a shade under that line
+// only; the quiet objective rests no lower than holds (uiQuietFloor). Hidden while the pause or settings screen is open.
+// Play reads one line every kReadEvery s (the one whose words just changed first); a guard rises at once and eases back
+// only after kGuardHold s of weaker reads.
 // Non-shipping: -UiExploreFake fills every piece with placeholders (and a two-line subtitle, in the dialogue's metrics,
-// over the measured band of uiSubtitleBand); -UiExploreShot=<file prefix> takes the still after -UiExploreShotDelay= s
-// (10) and quits; -UiExploreShotYaw= turns the view first; -UiSubScale= sets the placeholder subtitle's text scale.
+// over the measured band of uiSubtitleBand, the most any of its lines needs); -UiExploreShot=<file prefix> takes the still
+// after -UiExploreShotDelay= s (10) and quits; -UiExploreShotYaw= turns the view first; -UiSubScale= sets the placeholder
+// subtitle's text scale. Stills read every line twice a second, only rising, and log each ("UI: explore contrast").
 #if !UE_BUILD_SHIPPING
 const TCHAR* const kFakeObjective = TEXT("Find a way across the canal");
 const TCHAR* const kFakeNotice = TEXT("Map updated");
 const TCHAR* const kFakePrompt = TEXT("E  Open the gate");
 const TCHAR* const kFakeLine = TEXT("Stay close. The lamps along this street went out an hour ago.");
 #endif
+const TCHAR* const kGuardName[] = {TEXT("lead name"), TEXT("partner name"), TEXT("objective"), TEXT("notice"), TEXT("prompt verb"),
+	TEXT("subtitle line 1"), TEXT("subtitle line 2"), TEXT("subtitle speaker")};
 
 class SFTExploreHud : public SLeafWidget
 {
@@ -5638,6 +5671,7 @@ public:
 		{
 			FakeLine = kFakeLine;
 		}
+		bStills = bFake || bShot;
 #endif
 	}
 
@@ -5657,8 +5691,10 @@ public:
 		const AFTExploreDirector* D = GetDirector ? GetDirector() : nullptr;
 		const AFTExploreCharacter* C = GetLead ? GetLead() : nullptr;
 		Size = Geometry.GetLocalSize();
-		bOn = D && C && !C->GetPartyScreen().open; // the party screen has the left side while it is open
+		// The party screen has the left side while it is open; the pause and settings screens have the whole screen.
+		bOn = D && C && !C->GetPartyScreen().open && !MenuOpen(C);
 		TickShot(C);
+		TickReads();
 		if (!bOn)
 		{
 			return;
@@ -5678,8 +5714,14 @@ public:
 		const TArray<FFTLeadLook>& Looks = C->PartyLooks;
 		const auto LookName = [&Looks](int32 I) -> const FString& { return Looks.IsValidIndex(I) ? Looks[I].Name : NoName(); };
 		bPartnerHere = C->IsPartnerHere();
-		BuildName(LeadRow, LookName(C->GetLeadIndex()), kLeadUi, LeadFont);
-		BuildName(PartnerRow, LookName(C->GetPartnerIndex()), kPartnerUi, PartnerFont);
+		if (BuildName(LeadRow, LookName(C->GetLeadIndex()), kLeadUi, LeadFont))
+		{
+			ReadSoon(GuardLead);
+		}
+		if (BuildName(PartnerRow, LookName(C->GetPartnerIndex()), kPartnerUi, PartnerFont))
+		{
+			ReadSoon(GuardPartner);
+		}
 
 		// The objective: the story step's, a world's line, or the demo's current one.
 		const FString* Obj = &NoName();
@@ -5704,6 +5746,7 @@ public:
 			ObjectiveSeen = *Obj; // copied once per change of the words
 			++ObjectiveSerial;
 			ObjW = 0.f;
+			ReadSoon(GuardObjective);
 		}
 		if (ObjW <= 0.f && !ObjectiveSeen.IsEmpty())
 		{
@@ -5726,6 +5769,7 @@ public:
 		{
 			const std::uint8_t Slot = ftcore::uiNoticePush(Notices);
 			NoticeText[Slot] = *Note;
+			ReadSoon(GuardNotice);
 		}
 		LastNoticeAge = Note->IsEmpty() ? 1e9 : NoteAge;
 		ftcore::uiNoticeStep(Notices, DeltaTime);
@@ -5751,6 +5795,7 @@ public:
 			{
 				PromptSeen = *Prompt;
 				SplitPrompt(PromptSeen);
+				ReadSoon(GuardVerb);
 			}
 			bPrompt = Project(C, At, PromptAt);
 		}
@@ -5768,13 +5813,20 @@ public:
 		const float S = P.S;
 		const FUiWorldRow& R = Shown();
 		Mesh.Begin(Geometry, S);
+		for (FGuardLine& L : Lines)
+		{
+			L.Rect = FBox2f(ForceInit); // set again by each line drawn
+		}
 
 		// The party stack, top left: name, then its thin line (full: no value shown) with the cap at its end.
 		const float X0 = Hud::Margin * S;
 		float Y = Hud::Margin * S;
-		const auto Member = [&](const FRowName& Row, const FSlateFontInfo& Font, float Asc, float Ink, float LineLen, float LineW)
+		const auto Member = [&](const FRowName& Row, const FSlateFontInfo& Font, float Asc, float Ink, float LineLen, float LineW, int32 G)
 		{
-			P.Text(X0, Y, Row.Text, Font, Tok(UiToken::Ink, Ink));
+			FGuardLine& L = Lines[G];
+			L.Rect = FBox2f(FVector2f(X0, Y), FVector2f(X0 + Row.W, Y + Asc));
+			LineShade(P, L);
+			P.TextGuarded(X0, Y, Row.Text, Font, Tok(UiToken::Ink, Ink), L.G);
 			const float Base = Y + Asc;
 			const float LineY = Base + (0.5f * LineW + 8.f) * S;
 			const float WD = Mesh.WholeDev(LineW * S);
@@ -5788,27 +5840,34 @@ public:
 			Mesh.Fill(Pts, 4, Tok(UiToken::Ink));
 			Y = LineY + 0.5f * WD + 18.f * S;
 		};
-		Member(LeadRow, LeadFont, LeadAsc, 1.f, Hud::LeadLine, Hud::PartnerHpW);
+		Member(LeadRow, LeadFont, LeadAsc, 1.f, Hud::LeadLine, Hud::PartnerHpW, GuardLead);
 		if (bPartnerHere)
 		{
-			Member(PartnerRow, PartnerFont, PartnerAsc, Hud::PartnerInk, Hud::PartnerLine, Hud::GuardW);
+			Member(PartnerRow, PartnerFont, PartnerAsc, Hud::PartnerInk, Hud::PartnerLine, Hud::GuardW, GuardPartner);
 		}
 
-		// The objective under the stack.
-		ObjRect = FBox2f(FVector2f(X0, Y + 10.f * S), FVector2f(X0 + ObjW, Y + 10.f * S + ObjAsc));
-		P.Text(X0, Y + 10.f * S, ObjectiveSeen, ObjFont, Tok(UiToken::Ink, ObjFade.alpha));
+		// The objective under the stack, quieting no lower than its measured floor.
+		if (!ObjectiveSeen.IsEmpty())
+		{
+			FGuardLine& L = Lines[GuardObjective];
+			const float OY = Y + 10.f * S;
+			L.Rect = FBox2f(FVector2f(X0, OY), FVector2f(X0 + ObjW, OY + ObjAsc));
+			LineShade(P, L);
+			P.TextGuarded(X0, OY, ObjectiveSeen, ObjFont, Tok(UiToken::Ink, QuietAlpha(ObjFade.alpha, L.Floor)), L.G);
+		}
 
 		// The notice at the right edge, right-aligned.
 		const int32 ShownSlot = ftcore::uiNoticeShown(Notices);
-		NoteRect = FBox2f(ForceInit);
 		if (ShownSlot >= 0)
 		{
 			const FString& N = NoticeText[ShownSlot];
 			const float W = TextWidth(N, NoteFont); // measured while one stands: a few words, no allocation
 			const float NX = Sz.X - Hud::Margin * S - W;
 			const float NY = Sz.Y * 0.38f;
-			NoteRect = FBox2f(FVector2f(NX, NY), FVector2f(NX + W, NY + NoteAsc));
-			P.Text(NX, NY, N, NoteFont, Tok(UiToken::Ink, ftcore::uiNoticeAlpha(Notices)));
+			FGuardLine& L = Lines[GuardNotice];
+			L.Rect = FBox2f(FVector2f(NX, NY), FVector2f(NX + W, NY + NoteAsc));
+			LineShade(P, L);
+			P.TextGuarded(NX, NY, N, NoteFont, Tok(UiToken::Ink, ftcore::uiNoticeAlpha(Notices)), L.G);
 		}
 
 		// The prompt: the key in a 1 device px ring centred on the spot, the verb after it.
@@ -5826,8 +5885,13 @@ public:
 			}
 			PolyStroke(Line, Pts, N + 1, 0.5f * Mesh.PxSize());
 			Mesh.Stroke(Line, Tok(UiToken::Ink), true);
-			P.Text(CX - 0.5f * KeyW, CapTop(CY, KeyAsc), KeyText, KeyFont, Tok(UiToken::Ink));
-			P.Text(CX + Rr + 12.f * S, CapTop(CY, VerbAsc), VerbText, VerbFont, Tok(UiToken::Ink));
+			FGuardLine& L = Lines[GuardVerb];
+			const float VX = CX + Rr + 12.f * S;
+			const float VY = CapTop(CY, VerbAsc);
+			L.Rect = FBox2f(FVector2f(VX, VY), FVector2f(VX + VerbW, VY + VerbAsc));
+			LineShade(P, L);
+			P.TextGuarded(CX - 0.5f * KeyW, CapTop(CY, KeyAsc), KeyText, KeyFont, Tok(UiToken::Ink), L.G); // the key under the verb's guard
+			P.TextGuarded(VX, VY, VerbText, VerbFont, Tok(UiToken::Ink), L.G);
 		}
 
 #if !UE_BUILD_SHIPPING
@@ -5844,15 +5908,16 @@ public:
 			{
 				Widest = FMath::Max(Widest, SubLineW[I] + (I == 0 ? SpeakerW : 0.f));
 			}
-			SubRect = FBox2f(FVector2f(CX - 0.5f * Widest, Top), FVector2f(CX + 0.5f * Widest, Bottom));
-			PaintSubtitleBand(P, CX, Top, Bottom, Widest, SubLineH, SubBand);
+			PaintSubtitleBand(P, CX, Top, Bottom, Widest, SubLineH, SubBand());
 			for (int32 I = 0; I < Rows; ++I)
 			{
 				const float Lead = I == 0 ? SpeakerW : 0.f;
 				const float X = CX - (SubLineW[I] + Lead) * 0.5f;
 				const float LY = Top + SubLineH * I;
+				Lines[GuardSub0 + I].Rect = FBox2f(FVector2f(X + Lead, LY), FVector2f(X + Lead + SubLineW[I], LY + SubLineH));
 				if (I == 0)
 				{
+					Lines[GuardSpeaker].Rect = FBox2f(FVector2f(X, LY), FVector2f(X + FMath::Max(1.f, Lead - kSubSpeakerGap * S), LY + SubLineH));
 					P.Text(X, LY + SpeakerDy, SpeakerText, SpeakerFont, R.Fill);
 				}
 				P.Text(X + Lead, LY, FakeLine, SubFont, Tok(UiToken::Ink), static_cast<int32>(Fit.line[I].begin), static_cast<int32>(Fit.line[I].end));
@@ -5868,7 +5933,24 @@ private:
 	{
 		FString Seen;
 		FString Text;
+		float W = 0.f; // its width in its font
 		bool bBuilt = false;
+	};
+
+	// The lines whose picture is read, each drawn under its measured guard.
+	enum EGuardLine : int32 { GuardLead, GuardPartner, GuardObjective, GuardNotice, GuardVerb, GuardSub0, GuardSub1, GuardSpeaker, GuardCount };
+	static_assert(UE_ARRAY_COUNT(kGuardName) == GuardCount, "a name for each read line");
+	static constexpr float kReadEvery = 1.5f; // s between reads in play (one line each)
+	static constexpr float kGuardHold = 3.f;  // s of weaker reads before a guard eases back
+	struct FGuardLine
+	{
+		FBox2f Rect = FBox2f(ForceInit);              // where it was drawn this frame (invalid: not shown)
+		ftcore::UiLineGuard G;                        // drawn with (the subtitle's lines: shade = their band)
+		float Floor = ftcore::kUiObjectiveQuiet;      // the objective's quiet level
+		float LowSince = -1.f;                        // when a weaker read than G was first seen
+		float Bare = -1.f;                            // the last read's bare contrast
+		ftcore::UiColor Pic{0.f, 0.f, 0.f, 1.f};      // the last read's brightest tenth
+		bool bRead = false;
 	};
 
 	static const FString& NoName()
@@ -5877,13 +5959,91 @@ private:
 		return Empty;
 	}
 
-	static void BuildName(FRowName& Row, const FString& Src, const FString& Fallback, const FSlateFontInfo&)
+	// True when the words (or the fonts) changed: measured again.
+	static bool BuildName(FRowName& Row, const FString& Src, const FString& Fallback, const FSlateFontInfo& Font)
 	{
 		if (!Row.bBuilt || !Row.Seen.Equals(Src, ESearchCase::CaseSensitive))
 		{
 			Row.bBuilt = true;
 			Row.Seen = Src;
 			Row.Text = (Src.IsEmpty() ? Fallback : Src).ToUpper();
+			Row.W = TextWidth(Row.Text, Font);
+			return true;
+		}
+		return false;
+	}
+
+	static bool MenuOpen(const AFTExploreCharacter* C)
+	{
+		const UGameInstance* GI = C ? C->GetGameInstance() : nullptr;
+		const UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+		const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+		return (Pause && Pause->IsOpen()) || (Set && Set->IsOpen());
+	}
+
+	// The objective's alpha with its quiet level lifted to Floor: 0..quiet maps to 0..Floor, quiet..1 to Floor..1.
+	static float QuietAlpha(float A, float Floor)
+	{
+		const float Q = ftcore::kUiObjectiveQuiet;
+		return A <= Q ? A * Floor / Q : Floor + (A - Q) * (1.f - Floor) / (1.f - Q);
+	}
+
+	// A small line's shade, under it only, where its contour at the cap fell short.
+	static void LineShade(const FPainter& P, const FGuardLine& L)
+	{
+		if (L.G.shade > 0.f && L.Rect.bIsValid)
+		{
+			const FVector2f Ext = L.Rect.GetSize();
+			PaintSubtitleBand(P, L.Rect.GetCenter().X, L.Rect.Min.Y, L.Rect.Max.Y, Ext.X, Ext.Y, L.G.shade);
+		}
+	}
+
+	// The subtitle's band: the most any of its lines asks for.
+	float SubBand() const { return FMath::Max3(Lines[GuardSub0].G.shade, Lines[GuardSub1].G.shade, Lines[GuardSpeaker].G.shade); }
+
+	float Target(int32 I) const { return I <= GuardPartner ? ftcore::kUiNameMinContrast : ftcore::kUiLineMinContrast; }
+
+	float RestAlpha(int32 I) const
+	{
+		const FSlateFontInfo* F[GuardSub0] = {&LeadFont, &PartnerFont, &ObjFont, &NoteFont, &VerbFont};
+		return I < GuardSub0 ? F[I]->OutlineSettings.OutlineColor.A : 0.f;
+	}
+
+	// The line's ink as drawn at rest: the partner's dimmed, the objective at its quiet level (bRest), the speaker in fill.
+	ftcore::UiColor LineInk(int32 I, bool bRest = true) const
+	{
+		ftcore::UiColor C = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), I == GuardSpeaker ? UiToken::Fill : UiToken::Ink);
+		C.a *= I == GuardPartner ? Hud::PartnerInk : (I == GuardObjective && bRest ? Lines[I].Floor : 1.f);
+		return C;
+	}
+
+	// The line's contrast as drawn over its last read.
+	float DrawnRatio(int32 I) const
+	{
+		const FGuardLine& L = Lines[I];
+		if (I >= GuardSub0)
+		{
+			return ftcore::uiContrast(LineInk(I), ftcore::UiColor{0.f, 0.f, 0.f, SubBand()}, L.Pic);
+		}
+		const float K = 1.f - L.G.shade;
+		const float Mean = FMath::Max(ftcore::uiContourMean(1.f, RestAlpha(I)), ftcore::uiContourMean(L.G.spread, L.G.alpha));
+		return ftcore::uiContrast(LineInk(I), ftcore::UiColor{0.f, 0.f, 0.f, Mean}, ftcore::UiColor{L.Pic.r * K, L.Pic.g * K, L.Pic.b * K, 1.f});
+	}
+
+	void ReadSoon(int32 I)
+	{
+		ReadFirst = I;
+		ReadFirstAt = Time;
+	}
+
+	void ResetGuards()
+	{
+		for (FGuardLine& L : Lines)
+		{
+			L.G = ftcore::UiLineGuard();
+			L.Floor = ftcore::kUiObjectiveQuiet;
+			L.LowSince = -1.f;
+			L.bRead = false;
 		}
 	}
 
@@ -5910,6 +6070,8 @@ private:
 		VerbAsc = Asc(VerbFont);
 		ObjW = 0.f;
 		PromptSeen.Reset(); // measured again in the new fonts
+		LeadRow.bBuilt = false;
+		PartnerRow.bBuilt = false;
 #if !UE_BUILD_SHIPPING
 		if (bFake)
 		{
@@ -5998,7 +6160,7 @@ private:
 				Rot.Yaw = SweepWorstYaw;
 				SweepPC->SetControlRotation(Rot);
 				bSweepDone = true;
-				SubBand = 0.f; // the band is judged again over the view that is shot
+				ResetGuards(); // every line is judged again over the view that is shot
 				ShotDelay = Time + 3.f;
 				UE_LOG(LogForgottenThird, Display, TEXT("UI: explore sweep: worst subtitle view at yaw %.0f (bare %.2f)."),
 					SweepWorstYaw, SweepWorst);
@@ -6014,14 +6176,6 @@ private:
 				bYawDone = true;
 			}
 		}
-		if (!bReadBound && GEngine && GEngine->GameViewport)
-		{
-			GEngine->GameViewport->OnEndDraw().AddSP(this, &SFTExploreHud::ReadAtEndDraw);
-			bReadBound = true;
-		}
-		// Read the picture under the words twice a second, at the end of the game viewport's draw: the Slate layers are not
-		// in it yet, so the reads are of the bare scene.
-		bReadWanted = bReadWanted || Time - LastRead > 0.5f;
 		if (bShot && !bShotTaken && (!bSweep || bSweepDone) && Time >= ShotDelay)
 		{
 			bShotTaken = true;
@@ -6038,46 +6192,166 @@ private:
 #endif
 	}
 
-#if !UE_BUILD_SHIPPING
+	// The reads of the picture under the words, at the end of the game viewport's draw (the Slate layers are not in it yet,
+	// so each is of the bare scene). Stills read every line twice a second; play one line every kReadEvery s in turn, a
+	// line whose words just changed first.
+	void TickReads()
+	{
+		if (!bReadBound && GEngine && GEngine->GameViewport)
+		{
+			GEngine->GameViewport->OnEndDraw().AddSP(this, &SFTExploreHud::ReadAtEndDraw);
+			bReadBound = true;
+		}
+		if (bOn)
+		{
+			bReadWanted = bReadWanted || Time - LastRead > (bStills ? 0.5f : kReadEvery) || (ReadFirst >= 0 && Time - ReadFirstAt > 0.1f);
+		}
+	}
+
 	void ReadAtEndDraw()
 	{
-		if (!bReadWanted || FScreenshotRequest::IsScreenshotRequested() || !bOn)
+		if (!bReadWanted || FScreenshotRequest::IsScreenshotRequested() || !bOn || bCutscene)
 		{
 			return;
 		}
 		bReadWanted = false;
 		LastRead = Time;
-		const ftcore::UiStyle& St = Table().Style;
-		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Ink);
-		const ftcore::UiColor None{0.f, 0.f, 0.f, 0.f};
-		ftcore::UiColor Pic;
-		float SubRatio = -1.f, SubWith = -1.f, ObjRatio = -1.f, NoteRatio = -1.f;
-		if (PictureBrightest(SubRect, Size, Pic))
+		if (!bStills)
 		{
-			const float Want = ftcore::uiSubtitleBand(Ink, Pic, &SubRatio, &SubWith);
-			SubBand = FMath::Max(SubBand, Want); // only rises within the run: no flicker
+			// One line a read (each read stalls the render thread a moment), the one whose words just changed first.
+			int32 I = ReadFirst;
+			ReadFirst = -1;
+			for (int32 K = 0; (I < 0 || !Lines[I].Rect.bIsValid) && K < GuardCount; ++K)
+			{
+				const int32 J = (ReadNext + K) % GuardCount;
+				if (Lines[J].Rect.bIsValid)
+				{
+					I = J;
+					ReadNext = (J + 1) % GuardCount;
+				}
+			}
+			if (I >= 0)
+			{
+				MeasureLine(I);
+			}
+			return;
+		}
+#if !UE_BUILD_SHIPPING
+		float SubBare = -1.f;
+		for (int32 I = 0; I < GuardCount; ++I)
+		{
+			if (MeasureLine(I) && I >= GuardSub0 && I != GuardSpeaker)
+			{
+				SubBare = SubBare < 0.f ? Lines[I].Bare : FMath::Min(SubBare, Lines[I].Bare);
+			}
 		}
 		if (bSweepPending)
 		{
-			if (SubRatio >= 0.f && SubRatio < SweepWorst)
+			if (SubBare >= 0.f && SubBare < SweepWorst)
 			{
-				SweepWorst = SubRatio;
+				SweepWorst = SubBare;
 				SweepWorstYaw = SweepBase + kSweepDeg * static_cast<float>(SweepStep);
 			}
 			bSweepPending = false;
 			SweepStepAt = -1.f;
 			++SweepStep;
 		}
-		if (PictureBrightest(ObjRect, Size, Pic))
+		LogLines();
+#endif
+	}
+
+	// One line's read: the least guard that holds it (the subtitle's lines: their band); it rises at once and eases back
+	// only after kGuardHold s of weaker reads (never in a still). False when nothing could be read.
+	bool MeasureLine(int32 I)
+	{
+		FGuardLine& L = Lines[I];
+		ftcore::UiColor Pic{0.f, 0.f, 0.f, 1.f};
+		if (!L.Rect.bIsValid || !PictureBrightest(L.Rect, Size, Pic, &ReadBuf))
 		{
-			ObjRatio = ftcore::uiContrast(Ink, None, Pic);
+			return false;
 		}
-		if (PictureBrightest(NoteRect, Size, Pic))
+		L.Pic = Pic;
+		L.bRead = true;
+		ftcore::UiLineGuard Want;
+		float Floor = ftcore::kUiObjectiveQuiet;
+		if (I >= GuardSub0)
 		{
-			NoteRatio = ftcore::uiContrast(Ink, None, Pic);
+			Want.shade = ftcore::uiSubtitleBand(LineInk(I), Pic, &Want.bare, &Want.ratio);
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("UI: explore contrast (bare ink over the brightest tenth): subtitle %.2f (band %.2f: %.2f), objective %.2f, notice %.2f."),
-			SubRatio, SubBand, SubWith, ObjRatio, NoteRatio);
+		else
+		{
+			ftcore::UiColor Ink = LineInk(I, false);
+			if (I == GuardObjective)
+			{
+				Floor = ftcore::uiQuietFloor(Ink, Pic, Target(I), ftcore::kUiObjectiveQuiet);
+				Ink.a *= Floor; // judged at rest: the quiet line is the worst it stands
+			}
+			Want = ftcore::uiLineGuard(Ink, Pic, Target(I), 1.f, RestAlpha(I));
+		}
+		L.Bare = Want.bare;
+		const auto Strength = [](const ftcore::UiLineGuard& G) { return ftcore::uiContourMean(G.spread, G.alpha) + G.shade; };
+		const bool bUp = Strength(Want) > Strength(L.G) + 1e-4f;
+		const bool bFloorUp = Floor > L.Floor + 1e-4f;
+		if (bUp)
+		{
+			L.G = Want;
+		}
+		if (bFloorUp)
+		{
+			L.Floor = Floor;
+		}
+		const bool bWeaker = Strength(Want) < Strength(L.G) - 1e-4f || Floor < L.Floor - 1e-4f;
+		if (!bWeaker || bStills)
+		{
+			L.LowSince = -1.f;
+		}
+		else if (L.LowSince < 0.f)
+		{
+			L.LowSince = Time;
+		}
+		else if (Time - L.LowSince > kGuardHold)
+		{
+			L.G = Want;
+			L.Floor = Floor;
+			L.LowSince = -1.f;
+		}
+		return true;
+	}
+
+#if !UE_BUILD_SHIPPING
+	// Each line's contrast as drawn over its read, with its pixel box (as the menus' log), then the lowest.
+	void LogLines() const
+	{
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+		const float KX = Size.X > 0.f ? VS.X / Size.X : 1.f;
+		const float KY = Size.Y > 0.f ? VS.Y / Size.Y : 1.f;
+		float Low = -1.f;
+		int32 LowI = -1;
+		int32 N = 0;
+		for (int32 I = 0; I < GuardCount; ++I)
+		{
+			const FGuardLine& L = Lines[I];
+			if (!L.bRead || !L.Rect.bIsValid)
+			{
+				continue;
+			}
+			const float Ratio = DrawnRatio(I);
+			++N;
+			if (LowI < 0 || Ratio < Low)
+			{
+				Low = Ratio;
+				LowI = I;
+			}
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("UI: explore contrast %.2f (bare %.2f, ink %.2f, target %.1f) px %d,%d..%d,%d: %s; contour %.0f px %.2f, shade %.2f."), Ratio,
+				ftcore::uiContrast(LineInk(I), ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, L.Pic), LineInk(I).a, I >= GuardSub0 ? ftcore::kUiSubtitleMinContrast : Target(I),
+				FMath::FloorToInt(L.Rect.Min.X * KX), FMath::FloorToInt(L.Rect.Min.Y * KY), FMath::CeilToInt(L.Rect.Max.X * KX),
+				FMath::CeilToInt(L.Rect.Max.Y * KY), kGuardName[I], I >= GuardSub0 ? 0.f : L.G.spread, I >= GuardSub0 ? 0.f : L.G.alpha,
+				I >= GuardSub0 ? SubBand() : L.G.shade);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: explore contrast lowest %.2f (%s) over %d lines; band %.2f, objective quiet %.2f."), Low,
+			LowI >= 0 ? kGuardName[LowI] : TEXT("none"), N, SubBand(), Lines[GuardObjective].Floor);
 	}
 #endif
 
@@ -6107,14 +6381,16 @@ private:
 	FVector2f PromptAt = FVector2f::ZeroVector;
 	FString PromptSeen, KeyText, VerbText;
 	float KeyW = 0.f, VerbW = 0.f;
-	// The reads (non-shipping stills).
-	mutable FBox2f ObjRect = FBox2f(ForceInit);
-	mutable FBox2f NoteRect = FBox2f(ForceInit);
-	mutable FBox2f SubRect = FBox2f(ForceInit);
-	float SubBand = 0.f;
+	// The reads and each line's guard.
+	mutable FGuardLine Lines[GuardCount];
+	TArray<FColor> ReadBuf; // kept between reads
 	bool bReadBound = false;
 	bool bReadWanted = false;
+	bool bStills = false; // -UiExploreFake or -UiExploreShot: every line each read, logged, only rising
 	float LastRead = -1.f;
+	int32 ReadFirst = -1;
+	float ReadFirstAt = 0.f;
+	int32 ReadNext = 0;
 	// The placeholder subtitle and the stills.
 	float FakeSubScale = 1.f;
 	bool bFake = false;

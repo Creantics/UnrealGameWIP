@@ -443,6 +443,10 @@ FTCORE_API float uiContrast(UiColor fg, UiColor bg, UiColor under);
 // `c` lifted toward white until its relative luminance is at least `floor` (alpha kept); unchanged when already there.
 FTCORE_API UiColor uiLumaFloor(UiColor c, float floor);
 
+// The least alpha of `backing` in [from, cap] under which `ink` reaches `target` over `picture` (opaque); `from` when it
+// already does there, `cap` when even that falls short (check with uiContrast).
+FTCORE_API float uiLeastBacking(UiColor ink, UiColor backing, UiColor picture, float target, float from, float cap);
+
 // The dim behind the dialogue options: the least alpha of `backing` (0..s.optionsDimMax) under which `ink` reaches
 // s.optionsDimContrast over `picture`; 0 when it already does, the max when even that falls short.
 FTCORE_API float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture);

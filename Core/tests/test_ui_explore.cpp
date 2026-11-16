@@ -160,15 +160,93 @@ TEST_CASE("subtitle fit: past eight lines the rest joins the last; pages follow 
     CHECK(uiSubtitlePages(f) == 4);
 }
 
-TEST_CASE("subtitle band: none over a dark picture, 35% where the text falls below 4.5:1") {
+TEST_CASE("subtitle band: none over a dark picture, the least up to 70% that holds 4.5:1") {
     const UiColor ink{0.95f, 0.94f, 0.9f, 1.f};
     float bare = 0.f, banded = 0.f;
     CHECK(uiSubtitleBand(ink, UiColor{0.05f, 0.05f, 0.06f, 1.f}, &bare, &banded) == 0.f);
     CHECK(bare >= kUiSubtitleMinContrast);
-    CHECK(uiSubtitleBand(ink, UiColor{0.8f, 0.78f, 0.7f, 1.f}, &bare, &banded) == doctest::Approx(kUiSubtitleBand));
+    // Solhaven daylight: the bare line at about 1.8; the old 35% band left it near 4.0, the measured one holds it.
+    const UiColor day{0.8f, 0.78f, 0.7f, 1.f};
+    const float band = uiSubtitleBand(ink, day, &bare, &banded);
     CHECK(bare < kUiSubtitleMinContrast);
-    CHECK(banded > bare);
+    CHECK(band > 0.35f);
+    CHECK(band <= kUiSubtitleBandMax);
+    CHECK(banded >= kUiSubtitleMinContrast);
+    CHECK(banded < kUiSubtitleMinContrast + 0.05f); // the least: no darker than it needs
+    // A paler picture needs more band.
+    CHECK(uiSubtitleBand(ink, UiColor{0.9f, 0.9f, 0.88f, 1.f}) > band);
+    // Over white the cap: whatever it gives is reported, never more than the cap.
+    CHECK(uiSubtitleBand(ink, UiColor{1.f, 1.f, 1.f, 1.f}, &bare, &banded) <= kUiSubtitleBandMax);
     CHECK(uiSubtitleBand(ink, UiColor{0.2f, 0.2f, 0.2f, 1.f}) == 0.f); // the pointers are optional
+}
+
+TEST_CASE("least backing: the dialogue's option dim is the same search") {
+    const UiColor ink{0.95f, 0.94f, 0.9f, 1.f};
+    const UiColor black{0.f, 0.f, 0.f, 1.f};
+    const UiColor grey{0.6f, 0.6f, 0.6f, 1.f};
+    const float a = uiLeastBacking(ink, black, grey, 4.5f, 0.f, 1.f);
+    CHECK(a > 0.f);
+    CHECK(uiContrast(ink, UiColor{0.f, 0.f, 0.f, a}, grey) >= 4.5f);
+    CHECK(uiContrast(ink, UiColor{0.f, 0.f, 0.f, a - 0.01f}, grey) < 4.5f);
+    CHECK(uiLeastBacking(ink, black, grey, 4.5f, 0.9f, 1.f) == doctest::Approx(0.9f)); // already holds at `from`
+    CHECK(uiLeastBacking(ink, black, UiColor{1.f, 1.f, 1.f, 1.f}, 30.f, 0.f, 0.5f) == doctest::Approx(0.5f)); // short: the cap
+}
+
+TEST_CASE("line guard: the contour is judged by its mean, so today's ring does not pass a bright picture") {
+    const UiColor ink{0.95f, 0.94f, 0.9f, 1.f};
+    const float restA = 0.54f; // the edge colour's 0.9 times the words' 0.6 share
+    CHECK(uiContourMean(1.f, restA) == doctest::Approx(restA * 1.5f / kUiContourWindow));
+    CHECK(uiContourMean(3.f, kUiContourAlphaMax) == doctest::Approx(kUiContourAlphaMax * 3.5f / kUiContourWindow));
+    CHECK(uiContourMean(kUiContourWindow, 1.f) == doctest::Approx(1.f));
+    CHECK(uiContourMean(2.f, 0.6f) == doctest::Approx(0.6f * 2.5f / kUiContourWindow));
+    // Pictures under which the bare objective (3.30) and notice (2.24) were measured in Solhaven daylight.
+    for (const float v : {0.55f, 0.72f}) {
+        const UiColor pic{v, v, v * 0.95f, 1.f};
+        const float bare = uiContrast(ink, UiColor{0.f, 0.f, 0.f, 0.f}, pic);
+        CHECK(bare < 4.5f);
+        CHECK(uiContrast(ink, UiColor{0.f, 0.f, 0.f, uiContourMean(1.f, restA)}, pic) < 4.5f); // today's: a fail
+        const UiLineGuard g = uiLineGuard(ink, pic, kUiLineMinContrast, 1.f, restA);
+        CHECK(g.bare == doctest::Approx(bare));
+        CHECK(g.ratio >= kUiLineMinContrast);
+        CHECK(uiContourMean(g.spread, g.alpha) > uiContourMean(1.f, restA)); // the contour had to grow
+        CHECK(g.alpha <= kUiContourAlphaMax);
+        CHECK(g.shade == 0.f);
+    }
+    // A dark picture keeps the resting contour.
+    const UiLineGuard dark = uiLineGuard(ink, UiColor{0.1f, 0.1f, 0.12f, 1.f}, kUiLineMinContrast, 1.f, restA);
+    CHECK(dark.spread == 1.f);
+    CHECK(dark.alpha == doctest::Approx(restA));
+    CHECK(dark.shade == 0.f);
+    // Names hold 3:1 with less.
+    const UiColor pic{0.72f, 0.72f, 0.68f, 1.f};
+    const UiLineGuard name = uiLineGuard(ink, pic, kUiNameMinContrast, 1.f, restA);
+    const UiLineGuard small = uiLineGuard(ink, pic, kUiLineMinContrast, 1.f, restA);
+    CHECK(uiContourMean(name.spread, name.alpha) <= uiContourMean(small.spread, small.alpha));
+}
+
+TEST_CASE("line guard: a dim ink needs the shade under the line; the quiet floor rises above 40%") {
+    const UiColor dim{0.95f, 0.94f, 0.9f, 0.6f};
+    const UiColor white{1.f, 1.f, 1.f, 1.f};
+    const UiLineGuard g = uiLineGuard(dim, white, kUiLineMinContrast, 1.f, 0.54f);
+    CHECK(g.spread == kUiContourSpreadMax);
+    CHECK(g.alpha == doctest::Approx(kUiContourAlphaMax));
+    CHECK(g.shade > 0.f);
+    CHECK(g.shade <= kUiLineShadeMax);
+    const UiColor ink{0.95f, 0.94f, 0.9f, 1.f};
+    // 40% ink cannot hold 4.5:1 even over black (at most about 3.6).
+    CHECK(uiContrast(UiColor{ink.r, ink.g, ink.b, kUiObjectiveQuiet}, UiColor{0.f, 0.f, 0.f, 1.f}, white) < 4.5f);
+    const UiColor day{0.8f, 0.78f, 0.7f, 1.f};
+    const float q = uiQuietFloor(ink, day, kUiLineMinContrast, kUiObjectiveQuiet);
+    CHECK(q > kUiObjectiveQuiet);
+    CHECK(q < 1.f);
+    // Even over a dark picture 40% falls short, so the floor sits a little above it there, and lower than in daylight.
+    const float qDark = uiQuietFloor(ink, UiColor{0.1f, 0.1f, 0.12f, 1.f}, kUiLineMinContrast, kUiObjectiveQuiet);
+    CHECK(qDark > kUiObjectiveQuiet);
+    CHECK(qDark < q);
+    CHECK(uiQuietFloor(ink, UiColor{0.1f, 0.1f, 0.12f, 1.f}, 3.f, kUiObjectiveQuiet) == doctest::Approx(kUiObjectiveQuiet));
+    const UiLineGuard rest = uiLineGuard(UiColor{ink.r, ink.g, ink.b, q}, day, kUiLineMinContrast, 1.f, 0.54f);
+    CHECK(rest.ratio >= kUiLineMinContrast);
+    CHECK(rest.shade == 0.f);
 }
 
 TEST_CASE("explore UI: no allocation") {
@@ -186,6 +264,8 @@ TEST_CASE("explore UI: no allocation") {
         uiSubtitleFit(t, fit);
         (void)uiSubtitlePage(fit, static_cast<std::uint32_t>(i));
         (void)uiSubtitleBand(UiColor{1.f, 1.f, 1.f, 1.f}, UiColor{0.5f, 0.5f, 0.5f, 1.f});
+        (void)uiLineGuard(UiColor{1.f, 1.f, 1.f, 1.f}, UiColor{0.7f, 0.7f, 0.7f, 1.f}, 4.5f, 1.f, 0.54f);
+        (void)uiQuietFloor(UiColor{1.f, 1.f, 1.f, 1.f}, UiColor{0.7f, 0.7f, 0.7f, 1.f}, 4.5f, 0.4f);
     }
     if (counting) CHECK(ftcore_test::allocStats().count == before);
 }

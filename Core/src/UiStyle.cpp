@@ -473,18 +473,23 @@ UiColor uiLumaFloor(UiColor c, float floor) {
     return UiColor{c.r + (1.f - c.r) * hi, c.g + (1.f - c.g) * hi, c.b + (1.f - c.b) * hi, c.a};
 }
 
-float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture) {
+float uiLeastBacking(UiColor ink, UiColor backing, UiColor picture, float target, float from, float cap) {
     const UiColor pic{picture.r, picture.g, picture.b, 1.f};
     const auto at = [&](float a) { return uiContrast(ink, UiColor{backing.r, backing.g, backing.b, a}, pic); };
-    const float top = std::clamp(s.optionsDimMax, 0.f, 1.f);
-    if (at(0.f) >= s.optionsDimContrast) return 0.f;
-    if (at(top) < s.optionsDimContrast) return top;
-    float lo = 0.f, hi = top; // contrast rises with the dim: bisect the least that reaches the target
+    const float top = std::clamp(cap, 0.f, 1.f);
+    const float bottom = std::clamp(from, 0.f, top);
+    if (at(bottom) >= target) return bottom;
+    if (at(top) < target) return top;
+    float lo = bottom, hi = top; // contrast rises with a dark backing: bisect the least that reaches the target
     for (int i = 0; i < 20; ++i) {
         const float m = 0.5f * (lo + hi);
-        (at(m) >= s.optionsDimContrast ? hi : lo) = m;
+        (at(m) >= target ? hi : lo) = m;
     }
     return hi;
+}
+
+float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture) {
+    return uiLeastBacking(ink, backing, picture, s.optionsDimContrast, 0.f, s.optionsDimMax);
 }
 
 void uiLumaAdd(UiLumaHistogram& h, UiColor c) {

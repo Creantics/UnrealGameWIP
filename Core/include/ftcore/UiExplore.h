@@ -1,8 +1,9 @@
 #pragma once
 // The explore HUD's timing and the subtitle's fit (2026-11-16 ruling, item A): the objective line that quiets to 40%
 // after 4 s without change, the notices shown one at a time at the right edge (2.5 s each, a queue of 3), the
-// subtitle's breaks (42 characters a line, 2 lines on screen, a longer line in pages) and the band behind it (35% black,
-// only where the measured contrast under the text falls below 4.5:1).
+// subtitle's breaks (42 characters a line, 2 lines on screen, a longer line in pages), the band behind it (black, the
+// least up to 70% that holds 4.5:1 over the picture, none where the bare text already does) and the measured guard of a
+// small line with no plate (its soft contour raised in strength, then a shade under it, until it holds its target).
 //
 //   UiObjectiveFade f;   each tick: uiObjectiveStep(f, objective serial, dt); draw at f.alpha
 //   UiNoticeQueue q;     on a notice: slot = uiNoticePush(q), the host keeps the words in its own slot array
@@ -84,11 +85,47 @@ FTCORE_API std::size_t uiSubtitlePage(const UiSubtitleFit& fit, std::uint32_t re
 FTCORE_API std::size_t uiSubtitlePages(const UiSubtitleFit& fit);
 
 inline constexpr float kUiSubtitleMinContrast = 4.5f; // the text over the bare picture below this: the band comes in
-inline constexpr float kUiSubtitleBand = 0.35f;       // the band's black at its middle
+inline constexpr float kUiSubtitleBandMax = 0.70f;    // the band's black at its middle, at most (2026-11-16: cap lifted)
 
-// The band behind the subtitle: 0 when `ink` stands at kUiSubtitleMinContrast or more over `picture` (the brightest
-// part under the text), else kUiSubtitleBand. `ratio` (optional) gets the bare contrast, `withBand` the contrast over
-// the band.
+// The band behind a subtitle line: the least black (0..kUiSubtitleBandMax) under which `ink` stands at
+// kUiSubtitleMinContrast over `picture` (the brightest tenth under the line); 0 when the bare text already does, the cap
+// when even that falls short. `ratio` (optional) gets the bare contrast, `withBand` the contrast over the band returned.
 FTCORE_API float uiSubtitleBand(UiColor ink, UiColor picture, float* ratio = nullptr, float* withBand = nullptr);
+
+// --- A small line's guard (no plate) ----------------------------------------------------------------------------
+//
+// The objective, a notice, the prompt's verb and the party names stand on the picture over their own soft contour: the
+// font's dark edge `spread` px wide (at 1080p) at `alpha`, then one outer pixel at kUiContourOuter of that. The contour
+// is judged by its mean darkness over the kUiContourWindow px next to a stroke (the gap to the next stroke at the HUD's
+// small sizes, counted from one side only: conservative on purpose, since a 1 px ring reads far weaker than its alpha
+// says and the bare picture between letters is what the eye reads them against), as a black backing of that alpha. Raised a step at a time: spread 1, 2, 3 px, each with its
+// alpha from the resting one up to kUiContourAlphaMax, the least that holds `target`; at the cap and still short, a
+// black shade (0..kUiLineShadeMax) under that line only, the least that holds it.
+
+inline constexpr float kUiContourWindow = 6.f;     // px at 1080 beside a stroke over which the contour is judged
+inline constexpr float kUiContourSpreadMax = 3.f;  // px at 1080: the widest the contour grows
+inline constexpr float kUiContourAlphaMax = 0.9f;  // the contour's darkest (the edge colour's own alpha)
+inline constexpr float kUiContourOuter = 0.5f;     // the outer pixel's alpha, of the contour's
+inline constexpr float kUiLineShadeMax = kUiSubtitleBandMax;
+inline constexpr float kUiLineMinContrast = 4.5f;  // the small lines
+inline constexpr float kUiNameMinContrast = 3.f;   // the party names (large text)
+
+struct UiLineGuard {
+    float spread = 1.f; // px at 1080, whole
+    float alpha = 0.f;  // the contour's alpha (its inner px)
+    float shade = 0.f;  // black under the line (0: none)
+    float bare = 0.f;   // the ink over the bare picture
+    float ratio = 0.f;  // the ink over the contour (and shade) as returned
+};
+
+// The contour's mean darkness over kUiContourWindow px: `spread` px at `alpha`, then its outer pixel.
+FTCORE_API float uiContourMean(float spread, float alpha);
+
+// The least guard from the resting contour (`restSpread`, `restAlpha`) under which `ink` holds `target` over `picture`.
+FTCORE_API UiLineGuard uiLineGuard(UiColor ink, UiColor picture, float target, float restSpread, float restAlpha);
+
+// The least alpha (from `quiet` up to 1) at which `ink` drawn at that alpha holds `target` over `picture` under the
+// contour at its cap: a resting line's floor (the objective's quiet level); 1 when even full ink falls short.
+FTCORE_API float uiQuietFloor(UiColor ink, UiColor picture, float target, float quiet);
 
 } // namespace ftcore
