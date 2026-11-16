@@ -55,6 +55,7 @@
 #include "Components/DecalComponent.h"
 #include "Misc/PackageName.h"
 #include "ForgottenThird.h"
+#include "FTRimLight.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
@@ -142,6 +143,10 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Camera->SetRelativeRotation(FRotator(-10.0, 0.0, 0.0));
 	Camera->bUsePawnControlRotation = false;
 	Camera->SetFieldOfView(kFov);
+
+	Rim = CreateDefaultSubobject<UFTRimLightComponent>(TEXT("Rim"));
+	Rim->SetupAttachment(GetCapsuleComponent());
+	Rim->SetRelativeLocation(FVector(0.0, 0.0, 60.0)); // chest to head on a standing lead
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> Devin(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devin.devin"));
 	// The mesh's origin is at its feet; the capsule's is at its middle, and the capsule hovers over the floor.

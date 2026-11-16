@@ -39,6 +39,7 @@ class USkeletalMeshComponent;
 class USpringArmComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
+class UFTRimLightComponent;
 
 // How the weapon arm moves through an attack.
 enum class EFTArenaSwing : uint8
@@ -204,6 +205,15 @@ public:
 
 private:
 	void SetTellVisible(bool bVisible);
+#if !UE_BUILD_SHIPPING
+	// -ArenaWet review (not in Shipping): once a second, puts the fixed wet state on garment slots that don't carry it yet
+	// (pieces worn later). Each slot gets one dynamic instance, made once and kept in WetMids.
+	void SoakForReview();
+	FTimerHandle WetTimer;
+	FVector2f WetReview = FVector2f(0.f, 130.f);
+	int32 WetSlots = -1;
+	TArray<TWeakObjectPtr<UMaterialInstanceDynamic>> WetMids;
+#endif
 	void ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow);
 	void MakeCarried(USkeletalMesh* Mesh, TConstArrayView<FFTCarriedPiece> Split, bool bVisible);
 	// Puts Look on the player's skin: false (nothing changed) when its body doesn't load.
@@ -223,6 +233,8 @@ private:
 	// Leans, crouches and lies down; everything visible hangs off it.
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USceneComponent> Visual;
+	UPROPERTY()
+	TObjectPtr<UFTRimLightComponent> Rim; // character-only rim light on the player's figure (ft.RimLight)
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<UStaticMeshComponent> Body;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
