@@ -4002,8 +4002,9 @@ TEST_CASE("arena partner: the partner kit's range: none of it under the classic 
     CHECK(a.hits == b.hits);
     CHECK(a.stats.partnerDamage == b.stats.partnerDamage);
     REQUIRE(a.hits > 0);
-    // The close camera: the range read, its strings start from its band (1.8-2.7 m off the edge), not walked in to
-    // about 1 m; the bolt (range 3.6) lands from there.
+    // The close camera: the range read, its strings start within its reach (3.2 m off the edge) on its walk to its
+    // band (1.8-2.7 m), not walked in to about 1 m: at its hits it stands further off than without the range, and
+    // the bolt (range 3.6) lands from there.
     const RangeRun c = rangeRun(true, true), d = rangeRun(false, true);
     MESSAGE("close camera, kit range on: hits " << c.hits << " first at " << c.firstHit << " s, mean "
                                                 << c.meanEdge() << " m off the edge, damage " << c.stats.partnerDamage
