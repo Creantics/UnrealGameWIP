@@ -1022,7 +1022,7 @@ void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
     constexpr float kMinStride = 1.f;   // its own goal is at least this far: it leaves the place it stood in
     constexpr float kLeave = 1.5f * kPlace; // and at least this far from where that place began
     PartnerIntent& o = s_.out;
-    const PartnerTuning& t = s_.t;
+    const PartnerTuning& t = tStep_; // this step's, as every rule reads (s_.t here: it runs off the close camera alone)
     const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
     const bool haveTarget = s_.target >= 0 && static_cast<std::size_t>(s_.target) < n &&
                             standing(in.enemies[static_cast<std::size_t>(s_.target)]);

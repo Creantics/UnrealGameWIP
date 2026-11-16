@@ -1050,7 +1050,9 @@ TEST_CASE("close station: the kit's range: unset, invalid, or under the classic 
 
 TEST_CASE("close station: a caster with its kit's range strings from its band, not walked in") {
     // The shipped party kit's range (3.2, 1.8) under a caster band of 5-8 m: they do not overlap, so its band is
-    // [1.8, 2.7], Pause and Ready alike. Without the range Ready pulls in to 0.9-1.3 m.
+    // [1.8, 2.7], Pause and Ready alike, and its strings start once within reach (3.2) on its walk there. Without the
+    // range Ready pulls in to 0.9-1.3 m. Checked: its strings start at least 1.3 m off the edge on average, and 0.3 m
+    // further off than without the range; no goal of its is past its reach.
     const Vec2 lead{-5.f, 0.f}, start{-4.f, -3.f};
     const CsRangeRun ranged = csRangeRun({3.2f, 1.8f}, kPartnerCloseCasterMin, kPartnerCloseCasterMax, lead, start);
     const CsRangeRun plain = csRangeRun({}, kPartnerCloseCasterMin, kPartnerCloseCasterMax, lead, start);
@@ -1094,4 +1096,68 @@ TEST_CASE("close station: with the kit's range a StepBack only steps out to the 
     MESSAGE("lead next to the target, 9 runs: " << stepBacks << " StepBacks (all out to the standoff), " << strings
                                                 << " strings");
     CHECK(strings >= 9);
+}
+
+TEST_CASE("close station: with the kit's range, Pause and Ready do not flap at the band's edges") {
+    // The partner starts at an edge of its band (standoff 1.8, reach - tolerance 2.7, reach 3.2 off the target's
+    // edge) or just either side of one, and walks to its intents for 20 s. A flap: its (act, why) off a blow turns
+    // to another and back within 10 steps; or its goal off a blow jumps more than 0.5 m and back again within 10
+    // steps (Pause and Ready share the band: no goal between two stations).
+    const PartnerRange range{3.2f, 1.8f};
+    const Vec2 dir{-0.8f, -0.6f}; // the start's side of the target: in the lens, the lead's flank
+    int flaps = 0, jumps = 0, strings = 0;
+    for (const float at : {1.7f, 1.8f, 1.9f, 2.6f, 2.7f, 2.8f, 3.1f, 3.2f, 3.3f}) {
+        CAPTURE(at);
+        CsPit p(true);
+        p.in.range = range;
+        p.in.station.close.standMin = kPartnerCloseCasterMin;
+        p.in.station.close.standMax = kPartnerCloseCasterMax;
+        const float r = p.e[0].radius;
+        p.in.pos = csAdd(p.e[0].pos, csMul(dir, r + at));
+        struct Was {
+            PartnerAct act;
+            PartnerWhy why;
+            int step;
+        };
+        Was prev{PartnerAct::Wait, PartnerWhy::NotBegun, -100}, before{PartnerAct::Wait, PartnerWhy::NotBegun, -100};
+        bool haveGoal = false;
+        Vec2 lastGoal{}, jumpFrom{};
+        int jumpStep = -100;
+        int runFlaps = 0, runJumps = 0, runStrings = 0;
+        for (int s = 0; s < 20 * 60; ++s) {
+            const PartnerIntent& i = p.step();
+            if (i.act == PartnerAct::Attack) { // a blow: the next run off it starts afresh
+                if (i.newString) ++runStrings;
+                prev = before = Was{PartnerAct::Wait, PartnerWhy::NotBegun, -100};
+                haveGoal = false;
+                continue;
+            }
+            if (i.act != prev.act || i.why != prev.why) {
+                if (prev.step >= 0 && i.act == before.act && i.why == before.why && s - before.step <= 10) ++runFlaps;
+                before = prev;
+                prev = Was{i.act, i.why, s};
+            }
+            if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+                if (haveGoal && csLen(csSub(i.point, lastGoal)) > 0.5f) {
+                    if (s - jumpStep <= 10 && csLen(csSub(i.point, jumpFrom)) <= 0.5f) ++runJumps; // and back
+                    jumpFrom = lastGoal;
+                    jumpStep = s;
+                }
+                lastGoal = i.point;
+                haveGoal = true;
+                p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+            } else {
+                haveGoal = false;
+            }
+        }
+        MESSAGE("start " << at << " m off the edge: flaps " << runFlaps << ", goal jumps " << runJumps << ", strings "
+                         << runStrings);
+        CHECK(runFlaps == 0);
+        CHECK(runJumps == 0);
+        CHECK(runStrings >= 3);
+        flaps += runFlaps;
+        jumps += runJumps;
+        strings += runStrings;
+    }
+    MESSAGE("band edges, 9 runs: " << flaps << " flaps, " << jumps << " goal jumps, " << strings << " strings");
 }
