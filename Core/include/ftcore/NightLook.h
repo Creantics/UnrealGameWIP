@@ -41,13 +41,15 @@ struct NightFloorFit {
     float moonShare = 0.07f;   // the moon share every row was shot at; any other share falls back to skyFill
     float floorKey = 21.f;     // the median the fill holds (0-255); at or under 0, off: the fill is skyFill throughout
     float fillMin = 0.004f;    // the fill never goes under this (the capture keeps a sky to light)
-    // night_1116b (block 4, moon 0.07, fill 0.015) and night_1116a (the 21:00 bracket); slopes from the bracket until
-    // block 4b measures one per knot.
+    // Measured at moon 0.07: night_1116a (the 21:00 bracket), night_1116b (block 4, fill 0.015) and night_1116c (block
+    // 4b). Each row is the secant between the two measured fills that bracket the floor (the response is concave, so a
+    // local secant beats one slope): 20:30 0.020/0.026 read 20.8/30.6; 21:00 0.015/0.021 read 18.2/29.6; 22:00
+    // 0.012/0.015 read 23.6/29.2; 24:00 0.005/0.008 read 18.8/24.9.
     std::array<NightFloorKnot, 4> knots{{
-        {34.5f, 0.015f, 11.8f, 1680.f},   // 20:30
-        {41.0f, 0.015f, 18.2f, 1680.f},   // 21:00
-        {53.4f, 0.015f, 29.2f, 1680.f},   // 22:00
-        {68.0f, 0.015f, 35.2f, 1680.f},   // 24:00
+        {34.5f, 0.020f, 20.8f, 1633.f},   // 20:30
+        {41.0f, 0.015f, 18.2f, 1900.f},   // 21:00
+        {53.4f, 0.012f, 23.6f, 1867.f},   // 22:00
+        {68.0f, 0.005f, 18.8f, 2033.f},   // 24:00
     }};
 };
 
