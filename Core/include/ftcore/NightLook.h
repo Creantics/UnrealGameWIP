@@ -95,6 +95,15 @@ struct NightLook {
     // because the lift divided by a 1e-4 moon). Under it, as on a moonless or overcast night, the capture is lifted no
     // further, so the street falls darker instead of blowing out. The ruled moons (0.03 and up) stay exact.
     float liftFloorShare = 0.01f;
+    // The real-time sky lift comes in with the exposure blend (11-16 dusk ruling): while the camera meters freely
+    // (blend 0) it is 1, since the meter already answers the dimming; it reaches the full lift at blend 1, so every
+    // frame from exposureLowDeg down is exactly as before. False keeps the lift whole at any blend (-NightLiftAll).
+    bool liftByBlend = true;
+    // The range the exposure blends FROM once the blend is above 0 (11-16 dusk ruling): the day's own range narrowed to
+    // this, so the night's range binds from the blend's first step instead of only near its end. The defaults leave
+    // the day's range as it is (-NightDuskMinEV=, -NightDuskMaxEV=).
+    float duskExposureMinEV100 = -10.f;
+    float duskExposureMaxEV100 = 20.f;
     // The night's local exposure shadow contrast and film toe, reached with the exposure blend. Below 0 keeps the world
     // look's own (the default): set only by ruling (-NightShadowContrast=, -NightToe=).
     float shadowContrast = -1.f;
@@ -190,6 +199,14 @@ FTCORE_API bool nightLampOn(float fraction, std::uint32_t key);
 // The exposure's blend from the day's range to the night's: 0 above exposureHighDeg, 1 from exposureLowDeg down. No
 // allocation.
 FTCORE_API float nightExposureBlend(const NightLook& look, float sunElevationDeg);
+// The auto exposure's range for a frame, from the day's (the volume's own dayMin..dayMax): the day's at blend 0; from
+// above 0 the day's narrowed to duskExposureMin/MaxEV100 blended toward the frame's night range, exactly the night's at
+// blend 1. Min never above max. No allocation.
+struct ExposureRange {
+    float minEV100 = -10.f;
+    float maxEV100 = 20.f;
+};
+FTCORE_API ExposureRange nightExposureRange(const NightLook& look, const NightFrame& frame, float dayMin, float dayMax);
 // The moon's share of moonShare with the sun at this elevation (the moon stands opposite it): moonRiseShare at the
 // horizon and below it (the sun up), 1 from moonFullDeg up, eased; continuous everywhere. No allocation.
 FTCORE_API float nightMoonScale(const NightLook& look, float sunElevationDeg);

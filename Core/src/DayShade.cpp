@@ -10,12 +10,15 @@ float mix(float a, float b, float t) { return a + (b - a) * t; }
 float clamp01(float v) { return std::clamp(v, 0.f, 1.f); }
 } // namespace
 
-float dayShadeAmount(float night, float dusk) {
+float dayShadeAmount(const DayShadeFade& fade, float night, float sunElevationDeg) {
     // NaN reads as full night (no lift).
-    if (!(night == night) || !(dusk == dusk)) return 0.f;
-    // Gone by a fifth of the dusk, so the dusk's own dimmed fill (its whole ramp, not only its peak) stands.
-    const float d = 1.f - clamp01(dusk / kDayShadeDuskCut);
-    return (1.f - clamp01(night)) * d * d;
+    if (!(night == night) || !(sunElevationDeg == sunElevationDeg)) return 0.f;
+    float up = sunElevationDeg >= fade.highDeg ? 1.f : 0.f;
+    if (fade.highDeg > fade.lowDeg) {
+        const float t = clamp01((sunElevationDeg - fade.lowDeg) / (fade.highDeg - fade.lowDeg));
+        up = t * t * (3.f - 2.f * t);
+    }
+    return (1.f - clamp01(night)) * up;
 }
 
 DayShadeFrame dayShadeFrame(const DayShadeLook& look, const DayShadeBase& base, float amount) {

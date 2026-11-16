@@ -94,9 +94,21 @@ ftcore::DayShadeBase FTDayShade::BaseFor(const ftcore::SceneLook& WorldLook)
 	return Base;
 }
 
-float FTDayShade::AmountAt(const FTNight::FSkyFrame& Sky)
+const ftcore::DayShadeFade& FTDayShade::Fade()
 {
-	return Enabled() ? ftcore::dayShadeAmount(Sky.NightAmount, Sky.Dusk.amount) : 0.f;
+	static const ftcore::DayShadeFade Spec = []
+	{
+		ftcore::DayShadeFade F;
+		FParse::Value(FCommandLine::Get(), TEXT("DayShadeFadeHigh="), F.highDeg);
+		FParse::Value(FCommandLine::Get(), TEXT("DayShadeFadeLow="), F.lowDeg);
+		return F;
+	}();
+	return Spec;
+}
+
+float FTDayShade::AmountAt(const FTNight::FSkyFrame& Sky, float SunElevationDeg)
+{
+	return Enabled() ? ftcore::dayShadeAmount(Fade(), Sky.NightAmount, SunElevationDeg) : 0.f;
 }
 
 void FTDayShade::WriteFog(UExponentialHeightFogComponent& Fog, const ftcore::DayShadeFrame& Frame)
@@ -144,7 +156,8 @@ float FTDayShade::StillAmount()
 	float Hours = static_cast<float>(ftcore::kWorldClockStartHours);
 	FParse::Value(Cmd, TEXT("WorldEyeSunHour="), Hours);
 	// Only a full-day hour: a dusk or night hour's still (FTNight::ApplyStill) keeps exactly what it had.
-	const float Amount = AmountAt(FTNight::FrameAt(ftcore::WorldClockSpec{}, Hours));
+	const ftcore::WorldClockSpec Spec;
+	const float Amount = AmountAt(FTNight::FrameAt(Spec, Hours), ftcore::sunElevationDeg(Spec, Hours));
 	return Amount >= 0.999f ? Amount : -1.f;
 }
 
@@ -293,11 +306,12 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	const FRotator Rotation = FTClock::SunRotation(Spec, Clock.hours);
 	const FTNight::FSkyFrame Sky = FTNight::FrameAt(Spec, Clock.hours);
 	const ftcore::NightFrame& Frame = Sky.Night;
-	// The day's shadow floor (0 by night and dusk, so those keep their own); only in a world with a look.
+	// The day's shadow floor (eased out on the sun's elevation before the lamps start; 0 by night); only in a world
+	// with a look.
 	const UWorld* ShadeWorld = GetWorld();
 	const UFTLookSubsystem* ShadeLook = ShadeWorld ? ShadeWorld->GetSubsystem<UFTLookSubsystem>() : nullptr;
 	const bool bShade = ShadeLook && !ShadeLook->GetWorldLook().IsEmpty();
-	const float ShadeAmount = bShade ? FTDayShade::AmountAt(Sky) : 0.f;
+	const float ShadeAmount = bShade ? FTDayShade::AmountAt(Sky, ftcore::sunElevationDeg(Spec, Clock.hours)) : 0.f;
 	ftcore::DayShadeFrame Shade = ftcore::dayShadeFrame(FTDayShade::Look(),
 		FTDayShade::BaseFor(bShade ? ShadeLook->GetLook() : ftcore::SceneLook{}), ShadeAmount);
 	// The night's local shadow contrast and film toe, where given (-NightShadowContrast=, -NightToe=), on the exposure
@@ -353,8 +367,11 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 				FPostProcessSettings& S = Volume->Settings;
 				S.bOverride_AutoExposureMinBrightness = bExposureLocked || E.bMin;
 				S.bOverride_AutoExposureMaxBrightness = bExposureLocked || E.bMax;
-				S.AutoExposureMinBrightness = FMath::Lerp(E.Min, Frame.exposureMinEV100, Blend);
-				S.AutoExposureMaxBrightness = FMath::Lerp(E.Max, Frame.exposureMaxEV100, Blend);
+				// From the day's range narrowed to the dusk's (NightLook::duskExposureMin/MaxEV100), so it binds from
+				// the blend's first step; exactly the night's at blend 1.
+				const ftcore::ExposureRange Range = ftcore::nightExposureRange(NightSpec, Frame, E.Min, E.Max);
+				S.AutoExposureMinBrightness = Range.minEV100;
+				S.AutoExposureMaxBrightness = Range.maxEV100;
 			}
 		}
 	}

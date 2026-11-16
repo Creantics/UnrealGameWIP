@@ -10,16 +10,38 @@
 
 using namespace ftcore;
 
-TEST_CASE("dayShadeAmount: full by day, none at night or full dusk") {
-    CHECK(dayShadeAmount(0.f, 0.f) == doctest::Approx(1.f));
-    CHECK(dayShadeAmount(1.f, 0.f) == doctest::Approx(0.f));
-    CHECK(dayShadeAmount(0.f, 1.f) == doctest::Approx(0.f));
-    CHECK(dayShadeAmount(0.5f, 0.f) == doctest::Approx(0.5f));
-    CHECK(dayShadeAmount(0.f, 0.1f) == doctest::Approx(0.25f));
-    CHECK(dayShadeAmount(0.f, kDayShadeDuskCut) == 0.f);
-    CHECK(dayShadeAmount(0.f, 0.26f) == 0.f);
-    CHECK(dayShadeAmount(-1.f, 2.f) == doctest::Approx(0.f));
-    CHECK(dayShadeAmount(std::numeric_limits<float>::quiet_NaN(), 0.f) == 0.f);
+TEST_CASE("dayShadeAmount: full by day, eased out on the sun's elevation, none at night") {
+    const DayShadeFade fade;
+    CHECK(dayShadeAmount(fade, 0.f, 40.f) == 1.f);
+    CHECK(dayShadeAmount(fade, 0.f, fade.highDeg) == 1.f);
+    CHECK(dayShadeAmount(fade, 1.f, 40.f) == 0.f);
+    CHECK(dayShadeAmount(fade, 0.5f, 40.f) == doctest::Approx(0.5f));
+    CHECK(dayShadeAmount(fade, 0.f, 0.5f * (fade.highDeg + fade.lowDeg)) == doctest::Approx(0.5f));
+    CHECK(dayShadeAmount(fade, 0.f, fade.lowDeg) == 0.f);
+    CHECK(dayShadeAmount(fade, 0.f, -5.f) == 0.f);
+    CHECK(dayShadeAmount(fade, -1.f, 40.f) == 1.f);
+    CHECK(dayShadeAmount(fade, std::numeric_limits<float>::quiet_NaN(), 40.f) == 0.f);
+    CHECK(dayShadeAmount(fade, 0.f, std::numeric_limits<float>::quiet_NaN()) == 0.f);
+    // An empty span is a step at highDeg.
+    const DayShadeFade step{5.f, 5.f};
+    CHECK(dayShadeAmount(step, 0.f, 5.f) == 1.f);
+    CHECK(dayShadeAmount(step, 0.f, 4.9f) == 0.f);
+    // The default fade ends before the lamps start.
+    CHECK(fade.lowDeg > NightLook{}.lampsOnHighDeg);
+}
+
+TEST_CASE("day shade: non-increasing from 16:00 to 20:00 at 1-min steps, gone from the lamps' start down") {
+    const WorldClockSpec spec;
+    const DayShadeFade fade;
+    float prev = 2.f;
+    for (int m = 0; m <= 240; ++m) {
+        const double h = 16.0 + m / 60.0;
+        const float e = sunElevationDeg(spec, h);
+        const float a = dayShadeAmount(fade, nightAmount(spec, h), e);
+        CHECK(a <= prev);
+        if (e <= NightLook{}.lampsOnHighDeg) CHECK(a == 0.f);
+        prev = a;
+    }
 }
 
 TEST_CASE("dayShadeFrame: the night keeps the world's own values exactly") {
@@ -98,11 +120,8 @@ TEST_CASE("dayShadeFrame: clamps to the engine's ranges") {
 
 TEST_CASE("day shade: full at 08, 12 and 16 h, none at midnight, and allocation-free") {
     const WorldClockSpec spec;
-    const DuskLook dusk;
-    const auto amountAt = [&](double h) {
-        const float e = sunElevationDeg(spec, h);
-        return dayShadeAmount(nightAmount(spec, h), duskAmount(dusk, e, h >= 12.0));
-    };
+    const DayShadeFade fade;
+    const auto amountAt = [&](double h) { return dayShadeAmount(fade, nightAmount(spec, h), sunElevationDeg(spec, h)); };
     const ftcore_test::AllocStats before = ftcore_test::allocStats();
     const float a8 = amountAt(8.0), a12 = amountAt(12.0), a16 = amountAt(16.0), a0 = amountAt(0.0);
     const DayShadeFrame f = dayShadeFrame(DayShadeLook{}, DayShadeBase{}, a12);

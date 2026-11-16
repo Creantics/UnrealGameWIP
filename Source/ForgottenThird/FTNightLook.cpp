@@ -68,6 +68,12 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightMoonFull="), L.moonFullDeg);
 	ReadNumber(Cmd, TEXT("NightMoonRiseShare="), L.moonRiseShare);
 	ReadNumber(Cmd, TEXT("NightSunSetHalf="), L.sunSetHalfDeg);
+	ReadNumber(Cmd, TEXT("NightDuskMinEV="), L.duskExposureMinEV100);
+	ReadNumber(Cmd, TEXT("NightDuskMaxEV="), L.duskExposureMaxEV100);
+	if (FParse::Param(Cmd, TEXT("NightLiftAll")))
+	{
+		L.liftByBlend = false;
+	}
 	// Negative (the default) means the world look's own shadow contrast and toe; a ruling sets 0 or more.
 	ReadNumber(Cmd, TEXT("NightShadowContrast="), L.shadowContrast);
 	ReadNumber(Cmd, TEXT("NightToe="), L.filmToe);

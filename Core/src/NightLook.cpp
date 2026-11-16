@@ -93,6 +93,16 @@ float nightExposureBlend(const NightLook& look, float sunElevationDeg) {
     return easeDown(look.exposureHighDeg, look.exposureLowDeg, sunElevationDeg);
 }
 
+ExposureRange nightExposureRange(const NightLook& look, const NightFrame& frame, float dayMin, float dayMax) {
+    const float b = frame.exposureBlend;
+    if (!(b > 0.f)) return {dayMin, dayMax};
+    if (b >= 1.f) return {frame.exposureMinEV100, frame.exposureMaxEV100};
+    const float lo = std::max(dayMin, look.duskExposureMinEV100);
+    const float hi = std::max(lo, std::min(dayMax, look.duskExposureMaxEV100));
+    const float mn = lerp(lo, frame.exposureMinEV100, b);
+    return {mn, std::max(mn, lerp(hi, frame.exposureMaxEV100, b))};
+}
+
 float nightMoonScale(const NightLook& look, float sunElevationDeg) {
     const float rise = std::clamp(look.moonRiseShare, 0.f, 1.f);
     // The moon's elevation is the sun's depth: eased up from moonRiseDeg to moonFullDeg.
@@ -153,7 +163,14 @@ NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDe
     // The real-time capture sees the atmosphere lit by that light and the dome's own dimming: lift by both, so the
     // fill stands at skyScale's share of the day's on either side of the horizon.
     // Never divided by less than liftFloorShare (a moonless or overcast night darkens, it doesn't blow out).
-    f.skyScaleRealTime = f.skyScale / std::max(f.sunScale, std::max(look.liftFloorShare, 1e-4f)) / f.skyLuminance;
+    const float lift = 1.f / std::max(f.sunScale, std::max(look.liftFloorShare, 1e-4f)) / f.skyLuminance;
+    // With liftByBlend it comes in with the exposure blend, in ratio (evenly in EV, as the range blends): 1 while the
+    // camera meters freely, the whole lift (the same expression, bit for bit) from blend 1 on.
+    if (!look.liftByBlend || f.exposureBlend >= 1.f) {
+        f.skyScaleRealTime = f.skyScale / std::max(f.sunScale, std::max(look.liftFloorShare, 1e-4f)) / f.skyLuminance;
+    } else {
+        f.skyScaleRealTime = f.skyScale * lerpRatio(1.f, lift, std::max(f.exposureBlend, 0.f));
+    }
     return f;
 }
 

@@ -205,8 +205,12 @@ TEST_CASE("nightFrameAt: lamps on before the exposure leaves the day's; the stre
         // From 20:30 the model's key stays within the fit's fill range (the derived fill falls with the moon's rise).
         if (h >= 20.5 && key > model.fillWeight * nightDeepFill(look, -34.5f) + model.lampWeight + 1e-6f) flat = false;
         CHECK(key >= floorKey * 0.999f);  // never under the floor
-        // Either side of the horizon a real-time capture lands at the fill.
-        CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale).epsilon(1e-4));
+        // From blend 1 on a real-time capture lands at the fill; before it the lift comes in with the blend (1 at 0).
+        if (f.exposureBlend >= 1.f) {
+            CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale).epsilon(1e-4));
+        } else if (f.exposureBlend <= 0.f) {
+            CHECK(f.skyScaleRealTime == f.skyScale);
+        }
         last = key;
     }
     const auto after = ftcore_test::allocStats().count;
@@ -289,6 +293,8 @@ TEST_CASE("nightFrameAt: the directional light and the real-time sky lift have n
     for (const float moon : {0.07f, 0.045f, 0.03f}) {
         NightLook look;
         look.moonShare = moon;
+        // The whole lift (-NightLiftAll) is the one this bound was set on; the lift by the blend has its own test.
+        look.liftByBlend = false;
         float worstSun = 1.f, worstSky = 1.f, lastSun = 0.f, lastSky = 0.f;
         for (int i = 0; i <= 112; ++i) {
             const float e = 8.f - 0.25f * static_cast<float>(i);
@@ -779,4 +785,97 @@ TEST_CASE("aviationLamps: tallest roofs first, none on low or ground boxes, spac
     few.maxSkyline = 0;
     CHECK(aviationLamps(few, boxes.data(), boxes.size(), sky.data(), sky.size()).size() == 2);
     CHECK(aviationLamps(spec, nullptr, 0, nullptr, 0).empty());
+}
+
+TEST_CASE("dusk fix guards: every blend-1 frame unchanged, lamps half on wherever the blend moves") {
+    // 11-16 dusk ruling: the lift by the blend changes no frame at blend 1 (so the night floor table stays valid),
+    // and the exposure never leaves the day's before the lamps are at least half on.
+    const NightLook look;
+    NightLook whole = look;
+    whole.liftByBlend = false;
+    const WorldClockSpec spec;
+    const auto before = ftcore_test::allocStats().count;
+    bool same = true, lampsHalf = true, liftInside = true;
+    for (int m = 16 * 60; m <= 24 * 60; ++m) {
+        const double h = m >= 24 * 60 ? 0.0 : m / 60.0;
+        const float e = sunElevationDeg(spec, h);
+        const float n = nightAmount(spec, h);
+        const NightFrame f = nightFrameAt(look, n, e);
+        const NightFrame w = nightFrameAt(whole, n, e);
+        if (f.exposureBlend >= 1.f &&
+            (f.skyScaleRealTime != w.skyScaleRealTime || f.sunScale != w.sunScale || f.skyScale != w.skyScale)) {
+            same = false;
+        }
+        if (f.exposureBlend > 0.f && f.lamps < 0.5f) lampsHalf = false;
+        // Between 1 (blend 0) and the whole lift.
+        if (f.skyScaleRealTime < f.skyScale * (1.f - 1e-6f) || f.skyScaleRealTime > w.skyScaleRealTime * (1.f + 1e-6f)) {
+            liftInside = false;
+        }
+    }
+    const auto after = ftcore_test::allocStats().count;
+    CHECK(same);
+    CHECK(lampsHalf);
+    CHECK(liftInside);
+    // The floor table's knots (20:30 on) are all at blend 1.
+    for (const NightFloorKnot& k : look.floorFit.knots) CHECK(nightExposureBlend(look, -k.moonDeg) == 1.f);
+    CHECK(nightExposureBlend(look, sunElevationDeg(spec, 20.5)) == 1.f);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
+TEST_CASE("nightFrameAt: the lift by the blend has no step through the dusk") {
+    // Every 0.25 degrees (about a game minute) from the sun 8 up to 20 down: the real-time sky's neighbours differ by
+    // a bounded ratio at the ruled moon (0.07: 1.32; the lift then climbs about 30x over the blend's 5 degrees while
+    // the range closes; the street's own 5-minute ratio is the strip's to show, not this model's).
+    const WorldClockSpec spec;
+    for (const float moon : {0.07f}) {
+        NightLook look;
+        look.moonShare = moon;
+        float worst = 1.f, last = 0.f;
+        for (int i = 0; i <= 112; ++i) {
+            const float e = 8.f - 0.25f * static_cast<float>(i);
+            const float t = std::clamp((spec.twilightHigh - e) / (spec.twilightHigh - spec.twilightLow), 0.f, 1.f);
+            const NightFrame f = nightFrameAt(look, t * t * (3.f - 2.f * t), e);
+            REQUIRE(std::isfinite(f.skyScaleRealTime));
+            if (i > 0) worst = std::max(worst, std::max(f.skyScaleRealTime / last, last / f.skyScaleRealTime));
+            last = f.skyScaleRealTime;
+        }
+        INFO("moon " << moon << " worst neighbour ratio " << worst);
+        CHECK(worst <= 1.35f);
+    }
+}
+
+TEST_CASE("nightExposureRange: the day's at blend 0, the night's exactly at 1, the dusk's range between") {
+    NightLook look;
+    NightFrame f = nightFrame(look, 1.f);
+    f.exposureBlend = 0.f;
+    ExposureRange r = nightExposureRange(look, f, -10.f, 20.f);
+    CHECK(r.minEV100 == -10.f);
+    CHECK(r.maxEV100 == 20.f);
+    f.exposureBlend = 1.f;
+    r = nightExposureRange(look, f, -10.f, 20.f);
+    CHECK(r.minEV100 == f.exposureMinEV100);
+    CHECK(r.maxEV100 == f.exposureMaxEV100);
+    // The defaults leave the day's range: the old lerp from it.
+    f.exposureBlend = 0.25f;
+    r = nightExposureRange(look, f, -10.f, 20.f);
+    CHECK(r.minEV100 == doctest::Approx(-10.f + (f.exposureMinEV100 + 10.f) * 0.25f));
+    CHECK(r.maxEV100 == doctest::Approx(20.f + (f.exposureMaxEV100 - 20.f) * 0.25f));
+    // A dusk range binds from the blend's first step.
+    look.duskExposureMinEV100 = 1.f;
+    look.duskExposureMaxEV100 = 4.f;
+    f.exposureBlend = 1e-3f;
+    r = nightExposureRange(look, f, -10.f, 20.f);
+    CHECK(r.minEV100 == doctest::Approx(1.f).epsilon(1e-2));
+    CHECK(r.maxEV100 == doctest::Approx(4.f).epsilon(1e-2));
+    // Never wider than the day's; min never above max, even with the ends crossed.
+    r = nightExposureRange(look, f, 2.f, 3.f);
+    CHECK(r.minEV100 >= 2.f - 1e-2f);
+    CHECK(r.maxEV100 <= 3.f + 1e-2f);
+    look.duskExposureMinEV100 = 9.f;
+    look.duskExposureMaxEV100 = -9.f;
+    for (const float b : {1e-3f, 0.3f, 0.7f, 0.999f}) {
+        f.exposureBlend = b;
+        r = nightExposureRange(look, f, -10.f, 20.f);
+        CHECK(r.minEV100 <= r.maxEV100);
+    }
 }
