@@ -525,6 +525,7 @@ private:
 	void ShapeCloseLens(int32 Target, float DeltaSeconds);
 	void PickCloseShoulder(int32 Target);
 	bool bCloseShape = false;     // the close preset is on this fight
+	bool bPartnerStation = true;  // -ArenaPartnerStation=0 (capture only; always on in shipping): no close station handed to the brain
 	ftcore::CameraPreset CloseBase;
 	float CloseMelee = 0.f;       // 0..1: the melee share, eased (ftcore::arenaCloseMeleeStep)
 	float CloseTall = 0.f;        // 0..1: the followed target's tallness (ftcore::arenaCloseTallness)
@@ -573,7 +574,6 @@ private:
 	int32 CloseContactFrames = 0, CloseContactSwaps = 0;
 	float CloseContactYawMost = 0.f;
 	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
-	bool bPartnerStation = true;  // -ArenaPartnerStation=0 (capture only): no close station handed to the brain (a review's before)
 	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
