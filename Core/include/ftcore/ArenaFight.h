@@ -603,6 +603,13 @@ FTCORE_API const ArenaAttack* arenaPlayerAttack(const ArenaFighter& kit, std::ui
 // FightAnimator::playStrike (a riposte or Release with play) keyed to the attack's active part, startup after
 // AttackStarted.
 FTCORE_API FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move);
+// A cast's bolt (presentation only; the rules hit at the active part whatever is drawn): it leaves the casting hand as
+// the cast's startup begins and arrives on the hit, its flight the startup, never under kArenaBoltFlightMin.
+// arenaBoltLate is how long after the hit it lands: 0 unless the startup is under the floor. A startup below 0 or not
+// finite counts as 0.
+inline constexpr float kArenaBoltFlightMin = 0.16f;
+FTCORE_API float arenaBoltFlight(float startup);
+FTCORE_API float arenaBoltLate(float startup);
 // The leads' strike clips: the id each FightClip a lead plays has in Data/Anim/beat_clips.json and in the look's clip
 // folder ("lead_jab", "lead_cross", "lead_kick_r", "lead_counter", "lead_finisher", "lead_fire" for the shot,
 // "lead_cast" for the spell); nullptr for a clip no lead has. A literal: valid forever.

@@ -4232,6 +4232,16 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     return static_cast<std::size_t>(move) < n ? p[move] : FightClip::Stance;
 }
 
+float arenaBoltFlight(float startup) {
+    const float s = std::isfinite(startup) ? std::max(startup, 0.f) : 0.f;
+    return std::max(s, kArenaBoltFlightMin);
+}
+
+float arenaBoltLate(float startup) {
+    const float s = std::isfinite(startup) ? std::max(startup, 0.f) : 0.f;
+    return arenaBoltFlight(s) - s;
+}
+
 const char* arenaLeadClipId(FightClip clip) {
     switch (clip) {
     case FightClip::StrikeLeft: return "lead_jab";

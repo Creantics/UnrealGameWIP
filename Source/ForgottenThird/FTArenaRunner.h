@@ -1526,7 +1526,7 @@ private:
 	bool bAllyStrikeCut = false; // its blow's clip was cut (it was hit, or its target is down) until its next blow
 	int32 AllyTargetDeadLast = -1; // the blow's target when it was already dead the step before (the killing blow is not cut)
 	TWeakObjectPtr<AFTArenaFighter> AllyWeaponsFailed; // the ally figure its driver could not begin on: not tried again
-	// A partner shot's or cast's impact waits for its flight (FFTLeadWeapons::kTracerTime, kBoltTime).
+	// A partner shot's or cast's impact waits for what is left of its flight after the hit (FFTLeadWeapons::FlightOf).
 	ftcore::ArenaEvent PartnerImpactWaiting{};
 	double PartnerImpactDue = -1.0;
 	void PlayWaitingPartnerImpact(double T);

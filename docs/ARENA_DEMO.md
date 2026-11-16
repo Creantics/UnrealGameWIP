@@ -410,7 +410,8 @@ Pick the lead with `-ArenaLead=Devin` or `-ArenaLead=Duy` (the name of a `PartyL
 `Config/UserGame.ini`, any case); each plays its own fighter kit (Devin gauntlets; Duy kicks, and fires his pistol only
 while aiming). The third party slot is a party member only (`"playable": false` in `arena.json`) that fights as the
 partner with the magic kit (`"weapon": "magic"`): its lights are bolts from the casting hand (`spell_bolt`, then
-`spell_impact` at the hit point), its guard the ward (`spell_ward`). Its heavy (a short, slow, high-poise attack) is
+`spell_impact` at the hit point; the bolt leaves as the cast's startup begins and lands on the hit, its flight the startup and
+never under 0.16 s, `ftcore::arenaBoltFlight`), its guard the ward (`spell_ward`). Its heavy (a short, slow, high-poise attack) is
 data only: the partner brain throws lights, and `spell_burst` has no spawner (its system stays unbuilt). It sets its own partner
 reach and standoff (`"partnerReach"`, `"partnerStandoff"`, metres off the target's edge, reach up to 8.5; 0 or absent,
 as on Devin and Duy, is the partner brain's own): reach 8.5 and standoff 5, the caster's band of 5-8 m under the close

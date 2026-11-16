@@ -4173,6 +4173,31 @@ PartyOutcome partyPlay(const ArenaTable& t, const ArenaDef& def, const char* lea
 }
 } // namespace
 
+TEST_CASE("arena partner: a cast's bolt leaves the hand as the startup begins and arrives on the hit, its flight never under 0.16 s") {
+    // The floor and the formula.
+    CHECK(arenaBoltFlight(0.2f) == doctest::Approx(0.2f));
+    CHECK(arenaBoltLate(0.2f) == doctest::Approx(0.f));
+    CHECK(arenaBoltFlight(0.1f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltLate(0.1f) == doctest::Approx(kArenaBoltFlightMin - 0.1f));
+    CHECK(arenaBoltFlight(0.f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltLate(0.f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltFlight(-1.f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltFlight(std::numeric_limits<float>::quiet_NaN()) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltLate(std::numeric_limits<float>::infinity()) == doctest::Approx(kArenaBoltFlightMin));
+    // The shipped caster's lights: each bolt flies its light's startup and lands on the hit, none late.
+    const ArenaTable t = shippedTable();
+    const ArenaFighter& kit = t.fighter("third");
+    REQUIRE(kit.weapon == ArenaWeapon::Magic);
+    REQUIRE(kit.lightCount > 0);
+    for (std::uint8_t m = 0; m < kit.lightCount; ++m) {
+        const ArenaAttack* a = arenaPlayerAttack(kit, m);
+        REQUIRE(a != nullptr);
+        CHECK(arenaBoltFlight(a->startup) == doctest::Approx(a->startup));
+        CHECK(arenaBoltLate(a->startup) == doctest::Approx(0.f));
+        MESSAGE("caster light " << int(m) << ": startup " << a->startup << " s, bolt flight " << arenaBoltFlight(a->startup) << " s");
+    }
+}
+
 TEST_CASE("arena partner: the party member as each playable lead's partner plays the default's fights: won, lost, and it casts") {
     // The coverage test_arena.cpp's lead-kit balance gives the playable leads, for the kit that is never a lead: each
     // playable lead with it as the partner, against the shipped default fight, the two mixed fights and each enemy alone,

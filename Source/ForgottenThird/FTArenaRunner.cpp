@@ -3743,7 +3743,8 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 				PartnerHitEvents += E.source == ftcore::kArenaAlly ? 1 : 0;
 				if (E.source == ftcore::kArenaAlly)
 				{
-					// A shot's or cast's impact as it arrives (its tracer or bolt has just left), a blow's now.
+					// A shot's impact as it arrives (its tracer has just left), a cast's and a blow's now (the bolt left
+					// as the startup began: FFTLeadWeapons::FlightOf, 0 unless the startup is under the bolt's floor).
 					// The partner's own kit: its blow is that kit's light (ArenaDef::partnerKit).
 					const ftcore::ArenaFighter& Kit = Fight.def().partnerKit;
 					const int32 Lights = FMath::Max(1, static_cast<int32>(Kit.lightCount));
