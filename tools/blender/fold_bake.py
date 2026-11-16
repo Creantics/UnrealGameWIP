@@ -56,6 +56,8 @@ SPEC.json (lengths in metres, in the blend's world space):
                                         outline follows the cloth's edge, not the grid's steps
      "edge_max": null,                  subdiv only: cut the region's edges in two, again and again, until none is longer than
                                         this (m); "subdiv" cuts first
+     "pos_blur": 0.0,                   subdiv only: Gaussian sigma (m) the region's positions are smoothed over, outline and
+                                        real edge held (the game mesh's facets, cut finer, would bake as facets)
      "edge_min": 0.0,                   subdiv only: open-boundary pieces shorter than this (m) are not the cloth's edge (slits
                                         between layers of a generated mesh) and get no hem or curl
      "drop_inner": false,               subdiv only: a shell with thickness loses its inner faces inside the region (those
@@ -535,6 +537,32 @@ else:
     bm.free()
     hi.data.update()
     nv = len(hi.data.vertices)
+    if S.get("pos_blur", 0) > 0:  # the game mesh's flat facets, cut finer, are still flat: diffuse the positions inside the
+        # region (its outline and the cloth's real edge held), about 2 (sigma / edge)^2 half-steps
+        Pp = np.empty(nv * 3)
+        hi.data.vertices.foreach_get("co", Pp)
+        Pp = Pp.reshape(-1, 3)
+        EE = np.empty(len(hi.data.edges) * 2, int)
+        hi.data.edges.foreach_get("vertices", EE)
+        EE = EE.reshape(-1, 2)
+        mv = np.zeros(nv, bool)
+        mv[list(free)] = True
+        mv[list(bound)] = False
+        mv[ek] = False
+        EE = EE[mv[EE[:, 0]] | mv[EE[:, 1]]]
+        el = float(np.median(np.linalg.norm(Pp[EE[:, 0]] - Pp[EE[:, 1]], axis=1)))
+        its = int(min(2000, np.ceil(2 * (S["pos_blur"] / max(el, 1e-5)) ** 2)))
+        deg = np.bincount(EE.ravel(), minlength=nv).astype(float)[:, None]
+        P_ = Pp.copy()
+        for _ in range(its):
+            S_ = np.zeros_like(P_)
+            np.add.at(S_, EE[:, 0], P_[EE[:, 1]])
+            np.add.at(S_, EE[:, 1], P_[EE[:, 0]])
+            Q_ = 0.5 * P_ + 0.5 * np.where(deg > 0, S_ / np.maximum(deg, 1), P_)
+            P_[mv] = Q_[mv]
+        rep["pos_blur"] = [its, round(float(np.percentile(np.linalg.norm(P_ - Pp, axis=1)[mv], 99) * 1000), 2)]
+        hi.data.vertices.foreach_set("co", P_.ravel())
+        hi.data.update()
     nrm = None
     open_below = None
     EP = np.array([EPc[k] for k in ek]).reshape(-1, 3)
