@@ -31,9 +31,13 @@ param(
     [string]$Project = '',
     [string]$Label = '',
     [switch]$Shared,
-    [int]$BlockMinutes = 28
+    [int]$BlockMinutes = 28,
+    [switch]$DryRun # print one machine-state read and the run tags, launch nothing (tools/bench/test_bench.ps1)
 )
 $ErrorActionPreference = 'Continue'
+# Through powershell -File (or a wrapper passing @args) "a,b" arrives as one string: split the lists here.
+$Scenes = @($Scenes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+$Sizes = @($Sizes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not $Project) { $Project = Join-Path $repo 'ForgottenThird.uproject' }
 $ue = $env:FT_UE_CMD
@@ -53,7 +57,8 @@ function Get-MachineState {
         $cpu = [math]::Round((Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 3 |
                     ForEach-Object { $_.CounterSamples[0].CookedValue } | Measure-Object -Average).Average, 1)
     } catch {}
-    $heavy = @((Get-Names $env:FT_BENCH_HEAVY) + (Get-Names $env:FT_BENCH_GAMES) | ForEach-Object { '{0}({1})' -f $_.ProcessName, $_.Id })
+    # @() on each: a function's one-item result arrives as that item, not as an array.
+    $heavy = @(@(Get-Names $env:FT_BENCH_HEAVY) + @(Get-Names $env:FT_BENCH_GAMES) | ForEach-Object { '{0}({1})' -f $_.ProcessName, $_.Id })
     $top = ''
     try {
         $n = [Environment]::ProcessorCount
@@ -110,6 +115,16 @@ $table = @{
     arena_kite  = @{ Map = $arena; Args = @('-ArenaStage=kite_ring', '-ArenaAutoPlay', '-BenchWarmup=8', '-BenchSeconds=60') }
     wave        = @{ Map = $strip; Args = @('-TimeOfDay=12', '-BenchPath=wave_eye.txt', '-BenchSide=1000', '-BenchWarmup=4', '-WorldWaveAt=36600,-12450,470,8') }
     cold        = @{ Map = $strip; Args = @('-TimeOfDay=12', '-BenchWarmup=0', '-BenchSeconds=20') }
+}
+if ($DryRun) {
+    $st = Get-MachineState
+    "machine heavy [$($st.Heavy)] dirty $($st.Dirty)"
+    foreach ($scene in $Scenes) {
+        if (-not $table.ContainsKey($scene)) { "unknown scene $scene"; continue }
+        foreach ($size in $Sizes) { for ($r = 1; $r -le $Runs; $r++) {
+            "plan $(if ($Label) { "${scene}_${Label}_${size}_r$r" } else { "${scene}_${size}_r$r" })" } }
+    }
+    exit 0
 }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $order = Join-Path $Out 'run_order.txt'

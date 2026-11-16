@@ -33,7 +33,7 @@ constexpr double kMaxFps = 500.0;
 constexpr double kMaxSeconds = 1800.0;
 // Frames over 33 ms written out by name (the counts cover all of them).
 constexpr std::size_t kListedHitches = 64;
-// How long the CSV writer may take after the capture ends, in game seconds, before the run quits anyway.
+// How long the CSV writer may take after the capture ends, in wall-clock seconds, before the run quits anyway.
 constexpr double kFlushLimit = 60.0;
 
 // The settings that decide what the look costs, logged at the start of every run.
