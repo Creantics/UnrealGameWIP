@@ -54,6 +54,15 @@ SPEC.json (lengths in metres, in the blend's world space):
                                         (3 x cell when null)
      "snap_edge": false,                grid only: move the sheet's outline vertices onto the bisected edge points, so the
                                         outline follows the cloth's edge, not the grid's steps
+     "edge_max": null,                  subdiv only: cut the region's edges in two, again and again, until none is longer than
+                                        this (m); "subdiv" cuts first
+     "edge_min": 0.0,                   subdiv only: open-boundary pieces shorter than this (m) are not the cloth's edge (slits
+                                        between layers of a generated mesh) and get no hem or curl
+     "drop_inner": false,               subdiv only: a shell with thickness loses its inner faces inside the region (those
+                                        whose normal points at the collider), so the high copy there is one open sheet whose
+                                        open boundary is the cloth's real edge (the hem, curl and edge distance read it).
+                                        On subdiv, seed, hem and normal_blur work as on a grid (normal_blur smooths the
+                                        vertex normals over the mesh's edges)
      "coll_dist": 0.003,                the cloth's collision distance (m); keep it under "lift" on a seeded sheet
      "collide": true,                   false: the sheet ignores the collider and the game mesh (pins, rest shape and the
                                         max_disp clamp alone hold it; for a seeded sheet the solver only relaxes)
@@ -120,8 +129,6 @@ if any(EASE) and S.get("hi", "grid") != "grid":
 FREE_BELOW = S.get("free_below")
 SEED = S.get("seed")
 if SEED is not None:
-    if S.get("hi", "grid") != "grid":
-        fail("seed needs hi grid")
     def fold_ok(f):
         return (isinstance(f, dict) and all(k in f for k in ("a", "b", "amp_mm", "sigma")) and len(f["a"]) == 2
                 and len(f["b"]) == 2 and f["a"] != f["b"] and 0 <= f["amp_mm"] <= 30 and f["sigma"] > 0
@@ -131,15 +138,16 @@ if SEED is not None:
         fail("seed must be {folds: [{a, b, amp_mm 0..30, sigma > 0, fade_in 0..1, end > 0}], curl_mm 0..15, curl_width > 0}")
 HEM = S.get("hem")
 if HEM is not None:
-    if S.get("hi", "grid") != "grid":
-        fail("hem needs hi grid")
     if (not isinstance(HEM, dict) or not HEM.get("width", 0) > 0 or not 0 <= HEM.get("raise_mm", 2.5) <= 10
             or not HEM.get("round_mm", 1.5) > 0 or not HEM.get("stitch_sigma", 0.001) > 0 or not HEM.get("period", 0.006) > 0):
         fail("hem must be {width > 0, raise_mm 0..10, round_mm > 0, stitch_sigma > 0, period > 0, ...}")
 NBLUR, JUMP = S.get("normal_blur", 0.0), S.get("jump")
 if (not isinstance(NBLUR, (int, float)) or not 0 <= NBLUR <= 0.2 or (JUMP is not None and not (isinstance(JUMP, (int, float)) and JUMP > 0))
-        or ((NBLUR or JUMP is not None or S.get("snap_edge")) and S.get("hi", "grid") != "grid")):
-    fail("normal_blur 0..0.2, jump > 0 or null, snap_edge: hi grid only")
+        or ((JUMP is not None or S.get("snap_edge")) and S.get("hi", "grid") != "grid")
+        or ((S.get("edge_max") is not None or S.get("drop_inner")) and S.get("hi", "grid") != "subdiv")
+        or (S.get("edge_max") is not None and not (isinstance(S["edge_max"], (int, float)) and S["edge_max"] >= 0.0005))
+        or (S.get("drop_inner") and not S.get("collider"))):
+    fail("normal_blur 0..0.2; jump > 0 or null, snap_edge: hi grid only; edge_max >= 0.0005, drop_inner (needs a collider): hi subdiv only")
 MIN_ISLAND = S.get("min_island", 0.0)
 if not isinstance(MIN_ISLAND, (int, float)) or not 0 <= MIN_ISLAND < 1:
     fail("min_island must be 0..1")
@@ -472,14 +480,49 @@ else:
         c = f.calc_center_median()
         return R.get("min", -9) <= c[ax] <= R.get("max", 9) and R.get("zmin", -9) <= c.z <= R.get("zmax", 9)
 
+    u_ax, v_ax = [i for i in range(3) if i != ax]
     reg = [f for f in bm.faces if inside(f)]
     rep["region_faces"] = len(reg)
     if not reg:
         fail("region selects no faces of %s" % S["garment"])
+    if S.get("drop_inner"):
+        from mathutils.bvhtree import BVHTree
+        _col = bpy.data.objects[S["collider"]]
+        _body = BVHTree.FromObject(_col, bpy.context.evaluated_depsgraph_get())
+        _to, _from = _col.matrix_world.inverted(), _col.matrix_world
+        inner = []
+        for f in reg:
+            c = f.calc_center_median()
+            q = _body.find_nearest(_to @ c)[0]
+            if q is not None and f.normal.dot(c - _from @ q) < 0:
+                inner.append(f)
+        bmesh.ops.delete(bm, geom=inner, context="FACES")  # their loose edges and vertices go too
+        bm.faces.ensure_lookup_table()
+        reg = [f for f in bm.faces if inside(f)]
+        rep["inner_dropped"] = len(inner)
     if S.get("subdiv", 1) > 0 and reg:
         edges = list({e for f in reg for e in f.edges})
         bmesh.ops.subdivide_edges(bm, edges=edges, cuts=int(S.get("subdiv", 1)), use_grid_fill=True)
+    if S.get("edge_max"):
+        for _ in range(12):
+            long_ = list({e for f in bm.faces if inside(f) for e in f.edges if e.calc_length() > S["edge_max"]})
+            if not long_:
+                break
+            bmesh.ops.subdivide_edges(bm, edges=long_, cuts=1, use_grid_fill=True)
+            bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4])
+        rep["edge_max_left"] = len(long_)
     bm.faces.ensure_lookup_table()
+    bm.verts.index_update()
+    # the cloth's real edge inside the region: its open boundary (with drop_inner, where the outer sheet ends)
+    adj = {}
+    for e in bm.edges:
+        if len(e.link_faces) == 1 and inside(e.link_faces[0]):
+            a_, b_ = e.verts[0].index, e.verts[1].index
+            adj.setdefault(a_, []).append(b_)
+            adj.setdefault(b_, []).append(a_)
+    ek = sorted(adj)
+    bm.verts.ensure_lookup_table()
+    EPc = {k: np.array(bm.verts[k].co) for k in ek}
     free = set()
     for f in bm.faces:
         if inside(f):
@@ -494,7 +537,56 @@ else:
     nv = len(hi.data.vertices)
     nrm = None
     open_below = None
-    EP = np.zeros((0, 3))
+    EP = np.array([EPc[k] for k in ek]).reshape(-1, 3)
+    ES = np.zeros(len(EP))
+    if len(EP):  # arc length along each boundary loop (the stitches' phase)
+        pos = {k: i for i, k in enumerate(ek)}
+        seen, arc, chains = set(), 0.0, 0
+        for k0 in ek:
+            if k0 in seen:
+                continue
+            chains += 1
+            k = k0
+            seen.add(k)
+            ES[pos[k]] = arc
+            while True:
+                nxt = next((m for m in adj[k] if m not in seen), None)
+                if nxt is None:
+                    break
+                arc += float(np.linalg.norm(EPc[nxt] - EPc[k]))
+                k = nxt
+                seen.add(k)
+                ES[pos[k]] = arc
+            arc += 1.0
+        rep["edge"] = {"points": int(len(EP)), "chains": chains}
+        if S.get("edge_min", 0) > 0:  # boundary pieces shorter than this are slits between layers, not the cloth's edge
+            comp, clen = {}, []
+            for k0 in ek:
+                if k0 in comp:
+                    continue
+                c, st, ln = len(clen), [k0], 0.0
+                comp[k0] = c
+                while st:
+                    k = st.pop()
+                    for m in adj[k]:
+                        ln += 0.5 * float(np.linalg.norm(EPc[m] - EPc[k]))
+                        if m not in comp:
+                            comp[m] = c
+                            st.append(m)
+                clen.append(ln)
+            keep = np.array([clen[comp[k]] >= S["edge_min"] for k in ek])
+            EP, ES = EP[keep], ES[keep]
+            rep["edge"]["kept"] = [int(keep.sum()), int(sum(1 for x in clen if x >= S["edge_min"])), len(clen)]
+    if len(EP):
+        from mathutils.kdtree import KDTree as _KD
+        kde = _KD(len(EP))
+        for k, q in enumerate(EP):
+            kde.insert(q, k)
+        kde.balance()
+
+        def edge_near(P):
+            out = [kde.find(q) for q in P]
+            return np.array([o[2] for o in out]), np.array([o[1] for o in out], int)
 pin = hi.vertex_groups.new(name="fold_pin")
 Z0 = np.empty(nv * 3)
 hi.data.vertices.foreach_get("co", Z0)
@@ -530,6 +622,26 @@ if nrm is None:
     N0 = np.empty(nv * 3)
     hi.data.vertices.foreach_get("normal", N0)
     N0 = N0.reshape(-1, 3)
+    if NBLUR > 0:  # diffuse the vertex normals over the mesh's edges: about 2 (sigma / edge)^2 half-steps
+        EE = np.empty(len(hi.data.edges) * 2, int)
+        hi.data.edges.foreach_get("vertices", EE)
+        EE = EE.reshape(-1, 2)
+        fm_ = np.zeros(nv, bool)
+        fm_[list(free)] = True
+        EE = EE[fm_[EE[:, 0]] & fm_[EE[:, 1]]]  # inside the region only: past it the shell turns over (inner faces)
+        el = float(np.median(np.linalg.norm(P0[EE[:, 0]] - P0[EE[:, 1]], axis=1)))
+        its = int(min(4000, np.ceil(2 * (NBLUR / max(el, 1e-5)) ** 2)))
+        deg = np.bincount(EE.ravel(), minlength=nv).astype(float)[:, None]
+        N1 = N0.copy()
+        for _ in range(its):
+            S_ = np.zeros_like(N1)
+            np.add.at(S_, EE[:, 0], N1[EE[:, 1]])
+            np.add.at(S_, EE[:, 1], N1[EE[:, 0]])
+            N1 = 0.5 * N1 + 0.5 * np.where(deg > 0, S_ / np.maximum(deg, 1), N1)
+            N1 /= np.maximum(np.linalg.norm(N1, axis=1, keepdims=True), 1e-9)
+        rep["normal_blur_its"] = [its, round(el * 1000, 2), [round(float(x), 1) for x in np.percentile(
+            np.degrees(np.arccos(np.clip((N1 * N0).sum(1), -1, 1))), [50, 99])]]
+        N0 = N1
 else:
     N0 = nrm
 PB = P0  # the sheet the solver starts from: the cast, or the cast with seeded folds
