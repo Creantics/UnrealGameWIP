@@ -232,8 +232,10 @@ struct FFTLeadWeapons
 	// A capture's ward (-ArenaShotWard): a magic kit's ward raised for Seconds from the next Track, as a guard would
 	// (the fight itself unchanged).
 	void RaiseWard(double Seconds) { WardRaiseFor = Seconds; }
-	// A spell impact's turn: its ring square to Normal (toward the caster), its +X (the spec's gravity axis) up.
-	static FRotator ImpactFacing(const FVector& Normal);
+	// A spell impact's turn at At, cast from From: its ring stands upright facing the caster across the ground (the
+	// height between them is dropped, so +X, the spec's gravity axis, stays world up and the shards fall straight).
+	// The lead's bolt and the partner's impact both use it.
+	static FRotator ImpactFacing(const FVector& From, const FVector& At);
 
 private:
 	enum EEffect : int32
@@ -313,6 +315,7 @@ private:
 	ftcore::ArenaPart LastPart = ftcore::ArenaPart::None;
 	uint8 LastMove = 0;
 	bool bWarding = false;
+	bool bCasting = false;        // a cast's wind-up was tracked last step (its rings are out)
 	double WardRaiseFor = 0.0;    // RaiseWard's hold, taken up by the next Track
 	double WardHeldUntil = -1.0;  // a raised ward's end (fight time)
 	FVector ImpactFrom = FVector::ZeroVector; // where the travelling bolt left from (its impact faces back to it)

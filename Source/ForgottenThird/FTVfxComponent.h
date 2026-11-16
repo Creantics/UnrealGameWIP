@@ -54,6 +54,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	void Stop();
 
+	// Stops the effect and removes the particles already out (a wind-up cut short leaves nothing behind).
+	void Clear();
+
 	// Sets and pushes the user parameters (clamped by ftcore::sanitizeVfxUserParameters).
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	void SetParameters(float InSpeedScale, float InShapeScale);

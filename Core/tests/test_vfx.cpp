@@ -160,6 +160,19 @@ TEST_CASE("vfx: the leads' weapon effects load without warnings and keep their p
                             {"gun_tracer", 1, 2, false},
                             {"gun_impact", 3, 19, false},
                             {"gauntlet_spark", 2, 14, false}};
+    // Only the spell effects layered dark under bright draw in listed order; the rest keep their look on a rebuild.
+    for (const char* name : {"spell_bolt", "spell_cast", "spell_impact", "spell_ward", "spell_burst", "muzzle_flash",
+                             "gun_impact"}) {
+        CAPTURE(name);
+        const std::string n = name;
+        const bool sorted = n != "spell_burst" && n.rfind("spell_", 0) == 0;
+        VfxEffect e;
+        REQUIRE(loadEffect(name, e));
+        CHECK(e.sorted == sorted);
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        CHECK(plan.sorted == sorted);
+    }
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;

@@ -1,5 +1,6 @@
 {
   "name": "spell_cast",
+  "sorted": true,
   "emitters": [
     {
       "name": "ring_outer",

@@ -1,5 +1,6 @@
 {
   "name": "spell_bolt",
+  "sorted": true,
   "emitters": [
     {
       "name": "shell",

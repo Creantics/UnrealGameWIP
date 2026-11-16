@@ -490,9 +490,10 @@ UStaticMeshComponent* FFTLeadWeapons::AttachProp(const FTWeaponProps::FPiece& Pi
 	return C;
 }
 
-FRotator FFTLeadWeapons::ImpactFacing(const FVector& Normal)
+FRotator FFTLeadWeapons::ImpactFacing(const FVector& From, const FVector& At)
 {
-	return FRotationMatrix::MakeFromZX(Normal.GetSafeNormal(UE_SMALL_NUMBER, -FVector::ForwardVector), FVector::UpVector).Rotator();
+	const FVector Facing = (From - At).GetSafeNormal2D(UE_SMALL_NUMBER, -FVector::ForwardVector);
+	return FRotationMatrix::MakeFromZX(Facing, FVector::UpVector).Rotator();
 }
 
 void FFTLeadWeapons::SpawnEffects()
@@ -943,6 +944,7 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 	// so they ride the hand while it is moved here each step).
 	if (Kit.weapon == ftcore::ArenaWeapon::Magic && bAttacking && P.part == ftcore::ArenaPart::Startup)
 	{
+		bCasting = true;
 		const USkeletalMeshComponent* Body = Skin.Get();
 		FVector Palm;
 		if (UFTVfxComponent* Vfx = Fx[Cast].Get(); Vfx && Body && PalmPoint(*Body, StrikesLeft() ? 0 : 1, Palm))
@@ -951,6 +953,20 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			if (LastPart != ftcore::ArenaPart::Startup || LastMove != P.move || LastAction != P.action)
 			{
 				Play(Cast, T);
+			}
+		}
+	}
+	else if (bCasting)
+	{
+		// The wind-up ended: at the release the rings finish on their own; cut short (hit, down, guard, another
+		// move) they go at once.
+		bCasting = false;
+		if (!bWentActive)
+		{
+			if (UFTVfxComponent* Vfx = Fx[Cast].Get())
+			{
+				Vfx->Clear();
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[Cast], T);
 			}
 		}
 	}
@@ -1035,7 +1051,7 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				}
 			}
 			Vfx->SetWorldLocationAndRotation(ImpactAt,
-				Kit.weapon == ftcore::ArenaWeapon::Magic ? ImpactFacing(ImpactFrom - ImpactAt) : FRotator::ZeroRotator);
+				Kit.weapon == ftcore::ArenaWeapon::Magic ? ImpactFacing(ImpactFrom, ImpactAt) : FRotator::ZeroRotator);
 			Play(Impact, T);
 			LastImpactTime = T;
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: impact %s %.1f cm from the hit point"), Prefix(), FxName[Impact],
@@ -1406,6 +1422,7 @@ void FFTLeadWeapons::Restart()
 	ClipsStarted = ClipsCompleted = 0;
 	bStrikeClip = false;
 	bWarding = false;
+	bCasting = false;
 	WardRaiseFor = 0.0;
 	WardHeldUntil = -1.0;
 	ImpactDue = -1.0;
@@ -1462,6 +1479,7 @@ void FFTLeadWeapons::Reset()
 	ClipsStarted = ClipsCompleted = 0;
 	bStrikeClip = false;
 	bWarding = false;
+	bCasting = false;
 	WardRaiseFor = 0.0;
 	WardHeldUntil = -1.0;
 	ImpactDue = -1.0;

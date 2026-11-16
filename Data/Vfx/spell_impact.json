@@ -1,5 +1,6 @@
 {
   "name": "spell_impact",
+  "sorted": true,
   "emitters": [
     {
       "name": "core_dark",
