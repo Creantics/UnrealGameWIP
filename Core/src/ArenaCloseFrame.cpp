@@ -370,6 +370,22 @@ ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const Aren
     return out;
 }
 
+ArenaCloseFrameCheck arenaCloseFrameCheck(const ArenaCloseRules& rules, float shoulder, float leadX, float targetX,
+                                          bool partnerOn, ArenaFramePoint partner) {
+    ArenaCloseFrameCheck out;
+    const bool left = shoulder < 0.f;
+    // Mirrored onto the right shoulder: the lead on the left, the target right of centre.
+    const float lead = left ? 1.f - leadX : leadX;
+    const float target = left ? 1.f - targetX : targetX;
+    const float slack = finite(rules.frameLeadSlack) ? std::max(0.f, rules.frameLeadSlack) : 0.f;
+    out.lead = finite(lead) && lead >= 0.f && lead <= 1.f / 3.f + slack;
+    out.target = finite(target) && target >= rules.targetMin && target <= rules.targetMax;
+    out.partner = !partnerOn || (partner.ahead && finite(partner.x) && finite(partner.y) && partner.x >= 0.f && partner.x <= 1.f &&
+                                 partner.y >= 0.f && partner.y <= 1.f);
+    out.all = out.lead && out.target && out.partner;
+    return out;
+}
+
 float arenaCloseClearStep(const ArenaCloseRules& rules, float now, float want, float dt) {
     const float at = finite(now) ? now : 0.f;
     if (!finite(want) || !finite(dt) || !(dt > 0.f)) return at;

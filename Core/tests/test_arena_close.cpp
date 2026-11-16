@@ -836,3 +836,53 @@ TEST_CASE("close frame: the clearance eases in and out over 0.25 s") {
     CHECK(arenaCloseClearStep(R, 0.2f, 0.f, kNaN) == 0.2f);
     CHECK(arenaCloseClearStep(R, kNaN, 0.f, 0.1f) == 0.f);
 }
+
+TEST_CASE("close frame: the framing check takes the lead in its near-side third, the target in its band, the partner in frame") {
+    const ArenaCloseRules& R = kArenaClose;
+    CHECK(R.frameLeadSlack == 0.05f);
+    CHECK(R.framePass == 0.95f);
+    const ArenaFramePoint mateIn{0.5f, 0.5f, true};
+    // The lock's own frame at stand-off and melee distances, either shoulder: every term holds.
+    for (const float shoulder : {1.f, -1.f}) {
+        for (const float d : {2.5f, 3.5f, 5.f, 6.f, 8.f, 10.f}) {
+            CAPTURE(shoulder);
+            CAPTURE(d);
+            const float share = arenaCloseMeleeWant(R, d);
+            const ArenaCameraPose pose = lockPose(share, shoulder, d);
+            const ArenaFramePoint lead = arenaFramePoint(pose, kAspect, ArenaPoint3{0.f, 0.f, 1.f});
+            const ArenaFramePoint chest = arenaFramePoint(pose, kAspect, ArenaPoint3{d, 0.f, 1.3f});
+            REQUIRE(lead.ahead);
+            REQUIRE(chest.ahead);
+            const ArenaCloseFrameCheck c = arenaCloseFrameCheck(R, shoulder, lead.x, chest.x, true, mateIn);
+            MESSAGE("shoulder " << shoulder << " d " << d << ": lead " << lead.x << ", target " << chest.x);
+            CHECK(c.lead);
+            CHECK(c.target);
+            CHECK(c.all);
+        }
+    }
+    // The bands, right shoulder and mirrored.
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, false, ArenaFramePoint{}).all);
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.38f, 0.60f, false, ArenaFramePoint{}).lead);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.40f, 0.60f, false, ArenaFramePoint{}).lead);  // past the third and its slack
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.70f, 0.60f, false, ArenaFramePoint{}).lead);  // the far side
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, -0.01f, 0.60f, false, ArenaFramePoint{}).lead); // off the frame
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.50f, false, ArenaFramePoint{}).target);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.85f, false, ArenaFramePoint{}).target);
+    CHECK(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.40f, false, ArenaFramePoint{}).all);
+    CHECK(arenaCloseFrameCheck(R, -1.f, 0.62f, 0.40f, false, ArenaFramePoint{}).lead);
+    CHECK_FALSE(arenaCloseFrameCheck(R, -1.f, 0.30f, 0.40f, false, ArenaFramePoint{}).lead);
+    CHECK_FALSE(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.60f, false, ArenaFramePoint{}).target);
+    CHECK(arenaCloseFrameCheck(R, 0.f, 0.30f, 0.60f, false, ArenaFramePoint{}).all); // 0 counts as the right shoulder
+    // The partner: anywhere in the frame, judged only when on.
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{0.02f, 0.9f, true}).all);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{1.1f, 0.5f, true}).partner);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{0.5f, -0.1f, true}).partner);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{0.5f, 0.5f, false}).partner); // behind the lens
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, false, ArenaFramePoint{0.5f, 0.5f, false}).partner);
+    // NaN shares fail their own term only.
+    const ArenaCloseFrameCheck n = arenaCloseFrameCheck(R, 1.f, kNaN, kNaN, true, ArenaFramePoint{kNaN, 0.5f, true});
+    CHECK_FALSE(n.lead);
+    CHECK_FALSE(n.target);
+    CHECK_FALSE(n.partner);
+    CHECK_FALSE(n.all);
+}

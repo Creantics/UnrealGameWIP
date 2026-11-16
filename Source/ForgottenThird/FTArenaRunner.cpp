@@ -139,6 +139,8 @@ ftcore::ArenaCameraPose WallScaled(ftcore::ArenaCameraPose Pose, float Share)
 }
 
 constexpr float kArenaFaceHeight = ftcore::kArenaLookFaceShare;
+// The close framing check's aim point on a target with no weak point: its chest, this share of its height up.
+constexpr float kArenaChestShare = 0.72f;
 // A skinned enemy's hit reactions and playing rates: the rate that lands a clip's impact at the end of its startup is held
 // to these.
 constexpr float kArenaMinClipRate = 0.25f;
@@ -520,6 +522,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bFrameCheck = FParse::Param(FCommandLine::Get(), TEXT("ArenaFrameCheck"));
 	bNoFrame = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoFrame"));
 	FrameFrames = FrameSettled = FrameInThird = 0;
+	CloseFrameOk = CloseFrameLead = CloseFrameFoe = CloseFrameMate = 0;
 	ResetLeadFrameChecks();
 	FrameLeadWorst = FrameFoeWorst = FrameTurnMost = FrameRateMost = FrameLensMost = FrameArmMost = FramePrev = 0.f;
 	for (int32 I = 0; I < 4; ++I)
@@ -5219,6 +5222,35 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 	}
 	++FrameSettled;
 	FrameInThird += FMath::Abs(LeadX) <= 1.f / 3.f && FMath::Abs(FoeX) <= 1.f / 3.f ? 1 : 0;
+	if (bCloseShape)
+	{
+		// The close camera's bar (ruled 11-16): the lead in its near-side third, the target's weak point (else its chest)
+		// in its band of the width, the partner anywhere in the frame (ftcore::arenaCloseFrameCheck). Shares of the width.
+		FVector Aim(E.x * 100.0, E.y * 100.0, ZoneZ + Tall * kArenaChestShare * 100.0);
+		FVector Weak;
+		if (GetBossWeakPoint(Target, Weak))
+		{
+			Aim = Weak;
+		}
+		const FVector Up = FRotationMatrix(View).GetScaledAxis(EAxis::Z);
+		const double TanUp = Tan / FMath::Max(static_cast<double>(LockAspect()), 0.1);
+		ftcore::ArenaFramePoint Mate;
+		const bool bMateOn = bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0;
+		if (bMateOn)
+		{
+			const FVector M = FVector(Bodies.ally.x * 100.0, Bodies.ally.y * 100.0, ZoneZ + 100.0) - Eye;
+			const double Depth = FVector::DotProduct(M, Ahead);
+			Mate.ahead = Depth > 1.0;
+			Mate.x = 0.5f + 0.5f * static_cast<float>(FVector::DotProduct(M, Right) / FMath::Max(Depth, 1.0) / Tan);
+			Mate.y = 0.5f - 0.5f * static_cast<float>(FVector::DotProduct(M, Up) / FMath::Max(Depth, 1.0) / TanUp);
+		}
+		const ftcore::ArenaCloseFrameCheck C = ftcore::arenaCloseFrameCheck(ftcore::kArenaClose, CloseShoulder, 0.5f + 0.5f * LeadX,
+			0.5f + 0.5f * Across(Aim, 0.0), bMateOn, Mate);
+		CloseFrameOk += C.all ? 1 : 0;
+		CloseFrameLead += C.lead ? 1 : 0;
+		CloseFrameFoe += C.target ? 1 : 0;
+		CloseFrameMate += C.partner ? 1 : 0;
+	}
 	FrameLeadWorst = FMath::Max(FrameLeadWorst, FMath::Abs(LeadX));
 	FrameFoeWorst = FMath::Max(FrameFoeWorst, FMath::Abs(FoeX));
 	const float Dist = ArenaLength(To);
@@ -6357,13 +6389,21 @@ void UFTArenaRunner::LogFeatureChecks() const
 		// A zone whose framing cap is 0 cannot centre the target: there the check is only that the turn stays 0 and the
 		// lock's line eases onto the target (settled frames), not the middle third.
 		const bool bNoTurn = FrameRules().maxTurn <= 0.f;
-		const bool bPass = FrameSettled > 0 && (bNoTurn || FrameInThird == FrameSettled) && FrameTurnMost <= FrameRules().maxTurn + 0.01f &&
-			FrameArmMost <= Rig.arm + 0.001f;
+		// The middle-third bar is the classic camera's; the close camera is judged by its own (ruled 11-16), at framePass.
+		const float CloseShare = FrameSettled > 0 ? static_cast<float>(CloseFrameOk) / static_cast<float>(FrameSettled) : 0.f;
+		const bool bFramed = bCloseShape ? CloseShare >= ftcore::kArenaClose.framePass : (bNoTurn || FrameInThird == FrameSettled);
+		const bool bPass = FrameSettled > 0 && bFramed && FrameTurnMost <= FrameRules().maxTurn + 0.01f && FrameArmMost <= Rig.arm + 0.001f;
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("Arena check: framing %s%s (%d frames followed, %d settled, %d with both bodies in the middle third; worst |x| lead %.3f, target %.3f; turn most %.1f deg (cap %.0f), its rate most %.0f deg/s; boom arm most %.2f m (rig %.2f); lens to pivot most %.2f m (rig %.2f, camera lag aside))."),
-			bPass ? TEXT("PASS") : TEXT("FAIL"), bNoFrame ? TEXT(" [framing off]") : (bNoTurn ? TEXT(" [zone cap 0: turn and line only]") : TEXT("")), FrameFrames, FrameSettled, FrameInThird,
+			bPass ? TEXT("PASS") : TEXT("FAIL"), bNoFrame ? TEXT(" [framing off]") : (bCloseShape ? TEXT(" [close camera: its own bar, the middle third logged only]") : (bNoTurn ? TEXT(" [zone cap 0: turn and line only]") : TEXT(""))), FrameFrames, FrameSettled, FrameInThird,
 			FrameLeadWorst, FrameFoeWorst, FrameTurnMost, FrameRules().maxTurn, FrameRateMost, FrameArmMost, Rig.arm, FrameLensMost,
 			FreeLens);
+		if (bCloseShape)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close framing %s on %d of %d settled frames (%.1f%%, bar %.0f%%): lead in its near-side third %d, target's weak point or chest in its band %d, partner in the frame %d."),
+				CloseShare >= ftcore::kArenaClose.framePass ? TEXT("PASS") : TEXT("FAIL"), CloseFrameOk, FrameSettled, CloseShare * 100.f,
+				ftcore::kArenaClose.framePass * 100.f, CloseFrameLead, CloseFrameFoe, CloseFrameMate);
+		}
 		const TCHAR* Bands[4] = {TEXT("under 3"), TEXT("3-6"), TEXT("6-10"), TEXT("10 and over")};
 		for (int32 I = 0; I < 4; ++I)
 		{

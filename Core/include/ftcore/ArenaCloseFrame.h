@@ -105,6 +105,12 @@ struct ArenaCloseRules {
     float clearPivotUp = 0.3f;  // m
     float clearStep = 0.05f;    // m: the search's step, on the side and the pivot alike
     float clearEase = 0.25f;    // s: the time constant in and out
+    // Framing check (ruled 11-16; the middle-third bar stays the classic camera's): on settled frames off contact, the
+    // lead's centre in its near-side third (the left third on the right shoulder) with frameLeadSlack of the width over
+    // its inner edge, the target's aim point in targetMin..targetMax (mirrored on the left shoulder) and the partner, when
+    // on, anywhere in the frame; it passes on framePass of the frames or more (arenaCloseFrameCheck).
+    float frameLeadSlack = 0.05f; // share of the width
+    float framePass = 0.95f;      // share of the settled frames
 };
 inline constexpr ArenaCloseRules kArenaClose{};
 static_assert(kArenaClose.contactLowTall == kArenaLookTallBoss, "the tall contact's low lens starts at the lock's tall boss");
@@ -290,6 +296,19 @@ struct ArenaCloseClear {
 };
 FTCORE_API ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const ArenaCameraPose& pose, float aspect,
                                                    const ArenaLeadBody& body, ArenaPoint3 head);
+
+// The close camera's framing check on one settled frame off contact. Shares of the frame's width (0 the left edge, 1
+// the right): the lead's centre `leadX` and the target's aim point `targetX` (its weak point or its chest); `partner` is
+// the partner as arenaFramePoint gives it (x and y shares), judged only when `partnerOn`. The shoulder's sign mirrors
+// the bands (0 counts as the right shoulder). Each term is false on a NaN share.
+struct ArenaCloseFrameCheck {
+    bool lead = false;    // the lead's centre in its near-side third (plus frameLeadSlack)
+    bool target = false;  // the target's aim point in targetMin..targetMax, mirrored
+    bool partner = false; // in front of the lens and inside the frame (true when off)
+    bool all = false;
+};
+FTCORE_API ArenaCloseFrameCheck arenaCloseFrameCheck(const ArenaCloseRules& rules, float shoulder, float leadX, float targetX,
+                                                     bool partnerOn, ArenaFramePoint partner);
 
 // One frame of the clearance's ease: `now` toward `want` with the time constant clearEase. A dt of 0 or less (or
 // NaN) holds `now`; a NaN want holds `now`; a NaN now starts from 0.

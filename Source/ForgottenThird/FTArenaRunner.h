@@ -1241,6 +1241,8 @@ private:
 	int32 FrameBandN[4] = {};
 	float FrameBandFoe[4] = {};
 	float FrameBandGap[4] = {};
+	// The close camera's own bar on the same settled frames (ftcore::arenaCloseFrameCheck): all three terms, and each.
+	int32 CloseFrameOk = 0, CloseFrameLead = 0, CloseFrameFoe = 0, CloseFrameMate = 0;
 	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
 	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
 	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.

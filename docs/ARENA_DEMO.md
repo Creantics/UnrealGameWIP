@@ -201,7 +201,10 @@ in it. A normal-sized target keeps the melee shape. Off contact, a target whose 
 (the lead's box widened by 5% of the frame) moves the lens further out on its shoulder (0.85 m of side at most) and
 raises the pivot (0.3 m at most), by the least of the two together that clears it, eased in and out over 0.25 s
 (`ftcore::arenaCloseStandOffClear`); the side alone clears only a head near the box's edge, so the pivot does most of
-it. The check line `close lens target head clear of the lead` counts the stand-off frames whose target head is clear in
+it. With `-ArenaFrameCheck` the close camera has its own framing bar: on settled frames off contact, the lead's centre
+in its near-side third (5% of the width of slack), the target's weak point (else its chest) in 0.55-0.80 of the width
+(mirrored on the left shoulder) and the partner anywhere in the frame, passing at 95% (`close framing` line,
+`ftcore::arenaCloseFrameCheck`); the middle-third bar stays the classic camera's. The check line `close lens target head clear of the lead` counts the stand-off frames whose target head is clear in
 the drawn lens (PASS at 95% or more) and the most clearance used. Between its actions the partner takes its close station from the brain
 (ahead of the lead on a flank of its target, inside the drawn lens): the host hands it the lens's half-angles, pitch and
 height, the lead's side of the screen from the shoulder, the partner kit's band (a magic kit the caster's 5-8 m, the
