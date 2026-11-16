@@ -122,12 +122,12 @@ void UFTLampPoolSubsystem::Gather(UWorld& World)
 	{
 		const UFTNightLightData& Set = *Sets[S];
 		const size_t Si = static_cast<size_t>(S);
-		for (const FVector& At : Set.LampAt)
+		for (const FVector3f& At : Set.LampAt)
 		{
 			LampPts[Si].push_back({At.X, At.Y, At.Z});
 		}
-		const int32 Shops = FMath::Min(Set.ShopAt.Num(), Set.ShopYaw.Num());
-		for (int32 I = 0; I < Shops; ++I)
+		const int32 SetShops = FMath::Min(Set.ShopAt.Num(), Set.ShopYaw.Num());
+		for (int32 I = 0; I < SetShops; ++I)
 		{
 			ShopPts[Si].push_back({Set.ShopAt[I].X, Set.ShopAt[I].Y, Set.ShopAt[I].Z});
 		}
@@ -138,7 +138,7 @@ void UFTLampPoolSubsystem::Gather(UWorld& World)
 	ftcore::lampPoolMerge(LampSets.data(), LampSets.size(), Slots);
 	for (const ftcore::LampPoolSlot& Slot : Slots)
 	{
-		LampAt.Add(FVector(Slot.at.x, Slot.at.y, Slot.at.z));
+		LampAt.Add(FVector3f(static_cast<float>(Slot.at.x), static_cast<float>(Slot.at.y), static_cast<float>(Slot.at.z)));
 		LampGain.Add(Slot.gain);
 	}
 	// Two sets claiming the same light (within 50 cm) is a corner built twice: logged, never silently doubled.
@@ -160,7 +160,7 @@ void UFTLampPoolSubsystem::Gather(UWorld& World)
 	{
 		const UFTNightLightData& Set = *Sets[Slot.set];
 		const int32 I = static_cast<int32>(Slot.index);
-		ShopAt.Add(FVector(Slot.at.x, Slot.at.y, Slot.at.z));
+		ShopAt.Add(FVector3f(static_cast<float>(Slot.at.x), static_cast<float>(Slot.at.y), static_cast<float>(Slot.at.z)));
 		ShopYaw.Add(Set.ShopYaw[I]);
 		ShopPitch.Add(Set.ShopSlotPitch.IsValidIndex(I) ? Set.ShopSlotPitch[I] : Set.ShopPitch);
 		ShopGain.Add(Slot.gain);
