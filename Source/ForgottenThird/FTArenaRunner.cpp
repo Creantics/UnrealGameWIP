@@ -1583,6 +1583,9 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	// reads no keys. Out of focus only the held attack clears (below); the toggled latches stay.
 	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
 	{
+		// The HUD's Guard press count: the key's state taken as it is, so a key pressed in the pause and held after it
+		// counts no press.
+		bGuardWasDown = PC && FTInputBindings::IsDown(*PC, ftcore::InputAction::Guard);
 		bGuardHeld = false;
 		GuardInput.reset();
 		bInterceptHeld = false;
@@ -1607,11 +1610,21 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		bAimHeld && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns); // the controlled lead's kit
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
-	bPressDodge |= FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
+	// The HUD's press counts (GetPromptPresses), by ftcore::UiPrompt: 0 HEAL, 1 GIFT HEAL, 2 GIFT GUARD, 3 PARTNER, 4 ATTACK,
+	// 5 GUARD, 6 DODGE, 7 JUMP.
+	if (FTInputBindings::WasJustPressed(*PC, InputAction::Light))
+	{
+		++PromptPresses[4];
+	}
+	const bool bDodgeNow = FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
+	bPressDodge |= bDodgeNow;
+	PromptPresses[6] += bDodgeNow ? 1u : 0u;
 	// The jump: its key does nothing in a fight unless the jump is bound (-ArenaJump, until the user has tried it).
 	if (JumpBound())
 	{
-		bPressJump |= FTInputBindings::WasJustPressed(*PC, InputAction::Jump);
+		const bool bJumpNow = FTInputBindings::WasJustPressed(*PC, InputAction::Jump);
+		PromptPresses[7] += bJumpNow ? 1u : 0u;
+		bPressJump |= bJumpNow;
 	}
 	// The partner's Read: the three pick keys (1 / 2 / 3, the d-pad's left, up and right) while the cards are up,
 	// picked or not, until the move goes active. Core refuses a second pick. While the cards are up those keys are
@@ -1669,7 +1682,9 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 			bReleaseDown |= K.IsValid() && !Shadowed(InputAction::Release, Device) && PC->IsInputKeyDown(K);
 		}
 	}
-	bPressPair |= Pressed(InputAction::Count);
+	const bool bPairNow = Pressed(InputAction::Count);
+	bPressPair |= bPairNow;
+	PromptPresses[3] += bPairNow ? 1u : 0u;
 	// B (keyboard only until the pad's layout is ruled): the partner's order, STAY CLOSE and SPREAD in turn.
 	if (bPartner && Pressed(InputAction::PartnerOrder))
 	{
@@ -1678,17 +1693,24 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the partner's order: %s."), Fight.time(), bPartnerSpread ? TEXT("SPREAD") : TEXT("STAY CLOSE"));
 	}
 	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
-	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
+	const bool bGuardDown = FTInputBindings::IsDown(*PC, InputAction::Guard);
+	PromptPresses[5] += bGuardDown && !bGuardWasDown ? 1u : 0u;
+	bGuardWasDown = bGuardDown;
+	bGuardHeld = GuardInput.tick(bGuardDown, FTInputBindings::Toggles(World, InputAction::Guard));
 	// Three presses, each its own key with no modifier: the lead's own heal (Gift's row), and the third slot's Gift
 	// Heal and Gift Guard (no pad button yet: those two are keyboard only until the pad's layout is ruled).
-	bPressHeal |= Pressed(InputAction::Gift);
+	const bool bHealNow = Pressed(InputAction::Gift);
+	bPressHeal |= bHealNow;
+	PromptPresses[0] += bHealNow ? 1u : 0u;
 	if (Pressed(InputAction::GiftHeal))
 	{
 		GiftPick = ftcore::Gift::Heal;
+		++PromptPresses[1];
 	}
 	else if (Pressed(InputAction::GiftGuard))
 	{
 		GiftPick = ftcore::Gift::Guard;
+		++PromptPresses[2];
 	}
 	// Take half: its key, and on a pad with none bound, Interact pressed while the pad's Guard button is down (route
 	// "guard_interact"; the button itself, so a toggled guard leaves Interact as it is).

@@ -160,6 +160,9 @@ struct OptionFlag {
     bool on;
 };
 inline constexpr std::size_t kOptionFlagCount = 3;
+// The array type is instantiated here, before the exported function returns it by value: MSVC warns (C4686) that a
+// specialization first met in a return type may change the return calling convention.
+static_assert(sizeof(std::array<OptionFlag, kOptionFlagCount>) == kOptionFlagCount * sizeof(OptionFlag));
 // QTE auto-complete, hold toggle and skip choices, as F_SYS_OPT_* flag ids with their values. The
 // flags are booleans; a script that declares one gets it set from here at the start of the story,
 // after a load and whenever the setting changes.

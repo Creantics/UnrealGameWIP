@@ -436,12 +436,41 @@ TEST_CASE("ui swim: DIVE and RISE used on the first frame they apply are counted
     UiSwim r2;
     CHECK_FALSE(uiSwimStep(r2, fr, rise, kDt));
     CHECK(fr.count[at(UiFirstUseItem::Rise)] == 1);
-    // Never: still nothing counted.
+    // Switched to Never with DIVE on screen: a dive counts nothing (the teaching is off, whatever is live).
     UiFirstUse none = taught();
     UiSwim n;
+    CHECK_FALSE(uiSwimStep(n, none, surface(45.f), kDt));
+    REQUIRE(uiFirstUseAlpha(none, UiFirstUseItem::Dive) == 1.f); // live
     dive.teach = ShowBasicControls::Never;
     CHECK_FALSE(uiSwimStep(n, none, dive, kDt));
     CHECK(none.count[at(UiFirstUseItem::Dive)] == 0);
+}
+
+TEST_CASE("ui swim: a dive or rise under the rescue's fade is counted (a use is a use)") {
+    for (int phase = 0; phase < 2; ++phase) {
+        CAPTURE(phase);
+        UiSwim s;
+        UiFirstUse fu = taught();
+        run(s, fu, under(0.f), 0.5f);
+        run(s, fu, rescued(), 0.6f);
+        REQUIRE(s.fade == UiSwimFade::Black);
+        if (phase == 1) {
+            run(s, fu, surface(45.f), 0.25f);
+            REQUIRE(s.fade == UiSwimFade::In);
+        }
+        CHECK(uiSwimPromptAlpha(s, fu, surface(45.f), UiFirstUseItem::Dive) == 0.f); // nothing drawn under the fade
+        UiSwimIn dive = under(45.f);
+        dive.dived = true;
+        CHECK(uiSwimStep(s, fu, dive, 0.f));
+        CHECK(fu.count[at(UiFirstUseItem::Dive)] == 1);
+        UiSwimIn rise = under(45.f);
+        rise.canRise = false;
+        rise.rose = true;
+        CHECK(uiSwimStep(s, fu, rise, 0.f));
+        CHECK(fu.count[at(UiFirstUseItem::Rise)] == 1);
+        CHECK(s.fade != UiSwimFade::Clear);
+        CHECK(uiSwimPromptAlpha(s, fu, under(45.f), UiFirstUseItem::Rise) == 0.f);
+    }
 }
 
 TEST_CASE("ui swim: stepping allocates nothing") {
