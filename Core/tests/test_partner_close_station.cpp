@@ -1250,3 +1250,97 @@ TEST_CASE("close station: with the kit's range, Pause and Ready do not flap at t
     }
     MESSAGE("band edges, 9 runs: " << flaps << " flaps, " << jumps << " goal jumps, " << strings << " strings");
 }
+
+TEST_CASE("close station: a flank handed over while attacking never walks the partner before its blow lands") {
+    // Review (11-16): the far arc may hand a kept flank over while a string runs (tier 4, the kept flank's far arc
+    // empty). The station moves; the partner must not: no walk or step back while a blow it began is running. The
+    // lead hugs a target walking a 2 m circle, the lens on the lead; Spread (StayClose's leash may end a string at
+    // once by its own rule 1).
+    int strings = 0, early = 0, farWhileAttacking = 0, walks = 0;
+    for (const std::uint32_t seed : {1u, 2u, 3u, 4u}) {
+        CsPit p(true, seed);
+        p.in.blowSeconds.fill(0.6f);
+        p.in.pos = {-3.f, -3.f};
+        const float r = p.e[0].radius;
+        double blowEnd = -1.0;
+        for (int s = 0; s < 30 * 60; ++s) {
+            const float a = 0.4f * static_cast<float>(s) / 60.f;
+            p.e[0].pos = {2.f * std::cos(a) - 2.f, 2.f * std::sin(a)};
+            p.in.leadPos = csAdd(p.e[0].pos, csMul(csUnit(csSub(p.in.leadPos, p.e[0].pos)), r + 0.45f));
+            csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+            const PartnerIntent& i = p.step();
+            const double now = static_cast<double>(s + 1) / 60.0;
+            if (i.blowStart) blowEnd = now + 0.6;
+            if (i.act == PartnerAct::Attack && i.newString) ++strings;
+            if (i.act == PartnerAct::Attack && i.closeTier == 4) ++farWhileAttacking;
+            if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+                ++walks;
+                if (now + 1e-6 < blowEnd) ++early;
+                p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+            }
+        }
+    }
+    MESSAGE("4 seeds: " << strings << " strings, " << walks << " walking steps, " << early << " before a blow landed; "
+                        << farWhileAttacking << " attacking steps on the far arc");
+    CHECK(strings >= 8);
+    CHECK(walks > 0);
+    CHECK(early == 0);
+}
+
+TEST_CASE("close station: a string the lead hides ends no faster than a pause and one blow") {
+    // Review (11-16): the cut has no cooldown of its own. A partner the host never moves, standing where the lead
+    // hides it from the lens and in reach of the target (no station it reaches, so the fallback starts its strings
+    // from there): every string is cut after its first blow, and the next starts no sooner than the shortest pause
+    // after that blow (the pause is the cooldown; a still target, never staggered).
+    CsPit p(true);
+    p.in.blowSeconds.fill(0.6f);
+    const PartnerTuning t;
+    const Vec2 cam = p.in.station.cameraPos, lead = p.in.leadPos;
+    Vec2 spot{};
+    bool found = false;
+    for (int k = 0; k < 400 && !found; ++k) { // along the lens's line over the lead, the first point in reach
+        spot = csAdd(cam, csMul(csSub(lead, cam), 1.05f + 0.005f * static_cast<float>(k)));
+        const float off = csLen(csSub(spot, p.e[0].pos)) - p.e[0].radius;
+        found = off <= t.reachMeters - 0.3f && off >= 0.5f;
+    }
+    REQUIRE(found);
+    REQUIRE(partnerCloseHiddenBehind(cam, spot, lead, p.in.station.close.bodyRadius));
+    REQUIRE(csLen(csSub(spot, lead)) > t.personalSpaceMeters);
+    p.in.pos = spot;
+    int strings = 0, blows = 0;
+    double lastStart = -1.0, shortest = 1e9;
+    for (int s = 0; s < 30 * 60; ++s) {
+        const PartnerIntent& i = p.step();
+        const double now = static_cast<double>(s + 1) / 60.0;
+        if (i.blowStart) ++blows;
+        if (i.act == PartnerAct::Attack && i.newString) {
+            if (lastStart >= 0.0) shortest = std::min(shortest, now - lastStart);
+            lastStart = now;
+            ++strings;
+        }
+    }
+    MESSAGE("hidden and still: " << strings << " strings, " << blows << " blows in 30 s; shortest start to start "
+                                 << shortest << " s (a blow 0.6 s, the shortest pause " << t.pauseMin << " s)");
+    REQUIRE(strings >= 3);
+    CHECK(blows == strings); // each cut after its first blow
+    CHECK(shortest + 1e-6 >= 0.6 + static_cast<double>(t.pauseMin));
+}
+
+TEST_CASE("close station: a classic run's whole hash, pinned") {
+    // Review (11-16): the close rules leave the classic brain bit-identical; this pins one whole classic run (the
+    // close station off, the frame on, the target walking, the partner walked to each goal) at cb7d028a's value.
+    CsPit p(false);
+    p.in.blowSeconds.fill(0.6f);
+    for (int s = 0; s < 20 * 60; ++s) {
+        const float a = 0.3f * static_cast<float>(s) / 60.f;
+        p.e[0].pos = {1.5f * std::cos(a) - 1.5f, 1.5f * std::sin(a)};
+        p.in.leadPos = csAdd(p.e[0].pos, Vec2{-2.2f, 0.f});
+        csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+        const PartnerIntent& i = p.step();
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+    }
+    const std::uint64_t h = p.b.hash();
+    MESSAGE("classic whole-run hash " << h);
+    CHECK(h == 773648685674569465ull);
+}
