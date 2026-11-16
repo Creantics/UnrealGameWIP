@@ -55,18 +55,18 @@ if ($tag -and $dir) { Set-Content -Encoding utf8 (Join-Path $dir "$tag`_summary.
 Set-Content -Encoding ascii (Join-Path $fake 'fake_ue.cmd') "@powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake_ue.ps1`" %*"
 function Loop([string]$OutDir, [string[]]$BenchArgs) {
     $env:FT_UE_CMD = Join-Path $fake 'fake_ue.cmd'
-    $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $bench -Out $OutDir -Scenes day -Sizes 1920x1080 @BenchArgs 2>&1
+    $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $bench -Out $OutDir -Scenes day -Sizes 1920x1080 -BaseSeconds 1 -MaxBaseCpu 100 @BenchArgs 2>&1
     [pscustomobject]@{ Out = @($o | ForEach-Object { "$_" }); Code = $LASTEXITCODE }
 }
 
 # 5. Contaminated runs wait for the end of the pass, are repeated once there (first try kept), and never again.
 $d5 = Join-Path $fake 'repeat'
-$x = Loop $d5 @('-Runs', '2', '-MaxBgCpu', '-1')
+$x = Loop $d5 @('-Runs', '2', '-MaxBgCpu', '-100')
 $lines = @(Get-Content (Join-Path $d5 'run_order.txt'))
 Check 'dirty runs repeated once at the end' ($x.Code -eq 0 -and $lines.Count -eq 4 -and $lines[1] -match 'day_1920x1080_r2 ' -and
     $lines[2] -match 'day_1920x1080_r1 .*repeat' -and (Test-Path "$d5\day_1920x1080_r1_dirty1") -and
     (Test-Path "$d5\day_1920x1080_r2_dirty1")) (($x.Out + $lines) -join ' / ')
-$x = Loop $d5 @('-Runs', '2', '-MaxBgCpu', '-1')
+$x = Loop $d5 @('-Runs', '2', '-MaxBgCpu', '-100')
 Check 'no second repeat' ($x.Code -eq 0 -and @(Get-Content (Join-Path $d5 'run_order.txt')).Count -eq 4 -and
     @($x.Out -match 'repeated once, still contaminated').Count -eq 2) ($x.Out -join ' / ')
 
@@ -77,5 +77,18 @@ $n1 = @(Get-Content (Join-Path $d6 'run_order.txt')).Count
 $y = Loop $d6 @('-Runs', '2', '-MaxBgCpu', '100', '-MaxBgGpu', '100', '-BlockMinutes', '0', '-MaxBlocks', '1')
 Check 'block limit stops and resumes' ($x.Code -eq 4 -and $n1 -eq 1 -and $y.Code -eq 0 -and
     @(Get-Content (Join-Path $d6 'run_order.txt')).Count -eq 2 -and ($y.Out -match 'r1 done, skipped')) (($x.Out + $y.Out) -join ' / ')
+Check 'baselines recorded' (@(Get-Content (Join-Path $d6 'baselines.txt')).Count -eq 2 -and
+    ((Get-Content (Join-Path $d6 'baselines.txt')) -match 'idle baseline over 1 s cpu \d')) ((Get-Content (Join-Path $d6 'baselines.txt')) -join ' / ')
+
+# 7. A block whose idle baseline is over -MaxBaseCpu does not open (exit 3) and says what is running.
+$d7 = Join-Path $fake 'busy'
+$env:FT_UE_CMD = Join-Path $fake 'fake_ue.cmd'
+$o = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $bench -Out $d7 -Scenes day -Sizes 1920x1080 -Runs 1 -BaseSeconds 1 -MaxBaseCpu -1 2>&1 | ForEach-Object { "$_" })
+Check 'busy baseline refuses the block' ($LASTEXITCODE -eq 3 -and ($o -match 'idle baseline cpu .* is over -1%; running: cpu') -and
+    -not (Test-Path (Join-Path $d7 'day_1920x1080_r1')) -and ((Get-Content (Join-Path $d7 'baselines.txt')) -match 'REFUSED')) ($o -join ' / ')
+
+# 8. The 3D engine decides the GPU flag.
+$o = Bench @('-Scenes', 'day', '-Sizes', '1920x1080', '-Runs', '1', '-MaxBgCpu', '100', '-MaxBgGpu', '-1')
+Check '3d engine over its limit is dirty' ((@($o | Where-Object { $_ -like 'machine *' }) -join '') -match 'dirty True') ($o -join ' / ')
 Remove-Item -Recurse -Force $fake -ErrorAction SilentlyContinue
 if ($fails) { "$fails FAILED"; exit 1 } else { 'all passed'; exit 0 }

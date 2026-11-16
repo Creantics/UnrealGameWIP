@@ -20,9 +20,11 @@
 # the PC), or a game process runs: it then stops with exit code 3. It is resumable: a run whose summary exists and whose
 # machine.txt says CLEAN is skipped, so the same command picks up where a stop left off.
 # Each run's machine.txt holds the background load (a 5 s sample of total CPU % and GPU %, the GPU as its busiest engine,
-# as Task Manager shows it, with the top GPU users) and the listed processes, just before launch and just after exit. A run
-# whose background is over -MaxBgCpu or -MaxBgGpu, or with a FT_BENCH_HEAVY or FT_BENCH_GAMES process present, is
-# CONTAMINATED. A contaminated run is repeated once at the end of the pass (its first try kept as <tag>_dirty1); a resumed
+# as Task Manager shows it, and its 3D engine alone, with the top GPU users) and the listed processes, just before launch
+# and just after exit. Each block starts with a -BaseSeconds idle sample (median total CPU, written to baselines.txt); a
+# block whose baseline is over -MaxBaseCpu does not open (exit 3, with what is running). A run whose background CPU is more
+# than -MaxBgCpu points over its block's baseline, whose 3D engine is over -MaxBgGpu (video decode and other engines are
+# recorded only), or with a FT_BENCH_HEAVY or FT_BENCH_GAMES process present, is CONTAMINATED. A contaminated run is repeated once at the end of the pass (its first try kept as <tag>_dirty1); a resumed
 # pass leaves a contaminated run for its end too. -MaxBlocks stops after that many blocks (exit 4; the same command resumes).
 # -BlockOn (a regex on the BUSY line's text) limits which other open BUSY lines keep a block from opening (default: any).
 param(
@@ -40,6 +42,8 @@ param(
     [string]$BlockOn = '.',
     [double]$MaxBgCpu = 3,
     [double]$MaxBgGpu = 2,
+    [double]$MaxBaseCpu = 15,
+    [int]$BaseSeconds = 30,
     [switch]$DryRun # print one machine-state read and the run tags, launch nothing (tools/bench/test_bench.ps1)
 )
 $ErrorActionPreference = 'Continue'
@@ -112,7 +116,36 @@ function Get-MachineState {
     $tray = @(Get-Names $env:FT_BENCH_TRAY | ForEach-Object { $_.ProcessName } | Sort-Object -Unique)
     [pscustomobject]@{ Cpu = $cpu; Gpu = $bg.Gpu; Gpu3d = $bg.Gpu3d; GpuTop = $bg.GpuTop
         Heavy = (($heavy + @($tray | ForEach-Object { "$_(recorded)" })) -join ' '); Top = $top
-        Dirty = ($cpu -gt $MaxBgCpu -or $bg.Gpu -gt $MaxBgGpu -or $heavy.Count -gt 0) }
+        Dirty = ($cpu -gt $script:baseCpu + $MaxBgCpu -or $bg.Gpu3d -gt $MaxBgGpu -or $heavy.Count -gt 0) }
+}
+# The idle baseline of a block: median total CPU and median 3D engine over -BaseSeconds one-second samples.
+function Get-Baseline {
+    $r = [pscustomobject]@{ Cpu = -1.0; Gpu3d = -1.0 }
+    try {
+        $c = Get-Counter -Counter @('\Processor(_Total)\% Processor Time', '\GPU Engine(*)\Utilization Percentage') `
+            -SampleInterval 1 -MaxSamples ([math]::Max(1, $BaseSeconds)) -ErrorAction SilentlyContinue
+    } catch { return $r }
+    if (-not $c) { return $r }
+    function Median($v) {
+        $s = @($v | Sort-Object)
+        if (-not $s.Count) { return -1.0 }
+        [math]::Round(($s[[int][math]::Floor(($s.Count - 1) / 2)] + $s[[int][math]::Ceiling(($s.Count - 1) / 2)]) / 2, 1)
+    }
+    $cpus = @(); $g3 = @()
+    foreach ($s in $c) {
+        $eng = @{}
+        foreach ($x in $s.CounterSamples) {
+            if ($x.Path -like '*\processor(_total)\*') { $cpus += $x.CookedValue; continue }
+            if ($x.InstanceName -match '^pid_\d+_luid_(\w+)_phys_(\d+)_eng_(\d+)_engtype_3d$') {
+                $k = "$($Matches[1])/$($Matches[2])/$($Matches[3])"
+                $eng[$k] = [double]$eng[$k] + $x.CookedValue
+            }
+        }
+        $g3 += [double](@($eng.Values) + 0 | Measure-Object -Maximum).Maximum
+    }
+    $r.Cpu = Median $cpus
+    $r.Gpu3d = Median $g3
+    $r
 }
 function Format-State($st) {
     "cpu $($st.Cpu)% gpu $($st.Gpu)% (3d $($st.Gpu3d)%) heavy [$($st.Heavy)] top [$($st.Top)] gpu top [$($st.GpuTop)]"
@@ -172,6 +205,9 @@ $plan = @(foreach ($scene in $Scenes) {
                 [pscustomobject]@{ Scene = $scene; Size = $size
                     Tag = $(if ($Label) { "${scene}_${Label}_${size}_r$r" } else { "${scene}_${size}_r$r" }) } } }
     })
+# The open block's idle CPU baseline (0 until a block opens; -DryRun takes none).
+$script:baseCpu = 0.0
+$script:baseGpu3d = -1.0
 if ($DryRun) {
     $st = Get-MachineState
     "machine $(Format-State $st) dirty $($st.Dirty)"
@@ -208,6 +244,18 @@ function Enter-Block([string]$Tag) {
         $busy = @(Get-Blockers)
         if ($busy.Count -gt 0) { Write-Host "not opening a block: $($busy -join '; ')"; $script:exitCode = 3; return $false }
     }
+    $base = Get-Baseline
+    $st = Get-MachineState
+    $line = '{0} before {1}: idle baseline over {2} s cpu {3}% (3d engine {4}%); running: {5}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),
+        $Tag, $BaseSeconds, $base.Cpu, $base.Gpu3d, (Format-State $st)
+    if ($base.Cpu -lt 0 -or $base.Cpu -gt $MaxBaseCpu) {
+        Add-Content -Encoding utf8 (Join-Path $Out 'baselines.txt') "$line; REFUSED (limit $MaxBaseCpu%)"
+        Write-Host "not opening a block: idle baseline cpu $($base.Cpu)% is over $MaxBaseCpu%; running: $(Format-State $st)"
+        $script:exitCode = 3; return $false
+    }
+    Add-Content -Encoding utf8 (Join-Path $Out 'baselines.txt') $line
+    $script:baseCpu = $base.Cpu
+    $script:baseGpu3d = $base.Gpu3d
     Write-Busy 'BUSY' "bench block from $Tag ($BlockMinutes min max)"
     $script:blockStart = Get-Date
     $script:blockRuns = 0
@@ -238,13 +286,13 @@ function Invoke-Run($Item, [string]$Note) {
     $after = Get-MachineState
     $dirty = $before.Dirty -or $after.Dirty
     @($(if ($dirty) { 'CONTAMINATED' } else { 'CLEAN' }),
-        "limits: background cpu $MaxBgCpu% gpu $MaxBgGpu%$Note",
+        "limits: background cpu over $($script:baseCpu + $MaxBgCpu)% (block baseline $($script:baseCpu)% + $MaxBgCpu), 3d engine over $MaxBgGpu% (baseline $($script:baseGpu3d)%)$Note",
         "before: $(Format-State $before)",
         "after:  $(Format-State $after)",
         "args: $($a -join ' ')") | Set-Content -Encoding utf8 (Join-Path $dir 'machine.txt')
-    $line = '{0} {1} pid {2} exit {3} in {4} s bg cpu {5}/{6}% gpu {7}/{8}%{9}{10}{11}' -f (Get-Date -Format 'HH:mm:ss'), $tag,
-        $p.Id, $p.ExitCode, $secs, $before.Cpu, $after.Cpu, $before.Gpu, $after.Gpu,
-        $(if ($killed) { ' (time limit: stopped)' } else { '' }), $(if ($dirty) { ' CONTAMINATED' } else { '' }), $Note
+    $line = '{0} {1} pid {2} exit {3} in {4} s bg cpu {5}/{6}% (base {12}) 3d {7}/{8}%{9}{10}{11}' -f (Get-Date -Format 'HH:mm:ss'), $tag,
+        $p.Id, $p.ExitCode, $secs, $before.Cpu, $after.Cpu, $before.Gpu3d, $after.Gpu3d,
+        $(if ($killed) { ' (time limit: stopped)' } else { '' }), $(if ($dirty) { ' CONTAMINATED' } else { '' }), $Note, $script:baseCpu
     Add-Content -Encoding utf8 $order $line
     $line | Write-Host
     $sum = Join-Path $dir "$tag`_summary.txt"

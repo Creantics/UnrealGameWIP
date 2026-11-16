@@ -181,6 +181,10 @@ def main():
             statistics.median(x[2] for x in f), max(x[3] for x in f), max(s['over33'] for s in sts),
             max(s['over50'] for s in sts)))
     lines += ['', '## Frames over 33 ms and the stats that rose most on them', ''] + (hitch_lines or ['- none'])
+    base = out / 'baselines.txt'
+    lines += ['', '## Block idle baselines (a run is CONTAMINATED when its background CPU is more than the limit over its'
+              ' block\'s baseline, or the 3D engine is over its limit)', '']
+    lines += ['- ' + x for x in base.read_text(encoding='utf-8-sig').splitlines() if x.strip()] if base.exists() else ['- none']
     lines[2] = ('RESOLUTION: ' + ('; '.join(sorted(res_seen)) or 'no summary files read') +
                 '. With sg.ResolutionQuality 0 the engine\'s auto curve renders about 73% at 1080p and 61% at 1440p'
                 ' (about 1560x880) before TSR; the GPU-split runs at 100% and 75% give its cost.')
