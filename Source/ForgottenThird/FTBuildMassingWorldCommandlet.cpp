@@ -18,13 +18,20 @@
 #include "ForgottenThird.h"
 
 #if WITH_EDITOR
+#include "Animation/AnimSequence.h"
+#include "Animation/SkeletalMeshActor.h"
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
 #include "Components/RectLightComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "NiagaraActor.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSystem.h"
 #include "EditorWorldUtils.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/LevelStreamingAlwaysLoaded.h"
@@ -1906,11 +1913,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("HeroShopBackPitch="), HeroTune.shopBackPitch);
 	FParse::Value(*Params, TEXT("HeroShopBackGain="), HeroTune.shopBackGain);
 	// The lantern paper's shape of light (M_NightLamp's LampEdge, LampEdgePower, LampRibs, LampRibWidth; the defaults are
-	// tune 3's, edge 0.6 power 2, ribs 0.6 width 0.2; 0 edge and 0 ribs are the flat glow): -HeroLanternEdge=<0..1> darkens the body toward its silhouette
+	// tune 3's, edge 0.6 power 2, width 0.2; ribs 0 since step 2, whose lanterns carry 14 to 18 real ribs of their own;
+	// 0 edge and 0 ribs are the flat glow): -HeroLanternEdge=<0..1> darkens the body toward its silhouette
 	// by (1 - N.V)^-HeroLanternEdgePow=<p>, -HeroLanternRibs=<0..1> darkens the bamboo ribs (-HeroLanternRibPitch=<m> apart on
 	// the 0.6 m lantern, scaled to each mesh's height; 0.04 sits on the mesh's own ridges; -HeroLanternRibWidth=<0..1> of
 	// that pitch wide), faded out as a rib nears two pixels.
-	float HeroLanternEdge = 0.6f, HeroLanternEdgePow = 2.f, HeroLanternRibs = 0.6f, HeroLanternRibPitch = 0.04f, HeroLanternRibWidth = 0.2f;
+	float HeroLanternEdge = 0.6f, HeroLanternEdgePow = 2.f, HeroLanternRibs = 0.f, HeroLanternRibPitch = 0.04f, HeroLanternRibWidth = 0.2f;
 	FParse::Value(*Params, TEXT("HeroLanternEdge="), HeroLanternEdge);
 	FParse::Value(*Params, TEXT("HeroLanternEdgePow="), HeroLanternEdgePow);
 	FParse::Value(*Params, TEXT("HeroLanternRibs="), HeroLanternRibs);
@@ -3408,7 +3416,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		};
 		UMaterialInterface* const LargePaper = MakePaper(Large, TEXT("MI_HC_LanternPaper"));
 		UMaterialInterface* const SmallPaper = MakePaper(Small, TEXT("MI_HC_LanternPaperSmall"));
-		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double PlanTurn, const TCHAR* Label, double Scale = 1.0)
+		UStaticMesh* const LargeMark = HeroMesh(TEXT("SM_HC_LanternLargeMark"));
+		// A hero piece at a plan point, turned to an engine yaw; lanterns cast no shadow, the dressing does.
+		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double EngineYaw, const TCHAR* Label, double Scale = 1.0,
+			bool bShadow = false)
 		{
 			if (!Mesh)
 			{
@@ -3423,19 +3434,123 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 			FFTCellOptions Opts;
 			Opts.Cull = EFTCellCull::Prop;
-			Opts.bCastShadow = false;
+			Opts.bCastShadow = bShadow;
 			Opts.Label = FString::Printf(TEXT("%s-%d"), Label, HeroPieces + 1);
-			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(PlanTurn), 0.0), Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z)),
+			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, EngineYaw, 0.0), Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z)),
 				FVector(Scale)), {}, EFTCellKind::NoCollide, Opts);
 			++HeroPieces;
 		};
 		UStaticMesh* const Post = HeroMesh(TEXT("SM_HC_StringPost"));
+		// Step 2: one large lantern in three carries an invented mark (its own mesh, when imported).
+		int32 LargeIndex = 0, MarkedLanterns = 0;
 		for (size_t L = 0; L < Hero.lanternCount; ++L)
 		{
 			const ftcore::HeroLantern& Lantern = Hero.lanterns[L];
-			PlaceHero(Lantern.large ? Large : Small, Lantern.hook, 0.0, Lantern.large ? TEXT("HC-LANTERN") : TEXT("HC-STRINGLANTERN"),
-				Lantern.scale);
+			UStaticMesh* Mesh = Lantern.large ? Large : Small;
+			if (Lantern.large && ftcore::heroLanternMarked(LargeIndex++) && LargeMark)
+			{
+				Mesh = LargeMark;
+				++MarkedLanterns;
+			}
+			PlaceHero(Mesh, Lantern.hook, 0.0, Lantern.large ? TEXT("HC-LANTERN") : TEXT("HC-STRINGLANTERN"), Lantern.scale);
 		}
+		// Step 2 (2026-11-16): the lane's dressing (ftcore::heroCornerDressing): signs, banners, clutter, the gate with its
+		// lanterns, two scooters; the bicycle from the kit, the scooters from TQ-16. A piece whose mesh isn't imported is
+		// left out (logged once each).
+		UStaticMesh* const Bicycle = LoadMesh(TEXT("/Game/Props/BKIT/BICYCLE/StaticMeshes/BICYCLE"));
+		UStaticMesh* const Scooter = LoadMesh(TEXT("/Game/Props/TQ-16/scooter_downpipe_TQ-16_e4_import/StaticMeshes/SM_TQ16_scooter"));
+		TMap<int32, UStaticMesh*> DressMeshes;
+		ftcore::HeroItem Dressing[ftcore::kHeroDressingMax];
+		const int32 DressCount = ftcore::heroCornerDressing(HeroSpec, Hero, Dressing, ftcore::kHeroDressingMax);
+		int32 Dressed = 0;
+		for (int32 D = 0; D < DressCount; ++D)
+		{
+			const ftcore::HeroItem& Item = Dressing[D];
+			UStaticMesh* Mesh = nullptr;
+			switch (Item.piece)
+			{
+			case ftcore::HeroPiece::Bicycle: Mesh = Bicycle; break;
+			case ftcore::HeroPiece::Scooter: Mesh = Scooter; break;
+			case ftcore::HeroPiece::GateLantern: Mesh = Item.marked && LargeMark ? LargeMark : Large; break;
+			default:
+			{
+				const int32 Key = static_cast<int32>(Item.piece);
+				if (UStaticMesh** Found = DressMeshes.Find(Key))
+				{
+					Mesh = *Found;
+				}
+				else
+				{
+					Mesh = DressMeshes.Add(Key, HeroMesh(*(FString(TEXT("SM_HC_")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece)))));
+				}
+			}
+			}
+			if (!Mesh)
+			{
+				continue;
+			}
+			const bool bLantern = Item.piece == ftcore::HeroPiece::GateLantern;
+			PlaceHero(Mesh, Item.at, FTLots::HeroPropYaw(Item.faceX, Item.faceY, LotBuild.HeroPropTurn),
+				*(FString(TEXT("HC-")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece))), Item.scale, !bLantern);
+			++Dressed;
+		}
+		// The lit rooms' lamps (paper in its glow), figure and steam, laid out by FTLots::Place.
+		USkeletalMesh* const Human = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human"),
+			nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UAnimSequence* const HumanIdle = LoadObject<UAnimSequence>(nullptr,
+			TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_humanidle.test_humanidle"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UNiagaraSystem* const Steam = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/VFX/NS_eatery_steam.NS_eatery_steam"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		int32 RoomSpawns = 0;
+		for (const FTLots::FBuild::FHeroSpawn& Item : LotBuild.HeroSpawns)
+		{
+			const FRotator Turn(0.0, Item.Yaw, 0.0);
+			if (Item.Piece == ftcore::HeroPiece::Lantern && Small)
+			{
+				TArray<UMaterialInterface*, TInlineAllocator<8>> Mats;
+				for (const FStaticMaterial& Slot : Small->GetStaticMaterials())
+				{
+					Mats.Add(Slot.MaterialSlotName.ToString().Contains(TEXT("paper")) ? SmallPaper : nullptr);
+				}
+				FFTCellOptions Opts;
+				Opts.Cull = EFTCellCull::Prop;
+				Opts.bCastShadow = false;
+				Opts.Label = FString::Printf(TEXT("HC-ROOMLANTERN-%d"), RoomSpawns + 1);
+				Cells.Add(Small, Mats, FTransform(Turn, Item.At), {}, EFTCellKind::NoCollide, Opts);
+				++RoomSpawns;
+			}
+			else if (Item.Piece == ftcore::HeroPiece::Figure && Human)
+			{
+				// The eatery's cook: the test human in its idle, back to the lane (its mesh faces +Y at yaw 0, like the props).
+				ASkeletalMeshActor* Cook = World->SpawnActor<ASkeletalMeshActor>(Item.At, Turn, Spawn);
+				if (USkeletalMeshComponent* Body = Cook ? Cook->GetSkeletalMeshComponent() : nullptr)
+				{
+					Cook->SetActorLabel(TEXT("HC-EateryCook"));
+					Body->SetSkeletalMesh(Human);
+					if (HumanIdle)
+					{
+						Body->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+						Body->AnimationData.AnimToPlay = HumanIdle;
+						Body->AnimationData.bSavedLooping = true;
+						Body->AnimationData.bSavedPlaying = true;
+					}
+					++RoomSpawns;
+				}
+			}
+			else if (Item.Piece == ftcore::HeroPiece::Steam && Steam)
+			{
+				ANiagaraActor* Puff = World->SpawnActor<ANiagaraActor>(Item.At, FRotator::ZeroRotator, Spawn);
+				if (UNiagaraComponent* System = Puff ? Puff->GetNiagaraComponent() : nullptr)
+				{
+					Puff->SetActorLabel(TEXT("HC-EaterySteam"));
+					System->SetAsset(Steam);
+					System->SetAutoActivate(true);
+					++RoomSpawns;
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d marked large lanterns (%s); %d of %d dressing pieces; %d of %d room "
+			"spawns (cook %s, steam %s)."), MarkedLanterns, LargeMark ? TEXT("SM_HC_LanternLargeMark") : TEXT("not imported"), Dressed, DressCount,
+			RoomSpawns, LotBuild.HeroSpawns.Num(), Human ? TEXT("test human") : TEXT("missing"), Steam ? TEXT("NS_eatery_steam") : TEXT("missing (FTBuildVfx)"));
 		// The cables: a round rod (the engine's cylinder, its axis along the span) per span of the Core's polyline, so the
 		// sag is the tested one and the section holds up at a metre.
 		UMaterialInterface* const Steel = LoadSurface(TEXT("solhaven_painted_steel"));

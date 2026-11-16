@@ -72,6 +72,10 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(still.exposureMinEV100 == clock.exposureMinEV100);
     // LED shops cooler than the lamps; the moon and sky fill cool.
     CHECK(look.shopKelvin > look.lampKelvin);
+    // The hero corner's timber shops warm (about 2700 K), between the lamps' and the LED shops'.
+    CHECK(look.heroShopKelvin == doctest::Approx(2700.f));
+    CHECK(look.heroShopKelvin >= look.lampKelvin);
+    CHECK(look.heroShopKelvin < look.shopKelvin);
     CHECK(look.moonTint[2] > look.moonTint[0]);
     // Wide, soft lamp pools within the engine's spot cone limit.
     CHECK(look.lampOuterDeg <= 80.f);

@@ -136,6 +136,9 @@ struct NightLook {
     float shopCandela = 15.f;      // LED shop spill, cooler than the lamps beside them
     float shopReachM = 9.f;
     float shopKelvin = 4000.f;
+    // The hero corner's lit rooms are old timber shops under paper lamps, not LED: their pool shop slots burn at this
+    // (step 2, 2026-11-16: about 2700 K). 0 keeps shopKelvin.
+    float heroShopKelvin = 2700.f;
     std::array<float, 3> glow{0.030f, 0.019f, 0.010f};   // fog inscattering added at full night (linear luminance)
     // The moon is a pale blue. The sky light captures the atmosphere it lights, which is a far deeper blue than the
     // moon itself, so the fill's tint leans the other way (red over blue): net, an unlit facade reads a grey-blue, dark

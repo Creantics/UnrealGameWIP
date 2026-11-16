@@ -616,6 +616,19 @@ bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBu
 	return true;
 }
 
+UStaticMesh* HeroPropMesh(const FString& Name)
+{
+	const FString Root = TEXT("/Game/Props/HeroCorner/") + Name;
+	for (const FString& Path : {Root + TEXT("/StaticMeshes/") + Name, Root})
+	{
+		if (UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *(Path + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			return Mesh;
+		}
+	}
+	return nullptr;
+}
+
 bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::string* BayIds, const std::vector<ftcore::MassingBox>& Boxes, FBuild& Out)
 {
 	std::string Text, Error;
@@ -648,6 +661,14 @@ bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::s
 	};
 	ParseRgb(TEXT("HeroNorenTint="), Out.HeroNorenTint);
 	ParseRgb(TEXT("HeroNorenBand="), Out.HeroNorenBand);
+	ParseRgb(TEXT("HeroPanelTint="), Out.HeroPanelTint);
+	FParse::Value(Params, TEXT("HeroFloorShare="), Out.HeroFloorShare);
+	Out.HeroFloorShare = FMath::Clamp(Out.HeroFloorShare, 0.f, 1.f);
+	FParse::Value(Params, TEXT("HeroPropTurn="), Out.HeroPropTurn);
+	Out.bHeroFurnish = !FParse::Param(Params, TEXT("NoHeroFurnish"));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: rooms %s, panels tinted %.2f,%.2f,%.2f, floors x%.2f, props turned %.0f deg."),
+		Out.bHeroFurnish ? TEXT("furnished") : TEXT("boxes only (-NoHeroFurnish)"), Out.HeroPanelTint.R, Out.HeroPanelTint.G, Out.HeroPanelTint.B,
+		Out.HeroFloorShare, Out.HeroPropTurn);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: lit rooms' panels glow %.2f, back walls %.2f, cap %s."), Out.HeroPanelGlow,
 		Out.HeroWallGlow, Out.HeroGlowCap > 0.f ? *FString::Printf(TEXT("%.2f"), Out.HeroGlowCap) : TEXT("the master's"));
 	const int RunIndex = static_cast<int>(Out.Plan.runs.size());
@@ -1326,10 +1347,13 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			const TCHAR* const BayTag = TEXT("GlassProofBay");
 			UMaterialInterface* const WallPaint = BayMaterial(TEXT("MI_GlassProofBay_Wall"),
 				Pr->bKoshi ? FLinearColor(0.42f, 0.37f, 0.29f) : FLinearColor(0.38f, 0.37f, 0.34f), 0.f);
+			// Step 2: a hero room's floor at HeroFloorShare of its paint (it glowed under the shop slot) and its panels warm.
+			const float FloorShare = bHeroRoom ? Build.HeroFloorShare : 1.f;
 			UMaterialInterface* const FloorPaint = BayMaterial(TEXT("MI_GlassProofBay_Floor"),
-				Pr->bKoshi ? FLinearColor(0.12f, 0.08f, 0.05f) : FLinearColor(0.32f, 0.31f, 0.29f), 0.f);
+				(Pr->bKoshi ? FLinearColor(0.12f, 0.08f, 0.05f) : FLinearColor(0.32f, 0.31f, 0.29f)) * FloorShare, 0.f);
 			UMaterialInterface* const CeilPaint = BayMaterial(TEXT("MI_GlassProofBay_Ceiling"), FLinearColor(0.40f, 0.40f, 0.39f), 0.f);
-			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"), FLinearColor(0.9f, 0.9f, 0.88f), bHeroRoom ? Build.HeroPanelGlow : 1.f);
+			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"),
+				bHeroRoom ? Build.HeroPanelTint * 0.9f : FLinearColor(0.9f, 0.9f, 0.88f), bHeroRoom ? Build.HeroPanelGlow : 1.f);
 			UMaterialInterface* const BoardPaint = BayMaterial(TEXT("MI_GlassProofBay_Board"), FLinearColor(0.36f, 0.35f, 0.33f), 0.f);
 			// A hero room's back wall may glow a little of its own (-HeroWallGlow), so the lattice's bars read against it.
 			UMaterialInterface* const BackPaint = bHeroRoom && Build.HeroWallGlow > 0.f
@@ -1379,13 +1403,69 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				++GoodsCount;
 			};
 			const bool bCounter = Pr->bKoshi && ProofLot == Build.CounterLot;
-			for (int32 R = 0; !bCounter && R < 5; ++R)
+			// Step 2 (2026-11-16): a hero lattice room furnished with meshes (ftcore::heroRoomFurnish, room terms from the
+			// bay's front north corner); a box shelf run or counter stays only where its mesh isn't imported. The lamp, the
+			// figure and the steam go to the massing build (Build.HeroSpawns): the lamp's paper takes its night glow there.
+			bool bMeshShelves = false, bMeshCounter = false;
+			int32 Furnished = 0, FurnishPlanned = 0;
+			if (bHeroRoom && Pr->bKoshi && Build.bHeroFurnish)
+			{
+				ftcore::HeroRoomSpec Room;
+				Room.width = BayX1 - BayX0;
+				Room.depth = BayY1 - BayY0;
+				Room.height = BayZ1 - BayZ0;
+				Room.eatery = bCounter;
+				Room.doorX0 = FMath::Max(PieceX + 3.00 - BayX0, 0.0);
+				Room.doorX1 = FMath::Min(PieceX + 5.25 - BayX0, Room.width);
+				ftcore::HeroItem Items[ftcore::kHeroRoomMax];
+				FurnishPlanned = ftcore::heroRoomFurnish(Room, Items, ftcore::kHeroRoomMax);
+				for (int32 I = 0; I < FurnishPlanned; ++I)
+				{
+					const ftcore::HeroItem& Item = Items[I];
+					double Px = 0.0, Py = 0.0, Fx = 0.0, Fy = 0.0;
+					Proof.ToPlan(BayX0 + Item.at.x, BayY0 + Item.at.y, Px, Py);
+					Proof.ToPlan(BayX0 + Item.at.x + Item.faceX, BayY0 + Item.at.y + Item.faceY, Fx, Fy);
+					const double Yaw = HeroPropYaw(Fx - Px, Fy - Py, Build.HeroPropTurn);
+					const ftcore::MassingVec E = ftcore::massingEnginePoint(Side, Px, Py, BayZ0 + 0.04 + Item.at.z);
+					const FVector At = FVector(E.x, E.y, E.z) * 100.0;
+					if (Item.piece == ftcore::HeroPiece::Figure || Item.piece == ftcore::HeroPiece::Steam || Item.piece == ftcore::HeroPiece::Lantern)
+					{
+						Build.HeroSpawns.Add({Item.piece, At, Yaw});
+						++Furnished;
+						continue;
+					}
+					const FString Name = FString(TEXT("SM_HC_")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece));
+					UStaticMesh* const Mesh = HeroPropMesh(Name);
+					if (!Mesh)
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -Lots: hero room (lot %d): %s isn't imported; left out."), ProofLot, *Name);
+						continue;
+					}
+					TArray<UMaterialInterface*> PropMats;
+					for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
+					{
+						PropMats.Add(Slot.MaterialInterface);
+					}
+					FFTCellOptions PropOpts;
+					PropOpts.Label = FString::Printf(TEXT("LOT-%d-%s"), ProofLot, *Name);
+					PropOpts.bCastShadow = true;
+					PropOpts.Tag = BayTag;
+					Cells.Add(Mesh, PropMats, FTransform(FRotator(0.0, Yaw, 0.0), At), Data, EFTCellKind::NoCollide, PropOpts);
+					bMeshShelves = bMeshShelves || Item.piece == ftcore::HeroPiece::Shelf;
+					bMeshCounter = bMeshCounter || Item.piece == ftcore::HeroPiece::Counter;
+					++Furnished;
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: hero %s (lot %d, %.2f x %.2f m): %d of %d pieces furnished; box shelves %s, box counter %s."),
+					bCounter ? TEXT("eatery") : TEXT("shop"), ProofLot, Room.width, Room.depth, Furnished, FurnishPlanned, bMeshShelves ? TEXT("replaced") : TEXT("kept"),
+					bMeshCounter || !bCounter ? TEXT("replaced") : TEXT("kept"));
+			}
+			for (int32 R = 0; !bCounter && !bMeshShelves && R < 5; ++R)
 			{
 				Shelf(BayX0 + 0.1, BayX1 - 0.1, BayY1 - 0.40, BayY1 - 0.05, BayZ0 + 0.25 + 0.42 * R, 0.39);
 			}
 			// The eatery's counter across the room, 0.55 m off the back wall (the cook's side): a stained timber front and a
 			// paler top slab overhanging the guests' side.
-			if (bCounter)
+			if (bCounter && !bMeshCounter)
 			{
 				UMaterialInterface* const CounterPaint = BayMaterial(TEXT("MI_GlassProofBay_Counter"), FLinearColor(0.10f, 0.065f, 0.04f), 0.f);
 				UMaterialInterface* const TopPaint = BayMaterial(TEXT("MI_GlassProofBay_CounterTop"), FLinearColor(0.30f, 0.22f, 0.14f), 0.f);

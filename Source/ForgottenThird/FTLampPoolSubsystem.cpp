@@ -466,6 +466,13 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 			const FRotator Facing = bLamp ? LampFacing : FRotator(ShopPitch[Index], ShopYaw[Index], 0.f);
 			Light->SetWorldLocationAndRotation(At, Facing);
 			Light->SetIntensity(Candela(bLamp) * (Pool.Scale.IsValidIndex(Index) ? Pool.Scale[Index] : 1.f));
+			// A hero corner shop slot burns warm (its timber rooms under paper lamps), every other at the look's own.
+			if (!bLamp)
+			{
+				const ftcore::NightLook& Look = FTNight::Look();
+				const bool bHeroShop = Pool.Hero.IsValidIndex(Index) && Pool.Hero[Index] && Look.heroShopKelvin > 0.f;
+				Light->SetTemperature(bHeroShop ? Look.heroShopKelvin : Look.shopKelvin);
+			}
 		}
 	}
 	// Each held lamp shows once the switch-on passes its own hashed point (shops keyed apart from the lamps). Tick runs

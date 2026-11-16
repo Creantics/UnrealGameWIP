@@ -610,3 +610,205 @@ TEST_CASE("lamp pool merge: two sets append in order with their own gains; a lig
     lampPoolMerge(&same, 1, slots);
     CHECK(lampPoolClashes(slots, 50.0, nullptr, nullptr) == 0);
 }
+
+namespace {
+bool overlaps(const HeroItem& a, const HeroItem& b) {
+    double ax0, ax1, ay0, ay1, bx0, bx1, by0, by1;
+    if (!heroItemFootprint(a, ax0, ax1, ay0, ay1) || !heroItemFootprint(b, bx0, bx1, by0, by1)) return false;
+    return ax0 < bx1 - 1e-6 && bx0 < ax1 - 1e-6 && ay0 < by1 - 1e-6 && by0 < ay1 - 1e-6;
+}
+int countOf(const HeroItem* items, int n, HeroPiece piece) {
+    int c = 0;
+    for (int i = 0; i < n; ++i) c += items[i].piece == piece ? 1 : 0;
+    return c;
+}
+void checkRoom(const HeroRoomSpec& room, const HeroItem* items, int n) {
+    for (int i = 0; i < n; ++i) {
+        const HeroItem& it = items[i];
+        CHECK(std::string(heroPieceName(it.piece)).size() > 0);
+        CHECK(it.at.z >= 0.0);
+        CHECK(it.at.z <= room.height);
+        double x0, x1, y0, y1;
+        if (!heroItemFootprint(it, x0, x1, y0, y1)) {
+            CHECK(it.at.x >= 0.0);
+            CHECK(it.at.x <= room.width);
+            CHECK(it.at.y >= 0.0);
+            CHECK(it.at.y <= room.depth);
+            continue;
+        }
+        CHECK(x0 >= -1e-6);
+        CHECK(x1 <= room.width + 1e-6);
+        CHECK(y0 >= -1e-6);
+        CHECK(y1 <= room.depth + 1e-6);
+        // Nothing stands in the entrance's threshold.
+        const bool inDoor = x1 > room.doorX0 && x0 < room.doorX1 && y0 < room.doorClear;
+        CHECK_FALSE(inDoor);
+        for (int j = i + 1; j < n; ++j) CHECK_FALSE(overlaps(it, items[j]));
+    }
+}
+} // namespace
+
+TEST_CASE("hero room furnish: a lattice shop takes two shelf units, a counter, goods and one lamp, nothing overlapping") {
+    const HeroRoomSpec room;
+    HeroItem items[kHeroRoomMax];
+    const int n = heroRoomFurnish(room, items, kHeroRoomMax);
+    CHECK(countOf(items, n, HeroPiece::Shelf) == 2);
+    CHECK(countOf(items, n, HeroPiece::Counter) == 1);
+    CHECK(countOf(items, n, HeroPiece::Lantern) == 1);
+    CHECK(countOf(items, n, HeroPiece::HangGoods) >= 1);
+    CHECK(countOf(items, n, HeroPiece::Figure) == 0);
+    checkRoom(room, items, n);
+    for (int i = 0; i < n; ++i) {
+        // Shelves stand against the back wall facing the lane; jars and bottles on the counter.
+        if (items[i].piece == HeroPiece::Shelf) {
+            CHECK(items[i].at.y == doctest::Approx(room.depth - 0.04));
+            CHECK(items[i].faceY == doctest::Approx(-1.0));
+        }
+        if (items[i].piece == HeroPiece::Jars || items[i].piece == HeroPiece::Bottles) CHECK(items[i].at.z == doctest::Approx(0.95));
+    }
+}
+
+TEST_CASE("hero room furnish: the eatery's cook stands behind the counter, back to the lane, the pot steaming over it") {
+    HeroRoomSpec room;
+    room.eatery = true;
+    HeroItem items[kHeroRoomMax];
+    const int n = heroRoomFurnish(room, items, kHeroRoomMax);
+    REQUIRE(countOf(items, n, HeroPiece::Figure) == 1);
+    CHECK(countOf(items, n, HeroPiece::Counter) == 2);
+    CHECK(countOf(items, n, HeroPiece::StockPot) == 1);
+    CHECK(countOf(items, n, HeroPiece::Steam) == 1);
+    CHECK(countOf(items, n, HeroPiece::Shelf) == 1);
+    checkRoom(room, items, n);
+    const HeroItem *fig = nullptr, *pot = nullptr, *steam = nullptr;
+    double counterBack = 0.0;
+    for (int i = 0; i < n; ++i) {
+        if (items[i].piece == HeroPiece::Figure) fig = &items[i];
+        if (items[i].piece == HeroPiece::StockPot) pot = &items[i];
+        if (items[i].piece == HeroPiece::Steam) steam = &items[i];
+        if (items[i].piece == HeroPiece::Counter) counterBack = items[i].at.y;
+    }
+    REQUIRE(fig);
+    REQUIRE(pot);
+    REQUIRE(steam);
+    CHECK(fig->faceY == doctest::Approx(1.0));  // its back to the lane
+    CHECK(fig->at.y > counterBack);
+    CHECK(steam->at.x == doctest::Approx(pot->at.x));
+    CHECK(steam->at.z > pot->at.z);
+}
+
+TEST_CASE("hero room furnish: a shallow or narrow room drops what will not fit, never overlapping") {
+    for (const double depth : {0.8, 1.2, 1.8, 2.2, 2.8}) {
+        for (const double width : {2.0, 3.5, 5.1}) {
+            for (const bool eatery : {false, true}) {
+                HeroRoomSpec room;
+                room.depth = depth;
+                room.width = width;
+                room.doorX0 = std::min(2.85, width - 1.0);
+                room.doorX1 = width;
+                room.eatery = eatery;
+                HeroItem items[kHeroRoomMax];
+                const int n = heroRoomFurnish(room, items, kHeroRoomMax);
+                CHECK(n <= kHeroRoomMax);
+                checkRoom(room, items, n);
+            }
+        }
+    }
+    HeroItem two[2];
+    CHECK(heroRoomFurnish(HeroRoomSpec{}, two, 2) == 2);
+}
+
+TEST_CASE("hero corner dressing: signs every 3-4 m at two heights under the pent or the eave, clear of lanterns and doors") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    HeroItem items[kHeroDressingMax];
+    const int n = heroCornerDressing(spec, l, items, kHeroDressingMax);
+    CHECK(n < kHeroDressingMax);
+    std::vector<const HeroItem*> signs;
+    for (int i = 0; i < n; ++i)
+        if (items[i].piece == HeroPiece::SignLarge || items[i].piece == HeroPiece::SignSmall) signs.push_back(&items[i]);
+    CHECK(signs.size() >= 6);
+    std::set<double> heights;
+    for (std::size_t k = 0; k < signs.size(); ++k) {
+        const HeroItem& s = *signs[k];
+        CHECK(s.at.x == doctest::Approx(spec.laneX1));
+        CHECK(s.faceX == doctest::Approx(-1.0));
+        const double up = s.at.z - spec.ground;
+        heights.insert(std::round(up * 100.0));
+        REQUIRE(s.bay >= 0);
+        if (spec.bayKoshi[s.bay]) CHECK(up <= spec.pentFasciaUp - 0.05);
+        else CHECK(up <= spec.eaveUp - 0.2);
+        for (int i = 0; i < l.lanternCount; ++i)
+            if (l.lanterns[i].large) CHECK(std::abs(s.at.y - l.lanterns[i].hook.y) >= spec.signClear);
+        for (int p = 0; p < l.pairCount; ++p) CHECK(std::abs(s.at.y - l.entranceY[p]) >= spec.entranceHalf + spec.signClear);
+        if (k > 0) {
+            const double gap = s.at.y - signs[k - 1]->at.y;
+            CHECK(gap >= 2.5);
+            CHECK(gap <= 2.0 * spec.signPitch + 2.5);
+            CHECK(s.piece != signs[k - 1]->piece);
+        }
+    }
+    CHECK(heights.size() >= 3);  // two heights, under the pent and under the eave
+}
+
+TEST_CASE("hero corner dressing: banners on the dark bays, clutter at the walls, the gate closing the far end") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    HeroItem items[kHeroDressingMax];
+    const int n = heroCornerDressing(spec, l, items, kHeroDressingMax);
+    const double floorZ = spec.ground + spec.paveTop;
+    int banners = 0, gates = 0, gateLanterns = 0, marked = 0, scooters = 0;
+    for (int i = 0; i < n; ++i) {
+        const HeroItem& it = items[i];
+        CHECK(std::abs(it.faceX * it.faceX + it.faceY * it.faceY - 1.0) < 1e-9);
+        if (it.piece == HeroPiece::Banner) {
+            ++banners;
+            REQUIRE(it.bay >= 0);
+            CHECK_FALSE(spec.bayLit[it.bay]);
+            CHECK(it.at.z - spec.bannerDrop - spec.ground >= 1.9);  // head room under it
+        }
+        if (it.piece == HeroPiece::Gate) {
+            ++gates;
+            CHECK(it.at.y < spec.laneY1);
+            CHECK(it.at.y > spec.laneY1 - 1.0);
+            CHECK(std::abs(it.at.x - 0.5 * spec.gateWidth - spec.laneX0) < 0.25);  // its posts at the lane's edges
+            CHECK(std::abs(it.at.x + 0.5 * spec.gateWidth - spec.laneX1) < 0.25);
+        }
+        if (it.piece == HeroPiece::GateLantern) {
+            ++gateLanterns;
+            marked += it.marked ? 1 : 0;
+            CHECK(it.at.x > spec.laneX0);
+            CHECK(it.at.x < spec.laneX1);
+        }
+        if (it.piece == HeroPiece::Scooter) ++scooters;
+        double x0, x1, y0, y1;
+        if (it.at.z <= floorZ + 1e-9 && heroItemFootprint(it, x0, x1, y0, y1)) {
+            // A standing piece keeps to the walls or the far end, so the lane stays open.
+            CHECK(x0 >= spec.laneX0 - 1e-6);
+            CHECK(x1 <= spec.laneX1 + 1e-6);
+            CHECK((x0 >= spec.laneX1 - 0.9 || y0 >= spec.laneY1 - 3.5));
+            for (int p = 0; p < l.pairCount; ++p) {
+                const bool inDoor = y1 > l.entranceY[p] - spec.entranceHalf && y0 < l.entranceY[p] + spec.entranceHalf;
+                CHECK_FALSE(inDoor);
+            }
+            for (int j = 0; j < n; ++j)
+                if (j != i && items[j].at.z <= floorZ + 1e-9) CHECK_FALSE(overlaps(it, items[j]));
+        }
+    }
+    CHECK(banners >= 2);
+    CHECK(gates == 1);
+    CHECK(gateLanterns == 4);
+    CHECK(marked == 2);
+    CHECK(scooters == 2);
+    CHECK(countOf(items, n, HeroPiece::Crate) == 3);
+    CHECK(countOf(items, n, HeroPiece::Bicycle) == 1);
+    CHECK(countOf(items, n, HeroPiece::UmbrellaStand) == 1);
+}
+
+TEST_CASE("hero corner: one large lantern in three carries a mark") {
+    int marked = 0;
+    for (int i = 0; i < kHeroLargeLanterns; ++i) marked += heroLanternMarked(i) ? 1 : 0;
+    CHECK(marked == kHeroLargeLanterns / 3);
+    CHECK_FALSE(heroLanternMarked(0));
+}

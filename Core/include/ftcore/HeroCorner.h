@@ -129,6 +129,17 @@ struct HeroCornerSpec {
     double eye[3] = {904.5, 511.0, 5.78};
     double at[3] = {904.5, 551.0, 3.68};
     double lensMm = 35.0;
+    // Step 2 (2026-11-16): the lane's dressing (heroCornerDressing). Hanging signs on the shop face every signPitch,
+    // large and small in turn at two heights: under a lattice front's pent (its fascia foot pentFasciaUp) or under the
+    // eave; none within signClear of a lantern's hook, a string's anchor or an entrance (entranceHalf either side).
+    double pentFasciaUp = 2.50;
+    double signPitch = 3.5, signClear = 0.7, entranceHalf = 1.15;
+    double signUpPent[2] = {2.42, 2.22}, signUpEave[2] = {3.35, 2.95};
+    // Banners from the eave's edge over the dark bays, two a bay, bannerDrop long.
+    double bannerUp = 3.53, bannerIn = 0.1, bannerDrop = 1.6;
+    // The far end closed: a gate across the lane gateBack in from its end, its four lanterns' hooks gateHookUp.
+    double gateBack = 0.4, gateWidth = 7.4, gateHookUp = 3.42, gateLanternScale = 1.0;
+    double gateHookX[4] = {-2.4, -0.8, 0.8, 2.4};
 };
 
 struct HeroPoint {
@@ -279,5 +290,51 @@ FTCORE_API int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<Stan
 
 // Whether a street lamp at plan (x, y) is kept out of the corner (inside the spec's lamp-clear box, edges included).
 FTCORE_API bool heroCornerKeepsLampOut(const HeroCornerSpec& spec, double x, double y);
+
+// Step 2 (2026-11-16): the hero corner's furnishing and dressing as pieces by role. The Unreal side maps each piece to
+// its mesh (/Game/Props/HeroCorner/SM_HC_<heroPieceName>) and leaves out a piece whose mesh isn't imported.
+enum class HeroPiece : int {
+    Shelf, Counter, HangGoods, Lantern, Crate, Bucket, Figure, StockPot, Steam, Jars, Sacks, Bottles, GoodsHanging,
+    UmbrellaStand, SignLarge, SignSmall, Banner, Bicycle, Gate, GateLantern, Scooter, Count
+};
+FTCORE_API const char* heroPieceName(HeroPiece piece);
+
+// A piece's place. Room terms: x along the front from its north end, y in from the front, z over the floor. Plan
+// terms: the plan's x, y and z. face is the way its front (the mesh's -Y) looks, a unit vector in the same terms
+// (room: (0, -1) to the lane; plan: (0, -1) down the lane to the camera, (-1, 0) off the shop face).
+struct HeroItem {
+    HeroPiece piece = HeroPiece::Crate;
+    HeroPoint at;
+    double faceX = 0.0, faceY = -1.0;
+    double scale = 1.0;
+    int bay = -1;
+    bool marked = false;  // a lantern carrying an invented mark (the marked mesh)
+};
+
+// A standing piece's footprint (its box in its own terms, turned by its face, whatever its z); false for a piece that
+// hangs or sits on a counter.
+FTCORE_API bool heroItemFootprint(const HeroItem& item, double& x0, double& x1, double& y0, double& y1);
+
+// A lit lattice room (room terms): width along the front, depth in, height to the ceiling; the entrance's span along
+// the front. A shop takes two shelf units on its back wall, a counter behind the lattice with jars and bottles, sacks
+// by the door, hanging goods, a crate and one paper lamp; the eatery two counters across the room (the cook's side
+// behind), a shelf, the figure behind the counter with its back to the lane, a stock pot and its steam, a lamp. Floor
+// pieces keep out of each other and of the entrance's first doorClear in. Returns how many (at most max).
+struct HeroRoomSpec {
+    double width = 5.1, depth = 2.8, height = 2.45;
+    bool eatery = false;
+    double doorX0 = 2.85, doorX1 = 5.1, doorClear = 1.2;
+};
+inline constexpr int kHeroRoomMax = 16;
+FTCORE_API int heroRoomFurnish(const HeroRoomSpec& room, HeroItem* out, int max);
+
+// The lane's dressing (plan terms): hanging signs and banners, clutter by the walls (crates, buckets, the bicycle, an
+// umbrella stand), the gate across the far end with its lanterns and two parked scooters. Returns how many (at most
+// max).
+inline constexpr int kHeroDressingMax = 48;
+FTCORE_API int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLayout& layout, HeroItem* out, int max);
+
+// Whether the n-th large lantern (0-based, in layout order) carries an invented mark: one in three.
+inline bool heroLanternMarked(int largeIndex) { return largeIndex % 3 == 2; }
 
 } // namespace ftcore

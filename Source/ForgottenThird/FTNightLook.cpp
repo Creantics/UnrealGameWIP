@@ -120,6 +120,7 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightShop="), L.shopCandela);
 	ReadNumber(Cmd, TEXT("NightShopReach="), L.shopReachM);
 	ReadNumber(Cmd, TEXT("NightShopK="), L.shopKelvin);
+	ReadNumber(Cmd, TEXT("NightHeroShopK="), L.heroShopKelvin);
 	ReadNumber(Cmd, TEXT("NightCap="), L.capShare);
 	ReadNumber(Cmd, TEXT("NightCapFloor="), L.capFloor);
 	ReadNumber(Cmd, TEXT("NightCapRadius="), L.capRadiusM);

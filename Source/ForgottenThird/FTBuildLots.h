@@ -74,7 +74,37 @@ struct FBuild
 		float HeightCm = 0.f;
 	};
 	TArray<FBayLight> BayLights;
+	// Step 2 (2026-11-16): the hero rooms' furnishing (ftcore::heroRoomFurnish), meshes from /Game/Props/HeroCorner (a
+	// missing one is left out, and the box shelves or counter it would replace stay). -NoHeroFurnish keeps the boxes.
+	// -HeroPanelTint=<r,g,b> warms the lit rooms' ceiling panels (about 2700 K), -HeroFloorShare=<x> scales the lattice
+	// rooms' floor paint (a third: the floor glowed), -HeroPropTurn=<deg> turns every hero prop about its origin (the
+	// import's facing, if E1 finds it off).
+	bool bHeroFurnish = true;
+	FLinearColor HeroPanelTint = FLinearColor(1.0f, 0.66f, 0.38f);
+	float HeroFloorShare = 0.33f;
+	double HeroPropTurn = 0.0;
+	// Set by Place: the hero rooms' figure (a skeletal mesh) and steam (a Niagara system), which the massing build spawns as
+	// actors: engine cm and yaw.
+	struct FHeroSpawn
+	{
+		ftcore::HeroPiece Piece = ftcore::HeroPiece::Figure;
+		FVector At = FVector::ZeroVector;
+		double Yaw = 0.0;
+	};
+	TArray<FHeroSpawn> HeroSpawns;
 };
+
+// A hero prop's mesh: /Game/Props/HeroCorner/<Name>/StaticMeshes/<Name> (the glTF import) or /Game/Props/HeroCorner/<Name>;
+// null (not logged) when it isn't imported.
+UStaticMesh* HeroPropMesh(const FString& Name);
+
+// The engine yaw (degrees) that turns a hero prop's front (the Blender model's -Y, the engine's +Y after the import) to look
+// along plan direction (FaceX, FaceY), plus Extra.
+inline double HeroPropYaw(double FaceX, double FaceY, double Extra)
+{
+	// Plan (x, y) is engine (x, -y).
+	return FMath::RadiansToDegrees(FMath::Atan2(-FaceY, FaceX)) - 90.0 + Extra;
+}
 
 // Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces. True with bOn false without
 // -Lots; false (logged) on a table that doesn't read or a piece the grammar needs that the kit table lacks.
