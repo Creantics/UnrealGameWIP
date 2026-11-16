@@ -5072,7 +5072,7 @@ public:
 		const FLinearColor Body = View.kind == ftcore::DialogueViewKind::Direction ? Tok(UiToken::InkDim) : Tok(UiToken::Ink);
 		const int32 RevealedUnits = CpToUnit.Num() > 0 ? CpToUnit[FMath::Min(static_cast<int32>(View.revealedChars), CpToUnit.Num() - 1)] : 0;
 		float LastRight = CX;
-		const FLinearColor SpeakerC = Shown().Fill; // the speaker in the world's fill
+		const FLinearColor SpeakerC = ::Shown().Fill; // the speaker in the world's fill
 		for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
 		{
 			const float Lead = I == PageFirst ? SpeakerW : 0.f; // the speaker heads each page
