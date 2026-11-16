@@ -23,12 +23,41 @@
 
 namespace ftcore {
 
+// The deep night's floor, measured (11-16 rulings: the METERED wide-street key the same at 20:30, 22:00 and 24:00, held
+// by light, not tone). The model: with the moon at elevation m (the sun's depth) and the sky light's fill f, the wide
+// street's centre luma median (0-255, the shipped tone) is
+//     key(m, f) = keyAtRef(m) + slope(m) x (f - refFill(m)),
+// each of keyAtRef, slope and refFill read at the knots and linear between them (flat outside). It is linear in f in
+// display units near the floor (the 21:00 bracket 0.015 / 0.021 / 0.03 read 18.2 / 29.6 / 43.4), and its slope depends
+// on the moon (the real-time lift divides by it), so the table holds for one moon share only: moonShare. The fill that
+// holds the floor is then fill(m) = refFill + (floorKey - keyAtRef) / slope, clamped to fillMin .. twilightFill.
+struct NightFloorKnot {
+    float moonDeg = 0.f;    // the moon's elevation (the sun's depth) this row was shot at
+    float refFill = 0.f;    // the fill the key was read at
+    float keyAtRef = 0.f;   // the wide street's centre median (0-255) at that fill
+    float slope = 0.f;      // its change per unit of fill there
+};
+struct NightFloorFit {
+    float moonShare = 0.07f;   // the moon share every row was shot at; any other share falls back to skyFill
+    float floorKey = 21.f;     // the median the fill holds (0-255); at or under 0, off: the fill is skyFill throughout
+    float fillMin = 0.004f;    // the fill never goes under this (the capture keeps a sky to light)
+    // night_1116b (block 4, moon 0.07, fill 0.015) and night_1116a (the 21:00 bracket); slopes from the bracket until
+    // block 4b measures one per knot.
+    std::array<NightFloorKnot, 4> knots{{
+        {34.5f, 0.015f, 11.8f, 1680.f},   // 20:30
+        {41.0f, 0.015f, 18.2f, 1680.f},   // 21:00
+        {53.4f, 0.015f, 29.2f, 1680.f},   // 22:00
+        {68.0f, 0.015f, 35.2f, 1680.f},   // 24:00
+    }};
+};
+
 struct NightLook {
     float moonShare = 0.07f;       // the directional light at full night, as a share of its day intensity
-    float skyFill = 0.14f;         // the sky light in the deep night, as a share of its day intensity (net of the moon):
-                                   // the night's floor, so between the lamps reads dark but with form (11-15 19:00
-                                   // ruling: the wide street's median at 18-24/255 from 20:30 on; block 1 read 20.4 at
-                                   // a fill of 0.139)
+    float skyFill = 0.015f;        // the sky light in the deep night, as a share of its day intensity (net of the moon),
+                                   // for a still and whenever the floor fit is off: the night's floor, so between the
+                                   // lamps reads dark but with form (11-15 19:00 ruling: the wide street's median at
+                                   // 18-24/255 from 20:30 on; night_1116a read 18.2 at 21:00 with this)
+    NightFloorFit floorFit;          // the clock's deep fill per moon elevation (nightDeepFill)
     float skyLuminance = 0.03f;    // the sky dome's own brightness in the deep night (SkyAtmosphere SkyLuminanceFactor):
                                    // near black, so the lamps and shops carry the night, not a dimmed day sky. A
                                    // real-time sky capture sees the darker dome too, so its lift takes this back out
@@ -138,6 +167,14 @@ FTCORE_API NightFrame nightFrame(const NightLook& look, float night, float deep)
 FTCORE_API NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDeg);
 // 0 with the sun above deepHighDeg, 1 below deepLowDeg, eased between. No allocation.
 FTCORE_API float nightDeep(const NightLook& look, float sunElevationDeg);
+// Whether the floor fit drives the clock's deep fill: floorKey above 0 and moonShare the table's own (within 1e-4).
+FTCORE_API bool nightFloorFitActive(const NightLook& look);
+// The deep night's fill with the sun at this elevation: the floor fit's (NightFloorFit) when active, else skyFill.
+// Continuous in the elevation. nightFrameAt falls from twilightFill to it on nightDeep. No allocation.
+FTCORE_API float nightDeepFill(const NightLook& look, float sunElevationDeg);
+// The floor fit's predicted wide-street centre median (0-255) at a moon elevation (the sun's depth) and a fill. No
+// allocation.
+FTCORE_API float nightFloorKey(const NightFloorFit& fit, float moonElevationDeg, float fill);
 // The lamps', shops' and windows' switch-on fraction: 0 above lampsOnHighDeg, 1 from lampsOnLowDeg down, eased. No
 // allocation.
 FTCORE_API float nightLampFraction(const NightLook& look, float sunElevationDeg);
@@ -155,7 +192,8 @@ FTCORE_API float nightMoonScale(const NightLook& look, float sunElevationDeg);
 // strip against: the sky fill and the lamps light the street, the camera adapts within the day's range (a key it holds
 // while it can open up enough) and is clamped by the night's as the exposure blend goes over. Weights fitted to the
 // 11-15 strip (block 1: fill 1.24 / 0.55 / 0.14 / 0.033 / 0.012 read 49 / 37 / 20 / 11 / 10 of 255). The moon's direct
-// light is left out on purpose: it adds direction and shadow, not the floor (nightMoonKey is its share alone).
+// light is left out on purpose: it adds direction and shadow, not the floor (nightMoonKey is its share alone). It is the
+// old tone's model and a guard on the curves' order only: the measured floor is NightFloorFit's (11-16).
 struct NightKeyModel {
     float fillWeight = 0.025f;   // the median per unit of sky fill share at the night's exposure
     float lampWeight = 0.0005f;  // the lamps' share of the median between their pools, all on

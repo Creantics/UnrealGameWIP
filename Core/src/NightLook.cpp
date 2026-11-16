@@ -97,8 +97,46 @@ float nightMoonScale(const NightLook& look, float sunElevationDeg) {
     return lerp(rise, 1.f, easeDown(-look.moonRiseDeg, -look.moonFullDeg, sunElevationDeg));
 }
 
+bool nightFloorFitActive(const NightLook& look) {
+    return look.floorFit.floorKey > 0.f && std::fabs(look.moonShare - look.floorFit.moonShare) <= 1e-4f;
+}
+
+namespace {
+// The fit's row at a moon elevation: each field linear between the knots (sorted by moonDeg), flat outside.
+NightFloorKnot floorRow(const NightFloorFit& fit, float moonDeg) {
+    const auto& k = fit.knots;
+    if (moonDeg <= k.front().moonDeg) return k.front();
+    for (std::size_t i = 1; i < k.size(); ++i) {
+        if (moonDeg <= k[i].moonDeg) {
+            const float span = k[i].moonDeg - k[i - 1].moonDeg;
+            const float t = span > 0.f ? (moonDeg - k[i - 1].moonDeg) / span : 1.f;
+            return {moonDeg, lerp(k[i - 1].refFill, k[i].refFill, t), lerp(k[i - 1].keyAtRef, k[i].keyAtRef, t),
+                    lerp(k[i - 1].slope, k[i].slope, t)};
+        }
+    }
+    return k.back();
+}
+} // namespace
+
+float nightFloorKey(const NightFloorFit& fit, float moonElevationDeg, float fill) {
+    const NightFloorKnot r = floorRow(fit, moonElevationDeg);
+    return r.keyAtRef + r.slope * (fill - r.refFill);
+}
+
+float nightDeepFill(const NightLook& look, float sunElevationDeg) {
+    if (!nightFloorFitActive(look)) return look.skyFill;
+    const NightFloorKnot r = floorRow(look.floorFit, -sunElevationDeg);
+    if (!(r.slope > 0.f)) return look.skyFill;
+    const float fill = r.refFill + (look.floorFit.floorKey - r.keyAtRef) / r.slope;
+    const float hi = std::max(look.twilightFill, look.floorFit.fillMin);
+    return std::clamp(fill, std::max(look.floorFit.fillMin, 0.f), hi);
+}
+
 NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDeg) {
-    NightFrame f = nightFrame(look, night, nightDeep(look, sunElevationDeg));
+    // The deep fill this elevation holds the floor with (the fit's, or skyFill); nightFrame falls to it on nightDeep.
+    NightLook at = look;
+    at.skyFill = nightDeepFill(look, sunElevationDeg);
+    NightFrame f = nightFrame(at, night, nightDeep(look, sunElevationDeg));
     const float n = f.night;
     const float moon = std::max(look.moonShare, 1e-4f);
     f.lamps = nightLampFraction(look, sunElevationDeg);

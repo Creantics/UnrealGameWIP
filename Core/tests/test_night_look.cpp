@@ -87,8 +87,8 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     // its forms (11-15 19:00 ruling: wide-street median 18-24/255 from 20:30, whether the moon is up or not).
     CHECK(look.twilightFill >= 0.5f);
     CHECK(look.twilightFill <= 1.5f);
-    CHECK(look.skyFill >= 0.1f);
-    CHECK(look.skyFill <= 0.2f);
+    CHECK(look.skyFill >= 0.005f);  // night_1116a: 0.015 read 18.2 at 21:00 (the 0.14 of 85106b57 read 128)
+    CHECK(look.skyFill <= 0.03f);
 }
 
 TEST_CASE("nightFrame: the sky dome darkens with the night, near black at full night, smooth through dusk") {
@@ -179,12 +179,14 @@ TEST_CASE("nightFrameAt: lamps on before the exposure leaves the day's; the stre
     // 11-15 19:00 ruling, fault 1: every 5 minutes from 16:00 to 23:00 the predicted wide-street key falls (never
     // rises) to the night floor and holds there; the lamps are all on before the key is under twice the floor; the
     // exposure starts toward the night's only once the lamps are half on.
-    // NightKeyModel's constants are fitted to the block-1 strip, so the floor and the flatness band here check the
-    // curves against that model, not against a render: a guard that a swap or re-order of the curves is caught.
+    // NightKeyModel's constants are fitted to the block-1 strip, so the floor here checks the curves' order against that
+    // model, not a render: a guard that a swap or re-order of the curves is caught. The model's floor is its key at the
+    // deepest fill in the run (23:00, the moon highest); the flatness against the measured street is the floor fit's own
+    // test below.
     const NightLook look;
     const NightKeyModel model;
     const WorldClockSpec spec;
-    const float floorKey = model.fillWeight * look.skyFill + model.lampWeight;
+    const float floorKey = model.fillWeight * nightDeepFill(look, sunElevationDeg(spec, 23.0)) + model.lampWeight;
     const auto before = ftcore_test::allocStats().count;
     float last = 1e9f, lampsHalfAt = 99.f, keyUnderTwoFloorAt = 99.f;
     bool reachedFloor = false, monotone = true, lampsFirst = true, exposureAfterLamps = true, flat = true;
@@ -200,8 +202,8 @@ TEST_CASE("nightFrameAt: lamps on before the exposure leaves the day's; the stre
         if (f.lamps >= 0.5f && lampsHalfAt > 90.f) lampsHalfAt = static_cast<float>(h);
         if (key < 2.f * floorKey && keyUnderTwoFloorAt > 90.f) keyUnderTwoFloorAt = static_cast<float>(h);
         if (key <= floorKey * 1.001f) reachedFloor = true;
-        // From 20:30 the floor (the moon's part apart) holds within 15%.
-        if (h >= 20.5 && std::fabs(key / floorKey - 1.f) > 0.15f) flat = false;
+        // From 20:30 the model's key stays within the fit's fill range (the derived fill falls with the moon's rise).
+        if (h >= 20.5 && key > model.fillWeight * nightDeepFill(look, -34.5f) + model.lampWeight + 1e-6f) flat = false;
         CHECK(key >= floorKey * 0.999f);  // never under the floor
         // Either side of the horizon a real-time capture lands at the fill.
         CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale).epsilon(1e-4));
@@ -218,6 +220,64 @@ TEST_CASE("nightFrameAt: lamps on before the exposure leaves the day's; the stre
     CHECK(lampsHalfAt >= 17.9f);
     CHECK(lampsHalfAt <= 18.2f);
     if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
+TEST_CASE("nightDeepFill: the measured street key holds 18-24 from 20:30 to 24:00, continuous, no allocation") {
+    // 11-16 01:40 ruling: the fill is derived so the METERED wide-street key is the same at 20:30, 22:00 and 24:00;
+    // the floor fit's predicted key at the clock's own fill stays inside 18-24 every 5 minutes from 20:30 to 24:00.
+    const NightLook look;
+    const WorldClockSpec spec;
+    // The default moon is the one the table was measured at; otherwise the fit is off and skyFill holds throughout.
+    CHECK(look.moonShare == doctest::Approx(look.floorFit.moonShare).epsilon(1e-4));
+    REQUIRE(nightFloorFitActive(look));
+    for (std::size_t i = 1; i < look.floorFit.knots.size(); ++i) {
+        CHECK(look.floorFit.knots[i].moonDeg > look.floorFit.knots[i - 1].moonDeg);
+        CHECK(look.floorFit.knots[i].slope > 0.f);
+    }
+    const auto before = ftcore_test::allocStats().count;
+    float lastFill = 1e9f;
+    bool inside = true, falls = true, smooth = true;
+    for (int m = 20 * 60 + 30; m <= 24 * 60; m += 5) {
+        const double h = m / 60.0;
+        const float e = sunElevationDeg(spec, h >= 24.0 ? h - 24.0 : h);
+        const NightFrame f = nightFrameAt(look, nightAmount(spec, h >= 24.0 ? h - 24.0 : h), e);
+        REQUIRE(f.deep == doctest::Approx(1.f));
+        const float key = nightFloorKey(look.floorFit, -e, f.skyScale);
+        if (key < 18.f || key > 24.f) inside = false;
+        if (f.skyScale > lastFill * (1.f + 1e-5f)) falls = false;  // the moon rises, so the fill only falls
+        if (lastFill < 1e8f && f.skyScale < 0.9f * lastFill) smooth = false;  // no step over 10% in 5 minutes
+        // A real-time capture still lands at the fill.
+        CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale).epsilon(1e-4));
+        lastFill = f.skyScale;
+    }
+    const auto after = ftcore_test::allocStats().count;
+    CHECK(inside);
+    CHECK(falls);
+    CHECK(smooth);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+    // At each measured row the derived fill gives the floor exactly (unclamped), and the fill stays in its bounds.
+    for (const NightFloorKnot& k : look.floorFit.knots) {
+        const float fill = nightDeepFill(look, -k.moonDeg);
+        CHECK(fill >= look.floorFit.fillMin);
+        CHECK(fill <= look.twilightFill);
+        if (fill > look.floorFit.fillMin) CHECK(nightFloorKey(look.floorFit, k.moonDeg, fill) == doctest::Approx(21.f));
+    }
+    // Flat outside the knots: above the first row (the sun higher) and below the last.
+    CHECK(nightDeepFill(look, -20.f) == doctest::Approx(nightDeepFill(look, -look.floorFit.knots.front().moonDeg)));
+    CHECK(nightDeepFill(look, -89.f) == doctest::Approx(nightDeepFill(look, -look.floorFit.knots.back().moonDeg)));
+    // Off: a moon other than the table's, or floorKey 0 (an explicit -NightSky=), keeps skyFill at every hour.
+    NightLook other = look;
+    other.moonShare = 0.03f;
+    CHECK_FALSE(nightFloorFitActive(other));
+    CHECK(nightDeepFill(other, -53.4f) == other.skyFill);
+    NightLook off = look;
+    off.floorFit.floorKey = 0.f;
+    CHECK(nightDeepFill(off, -68.f) == off.skyFill);
+    CHECK(nightFrameAt(off, 1.f, -68.f).skyScale == doctest::Approx(off.skyFill));
+    // A row whose slope is 0 can't be solved: skyFill, not a division by zero.
+    NightLook bad = look;
+    for (NightFloorKnot& k : bad.floorFit.knots) k.slope = 0.f;
+    CHECK(nightDeepFill(bad, -53.4f) == bad.skyFill);
 }
 
 TEST_CASE("nightFrameAt: the directional light and the real-time sky lift have no step through the horizon") {
@@ -344,11 +404,14 @@ TEST_CASE("nightMoonScale: rises with the moon's elevation, full by 15 degrees; 
     const NightFrame high = nightFrameAt(look, 1.f, -40.f);
     CHECK(low.sunScale < high.sunScale);
     CHECK(high.sunScale == doctest::Approx(look.moonShare));
-    // The floor is the sky's: the same with or without a moon.
-    NightLook moonless = look;
+    // The model's floor is the sky's: at one fill (the floor fit off), the same with or without a moon. (The measured
+    // street is not: the floor fit is per moon share, nightDeepFill.)
+    NightLook fixed = look;
+    fixed.floorFit.floorKey = 0.f;
+    NightLook moonless = fixed;
     moonless.moonShare = 0.f;
     const NightKeyModel model;
-    CHECK(nightSceneKey(moonless, model, 1.f, -50.f) == doctest::Approx(nightSceneKey(look, model, 1.f, -50.f)));
+    CHECK(nightSceneKey(moonless, model, 1.f, -50.f) == doctest::Approx(nightSceneKey(fixed, model, 1.f, -50.f)));
     CHECK(nightMoonKey(look, model, 5.f) == 0.f);
     CHECK(nightMoonKey(look, model, -50.f) > nightMoonKey(look, model, -20.f));
 }
@@ -512,12 +575,15 @@ TEST_CASE("night look: grey-blue ambient, orange lamps, warm glow") {
     CHECK(look.glow[1] > look.glow[2]);
     // As twilight ends the fill shows an unlit facade (dark, not black): the captured sky is a deep blue that carries
     // little luminance, so the share is over the day's, many times the moon; its tint falls from red to blue, against
-    // that blue. In the deep night it is the floor (11-15 19:00 ruling): the sky, not the moon, holds the street between
-    // lamps, so it stands over the moon's share.
+    // that blue. In the deep night it is the floor (11-15 19:00 ruling), held by the floor fit per moon elevation; the
+    // still's skyFill sits inside the fit's range (11-16: the real-time lift divides by the moon, so a fill well under
+    // the moon's share still holds the floor).
     CHECK(look.twilightFill >= 0.5f);
     CHECK(look.twilightFill <= 1.5f);
     CHECK(look.twilightFill >= 10.f * look.moonShare);
-    CHECK(look.skyFill > look.moonShare);
+    CHECK(look.skyFill >= look.floorFit.fillMin);
+    CHECK(look.skyFill <= nightDeepFill(look, -34.5f));
+    CHECK(look.skyFill >= nightDeepFill(look, -68.f));
     CHECK(look.skyTint[0] >= look.skyTint[1]);
     CHECK(look.skyTint[1] > look.skyTint[2]);
     CHECK(look.skyTint[2] >= 0.4f);

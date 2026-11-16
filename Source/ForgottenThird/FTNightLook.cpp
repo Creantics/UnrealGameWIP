@@ -50,7 +50,12 @@ ftcore::NightLook Read()
 	ftcore::NightLook L;
 	const TCHAR* Cmd = FCommandLine::Get();
 	ReadNumber(Cmd, TEXT("NightMoon="), L.moonShare);
-	ReadNumber(Cmd, TEXT("NightSky="), L.skyFill);
+	// An explicit deep fill keeps it constant through the night (the floor fit off), so older scripts keep their meaning.
+	if (ReadNumber(Cmd, TEXT("NightSky="), L.skyFill))
+	{
+		L.floorFit.floorKey = 0.f;
+	}
+	ReadNumber(Cmd, TEXT("NightFloor="), L.floorFit.floorKey);
 	ReadNumber(Cmd, TEXT("NightSkyLum="), L.skyLuminance);
 	ReadNumber(Cmd, TEXT("NightTwilightFill="), L.twilightFill);
 	ReadNumber(Cmd, TEXT("NightDeepHigh="), L.deepHighDeg);
@@ -96,6 +101,17 @@ ftcore::NightLook Read()
 	L.moonShare = FMath::Max(L.moonShare, 1e-4f);
 	UE_LOG(LogForgottenThird, Display, TEXT("Night: moon %.3f, sky fill %.3f as twilight ends to %.3f in the deep night (sun %.1f to %.1f degrees), dome %.3f."),
 		L.moonShare, L.twilightFill, L.skyFill, L.deepHighDeg, L.deepLowDeg, L.skyLuminance);
+	if (ftcore::nightFloorFitActive(L))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Night: deep fill from the floor fit (median %.1f at moon %.3f): %.4f at 20:30, %.4f at 22:00, %.4f at 24:00 (the still keeps %.3f)."),
+			L.floorFit.floorKey, L.floorFit.moonShare, ftcore::nightDeepFill(L, -34.5f), ftcore::nightDeepFill(L, -53.4f),
+			ftcore::nightDeepFill(L, -68.f), L.skyFill);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Night: deep fill constant %.3f (the floor fit off: -NightSky= given, -NightFloor=0, or moon %.3f is not the fit's %.3f)."),
+			L.skyFill, L.moonShare, L.floorFit.moonShare);
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Night: lamps on from %.1f to %.1f degrees, exposure to the night's from %.1f to %.1f, moon up from %.1f to %.1f (%.2f at rise), "
 		"the sun's light halving every %.2f degrees once down, night shadow contrast %.2f, toe %.2f (under 0: the look's own)."),
 		L.lampsOnHighDeg, L.lampsOnLowDeg, L.exposureHighDeg, L.exposureLowDeg, L.moonRiseDeg, L.moonFullDeg, L.moonRiseShare,
