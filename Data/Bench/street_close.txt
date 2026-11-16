@@ -1,0 +1,11 @@
+# Bench scene (c): the densest shop row on World_Solhaven_Strip (lane CL-051, fronts at plan y 622.5, x 787-864) at
+# 1.4 m/s, eye 1.6 m over the pavement, about 1.7 m from the fronts, to the junction stop line. Waypoints of 2026-11-15. Plan metres on the 1000 m massing square (-BenchSide=1000): t  eye x y z  look-at x y z.
+0     836.0 624.2 7.15   846.0 622.9 7.0
+4.3   842.0 624.2 7.00   845.0 622.5 6.8
+8.6   848.0 624.2 6.82   858.0 623.0 6.6
+12.9  854.0 624.2 6.65   856.0 622.5 6.5
+17.9  861.0 624.4 6.43   871.0 624.8 6.0
+22.5  867.5 624.8 6.22   876.0 625.5 5.8
+27.5  874.5 625.2 6.00   885.0 625.5 5.5
+29.5  875.0 625.2 6.00   880.0 640.0 6.0
+31.5  875.0 625.2 6.00   880.0 640.0 6.0
