@@ -5215,3 +5215,348 @@ TEST_CASE("arena partner: classic partner fights resolve exactly as main's: hits
     CHECK(leads >= 2);
     CHECK(rows == static_cast<int>(sizeof kClassicPins / sizeof kClassicPins[0]));
 }
+
+namespace {
+// The close lens over a big target (the order of 11-16: no station beside the lens). The lead held at `centre` m from
+// a target of `radius` (centre to centre; it never attacks), or circling it at `orbit` degrees a second, the close
+// preset's lens on the right shoulder eased as the game eases it, the party kit's caster (8.5 / 5) walking from a
+// start set by `seed` (or `startLens`: depth and lateral from the lead in the lens's ground space). Measured in the
+// lens's ground space each step from 1 s: depth along its ground forward, lateral (+ right), and the partner's
+// projected height (a 1.8 m body at that depth, share of the frame's height).
+struct TitanLensRun {
+    int steps = 0, nearOk = 0, sizeOk = 0, seen = 0, seenClear = 0, flankChanges = 0, strings = 0;
+    int worstFlankRate = 0;   // most flank changes in any 3 s window
+    int goalOver = 0;         // steps walking (MoveTo, StepBack) to a goal over the size cap or failing rule 1
+    int crossings = 0;        // steps whose walk crossed the line from the lens to the lead (from the start)
+    float crossAt = 0.f, crossDepth = 0.f, crossLateral = 0.f; // the first: when, where from the lead in lens space
+    int crossAct = -1;
+    int hiddenLead = 0, hiddenTarget = 0; // steps its body stood hidden behind the lead, behind the target
+    int hiddenLeadStanding = 0, hiddenTargetStanding = 0; // of them, steps it was not walking (no MoveTo, StepBack)
+    float hiddenFirstAt = -1.f; // the first hidden step: its time and act
+    int hiddenFirstAct = -1;
+    int castsHidden = 0; // strings or blows begun on a step its body stood hidden behind the lead or the target
+    int stringsSeen = 0;
+    float depth = 0.f, lateral = 0.f, height = 0.f; // the last 3 s, averaged
+    float leadDepth = 0.f, leadLateral = 0.f; // at the start
+};
+
+bool titanCrossed(Vec2 a, Vec2 b, Vec2 c, Vec2 d) {
+    const auto side = [](Vec2 p, Vec2 q, Vec2 r) { return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x); };
+    return side(a, b, c) * side(a, b, d) < 0.f && side(c, d, a) * side(c, d, b) < 0.f;
+}
+
+TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float orbit = 0.f,
+                          const Vec2* startLens = nullptr, float seconds = 12.f) {
+    const ArenaTable t = shippedTable();
+    PRig r(t.fighter("devin"));
+    r.def.fighter.hp = 100000;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = t.fighter("third");
+    r.tuning = shippedTuning();
+    ArenaEnemyKind big = dummyKind(100000);
+    big.bodyRadius = radius;
+    if (radius >= 2.f) big.height = 7.f; // the shipped titan's height: tall (rule 18)
+    const Vec2 tp{0.f, 0.f};
+    r.enemy(big, tp);
+    r.bodies.player = Vec2{-centre, 0.f};
+
+    constexpr float kAspect = 16.f / 9.f;
+    constexpr float kRad = 3.14159265f / 180.f;
+    const float melee = 1.f - smooth01((centre - 2.5f) / 2.5f);
+    ArenaCameraPose pose;
+    pose.arm = 2.6f;
+    pose.pivot = 1.35f + 0.25f * melee;
+    pose.side = 0.55f;
+    pose.up = 0.1f;
+    pose.fov = 60.f + 8.f * melee;
+    pose.boomPitch = -2.f + 8.f * melee;
+    const float screenX = 0.6f + (0.64f - 0.6f) * melee;
+    const float turn = std::atan((2.f * screenX - 1.f) * std::tan(0.5f * pose.fov * kRad)) / kRad;
+    const auto lensAt = [&](Vec2 pivot) {
+        pose.yaw = std::atan2(tp.y - pivot.y, tp.x - pivot.x) / kRad;
+        for (int k = 0; k < 4; ++k) {
+            const ArenaFrustum f = arenaPoseFrustum(pose, pivot, kAspect);
+            pose.yaw = std::atan2(tp.y - f.pos.y, tp.x - f.pos.x) / kRad - turn;
+        }
+        return arenaPoseCamera(pose, pivot, kAspect, 1.75f);
+    };
+    PartnerCameraView cam = lensAt(r.bodies.player);
+    REQUIRE(partnerCameraWhole(cam));
+    Vec2 cp{}, fw{};
+    const auto ground = [&]() {
+        cp = Vec2{cam.pos.x, cam.pos.y};
+        const float fl = std::hypot(cam.forward.x, cam.forward.y);
+        fw = Vec2{cam.forward.x / fl, cam.forward.y / fl};
+    };
+    ground();
+    const float vTan = std::tan(0.5f * cam.verticalFovDegrees * kRad);
+    const auto depthOf = [&](Vec2 p) { return (p.x - cp.x) * fw.x + (p.y - cp.y) * fw.y; };
+    const auto latOf = [&](Vec2 p) { return -(p.x - cp.x) * fw.y + (p.y - cp.y) * fw.x; };
+    const auto heightOf = [&](Vec2 p) {
+        const float d = depthOf(p);
+        return d > 0.05f ? 1.8f / (2.f * d * vTan) : 99.f;
+    };
+    const auto nearOkAt = [&](Vec2 p) {
+        return depthOf(p) >= depthOf(r.bodies.player) - 0.5f && dist(p, cp) >= 2.5f;
+    };
+
+    if (startLens != nullptr) {
+        const Vec2 rt{-fw.y, fw.x};
+        r.bodies.ally = Vec2{r.bodies.player.x + startLens->x * fw.x + startLens->y * rt.x,
+                             r.bodies.player.y + startLens->x * fw.y + startLens->y * rt.y};
+    } else { // somewhere 1.5-3.5 m round the lead, by the seed
+        std::uint32_t s = seed * 2654435761u + 12345u;
+        const auto rnd = [&]() {
+            s = s * 1664525u + 1013904223u;
+            return static_cast<float>(s >> 8) / 16777216.f;
+        };
+        const float a0 = 6.2831853f * rnd(), d0 = 1.5f + 2.f * rnd();
+        r.bodies.ally = Vec2{r.bodies.player.x + d0 * std::cos(a0), r.bodies.player.y + d0 * std::sin(a0)};
+        if (dist(r.bodies.ally, tp) < radius + 0.5f) r.bodies.ally = Vec2{r.bodies.player.x - d0, 0.f};
+    }
+    r.in.partnerOrder = 1;
+    r.go(true, 100000, seed);
+    r.walk = true;
+
+    TitanLensRun o;
+    o.leadDepth = depthOf(r.bodies.player);
+    o.leadLateral = latOf(r.bodies.player);
+    const ArenaLeadBody leadBody{};
+    std::array<float, 64> changes{};
+    std::int8_t flank = 0;
+    int last = 0;
+    const int n = static_cast<int>(std::lround(seconds / kDt));
+    for (int k = 0; k < n; ++k) {
+        const float tNow = static_cast<float>(k + 1) * kDt;
+        if (orbit != 0.f) {
+            const float a = orbit * kRad * tNow;
+            r.bodies.player = Vec2{-centre * std::cos(a), -centre * std::sin(a)};
+            cam = lensAt(r.bodies.player);
+            ground();
+        }
+        r.in.partnerCamera = cam;
+        r.in.cameraOn = true;
+        r.in.cameraPos = cp;
+        r.in.cameraFacing = fw;
+        PartnerCloseView& v = r.in.partnerClose;
+        v.given = true;
+        v.leadSide = -1;
+        v.standMin = kPartnerCloseCasterMin;
+        v.standMax = kPartnerCloseCasterMax;
+        v.bodyRadius = 0.4f;
+        v.verticalHalfDegrees = 0.5f * cam.verticalFovDegrees;
+        v.halfAngleDegrees = std::atan(std::tan(v.verticalHalfDegrees * kRad) * cam.aspect) / kRad;
+        v.pitchDegrees = std::asin(std::clamp(cam.forward.z, -1.f, 1.f)) / kRad;
+        v.lensHeight = cam.pos.z - cam.groundZ;
+        const Vec2 before = r.bodies.ally;
+        r.tick();
+        const Vec2 a = r.bodies.ally;
+        if (titanCrossed(cp, r.bodies.player, before, a)) {
+            if (o.crossings == 0) {
+                o.crossAt = tNow;
+                o.crossDepth = depthOf(a) - depthOf(r.bodies.player);
+                o.crossLateral = latOf(a) - latOf(r.bodies.player);
+                o.crossAct = static_cast<int>(r.brain.intent().act);
+            }
+            ++o.crossings;
+        }
+        const Vec2 bear = sub(r.bodies.player, tp), rel = sub(a, tp);
+        const std::int8_t f = bear.x * rel.y - bear.y * rel.x > 0.f ? std::int8_t{1} : std::int8_t{-1};
+        if (tNow < 1.f) {
+            flank = f;
+            continue;
+        }
+        if (f != flank) {
+            if (o.flankChanges < static_cast<int>(changes.size())) changes[static_cast<std::size_t>(o.flankChanges)] = tNow;
+            ++o.flankChanges;
+            flank = f;
+        }
+        ++o.steps;
+        if (nearOkAt(a)) ++o.nearOk;
+        const float h = heightOf(a);
+        if (h <= kPartnerCloseSizeCap) ++o.sizeOk;
+        const ArenaPoint3 eye{cam.pos.x, cam.pos.y, cam.pos.z};
+        const auto behind = [&](Vec2 at, float rad, float top) {
+            return arenaHiddenBehind(eye, ArenaPoint3{a.x, a.y, 0.55f * 1.75f}, at, rad, 0.f, top) &&
+                   arenaHiddenBehind(eye, ArenaPoint3{a.x, a.y, 0.95f * 1.75f}, at, rad, 0.f, top);
+        };
+        const ArenaBodyCylinder tc = arenaBodyCylinder(r.def.enemies[0], tp, 0.f);
+        const bool byLead = behind(r.bodies.player, leadBody.radius, leadBody.head), byTarget = behind(tp, tc.radius, tc.top);
+        const PartnerAct act = r.brain.intent().act;
+        const bool walking = act == PartnerAct::MoveTo || act == PartnerAct::StepBack;
+        o.hiddenLead += byLead;
+        o.hiddenTarget += byTarget;
+        o.hiddenLeadStanding += byLead && !walking;
+        o.hiddenTargetStanding += byTarget && !walking;
+        const int stringsNow = r.fight.stats().partnerStrings;
+        if ((byLead || byTarget) && (stringsNow > o.stringsSeen || r.brain.intent().blowStart)) ++o.castsHidden;
+        o.stringsSeen = stringsNow;
+        if ((byLead || byTarget) && o.hiddenFirstAct < 0) {
+            o.hiddenFirstAt = tNow;
+            o.hiddenFirstAct = static_cast<int>(act);
+        }
+        if (partnerInFrameClose(cam, kPartnerFrustumMargin, a)) {
+            ++o.seen;
+            if (!byLead && !byTarget) ++o.seenClear;
+        }
+        const Vec2 g = r.out->ally.goal;
+        if (walking && (heightOf(g) > kPartnerCloseSizeCap || !nearOkAt(g))) ++o.goalOver;
+        if (tNow > seconds - 3.f) {
+            ++last;
+            o.depth += depthOf(a);
+            o.lateral += latOf(a);
+            o.height += h;
+        }
+    }
+    if (last > 0) {
+        o.depth /= static_cast<float>(last);
+        o.lateral /= static_cast<float>(last);
+        o.height /= static_cast<float>(last);
+    }
+    const int kept = std::min(o.flankChanges, static_cast<int>(changes.size()));
+    for (int i = 0; i < kept; ++i) {
+        int w = 0;
+        const float from = changes[static_cast<std::size_t>(i)];
+        for (int j = i; j < kept && changes[static_cast<std::size_t>(j)] < from + 3.f; ++j) ++w;
+        o.worstFlankRate = std::max(o.worstFlankRate, w);
+    }
+    o.strings = r.fight.stats().partnerStrings;
+    return o;
+}
+
+std::string titanLine(const TitanLensRun& o) {
+    std::ostringstream s;
+    s << "station (depth " << o.depth << ", lateral " << o.lateral << ", height " << o.height << "), lead depth "
+      << o.leadDepth << "; rule 1 " << 100 * o.nearOk / o.steps << "%, size " << 100 * o.sizeOk / o.steps
+      << "%, in frame " << 100 * o.seen / o.steps << "%, clear " << 100 * o.seenClear / o.steps << "%, goals over "
+      << o.goalOver << ", flank changes " << o.flankChanges << " (most in 3 s " << o.worstFlankRate << "), crossings "
+      << o.crossings << " (first at " << o.crossAt << " s, depth " << o.crossDepth << ", lateral " << o.crossLateral
+      << ", act " << o.crossAct << "), hidden behind the lead " << o.hiddenLead << " (standing "
+      << o.hiddenLeadStanding << "), behind the target " << o.hiddenTarget << " (standing " << o.hiddenTargetStanding
+      << ", first at " << o.hiddenFirstAt << " s, act " << o.hiddenFirstAct << "), casts begun hidden "
+      << o.castsHidden << ", strings " << o.strings;
+    return s.str();
+}
+
+// The checks every near-field run keeps: rule 1 on every step, the station and its goals in the size cap, in frame
+// at least `inFrame` of the steps, never standing hidden behind the lead (walking past it is reported), no flank
+// ping-pong, and it casts.
+void titanChecks(const TitanLensRun& o, float inFrame = 0.6f) {
+    INFO(titanLine(o));
+    REQUIRE(o.steps > 0);
+    CHECK(o.nearOk == o.steps);
+    CHECK(o.goalOver == 0);
+    CHECK(o.height <= kPartnerCloseSizeCap);
+    CHECK(static_cast<float>(o.seen) >= inFrame * static_cast<float>(o.steps));
+    CHECK(o.hiddenLeadStanding == 0);
+    CHECK(o.castsHidden == 0);
+    CHECK(o.worstFlankRate <= 1);
+    CHECK(o.strings >= 1);
+}
+} // namespace
+
+TEST_CASE("arena partner: the close lens's near field, a titan of 3.5 m in contact: rule 1 always, never behind the lead") {
+    // The ruling of 11-16: no in-frame bar here (the frame holds only a sliver); never inside the near field, never
+    // hidden behind the lead (standing: titanChecks; walking, at most a few steps on the way out), nor standing behind
+    // the target; the share in frame is reported.
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+        CAPTURE(seed);
+        const TitanLensRun o = titanLensRun(3.5f, 3.5f + 0.85f, seed);
+        MESSAGE("titan 3.5 in contact seed " << seed << ": " << titanLine(o));
+        titanChecks(o, 0.f);
+        CHECK(o.hiddenLead <= 6);
+        CHECK(o.hiddenTargetStanding == 0);
+        CHECK(o.crossings == 0);
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field, the shipped titan in contact and at 5, 6 and 8 m (report)") {
+    for (const float centre : {2.2f + 0.85f, 5.f, 6.f, 8.f}) {
+        for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+            CAPTURE(centre);
+            CAPTURE(seed);
+            const TitanLensRun o = titanLensRun(2.2f, centre, seed);
+            MESSAGE("titan 2.2 at " << centre << " seed " << seed << ": " << titanLine(o));
+            titanChecks(o);
+            CHECK(o.crossings == 0);
+        }
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field, a hulk in contact keeps its station within 0.5 m") {
+    // Before the near field (04527885) its station stood at depth 6.05, lateral -3.07 in the lens's ground space.
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+        CAPTURE(seed);
+        const TitanLensRun o = titanLensRun(1.2f, 1.2f + 0.85f, seed);
+        MESSAGE("hulk 1.2 in contact seed " << seed << ": " << titanLine(o));
+        titanChecks(o);
+        CHECK(std::hypot(o.depth - 6.05f, o.lateral + 3.07f) <= 0.5f);
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field, a normal enemy at 5 m keeps its flank, in frame and in the cap") {
+    // Before the near field (04527885) it stood about depth 4.28, lateral 2.15 (a 0.65 high body), on its way back
+    // from a step out beside the lens. The ruling of 11-16: the same flank, at most 0.70 high, no nearer than that
+    // depth less 0.5, in frame, rule 1 and never hidden on every step (deeper and smaller is no fault).
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+        CAPTURE(seed);
+        const TitanLensRun o = titanLensRun(0.45f, 5.f, seed);
+        MESSAGE("normal 0.45 at 5 seed " << seed << ": " << titanLine(o));
+        titanChecks(o);
+        CHECK(o.lateral > 0.f);
+        CHECK(o.depth >= 4.28f - 0.5f);
+        CHECK(o.seen == o.steps);
+        CHECK(o.hiddenLead == 0);
+        CHECK(o.hiddenTarget == 0);
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field, the lead circling a titan: no flank ping-pong") {
+    for (const float centre : {3.5f + 0.85f, 6.f}) {
+        for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+            CAPTURE(centre);
+            CAPTURE(seed);
+            const TitanLensRun o = titanLensRun(centre < 5.f ? 3.5f : 2.2f, centre, seed, 15.f);
+            INFO(titanLine(o));
+            CHECK(o.worstFlankRate <= 1);
+            CHECK(o.strings >= 1);
+        }
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field, a start between the lens and the lead walks round the far side") {
+    // Started behind the lead (lens space, from the lead) on the flank away from its station, so the straight walk to
+    // the station would cross the line from the lens to the lead: the waypoint takes it round the lead's far side.
+    struct Start {
+        float centre;
+        Vec2 at;
+    };
+    for (const Start s : {Start{6.f, Vec2{-2.f, 1.f}}, Start{6.f, Vec2{-2.2f, 0.9f}}, Start{6.f, Vec2{-1.8f, 0.8f}},
+                          Start{8.f, Vec2{-2.f, -0.4f}}, Start{8.f, Vec2{-1.5f, -0.6f}}, Start{8.f, Vec2{-2.2f, -0.3f}}}) {
+        CAPTURE(s.centre);
+        CAPTURE(s.at.x);
+        CAPTURE(s.at.y);
+        const TitanLensRun o = titanLensRun(2.2f, s.centre, s.centre < 7.f ? 5u : 1u, 0.f, &s.at);
+        INFO(titanLine(o));
+        const Vec2 lensFromLead{-o.leadDepth, -o.leadLateral};
+        const Vec2 stationFromLead{o.depth - o.leadDepth, o.lateral - o.leadLateral};
+        CHECK(titanCrossed(lensFromLead, Vec2{0.f, 0.f}, s.at, stationFromLead)); // the straight walk would cross
+        CHECK(o.crossings == 0);
+        CHECK(o.nearOk == o.steps);
+        CHECK(o.height <= kPartnerCloseSizeCap);
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field, in contact with a titan no way leads round the lead (report)") {
+    // The titan's body fills the far side of the lead: from a start behind the lead on the wrong flank it crosses once,
+    // just behind the lead, in its first half second, and keeps rule 1 from 1 s on.
+    for (const Vec2 start : {Vec2{-1.5f, 1.2f}, Vec2{-1.f, 0.9f}, Vec2{-2.f, 0.6f}}) {
+        CAPTURE(start.x);
+        CAPTURE(start.y);
+        const TitanLensRun o = titanLensRun(3.5f, 3.5f + 0.85f, 1, 0.f, &start);
+        MESSAGE("contact, start (" << start.x << ", " << start.y << "): " << titanLine(o));
+        CHECK(o.crossings <= 1);
+        CHECK(o.crossAt <= 0.5f);
+        CHECK(o.nearOk == o.steps);
+    }
+}

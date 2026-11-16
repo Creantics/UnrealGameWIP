@@ -60,6 +60,21 @@
 // With none legal on the flank it must keep (held, or attacking; tiers 1-4, the far arc on both flanks too): its held
 // angle at the band's nearest point, reported not valid (the caller keeps its own station). None legal at all: not
 // valid, and the hold is left as it was.
+// The near field (the order of 11-16; only with nearField, which the brain sets for a ranged kit under the close lens):
+//   - rule 1 (hard): no candidate in any tier whose depth along the lens's ground forward is under the lead's depth
+//     less kPartnerCloseNearBehindLead (0.5 m), nor within kPartnerCloseNearLens (2.5 m) of the lens
+//     (partnerCloseNearOk);
+//   - rule 2 (hard where any candidate passes, else soft): with a pitched lens given (verticalHalfDegrees > 0), the
+//     partner's projected height (a kPartnerCloseBodyTall body at its ground depth, share of the frame's height:
+//     partnerCloseProjectedHeight) at most kPartnerCloseSizeCap (0.70, the ruling of 11-16); the whole search
+//     (tiers 1-5) runs with it, and again without it only when that finds nothing;
+//   - rule 3: in tiers 1-4 a candidate no deeper than the lead scores + kPartnerCloseShallowPenalty, and one past
+//     kPartnerCloseEdgeNdc of the frame's half-width kPartnerCloseEdgeWeight a unit of ndc further (so it stands
+//     inside the frame, not on its margin, its stop tolerance included); and (5) none of
+//     tiers 1-4: the band round the whole target (both flanks, kPartnerCloseOutAngleStep steps from 0 to 180 degrees
+//     off the lead's bearing), with no screen test but rules 1-2 and the bodies, walls, arena, leash and personal
+//     space of the rest, scored in order: in the frame (sees, else ndc x within 1 - margin), not hidden behind the lead
+//     or the target, deeper than the lead, nearest the frame, then the walk; the flank held as in tiers 1-2.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
@@ -96,6 +111,15 @@ inline constexpr float kPartnerCloseMeleeMin = 1.5f;
 inline constexpr float kPartnerCloseMeleeMax = 2.5f;
 inline constexpr float kPartnerCloseCasterMin = 5.f;
 inline constexpr float kPartnerCloseCasterMax = 8.f;
+// The near field (the order of 11-16), with PartnerCloseInput::nearField.
+inline constexpr float kPartnerCloseNearBehindLead = 0.5f; // m: no point shallower than the lead's depth less this
+inline constexpr float kPartnerCloseNearLens = 2.5f;       // m from the lens, at least
+inline constexpr float kPartnerCloseSizeCap = 0.70f;       // the partner's projected height, share of the frame's
+inline constexpr float kPartnerCloseBodyTall = 1.8f;       // m: the body that share is measured with
+inline constexpr float kPartnerCloseShallowPenalty = 5.f;  // m of walk: no deeper than the lead (tiers 1-4)
+inline constexpr float kPartnerCloseOutAngleStep = 10.f;   // degrees (tier 5)
+inline constexpr float kPartnerCloseEdgeNdc = 0.6f;         // rule 3(a): past this |ndc x| a candidate scores ...
+inline constexpr float kPartnerCloseEdgeWeight = 20.f;      // ... this much a unit of ndc further (tiers 1-4)
 
 // A wall as the host knows it: a segment and its half-thickness (m).
 struct PartnerWall {
@@ -136,6 +160,7 @@ struct PartnerCloseInput {
     std::span<const PartnerWall> walls{};
     std::span<const PartnerBody> bodies{};
     bool attacking = false;      // the partner is in a string or a blow runs: its flank kept (but tier 4's hand-over)
+    bool nearField = false;      // rules 1-3 of the near field and tier 5 (above); off: exactly as before
     // The host's 3D frame test (none: null): a candidate must pass sees(seesContext, point). The brain gives its
     // rule-13 frame (middle and head of a standing body inside the frustum with its margins; feet not tested) when
     // framed.
@@ -159,7 +184,9 @@ struct PartnerCloseStation {
     float offEdge = 0.f;   // m off the target's edge
     bool held = false;     // the flank was kept by the hold (the 1.5 s, or attacking)
     std::uint8_t tier = 0; // 1 the band, 2 short of the band, 3 the lead ring (round the lead; angle is from the
-                           // lead-to-target line), 4 the far arc (band or short of it); 0 not valid
+                           // lead-to-target line), 4 the far arc (band or short of it), 5 round the whole
+                           // target, the frame not required (nearField only); 0 not valid
+    bool capped = false;   // nearField: rule 2's size cap held (false: no candidate passed it, the soft pass)
 };
 
 // What the host gives the brain under the close camera (PartnerStationView::close); the lens's place and forward are
@@ -196,5 +223,11 @@ FTCORE_API bool partnerCloseInCone(Vec2 cameraPos, Vec2 cameraForward, float hal
 FTCORE_API bool partnerCloseOverlaps(Vec2 cameraPos, Vec2 p, float pr, Vec2 b, float br);
 // From the lens, p's centre is inside the silhouette of the body (radius br) at b and deeper than it.
 FTCORE_API bool partnerCloseHiddenBehind(Vec2 cameraPos, Vec2 p, Vec2 b, float br);
+// Rule 1 of the near field: p at least the lead's depth less kPartnerCloseNearBehindLead along the lens's ground
+// forward, and kPartnerCloseNearLens from the lens. False for a zero forward or a non-finite point.
+FTCORE_API bool partnerCloseNearOk(Vec2 cameraPos, Vec2 cameraForward, Vec2 lead, Vec2 p);
+// Rule 2's measure: a kPartnerCloseBodyTall body at p's ground depth over the frame's height (verticalHalfDegrees,
+// 1..85); a huge share (1000) at or behind the lens's plane, or for anything not whole.
+FTCORE_API float partnerCloseProjectedHeight(Vec2 cameraPos, Vec2 cameraForward, float verticalHalfDegrees, Vec2 p);
 
 } // namespace ftcore
