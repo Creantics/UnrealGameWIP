@@ -200,7 +200,9 @@ in it. A normal-sized target keeps the melee shape. Between its actions the part
 (ahead of the lead on a flank of its target, inside the drawn lens): the host hands it the lens's half-angles, pitch and
 height, the lead's side of the screen from the shoulder, the partner kit's band (a magic kit the caster's 5-8 m, the
 others the melee 1.5-2.5 m) and the walls near the lead, found every 0.25 s by sixteen flat sweeps of the boom's own
-probe out to 10 m (each hit a wall 1 m across); its per-step in-frame count then tests its middle and head only. The log says `Arena: close shoulder ...` at each pick, `Arena: close frame at view ...`
+probe out to 10 m (each hit a wall 1 m across); its per-step in-frame count then tests its middle and head only, and the
+partner-in-play check line adds the share on screen and not behind the lead and whether the station was on.
+`-ArenaPartnerStation=0` (not in a shipping build) hands no station for a run, the review's before. The log says `Arena: close shoulder ...` at each pick, `Arena: close frame at view ...`
 at each review still (the distance, the lead's spine, the target's place, how much of it the lead covers, the partner's
 place in the lens's ground frame, in frame when its head and waist both are, the feet not tested) and `Arena: lock to ...` at each lock; the check lines give the partner turn's share,
 the shoulder swaps and the held frames with a wall-shortened boom (and how many of them have the spine under 28%), and

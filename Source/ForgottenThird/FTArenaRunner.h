@@ -573,6 +573,7 @@ private:
 	int32 CloseContactFrames = 0, CloseContactSwaps = 0;
 	float CloseContactYawMost = 0.f;
 	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
+	bool bPartnerStation = true;  // -ArenaPartnerStation=0 (capture only): no close station handed to the brain (a review's before)
 	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
@@ -1322,7 +1323,8 @@ private:
 	// (ftcore::partnerInFrame on ArenaInput::partnerCamera), and its distinct actions (a new intent other than Wait, or a new string).
 	// PartnerClearSteps: of the steps on screen, those it was not hidden behind the locked target from the lens
 	// (ftcore::arenaHiddenBehind on both its middle and its head).
-	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0, PartnerClearSteps = 0;
+	// PartnerLeadClearSteps: of the steps on screen, those it was not hidden behind the lead (the same test on the lead's body).
+	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0, PartnerClearSteps = 0, PartnerLeadClearSteps = 0;
 	float PartnerPlaySeconds = 0.f;
 	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
 	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;

@@ -2053,7 +2053,7 @@ void UFTArenaRunner::BeginSession()
 	PartnerHeldLeaks = PartnerBlowsRuled = PartnerHitEvents = PartnerJoins = 0;
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
-	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = PartnerClearSteps = 0;
+	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = PartnerClearSteps = PartnerLeadClearSteps = 0;
 	PartnerClipsStarted = PartnerClipsWhole = 0;
 	LeadWeapons.ResetAimSummary();
 	AllyWeapons.ResetAimSummary();
@@ -3348,7 +3348,7 @@ void UFTArenaRunner::StepFight()
 			In.partnerCamera = bFedCamera ? FedCamera : ftcore::arenaPoseCamera(CameraPoseNow, Bodies.player, LockAspect(), PartnerHeight());
 			// Under the close preset the partner stands ahead of the lead on a flank of its target, inside that same
 			// camera (ftcore::PartnerCloseView, rule 19); classic gives none, as before.
-			if (bCloseShape)
+			if (bCloseShape && bPartnerStation)
 			{
 				RefreshCloseWalls(StepSeconds);
 				In.partnerClose = CloseStationView(In.partnerCamera);
@@ -3379,8 +3379,8 @@ void UFTArenaRunner::StepFight()
 		if (ftcore::partnerCameraWhole(In.partnerCamera))
 		{
 			++PartnerFrustumSteps;
-			const bool bSeen = In.partnerClose.given ? ftcore::partnerInFrameClose(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally)
-			                                         : ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally);
+			const bool bSeen = bCloseShape ? ftcore::partnerInFrameClose(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally)
+			                               : ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally);
 			PartnerSeenSteps += bSeen ? 1 : 0;
 			// On screen and not behind the locked target: hidden when the lines from the lens to its middle and to its
 			// head both pass through the target's drawn cylinder.
@@ -3404,6 +3404,20 @@ void UFTArenaRunner::StepFight()
 				bHidden = Behind(Tall * 0.55f) && Behind(Tall * 0.95f);
 			}
 			PartnerClearSteps += bSeen && !bHidden ? 1 : 0;
+			// ... and not behind the lead: the same two lines through the lead's body (its radius, up to its head).
+			if (bSeen)
+			{
+				const ftcore::ArenaLeadBody Lb = LeadBody();
+				const ftcore::PartnerVec3& LeadEye = In.partnerCamera.pos;
+				const float Ground = In.partnerCamera.groundZ;
+				const float Height = In.partnerCamera.bodyHeight;
+				const auto BehindLead = [&](float Z)
+				{
+					return ftcore::arenaHiddenBehind({LeadEye.x, LeadEye.y, LeadEye.z}, {Bodies.ally.x, Bodies.ally.y, Ground + Z}, Bodies.player,
+						Lb.radius, Ground, Ground + Lb.head);
+				};
+				PartnerLeadClearSteps += BehindLead(Height * 0.55f) && BehindLead(Height * 0.95f) ? 0 : 1;
+			}
 		}
 		PartnerPlaySeconds += StepSeconds;
 		// Standing still: not swinging or guarding and moved under 1 cm since the last step; the longest such run.
@@ -6379,6 +6393,15 @@ void UFTArenaRunner::PickCameraPreset()
 		CloseArmSwitch = FMath::Clamp(Arm, 1.5f, 3.f);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: close lens arm %.2f m for this run (-ArenaCameraArm, held to 1.5-3.0 m)."), CloseArmSwitch);
 	}
+	// -ArenaPartnerStation=0: the close preset hands the brain no close station this run (a review's before; the in-frame
+	// count still tests the close way).
+	bPartnerStation = true;
+	int32 Station = 1;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaPartnerStation="), Station) && Station == 0)
+	{
+		bPartnerStation = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner close station off for this run (-ArenaPartnerStation=0)."));
+	}
 #endif
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena camera preset: %s (from %s)"), UTF8_TO_TCHAR(ftcore::cameraPresetName(Id)), From);
 }
@@ -8826,11 +8849,13 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 			// The pass is on the share on screen and not behind the locked target; the plain on-screen share is printed too.
 			const float Seen = static_cast<float>(PartnerSeenSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Clear = static_cast<float>(PartnerClearSteps) / static_cast<float>(PartnerFrustumSteps);
+			const float LeadClear = static_cast<float>(PartnerLeadClearSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Per20 = PartnerPlaySeconds > 0.f ? static_cast<float>(PartnerActions) * 20.f / PartnerPlaySeconds : 0.f;
 			const int32 ClipsStarted = PartnerClipsStarted + AllyWeapons.GetClipsStarted();
 			const int32 ClipsWhole = PartnerClipsWhole + AllyWeapons.GetClipsCompleted();
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; %d actions in %.1f s, %.1f per 20 s, wanted 4; blows with a strike clip %d, played whole %d; brain: %s)."),
-				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, PartnerActions, PartnerPlaySeconds, Per20,
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; on screen and not behind the lead %.0f%%; close station %s; %d actions in %.1f s, %.1f per 20 s, wanted 4; blows with a strike clip %d, played whole %d; brain: %s)."),
+				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, LeadClear * 100.f,
+				!bCloseShape ? TEXT("none (classic)") : (bPartnerStation ? TEXT("on") : TEXT("off")), PartnerActions, PartnerPlaySeconds, Per20,
 				ClipsStarted, ClipsWhole, *Brain);
 
 		}
