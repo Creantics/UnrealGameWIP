@@ -2,7 +2,7 @@
 
 // Builds the shared garment masters and one material instance per substance:
 //
-//   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildGarment [-DumpDir=<dir>]
+//   UnrealEditor-Cmd ForgottenThird.uproject -run=FTBuildGarment [-DumpDir=<dir>] [-FoldStats]
 //       -AllowCommandletRendering -unattended -nopause -nosplash
 //
 // -AllowCommandletRendering is required: without it the masters never compile here and their errors go unseen.
@@ -23,7 +23,12 @@
 // - MI_FTGarment_{Leather,Woven,Knit,Rubber,Metal}: the substances, each with its detail tile and values. A garment
 //   piece's instance takes one of these as its parent and sets only its maps and Gain (albedo scale).
 //
-// Exits 1 if a master has compile errors or a save fails.
+// Before saving, each master passes the fold self-check: FoldLayers is a static switch defaulting off, a transient
+// instance with it on reads it back true and finds DirtStrength, WetRidgeSheen, WetCreaseDarken and TintDrift, and
+// that permutation compiles larger than the master. GARMENT_STATS lines give both counts (-FoldStats adds a copy
+// without the world-wave state calls, for comparison with masters built before them).
+//
+// Exits 1 if a master has compile errors, fails the fold self-check or a save fails (the old assets stay).
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

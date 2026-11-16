@@ -10,8 +10,10 @@
 #include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
+#include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionPreSkinnedNormal.h"
 #include "Materials/MaterialExpressionPreSkinnedPosition.h"
@@ -22,6 +24,7 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionVertexInterpolator.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialFunction.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/App.h"
 #include "Misc/PackageName.h"
@@ -775,6 +778,114 @@ const TCHAR* TileName(ftcore::GarmentTile Tile)
 	}
 	return TEXT("Unknown");
 }
+
+FString StatsLine(const FMaterialStatistics& S)
+{
+	return FString::Printf(TEXT("ps=%d vs=%d samplers=%d ps_tex=%d interp=%d"), S.NumPixelShaderInstructions, S.NumVertexShaderInstructions,
+		S.NumSamplers, S.NumPixelTextureSamples, S.NumInterpolatorScalars);
+}
+
+// A transient copy of Master with every world-wave state call bypassed (BaseColor, Roughness, Emissive and the cloth's
+// fuzz on SubsurfaceColor each take what fed the call): the cost before the wave state, for comparison only.
+UMaterial* WithoutStates(UMaterial* Master)
+{
+	UMaterial* Copy = DuplicateObject<UMaterial>(Master, GetTransientPackage(),
+		MakeUniqueObjectName(GetTransientPackage(), UMaterial::StaticClass(), FName(Master->GetName() + TEXT("_NoState"))));
+	if (!Copy)
+	{
+		return nullptr;
+	}
+	const FString StatePath(FTWorldWave::StateFunctionPath);
+	const auto IsState = [&StatePath](const UMaterialExpression* E)
+	{
+		const UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(E);
+		return Call && Call->MaterialFunction && Call->MaterialFunction->GetOutermost()->GetName() == StatePath;
+	};
+	UMaterialEditorOnlyData* Inputs = Copy->GetEditorOnlyData();
+	TArray<UMaterialExpression*> Calls;
+	for (FExpressionInput* In : {&Inputs->BaseColor, &Inputs->Roughness, &Inputs->EmissiveColor, &Inputs->SubsurfaceColor})
+	{
+		if (!IsState(In->Expression))
+		{
+			continue;
+		}
+		UMaterialExpressionMaterialFunctionCall* Call = Cast<UMaterialExpressionMaterialFunctionCall>(In->Expression);
+		Calls.AddUnique(Call);
+		const FExpressionInput* Source = Call->FunctionInputs.IsValidIndex(In->OutputIndex) ? &Call->FunctionInputs[In->OutputIndex].Input : nullptr;
+		if (Source && Source->Expression)
+		{
+			In->Connect(Source->OutputIndex, Source->Expression);
+		}
+		else
+		{
+			In->Expression = nullptr;
+		}
+	}
+	for (UMaterialExpression* Call : Calls)
+	{
+		Copy->GetExpressionCollection().RemoveExpression(Call);
+	}
+	Copy->PreEditChange(nullptr);
+	Copy->PostEditChange();
+	return Copy;
+}
+
+// The fold layers' self-check, run on the built masters before anything is saved: FoldLayers is a static switch that
+// defaults off; a transient instance with it on reads it back true and finds the fold scalars; the on permutation costs
+// more than the master (the switch cuts the layers at compile time, it does not multiply them by zero). Logs
+// GARMENT_STATS <master> off / on (and nostate_off with -FoldStats). False, with an error, on any failure.
+bool FoldSelfTest(UMaterial* Master, bool bNoState)
+{
+	const FString Name = Master->GetName();
+	const FHashedMaterialParameterInfo Switch(TEXT("FoldLayers"));
+	bool bDefault = true;
+	FGuid Guid;
+	if (!Master->GetStaticSwitchParameterDefaultValue(Switch, bDefault, Guid) || bDefault)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: FOLD_SELF_TEST FAILED: %s has no FoldLayers static switch defaulting off."), *Name);
+		return false;
+	}
+	UMaterialInstanceConstant* On = NewObject<UMaterialInstanceConstant>(GetTransientPackage(), NAME_None, RF_Transient);
+	On->SetParentEditorOnly(Master);
+	On->SetStaticSwitchParameterValueEditorOnly(FMaterialParameterInfo(TEXT("FoldLayers")), true);
+	On->UpdateStaticPermutation();
+	FAssetCompilingManager::Get().FinishAllCompilation();
+	bool bOn = false;
+	if (!On->GetStaticSwitchParameterValue(Switch, bOn, Guid) || !bOn)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: FOLD_SELF_TEST FAILED: %s: an instance's FoldLayers does not read back true."), *Name);
+		return false;
+	}
+	bool bOk = true;
+	for (const TCHAR* Scalar : {TEXT("DirtStrength"), TEXT("WetRidgeSheen"), TEXT("WetCreaseDarken"), TEXT("TintDrift")})
+	{
+		float Value = 0.f;
+		if (!On->GetScalarParameterValue(FHashedMaterialParameterInfo(Scalar), Value))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: FOLD_SELF_TEST FAILED: %s: no scalar %s with FoldLayers on."), *Name, Scalar);
+			bOk = false;
+		}
+	}
+	const FMaterialStatistics Off = UMaterialEditingLibrary::GetStatistics(Master);
+	const FMaterialStatistics OnStats = UMaterialEditingLibrary::GetStatistics(On);
+	UE_LOG(LogForgottenThird, Display, TEXT("GARMENT_STATS %s off %s"), *Name, *StatsLine(Off));
+	UE_LOG(LogForgottenThird, Display, TEXT("GARMENT_STATS %s on %s"), *Name, *StatsLine(OnStats));
+	if (OnStats.NumPixelShaderInstructions <= Off.NumPixelShaderInstructions)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildGarment: FOLD_SELF_TEST FAILED: %s: FoldLayers on compiles no larger than off (%d vs %d)."), *Name,
+			OnStats.NumPixelShaderInstructions, Off.NumPixelShaderInstructions);
+		bOk = false;
+	}
+	if (bNoState)
+	{
+		if (UMaterial* Bare = WithoutStates(Master))
+		{
+			FAssetCompilingManager::Get().FinishAllCompilation();
+			UE_LOG(LogForgottenThird, Display, TEXT("GARMENT_STATS %s nostate_off %s"), *Name, *StatsLine(UMaterialEditingLibrary::GetStatistics(Bare)));
+		}
+	}
+	return bOk;
+}
 } // namespace FTGarmentBuild
 #endif
 
@@ -884,6 +995,12 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
+	const bool bFoldStats = FParse::Param(*Params, TEXT("FoldStats"));
+	if (!FoldSelfTest(Lit, bFoldStats) || !FoldSelfTest(Cloth, bFoldStats))
+	{
+		return 1; // nothing saved: the old assets stay
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildGarment: FOLD_SELF_TEST OK"));
 	bool bOk = true;
 	for (UObject* Asset : ToSave)
 	{

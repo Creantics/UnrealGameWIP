@@ -44,6 +44,8 @@ void UFTRimLightComponent::MakeLight()
 	Light->SetOuterConeAngle(26.f);
 	Light->SetCastShadows(false); // the body would shadow its own edge; and it stays cheap
 	Light->SetAffectTranslucentLighting(false);
+	Light->SetVolumetricScatteringIntensity(0.f); // no haze in the fog: height fog ignores lighting channels
+	Light->SetAffectGlobalIllumination(false);     // no bounce off the character onto the ground and walls
 	Light->SetLightingChannels(false, false, true);
 	Light->SetVisibility(false);
 	Light->RegisterComponent();
