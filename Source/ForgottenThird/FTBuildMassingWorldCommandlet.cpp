@@ -3551,6 +3551,41 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d marked large lanterns (%s); %d of %d dressing pieces; %d of %d room "
 			"spawns (cook %s, steam %s)."), MarkedLanterns, LargeMark ? TEXT("SM_HC_LanternLargeMark") : TEXT("not imported"), Dressed, DressCount,
 			RoomSpawns, LotBuild.HeroSpawns.Num(), Human ? TEXT("test human") : TEXT("missing"), Steam ? TEXT("NS_eatery_steam") : TEXT("missing (FTBuildVfx)"));
+		// The face ruling (2026-11-16): each lit front a wide soft warm key onto the lane, and one cool floor from the open
+		// canal side, so a face's shadow side never reads 0 (ftcore::heroCornerAreaLights). Tagged rect lights, dark at build;
+		// FTNight::WriteBayLights gives them their output, colour and specular by the lights' share.
+		ftcore::HeroAreaLight AreaLights[ftcore::kHeroAreaLights];
+		const int AreaCount = ftcore::heroCornerAreaLights(HeroSpec, AreaLights);
+		int32 AreaSpawned = 0;
+		for (int K = 0; K < AreaCount; ++K)
+		{
+			const ftcore::HeroAreaLight& A = AreaLights[K];
+			const FVector At = Cm(ftcore::massingEnginePoint(Side, A.x, A.y, A.z));
+			const FRotator Face(0.0, FMath::RadiansToDegrees(FMath::Atan2(-A.fy, A.fx)), 0.0);
+			ARectLight* Area = World->SpawnActor<ARectLight>(At, Face, Spawn);
+			URectLightComponent* Light = Area ? Area->RectLightComponent.Get() : nullptr;
+			if (!Light)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: couldn't spawn an area light at %s."), *At.ToString());
+				continue;
+			}
+			Area->SetActorLabel(A.sky ? FString(TEXT("HC-SkyFloor")) : FString::Printf(TEXT("HC-FrontKey-Bay%d"), A.bay + 1));
+			Area->Tags.Add(A.sky ? FTNight::HeroSkyTag : FTNight::HeroFrontTag);
+			Light->SetMobility(EComponentMobility::Movable);
+			Light->SetIntensityUnits(ELightUnits::Lumens);
+			Light->SetIntensity(0.f);
+			Light->SetVisibility(false);
+			Light->SetSourceWidth(static_cast<float>(A.width * 100.0));
+			Light->SetSourceHeight(static_cast<float>(A.height * 100.0));
+			Light->SetBarnDoorLength(0.f);
+			// The front reaches across the lane; the floor reaches the shop faces, shadowed so it stays out of the rooms.
+			Light->SetAttenuationRadius(A.sky ? static_cast<float>((HeroSpec.laneX1 - HeroSpec.laneX0 + HeroSpec.skyOut + 1.5) * 100.0) : 900.f);
+			Light->SetCastShadows(A.sky);
+			Light->SetVolumetricScatteringIntensity(0.f);
+			++AreaSpawned;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d of %d area lights (%d lit fronts, 1 cool floor), tagged %s / %s."),
+			AreaSpawned, AreaCount, AreaCount - 1, FTNight::HeroFrontTag, FTNight::HeroSkyTag);
 		// The cables: a round rod (the engine's cylinder, its axis along the span) per span of the Core's polyline, so the
 		// sag is the tested one and the section holds up at a metre.
 		UMaterialInterface* const Steel = LoadSurface(TEXT("solhaven_painted_steel"));

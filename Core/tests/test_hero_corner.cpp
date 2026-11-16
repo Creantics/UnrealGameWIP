@@ -812,3 +812,43 @@ TEST_CASE("hero corner: one large lantern in three carries a mark") {
     CHECK(marked == kHeroLargeLanterns / 3);
     CHECK_FALSE(heroLanternMarked(0));
 }
+
+TEST_CASE("hero corner: each lit front a wide key facing the lane, its room's width; one cool floor west of the lane") {
+    const HeroCornerSpec spec;
+    HeroAreaLight lights[kHeroAreaLights];
+    const int n = heroCornerAreaLights(spec, lights);
+    int lit = 0;
+    for (int i = 0; i < kHeroBays; ++i) lit += spec.bayLit[i] ? 1 : 0;
+    REQUIRE(n == lit + 1);
+    int fronts = 0, skies = 0;
+    for (int k = 0; k < n; ++k) {
+        const HeroAreaLight& l = lights[k];
+        if (l.sky) {
+            ++skies;
+            CHECK(l.x < spec.laneX0);
+            CHECK(l.fx == doctest::Approx(1.0));
+            CHECK(l.width == doctest::Approx(spec.laneY1 - spec.laneY0));
+            CHECK(l.y == doctest::Approx(0.5 * (spec.laneY0 + spec.laneY1)));
+            CHECK(l.z - l.height * 0.5 >= spec.ground - 1e-9);
+            continue;
+        }
+        ++fronts;
+        REQUIRE(l.bay >= 0);
+        CHECK(spec.bayLit[l.bay]);
+        const double south = spec.bayY0 + spec.bayWidth * l.bay;
+        const double north = south + spec.bayWidth;
+        // Inside the shop face, facing west, within its own bay, a wide source (at least 5 m) the opening's height.
+        CHECK(l.x > spec.laneX1);
+        CHECK(l.x < spec.laneX1 + 0.5);
+        CHECK(l.fx == doctest::Approx(-1.0));
+        CHECK(l.width >= 5.0);
+        CHECK(l.y - l.width * 0.5 >= south - 1e-9);
+        CHECK(l.y + l.width * 0.5 <= north + 1e-9);
+        CHECK(l.height == doctest::Approx(spec.frontHeight));
+        CHECK(l.z - l.height * 0.5 >= spec.ground);
+        if (spec.bayKoshi[l.bay]) CHECK(l.y == doctest::Approx(north - 2.7));
+        else CHECK(l.y == doctest::Approx(south + spec.bayWidth * 0.5));
+    }
+    CHECK(fronts == lit);
+    CHECK(skies == 1);
+}

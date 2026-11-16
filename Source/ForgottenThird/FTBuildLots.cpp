@@ -1425,7 +1425,8 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					double Px = 0.0, Py = 0.0, Fx = 0.0, Fy = 0.0;
 					Proof.ToPlan(BayX0 + Item.at.x, BayY0 + Item.at.y, Px, Py);
 					Proof.ToPlan(BayX0 + Item.at.x + Item.faceX, BayY0 + Item.at.y + Item.faceY, Fx, Fy);
-					const double Yaw = HeroPropYaw(Fx - Px, Fy - Py, Build.HeroPropTurn);
+					// -HeroPropTurn fixes the imported props' facing; the cook (the test human) has its own and keeps it.
+					const double Yaw = HeroPropYaw(Fx - Px, Fy - Py, Item.piece == ftcore::HeroPiece::Figure ? 0.0 : Build.HeroPropTurn);
 					const ftcore::MassingVec E = ftcore::massingEnginePoint(Side, Px, Py, BayZ0 + 0.04 + Item.at.z);
 					const FVector At = FVector(E.x, E.y, E.z) * 100.0;
 					if (Item.piece == ftcore::HeroPiece::Figure || Item.piece == ftcore::HeroPiece::Steam || Item.piece == ftcore::HeroPiece::Lantern)

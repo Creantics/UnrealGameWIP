@@ -121,6 +121,11 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightShopReach="), L.shopReachM);
 	ReadNumber(Cmd, TEXT("NightShopK="), L.shopKelvin);
 	ReadNumber(Cmd, TEXT("NightHeroShopK="), L.heroShopKelvin);
+	ReadNumber(Cmd, TEXT("NightHeroLampK="), L.heroLampKelvin);
+	ReadNumber(Cmd, TEXT("NightHeroFrontLm="), L.heroFrontLumens);
+	ReadNumber(Cmd, TEXT("NightHeroSkyLm="), L.heroSkyLumens);
+	ReadNumber(Cmd, TEXT("NightHeroSkySpec="), L.heroSkySpecular);
+	ReadList(Cmd, TEXT("NightHeroSkyTint="), L.heroSkyTint.data(), static_cast<int32>(L.heroSkyTint.size()));
 	ReadNumber(Cmd, TEXT("NightCap="), L.capShare);
 	ReadNumber(Cmd, TEXT("NightCapFloor="), L.capFloor);
 	ReadNumber(Cmd, TEXT("NightCapRadius="), L.capRadiusM);
@@ -270,9 +275,35 @@ int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 	// -NoBayLights (look switch, not in Shipping): the fixtures held dark, for the cost pair with and without them.
 	static const bool bNoBayLights = FParse::Param(FTLookSwitches(), TEXT("NoBayLights"));
 	const float Lumens = bNoBayLights ? 0.f : BayLampAt(Lights);
+	const ftcore::NightLook& L = Look();
+	const float Share = FMath::Clamp(Lights, 0.f, 1.f);
 	int32 Written = 0;
 	for (TActorIterator<ARectLight> It(&World); It; ++It)
 	{
+		URectLightComponent* Hero = It->RectLightComponent.Get();
+		const bool bFront = Hero && It->ActorHasTag(HeroFrontTag);
+		const bool bSky = Hero && !bFront && It->ActorHasTag(HeroSkyTag);
+		if (bFront || bSky)
+		{
+			// The face ruling's hero corner lights: a lit front's wide warm key, and the lane's cool floor (night only).
+			const float Lm = Share * FMath::Max(0.f, bFront ? L.heroFrontLumens : L.heroSkyLumens);
+			Hero->SetIntensity(Lm);
+			Hero->SetVisibility(Lm > 0.f);
+			Hero->SetVolumetricScatteringIntensity(0.f);
+			if (bFront)
+			{
+				Hero->SetUseTemperature(L.heroShopKelvin > 0.f);
+				Hero->SetTemperature(L.heroShopKelvin > 0.f ? L.heroShopKelvin : L.shopKelvin);
+			}
+			else
+			{
+				Hero->SetUseTemperature(false);
+				Hero->SetLightColor(Color(L.heroSkyTint));
+				Hero->SetSpecularScale(FMath::Max(0.f, L.heroSkySpecular));
+			}
+			++Written;
+			continue;
+		}
 		URectLightComponent* Light = It->ActorHasTag(BayLightTag) ? It->RectLightComponent.Get() : nullptr;
 		if (!Light)
 		{

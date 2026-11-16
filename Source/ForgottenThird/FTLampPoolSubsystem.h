@@ -50,6 +50,7 @@
 
 class AFTNightLights;
 class UFTNightLightData;
+class UMaterialParameterCollection;
 class USpotLightComponent;
 
 UCLASS(Config = Game)
@@ -152,4 +153,20 @@ private:
 	uint32 HeroLogKey = 0;
 	FVector HeroLogAt = FVector(1e30);
 	void LogHero(const FVector& From);
+
+	// The leads' rim colour (face ruling, 2026-11-16): each pick, the lit pool light that lights the lead most (the player's
+	// pawn, else the camera; ftcore::rimPickLamp, candela over distance squared) gives MPC_FTRim's RimColour its light
+	// colour, eased over ftcore::kRimColourEaseSeconds every frame, and FTRim::SetPreferredSide its side of the camera
+	// (+1 right, -1 left) where the leads' header is in. No lamp lit: the rim's default cool white. RimColour is the only
+	// parameter written (never RimDir). The collection is loaded once; missing, nothing is written.
+	void PickRim(const FVector& Lead, const FVector& Right);
+	void EaseRim(float DeltaTime);
+	void ResetRim();
+	void WriteRim(const FLinearColor& Colour);
+	FLinearColor RimTarget = FLinearColor(0.82f, 0.88f, 1.f);
+	FLinearColor RimNow = FLinearColor(0.82f, 0.88f, 1.f);
+	bool bRimSettled = true;
+	bool bRimTried = false;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialParameterCollection> RimCollection;
 };

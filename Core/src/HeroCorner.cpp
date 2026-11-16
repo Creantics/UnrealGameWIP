@@ -307,6 +307,41 @@ int heroCornerShopSlots(const HeroCornerSpec& spec, HeroShopSlot out[kHeroShopSl
     return n;
 }
 
+int heroCornerAreaLights(const HeroCornerSpec& spec, HeroAreaLight out[kHeroAreaLights]) {
+    int n = 0;
+    const double paving = spec.ground + spec.paveTop;
+    for (int i = 0; i < kHeroBays; ++i) {
+        if (!spec.bayLit[i]) continue;
+        HeroAreaLight& l = out[n++];
+        l = HeroAreaLight{};
+        const double north = spec.bayY0 + spec.bayWidth * (i + 1);
+        l.x = spec.laneX1 + spec.frontIn;
+        if (spec.bayKoshi[i]) {
+            // The lattice room runs koshiRoomX0..X1 south of the bay's north edge.
+            l.y = north - 0.5 * (spec.koshiRoomX0 + spec.koshiRoomX1);
+            l.width = spec.koshiRoomX1 - spec.koshiRoomX0;
+        } else {
+            l.y = north - 0.5 * spec.bayWidth;
+            l.width = std::min(spec.glazedFrontWidth, spec.bayWidth);
+        }
+        l.z = paving + spec.frontUp;
+        l.height = spec.frontHeight;
+        l.fx = -1.0;
+        l.fy = 0.0;
+        l.bay = i;
+    }
+    HeroAreaLight& s = out[n++];
+    s = HeroAreaLight{};
+    s.x = spec.laneX0 - spec.skyOut;
+    s.y = 0.5 * (spec.laneY0 + spec.laneY1);
+    s.z = paving + spec.skyUp;
+    s.width = spec.laneY1 - spec.laneY0;
+    s.height = spec.skyHeight;
+    s.fx = 1.0;
+    s.sky = true;
+    return n;
+}
+
 int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& points) {
     int n = 0;
     for (StandInPoint& p : points) {

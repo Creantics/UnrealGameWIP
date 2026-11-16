@@ -140,6 +140,14 @@ struct HeroCornerSpec {
     // The far end closed: a gate across the lane gateBack in from its end, its four lanterns' hooks gateHookUp.
     double gateBack = 0.4, gateWidth = 7.4, gateHookUp = 3.42, gateLanternScale = 1.0;
     double gateHookX[4] = {-2.4, -0.8, 0.8, 2.4};
+    // The face ruling (2026-11-16, heroCornerAreaLights): each lit bay's front a wide soft key, a rect light frontIn
+    // inside its shop face, frontUp (its centre) over the paving, the size of its opening: a lattice front its room
+    // (koshiRoomX0..X1 along the piece from the bay's north edge), a glazed front glazedFrontWidth about the bay's middle.
+    double frontIn = 0.1, frontUp = 1.3, frontHeight = 2.2;
+    double koshiRoomX0 = 0.15, koshiRoomX1 = 5.25, glazedFrontWidth = 6.0;
+    // The cool floor: a rect light skyOut west of the lane (the open canal side), the lane's length, skyHeight tall from
+    // skyUp (its centre) over the paving, facing the bays.
+    double skyOut = 1.0, skyUp = 2.5, skyHeight = 5.0;
 };
 
 struct HeroPoint {
@@ -336,5 +344,16 @@ FTCORE_API int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLa
 
 // Whether the n-th large lantern (0-based, in layout order) carries an invented mark: one in three.
 inline bool heroLanternMarked(int largeIndex) { return largeIndex % 3 == 2; }
+
+// The face ruling's area lights (plan metres): a wide soft key in each lit bay's front (sky false, bay its index) and
+// one cool floor west of the lane (sky true, bay -1). Each a rect light at (x, y, z), width along the lane (plan y),
+// height upright, emitting along plan (fx, fy): the fronts west onto the lane, the floor east onto the bays.
+struct HeroAreaLight {
+    double x = 0.0, y = 0.0, z = 0.0, width = 0.0, height = 0.0, fx = 0.0, fy = 0.0;
+    bool sky = false;
+    int bay = -1;
+};
+inline constexpr int kHeroAreaLights = kHeroBays + 1;
+FTCORE_API int heroCornerAreaLights(const HeroCornerSpec& spec, HeroAreaLight out[kHeroAreaLights]);
 
 } // namespace ftcore

@@ -76,6 +76,15 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(look.heroShopKelvin == doctest::Approx(2700.f));
     CHECK(look.heroShopKelvin >= look.lampKelvin);
     CHECK(look.heroShopKelvin < look.shopKelvin);
+    // The face ruling: the corner's lamp slots warm white (not the paper's amber), the fronts a key, the floor cool and
+    // far bluer than skin (R/B well under 0.9), with no specular rectangle in the puddles.
+    CHECK(look.heroLampKelvin >= 2400.f);
+    CHECK(look.heroLampKelvin <= 2700.f);
+    CHECK(look.heroFrontLumens > 0.f);
+    CHECK(look.heroSkyLumens > 0.f);
+    CHECK(look.heroSkyLumens < look.heroFrontLumens);
+    CHECK(look.heroSkyTint[0] / look.heroSkyTint[2] < 0.6f);
+    CHECK(look.heroSkySpecular == doctest::Approx(0.f));
     CHECK(look.moonTint[2] > look.moonTint[0]);
     // Wide, soft lamp pools within the engine's spot cone limit.
     CHECK(look.lampOuterDeg <= 80.f);
@@ -958,4 +967,49 @@ TEST_CASE("nightExposureRange: the day's at blend 0, the night's exactly at 1, t
             CHECK(r.minEV100 <= r.maxEV100);
         }
     }
+}
+TEST_CASE("rim: the lamp that lights the lead most gives the colour and the camera side") {
+    using namespace ftcore;
+    RimLamp lamps[4];
+    // A strong lamp far to the camera's left, a weak one near on the right, one off, one at zero candela.
+    lamps[0].at[0] = -800.f; lamps[0].candela = 24.f; lamps[0].on = true;
+    lamps[1].at[0] = 150.f;  lamps[1].candela = 2.4f; lamps[1].on = true;
+    lamps[2].at[0] = 10.f;   lamps[2].candela = 100.f; lamps[2].on = false;
+    lamps[3].at[0] = -5.f;   lamps[3].candela = 0.f;  lamps[3].on = true;
+    const float lead[3] = {0.f, 0.f, 0.f};
+    const float right[3] = {1.f, 0.f, 0.f};
+    RimPick p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    // 2.4 / 150^2 = 1.07e-4 beats 24 / 800^2 = 3.75e-5; the off and the dark lamps never count.
+    CHECK(p.index == 1);
+    CHECK(p.side == doctest::Approx(1.f));
+    CHECK(p.weight == doctest::Approx(2.4f / (150.f * 150.f)));
+    lamps[1].on = false;
+    p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    CHECK(p.index == 0);
+    CHECK(p.side == doctest::Approx(-1.f));
+    // A lamp at the lead's own point is floored at minDist, not infinite.
+    lamps[0].at[0] = 0.f;
+    p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    CHECK(p.weight == doctest::Approx(24.f / 2500.f));
+    // None lit: no pick, no side.
+    lamps[0].on = false;
+    p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    CHECK(p.index == -1);
+    CHECK(p.side == doctest::Approx(0.f));
+    CHECK(rimPickLamp(nullptr, 0, lead, right, 50.f).index == -1);
+}
+
+TEST_CASE("rim: the colour eases over half a second") {
+    using namespace ftcore;
+    CHECK(rimEaseShare(0.f, kRimColourEaseSeconds) == doctest::Approx(0.f));
+    CHECK(rimEaseShare(1.f / 60.f, kRimColourEaseSeconds) > 0.f);
+    CHECK(rimEaseShare(1.f / 60.f, kRimColourEaseSeconds) < 0.2f);
+    // Thirty 60 Hz frames (0.5 s) cover about 95% of a step, whatever the frame rate.
+    float left = 1.f;
+    for (int i = 0; i < 30; ++i) left *= 1.f - rimEaseShare(1.f / 60.f, kRimColourEaseSeconds);
+    CHECK(1.f - left == doctest::Approx(0.95f).epsilon(0.01));
+    float left30 = 1.f;
+    for (int i = 0; i < 15; ++i) left30 *= 1.f - rimEaseShare(1.f / 30.f, kRimColourEaseSeconds);
+    CHECK(left30 == doctest::Approx(left).epsilon(1e-3));
+    CHECK(rimEaseShare(0.1f, 0.f) == doctest::Approx(1.f));
 }

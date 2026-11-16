@@ -9,15 +9,38 @@
 #include "FTNightLook.h"
 #include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
 #include "ftcore/HeroCorner.h"
+#include "ftcore/NightLook.h"
+
+// The leads' rim collection (the leads lane's FTRimCollection.h); until main has that header, its path and parameter here.
+#if __has_include("FTRimCollection.h")
+#include "FTRimCollection.h"
+#define FT_HAS_RIM_COLLECTION 1
+#else
+#define FT_HAS_RIM_COLLECTION 0
+#endif
 
 namespace
 {
+#if FT_HAS_RIM_COLLECTION
+const TCHAR* const RimCollectionPath = FTRim::Collection;
+const TCHAR* const RimColourName = FTRim::Colour;
+FLinearColor RimDefaultColour() { return FTRim::DefaultColour; }
+#else
+const TCHAR* const RimCollectionPath = TEXT("/Game/Characters/Shared/Materials/MPC_FTRim");
+const TCHAR* const RimColourName = TEXT("RimColour");
+FLinearColor RimDefaultColour() { return FLinearColor(0.82f, 0.88f, 1.f); }
+#endif
+// A lamp nearer the lead than this counts as this near (cm): a lamp brushing the head doesn't take the rim outright.
+constexpr float kRimMinDistCm = 100.f;
 // The grid's cell for the pickers, in cm: about the reach, so a pick reads a few cells a side.
 constexpr float kPickerCellCm = 2000.f;
 // The pool lights' pointing: lamps straight down; shops out of their face at the data's pitch.
@@ -466,13 +489,12 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 			const FRotator Facing = bLamp ? LampFacing : FRotator(ShopPitch[Index], ShopYaw[Index], 0.f);
 			Light->SetWorldLocationAndRotation(At, Facing);
 			Light->SetIntensity(Candela(bLamp) * (Pool.Scale.IsValidIndex(Index) ? Pool.Scale[Index] : 1.f));
-			// A hero corner shop slot burns warm (its timber rooms under paper lamps), every other at the look's own.
-			if (!bLamp)
-			{
-				const ftcore::NightLook& Look = FTNight::Look();
-				const bool bHeroShop = Pool.Hero.IsValidIndex(Index) && Pool.Hero[Index] && Look.heroShopKelvin > 0.f;
-				Light->SetTemperature(bHeroShop ? Look.heroShopKelvin : Look.shopKelvin);
-			}
+			// A hero corner slot burns warm (its timber rooms under paper lamps; its lamps 2400-2700 K by the face ruling, the
+			// paper's amber kept to the paper), every other at the look's own. Set on every assignment: lights are recycled.
+			const ftcore::NightLook& Look = FTNight::Look();
+			const bool bHero = Pool.Hero.IsValidIndex(Index) && Pool.Hero[Index];
+			const float HeroK = bLamp ? Look.heroLampKelvin : Look.heroShopKelvin;
+			Light->SetTemperature(bHero && HeroK > 0.f ? HeroK : (bLamp ? Look.lampKelvin : Look.shopKelvin));
 		}
 	}
 	// Each held lamp shows once the switch-on passes its own hashed point (shops keyed apart from the lamps). Tick runs
@@ -548,6 +570,99 @@ void UFTLampPoolSubsystem::Pick()
 	{
 		LogHero(From);
 	}
+	const APawn* Pawn = Player->GetPawn();
+	PickRim(Pawn ? Pawn->GetActorLocation() : From, FRotationMatrix(Camera->GetCameraRotation()).GetUnitAxis(EAxis::Y));
+}
+
+void UFTLampPoolSubsystem::PickRim(const FVector& Lead, const FVector& Right)
+{
+	constexpr int32 kMax = kMaxLamps + kMaxShops;
+	ftcore::RimLamp Lit[kMax];
+	FLinearColor Colour[kMax];
+	int32 N = 0;
+	for (const TArray<TObjectPtr<USpotLightComponent>>* Pool : {&LampPool, &ShopPool})
+	{
+		for (const USpotLightComponent* Light : *Pool)
+		{
+			if (!Light || !Light->IsVisible() || Light->Intensity <= 0.f || N == kMax)
+			{
+				continue;
+			}
+			const FVector At = Light->GetComponentLocation();
+			ftcore::RimLamp& L = Lit[N];
+			L.at[0] = static_cast<float>(At.X);
+			L.at[1] = static_cast<float>(At.Y);
+			L.at[2] = static_cast<float>(At.Z);
+			L.candela = Light->Intensity;
+			L.on = true;
+			FLinearColor C = Light->GetLightColor();
+			if (Light->bUseTemperature)
+			{
+				C *= FLinearColor::MakeFromColorTemperature(Light->Temperature);
+			}
+			// The hue only, at the rim default's brightness (its largest channel 1).
+			const float Peak = FMath::Max3(C.R, C.G, C.B);
+			Colour[N] = Peak > 0.f ? FLinearColor(C.R / Peak, C.G / Peak, C.B / Peak, 1.f) : RimDefaultColour();
+			++N;
+		}
+	}
+	const float At[3] = {static_cast<float>(Lead.X), static_cast<float>(Lead.Y), static_cast<float>(Lead.Z)};
+	const float Side[3] = {static_cast<float>(Right.X), static_cast<float>(Right.Y), static_cast<float>(Right.Z)};
+	const ftcore::RimPick Best = ftcore::rimPickLamp(Lit, static_cast<std::size_t>(N), At, Side, kRimMinDistCm);
+	const FLinearColor Target = Best.index >= 0 ? Colour[Best.index] : RimDefaultColour();
+	if (!Target.Equals(RimTarget, 1e-4f))
+	{
+		RimTarget = Target;
+		bRimSettled = false;
+	}
+#if FT_HAS_RIM_COLLECTION
+	FTRim::SetPreferredSide(Best.index >= 0 ? Best.side : 0.f);
+#endif
+}
+
+void UFTLampPoolSubsystem::EaseRim(float DeltaTime)
+{
+	if (bRimSettled)
+	{
+		return;
+	}
+	RimNow = FMath::Lerp(RimNow, RimTarget, ftcore::rimEaseShare(DeltaTime, ftcore::kRimColourEaseSeconds));
+	if (RimNow.Equals(RimTarget, 2e-3f))
+	{
+		RimNow = RimTarget;
+		bRimSettled = true;
+	}
+	WriteRim(RimNow);
+}
+
+void UFTLampPoolSubsystem::ResetRim()
+{
+	RimTarget = RimDefaultColour();
+	RimNow = RimDefaultColour();
+	bRimSettled = true;
+	WriteRim(RimDefaultColour());
+#if FT_HAS_RIM_COLLECTION
+	FTRim::SetPreferredSide(0.f);
+#endif
+}
+
+void UFTLampPoolSubsystem::WriteRim(const FLinearColor& Colour)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	if (!bRimTried)
+	{
+		bRimTried = true;
+		const FString Path = FString(RimCollectionPath) + TEXT(".") + FPackageName::GetShortName(RimCollectionPath);
+		RimCollection = LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	}
+	if (UMaterialParameterCollectionInstance* Params = RimCollection ? World->GetParameterCollectionInstance(RimCollection) : nullptr)
+	{
+		Params->SetVectorParameterValue(FName(RimColourName), Colour);
+	}
 }
 
 void UFTLampPoolSubsystem::LogHero(const FVector& From)
@@ -601,6 +716,8 @@ void UFTLampPoolSubsystem::LogHero(const FVector& From)
 void UFTLampPoolSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	// The rim colour eases every frame; the pick sets its target every kPickSeconds.
+	EaseRim(DeltaTime);
 	SincePick += DeltaTime;
 	if (SincePick < kPickSeconds)
 	{
@@ -611,6 +728,10 @@ void UFTLampPoolSubsystem::Tick(float DeltaTime)
 	if (bWant != bNight)
 	{
 		SetNight(bWant);
+		if (!bWant)
+		{
+			ResetRim();
+		}
 	}
 	if (bNight)
 	{
