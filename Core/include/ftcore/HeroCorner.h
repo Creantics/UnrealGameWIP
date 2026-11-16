@@ -9,10 +9,11 @@
 // the tests and the meshes read one source:
 //   lane      x 901..908, y 515..555, on ground at z 4.18; stone setts end to end
 //   bays      x 908..916, 8.1 m each (nine of the kit's 0.9 m steps) from y 514.75, centred on the lane; their west
-//             face the shopfront; built as kit lots (heroCornerLots): two storeys, the shop storey 3.6 m (the eatery's
-//             timber front 3.0 m)
+//             face the shopfront; built as kit lots (heroCornerLots): two storeys, the shop storey 3.6 m (the timber
+//             lattice fronts of bay 1 and the eatery 3.0 m)
 //   eave      1.2 m out over the lane (x 906.8..908) at 3.65 m, clear of the kit's 3.6 m shop storey, 0.12 m thick;
-//             in two runs either side of the eatery, whose timber front has its own tiled pent roof at 3.0 m
+//             in runs between the two timber lattice fronts (bay 1 and the eatery), each with its own tiled pent roof
+//             at 3.0 m
 //   lanterns  6 large, 1.0 m out (x 907.0), centre 3.3 m up, a pair (1.6 m apart) about y 526, 543 and 549.5 (the
 //             eatery's flanked), each under the eave
 //   strings   S1 at y 536, S2 at y 552: from the facade (x 908, 3.55 m up, under the eave) to a post's top (x 901.3,
@@ -56,6 +57,8 @@ struct HeroCornerSpec {
     double bayDepth = 8.0, bayWidth = 8.1, bayHeight = 6.6, baySink = 0.3;
     bool bayLit[kHeroBays] = {true, false, true, true, false};
     int eateryBay = 2;  // 0-based: bay 3
+    // The timber lattice (koshi) fronts, each under its own pent roof: the eatery's and bay 1's.
+    bool bayKoshi[kHeroBays] = {true, false, true, false, false};
     // The eave.
     double eaveOut = 1.2, eaveUp = 3.65, eaveThick = 0.12;
     // The large lanterns.
@@ -95,8 +98,9 @@ struct HeroLantern {
 
 struct HeroCornerLayout {
     MassingBox pave;                 // the lane's paving slab (kind "paving")
-    MassingBox eaves[2];             // the eave's slabs over the lane (kind "eave"), the bays south and north of the eatery
-    int eaveCount = 0;               // runs with no bay (the eatery at an end) are left out
+    MassingBox eaves[kHeroBays / 2 + 1];  // the eave's slabs over the lane (kind "eave", ids HC-EAVE-<n> south to north):
+                                          // one per run of bays between the lattice fronts
+    int eaveCount = 0;
     MassingBox bays[kHeroBays];      // the shop bays (kind "kit", ids HC-BAY-<n><letter>)
     bool bayLit[kHeroBays] = {};
     int eateryBay = 0;
@@ -131,13 +135,15 @@ FTCORE_API bool heroCornerBay(std::string_view id, int* index);
 // The bays as kit lots (BuildingLots.h, facadePlacements): a run along the bays' lane face, A at its north end (the
 // left end seen from the lane), and one lot per bay, lots[i] for bay i (south to north). Two storeys each, no awnings
 // (the eave covers the lane), every upper storey flat (BAY_WIN_18 and blanks, nothing out under the eave):
+//   koshi bays TownHouse, ground SHOP_KOSHI_54 (the timber lattice front, a real shallow room behind it)
 //   lit bays   Tiled, ground SHOP_GLAZED_81 (its glass the true panes over a real bay)
-//   the eatery TownHouse, ground SHOP_KOSHI_54 (the timber lattice front)
 //   dark bays  WalkUp, ground SHOP_SHUTTER_63 (shut)
 // Roofs, walls and palettes alternate so neighbours differ in at least two traits.
 struct HeroLots {
     FrontageRun run;
     BuildingLot lots[kHeroBays];
+    bool lit[kHeroBays] = {};  // lit from inside: a real room behind its front
+    int eatery = -1;           // the lot whose room is the eatery's (a counter, not shelves)
 };
 FTCORE_API void heroCornerLots(const HeroCornerSpec& spec, HeroLots& out);
 

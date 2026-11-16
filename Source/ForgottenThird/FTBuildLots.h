@@ -46,10 +46,14 @@ struct FBuild
 	std::vector<ftcore::KitPlacement> Placements;
 	std::vector<bool> Replaced; // by box: a lot stands in its place (no box, no windows, no frontage, no roof dressing)
 	// The glass proof fronts, whose shop glass takes the look's own night level: -GlassProofLot=<lot>, and the hero
-	// corner's lit glazed lots (AddHeroLots).
+	// corner's lit lots (AddHeroLots), glazed or timber lattice.
 	TArray<int32> GlassProofLots;
 	bool bGlassProofPane = false; // -GlassProofPane: their glass is true panes over a real bay (else glass over a picture)
 	bool IsGlassProof(int32 Lot) const { return GlassProofLots.Contains(Lot); }
+	// The hero corner's lots: dark stained timber frames and trims with plaster walls (no bare concrete or metal), the
+	// shutters weathered; and the one whose lattice room is the eatery's (a counter, not shelves).
+	TArray<int32> TimberLots;
+	int32 CounterLot = -1;
 	// Set by Place: the proof bay's ceiling fixtures (engine cm, a rotation facing down, the source's size in cm), which the
 	// massing build spawns as rect lights tagged FTNight::BayLightTag.
 	struct FBayLight
@@ -67,7 +71,8 @@ struct FBuild
 bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBuild& Out);
 
 // The hero corner's bays as kit lots (ftcore::heroCornerLots): its run and lots appended to Out's plan, their pieces laid
-// out, the bay boxes (BayIds, by bay) marked replaced and the lit glazed lots made glass proof fronts. The kit table is
+// out, the bay boxes (BayIds, by bay) marked replaced, the lit lots made glass proof fronts and every lot a timber lot
+// (the eatery's the counter lot). The kit table is
 // -KitTable= or Data/Look/building_kit_pieces.csv when Plan read none; -GlassProofPane is read here too. Sets bOn. False
 // (logged) on a kit table that doesn't read or a piece the grammar needs that it lacks.
 bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::string* BayIds, const std::vector<ftcore::MassingBox>& Boxes,

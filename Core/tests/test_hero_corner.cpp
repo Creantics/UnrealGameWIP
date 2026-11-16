@@ -53,29 +53,40 @@ TEST_CASE("hero corner: the lane, the bays and the eave stand where the plan put
     CHECK_FALSE(l.bayLit[4]);
     CHECK(l.eateryBay == 2);
 
-    // The eave: 1.2 m over the lane at 3.65 m (clear of the kit's 3.6 m shop storey), in two runs: the two bays south of
-    // the eatery and the two north of it.
+    // The eave: 1.2 m over the lane at 3.65 m (clear of the kit's 3.6 m shop storey), in two runs between the lattice
+    // fronts (bays 1 and 3): bay 2 alone, and bays 4 and 5.
     REQUIRE(l.eaveCount == 2);
     for (int r = 0; r < 2; ++r) {
         const MassingBox& e = l.eaves[r];
+        CHECK(e.id == "HC-EAVE-" + std::to_string(r + 1));
         CHECK(e.cx - 0.5 * e.sx == doctest::Approx(906.8));
         CHECK(e.cx + 0.5 * e.sx == doctest::Approx(908.0));
         CHECK(e.z0 == doctest::Approx(4.18 + 3.65));
         CHECK(e.z0 > 4.18 + kShopStorey);
-        CHECK(e.sy == doctest::Approx(16.2));
     }
-    CHECK(l.eaves[0].cy - 0.5 * l.eaves[0].sy == doctest::Approx(514.75));
+    CHECK(l.eaves[0].cy - 0.5 * l.eaves[0].sy == doctest::Approx(522.85));
     CHECK(l.eaves[0].cy + 0.5 * l.eaves[0].sy == doctest::Approx(530.95));
     CHECK(l.eaves[1].cy - 0.5 * l.eaves[1].sy == doctest::Approx(539.05));
     CHECK(l.eaves[1].cy + 0.5 * l.eaves[1].sy == doctest::Approx(555.25));
 
-    // With the eatery at an end, one run.
-    HeroCornerSpec end;
-    end.eateryBay = 0;
-    HeroCornerLayout le;
-    heroCornerLayout(end, le);
-    REQUIRE(le.eaveCount == 1);
-    CHECK(le.eaves[0].sy == doctest::Approx(32.4));
+    // No lattice fronts: one run end to end. Every front a lattice: none.
+    HeroCornerSpec none;
+    for (bool& k : none.bayKoshi) k = false;
+    HeroCornerLayout ln;
+    heroCornerLayout(none, ln);
+    REQUIRE(ln.eaveCount == 1);
+    CHECK(ln.eaves[0].sy == doctest::Approx(40.5));
+    HeroCornerSpec all;
+    for (bool& k : all.bayKoshi) k = true;
+    HeroCornerLayout la;
+    heroCornerLayout(all, la);
+    CHECK(la.eaveCount == 0);
+    // Alternating fronts: the most runs there can be, each a bay wide.
+    HeroCornerSpec alt;
+    for (int i = 0; i < kHeroBays; ++i) alt.bayKoshi[i] = i % 2 == 1;
+    HeroCornerLayout lt;
+    heroCornerLayout(alt, lt);
+    CHECK(lt.eaveCount == kHeroBays / 2 + 1);
 }
 
 TEST_CASE("hero corner: every bay box fronts the lane as a shophouse with a rendered, tiled, board or brick wall") {
@@ -239,7 +250,9 @@ TEST_CASE("hero corner: the bays as kit lots fill each bay's box with real shop 
     CHECK(ix == doctest::Approx(909.0));
     CHECK(iy == doctest::Approx(555.25));
 
-    const char* const ground[kHeroBays] = {"SHOP_GLAZED_81", "SHOP_SHUTTER_63", "SHOP_KOSHI_54", "SHOP_GLAZED_81", "SHOP_SHUTTER_63"};
+    const char* const ground[kHeroBays] = {"SHOP_KOSHI_54", "SHOP_SHUTTER_63", "SHOP_KOSHI_54", "SHOP_GLAZED_81", "SHOP_SHUTTER_63"};
+    CHECK(lots.eatery == spec.eateryBay);
+    int glazed = 0;
     for (int i = 0; i < kHeroBays; ++i) {
         const BuildingLot& lot = lots.lots[i];
         const MassingBox& b = l.bays[i];
@@ -248,8 +261,9 @@ TEST_CASE("hero corner: the bays as kit lots fill each bay's box with real shop 
         CHECK(lot.floors == 2);
         CHECK(lot.flatUppers);
         CHECK(lot.signSet == 0);
-        // The shop storeys stand 3.6 m to the box's top; the eatery's timber storey is 3.0, so it stands 0.6 lower.
-        CHECK(lot.top() == doctest::Approx(b.z1 - (i == spec.eateryBay ? kShopStorey - kKoshiStorey : 0.0)));
+        // The shop storeys stand 3.6 m to the box's top; a lattice front's timber storey is 3.0, so it stands 0.6 lower.
+        CHECK(lot.top() == doctest::Approx(b.z1 - (spec.bayKoshi[i] ? kShopStorey - kKoshiStorey : 0.0)));
+        CHECK(lots.lit[i] == spec.bayLit[i]);
         // The lot's span along the run is the bay's in plan.
         double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
         lots.run.toPlan(lot.s0, 0.0, x0, y0);
@@ -274,9 +288,14 @@ TEST_CASE("hero corner: the bays as kit lots fill each bay's box with real shop 
             CHECK(p.y <= b.cy + 0.5 * b.sy + 0.6);
         }
         CHECK(shop == 1);
-        // The lit bays are glazed, the eatery koshi, the dark ones shuttered.
-        CHECK(spec.bayLit[i] == (i == spec.eateryBay || lot.type == LotType::Tiled));
+        // The lattice bays are town houses, the other lit ones glazed, the dark ones shuttered.
+        CHECK(spec.bayKoshi[i] == (lot.type == LotType::TownHouse));
+        if (!spec.bayKoshi[i]) CHECK(spec.bayLit[i] == (lot.type == LotType::Tiled));
+        if (lot.type == LotType::Tiled) ++glazed;
     }
+    // Two of the three lit fronts are lattices, one glazed at most; the eatery is one of the lattices.
+    CHECK(glazed <= 1);
+    CHECK(spec.bayKoshi[spec.eateryBay]);
 }
 
 TEST_CASE("hero corner: one shop spill point per lit bay, out over the lane under the eave") {

@@ -649,9 +649,14 @@ bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::s
 		Out.Plan.replaced.push_back(BayIds[B]);
 		Out.Plan.lots.push_back(std::move(Lot));
 		const ftcore::BuildingLot& Added = Out.Plan.lots.back();
-		if (Added.type == ftcore::LotType::Tiled)
+		if (Hero.lit[B])
 		{
 			Out.GlassProofLots.AddUnique(LotIndex);
+		}
+		Out.TimberLots.AddUnique(LotIndex);
+		if (B == Hero.eatery)
+		{
+			Out.CounterLot = LotIndex;
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: bay %d is lot %d: %s, %d storeys, floor %.2f, top %.2f, %s roof, wall %d%s [%s]."),
 			B + 1, LotIndex, UTF8_TO_TCHAR(ftcore::lotTypeName(Added.type)), Added.floors, Added.floorZ, Added.top(),
@@ -785,6 +790,8 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 	{
 		UStaticMesh* Mesh = nullptr;
 		TArray<UMaterialInterface*> Materials;
+		TArray<FString> SlotNames;                   // by mesh slot: the kit slot it wears (or the slot's own name)
+		TArray<UMaterialInterface*> TimberMaterials; // on a timber lot (FBuild::TimberLots)
 		FAxisFit Fit;
 	};
 	TArray<FPieceUse> Uses;
@@ -864,9 +871,71 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				}
 			}
 			Use.Materials.Add(Wears);
+			Use.SlotNames.Add(Name);
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: axis fits: %d pieces as imported with y flipped, %d other."), Fits[0], Fits[1]);
+
+	// The timber lots' pieces: frames, trims and metal in the timber slot (the lot's stain, below), every wall in the
+	// stucco slot (its plaster), the shutters weathered metal. Their glass, lattice, cloth and roof tiles keep theirs.
+	UMaterialInstanceConstant* const* const TimberMic = SlotMaterial.Find(TEXT("jpk_timber"));
+	UMaterialInstanceConstant* const* const PlasterMic = SlotMaterial.Find(TEXT("jpk_wall_stucco"));
+	UMaterialInterface* TimberShutter = nullptr;
+	if (Build.TimberLots.Num() > 0 && TimberMic && PlasterMic)
+	{
+		UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Kit_Timber_Shutter"), RF_Public);
+		Mic->SetParentEditorOnly(Master);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Slot")), 9.f);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), 0.62f);
+		Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Tint")), FLinearColor(0.50f, 0.48f, 0.44f));
+		if (const TArray<UTexture*>* Maps = SlotMaps.Find(TEXT("jpk_shutter")))
+		{
+			static const TCHAR* const Params[3] = {TEXT("BaseColorTexture"), TEXT("MetallicRoughnessTexture"), TEXT("NormalTexture")};
+			for (int32 K = 0; K < 3; ++K)
+			{
+				if ((*Maps)[K])
+				{
+					Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(Params[K]), (*Maps)[K]);
+				}
+			}
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HasMR")), (*Maps)[1] ? 1.f : 0.f);
+		}
+		Mic->PostEditChange();
+		TimberShutter = Mic;
+		for (int32 K = 0; K < Uses.Num(); ++K)
+		{
+			FPieceUse& Use = Uses[K];
+			const std::string& Group = Build.Kit.pieces[static_cast<size_t>(K)].group;
+			const bool bFramed = Group == "ground" || Group == "upper";
+			Use.TimberMaterials = Use.Materials;
+			for (int32 S = 0; S < Use.SlotNames.Num() && S < Use.TimberMaterials.Num(); ++S)
+			{
+				const FString& Name = Use.SlotNames[S];
+				if (Name == TEXT("jpk_wall_tile") || Name == TEXT("jpk_wall_concrete"))
+				{
+					Use.TimberMaterials[S] = *PlasterMic;
+				}
+				else if (bFramed && (Name == TEXT("jpk_trim") || Name == TEXT("jpk_metal")))
+				{
+					Use.TimberMaterials[S] = *TimberMic;
+				}
+				else if (Name == TEXT("jpk_shutter"))
+				{
+					Use.TimberMaterials[S] = TimberShutter;
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: %d timber lots: timber frames and trims, plaster walls, weathered shutters."),
+			Build.TimberLots.Num());
+	}
+	else if (Build.TimberLots.Num() > 0)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -Lots: no timber or stucco slot in the kit; the timber lots keep the kit's own materials."));
+	}
+	const bool bTimber = TimberShutter != nullptr;
+	// The timber lots' stain and plaster (display colours, the palettes' space), the plaster by lot so neighbours differ.
+	const ftcore::KitRgb Stain{0.27f, 0.19f, 0.14f};
+	const ftcore::KitRgb Plasters[3] = {{0.84f, 0.80f, 0.72f}, {0.80f, 0.75f, 0.66f}, {0.87f, 0.84f, 0.78f}};
 
 	// The glass proof front's true panes (-GlassProofPane with -GlassProofLot): its glazed shop piece's glass slot is cut
 	// out, a pane mesh stands in each of its panes (the true pane's material; Nanite draws no translucent section), the
@@ -907,7 +976,8 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			Y = (Px - Ax) * Ix + (Py - Ay) * Iy;
 		}
 	};
-	// A proof front: its lot's frame, its glazed piece with the piece's pane row, and the bay behind its glass in lot terms.
+	// A proof front: its lot's frame, its glazed piece with the piece's pane row (or its timber lattice piece), and the
+	// bay behind its glass in lot terms.
 	struct FProof
 	{
 		int32 Lot = -1;
@@ -915,7 +985,12 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 		double BayX0 = 0.0, BayX1 = 0.0, BayY0 = 0.0, BayY1 = 0.0, BayZ0 = 0.0, BayZ1 = 0.0;
 		const FPaneTable* Panes = nullptr;
 		const ftcore::KitPlacement* Piece = nullptr;
+		bool bKoshi = false;
 	};
+	// SHOP_KOSHI_54 (kit metres, make_building_kit.py p_shop_koshi): the lattice's backing (jpk_dark) x 0.15..2.85,
+	// z 0.45..2.30 at y 0.08..0.10; the entrance glass x 3.00..5.25, z 0..2.30 at y 0.30..0.36; the head beam's
+	// underside at 2.30 and the plaster band over it.
+	const TCHAR* const KoshiPiece = TEXT("SHOP_KOSHI_54");
 	TArray<FProof> Proofs;
 	for (int32 ProofLot : bProofPane ? Build.GlassProofLots : TArray<int32>())
 	{
@@ -937,6 +1012,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 		Pr.Frame.Iy = Cy - Pr.Frame.Ay;
 		Pr.Frame.S0 = Lot.s0;
 		Pr.Frame.Yaw = Run.yaw();
+		const ftcore::KitPlacement* Lattice = nullptr;
 		for (const ftcore::KitPlacement& P : Build.Placements)
 		{
 			if (P.lot != ProofLot || P.piece < 0 || P.role != ftcore::PlacementRole::Piece)
@@ -952,25 +1028,51 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					Pr.Panes = &Panes;
 				}
 			}
+			if (!Lattice && Id == KoshiPiece)
+			{
+				Lattice = &P;
+			}
+		}
+		if (!Pr.Piece && Lattice)
+		{
+			Pr.Piece = Lattice;
+			Pr.bKoshi = true;
 		}
 		if (!Pr.Piece)
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: -GlassProofPane: lot %d has no glazed piece with a pane table; it keeps "
-				"glass over a picture."), ProofLot);
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: -GlassProofPane: lot %d has no glazed piece with a pane table and no lattice "
+				"front; it keeps glass over a picture."), ProofLot);
 			Proofs.Pop();
 			continue;
 		}
 		double PieceX = 0.0, PieceY = 0.0;
 		Pr.Frame.ToLot(Pr.Piece->x, Pr.Piece->y, PieceX, PieceY);
-		const double Depth = FMath::Clamp(FMath::Max(Lot.depth, 3.0) - (PieceY + 0.30) - 1.0, 0.8, 2.4);
-		Pr.BayX0 = PieceX + 0.30;
-		Pr.BayX1 = PieceX + Pr.Panes->Rect.B + 0.03;
-		Pr.BayY0 = PieceY + 0.25;
-		Pr.BayY1 = PieceY + 0.30 + Depth;
-		Pr.BayZ0 = Pr.Piece->z;
-		Pr.BayZ1 = Pr.Piece->z + 2.90;
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front (lot %d): true panes on %s, a real bay %.2f m wide, "
-			"%.2f m deep and %.2f m high behind them."), ProofLot, Pr.Panes->Piece, Pr.BayX1 - Pr.BayX0, Pr.BayY1 - Pr.BayY0, Pr.BayZ1 - Pr.BayZ0);
+		if (Pr.bKoshi)
+		{
+			// A shallow room behind the lattice and the entrance, wall to wall between the end posts, its ceiling hidden
+			// over the head beam.
+			const double Depth = FMath::Clamp(FMath::Max(Lot.depth, 3.0) - (PieceY + 0.12) - 1.0, 0.8, 2.8);
+			Pr.BayX0 = PieceX + 0.15;
+			Pr.BayX1 = PieceX + 5.25;
+			Pr.BayY0 = PieceY + 0.12;
+			Pr.BayY1 = PieceY + 0.12 + Depth;
+			Pr.BayZ0 = Pr.Piece->z;
+			Pr.BayZ1 = Pr.Piece->z + 2.45;
+		}
+		else
+		{
+			const double Depth = FMath::Clamp(FMath::Max(Lot.depth, 3.0) - (PieceY + 0.30) - 1.0, 0.8, 2.4);
+			Pr.BayX0 = PieceX + 0.30;
+			Pr.BayX1 = PieceX + Pr.Panes->Rect.B + 0.03;
+			Pr.BayY0 = PieceY + 0.25;
+			Pr.BayY1 = PieceY + 0.30 + Depth;
+			Pr.BayZ0 = Pr.Piece->z;
+			Pr.BayZ1 = Pr.Piece->z + 2.90;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front (lot %d): true panes on %s, a real %s %.2f m wide, "
+			"%.2f m deep and %.2f m high behind them."), ProofLot, Pr.bKoshi ? KoshiPiece : Pr.Panes->Piece,
+			Pr.bKoshi ? (ProofLot == Build.CounterLot ? TEXT("room with a counter") : TEXT("room")) : TEXT("bay"),
+			Pr.BayX1 - Pr.BayX0, Pr.BayY1 - Pr.BayY0, Pr.BayZ1 - Pr.BayZ0);
 	}
 	bProofPane = Proofs.Num() > 0;
 	const auto ProofOf = [&](int32 Lot) -> const FProof*
@@ -1022,13 +1124,19 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 		Data[DataSeed] = static_cast<float>(P.seed % 9973u) / 9973.f;
 		Data[DataDirt] = static_cast<float>(Lot.clutterSeed % 101u) / 100.f;
 		Data[DataShop] = 0.f;
+		const bool bTimberLot = bTimber && Build.TimberLots.Contains(P.lot);
+		if (bTimberLot)
+		{
+			Data[DataWall] = static_cast<float>(Pack(Plasters[P.lot % 3]));
+			Data[DataTimber] = static_cast<float>(Pack(Stain));
+		}
 		FFTCellOptions Opts;
 		Opts.Label = FString::Printf(TEXT("LOT-%d"), P.lot);
 		const FProof* const Pr = bProofPane ? ProofOf(P.lot) : nullptr;
 		if (P.piece < 0)
 		{
 			const bool bPlinth = P.role == ftcore::PlacementRole::Plinth;
-			UMaterialInterface* const Mats[1] = {bPlinth ? Plinth : Bodies[static_cast<int32>(Lot.wall)]};
+			UMaterialInterface* const Mats[1] = {bPlinth ? Plinth : bTimberLot ? Bodies[static_cast<int32>(ftcore::WallSurface::Stucco)] : Bodies[static_cast<int32>(Lot.wall)]};
 			// A proof front's body is cut back behind its glass: what is left of the box round the bay.
 			if (Pr && !bPlinth)
 			{
@@ -1054,6 +1162,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			continue;
 		}
 		const FPieceUse& Use = Uses[P.piece];
+		const TArray<UMaterialInterface*>& Wear = bTimberLot && Use.TimberMaterials.Num() > 0 ? Use.TimberMaterials : Use.Materials;
 		const ftcore::KitPiece& Piece = Build.Kit.pieces[static_cast<size_t>(P.piece)];
 		const bool bGround = Piece.group == "ground";
 		// 2 on a glass proof front's shop storey: its interior takes the look's own night level.
@@ -1067,11 +1176,11 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			const FLotFrame& Proof = Pr->Frame;
 			const double BayX0 = Pr->BayX0, BayX1 = Pr->BayX1, BayY0 = Pr->BayY0, BayY1 = Pr->BayY1, BayZ0 = Pr->BayZ0, BayZ1 = Pr->BayZ1;
 			const int32 ProofLot = Pr->Lot;
-			TArray<UMaterialInterface*> Open = Use.Materials;
-			const TArray<FStaticMaterial>& Slots = Use.Mesh->GetStaticMaterials();
-			for (int32 S = 0; S < Slots.Num() && S < Open.Num(); ++S)
+			// The glass cut out; on a lattice front its backing too, so the eye sees between the slats.
+			TArray<UMaterialInterface*> Open = Wear;
+			for (int32 S = 0; S < Use.SlotNames.Num() && S < Open.Num(); ++S)
 			{
-				if (Slots[S].MaterialSlotName == TEXT("jpk_glass") || (Slots[S].MaterialInterface && Slots[S].MaterialInterface->GetName() == TEXT("jpk_glass")))
+				if (Use.SlotNames[S] == TEXT("jpk_glass") || (Pr->bKoshi && Use.SlotNames[S] == TEXT("jpk_dark")))
 				{
 					Open[S] = ProofHole;
 				}
@@ -1089,11 +1198,32 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				Mic->PostEditChange();
 				return Mic;
 			};
-			// The panes: the table's columns under the transom, and the fanlights' own over it.
-			const FPaneTable& T = *Pr->Panes;
 			int32 PaneCount = 0;
-			for (int32 R = 0; R < 2; ++R)
+			// A true pane (lot terms, X along the front, Z up) 8 mm thick about Y.
+			const auto TruePane = [&](int32 C, int32 R, double X0, double X1, double Z0, double Z1, double Y, const FLinearColor& Handle)
 			{
+				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofPane_L%d_%d_%d"), ProofLot, C, R), RF_Public);
+				Mic->SetParentEditorOnly(ProofPane);
+				Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("PaneSize")), FLinearColor(static_cast<float>(X1 - X0), static_cast<float>(Z1 - Z0), 0.f, 0.f));
+				Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Handle")), Handle);
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Seed")), FMath::Frac(0.37f + 0.173f * C + 0.31f * R));
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Age")), 0.15f);
+				Mic->PostEditChange();
+				LotBox(*Pr, X0, Y - 0.004, Z0, X1, Y + 0.004, Z1, Mic, Data, EFTCellKind::NoCollide, TEXT("GlassProofPane"), 90.0);
+				++PaneCount;
+			};
+			const FLinearColor NoHandle(-1.f, 0.f, 0.f, 0.f);
+			if (Pr->bKoshi)
+			{
+				// Glass behind the lattice where its backing was, and the entrance's two sliding leaves.
+				TruePane(0, 0, PieceX + 0.15, PieceX + 2.85, P.z + 0.45, P.z + 2.30, PieceY + 0.09, NoHandle);
+				TruePane(1, 0, PieceX + 3.00, PieceX + 4.125, P.z + 0.02, P.z + 2.30, PieceY + 0.33, NoHandle);
+				TruePane(2, 0, PieceX + 4.125, PieceX + 5.25, P.z + 0.02, P.z + 2.30, PieceY + 0.33, NoHandle);
+			}
+			// The panes: the table's columns under the transom, and the fanlights' own over it.
+			for (int32 R = 0; !Pr->bKoshi && R < 2; ++R)
+			{
+				const FPaneTable& T = *Pr->Panes;
 				const FLinearColor& A = R == 0 ? T.ColsA : T.ColsC;
 				const FLinearColor& B = R == 0 ? T.ColsB : T.ColsD;
 				// The cuts in order, the unused (0) ones dropped, between the glass's two ends.
@@ -1116,24 +1246,18 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					{
 						continue;
 					}
-					UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofPane_L%d_%d_%d"), ProofLot, C, R), RF_Public);
-					Mic->SetParentEditorOnly(ProofPane);
-					Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("PaneSize")), FLinearColor(W, H, 0.f, 0.f));
 					const bool bDoor = R == 0 && (FMath::IsNearlyEqual(Cuts[C], T.Door.R, 0.02f) || FMath::IsNearlyEqual(Cuts[C], T.Door.G, 0.02f));
-					Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Handle")), bDoor ? FLinearColor(T.Door.B, T.Door.A, 0.f, 0.f) : FLinearColor(-1.f, 0.f, 0.f, 0.f));
-					Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Seed")), FMath::Frac(0.37f + 0.173f * C + 0.31f * R));
-					Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Age")), 0.15f);
-					Mic->PostEditChange();
-					LotBox(*Pr, PieceX + Cuts[C], PieceY + 0.181, P.z + Rows[0], PieceX + Cuts[C + 1], PieceY + 0.189, P.z + Rows[1], Mic, Data, EFTCellKind::NoCollide,
-						TEXT("GlassProofPane"), 90.0);
-					++PaneCount;
+					TruePane(C, R, PieceX + Cuts[C], PieceX + Cuts[C + 1], P.z + Rows[0], P.z + Rows[1], PieceY + 0.185,
+						bDoor ? FLinearColor(T.Door.B, T.Door.A, 0.f, 0.f) : NoHandle);
 				}
 			}
 			// The bay's shell (paint, tiles and ceiling of albedo 0.3 to 0.4, so by day the bay is dim beside the street): floor,
-			// ceiling with three light panels, back and side walls.
+			// ceiling with three light panels, back and side walls. A lattice room is plastered over a dark board floor.
 			const TCHAR* const BayTag = TEXT("GlassProofBay");
-			UMaterialInterface* const WallPaint = BayMaterial(TEXT("MI_GlassProofBay_Wall"), FLinearColor(0.38f, 0.37f, 0.34f), 0.f);
-			UMaterialInterface* const FloorPaint = BayMaterial(TEXT("MI_GlassProofBay_Floor"), FLinearColor(0.32f, 0.31f, 0.29f), 0.f);
+			UMaterialInterface* const WallPaint = BayMaterial(TEXT("MI_GlassProofBay_Wall"),
+				Pr->bKoshi ? FLinearColor(0.42f, 0.37f, 0.29f) : FLinearColor(0.38f, 0.37f, 0.34f), 0.f);
+			UMaterialInterface* const FloorPaint = BayMaterial(TEXT("MI_GlassProofBay_Floor"),
+				Pr->bKoshi ? FLinearColor(0.12f, 0.08f, 0.05f) : FLinearColor(0.32f, 0.31f, 0.29f), 0.f);
 			UMaterialInterface* const CeilPaint = BayMaterial(TEXT("MI_GlassProofBay_Ceiling"), FLinearColor(0.40f, 0.40f, 0.39f), 0.f);
 			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"), FLinearColor(0.9f, 0.9f, 0.88f), 1.f);
 			UMaterialInterface* const BoardPaint = BayMaterial(TEXT("MI_GlassProofBay_Board"), FLinearColor(0.36f, 0.35f, 0.33f), 0.f);
@@ -1173,11 +1297,28 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				LotBox(*Pr, X0 + 0.02, Y0 + 0.08, Z + 0.03, X1 - 0.02, Y0 + 0.10, Z + 0.03 + RowH, Mic, Data, EFTCellKind::NoCollide, BayTag);
 				++GoodsCount;
 			};
-			for (int32 R = 0; R < 5; ++R)
+			const bool bCounter = Pr->bKoshi && ProofLot == Build.CounterLot;
+			for (int32 R = 0; !bCounter && R < 5; ++R)
 			{
 				Shelf(BayX0 + 0.1, BayX1 - 0.1, BayY1 - 0.40, BayY1 - 0.05, BayZ0 + 0.25 + 0.42 * R, 0.39);
 			}
-			if (BayY1 - BayY0 > 1.6)
+			// The eatery's counter across the room, 0.55 m off the back wall (the cook's side): a stained timber front and a
+			// paler top slab overhanging the guests' side.
+			if (bCounter)
+			{
+				UMaterialInterface* const CounterPaint = BayMaterial(TEXT("MI_GlassProofBay_Counter"), FLinearColor(0.10f, 0.065f, 0.04f), 0.f);
+				UMaterialInterface* const TopPaint = BayMaterial(TEXT("MI_GlassProofBay_CounterTop"), FLinearColor(0.30f, 0.22f, 0.14f), 0.f);
+				const double Cy0 = BayY1 - 1.10, Cy1 = BayY1 - 0.55;
+				LotBox(*Pr, BayX0 + 0.4, Cy0, BayZ0 + 0.04, BayX1 - 0.4, Cy1, BayZ0 + 0.95, CounterPaint, Data, EFTCellKind::NoCollide, BayTag);
+				LotBox(*Pr, BayX0 + 0.35, Cy0 - 0.08, BayZ0 + 0.95, BayX1 - 0.35, Cy1 + 0.02, BayZ0 + 1.00, TopPaint, Data, EFTCellKind::NoCollide, BayTag);
+				// Two boards on the back wall over the cook's side.
+				for (int32 R = 0; R < 2; ++R)
+				{
+					LotBox(*Pr, BayX0 + 0.4, BayY1 - 0.30, BayZ0 + 1.45 + 0.4 * R, BayX1 - 0.4, BayY1 - 0.04, BayZ0 + 1.48 + 0.4 * R, BoardPaint, Data,
+						EFTCellKind::NoCollide, BayTag);
+				}
+			}
+			if (!Pr->bKoshi && BayY1 - BayY0 > 1.6)
 			{
 				for (int32 S = 0; S < 2; ++S)
 				{
@@ -1191,10 +1332,16 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			}
 			// The shop's stock by the glass: real meshes of the local interior models (/Game/Props/Goods/<id>, local-only
 			// imports; one that is missing is left out with whatever stands on it), laid out by ftcore::glassBayStock.
+			// A lattice room has no stock by its glass.
 			ftcore::GlassBayItem Stock[ftcore::kGlassBayStockMax];
-			const bool bDoor = T.Door.G > T.Door.R + 0.1f;
-			const int32 StockPlanned = ftcore::glassBayStock(static_cast<float>(BayW), bDoor ? T.Door.R - 0.30f : 1.f, bDoor ? T.Door.G - 0.30f : 0.f,
-				Stock, ftcore::kGlassBayStockMax);
+			int32 StockPlanned = 0;
+			if (!Pr->bKoshi)
+			{
+				const FPaneTable& T = *Pr->Panes;
+				const bool bDoor = T.Door.G > T.Door.R + 0.1f;
+				StockPlanned = ftcore::glassBayStock(static_cast<float>(BayW), bDoor ? T.Door.R - 0.30f : 1.f, bDoor ? T.Door.G - 0.30f : 0.f, Stock,
+					ftcore::kGlassBayStockMax);
+			}
 			double StockTop[ftcore::kGlassBayStockMax];
 			int32 StockCount = 0;
 			for (int32 I = 0; I < StockPlanned; ++I)
@@ -1232,11 +1379,12 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					EFTCellKind::NoCollide, StockOpts);
 				++StockCount;
 			}
-			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front: %d true panes, the bay's shell, %d goods on its shelves, "
-				"%d of %d stock meshes; %d boxes in all."), PaneCount, GoodsCount, StockCount, StockPlanned, ProofBoxes);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front (lot %d): %d true panes, the %s's shell, %d goods on its "
+				"shelves, %s%d of %d stock meshes; %d boxes so far."), ProofLot, PaneCount, Pr->bKoshi ? TEXT("room") : TEXT("bay"), GoodsCount,
+				bCounter ? TEXT("a counter, ") : TEXT(""), StockCount, StockPlanned, ProofBoxes);
 			continue;
 		}
-		Cells.Add(Use.Mesh, Use.Materials, PieceTransform(P, Use.Fit, Side), Data,
+		Cells.Add(Use.Mesh, Wear, PieceTransform(P, Use.Fit, Side), Data,
 			bSolid || Piece.id == "VENDING" ? EFTCellKind::Solid : EFTCellKind::NoCollide, Opts);
 		++Pieces;
 	}
