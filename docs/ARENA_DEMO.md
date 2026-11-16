@@ -188,10 +188,18 @@ nearer the head than 0.35 m). *Shoulder:* picked when the lock is taken or chang
 that has the partner in the frame, then the one with clearly more room, else the side stays. The swap blends over 0.4 s
 and everything mirrors with it (the target at 0.4 of the width on the left shoulder); an attack that starts mid-blend freezes the blend where it is until the attack ends, and a stick held through the swap keeps the basis it had until it is let go (held past the blend's end, it eases onto the view over 0.25 s), so a held direction never turns under the player in one frame. *Partner:* a turn of up to 12
 degrees toward the partner when it is within 8 m and out of the frame, only while the lead keeps its rule and the target
-stays within 55-80% of the width. The log says `Arena: close shoulder ...` at each pick, `Arena: close frame at view ...`
+stays within 55-80% of the width. *Contact:* within 2.5 m of the body (centre less radius) of a target over 3 m tall
+or at least 1 m in radius, out by 3.5 m, the camera swings 50-70 degrees round the lead toward the open side so the view
+runs along the target's flank: the lead on one side, the near outline at 55% of the width or more across, the target's
+centre at 88% or more (mirrored on the left shoulder), the look-up held to 15-25 degrees, the arm unchanged. The share
+blends over 0.5 s (held still mid-attack and in a dodge's first moment, and a held stick keeps its basis through it),
+none while aiming; entering it asks for the shoulder again with each side tried at its swing, and no partner turn runs
+in it. A normal-sized target keeps the melee shape. The log says `Arena: close shoulder ...` at each pick, `Arena: close frame at view ...`
 at each review still (the distance, the lead's spine, the target's place, how much of it the lead covers, the partner's
 place in the lens's ground frame) and `Arena: lock to ...` at each lock; the check lines give the partner turn's share,
-the shoulder swaps and the held frames with a wall-shortened boom (and how many of them have the spine under 28%). Under both presets a check line gives where the partner stood from the drawn lens on held
+the shoulder swaps and the held frames with a wall-shortened boom (and how many of them have the spine under 28%), and
+the contact frames (left out of the frame check), the most swing and the swaps made in contact; each review still adds
+the contact share, the swing, the pitch, the arm and the target body's outline across the width. Under both presets a check line gives where the partner stood from the drawn lens on held
 frames (in frame, behind the lens, off either side, over or under, and its mean place while out of the frame), and
 `-ArenaRollAt=<s,s,...>` (not in a shipping build) has the autopilot press dodge at those fight times, so a dodge strip
 is shot at the same roll time under every lens. Known limits: the aim stance stays over the right shoulder (from the left it blends across); a
@@ -776,6 +784,8 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
 | `-ArenaCamera=close\|classic` | The camera preset for this run, over the **Camera** setting (see Camera presets), in every build. |
 | `-ArenaCameraLag=<seconds>` | The boom's lag for this run, over the preset's (0: the boom's own, -1: off). Not in shipping builds. |
+| `-ArenaCameraArm=<m>` | The close lens's arm for this run, held to 1.5-3.0 m (classic ignores it). Not in shipping builds. |
+| `-ArenaStandOff=<m>` | The autopilot holds this far from its target, guarding, with no attacks or dodges (stand-off stills). Not in shipping builds. |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |

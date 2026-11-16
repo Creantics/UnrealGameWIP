@@ -534,6 +534,15 @@ private:
 	int32 CloseTargetNow = -1;    // the target followed this frame, its distance and height (the shot log)
 	float CloseDistanceNow = -1.f;
 	float CloseHeightNow = 0.f;
+	float CloseRadiusNow = 0.f;   // m: its body's radius, scaled with its figure
+	// Contact (ftcore::arenaCloseContactWant): a tall or wide target within about 3 m of its body swings the view round
+	// the lead along its flank. The share as blended and as the range asks this frame; whether the shoulder was picked
+	// at the swing since contact was last off; the swing added to the drawn view; the tallness the cut is raised by.
+	float CloseContact = 0.f;
+	float CloseContactWant = 0.f;
+	bool bContactPicked = false;
+	float ContactYawNow = 0.f;    // degrees (ftcore::arenaCloseContactYaw): 0 exactly off contact
+	float CloseCutTall = 0.f;     // 0..1 (ftcore::arenaCloseCutTallness)
 	ftcore::ArenaStickBasis StickBasis; // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close swap)
 #if !UE_BUILD_SHIPPING
 	void LogCloseFrameShot(const TCHAR* Shot) const;
@@ -545,6 +554,11 @@ private:
 	// Held close frames with the boom wall-shortened (under 98% of its arm), and of them the ones with the lead's spine
 	// under 28% of the width (mirrored on the left shoulder).
 	int32 CloseWallFrames = 0, CloseWallLow = 0;
+	// Held close frames in contact, the most swing, and shoulder swaps made with the contact share over half.
+	int32 CloseContactFrames = 0, CloseContactSwaps = 0;
+	float CloseContactYawMost = 0.f;
+	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
+	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
 	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;
@@ -1151,7 +1165,7 @@ private:
 	float FrameTurn = 0.f;
 	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read (the partner's soft turn
 	// included, as the drawn camera and the control rotation have it).
-	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}) + PartnerYawNow; }
+	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}) + PartnerYawNow + ContactYawNow; }
 	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
 	ftcore::ArenaFrameRules FrameRules() const
 	{

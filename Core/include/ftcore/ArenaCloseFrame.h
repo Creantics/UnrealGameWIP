@@ -64,6 +64,18 @@ struct ArenaCloseRules {
     float partnerRange = 8.f;    // m from the lead
     float targetMin = 0.55f;     // the target's share of the width kept while the partner yaw turns (right shoulder)
     float targetMax = 0.80f;
+    // Contact against a tall or wide target: the view swings round the lead to run along the target's flank.
+    float contactTo = 2.5f;      // m from the lead to the target's body (its centre less its radius): share 1 at this or nearer
+    float contactFrom = 3.5f;    // m: and 0 at this or further (the stand-off framing beyond)
+    float contactTall = 3.f;     // m: a target taller than this takes the contact framing
+    float contactWide = 1.f;     // m of body radius: or one at least this wide
+    float contactSeconds = 0.5f; // s: a full blend in or out, at a steady rate
+    float swingMin = 50.f;       // degrees: the swing round the lead at a full contact share, held to this band
+    float swingMax = 70.f;
+    float contactX = 0.88f;      // share of the width the swing puts the target's centre at (right shoulder), at least
+    float contactEdgeX = 0.55f;  // and its body's near outline (the lead's side) at least this far across
+    float contactPitchMin = 15.f; // degrees: the look-up at a full contact share, held to this band
+    float contactPitchMax = 25.f;
 };
 inline constexpr ArenaCloseRules kArenaClose{};
 
@@ -138,6 +150,56 @@ FTCORE_API ArenaStickBasis arenaCloseStickBasis(const ArenaCloseRules& rules, Ar
 FTCORE_API float arenaClosePartnerYaw(const ArenaCloseRules& rules, const ArenaLeadFrameRules& leadRules, const ArenaCameraPose& pose,
                                       float aspect, const ArenaLeadBody& body, ArenaPoint3 partner, ArenaPoint3 target, float shoulder,
                                       float margin = kPartnerFrustumMargin);
+
+// Contact framing. Within about 3 m of the body of a target taller than contactTall m (or with a body radius of
+// contactWide m or more) the camera does not sit behind the lead: it swings round the lead toward the open side (the shoulder's side)
+// so the view runs along the target's flank, the lead on one side of the frame and the target's edge on the other,
+// looking up. The arm never changes (no pull-out).
+//
+// The contact share the range and size ask for: 0 for a target neither tall nor wide, else, by the distance to its body
+// (`distance` to its centre less `targetRadius`), 1 at contactTo m or nearer, 0 at contactFrom or further, a smoothstep
+// between. NaN or a negative distance: 0.
+FTCORE_API float arenaCloseContactWant(const ArenaCloseRules& rules, float distance, float targetHeight, float targetRadius);
+
+// One step of dt s of the contact share toward `want` at a full blend per contactSeconds, never past it. A NaN now: 0;
+// a NaN want or dt <= 0: unchanged.
+FTCORE_API float arenaCloseContactStep(const ArenaCloseRules& rules, float now, float want, float dt);
+
+// True while the contact share has not reached what the range asks for: the swing is blending (the stick keeps its
+// basis through it, as through a shoulder swap).
+FTCORE_API bool arenaCloseContactBlending(float now, float want);
+
+// The swing at a full contact share (degrees from the lock's line, + turns the view right). On the right shoulder the
+// view turns left round the lead, so the lens swings out to the lead's right and the view runs along the target's
+// flank: the smallest swing that puts the target's centre (`distance` m ahead on the line) at contactX of the width or
+// further right and its body's near outline (a circle `radius` m round the centre, seen from a lens `back` m behind the
+// pivot and |side| m out, horizontal field of view `fov`) at contactEdgeX or further right, held to swingMin..swingMax.
+// Turned the other way on the left shoulder. `shoulder` is the blend (-1..1); the swing scales with it, so a swap passes
+// through the line rather than jumping. NaN inputs: swingMin's size.
+FTCORE_API float arenaCloseContactSwing(const ArenaCloseRules& rules, float shoulder, float side, float distance, float radius, float fov,
+                                        float back);
+
+// A target's body seen from a pose (the line from the pivot at yaw 0 is not assumed: `centre` is relative to the pivot
+// on the floor, as arenaFramePoint): the shares of the frame's width its circle of `radius` m spans, left and right
+// (each may lie outside 0..1), from the lens on the floor plane. `ahead` false: the centre is behind the lens.
+struct ArenaBodySpan {
+    float left = 0.f;
+    float right = 0.f;
+    bool ahead = false;
+};
+FTCORE_API ArenaBodySpan arenaBodySpan(const ArenaCameraPose& pose, float aspect, ArenaPoint3 centre, float radius);
+
+// The tallness the close cut is raised by: the target's own (arenaCloseTallness), or the contact share if more, so
+// the contact look-up is allowed by the lead's rule on any target that takes it.
+FTCORE_API float arenaCloseCutTallness(const ArenaCloseRules& rules, float targetHeight, float contact);
+
+// The yaw added to the framed view (line + frameTurn) at a contact share: the drawn turn goes from frameTurn (share 0)
+// to `swing` (share 1), eased by a smoothstep of the share. Share 0 or a NaN input: exactly 0.
+FTCORE_API float arenaCloseContactYaw(float frameTurn, float swing, float share);
+
+// The pitch at a contact share: `pitch` (the melee pitch) held into contactPitchMin..contactPitchMax, blended in by
+// the share. Share 0 or a NaN input: `pitch` to the bit.
+FTCORE_API float arenaCloseContactPitch(const ArenaCloseRules& rules, float pitch, float share);
 
 // A point in the lens's own ground frame (the capture logs' partner position): `ahead` m along the view's yaw from
 // the lens (under 0: behind the camera) and `right` m to its right, from the lens where arenaCameraLens puts it.

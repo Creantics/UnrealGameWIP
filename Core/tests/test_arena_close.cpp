@@ -364,3 +364,146 @@ TEST_CASE("close frame: a point in the lens's ground frame") {
     CHECK(h.right == doctest::Approx(-0.55f).epsilon(1e-3));
 }
 
+
+TEST_CASE("close frame: the contact share: within 2.5 m of the body of a target over 3 m tall or 1 m wide, out by 3.5 m") {
+    // A tall thin one (radius 0): the body is the centre.
+    CHECK(arenaCloseContactWant(kArenaClose, 2.f, 7.f, 0.f) == 1.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 2.5f, 7.f, 0.f) == 1.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 3.f, 7.f, 0.f) == doctest::Approx(0.5f));
+    CHECK(arenaCloseContactWant(kArenaClose, 3.5f, 7.f, 0.f) == 0.f);
+    // The 7 m giant, 2.2 m round: full at 4.7 m from its centre, none at 5.7 (the stand-off stills at 6, 8, 10 m are clear).
+    CHECK(arenaCloseContactWant(kArenaClose, 2.6f, 7.f, 2.2f) == 1.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 4.7f, 7.f, 2.2f) == 1.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 5.2f, 7.f, 2.2f) == doctest::Approx(0.5f));
+    CHECK(arenaCloseContactWant(kArenaClose, 5.7f, 7.f, 2.2f) <= 1e-6f);
+    CHECK(arenaCloseContactWant(kArenaClose, 6.f, 7.f, 2.2f) == 0.f);
+    // A normal enemy keeps the melee frame; exactly 3 m tall is not over it; a wide one counts at any height.
+    CHECK(arenaCloseContactWant(kArenaClose, 1.f, 1.75f, 0.45f) == 0.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 1.f, 3.f, 0.45f) == 0.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 1.f, 3.01f, 0.45f) == 1.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 2.f, 2.f, 1.f) == 1.f);
+    CHECK(arenaCloseContactWant(kArenaClose, kNaN, 7.f, 1.f) == 0.f);
+    CHECK(arenaCloseContactWant(kArenaClose, -1.f, 7.f, 1.f) == 0.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 1.f, kNaN, kNaN) == 0.f);
+    CHECK(arenaCloseContactWant(kArenaClose, 1.f, 7.f, kNaN) == 1.f);
+    float last = 1.f;
+    for (float d = 4.7f; d <= 5.7f; d += 0.02f) {
+        const float w = arenaCloseContactWant(kArenaClose, d, 7.f, 2.2f);
+        CHECK(w <= last + 1e-6f);
+        last = w;
+    }
+}
+
+TEST_CASE("close frame: the contact share blends in and out over 0.5 s at a steady rate, never past") {
+    float c = 0.f;
+    int frames = 0;
+    while (c < 1.f && frames < 100) {
+        const float next = arenaCloseContactStep(kArenaClose, c, 1.f, 1.f / 60.f);
+        CHECK(next - c <= 1.f / 30.f + 1e-5f);
+        CHECK(arenaCloseContactBlending(c, 1.f));
+        c = next;
+        ++frames;
+    }
+    CHECK(frames >= 29);
+    CHECK(frames <= 31);
+    CHECK(c == 1.f);
+    CHECK_FALSE(arenaCloseContactBlending(c, 1.f));
+    CHECK(arenaCloseContactStep(kArenaClose, 1.f, 0.f, 0.25f) == doctest::Approx(0.5f));
+    CHECK(arenaCloseContactStep(kArenaClose, 0.4f, 0.5f, 1.f) == 0.5f);
+    CHECK(arenaCloseContactStep(kArenaClose, 0.4f, kNaN, 0.1f) == 0.4f);
+    CHECK(arenaCloseContactStep(kArenaClose, 0.4f, 1.f, 0.f) == 0.4f);
+    CHECK(arenaCloseContactStep(kArenaClose, kNaN, 1.f, 0.f) == 0.f);
+    CHECK_FALSE(arenaCloseContactBlending(0.f, 0.f));
+    CHECK_FALSE(arenaCloseContactBlending(kNaN, 1.f));
+}
+
+TEST_CASE("close frame: contact swings 50-70 degrees round the lead, the view along the target's flank, mirrored") {
+    const CameraPreset cp = closeCameraPreset();
+    const ArenaCloseShape s = arenaCloseShape(kArenaClose, cp, 1.f, 1.f, 1.f, 1.8f);
+    const ArenaCameraPose rig0 = closeRig(1.f, 1.f, 1.f, 1.8f);
+    const float back = arenaEyeBack(rig0.arm, rig0.up, 0.f);
+    const ArenaLeadBody body = closeBody(1.f, 1.f, 1.8f);
+    for (float d : {1.f, 1.5f, 2.f, 2.5f, 3.f, 3.5f, 4.f}) {
+        // A target up to 1.2 m round (its body 0.6 m clear of the lead's centre).
+        const float rad = std::fmin(1.2f, d - 0.6f);
+        CAPTURE(d);
+        const float r = arenaCloseContactSwing(kArenaClose, 1.f, s.side, d, rad, s.fov, back);
+        const float l = arenaCloseContactSwing(kArenaClose, -1.f, -s.side, d, rad, s.fov, back);
+        CHECK(r <= -50.f);
+        CHECK(r >= -70.f);
+        CHECK(l == -r);
+        // The swung pose: the lens out to the lead's right, the lead on the left of the frame, the arm unchanged.
+        const ArenaCameraPose p = arenaPoseAtPitch(kArenaLook, closeRig(1.f, 1.f, 1.f, 1.8f, r), 0.f);
+        CHECK(arenaCameraLens(p).y > 1.f);
+        CHECK(p.arm == rig0.arm);
+        const ArenaLeadShares lead = arenaLeadShares(p, kAspect, body);
+        CHECK(spineOf(lead) < 0.4f);
+        // The body's near outline stands in the frame right of the lead, against what lies beyond.
+        const ArenaBodySpan span = arenaBodySpan(p, kAspect, ArenaPoint3{d, 0.f, 1.5f}, rad);
+        CHECK(span.ahead);
+        CHECK(span.left > lead.right);
+        CHECK(span.left < 0.9f);
+        // Inside the band the swing is the least that puts the centre at 0.88 and the outline at 0.55 or further.
+        const float cx = arenaFramePoint(p, kAspect, ArenaPoint3{d, 0.f, 1.5f}).x;
+        if (r > -69.9f && r < -50.1f) {
+            CHECK(cx >= 0.87f);
+            CHECK(span.left >= 0.54f);
+            CHECK((cx == doctest::Approx(0.88f).epsilon(0.01) || span.left == doctest::Approx(0.55f).epsilon(0.02)));
+        }
+        // The left shoulder mirrors it.
+        const ArenaCameraPose q = arenaPoseAtPitch(kArenaLook, closeRig(1.f, 1.f, -1.f, 1.8f, l), 0.f);
+        CHECK(arenaBodySpan(q, kAspect, ArenaPoint3{d, 0.f, 1.5f}, rad).right == doctest::Approx(1.f - span.left).epsilon(1e-3));
+    }
+    // The 7 m giant, 2.2 m round, at the 2.6 m it is fought from: the swing is at the band's top; where its outline lands.
+    const float g = arenaCloseContactSwing(kArenaClose, 1.f, s.side, 2.6f, 2.2f, s.fov, back);
+    const ArenaCameraPose gp = arenaPoseAtPitch(kArenaLook, closeRig(1.f, 1.f, 1.f, 1.8f, g), 0.f);
+    const ArenaBodySpan gs = arenaBodySpan(gp, kAspect, ArenaPoint3{2.6f, 0.f, 1.5f}, 2.2f);
+    MESSAGE("giant at 2.6 m: swing ", g, ", body from ", gs.left, " to ", gs.right, ", lead right edge ", arenaLeadShares(gp, kAspect, body).right);
+    CHECK(g == -70.f);
+    // The swing scales with the shoulder's blend, so a swap passes through the line; NaN: the band's least.
+    const float full = arenaCloseContactSwing(kArenaClose, 1.f, s.side, 2.5f, 1.f, s.fov, back);
+    CHECK(arenaCloseContactSwing(kArenaClose, 0.5f, s.side, 2.5f, 1.f, s.fov, back) == doctest::Approx(0.5f * full));
+    CHECK(arenaCloseContactSwing(kArenaClose, 0.f, s.side, 2.5f, 1.f, s.fov, back) == 0.f);
+    CHECK(arenaCloseContactSwing(kArenaClose, 1.f, kNaN, 2.5f, 1.f, s.fov, back) == -50.f);
+}
+
+TEST_CASE("close frame: at a full contact share the lead's rule allows the 15 degree look-up on any contact target") {
+    // A 3.01 m one and a wide one of a normal height: the cut takes the contact share as its tallness.
+    for (float height : {3.01f, 1.75f, 7.f}) {
+        const float tall = arenaCloseCutTallness(kArenaClose, height, 1.f);
+        CHECK(tall == 1.f);
+        for (float head : {1.4f, 1.6f, 1.7f, 1.8f}) {
+            const ArenaLeadPitch p = arenaLeadPitch(kArenaLook, closeRules(1.f, tall, head), closeRig(1.f, tall, 1.f, head), kAspect,
+                                                    closeBody(1.f, tall, head), 15.f);
+            CAPTURE(height);
+            CAPTURE(head);
+            CHECK(p.kept == 2);
+            CHECK(p.pitch == doctest::Approx(15.f));
+        }
+    }
+    CHECK(arenaCloseCutTallness(kArenaClose, 1.75f, 0.f) == 0.f);
+    CHECK(arenaCloseCutTallness(kArenaClose, 4.75f, 0.2f) == doctest::Approx(0.5f));
+    CHECK(arenaCloseCutTallness(kArenaClose, 1.75f, kNaN) == 0.f);
+}
+
+TEST_CASE("close frame: the contact yaw blends the drawn turn from the frame's to the swing; the pitch held to 15-25") {
+    CHECK(arenaCloseContactYaw(-12.f, -60.f, 0.f) == 0.f);
+    CHECK(arenaCloseContactYaw(-12.f, -60.f, 1.f) == doctest::Approx(-48.f));
+    CHECK(arenaCloseContactYaw(-12.f, -60.f, 0.5f) == doctest::Approx(-24.f));
+    CHECK(arenaCloseContactYaw(-12.f, -60.f, 2.f) == doctest::Approx(-48.f));
+    CHECK(arenaCloseContactYaw(kNaN, -60.f, 1.f) == 0.f);
+    CHECK(arenaCloseContactYaw(-12.f, -60.f, kNaN) == 0.f);
+    float last = 0.f;
+    for (float c = 0.f; c <= 1.f; c += 0.05f) {
+        const float y = arenaCloseContactYaw(-12.f, -60.f, c);
+        CHECK(y <= last + 1e-5f);
+        last = y;
+    }
+    CHECK(arenaCloseContactPitch(kArenaClose, 10.f, 0.f) == 10.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, 10.f, 1.f) == 15.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, 28.f, 1.f) == 25.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, 20.f, 1.f) == 20.f);
+    CHECK(arenaCloseContactPitch(kArenaClose, 10.f, 0.5f) == doctest::Approx(12.5f));
+    CHECK(arenaCloseContactPitch(kArenaClose, 10.f, kNaN) == 10.f);
+    CHECK(std::isnan(arenaCloseContactPitch(kArenaClose, kNaN, 1.f)));
+}

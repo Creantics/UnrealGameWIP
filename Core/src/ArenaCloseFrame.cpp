@@ -142,6 +142,115 @@ float arenaClosePartnerYaw(const ArenaCloseRules& rules, const ArenaLeadFrameRul
     return 0.f;
 }
 
+float arenaCloseContactWant(const ArenaCloseRules& rules, float distance, float targetHeight, float targetRadius) {
+    if (!finite(distance) || distance < 0.f) return 0.f;
+    const bool big = (finite(targetHeight) && targetHeight > rules.contactTall) || (finite(targetRadius) && targetRadius >= rules.contactWide);
+    if (!big) return 0.f;
+    const float body = distance - (finite(targetRadius) ? std::max(0.f, targetRadius) : 0.f);
+    if (body <= rules.contactTo) return 1.f;
+    if (body >= rules.contactFrom || !(rules.contactFrom > rules.contactTo)) return 0.f;
+    const float t = (rules.contactFrom - body) / (rules.contactFrom - rules.contactTo);
+    return t * t * (3.f - 2.f * t);
+}
+
+float arenaCloseContactStep(const ArenaCloseRules& rules, float now, float want, float dt) {
+    if (!finite(now)) now = 0.f;
+    if (!finite(want) || !finite(dt) || !(dt > 0.f)) return now;
+    const float to = clamp01(want);
+    if (!(rules.contactSeconds > 0.f)) return to;
+    const float step = dt / rules.contactSeconds;
+    return now < to ? std::min(to, now + step) : std::max(to, now - step);
+}
+
+bool arenaCloseContactBlending(float now, float want) {
+    return finite(now) && finite(want) && now != clamp01(want);
+}
+
+namespace {
+// How far (degrees) the swing m (the right shoulder's, the view turned left by m) leaves the target's centre and its
+// near outline past where they are wanted (both >= 0: the swing is enough), on the floor plane from the lens.
+float contactShort(float m, float side, float distance, float radius, float back, float centreAt, float edgeAt) {
+    const float y = -m * kRad;
+    const float ahead = distance * std::cos(y) + back;
+    const float right = -distance * std::sin(y) - side;
+    const float a = std::atan2(right, ahead) / kRad;
+    const float dist = std::sqrt(ahead * ahead + right * right);
+    const float half = dist > radius && dist > 0.f ? std::asin(radius / dist) / kRad : 90.f;
+    return std::min(a - centreAt, a - half - edgeAt);
+}
+} // namespace
+
+float arenaCloseContactSwing(const ArenaCloseRules& rules, float shoulder, float side, float distance, float radius, float fov,
+                             float back) {
+    const float s = finite(shoulder) ? std::min(1.f, std::max(-1.f, shoulder)) : 1.f;
+    const float lo = std::max(0.f, rules.swingMin), hi = std::max(lo, rules.swingMax);
+    float size = lo;
+    if (finite(side) && finite(distance) && finite(radius) && finite(fov) && finite(back) && fov > 0.f && fov < 180.f) {
+        const float t = std::tan(0.5f * fov * kRad);
+        const float centreAt = std::atan((2.f * rules.contactX - 1.f) * t) / kRad;
+        const float edgeAt = std::atan((2.f * rules.contactEdgeX - 1.f) * t) / kRad;
+        const float sd = std::fabs(side), r = std::max(0.f, radius);
+        if (contactShort(lo, sd, distance, r, back, centreAt, edgeAt) >= 0.f) {
+            size = lo;
+        } else if (contactShort(hi, sd, distance, r, back, centreAt, edgeAt) < 0.f) {
+            size = hi;
+        } else {
+            float a = lo, b = hi; // short at a, enough at b
+            for (int i = 0; i < 24; ++i) {
+                const float mid = 0.5f * (a + b);
+                if (contactShort(mid, sd, distance, r, back, centreAt, edgeAt) >= 0.f) b = mid;
+                else a = mid;
+            }
+            size = b;
+        }
+    }
+    return -size * s;
+}
+
+ArenaBodySpan arenaBodySpan(const ArenaCameraPose& pose, float aspect, ArenaPoint3 centre, float radius) {
+    ArenaBodySpan out;
+    if (!finite(centre.x) || !finite(centre.y) || !finite(centre.z) || !finite(radius)) return out;
+    const ArenaLensAt lens = arenaCameraLens(pose);
+    const float vx = centre.x - lens.x, vy = centre.y - lens.y;
+    const float d = std::sqrt(vx * vx + vy * vy);
+    const float r = std::max(0.f, radius);
+    const ArenaFramePoint c = arenaFramePoint(pose, aspect, centre);
+    out.ahead = c.ahead;
+    if (!(d > r)) { // the lens inside the body: it fills the width
+        out.left = -1.f;
+        out.right = 2.f;
+        return out;
+    }
+    // The two tangent points from the lens: from the centre, back toward the lens turned by acos(r / d) each way.
+    const float b = std::acos(r / d);
+    const float ux = -vx / d, uy = -vy / d;
+    const float cb = std::cos(b), sb = std::sin(b);
+    const ArenaPoint3 t1{centre.x + r * (ux * cb - uy * sb), centre.y + r * (ux * sb + uy * cb), centre.z};
+    const ArenaPoint3 t2{centre.x + r * (ux * cb + uy * sb), centre.y + r * (-ux * sb + uy * cb), centre.z};
+    const ArenaFramePoint f1 = arenaFramePoint(pose, aspect, t1), f2 = arenaFramePoint(pose, aspect, t2);
+    const float x1 = f1.ahead ? f1.x : (f1.x < 0.5f ? -1.f : 2.f);
+    const float x2 = f2.ahead ? f2.x : (f2.x < 0.5f ? -1.f : 2.f);
+    out.left = std::min(x1, x2);
+    out.right = std::max(x1, x2);
+    return out;
+}
+
+float arenaCloseCutTallness(const ArenaCloseRules& rules, float targetHeight, float contact) {
+    return std::max(arenaCloseTallness(rules, targetHeight), shareOf(contact));
+}
+
+float arenaCloseContactYaw(float frameTurn, float swing, float share) {
+    if (!finite(share) || !(share > 0.f) || !finite(frameTurn) || !finite(swing)) return 0.f;
+    const float c = clamp01(share);
+    return (swing - frameTurn) * (c * c * (3.f - 2.f * c));
+}
+
+float arenaCloseContactPitch(const ArenaCloseRules& rules, float pitch, float share) {
+    if (!finite(share) || !(share > 0.f) || !finite(pitch)) return pitch;
+    const float held = std::min(rules.contactPitchMax, std::max(rules.contactPitchMin, pitch));
+    return lerp(pitch, held, clamp01(share));
+}
+
 ArenaLensGround arenaLensGround(const ArenaCameraPose& pose, ArenaPoint3 at) {
     const ArenaLensAt lens = arenaCameraLens(pose);
     const float y = pose.yaw * kRad;

@@ -368,6 +368,23 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bCloseShape = CameraPresetNow == ftcore::CameraPresetId::Close;
 	CloseBase = CameraLens;
 #if !UE_BUILD_SHIPPING
+	if (bCloseShape && CloseArmSwitch > 0.f)
+	{
+		// -ArenaCameraArm=<m>: the close lens's arm for this run (a review pair), read by PickCameraPreset.
+		Fit.camera.arm = CloseArmSwitch;
+		CloseBase.rig.arm = CameraLens.rig.arm = CloseArmSwitch;
+	}
+	{
+		// -ArenaStandOff=<m>: the autopilot holds this far from its target, guarding, no attacks or dodges (stand-off
+		// stills at a set range). 0 or missing: off.
+		StandOffAt = 0.f;
+		float Stand = 0.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaStandOff="), Stand) && FMath::IsFinite(Stand) && Stand > 0.f)
+		{
+			StandOffAt = FMath::Clamp(Stand, 1.f, 20.f);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaStandOff: the autopilot holds %.2f m from its target."), StandOffAt);
+		}
+	}
 	{
 		// -ArenaRollAt=<s,s,...>: the autopilot presses dodge at these fight times (a capture's dodge strip, the same
 		// roll time under every lens). Read once here; up to MaxRollAt, in rising order.
@@ -1603,6 +1620,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	// The lock camera's eased state starts each fight at rest: no partner turn, no low lens.
 	PartnerYawNow = PartnerYawGoal = 0.f;
 	CloseMelee = CloseTall = 0.f;
+	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = 0.f;
+	bContactPicked = false;
 	CloseShoulder = CloseShoulderWant = 1.f;
 	CloseShoulderFor = CloseTargetNow = -1;
 	CloseNextPickAt = -1e9f;
@@ -1611,6 +1630,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 #if !UE_BUILD_SHIPPING
 	CloseSwaps = CloseYawFrames = CloseYawOn = 0;
 	CloseWallFrames = CloseWallLow = 0;
+	CloseContactFrames = CloseContactSwaps = 0;
+	CloseContactYawMost = 0.f;
 	CloseYawSum = CloseYawMost = 0.f;
 	MateFrames = MateIn = MateBehind = MateLeft = MateRight = MateOffY = 0;
 	MateOutAhead = MateOutRight = 0.f;
@@ -1817,8 +1838,10 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	// Along the view as drawn (the lock's framing turn included), so the lead goes where the stick points on the screen.
 	// Through a close shoulder swap a held stick keeps the basis it had until it is let go, and held past the blend's
 	// end eases onto the view over 0.25 s (ftcore::arenaCloseStickBasis), so a held direction never turns under the
-	// player in one frame; with no swap behind it the basis is the view's yaw exactly (classic never swaps).
-	const bool bSwapping = bCloseShape && ftcore::arenaCloseSwapping(CloseShoulder, CloseShoulderWant);
+	// player in one frame; with no swap behind it the basis is the view's yaw exactly (classic never swaps). The close
+	// contact swing's blend counts as a swap.
+	const bool bSwapping = bCloseShape && (ftcore::arenaCloseSwapping(CloseShoulder, CloseShoulderWant)
+		|| ftcore::arenaCloseContactBlending(CloseContact, CloseContactWant));
 	StickBasis = ftcore::arenaCloseStickBasis(ftcore::kArenaClose, StickBasis, ViewYaw(), bSwapping, Forward != 0.f || Right != 0.f, DeltaSeconds);
 	Stick = ftcore::arenaStickToWorld(StickBasis.yaw, Forward, Right);
 
@@ -3184,6 +3207,26 @@ void UFTArenaRunner::StepFight()
 			In.dodge = true;
 			In.light = In.heavy = In.release = false;
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaRollAt dodge pressed at %.2f s."), Fight.time());
+		}
+		if (StandOffAt > 0.f)
+		{
+			// -ArenaStandOff: toward or away from the target the camera follows (else the lock) to hold the range, guarding.
+			const int32 T = CloseTargetNow >= 0 ? CloseTargetNow : (Fight.lock() != ftcore::kArenaNobody ? static_cast<int32>(Fight.lock()) : -1);
+			In.light = In.heavy = In.release = In.dodge = false;
+			In.guard = true;
+			In.move = ftcore::Vec2{0.f, 0.f};
+			if (T >= 0 && T < static_cast<int32>(Fight.enemyCount()))
+			{
+				const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(T)];
+				const ftcore::Vec2 To{E.x - Bodies.player.x, E.y - Bodies.player.y};
+				const float D = ArenaLength(To);
+				const float Err = D - StandOffAt;
+				if (D > 0.01f && FMath::Abs(Err) > 0.15f)
+				{
+					const float Push = FMath::Clamp(Err * 1.5f, -1.f, 1.f) / D;
+					In.move = ftcore::Vec2{To.x * Push, To.y * Push};
+				}
+			}
 		}
 #endif
 		if (bPilotHeavy && In.heavy)
@@ -5062,6 +5105,11 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 		FramePrev = FrameTurn; // a release folds the turn into CameraYaw: the view holds, so it is no rate
 		return;
 	}
+	if (bCloseShape && CloseContact > 0.f)
+	{
+		FramePrev = FrameTurn; // the close contact swing frames the flank, not the thirds: counted on its own check line
+		return;
+	}
 	const float Rate = DeltaSeconds > 0.f ? FMath::Abs(FrameTurn - FramePrev) / DeltaSeconds : 0.f;
 	FramePrev = FrameTurn;
 	const APlayerCameraManager& Cam = *PC->PlayerCameraManager;
@@ -5173,7 +5221,7 @@ ftcore::ArenaLeadBody UFTArenaRunner::LeadBody() const
 		Body.head = FMath::Max(0.5f, static_cast<float>(Lead->GetAnchor().Z - Lead->GetActorLocation().Z - 45.0) / 100.f);
 	}
 	// The height the lens keeps in the frame (classic: 0, the feet; close: the shaped cut, raised on a tall target).
-	Body.cut = bCloseShape ? ftcore::arenaCloseShape(ftcore::kArenaClose, CloseBase, CloseMelee, CloseTall, CloseShoulder, Body.head).cutAt
+	Body.cut = bCloseShape ? ftcore::arenaCloseShape(ftcore::kArenaClose, CloseBase, CloseMelee, CloseCutTall, CloseShoulder, Body.head).cutAt
 	                       : ftcore::cameraPresetCut(CameraLens, Body.head);
 	return Body;
 }
@@ -5195,6 +5243,7 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 		const ftcore::ArenaEnemyKind& Foe = Fight.def().enemies[static_cast<size_t>(Target)];
 		CloseHeightNow = ftcore::arenaEnemyHeight(Foe) * (Foe.look.skinned() ? Foe.look.scale : 1.f) + (Foe.look.skinned() ? Foe.look.hover : 0.f);
 		CloseTall = ftcore::arenaCloseTallness(R, CloseHeightNow);
+		CloseRadiusNow = Foe.bodyRadius * (Foe.look.skinned() ? Foe.look.scale : 1.f);
 	}
 	// The melee share from the range, held still for a dodge's first moment (the hit pause holds the whole camera
 	// before SteerCamera gets here). Nothing followed eases it back to the far shape.
@@ -5205,15 +5254,30 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 	// (asked again no sooner than every 0.5 s), never mid-attack (the pick waits for the attack to end).
 	const bool bMidAttack = Act == ftcore::ArenaAction::Light || Act == ftcore::ArenaAction::Heavy || Act == ftcore::ArenaAction::Riposte
 		|| Act == ftcore::ArenaAction::Release;
-	const bool bDue = bOn && (Target != CloseShoulderFor || (BoomWallShare() < R.wallRoom && Fight.time() >= CloseNextPickAt));
+	// Contact (a tall or wide target within about 3 m of its body; none while aiming): the share blends over 0.5 s,
+	// held still mid-attack and through a dodge's first moment like the swap. Nothing followed: the swing folds into the
+	// lock's yaw at once (the view and the stick's basis hold, as a release folds the framing turn) and the share is 0.
+	CloseContactWant = bOn && !ArenaAim.aiming() ? ftcore::arenaCloseContactWant(R, CloseDistanceNow, CloseHeightNow, CloseRadiusNow) : 0.f;
+	if (!bOn)
+	{
+		CameraYaw += ContactYawNow;
+		ContactYawNow = CloseContact = 0.f;
+	}
+	CloseContact = ftcore::arenaCloseContactStep(R, CloseContact, CloseContactWant, bMidAttack || bDodgeHold ? 0.f : DeltaSeconds);
+	CloseCutTall = ftcore::arenaCloseCutTallness(R, CloseHeightNow, CloseContact);
+	// Entering contact asks for the shoulder again, each side tried at its swing (the open side).
+	bContactPicked = bContactPicked && CloseContactWant > 0.f;
+	const bool bContactPick = bOn && CloseContactWant > 0.f && !bContactPicked;
+	const bool bDue = bOn && (Target != CloseShoulderFor || bContactPick || (BoomWallShare() < R.wallRoom && Fight.time() >= CloseNextPickAt));
 	if (bDue && !bMidAttack)
 	{
 		PickCloseShoulder(Target);
+		bContactPicked = CloseContactWant > 0.f;
 	}
 	// A swap's blend holds still through an attack: frozen where it is until the attack ends.
 	CloseShoulder = ftcore::arenaCloseShoulderStep(R, CloseShoulder, CloseShoulderWant, bMidAttack ? 0.f : DeltaSeconds);
 	// The cut is LeadBody's (it knows the lead's height); the rest goes on the rig and the preset the frame reads.
-	const ftcore::ArenaCloseShape Shape = ftcore::arenaCloseShape(R, CloseBase, CloseMelee, CloseTall, CloseShoulder, 0.f);
+	const ftcore::ArenaCloseShape Shape = ftcore::arenaCloseShape(R, CloseBase, CloseMelee, CloseCutTall, CloseShoulder, 0.f);
 	Fit.camera.pivot = Shape.pivot;
 	Fit.camera.side = Shape.side;
 	Fit.camera.fov = Shape.fov;
@@ -5246,6 +5310,8 @@ void UFTArenaRunner::PickCloseShoulder(int32 Target)
 	const float Aspect = LockAspect();
 	const float ArmNow = Boom ? Boom->TargetArmLength / 100.f : Fit.camera.arm;
 	const float Back = ftcore::arenaEyeBack(ArmNow, Fit.camera.up, ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch).boom);
+	// In contact range each side is tried where its lens would be at that side's swing.
+	const float Contact = ArenaAim.aiming() ? 0.f : ftcore::arenaCloseContactWant(R, Dist, CloseHeightNow, CloseRadiusNow);
 	for (int32 K = 0; K < 2; ++K)
 	{
 		const float S = K == 0 ? 1.f : -1.f;
@@ -5254,7 +5320,8 @@ void UFTArenaRunner::PickCloseShoulder(int32 Target)
 		Rig.pivot = Shape.pivot;
 		Rig.side = Shape.side;
 		Rig.fov = Shape.fov;
-		const float Turn = bFraming ? ftcore::arenaFrameTurnAt(FrameRules(), Shape.side, Dist, Shape.screenX, Shape.fov, Back) : 0.f;
+		float Turn = bFraming ? ftcore::arenaFrameTurnAt(FrameRules(), Shape.side, Dist, Shape.screenX, Shape.fov, Back) : 0.f;
+		Turn += ftcore::arenaCloseContactYaw(Turn, ftcore::arenaCloseContactSwing(R, S, Shape.side, Dist, CloseRadiusNow, Shape.fov, Back), Contact);
 		const ftcore::ArenaCameraPose P = ftcore::arenaCameraPose(Rig, ArenaAim, ftcore::ArenaFrameYaw{Line, Turn}, CameraPitch);
 		if (Boom && World)
 		{
@@ -5286,6 +5353,7 @@ void UFTArenaRunner::PickCloseShoulder(int32 Target)
 			bMate[0] ? 1 : 0, bMate[1] ? 1 : 0);
 	}
 	CloseSwaps += Want != CloseShoulderWant ? 1 : 0;
+	CloseContactSwaps += Want != CloseShoulderWant && CloseContact > 0.5f ? 1 : 0;
 #endif
 	CloseShoulderWant = Want;
 }
@@ -5303,6 +5371,7 @@ void UFTArenaRunner::LogCloseFrameShot(const TCHAR* Shot) const
 	const float Aspect = LockAspect();
 	const ftcore::ArenaLeadShares S = ftcore::arenaLeadShares(Lens, Aspect, LeadBody());
 	float TargetX = -1.f, Overlap = -1.f;
+	ftcore::ArenaBodySpan Span;
 	if (CloseTargetNow >= 0 && CloseTargetNow < static_cast<int32>(Fight.enemyCount()))
 	{
 		const size_t T = static_cast<size_t>(CloseTargetNow);
@@ -5321,6 +5390,7 @@ void UFTArenaRunner::LogCloseFrameShot(const TCHAR* Shot) const
 			const float Lo = FMath::Min(L.x, Rt.x), Hi = FMath::Max(L.x, Rt.x);
 			Overlap = FMath::Max(0.f, FMath::Min(S.right, Hi) - FMath::Max(S.left, Lo)) / FMath::Max(1e-4f, Hi - Lo);
 		}
+		Span = ftcore::arenaBodySpan(Lens, Aspect, ftcore::ArenaPoint3{X, Y, Z}, Rad); // its outline from the lens
 	}
 	const bool bMateOn = bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0;
 	const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
@@ -5328,9 +5398,10 @@ void UFTArenaRunner::LogCloseFrameShot(const TCHAR* Shot) const
 	const ftcore::ArenaLensGround G = ftcore::arenaLensGround(Lens, Mate);
 	const bool bMateIn = bMateOn && F.ahead && F.x >= 0.f && F.x <= 1.f;
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: close frame at view %s: distance %.2f m, melee %.2f, shoulder %+.2f, fov %.1f; lead spine x %.3f (left %.3f, right %.3f); target x %.3f, overlap %.3f of its width; partner %s x %.3f (%.2f m ahead of the lens, %.2f m right), turn %.1f (-1: not measured)."),
+		TEXT("Arena: close frame at view %s: distance %.2f m, melee %.2f, shoulder %+.2f, fov %.1f; lead spine x %.3f (left %.3f, right %.3f); target x %.3f, overlap %.3f of its width; partner %s x %.3f (%.2f m ahead of the lens, %.2f m right), turn %.1f (-1: not measured); contact %.2f, swing %.1f, pitch %.1f, arm %.2f; target body x %.3f to %.3f (%s)."),
 		Shot, CloseDistanceNow, CloseMelee, CloseShoulder, Lens.fov, 0.5f * (S.left + S.right), S.left, S.right, TargetX, Overlap,
-		!bMateOn ? TEXT("off") : (bMateIn ? TEXT("in frame") : TEXT("out of frame")), F.ahead ? F.x : -1.f, G.ahead, G.right, PartnerYawNow);
+		!bMateOn ? TEXT("off") : (bMateIn ? TEXT("in frame") : TEXT("out of frame")), F.ahead ? F.x : -1.f, G.ahead, G.right, PartnerYawNow,
+		CloseContact, ContactYawNow, CameraPitch, Lens.arm, Span.left, Span.right, Span.ahead ? TEXT("ahead") : TEXT("not ahead"));
 }
 #endif
 
@@ -5602,6 +5673,14 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	const ftcore::ArenaFrameYaw Yaw = ftcore::arenaFrameYawStep(FrameRules(), ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, Scene, DeltaSeconds);
 	CameraYaw = Yaw.line;
 	FrameTurn = Yaw.turn;
+	if (bCloseShape && bFollowed)
+	{
+		// Contact: the swing round the lead toward the open side (ftcore::arenaCloseContactSwing), added to the drawn view
+		// like the partner's turn and blended from the framing turn by the contact share (0 exactly off contact).
+		const float Swing = ftcore::arenaCloseContactSwing(ftcore::kArenaClose, CloseShoulder, Fit.camera.side, Scene.distance, CloseRadiusNow,
+			Fit.camera.fov, Scene.back);
+		ContactYawNow = ftcore::arenaCloseContactYaw(FrameTurn, Swing, CloseContact);
+	}
 #if !UE_BUILD_SHIPPING
 	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming
 		? ftcore::arenaFrameTurnAt(FrameRules(), Scene.side, Scene.distance, Scene.screenX, Scene.fov, Scene.back) : 0.f;
@@ -5663,6 +5742,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			// pivot; the far pitch is the lock's own (the aim pitch on a tall target). The lead's rule holds it below.
 			WantPitch = ftcore::arenaCloseMeleePitch(ftcore::kArenaClose, ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall,
 				CloseMelee, WantPitch);
+			// In contact the look-up is held to 15-25 degrees (ftcore::arenaCloseContactPitch); the cut is raised to allow it.
+			WantPitch = ftcore::arenaCloseContactPitch(ftcore::kArenaClose, WantPitch, CloseContact);
 		}
 #if !UE_BUILD_SHIPPING
 		if (AimCheckPhase == 2 || AimCheckPhase == 3)
@@ -5710,12 +5791,16 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		Lens = ftcore::arenaPoseAtPitch(ftcore::kArenaLook, LensRig, CameraPitch, LockLow, LowRules);
 		Pose = WallScaled(Lens, 1.f / WallShare); // the boom's own lengths: its probe shortens them to the lens solved
 	}
+	// The contact swing (0 off contact), before the partner's turn is solved on the lens it turns.
+	Pose.yaw += ContactYawNow;
+	Lens.yaw += ContactYawNow;
 	// The partner as a soft term (ftcore::arenaPartnerYaw): a turn of at most kArenaPartnerYaw.maxYaw (5) degrees that
 	// brings it into the frame while the lead keeps its rule, eased at kPartnerYawRate per second with a half-degree
 	// deadband so it does not hunt, and off (eased back to 0) for kPartnerYawQuiet s after the player turns the view.
 	float YawWant = 0.f;
 	const bool bLookedLately = Fight.time() - LastLookInputAt < kPartnerYawQuiet;
-	if (bHold && !bLookedLately && bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0)
+	// No partner turn in contact: the swing has the target outside the band of the width the turn keeps it in.
+	if (bHold && !bLookedLately && bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0 && !(CloseContact > 0.f))
 	{
 		const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
 		// The close lens turns up to ftcore::kArenaClose.partnerYawMax (12) degrees, the target kept in its band of the width.
@@ -5758,6 +5843,11 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		CloseYawOn += FMath::Abs(PartnerYawNow) > 0.25f ? 1 : 0;
 		CloseYawSum += FMath::Abs(PartnerYawNow);
 		CloseYawMost = FMath::Max(CloseYawMost, FMath::Abs(PartnerYawNow));
+		if (CloseContact > 0.f)
+		{
+			++CloseContactFrames;
+			CloseContactYawMost = FMath::Max(CloseContactYawMost, FMath::Abs(ContactYawNow));
+		}
 		if (WallShare < 0.98f)
 		{
 			++CloseWallFrames;
@@ -5980,6 +6070,8 @@ void UFTArenaRunner::LogFeatureChecks() const
 			CloseYawOn, CloseYawFrames, CloseYawFrames > 0 ? CloseYawSum / static_cast<float>(CloseYawFrames) : 0.f, CloseYawMost, CloseSwaps, CloseShoulder);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens wall-shortened (boom under 98%%) on %d of %d held frames, %d of them with the lead's spine under 28%% of the width."),
 			CloseWallFrames, CloseYawFrames, CloseWallLow);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens contact on %d of %d held frames (left out of the frame check), swing most %.1f degrees, %d shoulder swaps in contact."),
+			CloseContactFrames, CloseYawFrames, CloseContactYawMost, CloseContactSwaps);
 	}
 	if (bFrameCheck)
 	{
@@ -6143,6 +6235,14 @@ void UFTArenaRunner::PickCameraPreset()
 	{
 		CameraLag = FMath::IsFinite(Lag) ? Lag : -1.f;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera lag %.3f s for this run (-ArenaCameraLag; 0 the boom's own, under 0 off)."), CameraLag);
+	}
+	// -ArenaCameraArm=<m>: the close lens's arm for this run (a review pair), held to 1.5-3.0 m; classic ignores it.
+	CloseArmSwitch = 0.f;
+	float Arm = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaCameraArm="), Arm) && Id == ftcore::CameraPresetId::Close && FMath::IsFinite(Arm))
+	{
+		CloseArmSwitch = FMath::Clamp(Arm, 1.5f, 3.f);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: close lens arm %.2f m for this run (-ArenaCameraArm, held to 1.5-3.0 m)."), CloseArmSwitch);
 	}
 #endif
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena camera preset: %s (from %s)"), UTF8_TO_TCHAR(ftcore::cameraPresetName(Id)), From);
