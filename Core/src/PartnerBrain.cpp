@@ -254,6 +254,7 @@ bool rangeStepOut(const Ground& g, const PartnerTuning& t, const View& e, Partne
     const float ring = e.radius + t.standoffMeters;
     const float cap = order == PartnerOrder::StayClose ? closeCap(t, g) : kStFar;
     const float clear = std::min(t.personalSpaceMeters, dist(from, g.lead)) - 1e-4f;
+    const float body = std::min(e.radius + bodyRadius, dist(from, e.pos)) - 1e-4f;
     bool found = false;
     for (int k = 0; k <= 12; ++k)
         for (int w = 0; w < (k == 0 ? 1 : 2); ++w) {
@@ -263,6 +264,7 @@ bool rangeStepOut(const Ground& g, const PartnerTuning& t, const View& e, Partne
             if (!g.arenaOk(p) || !g.roomOk(p) || dist(p, g.lead) > cap + 1e-4f) continue;
             if (std::fabs(own) > 1e-3f && stCross(bear, stSub(p, e.pos)) * own < 0.f) continue; // the other flank
             if (!g.reviving && segmentDist(from, p, g.lead) < clear) continue;
+            if (segmentDist(from, p, e.pos) < body) continue; // nor through the target
             if (!lens || !rangePartlyHidden(*lens, p, g.lead, bodyRadius)) {
                 q = p;
                 return true;
@@ -790,6 +792,7 @@ std::uint64_t PartnerBrainSave::hash() const {
     // Rule 19: only once the close camera was given (closeUsed), so a brain never given it hashes as before.
     if (closeUsed)
         h.add(std::uint8_t{22}).add(closeHold.flank).add(closeHold.angle).add(closeHold.heldFor).add(closeHold.ring);
+    if (steppedOut) h.add(std::uint8_t{23}).add(steppedOut); // rule 19's step out (never set by the classic camera)
     return h.value;
 }
 
@@ -1303,6 +1306,10 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     const PartnerTuning& t = tStep_; // the kit's reach and standoff under the close camera (rule 19), else s_.t
     const bool rangeOn = partnerRangeOn(in, s_.t);
     const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
+    // Rule 19: the last step stepped out to the band (or held there). Set again only by the pause's step out; any
+    // other step (a leash, a guard, down, a new target) drops it.
+    bool wasOut = s_.steppedOut;
+    s_.steppedOut = false;
 
     // Rule 5: down at zero, waits, rises after downSeconds (every step until the host stands it).
     if (!(in.health > 0.f)) {
@@ -1677,8 +1684,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             }
         }
         // Rule 19 (ruling of 11-16): more than kPartnerRangeStepOut inside the kit's standoff, out to its band first.
+        // Once out (within a few centimetres of the standoff), it holds there till the pause is over.
         Vec2 outTo{};
-        if (st && rangeOn && edge(in.pos, e) < t.standoffMeters - kPartnerRangeStepOut &&
+        const float at = edge(in.pos, e);
+        if (st && rangeOn &&
+            (at < t.standoffMeters - kPartnerRangeStepOut || (wasOut && at < t.standoffMeters - 0.05f)) &&
             rangeStepOut(g, t, e, in.order, in.pos, closeOn ? &in.station.cameraPos : nullptr,
                          in.station.close.bodyRadius, outTo)) {
             s_.offStation += dt;
@@ -1686,6 +1696,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             out.act = PartnerAct::StepBack;
             out.enemy = s_.target;
             out.point = outTo;
+            return out;
+        }
+        if (st && rangeOn && wasOut && at <= t.reachMeters) {
+            s_.steppedOut = true;
+            out.enemy = s_.target;
             return out;
         }
         if (st) { // rule 12: back to the station
@@ -1728,6 +1743,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         s_.targetFor = 0.0;
         s_.targetReached = false;
         s_.closeHold = {}; // rule 19: one target's flank is not carried to the next
+        wasOut = false;
     }
     s_.target = tgt;
     if (tgt >= 0 && edge(in.pos, in.enemies[static_cast<std::size_t>(tgt)]) <= t.reachMeters) s_.targetReached = true;
@@ -1772,7 +1788,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             // its band in the pause just over, it casts from where it stands (on arrival, or on its way out, or with
             // no way out), unless it is even partly behind the lead.
             const bool inside =
-                rangeOn && (s_.steppedOut || edge(in.pos, e) < t.standoffMeters - kPartnerRangeStepOut) &&
+                rangeOn && (wasOut || edge(in.pos, e) < t.standoffMeters - kPartnerRangeStepOut) &&
                 !(closeOn && rangePartlyHidden(in.station.cameraPos, in.pos, in.leadPos, in.station.close.bodyRadius));
             const bool fromHere =
                 inReach && g.roomOk(in.pos) && (!fm || seenHere) &&
@@ -1832,7 +1848,6 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         return out;
     }
     s_.drawn = false;
-    s_.steppedOut = false;
     s_.phase = Phase::String;
     s_.clock = 0.0;
     s_.begunBlows = 1;

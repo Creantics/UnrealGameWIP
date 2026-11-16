@@ -554,7 +554,7 @@ struct PartnerBrainSave {
     double frameSideAt = -1e9;     // when the held station last changed side (now's clock; kPartnerSideHoldSeconds)
     double noFrame = 0.0;          // seconds with no valid station
     bool fellBack = false;         // rule 13's fallback holds: on rules 10-11's station until a valid one is found
-    bool steppedOut = false;       // rule 19: this pause stepped out to the kit's band (the next string from anywhere)
+    bool steppedOut = false;       // rule 19: the last step stepped out to the kit's band, or held there (Pause)
     double engageFor = 0.0;        // rule 14's clock
     double lastStrike = -1e9;      // rule 16: when the last string, guard and reposition began (on now's clock)
     double lastGuard = -1e9;

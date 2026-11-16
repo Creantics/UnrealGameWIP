@@ -4406,7 +4406,7 @@ TEST_CASE("arena partner: a caster whose target keeps closing to 2 m: it casts a
         c.leadSide = -1;
         c.standMin = kPartnerCloseCasterMin;
         c.standMax = kPartnerCloseCasterMax;
-        int stepBacks = 0, leashed = 0, closings = 0;
+        int stepBacks = 0, leashed = 0, closings = 0, through = 0;
         float idleRun = 0.f, idleLongest = 0.f, nearest = 1e9f;
         bool wasStepBack = false;
         for (int k = 0; k < 30 * 60; ++k) {
@@ -4429,6 +4429,14 @@ TEST_CASE("arena partner: a caster whose target keeps closing to 2 m: it casts a
             const bool stepBack = pi.act == PartnerAct::StepBack;
             if (stepBack && !wasStepBack) ++stepBacks;
             wasStepBack = stepBack;
+            if (stepBack) { // never a walk through the target: its segment clear of the target's body
+                const Vec2 ab = sub(pi.point, r.bodies.ally);
+                const float l2 = ab.x * ab.x + ab.y * ab.y;
+                const Vec2 ap = sub(tp, r.bodies.ally);
+                const float u = l2 > 1e-8f ? std::clamp((ap.x * ab.x + ap.y * ab.y) / l2, 0.f, 1.f) : 0.f;
+                const float off = length(sub(tp, Vec2{r.bodies.ally.x + ab.x * u, r.bodies.ally.y + ab.y * u}));
+                if (off + 1e-3f < std::min(dummy.bodyRadius, length(ap))) ++through;
+            }
             if (pi.why == PartnerWhy::Leash) ++leashed;
             const bool cool = pi.why == PartnerWhy::Approach || pi.why == PartnerWhy::NoTarget ||
                               pi.why == PartnerWhy::Start || pi.why == PartnerWhy::Leash;
@@ -4445,6 +4453,7 @@ TEST_CASE("arena partner: a caster whose target keeps closing to 2 m: it casts a
         CHECK(st.partnerStrings >= 6);
         CHECK(stepBacks >= 3);
         CHECK(leashed == 0);
+        CHECK(through == 0);
         CHECK(idleLongest <= 0.5f);
     }
 }

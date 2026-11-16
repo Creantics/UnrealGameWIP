@@ -1152,6 +1152,38 @@ TEST_CASE("close station: an 8.5 / 5 caster casts from inside its standoff and s
     MESSAGE("12 runs: " << all << " strings");
 }
 
+TEST_CASE("close station: a step out to the kit's band is not carried to the next target") {
+    // An 8.5 / 5 caster 1 m off its target steps out after a string; mid step its target falls and the lead turns to
+    // another 7 m off. The step out is dropped: no string on the new target from where the walk had got to, that step.
+    CsPit p(true);
+    p.in.range = {8.5f, 5.f};
+    p.in.station.close.standMin = kPartnerCloseCasterMin;
+    p.in.station.close.standMax = kPartnerCloseCasterMax;
+    p.in.leadPos = {-1.3f, 0.f};
+    p.in.pos = {-1.4f, -1.4f};
+    p.e[1].pos = {-3.f, -8.f};
+    p.e[1].radius = 1.f;
+    csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+    const auto step2 = [&]() -> const PartnerIntent& {
+        p.in.enemies = std::span<const PartnerEnemyView>(p.e.data(), 2);
+        return p.b.step(1.0 / 60.0, p.in);
+    };
+    bool out = false;
+    for (int s = 0; s < 600 && !out; ++s) {
+        const PartnerIntent& i = step2();
+        out = i.act == PartnerAct::StepBack;
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.02f));
+    }
+    REQUIRE(out);
+    CHECK(p.b.save().steppedOut);
+    p.e[0].state = PartnerEnemyView::State::Down;
+    p.in.leadTarget = 1;
+    const PartnerIntent& i = step2();
+    CHECK_FALSE(i.act == PartnerAct::Attack);
+    CHECK_FALSE(p.b.save().steppedOut);
+}
+
 TEST_CASE("close station: the kit's range sizes the leash to its band, a melee kit's stays") {
     const PartnerTuning tu;
     PartnerInput in;
