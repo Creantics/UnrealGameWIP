@@ -61,9 +61,11 @@ struct DayShadeFrame {
 
 // Where the day's lift fades on the sun's elevation: full from fadeHighDeg up, gone from fadeLowDeg down, eased
 // between. On the elevation, not the dusk's bell, so it never comes back after the bell's peak; fadeLowDeg sits above
-// the lamps' start (NightLook::lampsOnHighDeg), so the lamps come on into a frame the lift has left.
+// the lamps' start (NightLook::lampsOnHighDeg), so the lamps come on into a frame the lift has left. highDeg 10: the
+// unshaded street falls only 3% from 17:00 to 17:15 (block 1116e: 209 -> 202), so a fade already under way at 17:15
+// (10.4 deg) would brighten it past the shaded 17:00 (137); provisional until the re-shoot.
 struct DayShadeFade {
-    float highDeg = 14.f;
+    float highDeg = 10.f;
     float lowDeg = 2.f;
 };
 
