@@ -228,38 +228,65 @@ TEST_CASE("close frame: a shoulder swap takes 0.4 s, at a constant rate, never p
     CHECK(arenaCloseShoulderStep(kArenaClose, 0.3f, 1.f, kNaN) == 0.3f);
 }
 
-TEST_CASE("close frame: through a shoulder swap a held stick keeps its basis; neutral or the blend's end hands it back") {
+TEST_CASE("close frame: through a shoulder swap a held stick keeps its basis; let go it follows, past the blend it eases back") {
     CHECK_FALSE(arenaCloseSwapping(1.f, 1.f));
     CHECK_FALSE(arenaCloseSwapping(-1.f, -1.f));
     CHECK_FALSE(arenaCloseSwapping(1.f, 0.f)); // 0 counts as right
     CHECK(arenaCloseSwapping(0.4f, -1.f));
     CHECK_FALSE(arenaCloseSwapping(kNaN, 1.f));
     // A swap right to left while the view's yaw swings 2 degrees a frame: the held stick's basis stays at 10.
+    const float dt = 1.f / 60.f;
+    const auto step = [dt](ArenaStickBasis b, float v, bool swapping, bool held) {
+        return arenaCloseStickBasis(kArenaClose, b, v, swapping, held, dt);
+    };
     float s = 1.f;
-    float basis = arenaCloseStickBasis(kNaN, 10.f, false, true);
-    CHECK(basis == 10.f);
+    ArenaStickBasis basis = step(ArenaStickBasis{}, 10.f, false, true);
+    CHECK(basis.yaw == 10.f);
     float view = 10.f;
-    int frames = 0;
-    for (; frames < 6; ++frames) {
-        s = arenaCloseShoulderStep(kArenaClose, s, -1.f, 1.f / 60.f);
+    for (int i = 0; i < 6; ++i) {
+        s = arenaCloseShoulderStep(kArenaClose, s, -1.f, dt);
         view += 2.f;
-        basis = arenaCloseStickBasis(basis, view, arenaCloseSwapping(s, -1.f), true);
-        CHECK(basis == 10.f);
+        basis = step(basis, view, arenaCloseSwapping(s, -1.f), true);
+        CHECK(basis.yaw == 10.f);
     }
     // An attack freezes the blend (no step): still swapping, still held.
-    basis = arenaCloseStickBasis(basis, view + 2.f, arenaCloseSwapping(arenaCloseShoulderStep(kArenaClose, s, -1.f, 0.f), -1.f), true);
-    CHECK(basis == 10.f);
-    // Let go mid-blend: the view's yaw; pushed again, held from there.
-    basis = arenaCloseStickBasis(basis, view, true, false);
-    CHECK(basis == view);
+    basis = step(basis, view + 2.f, arenaCloseSwapping(arenaCloseShoulderStep(kArenaClose, s, -1.f, 0.f), -1.f), true);
+    CHECK(basis.yaw == 10.f);
+    // Let go mid-blend: the view's yaw at once; pushed again, held from there.
+    basis = step(basis, view, true, false);
+    CHECK(basis.yaw == view);
     const float latched = view;
-    view += 2.f;
-    basis = arenaCloseStickBasis(basis, view, true, true);
-    CHECK(basis == latched);
-    // The blend ends: the view's yaw again, the stick still held.
-    while (arenaCloseSwapping(s, -1.f)) s = arenaCloseShoulderStep(kArenaClose, s, -1.f, 1.f / 60.f);
-    basis = arenaCloseStickBasis(basis, view, arenaCloseSwapping(s, -1.f), true);
-    CHECK(basis == view);
+    view = latched + 40.f; // the rest of the swap turns the drawn yaw 40 degrees
+    basis = step(basis, view, true, true);
+    CHECK(basis.yaw == latched);
+    // The blend ends with the stick still held: no one-frame snap, a steady ease onto the view over 0.25 s.
+    while (arenaCloseSwapping(s, -1.f)) s = arenaCloseShoulderStep(kArenaClose, s, -1.f, dt);
+    float last = basis.yaw;
+    int frames = 0;
+    while (basis.yaw != view && frames < 60) {
+        basis = step(basis, view, arenaCloseSwapping(s, -1.f), true);
+        ++frames;
+        CHECK(basis.yaw > last);
+        CHECK(basis.yaw - last <= 40.f * dt / 0.25f + 1e-3f);
+        last = basis.yaw;
+    }
+    CHECK(frames >= 14);
+    CHECK(frames <= 16);
+    CHECK(basis.rate == 0.f);
+    CHECK_FALSE(basis.lag);
+    // With no swap behind it a held stick reads the view exactly as it turns (the free camera, the lock's framing).
+    for (int i = 0; i < 5; ++i) {
+        view += 7.f;
+        basis = step(basis, view, false, true);
+        CHECK(basis.yaw == view);
+    }
+    // The short way round across the wrap: 170 to -170 is 20 degrees right.
+    ArenaStickBasis wrap{170.f, 0.f, true, true};
+    wrap = step(wrap, -170.f, false, true);
+    CHECK(wrap.yaw == doctest::Approx(170.f + 20.f * dt / 0.25f));
+    // Nothing set yet, or a NaN view: the view, or no change.
+    CHECK(step(ArenaStickBasis{}, 33.f, true, true).yaw == 33.f);
+    CHECK(step(wrap, kNaN, false, true).yaw == wrap.yaw);
 }
 
 TEST_CASE("close frame: the partner yaw turns up to 12 degrees toward the partner, keeping the lead and the target") {

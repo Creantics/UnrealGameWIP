@@ -56,6 +56,7 @@ struct ArenaCloseRules {
     float dodgeHold = 0.15f;     // s: the share is held still for a dodge's first this long
     // Shoulder.
     float swapSeconds = 0.4f;    // s: a full swap from one shoulder to the other
+    float stickEase = 0.25f;     // s: a stick held past a swap's end eases its basis onto the view over this long
     float wallRoom = 0.8f;       // share of the arm clear under which a side is blocked
     float roomFlip = 0.05f;      // share of the arm one side's room must beat the other's by to win on room alone
     // Partner.
@@ -115,10 +116,19 @@ FTCORE_API float arenaCloseShoulderStep(const ArenaCloseRules& rules, float now,
 // True while the shoulder (-1..1) has not reached `want`'s side (its sign; 0 counts as right): a swap is blending.
 FTCORE_API bool arenaCloseSwapping(float now, float want);
 
-// The stick's basis yaw (degrees) through a shoulder swap: while the swap blends and the stick is held off neutral it
-// stays at `basis` (the yaw it had before), so a held direction never turns under the player; with the stick at
-// neutral, or once the blend ends, it is the view's yaw again. A basis that is not finite gives the view's yaw.
-FTCORE_API float arenaCloseStickBasis(float basis, float viewYaw, bool swapping, bool stickHeld);
+// The stick's basis (the yaw it is read along, degrees) through a shoulder swap. While the swap blends and the stick
+// is held off neutral the basis stays where it was, so a held direction never turns under the player; let go, it is
+// the view's yaw at once (nothing is felt with no stick); held past the blend's end, it eases onto the view at a
+// steady rate that closes the gap in stickEase s (never slower, so a view that keeps turning is still caught). With
+// no hold behind it the basis is the view's yaw exactly, held stick or not (classic never swaps, so never lags).
+struct ArenaStickBasis {
+    float yaw = 0.f;
+    float rate = 0.f;  // degrees/s of the ease onto the view; 0 while holding or following
+    bool set = false;  // false: the next step takes the view's yaw
+    bool lag = false;  // true while held through a swap or easing back after one
+};
+FTCORE_API ArenaStickBasis arenaCloseStickBasis(const ArenaCloseRules& rules, ArenaStickBasis now, float viewYaw, bool swapping,
+                                                bool stickHeld, float dt);
 
 // The close partner yaw (degrees, + right): the smallest turn in 0.25 degree steps, up to partnerYawMax, that puts
 // the partner's point (relative to the pivot, as arenaFramePoint) inside the frame's width less `margin` each side,

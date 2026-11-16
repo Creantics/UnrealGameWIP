@@ -99,8 +99,19 @@ bool arenaCloseSwapping(float now, float want) {
     return finite(now) && now != to;
 }
 
-float arenaCloseStickBasis(float basis, float viewYaw, bool swapping, bool stickHeld) {
-    return swapping && stickHeld && finite(basis) ? basis : viewYaw;
+ArenaStickBasis arenaCloseStickBasis(const ArenaCloseRules& rules, ArenaStickBasis now, float viewYaw, bool swapping,
+                                     bool stickHeld, float dt) {
+    if (!finite(viewYaw)) return now;
+    const ArenaStickBasis follow{viewYaw, 0.f, true, false};
+    if (!now.set || !finite(now.yaw) || !stickHeld) return follow;
+    if (swapping) return ArenaStickBasis{now.yaw, 0.f, true, true};
+    if (!now.lag) return follow;
+    const float gap = std::remainder(viewYaw - now.yaw, 360.f); // the short way round
+    if (std::fabs(gap) < 1e-3f || !(rules.stickEase > 0.f)) return follow;
+    const float rate = std::max(finite(now.rate) ? now.rate : 0.f, std::fabs(gap) / rules.stickEase);
+    const float move = finite(dt) && dt > 0.f ? rate * dt : 0.f;
+    if (move >= std::fabs(gap)) return follow;
+    return ArenaStickBasis{now.yaw + (gap < 0.f ? -move : move), rate, true, true};
 }
 
 float arenaClosePartnerYaw(const ArenaCloseRules& rules, const ArenaLeadFrameRules& leadRules, const ArenaCameraPose& pose, float aspect,

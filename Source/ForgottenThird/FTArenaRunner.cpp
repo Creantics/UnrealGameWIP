@@ -1815,11 +1815,12 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		Forward = Right = 0.f;
 	}
 	// Along the view as drawn (the lock's framing turn included), so the lead goes where the stick points on the screen.
-	// Through a close shoulder swap a held stick keeps the basis it had until it is let go or the blend ends
-	// (ftcore::arenaCloseStickBasis), so a held direction never turns under the player; classic never swaps.
+	// Through a close shoulder swap a held stick keeps the basis it had until it is let go, and held past the blend's
+	// end eases onto the view over 0.25 s (ftcore::arenaCloseStickBasis), so a held direction never turns under the
+	// player in one frame; with no swap behind it the basis is the view's yaw exactly (classic never swaps).
 	const bool bSwapping = bCloseShape && ftcore::arenaCloseSwapping(CloseShoulder, CloseShoulderWant);
-	StickBasis = ftcore::arenaCloseStickBasis(StickBasis, ViewYaw(), bSwapping, Forward != 0.f || Right != 0.f);
-	Stick = ftcore::arenaStickToWorld(StickBasis, Forward, Right);
+	StickBasis = ftcore::arenaCloseStickBasis(ftcore::kArenaClose, StickBasis, ViewYaw(), bSwapping, Forward != 0.f || Right != 0.f, DeltaSeconds);
+	Stick = ftcore::arenaStickToWorld(StickBasis.yaw, Forward, Right);
 
 	// The view: the mouse and the right stick turn the camera unless something is locked; locked, a flick of
 	// the right stick switches the target.

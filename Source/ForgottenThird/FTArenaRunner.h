@@ -533,7 +533,7 @@ private:
 	int32 CloseTargetNow = -1;    // the target followed this frame, its distance and height (the shot log)
 	float CloseDistanceNow = -1.f;
 	float CloseHeightNow = 0.f;
-	float StickBasis = 0.f;       // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close shoulder swap)
+	ftcore::ArenaStickBasis StickBasis; // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close swap)
 #if !UE_BUILD_SHIPPING
 	void LogCloseFrameShot(const TCHAR* Shot) const;
 	int32 CloseSwaps = 0;         // shoulder picks that changed the side
