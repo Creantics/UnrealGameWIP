@@ -509,7 +509,7 @@ void FFTLeadWeapons::SpawnEffects()
 	FxName[Travel] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_bolt") : TEXT("gun_tracer");
 	FxName[Impact] = ImpactEffectOf(Kit.weapon);
 	FxName[Ward] = TEXT("spell_ward");
-	FxName[Cast] = TEXT("spell_cast");
+	FxName[WindUp] = TEXT("spell_cast");
 	switch (Kit.weapon)
 	{
 	case ftcore::ArenaWeapon::Guns:
@@ -546,12 +546,12 @@ void FFTLeadWeapons::SpawnEffects()
 		Fx[Travel] = MakeEffect(FxName[Travel], Root, NAME_None);
 		Fx[Impact] = MakeEffect(FxName[Impact], Root, NAME_None);
 		Fx[Ward] = MakeEffect(FxName[Ward], Root, NAME_None);
-		Fx[Cast] = MakeEffect(FxName[Cast], Root, NAME_None); // put at the palm each step of the wind-up
+		Fx[WindUp] = MakeEffect(FxName[WindUp], Root, NAME_None); // put at the palm each step of the wind-up
 		break;
 	case ftcore::ArenaWeapon::None:
 		break;
 	}
-	for (const EEffect E : {Travel, Impact, Cast})
+	for (const EEffect E : {Travel, Impact, WindUp})
 	{
 		if (Fx[E].IsValid())
 		{
@@ -947,12 +947,12 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		bCasting = true;
 		const USkeletalMeshComponent* Body = Skin.Get();
 		FVector Palm;
-		if (UFTVfxComponent* Vfx = Fx[Cast].Get(); Vfx && Body && PalmPoint(*Body, StrikesLeft() ? 0 : 1, Palm))
+		if (UFTVfxComponent* Vfx = Fx[WindUp].Get(); Vfx && Body && PalmPoint(*Body, StrikesLeft() ? 0 : 1, Palm))
 		{
 			Vfx->SetWorldLocationAndRotation(Palm, ConeTo(AimPoint - Palm));
 			if (LastPart != ftcore::ArenaPart::Startup || LastMove != P.move || LastAction != P.action)
 			{
-				Play(Cast, T);
+				Play(WindUp, T);
 			}
 		}
 	}
@@ -963,10 +963,10 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		bCasting = false;
 		if (!bWentActive)
 		{
-			if (UFTVfxComponent* Vfx = Fx[Cast].Get())
+			if (UFTVfxComponent* Vfx = Fx[WindUp].Get())
 			{
 				Vfx->Clear();
-				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[Cast], T);
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[WindUp], T);
 			}
 		}
 	}

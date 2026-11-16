@@ -244,7 +244,7 @@ private:
 		Travel, // the tracer or the bolt
 		Impact,
 		Ward,
-		Cast, // a spell's wind-up at the palm
+		WindUp, // a spell's wind-up at the palm
 		EffectCount,
 	};
 
