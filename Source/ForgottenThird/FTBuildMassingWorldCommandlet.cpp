@@ -1848,6 +1848,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// and -HeroShopScale=<x> scale the corner's lamp and shop slot gains (default 1); -HeroShopIn=<m>, -HeroShopUp=<m> and
 	// -HeroShopPitch=<deg> move and aim the lit rooms' shop slots, -HeroLanternGlow=<x> sets the lantern paper's strength
 	// (the spec's by default), so the corner's lighting tunes without a compile. FTBuildLots reads the rooms' own glow.
+	// More of them below (-HeroStringGain .. -HeroLanternBase).
 	const bool bHeroSubLevel = FParse::Param(*Params, TEXT("HeroSubLevel"));
 	const bool bHeroCorner = FParse::Param(*Params, TEXT("HeroCorner")) || bHeroSubLevel || bHeroOnly;
 	const bool bHeroContent = bHeroCorner && !bHeroSubLevel;
@@ -1859,6 +1860,29 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("HeroShopUp="), HeroTune.shopLightUp);
 	FParse::Value(*Params, TEXT("HeroShopPitch="), HeroTune.shopLightPitch);
 	FParse::Value(*Params, TEXT("HeroLanternGlow="), HeroTune.lanternGlow);
+	// Tune 2's own (2026-11-16): -HeroStringGain, -HeroPairGain, -HeroEntranceGain set each kind of lamp slot's gain (the
+	// spec's by default; -HeroLampScale still scales all of them), -HeroLanternScale the glazed bays' lanterns' scale (the
+	// mesh is 0.6 m tall, so 1.25 is 0.75 m), -HeroLanternColour=<r,g,b> and -HeroLanternBase=<r,g,b> the paper's glow and
+	// its unlit colour. FTBuildLots reads -HeroNorenTint and -HeroNorenBand.
+	FParse::Value(*Params, TEXT("HeroStringGain="), HeroTune.stringLampGain);
+	FParse::Value(*Params, TEXT("HeroPairGain="), HeroTune.pairLampGain);
+	FParse::Value(*Params, TEXT("HeroEntranceGain="), HeroTune.entranceLampGain);
+	FParse::Value(*Params, TEXT("HeroLanternScale="), HeroTune.largeScale);
+	const auto ParseRgb = [&Params](const TCHAR* Key, float (&Rgb)[3])
+	{
+		FString Text;
+		TArray<FString> Parts;
+		if (FParse::Value(*Params, Key, Text, false) && Text.ParseIntoArray(Parts, TEXT(","), true) == 3)
+		{
+			for (int32 K = 0; K < 3; ++K)
+			{
+				Rgb[K] = FMath::Clamp(FCString::Atof(*Parts[K]), 0.f, 4.f);
+			}
+		}
+	};
+	ParseRgb(TEXT("HeroLanternColour="), HeroTune.lanternColour);
+	ParseRgb(TEXT("HeroLanternBase="), HeroTune.lanternBase);
+	HeroTune.largeScale = FMath::Clamp(HeroTune.largeScale, 0.5, 2.0);
 	if (bHeroSubLevel && bHeroOnly)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -HeroSubLevel (the strip) and -HeroCornerOnly (the corner) are two runs."));
@@ -1965,7 +1989,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	HeroFirst = Boxes.size();
 	if (bHeroCorner)
 	{
-		ftcore::heroCornerLayout(ftcore::HeroCornerSpec{}, Hero);
+		ftcore::heroCornerLayout(HeroTune, Hero);
 		for (const ftcore::MassingBox& Bay : Hero.bays)
 		{
 			Boxes.push_back(Bay);
@@ -1979,7 +2003,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		if (FParse::Value(*Params, TEXT("HeroProbeOut="), ProbeFile) && !ProbeFile.IsEmpty())
 		{
 			ftcore::HeroProbe Probes[ftcore::kHeroMaxProbes];
-			const int ProbeCount = ftcore::heroCornerProbes(ftcore::HeroCornerSpec{}, Hero, Probes, ftcore::kHeroMaxProbes);
+			const int ProbeCount = ftcore::heroCornerProbes(HeroTune, Hero, Probes, ftcore::kHeroMaxProbes);
 			FString Csv = TEXT("name,x,y,z\n");
 			for (int P = 0; P < ProbeCount; ++P)
 			{
@@ -3407,9 +3431,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: setts %s, eave %s, %d lantern/post/cable pieces, %d lamp slots "
-			"(strings, pairs, entrances; gains x%.2f)%s."), Setts ? TEXT("MI_Surface_solhaven_granite_sett") : TEXT("MISSING (the look's paving)"),
-			Timber ? TEXT("oak plank") : TEXT("the look's"), HeroPieces, HeroLamps, HeroLampScale,
-			bNightLamps ? TEXT("") : TEXT(" (no -NightLamps, so none)"));
+			"(strings %.3f, pairs %.3f, entrances %.3f, all x%.2f)%s; glazed lanterns x%.2f, paper %.2f,%.2f,%.2f on %.2f,%.2f,%.2f at %.2f."),
+			Setts ? TEXT("MI_Surface_solhaven_granite_sett") : TEXT("MISSING (the look's paving)"), Timber ? TEXT("oak plank") : TEXT("the look's"),
+			HeroPieces, HeroLamps, HeroSpec.stringLampGain, HeroSpec.pairLampGain, HeroSpec.entranceLampGain, HeroLampScale,
+			bNightLamps ? TEXT("") : TEXT(" (no -NightLamps, so none)"), HeroSpec.largeScale, HeroSpec.lanternColour[0], HeroSpec.lanternColour[1],
+			HeroSpec.lanternColour[2], HeroSpec.lanternBase[0], HeroSpec.lanternBase[1], HeroSpec.lanternBase[2], HeroSpec.lanternGlow);
 	}
 	// Per box face (box * 4 + face), whether its middle fronts a street: the frontage reads it; the windows' shop fronts
 	// follow it.

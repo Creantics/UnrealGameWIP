@@ -59,6 +59,10 @@ struct FBuild
 	float HeroPanelGlow = 1.f;
 	float HeroWallGlow = 0.f;
 	float HeroGlowCap = 0.f;
+	// The hero koshi's noren (AddHeroLots): -HeroNorenTint=<r,g,b> the cloth (plain, no print) and -HeroNorenBand=<r,g,b>
+	// its band, display colours. The band is the piece's trim slot, so the koshi's threshold takes it too (a pale stone).
+	FLinearColor HeroNorenTint = FLinearColor(0.14f, 0.18f, 0.34f);
+	FLinearColor HeroNorenBand = FLinearColor(0.84f, 0.82f, 0.76f);
 	// Set by Place: the proof bay's ceiling fixtures (engine cm, a rotation facing down, the source's size in cm), which the
 	// massing build spawns as rect lights tagged FTNight::BayLightTag.
 	struct FBayLight

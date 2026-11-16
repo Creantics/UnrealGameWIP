@@ -35,6 +35,9 @@
 // Shop shadows: a pooled shop light within ShopShadowMetres of the camera casts (a lit room's light through its lattice
 // or mullions onto the lane), under MegaLights as the lamps; beyond it, none. Config ShopShadowMetres (15 by default;
 // 0 none); -ShopShadows=<m> for A/B (-ShopShadows=0 none).
+//
+// -LampPoolHeroFirst (stills of the hero corner): the corner sub-level's lamps and shop lights within reach are held
+// first, so a dense strip never crowds them out of the pool; logged per camera place.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -83,6 +86,12 @@ private:
 		TArray<bool> Taken;       // per picked entry: already held by a slot
 		TArray<float> Scale;      // per data index: its crowding share of the candela
 		ftcore::LightPicker Picker;
+		// The hero corner's (a set from a level named *_HeroCorner, Gather): per data index, and as a list with each one's
+		// index in its own set. Merged is -LampPoolHeroFirst's scratch, the pool's size, made with the pool.
+		TArray<bool> Hero;
+		TArray<int32> HeroIdx;
+		TArray<int32> HeroLocal;
+		TArray<uint32> Merged;
 	};
 
 	// Every AFTNightLights' points into the lists below; logs the counts per actor when they change.
@@ -134,4 +143,10 @@ private:
 	bool bPoolMade = false;
 	bool bNight = false;
 	bool bLogged = false;
+	// -LampPoolHeroFirst (eyes on the hero corner, default off): the corner's lamps and shop lights within reach take the
+	// pool first, then the nearest of the rest; a line names the corner's live slots whenever they or the camera change.
+	bool bHeroFirst = false;
+	uint32 HeroLogKey = 0;
+	FVector HeroLogAt = FVector(1e30);
+	void LogHero(const FVector& From);
 };

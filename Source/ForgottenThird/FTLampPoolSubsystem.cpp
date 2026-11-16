@@ -79,6 +79,11 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	}
 	WantLamps = FMath::Clamp(WantLamps, 0, kMaxLamps);
 	WantShops = FMath::Clamp(WantShops, 0, kMaxShops);
+	bHeroFirst = FParse::Param(Cmd, TEXT("LampPoolHeroFirst"));
+	if (bHeroFirst)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: the hero corner's lights within reach are held first (-LampPoolHeroFirst)."));
+	}
 	bActive = true;
 	// The first tick looks at the clock straight away.
 	SincePick = kPickSeconds;
@@ -92,6 +97,12 @@ void UFTLampPoolSubsystem::Gather(UWorld& World)
 	ShopYaw.Reset();
 	ShopPitch.Reset();
 	ShopGain.Reset();
+	for (FPool* Pool : {&Lamps, &Shops})
+	{
+		Pool->Hero.Reset();
+		Pool->HeroIdx.Reset();
+		Pool->HeroLocal.Reset();
+	}
 	// Every night-light set (the strip's, a streamed sub-level's) merged by ftcore::lampPoolMerge: one set gives the pool
 	// as before. Runs at BeginPlay and once more when the pool is made, never per frame.
 	TArray<const UFTNightLightData*> Sets;
@@ -135,9 +146,21 @@ void UFTLampPoolSubsystem::Gather(UWorld& World)
 		ShopSets[Si] = {ShopPts[Si].data(), ShopPts[Si].size(), Set.ShopGain.GetData(), static_cast<size_t>(Set.ShopGain.Num())};
 	}
 	std::vector<ftcore::LampPoolSlot> Slots;
+	// The hero corner's lights, by the level they came from.
+	auto MarkHero = [&Names](FPool& Pool, const ftcore::LampPoolSlot& Slot, int32 Index)
+	{
+		const bool bHero = Names[static_cast<int32>(Slot.set)].EndsWith(TEXT("_HeroCorner"));
+		Pool.Hero.Add(bHero);
+		if (bHero)
+		{
+			Pool.HeroIdx.Add(Index);
+			Pool.HeroLocal.Add(static_cast<int32>(Slot.index));
+		}
+	};
 	ftcore::lampPoolMerge(LampSets.data(), LampSets.size(), Slots);
 	for (const ftcore::LampPoolSlot& Slot : Slots)
 	{
+		MarkHero(Lamps, Slot, LampAt.Num());
 		LampAt.Add(FVector3f(static_cast<float>(Slot.at.x), static_cast<float>(Slot.at.y), static_cast<float>(Slot.at.z)));
 		LampGain.Add(Slot.gain);
 	}
@@ -160,6 +183,7 @@ void UFTLampPoolSubsystem::Gather(UWorld& World)
 	{
 		const UFTNightLightData& Set = *Sets[Slot.set];
 		const int32 I = static_cast<int32>(Slot.index);
+		MarkHero(Shops, Slot, ShopAt.Num());
 		ShopAt.Add(FVector3f(static_cast<float>(Slot.at.x), static_cast<float>(Slot.at.y), static_cast<float>(Slot.at.z)));
 		ShopYaw.Add(Set.ShopYaw[I]);
 		ShopPitch.Add(Set.ShopSlotPitch.IsValidIndex(I) ? Set.ShopSlotPitch[I] : Set.ShopPitch);
@@ -169,8 +193,8 @@ void UFTLampPoolSubsystem::Gather(UWorld& World)
 	if (Actors != GatheredFrom)
 	{
 		GatheredFrom = Actors;
-		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: merged %d night light sets:%s %d lamps, %d shops in all; %d lamp and %d shop slots claimed twice."),
-			Actors, *Counts, LampAt.Num(), ShopAt.Num(), LampClashes, ShopClashes);
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: merged %d night light sets:%s %d lamps, %d shops in all; %d lamp and %d shop slots claimed twice; hero corner %d lamps, %d shops."),
+			Actors, *Counts, LampAt.Num(), ShopAt.Num(), LampClashes, ShopClashes, Lamps.HeroIdx.Num(), Shops.HeroIdx.Num());
 	}
 }
 
@@ -293,6 +317,7 @@ void UFTLampPoolSubsystem::CreatePool()
 		Pool.Slot.Init(INDEX_NONE, Size);
 		Pool.Picked.SetNumZeroed(Size);
 		Pool.Taken.Init(false, Size);
+		Pool.Merged.SetNumZeroed(Size);
 		for (int32 I = 0; I < Size; ++I)
 		{
 			USpotLightComponent* Light = NewObject<USpotLightComponent>(Owner, NAME_None, RF_Transient);
@@ -356,8 +381,39 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 	{
 		return;
 	}
-	const int32 Count = static_cast<int32>(Pool.Picker.pick(static_cast<float>(From.X), static_cast<float>(From.Y), ReachCm,
+	int32 Count = static_cast<int32>(Pool.Picker.pick(static_cast<float>(From.X), static_cast<float>(From.Y), ReachCm,
 		static_cast<size_t>(Size), Pool.Picked.GetData()));
+	// -LampPoolHeroFirst: the hero corner's lights within reach first, then the picked rest, nearest first (no allocation:
+	// Merged is the pool's size).
+	if (bHeroFirst && Pool.HeroIdx.Num() > 0 && Pool.Merged.Num() == Size)
+	{
+		const float Reach2 = ReachCm * ReachCm;
+		int32 N = 0;
+		for (int32 H = 0; H < Pool.HeroIdx.Num() && N < Size; ++H)
+		{
+			const int32 Index = Pool.HeroIdx[H];
+			const FVector3f& At = bLamp ? LampAt[Index] : ShopAt[Index];
+			const float Dx = At.X - static_cast<float>(From.X);
+			const float Dy = At.Y - static_cast<float>(From.Y);
+			if (Dx * Dx + Dy * Dy <= Reach2)
+			{
+				Pool.Merged[N++] = static_cast<uint32>(Index);
+			}
+		}
+		for (int32 P = 0; P < Count && N < Size; ++P)
+		{
+			const int32 Index = static_cast<int32>(Pool.Picked[P]);
+			if (!Pool.Hero.IsValidIndex(Index) || !Pool.Hero[Index])
+			{
+				Pool.Merged[N++] = Pool.Picked[P];
+			}
+		}
+		for (int32 P = 0; P < N; ++P)
+		{
+			Pool.Picked[P] = Pool.Merged[P];
+		}
+		Count = N;
+	}
 	for (int32 P = 0; P < Count; ++P)
 	{
 		Pool.Taken[P] = false;
@@ -480,6 +536,58 @@ void UFTLampPoolSubsystem::Pick()
 	const FVector From = Camera->GetCameraLocation();
 	PickPool(Lamps, LampPool, true, From);
 	PickPool(Shops, ShopPool, false, From);
+	if (bHeroFirst)
+	{
+		LogHero(From);
+	}
+}
+
+void UFTLampPoolSubsystem::LogHero(const FVector& From)
+{
+	// A key over the corner's held slots; the line goes out when it changes or the camera has moved a metre (a new eye),
+	// so a still camera logs once.
+	auto Live = [](const FPool& Pool, int32 Index)
+	{
+		for (int32 S = 0; S < Pool.Slot.Num(); ++S)
+		{
+			if (Pool.Slot[S] == Index)
+			{
+				return S;
+			}
+		}
+		return static_cast<int32>(INDEX_NONE);
+	};
+	uint32 Key = 2166136261u;
+	for (const FPool* Pool : {&Lamps, &Shops})
+	{
+		for (const int32 Index : Pool->HeroIdx)
+		{
+			Key = (Key ^ static_cast<uint32>(Live(*Pool, Index) + 1)) * 16777619u;
+		}
+	}
+	if (Key == HeroLogKey && FVector::DistSquared(From, HeroLogAt) < 100.f * 100.f)
+	{
+		return;
+	}
+	HeroLogKey = Key;
+	HeroLogAt = From;
+	auto List = [&Live](const FPool& Pool, int32& Count)
+	{
+		FString Out;
+		Count = 0;
+		for (int32 H = 0; H < Pool.HeroIdx.Num(); ++H)
+		{
+			const int32 Slot = Live(Pool, Pool.HeroIdx[H]);
+			Count += Slot != INDEX_NONE ? 1 : 0;
+			Out += Slot != INDEX_NONE ? FString::Printf(TEXT(" %d"), Pool.HeroLocal[H]) : FString::Printf(TEXT(" (%d)"), Pool.HeroLocal[H]);
+		}
+		return Out;
+	};
+	int32 LiveShops = 0, LiveLamps = 0;
+	const FString ShopList = List(Shops, LiveShops);
+	const FString LampList = List(Lamps, LiveLamps);
+	UE_LOG(LogForgottenThird, Display, TEXT("LampPool: hero corner at camera (%.0f, %.0f, %.0f): shops %d/%d live:%s; lamps %d/%d live:%s (bracketed: dark)."),
+		From.X, From.Y, From.Z, LiveShops, Shops.HeroIdx.Num(), *ShopList, LiveLamps, Lamps.HeroIdx.Num(), *LampList);
 }
 
 void UFTLampPoolSubsystem::Tick(float DeltaTime)

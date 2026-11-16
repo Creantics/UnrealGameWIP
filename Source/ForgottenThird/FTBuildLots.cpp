@@ -636,6 +636,18 @@ bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::s
 	FParse::Value(Params, TEXT("HeroPanelGlow="), Out.HeroPanelGlow);
 	FParse::Value(Params, TEXT("HeroWallGlow="), Out.HeroWallGlow);
 	FParse::Value(Params, TEXT("HeroGlowCap="), Out.HeroGlowCap);
+	const auto ParseRgb = [Params](const TCHAR* Key, FLinearColor& Rgb)
+	{
+		FString Value;
+		TArray<FString> Parts;
+		if (FParse::Value(Params, Key, Value, false) && Value.ParseIntoArray(Parts, TEXT(","), true) == 3)
+		{
+			Rgb = FLinearColor(FMath::Clamp(FCString::Atof(*Parts[0]), 0.f, 1.f), FMath::Clamp(FCString::Atof(*Parts[1]), 0.f, 1.f),
+				FMath::Clamp(FCString::Atof(*Parts[2]), 0.f, 1.f));
+		}
+	};
+	ParseRgb(TEXT("HeroNorenTint="), Out.HeroNorenTint);
+	ParseRgb(TEXT("HeroNorenBand="), Out.HeroNorenBand);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: lit rooms' panels glow %.2f, back walls %.2f, cap %s."), Out.HeroPanelGlow,
 		Out.HeroWallGlow, Out.HeroGlowCap > 0.f ? *FString::Printf(TEXT("%.2f"), Out.HeroGlowCap) : TEXT("the master's"));
 	const int RunIndex = static_cast<int>(Out.Plan.runs.size());
@@ -928,6 +940,54 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				{
 					Use.TimberMaterials[S] = TimberShutter;
 				}
+			}
+		}
+		// The hero koshi's noren: plain cloth in its own colour (no print: the kit's cloth map left off) and a pale band
+		// (its trim slot, else the timber stain). Each of its slots is logged with what it wears and that one's tint, so
+		// the build log shows the cloth's route before any still is shot.
+		const auto Plain = [&](const TCHAR* Name, const FLinearColor& Tint, float Rough)
+		{
+			UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
+			Mic->SetParentEditorOnly(Master);
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Slot")), 9.f);
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), Rough);
+			Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HasMR")), 0.f);
+			Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Tint")), Tint);
+			Mic->PostEditChange();
+			return Mic;
+		};
+		UMaterialInstanceConstant* const Noren = Plain(TEXT("MI_HC_Noren"), Build.HeroNorenTint, 0.92f);
+		UMaterialInstanceConstant* const NorenBand = Plain(TEXT("MI_HC_NorenBand"), Build.HeroNorenBand, 0.85f);
+		for (int32 K = 0; K < Uses.Num(); ++K)
+		{
+			FPieceUse& Use = Uses[K];
+			if (!Use.Mesh || Build.Kit.pieces[static_cast<size_t>(K)].id != "SHOP_KOSHI_54")
+			{
+				continue;
+			}
+			for (int32 S = 0; S < Use.SlotNames.Num() && S < Use.TimberMaterials.Num(); ++S)
+			{
+				const FString& Name = Use.SlotNames[S];
+				if (Name == TEXT("jpk_cloth"))
+				{
+					Use.TimberMaterials[S] = Noren;
+				}
+				else if (Name == TEXT("jpk_trim"))
+				{
+					Use.TimberMaterials[S] = NorenBand;
+				}
+				UMaterialInterface* const Wears = Use.TimberMaterials[S];
+				FLinearColor Tint(-1.f, -1.f, -1.f);
+				UTexture* Map = nullptr;
+				if (Wears)
+				{
+					Wears->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Tint")), Tint);
+					Wears->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("BaseColorTexture")), Map);
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: SHOP_KOSHI_54 on a timber lot: mesh slot %d (%s, imported %s) wears %s, tint %.2f,%.2f,%.2f, map %s."),
+					S, *Name, Use.Mesh->GetStaticMaterials().IsValidIndex(S) && Use.Mesh->GetStaticMaterials()[S].MaterialInterface
+						? *Use.Mesh->GetStaticMaterials()[S].MaterialInterface->GetName() : TEXT("-"),
+					Wears ? *Wears->GetName() : TEXT("nothing"), Tint.R, Tint.G, Tint.B, Map ? *Map->GetName() : TEXT("-"));
 			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: %d timber lots: timber frames and trims, plaster walls, weathered shutters."),

@@ -633,6 +633,24 @@ void UFTWorldEyeShotSubsystem::PlaceLead(const FVector& At)
 	const bool bMoved = Lead->SetActorLocation(At, false, nullptr, ETeleportType::TeleportPhysics);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: lead %s %s at engine %s."), *Lead->GetName(), bMoved ? TEXT("set") : TEXT("NOT set"),
 		*Lead->GetActorLocation().ToString());
+#if !UE_BUILD_SHIPPING
+	// -WorldEyeLeadFace=eye|away: the placed lead turns (yaw only) to face the eye or to face away from it, for a face still
+	// or an over-the-shoulder one. The controller turns with him so the pawn keeps the yaw. Not in a shipped build.
+	FString Face;
+	if (Eye && FParse::Value(FCommandLine::Get(), TEXT("WorldEyeLeadFace="), Face) && (Face == TEXT("eye") || Face == TEXT("away")))
+	{
+		FVector ToEye = Eye->GetActorLocation() - Lead->GetActorLocation();
+		ToEye.Z = 0.0;
+		if (!ToEye.IsNearlyZero())
+		{
+			const FRotator Yaw(0.0, (Face == TEXT("eye") ? ToEye : -ToEye).Rotation().Yaw, 0.0);
+			Lead->SetActorRotation(Yaw, ETeleportType::TeleportPhysics);
+			Player->SetControlRotation(Yaw);
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: lead turned to yaw %.1f (%s the eye)."), Yaw.Yaw,
+				Face == TEXT("eye") ? TEXT("facing") : TEXT("away from"));
+		}
+	}
+#endif
 }
 
 bool UFTWorldEyeShotSubsystem::StartNextEye()
