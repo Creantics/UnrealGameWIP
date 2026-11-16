@@ -5480,11 +5480,11 @@ TEST_CASE("arena partner: the close lens's near field, the shipped titan in cont
             MESSAGE("titan 2.2 at " << centre << " seed " << seed << ": " << titanLine(o));
             titanChecks(o);
             CHECK(o.crossings == 0);
-            if (centre < 4.f) { // in contact (before the minors of 11-16: 44 steps behind the lead and 12 behind the target
-                                // walking on seeds 7-8)
-                CHECK(o.hiddenLead <= 6);
-                CHECK(o.hiddenTarget == 0);
-            }
+            // Never behind the target (before the minors of 11-16: 93-138 steps at 5 m on seeds 4-6, the step out
+            // into its shadow).
+            CHECK(o.hiddenTarget == 0);
+            if (centre < 4.f) CHECK(o.hiddenLead <= 6); // in contact (before: 44 steps behind the lead and 12 behind
+                                                        // the target walking on seeds 7-8)
         }
     }
 }

@@ -288,9 +288,6 @@ inline constexpr float kPartnerSteerClear = 0.6f;
 // wider, this much at a time (m), up to kPartnerNearRoundMax more; samples nearer than a step to its start are skipped.
 inline constexpr float kPartnerNearRoundStep = 0.5f;
 inline constexpr float kPartnerNearRoundMax = 3.f;
-// Rule 19's near field: off a tall target, a clear spot this near (m) its station is held between strings rather
-// than a step out to a band point no better.
-inline constexpr float kPartnerNearHoldMeters = 0.5f;
 // Rule 18: StayClose's growth by a tall target ends only when its edge is this far (m) past closeLeadMeters.
 inline constexpr float kPartnerTallGrowHysteresis = 0.5f;
 // Rule 13: within this long (s) of the held station's last change of side, a new pick keeps to its side (none valid

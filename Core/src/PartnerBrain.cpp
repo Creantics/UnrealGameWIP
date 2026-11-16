@@ -1846,12 +1846,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         const bool steps = st && rangeOn && stepping &&
                            (stationFramed || rangeStepOut(g, t, e, in.order, in.pos, closeOn ? &in.station.cameraPos : nullptr,
                                                           in.station.close.bodyRadius, nr, outTo, &outRank));
-        // Off a tall target, at rule 19's station (legal, the frame clear of the target there) it holds rather than step
-        // out to a band point that is no better (none in the cap, in frame and clear of the lead and the target): that
-        // walk would go into the target's shadow and the next string would start back here.
+        // Off a tall target, where it stands legal (rule 19 has a station, the spot is in rule 1 and the frame clear of
+        // the target there) and in reach, it holds rather than step out to a band point that is no better (none in the
+        // cap, in frame and clear of the lead and the target): that walk would go into the target's shadow.
         const bool holdTall = steps && !stationFramed && outRank > 0 && nearField && fm && tallView(e) && stationHas &&
-                              dist(in.pos, framedStation) <= kPartnerNearHoldMeters && spotOk(in.pos) &&
-                              fr.clear(&e, in.pos) && at <= t.reachMeters;
+                              spotOk(in.pos) && fr.clear(&e, in.pos) && at <= t.reachMeters;
         if (holdTall) {
             s_.steppedOut = true;
             out.enemy = s_.target;
