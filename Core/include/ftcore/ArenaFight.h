@@ -298,6 +298,7 @@
 #include "ftcore/Load.h"
 #include "ftcore/LoneCarry.h"
 #include "ftcore/PartnerCamera.h"
+#include "ftcore/PartnerCloseStation.h" // PartnerCloseView
 #include "ftcore/PressReason.h"
 #include "ftcore/ReadCards.h"
 
@@ -861,6 +862,11 @@ struct ArenaInput {
     // on whatever cameraOn says, the station view takes this camera's place and forward on the ground (cameraPos and
     // cameraFacing unused), and the brain keeps its stations in this camera's frame.
     PartnerCameraView partnerCamera{};
+    // The close camera (CameraPresetId::Close) for the partner's station (PartnerBrain rule 19;
+    // ftcore/PartnerCloseStation.h): given, with stationing on, the partner stands between actions ahead of the lead
+    // on a flank of its target, inside this lens. Not given (the default): as before, to the bit. The walls' span must
+    // outlive the step.
+    PartnerCloseView partnerClose{};
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).

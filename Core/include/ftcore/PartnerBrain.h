@@ -224,6 +224,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/PartnerCamera.h" // PartnerVec3, PartnerCameraView
+#include "ftcore/PartnerCloseStation.h" // rule 19
 #include "ftcore/Explore.h"
 
 #include <array>
@@ -285,6 +286,7 @@ struct PartnerStationView {
     Vec2 arenaCentre{};
     float arenaRadius = 0.f; // where the partner may stand (its body's margin taken off); 0: unbounded
     PartnerCameraView camera{}; // rules 13-16; not given by default
+    PartnerCloseView close{};   // rule 19 (the close camera); not given by default
 };
 
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
@@ -509,6 +511,8 @@ struct PartnerBrainSave {
     std::uint8_t tallGrowOn = 0;   // rule 18: the targets growing StayClose's cap now, a bit each (with hysteresis)
     bool holdsFramed = false;      // framed with the framing holds on (a tall enemy in the fight, or rule 17's
                                    // circling) since begin (sticky): bottom margin and side hold steer, hashed from then
+    bool closeUsed = false;        // rule 19: the close camera was given since begin (sticky; its hold hashed from then)
+    PartnerCloseHold closeHold{};  // rule 19: the flank held (PartnerCloseStation.h)
     static_assert(kMaxPartnerEnemies <= 8 && kMaxArenaEnemies <= 8, "tallGrowOn: a bit per target in 8 bits");
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};
