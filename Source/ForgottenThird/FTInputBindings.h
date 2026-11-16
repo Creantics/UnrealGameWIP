@@ -257,7 +257,8 @@ inline bool WasJustPressed(const APlayerController& PC, ftcore::InputAction Acti
 }
 
 // The device the player used last: a bound pad button or a pushed stick picks the pad; a bound key, a mouse button or
-// a mouse move picks the keyboard. Starts on the keyboard. Call it each frame the controls line is drawn.
+// a mouse move picks the keyboard. Starts on the keyboard. Call it each frame the controls line is drawn. The device
+// returned is the one the prompts show: the Button prompts setting may hold one whatever was used last.
 inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 {
 	static ftcore::InputDevice Last = ftcore::InputDevice::Keys;
@@ -290,7 +291,11 @@ inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 	{
 		Last = ftcore::InputDevice::Keys;
 	}
-	return Last;
+	// The Button prompts row: Last used follows the device, Keyboard or Controller holds one.
+	const UWorld* World = PC->GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	const UFTSettingsSubsystem* Settings = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	return ftcore::uiPromptDevice(Settings ? Settings->Get().glyphMode : ftcore::UiGlyphMode::Auto, Last);
 }
 
 // A screen's controls line on a device, built from the table (ftcore::inputHintLine) with the words from ui.json

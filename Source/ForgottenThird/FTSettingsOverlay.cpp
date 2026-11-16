@@ -6,6 +6,7 @@
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 
+#include "FTNewUi.h"
 #include "FTSettingsSubsystem.h"
 
 namespace
@@ -26,7 +27,7 @@ const FString kRightSet(TEXT(">"));
 
 void FT::DrawSettingsOverlay(AHUD& Hud, UCanvas* Canvas, UFTSettingsSubsystem& Settings)
 {
-	if (!Canvas || !Settings.IsOpen())
+	if (!Canvas || FT::EnsureMenuScreens() || !Settings.IsOpen()) // the new UI's screen draws it, on the viewport
 	{
 		return;
 	}

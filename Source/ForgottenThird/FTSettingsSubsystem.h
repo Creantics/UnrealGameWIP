@@ -68,6 +68,13 @@ public:
 	// Where the HUD drew a row, and the column of its value (clicks left of ValueMid but right of
 	// ValueLeft step down, any other click on the row steps up).
 	void SetRowRect(int32 Row, const FBox2D& Box) { RowRects[Row] = Box; }
+	// Where the new screen drew a section's name (ftcore::SettingsGroup order): a click there selects the section's
+	// first row. Empty boxes (the old overlay draws no sections) take no clicks.
+	void SetSectionRect(int32 Group, const FBox2D& Box) { SectionRects[Group] = Box; }
+	// Selects a row (the new screen's capture switch picks a section with it).
+	void SelectRow(int32 Row);
+	// The first row of a section, in screen order.
+	static int32 FirstRowOf(int32 Group);
 	void SetValueColumn(float Left, float Mid)
 	{
 		ValueLeft = Left;
@@ -96,6 +103,7 @@ private:
 	TArray<FString> RowLabels;
 	TArray<FString> RowValues;
 	TArray<FBox2D> RowRects;
+	TArray<FBox2D> SectionRects;
 	float ValueLeft = 0.f;
 	float ValueMid = 0.f;
 	FVector2D LastMouse = FVector2D(-1.0, -1.0);

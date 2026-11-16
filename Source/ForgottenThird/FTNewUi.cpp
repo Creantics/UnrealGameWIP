@@ -7,6 +7,8 @@
 #include "FTExploreCharacter.h"
 #include "ForgottenThird.h"
 #include "FTInputBindings.h"
+#include "FTPauseSubsystem.h"
+#include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
@@ -254,7 +256,7 @@ struct FUiWorldRow
 struct FUiTable
 {
 	ftcore::UiStyle Style;
-	FUiWorldRow Row[ftcore::kUiWorldCount];
+	FUiWorldRow Row[ftcore::kUiPaletteCount][ftcore::kUiWorldCount]; // by the player's palette, then the world
 	FLinearColor Edge;
 };
 
@@ -274,13 +276,13 @@ const FUiTable& Table()
 				UE_LOG(LogTemp, Warning, TEXT("FTNewUi: %s: %s (the built-in style is used)"), *File, *FT::ToFString(Error));
 			}
 		}
-		// Every world's row; the shown one is picked per frame (ShownWorld). The default palette: the player's choice of
-		// palette has no setting on the screens yet.
-		const ftcore::UiPalette Pal = ftcore::UiPalette::Default;
+		// Every palette's and world's row; the shown one is picked per frame (ShownPalette, ShownWorld).
+		for (size_t P = 0; P < ftcore::kUiPaletteCount; ++P)
 		for (size_t W = 0; W < ftcore::kUiWorldCount; ++W)
 		{
+			const ftcore::UiPalette Pal = static_cast<ftcore::UiPalette>(P);
 			const ftcore::UiWorld World = static_cast<ftcore::UiWorld>(W);
-			FUiWorldRow& R = T.Row[W];
+			FUiWorldRow& R = T.Row[P][W];
 			for (size_t I = 0; I < ftcore::kUiTokenCount; ++I)
 			{
 				R.Token[I] = LinOf(ftcore::uiColor(T.Style, World, Pal, static_cast<UiToken>(I)));
@@ -323,7 +325,28 @@ ftcore::UiWorld ShownWorld()
 #endif
 }
 
-const FUiWorldRow& Shown() { return Table().Row[static_cast<size_t>(ShownWorld())]; }
+// The player's palette (the Colours row), set by the settings subsystem on every change (FT::SetUiPalette); outside
+// Shipping -UiPalette=<0..4> holds one for captures.
+std::atomic<uint8> GUiPalette{0};
+
+ftcore::UiPalette ShownPalette()
+{
+#if !UE_BUILD_SHIPPING
+	static const int32 Forced = []
+	{
+		int32 V = -1;
+		FParse::Value(FCommandLine::Get(), TEXT("-UiPalette="), V);
+		return V < static_cast<int32>(ftcore::kUiPaletteCount) ? V : -1;
+	}();
+	if (Forced >= 0)
+	{
+		return static_cast<ftcore::UiPalette>(Forced);
+	}
+#endif
+	return static_cast<ftcore::UiPalette>(FMath::Min<uint8>(GUiPalette.load(std::memory_order_relaxed), static_cast<uint8>(ftcore::kUiPaletteCount - 1)));
+}
+
+const FUiWorldRow& Shown() { return Table().Row[static_cast<size_t>(ShownPalette())][static_cast<size_t>(ShownWorld())]; }
 
 FLinearColor Tok(UiToken T, float Alpha = 1.f)
 {
@@ -4908,7 +4931,7 @@ public:
 		HiddenFor = 0.f;
 		Shown = D;
 		const FVector2f Size = Geometry.GetLocalSize();
-		const float Scale = FMath::Clamp(D->GetSubtitleScale(), 1.f, 2.f); // the text scale setting's range
+		const float Scale = FMath::Clamp(D->GetSubtitleScale(), ftcore::Settings::kMinSubtitleScale, ftcore::Settings::kMaxSubtitleScale);
 		if (WrappedSerial != D->GetBeatSerial() || WrappedBeat != View.beatRevision || WrappedSize != Size || WrappedScale != Scale)
 		{
 			Rewrap(*D, Size, Scale);
@@ -5049,7 +5072,7 @@ public:
 		const FLinearColor Body = View.kind == ftcore::DialogueViewKind::Direction ? Tok(UiToken::InkDim) : Tok(UiToken::Ink);
 		const int32 RevealedUnits = CpToUnit.Num() > 0 ? CpToUnit[FMath::Min(static_cast<int32>(View.revealedChars), CpToUnit.Num() - 1)] : 0;
 		float LastRight = CX;
-		const FLinearColor SpeakerC = Table().Row[static_cast<size_t>(ShownWorld())].Fill; // the speaker in the world's fill
+		const FLinearColor SpeakerC = Shown().Fill; // the speaker in the world's fill
 		for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
 		{
 			const float Lead = I == PageFirst ? SpeakerW : 0.f; // the speaker heads each page
@@ -5156,7 +5179,7 @@ private:
 			ftcore::UiColor Pic;
 			if (PictureBrightest(SubRead, DimSize, Pic))
 			{
-				const ftcore::UiColor Ink = ftcore::uiColor(Table().Style, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
+				const ftcore::UiColor Ink = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), UiToken::Ink);
 				float Bare = 0.f, Banded = 0.f;
 				SubBand = FMath::Max(SubBand, ftcore::uiSubtitleBand(Ink, Pic, &Bare, &Banded));
 				UE_LOG(LogForgottenThird, Display, TEXT("UI: subtitle contrast %.2f over the picture (%.2f over the band); band %.2f."), Bare, Banded, SubBand);
@@ -5194,8 +5217,8 @@ private:
 			return -1.f; // an all-black read is no picture yet: read again next frame
 		}
 		const ftcore::UiStyle& St = Table().Style;
-		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
-		const ftcore::UiColor Back = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Backing);
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Ink);
+		const ftcore::UiColor Back = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Backing);
 		const float Need = ftcore::uiOptionDim(St, Ink, Back, Pic);
 		UE_LOG(LogForgottenThird, Display, TEXT("UI: conversation gradient %.2f (this beat needs %.2f over the lower screen's brightest tenth (%.2f, %.2f, %.2f), %dx%d px read)."),
 			FMath::Max(ConvTarget(), Need), Need, Pic.r, Pic.g, Pic.b, Rc.Width(), Rc.Height());
@@ -6025,7 +6048,7 @@ private:
 		bReadWanted = false;
 		LastRead = Time;
 		const ftcore::UiStyle& St = Table().Style;
-		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Ink);
 		const ftcore::UiColor None{0.f, 0.f, 0.f, 0.f};
 		ftcore::UiColor Pic;
 		float SubRatio = -1.f, SubWith = -1.f, ObjRatio = -1.f, NoteRatio = -1.f;
@@ -6124,6 +6147,535 @@ private:
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line;
 };
+
+// The pause menu and the settings screen (the new UI, FT::NewUiEnabled; 2026-11-16 ruling, item B): one leaf widget on
+// the game viewport (FT::EnsureMenuScreens, from the Canvas overlays' entry points, which then draw nothing). Words on
+// the left over the world, no panels: the paused world under a light dim and a shade that fades out to the right of the
+// words. The selection is the r19 value line under the word, in the world's fill, with its square ink end cap. The pause
+// list (Resume, Settings, Quit to Title, Quit Game; a greyed item at kMenuOffInk) or, in its place, a quit item's Yes / No
+// prompt. Settings: its six sections on one line under the title (measured: they fit at 200% text at 1080), the selected
+// row's section marked; under them that section's rows, label and value, the value's two chevrons on the selected row;
+// Back under the rows; a hint at the foot. Everything is drawn at the Text size row's scale (a live preview) and in the
+// Colours row's palette (FT::SetUiPalette). Input stays with the subsystems (controller events); this widget reports
+// where it drew each row, button and section in viewport pixels and passes the mouse on for hover.
+// Non-shipping: -UiMenuShot=<file prefix> opens the menu after -UiMenuShotDelay= s (8) on the map's own HUD, takes the
+// still 1.5 s later and quits; -UiMenuShotOf=pause|settings (settings); -UiMenuShotSection=<0..5> picks the section;
+// -UiTextScale=<100..200> holds the screens' text size; -UiPalette=<0..4> the palette (ShownPalette).
+const FTUiText kMenuPauseTitleUi(TEXT("pause.title"));
+const FTUiText kMenuResumeUi(TEXT("pause.resume"));
+const FTUiText kMenuSettingsUi(TEXT("pause.settings"));
+const FTUiText kMenuQuitTitleUi(TEXT("pause.quit_title"));
+const FTUiText kMenuQuitGameUi(TEXT("pause.quit_game"));
+const FTUiText kMenuAskTitleUi(TEXT("pause.ask_title"));
+const FTUiText kMenuAskGameUi(TEXT("pause.ask_game"));
+const FTUiText kMenuAskNoteUi(TEXT("pause.ask_note"));
+const FTUiText kMenuYesUi(TEXT("pause.yes"));
+const FTUiText kMenuNoUi(TEXT("pause.no"));
+const FTUiText kMenuHintUi(TEXT("pause.hint"));
+const FTUiText kMenuAskHintUi(TEXT("pause.ask_hint"));
+const TCHAR* const kMenuSettingsTitle = TEXT("Settings");
+const TCHAR* const kMenuSettingsHint = TEXT("Left / Right: change    Esc: back (saved)");
+
+constexpr float kMenuOffInk = 0.4f;    // a greyed pause item
+constexpr float kMenuRestInk = 0.85f;  // a row, section or button not selected
+constexpr float kMenuDim = 0.35f;      // the whole paused world, in the backing colour
+constexpr float kMenuShade = 0.6f;     // the shade under the words, fading to nothing at its right end
+constexpr float kMenuLineW = 3.f;      // the selection's value line
+constexpr float kMenuLineDrop = 12.f;  // under the word's baseline
+constexpr float kMenuTitleTop = 150.f; // the title's top, down from the top
+constexpr float kMenuRowStep = 1.85f;  // a row's step, in its capitals' ascent
+constexpr int32 kMenuMaxShown = static_cast<int32>(ftcore::kSettingsRowCount);
+
+class SFTMenuScreens : public SLeafWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SFTMenuScreens) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		SetVisibility(EVisibility::HitTestInvisible);
+		if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			std::atomic<bool>* Flush = &TextRuns.bFlush;
+			FontRelease = FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().AddLambda(
+				[Flush](const FSlateFontCache&) { Flush->store(true); });
+		}
+#if !UE_BUILD_SHIPPING
+		const TCHAR* Cmd = FCommandLine::Get();
+		bShot = FParse::Value(Cmd, TEXT("UiMenuShot="), ShotPrefix);
+		FString Of;
+		FParse::Value(Cmd, TEXT("UiMenuShotOf="), Of);
+		bShotPause = Of.Equals(TEXT("pause"), ESearchCase::IgnoreCase);
+		FParse::Value(Cmd, TEXT("UiMenuShotDelay="), ShotDelay);
+		FParse::Value(Cmd, TEXT("UiMenuShotSection="), ShotSection);
+		ShotSection = FMath::Clamp(ShotSection, 0, static_cast<int32>(ftcore::kSettingsGroupCount) - 1);
+		int32 Forced = 0;
+		if (FParse::Value(Cmd, TEXT("UiTextScale="), Forced))
+		{
+			ForcedTextScale = FMath::Clamp(Forced, ftcore::Settings::kMinTextScale, ftcore::Settings::kMaxTextScale) / 100.f;
+		}
+#endif
+	}
+
+	virtual ~SFTMenuScreens() override
+	{
+		if (FontRelease.IsValid() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().Remove(FontRelease);
+		}
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1920.0, 1080.0); }
+
+	virtual void Tick(const FGeometry& Geometry, const double, const float) override
+	{
+		UGameViewportClient* VC = GEngine ? GEngine->GameViewport : nullptr;
+		UWorld* World = VC ? VC->GetWorld() : nullptr;
+		UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+		UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+		UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+		APlayerController* PC = GI ? GI->GetFirstLocalPlayerController() : nullptr;
+		TickShot(World, Pause, Set, PC);
+		bSettings = Set && Set->IsOpen();
+		bPause = !bSettings && Pause && Pause->IsOpen();
+		if (!bSettings && !bPause)
+		{
+			return;
+		}
+		const FVector2f Size = Geometry.GetLocalSize();
+		if (Size.X <= 0.f || Size.Y <= 0.f)
+		{
+			return;
+		}
+		float T = Set ? Set->Get().uiTextScale() : 1.f;
+#if !UE_BUILD_SHIPPING
+		T = ForcedTextScale > 0.f ? ForcedTextScale : T;
+#endif
+		if (Size.Y != BuiltHeight || T != BuiltScale)
+		{
+			BuiltHeight = Size.Y;
+			BuiltScale = T;
+			BuildFonts(Size.Y, T, Set);
+		}
+		S = FMath::Max(0.25f, Size.Y / 1080.f);
+		ShownSize = Size;
+		FVector2D VP(Size.X, Size.Y);
+		if (VC)
+		{
+			VC->GetViewportSize(VP);
+		}
+		ToVpX = static_cast<float>(VP.X) / Size.X;
+		ToVpY = static_cast<float>(VP.Y) / Size.Y;
+		if (bSettings)
+		{
+			LayoutSettings(*Set);
+		}
+		else
+		{
+			LayoutPause(*Pause);
+		}
+		float MX = 0.f;
+		float MY = 0.f;
+		if (PC && PC->GetMousePosition(MX, MY))
+		{
+			if (bSettings)
+			{
+				Set->UpdateHover(FVector2D(MX, MY));
+			}
+			else
+			{
+				Pause->UpdateHover(FVector2D(MX, MY));
+			}
+		}
+	}
+
+	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
+		const FWidgetStyle&, bool) const override
+	{
+		if ((!bSettings && !bPause) || BuiltHeight <= 0.f)
+		{
+			return Layer;
+		}
+		FTextRuns* Runs = UiTextCacheOn() ? &TextRuns : nullptr;
+		if (Runs)
+		{
+			Runs->BeginFrame();
+		}
+		const FVector2f Size = Geometry.GetLocalSize();
+		const FPainter P{Geometry, Out, Layer, S, false, Runs};
+		Mesh.Begin(Geometry, S);
+		Mesh.Rect(0.f, 0.f, Size.X, Size.Y, Tok(UiToken::Backing, kMenuDim), false);
+		Mesh.Band(0.f, 0.f, ShadeRight, Size.Y, false, false, 1.f, kMenuShade, Tok(UiToken::Backing, 1.f));
+		if (bSettings)
+		{
+			PaintSettings(P);
+		}
+		else
+		{
+			PaintPause(P);
+		}
+		Mesh.Flush(Out, Layer + 1);
+		return Layer + 5;
+	}
+
+private:
+	static FSlateFontInfo Tracked(UiTextRole Role, float H, float T)
+	{
+		return FontFor(Role, H, T);
+	}
+
+	static FString CasedFor(UiTextRole Role, const FString& In)
+	{
+		return Table().Style.text[static_cast<size_t>(Role)].upper ? In.ToUpper() : In;
+	}
+
+	void BuildFonts(float H, float T, const UFTSettingsSubsystem* Set)
+	{
+		const TSharedRef<FSlateFontMeasure> FM = FontMeasure();
+		const auto Asc = [&FM](const FSlateFontInfo& F) { return FM->GetMaxCharacterHeight(F) + FM->GetBaseline(F); };
+		TitleFont = Tracked(UiTextRole::Title, H, T);
+		TitleAsc = Asc(TitleFont);
+		HeadFont = Tracked(UiTextRole::Heading, H, T);
+		HeadAsc = Asc(HeadFont);
+		HeadEm = HeadFont.Size / 0.75f;
+		RowFont = Tracked(UiTextRole::Label, H, T);
+		RowAsc = Asc(RowFont);
+		RowEm = RowFont.Size / 0.75f;
+		NoteFont = Tracked(UiTextRole::Label, H, T);
+		NoteFont.Size *= 0.85f;
+		NoteAsc = Asc(NoteFont);
+
+		PauseTitle = CasedFor(UiTextRole::Title, kMenuPauseTitleUi.Get());
+		const FTUiText* const Items[UFTPauseSubsystem::RowCount] = {&kMenuResumeUi, &kMenuSettingsUi, &kMenuQuitTitleUi, &kMenuQuitGameUi};
+		MaxItemW = 0.f;
+		for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+		{
+			ItemWord[I] = CasedFor(UiTextRole::Label, Items[I]->Get());
+			ItemW[I] = TextWidth(ItemWord[I], RowFont);
+			MaxItemW = FMath::Max(MaxItemW, ItemW[I]);
+		}
+		AskTitle = kMenuAskTitleUi.Get();
+		AskGame = kMenuAskGameUi.Get();
+		AskNote = kMenuAskNoteUi.Get();
+		YesWord = CasedFor(UiTextRole::Label, kMenuYesUi.Get());
+		NoWord = CasedFor(UiTextRole::Label, kMenuNoUi.Get());
+		YesW = TextWidth(YesWord, RowFont);
+		NoW = TextWidth(NoWord, RowFont);
+		AskW = FMath::Max3(TextWidth(AskTitle, HeadFont), TextWidth(AskGame, HeadFont), TextWidth(AskNote, NoteFont));
+		PauseHint = kMenuHintUi.Get();
+		AskHint = kMenuAskHintUi.Get();
+
+		SettingsTitle = CasedFor(UiTextRole::Title, FString(kMenuSettingsTitle));
+		SettingsHint = FString(kMenuSettingsHint);
+		float X = 0.f;
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			SectionWord[G] = CasedFor(UiTextRole::Heading, FString(UTF8_TO_TCHAR(ftcore::settingsGroupLabel(static_cast<ftcore::SettingsGroup>(G)))));
+			SectionW[G] = TextWidth(SectionWord[G], HeadFont);
+			SectionX[G] = X; // from the margin
+			X += SectionW[G] + HeadEm; // one em between names
+		}
+		SectionLineW = X - HeadEm;
+		MaxLabelW = 0.f;
+		for (int32 R = 0; R < UFTSettingsSubsystem::RowCount; ++R)
+		{
+			LabelW[R] = Set ? TextWidth(Set->GetRowLabel(R), RowFont) : 0.f;
+			MaxLabelW = FMath::Max(MaxLabelW, LabelW[R]);
+		}
+#if !UE_BUILD_SHIPPING
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: menu fonts at text %.0f%%: section line %.0f of %.0f px usable (height %.0f)."), T * 100.f,
+			SectionLineW, FMath::Max(0.f, ShownSize.X - 2.f * Hud::Margin * FMath::Max(0.25f, H / 1080.f)), H);
+#endif
+	}
+
+	FBox2D ToVp(float X0, float Y0, float X1, float Y1) const
+	{
+		return FBox2D(FVector2D(X0 * ToVpX, Y0 * ToVpY), FVector2D(X1 * ToVpX, Y1 * ToVpY));
+	}
+
+	// A word's hit box: the capitals with a little air round them.
+	FBox2D WordBox(float X, float Top, float W, float Asc) const
+	{
+		return ToVp(X - 16.f * S, Top - 0.35f * Asc, X + W + 16.f * S, Top + 1.45f * Asc);
+	}
+
+	void LayoutPause(UFTPauseSubsystem& Pause)
+	{
+		const ftcore::PauseMenu& Menu = Pause.GetMenu();
+		X0 = Hud::Margin * S;
+		TitleTop = kMenuTitleTop * S;
+		const float First = TitleTop + TitleAsc + 72.f * S;
+		const float Step = kMenuRowStep * RowAsc;
+		bConfirm = Menu.confirming();
+		bAskGame = Menu.selected() == ftcore::PauseItem::QuitGame;
+		bYes = Menu.confirmYes();
+		Selected = static_cast<int32>(Menu.selected());
+		for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+		{
+			RowTop[I] = First + Step * I;
+			bItemOn[I] = Menu.enabled(static_cast<ftcore::PauseItem>(I));
+			Pause.SetRowRect(I, bConfirm ? FBox2D(ForceInit) : WordBox(X0, RowTop[I], ItemW[I], RowAsc));
+		}
+		AskTop = First;
+		NoteTop = AskTop + HeadAsc + 24.f * S;
+		ChoiceTop = NoteTop + NoteAsc + 56.f * S;
+		NoX = X0 + YesW + 2.f * RowEm;
+		Pause.SetChoiceRect(0, bConfirm ? WordBox(X0, ChoiceTop, YesW, RowAsc) : FBox2D(ForceInit));
+		Pause.SetChoiceRect(1, bConfirm ? WordBox(NoX, ChoiceTop, NoW, RowAsc) : FBox2D(ForceInit));
+		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
+		ShadeRight = X0 + FMath::Max3(MaxItemW, AskW, TextWidth(PauseTitle, TitleFont)) + 480.f * S;
+	}
+
+	void LayoutSettings(UFTSettingsSubsystem& Set)
+	{
+		X0 = Hud::Margin * S;
+		TitleTop = kMenuTitleTop * S * 0.6f;
+		SectionTop = TitleTop + TitleAsc + 40.f * S;
+		Selected = Set.GetSelectedRow();
+		const ftcore::SettingsRow SelRow = static_cast<ftcore::SettingsRow>(Selected);
+		if (SelRow != ftcore::SettingsRow::Back)
+		{
+			ShownGroup = static_cast<int32>(ftcore::settingsRowGroup(SelRow)); // Back keeps the section it came from
+		}
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			Set.SetSectionRect(G, WordBox(X0 + SectionX[G], SectionTop, SectionW[G], HeadAsc));
+		}
+		const float First = SectionTop + HeadAsc + 72.f * S;
+		const float Step = kMenuRowStep * RowAsc;
+		NumShown = 0;
+		ValueX = X0 + MaxLabelW + 3.f * RowEm;
+		ValueColW = 9.f * RowEm;
+		for (uint32 I = 0; I < ftcore::kSettingsRowCount; ++I)
+		{
+			const ftcore::SettingsRow Row = ftcore::settingsScreenRow(I);
+			const int32 R = static_cast<int32>(Row);
+			if (Row == ftcore::SettingsRow::Back || static_cast<int32>(ftcore::settingsRowGroup(Row)) != ShownGroup)
+			{
+				Set.SetRowRect(R, FBox2D(ForceInit));
+				continue;
+			}
+			ShownRow[NumShown] = R;
+			RowTop[NumShown] = First + Step * NumShown;
+			Set.SetRowRect(R, ToVp(X0 - 16.f * S, RowTop[NumShown] - 0.35f * RowAsc, ValueX + ValueColW + 2.f * RowEm, RowTop[NumShown] + 1.45f * RowAsc));
+			++NumShown;
+		}
+		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
+		BackTop = FMath::Max(First + Step * NumShown + 0.6f * Step, 0.f);
+		BackTop = FMath::Min(BackTop, HintTop - 1.6f * Step);
+		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
+		Set.SetRowRect(BackRow, WordBox(X0, BackTop, LabelW[BackRow], RowAsc));
+		// Left of the value's middle steps down, right of it up (the subsystem's rule for a click).
+		Set.SetValueColumn((ValueX - 1.5f * RowEm) * ToVpX, (ValueX + 0.5f * ValueColW) * ToVpX);
+		ShadeRight = X0 + FMath::Max(SectionLineW, ValueX - X0 + ValueColW) + 480.f * S;
+		RowsSet = &Set;
+	}
+
+	// The selection: the r19 value line under the word, in the world's fill, its square ink end cap at the word's end.
+	void SelectMark(float X, float W, float Top, float Asc) const
+	{
+		const float Y = Mesh.SnapLineY(Top + Asc + kMenuLineDrop * S, kMenuLineW * S);
+		ftcore::uiStrokeLine(Line, X, Y, X + W, Y, ValueStyle(kMenuLineW, 307, S), 0.f, 1.f);
+		Mesh.ValueStroke(Line, FillTok());
+		const float Side = Mesh.WholeDev((kMenuLineW + Table().Style.lines.capGrow) * S);
+		const float L = Mesh.SnapX(X + W - 0.5f * Side);
+		const float T = Mesh.SnapLineY(Y, Side) - 0.5f * Side;
+		const FVector2f Pts[4] = {FVector2f(L, T), FVector2f(L + Side, T), FVector2f(L + Side, T + Side), FVector2f(L, T + Side)};
+		Mesh.Fill(Pts, 4, Tok(UiToken::Ink));
+	}
+
+	// A value's chevron, pointing left (Dir -1) or right, centred on the capitals' middle.
+	void Chevron(float CX, float MidY, float Dir) const
+	{
+		const float H = 0.32f * RowAsc;
+		const FVector2f Pts[3] = {FVector2f(CX - 0.5f * Dir * H, MidY - H), FVector2f(CX + 0.5f * Dir * H, MidY), FVector2f(CX - 0.5f * Dir * H, MidY + H)};
+		PolyStroke(Line, Pts, 3, FMath::Max(1.f, 1.25f * S));
+		Mesh.Stroke(Line, Tok(UiToken::Ink));
+	}
+
+	void PaintPause(const FPainter& P) const
+	{
+		P.Text(X0, TitleTop, PauseTitle, TitleFont, Tok(UiToken::Ink));
+		if (!bConfirm)
+		{
+			for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+			{
+				const bool bSel = I == Selected && bItemOn[I];
+				P.Text(X0, RowTop[I], ItemWord[I], RowFont, Tok(UiToken::Ink, !bItemOn[I] ? kMenuOffInk : bSel ? 1.f : kMenuRestInk));
+				if (bSel)
+				{
+					SelectMark(X0, ItemW[I], RowTop[I], RowAsc);
+				}
+			}
+			P.Text(X0, HintTop, PauseHint, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+			return;
+		}
+		P.Text(X0, AskTop, bAskGame ? AskGame : AskTitle, HeadFont, Tok(UiToken::Ink));
+		P.Text(X0, NoteTop, AskNote, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		P.Text(X0, ChoiceTop, YesWord, RowFont, Tok(UiToken::Ink, bYes ? 1.f : kMenuRestInk));
+		P.Text(NoX, ChoiceTop, NoWord, RowFont, Tok(UiToken::Ink, bYes ? kMenuRestInk : 1.f));
+		if (bYes)
+		{
+			SelectMark(X0, YesW, ChoiceTop, RowAsc);
+		}
+		else
+		{
+			SelectMark(NoX, NoW, ChoiceTop, RowAsc);
+		}
+		P.Text(X0, HintTop, AskHint, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+	}
+
+	void PaintSettings(const FPainter& P) const
+	{
+		const UFTSettingsSubsystem* Set = RowsSet;
+		if (!Set)
+		{
+			return;
+		}
+		P.Text(X0, TitleTop, SettingsTitle, TitleFont, Tok(UiToken::Ink));
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			const bool bSel = G == ShownGroup;
+			P.Text(X0 + SectionX[G], SectionTop, SectionWord[G], HeadFont, Tok(UiToken::Ink, bSel ? 1.f : kMenuRestInk));
+			if (bSel)
+			{
+				SelectMark(X0 + SectionX[G], SectionW[G], SectionTop, HeadAsc);
+			}
+		}
+		for (int32 N = 0; N < NumShown; ++N)
+		{
+			const int32 R = ShownRow[N];
+			const bool bSel = R == Selected;
+			const float Ink = bSel ? 1.f : kMenuRestInk;
+			P.Text(X0, RowTop[N], Set->GetRowLabel(R), RowFont, Tok(UiToken::Ink, Ink));
+			P.Text(ValueX, RowTop[N], Set->GetRowValue(R), RowFont, Tok(UiToken::Ink, Ink));
+			if (bSel)
+			{
+				SelectMark(X0, LabelW[R], RowTop[N], RowAsc);
+				const float Mid = CapMid(RowTop[N] + RowAsc, RowAsc);
+				Chevron(ValueX - 1.f * RowEm, Mid, -1.f);
+				Chevron(ValueX + ValueColW + 1.f * RowEm, Mid, 1.f);
+			}
+		}
+		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
+		const bool bBack = Selected == BackRow;
+		P.Text(X0, BackTop, Set->GetRowLabel(BackRow), RowFont, Tok(UiToken::Ink, bBack ? 1.f : kMenuRestInk));
+		if (bBack)
+		{
+			SelectMark(X0, LabelW[BackRow], BackTop, RowAsc);
+		}
+		P.Text(X0, HintTop, SettingsHint, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+	}
+
+	void TickShot(UWorld* World, UFTPauseSubsystem* Pause, UFTSettingsSubsystem* Set, APlayerController* PC)
+	{
+		(void)World;
+		(void)Pause;
+		(void)Set;
+		(void)PC;
+#if !UE_BUILD_SHIPPING
+		if (!bShot)
+		{
+			return;
+		}
+		const double Now = FPlatformTime::Seconds();
+		if (ShotStart < 0.0)
+		{
+			ShotStart = Now;
+		}
+		if (!bShotOpened && Now - ShotStart >= ShotDelay && World && Pause && Set)
+		{
+			bShotOpened = true;
+			ShotOpenedAt = Now;
+			const bool bOpen = Pause->Open(World);
+			if (!bShotPause)
+			{
+				Set->Open(Cast<AFTPlayerController>(PC));
+				Set->SelectRow(UFTSettingsSubsystem::FirstRowOf(ShotSection));
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu shot opened %s (pause %s, section %d)."), bShotPause ? TEXT("pause") : TEXT("settings"),
+				bOpen ? TEXT("open") : TEXT("refused"), ShotSection);
+		}
+		if (bShotOpened && !bShotTaken && Now - ShotOpenedAt >= 1.5)
+		{
+			bShotTaken = true;
+			ShotTakenAt = Now;
+			const FString File = ShotPrefix + TEXT(".png");
+			FScreenshotRequest::RequestScreenshot(File, true, false);
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu still %s (world %d, palette %d, text %.0f%%)."), *File, static_cast<int32>(ShownWorld()),
+				static_cast<int32>(ShownPalette()), BuiltScale * 100.f);
+		}
+		if (bShotTaken && !bExitAsked && Now - ShotTakenAt >= 2.0)
+		{
+			bExitAsked = true;
+			FPlatformMisc::RequestExit(false, TEXT("UiMenuShot"));
+		}
+#endif
+	}
+
+	bool bPause = false;
+	bool bSettings = false;
+	float S = 1.f;
+	FVector2f ShownSize = FVector2f(1920.f, 1080.f);
+	float ToVpX = 1.f;
+	float ToVpY = 1.f;
+	float BuiltHeight = 0.f;
+	float BuiltScale = 0.f;
+	FSlateFontInfo TitleFont, HeadFont, RowFont, NoteFont;
+	float TitleAsc = 0.f, HeadAsc = 0.f, RowAsc = 0.f, NoteAsc = 0.f, HeadEm = 0.f, RowEm = 0.f;
+
+	// pause
+	FString PauseTitle, AskTitle, AskGame, AskNote, YesWord, NoWord, PauseHint, AskHint;
+	FString ItemWord[UFTPauseSubsystem::RowCount];
+	float ItemW[UFTPauseSubsystem::RowCount] = {};
+	bool bItemOn[UFTPauseSubsystem::RowCount] = {};
+	float MaxItemW = 0.f, YesW = 0.f, NoW = 0.f, AskW = 0.f;
+	bool bConfirm = false, bAskGame = false, bYes = false;
+	float AskTop = 0.f, NoteTop = 0.f, ChoiceTop = 0.f, NoX = 0.f;
+
+	// settings
+	FString SettingsTitle, SettingsHint;
+	FString SectionWord[ftcore::kSettingsGroupCount];
+	float SectionW[ftcore::kSettingsGroupCount] = {};
+	float SectionX[ftcore::kSettingsGroupCount] = {};
+	float SectionLineW = 0.f;
+	float LabelW[UFTSettingsSubsystem::RowCount] = {};
+	float MaxLabelW = 0.f;
+	int32 ShownGroup = 0;
+	int32 ShownRow[kMenuMaxShown] = {};
+	int32 NumShown = 0;
+	float SectionTop = 0.f, ValueX = 0.f, ValueColW = 0.f, BackTop = 0.f;
+	const UFTSettingsSubsystem* RowsSet = nullptr; // this tick's (the game instance outlives the frame)
+
+	// both
+	int32 Selected = 0;
+	float X0 = 0.f, TitleTop = 0.f, HintTop = 0.f, ShadeRight = 0.f;
+	float RowTop[kMenuMaxShown] = {};
+
+#if !UE_BUILD_SHIPPING
+	bool bShot = false;
+	bool bShotPause = false;
+	FString ShotPrefix;
+	float ShotDelay = 8.f;
+	int32 ShotSection = 0;
+	float ForcedTextScale = 0.f;
+	double ShotStart = -1.0;
+	double ShotOpenedAt = 0.0;
+	double ShotTakenAt = 0.0;
+	bool bShotOpened = false;
+	bool bShotTaken = false;
+	bool bExitAsked = false;
+#endif
+
+	mutable FTextRuns TextRuns;
+	FDelegateHandle FontRelease;
+	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line;
+};
+
+TWeakPtr<SWidget> GMenuScreens;
+TWeakObjectPtr<UGameViewportClient> GMenuViewport;
 }
 
 namespace FT
@@ -6168,5 +6720,28 @@ TSharedRef<SWidget> MakeExplorePartyWidget(TFunction<const AFTExploreCharacter*(
 TSharedRef<SWidget> MakeExploreHudWidget(TFunction<const AFTExploreDirector*()> GetDirector, TFunction<const AFTExploreCharacter*()> GetLead)
 {
 	return SNew(SFTExploreHud, MoveTemp(GetDirector), MoveTemp(GetLead));
+}
+
+void SetUiPalette(uint8 Palette)
+{
+	GUiPalette.store(Palette, std::memory_order_relaxed);
+}
+
+bool EnsureMenuScreens()
+{
+	if (!NewUiEnabled() || !GEngine || !GEngine->GameViewport)
+	{
+		return false;
+	}
+	if (GMenuScreens.IsValid() && GMenuViewport.Get() == GEngine->GameViewport)
+	{
+		return true;
+	}
+	// A map load clears the viewport's widgets (the weak pointer lapses with it): mount again, over every HUD layer.
+	const TSharedRef<SWidget> W = SNew(SFTMenuScreens);
+	GEngine->GameViewport->AddViewportWidgetContent(W, 1000);
+	GMenuScreens = W;
+	GMenuViewport = GEngine->GameViewport;
+	return true;
 }
 }

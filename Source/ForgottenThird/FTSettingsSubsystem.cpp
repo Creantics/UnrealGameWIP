@@ -6,6 +6,7 @@
 #include "Misc/Paths.h"
 
 #include "ForgottenThird.h"
+#include "FTNewUi.h"
 #include "FTPlayerController.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
@@ -42,6 +43,7 @@ void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RowLabels.SetNum(RowCount);
 	RowValues.SetNum(RowCount);
 	RowRects.Init(FBox2D(ForceInit), RowCount);
+	SectionRects.Init(FBox2D(ForceInit), static_cast<int32>(ftcore::kSettingsGroupCount));
 	for (int32 I = 0; I < RowCount; ++I)
 	{
 		RowLabels[I] = FString(UTF8_TO_TCHAR(ftcore::settingsRowLabel(static_cast<ftcore::SettingsRow>(I))));
@@ -116,6 +118,7 @@ void UFTSettingsSubsystem::MarkChanged()
 		RowValues[I] = FString(UTF8_TO_TCHAR(Buffer));
 	}
 	RowValues[kBasicControlsRow] = BasicControlsWord(Values.showBasicControls);
+	FT::SetUiPalette(static_cast<uint8>(Values.palette)); // the new UI's colours follow the Colours row at once
 }
 
 void UFTSettingsSubsystem::Open(AFTPlayerController* PC)
@@ -218,6 +221,14 @@ void UFTSettingsSubsystem::HandlePress()
 		{
 			return;
 		}
+		for (int32 G = 0; G < SectionRects.Num(); ++G)
+		{
+			if (SectionRects[G].bIsValid && SectionRects[G].IsInside(FVector2D(MouseX, MouseY)))
+			{
+				SelectRow(FirstRowOf(G));
+				return;
+			}
+		}
 		const int32 Row = HitRow(FVector2D(MouseX, MouseY));
 		if (Row < 0)
 		{
@@ -236,6 +247,27 @@ void UFTSettingsSubsystem::HandleCancel()
 	{
 		Close();
 	}
+}
+
+void UFTSettingsSubsystem::SelectRow(int32 Row)
+{
+	if (Row >= 0 && Row < RowCount)
+	{
+		Menu.select(static_cast<ftcore::SettingsRow>(Row));
+	}
+}
+
+int32 UFTSettingsSubsystem::FirstRowOf(int32 Group)
+{
+	for (uint32 I = 0; I < ftcore::kSettingsRowCount; ++I)
+	{
+		const ftcore::SettingsRow Row = ftcore::settingsScreenRow(I);
+		if (Row != ftcore::SettingsRow::Back && static_cast<int32>(ftcore::settingsRowGroup(Row)) == Group)
+		{
+			return static_cast<int32>(Row);
+		}
+	}
+	return static_cast<int32>(ftcore::SettingsRow::Back);
 }
 
 int32 UFTSettingsSubsystem::HitRow(const FVector2D& Point) const
