@@ -3224,6 +3224,7 @@ private:
 		{
 			FLinearColor Red = Shown().HitCue;
 			Red.A *= A;
+			bool bMeetsFill = false;
 			for (const ftcore::UiHitSeg& G : Segs->seg)
 			{
 				const float K = ftcore::uiHitFlashLevel(G.age);
@@ -3232,7 +3233,17 @@ private:
 				if (K > 0.f && Hi > Lo + 0.002f)
 				{
 					ValueLine(X0, X0 + Len, YS, Lo, Hi, Width, Seed + 3u, S, Red, 0.f);
+					if (Lo <= Hp + 0.002f) bMeetsFill = true;
 				}
+			}
+			// Red never meets the fill edge to edge (2026-11-16 ruling): a 1 device px ink separator, the line's
+			// height, on the fill's end wherever a red segment starts there (under the end cap where one is drawn).
+			if (bMeetsFill && Hp > 0.002f)
+			{
+				const float WD = Mesh.WholeDev(Width * S);
+				const float SX = Mesh.SnapX(X0 + Len * Hp);
+				const float Top = Mesh.SnapLineY(YS, WD) - 0.5f * WD;
+				Mesh.Rect(SX, Top, SX + Mesh.PxSize(), Top + WD, Tok(UiToken::Ink, A), true);
 			}
 		}
 		if (bCap)

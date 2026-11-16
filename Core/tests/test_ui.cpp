@@ -247,14 +247,16 @@ TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while
     CHECK(g.alpha == doctest::Approx(0.4f));
 }
 
-TEST_CASE("ui style: one danger red in every world, the weak point in Mark, a danger word ink over red") {
+TEST_CASE("ui style: danger red per world, the weak point in Mark, a danger word ink over red") {
     std::string err;
     std::string text;
     REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
     UiStyle shipped;
     REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
     const UiWorld unw = UiWorld::Unwritten;
-    const UiColor c2{230.f / 255.f, 0.f, 18.f / 255.f, 1.f};   // #E60012
+    const UiColor reds[] = {{230.f / 255.f, 0.f, 18.f / 255.f, 1.f}, // Solhaven #E60012
+        {212.f / 255.f, 0.f, 16.f / 255.f, 1.f},                    // the Lattice #D40010
+        {201.f / 255.f, 0.f, 14.f / 255.f, 1.f}};                   // the Unwritten #C9000E
     const UiColor gold{1.f, 224.f / 255.f, 138.f / 255.f, 1.f}; // #FFE08A
     for (const UiStyle& s : {defaultUiStyle(), shipped}) {
         // No world wears accent2 on its marks; every world draws a danger word in ink over a red underline.
@@ -265,7 +267,7 @@ TEST_CASE("ui style: one danger red in every world, the weak point in Mark, a da
         for (std::size_t w = 0; w < kUiWorldCount; ++w) {
             CAPTURE(w);
             const UiWorld wo = static_cast<UiWorld>(w);
-            CHECK(uiColor(s, wo, UiPalette::Default, UiToken::Danger) == c2);
+            CHECK(uiColor(s, wo, UiPalette::Default, UiToken::Danger) == reds[w]);
             CHECK(uiColor(s, wo, UiPalette::Default, UiToken::WeakPoint) == gold);
             CHECK(uiMarkColor(s, wo, UiPalette::Default, gold) == gold);
         }
@@ -422,12 +424,36 @@ TEST_CASE("ui style: a value line's three tones: the world's backing at 0.45, a 
     }
 }
 
-TEST_CASE("ui style: danger against the world fills is reported (under 3:1 in the Lattice and the Unwritten)") {
-    const UiStyle s = defaultUiStyle();
-    CHECK(uiDangerFillContrast(s, UiWorld::Solhaven, UiPalette::Default) == doctest::Approx(3.61f).epsilon(0.01));
-    CHECK(uiDangerFillContrast(s, UiWorld::Lattice, UiPalette::Default) == doctest::Approx(2.96f).epsilon(0.01));
-    CHECK(uiDangerFillContrast(s, UiWorld::Unwritten, UiPalette::Default) == doctest::Approx(2.62f).epsilon(0.01));
-    CHECK(uiDangerFillContrast(s, UiWorld::Lattice, UiPalette::HighContrast) >= 4.5f);
+TEST_CASE("ui style: danger and the hit cue's red hold 3:1 against every world's fill; import refuses less") {
+    const UiColor black{0.f, 0.f, 0.f, 1.f};
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle shipped;
+    REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
+    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
+        CHECK(uiDangerFillContrast(s, UiWorld::Solhaven, UiPalette::Default) == doctest::Approx(3.61f).epsilon(0.01));
+        CHECK(uiDangerFillContrast(s, UiWorld::Lattice, UiPalette::Default) == doctest::Approx(3.40f).epsilon(0.01));
+        CHECK(uiDangerFillContrast(s, UiWorld::Unwritten, UiPalette::Default) == doctest::Approx(3.28f).epsilon(0.01));
+        CHECK(uiDangerFillContrast(s, UiWorld::Lattice, UiPalette::HighContrast) >= 4.5f);
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+                CAPTURE(w);
+                CAPTURE(p);
+                const UiWorld wo = static_cast<UiWorld>(w);
+                const UiPalette pal = static_cast<UiPalette>(p);
+                CHECK(uiDangerFillContrast(s, wo, pal) >= 3.f);
+                CHECK(uiContrast(uiDangerSet(s, wo, pal).hitCue, uiTrackSet(s, wo, pal).fill, black) >= 3.f);
+            }
+        }
+    }
+    // The old one red (E60012) on the Lattice's cyan fill is 2.96:1: refused.
+    UiStyle t;
+    CHECK_FALSE(importUiStyle(R"({"worlds": {"lattice": {"danger": "#E60012"}}})", t, &err));
+    CHECK(err.find("danger against the fill") != std::string::npos);
+    // The Unwritten's red is the hit cue in every world, so it is held against every world's fill as well.
+    CHECK_FALSE(importUiStyle(R"({"worlds": {"unwritten": {"danger": "#E60012"}}})", t, &err));
+    CHECK(err.find("danger against the fill") != std::string::npos);
 }
 
 TEST_CASE("ui style: the hit cue is full for 100 ms and gone by 350 ms") {
@@ -498,10 +524,10 @@ TEST_CASE("ui style: the GUARD label shows for 2 s after the line appears or its
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
     UiStyle s;
     std::string err;
-    REQUIRE_MESSAGE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#B06000"}},
+    REQUIRE_MESSAGE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#8C5A00"}},
         "layers": {"plates": true, "world_anchored": true, "hairlines": false}})", s, &err), err);
     const UiColor d = uiColor(s, UiWorld::Solhaven, UiPalette::Deutan, UiToken::Danger);
-    CHECK(d.g == doctest::Approx(96.f / 255.f));
+    CHECK(d.g == doctest::Approx(90.f / 255.f));
     // A light danger fails 3:1 against the ink: refused.
     UiStyle light;
     CHECK_FALSE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#F0A030"}}})", light, &err));

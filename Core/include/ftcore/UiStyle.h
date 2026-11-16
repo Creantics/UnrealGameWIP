@@ -232,10 +232,10 @@ struct UiDangerSet {
     UiColor hitDark;      // the hit cue's darkening layer under the red (danger scaled by kUiHitDarkK)
 };
 // The danger colour's contrast against the world's fill, the line it is drawn beside (the lost hp at the fill's end,
-// the low underline under it). Reported, not enforced: the world fills (2026-11-16 ruling) put it under 3:1 in the
-// Lattice (2.96) and the Unwritten (2.62); import holds danger 3:1 against the track body's colour and the ink.
+// with a 1 px ink separator between them; the low underline under it). Import holds it 3:1, with the hit cue's red
+// against every world's fill, as well as danger 3:1 against the track body's colour and the ink (2026-11-16 ruling).
 FTCORE_API float uiDangerFillContrast(const UiStyle& s, UiWorld world, UiPalette palette);
-// The hit cue's darkening layer: the danger colour's sRGB channels times this (E60012 gives 5A0007).
+// The hit cue's darkening layer: the danger colour's sRGB channels times this (C9000E gives 4E0005).
 inline constexpr float kUiHitDarkK = 0.39f;
 FTCORE_API UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette);
 

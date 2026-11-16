@@ -127,31 +127,32 @@ UiStyle defaultUiStyle() {
     s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0x73 / 255.f), hex(0xE9B36B), hex(0xC9643C),
         hex(0xE60012), hex(0x8FD3B4), hex(0xFFE08A), hex(0xF2DDB4)};
     s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0x73 / 255.f), hex(0x8FD6E8), hex(0xA88BE0),
-        hex(0xE60012), hex(0x9BE3B0), hex(0xFFE08A), hex(0x8FD6E8)};
-    // One danger red in every world (E60012, luminance about 0.17: 3:1 or more against the track's black body and the
-    // white fill): red means harm to the player, and only the hit cue, the lost hp, the low underline and the call
-    // triangle wear it. The weak point is Mark (pale gold) in every world.
+        hex(0xD40010), hex(0x9BE3B0), hex(0xFFE08A), hex(0x8FD6E8)};
+    // Danger is red in every world, its tone set per world (2026-11-16 ruling) so it holds 3:1 or more against the
+    // track's black body, the ink and that world's own fill: Solhaven E60012 (3.61 on its fill), the Lattice D40010
+    // (3.40), the Unwritten C9000E (3.28). Red means harm to the player, and only the hit cue, the lost hp, the low
+    // underline and the call triangle wear it. The weak point is Mark (pale gold) in every world.
     // The Unwritten: a cold grey ink, its dim scaled from it as the others are (luminance x 0.6975), its accent the
     // ink itself (the prompt glyph's ring is ink there), and cold neutral backing and ally.
     s.world[2] = {hex(0xDCE1E5), hex(0xBBC0C3), hex(0x080A0C), hex(0xFFFFFF, 0x73 / 255.f), hex(0xDCE1E5), hex(0xB01E23),
-        hex(0xE60012), hex(0xA3ADB5), hex(0xFFE08A), hex(0xBBC0C3)};
+        hex(0xC9000E), hex(0xA3ADB5), hex(0xFFE08A), hex(0xBBC0C3)};
     // The danger red is a mid-tone mark that fails the text rule, so in every world a danger word is ink over a danger
     // underline.
     for (UiWorldRules& r : s.rules) r.dangerUnderline = true;
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.
-    // Each danger sits at luminance about 0.18 at its own hue (full saturation), so it holds 3:1 against the track
-    // body's colour and the ink as the default red does.
+    // A palette's danger is one colour in every world, so each sits at luminance about 0.125 at its own hue: 3:1 or
+    // more against every world's track body, ink and fill (the Unwritten's grey fill is the tightest, 3.26 or more).
     const auto cue = [&](UiPalette p, UiToken t, UiColor c) {
         s.paletteColor[static_cast<std::size_t>(p)][static_cast<std::size_t>(t)] = c;
         s.paletteOverrides[static_cast<std::size_t>(p)][static_cast<std::size_t>(t)] = true;
     };
     for (UiPalette p : {UiPalette::Protan, UiPalette::Deutan}) {
-        cue(p, UiToken::Danger, hex(0xAC6400));
+        cue(p, UiToken::Danger, hex(0x925400));
         cue(p, UiToken::Ally, hex(0x7CC4F0));
         cue(p, UiToken::WeakPoint, hex(0xF5EE70));
     }
-    cue(UiPalette::Tritan, UiToken::Danger, hex(0xDA3A00));
+    cue(UiPalette::Tritan, UiToken::Danger, hex(0xBA3000));
     cue(UiPalette::Tritan, UiToken::Ally, hex(0x40C8B0));
     cue(UiPalette::Tritan, UiToken::WeakPoint, hex(0xF5A0C8));
     cue(UiPalette::HighContrast, UiToken::Ink, hex(0xFFFFFF));
@@ -519,8 +520,7 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
                 }
             }
             // Danger 3:1 against the value track body's own colour (the lost hp is drawn over it) and the ink (the
-            // light line a danger underline sits under where the fill steps to ink). Against the world fills it is
-            // reported only (uiDangerFillContrast).
+            // light line a danger underline sits under where the fill steps to ink).
             {
                 UiColor body = uiTrackSet(s, world, palette).body;
                 body.a = 1.f;
@@ -528,6 +528,18 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
                 const float c = std::min(uiContrast(dg, body, white), uiContrast(dg, uiColor(s, world, palette, UiToken::Ink), white));
                 if (c < 3.f) {
                     std::snprintf(buf, sizeof buf, "%.*s/%.*s: danger on the track is %.2f:1, needs 3.0:1",
+                        static_cast<int>(kWorldNames[w].size()), kWorldNames[w].data(),
+                        static_cast<int>(kPaletteNames[p].size()), kPaletteNames[p].data(), static_cast<double>(c));
+                    return fail(error, buf);
+                }
+            }
+            // And 3:1 against the world's fill (2026-11-16 ruling): the world's danger (the low underline) and the hit
+            // cue's red (the lost hp, the Unwritten's danger in every world) both sit beside it.
+            {
+                const float c = std::min(uiDangerFillContrast(s, world, palette),
+                    uiContrast(uiDangerSet(s, world, palette).hitCue, uiTrackSet(s, world, palette).fill, white));
+                if (c < 3.f) {
+                    std::snprintf(buf, sizeof buf, "%.*s/%.*s: danger against the fill is %.2f:1, needs 3.0:1",
                         static_cast<int>(kWorldNames[w].size()), kWorldNames[w].data(),
                         static_cast<int>(kPaletteNames[p].size()), kPaletteNames[p].data(), static_cast<double>(c));
                     return fail(error, buf);
