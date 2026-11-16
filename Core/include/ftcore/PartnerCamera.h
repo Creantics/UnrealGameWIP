@@ -9,8 +9,9 @@ namespace ftcore {
 // Rule 13's frame margin, the default of PartnerTuning::frustumMargin: the share of the WHOLE screen's width (and of
 // its height) kept clear on the left, right and top. A point is in frame when its normalised device coordinates are
 // within 1 - 2 x margin of the centre across and above it (0.1: ndc <= 0.8; 0: the screen's own edges), and within
-// 1 - 2 x kPartnerFrustumMarginBottom below it. A host checking "on screen" calls partnerInFrame with this, so the
-// brain and the host can never disagree.
+// 1 - 2 x kPartnerFrustumMarginBottom below it. A host checking "on screen" calls partnerInFrame with this. The brain
+// picks stations by the same test with a tall enemy in the fight or rule 17's circling on; otherwise its bottom keeps
+// frustumMargin too (stricter than the host's measure, so a station it picks is always on screen by it).
 inline constexpr float kPartnerFrustumMargin = 0.1f;
 // The bottom edge's own margin: the low lock-on camera puts the feet of a partner beside the lead near the bottom of
 // the frame, where 0.10 left out partners whose whole body is plainly on screen. The bottom keeps this clear, or the

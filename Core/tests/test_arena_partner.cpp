@@ -2468,18 +2468,15 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                                    << r.brain.fallbackSeconds() << " s; shares:" << shares);
             {
                 // Hard pin: the default kit for both leads, main's group fight (1b59533b) to the tick. Main's report
-                // values, written by hand: never regenerate them from this build. Under main's tuning
-                // (mainEquivalentTuning) every row is main's; the shipped tuning's camera rows are this branch's
-                // (step 2's bottom margin and side hold: see the intents pin below), its rows without one main's.
+                // values, written by hand: never regenerate them from this build. Every row is main's, under main's
+                // tuning (mainEquivalentTuning) and the shipped one alike: no enemy here is tall and circling is off,
+                // so the framing holds (the bottom margin and the side hold) are off (framingHolds).
                 struct Pin { int strings, blows, cut, voided, guards, goalJumps; double walked; };
                 static constexpr Pin kMain[2][2] = { // [order][camera]
                     {{7, 9, 3, 0, 0, 7, 9.41492}, {7, 11, 1, 0, 0, 52, 26.1652}},
                     {{6, 8, 0, 0, 0, 7, 9.63654}, {6, 8, 0, 0, 0, 42, 23.9698}},
                 };
-                static constexpr Pin kShippedCamera[2] = { // [order], camera given, the shipped tuning
-                    {7, 11, 1, 0, 0, 55, 26.8518}, {5, 7, 0, 0, 0, 36, 24.3878},
-                };
-                const Pin& pin = !mainEq && camera ? kShippedCamera[order == 0 ? 0 : 1] : kMain[order == 0 ? 0 : 1][camera ? 1 : 0];
+                const Pin& pin = kMain[order == 0 ? 0 : 1][camera ? 1 : 0];
                 CHECK(std::fabs(T - 20.0165) < 0.5 * kDt);
                 CHECK(s.partnerStrings == pin.strings);
                 CHECK(s.partnerBlows == pin.blows);
@@ -3080,11 +3077,11 @@ TEST_CASE("arena partner: rule 17 off, main's tuning: the shipped group fight's 
     }
 }
 
-// The shipped tuning's pins, this branch's values. Without the camera both rows are main's to the bit (no camera, no
-// frame: step 2's margin and holds never run). With it both orders' intents move, by the side hold alone (measured:
-// the bottom margin alone on main's tuning leaves both main's), and so do their state hashes (the side hold and the
-// bottom margin are hashed off main's values).
-TEST_CASE("arena partner: rule 17 off, the shipped tuning: the shipped group fight's intents and state hash are pinned") {
+// The shipped tuning's pins: main's, to the bit, with the camera and without. No enemy in the group is tall and
+// circling is off, so the framing holds (the bottom margin and the side hold) are off and unhashed (framingHolds).
+// Kept general they moved this fight (Spread's strings and blows 6/8 to 5/7) and lowered an ordinary fight's on-screen
+// share (StayClose, the camera orbiting: 0.9458 to 0.9442), so they are rule 18's and rule 17's only.
+TEST_CASE("arena partner: rule 17 off, the shipped tuning: the shipped group fight's intents and state hash are main's") {
     CHECK_FALSE(shippedTuning().circling);
     struct Row {
         std::uint8_t order;
@@ -3093,9 +3090,9 @@ TEST_CASE("arena partner: rule 17 off, the shipped tuning: the shipped group fig
     };
     const Row rows[] = {
         {0, false, 13510023720450430857ull, 13607754419378690935ull}, // main's
-        {0, true, 13024001550807287536ull, 6219416955076716000ull},   // intents: the side hold
+        {0, true, 5572646704335333306ull, 6381732959959279559ull},    // main's
         {1, false, 9209459091041298615ull, 9225178481593612560ull},   // main's
-        {1, true, 8413671702271960558ull, 16115149057113691648ull},   // intents: the side hold
+        {1, true, 7321489833706842541ull, 8499464587038327255ull},    // main's
     };
     for (const Row& w : rows) {
         CAPTURE(int(w.order));
@@ -3758,10 +3755,15 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
 }
 
 // Finding 6: a partner whose kit has no attacks is told so (PartnerInput::kitAttacks, from the ally's kit: the brain's
-// NoKit) and deals no paired counter; the same fight with a kit that attacks does.
-TEST_CASE("arena partner: a partner kit with no attacks deals no paired counter; one with attacks does") {
-    for (const bool attacks : {true, false}) {
-        CAPTURE(attacks);
+// NoKit) and spends nothing on a paired counter; the lead's own counter (its damage, stagger and pairCooldown) is the
+// same as with no partner at all.
+TEST_CASE("arena partner: a partner kit with no attacks spends nothing on a paired counter; the lead's is as with no partner") {
+    struct Got {
+        float spent = 0.f, perCounter = 0.f;
+        int staggers = 0, amount = 0;
+        PressReason after = PressReason::Ok;
+    };
+    const auto run = [](bool partner, bool attacks) {
         PRig r;
         r.ownPartnerKit = true;
         r.def.partnerKit = kitB();
@@ -3769,15 +3771,26 @@ TEST_CASE("arena partner: a partner kit with no attacks deals no paired counter;
         r.enemy(biterKind(5, 3.f, 1.f), Vec2{1.5f, 0.f});
         r.bodies.player = Vec2{0.f, 0.f};
         r.bodies.ally = Vec2{-10.f, 0.f}; // out of the bites' and its own blows' reach
-        r.go(true, 100);
-        const float spent = pairUntilCounter(r);
+        r.go(partner, 100);
+        Got g;
+        g.spent = pairUntilCounter(r);
+        g.perCounter = r.def.fighter.pairPartnerSeconds;
         CHECK(r.count(ArenaEventType::Parried) > 0);
-        if (attacks) {
-            CHECK(spent == doctest::Approx(r.def.fighter.pairPartnerSeconds));
-            CHECK(r.fight.stats().counterStaggers == 1);
-        } else {
-            CHECK(spent == -1.f);
-            CHECK(r.fight.stats().counterStaggers == 0);
-        }
+        g.staggers = r.fight.stats().counterStaggers;
+        for (const auto& l : r.log)
+            if (l.e.type == ArenaEventType::CounterStagger) g.amount += l.e.amount;
+        g.after = r.fight.pressReason(ArenaPress::Pair);
+        return g;
+    };
+    const Got with = run(true, true), noKit = run(true, false), none = run(false, true);
+    CHECK(with.spent == doctest::Approx(with.perCounter));
+    CHECK(with.staggers == 1);
+    CHECK(noKit.spent == 0.f); // the partner pays nothing
+    CHECK(none.spent == 0.f);
+    for (const Got* g : {&noKit, &none}) {
+        CHECK(g->staggers == 1);
+        CHECK(g->amount == with.amount);
+        CHECK(g->amount > 0);
+        CHECK(g->after == PressReason::Cooldown); // pairCooldown runs
     }
 }

@@ -1760,9 +1760,11 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.guarding = !s.guarding; },
         [](PartnerBrainSave& s) { s.out.framed = !s.out.framed; },
         [](PartnerBrainSave& s) { s.out.frameFallback = !s.out.frameFallback; },
-        [](PartnerBrainSave& s) { s.t.frustumMarginBottom += 0.01f; },  // step 2: below frustumMargin, hashed
-        [](PartnerBrainSave& s) { s.t.frameSideHoldSeconds += 0.5f; },  // step 2: above 0, hashed
-        [](PartnerBrainSave& s) { s.frameSideAt = s.now; },             // its clock's age, capped at the hold
+        [](PartnerBrainSave& s) { s.holdsFramed = true; },              // the framing holds: hashed once on
+        // The framing holds' tuning and clock: hashed only once framed with them on (holdsFramed).
+        [](PartnerBrainSave& s) { s.holdsFramed = true; s.t.frustumMarginBottom += 0.01f; },
+        [](PartnerBrainSave& s) { s.holdsFramed = true; s.t.frameSideHoldSeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.holdsFramed = true; s.frameSideAt = s.now; },
         [](PartnerBrainSave& s) { s.tallGrowOn = 1; },                  // rule 18: hashed only when on
     };
     int j = 0;
@@ -1777,6 +1779,16 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         PartnerBrainSave u = base; // not framed: unseen
         e(u);
         CHECK(u.hash() == base.hash());
+    }
+    {
+        // Framed with the framing holds off (no tall enemy, circling off): their tuning and clock are unhashed, so
+        // such a fight hashes as main whatever they are.
+        PartnerBrainSave s = fb, m = fb, h = fb;
+        m.t.frustumMarginBottom += 0.01f;
+        h.t.frameSideHoldSeconds += 0.5f;
+        h.frameSideAt = h.now;
+        CHECK(m.hash() == s.hash());
+        CHECK(h.hash() == s.hash());
     }
     // Rule 17's switch is a tunable as rules 13-16's are: on, framed or not, it moves the hash.
     PartnerBrainSave on = base;

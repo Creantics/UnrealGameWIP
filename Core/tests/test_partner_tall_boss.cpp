@@ -412,35 +412,6 @@ TEST_CASE("partner tall boss: after a lead switch, the new partner reaches a see
     }
 }
 
-// Why StayClose's cap grows on a tall target: through the settled low lens, with the lead at the boss's foot, the
-// grown cap (closeLeadMeters plus the radius, at most tallGrowMaxMeters, under the grown leash less 0.5) holds more of
-// the station cells the camera sees unhidden than the old cap does. Measured (seen, within the old cap, within the
-// grown cap): 30, 0, 21 at a bottom margin of 0.10; 89, 41, 80 at the bottom's own 0.05 (kPartnerFrustumMarginBottom)
-// (96, 48, 87 at 0.04).
-TEST_CASE("partner tall boss: the grown cap holds more of the seen station cells than StayClose's old cap") {
-    TallCamera cam;
-    const Vec2 lead{-(kBossRadius + 0.9f), 0.f}, boss{0.f, 0.f};
-    cam.begin(lead, boss);
-    PartnerCameraView v{};
-    for (int i = 0; i < 300; ++i) v = cam.step(lead, boss, kBossHeight, kDt);
-    const PartnerTuning t = tbTuning();
-    int old = 0, grown = 0, all = 0;
-    for (const float rad : {kBossRadius + 0.5f * t.reachMeters, kBossRadius + t.reachMeters - t.stationTolerance})
-        for (int a = 0; a < 72; ++a) {
-            const float ang = 5.f * static_cast<float>(a) * 3.14159265f / 180.f;
-            const Vec2 q{boss.x + rad * std::cos(ang), boss.y + rad * std::sin(ang)};
-            if (!partnerInFrame(v, t.frustumMargin, q) || tbHidden(v, q, boss)) continue;
-            ++all;
-            const float dl = tbDist(q, lead);
-            const float g = std::min(kBossRadius, t.tallGrowMaxMeters);
-            old += dl <= std::min(t.closeLeadMeters, t.leashMeters - 0.5f) ? 1 : 0;
-            grown += dl <= std::min(t.closeLeadMeters + g, t.leashMeters + g - 0.5f) ? 1 : 0;
-        }
-    MESSAGE("seen station cells: " << all << ", within the old cap " << old << ", within the grown cap " << grown);
-    CHECK(all >= 30);
-    CHECK(grown > old);
-}
-
 // Rule 18's growth is the tall target's radius and no more, clamped to tallGrowMaxMeters (6.0 shipped, over this
 // boss's 2.5 m radius, so it does not bind here). Clamped to 1.0 m, its leash (4 m) and return grow by 1 m, not 2.5:
 // it keeps within that grown leash and nearer the lead than shipped (measured max 3.55 m against 4.42 m).
@@ -627,3 +598,77 @@ TEST_CASE("partner tall boss: StayClose's growth starts at closeLeadMeters and e
     }
 }
 
+
+// Why StayClose's cap grows on a tall target, through the brain: the settled low lens, the lead at the boss's foot,
+// 4 s. At a bottom margin of 0.10 the old cap (no growth: tallGrowMaxMeters 0) holds no valid station and it falls
+// back every step (measured 240 of 240); grown (shipped), it stations every step. At the bottom's own 0.05 (shipped)
+// both station every step: the growth is the margin's insurance there. Every run ends seen and unhidden.
+TEST_CASE("partner tall boss: through the brain, the grown cap finds seen stations the old cap does not") {
+    TallCamera cam;
+    const Vec2 lead{-(kBossRadius + 0.9f), 0.f}, boss{0.f, 0.f};
+    cam.begin(lead, boss);
+    PartnerCameraView v{};
+    for (int i = 0; i < 300; ++i) v = cam.step(lead, boss, kBossHeight, kDt);
+    for (const float bottom : {0.05f, 0.10f})
+        for (const bool grow : {true, false}) {
+            CAPTURE(bottom);
+            CAPTURE(grow);
+            PartnerTuning t = tbTuning();
+            t.frustumMarginBottom = bottom;
+            if (!grow) t.tallGrowMaxMeters = 0.f;
+            TbScene s(t, PartnerOrder::StayClose, lead, kBossRadius, kBossHeight);
+            s.v = v;
+            s.in.station.camera = v;
+            s.in.station.cameraPos = {v.pos.x, v.pos.y};
+            const float fl = std::hypot(v.forward.x, v.forward.y);
+            s.in.station.cameraForward = {v.forward.x / fl, v.forward.y / fl};
+            int valid = 0, fallback = 0, seen = 0;
+            for (int i = 0; i < 240; ++i) {
+                const PartnerIntent& o = s.step();
+                valid += o.framed && !o.frameFallback ? 1 : 0;
+                fallback += o.frameFallback ? 1 : 0;
+                if (i >= 180) seen += partnerInFrame(v, t.frustumMargin, s.in.pos) && !tbHidden(v, s.in.pos, boss) ? 1 : 0;
+            }
+            MESSAGE("bottom " << bottom << std::string(grow ? ", grown" : ", old cap") << ": station steps " << valid
+                              << ", fallback steps " << fallback << ", seen unhidden in the last second " << seen);
+            CHECK(s.b.save().tallGrowOn == 1); // marked either way: the growth by it is 0 with tallGrowMaxMeters 0
+            if (grow || bottom < 0.075f) {
+                CHECK(valid == 240);
+            } else {
+                CHECK(fallback >= 200);
+            }
+            CHECK(seen == 60);
+        }
+}
+
+// Rule 18's clamp, through the brain: a boss 8 m round (over the 6.0 m tallGrowMaxMeters), the lead 0.9 m off its
+// edge, the camera 12 m behind it, the partner starting on the boss's far flank so its nearest valid station is the
+// farthest from the lead the cap allows. Clamped, the cap is closeLeadMeters + 6 = 9.5 m (the grown leash less 0.5,
+// also 9.5); unclamped (tallGrowMaxMeters 10) 3.5 + 8 = 11.5 m. Measured, the farthest station: 9.11 m, 11.08 m
+// (the ring's 5 degree steps); with no growth the cap would be 3.5 m.
+TEST_CASE("partner tall boss: a radius past tallGrowMaxMeters grows the cap by the clamp, through the brain") {
+    constexpr float kR = 8.f;
+    float far[2] = {0.f, 0.f};
+    for (int k = 0; k < 2; ++k) {
+        PartnerTuning t = tbTuning();
+        if (k == 1) t.tallGrowMaxMeters = 10.f;
+        const Vec2 lead{-(kR + 0.9f), 0.f};
+        TbScene s(t, PartnerOrder::StayClose, lead, kR, 12.f, 12.f);
+        s.in.pos = {2.f, kR + 1.f};
+        for (int i = 0; i < 240; ++i) {
+            s.step();
+            const PartnerBrainSave& st = s.b.save();
+            if (st.frameRing == 1) far[k] = std::max(far[k], tbDist(st.frameLast, lead));
+        }
+        CHECK(s.b.save().tallGrowOn == 1);
+        MESSAGE(std::string(k == 0 ? "clamped (6 m)" : "unclamped (10 m)") << ": farthest station from the lead " << far[k]);
+    }
+    const PartnerTuning t = tbTuning();
+    REQUIRE(t.tallGrowMaxMeters == 6.f);
+    const float clamped = std::min(t.closeLeadMeters + 6.f, t.leashMeters + 6.f - 0.5f);
+    CHECK(clamped == doctest::Approx(9.5f));
+    CHECK(far[0] <= clamped + 1e-3f);                    // the clamp binds
+    CHECK(far[0] >= clamped - 0.5f);                     // and the cap is used to it
+    CHECK(far[1] > clamped + 1.f);                       // unclamped it reaches past ...
+    CHECK(far[1] <= t.closeLeadMeters + kR + 1e-3f);     // ... to the radius's cap
+}

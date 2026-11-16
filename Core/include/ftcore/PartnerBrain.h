@@ -122,7 +122,10 @@
 //      stations the nearest to the partner, those in rule 10's arc (rule 11's 110..160 degrees) first; once chosen it
 //      is held, by its angle on its ring, while it stays valid and the target stays. A new pick within
 //      kPartnerSideHoldSeconds (1.0) of the held station's last change of side (of the line from the target to the
-//      lead, or of the lead's facing) keeps to its side, so it does not flip across and back. None valid: it keeps
+//      lead, or of the lead's facing) keeps to its side, so it does not flip across and back. That bottom margin and the
+//      side hold act only with the framing holds on: a tall enemy (rule 18) in the fight or rule 17's circling on;
+//      else the bottom's margin is frustumMargin and no side is held, as before them (hashed only once on:
+//      holdsFramed). partnerInFrame, the host's measure, always keeps the bottom margin. None valid: it keeps
 //      going to the one it last held (whatever the target, while that spot stays legal and out of the target's
 //      keep-out, that last for the first kPartnerSideHoldSeconds after its last valid station);
 //      after frustumGiveUpSeconds (3.0) with none (or at once when it holds none) it falls back to rules 10-11's
@@ -404,7 +407,8 @@ struct PartnerTuning {
     float tallGrowMaxMeters = 6.f;       // rule 18: StayClose's cap, leash and return grow by a tall target's radius,
                                          // at most this (0..20)
     // Step 2's holds and the bottom margin, as tuning so main's brain is one tuning away (mainEquivalentTuning).
-    // Each is hashed only off main's value (the margin below frustumMargin, a hold above 0).
+    // Each is hashed only off main's value (the margin below frustumMargin, a hold above 0). The bottom margin and
+    // the side hold act in the brain only with a tall enemy in the fight or circling on (rule 13).
     float frustumMarginBottom = kPartnerFrustumMarginBottom; // rule 13: the bottom's margin, the smaller of it and
                                                              // frustumMargin (0..0.4; main: frustumMargin)
     float frameSideHoldSeconds = static_cast<float>(kPartnerSideHoldSeconds); // rule 13's side hold (0..5; main: 0)
@@ -503,6 +507,8 @@ struct PartnerBrainSave {
     double lastMove = -1e9;
     bool guarding = false;         // the last step's intent was Guard
     std::uint8_t tallGrowOn = 0;   // rule 18: the targets growing StayClose's cap now, a bit each (with hysteresis)
+    bool holdsFramed = false;      // framed with the framing holds on (a tall enemy in the fight, or rule 17's
+                                   // circling) since begin (sticky): bottom margin and side hold steer, hashed from then
     static_assert(kMaxPartnerEnemies <= 8 && kMaxArenaEnemies <= 8, "tallGrowOn: a bit per target in 8 bits");
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};

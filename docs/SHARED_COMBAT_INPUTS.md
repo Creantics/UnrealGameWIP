@@ -456,7 +456,8 @@ the pieces.
   default of `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and
   by `kPartnerFrustumMarginBottom` at the bottom (0.05, so ndc >= -0.90, or the margin when that is
   smaller: the low lock-on camera puts the feet of a partner beside the lead near the bottom edge;
-  feet and head must still both be inside; the one shared function, so host and brain agree) and outside the
+  feet and head must still both be inside; the brain uses that bottom margin only with a tall enemy in the
+  fight or circling on, else `frustumMargin` there too, stricter than the host's measure) and outside the
   keep-outs round the camera's lines to the lead and to its target. With none valid it holds the last
   station it had for `frustumGiveUpSeconds` (3 s, counted from the last valid station whatever the
   target, on every step: the held station is checked on string and guard steps too; sooner only when
@@ -483,7 +484,11 @@ the pieces.
   (`PartnerTuning::frameSideHoldSeconds`, `choiceHoldSeconds`, `turnHoldSeconds`, 1.0 each, 0..5;
   defaults `kPartnerSideHoldSeconds`, `kPartnerChoiceHoldSeconds`). The bottom margin is
   `PartnerTuning::frustumMarginBottom` (0..0.4, default `kPartnerFrustumMarginBottom`; the smaller of
-  it and `frustumMargin` is used). Each of the four is hashed only off its old value (a hold above 0,
+  it and `frustumMargin` is used). The brain uses that bottom margin and the side hold only with a
+  tall enemy (rule 18) in the fight or circling on; otherwise its bottom margin is `frustumMargin`
+  and no side is held, exactly as before them (measured: kept on for every fight they moved an
+  ordinary group fight's strings and lowered one on-screen share). `partnerInFrame`, the host's
+  measure, always uses the bottom margin. Each of the four is hashed only off its old value (a hold above 0,
   the bottom margin below `frustumMargin`), and `mainEquivalentTuning(t)` sets all four back (bottom
   margin = `frustumMargin`, holds 0): framed with circling off, on a target under `kPartnerTallMeters`,
   its intents and hash are the brain's before them, to the bit (pinned in the tests).

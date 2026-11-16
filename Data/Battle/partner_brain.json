@@ -36,5 +36,9 @@
   "stationAnySeconds": 6.0,
   "targetHoldSeconds": 1.5,
   "tallGrowMaxMeters": 6.0,
+  "frustumMarginBottom": 0.05,
+  "frameSideHoldSeconds": 1.0,
+  "choiceHoldSeconds": 1.0,
+  "turnHoldSeconds": 1.0,
   "circling": false
 }

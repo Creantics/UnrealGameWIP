@@ -1135,7 +1135,6 @@ struct ArenaFightImpl {
             ++stats.pairsCooled;
             return;
         }
-        if (partnerOn() && !pk.attacks) return; // a partner whose kit has no attacks deals no counter (PartnerIdle::NoKit)
         if (!alive(i) || foes[i].brain != ArenaBrain::Open) return;
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
@@ -1146,7 +1145,8 @@ struct ArenaFightImpl {
                   r))
             return;
         pl.pairCoolUntil = t0 + fi.pairCooldown; // dealt (the ruling let it through): the clock starts
-        if (partnerOn()) {
+        // A partner whose kit has no attacks (PartnerIdle::NoKit) pays nothing: the lead's counter is as with no partner.
+        if (partnerOn() && pk.attacks) {
             pl.pairSpent += fi.pairPartnerSeconds;
             pl.pairBrain += fi.pairPartnerSeconds; // the brain's rule 2 budget: its spentSeconds at its next step
         }

@@ -380,9 +380,11 @@ TEST_CASE("partner frame: every station it walks to is in the shrunk frame and o
                         todaySum[o] += today;
                         ++runs[o];
                         // On screen (feet, middle and head inside the frame shrunk by kPartnerFrustumMargin) at least
-                        // 0.8 of the run: measured 0.89..1.0, except Spread with the camera orbiting (0.76..0.86, each
+                        // 0.8 of the run: measured 0.89..1.0, except Spread with the camera orbiting (0.71..0.79, each
                         // run pinned in the test below). With the camera fixed behind the lead, cameraOn's stationing is
                         // lower by at least 0.03 (measured 0.04 and more at a bottom margin of 0.10).
+                        // Bar 0.8. Spread with the camera orbiting is not held to it here: it misses it in every run
+                        // (0.706 to 0.791, a miss of 0.009 to 0.094) and is pinned run by run in the next test.
                         if (o == 0 || orbit == 0.f) CHECK(on >= 0.8);
                         if (orbit == 0.f) {
                             if (today > 0.95) {
@@ -411,12 +413,14 @@ TEST_CASE("partner frame: every station it walks to is in the shrunk frame and o
 }
 
 // Spread with the camera orbiting the lead at 30 degrees a second: on screen per run, pinned hard at today's value
-// (rounded down to 0.01). The target is 0.8 of the run; the runs under it miss it mostly by rule 13's fallback when no
-// station by its target is in frame (a fault to fix: the pins only stop it getting worse).
+// (rounded down to 0.01), which is main's brain (no tall enemy, circling off: the framing holds off). The target is
+// 0.8 of the run; the runs under it miss it mostly by rule 13's fallback when no station by its target is in frame (a
+// fault to fix: the pins only stop it getting worse).
 TEST_CASE("partner frame: Spread with an orbiting camera: on screen per run no less than today (target 0.8)") {
-    // free x lock x dt, in loop order: (false, true, 1/60), (false, true, 0.25), (false, false, 1/60), ... Today 0.825,
-    // 0.763, 0.825, 0.763, 0.776, 0.763, 0.859, 0.763: 0.8 (the target) where it meets it, else today's value.
-    constexpr double kOrbitToday[8] = {0.8, 0.76, 0.8, 0.76, 0.77, 0.76, 0.8, 0.76};
+    // free x lock x dt, in loop order: (false, true, 1/60), (false, true, 0.25), (false, false, 1/60), ... Today 0.791,
+    // 0.763, 0.706, 0.763, 0.769, 0.763, 0.774, 0.763 (fe0e8690, the holds on: 0.825, 0.763, 0.825, 0.763, 0.776,
+    // 0.763, 0.859, 0.763). Every run misses the target; each is pinned at today's value.
+    constexpr double kOrbitToday[8] = {0.79, 0.76, 0.70, 0.76, 0.76, 0.76, 0.77, 0.76};
     int run = 0;
     for (const bool free : {false, true})
         for (const bool lock : {true, false})
@@ -433,7 +437,10 @@ TEST_CASE("partner frame: Spread with an orbiting camera: on screen per run no l
                 s.orbit = 30.f;
                 s.run(20.0, dt);
                 const double on = s.onScreen / s.elapsed;
-                MESSAGE("run " << run << " on screen " << on << " (target 0.8)");
+                // Bar 0.8. Measured 0.791, 0.763, 0.706, 0.763, 0.769, 0.763, 0.774, 0.763: every run misses it,
+                // runs 1, 3, 5 and 7 (dt 0.25) by 0.037, runs 0, 2, 4 and 6 by 0.009, 0.094, 0.031 and 0.026.
+                MESSAGE("run " << run << " on screen " << on << " (bar 0.8, miss " << std::max(0.0, 0.8 - on)
+                               << ", pin " << kOrbitToday[run] << ")");
                 CHECK(on >= kOrbitToday[run]);
                 ++run;
             }
@@ -792,33 +799,36 @@ FramePin orbitPin(PartnerOrder order, bool free, bool lock, double dt, PartnerTu
 // is main's to the bit: every step's intent and the state hash at the end of the orbit (both orders, the free and the
 // locked lead, both steps) equal main's pins at a0f48fa7 (recorded at 102219cb), copied by hand: never regenerate
 // them from this build. No target here is tall, so rule 18 cannot act.
+namespace {
+struct MainOrbitRow {
+    PartnerOrder order;
+    bool free, lock, fine;
+    std::uint64_t intents, state;
+};
+const MainOrbitRow kMainOrbitRows[] = {
+    {PartnerOrder::StayClose, false, false, false, 265514111919678174ull, 267639759532034892ull},
+    {PartnerOrder::StayClose, false, false, true, 13494321442008997399ull, 17156234905785402287ull},
+    {PartnerOrder::StayClose, false, true, false, 8697168510642720180ull, 1221592041938500472ull},
+    {PartnerOrder::StayClose, false, true, true, 303441118715888387ull, 6727766592074957145ull},
+    {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 3996803732724869128ull},
+    {PartnerOrder::StayClose, true, false, true, 17652568905509306018ull, 16222199093469650799ull},
+    {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 4361275200455314555ull},
+    {PartnerOrder::StayClose, true, true, true, 13298922241904239483ull, 526139214294223443ull},
+    {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 1762510326365600415ull},
+    {PartnerOrder::Spread, false, false, true, 2849074323208619076ull, 10684946757628589948ull},
+    {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 1762510326365600415ull},
+    {PartnerOrder::Spread, false, true, true, 11340955196540186759ull, 18266217942116871286ull},
+    {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 7453824002278148186ull},
+    {PartnerOrder::Spread, true, false, true, 3162916615266793425ull, 18348585300907830234ull},
+    {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 7453824002278148186ull},
+    {PartnerOrder::Spread, true, true, true, 10578977463318667820ull, 17647298366914853837ull},
+};
+} // namespace
+
 TEST_CASE("partner frame: rule 17 off, main's tuning: the framed orbit's intents and state hash are main's (a0f48fa7)") {
     CHECK_FALSE(PartnerTuning{}.circling);
-    struct Row {
-        PartnerOrder order;
-        bool free, lock, fine;
-        std::uint64_t intents, state;
-    };
-    const Row rows[] = {
-        {PartnerOrder::StayClose, false, false, false, 265514111919678174ull, 267639759532034892ull},
-        {PartnerOrder::StayClose, false, false, true, 13494321442008997399ull, 17156234905785402287ull},
-        {PartnerOrder::StayClose, false, true, false, 8697168510642720180ull, 1221592041938500472ull},
-        {PartnerOrder::StayClose, false, true, true, 303441118715888387ull, 6727766592074957145ull},
-        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 3996803732724869128ull},
-        {PartnerOrder::StayClose, true, false, true, 17652568905509306018ull, 16222199093469650799ull},
-        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 4361275200455314555ull},
-        {PartnerOrder::StayClose, true, true, true, 13298922241904239483ull, 526139214294223443ull},
-        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 1762510326365600415ull},
-        {PartnerOrder::Spread, false, false, true, 2849074323208619076ull, 10684946757628589948ull},
-        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 1762510326365600415ull},
-        {PartnerOrder::Spread, false, true, true, 11340955196540186759ull, 18266217942116871286ull},
-        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 7453824002278148186ull},
-        {PartnerOrder::Spread, true, false, true, 3162916615266793425ull, 18348585300907830234ull},
-        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 7453824002278148186ull},
-        {PartnerOrder::Spread, true, true, true, 10578977463318667820ull, 17647298366914853837ull},
-    };
     const PartnerTuning m = mainEquivalentTuning(PartnerTuning{});
-    for (const Row& w : rows) {
+    for (const MainOrbitRow& w : kMainOrbitRows) {
         CAPTURE(int(w.order));
         CAPTURE(w.free);
         CAPTURE(w.lock);
@@ -829,37 +839,13 @@ TEST_CASE("partner frame: rule 17 off, main's tuning: the framed orbit's intents
     }
 }
 
-// The shipped tuning's pins, this branch's values. 10 of 16 rows' intents move from main's, each by the change
-// named (measured with that change alone on main's tuning): the bottom margin (0.05, stations near the bottom edge
-// now in) or the side hold (1.0 s, a station flipped side within it keeps its side). Every state hash moves: the
-// shipped tuning hashes its bottom margin (below frustumMargin) and its side hold with the hold clock's age (capped
-// at the hold), which main's tuning does not.
-TEST_CASE("partner frame: rule 17 off, the shipped tuning: the framed orbit's intents and state hash are pinned") {
+// Review item 1: the shipped tuning's pins are main's (a0f48fa7) to the bit, intents and state hash, every row: no
+// enemy in the orbit is tall and circling is off, so the framing holds (frustumMarginBottom, frameSideHoldSeconds)
+// neither steer nor hash (framingHolds, holdsFramed). Kept general (fe0e8690) they moved 10 of these 16 rows and,
+// measured on ordinary fights, lowered one on-screen share (StayClose orbiting, 0.9458 to 0.9442 of the run).
+TEST_CASE("partner frame: rule 17 off, the shipped tuning, no tall enemy: the framed orbit's intents and state hash are main's") {
     CHECK_FALSE(PartnerTuning{}.circling);
-    struct Row {
-        PartnerOrder order;
-        bool free, lock, fine;
-        std::uint64_t intents, state;
-    };
-    const Row rows[] = {
-        {PartnerOrder::StayClose, false, false, false, 1357905274653255899ull, 13697923335789250723ull}, // intents: margin
-        {PartnerOrder::StayClose, false, false, true, 5074212404098555745ull, 18113349732729810429ull}, // intents: margin and side hold
-        {PartnerOrder::StayClose, false, true, false, 16086233793491785525ull, 9942363901030916838ull}, // intents: margin
-        {PartnerOrder::StayClose, false, true, true, 13361595823405808389ull, 12110359588259629963ull}, // intents: margin and side hold
-        {PartnerOrder::StayClose, true, false, false, 12318288052270451116ull, 6243710244904759685ull}, // intents main's
-        {PartnerOrder::StayClose, true, false, true, 10833352845746964059ull, 14428280010697570023ull}, // intents: margin and side hold
-        {PartnerOrder::StayClose, true, true, false, 11062567821329793665ull, 2827425724681207734ull}, // intents main's
-        {PartnerOrder::StayClose, true, true, true, 5339931848536943146ull, 14920154839734768300ull}, // intents: margin and side hold
-        {PartnerOrder::Spread, false, false, false, 603634575432450118ull, 7693424927675472466ull}, // intents main's
-        {PartnerOrder::Spread, false, false, true, 415095739551922365ull, 10861859527260200625ull}, // intents: side hold
-        {PartnerOrder::Spread, false, true, false, 603634575432450118ull, 7693424927675472466ull}, // intents main's
-        {PartnerOrder::Spread, false, true, true, 415095739551922365ull, 10861859527260200625ull}, // intents: margin and side hold
-        {PartnerOrder::Spread, true, false, false, 603634575432450118ull, 14654285743972932987ull}, // intents main's
-        {PartnerOrder::Spread, true, false, true, 4724611697778822349ull, 296234943700345006ull}, // intents: side hold
-        {PartnerOrder::Spread, true, true, false, 603634575432450118ull, 14654285743972932987ull}, // intents main's
-        {PartnerOrder::Spread, true, true, true, 14658538389056863119ull, 14732551354894952230ull}, // intents: margin and side hold
-    };
-    for (const Row& w : rows) {
+    for (const MainOrbitRow& w : kMainOrbitRows) {
         CAPTURE(int(w.order));
         CAPTURE(w.free);
         CAPTURE(w.lock);
@@ -867,5 +853,60 @@ TEST_CASE("partner frame: rule 17 off, the shipped tuning: the framed orbit's in
         const FramePin p = orbitPin(w.order, w.free, w.lock, w.fine ? 1.0 / 60.0 : 0.25);
         CHECK(p.intents == w.intents);
         CHECK(p.state == w.state);
+    }
+}
+
+// Review item 5 (one rule for the side hold and the grace): within frameSideHoldSeconds of its last change of side a
+// new pick keeps to that side, and refuses the other only while rule 13's grace will hold the last point. The state:
+// the side held, its side has no valid station (the arena ends 0.3 m past the target's line), the last point is in
+// frame and unhidden but in the target's keep-out, and no valid station for 1.2 s (past the grace's 1 s in a
+// keep-out). The target is tall, so the side hold is on. It takes the other side's valid station and does not fall
+// back (before: it fell back to rules 10-11's).
+// With no valid station for 0.5 s the grace still holds the last point.
+TEST_CASE("partner frame: the side hold refuses the other side only while the grace holds the last point") {
+    for (const double gap : {1.2, 0.5}) {
+        CAPTURE(gap);
+        Script s(PartnerOrder::Spread, true, false, 5);
+        s.n = 1;
+        s.spin = 0.f;
+        s.windups = false;
+        s.e[0].base = 0.f; // tall (rule 18), so the framing holds are on (framingHolds)
+        s.e[0].top = 6.f;
+        s.in.pos = {1.5f, -2.f};
+        s.in.station.arenaCentre = {3.5f, -50.f};
+        s.in.station.arenaRadius = 50.3f;
+        s.useCamera();
+        s.stepOnce(1.0 / 60.0);
+        PartnerBrainSave st = s.b.save();
+        REQUIRE(st.framed);
+        const float r = s.e[0].radius + 0.5f * PartnerTuning{}.reachMeters;
+        const float a = 180.f - std::asin(0.2f / r) / kRad; // the near side, 0.2 m off the camera-target line
+        s.e[0].pos = {3.5f, 0.f}; // after stepOnce (which puts it at 2.5, 0): its ring's near side 2.1 m from the
+                                  // lead, past its personal space and the camera's wedge
+        const Vec2 c = s.e[0].pos;
+        const Vec2 p{c.x + r * std::cos(a * kRad), c.y + r * std::sin(a * kRad)};
+        st.frameRing = 1;
+        st.frameTarget = 0;
+        st.frameAngle = a;
+        st.frameRadius = r;
+        st.frameLast = p;
+        st.frameSideAt = st.now - 0.5; // the side changed 0.5 s ago: held
+        st.noFrame = gap;
+        st.fellBack = false;
+        s.b.load(st);
+        const PartnerIntent i = s.b.step(1.0 / 60.0, s.in);
+        const PartnerBrainSave& after = s.b.save();
+        CAPTURE(after.frameLast.x);
+        CAPTURE(after.frameLast.y);
+        CAPTURE(after.noFrame);
+        CHECK_FALSE(i.frameFallback);
+        CHECK_FALSE(after.fellBack);
+        if (gap > 1.0) {
+            CHECK(after.noFrame == 0.0);       // a valid station found ...
+            CHECK(after.frameLast.y < -0.3f); // ... on the other side
+        } else {
+            CHECK(after.noFrame > gap);        // none found: the grace ...
+            CHECK(std::hypot(after.frameLast.x - p.x, after.frameLast.y - p.y) < 1e-4f); // ... holds the last point
+        }
     }
 }

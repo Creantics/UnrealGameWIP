@@ -327,10 +327,12 @@ using V3 = PartnerVec3;
 float v3Dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
 // Rule 13's frustum, shrunk by the margin: a capsule's three points each in front of the camera and within lim of
-// the screen's centre in its -1..1 frame across and above it, within limBelow below it (kPartnerFrustumMarginBottom).
+// the screen's centre in its -1..1 frame across and above it, within limBelow below it (the bottom's own
+// kPartnerFrustumMarginBottom in the brain only with its framing holds on, framingHolds; else lim, as main).
 struct Frame {
     V3 c{}, f{}, u{}, r{};
-    float tanV = 0.f, tanH = 0.f, lim = 0.8f, limBelow = 0.9f, z0 = 0.f, h = 1.8f;
+    float tanV = 0.f, tanH = 0.f, lim = 0.8f, limBelow = 0.8f, z0 = 0.f, h = 1.8f;
+    bool holds = false; // framingHolds this step: the brain's bottom margin and side hold are on
     bool point(float x, float y, float z) const {
         const V3 d{x - c.x, y - c.y, z - c.z};
         const float depth = v3Dot(d, f);
@@ -352,7 +354,24 @@ struct Frame {
 };
 
 // The camera view, whole (PartnerCameraView's rules), or not given.
-bool makeFrame(const PartnerCameraView& v, const PartnerTuning& t, Frame& fr) {
+// The brain's framing holds (rule 13's bottom margin, frustumMarginBottom, and side hold, frameSideHoldSeconds) act
+// only with a tall enemy in the fight (any of the input's: rule 18) or rule 17's circling on. Without either the
+// framing is main's, to the bit (measured: kept general they lowered an ordinary fight's on-screen share).
+bool framingHolds(const PartnerInput& in, const PartnerTuning& t) {
+    if (t.circling) return true;
+    const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
+    for (std::size_t i = 0; i < n; ++i)
+        if (tallView(in.enemies[i])) return true;
+    return false;
+}
+
+// Rule 13's side hold: frameSideHoldSeconds with the framing holds on, else 0 (main's: none).
+double sideHoldOf(const Frame& fr, const PartnerTuning& t) {
+    return fr.holds ? static_cast<double>(t.frameSideHoldSeconds) : 0.0;
+}
+
+// `holds`: framingHolds (the brain), or partnerInFrame's measure, which keeps the bottom's own margin always.
+bool makeFrame(const PartnerCameraView& v, const PartnerTuning& t, Frame& fr, bool holds) {
     if (!partnerCameraWhole(v)) return false; // the same test ArenaFight makes
     const float lf = std::sqrt(v3Dot(v.forward, v.forward)), lu = std::sqrt(v3Dot(v.up, v.up));
     const V3 f{v.forward.x / lf, v.forward.y / lf, v.forward.z / lf};
@@ -367,7 +386,8 @@ bool makeFrame(const PartnerCameraView& v, const PartnerTuning& t, Frame& fr) {
     fr.tanV = std::tan(0.5f * v.verticalFovDegrees * kStDeg);
     fr.tanH = fr.tanV * v.aspect;
     fr.lim = 1.f - 2.f * t.frustumMargin;
-    fr.limBelow = 1.f - 2.f * std::min(t.frustumMargin, t.frustumMarginBottom); // the bottom's own margin
+    fr.holds = holds;
+    fr.limBelow = holds ? 1.f - 2.f * std::min(t.frustumMargin, t.frustumMarginBottom) : fr.lim; // else main's
     fr.z0 = v.groundZ;
     fr.h = v.bodyHeight;
     return true;
@@ -453,6 +473,18 @@ float tallGrowOf(const PartnerInput& in, const PartnerTuning& t, std::uint8_t on
     return grow;
 }
 
+// Rule 13's grace: whether the last station (s.frameLast) is held this step with no valid one found. It holds while it
+// stays legal, unhidden and out of this target's keep-out (it may have left the frame: the camera can come back to it);
+// within frameSideHoldSeconds of the last valid station it holds in the keep-out too (a short gap is not worth a jump
+// to rules 10-11's and back). The one clock for that hold is noFrame, here and in frameStation's side hold.
+bool graceHolds(const Ground& g, const Frame& fr, const PartnerTuning& t, const PartnerEnemyView* e,
+                const PartnerBrainSave& s) {
+    const bool sideHeld = s.noFrame + 1e-9 < sideHoldOf(fr, t);
+    return !s.fellBack && s.frameRing != 0 && s.noFrame + 1e-9 < static_cast<double>(t.frustumGiveUpSeconds) &&
+           g.legal(s.frameLast) && (sideHeld || !(e && makeKeep(g, *e).in(s.frameLast, t.wedgeClearMeters))) &&
+           !fr.hides(e, s.frameLast);
+}
+
 bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, PartnerOrder order, Vec2 pos,
                   const PartnerEnemyView* e, int tgt, float minFrom, PartnerBrainSave& s, Vec2& out) {
     const bool close = order == PartnerOrder::StayClose;
@@ -494,11 +526,13 @@ bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, Part
     }
     // Within kPartnerSideHoldSeconds of its last change of side, a new pick keeps to its side; none valid there, the
     // grace holds the last point while the camera sees it unhidden (the other side once the hold is out).
-    const bool keepSide = side != 0.f && s.now - s.frameSideAt < static_cast<double>(t.frameSideHoldSeconds);
+    const bool keepSide = side != 0.f && s.now - s.frameSideAt < sideHoldOf(fr, t);
     Spot best;
     float bestAngle = 0.f, bestRadius = 0.f;
     for (int pass = keepSide ? 0 : 1; pass < 2 && best.tier >= 9; ++pass) {
-        if (pass == 1 && keepSide && fr.clear(e, s.frameLast)) return false;
+        // The other side is refused only while the grace will hold the last point (in frame and unhidden): else
+        // the other side's valid station, not rules 10-11's fallback.
+        if (pass == 1 && keepSide && fr.clear(e, s.frameLast) && graceHolds(g, fr, t, e, s)) return false;
         for (int ri = 0; ri < nr; ++ri)
             for (int a = 0; a < 72; ++a) {
                 const float ang = 5.f * static_cast<float>(a);
@@ -522,7 +556,7 @@ bool frameStation(const Ground& g, const Frame& fr, const PartnerTuning& t, Part
     s.frameAngle = bestAngle;
     s.frameRadius = bestRadius;
     s.frameLast = best.p;
-    if (side != 0.f && sideOf(best.p) != side) s.frameSideAt = s.now;
+    if (fr.holds && side != 0.f && sideOf(best.p) != side) s.frameSideAt = s.now; // the side hold's clock
     out = best.p;
     return true;
 }
@@ -554,7 +588,7 @@ bool partnerInFrame(const PartnerCameraView& camera, float margin, Vec2 p) {
     PartnerTuning t;
     t.frustumMargin = margin;
     Frame fr;
-    return pbWithin(margin, 0.f, 0.4f) && stFinite(p) && makeFrame(camera, t, fr) && fr.sees(p);
+    return pbWithin(margin, 0.f, 0.4f) && stFinite(p) && makeFrame(camera, t, fr, true) && fr.sees(p);
 }
 
 bool validPartnerTuning(const PartnerTuning& t) {
@@ -643,12 +677,16 @@ std::uint64_t PartnerBrainSave::hash() const {
             if (t.choiceHoldSeconds != d.choiceHoldSeconds || t.turnHoldSeconds != d.turnHoldSeconds)
                 h.add(t.choiceHoldSeconds).add(t.turnHoldSeconds);
         }
-        // Step 2, hashed only off main's value, so main's tuning hashes as main. The bottom margin: below the sides'.
-        if (t.frustumMarginBottom < t.frustumMargin) h.add(std::uint8_t{19}).add(t.frustumMarginBottom);
-        // The side hold: on, and its clock's age, capped at the hold (a side change older than that steers nothing).
-        if (t.frameSideHoldSeconds > 0.f)
-            h.add(std::uint8_t{20}).add(t.frameSideHoldSeconds)
-                .add(std::min(now - frameSideAt, static_cast<double>(t.frameSideHoldSeconds)));
+        // The framing holds, hashed only once framed with them on (holdsFramed), so a fight with no tall enemy and
+        // circling off hashes as main whatever the tuning. The bottom margin: below the sides'. The side hold: on,
+        // and its clock's age, capped at the hold (a side change older than that steers nothing).
+        if (holdsFramed) {
+            h.add(std::uint8_t{19}).add(holdsFramed);
+            if (t.frustumMarginBottom < t.frustumMargin) h.add(t.frustumMarginBottom);
+            if (t.frameSideHoldSeconds > 0.f)
+                h.add(std::uint8_t{20}).add(t.frameSideHoldSeconds)
+                    .add(std::min(now - frameSideAt, static_cast<double>(t.frameSideHoldSeconds)));
+        }
     }
     if (t.tallGrowMaxMeters != d.tallGrowMaxMeters) h.add(std::uint8_t{18}).add(t.tallGrowMaxMeters); // default: as before
     return h.value;
@@ -1001,7 +1039,7 @@ void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
     if (!held) return stop();
     Ground g;
     Frame fr;
-    if (!makeGround(in, t, g) || !makeFrame(in.station.camera, t, fr)) return stop();
+    if (!makeGround(in, t, g) || !makeFrame(in.station.camera, t, fr, framingHolds(in, t))) return stop();
     g.grow = tallGrowOf(in, t, s_.tallGrowOn); // rule 18: the step's own growth (one source)
     const View* e = haveTarget ? &in.enemies[static_cast<std::size_t>(s_.target)] : nullptr;
     const bool rooted = s_.placeFor + 1e-9 >= kPlaceStill; // in one place this long: a new goal now, whatever it walks
@@ -1210,7 +1248,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     };
     // Rules 13-16: the play camera, when the host gives a whole one with stationing on.
     Frame fr;
-    const bool fm = st && makeFrame(in.station.camera, t, fr);
+    const bool fm = st && makeFrame(in.station.camera, t, fr, framingHolds(in, t));
+    if (fm && fr.holds) s_.holdsFramed = true; // the framing holds steer from here (sticky; hashed from here)
     // Rule 18: StayClose by a tall target (framed; one standing whose edge is within closeLeadMeters of the lead, held
     // or not, so a lead switch does not shrink them): its cap, leash and return grow by the target's radius, at most
     // tallGrowMaxMeters.
@@ -1258,14 +1297,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             stationNow = true;
             return p;
         }
-        // The grace holds the last station while it stays legal and out of this target's keep-out (it may have
-        // left the frame: the camera can come back to it). Within kPartnerSideHoldSeconds of its side's last valid
-        // point it holds it in the keep-out too: a short gap is not worth a jump to rules 10-11's and back.
-        const bool sideHeld = s_.noFrame + 1e-9 < static_cast<double>(t.frameSideHoldSeconds);
-        if (!s_.fellBack && s_.frameRing != 0 && s_.noFrame + 1e-9 < static_cast<double>(t.frustumGiveUpSeconds) &&
-            g.legal(s_.frameLast) && (sideHeld || !(e && makeKeep(g, *e).in(s_.frameLast, t.wedgeClearMeters))) &&
-            !fr.hides(e, s_.frameLast))
-            return s_.frameLast;
+        if (graceHolds(g, fr, t, e, s_)) return s_.frameLast; // rule 13's grace
         out.frameFallback = true;
         s_.fellBack = true;
         s_.frameRing = 0;
