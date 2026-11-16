@@ -108,14 +108,70 @@ def tex_concrete(seed, tile=2.0):
     return val, h, 0.004, _mr(st, 0.86 + 0.06 * mid), tile
 
 
-def tex_stucco(seed, tile=2.0):
+def _blur(img, sigma_px):
+    """Tileable gaussian blur (FFT, wraps)."""
+    n = img.shape[0]
+    k = np.fft.fftfreq(n)
+    g = np.exp(-2 * (math.pi * sigma_px) ** 2 * (k[:, None] ** 2 + k[None, :] ** 2))
+    return np.real(np.fft.ifft2(np.fft.fft2(img) * g))
+
+
+def _trowel(rng, tile, n=TEX):
+    """Overlapping trowel smears, stamped with wrap-around so the tile stays seamless. Each smear is a crescent band
+    along a circular arc (the swing of the wrist), tapered at both ends, laid over the ones before it: a flat, slightly
+    tilted plate of plaster with a raised lip where the trowel's trailing edge lifted off. Returns (height, tone,
+    polish, lip) maps, polish 1 at a smear's middle, lip 1 on its ridge."""
+    px = n / tile
+    h = np.full((n, n), 0.42)
+    tone = np.zeros((n, n))
+    pol = np.zeros((n, n))
+    lip = np.zeros((n, n))
+    for _ in range(int(70 * tile * tile)):
+        cx, cy = rng.uniform(0, n, 2)
+        R = rng.uniform(0.16, 0.42) * px
+        hw = rng.uniform(0.045, 0.09) * px
+        a0, span = rng.uniform(0, 2 * math.pi), rng.uniform(0.55, 1.3)
+        ts = np.linspace(0, span, 9)
+        ax, ay = cx + R * np.cos(a0 + ts), cy + R * np.sin(a0 + ts)
+        x0, x1 = int(ax.min() - hw - 2), int(ax.max() + hw + 3)
+        y0, y1 = int(ay.min() - hw - 2), int(ay.max() + hw + 3)
+        xs, ys = np.arange(x0, x1), np.arange(y0, y1)
+        dx, dy = xs[None, :] - cx, ys[:, None] - cy
+        r = np.hypot(dx, dy)
+        rel = (np.arctan2(dy, dx) - a0) % (2 * math.pi)
+        s = np.clip(rel / span, 0, 1)
+        w = hw * (0.3 + 0.7 * np.sin(math.pi * s) ** 0.6)
+        t = (r - R) / np.maximum(w, 1e-3) * rng.choice((-1.0, 1.0))
+        m = (np.abs(t) < 1) & (rel < span)
+        if not m.any():
+            continue
+        ridge = np.exp(-((t - 0.82) / 0.13) ** 2)
+        lvl = rng.uniform(0.35, 0.65)
+        ix, iy = np.ix_(ys % n, xs % n)
+        h[ix, iy] = np.where(m, lvl + 0.10 * t + 0.32 * ridge, h[ix, iy])
+        tone[ix, iy] = np.where(m, rng.uniform(-1, 1) + 0 * t, tone[ix, iy])
+        pol[ix, iy] = np.where(m, smooth01(1 - np.abs(t) * 1.2), pol[ix, iy])
+        lip[ix, iy] = np.where(m, ridge, lip[ix, iy])
+    return _blur(h, 0.8), _blur(tone, 1.5), _blur(pol, 1.0), _blur(lip, 1.0)
+
+
+def tex_stucco(seed, tile=2.0, trowel=True):
+    """Lime plaster. With `trowel`: hand-trowelled, overlapping crescent smears with raised lips and polished middles
+    (the walls); without: the plain fine render (trim, sills, footings)."""
     rng = np.random.default_rng(seed)
     blob = fbm(rng, [1.5, 4, 16], [0.5, 0.3, 0.2])
     mid = fbm(rng, [30, 100], [0.6, 0.4])
     st = _streaks(rng, 0.8)
-    val = 0.84 * (1 + 0.025 * blob + 0.04 * mid) * (1 - 0.12 * st)
-    h = 0.5 + 0.25 * blob
-    return val, h, 0.0025, _mr(st, 0.9 - 0.05 * blob), tile
+    if not trowel:
+        val = 0.84 * (1 + 0.025 * blob + 0.04 * mid) * (1 - 0.12 * st)
+        h = 0.5 + 0.25 * blob
+        return val, h, 0.0025, _mr(st, 0.9 - 0.05 * blob), tile
+    th, tone, pol, lip = _trowel(rng, tile)
+    fine = pnoise(rng, 0.9)
+    val = 0.84 * (1 + 0.02 * blob + 0.03 * mid + 0.018 * tone + 0.025 * pol - 0.03 * lip) * (1 - 0.12 * st)
+    h = 0.15 + 0.7 * th + 0.06 * blob + 0.02 * fine
+    dirt = np.clip(st + 0.35 * lip, 0, 1)
+    return val, h, 0.0055, _mr(dirt, 0.92 - 0.16 * pol + 0.03 * lip - 0.04 * blob), tile
 
 
 def tex_timber(seed, tile=1.2, board=0.18):
@@ -339,7 +395,7 @@ def build_materials():
     _tex_mat("jpk_wall_tile", tex_smalltile, 101, 0.3)
     _tex_mat("jpk_wall_concrete", tex_concrete, 102, 0.86)
     _tex_mat("jpk_wall_stucco", tex_stucco, 103, 0.9)
-    _tex_mat("jpk_trim", tex_stucco, 104, 0.8)
+    _tex_mat("jpk_trim", lambda s: tex_stucco(s, trowel=False), 104, 0.8)
     _tex_mat("jpk_timber", tex_timber, 105, 0.78)
     _tex_mat("jpk_metal", tex_metal, 106, 0.4)
     _tex_mat("jpk_shutter", tex_corrugated, 107, 0.45)
@@ -433,7 +489,7 @@ def alu_window(A, x0, x1, z0, z1, rec=0.08, sill=True, sill_mat="jpk_trim", gril
         B(A, x0, -0.06, z0 + (z1 - z0) * 0.55, x1, -0.03, z0 + (z1 - z0) * 0.55 + 0.03, "jpk_metal")
 
 
-def grid_shell(A, rows, off, mat):
+def grid_shell(A, rows, off, mat, smooth=False):
     """Closed slab from a grid of points (rows of Vectors): top sheet, a copy moved by `off`, and rim quads."""
     bm = bmesh.new()
     top = [[bm.verts.new(p) for p in r] for r in rows]
@@ -450,8 +506,18 @@ def grid_shell(A, rows, off, mat):
         bm.faces.new((top[a][b], bot[a][b], bot[c][d], top[c][d]))
     bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
     bm.verts.index_update()
-    A._push([tuple(v.co) for v in bm.verts], [tuple(v.index for v in f.verts) for f in bm.faces], mat, False)
+    A._push([tuple(v.co) for v in bm.verts], [tuple(v.index for v in f.verts) for f in bm.faces], mat, smooth)
+    if smooth:  # the rim stays flat, so the sheets' normals are not bent toward it (no shading band at the seams)
+        A.s[-len(ring):] = [False] * len(ring)
     bm.free()
+
+
+def bar_x(A, x0, x1, y0, z0, y1, z1, mat, ch, M=None):
+    """A board along x with chamfered long edges and square, flush ends (pieces that meet at a seam)."""
+    poly = [(y0 + ch, z0), (y1 - ch, z0), (y1, z0 + ch), (y1, z1 - ch), (y1 - ch, z1), (y0 + ch, z1), (y0, z1 - ch),
+            (y0, z0 + ch)]
+    R = Matrix.Rotation(math.radians(90), 4, "Z")
+    A.prism_xz(poly, -x1, -x0, mat, M=(M @ R) if M is not None else R)
 
 
 def tile_surface(A, W, run, pitch_deg, ov, mat="jpk_rooftile", per=0.225, course=0.25, samples=5, amp=0.032,
@@ -477,14 +543,14 @@ def tile_surface(A, W, run, pitch_deg, ov, mat="jpk_rooftile", per=0.225, course
     for (s, step) in rows:
         grid.append([base0 + dvec * s + nvec * (amp * math.sin(2 * math.pi * (x + x_off) / per) + step + amp)
                      + Vector((x, 0, 0)) for x in xs])
-    grid_shell(A, grid, -nvec * thick, mat)
+    grid_shell(A, grid, -nvec * thick, mat, smooth=True)
     if ends:  # round eave-tile ends on each crest
         for i in range(int(round(W / per))):
             x = per * i + per / 4 - x_off % per
             if x < 0.05 or x > W - 0.05:
                 continue
             c = base0 + nvec * (2 * amp + 0.03) + Vector((x, 0, 0))
-            cyl(A, c - dvec * 0.03, c + dvec * 0.06, 0.055, mat, seg=10, smooth=True)
+            cyl(A, c - dvec * 0.03, c + dvec * 0.06, 0.055, mat, seg=16, smooth=True)
     return th
 
 
@@ -654,18 +720,24 @@ def _storefront(A, W, H, door_w=1.8, transom=2.25, M=None, recess=0.15):
         B(A, a + 0.15, yy - 0.015, 0.95, a + 0.18, yy, 1.25, "jpk_dark", M=M)
 
 
-def _shop_frame(A, W, H, wall, Hopen=2.9):
-    """Pilasters and lintel around a shop opening of the ground storey."""
+def _shop_frame(A, W, H, wall, Hopen=2.9, ret=None):
+    """Pilasters and lintel around a shop opening of the ground storey, a skirting board across each pilaster's foot
+    (proud 18 mm, chamfered) and, with `ret` (y), its return along the opening's reveal back to y = ret."""
     B(A, 0, -0.05, 0, 0.3, 0.25, H, wall)
     B(A, W - 0.3, -0.05, 0, W, 0.25, H, wall)
     B(A, 0.3, 0, Hopen, W - 0.3, 0.25, H, wall)
     B(A, 0, -0.08, Hopen - 0.04, W, 0.0, Hopen, "jpk_trim")  # soffit edge / drip
+    for (a, b) in ((0.0, 0.3), (W - 0.3, W)):
+        B(A, a, -0.068, 0.0, b, -0.04, 0.2, "jpk_trim", bevel=0.005)  # skirting
+    if ret is not None:
+        B(A, 0.29, -0.068, 0.0, 0.318, ret, 0.2, "jpk_trim", bevel=0.005)
+        B(A, W - 0.318, -0.068, 0.0, W - 0.29, ret, 0.2, "jpk_trim", bevel=0.005)
 
 
 def p_shop_glazed(W=3.6, wall="jpk_wall_concrete"):
     A = Acc()
     H = SHOP_H
-    _shop_frame(A, W, H, wall)
+    _shop_frame(A, W, H, wall, ret=0.13)
     M = Matrix.Translation((0.3, 0, 0))
     _storefront(A, W - 0.6, 2.9, door_w=1.8 if W > 4 else 1.6, M=M)
     B(A, 0.3, -0.45, -0.0, W - 0.3, 0.0, 0.1, "jpk_trim")  # step
@@ -693,12 +765,141 @@ def p_shop_shutter(W=6.3, wall="jpk_wall_concrete"):
             {"R": (W, 0, 0), "T": (0, 0, H), "FASCIA": (0, -0.32, 2.95), "AWNING": (0.3, 0, 2.95)})
 
 
+def _shell(A, top, bot, mat, smooth=True):
+    """Closed slab between two grids of points of the same shape (rows of Vectors): the faces of both sheets and the
+    rim quads. Normals recalculated outward."""
+    bm = bmesh.new()
+    tv = [[bm.verts.new(p) for p in r] for r in top]
+    bv = [[bm.verts.new(p) for p in r] for r in bot]
+    nj, ni = len(top), len(top[0])
+    for j in range(nj - 1):
+        for i in range(ni - 1):
+            bm.faces.new((tv[j][i], tv[j][i + 1], tv[j + 1][i + 1], tv[j + 1][i]))
+            bm.faces.new((bv[j][i], bv[j + 1][i], bv[j + 1][i + 1], bv[j][i + 1]))
+    ring = ([(0, i) for i in range(ni)] + [(j, ni - 1) for j in range(1, nj)] +
+            [(nj - 1, i) for i in range(ni - 2, -1, -1)] + [(j, 0) for j in range(nj - 2, 0, -1)])
+    for k in range(len(ring)):
+        (a, b), (c, d) = ring[k], ring[(k + 1) % len(ring)]
+        bm.faces.new((tv[a][b], bv[a][b], bv[c][d], tv[c][d]))
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    bm.verts.index_update()
+    A._push([tuple(v.co) for v in bm.verts], [tuple(v.index for v in f.verts) for f in bm.faces], mat, smooth)
+    bm.free()
+
+
+# The koshi noren: three split panels hung by cloth loops from the rail (axis along x at NOREN_RAIL (y, z), radius
+# NOREN_R); the cloth's mid surface y(x, z) from _noren_mid.
+NOREN_RAIL, NOREN_R = (-0.12, 2.22), 0.015
+NOREN_TOP, NOREN_FOOT, NOREN_T = 2.135, 1.55, 0.004
+
+
+def _noren_mid(x, z, a, pw, k):
+    """Mid surface of panel k (x a..a+pw) at (x, z): soft vertical folds that die out at the loops and grow down
+    the drop, a little forward belly at the foot."""
+    u = (x - a) / pw
+    d = (NOREN_TOP - z) / (NOREN_TOP - NOREN_FOOT)
+    amp = 0.005 + 0.009 * d
+    y = NOREN_RAIL[0] - amp * math.sin(2 * math.pi * (3.5 * u + 0.2 * k) + 0.6 * d)
+    y -= 0.0018 * math.sin(2 * math.pi * (7.0 * u + 0.37 * k))
+    return y - 0.004 * d * d
+
+
+def _noren_panel(A, a, pw, k, nx=18, nz=11):
+    """One noren panel as cloth with thickness: a 25 mm hem along the foot and 12 mm hems down both sides (double
+    cloth, standing 2.5 mm proud of the face), the top edge sagging a little between its four loops."""
+    hem_b, hem_s, ph = 0.025, 0.012, 0.0025
+    xs = [a, a + 0.0015, a + hem_s, a + hem_s + 0.0015]
+    xs += [a + hem_s + (pw - 2 * hem_s) * i / nx for i in range(1, nx)]
+    xs += [a + pw - hem_s - 0.0015, a + pw - hem_s, a + pw - 0.0015, a + pw]
+    loops = [a + (i + 0.5) * pw / 4 for i in range(4)]
+    sp = pw / 4
+
+    def ztop(x):
+        f = ((x - a) / sp - 0.5) % 1.0
+        return NOREN_TOP - 0.007 * math.sin(math.pi * f) ** 2
+
+    vs = [i / (nz - 1) for i in range(nz)]
+    top, bot = [], []
+    zf = NOREN_FOOT
+    zh = zf + hem_b
+    zrows = []
+    for v in vs:
+        zrows.append(lambda x, v=v: ztop(x) + v * (zh + 0.0015 - ztop(x)))
+    zrows += [lambda x: zh, lambda x: zh - 0.008, lambda x: zf + 0.004, lambda x: zf]
+    for zr in zrows:
+        rt, rb = [], []
+        for x in xs:
+            z = zr(x)
+            y = _noren_mid(x, z, a, pw, k)
+            hem = ph if (z <= zh + 1e-6 or x <= a + hem_s + 1e-6 or x >= a + pw - hem_s - 1e-6) else 0.0
+            if z < zf + 0.0045:  # the hem's rolled foot: the front face turns back
+                hem *= 0.5
+            rt.append(Vector((x, y - NOREN_T / 2 - hem, z)))
+            rb.append(Vector((x, y + NOREN_T / 2, z)))
+        top.append(rt)
+        bot.append(rb)
+    _shell(A, top, bot, "jpk_cloth", smooth=True)
+    # loops over the rail: a 38 mm cloth strap from the panel's face, up and round the rail, down behind it
+    ry, rz = NOREN_RAIL
+    rr = NOREN_R + 0.0035
+    for xl in loops:
+        zs0 = NOREN_TOP - 0.03
+        yf = _noren_mid(xl, zs0, a, pw, k) - NOREN_T / 2 - 0.0005
+        yb = _noren_mid(xl, zs0, a, pw, k) + NOREN_T / 2 + 0.0035
+        path = [(yf, zs0, Vector((0, -1, 0))), (ry - rr, rz - 0.03, Vector((0, -1, 0)))]
+        for i in range(11):
+            ang = math.pi * i / 10
+            path.append((ry - rr * math.cos(ang), rz + rr * math.sin(ang), Vector((0, -math.cos(ang), math.sin(ang)))))
+        path += [(ry + rr, rz - 0.03, Vector((0, 1, 0))), (yb, zs0, Vector((0, 1, 0)))]
+        lw = 0.019
+        t2, b2 = [], []
+        for (yy, zz, nrm) in path:
+            t2.append([Vector((xl - lw, yy, zz)), Vector((xl + lw, yy, zz))])
+            b2.append([Vector((xl - lw, yy, zz)) - nrm * 0.003, Vector((xl + lw, yy, zz)) - nrm * 0.003])
+        _shell(A, [[r[0] for r in t2], [r[1] for r in t2]], [[r[0] for r in b2], [r[1] for r in b2]], "jpk_cloth")
+    # the wave motif across the panel's lower third, raised 1.5 mm off the cloth (jpk_trim): two running wave lines
+    # and a curl over each crest of the upper one
+    x0m, x1m = a + hem_s + 0.01, a + pw - hem_s - 0.01
+
+    def ribbon(pts, wd):
+        n = len(pts)
+        tl, tr, bl, br = [], [], [], []
+        for i, (x, z) in enumerate(pts):
+            (xa, za), (xb, zb) = pts[max(i - 1, 0)], pts[min(i + 1, n - 1)]
+            tx, tz = xb - xa, zb - za
+            ln = math.hypot(tx, tz) or 1.0
+            nx_, nz_ = -tz / ln * wd / 2, tx / ln * wd / 2
+            for (side, sgn) in ((tl, 1), (tr, -1)):
+                px_, pz_ = x + sgn * nx_, z + sgn * nz_
+                side.append(Vector((px_, _noren_mid(px_, pz_, a, pw, k) - NOREN_T / 2 - 0.0015, pz_)))
+            bl.append(tl[-1] + Vector((0, 0.0025, 0)))
+            br.append(tr[-1] + Vector((0, 0.0025, 0)))
+        _shell(A, [tl, tr], [bl, br], "jpk_trim", smooth=True)
+
+    lam = 0.15
+    for (zc, amp, ph0, wd, lm) in ((1.712, 0.016, 0.0, 0.011, lam), (1.668, 0.012, 0.33, 0.008, lam * 0.8),
+                                   (1.632, 0.008, 0.6, 0.006, lam * 0.6)):
+        m = 32
+        pts = []
+        for i in range(m + 1):
+            x = x0m + (x1m - x0m) * i / m
+            p = 2 * math.pi * (x / lm + ph0)
+            pts.append((x, zc + amp * (math.sin(p) + 0.3 * math.sin(2 * p + 0.8))))  # leaning crests
+        ribbon(pts, wd)
+
+
 def p_shop_koshi(W=5.4, wall="jpk_wall_stucco"):
-    """Timber town-house front: lattice (koshi) window, recessed sliding entrance with a noren rail and curtain."""
+    """Timber town-house front: lattice (koshi) window, recessed sliding entrance with a noren rail and curtain.
+    Posts chamfered, proud of the head beam, capped, worn at the foot (a spliced, more rounded base) and stood on
+    chamfered stone footings."""
     A = Acc()
     H = STOREY
     for px in (0.0, 2.85, W - 0.15):
-        B(A, px, -0.06, 0, px + 0.15, 0.2, 2.45, "jpk_timber")  # posts
+        fx0, fx1 = max(0.0, px - 0.02), min(W, px + 0.17)
+        B(A, fx0, -0.115, 0.0, fx1, 0.2, 0.085, "jpk_trim", bevel=0.014)  # stone footing
+        B(A, px + 0.004, -0.096, 0.085, px + 0.146, 0.2, 0.38, "jpk_timber", bevel=0.022)  # worn, spliced base
+        B(A, px, -0.1, 0.383, px + 0.15, 0.2, 2.47, "jpk_timber", bevel=0.012)  # post, chamfered
+        B(A, max(0.0, px - 0.008), -0.108, 2.47, min(W, px + 0.158), 0.05, 2.505, "jpk_timber", bevel=0.007)  # cap
     B(A, 0, -0.08, 2.3, W, 0.2, 2.5, "jpk_timber")  # head beam
     B(A, 0, 0.05, 2.5, W, 0.2, H, wall)  # plaster band up to the pent eave
     # lattice: base board, slats, rails
@@ -724,15 +925,13 @@ def p_shop_koshi(W=5.4, wall="jpk_wall_stucco"):
     B(A, ex0, 0.0, 2.3, ex1, 0.38, 2.32, "jpk_timber")
     # noren rail and a short split curtain over the entrance only: three panels with slits, the door opening's top third
     # (a 0.65 m drop), a plain pale band across their foot
-    cyl(A, (ex0 + 0.05, -0.12, 2.22), (ex1 - 0.05, -0.12, 2.22), 0.015, "jpk_timber", seg=6)
-    for (a, b) in ((ex0, ex1 - 0.15),):
-        B(A, a, -0.15, 2.18, a + 0.03, 0.0, 2.25, "jpk_metal")
-        B(A, b + 0.12, -0.15, 2.18, b + 0.15, 0.0, 2.25, "jpk_metal")
+    cyl(A, (ex0 + 0.01, NOREN_RAIL[0], NOREN_RAIL[1]), (ex1 - 0.01, NOREN_RAIL[0], NOREN_RAIL[1]), NOREN_R,
+        "jpk_timber", seg=10)
+    for xb in (ex0, ex1 - 0.03):
+        B(A, xb, -0.15, 2.18, xb + 0.03, 0.0, 2.25, "jpk_metal", bevel=0.004)  # rail brackets
     pw = (ex1 - ex0 - 0.1 - 0.04) / 3
     for k in range(3):
-        a = ex0 + 0.05 + k * (pw + 0.02)
-        B(A, a, -0.13, 1.55, a + pw, -0.115, 2.2, "jpk_cloth")
-        B(A, a, -0.133, 1.61, a + pw, -0.129, 1.68, "jpk_trim")
+        _noren_panel(A, ex0 + 0.05 + k * (pw + 0.02), pw, k)
     return (A, [(0, -0.15, 0, W, 0.25, H)],
             {"R": (W, 0, 0), "T": (0, 0, H), "EAVE": (0, 0, H)})
 
@@ -981,15 +1180,30 @@ def p_hip_end():
 def p_eave_pent(W=0.9):
     """Pent eave (a short tiled roof between the ground floor and the first floor), origin on the wall at the top."""
     A = Acc()
-    run, ov = 0.0, 0.85
+    ov = 0.85
     th = tile_surface(A, W, 0.15, 22.0, ov, per=0.225, course=0.24, thick=0.035)
     ez = -ov * math.tan(th)
-    B(A, 0, -ov - 0.02, ez - 0.16, W, -ov + 0.03, ez + 0.01, "jpk_timber")
+    tn, ct_ = math.tan(th), math.cos(th)
+    Mr = Matrix.Rotation(th, 4, "X")  # the slope's frame: local y up the slope, local z off it
+    bar_x(A, 0, W, -ov - 0.02, ez - 0.16, -ov + 0.03, ez + 0.01, "jpk_timber", 0.006)  # fascia, chamfered
+    # soffit boards on the rafters, laid along the run at full width with shadow gaps up the slope
+    s0, s1, bw, gap = (-ov + 0.012) / ct_, 0.04 / ct_, 0.165, 0.007
+    s = s0
+    while s < s1 - 0.02:
+        bar_x(A, 0, W, s, -0.062, min(s + bw, s1), -0.044, "jpk_timber", 0.003, M=Mr)
+        s += bw + gap
+    # rafters every 0.45 m (centres 0.135 and 0.585, the same pitch across piece seams), along the slope, plumb cut
+    # at the fascia with an undercut tail, chamfered
+    def ztop(y):
+        return y * tn - 0.062 / ct_
+    ye, yw = -ov + 0.025, 0.05
     for xx in (0.1, 0.55):
-        B(A, xx, -ov + 0.03, ez - 0.13, xx + 0.07, 0.0, ez - 0.03, "jpk_timber")
-        B(A, xx, -0.06, ez - 0.13, xx + 0.07, 0.0, 0.06, "jpk_timber")
+        poly = [(ye, ztop(ye) - 0.055), (ye + 0.06, ztop(ye + 0.06) - 0.1), (yw, ztop(yw) - 0.1),
+                (yw, ztop(yw)), (ye, ztop(ye))]
+        A.prism_xz(poly, -(xx + 0.07), -xx, "jpk_timber", M=Matrix.Rotation(math.radians(90), 4, "Z"), bevel=0.008)
+    # wall plate the rafters land on
+    bar_x(A, 0, W, -0.085, ztop(0.0) - 0.2, 0.0, ztop(0.0) - 0.1, "jpk_timber", 0.008)
     B(A, 0, -0.04, 0.05, W, 0.0, 0.18, "jpk_wall_stucco")  # flashing upstand
-    del run
     return A, [(0, -ov, ez - 0.16, W, 0.2, 0.2)], {"R": (W, 0, 0)}
 
 
@@ -1154,7 +1368,7 @@ PIECES = [
     ("SHOP_GLAZED_36", "ground", p_shop_glazed, dict(W=3.6), 2500, "glazed front, sliding doors, transom"),
     ("SHOP_GLAZED_81", "ground", p_shop_glazed, dict(W=8.1), 2500, "glazed front, sliding doors, transom"),
     ("SHOP_SHUTTER_63", "ground", p_shop_shutter, dict(W=6.3), 2500, "roll-down shutter, box and guides"),
-    ("SHOP_KOSHI_54", "ground", p_shop_koshi, dict(W=5.4), 2500, "timber lattice, sliding door, noren"),
+    ("SHOP_KOSHI_54", "ground", p_shop_koshi, dict(W=5.4), 10000, "timber lattice, sliding door, cloth noren"),
     ("SHOP_CORNER_63", "ground", p_shop_corner, dict(W=6.3), 3000, "corner unit, 3.6 m return, chamfer door"),
     ("BAY_WIN_18", "upper", p_bay_win, dict(W=1.8), 1500, "small-tile wall, aluminium sliding window, sill"),
     ("BAY_BALC_27", "upper", p_bay_balc, dict(W=2.7), 2500, "balcony, solid parapet, laundry poles, AC unit"),
