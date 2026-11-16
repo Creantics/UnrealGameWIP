@@ -282,6 +282,10 @@ private:
 	int32 StrikeShots = 0;
 	int32 StrikesSeen = 0;
 	bool bShotAllyStrikes = false; // -ArenaShotAllyStrikes: the strike views are of the partner's blows, 1 m off
+	// -ArenaShotWard=<s>: at this fight time the partner's ward (the lead's without one) is raised for
+	// kArenaShotWardHold, for its views (-ArenaShotAt); a capture flag, the fight unchanged.
+	double ShotWardAt = -1.0;
+	bool bShotWardRaised = false;
 	bool bStrikeViewImpact = false; // the strike view under way is a landing (impact) view, not a mid-flight one
 	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 5 (-ArenaShotClose)
 	// the camera to go in front of the striking limb; 6 that view (<name>_front) to be taken; 2 the close camera to go to

@@ -137,6 +137,8 @@ constexpr float kArenaCloseFov = 55.f;
 // partner, and the side views' aim above its feet (low, so the ward on the ground is in the frame).
 constexpr double kArenaAllyCloseDistance = 100.0;
 constexpr double kArenaAllySideAim = 35.0;
+// -ArenaShotWard's hold (s): the ward up long enough for its rise, its held look and (after) its drop.
+constexpr double kArenaShotWardHold = 1.2;
 constexpr double kArenaCloseSettle = 0.6;
 // A -ArenaShot run gives up this long after the first view (wall seconds).
 constexpr double kArenaShotGiveUp = 200.0;
@@ -200,6 +202,7 @@ void AFTArenaGameMode::StartPlay()
 #if !UE_BUILD_SHIPPING
 		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
 		bShotAllyStrikes = FParse::Param(Cmd, TEXT("ArenaShotAllyStrikes")); // a capture flag too
+		FParse::Value(Cmd, TEXT("ArenaShotWard="), ShotWardAt); // and this
 #endif
 		bShotSide = bShotSide || bShotWorld;
 	}
@@ -1059,6 +1062,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		return false;
 	}
 	ShotWall += DeltaSeconds;
+	if (ShotWardAt >= 0.0 && !bShotWardRaised && static_cast<double>(Runner->GetFight().time()) >= ShotWardAt)
+	{
+		bShotWardRaised = true;
+		const bool bPartner = Runner->GetAllyFigure() != nullptr;
+		(bPartner ? Runner->GetAllyWeapons() : Runner->GetLeadWeapons()).RaiseWard(kArenaShotWardHold);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: capture: the %s's ward raised at %.2f s for %.1f s (-ArenaShotWard)."),
+			bPartner ? TEXT("partner") : TEXT("lead"), Runner->GetFight().time(), kArenaShotWardHold);
+	}
 	if (ShotWall < ShotHoldUntil)
 	{
 		return true;

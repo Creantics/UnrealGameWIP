@@ -229,6 +229,11 @@ struct FFTLeadWeapons
 	// with Freeze/Thaw in either order.
 	void HitPause(bool bOn);
 	bool IsFrozen() const { return bFrozen; }
+	// A capture's ward (-ArenaShotWard): a magic kit's ward raised for Seconds from the next Track, as a guard would
+	// (the fight itself unchanged).
+	void RaiseWard(double Seconds) { WardRaiseFor = Seconds; }
+	// A spell impact's turn: its ring square to Normal (toward the caster), its +X (the spec's gravity axis) up.
+	static FRotator ImpactFacing(const FVector& Normal);
 
 private:
 	enum EEffect : int32
@@ -237,6 +242,7 @@ private:
 		Travel, // the tracer or the bolt
 		Impact,
 		Ward,
+		Cast, // a spell's wind-up at the palm
 		EffectCount,
 	};
 
@@ -291,8 +297,8 @@ private:
 	TWeakObjectPtr<UFTVfxComponent> Fx[EffectCount];
 	const TCHAR* FxName[EffectCount] = {};
 	// When each effect last started (fight time; below 0: not since the fight began) and which Freeze paused.
-	static_assert(EffectCount == 4, "StartAt's initializer has one entry per effect");
-	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0};
+	static_assert(EffectCount == 5, "StartAt's initializer has one entry per effect");
+	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0, -1.0};
 	bool bPaused[EffectCount] = {};
 	bool bFrozen = false;
 	float FrozenDilation = 1.f;
@@ -307,6 +313,9 @@ private:
 	ftcore::ArenaPart LastPart = ftcore::ArenaPart::None;
 	uint8 LastMove = 0;
 	bool bWarding = false;
+	double WardRaiseFor = 0.0;    // RaiseWard's hold, taken up by the next Track
+	double WardHeldUntil = -1.0;  // a raised ward's end (fight time)
+	FVector ImpactFrom = FVector::ZeroVector; // where the travelling bolt left from (its impact faces back to it)
 	int32 ActiveCount = 0;
 	double LastActiveTime = -1e9;
 

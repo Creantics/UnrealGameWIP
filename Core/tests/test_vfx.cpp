@@ -151,10 +151,11 @@ TEST_CASE("vfx: the leads' weapon effects load without warnings and keep their p
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"spell_bolt", 3, 24, false},
+    const Expect files[] = {{"spell_bolt", 6, 50, false},
+                            {"spell_cast", 2, 40, false},
                             {"spell_burst", 5, 140, false},
                             {"spell_ward", 3, 150, true},
-                            {"spell_impact", 2, 16, false},
+                            {"spell_impact", 5, 140, false},
                             {"muzzle_flash", 4, 17, false},
                             {"gun_tracer", 1, 2, false},
                             {"gun_impact", 3, 19, false},
@@ -197,17 +198,45 @@ TEST_CASE("vfx: the weapon effects keep their timing and reach") {
     REQUIRE(loadEffect("gun_tracer", e));
     CHECK(e.emitters[0].speed.hi * e.emitters[0].lifetime.hi == doctest::Approx(3.f));
 
-    // The bolt's head covers 3.2 m (speed x lifetime, no drag), and its streaks do not pass it.
+    // The bolt's head covers 3.2 m (speed x lifetime, no drag); nothing else passes it. Its dark shell is alpha
+    // blended and drawn first, so it holds on bright ground under the additive core.
     REQUIRE(loadEffect("spell_bolt", e));
     const int head = findVfxEmitter(e, "head");
     REQUIRE(head >= 0);
     const VfxEmitter& h = e.emitters[static_cast<std::size_t>(head)];
     CHECK(h.speed.hi * h.lifetime.hi == doctest::Approx(3.2f));
-    const int streaks = findVfxEmitter(e, "streaks");
-    REQUIRE(streaks >= 0);
-    const VfxEmitter& s = e.emitters[static_cast<std::size_t>(streaks)];
-    CHECK(s.speed.hi * s.lifetime.hi <= doctest::Approx(3.2f));
+    for (const VfxEmitter& b : e.emitters) {
+        CAPTURE(b.name);
+        CHECK(b.speed.hi * b.lifetime.hi <= doctest::Approx(3.2f));
+    }
     CHECK(h.subEmitters.empty()); // the pop at the end is spell_impact, played at the hit point by the game
+    const int shell = findVfxEmitter(e, "shell");
+    REQUIRE(shell >= 0);
+    CHECK(shell < head);
+    CHECK(e.emitters[static_cast<std::size_t>(shell)].blend == VfxBlend::Alpha);
+    CHECK(h.blend == VfxBlend::Additive);
+
+    // The cast's rings close on the palm, inside the shortest light startup (0.16 s).
+    REQUIRE(loadEffect("spell_cast", e));
+    for (const VfxEmitter& c : e.emitters) {
+        CAPTURE(c.name);
+        const float at = c.bursts.empty() ? 0.f : c.bursts[0].time;
+        CHECK(c.speed.hi < 0.f);
+        CHECK(c.radius + c.speed.hi * c.lifetime.hi > 0.f);
+        CHECK(c.radius + c.speed.hi * c.lifetime.hi < 0.03f);
+        CHECK(at + c.lifetime.hi <= doctest::Approx(0.16f));
+    }
+
+    // The impact's ring opens to 0.9 m in 0.18 s; its glow fades near the lens.
+    REQUIRE(loadEffect("spell_impact", e));
+    const int iring = findVfxEmitter(e, "ring");
+    REQUIRE(iring >= 0);
+    const VfxEmitter& ir = e.emitters[static_cast<std::size_t>(iring)];
+    CHECK(ir.radius + ir.speed.hi * ir.lifetime.hi == doctest::Approx(0.92f));
+    CHECK(ir.lifetime.hi == doctest::Approx(0.18f));
+    const int glow = findVfxEmitter(e, "glow");
+    REQUIRE(glow >= 0);
+    CHECK(e.emitters[static_cast<std::size_t>(glow)].nearFade);
 
     // The burst's ring travels about 3 m before it fades: v/drag * (1 - exp(-drag t)).
     REQUIRE(loadEffect("spell_burst", e));

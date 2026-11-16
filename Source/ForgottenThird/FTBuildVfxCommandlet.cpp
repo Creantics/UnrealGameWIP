@@ -614,6 +614,12 @@ UNiagaraSystem* BuildSystem(UPackage* Package, UNiagaraSystem* Template, const f
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: couldn't build emitter %d of %s."), I, *Name);
 			return nullptr;
 		}
+		// Drawn in the spec's order: an alpha layer listed before an additive one stays under it (a dark shell
+		// under a bright core holds on bright ground).
+		for (UNiagaraRendererProperties* R : Emitter->GetRenderers())
+		{
+			R->SortOrderHint = I;
+		}
 		Emitter->PostEditChange();
 	}
 

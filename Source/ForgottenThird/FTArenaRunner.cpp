@@ -7959,7 +7959,9 @@ void UFTArenaRunner::PartnerImpact(const ftcore::ArenaEvent& E)
 		Vfx->SetParameters(kPartnerImpactScale, kPartnerImpactScale);
 		PartnerImpactFx = Vfx;
 	}
-	Vfx->SetWorldLocationAndRotation(At, FRotator::ZeroRotator);
+	// A spell's ring square to the blow, facing the partner (the others as they were made).
+	Vfx->SetWorldLocationAndRotation(At, Fight.def().partnerKit.weapon == ftcore::ArenaWeapon::Magic
+		? FFTLeadWeapons::ImpactFacing((AllyFigure->GetActorLocation() - At).GetSafeNormal2D()) : FRotator::ZeroRotator);
 	const bool bPlayed = Vfx->Play();
 	PartnerImpactPlayedAt = static_cast<double>(Fight.heldTime());
 	UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: %.2f: partner impact %s at %.0f%% on enemy %d (%d hp), %.0f cm from the partner's chest%s."),
