@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -23,15 +25,16 @@ TEST_CASE("hero corner: the lane, the bays and the eave stand where the plan put
     CHECK(l.pave.z1 == doctest::Approx(4.20));
     CHECK(l.pave.z1 - l.pave.z0 == doctest::Approx(0.08));
 
-    // Five 8 m bays from y 515 to 555, x 908..916, each touching the next.
+    // Five 8.1 m bays (nine kit steps) from y 514.75 to 555.25, centred on the lane, x 908..916, each touching the next.
     std::set<std::string> ids;
     for (int i = 0; i < kHeroBays; ++i) {
         const MassingBox& b = l.bays[i];
         CHECK(b.cx - 0.5 * b.sx == doctest::Approx(908.0));
         CHECK(b.cx + 0.5 * b.sx == doctest::Approx(916.0));
-        CHECK(b.cy - 0.5 * b.sy == doctest::Approx(515.0 + 8.0 * i));
-        CHECK(b.sy == doctest::Approx(8.0));
-        CHECK(b.z1 == doctest::Approx(4.18 + 7.0));
+        CHECK(b.cy - 0.5 * b.sy == doctest::Approx(514.75 + 8.1 * i));
+        CHECK(b.sy == doctest::Approx(8.1));
+        CHECK(b.sy / kLotGrid == doctest::Approx(9.0));
+        CHECK(b.z1 == doctest::Approx(4.18 + 6.6));
         CHECK(b.z0 < 4.18);
         CHECK(b.rot == 0.0);
         CHECK(massingVisible(massingRole(b)));
@@ -49,14 +52,32 @@ TEST_CASE("hero corner: the lane, the bays and the eave stand where the plan put
     CHECK_FALSE(l.bayLit[4]);
     CHECK(l.eateryBay == 2);
 
-    // The eave: 1.2 m over the lane at 3.4 m, the whole row long.
-    CHECK(l.eave.cx - 0.5 * l.eave.sx == doctest::Approx(906.8));
-    CHECK(l.eave.cx + 0.5 * l.eave.sx == doctest::Approx(908.0));
-    CHECK(l.eave.z0 == doctest::Approx(4.18 + 3.4));
-    CHECK(l.eave.sy == doctest::Approx(40.0));
+    // The eave: 1.2 m over the lane at 3.65 m (clear of the kit's 3.6 m shop storey), in two runs: the two bays south of
+    // the eatery and the two north of it.
+    REQUIRE(l.eaveCount == 2);
+    for (int r = 0; r < 2; ++r) {
+        const MassingBox& e = l.eaves[r];
+        CHECK(e.cx - 0.5 * e.sx == doctest::Approx(906.8));
+        CHECK(e.cx + 0.5 * e.sx == doctest::Approx(908.0));
+        CHECK(e.z0 == doctest::Approx(4.18 + 3.65));
+        CHECK(e.z0 > 4.18 + kShopStorey);
+        CHECK(e.sy == doctest::Approx(16.2));
+    }
+    CHECK(l.eaves[0].cy - 0.5 * l.eaves[0].sy == doctest::Approx(514.75));
+    CHECK(l.eaves[0].cy + 0.5 * l.eaves[0].sy == doctest::Approx(530.95));
+    CHECK(l.eaves[1].cy - 0.5 * l.eaves[1].sy == doctest::Approx(539.05));
+    CHECK(l.eaves[1].cy + 0.5 * l.eaves[1].sy == doctest::Approx(555.25));
+
+    // With the eatery at an end, one run.
+    HeroCornerSpec end;
+    end.eateryBay = 0;
+    HeroCornerLayout le;
+    heroCornerLayout(end, le);
+    REQUIRE(le.eaveCount == 1);
+    CHECK(le.eaves[0].sy == doctest::Approx(32.4));
 }
 
-TEST_CASE("hero corner: every bay fronts the lane as a shophouse, so the build gives it shop bays and one spill light") {
+TEST_CASE("hero corner: every bay box fronts the lane as a shophouse with a rendered, tiled, board or brick wall") {
     const HeroCornerSpec spec;
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
@@ -70,17 +91,6 @@ TEST_CASE("hero corner: every bay fronts the lane as a shophouse, so the build g
         const MassingLookSurface wall = massingLookSurface(b);
         CHECK(wall != MassingLookSurface::BuildingB);
         CHECK(wall != MassingLookSurface::BuildingC);
-
-        // The shop face is the west one: its spill point is 0.4 m out over the lane, facing west, one per 8 m bay.
-        std::vector<MassingShopLight> lights;
-        REQUIRE(massingShopLights(b, data, kMassingShopLightSpacing, lights) == 1);
-        CHECK(lights[0].faceIndex == kHeroShopFace);
-        CHECK(lights[0].x == doctest::Approx(908.0 - kMassingShopLightOut));
-        CHECK(lights[0].y == doctest::Approx(b.cy));
-        CHECK(lights[0].z == doctest::Approx(b.z0 + spec.baySink + kMassingShopLightUp));
-        CHECK(std::abs(std::abs(lights[0].face) - 180.0) < 1e-6);
-        // Under the eave: the spill sits below its slab.
-        CHECK(lights[0].z < l.eave.z0);
     }
 }
 
@@ -89,17 +99,25 @@ TEST_CASE("hero corner: six large lanterns in pairs under the eave") {
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
     REQUIRE(l.lanternCount == static_cast<std::size_t>(kHeroLargeLanterns + kHeroStrings * kHeroStringLanterns));
-    const double pairs[] = {524.0, 532.0, 548.0};
+    const double pairs[] = {526.0, 543.0, 549.5};
     for (int i = 0; i < kHeroLargeLanterns; ++i) {
         const HeroLantern& lan = l.lanterns[i];
         CHECK(lan.large);
         CHECK(lan.string == -1);
         CHECK(lan.centre.x == doctest::Approx(907.0));
-        CHECK(lan.centre.z == doctest::Approx(4.18 + 3.0));
+        CHECK(lan.centre.z == doctest::Approx(4.18 + 3.3));
         CHECK(std::abs(lan.centre.y - pairs[i / 2]) == doctest::Approx(0.8));
-        // It hangs from the eave's underside, inside the eave's reach, its top under the slab.
-        CHECK(lan.hook.z == doctest::Approx(l.eave.z0));
-        CHECK(lan.hook.x > l.eave.cx - 0.5 * l.eave.sx);
+        // It hangs from an eave run's underside, inside its reach (along and out), its top under the slab.
+        const MassingBox* over = nullptr;
+        for (int r = 0; r < l.eaveCount; ++r) {
+            const MassingBox& e = l.eaves[r];
+            if (std::abs(lan.centre.y - e.cy) < 0.5 * e.sy - 0.5 * spec.largeDiameter) over = &e;
+        }
+        REQUIRE(over != nullptr);
+        CHECK(lan.hook.z == doctest::Approx(over->z0));
+        CHECK(lan.hook.x > over->cx - 0.5 * over->sx);
+        // Clear of both strings' cables and small lanterns.
+        for (int s = 0; s < kHeroStrings; ++s) CHECK(std::abs(lan.centre.y - spec.stringY[s]) > 1.0);
         CHECK(lan.centre.z + 0.5 * spec.largeHeight <= lan.hook.z + 1e-9);
         // Clear of the shop's spill, which stands 0.4 m out at 2.4 m: the lantern's bottom is over it.
         CHECK(lan.centre.z - 0.5 * spec.largeHeight > 4.18 + kMassingShopLightUp);
@@ -114,7 +132,9 @@ TEST_CASE("hero corner: each string spans 6.7 m, sags 0.4 m and carries nine lan
         const HeroPoint& a = l.cable[s][0];
         const HeroPoint& b = l.cable[s][kHeroCablePoints - 1];
         CHECK(a.x == doctest::Approx(908.0));
-        CHECK(a.z == doctest::Approx(4.18 + 3.6));
+        CHECK(a.z == doctest::Approx(4.18 + 3.55));
+        CHECK(a.z < 4.18 + spec.eaveUp);  // it leaves the facade under the eave's height
+        CHECK(a.z > 4.18 + kKoshiStorey + 0.3);  // and over the eatery's pent roof
         CHECK(b.x == doctest::Approx(901.3));
         CHECK(b.z == doctest::Approx(4.18 + 3.8));
         CHECK(a.x - b.x == doctest::Approx(6.7));
@@ -186,6 +206,95 @@ TEST_CASE("hero corner: a bay's id is told apart from the rest") {
     CHECK_FALSE(heroCornerBay("HC-PAVE", &index));
     CHECK_FALSE(heroCornerBay("YD-0175", &index));
     CHECK(heroCornerBay("HC-BAY-3a", nullptr));
+}
+
+namespace {
+
+std::string readText(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    std::stringstream s;
+    s << f.rdbuf();
+    return s.str();
+}
+
+} // namespace
+
+TEST_CASE("hero corner: the bays as kit lots fill each bay's box with real shop fronts and flat uppers") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    HeroLots lots;
+    heroCornerLots(spec, lots);
+    KitTable kit;
+    std::string err;
+    REQUIRE_MESSAGE(parseKitTable(readText(std::string(FTCORE_PROJECT_DATA_DIR) + "/Look/building_kit_pieces.csv"), kit, &err), err);
+
+    // The run lies along the bays' lane face, north to south, so its inward side is east (into the bays).
+    CHECK(lots.run.ax == doctest::Approx(908.0));
+    CHECK(lots.run.ay == doctest::Approx(555.25));
+    CHECK(lots.run.by == doctest::Approx(514.75));
+    double ix = 0.0, iy = 0.0;
+    lots.run.toPlan(0.0, 1.0, ix, iy);
+    CHECK(ix == doctest::Approx(909.0));
+    CHECK(iy == doctest::Approx(555.25));
+
+    const char* const ground[kHeroBays] = {"SHOP_GLAZED_81", "SHOP_SHUTTER_63", "SHOP_KOSHI_54", "SHOP_GLAZED_81", "SHOP_SHUTTER_63"};
+    for (int i = 0; i < kHeroBays; ++i) {
+        const BuildingLot& lot = lots.lots[i];
+        const MassingBox& b = l.bays[i];
+        INFO("bay " << i + 1);
+        CHECK(lot.units() == 9);
+        CHECK(lot.floors == 2);
+        CHECK(lot.flatUppers);
+        CHECK(lot.signSet == 0);
+        // The shop storeys stand 3.6 m to the box's top; the eatery's timber storey is 3.0, so it stands 0.6 lower.
+        CHECK(lot.top() == doctest::Approx(b.z1 - (i == spec.eateryBay ? kShopStorey - kKoshiStorey : 0.0)));
+        // The lot's span along the run is the bay's in plan.
+        double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+        lots.run.toPlan(lot.s0, 0.0, x0, y0);
+        lots.run.toPlan(lot.s1, 0.0, x1, y1);
+        CHECK(std::max(y0, y1) == doctest::Approx(b.cy + 0.5 * b.sy));
+        CHECK(std::min(y0, y1) == doctest::Approx(b.cy - 0.5 * b.sy));
+        if (i > 0) CHECK(lotTraitDifferences(lot, lots.lots[i - 1]) >= 2);
+
+        std::vector<KitPlacement> out;
+        REQUIRE_MESSAGE(facadePlacements(kit, lots.run, lot, i, out, &err), err);
+        int shop = 0;
+        for (const KitPlacement& p : out) {
+            if (p.role != PlacementRole::Piece) continue;
+            const std::string id = kit.pieces[static_cast<std::size_t>(p.piece)].id;
+            if (id == ground[i]) ++shop;
+            // Nothing pushes out under the eave: no balconies, no corridor bays, no awnings.
+            CHECK(id != "BAY_BALC_27");
+            CHECK(id != "BAY_CORR_27");
+            CHECK(id.rfind("AWNING", 0) != 0);
+            // Every piece stands in its own bay's span.
+            CHECK(p.y >= b.cy - 0.5 * b.sy - 0.6);
+            CHECK(p.y <= b.cy + 0.5 * b.sy + 0.6);
+        }
+        CHECK(shop == 1);
+        // The lit bays are glazed, the eatery koshi, the dark ones shuttered.
+        CHECK(spec.bayLit[i] == (i == spec.eateryBay || lot.type == LotType::Tiled));
+    }
+}
+
+TEST_CASE("hero corner: one shop spill point per lit bay, out over the lane under the eave") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    MassingShopLight lights[kHeroBays];
+    REQUIRE(heroCornerShopLights(spec, lights) == 3);
+    const int lit[] = {0, 2, 3};
+    for (int k = 0; k < 3; ++k) {
+        const MassingBox& b = l.bays[lit[k]];
+        CHECK(lights[k].x == doctest::Approx(908.0 - kMassingShopLightOut));
+        CHECK(lights[k].y == doctest::Approx(b.cy));
+        CHECK(lights[k].z == doctest::Approx(4.18 + kMassingShopLightUp));
+        CHECK(lights[k].z < 4.18 + spec.eaveUp);
+        CHECK(lights[k].z < 4.18 + kKoshiStorey);
+        CHECK(lights[k].faceIndex == kHeroShopFace);
+        CHECK(lights[k].face == doctest::Approx(180.0));
+    }
 }
 
 TEST_CASE("lamp slot gain: an empty table keeps every lamp's light; a slot past the table keeps it too") {

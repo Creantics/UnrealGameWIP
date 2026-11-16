@@ -50,11 +50,20 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
     const double g = spec.ground;
     out.pave = flatBox("HC-PAVE", "paving", spec.laneX0, spec.laneX1, spec.laneY0, spec.laneY1,
                        g + spec.paveTop - spec.paveThick, g + spec.paveTop);
-    out.eave = flatBox("HC-EAVE", "eave", spec.laneX1 - spec.eaveOut, spec.laneX1, spec.laneY0, spec.laneY1,
-                       g + spec.eaveUp, g + spec.eaveUp + spec.eaveThick);
+    // The eave runs the row but the eatery's bay, whose timber front carries its own pent roof under it.
+    const int eatery = std::clamp(spec.eateryBay, 0, kHeroBays - 1);
+    out.eaveCount = 0;
+    const double runs[2][2] = {{spec.bayY0, spec.bayY0 + spec.bayWidth * eatery},
+                               {spec.bayY0 + spec.bayWidth * (eatery + 1), spec.bayY0 + spec.bayWidth * kHeroBays}};
+    const char* const eaveIds[2] = {"HC-EAVE-S", "HC-EAVE-N"};
+    for (int r = 0; r < 2; ++r) {
+        if (runs[r][1] - runs[r][0] < 1e-6) continue;
+        out.eaves[out.eaveCount++] = flatBox(eaveIds[r], "eave", spec.laneX1 - spec.eaveOut, spec.laneX1, runs[r][0], runs[r][1],
+                                             g + spec.eaveUp, g + spec.eaveUp + spec.eaveThick);
+    }
 
     for (int i = 0; i < kHeroBays; ++i) {
-        const double y0 = spec.laneY0 + spec.bayWidth * i;
+        const double y0 = spec.bayY0 + spec.bayWidth * i;
         MassingBox box = flatBox("", "kit", spec.laneX1, spec.laneX1 + spec.bayDepth, y0, y0 + spec.bayWidth,
                                  g - spec.baySink, g + spec.bayHeight);
         const std::string stem = "HC-BAY-" + std::to_string(i + 1);
@@ -67,7 +76,7 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
         out.bays[i] = box;
         out.bayLit[i] = spec.bayLit[i];
     }
-    out.eateryBay = std::clamp(spec.eateryBay, 0, kHeroBays - 1);
+    out.eateryBay = eatery;
 
     out.lanternCount = 0;
     const double largeX = spec.laneX1 - spec.largeOut;
@@ -114,6 +123,78 @@ bool heroCornerBay(std::string_view id, int* index) {
     if (c < '1' || c > '0' + kHeroBays) return false;
     if (index) *index = c - '1';
     return true;
+}
+
+void heroCornerLots(const HeroCornerSpec& spec, HeroLots& out) {
+    const double north = spec.bayY0 + spec.bayWidth * kHeroBays;
+    out.run = FrontageRun{};
+    out.run.id = "HC-RUN";
+    out.run.ax = spec.laneX1;
+    out.run.ay = north;
+    out.run.bx = spec.laneX1;
+    out.run.by = spec.bayY0;
+    out.run.maxDepth = spec.bayDepth;
+    out.run.cornerAtA = false;
+
+    // Per bay, south to north: the dark and lit kinds by the spec, the rest of the traits from these rows.
+    struct Traits {
+        RoofKind roof;
+        WallSurface wall;
+        std::uint8_t wallColour, trimColour, accent, timber, roofColour, signColour, upperVariant;
+    };
+    static constexpr Traits kTraits[kHeroBays] = {
+        {RoofKind::Hip, WallSurface::Concrete, 1, 0, 2, 0, 1, 0, 1},
+        {RoofKind::Flat, WallSurface::Tile, 3, 1, 0, 1, 0, 1, 0},
+        {RoofKind::Gable, WallSurface::Stucco, 0, 2, 3, 2, 2, 2, 0},
+        {RoofKind::Flat, WallSurface::Tile, 2, 1, 1, 0, 0, 3, 1},
+        {RoofKind::Gable, WallSurface::Concrete, 4, 0, 4, 1, 1, 0, 0},
+    };
+    const int eatery = std::clamp(spec.eateryBay, 0, kHeroBays - 1);
+    for (int i = 0; i < kHeroBays; ++i) {
+        BuildingLot& lot = out.lots[i];
+        lot = BuildingLot{};
+        lot.run = 0;
+        lot.parents.clear();
+        // Along the run from its north end A: bay i's north edge is the run's s0.
+        lot.s0 = north - (spec.bayY0 + spec.bayWidth * (i + 1));
+        lot.s1 = lot.s0 + spec.bayWidth;
+        lot.depth = spec.bayDepth;
+        lot.floorZ = spec.ground;
+        lot.footZ = spec.ground;
+        lot.oldTop = spec.ground + spec.bayHeight;
+        lot.type = i == eatery ? LotType::TownHouse : spec.bayLit[i] ? LotType::Tiled : LotType::WalkUp;
+        lot.floors = 2;
+        lot.setback = 0.0;
+        const Traits& t = kTraits[i];
+        lot.roof = t.roof;
+        lot.wall = t.wall;
+        lot.wallColour = static_cast<std::uint8_t>(t.wallColour % kitPaletteSize(KitPalette::Wall));
+        lot.trimColour = static_cast<std::uint8_t>(t.trimColour % kitPaletteSize(KitPalette::Trim));
+        lot.accent = static_cast<std::uint8_t>(t.accent % kitPaletteSize(KitPalette::Accent));
+        lot.timber = static_cast<std::uint8_t>(t.timber % kitPaletteSize(KitPalette::Timber));
+        lot.roofColour = static_cast<std::uint8_t>(t.roofColour % kitPaletteSize(KitPalette::Roof));
+        lot.signColour = static_cast<std::uint8_t>(t.signColour % kitPaletteSize(KitPalette::SignFg));
+        lot.groundVariant = 0;  // the shop piece first, its blanks after
+        lot.upperVariant = t.upperVariant;
+        lot.signSet = 0;        // a fascia sign, no awning: the eave is the lane's cover
+        lot.flatUppers = true;
+        lot.clutterSeed = 0x48430000u + static_cast<std::uint32_t>(i) * 0x101u;  // no vending, bicycle or planters but the eatery's
+        lot.seed = 0x48434F52u ^ (static_cast<std::uint32_t>(i + 1) * 0x9E3779B9u);
+    }
+}
+
+int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroBays]) {
+    int n = 0;
+    for (int i = 0; i < kHeroBays; ++i) {
+        if (!spec.bayLit[i]) continue;
+        MassingShopLight& l = out[n++];
+        l.x = spec.laneX1 - kMassingShopLightOut;
+        l.y = spec.bayY0 + spec.bayWidth * (i + 0.5);
+        l.z = spec.ground + kMassingShopLightUp;
+        l.face = 180.0;
+        l.faceIndex = kHeroShopFace;
+    }
+    return n;
 }
 
 } // namespace ftcore

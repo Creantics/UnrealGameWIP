@@ -109,6 +109,7 @@ std::vector<Course> groundCourses(const BuildingLot& lot) {
 std::vector<Course> upperCourses(const BuildingLot& lot) {
     const int n = lot.units();
     const int v = lot.upperVariant;
+    if (lot.flatUppers) return fill(n, {{"BAY_WIN_18", 2}, {"BAY_BLANK_09", 1}}, v == 1 ? 1 : 0, true);
     switch (lot.type) {
     case LotType::Corner:
         return v == 1 ? fill(n, {{"BAY_BALC_27", 3}}, 2, true) : fill(n, {{"BAY_WIN_18", 2}, {"BAY_BLANK_09", 1}}, v, true);

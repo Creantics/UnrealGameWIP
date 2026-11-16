@@ -8,18 +8,25 @@
 // Every number is the corner's plan (plan frame, metres, +y north; z absolute over the datum), kept here so the build,
 // the tests and the meshes read one source:
 //   lane      x 901..908, y 515..555, on ground at z 4.18; stone setts end to end
-//   bays      x 908..916, 8 m each from y 515; 7 m high over the lane, their west face the shopfront
-//   eave      1.2 m out over the lane (x 906.8..908) at 3.4 m, 0.12 m thick
-//   lanterns  6 large, 1.0 m out (x 907.0), centre 3.0 m up, a pair (1.6 m apart) about y 524, 532 and 548
-//   strings   S1 at y 536, S2 at y 552: from the facade (x 908, 3.6 m up) to a post's top (x 901.3, 3.8 m up), sag
-//             0.4 m at the middle; nine small lanterns 0.75 m apart, centred on the span, each hung under the cable
+//   bays      x 908..916, 8.1 m each (nine of the kit's 0.9 m steps) from y 514.75, centred on the lane; their west
+//             face the shopfront; built as kit lots (heroCornerLots): two storeys, the shop storey 3.6 m (the eatery's
+//             timber front 3.0 m)
+//   eave      1.2 m out over the lane (x 906.8..908) at 3.65 m, clear of the kit's 3.6 m shop storey, 0.12 m thick;
+//             in two runs either side of the eatery, whose timber front has its own tiled pent roof at 3.0 m
+//   lanterns  6 large, 1.0 m out (x 907.0), centre 3.3 m up, a pair (1.6 m apart) about y 526, 543 and 549.5 (the
+//             eatery's flanked), each under the eave
+//   strings   S1 at y 536, S2 at y 552: from the facade (x 908, 3.55 m up, under the eave) to a post's top (x 901.3,
+//             3.8 m up), sag 0.4 m at the middle; nine small lanterns 0.75 m apart, centred on the span, each hung
+//             under the cable
 //   light     only the lamp pool's: one lamp slot under each string's middle (warm, half a street lamp) and the lit
-//             bays' shop spill points; the lanterns themselves are emissive paper
+//             bays' shop spill points; the glazed lit bays' own ceiling fixtures; the lanterns are emissive paper
 //   camera    (904.5, 511.0, 5.78) looking north at (904.5, 551.0, 3.68), 35 mm
 //
 // heroCornerLayout fills a fixed layout (no allocation but the boxes' id strings). Plain C++20.
 
 #include "ftcore/Api.h"
+#include "ftcore/BuildingLots.h"
+#include "ftcore/MassingDress.h"
 #include "ftcore/MassingPlan.h"
 
 #include <cstddef>
@@ -42,19 +49,20 @@ struct HeroCornerSpec {
     double laneX0 = 901.0, laneX1 = 908.0, laneY0 = 515.0, laneY1 = 555.0;
     double paveThick = 0.08;  // the paving slab: top paveTop over the ground, this thick
     double paveTop = 0.02;
-    // The bays.
-    double bayDepth = 8.0, bayWidth = 8.0, bayHeight = 7.0, baySink = 0.3;
+    // The bays: from bayY0 north, bayWidth each (a whole number of kLotGrid steps).
+    double bayY0 = 514.75;
+    double bayDepth = 8.0, bayWidth = 8.1, bayHeight = 6.6, baySink = 0.3;
     bool bayLit[kHeroBays] = {true, false, true, true, false};
     int eateryBay = 2;  // 0-based: bay 3
     // The eave.
-    double eaveOut = 1.2, eaveUp = 3.4, eaveThick = 0.12;
+    double eaveOut = 1.2, eaveUp = 3.65, eaveThick = 0.12;
     // The large lanterns.
-    double largeOut = 1.0, largeUp = 3.0, largePairGap = 1.6;
-    double largePairs[kHeroLargeLanterns / 2] = {524.0, 532.0, 548.0};
+    double largeOut = 1.0, largeUp = 3.3, largePairGap = 1.6;
+    double largePairs[kHeroLargeLanterns / 2] = {526.0, 543.0, 549.5};
     double largeHeight = 0.6, largeDiameter = 0.45;
     // The strings.
     double stringY[kHeroStrings] = {536.0, 552.0};
-    double stringFacadeUp = 3.6, stringPostX = 901.3, stringPostUp = 3.8, stringSag = 0.4;
+    double stringFacadeUp = 3.55, stringPostX = 901.3, stringPostUp = 3.8, stringSag = 0.4;
     double stringPitch = 0.75;    // m between two small lanterns, along the plan
     double smallHeight = 0.32, smallDiameter = 0.25;
     double smallDrop = 0.05;      // m from the cable to a small lantern's top (its clip)
@@ -82,7 +90,8 @@ struct HeroLantern {
 
 struct HeroCornerLayout {
     MassingBox pave;                 // the lane's paving slab (kind "paving")
-    MassingBox eave;                 // the eave's slab over the lane (kind "eave")
+    MassingBox eaves[2];             // the eave's slabs over the lane (kind "eave"), the bays south and north of the eatery
+    int eaveCount = 0;               // runs with no bay (the eatery at an end) are left out
     MassingBox bays[kHeroBays];      // the shop bays (kind "kit", ids HC-BAY-<n><letter>)
     bool bayLit[kHeroBays] = {};
     int eateryBay = 0;
@@ -113,5 +122,22 @@ inline float lampSlotGain(const float* gains, std::size_t count, std::size_t i) 
 
 // Whether id is a hero corner bay's (HC-BAY-<n>...), and its 0-based bay index.
 FTCORE_API bool heroCornerBay(std::string_view id, int* index);
+
+// The bays as kit lots (BuildingLots.h, facadePlacements): a run along the bays' lane face, A at its north end (the
+// left end seen from the lane), and one lot per bay, lots[i] for bay i (south to north). Two storeys each, no awnings
+// (the eave covers the lane), every upper storey flat (BAY_WIN_18 and blanks, nothing out under the eave):
+//   lit bays   Tiled, ground SHOP_GLAZED_81 (its glass the true panes over a real bay)
+//   the eatery TownHouse, ground SHOP_KOSHI_54 (the timber lattice front)
+//   dark bays  WalkUp, ground SHOP_SHUTTER_63 (shut)
+// Roofs, walls and palettes alternate so neighbours differ in at least two traits.
+struct HeroLots {
+    FrontageRun run;
+    BuildingLot lots[kHeroBays];
+};
+FTCORE_API void heroCornerLots(const HeroCornerSpec& spec, HeroLots& out);
+
+// The lit bays' shop spill points (the lamp pool's shop slots): one per lit bay, kMassingShopLightOut out over the lane
+// from its shop face, kMassingShopLightUp over the ground, facing west. Returns how many (at most kHeroBays).
+FTCORE_API int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroBays]);
 
 } // namespace ftcore
