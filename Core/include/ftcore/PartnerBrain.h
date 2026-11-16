@@ -198,6 +198,13 @@
 //      inside a standing tall body (its radius + kPartnerSteerClear) is put out on that circle, and a straight line
 //      that would cross one goes round it the shorter way, by a point on that circle.
 //      Not tall (or no height given): none of it applies.
+//  19. The close camera (PartnerStationView::close given, with stationing on; PartnerCloseStation.h): with a target,
+//      its station between actions is partnerCloseStation's, ahead of the lead on a flank of the target inside the
+//      close lens: in Pause at the host's kit band, in Ready pulled in to [reach / 2, reach - stationTolerance] so a
+//      string can start there; framed, only where the 3D frame sees it too. None legal: the rules above, as before.
+//      Under it rule 16's reposition, rule 13's held-station clock and rule 17 step aside; rule 18's walk steering
+//      and the fight's pairing stay. Its flank hold is in the save, hashed only once given (closeUsed). Not given: none of
+//      it runs, to the bit.
 // No kit (PartnerInput::kitAttacks false, a lead whose kit has no attacks): it never starts a string or its next blow
 // and no other lead's kit stands in (why and idle NoKit); it still stations, guards, faces its target and, rule 17 on,
 // moves as with its attack held. True (the default) is the brain as before.

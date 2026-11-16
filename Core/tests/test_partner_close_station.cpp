@@ -202,8 +202,8 @@ TEST_CASE("close station: the flank holds 1.5 s and never changes while attackin
     PartnerCloseInput in = csScene(0, 0.f, 0.f);
     in.partner = {-1.5f, 2.6f};
     {
-        PartnerCloseHold free;
-        const PartnerCloseStation st = partnerCloseStation(in, free);
+        PartnerCloseHold unheld;
+        const PartnerCloseStation st = partnerCloseStation(in, unheld);
         REQUIRE(st.valid);
         CHECK(st.flank == -1);
         CHECK_FALSE(st.held);
@@ -240,17 +240,17 @@ TEST_CASE("close station: the flank holds 1.5 s and never changes while attackin
 TEST_CASE("close station: a wall rejects the stations in it and behind it") {
     PartnerCloseInput in = csScene();
     PartnerCloseHold h0;
-    const PartnerCloseStation open = partnerCloseStation(in, h0);
-    REQUIRE(open.valid);
-    // A wall through the open station, square to the target-to-station line.
-    const Vec2 radial = csUnit(csSub(open.point, in.target));
+    const PartnerCloseStation clearRun = partnerCloseStation(in, h0);
+    REQUIRE(clearRun.valid);
+    // A wall through the station found in the open, square to the target-to-station line.
+    const Vec2 radial = csUnit(csSub(clearRun.point, in.target));
     const Vec2 along = csRight(radial);
-    const std::array<PartnerWall, 1> walls{PartnerWall{csAdd(open.point, csMul(along, 1.f)), csSub(open.point, csMul(along, 1.f)), 0.1f}};
+    const std::array<PartnerWall, 1> walls{PartnerWall{csAdd(clearRun.point, csMul(along, 1.f)), csSub(clearRun.point, csMul(along, 1.f)), 0.1f}};
     in.walls = walls;
     PartnerCloseHold h1;
     const PartnerCloseStation walled = partnerCloseStation(in, h1);
     REQUIRE(walled.valid);
-    CHECK(csLen(csSub(walled.point, open.point)) > 0.4f);
+    CHECK(csLen(csSub(walled.point, clearRun.point)) > 0.4f);
     // Clear of the wall by its half-thickness and the body, and the lens sees it past the wall.
     const Vec2 a = walls[0].a, b = walls[0].b, ab = csSub(b, a);
     const float t = std::fmax(0.f, std::fmin(1.f, csDot(csSub(walled.point, a), ab) / csDot(ab, ab)));
@@ -275,12 +275,12 @@ TEST_CASE("close station: a wall rejects the stations in it and behind it") {
 
     // Another body on the station: rejected the same way.
     in.walls = {};
-    const std::array<PartnerBody, 1> body{PartnerBody{open.point, 0.6f}};
+    const std::array<PartnerBody, 1> body{PartnerBody{clearRun.point, 0.6f}};
     in.bodies = body;
     PartnerCloseHold h4;
     const PartnerCloseStation moved = partnerCloseStation(in, h4);
     REQUIRE(moved.valid);
-    CHECK(csLen(csSub(moved.point, open.point)) >= 0.6f + in.bodyRadius - 1e-4f);
+    CHECK(csLen(csSub(moved.point, clearRun.point)) >= 0.6f + in.bodyRadius - 1e-4f);
 }
 
 TEST_CASE("close station: the kit's distance from the target") {
@@ -419,8 +419,11 @@ TEST_CASE("close station: given, the brain walks to a station in the close lens 
     const float a = csAngleAt(p.e[0].pos, p.in.leadPos, first.point);
     CHECK(a >= kPartnerCloseAngleMin - 0.01f);
     CHECK(a <= kPartnerCloseAngleMax + 0.01f);
-    // In Ready the band is no deeper than reach, so a string can start there.
-    CHECK(csLen(csSub(first.point, p.e[0].pos)) - p.e[0].radius <= PartnerTuning{}.reachMeters - 0.1f + 1e-3f);
+    // In Ready the band is pulled in to reach less the station's tolerance, so a string can start there.
+    const PartnerTuning tune{};
+    const float off = csLen(csSub(first.point, p.e[0].pos)) - p.e[0].radius;
+    CHECK(off <= tune.reachMeters - tune.stationTolerance + 1e-3f);
+    CHECK(off >= 0.5f * tune.reachMeters - 1e-3f);
     CHECK(p.b.save().closeUsed);
 
     bool strung = false;
@@ -454,4 +457,33 @@ TEST_CASE("close station: stepping it allocates nothing") {
     const auto allocs = ftcore_test::allocStats().count - before;
     CHECK(r.inCone > 0.f);
     if (counting) CHECK(allocs == 0u);
+}
+
+TEST_CASE("close station: through the brain, a circle-strafe keeps the partner in the close lens 85% of the time or more") {
+    // The lead circles its target at 3 m/s with the close lens on it; the partner walks its intents at 4.5 m/s
+    // (strings, guards and waits stand still), as the arena's proofs count it: inside the lens's own edges.
+    for (const float dir : {1.f, -1.f}) {
+        CAPTURE(dir);
+        CsPit p(true);
+        const float orbit = 5.f, w = dir * 3.f / orbit, dt = 1.f / 60.f;
+        int n = 0, cone = 0, strings = 0;
+        for (int s = 0; s < 30 * 60; ++s) {
+            const float t = static_cast<float>(s) * dt;
+            p.in.leadPos = {-orbit * std::cos(w * t), -orbit * std::sin(w * t)};
+            csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+            const PartnerIntent& i = p.step(static_cast<double>(dt));
+            if (i.newString) ++strings;
+            if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+                const Vec2 v = csSub(i.point, p.in.pos);
+                const float l = csLen(v), step = 4.5f * dt;
+                if (l > 1e-6f) p.in.pos = l <= step ? i.point : csAdd(p.in.pos, csMul(v, step / l));
+            }
+            ++n;
+            if (partnerCloseInCone(p.in.station.cameraPos, p.in.station.cameraForward, kCsHalf, 0.f, p.in.pos)) ++cone;
+        }
+        const float share = static_cast<float>(cone) / static_cast<float>(n);
+        MESSAGE("close brain sweep dir " << dir << ": in cone " << share << ", strings " << strings);
+        CHECK(share >= 0.85f);
+        CHECK(strings >= 3);
+    }
 }

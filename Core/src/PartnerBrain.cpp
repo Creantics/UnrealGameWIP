@@ -867,7 +867,8 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     if (s_.begun) spend(in.spentSeconds); // counted before this step decides
     decide(dt, in);
     PartnerIntent& o = s_.out;
-    if (s_.begun && o.framed && s_.t.circling) skirmishStep(dt, in); // rule 17 (off: none of it runs)
+    // Rule 17 (off: none of it runs); the close camera's rule 19 replaces it.
+    if (s_.begun && o.framed && s_.t.circling && !in.station.close.given) skirmishStep(dt, in);
     if (s_.begun && o.framed) steerRound(in); // rule 18: a walk round a tall target, not through it
     o.idle = idleOf(o, in);
     if (s_.begun) s_.idleSeconds[static_cast<std::size_t>(o.idle)] += dt;
@@ -1299,7 +1300,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     bool stationNow = false;    // a valid station was found this step
     bool closeNow = false;      // rule 19's station was found this step
     int fallbackClass = 3; // rule 18: the class of the fallback by a tall target (tallFallback; 3 without one)
-    // Rule 19's station for target tgt; forString: one a string can start from (the band no deeper than reach).
+    // Rule 19's station for target tgt; forString: one a string can start from: the band pulled in to
+    // [reach / 2, reach - stationTolerance] where it is deeper (as the classic ring at reach / 2), since a partner
+    // stops within stationTolerance of its station and a string needs reach. Framed, the 3D frame must see it too.
     const auto closeGoal = [&](int tgt, bool forString, Vec2& p) -> bool {
         const PartnerCloseView& c = in.station.close;
         const View& v = in.enemies[static_cast<std::size_t>(tgt)];
@@ -1316,8 +1319,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         ci.halfAngleDegrees = c.halfAngleDegrees;
         ci.leadSide = c.leadSide;
         ci.partner = in.pos;
-        ci.standMax = forString ? std::min(c.standMax, t.reachMeters - 0.1f) : c.standMax;
-        ci.standMin = std::min(c.standMin, ci.standMax);
+        ci.standMax = forString ? std::min(c.standMax, t.reachMeters - t.stationTolerance) : c.standMax;
+        ci.standMin = std::min(forString ? std::min(c.standMin, 0.5f * t.reachMeters) : c.standMin, ci.standMax);
         ci.bodyRadius = c.bodyRadius;
         ci.personalSpace = in.station.reviving ? 0.f : t.personalSpaceMeters;
         ci.arenaCentre = in.station.arenaCentre;
@@ -1326,7 +1329,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         ci.bodies = std::span<const PartnerBody>(bodies.data(), nb);
         ci.attacking = s_.phase == Phase::String || committedLeft() > 0.0 || in.doing == PartnerDoing::Attacking;
         const PartnerCloseStation r = partnerCloseStation(ci, s_.closeHold);
-        if (!r.valid) return false;
+        if (!r.valid || (fm && !fr.sees(r.point))) return false;
         p = r.point;
         return true;
     };
