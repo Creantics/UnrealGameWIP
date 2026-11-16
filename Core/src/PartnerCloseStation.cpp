@@ -76,8 +76,33 @@ float verticalOut(float ndcY) {
     return ndcY < bottom ? bottom - ndcY : (ndcY > kPartnerCloseTopNdc ? ndcY - kPartnerCloseTopNdc : 0.f);
 }
 
-bool legal(const PartnerCloseInput& in, Vec2 p, float& ndcX, float& ndcY) {
+// The body tests every tier shares: outside the target, the lead's personal space kept, within the leash and the
+// arena, clear of the other bodies and the walls.
+bool roomFor(const PartnerCloseInput& in, Vec2 p) {
+    // Never inside the target's own body (the lead-ring points of tier 3 are placed round the lead, not its edge).
+    if (len(sub(p, in.target)) < in.targetRadius + in.bodyRadius) return false;
+    const float fromLead = len(sub(p, in.lead));
+    if (fromLead < in.personalSpace) return false;
+    if (in.leashMeters > 0.f && fromLead > in.leashMeters) return false;
+    if (in.arenaRadius > 0.f && len(sub(p, in.arenaCentre)) > in.arenaRadius) return false;
+    for (const PartnerBody& b : in.bodies)
+        if (len(sub(p, b.pos)) < b.radius + in.bodyRadius) return false;
+    for (const PartnerWall& w : in.walls)
+        if (distToSegment(p, w.a, w.b) < w.halfThickness + in.bodyRadius) return false;
+    return true;
+}
+
+// The near field's rules 1 and 2 (rule 2 only with capNow); off without nearField.
+bool nearFieldOk(const PartnerCloseInput& in, Vec2 p, bool capNow) {
+    if (!in.nearField) return true;
+    if (!partnerCloseNearOk(in.cameraPos, in.cameraForward, in.lead, p)) return false;
+    return !capNow || !(in.verticalHalfDegrees > 0.f) ||
+           partnerCloseProjectedHeight(in.cameraPos, in.cameraForward, in.verticalHalfDegrees, p) <= kPartnerCloseSizeCap;
+}
+
+bool legal(const PartnerCloseInput& in, Vec2 p, bool capNow, float& ndcX, float& ndcY) {
     if (!partnerCloseLens(in, p, ndcX, ndcY)) return false;
+    if (!nearFieldOk(in, p, capNow)) return false;
     if (in.sees != nullptr && !in.sees(in.seesContext, p)) return false;
     if (std::fabs(ndcX) > 1.f - 2.f * kPartnerCloseConeMargin) return false;
     Vec2 f;
@@ -87,20 +112,11 @@ bool legal(const PartnerCloseInput& in, Vec2 p, float& ndcX, float& ndcY) {
     if (ahead < in.minAhead) return false;
     if (in.aimConeDegrees > 0.f && std::fabs(dot(r, rightOf(f))) > ahead * std::tan(in.aimConeDegrees * kDeg))
         return false;
-    // Never inside the target's own body (the lead-ring points of tier 3 are placed round the lead, not its edge).
-    if (len(sub(p, in.target)) < in.targetRadius + in.bodyRadius) return false;
-    const float fromLead = len(sub(p, in.lead));
-    if (fromLead < in.personalSpace) return false;
-    if (in.leashMeters > 0.f && fromLead > in.leashMeters) return false;
-    if (in.arenaRadius > 0.f && len(sub(p, in.arenaCentre)) > in.arenaRadius) return false;
+    if (!roomFor(in, p)) return false;
     if (partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.lead, in.bodyRadius)) return false;
     if (partnerCloseHiddenBehind(in.cameraPos, p, in.target, in.targetRadius)) return false;
-    for (const PartnerBody& b : in.bodies)
-        if (len(sub(p, b.pos)) < b.radius + in.bodyRadius) return false;
-    for (const PartnerWall& w : in.walls) {
-        if (distToSegment(p, w.a, w.b) < w.halfThickness + in.bodyRadius) return false;
+    for (const PartnerWall& w : in.walls)
         if (segmentsCross(in.cameraPos, p, w.a, w.b)) return false;
-    }
     return true;
 }
 
@@ -174,6 +190,22 @@ bool partnerCloseHiddenBehind(Vec2 cameraPos, Vec2 p, Vec2 b, float br) {
     return dp > db && apart(cameraPos, p, b) < halfAngle(db, br);
 }
 
+bool partnerCloseNearOk(Vec2 cameraPos, Vec2 cameraForward, Vec2 lead, Vec2 p) {
+    Vec2 f;
+    if (!unitOf(cameraForward, f) || !fin(cameraPos) || !fin(lead) || !fin(p)) return false;
+    if (dot(sub(p, cameraPos), f) < dot(sub(lead, cameraPos), f) - kPartnerCloseNearBehindLead) return false;
+    return len(sub(p, cameraPos)) >= kPartnerCloseNearLens;
+}
+
+float partnerCloseProjectedHeight(Vec2 cameraPos, Vec2 cameraForward, float verticalHalfDegrees, Vec2 p) {
+    constexpr float kHuge = 1000.f;
+    Vec2 f;
+    if (!unitOf(cameraForward, f) || !within(verticalHalfDegrees, 1.f, 85.f) || !fin(cameraPos) || !fin(p)) return kHuge;
+    const float depth = dot(sub(p, cameraPos), f);
+    if (!(depth > kPartnerCloseNear)) return kHuge;
+    return std::min(kHuge, kPartnerCloseBodyTall / (2.f * depth * std::tan(verticalHalfDegrees * kDeg)));
+}
+
 PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerCloseHold& hold) {
     PartnerCloseStation out;
     if (!partnerCloseWhole(in)) return out;
@@ -202,6 +234,13 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     };
     const bool startShadowed = shadowed(in.partner);
     bool farArc = false;
+    // The near field: rule 2 held in the first pass (capNow), the lead's depth for rule 3's preference.
+    const bool capGiven = in.nearField && in.verticalHalfDegrees > 0.f;
+    bool capNow = capGiven;
+    Vec2 lensForward{1.f, 0.f};
+    const bool forwardOk = unitOf(in.cameraForward, lensForward);
+    const float leadDepth = dot(sub(in.lead, in.cameraPos), lensForward);
+    const auto shallow = [&](Vec2 p) { return dot(sub(p, in.cameraPos), lensForward) <= leadDepth; };
     const auto farClear = [&](Vec2 p) {
         if (partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.target, in.targetRadius)) return false;
         if (startShadowed) return true;
@@ -214,13 +253,17 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     // A legal p's score: the walk, the lead clearance, the lower two thirds and the lead's side (no hold terms).
     const auto score = [&](Vec2 p, float& cost) {
         float x = 0.f, y = 0.f;
-        if (!legal(in, p, x, y)) return false;
+        if (!legal(in, p, capNow, x, y)) return false;
         if (farArc && !farClear(p)) return false;
         const float dp = len(sub(p, in.cameraPos));
         const float clear = apart(in.cameraPos, p, in.lead) / (halfAngle(dp, in.bodyRadius) + leadHalf);
         cost = len(sub(p, in.partner)) - kPartnerCloseClearWeight * std::min(clear, 3.f) +
                kPartnerCloseVerticalWeight * verticalOut(y);
         if (in.leadSide != 0 && leadSeen && !(x * in.leadSide >= leadX * in.leadSide)) cost += kPartnerCloseSidePenalty;
+        if (in.nearField) {
+            if (shallow(p)) cost += kPartnerCloseShallowPenalty;
+            cost += kPartnerCloseEdgeWeight * std::max(0.f, std::fabs(x) - kPartnerCloseEdgeNdc);
+        }
         return true;
     };
     // Tiers 1-2 (or 4) on one flank between aMin and aMax degrees: the band's best, else the farthest legal point
@@ -274,43 +317,88 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         }
         return chosen;
     };
-    Pick best = sweep(angleMin, angleMax, keep);
-    std::uint8_t tier = 0;
-    if (best.found) tier = best.offEdge >= lo - 1e-5f ? 1 : 2;
-    bool ring = false;
-    if (!best.found && in.leashMeters > 0.f) { // tier 3: within the leash, round the lead toward the target's flanks
-        Vec2 toTarget;
-        if (!unitOf(sub(in.target, in.lead), toTarget)) toTarget = mul(bearing, -1.f);
-        const float radii[2] = {in.leashMeters - 0.25f, 0.5f * (in.leashMeters + in.personalSpace)};
+    // Tier 5 (the near field): round the whole target, no screen test; the frame, the clear view and the depth past
+    // the lead scored in that order.
+    const auto outOfFrame = [&]() {
+        Pick o;
+        if (!forwardOk) return o;
+        constexpr int kOutSteps = static_cast<int>(180.f / kPartnerCloseOutAngleStep + 0.5f);
+        const float inside = 1.f - 2.f * kPartnerCloseConeMargin;
         for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}}) {
-            if (keep && flank != hold.flank) continue;
-            for (int i = 0; i <= kSteps; ++i) {
-                const float angle =
-                    kPartnerCloseRingMin + (kPartnerCloseRingMax - kPartnerCloseRingMin) * static_cast<float>(i) / 8.f;
-                const Vec2 dir = turn(toTarget, -static_cast<float>(flank) * angle); // flank +1 as round the target
-                for (const float r : radii) {
-                    if (!(r > 0.f)) continue;
-                    const Vec2 p = add(in.lead, mul(dir, r));
-                    float cost = 0.f;
-                    if (!score(p, cost)) continue;
+            for (int i = 0; i <= kOutSteps; ++i) {
+                const float angle = kPartnerCloseOutAngleStep * static_cast<float>(i);
+                const Vec2 dir = turn(bearing, static_cast<float>(flank) * angle);
+                const float nearest = std::clamp(dot(sub(in.partner, in.target), dir) - in.targetRadius, lo, hi);
+                const float offs[4] = {nearest, lo, 0.5f * (lo + hi), hi};
+                for (const float off : offs) {
+                    const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
+                    if (!roomFor(in, p) || !nearFieldOk(in, p, capNow)) continue;
+                    float x = 0.f, y = 0.f;
+                    const bool lensOk = partnerCloseLens(in, p, x, y);
+                    const bool framed =
+                        in.sees != nullptr ? in.sees(in.seesContext, p) : lensOk && std::fabs(x) <= inside;
+                    bool hidden = partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.lead, in.bodyRadius) ||
+                                  partnerCloseHiddenBehind(in.cameraPos, p, in.target, in.targetRadius);
+                    for (const PartnerWall& w : in.walls)
+                        if (segmentsCross(in.cameraPos, p, w.a, w.b)) hidden = true;
+                    const float outBy = lensOk ? std::max(0.f, std::fabs(x) - inside) + verticalOut(y) : 3.f;
+                    float cost = (framed ? 0.f : 100.f) + (hidden ? 50.f : 0.f) + (shallow(p) ? 20.f : 0.f) +
+                                 10.f * std::min(outBy, 3.f) + len(sub(p, in.partner));
                     if (hold.flank != 0 && flank != hold.flank) cost += kPartnerCloseFlipMargin;
-                    if (!best.found || cost < best.cost)
-                        best = {true, cost, p, flank, angle, len(sub(p, in.target)) - in.targetRadius};
+                    if (!o.found || cost < o.cost) o = {true, cost, p, flank, angle, off};
                 }
             }
         }
-        if (best.found) {
-            tier = 3;
-            ring = true;
+        return o;
+    };
+    Pick best;
+    std::uint8_t tier = 0;
+    bool ring = false;
+    // Without the near field one pass, as before; with it, the cap held, then (nothing found) the soft pass.
+    for (int pass = 0; pass < 2 && !best.found; ++pass) {
+        if (pass == 1 && !capGiven) break;
+        capNow = capGiven && pass == 0;
+        farArc = false;
+        best = sweep(angleMin, angleMax, keep);
+        if (best.found) tier = best.offEdge >= lo - 1e-5f ? 1 : 2;
+        if (!best.found && in.leashMeters > 0.f) { // tier 3: within the leash, round the lead toward the target's flanks
+            Vec2 toTarget;
+            if (!unitOf(sub(in.target, in.lead), toTarget)) toTarget = mul(bearing, -1.f);
+            const float radii[2] = {in.leashMeters - 0.25f, 0.5f * (in.leashMeters + in.personalSpace)};
+            for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}}) {
+                if (keep && flank != hold.flank) continue;
+                for (int i = 0; i <= kSteps; ++i) {
+                    const float angle =
+                        kPartnerCloseRingMin + (kPartnerCloseRingMax - kPartnerCloseRingMin) * static_cast<float>(i) / 8.f;
+                    const Vec2 dir = turn(toTarget, -static_cast<float>(flank) * angle); // flank +1 as round the target
+                    for (const float r : radii) {
+                        if (!(r > 0.f)) continue;
+                        const Vec2 p = add(in.lead, mul(dir, r));
+                        float cost = 0.f;
+                        if (!score(p, cost)) continue;
+                        if (hold.flank != 0 && flank != hold.flank) cost += kPartnerCloseFlipMargin;
+                        if (!best.found || cost < best.cost)
+                            best = {true, cost, p, flank, angle, len(sub(p, in.target)) - in.targetRadius};
+                    }
+                }
+            }
+            if (best.found) {
+                tier = 3;
+                ring = true;
+            }
         }
-    }
-    if (!best.found && !wide) { // tier 4: the lead hugging its target, the near flanks all fail: the far arc
-        farArc = true;
-        best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, keep);
-        // The kept flank's far arc has nothing either (the partner held on the side the lead's body closes): the
-        // hold gives way to the open flank, since the fallback would stand it in the lead's shadow.
-        if (!best.found && keep) best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, false);
-        if (best.found) tier = 4;
+        if (!best.found && !wide) { // tier 4: the lead hugging its target, the near flanks all fail: the far arc
+            farArc = true;
+            best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, keep);
+            // The kept flank's far arc has nothing either (the partner held on the side the lead's body closes): the
+            // hold gives way to the open flank, since the fallback would stand it in the lead's shadow.
+            if (!best.found && keep) best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, false);
+            if (best.found) tier = 4;
+        }
+        if (!best.found && in.nearField) {
+            best = outOfFrame();
+            if (best.found) tier = 5;
+        }
     }
     if (!best.found) {
         if (keep && !hold.ring) { // the flank it must keep has no legal point: where it would stand, not valid
@@ -336,6 +424,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     out.angle = best.angle;
     out.offEdge = best.offEdge;
     out.held = keep && best.flank == heldFlank; // a released hold (tier 4) did not keep it
+    out.capped = capNow;
     return out;
 }
 
