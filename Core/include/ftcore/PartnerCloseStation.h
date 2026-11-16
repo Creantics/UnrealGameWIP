@@ -49,13 +49,14 @@
 // target near the lens's axis puts every 40-80 degree point nearer the lens than minAhead, out of the 3D frame or over
 // the lead; beside and past the target the lens sees the partner clear of both), legal as above and also clear of
 // the target's whole silhouette from the lens (not only its centre), and, from a start the lens sees clear of the
-// lead's shadow (deeper than the lead and over its silhouette), with a straight walk that never enters it. None of
+// lead's and the target's shadows (deeper than the body and over its silhouette), with a straight walk that never
+// enters either. The far arc of a kept flank empty, the hold gives way to the other flank's (held false). None of
 // these: not valid (the caller's rules).
 // Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and never changed while attacking; then only
 // when the other flank's pick beats the held flank's by more than kPartnerCloseFlipMargin (the band and short-of-band
 // picks of the two flanks are compared, so a Pause station and a Ready station on opposite flanks do not ping-pong).
 // On the held flank the best legal candidate wins. With none legal on the flank
-// it must keep (held, or attacking): its held angle at the band's nearest point, reported not valid (the caller keeps
+// it must keep (held, or attacking; tiers 1-4, the far arc on both flanks too): its held angle at the band's nearest point, reported not valid (the caller keeps
 // its own station). None legal at all: not valid, and the hold is left as it was.
 
 #include "ftcore/Api.h"

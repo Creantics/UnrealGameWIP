@@ -259,10 +259,10 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         return shortPick;
     };
     // Both flanks' picks between aMin and aMax (the held flank only while it is kept), and the better of the two.
-    const auto sweep = [&](float aMin, float aMax) {
+    const auto sweep = [&](float aMin, float aMax, bool kept) {
         Pick picks[2];
         for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}})
-            if (!keep || flank == hold.flank) picks[flank > 0 ? 1 : 0] = onFlank(flank, aMin, aMax);
+            if (!kept || flank == hold.flank) picks[flank > 0 ? 1 : 0] = onFlank(flank, aMin, aMax);
         Pick chosen;
         if (picks[0].found && picks[1].found && hold.flank != 0) {
             const Pick& held = picks[hold.flank > 0 ? 1 : 0];
@@ -274,7 +274,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         }
         return chosen;
     };
-    Pick best = sweep(angleMin, angleMax);
+    Pick best = sweep(angleMin, angleMax, keep);
     std::uint8_t tier = 0;
     if (best.found) tier = best.offEdge >= lo - 1e-5f ? 1 : 2;
     bool ring = false;
@@ -306,7 +306,10 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     }
     if (!best.found && !wide) { // tier 4: the lead hugging its target, the near flanks all fail: the far arc
         farArc = true;
-        best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax);
+        best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, keep);
+        // The kept flank's far arc has nothing either (the partner held on the side the lead's body closes): the
+        // hold gives way to the open flank, since the fallback would stand it in the lead's shadow.
+        if (!best.found && keep) best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, false);
         if (best.found) tier = 4;
     }
     if (!best.found) {
@@ -321,6 +324,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         }
         return out;
     }
+    const std::int8_t heldFlank = hold.flank;
     if (best.flank != hold.flank) hold.heldFor = 0.0;
     hold.flank = best.flank;
     hold.angle = best.angle;
@@ -331,7 +335,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     out.flank = best.flank;
     out.angle = best.angle;
     out.offEdge = best.offEdge;
-    out.held = keep;
+    out.held = keep && best.flank == heldFlank; // a released hold (tier 4) did not keep it
     return out;
 }
 

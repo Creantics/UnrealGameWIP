@@ -4059,6 +4059,9 @@ struct FoughtLens {
     // The target's share of the width at a full melee share (right shoulder): the rules' 0.64, or what the drawn lens
     // gave in the capture (cam4 on b93fd13e: under 3 m the target's x averaged 0.517).
     float targetXMelee = 0.64f;
+    // The lead pressing into its target (bodies touching) whenever it stands off, as the capture's lead did for
+    // about half of its fought steps (3 of the 5 views at 0.85-0.9 m), against the autopilot's fifth.
+    bool hug = false;
 };
 
 float smooth01(float t) {
@@ -4066,7 +4069,8 @@ float smooth01(float t) {
     return t * t * (3.f - 2.f * t);
 }
 
-FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, bool kitRange) {
+// kit: 0 the party kit without its range, 1 with its shipped range, 2 a caster's 8.5 / 5 (the ruling of 11-16).
+FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit) {
     const ArenaTable t = shippedTable();
     PRig r(t.fighter("devin"));
     r.def = t.fallback;
@@ -4083,7 +4087,11 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, bool kit
     r.def.ringRadius = 12.f;
     r.def.spawnDistance = 7.f;
     ArenaFighter third = t.fighter("third");
-    if (!kitRange) third.partnerReach = third.partnerStandoff = 0.f;
+    if (kit == 0) third.partnerReach = third.partnerStandoff = 0.f;
+    if (kit == 2) {
+        third.partnerReach = 8.5f;
+        third.partnerStandoff = 5.f;
+    }
     r.def.partnerKit = third;
     r.ownPartnerKit = true;
     r.tuning = shippedTuning();
@@ -4220,6 +4228,7 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, bool kit
         const std::uint8_t order = r.in.partnerOrder;
         r.in = r.fight.autopilot();
         r.in.partnerOrder = order;
+        if (lens.hug && centre > 0.95f) r.in.move = Vec2{(tp.x - r.bodies.player.x) / centre, (tp.y - r.bodies.player.y) / centre};
         r.in.partnerCamera = cam;
         r.in.cameraOn = true;
         PartnerCloseView& v = r.in.partnerClose;
@@ -4265,13 +4274,14 @@ std::string foughtLensText(const FoughtLensRun& o) {
 } // namespace
 
 TEST_CASE("arena partner: rule 19 in a fought run under the close lens, as the game's capture measures it") {
-    for (const bool kitRange : {false, true})
+    for (const bool hug : {false, true})
+    for (const int kitRange : {0, 1, 2})
         for (const float tx : {0.64f, 0.475f}) // the rules' x, or the capture's at contact (0.47-0.48)
             for (const float arm : {2.6f, 3.0f}) {
                 FoughtLensRun all;
                 for (std::uint32_t seed = 1; seed <= 3; ++seed) {
-                    const FoughtLensRun o = foughtLensRun(FoughtLens{arm, 0.55f, 1.f, true, tx}, seed, kitRange);
-                    MESSAGE("kit range " << kitRange << ", target x " << tx << ", arm " << arm << ", seed " << seed << ": "
+                    const FoughtLensRun o = foughtLensRun(FoughtLens{arm, 0.55f, 1.f, true, tx, hug}, seed, kitRange);
+                    MESSAGE("hug " << hug << ", kit range " << kitRange << ", target x " << tx << ", arm " << arm << ", seed " << seed << ": "
                                          << foughtLensText(o));
                     CHECK(o.steps > 0);
                     all.steps += o.steps;
@@ -4279,16 +4289,21 @@ TEST_CASE("arena partner: rule 19 in a fought run under the close lens, as the g
                     all.leadClear += o.leadClear;
                     all.leadClearSeen += o.leadClearSeen;
                     all.targetClear += o.targetClear;
+                    all.contact += o.contact;
                     all.contactSeen += o.contactSeen;
                     all.contactClearSeen += o.contactClearSeen;
                 }
-                MESSAGE("ALL kit range " << kitRange << ", target x " << tx << ", arm " << arm << ": on screen "
+                MESSAGE("ALL hug " << hug << ", kit range " << kitRange << ", target x " << tx << ", arm " << arm << ": on screen "
                                          << 100 * all.seen / std::max(all.steps, 1) << "%, clear of the lead "
                                          << 100 * all.leadClear / std::max(all.steps, 1) << "% of all, "
                                          << 100 * all.leadClearSeen / std::max(all.seen, 1) << "% of on-screen; not behind the target "
                                          << 100 * all.targetClear / std::max(all.steps, 1) << "%; in contact, clear of the lead "
                                          << 100 * all.contactClearSeen / std::max(all.contactSeen, 1) << "% of on-screen ("
-                                         << all.contactSeen << " steps)");
+                                         << all.contactSeen << " steps); in contact " << 100 * all.contact / std::max(all.steps, 1)
+                                         << "% of all steps");
+                // The bar (orchestrator, 11-16): clear of the lead on 75% of the on-screen steps, and in contact too.
+                CHECK(100 * all.leadClearSeen >= 75 * all.seen);
+                CHECK(100 * all.contactClearSeen >= 75 * all.contactSeen);
             }
 }
 
@@ -4418,9 +4433,9 @@ TEST_CASE("arena partner: the capture's frames where the partner stood behind th
         for (const bool forString : {false, true})
             for (const std::int8_t held : {std::int8_t{0}, std::int8_t{-1}, std::int8_t{1}}) {
                 const PartnerCloseStation r = loggedStation(s, forString, held);
-                // The hugging frames (not t_02): fresh, or held on the open flank, a station the lens sees clear of
-                // the lead and the target (rule 19's far arc).
-                if (f.distance < 1.f && held <= 0) {
+                // The hugging frames (not t_02): fresh or held on either flank (the closed one's hold gives way), a
+                // station the lens sees clear of the lead and the target (rule 19's far arc).
+                if (f.distance < 1.f) {
                     const ArenaBodyCylinder at = arenaBodyCylinder(s.kind, s.target, 0.f);
                     CHECK(r.valid);
                     CHECK(!loggedBehind(s, r.point, s.lead, leadBody.radius, leadBody.head));
