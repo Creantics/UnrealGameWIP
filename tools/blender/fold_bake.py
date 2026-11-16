@@ -22,6 +22,8 @@ SPEC.json (lengths in metres, in the blend's world space):
      "base_orm": "...png" | null,       its ORM (R takes the fold AO)
      "base_wear": "...png" | null,      its wear map (R curvature, 0.5 flat) the fold curvature adds to
      "curv_gain": 2.0, "curv_blur": 6,  fold curvature scale into the wear map, box blur half-width in texels
+     "hole_max_m": 0.5,                 an open boundary loop shorter than this is flagged as a hole (FOLD_BAKE_OPEN_BOUNDARY)
+     "openings": 3,                     ways through a closed shell the garment should have; more are flagged as holes
      "min_z": 0.6, "feather_cm": 3}     min_z: a baked texel tilted further than this from the sheet counts as a miss;
                                         feather_cm: the folds fade to flat over this distance in from the pinned outline
 
@@ -57,6 +59,71 @@ for ob in list(sc.objects):  # nothing else renders or collides
         ob.hide_render = True
 lo = mesh_copy(g, "fold_lo")
 hi = mesh_copy(g, "fold_hi")
+
+
+def open_loops(ob):  # the mesh's open boundary loops, longest first: hem, cuffs and collar are long; a short loop is a hole
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bm.transform(ob.matrix_world)
+    left = {e for e in bm.edges if e.is_boundary}
+    loops = []
+    while left:
+        stack, part = [left.pop()], []
+        while stack:
+            e = stack.pop()
+            part.append(e)
+            for v in e.verts:
+                for f in v.link_edges:
+                    if f in left:
+                        left.remove(f)
+                        stack.append(f)
+        pts = np.array([v.co for e in part for v in e.verts])
+        loops.append({"edges": len(part), "length_m": round(sum(e.calc_length() for e in part), 3),
+                      "centre": [round(c, 3) for c in pts.mean(0)]})
+    bm.free()
+    return sorted(loops, key=lambda l: -l["length_m"])
+
+
+def shell_openings(ob):  # per closed piece (a cloth shell with thickness): genus + 1 = the ways through the shell
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    seen, out = set(), []
+    for f0 in bm.faces:
+        if f0 in seen:
+            continue
+        seen.add(f0)
+        stack, faces = [f0], 0
+        vs, es = set(), set()
+        while stack:
+            f = stack.pop()
+            faces += 1
+            vs.update(f.verts)
+            es.update(f.edges)
+            for e in f.edges:
+                for n in e.link_faces:
+                    if n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        if faces >= 500 and not any(e.is_boundary for e in es):
+            out.append({"faces": faces, "openings": 1 + (2 - (len(vs) - len(es) + faces)) // 2})
+    bm.free()
+    return out
+
+
+# Every garment is checked for holes the body shows through, faults of the mesh itself, flagged even where the bake does
+# not reach them. An open surface: an open loop shorter than "hole_max_m" (default 0.5 m) is a hole. A shell with
+# thickness has no open edges; there each opening is a tunnel, counted by the genus, and more than the spec's
+# "openings" (an open jacket: 3, front with hem and collar, two cuffs) means holes.
+rep["open_loops"] = open_loops(lo)
+rep["holes"] = [l for l in rep["open_loops"] if l["length_m"] < S.get("hole_max_m", 0.5)]
+for l in rep["holes"]:
+    print("FOLD_BAKE_OPEN_BOUNDARY hole: %d edges, %.3f m round, centre %s" % (l["edges"], l["length_m"], l["centre"]))
+rep["shells"] = shell_openings(lo)
+for s_ in rep["shells"]:
+    want = S.get("openings")
+    if want is None or s_["openings"] > want:
+        print("FOLD_BAKE_OPEN_BOUNDARY shell of %d faces has %d openings (spec \"openings\": %s)" % (
+            s_["faces"], s_["openings"], want))
 g.hide_render = True
 for attr in ("visible_camera", "visible_diffuse", "visible_glossy", "visible_shadow", "visible_transmission", "visible_volume_scatter"):
     setattr(lo, attr, False)  # the bake target must not shade the high copy (it sits within max_disp of it)
@@ -407,4 +474,4 @@ rep["fold_texels_share"] = float((~miss & (np.abs(nf[..., 2]) < 0.995)).mean())
 rep["curv_p1_p99"] = [float(np.percentile(cv[~miss], 1)), float(np.percentile(cv[~miss], 99))]
 rep["ao_p5"] = float(np.percentile(AO[~miss], 5))
 json.dump(rep, open(os.path.join(OUT, NAME + "_report.json"), "w"), indent=1)
-print("FOLD_BAKE_DONE", json.dumps({k: v for k, v in rep.items() if k != "spec"}))
+print("FOLD_BAKE_DONE", json.dumps({k: v for k, v in rep.items() if k not in ("spec", "open_loops")}))
