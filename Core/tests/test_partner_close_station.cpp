@@ -1084,7 +1084,8 @@ namespace {
 // the lens's side): the target still, or walking a 2 m circle at 0.8 m/s with the lead and the lens following. Each
 // string's start off the target's edge; the farthest the partner stood from the lead once its first string began.
 struct CsBandRun {
-    int strings = 0, inside = 0; // inside: started nearer than the standoff less the station tolerance
+    int strings = 0, inside = 0; // inside: started more than kPartnerRangeStepOut inside the standoff
+    int unanswered = 0;           // a string begun with the last inside start not stepped out from
     float minStart = 1e9f, sumStart = 0.f, maxFromLead = 0.f;
     float meanStart() const { return strings > 0 ? sumStart / static_cast<float>(strings) : 0.f; }
 };
@@ -1096,8 +1097,8 @@ CsBandRun csBandRun(PartnerOrder order, bool moving, float leadGap, Vec2 start) 
     p.in.station.close.standMax = kPartnerCloseCasterMax;
     p.in.pos = start;
     const float r = p.e[0].radius;
-    const PartnerTuning tol;
     CsBandRun k;
+    bool owed = false; // an inside start, no StepBack since
     for (int s = 0; s < 30 * 60; ++s) {
         if (moving) {
             const float a = 0.4f * static_cast<float>(s) / 60.f;
@@ -1112,8 +1113,11 @@ CsBandRun csBandRun(PartnerOrder order, bool moving, float leadGap, Vec2 start) 
             ++k.strings;
             k.minStart = std::min(k.minStart, at);
             k.sumStart += at;
-            if (at + tol.stationTolerance < 5.f - 1e-3f) ++k.inside;
+            if (owed) ++k.unanswered;
+            owed = at < 5.f - kPartnerRangeStepOut - 1e-3f;
+            if (owed) ++k.inside;
         }
+        if (i.act == PartnerAct::StepBack) owed = false;
         if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
             p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
     }
@@ -1121,12 +1125,12 @@ CsBandRun csBandRun(PartnerOrder order, bool moving, float leadGap, Vec2 start) 
 }
 } // namespace
 
-TEST_CASE("close station: an 8.5 / 5 caster starts its strings in its band, never inside its standoff") {
-    // Ruling (orchestrator, 11-16): under the close camera with the kit's range on, a string starts only within
-    // [standoff, reach] (the station tolerance at the near end); inside the standoff the partner first steps out; the
-    // walk in from out of reach aims for the band's middle; the leash holds the band. Starts from inside the standoff
-    // (1 m off), from the band, and from out of reach; the lead in melee; Spread and StayClose; a still target and a
-    // moving one.
+TEST_CASE("close station: an 8.5 / 5 caster casts from inside its standoff and steps out between strings") {
+    // Ruling (orchestrator, 11-16, second): under the close camera with the kit's range on, the standoff is a goal, not
+    // a gate: a string starts anywhere within the reach; after one begun more than kPartnerRangeStepOut inside the
+    // standoff, the pause steps the partner out before the next. The walk in from out of reach aims for the band's
+    // middle; the leash holds the band. Starts from inside the standoff (1 m off), from the band, and from out of
+    // reach; the lead in melee; Spread and StayClose; a still target and a moving one.
     int all = 0;
     for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose})
         for (const bool moving : {false, true})
@@ -1138,14 +1142,46 @@ TEST_CASE("close station: an 8.5 / 5 caster starts its strings in its band, neve
                 MESSAGE(std::string(order == PartnerOrder::Spread ? "Spread" : "StayClose") << (moving ? ", moving" : ", still")
                         << ", from " << start.x << "," << start.y << ": strings " << k.strings << ", start off the edge mean "
                         << k.meanStart() << " min " << k.minStart << ", inside the standoff " << k.inside
-                        << "; farthest from the lead " << k.maxFromLead);
+                        << " (not stepped out from " << k.unanswered << "); farthest from the lead " << k.maxFromLead);
                 CHECK(k.strings >= 2);
-                CHECK(k.inside == 0);
+                CHECK(k.unanswered == 0);
                 CHECK(k.minStart <= 8.5f + 1e-3f);
                 if (order == PartnerOrder::StayClose) CHECK(k.maxFromLead <= 10.f + 0.5f); // the leash, 10 m at most
                 all += k.strings;
             }
     MESSAGE("12 runs: " << all << " strings");
+}
+
+TEST_CASE("close station: a step out to the kit's band is not carried to the next target") {
+    // An 8.5 / 5 caster 1 m off its target steps out after a string; mid step its target falls and the lead turns to
+    // another 7 m off. The step out is dropped: no string on the new target from where the walk had got to, that step.
+    CsPit p(true);
+    p.in.range = {8.5f, 5.f};
+    p.in.station.close.standMin = kPartnerCloseCasterMin;
+    p.in.station.close.standMax = kPartnerCloseCasterMax;
+    p.in.leadPos = {-1.3f, 0.f};
+    p.in.pos = {-1.4f, -1.4f};
+    p.e[1].pos = {-3.f, -8.f};
+    p.e[1].radius = 1.f;
+    csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+    const auto step2 = [&]() -> const PartnerIntent& {
+        p.in.enemies = std::span<const PartnerEnemyView>(p.e.data(), 2);
+        return p.b.step(1.0 / 60.0, p.in);
+    };
+    bool out = false;
+    for (int s = 0; s < 600 && !out; ++s) {
+        const PartnerIntent& i = step2();
+        out = i.act == PartnerAct::StepBack;
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.02f));
+    }
+    REQUIRE(out);
+    CHECK(p.b.save().steppedOut);
+    p.e[0].state = PartnerEnemyView::State::Down;
+    p.in.leadTarget = 1;
+    const PartnerIntent& i = step2();
+    CHECK_FALSE(i.act == PartnerAct::Attack);
+    CHECK_FALSE(p.b.save().steppedOut);
 }
 
 TEST_CASE("close station: the kit's range sizes the leash to its band, a melee kit's stays") {
