@@ -90,5 +90,42 @@ Check 'busy baseline refuses the block' ($LASTEXITCODE -eq 3 -and ($o -match 'id
 # 8. The 3D engine decides the GPU flag.
 $o = Bench @('-Scenes', 'day', '-Sizes', '1920x1080', '-Runs', '1', '-MaxBgCpu', '100', '-MaxBgGpu', '-1')
 Check '3d engine over its limit is dirty' ((@($o | Where-Object { $_ -like 'machine *' }) -join '') -match 'dirty True') ($o -join ' / ')
+
+# 9 and 10 run -Shared with a stand-in busy writer (called as the python would be: -I <script> BUSY|FREE <owner> <text>)
+# that appends its line to a slot file and prints it, as the real one does.
+$note = Join-Path $fake 'slots.txt'
+Set-Content -Encoding ascii (Join-Path $fake 'fake_writer.ps1') @'
+$l = "$($args[2]) $(Get-Date -Format 'yyyy-MM-dd HH:mm') - $($args[3]) $($args[4..($args.Count - 1)] -join ' ')"
+Add-Content -Encoding utf8 $env:FT_BUSY_NOTE $l
+$l
+'@
+Set-Content -Encoding ascii (Join-Path $fake 'fake_py.cmd') "@powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake_writer.ps1`" %*"
+$env:FT_PYTHON = Join-Path $fake 'fake_py.cmd'; $env:FT_BUSY_WRITER = 'writer.py'; $env:FT_BUSY_NOTE = $note; $env:FT_BENCH_OWNER = 'tester'
+function Shared([string]$OutDir, [string[]]$BenchArgs) {
+    $env:FT_UE_CMD = Join-Path $fake 'fake_ue.cmd'
+    $o = & powershell -NoProfile -ExecutionPolicy Bypass -File $bench -Out $OutDir -Scenes day -Sizes 1920x1080 -Shared -BaseSeconds 1 `
+        -MaxBaseCpu 100 -MaxBgCpu 100 -MaxBgGpu 100 -BlockOn COMPILE @BenchArgs 2>&1
+    [pscustomobject]@{ Out = @($o | ForEach-Object { "$_" }); Code = $LASTEXITCODE }
+}
+
+# 9. A writer that prints does not keep a block open past its limit.
+Set-Content -Encoding utf8 $note ''
+$d9 = Join-Path $fake 'writer'
+$x = Shared $d9 @('-Runs', '2', '-BlockMinutes', '0', '-MaxBlocks', '1')
+$slots = @(Get-Content $note | Where-Object { $_ })
+Check 'printing writer still stops at the block limit' ($x.Code -eq 4 -and @(Get-Content (Join-Path $d9 'run_order.txt')).Count -eq 1 -and
+    $slots.Count -eq 2 -and $slots[0] -like 'BUSY * - tester bench block*' -and $slots[1] -like 'FREE * - tester bench block done*') (($x.Out + $slots) -join ' / ')
+
+# 10. -BlockOn COMPILE: another owner's open COMPILE line refuses the block, its UNREAL line does not; a later FREE opens it.
+$now = Get-Date -Format 'yyyy-MM-dd HH:mm'
+Set-Content -Encoding utf8 $note @("BUSY $now - other UNREAL slot: stills", "BUSY $now - other COMPILE slot: gate")
+$d10 = Join-Path $fake 'blockon'
+$x = Shared $d10 @('-Runs', '1')
+Check 'open COMPILE line refuses' ($x.Code -eq 3 -and ($x.Out -match 'not opening a block: other COMPILE since') -and
+    -not ($x.Out -match 'other UNREAL') -and -not (Test-Path (Join-Path $d10 'day_1920x1080_r1'))) ($x.Out -join ' / ')
+Add-Content -Encoding utf8 $note "FREE $now - other COMPILE slot: GATE OK"
+$x = Shared $d10 @('-Runs', '1')
+Check 'freed COMPILE line opens' ($x.Code -eq 0 -and (Test-Path (Join-Path $d10 'day_1920x1080_r1\day_1920x1080_r1_summary.txt'))) ($x.Out -join ' / ')
+$env:FT_PYTHON = ''; $env:FT_BUSY_WRITER = ''; $env:FT_BUSY_NOTE = ''; $env:FT_BENCH_OWNER = ''
 Remove-Item -Recurse -Force $fake -ErrorAction SilentlyContinue
 if ($fails) { "$fails FAILED"; exit 1 } else { 'all passed'; exit 0 }

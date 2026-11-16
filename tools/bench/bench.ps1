@@ -70,8 +70,12 @@ function Get-Background {
     try {
         $c = Get-Counter -Counter @('\Processor(_Total)\% Processor Time', '\GPU Engine(*)\Utilization Percentage') `
             -SampleInterval 1 -MaxSamples 5 -ErrorAction SilentlyContinue
-    } catch { return $r }
-    if (-not $c) { return $r }
+    } catch { $c = $null }
+    if (-not $c) {
+        # No GPU Engine counters: CPU alone, the GPU figures stay -1.
+        try { $c = Get-Counter -Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 5 -ErrorAction SilentlyContinue } catch { return $r }
+        if (-not $c) { return $r }
+    }
     $cpus = @(); $gpus = @(); $g3 = @(); $byPid = @{}
     foreach ($s in $c) {
         $eng = @{}
@@ -84,6 +88,7 @@ function Get-Background {
                 $byPid[$pk] = [double]$byPid[$pk] + $x.CookedValue / $c.Count
             }
         }
+        if (-not $eng.Count) { continue } # no GPU Engine samples: the GPU figures stay -1
         $gpus += [double](@($eng.Values) + 0 | Measure-Object -Maximum).Maximum
         $g3 += [double](@($eng.GetEnumerator() | Where-Object { $_.Key -like '*/3d' } | ForEach-Object { $_.Value }) + 0 |
                 Measure-Object -Maximum).Maximum
@@ -124,8 +129,13 @@ function Get-Baseline {
     try {
         $c = Get-Counter -Counter @('\Processor(_Total)\% Processor Time', '\GPU Engine(*)\Utilization Percentage') `
             -SampleInterval 1 -MaxSamples ([math]::Max(1, $BaseSeconds)) -ErrorAction SilentlyContinue
-    } catch { return $r }
-    if (-not $c) { return $r }
+    } catch { $c = $null }
+    if (-not $c) {
+        # No GPU Engine counters on this PC: the CPU baseline alone, the 3D engine left unread (-1, never dirty).
+        try { $c = Get-Counter -Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 `
+                -MaxSamples ([math]::Max(1, $BaseSeconds)) -ErrorAction SilentlyContinue } catch { return $r }
+        if (-not $c) { return $r }
+    }
     function Median($v) {
         $s = @($v | Sort-Object)
         if (-not $s.Count) { return -1.0 }
@@ -141,7 +151,7 @@ function Get-Baseline {
                 $eng[$k] = [double]$eng[$k] + $x.CookedValue
             }
         }
-        $g3 += [double](@($eng.Values) + 0 | Measure-Object -Maximum).Maximum
+        if ($eng.Count) { $g3 += [double](@($eng.Values) + 0 | Measure-Object -Maximum).Maximum }
     }
     $r.Cpu = Median $cpus
     $r.Gpu3d = Median $g3
@@ -181,7 +191,8 @@ function Get-Blockers {
 }
 
 function Write-Busy([string]$Kind, [string]$Text) {
-    if ($Shared) { & $py -I $busyWriter $Kind $owner ($busyFormat -f $Text) }
+    # The writer's own output goes to the host only: in Enter-Block any pipeline output would join its $true/$false.
+    if ($Shared) { & $py -I $busyWriter $Kind $owner ($busyFormat -f $Text) 2>&1 | ForEach-Object { Write-Host "$_" } }
 }
 
 $strip = '/Game/Maps/World_Solhaven_Strip'
@@ -248,11 +259,17 @@ function Enter-Block([string]$Tag) {
     $st = Get-MachineState
     $line = '{0} before {1}: idle baseline over {2} s cpu {3}% (3d engine {4}%); running: {5}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),
         $Tag, $BaseSeconds, $base.Cpu, $base.Gpu3d, (Format-State $st)
-    if ($base.Cpu -lt 0 -or $base.Cpu -gt $MaxBaseCpu) {
+    if ($base.Cpu -lt 0) {
+        Add-Content -Encoding utf8 (Join-Path $Out 'baselines.txt') "$line; REFUSED (performance counters unreadable)"
+        Write-Host 'not opening a block: the Processor(_Total) performance counter could not be read, so there is no idle baseline'
+        $script:exitCode = 3; return $false
+    }
+    if ($base.Cpu -gt $MaxBaseCpu) {
         Add-Content -Encoding utf8 (Join-Path $Out 'baselines.txt') "$line; REFUSED (limit $MaxBaseCpu%)"
         Write-Host "not opening a block: idle baseline cpu $($base.Cpu)% is over $MaxBaseCpu%; running: $(Format-State $st)"
         $script:exitCode = 3; return $false
     }
+    if ($base.Gpu3d -lt 0) { Write-Host 'note: no GPU Engine counters; the 3D engine is not read and cannot mark a run' }
     Add-Content -Encoding utf8 (Join-Path $Out 'baselines.txt') $line
     $script:baseCpu = $base.Cpu
     $script:baseGpu3d = $base.Gpu3d
