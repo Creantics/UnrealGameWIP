@@ -92,7 +92,6 @@ float nightExposureBlend(const NightLook& look, float sunElevationDeg) {
 }
 
 float nightMoonScale(const NightLook& look, float sunElevationDeg) {
-    if (sunElevationDeg >= 0.f) return 1.f;
     const float rise = std::clamp(look.moonRiseShare, 0.f, 1.f);
     // The moon's elevation is the sun's depth: eased up from moonRiseDeg to moonFullDeg.
     return lerp(rise, 1.f, easeDown(-look.moonRiseDeg, -look.moonFullDeg, sunElevationDeg));
@@ -106,8 +105,11 @@ NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDe
     f.exposureBlend = nightExposureBlend(look, sunElevationDeg);
     f.lockExposure = f.exposureBlend > 0.f;
     f.moonScale = nightMoonScale(look, sunElevationDeg);
-    // The sun dims with the night while it is up; once down, the light is the moon at its elevation's share.
-    f.sunScale = sunElevationDeg >= 0.f ? lerp(1.f, moon, n) : std::max(moon * f.moonScale, 1e-4f);
+    // One light through the horizon, no step: the sun's part dims with the night and, once the sun is down, halves
+    // every sunSetHalfDeg; the moon's part comes in with the night at its elevation's share (0 by day).
+    const float half = std::max(look.sunSetHalfDeg, 0.05f);
+    const float sunPart = lerp(1.f, moon, n) * std::exp2(std::min(sunElevationDeg, 0.f) / half);
+    f.sunScale = std::max(sunPart + n * moon * f.moonScale, 1e-4f);
     // The real-time capture sees the atmosphere lit by that light and the dome's own dimming: lift by both, so the
     // fill stands at skyScale's share of the day's on either side of the horizon.
     f.skyScaleRealTime = f.skyScale / f.sunScale / f.skyLuminance;

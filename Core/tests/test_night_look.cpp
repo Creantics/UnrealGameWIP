@@ -179,6 +179,8 @@ TEST_CASE("nightFrameAt: lamps on before the exposure leaves the day's; the stre
     // 11-15 19:00 ruling, fault 1: every 5 minutes from 16:00 to 23:00 the predicted wide-street key falls (never
     // rises) to the night floor and holds there; the lamps are all on before the key is under twice the floor; the
     // exposure starts toward the night's only once the lamps are half on.
+    // NightKeyModel's constants are fitted to the block-1 strip, so the floor and the flatness band here check the
+    // curves against that model, not against a render: a guard that a swap or re-order of the curves is caught.
     const NightLook look;
     const NightKeyModel model;
     const WorldClockSpec spec;
@@ -215,6 +217,50 @@ TEST_CASE("nightFrameAt: lamps on before the exposure leaves the day's; the stre
     // The lamps are half on near sunset (18:00, the sun at 0), the key under twice the floor well into the evening.
     CHECK(lampsHalfAt >= 17.9f);
     CHECK(lampsHalfAt <= 18.2f);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
+TEST_CASE("nightFrameAt: the directional light and the real-time sky lift have no step through the horizon") {
+    // 11-15 20:12 review: every 0.25 degrees from the sun 8 up to 20 down, neighbours differ by at most 25%, for each
+    // moon of the ruled bracket (0.07, 0.045, 0.03); NightAmount from the clock's own twilight band. A near-moonless
+    // test switch (moonShare 1e-4) is exempt: the light then falls to the 1e-4 clamp itself.
+    const WorldClockSpec spec;
+    const auto before = ftcore_test::allocStats().count;
+    for (const float moon : {0.07f, 0.045f, 0.03f}) {
+        NightLook look;
+        look.moonShare = moon;
+        float worstSun = 1.f, worstSky = 1.f, lastSun = 0.f, lastSky = 0.f;
+        for (int i = 0; i <= 112; ++i) {
+            const float e = 8.f - 0.25f * static_cast<float>(i);
+            const float t = std::clamp((spec.twilightHigh - e) / (spec.twilightHigh - spec.twilightLow), 0.f, 1.f);
+            const NightFrame f = nightFrameAt(look, t * t * (3.f - 2.f * t), e);
+            CHECK(std::isfinite(f.sunScale));
+            CHECK(std::isfinite(f.skyScaleRealTime));
+            if (i > 0) {
+                worstSun = std::max(worstSun, std::max(f.sunScale / lastSun, lastSun / f.sunScale));
+                worstSky = std::max(worstSky, std::max(f.skyScaleRealTime / lastSky, lastSky / f.skyScaleRealTime));
+            }
+            lastSun = f.sunScale;
+            lastSky = f.skyScaleRealTime;
+        }
+        CHECK(worstSun <= 1.25f);
+        CHECK(worstSky <= 1.25f);
+        // Either side of 0 by a hair: the same light.
+        const NightFrame up = nightFrameAt(look, 0.5f, 1e-3f);
+        const NightFrame down = nightFrameAt(look, 0.5f, -1e-3f);
+        CHECK(up.sunScale == doctest::Approx(down.sunScale).epsilon(2e-3));
+        CHECK(up.skyScaleRealTime == doctest::Approx(down.skyScaleRealTime).epsilon(2e-3));
+    }
+    // By day the light is the sun's, untouched; in the deep night it is the moon's at its full share.
+    const NightLook look;
+    CHECK(nightFrameAt(look, 0.f, 30.f).sunScale == 1.f);
+    CHECK(nightFrameAt(look, 1.f, -50.f).sunScale == doctest::Approx(look.moonShare));
+    // A zero half-depth is clamped, not a NaN at the horizon.
+    NightLook sharp = look;
+    sharp.sunSetHalfDeg = 0.f;
+    CHECK(std::isfinite(nightFrameAt(sharp, 0.5f, 0.f).sunScale));
+    CHECK(std::isfinite(nightFrameAt(sharp, 0.5f, -10.f).skyScaleRealTime));
+    const auto after = ftcore_test::allocStats().count;
     if (ftcore_test::allocHookInstalled()) CHECK(after == before);
 }
 
@@ -282,12 +328,14 @@ TEST_CASE("nightLampFraction and nightExposureBlend: on the sun's elevation, the
 
 TEST_CASE("nightMoonScale: rises with the moon's elevation, full by 15 degrees; the floor does not need it") {
     const NightLook look;
-    CHECK(nightMoonScale(look, 5.f) == 1.f);  // the sun is up: the light is the sun's
+    // The moon below or at the horizon (the sun up): its rise share, the same either side of 0 (no step).
+    CHECK(nightMoonScale(look, 5.f) == doctest::Approx(look.moonRiseShare));
+    CHECK(nightMoonScale(look, 0.f) == doctest::Approx(look.moonRiseShare));
     CHECK(nightMoonScale(look, -0.001f) == doctest::Approx(look.moonRiseShare).epsilon(1e-3));
     CHECK(nightMoonScale(look, -look.moonFullDeg) == doctest::Approx(1.f));
     CHECK(nightMoonScale(look, -40.f) == 1.f);
     float last = 0.f;
-    for (int i = 1; i <= 30; ++i) {  // the sun just under the horizon down to 15 degrees: the moon's rise
+    for (int i = 0; i <= 30; ++i) {  // the horizon down to the sun 15 degrees under: the moon's rise
         const float s = nightMoonScale(look, -0.5f * static_cast<float>(i));
         CHECK(s >= last);
         last = s;

@@ -27,46 +27,66 @@
 
 namespace
 {
+// A numeric -Key=value switch. A value that is not a number (-NightToe=abc) is logged and the default kept, rather than
+// read as 0 and applied. True when a number was read.
+bool ReadNumber(const TCHAR* Cmd, const TCHAR* Key, float& Out)
+{
+	FString Text;
+	if (!FParse::Value(Cmd, Key, Text))
+	{
+		return false;
+	}
+	if (Text.IsEmpty() || !FCString::IsNumeric(*Text))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Night: -%s%s is not a number; kept %.3f."), Key, *Text, Out);
+		return false;
+	}
+	Out = FCString::Atof(*Text);
+	return true;
+}
+
 ftcore::NightLook Read()
 {
 	ftcore::NightLook L;
 	const TCHAR* Cmd = FCommandLine::Get();
-	FParse::Value(Cmd, TEXT("NightMoon="), L.moonShare);
-	FParse::Value(Cmd, TEXT("NightSky="), L.skyFill);
-	FParse::Value(Cmd, TEXT("NightSkyLum="), L.skyLuminance);
-	FParse::Value(Cmd, TEXT("NightTwilightFill="), L.twilightFill);
-	FParse::Value(Cmd, TEXT("NightDeepHigh="), L.deepHighDeg);
-	FParse::Value(Cmd, TEXT("NightDeepLow="), L.deepLowDeg);
-	FParse::Value(Cmd, TEXT("NightLampsOnHigh="), L.lampsOnHighDeg);
-	FParse::Value(Cmd, TEXT("NightLampsOnLow="), L.lampsOnLowDeg);
-	FParse::Value(Cmd, TEXT("NightExposureHigh="), L.exposureHighDeg);
-	FParse::Value(Cmd, TEXT("NightExposureLow="), L.exposureLowDeg);
-	FParse::Value(Cmd, TEXT("NightMoonRise="), L.moonRiseDeg);
-	FParse::Value(Cmd, TEXT("NightMoonFull="), L.moonFullDeg);
-	FParse::Value(Cmd, TEXT("NightMoonRiseShare="), L.moonRiseShare);
-	FParse::Value(Cmd, TEXT("NightShadowContrast="), L.shadowContrast);
-	FParse::Value(Cmd, TEXT("NightToe="), L.filmToe);
-	FParse::Value(Cmd, TEXT("NightCharFillStops="), L.charFillStops);
-	FParse::Value(Cmd, TEXT("NightCharFillK="), L.charFillKelvin);
-	FParse::Value(Cmd, TEXT("NightCharFillPitch="), L.charFillPitchDeg);
-	FParse::Value(Cmd, TEXT("NightFog="), L.fogKeep);
-	FParse::Value(Cmd, TEXT("NightEV="), L.exposureEV100);
-	FParse::Value(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
-	FParse::Value(Cmd, TEXT("NightWhiteK="), L.whiteKelvin);
-	FParse::Value(Cmd, TEXT("NightLamp="), L.lampCandela);
-	FParse::Value(Cmd, TEXT("NightLampReach="), L.lampReachM);
-	FParse::Value(Cmd, TEXT("NightLampK="), L.lampKelvin);
-	FParse::Value(Cmd, TEXT("NightLampCone="), L.lampOuterDeg);
-	FParse::Value(Cmd, TEXT("NightLampInner="), L.lampInnerDeg);
-	FParse::Value(Cmd, TEXT("NightLampSource="), L.lampSourceCm);
-	FParse::Value(Cmd, TEXT("NightShop="), L.shopCandela);
-	FParse::Value(Cmd, TEXT("NightShopReach="), L.shopReachM);
-	FParse::Value(Cmd, TEXT("NightShopK="), L.shopKelvin);
-	FParse::Value(Cmd, TEXT("NightCap="), L.capShare);
-	FParse::Value(Cmd, TEXT("NightCapFloor="), L.capFloor);
-	FParse::Value(Cmd, TEXT("NightCapRadius="), L.capRadiusM);
+	ReadNumber(Cmd, TEXT("NightMoon="), L.moonShare);
+	ReadNumber(Cmd, TEXT("NightSky="), L.skyFill);
+	ReadNumber(Cmd, TEXT("NightSkyLum="), L.skyLuminance);
+	ReadNumber(Cmd, TEXT("NightTwilightFill="), L.twilightFill);
+	ReadNumber(Cmd, TEXT("NightDeepHigh="), L.deepHighDeg);
+	ReadNumber(Cmd, TEXT("NightDeepLow="), L.deepLowDeg);
+	ReadNumber(Cmd, TEXT("NightLampsOnHigh="), L.lampsOnHighDeg);
+	ReadNumber(Cmd, TEXT("NightLampsOnLow="), L.lampsOnLowDeg);
+	ReadNumber(Cmd, TEXT("NightExposureHigh="), L.exposureHighDeg);
+	ReadNumber(Cmd, TEXT("NightExposureLow="), L.exposureLowDeg);
+	ReadNumber(Cmd, TEXT("NightMoonRise="), L.moonRiseDeg);
+	ReadNumber(Cmd, TEXT("NightMoonFull="), L.moonFullDeg);
+	ReadNumber(Cmd, TEXT("NightMoonRiseShare="), L.moonRiseShare);
+	ReadNumber(Cmd, TEXT("NightSunSetHalf="), L.sunSetHalfDeg);
+	// Negative (the default) means the world look's own shadow contrast and toe; a ruling sets 0 or more.
+	ReadNumber(Cmd, TEXT("NightShadowContrast="), L.shadowContrast);
+	ReadNumber(Cmd, TEXT("NightToe="), L.filmToe);
+	ReadNumber(Cmd, TEXT("NightCharFillStops="), L.charFillStops);
+	ReadNumber(Cmd, TEXT("NightCharFillK="), L.charFillKelvin);
+	ReadNumber(Cmd, TEXT("NightCharFillPitch="), L.charFillPitchDeg);
+	ReadNumber(Cmd, TEXT("NightFog="), L.fogKeep);
+	ReadNumber(Cmd, TEXT("NightEV="), L.exposureEV100);
+	ReadNumber(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
+	ReadNumber(Cmd, TEXT("NightWhiteK="), L.whiteKelvin);
+	ReadNumber(Cmd, TEXT("NightLamp="), L.lampCandela);
+	ReadNumber(Cmd, TEXT("NightLampReach="), L.lampReachM);
+	ReadNumber(Cmd, TEXT("NightLampK="), L.lampKelvin);
+	ReadNumber(Cmd, TEXT("NightLampCone="), L.lampOuterDeg);
+	ReadNumber(Cmd, TEXT("NightLampInner="), L.lampInnerDeg);
+	ReadNumber(Cmd, TEXT("NightLampSource="), L.lampSourceCm);
+	ReadNumber(Cmd, TEXT("NightShop="), L.shopCandela);
+	ReadNumber(Cmd, TEXT("NightShopReach="), L.shopReachM);
+	ReadNumber(Cmd, TEXT("NightShopK="), L.shopKelvin);
+	ReadNumber(Cmd, TEXT("NightCap="), L.capShare);
+	ReadNumber(Cmd, TEXT("NightCapFloor="), L.capFloor);
+	ReadNumber(Cmd, TEXT("NightCapRadius="), L.capRadiusM);
 	float Glow = 1.f;
-	if (FParse::Value(Cmd, TEXT("NightGlow="), Glow))
+	if (ReadNumber(Cmd, TEXT("NightGlow="), Glow))
 	{
 		for (float& C : L.glow)
 		{
@@ -77,9 +97,9 @@ ftcore::NightLook Read()
 	UE_LOG(LogForgottenThird, Display, TEXT("Night: moon %.3f, sky fill %.3f as twilight ends to %.3f in the deep night (sun %.1f to %.1f degrees), dome %.3f."),
 		L.moonShare, L.twilightFill, L.skyFill, L.deepHighDeg, L.deepLowDeg, L.skyLuminance);
 	UE_LOG(LogForgottenThird, Display, TEXT("Night: lamps on from %.1f to %.1f degrees, exposure to the night's from %.1f to %.1f, moon up from %.1f to %.1f (%.2f at rise), "
-		"night shadow contrast %.2f, toe %.2f (under 0: the look's own)."),
+		"the sun's light halving every %.2f degrees once down, night shadow contrast %.2f, toe %.2f (under 0: the look's own)."),
 		L.lampsOnHighDeg, L.lampsOnLowDeg, L.exposureHighDeg, L.exposureLowDeg, L.moonRiseDeg, L.moonFullDeg, L.moonRiseShare,
-		L.shadowContrast, L.filmToe);
+		L.sunSetHalfDeg, L.shadowContrast, L.filmToe);
 	return L;
 }
 

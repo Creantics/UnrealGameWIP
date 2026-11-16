@@ -306,7 +306,9 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 			Light->SetIntensity(Candela(bLamp) * (Pool.Scale.IsValidIndex(Index) ? Pool.Scale[Index] : 1.f));
 		}
 	}
-	// Each held lamp shows once the switch-on passes its own hashed point (shops keyed apart from the lamps).
+	// Each held lamp shows once the switch-on passes its own hashed point (shops keyed apart from the lamps). Tick runs
+	// this every kPickSeconds while the fraction is above 0, camera moving or not, so a lamp comes on within 0.2 s of
+	// its point.
 	const float Fraction = LampFraction();
 	const uint32 Salt = bLamp ? 0u : 0x9E3779B9u;
 	for (int32 S = 0; S < Size; ++S)

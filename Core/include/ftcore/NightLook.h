@@ -55,6 +55,11 @@ struct NightLook {
     float moonRiseDeg = 0.f;
     float moonFullDeg = 15.f;
     float moonRiseShare = 0.1f;
+    // The one directional light through the horizon (11-15 20:12 review): the sun's part, dimmed by the night, halves
+    // every sunSetHalfDeg once the sun is down, and the moon's part comes in with NightAmount, so the light's intensity
+    // has no step at the horizon (its direction still turns to the moon's there, both grazing). Under 0.05 is taken as
+    // 0.05. A look knob: smaller ends the sun's light sooner after sunset (-NightSunSetHalf=).
+    float sunSetHalfDeg = 2.f;
     // The night's local exposure shadow contrast and film toe, reached with the exposure blend. Below 0 keeps the world
     // look's own (the default): set only by ruling (-NightShadowContrast=, -NightToe=).
     float shadowContrast = -1.f;
@@ -126,9 +131,10 @@ struct NightFrame {
 FTCORE_API NightFrame nightFrame(const NightLook& look, float night);
 FTCORE_API NightFrame nightFrame(const NightLook& look, float night, float deep);
 // The clock's frame: as the three-argument form, with the switch-on, the exposure blend and the moon read from the
-// sun's elevation. With the sun up the directional light is the sun, dimmed by the night; with it down it is the moon
-// at moonShare times nightMoonScale, and the real-time sky lift divides by that, so the fill stays a share of the day's
-// across the horizon with no step. No allocation.
+// sun's elevation. The directional light is the sun's part, lerp(1, moonShare, night), halving every sunSetHalfDeg
+// below the horizon, plus the moon's, night x moonShare x nightMoonScale: continuous through the horizon, the sun's by
+// day (the moon's part is 0 at night 0) and the moon's in the deep night. The real-time sky lift divides by it, so the
+// fill stays a share of the day's on either side. No allocation.
 FTCORE_API NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDeg);
 // 0 with the sun above deepHighDeg, 1 below deepLowDeg, eased between. No allocation.
 FTCORE_API float nightDeep(const NightLook& look, float sunElevationDeg);
@@ -142,7 +148,7 @@ FTCORE_API bool nightLampOn(float fraction, std::uint32_t key);
 // allocation.
 FTCORE_API float nightExposureBlend(const NightLook& look, float sunElevationDeg);
 // The moon's share of moonShare with the sun at this elevation (the moon stands opposite it): moonRiseShare at the
-// horizon, 1 from moonFullDeg up, eased; 1 with the sun up (the light is the sun then). No allocation.
+// horizon and below it (the sun up), 1 from moonFullDeg up, eased; continuous everywhere. No allocation.
 FTCORE_API float nightMoonScale(const NightLook& look, float sunElevationDeg);
 
 // A model of the wide street's metered median (linear, 1 = white) through the evening, for tests and for reading a
