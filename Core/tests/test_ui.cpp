@@ -78,7 +78,11 @@ TEST_CASE("ui style: the built-in style and Data/UI/style.json pass the accessib
     for (std::size_t w = 0; w < kUiWorldCount; ++w) {
         CHECK(s.rules[w].marksAccent2 == d.rules[w].marksAccent2);
         CHECK(s.rules[w].dangerUnderline == d.rules[w].dangerUnderline);
+        CHECK(s.rules[w].loadBreaks == d.rules[w].loadBreaks);
     }
+    CHECK(s.rules[0].loadBreaks);
+    CHECK_FALSE(s.rules[1].loadBreaks);
+    CHECK_FALSE(s.rules[2].loadBreaks);
     CHECK(s.layers.hairlines);
     CHECK_FALSE(s.layers.worldAnchored);
 }
@@ -342,6 +346,77 @@ TEST_CASE("ui style: red means harm to the player: the hit cue, the lost hp, the
             }
         }
     }
+}
+
+TEST_CASE("ui style: LOAD and the hp figure take turns in their column, never both above 0.05") {
+    // A whole fight's first Load: the load held from 1 s to `spent`, the column stepped every frame (60 Hz, or hz).
+    const auto run = [](double spent, float& peakLabel, double& labelFirst, double& figBack, double hz = 60.0) {
+        UiLabelColumn c;
+        UiLoadLabel g;
+        peakLabel = 0.f;
+        labelFirst = -1.0;
+        figBack = -1.0;
+        bool figWasOut = false;
+        for (int i = 0; i <= static_cast<int>(8.0 * hz); ++i) {
+            const double t = i / hz;
+            const int load = t >= 1.0 && t < spent ? 10 : 0;
+            const UiLabelColumnView v = uiLabelColumnStep(c, uiLoadLabelStep(g, load, t), t);
+            CHECK_FALSE((v.label > 0.05f && v.fig > 0.05f));
+            CHECK(v.label >= 0.f);
+            CHECK(v.label <= 1.f);
+            CHECK(v.fig >= 0.f);
+            CHECK(v.fig <= 1.f);
+            if (v.label > 0.f && labelFirst < 0.0) labelFirst = t;
+            peakLabel = std::max(peakLabel, v.label);
+            if (v.fig == 0.f) figWasOut = true;
+            if (figWasOut && v.fig == 1.f && figBack < 0.0) figBack = t;
+        }
+    };
+    float peak = 0.f;
+    double first = 0.0, back = 0.0;
+    // Held throughout: LOAD waits for the figure to leave and the gap, reaches full, and the figure returns after it.
+    run(100.0, peak, first, back);
+    CHECK(peak == 1.f);
+    CHECK(first >= 1.0 + kUiFigOut + kUiColumnGap - 0.02); // the step at 1.0 already moves a frame
+    CHECK(first <= 1.0 + kUiFigOut + kUiColumnGap + 0.05);
+    CHECK(back >= 1.0 + kUiLabelHold + kUiLabelFade + kUiColumnGap + kUiFigReturn - 0.02);
+    CHECK(back <= 1.0 + kUiLabelHold + kUiLabelFade + kUiColumnGap + kUiFigReturn + 0.05);
+    // The Load spent mid-hold: LOAD goes with it and the figure comes back after the gap.
+    run(1.8, peak, first, back);
+    CHECK(peak == 1.f);
+    CHECK(back >= 1.8 + kUiColumnGap + kUiFigReturn - 0.02);
+    CHECK(back <= 1.8 + kUiColumnGap + kUiFigReturn + 0.05);
+    // Spent before the figure has gone: LOAD never shows, the figure comes back.
+    run(1.05, peak, first, back);
+    CHECK(peak == 0.f);
+    CHECK(first < 0.0);
+    // At 30 Hz and at an odd 47 Hz the rule holds the same way.
+    for (const double hz : {30.0, 47.0}) {
+        run(100.0, peak, first, back, hz);
+        CHECK(peak == 1.f);
+        CHECK(back > 4.0);
+        run(1.8, peak, first, back, hz);
+        CHECK(peak == 1.f);
+    }
+    // A big step (a hitch) clears the figure at once, and LOAD still waits the gap.
+    UiLabelColumn h;
+    CHECK(uiLabelColumnStep(h, 1.f, 0.0).label == 0.f);
+    const UiLabelColumnView hv = uiLabelColumnStep(h, 1.f, 1.0);
+    CHECK(hv.fig == 0.f);
+    CHECK(hv.label == 0.f);
+    CHECK(uiLabelColumnStep(h, 1.f, 1.05).label == 0.f);
+    CHECK(uiLabelColumnStep(h, 1.f, 1.11).label == 1.f);
+    // A NaN clock: no label, the figure as it was, the state unmoved.
+    UiLabelColumn n;
+    const UiLabelColumnView nv = uiLabelColumnStep(n, 1.f, std::nan(""));
+    CHECK(nv.label == 0.f);
+    CHECK(nv.fig == 1.f);
+    CHECK_FALSE(n.stepped);
+    // No Load at all: the figure stands, no label.
+    UiLabelColumn z;
+    const UiLabelColumnView zv = uiLabelColumnStep(z, 0.f, 3.0);
+    CHECK(zv.fig == 1.f);
+    CHECK(zv.label == 0.f);
 }
 
 TEST_CASE("ui style: the LOAD label shows on the first Load of a fight for 2 s, fades over 1 s, never again") {
@@ -1068,6 +1143,14 @@ TEST_CASE("ui style: the hit flash starts only on a later hit; a retry's reset s
     uiHitWatchStep(h, 1.0, 1.05);
     const float held = uiHitWatchStep(h, 1.0, 1.1);
     for (int i = 0; i < 10; ++i) CHECK(uiHitWatchStep(h, 1.0, 1.1) == held);
+    // Paused, the cue is hidden at every age; unpaused, the held cue returns at the level it had.
+    CHECK(uiHitCueLevel(held, false) > 0.f);
+    for (const float a : {0.f, 0.05f, 0.1f, 0.2f, 0.3f, 0.34f}) {
+        CHECK(uiHitCueLevel(a, true) == 0.f);
+        CHECK(uiHitCueLevel(a, false) == uiHitFlashLevel(a));
+    }
+    for (int i = 0; i < 10; ++i) CHECK(uiHitCueLevel(uiHitWatchStep(h, 1.0, 1.1), true) == 0.f); // a pause: clock held
+    CHECK(uiHitCueLevel(uiHitWatchStep(h, 1.0, 1.1), false) == uiHitFlashLevel(held)); // resumed: the same cue
     // A retry resets the stamp to "no hit": no flash, whether or not the view also clears its seed.
     CHECK(uiHitFlashLevel(uiHitWatchStep(w, -1e9, t += 0.016)) == 0.f);
     UiHitWatch r;
@@ -1167,6 +1250,34 @@ TEST_CASE("ui style: an end cap follows the fill's end and sits on the track at 
     CHECK(s.lines.capGrow == 4.f);
     CHECK(s.lines.guardDot == 3.f);
     CHECK(s.lines.guardPitch == 7.f);
+}
+
+TEST_CASE("ui style: the Load's breaks sit at fixed pitch from the start, clear of the fill end and the Release tick") {
+    float b[64];
+    // 300 px filled, 24 px pitch: 24, 48 .. 288 in (none past 300 - 12, half a pitch from the end): 12 breaks.
+    int n = uiLoadBreaks(100.f, 300.f, 24.f, std::nanf(""), 6.f, b, 64);
+    CHECK(n == 12);
+    CHECK(b[0] == doctest::Approx(124.f));
+    CHECK(b[n - 1] == doctest::Approx(388.f));
+    for (int i = 1; i < n; ++i) CHECK(b[i] - b[i - 1] == doctest::Approx(24.f));
+    // Anchored to the start: a shorter fill keeps the same positions, only fewer of them (none crawls as it drains).
+    float c[64];
+    const int m = uiLoadBreaks(100.f, 100.f, 24.f, std::nanf(""), 6.f, c, 64);
+    CHECK(m == 3); // 24, 48, 72; 96 is within 12 of the end
+    for (int i = 0; i < m; ++i) CHECK(c[i] == b[i]);
+    // The Release tick at 172 (48 in): the break at 172 is skipped, the ones 24 px off stay.
+    const int k = uiLoadBreaks(100.f, 300.f, 24.f, 173.f, 6.f, c, 64);
+    CHECK(k == 11);
+    for (int i = 0; i < k; ++i) CHECK(std::fabs(c[i] - 173.f) >= 6.f);
+    // The cap on the count, and the refusals: no fill, no pitch, no room, a NaN start.
+    CHECK(uiLoadBreaks(100.f, 300.f, 24.f, std::nanf(""), 6.f, c, 4) == 4);
+    CHECK(uiLoadBreaks(100.f, 0.f, 24.f, std::nanf(""), 6.f, c, 64) == 0);
+    CHECK(uiLoadBreaks(100.f, 300.f, 0.f, std::nanf(""), 6.f, c, 64) == 0);
+    CHECK(uiLoadBreaks(100.f, 300.f, 24.f, std::nanf(""), 6.f, nullptr, 64) == 0);
+    CHECK(uiLoadBreaks(std::nanf(""), 300.f, 24.f, std::nanf(""), 6.f, c, 64) == 0);
+    CHECK(uiLoadBreaks(100.f, std::nanf(""), 24.f, std::nanf(""), 6.f, c, 64) == 0);
+    // Long segments, thin breaks: never read as the guard's dots.
+    CHECK(kUiLoadBreakPitch >= 8.f * kUiLoadBreakW);
 }
 
 TEST_CASE("ui style: the signature devices are off in every world until a pick flips one row") {

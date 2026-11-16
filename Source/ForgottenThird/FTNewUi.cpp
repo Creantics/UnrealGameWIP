@@ -240,6 +240,7 @@ struct FUiWorldRow
 	bool bSigPulse = false;
 	bool bSigArcs = false;
 	bool bSigMarginRule = false;
+	bool bLoadBreaks = false; // UiWorldRules::loadBreaks: the Load's gold carries breaks (uiLoadBreaks)
 	FLinearColor LowLine;  // a low hp or guard line
 	FLinearColor LowUnder; // the 1 px line under it, drawn only where bLowUnder
 	bool bLowUnder = false;
@@ -301,6 +302,7 @@ const FUiTable& Table()
 			R.bSigPulse = T.Style.rules[W].sigPulse;
 			R.bSigArcs = T.Style.rules[W].sigArcs;
 			R.bSigMarginRule = T.Style.rules[W].sigMarginRule;
+			R.bLoadBreaks = T.Style.rules[W].loadBreaks;
 		}
 		T.Edge = LinOf(T.Style.edge);
 		return T;
@@ -1867,6 +1869,8 @@ public:
 			LoadLabel = ftcore::UiLoadLabel{};
 			WeakLabel = ftcore::UiOnceLabel{};
 			LoadLabelA = WeakLabelA = 0.f;
+			LoadColumn = ftcore::UiLabelColumn{};
+			HpFigA = 1.f;
 			GuardLabel = ftcore::UiGuardLabel{};
 			HitSegs = ftcore::UiHitSegs{};
 			HitWatch.seeded = false;
@@ -1887,6 +1891,7 @@ public:
 			GuardLabel = ftcore::UiGuardLabel{};
 			LoadLabel = ftcore::UiLoadLabel{};
 			WeakLabel = ftcore::UiOnceLabel{};
+			LoadColumn = ftcore::UiLabelColumn{};
 			ReleasePulse = ftcore::UiReleasePulse{};
 			// Each blow's red lost hp starts empty: the first step only reads the hp, so a retry at equal or lower hp draws
 			// no segment from the last fight's blows.
@@ -1978,7 +1983,10 @@ public:
 			// fight's first Load only, 2 s then a 1 s fade (uiLoadLabelStep); a retry starts a new fight.
 			const float To = Frac(L.load, L.loadCap);
 			LoadFill = To >= LoadFill ? To : FMath::Max(To, LoadFill - FrameDt / ftcore::kUiLoadDrain);
-			LoadLabelA = ftcore::uiLoadLabelStep(LoadLabel, L.load, FightNow);
+			// LOAD and the hp figure share a column and take turns in it (uiLabelColumnStep): never both drawn.
+			const ftcore::UiLabelColumnView Col = ftcore::uiLabelColumnStep(LoadColumn, ftcore::uiLoadLabelStep(LoadLabel, L.load, FightNow), FightNow);
+			LoadLabelA = Col.label;
+			HpFigA = Col.fig;
 			// The Release pulse (signature device 1): stepped always, drawn only where the world's row turns it on.
 			ReleasePulseV = ftcore::uiReleasePulseStep(ReleasePulse, L.releaseReady, L.overloaded, FightNow);
 		}
@@ -3394,18 +3402,20 @@ private:
 		{
 			if (L.debt >= 80)
 			{
-				DangerText(P, X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), NoteAsc, DebtW, DebtText, NoteFont, Hud::NoteInk * A, LowPulse());
+				// The debt shares the figure's column with LOAD, so it takes the figure's turn in it (uiLabelColumnStep).
+				DangerText(P, X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), NoteAsc, DebtW, DebtText, NoteFont, Hud::NoteInk * A * HpFigA, LowPulse());
 			}
 			else
 			{
-				P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A));
+				P.Text(X0 + Len + 12.f * S, CapTop(HpY, NoteAsc), DebtText, NoteFont, Tok(UiToken::Ink, Hud::NoteInk * A * HpFigA));
 			}
 		}
 		else if (!HpFigText.IsEmpty())
 		{
 			// The hp figure, FigGap px after the line, right-aligned to its slot's fixed right edge, centred on the line. It
-			// shares its column with LOAD over it, so it fades out while LOAD's once-a-fight label shows, then returns.
-			const float FigA = A * (1.f - LoadLabelA);
+			// shares its column with LOAD over it, so it is out while LOAD's once-a-fight label shows at all, and comes back
+			// once LOAD has gone, each with a gap (uiLabelColumnStep): never the two over each other.
+			const float FigA = A * HpFigA;
 			if (FigA > 0.f)
 			{
 				const float Right = X0 + Len + Hud::FigGap * S + HpFigSlotW;
@@ -3430,6 +3440,30 @@ private:
 			const float YS = SnapLine(LY, Hud::LoadW, S);
 			TrackLine(X0, X0 + Len, YS, Hud::LoadW, 221, S, A, LoadFill);
 			ValueLine(X0, X0 + Len, YS, 0.f, LoadFill, Hud::LoadW, 221, S, Gold, 0.f);
+			bool bBreaks = Shown().bLoadBreaks;
+#if !UE_BUILD_SHIPPING
+			// -UiLoadOld (captures): the Load without its breaks, for the side-by-side with the current look.
+			static const bool bLoadOld = FParse::Param(FCommandLine::Get(), TEXT("UiLoadOld"));
+			bBreaks = bBreaks && !bLoadOld;
+#endif
+			if (bBreaks && LoadFill > 0.f)
+			{
+				// The breaks (uiLoadBreaks): kUiLoadBreakW px of the world's backing across the gold's body every
+				// kUiLoadBreakPitch px from the line's start, clear of the cap and the Release tick. A fixed buffer.
+				float Bx[64];
+				const float TickX = L.releaseAt > 0 && L.releaseAt < L.loadCap
+					? X0 + Len * static_cast<float>(L.releaseAt) / static_cast<float>(L.loadCap) : std::numeric_limits<float>::quiet_NaN();
+				const int N = ftcore::uiLoadBreaks(X0, Len * LoadFill, ftcore::kUiLoadBreakPitch * S, TickX, ftcore::kUiLoadBreakKeep * S, Bx, 64);
+				const float BW = Mesh.WholeDev(ftcore::kUiLoadBreakW * S);
+				const float BTop = Mesh.SnapLineY(YS, WD) - 0.5f * WD;
+				FLinearColor Notch = Shown().TrackBody;
+				Notch.A = A;
+				for (int i = 0; i < N; ++i)
+				{
+					const float BL = Mesh.SnapX(Bx[i] - 0.5f * BW);
+					Mesh.Rect(BL, BTop, BL + BW, BTop + WD, Notch, true);
+				}
+			}
 			EndCap(X0, Len, YS, LoadFill, Hud::LoadW, S, A);
 			if (L.releaseAt > 0 && L.releaseAt < L.loadCap && Shown().bSigPulse)
 			{
@@ -4249,7 +4283,7 @@ private:
 			}
 			const UWorld* CueWorld = Runner.GetWorld();
 			const bool bGamePaused = CueWorld && CueWorld->IsPaused();
-			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f : (bGamePaused ? 0.f : ftcore::uiHitFlashLevel(HitAge));
+			HitA = UiStateShot() == EUiStateShot::Hit ? 1.f : ftcore::uiHitCueLevel(HitAge, bGamePaused);
 			if (UiStateShot() == EUiStateShot::Hit)
 			{
 				HitEdges = ftcore::uiHitEdges(true, 1.f, 0.f); // the still's blow: from the right
@@ -4558,6 +4592,8 @@ private:
 	float LoadFill = 0.f; // the Load line's gold, 0..1 of loadCap, drained
 	ftcore::UiLoadLabel LoadLabel;
 	float LoadLabelA = 0.f;
+	ftcore::UiLabelColumn LoadColumn; // LOAD and the hp figure take turns in one column
+	float HpFigA = 1.f;
 	ftcore::UiOnceLabel WeakLabel; // WEAK by the open weak point: once a fight
 	ftcore::UiReleasePulse ReleasePulse; // signature device 1's state, on the fight's clock
 	ftcore::UiReleasePulseView ReleasePulseV;

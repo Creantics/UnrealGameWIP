@@ -112,12 +112,15 @@ struct UiTextStyle {
 //   sigPulse:       the Load's Release spike and its travelling pulse (uiReleasePulseStep); "sig_pulse";
 //   sigArcs:        the boss and lead lines on concentric ring arcs (uiRingPoint); "sig_arcs";
 //   sigMarginRule:  a vertical rule down the party block's left edge (UiMarginRule); "sig_margin_rule".
+//   loadBreaks:     the Load line's gold carries short crosswise breaks (uiLoadBreaks), so it reads apart from a warm
+//                   hp fill by pattern, not colour (r19c S1: Solhaven's cream fill); "load_breaks".
 struct UiWorldRules {
     bool marksAccent2 = false;
     bool dangerUnderline = false;
     bool sigPulse = false;
     bool sigArcs = false;
     bool sigMarginRule = false;
+    bool loadBreaks = false;
 };
 
 // Value-line ends and the dotted guard, 1080p px at HUD scale 1 (the painter scales them and rounds each to whole device
@@ -263,6 +266,9 @@ inline constexpr float kUiHitGone = 0.35f;   // seconds until it is gone
 inline constexpr float kUiHitRepeat = 1.f / 3.f; // the least time between two cues' starts (3 a second at most)
 // The cue's strength `age` seconds after it starts: 1 until kUiHitFull, a smooth fall to 0 at kUiHitGone, 0 outside.
 FTCORE_API float uiHitFlashLevel(float age);
+// The cue as drawn: hidden (0) while the game is paused, else uiHitFlashLevel(age). The age holds in a pause (the fight's
+// clock stops), so the same cue comes back where it was when the game resumes.
+FTCORE_API float uiHitCueLevel(float age, bool paused);
 // Each blow's lost health in red: its own segment [lo, hi] of the line (0..1), drawn over lo..lo + (hi - lo) times
 // uiHitFlashLevel(age), so every hit shows its loss for kUiHitGone whatever the glow's cap. A fixed ring of the last
 // kUiHitSegs blows (the oldest dropped). A rise (a heal) clears them; so does the first step (it only reads the hp).
@@ -352,6 +358,26 @@ FTCORE_API float uiOnceLabelStep(UiOnceLabel& g, bool present, double now);
 using UiLoadLabel = UiOnceLabel;
 // LOAD's label: present while some Load is held. The cap moving or the Release opening is not a new appearance.
 FTCORE_API float uiLoadLabelStep(UiLoadLabel& g, int load, double now);
+// The hp figure shares LOAD's column, so the two take turns (r19c F1, by sequence): when LOAD's label wants to show, the
+// figure fades out over kUiFigOut s, then kUiColumnGap s of neither, then LOAD; when LOAD has gone, kUiColumnGap s of
+// neither, then the figure fades back over kUiFigReturn s. Neither is ever drawn while the other is above 0. `labelRaw`
+// is LOAD's own alpha (uiLoadLabelStep); its hold runs on regardless, so LOAD shows kUiFigOut + kUiColumnGap s less.
+// A new fight starts it fresh (figure shown). A NaN clock changes nothing and shows no label.
+inline constexpr float kUiFigOut = 0.15f;
+inline constexpr float kUiColumnGap = 0.1f;
+inline constexpr float kUiFigReturn = 0.3f;
+struct UiLabelColumn {
+    float fig = 1.f;       // the figure's alpha now
+    double prev = 0.0;     // the last step's clock time
+    bool stepped = false;  // prev is set
+    double clearAt = 0.0;  // when the figure reached 0 (valid while fig == 0)
+    double rawAt = -1e9;   // the last clock time LOAD wanted to show
+};
+struct UiLabelColumnView {
+    float label = 0.f; // LOAD's drawn alpha
+    float fig = 1.f;   // the hp figure's drawn alpha
+};
+FTCORE_API UiLabelColumnView uiLabelColumnStep(UiLabelColumn& c, float labelRaw, double now);
 
 // The boss's percent beside its line: floor(100 hp / hpMax), at least 1 while hp is above 0, 0 at or under 0, at most
 // 100; -1 (none shown) when hpMax is 0 or less.
@@ -360,6 +386,15 @@ FTCORE_API int uiBossPercent(int hp, int hpMax);
 // An end cap's centre x on a line from x0, `len` long, filled to fill01, for a cap `capW` wide: the fill's end, held
 // inside the track so the cap sits on its start at 0 fill and on its end when full.
 FTCORE_API float uiCapX(float x0, float len, float fill01, float capW);
+
+// The Load line's breaks (UiWorldRules::loadBreaks), 1080p px at HUD scale 1: kUiLoadBreakW wide, in the track's backing,
+// every kUiLoadBreakPitch px from the line's start (anchored there, so they never crawl as the Load drains; a break pops
+// out as the fill end passes it). Long segments, thin breaks: never the guard's dots. uiLoadBreaks writes the break
+// centres along [x0, x0 + fillLen], none within half a pitch of the fill's end (the cap's place) and none within keep`n// px of tickX (the Release tick; NaN for none), at most cap of them; returns the count. Nothing allocated.
+inline constexpr float kUiLoadBreakW = 2.f;
+inline constexpr float kUiLoadBreakPitch = 24.f;
+inline constexpr float kUiLoadBreakKeep = 6.f;
+FTCORE_API int uiLoadBreaks(float x0, float fillLen, float pitch, float tickX, float keep, float* out, int cap);
 
 // The first signature device, the Release pulse (UiWorldRules::sigPulse). When the Release opens, one pulse travels the
 // Load line from its start to the spike over kUiReleaseTravel, then the spike's peak grows kUiReleaseGrow times for

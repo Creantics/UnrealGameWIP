@@ -139,6 +139,8 @@ UiStyle defaultUiStyle() {
     // The danger red is a mid-tone mark that fails the text rule, so in every world a danger word is ink over a danger
     // underline.
     for (UiWorldRules& r : s.rules) r.dangerUnderline = true;
+    // Solhaven's cream hp fill and the Load's gold are both warm: its Load is told apart by its breaks (r19c S1).
+    s.rules[0].loadBreaks = true;
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.
     // A palette's danger is one colour in every world, so each sits at luminance about 0.125 at its own hue: 3:1 or
@@ -235,6 +237,8 @@ float uiHitFlashLevel(float age) {
     return 1.f - u * u * (3.f - 2.f * u);
 }
 
+float uiHitCueLevel(float age, bool paused) { return paused ? 0.f : uiHitFlashLevel(age); }
+
 float uiClockStep(double& last, double now) {
     if (!(now == now)) return 0.f; // NaN: no time passes, the last time stays
     const double was = last;
@@ -330,6 +334,42 @@ float uiOnceLabelStep(UiOnceLabel& g, bool present, double now) {
 }
 
 float uiLoadLabelStep(UiLoadLabel& g, int load, double now) { return uiOnceLabelStep(g, load > 0, now); }
+
+int uiLoadBreaks(float x0, float fillLen, float pitch, float tickX, float keep, float* out, int cap) {
+    if (!out || cap <= 0 || !std::isfinite(x0) || !(fillLen > 0.f) || !(pitch > 0.f) || !std::isfinite(fillLen)) return 0;
+    int n = 0;
+    for (int i = 1; n < cap; ++i) {
+        const float d = pitch * static_cast<float>(i);
+        if (!(d <= fillLen - 0.5f * pitch)) break;
+        const float x = x0 + d;
+        if (tickX == tickX && std::fabs(x - tickX) < keep) continue;
+        out[n++] = x;
+    }
+    return n;
+}
+
+UiLabelColumnView uiLabelColumnStep(UiLabelColumn& c, float labelRaw, double now) {
+    if (!(now == now)) return {0.f, c.fig}; // a NaN clock: nothing moves, no label
+    const double dt = c.stepped && now > c.prev ? now - c.prev : 0.0;
+    c.prev = now;
+    c.stepped = true;
+    if (labelRaw > 0.f) {
+        c.rawAt = now;
+        if (c.fig > 0.f) {
+            c.fig = std::max(0.f, c.fig - static_cast<float>(dt / static_cast<double>(kUiFigOut)));
+            if (c.fig > 0.f) return {0.f, c.fig};
+            c.clearAt = now;
+        }
+        const bool open = now - c.clearAt >= static_cast<double>(kUiColumnGap);
+        return {open ? std::min(labelRaw, 1.f) : 0.f, 0.f};
+    }
+    if (c.fig < 1.f) {
+        // Only the part of this step after the gap counts towards the return.
+        const double from = std::max(now - dt, c.rawAt + static_cast<double>(kUiColumnGap));
+        if (now > from) c.fig = std::min(1.f, c.fig + static_cast<float>((now - from) / static_cast<double>(kUiFigReturn)));
+    }
+    return {0.f, c.fig};
+}
 
 int uiBossPercent(int hp, int hpMax) {
     if (hpMax <= 0) return -1;
@@ -606,7 +646,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 : key == "danger_underline" ? &rules->dangerUnderline
                 : key == "sig_pulse" ? &rules->sigPulse
                 : key == "sig_arcs" ? &rules->sigArcs
-                : key == "sig_margin_rule" ? &rules->sigMarginRule : nullptr;
+                : key == "sig_margin_rule" ? &rules->sigMarginRule
+                : key == "load_breaks" ? &rules->loadBreaks : nullptr;
             if (rule) {
                 if (v.type() != JsonType::Bool) return bad(section, key);
                 *rule = v.boolean();
