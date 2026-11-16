@@ -142,6 +142,15 @@ float arenaClosePartnerYaw(const ArenaCloseRules& rules, const ArenaLeadFrameRul
     return 0.f;
 }
 
+float arenaClosePartnerYawCap(const ArenaCloseRules& rules, bool ranged, bool leadBusy, float yawNow) {
+    const float base = std::max(0.f, rules.partnerYawMax);
+    if (!ranged) return base;
+    const float most = std::max(base, rules.partnerYawRangedMax);
+    if (!leadBusy) return most;
+    const float held = finite(yawNow) ? std::fabs(yawNow) : 0.f;
+    return std::clamp(held, base, most);
+}
+
 float arenaCloseContactWant(const ArenaCloseRules& rules, float distance, float targetHeight, float targetRadius) {
     if (!finite(distance) || distance < 0.f) return 0.f;
     const bool big = (finite(targetHeight) && targetHeight > rules.contactTall) || (finite(targetRadius) && targetRadius >= rules.contactWide);

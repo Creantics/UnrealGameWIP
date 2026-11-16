@@ -531,6 +531,8 @@ private:
 	void PickCloseShoulder(int32 Target);
 	bool bCloseShape = false;     // the close preset is on this fight
 	bool bPartnerStation = true;  // -ArenaPartnerStation=0 (capture only; always on in shipping): no close station handed to the brain
+	// A ranged partner under the close lens: the partner's kit has its own range and the close station hands it to the brain.
+	bool RangedPartner() const;
 	ftcore::CameraPreset CloseBase;
 	float CloseMelee = 0.f;       // 0..1: the melee share, eased (ftcore::arenaCloseMeleeStep)
 	float CloseTall = 0.f;        // 0..1: the followed target's tallness (ftcore::arenaCloseTallness)
@@ -588,6 +590,10 @@ private:
 	int32 CloseTallFrames = 0, CloseTallMateFrames = 0, CloseTallMateIn = 0;
 	float CloseTallHeadMost = 0.f, CloseTallWaistLeast = 1.f, CloseTallPitchMost = 0.f;
 	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
+	float PartnerYawCapSwitch = 0.f; // -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (0: the rules' 24)
+	// Held close frames with a ranged partner (its kit's own range on): those with the turn over the melee cap, the most.
+	int32 CloseRangedFrames = 0, CloseRangedWide = 0;
+	float CloseRangedYawMost = 0.f;
 	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.

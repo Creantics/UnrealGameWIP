@@ -1655,6 +1655,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CloseTallHeadMost = CloseTallPitchMost = 0.f;
 	CloseTallWaistLeast = 1.f;
 	CloseYawSum = CloseYawMost = 0.f;
+	CloseRangedFrames = CloseRangedWide = 0;
+	CloseRangedYawMost = 0.f;
 	MateFrames = MateIn = MateBehind = MateLeft = MateRight = MateOffY = 0;
 	MateOutAhead = MateOutRight = 0.f;
 	RollAtNext = 0;
@@ -6000,11 +6002,30 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	if (bHold && !bLookedLately && bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0 && !(CloseContact > 0.f))
 	{
 		const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
-		// The close lens turns up to ftcore::kArenaClose.partnerYawMax (12) degrees, the target kept in its band of the width.
-		YawWant = bCloseShape
-			? ftcore::arenaClosePartnerYaw(ftcore::kArenaClose, LeadFrameRules(), Lens, Aspect, Body, Mate,
-				ftcore::ArenaPoint3{To.x, To.y, FMath::Clamp(CloseHeightNow * 0.5f, 0.5f, 2.f)}, CloseShoulder)
-			: ftcore::arenaPartnerYaw(ftcore::kArenaPartnerYaw, LeadFrameRules(), Lens, Aspect, Body, Mate);
+		// The close lens turns up to ftcore::kArenaClose.partnerYawMax (12) degrees, the target kept in its band of the width;
+		// for a ranged partner (its kit's own range handed to the brain with the close station) up to partnerYawRangedMax
+		// (24), never growing during the lead's attack or a dodge's first moment (ftcore::arenaClosePartnerYawCap).
+		if (bCloseShape)
+		{
+			const ftcore::ArenaAction Act = Fight.output().player.action;
+			const bool bLeadBusy = Act == ftcore::ArenaAction::Light || Act == ftcore::ArenaAction::Heavy
+				|| Act == ftcore::ArenaAction::Riposte || Act == ftcore::ArenaAction::Release
+				|| (Act == ftcore::ArenaAction::Dodge && ftcore::arenaCloseDodgeHolds(ftcore::kArenaClose, Fight.output().player.actionTime));
+			ftcore::ArenaCloseRules Rules = ftcore::kArenaClose;
+#if !UE_BUILD_SHIPPING
+			if (PartnerYawCapSwitch > 0.f)
+			{
+				Rules.partnerYawRangedMax = PartnerYawCapSwitch;
+			}
+#endif
+			Rules.partnerYawMax = ftcore::arenaClosePartnerYawCap(Rules, RangedPartner(), bLeadBusy, PartnerYawNow);
+			YawWant = ftcore::arenaClosePartnerYaw(Rules, LeadFrameRules(), Lens, Aspect, Body, Mate,
+				ftcore::ArenaPoint3{To.x, To.y, FMath::Clamp(CloseHeightNow * 0.5f, 0.5f, 2.f)}, CloseShoulder);
+		}
+		else
+		{
+			YawWant = ftcore::arenaPartnerYaw(ftcore::kArenaPartnerYaw, LeadFrameRules(), Lens, Aspect, Body, Mate);
+		}
 	}
 	if (FMath::Abs(YawWant - PartnerYawGoal) > 0.5f || YawWant == 0.f)
 	{
@@ -6046,6 +6067,12 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		CloseYawOn += FMath::Abs(PartnerYawNow) > 0.25f ? 1 : 0;
 		CloseYawSum += FMath::Abs(PartnerYawNow);
 		CloseYawMost = FMath::Max(CloseYawMost, FMath::Abs(PartnerYawNow));
+		if (RangedPartner() && bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0)
+		{
+			++CloseRangedFrames;
+			CloseRangedWide += FMath::Abs(PartnerYawNow) > ftcore::kArenaClose.partnerYawMax + 0.25f ? 1 : 0;
+			CloseRangedYawMost = FMath::Max(CloseRangedYawMost, FMath::Abs(PartnerYawNow));
+		}
 		if (CloseContact > 0.f)
 		{
 			++CloseContactFrames;
@@ -6279,6 +6306,9 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens partner turn on %d of %d held frames, mean %.2f, most %.2f degrees; shoulder swaps %d, ends %+.2f."),
 			CloseYawOn, CloseYawFrames, CloseYawFrames > 0 ? CloseYawSum / static_cast<float>(CloseYawFrames) : 0.f, CloseYawMost, CloseSwaps, CloseShoulder);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens ranged partner (its kit's own range on) on %d held frames, turn most %.1f (cap %.1f), %d of them turned past the melee %.0f degrees."),
+			CloseRangedFrames, CloseRangedYawMost, PartnerYawCapSwitch > 0.f ? PartnerYawCapSwitch : ftcore::kArenaClose.partnerYawRangedMax,
+			CloseRangedWide, ftcore::kArenaClose.partnerYawMax);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens wall-shortened (boom under 98%%) on %d of %d held frames, %d of them with the lead's spine under 28%% of the width; the lead's rule held off a dive under -6 degrees on %d frames."),
 			CloseWallFrames, CloseYawFrames, CloseWallLow, CloseWallHeld);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens contact on %d of %d held frames (left out of the frame check), swing most %.1f degrees, %d shoulder swaps in contact."),
@@ -6449,6 +6479,15 @@ void UFTArenaRunner::PickCameraPreset()
 		CameraLag = FMath::IsFinite(Lag) ? Lag : -1.f;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera lag %.3f s for this run (-ArenaCameraLag; 0 the boom's own, under 0 off)."), CameraLag);
 	}
+	// -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (the 12 / 24 review pair); classic ignores it.
+	PartnerYawCapSwitch = 0.f;
+	float YawCap = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaPartnerYawCap="), YawCap) && Id == ftcore::CameraPresetId::Close && FMath::IsFinite(YawCap))
+	{
+		PartnerYawCapSwitch = FMath::Clamp(YawCap, ftcore::kArenaClose.partnerYawMax, 40.f);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: close lens ranged partner turn most %.1f degrees for this run (-ArenaPartnerYawCap, held to %.0f-40)."),
+			PartnerYawCapSwitch, ftcore::kArenaClose.partnerYawMax);
+	}
 	// -ArenaCameraArm=<m>: the close lens's arm for this run (a review pair), held to 1.5-3.0 m; classic ignores it.
 	CloseArmSwitch = 0.f;
 	float Arm = 0.f;
@@ -6468,6 +6507,11 @@ void UFTArenaRunner::PickCameraPreset()
 	}
 #endif
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena camera preset: %s (from %s)"), UTF8_TO_TCHAR(ftcore::cameraPresetName(Id)), From);
+}
+
+bool UFTArenaRunner::RangedPartner() const
+{
+	return bCloseShape && bPartnerStation && bPartner && Fight.def().partnerKit.partnerReach > 0.f;
 }
 
 const ftcore::Settings* UFTArenaRunner::GetSettings() const

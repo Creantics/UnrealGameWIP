@@ -167,7 +167,8 @@ degree cap), 6.2 at 3 m, 3.5 at 4 m, 3.1 at 6 m, 4.0 at 8 m and 4.9 at 12 m, and
 53, 38, 26, 21 and 16, and is the free camera's alike with nothing locked; the windup arc's camera half-angle is the
 lens's own (30 degrees under close far, up to 34 in melee range, 35 under classic, 27.5 for both while aiming); the
 partner's stationing camera is the close lens (2.6 m back) and its yaw term reads close's frame rule (up to 12 degrees
-under close, 5 under classic); up on the stick walks the lead on screen toward the frame's centre at about 45 degrees
+under close, 24 for a ranged partner whose kit's own range is on, a turn never growing during the lead's attack or a
+dodge's first moment; 5 under classic); up on the stick walks the lead on screen toward the frame's centre at about 45 degrees
 under close (18.6 under classic); the aimed crosshair's ray keeps
 its plan line (0.55 m right of the pivot) but starts lower and nearer. The stick reads the drawn yaw under both
 presets: up walks the lead along the lens's facing, into the screen toward the frame's centre, not along the lock's
@@ -795,6 +796,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaCamera=close\|classic` | The camera preset for this run, over the **Camera** setting (see Camera presets), in every build. |
 | `-ArenaCameraLag=<seconds>` | The boom's lag for this run, over the preset's (0: the boom's own, -1: off). Not in shipping builds. |
 | `-ArenaCameraArm=<m>` | The close lens's arm for this run, held to 1.5-3.0 m (classic ignores it). Not in shipping builds. |
+| `-ArenaPartnerYawCap=<deg>` | A ranged partner's most close-lens turn for this run (default 24), held to 12-40, so `=12` is the melee cap (classic ignores it). Logged as `close lens ranged partner`. Not in shipping builds. |
 | `-ArenaStandOff=<m>` | The autopilot circles its target at this range at a slow walk, guarding, with no attacks or dodges (stand-off stills); the run ends after 18 s of fight time, with the partner's check lines for the run so far. Not in shipping builds. |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |

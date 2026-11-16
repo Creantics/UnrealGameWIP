@@ -25,7 +25,9 @@
 //
 // Partner: a yaw toward the partner of at most partnerYawMax degrees (arenaClosePartnerYaw), when it is within
 // partnerRange m of the lead and out of the frame, given only when the lead keeps its rule and the target stays in
-// targetMin..targetMax of the width (mirrored on the left shoulder).
+// targetMin..targetMax of the width (mirrored on the left shoulder). A ranged partner (its kit's own range on) may
+// take up to partnerYawRangedMax, but no turn grows past partnerYawMax during the lead's attack or a dodge's first
+// moment (arenaClosePartnerYawCap).
 //
 // Nothing here allocates.
 
@@ -61,6 +63,8 @@ struct ArenaCloseRules {
     float roomFlip = 0.05f;      // share of the arm one side's room must beat the other's by to win on room alone
     // Partner.
     float partnerYawMax = 12.f;  // degrees
+    float partnerYawRangedMax = 24.f; // degrees: the most for a ranged partner (a caster 5-8 m off cannot be kept in
+                                      // the frame by where it stands; the lens turns to it instead)
     float partnerRange = 8.f;    // m from the lead
     float targetMin = 0.55f;     // the target's share of the width kept while the partner yaw turns (right shoulder)
     float targetMax = 0.80f;
@@ -165,6 +169,12 @@ FTCORE_API ArenaStickBasis arenaCloseStickBasis(const ArenaCloseRules& rules, Ar
 FTCORE_API float arenaClosePartnerYaw(const ArenaCloseRules& rules, const ArenaLeadFrameRules& leadRules, const ArenaCameraPose& pose,
                                       float aspect, const ArenaLeadBody& body, ArenaPoint3 partner, ArenaPoint3 target, float shoulder,
                                       float margin = kPartnerFrustumMargin);
+
+// The most the close partner yaw may turn this step (degrees): partnerYawMax for a melee partner; for a ranged one
+// (`ranged`: its kit's own range on) partnerYawRangedMax, but while `leadBusy` (the lead's attack, a dodge's first
+// moment) a turn never grows: the cap is the turn held now (`yawNow`, either sign), no less than partnerYawMax and no
+// more than partnerYawRangedMax. A NaN yawNow counts as 0; a ranged most under partnerYawMax counts as partnerYawMax.
+FTCORE_API float arenaClosePartnerYawCap(const ArenaCloseRules& rules, bool ranged, bool leadBusy, float yawNow);
 
 // Contact framing. Within about 3 m of the body of a target taller than contactTall m (or with a body radius of
 // contactWide m or more) the camera does not sit behind the lead: it swings round the lead toward the open side (the shoulder's side)

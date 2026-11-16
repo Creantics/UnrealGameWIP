@@ -327,6 +327,59 @@ TEST_CASE("close frame: the partner yaw turns up to 12 degrees toward the partne
     CHECK(arenaClosePartnerYaw(kArenaClose, rules, pose, kAspect, body, ArenaPoint3{-4.f, 0.f, 1.f}, target, 1.f) == 0.f);
 }
 
+TEST_CASE("close frame: a ranged partner's yaw may turn up to 24 degrees, never growing past 12 while the lead is busy") {
+    CHECK(kArenaClose.partnerYawMax == 12.f);
+    CHECK(kArenaClose.partnerYawRangedMax == 24.f);
+    // Melee: 12, busy or not, whatever turn is held.
+    CHECK(arenaClosePartnerYawCap(kArenaClose, false, false, 0.f) == 12.f);
+    CHECK(arenaClosePartnerYawCap(kArenaClose, false, true, 20.f) == 12.f);
+    // Ranged and free: 24.
+    CHECK(arenaClosePartnerYawCap(kArenaClose, true, false, 0.f) == 24.f);
+    CHECK(arenaClosePartnerYawCap(kArenaClose, true, false, kNaN) == 24.f);
+    // Ranged and busy: the turn held now (either sign), within 12..24.
+    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, 0.f) == 12.f);
+    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, 8.f) == 12.f);
+    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, -18.5f) == 18.5f);
+    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, 30.f) == 24.f);
+    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, kNaN) == 12.f);
+    // A ranged most under the melee one never lowers it.
+    ArenaCloseRules low = kArenaClose;
+    low.partnerYawRangedMax = 6.f;
+    CHECK(arenaClosePartnerYawCap(low, true, false, 0.f) == 12.f);
+    // The cap fed back as the rules' partnerYawMax: a partner a 12 degree turn cannot reach, a 24 degree one can, the
+    // target kept in its band and the lead in the frame.
+    const float d = 4.f;
+    const ArenaPoint3 target{d, 0.f, 1.f};
+    const ArenaLeadBody body = closeBody(0.f, 0.f, 1.8f);
+    const ArenaLeadFrameRules rules = closeRules(0.f, 0.f, 1.8f);
+    const ArenaCameraPose pose = lockPose(0.f, 1.f, d);
+    ArenaCloseRules wide = kArenaClose;
+    wide.partnerYawMax = arenaClosePartnerYawCap(kArenaClose, true, false, 0.f);
+    int gained = 0;
+    for (float x = 1.f; x <= 7.f; x += 0.5f)
+        for (float y = 1.f; y <= 7.f; y += 0.5f) {
+            const ArenaPoint3 mate{x, -y, 1.f};
+            if (std::sqrt(x * x + y * y) > kArenaClose.partnerRange) continue;
+            const float narrow = arenaClosePartnerYaw(kArenaClose, rules, pose, kAspect, body, mate, target, 1.f);
+            const float yaw = arenaClosePartnerYaw(wide, rules, pose, kAspect, body, mate, target, 1.f);
+            CAPTURE(x);
+            CAPTURE(y);
+            CHECK(std::fabs(yaw) <= 24.f + 1e-4f);
+            if (narrow != 0.f) CHECK(yaw == narrow); // the smallest turn: unchanged where 12 did it
+            if (yaw == 0.f || narrow != 0.f) continue;
+            ++gained;
+            CHECK(std::fabs(yaw) > 12.f);
+            ArenaCameraPose turned = pose;
+            turned.yaw += yaw;
+            const float tx = arenaFramePoint(turned, kAspect, target).x;
+            CHECK(tx >= 0.55f - 1e-4f);
+            CHECK(tx <= 0.8f + 1e-4f);
+            CHECK(arenaLeadInFrame(rules, arenaLeadShares(turned, kAspect, body)));
+        }
+    MESSAGE("partner points a 24 degree turn frames and a 12 degree one cannot: " << gained);
+    CHECK(gained > 0);
+}
+
 TEST_CASE("close frame: the partner on the brain's stations round the target is in the frame on 60% of them or more") {
     // A model, not the fight: the stations of rule 10 (the ring 1.5 m round the target, 60 to 120 degrees from the lead,
     // either side), the target 2 to 6 m ahead, the close lens far and in melee, with the close partner yaw.
