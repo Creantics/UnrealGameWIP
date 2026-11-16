@@ -39,7 +39,8 @@
 // than its vertical half-angle sees nothing below its own height near it, so no ground station puts the partner in
 // frame; the score then only picks the least bad one.
 // Tiers, per flank: (1) the band as above; (2) none legal in the band (a caster with the lead next to the target):
-// the farthest legal point short of the band, at standMin x (1 - j/8), j = 1..8, scored + kPartnerCloseShortPenalty;
+// the farthest legal point short of the band, at standMin x (1 - j/8), j = 1..8, never under bodyRadius off the
+// target's edge, scored + kPartnerCloseShortPenalty (any band: a caster's, and a melee or Ready one alike);
 // (3) neither on any flank and leashMeters > 0: a ring round the lead within the leash (radii leash - 0.25 and the
 // middle of personal space and leash), at kPartnerCloseRingMin..Max (15-55) degrees off the lead-to-target line
 // toward each flank, + kPartnerCloseFlipMargin off the held flank. None of these: not valid (the caller's rules).

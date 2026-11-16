@@ -613,7 +613,7 @@ TEST_CASE("close station: a caster with the lead next to the target casts from s
     REQUIRE(st.valid);
     CHECK(st.tier == 2);
     CHECK(st.offEdge < kPartnerCloseCasterMin);
-    CHECK(st.offEdge >= 0.f);
+    CHECK(st.offEdge >= in.bodyRadius - 1e-4f); // never inside the target's own body
     CHECK(csLen(csSub(st.point, in.target)) - in.targetRadius == doctest::Approx(st.offEdge).epsilon(1e-4));
     CHECK(partnerCloseInCone(in.cameraPos, in.cameraForward, kCsHalf, kPartnerCloseConeMargin, st.point));
     // The steps short of the band are standMin x (1 - j/8): the one found is one of them.

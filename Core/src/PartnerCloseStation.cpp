@@ -219,6 +219,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
             if (band.found || !(lo > 0.f)) continue; // the short pass only while the band has none on this flank
             for (int j = 1; j <= kSteps; ++j) {
                 const float off = lo * (1.f - static_cast<float>(j) / static_cast<float>(kSteps));
+                if (off < in.bodyRadius) break; // never inside the target's own body
                 const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
                 float cost = 0.f;
                 if (!score(p, cost)) continue;
