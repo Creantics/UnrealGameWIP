@@ -11,9 +11,9 @@
 // at kPartnerCloseAngleMin..Max (40-80) degrees round the target from the target-to-lead line (a big target, radius
 // kPartnerCloseWideRadius (2) or more: kPartnerCloseWideAngleMin..Max, 60-100, to stand clear of the lead's
 // silhouette), in 8 equal steps (5 degrees), and at standMin..standMax metres off the target's edge (the host's
-// kit band: a melee partner 1.5-2.5, a caster 5-8): for each angle the band's two ends, its middle, and the point of the band nearest
-// the partner. A candidate is legal when, in order (and never with its body inside the target's: at least
-// targetRadius + bodyRadius from the target's centre, whatever its tier):
+// kit band: a melee partner 1.5-2.5, a caster 5-8): for each angle the band's two ends, its middle, and the point
+// of the band nearest the partner. A candidate is legal when, in order (and never with its body inside the
+// target's: at least targetRadius + bodyRadius from the target's centre, whatever its tier):
 //   - when the host gives a 3D frame test (sees; the brain's is rule 13's frame with the middle and head of the
 //     partner in it, feet not tested: partnerInFrameClose), it passes it; this is the measure whenever given;
 //   - it is in the lens's view cone with the margin: in front of the lens (depth over kPartnerCloseNear) and its
@@ -44,13 +44,22 @@
 // target's edge, scored + kPartnerCloseShortPenalty (any band: a caster's, and a melee or Ready one alike);
 // (3) neither on any flank and leashMeters > 0: a ring round the lead within the leash (radii leash - 0.25 and the
 // middle of personal space and leash), at kPartnerCloseRingMin..Max (15-55) degrees off the lead-to-target line
-// toward each flank, + kPartnerCloseFlipMargin off the held flank. None of these: not valid (the caller's rules).
-// Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and never changed while attacking; then only
-// when the other flank's pick beats the held flank's by more than kPartnerCloseFlipMargin (the band and short-of-band
-// picks of the two flanks are compared, so a Pause station and a Ready station on opposite flanks do not ping-pong).
-// On the held flank the best legal candidate wins. With none legal on the flank
-// it must keep (held, or attacking): its held angle at the band's nearest point, reported not valid (the caller keeps
-// its own station). None legal at all: not valid, and the hold is left as it was.
+// toward each flank, + kPartnerCloseFlipMargin off the held flank; (4) none of these and the target not big: tiers 1-2
+// again on the far arc, kPartnerCloseFarAngleMin..Max (90-130) degrees from the lead's bearing (the lead hugging its
+// target near the lens's axis puts every 40-80 degree point nearer the lens than minAhead, out of the 3D frame or over
+// the lead; beside and past the target the lens sees the partner clear of both), legal as above and also clear of
+// the target's whole silhouette from the lens (not only its centre), and, from a start the lens sees clear of the
+// lead's and the target's shadows (deeper than the body and over its silhouette), with a straight walk that never
+// enters either. The far arc of a kept flank empty, the hold gives way to the other flank's (held false). None of
+// these: not valid (the caller's rules).
+// Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and while attacking; then only when the other
+// flank's pick beats the held flank's by more than kPartnerCloseFlipMargin (the band and short-of-band picks of the
+// two flanks are compared, so a Pause station and a Ready station on opposite flanks do not ping-pong). The one
+// hand-over while attacking: tier 4 with the kept flank's far arc empty (above). The station moves, the partner does
+// not: the brain walks to it only once the blow running has landed. On the held flank the best legal candidate wins.
+// With none legal on the flank it must keep (held, or attacking; tiers 1-4, the far arc on both flanks too): its held
+// angle at the band's nearest point, reported not valid (the caller keeps its own station). None legal at all: not
+// valid, and the hold is left as it was.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
@@ -80,6 +89,8 @@ inline constexpr float kPartnerCloseShortPenalty = 3.f;     // m of walk: short 
 inline constexpr float kPartnerCloseFlipMargin = 2.f;       // m of walk the other flank must win by to take it
 inline constexpr float kPartnerCloseRingMin = 15.f;         // degrees off the lead-to-target line (tier 3)
 inline constexpr float kPartnerCloseRingMax = 55.f;
+inline constexpr float kPartnerCloseFarAngleMin = 90.f;     // degrees round the target (tier 4, not a big target)
+inline constexpr float kPartnerCloseFarAngleMax = 130.f;
 // The kit bands (m off the target's edge) a host gives by its partner's kit (WEAPONS owns which kit is which).
 inline constexpr float kPartnerCloseMeleeMin = 1.5f;
 inline constexpr float kPartnerCloseMeleeMax = 2.5f;
@@ -124,9 +135,10 @@ struct PartnerCloseInput {
     float arenaRadius = 0.f;     // where the partner may stand (its body's margin taken off); 0: unbounded
     std::span<const PartnerWall> walls{};
     std::span<const PartnerBody> bodies{};
-    bool attacking = false;      // the partner is in a string or a blow runs: its flank never changes
+    bool attacking = false;      // the partner is in a string or a blow runs: its flank kept (but tier 4's hand-over)
     // The host's 3D frame test (none: null): a candidate must pass sees(seesContext, point). The brain gives its
-    // rule-13 frame (middle and head of a standing body inside the frustum with its margins; feet not tested) when framed.
+    // rule-13 frame (middle and head of a standing body inside the frustum with its margins; feet not tested) when
+    // framed.
     bool (*sees)(const void* context, Vec2 p) = nullptr;
     const void* seesContext = nullptr;
 };
@@ -147,7 +159,7 @@ struct PartnerCloseStation {
     float offEdge = 0.f;   // m off the target's edge
     bool held = false;     // the flank was kept by the hold (the 1.5 s, or attacking)
     std::uint8_t tier = 0; // 1 the band, 2 short of the band, 3 the lead ring (round the lead; angle is from the
-                           // lead-to-target line); 0 not valid
+                           // lead-to-target line), 4 the far arc (band or short of it); 0 not valid
 };
 
 // What the host gives the brain under the close camera (PartnerStationView::close); the lens's place and forward are

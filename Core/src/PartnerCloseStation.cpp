@@ -190,10 +190,32 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     const float angleMin = wide ? kPartnerCloseWideAngleMin : kPartnerCloseAngleMin;
     const float angleMax = wide ? kPartnerCloseWideAngleMax : kPartnerCloseAngleMax;
     constexpr int kSteps = 8; // 5 degrees either way
+    // Tier 4's two extra tests: the far point is clear of the target's whole silhouette from the lens, and the straight
+    // walk to it never enters the lead's or the target's shadow (deeper than the body, over its silhouette) from a
+    // start clear of both.
+    const float targetFromLens = len(sub(in.target, in.cameraPos));
+    const float targetHalf = halfAngle(targetFromLens, in.targetRadius);
+    const auto shadowed = [&](Vec2 q) {
+        const float dq = len(sub(q, in.cameraPos)), own = halfAngle(dq, in.bodyRadius);
+        return (dq > distFromLens && apart(in.cameraPos, q, in.lead) < own + leadHalf) ||
+               (dq > targetFromLens && apart(in.cameraPos, q, in.target) < own + targetHalf);
+    };
+    const bool startShadowed = shadowed(in.partner);
+    bool farArc = false;
+    const auto farClear = [&](Vec2 p) {
+        if (partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.target, in.targetRadius)) return false;
+        if (startShadowed) return true;
+        constexpr int kWalkSamples = 8;
+        for (int k = 1; k <= kWalkSamples; ++k)
+            if (shadowed(add(in.partner, mul(sub(p, in.partner), static_cast<float>(k) / static_cast<float>(kWalkSamples)))))
+                return false;
+        return true;
+    };
     // A legal p's score: the walk, the lead clearance, the lower two thirds and the lead's side (no hold terms).
     const auto score = [&](Vec2 p, float& cost) {
         float x = 0.f, y = 0.f;
         if (!legal(in, p, x, y)) return false;
+        if (farArc && !farClear(p)) return false;
         const float dp = len(sub(p, in.cameraPos));
         const float clear = apart(in.cameraPos, p, in.lead) / (halfAngle(dp, in.bodyRadius) + leadHalf);
         cost = len(sub(p, in.partner)) - kPartnerCloseClearWeight * std::min(clear, 3.f) +
@@ -201,11 +223,12 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         if (in.leadSide != 0 && leadSeen && !(x * in.leadSide >= leadX * in.leadSide)) cost += kPartnerCloseSidePenalty;
         return true;
     };
-    // Tiers 1-2 on one flank: the band's best, else the farthest legal point short of the band.
-    const auto onFlank = [&](std::int8_t flank) {
+    // Tiers 1-2 (or 4) on one flank between aMin and aMax degrees: the band's best, else the farthest legal point
+    // short of the band.
+    const auto onFlank = [&](std::int8_t flank, float aMin, float aMax) {
         Pick band, shortPick;
         for (int i = 0; i <= kSteps; ++i) {
-            const float angle = angleMin + (angleMax - angleMin) * static_cast<float>(i) / static_cast<float>(kSteps);
+            const float angle = aMin + (aMax - aMin) * static_cast<float>(i) / static_cast<float>(kSteps);
             const Vec2 dir = turn(bearing, static_cast<float>(flank) * angle);
             const float keepBonus =
                 !hold.ring && flank == hold.flank && std::fabs(angle - hold.angle) < 1e-3f ? kPartnerCloseKeepBonus : 0.f;
@@ -235,19 +258,24 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         if (band.found) return band;
         return shortPick;
     };
-    Pick picks[2];
-    for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}})
-        if (!keep || flank == hold.flank) picks[flank > 0 ? 1 : 0] = onFlank(flank);
-    Pick best;
+    // Both flanks' picks between aMin and aMax (the held flank only while it is kept), and the better of the two.
+    const auto sweep = [&](float aMin, float aMax, bool kept) {
+        Pick picks[2];
+        for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}})
+            if (!kept || flank == hold.flank) picks[flank > 0 ? 1 : 0] = onFlank(flank, aMin, aMax);
+        Pick chosen;
+        if (picks[0].found && picks[1].found && hold.flank != 0) {
+            const Pick& held = picks[hold.flank > 0 ? 1 : 0];
+            const Pick& other = picks[hold.flank > 0 ? 0 : 1];
+            chosen = other.cost + kPartnerCloseFlipMargin < held.cost ? other : held;
+        } else {
+            for (const Pick& q : picks)
+                if (q.found && (!chosen.found || q.cost < chosen.cost)) chosen = q;
+        }
+        return chosen;
+    };
+    Pick best = sweep(angleMin, angleMax, keep);
     std::uint8_t tier = 0;
-    if (picks[0].found && picks[1].found && hold.flank != 0) {
-        const Pick& held = picks[hold.flank > 0 ? 1 : 0];
-        const Pick& other = picks[hold.flank > 0 ? 0 : 1];
-        best = other.cost + kPartnerCloseFlipMargin < held.cost ? other : held;
-    } else {
-        for (const Pick& q : picks)
-            if (q.found && (!best.found || q.cost < best.cost)) best = q;
-    }
     if (best.found) tier = best.offEdge >= lo - 1e-5f ? 1 : 2;
     bool ring = false;
     if (!best.found && in.leashMeters > 0.f) { // tier 3: within the leash, round the lead toward the target's flanks
@@ -276,6 +304,14 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
             ring = true;
         }
     }
+    if (!best.found && !wide) { // tier 4: the lead hugging its target, the near flanks all fail: the far arc
+        farArc = true;
+        best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, keep);
+        // The kept flank's far arc has nothing either (the partner held on the side the lead's body closes): the
+        // hold gives way to the open flank, since the fallback would stand it in the lead's shadow.
+        if (!best.found && keep) best = sweep(kPartnerCloseFarAngleMin, kPartnerCloseFarAngleMax, false);
+        if (best.found) tier = 4;
+    }
     if (!best.found) {
         if (keep && !hold.ring) { // the flank it must keep has no legal point: where it would stand, not valid
             const Vec2 dir = turn(bearing, static_cast<float>(hold.flank) * hold.angle);
@@ -288,6 +324,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         }
         return out;
     }
+    const std::int8_t heldFlank = hold.flank;
     if (best.flank != hold.flank) hold.heldFor = 0.0;
     hold.flank = best.flank;
     hold.angle = best.angle;
@@ -298,7 +335,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     out.flank = best.flank;
     out.angle = best.angle;
     out.offEdge = best.offEdge;
-    out.held = keep;
+    out.held = keep && best.flank == heldFlank; // a released hold (tier 4) did not keep it
     return out;
 }
 
