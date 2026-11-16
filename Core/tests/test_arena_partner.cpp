@@ -4160,7 +4160,19 @@ struct PartyOutcome {
     float time = 0.f;
     int strings = 0; // the partner's strings begun (its casts)
     int hits = 0;    // its casts that landed
+    // Close only: when the caster first stood inside its band off its target's edge (-1: never), its first light's
+    // startup, and the share of the ticks before the end it closed on the band (its gap to the band shrank).
+    float arrive = -1.f;
+    float startup = 0.f;
+    float closingShare = 0.f;
 };
+// A close fight with no cast is the caster's walk out, not a fault, only when the fight ended before it could have cast
+// (before it reached its band plus one startup, or it never reached it) and it was walking to the band on at least 80%
+// of the ticks (not idle, not leashed back).
+bool partyWalkOut(const PartyOutcome& o) {
+    const bool early = o.arrive < 0.f || o.time < o.arrive + o.startup;
+    return early && o.closingShare >= 0.8f;
+}
 
 // 120 s at most of Def with Lead at the controls (the autopilot, or nobody) and the party member as the partner, on the
 // shipped brain and no camera.
@@ -4183,6 +4195,9 @@ PartyOutcome partyPlay(const ArenaTable& t, const ArenaDef& def, const char* lea
     if (!autopilot) r.in = ArenaInput{};
     Vec2 look = r.fight.playerStartFacing();
     const ArenaFighter& kit = r.fight.def().partnerKit;
+    float gap = -1.f, arrive = -1.f; // close: the caster's gap to its band off its target's edge (-1: no target)
+    int ticks = 0, closing = 0;
+    PartnerCloseView& c = r.in.partnerClose;
     for (int s = 0; s < 120 * 60 && !r.fight.over(); ++s) {
         float best = 1e9f;
         for (std::size_t i = 0; i < r.fight.enemyCount(); ++i) {
@@ -4197,7 +4212,6 @@ PartyOutcome partyPlay(const ArenaTable& t, const ArenaDef& def, const char* lea
         r.in.cameraOn = true;
         r.in.cameraPos = Vec2{r.bodies.player.x - 4.5f * look.x, r.bodies.player.y - 4.5f * look.y};
         r.in.cameraFacing = look;
-        PartnerCloseView& c = r.in.partnerClose;
         c = PartnerCloseView{};
         if (lens == PartyLens::Close) {
             c.given = true;
@@ -4208,11 +4222,26 @@ PartyOutcome partyPlay(const ArenaTable& t, const ArenaDef& def, const char* lea
                 c.standMax = kPartnerCloseCasterMax;
             }
         }
+        const float gapBefore = gap;
         r.tick();
+        if (lens != PartyLens::Close) continue;
+        gap = -1.f;
+        const int aim = r.out->ally.target;
+        if (aim >= 0 && static_cast<std::size_t>(aim) < r.fight.enemyCount() && r.fight.enemyAlive(static_cast<std::size_t>(aim))) {
+            const std::size_t i = static_cast<std::size_t>(aim);
+            const float edge = dist(r.bodies.ally, r.bodies.enemies[i]) - r.def.enemies[i].bodyRadius;
+            gap = std::max(0.f, std::max(c.standMin - edge, edge - c.standMax));
+            if (arrive < 0.f && gap <= 0.05f) arrive = r.fight.time();
+        }
+        ++ticks;
+        closing += gapBefore >= 0.f && gap >= 0.f && gap < gapBefore - 1e-4f ? 1 : 0;
     }
     PartyOutcome o;
     o.phase = r.fight.phase();
     o.time = r.fight.time();
+    o.arrive = arrive;
+    o.closingShare = ticks > 0 ? static_cast<float>(closing) / static_cast<float>(ticks) : 0.f;
+    o.startup = kit.lightCount > 0 ? arenaPlayerAttack(kit, 0)->startup : 0.f;
     o.strings = r.fight.stats().partnerStrings;
     o.hits = r.allyHits();
     return o;
@@ -4249,8 +4278,8 @@ TEST_CASE("arena partner: the party member as each playable lead's partner plays
     // playable lead with it as the partner, against the shipped default fight, the two mixed fights and each enemy alone,
     // over 8 seeds, under the classic camera and under the close one (its kit's range on). The autopilot wins; nobody at the controls loses (both bodies down) on most seeds, the partner alone
     // winning the odd weak fight, and the fight is over in 120 s either way; it casts in every fight, but under the close
-    // camera a fight the lead wins inside 4 s may end while it still walks out to its 5-8 m band (a lone skirmisher,
-    // spitter or pup goes down in 2-4 s): counted and reported, not failed.
+    // camera a fight may end while it still walks out to its 5-8 m band (a lone skirmisher, spitter or pup goes down in
+    // 2-4 s): a cast-less close fight passes only as that walk-out (partyWalkOut), and is counted.
     // Where its casts start (inside its 5-8 m band) waits for the brain's string gate.
     const ArenaTable t = shippedTable();
     REQUIRE(t.fighterIds.size() >= 4);
@@ -4276,7 +4305,7 @@ TEST_CASE("arena partner: the party member as each playable lead's partner plays
         for (const auto& [name, def] : fights) {
             float slowestWin = 0.f, slowestLoss = 0.f;
             int fewestCasts = 1 << 30;
-            int losses = 0, quickNoCast = 0;
+            int losses = 0, walkOuts = 0;
             for (std::uint32_t seed = 1; seed <= 8; ++seed) {
                 const PartyOutcome win = partyPlay(t, def, lead, seed, true, lens);
                 const PartyOutcome lose = partyPlay(t, def, lead, seed, false, lens);
@@ -4286,10 +4315,15 @@ TEST_CASE("arena partner: the party member as each playable lead's partner plays
                 CHECK_MESSAGE((lose.phase == ArenaPhase::Defeat || lose.phase == ArenaPhase::Victory), "Error: " << std::string(lead) << " + third (" << std::string(partyLensName(lens)) << "), nobody at the controls, "
                                                             << name << " seed " << seed << " not over in 120 s");
                 losses += lose.phase == ArenaPhase::Defeat ? 1 : 0;
-                const bool quick = lens == PartyLens::Close && win.time < 4.f;
-                quickNoCast += quick && win.strings == 0 ? 1 : 0;
-                if (!quick) CHECK_MESSAGE(win.strings > 0, "Error: third (" << std::string(partyLensName(lens)) << ") never cast in " << std::string(lead) << "'s " << name << " seed " << seed);
-                CHECK_MESSAGE(lose.strings > 0, "Error: third (" << std::string(partyLensName(lens)) << ") never cast in " << std::string(lead) << "'s idle " << name << " seed " << seed);
+                for (const PartyOutcome* o : {&win, &lose}) {
+                    if (o->strings > 0) continue;
+                    const bool walkOut = lens == PartyLens::Close && partyWalkOut(*o);
+                    walkOuts += walkOut ? 1 : 0;
+                    CHECK_MESSAGE(walkOut, "Error: third (" << std::string(partyLensName(lens)) << ") never cast in "
+                                               << std::string(lead) << "'s " << std::string(o == &win ? "" : "idle ") << name
+                                               << " seed " << seed << ": ended " << o->time << " s, in its band at "
+                                               << o->arrive << " s, closing on it " << o->closingShare * 100.f << "% of ticks");
+                }
                 slowestWin = std::max(slowestWin, win.time);
                 slowestLoss = std::max(slowestLoss, lose.time);
                 fewestCasts = std::min(fewestCasts, std::min(win.strings, lose.strings));
@@ -4297,8 +4331,8 @@ TEST_CASE("arena partner: the party member as each playable lead's partner plays
             CHECK_MESSAGE(losses > 0, "Error: " << std::string(lead) << " + third (" << std::string(partyLensName(lens)) << "), nobody at the controls, never lost " << name);
             MESSAGE("party cover: " << std::string(lead) << " + third (" << std::string(partyLensName(lens)) << "), " << name << " over 8 seeds: slowest win " << slowestWin
                                     << " s, idle lost " << losses << "/8, slowest idle end " << slowestLoss
-                                    << " s, fewest casts in a fight " << fewestCasts << ", won inside 4 s with no cast "
-                                    << quickNoCast << "/8");
+                                    << " s, fewest casts in a fight " << fewestCasts << ", cast-less walk-outs " << walkOuts
+                                    << "/16");
         }
     }
     CHECK(leads >= 2);
