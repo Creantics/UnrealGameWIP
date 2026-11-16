@@ -44,6 +44,17 @@ UiPromptMask uiPromptsPresent(const UiPromptReasons& why) {
     return m;
 }
 
+UiPromptMask uiPromptsUsable(UiPromptMask shown, const ArenaHudLead& lead, const UiPromptReasons& why,
+                             UiPromptMask refusedShowing) {
+    UiPromptMask out = shown;
+    const bool healUsable = lead.hpMax > 0 && 2 * lead.hp < lead.hpMax && lead.heals > 0;
+    if (!healUsable) out = static_cast<UiPromptMask>(out & ~uiPromptBit(UiPrompt::Heal));
+    for (const UiPrompt g : {UiPrompt::GiftHeal, UiPrompt::GiftGuard}) {
+        if (why[static_cast<std::size_t>(g)] != PressReason::Ok) out = static_cast<UiPromptMask>(out & ~uiPromptBit(g));
+    }
+    return static_cast<UiPromptMask>(out | (shown & refusedShowing));
+}
+
 UiPromptMask uiPromptsTaught(UiPromptMask present, ShowBasicControls policy, UiPromptMask teaching) {
     UiPromptMask keep = 0; // the basic controls the policy lets stand
     switch (policy) {
@@ -59,6 +70,48 @@ UiPromptMask uiPromptsDimmed(const UiPromptReasons& why, UiPromptMask noKey) {
     UiPromptMask m = static_cast<UiPromptMask>(noKey & ((1u << kUiPromptCount) - 1u));
     for (std::size_t p = 0; p < kUiPromptCount; ++p) {
         if (pressRefused(why[p])) m = static_cast<UiPromptMask>(m | uiPromptBit(static_cast<UiPrompt>(p)));
+    }
+    return m;
+}
+
+void uiRefusedStep(UiRefusedRows& st, const UiPromptReasons& before, const UiPromptReasons& why, UiPromptMask pressed,
+                   float dt) {
+    const float step = dt > 0.f ? dt : 0.f;
+    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
+        float& left = st.left[p];
+        if (!pressRefused(why[p])) {
+            left = 0.f;
+        } else if (((pressed >> p) & 1u) && pressRefused(before[p])) {
+            left = kUiRefusedShow;
+        } else {
+            left = left > step ? left - step : 0.f;
+        }
+    }
+}
+
+void uiRefusedWatchStep(UiRefusedRows& st, UiRefusedWatch& w, const UiPromptReasons& why, UiPromptMask pressed,
+                        float dt) {
+    if (!w.seeded) {
+        w.before = why;
+        w.seeded = true;
+        pressed = 0;
+    }
+    uiRefusedStep(st, w.before, why, pressed, dt);
+    w.before = why;
+}
+
+UiPromptMask uiRefusedShowing(const UiRefusedRows& st) {
+    UiPromptMask m = 0;
+    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
+        if (st.left[p] > 0.f) m = static_cast<UiPromptMask>(m | uiPromptBit(static_cast<UiPrompt>(p)));
+    }
+    return m;
+}
+
+UiPromptMask uiPromptsStanding(const UiPromptReasons& why, const UiRefusedRows& st) {
+    UiPromptMask m = uiPromptsPresent(why);
+    for (std::size_t p = 0; p < kUiPromptCount; ++p) {
+        if (pressRefused(why[p]) && !(st.left[p] > 0.f)) m = static_cast<UiPromptMask>(m & ~uiPromptBit(static_cast<UiPrompt>(p)));
     }
     return m;
 }

@@ -384,6 +384,11 @@ public:
 	// and its word: the HUD's SWITCH: <WORD> call.
 	uint32 GetSwitchRefusedSerial() const { return SwitchRefusedSerial; }
 	ftcore::UiPartyWhy GetSwitchRefusedWhy() const { return SwitchRefusedWhy; }
+	// For the HUD's refused prompts (ftcore::uiRefusedStep): a count per prompt, in ftcore::UiPrompt's order (HEAL, GIFT
+	// HEAL, GIFT GUARD, PARTNER, ATTACK, GUARD, DODGE, JUMP), that rises with each press of its key by the player, a press
+	// the rules refuse included. The autopilot presses none.
+	static constexpr int32 PromptPressCount = 8;
+	uint32 GetPromptPresses(int32 Prompt) const { return Prompt >= 0 && Prompt < PromptPressCount ? PromptPresses[Prompt] : 0u; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -1067,6 +1072,8 @@ private:
 	ftcore::UiPartyScreen PartyScreen;
 	uint32 SwitchRefusedSerial = 0;
 	ftcore::UiPartyWhy SwitchRefusedWhy = ftcore::UiPartyWhy::Unknown;
+	uint32 PromptPresses[PromptPressCount] = {};
+	bool bGuardWasDown = false; // the Guard key down last poll (its press is the key going down, whatever the toggle)
 
 	double Now = 0.0;
 	double TellSince[ftcore::kMaxArenaEnemies] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)

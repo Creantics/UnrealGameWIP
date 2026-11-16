@@ -1032,6 +1032,8 @@ struct ArenaAllyOut {
     bool stationed = false;           // stationing ran this tick (ArenaInput::cameraOn, the partner up)
     float pairSeconds = 0.f;          // the partner's attack time the paired counters dealt this tick spent
                                       // (pairPartnerSeconds each), for its budget; 0 with no partner on (appended)
+    bool bodyTurn = false;            // its walk turned past the heading rule's hold this tick: the held line ran into
+                                      // an enemy's body (forced, as a wind-up's step back is) (appended)
 };
 
 struct ArenaOutput {
@@ -1735,6 +1737,16 @@ private:
         float hurtLeft = 0.f;               // s of hitstun left
         std::uint8_t act = 0;               // the brain's last intent (PartnerAct)
         bool stationed = false;             // ... and stationing ran for it
+        // Its walk's shape (the host walks straight to the goal): round an enemy's body on one side, held until it is
+        // passed; no turn over 90 degrees within the hold of its last reversal.
+        int around = -1;                    // the body it goes round (-1: none) ...
+        float aroundSide = 0.f;             // ... on this side of its line (+1: left)
+        static constexpr std::size_t kHeadingSlots = 64;
+        std::array<Vec2, kHeadingSlots> headings{};   // its walk's headings since its last reversal (a ring) ...
+        std::array<float, kHeadingSlots> headingAt{}; // ... at these fight times
+        std::size_t headingNext = 0, headingCount = 0;
+        float headingSince = -1.f;          // its last reversal (or its walk's start) at this fight time
+        bool bodyTurn = false;              // this tick a body forced its walk past the hold
     };
 
     ArenaDef def_;

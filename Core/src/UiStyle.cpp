@@ -124,36 +124,40 @@ UiStyle defaultUiStyle() {
     UiStyle s;
     // ink, ink_dim, backing, track, accent, accent2, danger, ally, weak_point
     s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0.45f), hex(0xE9B36B), hex(0xC9643C),
-        hex(0xFF7A5C), hex(0x8FD3B4), hex(0xFFE08A)};
+        hex(0xE60012), hex(0x8FD3B4), hex(0xFFE08A)};
     s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.45f), hex(0x8FD6E8), hex(0xA88BE0),
-        hex(0xFF7A86), hex(0x9BE3B0), hex(0xFFE08A)};
+        hex(0xE60012), hex(0x9BE3B0), hex(0xFFE08A)};
+    // One danger red in every world (E60012, luminance about 0.17: 3:1 or more against the track's black body and the
+    // white fill): red means harm to the player, and only the hit cue, the lost hp, the low underline and the call
+    // triangle wear it. The weak point is Mark (pale gold) in every world.
     // The Unwritten: a cold grey ink, its dim scaled from it as the others are (luminance x 0.6975), a cold neutral
-    // accent a step brighter than the ink, and cold neutral backing, ally and weak point, so the dark blood red in
-    // accent2 is the one colour in its HUD. The red never sits on text (it fails the 4.5:1 rule): it is on marks only,
-    // and a danger word is ink with a danger underline. Danger keeps its red, on marks.
+    // accent a step brighter than the ink, and cold neutral backing and ally.
     s.world[2] = {hex(0xDCE1E5), hex(0xBBC0C3), hex(0x080A0C), hex(0xFFFFFF, 0.45f), hex(0xF4F6F8), hex(0xB01E23),
-        hex(0xFF7A66), hex(0xA3ADB5), hex(0xC9D1D7)};
-    s.rules[2].marksAccent2 = true;
-    s.rules[2].dangerUnderline = true;
+        hex(0xE60012), hex(0xA3ADB5), hex(0xFFE08A)};
+    // The danger red is a mid-tone mark that fails the text rule, so in every world a danger word is ink over a danger
+    // underline.
+    for (UiWorldRules& r : s.rules) r.dangerUnderline = true;
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.
+    // Each danger sits at luminance about 0.18 at its own hue (full saturation), so it holds 3:1 against the track's
+    // black body and the white fill as the default red does.
     const auto cue = [&](UiPalette p, UiToken t, UiColor c) {
         s.paletteColor[static_cast<std::size_t>(p)][static_cast<std::size_t>(t)] = c;
         s.paletteOverrides[static_cast<std::size_t>(p)][static_cast<std::size_t>(t)] = true;
     };
     for (UiPalette p : {UiPalette::Protan, UiPalette::Deutan}) {
-        cue(p, UiToken::Danger, hex(0xF0A030));
+        cue(p, UiToken::Danger, hex(0xAC6400));
         cue(p, UiToken::Ally, hex(0x7CC4F0));
         cue(p, UiToken::WeakPoint, hex(0xF5EE70));
     }
-    cue(UiPalette::Tritan, UiToken::Danger, hex(0xFF7A4A));
+    cue(UiPalette::Tritan, UiToken::Danger, hex(0xDA3A00));
     cue(UiPalette::Tritan, UiToken::Ally, hex(0x40C8B0));
     cue(UiPalette::Tritan, UiToken::WeakPoint, hex(0xF5A0C8));
     cue(UiPalette::HighContrast, UiToken::Ink, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::InkDim, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::Backing, hex(0x000000));
     cue(UiPalette::HighContrast, UiToken::Track, hex(0xFFFFFF, 0.6f));
-    cue(UiPalette::HighContrast, UiToken::Danger, hex(0xFF8A00));
+    cue(UiPalette::HighContrast, UiToken::Danger, hex(0xB46000));
     cue(UiPalette::HighContrast, UiToken::Ally, hex(0x00E0FF));
     cue(UiPalette::HighContrast, UiToken::WeakPoint, hex(0xFFFF00));
 
@@ -185,12 +189,145 @@ UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor 
     return uiColor(s, world, palette, UiToken::Accent2);
 }
 
+namespace {
+float unlinear(float l) {
+    const float c = l <= 0.0031308f ? l * 12.92f : 1.055f * std::pow(l, 1.f / 2.4f) - 0.055f;
+    return std::clamp(c, 0.f, 1.f);
+}
+} // namespace
+
+UiTrackSet uiTrackSet(const UiStyle& s, UiWorld world, UiPalette palette) {
+    UiTrackSet t;
+    t.body = UiColor{kUiTrackBodyL, kUiTrackBodyL, kUiTrackBodyL, 1.f};
+    t.fill = UiColor{1.f, 1.f, 1.f, 1.f};
+    // The hairline: the ink of the palette shown (high contrast's white ink gives a neutral grey) scaled in linear light
+    // to kUiTrackHairL, so it keeps that ink's hue at the same lightness in every palette.
+    const UiColor ink = uiColor(s, world, palette, UiToken::Ink);
+    const float l = luminance(ink);
+    const float k = l > 1e-4f ? kUiTrackHairL / l : 0.f;
+    t.hairline = l > 1e-4f ? UiColor{unlinear(linear(ink.r) * k), unlinear(linear(ink.g) * k), unlinear(linear(ink.b) * k), 1.f}
+                           : UiColor{unlinear(kUiTrackHairL), unlinear(kUiTrackHairL), unlinear(kUiTrackHairL), 1.f};
+    return t;
+}
+
 UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette) {
     UiDangerWord d;
     d.underline = uiColor(s, world, palette, UiToken::Danger);
     d.underlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
     d.word = d.underlined ? uiColor(s, world, palette, UiToken::Ink) : d.underline;
     return d;
+}
+
+UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette) {
+    const UiColor danger = uiColor(s, world, palette, UiToken::Danger);
+    UiDangerSet d;
+    d.lowUnderlined = s.rules[static_cast<std::size_t>(world) % kUiWorldCount].dangerUnderline;
+    // One hit cue in every world: the Unwritten's danger red in the palette shown.
+    d.hitCue = uiColor(s, UiWorld::Unwritten, palette, UiToken::Danger);
+    d.lowLine = d.lowUnderlined ? uiTrackSet(s, world, palette).fill : danger;
+    d.lowUnderline = danger;
+    d.cueMark = uiMarkColor(s, world, palette, danger);
+    d.hitDark = UiColor{d.hitCue.r * kUiHitDarkK, d.hitCue.g * kUiHitDarkK, d.hitCue.b * kUiHitDarkK, d.hitCue.a};
+    return d;
+}
+
+float uiHitFlashLevel(float age) {
+    if (!(age >= 0.f) || age >= kUiHitGone) return 0.f;
+    if (age <= kUiHitFull) return 1.f;
+    const float u = (age - kUiHitFull) / (kUiHitGone - kUiHitFull);
+    return 1.f - u * u * (3.f - 2.f * u);
+}
+
+void uiHitSegsStep(UiHitSegs& s, float hp01, float dt) {
+    const float hp = std::clamp(hp01, 0.f, 1.f);
+    for (UiHitSeg& g : s.seg) {
+        if (g.age < kUiHitGone) g.age = std::min(kUiHitGone, g.age + std::max(dt, 0.f));
+    }
+    if (s.last < 0.f || hp > s.last + 1e-4f) {
+        for (UiHitSeg& g : s.seg) g.age = kUiHitGone;
+    } else if (hp < s.last - 1e-4f) {
+        s.seg[s.next] = UiHitSeg{hp, s.last, 0.f};
+        s.next = static_cast<std::uint8_t>((s.next + 1u) % kUiHitSegs);
+    }
+    s.last = hp;
+}
+
+UiHitLayers uiHitLayers(float in, float edge) {
+    UiHitLayers l;
+    if (!(edge > 0.f)) return l;
+    const float u = std::clamp(in, 0.f, 1.f);
+    const float f = 1.f - u * u * (3.f - 2.f * u);
+    if (f <= 0.f) return l;
+    l.dark = kUiHitDarkPeak * (edge >= 1.f ? 1.f : kUiHitDarkOffSide) * std::pow(f, kUiHitDarkPow);
+    l.red = kUiHitGlowPeak * std::min(edge, 1.f) * std::pow(f, kUiHitGlowPow);
+    return l;
+}
+
+UiHitEdges uiHitEdges(bool hasSide, float rightX, float aheadY) {
+    UiHitEdges e;
+    const float ax = std::fabs(rightX), ay = std::fabs(aheadY);
+    if (!hasSide || !(ax + ay > 1e-6f)) return e;
+    e.left = e.right = e.top = e.bottom = kUiHitOffSide;
+    if (ax >= ay) (rightX > 0.f ? e.right : e.left) = 1.f;
+    else (aheadY > 0.f ? e.top : e.bottom) = 1.f;
+    return e;
+}
+
+float uiHitWatchStep(UiHitWatch& w, double stamp, float dt) {
+    if (!w.seeded) {
+        w.seen = stamp;
+        w.age = 1e3f;
+        w.seeded = true;
+    } else if (stamp != w.seen) {
+        const bool fresh = stamp > w.seen && stamp >= 0.0;
+        w.seen = stamp;
+        if (!fresh) w.age = 1e3f;
+        else if (w.age >= kUiHitRepeat) w.age = 0.f;
+        else w.age = std::min(w.age + (dt > 0.f ? dt : 0.f), 1e3f); // too soon after the last: no new cue
+    } else {
+        w.age = std::min(w.age + (dt > 0.f ? dt : 0.f), 1e3f);
+    }
+    return w.age;
+}
+
+UiGuardState uiGuardState(float stamina01, bool broken) {
+    if (broken) return UiGuardState::Broken;
+    if (!(stamina01 < 0.999f)) return UiGuardState::Full;
+    return stamina01 <= 0.001f ? UiGuardState::Spent : UiGuardState::Under;
+}
+
+float uiGuardLabelStep(UiGuardLabel& g, UiGuardState now, float dt) {
+    if (now != g.state) {
+        g.state = now;
+        g.since = 0.f;
+    } else {
+        g.since = std::min(g.since + (dt > 0.f ? dt : 0.f), 1e3f);
+    }
+    if (g.state == UiGuardState::Full || g.since >= kUiGuardLabelHold + kUiGuardLabelFade) return 0.f;
+    return g.since <= kUiGuardLabelHold ? 1.f : 1.f - (g.since - kUiGuardLabelHold) / kUiGuardLabelFade;
+}
+
+float uiLoadLabelStep(UiLoadLabel& g, int load, int cap, bool releaseReady, float dt) {
+    const UiLoadState now = load <= 0 ? UiLoadState::None : (releaseReady ? UiLoadState::Ready : UiLoadState::Held);
+    if (now != g.state || (now != UiLoadState::None && cap != g.cap)) {
+        g.state = now;
+        g.since = 0.f;
+    } else {
+        g.since = std::min(g.since + (dt > 0.f ? dt : 0.f), 1e3f);
+    }
+    g.cap = cap;
+    if (g.state == UiLoadState::None || g.since >= kUiGuardLabelHold + kUiGuardLabelFade) return 0.f;
+    return g.since <= kUiGuardLabelHold ? 1.f : 1.f - (g.since - kUiGuardLabelHold) / kUiGuardLabelFade;
+}
+
+UiLowGuardGaps uiLowGuardGaps(float s, float px) {
+    const float d = px > 0.f ? px : 1.f;
+    const auto whole = [d](float v) { return std::max(1.f, std::floor(v / d + 0.5f)) * d; };
+    UiLowGuardGaps g;
+    g.gap = whole(kUiLowUnderGap * s);
+    g.under = whole(kUiLowUnderW * s);
+    g.clear = std::max(kUiGuardClearMinPx * d, whole(kUiGuardClear * s));
+    return g;
 }
 
 float uiTextPx(const UiStyle& s, UiTextRole role, float height, float textScale) {
@@ -287,9 +424,10 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
                 UiToken token;
                 float ratio;
             };
-            // Text tokens 4.5:1; cue colours (drawn as shapes and fills, with a word beside them) 3:1.
+            // Text tokens 4.5:1; cue colours (drawn as shapes and fills, with a word beside them) 3:1. Danger is a
+            // mid-tone mark that is never text (danger_underline in every world): it is measured below where it is drawn.
             constexpr Need kNeeds[] = {{UiToken::Ink, 4.5f}, {UiToken::InkDim, 4.5f}, {UiToken::Accent, 4.5f},
-                {UiToken::Danger, 3.f}, {UiToken::Ally, 3.f}, {UiToken::WeakPoint, 3.f}};
+                {UiToken::Ally, 3.f}, {UiToken::WeakPoint, 3.f}};
             for (const Need& n : kNeeds) {
                 const float c = uiContrast(uiColor(s, world, palette, n.token), back, white);
                 if (c < n.ratio) {
@@ -299,6 +437,19 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
                         static_cast<int>(kTokenNames[static_cast<std::size_t>(n.token)].size()),
                         kTokenNames[static_cast<std::size_t>(n.token)].data(), static_cast<double>(c),
                         static_cast<double>(n.ratio));
+                    return fail(error, buf);
+                }
+            }
+            // Danger 3:1 against both the value track's black body and its white fill, the two things it is drawn on
+            // and beside (the lost hp over the track, the low underline under the fill, the call triangle's rim).
+            {
+                const UiTrackSet t = uiTrackSet(s, world, palette);
+                const UiColor dg = uiColor(s, world, palette, UiToken::Danger);
+                const float c = std::min(uiContrast(dg, t.body, white), uiContrast(dg, t.fill, white));
+                if (c < 3.f) {
+                    std::snprintf(buf, sizeof buf, "%.*s/%.*s: danger on the track is %.2f:1, needs 3.0:1",
+                        static_cast<int>(kWorldNames[w].size()), kWorldNames[w].data(),
+                        static_cast<int>(kPaletteNames[p].size()), kPaletteNames[p].data(), static_cast<double>(c));
                     return fail(error, buf);
                 }
             }

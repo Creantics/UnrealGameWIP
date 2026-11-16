@@ -22,7 +22,6 @@ SwimEnv deep() {
 // One frame as the host runs it: the swim stepped, the body moved to its position, the HUD input read from it.
 struct Lead {
     Swim swim;
-    UiSwimFeed feed;
     SwimEnv env = deep();
     UiSwim hud;
     UiFirstUse fu;
@@ -33,7 +32,7 @@ struct Lead {
     UiSwimIn frame(const SwimInput& input, float dt = kDt) {
         const SwimStep& st = swim.step(input, env, dt);
         if (st.positionValid) env.position = st.position;
-        const UiSwimIn in = uiSwimInFrom(feed, swim, st, input, env, ShowBasicControls::FirstFights);
+        const UiSwimIn in = uiSwimInFrom(swim, st, ShowBasicControls::FirstFights);
         changed = uiSwimStep(hud, fu, in, dt) || changed;
         return in;
     }
@@ -80,6 +79,33 @@ TEST_CASE("ui swim feed: DIVE is offered exactly where a crouch press dives") {
         CHECK(st.diveRefused == !idle.canDive);
         CHECK(pressed.dived == st.dived);
         CHECK(uiSwimPromptAlpha(UiSwim{}, lead.fu, idle, UiFirstUseItem::Dive) == (idle.canDive ? 1.f : 0.f));
+    }
+}
+
+TEST_CASE("ui swim feed: on an env Swim cannot move in, DIVE is not offered and the press waits") {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (int k = 0; k < 4; ++k) {
+        CAPTURE(k);
+        Lead lead;
+        SwimEnv bad = deep(); // the column stays finite: only the guard tells this env is unusable
+        if (k == 0) bad.surfaceZ = nan;
+        if (k == 1) bad.bedZ = nan;
+        if (k == 2) bad.bedZ = bad.surfaceZ + 1.f; // the bed above the surface
+        if (k == 3) bad.position.z = nan;
+        lead.env = bad;
+        const UiSwimIn idle = lead.frame(SwimInput{});
+        CHECK_FALSE(lead.swim.last().envOk);
+        CHECK_FALSE(idle.canDive);
+        CHECK(uiSwimPromptAlpha(lead.hud, lead.fu, idle, UiFirstUseItem::Dive) == 0.f);
+        const UiSwimIn pressed = lead.frame(press(true));
+        CHECK_FALSE(lead.swim.last().dived); // Swim only pends it
+        CHECK_FALSE(pressed.dived);
+        // The env comes good: Swim dives on its pended press, and the feed reports that dive.
+        lead.env = deep();
+        const UiSwimIn good = lead.frame(press(true));
+        CHECK(lead.swim.last().dived);
+        CHECK(good.dived);
+        CHECK(lead.fu.count[at(UiFirstUseItem::Dive)] == 1);
     }
 }
 
@@ -161,7 +187,7 @@ TEST_CASE("ui swim feed: breath, the drain and the rescue come from the step") {
     CHECK_FALSE(in.canDive);
     CHECK(lead.hud.fade == UiSwimFade::Out);
     // Out of the water: nothing hidden, no prompt.
-    const UiSwimIn dry = uiSwimInDry(lead.feed, SwimInput{}, ShowBasicControls::FirstFights);
+    const UiSwimIn dry = uiSwimInDry(ShowBasicControls::FirstFights);
     CHECK_FALSE(dry.swimming);
     CHECK(uiSwimHidden(UiSwim{}, dry) == 0u);
 }
