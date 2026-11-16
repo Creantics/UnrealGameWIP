@@ -4043,6 +4043,12 @@ struct FoughtLensRun {
     int hidFramed = 0, hidFallback = 0;
     int strings = 0, partnerDamage = 0;
     float time = 0.f;
+    // The steps the lead stood within 1.2 m of its target (centre to centre: bodies touching), and their sums.
+    int contact = 0, contactSeen = 0, contactClearSeen = 0;
+    // The brain's rule-19 tier this step (PartnerIntent::closeTier, 0 none) on the steps hidden behind the lead,
+    // and on those behind the target.
+    int leadHidTier[5] = {}, targetHidTier[5] = {};
+    float contactDist = 0.f, contactTargetX = 0.f;
 };
 
 struct FoughtLens {
@@ -4108,8 +4114,8 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, bool kit
         const ArenaEnemyKind& tk = r.def.enemies[static_cast<std::size_t>(target)];
         // The lens: the pivot lagged, the melee share eased, the yaw turning the target to its share of the width.
         pivot = r.bodies.player; // the preset's lag is 0
-        const float edge = dist(r.bodies.player, tp) - tk.bodyRadius;
-        const float want = 1.f - smooth01((edge - 2.5f) / 2.5f);
+        const float centre = dist(r.bodies.player, tp); // the close rules ease by the centre distance
+        const float want = 1.f - smooth01((centre - 2.5f) / 2.5f);
         melee += (want - melee) * (1.f - std::exp(-kDt / 0.3f));
         ArenaCameraPose pose;
         pose.arm = lens.arm;
@@ -4150,6 +4156,13 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, bool kit
             };
             const ArenaBodyCylinder tc = arenaBodyCylinder(tk, tp, 0.f);
             ++o.steps;
+            if (centre < 1.2f) {
+                float tx = 0.f;
+                partnerCloseNdc(Vec2{cam.pos.x, cam.pos.y}, Vec2{cam.forward.x, cam.forward.y}, 0.5f * pose.fov, tp, tx);
+                ++o.contact;
+                o.contactDist += centre;
+                o.contactTargetX += 0.5f * (tx + 1.f);
+            }
             const bool seen = partnerInFrameClose(cam, kPartnerFrustumMargin, a);
             const bool leadHid = behind(r.bodies.player, leadBody.radius, leadBody.head);
             if (!leadHid) ++o.leadClear;
@@ -4157,6 +4170,12 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, bool kit
                 ++o.seen;
                 if (!leadHid) ++o.leadClearSeen;
                 if (!behind(tp, tc.radius, tc.top)) ++o.targetClear;
+                else ++o.targetHidTier[std::min<int>(r.brain.intent().closeTier, 4)];
+                if (leadHid) ++o.leadHidTier[std::min<int>(r.brain.intent().closeTier, 4)];
+                if (centre < 1.2f) {
+                    ++o.contactSeen;
+                    if (!leadHid) ++o.contactClearSeen;
+                }
             }
             if (seen && leadHid) {
                 const PartnerIntent& pi = r.brain.intent();
@@ -4232,21 +4251,45 @@ std::string foughtLensText(const FoughtLensRun& o) {
       << o.hidAttack << ", walking to a hidden goal " << o.hidWalkGoalHidden << ", to a clear one " << o.hidWalkGoalClear
       << ", still at a hidden goal " << o.hidStillGoalHidden << ", still other " << o.hidStillOther << "; rule 19 none valid "
       << o.hidNoneValid << ", valid on its flank " << o.hidOwnFlankValid << ", only the other " << o.hidOtherFlankOnly
-      << "; framed " << o.hidFramed << ", fallback " << o.hidFallback;
+      << "; framed " << o.hidFramed << ", fallback " << o.hidFallback << ". In contact " << pc(o.contact, o.steps);
+    if (o.contact > 0)
+        s << " (centre " << o.contactDist / static_cast<float>(o.contact) << " m, target x "
+          << o.contactTargetX / static_cast<float>(o.contact) << "; clear of the lead " << pc(o.contactClearSeen, o.contactSeen)
+          << " of on-screen)";
+    s << ". Tiers behind the lead";
+    for (const int k : o.leadHidTier) s << " " << k;
+    s << ", behind the target";
+    for (const int k : o.targetHidTier) s << " " << k;
     return s.str();
 }
 } // namespace
 
 TEST_CASE("arena partner: rule 19 in a fought run under the close lens, as the game's capture measures it") {
     for (const bool kitRange : {false, true})
-        for (const float tx : {0.64f, 0.52f})
-            for (const float arm : {2.6f, 3.0f})
+        for (const float tx : {0.64f, 0.475f}) // the rules' x, or the capture's at contact (0.47-0.48)
+            for (const float arm : {2.6f, 3.0f}) {
+                FoughtLensRun all;
                 for (std::uint32_t seed = 1; seed <= 3; ++seed) {
                     const FoughtLensRun o = foughtLensRun(FoughtLens{arm, 0.55f, 1.f, true, tx}, seed, kitRange);
                     MESSAGE("kit range " << kitRange << ", target x " << tx << ", arm " << arm << ", seed " << seed << ": "
                                          << foughtLensText(o));
                     CHECK(o.steps > 0);
+                    all.steps += o.steps;
+                    all.seen += o.seen;
+                    all.leadClear += o.leadClear;
+                    all.leadClearSeen += o.leadClearSeen;
+                    all.targetClear += o.targetClear;
+                    all.contactSeen += o.contactSeen;
+                    all.contactClearSeen += o.contactClearSeen;
                 }
+                MESSAGE("ALL kit range " << kitRange << ", target x " << tx << ", arm " << arm << ": on screen "
+                                         << 100 * all.seen / std::max(all.steps, 1) << "%, clear of the lead "
+                                         << 100 * all.leadClear / std::max(all.steps, 1) << "% of all, "
+                                         << 100 * all.leadClearSeen / std::max(all.seen, 1) << "% of on-screen; not behind the target "
+                                         << 100 * all.targetClear / std::max(all.steps, 1) << "%; in contact, clear of the lead "
+                                         << 100 * all.contactClearSeen / std::max(all.contactSeen, 1) << "% of on-screen ("
+                                         << all.contactSeen << " steps)");
+            }
 }
 
 namespace {
@@ -4272,13 +4315,13 @@ struct LoggedScene {
     PartnerCloseView view;
 };
 
-LoggedScene loggedScene(const LoggedFrame& f) {
+LoggedScene loggedScene(const LoggedFrame& f, float arm = 2.6f) {
     const ArenaTable t = shippedTable();
     LoggedScene s;
     for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
         if (t.enemyIds[e] == f.enemy) s.kind = t.enemies[e];
     ArenaCameraPose pose;
-    pose.arm = 2.6f;
+    pose.arm = arm;
     pose.pivot = 1.6f; // 1.35 + 0.25 at a full melee share
     pose.side = 0.55f;
     pose.up = 0.1f;
@@ -4375,6 +4418,15 @@ TEST_CASE("arena partner: the capture's frames where the partner stood behind th
         for (const bool forString : {false, true})
             for (const std::int8_t held : {std::int8_t{0}, std::int8_t{-1}, std::int8_t{1}}) {
                 const PartnerCloseStation r = loggedStation(s, forString, held);
+                // The hugging frames (not t_02): fresh, or held on the open flank, a station the lens sees clear of
+                // the lead and the target (rule 19's far arc).
+                if (f.distance < 1.f && held <= 0) {
+                    const ArenaBodyCylinder at = arenaBodyCylinder(s.kind, s.target, 0.f);
+                    CHECK(r.valid);
+                    CHECK(!loggedBehind(s, r.point, s.lead, leadBody.radius, leadBody.head));
+                    CHECK(!loggedBehind(s, r.point, s.target, at.radius, at.top));
+                    CHECK(partnerInFrameClose(s.cam, kPartnerFrustumMargin, r.point));
+                }
                 m << "\n  " << (forString ? "string" : "pause ") << " held " << int(held) << ": ";
                 if (!r.valid) {
                     m << "none valid";
@@ -4386,4 +4438,71 @@ TEST_CASE("arena partner: the capture's frames where the partner stood behind th
             }
         MESSAGE(m.str());
     }
+}
+
+namespace {
+// Rule 19's legality for one point (PartnerCloseStation.cpp's legal(), no walls or other bodies), as a letter: the
+// first test it fails, or '.' legal and clear of the lead and the target by the host's two-line measure, 'h' legal
+// but hidden by that measure.
+char loggedCell(const LoggedScene& s, Vec2 p, float minAhead) {
+    PartnerCloseInput ci;
+    ci.lead = s.lead;
+    ci.target = s.target;
+    ci.targetRadius = s.kind.bodyRadius;
+    ci.cameraPos = Vec2{s.cam.pos.x, s.cam.pos.y};
+    ci.cameraForward = Vec2{s.cam.forward.x, s.cam.forward.y};
+    ci.halfAngleDegrees = s.view.halfAngleDegrees;
+    ci.pitchDegrees = s.view.pitchDegrees;
+    ci.verticalHalfDegrees = s.view.verticalHalfDegrees;
+    ci.lensHeight = s.view.lensHeight;
+    float x = 0.f, y = 0.f;
+    if (!partnerCloseLens(ci, p, x, y)) return 'L';
+    if (!loggedSees(&s.cam, p)) return 'S';
+    if (std::fabs(x) > 1.f - 2.f * kPartnerCloseConeMargin) return 'X';
+    const float l = length(ci.cameraForward);
+    const Vec2 f{ci.cameraForward.x / l, ci.cameraForward.y / l};
+    const Vec2 r = sub(p, ci.cameraPos);
+    const float ahead = r.x * f.x + r.y * f.y;
+    if (ahead < minAhead) return 'A';
+    if (std::fabs(-r.x * f.y + r.y * f.x) > ahead * std::tan(kPartnerCloseAimConeDegrees * 3.14159265f / 180.f)) return 'C';
+    if (dist(p, s.target) < s.kind.bodyRadius + 0.4f) return 'B';
+    if (dist(p, s.lead) < 1.6f) return 'P';
+    if (partnerCloseOverlaps(ci.cameraPos, p, 0.4f, s.lead, 0.4f)) return 'O';
+    if (partnerCloseHiddenBehind(ci.cameraPos, p, s.target, s.kind.bodyRadius)) return 'H';
+    const ArenaLeadBody lb{};
+    const ArenaBodyCylinder tc = arenaBodyCylinder(s.kind, s.target, 0.f);
+    if (loggedBehind(s, p, s.lead, lb.radius, lb.head) || loggedBehind(s, p, s.target, tc.radius, tc.top)) return 'h';
+    return '.';
+}
+} // namespace
+
+TEST_CASE("arena partner: the capture's hugging frames, every flank point graded") {
+    // Rows: flank and off-edge; columns: 40-170 degrees from the lead's bearing in 10s. Letters: L behind the lens,
+    // S the 3D frame, X the cone's margin, A short of minAhead, C the aim cone, B in the target's body, P personal
+    // space, O over the lead, H behind the target (2D), h hidden by the host's measure, '.' legal and clear.
+    for (const LoggedFrame& f : {LoggedFrame{"t_04", "brute", 0.85f, 0.472f, 6.f, 68.f, 3.92f, -0.90f},
+                                 LoggedFrame{"t_10", "breaker", 0.90f, 0.478f, 6.f, 68.f, 3.96f, -0.92f},
+                                 LoggedFrame{"t_08", "skirmisher", 0.90f, 0.478f, 5.9f, 68.f, 4.28f, -0.08f}})
+        for (const float arm : {2.6f, 3.0f})
+            for (const float minAhead : {kPartnerCloseMinAhead, 2.4f}) {
+                CAPTURE(f.name);
+                const LoggedScene s = loggedScene(f, arm);
+                Vec2 bearing = sub(s.lead, s.target);
+                const float bl = length(bearing);
+                bearing = Vec2{bearing.x / bl, bearing.y / bl};
+                std::ostringstream m;
+                m << f.name << " arm " << arm << " minAhead " << minAhead << " (lead " << (s.lead.x - s.frustum.pos.x) << " ahead)";
+                for (const int flank : {1, -1})
+                    for (const float off : {0.5f, 0.9f, 1.1f, 1.3f, 2.f, 3.f, 5.f}) {
+                        m << "\n  flank " << (flank > 0 ? "+1" : "-1") << " off " << off << ": ";
+                        for (int a = 40; a <= 170; a += 10) {
+                            const float rad = static_cast<float>(flank * a) * 3.14159265f / 180.f;
+                            const Vec2 dir{bearing.x * std::cos(rad) - bearing.y * std::sin(rad),
+                                           bearing.x * std::sin(rad) + bearing.y * std::cos(rad)};
+                            const float k = s.kind.bodyRadius + off;
+                            m << loggedCell(s, Vec2{s.target.x + dir.x * k, s.target.y + dir.y * k}, minAhead);
+                        }
+                    }
+                MESSAGE(m.str());
+            }
 }

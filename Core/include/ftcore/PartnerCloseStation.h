@@ -44,7 +44,13 @@
 // target's edge, scored + kPartnerCloseShortPenalty (any band: a caster's, and a melee or Ready one alike);
 // (3) neither on any flank and leashMeters > 0: a ring round the lead within the leash (radii leash - 0.25 and the
 // middle of personal space and leash), at kPartnerCloseRingMin..Max (15-55) degrees off the lead-to-target line
-// toward each flank, + kPartnerCloseFlipMargin off the held flank. None of these: not valid (the caller's rules).
+// toward each flank, + kPartnerCloseFlipMargin off the held flank; (4) none of these and the target not big: tiers 1-2
+// again on the far arc, kPartnerCloseFarAngleMin..Max (90-130) degrees from the lead's bearing (the lead hugging its
+// target near the lens's axis puts every 40-80 degree point nearer the lens than minAhead, out of the 3D frame or over
+// the lead; beside and past the target the lens sees the partner clear of both), legal as above and also clear of
+// the target's whole silhouette from the lens (not only its centre), and, from a start the lens sees clear of the
+// lead's shadow (deeper than the lead and over its silhouette), with a straight walk that never enters it. None of
+// these: not valid (the caller's rules).
 // Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and never changed while attacking; then only
 // when the other flank's pick beats the held flank's by more than kPartnerCloseFlipMargin (the band and short-of-band
 // picks of the two flanks are compared, so a Pause station and a Ready station on opposite flanks do not ping-pong).
@@ -80,6 +86,8 @@ inline constexpr float kPartnerCloseShortPenalty = 3.f;     // m of walk: short 
 inline constexpr float kPartnerCloseFlipMargin = 2.f;       // m of walk the other flank must win by to take it
 inline constexpr float kPartnerCloseRingMin = 15.f;         // degrees off the lead-to-target line (tier 3)
 inline constexpr float kPartnerCloseRingMax = 55.f;
+inline constexpr float kPartnerCloseFarAngleMin = 90.f;     // degrees round the target (tier 4, not a big target)
+inline constexpr float kPartnerCloseFarAngleMax = 130.f;
 // The kit bands (m off the target's edge) a host gives by its partner's kit (WEAPONS owns which kit is which).
 inline constexpr float kPartnerCloseMeleeMin = 1.5f;
 inline constexpr float kPartnerCloseMeleeMax = 2.5f;
@@ -147,7 +155,7 @@ struct PartnerCloseStation {
     float offEdge = 0.f;   // m off the target's edge
     bool held = false;     // the flank was kept by the hold (the 1.5 s, or attacking)
     std::uint8_t tier = 0; // 1 the band, 2 short of the band, 3 the lead ring (round the lead; angle is from the
-                           // lead-to-target line); 0 not valid
+                           // lead-to-target line), 4 the far arc (band or short of it); 0 not valid
 };
 
 // What the host gives the brain under the close camera (PartnerStationView::close); the lens's place and forward are

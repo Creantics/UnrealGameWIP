@@ -1405,6 +1405,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         ci.attacking = s_.phase == Phase::String || committedLeft() > 0.0 || in.doing == PartnerDoing::Attacking;
         const PartnerCloseStation r = partnerCloseStation(ci, s_.closeHold);
         if (!r.valid || (fm && !fr.sees(r.point))) return false;
+        out.closeTier = r.tier;
         p = r.point;
         closeDoneOk = true;
         closeDonePoint = p;

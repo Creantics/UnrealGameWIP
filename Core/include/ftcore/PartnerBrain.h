@@ -386,6 +386,7 @@ struct PartnerIntent {
     bool offFrame = false;      // a report: this string starts from off the frame, no valid station found (rule 14)
     bool skirmish = false;      // rule 17: this step walks its never-still goal (point), facing enemy
     PartnerIdle idle = PartnerIdle::Other; // a report: never in the hash
+    std::uint8_t closeTier = 0; // a report: rule 19's station this step (PartnerCloseStation::tier), 0 none; never hashed
 };
 
 struct PartnerTuning {
