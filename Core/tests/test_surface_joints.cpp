@@ -347,11 +347,12 @@ TEST_CASE("joints: per-surface depths by id substring") {
     CHECK(surfaceJointFor("solhaven_board_concrete").unitsU == doctest::Approx(0.f));
     CHECK(surfaceJointFor("solhaven_asphalt").unitsU == doctest::Approx(0.f));
     CHECK_FALSE(surfaceJointFor("solhaven_paving_slab").bond);
-    // The hero corner's granite setts: 10 cm square in stack bond on a 120 cm tile, 1 cm deep joints.
+    // The hero corner's granite setts (v5): staggered courses of mixed sizes on a 120 cm tile, 1.3 cm deep joints, no
+    // unit grid (the setts carry their own tone in the map).
     const SurfaceJointSurface sett = surfaceJointFor("solhaven_granite_sett");
-    CHECK(sett.depthCm == doctest::Approx(1.0f));
-    CHECK(sett.unitsU == doctest::Approx(12.f));
-    CHECK(sett.unitsV == doctest::Approx(12.f));
+    CHECK(sett.depthCm == doctest::Approx(1.3f));
+    CHECK(sett.unitsU == doctest::Approx(0.f));
+    CHECK(sett.unitsV == doctest::Approx(0.f));
     CHECK_FALSE(sett.bond);
 }
 

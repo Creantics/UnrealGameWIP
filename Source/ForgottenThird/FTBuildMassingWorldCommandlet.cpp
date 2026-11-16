@@ -3557,11 +3557,30 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		ftcore::HeroAreaLight AreaLights[ftcore::kHeroAreaLights];
 		const int AreaCount = ftcore::heroCornerAreaLights(HeroSpec, AreaLights);
 		int32 AreaSpawned = 0;
+		// Shaping the fronts' key without a compile (E1, 11-16; the defaults build what E1 shot): -HeroKeyBarnDoor= cm of
+		// barn door and -HeroKeyBarnAngle= degrees (a soft one-sided edge), -HeroKeyPitch= degrees down onto the lane,
+		// -HeroKeyReach= x the reach, -HeroKeySize= x the source, -HeroKeyShadows=1 lets the fronts cast.
+		float KeyBarnDoor = 0.f, KeyBarnAngle = 88.f, KeyPitch = 0.f, KeyReach = 1.f, KeySize = 1.f;
+		int32 KeyShadows = 0;
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyBarnDoor="), KeyBarnDoor);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyBarnAngle="), KeyBarnAngle);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyPitch="), KeyPitch);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyReach="), KeyReach);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeySize="), KeySize);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyShadows="), KeyShadows);
+		KeyBarnDoor = FMath::Clamp(KeyBarnDoor, 0.f, 100.f);
+		KeyBarnAngle = FMath::Clamp(KeyBarnAngle, 0.f, 90.f);
+		KeyPitch = FMath::Clamp(KeyPitch, 0.f, 80.f);
+		KeyReach = FMath::Clamp(KeyReach, 0.1f, 4.f);
+		KeySize = FMath::Clamp(KeySize, 0.1f, 4.f);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: front keys barn door %.1f cm at %.1f deg, pitch %.1f deg down, reach x%.2f, "
+			"size x%.2f, shadows %s."), KeyBarnDoor, KeyBarnAngle, KeyPitch, KeyReach, KeySize, KeyShadows ? TEXT("on") : TEXT("off"));
 		for (int K = 0; K < AreaCount; ++K)
 		{
 			const ftcore::HeroAreaLight& A = AreaLights[K];
 			const FVector At = Cm(ftcore::massingEnginePoint(Side, A.x, A.y, A.z));
-			const FRotator Face(0.0, FMath::RadiansToDegrees(FMath::Atan2(-A.fy, A.fx)), 0.0);
+			const FRotator Face(A.sky ? 0.0 : -static_cast<double>(KeyPitch), FMath::RadiansToDegrees(FMath::Atan2(-A.fy, A.fx)), 0.0);
+			const float Size = A.sky ? 1.f : KeySize;
 			ARectLight* Area = World->SpawnActor<ARectLight>(At, Face, Spawn);
 			URectLightComponent* Light = Area ? Area->RectLightComponent.Get() : nullptr;
 			if (!Light)
@@ -3575,12 +3594,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			Light->SetIntensityUnits(ELightUnits::Lumens);
 			Light->SetIntensity(0.f);
 			Light->SetVisibility(false);
-			Light->SetSourceWidth(static_cast<float>(A.width * 100.0));
-			Light->SetSourceHeight(static_cast<float>(A.height * 100.0));
-			Light->SetBarnDoorLength(0.f);
+			Light->SetSourceWidth(static_cast<float>(A.width * 100.0) * Size);
+			Light->SetSourceHeight(static_cast<float>(A.height * 100.0) * Size);
+			Light->SetBarnDoorLength(A.sky ? 0.f : KeyBarnDoor);
+			Light->SetBarnDoorAngle(A.sky ? 88.f : KeyBarnAngle);
 			// The front reaches across the lane; the floor reaches the shop faces, shadowed so it stays out of the rooms.
-			Light->SetAttenuationRadius(static_cast<float>(A.reach * 100.0));
-			Light->SetCastShadows(A.sky);
+			Light->SetAttenuationRadius(static_cast<float>(A.reach * 100.0) * (A.sky ? 1.f : KeyReach));
+			Light->SetCastShadows(A.sky || KeyShadows != 0);
 			Light->SetVolumetricScatteringIntensity(0.f);
 			++AreaSpawned;
 		}

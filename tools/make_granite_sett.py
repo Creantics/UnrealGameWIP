@@ -1,10 +1,11 @@
-"""Generate the solhaven_granite_sett surface: small square grey granite setts in stack bond, tileable.
+"""Generate the solhaven_granite_sett surface: grey granite setts in staggered courses, tileable.
 
 The hero corner's lane paving (our own generated route; a scanned set may replace the files later under its own id).
-One tile is 120 cm square: 12 setts across and 12 rows down (10 cm square), rows in line (stack bond), as
-SurfaceJoints' entry {"granite_sett", depth 1.0 cm, 12, 12, no bond} reads it. Joints are about 1.2 cm wide and 1.0 cm
-deep, filled with near-black grit, so the pattern reads from the lane's camera. --units-u/--units-v/--bond running give
-the old 20 x 10 cm running bond back (the joint table must then match).
+One tile is 120 cm square. v5 (default --layout courses): courses of 8.5, 10 and 12 cm mixed, setts of 9, 12 and 15 cm
+along each course, every course started at its own offset so the joints stagger; SurfaceJoints' entry
+{"granite_sett", depth 1.3 cm, no unit grid} reads it. Joints are about 1.2 cm wide and 1.3 cm deep, filled low with
+near-black grit, so the pattern reads from the lane's camera. --layout grid gives the old 12 x 12 stack bond (and
+--units-u/--units-v/--bond running the 20 x 10 cm running bond); the joint table must then match.
 
 Writes <out>/<id>_diff_2k.jpg (sRGB albedo), <id>_nor_dx_2k.jpg (DirectX normal from the true height),
 <id>_arm_2k.jpg (R ambient occlusion: >= 0.92 on the stone tops, <= 0.6 in the joints; G roughness; B metal 0),
@@ -23,7 +24,9 @@ from PIL import Image
 ID = "solhaven_granite_sett"
 TILE_CM = 120.0
 JOINT_CM = 1.2                    # joint width (both sides' insets together)
-DEPTH_CM = 1.0                    # joint depth under a sett's top
+DEPTH_CM = 1.3                    # joint depth under a sett's top (v5; SurfaceJoints' granite_sett depth matches)
+COURSE_CM = (8.5, 10.0, 12.0)     # v5 course heights, mixed per tile
+SETT_CM = (9.0, 12.0, 15.0)       # v5 sett lengths along a course
 GRIT = (0.035, 0.032, 0.029)      # the joints' fill, linear albedo: near-black wet grit
 JOINT_AO = 0.42                   # the joints' AO ceiling
 
@@ -59,6 +62,7 @@ def main():
     ap.add_argument("--units-u", type=int, default=12)
     ap.add_argument("--units-v", type=int, default=12)
     ap.add_argument("--bond", choices=("stack", "running"), default="stack")
+    ap.add_argument("--layout", choices=("courses", "grid"), default="courses")
     args = ap.parse_args()
     UNITS_U, UNITS_V = args.units_u, args.units_v
     running = args.bond == "running"
@@ -68,17 +72,60 @@ def main():
     stones = UNITS_U * UNITS_V
     sett_u, sett_v = TILE_CM / UNITS_U, TILE_CM / UNITS_V   # 10 x 10 cm
 
-    # The grid, as SurfaceJoints reads it: row = floor(v * unitsV); in running bond odd rows shift half a unit.
     c = (np.arange(n) + 0.5) / n
     u, v = np.meshgrid(c, c)
-    row = np.floor(v * UNITS_V).astype(np.int64)
-    cu = u * UNITS_U - (0.5 * (row % 2) if running else 0.0)
-    col = np.floor(cu).astype(np.int64)
-    fu = cu - col
-    fv = v * UNITS_V - row
-    sid = (row % UNITS_V) * UNITS_U + (col % UNITS_U)
-    lx = (fu - 0.5) * sett_u      # cm from the cell's centre
-    ly = (fv - 0.5) * sett_v
+    if args.layout == "courses":
+        # v5: courses of three heights, setts of three lengths, each course started at its own offset so no joint runs
+        # on from the course below (staggered); the tile still wraps. SurfaceJoints reads no unit grid for it (0 x 0).
+        heights = np.array(COURSE_CM, dtype=float)
+        courses = rng.permutation(np.resize(heights, int(round(TILE_CM / heights.mean()))))
+        courses *= TILE_CM / courses.sum()
+        y_edges = np.concatenate([[0.0], np.cumsum(courses)])
+        rows_x = []
+        for _ in courses:
+            lens = []
+            while sum(lens) < TILE_CM - max(SETT_CM):
+                lens.append(float(rng.choice(SETT_CM)))
+            lens.append(TILE_CM - sum(lens))
+            if lens[-1] < min(SETT_CM) * 0.75:              # fold a sliver into its neighbour
+                lens[-2] += lens.pop()
+            rows_x.append((np.concatenate([[0.0], np.cumsum(lens)]), rng.uniform(0.0, TILE_CM)))
+        y_cm = v * TILE_CM
+        x_cm = u * TILE_CM
+        row = np.clip(np.searchsorted(y_edges, y_cm, side="right") - 1, 0, len(courses) - 1)
+        cy_r = 0.5 * (y_edges[:-1] + y_edges[1:])
+        ly = y_cm - cy_r[row]
+        sett_v = courses[row]
+        sid = np.zeros((n, n), np.int64)
+        lx = np.zeros((n, n))
+        sett_u = np.zeros((n, n))
+        sizes_u, sizes_v = [], []
+        base_id = 0
+        for r_i, (edges, shift) in enumerate(rows_x):
+            m = row == r_i
+            xx = np.mod(x_cm[m] - shift, TILE_CM)
+            k = np.clip(np.searchsorted(edges, xx, side="right") - 1, 0, len(edges) - 2)
+            ctr = 0.5 * (edges[:-1] + edges[1:])
+            dx_c = xx - ctr[k]
+            lx[m] = dx_c
+            sett_u[m] = (edges[1:] - edges[:-1])[k]
+            sid[m] = base_id + k
+            sizes_u += list(edges[1:] - edges[:-1])
+            sizes_v += [courses[r_i]] * (len(edges) - 1)
+            base_id += len(edges) - 1
+        stones = base_id
+        su_s, sv_s = np.array(sizes_u), np.array(sizes_v)
+    else:
+        # The grid, as SurfaceJoints reads it: row = floor(v * unitsV); in running bond odd rows shift half a unit.
+        row = np.floor(v * UNITS_V).astype(np.int64)
+        cu = u * UNITS_U - (0.5 * (row % 2) if running else 0.0)
+        col = np.floor(cu).astype(np.int64)
+        fu = cu - col
+        fv = v * UNITS_V - row
+        sid = (row % UNITS_V) * UNITS_U + (col % UNITS_U)
+        lx = (fu - 0.5) * sett_u      # cm from the cell's centre
+        ly = (fv - 0.5) * sett_v
+        su_s, sv_s = np.full(stones, sett_u), np.full(stones, sett_v)
 
     # Per-sett character.
     half_j = 0.5 * JOINT_CM
@@ -123,8 +170,8 @@ def main():
         along = rng.uniform(-0.8, 0.8, stones)
         cr = rng.uniform(0.5, 1.4, stones)
         cdepth = rng.uniform(0.25, 0.6, stones)
-        hxs = 0.5 * sett_u - 0.5 * (ins[:, 0] + ins[:, 1])
-        hys = 0.5 * sett_v - 0.5 * (ins[:, 2] + ins[:, 3])
+        hxs = 0.5 * su_s - 0.5 * (ins[:, 0] + ins[:, 1])
+        hys = 0.5 * sv_s - 0.5 * (ins[:, 2] + ins[:, 3])
         oxs = 0.5 * (ins[:, 0] - ins[:, 1])
         oys = 0.5 * (ins[:, 2] - ins[:, 3])
         ccx = np.where(side == 0, oxs - hxs, np.where(side == 1, oxs + hxs, oxs + along * hxs))
@@ -134,8 +181,8 @@ def main():
         stone_h = np.maximum(stone_h - cut * (inside > 0), 0.0)
 
     # The joints' grit fill: a little under half way up in places, near the floor in others.
-    fill = np.clip(0.12 + 0.07 * periodic_noise(rng, n, 1.5 / px_cm)
-                   + 0.03 * periodic_noise(rng, n, 0.1 / px_cm), 0.02, 0.35)
+    fill = np.clip(0.08 + 0.06 * periodic_noise(rng, n, 1.5 / px_cm)
+                   + 0.03 * periodic_noise(rng, n, 0.1 / px_cm), 0.02, 0.3)
     height = np.maximum(stone_h, fill)
     height = blur(height, 0.6)
 
@@ -201,8 +248,10 @@ def main():
         "seed": args.seed,
         "res": n,
         "tile_cm": TILE_CM,
-        "units": [UNITS_U, UNITS_V],
-        "bond": "running, half" if running else "stack",
+        "units": [0, 0] if args.layout == "courses" else [UNITS_U, UNITS_V],
+        "bond": ("staggered courses %s cm, setts %s cm" % (list(COURSE_CM), list(SETT_CM)) if args.layout == "courses"
+                 else ("running, half" if running else "stack")),
+        "stones": int(stones),
         "joint_cm": JOINT_CM,
         "depth_cm": DEPTH_CM,
         "ao_top_min": float(ao[top_mask].min()),

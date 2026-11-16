@@ -1283,6 +1283,7 @@ UMaterial* BuildGlass()
 	Material->BlendMode = BLEND_Translucent;
 	Material->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
 	Material->RefractionMethod = RM_IndexOfRefraction;
+	Material->TranslucencyPass = MTP_BeforeDOF; // glass blurs with what is behind it in a shallow-focus still
 	Material->bAllowFrontLayerTranslucency = true;
 	Material->bScreenSpaceReflections = true;
 	Material->bUseTranslucencyVertexFog = false; // thin glass adds no fog of its own (11-14 haze ruling)
