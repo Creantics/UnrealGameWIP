@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <span>
+#include <string>
 
 using namespace ftcore;
 
@@ -997,7 +998,7 @@ TEST_CASE("close station: the kit's range: unset, invalid, or under the classic 
     const PartnerTuning e = partnerEffectiveTuning(tu, in);
     CHECK(e.reachMeters == 3.2f);
     CHECK(e.standoffMeters == 1.8f);
-    CHECK(e.leashMeters == tu.leashMeters); // only the two
+    CHECK(e.leashMeters == doctest::Approx(3.2f + kPartnerRangeLeadMelee)); // the leash holds the band (4.7 m)
     CHECK(e.stationTolerance == tu.stationTolerance);
     const float notNumber = std::nanf("");
     const float endless = HUGE_VALF;
@@ -1076,6 +1077,130 @@ TEST_CASE("close station: a caster with its kit's range strings from its band, n
     CHECK(farKit.meanStart() >= kPartnerCloseCasterMin - 0.5f);
     CHECK(farKit.maxGoal <= kPartnerRangeMax + 1e-3f);
     CHECK(farKit.badStepBacks == 0);
+}
+
+namespace {
+// 30 s of a close-camera caster with an 8.5 / 5 kit range by a lead in melee (`leadGap` off the target's edge, on
+// the lens's side): the target still, or walking a 2 m circle at 0.8 m/s with the lead and the lens following. Each
+// string's start off the target's edge; the farthest the partner stood from the lead once its first string began.
+struct CsBandRun {
+    int strings = 0, inside = 0; // inside: started more than kPartnerRangeStepOut inside the standoff
+    int unanswered = 0;           // a string begun with the last inside start not stepped out from
+    float minStart = 1e9f, sumStart = 0.f, maxFromLead = 0.f;
+    float meanStart() const { return strings > 0 ? sumStart / static_cast<float>(strings) : 0.f; }
+};
+CsBandRun csBandRun(PartnerOrder order, bool moving, float leadGap, Vec2 start) {
+    CsPit p(true);
+    p.in.order = order;
+    p.in.range = {8.5f, 5.f};
+    p.in.station.close.standMin = kPartnerCloseCasterMin;
+    p.in.station.close.standMax = kPartnerCloseCasterMax;
+    p.in.pos = start;
+    const float r = p.e[0].radius;
+    CsBandRun k;
+    bool owed = false; // an inside start, no StepBack since
+    for (int s = 0; s < 30 * 60; ++s) {
+        if (moving) {
+            const float a = 0.4f * static_cast<float>(s) / 60.f;
+            p.e[0].pos = {2.f * std::cos(a) - 2.f, 2.f * std::sin(a)};
+        }
+        p.in.leadPos = csAdd(p.e[0].pos, Vec2{-(r + leadGap), 0.f});
+        csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+        const PartnerIntent& i = p.step();
+        const float at = csLen(csSub(p.in.pos, p.e[0].pos)) - r;
+        if (k.strings > 0) k.maxFromLead = std::max(k.maxFromLead, csLen(csSub(p.in.pos, p.in.leadPos))); // after the walk in
+        if (i.act == PartnerAct::Attack && i.newString) {
+            ++k.strings;
+            k.minStart = std::min(k.minStart, at);
+            k.sumStart += at;
+            if (owed) ++k.unanswered;
+            owed = at < 5.f - kPartnerRangeStepOut - 1e-3f;
+            if (owed) ++k.inside;
+        }
+        if (i.act == PartnerAct::StepBack) owed = false;
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+    }
+    return k;
+}
+} // namespace
+
+TEST_CASE("close station: an 8.5 / 5 caster casts from inside its standoff and steps out between strings") {
+    // Ruling (orchestrator, 11-16, second): under the close camera with the kit's range on, the standoff is a goal, not
+    // a gate: a string starts anywhere within the reach; after one begun more than kPartnerRangeStepOut inside the
+    // standoff, the pause steps the partner out before the next. The walk in from out of reach aims for the band's
+    // middle; the leash holds the band. Starts from inside the standoff (1 m off), from the band, and from out of
+    // reach; the lead in melee; Spread and StayClose; a still target and a moving one.
+    int all = 0;
+    for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose})
+        for (const bool moving : {false, true})
+            for (const Vec2 start : {Vec2{-1.5f, -1.5f}, Vec2{-4.f, -5.f}, Vec2{-9.f, -9.f}}) {
+                CAPTURE(static_cast<int>(order));
+                CAPTURE(moving);
+                CAPTURE(start.x);
+                const CsBandRun k = csBandRun(order, moving, 0.3f, start);
+                MESSAGE(std::string(order == PartnerOrder::Spread ? "Spread" : "StayClose") << (moving ? ", moving" : ", still")
+                        << ", from " << start.x << "," << start.y << ": strings " << k.strings << ", start off the edge mean "
+                        << k.meanStart() << " min " << k.minStart << ", inside the standoff " << k.inside
+                        << " (not stepped out from " << k.unanswered << "); farthest from the lead " << k.maxFromLead);
+                CHECK(k.strings >= 2);
+                CHECK(k.unanswered == 0);
+                CHECK(k.minStart <= 8.5f + 1e-3f);
+                if (order == PartnerOrder::StayClose) CHECK(k.maxFromLead <= 10.f + 0.5f); // the leash, 10 m at most
+                all += k.strings;
+            }
+    MESSAGE("12 runs: " << all << " strings");
+}
+
+TEST_CASE("close station: a step out to the kit's band is not carried to the next target") {
+    // An 8.5 / 5 caster 1 m off its target steps out after a string; mid step its target falls and the lead turns to
+    // another 7 m off. The step out is dropped: no string on the new target from where the walk had got to, that step.
+    CsPit p(true);
+    p.in.range = {8.5f, 5.f};
+    p.in.station.close.standMin = kPartnerCloseCasterMin;
+    p.in.station.close.standMax = kPartnerCloseCasterMax;
+    p.in.leadPos = {-1.3f, 0.f};
+    p.in.pos = {-1.4f, -1.4f};
+    p.e[1].pos = {-3.f, -8.f};
+    p.e[1].radius = 1.f;
+    csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+    const auto step2 = [&]() -> const PartnerIntent& {
+        p.in.enemies = std::span<const PartnerEnemyView>(p.e.data(), 2);
+        return p.b.step(1.0 / 60.0, p.in);
+    };
+    bool out = false;
+    for (int s = 0; s < 600 && !out; ++s) {
+        const PartnerIntent& i = step2();
+        out = i.act == PartnerAct::StepBack;
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.02f));
+    }
+    REQUIRE(out);
+    CHECK(p.b.save().steppedOut);
+    p.e[0].state = PartnerEnemyView::State::Down;
+    p.in.leadTarget = 1;
+    const PartnerIntent& i = step2();
+    CHECK_FALSE(i.act == PartnerAct::Attack);
+    CHECK_FALSE(p.b.save().steppedOut);
+}
+
+TEST_CASE("close station: the kit's range sizes the leash to its band, a melee kit's stays") {
+    const PartnerTuning tu;
+    PartnerInput in;
+    in.station.close.given = true;
+    in.range = {8.5f, 5.f};
+    const PartnerTuning caster = partnerEffectiveTuning(tu, in);
+    CHECK(partnerRangeOn(in, tu));
+    CHECK(caster.leashMeters == doctest::Approx(10.f));
+    CHECK(caster.returnMeters == doctest::Approx(10.f - (tu.leashMeters - tu.returnMeters)));
+    in.range = {1.8f, 0.8f}; // a melee kit's
+    const PartnerTuning melee = partnerEffectiveTuning(tu, in);
+    CHECK(melee.leashMeters == tu.leashMeters);
+    CHECK(melee.returnMeters == tu.returnMeters);
+    in.station.close.given = false; // the classic camera: none of it
+    const PartnerTuning classic = partnerEffectiveTuning(tu, in);
+    CHECK_FALSE(partnerRangeOn(in, tu));
+    CHECK(classic.leashMeters == tu.leashMeters);
 }
 
 TEST_CASE("close station: with the kit's range a StepBack only steps out to the standoff") {
@@ -1160,4 +1285,98 @@ TEST_CASE("close station: with the kit's range, Pause and Ready do not flap at t
         strings += runStrings;
     }
     MESSAGE("band edges, 9 runs: " << flaps << " flaps, " << jumps << " goal jumps, " << strings << " strings");
+}
+
+TEST_CASE("close station: a flank handed over while attacking never walks the partner before its blow lands") {
+    // Review (11-16): the far arc may hand a kept flank over while a string runs (tier 4, the kept flank's far arc
+    // empty). The station moves; the partner must not: no walk or step back while a blow it began is running. The
+    // lead hugs a target walking a 2 m circle, the lens on the lead; Spread (StayClose's leash may end a string at
+    // once by its own rule 1).
+    int strings = 0, early = 0, farWhileAttacking = 0, walks = 0;
+    for (const std::uint32_t seed : {1u, 2u, 3u, 4u}) {
+        CsPit p(true, seed);
+        p.in.blowSeconds.fill(0.6f);
+        p.in.pos = {-3.f, -3.f};
+        const float r = p.e[0].radius;
+        double blowEnd = -1.0;
+        for (int s = 0; s < 30 * 60; ++s) {
+            const float a = 0.4f * static_cast<float>(s) / 60.f;
+            p.e[0].pos = {2.f * std::cos(a) - 2.f, 2.f * std::sin(a)};
+            p.in.leadPos = csAdd(p.e[0].pos, csMul(csUnit(csSub(p.in.leadPos, p.e[0].pos)), r + 0.45f));
+            csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+            const PartnerIntent& i = p.step();
+            const double now = static_cast<double>(s + 1) / 60.0;
+            if (i.blowStart) blowEnd = now + 0.6;
+            if (i.act == PartnerAct::Attack && i.newString) ++strings;
+            if (i.act == PartnerAct::Attack && i.closeTier == 4) ++farWhileAttacking;
+            if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+                ++walks;
+                if (now + 1e-6 < blowEnd) ++early;
+                p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+            }
+        }
+    }
+    MESSAGE("4 seeds: " << strings << " strings, " << walks << " walking steps, " << early << " before a blow landed; "
+                        << farWhileAttacking << " attacking steps on the far arc");
+    CHECK(strings >= 8);
+    CHECK(walks > 0);
+    CHECK(early == 0);
+}
+
+TEST_CASE("close station: a string the lead hides ends no faster than a pause and one blow") {
+    // Review (11-16): the cut has no cooldown of its own. A partner the host never moves, standing where the lead
+    // hides it from the lens and in reach of the target (no station it reaches, so the fallback starts its strings
+    // from there): every string is cut after its first blow, and the next starts no sooner than the shortest pause
+    // after that blow (the pause is the cooldown; a still target, never staggered).
+    CsPit p(true);
+    p.in.blowSeconds.fill(0.6f);
+    const PartnerTuning t;
+    const Vec2 cam = p.in.station.cameraPos, lead = p.in.leadPos;
+    Vec2 spot{};
+    bool found = false;
+    for (int k = 0; k < 400 && !found; ++k) { // along the lens's line over the lead, the first point in reach
+        spot = csAdd(cam, csMul(csSub(lead, cam), 1.05f + 0.005f * static_cast<float>(k)));
+        const float off = csLen(csSub(spot, p.e[0].pos)) - p.e[0].radius;
+        found = off <= t.reachMeters - 0.3f && off >= 0.5f;
+    }
+    REQUIRE(found);
+    REQUIRE(partnerCloseHiddenBehind(cam, spot, lead, p.in.station.close.bodyRadius));
+    REQUIRE(csLen(csSub(spot, lead)) > t.personalSpaceMeters);
+    p.in.pos = spot;
+    int strings = 0, blows = 0;
+    double lastStart = -1.0, shortest = 1e9;
+    for (int s = 0; s < 30 * 60; ++s) {
+        const PartnerIntent& i = p.step();
+        const double now = static_cast<double>(s + 1) / 60.0;
+        if (i.blowStart) ++blows;
+        if (i.act == PartnerAct::Attack && i.newString) {
+            if (lastStart >= 0.0) shortest = std::min(shortest, now - lastStart);
+            lastStart = now;
+            ++strings;
+        }
+    }
+    MESSAGE("hidden and still: " << strings << " strings, " << blows << " blows in 30 s; shortest start to start "
+                                 << shortest << " s (a blow 0.6 s, the shortest pause " << t.pauseMin << " s)");
+    REQUIRE(strings >= 3);
+    CHECK(blows == strings); // each cut after its first blow
+    CHECK(shortest + 1e-6 >= 0.6 + static_cast<double>(t.pauseMin));
+}
+
+TEST_CASE("close station: a classic run's whole hash, pinned") {
+    // Review (11-16): the close rules leave the classic brain bit-identical; this pins one whole classic run (the
+    // close station off, the frame on, the target walking, the partner walked to each goal) at cb7d028a's value.
+    CsPit p(false);
+    p.in.blowSeconds.fill(0.6f);
+    for (int s = 0; s < 20 * 60; ++s) {
+        const float a = 0.3f * static_cast<float>(s) / 60.f;
+        p.e[0].pos = {1.5f * std::cos(a) - 1.5f, 1.5f * std::sin(a)};
+        p.in.leadPos = csAdd(p.e[0].pos, Vec2{-2.2f, 0.f});
+        csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+        const PartnerIntent& i = p.step();
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+    }
+    const std::uint64_t h = p.b.hash();
+    MESSAGE("classic whole-run hash " << h);
+    CHECK(h == 773648685674569465ull);
 }

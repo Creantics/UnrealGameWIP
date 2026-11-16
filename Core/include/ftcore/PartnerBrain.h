@@ -206,7 +206,11 @@
 //      the reach and standoff of every rule (partnerEffectiveTuning), and Pause and Ready share one band, the host's
 //      within [standoff, reach - stationTolerance] (no overlap: that interval itself), so a caster strings from where
 //      it waits; a StepBack is a step out to the standoff only (a walk to a station inside it, rule 19's short of the
-//      band or on the lead ring or a fallback's, is a MoveTo). Range unset or invalid: as without it, to the bit.
+//      band or on the lead ring or a fallback's, is a MoveTo). A string starts only within [standoff, reach] (less
+//      the tolerance at the near end): inside the standoff it walks out first, and every ring that places a string
+//      (rules 10, 12's fallback, 13, 18, the walk in from out of reach) sits at the band's middle, not reach / 2. The
+//      leash holds the band (reach + kPartnerRangeLeadMelee, at most 10 m; StayClose's cap standoff + that). Range
+//      unset or invalid: as without it, to the bit.
 //      Under it the partner is in frame by its
 //      middle and head alone (partnerInFrameClose; feet not tested), for every frame test of the partner while it is
 //      given. None legal: the rules above, as before.
@@ -311,9 +315,17 @@ struct PartnerRange {
     float reach = 0.f;
     float standoff = 0.f;
 };
-// The far end of a valid range: the caster band's far end, plus a station's tolerance (the tuning's own reach stays
-// 0.5..4, as arena.json's partnerReach; a kit that would cast from 5-8 m needs both raised there).
+// The far end of a valid range: the caster band's far end, plus a station's tolerance. The tuning's own reach (the
+// classic brain, PartnerTuning::reachMeters) stays 0.5..4; a kit's range (arena.json's partnerReach and
+// partnerStandoff) goes to kPartnerRangeMax.
 inline constexpr float kPartnerRangeMax = kPartnerCloseCasterMax + 0.5f;
+// The kit's range on: a lead in melee stands this far past its target's far edge at most (a normal target's width and
+// the lead's gap to it), so the leash (reach + this, at most 10 m) and StayClose's cap (standoff + this) hold the band.
+inline constexpr float kPartnerRangeLeadMelee = 1.5f;
+// The kit's range on (ruling of 11-16): the standoff is a goal, not a gate. A string starts from anywhere within the
+// reach; between strings, a partner more than this inside its standoff steps out to the band's near end (on its own
+// flank), and once its pause is over casts again from wherever its walk has got to.
+inline constexpr float kPartnerRangeStepOut = 0.5f;
 
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
 struct PartnerInput {
@@ -386,6 +398,7 @@ struct PartnerIntent {
     bool offFrame = false;      // a report: this string starts from off the frame, no valid station found (rule 14)
     bool skirmish = false;      // rule 17: this step walks its never-still goal (point), facing enemy
     PartnerIdle idle = PartnerIdle::Other; // a report: never in the hash
+    std::uint8_t closeTier = 0; // a report: rule 19's station this step (PartnerCloseStation::tier), 0 none; never hashed
 };
 
 struct PartnerTuning {
@@ -454,7 +467,8 @@ struct PartnerTuning {
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
 // Rule 19: the kit's range is on this step (the close camera given and in.range valid against `t`, see PartnerRange).
 FTCORE_API bool partnerRangeOn(const PartnerInput& in, const PartnerTuning& t);
-// The tuning the brain steps on: `t`, with the kit's reach and standoff when partnerRangeOn; else `t` itself.
+// The tuning the brain steps on: `t`, with the kit's reach and standoff when partnerRangeOn (and the leash
+// at least reach + kPartnerRangeLeadMelee up to 10 m, the return as far inside it as `t`'s); else `t` itself.
 FTCORE_API PartnerTuning partnerEffectiveTuning(const PartnerTuning& t, const PartnerInput& in);
 // The shipped tuning with step 2's changes off: bottom margin equal to frustumMargin, the side, choice and turn holds 0.
 // Framed and with rule 17 off its intents and hash are main's (a0f48fa7) to the bit, on any target under
@@ -540,6 +554,7 @@ struct PartnerBrainSave {
     double frameSideAt = -1e9;     // when the held station last changed side (now's clock; kPartnerSideHoldSeconds)
     double noFrame = 0.0;          // seconds with no valid station
     bool fellBack = false;         // rule 13's fallback holds: on rules 10-11's station until a valid one is found
+    bool steppedOut = false;       // rule 19: the last step stepped out to the kit's band, or held there (Pause)
     double engageFor = 0.0;        // rule 14's clock
     double lastStrike = -1e9;      // rule 16: when the last string, guard and reposition began (on now's clock)
     double lastGuard = -1e9;
