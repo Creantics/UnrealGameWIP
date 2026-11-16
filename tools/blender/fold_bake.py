@@ -27,6 +27,8 @@ SPEC.json (lengths in metres, in the blend's world space):
      "allow_holes": false,              holes (either kind) stop the run with exit code 3 unless this is true
      "min_z": 0.6, "feather_cm": 3,   min_z: a baked texel tilted further than this from the sheet counts as a miss;
                                         feather_cm: the folds fade to flat over this distance in from the pinned outline
+     "outer_only": false,               a shell with thickness whose inner faces share the outer faces' UVs: bake only the
+                                        faces whose normal points away from the collider (needs "collider")
      "overwrite": false}                earlier <name>_*.png, <name>_hi.obj or <name>_report.json in out stop the run unless true
 
 The environment variable FOLD_BAKE_ROOT must name the folder "out" stays under; unset, or "out" outside it, stops the run.
@@ -82,6 +84,8 @@ if S["garment"] not in bpy.data.objects or bpy.data.objects[S["garment"]].type !
     fail("no mesh object %s in the blend" % S["garment"])
 if S.get("collider") and S["collider"] not in bpy.data.objects:
     fail("no collider object %s in the blend" % S["collider"])
+if S.get("outer_only", False) and not S.get("collider"):
+    fail("outer_only needs a collider: inner faces are the ones whose normal points at it")
 if not bpy.data.objects[S["garment"]].data.polygons:
     fail("garment %s has no faces" % S["garment"])
 for key in ("base_normal_gl", "base_normal_dx", "base_orm", "base_wear"):
@@ -393,6 +397,33 @@ try:
 except RuntimeError as e:  # the operator's own failure (path, permissions): the high copy is a by-product, so go on
     rep["obj_export_error"] = str(e)
     print("FOLD_BAKE_WARNING: high copy not exported: %s" % e)
+
+# A shell with thickness whose inner faces reuse the outer faces' UVs bakes each shared texel twice, and the inner face
+# (it meets the sheet from under it, a miss) can write last and flatten the fold. "outer_only" drops from the bake target
+# the faces whose normal points at the collider, so every shared texel takes the outer face's bake. The game mesh and
+# its UVs are not touched (the bake target is a copy).
+if S.get("outer_only", False):
+    from mathutils.bvhtree import BVHTree
+    col = bpy.data.objects[S["collider"]]
+    body = BVHTree.FromObject(col, bpy.context.evaluated_depsgraph_get())
+    to_col, from_col = col.matrix_world.inverted(), col.matrix_world
+    bm = bmesh.new()
+    bm.from_mesh(lo.data)
+    mw, nw = lo.matrix_world, lo.matrix_world.to_3x3().inverted().transposed()
+    inner = []
+    for f in bm.faces:
+        c = mw @ f.calc_center_median()
+        q = body.find_nearest(to_col @ c)[0]
+        if q is not None and (nw @ f.normal).dot(c - from_col @ q) < 0:
+            inner.append(f)
+    rep["outer_only_dropped_faces"] = [len(inner), len(bm.faces)]
+    if len(inner) > 0.55 * len(bm.faces):
+        fail("outer_only would drop %d of %d faces: the garment's normals face the body (flip them first)" % (len(inner), len(bm.faces)))
+    bmesh.ops.delete(bm, geom=inner, context="FACES_ONLY")
+    bm.to_mesh(lo.data)
+    bm.free()
+    lo.data.update()
+    print("FOLD_BAKE outer_only: dropped %d of %d faces from the bake target" % tuple(rep["outer_only_dropped_faces"]))
 
 # Bake onto the game mesh's UVs.
 res = int(S.get("res", 2048))

@@ -1,12 +1,21 @@
 #include "FTRimLight.h"
 
+#include "ForgottenThird.h"
+
 #include "Camera/PlayerCameraManager.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/SpotLightComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "Containers/StringConv.h"
+
+#include <string_view>
 
 #include "ftcore/LookReview.h"
 
@@ -71,12 +80,30 @@ void UFTRimLightComponent::ApplyChannels()
 	{
 		return;
 	}
+	static const FName GroomClassName(TEXT("GroomComponent"));
 	TInlineComponentArray<UPrimitiveComponent*> Prims(Owner);
 	for (UPrimitiveComponent* P : Prims)
 	{
-		if (P && !P->LightingChannels.bChannel2)
+		if (!P)
 		{
-			P->SetLightingChannels(P->LightingChannels.bChannel0, P->LightingChannels.bChannel1, true);
+			continue;
+		}
+		// Hair, the face piece and glasses stay off the channel (ftcore::look::rimLightSkipsPiece says why).
+		const UObject* Mesh = nullptr;
+		if (const USkeletalMeshComponent* Skel = Cast<USkeletalMeshComponent>(P))
+		{
+			Mesh = Skel->GetSkeletalMeshAsset();
+		}
+		else if (const UStaticMeshComponent* Static = Cast<UStaticMeshComponent>(P))
+		{
+			Mesh = Static->GetStaticMesh();
+		}
+		const FTCHARToUTF8 Name(Mesh ? *Mesh->GetName() : TEXT(""));
+		const bool bGroom = P->GetClass()->GetFName() == GroomClassName;
+		const bool bWant = !ftcore::look::rimLightSkipsPiece(std::string_view(Name.Get(), static_cast<size_t>(Name.Length())), bGroom);
+		if (P->LightingChannels.bChannel2 != bWant)
+		{
+			P->SetLightingChannels(P->LightingChannels.bChannel0, P->LightingChannels.bChannel1, bWant);
 		}
 	}
 }
@@ -97,7 +124,8 @@ void UFTRimLightComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 			return;
 		}
 	}
-	if (Scale != AppliedScale)
+	const bool bScaleChanged = Scale != AppliedScale;
+	if (bScaleChanged)
 	{
 		AppliedScale = Scale;
 		Light->SetVisibility(Scale > 0.f);
@@ -130,4 +158,13 @@ void UFTRimLightComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	const FVector Right = FVector::CrossProduct(FVector::UpVector, Away);
 	const FVector Pos = Target + Away * Back + Right * Side + FVector::UpVector * Up;
 	Light->SetWorldLocationAndRotation(Pos, (Target - Pos).Rotation());
+	if (bScaleChanged || FVector::DotProduct(Away, LoggedAway) < 0.94)
+	{
+		// Where the light sits against the view it was placed for, on a scale change or when the camera bearing turns
+		// more than about 20 degrees (a review log can check it is behind the figure as the camera sees it).
+		LoggedAway = Away;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTRimLight: %s scale %.2f, camera %s, aim %s, light %s (%.0f deg up)."), *GetOwner()->GetName(), Scale,
+			*Cam->GetCameraLocation().ToCompactString(), *Target.ToCompactString(), *Pos.ToCompactString(),
+			FMath::RadiansToDegrees(FMath::Atan2(Up, FMath::Sqrt(Back * Back + Side * Side))));
+	}
 }

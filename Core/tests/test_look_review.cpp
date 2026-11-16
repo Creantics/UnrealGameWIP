@@ -30,6 +30,17 @@ TEST_CASE("look review: the rim light is off at cvar 0, negative, NaN, or on a f
     CHECK(rimLightScale(0.25f, true) == doctest::Approx(0.25f));
 }
 
+TEST_CASE("look review: the rim light leaves hair, the face piece and glasses off its channel") {
+    using ftcore::look::rimLightSkipsPiece;
+    static_assert(rimLightSkipsPiece("", true));
+    CHECK(rimLightSkipsPiece("Hair_S_Casual", true));
+    CHECK(rimLightSkipsPiece("SKM_MHC_DuyReal4_FaceMesh", false));
+    CHECK(rimLightSkipsPiece("SK_Duy_Glasses_b", false));
+    CHECK_FALSE(rimLightSkipsPiece("SK_Duy_JacketOpen_rr1", false));
+    CHECK_FALSE(rimLightSkipsPiece("SKM_MHC_DuyReal4_BodyMesh", false));
+    CHECK_FALSE(rimLightSkipsPiece("", false));
+}
+
 TEST_CASE("look review: no -ArenaWet, no review") {
     CHECK_FALSE(findWetReview("", "ArenaWet").has_value());
     CHECK_FALSE(findWetReview("/Game/Maps/Demo_Arena -game -ArenaLead=Duy -ExploreWet=1,130,0", "ArenaWet").has_value());

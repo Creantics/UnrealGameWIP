@@ -28,6 +28,13 @@ inline constexpr float kFoldDirtRoughness = 0.15f; // scaled by DirtStrength, so
 constexpr float rimLightScale(float cvarValue, bool allowed) { return allowed && cvarValue > 0.f ? cvarValue : 0.f; }
 constexpr bool rimLightWanted(float cvarValue, bool allowed) { return rimLightScale(cvarValue, allowed) > 0.f; }
 
+// Pieces the rim light leaves off its lighting channel. The light casts no shadow, so it reaches through the head:
+// strand hair scatters it into a pale glow, and the face piece (eyes are slots on it) and glasses lenses catch it
+// from the front. Grooms are left off whole; meshes by asset name (MetaHuman face pieces carry "FaceMesh").
+constexpr bool rimLightSkipsPiece(std::string_view meshName, bool isGroom) {
+    return isGroom || meshName.find("FaceMesh") != std::string_view::npos || meshName.find("Glasses") != std::string_view::npos;
+}
+
 // A fixed wet state held on a figure's garments for review: Wetness and the wet line in cm above the feet.
 struct WetReview {
     float wetness = 1.f;

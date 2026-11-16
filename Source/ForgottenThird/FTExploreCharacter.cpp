@@ -823,6 +823,35 @@ void AFTExploreCharacter::EnterLookDev()
 			Ground->SetMaterial(0, Grey);
 		}
 	}
+	// -ExploreLookDevGrey[=<albedo>]: a set where a dark garment reads against its surround. A grey wall (albedo 0.35
+	// unless given) stands behind the pawn on the far side from the camera, the key sits 45 degrees off the view and
+	// follows the camera round (so a back or elbow crop is key-lit too), and the fill is stronger, about 1.5 stops
+	// under the key. Without the flag the set is as before.
+	float GreyAlbedo = 0.f;
+	const bool bGrey = FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDevGrey")) || FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevGrey="), GreyAlbedo);
+	if (bGrey)
+	{
+		if (!FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevGrey="), GreyAlbedo) || GreyAlbedo <= 0.f)
+		{
+			GreyAlbedo = 0.35f;
+		}
+		UStaticMesh* Box = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+		if (Box && Base)
+		{
+			UStaticMeshComponent* Wall = NewObject<UStaticMeshComponent>(this);
+			Wall->SetStaticMesh(Box);
+			Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Wall->SetupAttachment(Boom); // boom space: the camera is at -X, so +X is behind the pawn as it sees it
+			Wall->SetUsingAbsoluteScale(true);
+			Wall->SetWorldScale3D(FVector(0.05, 14.0, 10.0));
+			Wall->SetRelativeLocation(FVector(380.0, 0.0, 150.0));
+			Wall->RegisterComponent();
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, this);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(GreyAlbedo, GreyAlbedo, GreyAlbedo));
+			Wall->SetMaterial(0, Grey);
+		}
+	}
 	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevSpin="), LookDevSpin);
 	LookDevPivot = NewObject<USceneComponent>(this);
 	LookDevPivot->SetupAttachment(GetRootComponent());
@@ -841,8 +870,13 @@ void AFTExploreCharacter::EnterLookDev()
 		{LookDevPivot, FVector(-250.0, -170.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key
 		{Boom, FVector(-260.0, 240.0, 30.0), 6.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},        // fill
 	};
+	const FLightSpec GreySpecs[] = {
+		{Boom, FVector(-220.0, -220.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key, 45 degrees off the view
+		{Boom, FVector(-260.0, 240.0, 60.0), 14.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},  // fill
+	};
 	const FVector Target(0.0, 0.0, 20.0);
-	for (const FLightSpec& Spec : Specs)
+	const TConstArrayView<FLightSpec> Chosen = bGrey ? TConstArrayView<FLightSpec>(GreySpecs) : TConstArrayView<FLightSpec>(Specs);
+	for (const FLightSpec& Spec : Chosen)
 	{
 		URectLightComponent* Light = NewObject<URectLightComponent>(this);
 		Light->SetupAttachment(Spec.Parent);
@@ -866,7 +900,7 @@ void AFTExploreCharacter::EnterLookDev()
 	float Bias = 0.f;
 	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevBias="), Bias);
 	FixExposure(Bias);
-	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s)."), Hidden, LookDevSpin);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s, grey wall %.2f)."), Hidden, LookDevSpin, GreyAlbedo);
 }
 
 #if !UE_BUILD_SHIPPING
