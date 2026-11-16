@@ -80,5 +80,4 @@ private:
 	int32 Frames = 0;
 	bool bViewSet = false;
 	TSharedFuture<FString> CsvFile;
-	FString CsvPath;
 };
