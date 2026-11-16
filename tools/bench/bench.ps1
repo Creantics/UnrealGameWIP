@@ -19,8 +19,12 @@
 # BUSY line is open (younger than 90 min), a HOLD line is not yet lifted (by a later line saying resumed, lifted or freed
 # the PC), or a game process runs: it then stops with exit code 3. It is resumable: a run whose summary exists and whose
 # machine.txt says CLEAN is skipped, so the same command picks up where a stop left off.
-# Each run's machine.txt holds the CPU load and the listed processes seen just before launch and just after exit; a run
-# with total CPU over 10%, or a FT_BENCH_HEAVY or FT_BENCH_GAMES process present, is CONTAMINATED.
+# Each run's machine.txt holds the background load (a 5 s sample of total CPU % and GPU %, the GPU as its busiest engine,
+# as Task Manager shows it, with the top GPU users) and the listed processes, just before launch and just after exit. A run
+# whose background is over -MaxBgCpu or -MaxBgGpu, or with a FT_BENCH_HEAVY or FT_BENCH_GAMES process present, is
+# CONTAMINATED. A contaminated run is repeated once at the end of the pass (its first try kept as <tag>_dirty1); a resumed
+# pass leaves a contaminated run for its end too. -MaxBlocks stops after that many blocks (exit 4; the same command resumes).
+# -BlockOn (a regex on the BUSY line's text) limits which other open BUSY lines keep a block from opening (default: any).
 param(
     [Parameter(Mandatory = $true)][string]$Out,
     [string[]]$Scenes = @('day', 'night', 'close', 'trees', 'arena_group', 'arena_kite', 'wave', 'cold'),
@@ -32,6 +36,10 @@ param(
     [string]$Label = '',
     [switch]$Shared,
     [int]$BlockMinutes = 28,
+    [int]$MaxBlocks = 0,
+    [string]$BlockOn = '.',
+    [double]$MaxBgCpu = 3,
+    [double]$MaxBgGpu = 2,
     [switch]$DryRun # print one machine-state read and the run tags, launch nothing (tools/bench/test_bench.ps1)
 )
 $ErrorActionPreference = 'Continue'
@@ -51,12 +59,46 @@ if ($Shared -and -not ($busyWriter -and $busyNote -and $owner)) { 'with -Shared 
 # An empty list matches nothing.
 function Get-Names([string]$List) { if ($List) { @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match "^($List)$" }) } else { @() } }
 
-function Get-MachineState {
-    $cpu = -1.0
+# The background load over 5 one-second samples: total CPU %, GPU % (per sample the busiest engine, summed over the
+# processes using it, as Task Manager shows it), the 3D engine alone, and the top three GPU users. -1 where unread.
+function Get-Background {
+    $r = [pscustomobject]@{ Cpu = -1.0; Gpu = -1.0; Gpu3d = -1.0; GpuTop = '' }
     try {
-        $cpu = [math]::Round((Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 3 |
-                    ForEach-Object { $_.CounterSamples[0].CookedValue } | Measure-Object -Average).Average, 1)
-    } catch {}
+        $c = Get-Counter -Counter @('\Processor(_Total)\% Processor Time', '\GPU Engine(*)\Utilization Percentage') `
+            -SampleInterval 1 -MaxSamples 5 -ErrorAction SilentlyContinue
+    } catch { return $r }
+    if (-not $c) { return $r }
+    $cpus = @(); $gpus = @(); $g3 = @(); $byPid = @{}
+    foreach ($s in $c) {
+        $eng = @{}
+        foreach ($x in $s.CounterSamples) {
+            if ($x.Path -like '*\processor(_total)\*') { $cpus += $x.CookedValue; continue }
+            if ($x.InstanceName -match '^pid_(\d+)_luid_(\w+)_phys_(\d+)_eng_(\d+)_engtype_(\w+)$') {
+                $k = "$($Matches[2])/$($Matches[3])/$($Matches[4])/$($Matches[5])"
+                $eng[$k] = [double]$eng[$k] + $x.CookedValue
+                $pk = "$($Matches[1]) $($Matches[5])"
+                $byPid[$pk] = [double]$byPid[$pk] + $x.CookedValue / $c.Count
+            }
+        }
+        $gpus += [double](@($eng.Values) + 0 | Measure-Object -Maximum).Maximum
+        $g3 += [double](@($eng.GetEnumerator() | Where-Object { $_.Key -like '*/3d' } | ForEach-Object { $_.Value }) + 0 |
+                Measure-Object -Maximum).Maximum
+    }
+    if ($cpus.Count) { $r.Cpu = [math]::Round(($cpus | Measure-Object -Average).Average, 1) }
+    if ($gpus.Count) { $r.Gpu = [math]::Round(($gpus | Measure-Object -Average).Average, 1) }
+    if ($g3.Count) { $r.Gpu3d = [math]::Round(($g3 | Measure-Object -Average).Average, 1) }
+    $r.GpuTop = (@($byPid.GetEnumerator() | Where-Object { $_.Value -ge 0.1 } | Sort-Object Value -Descending |
+            Select-Object -First 3 | ForEach-Object {
+                $id, $kind = $_.Key.Split(' ')
+                $n = (Get-Process -Id ([int]$id) -ErrorAction SilentlyContinue).ProcessName
+                '{0} {1} {2:N1}%' -f $(if ($n) { $n } else { "pid$id" }), $kind, $_.Value
+            })) -join ', '
+    $r
+}
+
+function Get-MachineState {
+    $bg = Get-Background
+    $cpu = $bg.Cpu
     # @() on each: a function's one-item result arrives as that item, not as an array.
     $heavy = @(@(Get-Names $env:FT_BENCH_HEAVY) + @(Get-Names $env:FT_BENCH_GAMES) | ForEach-Object { '{0}({1})' -f $_.ProcessName, $_.Id })
     $top = ''
@@ -68,8 +110,12 @@ function Get-MachineState {
                 ForEach-Object { '{0} {1:N0}%' -f $_.InstanceName, ($_.CookedValue / $n) }) -join ', '
     } catch {}
     $tray = @(Get-Names $env:FT_BENCH_TRAY | ForEach-Object { $_.ProcessName } | Sort-Object -Unique)
-    [pscustomobject]@{ Cpu = $cpu; Heavy = (($heavy + @($tray | ForEach-Object { "$_(recorded)" })) -join ' '); Top = $top
-        Dirty = ($cpu -gt 10 -or $heavy.Count -gt 0) }
+    [pscustomobject]@{ Cpu = $cpu; Gpu = $bg.Gpu; Gpu3d = $bg.Gpu3d; GpuTop = $bg.GpuTop
+        Heavy = (($heavy + @($tray | ForEach-Object { "$_(recorded)" })) -join ' '); Top = $top
+        Dirty = ($cpu -gt $MaxBgCpu -or $bg.Gpu -gt $MaxBgGpu -or $heavy.Count -gt 0) }
+}
+function Format-State($st) {
+    "cpu $($st.Cpu)% gpu $($st.Gpu)% (3d $($st.Gpu3d)%) heavy [$($st.Heavy)] top [$($st.Top)] gpu top [$($st.GpuTop)]"
 }
 
 # Why no shared block may open. Lines read: "BUSY|FREE yyyy-MM-dd HH:mm - <owner>[:] <kind>[:] ...". A FREE closes that
@@ -85,15 +131,18 @@ function Get-Blockers {
             if ($l -match '^(BUSY|FREE) (\d{4}-\d\d-\d\d \d\d:\d\d) - (\S+?):? (\S+)') {
                 $who = $Matches[3]
                 $key = "$who $($Matches[4].TrimEnd(':').ToUpper())"
-                if ($Matches[1] -eq 'BUSY') { $open[$key] = [datetime]::ParseExact($Matches[2], 'yyyy-MM-dd HH:mm', $null) }
+                if ($Matches[1] -eq 'BUSY') {
+                    $open[$key] = [pscustomobject]@{ T = [datetime]::ParseExact($Matches[2], 'yyyy-MM-dd HH:mm', $null); L = $l }
+                }
                 elseif ($open.ContainsKey($key)) { $open.Remove($key) }
                 else { @($open.Keys | Where-Object { $_.StartsWith("$who ") }) | ForEach-Object { $open.Remove($_) } }
             }
         }
     }
     $now = Get-Date
-    @($open.GetEnumerator() | Where-Object { -not $_.Key.StartsWith("$owner ") -and ($now - $_.Value).TotalMinutes -lt 90 } |
-            ForEach-Object { "$($_.Key) since $($_.Value.ToString('HH:mm'))" }) +
+    @($open.GetEnumerator() | Where-Object { -not $_.Key.StartsWith("$owner ") -and ($now - $_.Value.T).TotalMinutes -lt 90 -and
+                $_.Value.L -match $BlockOn } |
+            ForEach-Object { "$($_.Key) since $($_.Value.T.ToString('HH:mm'))" }) +
         @($(if ($hold) { "HOLD open: $($hold.Substring(0, [math]::Min(60, $hold.Length)))" })) +
         @($(if ($games.Count -gt 0) { "game running: $($games -join ' ')" })) | Where-Object { $_ }
 }
@@ -116,77 +165,115 @@ $table = @{
     wave        = @{ Map = $strip; Args = @('-TimeOfDay=12', '-BenchPath=wave_eye.txt', '-BenchSide=1000', '-BenchWarmup=4', '-WorldWaveAt=36600,-12450,470,8') }
     cold        = @{ Map = $strip; Args = @('-TimeOfDay=12', '-BenchWarmup=0', '-BenchSeconds=20') }
 }
+# The runs in order (scene, then size, then run).
+$plan = @(foreach ($scene in $Scenes) {
+        if (-not $table.ContainsKey($scene)) { "unknown scene $scene" | Write-Host; continue }
+        foreach ($size in $Sizes) { for ($r = 1; $r -le $Runs; $r++) {
+                [pscustomobject]@{ Scene = $scene; Size = $size
+                    Tag = $(if ($Label) { "${scene}_${Label}_${size}_r$r" } else { "${scene}_${size}_r$r" }) } } }
+    })
 if ($DryRun) {
     $st = Get-MachineState
-    "machine heavy [$($st.Heavy)] dirty $($st.Dirty)"
-    foreach ($scene in $Scenes) {
-        if (-not $table.ContainsKey($scene)) { "unknown scene $scene"; continue }
-        foreach ($size in $Sizes) { for ($r = 1; $r -le $Runs; $r++) {
-            "plan $(if ($Label) { "${scene}_${Label}_${size}_r$r" } else { "${scene}_${size}_r$r" })" } }
-    }
+    "machine $(Format-State $st) dirty $($st.Dirty)"
+    $plan | ForEach-Object { "plan $($_.Tag)" }
     exit 0
 }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $order = Join-Path $Out 'run_order.txt'
-$blockStart = $null
-$blockRuns = 0
-$lastSecs = 240
-$exitCode = 0
-:all foreach ($scene in $Scenes) {
-    if (-not $table.ContainsKey($scene)) { "unknown scene $scene"; continue }
-    $s = $table[$scene]
-    foreach ($size in $Sizes) {
-        $wh = $size.Split('x')
-        for ($r = 1; $r -le $Runs; $r++) {
-            $tag = if ($Label) { "${scene}_${Label}_${size}_r$r" } else { "${scene}_${size}_r$r" }
-            $dir = Join-Path $Out $tag
-            $machine = Join-Path $dir 'machine.txt'
-            $sum = Join-Path $dir "$tag`_summary.txt"
-            if ((Test-Path $sum) -and (Test-Path $machine) -and ((Get-Content $machine -TotalCount 1) -eq 'CLEAN')) {
-                "$tag done, skipped"; continue
-            }
-            # Close the block when the next run would take it past its limit; open one when none is open.
-            if ($blockStart -and ((Get-Date) - $blockStart).TotalSeconds + $lastSecs -gt $BlockMinutes * 60) {
-                Write-Busy 'FREE' "bench block done ($blockRuns runs), nothing of this job running"
-                $blockStart = $null
-            }
-            if (-not $blockStart) {
-                if ($Shared) {
-                    $busy = Get-Blockers
-                    if ($busy.Count -gt 0) { "not opening a block: $($busy -join '; ')"; $exitCode = 3; break all }
-                }
-                Write-Busy 'BUSY' "bench block from $tag ($BlockMinutes min max)"
-                $blockStart = Get-Date
-                $blockRuns = 0
-            }
-            New-Item -ItemType Directory -Force -Path $dir | Out-Null
-            $log = Join-Path $dir 'game.log'
-            $a = @("`"$Project`"", $s.Map, '-game', '-RenderOffScreen', "-ResX=$($wh[0])", "-ResY=$($wh[1])", "-Bench=$tag",
-                "-BenchOut=`"$dir`"", '-unattended', '-nopause', '-nosplash', '-NoSound', "-abslog=`"$log`"") + $s.Args + $Extra
-            $before = Get-MachineState
-            $t0 = Get-Date
-            $p = Start-Process $ue -ArgumentList $a -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $dir 'game.out')
-            $null = $p.Handle
-            $killed = $false
-            if (-not $p.WaitForExit($Minutes * 60 * 1000)) { $p.Kill(); $killed = $true }
-            $p.WaitForExit()
-            $secs = [int]((Get-Date) - $t0).TotalSeconds
-            $lastSecs = [math]::Max($lastSecs, $secs)
-            $blockRuns++
-            Start-Sleep -Seconds 5 # this run's own shader workers exit before the after-state is read
-            $after = Get-MachineState
-            $dirty = $before.Dirty -or $after.Dirty
-            @($(if ($dirty) { 'CONTAMINATED' } else { 'CLEAN' }),
-                "before: cpu $($before.Cpu)% heavy [$($before.Heavy)] top [$($before.Top)]",
-                "after:  cpu $($after.Cpu)% heavy [$($after.Heavy)] top [$($after.Top)]",
-                "args: $($a -join ' ')") | Set-Content -Encoding utf8 $machine
-            $line = '{0} {1} pid {2} exit {3} in {4} s{5}{6}' -f (Get-Date -Format 'HH:mm:ss'), $tag, $p.Id, $p.ExitCode, $secs,
-                $(if ($killed) { ' (time limit: stopped)' } else { '' }), $(if ($dirty) { ' CONTAMINATED' } else { '' })
-            Add-Content -Encoding utf8 $order $line
-            $line
-            if (Test-Path $sum) { Get-Content $sum -TotalCount 1 }
-        }
+$script:blockStart = $null
+$script:blockRuns = 0
+$script:blocksDone = 0
+$script:lastSecs = 240
+$script:exitCode = 0
+
+# CLEAN or CONTAMINATED for a run with a summary, else '' (never run, failed or stopped).
+function Get-RunState([string]$Tag) {
+    $dir = Join-Path $Out $Tag
+    $machine = Join-Path $dir 'machine.txt'
+    if ((Test-Path (Join-Path $dir "$Tag`_summary.txt")) -and (Test-Path $machine)) { "$(Get-Content $machine -TotalCount 1)".Trim() } else { '' }
+}
+
+# Close the block when the next run would take it past its limit; open one when none is open. $false: stop here.
+function Enter-Block([string]$Tag) {
+    if ($script:blockStart -and ((Get-Date) - $script:blockStart).TotalSeconds + $script:lastSecs -gt $BlockMinutes * 60) {
+        Write-Busy 'FREE' "bench block done ($($script:blockRuns) runs), nothing of this job running"
+        $script:blockStart = $null
+        $script:blocksDone++
+    }
+    if ($script:blockStart) { return $true }
+    if ($MaxBlocks -gt 0 -and $script:blocksDone -ge $MaxBlocks) {
+        Write-Host "block limit ($MaxBlocks) reached before $Tag; the same command resumes"; $script:exitCode = 4; return $false
+    }
+    if ($Shared) {
+        $busy = @(Get-Blockers)
+        if ($busy.Count -gt 0) { Write-Host "not opening a block: $($busy -join '; ')"; $script:exitCode = 3; return $false }
+    }
+    Write-Busy 'BUSY' "bench block from $Tag ($BlockMinutes min max)"
+    $script:blockStart = Get-Date
+    $script:blockRuns = 0
+    $true
+}
+
+# One run; returns $true when it was contaminated.
+function Invoke-Run($Item, [string]$Note) {
+    $s = $table[$Item.Scene]
+    $wh = $Item.Size.Split('x')
+    $tag = $Item.Tag
+    $dir = Join-Path $Out $tag
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $log = Join-Path $dir 'game.log'
+    $a = @("`"$Project`"", $s.Map, '-game', '-RenderOffScreen', "-ResX=$($wh[0])", "-ResY=$($wh[1])", "-Bench=$tag",
+        "-BenchOut=`"$dir`"", '-unattended', '-nopause', '-nosplash', '-NoSound', "-abslog=`"$log`"") + $s.Args + $Extra
+    $before = Get-MachineState
+    $t0 = Get-Date
+    $p = Start-Process $ue -ArgumentList $a -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $dir 'game.out')
+    $null = $p.Handle
+    $killed = $false
+    if (-not $p.WaitForExit($Minutes * 60 * 1000)) { $p.Kill(); $killed = $true }
+    $p.WaitForExit()
+    $secs = [int]((Get-Date) - $t0).TotalSeconds
+    $script:lastSecs = [math]::Max($script:lastSecs, $secs + 20)
+    $script:blockRuns++
+    Start-Sleep -Seconds 5 # this run's own shader workers exit before the after-state is read
+    $after = Get-MachineState
+    $dirty = $before.Dirty -or $after.Dirty
+    @($(if ($dirty) { 'CONTAMINATED' } else { 'CLEAN' }),
+        "limits: background cpu $MaxBgCpu% gpu $MaxBgGpu%$Note",
+        "before: $(Format-State $before)",
+        "after:  $(Format-State $after)",
+        "args: $($a -join ' ')") | Set-Content -Encoding utf8 (Join-Path $dir 'machine.txt')
+    $line = '{0} {1} pid {2} exit {3} in {4} s bg cpu {5}/{6}% gpu {7}/{8}%{9}{10}{11}' -f (Get-Date -Format 'HH:mm:ss'), $tag,
+        $p.Id, $p.ExitCode, $secs, $before.Cpu, $after.Cpu, $before.Gpu, $after.Gpu,
+        $(if ($killed) { ' (time limit: stopped)' } else { '' }), $(if ($dirty) { ' CONTAMINATED' } else { '' }), $Note
+    Add-Content -Encoding utf8 $order $line
+    $line | Write-Host
+    $sum = Join-Path $dir "$tag`_summary.txt"
+    if (Test-Path $sum) { Get-Content $sum -TotalCount 1 | Write-Host }
+    $dirty
+}
+
+# Main pass: a contaminated run (new, or found from an earlier pass) waits for the end; it is repeated once there, its
+# first try kept as <tag>_dirty1. A run that already has a _dirty1 is not repeated again.
+$deferred = @()
+foreach ($it in $plan) {
+    $state = Get-RunState $it.Tag
+    $tried = Test-Path (Join-Path $Out "$($it.Tag)_dirty1")
+    if ($state -eq 'CLEAN') { "$($it.Tag) done, skipped"; continue }
+    if ($state -eq 'CONTAMINATED') {
+        if ($tried) { "$($it.Tag) repeated once, still contaminated: kept" } else { $deferred += $it }
+        continue
+    }
+    if (-not (Enter-Block $it.Tag)) { break }
+    if ((Invoke-Run $it '') -and -not $tried) { $deferred += $it }
+}
+if ($script:exitCode -eq 0 -and $deferred.Count -gt 0) {
+    "repeating $($deferred.Count) contaminated run(s) once: $(($deferred | ForEach-Object { $_.Tag }) -join ' ')"
+    foreach ($it in $deferred) {
+        if (-not (Enter-Block $it.Tag)) { break }
+        $dir = Join-Path $Out $it.Tag
+        Move-Item -LiteralPath $dir -Destination "$dir`_dirty1"
+        $null = Invoke-Run $it ' (repeat of a contaminated run)'
     }
 }
-if ($blockStart) { Write-Busy 'FREE' "bench block done ($blockRuns runs), nothing of this job running" }
-exit $exitCode
+if ($script:blockStart) { Write-Busy 'FREE' "bench block done ($($script:blockRuns) runs), nothing of this job running" }
+exit $script:exitCode
