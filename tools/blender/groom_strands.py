@@ -46,6 +46,10 @@ With no "where" an op applies to every strand. Ops run in order:
                                           the tangent plane at the nearest head vertex) and the strand moves with it.
                                           Fills a bare patch from the hair beside it, or thickens a sparse region
                                           (a "group" id tags the copies, so later ops can reshape only them)
+  {"op": "replace", "file": npz[, "min_len": cm]}
+                                          take the points from an edited dump of these same strands ("P", "n", "W",
+                                          strand for strand as they stand when the op runs, edited outside, e.g. per-zone
+                                          trims); strands shorter than min_len (default 0.01 cm) are dropped
   {"op": "graft", "file": npz[, "group": id]}
                                           (needs "head") copy donor strands onto new roots: the npz (head_prop.py
                                           transplant) holds "roots" (cm, this frame) and "donor" (strand indices as the
@@ -420,6 +424,15 @@ for op in spec.get("ops", []):
         if "group" in op and len(k):   # tag the copies, so later ops can reshape them alone ("where": {"group": id})
             st["g"][len(st) - len(k):] = op["group"]
         print("op dup    %d strands copied" % len(k))
+        continue
+    if kind == "replace":
+        d = np.load(op["file"])
+        if len(d["n"]) != len(st):
+            raise SystemExit("replace: %d strands in the file, %d here" % (len(d["n"]), len(st)))
+        st["n"], P, W = d["n"], d["P"].astype(np.float64), d["W"].astype(np.float64)
+        L = arcs()[2]
+        keep_strands(L >= op.get("min_len", 0.01))
+        print("op replace %d strands, %d kept" % (len(L), len(st)))
         continue
     if kind == "graft":
         if not spec.get("head"):
