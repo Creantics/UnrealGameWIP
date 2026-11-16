@@ -375,14 +375,14 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		CloseBase.rig.arm = CameraLens.rig.arm = CloseArmSwitch;
 	}
 	{
-		// -ArenaStandOff=<m>: the autopilot holds this far from its target, guarding, no attacks or dodges (stand-off
+		// -ArenaStandOff=<m>: the autopilot circles its target at this range, guarding, no attacks or dodges (stand-off
 		// stills at a set range). 0 or missing: off.
 		StandOffAt = 0.f;
 		float Stand = 0.f;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaStandOff="), Stand) && FMath::IsFinite(Stand) && Stand > 0.f)
 		{
 			StandOffAt = FMath::Clamp(Stand, 1.f, 20.f);
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaStandOff: the autopilot holds %.2f m from its target."), StandOffAt);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaStandOff: the autopilot circles its target at %.2f m."), StandOffAt);
 		}
 	}
 	{
@@ -3210,7 +3210,8 @@ void UFTArenaRunner::StepFight()
 		}
 		if (StandOffAt > 0.f)
 		{
-			// -ArenaStandOff: toward or away from the target the camera follows (else the lock) to hold the range, guarding.
+			// -ArenaStandOff: the lead circles the target the camera follows (else the lock) at a slow walk, stepping in or
+			// out to hold the range, guarding (a capture mode: stand-off stills at a set range).
 			const int32 T = CloseTargetNow >= 0 ? CloseTargetNow : (Fight.lock() != ftcore::kArenaNobody ? static_cast<int32>(Fight.lock()) : -1);
 			In.light = In.heavy = In.release = In.dodge = false;
 			In.guard = true;
@@ -3221,10 +3222,17 @@ void UFTArenaRunner::StepFight()
 				const ftcore::Vec2 To{E.x - Bodies.player.x, E.y - Bodies.player.y};
 				const float D = ArenaLength(To);
 				const float Err = D - StandOffAt;
-				if (D > 0.01f && FMath::Abs(Err) > 0.15f)
+				if (D > 0.01f)
 				{
-					const float Push = FMath::Clamp(Err * 1.5f, -1.f, 1.f) / D;
-					In.move = ftcore::Vec2{To.x * Push, To.y * Push};
+					const float Push = (FMath::Abs(Err) > 0.15f ? FMath::Clamp(Err * 1.5f, -1.f, 1.f) : 0.f) / D;
+					const float Round = 0.4f / D; // the tangent, counter-clockwise round the target
+					ftcore::Vec2 M{To.x * Push - To.y * Round, To.y * Push + To.x * Round};
+					const float Len = ArenaLength(M);
+					if (Len > 1.f)
+					{
+						M = ftcore::Vec2{M.x / Len, M.y / Len};
+					}
+					In.move = M;
 				}
 			}
 		}

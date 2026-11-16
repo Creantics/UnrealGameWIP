@@ -81,7 +81,7 @@ inline constexpr CameraPreset closeCameraPreset() {
     p.cutMin = -0.04f;
     p.headMax = 0.75f;
     p.targetX = 0.6f;
-    p.lagSeconds = 0.08f;
+    p.lagSeconds = 0.f; // the boom's own, as classic: a 0.08 s lag measured no different on the dodge strip
     p.lowMax = 0.f;
     return p;
 }

@@ -85,7 +85,7 @@ TEST_CASE("camera preset: classic is the zone's rig and the lead's rule exactly;
     CHECK(c.lowMax == 0.f);
     CHECK(c.headMax == 0.75f);
     CHECK(c.targetX == 0.6f);
-    CHECK(c.lagSeconds == 0.08f);
+    CHECK(c.lagSeconds == 0.f);
     const ArenaLeadFrameRules rc = cameraPresetLeadRules(c);
     CHECK(rc.feetMin == -0.04f);
     CHECK(rc.headMax == 0.75f);

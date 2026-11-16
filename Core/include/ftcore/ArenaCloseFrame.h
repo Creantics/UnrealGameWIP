@@ -10,7 +10,7 @@
 // share of the width to targetXMelee, and the lead's frame rule relaxed so the look-up can happen. From a lens 2.6 m
 // behind a pivot raised 0.25 m the lead sinks in the frame, so the rule's cut (the point on the lead kept on screen)
 // may sink to cutMinMelee and, on a tall target, rise toward the shoulders (cutUpTall, held shoulderRoom under the
-// head): at a full melee share the rule then allows +10 degrees on a normal enemy and about +28 on a tall one (the
+// head): at a full melee share the rule then allows +6 degrees on a normal enemy and about +28 on a tall one (the
 // tests pin what it allows), where the far rule held a raised pivot at -4.4. The arm never changes.
 // The pitch at melee looks toward the target's head (arenaCloseMeleePitch), capped by the target's height between
 // pitchMelee (normal) and pitchMeleeTall (tallTo m and over), blended from the far pitch by the share. The lead's rule
@@ -45,7 +45,7 @@ struct ArenaCloseRules {
     float pivotUp = 0.25f;       // m the pivot rises at a full melee share
     float fovMelee = 68.f;       // degrees, horizontal, at a full melee share
     float targetXMelee = 0.64f;  // share of the width the target is turned to at a full melee share (right shoulder)
-    float pitchMelee = 10.f;     // degrees: the most the melee look-up takes on a normal enemy
+    float pitchMelee = 6.f;      // degrees: the most the melee look-up takes on a normal enemy (the enemy, not the sky, holds the upper frame)
     float pitchMeleeTall = 28.f; // degrees: on a target tallTo m or taller
     float tallFrom = 2.5f;       // m: a target this tall or shorter is normal
     float tallTo = 7.f;          // m: this tall or taller is fully tall

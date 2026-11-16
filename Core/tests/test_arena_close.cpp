@@ -180,13 +180,13 @@ TEST_CASE("close frame: the melee look-up goes toward the head, capped by the ta
     (void)cp;
 }
 
-TEST_CASE("close frame: at a full melee share the lead's rule allows the look-up (+10 normal, the tall reach pinned)") {
+TEST_CASE("close frame: at a full melee share the lead's rule allows the look-up (+6 normal, the tall reach pinned)") {
     for (float head : {1.6f, 1.7f, 1.8f}) {
         const ArenaLeadPitch p = arenaLeadPitch(kArenaLook, closeRules(1.f, 0.f, head), closeRig(1.f, 0.f, 1.f, head), kAspect,
-                                                closeBody(1.f, 0.f, head), 10.f);
+                                                closeBody(1.f, 0.f, head), 6.f);
         CAPTURE(head);
         CHECK(p.kept == 2);
-        CHECK(p.pitch == doctest::Approx(10.f));
+        CHECK(p.pitch == doctest::Approx(6.f));
     }
     // The far rule on the raised pivot (what the shape replaces) held the same lens at -4.4: the cut sank under it.
     const CameraPreset cp = closeCameraPreset();
