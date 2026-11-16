@@ -452,8 +452,12 @@ the pieces.
   Given and whole, ArenaFight turns stationing on from the camera's own place and forward (over
   `cameraOn`, `cameraPos` and `cameraFacing`), and the brain picks only stations where the partner's
   feet, middle and head are inside the frame shrunk by `kPartnerFrustumMargin` (0.10 of the whole
-  screen's width and height kept clear on each side, so |ndc| <= 1 - 2 x 0.10 = 0.8; the default of
-  `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and outside the
+  screen's width and height kept clear on the left, right and top, so ndc <= 1 - 2 x 0.10 = 0.8; the
+  default of `PartnerTuning::frustumMargin`, and the margin the host passes to `partnerInFrame`) and
+  by `kPartnerFrustumMarginBottom` at the bottom (0.05, so ndc >= -0.90, or the margin when that is
+  smaller: the low lock-on camera puts the feet of a partner beside the lead near the bottom edge;
+  feet and head must still both be inside; the brain uses that bottom margin only with a tall enemy in the
+  fight or circling on, else `frustumMargin` there too, stricter than the host's measure) and outside the
   keep-outs round the camera's lines to the lead and to its target. With none valid it holds the last
   station it had for `frustumGiveUpSeconds` (3 s, counted from the last valid station whatever the
   target, on every step: the held station is checked on string and guard steps too; sooner only when
@@ -473,7 +477,37 @@ the pieces.
   target on every step. These walks deal nothing and spend no attack budget; the idle reason is
   unchanged. The host reads `PartnerIntent::skirmish` (the step walks such a goal) and turns the
   partner to `PartnerIntent::enemy`; the report is `skirmishSeconds()`, `skirmishMoves()` and
-  `guardsBegun()`. No lead's kit has a dodge, so the partner never dodges.
+  `guardsBegun()`. No lead's kit has a dodge, so the partner never dodges. Neither its station's
+  side nor (with circling on) its choice between a goal of its own and its rules' walk flips back
+  within 1 s of the last change, and within 1 s of its last walk a goal of its own back the way it
+  came (over 90 degrees) is taken only when no side-step keeps its way
+  (`PartnerTuning::frameSideHoldSeconds`, `choiceHoldSeconds`, `turnHoldSeconds`, 1.0 each, 0..5;
+  defaults `kPartnerSideHoldSeconds`, `kPartnerChoiceHoldSeconds`). The bottom margin is
+  `PartnerTuning::frustumMarginBottom` (0..0.4, default `kPartnerFrustumMarginBottom`; the smaller of
+  it and `frustumMargin` is used). The brain uses that bottom margin and the side hold only with a
+  tall enemy (rule 18) in the fight or circling on; otherwise its bottom margin is `frustumMargin`
+  and no side is held, exactly as before them (measured: kept on for every fight they moved an
+  ordinary group fight's strings and lowered one on-screen share). `partnerInFrame`, the host's
+  measure, always uses the bottom margin. Each of the four is hashed only off its old value (a hold above 0,
+  the bottom margin below `frustumMargin`), and `mainEquivalentTuning(t)` sets all four back (bottom
+  margin = `frustumMargin`, holds 0): framed with circling off, on a target under `kPartnerTallMeters`,
+  its intents and hash are the brain's before them, to the bit (pinned in the tests).
+  Rule 18, a tall target (standing, its `top - base` at least `kPartnerTallMeters`, 4 m): the partner
+  never stands where the camera sees it hidden behind that body, and every walk is steered round it
+  (`kPartnerSteerClear`, 0.6 m off its edge). StayClose by such a target (its edge within
+  `closeLeadMeters` of the lead) grows its cap, leash and return by the target's radius, at most
+  `PartnerTuning::tallGrowMaxMeters` (6 m, 0..20); the growth ends only when the edge is
+  `kPartnerTallGrowHysteresis` (0.5 m) past `closeLeadMeters`, so a lead on the line does not move the
+  leash every step, and the brain and its circling walk read the same growth. With no valid station by
+  a tall target, rule 13's fallback is the nearest point of its two station rings that is legal and
+  within the cap, seen and unhidden first, then unhidden, then seen (rules 10-11's station only when
+  none is legal); a string from a spot the camera does not see is let through only when that fallback
+  found no seen unhidden one, and from a hidden spot only when it found no unhidden one. Any target under 4 m, or with no height given: none of rule 18 applies.
+  `PartnerInput::kitAttacks` (default true) says whether the ally's kit has attacks; false (a lead
+  whose kit has none) and the brain never starts a blow, with no fallback to the other lead's kit:
+  the idle reason is `NoKit`, and it still stations, faces its target and, circling on, moves.
+  ArenaFight sets it every tick from the partner's kit (`attacks`), and its paired counter (`tryPair`)
+  never picks a partner whose kit has no attacks.
   The cut rule (ArenaFight): a damaging hit the partner does not guard holds it in the lead
   fighter's hitstun and ends its running blow, in startup, active or recovery: nothing more from it,
   what it dealt stays, and the time its brain committed stays spent (`ArenaStats::partnerBlowsCut`).

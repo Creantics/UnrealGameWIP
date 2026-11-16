@@ -105,7 +105,7 @@ const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
 {
 	static const TCHAR* const Words[] = {TEXT("NotBegun"), TEXT("Down"), TEXT("CannotAct"), TEXT("Guard"), TEXT("Leash"),
 		TEXT("String"), TEXT("Pause"), TEXT("NoTarget"), TEXT("Approach"), TEXT("HeldOff"), TEXT("Start"), TEXT("Budget"),
-		TEXT("Committed"), TEXT("Reposition")};
+		TEXT("Committed"), TEXT("Reposition"), TEXT("NoKit")};
 	const size_t I = static_cast<size_t>(W);
 	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
 }
@@ -114,7 +114,7 @@ const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
 const TCHAR* PartnerIdleWord(ftcore::PartnerIdle W)
 {
 	static const TCHAR* const Words[] = {TEXT("None"), TEXT("NoBudget"), TEXT("NoTarget"), TEXT("Moving"), TEXT("Staggered"),
-		TEXT("Pause"), TEXT("Other")};
+		TEXT("Pause"), TEXT("Other"), TEXT("NoKit")};
 	static_assert(UE_ARRAY_COUNT(Words) == ftcore::kPartnerIdleCount, "one word per idle reason");
 	const size_t I = static_cast<size_t>(W);
 	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");

@@ -286,6 +286,8 @@ TEST_CASE("partner brain: partner_brain.json is the defaults; the importer keeps
     CHECK(d.budgetWindowSeconds == 20.f);
     CHECK(d.budgetShare == 0.6f);
     CHECK(d.budgetAllowanceSeconds == 2.f);
+    CHECK(t.tallGrowMaxMeters == d.tallGrowMaxMeters);
+    CHECK(d.tallGrowMaxMeters == 6.f); // rule 18: the shipped clamp
     CHECK(validPartnerTuning(d));
 
     REQUIRE(importPartnerBrain(R"({"version":1,"leashMeters":6,"blowsMax":4,"guardChance":1})", t, &err));
@@ -1312,7 +1314,7 @@ TEST_CASE("partner brain: the importer refuses each field just past either bound
         {"guardWarning", "-0.01", "2.01"},  {"guardChance", "-0.01", "1.01"},  {"guardHold", "-0.01", "2.01"},
         {"downSeconds", "0.99", "600.01"},  {"riseHealth", "0.009", "1.01"},   {"blowCapShare", "-0.01", "1.01"},
         {"overScale", "-0.01", "1.01"},     {"budgetWindowSeconds", "4.99", "30.01"}, {"budgetShare", "-0.01", "1.01"},
-        {"budgetAllowanceSeconds", "-0.01", "10.01"},
+        {"budgetAllowanceSeconds", "-0.01", "10.01"}, {"tallGrowMaxMeters", "-0.01", "20.01"},
     };
     const PartnerTuning d;
     PartnerTuning t;
@@ -1341,6 +1343,7 @@ TEST_CASE("partner brain: the importer refuses each field just past either bound
              R"({"version":1,"budgetAllowanceSeconds":10})", R"({"version":1,"standoffMeters":0})",
              R"({"version":1,"blowSeconds":0.1})",    R"({"version":1,"blowSeconds":2})",
              R"({"version":1,"leashMeters":10})",     R"({"version":1,"reachMeters":4})",
+             R"({"version":1,"tallGrowMaxMeters":0})", R"({"version":1,"tallGrowMaxMeters":20})",
          }) {
         CAPTURE(ok);
         CHECK(importPartnerBrain(ok, t, &err));
@@ -1665,6 +1668,7 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.t.engageSeconds += 0.5f; },
         [](PartnerBrainSave& s) { s.t.repositionEverySeconds += 0.5f; },
         [](PartnerBrainSave& s) { s.t.repositionMeters += 0.5f; },
+        [](PartnerBrainSave& s) { s.t.tallGrowMaxMeters += 0.5f; }, // rule 18 clamp: hashed only off its default
         [](PartnerBrainSave& s) { s.rhythm += 1; },
         [](PartnerBrainSave& s) { s.defence += 1; },
         [](PartnerBrainSave& s) { s.rhythmDraws += 1; },
@@ -1715,12 +1719,13 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.targetFor += 0.5; },
         [](PartnerBrainSave& s) { s.targetReached = !s.targetReached; },
     };
-    // One row per field: the 40 tunables before rule 17's switch (its rows are below); rhythm .. downFor (20); a
-    // watch's 4; the intent's 16 (its point as x and y); begun; side, sideKey, sideFor, swaps, sideTarget,
-    // offStation, targetFor, targetReached (8).
-    static_assert(aggregateFields<PartnerTuning>() == 41, "a new tunable needs a row here");
-    static_assert(offsetof(PartnerTuning, circling) == 40 * sizeof(float), "the switch follows the 40 tunables");
-    CHECK(std::size(edits) == 40u + 20u + 4u + 16u + 1u + 8u);
+    // One row per field: the 41 tunables before step 2's four (framed and rule 17's rows below) and rule 17's switch;
+    // rhythm .. downFor (20); a watch's 4; the intent's 16 (its point as x and y); begun; side, sideKey, sideFor,
+    // swaps, sideTarget, offStation, targetFor, targetReached (8).
+    static_assert(aggregateFields<PartnerTuning>() == 46, "a new tunable needs a row here");
+    static_assert(offsetof(PartnerTuning, frustumMarginBottom) == 41 * sizeof(float), "step 2's four follow the 41");
+    static_assert(offsetof(PartnerTuning, circling) == 45 * sizeof(float), "the switch follows the 45 tunables");
+    CHECK(std::size(edits) == 41u + 20u + 4u + 16u + 1u + 8u);
     int i = 0;
     for (const Edit e : edits) {
         CAPTURE(i++);
@@ -1755,6 +1760,12 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.guarding = !s.guarding; },
         [](PartnerBrainSave& s) { s.out.framed = !s.out.framed; },
         [](PartnerBrainSave& s) { s.out.frameFallback = !s.out.frameFallback; },
+        [](PartnerBrainSave& s) { s.holdsFramed = true; },              // the framing holds: hashed once on
+        // The framing holds' tuning and clock: hashed only once framed with them on (holdsFramed).
+        [](PartnerBrainSave& s) { s.holdsFramed = true; s.t.frustumMarginBottom += 0.01f; },
+        [](PartnerBrainSave& s) { s.holdsFramed = true; s.t.frameSideHoldSeconds += 0.5f; },
+        [](PartnerBrainSave& s) { s.holdsFramed = true; s.frameSideAt = s.now; },
+        [](PartnerBrainSave& s) { s.tallGrowOn = 1; },                  // rule 18: hashed only when on
     };
     int j = 0;
     for (const Edit e : framedEdits) {
@@ -1768,6 +1779,16 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         PartnerBrainSave u = base; // not framed: unseen
         e(u);
         CHECK(u.hash() == base.hash());
+    }
+    {
+        // Framed with the framing holds off (no tall enemy, circling off): their tuning and clock are unhashed, so
+        // such a fight hashes as main whatever they are.
+        PartnerBrainSave s = fb, m = fb, h = fb;
+        m.t.frustumMarginBottom += 0.01f;
+        h.t.frameSideHoldSeconds += 0.5f;
+        h.frameSideAt = h.now;
+        CHECK(m.hash() == s.hash());
+        CHECK(h.hash() == s.hash());
     }
     // Rule 17's switch is a tunable as rules 13-16's are: on, framed or not, it moves the hash.
     PartnerBrainSave on = base;
@@ -1793,6 +1814,13 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.skirmishDir = static_cast<std::int8_t>(-s.skirmishDir); },
         [](PartnerBrainSave& s) { s.skirmishKind = 1; },
         [](PartnerBrainSave& s) { s.skirmishOf += 2; },
+        [](PartnerBrainSave& s) { s.choice = 1; },
+        [](PartnerBrainSave& s) { s.choiceAt += 0.5; },
+        [](PartnerBrainSave& s) { s.walkDir.x += 1.f; },
+        [](PartnerBrainSave& s) { s.walkDir.y += 1.f; },
+        [](PartnerBrainSave& s) { s.walkAt += 0.5; },
+        [](PartnerBrainSave& s) { s.t.choiceHoldSeconds += 0.5f; }, // off its default, hashed
+        [](PartnerBrainSave& s) { s.t.turnHoldSeconds += 0.5f; },
     };
     int k = 0;
     for (const Edit e : circlingEdits) {
