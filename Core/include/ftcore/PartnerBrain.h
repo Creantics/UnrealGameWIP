@@ -201,7 +201,13 @@
 //  19. The close camera (PartnerStationView::close given, with stationing on; PartnerCloseStation.h): with a target,
 //      its station between actions is partnerCloseStation's, ahead of the lead on a flank of the target inside the
 //      close lens: in Pause at the host's kit band, in Ready pulled in to [reach / 2, reach - stationTolerance] so a
-//      string can start there; framed, only where the 3D frame sees it too. Under it the partner is in frame by its
+//      string can start there; framed, only where the 3D frame sees it too.
+//      The kit's own range (PartnerInput::range, valid: partnerRangeOn) is read under it alone: for the step it is
+//      the reach and standoff of every rule (partnerEffectiveTuning), and Pause and Ready share one band, the host's
+//      within [standoff, reach - stationTolerance] (no overlap: that interval itself), so a caster strings from where
+//      it waits; a StepBack is a step out to the standoff only (a walk to a station inside it, rule 19's short of the
+//      band or on the lead ring or a fallback's, is a MoveTo). Range unset or invalid: as without it, to the bit.
+//      Under it the partner is in frame by its
 //      middle and head alone (partnerInFrameClose; feet not tested), for every frame test of the partner while it is
 //      given. None legal: the rules above, as before.
 //      Under it rule 16's reposition, rule 13's held-station clock and rule 17 step aside; rule 18's walk steering
@@ -298,6 +304,17 @@ struct PartnerStationView {
     PartnerCloseView close{};   // rule 19 (the close camera); not given by default
 };
 
+// A partner kit's own range, metres off its target's edge: strings start within `reach`, and it stands no nearer than
+// `standoff`. Valid (partnerRangeOn): both finite, reach in 2 x stationTolerance..kPartnerRangeMax (and 0.5 at least),
+// standoff in 0..reach. 0, 0: unset.
+struct PartnerRange {
+    float reach = 0.f;
+    float standoff = 0.f;
+};
+// The far end of a valid range: the caster band's far end, plus a station's tolerance (the tuning's own reach stays
+// 0.5..4, as arena.json's partnerReach; a kit that would cast from 5-8 m needs both raised there).
+inline constexpr float kPartnerRangeMax = kPartnerCloseCasterMax + 0.5f;
+
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
 struct PartnerInput {
     PartnerOrder order = PartnerOrder::Spread;
@@ -323,6 +340,9 @@ struct PartnerInput {
     // the other lead's kit; it still stations, faces its target, guards and (rule 17) moves. The host sets it per
     // lead; true by default, so a host that never says is unchanged.
     bool kitAttacks = true;
+    // Rule 19: the partner kit's own range (ArenaFighter::partnerReach, partnerStandoff), read only under the close
+    // camera. Unset (0) or invalid: the tuning's. Input, not state: never in the save or the hash.
+    PartnerRange range{};
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
@@ -432,6 +452,10 @@ struct PartnerTuning {
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
+// Rule 19: the kit's range is on this step (the close camera given and in.range valid against `t`, see PartnerRange).
+FTCORE_API bool partnerRangeOn(const PartnerInput& in, const PartnerTuning& t);
+// The tuning the brain steps on: `t`, with the kit's reach and standoff when partnerRangeOn; else `t` itself.
+FTCORE_API PartnerTuning partnerEffectiveTuning(const PartnerTuning& t, const PartnerInput& in);
 // The shipped tuning with step 2's changes off: bottom margin equal to frustumMargin, the side, choice and turn holds 0.
 // Framed and with rule 17 off its intents and hash are main's (a0f48fa7) to the bit, on any target under
 // kPartnerTallMeters (rule 18 needs a tall one).
@@ -623,6 +647,9 @@ private:
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;
 
     PartnerBrainSave s_{};
+    // This step's tuning (partnerEffectiveTuning of s_.t), set as each step starts: input, not state (never saved or
+    // hashed); s_.t itself unless the kit's range is on.
+    PartnerTuning tStep_{};
 };
 
 } // namespace ftcore

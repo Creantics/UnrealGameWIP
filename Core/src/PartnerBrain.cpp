@@ -638,10 +638,27 @@ PartnerTuning mainEquivalentTuning(PartnerTuning t) {
 
 static_assert(kMaxPartnerStep == kMaxFightStep, "the brain's step bound is the fight's");
 
+bool partnerRangeOn(const PartnerInput& in, const PartnerTuning& t) {
+    const PartnerRange& r = in.range;
+    return in.station.close.given && std::isfinite(r.reach) && std::isfinite(r.standoff) &&
+           r.reach >= std::max(0.5f, 2.f * t.stationTolerance) && r.reach <= kPartnerRangeMax && r.standoff >= 0.f &&
+           r.standoff <= r.reach;
+}
+
+PartnerTuning partnerEffectiveTuning(const PartnerTuning& t, const PartnerInput& in) {
+    PartnerTuning e = t;
+    if (partnerRangeOn(in, t)) {
+        e.reachMeters = in.range.reach;
+        e.standoffMeters = in.range.standoff;
+    }
+    return e;
+}
+
 bool PartnerBrain::begin(const PartnerTuning& t, std::uint32_t seed) {
     const bool ok = validPartnerTuning(t);
     s_ = PartnerBrainSave{};
     s_.t = ok ? t : PartnerTuning{};
+    tStep_ = s_.t;
     s_.rhythm = mix(seed);
     s_.defence = mix(seed ^ 0xA5C3F00Du);
     s_.skirmish = mix(seed ^ 0x5C1A7E3Bu);
@@ -728,7 +745,7 @@ int PartnerBrain::chooseTarget(const PartnerInput& in, bool framed, std::uint32_
         if (t >= 0 && t < n && standing(in.enemies[static_cast<std::size_t>(t)])) return t;
         if (!framed) return -1;
         // Rule 15: no lock; the enemy the lead attacks, else the nearest standing one near the lead.
-        const float nearLead = s_.t.closeLeadMeters + s_.t.reachMeters;
+        const float nearLead = tStep_.closeLeadMeters + tStep_.reachMeters;
         int hit = -1, close = -1;
         float dHit = 0.f, dClose = 0.f;
         for (int i = 0; i < n; ++i) {
@@ -876,6 +893,7 @@ void PartnerBrain::rolesSwapped() {
 const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     // As FightSession's tick: not a finite number or under 0 is 0; a long step counts as kMaxPartnerStep.
     dt = std::isfinite(dt) && dt > 0.0 ? std::min(dt, kMaxPartnerStep) : 0.0;
+    tStep_ = partnerEffectiveTuning(s_.t, in); // rule 19: the kit's range under the close camera; else s_.t
     if (s_.begun) spend(in.spentSeconds); // counted before this step decides
     decide(dt, in);
     PartnerIntent& o = s_.out;
@@ -908,8 +926,8 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
             const float l = in.blowSeconds[0];
             const double next = s_.drawn ? s_.lengths[0] : static_cast<double>(l >= 0.1f && l <= 2.f ? l : s_.t.blowSeconds);
             Ground g;
-            eligible = in.kitAttacks && standing(e) && edge(in.pos, e) <= s_.t.reachMeters && budgetFits(committedLeft() + next) &&
-                       makeGround(in, s_.t, g) && g.roomOk(in.pos) && !g.inWedge(in.pos, 0.f) &&
+            eligible = in.kitAttacks && standing(e) && edge(in.pos, e) <= tStep_.reachMeters && budgetFits(committedLeft() + next) &&
+                       makeGround(in, tStep_, g) && g.roomOk(in.pos) && !g.inWedge(in.pos, 0.f) &&
                        !makeKeep(g, e).in(in.pos, 0.f);
         }
         if (began || o.idle == PartnerIdle::None) s_.engageFor = 0.0;
@@ -1210,7 +1228,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     const bool wasStill = out.act != PartnerAct::MoveTo && out.act != PartnerAct::StepBack; // the last step's
     out = PartnerIntent{};
     if (!s_.begun) return out;
-    const PartnerTuning& t = s_.t;
+    const PartnerTuning& t = tStep_; // the kit's reach and standoff under the close camera (rule 19), else s_.t
+    const bool rangeOn = partnerRangeOn(in, s_.t);
     const std::size_t n = std::min(in.enemies.size(), kMaxPartnerEnemies);
 
     // Rule 5: down at zero, waits, rises after downSeconds (every step until the host stands it).
@@ -1364,8 +1383,19 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         ci.leashMeters = in.order == PartnerOrder::StayClose ? closeCap(t, g) : 0.f;
         ci.leadSide = c.leadSide;
         ci.partner = in.pos;
-        ci.standMax = forString ? std::min(c.standMax, t.reachMeters - t.stationTolerance) : c.standMax;
-        ci.standMin = std::min(forString ? std::min(c.standMin, 0.5f * t.reachMeters) : c.standMin, ci.standMax);
+        if (rangeOn) {
+            // The kit's range: one band for Pause and Ready, [standoff, reach - tolerance] (a standoff past its far end:
+            // that end), the host's band within it where they overlap, so a string starts where it waits.
+            const float rangeHi = t.reachMeters - t.stationTolerance;
+            const float rangeLo = std::min(t.standoffMeters, rangeHi);
+            const float bothLo = std::max(rangeLo, c.standMin), bothHi = std::min(rangeHi, c.standMax);
+            const bool overlap = bothLo <= bothHi;
+            ci.standMin = overlap ? bothLo : rangeLo;
+            ci.standMax = overlap ? bothHi : rangeHi;
+        } else {
+            ci.standMax = forString ? std::min(c.standMax, t.reachMeters - t.stationTolerance) : c.standMax;
+            ci.standMin = std::min(forString ? std::min(c.standMin, 0.5f * t.reachMeters) : c.standMin, ci.standMax);
+        }
         ci.bodyRadius = c.bodyRadius;
         ci.personalSpace = in.station.reviving ? 0.f : t.personalSpaceMeters;
         ci.arenaCentre = in.station.arenaCentre;
@@ -1574,7 +1604,10 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             if (there && edge(in.pos, e) <= t.reachMeters) s_.offStation = 0.0;
             else s_.offStation += dt;
             if (!there) {
-                out.act = edge(in.pos, e) < t.standoffMeters ? PartnerAct::StepBack : PartnerAct::MoveTo;
+                // With the kit's range, a StepBack is a step out to the standoff only: a walk to a station inside it
+                // (rule 19's short of its band or on the lead ring, or a fallback's ring) is a MoveTo.
+                const bool outward = !rangeOn || edge(p, e) + 1e-4f >= t.standoffMeters;
+                out.act = edge(in.pos, e) < t.standoffMeters && outward ? PartnerAct::StepBack : PartnerAct::MoveTo;
                 out.enemy = s_.target;
                 out.point = p;
             }
