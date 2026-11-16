@@ -89,6 +89,10 @@ struct NightLook {
     // has no step at the horizon (its direction still turns to the moon's there, both grazing). Under 0.05 is taken as
     // 0.05. A look knob: smaller ends the sun's light sooner after sunset (-NightSunSetHalf=).
     float sunSetHalfDeg = 2.f;
+    // The real-time sky lift never divides by a light under this share (11-16 ruling: block 4's moonless still read 209
+    // because the lift divided by a 1e-4 moon). Under it, as on a moonless or overcast night, the capture is lifted no
+    // further, so the street falls darker instead of blowing out. The ruled moons (0.03 and up) stay exact.
+    float liftFloorShare = 0.01f;
     // The night's local exposure shadow contrast and film toe, reached with the exposure blend. Below 0 keeps the world
     // look's own (the default): set only by ruling (-NightShadowContrast=, -NightToe=).
     float shadowContrast = -1.f;

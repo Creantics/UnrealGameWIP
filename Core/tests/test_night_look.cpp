@@ -315,6 +315,24 @@ TEST_CASE("nightFrameAt: the directional light and the real-time sky lift have n
     const NightLook look;
     CHECK(nightFrameAt(look, 0.f, 30.f).sunScale == 1.f);
     CHECK(nightFrameAt(look, 1.f, -50.f).sunScale == doctest::Approx(look.moonShare));
+    // A moonless (or overcast) night: the lift divides by liftFloorShare, not the 1e-4 clamp, so the capture is lifted
+    // at most as for a moon of that share and the street darkens instead of blowing out (block 4's moonless read 209).
+    for (const float moon : {1e-4f, 0.f, 0.005f}) {
+        NightLook dark = look;
+        dark.moonShare = moon;
+        dark.floorFit.floorKey = 0.f;
+        const NightFrame m = nightFrameAt(dark, 1.f, -53.4f);
+        const NightFrame still = nightFrame(dark, 1.f);
+        CHECK(m.skyScaleRealTime * look.liftFloorShare * m.skyLuminance == doctest::Approx(m.skyScale));
+        CHECK(still.skyScaleRealTime * look.liftFloorShare * still.skyLuminance == doctest::Approx(still.skyScale));
+    }
+    NightLook dark = look;
+    dark.moonShare = 1e-4f;
+    dark.floorFit.floorKey = 0.f;
+    NightLook ruled = dark;
+    ruled.moonShare = 0.03f;  // the smallest ruled moon is lifted exactly, past the floor
+    CHECK(nightFrameAt(dark, 1.f, -53.4f).skyScaleRealTime <= nightFrameAt(ruled, 1.f, -53.4f).skyScaleRealTime * 3.001f);
+    CHECK(look.liftFloorShare < 0.03f);
     // A zero half-depth is clamped, not a NaN at the horizon.
     NightLook sharp = look;
     sharp.sunSetHalfDeg = 0.f;

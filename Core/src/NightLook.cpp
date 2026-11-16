@@ -39,8 +39,10 @@ NightFrame nightFrame(const NightLook& look, float night, float deep) {
     f.sunScale = lerp(1.f, moon, n);
     f.skyScale = lerp(1.f, fill, n);
     f.skyLuminance = lerpRatio(1.f, std::clamp(look.skyLuminance, 1e-4f, 1.f), d);
-    // The capture also sees the dome's own dimming; lift it by that too, so the fill stands where it did.
-    f.skyScaleRealTime = lerp(1.f, fill / moon, n) / f.skyLuminance;
+    // The capture also sees the dome's own dimming; lift it by that too, so the fill stands where it did. The lift
+    // divides by no less than liftFloorShare, so a moonless still darkens instead of blowing out.
+    const float liftMoon = std::max(moon, std::max(look.liftFloorShare, 1e-4f));
+    f.skyScaleRealTime = lerp(1.f, fill / liftMoon, n) / f.skyLuminance;
     f.tintMix = n;
     f.fogKeep = lerp(1.f, std::max(look.fogKeep, 0.f), n);
     for (std::size_t c = 0; c < 3; ++c) {
@@ -150,7 +152,8 @@ NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDe
     f.sunScale = std::max(sunPart + n * moon * f.moonScale, 1e-4f);
     // The real-time capture sees the atmosphere lit by that light and the dome's own dimming: lift by both, so the
     // fill stands at skyScale's share of the day's on either side of the horizon.
-    f.skyScaleRealTime = f.skyScale / f.sunScale / f.skyLuminance;
+    // Never divided by less than liftFloorShare (a moonless or overcast night darkens, it doesn't blow out).
+    f.skyScaleRealTime = f.skyScale / std::max(f.sunScale, std::max(look.liftFloorShare, 1e-4f)) / f.skyLuminance;
     return f;
 }
 
