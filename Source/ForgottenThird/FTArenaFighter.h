@@ -147,6 +147,9 @@ public:
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's
 	// height over the feet, the shoulder offset sideways and up, and the field of view in degrees.
 	void SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees);
+	// The boom's location lag (ftcore::CameraPreset::lagSeconds): Seconds > 0 lags by about that long (a lag speed of
+	// 1 / Seconds), 0 is the boom's own (on, at the constructor's speed), under 0 turns the lag off.
+	void SetCameraLag(float Seconds);
 	// The lens tilted up on the boom's end by this much (degrees; ftcore::arenaSplitPitch's tilt): a look steeper than
 	// the boom may swing.
 	void SetCameraTilt(float Degrees);

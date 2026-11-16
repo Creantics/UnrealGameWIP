@@ -92,6 +92,15 @@ inline constexpr ArenaFrameRules kArenaFrame{};
 // NaN distance: 0; a distance within |side|: the cap).
 FTCORE_API float arenaFrameTurn(const ArenaFrameRules& rules, float side, float distance);
 
+// The same turn with the target put at `screenX` of the frame's width instead of on its centre line (a close lens keeps
+// it right of the lead: CameraPreset::targetX), for a horizontal field of view `fov` degrees and a lens `back` m behind
+// the pivot along the view (arenaEyeBack). With A the target's angle off the view's axis, tan A = (2 screenX - 1)
+// tan(fov / 2), the turn t solves -(D sin t + side) = tan A (D cos t + back), so
+//   t = asin(-(side + tan A back) cos A / D) - A   (the asin's argument clamped to -1..1),
+// held to +-maxTurn. At A = 0 that is asin(-side / D), arenaFrameTurn's. screenX exactly 0.5, or any input not finite:
+// arenaFrameTurn itself (the same float, so a centred lens is today's to the bit).
+FTCORE_API float arenaFrameTurnAt(const ArenaFrameRules& rules, float side, float distance, float screenX, float fov, float back);
+
 // One step of dt s of the applied turn toward `want`: eased, never past it, and unchanged when it is there already (an
 // applied 0 toward a want of 0 stays exactly 0). dt <= 0 or a NaN want: unchanged; a NaN applied counts as 0.
 FTCORE_API float arenaFrameStep(const ArenaFrameRules& rules, float applied, float want, float dt);
@@ -117,6 +126,9 @@ struct ArenaFrameScene {
     bool aiming = false;   // the aim frames the shot over the shoulder: the turn eases to 0
     bool framing = true;   // the Lock framing setting: off, the turn eases to 0
     bool held = false;     // the hit pause: the camera holds where it is
+    float screenX = 0.5f;  // share of the frame's width the turn puts the target at (0.5: the centre line, today's turn)
+    float fov = 70.f;      // degrees, the lens's horizontal field of view (read only off the centre line)
+    float back = 0.f;      // m: the lens behind the pivot along the view (arenaEyeBack; read only off the centre line)
 };
 
 // line + turn, unwound to (-180, 180].
@@ -124,7 +136,8 @@ FTCORE_API float arenaFrameViewYaw(const ArenaFrameYaw& yaw);
 
 // One camera step of dt s. Held (the hit pause) or dt <= 0: unchanged. Nothing followed: the turn goes into the line
 // (the drawn yaw unchanged) and is 0. Followed: the line eases toward lineWant (when there is one) and the turn toward
-// arenaFrameTurn, or toward 0 while aiming or with framing off (arenaFrameStep). A NaN turn counts as 0.
+// arenaFrameTurnAt (the scene's screenX, fov and back), or toward 0 while aiming or with framing off (arenaFrameStep).
+// A NaN turn counts as 0.
 FTCORE_API ArenaFrameYaw arenaFrameYawStep(const ArenaFrameRules& rules, ArenaFrameYaw now, const ArenaFrameScene& scene, float dt);
 
 // The stick (forward = up the screen, right = right) as a world move for a view drawn at viewYaw degrees.

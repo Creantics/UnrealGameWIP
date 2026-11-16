@@ -27,6 +27,7 @@
 #include "ftcore/ArenaGun.h"
 #include "ftcore/ArenaLockFrame.h"
 #include "ftcore/ArenaLook.h"
+#include "ftcore/CameraPreset.h"
 #include "FTArenaGlide.h"
 #include "ftcore/ArenaKindCrit.h"
 #include "ftcore/ArenaZone.h"
@@ -496,6 +497,17 @@ private:
 	float LockAspect() const;
 	ftcore::ArenaLeadBody LeadBody() const;
 	float LockAimHeight(int32 Target, float Base, float Top) const;
+	// The arena camera's preset (ftcore/CameraPreset.h), view only: the presets read once from
+	// Data/Battle/camera_presets.json, and at each Begin the one this fight is looked at through (-ArenaCamera=, else the
+	// settings' Camera row), applied to Fit.camera there. Its lead rule is what the hold, the low fit, the partner's
+	// turn and the lead-frame check all keep (ftcore::cameraPresetLeadRules); its cut is LeadBody's.
+	void PickCameraPreset();
+	ftcore::ArenaLeadFrameRules LeadFrameRules() const { return ftcore::cameraPresetLeadRules(CameraLens); }
+	ftcore::CameraPresets CameraPresetTable;
+	bool bCameraPresetsTried = false;
+	ftcore::CameraPresetId CameraPresetNow = ftcore::CameraPresetId::Classic;
+	ftcore::CameraPreset CameraLens;
+	float CameraLag = 0.f; // s, given to the boom (AFTArenaFighter::SetCameraLag): the preset's, or -ArenaCameraLag's
 	float LockLow = 0.f;          // 0..1: the low lens's share (eased at ftcore::kArenaLow.rate toward LowFit)
 	bool bShortArmLogged = false; // the arm under ftcore::kArenaHeadKeptArm was logged this fight
 	bool bLowRig = false;         // the low rig was last given to the boom
@@ -1097,7 +1109,7 @@ private:
 
 	float CameraYaw = 0.f;
 	float CameraPitch = -16.f;
-	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurn) on top of CameraYaw, which stays on the lock's
+	// The lock's framing: an orbit turn (degrees, ftcore::arenaFrameTurnAt) on top of CameraYaw, which stays on the lock's
 	// line. It goes into CameraYaw once nothing is followed (ftcore::arenaFrameYawStep), so the view never jumps.
 	float FrameTurn = 0.f;
 	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read (the partner's soft turn

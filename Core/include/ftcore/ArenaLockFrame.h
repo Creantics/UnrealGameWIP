@@ -36,10 +36,13 @@ struct ArenaLeadFrameRules {
 
 inline constexpr ArenaLeadFrameRules kArenaLeadFrame{};
 
-// The controlled lead's body at the pivot (on the floor under it), metres.
+// The controlled lead's body at the pivot (on the floor under it), metres. `cut` is the height on it the frame rule is
+// held at instead of the feet (a close lens keeps the thighs, not the shoes: CameraPreset::cutAt): the shares' `feet`
+// are that height's, and the rule's feetMin is held there. 0, the feet, is every lens's but the close one.
 struct ArenaLeadBody {
     float head = 1.8f;
     float radius = 0.35f;
+    float cut = 0.f;
 };
 
 // Where a point lands in a view: x and y as shares of the frame (0 left / bottom, 1 right / top); `ahead` false when
@@ -55,7 +58,8 @@ struct ArenaFramePoint {
 FTCORE_API ArenaFramePoint arenaFramePoint(const ArenaCameraPose& pose, float aspect, ArenaPoint3 at);
 
 // The lead's extent in the frame: its feet's and head's heights, and its leftmost and rightmost share, as seen by
-// `pose` (its yaw included: the lead stays where the pose puts it, the body's sides along the view's right).
+// `pose` (its yaw included: the lead stays where the pose puts it, the body's sides along the view's right). The
+// "feet" and the low sides are taken at the body's cut (0: the floor).
 struct ArenaLeadShares {
     float feet = 0.f;
     float head = 0.f;

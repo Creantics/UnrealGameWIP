@@ -34,6 +34,23 @@ float arenaFrameTurn(const ArenaFrameRules& rules, float side, float distance) {
     return side > 0.f ? -held : held;
 }
 
+float arenaFrameTurnAt(const ArenaFrameRules& rules, float side, float distance, float screenX, float fov, float back) {
+    if (screenX == 0.5f || !std::isfinite(side) || !std::isfinite(distance) || !std::isfinite(screenX) || !std::isfinite(fov) ||
+        !std::isfinite(back) || !(fov > 0.f && fov < 180.f))
+        return arenaFrameTurn(rules, side, distance);
+    const float cap = rules.maxTurn > 0.f ? (rules.maxTurn < 89.f ? rules.maxTurn : 89.f) : 0.f;
+    const float tanA = (2.f * screenX - 1.f) * std::tan(0.5f * fov * kDegToRad);
+    const float a = std::atan(tanA);
+    // sin(t + A) = -(side + tan A back) cos A / D: the target's right over its forward from the lens equals tan A.
+    const float num = -(side + tanA * back) * std::cos(a);
+    float ratio;
+    if (distance > 1e-4f) ratio = num / distance;
+    else ratio = num > 0.f ? 1.f : (num < 0.f ? -1.f : 0.f); // on the pivot: the turn's limit that way
+    ratio = std::clamp(ratio, -1.f, 1.f);
+    const float turn = (std::asin(ratio) - a) * kRadToDeg;
+    return std::clamp(turn, -cap, cap);
+}
+
 float arenaFrameStep(const ArenaFrameRules& rules, float applied, float want, float dt) {
     if (!(applied == applied)) applied = 0.f;
     if (!(dt > 0.f) || !(want == want) || applied == want) return applied;
@@ -74,7 +91,9 @@ ArenaFrameYaw arenaFrameYawStep(const ArenaFrameRules& rules, ArenaFrameYaw now,
         const float delta = unwound(scene.lineWant - out.line);
         out.line = unwound(out.line + delta * std::min(1.f, scene.lineRate * dt));
     }
-    const float want = scene.framing && !scene.aiming ? arenaFrameTurn(rules, scene.side, scene.distance) : 0.f;
+    const float want = scene.framing && !scene.aiming
+                           ? arenaFrameTurnAt(rules, scene.side, scene.distance, scene.screenX, scene.fov, scene.back)
+                           : 0.f;
     out.turn = arenaFrameStep(rules, out.turn, want, dt);
     return out;
 }

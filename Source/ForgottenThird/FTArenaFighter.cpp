@@ -38,6 +38,8 @@ constexpr float kArenaWalkFrom = 0.6f;
 constexpr float kArenaLeadHeight = 175.f;
 constexpr float kArenaLeadMinHeight = 140.f;
 constexpr float kArenaLeadMaxHeight = 210.f;
+// The boom's own location lag speed (USpringArmComponent::CameraLagSpeed): the classic lens's, and SetCameraLag(0)'s.
+constexpr float kArenaBoomLagSpeed = 9.f;
 
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
@@ -164,7 +166,7 @@ AFTArenaFighter::AFTArenaFighter()
 	Boom->ProbeSize = ftcore::kArenaBoomProbe * 100.f; // the probe the zone's lens clearance counts (ArenaCamera.h)
 	Boom->ProbeChannel = ECC_Camera;
 	Boom->bEnableCameraLag = true;
-	Boom->CameraLagSpeed = 9.f;
+	Boom->CameraLagSpeed = kArenaBoomLagSpeed;
 	Boom->bEnableCameraRotationLag = true;
 	Boom->CameraRotationLagSpeed = 10.f;
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
@@ -232,6 +234,28 @@ void AFTArenaFighter::SoakForReview()
 		WetSlots = Slots;
 		UE_LOG(LogForgottenThird, Display, TEXT("FTArenaFighter: wet review on %d garment slots (wetness %.2f, line %.0f cm above the feet)."),
 			Slots, WetReview.X, WetReview.Y);
+	}
+}
+
+void AFTArenaFighter::SetCameraLag(float Seconds)
+{
+	if (!Boom)
+	{
+		return;
+	}
+	if (Seconds > 0.f)
+	{
+		Boom->bEnableCameraLag = true;
+		Boom->CameraLagSpeed = 1.f / Seconds;
+	}
+	else if (Seconds == 0.f)
+	{
+		Boom->bEnableCameraLag = true; // the boom's own, as the constructor set it
+		Boom->CameraLagSpeed = kArenaBoomLagSpeed;
+	}
+	else
+	{
+		Boom->bEnableCameraLag = false;
 	}
 }
 
