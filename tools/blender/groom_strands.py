@@ -49,7 +49,9 @@ With no "where" an op applies to every strand. Ops run in order:
   {"op": "replace", "file": npz[, "min_len": cm]}
                                           take the points from an edited dump of these same strands ("P", "n", "W",
                                           strand for strand as they stand when the op runs, edited outside, e.g. per-zone
-                                          trims); strands shorter than min_len (default 0.01 cm) are dropped
+                                          trims); strands shorter than min_len (default 0.01 cm) are dropped. The file
+                                          may hold more strands than are here when it has "src": the parent of each
+                                          strand past the end (strands added in a sparse zone), whose group they take
   {"op": "graft", "file": npz[, "group": id]}
                                           (needs "head") copy donor strands onto new roots: the npz (head_prop.py
                                           transplant) holds "roots" (cm, this frame) and "donor" (strand indices as the
@@ -427,8 +429,11 @@ for op in spec.get("ops", []):
         continue
     if kind == "replace":
         d = np.load(op["file"])
-        if len(d["n"]) != len(st):
+        extra = len(d["n"]) - len(st)
+        if extra < 0 or (extra and ("src" not in d or len(d["src"]) != extra)):
             raise SystemExit("replace: %d strands in the file, %d here" % (len(d["n"]), len(st)))
+        if extra:  # strands added after these (e.g. interpolated in a sparse zone): "src" names each one's parent
+            st = np.concatenate([st, st[d["src"].astype(np.int64)]])
         st["n"], P, W = d["n"], d["P"].astype(np.float64), d["W"].astype(np.float64)
         L = arcs()[2]
         keep_strands(L >= op.get("min_len", 0.01))
