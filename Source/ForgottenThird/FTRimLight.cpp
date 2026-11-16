@@ -8,6 +8,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 
+#include "ftcore/LookReview.h"
+
 namespace
 {
 TAutoConsoleVariable<float> CVarRimLight(TEXT("ft.RimLight"), 0.f,
@@ -80,7 +82,7 @@ void UFTRimLightComponent::ApplyChannels()
 void UFTRimLightComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-	const float Scale = bAllowed ? FMath::Max(CVarRimLight.GetValueOnGameThread(), 0.f) : 0.f;
+	const float Scale = ftcore::look::rimLightScale(CVarRimLight.GetValueOnGameThread(), bAllowed);
 	if (!Light)
 	{
 		if (Scale <= 0.f)
@@ -111,7 +113,7 @@ void UFTRimLightComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 		ChannelTimer = 1.f;
 		ApplyChannels();
 	}
-	const APlayerCameraManager* Cam = UGameplayStatics::GetPlayerCameraManager(this, 0);
+	const APlayerCameraManager* Cam = UGameplayStatics::GetPlayerCameraManager(this, 0); // player 0: one view
 	if (!Cam)
 	{
 		return;

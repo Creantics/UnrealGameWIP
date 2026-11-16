@@ -1,6 +1,9 @@
 // A character-only rim light for gameplay. A spot light on lighting channel 2 alone sits behind the character as
 // the active camera sees it, raised and to one side, so the hair, shoulders and arms get a bright edge against the scene.
-// Only the owner's own primitives are put on channel 2, so nothing else in the level picks the light up.
+// Only characters' primitives are put on channel 2, so the level never picks the light up. Every character carrying one
+// shares channel 2, so each rim also lights the other characters inside its cone and attenuation radius (wanted for a
+// party lit from behind together; the arena allows it on the player's figure only). The camera it places against is
+// player 0's (split screen would need one per view).
 // Switched by ft.RimLight: 0 = off (the old look), above 0 = on at that intensity scale.
 #pragma once
 
