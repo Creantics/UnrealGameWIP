@@ -23,6 +23,7 @@
 // The menu never allocates; settingsRowValue writes into the caller's buffer.
 
 #include "ftcore/Api.h"
+#include "ftcore/CameraPresetId.h"
 #include "ftcore/Skip.h"
 #include "ftcore/UiFirstUse.h"
 
@@ -60,6 +61,8 @@ struct Settings {
     bool stickFlicks = false;     // the Turns arrow combos also take the left stick's flicks (StickFlick.h)
     float cameraShake = 1.f;      // 0..1: how hard the arena camera kicks when a blow lands (0: not at all)
     bool lockFraming = true;      // the followed arena view orbits to put the target on its centre line (ArenaLook.h)
+    CameraPresetId cameraPreset = CameraPresetId::Classic; // the arena camera's lens (CameraPreset.h): view only, never
+                                  // a rule of the fight
     std::uint32_t uiFirstUse = 0; // what the fight HUD has taught this save: its counts, packed by uiFirstUseSaved (UiFirstUse.h)
     int hudScale = 100;           // the fight HUD's size over the viewport's scale, margins included: percent
     int hudSafeMargin = 0;        // more room at the fight HUD's edges: percent of the viewport's width (left and right)
@@ -97,9 +100,10 @@ FTCORE_API void clampSettings(Settings& s);
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
 //  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"aimAssist":true,"subtitleSize":1,"reduceFlashes":false,
 //  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0,
-//  "lockFraming":true,"uiFirstUse":0,"hudScale":100,"hudSafeMargin":0,"showBasicControls":0}
+//  "lockFraming":true,"cameraPreset":0,"uiFirstUse":0,"hudScale":100,"hudSafeMargin":0,"showBasicControls":0}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
-// defenceAssist off/wide, subtitleSize small..large, showBasicControls first fights/always/never).
+// defenceAssist off/wide, subtitleSize small..large, cameraPreset classic/close, showBasicControls first
+// fights/always/never).
 FTCORE_API std::string encodeSettings(const Settings& s);
 // Reads settings text. Needs valid JSON with an integer "version" from 1 to Settings::kVersion;
 // otherwise false (`*error` says why) and `out` is untouched. A missing or wrong-typed field keeps
@@ -127,12 +131,13 @@ enum class SettingsRow : std::uint8_t {
     StickFlicks,
     CameraShake,
     LockFraming,
+    CameraPreset,
     HudScale,
     HudSafeMargin,
     ShowBasicControls,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 22;
+inline constexpr std::uint32_t kSettingsRowCount = 23;
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 

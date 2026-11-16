@@ -36,6 +36,8 @@ constexpr float kArenaWalkFrom = 0.6f;
 constexpr float kArenaLeadHeight = 175.f;
 constexpr float kArenaLeadMinHeight = 140.f;
 constexpr float kArenaLeadMaxHeight = 210.f;
+// The boom's own location lag speed (USpringArmComponent::CameraLagSpeed): the classic lens's, and SetCameraLag(0)'s.
+constexpr float kArenaBoomLagSpeed = 9.f;
 
 const FLinearColor kArenaBlade(0.75f, 0.78f, 0.82f);
 const FLinearColor kArenaShield(0.32f, 0.36f, 0.42f);
@@ -159,7 +161,7 @@ AFTArenaFighter::AFTArenaFighter()
 	Boom->ProbeSize = ftcore::kArenaBoomProbe * 100.f; // the probe the zone's lens clearance counts (ArenaCamera.h)
 	Boom->ProbeChannel = ECC_Camera;
 	Boom->bEnableCameraLag = true;
-	Boom->CameraLagSpeed = 9.f;
+	Boom->CameraLagSpeed = kArenaBoomLagSpeed;
 	Boom->bEnableCameraRotationLag = true;
 	Boom->CameraRotationLagSpeed = 10.f;
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
@@ -199,6 +201,28 @@ void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float Sid
 	Boom->SetRelativeLocation(FVector(0.0, 0.0, PivotMeters * 100.f));
 	Boom->SocketOffset = FVector(0.0, SideMeters * 100.f, UpMeters * 100.f);
 	Camera->SetFieldOfView(FovDegrees);
+}
+
+void AFTArenaFighter::SetCameraLag(float Seconds)
+{
+	if (!Boom)
+	{
+		return;
+	}
+	if (Seconds > 0.f)
+	{
+		Boom->bEnableCameraLag = true;
+		Boom->CameraLagSpeed = 1.f / Seconds;
+	}
+	else if (Seconds == 0.f)
+	{
+		Boom->bEnableCameraLag = true; // the boom's own, as the constructor set it
+		Boom->CameraLagSpeed = kArenaBoomLagSpeed;
+	}
+	else
+	{
+		Boom->bEnableCameraLag = false;
+	}
 }
 
 void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& InBaseColor, float HeightMeters, const FFTLeadLook* Look)
