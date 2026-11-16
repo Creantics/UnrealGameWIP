@@ -21,9 +21,9 @@ SPEC.json (lengths in metres, in the blend's world space):
      "base_normal_gl" or "base_normal_dx": "...png" | null, the piece's own normal map, the folds are laid over it
      "base_orm": "...png" | null,       its ORM (R takes the fold AO)
      "base_wear": "...png" | null,      its wear map (R curvature, 0.5 flat) the fold curvature adds to
-     "curv_gain": 1.0, "curv_blur": 6,  fold curvature scale into the wear map, box blur half-width in texels
-     "min_z": 0.6, "feather": 24}       min_z: a baked texel tilted further than this from the sheet counts as a miss;
-                                        feather: the folds fade to flat over this many bake texels at the cast edge
+     "curv_gain": 2.0, "curv_blur": 6,  fold curvature scale into the wear map, box blur half-width in texels
+     "min_z": 0.6, "feather_cm": 3}     min_z: a baked texel tilted further than this from the sheet counts as a miss;
+                                        feather_cm: the folds fade to flat over this distance in from the pinned outline
 
 Writes into out: <name>_fold_gl.png (the folds alone), <name>_N_gl.png and <name>_N.png (base plus folds, OpenGL and
 DirectX green), <name>_ORM.png, <name>_W.png (R curvature: above 0.5 ridge, below crease; G fold AO; B dirt = crease x
@@ -166,6 +166,24 @@ rep["hi_verts"], rep["free_verts"] = nv, len(free) - len(bound)
 P0 = np.empty(nv * 3)
 hi.data.vertices.foreach_get("co", P0)
 P0 = P0.reshape(-1, 3)
+# Feather weight per vertex, in 3D: 0 on the pinned outline, rising to 1 "feather_cm" in from it, so the folds fade out at the
+# cast edge and nowhere else (a weight in texture space would also fade them at every UV seam). The bake reads it below.
+from mathutils.kdtree import KDTree
+kd = KDTree(max(len(pinned), 1))
+for i in pinned:
+    kd.insert(P0[i], i)
+kd.balance()
+fw = np.zeros(nv, np.float32)
+if pinned:
+    fm = S.get("feather_cm", 3.0) / 100.0
+    for i in free - bound:
+        d = kd.find(P0[i])[2]
+        t = min(d / fm, 1.0) if fm > 0 else 1.0
+        fw[i] = t * t * (3 - 2 * t)
+else:
+    fw[:] = 1.0
+fa_w = hi.data.attributes.new("fold_w", "FLOAT", "POINT")
+fa_w.data.foreach_set("value", fw)
 if nrm is None:
     N0 = np.empty(nv * 3)
     hi.data.vertices.foreach_get("normal", N0)
@@ -269,7 +287,13 @@ inv = mat.node_tree.nodes.new("ShaderNodeMath")
 inv.operation = "SUBTRACT"
 inv.inputs[0].default_value = 1.0
 mat.node_tree.links.new(geo.outputs["Backfacing"], inv.inputs[1])
-mat.node_tree.links.new(inv.outputs[0], bsdf.inputs["Emission Strength"])
+att = mat.node_tree.nodes.new("ShaderNodeAttribute")
+att.attribute_name = "fold_w"
+mul = mat.node_tree.nodes.new("ShaderNodeMath")
+mul.operation = "MULTIPLY"
+mat.node_tree.links.new(inv.outputs[0], mul.inputs[0])
+mat.node_tree.links.new(att.outputs["Fac"], mul.inputs[1])
+mat.node_tree.links.new(mul.outputs[0], bsdf.inputs["Emission Strength"])  # front face x feather weight
 HIT = bake("EMIT", "Non-Color")[..., 0]
 
 
@@ -325,19 +349,17 @@ def box(arr, k):  # mean over a (2k+1)-texel square, edges padded with their own
 # The folds alone: unit vectors; texels the bake missed are flat, and so are texels whose ray met the sheet at a
 # grazing angle ("min_z": a lining or side face under the cast sheet, not a fold on it).
 nf = Nf * 2 - 1
-miss = (HIT < 0.5) | (np.linalg.norm(nf, axis=2) < 0.5) | (nf[..., 2] < S.get("min_z", 0.6))
+miss = (HIT < 0.01) | (np.linalg.norm(nf, axis=2) < 0.5) | (nf[..., 2] < S.get("min_z", 0.6))
 # A texel fully dark within ao_dist found the sheet from under it (a lining or inner layer), not a fold on its face.
 rep["buried_texels_share"] = float((~miss & (AO < 0.02)).mean())
 miss |= AO < 0.02
-rep["grazing_texels_share"] = float(((HIT >= 0.5) & (nf[..., 2] < S.get("min_z", 0.6))).mean())
+rep["grazing_texels_share"] = float(((HIT >= 0.01) & (nf[..., 2] < S.get("min_z", 0.6))).mean())
 nf[miss] = (0, 0, 1)
 AO[miss] = 1.0
-# Fade the folds to flat over "feather" texels before the edge of what the sheet covered, so the cast region has no step.
-f = int(S.get("feather", 24))
-if f > 0:
-    wt = np.clip((box((~miss).astype(np.float32), f) - 0.5) * 2, 0, 1) * ~miss
-    nf = nf * wt[..., None] + np.array([0, 0, 1.0]) * (1 - wt[..., None])
-    AO = AO * wt + (1 - wt)
+# Fade the folds to flat by the sheet's feather weight (baked into HIT), so the cast region has no step at its edge.
+wt = np.clip(HIT, 0, 1) * ~miss
+nf = nf * wt[..., None] + np.array([0, 0, 1.0]) * (1 - wt[..., None])
+AO = AO * wt + (1 - wt)
 nf /= np.linalg.norm(nf, axis=2, keepdims=True)
 save(nf * 0.5 + 0.5, NAME + "_fold_gl")
 
@@ -369,7 +391,7 @@ save(dx * 0.5 + 0.5, NAME + "_N")
 
 # Fold curvature from the fold normal's divergence in texture space (+ ridge, - crease), smoothed over a few texels.
 cv = np.gradient(nf[..., 0], axis=1) - np.gradient(nf[..., 1], axis=0)  # PNG rows run down, the tangent's v up
-cv = box(cv, int(S.get("curv_blur", 6))) * (res / 1024.0) * S.get("curv_gain", 1.0)
+cv = box(cv, int(S.get("curv_blur", 6))) * (res / 1024.0) * S.get("curv_gain", 2.0)
 cv[miss] = 0
 W0 = load(S.get("base_wear"), 4)  # its alpha (a tape mask on some pieces) is kept
 wr = np.clip((W0[..., 0] if W0 is not None else 0.5) + cv, 0, 1)
