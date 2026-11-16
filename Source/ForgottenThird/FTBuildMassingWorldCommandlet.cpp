@@ -3192,13 +3192,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		// The meshes (tools/hero_corner_props.py, FTImportProp -Dest=/Game/Props/HeroCorner): each one's origin is its hook
 		// (a lantern's top), its foot (a post) or its facade end (a cable, running along +X). Their paper slots wear the
-		// night glow.
+		// night glow. The glTF import puts each file's mesh under <Dest>/<file>/StaticMeshes/<mesh>; a mesh moved up to
+		// <Dest>/<mesh> is taken too.
 		const auto HeroMesh = [&](const TCHAR* Name) -> UStaticMesh*
 		{
-			UStaticMesh* Mesh = LoadMesh(FString(TEXT("/Game/Props/HeroCorner/")) + Name);
+			const FString Root = FString(TEXT("/Game/Props/HeroCorner/")) + Name;
+			UStaticMesh* Mesh = LoadMesh(Root + TEXT("/StaticMeshes/") + Name);
 			if (!Mesh)
 			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: /Game/Props/HeroCorner/%s isn't imported; left out."), Name);
+				Mesh = LoadMesh(Root);
+			}
+			if (!Mesh)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: %s/StaticMeshes/%s isn't imported; left out."), *Root, Name);
 			}
 			return Mesh;
 		};
