@@ -77,6 +77,8 @@ private:
 	};
 
 	bool IsNightNow() const;
+	// The lamps' switch-on now: 1 when forced, else the world clock's (0 with no clock running).
+	float LampFraction() const;
 	void CreatePool();
 	void SetNight(bool bOn);
 	void ApplyValues(USpotLightComponent& Light, bool bLamp) const;

@@ -37,6 +37,15 @@ ftcore::NightLook Read()
 	FParse::Value(Cmd, TEXT("NightTwilightFill="), L.twilightFill);
 	FParse::Value(Cmd, TEXT("NightDeepHigh="), L.deepHighDeg);
 	FParse::Value(Cmd, TEXT("NightDeepLow="), L.deepLowDeg);
+	FParse::Value(Cmd, TEXT("NightLampsOnHigh="), L.lampsOnHighDeg);
+	FParse::Value(Cmd, TEXT("NightLampsOnLow="), L.lampsOnLowDeg);
+	FParse::Value(Cmd, TEXT("NightExposureHigh="), L.exposureHighDeg);
+	FParse::Value(Cmd, TEXT("NightExposureLow="), L.exposureLowDeg);
+	FParse::Value(Cmd, TEXT("NightMoonRise="), L.moonRiseDeg);
+	FParse::Value(Cmd, TEXT("NightMoonFull="), L.moonFullDeg);
+	FParse::Value(Cmd, TEXT("NightMoonRiseShare="), L.moonRiseShare);
+	FParse::Value(Cmd, TEXT("NightShadowContrast="), L.shadowContrast);
+	FParse::Value(Cmd, TEXT("NightToe="), L.filmToe);
 	FParse::Value(Cmd, TEXT("NightCharFillStops="), L.charFillStops);
 	FParse::Value(Cmd, TEXT("NightCharFillK="), L.charFillKelvin);
 	FParse::Value(Cmd, TEXT("NightCharFillPitch="), L.charFillPitchDeg);
@@ -67,6 +76,10 @@ ftcore::NightLook Read()
 	L.moonShare = FMath::Max(L.moonShare, 1e-4f);
 	UE_LOG(LogForgottenThird, Display, TEXT("Night: moon %.3f, sky fill %.3f as twilight ends to %.3f in the deep night (sun %.1f to %.1f degrees), dome %.3f."),
 		L.moonShare, L.twilightFill, L.skyFill, L.deepHighDeg, L.deepLowDeg, L.skyLuminance);
+	UE_LOG(LogForgottenThird, Display, TEXT("Night: lamps on from %.1f to %.1f degrees, exposure to the night's from %.1f to %.1f, moon up from %.1f to %.1f (%.2f at rise), "
+		"night shadow contrast %.2f, toe %.2f (under 0: the look's own)."),
+		L.lampsOnHighDeg, L.lampsOnLowDeg, L.exposureHighDeg, L.exposureLowDeg, L.moonRiseDeg, L.moonFullDeg, L.moonRiseShare,
+		L.shadowContrast, L.filmToe);
 	return L;
 }
 
@@ -116,11 +129,13 @@ FTNight::FSkyFrame FTNight::FrameAt(const ftcore::WorldClockSpec& Spec, double H
 	FSkyFrame F;
 	F.NightAmount = ftcore::nightAmount(Spec, Hours);
 	const float Elevation = ftcore::sunElevationDeg(Spec, Hours);
-	// The fill and the dome go on darkening after NightAmount is full, by the sun's depth below the horizon.
-	F.Night = ftcore::nightFrame(Look(), F.NightAmount, ftcore::nightDeep(Look(), Elevation));
+	// The fill and the dome go on darkening after NightAmount is full, by the sun's depth below the horizon; the lamps,
+	// the exposure and the moon follow the sun's elevation (ftcore::nightFrameAt).
+	F.Night = ftcore::nightFrameAt(Look(), F.NightAmount, Elevation);
 	const float Amount = ftcore::duskAmount(Dusk(), Elevation, Hours >= 12.0);
 	F.Dusk = ftcore::duskFrame(Dusk(), Amount);
-	F.Lights = FMath::Max(F.NightAmount, ftcore::duskLights(Dusk(), Elevation));
+	// Windows and shops on with the lamps' curve (or the dusk row's, if earlier), before the exposure leaves the day's.
+	F.Lights = FMath::Max(F.Night.lamps, ftcore::duskLights(Dusk(), Elevation));
 	F.Daylight = ftcore::duskDaylight(Dusk(), Elevation) * (1.f - F.NightAmount);
 	F.ExposureBias = Dusk().exposureBias * Amount * (1.f - F.NightAmount);
 	return F;

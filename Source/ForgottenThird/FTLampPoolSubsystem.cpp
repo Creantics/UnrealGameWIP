@@ -102,8 +102,20 @@ bool UFTLampPoolSubsystem::IsNightNow() const
 	}
 	const UWorld* World = GetWorld();
 	const UFTWorldClockSubsystem* Clock = World ? World->GetSubsystem<UFTWorldClockSubsystem>() : nullptr;
-	// The clock's own lamps switch on about NightAmount 0.5 (each at a hashed point between 0.4 and 0.6).
-	return Clock && Clock->IsRunning() && Clock->GetNightAmount() > 0.5f;
+	// Live from the first lamp's switch-on (the clock's lamp fraction, on the sun's elevation); PickPool shows each lamp
+	// at its own hashed point of it.
+	return Clock && Clock->IsRunning() && Clock->GetLampFraction() > 0.f;
+}
+
+float UFTLampPoolSubsystem::LampFraction() const
+{
+	if (bForced)
+	{
+		return 1.f;
+	}
+	const UWorld* World = GetWorld();
+	const UFTWorldClockSubsystem* Clock = World ? World->GetSubsystem<UFTWorldClockSubsystem>() : nullptr;
+	return Clock && Clock->IsRunning() ? Clock->GetLampFraction() : 0.f;
 }
 
 float UFTLampPoolSubsystem::Candela(bool bLamp) const
@@ -294,11 +306,15 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 			Light->SetIntensity(Candela(bLamp) * (Pool.Scale.IsValidIndex(Index) ? Pool.Scale[Index] : 1.f));
 		}
 	}
+	// Each held lamp shows once the switch-on passes its own hashed point (shops keyed apart from the lamps).
+	const float Fraction = LampFraction();
+	const uint32 Salt = bLamp ? 0u : 0x9E3779B9u;
 	for (int32 S = 0; S < Size; ++S)
 	{
 		if (USpotLightComponent* Light = Lights[S])
 		{
-			Light->SetVisibility(Pool.Slot[S] != INDEX_NONE);
+			const int32 Held = Pool.Slot[S];
+			Light->SetVisibility(Held != INDEX_NONE && ftcore::nightLampOn(Fraction, static_cast<uint32>(Held) ^ Salt));
 		}
 	}
 	// -LampShadows: the lamps among the first ShadowLamps picked (nearest first) cast; the rest don't.

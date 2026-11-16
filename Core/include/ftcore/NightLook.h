@@ -19,13 +19,16 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 namespace ftcore {
 
 struct NightLook {
     float moonShare = 0.07f;       // the directional light at full night, as a share of its day intensity
-    float skyFill = 0.01f;         // the sky light in the deep night, as a share of its day intensity (net of the moon):
-                                   // near nothing, so between the lamps reads dark (11-15 ruling)
+    float skyFill = 0.14f;         // the sky light in the deep night, as a share of its day intensity (net of the moon):
+                                   // the night's floor, so between the lamps reads dark but with form (11-15 19:00
+                                   // ruling: the wide street's median at 18-24/255 from 20:30 on; block 1 read 20.4 at
+                                   // a fill of 0.139)
     float skyLuminance = 0.03f;    // the sky dome's own brightness in the deep night (SkyAtmosphere SkyLuminanceFactor):
                                    // near black, so the lamps and shops carry the night, not a dimmed day sky. A
                                    // real-time sky capture sees the darker dome too, so its lift takes this back out
@@ -34,10 +37,28 @@ struct NightLook {
     // follow a second curve on the sun's elevation (nightDeep): the fill stands at twilightFill and the dome at the day's
     // as twilight ends, and both fall in ratio to skyFill and skyLuminance from deepHighDeg to deepLowDeg (eased), so the
     // evening darkens continuously with no step. The defaults put 19:00 within a few percent of the twilight's values
-    // and 21:00 within a few percent of the deep night's.
+    // and hold the deep night's from about 20:25.
     float twilightFill = 1.30f;    // the sky light's fill as twilight ends (the night's old value)
     float deepHighDeg = -12.f;     // the deep night starts with the sun this far down ...
-    float deepLowDeg = -45.f;      // ... and is full by here (above -53.4, the sun at 22:00, so 22:00 is the spec)
+    float deepLowDeg = -33.f;      // ... and is full by here (the sun at about 20:25), so the floor is flat from 20:30
+    // The evening's switch-on, one curve on the sun's elevation (11-15 19:00 ruling): the street lamps, the shop and
+    // window lights come on from lampsOnHighDeg to lampsOnLowDeg (each lamp at its own hashed point of that fraction,
+    // nightLampOn, so they don't pop together), and only then does the exposure leave the day's range for the night's,
+    // from exposureHighDeg to exposureLowDeg (eased). exposureHighDeg sits where the lamps are past half on.
+    float lampsOnHighDeg = 1.f;
+    float lampsOnLowDeg = -4.f;
+    float exposureHighDeg = -2.f;
+    float exposureLowDeg = -7.f;
+    // The moon (the directional light opposite the sun) grows with its own elevation, eased from moonRiseDeg to
+    // moonFullDeg, from moonRiseShare of moonShare (a grazing moon lights nothing direct; the share keeps the sky
+    // capture it lights from vanishing) up to all of it.
+    float moonRiseDeg = 0.f;
+    float moonFullDeg = 15.f;
+    float moonRiseShare = 0.1f;
+    // The night's local exposure shadow contrast and film toe, reached with the exposure blend. Below 0 keeps the world
+    // look's own (the default): set only by ruling (-NightShadowContrast=, -NightToe=).
+    float shadowContrast = -1.f;
+    float filmToe = -1.f;
     float fogKeep = 0.08f;         // the height fog's own inscattering colour kept at full night
     float exposureEV100 = -1.2f;   // the night exposure's centre, from NightAmount kExposureLockAt on ...
     float exposureRangeEV = 1.0f;  // ... and its half-width: auto exposure moves within centre +- this (0 = locked)
@@ -87,7 +108,10 @@ struct NightFrame {
     float tintMix = 0.f;
     float fogKeep = 1.f;                     // the fog's day colour times this ...
     std::array<float, 3> fogGlow{0.f, 0.f, 0.f}; // ... plus this
-    bool lockExposure = false;               // the night's exposure range applies (from kExposureLockAt on)
+    bool lockExposure = false;               // the night's exposure range applies (exposureBlend above 0)
+    float exposureBlend = 0.f;               // the exposure range blended from the day's toward the night's by this
+    float lamps = 0.f;                       // the lamps', shops' and windows' switch-on fraction (nightLampFraction)
+    float moonScale = 1.f;                   // the moon's share of moonShare at its elevation (nightMoonScale)
     float exposureEV100 = 0.f;               // its centre ...
     float exposureMinEV100 = 0.f;            // ... the darkest the scene is metered (the camera opens up no further)
     float exposureMaxEV100 = 0.f;            // ... the brightest (the camera closes down no further)
@@ -101,8 +125,42 @@ struct NightFrame {
 // night (a night still). The clock passes nightDeep at the sun's elevation. No allocation.
 FTCORE_API NightFrame nightFrame(const NightLook& look, float night);
 FTCORE_API NightFrame nightFrame(const NightLook& look, float night, float deep);
+// The clock's frame: as the three-argument form, with the switch-on, the exposure blend and the moon read from the
+// sun's elevation. With the sun up the directional light is the sun, dimmed by the night; with it down it is the moon
+// at moonShare times nightMoonScale, and the real-time sky lift divides by that, so the fill stays a share of the day's
+// across the horizon with no step. No allocation.
+FTCORE_API NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDeg);
 // 0 with the sun above deepHighDeg, 1 below deepLowDeg, eased between. No allocation.
 FTCORE_API float nightDeep(const NightLook& look, float sunElevationDeg);
+// The lamps', shops' and windows' switch-on fraction: 0 above lampsOnHighDeg, 1 from lampsOnLowDeg down, eased. No
+// allocation.
+FTCORE_API float nightLampFraction(const NightLook& look, float sunElevationDeg);
+// Whether the lamp keyed `key` (a stable id: its index or a hash of its place) is on at a fraction: each lamp has its
+// own point in 0.05..0.95 of the fraction, so the street comes on lamp by lamp. All off at 0, all on at 1. No allocation.
+FTCORE_API bool nightLampOn(float fraction, std::uint32_t key);
+// The exposure's blend from the day's range to the night's: 0 above exposureHighDeg, 1 from exposureLowDeg down. No
+// allocation.
+FTCORE_API float nightExposureBlend(const NightLook& look, float sunElevationDeg);
+// The moon's share of moonShare with the sun at this elevation (the moon stands opposite it): moonRiseShare at the
+// horizon, 1 from moonFullDeg up, eased; 1 with the sun up (the light is the sun then). No allocation.
+FTCORE_API float nightMoonScale(const NightLook& look, float sunElevationDeg);
+
+// A model of the wide street's metered median (linear, 1 = white) through the evening, for tests and for reading a
+// strip against: the sky fill and the lamps light the street, the camera adapts within the day's range (a key it holds
+// while it can open up enough) and is clamped by the night's as the exposure blend goes over. Weights fitted to the
+// 11-15 strip (block 1: fill 1.24 / 0.55 / 0.14 / 0.033 / 0.012 read 49 / 37 / 20 / 11 / 10 of 255). The moon's direct
+// light is left out on purpose: it adds direction and shadow, not the floor (nightMoonKey is its share alone).
+struct NightKeyModel {
+    float fillWeight = 0.025f;   // the median per unit of sky fill share at the night's exposure
+    float lampWeight = 0.0005f;  // the lamps' share of the median between their pools, all on
+    float moonWeight = 0.052f;   // the moon's direct light per unit of moonShare x sin(its elevation), where it reaches
+    float dayKey = 0.0266f;      // what the camera holds while the day's range can open it up (19:00's 49/255)
+    float dayOpenEV = 8.f;       // how far past the night's range the day's range opens the camera
+};
+// The model's median at a NightAmount and sun elevation. No allocation.
+FTCORE_API float nightSceneKey(const NightLook& look, const NightKeyModel& model, float night, float sunElevationDeg);
+// The moon's direct share of the median at a sun elevation (0 with the sun up). No allocation.
+FTCORE_API float nightMoonKey(const NightLook& look, const NightKeyModel& model, float sunElevationDeg);
 
 // The characters-only fill's illuminance (lux) at a NightAmount: 0 by day, the lamp key's at charFillRefM less
 // charFillStops at full night, in between by the night. No allocation.

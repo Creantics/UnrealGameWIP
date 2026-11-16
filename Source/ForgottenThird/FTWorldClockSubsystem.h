@@ -123,6 +123,8 @@ public:
 	bool IsFixedByCommandLine() const { return bFixedByCommandLine; }
 	UFUNCTION(BlueprintPure, Category = "FT|Time")
 	float GetNightAmount() const { return Night; }
+	// The street lamps' switch-on, 0 by day to 1 once all are on (ftcore::nightLampFraction, on the sun's elevation).
+	float GetLampFraction() const { return LampFraction; }
 	// The time curves (Data/time_curves.csv): the share of the daytime crowd out now, and how dangerous the streets are.
 	UFUNCTION(BlueprintPure, Category = "FT|Time")
 	float GetCrowdDensity() const;
@@ -169,7 +171,7 @@ private:
 	struct FLamp
 	{
 		TWeakObjectPtr<ULightComponent> Light;
-		float OnAt = 0.5f;
+		uint32 Key = 0; // its place's hash: where in the lamps' switch-on it comes on (ftcore::nightLampOn)
 		bool bOn = false;
 	};
 
@@ -182,6 +184,9 @@ private:
 	double AppliedHours = -1.0;
 	float Night = 0.f;
 	bool bExposureLocked = false;
+	// The exposure blend last written to the volumes (-1: write on the next step), and the lamps' switch-on now.
+	float AppliedExposureBlend = -1.f;
+	float LampFraction = 0.f;
 	float AppliedWhiteMix = 0.f;
 	bool bClockGiven = false;
 
