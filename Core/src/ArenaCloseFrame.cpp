@@ -257,6 +257,40 @@ float arenaCloseContactPitch(const ArenaCloseRules& rules, float offPitch, float
     return lerp(standOff, held, clamp01(share));
 }
 
+float arenaCloseContactLow(const ArenaCloseRules& rules, float contact, float targetHeight) {
+    if (!finite(targetHeight) || !(targetHeight >= rules.contactLowTall)) return 0.f;
+    return shareOf(contact);
+}
+
+ArenaLowRules arenaCloseContactLowRules(const ArenaCloseRules& rules, float side) {
+    ArenaLowRules r = kArenaLow;
+    r.eye = rules.contactLowEye;
+    r.side = finite(side) ? side : 0.f;
+    return r;
+}
+
+float arenaCloseContactLowPitch(const ArenaCloseRules& rules, float pitch, float low) {
+    if (!finite(pitch) || !finite(low) || !(low > 0.f) || pitch <= rules.contactLowPitchMax) return pitch;
+    return lerp(pitch, rules.contactLowPitchMax, clamp01(low));
+}
+
+float arenaCloseContactLowCut(const ArenaCloseRules& rules, float cut, float head, float low) {
+    if (!finite(cut) || !finite(head) || !finite(low) || !(low > 0.f)) return cut;
+    return lerp(cut, rules.contactLowWaist * head, clamp01(low));
+}
+
+ArenaLeadFrameRules arenaCloseContactLowLeadRules(const ArenaLeadFrameRules& leadRules, float low) {
+    ArenaLeadFrameRules r = leadRules;
+    if (finite(low) && low > 0.f) r.feetMin = lerp(leadRules.feetMin, kArenaLeadFrame.feetMin, clamp01(low));
+    return r;
+}
+
+float arenaCloseWallPitch(const ArenaCloseRules& rules, float rulePitch, float asked) {
+    if (!finite(rulePitch)) return rulePitch;
+    const float floor = finite(asked) ? std::min(asked, rules.wallPitchMin) : rules.wallPitchMin;
+    return std::max(rulePitch, floor);
+}
+
 float arenaCloseStandOffPitch(const ArenaCloseRules& rules, const ArenaLookLimits& limits, const ArenaCameraPose& rig, float aspect,
                               ArenaPoint3 point, float floorPitch) {
     const float cap = arenaClampViewPitch(limits, rules.standOffPitchMax);

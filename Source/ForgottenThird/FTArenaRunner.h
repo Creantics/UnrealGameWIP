@@ -505,7 +505,11 @@ private:
 	// settings' Camera row), applied to Fit.camera there. Its lead rule is what the hold, the low fit, the partner's
 	// turn and the lead-frame check all keep (ftcore::cameraPresetLeadRules); its cut is LeadBody's.
 	void PickCameraPreset();
-	ftcore::ArenaLeadFrameRules LeadFrameRules() const { return ftcore::cameraPresetLeadRules(CameraLens); }
+	// The preset's rule; in tall contact the feet margin goes to the lock's (the waist above the bottom margin).
+	ftcore::ArenaLeadFrameRules LeadFrameRules() const
+	{
+		return ftcore::arenaCloseContactLowLeadRules(ftcore::cameraPresetLeadRules(CameraLens), bCloseShape ? CloseContactLow : 0.f);
+	}
 	ftcore::CameraPresets CameraPresetTable;
 	bool bCameraPresetsTried = false;
 	ftcore::CameraPresetId CameraPresetNow = ftcore::CameraPresetId::Classic;
@@ -546,6 +550,7 @@ private:
 	bool bContactPicked = false;
 	float ContactYawNow = 0.f;    // degrees (ftcore::arenaCloseContactYaw): 0 exactly off contact
 	float CloseCutTall = 0.f;     // 0..1 (ftcore::arenaCloseCutTallness)
+	float CloseContactLow = 0.f;  // 0..1 (ftcore::arenaCloseContactLow): the tall contact's low lens; exactly 0 under a 4 m target
 	float StandOffPitchNow = 0.f; // degrees (ftcore::arenaCloseStandOffPitch): the least look-up that keeps the target's top in
 	bool bStandOffWeak = false;   // and whether it kept the weak point instead of the top
 	static constexpr float CloseMateHead = 1.6f;  // m: the partner's head and waist heights the close still log tests
@@ -574,9 +579,14 @@ private:
 	// Held close frames with the boom wall-shortened (under 98% of its arm), and of them the ones with the lead's spine
 	// under 28% of the width (mirrored on the left shoulder).
 	int32 CloseWallFrames = 0, CloseWallLow = 0;
+	int32 CloseWallHeld = 0; // frames the close lens's pitch was held off the lead's rule's dive (ftcore::arenaCloseWallPitch)
 	// Held close frames in contact, the most swing, and shoulder swaps made with the contact share over half.
 	int32 CloseContactFrames = 0, CloseContactSwaps = 0;
 	float CloseContactYawMost = 0.f;
+	// Held close frames in tall contact (low share over half): the lead's highest head and lowest waist share, the most
+	// pitch; the partner's frames there and those in the frame (it is exempt in contact: logged only).
+	int32 CloseTallFrames = 0, CloseTallMateFrames = 0, CloseTallMateIn = 0;
+	float CloseTallHeadMost = 0.f, CloseTallWaistLeast = 1.f, CloseTallPitchMost = 0.f;
 	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
 	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
@@ -1329,6 +1339,9 @@ private:
 	// (ftcore::arenaHiddenBehind on both its middle and its head).
 	// PartnerLeadClearSteps: of the steps on screen, those it was not hidden behind the lead (the same test on the lead's body).
 	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0, PartnerClearSteps = 0, PartnerLeadClearSteps = 0;
+	// The same two on the floor plane, as the close station's rule measures them (ftcore::partnerCloseHiddenBehind on the
+	// locked target's radius; ftcore::partnerCloseOverlaps with the lead, 0.4 m each), printed beside the two above.
+	int32 PartnerClearFlatSteps = 0, PartnerLeadClearFlatSteps = 0;
 	float PartnerPlaySeconds = 0.f;
 	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
 	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;

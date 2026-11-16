@@ -4125,3 +4125,104 @@ TEST_CASE("arena partner: the party member's casts against each shipped boss and
         }
     }
 }
+
+namespace {
+// One shipped fight by enemy id (as test_arena.cpp's shippedFight: ring 12 m, spawn 7 m).
+ArenaDef partyFight(const ArenaTable& t, std::initializer_list<const char*> ids, std::uint8_t attackers) {
+    ArenaDef def;
+    def.enemyCount = 0;
+    for (const char* id : ids)
+        for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+            if (t.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = t.enemies[e];
+            }
+    def.attackers = attackers;
+    def.ringRadius = 12.f;
+    def.spawnDistance = 7.f;
+    REQUIRE(def.enemyCount == ids.size());
+    return def;
+}
+
+struct PartyOutcome {
+    ArenaPhase phase = ArenaPhase::Fighting;
+    float time = 0.f;
+    int strings = 0; // the partner's strings begun (its casts)
+    int hits = 0;    // its casts that landed
+};
+
+// 120 s at most of Def with Lead at the controls (the autopilot, or nobody) and the party member as the partner, on the
+// shipped brain and no camera.
+PartyOutcome partyPlay(const ArenaTable& t, const ArenaDef& def, const char* lead, std::uint32_t seed, bool autopilot) {
+    PRig r(t.fighter(lead));
+    r.def = def;
+    r.def.fighter = t.fighter(lead);
+    r.def.partnerKit = t.fighter("third");
+    r.ownPartnerKit = true;
+    r.tuning = shippedTuning();
+    r.goShipped(true, seed);
+    r.autopilot = autopilot;
+    if (!autopilot) r.in = ArenaInput{};
+    r.run(120.f);
+    PartyOutcome o;
+    o.phase = r.fight.phase();
+    o.time = r.fight.time();
+    o.strings = r.fight.stats().partnerStrings;
+    o.hits = r.allyHits();
+    return o;
+}
+} // namespace
+
+TEST_CASE("arena partner: the party member as each playable lead's partner plays the default's fights: won, lost, and it casts") {
+    // The coverage test_arena.cpp's lead-kit balance gives the playable leads, for the kit that is never a lead: each
+    // playable lead with it as the partner, against the shipped default fight, the two mixed fights and each enemy alone,
+    // over 8 seeds. The autopilot wins; nobody at the controls loses (both bodies down) on most seeds, the partner alone
+    // winning the odd weak fight, and the fight is over in 120 s either way; it casts in every fight.
+    // Where its casts start (inside its 5-8 m band) waits for the brain's string gate.
+    const ArenaTable t = shippedTable();
+    REQUIRE(t.fighterIds.size() >= 4);
+    std::vector<std::pair<std::string, ArenaDef>> fights;
+    fights.emplace_back("shipped default fight", t.fallback);
+    fights.emplace_back("three kinds, attackers 1", partyFight(t, {"brute", "skirmisher", "breaker"}, 1));
+    fights.emplace_back("a brute and a spitter, attackers 2", partyFight(t, {"brute", "spitter"}, 2));
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e) {
+        if (t.enemies[e].passive) continue;
+        ArenaDef def;
+        def.enemyCount = 1;
+        def.enemyKind[0] = static_cast<std::uint8_t>(e);
+        def.enemies[0] = t.enemies[e];
+        def.attackers = 1;
+        fights.emplace_back(t.enemyIds[e], def);
+    }
+    int leads = 0;
+    for (std::size_t f = 1; f < t.fighterIds.size(); ++f) {
+        if (!t.fighters[f].playable || !t.fighters[f].attacks) continue;
+        ++leads;
+        const char* lead = t.fighterIds[f].c_str();
+        for (const auto& [name, def] : fights) {
+            float slowestWin = 0.f, slowestLoss = 0.f;
+            int fewestCasts = 1 << 30;
+            int losses = 0;
+            for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+                const PartyOutcome win = partyPlay(t, def, lead, seed, true);
+                const PartyOutcome lose = partyPlay(t, def, lead, seed, false);
+                CHECK_MESSAGE(win.phase == ArenaPhase::Victory, "Error: " << std::string(lead) << " + third did not win " << name
+                                                                          << " seed " << seed << " in 120 s");
+                // Nobody at the controls: the fight ends in 120 s, mostly lost; the partner alone may win a weak one.
+                CHECK_MESSAGE((lose.phase == ArenaPhase::Defeat || lose.phase == ArenaPhase::Victory), "Error: " << std::string(lead) << " + third, nobody at the controls, "
+                                                            << name << " seed " << seed << " not over in 120 s");
+                losses += lose.phase == ArenaPhase::Defeat ? 1 : 0;
+                CHECK_MESSAGE(win.strings > 0, "Error: third never cast in " << std::string(lead) << "'s " << name << " seed " << seed);
+                CHECK_MESSAGE(lose.strings > 0, "Error: third never cast in " << std::string(lead) << "'s idle " << name << " seed " << seed);
+                slowestWin = std::max(slowestWin, win.time);
+                slowestLoss = std::max(slowestLoss, lose.time);
+                fewestCasts = std::min(fewestCasts, std::min(win.strings, lose.strings));
+            }
+            CHECK_MESSAGE(losses > 0, "Error: " << std::string(lead) << " + third, nobody at the controls, never lost " << name);
+            MESSAGE("party cover: " << std::string(lead) << " + third, " << name << " over 8 seeds: slowest win " << slowestWin
+                                    << " s, idle lost " << losses << "/8, slowest idle end " << slowestLoss
+                                    << " s, fewest casts in a fight " << fewestCasts);
+        }
+    }
+    CHECK(leads >= 2);
+}

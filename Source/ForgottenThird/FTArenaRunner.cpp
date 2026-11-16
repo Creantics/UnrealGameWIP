@@ -1636,7 +1636,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	// The lock camera's eased state starts each fight at rest: no partner turn, no low lens.
 	PartnerYawNow = PartnerYawGoal = 0.f;
 	CloseMelee = CloseTall = 0.f;
-	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = StandOffPitchNow = 0.f;
+	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = CloseContactLow = StandOffPitchNow = 0.f;
 	CloseWallCount = 0;
 	CloseWallAge = 1e9f;
 	bStandOffWeak = false;
@@ -1648,9 +1648,12 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CloseHeightNow = 0.f;
 #if !UE_BUILD_SHIPPING
 	CloseSwaps = CloseYawFrames = CloseYawOn = 0;
-	CloseWallFrames = CloseWallLow = 0;
+	CloseWallFrames = CloseWallLow = CloseWallHeld = 0;
 	CloseContactFrames = CloseContactSwaps = 0;
 	CloseContactYawMost = 0.f;
+	CloseTallFrames = CloseTallMateFrames = CloseTallMateIn = 0;
+	CloseTallHeadMost = CloseTallPitchMost = 0.f;
+	CloseTallWaistLeast = 1.f;
 	CloseYawSum = CloseYawMost = 0.f;
 	MateFrames = MateIn = MateBehind = MateLeft = MateRight = MateOffY = 0;
 	MateOutAhead = MateOutRight = 0.f;
@@ -2058,6 +2061,7 @@ void UFTArenaRunner::BeginSession()
 	PartnerJoinAsks = PartnerJoinsLanded = PartnerJoinsRefused = PartnerJoinDisagree = 0;
 	PartnerOnSteps = PartnerStationedSteps = PartnerCameraSteps = 0;
 	PartnerSeenSteps = PartnerFrustumSteps = PartnerActions = PartnerClearSteps = PartnerLeadClearSteps = 0;
+	PartnerClearFlatSteps = PartnerLeadClearFlatSteps = 0;
 	PartnerClipsStarted = PartnerClipsWhole = 0;
 	LeadWeapons.ResetAimSummary();
 	AllyWeapons.ResetAimSummary();
@@ -3406,6 +3410,12 @@ void UFTArenaRunner::StepFight()
 						Foe.bodyRadius * Scale, Base, Top);
 				};
 				bHidden = Behind(Tall * 0.55f) && Behind(Tall * 0.95f);
+				PartnerClearFlatSteps +=
+					ftcore::partnerCloseHiddenBehind(ftcore::Vec2{Eye.x, Eye.y}, Bodies.ally, Bodies.enemies[Locked], Foe.bodyRadius * Scale) ? 0 : 1;
+			}
+			else if (bSeen)
+			{
+				++PartnerClearFlatSteps; // nothing locked: nothing to hide behind
 			}
 			PartnerClearSteps += bSeen && !bHidden ? 1 : 0;
 			// ... and not behind the lead: the same two lines through the lead's body (its radius, up to its head).
@@ -3421,6 +3431,8 @@ void UFTArenaRunner::StepFight()
 						Lb.radius, Ground, Ground + Lb.head);
 				};
 				PartnerLeadClearSteps += BehindLead(Height * 0.55f) && BehindLead(Height * 0.95f) ? 0 : 1;
+				PartnerLeadClearFlatSteps += ftcore::partnerCloseOverlaps(ftcore::Vec2{LeadEye.x, LeadEye.y}, Bodies.ally, 0.4f,
+					Bodies.player, 0.4f) ? 0 : 1;
 			}
 		}
 		PartnerPlaySeconds += StepSeconds;
@@ -5358,8 +5370,12 @@ ftcore::ArenaLeadBody UFTArenaRunner::LeadBody() const
 		Body.head = FMath::Max(0.5f, static_cast<float>(Lead->GetAnchor().Z - Lead->GetActorLocation().Z - 45.0) / 100.f);
 	}
 	// The height the lens keeps in the frame (classic: 0, the feet; close: the shaped cut, raised on a tall target).
-	Body.cut = bCloseShape ? ftcore::arenaCloseShape(ftcore::kArenaClose, CloseBase, CloseMelee, CloseCutTall, CloseShoulder, Body.head).cutAt
-	                       : ftcore::cameraPresetCut(CameraLens, Body.head);
+	// In tall contact the cut comes back down to the waist (ftcore::arenaCloseContactLowCut): the low lens keeps the lead
+	// from there up.
+	Body.cut = bCloseShape
+		? ftcore::arenaCloseContactLowCut(ftcore::kArenaClose,
+			ftcore::arenaCloseShape(ftcore::kArenaClose, CloseBase, CloseMelee, CloseCutTall, CloseShoulder, Body.head).cutAt, Body.head, CloseContactLow)
+		: ftcore::cameraPresetCut(CameraLens, Body.head);
 	return Body;
 }
 
@@ -5402,6 +5418,8 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 	}
 	CloseContact = ftcore::arenaCloseContactStep(R, CloseContact, CloseContactWant, bMidAttack || bDodgeHold ? 0.f : DeltaSeconds);
 	CloseCutTall = ftcore::arenaCloseCutTallness(R, CloseHeightNow, CloseContact);
+	// On a target 4 m tall or more the contact share also drops the lens low (0 on a shorter one: its framing unchanged).
+	CloseContactLow = ftcore::arenaCloseContactLow(R, CloseContact, CloseHeightNow);
 	// Entering contact asks for the shoulder again, each side tried at its swing (the open side).
 	bContactPicked = bContactPicked && CloseContactWant > 0.f;
 	const bool bContactPick = bOn && CloseContactWant > 0.f && !bContactPicked;
@@ -5901,6 +5919,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			const float Held = ftcore::arenaCloseMeleePitch(ftcore::kArenaClose, ftcore::kArenaLook, Rig.pivot, ArmNow, Rig.up, ArenaLength(To), Tall,
 				CloseMelee, WantPitch);
 			WantPitch = ftcore::arenaCloseContactPitch(ftcore::kArenaClose, Off, Held, CloseContact);
+			// Tall contact looks up from the low lens instead, at most 15 degrees (ftcore::arenaCloseContactLowPitch).
+			WantPitch = ftcore::arenaCloseContactLowPitch(ftcore::kArenaClose, WantPitch, CloseContactLow);
 		}
 #if !UE_BUILD_SHIPPING
 		if (AimCheckPhase == 2 || AimCheckPhase == 3)
@@ -5937,15 +5957,34 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	LowSideNow = LockLow > 0.f ? FMath::FInterpConstantTo(LowSideNow, LowSideWant, DeltaSeconds, kArenaLowSideRate) : LowSideWant;
 	ftcore::ArenaLowRules LowRules = SideRules;
 	LowRules.side = LowSideNow * WallShare;
+	// Tall contact on the close lens: the lens drops 0.9 m over the floor on the shoulder's own side (the share eased with
+	// the contact share). The close preset's lock low lens is off (lowMax 0), so the two never mix.
+	float LowNow = LockLow;
+	if (bCloseShape && CloseContactLow > LockLow)
+	{
+		LowNow = CloseContactLow;
+		LowRules = ftcore::arenaCloseContactLowRules(ftcore::kArenaClose, LensRig.side);
+	}
 	ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
 	ftcore::ArenaCameraPose Lens = WallScaled(Pose, WallShare);
-	if (bHold || LockLow > 0.f)
+	if (bHold || LowNow > 0.f)
 	{
 		if (bHold)
 		{
-			CameraPitch = ftcore::arenaLeadPitch(ftcore::kArenaLook, LeadFrameRules(), LensRig, Aspect, Body, CameraPitch, LockLow, LowRules).pitch;
+			const float Asked = CameraPitch;
+			CameraPitch = ftcore::arenaLeadPitch(ftcore::kArenaLook, LeadFrameRules(), LensRig, Aspect, Body, CameraPitch, LowNow, LowRules).pitch;
+			if (bCloseShape)
+			{
+				// A wall-shortened close lens keeps the cut only by diving (ftcore::arenaCloseWallPitch): held at -6 or over,
+				// the cut gives way instead.
+				const float Held = ftcore::arenaCloseWallPitch(ftcore::kArenaClose, CameraPitch, Asked);
+#if !UE_BUILD_SHIPPING
+				CloseWallHeld += Held != CameraPitch ? 1 : 0;
+#endif
+				CameraPitch = Held;
+			}
 		}
-		Lens = ftcore::arenaPoseAtPitch(ftcore::kArenaLook, LensRig, CameraPitch, LockLow, LowRules);
+		Lens = ftcore::arenaPoseAtPitch(ftcore::kArenaLook, LensRig, CameraPitch, LowNow, LowRules);
 		Pose = WallScaled(Lens, 1.f / WallShare); // the boom's own lengths: its probe shortens them to the lens solved
 	}
 	// The contact swing (0 off contact), before the partner's turn is solved on the lens it turns.
@@ -5980,7 +6019,13 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		const ftcore::ArenaFramePoint F = ftcore::arenaFramePoint(Lens, Aspect, Mate);
 		const ftcore::ArenaLensGround G = ftcore::arenaLensGround(Lens, Mate);
 		++MateFrames;
-		if (F.ahead && F.x >= 0.f && F.x <= 1.f && F.y >= 0.f && F.y <= 1.f)
+		const bool bMateIn = F.ahead && F.x >= 0.f && F.x <= 1.f && F.y >= 0.f && F.y <= 1.f;
+		if (bCloseShape && CloseContactLow > 0.5f)
+		{
+			++CloseTallMateFrames;
+			CloseTallMateIn += bMateIn ? 1 : 0;
+		}
+		if (bMateIn)
 		{
 			++MateIn;
 		}
@@ -6005,6 +6050,14 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			++CloseContactFrames;
 			CloseContactYawMost = FMath::Max(CloseContactYawMost, FMath::Abs(ContactYawNow));
 		}
+		if (CloseContactLow > 0.5f)
+		{
+			const ftcore::ArenaLeadShares Sh = ftcore::arenaLeadShares(Lens, Aspect, Body);
+			++CloseTallFrames;
+			CloseTallHeadMost = FMath::Max(CloseTallHeadMost, Sh.ahead ? Sh.head : 1.f);
+			CloseTallWaistLeast = FMath::Min(CloseTallWaistLeast, Sh.ahead ? Sh.feet : 0.f);
+			CloseTallPitchMost = FMath::Max(CloseTallPitchMost, CameraPitch);
+		}
 		if (WallShare < 0.98f)
 		{
 			++CloseWallFrames;
@@ -6027,10 +6080,10 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	}
 	// The low rig is given to the boom here, the aim stance's blend included (ApplyAimCamera stands aside while the low
 	// lens is on), so the stance starting on a low lens eases out of it rather than jumping.
-	if (AFTArenaFighter* LowLead = PlayerFigure.Get(); LowLead && (LockLow > 0.f || bLowRig))
+	if (AFTArenaFighter* LowLead = PlayerFigure.Get(); LowLead && (LowNow > 0.f || bLowRig))
 	{
 		LowLead->SetCameraRig(Pose.arm, Pose.pivot, Pose.side, Pose.up, Pose.fov);
-		bLowRig = LockLow > 0.f;
+		bLowRig = LowNow > 0.f;
 	}
 	else if (AFTArenaFighter* CloseLead = PlayerFigure.Get(); CloseLead && bCloseShape && ArenaAim.alpha() <= 0.f)
 	{
@@ -6225,10 +6278,12 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens partner turn on %d of %d held frames, mean %.2f, most %.2f degrees; shoulder swaps %d, ends %+.2f."),
 			CloseYawOn, CloseYawFrames, CloseYawFrames > 0 ? CloseYawSum / static_cast<float>(CloseYawFrames) : 0.f, CloseYawMost, CloseSwaps, CloseShoulder);
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens wall-shortened (boom under 98%%) on %d of %d held frames, %d of them with the lead's spine under 28%% of the width."),
-			CloseWallFrames, CloseYawFrames, CloseWallLow);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens wall-shortened (boom under 98%%) on %d of %d held frames, %d of them with the lead's spine under 28%% of the width; the lead's rule held off a dive under -6 degrees on %d frames."),
+			CloseWallFrames, CloseYawFrames, CloseWallLow, CloseWallHeld);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens contact on %d of %d held frames (left out of the frame check), swing most %.1f degrees, %d shoulder swaps in contact."),
 			CloseContactFrames, CloseYawFrames, CloseContactYawMost, CloseContactSwaps);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens tall contact (low lens over half) on %d held frames: lead's head at most %.0f%% of the height, waist at least %.0f%%, pitch at most %.1f degrees; partner in the frame on %d of %d of them (exempt, logged only)."),
+			CloseTallFrames, CloseTallHeadMost * 100.f, CloseTallWaistLeast * 100.f, CloseTallPitchMost, CloseTallMateIn, CloseTallMateFrames);
 	}
 	if (bFrameCheck)
 	{
@@ -8858,12 +8913,14 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 			const float Seen = static_cast<float>(PartnerSeenSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Clear = static_cast<float>(PartnerClearSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float LeadClear = static_cast<float>(PartnerLeadClearSteps) / static_cast<float>(PartnerFrustumSteps);
+			const float ClearFlat = static_cast<float>(PartnerClearFlatSteps) / static_cast<float>(PartnerFrustumSteps);
+			const float LeadClearFlat = static_cast<float>(PartnerLeadClearFlatSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Per20 = PartnerPlaySeconds > 0.f ? static_cast<float>(PartnerActions) * 20.f / PartnerPlaySeconds : 0.f;
 			const int32 ClipsStarted = PartnerClipsStarted + AllyWeapons.GetClipsStarted();
 			const int32 ClipsWhole = PartnerClipsWhole + AllyWeapons.GetClipsCompleted();
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; on screen and not behind the lead %.0f%%; close station %s; %d actions in %.1f s, %.1f per 20 s, wanted 4; blows with a strike clip %d, played whole %d; brain: %s)."),
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; on screen and not behind the lead %.0f%%; on the floor plane (the station's measure) not behind the target %.0f%%, not overlapping the lead %.0f%%; close station %s; %d actions in %.1f s, %.1f per 20 s, wanted 4; blows with a strike clip %d, played whole %d; brain: %s)."),
 				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, LeadClear * 100.f,
-				!bCloseShape ? TEXT("none (classic)") : (bPartnerStation ? TEXT("on") : TEXT("off")), PartnerActions, PartnerPlaySeconds, Per20,
+				ClearFlat * 100.f, LeadClearFlat * 100.f, !bCloseShape ? TEXT("none (classic)") : (bPartnerStation ? TEXT("on") : TEXT("off")), PartnerActions, PartnerPlaySeconds, Per20,
 				ClipsStarted, ClipsWhole, *Brain);
 
 		}

@@ -80,8 +80,19 @@ struct ArenaCloseRules {
                                    // less of the ground near the lens is in the frame)
     float standOffTopY = 0.9f;     // share of the frame's height: off contact the target's top (or its weak point) is
                                    // kept at or under this, by the least look-up that does it (arenaCloseStandOffPitch)
+    // Tall contact: in contact with a target at least contactLowTall m tall the lens does not pitch up from the
+    // shoulder. It drops low behind and beside the lead (the shoulder's own side) and looks up from there, no more than
+    // contactLowPitchMax, the lead kept from the waist up (arenaCloseContactLow and the two below).
+    float contactLowTall = 4.f;      // m: the lock's tall boss (kArenaLookTallBoss); a shorter target keeps the shoulder lens
+    float contactLowEye = 0.9f;      // m: the lens's height over the floor at a full share
+    float contactLowPitchMax = 15.f; // degrees: the most look-up there
+    float contactLowWaist = 0.55f;   // share of the lead's height the kept part starts at (the waist), at a full share
+    // A lens pulled in by a wall: the lead's rule keeps the cut in the shortened frame only by looking down (about -13
+    // degrees at 80% of the arm, -29 at 60%). Close holds the view at this pitch or over instead and lets the cut give way.
+    float wallPitchMin = -6.f;       // degrees (the preset's lock pitch is -2)
 };
 inline constexpr ArenaCloseRules kArenaClose{};
+static_assert(kArenaClose.contactLowTall == kArenaLookTallBoss, "the tall contact's low lens starts at the lock's tall boss");
 
 // The melee share the distance asks for: 1 at meleeTo or nearer, 0 at farFrom or further, a smoothstep between. A
 // NaN or negative distance gives 0 (nothing to frame).
@@ -208,6 +219,29 @@ FTCORE_API float arenaCloseContactPitch(const ArenaCloseRules& rules, float pitc
 // `contactPitch` (the lock's own look-up) held into the contact band at share 1. A NaN contactPitch, or a NaN or
 // non-positive share, gives the capped offPitch; a NaN offPitch stays NaN.
 FTCORE_API float arenaCloseContactPitch(const ArenaCloseRules& rules, float offPitch, float contactPitch, float share);
+
+// Tall contact's low share: the contact share on a target at least contactLowTall m tall, else exactly 0 (and 0 for
+// a NaN input), so a shorter target's framing is unchanged.
+FTCORE_API float arenaCloseContactLow(const ArenaCloseRules& rules, float contact, float targetHeight);
+
+// The low lens's rules at that share: the eye contactLowEye, the side `side` (the shoulder lens's own, so the lens drops
+// straight down rather than swinging out), the rate kArenaLow's.
+FTCORE_API ArenaLowRules arenaCloseContactLowRules(const ArenaCloseRules& rules, float side);
+
+// The pitch at a low share: `pitch` with its look-up held to contactLowPitchMax, blended by the share (`pitch` itself
+// at 0 or a NaN share; a NaN pitch stays NaN). A pitch under the cap is unchanged.
+FTCORE_API float arenaCloseContactLowPitch(const ArenaCloseRules& rules, float pitch, float low);
+
+// The lead's kept height (the cut, m) at a low share: from `cut` toward contactLowWaist of `head`, blended by the
+// share; and its rule's feet margin from `leadRules.feetMin` toward kArenaLeadFrame's (the waist above the frame's
+// bottom margin). Share 0 or NaN: unchanged.
+FTCORE_API float arenaCloseContactLowCut(const ArenaCloseRules& rules, float cut, float head, float low);
+FTCORE_API ArenaLeadFrameRules arenaCloseContactLowLeadRules(const ArenaLeadFrameRules& leadRules, float low);
+
+// The lead's rule's pitch held off a dive (arenaLeadPitch's answer `rulePitch` to the asked `asked`): no lower than
+// wallPitchMin, or than `asked` when that is lower already. A rule pitch at or over that is unchanged (the rule kept
+// as asked moves nothing); a NaN rulePitch stays NaN, a NaN asked reads as no ask (the floor alone).
+FTCORE_API float arenaCloseWallPitch(const ArenaCloseRules& rules, float rulePitch, float asked);
 
 // Stand-off framing: the least view pitch, from floorPitch up, that puts the point `point` (the target's top, or its
 // weak point when it has one; relative to the pivot, as arenaFramePoint) at or under standOffTopY of the frame's height

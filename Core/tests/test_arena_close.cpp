@@ -578,3 +578,90 @@ TEST_CASE("close frame: the contact pitch takes its two ends apart, a low stand-
     for (const float p : {-3.f, 6.f, 12.f, 20.f, 28.f})
         for (const float s : {0.f, 0.3f, 1.f}) CHECK(arenaCloseContactPitch(R, p, s) == arenaCloseContactPitch(R, p, p, s));
 }
+
+TEST_CASE("close frame: tall contact drops the lens low and holds the look-up to 15, the lead kept from the waist up") {
+    const ArenaCloseRules& R = kArenaClose;
+    // The low share is the contact share on a target of contactLowTall m or more, and exactly 0 under it: the 3.5 m
+    // target's contact framing is the shoulder lens's, unchanged.
+    for (const float c : {0.f, 0.3f, 1.f}) {
+        CHECK(arenaCloseContactLow(R, c, 3.5f) == 0.f);
+        CHECK(arenaCloseContactLow(R, c, 7.f) == c);
+    }
+    CHECK(arenaCloseContactLow(R, 1.f, 4.f) == 1.f);
+    CHECK(arenaCloseContactLow(R, kNaN, 7.f) == 0.f);
+    CHECK(arenaCloseContactLow(R, 1.f, kNaN) == 0.f);
+    // At share 0 the pitch, the cut and the lead's rule are exactly as given.
+    const ArenaLeadFrameRules presetRules = cameraPresetLeadRules(closeCameraPreset());
+    for (const float p : {-2.f, 12.f, 25.f}) CHECK(arenaCloseContactLowPitch(R, p, 0.f) == p);
+    CHECK(arenaCloseContactLowCut(R, 1.25f, 1.8f, 0.f) == 1.25f);
+    CHECK(arenaCloseContactLowLeadRules(presetRules, 0.f).feetMin == presetRules.feetMin);
+    CHECK(arenaCloseContactLowLeadRules(presetRules, 0.f).headMax == presetRules.headMax);
+    // At share 1: the look-up at most 15, a lower one untouched; the cut at the waist; the feet margin the lock's.
+    CHECK(arenaCloseContactLowPitch(R, 25.f, 1.f) == R.contactLowPitchMax);
+    CHECK(arenaCloseContactLowPitch(R, 10.f, 1.f) == 10.f);
+    CHECK(arenaCloseContactLowPitch(R, 25.f, 0.5f) == doctest::Approx(20.f));
+    CHECK(std::isnan(arenaCloseContactLowPitch(R, kNaN, 1.f)));
+    CHECK(arenaCloseContactLowPitch(R, 25.f, kNaN) == 25.f);
+    CHECK(arenaCloseContactLowCut(R, 1.25f, 1.8f, 1.f) == doctest::Approx(R.contactLowWaist * 1.8f));
+    CHECK(arenaCloseContactLowLeadRules(presetRules, 1.f).feetMin == doctest::Approx(kArenaLeadFrame.feetMin));
+    CHECK(arenaCloseContactLowLeadRules(presetRules, 1.f).headMax == presetRules.headMax);
+    const ArenaLowRules low = arenaCloseContactLowRules(R, 0.55f);
+    CHECK(low.eye == R.contactLowEye);
+    CHECK(low.side == 0.55f);
+    // The frame it gives, on the shoulder rig at a full melee share, either shoulder: the lens 0.9 m up at 15 degrees
+    // keeps the lead's waist above the bottom margin and the head under the close preset's head line (75%), and the
+    // lead's rule leaves that pitch as asked. Not under 55%: that needs about 17.5 degrees at this eye (the cap holds).
+    for (const float shoulder : {-1.f, 1.f}) {
+        CAPTURE(shoulder);
+        const ArenaCameraPose rig = closeRig(1.f, 1.f, shoulder, 1.8f);
+        const ArenaLowRules lr = arenaCloseContactLowRules(R, rig.side);
+        const ArenaLeadBody body{1.8f, 0.35f, arenaCloseContactLowCut(R, 1.25f, 1.8f, 1.f)};
+        const ArenaLeadFrameRules rules = arenaCloseContactLowLeadRules(presetRules, 1.f);
+        const ArenaCameraPose pose = arenaPoseAtPitch(kArenaLook, rig, R.contactLowPitchMax, 1.f, lr);
+        const ArenaLeadShares s = arenaLeadShares(pose, kAspect, body);
+        CHECK(s.ahead);
+        CHECK(s.feet >= rules.feetMin);
+        CHECK(s.head <= rules.headMax);
+        CHECK(s.head > 0.55f);
+        CHECK(pose.side == doctest::Approx(rig.side)); // straight down: the shoulder's own side
+        const ArenaLeadPitch held = arenaLeadPitch(kArenaLook, rules, rig, kAspect, body, R.contactLowPitchMax, 1.f, lr);
+        CHECK(held.pitch == doctest::Approx(R.contactLowPitchMax));
+        MESSAGE("tall contact low lens, shoulder " << shoulder << ": waist at " << s.feet << ", head at " << s.head
+                                                   << " of the height; width " << s.left << ".." << s.right);
+    }
+}
+TEST_CASE("close frame: a wall-shortened lens does not dive to keep the cut: the pitch holds at -6 and the cut gives way") {
+    const ArenaCloseRules& R = kArenaClose;
+    // The dive itself, on the lead's rule alone (melee share 1, asked +6): kept as asked at the full arm, about -13 at
+    // 80% of it, about -29 at 60%.
+    const ArenaLeadBody body = closeBody(1.f, 0.f, 1.8f);
+    const ArenaLeadFrameRules rules = closeRules(1.f, 0.f, 1.8f);
+    const auto rulePitch = [&](float wall) {
+        return arenaLeadPitch(kArenaLook, rules, closeRig(1.f, 0.f, 1.f, 1.8f, 0.f, wall), kAspect, body, 6.f).pitch;
+    };
+    CHECK(rulePitch(1.f) == 6.f);
+    CHECK(rulePitch(0.8f) < -10.f);
+    CHECK(rulePitch(0.6f) < -25.f);
+    // Held: unchanged when the rule keeps the asked pitch (or moves it up), the floor when it dives under it.
+    CHECK(arenaCloseWallPitch(R, rulePitch(1.f), 6.f) == 6.f);
+    CHECK(arenaCloseWallPitch(R, 9.f, 6.f) == 9.f);
+    CHECK(arenaCloseWallPitch(R, -4.f, 6.f) == -4.f);
+    CHECK(arenaCloseWallPitch(R, rulePitch(0.8f), 6.f) == R.wallPitchMin);
+    CHECK(arenaCloseWallPitch(R, rulePitch(0.6f), 6.f) == R.wallPitchMin);
+    // An ask under the floor is the floor; NaN inputs.
+    CHECK(arenaCloseWallPitch(R, -30.f, -9.f) == -9.f);
+    CHECK(arenaCloseWallPitch(R, -30.f, kNaN) == R.wallPitchMin);
+    CHECK(std::isnan(arenaCloseWallPitch(R, kNaN, 6.f)));
+    // At the floor the lead's head stays under the close preset's head line down to 40% of the arm, the body inside
+    // the width; its feet are out of the frame (the cut gives way).
+    for (const float wall : {0.8f, 0.6f, 0.4f}) {
+        CAPTURE(wall);
+        const ArenaLeadShares s = arenaLeadShares(arenaPoseAtPitch(kArenaLook, closeRig(1.f, 0.f, 1.f, 1.8f, 0.f, wall), R.wallPitchMin),
+                                                  kAspect, body);
+        CHECK(s.ahead);
+        CHECK(s.head <= rules.headMax);
+        CHECK(s.left > 0.f);
+        CHECK(s.right < 1.f);
+        MESSAGE("wall " << wall << " at " << R.wallPitchMin << ": cut at " << s.feet << ", head at " << s.head << " of the height");
+    }
+}
