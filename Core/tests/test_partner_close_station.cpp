@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <span>
+#include <string>
 
 using namespace ftcore;
 
@@ -997,7 +998,7 @@ TEST_CASE("close station: the kit's range: unset, invalid, or under the classic 
     const PartnerTuning e = partnerEffectiveTuning(tu, in);
     CHECK(e.reachMeters == 3.2f);
     CHECK(e.standoffMeters == 1.8f);
-    CHECK(e.leashMeters == tu.leashMeters); // only the two
+    CHECK(e.leashMeters == doctest::Approx(3.2f + kPartnerRangeLeadMelee)); // the leash holds the band (4.7 m)
     CHECK(e.stationTolerance == tu.stationTolerance);
     const float notNumber = std::nanf("");
     const float endless = HUGE_VALF;
@@ -1076,6 +1077,94 @@ TEST_CASE("close station: a caster with its kit's range strings from its band, n
     CHECK(farKit.meanStart() >= kPartnerCloseCasterMin - 0.5f);
     CHECK(farKit.maxGoal <= kPartnerRangeMax + 1e-3f);
     CHECK(farKit.badStepBacks == 0);
+}
+
+namespace {
+// 30 s of a close-camera caster with an 8.5 / 5 kit range by a lead in melee (`leadGap` off the target's edge, on
+// the lens's side): the target still, or walking a 2 m circle at 0.8 m/s with the lead and the lens following. Each
+// string's start off the target's edge; the farthest the partner stood from the lead once its first string began.
+struct CsBandRun {
+    int strings = 0, inside = 0; // inside: started nearer than the standoff less the station tolerance
+    float minStart = 1e9f, sumStart = 0.f, maxFromLead = 0.f;
+    float meanStart() const { return strings > 0 ? sumStart / static_cast<float>(strings) : 0.f; }
+};
+CsBandRun csBandRun(PartnerOrder order, bool moving, float leadGap, Vec2 start) {
+    CsPit p(true);
+    p.in.order = order;
+    p.in.range = {8.5f, 5.f};
+    p.in.station.close.standMin = kPartnerCloseCasterMin;
+    p.in.station.close.standMax = kPartnerCloseCasterMax;
+    p.in.pos = start;
+    const float r = p.e[0].radius;
+    const PartnerTuning tol;
+    CsBandRun k;
+    for (int s = 0; s < 30 * 60; ++s) {
+        if (moving) {
+            const float a = 0.4f * static_cast<float>(s) / 60.f;
+            p.e[0].pos = {2.f * std::cos(a) - 2.f, 2.f * std::sin(a)};
+        }
+        p.in.leadPos = csAdd(p.e[0].pos, Vec2{-(r + leadGap), 0.f});
+        csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+        const PartnerIntent& i = p.step();
+        const float at = csLen(csSub(p.in.pos, p.e[0].pos)) - r;
+        if (k.strings > 0) k.maxFromLead = std::max(k.maxFromLead, csLen(csSub(p.in.pos, p.in.leadPos))); // after the walk in
+        if (i.act == PartnerAct::Attack && i.newString) {
+            ++k.strings;
+            k.minStart = std::min(k.minStart, at);
+            k.sumStart += at;
+            if (at + tol.stationTolerance < 5.f - 1e-3f) ++k.inside;
+        }
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack)
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+    }
+    return k;
+}
+} // namespace
+
+TEST_CASE("close station: an 8.5 / 5 caster starts its strings in its band, never inside its standoff") {
+    // Ruling (orchestrator, 11-16): under the close camera with the kit's range on, a string starts only within
+    // [standoff, reach] (the station tolerance at the near end); inside the standoff the partner first steps out; the
+    // walk in from out of reach aims for the band's middle; the leash holds the band. Starts from inside the standoff
+    // (1 m off), from the band, and from out of reach; the lead in melee; Spread and StayClose; a still target and a
+    // moving one.
+    int all = 0;
+    for (const PartnerOrder order : {PartnerOrder::Spread, PartnerOrder::StayClose})
+        for (const bool moving : {false, true})
+            for (const Vec2 start : {Vec2{-1.5f, -1.5f}, Vec2{-4.f, -5.f}, Vec2{-9.f, -9.f}}) {
+                CAPTURE(static_cast<int>(order));
+                CAPTURE(moving);
+                CAPTURE(start.x);
+                const CsBandRun k = csBandRun(order, moving, 0.3f, start);
+                MESSAGE(std::string(order == PartnerOrder::Spread ? "Spread" : "StayClose") << (moving ? ", moving" : ", still")
+                        << ", from " << start.x << "," << start.y << ": strings " << k.strings << ", start off the edge mean "
+                        << k.meanStart() << " min " << k.minStart << ", inside the standoff " << k.inside
+                        << "; farthest from the lead " << k.maxFromLead);
+                CHECK(k.strings >= 2);
+                CHECK(k.inside == 0);
+                CHECK(k.minStart <= 8.5f + 1e-3f);
+                if (order == PartnerOrder::StayClose) CHECK(k.maxFromLead <= 10.f + 0.5f); // the leash, 10 m at most
+                all += k.strings;
+            }
+    MESSAGE("12 runs: " << all << " strings");
+}
+
+TEST_CASE("close station: the kit's range sizes the leash to its band, a melee kit's stays") {
+    const PartnerTuning tu;
+    PartnerInput in;
+    in.station.close.given = true;
+    in.range = {8.5f, 5.f};
+    const PartnerTuning caster = partnerEffectiveTuning(tu, in);
+    CHECK(partnerRangeOn(in, tu));
+    CHECK(caster.leashMeters == doctest::Approx(10.f));
+    CHECK(caster.returnMeters == doctest::Approx(10.f - (tu.leashMeters - tu.returnMeters)));
+    in.range = {1.8f, 0.8f}; // a melee kit's
+    const PartnerTuning melee = partnerEffectiveTuning(tu, in);
+    CHECK(melee.leashMeters == tu.leashMeters);
+    CHECK(melee.returnMeters == tu.returnMeters);
+    in.station.close.given = false; // the classic camera: none of it
+    const PartnerTuning classic = partnerEffectiveTuning(tu, in);
+    CHECK_FALSE(partnerRangeOn(in, tu));
+    CHECK(classic.leashMeters == tu.leashMeters);
 }
 
 TEST_CASE("close station: with the kit's range a StepBack only steps out to the standoff") {
