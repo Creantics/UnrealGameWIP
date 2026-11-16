@@ -6150,8 +6150,9 @@ private:
 
 // The pause menu and the settings screen (the new UI, FT::NewUiEnabled; 2026-11-16 ruling, item B): one leaf widget on
 // the game viewport (FT::EnsureMenuScreens, from the Canvas overlays' entry points, which then draw nothing). Words on
-// the left over the world, no panels: the paused world under a light dim and a shade that fades out to the right of the
-// words. The selection is the r19 value line under the word, in the world's fill, with its square ink end cap. The pause
+// the left over the world, no panels: the paused world under a light dim and a shade, even under all the words and fading
+// out right of them, whose strength is measured: the least (kMenuShade and up) that holds every text line at 4.5:1 over
+// the brightest tenth of the bare scene under it (one read of the picture when a screen opens or changes). The selection is the r19 value line under the word, in the world's fill, with its square ink end cap. The pause
 // list (Resume, Settings, Quit to Title, Quit Game; a greyed item at kMenuOffInk) or, in its place, a quit item's Yes / No
 // prompt. Settings: its six sections on one line under the title (measured: they fit at 200% text at 1080), the selected
 // row's section marked; under them that section's rows, label and value, the value's two chevrons on the selected row;
@@ -6160,7 +6161,8 @@ private:
 // where it drew each row, button and section in viewport pixels and passes the mouse on for hover.
 // Non-shipping: -UiMenuShot=<file prefix> opens the menu after -UiMenuShotDelay= s (8) on the map's own HUD, takes the
 // still 1.5 s later and quits; -UiMenuShotOf=pause|settings (settings); -UiMenuShotSection=<0..5> picks the section;
-// -UiTextScale=<100..200> holds the screens' text size; -UiPalette=<0..4> the palette (ShownPalette).
+// -UiTextScale=<100..200> holds the screens' text size; -UiPalette=<0..4> the palette (ShownPalette); -UiMenuShotSweep
+// first turns the camera a full circle in 12 steps and shoots the brightest view. Each read logs "UI: menu contrast".
 const FTUiText kMenuPauseTitleUi(TEXT("pause.title"));
 const FTUiText kMenuResumeUi(TEXT("pause.resume"));
 const FTUiText kMenuSettingsUi(TEXT("pause.settings"));
@@ -6179,12 +6181,30 @@ const TCHAR* const kMenuSettingsHint = TEXT("Left / Right: change    Esc: back (
 constexpr float kMenuOffInk = 0.4f;    // a greyed pause item
 constexpr float kMenuRestInk = 0.85f;  // a row, section or button not selected
 constexpr float kMenuDim = 0.35f;      // the whole paused world, in the backing colour
-constexpr float kMenuShade = 0.6f;     // the shade under the words, fading to nothing at its right end
+constexpr float kMenuShade = 0.6f;     // the shade under the words at least: even under all of them, then fading out
+constexpr float kMenuShadeMax = 0.94f; // the most the shade rises to for a bright scene
+constexpr float kMenuShadeFall = 480.f; // px (at 1080) the shade takes to fade out right of the words
+constexpr float kMenuContrast = 4.6f;  // what every text line is held to over the brightest tenth under it (4.5:1 and a margin)
+constexpr int32 kMenuSweepSteps = 12;  // shots: the turn that finds the brightest view (30 degrees a step)
 constexpr float kMenuLineW = 3.f;      // the selection's value line
 constexpr float kMenuLineDrop = 12.f;  // under the word's baseline
 constexpr float kMenuTitleTop = 150.f; // the title's top, down from the top
 constexpr float kMenuRowStep = 1.85f;  // a row's step, in its capitals' ascent
 constexpr int32 kMenuMaxShown = static_cast<int32>(ftcore::kSettingsRowCount);
+constexpr int32 kMenuMaxLines = 2 * kMenuMaxShown + 16; // every text line a screen draws (the contrast read)
+
+// One text line's box (widget px), its ink alpha and a name for the shots' log.
+struct FMenuLine
+{
+	FBox2f Rc = FBox2f(ForceInit);
+	float InkA = 1.f;
+	FString Name;
+};
+
+ftcore::UiColor MenuOver(const ftcore::UiColor& Under, const ftcore::UiColor& C, float A)
+{
+	return ftcore::UiColor{FMath::Lerp(Under.r, C.r, A), FMath::Lerp(Under.g, C.g, A), FMath::Lerp(Under.b, C.b, A), 1.f};
+}
 
 class SFTMenuScreens : public SLeafWidget
 {
@@ -6207,6 +6227,7 @@ public:
 		FString Of;
 		FParse::Value(Cmd, TEXT("UiMenuShotOf="), Of);
 		bShotPause = Of.Equals(TEXT("pause"), ESearchCase::IgnoreCase);
+		bShotSweep = FParse::Param(Cmd, TEXT("UiMenuShotSweep"));
 		FParse::Value(Cmd, TEXT("UiMenuShotDelay="), ShotDelay);
 		FParse::Value(Cmd, TEXT("UiMenuShotSection="), ShotSection);
 		ShotSection = FMath::Clamp(ShotSection, 0, static_cast<int32>(ftcore::kSettingsGroupCount) - 1);
@@ -6236,14 +6257,21 @@ public:
 		UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
 		UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
 		APlayerController* PC = GI ? GI->GetFirstLocalPlayerController() : nullptr;
+		if (!bReadBound && VC)
+		{
+			VC->OnEndDraw().AddSP(this, &SFTMenuScreens::ReadAtEndDraw);
+			bReadBound = true;
+		}
+		const FVector2f Size = Geometry.GetLocalSize();
+		LastSize = Size;
 		TickShot(World, Pause, Set, PC);
 		bSettings = Set && Set->IsOpen();
 		bPause = !bSettings && Pause && Pause->IsOpen();
 		if (!bSettings && !bPause)
 		{
+			ReadKey = 0;
 			return;
 		}
-		const FVector2f Size = Geometry.GetLocalSize();
 		if (Size.X <= 0.f || Size.Y <= 0.f)
 		{
 			return;
@@ -6276,6 +6304,19 @@ public:
 		{
 			LayoutPause(*Pause);
 		}
+		// A screen that opened or changed what it shows (screen, section, ask, size, text size) reads the scene under it again;
+		// on open the shade starts from its least.
+		const uint32 Key = 1u + (bSettings ? 2u : 0u) + (bConfirm && !bSettings ? 4u : 0u) + (static_cast<uint32>(ShownGroup) << 3) +
+			(static_cast<uint32>(FMath::RoundToInt(BuiltScale * 100.f)) << 8) + (static_cast<uint32>(Size.Y) << 16);
+		if (Key != ReadKey)
+		{
+			if (ReadKey == 0)
+			{
+				ShadePeak = kMenuShade;
+			}
+			ReadKey = Key;
+			bReadWanted = true;
+		}
 		float MX = 0.f;
 		float MY = 0.f;
 		if (PC && PC->GetMousePosition(MX, MY))
@@ -6307,7 +6348,8 @@ public:
 		const FPainter P{Geometry, Out, Layer, S, false, Runs};
 		Mesh.Begin(Geometry, S);
 		Mesh.Rect(0.f, 0.f, Size.X, Size.Y, Tok(UiToken::Backing, kMenuDim), false);
-		Mesh.Band(0.f, 0.f, ShadeRight, Size.Y, false, false, 1.f, kMenuShade, Tok(UiToken::Backing, 1.f));
+		Mesh.Band(0.f, 0.f, ShadeRight, Size.Y, false, false, (ShadeRight - TextRight) / FMath::Max(1.f, ShadeRight), ShadePeak,
+			Tok(UiToken::Backing, 1.f));
 		if (bSettings)
 		{
 			PaintSettings(P);
@@ -6374,6 +6416,10 @@ private:
 		FitHint(PauseHint, PauseHint2, Usable, NoteFont);
 		FitHint(AskHint, AskHint2, Usable, NoteFont);
 		FitHint(SettingsHint, SettingsHint2, Usable, NoteFont);
+		PauseHintW = FMath::Max(TextWidth(PauseHint, NoteFont), TextWidth(PauseHint2, NoteFont));
+		AskHintW = FMath::Max(TextWidth(AskHint, NoteFont), TextWidth(AskHint2, NoteFont));
+		SettingsHintW = FMath::Max(TextWidth(SettingsHint, NoteFont), TextWidth(SettingsHint2, NoteFont));
+		SettingsTitleW = TextWidth(SettingsTitle, TitleFont);
 		float X = 0.f;
 		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
 		{
@@ -6471,7 +6517,8 @@ private:
 		Pause.SetChoiceRect(0, bConfirm ? WordBox(X0, ChoiceTop, YesW, RowAsc) : FBox2D(ForceInit));
 		Pause.SetChoiceRect(1, bConfirm ? WordBox(NoX, ChoiceTop, NoW, RowAsc) : FBox2D(ForceInit));
 		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
-		ShadeRight = X0 + FMath::Max3(MaxItemW, AskW, PauseTitleW) + 480.f * S;
+		TextRight = X0 + FMath::Max3(bConfirm ? FMath::Max(AskW, YesW + 2.f * RowEm + NoW) : MaxItemW, PauseTitleW, bConfirm ? AskHintW : PauseHintW);
+		ShadeRight = TextRight + kMenuShadeFall * S;
 	}
 
 	void LayoutSettings(UFTSettingsSubsystem& Set)
@@ -6515,7 +6562,8 @@ private:
 		Set.SetRowRect(BackRow, WordBox(X0, BackTop, LabelW[BackRow], RowAsc));
 		// Left of the value's middle steps down, right of it up (the subsystem's rule for a click).
 		Set.SetValueColumn((ValueX - 1.5f * RowEm) * ToVpX, (ValueX + 0.5f * ValueColW) * ToVpX);
-		ShadeRight = X0 + FMath::Max(SectionLineW, ValueX - X0 + ValueColW) + 480.f * S;
+		TextRight = X0 + FMath::Max3(FMath::Max(SectionLineW, SettingsTitleW), ValueX - X0 + ValueColW, SettingsHintW);
+		ShadeRight = TextRight + kMenuShadeFall * S;
 		RowsSet = &Set;
 	}
 
@@ -6615,6 +6663,208 @@ private:
 		PaintHint(P, SettingsHint, SettingsHint2);
 	}
 
+	void AddLine(float X, float Top, float W, float Asc, float InkA, const FString& Name)
+	{
+		if (NumLines >= kMenuMaxLines || W <= 0.f || InkA <= 0.f)
+		{
+			return;
+		}
+		FMenuLine& L = Lines[NumLines++];
+		L.Rc = FBox2f(FVector2f(X, Top - 0.35f * Asc), FVector2f(X + W, Top + 1.45f * Asc));
+		L.InkA = InkA;
+		L.Name = Name;
+	}
+
+	// Every text line the shown screen draws, at its ink (a greyed pause item is left out: it says it is off).
+	void CollectLines()
+	{
+		NumLines = 0;
+		const auto HintLines = [this](const FString& First, const FString& Second)
+		{
+			AddLine(X0, HintFirst(Second), TextWidth(First, NoteFont), NoteAsc, Hud::NoteInk, TEXT("hint"));
+			if (!Second.IsEmpty())
+			{
+				AddLine(X0, HintTop, TextWidth(Second, NoteFont), NoteAsc, Hud::NoteInk, TEXT("hint, second line"));
+			}
+		};
+		if (bPause)
+		{
+			AddLine(X0, TitleTop, PauseTitleW, TitleAsc, 1.f, PauseTitle);
+			if (!bConfirm)
+			{
+				for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+				{
+					if (bItemOn[I])
+					{
+						AddLine(X0, RowTop[I], ItemW[I], RowAsc, I == Selected ? 1.f : kMenuRestInk, ItemWord[I]);
+					}
+				}
+				HintLines(PauseHint, PauseHint2);
+				return;
+			}
+			const FString& Ask = bAskGame ? AskGame : AskTitle;
+			AddLine(X0, AskTop, TextWidth(Ask, HeadFont), HeadAsc, 1.f, Ask);
+			AddLine(X0, NoteTop, TextWidth(AskNote, NoteFont), NoteAsc, Hud::NoteInk, AskNote);
+			AddLine(X0, ChoiceTop, YesW, RowAsc, kMenuRestInk, YesWord);
+			AddLine(NoX, ChoiceTop, NoW, RowAsc, kMenuRestInk, NoWord);
+			HintLines(AskHint, AskHint2);
+			return;
+		}
+		const UFTSettingsSubsystem* Rows = RowsSet;
+		if (!Rows)
+		{
+			return;
+		}
+		AddLine(X0, TitleTop, SettingsTitleW, TitleAsc, 1.f, SettingsTitle);
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			AddLine(X0 + SectionX[G], SectionTop, SectionW[G], HeadAsc, G == ShownGroup ? 1.f : kMenuRestInk, SectionWord[G]);
+		}
+		for (int32 N = 0; N < NumShown; ++N)
+		{
+			const int32 R = ShownRow[N];
+			const float InkA = R == Selected ? 1.f : kMenuRestInk;
+			AddLine(X0, RowTop[N], LabelW[R], RowAsc, InkA, Rows->GetRowLabel(R));
+			const FString& Value = Rows->GetRowValue(R);
+			AddLine(ValueX, RowTop[N], TextWidth(Value, RowFont), RowAsc, InkA, Value);
+		}
+		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
+		AddLine(X0, BackTop, LabelW[BackRow], RowAsc, Selected == BackRow ? 1.f : kMenuRestInk, Rows->GetRowLabel(BackRow));
+		HintLines(SettingsHint, SettingsHint2);
+	}
+
+	// A line's contrast: its ink over the picture under the dim and the shade at Peak.
+	static float MenuRatio(const ftcore::UiColor& Fg, const ftcore::UiColor& Pic, const ftcore::UiColor& Back, float Peak)
+	{
+		const ftcore::UiColor Under = MenuOver(MenuOver(Pic, Back, kMenuDim), Back, Peak);
+		return ftcore::uiContrast(Fg, ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, Under);
+	}
+
+	// At the end of the game viewport's draw (the Slate layers are not in the picture yet, so this is the bare scene), when a
+	// screen opened or changed: one read of the picture under all its words, then for each line the least shade that holds it
+	// at kMenuContrast over the brightest tenth under it; the shade takes the most any line needs (only rising while open).
+	void ReadAtEndDraw()
+	{
+		if (!bReadWanted || FScreenshotRequest::IsScreenshotRequested())
+		{
+			return;
+		}
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+		if (VS.X <= 0 || VS.Y <= 0 || LastSize.X <= 0.f || LastSize.Y <= 0.f)
+		{
+			return;
+		}
+#if !UE_BUILD_SHIPPING
+		if (bSweepPending)
+		{
+			bReadWanted = false;
+			bSweepPending = false;
+			const float S0 = FMath::Max(0.25f, LastSize.Y / 1080.f);
+			ftcore::UiColor Pic;
+			if (PictureBrightest(FBox2f(FVector2f(Hud::Margin * S0, 0.08f * LastSize.Y), FVector2f(0.6f * LastSize.X, LastSize.Y - Hud::Margin * S0)),
+					LastSize, Pic))
+			{
+				const float Luma = 0.2126f * Pic.r + 0.7152f * Pic.g + 0.0722f * Pic.b;
+				if (Luma > SweepBest)
+				{
+					SweepBest = Luma;
+					SweepBestYaw = SweepBase + 30.f * static_cast<float>(SweepStep);
+				}
+			}
+			SweepStepAt = -1.0;
+			++SweepStep;
+			return;
+		}
+#endif
+		if ((!bSettings && !bPause) || BuiltHeight <= 0.f)
+		{
+			return;
+		}
+		bReadWanted = false;
+		CollectLines();
+		if (NumLines == 0)
+		{
+			return;
+		}
+		const float KX = VS.X / LastSize.X;
+		const float KY = VS.Y / LastSize.Y;
+		const auto ToPx = [KX, KY, VS](const FBox2f& Rc)
+		{
+			return FIntRect(FMath::Clamp(FMath::FloorToInt(Rc.Min.X * KX), 0, VS.X), FMath::Clamp(FMath::FloorToInt(Rc.Min.Y * KY), 0, VS.Y),
+				FMath::Clamp(FMath::CeilToInt(Rc.Max.X * KX), 0, VS.X), FMath::Clamp(FMath::CeilToInt(Rc.Max.Y * KY), 0, VS.Y));
+		};
+		FBox2f All(ForceInit);
+		for (int32 I = 0; I < NumLines; ++I)
+		{
+			All += Lines[I].Rc;
+		}
+		const FIntRect R = ToPx(All);
+		ReadPx.Reset();
+		if (R.Width() <= 0 || R.Height() <= 0 || !VP->ReadPixels(ReadPx, FReadSurfaceDataFlags(), R) || ReadPx.Num() != R.Width() * R.Height())
+		{
+			return;
+		}
+		const ftcore::UiStyle& St = Table().Style;
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Ink);
+		const ftcore::UiColor Back = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Backing);
+		ftcore::UiColor Pics[kMenuMaxLines];
+		bool bRead[kMenuMaxLines] = {};
+		float Need = kMenuShade;
+		for (int32 I = 0; I < NumLines; ++I)
+		{
+			FIntRect Sub = ToPx(Lines[I].Rc);
+			Sub.Clip(R);
+			if (Sub.Width() <= 0 || Sub.Height() <= 0)
+			{
+				continue;
+			}
+			ftcore::UiLumaHistogram Hist;
+			for (int32 Y = Sub.Min.Y; Y < Sub.Max.Y; ++Y)
+			{
+				const FColor* Row = ReadPx.GetData() + static_cast<int64>(Y - R.Min.Y) * R.Width();
+				for (int32 X = Sub.Min.X; X < Sub.Max.X; ++X)
+				{
+					const FColor& Q = Row[X - R.Min.X];
+					ftcore::uiLumaAdd(Hist, ftcore::UiColor{Q.R / 255.f, Q.G / 255.f, Q.B / 255.f, 1.f});
+				}
+			}
+			Pics[I] = ftcore::uiLumaBrightest(Hist, 0.1f);
+			bRead[I] = true;
+			const ftcore::UiColor Fg{Ink.r, Ink.g, Ink.b, Ink.a * Lines[I].InkA};
+			float Peak = kMenuShade;
+			while (Peak < kMenuShadeMax && MenuRatio(Fg, Pics[I], Back, Peak) < kMenuContrast)
+			{
+				Peak += 0.02f;
+			}
+			Need = FMath::Max(Need, FMath::Min(Peak, kMenuShadeMax));
+		}
+		ShadePeak = FMath::Max(ShadePeak, Need);
+#if !UE_BUILD_SHIPPING
+		float Lowest = TNumericLimits<float>::Max();
+		int32 LowestAt = INDEX_NONE;
+		for (int32 I = 0; I < NumLines; ++I)
+		{
+			if (!bRead[I])
+			{
+				continue;
+			}
+			const ftcore::UiColor Fg{Ink.r, Ink.g, Ink.b, Ink.a * Lines[I].InkA};
+			const float Ratio = MenuRatio(Fg, Pics[I], Back, ShadePeak);
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu contrast %.2f (bare %.2f): %s"), Ratio,
+				ftcore::uiContrast(Fg, ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, Pics[I]), *Lines[I].Name);
+			if (Ratio < Lowest)
+			{
+				Lowest = Ratio;
+				LowestAt = I;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: menu contrast lowest %.2f (%s) over %d lines; shade %.2f, dim %.2f (%s)."), Lowest,
+			LowestAt != INDEX_NONE ? *Lines[LowestAt].Name : TEXT("none"), NumLines, ShadePeak, kMenuDim,
+			bSettings ? TEXT("settings") : TEXT("pause"));
+#endif
+	}
+
 	void TickShot(UWorld* World, UFTPauseSubsystem* Pause, UFTSettingsSubsystem* Set, APlayerController* PC)
 	{
 		(void)World;
@@ -6631,7 +6881,37 @@ private:
 		{
 			ShotStart = Now;
 		}
-		if (!bShotOpened && Now - ShotStart >= ShotDelay && World && Pause && Set)
+		// The sweep (-UiMenuShotSweep): a step of the turn, a read of the bare scene half a second later, the next step; then
+		// back to the brightest view, and the menu opens over it.
+		if (bShotSweep && !bSweepDone && PC && Now - ShotStart >= ShotDelay)
+		{
+			if (SweepStep >= kMenuSweepSteps)
+			{
+				FRotator Rot = PC->GetControlRotation();
+				Rot.Yaw = SweepBestYaw;
+				PC->SetControlRotation(Rot);
+				bSweepDone = true;
+				SweepDoneAt = Now;
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: menu sweep: brightest view at yaw %.0f (brightest tenth luma %.2f)."), SweepBestYaw, SweepBest);
+			}
+			else if (SweepStepAt < 0.0)
+			{
+				FRotator Rot = PC->GetControlRotation();
+				if (SweepStep == 0)
+				{
+					SweepBase = Rot.Yaw;
+				}
+				Rot.Yaw = SweepBase + 30.f * static_cast<float>(SweepStep);
+				PC->SetControlRotation(Rot);
+				SweepStepAt = Now;
+			}
+			else if (!bSweepPending && Now - SweepStepAt > 0.5)
+			{
+				bSweepPending = true;
+				bReadWanted = true;
+			}
+		}
+		if (!bShotOpened && Now - ShotStart >= ShotDelay && (!bShotSweep || (bSweepDone && Now - SweepDoneAt >= 1.5)) && World && Pause && Set)
 		{
 			bShotOpened = true;
 			ShotOpenedAt = Now;
@@ -6677,7 +6957,7 @@ private:
 	FString ItemWord[UFTPauseSubsystem::RowCount];
 	float ItemW[UFTPauseSubsystem::RowCount] = {};
 	bool bItemOn[UFTPauseSubsystem::RowCount] = {};
-	float MaxItemW = 0.f, YesW = 0.f, NoW = 0.f, AskW = 0.f, PauseTitleW = 0.f;
+	float MaxItemW = 0.f, YesW = 0.f, NoW = 0.f, AskW = 0.f, PauseTitleW = 0.f, PauseHintW = 0.f, AskHintW = 0.f;
 	bool bConfirm = false, bAskGame = false, bYes = false;
 	float AskTop = 0.f, NoteTop = 0.f, ChoiceTop = 0.f, NoX = 0.f;
 
@@ -6686,7 +6966,7 @@ private:
 	FString SectionWord[ftcore::kSettingsGroupCount];
 	float SectionW[ftcore::kSettingsGroupCount] = {};
 	float SectionX[ftcore::kSettingsGroupCount] = {};
-	float SectionLineW = 0.f;
+	float SectionLineW = 0.f, SettingsTitleW = 0.f, SettingsHintW = 0.f;
 	float LabelW[UFTSettingsSubsystem::RowCount] = {};
 	float MaxLabelW = 0.f;
 	int32 ShownGroup = 0;
@@ -6697,8 +6977,18 @@ private:
 
 	// both
 	int32 Selected = 0;
-	float X0 = 0.f, TitleTop = 0.f, HintTop = 0.f, ShadeRight = 0.f;
+	float X0 = 0.f, TitleTop = 0.f, HintTop = 0.f, ShadeRight = 0.f, TextRight = 0.f;
 	float RowTop[kMenuMaxShown] = {};
+
+	// the scrim's measure
+	FVector2f LastSize = FVector2f::ZeroVector;
+	float ShadePeak = kMenuShade;
+	uint32 ReadKey = 0;
+	bool bReadWanted = false;
+	bool bReadBound = false;
+	FMenuLine Lines[kMenuMaxLines];
+	int32 NumLines = 0;
+	TArray<FColor> ReadPx;
 
 #if !UE_BUILD_SHIPPING
 	bool bShot = false;
@@ -6713,6 +7003,15 @@ private:
 	bool bShotOpened = false;
 	bool bShotTaken = false;
 	bool bExitAsked = false;
+	bool bShotSweep = false;
+	bool bSweepDone = false;
+	bool bSweepPending = false;
+	int32 SweepStep = 0;
+	double SweepStepAt = -1.0;
+	double SweepDoneAt = 0.0;
+	float SweepBase = 0.f;
+	float SweepBest = -1.f;
+	float SweepBestYaw = 0.f;
 #endif
 
 	mutable FTextRuns TextRuns;
