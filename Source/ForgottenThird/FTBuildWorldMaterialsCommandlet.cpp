@@ -223,6 +223,7 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	Options.street = true;
 	Options.jointDepth = true;
 	Options.streetDetail = Detail != nullptr;
+	Options.specOut = true;
 	UMaterialExpressionCollectionParameter* Wetness = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, 600);
 	Wetness->Collection = Look;
 	Wetness->ParameterName = TEXT("Wetness");
@@ -285,9 +286,9 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 		Tex->SamplerType = kDetailMaps[M].Sampler;
 		AddWeatherInput(Weather, kDetailMaps[M].Input, Tex, 0);
 	}
-	const TCHAR* const Outputs[] = {TEXT("NormalOut"), TEXT("RoughOut"), TEXT("AOOut")};
-	const ECustomMaterialOutputType Types[] = {CMOT_Float3, CMOT_Float1, CMOT_Float1};
-	for (int32 O = 0; O < 3; ++O)
+	const TCHAR* const Outputs[] = {TEXT("NormalOut"), TEXT("RoughOut"), TEXT("AOOut"), TEXT("SpecOut")};
+	const ECustomMaterialOutputType Types[] = {CMOT_Float3, CMOT_Float1, CMOT_Float1, CMOT_Float1};
+	for (int32 O = 0; O < 4; ++O)
 	{
 		FCustomOutput& Out = Weather->AdditionalOutputs.AddDefaulted_GetRef();
 		Out.OutputName = Outputs[O];
@@ -295,13 +296,14 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	}
 	Weather->RebuildOutputs();
 
-	// Output 0 is the albedo, then NormalOut, RoughOut and AOOut.
+	// Output 0 is the albedo, then NormalOut, RoughOut, AOOut and SpecOut (dry asphalt's specular, else 0.5).
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Weather);
 	Material->bTangentSpaceNormal = false;
 	Inputs->Normal.Connect(1, Weather);
 	Inputs->Roughness.Connect(2, Weather);
 	Inputs->AmbientOcclusion.Connect(3, Weather);
+	Inputs->Specular.Connect(4, Weather);
 }
 
 // Look (-Weather): the weather node over the surface.
