@@ -6256,6 +6256,7 @@ public:
 		{
 			BuiltHeight = Size.Y;
 			BuiltScale = T;
+			ShownSize = Size; // before the fonts: their log line reads it
 			BuildFonts(Size.Y, T, Set);
 		}
 		S = FMath::Max(0.25f, Size.Y / 1080.f);
@@ -6347,6 +6348,7 @@ private:
 		NoteAsc = Asc(NoteFont);
 
 		PauseTitle = CasedFor(UiTextRole::Title, kMenuPauseTitleUi.Get());
+		PauseTitleW = TextWidth(PauseTitle, TitleFont);
 		const FTUiText* const Items[UFTPauseSubsystem::RowCount] = {&kMenuResumeUi, &kMenuSettingsUi, &kMenuQuitTitleUi, &kMenuQuitGameUi};
 		MaxItemW = 0.f;
 		for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
@@ -6368,6 +6370,10 @@ private:
 
 		SettingsTitle = CasedFor(UiTextRole::Title, FString(kMenuSettingsTitle));
 		SettingsHint = FString(kMenuSettingsHint);
+		const float Usable = FMath::Max(0.f, ShownSize.X - 2.f * Hud::Margin * FMath::Max(0.25f, H / 1080.f));
+		FitHint(PauseHint, PauseHint2, Usable, NoteFont);
+		FitHint(AskHint, AskHint2, Usable, NoteFont);
+		FitHint(SettingsHint, SettingsHint2, Usable, NoteFont);
 		float X = 0.f;
 		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
 		{
@@ -6389,9 +6395,50 @@ private:
 #endif
 	}
 
-	FBox2D ToVp(float X0, float Y0, float X1, float Y1) const
+	// A hint too wide for the line (200% text on a tall screen) breaks at the gap (four spaces) nearest
+	// its middle; it is never shrunk. Second is empty when the hint fits.
+	static void FitHint(FString& Line, FString& Second, float Usable, const FSlateFontInfo& Font)
 	{
-		return FBox2D(FVector2D(X0 * ToVpX, Y0 * ToVpY), FVector2D(X1 * ToVpX, Y1 * ToVpY));
+		Second.Reset();
+		const float Full = TextWidth(Line, Font);
+		if (Full <= Usable)
+		{
+			return;
+		}
+		int32 Best = INDEX_NONE;
+		float BestOff = TNumericLimits<float>::Max();
+		for (int32 At = Line.Find(TEXT("    ")); At != INDEX_NONE;
+			 At = Line.Find(TEXT("    "), ESearchCase::CaseSensitive, ESearchDir::FromStart, At + 4))
+		{
+			const float Off = FMath::Abs(TextWidth(Line.Left(At), Font) - 0.5f * Full);
+			if (Off < BestOff)
+			{
+				BestOff = Off;
+				Best = At;
+			}
+		}
+		if (Best != INDEX_NONE)
+		{
+			Second = Line.Mid(Best).TrimStart();
+			Line.LeftInline(Best);
+		}
+	}
+
+	// The hint's first line sits one step above the bottom one when it broke.
+	float HintFirst(const FString& Second) const { return Second.IsEmpty() ? HintTop : HintTop - 1.5f * NoteAsc; }
+
+	void PaintHint(const FPainter& P, const FString& First, const FString& Second) const
+	{
+		P.Text(X0, HintFirst(Second), First, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		if (!Second.IsEmpty())
+		{
+			P.Text(X0, HintTop, Second, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		}
+	}
+
+	FBox2D ToVp(float L, float T, float R, float B) const
+	{
+		return FBox2D(FVector2D(L * ToVpX, T * ToVpY), FVector2D(R * ToVpX, B * ToVpY));
 	}
 
 	// A word's hit box: the capitals with a little air round them.
@@ -6424,7 +6471,7 @@ private:
 		Pause.SetChoiceRect(0, bConfirm ? WordBox(X0, ChoiceTop, YesW, RowAsc) : FBox2D(ForceInit));
 		Pause.SetChoiceRect(1, bConfirm ? WordBox(NoX, ChoiceTop, NoW, RowAsc) : FBox2D(ForceInit));
 		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
-		ShadeRight = X0 + FMath::Max3(MaxItemW, AskW, TextWidth(PauseTitle, TitleFont)) + 480.f * S;
+		ShadeRight = X0 + FMath::Max3(MaxItemW, AskW, PauseTitleW) + 480.f * S;
 	}
 
 	void LayoutSettings(UFTSettingsSubsystem& Set)
@@ -6463,7 +6510,7 @@ private:
 		}
 		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
 		BackTop = FMath::Max(First + Step * NumShown + 0.6f * Step, 0.f);
-		BackTop = FMath::Min(BackTop, HintTop - 1.6f * Step);
+		BackTop = FMath::Min(BackTop, HintFirst(SettingsHint2) - 1.6f * Step);
 		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
 		Set.SetRowRect(BackRow, WordBox(X0, BackTop, LabelW[BackRow], RowAsc));
 		// Left of the value's middle steps down, right of it up (the subsystem's rule for a click).
@@ -6508,7 +6555,7 @@ private:
 					SelectMark(X0, ItemW[I], RowTop[I], RowAsc);
 				}
 			}
-			P.Text(X0, HintTop, PauseHint, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+			PaintHint(P, PauseHint, PauseHint2);
 			return;
 		}
 		P.Text(X0, AskTop, bAskGame ? AskGame : AskTitle, HeadFont, Tok(UiToken::Ink));
@@ -6523,7 +6570,7 @@ private:
 		{
 			SelectMark(NoX, NoW, ChoiceTop, RowAsc);
 		}
-		P.Text(X0, HintTop, AskHint, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		PaintHint(P, AskHint, AskHint2);
 	}
 
 	void PaintSettings(const FPainter& P) const
@@ -6565,7 +6612,7 @@ private:
 		{
 			SelectMark(X0, LabelW[BackRow], BackTop, RowAsc);
 		}
-		P.Text(X0, HintTop, SettingsHint, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		PaintHint(P, SettingsHint, SettingsHint2);
 	}
 
 	void TickShot(UWorld* World, UFTPauseSubsystem* Pause, UFTSettingsSubsystem* Set, APlayerController* PC)
@@ -6626,16 +6673,16 @@ private:
 	float TitleAsc = 0.f, HeadAsc = 0.f, RowAsc = 0.f, NoteAsc = 0.f, HeadEm = 0.f, RowEm = 0.f;
 
 	// pause
-	FString PauseTitle, AskTitle, AskGame, AskNote, YesWord, NoWord, PauseHint, AskHint;
+	FString PauseTitle, AskTitle, AskGame, AskNote, YesWord, NoWord, PauseHint, AskHint, PauseHint2, AskHint2;
 	FString ItemWord[UFTPauseSubsystem::RowCount];
 	float ItemW[UFTPauseSubsystem::RowCount] = {};
 	bool bItemOn[UFTPauseSubsystem::RowCount] = {};
-	float MaxItemW = 0.f, YesW = 0.f, NoW = 0.f, AskW = 0.f;
+	float MaxItemW = 0.f, YesW = 0.f, NoW = 0.f, AskW = 0.f, PauseTitleW = 0.f;
 	bool bConfirm = false, bAskGame = false, bYes = false;
 	float AskTop = 0.f, NoteTop = 0.f, ChoiceTop = 0.f, NoX = 0.f;
 
 	// settings
-	FString SettingsTitle, SettingsHint;
+	FString SettingsTitle, SettingsHint, SettingsHint2;
 	FString SectionWord[ftcore::kSettingsGroupCount];
 	float SectionW[ftcore::kSettingsGroupCount] = {};
 	float SectionX[ftcore::kSettingsGroupCount] = {};

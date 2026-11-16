@@ -63,25 +63,27 @@ void FT::DrawSettingsOverlay(AHUD& Hud, UCanvas* Canvas, UFTSettingsSubsystem& S
 	const int32 Selected = Settings.GetSelectedRow();
 	for (int32 I = 0; I < N; ++I)
 	{
+		// Slot I shows the row Up / Down reach in I steps (screen order: section by section, Back last).
+		const int32 Row = static_cast<int32>(ftcore::settingsScreenRow(static_cast<std::uint32_t>(I)));
 		const float Y0 = PanelY + HeaderH + RowH * I;
 		const float Y1 = Y0 + RowH - 4.f * S;
-		Settings.SetRowRect(I, FBox2D(FVector2D(RowX0, Y0), FVector2D(RowX1, Y1)));
-		const bool bSel = I == Selected;
+		Settings.SetRowRect(Row, FBox2D(FVector2D(RowX0, Y0), FVector2D(RowX1, Y1)));
+		const bool bSel = Row == Selected;
 		if (bSel)
 		{
 			Hud.DrawRect(kRowSet, RowX0, Y0, RowX1 - RowX0, Y1 - Y0);
 		}
-		const FString& Label = Settings.GetRowLabel(I);
+		const FString& Label = Settings.GetRowLabel(Row);
 		Hud.GetTextSize(Label, W, H, Font, Scale);
 		const float TextY = Y0 + (Y1 - Y0 - H) * 0.5f;
 		const FLinearColor& Color = bSel ? kGoldSet : kWhiteSet;
-		if (!UFTSettingsSubsystem::IsRowAdjustable(I))
+		if (!UFTSettingsSubsystem::IsRowAdjustable(Row))
 		{
 			Hud.DrawText(Label, Color, Canvas->ClipX * 0.5f - W * 0.5f, TextY, Font, Scale);
 			continue;
 		}
 		Hud.DrawText(Label, Color, RowX0 + 16.f * S, TextY, Font, Scale);
-		const FString& Value = Settings.GetRowValue(I);
+		const FString& Value = Settings.GetRowValue(Row);
 		Hud.GetTextSize(Value, W, H, Font, Scale);
 		Hud.DrawText(Value, bSel ? kGoldSet : kDimSet, ValueMid - W * 0.5f, TextY, Font, Scale);
 		if (bSel)
