@@ -36,6 +36,24 @@ inline constexpr const TCHAR* Strength = TEXT("RimStrength");
 inline constexpr const TCHAR* HairCap = TEXT("RimHairCap");
 inline const FLinearColor DefaultColour(0.82f, 0.88f, 1.f); // a cool edge, against warm street light
 
+// Who writes RimDir. Camera (the default): UFTRimComponent, once a frame, from player 0's view. World: a world system
+// (for example the nearest lamp) owns RimDir and RimColour; the component then writes RimStrength only. One writer per
+// parameter, so the rim never flips between two directions within a frame. Set it back to Camera when that system stops.
+enum class EDirectionSource : uint8
+{
+	Camera,
+	World
+};
+
+inline EDirectionSource& DirectionSourceSlot()
+{
+	static EDirectionSource Source = EDirectionSource::Camera;
+	return Source;
+}
+
+inline EDirectionSource GetDirectionSource() { return DirectionSourceSlot(); }
+inline void SetDirectionSource(EDirectionSource Source) { DirectionSourceSlot() = Source; }
+
 inline UMaterialParameterCollection* Load()
 {
 	const FString Path = FString(Collection) + TEXT(".") + FPackageName::GetShortName(Collection);

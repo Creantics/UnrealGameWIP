@@ -4,7 +4,8 @@
 // player 0's camera, raised 30 degrees, turned 35 to the camera's right) and its strength into MPC_FTRim. The collection
 // is shared, so only one figure writes: the pawn player 0 controls, or (bRequirePlayerPawn false) any figure allowed to
 // carry it (the arena allows the player's figure alone).
-// Strength from ft.Rim: 0 = off (the default, the masters add nothing); above 0 = that strength.
+// Strength from ft.Rim: 0 = off (the default, the masters add nothing); above 0 = that strength. When a world system
+// owns the direction (FTRim::SetDirectionSource(World)), this component writes the strength only.
 #pragma once
 
 #include "CoreMinimal.h"

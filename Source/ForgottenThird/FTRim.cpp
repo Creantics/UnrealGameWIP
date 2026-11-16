@@ -49,9 +49,9 @@ void UFTRimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 		Params->SetScalarParameterValue(FTRim::Strength, Strength);
 		LoggedAway = FVector::ZeroVector; // log the placement again at the new strength
 	}
-	if (Strength <= 0.f)
+	if (Strength <= 0.f || FTRim::GetDirectionSource() != FTRim::EDirectionSource::Camera)
 	{
-		return;
+		return; // off, or a world system owns RimDir (FTRim::SetDirectionSource)
 	}
 	const APlayerCameraManager* Cam = UGameplayStatics::GetPlayerCameraManager(this, 0); // player 0: one view
 	if (!Cam)
