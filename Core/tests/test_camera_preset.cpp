@@ -223,7 +223,8 @@ TEST_CASE("camera preset: close keeps every look-up for leads 1.4 to 1.8 m tall;
             CHECK(held.pitch == want);
         }
     }
-    // A 2 m lead's head leaves close's rule at its own lock pitch: the limit, written down (the leads are under it).
+    // A 2 m lead's head leaves close's rule at its own lock pitch, whatever the cut: the limit, written down (a lead
+    // over about 1.85 m under close is an open question for the lens, not for the cut).
     const ArenaLeadShares tall = arenaLeadShares(arenaPoseAtPitch(kArenaLook, rig, c.rig.lockPitch), kAspect, bodyOf(c, 2.f));
     CHECK(tall.head > c.headMax);
 }
@@ -247,6 +248,11 @@ TEST_CASE("camera preset: a bad file is refused with a reason and changes nothin
     // Classic's rig is the zone's own: a rig key on it is refused, whatever its value.
     refused(R"({"classic": {"fov": 70}})", "camera_presets.classic.fov: classic's rig is the zone's own");
     refused(R"({"classic": {"arm": 6.4}})", "camera_presets.classic.arm: classic's rig is the zone's own");
+    refused(R"({"classic": {"lockPitch": -20}})", "camera_presets.classic.lockPitch: classic's rig is the zone's own");
+    // The seventh key on is not the rig's: classic takes it.
+    CameraPresets lens = before;
+    REQUIRE(importCameraPresets(R"({"classic": {"cutAt": 0.0, "targetX": 0.5}})", lens, nullptr));
+    CHECK(samePreset(lens.classic, before.classic));
     refused(R"({"close": {"cutAt": 1.2}})", "camera_presets.close.cutAt: out of range");
     refused(R"({"close": {"cutMin": 0.3, "headMax": 0.3}})", "camera_presets.close.cutMin: not under headMax");
     refused(R"({"close": {"targetX": 0.8}})", "camera_presets.close.targetX: out of range");

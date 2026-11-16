@@ -10,7 +10,9 @@
 //   - cutAt: the height on the lead's body (m over the floor) that must stay in the frame (ArenaLeadBody::cut; 0 the
 //     feet). Metres, not a share of the lead's height: the lens's pivot is at a fixed height too, so a fixed cut sits
 //     at the same place in the frame for every lead (close's 0.6 m keeps every look-up for leads 1.4 to 1.8 m tall),
-//     where a share would sink for a short lead and hold its look-up back (a third of 1.7 m holds +14 to +5.5).
+//     where a share that keeps 0.6 m on a 1.8 m lead (a third) sinks for a shorter one and holds its look-up back
+//     (a 1.7 m lead's +14 to +5.5; 1.4 to 1.6 m lose every look-up), and one high enough for 1.4 m (0.43) lifts the
+//     1.8 m lead's cut to 0.77 m. Over about 1.85 m the head leaves close's rule whatever the cut.
 //     The host holds it to half the lead's height (cameraPresetCut),
 //   - cutMin: the least share of the frame's height that point sits over the bottom edge (the rule's feetMin),
 //   - headMax: the most share the head may reach (the rule's headMax),
