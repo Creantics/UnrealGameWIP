@@ -443,8 +443,9 @@ FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "
 
 // Why ArenaFight::switchLeads refused (ArenaFight::switchRefusal). Append only.
 // When several apply, one wins and is the one named and counted: not begun (NotFighting: there is no fight), then
-// NoPartner (no other lead to name), then the permanent reason NotPlayable, then PlayerDown, then PartnerDown, then
-// NotFighting for the busy rest (over, or inside the step's hook). The player always sees the same word for one lead.
+// NoPartner (no other lead to name), then the permanent reason NotPlayable, then NotFighting for the rest of the
+// fight's own state (over, or inside the step's hook), then PlayerDown, then PartnerDown: the session's order
+// (FightSession::leadSwitchReason: NotPlayable, FightOver, Down). The player always sees the same word for one lead.
 enum class ArenaSwitchRefusal : std::uint8_t {
     Ok,          // it swapped (or none asked)
     NotFighting, // not begun, over, or asked inside the step's hook
@@ -561,6 +562,11 @@ struct ArenaFighter {
     // the player's own time (a hit pause holds it). Full at begin() and restart().
     std::uint8_t rounds = 0;
     float reload = 1.2f;
+    // As the partner (ArenaDef::partnerKit): the brain's reach and standoff for this kit, in metres off the target's
+    // edge (PartnerTuning::reachMeters, standoffMeters; arena.json "partnerReach" 0.5..4, "partnerStandoff"
+    // 0..partnerReach, and only with a partnerReach). 0: unset, the tuning's own. A ranged partner kit sets them; a close-in one leaves them 0.
+    float partnerReach = 0.f;
+    float partnerStandoff = 0.f;
 };
 
 // Whether the player may take this kit as the lead: the kit's own data flag (arena.json "playable"), never inferred

@@ -563,9 +563,9 @@ TEST_CASE("arena data: each lead ships its own kit and its own blocks") {
     CHECK(duy.heavy.range < kArenaShotRange);
     CHECK(duy.heavy.lunge > 0.f);
     CHECK(duy.heavy.poiseDamage >= base.heavy.poiseDamage);
-    // The Third: no weapon and no attack of his own, a guard all round. Devin and Duy attack.
-    CHECK(third.weapon == ArenaWeapon::None);
-    CHECK_FALSE(third.attacks);
+    // The Third: a party member who fights with magic (bolts), a guard all round (the ward). All three attack.
+    CHECK(third.weapon == ArenaWeapon::Magic);
+    CHECK(third.attacks);
     CHECK(devin.attacks);
     CHECK(duy.attacks);
     CHECK(third.guardArcCos <= -1.f);
@@ -584,6 +584,7 @@ TEST_CASE("arena data: a kit with no attacks of its own drops light, heavy and R
     const ArenaTable t = loadShipped();
     ArenaDef def = t.fallback;
     def.fighter = t.fighter("third");
+    def.fighter.attacks = false; // the shipped party member fights: this is its kit with the attacks taken off
     REQUIRE_FALSE(def.fighter.attacks);
     def.enemyCount = 1;
     ArenaFight fight;
@@ -6634,7 +6635,7 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
         CHECK_FALSE(arenaPlayable(fights));
         ArenaFighter still = t.fighter("third");
         still.playable = true;
-        CHECK_FALSE(still.attacks);
+        still.attacks = false;
         CHECK(arenaPlayable(still));
     }
     // -ArenaLead=Third is refused on this: the host lower-cases the name and asks arenaPlayable (the kit stays pinned).
@@ -6645,9 +6646,9 @@ TEST_CASE("arena data: the shipped weapons and the strike pattern each lead's ki
     CHECK(t.fighter("default").weapon == ArenaWeapon::None);
     CHECK(t.fighter("devin").weapon == ArenaWeapon::Gauntlets);
     CHECK(t.fighter("duy").weapon == ArenaWeapon::Guns);
-    CHECK(t.fighter("third").weapon == ArenaWeapon::None);
-    for (const char* id : {"default", "devin", "duy", "third"}) CHECK(t.fighter(id).weapon != ArenaWeapon::Magic);
-    ArenaFighter magic = t.fighter("default"); // the magic kind: no lead uses it, its clips stay for old data
+    CHECK(t.fighter("third").weapon == ArenaWeapon::Magic);
+    for (const char* id : {"default", "devin", "duy"}) CHECK(t.fighter(id).weapon != ArenaWeapon::Magic);
+    ArenaFighter magic = t.fighter("default"); // the magic kind on the default's chain (the Third's has three casts too)
     magic.weapon = ArenaWeapon::Magic;
 
     FightClip p[kMaxLightChain];
@@ -9580,9 +9581,8 @@ TEST_CASE("arena table: the shipped kits jump with their own air lights; the ten
     const ArenaFighter& third = t.fighter("third");
     CHECK(devin.jumpLight.damage > duy.jumpLight.damage); // the gauntlets' downward strike hits hardest ...
     CHECK(duy.jumpLight.range > devin.jumpLight.range);   // ... the kick reaches furthest ...
-    // The Third's row is kept for when his attacks come on (off today, so it strikes nothing yet): the weakest of the
-    // three, and on the light's stamina like the others.
-    CHECK_FALSE(third.attacks);
+    // The Third's air light: the weakest of the three, and on the light's stamina like the others.
+    CHECK(third.attacks);
     CHECK(third.jumpLight.damage > 0.f);
     CHECK(third.jumpLight.damage < duy.jumpLight.damage);
     CHECK(third.jumpLight.stamina == third.light[0].stamina);

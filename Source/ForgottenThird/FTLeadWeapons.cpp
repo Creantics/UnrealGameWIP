@@ -113,6 +113,23 @@ bool KnucklePad(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
 	}
 	return true;
 }
+// The open hand's palm, where a spell gathers and leaves: kPalmAlong of the way from the wrist to the middle finger's
+// knuckle (the wrist alone without the knuckle bone). False with no hand bone.
+constexpr double kPalmAlong = 0.6;
+bool PalmPoint(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
+{
+	const FArmBones& Bones = ArmBones(Side);
+	if (!Body.DoesSocketExist(Bones.Hand))
+	{
+		return false;
+	}
+	Out = Body.GetSocketLocation(Bones.Hand);
+	if (Body.DoesSocketExist(Bones.Knuckle))
+	{
+		Out = FMath::Lerp(Out, Body.GetSocketLocation(Bones.Knuckle), kPalmAlong);
+	}
+	return true;
+}
 // A view of a strike's impact, this long after it.
 constexpr double kViewLag = 0.03;
 // A bone's place in the clip's component space at Time (up its parent chain); zero for no such bone.
@@ -473,6 +490,12 @@ UStaticMeshComponent* FFTLeadWeapons::AttachProp(const FTWeaponProps::FPiece& Pi
 	return C;
 }
 
+FRotator FFTLeadWeapons::ImpactFacing(const FVector& From, const FVector& At)
+{
+	const FVector Facing = (From - At).GetSafeNormal2D(UE_SMALL_NUMBER, -FVector::ForwardVector);
+	return FRotationMatrix::MakeFromZX(Facing, FVector::UpVector).Rotator();
+}
+
 void FFTLeadWeapons::SpawnEffects()
 {
 	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoWeaponFx")))
@@ -486,6 +509,7 @@ void FFTLeadWeapons::SpawnEffects()
 	FxName[Travel] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_bolt") : TEXT("gun_tracer");
 	FxName[Impact] = ImpactEffectOf(Kit.weapon);
 	FxName[Ward] = TEXT("spell_ward");
+	FxName[WindUp] = TEXT("spell_cast");
 	switch (Kit.weapon)
 	{
 	case ftcore::ArenaWeapon::Guns:
@@ -522,11 +546,12 @@ void FFTLeadWeapons::SpawnEffects()
 		Fx[Travel] = MakeEffect(FxName[Travel], Root, NAME_None);
 		Fx[Impact] = MakeEffect(FxName[Impact], Root, NAME_None);
 		Fx[Ward] = MakeEffect(FxName[Ward], Root, NAME_None);
+		Fx[WindUp] = MakeEffect(FxName[WindUp], Root, NAME_None); // put at the palm each step of the wind-up
 		break;
 	case ftcore::ArenaWeapon::None:
 		break;
 	}
-	for (const EEffect E : {Travel, Impact})
+	for (const EEffect E : {Travel, Impact, WindUp})
 	{
 		if (Fx[E].IsValid())
 		{
@@ -915,6 +940,36 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 	}
 	const bool bWentActive = bAttacking && P.part == ftcore::ArenaPart::Active
 		&& (LastPart != ftcore::ArenaPart::Active || LastMove != P.move || LastAction != P.action);
+	// A cast's wind-up: two rings close on the palm through the startup (the emitters are in the component's space,
+	// so they ride the hand while it is moved here each step).
+	if (Kit.weapon == ftcore::ArenaWeapon::Magic && bAttacking && P.part == ftcore::ArenaPart::Startup)
+	{
+		bCasting = true;
+		const USkeletalMeshComponent* Body = Skin.Get();
+		FVector Palm;
+		if (UFTVfxComponent* Vfx = Fx[WindUp].Get(); Vfx && Body && PalmPoint(*Body, StrikesLeft() ? 0 : 1, Palm))
+		{
+			Vfx->SetWorldLocationAndRotation(Palm, ConeTo(AimPoint - Palm));
+			if (LastPart != ftcore::ArenaPart::Startup || LastMove != P.move || LastAction != P.action)
+			{
+				Play(WindUp, T);
+			}
+		}
+	}
+	else if (bCasting)
+	{
+		// The wind-up ended: at the release the rings finish on their own; cut short (hit, down, guard, another
+		// move) they go at once.
+		bCasting = false;
+		if (!bWentActive)
+		{
+			if (UFTVfxComponent* Vfx = Fx[WindUp].Get())
+			{
+				Vfx->Clear();
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[WindUp], T);
+			}
+		}
+	}
 	if (bWentActive)
 	{
 		++ActiveCount;
@@ -946,8 +1001,9 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			break;
 		case ftcore::ArenaWeapon::Magic:
 		{
+			// From the palm (the wrist without the knuckle bone).
 			const FName Hand = StrikesLeft() ? TEXT("hand_l") : TEXT("hand_r");
-			if (Body && Body->DoesSocketExist(Hand))
+			if (Body && !PalmPoint(*Body, StrikesLeft() ? 0 : 1, From) && Body->DoesSocketExist(Hand))
 			{
 				From = Body->GetSocketLocation(Hand);
 			}
@@ -973,6 +1029,7 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			if (bImpacts)
 			{
 				ImpactAt = AimPoint;
+				ImpactFrom = From;
 				ImpactDue = T + Flight;
 			}
 		}
@@ -993,7 +1050,8 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 					GetStrikeLimb(Limb, ImpactAt, bLeft);
 				}
 			}
-			Vfx->SetWorldLocationAndRotation(ImpactAt, FRotator::ZeroRotator);
+			Vfx->SetWorldLocationAndRotation(ImpactAt,
+				Kit.weapon == ftcore::ArenaWeapon::Magic ? ImpactFacing(ImpactFrom, ImpactAt) : FRotator::ZeroRotator);
 			Play(Impact, T);
 			LastImpactTime = T;
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: impact %s %.1f cm from the hit point"), Prefix(), FxName[Impact],
@@ -1006,7 +1064,13 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		AimCheckDue = -1.0;
 		LogAim();
 	}
-	const bool bWard = Kit.weapon == ftcore::ArenaWeapon::Magic && P.action == ftcore::ArenaAction::Guard;
+	if (WardRaiseFor > 0.0)
+	{
+		WardHeldUntil = T + WardRaiseFor;
+		WardRaiseFor = 0.0;
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: ward raised for the capture from %.2f to %.2f"), Prefix(), T, WardHeldUntil);
+	}
+	const bool bWard = Kit.weapon == ftcore::ArenaWeapon::Magic && (P.action == ftcore::ArenaAction::Guard || T < WardHeldUntil);
 	if (bWard != bWarding)
 	{
 		bWarding = bWard;
@@ -1358,6 +1422,9 @@ void FFTLeadWeapons::Restart()
 	ClipsStarted = ClipsCompleted = 0;
 	bStrikeClip = false;
 	bWarding = false;
+	bCasting = false;
+	WardRaiseFor = 0.0;
+	WardHeldUntil = -1.0;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;
 	LastImpactTime = -1e9;
@@ -1412,6 +1479,9 @@ void FFTLeadWeapons::Reset()
 	ClipsStarted = ClipsCompleted = 0;
 	bStrikeClip = false;
 	bWarding = false;
+	bCasting = false;
+	WardRaiseFor = 0.0;
+	WardHeldUntil = -1.0;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;
 	LastImpactTime = -1e9;

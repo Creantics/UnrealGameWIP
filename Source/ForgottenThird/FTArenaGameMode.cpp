@@ -133,6 +133,12 @@ constexpr double kArenaFrontDistance = 55.0;
 constexpr double kArenaGunDistance = 60.0;
 constexpr double kArenaArmsDistance = 140.0;
 constexpr float kArenaCloseFov = 55.f;
+// -ArenaShotAllyStrikes: the partner's close views, cm off the casting hand, the hit point or (its side views) the
+// partner, and the side views' aim above its feet (low, so the ward on the ground is in the frame).
+constexpr double kArenaAllyCloseDistance = 100.0;
+constexpr double kArenaAllySideAim = 35.0;
+// -ArenaShotWard's hold (s): the ward up long enough for its rise, its held look and (after) its drop.
+constexpr double kArenaShotWardHold = 1.2;
 constexpr double kArenaCloseSettle = 0.6;
 // A -ArenaShot run gives up this long after the first view (wall seconds).
 constexpr double kArenaShotGiveUp = 200.0;
@@ -195,6 +201,8 @@ void AFTArenaGameMode::StartPlay()
 		bShotAlly = FParse::Param(Cmd, TEXT("ArenaShotAlly"));
 #if !UE_BUILD_SHIPPING
 		bShotUi = FParse::Param(Cmd, TEXT("ArenaShotUi")); // a capture flag: never in a shipping build
+		bShotAllyStrikes = FParse::Param(Cmd, TEXT("ArenaShotAllyStrikes")); // a capture flag too
+		FParse::Value(Cmd, TEXT("ArenaShotWard="), ShotWardAt); // and this
 		FString HitAges;
 		if (FParse::Value(Cmd, TEXT("ArenaShotHit="), HitAges, false)) // a capture switch, read once: never in a shipping build
 		{
@@ -283,6 +291,21 @@ void AFTArenaGameMode::StartPlay()
 	AGameModeBase::StartPlay();
 
 	BuildDef(bTable);
+	if (bNoPlayableLead)
+	{
+		LeadRefusal = TEXT("no look in PartyLooks is playable (a kit in arena.json with playable true)");
+	}
+	if (!LeadRefusal.IsEmpty())
+	{
+		if (bStoryStaged)
+		{
+			StoryRefusal = LeadRefusal; // RefuseStory's one error line, and the step leaves for the title
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("Arena: the fight is refused: %s; no fight begins."), *LeadRefusal);
+		}
+	}
 
 	// The enemies' tells: every startup at least kArenaMinTell (the data's loader doesn't hold it to that).
 	float Shortest = 1e9f;
@@ -447,19 +470,21 @@ void AFTArenaGameMode::BuildDef(bool bTable)
 	Def = bTable ? Table.fallback : ftcore::defaultArenaDef();
 	if (bTable)
 	{
-		// The lead's own kit (its attacks and its blocks); a lead without one plays the default fighter.
+		// The lead's own kit (its attacks and its blocks): one lookup, no fallback, as the pickers do. An id the table
+		// lacks, or a kit not playable, refuses the fight (StartPlay).
 		const FString Want = FindKitId();
-		const std::string WantId = FT::ToUtf8(Want);
-		Def.fighter = Table.fighter(WantId);
-		bool bOwn = false;
-		for (const std::string& Id : Table.fighterIds)
+		KitId = Want;
+		if (const ftcore::ArenaFighter* Kit = Table.findFighter(FT::ToUtf8(Want)))
 		{
-			bOwn = bOwn || Id == WantId;
+			Def.fighter = *Kit;
+			if (!ftcore::arenaPlayable(*Kit))
+			{
+				LeadRefusal = FString::Printf(TEXT("the lead's kit \"%s\" is not playable"), *Want);
+			}
 		}
-		KitId = bOwn ? Want : FString(TEXT("default"));
-		if (!bOwn && Want != TEXT("default"))
+		else
 		{
-			UE_LOG(LogForgottenThird, Log, TEXT("Arena: no fighter kit \"%s\" in arena.json; the lead plays the default kit."), *Want);
+			LeadRefusal = FString::Printf(TEXT("no fighter kit \"%s\" in arena.json"), *Want);
 		}
 	}
 	else
@@ -877,7 +902,16 @@ void AFTArenaGameMode::RefuseStory()
 
 bool AFTArenaGameMode::IsPlayable(const FString& Name) const
 {
-	return ftcore::arenaPlayable(Table.fighter(FT::ToUtf8(Name.ToLower())));
+	// The runner's lookup, no fallback to the first kit: a look with no kit in arena.json is not playable here either.
+	const ftcore::ArenaFighter* Kit = Table.findFighter(FT::ToUtf8(Name.ToLower()));
+	return Kit && ftcore::arenaPlayable(*Kit);
+}
+
+const FFTLeadLook* AFTArenaGameMode::FirstPlayable(const TArray<FFTLeadLook>& Party) const
+{
+	const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
+	bNoPlayableLead = bNoPlayableLead || (!First && !Party.IsEmpty()); // no fallback: StartPlay refuses the fight
+	return First;
 }
 
 FString AFTArenaGameMode::WantedLead() const
@@ -887,7 +921,14 @@ FString AFTArenaGameMode::WantedLead() const
 	Want = Want.TrimStartAndEnd();
 	if (!Want.IsEmpty() && !IsPlayable(Want))
 	{
-		UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a party member only (its kit is not playable) and can't be the lead; using the first playable lead."), *Want);
+		if (!Table.findFighter(FT::ToUtf8(Want.ToLower())))
+		{
+			UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no such kit \"%s\" in arena.json; using the first playable lead."), *Want);
+		}
+		else
+		{
+			UE_CLOG(!bLeadWarned, LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: %s is a party member only (its kit is not playable) and can't be the lead; using the first playable lead."), *Want);
+		}
 		bLeadWarned = true;
 		Want.Reset();
 	}
@@ -899,9 +940,7 @@ FString AFTArenaGameMode::FindKitId() const
 	FString Want = WantedLead();
 	if (Want.IsEmpty())
 	{
-		const TArray<FFTLeadLook>& Party = GetDefault<AFTExploreCharacter>()->PartyLooks;
-		const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
-		First = First ? First : (Party.IsEmpty() ? nullptr : &Party[0]);
+		const FFTLeadLook* First = FirstPlayable(GetDefault<AFTExploreCharacter>()->PartyLooks);
 		Want = First ? First->Name : FString(TEXT("default"));
 	}
 	return Want.ToLower();
@@ -915,8 +954,7 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 		UE_LOG(LogForgottenThird, Log, TEXT("Arena: no PartyLooks in config; the lead is the test human."));
 		return nullptr;
 	}
-	const FFTLeadLook* First = Party.FindByPredicate([this](const FFTLeadLook& Member) { return IsPlayable(Member.Name); });
-	First = First ? First : &Party[0];
+	const FFTLeadLook* First = FirstPlayable(Party);
 	const FString Want = WantedLead();
 	if (!Want.IsEmpty())
 	{
@@ -927,7 +965,8 @@ const FFTLeadLook* AFTArenaGameMode::FindLead() const
 				return &Member;
 			}
 		}
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want, *First->Name);
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaLead: no look named \"%s\" in PartyLooks; using %s."), *Want,
+			First ? *First->Name : TEXT("none (no look playable)"));
 	}
 	return First;
 }
@@ -952,6 +991,10 @@ void AFTArenaGameMode::Tick(float DeltaSeconds)
 			RefuseStory();
 		}
 		return; // never a fight on the wrong stage or with part of its line-up
+	}
+	if (!LeadRefusal.IsEmpty() || Runner->IsRefused())
+	{
+		return; // never a fight with a party member only as the lead
 	}
 	if (!Runner->IsBegun())
 	{
@@ -1045,6 +1088,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		return false;
 	}
 	ShotWall += DeltaSeconds;
+	if (ShotWardAt >= 0.0 && !bShotWardRaised && static_cast<double>(Runner->GetFight().time()) >= ShotWardAt)
+	{
+		bShotWardRaised = true;
+		const bool bPartner = Runner->GetAllyFigure() != nullptr;
+		(bPartner ? Runner->GetAllyWeapons() : Runner->GetLeadWeapons()).RaiseWard(kArenaShotWardHold);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: capture: the %s's ward raised at %.2f s for %.1f s (-ArenaShotWard)."),
+			bPartner ? TEXT("partner") : TEXT("lead"), Runner->GetFight().time(), kArenaShotWardHold);
+	}
 	if (bShotHitRunning)
 	{
 		return false; // -ArenaShotHit's strip under way: the fight runs on and no other view takes the frame
@@ -1083,15 +1134,19 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		}
 		if (bShotSide && !bSideAimed && Lead)
 		{
-			// Up with the jump's lift, so the head stays in the view at the top of the arc.
-			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, 80.0 + Lead->GetJumpLift());
+			// Up with the jump's lift, so the head stays in the view at the top of the arc. The partner's with
+			// -ArenaShotAllyStrikes: 1 m off, low, the ward at its feet in the frame.
+			const bool bAllyClose = bShotAllyStrikes && Lead == Runner->GetAllyFigure();
+			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, (bAllyClose ? kArenaAllySideAim : 80.0) + Lead->GetJumpLift());
 			FVector Side = bShotWorld ? FVector(0.0, 1.0, 0.0) : Lead->GetActorRightVector().GetSafeNormal2D();
 			if (bShotQuarter)
 			{
 				const FVector Front = bShotWorld ? FVector(1.0, 0.0, 0.0) : Lead->GetActorForwardVector().GetSafeNormal2D();
 				Side = (Side + Front).GetSafeNormal2D();
 			}
-			bSideAimed = AimStrikeCamera(At + Side * 340.0 + FVector(0.0, 0.0, 90.0), At);
+			const FVector Off = bAllyClose ? (Side * 0.95 + FVector(0.0, 0.0, 0.3)).GetSafeNormal() * kArenaAllyCloseDistance
+				: Side * 340.0 + FVector(0.0, 0.0, 90.0);
+			bSideAimed = AimStrikeCamera(At + Off, At);
 			if (bSideAimed)
 			{
 				return true;
@@ -1122,13 +1177,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	// uncounted too). Attacks that went by while another view held the fight are skipped.
 	if (StrikeShots < ShotStrikes && ShotsTaken > 0)
 	{
-		FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+		FFTLeadWeapons& Weapons = StrikeWeapons();
 		StrikesSeen = FMath::Min(StrikesSeen, Weapons.GetActiveCount()); // the fight begun again
 		if (Weapons.GetActiveCount() > StrikesSeen)
 		{
 			// The frame is on the clock the figures are drawn by; until it is reached, the fight's clock is kept from
 			// passing it (Tick), so it lands on the mark.
-			const double Due = Weapons.GetViewTime(StrikeShots % 2 == 0);
+			bStrikeViewImpact = StrikeShots % 2 == 0;
+			const double Due = Weapons.GetViewTime(bStrikeViewImpact);
 			const double Drawn = Runner->GetDrawnTime();
 			if (Drawn < Due - kArenaStrikeSlack)
 			{
@@ -1143,6 +1199,10 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 				UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s held at fight time %.3f, %.3f s after the attack went active."), *StrikeName,
 					Drawn, Drawn - Weapons.GetLastActiveTime());
 				Weapons.Freeze(Drawn);
+				if (bShotAllyStrikes)
+				{
+					Runner->FreezePartnerImpact(Drawn); // the partner's impact is the runner's, not its weapons'
+				}
 				StrikePhase = 1;
 				if (bShotClose && AimAtStrike())
 				{
@@ -1246,9 +1306,14 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	return false;
 }
 
+FFTLeadWeapons& AFTArenaGameMode::StrikeWeapons()
+{
+	return bShotAllyStrikes ? Runner->GetAllyWeapons() : Runner->GetLeadWeapons();
+}
+
 bool AFTArenaGameMode::StrikeShot()
 {
-	FFTLeadWeapons& Weapons = Runner->GetLeadWeapons();
+	FFTLeadWeapons& Weapons = StrikeWeapons();
 	switch (StrikePhase)
 	{
 	case 1:
@@ -1266,7 +1331,12 @@ bool AFTArenaGameMode::StrikeShot()
 		{
 			LogFramed(*StrikeName, TEXT("the pistol's muzzle"), At);
 		}
-		StrikePhase = bShotClose && StrikeCamera ? 5 : 4;
+		if (bShotAllyStrikes)
+		{
+			LogFramed(*StrikeName, TEXT("the hit point"), Weapons.GetAimPoint());
+		}
+		// The front and forearms views are the lead's (its body square to the camera); the partner's views stop here.
+		StrikePhase = bShotClose && StrikeCamera && !bShotAllyStrikes ? 5 : 4;
 		return true;
 	}
 	case 5:
@@ -1340,6 +1410,10 @@ bool AFTArenaGameMode::StrikeShot()
 	default:
 		// Back to the fight.
 		Weapons.Thaw();
+		if (bShotAllyStrikes)
+		{
+			Runner->ThawPartnerImpact();
+		}
 		EndCloseCamera();
 		StrikePhase = 0;
 		return true;
@@ -1450,6 +1524,46 @@ bool AFTArenaGameMode::AimStrikeCamera(const FVector& From, const FVector& At)
 
 bool AFTArenaGameMode::AimAtStrike()
 {
+	if (bShotAllyStrikes)
+	{
+		// The partner's cast: mid-flight from behind and beside the casting hand, looking along the aim at the bolt's
+		// middle, every other one from in front of the hand looking back at it (the caster's face and the bolt coming
+		// at the lens); its landing from 1 m short of the impact (the runner's, frozen with the view; else the hit
+		// point), on the partner's side, looking at it.
+		const AFTArenaFighter* Ally = Runner->GetAllyFigure();
+		const FFTLeadWeapons& Weapons = Runner->GetAllyWeapons();
+		FName Bone;
+		FVector Hand;
+		bool bLeft = false;
+		if (!Ally || !Weapons.GetStrikeLimb(Bone, Hand, bLeft))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: view %s: the partner has no body to frame; the view stays on the follow camera."), *StrikeName);
+			return false;
+		}
+		const FVector Hit = Weapons.GetAimPoint();
+		FVector Aim = (Hit - Hand).GetSafeNormal();
+		if (Aim.IsNearlyZero())
+		{
+			Aim = Ally->GetActorForwardVector().GetSafeNormal2D();
+		}
+		const FVector Side = FVector::CrossProduct(FVector::UpVector, Aim).GetSafeNormal() * (bLeft ? -1.0 : 1.0);
+		const FVector Back = (-Aim * 0.8 + Side * 0.5 + FVector(0.0, 0.0, 0.3)).GetSafeNormal() * kArenaAllyCloseDistance;
+		const FVector Front = (Aim * 0.8 + Side * 0.5 + FVector(0.0, 0.0, 0.3)).GetSafeNormal() * kArenaAllyCloseDistance;
+		const bool bFront = !bStrikeViewImpact && (StrikeShots / 2) % 2 == 0; // s4, s8, ...
+		FVector Impact;
+		const bool bImpact = bStrikeViewImpact && Runner->GetPartnerImpactAt(Impact);
+		const FVector Landing = bImpact ? Impact : Hit;
+		const FVector From = bStrikeViewImpact ? Landing + Back : Hand + (bFront ? Front : Back);
+		const FVector At = bStrikeViewImpact ? Landing : (bFront ? Hand : (Hand + Hit) * 0.5);
+		if (!AimStrikeCamera(From, At))
+		{
+			return false;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view %s: partner close camera, %s view, %.0f cm off the %s."), *StrikeName,
+			bStrikeViewImpact ? TEXT("landing") : (bFront ? TEXT("mid-flight front") : TEXT("mid-flight")), kArenaAllyCloseDistance,
+			bStrikeViewImpact ? (bImpact ? TEXT("partner impact") : TEXT("hit point (no partner impact running)")) : *Bone.ToString());
+		return true;
+	}
 	const AFTArenaFighter* Lead = Runner->GetPlayerFigure();
 	FName Bone;
 	FVector At;

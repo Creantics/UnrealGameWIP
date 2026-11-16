@@ -195,9 +195,10 @@ TEST_CASE("field strike: Duy's round on the reticle reaches down its lane, his u
     CHECK(arenaPlayerStrike(third, 0) == FightClip::Cast);
 }
 
-TEST_CASE("field strike: the Third has no attack of his own, so every press is dropped") {
+TEST_CASE("field strike: a kit with no attack of its own drops every press") {
     const ArenaTable table = shipped();
-    const ArenaFighter third = table.fighter("third");
+    ArenaFighter third = table.fighter("third");
+    third.attacks = false; // the shipped party member fights; its kit with the attacks taken off
     REQUIRE_FALSE(third.attacks);
     FieldStrike s;
     s.begin(third);

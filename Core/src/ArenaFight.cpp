@@ -3220,9 +3220,9 @@ struct ArenaFightImpl {
         why = fight.phase_ == ArenaPhase::NotStarted                     ? ArenaSwitchRefusal::NotFighting
               : !partnerOn()                                             ? ArenaSwitchRefusal::NoPartner
               : !pk.playable                                             ? ArenaSwitchRefusal::NotPlayable
+              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
               : pl.hp <= 0                                               ? ArenaSwitchRefusal::PlayerDown
               : !allyUp()                                                ? ArenaSwitchRefusal::PartnerDown
-              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
                                                                          : ArenaSwitchRefusal::Ok;
         if (why == ArenaSwitchRefusal::Ok) return doSwitch();
         ++stats.leadSwitchesRefused;
@@ -4644,7 +4644,8 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "readWrongPoise", "attacks", "playable", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
                       "hurtJolt", "blockLoadShare", "blockCallGuard", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
                       "takeHalfRearm", "rounds", "reload", "jumpStartup", "jumpAir", "jumpLand", "jumpLandLock",
-                      "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight"},
+                      "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight", "partnerReach",
+                      "partnerStandoff"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -4724,6 +4725,14 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "jumpClearEnd", f.jumpClearEnd, 0, 5, false, path, errors);
     arenaNum(j, "jumpAirControl", f.jumpAirControl, 0, 1000, false, path, errors);
     if (j.has("jumpLight")) arenaParseAttackObject(j["jumpLight"], path + ".jumpLight", f.jumpLight, errors, warnings);
+    arenaNum(j, "partnerReach", f.partnerReach, 0, 4, false, path, errors);
+    arenaNum(j, "partnerStandoff", f.partnerStandoff, 0, 4, false, path, errors);
+    if (f.partnerReach > 0.f && f.partnerReach < 0.5f)
+        errors.push_back(path + ".partnerReach: expected 0 (unset) or 0.5..4");
+    if (f.partnerStandoff > 0.f && f.partnerReach == 0.f) // the default reach may sit below the standoff
+        errors.push_back(path + ".partnerStandoff: expected a partnerReach with it");
+    else if (f.partnerStandoff > f.partnerReach)
+        errors.push_back(path + ".partnerStandoff: expected at most partnerReach");
 
     const JsonValue light = j["light"];
     if (!light.isAbsent()) {

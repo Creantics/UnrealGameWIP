@@ -38,9 +38,11 @@
 //     spell_impact at the hit point;
 //   - gauntlet_spark at the striking fist's knuckles (the foot for a kick) on the lead's hit;
 //   - spell_ward at the feet while a magic lead guards.
-// The magic kit (ftcore::ArenaWeapon::Magic, "weapon": "magic" in arena.json: its cast, spell effects and ward) is kept
-// for a future fighter kind: no shipped fighter uses it (the third party slot is a support slot with no attack kit), and
-// Core's arena tests pin what it plays.
+// The magic kit (ftcore::ArenaWeapon::Magic, "weapon": "magic" in arena.json: its cast, spell effects and ward) is the
+// third party slot's: a party member only (playable false) that fights as the partner, its lights bolts from the
+// casting hand, its guard the ward. Its heavy is data only: the partner brain throws lights, and nothing spawns
+// spell_burst (its system stays unbuilt until a heavy is ruled for the partner). Data/Anim/beat_clips.json's lead_cast
+// has no asset yet; the bolt leaves the casting hand whatever the body plays. Core's arena tests pin what it plays.
 // Each start logs one line, "<Arena|Field>: weapon fx <effect> at <fight time>". Run checks, one line each:
 // "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment, only on capture runs
 // (-ArenaShot= or -ExploreWeaponShot=) (the angle between the
@@ -227,6 +229,13 @@ struct FFTLeadWeapons
 	// with Freeze/Thaw in either order.
 	void HitPause(bool bOn);
 	bool IsFrozen() const { return bFrozen; }
+	// A capture's ward (-ArenaShotWard): a magic kit's ward raised for Seconds from the next Track, as a guard would
+	// (the fight itself unchanged).
+	void RaiseWard(double Seconds) { WardRaiseFor = Seconds; }
+	// A spell impact's turn at At, cast from From: its ring stands upright facing the caster across the ground (the
+	// height between them is dropped, so +X, the spec's gravity axis, stays world up and the shards fall straight).
+	// The lead's bolt and the partner's impact both use it.
+	static FRotator ImpactFacing(const FVector& From, const FVector& At);
 
 private:
 	enum EEffect : int32
@@ -235,6 +244,7 @@ private:
 		Travel, // the tracer or the bolt
 		Impact,
 		Ward,
+		WindUp, // a spell's wind-up at the palm
 		EffectCount,
 	};
 
@@ -289,8 +299,8 @@ private:
 	TWeakObjectPtr<UFTVfxComponent> Fx[EffectCount];
 	const TCHAR* FxName[EffectCount] = {};
 	// When each effect last started (fight time; below 0: not since the fight began) and which Freeze paused.
-	static_assert(EffectCount == 4, "StartAt's initializer has one entry per effect");
-	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0};
+	static_assert(EffectCount == 5, "StartAt's initializer has one entry per effect");
+	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0, -1.0};
 	bool bPaused[EffectCount] = {};
 	bool bFrozen = false;
 	float FrozenDilation = 1.f;
@@ -305,6 +315,10 @@ private:
 	ftcore::ArenaPart LastPart = ftcore::ArenaPart::None;
 	uint8 LastMove = 0;
 	bool bWarding = false;
+	bool bCasting = false;        // a cast's wind-up was tracked last step (its rings are out)
+	double WardRaiseFor = 0.0;    // RaiseWard's hold, taken up by the next Track
+	double WardHeldUntil = -1.0;  // a raised ward's end (fight time)
+	FVector ImpactFrom = FVector::ZeroVector; // where the travelling bolt left from (its impact faces back to it)
 	int32 ActiveCount = 0;
 	double LastActiveTime = -1e9;
 
