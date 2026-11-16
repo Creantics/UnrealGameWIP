@@ -119,6 +119,15 @@ void UFTVfxComponent::SetParameters(float InSpeedScale, float InShapeScale)
 	PushParameters();
 }
 
+void UFTVfxComponent::SetTimeDilation(float InDilation)
+{
+	TimeDilation = FMath::IsFinite(InDilation) ? FMath::Clamp(InDilation, 0.05f, 20.f) : 1.f;
+	if (Niagara)
+	{
+		Niagara->SetCustomTimeDilation(TimeDilation);
+	}
+}
+
 void UFTVfxComponent::PushParameters()
 {
 	ftcore::VfxUserParameters P;
@@ -131,6 +140,7 @@ void UFTVfxComponent::PushParameters()
 	{
 		Niagara->SetVariableFloat(SpeedScaleName(), P.speedScale);
 		Niagara->SetVariableVec3(ShapeScaleName(), FVector(P.shapeScale));
+		Niagara->SetCustomTimeDilation(TimeDilation);
 	}
 }
 

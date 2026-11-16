@@ -19,6 +19,7 @@
 #include <memory>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -209,6 +210,7 @@ struct PRig {
     float pushed = 0.f;
     bool pushedByEnemy = false;
     bool ownPartnerKit = false; // per-lead kits: the test set def.partnerKit itself (else it is the lead's, as before)
+    bool keepView = false;      // the autopilot keeps the test's camera too (cameraOn, cameraPos, cameraFacing, partnerClose)
 
     explicit PRig(const ArenaFighter& fighter = ruleFighter()) {
         def.fighter = fighter;
@@ -243,9 +245,16 @@ struct PRig {
         if (autopilot) {
             const std::uint8_t order = in.partnerOrder;
             const PartnerCameraView camera = in.partnerCamera;
+            const ArenaInput view = in;
             in = fight.autopilot();
             in.partnerOrder = order;
             in.partnerCamera = camera;
+            if (keepView) {
+                in.cameraOn = view.cameraOn;
+                in.cameraPos = view.cameraPos;
+                in.cameraFacing = view.cameraFacing;
+                in.partnerClose = view.partnerClose;
+            }
             if (pairOnParry) in.pair = pairDue;
             pairDue = false;
         }
@@ -3707,7 +3716,7 @@ TEST_CASE("arena partner: per-lead kits: partnerReach and partnerStandoff parse,
     // The shipped table with the party member's two keys replaced by `keys`.
     std::string shipped;
     REQUIRE(ftcore_test::readProjectData("Battle/arena.json", shipped));
-    const std::string kShipped = R"("partnerReach": 3.2, "partnerStandoff": 1.8,)";
+    const std::string kShipped = R"("partnerReach": 8.5, "partnerStandoff": 5,)";
     const std::size_t at = shipped.find(kShipped);
     REQUIRE(at != std::string::npos);
     const auto load = [&](const char* keys, std::string* err) {
@@ -3727,7 +3736,10 @@ TEST_CASE("arena partner: per-lead kits: partnerReach and partnerStandoff parse,
     CHECK(got.second.partnerReach == 0.f);
     CHECK(got.second.partnerStandoff == 0.f);
     CHECK_FALSE(load(R"("partnerReach":0.3,)", &err).first);
-    CHECK_FALSE(load(R"("partnerReach":4.5,)", &err).first);
+    got = load(R"("partnerReach":8.5,"partnerStandoff":8.5,)", &err); // the caster band's bound: accepted
+    REQUIRE_MESSAGE(got.first, err);
+    CHECK_FALSE(load(R"("partnerReach":8.6,)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":3,"partnerStandoff":8.6,)", &err).first);
     CHECK_FALSE(load(R"("partnerReach":2,"partnerStandoff":2.5,)", &err).first);
     got = load(R"("partnerReach":2,"partnerStandoff":2,)", &err); // standoff equal to reach: accepted
     REQUIRE_MESSAGE(got.first, err);
@@ -4005,9 +4017,9 @@ TEST_CASE("arena partner: the partner kit's range: none of it under the classic 
     CHECK(a.hits == b.hits);
     CHECK(a.stats.partnerDamage == b.stats.partnerDamage);
     REQUIRE(a.hits > 0);
-    // The close camera: the range read, its strings start within its reach (3.2 m off the edge) on its walk to its
-    // band (1.8-2.7 m), not walked in to about 1 m: at its hits it stands further off than without the range, and
-    // the bolt (range 3.6) lands from there.
+    // The close camera: the range read (reach 8.5 m off the edge, standoff 5: a band of 5-8 m; the bolt's range 8.5),
+    // so at its hits it stands further off than without the range. Not yet in its band: a string may start anywhere
+    // in reach, so it starts from where it stands (about 2.7 m here), short of the standoff.
     const RangeRun c = rangeRun(true, true), d = rangeRun(false, true);
     MESSAGE("close camera, kit range on: hits " << c.hits << " first at " << c.firstHit << " s, mean "
                                                 << c.meanEdge() << " m off the edge, damage " << c.stats.partnerDamage
@@ -4021,6 +4033,310 @@ TEST_CASE("arena partner: the partner kit's range: none of it under the classic 
     REQUIRE(d.hits > 0);
     CHECK(c.meanEdge() > d.meanEdge());
     CHECK(c.hashes != d.hashes);
+}
+
+TEST_CASE("arena partner: the party member's casts against each shipped boss and the group, no camera and close (report)") {
+    // The balance read on the caster's range: each lead with the third as the partner, against the shipped bosses
+    // (60 s) and the group (20 s), with no camera (as the per-lead report above) and with the close one behind the
+    // lead (3 m back, facing its first standing enemy; the caster band). Damage, the first partner hit, the fight time.
+    const ArenaTable t = shippedTable();
+    for (const char* lead : {"devin", "duy"}) {
+        for (const char* idText : {"kite_boss", "stone_bearer", "white_glove", "group/0"}) {
+            for (const bool close : {false, true}) {
+                const std::string id = idText;
+                const bool group = id.rfind("group", 0) == 0;
+                PRig r(t.fighter(lead));
+                if (group) {
+                    r.def = t.fallback;
+                    r.def.enemyCount = 0;
+                    for (const char* e : {"skirmisher", "hulk", "duelist"})
+                        for (std::size_t j = 0; j < t.enemyIds.size(); ++j)
+                            if (t.enemyIds[j] == e) {
+                                r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(j);
+                                r.def.enemies[r.def.enemyCount++] = t.enemies[j];
+                            }
+                    r.def.attackers = 2;
+                } else {
+                    r.def = shippedBoss(t, idText, false);
+                }
+                r.def.fighter = t.fighter(lead);
+                r.def.partnerKit = t.fighter("third");
+                r.ownPartnerKit = true;
+                r.tuning = shippedTuning();
+                r.goShipped(true, 1);
+                r.autopilot = false; // the autopilot's input is taken below, the camera added to it
+                const float limit = group ? 20.f : 60.f;
+                int hits = 0;
+                float firstHit = -1.f, nearest = 1e9f, farthest = 0.f, sum = 0.f;
+                int strings = 0, stringsInside = 0; // strings begun, and those begun inside the standoff
+                float stringSum = 0.f;              // the partner's edge distance to its nearest standing enemy at each
+                const float standoff = r.def.partnerKit.partnerStandoff;
+                while (!r.fight.over() && r.fight.time() < limit) {
+                    r.in = r.fight.autopilot();
+                    r.in.partnerOrder = 0;
+                    if (close) {
+                        Vec2 to = r.bodies.player;
+                        for (std::size_t e = 0; e < r.fight.enemyCount(); ++e)
+                            if (r.fight.enemyHp(e) > 0) {
+                                to = r.bodies.enemies[e];
+                                break;
+                            }
+                        Vec2 f = sub(to, r.bodies.player);
+                        const float n = length(f);
+                        f = n > 1e-3f ? Vec2{f.x / n, f.y / n} : Vec2{1.f, 0.f};
+                        r.in.cameraOn = true;
+                        r.in.cameraPos = Vec2{r.bodies.player.x - 3.f * f.x, r.bodies.player.y - 3.f * f.y};
+                        r.in.cameraFacing = f;
+                        PartnerCloseView& c = r.in.partnerClose;
+                        c.given = true;
+                        c.halfAngleDegrees = 30.f;
+                        c.standMin = kPartnerCloseCasterMin;
+                        c.standMax = kPartnerCloseCasterMax;
+                    }
+                    const std::size_t from = r.log.size();
+                    const int stringsBefore = r.fight.stats().partnerStrings;
+                    r.tick();
+                    if (r.fight.stats().partnerStrings > stringsBefore) {
+                        float edgeNow = 1e9f;
+                        for (std::size_t e = 0; e < r.fight.enemyCount(); ++e)
+                            if (r.fight.enemyHp(e) > 0)
+                                edgeNow = std::min(edgeNow, length(sub(r.bodies.enemies[e], r.fight.allyPos())) -
+                                                                arenaBodyCylinder(r.def.enemies[e], r.bodies.enemies[e], 0.f).radius);
+                        ++strings;
+                        stringSum += edgeNow;
+                        if (edgeNow < standoff) ++stringsInside;
+                    }
+                    for (std::size_t i = from; i < r.log.size(); ++i)
+                        if (allyHit(r.log[i].e)) {
+                            if (hits == 0) firstHit = r.log[i].t;
+                            ++hits;
+                            // Cast from: the partner's centre to the target's edge (the reach's and the hit's measure).
+                            const ArenaEvent& e = r.log[i].e;
+                            const float radius = e.target < r.def.enemyCount
+                                                     ? arenaBodyCylinder(r.def.enemies[e.target], e.at, 0.f).radius
+                                                     : 0.f;
+                            const float d = length(sub(e.at, r.fight.allyPos())) - radius;
+                            nearest = std::min(nearest, d);
+                            farthest = std::max(farthest, d);
+                            sum += d;
+                        }
+                }
+                const ArenaStats& s = r.fight.stats();
+                MESSAGE("caster report: " << std::string(lead) << " + third, " << id << ", " << std::string(close ? "close" : "no camera")
+                        << ": " << r.fight.time() << " s" << std::string(r.fight.over() ? " (over)" : "") << "; partner damage "
+                        << s.partnerDamage << " in " << hits << " hits, first at " << firstHit << " s, cast from "
+                        << (hits > 0 ? nearest : 0.f) << ".." << farthest << " m (mean " << (hits > 0 ? sum / hits : 0.f)
+                        << "); strings begun " << strings << ", " << stringsInside << " inside the standoff, mean edge "
+                        << (strings > 0 ? stringSum / strings : 0.f) << " m; ring " << r.ring.radius << " m, leash "
+                        << r.tuning.leashMeters << " m, target radius "
+                        << arenaBodyCylinder(r.def.enemies[0], Vec2{0.f, 0.f}, 0.f).radius << " m; lead "
+                        << s.damageDealt << "; strings " << s.partnerStrings << ", ally downed "
+                        << r.count(ArenaEventType::AllyDowned));
+                CHECK(hits >= 0);
+            }
+        }
+    }
+}
+
+namespace {
+// One shipped fight by enemy id (as test_arena.cpp's shippedFight: ring 12 m, spawn 7 m).
+ArenaDef partyFight(const ArenaTable& t, std::initializer_list<const char*> ids, std::uint8_t attackers) {
+    ArenaDef def;
+    def.enemyCount = 0;
+    for (const char* id : ids)
+        for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+            if (t.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = t.enemies[e];
+            }
+    def.attackers = attackers;
+    def.ringRadius = 12.f;
+    def.spawnDistance = 7.f;
+    REQUIRE(def.enemyCount == ids.size());
+    return def;
+}
+
+struct PartyOutcome {
+    ArenaPhase phase = ArenaPhase::Fighting;
+    float time = 0.f;
+    int strings = 0; // the partner's strings begun (its casts)
+    int hits = 0;    // its casts that landed
+    // Close only: when the caster first stood inside its band off its target's edge (-1: never), its first light's
+    // startup, and the share of the ticks before the end it closed on the band (its gap to the band shrank).
+    float arrive = -1.f;
+    float startup = 0.f;
+    float closingShare = 0.f;
+};
+// A close fight with no cast is the caster's walk out, not a fault, only when the fight ended before it could have cast
+// (before it reached its band plus one startup, or it never reached it) and it was walking to the band on at least 80%
+// of the ticks (not idle, not leashed back).
+bool partyWalkOut(const PartyOutcome& o) {
+    const bool early = o.arrive < 0.f || o.time < o.arrive + o.startup;
+    return early && o.closingShare >= 0.8f;
+}
+
+// 120 s at most of Def with Lead at the controls (the autopilot, or nobody) and the party member as the partner, on the
+// shipped brain and no camera.
+// The lens a party run is fought under: the classic camera (a ground camera 4.5 m behind the lead, facing its nearest
+// live enemy; the close station never given) or the close one (the same camera with the close station given at the
+// kit's own band: rule 19 and the kit's range on).
+enum class PartyLens : std::uint8_t { Classic, Close };
+const char* partyLensName(PartyLens lens) { return lens == PartyLens::Close ? "close" : "classic"; }
+PartyOutcome partyPlay(const ArenaTable& t, const ArenaDef& def, const char* lead, std::uint32_t seed, bool autopilot,
+                       PartyLens lens) {
+    PRig r(t.fighter(lead));
+    r.def = def;
+    r.def.fighter = t.fighter(lead);
+    r.def.partnerKit = t.fighter("third");
+    r.ownPartnerKit = true;
+    r.tuning = shippedTuning();
+    r.goShipped(true, seed);
+    r.autopilot = autopilot;
+    r.keepView = true;
+    if (!autopilot) r.in = ArenaInput{};
+    Vec2 look = r.fight.playerStartFacing();
+    const ArenaFighter& kit = r.fight.def().partnerKit;
+    float gap = -1.f, arrive = -1.f; // close: the caster's gap to its band off its target's edge (-1: no target)
+    int ticks = 0, closing = 0;
+    PartnerCloseView& c = r.in.partnerClose;
+    for (int s = 0; s < 120 * 60 && !r.fight.over(); ++s) {
+        float best = 1e9f;
+        for (std::size_t i = 0; i < r.fight.enemyCount(); ++i) {
+            if (!r.fight.enemyAlive(i)) continue;
+            const Vec2 d = sub(r.bodies.enemies[i], r.bodies.player);
+            const float far = length(d);
+            if (far > 1e-3f && far < best) {
+                best = far;
+                look = Vec2{d.x / far, d.y / far};
+            }
+        }
+        r.in.cameraOn = true;
+        r.in.cameraPos = Vec2{r.bodies.player.x - 4.5f * look.x, r.bodies.player.y - 4.5f * look.y};
+        r.in.cameraFacing = look;
+        c = PartnerCloseView{};
+        if (lens == PartyLens::Close) {
+            c.given = true;
+            c.halfAngleDegrees = 30.f;
+            c.leadSide = 0;
+            if (kit.partnerReach > 0.f) {
+                c.standMin = kPartnerCloseCasterMin;
+                c.standMax = kPartnerCloseCasterMax;
+            }
+        }
+        const float gapBefore = gap;
+        r.tick();
+        if (lens != PartyLens::Close) continue;
+        gap = -1.f;
+        const int aim = r.out->ally.target;
+        if (aim >= 0 && static_cast<std::size_t>(aim) < r.fight.enemyCount() && r.fight.enemyAlive(static_cast<std::size_t>(aim))) {
+            const std::size_t i = static_cast<std::size_t>(aim);
+            const float edge = dist(r.bodies.ally, r.bodies.enemies[i]) - r.def.enemies[i].bodyRadius;
+            gap = std::max(0.f, std::max(c.standMin - edge, edge - c.standMax));
+            if (arrive < 0.f && gap <= 0.05f) arrive = r.fight.time();
+        }
+        ++ticks;
+        closing += gapBefore >= 0.f && gap >= 0.f && gap < gapBefore - 1e-4f ? 1 : 0;
+    }
+    PartyOutcome o;
+    o.phase = r.fight.phase();
+    o.time = r.fight.time();
+    o.arrive = arrive;
+    o.closingShare = ticks > 0 ? static_cast<float>(closing) / static_cast<float>(ticks) : 0.f;
+    o.startup = kit.lightCount > 0 ? arenaPlayerAttack(kit, 0)->startup : 0.f;
+    o.strings = r.fight.stats().partnerStrings;
+    o.hits = r.allyHits();
+    return o;
+}
+} // namespace
+
+TEST_CASE("arena partner: a cast's bolt leaves the hand as the startup begins and arrives on the hit, its flight never under 0.16 s") {
+    // The floor and the formula.
+    CHECK(arenaBoltFlight(0.2f) == doctest::Approx(0.2f));
+    CHECK(arenaBoltLate(0.2f) == doctest::Approx(0.f));
+    CHECK(arenaBoltFlight(0.1f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltLate(0.1f) == doctest::Approx(kArenaBoltFlightMin - 0.1f));
+    CHECK(arenaBoltFlight(0.f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltLate(0.f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltFlight(-1.f) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltFlight(std::numeric_limits<float>::quiet_NaN()) == doctest::Approx(kArenaBoltFlightMin));
+    CHECK(arenaBoltLate(std::numeric_limits<float>::infinity()) == doctest::Approx(kArenaBoltFlightMin));
+    // The shipped caster's lights: each bolt flies its light's startup and lands on the hit, none late.
+    const ArenaTable t = shippedTable();
+    const ArenaFighter& kit = t.fighter("third");
+    REQUIRE(kit.weapon == ArenaWeapon::Magic);
+    REQUIRE(kit.lightCount > 0);
+    for (std::uint8_t m = 0; m < kit.lightCount; ++m) {
+        const ArenaAttack* a = arenaPlayerAttack(kit, m);
+        REQUIRE(a != nullptr);
+        CHECK(arenaBoltFlight(a->startup) == doctest::Approx(a->startup));
+        CHECK(arenaBoltLate(a->startup) == doctest::Approx(0.f));
+        MESSAGE("caster light " << int(m) << ": startup " << a->startup << " s, bolt flight " << arenaBoltFlight(a->startup) << " s");
+    }
+}
+
+TEST_CASE("arena partner: the party member as each playable lead's partner plays the default's fights: won, lost, and it casts") {
+    // The coverage test_arena.cpp's lead-kit balance gives the playable leads, for the kit that is never a lead: each
+    // playable lead with it as the partner, against the shipped default fight, the two mixed fights and each enemy alone,
+    // over 8 seeds, under the classic camera and under the close one (its kit's range on). The autopilot wins; nobody at the controls loses (both bodies down) on most seeds, the partner alone
+    // winning the odd weak fight, and the fight is over in 120 s either way; it casts in every fight, but under the close
+    // camera a fight may end while it still walks out to its 5-8 m band (a lone skirmisher, spitter or pup goes down in
+    // 2-4 s): a cast-less close fight passes only as that walk-out (partyWalkOut), and is counted.
+    // Where its casts start (inside its 5-8 m band) waits for the brain's string gate.
+    const ArenaTable t = shippedTable();
+    REQUIRE(t.fighterIds.size() >= 4);
+    std::vector<std::pair<std::string, ArenaDef>> fights;
+    fights.emplace_back("shipped default fight", t.fallback);
+    fights.emplace_back("three kinds, attackers 1", partyFight(t, {"brute", "skirmisher", "breaker"}, 1));
+    fights.emplace_back("a brute and a spitter, attackers 2", partyFight(t, {"brute", "spitter"}, 2));
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e) {
+        if (t.enemies[e].passive) continue;
+        ArenaDef def;
+        def.enemyCount = 1;
+        def.enemyKind[0] = static_cast<std::uint8_t>(e);
+        def.enemies[0] = t.enemies[e];
+        def.attackers = 1;
+        fights.emplace_back(t.enemyIds[e], def);
+    }
+    int leads = 0;
+    for (std::size_t f = 1; f < t.fighterIds.size(); ++f) {
+        if (!t.fighters[f].playable || !t.fighters[f].attacks) continue;
+        ++leads;
+        const char* lead = t.fighterIds[f].c_str();
+        for (const PartyLens lens : {PartyLens::Classic, PartyLens::Close})
+        for (const auto& [name, def] : fights) {
+            float slowestWin = 0.f, slowestLoss = 0.f;
+            int fewestCasts = 1 << 30;
+            int losses = 0, walkOuts = 0;
+            for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+                const PartyOutcome win = partyPlay(t, def, lead, seed, true, lens);
+                const PartyOutcome lose = partyPlay(t, def, lead, seed, false, lens);
+                CHECK_MESSAGE(win.phase == ArenaPhase::Victory, "Error: " << std::string(lead) << " + third (" << std::string(partyLensName(lens)) << ") did not win " << name
+                                                                          << " seed " << seed << " in 120 s");
+                // Nobody at the controls: the fight ends in 120 s, mostly lost; the partner alone may win a weak one.
+                CHECK_MESSAGE((lose.phase == ArenaPhase::Defeat || lose.phase == ArenaPhase::Victory), "Error: " << std::string(lead) << " + third (" << std::string(partyLensName(lens)) << "), nobody at the controls, "
+                                                            << name << " seed " << seed << " not over in 120 s");
+                losses += lose.phase == ArenaPhase::Defeat ? 1 : 0;
+                for (const PartyOutcome* o : {&win, &lose}) {
+                    if (o->strings > 0) continue;
+                    const bool walkOut = lens == PartyLens::Close && partyWalkOut(*o);
+                    walkOuts += walkOut ? 1 : 0;
+                    CHECK_MESSAGE(walkOut, "Error: third (" << std::string(partyLensName(lens)) << ") never cast in "
+                                               << std::string(lead) << "'s " << std::string(o == &win ? "" : "idle ") << name
+                                               << " seed " << seed << ": ended " << o->time << " s, in its band at "
+                                               << o->arrive << " s, closing on it " << o->closingShare * 100.f << "% of ticks");
+                }
+                slowestWin = std::max(slowestWin, win.time);
+                slowestLoss = std::max(slowestLoss, lose.time);
+                fewestCasts = std::min(fewestCasts, std::min(win.strings, lose.strings));
+            }
+            CHECK_MESSAGE(losses > 0, "Error: " << std::string(lead) << " + third (" << std::string(partyLensName(lens)) << "), nobody at the controls, never lost " << name);
+            MESSAGE("party cover: " << std::string(lead) << " + third (" << std::string(partyLensName(lens)) << "), " << name << " over 8 seeds: slowest win " << slowestWin
+                                    << " s, idle lost " << losses << "/8, slowest idle end " << slowestLoss
+                                    << " s, fewest casts in a fight " << fewestCasts << ", cast-less walk-outs " << walkOuts
+                                    << "/16");
+        }
+    }
+    CHECK(leads >= 2);
 }
 
 namespace {
@@ -4049,6 +4365,10 @@ struct FoughtLensRun {
     // and on those behind the target.
     int leadHidTier[5] = {}, targetHidTier[5] = {};
     float contactDist = 0.f, contactTargetX = 0.f;
+    // Steps the partner stood still (Wait, not in a pause, its budget, a blow running out, a guard or held off a
+    // windup) with a standing enemy inside its reach: the longest such run (s), and the first time any standing enemy
+    // was inside its reach (-1: never).
+    float idleLongest = 0.f, firstInReach = -1.f;
 };
 
 struct FoughtLens {
@@ -4070,19 +4390,21 @@ float smooth01(float t) {
 }
 
 // kit: 0 the party kit without its range, 1 with its shipped range, 2 a caster's 8.5 / 5 (the ruling of 11-16).
-FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit) {
+// The lead's kit and the enemies (one at a time) as named.
+FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit, const char* lead = "devin",
+                            std::initializer_list<const char*> foes = {"brute", "skirmisher", "breaker"}) {
     const ArenaTable t = shippedTable();
-    PRig r(t.fighter("devin"));
+    PRig r(t.fighter(lead));
     r.def = t.fallback;
-    r.def.fighter = t.fighter("devin");
+    r.def.fighter = t.fighter(lead);
     r.def.enemyCount = 0;
-    for (const char* id : {"brute", "skirmisher", "breaker"})
+    for (const char* id : foes)
         for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
             if (t.enemyIds[e] == id) {
                 r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
                 r.def.enemies[r.def.enemyCount++] = t.enemies[e];
             }
-    REQUIRE(r.def.enemyCount == 3);
+    REQUIRE(r.def.enemyCount == foes.size());
     r.def.attackers = 1;
     r.def.ringRadius = 12.f;
     r.def.spawnDistance = 7.f;
@@ -4105,6 +4427,7 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit)
     Vec2 pivot = r.bodies.player;
     float melee = 0.f;
     FoughtLensRun o;
+    float idleRun = 0.f;
     while (!r.fight.over() && r.fight.time() < 40.f) {
         // The followed target: the lock, else the nearest standing enemy.
         int target = -1;
@@ -4224,6 +4547,22 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit)
             }
         }
 
+        // Still with a standing enemy in its reach (the kit's under the close lens: the range on), its cooldown clear.
+        if (r.out && r.out->ally.partnerOn) {
+            const float reach = third.partnerReach > 0.f ? third.partnerReach : r.tuning.reachMeters;
+            bool inReach = false;
+            for (std::size_t i = 0; i < r.fight.enemyCount(); ++i)
+                if (r.fight.enemyAlive(i) &&
+                    dist(r.bodies.ally, r.bodies.enemies[i]) - r.def.enemies[i].bodyRadius <= reach)
+                    inReach = true;
+            if (inReach && o.firstInReach < 0.f) o.firstInReach = r.fight.time();
+            const PartnerIntent& pi = r.brain.intent();
+            const bool cool = pi.why == PartnerWhy::Approach || pi.why == PartnerWhy::NoTarget ||
+                              pi.why == PartnerWhy::Start || pi.why == PartnerWhy::Leash;
+            idleRun = inReach && pi.act == PartnerAct::Wait && cool ? idleRun + kDt : 0.f;
+            o.idleLongest = std::max(o.idleLongest, idleRun);
+        }
+
         // The host's input this step.
         const std::uint8_t order = r.in.partnerOrder;
         r.in = r.fight.autopilot();
@@ -4305,6 +4644,133 @@ TEST_CASE("arena partner: rule 19 in a fought run under the close lens, as the g
                 CHECK(100 * all.leadClearSeen >= 75 * all.seen);
                 CHECK(100 * all.contactClearSeen >= 75 * all.contactSeen);
             }
+}
+
+TEST_CASE("arena partner: a caster's target rushing inside its stand-off: it still casts, and never stands idle in reach") {
+    // The arena lane's trace (11-16): a lead and one enemy, the close station on, the caster's 8.5 / 5. The enemy
+    // rushed the lead and stood 2 m from the caster, which then stood still for the whole fight with no cast.
+    struct Pair {
+        const char* lead;
+        const char* foe;
+    };
+    const ArenaTable table = shippedTable();
+    int fights = 0, worst = 1 << 20;
+    float idleWorst = 0.f;
+    for (const Pair p : {Pair{"devin", "skirmisher"}, Pair{"devin", "maw_pup"}, Pair{"devin", "spitter"},
+                         Pair{"duy", "skirmisher"}, Pair{"duy", "maw_pup"}}) {
+        std::ostringstream row;
+        int casts = 0;
+        for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+            CAPTURE(p.lead);
+            CAPTURE(p.foe);
+            CAPTURE(seed);
+            const FoughtLensRun o = foughtLensRun(FoughtLens{}, seed, 2, p.lead, {p.foe});
+            row << " " << o.strings << (o.idleLongest > 0.5f ? "!" : "");
+            casts += o.strings;
+            ++fights;
+            idleWorst = std::max(idleWorst, o.idleLongest);
+            // At least one cast, unless the fight ended before it could: its first step in reach and a blow's
+            // startup (the party kit's first light), with a pause's grace.
+            const float startup = table.fighter("third").light[0].startup;
+            if (o.firstInReach >= 0.f && o.time > o.firstInReach + startup + 1.f) {
+                CHECK(o.strings >= 1);
+                worst = std::min(worst, o.strings);
+            }
+            CHECK(o.idleLongest <= 0.5f);
+        }
+        MESSAGE((std::string("caster 8.5/5, lead ") + p.lead + " vs one " + p.foe + ": casts per seed" + row.str() +
+                 " (total " + std::to_string(casts) + ")"));
+    }
+    MESSAGE(fights << " fights: fewest casts " << worst << ", longest idle in reach " << idleWorst << " s");
+}
+
+TEST_CASE("arena partner: a caster whose target keeps closing to 2 m: it casts and steps back by turns, never leashed or idle") {
+    // The caster's 8.5 / 5 under the close station; the target, which cannot fall and never attacks, walks back to
+    // 2 m off the caster's edge whenever the caster gets 3 m away, the lead pressed against it (1.2 m). 30 s; both
+    // orders.
+    const ArenaTable table = shippedTable();
+    const auto toward = [](Vec2 from, Vec2 to, float d) { // the point d from `from` toward `to`
+        const Vec2 v = sub(to, from);
+        const float l = length(v);
+        return l > 1e-5f ? Vec2{from.x + v.x * d / l, from.y + v.y * d / l} : Vec2{from.x + d, from.y};
+    };
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        ArenaFighter third = table.fighter("third");
+        third.partnerReach = 8.5f;
+        third.partnerStandoff = 5.f;
+        PRig r;
+        r.ownPartnerKit = true;
+        r.def.partnerKit = third;
+        r.def.fighter.hp = 100000; // the lead never falls: no takeover
+        r.tuning = shippedTuning();
+        r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way: it strings whenever its pause is over
+        REQUIRE(validPartnerTuning(r.tuning));
+        const ArenaEnemyKind dummy = dummyKind();
+        r.enemy(dummy, Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{-1.2f, 0.f};
+        r.bodies.ally = Vec2{0.f, 2.f + dummy.bodyRadius}; // 2 m off its edge, beside the lead
+        r.in.partnerOrder = order;
+        r.go(true, 1000);
+        r.walk = true;
+        r.in.cameraOn = true;
+        r.in.lock = true; // the lead locks on (StayClose's target)
+        PartnerCloseView& c = r.in.partnerClose;
+        c.given = true;
+        c.halfAngleDegrees = 30.f;
+        c.leadSide = -1;
+        c.standMin = kPartnerCloseCasterMin;
+        c.standMax = kPartnerCloseCasterMax;
+        int stepBacks = 0, leashed = 0, closings = 0, through = 0;
+        float idleRun = 0.f, idleLongest = 0.f, nearest = 1e9f;
+        bool wasStepBack = false;
+        for (int k = 0; k < 30 * 60; ++k) {
+            Vec2& tp = r.bodies.enemies[0];
+            const float edgeNow = dist(r.bodies.ally, tp) - dummy.bodyRadius;
+            if (edgeNow > 3.f) { // the target closes on the caster at 3 m/s, the lead pressed against it
+                ++closings;
+                const Vec2 goal = toward(r.bodies.ally, tp, 2.f + dummy.bodyRadius);
+                const Vec2 d = sub(goal, tp);
+                const float l = length(d);
+                const float most = 3.f * kDt;
+                tp = l > most ? Vec2{tp.x + d.x * most / l, tp.y + d.y * most / l} : goal;
+            }
+            r.bodies.player = toward(tp, r.bodies.player, 1.2f);
+            const Vec2 back = toward(tp, r.bodies.player, 4.2f); // the lens 3 m behind the lead, on the target
+            r.in.cameraPos = back;
+            r.in.cameraFacing = Vec2{(tp.x - back.x) / 4.2f, (tp.y - back.y) / 4.2f};
+            r.tick();
+            const PartnerIntent& pi = r.brain.intent();
+            const bool stepBack = pi.act == PartnerAct::StepBack;
+            if (stepBack && !wasStepBack) ++stepBacks;
+            wasStepBack = stepBack;
+            if (stepBack) { // never a walk through the target: its segment clear of the target's body
+                const Vec2 ab = sub(pi.point, r.bodies.ally);
+                const float l2 = ab.x * ab.x + ab.y * ab.y;
+                const Vec2 ap = sub(tp, r.bodies.ally);
+                const float u = l2 > 1e-8f ? std::clamp((ap.x * ab.x + ap.y * ab.y) / l2, 0.f, 1.f) : 0.f;
+                const float off = length(sub(tp, Vec2{r.bodies.ally.x + ab.x * u, r.bodies.ally.y + ab.y * u}));
+                if (off + 1e-3f < std::min(dummy.bodyRadius, length(ap))) ++through;
+            }
+            if (pi.why == PartnerWhy::Leash) ++leashed;
+            const bool cool = pi.why == PartnerWhy::Approach || pi.why == PartnerWhy::NoTarget ||
+                              pi.why == PartnerWhy::Start || pi.why == PartnerWhy::Leash;
+            const float e = dist(r.bodies.ally, r.bodies.enemies[0]) - dummy.bodyRadius;
+            nearest = std::min(nearest, e);
+            idleRun = e <= third.partnerReach && pi.act == PartnerAct::Wait && cool ? idleRun + kDt : 0.f;
+            idleLongest = std::max(idleLongest, idleRun);
+        }
+        const ArenaStats& st = r.fight.stats();
+        MESSAGE("caster at 2 m, order " << static_cast<int>(order) << ": strings " << st.partnerStrings << ", step-backs "
+                                        << stepBacks << ", target closings (steps) " << closings << ", leashed steps "
+                                        << leashed << ", nearest edge " << nearest << " m, longest idle in reach "
+                                        << idleLongest << " s");
+        CHECK(st.partnerStrings >= 6);
+        CHECK(stepBacks >= 3);
+        CHECK(leashed == 0);
+        CHECK(through == 0);
+        CHECK(idleLongest <= 0.5f);
+    }
 }
 
 namespace {
@@ -4520,4 +4986,232 @@ TEST_CASE("arena partner: the capture's hugging frames, every flank point graded
                     }
                 MESSAGE(m.str());
             }
+}
+
+namespace {
+// Classic partner fights, whole runs, for the review's pin (11-16): the party member's kit as each attacking lead's
+// partner (the autopilot at the controls) over the default's 8 fights and 3 seeds, with no camera and with a classic
+// ground camera (4.5 m behind the lead, facing its nearest live enemy; the close station never given). Each run's
+// partner hits, partner damage and a whole-run state hash (FNV-1a over every step's bodies, hp and the brain's hash).
+struct ClassicPin {
+    int hits = 0;
+    int damage = 0;
+    std::uint64_t hash = 1469598103934665603ull;
+    ArenaPhase phase = ArenaPhase::Fighting;
+};
+void pinFold(std::uint64_t& h, const void* p, std::size_t n) {
+    const unsigned char* b = static_cast<const unsigned char*>(p);
+    for (std::size_t i = 0; i < n; ++i) {
+        h ^= b[i];
+        h *= 1099511628211ull;
+    }
+}
+void pinFoldV(std::uint64_t& h, Vec2 v) {
+    pinFold(h, &v.x, sizeof v.x);
+    pinFold(h, &v.y, sizeof v.y);
+}
+ArenaDef pinFight(const ArenaTable& t, std::initializer_list<const char*> ids, std::uint8_t attackers) {
+    ArenaDef def;
+    def.enemyCount = 0;
+    for (const char* id : ids)
+        for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+            if (t.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = t.enemies[e];
+            }
+    def.attackers = attackers;
+    def.ringRadius = 12.f;
+    def.spawnDistance = 7.f;
+    return def;
+}
+ClassicPin classicPinRun(const ArenaTable& t, const ArenaDef& base, const char* lead, std::uint32_t seed, bool camera) {
+    ArenaDef def = base;
+    def.fighter = t.fighter(lead);
+    def.partnerKit = t.fighter("third");
+    PartnerBrain brain;
+    const PartnerTuning tuning = shippedTuning();
+    ArenaFight fight;
+    ArenaBodies bodies;
+    const ArenaRing ring = arenaRingAt(Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, def.ringRadius, ArenaRing{Vec2{0.f, 0.f}, 36.f});
+    fight.setAlly(def.partnerKit.hp, 0.4f);
+    fight.setPartner(&brain, &tuning);
+    fight.begin(def, ring, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, seed);
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    const Vec2 f0 = fight.playerStartFacing();
+    bodies.ally = fight.ring().clamp(Vec2{bodies.player.x - 1.5f * f0.y, bodies.player.y + 1.5f * f0.x}, 0.4f);
+    Vec2 look = f0;
+    ClassicPin o;
+    for (int s = 0; s < 120 * 60 && !fight.over(); ++s) {
+        ArenaInput in = fight.autopilot();
+        if (camera) {
+            float best = 1e9f;
+            for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+                if (!fight.enemyAlive(i)) continue;
+                const Vec2 d = sub(bodies.enemies[i], bodies.player);
+                const float far = length(d);
+                if (far > 1e-3f && far < best) {
+                    best = far;
+                    look = Vec2{d.x / far, d.y / far};
+                }
+            }
+            in.cameraOn = true;
+            in.cameraPos = Vec2{bodies.player.x - 4.5f * look.x, bodies.player.y - 4.5f * look.y};
+            in.cameraFacing = look;
+        }
+        const ArenaOutput& out = fight.tick(kDt, in, bodies);
+        for (const ArenaEvent& e : out.events) {
+            if (e.type == ArenaEventType::Hit && e.source == kArenaAlly) ++o.hits;
+            if (e.type == ArenaEventType::TookOver) std::swap(bodies.player, bodies.ally);
+        }
+        arenaStep(fight, bodies, kDt);
+        if (out.ally.partnerOn) {
+            const Vec2 d = sub(out.ally.goal, bodies.ally);
+            const float far = length(d);
+            const float most = fight.def().partnerKit.moveSpeed * kDt;
+            bodies.ally = far > most ? Vec2{bodies.ally.x + d.x * most / far, bodies.ally.y + d.y * most / far} : out.ally.goal;
+            for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+                if (!fight.enemyAlive(i)) continue;
+                const float least = 0.4f + def.enemies[i].bodyRadius;
+                const Vec2 e = sub(bodies.ally, bodies.enemies[i]);
+                const float apart = length(e);
+                if (apart >= least) continue;
+                const Vec2 dir = apart > 1e-4f ? Vec2{e.x / apart, e.y / apart} : Vec2{1.f, 0.f};
+                bodies.ally = Vec2{bodies.enemies[i].x + dir.x * least, bodies.enemies[i].y + dir.y * least};
+            }
+            bodies.ally = fight.ring().clamp(bodies.ally, 0.4f);
+        }
+        pinFoldV(o.hash, bodies.player);
+        pinFoldV(o.hash, bodies.ally);
+        const int hp[2] = {fight.hp(), fight.allyHp()};
+        pinFold(o.hash, hp, sizeof hp);
+        for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+            pinFoldV(o.hash, bodies.enemies[i]);
+            const int ehp = fight.enemyHp(i);
+            pinFold(o.hash, &ehp, sizeof ehp);
+        }
+        const std::uint64_t bh = brain.hash();
+        pinFold(o.hash, &bh, sizeof bh);
+    }
+    o.damage = fight.stats().partnerDamage;
+    o.phase = fight.phase();
+    return o;
+}
+struct ClassicPinRow {
+    const char* lead;
+    const char* fight;
+    bool camera;
+    int hits;   // over seeds 1-3
+    int damage; // over seeds 1-3
+    std::uint64_t hash; // the 3 seeds' whole-run hashes folded in order
+};
+// Taken from main (04ffce8f: the party member's light range 3.6, no close-only reach) by this same code.
+const ClassicPinRow kClassicPins[] = {
+    {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
+    {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
+    {"devin", "three kinds, attackers 1", false, 25, 170, 16537530505005903450ull},
+    {"devin", "three kinds, attackers 1", true, 23, 164, 7641466744412459784ull},
+    {"devin", "a brute and a spitter, attackers 2", false, 16, 108, 5241323735042292893ull},
+    {"devin", "a brute and a spitter, attackers 2", true, 16, 115, 14748652239614714217ull},
+    {"devin", "brute", false, 13, 94, 31290753253845615ull},
+    {"devin", "brute", true, 13, 94, 16239672271515793875ull},
+    {"devin", "skirmisher", false, 9, 66, 5952098331214068505ull},
+    {"devin", "skirmisher", true, 6, 42, 1249458168175911326ull},
+    {"devin", "breaker", false, 22, 163, 18329296392151869695ull},
+    {"devin", "breaker", true, 17, 128, 2481547781211154738ull},
+    {"devin", "duelist", false, 16, 121, 17596743998803615256ull},
+    {"devin", "duelist", true, 15, 114, 3889848073699997715ull},
+    {"devin", "hulk", false, 23, 170, 8466614135980583722ull},
+    {"devin", "hulk", true, 24, 177, 17463738276282656931ull},
+    {"devin", "titan", false, 27, 198, 17037376046017037454ull},
+    {"devin", "titan", true, 24, 177, 9005697788452095697ull},
+    {"devin", "kite_boss", false, 57, 408, 11219984855826233746ull},
+    {"devin", "kite_boss", true, 58, 418, 2789500301622640658ull},
+    {"devin", "stone_bearer", false, 80, 575, 15615442648485410031ull},
+    {"devin", "stone_bearer", true, 80, 581, 10800794574737038193ull},
+    {"devin", "white_glove", false, 66, 465, 12554922323999540588ull},
+    {"devin", "white_glove", true, 71, 503, 8649862504494032913ull},
+    {"devin", "maw_pup", false, 6, 42, 7629072203778842793ull},
+    {"devin", "maw_pup", true, 6, 42, 12945017244662502135ull},
+    {"devin", "spitter", false, 6, 42, 16994954208136295472ull},
+    {"devin", "spitter", true, 6, 42, 596144150160075129ull},
+    {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
+    {"duy", "shipped default fight", true, 16, 121, 165081782403125027ull},
+    {"duy", "three kinds, attackers 1", false, 31, 221, 3058889908460975563ull},
+    {"duy", "three kinds, attackers 1", true, 35, 251, 15975811842975394185ull},
+    {"duy", "a brute and a spitter, attackers 2", false, 17, 119, 13769110188836988905ull},
+    {"duy", "a brute and a spitter, attackers 2", true, 19, 136, 4970841333878948935ull},
+    {"duy", "brute", false, 16, 118, 17274731110568096544ull},
+    {"duy", "brute", true, 16, 121, 165081782403125027ull},
+    {"duy", "skirmisher", false, 6, 42, 12056965067669638780ull},
+    {"duy", "skirmisher", true, 6, 27, 7451009726274229835ull},
+    {"duy", "breaker", false, 24, 180, 3918144725000809230ull},
+    {"duy", "breaker", true, 25, 184, 9399829982760244120ull},
+    {"duy", "duelist", false, 16, 124, 17618373211950944107ull},
+    {"duy", "duelist", true, 16, 121, 3000389506109734572ull},
+    {"duy", "hulk", false, 30, 219, 8604643699523506543ull},
+    {"duy", "hulk", true, 29, 206, 10408765349377459501ull},
+    {"duy", "titan", false, 31, 229, 8858760711467032362ull},
+    {"duy", "titan", true, 29, 204, 4745636326408502596ull},
+    {"duy", "kite_boss", false, 62, 443, 14444996425331591300ull},
+    {"duy", "kite_boss", true, 68, 488, 7340459745914879359ull},
+    {"duy", "stone_bearer", false, 103, 760, 16450274339744880094ull},
+    {"duy", "stone_bearer", true, 102, 747, 8699959715483297912ull},
+    {"duy", "white_glove", false, 84, 609, 6572322498555516023ull},
+    {"duy", "white_glove", true, 89, 641, 8591835143023752347ull},
+    {"duy", "maw_pup", false, 6, 42, 18005428526199812985ull},
+    {"duy", "maw_pup", true, 6, 42, 3177779032497351680ull},
+    {"duy", "spitter", false, 6, 42, 373096491565446441ull},
+    {"duy", "spitter", true, 6, 42, 13513007789646449681ull},
+};
+} // namespace
+
+TEST_CASE("arena partner: classic partner fights resolve exactly as main's: hits, damage and whole-run hashes pinned") {
+    // Review (11-16): rule 19's kit range (the party member's 5-8 m casts) applies under the close camera only; with
+    // no camera or a classic one every blow lands from the light's own range, so these whole runs match main's.
+    const ArenaTable t = shippedTable();
+    std::vector<std::pair<std::string, ArenaDef>> fights;
+    fights.emplace_back("shipped default fight", t.fallback);
+    fights.emplace_back("three kinds, attackers 1", pinFight(t, {"brute", "skirmisher", "breaker"}, 1));
+    fights.emplace_back("a brute and a spitter, attackers 2", pinFight(t, {"brute", "spitter"}, 2));
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e) {
+        if (t.enemies[e].passive) continue;
+        ArenaDef def;
+        def.enemyCount = 1;
+        def.enemyKind[0] = static_cast<std::uint8_t>(e);
+        def.enemies[0] = t.enemies[e];
+        def.attackers = 1;
+        fights.emplace_back(t.enemyIds[e], def);
+    }
+    REQUIRE(fights.size() >= 8);
+    int rows = 0, leads = 0;
+    for (std::size_t f = 1; f < t.fighterIds.size(); ++f) {
+        if (!t.fighters[f].attacks || t.fighterIds[f] == "third") continue;
+        ++leads;
+        const char* lead = t.fighterIds[f].c_str();
+        for (const auto& [name, def] : fights)
+            for (int cam = 0; cam < 2; ++cam) {
+                int hits = 0, damage = 0;
+                std::uint64_t hash = 1469598103934665603ull;
+                for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+                    const ClassicPin p = classicPinRun(t, def, lead, seed, cam == 1);
+                    hits += p.hits;
+                    damage += p.damage;
+                    pinFold(hash, &p.hash, sizeof p.hash);
+                }
+                const ClassicPinRow* row = nullptr;
+                for (const ClassicPinRow& r : kClassicPins)
+                    if (std::string(r.lead) == lead && name == r.fight && r.camera == (cam == 1)) row = &r;
+                MESSAGE("PIN    {\"" << std::string(lead) << "\", \"" << name << "\", " << std::string(cam ? "true" : "false") << ", " << hits << ", "
+                                     << damage << ", " << hash << "ull},");
+                REQUIRE_MESSAGE(row != nullptr, "Error: no pin for " << lead << " " << name << " camera " << cam);
+                ++rows;
+                CHECK(hits > 0);
+                CHECK(hits == row->hits);
+                CHECK(damage == row->damage);
+                CHECK(hash == row->hash);
+            }
+    }
+    CHECK(leads >= 2);
+    CHECK(rows == static_cast<int>(sizeof kClassicPins / sizeof kClassicPins[0]));
 }

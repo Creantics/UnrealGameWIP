@@ -34,8 +34,10 @@
 //   - muzzle_flash on the pistol's `muzzle` socket as a shot goes active;
 //   - gun_tracer from the muzzle to the hit point as a shot goes active (its speed scaled so its head ends on the hit
 //     point at its lifetime, kTracerTime), then gun_impact at the hit point;
-//   - spell_bolt from the casting hand to the hit point as any magic attack goes active (the same way, kBoltTime), then
-//     spell_impact at the hit point;
+//   - spell_bolt from the casting hand to the hit point as a magic attack's startup begins, arriving on the hit: its
+//     flight the rest of the startup, never under ftcore::kArenaBoltFlightMin (ftcore::arenaBoltFlight), its clock run
+//     so its kBoltTime lifetime spans the flight; an attack with no startup tracked casts it as it goes active, flying
+//     the floor; a cast cut short in its startup clears it; then spell_impact at the hit point;
 //   - gauntlet_spark at the striking fist's knuckles (the foot for a kick) on the lead's hit;
 //   - spell_ward at the feet while a magic lead guards.
 // The magic kit (ftcore::ArenaWeapon::Magic, "weapon": "magic" in arena.json: its cast, spell effects and ward) is the
@@ -196,13 +198,14 @@ struct FFTLeadWeapons
 	// The fight time to view the last strike at: its impact (bImpact; the hit or the shot's or cast's arrival) or, for a
 	// shot or cast, half way along its flight. Each a moment after, for the effect to show.
 	double GetViewTime(bool bImpact) const;
-	// A shot's and a cast's flight from the hand to the hit point (s): gun_tracer's and spell_bolt's head lifetime, and
-	// the distance their heads cover at speed scale 1 (cm).
+	// A shot's and a cast's flight from the hand to the hit point (s): gun_tracer's and spell_bolt's head lifetime as
+	// built, and the distance their heads cover at speed scale 1 (cm). A bolt's clock is run so kBoltTime spans its flight.
 	static constexpr double kTracerTime = 0.1;
 	static constexpr double kTracerReach = 300.0;
 	static constexpr double kBoltTime = 0.2;
 	static constexpr double kBoltReach = 320.0;
-	// The flight of Kit's light Move (a shot: kTracerTime, a cast: kBoltTime), 0 for a blow that lands where it is.
+	// How long after the hit Kit's light Move's impact plays: a shot kTracerTime (it leaves on the hit), a cast
+	// ftcore::arenaBoltLate of its startup (it leaves as the startup begins: 0 unless under the floor), a blow 0.
 	static double FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move);
 
 	// For -ArenaShotClose's views. The strike under way's limb (after the clip played: hand_l or hand_r, foot_l or
@@ -319,6 +322,11 @@ private:
 	double WardRaiseFor = 0.0;    // RaiseWard's hold, taken up by the next Track
 	double WardHeldUntil = -1.0;  // a raised ward's end (fight time)
 	FVector ImpactFrom = FVector::ZeroVector; // where the travelling bolt left from (its impact faces back to it)
+	double StrikeStartAt = -1e9; // the strike under way's start (StartStrike's T): a cast's bolt flies the rest of its startup
+	bool bBoltOut = false;       // this cast's bolt has left (in its startup) and is on its way to the hit
+	double BoltLaunch = -1e9;    // the last bolt's launch and flight (fight time, s), for the view times
+	double BoltFlight = 0.0;
+	void LaunchBolt(double T, double Flight);
 	int32 ActiveCount = 0;
 	double LastActiveTime = -1e9;
 

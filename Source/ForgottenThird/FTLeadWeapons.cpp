@@ -669,8 +669,10 @@ void FFTLeadWeapons::Freeze(double T)
 		{
 			// From its start again, then on to its age at T (the order matters: a paused system doesn't advance).
 			Vfx->Play();
-			const int32 Ticks = FMath::Max(1, FMath::CeilToInt32(static_cast<float>(Age) / kFreezeTick));
-			Niagara->AdvanceSimulation(Ticks, static_cast<float>(Age) / static_cast<float>(Ticks));
+			// On its own clock (a bolt's runs at its flight's rate).
+			const double SimAge = Age * static_cast<double>(Niagara->GetCustomTimeDilation());
+			const int32 Ticks = FMath::Max(1, FMath::CeilToInt32(static_cast<float>(SimAge) / kFreezeTick));
+			Niagara->AdvanceSimulation(Ticks, static_cast<float>(SimAge) / static_cast<float>(Ticks));
 			bRerun = true;
 		}
 		Niagara->SetPaused(true);
@@ -871,9 +873,45 @@ double FFTLeadWeapons::FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move)
 	case ftcore::ArenaWeapon::Guns:
 		return ftcore::arenaPlayerStrike(Kit, Move) == FightClip::WeaponRight ? kTracerTime : 0.0;
 	case ftcore::ArenaWeapon::Magic:
-		return kBoltTime;
+	{
+		const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, Move);
+		return static_cast<double>(ftcore::arenaBoltLate(Attack ? Attack->startup : 0.f));
+	}
 	default:
 		return 0.0;
+	}
+}
+
+void FFTLeadWeapons::LaunchBolt(double T, double Flight)
+{
+	// From the palm (the wrist without the knuckle bone).
+	USkeletalMeshComponent* Body = Skin.Get();
+	FVector From = Chest();
+	const FName Hand = StrikesLeft() ? TEXT("hand_l") : TEXT("hand_r");
+	if (Body && !PalmPoint(*Body, StrikesLeft() ? 0 : 1, From) && Body->DoesSocketExist(Hand))
+	{
+		From = Body->GetSocketLocation(Hand);
+	}
+	Flight = FMath::Max(Flight, static_cast<double>(ftcore::kArenaBoltFlightMin));
+	const FVector Path = AimPoint - From;
+	if (UFTVfxComponent* Vfx = Fx[Travel].Get())
+	{
+		// The head is stretched or shrunk to die on the hit point at its lifetime, and its clock run so that lifetime
+		// is the flight.
+		Vfx->SetWorldLocationAndRotation(From, ConeTo(Path));
+		Vfx->SetParameters(static_cast<float>(FMath::Max(Path.Size(), 1.0) / kBoltReach), 1.f);
+		Vfx->SetTimeDilation(static_cast<float>(kBoltTime / Flight));
+	}
+	Play(Travel, T);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: bolt cast at %.3f, flight %.3f s, due at %.3f"), Prefix(), T, Flight, T + Flight);
+	bBoltOut = true;
+	BoltLaunch = T;
+	BoltFlight = Flight;
+	if (bImpacts)
+	{
+		ImpactAt = AimPoint;
+		ImpactFrom = From;
+		ImpactDue = T + Flight;
 	}
 }
 
@@ -885,6 +923,7 @@ void FFTLeadWeapons::StartStrike(uint8 Move, double T)
 		ClipsCompleted += LastPart == ftcore::ArenaPart::Recovery ? 1 : 0;
 		bStrikeClip = false;
 	}
+	StrikeStartAt = T;
 	if (!IsOn())
 	{
 		return;
@@ -955,6 +994,14 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				Play(WindUp, T);
 			}
 		}
+		// The bolt leaves as the startup begins and flies the rest of it, arriving on the hit (never under the floor).
+		if (LastPart != ftcore::ArenaPart::Startup || LastMove != P.move || LastAction != P.action)
+		{
+			const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, P.move);
+			const double Startup = Attack ? static_cast<double>(Attack->startup) : 0.0;
+			const double Left = Startup - FMath::Clamp(T - StrikeStartAt, 0.0, Startup);
+			LaunchBolt(T, static_cast<double>(ftcore::arenaBoltFlight(static_cast<float>(Left))));
+		}
 	}
 	else if (bCasting)
 	{
@@ -967,6 +1014,17 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			{
 				Vfx->Clear();
 				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[WindUp], T);
+			}
+			// Its bolt never lands: it goes, and its impact with it.
+			if (bBoltOut)
+			{
+				bBoltOut = false;
+				ImpactDue = -1.0;
+				if (UFTVfxComponent* Vfx = Fx[Travel].Get())
+				{
+					Vfx->Clear();
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[Travel], T);
 			}
 		}
 	}
@@ -1000,18 +1058,13 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			}
 			break;
 		case ftcore::ArenaWeapon::Magic:
-		{
-			// From the palm (the wrist without the knuckle bone).
-			const FName Hand = StrikesLeft() ? TEXT("hand_l") : TEXT("hand_r");
-			if (Body && !PalmPoint(*Body, StrikesLeft() ? 0 : 1, From) && Body->DoesSocketExist(Hand))
+			// The bolt left as the startup began and arrives now; with no startup tracked it leaves now, flying the floor.
+			if (!bBoltOut)
 			{
-				From = Body->GetSocketLocation(Hand);
+				LaunchBolt(T, static_cast<double>(ftcore::kArenaBoltFlightMin));
 			}
-			Reach = kBoltReach;
-			Flight = kBoltTime;
-			bTravel = true;
+			bBoltOut = false;
 			break;
-		}
 		case ftcore::ArenaWeapon::Gauntlets:
 		case ftcore::ArenaWeapon::None:
 			break;
@@ -1105,7 +1158,8 @@ double FFTLeadWeapons::GetViewTime(bool bImpact) const
 	case ftcore::ArenaWeapon::Guns:
 		return bImpact ? LastActiveTime + kTracerTime + kViewLag : LastActiveTime + kTracerTime * 0.5;
 	case ftcore::ArenaWeapon::Magic:
-		return bImpact ? LastActiveTime + kBoltTime + kViewLag : LastActiveTime + kBoltTime * 0.5;
+		// The bolt's arrival; its mid-flight is in the startup, before the attack went active, so no earlier than that.
+		return bImpact ? BoltLaunch + BoltFlight + kViewLag : FMath::Max(LastActiveTime, BoltLaunch + BoltFlight * 0.5);
 	default:
 		return LastActiveTime + kViewLag;
 	}

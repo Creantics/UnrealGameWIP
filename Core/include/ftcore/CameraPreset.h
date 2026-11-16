@@ -28,13 +28,16 @@
 // What the fight reads from the drawn camera every tick does change under close, by design (it is what the player
 // sees), and no rule or number does:
 //   - the view yaw (ArenaInput::view and cameraFacing: the stick's basis, the lock press's pick, a regular enemy's
-//     windup arc), drawn at the lock's line plus the framing turn: close's turn differs from classic's by up to
-//     11.5 degrees (at 2.4 m, where classic's is at its 30 degree cap), 0.2 at 6 m, 3.2 at 12 m; with nothing locked
-//     both are 0 and the view is the free camera's;
-//   - the windup arc's camera half-angle (the real lens's: 30 degrees for close's 60, 35 for classic's 70; aiming,
-//     both 27.5);
+//     windup arc), drawn at the lock's line plus the framing turn: close's turn (shaped by the range, ArenaCloseFrame.h)
+//     differs from classic's on the right shoulder by 0 at 2.4 m (both at the 30 degree cap), 6.2 at 3 m, 3.5 at 4 m,
+//     3.1 at 6 m, 4.0 at 8 m and 4.9 at 12 m, and on the left shoulder (the mirror) by 60, 53, 38, 26, 21 and 16; the
+//     close partner turn adds up to 12 more; with nothing locked both are 0 and the view is the free camera's;
+//   - the windup arc's camera half-angle (the real lens's: 30 degrees for close's 60 far, up to 34 for its 68 in
+//     melee range, 35 for classic's 70; aiming, both 27.5);
 //   - the partner's stationing camera (ArenaInput::cameraPos and partnerCamera: the close lens is 2.6 m back, not 6.4)
 //     and the partner yaw's frame rule (cameraPresetLeadRules);
+//   - the stick's lean on screen: up walks the lead toward the frame's centre at about 45 degrees under close (the
+//     lead a third in from the side, 0.55 m off the lens), 18.6 under classic;
 //   - the crosshair's ray (the aimed arm is the preset's times armScale, so the close lens is lower and nearer).
 // The stick reads the drawn yaw under both: up the stick walks the lead along the lens's own facing, into the screen
 // toward the frame's centre at the horizon, as under classic; read off the lock's line instead, the walk would head
@@ -70,7 +73,7 @@ inline constexpr CameraPreset closeCameraPreset() {
     CameraPreset p;
     p.rig.arm = 2.6f;
     p.rig.pivot = 1.35f;
-    p.rig.side = 0.2f;
+    p.rig.side = 0.55f;
     p.rig.up = 0.1f;
     p.rig.fov = 60.f;
     p.rig.lockPitch = -2.f;
@@ -78,7 +81,7 @@ inline constexpr CameraPreset closeCameraPreset() {
     p.cutMin = -0.04f;
     p.headMax = 0.75f;
     p.targetX = 0.6f;
-    p.lagSeconds = 0.08f;
+    p.lagSeconds = 0.f; // the boom's own, as classic: a 0.08 s lag measured no different on the dodge strip
     p.lowMax = 0.f;
     return p;
 }
