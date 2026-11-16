@@ -568,7 +568,7 @@ int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLayout& layou
 
     // Hanging signs off the shop face, arms out over the lane.
     const auto blocked = [&](double y) {
-        for (int i = 0; i < layout.lanternCount; ++i) {
+        for (std::size_t i = 0; i < layout.lanternCount; ++i) {
             const HeroLantern& l = layout.lanterns[i];
             if (l.large && std::abs(y - l.hook.y) < spec.signClear + 0.5 * spec.largeDiameter * l.scale) return true;
         }
