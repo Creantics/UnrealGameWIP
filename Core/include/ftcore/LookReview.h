@@ -31,16 +31,34 @@ inline constexpr float kFoldDirtRoughness = 0.15f; // scaled by DirtStrength, so
 inline constexpr float kFoldDryRidgeRoughness = 1.f;
 
 // The character rim is a material term, not a light: the garment and skin masters add, after lighting (emissive),
-//   rim = pow(1 - saturate(N.V), 4) * saturate(N.L * 0.5 + 0.5) * RimStrength * RimScale * RimColour
-// with L a virtual direction set once a frame. Strength 0 (the default) adds nothing. Per instance RimScale: 1 on cloth,
+//   rim = pow(1 - saturate(N.V), kRimExponent) * smoothstep(kRimSideLow, kRimSideHigh, saturate(N.L))
+//         * RimStrength * RimScale * RimColour
+// with N the vertex (interpolated geometric) normal, never the normal-mapped one, so fold ridges, seams and stitch lines
+// inside the silhouette catch nothing; and L a virtual direction set once a frame. The side term has no bias: the
+// silhouette edge facing away from L gets nothing, the edge toward it gets the full rim (rimWeight is the reference). Strength 0 (the default) adds nothing. Per instance RimScale: 1 on cloth,
 // leather and skin, kRimFaceScale on the face, kRimHairScale on hair (whose rim is also capped at kRimHairCap times its
 // base colour: a stand-in for "at most 1.6 times its lit value", which a surface material cannot read), none on glasses.
+inline constexpr float kRimExponent = 5.f;   // edge falloff, pow(1 - N.V, this)
+inline constexpr float kRimSideLow = 0.1f;   // N.L at or below this: no rim on that side
+inline constexpr float kRimSideHigh = 0.6f;  // N.L at or above this: the full rim
 inline constexpr float kRimFaceScale = 0.5f;
 inline constexpr float kRimHairScale = 0.4f;
 inline constexpr float kRimHairCap = 0.6f;
 inline constexpr float kRimElevationDeg = 30.f; // above the horizon, on the far side of the lead from the camera
 inline constexpr float kRimYawDeg = 35.f;       // turned this far to one side of the camera (right by default)
 inline constexpr float kRimSideFlipSeconds = 0.4f; // a full flip, camera-right to camera-left, eases over this long
+
+// The rim's weight before strength, scale and colour, as the masters compute it: nDotV and nDotL from the vertex normal.
+// NaN gives 0.
+inline float rimWeight(float nDotV, float nDotL) {
+    const float v = nDotV > 0.f ? std::fmin(nDotV, 1.f) : 0.f;
+    const float l = nDotL > 0.f ? std::fmin(nDotL, 1.f) : 0.f;
+    if (!(nDotV == nDotV) || !(nDotL == nDotL)) {
+        return 0.f;
+    }
+    const float t = std::fmin(std::fmax((l - kRimSideLow) / (kRimSideHigh - kRimSideLow), 0.f), 1.f);
+    return std::pow(1.f - v, kRimExponent) * t * t * (3.f - 2.f * t);
+}
 
 // The ft.Rim value as a strength: 0 for 0, negative or NaN.
 constexpr float rimStrength(float cvarValue) { return cvarValue > 0.f ? cvarValue : 0.f; }

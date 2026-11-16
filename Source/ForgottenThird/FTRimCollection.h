@@ -21,7 +21,7 @@
 #include "Materials/MaterialExpressionCameraVectorWS.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionCustom.h"
-#include "Materials/MaterialExpressionPixelNormalWS.h"
+#include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -144,8 +144,9 @@ inline UMaterialParameterCollection* LoadOrBuild()
 	return UPackage::SavePackage(Package, Asset, *File, Args) ? Asset : nullptr;
 }
 
-// The rim term, as an expression: pow(1 - saturate(N.V), 4) * saturate(N.L * 0.5 + 0.5) * RimStrength * RimScale *
-// RimColour, N the shaded world normal. RimScale is a scalar parameter on the master (DefaultScale; an instance sets
+// The rim term, as an expression (ftcore::look::rimWeight): pow(1 - saturate(N.V), kRimExponent) *
+// smoothstep(kRimSideLow, kRimSideHigh, saturate(N.L)) * RimStrength * RimScale * RimColour, N the vertex normal, not the
+// normal-mapped one, so fold ridges, seams and stitches inside the silhouette catch nothing. RimScale is a scalar parameter on the master (DefaultScale; an instance sets
 // its own). Returns null (and the master gets no term) when the collection is missing.
 inline UMaterialExpression* Term(UMaterial* Material, const TCHAR* Group, float DefaultScale, int32 X, int32 Y)
 {
@@ -162,8 +163,11 @@ inline UMaterialExpression* Term(UMaterial* Material, const TCHAR* Group, float 
 	UMaterialExpressionCustom* C = Detail::Node<UMaterialExpressionCustom>(Material, X, Y);
 	C->Description = TEXT("CharacterRim");
 	C->OutputType = CMOT_Float3;
-	C->Code = TEXT("float e = 1.0 - saturate(dot(N, V));\n"
-				   "return (e * e) * (e * e) * saturate(dot(N, L.xyz) * 0.5 + 0.5) * max(Strength, 0.0) * Scale * Colour.rgb;\n");
+	C->Code = FString::Printf(TEXT("float3 n = normalize(N);\n"
+								   "float e = pow(1.0 - saturate(dot(n, V)), %.3f);\n"
+								   "float s = smoothstep(%.3f, %.3f, saturate(dot(n, L.xyz)));\n"
+								   "return e * s * max(Strength, 0.0) * Scale * Colour.rgb;\n"),
+							  ftcore::look::kRimExponent, ftcore::look::kRimSideLow, ftcore::look::kRimSideHigh);
 	C->Inputs.Reset();
 	auto In = [C](const TCHAR* Name, UMaterialExpression* From)
 	{
@@ -171,7 +175,7 @@ inline UMaterialExpression* Term(UMaterial* Material, const TCHAR* Group, float 
 		Slot.InputName = Name;
 		Slot.Input.Connect(0, From);
 	};
-	In(TEXT("N"), Detail::Node<UMaterialExpressionPixelNormalWS>(Material, X - 300, Y - 120));
+	In(TEXT("N"), Detail::Node<UMaterialExpressionVertexNormalWS>(Material, X - 300, Y - 120));
 	In(TEXT("V"), Detail::Node<UMaterialExpressionCameraVectorWS>(Material, X - 300, Y - 60));
 	In(TEXT("L"), Detail::Read(Material, Asset, Dir, X - 300, Y));
 	In(TEXT("Colour"), Detail::Read(Material, Asset, Colour, X - 300, Y + 60));

@@ -55,6 +55,21 @@ TEST_CASE("look review: the rim direction is behind the lead, raised 30 degrees,
     CHECK(top.z == doctest::Approx(0.5f));
 }
 
+TEST_CASE("look review: the rim weight lights only the edge facing the rim direction") {
+    using ftcore::look::rimWeight;
+    CHECK(rimWeight(0.f, 1.f) == doctest::Approx(1.f));             // grazing edge, facing the rim: full
+    CHECK(rimWeight(1.f, 1.f) == 0.f);                               // facing the camera: none
+    CHECK(rimWeight(0.f, 0.1f) == 0.f);                              // at the low side edge: none
+    CHECK(rimWeight(0.f, -1.f) == 0.f);                              // the far silhouette: none
+    CHECK(rimWeight(0.f, 0.6f) == doctest::Approx(1.f));             // full from the high side edge up
+    CHECK(rimWeight(0.f, 0.35f) == doctest::Approx(0.5f));           // smoothstep midpoint
+    CHECK(rimWeight(0.5f, 1.f) == doctest::Approx(1.f / 32.f));      // exponent 5
+    CHECK(rimWeight(-0.2f, 1.f) == doctest::Approx(1.f));            // back-facing N.V clamps to 0
+    CHECK(rimWeight(0.2f, 0.3f) < rimWeight(0.2f, 0.4f));            // rises with N.L
+    CHECK(rimWeight(std::nanf(""), 1.f) == 0.f);
+    CHECK(rimWeight(0.f, std::nanf("")) == 0.f);
+}
+
 TEST_CASE("look review: the lamp side turns the rim to the camera's left, eased over 0.4 s") {
     using ftcore::look::rimSideStep;
     using ftcore::look::rimSideTarget;
