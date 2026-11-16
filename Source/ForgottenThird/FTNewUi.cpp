@@ -1862,10 +1862,15 @@ public:
 		if (!bLive)
 		{
 			RowSwap = ftcore::UiRowSwap{}; // a new fight's first seats are where the rows start, not a switch
-			// The once-a-fight labels start again with the next fight (its clock starts again too).
+			// The once-a-fight labels and every stamp on the fight's clock start again with the next fight (its clock
+			// starts again too, so a stamp from this one would read as the future).
 			LoadLabel = ftcore::UiLoadLabel{};
 			WeakLabel = ftcore::UiOnceLabel{};
 			LoadLabelA = WeakLabelA = 0.f;
+			GuardLabel = ftcore::UiGuardLabel{};
+			HitSegs = ftcore::UiHitSegs{};
+			HitWatch.seeded = false;
+			ReleasePulse = ftcore::UiReleasePulse{};
 			return;
 		}
 		const ftcore::ArenaFight& Fight = Runner->GetFight();
@@ -1882,6 +1887,7 @@ public:
 			GuardLabel = ftcore::UiGuardLabel{};
 			LoadLabel = ftcore::UiLoadLabel{};
 			WeakLabel = ftcore::UiOnceLabel{};
+			ReleasePulse = ftcore::UiReleasePulse{};
 			// Each blow's red lost hp starts empty: the first step only reads the hp, so a retry at equal or lower hp draws
 			// no segment from the last fight's blows.
 			HitSegs = ftcore::UiHitSegs{};
@@ -3240,10 +3246,10 @@ private:
 	// A key cap: a 1 px rounded outline round its letters, centred on (CX, MidY). Every key on the HUD is this one cap.
 	// Ring: the cap's outline where it differs from its letters (the prompts': the world's accent).
 	void KeyCap(const FPainter& P, float CX, float MidY, float W, const FString& Key, float KeyW, const FLinearColor& C,
-		const FLinearColor* Ring = nullptr) const
+		const FLinearColor* CapRing = nullptr) const
 	{
 		KeyCapStroke(Line, CX, MidY, W, Hud::KeyCapH * P.S, 0.5f * P.S, Hud::KeyCapCorner * P.S);
-		Mesh.Stroke(Line, Ring ? *Ring : C, true);
+		Mesh.Stroke(Line, CapRing ? *CapRing : C, true);
 		P.Text(CX - KeyW * 0.5f, CapTop(MidY, KeyAsc), Key, KeyFont, C);
 	}
 
@@ -3907,7 +3913,7 @@ private:
 			const FLinearColor C = ((RefusedShowing >> I) & 1u) ? Tok(UiToken::Ink, ftcore::kUiRefusedInk)
 				: ((PromptDimmed >> I) & 1u)                       ? Tok(UiToken::Ink, ftcore::kUiRefusedInk)
 																	: Tok(UiToken::Ink);
-			const FLinearColor Ring = Tok(UiToken::Accent, C.A);
+			const FLinearColor CapRing = Tok(UiToken::Accent, C.A);
 			const float Row = static_cast<float>(ftcore::uiPromptRow(static_cast<ftcore::UiPrompt>(I)));
 			const float MidY = Size.Y - E.bottom - (0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
 			const float CapW = KeyCapW(PromptKeyW[I], S);
@@ -3920,7 +3926,7 @@ private:
 				const float GroupRight = BX + KeyColW - KeyCapW(PromptKeyW[GG], S) - (GuardWhy >= 0 ? Gap + WhyW[GuardWhy] : 0.f) - Hud::GiftGap * S;
 				CapRight = GroupRight - (PromptWordW[I] + Gap + (bCount ? Gap + CountW(I) : 0.f));
 			}
-			KeyCap(P, CapRight - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyW[I], C, &Ring);
+			KeyCap(P, CapRight - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyW[I], C, &CapRing);
 			const float VX = CapRight + Gap;
 			P.Text(VX, CapTop(MidY, PromptAsc), PromptWord[I], PromptFont, C);
 			if (bCount)
