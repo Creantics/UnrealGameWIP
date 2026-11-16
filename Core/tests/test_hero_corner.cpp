@@ -298,7 +298,7 @@ TEST_CASE("hero corner: the bays as kit lots fill each bay's box with real shop 
     CHECK(spec.bayKoshi[spec.eateryBay]);
 }
 
-TEST_CASE("hero corner: one shop spill point per lit bay, out over the lane under the eave") {
+TEST_CASE("hero corner: one shop slot per lit bay, inside the room near its front, under the room's ceiling") {
     const HeroCornerSpec spec;
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
@@ -307,9 +307,13 @@ TEST_CASE("hero corner: one shop spill point per lit bay, out over the lane unde
     const int lit[] = {0, 2, 3};
     for (int k = 0; k < 3; ++k) {
         const MassingBox& b = l.bays[lit[k]];
-        CHECK(lights[k].x == doctest::Approx(908.0 - kMassingShopLightOut));
+        // Behind the shop face (x 908), in the front metre of the room, not out over the lane.
+        CHECK(lights[k].x > 908.0);
+        CHECK(lights[k].x < 909.0);
         CHECK(lights[k].y == doctest::Approx(b.cy));
-        CHECK(lights[k].z == doctest::Approx(4.18 + kMassingShopLightUp));
+        CHECK(lights[k].z == doctest::Approx(4.18 + spec.shopLightUp));
+        // Under a lattice room's 2.45 m ceiling and its 0.07 m panels.
+        CHECK(lights[k].z < 4.18 + 2.45 - 0.07);
         CHECK(lights[k].z < 4.18 + spec.eaveUp);
         CHECK(lights[k].z < 4.18 + kKoshiStorey);
         CHECK(lights[k].faceIndex == kHeroShopFace);

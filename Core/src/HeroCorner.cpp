@@ -198,9 +198,9 @@ int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroB
     for (int i = 0; i < kHeroBays; ++i) {
         if (!spec.bayLit[i]) continue;
         MassingShopLight& l = out[n++];
-        l.x = spec.laneX1 - kMassingShopLightOut;
+        l.x = spec.laneX1 + spec.shopLightIn;
         l.y = spec.bayY0 + spec.bayWidth * (i + 0.5);
-        l.z = spec.ground + kMassingShopLightUp;
+        l.z = spec.ground + spec.shopLightUp;
         l.face = 180.0;
         l.faceIndex = kHeroShopFace;
     }

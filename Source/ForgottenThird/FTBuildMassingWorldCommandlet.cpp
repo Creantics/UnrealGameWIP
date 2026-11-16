@@ -3585,7 +3585,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -NightLamps with -Windows: a spill point out of each shopfront (ftcore::massingShopLights) in the night lights' data.
 	int32 ShopLights = 0, ShopFaces = 0;
 	std::vector<ftcore::MassingShopLight> ShopAt;
-	// The hero corner's bays are kit lots (no box, no windows): each lit bay's shop spill is one pool shop slot.
+	// The hero corner's bays are kit lots (no box, no windows): each lit bay's one light is a pool shop slot inside its room
+	// near the front, facing out (its fixtures are emissive panels, no light actors).
 	if (bHeroCorner && bNightLamps)
 	{
 		ftcore::MassingShopLight HeroShops[ftcore::kHeroBays];
@@ -3596,7 +3597,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		ShopLights += HeroShopCount;
 		ShopFaces += HeroShopCount;
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d shop spill slots, one per lit bay."), HeroShopCount);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d shop slots, one inside each lit room."), HeroShopCount);
 	}
 	if (bWindows)
 	{

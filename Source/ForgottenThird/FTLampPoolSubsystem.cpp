@@ -63,9 +63,16 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		ShadowLamps = kMaxLamps;
 	}
-	if (ShadowLamps > 0)
+	float ShopShadowM = ShopShadowMetres;
+	FParse::Value(Cmd, TEXT("ShopShadows="), ShopShadowM);
+	ShopShadowCm = FMath::Max(ShopShadowM, 0.f) * 100.f;
+	if (ShopShadowCm > 0.f)
 	{
-		// Shadowed lamps go through MegaLights. Project-setting priority: a -dpcvars or console value still wins.
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: shadows on the shop lights within %.0f m of the camera."), ShopShadowCm / 100.f);
+	}
+	if (ShadowLamps > 0 || ShopShadowCm > 0.f)
+	{
+		// Shadowed lamps and shop lights go through MegaLights. Project-setting priority: a -dpcvars or console value still wins.
 		if (bMegaLightsForShadows)
 		{
 			if (IConsoleVariable* MegaLights = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MegaLights.EnableForProject")))
@@ -341,6 +348,25 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 			{
 				bCast = bCast || static_cast<int32>(Pool.Picked[P]) == Held;
 			}
+			if ((Light->CastShadows != 0) != bCast)
+			{
+				Light->SetCastShadows(bCast);
+			}
+		}
+	}
+	// Shop shadows: the shop lights within ShopShadowCm of the camera cast; the rest don't.
+	if (!bLamp && ShopShadowCm > 0.f)
+	{
+		const float Near2 = ShopShadowCm * ShopShadowCm;
+		for (int32 S = 0; S < Size; ++S)
+		{
+			USpotLightComponent* Light = Lights[S];
+			const int32 Held = Pool.Slot[S];
+			if (!Light)
+			{
+				continue;
+			}
+			const bool bCast = Held != INDEX_NONE && D.ShopAt.IsValidIndex(Held) && FVector::DistSquared(FVector(D.ShopAt[Held]), From) <= Near2;
 			if ((Light->CastShadows != 0) != bCast)
 			{
 				Light->SetCastShadows(bCast);

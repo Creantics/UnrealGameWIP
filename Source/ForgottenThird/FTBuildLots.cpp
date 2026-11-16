@@ -1267,10 +1267,17 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX0 + 0.04, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(*Pr, BayX1 - 0.04, BayY0, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
 			const double BayW = BayX1 - BayX0, BayMidY = 0.5 * (BayY0 + BayY1);
+			// The hero corner's rooms (timber lots) have no fixtures: the perf budget's lights come only through the lamp
+			// pool, so a lit room's one light is its pool shop slot (ftcore::heroCornerShopLights) and its panels glow alone.
+			const bool bFixtures = !Build.TimberLots.Contains(ProofLot);
 			for (int32 L = 0; L < 3; ++L)
 			{
 				const double Lx = BayX0 + BayW * (0.5 + L) / 3.0;
 				LotBox(*Pr, Lx - 0.6, BayMidY - 0.15, BayZ1 - 0.07, Lx + 0.6, BayMidY + 0.15, BayZ1 - 0.04, PanelPaint, Data, EFTCellKind::NoCollide, BayTag);
+				if (!bFixtures)
+				{
+					continue;
+				}
 				// Its fixture: a rect light just under the panel, facing down, its width along the front (its local y,
 				// which a yaw of -Yaw - 90 lays along the cube's x above).
 				double Lpx = 0.0, Lpy = 0.0;

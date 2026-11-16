@@ -20,7 +20,8 @@
 //             3.8 m up), sag 0.4 m at the middle; nine small lanterns 0.75 m apart, centred on the span, each hung
 //             under the cable
 //   light     only the lamp pool's: one lamp slot under each string's middle (warm, half a street lamp) and the lit
-//             bays' shop spill points; the glazed lit bays' own ceiling fixtures; the lanterns are emissive paper
+//             bays' shop slots, one inside each lit room near its front; the rooms' ceiling panels and the lanterns
+//             are emissive, no lights of their own
 //   camera    (904.5, 511.0, 5.78) looking north at (904.5, 551.0, 3.68), 35 mm
 //
 // heroCornerLayout fills a fixed layout (no allocation but the boxes' id strings). Plain C++20.
@@ -76,6 +77,10 @@ struct HeroCornerSpec {
     // street lamp's candela.
     double stringLampUnder = 0.35;
     float stringLampGain = 0.5f;
+    // A lit bay's one light, its pool shop slot: this far inside the room behind its shop face and this high over the
+    // ground (under a lattice room's 2.45 m ceiling and its panels), facing out, so it lights the front of the room and
+    // spills through the front onto the lane.
+    double shopLightIn = 0.6, shopLightUp = 2.1;
     // The quay's lamp masts in the camera's view (both banks of the canal beside the lane, to its far end) have no lamp
     // in the pool: inside this plan box each gives way to a rail piece (heroCornerClearMasts).
     double mastClearX0 = 890.0, mastClearX1 = 903.0, mastClearY0 = 505.0, mastClearY1 = 640.0;
@@ -147,8 +152,9 @@ struct HeroLots {
 };
 FTCORE_API void heroCornerLots(const HeroCornerSpec& spec, HeroLots& out);
 
-// The lit bays' shop spill points (the lamp pool's shop slots): one per lit bay, kMassingShopLightOut out over the lane
-// from its shop face, kMassingShopLightUp over the ground, facing west. Returns how many (at most kHeroBays).
+// The lit bays' lights (the lamp pool's shop slots, the only light a lit bay has): one per lit bay at the middle of its
+// front, shopLightIn inside the room behind its shop face and shopLightUp over the ground, facing west (out onto the
+// lane). Returns how many (at most kHeroBays).
 FTCORE_API int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroBays]);
 
 // The quay's lamp masts inside the spec's mast-clear box become railing spans that close the rail's gap round the mast

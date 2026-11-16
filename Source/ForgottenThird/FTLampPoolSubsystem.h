@@ -25,7 +25,11 @@
 // kMaxLamps; 64 = every pooled lamp, since the pool never holds more than kMaxLamps = 64 and holds WantLamps = 48 by
 // default) and bMegaLightsForShadows (sets r.MegaLights.EnableForProject at project-setting priority, so -dpcvars
 // still overrides it). For A/B: -LampShadows=<n> casts from the n nearest, -LampShadows=0 none, -LampShadows=all (or a
-// bare -LampShadows) every pooled lamp. Shop lights never cast.
+// bare -LampShadows) every pooled lamp.
+//
+// Shop shadows: a pooled shop light within ShopShadowMetres of the camera casts (a lit room's light through its lattice
+// or mullions onto the lane), under MegaLights as the lamps; beyond it, none. Config ShopShadowMetres (15 by default;
+// 0 none); -ShopShadows=<m> for A/B (-ShopShadows=0 none).
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -107,6 +111,9 @@ private:
 	UPROPERTY(Config)
 	bool bMegaLightsForShadows = false;
 	int32 ShadowLamps = 0; // in use: 0 none, a count of the nearest, or kMaxLamps for all
+	UPROPERTY(Config)
+	float ShopShadowMetres = 15.f;
+	float ShopShadowCm = 0.f; // in use: shop lights this near the camera cast, 0 none
 	bool bActive = false;
 	bool bForced = false;
 	bool bPoolMade = false;
