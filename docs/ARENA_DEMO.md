@@ -191,7 +191,10 @@ degrees toward the partner when it is within 8 m and out of the frame, only whil
 stays within 55-80% of the width. The log says `Arena: close shoulder ...` at each pick, `Arena: close frame at view ...`
 at each review still (the distance, the lead's spine, the target's place, how much of it the lead covers, the partner's
 place in the lens's ground frame) and `Arena: lock to ...` at each lock; the check line gives the partner turn's share
-and the shoulder swaps. Known limits: the aim stance stays over the right shoulder (from the left it blends across); a
+and the shoulder swaps. Under both presets a check line gives where the partner stood from the drawn lens on held
+frames (in frame, behind the lens, off either side, over or under, and its mean place while out of the frame), and
+`-ArenaRollAt=<s,s,...>` (not in a shipping build) has the autopilot press dodge at those fight times, so a dodge strip
+is shot at the same roll time under every lens. Known limits: the aim stance stays over the right shoulder (from the left it blends across); a
 wall-shortened arm under close keeps only the visible rule far, as before.
 
 **Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:

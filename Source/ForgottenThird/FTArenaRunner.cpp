@@ -367,6 +367,28 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	// The close lens is shaped each frame from the preset as picked (ShapeCloseLens); classic is never shaped.
 	bCloseShape = CameraPresetNow == ftcore::CameraPresetId::Close;
 	CloseBase = CameraLens;
+#if !UE_BUILD_SHIPPING
+	{
+		// -ArenaRollAt=<s,s,...>: the autopilot presses dodge at these fight times (a capture's dodge strip, the same
+		// roll time under every lens). Read once here; up to MaxRollAt, in rising order.
+		RollAtCount = 0;
+		FString RollList;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaRollAt="), RollList, false))
+		{
+			TArray<FString> Parts;
+			RollList.ParseIntoArray(Parts, TEXT(","));
+			for (const FString& Part : Parts)
+			{
+				const float At = FCString::Atof(*Part);
+				if (RollAtCount < MaxRollAt && FMath::IsFinite(At) && At >= 0.f && (RollAtCount == 0 || At > RollAt[RollAtCount - 1]))
+				{
+					RollAt[RollAtCount++] = At;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaRollAt: %d dodge presses for the autopilot."), RollAtCount);
+		}
+	}
+#endif
 	LeadSeat = Setup.LeadSeat;
 	AllySeat = Setup.AllySeat;
 	LeadName = Setup.Lead ? Setup.Lead->Name : FString();
@@ -1589,6 +1611,9 @@ void UFTArenaRunner::PutBodiesAtStart()
 #if !UE_BUILD_SHIPPING
 	CloseSwaps = CloseYawFrames = CloseYawOn = 0;
 	CloseYawSum = CloseYawMost = 0.f;
+	MateFrames = MateIn = MateBehind = MateLeft = MateRight = MateOffY = 0;
+	MateOutAhead = MateOutRight = 0.f;
+	RollAtNext = 0;
 #endif
 	LockLow = 0.f;
 	LowSideNow = ftcore::kArenaLow.side;
@@ -3146,6 +3171,14 @@ void UFTArenaRunner::StepFight()
 		StoneBearer.Assist(In, bIntercept, Bodies);
 #if !UE_BUILD_SHIPPING
 		StepAimCheck(In);
+		if (RollAtNext < RollAtCount && Fight.time() >= RollAt[RollAtNext])
+		{
+			// -ArenaRollAt: a dodge press now, along the stick the autopilot holds (nothing else pressed with it).
+			++RollAtNext;
+			In.dodge = true;
+			In.light = In.heavy = In.release = false;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaRollAt dodge pressed at %.2f s."), Fight.time());
+		}
 #endif
 		if (bPilotHeavy && In.heavy)
 		{
@@ -5145,6 +5178,10 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 	const bool bOn = Target >= 0 && Target < static_cast<int32>(Fight.enemyCount());
 	CloseTargetNow = bOn ? Target : -1;
 	CloseDistanceNow = -1.f;
+	if (!bOn)
+	{
+		CloseShoulderFor = -1; // nothing followed: the next lock picks again, the same target included
+	}
 	if (bOn)
 	{
 		const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
@@ -5183,9 +5220,15 @@ void UFTArenaRunner::PickCloseShoulder(int32 Target)
 	const bool bNewTarget = Target != CloseShoulderFor;
 	CloseShoulderFor = Target;
 	CloseNextPickAt = Fight.time() + 0.5f;
-	// Each side as it would stand: the shoulder's offset that way, the framing's turn mirrored with it.
-	const float Side = FMath::Abs(CloseBase.rig.side);
-	const float Sign = CloseShoulder < 0.f ? -1.f : 1.f;
+	// Each side at the view the lock settles to: the line to the target, the range's shape and that side's own framing
+	// turn (ftcore::arenaFrameTurnAt, the target's share of the width mirrored with the side).
+	const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
+	const ftcore::Vec2 ToFoe{E.x - Bodies.player.x, E.y - Bodies.player.y};
+	const float Dist = ArenaLength(ToFoe);
+	const float Line = Dist > 0.3f ? ArenaYaw(ToFoe) : CameraYaw;
+	const float Settle = ftcore::arenaCloseMeleeWant(R, Dist);
+	const ftcore::Settings* Prefs = GetSettings();
+	const bool bFraming = (!Prefs || Prefs->lockFraming) && !ArenaAim.aiming();
 	float Room[2] = {1.f, 1.f}; // the share of the line from the pivot to the lens that is clear: right, left
 	bool bMate[2] = {false, false};
 	const AFTArenaFighter* Lead = PlayerFigure.Get();
@@ -5194,17 +5237,23 @@ void UFTArenaRunner::PickCloseShoulder(int32 Target)
 	const bool bMateOn = bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0;
 	const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
 	const float Aspect = LockAspect();
+	const float ArmNow = Boom ? Boom->TargetArmLength / 100.f : Fit.camera.arm;
+	const float Back = ftcore::arenaEyeBack(ArmNow, Fit.camera.up, ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch).boom);
 	for (int32 K = 0; K < 2; ++K)
 	{
 		const float S = K == 0 ? 1.f : -1.f;
+		const ftcore::ArenaCloseShape Shape = ftcore::arenaCloseShape(R, CloseBase, Settle, CloseTall, S, 0.f);
 		ftcore::ZoneCamera Rig = Fit.camera;
-		Rig.side = S * Side;
-		const ftcore::ArenaCameraPose P = ftcore::arenaCameraPose(Rig, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn * S * Sign}, CameraPitch);
+		Rig.pivot = Shape.pivot;
+		Rig.side = Shape.side;
+		Rig.fov = Shape.fov;
+		const float Turn = bFraming ? ftcore::arenaFrameTurnAt(FrameRules(), Shape.side, Dist, Shape.screenX, Shape.fov, Back) : 0.f;
+		const ftcore::ArenaCameraPose P = ftcore::arenaCameraPose(Rig, ArenaAim, ftcore::ArenaFrameYaw{Line, Turn}, CameraPitch);
 		if (Boom && World)
 		{
-			// The boom's own probe, swept from its origin to where that side's lens would be.
+			// The boom's own probe, swept from its origin (at that pivot) to where that side's lens would be.
 			const ftcore::ArenaLensAt At = ftcore::arenaCameraLens(P);
-			const FVector From = Boom->GetComponentLocation() + Boom->TargetOffset;
+			const FVector From = Boom->GetComponentLocation() + Boom->TargetOffset + FVector(0.0, 0.0, (Shape.pivot - Fit.camera.pivot) * 100.0);
 			const FVector LensAt = From + FVector(At.x, At.y, At.z) * 100.0;
 			FCollisionQueryParams Params(SCENE_QUERY_STAT(ArenaCloseShoulder), false, Lead);
 			FHitResult Hit;
@@ -5219,7 +5268,9 @@ void UFTArenaRunner::PickCloseShoulder(int32 Target)
 			bMate[K] = F.ahead && F.x >= ftcore::kPartnerFrustumMargin && F.x <= 1.f - ftcore::kPartnerFrustumMargin;
 		}
 	}
-	const float Want = ftcore::arenaCloseShoulderPick(R, Room[0], Room[1], bMate[0], bMate[1], CloseShoulderWant);
+	// A wall's re-pick reads the room alone: with both sides open or both blocked the side stays (no swap on the
+	// partner's place that no wall forced).
+	const float Want = ftcore::arenaCloseShoulderPick(R, Room[0], Room[1], bNewTarget && bMate[0], bNewTarget && bMate[1], CloseShoulderWant);
 #if !UE_BUILD_SHIPPING
 	if (bNewTarget || Want != CloseShoulderWant)
 	{
@@ -5228,8 +5279,6 @@ void UFTArenaRunner::PickCloseShoulder(int32 Target)
 			bMate[0] ? 1 : 0, bMate[1] ? 1 : 0);
 	}
 	CloseSwaps += Want != CloseShoulderWant ? 1 : 0;
-#else
-	(void)bNewTarget;
 #endif
 	CloseShoulderWant = Want;
 }
@@ -5676,6 +5725,26 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	Pose.yaw += PartnerYawNow;
 	Lens.yaw += PartnerYawNow;
 #if !UE_BUILD_SHIPPING
+	if (bHold && bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0)
+	{
+		const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
+		const ftcore::ArenaFramePoint F = ftcore::arenaFramePoint(Lens, Aspect, Mate);
+		const ftcore::ArenaLensGround G = ftcore::arenaLensGround(Lens, Mate);
+		++MateFrames;
+		if (F.ahead && F.x >= 0.f && F.x <= 1.f && F.y >= 0.f && F.y <= 1.f)
+		{
+			++MateIn;
+		}
+		else
+		{
+			MateBehind += !F.ahead ? 1 : 0;
+			MateLeft += F.ahead && F.x < 0.f ? 1 : 0;
+			MateRight += F.ahead && F.x > 1.f ? 1 : 0;
+			MateOffY += F.ahead && F.x >= 0.f && F.x <= 1.f ? 1 : 0;
+			MateOutAhead += G.ahead;
+			MateOutRight += G.right;
+		}
+	}
 	if (bCloseShape && bHold)
 	{
 		++CloseYawFrames;
@@ -5883,6 +5952,13 @@ void UFTArenaRunner::LogFeatureChecks() const
 			LeadSideWorst, TellFrames, TellInPlace, TellPinned, TellEdge);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lead in frame worst samples (past the rule by, at fight time): %.3f at %.2f s, %.3f at %.2f s, %.3f at %.2f s (-1 s: none)."),
 			LeadMissWorst[0], LeadMissAt[0], LeadMissWorst[1], LeadMissAt[1], LeadMissWorst[2], LeadMissAt[2]);
+	}
+	if (MateFrames > 0)
+	{
+		const int32 Out = MateFrames - MateIn;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner from the drawn lens on %d held frames: %d in frame, %d behind the lens, %d off the left, %d off the right, %d over or under; out of frame its mean place %.2f m ahead of the lens, %.2f m right."),
+			MateFrames, MateIn, MateBehind, MateLeft, MateRight, MateOffY, Out > 0 ? MateOutAhead / static_cast<float>(Out) : 0.f,
+			Out > 0 ? MateOutRight / static_cast<float>(Out) : 0.f);
 	}
 	if (bCloseShape)
 	{

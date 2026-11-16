@@ -540,6 +540,14 @@ private:
 	int32 CloseYawOn = 0;
 	float CloseYawSum = 0.f;
 	float CloseYawMost = 0.f;
+	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
+	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
+	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;
+	float MateOutAhead = 0.f, MateOutRight = 0.f;
+	// -ArenaRollAt=<s,s,...>: capture-only dodge presses under the autopilot at these fight times (the dodge strip).
+	static constexpr int32 MaxRollAt = 8;
+	float RollAt[MaxRollAt] = {};
+	int32 RollAtCount = 0, RollAtNext = 0;
 #endif
 	float LastLookInputAt = -1e9f; // fight time of the last look input (the stick or the mouse): the soft turn waits
 	bool bLockAimAbove = false;   // the lock's aim point is above the frame this frame (GetLockAimAbove)
