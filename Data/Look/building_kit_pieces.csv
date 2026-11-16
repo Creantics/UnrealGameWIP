@@ -31,6 +31,6 @@ AWNING_36,sign,3.6,1.117,0.73,0.00/-1.11/-0.70,424,jpk_accent;jpk_metal,R:3.600/
 AC_UNIT,clutter,0.97,0.45,0.9,-0.02/-0.45/-0.35,264,jpk_dark;jpk_metal,MOUNT:0.000/0.000/0.000
 VENDING,clutter,1.04,0.83,1.87,-0.02/-0.06/0.00,92,jpk_accent;jpk_dark;jpk_metal;jpk_sign_vend,BASE:0.000/0.000/0.000
 UTILITY_POLE,clutter,1.8,1.077,12.05,-0.90/-0.80/0.00,1220,jpk_dark;jpk_metal;jpk_sign;jpk_trim;jpk_wall_concrete,WIRE_A0:-0.780/0.000/11.470;WIRE_A1:-0.250/0.000/11.470;WIRE_A2:0.250/0.000/11.470;WIRE_A3:0.780/0.000/11.470;WIRE_B0:-0.630/0.000/10.670;WIRE_B1:-0.250/0.000/10.670;WIRE_B2:0.250/0.000/10.670;WIRE_B3:0.630/0.000/10.670;DROP:0.000/-0.500/8.700
-BICYCLE,clutter,0.6,1.704,1.062,-0.30/-0.85/-0.00,912,jpk_accent;jpk_dark;jpk_metal,BASE:0.000/0.000/0.000
+BICYCLE,clutter,0.6,1.758,1.007,-0.30/-0.88/-0.00,12482,hc_bikepaint;hc_lens;hc_reflector;hc_rubber;hc_rust;hc_saddle;hc_steel,BASE:0.000/0.000/0.000
 PLANTERS,clutter,1.594,0.759,0.972,-0.31/-0.49/0.00,900,jpk_plant;jpk_trim,BASE:0.000/0.000/0.000
 GUARD_RAIL_2,clutter,2.0,0.067,0.85,-0.00/-0.03/0.00,288,jpk_metal,R:2.000/0.000/0.000

@@ -18,6 +18,8 @@ Writes into <out_dir> (metres, Z up in Blender, glTF +Y up in the files):
   SM_HC_Crate.glb             0.6 x 0.4 x 0.35 m slat crate; origin at the bottom centre
   SM_HC_Bucket.glb            0.30 m stave bucket with a rope handle; origin at the bottom centre
   SM_HC_Gate.glb              timber lane gateway, posts at x = +-3.6; origin at the ground centre
+  BICYCLE.glb                 1.70 m city bicycle along Y (front wheel at -Y), the kit's BICYCLE replaced at its
+                              bounds; origin at the ground under its middle
   hero_corner_props.json      triangles, bounds, slots and images per file, from the files read back (merged)
 With --only, only the named pieces are built and their rows replace those in the json.
 
@@ -202,6 +204,30 @@ def gen_weave(seed, tile, n=1024, colour=(0.55, 0.46, 0.33), thread=0.0025, mott
     return np.clip(c, 0, 1), h, 0.0006, _mr(smooth01(mot * 0.3 + 0.1) * 0.3, rough + 0.03 * mot), tile
 
 
+def gen_worn(seed, tile, base, under, chips, rough_top, rough_under, metal_top=0.0, metal_under=0.0, grime=0.3,
+             n=1024, streak=0.0):
+    """A worn coating over what is under it (paint over rusting steel, leather's dye over its hide, plating over steel):
+    chips and scuffs (fraction chips) down to the under colour, mottle, streaked grime; R dirt, G roughness, B metal."""
+    rng = np.random.default_rng(seed)
+    mot = pnoise(rng, 40, n)
+    fine = pnoise(rng, 2, n)
+    chipn = pnoise(rng, 6, n) + 0.6 * pnoise(rng, 1.5, n) + 0.3 * pnoise(rng, 25, n)
+    thr = float(np.quantile(chipn, 1.0 - chips)) if chips > 0 else 1e9
+    m = smooth01((chipn - thr) / 0.25)
+    halo = smooth01((chipn - thr + 0.5) / 0.5) * (1 - m)  # rust bleeding into the paint round a chip
+    top = np.array(base) * (1 + 0.08 * mot[..., None] + 0.03 * fine[..., None])
+    und = np.array(under) * (1 + 0.25 * pnoise(rng, 3, n)[..., None] + 0.1 * mot[..., None])
+    c = top * (1 - m[..., None]) + und * m[..., None]
+    c = c * (1 - 0.35 * halo[..., None]) + np.array(under) * 0.35 * halo[..., None] * (chips > 0)
+    g = smooth01(pnoise(rng, 60, n, aniso=(1.0, 6.0)) * 0.5 + 0.1) * (1.0 + streak)
+    c = c * (1 - grime * g[..., None])
+    h = 0.5 - 0.35 * m + 0.03 * mot + 0.02 * fine
+    rough = rough_top * (1 - m) + rough_under * m + 0.05 * mot + 0.15 * grime * g
+    metal = metal_top * (1 - m) + metal_under * m
+    mr = np.dstack([np.clip(np.maximum(g * grime, 0.6 * m), 0, 1), np.clip(rough, 0.02, 1), np.clip(metal, 0, 1)])
+    return np.clip(c, 0, 1), h, 0.0004, mr, tile
+
+
 TEXTURED.update({
     "hc_timber": (lambda: gen_timber(21, 0.8), 0.65),
     "hc_timber_post": (lambda: gen_timber(22, 0.8, worn_post=4.2), 0.7),
@@ -214,6 +240,21 @@ TEXTURED.update({
 # The worn post map covers the post's height in v (0.8 m across in u).
 TILE.update({"hc_timber": 0.8, "hc_timber_post": 0.8, "hc_stone": 1.0, "hc_wrapping": 0.4, "hc_cloth": 0.3,
              "hc_bannercloth": 0.2})
+# The bicycle: dark green-black enamel chipped to rust, a rusting wire basket, worn plated steel, a worn black saddle.
+TEXTURED.update({
+    "hc_bikepaint": (lambda: gen_worn(31, 0.5, (0.020, 0.032, 0.026), (0.16, 0.065, 0.025), 0.06, 0.32, 0.85,
+                                      grime=0.25), 0.4),
+    "hc_rust": (lambda: gen_worn(32, 0.4, (0.13, 0.12, 0.11), (0.20, 0.075, 0.03), 0.45, 0.5, 0.9, metal_top=0.8,
+                                 grime=0.35, streak=0.5), 0.8),
+    "hc_steel": (lambda: gen_worn(33, 0.4, (0.50, 0.49, 0.47), (0.17, 0.08, 0.04), 0.04, 0.28, 0.85, metal_top=1.0,
+                                  grime=0.3), 0.35),
+    "hc_saddle": (lambda: gen_worn(34, 0.3, (0.018, 0.016, 0.015), (0.10, 0.07, 0.05), 0.12, 0.45, 0.8, grime=0.2),
+                  0.5),
+})
+TILE.update({"hc_bikepaint": 0.5, "hc_rust": 0.4, "hc_steel": 0.4, "hc_saddle": 0.3})
+MATERIALS["hc_rubber"] = ((0.022, 0.021, 0.020), 0.86, 0.0)
+MATERIALS["hc_reflector"] = ((0.32, 0.015, 0.008), 0.25, 0.0)
+MATERIALS["hc_lens"] = ((0.55, 0.53, 0.46), 0.08, 0.0)
 
 
 def material(name):
@@ -1578,6 +1619,206 @@ def gate(name):
     return b.finish()
 
 
+def bez3(p0, p1, p2, p3, n):
+    P = [Vector(p) for p in (p0, p1, p2, p3)]
+    out = []
+    for i in range(n):
+        t = i / (n - 1)
+        out.append(P[0] * (1 - t) ** 3 + P[1] * 3 * (1 - t) ** 2 * t + P[2] * 3 * (1 - t) * t * t + P[3] * t ** 3)
+    return out
+
+
+def rrect(x0, x1, y0, y1, rad, z, k=4):
+    """A rounded rectangle's outline at height z, anticlockwise, the first point not repeated."""
+    pts = []
+    for cx, cy, a0 in ((x1 - rad, y0 + rad, -90), (x1 - rad, y1 - rad, 0), (x0 + rad, y1 - rad, 90),
+                       (x0 + rad, y0 + rad, 180)):
+        for i in range(k + 1):
+            a = math.radians(a0 + 90 * i / k)
+            pts.append(Vector((cx + rad * math.cos(a), cy + rad * math.sin(a), z)))
+    return pts
+
+
+def bicycle(name):
+    """A city step-through bicycle, 1.70 m long along Y (the front wheel at -Y), 0.58 m across the bars, 1.0 m to the
+    basket's rim: origin at the ground under the middle, both tyres and the centre stand's foot on z = 0. Green-black
+    enamel chipped to rust, a rusting wire basket on the front, a rear rack, mudguards, a chain guard on the right, a
+    sprung saddle, swept-back bars with a bell, a lamp on the fork. Replaces the kit's BICYCLE (same bounds)."""
+    b = Builder(name)
+    rng = random.Random(9090)
+    R0, AZ = 0.325, 0.325
+    FA, RA = Vector((0, -0.525, AZ)), Vector((0, 0.525, AZ))
+    BB = Vector((0, 0.03, 0.27))
+    paint, steel, rust, rub = "hc_bikepaint", "hc_steel", "hc_rust", "hc_rubber"
+
+    def tube(pts, r, mat, seg=10, caps=True):
+        b.add(bm_tube(pts, r, seg=seg, caps=caps), mat, uv="keep", uvoff=(rng.random(), rng.random()))
+
+    # wheels: tyre, rim, hub, 32 tangent-laced spokes
+    hub = [(0.0, -0.05), (0.008, -0.05), (0.008, -0.042), (0.031, -0.037), (0.031, -0.031), (0.019, -0.026),
+           (0.019, 0.026), (0.031, 0.031), (0.031, 0.037), (0.008, 0.042), (0.008, 0.05), (0.0, 0.05)]
+    for c in (FA, RA):
+        M = T(*c) @ R(90, "Y")
+        b.add(bm_torus(R0 - 0.0185, 0.0185, seg=56, tube=8), rub, M=M, uv="keep")
+        b.add(bm_torus(0.291, 0.0085, seg=56, tube=6), steel, M=M @ S(1, 1, 1.4), uv="keep")
+        b.add(bm_lathe(hub, 12), steel, M=M, uv="keep")
+        for k in range(32):
+            side = 1 if k % 2 else -1
+            a = 2 * math.pi * k / 32
+            ar = a + side * 0.33
+            p0 = c + Vector((side * 0.034, 0.028 * math.cos(a), 0.028 * math.sin(a)))
+            p1 = c + Vector((0.0, 0.284 * math.cos(ar), 0.284 * math.sin(ar)))
+            tube([p0, p1], 0.0011, steel, seg=3, caps=False)
+        for sx in (-1, 1):  # axle nuts
+            b.add(bm_lathe([(0.0, 0.0), (0.009, 0.0), (0.009, 0.008), (0.0, 0.008)], 6, smooth=False), steel,
+                  M=T(c.x + sx * 0.052, c.y, c.z) @ R(90 * sx, "Y"), uv="keep")
+    # mudguards: a crowned steel strip round each wheel, a stay each side
+    for c, a0, a1 in ((FA, 25, 200), (RA, -25, 155)):
+        rows_t, rows_b, uvs = [], [], []
+        w = 0.066
+        for j in range(30):
+            a = math.radians(a0 + (a1 - a0) * j / 29)
+            d = Vector((0, math.cos(a), math.sin(a)))
+            rt, rb, ru = [], [], []
+            for i in range(7):
+                x = -w / 2 + w * i / 6
+                q = (2 * x / w) ** 2
+                rad = R0 + 0.022 + 0.007 * (1 - q) - 0.006 * q * q
+                rt.append(c + d * rad + Vector((x, 0, 0)))
+                rb.append(c + d * (rad - 0.0018) + Vector((x, 0, 0)))
+                ru.append((x, (a - math.radians(a0)) * 0.35))
+            rows_t.append(rt)
+            rows_b.append(rb)
+            uvs.append(ru)
+        b.add(bm_shell(rows_t, rows_b, uvs), paint, uv="keep")
+        am = math.radians(a0 + (a1 - a0) * (0.22 if c is FA else 0.12))
+        for sx in (-1, 1):
+            tube([c + Vector((sx * 0.036, 0, 0)), c + Vector((sx * 0.034, math.cos(am) * (R0 + 0.026),
+                                                                  math.sin(am) * (R0 + 0.026)))], 0.0028, steel, seg=4)
+    # frame: head tube, a low curved main tube and a second tube over it, seat tube, stays, bottom bracket
+    H0, H1 = Vector((0, -0.50, 0.64)), Vector((0, -0.54, 0.80))
+    tube([H0 - (H1 - H0) * 0.08, H1], 0.021, paint, seg=14)
+    tube(bez3((0, -0.505, 0.68), (0, -0.42, 0.40), (0, -0.17, 0.22), BB + Vector((0, -0.01, 0.0)), 18), 0.022, paint,
+         seg=12)
+    ST = Vector((0, 0.155, 0.80))
+    tube(bez3((0, -0.52, 0.755), (0, -0.36, 0.50), (0, -0.06, 0.43), (0, 0.112, 0.62), 16), 0.015, paint, seg=10)
+    tube([BB, ST], 0.019, paint, seg=12)
+    b.add(bm_lathe([(0.0, -0.045), (0.024, -0.045), (0.024, 0.045), (0.0, 0.045)], 14, smooth=False), paint,
+          M=T(*BB) @ R(90, "Y"), uv="keep")
+    for sx in (-1, 1):
+        tube([BB + Vector((sx * 0.03, 0.02, 0)), RA + Vector((sx * 0.062, -0.02, 0))], 0.0105, paint, seg=8)
+        tube([Vector((sx * 0.022, 0.15, 0.755)), RA + Vector((sx * 0.062, -0.01, 0.01))], 0.009, paint, seg=8)
+        b.add(bm_box(sx * 0.058, 0.50, AZ - 0.02, sx * 0.068, 0.545, AZ + 0.02, bevel=0.003), paint)  # drop-out
+    # fork: crown, two raked blades to the front axle
+    b.add(bm_box(-0.06, -0.525, 0.605, 0.06, -0.48, 0.635, bevel=0.008, seg=2), paint)
+    for sx in (-1, 1):
+        tube(bez3((sx * 0.048, -0.50, 0.615), (sx * 0.052, -0.495, 0.50), (sx * 0.054, -0.50, 0.40),
+                  FA + Vector((sx * 0.054, 0, 0.005)), 12), 0.0125, paint, seg=8)
+    # stem and swept-back bars, grips, brake levers, bell
+    tube([H1, Vector((0, -0.56, 0.905)), Vector((0, -0.592, 0.95))], 0.013, steel, seg=10)
+    bar = bez3((0, -0.595, 0.952), (0.16, -0.60, 0.958), (0.25, -0.53, 0.985), (0.285, -0.40, 0.99), 12)
+    bar = [Vector((-p.x, p.y, p.z)) for p in reversed(bar)] + bar[1:]
+    tube(bar, 0.0115, steel, seg=10)
+    for sx in (-1, 1):
+        g = [p for p in bar if p.x * sx > 0.235]
+        tube(g, 0.0165, rub, seg=10)
+        tube([Vector((sx * 0.20, -0.575, 0.968)), Vector((sx * 0.235, -0.62, 0.955)),
+              Vector((sx * 0.27, -0.57, 0.958))], 0.005, steel, seg=6)
+    b.add(bm_lathe([(0.0, 0.0), (0.028, 0.0), (0.027, 0.012), (0.02, 0.026), (0.008, 0.033), (0.0, 0.034)], 16),
+          steel, M=T(0.13, -0.585, 0.962), uv="keep")
+    # saddle: a sprung shell on two coils, a clamp on the post
+    tube([ST, Vector((0, 0.172, 0.875))], 0.0125, steel, seg=10)
+    b.add(bm_box(-0.03, 0.155, 0.865, 0.03, 0.20, 0.885, bevel=0.004), steel)
+    rows_t, rows_b, uvs = [], [], []
+    for j in range(14):
+        t = j / 13  # 0 the rear, 1 the nose
+        y = 0.33 - 0.26 * t
+        w = 0.235 - 0.17 * smooth01(min(1.0, t * 1.3))
+        rt, rb, ru = [], [], []
+        for i in range(11):
+            x = -w / 2 + w * i / 10
+            q = (2 * x / w) ** 2
+            z = 0.935 + 0.014 * (1 - q) - 0.012 * t - 0.012 * q * q - (0.02 * (1 - j / 2) if j < 2 else 0.0)
+            rt.append(Vector((x, y, z)))
+            rb.append(Vector((x * 0.97, y, z - 0.032 + 0.018 * q)))
+            ru.append((x, y))
+        rows_t.append(rt)
+        rows_b.append(rb)
+        uvs.append(ru)
+    b.add(bm_shell(rows_t, rows_b, uvs), "hc_saddle", uv="keep")
+    for sx in (-1, 1):
+        coil = [Vector((sx * 0.06 + 0.014 * math.cos(2 * math.pi * i / 12), 0.27 + 0.014 * math.sin(2 * math.pi * i / 12),
+                        0.862 + 0.045 * i / 60)) for i in range(61)]
+        tube(coil, 0.0026, steel, seg=4)
+        tube([Vector((sx * 0.06, 0.27, 0.86)), Vector((sx * 0.03, 0.19, 0.876)), Vector((sx * 0.016, 0.07, 0.905))],
+             0.004, steel, seg=6)
+    # chain guard (right), chainring under it, cranks and pedals
+    poly = []
+    for i in range(13):
+        a = math.radians(90 + 180 * i / 12)
+        poly.append((BB.y + 0.125 * math.cos(a), BB.z + 0.125 * math.sin(a)))
+    for i in range(9):
+        a = math.radians(-90 + 180 * i / 8)
+        poly.append((RA.y + 0.06 * math.cos(a), RA.z + 0.06 * math.sin(a)))
+    b.add(bm_prism(poly, -0.097, -0.089, bevel=0.0025), paint, M=R(90, "Z"))
+    b.add(bm_lathe([(0.0, 0.0), (0.102, 0.0), (0.102, 0.004), (0.0, 0.004)], 32, smooth=False), steel,
+          M=T(0.074, BB.y, BB.z) @ R(90, "Y"), uv="keep")
+    for sx, ang in ((1, -35), (-1, 145)):
+        a = math.radians(ang)
+        end = Vector((sx * 0.088, BB.y + 0.165 * math.cos(a), BB.z + 0.165 * math.sin(a)))
+        tube([Vector((sx * 0.06, BB.y, BB.z)), Vector((sx * 0.088, BB.y, BB.z)), end], 0.0105, steel, seg=8)
+        px = sx * 0.15
+        b.add(bm_box(px - 0.045, end.y - 0.028, end.z - 0.012, px + 0.045, end.y + 0.028, end.z + 0.012, bevel=0.004,
+                     seg=2), rub)
+        tube([end, Vector((px, end.y, end.z))], 0.006, steel, seg=6)
+    # rear rack and a reflector
+    for x in (-0.07, 0.0, 0.07):
+        tube([Vector((x, 0.30, 0.72)), Vector((x, 0.79, 0.72))], 0.0055, paint, seg=6)
+    for y in (0.32, 0.47, 0.62, 0.78):
+        tube([Vector((-0.072, y, 0.72)), Vector((0.072, y, 0.72))], 0.0055, paint, seg=6)
+    for sx in (-1, 1):
+        tube([Vector((sx * 0.07, 0.74, 0.72)), RA + Vector((sx * 0.066, 0.01, 0.0))], 0.0065, paint, seg=6)
+        tube([Vector((sx * 0.07, 0.31, 0.72)), Vector((sx * 0.026, 0.17, 0.745))], 0.005, paint, seg=6)
+    b.add(bm_box(-0.04, 0.792, 0.69, 0.04, 0.806, 0.715, bevel=0.003), "hc_reflector")
+    # front basket: a rusting wire box on the bars, two struts to the fork's ends
+    bx0, bx1, by0, by1, bz0, bz1 = -0.17, 0.17, -0.842, -0.60, 0.765, 0.995
+    for z, r in ((bz0, 0.0035), (0.84, 0.0022), (0.92, 0.0022), (bz1, 0.0042)):
+        ring = rrect(bx0, bx1, by0, by1, 0.03, z)
+        tube(ring + [ring[0]], r, rust, seg=4, caps=False)
+    ring = rrect(bx0, bx1, by0, by1, 0.03, bz0)
+    per = [0.0]
+    for i in range(1, len(ring) + 1):
+        per.append(per[-1] + (ring[i % len(ring)] - ring[i - 1]).length)
+    nw = int(per[-1] / 0.033)
+    for k in range(nw):
+        s = per[-1] * k / nw
+        i = max(i for i in range(len(per) - 1) if per[i] <= s)
+        p = ring[i].lerp(ring[(i + 1) % len(ring)], (s - per[i]) / max(1e-9, per[i + 1] - per[i]))
+        tube([p, Vector((p.x, p.y, bz1))], 0.0019, rust, seg=3, caps=False)
+    for x in [bx0 + 0.04 * k for k in range(1, 9)]:
+        tube([Vector((x, by0 + 0.01, bz0)), Vector((x, by1 - 0.01, bz0))], 0.0019, rust, seg=3, caps=False)
+    for y in [by0 + 0.04 * k for k in range(1, 7)]:
+        tube([Vector((bx0 + 0.01, y, bz0)), Vector((bx1 - 0.01, y, bz0))], 0.0019, rust, seg=3, caps=False)
+    for sx in (-1, 1):
+        tube([Vector((sx * 0.12, -0.80, bz0)), FA + Vector((sx * 0.06, -0.005, 0.01))], 0.0045, rust, seg=6)
+    tube([Vector((0, by1, 0.86)), Vector((0, -0.575, 0.86)), Vector((0, -0.565, 0.92))], 0.006, rust, seg=6)
+    # lamp on the fork crown, facing forward
+    b.add(bm_lathe([(0.0, 0.0), (0.024, 0.0), (0.03, 0.03), (0.033, 0.06), (0.0, 0.06)], 16), steel,
+          M=T(0, -0.53, 0.60) @ R(90, "X"), uv="keep")
+    b.add(bm_lathe([(0.0, 0.0), (0.03, 0.0), (0.0, 0.006)], 16), "hc_lens", M=T(0, -0.59, 0.60) @ R(90, "X"), uv="keep")
+    # ring lock across the rear wheel, centre stand to the ground
+    b.add(bm_box(-0.04, 0.33, 0.43, 0.04, 0.37, 0.50, bevel=0.008, seg=2), steel)
+    for sx in (-1, 1):
+        tube([RA + Vector((sx * 0.07, 0.0, 0.0)), Vector((sx * 0.10, 0.60, 0.09)), Vector((sx * 0.115, 0.62, 0.009))],
+             0.0085, steel, seg=8)
+    tube([Vector((-0.115, 0.62, 0.009)), Vector((0.115, 0.62, 0.009))], 0.009, steel, seg=8)
+    # a cable from the right lever down the bars and the tubes to the rear brake
+    tube(bez3((0.22, -0.60, 0.955), (0.10, -0.66, 0.90), (0.04, -0.58, 0.72), (0.0, -0.45, 0.58), 10) +
+         bez3((0.0, -0.44, 0.55), (0.0, -0.30, 0.42), (0.01, 0.0, 0.44), (0.02, 0.10, 0.62), 10)[1:] +
+         [Vector((0.03, 0.30, 0.55)), Vector((0.04, 0.46, 0.40))], 0.0025, rub, seg=4)
+    return b.finish()
+
+
 def tile_slope(b, L, run, pitch, z_eave):
     """Two tiled slopes (ridge along X at y = 0, eaves at y = +-run): round tile rolls over pans, a course step, round
     end tiles at the eaves."""
@@ -1697,6 +1938,7 @@ PARTS = {
     "SM_HC_Crate": (crate, 8000, True),
     "SM_HC_Bucket": (bucket, 8000, True),
     "SM_HC_Gate": (gate, 15000, True),
+    "BICYCLE": (bicycle, 16000, True),  # the kit's piece: import with -Kit -NoNanite to /Game/Props/BKIT
 }
 
 
