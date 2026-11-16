@@ -223,7 +223,7 @@ TEST_CASE("road decals: the box and data the engine lays them by") {
                              "[branch] if (HxFar > 0.0)", "Tl += HxFar * Texture2DSample(DetRA, DetRASampler, DUvF).rgb;",
                              "float HxA0 = ", "D.L(HxV0 + int2(13, 97))", "float LE = Edge - 0.012000;",
                              // The road's stand-in under the soft kinds is the asphalt tint, matt.
-                             "float3(0.093, 0.092, 0.09);", "float UnderR = Paved ? 0.8 : 0.88;",
+                             "float3(0.066000, 0.065000, 0.063000);", "float UnderR = Paved ? 0.8 : 0.88;",
                              // Sealed cracks and a cut patch's seal: black and glossy; alligator cracking on wide plates.
                              "R = 0.35;", "R = lerp(Newer ? 0.8 : 0.9, 0.35, Seal);", "if (Size.y >= 0.55 * Size.x)",
                              "float Net = 1.0 - smoothstep(0.03, 0.07, F2 - F1);",
