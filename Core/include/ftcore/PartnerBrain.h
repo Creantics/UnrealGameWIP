@@ -284,6 +284,10 @@ struct PartnerEnemyView {
 inline constexpr float kPartnerTallMeters = 4.f;
 // Rule 18: a walk keeps this far (m) off a tall target's edge (the partner's body and a little room).
 inline constexpr float kPartnerSteerClear = 0.6f;
+// Rule 19's near field (the order of 11-16): a walk round a tall target that would pass behind the lead goes round
+// wider, this much at a time (m), up to kPartnerNearRoundMax more; samples nearer than a step to its start are skipped.
+inline constexpr float kPartnerNearRoundStep = 0.5f;
+inline constexpr float kPartnerNearRoundMax = 3.f;
 // Rule 18: StayClose's growth by a tall target ends only when its edge is this far (m) past closeLeadMeters.
 inline constexpr float kPartnerTallGrowHysteresis = 0.5f;
 // Rule 13: within this long (s) of the held station's last change of side, a new pick keeps to its side (none valid
@@ -657,6 +661,7 @@ private:
     void endString(bool staggered);
     void skirmishStep(double dt, const PartnerInput& in); // rule 17, after decide, framed
     void skirmishWalk(double dt, const PartnerInput& in); // skirmishStep's walk; it then records the choice
+    void nearWalk(const PartnerInput& in);                // rule 19's near field: round the far side of the lead
     void steerRound(const PartnerInput& in);              // rule 18, last, framed
     // seen: bit i set when enemy i stands in the frame (framed only; 0 otherwise).
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;
@@ -665,6 +670,8 @@ private:
     // This step's tuning (partnerEffectiveTuning of s_.t), set as each step starts: input, not state (never saved or
     // hashed); s_.t itself unless the kit's range is on.
     PartnerTuning tStep_{};
+    // This step's near field (rule 19, a ranged kit under the close lens), set by decide: input, not state.
+    bool nearStep_ = false;
 };
 
 } // namespace ftcore
