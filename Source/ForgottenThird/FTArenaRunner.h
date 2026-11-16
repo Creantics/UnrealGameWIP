@@ -517,6 +517,30 @@ private:
 	float LowFitArm = -1.f, LowFitAspect = 0.f, LowFitHead = 0.f;
 	float PartnerYawNow = 0.f;    // degrees: the partner's soft turn (ftcore::arenaPartnerYaw), eased
 	float PartnerYawGoal = 0.f;
+	// The close lens's shape (ftcore/ArenaCloseFrame.h), close only (classic reads none of it): each frame ShapeCloseLens
+	// writes the shaped pivot, side and fov on Fit.camera, and the target's share of the width and the cut's least
+	// share on CameraLens, from CloseBase (the preset as picked); LeadBody takes the shaped cut.
+	void ShapeCloseLens(int32 Target, float DeltaSeconds);
+	void PickCloseShoulder(int32 Target);
+	bool bCloseShape = false;     // the close preset is on this fight
+	ftcore::CameraPreset CloseBase;
+	float CloseMelee = 0.f;       // 0..1: the melee share, eased (ftcore::arenaCloseMeleeStep)
+	float CloseTall = 0.f;        // 0..1: the followed target's tallness (ftcore::arenaCloseTallness)
+	float CloseShoulder = 1.f;    // -1..1: the shoulder as eased (+1 right)
+	float CloseShoulderWant = 1.f;
+	int32 CloseShoulderFor = -1;  // the target the shoulder was last picked for
+	float CloseNextPickAt = -1e9f; // fight time a wall may ask for the next pick
+	int32 CloseTargetNow = -1;    // the target followed this frame, its distance and height (the shot log)
+	float CloseDistanceNow = -1.f;
+	float CloseHeightNow = 0.f;
+#if !UE_BUILD_SHIPPING
+	void LogCloseFrameShot(const TCHAR* Shot) const;
+	int32 CloseSwaps = 0;         // shoulder picks that changed the side
+	int32 CloseYawFrames = 0;     // frames held under close, with the partner's turn on, its sum and its most
+	int32 CloseYawOn = 0;
+	float CloseYawSum = 0.f;
+	float CloseYawMost = 0.f;
+#endif
 	float LastLookInputAt = -1e9f; // fight time of the last look input (the stick or the mouse): the soft turn waits
 	bool bLockAimAbove = false;   // the lock's aim point is above the frame this frame (GetLockAimAbove)
 	float LockAimX = 0.5f;

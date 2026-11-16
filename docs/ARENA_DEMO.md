@@ -145,7 +145,7 @@ over the bar and a layout follow-up for the zone's owner), both pinned in the zo
 25.8 m ring.
 
 **Camera presets** (`ftcore/CameraPreset.h`, `Data/Battle/camera_presets.json`). The lens has two presets: `classic`, the
-zone's own rig (the fit's camera, left untouched; the file gives it no rig keys) and the default, and `close`, a near over-the-shoulder view (a 2.6 m arm, 1.35 m pivot, 0.2 m shoulder offset,
+zone's own rig (the fit's camera, left untouched; the file gives it no rig keys) and the default, and `close`, a near over-the-shoulder view (a 2.6 m arm, 1.35 m pivot, 0.55 m shoulder offset,
 0.1 m up, a 60 degree fov, a -2 degree lock pitch and a little boom lag). Under `close` the lead rule keeps the body from
 0.6 m up in the frame (its head under 75% of the height) rather than the feet; the cut is in metres over the floor, as
 the pivot is, and held to half the lead's height (`ftcore::cameraPresetCut`), which keeps every look-up for leads 1.4 to
@@ -162,15 +162,37 @@ The host puts the preset on the fit's camera after the zone was fitted and check
 the starts, the sizing and `cameraBlocked` (the zone rig's share; the close lens's own is not measured yet) never read
 it. No fight rule or number changes with it, but what the fight reads from the drawn camera each tick follows the lens
 under `close`: the view yaw (the stick's basis, the lock press's pick, a regular enemy's windup arc) is the lock's line
-plus close's framing turn, which differs from classic's by up to 11.5 degrees (at 2.4 m), 7.5 at 3 m, 0.2 at 6 m and
-3.2 at 12 m, and is the free camera's alike with nothing locked; the windup arc's camera half-angle is the lens's own
-(30 degrees under close, 35 under classic, 27.5 for both while aiming); the partner's stationing camera is the close
-lens (2.6 m back) and its yaw term reads close's frame rule (still at most 5 degrees); the aimed crosshair's ray keeps
+plus close's framing turn, which differs from classic's on the right shoulder by 0 degrees at 2.4 m (both at the 30
+degree cap), 6.2 at 3 m, 3.5 at 4 m, 3.1 at 6 m, 4.0 at 8 m and 4.9 at 12 m, and on the left shoulder (the mirror) by 60,
+53, 38, 26, 21 and 16, and is the free camera's alike with nothing locked; the windup arc's camera half-angle is the
+lens's own (30 degrees under close far, up to 34 in melee range, 35 under classic, 27.5 for both while aiming); the
+partner's stationing camera is the close lens (2.6 m back) and its yaw term reads close's frame rule (up to 12 degrees
+under close, 5 under classic); up on the stick walks the lead on screen toward the frame's centre at about 45 degrees
+under close (18.6 under classic); the aimed crosshair's ray keeps
 its plan line (0.55 m right of the pivot) but starts lower and nearer. The stick reads the drawn yaw under both
 presets: up walks the lead along the lens's facing, into the screen toward the frame's centre, not along the lock's
 line. A lock press after letting go reads that drawn view too, so the pick can differ: at 3 m, with a second enemy
-35 degrees off the line at the same distance, classic picks the second and close the first (tested in
-`test_arena.cpp`). The boom still probes walls under `close` (the spring arm's collision test is on for every preset).
+35 degrees off the line at the same distance, classic and close on the right shoulder pick the second and close on
+the left shoulder the first (tested in `test_arena.cpp`). The boom still probes walls under `close` (the spring arm's
+collision test is on for every preset).
+
+**The close lens's shape** (`ftcore/ArenaCloseFrame.h`, close only; classic never reads it). The lead stands a third
+of the way in from one side (its spine at 30-35% of the width, tested far, half way and in melee range), the target
+beside it, and the camera is never pulled out: the arm stays 2.6 m. *Range:* a melee share, 1 at 2.5 m or nearer and 0
+at 5 m or further (a smoothstep between), eased over 0.3 s and held still for a dodge's first 0.15 s, raises the pivot
+by 0.25 m, widens the fov from 60 to 68, turns the target to 0.64 of the width (0.6 far) and looks up toward the target's
+head (at most +10 degrees on a normal enemy, +28 on one 7 m tall or more). The lead's rule relaxes with it so the look-up
+is kept: its 0.6 m point may sink to 10% under the bottom edge and, on a tall target, rises toward the shoulders (never
+nearer the head than 0.35 m). *Shoulder:* picked when the lock is taken or changes, or when a wall leaves the boom under
+80% of its arm (asked again no sooner than every 0.5 s), and never mid-attack: a side a wall blocks loses, then the side
+that has the partner in the frame, then the one with clearly more room, else the side stays. The swap blends over 0.4 s
+and everything mirrors with it (the target at 0.4 of the width on the left shoulder). *Partner:* a turn of up to 12
+degrees toward the partner when it is within 8 m and out of the frame, only while the lead keeps its rule and the target
+stays within 55-80% of the width. The log says `Arena: close shoulder ...` at each pick, `Arena: close frame at view ...`
+at each review still (the distance, the lead's spine, the target's place, how much of it the lead covers, the partner's
+place in the lens's ground frame) and `Arena: lock to ...` at each lock; the check line gives the partner turn's share
+and the shoulder swaps. Known limits: the aim stance stays over the right shoulder (from the left it blends across); a
+wall-shortened arm under close keeps only the visible rule far, as before.
 
 **Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:
 the player's blows by their move's `jolt`, an enemy's blow on the lead by its move's `jolt` (the kit's `hurtJolt` when it
