@@ -37,7 +37,8 @@
 // 0 none); -ShopShadows=<m> for A/B (-ShopShadows=0 none).
 //
 // -LampPoolHeroFirst (stills of the hero corner): the corner sub-level's lamps and shop lights within reach are held
-// first, so a dense strip never crowds them out of the pool; logged per camera place.
+// first, so a dense strip never crowds them out of the pool; logged per camera place. -LampPoolHeroLog logs the
+// corner's live slots without holding them first.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -146,6 +147,8 @@ private:
 	// -LampPoolHeroFirst (eyes on the hero corner, default off): the corner's lamps and shop lights within reach take the
 	// pool first, then the nearest of the rest; a line names the corner's live slots whenever they or the camera change.
 	bool bHeroFirst = false;
+	// -LampPoolHeroLog: the same line without holding the corner first (the A/B's other arm); on with -LampPoolHeroFirst.
+	bool bHeroLog = false;
 	uint32 HeroLogKey = 0;
 	FVector HeroLogAt = FVector(1e30);
 	void LogHero(const FVector& From);

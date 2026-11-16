@@ -80,6 +80,7 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	WantLamps = FMath::Clamp(WantLamps, 0, kMaxLamps);
 	WantShops = FMath::Clamp(WantShops, 0, kMaxShops);
 	bHeroFirst = FParse::Param(Cmd, TEXT("LampPoolHeroFirst"));
+	bHeroLog = bHeroFirst || FParse::Param(Cmd, TEXT("LampPoolHeroLog"));
 	if (bHeroFirst)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: the hero corner's lights within reach are held first (-LampPoolHeroFirst)."));
@@ -536,7 +537,7 @@ void UFTLampPoolSubsystem::Pick()
 	const FVector From = Camera->GetCameraLocation();
 	PickPool(Lamps, LampPool, true, From);
 	PickPool(Shops, ShopPool, false, From);
-	if (bHeroFirst)
+	if (bHeroLog)
 	{
 		LogHero(From);
 	}
