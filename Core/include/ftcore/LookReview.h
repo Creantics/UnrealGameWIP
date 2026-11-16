@@ -7,6 +7,7 @@
 //   if (auto w = ftcore::look::findWetReview(commandLine, "ArenaWet")) { /* hold the garments at w->wetness */ }
 
 #include <charconv>
+#include <cstddef>
 #include <optional>
 #include <string_view>
 #include <system_error>
