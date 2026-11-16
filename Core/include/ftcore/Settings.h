@@ -167,6 +167,11 @@ inline constexpr std::uint32_t kSettingsGroupCount = 6;
 FTCORE_API SettingsGroup settingsRowGroup(SettingsRow row);
 // "Text", "Sound", ...; "" for an out-of-range group.
 FTCORE_API const char* settingsGroupLabel(SettingsGroup group);
+// The rows in the order the screen shows them: section by section, each section's rows in SettingsRow order, Back
+// last. settingsScreenRow(i) is the i-th (Back past the end); settingsScreenIndex is its inverse. The menu's Up / Down
+// walk this order.
+FTCORE_API SettingsRow settingsScreenRow(std::uint32_t index);
+FTCORE_API std::uint32_t settingsScreenIndex(SettingsRow row);
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 
@@ -208,7 +213,7 @@ public:
     void select(SettingsRow row) { selected_ = static_cast<std::uint8_t>(row) < kSettingsRowCount ? row : SettingsRow::TextSpeed; }
     void reset() { selected_ = SettingsRow::TextSpeed; }
 
-    // Up / Down move (no wrap). Left / Right step the selected value. Confirm cycles it (wrapping), or
+    // Up / Down move in screen order (settingsScreenRow; no wrap). Left / Right step the selected value. Confirm cycles it (wrapping), or
     // closes on Back.
     FTCORE_API SettingsAction press(Settings& s, SettingsKey key);
     // A mouse click on `row`: selects it, then acts like Left (dir < 0) or like Confirm (otherwise).

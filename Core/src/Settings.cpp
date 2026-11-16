@@ -3,6 +3,7 @@
 #include "ftcore/Json.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -333,7 +334,9 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     return false;
 }
 
-SettingsGroup settingsRowGroup(SettingsRow row) {
+namespace {
+
+constexpr SettingsGroup groupOf(SettingsRow row) {
     switch (row) {
     case SettingsRow::TextSpeed:
     case SettingsRow::AutoAdvance:
@@ -366,6 +369,46 @@ SettingsGroup settingsRowGroup(SettingsRow row) {
     return SettingsGroup::Text;
 }
 
+struct ScreenOrder {
+    std::array<SettingsRow, kSettingsRowCount> row{};
+    std::array<std::uint8_t, kSettingsRowCount> index{};
+};
+
+constexpr ScreenOrder makeScreenOrder() {
+    ScreenOrder o{};
+    std::uint32_t n = 0;
+    for (std::uint32_t g = 0; g < kSettingsGroupCount; ++g) {
+        for (std::uint32_t r = 0; r < kSettingsRowCount; ++r) {
+            const auto row = static_cast<SettingsRow>(r);
+            if (row != SettingsRow::Back && static_cast<std::uint32_t>(groupOf(row)) == g) {
+                o.row[n] = row;
+                o.index[r] = static_cast<std::uint8_t>(n);
+                ++n;
+            }
+        }
+    }
+    o.row[n] = SettingsRow::Back;
+    o.index[static_cast<std::uint32_t>(SettingsRow::Back)] = static_cast<std::uint8_t>(n);
+    return o;
+}
+
+constexpr ScreenOrder kScreenOrder = makeScreenOrder();
+static_assert(kScreenOrder.row[kSettingsRowCount - 1] == SettingsRow::Back);
+static_assert(kScreenOrder.row[0] == SettingsRow::TextSpeed);
+
+} // namespace
+
+SettingsGroup settingsRowGroup(SettingsRow row) { return groupOf(row); }
+
+SettingsRow settingsScreenRow(std::uint32_t index) {
+    return index < kSettingsRowCount ? kScreenOrder.row[index] : SettingsRow::Back;
+}
+
+std::uint32_t settingsScreenIndex(SettingsRow row) {
+    const auto r = static_cast<std::uint32_t>(row);
+    return r < kSettingsRowCount ? kScreenOrder.index[r] : kSettingsRowCount - 1;
+}
+
 const char* settingsGroupLabel(SettingsGroup group) {
     switch (group) {
     case SettingsGroup::Text: return "Text";
@@ -385,15 +428,15 @@ std::array<OptionFlag, kOptionFlagCount> settingsOptionFlags(const Settings& s) 
 }
 
 SettingsAction SettingsMenu::press(Settings& s, SettingsKey key) {
-    const std::uint8_t row = static_cast<std::uint8_t>(selected_);
+    const std::uint32_t at = settingsScreenIndex(selected_);
     switch (key) {
     case SettingsKey::Up:
-        if (row == 0) return SettingsAction::None;
-        selected_ = static_cast<SettingsRow>(row - 1);
+        if (at == 0) return SettingsAction::None;
+        selected_ = settingsScreenRow(at - 1);
         return SettingsAction::Moved;
     case SettingsKey::Down:
-        if (row + 1u >= kSettingsRowCount) return SettingsAction::None;
-        selected_ = static_cast<SettingsRow>(row + 1);
+        if (at + 1u >= kSettingsRowCount) return SettingsAction::None;
+        selected_ = settingsScreenRow(at + 1);
         return SettingsAction::Moved;
     case SettingsKey::Left: return adjustSetting(s, selected_, -1, false) ? SettingsAction::Changed : SettingsAction::None;
     case SettingsKey::Right: return adjustSetting(s, selected_, 1, false) ? SettingsAction::Changed : SettingsAction::None;

@@ -807,3 +807,42 @@ TEST_CASE("settings: the access rows and sections allocate nothing") {
     (void)s.subtitleTextScale();
     if (counting) CHECK(ftcore_test::allocStats().count == before);
 }
+
+TEST_CASE("settings screen: Up / Down walk the rows section by section, Back last, and the walk is its own inverse") {
+    std::uint32_t lastGroup = 0;
+    bool seen[kSettingsRowCount] = {};
+    for (std::uint32_t i = 0; i < kSettingsRowCount; ++i) {
+        const SettingsRow row = settingsScreenRow(i);
+        CHECK(settingsScreenIndex(row) == i);
+        REQUIRE(static_cast<std::uint32_t>(row) < kSettingsRowCount);
+        CHECK_FALSE(seen[static_cast<std::uint32_t>(row)]);
+        seen[static_cast<std::uint32_t>(row)] = true;
+        if (row == SettingsRow::Back) {
+            CHECK(i + 1u == kSettingsRowCount);
+            continue;
+        }
+        const auto g = static_cast<std::uint32_t>(settingsRowGroup(row));
+        CHECK(g >= lastGroup); // sections never come back
+        lastGroup = g;
+    }
+    CHECK(settingsScreenRow(kSettingsRowCount + 5u) == SettingsRow::Back);
+    CHECK(settingsScreenRow(0) == SettingsRow::TextSpeed);
+
+    // Text ends at Skip choices; Down goes on to the first Sound row.
+    Settings s;
+    SettingsMenu m;
+    m.select(SettingsRow::SkipChoices);
+    CHECK(m.press(s, SettingsKey::Down) == SettingsAction::Moved);
+    CHECK(m.selected() == SettingsRow::Master);
+    CHECK(m.press(s, SettingsKey::Up) == SettingsAction::Moved);
+    CHECK(m.selected() == SettingsRow::SkipChoices);
+    // Text size sits in Access, after Subtitle size and its neighbours, not after Basic controls.
+    m.select(SettingsRow::ShowBasicControls);
+    CHECK(m.press(s, SettingsKey::Down) == SettingsAction::Moved);
+    CHECK(settingsRowGroup(m.selected()) == SettingsGroup::Access);
+    CHECK(m.selected() == SettingsRow::SubtitleSize);
+    m.select(SettingsRow::Back);
+    CHECK(m.press(s, SettingsKey::Down) == SettingsAction::None);
+    CHECK(m.press(s, SettingsKey::Up) == SettingsAction::Moved);
+    CHECK(m.selected() == SettingsRow::ReduceMotion);
+}
