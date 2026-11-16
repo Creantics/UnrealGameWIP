@@ -1317,6 +1317,12 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         ci.cameraPos = in.station.cameraPos;
         ci.cameraForward = in.station.cameraForward;
         ci.halfAngleDegrees = c.halfAngleDegrees;
+        ci.aimConeDegrees = c.aimConeDegrees;
+        ci.minAhead = c.minAhead;
+        ci.pitchDegrees = c.pitchDegrees;
+        ci.verticalHalfDegrees = c.verticalHalfDegrees;
+        ci.lensHeight = c.lensHeight;
+        ci.aimHeight = c.aimHeight;
         ci.leadSide = c.leadSide;
         ci.partner = in.pos;
         ci.standMax = forString ? std::min(c.standMax, t.reachMeters - t.stationTolerance) : c.standMax;

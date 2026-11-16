@@ -70,9 +70,22 @@ struct Pick {
     float offEdge = 0.f;
 };
 
-bool legal(const PartnerCloseInput& in, Vec2 p, float& ndcX) {
-    if (!partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, p, ndcX)) return false;
+// How far an ndc y falls outside the lower two thirds of the frame (0 inside).
+float verticalOut(float ndcY) {
+    const float bottom = -(1.f - 2.f * kPartnerCloseConeMargin);
+    return ndcY < bottom ? bottom - ndcY : (ndcY > kPartnerCloseTopNdc ? ndcY - kPartnerCloseTopNdc : 0.f);
+}
+
+bool legal(const PartnerCloseInput& in, Vec2 p, float& ndcX, float& ndcY) {
+    if (!partnerCloseLens(in, p, ndcX, ndcY)) return false;
     if (std::fabs(ndcX) > 1.f - 2.f * kPartnerCloseConeMargin) return false;
+    Vec2 f;
+    if (!unitOf(in.cameraForward, f)) return false;
+    const Vec2 r = sub(p, in.cameraPos);
+    const float ahead = dot(r, f);
+    if (ahead < in.minAhead) return false;
+    if (in.aimConeDegrees > 0.f && std::fabs(dot(r, rightOf(f))) > ahead * std::tan(in.aimConeDegrees * kDeg))
+        return false;
     const float fromLead = len(sub(p, in.lead));
     if (fromLead < in.personalSpace) return false;
     if (in.leashMeters > 0.f && fromLead > in.leashMeters) return false;
@@ -97,8 +110,12 @@ bool partnerCloseWhole(const PartnerCloseInput& in) {
     if (!within(in.targetRadius, 0.f, 50.f) || !within(in.halfAngleDegrees, 1.f, 85.f) ||
         !within(in.standMin, 0.f, 30.f) || !within(in.standMax, in.standMin, 30.f) ||
         !within(in.bodyRadius, 0.1f, 1.5f) || !within(in.personalSpace, 0.f, 20.f) ||
-        !within(in.leashMeters, 0.f, 200.f) || !within(in.arenaRadius, 0.f, 1000.f))
+        !within(in.leashMeters, 0.f, 200.f) || !within(in.arenaRadius, 0.f, 1000.f) ||
+        !within(in.aimConeDegrees, 0.f, 85.f) || !within(in.minAhead, 0.f, 20.f) ||
+        !within(in.pitchDegrees, -85.f, 85.f) || !within(in.verticalHalfDegrees, 0.f, 85.f) ||
+        !within(in.lensHeight, -20.f, 50.f) || !within(in.aimHeight, 0.f, 5.f))
         return false;
+    if (in.verticalHalfDegrees > 0.f && in.verticalHalfDegrees < 1.f) return false;
     if (in.leadSide < -1 || in.leadSide > 1) return false;
     for (const PartnerWall& w : in.walls)
         if (!fin(w.a) || !fin(w.b) || !within(w.halfThickness, 0.f, 10.f)) return false;
@@ -114,6 +131,25 @@ bool partnerCloseNdc(Vec2 cameraPos, Vec2 cameraForward, float halfAngleDegrees,
     const float depth = dot(r, f);
     if (!(depth > kPartnerCloseNear)) return false;
     ndcX = dot(r, rightOf(f)) / (depth * std::tan(halfAngleDegrees * kDeg));
+    return true;
+}
+
+bool partnerCloseLens(const PartnerCloseInput& in, Vec2 p, float& ndcX, float& ndcY) {
+    ndcY = 0.f;
+    if (!(in.verticalHalfDegrees > 0.f))
+        return partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, p, ndcX);
+    Vec2 f;
+    if (!unitOf(in.cameraForward, f) || !within(in.halfAngleDegrees, 1.f, 85.f) ||
+        !within(in.verticalHalfDegrees, 1.f, 85.f) || !within(in.pitchDegrees, -85.f, 85.f) || !fin(p) ||
+        !fin(in.cameraPos) || !std::isfinite(in.lensHeight) || !std::isfinite(in.aimHeight))
+        return false;
+    const Vec2 r = sub(p, in.cameraPos);
+    const float ground = dot(r, f), up = in.aimHeight - in.lensHeight;
+    const float c = std::cos(in.pitchDegrees * kDeg), s = std::sin(in.pitchDegrees * kDeg);
+    const float depth = ground * c + up * s;
+    if (!(depth > kPartnerCloseNear)) return false;
+    ndcX = dot(r, rightOf(f)) / (depth * std::tan(in.halfAngleDegrees * kDeg));
+    ndcY = (up * c - ground * s) / (depth * std::tan(in.verticalHalfDegrees * kDeg));
     return true;
 }
 
@@ -141,8 +177,8 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     // The lead's bearing from the target; the lead on the target: the lens's.
     Vec2 bearing;
     if (!unitOf(sub(in.lead, in.target), bearing) && !unitOf(sub(in.cameraPos, in.target), bearing)) bearing = {1.f, 0.f};
-    float leadX = 0.f;
-    const bool leadSeen = partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, in.lead, leadX);
+    float leadX = 0.f, leadY = 0.f;
+    const bool leadSeen = partnerCloseLens(in, in.lead, leadX, leadY);
     const bool keep = hold.flank != 0 && (hold.heldFor < kPartnerCloseHoldSeconds || in.attacking);
     const float lo = in.standMin, hi = in.standMax;
     const float distFromLens = len(sub(in.lead, in.cameraPos));
@@ -158,11 +194,12 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
             const float offs[4] = {nearest, lo, 0.5f * (lo + hi), hi};
             for (const float off : offs) {
                 const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
-                float x = 0.f;
-                if (!legal(in, p, x)) continue;
+                float x = 0.f, y = 0.f;
+                if (!legal(in, p, x, y)) continue;
                 const float dp = len(sub(p, in.cameraPos));
                 const float clear = apart(in.cameraPos, p, in.lead) / (halfAngle(dp, in.bodyRadius) + leadHalf);
-                float cost = len(sub(p, in.partner)) - kPartnerCloseClearWeight * std::min(clear, 3.f);
+                float cost = len(sub(p, in.partner)) - kPartnerCloseClearWeight * std::min(clear, 3.f) +
+                             kPartnerCloseVerticalWeight * verticalOut(y);
                 if (in.leadSide != 0 && leadSeen && !(x * in.leadSide >= leadX * in.leadSide))
                     cost += kPartnerCloseSidePenalty;
                 if (flank == hold.flank && std::fabs(angle - hold.angle) < 1e-3f) cost -= kPartnerCloseKeepBonus;

@@ -487,3 +487,77 @@ TEST_CASE("close station: through the brain, a circle-strafe keeps the partner i
         CHECK(strings >= 3);
     }
 }
+
+TEST_CASE("close station: at least 3 m ahead of the lens and within 25 degrees of its axis") {
+    // The camera lane's lens: 34 degrees of half-width, 0.55 m off the lead's shoulder. Its partner turn is capped
+    // well under the half-width, so the station keeps near the axis and ahead of the lead, not at the cone's edge.
+    int found = 0;
+    for (int a = 0; a < 360; a += 15)
+        for (const float tr : {0.5f, 1.f, 2.5f})
+            for (const float px : {-6.f, -2.f, 2.f}) {
+                PartnerCloseInput in;
+                in.target = {0.f, 0.f};
+                in.targetRadius = tr;
+                in.lead = csMul({std::cos(static_cast<float>(a) * kCsDeg), std::sin(static_cast<float>(a) * kCsDeg)}, tr + 4.f);
+                csLens(in.lead, in.target, 0.55f, 0.2f, in.cameraPos, in.cameraForward);
+                in.halfAngleDegrees = 34.f;
+                in.leadSide = -1;
+                in.partner = {px, 3.f};
+                PartnerCloseHold hold;
+                const PartnerCloseStation st = partnerCloseStation(in, hold);
+                if (!st.valid) continue;
+                ++found;
+                const Vec2 f = csUnit(in.cameraForward);
+                const Vec2 r = csSub(st.point, in.cameraPos);
+                const float ahead = csDot(r, f);
+                CHECK(ahead >= kPartnerCloseMinAhead - 1e-4f);
+                CHECK(std::atan2(std::fabs(csDot(r, csRight(f))), ahead) / kCsDeg <= kPartnerCloseAimConeDegrees + 1e-3f);
+            }
+    CHECK(found >= 200); // of 216
+
+    // Pulled in so near that nothing is 3 m ahead of the lens: no station; the floor off: one.
+    PartnerCloseInput in = csScene();
+    in.cameraPos = csAdd(in.lead, csMul(csUnit(in.cameraForward), 2.f));
+    in.minAhead = 20.f;
+    PartnerCloseHold hold;
+    CHECK_FALSE(partnerCloseStation(in, hold).valid);
+    in.minAhead = 0.f;
+    in.aimConeDegrees = 0.f;
+    in.cameraPos = csScene().cameraPos;
+    CHECK(partnerCloseStation(in, hold).valid);
+    in.aimConeDegrees = 86.f; // out of range: not whole
+    PartnerCloseHold unheld;
+    CHECK_FALSE(partnerCloseStation(in, unheld).valid);
+}
+
+TEST_CASE("close station: a pitched lens keeps the partner in the lower two thirds of the frame") {
+    PartnerCloseInput in = csScene();
+    const float vhalf = std::atan(std::tan(34.f * kCsDeg) / (16.f / 9.f)) / kCsDeg; // 20.8
+    // Level and flat agree on x; the aim point under the lens sits below the centre.
+    float x2 = 0.f, x3 = 0.f, y3 = 0.f;
+    const Vec2 probe{-2.f, -2.f};
+    REQUIRE(partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, probe, x2));
+    in.verticalHalfDegrees = vhalf;
+    REQUIRE(partnerCloseLens(in, probe, x3, y3));
+    CHECK(x3 == doctest::Approx(x2).epsilon(1e-4));
+    CHECK(y3 < 0.f);
+    // Pitched up 6 degrees: the station's aim point is in the lower two thirds, inside the frame.
+    in.pitchDegrees = 6.f;
+    PartnerCloseHold hold;
+    const PartnerCloseStation st = partnerCloseStation(in, hold);
+    REQUIRE(st.valid);
+    REQUIRE(partnerCloseLens(in, st.point, x3, y3));
+    CHECK(y3 >= -(1.f - 2.f * kPartnerCloseConeMargin) - 1e-4f);
+    CHECK(y3 <= kPartnerCloseTopNdc + 1e-4f);
+    CHECK(std::fabs(x3) <= 1.f - 2.f * kPartnerCloseConeMargin + 1e-4f);
+    // Pitched up 25 degrees, past the vertical half-angle: the frame's bottom edge is above the horizon, so no ground
+    // station shows the partner. A station is still given (the least bad one), below the frame: the camera must
+    // keep its pitch under about 12 degrees for this rule to hold the partner (MESSAGE for the camera lane).
+    in.pitchDegrees = 25.f;
+    PartnerCloseHold hold2;
+    const PartnerCloseStation low = partnerCloseStation(in, hold2);
+    REQUIRE(low.valid);
+    REQUIRE(partnerCloseLens(in, low.point, x3, y3));
+    CHECK(y3 < -1.f);
+    MESSAGE("pitched 25: the station's aim point at ndc y " << y3);
+}

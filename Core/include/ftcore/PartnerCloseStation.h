@@ -15,6 +15,9 @@
 //   - it is in the lens's view cone with the margin: in front of the lens (depth over kPartnerCloseNear) and its
 //     horizontal screen coordinate within 1 - 2 x kPartnerCloseConeMargin of the centre (0.1: ndc 0.8; the share of
 //     the whole width kept clear each side, as rule 13's frustumMargin);
+//   - it is ahead of the lens and near its axis: at least minAhead (3) m along the lens's ground forward and within
+//     aimConeDegrees (25) of it (the camera's partner turn is capped well under the half-width, so a station at the
+//     cone's edge cannot be brought in; 0 turns either off);
 //   - its silhouette (bodyRadius) does not overlap the lead's (bodyRadius) from the lens, either way round (never
 //     hidden behind the lead, never covering it);
 //   - it is not hidden behind the target (its centre inside the target's silhouette and deeper than the target);
@@ -26,7 +29,12 @@
 // between partner and lead from the lens over the sum of their silhouettes' half-angles, at most 3), plus
 // kPartnerCloseSidePenalty when leadSide is set and it does not stand between the screen's edge and the lead on the
 // lead's side (the owner's reference: the ally ahead of the lead, between the edge and the lead), minus
-// kPartnerCloseKeepBonus for the angle held.
+// kPartnerCloseKeepBonus for the angle held, plus kPartnerCloseVerticalWeight x how far the partner's aim point
+// (aimHeight) falls outside the lower two thirds of the frame (ndc y from -(1 - 2 x margin) up to kPartnerCloseTopNdc)
+// when the host gives a pitched lens (verticalHalfDegrees > 0). With a pitched lens every screen measure here is the
+// 3D one (the lens lensHeight above the partner's ground, pitched pitchDegrees, + up). Note: a lens pitched up by more
+// than its vertical half-angle sees nothing below its own height near it, so no ground station puts the partner in
+// frame; the score then only picks the least bad one.
 // Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and never changed while attacking; then only
 // when the other flank scores better. On the held flank the best legal candidate wins. With none legal on the flank
 // it must keep (held, or attacking): its held angle at the band's nearest point, reported not valid (the caller keeps
@@ -49,6 +57,10 @@ inline constexpr double kPartnerCloseHoldSeconds = 1.5; // a flank is kept at le
 inline constexpr float kPartnerCloseClearWeight = 4.f;  // m of walk per unit of lead clearance (capped at 3)
 inline constexpr float kPartnerCloseSidePenalty = 2.f;  // m of walk: not between the screen's edge and the lead
 inline constexpr float kPartnerCloseKeepBonus = 1.f;    // m of walk: the held angle
+inline constexpr float kPartnerCloseAimConeDegrees = 25.f; // within this of the lens's ground forward
+inline constexpr float kPartnerCloseMinAhead = 3.f;        // m along the lens's ground forward, at least
+inline constexpr float kPartnerCloseTopNdc = 1.f / 3.f;    // the aim point's ndc y at most this (the lower two thirds)
+inline constexpr float kPartnerCloseVerticalWeight = 10.f; // m of walk per ndc unit outside the lower two thirds
 // The kit bands (m off the target's edge) a host gives by its partner's kit (WEAPONS owns which kit is which).
 inline constexpr float kPartnerCloseMeleeMin = 1.5f;
 inline constexpr float kPartnerCloseMeleeMax = 2.5f;
@@ -74,6 +86,12 @@ struct PartnerCloseInput {
     Vec2 cameraPos{};
     Vec2 cameraForward{};          // need not be unit; zero: nothing is in the cone
     float halfAngleDegrees = 30.f; // the lens's horizontal half-angle (1..85)
+    float aimConeDegrees = kPartnerCloseAimConeDegrees; // 0..85; 0: off
+    float minAhead = kPartnerCloseMinAhead;             // m, 0..20; 0: off
+    float pitchDegrees = 0.f;        // the lens's pitch, + up (-85..85); used only with verticalHalfDegrees > 0
+    float verticalHalfDegrees = 0.f; // the lens's vertical half-angle (1..85); 0: the flat measure, no vertical score
+    float lensHeight = 1.7f;         // m, the lens above the partner's ground (-20..50)
+    float aimHeight = 1.f;           // m, the partner's aim point above its ground (0..5)
     // The lead's side of the screen's centre: -1 left, +1 right, 0 no preference. Right is the lens's level right,
     // (-f.y, f.x) for forward f: x forward and y right at yaw 0, as arenaInFrustum.
     std::int8_t leadSide = 0;
@@ -117,6 +135,12 @@ struct PartnerCloseView {
     float standMax = kPartnerCloseMeleeMax;
     float bodyRadius = 0.4f;        // the partner's (and the lead's) body
     std::span<const PartnerWall> walls{}; // the host's walls near the fight (the brain never knows the navmesh)
+    float aimConeDegrees = kPartnerCloseAimConeDegrees; // as PartnerCloseInput
+    float minAhead = kPartnerCloseMinAhead;
+    float pitchDegrees = 0.f;        // the live lens's pitch, + up
+    float verticalHalfDegrees = 0.f; // atan(tan(horizontal half) / aspect); 0: flat measure
+    float lensHeight = 1.7f;         // the lens above the ground the partner stands on
+    float aimHeight = 1.f;
 };
 
 // A whole input: every number finite, the ranges above. Not whole: no station (not valid), the hold untouched.
@@ -125,6 +149,9 @@ FTCORE_API bool partnerCloseWhole(const PartnerCloseInput& in);
 FTCORE_API PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerCloseHold& hold);
 // The measure: p's horizontal screen coordinate (-1..1 at the lens's edges) and whether it is in front of the lens.
 FTCORE_API bool partnerCloseNdc(Vec2 cameraPos, Vec2 cameraForward, float halfAngleDegrees, Vec2 p, float& ndcX);
+// The measure the rule uses: p's screen coordinates through the input's lens (pitched when verticalHalfDegrees > 0,
+// with p's aim point aimHeight above its ground; ndcY 0 when flat). False when p is not in front of the lens.
+FTCORE_API bool partnerCloseLens(const PartnerCloseInput& in, Vec2 p, float& ndcX, float& ndcY);
 // p in the cone with `margin` (share of the width each side; 0: the lens's own edges).
 FTCORE_API bool partnerCloseInCone(Vec2 cameraPos, Vec2 cameraForward, float halfAngleDegrees, float margin, Vec2 p);
 // From the lens, a body of radius pr at p and one of radius br at b overlap (either nearer).
