@@ -319,7 +319,7 @@ TEST_CASE("settings menu: stick flicks are off by default and the row toggles th
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK_FALSE(out.stickFlicks);
     // The row sits above Camera shake, Lock framing, Camera, HUD scale, HUD safe margin, Basic controls and Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 8u == kSettingsRowCount);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 12u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down to 0, and saves") {
@@ -348,7 +348,7 @@ TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down
     REQUIRE(decodeSettings(R"({"version":1,"cameraShake":-2})", out, nullptr));
     CHECK(out.cameraShake == 0.f);
     // The row sits above Lock framing, Camera, HUD scale, HUD safe margin, Basic controls and Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 7u == kSettingsRowCount);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 11u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: HUD scale runs 80% to 130% in tens, 100% by default, and saves") {
@@ -382,7 +382,7 @@ TEST_CASE("settings menu: HUD scale runs 80% to 130% in tens, 100% by default, a
     CHECK(out.hudScale == 100);
     // The row sits under Camera and above HUD safe margin, Basic controls and Back.
     CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) == static_cast<std::uint32_t>(SettingsRow::CameraPreset) + 1u);
-    CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) + 4u == kSettingsRowCount);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) + 8u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: HUD safe margin runs 0% to 10% in ones, 0% by default, and saves") {
@@ -432,7 +432,7 @@ TEST_CASE("settings menu: HUD safe margin runs 0% to 10% in ones, 0% by default,
     CHECK(wild.hudSafeMargin == 0);
     // The row sits under HUD scale and above Basic controls and Back.
     CHECK(static_cast<std::uint32_t>(SettingsRow::HudSafeMargin) == static_cast<std::uint32_t>(SettingsRow::HudScale) + 1u);
-    CHECK(static_cast<std::uint32_t>(SettingsRow::HudSafeMargin) + 3u == kSettingsRowCount);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudSafeMargin) + 7u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: basic controls default to the first fights, cycle through Always and Never, and save") {
@@ -490,11 +490,11 @@ TEST_CASE("settings menu: basic controls default to the first fights, cycle thro
     wild.showBasicControls = static_cast<ShowBasicControls>(9);
     clampSettings(wild);
     CHECK(wild.showBasicControls == ShowBasicControls::Never);
-    // The row sits under HUD safe margin, the last above Back.
+    // The row sits under HUD safe margin, above the access rows and Back.
     CHECK(static_cast<std::uint32_t>(SettingsRow::ShowBasicControls) ==
           static_cast<std::uint32_t>(SettingsRow::HudSafeMargin) + 1u);
-    CHECK(static_cast<std::uint32_t>(SettingsRow::ShowBasicControls) + 2u == kSettingsRowCount);
-    CHECK(kSettingsRowCount == 23u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::ShowBasicControls) + 6u == kSettingsRowCount);
+    CHECK(kSettingsRowCount == 27u);
 }
 
 TEST_CASE("settings: the fight HUD's first-use bits survive a save; a bad value reads as nothing taught") {
@@ -588,7 +588,7 @@ TEST_CASE("settings menu: aim assist is on by default, sits under Defence window
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK(out.aimAssist);
     CHECK(static_cast<std::uint32_t>(SettingsRow::AimAssist) == static_cast<std::uint32_t>(SettingsRow::DefenceAssist) + 1u);
-    CHECK(kSettingsRowCount == 23u);
+    CHECK(kSettingsRowCount == 27u);
 }
 
 TEST_CASE("settings menu: lock framing is on by default, sits under Camera shake, toggles and saves") {
@@ -656,4 +656,154 @@ TEST_CASE("settings menu: the camera preset is Classic by default, sits under Lo
     CHECK(bad.cameraPreset == CameraPresetId::Close);
     CHECK(static_cast<std::uint32_t>(SettingsRow::CameraPreset) == static_cast<std::uint32_t>(SettingsRow::LockFraming) + 1u);
     CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) == static_cast<std::uint32_t>(SettingsRow::CameraPreset) + 1u);
+}
+
+TEST_CASE("settings: the access rows (text size, colours, reduce motion, button prompts) default, step, save and clamp") {
+    Settings s;
+    CHECK(s.textScale == 100);
+    CHECK(s.uiTextScale() == doctest::Approx(1.f));
+    CHECK(s.palette == UiPalette::Default);
+    CHECK_FALSE(s.reduceMotion);
+    CHECK(s.glyphMode == UiGlyphMode::Auto);
+    // They sit after Basic controls, in this order, the last above Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::TextScale) == static_cast<std::uint32_t>(SettingsRow::ShowBasicControls) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::Palette) == static_cast<std::uint32_t>(SettingsRow::TextScale) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::ReduceMotion) == static_cast<std::uint32_t>(SettingsRow::Palette) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::GlyphMode) == static_cast<std::uint32_t>(SettingsRow::ReduceMotion) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::GlyphMode) + 2u == kSettingsRowCount);
+
+    char value[24];
+    CHECK(std::string(settingsRowLabel(SettingsRow::TextScale)) == "Text size");
+    settingsRowValue(s, SettingsRow::TextScale, value, sizeof value);
+    CHECK(std::string(value) == "100%");
+    // Text size is a slider: no step below 100% or above 200%, in steps of 10, even with wrap.
+    CHECK_FALSE(adjustSetting(s, SettingsRow::TextScale, -1, true));
+    for (int i = 0; i < 10; ++i) CHECK(adjustSetting(s, SettingsRow::TextScale, 1, true));
+    CHECK(s.textScale == 200);
+    CHECK_FALSE(adjustSetting(s, SettingsRow::TextScale, 1, true));
+    settingsRowValue(s, SettingsRow::TextScale, value, sizeof value);
+    CHECK(std::string(value) == "200%");
+    CHECK(s.uiTextScale() == doctest::Approx(2.f));
+
+    // Colours go round all five with Confirm.
+    SettingsMenu m;
+    m.select(SettingsRow::Palette);
+    const char* names[] = {"Protanopia", "Deuteranopia", "Tritanopia", "High contrast", "Default"};
+    for (const char* n : names) {
+        CHECK(m.press(s, SettingsKey::Confirm) == SettingsAction::Changed);
+        settingsRowValue(s, SettingsRow::Palette, value, sizeof value);
+        CHECK(std::string(value) == n);
+    }
+    CHECK(m.press(s, SettingsKey::Left) == SettingsAction::None); // at Default: Left stops
+
+    m.select(SettingsRow::ReduceMotion);
+    CHECK(m.press(s, SettingsKey::Right) == SettingsAction::Changed);
+    CHECK(s.reduceMotion);
+    m.select(SettingsRow::GlyphMode);
+    CHECK(m.press(s, SettingsKey::Right) == SettingsAction::Changed);
+    settingsRowValue(s, SettingsRow::GlyphMode, value, sizeof value);
+    CHECK(std::string(value) == "Keyboard");
+    CHECK(m.press(s, SettingsKey::Right) == SettingsAction::Changed);
+    settingsRowValue(s, SettingsRow::GlyphMode, value, sizeof value);
+    CHECK(std::string(value) == "Controller");
+    CHECK(m.press(s, SettingsKey::Right) == SettingsAction::None);
+    CHECK(m.press(s, SettingsKey::Confirm) == SettingsAction::Changed); // wraps to Last used
+    CHECK(s.glyphMode == UiGlyphMode::Auto);
+
+    // A save keeps them.
+    s.palette = UiPalette::Tritan;
+    s.glyphMode = UiGlyphMode::Pad;
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK(out == s);
+    CHECK(encodeSettings(s).find("\"textScale\":200") != std::string::npos);
+    CHECK(encodeSettings(s).find("\"reduceMotion\":true") != std::string::npos);
+
+    // An old file keeps the defaults; values out of range are clamped onto the steps.
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.textScale == 100);
+    CHECK(out.palette == UiPalette::Default);
+    CHECK_FALSE(out.reduceMotion);
+    CHECK(out.glyphMode == UiGlyphMode::Auto);
+    REQUIRE(decodeSettings(R"({"version":1,"textScale":95,"palette":9,"glyphMode":7,"reduceMotion":1})", out, nullptr));
+    CHECK(out.textScale == 100);
+    CHECK(out.palette == UiPalette::HighContrast);
+    CHECK(out.glyphMode == UiGlyphMode::Pad);
+    CHECK_FALSE(out.reduceMotion); // not a boolean: the default
+    REQUIRE(decodeSettings(R"({"version":1,"textScale":205})", out, nullptr));
+    CHECK(out.textScale == 200);
+    REQUIRE(decodeSettings(R"({"version":1,"textScale":133})", out, nullptr));
+    CHECK(out.textScale == 130);
+    REQUIRE(decodeSettings(R"({"version":1,"textScale":"big"})", out, nullptr));
+    CHECK(out.textScale == 100);
+    Settings wild;
+    wild.textScale = -40;
+    wild.palette = static_cast<UiPalette>(200);
+    wild.glyphMode = static_cast<UiGlyphMode>(9);
+    clampSettings(wild);
+    CHECK(wild.textScale == 100);
+    CHECK(wild.palette == UiPalette::HighContrast);
+    CHECK(wild.glyphMode == UiGlyphMode::Pad);
+}
+
+TEST_CASE("settings: the subtitle size is the text size times the subtitle row, within 0.85..2.0") {
+    Settings s;
+    CHECK(s.subtitleTextScale() == doctest::Approx(1.f));
+    s.subtitleSize = SubtitleSize::Small;
+    CHECK(s.subtitleTextScale() == doctest::Approx(Settings::kMinSubtitleScale));
+    s.subtitleSize = SubtitleSize::Large;
+    CHECK(s.subtitleTextScale() == doctest::Approx(1.3f));
+    s.textScale = 150;
+    CHECK(s.subtitleTextScale() == doctest::Approx(1.95f));
+    s.textScale = 200;
+    CHECK(s.subtitleTextScale() == doctest::Approx(Settings::kMaxSubtitleScale)); // 2.6 held at 2.0
+    s.subtitleSize = SubtitleSize::Medium;
+    CHECK(s.subtitleTextScale() == doctest::Approx(2.f));
+    s.subtitleSize = SubtitleSize::Small;
+    CHECK(s.subtitleTextScale() == doctest::Approx(1.7f));
+}
+
+TEST_CASE("settings screen: every row but Back is in exactly one section; sections are in order and named") {
+    std::uint32_t perGroup[kSettingsGroupCount] = {};
+    for (std::uint32_t i = 0; i < kSettingsRowCount; ++i) {
+        const auto row = static_cast<SettingsRow>(i);
+        const auto g = static_cast<std::uint32_t>(settingsRowGroup(row));
+        REQUIRE(g < kSettingsGroupCount);
+        if (row != SettingsRow::Back) ++perGroup[g];
+        char value[24];
+        CHECK(std::strlen(settingsRowLabel(row)) > 0);
+        CHECK((settingsRowValue(Settings{}, row, value, sizeof value) == 0) == (row == SettingsRow::Back));
+    }
+    std::uint32_t total = 0;
+    for (std::uint32_t g = 0; g < kSettingsGroupCount; ++g) {
+        CHECK(perGroup[g] > 0); // no empty section
+        CHECK(std::strlen(settingsGroupLabel(static_cast<SettingsGroup>(g))) > 0);
+        total += perGroup[g];
+    }
+    CHECK(total + 1u == kSettingsRowCount);
+    CHECK(settingsRowGroup(SettingsRow::TextScale) == SettingsGroup::Access);
+    CHECK(settingsRowGroup(SettingsRow::Palette) == SettingsGroup::Access);
+    CHECK(settingsRowGroup(SettingsRow::ReduceMotion) == SettingsGroup::Access);
+    CHECK(settingsRowGroup(SettingsRow::GlyphMode) == SettingsGroup::Play);
+    CHECK(std::string(settingsGroupLabel(static_cast<SettingsGroup>(99))).empty());
+}
+
+TEST_CASE("settings: the access rows and sections allocate nothing") {
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    Settings s;
+    SettingsMenu m;
+    char value[24];
+    for (std::uint32_t i = 0; i < kSettingsRowCount; ++i) {
+        const auto row = static_cast<SettingsRow>(i);
+        (void)settingsRowGroup(row);
+        (void)settingsRowValue(s, row, value, sizeof value);
+    }
+    for (SettingsRow row : {SettingsRow::TextScale, SettingsRow::Palette, SettingsRow::ReduceMotion, SettingsRow::GlyphMode}) {
+        m.select(row);
+        (void)m.press(s, SettingsKey::Right);
+        (void)m.press(s, SettingsKey::Confirm);
+    }
+    (void)s.subtitleTextScale();
+    if (counting) CHECK(ftcore_test::allocStats().count == before);
 }

@@ -26,6 +26,8 @@
 #include "ftcore/CameraPresetId.h"
 #include "ftcore/Skip.h"
 #include "ftcore/UiFirstUse.h"
+#include "ftcore/UiGlyphs.h"
+#include "ftcore/UiStyle.h"
 
 #include <array>
 #include <cstddef>
@@ -45,6 +47,8 @@ struct Settings {
     static constexpr float kMinAutoDelay = 0.25f, kMaxAutoDelay = 5.f;
     static constexpr int kMinHudScale = 80, kMaxHudScale = 130; // percent, in steps of 10
     static constexpr int kMinHudSafeMargin = 0, kMaxHudSafeMargin = 10; // percent of the viewport, in steps of 1
+    static constexpr int kMinTextScale = 100, kMaxTextScale = 200; // percent, in steps of 10
+    static constexpr float kMinSubtitleScale = 0.85f, kMaxSubtitleScale = 2.f;
 
     TextSpeed textSpeed = TextSpeed::Normal;
     bool autoAdvance = false;
@@ -69,6 +73,10 @@ struct Settings {
                                   // and height (top and bottom), on top of the platform's title-safe padding (uiHudMargins)
     ShowBasicControls showBasicControls = ShowBasicControls::FirstFights; // the fight HUD's basic control prompts: the
                                   // teaching policy (UiFirstUse.h), not a rule of the fight
+    int textScale = 100;          // the new UI's text size: percent of the style's type ramp (uiTextPx's textScale)
+    UiPalette palette = UiPalette::Default; // the colour-vision or high-contrast token set every UI colour comes from
+    bool reduceMotion = false;    // UI movement (rises, slides, wobbles) stills to fades and cuts
+    UiGlyphMode glyphMode = UiGlyphMode::Auto; // button prompts: follow the last device used, or always keys or pad
 
     // Characters per second the dialogue types out at (0: whole text at once).
     float textCharsPerSecond() const {
@@ -90,6 +98,14 @@ struct Settings {
         return 1.f;
     }
 
+    // The text size as a factor (1.0..2.0) for uiTextPx.
+    float uiTextScale() const { return static_cast<float>(textScale) / 100.f; }
+    // The subtitle size: the text size times the subtitle size row, kept within 0.85..2.0.
+    float subtitleTextScale() const {
+        const float k = uiTextScale() * subtitleScale();
+        return k < kMinSubtitleScale ? kMinSubtitleScale : k > kMaxSubtitleScale ? kMaxSubtitleScale : k;
+    }
+
     bool operator==(const Settings&) const = default;
 };
 
@@ -100,10 +116,11 @@ FTCORE_API void clampSettings(Settings& s);
 // {"version":1,"textSpeed":1,"autoAdvance":false,"autoDelay":1.5,"skipMode":1,"master":1.0,
 //  "music":0.8,"voice":1.0,"sfx":1.0,"defenceAssist":0,"aimAssist":true,"subtitleSize":1,"reduceFlashes":false,
 //  "qteAutoComplete":false,"holdToggle":false,"skipChoices":false,"stickFlicks":false,"cameraShake":1.0,
-//  "lockFraming":true,"cameraPreset":0,"uiFirstUse":0,"hudScale":100,"hudSafeMargin":0,"showBasicControls":0}
+//  "lockFraming":true,"cameraPreset":0,"uiFirstUse":0,"hudScale":100,"hudSafeMargin":0,"showBasicControls":0,
+//  "textScale":100,"palette":0,"reduceMotion":false,"glyphMode":0}
 // Enums are written as their number (the order above: textSpeed slow..instant, skipMode all/seen,
 // defenceAssist off/wide, subtitleSize small..large, cameraPreset classic/close, showBasicControls first
-// fights/always/never).
+// fights/always/never, palette default/protan/deutan/tritan/high contrast, glyphMode auto/keys/pad).
 FTCORE_API std::string encodeSettings(const Settings& s);
 // Reads settings text. Needs valid JSON with an integer "version" from 1 to Settings::kVersion;
 // otherwise false (`*error` says why) and `out` is untouched. A missing or wrong-typed field keeps
@@ -135,9 +152,21 @@ enum class SettingsRow : std::uint8_t {
     HudScale,
     HudSafeMargin,
     ShowBasicControls,
+    TextScale,
+    Palette,
+    ReduceMotion,
+    GlyphMode,
     Back,
 };
-inline constexpr std::uint32_t kSettingsRowCount = 23;
+inline constexpr std::uint32_t kSettingsRowCount = 27;
+
+// The settings screen's sections, in their order on screen. Every row but Back is in exactly one.
+enum class SettingsGroup : std::uint8_t { Text, Sound, Play, Camera, Display, Access };
+inline constexpr std::uint32_t kSettingsGroupCount = 6;
+// The section a row is in (Back: Text, the first; the screen draws it apart).
+FTCORE_API SettingsGroup settingsRowGroup(SettingsRow row);
+// "Text", "Sound", ...; "" for an out-of-range group.
+FTCORE_API const char* settingsGroupLabel(SettingsGroup group);
 
 enum class SettingsKey : std::uint8_t { Up, Down, Left, Right, Confirm };
 

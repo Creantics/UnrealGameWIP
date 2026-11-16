@@ -82,18 +82,22 @@ void clampSettings(Settings& s) {
     s.hudSafeMargin = std::clamp(s.hudSafeMargin, Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin);
     s.showBasicControls =
         clampEnum(static_cast<std::int64_t>(s.showBasicControls), ShowBasicControls::Never, d.showBasicControls);
+    s.textScale = (std::clamp(s.textScale, Settings::kMinTextScale, Settings::kMaxTextScale) + 5) / 10 * 10; // the menu's steps
+    s.palette = clampEnum(static_cast<std::int64_t>(s.palette), UiPalette::HighContrast, d.palette);
+    s.glyphMode = clampEnum(static_cast<std::int64_t>(s.glyphMode), UiGlyphMode::Pad, d.glyphMode);
 }
 
 std::string encodeSettings(const Settings& in) {
     Settings s = in;
     clampSettings(s);
-    char buf[768];
+    char buf[896];
     std::snprintf(buf, sizeof buf,
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"aimAssist\":%s,\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
                   "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f,\"lockFraming\":%s,\"cameraPreset\":%d,"
-                  "\"uiFirstUse\":%u,\"hudScale\":%d,\"hudSafeMargin\":%d,\"showBasicControls\":%d}",
+                  "\"uiFirstUse\":%u,\"hudScale\":%d,\"hudSafeMargin\":%d,\"showBasicControls\":%d,"
+                  "\"textScale\":%d,\"palette\":%d,\"reduceMotion\":%s,\"glyphMode\":%d}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
@@ -102,7 +106,8 @@ std::string encodeSettings(const Settings& in) {
                   s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
                   s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake), s.lockFraming ? "true" : "false",
                   static_cast<int>(s.cameraPreset), static_cast<unsigned>(s.uiFirstUse), s.hudScale, s.hudSafeMargin,
-                  static_cast<int>(s.showBasicControls));
+                  static_cast<int>(s.showBasicControls), s.textScale, static_cast<int>(s.palette),
+                  s.reduceMotion ? "true" : "false", static_cast<int>(s.glyphMode));
     return buf;
 }
 
@@ -164,6 +169,11 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
                                                                 Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin));
     s.showBasicControls = clampEnum(intField("showBasicControls", static_cast<std::int64_t>(s.showBasicControls)),
                                     ShowBasicControls::Never, s.showBasicControls);
+    s.textScale = static_cast<int>(std::clamp<std::int64_t>(intField("textScale", s.textScale), Settings::kMinTextScale,
+                                                            Settings::kMaxTextScale));
+    s.palette = clampEnum(intField("palette", static_cast<std::int64_t>(s.palette)), UiPalette::HighContrast, s.palette);
+    s.reduceMotion = boolField("reduceMotion", s.reduceMotion);
+    s.glyphMode = clampEnum(intField("glyphMode", static_cast<std::int64_t>(s.glyphMode)), UiGlyphMode::Pad, s.glyphMode);
     clampSettings(s);
     out = s;
     return true;
@@ -193,6 +203,10 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::HudScale: return "HUD scale";
     case SettingsRow::HudSafeMargin: return "HUD safe margin";
     case SettingsRow::ShowBasicControls: return "Basic controls";
+    case SettingsRow::TextScale: return "Text size";
+    case SettingsRow::Palette: return "Colours";
+    case SettingsRow::ReduceMotion: return "Reduce motion";
+    case SettingsRow::GlyphMode: return "Button prompts";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -227,6 +241,20 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
                : s.showBasicControls == ShowBasicControls::Always    ? "Always"
                                                                      : "Never";
         break;
+    case SettingsRow::Palette:
+        switch (s.palette) {
+        case UiPalette::Protan: word = "Protanopia"; break;
+        case UiPalette::Deutan: word = "Deuteranopia"; break;
+        case UiPalette::Tritan: word = "Tritanopia"; break;
+        case UiPalette::HighContrast: word = "High contrast"; break;
+        case UiPalette::Default: word = "Default"; break;
+        }
+        if (!word) word = "Default";
+        break;
+    case SettingsRow::ReduceMotion: word = s.reduceMotion ? "On" : "Off"; break;
+    case SettingsRow::GlyphMode:
+        word = s.glyphMode == UiGlyphMode::Keys ? "Keyboard" : s.glyphMode == UiGlyphMode::Pad ? "Controller" : "Last used";
+        break;
     case SettingsRow::Back: word = ""; break;
     default: break;
     }
@@ -235,6 +263,8 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
         n = std::snprintf(buf, cap, "%s", word);
     } else if (row == SettingsRow::HudScale) {
         n = std::snprintf(buf, cap, "%d%%", s.hudScale);
+    } else if (row == SettingsRow::TextScale) {
+        n = std::snprintf(buf, cap, "%d%%", s.textScale);
     } else if (row == SettingsRow::HudSafeMargin) {
         n = std::snprintf(buf, cap, "%d%%", s.hudSafeMargin);
     } else if (row == SettingsRow::AutoDelay) {
@@ -289,9 +319,63 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
         return true;
     }
     case SettingsRow::ShowBasicControls: return stepEnum(s.showBasicControls, dir, ShowBasicControls::Never, wrap);
+    case SettingsRow::TextScale: {
+        const int next = std::clamp(s.textScale + 10 * step, Settings::kMinTextScale, Settings::kMaxTextScale); // a slider
+        if (next == s.textScale) return false;
+        s.textScale = next;
+        return true;
+    }
+    case SettingsRow::Palette: return stepEnum(s.palette, dir, UiPalette::HighContrast, wrap);
+    case SettingsRow::ReduceMotion: return setBool(s.reduceMotion, dir, wrap);
+    case SettingsRow::GlyphMode: return stepEnum(s.glyphMode, dir, UiGlyphMode::Pad, wrap);
     case SettingsRow::Back: break;
     }
     return false;
+}
+
+SettingsGroup settingsRowGroup(SettingsRow row) {
+    switch (row) {
+    case SettingsRow::TextSpeed:
+    case SettingsRow::AutoAdvance:
+    case SettingsRow::AutoDelay:
+    case SettingsRow::SkipMode:
+    case SettingsRow::SkipChoices:
+    case SettingsRow::Back: return SettingsGroup::Text;
+    case SettingsRow::Master:
+    case SettingsRow::Music:
+    case SettingsRow::Voice:
+    case SettingsRow::Sfx: return SettingsGroup::Sound;
+    case SettingsRow::DefenceAssist:
+    case SettingsRow::AimAssist:
+    case SettingsRow::StickFlicks:
+    case SettingsRow::GlyphMode: return SettingsGroup::Play;
+    case SettingsRow::CameraShake:
+    case SettingsRow::LockFraming:
+    case SettingsRow::CameraPreset: return SettingsGroup::Camera;
+    case SettingsRow::HudScale:
+    case SettingsRow::HudSafeMargin:
+    case SettingsRow::ShowBasicControls: return SettingsGroup::Display;
+    case SettingsRow::SubtitleSize:
+    case SettingsRow::ReduceFlashes:
+    case SettingsRow::QteAutoComplete:
+    case SettingsRow::HoldToggle:
+    case SettingsRow::TextScale:
+    case SettingsRow::Palette:
+    case SettingsRow::ReduceMotion: return SettingsGroup::Access;
+    }
+    return SettingsGroup::Text;
+}
+
+const char* settingsGroupLabel(SettingsGroup group) {
+    switch (group) {
+    case SettingsGroup::Text: return "Text";
+    case SettingsGroup::Sound: return "Sound";
+    case SettingsGroup::Play: return "Play";
+    case SettingsGroup::Camera: return "Camera";
+    case SettingsGroup::Display: return "Display";
+    case SettingsGroup::Access: return "Access";
+    }
+    return "";
 }
 
 std::array<OptionFlag, kOptionFlagCount> settingsOptionFlags(const Settings& s) {
