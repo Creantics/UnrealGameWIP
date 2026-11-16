@@ -704,10 +704,12 @@ def p_shop_koshi(W=5.4, wall="jpk_wall_stucco"):
     # lattice: base board, slats, rails
     B(A, 0.15, -0.02, 0.0, 2.85, 0.15, 0.45, "jpk_timber")
     B(A, 0.15, 0.08, 0.45, 2.85, 0.1, 2.3, "jpk_dark")
-    n = int(2.7 / 0.055)
+    # Separate square slats, 24 mm, with 50 mm gaps: the room behind shows between them from straight on to about 60
+    # degrees off (deeper, closer slats shut at about 34).
+    n = int(2.7 / 0.074)
     for k in range(n):
         xx = 0.15 + (k + 0.5) * 2.7 / n
-        B(A, xx - 0.014, -0.04, 0.45, xx + 0.014, 0.0, 2.3, "jpk_timber")
+        B(A, xx - 0.012, -0.024, 0.45, xx + 0.012, 0.0, 2.3, "jpk_timber")
     for z in (0.45, 1.35):
         B(A, 0.15, -0.05, z, 2.85, 0.02, z + 0.04, "jpk_timber")
     # entrance: recessed sliding timber-and-glass doors

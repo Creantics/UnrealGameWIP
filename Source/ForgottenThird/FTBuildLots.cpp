@@ -1215,8 +1215,8 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			const FLinearColor NoHandle(-1.f, 0.f, 0.f, 0.f);
 			if (Pr->bKoshi)
 			{
-				// Glass behind the lattice where its backing was, and the entrance's two sliding leaves.
-				TruePane(0, 0, PieceX + 0.15, PieceX + 2.85, P.z + 0.45, P.z + 2.30, PieceY + 0.09, NoHandle);
+				// The lattice open onto the warm room where its backing was (no glass behind it, so nothing mirrors the lane
+				// between the slats), and the entrance's two sliding leaves.
 				TruePane(1, 0, PieceX + 3.00, PieceX + 4.125, P.z + 0.02, P.z + 2.30, PieceY + 0.33, NoHandle);
 				TruePane(2, 0, PieceX + 4.125, PieceX + 5.25, P.z + 0.02, P.z + 2.30, PieceY + 0.33, NoHandle);
 			}

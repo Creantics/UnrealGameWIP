@@ -52,6 +52,8 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
     const double g = spec.ground;
     out.pave = flatBox("HC-PAVE", "paving", spec.laneX0, spec.laneX1, spec.laneY0, spec.laneY1,
                        g + spec.paveTop - spec.paveThick, g + spec.paveTop);
+    out.nearClear = flatBox("HC-NEAR-CLEAR", "clear", spec.laneX0, spec.laneX1, std::min(spec.nearClearY0, spec.laneY0), spec.laneY0,
+                            g - spec.paveThick, g + spec.paveTop);
     // The eave runs the row but the lattice fronts' bays, whose timber fronts carry their own pent roofs under it.
     const int eatery = std::clamp(spec.eateryBay, 0, kHeroBays - 1);
     out.eaveCount = 0;
@@ -93,8 +95,9 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
             HeroLantern& l = out.lanterns[out.lanternCount++];
             l.large = true;
             l.string = -1;
-            l.centre = {largeX, spec.largePairs[p] + 0.5 * side * spec.largePairGap, g + spec.largeUp};
-            l.hook = {l.centre.x, l.centre.y, g + spec.eaveUp};
+            // The mesh hangs from its hook at largeScale, so its centre drops largeScale times its own hook-to-centre.
+            l.hook = {largeX, spec.largePairs[p] + 0.5 * side * spec.largePairGap, g + spec.eaveUp};
+            l.centre = {l.hook.x, l.hook.y, l.hook.z - (spec.eaveUp - spec.largeUp) * spec.largeScale};
         }
     }
 
@@ -226,6 +229,10 @@ int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& 
         ++n;
     }
     return n;
+}
+
+bool heroCornerKeepsLampOut(const HeroCornerSpec& spec, double x, double y) {
+    return x >= spec.lampClearX0 && x <= spec.lampClearX1 && y >= spec.lampClearY0 && y <= spec.lampClearY1;
 }
 
 } // namespace ftcore

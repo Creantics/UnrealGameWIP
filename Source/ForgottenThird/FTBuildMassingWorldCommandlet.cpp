@@ -3184,6 +3184,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		LayCubeWearing(Hero.pave, Setts ? Setts : (bSurfaces ? WearLook(LookSet, Hero.pave) : Finish[static_cast<int32>(ftcore::massingFinish(Hero.pave))]),
 			EFTCellKind::Walk, EFTCellCull::None);
 		Taken.push_back(ftcore::massingBoxFoot(Hero.pave));
+		// The camera's foreground, south of the paving: kept clear of parked cars, scooters and props, never built.
+		Taken.push_back(ftcore::massingBoxFoot(Hero.nearClear));
 		for (int32 R = 0; R < Hero.eaveCount; ++R)
 		{
 			const ftcore::MassingBox& Eave = Hero.eaves[R];
@@ -3209,7 +3211,22 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			return Mesh;
 		};
 		int32 HeroPieces = 0;
-		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double PlanTurn, const TCHAR* Label)
+		// The lanterns' paper: the night lamp head master at the spec's amber and strength, so the paper's ribs and form
+		// read at a metre (the street lamps' own heads keep the master's defaults).
+		const ftcore::HeroCornerSpec HeroSpec;
+		UMaterialInterface* LanternGlow = NightGlow;
+		if (NightGlow)
+		{
+			UMaterialInstanceConstant* Paper = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_HC_LanternPaper"), RF_Public);
+			Paper->SetParentEditorOnly(NightGlow);
+			Paper->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampBase")), FLinearColor(0.80f, 0.60f, 0.38f));
+			Paper->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampColor")),
+				FLinearColor(HeroSpec.lanternColour[0], HeroSpec.lanternColour[1], HeroSpec.lanternColour[2]));
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampStrength")), HeroSpec.lanternGlow);
+			Paper->PostEditChange();
+			LanternGlow = Paper;
+		}
+		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double PlanTurn, const TCHAR* Label, double Scale = 1.0)
 		{
 			if (!Mesh)
 			{
@@ -3218,15 +3235,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			TArray<UMaterialInterface*, TInlineAllocator<8>> Mats;
 			for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
 			{
-				const bool bGlow = Slot.MaterialSlotName.ToString().Contains(TEXT("paper")) || GlowSlots.Contains(Slot.MaterialSlotName);
-				Mats.Add(NightGlow && bGlow ? NightGlow : nullptr);
+				const bool bPaper = Slot.MaterialSlotName.ToString().Contains(TEXT("paper"));
+				Mats.Add(bPaper && LanternGlow ? LanternGlow : (NightGlow && GlowSlots.Contains(Slot.MaterialSlotName) ? NightGlow : nullptr));
 			}
 			FFTCellOptions Opts;
 			Opts.Cull = EFTCellCull::Prop;
 			Opts.bCastShadow = false;
 			Opts.Label = FString::Printf(TEXT("%s-%d"), Label, HeroPieces + 1);
-			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(PlanTurn), 0.0), Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z))),
-				{}, EFTCellKind::NoCollide, Opts);
+			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(PlanTurn), 0.0), Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z)),
+				FVector(Scale)), {}, EFTCellKind::NoCollide, Opts);
 			++HeroPieces;
 		};
 		UStaticMesh* const Large = HeroMesh(TEXT("SM_HC_LanternLarge"));
@@ -3235,7 +3252,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		for (size_t L = 0; L < Hero.lanternCount; ++L)
 		{
 			const ftcore::HeroLantern& Lantern = Hero.lanterns[L];
-			PlaceHero(Lantern.large ? Large : Small, Lantern.hook, 0.0, Lantern.large ? TEXT("HC-LANTERN") : TEXT("HC-STRINGLANTERN"));
+			PlaceHero(Lantern.large ? Large : Small, Lantern.hook, 0.0, Lantern.large ? TEXT("HC-LANTERN") : TEXT("HC-STRINGLANTERN"),
+				Lantern.large ? HeroSpec.largeScale : 1.0);
 		}
 		// The cables: a round rod (the engine's cylinder, its axis along the span) per span of the Core's polyline, so the
 		// sag is the tested one and the section holds up at a metre.
@@ -3298,12 +3316,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// Per box face (box * 4 + face), whether its middle fronts a street: the frontage reads it; the windows' shop fronts
 	// follow it.
 	std::vector<uint8_t> FrontFaces;
+	int32 HeroLampsKept = 0;  // street lamps left out of the hero corner
 	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
 	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance; a
 	// lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
 	{
+		// -HeroCorner: inside the corner the light comes from the lanterns and the shops, so no street lamp stands there.
+		if (bHeroCorner && Mesh->GetPathName().Contains(kNightLampMesh) && ftcore::heroCornerKeepsLampOut(ftcore::HeroCornerSpec{}, Placed.x, Placed.y))
+		{
+			++HeroLampsKept;
+			return false;
+		}
 		const FBox Bounds(Mesh->GetBoundingBox().Min * Scale, Mesh->GetBoundingBox().Max * Scale);
 		const ftcore::MassingVec MeshMin{Bounds.Min.X / 100.0, Bounds.Min.Y / 100.0, Bounds.Min.Z / 100.0};
 		const ftcore::MassingVec MeshMax{Bounds.Max.X / 100.0, Bounds.Max.Y / 100.0, Bounds.Max.Z / 100.0};
@@ -3393,6 +3418,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	FTBuildDecals::Lay(Package, Cells, RoadSpecs, RoadBuilds, Side);
+	if (bHeroCorner)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d street lamps left out of the corner (roads and lanes so far)."), HeroLampsKept);
+	}
 
 	// The quays: a rail, posts and bollards along each deck's seaward edges, and -QuayLamp's lamps, set with the props.
 	std::vector<ftcore::MassingProp> QuayLamps;

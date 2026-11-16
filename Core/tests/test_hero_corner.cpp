@@ -117,23 +117,57 @@ TEST_CASE("hero corner: six large lanterns in pairs under the eave") {
         CHECK(lan.large);
         CHECK(lan.string == -1);
         CHECK(lan.centre.x == doctest::Approx(907.0));
-        CHECK(lan.centre.z == doctest::Approx(4.18 + 3.3));
+        // Hung from the eave's underside at 3.65 m, the mesh at largeScale: its centre largeScale times 0.35 m under.
+        CHECK(lan.centre.z == doctest::Approx(4.18 + 3.65 - 0.35 * spec.largeScale));
+        const double height = spec.largeHeight * spec.largeScale, diameter = spec.largeDiameter * spec.largeScale;
         CHECK(std::abs(lan.centre.y - pairs[i / 2]) == doctest::Approx(0.8));
         // It hangs from an eave run's underside, inside its reach (along and out), its top under the slab.
         const MassingBox* over = nullptr;
         for (int r = 0; r < l.eaveCount; ++r) {
             const MassingBox& e = l.eaves[r];
-            if (std::abs(lan.centre.y - e.cy) < 0.5 * e.sy - 0.5 * spec.largeDiameter) over = &e;
+            if (std::abs(lan.centre.y - e.cy) < 0.5 * e.sy - 0.5 * diameter) over = &e;
         }
         REQUIRE(over != nullptr);
         CHECK(lan.hook.z == doctest::Approx(over->z0));
         CHECK(lan.hook.x > over->cx - 0.5 * over->sx);
         // Clear of both strings' cables and small lanterns.
         for (int s = 0; s < kHeroStrings; ++s) CHECK(std::abs(lan.centre.y - spec.stringY[s]) > 1.0);
-        CHECK(lan.centre.z + 0.5 * spec.largeHeight <= lan.hook.z + 1e-9);
+        CHECK(lan.centre.z + 0.5 * height <= lan.hook.z + 1e-9);
         // Clear of the shop's spill, which stands 0.4 m out at 2.4 m: the lantern's bottom is over it.
-        CHECK(lan.centre.z - 0.5 * spec.largeHeight > 4.18 + kMassingShopLightUp);
+        CHECK(lan.centre.z - 0.5 * height > 4.18 + kMassingShopLightUp);
+        // Big: the paper at least 0.8 m tall.
+        CHECK(height >= 0.8);
     }
+}
+
+TEST_CASE("hero corner: the lanterns glow amber, low enough for the paper to read") {
+    const HeroCornerSpec spec;
+    CHECK(spec.lanternGlow > 0.f);
+    CHECK(spec.lanternGlow < 8.f);  // under the night lamp head's own default
+    CHECK(spec.lanternColour[0] == doctest::Approx(1.f));
+    CHECK(spec.lanternColour[1] < 0.5f);
+    CHECK(spec.lanternColour[2] < spec.lanternColour[1]);
+}
+
+TEST_CASE("hero corner: no street lamp inside the corner, and the camera's foreground kept clear") {
+    const HeroCornerSpec spec;
+    CHECK(heroCornerKeepsLampOut(spec, 904.5, 530.0));   // mid-lane
+    CHECK(heroCornerKeepsLampOut(spec, 904.5, 506.0));   // between the camera and the lane
+    CHECK(heroCornerKeepsLampOut(spec, 897.0, 503.0));   // an edge counts
+    CHECK_FALSE(heroCornerKeepsLampOut(spec, 896.9, 530.0));
+    CHECK_FALSE(heroCornerKeepsLampOut(spec, 904.5, 560.1));
+    CHECK_FALSE(heroCornerKeepsLampOut(spec, 904.5, 480.0));
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    const MassingBox& c = l.nearClear;
+    CHECK(c.kind == "clear");
+    CHECK(c.cx - 0.5 * c.sx == doctest::Approx(spec.laneX0));  // off the quay rail west of the lane
+    CHECK(c.cx + 0.5 * c.sx == doctest::Approx(spec.laneX1));
+    CHECK(c.cy - 0.5 * c.sy == doctest::Approx(503.0));
+    CHECK(c.cy + 0.5 * c.sy == doctest::Approx(spec.laneY0));
+    // The camera stands over it.
+    CHECK(spec.eye[1] > c.cy - 0.5 * c.sy);
+    CHECK(spec.eye[1] < c.cy + 0.5 * c.sy);
 }
 
 TEST_CASE("hero corner: each string spans 6.7 m, sags 0.4 m and carries nine lanterns 0.75 m apart") {

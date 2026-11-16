@@ -65,7 +65,12 @@ struct HeroCornerSpec {
     // The large lanterns.
     double largeOut = 1.0, largeUp = 3.3, largePairGap = 1.6;
     double largePairs[kHeroLargeLanterns / 2] = {526.0, 543.0, 549.5};
-    double largeHeight = 0.6, largeDiameter = 0.45;
+    double largeHeight = 0.6, largeDiameter = 0.45;  // the mesh's own size; placed largeScale times it from its hook
+    double largeScale = 1.5;
+    // The lanterns' paper glow (the night lamp head master's LampStrength and LampColor): amber, about 2200 K, low enough
+    // that the paper's ribs and form read at a metre at the hero exposure.
+    float lanternGlow = 2.0f;
+    float lanternColour[3] = {1.0f, 0.40f, 0.09f};
     // The strings.
     double stringY[kHeroStrings] = {536.0, 552.0};
     double stringFacadeUp = 3.55, stringPostX = 901.3, stringPostUp = 3.8, stringSag = 0.4;
@@ -84,6 +89,12 @@ struct HeroCornerSpec {
     // The quay's lamp masts in the camera's view (both banks of the canal beside the lane, to its far end) have no lamp
     // in the pool: inside this plan box each gives way to a rail piece (heroCornerClearMasts).
     double mastClearX0 = 890.0, mastClearX1 = 903.0, mastClearY0 = 505.0, mastClearY1 = 640.0;
+    // Inside the corner the light comes from the lanterns and the shops: no street lamp (a road's or a lane's) stands in
+    // this plan box.
+    double lampClearX0 = 897.0, lampClearX1 = 909.0, lampClearY0 = 503.0, lampClearY1 = 560.0;
+    // The lane's foot carried south past the paving to here, so nothing (a parked car, a scooter, a prop) stands between
+    // the camera and the corner.
+    double nearClearY0 = 503.0;
     // The camera.
     double eye[3] = {904.5, 511.0, 5.78};
     double at[3] = {904.5, 551.0, 3.68};
@@ -103,6 +114,8 @@ struct HeroLantern {
 
 struct HeroCornerLayout {
     MassingBox pave;                 // the lane's paving slab (kind "paving")
+    MassingBox nearClear;            // the lane's width from nearClearY0 to the paving's south end (kind "clear"): kept
+                                     // free of cars, scooters and props, never built
     MassingBox eaves[kHeroBays / 2 + 1];  // the eave's slabs over the lane (kind "eave", ids HC-EAVE-<n> south to north):
                                           // one per run of bays between the lattice fronts
     int eaveCount = 0;
@@ -161,5 +174,8 @@ FTCORE_API int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight
 // (kQuayMastPlate long, rail high, along the rail: the mast's rot turned 90 degrees, id "<mast id>-RAIL"). Returns how
 // many it changed; other points are left as they are.
 FTCORE_API int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& points);
+
+// Whether a street lamp at plan (x, y) is kept out of the corner (inside the spec's lamp-clear box, edges included).
+FTCORE_API bool heroCornerKeepsLampOut(const HeroCornerSpec& spec, double x, double y);
 
 } // namespace ftcore
