@@ -6190,6 +6190,7 @@ constexpr float kMenuLineW = 3.f;      // the selection's value line
 constexpr float kMenuLineDrop = 12.f;  // under the word's baseline
 constexpr float kMenuTitleTop = 150.f; // the title's top, down from the top
 constexpr float kMenuRowStep = 1.85f;  // a row's step, in its capitals' ascent
+constexpr float kMenuRowStepMin = 1.2f; // the tightest a settings row's step goes (large text); past it the section shows a window
 constexpr int32 kMenuMaxShown = static_cast<int32>(ftcore::kSettingsRowCount);
 constexpr int32 kMenuMaxLines = 2 * kMenuMaxShown + 16; // every text line a screen draws (the contrast read)
 
@@ -6304,10 +6305,13 @@ public:
 		{
 			LayoutPause(*Pause);
 		}
-		// A screen that opened or changed what it shows (screen, section, ask, size, text size) reads the scene under it again;
+		// A screen that opened or changed what it shows (screen, section, ask, palette, rows' window, size, text size) reads the
+		// scene under it again;
 		// on open the shade starts from its least.
-		const uint32 Key = 1u + (bSettings ? 2u : 0u) + (bConfirm && !bSettings ? 4u : 0u) + (static_cast<uint32>(ShownGroup) << 3) +
-			(static_cast<uint32>(FMath::RoundToInt(BuiltScale * 100.f)) << 8) + (static_cast<uint32>(Size.Y) << 16);
+		uint32 Key = (bSettings ? 2u : 0u) | (bConfirm && !bSettings ? 4u : 0u) | (static_cast<uint32>(ShownGroup) << 3) |
+			(static_cast<uint32>(ShownPalette()) << 6) | (static_cast<uint32>(bSettings ? RowStart : 0) << 9);
+		Key = HashCombineFast(Key, GetTypeHash(FMath::RoundToInt(BuiltScale * 100.f)));
+		Key = HashCombineFast(Key, GetTypeHash(FMath::RoundToInt(Size.Y))) | 1u; // 0 is "no screen open"
 		if (Key != ReadKey)
 		{
 			if (ReadKey == 0)
@@ -6348,8 +6352,8 @@ public:
 		const FPainter P{Geometry, Out, Layer, S, false, Runs};
 		Mesh.Begin(Geometry, S);
 		Mesh.Rect(0.f, 0.f, Size.X, Size.Y, Tok(UiToken::Backing, kMenuDim), false);
-		Mesh.Band(0.f, 0.f, ShadeRight, Size.Y, false, false, (ShadeRight - TextRight) / FMath::Max(1.f, ShadeRight), ShadePeak,
-			Tok(UiToken::Backing, 1.f));
+		Mesh.Rect(0.f, 0.f, TextRight, Size.Y, Tok(UiToken::Backing, ShadePeak), false);
+		Mesh.Band(TextRight, 0.f, ShadeRight, Size.Y, false, false, 1.f, ShadePeak, Tok(UiToken::Backing, 1.f));
 		if (bSettings)
 		{
 			PaintSettings(P);
@@ -6536,33 +6540,64 @@ private:
 		{
 			Set.SetSectionRect(G, WordBox(X0 + SectionX[G], SectionTop, SectionW[G], HeadAsc));
 		}
-		const float First = SectionTop + HeadAsc + 72.f * S;
-		const float Step = kMenuRowStep * RowAsc;
-		NumShown = 0;
 		ValueX = X0 + MaxLabelW + 3.f * RowEm;
 		ValueColW = 9.f * RowEm;
+		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
+		// The section's rows (Back aside), in screen order.
+		int32 InSection[kMenuMaxShown];
+		int32 NumIn = 0;
+		int32 SelAt = INDEX_NONE;
 		for (uint32 I = 0; I < ftcore::kSettingsRowCount; ++I)
 		{
 			const ftcore::SettingsRow Row = ftcore::settingsScreenRow(I);
 			const int32 R = static_cast<int32>(Row);
-			if (Row == ftcore::SettingsRow::Back || static_cast<int32>(ftcore::settingsRowGroup(Row)) != ShownGroup)
+			Set.SetRowRect(R, FBox2D(ForceInit));
+			if (Row != ftcore::SettingsRow::Back && static_cast<int32>(ftcore::settingsRowGroup(Row)) == ShownGroup && NumIn < kMenuMaxShown)
 			{
-				Set.SetRowRect(R, FBox2D(ForceInit));
-				continue;
+				SelAt = R == Selected ? NumIn : SelAt;
+				InSection[NumIn++] = R;
 			}
+		}
+		// Below the section line: a gap, the rows, Back 0.6 of a step under them and 1.6 steps above the hint. At a large text
+		// size that does not fit at kMenuRowStep: the gap tightens, then the step (to kMenuRowStepMin); past that the section
+		// shows a window of its rows that follows the selection, with a chevron on the side rows are hidden.
+		const float Room = HintFirst(SettingsHint2) - SectionTop - HeadAsc;
+		const auto Fits = [Room](float G, float St, int32 N) { return G + St * (static_cast<float>(N) + 2.2f) <= Room; };
+		float Gap = 72.f * S;
+		float Step = kMenuRowStep * RowAsc;
+		if (!Fits(Gap, Step, NumIn))
+		{
+			Gap = 40.f * S;
+			Step = FMath::Clamp((Room - Gap) / (static_cast<float>(NumIn) + 2.2f), kMenuRowStepMin * RowAsc, Step);
+		}
+		int32 Fit = NumIn;
+		while (Fit > 1 && !Fits(Gap, Step, Fit))
+		{
+			--Fit;
+		}
+		RowStart = Fit < NumIn ? FMath::Clamp((SelAt == INDEX_NONE ? NumIn : SelAt) - Fit / 2, 0, NumIn - Fit) : 0;
+		bRowsAbove = RowStart > 0;
+		bRowsBelow = RowStart + Fit < NumIn;
+		const float First = SectionTop + HeadAsc + Gap;
+		const float Half = FMath::Min(0.9f * RowAsc, 0.5f * Step); // a row's hit box, never into its neighbour's
+		NumShown = 0;
+		for (int32 N = RowStart; N < RowStart + Fit && N < NumIn; ++N)
+		{
+			const int32 R = InSection[N];
 			ShownRow[NumShown] = R;
 			RowTop[NumShown] = First + Step * NumShown;
-			Set.SetRowRect(R, ToVp(X0 - 16.f * S, RowTop[NumShown] - 0.35f * RowAsc, ValueX + ValueColW + 2.f * RowEm, RowTop[NumShown] + 1.45f * RowAsc));
+			const float Mid = RowTop[NumShown] + 0.55f * RowAsc;
+			Set.SetRowRect(R, ToVp(X0 - 16.f * S, Mid - Half, ValueX + ValueColW + 2.f * RowEm, Mid + Half));
 			++NumShown;
 		}
-		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
 		BackTop = FMath::Max(First + Step * NumShown + 0.6f * Step, 0.f);
 		BackTop = FMath::Min(BackTop, HintFirst(SettingsHint2) - 1.6f * Step);
 		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
 		Set.SetRowRect(BackRow, WordBox(X0, BackTop, LabelW[BackRow], RowAsc));
 		// Left of the value's middle steps down, right of it up (the subsystem's rule for a click).
 		Set.SetValueColumn((ValueX - 1.5f * RowEm) * ToVpX, (ValueX + 0.5f * ValueColW) * ToVpX);
-		TextRight = X0 + FMath::Max3(FMath::Max(SectionLineW, SettingsTitleW), ValueX - X0 + ValueColW, SettingsHintW);
+		TextRight = X0 + FMath::Max3(FMath::Max(SectionLineW, SettingsTitleW), ValueX - X0 + ValueColW + (bRowsAbove || bRowsBelow ? 3.f * RowEm : 0.f),
+			SettingsHintW);
 		ShadeRight = TextRight + kMenuShadeFall * S;
 		RowsSet = &Set;
 	}
@@ -6587,6 +6622,15 @@ private:
 		const FVector2f Pts[3] = {FVector2f(CX - 0.5f * Dir * H, MidY - H), FVector2f(CX + 0.5f * Dir * H, MidY), FVector2f(CX - 0.5f * Dir * H, MidY + H)};
 		PolyStroke(Line, Pts, 3, FMath::Max(1.f, 1.25f * S));
 		Mesh.Stroke(Line, Tok(UiToken::Ink));
+	}
+
+	// The settings rows' window: a chevron pointing up (Dir -1) or down at the side rows are hidden.
+	void MoreMark(float CX, float MidY, float Dir) const
+	{
+		const float H = 0.32f * RowAsc;
+		const FVector2f Pts[3] = {FVector2f(CX - H, MidY - 0.5f * Dir * H), FVector2f(CX, MidY + 0.5f * Dir * H), FVector2f(CX + H, MidY - 0.5f * Dir * H)};
+		PolyStroke(Line, Pts, 3, FMath::Max(1.f, 1.25f * S));
+		Mesh.Stroke(Line, Tok(UiToken::Ink, kMenuRestInk));
 	}
 
 	void PaintPause(const FPainter& P) const
@@ -6653,6 +6697,14 @@ private:
 				Chevron(ValueX + ValueColW + 1.f * RowEm, Mid, 1.f);
 			}
 		}
+		if (NumShown > 0 && bRowsAbove)
+		{
+			MoreMark(ValueX + ValueColW + 2.5f * RowEm, CapMid(RowTop[0] + RowAsc, RowAsc), -1.f);
+		}
+		if (NumShown > 0 && bRowsBelow)
+		{
+			MoreMark(ValueX + ValueColW + 2.5f * RowEm, CapMid(RowTop[NumShown - 1] + RowAsc, RowAsc), 1.f);
+		}
 		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
 		const bool bBack = Selected == BackRow;
 		P.Text(X0, BackTop, Set->GetRowLabel(BackRow), RowFont, Tok(UiToken::Ink, bBack ? 1.f : kMenuRestInk));
@@ -6675,7 +6727,8 @@ private:
 		L.Name = Name;
 	}
 
-	// Every text line the shown screen draws, at its ink (a greyed pause item is left out: it says it is off).
+	// Every text line the shown screen draws, a choosable one at its resting ink (the selection moves without a new read; the
+	// selected one only reads brighter). A greyed pause item is left out: it says it is off.
 	void CollectLines()
 	{
 		NumLines = 0;
@@ -6696,7 +6749,7 @@ private:
 				{
 					if (bItemOn[I])
 					{
-						AddLine(X0, RowTop[I], ItemW[I], RowAsc, I == Selected ? 1.f : kMenuRestInk, ItemWord[I]);
+						AddLine(X0, RowTop[I], ItemW[I], RowAsc, kMenuRestInk, ItemWord[I]);
 					}
 				}
 				HintLines(PauseHint, PauseHint2);
@@ -6718,18 +6771,18 @@ private:
 		AddLine(X0, TitleTop, SettingsTitleW, TitleAsc, 1.f, SettingsTitle);
 		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
 		{
-			AddLine(X0 + SectionX[G], SectionTop, SectionW[G], HeadAsc, G == ShownGroup ? 1.f : kMenuRestInk, SectionWord[G]);
+			AddLine(X0 + SectionX[G], SectionTop, SectionW[G], HeadAsc, kMenuRestInk, SectionWord[G]);
 		}
 		for (int32 N = 0; N < NumShown; ++N)
 		{
 			const int32 R = ShownRow[N];
-			const float InkA = R == Selected ? 1.f : kMenuRestInk;
+			const float InkA = kMenuRestInk;
 			AddLine(X0, RowTop[N], LabelW[R], RowAsc, InkA, Rows->GetRowLabel(R));
 			const FString& Value = Rows->GetRowValue(R);
 			AddLine(ValueX, RowTop[N], TextWidth(Value, RowFont), RowAsc, InkA, Value);
 		}
 		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
-		AddLine(X0, BackTop, LabelW[BackRow], RowAsc, Selected == BackRow ? 1.f : kMenuRestInk, Rows->GetRowLabel(BackRow));
+		AddLine(X0, BackTop, LabelW[BackRow], RowAsc, kMenuRestInk, Rows->GetRowLabel(BackRow));
 		HintLines(SettingsHint, SettingsHint2);
 	}
 
@@ -6851,8 +6904,10 @@ private:
 			}
 			const ftcore::UiColor Fg{Ink.r, Ink.g, Ink.b, Ink.a * Lines[I].InkA};
 			const float Ratio = MenuRatio(Fg, Pics[I], Back, ShadePeak);
-			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu contrast %.2f (bare %.2f): %s"), Ratio,
-				ftcore::uiContrast(Fg, ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, Pics[I]), *Lines[I].Name);
+			const FIntRect Px = ToPx(Lines[I].Rc);
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu contrast %.2f (bare %.2f, ink %.2f) px %d,%d..%d,%d: %s"), Ratio,
+				ftcore::uiContrast(Fg, ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, Pics[I]), Lines[I].InkA, Px.Min.X, Px.Min.Y, Px.Max.X, Px.Max.Y,
+				*Lines[I].Name);
 			if (Ratio < Lowest)
 			{
 				Lowest = Ratio;
@@ -6900,6 +6955,7 @@ private:
 				if (SweepStep == 0)
 				{
 					SweepBase = Rot.Yaw;
+					SweepBestYaw = Rot.Yaw;
 				}
 				Rot.Yaw = SweepBase + 30.f * static_cast<float>(SweepStep);
 				PC->SetControlRotation(Rot);
@@ -6973,6 +7029,8 @@ private:
 	int32 ShownRow[kMenuMaxShown] = {};
 	int32 NumShown = 0;
 	float SectionTop = 0.f, ValueX = 0.f, ValueColW = 0.f, BackTop = 0.f;
+	int32 RowStart = 0; // the section's first shown row (a window at a large text size)
+	bool bRowsAbove = false, bRowsBelow = false;
 	const UFTSettingsSubsystem* RowsSet = nullptr; // this tick's (the game instance outlives the frame)
 
 	// both
