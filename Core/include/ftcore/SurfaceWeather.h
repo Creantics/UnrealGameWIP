@@ -89,18 +89,25 @@ struct StreetSurfaceSpec {
     // Asphalt detail tile (SurfaceWeatherOptions::streetDetail): a baked 1 m tile of stones and binder, world-mapped on
     // the asphalt; it replaces the procedural aggregate near by (the mips carry it to its mean far off).
     float detailTileM = 1.0f;            // the tile's side in the world
-    float detailAlbedoMean = 0.0828f;    // the albedo map's linear luminance mean (the tile adds grain, not tone)
+    // The asphalt's tint (RoadTint::Asphalt's colour, and the paint's and decals' stand-in for the road under them).
+    // The tile v5's albedo mean equals its luminance, so the tile lands at its own values: binder 0.03-0.05, bare
+    // stone tops 0.10-0.20.
+    float asphaltR = 0.066f, asphaltG = 0.065f, asphaltB = 0.063f;
+    float asphaltTintRough = 0.89f;      // its roughness (about the tile's mean, so the tile's roughness lands as is)
+    float detailAlbedoMean = 0.065f;     // the albedo map's linear luminance mean (the tile adds grain, not tone)
     float detailRoughMean = 0.892f;      // the roughness channel's mean
     float detailAOMean = 0.912f;         // the AO channel's mean, and the stone-peak channel's (the paint's stand-ins)
     float detailPeakMean = 0.235f;
     // The asphalt's final range (after every tone and roughness term, before the weather): albedo luminance clamped to
-    // asphaltAlbedoLo..Hi (binder about 0.06-0.10, stone tips never past 0.20); off the wheel paths roughness clamped to
-    // asphaltRoughLo..Hi; in a wheel band it goes to wheelBandRough..wheelBandRoughTop (the latter on polished stone
-    // peaks); tar seal (joints, sealed cracks) to sealRough, black and glossy.
-    float asphaltAlbedoLo = 0.05f;
+    // asphaltAlbedoLo..Hi (binder about 0.03-0.05, stone tips never past 0.20); off the wheel paths roughness clamped to
+    // asphaltRoughLo..Hi (worn stone tops 0.78-0.85 inside it); in a wheel band it goes to
+    // wheelBandRough..wheelBandRoughTop (the latter on polished stone peaks); tar seal (joints, sealed cracks) to
+    // sealRough, black and glossy. Dry asphalt's specular is asphaltSpecular (F0 about 0.028), the rest 0.5.
+    float asphaltAlbedoLo = 0.03f;
     float asphaltAlbedoHi = 0.20f;
-    float asphaltRoughLo = 0.85f;
+    float asphaltRoughLo = 0.75f;
     float asphaltRoughHi = 0.95f;
+    float asphaltSpecular = 0.35f;
     float wheelBandRough = 0.7f;
     float wheelBandRoughTop = 0.6f;
     float sealRough = 0.35f;
@@ -123,7 +130,7 @@ struct StreetSurfaceSpec {
     float petalR = 0.68f, petalG = 0.5f, petalB = 0.52f; // a fresh petal's albedo (aged ones brown toward the road)
     float detailTone = 1.0f;             // share of the tile's albedo ratio taken into the tone
     float detailSlope = 0.5f;            // share of the tile's true slope taken into the normal
-    float detailRough = 0.6f;            // share of the tile's roughness ratio taken
+    float detailRough = 1.0f;            // share of the tile's roughness ratio taken (all: the tile's spread survives)
     float detailAO = 0.7f;               // share of the tile's cavity AO taken
     // Anti-repetition of the tile (stochastic hex tiling): three reads on a triangular lattice this far apart, each
     // vertex turned and offset at random, blended with weights raised to detailHexSharp and the contrast restored.
@@ -266,6 +273,7 @@ struct SurfaceWeatherOptions {
     bool street = false;     // the street layer, by a Street input (needs boxFrame)
     bool jointDepth = false; // the street's joints as real recesses, by ViewVec and JointDepth inputs (needs street)
     bool streetDetail = false; // the asphalt's baked detail tile, by DetAlb, DetNrm and DetRA texture inputs (needs street)
+    bool specOut = false;    // a SpecOut output: the street layer's specular (dry asphalt's own, else 0.5)
 };
 
 // 0..1, how up-facing a pixel is from its vertex normal's world z.

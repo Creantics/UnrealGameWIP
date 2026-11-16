@@ -4,8 +4,10 @@
 #include "ftcore/WorldClock.h"
 #include "AllocCounter.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <vector>
 
 using namespace ftcore;
@@ -55,8 +57,9 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     const NightFrame still = nightFrame(look, 7.f); // clamped
     CHECK(clock.sunScale == doctest::Approx(look.moonShare));
     CHECK(clock.skyScale == doctest::Approx(look.skyFill));
-    // A real-time sky, lit by a moon at moonShare, lands at skyFill net.
-    CHECK(clock.skyScaleRealTime * clock.sunScale == doctest::Approx(look.skyFill));
+    // A real-time sky, lit by a moon at moonShare under a dome dimmed to skyLuminance, lands at skyFill net.
+    CHECK(clock.skyScaleRealTime * clock.sunScale * clock.skyLuminance == doctest::Approx(look.skyFill));
+    CHECK(clock.skyLuminance == doctest::Approx(look.skyLuminance));
     CHECK(clock.fogGlow[0] == doctest::Approx(look.glow[0]));
     CHECK(clock.lockExposure);
     CHECK(clock.exposureEV100 == doctest::Approx(look.exposureEV100));
@@ -81,8 +84,376 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     // own stays cool, above), and the fill is strong enough to show an unlit facade.
     CHECK(look.glow[0] > look.glow[2]);
     CHECK(look.skyTint[0] > look.skyTint[2]);
-    CHECK(look.skyFill >= 0.5f);
-    CHECK(look.skyFill <= 1.5f);
+    // Twilight's fill shows an unlit facade; the deep night's holds the street between lamps at the floor, dark but with
+    // its forms (11-15 19:00 ruling: wide-street median 18-24/255 from 20:30, whether the moon is up or not).
+    CHECK(look.twilightFill >= 0.5f);
+    CHECK(look.twilightFill <= 1.5f);
+    CHECK(look.skyFill >= 0.005f);  // night_1116a: 0.015 read 18.2 at 21:00 (the 0.14 of 85106b57 read 128)
+    CHECK(look.skyFill <= 0.03f);
+}
+
+TEST_CASE("nightFrame: the sky dome darkens with the night, near black at full night, smooth through dusk") {
+    const NightLook look;
+    // The night sky is near black navy, not a dimmed day sky (the lamps carry the night).
+    CHECK(look.skyLuminance >= 0.02f);
+    CHECK(look.skyLuminance <= 0.05f);
+    // Day exactly as before: the dome untouched and the capture's lift unchanged, to the bit.
+    const NightFrame day = nightFrame(look, 0.f);
+    CHECK(day.skyLuminance == 1.f);
+    CHECK(day.skyScaleRealTime == 1.f);
+    NightLook plain = look;
+    plain.skyLuminance = 1.f;  // with the dome left alone the capture's lift is exactly the old one at every hour
+    // Monotone through dusk, no step (it falls in ratio, under 20% a twentieth); the capture's net fill follows the
+    // same curve as before.
+    float last = 1.f;
+    for (int i = 0; i <= 20; ++i) {
+        const float n = static_cast<float>(i) / 20.f;
+        const NightFrame f = nightFrame(look, n);
+        CHECK(f.skyLuminance <= last);
+        CHECK(f.skyLuminance > 0.f);
+        CHECK(f.skyLuminance >= 0.8f * last);
+        last = f.skyLuminance;
+        const NightFrame old = nightFrame(plain, n);
+        CHECK(f.skyScaleRealTime * f.skyLuminance == doctest::Approx(old.skyScaleRealTime));
+        CHECK(f.sunScale == old.sunScale);  // the moon is not raised to make up for the darker dome
+    }
+    CHECK(nightFrame(look, 1.f).skyLuminance == doctest::Approx(look.skyLuminance));
+    NightLook odd;
+    odd.skyLuminance = 0.f;  // clamped above zero, so the capture's lift stays finite
+    CHECK(std::isfinite(nightFrame(odd, 1.f).skyScaleRealTime));
+}
+
+TEST_CASE("nightFrame: the evening darkens on the sun's depth after NightAmount is full, with no step") {
+    const NightLook look;
+    const WorldClockSpec spec;
+    const auto at = [&](double hours) {
+        return nightFrame(look, nightAmount(spec, hours), nightDeep(look, sunElevationDeg(spec, hours)));
+    };
+    // 19:00: NightAmount is full, but the fill and dome are within 10% of twilight's (the old 19:00 look).
+    const NightFrame seven = at(19.0);
+    CHECK(seven.night == doctest::Approx(1.f));
+    CHECK(seven.skyScale >= 0.9f * look.twilightFill);
+    CHECK(seven.skyLuminance >= 0.9f);
+    // 22:00 and midnight: exactly the spec, the same as a night still.
+    const NightFrame still = nightFrame(look, 1.f);
+    for (const double h : {22.0, 0.0}) {
+        const NightFrame f = at(h);
+        CHECK(f.deep == 1.f);
+        CHECK(f.skyScale == doctest::Approx(still.skyScale));
+        CHECK(f.skyScaleRealTime == doctest::Approx(still.skyScaleRealTime));
+        CHECK(f.skyLuminance == doctest::Approx(still.skyLuminance));
+    }
+    CHECK(still.deep == 1.f);
+    CHECK(still.skyScale == doctest::Approx(look.skyFill));
+    // From the sun 6 degrees up to 60 down, every half degree: the dome never brightens and the fill (once the night is
+    // full) never rises; the fill moves no more than about 10% a step (2 clock minutes) and the dome no more than about
+    // 13% (it falls to the floor by 20:25 now), across the seam at -6 degrees too.
+    // Once the night is full, a real-time capture lands at the fill.
+    float lastDome = 2.f, lastFill = 0.f;
+    for (int i = 0; i <= 132; ++i) {
+        const float e = 6.f - 0.5f * static_cast<float>(i);
+        const float t = std::clamp((spec.twilightHigh - e) / (spec.twilightHigh - spec.twilightLow), 0.f, 1.f);
+        const NightFrame f = nightFrame(look, t * t * (3.f - 2.f * t), nightDeep(look, e));
+        CHECK(f.skyLuminance <= lastDome);
+        if (i > 0) {
+            CHECK(f.skyLuminance >= 0.87f * lastDome);
+            CHECK(f.skyScale <= 1.1f * lastFill);
+            CHECK(f.skyScale >= 0.85f * lastFill);
+            if (e < spec.twilightLow) CHECK(f.skyScale <= lastFill);
+        }
+        if (e <= spec.twilightLow) CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale));
+        lastDome = f.skyLuminance;
+        lastFill = f.skyScale;
+    }
+    // Ends crossed or equal: a step at deepHighDeg, still clamped; zero fill falls straight.
+    NightLook flat = look;
+    flat.deepLowDeg = flat.deepHighDeg;
+    CHECK(nightDeep(flat, flat.deepHighDeg + 1.f) == 0.f);
+    CHECK(nightDeep(flat, flat.deepHighDeg - 1.f) == 1.f);
+    NightLook none = look;
+    none.skyFill = 0.f;
+    CHECK(nightFrame(none, 1.f, 0.5f).skyScale == doctest::Approx(0.5f * look.twilightFill));
+    CHECK(std::isfinite(nightFrame(none, 1.f, 1.f).skyScaleRealTime));
+}
+
+TEST_CASE("nightFrameAt: lamps on before the exposure leaves the day's; the street never dips under the floor") {
+    // 11-15 19:00 ruling, fault 1: every 5 minutes from 16:00 to 23:00 the predicted wide-street key falls (never
+    // rises) to the night floor and holds there; the lamps are all on before the key is under twice the floor; the
+    // exposure starts toward the night's only once the lamps are half on.
+    // NightKeyModel's constants are fitted to the block-1 strip, so the floor here checks the curves' order against that
+    // model, not a render: a guard that a swap or re-order of the curves is caught. The model's floor is its key at the
+    // deepest fill in the run (23:00, the moon highest); the flatness against the measured street is the floor fit's own
+    // test below.
+    const NightLook look;
+    const NightKeyModel model;
+    const WorldClockSpec spec;
+    const float floorKey = model.fillWeight * nightDeepFill(look, sunElevationDeg(spec, 23.0)) + model.lampWeight;
+    const auto before = ftcore_test::allocStats().count;
+    float last = 1e9f, lampsHalfAt = 99.f, keyUnderTwoFloorAt = 99.f;
+    bool reachedFloor = false, monotone = true, lampsFirst = true, exposureAfterLamps = true, flat = true;
+    for (int m = 16 * 60; m <= 23 * 60; m += 5) {
+        const double h = m / 60.0;
+        const float e = sunElevationDeg(spec, h);
+        const float n = nightAmount(spec, h);
+        const NightFrame f = nightFrameAt(look, n, e);
+        const float key = nightSceneKey(look, model, n, e);
+        if (!reachedFloor && key > last * (1.f + 1e-5f)) monotone = false;
+        if (key < 2.f * floorKey && f.lamps < 1.f) lampsFirst = false;
+        if (f.lamps < 0.5f && f.exposureBlend > 0.f) exposureAfterLamps = false;
+        if (f.lamps >= 0.5f && lampsHalfAt > 90.f) lampsHalfAt = static_cast<float>(h);
+        if (key < 2.f * floorKey && keyUnderTwoFloorAt > 90.f) keyUnderTwoFloorAt = static_cast<float>(h);
+        if (key <= floorKey * 1.001f) reachedFloor = true;
+        // From 20:30 the model's key stays within the fit's fill range (the derived fill falls with the moon's rise).
+        if (h >= 20.5 && key > model.fillWeight * nightDeepFill(look, -34.5f) + model.lampWeight + 1e-6f) flat = false;
+        CHECK(key >= floorKey * 0.999f);  // never under the floor
+        // From blend 1 on (and above the dusk table) a real-time capture lands at the fill; between, the table's lift.
+        if (f.exposureBlend >= 1.f || e >= look.duskLiftTopDeg) {
+            CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale).epsilon(1e-4));
+        }
+        last = key;
+    }
+    const auto after = ftcore_test::allocStats().count;
+    CHECK(monotone);
+    CHECK(lampsFirst);
+    CHECK(exposureAfterLamps);
+    CHECK(reachedFloor);
+    CHECK(flat);
+    CHECK(lampsHalfAt < keyUnderTwoFloorAt);
+    // The lamps are half on near sunset (18:00, the sun at 0), the key under twice the floor well into the evening.
+    CHECK(lampsHalfAt >= 17.9f);
+    CHECK(lampsHalfAt <= 18.2f);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
+TEST_CASE("nightDeepFill: the measured street key holds 18-24 from 20:30 to 24:00, continuous, no allocation") {
+    // 11-16 01:40 ruling: the fill is derived so the METERED wide-street key is the same at 20:30, 22:00 and 24:00;
+    // the floor fit's predicted key at the clock's own fill stays inside 18-24 every 5 minutes from 20:30 to 24:00.
+    const NightLook look;
+    const WorldClockSpec spec;
+    // The default moon is the one the table was measured at; otherwise the fit is off and skyFill holds throughout.
+    CHECK(look.moonShare == doctest::Approx(look.floorFit.moonShare).epsilon(1e-4));
+    REQUIRE(nightFloorFitActive(look));
+    for (std::size_t i = 1; i < look.floorFit.knots.size(); ++i) {
+        CHECK(look.floorFit.knots[i].moonDeg > look.floorFit.knots[i - 1].moonDeg);
+        CHECK(look.floorFit.knots[i].slope > 0.f);
+    }
+    const auto before = ftcore_test::allocStats().count;
+    float lastFill = 1e9f;
+    bool inside = true, falls = true, smooth = true;
+    for (int m = 20 * 60 + 30; m <= 24 * 60; m += 5) {
+        const double h = m / 60.0;
+        const float e = sunElevationDeg(spec, h >= 24.0 ? h - 24.0 : h);
+        const NightFrame f = nightFrameAt(look, nightAmount(spec, h >= 24.0 ? h - 24.0 : h), e);
+        REQUIRE(f.deep == doctest::Approx(1.f));
+        const float key = nightFloorKey(look.floorFit, -e, f.skyScale);
+        if (key < 18.f || key > 24.f) inside = false;
+        if (f.skyScale > lastFill * (1.f + 1e-5f)) falls = false;  // the moon rises, so the fill only falls
+        if (lastFill < 1e8f && f.skyScale < 0.9f * lastFill) smooth = false;  // no step over 10% in 5 minutes
+        // A real-time capture still lands at the fill.
+        CHECK(f.skyScaleRealTime * f.sunScale * f.skyLuminance == doctest::Approx(f.skyScale).epsilon(1e-4));
+        lastFill = f.skyScale;
+    }
+    const auto after = ftcore_test::allocStats().count;
+    CHECK(inside);
+    CHECK(falls);
+    CHECK(smooth);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+    // At each measured row the derived fill gives the floor exactly (unclamped), and the fill stays in its bounds.
+    for (const NightFloorKnot& k : look.floorFit.knots) {
+        const float fill = nightDeepFill(look, -k.moonDeg);
+        CHECK(fill >= look.floorFit.fillMin);
+        CHECK(fill <= look.twilightFill);
+        if (fill > look.floorFit.fillMin) CHECK(nightFloorKey(look.floorFit, k.moonDeg, fill) == doctest::Approx(21.f));
+    }
+    // Flat outside the knots: above the first row (the sun higher) and below the last.
+    CHECK(nightDeepFill(look, -20.f) == doctest::Approx(nightDeepFill(look, -look.floorFit.knots.front().moonDeg)));
+    CHECK(nightDeepFill(look, -89.f) == doctest::Approx(nightDeepFill(look, -look.floorFit.knots.back().moonDeg)));
+    // Off: a moon other than the table's, or floorKey 0 (an explicit -NightSky=), keeps skyFill at every hour.
+    NightLook other = look;
+    other.moonShare = 0.03f;
+    CHECK_FALSE(nightFloorFitActive(other));
+    CHECK(nightDeepFill(other, -53.4f) == other.skyFill);
+    NightLook off = look;
+    off.floorFit.floorKey = 0.f;
+    CHECK(nightDeepFill(off, -68.f) == off.skyFill);
+    CHECK(nightFrameAt(off, 1.f, -68.f).skyScale == doctest::Approx(off.skyFill));
+    // A row whose slope is 0 can't be solved: skyFill, not a division by zero.
+    NightLook bad = look;
+    for (NightFloorKnot& k : bad.floorFit.knots) k.slope = 0.f;
+    CHECK(nightDeepFill(bad, -53.4f) == bad.skyFill);
+}
+
+TEST_CASE("nightFrameAt: the directional light and the real-time sky lift have no step through the horizon") {
+    // 11-15 20:12 review: every 0.25 degrees from the sun 8 up to 20 down, neighbours differ by at most 25%, for each
+    // moon of the ruled bracket (0.07, 0.045, 0.03); NightAmount from the clock's own twilight band. A near-moonless
+    // test switch (moonShare 1e-4) is exempt: the light then falls to the 1e-4 clamp itself.
+    const WorldClockSpec spec;
+    const auto before = ftcore_test::allocStats().count;
+    for (const float moon : {0.07f, 0.045f, 0.03f}) {
+        NightLook look;
+        look.moonShare = moon;
+        // The whole lift (-NightLiftAll) is the one this bound was set on; the lift by the blend has its own test.
+        look.duskLiftTable = false;
+        float worstSun = 1.f, worstSky = 1.f, lastSun = 0.f, lastSky = 0.f;
+        for (int i = 0; i <= 112; ++i) {
+            const float e = 8.f - 0.25f * static_cast<float>(i);
+            const float t = std::clamp((spec.twilightHigh - e) / (spec.twilightHigh - spec.twilightLow), 0.f, 1.f);
+            const NightFrame f = nightFrameAt(look, t * t * (3.f - 2.f * t), e);
+            CHECK(std::isfinite(f.sunScale));
+            CHECK(std::isfinite(f.skyScaleRealTime));
+            if (i > 0) {
+                worstSun = std::max(worstSun, std::max(f.sunScale / lastSun, lastSun / f.sunScale));
+                worstSky = std::max(worstSky, std::max(f.skyScaleRealTime / lastSky, lastSky / f.skyScaleRealTime));
+            }
+            lastSun = f.sunScale;
+            lastSky = f.skyScaleRealTime;
+        }
+        CHECK(worstSun <= 1.25f);
+        CHECK(worstSky <= 1.25f);
+        // Either side of 0 by a hair: the same light.
+        const NightFrame up = nightFrameAt(look, 0.5f, 1e-3f);
+        const NightFrame down = nightFrameAt(look, 0.5f, -1e-3f);
+        CHECK(up.sunScale == doctest::Approx(down.sunScale).epsilon(2e-3));
+        CHECK(up.skyScaleRealTime == doctest::Approx(down.skyScaleRealTime).epsilon(2e-3));
+    }
+    // By day the light is the sun's, untouched; in the deep night it is the moon's at its full share.
+    const NightLook look;
+    CHECK(nightFrameAt(look, 0.f, 30.f).sunScale == 1.f);
+    CHECK(nightFrameAt(look, 1.f, -50.f).sunScale == doctest::Approx(look.moonShare));
+    // A moonless (or overcast) night: the lift divides by liftFloorShare, not the 1e-4 clamp, so the capture is lifted
+    // at most as for a moon of that share and the street darkens instead of blowing out (block 4's moonless read 209).
+    for (const float moon : {1e-4f, 0.f, 0.005f}) {
+        NightLook dark = look;
+        dark.moonShare = moon;
+        dark.floorFit.floorKey = 0.f;
+        const NightFrame m = nightFrameAt(dark, 1.f, -53.4f);
+        const NightFrame still = nightFrame(dark, 1.f);
+        CHECK(m.skyScaleRealTime * look.liftFloorShare * m.skyLuminance == doctest::Approx(m.skyScale));
+        CHECK(still.skyScaleRealTime * look.liftFloorShare * still.skyLuminance == doctest::Approx(still.skyScale));
+    }
+    NightLook dark = look;
+    dark.moonShare = 1e-4f;
+    dark.floorFit.floorKey = 0.f;
+    NightLook ruled = dark;
+    ruled.moonShare = 0.03f;  // the smallest ruled moon is lifted exactly, past the floor
+    CHECK(nightFrameAt(dark, 1.f, -53.4f).skyScaleRealTime <= nightFrameAt(ruled, 1.f, -53.4f).skyScaleRealTime * 3.001f);
+    CHECK(look.liftFloorShare < 0.03f);
+    // A zero half-depth is clamped, not a NaN at the horizon.
+    NightLook sharp = look;
+    sharp.sunSetHalfDeg = 0.f;
+    CHECK(std::isfinite(nightFrameAt(sharp, 0.5f, 0.f).sunScale));
+    CHECK(std::isfinite(nightFrameAt(sharp, 0.5f, -10.f).skyScaleRealTime));
+    const auto after = ftcore_test::allocStats().count;
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
+TEST_CASE("nightLampOn: staggered by key, each lamp on for good once its point is passed") {
+    int half = 0;
+    for (std::uint32_t k = 0; k < 1000; ++k) {
+        CHECK_FALSE(nightLampOn(0.f, k));
+        CHECK(nightLampOn(1.f, k));
+        if (nightLampOn(0.5f, k)) ++half;
+        bool was = false;
+        for (int i = 0; i <= 20; ++i) {
+            const bool on = nightLampOn(static_cast<float>(i) / 20.f, k);
+            CHECK((on || !was));  // once on, stays on as the fraction rises
+            was = on;
+        }
+    }
+    CHECK(half > 350);
+    CHECK(half < 650);
+    // Neighbouring keys don't come on together.
+    int runs = 0;
+    for (std::uint32_t k = 1; k < 200; ++k) runs += nightLampOn(0.5f, k) != nightLampOn(0.5f, k - 1) ? 1 : 0;
+    CHECK(runs > 60);
+}
+
+TEST_CASE("lamp stagger: the fraction rises with the sun's depth, every lamp on by -4 degrees") {
+    const NightLook look;
+    float last = 0.f;
+    for (int i = 0; i <= 200; ++i) {
+        const float e = 6.f - 0.05f * static_cast<float>(i);  // +6 down to -4 degrees
+        const float f = nightLampFraction(look, e);
+        CHECK(f >= last);
+        last = f;
+    }
+    CHECK(nightLampFraction(look, -4.f) == 1.f);
+    int onAtSunset = 0;
+    for (std::uint32_t k = 0; k < 500; ++k) {
+        CHECK(nightLampOn(nightLampFraction(look, -4.f), k));
+        CHECK_FALSE(nightLampOn(nightLampFraction(look, 1.5f), k));
+        onAtSunset += nightLampOn(nightLampFraction(look, 0.f), k) ? 1 : 0;
+    }
+    // At sunset some lamps are on and most still off: they come on through the next quarter hour, not together.
+    CHECK(onAtSunset > 0);
+    CHECK(onAtSunset < 250);
+}
+
+TEST_CASE("nightLampFraction and nightExposureBlend: on the sun's elevation, the same at dawn") {
+    const NightLook look;
+    CHECK(nightLampFraction(look, look.lampsOnHighDeg + 1.f) == 0.f);
+    CHECK(nightLampFraction(look, look.lampsOnLowDeg - 1.f) == 1.f);
+    CHECK(nightExposureBlend(look, look.exposureHighDeg + 0.1f) == 0.f);
+    CHECK(nightExposureBlend(look, look.exposureLowDeg - 0.1f) == 1.f);
+    // The exposure starts no earlier than the lamps' half point.
+    float halfDeg = look.lampsOnHighDeg;
+    while (nightLampFraction(look, halfDeg) < 0.5f) halfDeg -= 0.01f;
+    CHECK(nightExposureBlend(look, halfDeg) == 0.f);
+    NightLook step = look;
+    step.lampsOnLowDeg = step.lampsOnHighDeg;  // an empty span: a step at the high end
+    CHECK(nightLampFraction(step, step.lampsOnHighDeg + 0.1f) == 0.f);
+    CHECK(nightLampFraction(step, step.lampsOnHighDeg - 0.1f) == 1.f);
+    // A still (no sun given): lamps and exposure follow the night alone.
+    CHECK(nightFrame(look, 1.f).lamps == 1.f);
+    CHECK(nightFrame(look, 1.f).exposureBlend == 1.f);
+    CHECK(nightFrame(look, 0.f).exposureBlend == 0.f);
+}
+
+TEST_CASE("nightMoonScale: rises with the moon's elevation, full by 15 degrees; the floor does not need it") {
+    const NightLook look;
+    // The moon below or at the horizon (the sun up): its rise share, the same either side of 0 (no step).
+    CHECK(nightMoonScale(look, 5.f) == doctest::Approx(look.moonRiseShare));
+    CHECK(nightMoonScale(look, 0.f) == doctest::Approx(look.moonRiseShare));
+    CHECK(nightMoonScale(look, -0.001f) == doctest::Approx(look.moonRiseShare).epsilon(1e-3));
+    CHECK(nightMoonScale(look, -look.moonFullDeg) == doctest::Approx(1.f));
+    CHECK(nightMoonScale(look, -40.f) == 1.f);
+    float last = 0.f;
+    for (int i = 0; i <= 30; ++i) {  // the horizon down to the sun 15 degrees under: the moon's rise
+        const float s = nightMoonScale(look, -0.5f * static_cast<float>(i));
+        CHECK(s >= last);
+        last = s;
+    }
+    const NightFrame low = nightFrameAt(look, 1.f, -3.f);
+    const NightFrame high = nightFrameAt(look, 1.f, -40.f);
+    CHECK(low.sunScale < high.sunScale);
+    CHECK(high.sunScale == doctest::Approx(look.moonShare));
+    // The model's floor is the sky's: at one fill (the floor fit off), the same with or without a moon. (The measured
+    // street is not: the floor fit is per moon share, nightDeepFill.)
+    NightLook fixed = look;
+    fixed.floorFit.floorKey = 0.f;
+    NightLook moonless = fixed;
+    moonless.moonShare = 0.f;
+    const NightKeyModel model;
+    CHECK(nightSceneKey(moonless, model, 1.f, -50.f) == doctest::Approx(nightSceneKey(fixed, model, 1.f, -50.f)));
+    CHECK(nightMoonKey(look, model, 5.f) == 0.f);
+    CHECK(nightMoonKey(look, model, -50.f) > nightMoonKey(look, model, -20.f));
+}
+
+TEST_CASE("nightCharacterFillLux: off by day, two stops under the lamp key at night, cool and from above") {
+    const NightLook look;
+    CHECK(nightCharacterFillLux(look, 0.f) == 0.f);
+    const float key = look.lampCandela / (look.charFillRefM * look.charFillRefM);
+    CHECK(nightCharacterFillLux(look, 1.f) == doctest::Approx(key / 4.f));
+    CHECK(nightCharacterFillLux(look, 7.f) == nightCharacterFillLux(look, 1.f));
+    CHECK(nightCharacterFillLux(look, 0.5f) == doctest::Approx(key / 8.f));
+    CHECK(look.charFillStops == doctest::Approx(2.f));
+    CHECK(look.charFillKelvin > look.whiteKelvin);
+    CHECK(look.charFillPitchDeg < 0.f);
+    NightLook odd;
+    odd.charFillRefM = 0.f;  // a floor on the distance, so the fill stays finite
+    odd.charFillStops = -3.f; // never over the key
+    CHECK(std::isfinite(nightCharacterFillLux(odd, 1.f)));
+    CHECK(nightCharacterFillLux(odd, 1.f) == doctest::Approx(look.lampCandela / 0.01f));
 }
 
 TEST_CASE("nightFrame: exposure locks from half night; no allocation") {
@@ -225,12 +596,17 @@ TEST_CASE("night look: grey-blue ambient, orange lamps, warm glow") {
     CHECK(look.lampKelvin <= 2700.f);
     CHECK(look.glow[0] > look.glow[1]);
     CHECK(look.glow[1] > look.glow[2]);
-    // The fill shows an unlit facade (dark, not black): the captured night sky is a deep blue that carries little
-    // luminance, so the share is over the day's; its tint falls from red to blue, against that blue.
-    CHECK(look.skyFill >= 0.5f);
-    CHECK(look.skyFill <= 1.5f);
-    // A face turned from the moon stays within about two stops of a moonlit one: the fill is many times the moon.
-    CHECK(look.skyFill >= 10.f * look.moonShare);
+    // As twilight ends the fill shows an unlit facade (dark, not black): the captured sky is a deep blue that carries
+    // little luminance, so the share is over the day's, many times the moon; its tint falls from red to blue, against
+    // that blue. In the deep night it is the floor (11-15 19:00 ruling), held by the floor fit per moon elevation; the
+    // still's skyFill sits inside the fit's range (11-16: the real-time lift divides by the moon, so a fill well under
+    // the moon's share still holds the floor).
+    CHECK(look.twilightFill >= 0.5f);
+    CHECK(look.twilightFill <= 1.5f);
+    CHECK(look.twilightFill >= 10.f * look.moonShare);
+    CHECK(look.skyFill >= look.floorFit.fillMin);
+    CHECK(look.skyFill <= nightDeepFill(look, -34.5f));
+    CHECK(look.skyFill >= nightDeepFill(look, -68.f));
     CHECK(look.skyTint[0] >= look.skyTint[1]);
     CHECK(look.skyTint[1] > look.skyTint[2]);
     CHECK(look.skyTint[2] >= 0.4f);
@@ -408,4 +784,137 @@ TEST_CASE("aviationLamps: tallest roofs first, none on low or ground boxes, spac
     few.maxSkyline = 0;
     CHECK(aviationLamps(few, boxes.data(), boxes.size(), sky.data(), sky.size()).size() == 2);
     CHECK(aviationLamps(spec, nullptr, 0, nullptr, 0).empty());
+}
+
+TEST_CASE("dusk fix guards: frames outside the dusk table unchanged, lamps half on wherever the blend moves") {
+    // 11-16 dusk ruling: the dusk table changes no frame at blend 1 (so the night floor table stays valid) nor above
+    // its top, and the exposure never leaves the day's before the lamps are at least half on.
+    const NightLook look;
+    NightLook whole = look;
+    whole.duskLiftTable = false;
+    const WorldClockSpec spec;
+    const auto before = ftcore_test::allocStats().count;
+    bool same = true, lampsHalf = true;
+    for (int m = 16 * 60; m <= 24 * 60; ++m) {
+        const double h = m >= 24 * 60 ? 0.0 : m / 60.0;
+        const float e = sunElevationDeg(spec, h);
+        const float n = nightAmount(spec, h);
+        const NightFrame f = nightFrameAt(look, n, e);
+        const NightFrame w = nightFrameAt(whole, n, e);
+        if ((f.exposureBlend >= 1.f || e >= look.duskLiftTopDeg) &&
+            (f.skyScaleRealTime != w.skyScaleRealTime || f.sunScale != w.sunScale || f.skyScale != w.skyScale)) {
+            same = false;
+        }
+        if (f.exposureBlend > 0.f && f.lamps < 0.5f) lampsHalf = false;
+    }
+    const auto after = ftcore_test::allocStats().count;
+    CHECK(same);
+    CHECK(lampsHalf);
+    // The floor table's knots (20:30 on) are all at blend 1.
+    for (const NightFloorKnot& k : look.floorFit.knots) CHECK(nightExposureBlend(look, -k.moonDeg) == 1.f);
+    CHECK(nightExposureBlend(look, sunElevationDeg(spec, 20.5)) == 1.f);
+    // Each table's knots descend strictly inside its span.
+    CHECK(look.duskLiftTopDeg > look.duskLiftDeg[0]);
+    for (std::size_t i = 1; i < look.duskLiftDeg.size(); ++i) CHECK(look.duskLiftDeg[i - 1] > look.duskLiftDeg[i]);
+    CHECK(look.duskLiftDeg.back() > look.exposureLowDeg);
+    CHECK(look.exposureHighDeg > look.duskMinDeg[0]);
+    for (std::size_t i = 1; i < look.duskMinDeg.size(); ++i) CHECK(look.duskMinDeg[i - 1] > look.duskMinDeg[i]);
+    CHECK(look.duskMinDeg.back() > look.exposureLowDeg);
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+}
+
+TEST_CASE("dusk table: the knots' values at their elevations, the whole lift and the day's and night's floor outside") {
+    const NightLook look;
+    const float nightMin = -2.2f;
+    for (std::size_t i = 0; i < look.duskLift.size(); ++i) {
+        CHECK(duskLiftAt(look, look.duskLiftDeg[i], 7.f) == doctest::Approx(look.duskLift[i]));
+    }
+    for (std::size_t i = 0; i < look.duskMinEV.size(); ++i) {
+        CHECK(duskMinAt(look, look.duskMinDeg[i], -10.f, nightMin) == doctest::Approx(look.duskMinEV[i]));
+    }
+    CHECK(duskLiftAt(look, look.duskLiftTopDeg + 0.5f, 7.f) == 7.f);
+    CHECK(duskLiftAt(look, look.exposureLowDeg, 7.f) == 7.f);
+    CHECK(duskLiftAt(look, std::nanf(""), 7.f) == 7.f);
+    CHECK(duskMinAt(look, look.exposureHighDeg, -10.f, nightMin) == -10.f);
+    CHECK(duskMinAt(look, look.exposureLowDeg, -10.f, nightMin) == nightMin);
+    // Continuous: a thousandth of a degree, from 6 up to 9 down, never moves the lift by more than 1% or the floor by
+    // more than 0.05 EV (no step at either end of either table).
+    float lastLift = duskLiftAt(look, 6.f, 7.f), lastMin = duskMinAt(look, 6.f, -10.f, nightMin);
+    float worstLift = 1.f, worstMin = 0.f;
+    for (int i = 1; i <= 15000; ++i) {
+        const float e = 6.f - 1e-3f * static_cast<float>(i);
+        const float l = duskLiftAt(look, e, 7.f), mn = duskMinAt(look, e, -10.f, nightMin);
+        worstLift = std::max(worstLift, std::max(l / lastLift, lastLift / l));
+        worstMin = std::max(worstMin, std::fabs(mn - lastMin));
+        lastLift = l;
+        lastMin = mn;
+    }
+    CHECK(worstLift <= 1.01f);
+    CHECK(worstMin <= 0.05f);
+}
+
+TEST_CASE("dusk table: the strip-centre key it predicts from blocks 1116e/f falls smoothly from 17:45 to 18:30") {
+    // The measured rows (strip-centre key, 0-255): 18:00 and 18:05 at blend 0 (the day's free meter) against the
+    // real-time lift r; 18:10 and 18:20 with the meter pinned, against EV at the r they were shot at. 17:45 (101, the
+    // shade fade) and 18:30 (39.4, blend 1, unchanged) are the ends. Known fault, not checked: 18:30 -> 19:00 rises
+    // x1.21 (39.4 -> 47.7) with the meter pinned too (0 -> 4.9), the moon's own elevation, not the table.
+    const NightLook look;
+    const WorldClockSpec spec;
+    auto frameAt = [&](double h) { return nightFrameAt(look, nightAmount(spec, h), sunElevationDeg(spec, h)); };
+    // 18:00: 35.9 at r 2.136, 92.5 at r 4.271 (r^1.37); 18:05: 46.7 at r 1.302, 93.3 at r 4.35 (r^0.57).
+    const float r1800 = frameAt(18.0).skyScaleRealTime;
+    const float r1805 = frameAt(18.0 + 5.0 / 60.0).skyScaleRealTime;
+    const float k1800 = 35.9f * std::pow(r1800 / 2.136f, std::log(92.5f / 35.9f) / std::log(4.271f / 2.136f));
+    const float k1805 = 46.7f * std::pow(r1805 / 1.302f, std::log(93.3f / 46.7f) / std::log(4.35f / 1.302f));
+    // 18:10 (r 1.683): 21 at EV -4.5, 65 at -5.5; 18:20 (r 17.8): 12.2 at -2.5, 55.5 at -3.5. The floor binds there.
+    const NightFrame f1810 = frameAt(18.0 + 10.0 / 60.0), f1820 = frameAt(18.0 + 20.0 / 60.0);
+    CHECK(f1810.skyScaleRealTime == doctest::Approx(1.683f).epsilon(0.08));
+    CHECK(f1820.skyScaleRealTime == doctest::Approx(17.8f).epsilon(0.08));
+    const float e1810 = sunElevationDeg(spec, 18.0 + 10.0 / 60.0), e1820 = sunElevationDeg(spec, 18.0 + 20.0 / 60.0);
+    const float ev1810 = nightExposureRange(look, f1810, e1810, -10.f, 20.f).minEV100;
+    const float ev1820 = nightExposureRange(look, f1820, e1820, -10.f, 20.f).minEV100;
+    const float k1810 = 65.f * std::pow(65.f / 21.f, -5.5f - ev1810);
+    const float k1820 = 55.5f * std::pow(55.5f / 12.2f, -3.5f - ev1820);
+    const float keys[] = {101.f, k1800, k1805, k1810, k1820, 39.4f};
+    INFO("18:00 " << k1800 << " (r " << r1800 << "), 18:05 " << k1805 << " (r " << r1805 << "), 18:10 " << k1810
+                  << " (EV " << ev1810 << "), 18:20 " << k1820 << " (EV " << ev1820 << "); e " << e1810 << ", "
+                  << sunElevationDeg(spec, 18.25) << ", " << e1820 << ", " << sunElevationDeg(spec, 18.0 + 25.0 / 60.0)
+                  << ", " << sunElevationDeg(spec, 18.0 + 5.0 / 60.0) << ", " << sunElevationDeg(spec, 18.0));
+    for (std::size_t i = 1; i < std::size(keys); ++i) {
+        CHECK(keys[i] <= keys[i - 1] * 1.02f);
+        CHECK(std::max(keys[i], keys[i - 1]) / std::min(keys[i], keys[i - 1]) <= 1.6f);
+    }
+    CHECK(k1800 == doctest::Approx(75.f).epsilon(0.1));
+    CHECK(k1805 == doctest::Approx(68.f).epsilon(0.1));
+    CHECK(k1810 == doctest::Approx(60.f).epsilon(0.1));
+    CHECK(k1820 == doctest::Approx(48.f).epsilon(0.1));
+}
+
+TEST_CASE("nightExposureRange: the day's at blend 0, the night's exactly at 1, the dusk table's floor between") {
+    NightLook look;
+    NightFrame f = nightFrame(look, 1.f);
+    f.exposureBlend = 0.f;
+    ExposureRange r = nightExposureRange(look, f, -1.f, -10.f, 20.f);
+    CHECK(r.minEV100 == -10.f);
+    CHECK(r.maxEV100 == 20.f);
+    f.exposureBlend = 1.f;
+    r = nightExposureRange(look, f, -8.f, -10.f, 20.f);
+    CHECK(r.minEV100 == f.exposureMinEV100);
+    CHECK(r.maxEV100 == f.exposureMaxEV100);
+    look.duskMinEV = {-5.f, -4.f, -3.f, -2.5f};
+    f.exposureBlend = 0.25f;
+    r = nightExposureRange(look, f, look.duskMinDeg[1], -10.f, 20.f);
+    CHECK(r.minEV100 == doctest::Approx(-4.f));
+    CHECK(r.maxEV100 == doctest::Approx(20.f + (f.exposureMaxEV100 - 20.f) * 0.25f));
+    // Never under the day's own floor; min never above max, even with the table over the max.
+    r = nightExposureRange(look, f, look.duskMinDeg[1], -3.5f, 20.f);
+    CHECK(r.minEV100 >= -3.5f);
+    look.duskMinEV = {30.f, 30.f, 30.f, 30.f};
+    for (const float b : {1e-3f, 0.3f, 0.7f, 0.999f}) {
+        f.exposureBlend = b;
+        for (const float e : look.duskMinDeg) {
+            r = nightExposureRange(look, f, e, -10.f, 20.f);
+            CHECK(r.minEV100 <= r.maxEV100);
+        }
+    }
 }

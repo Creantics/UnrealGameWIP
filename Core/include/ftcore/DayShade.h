@@ -3,8 +3,8 @@
 // The day's shadow floor: how far a world lifts its shade by full day, so a lane or a building's shadow reads at about
 // a third of the sunlit value instead of going black beside a bright sky.
 //
-// Four levers, each blended in by the day amount (dayShadeAmount: 1 by full day, 0 at full night and through the dusk,
-// so the night and the whole dusk keep exactly what they had):
+// Four levers, each blended in by the day amount (dayShadeAmount: 1 by full day, fading smoothly on the sun's
+// elevation as it sets, 0 before the lamps start and through the night, so the frame never brightens as it goes):
 //   skyScale       the sky light's intensity times this (the fill a shaded lane mostly sees)
 //   shadowContrast the local exposure's shadow contrast (1 = off; lower lifts the shade against a bright frame)
 //   diffuseBoost   Lumen's diffuse colour boost (1 = off, the engine's 1..4): more bounce from sunlit walls into shade
@@ -59,12 +59,19 @@ struct DayShadeFrame {
     std::array<float, 3> fogSky{1.f, 1.f, 1.f};
 };
 
-// The dusk amount by which the day's lift is gone.
-inline constexpr float kDayShadeDuskCut = 0.2f;
+// Where the day's lift fades on the sun's elevation: full from fadeHighDeg up, gone from fadeLowDeg down, eased
+// between. On the elevation, not the dusk's bell, so it never comes back after the bell's peak; fadeLowDeg sits above
+// the lamps' start (NightLook::lampsOnHighDeg), so the lamps come on into a frame the lift has left. highDeg 10: the
+// unshaded street falls only 3% from 17:00 to 17:15 (block 1116e: 209 -> 202), so a fade already under way at 17:15
+// (10.4 deg) would brighten it past the shaded 17:00 (137); provisional until the re-shoot.
+struct DayShadeFade {
+    float highDeg = 10.f;
+    float lowDeg = 2.f;
+};
 
-// 1 by full day; falls with the night (0 day .. 1 full night) and, squared, with the dusk (0 .. 1), gone from
-// kDayShadeDuskCut of it on.
-FTCORE_API float dayShadeAmount(float night, float dusk);
+// 1 by full day; (1 - night) times the eased fade on the sun's elevation. Non-increasing as the sun sets, 0 from
+// fade.lowDeg down; NaN reads as 0.
+FTCORE_API float dayShadeAmount(const DayShadeFade& fade, float night, float sunElevationDeg);
 
 // Base blended toward Look by Amount (clamped); out-of-range look values are clamped to the engine's ranges
 // (skyScale >= 0, shadowContrast 0..1, diffuseBoost 1..4, filmToe 0..1, highlightContrast 0..1 and never over the
