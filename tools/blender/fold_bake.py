@@ -25,10 +25,14 @@ SPEC.json (lengths in metres, in the blend's world space):
      "hole_max_m": 0.5,                 an open boundary loop shorter than this is flagged as a hole (FOLD_BAKE_OPEN_BOUNDARY)
      "openings": 3,                     ways through a closed shell the garment should have; more are flagged as holes
      "allow_holes": false,              holes (either kind) stop the run with exit code 3 unless this is true
-     "min_z": 0.6, "feather_cm": 3}     min_z: a baked texel tilted further than this from the sheet counts as a miss;
+     "min_z": 0.6, "feather_cm": 3,   min_z: a baked texel tilted further than this from the sheet counts as a miss;
                                         feather_cm: the folds fade to flat over this distance in from the pinned outline
+     "overwrite": false}                earlier <name>_*.png, <name>_hi.obj or <name>_report.json in out stop the run unless true
 
-Checks: a missing key, a garment or collider not in the blend, a garment with no faces, a region that selects nothing,
+The environment variable FOLD_BAKE_ROOT must name the folder "out" stays under; unset, or "out" outside it, stops the run.
+
+Checks: a missing key, a garment or collider not in the blend, a garment with no faces or no UV layer, a name that is not
+a plain prefix, FOLD_BAKE_ROOT unset or "out" outside it, earlier outputs without "overwrite", a region that selects nothing,
 a closed-shell garment with no "openings", a cast grid over GRID_MAX points, frames outside 1..FRAMES_MAX or res outside 64..8192 stop the run with
 FOLD_BAKE_FAILED and exit code 2, before anything is simulated or written.
 
@@ -83,7 +87,22 @@ if not bpy.data.objects[S["garment"]].data.polygons:
 for key in ("base_normal_gl", "base_normal_dx", "base_orm", "base_wear"):
     if S.get(key) and not os.path.isfile(S[key]):
         fail("%s %s not found" % (key, S[key]))
+if not bpy.data.objects[S["garment"]].data.uv_layers:
+    fail("garment %s has no UV layer: the folds bake onto its own UVs" % S["garment"])
 OUT, NAME = S["out"], S["name"]
+if not isinstance(NAME, str) or not NAME or NAME != os.path.basename(NAME) or NAME in (".", ".."):
+    fail("name %r must be a plain file prefix (no folders)" % (NAME,))
+ROOT = os.environ.get("FOLD_BAKE_ROOT", "")
+if not ROOT:
+    fail("FOLD_BAKE_ROOT is not set: set it to the folder the output must stay under")
+root_r, out_r = os.path.realpath(ROOT), os.path.realpath(OUT)
+if os.path.normcase(os.path.commonpath([root_r, out_r])) != os.path.normcase(root_r):
+    fail("out %s is not under FOLD_BAKE_ROOT" % OUT)
+if os.path.isdir(OUT) and not S.get("overwrite", False):
+    old = sorted(f for f in os.listdir(OUT) if f.startswith(NAME + "_") and
+                 (f.endswith(".png") or f == NAME + "_hi.obj" or f == NAME + "_report.json"))
+    if old:
+        fail("%d earlier outputs of %s in out (%s ...): set \"overwrite\": true in the spec to replace them" % (len(old), NAME, old[0]))
 os.makedirs(OUT, exist_ok=True)
 rep = {"spec": S}
 sc = bpy.context.scene
