@@ -34,6 +34,9 @@ param(
     [int]$BlockMinutes = 28
 )
 $ErrorActionPreference = 'Continue'
+# Through powershell -File (or a wrapper passing @args) "a,b" arrives as one string: split the lists here.
+$Scenes = @($Scenes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+$Sizes = @($Sizes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not $Project) { $Project = Join-Path $repo 'ForgottenThird.uproject' }
 $ue = $env:FT_UE_CMD
@@ -53,7 +56,8 @@ function Get-MachineState {
         $cpu = [math]::Round((Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 3 |
                     ForEach-Object { $_.CounterSamples[0].CookedValue } | Measure-Object -Average).Average, 1)
     } catch {}
-    $heavy = @((Get-Names $env:FT_BENCH_HEAVY) + (Get-Names $env:FT_BENCH_GAMES) | ForEach-Object { '{0}({1})' -f $_.ProcessName, $_.Id })
+    # @() on each: a function's one-item result arrives as that item, not as an array.
+    $heavy = @(@(Get-Names $env:FT_BENCH_HEAVY) + @(Get-Names $env:FT_BENCH_GAMES) | ForEach-Object { '{0}({1})' -f $_.ProcessName, $_.Id })
     $top = ''
     try {
         $n = [Environment]::ProcessorCount
