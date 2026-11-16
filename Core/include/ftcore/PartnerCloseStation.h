@@ -8,10 +8,13 @@
 // PartnerStationView::close (given, whole); not given, the brain is exactly as before (the classic camera, to the bit).
 //
 // Candidates: on both flanks of the target (flank +1: the lead's bearing turned from +x toward +y, as stTurn),
-// at kPartnerCloseAngleMin..Max (40-80) degrees round the target from the target-to-lead line, in steps of
-// kPartnerCloseAngleStep (5), and at standMin..standMax metres off the target's edge (the host's kit band: a melee
-// partner 1.5-2.5, a caster 5-8): for each angle the band's two ends, its middle, and the point of the band nearest
+// at kPartnerCloseAngleMin..Max (40-80) degrees round the target from the target-to-lead line (a big target, radius
+// kPartnerCloseWideRadius (2) or more: kPartnerCloseWideAngleMin..Max, 60-100, to stand clear of the lead's
+// silhouette), in 8 equal steps (5 degrees), and at standMin..standMax metres off the target's edge (the host's
+// kit band: a melee partner 1.5-2.5, a caster 5-8): for each angle the band's two ends, its middle, and the point of the band nearest
 // the partner. A candidate is legal when, in order:
+//   - when the host gives a 3D frame test (sees, the brain's rule-13 frame: feet, middle and head in the frame), it
+//     passes it; this is the measure whenever given;
 //   - it is in the lens's view cone with the margin: in front of the lens (depth over kPartnerCloseNear) and its
 //     horizontal screen coordinate within 1 - 2 x kPartnerCloseConeMargin of the centre (0.1: ndc 0.8; the share of
 //     the whole width kept clear each side, as rule 13's frustumMargin);
@@ -35,8 +38,15 @@
 // 3D one (the lens lensHeight above the partner's ground, pitched pitchDegrees, + up). Note: a lens pitched up by more
 // than its vertical half-angle sees nothing below its own height near it, so no ground station puts the partner in
 // frame; the score then only picks the least bad one.
+// Tiers, per flank: (1) the band as above; (2) none legal in the band (a caster with the lead next to the target):
+// the farthest legal point short of the band, at standMin x (1 - j/8), j = 1..8, scored + kPartnerCloseShortPenalty;
+// (3) neither on any flank and leashMeters > 0: a ring round the lead within the leash (radii leash - 0.25 and the
+// middle of personal space and leash), at kPartnerCloseRingMin..Max (15-55) degrees off the lead-to-target line
+// toward each flank, + kPartnerCloseFlipMargin off the held flank. None of these: not valid (the caller's rules).
 // Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and never changed while attacking; then only
-// when the other flank scores better. On the held flank the best legal candidate wins. With none legal on the flank
+// when the other flank's pick beats the held flank's by more than kPartnerCloseFlipMargin (the band and short-of-band
+// picks of the two flanks are compared, so a Pause station and a Ready station on opposite flanks do not ping-pong).
+// On the held flank the best legal candidate wins. With none legal on the flank
 // it must keep (held, or attacking): its held angle at the band's nearest point, reported not valid (the caller keeps
 // its own station). None legal at all: not valid, and the hold is left as it was.
 
@@ -61,6 +71,13 @@ inline constexpr float kPartnerCloseAimConeDegrees = 25.f; // within this of the
 inline constexpr float kPartnerCloseMinAhead = 3.f;        // m along the lens's ground forward, at least
 inline constexpr float kPartnerCloseTopNdc = 1.f / 3.f;    // the aim point's ndc y at most this (the lower two thirds)
 inline constexpr float kPartnerCloseVerticalWeight = 10.f; // m of walk per ndc unit outside the lower two thirds
+inline constexpr float kPartnerCloseWideRadius = 2.f;       // m: a target this big or bigger takes the wide flanks
+inline constexpr float kPartnerCloseWideAngleMin = 60.f;    // degrees round a big target
+inline constexpr float kPartnerCloseWideAngleMax = 100.f;
+inline constexpr float kPartnerCloseShortPenalty = 3.f;     // m of walk: short of the band (tier 2)
+inline constexpr float kPartnerCloseFlipMargin = 2.f;       // m of walk the other flank must win by to take it
+inline constexpr float kPartnerCloseRingMin = 15.f;         // degrees off the lead-to-target line (tier 3)
+inline constexpr float kPartnerCloseRingMax = 55.f;
 // The kit bands (m off the target's edge) a host gives by its partner's kit (WEAPONS owns which kit is which).
 inline constexpr float kPartnerCloseMeleeMin = 1.5f;
 inline constexpr float kPartnerCloseMeleeMax = 2.5f;
@@ -106,6 +123,10 @@ struct PartnerCloseInput {
     std::span<const PartnerWall> walls{};
     std::span<const PartnerBody> bodies{};
     bool attacking = false;      // the partner is in a string or a blow runs: its flank never changes
+    // The host's 3D frame test (none: null): a candidate must pass sees(seesContext, point). The brain gives its
+    // rule-13 frame (feet, middle and head of a standing body inside the frustum with its margins) when framed.
+    bool (*sees)(const void* context, Vec2 p) = nullptr;
+    const void* seesContext = nullptr;
 };
 
 // The caller's hold (keep it per partner; zero it on a new fight, a party switch or going down).
@@ -113,6 +134,7 @@ struct PartnerCloseHold {
     std::int8_t flank = 0; // 0: none held
     float angle = 0.f;     // degrees, the held candidate's
     double heldFor = 0.0;  // since the flank last changed (the caller adds dt each step before the call)
+    bool ring = false;     // the held candidate is a lead-ring one (tier 3): angle is round the lead
 };
 
 struct PartnerCloseStation {
@@ -122,6 +144,8 @@ struct PartnerCloseStation {
     float angle = 0.f;     // degrees round the target from the lead's bearing
     float offEdge = 0.f;   // m off the target's edge
     bool held = false;     // the flank was kept by the hold (the 1.5 s, or attacking)
+    std::uint8_t tier = 0; // 1 the band, 2 short of the band, 3 the lead ring (round the lead; angle is from the
+                           // lead-to-target line); 0 not valid
 };
 
 // What the host gives the brain under the close camera (PartnerStationView::close); the lens's place and forward are

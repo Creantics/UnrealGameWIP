@@ -690,7 +690,8 @@ std::uint64_t PartnerBrainSave::hash() const {
     }
     if (t.tallGrowMaxMeters != d.tallGrowMaxMeters) h.add(std::uint8_t{18}).add(t.tallGrowMaxMeters); // default: as before
     // Rule 19: only once the close camera was given (closeUsed), so a brain never given it hashes as before.
-    if (closeUsed) h.add(std::uint8_t{22}).add(closeHold.flank).add(closeHold.angle).add(closeHold.heldFor);
+    if (closeUsed)
+        h.add(std::uint8_t{22}).add(closeHold.flank).add(closeHold.angle).add(closeHold.heldFor).add(closeHold.ring);
     return h.value;
 }
 
@@ -1323,6 +1324,21 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         ci.verticalHalfDegrees = c.verticalHalfDegrees;
         ci.lensHeight = c.lensHeight;
         ci.aimHeight = c.aimHeight;
+        if (fm) { // ruling: the 3D frame is the measure whenever the camera is given
+            ci.sees = [](const void* ctx, Vec2 at) { return static_cast<const Frame*>(ctx)->sees(at); };
+            ci.seesContext = &fr;
+            if (!(c.verticalHalfDegrees > 0.f)) { // the vertical score from the given camera itself
+                const PartnerCameraView& lensView = in.station.camera;
+                const float fwdLen = std::sqrt(lensView.forward.x * lensView.forward.x + lensView.forward.y * lensView.forward.y +
+                                           lensView.forward.z * lensView.forward.z);
+                ci.pitchDegrees = std::clamp(std::asin(std::clamp(lensView.forward.z / fwdLen, -1.f, 1.f)) / kStDeg, -85.f, 85.f);
+                ci.verticalHalfDegrees = std::clamp(0.5f * lensView.verticalFovDegrees, 1.f, 85.f);
+                ci.lensHeight = std::clamp(lensView.pos.z - lensView.groundZ, -20.f, 50.f);
+                ci.aimHeight = std::clamp(0.5f * lensView.bodyHeight, 0.f, 5.f);
+            }
+        }
+        // Ruling: under StayClose the leash holds here too (rule 18's cap, grown by a tall target).
+        ci.leashMeters = in.order == PartnerOrder::StayClose ? closeCap(t, g) : 0.f;
         ci.leadSide = c.leadSide;
         ci.partner = in.pos;
         ci.standMax = forString ? std::min(c.standMax, t.reachMeters - t.stationTolerance) : c.standMax;

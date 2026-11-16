@@ -42,12 +42,12 @@ float csNdc(const PartnerCloseInput& in, Vec2 p) {
 }
 
 // The close lens on the lead looking at the target: `shoulder` m to the lens's right (positive: the lead left of
-// centre), the forward turned so the target sits at `aimNdc`.
-void csLens(Vec2 lead, Vec2 target, float shoulder, float aimNdc, Vec2& cam, Vec2& fwd) {
+// centre), the forward turned so the target sits at `aimNdc` (`half`: the lens's half-width, 30 by default).
+void csLens(Vec2 lead, Vec2 target, float shoulder, float aimNdc, Vec2& cam, Vec2& fwd, float half = kCsHalf) {
     const Vec2 d = csUnit(csSub(target, lead));
     cam = csAdd(csAdd(lead, csMul(d, -2.6f)), csMul(csRight(d), shoulder));
     const Vec2 aim = csUnit(csSub(target, cam));
-    fwd = csTurn(aim, -std::atan(aimNdc * std::tan(kCsHalf * kCsDeg)) / kCsDeg);
+    fwd = csTurn(aim, -std::atan(aimNdc * std::tan(half * kCsDeg)) / kCsDeg);
 }
 
 // A target of radius 1 at the origin, the lead 5 m out on -x, the lens over its right shoulder (lead left of centre).
@@ -560,4 +560,297 @@ TEST_CASE("close station: a pitched lens keeps the partner in the lower two thir
     REQUIRE(partnerCloseLens(in, low.point, x3, y3));
     CHECK(y3 < -1.f);
     MESSAGE("pitched 25: the station's aim point at ndc y " << y3);
+}
+
+TEST_CASE("close station: a big target takes the wide flanks and keeps the partner clear of the lead 75% of the time") {
+    // Radius 2 or more: 60-100 degrees round the target, so the partner stands off the lead's silhouette.
+    for (const float tr : {2.f, 2.5f, 3.5f}) {
+        CAPTURE(tr);
+        PartnerCloseInput in = csScene();
+        in.targetRadius = tr;
+        PartnerCloseHold hold;
+        const PartnerCloseStation st = partnerCloseStation(in, hold);
+        REQUIRE(st.valid);
+        CHECK(st.tier == 1);
+        const float a = csAngleAt(in.target, in.lead, st.point);
+        CHECK(a >= kPartnerCloseWideAngleMin - 0.01f);
+        CHECK(a <= kPartnerCloseWideAngleMax + 0.01f);
+    }
+    PartnerCloseInput small = csScene();
+    small.targetRadius = 1.9f; // under the line: the usual 40-80
+    PartnerCloseHold hs;
+    const PartnerCloseStation s = partnerCloseStation(small, hs);
+    REQUIRE(s.valid);
+    CHECK(csAngleAt(small.target, small.lead, s.point) <= kPartnerCloseAngleMax + 0.01f);
+
+    // The circle-strafe by a big target: in the lens, and clear of the lead's silhouette and the target, 75% or more.
+    struct Case {
+        float targetRadius, orbit;
+    };
+    for (const Case c : {Case{2.5f, 6.f}, Case{3.5f, 7.f}})
+        for (const float dir : {1.f, -1.f}) {
+            CAPTURE(c.targetRadius);
+            CAPTURE(dir);
+            const CsSweep r = csSweep(c.targetRadius, c.orbit, kPartnerCloseMeleeMin, kPartnerCloseMeleeMax, dir);
+            MESSAGE("wide sweep: target r " << c.targetRadius << " dir " << dir << ": in cone " << r.inCone << ", clear "
+                                            << r.clear << ", flips " << r.flips);
+            CHECK(r.inCone >= 0.85f);
+            CHECK(r.clear >= 0.75f);
+            CHECK(r.flipsAttacking == 0);
+        }
+}
+
+TEST_CASE("close station: a caster with the lead next to the target casts from short of its band") {
+    // The lead 1 m off the target's edge: no point of the 5-8 m band is in the cone; the farthest legal one short of it.
+    PartnerCloseInput in = csScene();
+    in.lead = {-2.f, 0.f};
+    csLens(in.lead, in.target, 0.8f, 0.2f, in.cameraPos, in.cameraForward);
+    in.partner = {-1.f, -3.f};
+    in.standMin = kPartnerCloseCasterMin;
+    in.standMax = kPartnerCloseCasterMax;
+    PartnerCloseHold hold;
+    const PartnerCloseStation st = partnerCloseStation(in, hold);
+    REQUIRE(st.valid);
+    CHECK(st.tier == 2);
+    CHECK(st.offEdge < kPartnerCloseCasterMin);
+    CHECK(st.offEdge >= 0.f);
+    CHECK(csLen(csSub(st.point, in.target)) - in.targetRadius == doctest::Approx(st.offEdge).epsilon(1e-4));
+    CHECK(partnerCloseInCone(in.cameraPos, in.cameraForward, kCsHalf, kPartnerCloseConeMargin, st.point));
+    // The steps short of the band are standMin x (1 - j/8): the one found is one of them.
+    const float j = (1.f - st.offEdge / kPartnerCloseCasterMin) * 8.f;
+    CHECK(std::fabs(j - std::round(j)) < 1e-3f);
+    // The lead far out: the band itself (tier 1).
+    PartnerCloseInput away = in;
+    away.lead = {-11.f, 0.f};
+    csLens(away.lead, away.target, 0.8f, 0.2f, away.cameraPos, away.cameraForward);
+    away.partner = {-9.f, -3.f};
+    PartnerCloseHold hf;
+    const PartnerCloseStation f = partnerCloseStation(away, hf);
+    REQUIRE(f.valid);
+    CHECK(f.tier == 1);
+    // The cone holds none at all: not valid (the brain's own rules then).
+    in.minAhead = 20.f;
+    PartnerCloseHold hn;
+    const PartnerCloseStation none = partnerCloseStation(in, hn);
+    CHECK_FALSE(none.valid);
+    CHECK(none.tier == 0);
+    CHECK(hn.flank == 0);
+}
+
+TEST_CASE("close station: never beyond the leash; within it a ring round the lead") {
+    // A far target (lead 11 m off its edge), a melee band: its stations are 10 m from the lead.
+    PartnerCloseInput in = csScene();
+    in.lead = {-12.f, 0.f};
+    csLens(in.lead, in.target, 0.8f, 0.2f, in.cameraPos, in.cameraForward);
+    in.partner = {-10.f, -2.f};
+    PartnerCloseHold h0;
+    const PartnerCloseStation loose = partnerCloseStation(in, h0);
+    REQUIRE(loose.valid);
+    CHECK(loose.tier == 1);
+    CHECK(csLen(csSub(loose.point, in.lead)) > 3.5f);
+    // Leashed at 3.5 m: nothing of the band is legal; the ring round the lead, toward the target's flank, in the lens.
+    in.leashMeters = 3.5f;
+    PartnerCloseHold h1;
+    const PartnerCloseStation ring = partnerCloseStation(in, h1);
+    REQUIRE(ring.valid);
+    CHECK(ring.tier == 3);
+    CHECK(h1.ring);
+    CHECK(csLen(csSub(ring.point, in.lead)) <= in.leashMeters + 1e-4f);
+    CHECK(csLen(csSub(ring.point, in.lead)) >= in.personalSpace - 1e-4f);
+    CHECK(partnerCloseInCone(in.cameraPos, in.cameraForward, kCsHalf, kPartnerCloseConeMargin, ring.point));
+    // Held on the ring, the next call keeps it (no band angle mistaken for the ring's).
+    const PartnerCloseStation again = partnerCloseStation(in, h1);
+    REQUIRE(again.valid);
+    CHECK(again.tier == 3);
+    CHECK(csLen(csSub(again.point, ring.point)) < 1e-4f);
+
+    // Every bearing, both kits, leashed: every station within the leash.
+    int found = 0;
+    for (int a = 0; a < 360; a += 15)
+        for (const float lo : {kPartnerCloseMeleeMin, kPartnerCloseCasterMin}) {
+            PartnerCloseInput s = csScene();
+            s.lead = csMul({std::cos(static_cast<float>(a) * kCsDeg), std::sin(static_cast<float>(a) * kCsDeg)}, 5.f);
+            csLens(s.lead, s.target, 0.8f, 0.2f, s.cameraPos, s.cameraForward);
+            s.partner = {0.f, 3.f};
+            s.standMin = lo;
+            s.standMax = lo == kPartnerCloseMeleeMin ? kPartnerCloseMeleeMax : kPartnerCloseCasterMax;
+            s.leashMeters = 3.5f;
+            PartnerCloseHold h;
+            const PartnerCloseStation st = partnerCloseStation(s, h);
+            if (!st.valid) continue;
+            ++found;
+            CHECK(csLen(csSub(st.point, s.lead)) <= s.leashMeters + 1e-4f);
+        }
+    CHECK(found >= 44); // of 48
+
+    // Through the brain under StayClose: every goal within its cap (3.5 m here) of the lead.
+    CsPit p(true);
+    p.in.order = PartnerOrder::StayClose;
+    p.in.station.close.standMin = kPartnerCloseCasterMin;
+    p.in.station.close.standMax = kPartnerCloseCasterMax;
+    const PartnerTuning tune{};
+    int moves = 0;
+    for (int s = 0; s < 600; ++s) {
+        const PartnerIntent& i = p.step();
+        if (i.act != PartnerAct::MoveTo) continue;
+        ++moves;
+        CHECK(csLen(csSub(i.point, p.in.leadPos)) <= tune.closeLeadMeters + 1e-3f);
+        p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+    }
+    CHECK(moves > 0);
+}
+
+namespace {
+
+// A host's 3D frame test for the rule: the brain's rule-13 frame (partnerInFrame, feet to head) through `cam`.
+bool csSees(const void* cam, Vec2 p) {
+    return partnerInFrame(*static_cast<const PartnerCameraView*>(cam), kPartnerFrustumMargin, p);
+}
+// The flat close lens as a 3D camera, 1.7 m up, pitched `pitch` degrees (+ up), 16:9 with the lens's half-width.
+PartnerCameraView csCamera(const PartnerCloseInput& in, float pitch) {
+    const Vec2 f = csUnit(in.cameraForward);
+    const float c = std::cos(pitch * kCsDeg), s = std::sin(pitch * kCsDeg);
+    PartnerCameraView v;
+    v.given = true;
+    v.pos = {in.cameraPos.x, in.cameraPos.y, 1.7f};
+    v.forward = {f.x * c, f.y * c, s};
+    v.up = {-f.x * s, -f.y * s, c};
+    v.aspect = 16.f / 9.f;
+    v.verticalFovDegrees = 2.f * std::atan(std::tan(in.halfAngleDegrees * kCsDeg) / v.aspect) / kCsDeg;
+    v.groundZ = 0.f;
+    v.bodyHeight = 1.8f;
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("close station: given a 3D frame test, it is the measure") {
+    PartnerCloseInput in = csScene();
+    PartnerCameraView cam = csCamera(in, 0.f);
+    in.sees = csSees;
+    in.seesContext = &cam;
+    PartnerCloseHold hold;
+    const PartnerCloseStation st = partnerCloseStation(in, hold);
+    REQUIRE(st.valid);
+    CHECK(partnerInFrame(cam, kPartnerFrustumMargin, st.point));
+    // A test that sees nothing: no station.
+    in.sees = [](const void*, Vec2) { return false; };
+    PartnerCloseHold h0;
+    CHECK_FALSE(partnerCloseStation(in, h0).valid);
+
+    // A sweep of bearings and target sizes, level and pitched up: every station passes the frame test. Pitched up
+    // 28 degrees (a tall boss) the frame's bottom edge clears the partner's feet everywhere near: none (the camera's
+    // pitch is the fix; MESSAGE for the camera lane).
+    in.sees = csSees;
+    for (const float pitch : {0.f, 6.f, 12.f, 28.f}) {
+        int found = 0, n = 0;
+        for (int a = 0; a < 360; a += 15)
+            for (const float tr : {1.f, 2.5f}) {
+                PartnerCloseInput s = csScene();
+                s.targetRadius = tr;
+                s.lead = csMul({std::cos(static_cast<float>(a) * kCsDeg), std::sin(static_cast<float>(a) * kCsDeg)}, tr + 4.f);
+                csLens(s.lead, s.target, 0.8f, 0.2f, s.cameraPos, s.cameraForward);
+                const PartnerCameraView v = csCamera(s, pitch);
+                s.sees = csSees;
+                s.seesContext = &v;
+                PartnerCloseHold h;
+                const PartnerCloseStation r = partnerCloseStation(s, h);
+                ++n;
+                if (!r.valid) continue;
+                ++found;
+                CHECK(partnerInFrame(v, kPartnerFrustumMargin, r.point));
+            }
+        MESSAGE("3D frame, pitch " << pitch << ": a station in frame for " << found << " of " << n << " scenes");
+        if (pitch == 0.f) CHECK(found >= n * 3 / 4);
+        if (pitch == 28.f) CHECK(found == 0);
+    }
+}
+
+namespace {
+
+// The brain's cycle on the rule alone: Ready (the band pulled in to reach less tolerance), a 1.2 s string, a 1.5 s
+// pause in the kit band, one hold throughout; the lens 0.55 m off the shoulder at 34 degrees, the lead circling.
+struct CsCycle {
+    float inFrame = 0.f;
+    int flips = 0, strings = 0, none = 0;
+};
+CsCycle csCycle(float targetRadius, float orbit, float kitLo, float kitHi, float dir) {
+    constexpr float kReach = 1.8f, kTol = 0.5f, kHalf = 34.f;
+    PartnerCloseInput in;
+    in.target = {0.f, 0.f};
+    in.targetRadius = targetRadius;
+    in.halfAngleDegrees = kHalf;
+    in.leadSide = -1;
+    in.partner = {orbit, 2.f};
+    PartnerCloseHold hold;
+    CsCycle r;
+    int phase = 0; // 0 Ready, 1 string, 2 pause
+    double phaseFor = 0.0;
+    const float dt = 1.f / 60.f, w = dir * 3.f / orbit;
+    const float readyLo = std::fmin(kitLo, 0.5f * kReach), readyHi = std::fmin(kitHi, kReach - kTol);
+    int n = 0, seen = 0;
+    std::int8_t last = 0;
+    for (int s = 0; s < 30 * 60; ++s) {
+        const float t = static_cast<float>(s) * dt;
+        in.lead = {orbit * std::cos(w * t), orbit * std::sin(w * t)};
+        csLens(in.lead, in.target, 0.55f, 0.2f, in.cameraPos, in.cameraForward, kHalf);
+        hold.heldFor += dt;
+        phaseFor += dt;
+        if (phase != 1) {
+            in.standMin = phase == 0 ? readyLo : kitLo;
+            in.standMax = phase == 0 ? readyHi : kitHi;
+            const PartnerCloseStation st = partnerCloseStation(in, hold);
+            if (!st.valid) {
+                ++r.none;
+            } else {
+                const Vec2 v = csSub(st.point, in.partner);
+                const float l = csLen(v), step = 4.5f * dt;
+                if (l > kTol || phase == 2) in.partner = l <= step ? st.point : csAdd(in.partner, csMul(v, step / l));
+                if (phase == 0 && csLen(csSub(st.point, in.partner)) <= kTol &&
+                    csLen(in.partner) - targetRadius <= kReach) {
+                    phase = 1;
+                    phaseFor = 0.0;
+                    ++r.strings;
+                }
+            }
+            if (phase == 2 && phaseFor >= 1.5) {
+                phase = 0;
+                phaseFor = 0.0;
+            }
+        } else if (phaseFor >= 1.2) {
+            phase = 2;
+            phaseFor = 0.0;
+        }
+        if (hold.flank != last && last != 0) ++r.flips;
+        last = hold.flank;
+        ++n;
+        if (partnerCloseInCone(in.cameraPos, in.cameraForward, kHalf, 0.f, in.partner)) ++seen;
+    }
+    r.inFrame = static_cast<float>(seen) / static_cast<float>(n);
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("close station: Pause and Ready on opposite flanks do not ping-pong") {
+    // Without the switch margin a caster's Pause station (5-8 m) and Ready station (0.9-1.3 m) can each be best on
+    // opposite flanks, and the partner crosses between them every cycle. With it: no flank change in 30 s.
+    struct Case {
+        float targetRadius, orbit, lo, hi;
+    };
+    for (const Case c : {Case{1.f, 5.f, kPartnerCloseMeleeMin, kPartnerCloseMeleeMax},
+                         Case{2.5f, 6.f, kPartnerCloseMeleeMin, kPartnerCloseMeleeMax},
+                         Case{1.f, 11.f, kPartnerCloseCasterMin, kPartnerCloseCasterMax}})
+        for (const float dir : {1.f, -1.f}) {
+            CAPTURE(c.targetRadius);
+            CAPTURE(c.orbit);
+            CAPTURE(dir);
+            const CsCycle r = csCycle(c.targetRadius, c.orbit, c.lo, c.hi, dir);
+            MESSAGE("cycle: target r " << c.targetRadius << " orbit " << c.orbit << " band " << c.lo << "-" << c.hi
+                                       << " dir " << dir << ": in frame " << r.inFrame << ", flips " << r.flips
+                                       << ", strings " << r.strings << ", steps without a station " << r.none);
+            CHECK(r.inFrame >= 0.85f);
+            CHECK(r.flips <= 1);
+            CHECK(r.strings >= 5);
+        }
 }

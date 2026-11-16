@@ -78,6 +78,7 @@ float verticalOut(float ndcY) {
 
 bool legal(const PartnerCloseInput& in, Vec2 p, float& ndcX, float& ndcY) {
     if (!partnerCloseLens(in, p, ndcX, ndcY)) return false;
+    if (in.sees != nullptr && !in.sees(in.seesContext, p)) return false;
     if (std::fabs(ndcX) > 1.f - 2.f * kPartnerCloseConeMargin) return false;
     Vec2 f;
     if (!unitOf(in.cameraForward, f)) return false;
@@ -183,32 +184,97 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     const float lo = in.standMin, hi = in.standMax;
     const float distFromLens = len(sub(in.lead, in.cameraPos));
     const float leadHalf = halfAngle(distFromLens, in.bodyRadius);
-    const int steps = static_cast<int>(std::lround((kPartnerCloseAngleMax - kPartnerCloseAngleMin) / kPartnerCloseAngleStep));
-    Pick best;
-    for (std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}}) {
-        if (keep && flank != hold.flank) continue;
-        for (int i = 0; i <= steps; ++i) {
-            const float angle = kPartnerCloseAngleMin + static_cast<float>(i) * kPartnerCloseAngleStep;
+    const bool wide = in.targetRadius >= kPartnerCloseWideRadius;
+    const float angleMin = wide ? kPartnerCloseWideAngleMin : kPartnerCloseAngleMin;
+    const float angleMax = wide ? kPartnerCloseWideAngleMax : kPartnerCloseAngleMax;
+    constexpr int kSteps = 8; // 5 degrees either way
+    // A legal p's score: the walk, the lead clearance, the lower two thirds and the lead's side (no hold terms).
+    const auto score = [&](Vec2 p, float& cost) {
+        float x = 0.f, y = 0.f;
+        if (!legal(in, p, x, y)) return false;
+        const float dp = len(sub(p, in.cameraPos));
+        const float clear = apart(in.cameraPos, p, in.lead) / (halfAngle(dp, in.bodyRadius) + leadHalf);
+        cost = len(sub(p, in.partner)) - kPartnerCloseClearWeight * std::min(clear, 3.f) +
+               kPartnerCloseVerticalWeight * verticalOut(y);
+        if (in.leadSide != 0 && leadSeen && !(x * in.leadSide >= leadX * in.leadSide)) cost += kPartnerCloseSidePenalty;
+        return true;
+    };
+    // Tiers 1-2 on one flank: the band's best, else the farthest legal point short of the band.
+    const auto onFlank = [&](std::int8_t flank) {
+        Pick band, shortPick;
+        for (int i = 0; i <= kSteps; ++i) {
+            const float angle = angleMin + (angleMax - angleMin) * static_cast<float>(i) / static_cast<float>(kSteps);
             const Vec2 dir = turn(bearing, static_cast<float>(flank) * angle);
+            const float keepBonus =
+                !hold.ring && flank == hold.flank && std::fabs(angle - hold.angle) < 1e-3f ? kPartnerCloseKeepBonus : 0.f;
             const float nearest = std::clamp(dot(sub(in.partner, in.target), dir) - in.targetRadius, lo, hi);
             const float offs[4] = {nearest, lo, 0.5f * (lo + hi), hi};
             for (const float off : offs) {
                 const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
-                float x = 0.f, y = 0.f;
-                if (!legal(in, p, x, y)) continue;
-                const float dp = len(sub(p, in.cameraPos));
-                const float clear = apart(in.cameraPos, p, in.lead) / (halfAngle(dp, in.bodyRadius) + leadHalf);
-                float cost = len(sub(p, in.partner)) - kPartnerCloseClearWeight * std::min(clear, 3.f) +
-                             kPartnerCloseVerticalWeight * verticalOut(y);
-                if (in.leadSide != 0 && leadSeen && !(x * in.leadSide >= leadX * in.leadSide))
-                    cost += kPartnerCloseSidePenalty;
-                if (flank == hold.flank && std::fabs(angle - hold.angle) < 1e-3f) cost -= kPartnerCloseKeepBonus;
-                if (!best.found || cost < best.cost) best = {true, cost, p, flank, angle, off};
+                float cost = 0.f;
+                if (!score(p, cost)) continue;
+                cost -= keepBonus;
+                if (!band.found || cost < band.cost) band = {true, cost, p, flank, angle, off};
             }
+            if (band.found || !(lo > 0.f)) continue; // the short pass only while the band has none on this flank
+            for (int j = 1; j <= kSteps; ++j) {
+                const float off = lo * (1.f - static_cast<float>(j) / static_cast<float>(kSteps));
+                const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
+                float cost = 0.f;
+                if (!score(p, cost)) continue;
+                cost += kPartnerCloseShortPenalty - keepBonus;
+                if (!shortPick.found || off > shortPick.offEdge + 1e-5f ||
+                    (off > shortPick.offEdge - 1e-5f && cost < shortPick.cost))
+                    shortPick = {true, cost, p, flank, angle, off};
+                break; // the farthest legal one at this angle
+            }
+        }
+        if (band.found) return band;
+        return shortPick;
+    };
+    Pick picks[2];
+    for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}})
+        if (!keep || flank == hold.flank) picks[flank > 0 ? 1 : 0] = onFlank(flank);
+    Pick best;
+    std::uint8_t tier = 0;
+    if (picks[0].found && picks[1].found && hold.flank != 0) {
+        const Pick& held = picks[hold.flank > 0 ? 1 : 0];
+        const Pick& other = picks[hold.flank > 0 ? 0 : 1];
+        best = other.cost + kPartnerCloseFlipMargin < held.cost ? other : held;
+    } else {
+        for (const Pick& q : picks)
+            if (q.found && (!best.found || q.cost < best.cost)) best = q;
+    }
+    if (best.found) tier = best.offEdge >= lo - 1e-5f ? 1 : 2;
+    bool ring = false;
+    if (!best.found && in.leashMeters > 0.f) { // tier 3: within the leash, round the lead toward the target's flanks
+        Vec2 toTarget;
+        if (!unitOf(sub(in.target, in.lead), toTarget)) toTarget = mul(bearing, -1.f);
+        const float radii[2] = {in.leashMeters - 0.25f, 0.5f * (in.leashMeters + in.personalSpace)};
+        for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}}) {
+            if (keep && flank != hold.flank) continue;
+            for (int i = 0; i <= kSteps; ++i) {
+                const float angle =
+                    kPartnerCloseRingMin + (kPartnerCloseRingMax - kPartnerCloseRingMin) * static_cast<float>(i) / 8.f;
+                const Vec2 dir = turn(toTarget, -static_cast<float>(flank) * angle); // flank +1 as round the target
+                for (const float r : radii) {
+                    if (!(r > 0.f)) continue;
+                    const Vec2 p = add(in.lead, mul(dir, r));
+                    float cost = 0.f;
+                    if (!score(p, cost)) continue;
+                    if (hold.flank != 0 && flank != hold.flank) cost += kPartnerCloseFlipMargin;
+                    if (!best.found || cost < best.cost)
+                        best = {true, cost, p, flank, angle, len(sub(p, in.target)) - in.targetRadius};
+                }
+            }
+        }
+        if (best.found) {
+            tier = 3;
+            ring = true;
         }
     }
     if (!best.found) {
-        if (keep) { // the flank it must keep has no legal point: where it would stand, not valid
+        if (keep && !hold.ring) { // the flank it must keep has no legal point: where it would stand, not valid
             const Vec2 dir = turn(bearing, static_cast<float>(hold.flank) * hold.angle);
             const float off = std::clamp(dot(sub(in.partner, in.target), dir) - in.targetRadius, lo, hi);
             out.point = add(in.target, mul(dir, in.targetRadius + off));
@@ -222,7 +288,9 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     if (best.flank != hold.flank) hold.heldFor = 0.0;
     hold.flank = best.flank;
     hold.angle = best.angle;
+    hold.ring = ring;
     out.valid = true;
+    out.tier = tier;
     out.point = best.point;
     out.flank = best.flank;
     out.angle = best.angle;
