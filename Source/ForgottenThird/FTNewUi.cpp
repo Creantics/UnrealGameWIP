@@ -5204,10 +5204,15 @@ private:
 			ftcore::UiColor Pic;
 			if (PictureBrightest(SubRead, DimSize, Pic))
 			{
+				// The words in ink and the speaker in the world's fill: the band the darker of the two asks for.
 				const ftcore::UiColor Ink = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), UiToken::Ink);
-				float Bare = 0.f, Banded = 0.f;
-				SubBand = FMath::Max(SubBand, ftcore::uiSubtitleBand(Ink, Pic, &Bare, &Banded));
-				UE_LOG(LogForgottenThird, Display, TEXT("UI: subtitle contrast %.2f over the picture (%.2f over the band); band %.2f."), Bare, Banded, SubBand);
+				const ftcore::UiColor Name = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), UiToken::Fill);
+				float Bare = 0.f, Banded = 0.f, NameBare = 0.f, NameBanded = 0.f;
+				const float Want = ftcore::uiSubtitleBand(Ink, Pic, &Bare, &Banded);
+				const float NameWant = ftcore::uiSubtitleBand(Name, Pic, &NameBare, &NameBanded);
+				SubBand = FMath::Max3(SubBand, Want, NameWant);
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: subtitle contrast %.2f over the picture (%.2f over the band), speaker %.2f (%.2f); band %.2f."),
+					Bare, Banded, NameBare, NameBanded, SubBand);
 			}
 		}
 	}
@@ -5671,7 +5676,10 @@ public:
 		{
 			FakeLine = kFakeLine;
 		}
-		bStills = bFake || bShot;
+		// -UiExplorePlayReads: the play path's reads (one line each, easing back) in a still run, each logged with its cost.
+		bPlayReads = FParse::Param(Cmd, TEXT("UiExplorePlayReads"));
+		bSweep = bSweep && !bPlayReads; // the sweep reads every line
+		bStills = (bFake || bShot) && !bPlayReads;
 #endif
 	}
 
@@ -5769,10 +5777,18 @@ public:
 		{
 			const std::uint8_t Slot = ftcore::uiNoticePush(Notices);
 			NoticeText[Slot] = *Note;
-			ReadSoon(GuardNotice);
 		}
 		LastNoticeAge = Note->IsEmpty() ? 1e9 : NoteAge;
 		ftcore::uiNoticeStep(Notices, DeltaTime);
+		const int32 NoteShown = ftcore::uiNoticeShown(Notices);
+		if (NoteShown != NoteSlotSeen)
+		{
+			NoteSlotSeen = NoteShown;
+			if (NoteShown >= 0)
+			{
+				ReadSoon(GuardNotice); // a notice's words just came up
+			}
+		}
 
 		// The prompt at its spot, from the director's "<key>  <words>": the key in the ring, the first word the verb.
 		bPrompt = false;
@@ -6174,7 +6190,14 @@ private:
 				Rot.Yaw = ShotYaw;
 				PC->SetControlRotation(Rot);
 				bYawDone = true;
+				ResetGuards(); // judged over the view that is shot, not the one before the turn
 			}
+		}
+		// Stills only rise: judged afresh over the last 2 s before the still (not the start-up exposure).
+		if (bShot && !bGuardsFresh && (!bSweep || bSweepDone) && Time >= ShotDelay - 2.f)
+		{
+			bGuardsFresh = true;
+			ResetGuards();
 		}
 		if (bShot && !bShotTaken && (!bSweep || bSweepDone) && Time >= ShotDelay)
 		{
@@ -6232,15 +6255,30 @@ private:
 			}
 			if (I >= 0)
 			{
+#if !UE_BUILD_SHIPPING
+				const double T0 = FPlatformTime::Seconds();
+				const bool bGot = MeasureLine(I);
+				if (bPlayReads && bGot)
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("UI: explore play read %s in %.2f ms at %.1f s: contrast %.2f; contour %.0f px %.2f, shade %.2f."),
+						kGuardName[I], 1000.0 * (FPlatformTime::Seconds() - T0), Time, DrawnRatio(I), Lines[I].G.spread, Lines[I].G.alpha,
+						I >= GuardSub0 ? SubBand() : Lines[I].G.shade);
+				}
+#else
 				MeasureLine(I);
+#endif
 			}
 			return;
 		}
 #if !UE_BUILD_SHIPPING
 		float SubBare = -1.f;
+		const double T0 = FPlatformTime::Seconds();
+		int32 Got = 0;
 		for (int32 I = 0; I < GuardCount; ++I)
 		{
-			if (MeasureLine(I) && I >= GuardSub0 && I != GuardSpeaker)
+			const bool bGot = MeasureLine(I);
+			Got += bGot ? 1 : 0;
+			if (bGot && I >= GuardSub0 && I != GuardSpeaker)
 			{
 				SubBare = SubBare < 0.f ? Lines[I].Bare : FMath::Min(SubBare, Lines[I].Bare);
 			}
@@ -6257,6 +6295,7 @@ private:
 			++SweepStep;
 		}
 		LogLines();
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: explore reads %d lines in %.2f ms."), Got, 1000.0 * (FPlatformTime::Seconds() - T0));
 #endif
 	}
 
@@ -6391,6 +6430,7 @@ private:
 	int32 ReadFirst = -1;
 	float ReadFirstAt = 0.f;
 	int32 ReadNext = 0;
+	int32 NoteSlotSeen = -1;
 	// The placeholder subtitle and the stills.
 	float FakeSubScale = 1.f;
 	bool bFake = false;
@@ -6402,6 +6442,8 @@ private:
 	float ShotDelay = 10.f;
 	bool bShotYaw = false;
 	bool bYawDone = false;
+	bool bGuardsFresh = false;
+	bool bPlayReads = false;
 	static constexpr int32 kSweepSteps = 12;
 	static constexpr float kSweepDeg = 30.f;
 	bool bSweep = false;
