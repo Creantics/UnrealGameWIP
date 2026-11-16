@@ -16,6 +16,7 @@
 #include "Materials/MaterialExpressionPreSkinnedNormal.h"
 #include "Materials/MaterialExpressionPreSkinnedPosition.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
@@ -29,6 +30,7 @@
 #include "UObject/SavePackage.h"
 
 #include "ftcore/GarmentDetail.h"
+#include "ftcore/LookReview.h"
 #include "ftcore/SkinDetail.h"
 #endif
 
@@ -92,12 +94,12 @@ const FScalarSpec kScalars[] = {
 	{TEXT("SiltFilmRoughness"), 0.1f}, // and roughness up by at most this once dry (spec: 0.1)
 	{TEXT("SiltLiftMax"), 100.f},     // the film lifts the albedo by at most this factor per channel (100: no cap; leather 1.15)
 	// Baked fold masks (tools/blender/fold_bake.py writes them into the wear map: B dirt packed into the creases, G fold
-	// AO). All 0 = off, so a wear map without them (B 0 on the default) looks as before.
-	{TEXT("DirtStrength"), 0.f},      // albedo toward DirtTint by WearTexture B x this
-	{TEXT("DirtRoughness"), 0.15f},   // and roughness up by this at full dirt
-	{TEXT("WetRidgeSheen"), 0.f},     // soaked: roughness on convex ridges (WearTexture R above 0.5) goes this far below WetRoughness
-	{TEXT("WetCreaseDarken"), 0.f},   // soaked: albedo x (1 - this) in the creases (water stands there), on top of WetDarken
-	{TEXT("TintDrift"), 0.f},         // albedo toward DriftTint by up to this, in broad patches of about 25 cm (faded high points)
+	// AO). Read only with the static switch FoldLayers on (FoldSwitch); off, the master compiles as before.
+	{TEXT("DirtStrength"), ftcore::look::kFoldDirtStrength},    // albedo toward DirtTint by WearTexture B x this
+	{TEXT("DirtRoughness"), ftcore::look::kFoldDirtRoughness},   // and roughness up by this at full dirt
+	{TEXT("WetRidgeSheen"), ftcore::look::kFoldWetRidgeSheen},   // soaked: roughness on convex ridges (WearTexture R above 0.5) goes this far below WetRoughness
+	{TEXT("WetCreaseDarken"), ftcore::look::kFoldWetCreaseDarken},   // soaked: albedo x (1 - this) in the creases (water stands there), on top of WetDarken
+	{TEXT("TintDrift"), ftcore::look::kFoldTintDrift},    // albedo toward DriftTint by up to this, in broad patches of about 25 cm (faded high points)
 	{TEXT("SoleHeight"), -1000.f},    // pre-skinned height (cm) below which a shoe is rubber sole; off by default
 	{TEXT("SoleBlend"), 0.6f},        // cm over which the sole fades into the upper
 	{TEXT("SoleSpecular"), 0.45f},
@@ -241,6 +243,25 @@ const TCHAR* const kMetalCode = TEXT("return saturate(max(smoothstep(MetalFloor,
 const TCHAR* const kColorCode = TEXT(R"HLSL(float3 b = Base * Tint.rgb;
 float3 c = b * Gain / (1.0 + b * (Gain - 1.0));
 c = pow(max(c, 1e-5), DiffResp);
+float edge = saturate((Wear.r - 0.5) * 2.0);
+// Rubbed, not outlined: the edge wear comes and goes along an edge (a smooth noise of about 8 cm in pre-skinned space).
+float3 q = P * 0.8;
+float rub = sin(q.x + 1.7 * sin(q.y * 0.6)) * sin(q.y * 0.9 + 1.3 * sin(q.z * 0.7)) * sin(q.z * 0.8 + 1.1 * sin(q.x * 0.5));
+edge *= saturate(0.35 + 1.6 * rub);
+c *= 1.0 + EdgeLighten * edge;
+c *= lerp(1.0, D.z, CavityDarken);
+c *= lerp(1.0, SoleTint.rgb, Sole);
+c *= lerp(1.0, WetDarken, Wet.x);
+// silt film below the line; on leather a capped lift (still black). The 0.01 floor keeps the cap from vanishing where the
+// albedo is 0, so at the default (100) the cap is at least 1 and never binds.
+c = min(lerp(c, SiltColor.rgb, Wet.z), max(c, 0.01) * SiltLiftMax);
+c *= lerp(float3(1.0, 1.0, 1.0), TideTint.rgb, Wet.y); // tide line: a stain that darkens, never a lighter paint
+return lerp(c, MetalColor.rgb * lerp(0.55, 1.0, D.z), Metal); // grime in the metal's recesses
+)HLSL");
+// With FoldLayers on (fold_bake.py masks in the wear map): tint drift, crease dirt and standing water in the creases.
+const TCHAR* const kColorFoldCode = TEXT(R"HLSL(float3 b = Base * Tint.rgb;
+float3 c = b * Gain / (1.0 + b * (Gain - 1.0));
+c = pow(max(c, 1e-5), DiffResp);
 float3 dq = P * 0.25; // tint drift: broad patches of about 25 cm in pre-skinned space
 float drift = 0.5 + 0.5 * sin(dq.x + 1.3 * sin(dq.z * 0.7)) * sin(dq.z * 0.9 + 1.1 * sin(dq.y * 0.8));
 c *= lerp(float3(1.0, 1.0, 1.0), DriftTint.rgb, TintDrift * drift);
@@ -263,6 +284,18 @@ return lerp(c, MetalColor.rgb * lerp(0.55, 1.0, D.z), Metal); // grime in the me
 )HLSL");
 
 const TCHAR* const kRoughnessCode = TEXT(R"HLSL(float edge = saturate((Wear.r - 0.5) * 2.0);
+float crease = saturate((0.5 - Wear.r) * 2.0);
+float r = ORM.g * RoughScale + RoughOffset;
+r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
+r += crease * CreaseRough - edge * EdgeSmooth;
+r += M.z; // centimetre mottle (0 unless MottleRoughness is set)
+r = lerp(r, SoleRough + D.w * MicroRough, Sole);
+r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
+r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
+return saturate(lerp(r, lerp(WetRough, 0.1, Metal), Wet.x));
+)HLSL");
+// With FoldLayers on: matte crease dirt and a sharper soaked sheen on the ridges.
+const TCHAR* const kRoughnessFoldCode = TEXT(R"HLSL(float edge = saturate((Wear.r - 0.5) * 2.0);
 float crease = saturate((0.5 - Wear.r) * 2.0);
 float r = ORM.g * RoughScale + RoughOffset;
 r += D.w * MicroRough + (1.0 - D.z) * CavityRough;
@@ -501,6 +534,20 @@ UMaterialExpressionCustom* Custom(UMaterial* Material, const TCHAR* Description,
 	return C;
 }
 
+// Static switch FoldLayers (default off): off keeps the plain node, so a garment without baked fold masks compiles to the
+// same shader as before the fold layers existed (the fold nodes and their parameters are pruned); on takes the fold node.
+UMaterialExpression* FoldSwitch(UMaterial* Material, UMaterialExpression* Fold, UMaterialExpression* Plain, int32 Y)
+{
+	UMaterialExpressionStaticSwitchParameter* S = AddExpression<UMaterialExpressionStaticSwitchParameter>(Material, -250, Y);
+	S->ParameterName = TEXT("FoldLayers");
+	S->DefaultValue = false;
+	S->Group = kGroup;
+	S->UpdateParameterGuid(true, false);
+	S->A.Connect(0, Fold);
+	S->B.Connect(0, Plain);
+	return S;
+}
+
 // A pre-skinned vector carried from the vertex shader to the pixel shader.
 UMaterialExpressionVertexInterpolator* Interpolated(UMaterial* Material, UMaterialExpression* From, int32 Y)
 {
@@ -574,11 +621,20 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0},
 			{TEXT("P"), Position, 0}, {TEXT("DiffResp"), G.Scalar(TEXT("DiffuseResponse")), 0},
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0},
+			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}, {TEXT("SiltLiftMax"), G.Scalar(TEXT("SiltLiftMax")), 0}},
+		-900);
+	UMaterialExpressionCustom* ColorFold = Custom(Material, TEXT("GarmentColorFold"), CMOT_Float3, kColorFoldCode,
+		{{TEXT("Base"), Base, 0}, {TEXT("Tint"), G.Vector(TEXT("Tint")), 0}, {TEXT("Gain"), G.Scalar(TEXT("Gain")), 0}, {TEXT("Wear"), Wear, 0},
+			{TEXT("D"), Detail, 0}, {TEXT("EdgeLighten"), G.Scalar(TEXT("EdgeLighten")), 0},
+			{TEXT("CavityDarken"), G.Scalar(TEXT("CavityDarken")), 0}, {TEXT("MetalColor"), G.Vector(TEXT("MetalColor")), 0},
+			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleTint"), G.Vector(TEXT("SoleTint")), 0},
+			{TEXT("P"), Position, 0}, {TEXT("DiffResp"), G.Scalar(TEXT("DiffuseResponse")), 0},
+			{TEXT("Wet"), WetMask, 0}, {TEXT("WetDarken"), G.Scalar(TEXT("WetDarken")), 0}, {TEXT("SiltColor"), G.Vector(TEXT("SiltColor")), 0},
 			{TEXT("TideTint"), G.Vector(TEXT("TideTint")), 0}, {TEXT("SiltLiftMax"), G.Scalar(TEXT("SiltLiftMax")), 0},
 			{TEXT("DirtStrength"), G.Scalar(TEXT("DirtStrength")), 0}, {TEXT("DirtTint"), G.Vector(TEXT("DirtTint")), 0},
 			{TEXT("WetCreaseDarken"), G.Scalar(TEXT("WetCreaseDarken")), 0}, {TEXT("TintDrift"), G.Scalar(TEXT("TintDrift")), 0},
 			{TEXT("DriftTint"), G.Vector(TEXT("DriftTint")), 0}},
-		-900);
+		-1000);
 	UMaterialExpressionCustom* Mottle = Custom(Material, TEXT("GarmentMottle"), CMOT_Float3, kMottleCode,
 		{{TEXT("P"), Position, 0}, {TEXT("Depth"), Depth, 0}, {TEXT("Metal"), Metal, 0}, {TEXT("Size"), G.Scalar(TEXT("MottleSize")), 0},
 			{TEXT("Tilt"), G.Scalar(TEXT("MottleTilt")), 0}, {TEXT("Rough"), G.Scalar(TEXT("MottleRoughness")), 0},
@@ -592,10 +648,18 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("CavityRough"), G.Scalar(TEXT("CavityRoughness")), 0}, {TEXT("CreaseRough"), G.Scalar(TEXT("CreaseRoughness")), 0},
 			{TEXT("EdgeSmooth"), G.Scalar(TEXT("EdgeSmooth")), 0}, {TEXT("MetalRough"), G.Scalar(TEXT("MetalRoughness")), 0},
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0},
+			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0}},
+		0);
+	UMaterialExpressionCustom* RoughnessFold = Custom(Material, TEXT("GarmentRoughnessFold"), CMOT_Float1, kRoughnessFoldCode,
+		{{TEXT("ORM"), Orm, 0}, {TEXT("Wear"), Wear, 0}, {TEXT("D"), Detail, 0}, {TEXT("RoughScale"), G.Scalar(TEXT("RoughnessScale")), 0},
+			{TEXT("RoughOffset"), G.Scalar(TEXT("RoughnessOffset")), 0}, {TEXT("MicroRough"), G.Scalar(TEXT("MicroRoughness")), 0},
+			{TEXT("CavityRough"), G.Scalar(TEXT("CavityRoughness")), 0}, {TEXT("CreaseRough"), G.Scalar(TEXT("CreaseRoughness")), 0},
+			{TEXT("EdgeSmooth"), G.Scalar(TEXT("EdgeSmooth")), 0}, {TEXT("MetalRough"), G.Scalar(TEXT("MetalRoughness")), 0},
+			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0},
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0},
 			{TEXT("DirtStrength"), G.Scalar(TEXT("DirtStrength")), 0}, {TEXT("DirtRough"), G.Scalar(TEXT("DirtRoughness")), 0},
 			{TEXT("WetRidgeSheen"), G.Scalar(TEXT("WetRidgeSheen")), 0}},
-		0);
+		100);
 	UMaterialExpressionCustom* Specular = Custom(Material, TEXT("GarmentSpecular"), CMOT_Float1, kSpecularCode,
 		{{TEXT("Spec"), G.Scalar(TEXT("Specular")), 0}, {TEXT("CavitySpec"), G.Scalar(TEXT("CavitySpecular")), 0}, {TEXT("D"), Detail, 0},
 			{TEXT("Sole"), Sole, 0}, {TEXT("SoleSpec"), G.Scalar(TEXT("SoleSpecular")), 0}}, 200);
@@ -603,9 +667,9 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 		{{TEXT("ORM"), Orm, 0}, {TEXT("AOStrength"), G.Scalar(TEXT("AOStrength")), 0}, {TEXT("SkyFill"), G.Scalar(TEXT("SkyFill")), 0}}, 400);
 
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
-	Inputs->BaseColor.Connect(0, Color);
+	Inputs->BaseColor.Connect(0, FoldSwitch(Material, ColorFold, Color, -1000));
 	Inputs->Normal.Connect(0, NormalOut);
-	Inputs->Roughness.Connect(0, Roughness);
+	Inputs->Roughness.Connect(0, FoldSwitch(Material, RoughnessFold, Roughness, 100));
 	Inputs->Metallic.Connect(0, Metal);
 	Inputs->Specular.Connect(0, Specular);
 	Inputs->AmbientOcclusion.Connect(0, Occlusion);

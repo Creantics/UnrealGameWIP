@@ -205,11 +205,15 @@ public:
 
 private:
 	void SetTellVisible(bool bVisible);
-	// -ArenaWet review: puts the fixed wet state on the player's garment slots once a second.
+#if !UE_BUILD_SHIPPING
+	// -ArenaWet review (not in Shipping): once a second, puts the fixed wet state on garment slots that don't carry it yet
+	// (pieces worn later). Each slot gets one dynamic instance, made once and kept in WetMids.
 	void SoakForReview();
 	FTimerHandle WetTimer;
 	FVector2f WetReview = FVector2f(0.f, 130.f);
 	int32 WetSlots = -1;
+	TArray<TWeakObjectPtr<UMaterialInstanceDynamic>> WetMids;
+#endif
 	void ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow);
 	void MakeCarried(USkeletalMesh* Mesh, TConstArrayView<FFTCarriedPiece> Split, bool bVisible);
 	// Puts Look on the player's skin: false (nothing changed) when its body doesn't load.

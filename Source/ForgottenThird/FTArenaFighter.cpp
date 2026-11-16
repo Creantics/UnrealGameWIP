@@ -22,6 +22,7 @@
 
 #include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/LookReview.h"
 
 namespace
 {
@@ -208,6 +209,7 @@ void AFTArenaFighter::SetCameraRig(float ArmMeters, float PivotMeters, float Sid
 	Camera->SetFieldOfView(FovDegrees);
 }
 
+#if !UE_BUILD_SHIPPING
 void AFTArenaFighter::SoakForReview()
 {
 	const float FeetZ = GetActorLocation().Z;
@@ -218,14 +220,25 @@ void AFTArenaFighter::SoakForReview()
 		for (int32 Slot = 0; Slot < Mesh->GetNumMaterials(); ++Slot)
 		{
 			UMaterialInterface* Material = Mesh->GetMaterial(Slot);
+			UMaterialInstanceDynamic* Held = Cast<UMaterialInstanceDynamic>(Material);
+			if (Held && WetMids.Contains(TWeakObjectPtr<UMaterialInstanceDynamic>(Held)))
+			{
+				++Slots; // already soaked; the values hold
+				continue;
+			}
 			float Unused = 0.f;
 			if (!Material || !Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Wetness")), Unused))
 			{
 				continue;
 			}
 			UMaterialInstanceDynamic* Dynamic = Mesh->CreateAndSetMaterialInstanceDynamic(Slot);
+			if (!Dynamic)
+			{
+				continue;
+			}
 			Dynamic->SetScalarParameterValue(TEXT("Wetness"), WetReview.X);
 			Dynamic->SetScalarParameterValue(TEXT("WetLineZ"), FeetZ + WetReview.Y);
+			WetMids.Add(Dynamic);
 			++Slots;
 		}
 	}
@@ -236,6 +249,7 @@ void AFTArenaFighter::SoakForReview()
 			Slots, WetReview.X, WetReview.Y);
 	}
 }
+#endif
 
 void AFTArenaFighter::SetCameraLag(float Seconds)
 {
@@ -272,14 +286,18 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	Rim->SetRelativeLocation(FVector(0.0, 0.0, Height * 0.8));
 	// Wetness proof in the arena, as -ExploreWet does in explore: -ArenaWet=<Wetness>,<line cm above the feet> holds the
 	// player's garments at that state (pieces worn later take it within a second). The world drives these in play.
-	FString Wet;
-	if (bPlayer && FParse::Value(FCommandLine::Get(), TEXT("ArenaWet="), Wet, false))
+	// Not in Shipping; no flag, no timer (ftcore::look::findWetReview).
+#if !UE_BUILD_SHIPPING
+	if (bPlayer)
 	{
-		TArray<FString> Parts;
-		Wet.ParseIntoArray(Parts, TEXT(","));
-		WetReview = FVector2f(Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 1.f, Parts.Num() > 1 ? FCString::Atof(*Parts[1]) : 130.f);
-		GetWorldTimerManager().SetTimer(WetTimer, this, &AFTArenaFighter::SoakForReview, 1.f, true, 0.5f);
+		const FTCHARToUTF8 Line(FCommandLine::Get());
+		if (const std::optional<ftcore::look::WetReview> Wet = ftcore::look::findWetReview(std::string_view(Line.Get(), Line.Length()), "ArenaWet"))
+		{
+			WetReview = FVector2f(Wet->wetness, Wet->lineCm);
+			GetWorldTimerManager().SetTimer(WetTimer, this, &AFTArenaFighter::SoakForReview, 1.f, true, 0.5f);
+		}
 	}
+#endif
 	if (bPlayer && !FMath::IsNearlyEqual(GNearClippingPlane, ftcore::kArenaLensNearClip * 100.f, 0.01f))
 	{
 		// The zone's lens clearance counts this near plane; a changed one leaves the walls' lens checks short.

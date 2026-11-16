@@ -7,7 +7,7 @@ reads. Headless:
 SPEC.json (lengths in metres, in the blend's world space):
     {"garment": "SK_...",              the game mesh (its armature modifier is dropped: the bake is in the rest pose)
      "collider": "Body_LOD0" | null,    a body the cloth rests on (optional)
-     "out": "D:/.../dir", "name": "prefix",
+     "out": "<output folder>", "name": "prefix",
      "region": {"axis": "y", "min": 0.05, "max": 9, "zmin": 0.95, "zmax": 1.45},
                                         faces whose centre is in the box get folds; the rest stays as it is
      "hi": "grid",                      "grid": a clean sheet cast onto the region ("cell" 0.004, "lift" 0.0015);
@@ -24,8 +24,18 @@ SPEC.json (lengths in metres, in the blend's world space):
      "curv_gain": 2.0, "curv_blur": 6,  fold curvature scale into the wear map, box blur half-width in texels
      "hole_max_m": 0.5,                 an open boundary loop shorter than this is flagged as a hole (FOLD_BAKE_OPEN_BOUNDARY)
      "openings": 3,                     ways through a closed shell the garment should have; more are flagged as holes
+     "allow_holes": false,              holes (either kind) stop the run with exit code 3 unless this is true
      "min_z": 0.6, "feather_cm": 3}     min_z: a baked texel tilted further than this from the sheet counts as a miss;
                                         feather_cm: the folds fade to flat over this distance in from the pinned outline
+
+Checks: a missing key, a garment or collider not in the blend, a garment with no faces, a region that selects nothing,
+a closed-shell garment with no "openings", a cast grid over GRID_MAX points, frames outside 1..FRAMES_MAX or res outside 64..8192 stop the run with
+FOLD_BAKE_FAILED and exit code 2, before anything is simulated or written.
+
+Not deterministic: a rerun of one spec on the same blend and Blender build gave a different cloth (median fold lift
+3.87 against 3.84 mm, fold texels 4.0 against 3.0%), cause not isolated (the first run's thread count was not
+recorded; the report now records it). Keep and judge the maps of a run; the spec alone does not reproduce them. The
+Cycles seed is fixed (0, not animated), so the bake itself adds no run-to-run noise.
 
 Writes into out: <name>_fold_gl.png (the folds alone), <name>_N_gl.png and <name>_N.png (base plus folds, OpenGL and
 DirectX green), <name>_ORM.png, <name>_W.png (R curvature: above 0.5 ridge, below crease; G fold AO; B dirt = crease x
@@ -34,12 +44,52 @@ AO), <name>_hi.obj (the simulated high copy) and <name>_report.json.
 import bpy, bmesh, sys, json, os
 import numpy as np
 
-a = sys.argv[sys.argv.index("--") + 1:]
-S = json.load(open(a[0]))
+GRID_MAX = 1_500_000  # cast-grid points: 4 mm cells over about 4.9 m x 4.9 m of cloth
+FRAMES_MAX = 400
+
+
+def fail(msg, code=2):
+    print("FOLD_BAKE_FAILED: " + msg)
+    sys.stdout.flush()
+    sys.exit(code)
+
+
+a = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+if not a or not os.path.isfile(a[0]):
+    fail("usage: blender -b GARMENT.blend --python fold_bake.py -- SPEC.json (spec file not found)")
+try:
+    S = json.load(open(a[0]))
+except ValueError as e:
+    fail("spec %s is not JSON: %s" % (a[0], e))
+for key in ("garment", "out", "name", "region"):
+    if key not in S:
+        fail("spec has no \"%s\"" % key)
+if not isinstance(S["region"], dict) or not all(isinstance(v, (int, float)) for k, v in S["region"].items() if k != "axis"):
+    fail("\"region\" must be an object of numbers (min, max, zmin, zmax) and an axis")
+if S["region"].get("axis", "y") not in ("x", "y", "z"):
+    fail("region axis must be x, y or z")
+if not 1 <= int(S.get("frames", 30)) <= FRAMES_MAX:
+    fail("frames %s outside 1..%d" % (S.get("frames"), FRAMES_MAX))
+if not 64 <= int(S.get("res", 2048)) <= 8192:
+    fail("res %s outside 64..8192" % S.get("res"))
+if S.get("hi", "grid") not in ("grid", "subdiv"):
+    fail("hi must be grid or subdiv")
+if S["garment"] not in bpy.data.objects or bpy.data.objects[S["garment"]].type != "MESH":
+    fail("no mesh object %s in the blend" % S["garment"])
+if S.get("collider") and S["collider"] not in bpy.data.objects:
+    fail("no collider object %s in the blend" % S["collider"])
+if not bpy.data.objects[S["garment"]].data.polygons:
+    fail("garment %s has no faces" % S["garment"])
+for key in ("base_normal_gl", "base_normal_dx", "base_orm", "base_wear"):
+    if S.get(key) and not os.path.isfile(S[key]):
+        fail("%s %s not found" % (key, S[key]))
 OUT, NAME = S["out"], S["name"]
 os.makedirs(OUT, exist_ok=True)
 rep = {"spec": S}
 sc = bpy.context.scene
+rep["blender"], rep["threads"] = bpy.app.version_string, [sc.render.threads_mode, sc.render.threads]
+sc.cycles.seed = 0
+sc.cycles.use_animated_seed = False
 
 
 def mesh_copy(src, name):
@@ -79,7 +129,7 @@ def open_loops(ob):  # the mesh's open boundary loops, longest first: hem, cuffs
                         stack.append(f)
         pts = np.array([v.co for e in part for v in e.verts])
         loops.append({"edges": len(part), "length_m": round(sum(e.calc_length() for e in part), 3),
-                      "centre": [round(c, 3) for c in pts.mean(0)]})
+                      "centre": [round(float(c), 3) for c in pts.mean(0)]})
     bm.free()
     return sorted(loops, key=lambda l: -l["length_m"])
 
@@ -119,11 +169,18 @@ rep["holes"] = [l for l in rep["open_loops"] if l["length_m"] < S.get("hole_max_
 for l in rep["holes"]:
     print("FOLD_BAKE_OPEN_BOUNDARY hole: %d edges, %.3f m round, centre %s" % (l["edges"], l["length_m"], l["centre"]))
 rep["shells"] = shell_openings(lo)
+if rep["shells"] and not isinstance(S.get("openings"), int):
+    fail("%s is a closed shell: the spec needs \"openings\" (the ways through it the garment should have)" % S["garment"])
 for s_ in rep["shells"]:
-    want = S.get("openings")
-    if want is None or s_["openings"] > want:
+    want = S["openings"]
+    if s_["openings"] > want:
         print("FOLD_BAKE_OPEN_BOUNDARY shell of %d faces has %d openings (spec \"openings\": %s)" % (
             s_["faces"], s_["openings"], want))
+        rep.setdefault("shell_holes", []).append(s_)
+if (rep["holes"] or rep.get("shell_holes")) and not S.get("allow_holes", False):
+    json.dump(rep, open(os.path.join(OUT, NAME + "_report.json"), "w"), indent=1)
+    fail("%s has holes (see FOLD_BAKE_OPEN_BOUNDARY and %s_report.json); fix the mesh or set \"allow_holes\": true" % (
+        S["garment"], NAME), 3)
 g.hide_render = True
 for attr in ("visible_camera", "visible_diffuse", "visible_glossy", "visible_shadow", "visible_transmission", "visible_volume_scatter"):
     setattr(lo, attr, False)  # the bake target must not shade the high copy (it sits within max_disp of it)
@@ -147,9 +204,15 @@ if S.get("hi", "grid") == "grid":
     V = V.reshape(-1, 3)
     u_ax, v_ax = [i for i in range(3) if i != ax]
     sel = (V[:, ax] >= R.get("min", -9)) & (V[:, ax] <= R.get("max", 9)) & (V[:, 2] >= R.get("zmin", -9)) & (V[:, 2] <= R.get("zmax", 9))
+    if not sel.any():
+        fail("region selects no vertices of %s" % S["garment"])
     cell, lift = S.get("cell", 0.004), S.get("lift", 0.0015)
+    if not cell > 0:
+        fail("cell must be above 0")
     us = np.arange(V[sel, u_ax].min(), V[sel, u_ax].max(), cell)
     vs = np.arange(max(V[sel, v_ax].min(), R.get("zmin", -9)), min(V[sel, v_ax].max(), R.get("zmax", 9)), cell)
+    if len(us) * len(vs) > GRID_MAX:
+        fail("cast grid %d x %d over GRID_MAX %d: raise cell or shrink the region" % (len(us), len(vs), GRID_MAX))
     top = V[:, ax].max() + 0.05
     dirv = Vector([0, 0, 0])
     dirv[ax] = -1.0
@@ -165,6 +228,8 @@ if S.get("hi", "grid") == "grid":
             idx[j, i] = len(pts)
             pts.append(np.array(hit) + np.array(n) * lift)
             nrm.append(np.array(n))
+    if not pts:
+        fail("no ray from the grid hit %s inside the region" % S["garment"])
     pts, nrm = np.array(pts), np.array(nrm)
     faces = []
     for j in range(len(vs) - 1):
@@ -175,6 +240,8 @@ if S.get("hi", "grid") == "grid":
             e = np.linalg.norm(pts[q] - pts[q[1:] + q[:1]], axis=1)
             if e.max() < cell * 3:  # no face across a step or a gap in the cloth
                 faces.append(q)
+    if not faces:
+        fail("the cast grid made no faces (cell too coarse for the region)")
     fa = np.array(faces)
     fn = np.cross(pts[fa[:, 1]] - pts[fa[:, 0]], pts[fa[:, 3]] - pts[fa[:, 0]])
     if (fn * nrm[fa[:, 0]]).sum() < 0:  # face the sheet the way the surface it was cast on faces
@@ -209,6 +276,8 @@ else:
 
     reg = [f for f in bm.faces if inside(f)]
     rep["region_faces"] = len(reg)
+    if not reg:
+        fail("region selects no faces of %s" % S["garment"])
     if S.get("subdiv", 1) > 0 and reg:
         edges = list({e for f in reg for e in f.edges})
         bmesh.ops.subdivide_edges(bm, edges=edges, cuts=int(S.get("subdiv", 1)), use_grid_fill=True)
@@ -302,8 +371,9 @@ hi.select_set(True)
 bpy.context.view_layer.objects.active = hi
 try:
     bpy.ops.wm.obj_export(filepath=os.path.join(OUT, NAME + "_hi.obj"), export_selected_objects=True, export_materials=False)
-except Exception as e:  # the high copy is a by-product; the bake does not need it
+except RuntimeError as e:  # the operator's own failure (path, permissions): the high copy is a by-product, so go on
     rep["obj_export_error"] = str(e)
+    print("FOLD_BAKE_WARNING: high copy not exported: %s" % e)
 
 # Bake onto the game mesh's UVs.
 res = int(S.get("res", 2048))
