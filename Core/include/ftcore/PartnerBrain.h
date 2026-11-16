@@ -657,6 +657,7 @@ private:
     void endString(bool staggered);
     void skirmishStep(double dt, const PartnerInput& in); // rule 17, after decide, framed
     void skirmishWalk(double dt, const PartnerInput& in); // skirmishStep's walk; it then records the choice
+    void nearWalk(const PartnerInput& in);                // rule 19's near field: round the far side of the lead
     void steerRound(const PartnerInput& in);              // rule 18, last, framed
     // seen: bit i set when enemy i stands in the frame (framed only; 0 otherwise).
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;
@@ -665,6 +666,8 @@ private:
     // This step's tuning (partnerEffectiveTuning of s_.t), set as each step starts: input, not state (never saved or
     // hashed); s_.t itself unless the kit's range is on.
     PartnerTuning tStep_{};
+    // This step's near field (rule 19, a ranged kit under the close lens), set by decide: input, not state.
+    bool nearStep_ = false;
 };
 
 } // namespace ftcore
