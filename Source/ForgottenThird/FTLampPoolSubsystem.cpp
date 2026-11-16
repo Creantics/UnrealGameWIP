@@ -20,7 +20,8 @@
 #include "ftcore/HeroCorner.h"
 #include "ftcore/NightLook.h"
 
-// The leads' rim collection (the leads lane's FTRimCollection.h); until main has that header, its path and parameter here.
+// The leads' rim collection (the leads lane's FTRimCollection.h). Until main has that header, the rim path compiles to
+// nothing but one log line (PickRim).
 #if __has_include("FTRimCollection.h")
 #include "FTRimCollection.h"
 #define FT_HAS_RIM_COLLECTION 1
@@ -31,16 +32,10 @@
 namespace
 {
 #if FT_HAS_RIM_COLLECTION
-const TCHAR* const RimCollectionPath = FTRim::Collection;
-const TCHAR* const RimColourName = FTRim::Colour;
 FLinearColor RimDefaultColour() { return FTRim::DefaultColour; }
-#else
-const TCHAR* const RimCollectionPath = TEXT("/Game/Characters/Shared/Materials/MPC_FTRim");
-const TCHAR* const RimColourName = TEXT("RimColour");
-FLinearColor RimDefaultColour() { return FLinearColor(0.82f, 0.88f, 1.f); }
-#endif
 // A lamp nearer the lead than this counts as this near (cm): a lamp brushing the head doesn't take the rim outright.
 constexpr float kRimMinDistCm = 100.f;
+#endif
 // The grid's cell for the pickers, in cm: about the reach, so a pick reads a few cells a side.
 constexpr float kPickerCellCm = 2000.f;
 // The pool lights' pointing: lamps straight down; shops out of their face at the data's pitch.
@@ -576,6 +571,15 @@ void UFTLampPoolSubsystem::Pick()
 
 void UFTLampPoolSubsystem::PickRim(const FVector& Lead, const FVector& Right)
 {
+#if !FT_HAS_RIM_COLLECTION
+	if (!bRimTried)
+	{
+		bRimTried = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: rim colour off (this build has no FTRimCollection.h)."));
+	}
+	(void)Lead;
+	(void)Right;
+#else
 	constexpr int32 kMax = kMaxLamps + kMaxShops;
 	ftcore::RimLamp Lit[kMax];
 	FLinearColor Colour[kMax];
@@ -620,7 +624,6 @@ void UFTLampPoolSubsystem::PickRim(const FVector& Lead, const FVector& Right)
 		RimTarget = Target;
 		bRimSettled = false;
 	}
-#if FT_HAS_RIM_COLLECTION
 	FTRim::SetPreferredSide(Best.index >= 0 ? Best.side : 0.f);
 #endif
 }
@@ -642,17 +645,18 @@ void UFTLampPoolSubsystem::EaseRim(float DeltaTime)
 
 void UFTLampPoolSubsystem::ResetRim()
 {
+#if FT_HAS_RIM_COLLECTION
 	RimTarget = RimDefaultColour();
 	RimNow = RimDefaultColour();
 	bRimSettled = true;
 	WriteRim(RimDefaultColour());
-#if FT_HAS_RIM_COLLECTION
 	FTRim::SetPreferredSide(0.f);
 #endif
 }
 
 void UFTLampPoolSubsystem::WriteRim(const FLinearColor& Colour)
 {
+#if FT_HAS_RIM_COLLECTION
 	UWorld* World = GetWorld();
 	if (!World)
 	{
@@ -661,13 +665,17 @@ void UFTLampPoolSubsystem::WriteRim(const FLinearColor& Colour)
 	if (!bRimTried)
 	{
 		bRimTried = true;
-		const FString Path = FString(RimCollectionPath) + TEXT(".") + FPackageName::GetShortName(RimCollectionPath);
-		RimCollection = LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		RimCollection = FTRim::Load();
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: rim colour %s."),
+			RimCollection ? TEXT("drives MPC_FTRim's RimColour from the lamp that lights the lead") : TEXT("off (no MPC_FTRim built)"));
 	}
 	if (UMaterialParameterCollectionInstance* Params = RimCollection ? World->GetParameterCollectionInstance(RimCollection) : nullptr)
 	{
-		Params->SetVectorParameterValue(FName(RimColourName), Colour);
+		Params->SetVectorParameterValue(FName(FTRim::Colour), Colour);
 	}
+#else
+	(void)Colour;
+#endif
 }
 
 void UFTLampPoolSubsystem::LogHero(const FVector& From)
