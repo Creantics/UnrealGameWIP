@@ -284,6 +284,10 @@ struct PartnerEnemyView {
 inline constexpr float kPartnerTallMeters = 4.f;
 // Rule 18: a walk keeps this far (m) off a tall target's edge (the partner's body and a little room).
 inline constexpr float kPartnerSteerClear = 0.6f;
+// Rule 19's near field (the order of 11-16): a walk round a tall target that would pass behind the lead goes round
+// wider, this much at a time (m), up to kPartnerNearRoundMax more; samples nearer than a step to its start are skipped.
+inline constexpr float kPartnerNearRoundStep = 0.5f;
+inline constexpr float kPartnerNearRoundMax = 3.f;
 // Rule 18: StayClose's growth by a tall target ends only when its edge is this far (m) past closeLeadMeters.
 inline constexpr float kPartnerTallGrowHysteresis = 0.5f;
 // Rule 13: within this long (s) of the held station's last change of side, a new pick keeps to its side (none valid

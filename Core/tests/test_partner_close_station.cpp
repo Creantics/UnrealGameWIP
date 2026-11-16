@@ -1184,6 +1184,80 @@ TEST_CASE("close station: a step out to the kit's band is not carried to the nex
     CHECK_FALSE(p.b.save().steppedOut);
 }
 
+TEST_CASE("close station: a target not tall rushed inside the standoff: over the size cap a string starts only with no band station") {
+    // The near field (the order of 11-16): an 8.5 / 5 caster stands over rule 2's size cap (0.85 of the frame's
+    // height) but outside rule 1, its target not tall. More than kPartnerRangeStepOut inside the standoff with no
+    // station in the band (a 4 degree cone: tier 3-5) it strings from where it stands; with one (tier 1-2) it walks
+    // there; outside the standoff it walks too.
+    struct Case {
+        float half, depth, lateral;
+        bool casts;
+    };
+    for (const Case c : {Case{4.f, 2.9f, 2.f, true}, Case{kCsHalf, 2.9f, 2.f, false}, Case{4.f, 2.55f, -3.f, false}}) {
+        CAPTURE(c.half);
+        CAPTURE(c.depth);
+        CAPTURE(c.lateral);
+        CsPit p(true);
+        p.in.range = {8.5f, 5.f};
+        p.in.station.close.standMin = kPartnerCloseCasterMin;
+        p.in.station.close.standMax = kPartnerCloseCasterMax;
+        p.in.station.close.halfAngleDegrees = c.half;
+        p.in.station.close.verticalHalfDegrees = 20.f;
+        const Vec2 cam = p.in.station.cameraPos, f = csUnit(p.in.station.cameraForward);
+        p.in.pos = csAdd(csAdd(cam, csMul(f, c.depth)), csMul(Vec2{-f.y, f.x}, c.lateral));
+        REQUIRE(partnerCloseNearOk(cam, f, p.in.leadPos, p.in.pos));
+        REQUIRE(partnerCloseProjectedHeight(cam, f, 20.f, p.in.pos) > kPartnerCloseSizeCap);
+        const float edge = std::hypot(p.in.pos.x, p.in.pos.y) - p.e[0].radius;
+        const PartnerIntent& i = p.step();
+        if (c.casts) {
+            CHECK(edge < 5.f - kPartnerRangeStepOut);
+            CHECK(i.closeTier >= 3);
+            CHECK(i.why == PartnerWhy::Start);
+            CHECK(i.act == PartnerAct::Attack);
+            CHECK(i.blowStart);
+        } else {
+            if (c.half == kCsHalf) CHECK(i.closeTier <= 2);
+            else CHECK(edge >= 5.f - kPartnerRangeStepOut);
+            CHECK(i.why == PartnerWhy::Approach);
+            CHECK(i.act == PartnerAct::MoveTo);
+            CHECK_FALSE(i.blowStart);
+        }
+    }
+}
+
+TEST_CASE("close station: the near field stretches the band to the kit's reach, past the host's band") {
+    // The near field's rule 3 (the order of 11-16): with the kit's range on under the close lens, the band reaches
+    // reach - tolerance whatever the host's own band: a host band of 5-5.3 m gives the station a band of 5-8.5 m gives,
+    // there past 5.3 m off the target's edge (without the stretch, 5.3 m at most: a tier 4 and a tier 5 case).
+    struct Case {
+        float lead, verticalHalf, half;
+        Vec2 start;
+        int tier;
+    };
+    for (const Case c : {Case{5.f, 8.f, 30.f, Vec2{2.f, -8.f}, 4}, Case{6.f, 22.f, 12.f, Vec2{-4.f, -6.f}, 5}}) {
+        CAPTURE(c.lead);
+        CAPTURE(c.half);
+        Vec2 goal[2];
+        for (int k = 0; k < 2; ++k) {
+            CsPit p(true);
+            p.in.range = {8.5f, 5.f};
+            p.in.leadPos = {-c.lead, 0.f};
+            p.in.station.close.standMin = 5.f;
+            p.in.station.close.standMax = k == 0 ? 5.3f : 8.5f;
+            p.in.station.close.halfAngleDegrees = c.half;
+            p.in.station.close.verticalHalfDegrees = c.verticalHalf;
+            csLens(p.in.leadPos, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward, c.half);
+            p.in.pos = c.start;
+            const PartnerIntent& i = p.step();
+            CHECK(i.act == PartnerAct::MoveTo);
+            CHECK(static_cast<int>(i.closeTier) == c.tier);
+            goal[k] = i.point;
+        }
+        CHECK(std::hypot(goal[0].x - goal[1].x, goal[0].y - goal[1].y) <= 1e-4f);
+        CHECK(std::hypot(goal[0].x, goal[0].y) - 1.f > 5.3f + 0.5f);
+    }
+}
+
 TEST_CASE("close station: the kit's range sizes the leash to its band, a melee kit's stays") {
     const PartnerTuning tu;
     PartnerInput in;
