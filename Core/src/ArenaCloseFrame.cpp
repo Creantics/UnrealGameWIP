@@ -323,6 +323,60 @@ float arenaCloseStandOffPitch(const ArenaCloseRules& rules, const ArenaLookLimit
     return b;
 }
 
+bool arenaCloseHeadHidden(const ArenaCameraPose& pose, float aspect, const ArenaLeadBody& body, ArenaPoint3 head, float margin) {
+    if (!finite(aspect) || !(aspect > 0.f) || !finite(head.x) || !finite(head.y) || !finite(head.z)) return false;
+    const ArenaFramePoint p = arenaFramePoint(pose, aspect, head);
+    if (!p.ahead || !finite(p.x) || !finite(p.y)) return false;
+    const ArenaLeadShares s = arenaLeadShares(pose, aspect, body);
+    if (!s.ahead) return false;
+    const float m = finite(margin) ? std::max(0.f, margin) : 0.f;
+    return p.x >= s.left - m && p.x <= s.right + m && p.y >= s.feet - m && p.y <= s.head + m;
+}
+
+ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const ArenaCameraPose& pose, float aspect,
+                                        const ArenaLeadBody& body, ArenaPoint3 head) {
+    ArenaCloseClear out;
+    if (!finite(pose.side) || !finite(pose.pivot) || !finite(rules.clearMargin)) return out;
+    const auto hidden = [&](const ArenaCameraPose& q) { return arenaCloseHeadHidden(q, aspect, body, head, rules.clearMargin); };
+    if (!hidden(pose)) return out;
+    const float sign = pose.side < 0.f ? -1.f : 1.f;
+    const float step = finite(rules.clearStep) && rules.clearStep > 0.01f ? rules.clearStep : 0.05f;
+    const float room = finite(rules.clearSideMax) ? std::max(0.f, rules.clearSideMax - std::fabs(pose.side)) : 0.f;
+    const float rise = finite(rules.clearPivotUp) ? std::max(0.f, rules.clearPivotUp) : 0.f;
+    // Each side step (the last landing on the most) with its least pivot step that clears; the least sum kept. At most
+    // 18 x 7 projections of the head and the lead.
+    const int sideSteps = static_cast<int>(std::ceil(room / step - 1e-4f));
+    const int upSteps = static_cast<int>(std::ceil(rise / step - 1e-4f));
+    ArenaCameraPose p = pose;
+    float best = 1e9f;
+    for (int ks = 0; ks <= sideSteps; ++ks) {
+        const float add = std::min(room, static_cast<float>(ks) * step);
+        if (add >= best) break;
+        p.side = pose.side + sign * add;
+        for (int kp = ks == 0 ? 1 : 0; kp <= upSteps; ++kp) {
+            const float up = std::min(rise, static_cast<float>(kp) * step);
+            if (add + up >= best) break;
+            p.pivot = pose.pivot + up;
+            if (hidden(p)) continue;
+            best = add + up;
+            out.side = sign * add;
+            out.pivot = up;
+            break;
+        }
+    }
+    if (best < 1e8f) return out;
+    out.side = sign * room;
+    out.pivot = rise;
+    return out;
+}
+
+float arenaCloseClearStep(const ArenaCloseRules& rules, float now, float want, float dt) {
+    const float at = finite(now) ? now : 0.f;
+    if (!finite(want) || !finite(dt) || !(dt > 0.f)) return at;
+    const float tau = finite(rules.clearEase) && rules.clearEase > 1e-4f ? rules.clearEase : 1e-4f;
+    return at + (want - at) * (1.f - std::exp(-dt / tau));
+}
+
 ArenaLensGround arenaLensGround(const ArenaCameraPose& pose, ArenaPoint3 at) {
     const ArenaLensAt lens = arenaCameraLens(pose);
     const float y = pose.yaw * kRad;

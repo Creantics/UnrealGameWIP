@@ -1637,6 +1637,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	PartnerYawNow = PartnerYawGoal = 0.f;
 	CloseMelee = CloseTall = 0.f;
 	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = CloseContactLow = StandOffPitchNow = 0.f;
+	ClearSideNow = ClearPivotNow = 0.f;
 	CloseWallCount = 0;
 	CloseWallAge = 1e9f;
 	bStandOffWeak = false;
@@ -1650,6 +1651,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CloseSwaps = CloseYawFrames = CloseYawOn = 0;
 	CloseWallFrames = CloseWallLow = CloseWallHeld = 0;
 	CloseContactFrames = CloseContactSwaps = 0;
+	CloseClearFrames = CloseClearSeen = 0;
+	CloseClearSideMost = CloseClearPivotMost = 0.f;
 	CloseContactYawMost = 0.f;
 	CloseTallFrames = CloseTallMateFrames = CloseTallMateIn = 0;
 	CloseTallHeadMost = CloseTallPitchMost = 0.f;
@@ -5436,8 +5439,27 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 	CloseShoulder = ftcore::arenaCloseShoulderStep(R, CloseShoulder, CloseShoulderWant, bMidAttack ? 0.f : DeltaSeconds);
 	// The cut is LeadBody's (it knows the lead's height); the rest goes on the rig and the preset the frame reads.
 	const ftcore::ArenaCloseShape Shape = ftcore::arenaCloseShape(R, CloseBase, CloseMelee, CloseCutTall, CloseShoulder, 0.f);
-	Fit.camera.pivot = Shape.pivot;
-	Fit.camera.side = Shape.side;
+	// Stand-off clearance: off contact, a target whose head sits behind the lead on the screen (the lead's box widened by
+	// 5% of the frame) takes the lens further out on its shoulder (to 0.85 m in all) and the pivot up (to 0.3 m), by the
+	// least of the two that clears it, eased in and out over 0.25 s. Asked of the last drawn view with this frame's shape
+	// (the clearance taken off), the arm as the wall leaves it; scaled down as contact blends in.
+	ftcore::ArenaCloseClear ClearWant;
+	if (bOn && bCameraPoseNow && CloseContact < 1.f && !ArenaAim.aiming())
+	{
+		ftcore::ArenaCameraPose View = CameraPoseNow;
+		View.pivot = Shape.pivot;
+		View.side = Shape.side;
+		View.fov = Shape.fov;
+		const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
+		const ftcore::ArenaPoint3 Head{E.x - Bodies.player.x, E.y - Bodies.player.y, CloseHeadHeight()};
+		ClearWant = ftcore::arenaCloseStandOffClear(R, WallScaled(View, BoomWallShare()), LockAspect(), LeadBody(), Head);
+		ClearWant.side *= 1.f - CloseContact;
+		ClearWant.pivot *= 1.f - CloseContact;
+	}
+	ClearSideNow = ftcore::arenaCloseClearStep(R, ClearSideNow, ClearWant.side, DeltaSeconds);
+	ClearPivotNow = ftcore::arenaCloseClearStep(R, ClearPivotNow, ClearWant.pivot, DeltaSeconds);
+	Fit.camera.pivot = Shape.pivot + ClearPivotNow;
+	Fit.camera.side = Shape.side + ClearSideNow;
 	Fit.camera.fov = Shape.fov;
 	CameraLens.targetX = Shape.screenX;
 	CameraLens.cutMin = Shape.cutMin;
@@ -6004,7 +6026,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
 		// The close lens turns up to ftcore::kArenaClose.partnerYawMax (12) degrees, the target kept in its band of the width;
 		// for a ranged partner (its kit's own range handed to the brain with the close station) up to partnerYawRangedMax
-		// (24), never growing during the lead's attack or a dodge's first moment (ftcore::arenaClosePartnerYawCap).
+		// (12 as ruled; the switch may widen it), never growing during the lead's attack or a dodge's first moment
+		// (ftcore::arenaClosePartnerYawCap).
 		if (bCloseShape)
 		{
 			const ftcore::ArenaAction Act = Fight.output().player.action;
@@ -6077,6 +6100,14 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		{
 			++CloseContactFrames;
 			CloseContactYawMost = FMath::Max(CloseContactYawMost, FMath::Abs(ContactYawNow));
+		}
+		else if (CloseTargetNow >= 0)
+		{
+			// Stand-off: the target's head in the drawn lens, clear of the lead's box (no margin).
+			++CloseClearFrames;
+			CloseClearSeen += ftcore::arenaCloseHeadHidden(Lens, Aspect, Body, ftcore::ArenaPoint3{To.x, To.y, CloseHeadHeight()}, 0.f) ? 0 : 1;
+			CloseClearSideMost = FMath::Max(CloseClearSideMost, FMath::Abs(ClearSideNow));
+			CloseClearPivotMost = FMath::Max(CloseClearPivotMost, ClearPivotNow);
 		}
 		if (CloseContactLow > 0.5f)
 		{
@@ -6313,6 +6344,9 @@ void UFTArenaRunner::LogFeatureChecks() const
 			CloseWallFrames, CloseYawFrames, CloseWallLow, CloseWallHeld);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens contact on %d of %d held frames (left out of the frame check), swing most %.1f degrees, %d shoulder swaps in contact."),
 			CloseContactFrames, CloseYawFrames, CloseContactYawMost, CloseContactSwaps);
+		const float ClearShare = CloseClearFrames > 0 ? 100.f * static_cast<float>(CloseClearSeen) / static_cast<float>(CloseClearFrames) : 100.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens target head clear of the lead %s on %d of %d stand-off frames (%.1f%%, bar 95%%), the clearance at most %.2f m side, %.2f m pivot."),
+			ClearShare >= 95.f ? TEXT("PASS") : TEXT("FAIL"), CloseClearSeen, CloseClearFrames, ClearShare, CloseClearSideMost, CloseClearPivotMost);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens tall contact (low lens over half) on %d held frames: lead's head at most %.0f%% of the height, waist at least %.0f%%, pitch at most %.1f degrees; partner in the frame on %d of %d of them (exempt, logged only)."),
 			CloseTallFrames, CloseTallHeadMost * 100.f, CloseTallWaistLeast * 100.f, CloseTallPitchMost, CloseTallMateIn, CloseTallMateFrames);
 	}
@@ -6479,7 +6513,7 @@ void UFTArenaRunner::PickCameraPreset()
 		CameraLag = FMath::IsFinite(Lag) ? Lag : -1.f;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera lag %.3f s for this run (-ArenaCameraLag; 0 the boom's own, under 0 off)."), CameraLag);
 	}
-	// -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (the 12 / 24 review pair); classic ignores it.
+	// -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (default 12); classic ignores it.
 	PartnerYawCapSwitch = 0.f;
 	float YawCap = 0.f;
 	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaPartnerYawCap="), YawCap) && Id == ftcore::CameraPresetId::Close && FMath::IsFinite(YawCap))

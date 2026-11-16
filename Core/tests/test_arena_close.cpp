@@ -7,6 +7,7 @@
 #include <doctest/doctest.h>
 #include <cmath>
 #include <limits>
+#include <string>
 
 using namespace ftcore;
 
@@ -327,23 +328,30 @@ TEST_CASE("close frame: the partner yaw turns up to 12 degrees toward the partne
     CHECK(arenaClosePartnerYaw(kArenaClose, rules, pose, kAspect, body, ArenaPoint3{-4.f, 0.f, 1.f}, target, 1.f) == 0.f);
 }
 
-TEST_CASE("close frame: a ranged partner's yaw may turn up to 24 degrees, never growing past 12 while the lead is busy") {
+TEST_CASE("close frame: a ranged partner's yaw cap is 12 as ruled; a wider one (the switch's) never grows past 12 while the lead is busy") {
     CHECK(kArenaClose.partnerYawMax == 12.f);
-    CHECK(kArenaClose.partnerYawRangedMax == 24.f);
+    CHECK(kArenaClose.partnerYawRangedMax == 12.f);
+    // As shipped: 12 for either kit, busy or not, whatever turn is held.
+    for (const bool ranged : {false, true})
+        for (const bool busy : {false, true})
+            for (const float held : {0.f, 8.f, -18.5f, 30.f, kNaN}) CHECK(arenaClosePartnerYawCap(kArenaClose, ranged, busy, held) == 12.f);
+    // The mechanism at a 24 degree cap (-ArenaPartnerYawCap=24).
+    ArenaCloseRules r24 = kArenaClose;
+    r24.partnerYawRangedMax = 24.f;
     // Melee: 12, busy or not, whatever turn is held.
-    CHECK(arenaClosePartnerYawCap(kArenaClose, false, false, 0.f) == 12.f);
-    CHECK(arenaClosePartnerYawCap(kArenaClose, false, true, 20.f) == 12.f);
+    CHECK(arenaClosePartnerYawCap(r24, false, false, 0.f) == 12.f);
+    CHECK(arenaClosePartnerYawCap(r24, false, true, 20.f) == 12.f);
     // Ranged and free: 24.
-    CHECK(arenaClosePartnerYawCap(kArenaClose, true, false, 0.f) == 24.f);
-    CHECK(arenaClosePartnerYawCap(kArenaClose, true, false, kNaN) == 24.f);
+    CHECK(arenaClosePartnerYawCap(r24, true, false, 0.f) == 24.f);
+    CHECK(arenaClosePartnerYawCap(r24, true, false, kNaN) == 24.f);
     // Ranged and busy: the turn held now (either sign), within 12..24.
-    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, 0.f) == 12.f);
-    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, 8.f) == 12.f);
-    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, -18.5f) == 18.5f);
-    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, 30.f) == 24.f);
-    CHECK(arenaClosePartnerYawCap(kArenaClose, true, true, kNaN) == 12.f);
+    CHECK(arenaClosePartnerYawCap(r24, true, true, 0.f) == 12.f);
+    CHECK(arenaClosePartnerYawCap(r24, true, true, 8.f) == 12.f);
+    CHECK(arenaClosePartnerYawCap(r24, true, true, -18.5f) == 18.5f);
+    CHECK(arenaClosePartnerYawCap(r24, true, true, 30.f) == 24.f);
+    CHECK(arenaClosePartnerYawCap(r24, true, true, kNaN) == 12.f);
     // A ranged most under the melee one never lowers it.
-    ArenaCloseRules low = kArenaClose;
+    ArenaCloseRules low = r24;
     low.partnerYawRangedMax = 6.f;
     CHECK(arenaClosePartnerYawCap(low, true, false, 0.f) == 12.f);
     // The cap fed back as the rules' partnerYawMax: a partner a 12 degree turn cannot reach, a 24 degree one can, the
@@ -353,8 +361,8 @@ TEST_CASE("close frame: a ranged partner's yaw may turn up to 24 degrees, never 
     const ArenaLeadBody body = closeBody(0.f, 0.f, 1.8f);
     const ArenaLeadFrameRules rules = closeRules(0.f, 0.f, 1.8f);
     const ArenaCameraPose pose = lockPose(0.f, 1.f, d);
-    ArenaCloseRules wide = kArenaClose;
-    wide.partnerYawMax = arenaClosePartnerYawCap(kArenaClose, true, false, 0.f);
+    ArenaCloseRules wide = r24;
+    wide.partnerYawMax = arenaClosePartnerYawCap(r24, true, false, 0.f);
     int gained = 0;
     for (float x = 1.f; x <= 7.f; x += 0.5f)
         for (float y = 1.f; y <= 7.f; y += 0.5f) {
@@ -717,4 +725,114 @@ TEST_CASE("close frame: a wall-shortened lens does not dive to keep the cut: the
         CHECK(s.right < 1.f);
         MESSAGE("wall " << wall << " at " << R.wallPitchMin << ": cut at " << s.feet << ", head at " << s.head << " of the height");
     }
+}
+
+namespace {
+// A target's head `d` m out from the lead, straight behind a point of the lead (`across` m to its right, `head` m up)
+// as the lens sees it: the lens, that point and the target's head in one line.
+ArenaPoint3 behindHead(const ArenaCameraPose& pose, float d, float head, float across = 0.f) {
+    const ArenaLensAt lens = arenaCameraLens(pose);
+    const float lz = pose.pivot + lens.z; // the lens's height over the floor
+    const float dx = -lens.x, dy = across - lens.y, dz = head - lz;
+    const float flat = std::sqrt(dx * dx + dy * dy);
+    const float k = (flat + d) / flat;
+    return ArenaPoint3{lens.x + dx * k, lens.y + dy * k, lz + dz * k};
+}
+} // namespace
+
+TEST_CASE("close frame: stand-off clearance moves the lens out on its shoulder, then up, until the target's head clears the lead") {
+    const ArenaCloseRules& R = kArenaClose;
+    CHECK(R.clearSideMax == 0.85f);
+    CHECK(R.clearMargin == 0.05f);
+    CHECK(R.clearEase == 0.25f);
+    int sideUsed = 0, raised = 0;
+    for (const float shoulder : {1.f, -1.f}) {
+        for (const float d : {3.5f, 5.f, 6.f, 8.f, 10.f}) {
+            for (const float head : {1.6f, 1.8f}) {
+                CAPTURE(shoulder);
+                CAPTURE(d);
+                CAPTURE(head);
+                const ArenaCameraPose pose = lockPose(0.f, shoulder, d, head);
+                const ArenaLeadBody body = closeBody(0.f, 0.f, head);
+                // A target at the lock's own place, clear of the lead: nothing asked.
+                const ArenaPoint3 framed{d, 0.f, 1.7f};
+                CHECK_FALSE(arenaCloseHeadHidden(pose, kAspect, body, framed, R.clearMargin));
+                const ArenaCloseClear none = arenaCloseStandOffClear(R, pose, kAspect, body, framed);
+                CHECK(none.side == 0.f);
+                CHECK(none.pivot == 0.f);
+                // A target behind the lead (its head's top, dead centre; or its near shoulder, on the target's side of
+                // the frame): hidden, and the clearance clears it.
+              for (const bool edge : {false, true}) {
+                CAPTURE(edge);
+                const ArenaPoint3 hid = edge ? behindHead(pose, d, head - 0.6f, 0.3f * shoulder) : behindHead(pose, d, head - 0.05f);
+                REQUIRE(arenaCloseHeadHidden(pose, kAspect, body, hid, 0.f));
+                const ArenaCloseClear c = arenaCloseStandOffClear(R, pose, kAspect, body, hid);
+                CHECK(c.side * shoulder >= 0.f);                                // out on its own shoulder, if at all
+                CHECK(std::fabs(pose.side + c.side) <= R.clearSideMax + 1e-4f); // never past the most
+                CHECK(c.pivot >= 0.f);
+                CHECK(c.pivot <= R.clearPivotUp + 1e-4f);
+                ArenaCameraPose cleared = pose;
+                cleared.side += c.side;
+                cleared.pivot += c.pivot;
+                if (c.pivot < R.clearPivotUp - 1e-4f) CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, body, hid, R.clearMargin));
+                CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, body, hid, 0.f)); // the head itself is seen in every case
+                // The least move: no pair of steps with a smaller sum clears it.
+                const float sum = std::fabs(c.side) + c.pivot;
+                for (int ks = 0; ks <= 6; ++ks)
+                    for (int kp = 0; kp <= 6; ++kp) {
+                        const float add = std::min(R.clearSideMax - std::fabs(pose.side), ks * R.clearStep);
+                        const float up = kp * R.clearStep;
+                        if (add + up >= sum - 1e-4f) continue;
+                        ArenaCameraPose less = pose;
+                        less.side += shoulder * add;
+                        less.pivot += up;
+                        CHECK(arenaCloseHeadHidden(less, kAspect, body, hid, R.clearMargin));
+                    }
+                sideUsed += c.side != 0.f ? 1 : 0;
+                raised += c.pivot > 0.f ? 1 : 0;
+                // The lead stays in the frame's width and under its top (the lead's rule pitches for the cut).
+                const ArenaLeadShares s = arenaLeadShares(cleared, kAspect, body);
+                CHECK(s.ahead);
+                CHECK(s.left >= 0.f);
+                CHECK(s.right <= 1.f);
+                CHECK(s.head <= 1.f);
+                MESSAGE("shoulder " << shoulder << " d " << d << " head " << head << std::string(edge ? " shoulder edge" : " dead centre") << ": side "
+                                     << c.side << " m, pivot +" << c.pivot << " m");
+              }
+            }
+        }
+    }
+    MESSAGE("cleared with the side moved " << sideUsed << ", with the pivot raised " << raised);
+    CHECK(raised > 0);
+    CHECK(sideUsed > 0);
+    // Edge inputs.
+    const ArenaCameraPose pose = lockPose(0.f, 1.f, 5.f);
+    const ArenaLeadBody body = closeBody(0.f, 0.f, 1.8f);
+    const ArenaPoint3 hid = behindHead(pose, 5.f, 1.75f);
+    CHECK_FALSE(arenaCloseHeadHidden(pose, kNaN, body, hid, 0.f));
+    CHECK_FALSE(arenaCloseHeadHidden(pose, kAspect, body, ArenaPoint3{kNaN, 0.f, 1.f}, 0.f));
+    CHECK_FALSE(arenaCloseHeadHidden(pose, kAspect, body, ArenaPoint3{-6.f, 0.f, 1.f}, 0.f)); // behind the lens
+    CHECK(arenaCloseHeadHidden(pose, kAspect, body, hid, kNaN));                               // a NaN margin reads as 0
+    ArenaCameraPose bad = pose;
+    bad.side = kNaN;
+    CHECK(arenaCloseStandOffClear(R, bad, kAspect, body, hid).side == 0.f);
+    ArenaCameraPose wide = pose;
+    wide.side = 0.9f; // already past the most: no side left, the pivot does what it can
+    CHECK(arenaCloseStandOffClear(R, wide, kAspect, body, behindHead(wide, 5.f, 1.75f)).side == 0.f);
+}
+
+TEST_CASE("close frame: the clearance eases in and out over 0.25 s") {
+    const ArenaCloseRules& R = kArenaClose;
+    float v = 0.f;
+    for (int i = 0; i < 15; ++i) v = arenaCloseClearStep(R, v, 0.3f, 1.f / 60.f); // 0.25 s: one time constant
+    CHECK(v == doctest::Approx(0.3f * (1.f - std::exp(-1.f))).epsilon(0.01));
+    for (int i = 0; i < 120; ++i) v = arenaCloseClearStep(R, v, 0.3f, 1.f / 60.f);
+    CHECK(v == doctest::Approx(0.3f).epsilon(0.001));
+    for (int i = 0; i < 15; ++i) v = arenaCloseClearStep(R, v, 0.f, 1.f / 60.f);
+    CHECK(v == doctest::Approx(0.3f * std::exp(-1.f)).epsilon(0.01));
+    CHECK(v > 0.f);
+    CHECK(arenaCloseClearStep(R, 0.2f, 0.f, 0.f) == 0.2f);
+    CHECK(arenaCloseClearStep(R, 0.2f, kNaN, 0.1f) == 0.2f);
+    CHECK(arenaCloseClearStep(R, 0.2f, 0.f, kNaN) == 0.2f);
+    CHECK(arenaCloseClearStep(R, kNaN, 0.f, 0.1f) == 0.f);
 }

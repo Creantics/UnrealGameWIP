@@ -559,6 +559,12 @@ private:
 	float CloseContactLow = 0.f;  // 0..1 (ftcore::arenaCloseContactLow): the tall contact's low lens; exactly 0 under a 4 m target
 	float StandOffPitchNow = 0.f; // degrees (ftcore::arenaCloseStandOffPitch): the least look-up that keeps the target's top in
 	bool bStandOffWeak = false;   // and whether it kept the weak point instead of the top
+	// Stand-off clearance (ftcore::arenaCloseStandOffClear): the extra side (signed) and pivot rise as eased; asked only
+	// off contact (scaled down as contact blends in), 0 with nothing followed. The target's head is its top less this.
+	float ClearSideNow = 0.f;
+	float ClearPivotNow = 0.f;
+	static constexpr float CloseHeadDrop = 0.15f; // m
+	float CloseHeadHeight() const { return FMath::Max(0.3f, CloseHeightNow - CloseHeadDrop); }
 	static constexpr float CloseMateHead = 1.6f;  // m: the partner's head and waist heights the close still log tests
 	static constexpr float CloseMateWaist = 1.0f;
 	// The partner's close station (ftcore::PartnerCloseView, rule 19): the walls near the lead from the boom's own probe,
@@ -588,13 +594,17 @@ private:
 	int32 CloseWallHeld = 0; // frames the close lens's pitch was held off the lead's rule's dive (ftcore::arenaCloseWallPitch)
 	// Held close frames in contact, the most swing, and shoulder swaps made with the contact share over half.
 	int32 CloseContactFrames = 0, CloseContactSwaps = 0;
+	// Held close frames off contact with a target followed, those with its head clear of the lead's box in the drawn
+	// lens (no margin), and the most clearance eased in (side, pivot).
+	int32 CloseClearFrames = 0, CloseClearSeen = 0;
+	float CloseClearSideMost = 0.f, CloseClearPivotMost = 0.f;
 	float CloseContactYawMost = 0.f;
 	// Held close frames in tall contact (low share over half): the lead's highest head and lowest waist share, the most
 	// pitch; the partner's frames there and those in the frame (it is exempt in contact: logged only).
 	int32 CloseTallFrames = 0, CloseTallMateFrames = 0, CloseTallMateIn = 0;
 	float CloseTallHeadMost = 0.f, CloseTallWaistLeast = 1.f, CloseTallPitchMost = 0.f;
 	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
-	float PartnerYawCapSwitch = 0.f; // -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (0: the rules' 24)
+	float PartnerYawCapSwitch = 0.f; // -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (0: the rules' 12)
 	// Held close frames with a ranged partner (its kit's own range on): those with the turn over the melee cap, the most.
 	int32 CloseRangedFrames = 0, CloseRangedWide = 0;
 	float CloseRangedYawMost = 0.f;
