@@ -28,9 +28,11 @@
 #include "ftcore/BuildingLots.h"
 #include "ftcore/MassingDress.h"
 #include "ftcore/MassingPlan.h"
+#include "ftcore/StandIns.h"
 
 #include <cstddef>
 #include <string_view>
+#include <vector>
 
 namespace ftcore {
 
@@ -71,6 +73,9 @@ struct HeroCornerSpec {
     // street lamp's candela.
     double stringLampUnder = 0.35;
     float stringLampGain = 0.5f;
+    // The quay's lamp masts in the camera's view (both banks of the canal beside the lane, to its far end) have no lamp
+    // in the pool: inside this plan box each gives way to a rail piece (heroCornerClearMasts).
+    double mastClearX0 = 890.0, mastClearX1 = 903.0, mastClearY0 = 505.0, mastClearY1 = 640.0;
     // The camera.
     double eye[3] = {904.5, 511.0, 5.78};
     double at[3] = {904.5, 551.0, 3.68};
@@ -139,5 +144,10 @@ FTCORE_API void heroCornerLots(const HeroCornerSpec& spec, HeroLots& out);
 // The lit bays' shop spill points (the lamp pool's shop slots): one per lit bay, kMassingShopLightOut out over the lane
 // from its shop face, kMassingShopLightUp over the ground, facing west. Returns how many (at most kHeroBays).
 FTCORE_API int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroBays]);
+
+// The quay's lamp masts inside the spec's mast-clear box become railing spans that close the rail's gap round the mast
+// (kQuayMastPlate long, rail high, along the rail: the mast's rot turned 90 degrees, id "<mast id>-RAIL"). Returns how
+// many it changed; other points are left as they are.
+FTCORE_API int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& points);
 
 } // namespace ftcore

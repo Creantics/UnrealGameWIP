@@ -26,6 +26,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
@@ -599,12 +600,74 @@ bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBu
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: street rules %s (equal facades within 40 m %d, neighbour twins %d, "
 		"60 m windows under three types %d, wall colour triples %d)%s%s"), Check.ok ? TEXT("PASS") : TEXT("FAIL"), Check.equalWithin40,
 		Check.neighbourTwins, Check.poorWindows, Check.colourTriples, Check.ok ? TEXT(".") : TEXT(": "), *Utf8(Check.firstFault));
-	FParse::Value(Params, TEXT("GlassProofLot="), Out.GlassProofLot);
+	int32 ProofLot = -1;
+	FParse::Value(Params, TEXT("GlassProofLot="), ProofLot);
 	Out.bGlassProofPane = FParse::Param(Params, TEXT("GlassProofPane"));
-	if (Out.GlassProofLot >= 0)
+	if (ProofLot >= 0)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front is lot %d%s."), Out.GlassProofLot,
-			Out.GlassProofLot < static_cast<int32>(Out.Plan.lots.size()) ? TEXT("") : TEXT(" (no such lot)"));
+		const bool bThere = ProofLot < static_cast<int32>(Out.Plan.lots.size());
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front is lot %d%s."), ProofLot, bThere ? TEXT("") : TEXT(" (no such lot)"));
+		if (bThere)
+		{
+			Out.GlassProofLots.AddUnique(ProofLot);
+		}
+	}
+	Out.bOn = true;
+	return true;
+}
+
+bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::string* BayIds, const std::vector<ftcore::MassingBox>& Boxes, FBuild& Out)
+{
+	std::string Text, Error;
+	if (!Out.bOn)
+	{
+		FString KitFile;
+		if (!FParse::Value(Params, TEXT("KitTable="), KitFile) || KitFile.IsEmpty())
+		{
+			KitFile = FPaths::Combine(FPaths::ProjectDir(), TEXT("Data/Look/building_kit_pieces.csv"));
+		}
+		if (!ReadText(KitFile, Text) || !ftcore::parseKitTable(Text, Out.Kit, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -HeroCorner: kit table %s: %s"), *KitFile, *Utf8(Error));
+			return false;
+		}
+		Out.bGlassProofPane = FParse::Param(Params, TEXT("GlassProofPane"));
+	}
+	const int RunIndex = static_cast<int>(Out.Plan.runs.size());
+	Out.Plan.runs.push_back(Hero.run);
+	for (int32 B = 0; B < ftcore::kHeroBays; ++B)
+	{
+		ftcore::BuildingLot Lot = Hero.lots[B];
+		Lot.run = RunIndex;
+		Lot.parents.assign(1, BayIds[B]);
+		const int LotIndex = static_cast<int>(Out.Plan.lots.size());
+		if (!ftcore::facadePlacements(Out.Kit, Out.Plan.runs.back(), Lot, LotIndex, Out.Placements, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -HeroCorner: bay %d's lot: %s"), B + 1, *Utf8(Error));
+			return false;
+		}
+		Out.Plan.replaced.push_back(BayIds[B]);
+		Out.Plan.lots.push_back(std::move(Lot));
+		const ftcore::BuildingLot& Added = Out.Plan.lots.back();
+		if (Added.type == ftcore::LotType::Tiled)
+		{
+			Out.GlassProofLots.AddUnique(LotIndex);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: bay %d is lot %d: %s, %d storeys, floor %.2f, top %.2f, %s roof, wall %d%s [%s]."),
+			B + 1, LotIndex, UTF8_TO_TCHAR(ftcore::lotTypeName(Added.type)), Added.floors, Added.floorZ, Added.top(),
+			Added.roof == ftcore::RoofKind::Flat ? TEXT("flat") : Added.roof == ftcore::RoofKind::Gable ? TEXT("gable") : TEXT("hip"),
+			static_cast<int32>(Added.wall), Out.IsGlassProof(LotIndex) ? TEXT(", a glass proof front") : TEXT(""), *Utf8(BayIds[B]));
+	}
+	Out.Replaced.resize(Boxes.size(), false);
+	for (size_t I = 0; I < Boxes.size(); ++I)
+	{
+		for (int32 B = 0; B < ftcore::kHeroBays; ++B)
+		{
+			if (Boxes[I].id == BayIds[B])
+			{
+				Out.Replaced[I] = true;
+			}
+		}
 	}
 	Out.bOn = true;
 	return true;
@@ -809,8 +872,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 	// out, a pane mesh stands in each of its panes (the true pane's material; Nanite draws no translucent section), the
 	// lot's body is cut back behind the glass for a real bay, lined, shelved with goods and kit pieces, lit by its own
 	// surfaces (the bay's material), so the eye sees real things through real glass.
-	const bool bProofLot = Build.GlassProofLot >= 0 && Build.GlassProofLot < static_cast<int32>(Build.Plan.lots.size());
-	bool bProofPane = Build.bGlassProofPane && bProofLot;
+	bool bProofPane = Build.bGlassProofPane && Build.GlassProofLots.Num() > 0;
 	UMaterialInterface* ProofHole = nullptr;
 	UMaterialInterface* ProofPane = nullptr;
 	UMaterialInterface* ProofBay = nullptr;
@@ -845,82 +907,103 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			Y = (Px - Ax) * Ix + (Py - Ay) * Iy;
 		}
 	};
-	FLotFrame Proof;
-	// The bay behind the proof front's glass, in lot terms (set when its glazed piece is found below).
-	double BayX0 = 0.0, BayX1 = 0.0, BayY0 = 0.0, BayY1 = 0.0, BayZ0 = 0.0, BayZ1 = 0.0;
-	const FPaneTable* ProofPanes = nullptr;
-	const ftcore::KitPlacement* ProofPiece = nullptr;
-	if (bProofPane)
+	// A proof front: its lot's frame, its glazed piece with the piece's pane row, and the bay behind its glass in lot terms.
+	struct FProof
 	{
-		const ftcore::BuildingLot& Lot = Build.Plan.lots[static_cast<size_t>(Build.GlassProofLot)];
+		int32 Lot = -1;
+		FLotFrame Frame;
+		double BayX0 = 0.0, BayX1 = 0.0, BayY0 = 0.0, BayY1 = 0.0, BayZ0 = 0.0, BayZ1 = 0.0;
+		const FPaneTable* Panes = nullptr;
+		const ftcore::KitPlacement* Piece = nullptr;
+	};
+	TArray<FProof> Proofs;
+	for (int32 ProofLot : bProofPane ? Build.GlassProofLots : TArray<int32>())
+	{
+		if (ProofLot < 0 || ProofLot >= static_cast<int32>(Build.Plan.lots.size()))
+		{
+			continue;
+		}
+		FProof& Pr = Proofs.AddDefaulted_GetRef();
+		Pr.Lot = ProofLot;
+		const ftcore::BuildingLot& Lot = Build.Plan.lots[static_cast<size_t>(ProofLot)];
 		const ftcore::FrontageRun& Run = Build.Plan.runs[static_cast<size_t>(Lot.run)];
 		double Bx = 0.0, By = 0.0, Cx = 0.0, Cy = 0.0;
-		Run.toPlan(0.0, 0.0, Proof.Ax, Proof.Ay);
+		Run.toPlan(0.0, 0.0, Pr.Frame.Ax, Pr.Frame.Ay);
 		Run.toPlan(1.0, 0.0, Bx, By);
 		Run.toPlan(0.0, 1.0, Cx, Cy);
-		Proof.Ex = Bx - Proof.Ax;
-		Proof.Ey = By - Proof.Ay;
-		Proof.Ix = Cx - Proof.Ax;
-		Proof.Iy = Cy - Proof.Ay;
-		Proof.S0 = Lot.s0;
-		Proof.Yaw = Run.yaw();
+		Pr.Frame.Ex = Bx - Pr.Frame.Ax;
+		Pr.Frame.Ey = By - Pr.Frame.Ay;
+		Pr.Frame.Ix = Cx - Pr.Frame.Ax;
+		Pr.Frame.Iy = Cy - Pr.Frame.Ay;
+		Pr.Frame.S0 = Lot.s0;
+		Pr.Frame.Yaw = Run.yaw();
 		for (const ftcore::KitPlacement& P : Build.Placements)
 		{
-			if (P.lot != Build.GlassProofLot || P.piece < 0 || P.role != ftcore::PlacementRole::Piece)
+			if (P.lot != ProofLot || P.piece < 0 || P.role != ftcore::PlacementRole::Piece)
 			{
 				continue;
 			}
 			const FString Id = Utf8(Build.Kit.pieces[static_cast<size_t>(P.piece)].id);
 			for (const FPaneTable& Panes : kPanes)
 			{
-				if (!ProofPiece && Id == Panes.Piece)
+				if (!Pr.Piece && Id == Panes.Piece)
 				{
-					ProofPiece = &P;
-					ProofPanes = &Panes;
+					Pr.Piece = &P;
+					Pr.Panes = &Panes;
 				}
 			}
 		}
-		if (!ProofPiece)
+		if (!Pr.Piece)
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: -GlassProofPane: lot %d has no glazed piece with a pane table; it keeps "
-				"glass over a picture."), Build.GlassProofLot);
-			bProofPane = false;
+				"glass over a picture."), ProofLot);
+			Proofs.Pop();
+			continue;
 		}
-		else
-		{
-			double PieceX = 0.0, PieceY = 0.0;
-			Proof.ToLot(ProofPiece->x, ProofPiece->y, PieceX, PieceY);
-			const double Depth = FMath::Clamp(FMath::Max(Lot.depth, 3.0) - (PieceY + 0.30) - 1.0, 0.8, 2.4);
-			BayX0 = PieceX + 0.30;
-			BayX1 = PieceX + ProofPanes->Rect.B + 0.03;
-			BayY0 = PieceY + 0.25;
-			BayY1 = PieceY + 0.30 + Depth;
-			BayZ0 = ProofPiece->z;
-			BayZ1 = ProofPiece->z + 2.90;
-			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front (lot %d): true panes on %s, a real bay %.2f m wide, "
-				"%.2f m deep and %.2f m high behind them."), Build.GlassProofLot, ProofPanes->Piece, BayX1 - BayX0, BayY1 - BayY0, BayZ1 - BayZ0);
-		}
+		double PieceX = 0.0, PieceY = 0.0;
+		Pr.Frame.ToLot(Pr.Piece->x, Pr.Piece->y, PieceX, PieceY);
+		const double Depth = FMath::Clamp(FMath::Max(Lot.depth, 3.0) - (PieceY + 0.30) - 1.0, 0.8, 2.4);
+		Pr.BayX0 = PieceX + 0.30;
+		Pr.BayX1 = PieceX + Pr.Panes->Rect.B + 0.03;
+		Pr.BayY0 = PieceY + 0.25;
+		Pr.BayY1 = PieceY + 0.30 + Depth;
+		Pr.BayZ0 = Pr.Piece->z;
+		Pr.BayZ1 = Pr.Piece->z + 2.90;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: the glass proof front (lot %d): true panes on %s, a real bay %.2f m wide, "
+			"%.2f m deep and %.2f m high behind them."), ProofLot, Pr.Panes->Piece, Pr.BayX1 - Pr.BayX0, Pr.BayY1 - Pr.BayY0, Pr.BayZ1 - Pr.BayZ0);
 	}
-	// A box of the proof lot (lot terms) as a cube instance.
+	bProofPane = Proofs.Num() > 0;
+	const auto ProofOf = [&](int32 Lot) -> const FProof*
+	{
+		for (const FProof& Pr : Proofs)
+		{
+			if (Pr.Lot == Lot)
+			{
+				return &Pr;
+			}
+		}
+		return nullptr;
+	};
+	// A box of a proof lot (lot terms) as a cube instance.
 	int32 ProofBoxes = 0;
-	const auto LotBox = [&](double X0, double Y0, double Z0, double X1, double Y1, double Z1, UMaterialInterface* Material, const float* BoxData,
-		EFTCellKind Kind, const TCHAR* Tag, double Turn = 0.0)
+	const auto LotBox = [&](const FProof& Pr, double X0, double Y0, double Z0, double X1, double Y1, double Z1, UMaterialInterface* Material,
+		const float* BoxData, EFTCellKind Kind, const TCHAR* Tag, double Turn = 0.0)
 	{
 		if (X1 - X0 < 0.002 || Y1 - Y0 < 0.002 || Z1 - Z0 < 0.002)
 		{
 			return;
 		}
 		double Px = 0.0, Py = 0.0;
-		Proof.ToPlan(0.5 * (X0 + X1), 0.5 * (Y0 + Y1), Px, Py);
+		Pr.Frame.ToPlan(0.5 * (X0 + X1), 0.5 * (Y0 + Y1), Px, Py);
 		const ftcore::MassingVec E = ftcore::massingEnginePoint(Side, Px, Py, 0.5 * (Z0 + Z1));
 		UMaterialInterface* const Mats[1] = {Material};
 		FFTCellOptions BoxOpts;
-		BoxOpts.Label = FString::Printf(TEXT("LOT-%d"), Build.GlassProofLot);
+		BoxOpts.Label = FString::Printf(TEXT("LOT-%d"), Pr.Lot);
 		BoxOpts.bCastShadow = Kind != EFTCellKind::NoCollide;
 		BoxOpts.Tag = Tag;
 		// Turn 90: the cube's x runs in from the facade (a pane's thin axis), its y along it.
 		const FVector Scale = Turn != 0.0 ? FVector(Y1 - Y0, X1 - X0, Z1 - Z0) : FVector(X1 - X0, Y1 - Y0, Z1 - Z0);
-		Cells.Add(Cube, Mats, FTransform(FRotator(0.0, -Proof.Yaw + Turn, 0.0), FVector(E.x, E.y, E.z) * 100.0, Scale),
+		Cells.Add(Cube, Mats, FTransform(FRotator(0.0, -Pr.Frame.Yaw + Turn, 0.0), FVector(E.x, E.y, E.z) * 100.0, Scale),
 			TArrayView<const float>(BoxData, DataCount), Kind, BoxOpts);
 		++ProofBoxes;
 	};
@@ -941,23 +1024,25 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 		Data[DataShop] = 0.f;
 		FFTCellOptions Opts;
 		Opts.Label = FString::Printf(TEXT("LOT-%d"), P.lot);
+		const FProof* const Pr = bProofPane ? ProofOf(P.lot) : nullptr;
 		if (P.piece < 0)
 		{
 			const bool bPlinth = P.role == ftcore::PlacementRole::Plinth;
 			UMaterialInterface* const Mats[1] = {bPlinth ? Plinth : Bodies[static_cast<int32>(Lot.wall)]};
-			// The proof front's body is cut back behind its glass: what is left of the box round the bay.
-			if (bProofPane && !bPlinth && P.lot == Build.GlassProofLot)
+			// A proof front's body is cut back behind its glass: what is left of the box round the bay.
+			if (Pr && !bPlinth)
 			{
 				double Cx = 0.0, Cy = 0.0;
-				Proof.ToLot(P.x, P.y, Cx, Cy);
+				Pr->Frame.ToLot(P.x, P.y, Cx, Cy);
 				const double X0 = Cx - 0.5 * P.sx, X1 = Cx + 0.5 * P.sx, Y0 = Cy - 0.5 * P.sy, Y1 = Cy + 0.5 * P.sy, Z0 = P.z, Z1 = P.z + P.sz;
+				const double BayX0 = Pr->BayX0, BayX1 = Pr->BayX1, BayY0 = Pr->BayY0, BayY1 = Pr->BayY1, BayZ0 = Pr->BayZ0, BayZ1 = Pr->BayZ1;
 				if (X0 < BayX1 && X1 > BayX0 && Y0 < BayY1 && Y1 > BayY0 && Z0 < BayZ1 && Z1 > BayZ0)
 				{
 					const double Zc = FMath::Min(Z1, BayZ1);
-					LotBox(X0, Y0, Zc, X1, Y1, Z1, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));      // over the bay
-					LotBox(X0, BayY1, Z0, X1, Y1, Zc, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));   // behind it
-					LotBox(X0, Y0, Z0, BayX0, FMath::Min(Y1, BayY1), Zc, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));
-					LotBox(BayX1, Y0, Z0, X1, FMath::Min(Y1, BayY1), Zc, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));
+					LotBox(*Pr, X0, Y0, Zc, X1, Y1, Z1, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));      // over the bay
+					LotBox(*Pr, X0, BayY1, Z0, X1, Y1, Zc, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));   // behind it
+					LotBox(*Pr, X0, Y0, Z0, BayX0, FMath::Min(Y1, BayY1), Zc, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));
+					LotBox(*Pr, BayX1, Y0, Z0, X1, FMath::Min(Y1, BayY1), Zc, Mats[0], Data, EFTCellKind::Solid, TEXT("GlassProofBody"));
 					++Boxes;
 					continue;
 				}
@@ -971,14 +1056,17 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 		const FPieceUse& Use = Uses[P.piece];
 		const ftcore::KitPiece& Piece = Build.Kit.pieces[static_cast<size_t>(P.piece)];
 		const bool bGround = Piece.group == "ground";
-		// 2 on the glass proof front's shop storey (-GlassProofLot=<lot>): its interior takes the look's own night level.
-		Data[DataShop] = bGround ? (P.lot == Build.GlassProofLot ? 2.f : 1.f) : 0.f;
+		// 2 on a glass proof front's shop storey: its interior takes the look's own night level.
+		Data[DataShop] = bGround ? (Build.IsGlassProof(P.lot) ? 2.f : 1.f) : 0.f;
 		const bool bSolid = (Piece.group == "ground" || Piece.group == "upper") && P.role == ftcore::PlacementRole::Piece;
 		Opts.Cull = P.role == ftcore::PlacementRole::Clutter ? EFTCellCull::Prop : Piece.group == "roof" && Piece.id.rfind("TANK", 0) == 0 ? EFTCellCull::Dressing
 			: EFTCellCull::None;
 		// The proof front's glazed piece: its glass slot cut out, a true pane in each of its panes, the bay behind.
-		if (bProofPane && &P == ProofPiece)
+		if (Pr && &P == Pr->Piece)
 		{
+			const FLotFrame& Proof = Pr->Frame;
+			const double BayX0 = Pr->BayX0, BayX1 = Pr->BayX1, BayY0 = Pr->BayY0, BayY1 = Pr->BayY1, BayZ0 = Pr->BayZ0, BayZ1 = Pr->BayZ1;
+			const int32 ProofLot = Pr->Lot;
 			TArray<UMaterialInterface*> Open = Use.Materials;
 			const TArray<FStaticMaterial>& Slots = Use.Mesh->GetStaticMaterials();
 			for (int32 S = 0; S < Slots.Num() && S < Open.Num(); ++S)
@@ -994,7 +1082,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			Proof.ToLot(P.x, P.y, PieceX, PieceY);
 			const auto BayMaterial = [&](const TCHAR* Name, const FLinearColor& Color, float LampPanel)
 			{
-				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
+				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("%s_L%d"), Name, ProofLot), RF_Public);
 				Mic->SetParentEditorOnly(ProofBay);
 				Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Color")), Color);
 				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampPanel")), LampPanel);
@@ -1002,7 +1090,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				return Mic;
 			};
 			// The panes: the table's columns under the transom, and the fanlights' own over it.
-			const FPaneTable& T = *ProofPanes;
+			const FPaneTable& T = *Pr->Panes;
 			int32 PaneCount = 0;
 			for (int32 R = 0; R < 2; ++R)
 			{
@@ -1028,7 +1116,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					{
 						continue;
 					}
-					UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofPane_%d_%d"), C, R), RF_Public);
+					UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofPane_L%d_%d_%d"), ProofLot, C, R), RF_Public);
 					Mic->SetParentEditorOnly(ProofPane);
 					Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("PaneSize")), FLinearColor(W, H, 0.f, 0.f));
 					const bool bDoor = R == 0 && (FMath::IsNearlyEqual(Cuts[C], T.Door.R, 0.02f) || FMath::IsNearlyEqual(Cuts[C], T.Door.G, 0.02f));
@@ -1036,7 +1124,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Seed")), FMath::Frac(0.37f + 0.173f * C + 0.31f * R));
 					Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Age")), 0.15f);
 					Mic->PostEditChange();
-					LotBox(PieceX + Cuts[C], PieceY + 0.181, P.z + Rows[0], PieceX + Cuts[C + 1], PieceY + 0.189, P.z + Rows[1], Mic, Data, EFTCellKind::NoCollide,
+					LotBox(*Pr, PieceX + Cuts[C], PieceY + 0.181, P.z + Rows[0], PieceX + Cuts[C + 1], PieceY + 0.189, P.z + Rows[1], Mic, Data, EFTCellKind::NoCollide,
 						TEXT("GlassProofPane"), 90.0);
 					++PaneCount;
 				}
@@ -1049,16 +1137,16 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			UMaterialInterface* const CeilPaint = BayMaterial(TEXT("MI_GlassProofBay_Ceiling"), FLinearColor(0.40f, 0.40f, 0.39f), 0.f);
 			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"), FLinearColor(0.9f, 0.9f, 0.88f), 1.f);
 			UMaterialInterface* const BoardPaint = BayMaterial(TEXT("MI_GlassProofBay_Board"), FLinearColor(0.36f, 0.35f, 0.33f), 0.f);
-			LotBox(BayX0, BayY0, BayZ0, BayX1, BayY1, BayZ0 + 0.04, FloorPaint, Data, EFTCellKind::NoCollide, BayTag);
-			LotBox(BayX0, BayY0, BayZ1 - 0.04, BayX1, BayY1, BayZ1, CeilPaint, Data, EFTCellKind::NoCollide, BayTag);
-			LotBox(BayX0, BayY1 - 0.04, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
-			LotBox(BayX0, BayY0, BayZ0, BayX0 + 0.04, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
-			LotBox(BayX1 - 0.04, BayY0, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
+			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX1, BayY1, BayZ0 + 0.04, FloorPaint, Data, EFTCellKind::NoCollide, BayTag);
+			LotBox(*Pr, BayX0, BayY0, BayZ1 - 0.04, BayX1, BayY1, BayZ1, CeilPaint, Data, EFTCellKind::NoCollide, BayTag);
+			LotBox(*Pr, BayX0, BayY1 - 0.04, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
+			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX0 + 0.04, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
+			LotBox(*Pr, BayX1 - 0.04, BayY0, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
 			const double BayW = BayX1 - BayX0, BayMidY = 0.5 * (BayY0 + BayY1);
 			for (int32 L = 0; L < 3; ++L)
 			{
 				const double Lx = BayX0 + BayW * (0.5 + L) / 3.0;
-				LotBox(Lx - 0.6, BayMidY - 0.15, BayZ1 - 0.07, Lx + 0.6, BayMidY + 0.15, BayZ1 - 0.04, PanelPaint, Data, EFTCellKind::NoCollide, BayTag);
+				LotBox(*Pr, Lx - 0.6, BayMidY - 0.15, BayZ1 - 0.07, Lx + 0.6, BayMidY + 0.15, BayZ1 - 0.04, PanelPaint, Data, EFTCellKind::NoCollide, BayTag);
 				// Its fixture: a rect light just under the panel, facing down, its width along the front (its local y,
 				// which a yaw of -Yaw - 90 lays along the cube's x above).
 				double Lpx = 0.0, Lpy = 0.0;
@@ -1072,9 +1160,9 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			const float GoodsSeed = FMath::Frac(static_cast<float>(P.seed % 9973u) * 0.000731f + 0.37f);
 			const auto Shelf = [&](double X0, double X1, double Y0, double Y1, double Z, double RowH)
 			{
-				LotBox(X0, Y0, Z, X1, Y1, Z + 0.03, BoardPaint, Data, EFTCellKind::NoCollide, BayTag);
+				LotBox(*Pr, X0, Y0, Z, X1, Y1, Z + 0.03, BoardPaint, Data, EFTCellKind::NoCollide, BayTag);
 				const ftcore::GlassGoodsRow Row = ftcore::glassGoodsRow(GoodsCount, GoodsSeed);
-				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofBay_Goods%d"), GoodsCount), RF_Public);
+				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofBay_L%d_Goods%d"), ProofLot, GoodsCount), RF_Public);
 				Mic->SetParentEditorOnly(ProofBay);
 				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GoodsMix")), 1.f);
 				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GoodsBand")), static_cast<float>(Row.band));
@@ -1082,7 +1170,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GoodsWidthCm")),
 					100.f * ftcore::kGlassGoodsWidthM * static_cast<float>(RowH) / ftcore::kGlassGoodsBandM);
 				Mic->PostEditChange();
-				LotBox(X0 + 0.02, Y0 + 0.08, Z + 0.03, X1 - 0.02, Y0 + 0.10, Z + 0.03 + RowH, Mic, Data, EFTCellKind::NoCollide, BayTag);
+				LotBox(*Pr, X0 + 0.02, Y0 + 0.08, Z + 0.03, X1 - 0.02, Y0 + 0.10, Z + 0.03 + RowH, Mic, Data, EFTCellKind::NoCollide, BayTag);
 				++GoodsCount;
 			};
 			for (int32 R = 0; R < 5; ++R)
@@ -1094,7 +1182,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				for (int32 S = 0; S < 2; ++S)
 				{
 					const double Sx0 = BayX0 + 0.6 + S * (0.5 * BayW), Sx1 = Sx0 + 0.5 * BayW - 1.3;
-					LotBox(Sx0, BayMidY - 0.22, BayZ0 + 0.04, Sx1, BayMidY + 0.22, BayZ0 + 0.18, BoardPaint, Data, EFTCellKind::NoCollide, BayTag);
+					LotBox(*Pr, Sx0, BayMidY - 0.22, BayZ0 + 0.04, Sx1, BayMidY + 0.22, BayZ0 + 0.18, BoardPaint, Data, EFTCellKind::NoCollide, BayTag);
 					for (int32 R = 0; R < 3; ++R)
 					{
 						Shelf(Sx0, Sx1, BayMidY - 0.2, BayMidY + 0.2, BayZ0 + 0.18 + 0.38 * R, 0.35);

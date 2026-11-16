@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "ftcore/HeroCorner.h"
 #include "ftcore/MassingDress.h"
+#include "ftcore/Roads.h"
 #include "ftcore/WindowFacade.h"
 
 #include <algorithm>
@@ -295,6 +296,30 @@ TEST_CASE("hero corner: one shop spill point per lit bay, out over the lane unde
         CHECK(lights[k].faceIndex == kHeroShopFace);
         CHECK(lights[k].face == doctest::Approx(180.0));
     }
+}
+
+TEST_CASE("hero corner: the quay masts in the corner's view become rail pieces; the rest stay masts") {
+    const ftcore::HeroCornerSpec spec;
+    std::vector<ftcore::StandInPoint> pts(4);
+    pts[0].kind = ftcore::StandInKind::LampMast;  // the lane's bank, beside bay 2
+    pts[0].x = 900.75; pts[0].y = 524.0; pts[0].z = 4.18; pts[0].hasZ = true; pts[0].rot = 0.0; pts[0].id = "LM-12";
+    pts[1].kind = ftcore::StandInKind::LampMast;  // the far bank, up the lane
+    pts[1].x = 892.25; pts[1].y = 611.5; pts[1].z = 4.18; pts[1].hasZ = true; pts[1].rot = 180.0; pts[1].id = "LM-8";
+    pts[2].kind = ftcore::StandInKind::LampMast;  // the next canal, out of the corner's view
+    pts[2].x = 900.75; pts[2].y = 689.0;
+    pts[3].kind = ftcore::StandInKind::StreetTree;  // not a mast
+    pts[3].x = 895.0; pts[3].y = 530.0;
+    CHECK(ftcore::heroCornerClearMasts(spec, pts) == 2);
+    for (int i = 0; i < 2; ++i) {
+        CHECK(pts[i].kind == ftcore::StandInKind::Railing);
+        CHECK(pts[i].len == doctest::Approx(ftcore::kQuayMastPlate));
+        CHECK(pts[i].hasTop);
+        CHECK(pts[i].top == doctest::Approx(4.18 + ftcore::kQuayRailHigh));
+        CHECK(std::fmod(pts[i].rot, 180.0) == doctest::Approx(90.0));  // along the north-south rail
+    }
+    CHECK(pts[0].id == "LM-12-RAIL");
+    CHECK(pts[2].kind == ftcore::StandInKind::LampMast);
+    CHECK(pts[3].kind == ftcore::StandInKind::StreetTree);
 }
 
 TEST_CASE("lamp slot gain: an empty table keeps every lamp's light; a slot past the table keeps it too") {

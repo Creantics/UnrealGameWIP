@@ -1,9 +1,11 @@
 #include "ftcore/HeroCorner.h"
 
 #include "ftcore/MassingDress.h"
+#include "ftcore/Roads.h"
 #include "ftcore/WindowFacade.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace ftcore {
@@ -193,6 +195,27 @@ int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroB
         l.z = spec.ground + kMassingShopLightUp;
         l.face = 180.0;
         l.faceIndex = kHeroShopFace;
+    }
+    return n;
+}
+
+int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& points) {
+    int n = 0;
+    for (StandInPoint& p : points) {
+        if (p.kind != StandInKind::LampMast || p.x < spec.mastClearX0 || p.x > spec.mastClearX1 || p.y < spec.mastClearY0 ||
+            p.y > spec.mastClearY1) {
+            continue;
+        }
+        p.kind = StandInKind::Railing;
+        p.rot = std::fmod(p.rot + 90.0, 360.0);
+        p.len = kQuayMastPlate;
+        p.wid = 0.06;
+        p.top = p.z + kQuayRailHigh;
+        p.hasTop = p.hasZ;
+        p.slope = 0.0;
+        p.id += "-RAIL";
+        p.tag = "railing_span";
+        ++n;
     }
     return n;
 }

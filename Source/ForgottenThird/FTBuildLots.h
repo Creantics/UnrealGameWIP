@@ -9,8 +9,10 @@
 #include "CoreMinimal.h"
 
 #include "ftcore/BuildingLots.h"
+#include "ftcore/HeroCorner.h"
 #include "ftcore/MassingPlan.h"
 
+#include <string>
 #include <vector>
 
 class FFTCellInstancer;
@@ -43,8 +45,11 @@ struct FBuild
 	ftcore::FrontagePlan Plan;
 	std::vector<ftcore::KitPlacement> Placements;
 	std::vector<bool> Replaced; // by box: a lot stands in its place (no box, no windows, no frontage, no roof dressing)
-	int32 GlassProofLot = -1;   // -GlassProofLot=<lot>: the one front whose shop glass takes the look's own night level
-	bool bGlassProofPane = false; // -GlassProofPane: that front's glass is true panes over a real bay (else glass over a picture)
+	// The glass proof fronts, whose shop glass takes the look's own night level: -GlassProofLot=<lot>, and the hero
+	// corner's lit glazed lots (AddHeroLots).
+	TArray<int32> GlassProofLots;
+	bool bGlassProofPane = false; // -GlassProofPane: their glass is true panes over a real bay (else glass over a picture)
+	bool IsGlassProof(int32 Lot) const { return GlassProofLots.Contains(Lot); }
 	// Set by Place: the proof bay's ceiling fixtures (engine cm, a rotation facing down, the source's size in cm), which the
 	// massing build spawns as rect lights tagged FTNight::BayLightTag.
 	struct FBayLight
@@ -60,6 +65,13 @@ struct FBuild
 // Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces. True with bOn false without
 // -Lots; false (logged) on a table that doesn't read or a piece the grammar needs that the kit table lacks.
 bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBuild& Out);
+
+// The hero corner's bays as kit lots (ftcore::heroCornerLots): its run and lots appended to Out's plan, their pieces laid
+// out, the bay boxes (BayIds, by bay) marked replaced and the lit glazed lots made glass proof fronts. The kit table is
+// -KitTable= or Data/Look/building_kit_pieces.csv when Plan read none; -GlassProofPane is read here too. Sets bOn. False
+// (logged) on a kit table that doesn't read or a piece the grammar needs that it lacks.
+bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::string* BayIds, const std::vector<ftcore::MassingBox>& Boxes,
+	FBuild& Out);
 
 // Places the planned pieces and boxes as instances; the kit master and its instances go into Package. False (logged)
 // when a piece mesh is missing or no axis fit maps the kit table onto the imported meshes.
