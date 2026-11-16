@@ -13,8 +13,8 @@
 // silhouette), in 8 equal steps (5 degrees), and at standMin..standMax metres off the target's edge (the host's
 // kit band: a melee partner 1.5-2.5, a caster 5-8): for each angle the band's two ends, its middle, and the point of the band nearest
 // the partner. A candidate is legal when, in order:
-//   - when the host gives a 3D frame test (sees, the brain's rule-13 frame: feet, middle and head in the frame), it
-//     passes it; this is the measure whenever given;
+//   - when the host gives a 3D frame test (sees; the brain's is rule 13's frame with the middle and head of the
+//     partner in it, feet not tested: partnerInFrameClose), it passes it; this is the measure whenever given;
 //   - it is in the lens's view cone with the margin: in front of the lens (depth over kPartnerCloseNear) and its
 //     horizontal screen coordinate within 1 - 2 x kPartnerCloseConeMargin of the centre (0.1: ndc 0.8; the share of
 //     the whole width kept clear each side, as rule 13's frustumMargin);
@@ -125,7 +125,7 @@ struct PartnerCloseInput {
     std::span<const PartnerBody> bodies{};
     bool attacking = false;      // the partner is in a string or a blow runs: its flank never changes
     // The host's 3D frame test (none: null): a candidate must pass sees(seesContext, point). The brain gives its
-    // rule-13 frame (feet, middle and head of a standing body inside the frustum with its margins) when framed.
+    // rule-13 frame (middle and head of a standing body inside the frustum with its margins; feet not tested) when framed.
     bool (*sees)(const void* context, Vec2 p) = nullptr;
     const void* seesContext = nullptr;
 };

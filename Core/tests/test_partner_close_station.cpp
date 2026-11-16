@@ -702,9 +702,9 @@ TEST_CASE("close station: never beyond the leash; within it a ring round the lea
 
 namespace {
 
-// A host's 3D frame test for the rule: the brain's rule-13 frame (partnerInFrame, feet to head) through `cam`.
+// A host's 3D frame test for the rule: the brain's close measure (partnerInFrameClose, middle and head) through `cam`.
 bool csSees(const void* cam, Vec2 p) {
-    return partnerInFrame(*static_cast<const PartnerCameraView*>(cam), kPartnerFrustumMargin, p);
+    return partnerInFrameClose(*static_cast<const PartnerCameraView*>(cam), kPartnerFrustumMargin, p);
 }
 // The flat close lens as a 3D camera, 1.7 m up, pitched `pitch` degrees (+ up), 16:9 with the lens's half-width.
 PartnerCameraView csCamera(const PartnerCloseInput& in, float pitch) {
@@ -732,15 +732,30 @@ TEST_CASE("close station: given a 3D frame test, it is the measure") {
     PartnerCloseHold hold;
     const PartnerCloseStation st = partnerCloseStation(in, hold);
     REQUIRE(st.valid);
-    CHECK(partnerInFrame(cam, kPartnerFrustumMargin, st.point));
+    CHECK(partnerInFrameClose(cam, kPartnerFrustumMargin, st.point));
     // A test that sees nothing: no station.
     in.sees = [](const void*, Vec2) { return false; };
     PartnerCloseHold h0;
     CHECK_FALSE(partnerCloseStation(in, h0).valid);
 
-    // A sweep of bearings and target sizes, level and pitched up: every station passes the frame test. Pitched up
-    // 28 degrees (a tall boss) the frame's bottom edge clears the partner's feet everywhere near: none (the camera's
-    // pitch is the fix; MESSAGE for the camera lane).
+    // The close measure leaves the feet out: a lens 1.7 m up pitched up 6 degrees, a partner 6 m ahead. Its feet are
+    // below the frame (ndc y -1.23), its waist (-0.74) and head (-0.27) in it.
+    PartnerCameraView up6;
+    up6.given = true;
+    up6.pos = {0.f, 0.f, 1.7f};
+    up6.forward = {std::cos(6.f * kCsDeg), 0.f, std::sin(6.f * kCsDeg)};
+    up6.up = {-std::sin(6.f * kCsDeg), 0.f, std::cos(6.f * kCsDeg)};
+    up6.aspect = 16.f / 9.f;
+    up6.verticalFovDegrees = 2.f * std::atan(std::tan(30.f * kCsDeg) / up6.aspect) / kCsDeg;
+    up6.groundZ = 0.f;
+    up6.bodyHeight = 1.8f;
+    CHECK_FALSE(partnerInFrame(up6, kPartnerFrustumMargin, Vec2{6.f, 0.f}));
+    CHECK(partnerInFrameClose(up6, kPartnerFrustumMargin, Vec2{6.f, 0.f}));
+    CHECK_FALSE(partnerInFrameClose(up6, kPartnerFrustumMargin, Vec2{2.f, 0.f})); // its waist below the frame too
+
+    // A sweep of bearings and target sizes, level and pitched up: every station passes the frame test (middle and
+    // head; feet not tested). Level and at +6 (the camera's usual stand-off pitch) a station nearly everywhere; +12
+    // (its cap) about half (MESSAGE); at +28 the frame's bottom clears even the partner's waist near the lens: none.
     in.sees = csSees;
     for (const float pitch : {0.f, 6.f, 12.f, 28.f}) {
         int found = 0, n = 0;
@@ -758,10 +773,10 @@ TEST_CASE("close station: given a 3D frame test, it is the measure") {
                 ++n;
                 if (!r.valid) continue;
                 ++found;
-                CHECK(partnerInFrame(v, kPartnerFrustumMargin, r.point));
+                CHECK(partnerInFrameClose(v, kPartnerFrustumMargin, r.point));
             }
         MESSAGE("3D frame, pitch " << pitch << ": a station in frame for " << found << " of " << n << " scenes");
-        if (pitch == 0.f) CHECK(found >= n * 3 / 4);
+        if (pitch == 0.f || pitch == 6.f) CHECK(found >= n * 3 / 4);
         if (pitch == 28.f) CHECK(found == 0);
     }
 }

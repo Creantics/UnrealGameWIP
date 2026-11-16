@@ -329,10 +329,12 @@ float v3Dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 // Rule 13's frustum, shrunk by the margin: a capsule's three points each in front of the camera and within lim of
 // the screen's centre in its -1..1 frame across and above it, within limBelow below it (the bottom's own
 // kPartnerFrustumMarginBottom in the brain only with its framing holds on, framingHolds; else lim, as main).
+// Under rule 19 (upper) the partner is in frame by its middle and head alone; its feet are not tested.
 struct Frame {
     V3 c{}, f{}, u{}, r{};
     float tanV = 0.f, tanH = 0.f, lim = 0.8f, limBelow = 0.8f, z0 = 0.f, h = 1.8f;
     bool holds = false; // framingHolds this step: the brain's bottom margin and side hold are on
+    bool upper = false; // rule 19 (the close camera given): the feet are not tested
     bool point(float x, float y, float z) const {
         const V3 d{x - c.x, y - c.y, z - c.z};
         const float depth = v3Dot(d, f);
@@ -340,7 +342,8 @@ struct Frame {
         const float sx = v3Dot(d, r) / (depth * tanH), sy = v3Dot(d, u) / (depth * tanV);
         return std::fabs(sx) <= lim && sy <= lim && sy >= -limBelow;
     }
-    bool sees(Vec2 p) const { return point(p.x, p.y, z0) && point(p.x, p.y, z0 + 0.5f * h) && point(p.x, p.y, z0 + h); }
+    bool sees(Vec2 p) const { return (upper || point(p.x, p.y, z0)) && point(p.x, p.y, z0 + 0.5f * h) && point(p.x, p.y, z0 + h); }
+    bool seesWhole(Vec2 p) const { return point(p.x, p.y, z0) && point(p.x, p.y, z0 + 0.5f * h) && point(p.x, p.y, z0 + h); }
     // Rule 18: the partner at p hidden behind a tall e from the lens (its middle and its head both behind its body).
     bool hides(const PartnerEnemyView* e, Vec2 p) const {
         if (!e || !tallView(*e)) return false;
@@ -588,6 +591,14 @@ bool partnerInFrame(const PartnerCameraView& camera, float margin, Vec2 p) {
     PartnerTuning t;
     t.frustumMargin = margin;
     Frame fr;
+    return pbWithin(margin, 0.f, 0.4f) && stFinite(p) && makeFrame(camera, t, fr, true) && fr.sees(p);
+}
+
+bool partnerInFrameClose(const PartnerCameraView& camera, float margin, Vec2 p) {
+    PartnerTuning t;
+    t.frustumMargin = margin;
+    Frame fr;
+    fr.upper = true;
     return pbWithin(margin, 0.f, 0.4f) && stFinite(p) && makeFrame(camera, t, fr, true) && fr.sees(p);
 }
 
@@ -1045,6 +1056,7 @@ void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
     Ground g;
     Frame fr;
     if (!makeGround(in, t, g) || !makeFrame(in.station.camera, t, fr, framingHolds(in, t))) return stop();
+    fr.upper = in.station.close.given; // rule 19: middle and head only
     g.grow = tallGrowOf(in, t, s_.tallGrowOn); // rule 18: the step's own growth (one source)
     const View* e = haveTarget ? &in.enemies[static_cast<std::size_t>(s_.target)] : nullptr;
     const bool rooted = s_.placeFor + 1e-9 >= kPlaceStill; // in one place this long: a new goal now, whatever it walks
@@ -1255,6 +1267,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // Rules 13-16: the play camera, when the host gives a whole one with stationing on.
     Frame fr;
     const bool fm = st && makeFrame(in.station.camera, t, fr, framingHolds(in, t));
+    fr.upper = st && in.station.close.given; // rule 19: the partner in frame by its middle and head alone
     if (fm && fr.holds) s_.holdsFramed = true; // the framing holds steer from here (sticky; hashed from here)
     // Rule 18: StayClose by a tall target (framed; one standing whose edge is within closeLeadMeters of the lead, held
     // or not, so a lead switch does not shrink them): its cap, leash and return grow by the target's radius, at most
@@ -1567,7 +1580,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     std::uint32_t seen = 0;
     if (fm)
         for (std::size_t i = 0; i < n; ++i)
-            if (fr.sees(in.enemies[i].pos)) seen |= 1u << i;
+            if (fr.seesWhole(in.enemies[i].pos)) seen |= 1u << i;
     int tgt = chooseTarget(in, fm, seen);
     if (in.order == PartnerOrder::Spread && s_.target >= 0 && tgt != s_.target &&
         static_cast<std::size_t>(s_.target) < n && s_.targetFor + 1e-9 < static_cast<double>(t.targetHoldSeconds)) {
