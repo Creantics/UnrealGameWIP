@@ -548,6 +548,16 @@ private:
 	bool bStandOffWeak = false;   // and whether it kept the weak point instead of the top
 	static constexpr float CloseMateHead = 1.6f;  // m: the partner's head and waist heights the close still log tests
 	static constexpr float CloseMateWaist = 1.0f;
+	// The partner's close station (ftcore::PartnerCloseView, rule 19): the walls near the lead from the boom's own probe,
+	// CloseWallRays sweeps round it every CloseWallSeconds, each hit a segment 1 m across its surface. No allocation.
+	static constexpr int32 CloseWallRays = 16;
+	static constexpr float CloseWallSeconds = 0.25f;
+	static constexpr float CloseWallReach = 10.f; // m
+	ftcore::PartnerWall CloseWalls[CloseWallRays];
+	int32 CloseWallCount = 0;
+	float CloseWallAge = 1e9f; // s since the last sweep (large: sweep on the next step)
+	void RefreshCloseWalls(float Dt);
+	ftcore::PartnerCloseView CloseStationView(const ftcore::PartnerCameraView& Camera) const;
 	ftcore::ArenaStickBasis StickBasis; // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close swap)
 #if !UE_BUILD_SHIPPING
 	void LogCloseFrameShot(const TCHAR* Shot) const;

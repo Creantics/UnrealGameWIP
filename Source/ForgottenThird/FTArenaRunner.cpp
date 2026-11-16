@@ -1633,6 +1633,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	PartnerYawNow = PartnerYawGoal = 0.f;
 	CloseMelee = CloseTall = 0.f;
 	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = StandOffPitchNow = 0.f;
+	CloseWallCount = 0;
+	CloseWallAge = 1e9f;
 	bStandOffWeak = false;
 	bContactPicked = false;
 	CloseShoulder = CloseShoulderWant = 1.f;
@@ -3344,6 +3346,13 @@ void UFTArenaRunner::StepFight()
 			In.cameraPos = ftcore::Vec2{Bodies.player.x + Lens.x, Bodies.player.y + Lens.y};
 			// ... and that camera in full, the lens over the floor (the brain's frame rules 13-16, the in-play count).
 			In.partnerCamera = bFedCamera ? FedCamera : ftcore::arenaPoseCamera(CameraPoseNow, Bodies.player, LockAspect(), PartnerHeight());
+			// Under the close preset the partner stands ahead of the lead on a flank of its target, inside that same
+			// camera (ftcore::PartnerCloseView, rule 19); classic gives none, as before.
+			if (bCloseShape)
+			{
+				RefreshCloseWalls(StepSeconds);
+				In.partnerClose = CloseStationView(In.partnerCamera);
+			}
 		}
 	}
 	if (bPartner)
@@ -3364,12 +3373,14 @@ void UFTArenaRunner::StepFight()
 		++PartnerOnSteps;
 		PartnerCameraSteps += In.cameraOn ? 1 : 0;
 		PartnerStationedSteps += Out.ally.stationed ? 1 : 0;
-		// In play: the partner's feet, middle and head all in the frame the brain itself tests (ftcore::partnerInFrame
-		// at ftcore::kPartnerFrustumMargin on the camera it was fed), and its actions that lasted and were carried out.
+		// In play: the partner in the frame the brain itself tests (at ftcore::kPartnerFrustumMargin on the camera it was
+		// fed: its feet, middle and head, ftcore::partnerInFrame; under the close camera its middle and head alone,
+		// ftcore::partnerInFrameClose), and its actions that lasted and were carried out.
 		if (ftcore::partnerCameraWhole(In.partnerCamera))
 		{
 			++PartnerFrustumSteps;
-			const bool bSeen = ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally);
+			const bool bSeen = In.partnerClose.given ? ftcore::partnerInFrameClose(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally)
+			                                         : ftcore::partnerInFrame(In.partnerCamera, ftcore::kPartnerFrustumMargin, Bodies.ally);
 			PartnerSeenSteps += bSeen ? 1 : 0;
 			// On screen and not behind the locked target: hidden when the lines from the lens to its middle and to its
 			// head both pass through the target's drawn cylinder.
@@ -5231,6 +5242,89 @@ float UFTArenaRunner::LockAspect() const
 		GEngine->GameViewport->GetViewportSize(Size);
 	}
 	return Size.X > 1.0 && Size.Y > 1.0 ? static_cast<float>(Size.X / Size.Y) : 16.f / 9.f;
+}
+
+void UFTArenaRunner::RefreshCloseWalls(float Dt)
+{
+	CloseWallAge += Dt;
+	if (CloseWallAge < CloseWallSeconds)
+	{
+		return;
+	}
+	CloseWallAge = 0.f;
+	CloseWallCount = 0;
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	const USpringArmComponent* Boom = Lead ? Lead->GetBoom() : nullptr;
+	UWorld* World = GetWorld();
+	if (!Lead || !Boom || !World)
+	{
+		return;
+	}
+	// The boom's own probe (its channel and sphere), swept flat from the lead at 1.2 m; the fighters are not walls.
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ArenaCloseWalls), false, Lead);
+	if (AllyFigure)
+	{
+		Params.AddIgnoredActor(AllyFigure);
+	}
+	for (int32 I = 0; I < MaxEnemies; ++I)
+	{
+		if (const AFTArenaFighter* Foe = EnemyFigures[I].Get())
+		{
+			Params.AddIgnoredActor(Foe);
+		}
+	}
+	const FVector From = ToWorld(Bodies.player) + FVector(0.0, 0.0, 120.0);
+	for (int32 K = 0; K < CloseWallRays; ++K)
+	{
+		const double A = 2.0 * UE_DOUBLE_PI * K / CloseWallRays;
+		const FVector To = From + FVector(FMath::Cos(A), FMath::Sin(A), 0.0) * (CloseWallReach * 100.0);
+		FHitResult Hit;
+		if (!World->SweepSingleByChannel(Hit, From, To, FQuat::Identity, Boom->ProbeChannel, FCollisionShape::MakeSphere(Boom->ProbeSize), Params))
+		{
+			continue;
+		}
+		const FVector2D N = FVector2D(Hit.ImpactNormal.X, Hit.ImpactNormal.Y).GetSafeNormal();
+		if (N.IsNearlyZero())
+		{
+			continue; // a floor or a ceiling, not a wall
+		}
+		// 1 m along the surface (square to its normal), centred on the hit.
+		const ftcore::Vec2 C{static_cast<float>(Hit.ImpactPoint.X / 100.0), static_cast<float>(Hit.ImpactPoint.Y / 100.0)};
+		const ftcore::Vec2 T{static_cast<float>(-N.Y) * 0.5f, static_cast<float>(N.X) * 0.5f};
+		ftcore::PartnerWall& W = CloseWalls[CloseWallCount++];
+		W.a = ftcore::Vec2{C.x - T.x, C.y - T.y};
+		W.b = ftcore::Vec2{C.x + T.x, C.y + T.y};
+		W.halfThickness = 0.1f;
+	}
+}
+
+ftcore::PartnerCloseView UFTArenaRunner::CloseStationView(const ftcore::PartnerCameraView& Camera) const
+{
+	ftcore::PartnerCloseView V;
+	V.given = true;
+	// The lead's side of the screen: the lens over the right shoulder puts the lead left of centre (0 mid-swap).
+	V.leadSide = static_cast<std::int8_t>(FMath::Abs(CloseShoulder) < 0.5f ? 0 : (CloseShoulder > 0.f ? -1 : 1));
+	// The kit band: a magic partner keeps the caster's range, the others the melee one.
+	const ftcore::ArenaFighter& Kit = Fight.def().partnerKit;
+	const bool bCaster = Kit.weapon == ftcore::ArenaWeapon::Magic;
+	V.standMin = bCaster ? ftcore::kPartnerCloseCasterMin : ftcore::kPartnerCloseMeleeMin;
+	V.standMax = bCaster ? ftcore::kPartnerCloseCasterMax : ftcore::kPartnerCloseMeleeMax;
+	V.bodyRadius = FMath::Clamp(Kit.bodyRadius, 0.1f, 1.5f);
+	V.walls = std::span<const ftcore::PartnerWall>(CloseWalls, static_cast<size_t>(CloseWallCount));
+	// The lens as the brain's camera has it: its half-angles, its pitch and its height over the partner's ground.
+	if (ftcore::partnerCameraWhole(Camera))
+	{
+		const float Vertical = FMath::DegreesToRadians(0.5f * Camera.verticalFovDegrees);
+		V.verticalHalfDegrees = FMath::RadiansToDegrees(Vertical);
+		V.halfAngleDegrees = FMath::RadiansToDegrees(FMath::Atan(FMath::Tan(Vertical) * Camera.aspect));
+		V.pitchDegrees = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(Camera.forward.z, -1.f, 1.f)));
+		V.lensHeight = Camera.pos.z - Camera.groundZ;
+	}
+	else
+	{
+		V.halfAngleDegrees = 0.5f * CameraPoseNow.fov;
+	}
+	return V;
 }
 
 ftcore::ArenaLeadBody UFTArenaRunner::LeadBody() const
