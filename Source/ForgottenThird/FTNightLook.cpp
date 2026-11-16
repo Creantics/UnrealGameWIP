@@ -266,7 +266,9 @@ float FTNight::BayLampAt(float Lights)
 
 int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 {
-	const float Lumens = BayLampAt(Lights);
+	// -NoBayLights (look switch, not in Shipping): the fixtures held dark, for the cost pair with and without them.
+	static const bool bNoBayLights = FParse::Param(FTLookSwitches(), TEXT("NoBayLights"));
+	const float Lumens = bNoBayLights ? 0.f : BayLampAt(Lights);
 	int32 Written = 0;
 	for (TActorIterator<ARectLight> It(&World); It; ++It)
 	{
