@@ -71,6 +71,7 @@ void clampSettings(Settings& s) {
     s.voice = clampFloat(s.voice, 0.f, 1.f, d.voice);
     s.sfx = clampFloat(s.sfx, 0.f, 1.f, d.sfx);
     s.cameraShake = clampFloat(s.cameraShake, 0.f, 1.f, d.cameraShake);
+    s.cameraPreset = clampEnum(static_cast<std::int64_t>(s.cameraPreset), CameraPresetId::Close, d.cameraPreset);
     s.hudScale = (std::clamp(s.hudScale, Settings::kMinHudScale, Settings::kMaxHudScale) + 5) / 10 * 10; // the menu's steps
     s.hudSafeMargin = std::clamp(s.hudSafeMargin, Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin);
     s.showBasicControls =
@@ -80,13 +81,13 @@ void clampSettings(Settings& s) {
 std::string encodeSettings(const Settings& in) {
     Settings s = in;
     clampSettings(s);
-    char buf[704];
+    char buf[768];
     std::snprintf(buf, sizeof buf,
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"aimAssist\":%s,\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
-                  "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f,\"lockFraming\":%s,\"uiFirstUse\":%u,"
-                  "\"hudScale\":%d,\"hudSafeMargin\":%d,\"showBasicControls\":%d}",
+                  "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f,\"lockFraming\":%s,\"cameraPreset\":%d,"
+                  "\"uiFirstUse\":%u,\"hudScale\":%d,\"hudSafeMargin\":%d,\"showBasicControls\":%d}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
@@ -94,7 +95,7 @@ std::string encodeSettings(const Settings& in) {
                   s.reduceFlashes ? "true" : "false", s.qteAutoComplete ? "true" : "false",
                   s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
                   s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake), s.lockFraming ? "true" : "false",
-                  static_cast<unsigned>(s.uiFirstUse), s.hudScale, s.hudSafeMargin,
+                  static_cast<int>(s.cameraPreset), static_cast<unsigned>(s.uiFirstUse), s.hudScale, s.hudSafeMargin,
                   static_cast<int>(s.showBasicControls));
     return buf;
 }
@@ -149,6 +150,8 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.aimAssist = boolField("aimAssist", s.aimAssist);
     s.cameraShake = floatField("cameraShake", s.cameraShake);
     s.lockFraming = boolField("lockFraming", s.lockFraming);
+    s.cameraPreset = clampEnum(intField("cameraPreset", static_cast<std::int64_t>(s.cameraPreset)), CameraPresetId::Close,
+                               s.cameraPreset); // absent (a file saved before the row): Classic
     const std::int64_t taught = intField("uiFirstUse", 0); // 32 packed bits, so anything outside them is nothing taught
     s.uiFirstUse = taught >= 0 && taught <= 0xFFFFFFFF ? static_cast<std::uint32_t>(taught) : 0u;
     s.hudScale = static_cast<int>(std::clamp<std::int64_t>(intField("hudScale", s.hudScale), Settings::kMinHudScale, Settings::kMaxHudScale));
@@ -181,6 +184,7 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::StickFlicks: return "Stick flicks";
     case SettingsRow::CameraShake: return "Camera shake";
     case SettingsRow::LockFraming: return "Lock framing";
+    case SettingsRow::CameraPreset: return "Camera";
     case SettingsRow::HudScale: return "HUD scale";
     case SettingsRow::HudSafeMargin: return "HUD safe margin";
     case SettingsRow::ShowBasicControls: return "Basic controls";
@@ -212,6 +216,7 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
     case SettingsRow::StickFlicks: word = s.stickFlicks ? "On" : "Off"; break;
     case SettingsRow::AimAssist: word = s.aimAssist ? "On" : "Off"; break;
     case SettingsRow::LockFraming: word = s.lockFraming ? "On" : "Off"; break;
+    case SettingsRow::CameraPreset: word = s.cameraPreset == CameraPresetId::Close ? "Close" : "Classic"; break;
     case SettingsRow::ShowBasicControls:
         word = s.showBasicControls == ShowBasicControls::FirstFights ? "First fights"
                : s.showBasicControls == ShowBasicControls::Always    ? "Always"
@@ -265,6 +270,7 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     case SettingsRow::AimAssist: return setBool(s.aimAssist, dir, wrap);
     case SettingsRow::CameraShake: return stepFloat(s.cameraShake, stepTenth(s.cameraShake, step));
     case SettingsRow::LockFraming: return setBool(s.lockFraming, dir, wrap);
+    case SettingsRow::CameraPreset: return stepEnum(s.cameraPreset, dir, CameraPresetId::Close, wrap);
     case SettingsRow::HudScale: {
         const int next = std::clamp(s.hudScale + 10 * step, Settings::kMinHudScale, Settings::kMaxHudScale); // a slider: stops at its ends
         if (next == s.hudScale) return false;

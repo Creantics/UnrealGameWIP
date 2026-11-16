@@ -60,10 +60,11 @@ ArenaFramePoint project(const View& v, ArenaPoint3 at) {
 }
 
 ArenaLeadShares sharesOf(const View& v, const ArenaLeadBody& body) {
-    // The body's sides along the view's right.
+    // The body's sides along the view's right; its low points at the cut (the feet, 0, unless a close lens cuts higher).
     const float rx = v.rx * body.radius, ry = v.ry * body.radius;
+    const float lo = body.cut;
     const ArenaPoint3 pts[6] = {
-        {0.f, 0.f, 0.f}, {0.f, 0.f, body.head}, {rx, ry, 0.f}, {-rx, -ry, 0.f}, {rx, ry, body.head}, {-rx, -ry, body.head},
+        {0.f, 0.f, lo}, {0.f, 0.f, body.head}, {rx, ry, lo}, {-rx, -ry, lo}, {rx, ry, body.head}, {-rx, -ry, body.head},
     };
     ArenaLeadShares s;
     s.ahead = true;
@@ -372,13 +373,17 @@ float arenaLowSide(const ArenaLookLimits& limits, const ArenaCameraPose& rig, fl
     const float mag = std::fabs(lowRules.side);
     if (!(mag > 1e-3f) || !finite(mag)) return cur;
     const float lowBoom = lowBoomOf(rig, 1.f, lowRules);
+    // The whole body down to the floor: a point the lead stands in front of is hidden by the legs too, wherever the
+    // frame rule is held (a cut is the rule's, not the body's).
+    ArenaLeadBody whole = body;
+    whole.cut = 0.f;
     // How far the aim point stands clear of the lead's box in the frame, from the full low lens on shoulder `s`: 1 when
     // it is above or below the body (never hidden), 0 when it is inside the body's width.
     const auto clear = [&](float s) {
         const View v = viewOf(poseAt(limits, rig, viewPitch, 1.f, lowBoom, s * mag), aspect);
         const ArenaFramePoint a = project(v, aim);
         if (!a.ahead) return 1.f;
-        const ArenaLeadShares sh = sharesOf(v, body);
+        const ArenaLeadShares sh = sharesOf(v, whole);
         if (!sh.ahead || a.y > sh.head || a.y < sh.feet) return 1.f;
         return std::max(0.f, std::max(sh.left - a.x, a.x - sh.right));
     };

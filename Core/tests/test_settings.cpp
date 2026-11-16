@@ -66,6 +66,7 @@ TEST_CASE("settings round-trip through JSON") {
     s.skipChoices = true;
     s.stickFlicks = true;
     s.aimAssist = false;
+    s.cameraPreset = CameraPresetId::Close;
     s.uiFirstUse = 0xA5u;
     s.hudScale = 120;
     s.hudSafeMargin = 7;
@@ -317,8 +318,8 @@ TEST_CASE("settings menu: stick flicks are off by default and the row toggles th
     out.stickFlicks = true;
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK_FALSE(out.stickFlicks);
-    // The row sits above Camera shake, Lock framing, HUD scale, HUD safe margin, Basic controls and Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 7u == kSettingsRowCount);
+    // The row sits above Camera shake, Lock framing, Camera, HUD scale, HUD safe margin, Basic controls and Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::StickFlicks) + 8u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down to 0, and saves") {
@@ -346,8 +347,8 @@ TEST_CASE("settings menu: camera shake is full by default, steps by a tenth down
     CHECK(out.cameraShake == 1.f);
     REQUIRE(decodeSettings(R"({"version":1,"cameraShake":-2})", out, nullptr));
     CHECK(out.cameraShake == 0.f);
-    // The row sits above Lock framing, HUD scale, HUD safe margin, Basic controls and Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 6u == kSettingsRowCount);
+    // The row sits above Lock framing, Camera, HUD scale, HUD safe margin, Basic controls and Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraShake) + 7u == kSettingsRowCount);
 }
 
 TEST_CASE("settings menu: HUD scale runs 80% to 130% in tens, 100% by default, and saves") {
@@ -379,8 +380,8 @@ TEST_CASE("settings menu: HUD scale runs 80% to 130% in tens, 100% by default, a
     CHECK(out.hudScale == 80);
     REQUIRE(decodeSettings(R"({"version":1,"hudScale":96})", out, nullptr));
     CHECK(out.hudScale == 100);
-    // The row sits under Lock framing and above HUD safe margin, Basic controls and Back.
-    CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) == static_cast<std::uint32_t>(SettingsRow::LockFraming) + 1u);
+    // The row sits under Camera and above HUD safe margin, Basic controls and Back.
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) == static_cast<std::uint32_t>(SettingsRow::CameraPreset) + 1u);
     CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) + 4u == kSettingsRowCount);
 }
 
@@ -493,7 +494,7 @@ TEST_CASE("settings menu: basic controls default to the first fights, cycle thro
     CHECK(static_cast<std::uint32_t>(SettingsRow::ShowBasicControls) ==
           static_cast<std::uint32_t>(SettingsRow::HudSafeMargin) + 1u);
     CHECK(static_cast<std::uint32_t>(SettingsRow::ShowBasicControls) + 2u == kSettingsRowCount);
-    CHECK(kSettingsRowCount == 22u);
+    CHECK(kSettingsRowCount == 23u);
 }
 
 TEST_CASE("settings: the fight HUD's first-use bits survive a save; a bad value reads as nothing taught") {
@@ -587,7 +588,7 @@ TEST_CASE("settings menu: aim assist is on by default, sits under Defence window
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK(out.aimAssist);
     CHECK(static_cast<std::uint32_t>(SettingsRow::AimAssist) == static_cast<std::uint32_t>(SettingsRow::DefenceAssist) + 1u);
-    CHECK(kSettingsRowCount == 22u);
+    CHECK(kSettingsRowCount == 23u);
 }
 
 TEST_CASE("settings menu: lock framing is on by default, sits under Camera shake, toggles and saves") {
@@ -611,4 +612,36 @@ TEST_CASE("settings menu: lock framing is on by default, sits under Camera shake
     CHECK(out.lockFraming);
     CHECK(static_cast<std::uint32_t>(SettingsRow::LockFraming) == static_cast<std::uint32_t>(SettingsRow::CameraShake) + 1u);
     CHECK(static_cast<std::uint32_t>(SettingsRow::Back) + 1u == kSettingsRowCount);
+}
+
+TEST_CASE("settings menu: the camera preset is Classic by default, sits under Lock framing, steps to Close and saves") {
+    Settings s;
+    CHECK(s.cameraPreset == CameraPresetId::Classic);
+    SettingsMenu m;
+    char value[32];
+    CHECK(std::string(settingsRowLabel(SettingsRow::CameraPreset)) == "Camera");
+    settingsRowValue(s, SettingsRow::CameraPreset, value, sizeof value);
+    CHECK(std::string(value) == "Classic");
+    CHECK(m.click(s, SettingsRow::CameraPreset, 1) == SettingsAction::Changed);
+    CHECK(s.cameraPreset == CameraPresetId::Close);
+    settingsRowValue(s, SettingsRow::CameraPreset, value, sizeof value);
+    CHECK(std::string(value) == "Close");
+    Settings out;
+    REQUIRE(decodeSettings(encodeSettings(s), out, nullptr));
+    CHECK(out.cameraPreset == CameraPresetId::Close);
+    CHECK(out == s);
+    // Two values: a step past Close without wrap stays, with it goes round to Classic.
+    CHECK_FALSE(adjustSetting(s, SettingsRow::CameraPreset, 1, false));
+    CHECK(adjustSetting(s, SettingsRow::CameraPreset, 1, true));
+    CHECK(s.cameraPreset == CameraPresetId::Classic);
+    // An old file without the field loads as Classic; a number past the last is the last.
+    out.cameraPreset = CameraPresetId::Close;
+    REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
+    CHECK(out.cameraPreset == CameraPresetId::Classic);
+    REQUIRE(decodeSettings(R"({"version":1,"cameraPreset":9})", out, nullptr));
+    CHECK(out.cameraPreset == CameraPresetId::Close);
+    REQUIRE(decodeSettings(R"({"version":1,"cameraPreset":-1})", out, nullptr));
+    CHECK(out.cameraPreset == CameraPresetId::Classic);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::CameraPreset) == static_cast<std::uint32_t>(SettingsRow::LockFraming) + 1u);
+    CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) == static_cast<std::uint32_t>(SettingsRow::CameraPreset) + 1u);
 }

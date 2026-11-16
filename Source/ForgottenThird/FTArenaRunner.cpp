@@ -356,6 +356,12 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 			*Setup.Ally->Name, Setup.Table ? TEXT("no entry in Data/Battle/arena.json") : TEXT("no arena table"));
 	}
 	Fit = Setup.Fit;
+	// The camera preset, view only: put on this copy of the fit's camera after the zone's fit was made and checked with
+	// the zone's own rig (the close lens's arm and pitch are outside that check's ranges, ftcore::checkArenaZone). The
+	// fight never reads it: the ring, the starts and the sizing are the fit's own. Fit.cameraBlocked stays the zone
+	// rig's share; the close lens's own blocked share is not measured yet.
+	PickCameraPreset();
+	Fit.camera = ftcore::applyCameraPreset(Fit.camera, CameraLens);
 	LeadSeat = Setup.LeadSeat;
 	AllySeat = Setup.AllySeat;
 	LeadName = Setup.Lead ? Setup.Lead->Name : FString();
@@ -893,6 +899,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		// The rig from Core's pose (ftcore::arenaCameraPose: the zone's, blended by the aim stance), as every frame sets it.
 		const ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
 		PlayerFigure->SetCameraRig(Pose.arm, Pose.pivot, Pose.side, Pose.up, Pose.fov);
+		PlayerFigure->SetCameraLag(CameraLag); // the preset's boom lag (classic: the boom's own)
 		// The kit's weapon on the lead's body: its strike clips, props and effects.
 		if (Lead)
 		{
@@ -5100,6 +5107,7 @@ ftcore::ArenaLeadBody UFTArenaRunner::LeadBody() const
 		// The anchor hangs 45 cm over the head (AFTArenaFighter::GetAnchor).
 		Body.head = FMath::Max(0.5f, static_cast<float>(Lead->GetAnchor().Z - Lead->GetActorLocation().Z - 45.0) / 100.f);
 	}
+	Body.cut = CameraLens.cutAt; // the height the preset's lens keeps in the frame (classic: the feet, 0)
 	return Body;
 }
 
@@ -5132,7 +5140,7 @@ void UFTArenaRunner::LogLeadFrameShot(const TCHAR* Shot) const
 	}
 	const ftcore::ArenaLeadShares& S = LeadShotShares;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead frame at view %s: %s (feet %.3f, head %.3f, left %.3f, right %.3f, ahead %d, visible %d)."),
-		Shot, ftcore::arenaLeadInFrame(ftcore::kArenaLeadFrame, S) ? TEXT("kept") : TEXT("BROKE the rule"), S.feet, S.head, S.left, S.right,
+		Shot, ftcore::arenaLeadInFrame(LeadFrameRules(), S) ? TEXT("kept") : TEXT("BROKE the rule"), S.feet, S.head, S.left, S.right,
 		S.ahead ? 1 : 0, ftcore::arenaLeadVisible(S) ? 1 : 0);
 #else
 	(void)Shot;
@@ -5166,7 +5174,8 @@ void UFTArenaRunner::SampleLeadFrame()
 	const double TanH = FMath::Tan(FMath::DegreesToRadians(static_cast<double>(Cam->GetFOVAngle()) * 0.5));
 	const double TanV = TanH / static_cast<double>(LockAspect());
 	const FVector Right = FRotationMatrix(Rot).GetUnitAxis(EAxis::Y) * static_cast<double>(LeadBody().radius) * 100.0;
-	const FVector Feet = Lead->GetActorLocation();
+	// The low points at the preset's cut, as ftcore::arenaLeadShares takes them (classic: the feet themselves).
+	const FVector Feet = Lead->GetActorLocation() + FVector(0.0, 0.0, static_cast<double>(LeadBody().cut) * 100.0);
 	const FVector Head = Lead->GetAnchor() - FVector(0.0, 0.0, 45.0);
 	const FVector Points[6] = {Feet, Head, Feet + Right, Feet - Right, Head + Right, Head - Right};
 	ftcore::ArenaLeadShares S;
@@ -5195,13 +5204,14 @@ void UFTArenaRunner::SampleLeadFrame()
 		return; // only a tall target's hold is the check's (a short one keeps the lead by the framing already)
 	}
 	++LeadFrameFrames;
-	LeadFrameKept += ftcore::arenaLeadInFrame(ftcore::kArenaLeadFrame, S) ? 1 : 0;
+	const ftcore::ArenaLeadFrameRules LeadRules = LeadFrameRules();
+	LeadFrameKept += ftcore::arenaLeadInFrame(LeadRules, S) ? 1 : 0;
 	LeadFrameVisible += ftcore::arenaLeadVisible(S) ? 1 : 0;
 	{
 		// How far past the rule (0: kept), into the three worst.
-		const float Edge = 0.5f * (1.f - ftcore::kArenaLeadFrame.widthMid);
+		const float Edge = 0.5f * (1.f - LeadRules.widthMid);
 		const float Miss = !S.ahead ? 1.f + FMath::Max(0.f, 1.f - S.feet)
-			: FMath::Max(FMath::Max(ftcore::kArenaLeadFrame.feetMin - S.feet, S.head - ftcore::kArenaLeadFrame.headMax),
+			: FMath::Max(FMath::Max(LeadRules.feetMin - S.feet, S.head - LeadRules.headMax),
 				FMath::Max(Edge - S.left, S.right - (1.f - Edge)));
 		for (int32 I = 0; Miss > 0.f && I < 3; ++I)
 		{
@@ -5338,6 +5348,11 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	Scene.aiming = ArenaAim.aiming(); // the aim camera frames the shot over the shoulder
 	Scene.side = Fit.camera.side;
 	Scene.lineRate = kArenaLockTurn;
+	// The preset's share of the width the turn puts the target at (classic: 0.5, the centre line, and then the lens and
+	// its distance back are not read), for the lens as the boom has it now.
+	Scene.screenX = CameraLens.targetX;
+	Scene.fov = Fit.camera.fov;
+	Scene.back = ftcore::arenaEyeBack(ArmNow, Fit.camera.up, ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch).boom);
 #if !UE_BUILD_SHIPPING
 	if (bNoFrame || AimCheckPhase == 2 || AimCheckPhase == 3)
 	{
@@ -5360,7 +5375,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	CameraYaw = Yaw.line;
 	FrameTurn = Yaw.turn;
 #if !UE_BUILD_SHIPPING
-	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming ? ftcore::arenaFrameTurn(FrameRules(), Scene.side, Scene.distance) : 0.f;
+	const float FrameWant = bFollowed && Scene.framing && !Scene.aiming
+		? ftcore::arenaFrameTurnAt(FrameRules(), Scene.side, Scene.distance, Scene.screenX, Scene.fov, Scene.back) : 0.f;
 #endif
 	// The lens as the boom really has it: its wall probe shortens the arm, the shoulder and the height alike, by this
 	// share (measured on the boom's last update). The lead's rule and the fed camera are solved on that lens; the boom
@@ -5403,7 +5419,8 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			LowSideSign = ftcore::arenaLowSide(ftcore::kArenaLook, LensRig, CameraPitch, Aspect, Body, Aim, LowSideSign, ftcore::kArenaLowSide, SideRules);
 			if (FMath::Abs(LensRig.arm - LowFitArm) > 0.05f || Aspect != LowFitAspect || Body.head != LowFitHead)
 			{
-				LowFit = ftcore::arenaLowFit(ftcore::kArenaLook, ftcore::kArenaLeadFrame, LensRig, Aspect, Body, SideRules);
+				// No more than the preset allows (CameraPreset::lowMax: classic 1, which every fit is under; close 0).
+				LowFit = FMath::Min(ftcore::arenaLowFit(ftcore::kArenaLook, LeadFrameRules(), LensRig, Aspect, Body, SideRules), CameraLens.lowMax);
 				LowFitArm = LensRig.arm;
 				LowFitAspect = Aspect;
 				LowFitHead = Body.head;
@@ -5453,7 +5470,7 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	{
 		if (bHold)
 		{
-			CameraPitch = ftcore::arenaLeadPitch(ftcore::kArenaLook, ftcore::kArenaLeadFrame, LensRig, Aspect, Body, CameraPitch, LockLow, LowRules).pitch;
+			CameraPitch = ftcore::arenaLeadPitch(ftcore::kArenaLook, LeadFrameRules(), LensRig, Aspect, Body, CameraPitch, LockLow, LowRules).pitch;
 		}
 		Lens = ftcore::arenaPoseAtPitch(ftcore::kArenaLook, LensRig, CameraPitch, LockLow, LowRules);
 		Pose = WallScaled(Lens, 1.f / WallShare); // the boom's own lengths: its probe shortens them to the lens solved
@@ -5466,7 +5483,7 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	if (bHold && !bLookedLately && bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0)
 	{
 		const ftcore::ArenaPoint3 Mate{Bodies.ally.x - Bodies.player.x, Bodies.ally.y - Bodies.player.y, 1.f};
-		YawWant = ftcore::arenaPartnerYaw(ftcore::kArenaPartnerYaw, ftcore::kArenaLeadFrame, Lens, Aspect, Body, Mate);
+		YawWant = ftcore::arenaPartnerYaw(ftcore::kArenaPartnerYaw, LeadFrameRules(), Lens, Aspect, Body, Mate);
 	}
 	if (FMath::Abs(YawWant - PartnerYawGoal) > 0.5f || YawWant == 0.f)
 	{
@@ -5663,8 +5680,8 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("Arena check: lead in frame %s (%d frames on a tall lock, %d kept the rule (feet over %.0f%%, head under %.0f%%, the middle %.0f%%), %d whole body seen; feet least %.3f, head most %.3f, side most %.3f from the middle; telegraph frames %d: %d bar in place, %d pinned under the top edge, %d edge marker; the aim stance and the free look are outside the rule)."),
-			LeadFrameKept == LeadFrameFrames ? TEXT("PASS") : TEXT("FAIL"), LeadFrameFrames, LeadFrameKept, ftcore::kArenaLeadFrame.feetMin * 100.f,
-			ftcore::kArenaLeadFrame.headMax * 100.f, ftcore::kArenaLeadFrame.widthMid * 100.f, LeadFrameVisible, LeadFeetLeast, LeadHeadMost,
+			LeadFrameKept == LeadFrameFrames ? TEXT("PASS") : TEXT("FAIL"), LeadFrameFrames, LeadFrameKept, LeadFrameRules().feetMin * 100.f,
+			LeadFrameRules().headMax * 100.f, LeadFrameRules().widthMid * 100.f, LeadFrameVisible, LeadFeetLeast, LeadHeadMost,
 			LeadSideWorst, TellFrames, TellInPlace, TellPinned, TellEdge);
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: lead in frame worst samples (past the rule by, at fight time): %.3f at %.2f s, %.3f at %.2f s, %.3f at %.2f s (-1 s: none)."),
 			LeadMissWorst[0], LeadMissAt[0], LeadMissWorst[1], LeadMissAt[1], LeadMissWorst[2], LeadMissAt[2]);
@@ -5782,6 +5799,58 @@ void UFTArenaRunner::LogFeatureChecks() const
 	char Pace[256];
 	ftcore::arenaPaceText(S, Fight.enemyCount(), Pace, sizeof Pace);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: %s."), UTF8_TO_TCHAR(Pace));
+}
+
+void UFTArenaRunner::PickCameraPreset()
+{
+	if (!bCameraPresetsTried)
+	{
+		bCameraPresetsTried = true;
+		TArray<uint8> Bytes;
+		std::string Error;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/camera_presets.json");
+		ftcore::CameraPresets Read;
+		if (FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importCameraPresets(FT::BytesAsText(Bytes), Read, &Error))
+		{
+			CameraPresetTable = Read;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: no usable Data/Battle/camera_presets.json; the built-in camera presets.\n%s"),
+				*FT::ToFString(Error));
+			CameraPresetTable = ftcore::CameraPresets();
+		}
+	}
+	// -ArenaCamera=close|classic wins over the settings' Camera row, in every build (a review run picks its lens).
+	const ftcore::Settings* Prefs = GetSettings();
+	ftcore::CameraPresetId Id = Prefs ? Prefs->cameraPreset : ftcore::CameraPresetId::Classic;
+	const TCHAR* From = Prefs ? TEXT("settings") : TEXT("default");
+	FString Word;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaCamera="), Word))
+	{
+		if (Word == TEXT("close") || Word == TEXT("classic"))
+		{
+			Id = Word == TEXT("close") ? ftcore::CameraPresetId::Close : ftcore::CameraPresetId::Classic;
+			From = TEXT("-ArenaCamera");
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaCamera=%s is no camera preset (close or classic); the %s one stands."), *Word, From);
+		}
+	}
+	CameraPresetNow = Id;
+	CameraLens = ftcore::cameraPreset(CameraPresetTable, Id);
+	CameraLag = CameraLens.lagSeconds;
+#if !UE_BUILD_SHIPPING
+	// -ArenaCameraLag=<seconds>: the boom's lag for this run over the preset's (0 the boom's own, -1 off).
+	float Lag = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaCameraLag="), Lag))
+	{
+		CameraLag = FMath::IsFinite(Lag) ? Lag : -1.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: camera lag %.3f s for this run (-ArenaCameraLag; 0 the boom's own, under 0 off)."), CameraLag);
+	}
+#endif
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena camera preset: %s (from %s)"), UTF8_TO_TCHAR(ftcore::cameraPresetName(Id)), From);
 }
 
 const ftcore::Settings* UFTArenaRunner::GetSettings() const
@@ -7720,6 +7789,10 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 				++BenchMorphChecks;
 			}
 		}
+	}
+	if (PlayerFigure)
+	{
+		PlayerFigure->SetCameraLag(CameraLag); // the preset's boom lag on the new lead's boom too
 	}
 	if (PlayerFigure && bCameraPoseNow)
 	{
