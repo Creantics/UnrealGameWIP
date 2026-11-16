@@ -31,10 +31,11 @@
 // so shaded lanes read at about a third of the sunlit value. So a shaded lane's far end keeps its colour, the day also
 // holds the auto exposure's floor (in a frame that is all shade the camera opens no further), pulls the highlights down
 // (local exposure highlight contrast), caps the height fog's opacity and dims the sky's share of its colour to a
-// grey-blue. Blended by ftcore::dayShadeAmount (0 at full night and full
-// dusk, which keep exactly what they had). Only in a world with a look (UFTLookSubsystem). Switches (read once):
+// grey-blue. Blended by ftcore::dayShadeAmount (eased out on the sun's elevation as it sets, 0 before the lamps start
+// and through the night). Only in a world with a look (UFTLookSubsystem). Switches (read once):
 //   -NoDayShade  off;  -DayShadeSky=<scale>  -DayShadeContrast=<0..1>  -DayShadeBoost=<1..4>  -DayShadeToe=<0..1>
 //   -DayShadeHighlight=<0..1>  -DayShadeMinEV=<ev100>  -DayShadeFogCap=<0..1>  -DayShadeFogSky=<scale on the fog's sky share>
+//   -DayShadeFadeHigh=<deg> -DayShadeFadeLow=<deg>  the sun's elevations the fade runs between (full above, gone below)
 // and r.FT.DayShade 0/1 at run time. A day world-eye still with no running clock gets the full day's (or
 // -WorldEyeSunHour's) shade from the look subsystem once the look is written (FTDayShade::StillAmount).
 
@@ -75,8 +76,10 @@ FORGOTTENTHIRD_API const ftcore::DayShadeLook& Look();
 FORGOTTENTHIRD_API bool Enabled();
 // What the world look writes (the night keeps it).
 FORGOTTENTHIRD_API ftcore::DayShadeBase BaseFor(const ftcore::SceneLook& WorldLook);
-// The day amount at a sky frame (0 when off).
-FORGOTTENTHIRD_API float AmountAt(const FTNight::FSkyFrame& Sky);
+// The fade's span: ftcore::DayShadeFade's defaults with -DayShadeFadeHigh= / -DayShadeFadeLow= over them.
+FORGOTTENTHIRD_API const ftcore::DayShadeFade& Fade();
+// The day amount at a sky frame with the sun at SunElevationDeg (0 when off).
+FORGOTTENTHIRD_API float AmountAt(const FTNight::FSkyFrame& Sky, float SunElevationDeg);
 // Writes the frame's shadow and highlight contrast, diffuse colour boost and film toe into World's unbound priority-0
 // post-process volume (the look's), and with bExposure its auto exposure floor (left alone while the night's exposure
 // range holds it). False when there is none.
@@ -123,6 +126,8 @@ public:
 	bool IsFixedByCommandLine() const { return bFixedByCommandLine; }
 	UFUNCTION(BlueprintPure, Category = "FT|Time")
 	float GetNightAmount() const { return Night; }
+	// The street lamps' switch-on, 0 by day to 1 once all are on (ftcore::nightLampFraction, on the sun's elevation).
+	float GetLampFraction() const { return LampFraction; }
 	// The time curves (Data/time_curves.csv): the share of the daytime crowd out now, and how dangerous the streets are.
 	UFUNCTION(BlueprintPure, Category = "FT|Time")
 	float GetCrowdDensity() const;
@@ -169,7 +174,7 @@ private:
 	struct FLamp
 	{
 		TWeakObjectPtr<ULightComponent> Light;
-		float OnAt = 0.5f;
+		uint32 Key = 0; // its place's hash: where in the lamps' switch-on it comes on (ftcore::nightLampOn)
 		bool bOn = false;
 	};
 
@@ -182,6 +187,9 @@ private:
 	double AppliedHours = -1.0;
 	float Night = 0.f;
 	bool bExposureLocked = false;
+	// The exposure blend last written to the volumes (-1: write on the next step), and the lamps' switch-on now.
+	float AppliedExposureBlend = -1.f;
+	float LampFraction = 0.f;
 	float AppliedWhiteMix = 0.f;
 	bool bClockGiven = false;
 

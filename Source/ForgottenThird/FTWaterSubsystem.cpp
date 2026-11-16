@@ -1,5 +1,6 @@
 #include "FTWaterSubsystem.h"
 
+#include "FTCharacterFillSubsystem.h"
 #include "FTExploreDirector.h"
 #include "FTSceneLook.h"
 #include "FTVfxComponent.h"
@@ -348,8 +349,11 @@ void UFTWaterSubsystem::PushSurface(float DeltaTime)
 		SunSought = 2.f;
 		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
 		{
-			Sun = *It;
-			break;
+			if (!It->ActorHasTag(UFTCharacterFillSubsystem::LightTag)) // the characters' fill is no sun
+			{
+				Sun = *It;
+				break;
+			}
 		}
 	}
 	FLinearColor SunUnder(0.f, 0.f, 1.f, 0.f);

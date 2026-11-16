@@ -413,7 +413,7 @@ int Kd = Paved ? KindAll - PAVED_K : KindAll;
 float Foot = max(length(fwidth(WorldPos.xyz)) / 100.0, 1e-4);
 float2 Pw = WorldPos.xy / 100.0;
 float3 Nrm = normalize(VN);
-float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(0.093, 0.092, 0.09);
+float3 Under = Paved ? float3(0.32, 0.31, 0.29) : float3(ASPHALT_R, ASPHALT_G, ASPHALT_B);
 float UnderR = Paved ? 0.8 : 0.88;
 float Grain = D.N(M * 23.0 + O);
 float3 C = Under;
@@ -727,7 +727,10 @@ float WetIn = saturate(Wetness);
                       {"WHEEL_OFF_M", static_cast<double>(street.wheelOffM)},
                       {"CRACK_M", static_cast<double>(street.crackScaleM)},
                       {"PAINT_PAD", kRoadPaintPad},
-                      {"DETAIL_M", static_cast<double>(street.detailTileM)}};
+                      {"DETAIL_M", static_cast<double>(street.detailTileM)},
+                      {"ASPHALT_R", static_cast<double>(street.asphaltR)},
+                      {"ASPHALT_G", static_cast<double>(street.asphaltG)},
+                      {"ASPHALT_B", static_cast<double>(street.asphaltB)}};
         for (const auto& s : splice) {
             const std::string key = s.key;
             char buf[32];

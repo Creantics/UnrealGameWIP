@@ -28,6 +28,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "FTCharacterFillSubsystem.h"
 #include "FTLampPoolSubsystem.h"
 #include "FTLookSubsystem.h"
 #include "FTNightLightData.h"
@@ -704,6 +705,10 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		int32 Turned = 0;
 		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 		{
+			if (It->ActorHasTag(UFTCharacterFillSubsystem::LightTag))
+			{
+				continue;
+			}
 			if (ULightComponent* Light = It->GetLightComponent())
 			{
 				Light->SetMobility(EComponentMobility::Movable);
@@ -827,6 +832,10 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 		int32 Suns = 0, Skies = 0, Volumes = 0;
 		for (TActorIterator<ADirectionalLight> It(&World); It; ++It)
 		{
+			if (It->ActorHasTag(UFTCharacterFillSubsystem::LightTag))
+			{
+				continue; // the characters' own fill, not the moon
+			}
 			ULightComponent* Light = It->GetLightComponent();
 			// On a Solhaven map the moon stands where the clock puts it at midnight (or -WorldEyeSunHour), not at the
 			// built sun's angle.
@@ -839,12 +848,15 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 			Light->SetLightColor(FTNight::Color(Spec.moonTint), false);
 			++Suns;
 		}
-		// A real-time capture of the atmosphere already dims (and tints) with the sun, so it is lifted back by the moon's
-		// share to land at SkyFill of the map's: the blue fill the street keeps where no lamp reaches.
+		// The sky dome near black, as the clock's full night (the night frame's skyLuminance on the atmosphere's factor).
+		FTNight::FDuskScene Dome;
+		Dome.Apply(World, ftcore::DuskFrame{}, Frame.skyLuminance, true);
+		// A real-time capture of the atmosphere already dims (and tints) with the sun and the dome, so it is lifted back by
+		// the moon's share and the dome's to land at SkyFill of the map's: the fill the street keeps where no lamp reaches.
 		for (TActorIterator<ASkyLight> It(&World); It; ++It)
 		{
 			USkyLightComponent* Light = It->GetLightComponent();
-			Light->SetIntensity(Light->Intensity * (Light->bRealTimeCapture ? SkyFill / SunShare : SkyFill));
+			Light->SetIntensity(Light->Intensity * (Light->bRealTimeCapture ? SkyFill / SunShare / Frame.skyLuminance : SkyFill));
 			Light->SetLightColor(FTNight::Color(Spec.skyTint));
 			++Skies;
 		}
@@ -970,9 +982,9 @@ void UFTWorldEyeShotSubsystem::ApplyLook(UWorld& World)
 			++Volumes;
 		}
 		const FString GlowText = bGlow ? FString::SanitizeFloat(Glow) : FString(TEXT("as built"));
-		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night: windows' Night %s, NightGlow %s; %d moons at %.3f of the map's sun and %d sky "
-			"lights at %.3f fill; %d fogs with the city glow; %d street lamps at %.0f cd (%.0f m), %d shop lights at %.0f cd, %d lamp heads and %d stand-in lenses%s; exposure EV %.1f +- %.2f, white %.0f K in %d volumes."),
-			bNight ? TEXT("1") : TEXT("unset (no window collection)"), *GlowText, Suns, SunShare, Skies,
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: night: windows' Night %s, NightGlow %s; %d moons at %.3f of the map's sun, %d skies at "
+			"x%.3f luminance and %d sky lights at %.3f fill; %d fogs with the city glow; %d street lamps at %.0f cd (%.0f m), %d shop lights at %.0f cd, %d lamp heads and %d stand-in lenses%s; exposure EV %.1f +- %.2f, white %.0f K in %d volumes."),
+			bNight ? TEXT("1") : TEXT("unset (no window collection)"), *GlowText, Suns, SunShare, Dome.NumSkies(), Frame.skyLuminance, Skies,
 			SkyFill, Fogs, Lamps, LampCd, LampRadius, Shops, ShopCd, Heads, Lenses, LampMaterial ? TEXT("") : TEXT(" (no lamp material)"), Ev, EvRange,
 			Frame.whiteKelvin, Volumes);
 	}
