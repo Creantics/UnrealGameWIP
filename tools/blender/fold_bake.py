@@ -32,8 +32,10 @@ Checks: a missing key, a garment or collider not in the blend, a garment with no
 a closed-shell garment with no "openings", a cast grid over GRID_MAX points, frames outside 1..FRAMES_MAX or res outside 64..8192 stop the run with
 FOLD_BAKE_FAILED and exit code 2, before anything is simulated or written.
 
-Deterministic: the same spec, blend and Blender build give the same maps. The cloth solver has no random input and
-the Cycles seed is fixed (0, not animated). Not checked across machines or thread counts.
+Not deterministic: a rerun of one spec on the same blend and Blender build gave a different cloth (median fold lift
+3.87 against 3.84 mm, fold texels 4.0 against 3.0%), cause not isolated (the first run's thread count was not
+recorded; the report now records it). Keep and judge the maps of a run; the spec alone does not reproduce them. The
+Cycles seed is fixed (0, not animated), so the bake itself adds no run-to-run noise.
 
 Writes into out: <name>_fold_gl.png (the folds alone), <name>_N_gl.png and <name>_N.png (base plus folds, OpenGL and
 DirectX green), <name>_ORM.png, <name>_W.png (R curvature: above 0.5 ridge, below crease; G fold AO; B dirt = crease x
@@ -85,6 +87,7 @@ OUT, NAME = S["out"], S["name"]
 os.makedirs(OUT, exist_ok=True)
 rep = {"spec": S}
 sc = bpy.context.scene
+rep["blender"], rep["threads"] = bpy.app.version_string, [sc.render.threads_mode, sc.render.threads]
 sc.cycles.seed = 0
 sc.cycles.use_animated_seed = False
 
