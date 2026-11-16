@@ -328,17 +328,24 @@ int heroCornerAreaLights(const HeroCornerSpec& spec, HeroAreaLight out[kHeroArea
         l.height = spec.frontHeight;
         l.fx = -1.0;
         l.fy = 0.0;
+        // Past the lane's far side at the front's ends, with a margin for the falloff's tail.
+        l.reach = std::hypot(l.x - spec.laneX0, 0.5 * l.width) + 1.5;
         l.bay = i;
     }
-    HeroAreaLight& s = out[n++];
-    s = HeroAreaLight{};
-    s.x = spec.laneX0 - spec.skyOut;
-    s.y = 0.5 * (spec.laneY0 + spec.laneY1);
-    s.z = paving + spec.skyUp;
-    s.width = spec.laneY1 - spec.laneY0;
-    s.height = spec.skyHeight;
-    s.fx = 1.0;
-    s.sky = true;
+    const double length = (spec.laneY1 - spec.laneY0) / kHeroSkyFloors;
+    for (int k = 0; k < kHeroSkyFloors; ++k) {
+        HeroAreaLight& s = out[n++];
+        s = HeroAreaLight{};
+        s.x = spec.laneX0 - spec.skyOut;
+        s.y = spec.laneY0 + length * (k + 0.5);
+        s.z = paving + spec.skyUp;
+        s.width = length;
+        s.height = spec.skyHeight;
+        s.fx = 1.0;
+        // Past the shop faces at its length's ends (a little beyond, so neighbours overlap).
+        s.reach = std::hypot(spec.laneX1 - s.x, 0.5 * length + 1.0) + 1.5;
+        s.sky = true;
+    }
     return n;
 }
 

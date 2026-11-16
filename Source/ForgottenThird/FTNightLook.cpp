@@ -23,6 +23,7 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 
+#include "ftcore/HeroCorner.h"
 #include "ftcore/LookTable.h"
 
 namespace
@@ -277,7 +278,7 @@ int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 	const float Lumens = bNoBayLights ? 0.f : BayLampAt(Lights);
 	const ftcore::NightLook& L = Look();
 	const float Share = FMath::Clamp(Lights, 0.f, 1.f);
-	int32 Written = 0;
+	int32 Written = 0, Fronts = 0, Skies = 0;
 	for (TActorIterator<ARectLight> It(&World); It; ++It)
 	{
 		URectLightComponent* Hero = It->RectLightComponent.Get();
@@ -285,8 +286,11 @@ int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 		const bool bSky = Hero && !bFront && It->ActorHasTag(HeroSkyTag);
 		if (bFront || bSky)
 		{
-			// The face ruling's hero corner lights: a lit front's wide warm key, and the lane's cool floor (night only).
-			const float Lm = Share * FMath::Max(0.f, bFront ? L.heroFrontLumens : L.heroSkyLumens);
+			// The face ruling's hero corner lights: a lit front's wide warm key, and the lane's cool floor (night only; its
+			// lumens shared between its lengths).
+			const float Lm = Share * (bFront ? FMath::Max(0.f, L.heroFrontLumens) : FMath::Max(0.f, L.heroSkyLumens) / ftcore::kHeroSkyFloors);
+			Fronts += bFront ? 1 : 0;
+			Skies += bSky ? 1 : 0;
 			Hero->SetIntensity(Lm);
 			Hero->SetVisibility(Lm > 0.f);
 			Hero->SetVolumetricScatteringIntensity(0.f);
@@ -314,6 +318,17 @@ int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 		// A shop lamp lights the goods, not fog inside the shop (11-14 haze ruling).
 		Light->SetVolumetricScatteringIntensity(0.f);
 		++Written;
+	}
+	// The values the hero corner's lights resolve to, logged when the share has moved a quarter (or the first time).
+	static float LastLogged = -1.f;
+	if (Fronts + Skies > 0 && FMath::Abs(Share - LastLogged) >= 0.25f)
+	{
+		LastLogged = Share;
+		UE_LOG(LogForgottenThird, Display, TEXT("Night: hero corner at lights %.2f: %d front keys %.1f lm at %.0f K, %d floor lengths %.1f lm (of %.1f) tint %.2f,%.2f,%.2f "
+			"specular %.2f; pool lamps %.0f K, shops %.0f K."), Share, Fronts, Share * L.heroFrontLumens,
+			L.heroShopKelvin > 0.f ? L.heroShopKelvin : L.shopKelvin, Skies, Share * L.heroSkyLumens / ftcore::kHeroSkyFloors, Share * L.heroSkyLumens,
+			L.heroSkyTint[0], L.heroSkyTint[1], L.heroSkyTint[2], L.heroSkySpecular, L.heroLampKelvin > 0.f ? L.heroLampKelvin : L.lampKelvin,
+			L.heroShopKelvin > 0.f ? L.heroShopKelvin : L.shopKelvin);
 	}
 	return Written;
 }

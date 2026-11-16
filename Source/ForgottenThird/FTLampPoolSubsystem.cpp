@@ -589,6 +589,11 @@ void UFTLampPoolSubsystem::PickRim(const FVector& Lead, const FVector& Right)
 				continue;
 			}
 			const FVector At = Light->GetComponentLocation();
+			// Out of its reach the light gives the lead nothing; with none in reach the rim keeps its cool default.
+			if (FVector::DistSquared(At, Lead) > FMath::Square(Light->AttenuationRadius))
+			{
+				continue;
+			}
 			ftcore::RimLamp& L = Lit[N];
 			L.at[0] = static_cast<float>(At.X);
 			L.at[1] = static_cast<float>(At.Y);

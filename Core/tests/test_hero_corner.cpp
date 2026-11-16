@@ -819,19 +819,25 @@ TEST_CASE("hero corner: each lit front a wide key facing the lane, its room's wi
     const int n = heroCornerAreaLights(spec, lights);
     int lit = 0;
     for (int i = 0; i < kHeroBays; ++i) lit += spec.bayLit[i] ? 1 : 0;
-    REQUIRE(n == lit + 1);
+    REQUIRE(n == lit + kHeroSkyFloors);
     int fronts = 0, skies = 0;
+    double skyLength = 0.0;
     for (int k = 0; k < n; ++k) {
         const HeroAreaLight& l = lights[k];
         if (l.sky) {
             ++skies;
+            skyLength += l.width;
             CHECK(l.x < spec.laneX0);
             CHECK(l.fx == doctest::Approx(1.0));
-            CHECK(l.width == doctest::Approx(spec.laneY1 - spec.laneY0));
-            CHECK(l.y == doctest::Approx(0.5 * (spec.laneY0 + spec.laneY1)));
+            CHECK(l.y - l.width * 0.5 >= spec.laneY0 - 1e-9);
+            CHECK(l.y + l.width * 0.5 <= spec.laneY1 + 1e-9);
             CHECK(l.z - l.height * 0.5 >= spec.ground - 1e-9);
+            // Its reach (a sphere about its centre) passes the shop faces at its length's ends.
+            CHECK(l.reach > std::hypot(spec.laneX1 - l.x, 0.5 * l.width));
             continue;
         }
+        // A front's reach passes the lane's far side at its ends.
+        CHECK(l.reach > std::hypot(l.x - spec.laneX0, 0.5 * l.width));
         ++fronts;
         REQUIRE(l.bay >= 0);
         CHECK(spec.bayLit[l.bay]);
@@ -850,5 +856,6 @@ TEST_CASE("hero corner: each lit front a wide key facing the lane, its room's wi
         else CHECK(l.y == doctest::Approx(south + spec.bayWidth * 0.5));
     }
     CHECK(fronts == lit);
-    CHECK(skies == 1);
+    CHECK(skies == kHeroSkyFloors);
+    CHECK(skyLength == doctest::Approx(spec.laneY1 - spec.laneY0));
 }

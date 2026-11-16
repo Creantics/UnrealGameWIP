@@ -346,14 +346,18 @@ FTCORE_API int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLa
 inline bool heroLanternMarked(int largeIndex) { return largeIndex % 3 == 2; }
 
 // The face ruling's area lights (plan metres): a wide soft key in each lit bay's front (sky false, bay its index) and
-// one cool floor west of the lane (sky true, bay -1). Each a rect light at (x, y, z), width along the lane (plan y),
-// height upright, emitting along plan (fx, fy): the fronts west onto the lane, the floor east onto the bays.
+// the cool floor west of the lane in kHeroSkyFloors equal lengths end to end (sky true, bay -1; a light's attenuation
+// is a sphere about its centre, so one 40 m source would light only the lane's middle). Each a rect light at (x, y, z),
+// width along the lane (plan y), height upright, emitting along plan (fx, fy): the fronts west onto the lane, the
+// floor east onto the bays; reach its attenuation radius, past the far corners of what it lights (the lane's far side
+// for a front, its length of the shop faces for the floor).
 struct HeroAreaLight {
-    double x = 0.0, y = 0.0, z = 0.0, width = 0.0, height = 0.0, fx = 0.0, fy = 0.0;
+    double x = 0.0, y = 0.0, z = 0.0, width = 0.0, height = 0.0, fx = 0.0, fy = 0.0, reach = 0.0;
     bool sky = false;
     int bay = -1;
 };
-inline constexpr int kHeroAreaLights = kHeroBays + 1;
+inline constexpr int kHeroSkyFloors = 4;
+inline constexpr int kHeroAreaLights = kHeroBays + kHeroSkyFloors;
 FTCORE_API int heroCornerAreaLights(const HeroCornerSpec& spec, HeroAreaLight out[kHeroAreaLights]);
 
 } // namespace ftcore

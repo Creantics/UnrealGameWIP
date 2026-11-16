@@ -3569,7 +3569,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: couldn't spawn an area light at %s."), *At.ToString());
 				continue;
 			}
-			Area->SetActorLabel(A.sky ? FString(TEXT("HC-SkyFloor")) : FString::Printf(TEXT("HC-FrontKey-Bay%d"), A.bay + 1));
+			Area->SetActorLabel(A.sky ? FString::Printf(TEXT("HC-SkyFloor-%d"), K + 1) : FString::Printf(TEXT("HC-FrontKey-Bay%d"), A.bay + 1));
 			Area->Tags.Add(A.sky ? FTNight::HeroSkyTag : FTNight::HeroFrontTag);
 			Light->SetMobility(EComponentMobility::Movable);
 			Light->SetIntensityUnits(ELightUnits::Lumens);
@@ -3579,13 +3579,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			Light->SetSourceHeight(static_cast<float>(A.height * 100.0));
 			Light->SetBarnDoorLength(0.f);
 			// The front reaches across the lane; the floor reaches the shop faces, shadowed so it stays out of the rooms.
-			Light->SetAttenuationRadius(A.sky ? static_cast<float>((HeroSpec.laneX1 - HeroSpec.laneX0 + HeroSpec.skyOut + 1.5) * 100.0) : 900.f);
+			Light->SetAttenuationRadius(static_cast<float>(A.reach * 100.0));
 			Light->SetCastShadows(A.sky);
 			Light->SetVolumetricScatteringIntensity(0.f);
 			++AreaSpawned;
 		}
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d of %d area lights (%d lit fronts, 1 cool floor), tagged %s / %s."),
-			AreaSpawned, AreaCount, AreaCount - 1, FTNight::HeroFrontTag, FTNight::HeroSkyTag);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d of %d area lights (%d lit fronts, the cool floor in %d lengths), tagged %s / %s."),
+			AreaSpawned, AreaCount, AreaCount - ftcore::kHeroSkyFloors, ftcore::kHeroSkyFloors, FTNight::HeroFrontTag, FTNight::HeroSkyTag);
 		// The cables: a round rod (the engine's cylinder, its axis along the span) per span of the Core's polyline, so the
 		// sag is the tested one and the section holds up at a metre.
 		UMaterialInterface* const Steel = LoadSurface(TEXT("solhaven_painted_steel"));
