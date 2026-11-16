@@ -149,7 +149,8 @@ zone's own rig (the fit's camera, left untouched; the file gives it no rig keys)
 0.1 m up, a 60 degree fov, a -2 degree lock pitch and a little boom lag). Under `close` the lead rule keeps the body from
 0.6 m up in the frame (its head under 75% of the height) rather than the feet; the cut is in metres over the floor, as
 the pivot is, and held to half the lead's height (`ftcore::cameraPresetCut`), which keeps every look-up for leads 1.4 to
-1.8 m tall (a lead over about 1.85 m would leave the head rule at close's lock pitch), and the lock's turn puts the target at 0.6
+1.8 m tall (a known limit: a lead over about 1.85 m leaves the head rule at close's lock pitch whatever the cut; the
+three leads are all under it), and the lock's turn puts the target at 0.6
 of the width (`ftcore::arenaFrameTurnAt`) rather than on the centre line. On a tall lock the close lens looks up by
 swinging the boom, with no low lens (`lowMax` 0): the 0.6 m point may sink 4% under the bottom edge (`cutMin` -0.04), so
 a look-up to +14 degrees is never held back. The settings menu's **Camera** row (under Lock
