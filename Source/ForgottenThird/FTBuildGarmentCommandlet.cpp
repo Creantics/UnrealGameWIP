@@ -803,7 +803,8 @@ UMaterial* WithoutStates(UMaterial* Master)
 	};
 	UMaterialEditorOnlyData* Inputs = Copy->GetEditorOnlyData();
 	TArray<UMaterialExpression*> Calls;
-	for (FExpressionInput* In : {&Inputs->BaseColor, &Inputs->Roughness, &Inputs->EmissiveColor, &Inputs->SubsurfaceColor})
+	FExpressionInput* const StateInputs[] = {&Inputs->BaseColor, &Inputs->Roughness, &Inputs->EmissiveColor, &Inputs->SubsurfaceColor};
+	for (FExpressionInput* In : StateInputs)
 	{
 		if (!IsState(In->Expression))
 		{
