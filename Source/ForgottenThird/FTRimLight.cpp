@@ -41,7 +41,7 @@ void UFTRimLightComponent::MakeLight()
 	Light->SetInnerConeAngle(14.f);
 	Light->SetOuterConeAngle(26.f);
 	Light->SetCastShadows(false); // the body would shadow its own edge; and it stays cheap
-	Light->bAffectsTranslucentLighting = false;
+	Light->SetAffectTranslucentLighting(false);
 	Light->SetLightingChannels(false, false, true);
 	Light->SetVisibility(false);
 	Light->RegisterComponent();
