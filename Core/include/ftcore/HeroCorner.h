@@ -69,7 +69,7 @@ struct HeroCornerSpec {
     // largeScale, largePairGap apart about the door.
     double largeOut = 1.0, largeUp = 3.3, largePairGap = 2.6;
     double largeHeight = 0.6, largeDiameter = 0.45;  // the mesh's own size; placed largeScale times it from its hook
-    double largeScale = 1.5;
+    double largeScale = 1.25;  // tune 3 (2026-11-16): 0.75 m
     // Under a lattice front's pent roof (EAVE_PENT_09: 0.85 m out from 3.0 m at 22 degrees, its fascia's foot 2.50 m up):
     // hooked pentHookOut from the face and pentHookUp over the ground, clear of the fascia, the mesh at pentScale,
     // pentPairGap apart about the entrance (2.25 m wide).
@@ -78,10 +78,11 @@ struct HeroCornerSpec {
     // piece from the bay's north edge) this far south of the north edge; a glazed front's door at the bay's middle.
     double koshiEntranceFromNorth = 4.125;
     // The lanterns' paper (the night lamp head master's LampBase, LampColor and LampStrength): a deep amber paper and a
-    // glow low enough that the body stays under clipping at the hero exposure and its ribs read at a metre.
-    float lanternGlow = 0.9f;
-    float lanternColour[3] = {1.0f, 0.40f, 0.09f};
-    float lanternBase[3] = {0.55f, 0.30f, 0.12f};
+    // glow low enough that the body stays under clipping at the hero exposure and its ribs read at a metre. Tune 3's
+    // values (2026-11-16, passed as the corner's lighting base).
+    float lanternGlow = 0.34f;
+    float lanternColour[3] = {1.0f, 0.22f, 0.02f};
+    float lanternBase[3] = {0.45f, 0.16f, 0.04f};
     // The strings.
     double stringY[kHeroStrings] = {538.4, 552.0};
     double stringFacadeUp = 3.55, stringPostX = 901.3, stringPostUp = 3.8, stringSag = 0.4;
@@ -92,28 +93,29 @@ struct HeroCornerSpec {
     // The pool's lamp slot under each string's middle: this far under the cable's lowest point, at this gain of a
     // street lamp's candela.
     double stringLampUnder = 0.35;
-    float stringLampGain = 0.5f;
+    float stringLampGain = 0.30f;
     // The pool's lamp slot for each pair of large lanterns: between the pair, this far under their hooks, so the faces,
     // the noren and the paving under them take its warm pool.
     double pairLampUnder = 0.1;
-    float pairLampGain = 0.5f;
+    float pairLampGain = 0.10f;
     // The pool's lamp slot over each lit entrance: this far out from the shop face (straight down, so it grazes the
     // noren, the lattice face and the threshold), under the pent or the eave at the up below.
     double entranceLampOut = 0.35, entranceLampUpPent = 2.7, entranceLampUpEave = 3.55;
-    float entranceLampGain = 0.3f;
+    float entranceLampGain = 0.06f;
     // A lit bay's one light, its pool shop slot: this far inside the room behind its shop face and this high over the
     // ground (under a lattice room's 2.45 m ceiling and its panels), facing out and pitched down shopLightPitch degrees,
     // so it lights the room's front and falls through the front onto the lane; at shopLightGain of a shop light.
-    double shopLightIn = 1.2, shopLightUp = 2.3;
+    // Tune 3: 2.0 in, 2.35 up, gain 4.5 (tune 3 ran 1.5 at -HeroShopScale=3).
+    double shopLightIn = 2.0, shopLightUp = 2.35;
     float shopLightPitch = -35.f;
-    float shopLightGain = 1.5f;
+    float shopLightGain = 4.5f;
     // A lit bay may take a second slot facing in (east), pitched near level from just behind its front, so its room's
-    // back wall takes the light (the front slot faces out: on a glazed bay it lights only the front and the floor). Off
-    // in every bay by default.
-    bool shopBack[kHeroBays] = {false, false, false, false, false};
+    // back wall takes the light (the front slot faces out: on a glazed bay it lights only the front and the floor). By
+    // default (tune 3) only the glazed bay 4 has one, at gain 3 (tune 3 ran 1.0 at -HeroShopScale=3).
+    bool shopBack[kHeroBays] = {false, false, false, true, false};
     double shopBackIn = 0.5, shopBackUp = 2.3;
     float shopBackPitch = -10.f;
-    float shopBackGain = 1.0f;
+    float shopBackGain = 3.0f;
     // The quay's lamp masts in the camera's view (both banks of the canal beside the lane, to its far end) have no lamp
     // in the pool: inside this plan box each gives way to a rail piece (heroCornerClearMasts).
     double mastClearX0 = 890.0, mastClearX1 = 903.0, mastClearY0 = 505.0, mastClearY1 = 640.0;

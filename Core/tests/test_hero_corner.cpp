@@ -165,8 +165,8 @@ TEST_CASE("hero corner: six large lanterns, a pair flanking each lit bay's entra
         CHECK(lan.hook.x > over->cx - 0.5 * over->sx);
         // Clear of the shop's spill, which stands 0.4 m out at 2.4 m: the lantern's bottom is over it.
         CHECK(lan.centre.z - 0.5 * height > 4.18 + kMassingShopLightUp);
-        // Big: the paper at least 0.8 m tall.
-        CHECK(height >= 0.8);
+        // Big: the paper at least 0.7 m tall (tune 3's 1.25 scale: 0.75 m).
+        CHECK(height >= 0.7);
     }
 }
 
@@ -334,7 +334,8 @@ TEST_CASE("hero corner: each string spans 6.7 m, sags 0.4 m and carries nine lan
         CHECK(l.stringLamp[s].x == doctest::Approx(904.65));
         CHECK(l.stringLamp[s].z == doctest::Approx(mid.z - 0.35));
     }
-    CHECK(l.stringLampGain == doctest::Approx(0.5f));
+    CHECK(l.stringLampGain == doctest::Approx(spec.stringLampGain));
+    CHECK(spec.stringLampGain == doctest::Approx(0.30f));  // tune 3's default
 }
 
 TEST_CASE("hero corner: the camera stands at the corner's south end looking north down the lane") {
@@ -474,13 +475,22 @@ TEST_CASE("hero corner: one shop slot per lit bay, deep and high in the room, pi
     }
 }
 
-TEST_CASE("hero corner: shop slots carry their own aim; a back slot faces into its room near level, off by default") {
+TEST_CASE("hero corner: shop slots carry their own aim; a back slot faces into its room near level, bay 4's alone by default") {
     HeroCornerSpec spec;
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
     MassingShopLight fronts[kHeroBays];
     HeroShopSlot slots[kHeroShopSlots];
-    // By default the slots are the front lights, one per lit bay, at the spec's one pitch and gain.
+    // Tune 3's default: the glazed bay 4 alone has a back slot.
+    for (int i = 0; i < kHeroBays; ++i) CHECK(spec.shopBack[i] == (i == 3));
+    {
+        const int nDefault = heroCornerShopLights(spec, fronts);
+        REQUIRE(heroCornerShopSlots(spec, slots) == nDefault + 1);
+        CHECK(slots[nDefault].back);
+        CHECK(slots[nDefault].bay == 3);
+    }
+    // With no back slots, the slots are the front lights, one per lit bay, at the spec's one pitch and gain.
+    for (bool& b : spec.shopBack) b = false;
     const int n = heroCornerShopLights(spec, fronts);
     REQUIRE(heroCornerShopSlots(spec, slots) == n);
     for (int k = 0; k < n; ++k) {

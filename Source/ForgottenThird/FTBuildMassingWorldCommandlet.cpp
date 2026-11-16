@@ -1905,12 +1905,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("HeroShopBackUp="), HeroTune.shopBackUp);
 	FParse::Value(*Params, TEXT("HeroShopBackPitch="), HeroTune.shopBackPitch);
 	FParse::Value(*Params, TEXT("HeroShopBackGain="), HeroTune.shopBackGain);
-	// The lantern paper's shape of light (M_NightLamp's LampEdge, LampEdgePower, LampRibs, LampRibWidth; 0 edge and 0
-	// ribs, the defaults, are the flat glow as before): -HeroLanternEdge=<0..1> darkens the body toward its silhouette
+	// The lantern paper's shape of light (M_NightLamp's LampEdge, LampEdgePower, LampRibs, LampRibWidth; the defaults are
+	// tune 3's, edge 0.6 power 2, ribs 0.6 width 0.2; 0 edge and 0 ribs are the flat glow): -HeroLanternEdge=<0..1> darkens the body toward its silhouette
 	// by (1 - N.V)^-HeroLanternEdgePow=<p>, -HeroLanternRibs=<0..1> darkens the bamboo ribs (-HeroLanternRibPitch=<m> apart on
 	// the 0.6 m lantern, scaled to each mesh's height; 0.04 sits on the mesh's own ridges; -HeroLanternRibWidth=<0..1> of
 	// that pitch wide), faded out as a rib nears two pixels.
-	float HeroLanternEdge = 0.f, HeroLanternEdgePow = 2.f, HeroLanternRibs = 0.f, HeroLanternRibPitch = 0.04f, HeroLanternRibWidth = 0.15f;
+	float HeroLanternEdge = 0.6f, HeroLanternEdgePow = 2.f, HeroLanternRibs = 0.6f, HeroLanternRibPitch = 0.04f, HeroLanternRibWidth = 0.2f;
 	FParse::Value(*Params, TEXT("HeroLanternEdge="), HeroLanternEdge);
 	FParse::Value(*Params, TEXT("HeroLanternEdgePow="), HeroLanternEdgePow);
 	FParse::Value(*Params, TEXT("HeroLanternRibs="), HeroLanternRibs);
