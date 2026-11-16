@@ -157,6 +157,7 @@ public:
 	static constexpr float StepSeconds = 1.f / 60.f;
 	static constexpr int32 MaxStepsPerFrame = 8;
 	static constexpr float WatchdogSeconds = 180.f;
+	static constexpr float StandOffRunSeconds = 18.f; // -ArenaStandOff: the run ends after this much fight time
 
 	// What the HUD pops up over a body, and when (seconds on the screen's clock, GetNow()).
 	struct FPopup

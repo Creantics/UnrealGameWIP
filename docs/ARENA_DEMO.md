@@ -786,7 +786,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaCamera=close\|classic` | The camera preset for this run, over the **Camera** setting (see Camera presets), in every build. |
 | `-ArenaCameraLag=<seconds>` | The boom's lag for this run, over the preset's (0: the boom's own, -1: off). Not in shipping builds. |
 | `-ArenaCameraArm=<m>` | The close lens's arm for this run, held to 1.5-3.0 m (classic ignores it). Not in shipping builds. |
-| `-ArenaStandOff=<m>` | The autopilot circles its target at this range at a slow walk, guarding, with no attacks or dodges (stand-off stills). Not in shipping builds. |
+| `-ArenaStandOff=<m>` | The autopilot circles its target at this range at a slow walk, guarding, with no attacks or dodges (stand-off stills); the run ends after 18 s of fight time. Not in shipping builds. |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |

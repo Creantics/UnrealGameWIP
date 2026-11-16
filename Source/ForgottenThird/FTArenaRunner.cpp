@@ -792,6 +792,18 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		return;
 	}
 
+#if !UE_BUILD_SHIPPING
+	// -ArenaStandOff: the lead never attacks, so the fight would last to the watchdog; the run ends after its stills.
+	if ((bQuitOnFinish || bShots) && StandOffAt > 0.f && Fight.time() > StandOffRunSeconds)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaStandOff run ends at %.2f s of fight time."), Fight.time());
+		LogResult();
+		bQuitOnFinish = false;
+		StandOffAt = 0.f; // once: the exit lands a frame or more later
+		FPlatformMisc::RequestExitWithStatus(false, 0, TEXT("Arena"));
+		return;
+	}
+#endif
 	// A hang guard for unattended runs: a fight that outlasts the watchdog ends the run.
 	if (bQuitOnFinish && (Fight.time() > WatchdogSeconds || Now - BeginNow > WatchdogSeconds * 2.0))
 	{
