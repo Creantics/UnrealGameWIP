@@ -61,9 +61,9 @@
     {
       "id": "third", "weapon": "magic", "attacks": true, "playable": false,
       "light": [
-        { "startup": 0.18, "active": 0.1, "recovery": 0.32, "range": 8.5, "arcCos": 0.6, "damage": 9, "poiseDamage": 8, "lunge": 0, "tracking": 7, "stamina": 0, "cancel": 0.5, "hitStop": 0.05, "jolt": 0.5 },
-        { "startup": 0.16, "active": 0.1, "recovery": 0.32, "range": 8.5, "arcCos": 0.6, "damage": 9, "poiseDamage": 8, "lunge": 0, "tracking": 7, "stamina": 0, "cancel": 0.5, "hitStop": 0.05, "jolt": 0.5 },
-        { "startup": 0.24, "active": 0.12, "recovery": 0.45, "range": 8.5, "arcCos": 0.6, "damage": 14, "poiseDamage": 16, "lunge": 0, "tracking": 7, "stamina": 0, "cancel": 0.5, "hitStop": 0.06, "jolt": 0.8 }
+        { "startup": 0.18, "active": 0.1, "recovery": 0.32, "range": 3.6, "arcCos": 0.6, "damage": 9, "poiseDamage": 8, "lunge": 0, "tracking": 7, "stamina": 0, "cancel": 0.5, "hitStop": 0.05, "jolt": 0.5 },
+        { "startup": 0.16, "active": 0.1, "recovery": 0.32, "range": 3.6, "arcCos": 0.6, "damage": 9, "poiseDamage": 8, "lunge": 0, "tracking": 7, "stamina": 0, "cancel": 0.5, "hitStop": 0.05, "jolt": 0.5 },
+        { "startup": 0.24, "active": 0.12, "recovery": 0.45, "range": 3.6, "arcCos": 0.6, "damage": 14, "poiseDamage": 16, "lunge": 0, "tracking": 7, "stamina": 0, "cancel": 0.5, "hitStop": 0.06, "jolt": 0.8 }
       ],
       "heavy": { "startup": 0.6, "active": 0.14, "recovery": 0.65, "range": 1.8, "arcCos": -0.6, "damage": 30, "poiseDamage": 60, "lunge": 0, "tracking": 4, "armor": 0.3, "stamina": 26, "cancel": 0.7, "hitStop": 0.1, "jolt": 1.4 },
       "partnerReach": 8.5, "partnerStandoff": 5,

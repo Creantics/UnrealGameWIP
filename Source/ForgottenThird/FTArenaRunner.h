@@ -530,7 +530,11 @@ private:
 	void ShapeCloseLens(int32 Target, float DeltaSeconds);
 	void PickCloseShoulder(int32 Target);
 	bool bCloseShape = false;     // the close preset is on this fight
-	bool bPartnerStation = true;  // -ArenaPartnerStation=0 (capture only; always on in shipping): no close station handed to the brain
+#if !UE_BUILD_SHIPPING
+	bool bPartnerStation = true;  // -ArenaPartnerStation=0 (capture only): no close station handed to the brain
+#else
+	static constexpr bool bPartnerStation = true; // shipping: the close preset always hands the brain its station
+#endif
 	// A ranged partner under the close lens: the partner's kit has its own range and the close station hands it to the brain.
 	bool RangedPartner() const;
 	ftcore::CameraPreset CloseBase;

@@ -2924,7 +2924,9 @@ struct ArenaFightImpl {
         al.guarding = intent.act == PartnerAct::Guard && !al.attacking;
         if (al.attacking) {
             al.bodyTurn = false;
-            runAllyBlow();
+            // Rule 19's kit range: under the close camera a kit with its own reach strikes from it (the caster's 5-8 m);
+            // otherwise (classic, no camera) the light's own range, as ever.
+            runAllyBlow(partnerRangeOn(pin, *fight.partnerTuning_) ? pin.range.reach : 0.f);
             return;
         }
         const bool walk = intent.act == PartnerAct::MoveTo || intent.act == PartnerAct::StepBack;
@@ -3139,8 +3141,9 @@ struct ArenaFightImpl {
         return arenaMadd(from, dir, std::min(len, std::max(kAllyAroundStep, ahead)));
     }
 
-    // The partner's running blow: the lead's light's tracking and lunge, and its one landing in the active part.
-    void runAllyBlow() {
+    // The partner's running blow: the lead's light's tracking and lunge, and its one landing in the active part, from
+    // `closeReach` m when that is further than the light's range (the kit's own reach under the close camera; 0: none).
+    void runAllyBlow(float closeReach) {
         ArenaFight::AllyState& al = fight.ally_;
         const ArenaAttack& a = allyLight(al.blow);
         const float a0 = al.blowTime;
@@ -3158,7 +3161,7 @@ struct ArenaFightImpl {
             al.facing = arenaTurn(al.facing, arenaUnit(to, al.facing), a.tracking * (std::min(a1, a.startup) - a0));
         }
         if (aimed && !al.landed && a1 > a.startup && a0 < a.startup + a.active)
-            allyStrike(static_cast<std::size_t>(al.target));
+            allyStrike(static_cast<std::size_t>(al.target), closeReach);
         // The lunge, spread over startup and active as the lead's: this tick's part of it is in the goal.
         const float span = a.startup + a.active;
         float lunge = 0.f;
@@ -3174,12 +3177,13 @@ struct ArenaFightImpl {
 
     // The partner's blow reaches enemy i (its string's target): the player's blow path (landBlow) with the partner as
     // the striker, its poise and break weight at the data's partner scales; no hit pause, punish credit or riposte,
-    // and nothing in the player's stats or Load.
-    void allyStrike(std::size_t i) {
+    // and nothing in the player's stats or Load. Its range is the light's, or `closeReach` when further.
+    void allyStrike(std::size_t i, float closeReach) {
         ArenaFight::AllyState& al = fight.ally_;
         Enemy& foe = foes[i];
         if (unhurt(foe)) return;
-        const ArenaAttack& a = allyLight(al.blow);
+        ArenaAttack a = allyLight(al.blow);
+        if (closeReach > a.range) a.range = closeReach;
         const float radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
         if (!arenaReaches(fight.allyPos_, al.facing, a, foe.pos, radius)) return;
         al.landed = true; // connected (or vetoed): spent
