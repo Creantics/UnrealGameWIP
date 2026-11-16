@@ -1,3 +1,4 @@
+#include "ftcore/ArenaCloseFrame.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaLook.h" // the lock pick under each camera preset's view
 #include "ftcore/CameraPreset.h"
@@ -3066,16 +3067,24 @@ TEST_CASE("arena lock-on: the pick, nearest wins ties, switch left and right") {
 }
 
 TEST_CASE("arena lock-on: a press after letting go picks by the drawn view, under classic and close alike") {
-    // Let go of a lock, the view kept is the drawn one: the line plus the framing turn, folded in. The two presets
-    // turn by different amounts (close puts the target at 0.6 of the width from a nearer lens), so the press reads a
-    // different view; laid out as below, the pick is the same. At 3 m the two turns differ by 7.5 degrees, and a
-    // second enemy 35 degrees off the line at the same distance is picked under classic and not under close: written
-    // down here as the known difference (the player sees that enemy nearer the centre under classic).
+    // Let go of a lock, the view kept is the drawn one: the line plus the framing turn, folded in. The presets turn by
+    // different amounts (close puts the target at 0.6 of the width from a nearer lens, 0.64 in melee, mirrored on the
+    // left shoulder: ftcore/ArenaCloseFrame.h), so the press reads a different view. On the right shoulder close's turn
+    // is classic's at 2.4 m (both at the 30 degree cap) and differs by 6.2 degrees at 3 m, 3.5 at 4 m, 3.1 at 6 m, 4.0
+    // at 8 m and 4.9 at 12 m; laid out as below the pick is the same. On the left shoulder the turn swings the other
+    // way (60 degrees from classic's at 2.4 m, 53 at 3 m, 26 at 6 m, 16 at 12 m): a second enemy 35 degrees off the
+    // line on the left at 3 m is picked under classic and close's right shoulder and not under its left one, written
+    // down here as the known difference (the player sees that enemy at the frame's left edge from the left shoulder).
     const CameraPresets presets{};
-    const auto releasedView = [&](CameraPresetId id, float dist) {
+    const auto releasedView = [&](CameraPresetId id, float shoulder, float dist) {
         const CameraPreset& p = cameraPreset(presets, id);
         const float boom = arenaSplitPitch(kArenaLook, p.rig.lockPitch).boom;
-        const float turn = arenaFrameTurnAt(kArenaFrame, p.rig.side, dist, p.targetX, p.rig.fov, arenaEyeBack(p.rig.arm, p.rig.up, boom));
+        const float back = arenaEyeBack(p.rig.arm, p.rig.up, boom);
+        float turn = arenaFrameTurnAt(kArenaFrame, p.rig.side, dist, p.targetX, p.rig.fov, back);
+        if (id == CameraPresetId::Close) {
+            const ArenaCloseShape s = arenaCloseShape(kArenaClose, p, arenaCloseMeleeWant(kArenaClose, dist), 0.f, shoulder, 1.8f);
+            turn = arenaFrameTurnAt(kArenaFrame, s.side, dist, s.screenX, s.fov, back);
+        }
         const float yaw = arenaFrameViewYaw(ArenaFrameYaw{0.f, turn}) * 3.14159265f / 180.f;
         return Vec2{std::cos(yaw), std::sin(yaw)};
     };
@@ -3083,26 +3092,27 @@ TEST_CASE("arena lock-on: a press after letting go picks by the drawn view, unde
         float d;
         Vec2 at[3];
         std::size_t n;
-        std::uint8_t classic, close;
+        std::uint8_t classic, closeRight, closeLeft;
     };
     const float a35 = 35.f * 3.14159265f / 180.f;
     const Case cases[] = {
-        {8.f, {Vec2{8.f, 0.f}, Vec2{4.f, 5.f}, Vec2{4.f, -5.f}}, 3, 0, 0},
-        {5.f, {Vec2{5.f, 0.f}, Vec2{2.5f, -2.5f}, Vec2{}}, 2, 0, 0},
-        {10.f, {Vec2{10.f, 0.f}, Vec2{-6.f, -3.f}, Vec2{3.f, 6.f}}, 3, 0, 0},
-        {3.f, {Vec2{3.f, 0.f}, Vec2{3.f * std::cos(a35), -3.f * std::sin(a35)}, Vec2{}}, 2, 1, 0}, // the known flip
+        {8.f, {Vec2{8.f, 0.f}, Vec2{4.f, 5.f}, Vec2{4.f, -5.f}}, 3, 0, 0, 0},
+        {5.f, {Vec2{5.f, 0.f}, Vec2{2.5f, -2.5f}, Vec2{}}, 2, 0, 0, 0},
+        {10.f, {Vec2{10.f, 0.f}, Vec2{-6.f, -3.f}, Vec2{3.f, 6.f}}, 3, 0, 0, 0},
+        {3.f, {Vec2{3.f, 0.f}, Vec2{3.f * std::cos(a35), -3.f * std::sin(a35)}, Vec2{}}, 2, 1, 1, 0}, // the known flip
     };
     for (const Case& c : cases) {
-        for (const CameraPresetId id : {CameraPresetId::Classic, CameraPresetId::Close}) {
+        for (int view = 0; view < 3; ++view) {
             CAPTURE(c.d);
-            CAPTURE(static_cast<int>(id));
+            CAPTURE(view);
             Rig rig(ruleFighter(), c.n == 3 ? std::initializer_list<ArenaEnemyKind>{dummyKind(), dummyKind(), dummyKind()}
                                             : std::initializer_list<ArenaEnemyKind>{dummyKind(), dummyKind()});
             for (std::size_t i = 0; i < c.n; ++i) rig.put(i, c.at[i].x, c.at[i].y);
-            rig.in.view = releasedView(id, c.d);
+            rig.in.view = view == 0 ? releasedView(CameraPresetId::Classic, 1.f, c.d)
+                                    : releasedView(CameraPresetId::Close, view == 1 ? 1.f : -1.f, c.d);
             rig.in.lock = true;
             rig.tick();
-            CHECK(rig.fight.lock() == (id == CameraPresetId::Classic ? c.classic : c.close));
+            CHECK(rig.fight.lock() == (view == 0 ? c.classic : view == 1 ? c.closeRight : c.closeLeft));
         }
     }
 }

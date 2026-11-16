@@ -61,6 +61,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	void SetParameters(float InSpeedScale, float InShapeScale);
 
+	// The effect's own clock rate (Niagara custom time dilation; 1 by default, kept on later plays): a one-shot whose
+	// lifetimes are built for one flight runs over another (a cast's bolt over its startup). Clamped to 0.05..20.
+	void SetTimeDilation(float InDilation);
+
 	UNiagaraComponent* GetNiagara() const { return Niagara; }
 
 	// "/Game/VFX/NS_<Effect>.NS_<Effect>".
@@ -73,6 +77,8 @@ protected:
 private:
 	void PushParameters();
 	void Replay();
+
+	float TimeDilation = 1.f;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UNiagaraComponent> Niagara;
