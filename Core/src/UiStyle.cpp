@@ -366,11 +366,11 @@ UiReleasePulseView uiReleasePulseStep(UiReleasePulse& p, bool ready, bool overlo
 
 UiRingPoint uiRingPoint(float t, float chord, float sag, float offset) {
     UiRingPoint q;
-    const float c = std::max(chord, 0.f);
+    const float c = chord > 0.f ? chord : 0.f; // a NaN chord is none
     const float u = t == t ? std::clamp(t, 0.f, 1.f) : 0.f;
     if (!(sag > 1e-4f) || c <= 0.f) {
         q.x = c * u;
-        q.y = -offset;
+        q.y = offset; // outward is toward the bulge, as on the curve
         return q;
     }
     // The circle through the chord's ends whose middle stands `sag` off the chord: radius r, centre (c/2, sag - r) with y
@@ -379,7 +379,7 @@ UiRingPoint uiRingPoint(float t, float chord, float sag, float offset) {
     const double r = (cs * cs / 4.0 + ss * ss) / (2.0 * ss);
     const double half = std::asin(std::min(1.0, cs / (2.0 * r)));
     const double th = (2.0 * u - 1.0) * half;
-    const double rr = r + offset;
+    const double rr = std::max(r + offset, 0.0); // inward past the centre stops there, never flips side
     q.x = static_cast<float>(cs / 2.0 + rr * std::sin(th));
     q.y = static_cast<float>(ss - r + rr * std::cos(th));
     q.tx = static_cast<float>(std::cos(th));

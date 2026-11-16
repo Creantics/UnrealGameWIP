@@ -384,7 +384,8 @@ FTCORE_API UiReleasePulseView uiReleasePulseStep(UiReleasePulse& p, bool ready, 
 // The second signature device, ring arcs (UiWorldRules::sigArcs): a line `chord` long bowed `sag` at its middle on a
 // circle. uiRingPoint gives the point a share `t` (0..1) along, offset `offset` outward along the radius (a concentric
 // line), as x along the chord from its start and y toward the bulge, with the unit tangent there; sag 0 is the straight
-// line. uiArcSag gives the sag of a chord on a circle of `radius`; uiArcSegments the segments that keep each piece at
+// line (an outward offset still toward +y), an inward offset past the radius stops at the centre, a NaN t is the start
+// and no chord is one point. uiArcSag gives the sag of a chord on a circle of `radius`; uiArcSegments the segments that keep each piece at
 // most maxChordPx long.
 struct UiRingPoint {
     float x = 0.f, y = 0.f;

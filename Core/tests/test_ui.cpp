@@ -1248,3 +1248,37 @@ TEST_CASE("ui style: ring arcs: exact ends, the sag at the middle, concentric li
     CHECK(uiArcSegments(0.f, 4.f) == 1);
     CHECK(uiArcSag(100.f, 10.f) == 0.f); // no circle that small: straight
 }
+
+TEST_CASE("ui style: ring arcs: NaN t, zero chord, offsets on the straight line and past the centre") {
+    const float chord = 768.f;
+    const float sag = uiArcSag(chord, 3.f * 1920.f);
+    // A NaN share is the start.
+    const UiRingPoint n = uiRingPoint(std::nanf(""), chord, sag);
+    CHECK(n.x == doctest::Approx(0.f).epsilon(1e-4));
+    CHECK(n.y == doctest::Approx(0.f).epsilon(1e-4));
+    // No chord (zero, negative or NaN) with a sag: one point at the start, the offset outward, tangent along.
+    for (const float c : {0.f, -5.f, std::nanf("")}) {
+        const UiRingPoint z = uiRingPoint(0.7f, c, sag, 3.f);
+        CHECK(z.x == 0.f);
+        CHECK(z.y == 3.f);
+        CHECK(z.tx == 1.f);
+        CHECK(z.ty == 0.f);
+    }
+    // On the straight line an outward offset goes the same way as on a curve: toward the bulge (+y).
+    const float tiny = 1e-3f;
+    CHECK(uiRingPoint(0.5f, chord, 0.f, 6.f).y == 6.f);
+    CHECK(uiRingPoint(0.5f, chord, tiny, 6.f).y == doctest::Approx(6.f + tiny).epsilon(1e-3));
+    CHECK(uiRingPoint(0.5f, chord, 0.f, -6.f).y == -6.f);
+    // An inward offset inside the radius keeps its gap; past the radius every t sits at the centre, never on the far side.
+    const float r = 3.f * 1920.f;
+    const UiRingPoint in = uiRingPoint(0.5f, chord, sag, -20.f);
+    CHECK(in.y == doctest::Approx(sag - 20.f).epsilon(1e-4));
+    for (int i = 0; i <= 4; ++i) {
+        const float t = static_cast<float>(i) / 4.f;
+        const UiRingPoint p = uiRingPoint(t, chord, sag, -(r + 500.f));
+        CHECK(p.x == doctest::Approx(chord / 2.f).epsilon(1e-4));
+        CHECK(p.y == doctest::Approx(sag - r).epsilon(1e-4));
+        CHECK(std::isfinite(p.tx));
+        CHECK(std::hypot(p.tx, p.ty) == doctest::Approx(1.f));
+    }
+}

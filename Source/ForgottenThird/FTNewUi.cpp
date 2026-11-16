@@ -1979,7 +1979,6 @@ public:
 			const float To = Frac(L.load, L.loadCap);
 			LoadFill = To >= LoadFill ? To : FMath::Max(To, LoadFill - FrameDt / ftcore::kUiLoadDrain);
 			LoadLabelA = ftcore::uiLoadLabelStep(LoadLabel, L.load, FightNow);
-			WeakLabelA = ftcore::uiOnceLabelStep(WeakLabel, bWeakOn, FightNow); // last tick's mark: one tick late at most
 			// The Release pulse (signature device 1): stepped always, drawn only where the world's row turns it on.
 			ReleasePulseV = ftcore::uiReleasePulseStep(ReleasePulse, L.releaseReady, L.overloaded, FightNow);
 		}
@@ -2070,6 +2069,8 @@ public:
 		TickHall(*Runner, Fight, DeltaTime);
 		TickParty(*Runner, Fight, DeltaTime);
 		TickBudget(*Runner, Fight, Changed, DeltaTime);
+		// WEAK steps after TickWorld and TickBudget have set this tick's mark, so the label comes with the diamond.
+		WeakLabelA = ftcore::uiOnceLabelStep(WeakLabel, bWeakOn, FightNow);
 		TickLabels(*Runner);
 	}
 
