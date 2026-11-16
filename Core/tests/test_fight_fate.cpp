@@ -501,6 +501,91 @@ TEST_CASE("fight fate: a switch to a lead not playable is refused NotPlayable, a
     }
 }
 
+TEST_CASE("fight fate: every begin and retry opens on a playable lead, or reports none playable") {
+    {   // the default lead (A) not playable: the fight opens on B
+        FightSession s;
+        const FightSessionCheck c = s.begin(partyOnly(kLeadA), 0.0);
+        CHECK(c.ok());
+        CHECK(c.playable);
+        CHECK(s.activeLead() == kLeadB);
+        s.tick(kFrame);
+        CHECK(s.activeLead() == kLeadB);
+        s.retry(); // a retry to the start opens on B again
+        CHECK(s.activeLead() == kLeadB);
+    }
+    {   // control carried from the last fight onto a lead now not playable moves to the other, either way round
+        for (const FighterId carried : {kLeadA, kLeadB}) {
+            CAPTURE(carried);
+            FightSession s;
+            REQUIRE(s.begin(noSwitchCooldown(), 0.0).ok());
+            s.tick(kFrame);
+            if (carried == kLeadB) {
+                REQUIRE(s.setActiveLead(kLeadB));
+                s.tick(kFrame);
+            }
+            REQUIRE(s.activeLead() == carried);
+            REQUIRE(s.begin(partyOnly(carried), 1.0).ok());
+            CHECK(s.activeLead() == (carried == kLeadA ? kLeadB : kLeadA));
+        }
+    }
+    {   // a playable carried lead stays
+        FightSession s;
+        REQUIRE(s.begin(noSwitchCooldown(), 0.0).ok());
+        s.tick(kFrame);
+        REQUIRE(s.setActiveLead(kLeadB));
+        s.tick(kFrame);
+        REQUIRE(s.begin(partyOnly(kLeadA), 1.0).ok());
+        CHECK(s.activeLead() == kLeadB);
+    }
+    {   // no lead playable: refused (check.playable, ok())
+        FightSession s;
+        FightSessionDef d = partyOnly(kLeadA);
+        d.playable[kLeadB] = false;
+        const FightSessionCheck c = s.begin(d, 0.0);
+        CHECK_FALSE(c.playable);
+        CHECK_FALSE(c.ok());
+    }
+    {   // the only lead in the fight not playable: the playable one is not in it, so none drives
+        FightSession s;
+        FightSessionDef d = partyOnly(kLeadA);
+        d.inFight = {true, false};
+        const FightSessionCheck c = s.begin(d, 0.0);
+        CHECK_FALSE(c.playable);
+        CHECK(s.activeLead() == kLeadA);
+    }
+}
+
+TEST_CASE("fight fate: NotPlayable wins over Lone; the cooldown never runs with a party member in the fight") {
+    {   // the Lone lead in control, the party member asked: NotPlayable, not Lone, and the carry stays on
+        FightSession s;
+        FightSessionDef d = partyOnly(kLeadB);
+        d.lift = true;
+        d.loneLead = kLeadA;
+        REQUIRE(s.begin(d, 0.0).ok());
+        REQUIRE(s.lone());
+        s.tick(kFrame);
+        CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotPlayable);
+        REQUIRE(s.setActiveLead(kLeadB));
+        const FightTick& t = s.tick(kFrame);
+        CHECK(t.switchRefusal == LeadSwitch::NotPlayable);
+        CHECK(s.lone());
+    }
+    {   // Cooldown cannot meet NotPlayable: the cooldown runs from an accepted switch, and with one lead not
+        // playable none is ever accepted (a takeover never starts it). Pinned so a change that starts it elsewhere
+        // shows here: the reason stays NotPlayable and nothing is left to wait.
+        FightSession s;
+        FightSessionDef d = partyOnly(kLeadB);
+        d.leadSwitchCooldownSeconds = 5.0;
+        REQUIRE(s.begin(d, 0.0).ok());
+        for (int i = 0; i < 30; ++i) {
+            s.setActiveLead(kLeadB);
+            s.tick(kFrame);
+            CHECK(s.leadSwitchReadyIn() == 0.0);
+            CHECK(s.leadSwitchReason(kLeadB) == LeadSwitch::NotPlayable);
+        }
+    }
+}
+
 TEST_CASE("fight fate: of two switch requests in one step the last wins, and the earlier raises no event") {
     const Closed c = closeStep(false, {switchTo(kLeadB), switchTo(kLeadA)});
     CHECK(c.switched == kNoFighter); // the last asked for the lead already in control

@@ -192,6 +192,8 @@ public:
 
 	// ---- for AFTArenaHUD and the owner (no allocation) ----
 	bool IsBegun() const { return bBegun; }
+	// The fight was refused (no playable lead: Begin's guard, or the session's check): it never runs.
+	bool IsRefused() const { return bLeadRefused; }
 	// The outcome has come and its line is logged.
 	bool IsFinished() const { return bResultLogged; }
 	const ftcore::ArenaFight& GetFight() const { return Fight; }
@@ -384,6 +386,11 @@ public:
 	// and its word: the HUD's SWITCH: <WORD> call.
 	uint32 GetSwitchRefusedSerial() const { return SwitchRefusedSerial; }
 	ftcore::UiPartyWhy GetSwitchRefusedWhy() const { return SwitchRefusedWhy; }
+	// For the HUD's refused prompts (ftcore::uiRefusedStep): a count per prompt, in ftcore::UiPrompt's order (HEAL, GIFT
+	// HEAL, GIFT GUARD, PARTNER, ATTACK, GUARD, DODGE, JUMP), that rises with each press of its key by the player, a press
+	// the rules refuse included. The autopilot presses none.
+	static constexpr int32 PromptPressCount = 8;
+	uint32 GetPromptPresses(int32 Prompt) const { return Prompt >= 0 && Prompt < PromptPressCount ? PromptPresses[Prompt] : 0u; }
 
 private:
 	void SpawnFigures(const FFTLeadLook* Lead);
@@ -1067,6 +1074,8 @@ private:
 	ftcore::UiPartyScreen PartyScreen;
 	uint32 SwitchRefusedSerial = 0;
 	ftcore::UiPartyWhy SwitchRefusedWhy = ftcore::UiPartyWhy::Unknown;
+	uint32 PromptPresses[PromptPressCount] = {};
+	bool bGuardWasDown = false; // the Guard key down last poll (its press is the key going down, whatever the toggle)
 
 	double Now = 0.0;
 	double TellSince[ftcore::kMaxArenaEnemies] = {}; // when each enemy's break tell rose (DriveSkin's body pulse)
@@ -1161,6 +1170,7 @@ private:
 	int32 Stingers = 0;
 
 	bool bBegun = false;
+	bool bLeadRefused = false; // IsRefused
 	bool bFiguresSpawned = false;
 	bool bAutoPlay = false;
 	bool bIdle = false;
@@ -1295,6 +1305,8 @@ private:
 	double SwitchWorstMoved = 0.0, SwitchWorstOut = 0.0;
 	int32 SwitchPartnerChecks = 0;
 	TWeakObjectPtr<class UFTVfxComponent> PartnerImpactFx;
+	double PartnerImpactPlayedAt = -1.0; // the held time it last played (a capture view's freeze reads its age)
+	bool bPartnerImpactFrozen = false;
 	bool bImpactHookLogged[2] = {false, false};
 	bool bSwitchAskOpen = false;
 	bool bSwitchAskedThisStep = false; // AskLeadSwitch's one ask per step (cleared at the step's close, as bSwitchAskOpen)
@@ -1402,6 +1414,13 @@ private:
 	FFTLeadWeapons AllyWeapons;
 public:
 	const FFTLeadWeapons& GetAllyWeapons() const { return AllyWeapons; }
+	FFTLeadWeapons& GetAllyWeapons() { return AllyWeapons; } // a capture view's freeze (-ArenaShotAllyStrikes)
+	// A capture view's freeze of the partner's impact (-ArenaShotAllyStrikes; never in a fight's own path): one still
+	// running is run again to its age at T and paused, as FFTLeadWeapons::Freeze; one line with its age. Thaw lets it go.
+	void FreezePartnerImpact(double T);
+	void ThawPartnerImpact();
+	// Where the partner's impact plays, while it is frozen and running.
+	bool GetPartnerImpactAt(FVector& OutAt) const;
 private:
 	void TrackAllyWeapons(const ftcore::ArenaOutput& Out);
 	bool bAllyStruck = false;  // the ally was in a blow last step ...

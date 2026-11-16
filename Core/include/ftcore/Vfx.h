@@ -351,6 +351,9 @@ struct VfxEmitter {
 struct VfxEffect {
     std::string name;
     std::vector<VfxEmitter> emitters;
+    // `sorted`: the emitters draw in the listed order (an alpha layer listed first stays under an additive one).
+    // Off by default, so an effect without the key keeps Niagara's own order when it is rebuilt.
+    bool sorted = false;
 };
 
 // Reads an effect file: {"name", "emitters": [...]}, or a single emitter object without "emitters". False
@@ -460,6 +463,7 @@ struct VfxNiagaraEmitter {
 struct VfxNiagaraPlan {
     std::string name;
     std::vector<VfxNiagaraEmitter> emitters;
+    bool sorted = false;   // the effect's `sorted`: the renderers draw in emitter order
     bool loops = false;    // any emitter loops
     float duration = 0.f;  // one-shot effects: seconds until the last particle can have died
 };

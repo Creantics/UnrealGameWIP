@@ -79,6 +79,8 @@
 // picture only, and a second, <prefix>_0b_edge.png: the player 1.4 m from the wall, to show the edge cue.
 // -ArenaShotAt=<s>,<s>,... adds a view <prefix>_t_<s>.png at each of those fight times (uncounted: the six views and the
 // quit are unchanged), so two runs of the same fight (an OFF/ON pair) are shot at the same moments.
+// -ArenaShotHit=<s>,<s>,... (capture only) adds views <prefix>_hit_<ms>.png at those ages of the first hit the player
+// takes after the ring view (0 = the frame it lands), the fight running on: the hit flash as it really plays.
 // -ArenaWorldView (without -ArenaOverview) adds instead one clean first view, <prefix>_0_world.png: a low wide look
 // across the zone at the scene round it, HUD off, nothing drawn, for judging the world's look.
 // -ArenaShotStrikes=<n> adds a view <prefix>_s<k>_<clip>.png 0.04 s after each of the player's first n attacks goes active
@@ -91,6 +93,11 @@
 // from 1.4 m ahead of the lead on the striking side. A lead with a pistol also gets <prefix>_1_holstered.png and
 // <prefix>_1_drawn.png after the ring view, 60 cm off its right side (the pistol put in its holster for the first). Each
 // close view logs where the hand (and the pistol's muzzle) fall in the frame.
+// -ArenaShotAllyStrikes (with -ArenaPartner; not in a shipping build) points -ArenaShotStrikes's views at the partner's
+// blows instead of the player's (its own effects frozen the same way). With -ArenaShotClose each is 1 m off: a cast's
+// mid-flight view from behind and beside the casting hand, looking along its aim; its landing view from 1 m short of
+// the hit point, on the partner's side, looking at it (no front or forearms views). With -ArenaShotAlly and
+// -ArenaShotSide, -ArenaShotAt's side views of the partner are 1 m off it too, framed low for the ward at its feet.
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).
@@ -111,6 +118,7 @@
 
 #include "FTArenaGameMode.generated.h"
 
+struct FFTLeadWeapons;
 struct FFTStoryCarry;
 
 class APlayerController;
@@ -161,16 +169,21 @@ private:
 	// The ground, the zone's dressing, then the runner's fight.
 	void Begin();
 	// The lead look the player's figure wears: -ArenaLead=<name> among the explore character's PartyLooks, else the first
-	// playable one; null (logged) when the config has none. A look whose kit has no attacks is never picked.
+	// playable one; null (logged) when the config has none, or has none playable (the fight is then refused: LeadRefusal).
+	// A look whose kit is not playable is never picked.
 	const FFTLeadLook* FindLead() const;
 	// The fighter kit's id in arena.json: -ArenaLead=<name> lower-cased (even when no look of that name loads), else
-	// the first playable PartyLooks name lower-cased, else "default". The table falls back to "default" for an id it
-	// lacks. A name whose kit has no attacks (a party slot, ftcore::arenaPlayable) is refused with a warning.
+	// the first playable PartyLooks name lower-cased, else "default" (no PartyLooks). A name with no kit, or whose kit
+	// is not playable (a party member only, ftcore::arenaPlayable), is refused with a warning. BuildDef looks it up once,
+	// with no fallback: an id the table lacks refuses the fight (LeadRefusal).
 	FString FindKitId() const;
 	// -ArenaLead=<name>, trimmed; empty when missing or when that kit has no attacks (warned).
 	FString WantedLead() const;
 	bool IsPlayable(const FString& Name) const;
+	// The first playable look of Party; null for an empty party, or one with no look playable (bNoPlayableLead set).
+	const FFTLeadLook* FirstPlayable(const TArray<FFTLeadLook>& Party) const;
 	mutable bool bLeadWarned = false; // WantedLead warns once
+	mutable bool bNoPlayableLead = false; // FirstPlayable found a party with no look playable: the fight is refused
 	// -ArenaShot's views; true while the fight should hold still (before the first view and just after each).
 	bool Shots(float DeltaSeconds);
 	void TakeShot(const TCHAR* Name, bool bCounted = true);
@@ -191,6 +204,8 @@ private:
 	bool AimStrikeCamera(const FVector& From, const FVector& At);
 	// The camera on the striking limb, 1 m off on its side; false when the lead has no body.
 	bool AimAtStrike();
+	// The weapons -ArenaShotStrikes's views are of: the partner's with -ArenaShotAllyStrikes, else the lead's.
+	FFTLeadWeapons& StrikeWeapons();
 	// One log line: where At falls in the frame (0..1 across and down) and how far it is from the camera.
 	void LogFramed(const TCHAR* View, const TCHAR* What, const FVector& At) const;
 	// -ArenaBossCam: places the camera once the boss stands, then logs its yaw each time it has turned 10 degrees.
@@ -226,6 +241,10 @@ private:
 	// set while loading; the fight never starts and the step leaves for the title, loudly (RefuseStory).
 	FString StoryRefusal;
 	void RefuseStory();
+	// Why no fight can begin with the lead this run has (no PartyLooks look playable, the lead's kit missing from
+	// arena.json, or not playable): set in StartPlay, one error line (a story fight's goes to StoryRefusal); no fight
+	// begins. Core's rule: a party member only is never the lead.
+	FString LeadRefusal;
 	// -ArenaStoryQuitAt=<s> (non-shipping, headless, staged story fights only): at that fight time the screen quits
 	// to the title the way the pause menu's Quit to Title does (FTStep::QuitToTitle). Off (< 0) by default.
 	float StoryQuitAt = -1.f;
@@ -260,10 +279,33 @@ private:
 	// -ArenaShotAt: extra views at these fight times (seconds, ascending), and the next one due.
 	TArray<double> ShotAt;
 	int32 NextShotAt = 0;
+	// -ArenaShotHit (capture only, never in a shipping build): views <prefix>_hit_<ms>.png at these ages (s, ascending)
+	// of the first hit the player takes after the ring view, on the HUD's clock (age 0 is the frame the hit lands), the
+	// fight running on; the next one due, the hit's stamp and its age, and whether the strip is under way.
+	TArray<double> ShotHit;
+	int32 NextShotHit = 0;
+	// -ArenaShotHitStrip=<n> (capture only, n 12 at most): instead of set ages, a view every frame from the arming on: a
+	// ring of the last ShotStripRing as <prefix>_strip_pre_<frame % ring>.png until the hit lands (the log names their
+	// frames), then <prefix>_strip_<frame>.png to n frames past it. Gives up 900 frames after arming with no hit.
+	int32 ShotStripPost = 0;
+	static constexpr int32 ShotStripRing = 3; // views kept before the hit
+	int32 ShotStripFrame = 0;
+	int32 ShotStripHitFrame = -1;
+	double ShotHitStamp = -1e9;
+	double ShotHitAge = 0.0;
+	bool bShotHitArmed = false;
+	bool bShotHitRunning = false;
+	void HitStrip(float DeltaSeconds);
 	// -ArenaShotStrikes: how many of the player's attacks to view, the views taken and the attacks already seen.
 	int32 ShotStrikes = 0;
 	int32 StrikeShots = 0;
 	int32 StrikesSeen = 0;
+	bool bShotAllyStrikes = false; // -ArenaShotAllyStrikes: the strike views are of the partner's blows, 1 m off
+	// -ArenaShotWard=<s>: at this fight time the partner's ward (the lead's without one) is raised for
+	// kArenaShotWardHold, for its views (-ArenaShotAt); a capture flag, the fight unchanged.
+	double ShotWardAt = -1.0;
+	bool bShotWardRaised = false; // once per run: a restarted fight does not raise it again (captures only)
+	bool bStrikeViewImpact = false; // the strike view under way is a landing (impact) view, not a mid-flight one
 	// The strike view under way: 0 none; 1 its frame held (and the close camera placed), to be taken; 5 (-ArenaShotClose)
 	// the camera to go in front of the striking limb; 6 that view (<name>_front) to be taken; 2 the close camera to go to
 	// both forearms; 3 that view to be taken; 4 back to the fight. Its name (s<k>_<clip>).

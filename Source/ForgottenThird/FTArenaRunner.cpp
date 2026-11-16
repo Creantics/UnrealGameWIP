@@ -28,6 +28,7 @@
 #include "FTStoryStateSubsystem.h"
 #include "FTText.h"
 #include "FTVfxComponent.h"
+#include "NiagaraComponent.h"
 #include "ForgottenThird.h"
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/PlayerController.h"
@@ -104,7 +105,7 @@ const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
 {
 	static const TCHAR* const Words[] = {TEXT("NotBegun"), TEXT("Down"), TEXT("CannotAct"), TEXT("Guard"), TEXT("Leash"),
 		TEXT("String"), TEXT("Pause"), TEXT("NoTarget"), TEXT("Approach"), TEXT("HeldOff"), TEXT("Start"), TEXT("Budget"),
-		TEXT("Committed"), TEXT("Reposition")};
+		TEXT("Committed"), TEXT("Reposition"), TEXT("NoKit")};
 	const size_t I = static_cast<size_t>(W);
 	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
 }
@@ -113,7 +114,7 @@ const TCHAR* PartnerWhyWord(ftcore::PartnerWhy W)
 const TCHAR* PartnerIdleWord(ftcore::PartnerIdle W)
 {
 	static const TCHAR* const Words[] = {TEXT("None"), TEXT("NoBudget"), TEXT("NoTarget"), TEXT("Moving"), TEXT("Staggered"),
-		TEXT("Pause"), TEXT("Other")};
+		TEXT("Pause"), TEXT("Other"), TEXT("NoKit")};
 	static_assert(UE_ARRAY_COUNT(Words) == ftcore::kPartnerIdleCount, "one word per idle reason");
 	const size_t I = static_cast<size_t>(W);
 	return I < UE_ARRAY_COUNT(Words) ? Words[I] : TEXT("?");
@@ -330,6 +331,15 @@ const TCHAR* UFTArenaRunner::PilotName(bool bAutoPlayRun, bool bIdleRun)
 
 void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 {
+	// The lead's kit must be one the player may drive (ftcore::arenaPlayable): a party member only never starts a fight
+	// as the lead. Refused: no fight begins, one error line (the host checks first; this is the runner's own guard).
+	if (!ftcore::arenaPlayable(Setup.Def.fighter))
+	{
+		UE_CLOG(!bLeadRefused, LogForgottenThird, Error, TEXT("Arena: the fight is refused: the lead's kit (%s) is not playable; no fight begins."),
+			*Setup.KitId);
+		bLeadRefused = true;
+		return;
+	}
 	if (Setup.Table)
 	{
 		Table = *Setup.Table;
@@ -653,7 +663,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 {
 	FrameDelta = DeltaSeconds;
-	if (!bBegun)
+	if (!bBegun || bLeadRefused)
 	{
 		return;
 	}
@@ -1583,6 +1593,9 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 	// reads no keys. Out of focus only the held attack clears (below); the toggled latches stay.
 	if (!PC || bAutoPlay || bIdle || UFTPauseSubsystem::IsBlocking(this) || UFTPauseSubsystem::IsJustResumed(this))
 	{
+		// The HUD's Guard press count: the key's state taken as it is, so a key pressed in the pause and held after it
+		// counts no press.
+		bGuardWasDown = PC && FTInputBindings::IsDown(*PC, ftcore::InputAction::Guard);
 		bGuardHeld = false;
 		GuardInput.reset();
 		bInterceptHeld = false;
@@ -1607,11 +1620,21 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		bAimHeld && Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns); // the controlled lead's kit
 	bPressLight |= Press.light;
 	bPressHeavy |= Press.heavy;
-	bPressDodge |= FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
+	// The HUD's press counts (GetPromptPresses), by ftcore::UiPrompt: 0 HEAL, 1 GIFT HEAL, 2 GIFT GUARD, 3 PARTNER, 4 ATTACK,
+	// 5 GUARD, 6 DODGE, 7 JUMP.
+	if (FTInputBindings::WasJustPressed(*PC, InputAction::Light))
+	{
+		++PromptPresses[4];
+	}
+	const bool bDodgeNow = FTInputBindings::WasJustPressed(*PC, InputAction::Roll);
+	bPressDodge |= bDodgeNow;
+	PromptPresses[6] += bDodgeNow ? 1u : 0u;
 	// The jump: its key does nothing in a fight unless the jump is bound (-ArenaJump, until the user has tried it).
 	if (JumpBound())
 	{
-		bPressJump |= FTInputBindings::WasJustPressed(*PC, InputAction::Jump);
+		const bool bJumpNow = FTInputBindings::WasJustPressed(*PC, InputAction::Jump);
+		PromptPresses[7] += bJumpNow ? 1u : 0u;
+		bPressJump |= bJumpNow;
 	}
 	// The partner's Read: the three pick keys (1 / 2 / 3, the d-pad's left, up and right) while the cards are up,
 	// picked or not, until the move goes active. Core refuses a second pick. While the cards are up those keys are
@@ -1669,7 +1692,9 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 			bReleaseDown |= K.IsValid() && !Shadowed(InputAction::Release, Device) && PC->IsInputKeyDown(K);
 		}
 	}
-	bPressPair |= Pressed(InputAction::Count);
+	const bool bPairNow = Pressed(InputAction::Count);
+	bPressPair |= bPairNow;
+	PromptPresses[3] += bPairNow ? 1u : 0u;
 	// B (keyboard only until the pad's layout is ruled): the partner's order, STAY CLOSE and SPREAD in turn.
 	if (bPartner && Pressed(InputAction::PartnerOrder))
 	{
@@ -1678,17 +1703,24 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the partner's order: %s."), Fight.time(), bPartnerSpread ? TEXT("SPREAD") : TEXT("STAY CLOSE"));
 	}
 	// Guard: held, or pressed once to toggle (a refusal is a held Guard, so the toggle saves holding it).
-	bGuardHeld = GuardInput.tick(FTInputBindings::IsDown(*PC, InputAction::Guard), FTInputBindings::Toggles(World, InputAction::Guard));
+	const bool bGuardDown = FTInputBindings::IsDown(*PC, InputAction::Guard);
+	PromptPresses[5] += bGuardDown && !bGuardWasDown ? 1u : 0u;
+	bGuardWasDown = bGuardDown;
+	bGuardHeld = GuardInput.tick(bGuardDown, FTInputBindings::Toggles(World, InputAction::Guard));
 	// Three presses, each its own key with no modifier: the lead's own heal (Gift's row), and the third slot's Gift
 	// Heal and Gift Guard (no pad button yet: those two are keyboard only until the pad's layout is ruled).
-	bPressHeal |= Pressed(InputAction::Gift);
+	const bool bHealNow = Pressed(InputAction::Gift);
+	bPressHeal |= bHealNow;
+	PromptPresses[0] += bHealNow ? 1u : 0u;
 	if (Pressed(InputAction::GiftHeal))
 	{
 		GiftPick = ftcore::Gift::Heal;
+		++PromptPresses[1];
 	}
 	else if (Pressed(InputAction::GiftGuard))
 	{
 		GiftPick = ftcore::Gift::Guard;
+		++PromptPresses[2];
 	}
 	// Take half: its key, and on a pad with none bound, Interact pressed while the pad's Guard button is down (route
 	// "guard_interact"; the button itself, so a toggled guard leaves Interact as it is).
@@ -2057,7 +2089,12 @@ void UFTArenaRunner::BeginSession()
 		}
 		LoneBargainAt = -1.0;
 		SessionDef.thirdSlot = static_cast<ftcore::SlotState>(ThirdSlot);
-		Session->Begin(SessionDef, static_cast<double>(SessionHeld));
+		if (!Session->Begin(SessionDef, static_cast<double>(SessionHeld)) && !Session->GetLastCheck().playable)
+		{
+			// Core's refusal: no lead in the fight may be driven. The fight stops here (TickFight runs nothing more).
+			UE_CLOG(!bLeadRefused, LogForgottenThird, Error, TEXT("Arena: the fight is refused: no lead in it is playable; it stops."));
+			bLeadRefused = true;
+		}
 		if (PartnerBody())
 		{
 			// A begin keeps the last fight's controlled lead, so ask for this one's. That is a request: the first tick's
@@ -7277,6 +7314,52 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	AllyFigure->ApplyPose(Pose);
 }
 
+void UFTArenaRunner::FreezePartnerImpact(double T)
+{
+	UFTVfxComponent* Vfx = PartnerImpactFx.Get();
+	UNiagaraComponent* Niagara = Vfx ? Vfx->GetNiagara() : nullptr;
+	// T is the drawn clock, up to a step behind the held clock it was played on: one played this step is at age 0.
+	const double Age = FMath::Max(0.0, T - PartnerImpactPlayedAt);
+	if (bPartnerImpactFrozen || !Niagara || !Niagara->IsActive() || PartnerImpactPlayedAt < 0.0 || T - PartnerImpactPlayedAt < -0.1)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view frame %.3f: partner impact not running (last played at %.3f)."), T, PartnerImpactPlayedAt);
+		return;
+	}
+	// From its start again, then on to its age at T (a paused system doesn't advance), as FFTLeadWeapons::Freeze.
+	const bool bRerun = Age > 0.0 && Age <= FFTLeadWeapons::kFreezeRerun;
+	if (bRerun)
+	{
+		Vfx->Play();
+		const int32 Ticks = FMath::Max(1, FMath::CeilToInt32(static_cast<float>(Age) / FFTLeadWeapons::kFreezeTick));
+		Niagara->AdvanceSimulation(Ticks, static_cast<float>(Age) / static_cast<float>(Ticks));
+	}
+	Niagara->SetPaused(true);
+	bPartnerImpactFrozen = true;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: view frame %.3f: partner impact %s at age %.3f (%s), %s."), T, *Vfx->Effect.ToString(), Age,
+		bRerun ? TEXT("run again from its start") : TEXT("as it was"), Niagara->IsPaused() ? TEXT("paused") : TEXT("NOT paused"));
+}
+
+void UFTArenaRunner::ThawPartnerImpact()
+{
+	UFTVfxComponent* Vfx = PartnerImpactFx.Get();
+	if (UNiagaraComponent* Niagara = Vfx ? Vfx->GetNiagara() : nullptr; Niagara && bPartnerImpactFrozen)
+	{
+		Niagara->SetPaused(false);
+	}
+	bPartnerImpactFrozen = false;
+}
+
+bool UFTArenaRunner::GetPartnerImpactAt(FVector& OutAt) const
+{
+	const UFTVfxComponent* Vfx = PartnerImpactFx.Get();
+	if (!bPartnerImpactFrozen || !Vfx)
+	{
+		return false;
+	}
+	OutAt = Vfx->GetComponentLocation();
+	return true;
+}
+
 void UFTArenaRunner::PlayWaitingPartnerImpact(double T)
 {
 	if (PartnerImpactDue >= 0.0 && T + 1e-6 >= PartnerImpactDue)
@@ -7898,8 +7981,11 @@ void UFTArenaRunner::PartnerImpact(const ftcore::ArenaEvent& E)
 		Vfx->SetParameters(kPartnerImpactScale, kPartnerImpactScale);
 		PartnerImpactFx = Vfx;
 	}
-	Vfx->SetWorldLocationAndRotation(At, FRotator::ZeroRotator);
+	// A spell's ring square to the blow, facing the partner (the others as they were made).
+	Vfx->SetWorldLocationAndRotation(At, Fight.def().partnerKit.weapon == ftcore::ArenaWeapon::Magic
+		? FFTLeadWeapons::ImpactFacing(AllyFigure->GetActorLocation(), At) : FRotator::ZeroRotator);
 	const bool bPlayed = Vfx->Play();
+	PartnerImpactPlayedAt = static_cast<double>(Fight.heldTime());
 	UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: %.2f: partner impact %s at %.0f%% on enemy %d (%d hp), %.0f cm from the partner's chest%s."),
 		Fight.time(), *Vfx->Effect.ToString(), kPartnerImpactScale * 100.f, static_cast<int32>(E.target), E.amount,
 		FVector::Dist(At, AllyFigure->GetChest()), bPlayed ? TEXT("") : TEXT(" (no effect asset: not drawn)"));
@@ -8199,8 +8285,12 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	DropPendingHandoff(TEXT("the fight ended")); // a fight over inside a takeover's hold
 	LogHandoffChecks();
 	const bool bBothDown = Session && Session->Get().down(ftcore::kLeadA) && Session->Get().down(ftcore::kLeadB);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner defeat %s (session defeat %d, both leads down %d)."),
-		!bLost ? TEXT("n/a") : (bSessionDefeated && bBothDown ? TEXT("PASS") : TEXT("FAIL")), bSessionDefeated ? 1 : 0, bBothDown ? 1 : 0);
+	// A party member only as the ally (its kit not playable): the lead's fall is the defeat, with no takeover.
+	const bool bAllyNotPlayable = !ftcore::arenaPlayable(Fight.def().partnerKit);
+	const bool bLoneFall = bAllyNotPlayable && S.takeovers == 0 && PartnerTakeovers == 0 && Session && Session->Get().down(SessionLead);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner defeat %s (session defeat %d, both leads down %d; ally playable %d, the lead down with no takeover %d)."),
+		!bLost ? TEXT("n/a") : (bSessionDefeated && (bAllyNotPlayable ? bLoneFall : bBothDown) ? TEXT("PASS") : TEXT("FAIL")),
+		bSessionDefeated ? 1 : 0, bBothDown ? 1 : 0, bAllyNotPlayable ? 0 : 1, bLoneFall ? 1 : 0);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: partner fight: falls lead %d, partner %d; takeovers %d; rises %d (fight %d); partner blows %d, strings %d, guards %d; order presses %d."),
 		PartnerLeadFalls, PartnerAllyFalls, PartnerTakeovers, PartnerRises, S.partnerRises, S.partnerBlows, S.partnerStrings, S.partnerGuards, PartnerOrders);
 }

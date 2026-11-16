@@ -728,6 +728,7 @@ void readEffect(Reader& r, VfxEffect& out) {
         return;
     }
     r.get("name", out.name);
+    r.get("sorted", out.sorted);
     if (std::optional<Reader> list = r.child("emitters"); list && list->expectArray()) {
         out.emitters.clear();
         std::vector<std::string> paths;
@@ -1244,6 +1245,7 @@ void planBounds(VfxNiagaraEmitter& p) {
 void planVfxNiagara(const VfxEffect& effect, VfxNiagaraPlan& out) {
     out = VfxNiagaraPlan{};
     out.name = effect.name;
+    out.sorted = effect.sorted;
     for (const VfxEmitter& e : effect.emitters) {
         VfxNiagaraEmitter p;
         p.name = e.name;

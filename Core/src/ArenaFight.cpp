@@ -48,6 +48,14 @@ constexpr float kArenaParkOffset = 1.5f;   // follower spots: metres outside the
 constexpr float kArenaParkSpacing = 2.0f;  // ... and metres between neighbours along its edge
 constexpr float kArenaSpawnGapRadii = 4.0f; // enemy start points: neighbours this many body radii apart along the arc
 constexpr int kArenaPushPasses = 3;        // arenaStep: push-apart passes
+// The partner's walk (stepAlly's shapeAllyWalk).
+constexpr float kAllyAroundMargin = 0.15f; // m: it passes an enemy body this far outside touching it (twice round it)
+constexpr float kAllyAroundStep = 0.5f;    // m: the least look-ahead along a tangent round a body
+constexpr float kAllyHeadingHold = 0.4f;   // s: no reversal over 90 degrees within this of its last one
+constexpr float kAllyHeadingGap = 0.5f;    // s: a heading is kept this long (standing this long, the next walk is fresh)
+constexpr float kAllyHeadingStep = 1.f / 120.f; // s: a heading is kept at most this often (the ring covers the gap)
+constexpr float kAllyHeadingMargin = 0.05f; // radians inside the allowed arc's edges
+constexpr float kAllyMovingSpeed = 0.5f;   // m/s: a goal nearer than this a step is standing (no heading)
 
 float arenaLength(Vec2 v) { return std::sqrt(v.x * v.x + v.y * v.y); }
 Vec2 arenaSub(Vec2 a, Vec2 b) { return Vec2{a.x - b.x, a.y - b.y}; }
@@ -507,6 +515,7 @@ struct ArenaFightImpl {
             ao.partnerOn = true;
             ao.stationed = al.stationed;
             ao.pairSeconds = pl.pairSpent;
+            ao.bodyTurn = al.bodyTurn;
         }
     }
 
@@ -561,6 +570,7 @@ struct ArenaFightImpl {
         applyHolds();
         stepPlayer(in);
         stepAlly(in);
+        noteAllyHeading();
         stepEnemies();
         stepBossBreaks();
         if (fight.read_.dealt() && !readStillOpen()) closeRead(); // the active part began, or the move is gone
@@ -1135,7 +1145,8 @@ struct ArenaFightImpl {
                   r))
             return;
         pl.pairCoolUntil = t0 + fi.pairCooldown; // dealt (the ruling let it through): the clock starts
-        if (partnerOn()) {
+        // A partner whose kit has no attacks (PartnerIdle::NoKit) pays nothing: the lead's counter is as with no partner.
+        if (partnerOn() && pk.attacks) {
             pl.pairSpent += fi.pairPartnerSeconds;
             pl.pairBrain += fi.pairPartnerSeconds; // the brain's rule 2 budget: its spentSeconds at its next step
         }
@@ -2787,6 +2798,7 @@ struct ArenaFightImpl {
         al.guarding = false;
         al.hurtLeft = 0.f;
         al.goal = fight.allyPos_;
+        resetAllyWalk();
     }
 
     // The ally reached 0 hp.
@@ -2805,6 +2817,7 @@ struct ArenaFightImpl {
             al.guarding = false;
             al.hurtLeft = 0.f;
             al.goal = fight.allyPos_;
+            resetAllyWalk();
             return;
         }
         PartnerBrain& brain = *fight.partner_;
@@ -2816,7 +2829,10 @@ struct ArenaFightImpl {
             const Enemy& foe = foes[i];
             PartnerEnemyView& v = views[i];
             v.pos = foe.pos;
-            v.radius = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f).radius;
+            const ArenaBodyCylinder body = arenaBodyCylinder(def.enemies[i], foe.pos, 0.f);
+            v.radius = body.radius;
+            v.base = body.base; // rule 18: over the floor, as the camera's groundZ
+            v.top = body.top;
             v.kind = def.enemies[i].boss ? PartnerEnemyView::Kind::Boss : PartnerEnemyView::Kind::Regular;
             if (foe.brain == ArenaBrain::Dead) {
                 v.state = PartnerEnemyView::State::Down;
@@ -2854,6 +2870,7 @@ struct ArenaFightImpl {
         // No kit (a partner kit with no attacks): its budget reads spent every step, so the brain begins no string
         // (NoBudget) and still guards, moves and repositions; the time is counted as no kit's.
         const bool noKit = !pk.attacks;
+        pin.kitAttacks = !noKit; // the brain's NoKit: no string, no next blow, no paired counter (tryPair)
         if (noKit) {
             pin.spentSeconds = fight.partnerTuning_->budgetWindowSeconds;
             if (allyUp()) stats.partnerNoKitSeconds += dt;
@@ -2904,11 +2921,12 @@ struct ArenaFightImpl {
         }
         al.guarding = intent.act == PartnerAct::Guard && !al.attacking;
         if (al.attacking) {
+            al.bodyTurn = false;
             runAllyBlow();
             return;
         }
         const bool walk = intent.act == PartnerAct::MoveTo || intent.act == PartnerAct::StepBack;
-        al.goal = walk ? intent.point : fight.allyPos_;
+        al.goal = shapeAllyWalk(in, intent, walk);
         al.target = intent.enemy;
         Vec2 look = al.facing;
         if (intent.enemy >= 0 && alive(static_cast<std::size_t>(intent.enemy)))
@@ -2916,6 +2934,207 @@ struct ArenaFightImpl {
         else if (walk)
             look = arenaSub(intent.point, fight.allyPos_);
         al.facing = arenaTurn(al.facing, arenaUnit(look, al.facing), pk.turnRate * dt);
+    }
+
+    // ---- the partner's walk: the brain's point as the body walks to it ----
+
+    // Its walk forgets the old body (down, risen, swapped, the partner off).
+    void resetAllyWalk() {
+        ArenaFight::AllyState& al = fight.ally_;
+        al.around = -1;
+        al.headingCount = 0;
+        al.headingSince = -1.f;
+        al.bodyTurn = false;
+    }
+
+    // The goal this tick (the host walks straight to it, pushed out of the living enemies' bodies). Standing: its place.
+    // Walking rule 17's circling (its never-still goal, or its budget spent): round a body in the way (skirmishing, not
+    // its own target's: the never-still point circles that one, and going round it as well doubled its reversals);
+    // and, unless a wind-up at it forces the step (StepBack), within the heading rule's arc. Every other walk is the
+    // brain's point as before: on its rules' stations the heading rule cost the camera's frame (StayClose's group
+    // fight 0.97 -> 0.75 on screen, its goal jumps 28 -> 36 per 10 s), and rounding there cost Spread's worst seed.
+    Vec2 shapeAllyWalk(const ArenaInput& in, const PartnerIntent& intent, bool walk) {
+        fight.ally_.bodyTurn = false;
+        if (!walk) {
+            fight.ally_.around = -1;
+            return fight.allyPos_;
+        }
+        const bool circling = intent.skirmish || intent.idle == PartnerIdle::NoBudget;
+        const Vec2 goal = circling ? allyRound(in, intent.point, intent.skirmish ? intent.enemy : -1) : intent.point;
+        return intent.act == PartnerAct::StepBack || !circling ? goal : allyHeadingHeld(goal);
+    }
+
+    // The headings its walk moved on since its last reversal and within kAllyHeadingGap, newest first, while `f`
+    // returns true.
+    template <class F> void forAllyHeadings(F&& f) const {
+        const ArenaFight::AllyState& al = fight.ally_;
+        const std::size_t slots = ArenaFight::AllyState::kHeadingSlots;
+        for (std::size_t k = 0; k < al.headingCount; ++k) {
+            const std::size_t i = (al.headingNext + slots - 1 - k) % slots;
+            if (fight.time_ - al.headingAt[i] >= kAllyHeadingGap || !f(al.headings[i])) return;
+        }
+    }
+
+    // The heading rule's arc now (radians from `ref`, its newest heading): within kAllyHeadingHold of its last
+    // reversal (or its walk's start) a heading it walks on lies within 90 degrees of each since; false: no rule now.
+    bool allyHeadingArc(Vec2& ref, float& lo, float& hi) const {
+        const ArenaFight::AllyState& al = fight.ally_;
+        if (al.headingSince < 0.f || fight.time_ - al.headingSince >= kAllyHeadingHold + 0.5f * dt) return false;
+        bool any = false;
+        float a0 = -kArenaPi, a1 = kArenaPi;
+        forAllyHeadings([&](Vec2 h) {
+            if (!any) ref = h;
+            any = true;
+            const float a = std::atan2(arenaCross(ref, h), arenaDot(ref, h));
+            a0 = std::max(a0, a - 0.5f * kArenaPi);
+            a1 = std::min(a1, a + 0.5f * kArenaPi);
+            return true;
+        });
+        if (!any) return false;
+        lo = a0 + kAllyHeadingMargin;
+        hi = a1 - kAllyHeadingMargin;
+        if (lo > hi) lo = hi = 0.5f * (a0 + a1);
+        return true;
+    }
+
+    // `goal` held to the arc: the nearest allowed heading at the same distance (a goal far past the arc: it walks the
+    // arc's edge, not standing, so the hold costs no time in one place). A held line into a living enemy's body is
+    // not walked: the arc's other edge if that one is clear, else the body forces the turn, as a wind-up does.
+    Vec2 allyHeadingHeld(Vec2 goal) {
+        const Vec2 from = fight.allyPos_;
+        const Vec2 want = arenaSub(goal, from);
+        const float far = arenaLength(want);
+        Vec2 ref{1.f, 0.f};
+        float lo = 0.f, hi = 0.f;
+        if (far <= kAllyMovingSpeed * dt || !allyHeadingArc(ref, lo, hi)) return goal;
+        const float w = std::atan2(arenaCross(ref, want), arenaDot(ref, want));
+        const float c = std::clamp(w, lo, hi);
+        if (c == w) return goal;
+        for (const float a : {c, c == lo ? hi : lo}) {
+            const Vec2 held = arenaMadd(from, arenaRotate(ref, a), far);
+            if (allyLineClear(from, held)) return held;
+        }
+        fight.ally_.bodyTurn = true;
+        return goal;
+    }
+
+    // The straight walk from `from` to `to` keeps outside every living enemy's body (touching allowed).
+    bool allyLineClear(Vec2 from, Vec2 to) const {
+        const Vec2 line = arenaSub(to, from);
+        const float len2 = arenaDot(line, line);
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!alive(i)) continue;
+            const float touch = fight.allyRadius_ + def.enemies[i].bodyRadius;
+            const Vec2 e = arenaSub(foes[i].pos, from);
+            const float t = len2 > kArenaEps ? std::clamp(arenaDot(e, line) / len2, 0.f, 1.f) : 0.f;
+            if (arenaDistance(arenaMadd(from, line, t), foes[i].pos) < touch &&
+                arenaDistance(from, foes[i].pos) >= touch - kArenaEps) // already inside: the host pushes it out
+                return false;
+        }
+        return true;
+    }
+
+    // The heading this tick's goal walks it on, for the heading rule (after stepAlly; a blow's lunge included).
+    // A heading over 90 degrees from one kept is a reversal: the ring empties and the hold starts again from it; so
+    // does a walk begun with none kept.
+    void noteAllyHeading() {
+        ArenaFight::AllyState& al = fight.ally_;
+        if (!partnerOn() || !allyUp()) {
+            al.headingCount = 0;
+            al.headingSince = -1.f;
+            return;
+        }
+        const Vec2 v = arenaSub(al.goal, fight.allyPos_);
+        const float far = arenaLength(v);
+        if (!(dt > 0.f) || far <= kAllyMovingSpeed * dt) return;
+        const Vec2 d = arenaScaled(v, 1.f / far);
+        const float now = fight.time_;
+        bool kept = false, reversed = false;
+        forAllyHeadings([&](Vec2 h) {
+            kept = true;
+            reversed = arenaDot(d, h) < 0.f;
+            return !reversed;
+        });
+        if (reversed || !kept) {
+            al.headingCount = 0;
+            al.headingSince = now;
+        }
+        const std::size_t slots = ArenaFight::AllyState::kHeadingSlots;
+        const std::size_t last = (al.headingNext + slots - 1) % slots;
+        if (al.headingCount == 0 || now - al.headingAt[last] >= kAllyHeadingStep) {
+            al.headings[al.headingNext] = d;
+            al.headingAt[al.headingNext] = now;
+            al.headingNext = (al.headingNext + 1) % slots;
+            al.headingCount = std::min(slots, al.headingCount + 1);
+        }
+    }
+
+    // The walk to `to` round a living enemy's body in the way: on the side of the smaller detour (square on: the
+    // camera's side; with the play camera whole, a side whose passing point is out of its frame loses to one in it),
+    // that side held until the body is passed, the line clears it or the goal comes to it. Body `skip` is never gone
+    // round (-1: none).
+    Vec2 allyRound(const ArenaInput& in, Vec2 to, int skip) {
+        ArenaFight::AllyState& al = fight.ally_;
+        const Vec2 from = fight.allyPos_;
+        const Vec2 line = arenaSub(to, from);
+        const float len = arenaLength(line);
+        if (len <= kArenaEps) {
+            al.around = -1;
+            return to;
+        }
+        const Vec2 u = arenaScaled(line, 1.f / len);
+        const Vec2 left{-u.y, u.x};
+        // Body i blocks the line: ahead, short of the goal, within its clearance of the line, the goal outside it. A
+        // body held is kept on a wider band, so it is not let go and taken again tick by tick.
+        const auto blocks = [&](std::size_t i, bool held, float& off) {
+            if (!alive(i) || static_cast<int>(i) == skip) return false;
+            const float clear = fight.allyRadius_ + def.enemies[i].bodyRadius + kAllyAroundMargin;
+            const Vec2 e = arenaSub(foes[i].pos, from);
+            const float along = arenaDot(e, u);
+            off = arenaCross(u, e);
+            const float goalOff = arenaDistance(to, foes[i].pos);
+            if (held) return along > 0.f && std::fabs(off) < clear + kAllyAroundMargin && goalOff > clear;
+            return along > 0.f && along < len && std::fabs(off) < clear && goalOff > clear + 2.f * kAllyAroundMargin;
+        };
+        float off = 0.f;
+        if (al.around >= 0 && !blocks(static_cast<std::size_t>(al.around), true, off)) al.around = -1;
+        if (al.around < 0) {
+            float nearest = 1e9f;
+            for (std::size_t i = 0; i < n; ++i) {
+                float o = 0.f;
+                if (!blocks(i, false, o)) continue;
+                const float a = arenaDot(arenaSub(foes[i].pos, from), u);
+                if (a >= nearest) continue;
+                nearest = a;
+                al.around = static_cast<int>(i);
+                off = o;
+            }
+            if (al.around < 0) return to;
+            const std::size_t i = static_cast<std::size_t>(al.around);
+            const PartnerCameraView& cam = in.partnerCamera;
+            const bool whole = partnerCameraWhole(cam);
+            float side = off > 0.f ? -1.f : 1.f; // past the side the body is not on
+            if (std::fabs(off) < 0.05f) {
+                const Vec2 eye = whole ? Vec2{cam.pos.x, cam.pos.y} : in.cameraOn ? in.cameraPos : pl.pos;
+                side = arenaCross(u, arenaSub(eye, from)) >= 0.f ? 1.f : -1.f;
+            }
+            if (whole) {
+                const float pass = fight.allyRadius_ + def.enemies[i].bodyRadius + 2.f * kAllyAroundMargin;
+                const bool here = partnerInFrame(cam, kPartnerFrustumMargin, arenaMadd(foes[i].pos, left, side * pass));
+                const bool there = partnerInFrame(cam, kPartnerFrustumMargin, arenaMadd(foes[i].pos, left, -side * pass));
+                if (!here && there) side = -side;
+            }
+            al.aroundSide = side;
+        }
+        // Along the tangent to the body's passing circle on the held side (straight out from inside it).
+        const std::size_t i = static_cast<std::size_t>(al.around);
+        const float pass = fight.allyRadius_ + def.enemies[i].bodyRadius + 2.f * kAllyAroundMargin;
+        const Vec2 toBody = arenaSub(foes[i].pos, from);
+        const float d = arenaLength(toBody);
+        const float turn = d > pass ? std::asin(pass / d) : 0.5f * kArenaPi;
+        const float ahead = d > pass ? std::sqrt(d * d - pass * pass) : 0.f;
+        const Vec2 dir = arenaRotate(arenaUnit(toBody, u), al.aroundSide * turn);
+        return arenaMadd(from, dir, std::min(len, std::max(kAllyAroundStep, ahead)));
     }
 
     // The partner's running blow: the lead's light's tracking and lunge, and its one landing in the active part.
@@ -3001,9 +3220,9 @@ struct ArenaFightImpl {
         why = fight.phase_ == ArenaPhase::NotStarted                     ? ArenaSwitchRefusal::NotFighting
               : !partnerOn()                                             ? ArenaSwitchRefusal::NoPartner
               : !pk.playable                                             ? ArenaSwitchRefusal::NotPlayable
+              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
               : pl.hp <= 0                                               ? ArenaSwitchRefusal::PlayerDown
               : !allyUp()                                                ? ArenaSwitchRefusal::PartnerDown
-              : fight.inHook_.on || fight.phase_ != ArenaPhase::Fighting ? ArenaSwitchRefusal::NotFighting
                                                                          : ArenaSwitchRefusal::Ok;
         if (why == ArenaSwitchRefusal::Ok) return doSwitch();
         ++stats.leadSwitchesRefused;
@@ -4425,7 +4644,8 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
                       "readWrongPoise", "attacks", "playable", "shot", "parryStop", "softRange", "softArcCos", "homingReach",
                       "hurtJolt", "blockLoadShare", "blockCallGuard", "takeHalfWindow", "takeHalfReach", "takeHalfLoadShare",
                       "takeHalfRearm", "rounds", "reload", "jumpStartup", "jumpAir", "jumpLand", "jumpLandLock",
-                      "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight"},
+                      "jumpHeight", "jumpClearStart", "jumpClearEnd", "jumpAirControl", "jumpLight", "partnerReach",
+                      "partnerStandoff"},
                      false, warnings);
     if (const JsonValue wj = j["weapon"]; !wj.isAbsent()) {
         bool known = false;
@@ -4505,6 +4725,14 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "jumpClearEnd", f.jumpClearEnd, 0, 5, false, path, errors);
     arenaNum(j, "jumpAirControl", f.jumpAirControl, 0, 1000, false, path, errors);
     if (j.has("jumpLight")) arenaParseAttackObject(j["jumpLight"], path + ".jumpLight", f.jumpLight, errors, warnings);
+    arenaNum(j, "partnerReach", f.partnerReach, 0, 4, false, path, errors);
+    arenaNum(j, "partnerStandoff", f.partnerStandoff, 0, 4, false, path, errors);
+    if (f.partnerReach > 0.f && f.partnerReach < 0.5f)
+        errors.push_back(path + ".partnerReach: expected 0 (unset) or 0.5..4");
+    if (f.partnerStandoff > 0.f && f.partnerReach == 0.f) // the default reach may sit below the standoff
+        errors.push_back(path + ".partnerStandoff: expected a partnerReach with it");
+    else if (f.partnerStandoff > f.partnerReach)
+        errors.push_back(path + ".partnerStandoff: expected at most partnerReach");
 
     const JsonValue light = j["light"];
     if (!light.isAbsent()) {

@@ -100,6 +100,18 @@ void UFTVfxComponent::Stop()
 	}
 }
 
+void UFTVfxComponent::Clear()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReplayTimer);
+	}
+	if (Niagara)
+	{
+		Niagara->DeactivateImmediate();
+	}
+}
+
 void UFTVfxComponent::SetParameters(float InSpeedScale, float InShapeScale)
 {
 	SpeedScale = InSpeedScale;

@@ -443,8 +443,9 @@ FTCORE_API const char* arenaWeaponName(ArenaWeapon w); // "none", "gauntlets", "
 
 // Why ArenaFight::switchLeads refused (ArenaFight::switchRefusal). Append only.
 // When several apply, one wins and is the one named and counted: not begun (NotFighting: there is no fight), then
-// NoPartner (no other lead to name), then the permanent reason NotPlayable, then PlayerDown, then PartnerDown, then
-// NotFighting for the busy rest (over, or inside the step's hook). The player always sees the same word for one lead.
+// NoPartner (no other lead to name), then the permanent reason NotPlayable, then NotFighting for the rest of the
+// fight's own state (over, or inside the step's hook), then PlayerDown, then PartnerDown: the session's order
+// (FightSession::leadSwitchReason: NotPlayable, FightOver, Down). The player always sees the same word for one lead.
 enum class ArenaSwitchRefusal : std::uint8_t {
     Ok,          // it swapped (or none asked)
     NotFighting, // not begun, over, or asked inside the step's hook
@@ -561,6 +562,11 @@ struct ArenaFighter {
     // the player's own time (a hit pause holds it). Full at begin() and restart().
     std::uint8_t rounds = 0;
     float reload = 1.2f;
+    // As the partner (ArenaDef::partnerKit): the brain's reach and standoff for this kit, in metres off the target's
+    // edge (PartnerTuning::reachMeters, standoffMeters; arena.json "partnerReach" 0.5..4, "partnerStandoff"
+    // 0..partnerReach, and only with a partnerReach). 0: unset, the tuning's own. A ranged partner kit sets them; a close-in one leaves them 0.
+    float partnerReach = 0.f;
+    float partnerStandoff = 0.f;
 };
 
 // Whether the player may take this kit as the lead: the kit's own data flag (arena.json "playable"), never inferred
@@ -1032,6 +1038,8 @@ struct ArenaAllyOut {
     bool stationed = false;           // stationing ran this tick (ArenaInput::cameraOn, the partner up)
     float pairSeconds = 0.f;          // the partner's attack time the paired counters dealt this tick spent
                                       // (pairPartnerSeconds each), for its budget; 0 with no partner on (appended)
+    bool bodyTurn = false;            // its walk turned past the heading rule's hold this tick: the held line ran into
+                                      // an enemy's body (forced, as a wind-up's step back is) (appended)
 };
 
 struct ArenaOutput {
@@ -1735,6 +1743,16 @@ private:
         float hurtLeft = 0.f;               // s of hitstun left
         std::uint8_t act = 0;               // the brain's last intent (PartnerAct)
         bool stationed = false;             // ... and stationing ran for it
+        // Its walk's shape (the host walks straight to the goal): round an enemy's body on one side, held until it is
+        // passed; no turn over 90 degrees within the hold of its last reversal.
+        int around = -1;                    // the body it goes round (-1: none) ...
+        float aroundSide = 0.f;             // ... on this side of its line (+1: left)
+        static constexpr std::size_t kHeadingSlots = 64;
+        std::array<Vec2, kHeadingSlots> headings{};   // its walk's headings since its last reversal (a ring) ...
+        std::array<float, kHeadingSlots> headingAt{}; // ... at these fight times
+        std::size_t headingNext = 0, headingCount = 0;
+        float headingSince = -1.f;          // its last reversal (or its walk's start) at this fight time
+        bool bodyTurn = false;              // this tick a body forced its walk past the hold
     };
 
     ArenaDef def_;

@@ -74,6 +74,7 @@ add_library(ftcore STATIC
     src/SurfaceWeather.cpp
     src/SurfaceJoints.cpp
     src/FrameStats.cpp
+    src/BenchPath.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
     src/GlassSurface.cpp
@@ -352,6 +353,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_partner_brain.cpp
         tests/test_partner_station.cpp
         tests/test_partner_frame.cpp
+        tests/test_partner_tall_boss.cpp
         tests/test_combat_inputs.cpp
         tests/test_table_ring.cpp
         tests/test_boss_script.cpp
@@ -380,6 +382,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_surface_weather.cpp
         tests/test_surface_joints.cpp
         tests/test_frame_stats.cpp
+        tests/test_bench_path.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
         tests/test_glass_surface.cpp
