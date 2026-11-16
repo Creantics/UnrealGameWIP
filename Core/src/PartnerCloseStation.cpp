@@ -87,6 +87,8 @@ bool legal(const PartnerCloseInput& in, Vec2 p, float& ndcX, float& ndcY) {
     if (ahead < in.minAhead) return false;
     if (in.aimConeDegrees > 0.f && std::fabs(dot(r, rightOf(f))) > ahead * std::tan(in.aimConeDegrees * kDeg))
         return false;
+    // Never inside the target's own body (the lead-ring points of tier 3 are placed round the lead, not its edge).
+    if (len(sub(p, in.target)) < in.targetRadius + in.bodyRadius) return false;
     const float fromLead = len(sub(p, in.lead));
     if (fromLead < in.personalSpace) return false;
     if (in.leashMeters > 0.f && fromLead > in.leashMeters) return false;

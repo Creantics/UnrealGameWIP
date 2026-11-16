@@ -1317,7 +1317,17 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // Rule 19's station for target tgt; forString: one a string can start from: the band pulled in to
     // [reach / 2, reach - stationTolerance] where it is deeper (as the classic ring at reach / 2), since a partner
     // stops within stationTolerance of its station and a string needs reach. Framed, the 3D frame must see it too.
+    // Single-sourced: computed once a step (the first call's target and band), later calls this step reuse it.
+    int closeDoneFor = -1;
+    bool closeDoneOk = false;
+    Vec2 closeDonePoint{};
     const auto closeGoal = [&](int tgt, bool forString, Vec2& p) -> bool {
+        if (closeDoneFor == tgt) {
+            if (closeDoneOk) p = closeDonePoint;
+            return closeDoneOk;
+        }
+        closeDoneFor = tgt;
+        closeDoneOk = false;
         const PartnerCloseView& c = in.station.close;
         const View& v = in.enemies[static_cast<std::size_t>(tgt)];
         std::array<PartnerBody, kMaxPartnerEnemies> bodies{};
@@ -1366,6 +1376,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         const PartnerCloseStation r = partnerCloseStation(ci, s_.closeHold);
         if (!r.valid || (fm && !fr.sees(r.point))) return false;
         p = r.point;
+        closeDoneOk = true;
+        closeDonePoint = p;
         return true;
     };
     const auto goalFor = [&](int tgt, bool forString) -> Vec2 {
@@ -1592,6 +1604,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (tgt != s_.target) {
         s_.targetFor = 0.0;
         s_.targetReached = false;
+        s_.closeHold = {}; // rule 19: one target's flank is not carried to the next
     }
     s_.target = tgt;
     if (tgt >= 0 && edge(in.pos, in.enemies[static_cast<std::size_t>(tgt)]) <= t.reachMeters) s_.targetReached = true;

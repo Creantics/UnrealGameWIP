@@ -869,3 +869,75 @@ TEST_CASE("close station: Pause and Ready on opposite flanks do not ping-pong") 
             CHECK(r.strings >= 5);
         }
 }
+
+TEST_CASE("close station: never inside the target's body, whatever the tier") {
+    // The review's case: the lead 1.5 m off the edge of a radius-2 target, leashed at 3.5 m. The lead ring (tier 3)
+    // is placed round the lead, so its points can reach into the target: none may stand there.
+    {
+        PartnerCloseInput in = csScene();
+        in.targetRadius = 2.f;
+        in.lead = {-3.5f, 0.f};
+        csLens(in.lead, in.target, 0.8f, 0.2f, in.cameraPos, in.cameraForward);
+        in.partner = {-2.f, 2.f};
+        in.leashMeters = 3.5f;
+        PartnerCloseHold h;
+        const PartnerCloseStation st = partnerCloseStation(in, h);
+        if (st.valid) CHECK(csLen(csSub(st.point, in.target)) >= in.targetRadius + in.bodyRadius - 1e-4f);
+    }
+    // A sweep: every bearing, big targets, the lead 1-2 m off their edge, both kits, leashed at 3.5 m, so the ring's
+    // angles and radii are all tried. Without the body test the model put 190 of 432 stations inside the target.
+    int found = 0, ring = 0;
+    for (int a = 0; a < 360; a += 15)
+        for (const float tr : {2.f, 2.5f, 3.5f})
+            for (const float off : {1.f, 1.5f, 2.f})
+                for (const float lo : {kPartnerCloseMeleeMin, kPartnerCloseCasterMin}) {
+                    CAPTURE(a);
+                    CAPTURE(tr);
+                    CAPTURE(off);
+                    CAPTURE(lo);
+                    PartnerCloseInput s = csScene();
+                    s.targetRadius = tr;
+                    s.lead = csMul({std::cos(static_cast<float>(a) * kCsDeg), std::sin(static_cast<float>(a) * kCsDeg)}, tr + off);
+                    csLens(s.lead, s.target, 0.8f, 0.2f, s.cameraPos, s.cameraForward);
+                    s.partner = csAdd(csMul(s.lead, 0.5f), Vec2{0.f, 2.f});
+                    s.standMin = lo;
+                    s.standMax = lo == kPartnerCloseMeleeMin ? kPartnerCloseMeleeMax : kPartnerCloseCasterMax;
+                    s.leashMeters = 3.5f;
+                    PartnerCloseHold h;
+                    const PartnerCloseStation st = partnerCloseStation(s, h);
+                    if (!st.valid) continue;
+                    ++found;
+                    if (st.tier == 3) ++ring;
+                    CHECK(csLen(csSub(st.point, s.target)) >= tr + s.bodyRadius - 1e-4f);
+                    CHECK(csLen(csSub(st.point, s.lead)) <= s.leashMeters + 1e-4f);
+                }
+    MESSAGE("never inside: " << found << " stations of 648, " << ring << " on the lead ring");
+    CHECK(found >= 300); // the model: 384
+    CHECK(ring >= 100);  // the ring is exercised (the model: 240)
+}
+
+TEST_CASE("close station: a new target starts a new flank hold") {
+    // Two targets at one place: the same geometry, so the same flank. Held on the first for a while, the switch
+    // to the second clears the hold (its clock starts again), as on a lead switch or a fall.
+    CsPit p(true);
+    p.e[1] = p.e[0];
+    p.in.leadTarget = 0;
+    const auto two = [&p]() {
+        p.in.enemies = std::span<const PartnerEnemyView>(p.e.data(), 2);
+        return p.b.step(1.0 / 60.0, p.in);
+    };
+    for (int s = 0; s < 180; ++s) {
+        const PartnerIntent& i = two();
+        if (i.act == PartnerAct::MoveTo) p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+    }
+    REQUIRE(p.b.save().target == 0);
+    REQUIRE(p.b.save().closeHold.flank != 0);
+    REQUIRE(p.b.save().closeHold.heldFor > 0.5);
+    const std::int8_t was = p.b.save().closeHold.flank;
+    p.e[0].state = PartnerEnemyView::State::Down;
+    p.in.leadTarget = 1;
+    for (int s = 0; s < 120 && p.b.save().target != 1; ++s) two(); // a string running ends first
+    REQUIRE(p.b.save().target == 1);
+    MESSAGE("flank on the first target " << static_cast<int>(was) << ", on the second " << static_cast<int>(p.b.save().closeHold.flank));
+    CHECK(p.b.save().closeHold.heldFor < 1e-9);
+}
