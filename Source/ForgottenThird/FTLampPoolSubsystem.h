@@ -27,6 +27,11 @@
 // still overrides it). For A/B: -LampShadows=<n> casts from the n nearest, -LampShadows=0 none, -LampShadows=all (or a
 // bare -LampShadows) every pooled lamp.
 //
+// A map whose parts stand in several levels (the strip and its always-loaded hero corner sub-level) has one
+// AFTNightLights per level: the pool takes every one's lamps and shops into its own lists (each shop with its own pitch
+// and gain), the first one's cones and sources for all, gathered again when the pool is made so a level streamed in
+// after BeginPlay is counted.
+//
 // Shop shadows: a pooled shop light within ShopShadowMetres of the camera casts (a lit room's light through its lattice
 // or mullions onto the lane), under MegaLights as the lamps; beyond it, none. Config ShopShadowMetres (15 by default;
 // 0 none); -ShopShadows=<m> for A/B (-ShopShadows=0 none).
@@ -80,6 +85,8 @@ private:
 		ftcore::LightPicker Picker;
 	};
 
+	// Every AFTNightLights' points into the lists below; logs the counts per actor when they change.
+	void Gather(UWorld& World);
 	bool IsNightNow() const;
 	// The lamps' switch-on now: 1 when forced, else the world clock's (0 with no clock running).
 	float LampFraction() const;
@@ -92,6 +99,14 @@ private:
 
 	TWeakObjectPtr<AFTNightLights> NightLights;
 	TWeakObjectPtr<UFTNightLightData> Data;
+	// Every level's lights, merged (Gather).
+	TArray<FVector3f> LampAt;
+	TArray<float> LampGain;
+	TArray<FVector3f> ShopAt;
+	TArray<float> ShopYaw;
+	TArray<float> ShopPitch;
+	TArray<float> ShopGain;
+	int32 GatheredFrom = 0;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USpotLightComponent>> LampPool;

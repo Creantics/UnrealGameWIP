@@ -54,6 +54,11 @@ struct FBuild
 	// shutters weathered; and the one whose lattice room is the eatery's (a counter, not shelves).
 	TArray<int32> TimberLots;
 	int32 CounterLot = -1;
+	// The hero corner's lit rooms' own glow (AddHeroLots): -HeroPanelGlow=<x> the ceiling panels' LampPanel (1),
+	// -HeroWallGlow=<x> the back wall's (0: lit by the shop slot alone), -HeroGlowCap=<x> their ShopGlowCap (0: the master's).
+	float HeroPanelGlow = 1.f;
+	float HeroWallGlow = 0.f;
+	float HeroGlowCap = 0.f;
 	// Set by Place: the proof bay's ceiling fixtures (engine cm, a rotation facing down, the source's size in cm), which the
 	// massing build spawns as rect lights tagged FTNight::BayLightTag.
 	struct FBayLight

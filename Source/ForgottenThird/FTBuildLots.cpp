@@ -633,6 +633,11 @@ bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::s
 		}
 		Out.bGlassProofPane = FParse::Param(Params, TEXT("GlassProofPane"));
 	}
+	FParse::Value(Params, TEXT("HeroPanelGlow="), Out.HeroPanelGlow);
+	FParse::Value(Params, TEXT("HeroWallGlow="), Out.HeroWallGlow);
+	FParse::Value(Params, TEXT("HeroGlowCap="), Out.HeroGlowCap);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: lit rooms' panels glow %.2f, back walls %.2f, cap %s."), Out.HeroPanelGlow,
+		Out.HeroWallGlow, Out.HeroGlowCap > 0.f ? *FString::Printf(TEXT("%.2f"), Out.HeroGlowCap) : TEXT("the master's"));
 	const int RunIndex = static_cast<int>(Out.Plan.runs.size());
 	Out.Plan.runs.push_back(Hero.run);
 	for (int32 B = 0; B < ftcore::kHeroBays; ++B)
@@ -1189,12 +1194,17 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			++Pieces;
 			double PieceX = 0.0, PieceY = 0.0;
 			Proof.ToLot(P.x, P.y, PieceX, PieceY);
-			const auto BayMaterial = [&](const TCHAR* Name, const FLinearColor& Color, float LampPanel)
+			const bool bHeroRoom = Build.TimberLots.Contains(ProofLot);
+			const auto BayMaterial =[&](const TCHAR* Name, const FLinearColor& Color, float LampPanel)
 			{
 				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("%s_L%d"), Name, ProofLot), RF_Public);
 				Mic->SetParentEditorOnly(ProofBay);
 				Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Color")), Color);
 				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampPanel")), LampPanel);
+				if (bHeroRoom && Build.HeroGlowCap > 0.f)
+				{
+					Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("ShopGlowCap")), Build.HeroGlowCap);
+				}
 				Mic->PostEditChange();
 				return Mic;
 			};
@@ -1259,11 +1269,15 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			UMaterialInterface* const FloorPaint = BayMaterial(TEXT("MI_GlassProofBay_Floor"),
 				Pr->bKoshi ? FLinearColor(0.12f, 0.08f, 0.05f) : FLinearColor(0.32f, 0.31f, 0.29f), 0.f);
 			UMaterialInterface* const CeilPaint = BayMaterial(TEXT("MI_GlassProofBay_Ceiling"), FLinearColor(0.40f, 0.40f, 0.39f), 0.f);
-			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"), FLinearColor(0.9f, 0.9f, 0.88f), 1.f);
+			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"), FLinearColor(0.9f, 0.9f, 0.88f), bHeroRoom ? Build.HeroPanelGlow : 1.f);
 			UMaterialInterface* const BoardPaint = BayMaterial(TEXT("MI_GlassProofBay_Board"), FLinearColor(0.36f, 0.35f, 0.33f), 0.f);
+			// A hero room's back wall may glow a little of its own (-HeroWallGlow), so the lattice's bars read against it.
+			UMaterialInterface* const BackPaint = bHeroRoom && Build.HeroWallGlow > 0.f
+				? BayMaterial(TEXT("MI_GlassProofBay_Back"), Pr->bKoshi ? FLinearColor(0.42f, 0.37f, 0.29f) : FLinearColor(0.38f, 0.37f, 0.34f), Build.HeroWallGlow)
+				: WallPaint;
 			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX1, BayY1, BayZ0 + 0.04, FloorPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(*Pr, BayX0, BayY0, BayZ1 - 0.04, BayX1, BayY1, BayZ1, CeilPaint, Data, EFTCellKind::NoCollide, BayTag);
-			LotBox(*Pr, BayX0, BayY1 - 0.04, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
+			LotBox(*Pr, BayX0, BayY1 - 0.04, BayZ0, BayX1, BayY1, BayZ1, BackPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX0 + 0.04, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(*Pr, BayX1 - 0.04, BayY0, BayZ0, BayX1, BayY1, BayZ1, WallPaint, Data, EFTCellKind::NoCollide, BayTag);
 			const double BayW = BayX1 - BayX0, BayMidY = 0.5 * (BayY0 + BayY1);

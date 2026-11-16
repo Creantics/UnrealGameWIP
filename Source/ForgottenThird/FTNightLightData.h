@@ -56,6 +56,12 @@ public:
 	TArray<FVector3f> ShopAt;
 	UPROPERTY()
 	TArray<float> ShopYaw;
+	// Per shop (same index as ShopAt), its own pitch (degrees under the horizontal) and its share of the shop candela:
+	// empty, or shorter than ShopAt, for ShopPitch and 1 (the city's shops; the hero corner's lit rooms set theirs).
+	UPROPERTY()
+	TArray<float> ShopSlotPitch;
+	UPROPERTY()
+	TArray<float> ShopGain;
 
 	UPROPERTY()
 	float LampCandela;

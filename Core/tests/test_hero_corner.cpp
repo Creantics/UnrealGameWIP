@@ -106,21 +106,54 @@ TEST_CASE("hero corner: every bay box fronts the lane as a shophouse with a rend
     }
 }
 
-TEST_CASE("hero corner: six large lanterns in pairs under the eave") {
+TEST_CASE("hero corner: six large lanterns, a pair flanking each lit bay's entrance") {
     const HeroCornerSpec spec;
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
     REQUIRE(l.lanternCount == static_cast<std::size_t>(kHeroLargeLanterns + kHeroStrings * kHeroStringLanterns));
-    const double pairs[] = {526.0, 543.0, 549.5};
+    // The lit bays in order (1, 3 and 4), their entrances: bay 1's and the eatery's lattice fronts 4.125 m south of
+    // their north edges, bay 4's glazed door at its middle.
+    REQUIRE(l.pairCount == 3);
+    const int bays[] = {0, 2, 3};
+    const double entrances[] = {518.725, 534.925, 543.1};
+    for (int p = 0; p < 3; ++p) {
+        CHECK(l.pairBay[p] == bays[p]);
+        CHECK(l.entranceY[p] == doctest::Approx(entrances[p]));
+    }
     for (int i = 0; i < kHeroLargeLanterns; ++i) {
         const HeroLantern& lan = l.lanterns[i];
+        INFO("lantern " << i);
         CHECK(lan.large);
         CHECK(lan.string == -1);
+        CHECK(lan.bay == bays[i / 2]);
+        CHECK(lan.pent == spec.bayKoshi[lan.bay]);
+        CHECK(lan.scale == doctest::Approx(lan.pent ? spec.pentScale : spec.largeScale));
+        const double height = spec.largeHeight * lan.scale, diameter = spec.largeDiameter * lan.scale;
+        // Hung from its hook, the mesh at its scale: its centre that times 0.35 m under.
+        CHECK(lan.centre.z == doctest::Approx(lan.hook.z - 0.35 * lan.scale));
+        CHECK(lan.centre.z + 0.5 * height <= lan.hook.z + 1e-9);
+        // Either side of the entrance, outside its opening (a lattice front's 2.25 m, a glazed door's 1.8 m).
+        const double half = std::abs(lan.centre.y - entrances[i / 2]);
+        CHECK(half == doctest::Approx(0.5 * (lan.pent ? spec.pentPairGap : spec.largePairGap)));
+        CHECK(half - 0.5 * diameter > (lan.pent ? 1.125 : 0.9) - 0.3);
+        // In its own bay.
+        const double y0 = spec.bayY0 + spec.bayWidth * lan.bay;
+        CHECK(lan.centre.y - 0.5 * diameter > y0);
+        CHECK(lan.centre.y + 0.5 * diameter < y0 + spec.bayWidth);
+        // Clear of both strings' cables and small lanterns.
+        for (int s = 0; s < kHeroStrings; ++s) CHECK(std::abs(lan.centre.y - spec.stringY[s]) > 1.0);
+        if (lan.pent) {
+            // Under the pent roof (3.0 m at the face, falling 22 degrees out): its hook under the slope's underside, its
+            // paper clear of the fascia 0.85 m out and of the face, its foot over a walker's head.
+            CHECK(lan.hook.x == doctest::Approx(908.0 - 0.6));
+            CHECK(lan.hook.z < 4.18 + 3.0 - 0.6 * std::tan(22.0 * 3.14159265358979 / 180.0) - 0.04);
+            CHECK(lan.centre.x - 0.5 * diameter > 908.0 - 0.85);
+            CHECK(lan.centre.x + 0.5 * diameter < 908.0);
+            CHECK(lan.centre.z - 0.5 * height >= 4.18 + 1.95);
+            continue;
+        }
         CHECK(lan.centre.x == doctest::Approx(907.0));
-        // Hung from the eave's underside at 3.65 m, the mesh at largeScale: its centre largeScale times 0.35 m under.
-        CHECK(lan.centre.z == doctest::Approx(4.18 + 3.65 - 0.35 * spec.largeScale));
-        const double height = spec.largeHeight * spec.largeScale, diameter = spec.largeDiameter * spec.largeScale;
-        CHECK(std::abs(lan.centre.y - pairs[i / 2]) == doctest::Approx(0.8));
+        CHECK(lan.hook.z == doctest::Approx(4.18 + 3.65));
         // It hangs from an eave run's underside, inside its reach (along and out), its top under the slab.
         const MassingBox* over = nullptr;
         for (int r = 0; r < l.eaveCount; ++r) {
@@ -130,9 +163,6 @@ TEST_CASE("hero corner: six large lanterns in pairs under the eave") {
         REQUIRE(over != nullptr);
         CHECK(lan.hook.z == doctest::Approx(over->z0));
         CHECK(lan.hook.x > over->cx - 0.5 * over->sx);
-        // Clear of both strings' cables and small lanterns.
-        for (int s = 0; s < kHeroStrings; ++s) CHECK(std::abs(lan.centre.y - spec.stringY[s]) > 1.0);
-        CHECK(lan.centre.z + 0.5 * height <= lan.hook.z + 1e-9);
         // Clear of the shop's spill, which stands 0.4 m out at 2.4 m: the lantern's bottom is over it.
         CHECK(lan.centre.z - 0.5 * height > 4.18 + kMassingShopLightUp);
         // Big: the paper at least 0.8 m tall.
@@ -140,13 +170,93 @@ TEST_CASE("hero corner: six large lanterns in pairs under the eave") {
     }
 }
 
+TEST_CASE("hero corner: lamp slots under the strings, between each pair and over each lit entrance") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.lampCount == kHeroLampSlots);
+    CHECK(kHeroLampSlots == 8);
+    int strings = 0, pairs = 0, entrances = 0;
+    for (int k = 0; k < l.lampCount; ++k) {
+        const HeroLampSlot& s = l.lamps[k];
+        INFO("slot " << k);
+        CHECK(s.gain > 0.f);
+        CHECK(s.gain <= 1.f);
+        // Over the lane, inside the corner's no-street-lamp box (which the build checks lamps against).
+        CHECK(s.at.x < 908.0);
+        CHECK(s.at.x > 901.0);
+        CHECK(heroCornerKeepsLampOut(spec, s.at.x, s.at.y));
+        if (s.kind == HeroLampKind::String) {
+            CHECK(s.at.x == doctest::Approx(l.stringLamp[s.index].x));
+            CHECK(s.at.z == doctest::Approx(l.stringLamp[s.index].z));
+            CHECK(s.gain == doctest::Approx(spec.stringLampGain));
+            ++strings;
+            continue;
+        }
+        REQUIRE(s.index >= 0);
+        REQUIRE(s.index < l.pairCount);
+        CHECK(s.at.y == doctest::Approx(l.entranceY[s.index]));
+        const bool pent = spec.bayKoshi[l.pairBay[s.index]];
+        if (s.kind == HeroLampKind::Pair) {
+            // Between its two lanterns, just under their hooks.
+            const HeroLantern& a = l.lanterns[2 * s.index];
+            CHECK(s.at.x == doctest::Approx(a.hook.x));
+            CHECK(s.at.z == doctest::Approx(a.hook.z - spec.pairLampUnder));
+            CHECK(s.gain == doctest::Approx(spec.pairLampGain));
+            ++pairs;
+        } else {
+            // Close to the face, under the pent (whose underside at 0.35 m out is about 2.8 m up) or the eave.
+            CHECK(s.at.x == doctest::Approx(908.0 - spec.entranceLampOut));
+            CHECK(s.at.z < 4.18 + (pent ? 2.8 : 3.65));
+            CHECK(s.at.z > 4.18 + 2.5);  // over the lattice front's head beam
+            CHECK(s.gain == doctest::Approx(spec.entranceLampGain));
+            ++entrances;
+        }
+    }
+    CHECK(strings == 2);
+    CHECK(pairs == 3);
+    CHECK(entrances == 3);
+}
+
+TEST_CASE("hero corner: the probe points follow the layout") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    HeroProbe probes[kHeroMaxProbes];
+    const int n = heroCornerProbes(spec, l, probes, kHeroMaxProbes);
+    // 6 lanterns; per lit bay 4 face points, the lane and the back wall, and on the two lattices the noren and the
+    // lattice; 2 dark bays.
+    CHECK(n == 6 + 3 * 6 + 2 * 2 + 2);
+    std::set<std::string> names;
+    int noren = 0;
+    for (int i = 0; i < n; ++i) {
+        names.insert(probes[i].name);
+        if (std::string(probes[i].name).rfind("noren", 0) == 0) {
+            ++noren;
+            CHECK(probes[i].at.y == doctest::Approx(l.entranceY[noren == 1 ? 0 : 1]));
+        }
+        // A lattice room's back wall is read under the noren's foot (1.55 m), so the probe sees wall, not cloth.
+        if (std::string(probes[i].name).rfind("backwall bay1", 0) == 0) CHECK(probes[i].at.z < spec.ground + 1.55);
+    }
+    CHECK(names.size() == static_cast<std::size_t>(n));
+    CHECK(noren == 2);
+    CHECK(std::string(probes[0].name) == "lantern bay1 y517.3");
+    CHECK(probes[0].at.z == doctest::Approx(l.lanterns[0].centre.z));
+    // A short buffer takes what fits.
+    CHECK(heroCornerProbes(spec, l, probes, 3) == 3);
+}
+
 TEST_CASE("hero corner: the lanterns glow amber, low enough for the paper to read") {
     const HeroCornerSpec spec;
     CHECK(spec.lanternGlow > 0.f);
-    CHECK(spec.lanternGlow < 8.f);  // under the night lamp head's own default
+    CHECK(spec.lanternGlow <= 1.f);  // the body under clipping at the hero exposure (block C clipped at 2.0)
     CHECK(spec.lanternColour[0] == doctest::Approx(1.f));
     CHECK(spec.lanternColour[1] < 0.5f);
     CHECK(spec.lanternColour[2] < spec.lanternColour[1]);
+    // A deep amber paper: darker than block C's cream (0.80, 0.60, 0.38), its warmth kept.
+    CHECK(spec.lanternBase[0] < 0.8f);
+    CHECK(spec.lanternBase[1] < spec.lanternBase[0]);
+    CHECK(spec.lanternBase[2] < spec.lanternBase[1]);
 }
 
 TEST_CASE("hero corner: no street lamp inside the corner, and the camera's foreground kept clear") {
@@ -237,8 +347,12 @@ TEST_CASE("hero corner: the camera stands at the corner's south end looking nort
     const double pitch = std::atan2(l.at.z - l.eye.z, l.at.y - l.eye.y) * 180.0 / 3.14159265358979;
     CHECK(pitch == doctest::Approx(-3.0).epsilon(0.01));
     CHECK(l.lensMm == doctest::Approx(35.0));
-    // Every lantern is in front of it.
-    for (std::size_t i = 0; i < l.lanternCount; ++i) CHECK(l.lanterns[i].centre.y > l.eye.y + 10.0);
+    // Every lantern is in front of it and inside the 35 mm frame's width (36 mm across).
+    for (std::size_t i = 0; i < l.lanternCount; ++i) {
+        const double dy = l.lanterns[i].centre.y - l.eye.y;
+        CHECK(dy > 5.0);
+        CHECK(std::abs(l.lanterns[i].centre.x - l.eye.x) / dy < 18.0 / 35.0);
+    }
 }
 
 TEST_CASE("hero corner: a bay's id is told apart from the rest") {
@@ -332,18 +446,23 @@ TEST_CASE("hero corner: the bays as kit lots fill each bay's box with real shop 
     CHECK(spec.bayKoshi[spec.eateryBay]);
 }
 
-TEST_CASE("hero corner: one shop slot per lit bay, inside the room near its front, under the room's ceiling") {
+TEST_CASE("hero corner: one shop slot per lit bay, deep and high in the room, pitched out through its front") {
     const HeroCornerSpec spec;
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
     MassingShopLight lights[kHeroBays];
     REQUIRE(heroCornerShopLights(spec, lights) == 3);
+    // Pitched down less than the city's shops (-55), so its cone reaches out through the front onto the lane.
+    CHECK(spec.shopLightPitch < 0.f);
+    CHECK(spec.shopLightPitch > -55.f);
+    CHECK(spec.shopLightGain > 0.f);
     const int lit[] = {0, 2, 3};
     for (int k = 0; k < 3; ++k) {
         const MassingBox& b = l.bays[lit[k]];
-        // Behind the shop face (x 908), in the front metre of the room, not out over the lane.
-        CHECK(lights[k].x > 908.0);
-        CHECK(lights[k].x < 909.0);
+        // Behind the shop face (x 908), past the room's front metre, inside a lattice room's 2.8 m depth (0.12 m behind the
+        // face).
+        CHECK(lights[k].x > 909.0);
+        CHECK(lights[k].x < 908.0 + 0.12 + 2.8 - 0.5);
         CHECK(lights[k].y == doctest::Approx(b.cy));
         CHECK(lights[k].z == doctest::Approx(4.18 + spec.shopLightUp));
         // Under a lattice room's 2.45 m ceiling and its 0.07 m panels.
@@ -386,4 +505,56 @@ TEST_CASE("lamp slot gain: an empty table keeps every lamp's light; a slot past 
     CHECK(lampSlotGain(gains, 2, 0) == 1.f);
     CHECK(lampSlotGain(gains, 2, 1) == 0.5f);
     CHECK(lampSlotGain(gains, 2, 2) == 1.f);
+}
+
+TEST_CASE("lamp pool merge: one set gives the pool it had before sets merged") {
+    const LampPoolPoint pts[] = {{100.0, 200.0, 300.0}, {400.0, 500.0, 600.0}, {700.0, 800.0, 900.0}};
+    const float gains[] = {0.8f, 0.5f};
+    const LampPoolSet one{pts, 3, gains, 2};
+    std::vector<LampPoolSlot> slots;
+    lampPoolMerge(&one, 1, slots);
+    REQUIRE(slots.size() == 3);
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(slots[i].at.x == pts[i].x);
+        CHECK(slots[i].at.y == pts[i].y);
+        CHECK(slots[i].at.z == pts[i].z);
+        CHECK(slots[i].gain == lampSlotGain(gains, 2, i));
+        CHECK(slots[i].set == 0);
+        CHECK(slots[i].index == i);
+    }
+    // No table: every lamp keeps its light. Nothing to clash with in one set.
+    const LampPoolSet bare{pts, 3, nullptr, 0};
+    lampPoolMerge(&bare, 1, slots);
+    REQUIRE(slots.size() == 3);
+    CHECK(slots[2].gain == 1.f);
+    CHECK(lampPoolClashes(slots, 50.0, nullptr, nullptr) == 0);
+    lampPoolMerge(nullptr, 0, slots);
+    CHECK(slots.empty());
+}
+
+TEST_CASE("lamp pool merge: two sets append in order with their own gains; a light claimed by both is a clash") {
+    const LampPoolPoint strip[] = {{0.0, 0.0, 0.0}, {1000.0, 0.0, 0.0}};
+    const LampPoolPoint corner[] = {{5000.0, 0.0, 0.0}, {1010.0, 0.0, 0.0}};
+    const float stripGains[] = {0.5f};
+    const float cornerGains[] = {2.f, 3.f};
+    const LampPoolSet sets[] = {{strip, 2, stripGains, 1}, {corner, 2, cornerGains, 2}};
+    std::vector<LampPoolSlot> slots;
+    lampPoolMerge(sets, 2, slots);
+    REQUIRE(slots.size() == 4);
+    CHECK(slots[0].gain == 0.5f);
+    CHECK(slots[1].gain == 1.f);
+    CHECK(slots[2].gain == 2.f);
+    CHECK(slots[3].gain == 3.f);
+    CHECK(slots[2].set == 1);
+    CHECK(slots[3].index == 1);
+    std::size_t a = 99, b = 99;
+    CHECK(lampPoolClashes(slots, 50.0, &a, &b) == 1);
+    CHECK(a == 1);
+    CHECK(b == 3);
+    CHECK(lampPoolClashes(slots, 5.0, nullptr, nullptr) == 0);
+    // Two lights of one set side by side are not a clash.
+    const LampPoolPoint pair[] = {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+    const LampPoolSet same{pair, 2, nullptr, 0};
+    lampPoolMerge(&same, 1, slots);
+    CHECK(lampPoolClashes(slots, 50.0, nullptr, nullptr) == 0);
 }

@@ -14,13 +14,15 @@
 //   eave      1.2 m out over the lane (x 906.8..908) at 3.65 m, clear of the kit's 3.6 m shop storey, 0.12 m thick;
 //             in runs between the two timber lattice fronts (bay 1 and the eatery), each with its own tiled pent roof
 //             at 3.0 m
-//   lanterns  6 large, 1.0 m out (x 907.0), centre 3.3 m up, a pair (1.6 m apart) about y 526, 543 and 549.5 (the
-//             eatery's flanked), each under the eave
-//   strings   S1 at y 536, S2 at y 552: from the facade (x 908, 3.55 m up, under the eave) to a post's top (x 901.3,
+//   lanterns  6 large, a pair flanking each lit bay's entrance as the shops hang them: the glazed front's under the eave
+//             (1.0 m out, 2.6 m apart about its door, at 1.5 times the mesh), each lattice front's under its pent roof
+//             (0.6 m out, 2.65 m up, 2.8 m apart about its entrance, at the mesh's own size)
+//   strings   S1 at y 538.4, S2 at y 552: from the facade (x 908, 3.55 m up, under the eave) to a post's top (x 901.3,
 //             3.8 m up), sag 0.4 m at the middle; nine small lanterns 0.75 m apart, centred on the span, each hung
 //             under the cable
-//   light     only the lamp pool's: one lamp slot under each string's middle (warm, half a street lamp) and the lit
-//             bays' shop slots, one inside each lit room near its front; the rooms' ceiling panels and the lanterns
+//   light     only the lamp pool's: lamp slots (warm, straight down) under each string's middle, between each pair of
+//             large lanterns and over each lit entrance, close to its face; and the lit bays' shop slots, one inside
+//             each lit room, deep and high, facing out through its front; the rooms' ceiling panels and the lanterns
 //             are emissive, no lights of their own
 //   camera    (904.5, 511.0, 5.78) looking north at (904.5, 551.0, 3.68), 35 mm
 //
@@ -62,17 +64,26 @@ struct HeroCornerSpec {
     bool bayKoshi[kHeroBays] = {true, false, true, false, false};
     // The eave.
     double eaveOut = 1.2, eaveUp = 3.65, eaveThick = 0.12;
-    // The large lanterns.
-    double largeOut = 1.0, largeUp = 3.3, largePairGap = 1.6;
-    double largePairs[kHeroLargeLanterns / 2] = {526.0, 543.0, 549.5};
+    // The large lanterns: a pair flanking each lit bay's entrance (the first kHeroLargeLanterns / 2 lit bays, south to
+    // north). Under the eave (a glazed front): largeOut from the shop face, hooked to the eave's underside, the mesh at
+    // largeScale, largePairGap apart about the door.
+    double largeOut = 1.0, largeUp = 3.3, largePairGap = 2.6;
     double largeHeight = 0.6, largeDiameter = 0.45;  // the mesh's own size; placed largeScale times it from its hook
     double largeScale = 1.5;
-    // The lanterns' paper glow (the night lamp head master's LampStrength and LampColor): amber, about 2200 K, low enough
-    // that the paper's ribs and form read at a metre at the hero exposure.
-    float lanternGlow = 2.0f;
+    // Under a lattice front's pent roof (EAVE_PENT_09: 0.85 m out from 3.0 m at 22 degrees, its fascia's foot 2.50 m up):
+    // hooked pentHookOut from the face and pentHookUp over the ground, clear of the fascia, the mesh at pentScale,
+    // pentPairGap apart about the entrance (2.25 m wide).
+    double pentHookOut = 0.6, pentHookUp = 2.65, pentScale = 1.0, pentPairGap = 2.8;
+    // Where a bay's entrance is along the lane: a lattice front's (SHOP_KOSHI_54, its entrance 3.0..5.25 m along the
+    // piece from the bay's north edge) this far south of the north edge; a glazed front's door at the bay's middle.
+    double koshiEntranceFromNorth = 4.125;
+    // The lanterns' paper (the night lamp head master's LampBase, LampColor and LampStrength): a deep amber paper and a
+    // glow low enough that the body stays under clipping at the hero exposure and its ribs read at a metre.
+    float lanternGlow = 0.9f;
     float lanternColour[3] = {1.0f, 0.40f, 0.09f};
+    float lanternBase[3] = {0.55f, 0.30f, 0.12f};
     // The strings.
-    double stringY[kHeroStrings] = {536.0, 552.0};
+    double stringY[kHeroStrings] = {538.4, 552.0};
     double stringFacadeUp = 3.55, stringPostX = 901.3, stringPostUp = 3.8, stringSag = 0.4;
     double stringPitch = 0.75;    // m between two small lanterns, along the plan
     double smallHeight = 0.32, smallDiameter = 0.25;
@@ -82,10 +93,20 @@ struct HeroCornerSpec {
     // street lamp's candela.
     double stringLampUnder = 0.35;
     float stringLampGain = 0.5f;
+    // The pool's lamp slot for each pair of large lanterns: between the pair, this far under their hooks, so the faces,
+    // the noren and the paving under them take its warm pool.
+    double pairLampUnder = 0.1;
+    float pairLampGain = 0.5f;
+    // The pool's lamp slot over each lit entrance: this far out from the shop face (straight down, so it grazes the
+    // noren, the lattice face and the threshold), under the pent or the eave at the up below.
+    double entranceLampOut = 0.35, entranceLampUpPent = 2.7, entranceLampUpEave = 3.55;
+    float entranceLampGain = 0.3f;
     // A lit bay's one light, its pool shop slot: this far inside the room behind its shop face and this high over the
-    // ground (under a lattice room's 2.45 m ceiling and its panels), facing out, so it lights the front of the room and
-    // spills through the front onto the lane.
-    double shopLightIn = 0.6, shopLightUp = 2.1;
+    // ground (under a lattice room's 2.45 m ceiling and its panels), facing out and pitched down shopLightPitch degrees,
+    // so it lights the room's front and falls through the front onto the lane; at shopLightGain of a shop light.
+    double shopLightIn = 1.2, shopLightUp = 2.3;
+    float shopLightPitch = -35.f;
+    float shopLightGain = 1.5f;
     // The quay's lamp masts in the camera's view (both banks of the canal beside the lane, to its far end) have no lamp
     // in the pool: inside this plan box each gives way to a rail piece (heroCornerClearMasts).
     double mastClearX0 = 890.0, mastClearX1 = 903.0, mastClearY0 = 505.0, mastClearY1 = 640.0;
@@ -108,9 +129,22 @@ struct HeroPoint {
 struct HeroLantern {
     HeroPoint centre;     // the paper's centre
     HeroPoint hook;       // where it hangs from (its top)
+    double scale = 1.0;   // the mesh's scale about its hook
     bool large = false;
-    int string = -1;      // 0, 1: on that string; -1: under the eave
+    bool pent = false;    // a large lantern under a lattice front's pent roof (else under the eave)
+    int string = -1;      // 0, 1: on that string; -1: a large one
+    int bay = -1;         // a large one: the lit bay whose entrance it flanks
 };
+
+// A lamp slot of the pool's (a warm street-lamp spot, straight down) at gain times a street lamp's candela.
+enum class HeroLampKind { String, Pair, Entrance };
+struct HeroLampSlot {
+    HeroPoint at;
+    float gain = 1.f;
+    HeroLampKind kind = HeroLampKind::String;
+    int index = 0;  // the string's, or the pair's (0 the southmost lit bay's)
+};
+inline constexpr int kHeroLampSlots = kHeroStrings + 2 * (kHeroLargeLanterns / 2);
 
 struct HeroCornerLayout {
     MassingBox pave;                 // the lane's paving slab (kind "paving")
@@ -128,6 +162,13 @@ struct HeroCornerLayout {
     HeroPoint postFoot[kHeroStrings];  // a post's foot on the ground; it stands postHeight
     HeroPoint stringLamp[kHeroStrings];
     float stringLampGain = 1.f;
+    // Every lamp slot: the strings' first, then per pair its pair slot and its entrance slot.
+    HeroLampSlot lamps[kHeroLampSlots];
+    int lampCount = 0;
+    // Per pair (the lit bays' in order, south to north): its bay and the middle of that bay's entrance along the lane.
+    int pairBay[kHeroLargeLanterns / 2] = {-1, -1, -1};
+    double entranceY[kHeroLargeLanterns / 2] = {};
+    int pairCount = 0;
     HeroPoint eye, at;
     double lensMm = 35.0;
 };
@@ -146,6 +187,34 @@ FTCORE_API void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& o
 inline float lampSlotGain(const float* gains, std::size_t count, std::size_t i) {
     return gains && i < count ? gains[i] : 1.f;
 }
+
+// The night lamp pool's slots, merged from every night-light set in the world (the strip's and a streamed sub-level's).
+// A set is one actor's lamps or shop lights: count points and its own gain table (lampSlotGain within the set).
+struct LampPoolPoint {
+    double x = 0.0, y = 0.0, z = 0.0;
+};
+struct LampPoolSet {
+    const LampPoolPoint* at = nullptr;
+    std::size_t count = 0;
+    const float* gains = nullptr;
+    std::size_t gainCount = 0;
+};
+struct LampPoolSlot {
+    LampPoolPoint at;
+    float gain = 1.f;
+    int set = 0;            // which set it came from
+    std::size_t index = 0;  // its index in that set
+};
+
+// Every set's slots in set order, then point order: one set gives exactly its points with lampSlotGain's gains, as the
+// pool had before it merged sets.
+FTCORE_API void lampPoolMerge(const LampPoolSet* sets, std::size_t setCount, std::vector<LampPoolSlot>& out);
+
+// Slot pairs from two different sets closer than tolerance (in the points' units): the same light claimed twice, e.g. a
+// corner left in the strip and also built in its sub-level. Returns the number of pairs; the first pair's slot indices
+// go to *firstA < *firstB when there is one.
+FTCORE_API std::size_t lampPoolClashes(const std::vector<LampPoolSlot>& slots, double tolerance, std::size_t* firstA,
+                                       std::size_t* firstB);
 
 // Whether id is a hero corner bay's (HC-BAY-<n>...), and its 0-based bay index.
 FTCORE_API bool heroCornerBay(std::string_view id, int* index);
@@ -169,6 +238,17 @@ FTCORE_API void heroCornerLots(const HeroCornerSpec& spec, HeroLots& out);
 // front, shopLightIn inside the room behind its shop face and shopLightUp over the ground, facing west (out onto the
 // lane). Returns how many (at most kHeroBays).
 FTCORE_API int heroCornerShopLights(const HeroCornerSpec& spec, MassingShopLight out[kHeroBays]);
+
+// The plan points a still's luma probe reads (the build writes them out, so the probe never keeps its own copy of the
+// layout): each large lantern's body; per lit bay the shop face either side of its entrance at 1.0 and 2.0 m, the lane
+// under its pair, its room's back wall (probeRoomIn behind the face, in the room's top third) and, on a lattice front,
+// its noren and lattice; per dark bay its face at 1.5 m. Returns how many (at most max).
+struct HeroProbe {
+    char name[32] = {};
+    HeroPoint at;
+};
+inline constexpr int kHeroMaxProbes = 64;
+FTCORE_API int heroCornerProbes(const HeroCornerSpec& spec, const HeroCornerLayout& layout, HeroProbe* out, int max);
 
 // The quay's lamp masts inside the spec's mast-clear box become railing spans that close the rail's gap round the mast
 // (kQuayMastPlate long, rail high, along the rail: the mast's rot turned 90 degrees, id "<mast id>-RAIL"). Returns how

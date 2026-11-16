@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 namespace ftcore {
@@ -88,16 +89,31 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
     }
     out.eateryBay = eatery;
 
+    // A pair flanking each lit bay's entrance: under the pent on a lattice front, under the eave on a glazed one.
     out.lanternCount = 0;
-    const double largeX = spec.laneX1 - spec.largeOut;
-    for (int p = 0; p < kHeroLargeLanterns / 2; ++p) {
+    out.pairCount = 0;
+    HeroPoint pairHook[kHeroLargeLanterns / 2];
+    for (int i = 0; i < kHeroBays && out.pairCount < kHeroLargeLanterns / 2; ++i) {
+        if (!spec.bayLit[i]) continue;
+        const int p = out.pairCount++;
+        const bool pent = spec.bayKoshi[i];
+        const double south = spec.bayY0 + spec.bayWidth * i;
+        const double y = pent ? south + spec.bayWidth - spec.koshiEntranceFromNorth : south + 0.5 * spec.bayWidth;
+        out.pairBay[p] = i;
+        out.entranceY[p] = y;
+        const double scale = pent ? spec.pentScale : spec.largeScale;
+        const double gap = pent ? spec.pentPairGap : spec.largePairGap;
+        pairHook[p] = {spec.laneX1 - (pent ? spec.pentHookOut : spec.largeOut), y, g + (pent ? spec.pentHookUp : spec.eaveUp)};
         for (int side = -1; side <= 1; side += 2) {
             HeroLantern& l = out.lanterns[out.lanternCount++];
             l.large = true;
+            l.pent = pent;
             l.string = -1;
-            // The mesh hangs from its hook at largeScale, so its centre drops largeScale times its own hook-to-centre.
-            l.hook = {largeX, spec.largePairs[p] + 0.5 * side * spec.largePairGap, g + spec.eaveUp};
-            l.centre = {l.hook.x, l.hook.y, l.hook.z - (spec.eaveUp - spec.largeUp) * spec.largeScale};
+            l.bay = i;
+            l.scale = scale;
+            // The mesh hangs from its hook at its scale, so its centre drops that times its own hook-to-centre.
+            l.hook = {pairHook[p].x, y + 0.5 * side * gap, pairHook[p].z};
+            l.centre = {l.hook.x, l.hook.y, l.hook.z - (spec.eaveUp - spec.largeUp) * scale};
         }
     }
 
@@ -122,9 +138,59 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
         out.stringLamp[s] = {spec.laneX1 - 0.5 * span, y, heroCableZ(spec, 0.5) - spec.stringLampUnder};
     }
     out.stringLampGain = spec.stringLampGain;
-    out.eye = {spec.eye[0], spec.eye[1], spec.eye[2]};
+
+    out.lampCount = 0;
+    for (int s = 0; s < kHeroStrings; ++s) {
+        out.lamps[out.lampCount++] = {out.stringLamp[s], spec.stringLampGain, HeroLampKind::String, s};
+    }
+    for (int p = 0; p < out.pairCount; ++p) {
+        const bool pent = spec.bayKoshi[out.pairBay[p]];
+        out.lamps[out.lampCount++] = {{pairHook[p].x, pairHook[p].y, pairHook[p].z - spec.pairLampUnder}, spec.pairLampGain, HeroLampKind::Pair, p};
+        out.lamps[out.lampCount++] = {{spec.laneX1 - spec.entranceLampOut, out.entranceY[p], g + (pent ? spec.entranceLampUpPent : spec.entranceLampUpEave)},
+                                      spec.entranceLampGain, HeroLampKind::Entrance, p};
+    }
+    out.eye ={spec.eye[0], spec.eye[1], spec.eye[2]};
     out.at = {spec.at[0], spec.at[1], spec.at[2]};
     out.lensMm = spec.lensMm;
+}
+
+void lampPoolMerge(const LampPoolSet* sets, std::size_t setCount, std::vector<LampPoolSlot>& out) {
+    out.clear();
+    for (std::size_t s = 0; sets && s < setCount; ++s) {
+        const LampPoolSet& set = sets[s];
+        for (std::size_t i = 0; set.at && i < set.count; ++i) {
+            LampPoolSlot slot;
+            slot.at = set.at[i];
+            slot.gain = lampSlotGain(set.gains, set.gainCount, i);
+            slot.set = static_cast<int>(s);
+            slot.index = i;
+            out.push_back(slot);
+        }
+    }
+}
+
+std::size_t lampPoolClashes(const std::vector<LampPoolSlot>& slots, double tolerance, std::size_t* firstA,
+                            std::size_t* firstB) {
+    const double t2 = tolerance * tolerance;
+    std::size_t clashes = 0;
+    for (std::size_t a = 0; a < slots.size(); ++a) {
+        for (std::size_t b = a + 1; b < slots.size(); ++b) {
+            if (slots[a].set == slots[b].set) {
+                continue;
+            }
+            const double dx = slots[a].at.x - slots[b].at.x;
+            const double dy = slots[a].at.y - slots[b].at.y;
+            const double dz = slots[a].at.z - slots[b].at.z;
+            if (dx * dx + dy * dy + dz * dz < t2) {
+                if (clashes == 0) {
+                    if (firstA) *firstA = a;
+                    if (firstB) *firstB = b;
+                }
+                ++clashes;
+            }
+        }
+    }
+    return clashes;
 }
 
 bool heroCornerBay(std::string_view id, int* index) {
@@ -227,6 +293,48 @@ int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& 
         p.id += "-RAIL";
         p.tag = "railing_span";
         ++n;
+    }
+    return n;
+}
+
+int heroCornerProbes(const HeroCornerSpec& spec, const HeroCornerLayout& layout, HeroProbe* out, int max) {
+    int n = 0;
+    const double g = spec.ground;
+    const auto add = [&](const char* fmt, int a, double b, const HeroPoint& at) {
+        if (n >= max) return;
+        HeroProbe& p = out[n++];
+        std::snprintf(p.name, sizeof(p.name), fmt, a, b);
+        p.at = at;
+    };
+    constexpr double probeRoomIn = 2.5;
+    for (std::size_t i = 0; i < layout.lanternCount; ++i) {
+        const HeroLantern& l = layout.lanterns[i];
+        if (l.large) add("lantern bay%d y%.1f", l.bay + 1, l.centre.y, l.centre);
+    }
+    for (int p = 0; p < layout.pairCount; ++p) {
+        const int bay = layout.pairBay[p];
+        const bool pent = spec.bayKoshi[bay];
+        const double y = layout.entranceY[p];
+        const double gap = pent ? spec.pentPairGap : spec.largePairGap;
+        for (int side = -1; side <= 1; side += 2) {
+            const double fy = y + 0.5 * side * gap;
+            add("face bay%d y%.1f z2.0", bay + 1, fy, {spec.laneX1, fy, g + 2.0});
+            add("face bay%d y%.1f z1.0", bay + 1, fy, {spec.laneX1, fy, g + 1.0});
+        }
+        add("lane bay%d y%.1f", bay + 1, y, {spec.laneX1 - 1.5, y, g + spec.paveTop});
+        // The back wall seen through the entrance: in a lattice room under the noren's foot (it hangs 1.55..2.2 m), else
+        // the room's top third.
+        add("backwall bay%d y%.1f", bay + 1, y, {spec.laneX1 + probeRoomIn, y, g + (pent ? 1.2 : 2.2)});
+        if (pent) {
+            add("noren bay%d y%.1f", bay + 1, y, {spec.laneX1 - 0.13, y, g + 1.9});
+            const double north = spec.bayY0 + spec.bayWidth * (bay + 1);
+            add("lattice bay%d y%.1f", bay + 1, north - 1.5, {spec.laneX1 - 0.1, north - 1.5, g + 1.4});
+        }
+    }
+    for (int i = 0; i < kHeroBays; ++i) {
+        if (spec.bayLit[i]) continue;
+        const double y = spec.bayY0 + spec.bayWidth * (i + 0.5);
+        add("dark bay%d y%.1f z1.5", i + 1, y, {spec.laneX1, y, g + 1.5});
     }
     return n;
 }

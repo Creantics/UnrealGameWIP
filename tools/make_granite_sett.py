@@ -1,9 +1,10 @@
-"""Generate the solhaven_granite_sett surface: grey granite setts in running bond, tileable.
+"""Generate the solhaven_granite_sett surface: small square grey granite setts in stack bond, tileable.
 
 The hero corner's lane paving (our own generated route; a scanned set may replace the files later under its own id).
-One tile is 120 cm square: 6 setts across (20 cm) and 12 rows down (10 cm), odd rows shifted half a sett, as
-SurfaceJoints' entry {"granite_sett", depth 1.0 cm, 6, 12, bond} reads it. Joints are about 1.2 cm wide and 1.0 cm deep,
-filled with dark grit.
+One tile is 120 cm square: 12 setts across and 12 rows down (10 cm square), rows in line (stack bond), as
+SurfaceJoints' entry {"granite_sett", depth 1.0 cm, 12, 12, no bond} reads it. Joints are about 1.2 cm wide and 1.0 cm
+deep, filled with near-black grit, so the pattern reads from the lane's camera. --units-u/--units-v/--bond running give
+the old 20 x 10 cm running bond back (the joint table must then match).
 
 Writes <out>/<id>_diff_2k.jpg (sRGB albedo), <id>_nor_dx_2k.jpg (DirectX normal from the true height),
 <id>_arm_2k.jpg (R ambient occlusion: >= 0.92 on the stone tops, <= 0.6 in the joints; G roughness; B metal 0),
@@ -21,9 +22,10 @@ from PIL import Image
 
 ID = "solhaven_granite_sett"
 TILE_CM = 120.0
-UNITS_U, UNITS_V = 6, 12          # setts across, rows down
 JOINT_CM = 1.2                    # joint width (both sides' insets together)
 DEPTH_CM = 1.0                    # joint depth under a sett's top
+GRIT = (0.035, 0.032, 0.029)      # the joints' fill, linear albedo: near-black wet grit
+JOINT_AO = 0.42                   # the joints' AO ceiling
 
 
 def periodic_noise(rng, n, sigma_px):
@@ -54,18 +56,23 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--res", type=int, default=2048)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--units-u", type=int, default=12)
+    ap.add_argument("--units-v", type=int, default=12)
+    ap.add_argument("--bond", choices=("stack", "running"), default="stack")
     args = ap.parse_args()
+    UNITS_U, UNITS_V = args.units_u, args.units_v
+    running = args.bond == "running"
     n = args.res
     rng = np.random.default_rng(args.seed)
     px_cm = TILE_CM / n
     stones = UNITS_U * UNITS_V
-    sett_u, sett_v = TILE_CM / UNITS_U, TILE_CM / UNITS_V   # 20 x 10 cm
+    sett_u, sett_v = TILE_CM / UNITS_U, TILE_CM / UNITS_V   # 10 x 10 cm
 
-    # The grid, as SurfaceJoints reads it: row = floor(v * unitsV), odd rows shifted half a unit.
+    # The grid, as SurfaceJoints reads it: row = floor(v * unitsV); in running bond odd rows shift half a unit.
     c = (np.arange(n) + 0.5) / n
     u, v = np.meshgrid(c, c)
     row = np.floor(v * UNITS_V).astype(np.int64)
-    cu = u * UNITS_U - 0.5 * (row % 2)
+    cu = u * UNITS_U - (0.5 * (row % 2) if running else 0.0)
     col = np.floor(cu).astype(np.int64)
     fu = cu - col
     fv = v * UNITS_V - row
@@ -75,8 +82,9 @@ def main():
 
     # Per-sett character.
     half_j = 0.5 * JOINT_CM
-    ins = 0.75 * half_j + rng.uniform(-0.05, 0.18, (stones, 4))      # left, right, top, bottom insets, cm
-    radius = rng.uniform(0.3, 1.0, stones)
+    # Left, right, top, bottom insets, cm: hand-split setts sit unevenly, so no two joints run the same width.
+    ins = 0.6 * half_j + rng.uniform(-0.1, 0.55, (stones, 4))
+    radius = rng.uniform(0.6, 1.8, stones)
     bevel = rng.uniform(0.5, 1.0, stones)
     top = rng.uniform(0.93, 0.975, stones)
     tilt = rng.uniform(-0.02, 0.02, (stones, 2))
@@ -153,9 +161,9 @@ def main():
     edge = smoothstep(0.0, 1.6, inside)
     grime = 1.0 - 0.28 * (1.0 - edge) * (inside > 0)
     rgb *= grime[..., None]
-    grit = np.stack([0.075, 0.068, 0.06]) * (1.0 + 0.25 * periodic_noise(rng, n, 0.08 / px_cm))[..., None]
+    grit = np.stack(GRIT) * (1.0 + 0.25 * periodic_noise(rng, n, 0.08 / px_cm))[..., None]
     in_joint = height <= fill + 0.02
-    ao = np.where(in_joint, np.minimum(ao, 0.58), ao)
+    ao = np.where(in_joint, np.minimum(ao, JOINT_AO), ao)
     rgb = np.where(in_joint[..., None], grit, rgb)
     rgb = np.clip(rgb, 0.02, 0.95)
     srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * rgb ** (1 / 2.4) - 0.055)
@@ -194,7 +202,7 @@ def main():
         "res": n,
         "tile_cm": TILE_CM,
         "units": [UNITS_U, UNITS_V],
-        "bond": "running, half",
+        "bond": "running, half" if running else "stack",
         "joint_cm": JOINT_CM,
         "depth_cm": DEPTH_CM,
         "ao_top_min": float(ao[top_mask].min()),

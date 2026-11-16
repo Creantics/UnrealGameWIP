@@ -2,6 +2,7 @@
 
 #include "Camera/PlayerCameraManager.h"
 #include "Components/SpotLightComponent.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FTNightLightData.h"
@@ -11,6 +12,7 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "ftcore/HeroCorner.h"
 
@@ -32,15 +34,7 @@ bool UFTLampPoolSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
-	for (TActorIterator<AFTNightLights> It(&InWorld); It; ++It)
-	{
-		if (UFTNightLightData* Found = It->FindComponentByClass<UFTNightLightData>())
-		{
-			NightLights = *It;
-			Data = Found;
-			break;
-		}
-	}
+	Gather(InWorld);
 	if (!Data.IsValid())
 	{
 		return;
@@ -90,16 +84,104 @@ void UFTLampPoolSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	SincePick = kPickSeconds;
 }
 
+void UFTLampPoolSubsystem::Gather(UWorld& World)
+{
+	LampAt.Reset();
+	LampGain.Reset();
+	ShopAt.Reset();
+	ShopYaw.Reset();
+	ShopPitch.Reset();
+	ShopGain.Reset();
+	// Every night-light set (the strip's, a streamed sub-level's) merged by ftcore::lampPoolMerge: one set gives the pool
+	// as before. Runs at BeginPlay and once more when the pool is made, never per frame.
+	TArray<const UFTNightLightData*> Sets;
+	TArray<FString> Names;
+	FString Counts;
+	for (TActorIterator<AFTNightLights> It(&World); It; ++It)
+	{
+		UFTNightLightData* Found = It->FindComponentByClass<UFTNightLightData>();
+		if (!Found)
+		{
+			continue;
+		}
+		if (!Data.IsValid())
+		{
+			// The first one's cones and sources serve every light.
+			NightLights = *It;
+			Data = Found;
+		}
+		const ULevel* Level = It->GetLevel();
+		Names.Add(Level ? FPackageName::GetShortName(Level->GetOutermost()->GetName()) : FString(TEXT("?")));
+		Counts += FString::Printf(TEXT(" %s %d lamps + %d shops;"), *Names.Last(), Found->LampAt.Num(), FMath::Min(Found->ShopAt.Num(), Found->ShopYaw.Num()));
+		Sets.Add(Found);
+	}
+	const int32 Actors = Sets.Num();
+	std::vector<std::vector<ftcore::LampPoolPoint>> LampPts(static_cast<size_t>(Actors)), ShopPts(static_cast<size_t>(Actors));
+	std::vector<ftcore::LampPoolSet> LampSets(static_cast<size_t>(Actors)), ShopSets(static_cast<size_t>(Actors));
+	for (int32 S = 0; S < Actors; ++S)
+	{
+		const UFTNightLightData& Set = *Sets[S];
+		const size_t Si = static_cast<size_t>(S);
+		for (const FVector& At : Set.LampAt)
+		{
+			LampPts[Si].push_back({At.X, At.Y, At.Z});
+		}
+		const int32 Shops = FMath::Min(Set.ShopAt.Num(), Set.ShopYaw.Num());
+		for (int32 I = 0; I < Shops; ++I)
+		{
+			ShopPts[Si].push_back({Set.ShopAt[I].X, Set.ShopAt[I].Y, Set.ShopAt[I].Z});
+		}
+		LampSets[Si] = {LampPts[Si].data(), LampPts[Si].size(), Set.LampGain.GetData(), static_cast<size_t>(Set.LampGain.Num())};
+		ShopSets[Si] = {ShopPts[Si].data(), ShopPts[Si].size(), Set.ShopGain.GetData(), static_cast<size_t>(Set.ShopGain.Num())};
+	}
+	std::vector<ftcore::LampPoolSlot> Slots;
+	ftcore::lampPoolMerge(LampSets.data(), LampSets.size(), Slots);
+	for (const ftcore::LampPoolSlot& Slot : Slots)
+	{
+		LampAt.Add(FVector(Slot.at.x, Slot.at.y, Slot.at.z));
+		LampGain.Add(Slot.gain);
+	}
+	// Two sets claiming the same light (within 50 cm) is a corner built twice: logged, never silently doubled.
+	auto Clashes = [&](const TCHAR* What)
+	{
+		size_t A = 0, B = 0;
+		const size_t N = ftcore::lampPoolClashes(Slots, 50.0, &A, &B);
+		if (N > 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("LampPool: %d %s claimed by two night light sets, first %s #%d and %s #%d at (%.0f, %.0f, %.0f)."),
+				static_cast<int32>(N), What, *Names[Slots[A].set], static_cast<int32>(Slots[A].index), *Names[Slots[B].set], static_cast<int32>(Slots[B].index),
+				Slots[A].at.x, Slots[A].at.y, Slots[A].at.z);
+		}
+		return static_cast<int32>(N);
+	};
+	const int32 LampClashes = Actors > 1 ? Clashes(TEXT("lamps")) : 0;
+	ftcore::lampPoolMerge(ShopSets.data(), ShopSets.size(), Slots);
+	for (const ftcore::LampPoolSlot& Slot : Slots)
+	{
+		const UFTNightLightData& Set = *Sets[Slot.set];
+		const int32 I = static_cast<int32>(Slot.index);
+		ShopAt.Add(FVector(Slot.at.x, Slot.at.y, Slot.at.z));
+		ShopYaw.Add(Set.ShopYaw[I]);
+		ShopPitch.Add(Set.ShopSlotPitch.IsValidIndex(I) ? Set.ShopSlotPitch[I] : Set.ShopPitch);
+		ShopGain.Add(Slot.gain);
+	}
+	const int32 ShopClashes = Actors > 1 ? Clashes(TEXT("shop lights")) : 0;
+	if (Actors != GatheredFrom)
+	{
+		GatheredFrom = Actors;
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: merged %d night light sets:%s %d lamps, %d shops in all; %d lamp and %d shop slots claimed twice."),
+			Actors, *Counts, LampAt.Num(), ShopAt.Num(), LampClashes, ShopClashes);
+	}
+}
+
 int32 UFTLampPoolSubsystem::GetLampCount() const
 {
-	const UFTNightLightData* D = Data.Get();
-	return D ? D->LampAt.Num() : 0;
+	return LampAt.Num();
 }
 
 int32 UFTLampPoolSubsystem::GetShopCount() const
 {
-	const UFTNightLightData* D = Data.Get();
-	return D ? FMath::Min(D->ShopAt.Num(), D->ShopYaw.Num()) : 0;
+	return ShopAt.Num();
 }
 
 bool UFTLampPoolSubsystem::IsNightNow() const
@@ -160,9 +242,17 @@ void UFTLampPoolSubsystem::ApplyValues(USpotLightComponent& Light, bool bLamp) c
 
 void UFTLampPoolSubsystem::CreatePool()
 {
+	if (bPoolMade || !NightLights.IsValid() || !Data.IsValid())
+	{
+		return;
+	}
+	// Again now: a level streamed in after BeginPlay (an always-loaded sub-level) brings its own lights.
+	if (UWorld* World = GetWorld())
+	{
+		Gather(*World);
+	}
 	AFTNightLights* Owner = NightLights.Get();
-	const UFTNightLightData* D = Data.Get();
-	if (bPoolMade || !Owner || !D)
+	if (!Owner)
 	{
 		return;
 	}
@@ -173,25 +263,29 @@ void UFTLampPoolSubsystem::CreatePool()
 	Xy.Reserve(FMath::Max(LampCount, ShopCount) * 2);
 	for (int32 I = 0; I < LampCount; ++I)
 	{
-		Xy.Add(D->LampAt[I].X);
-		Xy.Add(D->LampAt[I].Y);
+		Xy.Add(LampAt[I].X);
+		Xy.Add(LampAt[I].Y);
 	}
 	Lamps.Picker.build(Xy.GetData(), static_cast<size_t>(LampCount), kPickerCellCm);
 	Lamps.Scale.SetNumUninitialized(LampCount);
 	ftcore::nightLampScales(FTNight::Look(), Xy.GetData(), static_cast<size_t>(LampCount), 100.f, Lamps.Scale.GetData());
 	for (int32 I = 0; I < LampCount; ++I)
 	{
-		Lamps.Scale[I] *= ftcore::lampSlotGain(D->LampGain.GetData(), static_cast<size_t>(D->LampGain.Num()), static_cast<size_t>(I));
+		Lamps.Scale[I] *= LampGain[I];
 	}
 	Xy.Reset();
 	for (int32 I = 0; I < ShopCount; ++I)
 	{
-		Xy.Add(D->ShopAt[I].X);
-		Xy.Add(D->ShopAt[I].Y);
+		Xy.Add(ShopAt[I].X);
+		Xy.Add(ShopAt[I].Y);
 	}
 	Shops.Picker.build(Xy.GetData(), static_cast<size_t>(ShopCount), kPickerCellCm);
 	Shops.Scale.SetNumUninitialized(ShopCount);
 	ftcore::nightLampScales(FTNight::Look(), Xy.GetData(), static_cast<size_t>(ShopCount), 100.f, Shops.Scale.GetData());
+	for (int32 I = 0; I < ShopCount; ++I)
+	{
+		Shops.Scale[I] *= ShopGain[I];
+	}
 
 	auto Make = [this, Owner](FPool& Pool, TArray<TObjectPtr<USpotLightComponent>>& Lights, int32 Size, bool bLamp)
 	{
@@ -262,7 +356,6 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 	{
 		return;
 	}
-	const UFTNightLightData& D = *Data.Get();
 	const int32 Count = static_cast<int32>(Pool.Picker.pick(static_cast<float>(From.X), static_cast<float>(From.Y), ReachCm,
 		static_cast<size_t>(Size), Pool.Picked.GetData()));
 	for (int32 P = 0; P < Count; ++P)
@@ -312,8 +405,8 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 		Pool.Slot[Free] = Index;
 		if (USpotLightComponent* Light = Lights[Free])
 		{
-			const FVector At(bLamp ? D.LampAt[Index] : D.ShopAt[Index]);
-			const FRotator Facing = bLamp ? LampFacing : FRotator(D.ShopPitch, D.ShopYaw[Index], 0.f);
+			const FVector At(bLamp ? LampAt[Index] : ShopAt[Index]);
+			const FRotator Facing = bLamp ? LampFacing : FRotator(ShopPitch[Index], ShopYaw[Index], 0.f);
 			Light->SetWorldLocationAndRotation(At, Facing);
 			Light->SetIntensity(Candela(bLamp) * (Pool.Scale.IsValidIndex(Index) ? Pool.Scale[Index] : 1.f));
 		}
@@ -366,7 +459,7 @@ void UFTLampPoolSubsystem::PickPool(FPool& Pool, TArray<TObjectPtr<USpotLightCom
 			{
 				continue;
 			}
-			const bool bCast = Held != INDEX_NONE && D.ShopAt.IsValidIndex(Held) && FVector::DistSquared(FVector(D.ShopAt[Held]), From) <= Near2;
+			const bool bCast = Held != INDEX_NONE && ShopAt.IsValidIndex(Held) && FVector::DistSquared(FVector(ShopAt[Held]), From) <= Near2;
 			if ((Light->CastShadows != 0) != bCast)
 			{
 				Light->SetCastShadows(bCast);
