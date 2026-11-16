@@ -999,11 +999,11 @@ TEST_CASE("close station: the kit's range: unset, invalid, or under the classic 
     CHECK(e.standoffMeters == 1.8f);
     CHECK(e.leashMeters == tu.leashMeters); // only the two
     CHECK(e.stationTolerance == tu.stationTolerance);
-    const float nan = std::nanf("");
-    const float inf = HUGE_VALF;
-    for (const PartnerRange bad : {PartnerRange{}, PartnerRange{nan, 1.f}, PartnerRange{3.f, nan}, PartnerRange{3.f, 3.5f},
+    const float notNumber = std::nanf("");
+    const float endless = HUGE_VALF;
+    for (const PartnerRange bad : {PartnerRange{}, PartnerRange{notNumber, 1.f}, PartnerRange{3.f, notNumber}, PartnerRange{3.f, 3.5f},
                                    PartnerRange{0.3f, 0.f}, PartnerRange{0.9f, 0.f}, PartnerRange{3.f, -0.1f},
-                                   PartnerRange{kPartnerRangeMax + 0.1f, 1.f}, PartnerRange{inf, 1.f}}) {
+                                   PartnerRange{kPartnerRangeMax + 0.1f, 1.f}, PartnerRange{endless, 1.f}}) {
         CAPTURE(bad.reach);
         CAPTURE(bad.standoff);
         in.range = bad;
@@ -1022,7 +1022,7 @@ TEST_CASE("close station: the kit's range: unset, invalid, or under the classic 
         bool close;
         PartnerRange range;
     };
-    for (const Pair c : {Pair{true, PartnerRange{3.f, 3.5f}}, Pair{true, PartnerRange{nan, 1.f}},
+    for (const Pair c : {Pair{true, PartnerRange{3.f, 3.5f}}, Pair{true, PartnerRange{notNumber, 1.f}},
                          Pair{false, PartnerRange{3.2f, 1.8f}}, Pair{false, PartnerRange{8.5f, 5.f}}}) {
         CAPTURE(c.close);
         CAPTURE(c.range.reach);
@@ -1042,7 +1042,9 @@ TEST_CASE("close station: the kit's range: unset, invalid, or under the classic 
             }
             REQUIRE(plain.b.hash() == told.b.hash());
         }
-        CHECK(strings >= 1); // the runs fight
+        MESSAGE("range " << c.range.reach << "/" << c.range.standoff << (c.close ? ", close" : ", classic") << ": "
+                         << strings << " strings in 15 s, alike");
+        if (c.close) CHECK(strings >= 1); // the close runs fight (the classic one: the arena test's hits)
     }
 }
 
