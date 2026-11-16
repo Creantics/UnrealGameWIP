@@ -5,6 +5,7 @@
 #include "ftcore/PartnerCloseStation.h"
 #include "AllocCounter.h"
 #include <doctest/doctest.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -940,4 +941,223 @@ TEST_CASE("close station: a new target starts a new flank hold") {
     REQUIRE(p.b.save().target == 1);
     MESSAGE("flank on the first target " << static_cast<int>(was) << ", on the second " << static_cast<int>(p.b.save().closeHold.flank));
     CHECK(p.b.save().closeHold.heldFor < 1e-9);
+}
+
+namespace {
+// 30 s of a close-camera partner on one target with a kit range: its strings, from how far off the edge each starts,
+// its farthest Pause or Approach goal, and its StepBacks (bad: one not out to the standoff from inside it).
+struct CsRangeRun {
+    int strings = 0;
+    float minStart = 1e9f, sumStart = 0.f;
+    float maxGoal = 0.f;
+    int stepBacks = 0, badStepBacks = 0;
+    float meanStart() const { return strings > 0 ? sumStart / static_cast<float>(strings) : 0.f; }
+};
+CsRangeRun csRangeRun(PartnerRange range, float lo, float hi, Vec2 lead, Vec2 start) {
+    CsPit p(true);
+    p.in.range = range;
+    p.in.station.close.standMin = lo;
+    p.in.station.close.standMax = hi;
+    p.in.leadPos = lead;
+    csLens(lead, p.e[0].pos, 0.8f, 0.2f, p.in.station.cameraPos, p.in.station.cameraForward);
+    p.in.pos = start;
+    const float r = p.e[0].radius;
+    const float standoff = partnerEffectiveTuning(PartnerTuning{}, p.in).standoffMeters;
+    CsRangeRun k;
+    for (int s = 0; s < 30 * 60; ++s) {
+        const PartnerIntent& i = p.step();
+        const float at = csLen(csSub(p.in.pos, p.e[0].pos)) - r;
+        if (i.act == PartnerAct::Attack && i.newString) {
+            ++k.strings;
+            k.minStart = std::min(k.minStart, at);
+            k.sumStart += at;
+        }
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+            const float goal = csLen(csSub(i.point, p.e[0].pos)) - r;
+            if (i.why == PartnerWhy::Pause || i.why == PartnerWhy::Approach) k.maxGoal = std::max(k.maxGoal, goal);
+            if (i.act == PartnerAct::StepBack) {
+                ++k.stepBacks;
+                if (!(at < standoff && goal + 1e-3f >= standoff)) ++k.badStepBacks;
+            }
+            p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+        }
+    }
+    return k;
+}
+} // namespace
+
+TEST_CASE("close station: the kit's range: unset, invalid, or under the classic camera, the brain as without it") {
+    const PartnerTuning tu;
+    PartnerInput in;
+    in.range = {3.2f, 1.8f};
+    CHECK_FALSE(partnerRangeOn(in, tu)); // the classic camera: never read
+    CHECK(partnerEffectiveTuning(tu, in).reachMeters == tu.reachMeters);
+    in.station.close.given = true;
+    REQUIRE(partnerRangeOn(in, tu));
+    const PartnerTuning e = partnerEffectiveTuning(tu, in);
+    CHECK(e.reachMeters == 3.2f);
+    CHECK(e.standoffMeters == 1.8f);
+    CHECK(e.leashMeters == tu.leashMeters); // only the two
+    CHECK(e.stationTolerance == tu.stationTolerance);
+    const float notNumber = std::nanf("");
+    const float endless = HUGE_VALF;
+    for (const PartnerRange bad : {PartnerRange{}, PartnerRange{notNumber, 1.f}, PartnerRange{3.f, notNumber}, PartnerRange{3.f, 3.5f},
+                                   PartnerRange{0.3f, 0.f}, PartnerRange{0.9f, 0.f}, PartnerRange{3.f, -0.1f},
+                                   PartnerRange{kPartnerRangeMax + 0.1f, 1.f}, PartnerRange{endless, 1.f}}) {
+        CAPTURE(bad.reach);
+        CAPTURE(bad.standoff);
+        in.range = bad;
+        CHECK_FALSE(partnerRangeOn(in, tu));
+        CHECK(partnerEffectiveTuning(tu, in).reachMeters == tu.reachMeters);
+        CHECK(partnerEffectiveTuning(tu, in).standoffMeters == tu.standoffMeters);
+    }
+    in.range = {kPartnerRangeMax, kPartnerCloseCasterMin}; // the far end: a kit that casts from the caster band
+    CHECK(partnerRangeOn(in, tu));
+    in.range = {1.f, 1.f}; // reach twice the tolerance, standoff equal to it: the near end
+    CHECK(partnerRangeOn(in, tu));
+
+    // Stepped: an invalid range under the close camera, and a valid one under the classic camera, step exactly as
+    // none (act, point and hash, every step).
+    struct Pair {
+        bool close;
+        PartnerRange range;
+    };
+    for (const Pair c : {Pair{true, PartnerRange{3.f, 3.5f}}, Pair{true, PartnerRange{notNumber, 1.f}},
+                         Pair{false, PartnerRange{3.2f, 1.8f}}, Pair{false, PartnerRange{8.5f, 5.f}}}) {
+        CAPTURE(c.close);
+        CAPTURE(c.range.reach);
+        CsPit plain(c.close), told(c.close);
+        told.in.range = c.range;
+        int strings = 0;
+        for (int s = 0; s < 900; ++s) {
+            const PartnerIntent& a = plain.step();
+            const PartnerIntent& b = told.step();
+            REQUIRE(a.act == b.act);
+            REQUIRE(a.point.x == b.point.x);
+            REQUIRE(a.point.y == b.point.y);
+            if (a.act == PartnerAct::Attack && a.newString) ++strings;
+            if (a.act == PartnerAct::MoveTo || a.act == PartnerAct::StepBack) {
+                plain.in.pos = csAdd(plain.in.pos, csMul(csSub(a.point, plain.in.pos), 0.1f));
+                told.in.pos = csAdd(told.in.pos, csMul(csSub(b.point, told.in.pos), 0.1f));
+            }
+            REQUIRE(plain.b.hash() == told.b.hash());
+        }
+        MESSAGE("range " << c.range.reach << "/" << c.range.standoff << (c.close ? ", close" : ", classic") << ": "
+                         << strings << " strings in 15 s, alike");
+        if (c.close) CHECK(strings >= 1); // the close runs fight (the classic one: the arena test's hits)
+    }
+}
+
+TEST_CASE("close station: a caster with its kit's range strings from its band, not walked in") {
+    // The shipped party kit's range (3.2, 1.8) under a caster band of 5-8 m: they do not overlap, so its band is
+    // [1.8, 2.7], Pause and Ready alike, and its strings start once within reach (3.2) on its walk there. Without the
+    // range Ready pulls in to 0.9-1.3 m. Checked: its strings start at least 1.3 m off the edge on average, and 0.3 m
+    // further off than without the range; no goal of its is past its reach.
+    const Vec2 lead{-5.f, 0.f}, start{-4.f, -3.f};
+    const CsRangeRun ranged = csRangeRun({3.2f, 1.8f}, kPartnerCloseCasterMin, kPartnerCloseCasterMax, lead, start);
+    const CsRangeRun plain = csRangeRun({}, kPartnerCloseCasterMin, kPartnerCloseCasterMax, lead, start);
+    MESSAGE("kit range 3.2/1.8: strings " << ranged.strings << ", start off the edge mean " << ranged.meanStart()
+                                          << " min " << ranged.minStart << ", farthest goal " << ranged.maxGoal
+                                          << "; none: strings " << plain.strings << ", mean " << plain.meanStart());
+    REQUIRE(ranged.strings >= 3);
+    REQUIRE(plain.strings >= 3);
+    CHECK(ranged.meanStart() > plain.meanStart() + 0.3f);
+    CHECK(ranged.meanStart() >= 1.3f);
+    CHECK(ranged.maxGoal <= 3.2f + 1e-3f); // never a station out of its reach
+    CHECK(ranged.badStepBacks == 0);
+
+    // A kit that would cast from the caster band itself (8.5, 5; arena.json caps partnerReach at 4 today): its band
+    // is the host's, 5-8 m, and its strings start there.
+    const CsRangeRun farKit = csRangeRun({kPartnerRangeMax, kPartnerCloseCasterMin}, kPartnerCloseCasterMin,
+                                         kPartnerCloseCasterMax, Vec2{-12.f, 0.f}, Vec2{-10.f, -3.f});
+    MESSAGE("kit range 8.5/5: strings " << farKit.strings << ", start off the edge mean " << farKit.meanStart()
+                                        << " min " << farKit.minStart << ", farthest goal " << farKit.maxGoal);
+    REQUIRE(farKit.strings >= 3);
+    CHECK(farKit.meanStart() >= kPartnerCloseCasterMin - 0.5f);
+    CHECK(farKit.maxGoal <= kPartnerRangeMax + 1e-3f);
+    CHECK(farKit.badStepBacks == 0);
+}
+
+TEST_CASE("close station: with the kit's range a StepBack only steps out to the standoff") {
+    // The lead next to the target (its band has no point in the cone: short of it, maybe inside the standoff), the
+    // partner starting inside the standoff: every StepBack is from inside it to a goal at least the standoff off.
+    int stepBacks = 0, strings = 0;
+    for (const float leadOff : {1.f, 1.5f, 2.5f})
+        for (const Vec2 start : {Vec2{-1.2f, -0.9f}, Vec2{-0.5f, 1.3f}, Vec2{-2.f, -2.f}}) {
+            CAPTURE(leadOff);
+            CAPTURE(start.x);
+            const CsRangeRun k = csRangeRun({3.2f, 1.8f}, kPartnerCloseCasterMin, kPartnerCloseCasterMax,
+                                            Vec2{-1.f - leadOff, 0.f}, start);
+            CHECK(k.badStepBacks == 0);
+            CHECK(k.maxGoal <= 3.2f + 1e-3f);
+            stepBacks += k.stepBacks;
+            strings += k.strings;
+        }
+    MESSAGE("lead next to the target, 9 runs: " << stepBacks << " StepBacks (all out to the standoff), " << strings
+                                                << " strings");
+    CHECK(strings >= 9);
+}
+
+TEST_CASE("close station: with the kit's range, Pause and Ready do not flap at the band's edges") {
+    // The partner starts at an edge of its band (standoff 1.8, reach - tolerance 2.7, reach 3.2 off the target's
+    // edge) or just either side of one, and walks to its intents for 20 s. A flap: its (act, why) off a blow turns
+    // to another and back within 10 steps; or its goal off a blow jumps more than 0.5 m and back again within 10
+    // steps (Pause and Ready share the band: no goal between two stations).
+    const PartnerRange range{3.2f, 1.8f};
+    const Vec2 dir{-0.8f, -0.6f}; // the start's side of the target: in the lens, the lead's flank
+    int flaps = 0, jumps = 0, strings = 0;
+    for (const float at : {1.7f, 1.8f, 1.9f, 2.6f, 2.7f, 2.8f, 3.1f, 3.2f, 3.3f}) {
+        CAPTURE(at);
+        CsPit p(true);
+        p.in.range = range;
+        p.in.station.close.standMin = kPartnerCloseCasterMin;
+        p.in.station.close.standMax = kPartnerCloseCasterMax;
+        const float r = p.e[0].radius;
+        p.in.pos = csAdd(p.e[0].pos, csMul(dir, r + at));
+        struct Was {
+            PartnerAct act;
+            PartnerWhy why;
+            int step;
+        };
+        Was prev{PartnerAct::Wait, PartnerWhy::NotBegun, -100}, before{PartnerAct::Wait, PartnerWhy::NotBegun, -100};
+        bool haveGoal = false;
+        Vec2 lastGoal{}, jumpFrom{};
+        int jumpStep = -100;
+        int runFlaps = 0, runJumps = 0, runStrings = 0;
+        for (int s = 0; s < 20 * 60; ++s) {
+            const PartnerIntent& i = p.step();
+            if (i.act == PartnerAct::Attack) { // a blow: the next run off it starts afresh
+                if (i.newString) ++runStrings;
+                prev = before = Was{PartnerAct::Wait, PartnerWhy::NotBegun, -100};
+                haveGoal = false;
+                continue;
+            }
+            if (i.act != prev.act || i.why != prev.why) {
+                if (prev.step >= 0 && i.act == before.act && i.why == before.why && s - before.step <= 10) ++runFlaps;
+                before = prev;
+                prev = Was{i.act, i.why, s};
+            }
+            if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+                if (haveGoal && csLen(csSub(i.point, lastGoal)) > 0.5f) {
+                    if (s - jumpStep <= 10 && csLen(csSub(i.point, jumpFrom)) <= 0.5f) ++runJumps; // and back
+                    jumpFrom = lastGoal;
+                    jumpStep = s;
+                }
+                lastGoal = i.point;
+                haveGoal = true;
+                p.in.pos = csAdd(p.in.pos, csMul(csSub(i.point, p.in.pos), 0.1f));
+            } else {
+                haveGoal = false;
+            }
+        }
+        MESSAGE("start " << at << " m off the edge: flaps " << runFlaps << ", goal jumps " << runJumps << ", strings "
+                         << runStrings);
+        CHECK(runFlaps == 0);
+        CHECK(runJumps == 0);
+        CHECK(runStrings >= 3);
+        flaps += runFlaps;
+        jumps += runJumps;
+        strings += runStrings;
+    }
+    MESSAGE("band edges, 9 runs: " << flaps << " flaps, " << jumps << " goal jumps, " << strings << " strings");
 }
