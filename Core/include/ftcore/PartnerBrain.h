@@ -322,6 +322,10 @@ inline constexpr float kPartnerRangeMax = kPartnerCloseCasterMax + 0.5f;
 // The kit's range on: a lead in melee stands this far past its target's far edge at most (a normal target's width and
 // the lead's gap to it), so the leash (reach + this, at most 10 m) and StayClose's cap (standoff + this) hold the band.
 inline constexpr float kPartnerRangeLeadMelee = 1.5f;
+// The kit's range on (ruling of 11-16): the standoff is a goal, not a gate. A string starts from anywhere within the
+// reach; between strings, a partner more than this inside its standoff steps out to the band's near end (on its own
+// flank), and once its pause is over casts again from wherever its walk has got to.
+inline constexpr float kPartnerRangeStepOut = 0.5f;
 
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
 struct PartnerInput {
@@ -550,6 +554,7 @@ struct PartnerBrainSave {
     double frameSideAt = -1e9;     // when the held station last changed side (now's clock; kPartnerSideHoldSeconds)
     double noFrame = 0.0;          // seconds with no valid station
     bool fellBack = false;         // rule 13's fallback holds: on rules 10-11's station until a valid one is found
+    bool steppedOut = false;       // rule 19: this pause stepped out to the kit's band (the next string from anywhere)
     double engageFor = 0.0;        // rule 14's clock
     double lastStrike = -1e9;      // rule 16: when the last string, guard and reposition began (on now's clock)
     double lastGuard = -1e9;

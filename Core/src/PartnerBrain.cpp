@@ -221,12 +221,56 @@ float innerRing(const PartnerTuning& t, bool rangeBand) {
     return 0.5f * (std::min(t.standoffMeters, hi) + hi);
 }
 
-// A string may start at this edge distance: within the reach and, the kit's range on (rule 19), no nearer than the
-// band's near end less the station tolerance (inside it the partner steps out to the band first).
-bool inStartBand(const PartnerTuning& t, bool rangeBand, float edgeDist) {
-    if (!(edgeDist <= t.reachMeters)) return false;
-    if (!rangeBand) return true;
-    return edgeDist + t.stationTolerance >= std::min(t.standoffMeters, t.reachMeters - t.stationTolerance);
+// A string may start at this edge distance: within the reach. The kit's range on (rule 19, ruling of 11-16), its
+// standoff holds no string back: the partner steps out to it between strings (kPartnerRangeStepOut).
+bool inStartBand(const PartnerTuning& t, float edgeDist) { return edgeDist <= t.reachMeters; }
+
+// Rule 19, the kit's range on: from the lens, a partner at p is at least partly behind the lead at b (both of radius
+// bodyRadius): its centre within the lead's silhouette widened by its own width, and further off.
+bool rangePartlyHidden(Vec2 lens, Vec2 p, Vec2 b, float bodyRadius) {
+    return partnerCloseHiddenBehind(lens, p, b, 2.f * bodyRadius);
+}
+
+// The distance from p to the segment a-b.
+float segmentDist(Vec2 a, Vec2 b, Vec2 p) {
+    const Vec2 ab = stSub(b, a);
+    const float l2 = stDot(ab, ab);
+    const float k = l2 > 1e-8f ? std::clamp(stDot(stSub(p, a), ab) / l2, 0.f, 1.f) : 0.f;
+    return dist(p, stAlong(a, ab, k));
+}
+
+// Rule 19, the kit's range on (ruling of 11-16): a partner more than kPartnerRangeStepOut inside its standoff steps out
+// between strings to the nearest point of the band's near end (the target's edge plus the standoff) on its own flank
+// (the side of the lead-target line it stands on): straight out from the target first, then turned up to 120 degrees
+// either way, 10 at a time. The point is in the arena, outside personal space and, under StayClose, inside the cap;
+// the walk to it passes the lead no closer than personal space (or than the partner stands now). Under the close lens
+// (lens given), the first such point not even partly behind the lead (rangePartlyHidden) wins, else the first. False:
+// no such point (the partner casts from where it stands).
+bool rangeStepOut(const Ground& g, const PartnerTuning& t, const View& e, PartnerOrder order, Vec2 from,
+                  const Vec2* lens, float bodyRadius, Vec2& q) {
+    const Vec2 bear = stSub(g.lead, e.pos);
+    const Vec2 out = stUnit(stSub(from, e.pos), stUnit(Vec2{-bear.x, -bear.y}, Vec2{1.f, 0.f}));
+    const float own = stCross(bear, stSub(from, e.pos));
+    const float ring = e.radius + t.standoffMeters;
+    const float cap = order == PartnerOrder::StayClose ? closeCap(t, g) : kStFar;
+    const float clear = std::min(t.personalSpaceMeters, dist(from, g.lead)) - 1e-4f;
+    bool found = false;
+    for (int k = 0; k <= 12; ++k)
+        for (int w = 0; w < (k == 0 ? 1 : 2); ++w) {
+            const float a = (w == 0 ? 10.f : -10.f) * static_cast<float>(k) * kStDeg;
+            const float c = std::cos(a), s = std::sin(a);
+            const Vec2 p = stAlong(e.pos, Vec2{out.x * c - out.y * s, out.x * s + out.y * c}, ring);
+            if (!g.arenaOk(p) || !g.roomOk(p) || dist(p, g.lead) > cap + 1e-4f) continue;
+            if (std::fabs(own) > 1e-3f && stCross(bear, stSub(p, e.pos)) * own < 0.f) continue; // the other flank
+            if (!g.reviving && segmentDist(from, p, g.lead) < clear) continue;
+            if (!lens || !rangePartlyHidden(*lens, p, g.lead, bodyRadius)) {
+                q = p;
+                return true;
+            }
+            if (!found) q = p;
+            found = true;
+        }
+    return found;
 }
 
 // Rule 10: the best station on side s (+1: counter-clockwise from the lead, seen at the target).
@@ -900,6 +944,7 @@ void PartnerBrain::rolesSwapped() {
     s_.sideTarget = -1;
     s_.sideFor = 0.0;
     s_.offStation = 0.0;
+    s_.steppedOut = false;
     s_.targetFor = 0.0;
     s_.targetReached = false;
     s_.frameRing = 0;
@@ -952,7 +997,7 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
             const float l = in.blowSeconds[0];
             const double next = s_.drawn ? s_.lengths[0] : static_cast<double>(l >= 0.1f && l <= 2.f ? l : s_.t.blowSeconds);
             Ground g;
-            eligible = in.kitAttacks && standing(e) && inStartBand(tStep_, partnerRangeOn(in, s_.t), edge(in.pos, e)) &&
+            eligible = in.kitAttacks && standing(e) && inStartBand(tStep_, edge(in.pos, e)) &&
                        budgetFits(committedLeft() + next) &&
                        makeGround(in, tStep_, g) && g.roomOk(in.pos) && !g.inWedge(in.pos, 0.f) &&
                        !makeKeep(g, e).in(in.pos, 0.f);
@@ -1631,10 +1676,22 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
                 }
             }
         }
+        // Rule 19 (ruling of 11-16): more than kPartnerRangeStepOut inside the kit's standoff, out to its band first.
+        Vec2 outTo{};
+        if (st && rangeOn && edge(in.pos, e) < t.standoffMeters - kPartnerRangeStepOut &&
+            rangeStepOut(g, t, e, in.order, in.pos, closeOn ? &in.station.cameraPos : nullptr,
+                         in.station.close.bodyRadius, outTo)) {
+            s_.offStation += dt;
+            s_.steppedOut = true;
+            out.act = PartnerAct::StepBack;
+            out.enemy = s_.target;
+            out.point = outTo;
+            return out;
+        }
         if (st) { // rule 12: back to the station
             const Vec2 p = goalFor(s_.target, false);
             const bool there = near(p, &e);
-            if (there && inStartBand(t, rangeOn, edge(in.pos, e))) s_.offStation = 0.0;
+            if (there && inStartBand(t, edge(in.pos, e))) s_.offStation = 0.0;
             else s_.offStation += dt;
             if (!there) {
                 // With the kit's range, a StepBack is a step out to the standoff only: a walk to a station inside it
@@ -1688,7 +1745,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     const View& e = in.enemies[static_cast<std::size_t>(tgt)];
     if (st) { // rule 12: a string starts only from its station
         const Vec2 p = goalFor(tgt, true);
-        const bool inReach = inStartBand(t, rangeOn, edge(in.pos, e)); // rule 19: in the kit's band, not inside its standoff
+        const bool inReach = inStartBand(t, edge(in.pos, e));
         // Rule 18: on a tall target a string starts at its station only where the camera sees it unhidden (the
         // grace's spot may have left the frame), unless fallen back. Fallen back, it starts from a spot the camera
         // does not see when no legal ring point is seen and unhidden (class 1: from an unhidden spot only), and from a
@@ -1711,9 +1768,15 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             // the frame, unless no valid station was found this step (then reported: intent.offFrame).
             // Rule 18: on a tall target, only from a spot the camera sees unhidden, unless fallen back.
             const bool seenHere = tallView(e) ? hiddenOk || fr.clear(&e, in.pos) : !stationNow || fr.sees(in.pos);
+            // Rule 19 (ruling of 11-16): more than kPartnerRangeStepOut inside the kit's standoff, or stepped out to
+            // its band in the pause just over, it casts from where it stands (on arrival, or on its way out, or with
+            // no way out), unless it is even partly behind the lead.
+            const bool inside =
+                rangeOn && (s_.steppedOut || edge(in.pos, e) < t.standoffMeters - kPartnerRangeStepOut) &&
+                !(closeOn && rangePartlyHidden(in.station.cameraPos, in.pos, in.leadPos, in.station.close.bodyRadius));
             const bool fromHere =
                 inReach && g.roomOk(in.pos) && (!fm || seenHere) &&
-                ((giveUp && !g.inWedge(in.pos, 0.f)) || any ||
+                ((giveUp && !g.inWedge(in.pos, 0.f)) || any || inside ||
                  (engageDue && !g.inWedge(in.pos, 0.f) && !makeKeep(g, e).in(in.pos, 0.f)));
             if (!fromHere) {
                 Vec2 goal = p;
@@ -1725,7 +1788,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
                 return out;
             }
         }
-    } else if (!inStartBand(t, rangeOn, edge(in.pos, e))) { // out of reach (or, rule 19, inside the standoff): to the ring
+    } else if (!inStartBand(t, edge(in.pos, e))) { // out of reach: to the ring
         Vec2 p = toward(e.pos, in.pos, e.radius + innerRing(t, rangeOn));
         if (in.order == PartnerOrder::StayClose && dist(in.leadPos, p) > t.returnMeters)
             p = toward(in.leadPos, p, t.returnMeters);
@@ -1769,6 +1832,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         return out;
     }
     s_.drawn = false;
+    s_.steppedOut = false;
     s_.phase = Phase::String;
     s_.clock = 0.0;
     s_.begunBlows = 1;

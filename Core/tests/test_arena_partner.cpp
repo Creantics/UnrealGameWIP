@@ -19,6 +19,7 @@
 #include <memory>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -4049,6 +4050,10 @@ struct FoughtLensRun {
     // and on those behind the target.
     int leadHidTier[5] = {}, targetHidTier[5] = {};
     float contactDist = 0.f, contactTargetX = 0.f;
+    // Steps the partner stood still (Wait, not in a pause, its budget, a blow running out, a guard or held off a
+    // windup) with a standing enemy inside its reach: the longest such run (s), and the first time any standing enemy
+    // was inside its reach (-1: never).
+    float idleLongest = 0.f, firstInReach = -1.f;
 };
 
 struct FoughtLens {
@@ -4070,19 +4075,21 @@ float smooth01(float t) {
 }
 
 // kit: 0 the party kit without its range, 1 with its shipped range, 2 a caster's 8.5 / 5 (the ruling of 11-16).
-FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit) {
+// The lead's kit and the enemies (one at a time) as named.
+FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit, const char* lead = "devin",
+                            std::initializer_list<const char*> foes = {"brute", "skirmisher", "breaker"}) {
     const ArenaTable t = shippedTable();
-    PRig r(t.fighter("devin"));
+    PRig r(t.fighter(lead));
     r.def = t.fallback;
-    r.def.fighter = t.fighter("devin");
+    r.def.fighter = t.fighter(lead);
     r.def.enemyCount = 0;
-    for (const char* id : {"brute", "skirmisher", "breaker"})
+    for (const char* id : foes)
         for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
             if (t.enemyIds[e] == id) {
                 r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
                 r.def.enemies[r.def.enemyCount++] = t.enemies[e];
             }
-    REQUIRE(r.def.enemyCount == 3);
+    REQUIRE(r.def.enemyCount == foes.size());
     r.def.attackers = 1;
     r.def.ringRadius = 12.f;
     r.def.spawnDistance = 7.f;
@@ -4105,6 +4112,7 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit)
     Vec2 pivot = r.bodies.player;
     float melee = 0.f;
     FoughtLensRun o;
+    float idleRun = 0.f;
     while (!r.fight.over() && r.fight.time() < 40.f) {
         // The followed target: the lock, else the nearest standing enemy.
         int target = -1;
@@ -4224,6 +4232,22 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit)
             }
         }
 
+        // Still with a standing enemy in its reach (the kit's under the close lens: the range on), its cooldown clear.
+        if (r.out && r.out->ally.partnerOn) {
+            const float reach = third.partnerReach > 0.f ? third.partnerReach : r.tuning.reachMeters;
+            bool inReach = false;
+            for (std::size_t i = 0; i < r.fight.enemyCount(); ++i)
+                if (r.fight.enemyAlive(i) &&
+                    dist(r.bodies.ally, r.bodies.enemies[i]) - r.def.enemies[i].bodyRadius <= reach)
+                    inReach = true;
+            if (inReach && o.firstInReach < 0.f) o.firstInReach = r.fight.time();
+            const PartnerIntent& pi = r.brain.intent();
+            const bool cool = pi.why == PartnerWhy::Approach || pi.why == PartnerWhy::NoTarget ||
+                              pi.why == PartnerWhy::Start || pi.why == PartnerWhy::Leash;
+            idleRun = inReach && pi.act == PartnerAct::Wait && cool ? idleRun + kDt : 0.f;
+            o.idleLongest = std::max(o.idleLongest, idleRun);
+        }
+
         // The host's input this step.
         const std::uint8_t order = r.in.partnerOrder;
         r.in = r.fight.autopilot();
@@ -4305,6 +4329,124 @@ TEST_CASE("arena partner: rule 19 in a fought run under the close lens, as the g
                 CHECK(100 * all.leadClearSeen >= 75 * all.seen);
                 CHECK(100 * all.contactClearSeen >= 75 * all.contactSeen);
             }
+}
+
+TEST_CASE("arena partner: a caster's target rushing inside its stand-off: it still casts, and never stands idle in reach") {
+    // The arena lane's trace (11-16): a lead and one enemy, the close station on, the caster's 8.5 / 5. The enemy
+    // rushed the lead and stood 2 m from the caster, which then stood still for the whole fight with no cast.
+    struct Pair {
+        const char* lead;
+        const char* foe;
+    };
+    const ArenaTable table = shippedTable();
+    int fights = 0, worst = 1 << 20;
+    float idleWorst = 0.f;
+    for (const Pair p : {Pair{"devin", "skirmisher"}, Pair{"devin", "maw_pup"}, Pair{"devin", "spitter"},
+                         Pair{"duy", "skirmisher"}, Pair{"duy", "maw_pup"}}) {
+        std::ostringstream row;
+        int casts = 0;
+        for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+            CAPTURE(p.lead);
+            CAPTURE(p.foe);
+            CAPTURE(seed);
+            const FoughtLensRun o = foughtLensRun(FoughtLens{}, seed, 2, p.lead, {p.foe});
+            row << " " << o.strings << (o.idleLongest > 0.5f ? "!" : "");
+            casts += o.strings;
+            ++fights;
+            idleWorst = std::max(idleWorst, o.idleLongest);
+            // At least one cast, unless the fight ended before it could: its first step in reach and a blow's
+            // startup (the party kit's first light), with a pause's grace.
+            const float startup = table.fighter("third").light[0].startup;
+            if (o.firstInReach >= 0.f && o.time > o.firstInReach + startup + 1.f) {
+                CHECK(o.strings >= 1);
+                worst = std::min(worst, o.strings);
+            }
+            CHECK(o.idleLongest <= 0.5f);
+        }
+        MESSAGE((std::string("caster 8.5/5, lead ") + p.lead + " vs one " + p.foe + ": casts per seed" + row.str() +
+                 " (total " + std::to_string(casts) + ")"));
+    }
+    MESSAGE(fights << " fights: fewest casts " << worst << ", longest idle in reach " << idleWorst << " s");
+}
+
+TEST_CASE("arena partner: a caster whose target keeps closing to 2 m: it casts and steps back by turns, never leashed or idle") {
+    // The caster's 8.5 / 5 under the close station; the target, which cannot fall and never attacks, walks back to
+    // 2 m off the caster's edge whenever the caster gets 3 m away, the lead pressed against it (1.2 m). 30 s; both
+    // orders.
+    const ArenaTable table = shippedTable();
+    const auto toward = [](Vec2 from, Vec2 to, float d) { // the point d from `from` toward `to`
+        const Vec2 v = sub(to, from);
+        const float l = length(v);
+        return l > 1e-5f ? Vec2{from.x + v.x * d / l, from.y + v.y * d / l} : Vec2{from.x + d, from.y};
+    };
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        CAPTURE(order);
+        ArenaFighter third = table.fighter("third");
+        third.partnerReach = 8.5f;
+        third.partnerStandoff = 5.f;
+        PRig r;
+        r.ownPartnerKit = true;
+        r.def.partnerKit = third;
+        r.def.fighter.hp = 100000; // the lead never falls: no takeover
+        r.tuning = shippedTuning();
+        r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way: it strings whenever its pause is over
+        REQUIRE(validPartnerTuning(r.tuning));
+        const ArenaEnemyKind dummy = dummyKind();
+        r.enemy(dummy, Vec2{0.f, 0.f});
+        r.bodies.player = Vec2{-1.2f, 0.f};
+        r.bodies.ally = Vec2{0.f, 2.f + dummy.bodyRadius}; // 2 m off its edge, beside the lead
+        r.in.partnerOrder = order;
+        r.go(true, 1000);
+        r.walk = true;
+        r.in.cameraOn = true;
+        r.in.lock = true; // the lead locks on (StayClose's target)
+        PartnerCloseView& c = r.in.partnerClose;
+        c.given = true;
+        c.halfAngleDegrees = 30.f;
+        c.leadSide = -1;
+        c.standMin = kPartnerCloseCasterMin;
+        c.standMax = kPartnerCloseCasterMax;
+        int stepBacks = 0, leashed = 0, closings = 0;
+        float idleRun = 0.f, idleLongest = 0.f, nearest = 1e9f;
+        bool wasStepBack = false;
+        for (int k = 0; k < 30 * 60; ++k) {
+            Vec2& tp = r.bodies.enemies[0];
+            const float edgeNow = dist(r.bodies.ally, tp) - dummy.bodyRadius;
+            if (edgeNow > 3.f) { // the target closes on the caster at 3 m/s, the lead pressed against it
+                ++closings;
+                const Vec2 goal = toward(r.bodies.ally, tp, 2.f + dummy.bodyRadius);
+                const Vec2 d = sub(goal, tp);
+                const float l = length(d);
+                const float most = 3.f * kDt;
+                tp = l > most ? Vec2{tp.x + d.x * most / l, tp.y + d.y * most / l} : goal;
+            }
+            r.bodies.player = toward(tp, r.bodies.player, 1.2f);
+            const Vec2 back = toward(tp, r.bodies.player, 4.2f); // the lens 3 m behind the lead, on the target
+            r.in.cameraPos = back;
+            r.in.cameraFacing = Vec2{(tp.x - back.x) / 4.2f, (tp.y - back.y) / 4.2f};
+            r.tick();
+            const PartnerIntent& pi = r.brain.intent();
+            const bool stepBack = pi.act == PartnerAct::StepBack;
+            if (stepBack && !wasStepBack) ++stepBacks;
+            wasStepBack = stepBack;
+            if (pi.why == PartnerWhy::Leash) ++leashed;
+            const bool cool = pi.why == PartnerWhy::Approach || pi.why == PartnerWhy::NoTarget ||
+                              pi.why == PartnerWhy::Start || pi.why == PartnerWhy::Leash;
+            const float e = dist(r.bodies.ally, r.bodies.enemies[0]) - dummy.bodyRadius;
+            nearest = std::min(nearest, e);
+            idleRun = e <= third.partnerReach && pi.act == PartnerAct::Wait && cool ? idleRun + kDt : 0.f;
+            idleLongest = std::max(idleLongest, idleRun);
+        }
+        const ArenaStats& st = r.fight.stats();
+        MESSAGE("caster at 2 m, order " << static_cast<int>(order) << ": strings " << st.partnerStrings << ", step-backs "
+                                        << stepBacks << ", target closings (steps) " << closings << ", leashed steps "
+                                        << leashed << ", nearest edge " << nearest << " m, longest idle in reach "
+                                        << idleLongest << " s");
+        CHECK(st.partnerStrings >= 6);
+        CHECK(stepBacks >= 3);
+        CHECK(leashed == 0);
+        CHECK(idleLongest <= 0.5f);
+    }
 }
 
 namespace {
