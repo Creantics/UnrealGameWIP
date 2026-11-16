@@ -7,6 +7,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
+#include "FTRimCollection.h"
 #include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
@@ -101,6 +102,7 @@ const FScalarSpec kScalars[] = {
 	{TEXT("DirtStrength"), ftcore::look::kFoldDirtStrength},    // albedo toward DirtTint by WearTexture B x this
 	{TEXT("DirtRoughness"), ftcore::look::kFoldDirtRoughness},   // and roughness up by this at full dirt
 	{TEXT("WetRidgeSheen"), ftcore::look::kFoldWetRidgeSheen},   // soaked: roughness on convex ridges (WearTexture R above 0.5) goes this far below WetRoughness
+	{TEXT("DryRidgeRoughness"), ftcore::look::kFoldDryRidgeRoughness}, // dry: roughness on convex ridges held at most this (1 = off)
 	{TEXT("WetCreaseDarken"), ftcore::look::kFoldWetCreaseDarken},   // soaked: albedo x (1 - this) in the creases (water stands there), on top of WetDarken
 	{TEXT("TintDrift"), ftcore::look::kFoldTintDrift},    // albedo toward DriftTint by up to this, in broad patches of about 25 cm (faded high points)
 	{TEXT("SoleHeight"), -1000.f},    // pre-skinned height (cm) below which a shoe is rubber sole; off by default
@@ -297,7 +299,7 @@ r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
 r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
 return saturate(lerp(r, lerp(WetRough, 0.1, Metal), Wet.x));
 )HLSL");
-// With FoldLayers on: matte crease dirt and a sharper soaked sheen on the ridges.
+// With FoldLayers on: matte crease dirt, a soft dry sheen and a sharper soaked sheen on the ridges.
 const TCHAR* const kRoughnessFoldCode = TEXT(R"HLSL(float edge = saturate((Wear.r - 0.5) * 2.0);
 float crease = saturate((0.5 - Wear.r) * 2.0);
 float r = ORM.g * RoughScale + RoughOffset;
@@ -308,6 +310,7 @@ r = lerp(r, SoleRough + D.w * MicroRough, Sole);
 r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
 r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
 r += saturate(Wear.b * DirtStrength) * DirtRough * (1.0 - Metal); // baked fold dirt is matte
+r = min(r, lerp(1.0, DryRidgeRough, edge * (1.0 - Metal))); // dry ridges and seams keep a soft sheen (1: off)
 float wetR = max(WetRough - edge * WetRidgeSheen, 0.02); // soaked ridges catch a sharper sheen than the cloth around them
 return saturate(lerp(r, lerp(wetR, 0.1, Metal), Wet.x));
 )HLSL");
@@ -661,7 +664,7 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0},
 			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0},
 			{TEXT("DirtStrength"), G.Scalar(TEXT("DirtStrength")), 0}, {TEXT("DirtRough"), G.Scalar(TEXT("DirtRoughness")), 0},
-			{TEXT("WetRidgeSheen"), G.Scalar(TEXT("WetRidgeSheen")), 0}},
+			{TEXT("WetRidgeSheen"), G.Scalar(TEXT("WetRidgeSheen")), 0}, {TEXT("DryRidgeRough"), G.Scalar(TEXT("DryRidgeRoughness")), 0}},
 		100);
 	UMaterialExpressionCustom* Specular = Custom(Material, TEXT("GarmentSpecular"), CMOT_Float1, kSpecularCode,
 		{{TEXT("Spec"), G.Scalar(TEXT("Specular")), 0}, {TEXT("CavitySpec"), G.Scalar(TEXT("CavitySpecular")), 0}, {TEXT("D"), Detail, 0},
@@ -685,6 +688,11 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			800);
 		Inputs->SubsurfaceColor.Connect(0, Fuzz);
 		Inputs->ClearCoat.Connect(0, G.Scalar(TEXT("Cloth")));
+	}
+	// The character rim (a material term after lighting; FTRimCollection.h), at RimScale 1 on cloth and leather.
+	if (!FTRim::AddTerm(Material, kGroup, 1.f, 0, 1500))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildGarment: MPC_FTRim could not be built or saved; %s has no rim term."), *Material->GetName());
 	}
 	// The world wave's character state, as the other worn masters take it (FTImportMaterials). On the cloth master the
 	// fuzz colour goes through a second call of it (FTWorldWave::AddState), so the sheen greys with the cloth.
@@ -858,7 +866,7 @@ bool FoldSelfTest(UMaterial* Master, bool bNoState)
 		return false;
 	}
 	bool bOk = true;
-	for (const TCHAR* Scalar : {TEXT("DirtStrength"), TEXT("WetRidgeSheen"), TEXT("WetCreaseDarken"), TEXT("TintDrift")})
+	for (const TCHAR* Scalar : {TEXT("DirtStrength"), TEXT("WetRidgeSheen"), TEXT("WetCreaseDarken"), TEXT("TintDrift"), TEXT("DryRidgeRoughness")})
 	{
 		float Value = 0.f;
 		if (!On->GetScalarParameterValue(FHashedMaterialParameterInfo(Scalar), Value))

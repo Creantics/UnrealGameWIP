@@ -55,7 +55,7 @@
 #include "Components/DecalComponent.h"
 #include "Misc/PackageName.h"
 #include "ForgottenThird.h"
-#include "FTRimLight.h"
+#include "FTRim.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
@@ -144,7 +144,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Camera->bUsePawnControlRotation = false;
 	Camera->SetFieldOfView(kFov);
 
-	Rim = CreateDefaultSubobject<UFTRimLightComponent>(TEXT("Rim"));
+	Rim = CreateDefaultSubobject<UFTRimComponent>(TEXT("Rim"));
 	Rim->SetupAttachment(GetCapsuleComponent());
 	Rim->SetRelativeLocation(FVector(0.0, 0.0, 60.0)); // chest to head on a standing lead
 

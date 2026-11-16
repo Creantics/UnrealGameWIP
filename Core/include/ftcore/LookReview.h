@@ -1,12 +1,14 @@
 #pragma once
 
 // Look-dev switches that must be inert unless asked for: the garment master's fold-layer defaults, the character rim
-// light's scale and the -ArenaWet review flag. Header only; nothing here allocates.
+// term and the -ArenaWet review flag. Header only; nothing here allocates.
 //
-//   float s = ftcore::look::rimLightScale(cvarValue, figureAllowed); // 0: no light component is made
+//   float s = ftcore::look::rimStrength(cvarValue);                  // 0: the masters add no rim
+//   ftcore::look::Dir3 l = ftcore::look::rimDirection(camera, lead); // the virtual rim direction for this frame
 //   if (auto w = ftcore::look::findWetReview(commandLine, "ArenaWet")) { /* hold the garments at w->wetness */ }
 
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <string_view>
@@ -23,18 +25,58 @@ inline constexpr float kFoldWetCreaseDarken = 0.f;
 inline constexpr float kFoldTintDrift = 0.f;
 inline constexpr float kFoldDirtRoughness = 0.15f; // scaled by DirtStrength, so inert at its default
 
-// The intensity scale a rim light runs at: the ft.RimLight value when the figure carries the light, else 0. 0 (or a
-// negative or NaN value) means off, and an off rim light never makes its light component.
-constexpr float rimLightScale(float cvarValue, bool allowed) { return allowed && cvarValue > 0.f ? cvarValue : 0.f; }
-constexpr bool rimLightWanted(float cvarValue, bool allowed) { return rimLightScale(cvarValue, allowed) > 0.f; }
+// Dry fold ridges: roughness on convex ridges (WearTexture R above 0.5) is held at most this, so dry leather keeps a soft
+// sheen on its folds and seams. 1 (the default) never binds: roughness is at most 1 anyway.
+inline constexpr float kFoldDryRidgeRoughness = 1.f;
 
-// Pieces the rim light leaves off its lighting channel. The light casts no shadow, so it reaches through the head: the
-// face piece (eyes are slots on it) and glasses lenses catch it from the front. Matched by asset name (MetaHuman face
-// pieces carry "FaceMesh"). Grooms stay on: with the light behind and low, the hair gives the head its outline (it was
-// left off while the light sat high, when it lit the hair from the front).
-constexpr bool rimLightSkipsPiece(std::string_view meshName, bool isGroom) {
-    (void)isGroom;
-    return meshName.find("FaceMesh") != std::string_view::npos || meshName.find("Glasses") != std::string_view::npos;
+// The character rim is a material term, not a light: the garment and skin masters add, after lighting (emissive),
+//   rim = pow(1 - saturate(N.V), 4) * saturate(N.L * 0.5 + 0.5) * RimStrength * RimScale * RimColour
+// with L a virtual direction set once a frame. Strength 0 (the default) adds nothing. Per instance RimScale: 1 on cloth,
+// leather and skin, kRimFaceScale on the face, kRimHairScale on hair (whose rim is also capped at kRimHairCap times its
+// base colour: a stand-in for "at most 1.6 times its lit value", which a surface material cannot read), none on glasses.
+inline constexpr float kRimFaceScale = 0.5f;
+inline constexpr float kRimHairScale = 0.4f;
+inline constexpr float kRimHairCap = 0.6f;
+inline constexpr float kRimElevationDeg = 30.f; // above the horizon, on the far side of the lead from the camera
+inline constexpr float kRimYawDeg = 35.f;       // turned this far toward the camera's right
+
+// The ft.Rim value as a strength: 0 for 0, negative or NaN.
+constexpr float rimStrength(float cvarValue) { return cvarValue > 0.f ? cvarValue : 0.f; }
+
+struct Dir3 {
+    float x = 0.f;
+    float y = 0.f;
+    float z = 0.f;
+};
+
+// The rim direction (unit, z up, the engine's axes: x forward, y right) for a camera and a lead: from the lead away from
+// the camera on the ground plane, turned kRimYawDeg toward the camera's right (up x away), raised kRimElevationDeg. With
+// the camera straight above the lead (no ground bearing) the bearing is +x.
+inline Dir3 rimDirection(Dir3 camera, Dir3 lead) {
+    float ax = lead.x - camera.x;
+    float ay = lead.y - camera.y;
+    const float len = std::sqrt(ax * ax + ay * ay);
+    if (!(len > 1e-3f)) {
+        ax = 1.f;
+        ay = 0.f;
+    } else {
+        ax /= len;
+        ay /= len;
+    }
+    const float rx = -ay; // up x away
+    const float ry = ax;
+    constexpr float kDeg = 3.14159265358979f / 180.f;
+    const float cy = std::cos(kRimYawDeg * kDeg), sy = std::sin(kRimYawDeg * kDeg);
+    const float ce = std::cos(kRimElevationDeg * kDeg), se = std::sin(kRimElevationDeg * kDeg);
+    return {ce * (cy * ax + sy * rx), ce * (cy * ay + sy * ry), se};
+}
+
+// The rim term's weight before colour, as the masters compute it (n.v and n.l of the shaded normal).
+inline float rimTerm(float nDotV, float nDotL, float strength) {
+    const float facing = std::fmin(std::fmax(nDotV, 0.f), 1.f);
+    const float side = std::fmin(std::fmax(nDotL * 0.5f + 0.5f, 0.f), 1.f);
+    const float edge = 1.f - facing;
+    return edge * edge * edge * edge * side * rimStrength(strength);
 }
 
 // A fixed wet state held on a figure's garments for review: Wetness and the wet line in cm above the feet.

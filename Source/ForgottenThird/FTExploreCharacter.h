@@ -115,7 +115,7 @@ class UInputMappingContext;
 class URectLightComponent;
 class USpringArmComponent;
 class UFTWaterSubsystem;
-class UFTRimLightComponent;
+class UFTRimComponent;
 
 UCLASS(Config = Game)
 class FORGOTTENTHIRD_API AFTExploreCharacter : public ACharacter
@@ -344,7 +344,7 @@ private:
 	TObjectPtr<UCameraComponent> Camera;
 
 	UPROPERTY(VisibleAnywhere, Category = "Explore|Look")
-	TObjectPtr<UFTRimLightComponent> Rim; // character-only rim light (ft.RimLight)
+	TObjectPtr<UFTRimComponent> Rim; // writes the rim term's direction while player 0 controls this lead (ft.Rim)
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> Context;

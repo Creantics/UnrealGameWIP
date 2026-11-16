@@ -9,6 +9,7 @@
 #include "Engine/SubsurfaceProfile.h"
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
+#include "FTRimCollection.h"
 #include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
@@ -256,6 +257,11 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 	Inputs->AmbientOcclusion.Connect(1, Region);
 	Inputs->Opacity.Connect(0, ScatterOut);
 	// The world wave's character state, as the other worn masters take it (FTImportMaterials).
+	// The character rim (FTRimCollection.h): RimScale 1 on skin; a face instance sets ftcore::look::kRimFaceScale.
+	if (!FTRim::AddTerm(Material, TEXT("Skin"), 1.f, 0, 1500))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildSkin: MPC_FTRim could not be built or saved; %s has no rim term."), *Material->GetName());
+	}
 	FTWorldWave::AddState(TEXT("FTBuildSkin"), Material, 300, 1300, true);
 
 	Material->PreEditChange(nullptr);
