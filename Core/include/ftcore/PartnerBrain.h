@@ -198,6 +198,21 @@
 //      inside a standing tall body (its radius + kPartnerSteerClear) is put out on that circle, and a straight line
 //      that would cross one goes round it the shorter way, by a point on that circle.
 //      Not tall (or no height given): none of it applies.
+//  19. The close camera (PartnerStationView::close given, with stationing on; PartnerCloseStation.h): with a target,
+//      its station between actions is partnerCloseStation's, ahead of the lead on a flank of the target inside the
+//      close lens: in Pause at the host's kit band, in Ready pulled in to [reach / 2, reach - stationTolerance] so a
+//      string can start there; framed, only where the 3D frame sees it too.
+//      The kit's own range (PartnerInput::range, valid: partnerRangeOn) is read under it alone: for the step it is
+//      the reach and standoff of every rule (partnerEffectiveTuning), and Pause and Ready share one band, the host's
+//      within [standoff, reach - stationTolerance] (no overlap: that interval itself), so a caster strings from where
+//      it waits; a StepBack is a step out to the standoff only (a walk to a station inside it, rule 19's short of the
+//      band or on the lead ring or a fallback's, is a MoveTo). Range unset or invalid: as without it, to the bit.
+//      Under it the partner is in frame by its
+//      middle and head alone (partnerInFrameClose; feet not tested), for every frame test of the partner while it is
+//      given. None legal: the rules above, as before.
+//      Under it rule 16's reposition, rule 13's held-station clock and rule 17 step aside; rule 18's walk steering
+//      and the fight's pairing stay. Its flank hold is in the save, hashed only once given (closeUsed). Not given: none of
+//      it runs, to the bit.
 // No kit (PartnerInput::kitAttacks false, a lead whose kit has no attacks): it never starts a string or its next blow
 // and no other lead's kit stands in (why and idle NoKit); it still stations, guards, faces its target and, rule 17 on,
 // moves as with its attack held. True (the default) is the brain as before.
@@ -224,6 +239,7 @@
 #include "ftcore/Api.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/PartnerCamera.h" // PartnerVec3, PartnerCameraView
+#include "ftcore/PartnerCloseStation.h" // rule 19
 #include "ftcore/Explore.h"
 
 #include <array>
@@ -285,7 +301,19 @@ struct PartnerStationView {
     Vec2 arenaCentre{};
     float arenaRadius = 0.f; // where the partner may stand (its body's margin taken off); 0: unbounded
     PartnerCameraView camera{}; // rules 13-16; not given by default
+    PartnerCloseView close{};   // rule 19 (the close camera); not given by default
 };
+
+// A partner kit's own range, metres off its target's edge: strings start within `reach`, and it stands no nearer than
+// `standoff`. Valid (partnerRangeOn): both finite, reach in 2 x stationTolerance..kPartnerRangeMax (and 0.5 at least),
+// standoff in 0..reach. 0, 0: unset.
+struct PartnerRange {
+    float reach = 0.f;
+    float standoff = 0.f;
+};
+// The far end of a valid range: the caster band's far end, plus a station's tolerance (the tuning's own reach stays
+// 0.5..4, as arena.json's partnerReach; a kit that would cast from 5-8 m needs both raised there).
+inline constexpr float kPartnerRangeMax = kPartnerCloseCasterMax + 0.5f;
 
 // One step's view. Enemies by the fight's own index (keep the order stable through the fight).
 struct PartnerInput {
@@ -312,6 +340,9 @@ struct PartnerInput {
     // the other lead's kit; it still stations, faces its target, guards and (rule 17) moves. The host sets it per
     // lead; true by default, so a host that never says is unchanged.
     bool kitAttacks = true;
+    // Rule 19: the partner kit's own range (ArenaFighter::partnerReach, partnerStandoff), read only under the close
+    // camera. Unset (0) or invalid: the tuning's. Input, not state: never in the save or the hash.
+    PartnerRange range{};
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
@@ -421,6 +452,10 @@ struct PartnerTuning {
 };
 
 FTCORE_API bool validPartnerTuning(const PartnerTuning& t);
+// Rule 19: the kit's range is on this step (the close camera given and in.range valid against `t`, see PartnerRange).
+FTCORE_API bool partnerRangeOn(const PartnerInput& in, const PartnerTuning& t);
+// The tuning the brain steps on: `t`, with the kit's reach and standoff when partnerRangeOn; else `t` itself.
+FTCORE_API PartnerTuning partnerEffectiveTuning(const PartnerTuning& t, const PartnerInput& in);
 // The shipped tuning with step 2's changes off: bottom margin equal to frustumMargin, the side, choice and turn holds 0.
 // Framed and with rule 17 off its intents and hash are main's (a0f48fa7) to the bit, on any target under
 // kPartnerTallMeters (rule 18 needs a tall one).
@@ -428,6 +463,10 @@ FTCORE_API PartnerTuning mainEquivalentTuning(PartnerTuning t);
 // Rule 13's frame test alone: a partner standing at p (its capsule, the camera's groundZ and bodyHeight) is inside the
 // camera's frustum shrunk by `margin` (0..0.4) of the screen on every side. A camera not given or not whole: false.
 FTCORE_API bool partnerInFrame(const PartnerCameraView& camera, float margin, Vec2 p);
+// Rule 19's measure under the close camera: as partnerInFrame, but the partner's middle (waist) and head only; its
+// feet are not tested (a lens 1.7 m up pitched up leaves the ground near it below the frame). The host's in-frame
+// count uses this while the close camera is given, partnerInFrame otherwise.
+FTCORE_API bool partnerInFrameClose(const PartnerCameraView& camera, float margin, Vec2 p);
 // Reads Data/Battle/partner_brain.json. A field out of its range, of the wrong type or unknown, a bad version or a
 // file that does not parse: `out` is the defaults and false (`error` says why). A cross-field pair broken (returnMeters
 // over leashMeters, leashMeters under personalSpaceMeters + 1, standoffMeters over reachMeters, stationTolerance over
@@ -509,6 +548,8 @@ struct PartnerBrainSave {
     std::uint8_t tallGrowOn = 0;   // rule 18: the targets growing StayClose's cap now, a bit each (with hysteresis)
     bool holdsFramed = false;      // framed with the framing holds on (a tall enemy in the fight, or rule 17's
                                    // circling) since begin (sticky): bottom margin and side hold steer, hashed from then
+    bool closeUsed = false;        // rule 19: the close camera was given since begin (sticky; its hold hashed from then)
+    PartnerCloseHold closeHold{};  // rule 19: the flank held (PartnerCloseStation.h)
     static_assert(kMaxPartnerEnemies <= 8 && kMaxArenaEnemies <= 8, "tallGrowOn: a bit per target in 8 bits");
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};
@@ -606,6 +647,9 @@ private:
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;
 
     PartnerBrainSave s_{};
+    // This step's tuning (partnerEffectiveTuning of s_.t), set as each step starts: input, not state (never saved or
+    // hashed); s_.t itself unless the kit's range is on.
+    PartnerTuning tStep_{};
 };
 
 } // namespace ftcore

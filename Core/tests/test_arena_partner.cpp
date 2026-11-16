@@ -3938,3 +3938,84 @@ TEST_CASE("arena partner: a partner kit with no attacks spends nothing on a pair
         CHECK(g->after == PressReason::Cooldown); // pairCooldown runs
     }
 }
+
+namespace {
+// 20 s of the shipped party kit as the partner against one dummy, the lead 4 m off it, the camera on behind the lead:
+// the classic camera or the close one (a caster band of 5-8 m), with the kit's range as shipped or zeroed.
+struct RangeRun {
+    std::vector<std::uint64_t> hashes; // the brain's, every tick
+    int hits = 0;
+    float firstHit = -1.f;
+    float sumEdge = 0.f; // the ally's distance off the dummy's edge at each of its hits
+    ArenaStats stats;
+    float meanEdge() const { return hits > 0 ? sumEdge / static_cast<float>(hits) : 0.f; }
+};
+RangeRun rangeRun(bool kitRange, bool close) {
+    const ArenaTable t = shippedTable();
+    ArenaFighter third = t.fighter("third");
+    if (!kitRange) third.partnerReach = third.partnerStandoff = 0.f;
+    PRig r;
+    r.ownPartnerKit = true;
+    r.def.partnerKit = third;
+    r.def.fighter.hp = 100000; // the lead never falls: no takeover
+    r.tuning.budgetAllowanceSeconds = 10.f;
+    REQUIRE(validPartnerTuning(r.tuning));
+    const ArenaEnemyKind dummy = dummyKind();
+    r.enemy(dummy, Vec2{0.f, 0.f});
+    r.bodies.player = Vec2{-4.f, 0.f};
+    r.bodies.ally = Vec2{-3.f, 2.f};
+    r.go(true, 1000);
+    r.walk = true;
+    r.in.cameraOn = true;
+    r.in.cameraPos = Vec2{-7.f, 0.f};
+    r.in.cameraFacing = Vec2{1.f, 0.f};
+    if (close) {
+        PartnerCloseView& c = r.in.partnerClose;
+        c.given = true;
+        c.halfAngleDegrees = 30.f;
+        c.leadSide = 0;
+        c.standMin = kPartnerCloseCasterMin;
+        c.standMax = kPartnerCloseCasterMax;
+    }
+    RangeRun k;
+    for (int s = 0; s < 20 * 60; ++s) {
+        const std::size_t from = r.log.size();
+        r.tick();
+        k.hashes.push_back(r.brain.hash());
+        for (std::size_t i = from; i < r.log.size(); ++i)
+            if (allyHit(r.log[i].e)) {
+                if (k.hits == 0) k.firstHit = r.fight.time();
+                ++k.hits;
+                k.sumEdge += length(sub(r.bodies.ally, r.bodies.enemies[0])) - dummy.bodyRadius;
+            }
+    }
+    k.stats = r.fight.stats();
+    return k;
+}
+} // namespace
+
+TEST_CASE("arena partner: the partner kit's range: none of it under the classic camera; under the close one it casts from further off") {
+    // The fight always passes the kit's range; the classic camera never reads it: the brain hashes alike every tick.
+    const RangeRun a = rangeRun(true, false), b = rangeRun(false, false);
+    REQUIRE(a.hashes.size() == b.hashes.size());
+    CHECK(a.hashes == b.hashes);
+    CHECK(a.hits == b.hits);
+    CHECK(a.stats.partnerDamage == b.stats.partnerDamage);
+    REQUIRE(a.hits > 0);
+    // The close camera: the range read, its strings start within its reach (3.2 m off the edge) on its walk to its
+    // band (1.8-2.7 m), not walked in to about 1 m: at its hits it stands further off than without the range, and
+    // the bolt (range 3.6) lands from there.
+    const RangeRun c = rangeRun(true, true), d = rangeRun(false, true);
+    MESSAGE("close camera, kit range on: hits " << c.hits << " first at " << c.firstHit << " s, mean "
+                                                << c.meanEdge() << " m off the edge, damage " << c.stats.partnerDamage
+                                                << ", strings " << c.stats.partnerStrings);
+    MESSAGE("close camera, kit range off: hits " << d.hits << " first at " << d.firstHit << " s, mean "
+                                                 << d.meanEdge() << " m off the edge, damage " << d.stats.partnerDamage
+                                                 << ", strings " << d.stats.partnerStrings);
+    MESSAGE("classic camera: hits " << a.hits << " first at " << a.firstHit << " s, mean " << a.meanEdge()
+                                    << " m off the edge, damage " << a.stats.partnerDamage);
+    REQUIRE(c.hits > 0);
+    REQUIRE(d.hits > 0);
+    CHECK(c.meanEdge() > d.meanEdge());
+    CHECK(c.hashes != d.hashes);
+}
