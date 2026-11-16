@@ -24,6 +24,7 @@
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaCamera.h"
+#include "ftcore/ArenaCloseFrame.h"
 #include "ftcore/ArenaGun.h"
 #include "ftcore/ArenaLockFrame.h"
 #include "ftcore/ArenaLook.h"
