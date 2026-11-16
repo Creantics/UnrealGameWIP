@@ -49,8 +49,8 @@ void UFTRimLightComponent::MakeLight()
 	Light->SetIntensity(0.f);
 	Light->SetLightColor(Color);
 	Light->SetAttenuationRadius(Back + 400.f);
-	Light->SetInnerConeAngle(14.f);
-	Light->SetOuterConeAngle(26.f);
+	Light->SetInnerConeAngle(20.f);
+	Light->SetOuterConeAngle(35.f);
 	Light->SetCastShadows(false); // the body would shadow its own edge; and it stays cheap
 	Light->SetAffectTranslucentLighting(false);
 	Light->SetVolumetricScatteringIntensity(0.f); // no haze in the fog: height fog ignores lighting channels
@@ -88,7 +88,7 @@ void UFTRimLightComponent::ApplyChannels()
 		{
 			continue;
 		}
-		// Hair, the face piece and glasses stay off the channel (ftcore::look::rimLightSkipsPiece says why).
+		// The face piece and glasses stay off the channel (ftcore::look::rimLightSkipsPiece says why).
 		const UObject* Mesh = nullptr;
 		if (const USkeletalMeshComponent* Skel = Cast<USkeletalMeshComponent>(P))
 		{
