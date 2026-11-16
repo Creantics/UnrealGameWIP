@@ -15,7 +15,7 @@ namespace {
 constexpr std::array<std::string_view, kUiWorldCount> kWorldNames{"solhaven", "lattice", "unwritten"};
 constexpr std::array<std::string_view, kUiPaletteCount> kPaletteNames{"default", "protan", "deutan", "tritan", "high_contrast"};
 constexpr std::array<std::string_view, kUiTokenCount> kTokenNames{"ink", "ink_dim", "backing", "track", "accent",
-    "accent2", "danger", "ally", "weak_point"};
+    "accent2", "danger", "ally", "weak_point", "fill"};
 constexpr std::array<std::string_view, kUiTextRoleCount> kRoleNames{"title", "heading", "label", "value", "subtitle",
     "speaker", "prompt", "popup", "verb"};
 constexpr std::array<std::string_view, kUiFontCount> kFontNames{"sans",  "sans_bold", "serif",        "hand",
@@ -122,25 +122,26 @@ void uiFadeStep(UiFade& f, bool changed, float dt, const UiFadeTimes& t) {
 
 UiStyle defaultUiStyle() {
     UiStyle s;
-    // ink, ink_dim, backing, track, accent, accent2, danger, ally, weak_point
-    s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0.45f), hex(0xE9B36B), hex(0xC9643C),
-        hex(0xE60012), hex(0x8FD3B4), hex(0xFFE08A)};
-    s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0.45f), hex(0x8FD6E8), hex(0xA88BE0),
-        hex(0xE60012), hex(0x9BE3B0), hex(0xFFE08A)};
+    // ink, ink_dim, backing, track, accent, accent2, danger, ally, weak_point, fill. The fills are the worlds' own
+    // (2026-11-16): Solhaven parchment, Lattice cyan, Unwritten grey; the track's hairline is white at 0x73.
+    s.world[0] = {hex(0xF3EEE6), hex(0xD2CBBF), hex(0x0A0806), hex(0xFFFFFF, 0x73 / 255.f), hex(0xE9B36B), hex(0xC9643C),
+        hex(0xE60012), hex(0x8FD3B4), hex(0xFFE08A), hex(0xF2DDB4)};
+    s.world[1] = {hex(0xEEF4F6), hex(0xC4D1D6), hex(0x05090C), hex(0xFFFFFF, 0x73 / 255.f), hex(0x8FD6E8), hex(0xA88BE0),
+        hex(0xE60012), hex(0x9BE3B0), hex(0xFFE08A), hex(0x8FD6E8)};
     // One danger red in every world (E60012, luminance about 0.17: 3:1 or more against the track's black body and the
     // white fill): red means harm to the player, and only the hit cue, the lost hp, the low underline and the call
     // triangle wear it. The weak point is Mark (pale gold) in every world.
-    // The Unwritten: a cold grey ink, its dim scaled from it as the others are (luminance x 0.6975), a cold neutral
-    // accent a step brighter than the ink, and cold neutral backing and ally.
-    s.world[2] = {hex(0xDCE1E5), hex(0xBBC0C3), hex(0x080A0C), hex(0xFFFFFF, 0.45f), hex(0xF4F6F8), hex(0xB01E23),
-        hex(0xE60012), hex(0xA3ADB5), hex(0xFFE08A)};
+    // The Unwritten: a cold grey ink, its dim scaled from it as the others are (luminance x 0.6975), its accent the
+    // ink itself (the prompt glyph's ring is ink there), and cold neutral backing and ally.
+    s.world[2] = {hex(0xDCE1E5), hex(0xBBC0C3), hex(0x080A0C), hex(0xFFFFFF, 0x73 / 255.f), hex(0xDCE1E5), hex(0xB01E23),
+        hex(0xE60012), hex(0xA3ADB5), hex(0xFFE08A), hex(0xBBC0C3)};
     // The danger red is a mid-tone mark that fails the text rule, so in every world a danger word is ink over a danger
     // underline.
     for (UiWorldRules& r : s.rules) r.dangerUnderline = true;
     // Colour-vision sets: danger, ally and weak point moved to hues each type tells apart (orange / sky / yellow for
     // red-green; vermilion / teal / pink for blue-yellow). High contrast: white text on solid black, saturated cues.
-    // Each danger sits at luminance about 0.18 at its own hue (full saturation), so it holds 3:1 against the track's
-    // black body and the white fill as the default red does.
+    // Each danger sits at luminance about 0.18 at its own hue (full saturation), so it holds 3:1 against the track
+    // body's colour and the ink as the default red does.
     const auto cue = [&](UiPalette p, UiToken t, UiColor c) {
         s.paletteColor[static_cast<std::size_t>(p)][static_cast<std::size_t>(t)] = c;
         s.paletteOverrides[static_cast<std::size_t>(p)][static_cast<std::size_t>(t)] = true;
@@ -157,6 +158,7 @@ UiStyle defaultUiStyle() {
     cue(UiPalette::HighContrast, UiToken::InkDim, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::Backing, hex(0x000000));
     cue(UiPalette::HighContrast, UiToken::Track, hex(0xFFFFFF, 0.6f));
+    cue(UiPalette::HighContrast, UiToken::Fill, hex(0xFFFFFF));
     cue(UiPalette::HighContrast, UiToken::Danger, hex(0xB46000));
     cue(UiPalette::HighContrast, UiToken::Ally, hex(0x00E0FF));
     cue(UiPalette::HighContrast, UiToken::WeakPoint, hex(0xFFFF00));
@@ -169,7 +171,7 @@ UiStyle defaultUiStyle() {
     s.text[static_cast<std::size_t>(UiTextRole::Speaker)] = {UiFont::SerifScBold, 26.f, 0.08f, false};
     s.text[static_cast<std::size_t>(UiTextRole::Prompt)] = {UiFont::Serif, 22.f, 0.02f, false};
     s.text[static_cast<std::size_t>(UiTextRole::Popup)] = {UiFont::SerifScBold, 30.f, 0.04f, false};
-    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::SerifScBold, 27.f, 0.22f, true};
+    s.text[static_cast<std::size_t>(UiTextRole::Verb)] = {UiFont::SerifScBold, 29.f, 0.22f, true};
 
     s.cueShape[static_cast<std::size_t>(UiToken::Danger)] = UiCueShape::Triangle;
     s.cueShape[static_cast<std::size_t>(UiToken::Ally)] = UiCueShape::Circle;
@@ -189,25 +191,19 @@ UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor 
     return uiColor(s, world, palette, UiToken::Accent2);
 }
 
-namespace {
-float unlinear(float l) {
-    const float c = l <= 0.0031308f ? l * 12.92f : 1.055f * std::pow(l, 1.f / 2.4f) - 0.055f;
-    return std::clamp(c, 0.f, 1.f);
-}
-} // namespace
-
 UiTrackSet uiTrackSet(const UiStyle& s, UiWorld world, UiPalette palette) {
     UiTrackSet t;
-    t.body = UiColor{kUiTrackBodyL, kUiTrackBodyL, kUiTrackBodyL, 1.f};
-    t.fill = UiColor{1.f, 1.f, 1.f, 1.f};
-    // The hairline: the ink of the palette shown (high contrast's white ink gives a neutral grey) scaled in linear light
-    // to kUiTrackHairL, so it keeps that ink's hue at the same lightness in every palette.
-    const UiColor ink = uiColor(s, world, palette, UiToken::Ink);
-    const float l = luminance(ink);
-    const float k = l > 1e-4f ? kUiTrackHairL / l : 0.f;
-    t.hairline = l > 1e-4f ? UiColor{unlinear(linear(ink.r) * k), unlinear(linear(ink.g) * k), unlinear(linear(ink.b) * k), 1.f}
-                           : UiColor{unlinear(kUiTrackHairL), unlinear(kUiTrackHairL), unlinear(kUiTrackHairL), 1.f};
+    t.body = uiColor(s, world, palette, UiToken::Backing);
+    t.body.a = palette == UiPalette::HighContrast ? 1.f : kUiTrackBodyA;
+    t.hairline = uiColor(s, world, palette, UiToken::Track);
+    t.fill = uiColor(s, world, palette, UiToken::Fill);
+    t.fill.a = 1.f;
     return t;
+}
+
+float uiDangerFillContrast(const UiStyle& s, UiWorld world, UiPalette palette) {
+    const UiColor black{0.f, 0.f, 0.f, 1.f};
+    return uiContrast(uiColor(s, world, palette, UiToken::Danger), uiTrackSet(s, world, palette).fill, black);
 }
 
 UiDangerWord uiDangerWord(const UiStyle& s, UiWorld world, UiPalette palette) {
@@ -238,11 +234,21 @@ float uiHitFlashLevel(float age) {
     return 1.f - u * u * (3.f - 2.f * u);
 }
 
-void uiHitSegsStep(UiHitSegs& s, float hp01, float dt) {
-    const float hp = std::clamp(hp01, 0.f, 1.f);
+float uiClockStep(double& last, double now) {
+    if (!(now == now)) return 0.f; // NaN: no time passes, the last time stays
+    const double was = last;
+    last = now;
+    if (was < 0.0 || !(now > was)) return 0.f;
+    return static_cast<float>(std::min(now - was, 1e3));
+}
+
+void uiHitSegsStep(UiHitSegs& s, float hp01, double now) {
+    const float dt = uiClockStep(s.clock, now);
     for (UiHitSeg& g : s.seg) {
-        if (g.age < kUiHitGone) g.age = std::min(kUiHitGone, g.age + std::max(dt, 0.f));
+        if (g.age < kUiHitGone) g.age = std::min(kUiHitGone, g.age + dt);
     }
+    if (!(hp01 == hp01)) return; // NaN: no segment, `last` kept
+    const float hp = std::clamp(hp01, 0.f, 1.f);
     if (s.last < 0.f || hp > s.last + 1e-4f) {
         for (UiHitSeg& g : s.seg) g.age = kUiHitGone;
     } else if (hp < s.last - 1e-4f) {
@@ -258,8 +264,9 @@ UiHitLayers uiHitLayers(float in, float edge) {
     const float u = std::clamp(in, 0.f, 1.f);
     const float f = 1.f - u * u * (3.f - 2.f * u);
     if (f <= 0.f) return l;
-    l.dark = kUiHitDarkPeak * (edge >= 1.f ? 1.f : kUiHitDarkOffSide) * std::pow(f, kUiHitDarkPow);
-    l.red = kUiHitGlowPeak * std::min(edge, 1.f) * std::pow(f, kUiHitGlowPow);
+    const float k = std::min(edge, 1.f) * std::pow(f, kUiHitGlowPow); // one curve, one share, both layers
+    l.dark = kUiHitDarkPeak * k;
+    l.red = kUiHitGlowPeak * k;
     return l;
 }
 
@@ -273,7 +280,8 @@ UiHitEdges uiHitEdges(bool hasSide, float rightX, float aheadY) {
     return e;
 }
 
-float uiHitWatchStep(UiHitWatch& w, double stamp, float dt) {
+float uiHitWatchStep(UiHitWatch& w, double stamp, double now) {
+    const float dt = uiClockStep(w.clock, now);
     if (!w.seeded) {
         w.seen = stamp;
         w.age = 1e3f;
@@ -283,9 +291,9 @@ float uiHitWatchStep(UiHitWatch& w, double stamp, float dt) {
         w.seen = stamp;
         if (!fresh) w.age = 1e3f;
         else if (w.age >= kUiHitRepeat) w.age = 0.f;
-        else w.age = std::min(w.age + (dt > 0.f ? dt : 0.f), 1e3f); // too soon after the last: no new cue
+        else w.age = std::min(w.age + dt, 1e3f); // too soon after the last: no new cue
     } else {
-        w.age = std::min(w.age + (dt > 0.f ? dt : 0.f), 1e3f);
+        w.age = std::min(w.age + dt, 1e3f);
     }
     return w.age;
 }
@@ -296,37 +304,107 @@ UiGuardState uiGuardState(float stamina01, bool broken) {
     return stamina01 <= 0.001f ? UiGuardState::Spent : UiGuardState::Under;
 }
 
-float uiGuardLabelStep(UiGuardLabel& g, UiGuardState now, float dt) {
-    if (now != g.state) {
-        g.state = now;
-        g.since = 0.f;
-    } else {
-        g.since = std::min(g.since + (dt > 0.f ? dt : 0.f), 1e3f);
-    }
-    if (g.state == UiGuardState::Full || g.since >= kUiGuardLabelHold + kUiGuardLabelFade) return 0.f;
-    return g.since <= kUiGuardLabelHold ? 1.f : 1.f - (g.since - kUiGuardLabelHold) / kUiGuardLabelFade;
+float uiLabelLevel(double age) {
+    if (!(age >= 0.0) || age >= static_cast<double>(kUiLabelHold + kUiLabelFade)) return 0.f;
+    if (age <= static_cast<double>(kUiLabelHold)) return 1.f;
+    return std::clamp(1.f - static_cast<float>(age - kUiLabelHold) / kUiLabelFade, 0.f, 1.f);
 }
 
-float uiLoadLabelStep(UiLoadLabel& g, int load, int cap, bool releaseReady, float dt) {
-    const UiLoadState now = load <= 0 ? UiLoadState::None : (releaseReady ? UiLoadState::Ready : UiLoadState::Held);
-    if (now != g.state || (now != UiLoadState::None && cap != g.cap)) {
-        g.state = now;
-        g.since = 0.f;
-    } else {
-        g.since = std::min(g.since + (dt > 0.f ? dt : 0.f), 1e3f);
+float uiGuardLabelStep(UiGuardLabel& g, UiGuardState state, double now) {
+    if (state != g.state) {
+        g.state = state;
+        g.since = now;
     }
-    g.cap = cap;
-    if (g.state == UiLoadState::None || g.since >= kUiGuardLabelHold + kUiGuardLabelFade) return 0.f;
-    return g.since <= kUiGuardLabelHold ? 1.f : 1.f - (g.since - kUiGuardLabelHold) / kUiGuardLabelFade;
+    if (g.state == UiGuardState::Full) return 0.f;
+    return uiLabelLevel(now - g.since);
+}
+
+float uiOnceLabelStep(UiOnceLabel& g, bool present, double now) {
+    if (!present) return 0.f;
+    if (!g.shown) {
+        g.shown = true;
+        g.since = now;
+    }
+    return uiLabelLevel(now - g.since);
+}
+
+float uiLoadLabelStep(UiLoadLabel& g, int load, double now) { return uiOnceLabelStep(g, load > 0, now); }
+
+int uiBossPercent(int hp, int hpMax) {
+    if (hpMax <= 0) return -1;
+    if (hp <= 0) return 0;
+    if (hp >= hpMax) return 100;
+    const long long pc = (100LL * hp) / hpMax;
+    return static_cast<int>(std::max<long long>(1, pc));
+}
+
+float uiCapX(float x0, float len, float fill01, float capW) {
+    const float f = fill01 == fill01 ? std::clamp(fill01, 0.f, 1.f) : 0.f;
+    const float l = std::max(len, 0.f);
+    const float half = std::min(0.5f * std::max(capW, 0.f), 0.5f * l);
+    return std::clamp(x0 + l * f, x0 + half, x0 + l - half);
+}
+
+UiReleasePulseView uiReleasePulseStep(UiReleasePulse& p, bool ready, bool overloaded, double now) {
+    if (ready && !p.ready) p.readyAt = now;
+    if (overloaded && !p.over) p.overAt = now;
+    p.ready = ready;
+    p.over = overloaded;
+    UiReleasePulseView v;
+    if (ready) {
+        const double a = now - p.readyAt;
+        if (a >= 0.0 && a < kUiReleaseTravel) v.travel = static_cast<float>(a / kUiReleaseTravel);
+        else if (a >= kUiReleaseTravel && a < kUiReleaseTravel + kUiReleasePeak) v.peak = kUiReleaseGrow;
+    }
+    if (overloaded) {
+        const double a = now - p.overAt;
+        if (a >= 0.0 && std::fmod(a, static_cast<double>(kUiReleaseRepeat)) < kUiReleasePeak) v.peak = kUiReleaseGrow;
+    }
+    return v;
+}
+
+UiRingPoint uiRingPoint(float t, float chord, float sag, float offset) {
+    UiRingPoint q;
+    const float c = std::max(chord, 0.f);
+    const float u = t == t ? std::clamp(t, 0.f, 1.f) : 0.f;
+    if (!(sag > 1e-4f) || c <= 0.f) {
+        q.x = c * u;
+        q.y = -offset;
+        return q;
+    }
+    // The circle through the chord's ends whose middle stands `sag` off the chord: radius r, centre (c/2, sag - r) with y
+    // toward the bulge. Outward along the radius is away from the centre, so a positive offset moves toward the bulge.
+    const double cs = c, ss = sag;
+    const double r = (cs * cs / 4.0 + ss * ss) / (2.0 * ss);
+    const double half = std::asin(std::min(1.0, cs / (2.0 * r)));
+    const double th = (2.0 * u - 1.0) * half;
+    const double rr = r + offset;
+    q.x = static_cast<float>(cs / 2.0 + rr * std::sin(th));
+    q.y = static_cast<float>(ss - r + rr * std::cos(th));
+    q.tx = static_cast<float>(std::cos(th));
+    q.ty = static_cast<float>(-std::sin(th));
+    return q;
+}
+
+float uiArcSag(float chord, float radius) {
+    const float half = 0.5f * std::max(chord, 0.f);
+    if (!(radius > half)) return 0.f;
+    return radius - std::sqrt(radius * radius - half * half);
+}
+
+int uiArcSegments(float chord, float maxChordPx) {
+    const float m = maxChordPx > 0.f ? maxChordPx : 4.f;
+    const float n = std::ceil(std::max(chord, 0.f) / m);
+    return std::clamp(static_cast<int>(n), 1, 1024);
 }
 
 UiLowGuardGaps uiLowGuardGaps(float s, float px) {
     const float d = px > 0.f ? px : 1.f;
     const auto whole = [d](float v) { return std::max(1.f, std::floor(v / d + 0.5f)) * d; };
     UiLowGuardGaps g;
-    g.gap = whole(kUiLowUnderGap * s);
+    g.gap = std::max(kUiGapMinPx * d, whole(kUiLowUnderGap * s));
     g.under = whole(kUiLowUnderW * s);
-    g.clear = std::max(kUiGuardClearMinPx * d, whole(kUiGuardClear * s));
+    g.clear = std::max(kUiGapMinPx * d, whole(kUiGuardClear * s));
     return g;
 }
 
@@ -427,7 +505,7 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
             // Text tokens 4.5:1; cue colours (drawn as shapes and fills, with a word beside them) 3:1. Danger is a
             // mid-tone mark that is never text (danger_underline in every world): it is measured below where it is drawn.
             constexpr Need kNeeds[] = {{UiToken::Ink, 4.5f}, {UiToken::InkDim, 4.5f}, {UiToken::Accent, 4.5f},
-                {UiToken::Ally, 3.f}, {UiToken::WeakPoint, 3.f}};
+                {UiToken::Ally, 3.f}, {UiToken::WeakPoint, 3.f}, {UiToken::Fill, 3.f}};
             for (const Need& n : kNeeds) {
                 const float c = uiContrast(uiColor(s, world, palette, n.token), back, white);
                 if (c < n.ratio) {
@@ -440,12 +518,14 @@ bool validateUiStyle(const UiStyle& s, std::string* error) {
                     return fail(error, buf);
                 }
             }
-            // Danger 3:1 against both the value track's black body and its white fill, the two things it is drawn on
-            // and beside (the lost hp over the track, the low underline under the fill, the call triangle's rim).
+            // Danger 3:1 against the value track body's own colour (the lost hp is drawn over it) and the ink (the
+            // light line a danger underline sits under where the fill steps to ink). Against the world fills it is
+            // reported only (uiDangerFillContrast).
             {
-                const UiTrackSet t = uiTrackSet(s, world, palette);
+                UiColor body = uiTrackSet(s, world, palette).body;
+                body.a = 1.f;
                 const UiColor dg = uiColor(s, world, palette, UiToken::Danger);
-                const float c = std::min(uiContrast(dg, t.body, white), uiContrast(dg, t.fill, white));
+                const float c = std::min(uiContrast(dg, body, white), uiContrast(dg, uiColor(s, world, palette, UiToken::Ink), white));
                 if (c < 3.f) {
                     std::snprintf(buf, sizeof buf, "%.*s/%.*s: danger on the track is %.2f:1, needs 3.0:1",
                         static_cast<int>(kWorldNames[w].size()), kWorldNames[w].data(),
@@ -509,9 +589,15 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 setPlate(*plate, v.string());
                 continue;
             }
-            if (rules && (key == "marks_accent2" || key == "danger_underline")) {
+            bool* rule = !rules ? nullptr
+                : key == "marks_accent2" ? &rules->marksAccent2
+                : key == "danger_underline" ? &rules->dangerUnderline
+                : key == "sig_pulse" ? &rules->sigPulse
+                : key == "sig_arcs" ? &rules->sigArcs
+                : key == "sig_margin_rule" ? &rules->sigMarginRule : nullptr;
+            if (rule) {
                 if (v.type() != JsonType::Bool) return bad(section, key);
-                (key == "marks_accent2" ? rules->marksAccent2 : rules->dangerUnderline) = v.boolean();
+                *rule = v.boolean();
                 continue;
             }
             std::size_t t = 0;
@@ -587,6 +673,24 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 float* dst = fk == "in" ? &s.fade.in : fk == "rest" ? &s.fade.rest : fk == "out" ? &s.fade.out
                     : fk == "rest_alpha" ? &s.fade.restAlpha : nullptr;
                 if (!dst || !number(fv, 0.f, fk == "rest_alpha" ? 1.f : 30.f, *dst)) return bad(key, fk);
+            }
+        } else if (key == "lines") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view lk = v.key(j);
+                float* dst = lk == "cap_grow" ? &s.lines.capGrow : lk == "guard_dot" ? &s.lines.guardDot
+                    : lk == "guard_pitch" ? &s.lines.guardPitch : nullptr;
+                if (!dst || !number(v.value(j), lk == "cap_grow" ? 0.f : 1.f, 32.f, *dst)) return bad(key, lk);
+            }
+            if (s.lines.guardPitch <= s.lines.guardDot) return bad(key, "guard_pitch");
+        } else if (key == "margin_rule") {
+            if (v.type() != JsonType::Object) return bad("style", key);
+            for (std::uint32_t j = 0; j < v.size(); ++j) {
+                const std::string_view mk = v.key(j);
+                float* dst = mk == "gap" ? &s.marginRule.gap : mk == "width" ? &s.marginRule.width
+                    : mk == "alpha" ? &s.marginRule.alpha : mk == "tick_w" ? &s.marginRule.tickW
+                    : mk == "tick_h" ? &s.marginRule.tickH : nullptr;
+                if (!dst || !number(v.value(j), 0.f, mk == "alpha" ? 1.f : 64.f, *dst)) return bad(key, mk);
             }
         } else if (key == "word_luma_floor") {
             if (!number(v, 0.f, 1.f, s.wordLumaFloor)) return bad("style", key);

@@ -45,8 +45,9 @@ enum class UiToken : std::uint8_t {
     Danger,    // tells, low health
     Ally,      // the partner and allies
     WeakPoint, // an open weak point
+    Fill,      // a value line's fill (health, guard, partner, boss): the world's own colour
 };
-inline constexpr std::size_t kUiTokenCount = 9;
+inline constexpr std::size_t kUiTokenCount = 10;
 
 enum class UiTextRole : std::uint8_t { Title, Heading, Label, Value, Subtitle, Speaker, Prompt, Popup, Verb };
 inline constexpr std::size_t kUiTextRoleCount = 9;
@@ -107,9 +108,37 @@ struct UiTextStyle {
 //   marksAccent2:    a non-text mark (a value line such as the Load's, the current lead's dot, the weak-point mark)
 //                    wears accent2 (uiMarkColor); "marks_accent2" in the data;
 //   dangerUnderline: a danger word is drawn in ink, with danger as its underline (uiDangerWord); "danger_underline".
+//   The three signature devices (the owner's pick flips one row; all off by default, and off draws the base path):
+//   sigPulse:       the Load's Release spike and its travelling pulse (uiReleasePulseStep); "sig_pulse";
+//   sigArcs:        the boss and lead lines on concentric ring arcs (uiRingPoint); "sig_arcs";
+//   sigMarginRule:  a vertical rule down the party block's left edge (UiMarginRule); "sig_margin_rule".
 struct UiWorldRules {
     bool marksAccent2 = false;
     bool dangerUnderline = false;
+    bool sigPulse = false;
+    bool sigArcs = false;
+    bool sigMarginRule = false;
+};
+
+// Value-line ends and the dotted guard, 1080p px at HUD scale 1 (the painter scales them and rounds each to whole device
+// px). An end cap is a square of ink capGrow px wider than its line's weight, on the fill's end: it moves with the end
+// and sits on the track's start at 0 fill (uiCapX); a line with no value has none; the dotted guard has none. The guard
+// is square dots guardDot across at guardPitch px centres.
+struct UiLineShape {
+    float capGrow = 4.f;
+    float guardDot = 3.f;
+    float guardPitch = 7.f;
+};
+
+// The margin rule (the third signature device): a rule `width` px wide `gap` px left of the party block's lines, ink at
+// `alpha`, from the guard row's foot to the cap top of the highest name shown; the lines start `gap` px right of it.
+// The boss line carries a vertical tick `tickW` x `tickH` at its start.
+struct UiMarginRule {
+    float gap = 12.f;
+    float width = 2.f;
+    float alpha = 0.6f;
+    float tickW = 2.f;
+    float tickH = 16.f;
 };
 
 struct UiStyle {
@@ -142,6 +171,8 @@ struct UiStyle {
     UiColor loadBright{1.f, 0.878f, 0.541f, 1.f};    // #FFE08A
     UiFadeTimes fade;
     UiBudgetRules budget;
+    UiLineShape lines;
+    UiMarginRule marginRule;
     float wordLumaFloor = 0.45f; // a coloured word's relative luminance is lifted to at least this (uiLumaFloor)
     float minTextPx = 18.f;     // the floor at 1080p
     float minTextPxAbsolute = 14.f; // the floor at any height
@@ -164,16 +195,13 @@ FTCORE_API UiColor uiColor(const UiStyle& s, UiWorld world, UiPalette palette, U
 // overrides accent2, so the mark keeps it in every palette; its shape and edge carry it.
 FTCORE_API UiColor uiMarkColor(const UiStyle& s, UiWorld world, UiPalette palette, UiColor usual);
 
-// A value line's three tones (health, guard; one family, every world the same way): the unfilled track's body, black
-// (L 0), with a 1 device px top hairline of the world's ink hue at L kUiTrackHairL; and the fill, white. The fill is
-// judged against the body only (it never sits on the hairline): 21:1. Over any stage one of body and hairline holds
-// 3:1 (the body for a stage at L 0.10 or more, the hairline for one at L 0.107 or less). A palette moves only the
-// hairline's hue (its ink's), never a lightness.
-inline constexpr float kUiTrackBodyL = 0.f;
-inline constexpr float kUiTrackHairL = 0.42f;
+// A value line's three tones (health, guard, partner, boss; one family): the unfilled track's body, the world's backing
+// at kUiTrackBodyA (solid in high contrast); a 1 device px top hairline in the track token (white at 0x73); and the
+// fill, the world's fill token (high contrast: white). The fill holds 10:1 or more against the body's own colour.
+inline constexpr float kUiTrackBodyA = 0.45f;
 struct UiTrackSet {
-    UiColor body;     // the unfilled track's body
-    UiColor hairline; // its 1 device px top edge
+    UiColor body;     // the unfilled track's body (alpha is its strength over the picture)
+    UiColor hairline; // its 1 device px top edge (alpha likewise)
     UiColor fill;     // the value
 };
 FTCORE_API UiTrackSet uiTrackSet(const UiStyle& s, UiWorld world, UiPalette palette);
@@ -203,21 +231,24 @@ struct UiDangerSet {
     UiColor cueMark;      // the call cue's danger triangle
     UiColor hitDark;      // the hit cue's darkening layer under the red (danger scaled by kUiHitDarkK)
 };
+// The danger colour's contrast against the world's fill, the line it is drawn beside (the lost hp at the fill's end,
+// the low underline under it). Reported, not enforced: the world fills (2026-11-16 ruling) put it under 3:1 in the
+// Lattice (2.96) and the Unwritten (2.62); import holds danger 3:1 against the track body's colour and the ink.
+FTCORE_API float uiDangerFillContrast(const UiStyle& s, UiWorld world, UiPalette palette);
 // The hit cue's darkening layer: the danger colour's sRGB channels times this (E60012 gives 5A0007).
 inline constexpr float kUiHitDarkK = 0.39f;
 FTCORE_API UiDangerSet uiDangerSet(const UiStyle& s, UiWorld world, UiPalette palette);
 
-// The hit cue's glow: two layers on each edge, laid over the frame under every HUD line and word, each falling from the
-// frame's edge to nothing kUiHitGlowShare of that edge's axis in (6 percent of the width at the sides, of the height at
-// top and bottom). First a darkening layer in UiDangerSet::hitDark, then the red in hitCue over it (uiHitLayers). The
-// struck side at full, the other three at kUiHitOffSide (the red) or kUiHitDarkOffSide (the dark); with no side (a
-// hazard), all four at full. With reduced flashes only the lost hp is drawn.
+// The hit cue's glow (arm fB, ruled 2026-11-16 01:28): two layers on each edge, laid over the frame under every HUD
+// line and word, each falling from the frame's edge to nothing kUiHitGlowShare of that edge's axis in (6 percent of
+// the width at the sides, of the height at top and bottom). First a darkening layer in UiDangerSet::hitDark, then the
+// red in hitCue over it (uiHitLayers), both on one curve, f^kUiHitGlowPow with f = 1 - smoothstep(in), and one share:
+// the struck side at full, the other three at kUiHitOffSide; with no side (a hazard), all four at full. With reduced
+// flashes only the lost hp is drawn.
 inline constexpr float kUiHitGlowShare = 0.06f;
-inline constexpr float kUiHitGlowPeak = 0.75f;   // the red layer at the struck edge
-inline constexpr float kUiHitGlowPow = 0.7f;     // its fall: (1 - smoothstep)^this
-inline constexpr float kUiHitDarkPeak = 0.7f;    // the dark layer at the struck edge
-inline constexpr float kUiHitDarkPow = 0.4f;     // its fall, wider than the red's
-inline constexpr float kUiHitDarkOffSide = 0.75f; // the dark layer on the three other edges
+inline constexpr float kUiHitGlowPeak = 0.38f; // the red layer at the struck edge
+inline constexpr float kUiHitGlowPow = 1.6f;   // both layers' fall: (1 - smoothstep)^this
+inline constexpr float kUiHitDarkPeak = 0.30f; // the dark layer at the struck edge
 // The two layers' alphas at `in` (the share of the way in from the frame's edge, 0 at the edge, 1 at kUiHitGlowShare)
 // on an edge of weight `edge` (from uiHitEdges), before the cue's strength. Where two edges meet, take each layer's
 // larger value of the two edges, never the two stacked.
@@ -241,10 +272,18 @@ struct UiHitSeg {
 };
 struct UiHitSegs {
     std::array<UiHitSeg, kUiHitSegs> seg{};
-    float last = -1.f; // the hp the last step saw; negative before the first
+    float last = -1.f;   // the hp the last step saw; negative before the first
+    double clock = -1.0; // the clock time of the last step; negative before the first
     std::uint8_t next = 0;
 };
-FTCORE_API void uiHitSegsStep(UiHitSegs& s, float hp01, float dt);
+// One step at clock time `now` (the runner's fight clock, GetNow()): segments age by the clock's change since the last
+// step, so a second step at the same time ages nothing, and a clock that runs back (a retry) ages nothing. A NaN hp
+// makes no segment and leaves `last` as it was.
+FTCORE_API void uiHitSegsStep(UiHitSegs& s, float hp01, double now);
+
+// The clock's change since `last` (then set to `now`): 0 on the first call (last negative), on no change and on a clock
+// that runs back. Every timed HUD state ages by this, never by a Tick's or a paint's own delta.
+FTCORE_API float uiClockStep(double& last, double now);
 // Each edge's weight for a blow from `rightAhead` (the striker from the lead on the camera's ground plane: x right, y
 // ahead; need not be unit): the nearer of left/right or top (ahead)/bottom (behind) at 1, the others at kUiHitOffSide.
 // With no side, or a zero vector, every edge at 1.
@@ -253,60 +292,107 @@ struct UiHitEdges {
     bool operator==(const UiHitEdges&) const = default;
 };
 FTCORE_API UiHitEdges uiHitEdges(bool hasSide, float rightX, float aheadY);
-// The cue's age on the engine's frame clock (the host passes the frame's own delta, the one the game's step and the
-// captures use; it runs in a pause, so a pause right after a hit lets the cue finish). `stamp` is the host's last hit
-// time on its fight clock, negative when the fight has had no hit. The cue starts (age exactly 0) only when the stamp
+// The cue's age on the runner's fight clock (`now`, GetNow(); it holds in a capture's hold and when the game is paused,
+// so the painter hides the cue while paused). `stamp` is the host's last hit time on that clock, negative when the
+// fight has had no hit. A second step at the same `now` adds nothing. The cue starts (age exactly 0) only when the stamp
 // moves later, is not negative and the last cue started kUiHitRepeat or more ago; a later stamp sooner is taken in
 // without a new cue. Any other change (a retry resetting it) ends it. The first tick after `seeded` is cleared (the
 // view's first, or a retry's) only reads the stamp. Returns the age.
 struct UiHitWatch {
     double seen = 0.0;
+    double clock = -1.0;
     float age = 1e3f;
     bool seeded = false;
 };
-FTCORE_API float uiHitWatchStep(UiHitWatch& w, double stamp, float dt);
+FTCORE_API float uiHitWatchStep(UiHitWatch& w, double stamp, double now);
 
-// A low value line's underline and the guard row under it, in 1080p px at HUD scale 1: the underline kUiLowUnderW
-// thick, kUiLowUnderGap below the line's bottom edge, and the guard row's top kUiGuardClear below the underline, never
-// nearer than kUiGuardClearMinPx device pixels at any scale.
-inline constexpr float kUiLowUnderGap = 5.f;
+// A low value line's underline and the guard row under it, in 1080p px at HUD scale 1 (r19c): the underline kUiLowUnderW
+// thick, kUiLowUnderGap below the line's bottom edge (the room is kept when no underline is drawn), and the guard row's
+// top kUiGuardClear below the underline. Each gap is a whole number of device pixels and never under kUiGapMinPx.
+inline constexpr float kUiLowUnderGap = 8.f;
 inline constexpr float kUiLowUnderW = 2.f;
-inline constexpr float kUiGuardClear = 12.f;
-inline constexpr float kUiGuardClearMinPx = 10.f;
+inline constexpr float kUiGuardClear = 8.f;
+inline constexpr float kUiGapMinPx = 8.f;
+inline constexpr float kUiGuardClearMinPx = kUiGapMinPx;
 struct UiLowGuardGaps {
     float gap = 0.f;   // line's bottom edge to the underline's top
     float under = 0.f; // the underline's thickness
     float clear = 0.f; // the underline's bottom to the guard row's top
 };
 // Those gaps in local units for the HUD's scale `s` and a device pixel `px` local units wide: each a whole number of
-// device pixels, at least one; the clearance at least kUiGuardClearMinPx device pixels.
+// device pixels; the two gaps at least kUiGapMinPx device pixels, the underline at least one.
 FTCORE_API UiLowGuardGaps uiLowGuardGaps(float s, float px);
 
-// The GUARD label beside the guard line: shown when the line first appears and for kUiGuardLabelHold seconds after each
-// change of guard state, then a kUiGuardLabelFade fall to nothing; the line itself is drawn as before. Only these states
-// count (crossing the low threshold is not a change, so the label never flickers on a line near it).
+// The fight's one-word labels (r19c rule): LOAD, WEAK and GUARD, NotePx ink, 8 px right of their line's end, shown
+// kUiLabelHold seconds and faded over kUiLabelFade. LOAD and WEAK show on their first appearance in each fight only (the
+// host resets them when a fight begins); GUARD shows again on each change of guard state. Ages run on the fight clock.
+inline constexpr float kUiLabelHold = 2.f;
+inline constexpr float kUiLabelFade = 1.f;
+inline constexpr float kUiGuardLabelHold = kUiLabelHold;
+inline constexpr float kUiGuardLabelFade = kUiLabelFade;
+// A label's alpha `age` seconds after it showed: 1 to kUiLabelHold, a straight fall to 0 at kUiLabelHold + kUiLabelFade.
+FTCORE_API float uiLabelLevel(double age);
+
+// GUARD: only these states count (crossing the low threshold is not a change, so the label never flickers).
 enum class UiGuardState : std::uint8_t { Full, Under, Spent, Broken };
 FTCORE_API UiGuardState uiGuardState(float stamina01, bool broken);
-inline constexpr float kUiGuardLabelHold = 2.f;
-inline constexpr float kUiGuardLabelFade = 0.3f;
 struct UiGuardLabel {
     UiGuardState state = UiGuardState::Full;
-    float since = 1e3f; // seconds since the last change
+    double since = -1e9; // the clock time of the last change
 };
-// One tick: takes the state now, returns the label's alpha (0..1). The first state after a fresh watch that is not Full
-// shows the label as a change would.
-FTCORE_API float uiGuardLabelStep(UiGuardLabel& g, UiGuardState now, float dt);
+// One step at clock time `now`: returns the label's alpha (0..1). Full shows none.
+FTCORE_API float uiGuardLabelStep(UiGuardLabel& g, UiGuardState state, double now);
 
-// The LOAD label beside the Load line under the lead's name, the GUARD label's rule: shown when some Load is first held
-// and for kUiGuardLabelHold seconds after each change (the Release opening or closing, the cap moving), then the same
-// fade. No Load held: no label. Never a permanent label.
-enum class UiLoadState : std::uint8_t { None, Held, Ready };
-struct UiLoadLabel {
-    UiLoadState state = UiLoadState::None;
-    int cap = 0;
-    float since = 1e3f; // seconds since the last change
+// LOAD and WEAK: once a fight, on the first step that sees the thing present; none while it is absent.
+struct UiOnceLabel {
+    bool shown = false;
+    double since = 0.0; // the clock time it first showed
 };
-FTCORE_API float uiLoadLabelStep(UiLoadLabel& g, int load, int cap, bool releaseReady, float dt);
+FTCORE_API float uiOnceLabelStep(UiOnceLabel& g, bool present, double now);
+using UiLoadLabel = UiOnceLabel;
+// LOAD's label: present while some Load is held. The cap moving or the Release opening is not a new appearance.
+FTCORE_API float uiLoadLabelStep(UiLoadLabel& g, int load, double now);
+
+// The boss's percent beside its line: floor(100 hp / hpMax), at least 1 while hp is above 0, 0 at or under 0, at most
+// 100; -1 (none shown) when hpMax is 0 or less.
+FTCORE_API int uiBossPercent(int hp, int hpMax);
+
+// An end cap's centre x on a line from x0, `len` long, filled to fill01, for a cap `capW` wide: the fill's end, held
+// inside the track so the cap sits on its start at 0 fill and on its end when full.
+FTCORE_API float uiCapX(float x0, float len, float fill01, float capW);
+
+// The first signature device, the Release pulse (UiWorldRules::sigPulse). When the Release opens, one pulse travels the
+// Load line from its start to the spike over kUiReleaseTravel, then the spike's peak grows kUiReleaseGrow times for
+// kUiReleasePeak; while overloaded the peak repeats every kUiReleaseRepeat. Clock based: the same `now` twice gives the
+// same view.
+inline constexpr float kUiReleaseTravel = 0.3f;
+inline constexpr float kUiReleasePeak = 0.15f;
+inline constexpr float kUiReleaseGrow = 1.5f;
+inline constexpr float kUiReleaseRepeat = 1.2f;
+struct UiReleasePulse {
+    bool ready = false;
+    bool over = false;
+    double readyAt = -1e9;
+    double overAt = -1e9;
+};
+struct UiReleasePulseView {
+    float travel = -1.f; // the pulse's place along the line to the spike, 0..1; negative: none
+    float peak = 1.f;    // the spike's peak height factor (1 or kUiReleaseGrow)
+};
+FTCORE_API UiReleasePulseView uiReleasePulseStep(UiReleasePulse& p, bool ready, bool overloaded, double now);
+
+// The second signature device, ring arcs (UiWorldRules::sigArcs): a line `chord` long bowed `sag` at its middle on a
+// circle. uiRingPoint gives the point a share `t` (0..1) along, offset `offset` outward along the radius (a concentric
+// line), as x along the chord from its start and y toward the bulge, with the unit tangent there; sag 0 is the straight
+// line. uiArcSag gives the sag of a chord on a circle of `radius`; uiArcSegments the segments that keep each piece at
+// most maxChordPx long.
+struct UiRingPoint {
+    float x = 0.f, y = 0.f;
+    float tx = 1.f, ty = 0.f;
+};
+FTCORE_API UiRingPoint uiRingPoint(float t, float chord, float sag, float offset = 0.f);
+FTCORE_API float uiArcSag(float chord, float radius);
+FTCORE_API int uiArcSegments(float chord, float maxChordPx);
 
 // A role's size in pixels for a viewport `height` px tall at the player's text scale (1.0..2.0, clamped), never below
 // the floors.
