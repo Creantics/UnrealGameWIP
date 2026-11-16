@@ -5457,15 +5457,16 @@ void titanChecks(const TitanLensRun& o, float inFrame = 0.6f) {
 
 TEST_CASE("arena partner: the close lens's near field, a titan of 3.5 m in contact: rule 1 always, never behind the lead") {
     // The ruling of 11-16: no in-frame bar here (the frame holds only a sliver); never inside the near field, never
-    // hidden behind the lead (standing: titanChecks; walking, at most a few steps on the way out), nor standing behind
-    // the target; the share in frame is reported.
+    // hidden behind the lead, standing or walking, nor behind the target (before the order of 11-16's minors: 3 steps
+    // behind the lead walking on one seed, 18 to 77 behind the target; it stepped out into the target's shadow and the
+    // next string started back at its station); the share in frame is reported.
     for (std::uint32_t seed = 1; seed <= 8; ++seed) {
         CAPTURE(seed);
         const TitanLensRun o = titanLensRun(3.5f, 3.5f + 0.85f, seed);
         MESSAGE("titan 3.5 in contact seed " << seed << ": " << titanLine(o));
         titanChecks(o, 0.f);
-        CHECK(o.hiddenLead <= 6);
-        CHECK(o.hiddenTargetStanding == 0);
+        CHECK(o.hiddenLead == 0);
+        CHECK(o.hiddenTarget == 0);
         CHECK(o.crossings == 0);
     }
 }
@@ -5479,6 +5480,11 @@ TEST_CASE("arena partner: the close lens's near field, the shipped titan in cont
             MESSAGE("titan 2.2 at " << centre << " seed " << seed << ": " << titanLine(o));
             titanChecks(o);
             CHECK(o.crossings == 0);
+            if (centre < 4.f) { // in contact (before the minors of 11-16: 44 steps behind the lead and 12 behind the target
+                                // walking on seeds 7-8)
+                CHECK(o.hiddenLead <= 6);
+                CHECK(o.hiddenTarget == 0);
+            }
         }
     }
 }

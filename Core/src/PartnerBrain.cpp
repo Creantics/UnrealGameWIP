@@ -247,7 +247,7 @@ float segmentDist(Vec2 a, Vec2 b, Vec2 p) {
 // (lens given), the first such point not even partly behind the lead (rangePartlyHidden) wins, else the first. False:
 // no such point (the partner casts from where it stands). The near field (the order of 11-16, nr.on): no point
 // failing its rule 1; one within rule 2's size cap before one over it, then one the frame sees (seen given) before
-// one it does not, then the lead's cover as above.
+// one it does not, then the lead's cover as above. `rank` (given): the found point's, 0 when it breaks none of these.
 struct NearRule {
     bool on = false;
     Vec2 lens{}, forward{}, lead{};
@@ -256,7 +256,7 @@ struct NearRule {
     const void* seenContext = nullptr;
 };
 bool rangeStepOut(const Ground& g, const PartnerTuning& t, const View& e, PartnerOrder order, Vec2 from,
-                  const Vec2* lens, float bodyRadius, const NearRule& nr, Vec2& q) {
+                  const Vec2* lens, float bodyRadius, const NearRule& nr, Vec2& q, int* rank = nullptr) {
     const Vec2 bear = stSub(g.lead, e.pos);
     const Vec2 out = stUnit(stSub(from, e.pos), stUnit(Vec2{-bear.x, -bear.y}, Vec2{1.f, 0.f}));
     const float own = stCross(bear, stSub(from, e.pos));
@@ -274,26 +274,28 @@ bool rangeStepOut(const Ground& g, const PartnerTuning& t, const View& e, Partne
             if (std::fabs(own) > 1e-3f && stCross(bear, stSub(p, e.pos)) * own < 0.f) continue; // the other flank
             if (!g.reviving && segmentDist(from, p, g.lead) < clear) continue;
             if (segmentDist(from, p, e.pos) < body) continue; // nor through the target
-            int rank = 0;
+            int r = 0;
             if (nr.on) {
                 if (!partnerCloseNearOk(nr.lens, nr.forward, nr.lead, p)) continue;
                 if (nr.verticalHalfDegrees > 0.f &&
                     partnerCloseProjectedHeight(nr.lens, nr.forward, nr.verticalHalfDegrees, p) > kPartnerCloseSizeCap)
-                    rank += 4;
-                if (nr.seen != nullptr && !nr.seen(nr.seenContext, p)) rank += 2;
+                    r += 4;
+                if (nr.seen != nullptr && !nr.seen(nr.seenContext, p)) r += 2;
             }
             if ((lens && rangePartlyHidden(*lens, p, g.lead, bodyRadius)) ||
                 (nr.on && partnerCloseHiddenBehind(nr.lens, p, e.pos, e.radius)))
-                rank += 1; // the near field: behind the target too
-            if (rank == 0) {
+                r += 1; // the near field: behind the target too
+            if (r == 0) {
                 q = p;
+                if (rank != nullptr) *rank = 0;
                 return true;
             }
-            if (rank < found) {
+            if (r < found) {
                 q = p;
-                found = rank;
+                found = r;
             }
         }
+    if (rank != nullptr) *rank = found;
     return found < 9;
 }
 
@@ -1126,9 +1128,36 @@ void PartnerBrain::steerRound(const PartnerInput& in) {
     if (std::hypot(from.x + d.x * u, from.y + d.y * u) >= rr) return; // the line keeps clear
     // Inside the circle already (pushed against the body): the point is out on it and on round (the tangent is 0).
     const float left = std::atan2(stCross(from, to), stDot(from, to)) / kStDeg; // signed, the shorter way
-    const float tangent = std::acos(std::clamp(rr / far, -1.f, 1.f)) / kStDeg;
-    const float turn = std::min(std::max(tangent, 20.f), std::fabs(left));
-    o.point = stAlong(e.pos, stUnit(stTurn(from, left < 0.f ? -turn : turn), Vec2{1.f, 0.f}), rr + 0.1f);
+    const auto roundAt = [&](float rad) {
+        const float tangent = std::acos(std::clamp(rad / far, -1.f, 1.f)) / kStDeg;
+        const float turn = std::min(std::max(tangent, 20.f), std::fabs(left));
+        return stAlong(e.pos, stUnit(stTurn(from, left < 0.f ? -turn : turn), Vec2{1.f, 0.f}), rad + 0.1f);
+    };
+    o.point = roundAt(rr);
+    // Rule 19's near field (the order of 11-16): a walk round it that would pass even partly behind the lead goes
+    // round wider, kPartnerNearRoundStep at a time up to kPartnerNearRoundMax more, the first clear of the lead.
+    if (!nearStep_) return;
+    const Vec2 lens = in.station.cameraPos, lead = in.leadPos;
+    if (!stFinite(lens) || !stFinite(lead)) return;
+    const float body = in.station.close.bodyRadius;
+    const auto shaded = [&](Vec2 w) {
+        for (int k = 1; k <= 8; ++k) {
+            const Vec2 q = stAlong(in.pos, stSub(w, in.pos), static_cast<float>(k) / 8.f);
+            if (dist(q, in.pos) >= kPartnerNearRoundStep && rangePartlyHidden(lens, q, lead, body)) return true;
+        }
+        return false;
+    };
+    if (!shaded(o.point)) return;
+    Ground g;
+    if (!makeGround(in, tStep_, g)) return;
+    for (float more = kPartnerNearRoundStep; more <= kPartnerNearRoundMax + 1e-4f; more += kPartnerNearRoundStep) {
+        const Vec2 w = roundAt(rr + more);
+        if (g.arenaOk(w) && partnerCloseNearOk(lens, stUnit(in.station.cameraForward, Vec2{1.f, 0.f}), lead, w) &&
+            !shaded(w)) {
+            o.point = w;
+            return;
+        }
+    }
 }
 
 // Rule 17 (framed): with its attack held (the budget out, a pause, a windup at it it did not guard, no target), it
@@ -1799,7 +1828,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         // Only when where it stands breaks rule 1 or the size cap; a legal spot steps out as before.
         const bool stationFramed = stationHas && out.closeTier == 1 && !spotOk(in.pos);
         // The near field: a spot is clear when it is legal (rules 1-2), in frame and hidden behind neither the lead nor
-        // the target. Rule 3 kept: off a tall target a clear spot deeper than the lead is held, inside the standoff too.
+        // the target. Rule 3 kept: off a target not tall a clear spot deeper than the lead is held, inside the standoff
+        // too.
         const auto depthOf = [&](Vec2 q) { return (q.x - nearLens.x) * nearForward.x + (q.y - nearLens.y) * nearForward.y; };
         const bool spotClear = nearField && fm && spotOk(in.pos) && fr.clear(&e, in.pos) &&
                                !rangePartlyHidden(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius);
@@ -1812,9 +1842,22 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         const bool stepping =
             !keepSpot && (at < t.standoffMeters - kPartnerRangeStepOut || (wasOut && at < t.standoffMeters - 0.05f));
         if (st && rangeOn && stepping && stationFramed) outTo = framedStation;
-        if (st && rangeOn && stepping &&
-            (stationFramed || rangeStepOut(g, t, e, in.order, in.pos, closeOn ? &in.station.cameraPos : nullptr,
-                                           in.station.close.bodyRadius, nr, outTo))) {
+        int outRank = 0;
+        const bool steps = st && rangeOn && stepping &&
+                           (stationFramed || rangeStepOut(g, t, e, in.order, in.pos, closeOn ? &in.station.cameraPos : nullptr,
+                                                          in.station.close.bodyRadius, nr, outTo, &outRank));
+        // Off a tall target, at rule 19's station (legal, the frame clear of the target there) it holds rather than step
+        // out to a band point that is no better (none in the cap, in frame and clear of the lead and the target): that
+        // walk would go into the target's shadow and the next string would start back here.
+        const bool holdTall = steps && !stationFramed && outRank > 0 && nearField && fm && tallView(e) && stationHas &&
+                              dist(in.pos, framedStation) <= kPartnerNearHoldMeters && spotOk(in.pos) &&
+                              fr.clear(&e, in.pos) && at <= t.reachMeters;
+        if (holdTall) {
+            s_.steppedOut = true;
+            out.enemy = s_.target;
+            return out;
+        }
+        if (steps) {
             s_.offStation += dt;
             s_.steppedOut = true;
             out.act = PartnerAct::StepBack;
