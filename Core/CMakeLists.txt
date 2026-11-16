@@ -74,6 +74,7 @@ add_library(ftcore STATIC
     src/SurfaceWeather.cpp
     src/SurfaceJoints.cpp
     src/FrameStats.cpp
+    src/BenchPath.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
     src/GlassSurface.cpp
@@ -380,6 +381,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_surface_weather.cpp
         tests/test_surface_joints.cpp
         tests/test_frame_stats.cpp
+        tests/test_bench_path.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
         tests/test_glass_surface.cpp
