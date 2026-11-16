@@ -29,6 +29,22 @@ SPEC.json (lengths in metres, in the blend's world space):
                                         feather_cm: the folds fade to flat over this distance in from the pinned outline
      "outer_only": false,               a shell with thickness whose inner faces share the outer faces' UVs: bake only the
                                         faces whose normal points away from the collider (needs "collider")
+     "ease_u": [0.0, 0.0],              grid only: extra cloth across the sheet (along its u axis, not down it), as a share of
+                                        its width, at the region's bottom and top (linear between): the springs rest that
+                                        much wider than the pinned outline holds them, so the spare width hangs in folds
+                                        running down the sheet (gathered or draped cloth), not in shrink's pillow buckles
+     "seed": null,                      grid only: folds laid into the sheet before the solver runs, so it relaxes them instead
+                                        of buckling at random: {"u": [fold centres along the sheet's u axis, m],
+                                        "amp_mm": [height off the surface, one per fold], "sigma": fold half-width (m),
+                                        "v_top": height where the folds start (0), "v_full": height where they are full}.
+                                        The seeded shape is also the springs' rest shape (ease_u then spreads it)
+     "coll_dist": 0.003,                the cloth's collision distance (m); keep it under "lift" on a seeded sheet
+     "collide": true,                   false: the sheet ignores the collider and the game mesh (pins, rest shape and the
+                                        max_disp clamp alone hold it; for a seeded sheet the solver only relaxes)
+     "free_below": null,                a height (m): the cloth's bottom edge below it is left free, not pinned (on a grid, the
+                                        vertices with no grid point under them; cuts up the sides stay pinned): a hem that
+                                        hangs, so the folds run out through it instead of stopping at a pinned row
+     "sim_only": false,                 stop after the high copy (<name>_hi.obj) and the report: look at it before baking
      "overwrite": false}                earlier <name>_*.png, <name>_hi.obj or <name>_report.json in out stop the run unless true
 
 The environment variable FOLD_BAKE_ROOT must name the folder "out" stays under; unset, or "out" outside it, stops the run.
@@ -80,6 +96,22 @@ if not 64 <= int(S.get("res", 2048)) <= 8192:
     fail("res %s outside 64..8192" % S.get("res"))
 if S.get("hi", "grid") not in ("grid", "subdiv"):
     fail("hi must be grid or subdiv")
+EASE = S.get("ease_u", [0.0, 0.0])
+if (not isinstance(EASE, list) or len(EASE) != 2 or not all(isinstance(e, (int, float)) and 0.0 <= e <= 0.5 for e in EASE)):
+    fail("ease_u must be [bottom, top], each 0..0.5")
+if any(EASE) and S.get("hi", "grid") != "grid":
+    fail("ease_u needs hi grid (the sheet's u axis)")
+FREE_BELOW = S.get("free_below")
+SEED = S.get("seed")
+if SEED is not None:
+    if S.get("hi", "grid") != "grid":
+        fail("seed needs hi grid")
+    if (not isinstance(SEED, dict) or not all(k in SEED for k in ("u", "amp_mm", "sigma", "v_top", "v_full"))
+            or len(SEED["u"]) != len(SEED["amp_mm"]) or not SEED["u"] or not SEED["sigma"] > 0
+            or not all(0 <= a <= 30 for a in SEED["amp_mm"]) or SEED["v_top"] == SEED["v_full"]):
+        fail("seed must be {u, amp_mm (0..30 each, one per u), sigma > 0, v_top != v_full}")
+if FREE_BELOW is not None and not isinstance(FREE_BELOW, (int, float)):
+    fail("free_below must be a height in metres or null")
 if S["garment"] not in bpy.data.objects or bpy.data.objects[S["garment"]].type != "MESH":
     fail("no mesh object %s in the blend" % S["garment"])
 if S.get("collider") and S["collider"] not in bpy.data.objects:
@@ -273,6 +305,9 @@ if S.get("hi", "grid") == "grid":
     remap = -np.ones(len(pts), int)
     remap[used] = np.arange(len(used))
     pts, nrm = pts[used], nrm[used]
+    # the bottom edge of the cloth: a vertex with no grid point under it (a hem, not a cut up the side)
+    open_below = {int(remap[idx[j, i]]) for j in range(len(vs)) for i in range(len(us))
+                  if idx[j, i] >= 0 and remap[idx[j, i]] >= 0 and (j == 0 or idx[j - 1, i] < 0)}
     me = bpy.data.meshes.new("fold_grid")
     me.from_pydata(pts.tolist(), [], remap[np.array(faces)].tolist())
     me.shade_smooth()  # flat-shaded quads bake as facets
@@ -318,10 +353,17 @@ else:
     hi.data.update()
     nv = len(hi.data.vertices)
     nrm = None
+    open_below = None
 pin = hi.vertex_groups.new(name="fold_pin")
-pinned = [i for i in range(nv) if i not in free or i in bound]
+Z0 = np.empty(nv * 3)
+hi.data.vertices.foreach_get("co", Z0)
+Z0 = Z0.reshape(-1, 3)[:, 2]
+hem = set() if FREE_BELOW is None else {i for i in bound if Z0[i] < FREE_BELOW and (open_below is None or i in open_below)}
+pinned = [i for i in range(nv) if i not in free or (i in bound and i not in hem)]
+moving = sorted(set(range(nv)) - set(pinned))  # free inside, plus a free hem
+rep["free_hem_verts"] = len(hem)
 pin.add(pinned, 1.0, "REPLACE")
-rep["hi_verts"], rep["free_verts"] = nv, len(free) - len(bound)
+rep["hi_verts"], rep["free_verts"] = nv, nv - len(pinned)
 P0 = np.empty(nv * 3)
 hi.data.vertices.foreach_get("co", P0)
 P0 = P0.reshape(-1, 3)
@@ -335,7 +377,7 @@ kd.balance()
 fw = np.zeros(nv, np.float32)
 if pinned:
     fm = S.get("feather_cm", 3.0) / 100.0
-    for i in free - bound:
+    for i in moving:
         d = kd.find(P0[i])[2]
         t = min(d / fm, 1.0) if fm > 0 else 1.0
         fw[i] = t * t * (3 - 2 * t)
@@ -349,6 +391,19 @@ if nrm is None:
     N0 = N0.reshape(-1, 3)
 else:
     N0 = nrm
+PB = P0  # the sheet the solver starts from: the cast, or the cast with seeded folds
+if SEED is not None:
+    tz = np.clip((P0[:, v_ax] - SEED["v_top"]) / (SEED["v_full"] - SEED["v_top"]), 0.0, 1.0)
+    ramp = tz * tz * (3 - 2 * tz)
+    h = np.zeros(nv)
+    for c, a in zip(SEED["u"], SEED["amp_mm"]):
+        h += a / 1000.0 * np.exp(-0.5 * ((P0[:, u_ax] - c) / SEED["sigma"]) ** 2)
+    h *= ramp
+    h[pinned] = 0.0  # the outline stays where it was cast
+    PB = P0 + N0 * h[:, None]
+    hi.data.vertices.foreach_set("co", PB.ravel())
+    hi.data.update()
+    rep["seed"] = {"folds": len(SEED["u"]), "max_mm": round(float(h.max() * 1000), 1)}
 
 if S.get("collider"):
     col = bpy.data.objects[S["collider"]]
@@ -363,8 +418,22 @@ cs.shear_stiffness = 5.0
 cs.bending_stiffness = S.get("bending", 0.5)
 cs.vertex_group_mass = "fold_pin"
 cs.shrink_min = S.get("shrink", -0.05)
-cm.collision_settings.use_collision = bool(S.get("collider"))
-cm.collision_settings.distance_min = 0.003
+if any(EASE):
+    # The rest shape: the sheet spread along u about its middle, by ease_u at its height. The cloth starts from the cast
+    # sheet (the basis) and its springs rest at the spread lengths, so the pinned outline holds it narrower than it wants.
+    hi.shape_key_add(name="fold_basis", from_mix=False)
+    rest = hi.shape_key_add(name="fold_rest", from_mix=False)
+    vmin, vmax = PB[:, v_ax].min(), PB[:, v_ax].max()
+    t = (P0[:, v_ax] - vmin) / max(vmax - vmin, 1e-9)
+    e = EASE[0] + (EASE[1] - EASE[0]) * t
+    uc = 0.5 * (PB[:, u_ax].min() + PB[:, u_ax].max())
+    PR = PB.copy()
+    PR[:, u_ax] = uc + (P0[:, u_ax] - uc) * (1.0 + e)
+    rest.data.foreach_set("co", PR.ravel())
+    cs.rest_shape_key = rest
+    rep["ease_u"] = EASE
+cm.collision_settings.use_collision = bool(S.get("collider")) and bool(S.get("collide", True))
+cm.collision_settings.distance_min = S.get("coll_dist", 0.003)
 cm.point_cache.frame_start = 1
 cm.point_cache.frame_end = int(S.get("frames", 30))
 for f in range(1, int(S.get("frames", 30)) + 1):
@@ -375,6 +444,8 @@ P1 = np.empty(nv * 3)
 me.vertices.foreach_get("co", P1)
 P1 = P1.reshape(-1, 3)
 hi.modifiers.clear()
+if hi.data.shape_keys:
+    hi.shape_key_clear()  # the basis key would otherwise hold the vertices where the cast left them
 # Keep the high copy on the game mesh: the normal part of the move is capped at max_disp, the sliding part at half that,
 # so every texel of the bake still lands on its own spot of the cloth.
 d = P1 - P0
@@ -387,7 +458,7 @@ dt *= (np.minimum(tl, mx * 0.5) / np.maximum(tl, 1e-9))[:, None]
 P2 = P0 + dn[:, None] * N0 + dt
 hi.data.vertices.foreach_set("co", P2.ravel())
 hi.data.update()
-fr = np.array(sorted(free - bound), int)
+fr = np.array(moving, int)
 rep["disp_normal_mm"] = [float(np.percentile(np.abs(dn[fr]) * 1000, p)) for p in (50, 90, 99)] if len(fr) else []
 bpy.ops.object.select_all(action="DESELECT")
 hi.select_set(True)
@@ -397,6 +468,10 @@ try:
 except RuntimeError as e:  # the operator's own failure (path, permissions): the high copy is a by-product, so go on
     rep["obj_export_error"] = str(e)
     print("FOLD_BAKE_WARNING: high copy not exported: %s" % e)
+if S.get("sim_only", False):
+    json.dump(rep, open(os.path.join(OUT, NAME + "_report.json"), "w"), indent=1)
+    print("FOLD_BAKE_SIM_ONLY " + json.dumps(rep))
+    sys.exit(0)
 
 # A shell with thickness whose inner faces reuse the outer faces' UVs bakes each shared texel twice, and the inner face
 # (it meets the sheet from under it, a miss) can write last and flatten the fold. "outer_only" drops from the bake target
