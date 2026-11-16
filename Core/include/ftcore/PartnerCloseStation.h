@@ -11,9 +11,9 @@
 // at kPartnerCloseAngleMin..Max (40-80) degrees round the target from the target-to-lead line (a big target, radius
 // kPartnerCloseWideRadius (2) or more: kPartnerCloseWideAngleMin..Max, 60-100, to stand clear of the lead's
 // silhouette), in 8 equal steps (5 degrees), and at standMin..standMax metres off the target's edge (the host's
-// kit band: a melee partner 1.5-2.5, a caster 5-8): for each angle the band's two ends, its middle, and the point of the band nearest
-// the partner. A candidate is legal when, in order (and never with its body inside the target's: at least
-// targetRadius + bodyRadius from the target's centre, whatever its tier):
+// kit band: a melee partner 1.5-2.5, a caster 5-8): for each angle the band's two ends, its middle, and the point
+// of the band nearest the partner. A candidate is legal when, in order (and never with its body inside the
+// target's: at least targetRadius + bodyRadius from the target's centre, whatever its tier):
 //   - when the host gives a 3D frame test (sees; the brain's is rule 13's frame with the middle and head of the
 //     partner in it, feet not tested: partnerInFrameClose), it passes it; this is the measure whenever given;
 //   - it is in the lens's view cone with the margin: in front of the lens (depth over kPartnerCloseNear) and its
@@ -52,12 +52,14 @@
 // lead's and the target's shadows (deeper than the body and over its silhouette), with a straight walk that never
 // enters either. The far arc of a kept flank empty, the hold gives way to the other flank's (held false). None of
 // these: not valid (the caller's rules).
-// Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and never changed while attacking; then only
-// when the other flank's pick beats the held flank's by more than kPartnerCloseFlipMargin (the band and short-of-band
-// picks of the two flanks are compared, so a Pause station and a Ready station on opposite flanks do not ping-pong).
-// On the held flank the best legal candidate wins. With none legal on the flank
-// it must keep (held, or attacking; tiers 1-4, the far arc on both flanks too): its held angle at the band's nearest point, reported not valid (the caller keeps
-// its own station). None legal at all: not valid, and the hold is left as it was.
+// Hold: a flank once chosen is kept at least kPartnerCloseHoldSeconds and while attacking; then only when the other
+// flank's pick beats the held flank's by more than kPartnerCloseFlipMargin (the band and short-of-band picks of the
+// two flanks are compared, so a Pause station and a Ready station on opposite flanks do not ping-pong). The one
+// hand-over while attacking: tier 4 with the kept flank's far arc empty (above). The station moves, the partner does
+// not: the brain walks to it only once the blow running has landed. On the held flank the best legal candidate wins.
+// With none legal on the flank it must keep (held, or attacking; tiers 1-4, the far arc on both flanks too): its held
+// angle at the band's nearest point, reported not valid (the caller keeps its own station). None legal at all: not
+// valid, and the hold is left as it was.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
@@ -133,9 +135,10 @@ struct PartnerCloseInput {
     float arenaRadius = 0.f;     // where the partner may stand (its body's margin taken off); 0: unbounded
     std::span<const PartnerWall> walls{};
     std::span<const PartnerBody> bodies{};
-    bool attacking = false;      // the partner is in a string or a blow runs: its flank never changes
+    bool attacking = false;      // the partner is in a string or a blow runs: its flank kept (but tier 4's hand-over)
     // The host's 3D frame test (none: null): a candidate must pass sees(seesContext, point). The brain gives its
-    // rule-13 frame (middle and head of a standing body inside the frustum with its margins; feet not tested) when framed.
+    // rule-13 frame (middle and head of a standing body inside the frustum with its margins; feet not tested) when
+    // framed.
     bool (*sees)(const void* context, Vec2 p) = nullptr;
     const void* seesContext = nullptr;
 };
