@@ -83,7 +83,6 @@ const FTUiText kAnswerUi[3] = {FTUiText(TEXT("arena.parry")), FTUiText(TEXT("are
 const FTUiText kStaggeredUi(TEXT("battle.staggered")); // the call word's slot, with no line
 const FTUiText kNextMoveUi(TEXT("arena.next_move")); // the Read row's prefix
 const FTUiText kReleaseUi(TEXT("arena.release"));
-const FTUiText kSharedUi(TEXT("arena.label.shared"));
 const FTUiText kWeightUi(TEXT("arena.boss.weight"));
 const FTUiText kDebtUi(TEXT("arena.debt"));
 const FTUiText kLeadUi(TEXT("input.lead"));     // a party row's name without a look
@@ -1411,7 +1410,7 @@ constexpr float PartnerPx = 29.f; // 19.1 px (floor 18)
 constexpr float SmallPx = 26.f;   // the call word over a minor enemy or at the screen's edge: 17.2 px
 constexpr float RowPx = 29.f;     // the prompts' words and the Read row's moves: 19.1 px (floor 18)
 constexpr float PrefixPx = 26.f;  // the Read row's NEXT MOVE: 17.2 px (floor 16)
-constexpr float NotePx = 26.f;    // the labels and the state slots (LOAD, RELEASE, GUARD, POISE, SHARED, WEAK POINT,
+constexpr float NotePx = 26.f;    // the labels and the state slots (LOAD, RELEASE, GUARD, POISE, WEAK POINT,
                                   // WEIGHT, the Debt): 17.2 px (floor 16)
 constexpr float FoePx = 22.f;     // a minor enemy's name over its body
 // A key cap's letters, set for 14 px capitals on screen: 15.8 px by the file's cap height, and rendered small text
@@ -1437,8 +1436,8 @@ constexpr float SlotInk = 0.8f;     // LOAD (its first three times a save), ALON
 constexpr float WaitGap = 10.f;
 constexpr float WaitLen = 80.f;
 constexpr float TooSoonShow = 1.f; // seconds TOO SOON stands in the call slot
-// SHARED's gap after the partner's name, 1080p px: 10 px on the screen with the word's own side bearing.
-constexpr float SharedGap = 6.f;
+// The partner's slot word's gap after its name, 1080p px: 10 px on the screen with the word's own side bearing.
+constexpr float PartnerSlotGap = 6.f;
 // The lead's name's dark rim, hard, at this alpha on screen. Its size is FontFor's, round(uiEdgePx) of the viewport's
 // height: 1 device px at 1080 and 1440, 2 at 2160, and the HUD scale (-FTHudScale, up to 2.0) does not thicken it, so
 // at scale 2.0 the letters double and the rim stays the screen's own edge. The -FTHudScale=2 captures check it.
@@ -1854,6 +1853,9 @@ public:
 			HitWatch.seeded = false;
 			GuardLabel = ftcore::UiGuardLabel{};
 			LoadLabel = ftcore::UiLoadLabel{};
+			// Each blow's red lost hp starts empty: the first step only reads the hp, so a retry at equal or lower hp draws
+			// no segment from the last fight's blows.
+			HitSegs = ftcore::UiHitSegs{};
 			LoadFill = 0.f;
 		}
 		// A lead switch or a takeover traded the seats (the runner's SwapLeadFigures): each hp trail follows its lead to
@@ -2399,7 +2401,6 @@ private:
 		{
 			NoteWord[I] = kFirstUseUi[I] ? kFirstUseUi[I]->Get().ToUpper() : FString();
 		}
-		SharedWord = kSharedUi.Get().ToUpper();
 		AgainWord = kAgainUi;
 		AgainW = TextWidth(AgainWord, LabelFont);
 		TagWord[0] = kAutoPlayUi;
@@ -3345,7 +3346,7 @@ private:
 				A * (bPRefused ? FMath::Lerp(1.f, Hud::PartyRefusedInk, K) : 1.f));
 		}
 		P.Text(X0, PBase - PartnerNameAsc, PartnerName, PartnerNameFont, Tok(UiToken::Ink, PInk * A));
-		const float PSlotX = X0 + PartnerNameW + Hud::SharedGap * S;
+		const float PSlotX = X0 + PartnerNameW + Hud::PartnerSlotGap * S;
 		if (bPRefused)
 		{
 			const int32 Wi = static_cast<int32>(PWhy);
@@ -4444,10 +4445,10 @@ private:
 	float Wait01 = 0.f;
 	// The rows' trade of places on a lead switch.
 	ftcore::UiRowSwap RowSwap;
-	// The first-use labels and SHARED.
+	// The first-use labels.
 	FSlateFontInfo NoteFont;
 	float NoteAsc = 0.f;
-	FString NoteWord[UE_ARRAY_COUNT(kFirstUseUi)], SharedWord;
+	FString NoteWord[UE_ARRAY_COUNT(kFirstUseUi)];
 	ftcore::UiFirstUse FirstUse;
 	bool bTeaching = false;   // a fight's teaching begun and not yet ended
 	bool bTaughtOnce = false; // this run has begun one
