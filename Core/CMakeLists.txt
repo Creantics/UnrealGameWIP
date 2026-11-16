@@ -187,6 +187,7 @@ add_library(ftcore STATIC
     src/ArenaLockFrame.cpp
     src/ArenaLook.cpp
     src/ArenaCamera.cpp
+    src/CameraPreset.cpp
     src/ArenaGun.cpp
     src/StoneBearer.cpp
     src/BeatChoreo.cpp
@@ -494,6 +495,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena_lock_frame.cpp
         tests/test_ready_stance.cpp
         tests/test_arena_look.cpp
+        tests/test_camera_preset.cpp
         tests/test_arena_boss_break.cpp
         tests/test_arena_partner.cpp
         tests/test_third_never_lead.cpp

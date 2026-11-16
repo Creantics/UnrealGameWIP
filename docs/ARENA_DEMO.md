@@ -88,8 +88,8 @@ The zone's size follows its boss, as the old rings did: `k` is the larger of the
 and `height` / 2.2 m (`height` is an optional key of an enemy kind in `arena.json`), held to 1..6. The ring asked for
 is (8.5 m + 1.5 per enemy past one + 0.75 per attacker past one) x (0.4 + 0.6 k), held to 7..60 m: a duelist 8.5 m, the 3.5 m
 hulk 15.6 m, the 7 m titan 25.8 m. The spawn distance is 0.58 of it, at least the biggest radius + 4 m and at most 12 m (the
-lock reaches 15 m). The camera arm is 6.4 m x (0.35 + 0.65 k) (at most 4.2x; 6.4, 12.2 and 20.5 m for those three), with
-the pivot, shoulder offset and lock pitch following.
+lock reaches 15 m). The camera rig does not grow with `k`: it is the same for every fight (`arenaZoneCamera`, a 6.4 m arm,
+1.5 m pivot, 1.2 m shoulder offset and -20 degree lock pitch), and a giant is found by locking on or looking up.
 
 `fitArenaZone` (Core, `ArenaZone.h`) then puts that size in the world's real layout (`generateWorldLayout`):
 
@@ -143,6 +143,34 @@ engine's 10 cm near clip plus the boom's 12 cm probe), is within 0.5 m of a buil
 are 27% (`sol_facade_a`, 13/48, under the 30% bar) and 31% (`lat_facade_a`, 15/48 with its cap of 0, the one exception
 over the bar and a layout follow-up for the zone's owner), both pinned in the zone test; the tower plaza with a giant (`lat_plaza_a` with `-ArenaLineup=titan`) is 0 at its
 25.8 m ring.
+
+**Camera presets** (`ftcore/CameraPreset.h`, `Data/Battle/camera_presets.json`). The lens has two presets: `classic`, the
+zone's own rig (the fit's camera, left untouched; the file gives it no rig keys) and the default, and `close`, a near over-the-shoulder view (a 2.6 m arm, 1.35 m pivot, 0.2 m shoulder offset,
+0.1 m up, a 60 degree fov, a -2 degree lock pitch and a little boom lag). Under `close` the lead rule keeps the body from
+0.6 m up in the frame (its head under 75% of the height) rather than the feet; the cut is in metres over the floor, as
+the pivot is, and held to half the lead's height (`ftcore::cameraPresetCut`), which keeps every look-up for leads 1.4 to
+1.8 m tall (a known limit: a lead over about 1.85 m leaves the head rule at close's lock pitch whatever the cut; the
+three leads are all under it), and the lock's turn puts the target at 0.6
+of the width (`ftcore::arenaFrameTurnAt`) rather than on the centre line. On a tall lock the close lens looks up by
+swinging the boom, with no low lens (`lowMax` 0): the 0.6 m point may sink 4% under the bottom edge (`cutMin` -0.04), so
+a look-up to +14 degrees is never held back. The settings menu's **Camera** row (under Lock
+framing, `cameraPreset` in the settings file, 0 classic or 1 close; an older file loads as classic) picks it, and
+`-ArenaCamera=close|classic` wins over it in every build; `-ArenaCameraLag=<seconds>` (not in a shipping build) sets the
+boom's lag for the run (0 the boom's own, -1 off). The log says `Arena camera preset: <name> (from <settings, default or
+-ArenaCamera>)`, and a change in the menu takes effect at the next fight; a corrupt value in the file loads as classic.
+The host puts the preset on the fit's camera after the zone was fitted and checked with the zone's own rig, so the ring,
+the starts, the sizing and `cameraBlocked` (the zone rig's share; the close lens's own is not measured yet) never read
+it. No fight rule or number changes with it, but what the fight reads from the drawn camera each tick follows the lens
+under `close`: the view yaw (the stick's basis, the lock press's pick, a regular enemy's windup arc) is the lock's line
+plus close's framing turn, which differs from classic's by up to 11.5 degrees (at 2.4 m), 7.5 at 3 m, 0.2 at 6 m and
+3.2 at 12 m, and is the free camera's alike with nothing locked; the windup arc's camera half-angle is the lens's own
+(30 degrees under close, 35 under classic, 27.5 for both while aiming); the partner's stationing camera is the close
+lens (2.6 m back) and its yaw term reads close's frame rule (still at most 5 degrees); the aimed crosshair's ray keeps
+its plan line (0.55 m right of the pivot) but starts lower and nearer. The stick reads the drawn yaw under both
+presets: up walks the lead along the lens's facing, into the screen toward the frame's centre, not along the lock's
+line. A lock press after letting go reads that drawn view too, so the pick can differ: at 3 m, with a second enemy
+35 degrees off the line at the same distance, classic picks the second and close the first (tested in
+`test_arena.cpp`). The boom still probes walls under `close` (the spring arm's collision test is on for every preset).
 
 **Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:
 the player's blows by their move's `jolt`, an enemy's blow on the lead by its move's `jolt` (the kit's `hurtJolt` when it
@@ -721,6 +749,8 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaFrameCheck` | Samples the lock's framing as the rendered camera shows it on every followed frame: the lead's and the target's place across the screen, the turn and its rate, the boom's arm and the lens's distance from the pivot. The `framing` check line passes when every settled frame (the lock's line within 5 degrees, the turn within 1 of its want) has both bodies in the middle third (not in a zone whose framing cap is 0, where only the turn staying 0 and the line settling on the target are checked), the turn never passes its cap and the arm never passes the rig's; the bands under it give the target's mean place and the least edge gap by distance. Not in shipping builds. |
 | `-ArenaNoFrame` | Holds the lock's framing at 0, for a side-by-side with `-ArenaFrameCheck`, whatever the **Lock framing** setting says (players turn it off there). Not in shipping builds. |
 | `-ArenaCameraShake=<0..1>` | The impact jolt's scale for this run, over the Camera shake setting (0: no jolt). |
+| `-ArenaCamera=close\|classic` | The camera preset for this run, over the **Camera** setting (see Camera presets), in every build. |
+| `-ArenaCameraLag=<seconds>` | The boom's lag for this run, over the preset's (0: the boom's own, -1: off). Not in shipping builds. |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |
