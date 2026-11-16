@@ -145,18 +145,31 @@ over the bar and a layout follow-up for the zone's owner), both pinned in the zo
 25.8 m ring.
 
 **Camera presets** (`ftcore/CameraPreset.h`, `Data/Battle/camera_presets.json`). The lens has two presets: `classic`, the
-rig above and the default, and `close`, a near over-the-shoulder view (a 2.6 m arm, 1.35 m pivot, 0.2 m shoulder offset,
+zone's own rig (the fit's camera, left untouched; the file gives it no rig keys) and the default, and `close`, a near over-the-shoulder view (a 2.6 m arm, 1.35 m pivot, 0.2 m shoulder offset,
 0.1 m up, a 60 degree fov, a -2 degree lock pitch and a little boom lag). Under `close` the lead rule keeps the body from
-0.6 m up in the frame (its head under 75% of the height) rather than the feet, and the lock's turn puts the target at 0.6
+0.6 m up in the frame (its head under 75% of the height) rather than the feet; the cut is in metres over the floor, as
+the pivot is, and held to half the lead's height (`ftcore::cameraPresetCut`), which keeps every look-up for leads 1.4 to
+1.8 m tall (a lead over about 1.85 m would leave the head rule at close's lock pitch), and the lock's turn puts the target at 0.6
 of the width (`ftcore::arenaFrameTurnAt`) rather than on the centre line. On a tall lock the close lens looks up by
 swinging the boom, with no low lens (`lowMax` 0): the 0.6 m point may sink 4% under the bottom edge (`cutMin` -0.04), so
 a look-up to +14 degrees is never held back. The settings menu's **Camera** row (under Lock
 framing, `cameraPreset` in the settings file, 0 classic or 1 close; an older file loads as classic) picks it, and
 `-ArenaCamera=close|classic` wins over it in every build; `-ArenaCameraLag=<seconds>` (not in a shipping build) sets the
 boom's lag for the run (0 the boom's own, -1 off). The log says `Arena camera preset: <name> (from <settings, default or
--ArenaCamera>)`, and a change in the menu takes effect at the next fight. The preset is view only: the host puts it on the
-fit's camera after the zone was fitted and checked with the zone's own rig, and the fight never reads it. `cameraBlocked`
-stays the zone rig's share; the close lens's own blocked share is not measured yet.
+-ArenaCamera>)`, and a change in the menu takes effect at the next fight; a corrupt value in the file loads as classic.
+The host puts the preset on the fit's camera after the zone was fitted and checked with the zone's own rig, so the ring,
+the starts, the sizing and `cameraBlocked` (the zone rig's share; the close lens's own is not measured yet) never read
+it. No fight rule or number changes with it, but what the fight reads from the drawn camera each tick follows the lens
+under `close`: the view yaw (the stick's basis, the lock press's pick, a regular enemy's windup arc) is the lock's line
+plus close's framing turn, which differs from classic's by up to 11.5 degrees (at 2.4 m), 7.5 at 3 m, 0.2 at 6 m and
+3.2 at 12 m, and is the free camera's alike with nothing locked; the windup arc's camera half-angle is the lens's own
+(30 degrees under close, 35 under classic, 27.5 for both while aiming); the partner's stationing camera is the close
+lens (2.6 m back) and its yaw term reads close's frame rule (still at most 5 degrees); the aimed crosshair's ray keeps
+its plan line (0.55 m right of the pivot) but starts lower and nearer. The stick reads the drawn yaw under both
+presets: up walks the lead along the lens's facing, into the screen toward the frame's centre, not along the lock's
+line. A lock press after letting go reads that drawn view too, so the pick can differ: at 3 m, with a second enemy
+35 degrees off the line at the same distance, classic picks the second and close the first (tested in
+`test_arena.cpp`). The boom still probes walls under `close` (the spring arm's collision test is on for every preset).
 
 **Impact jolt** (`ftcore/ArenaImpact.h`). A blow that lands kicks the view a few degrees and lets it settle in 0.22 s:
 the player's blows by their move's `jolt`, an enemy's blow on the lead by its move's `jolt` (the kit's `hurtJolt` when it

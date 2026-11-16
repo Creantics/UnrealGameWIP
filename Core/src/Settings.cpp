@@ -22,6 +22,12 @@ E clampEnum(std::int64_t v, E last, E fallback) {
     return static_cast<E>(v);
 }
 
+// The camera preset from a stored number: Close only for its own value; anything else (a corrupt 9, a -1) is Classic,
+// the default lens, never the last one.
+CameraPresetId cameraPresetFrom(std::int64_t v) {
+    return v == static_cast<std::int64_t>(CameraPresetId::Close) ? CameraPresetId::Close : CameraPresetId::Classic;
+}
+
 // The next step of a value on a 0.1 grid, kept exact so a saved value reads back the same.
 float stepTenth(float v, int dir) {
     const float n = std::round(v * 10.f) + static_cast<float>(dir);
@@ -71,7 +77,7 @@ void clampSettings(Settings& s) {
     s.voice = clampFloat(s.voice, 0.f, 1.f, d.voice);
     s.sfx = clampFloat(s.sfx, 0.f, 1.f, d.sfx);
     s.cameraShake = clampFloat(s.cameraShake, 0.f, 1.f, d.cameraShake);
-    s.cameraPreset = clampEnum(static_cast<std::int64_t>(s.cameraPreset), CameraPresetId::Close, d.cameraPreset);
+    s.cameraPreset = cameraPresetFrom(static_cast<std::int64_t>(s.cameraPreset));
     s.hudScale = (std::clamp(s.hudScale, Settings::kMinHudScale, Settings::kMaxHudScale) + 5) / 10 * 10; // the menu's steps
     s.hudSafeMargin = std::clamp(s.hudSafeMargin, Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin);
     s.showBasicControls =
@@ -150,8 +156,7 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
     s.aimAssist = boolField("aimAssist", s.aimAssist);
     s.cameraShake = floatField("cameraShake", s.cameraShake);
     s.lockFraming = boolField("lockFraming", s.lockFraming);
-    s.cameraPreset = clampEnum(intField("cameraPreset", static_cast<std::int64_t>(s.cameraPreset)), CameraPresetId::Close,
-                               s.cameraPreset); // absent (a file saved before the row): Classic
+    s.cameraPreset = cameraPresetFrom(intField("cameraPreset", static_cast<std::int64_t>(s.cameraPreset))); // absent: Classic
     const std::int64_t taught = intField("uiFirstUse", 0); // 32 packed bits, so anything outside them is nothing taught
     s.uiFirstUse = taught >= 0 && taught <= 0xFFFFFFFF ? static_cast<std::uint32_t>(taught) : 0u;
     s.hudScale = static_cast<int>(std::clamp<std::int64_t>(intField("hudScale", s.hudScale), Settings::kMinHudScale, Settings::kMaxHudScale));

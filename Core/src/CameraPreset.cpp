@@ -22,14 +22,20 @@ bool readPreset(const JsonValue& v, std::string_view name, CameraPreset& p, std:
         {"arm", &p.rig.arm, 1.0, 40.0},          {"pivot", &p.rig.pivot, 0.5, 10.0},
         {"side", &p.rig.side, -3.0, 3.0},        {"up", &p.rig.up, -1.0, 3.0},
         {"fov", &p.rig.fov, 30.0, 120.0},        {"lockPitch", &p.rig.lockPitch, -40.0, 10.0},
-        {"cutAt", &p.cutAt, 0.0, 1.8},           {"cutMin", &p.cutMin, -0.1, 0.5},
+        {"cutAt", &p.cutAt, 0.0, 1.05},          {"cutMin", &p.cutMin, -0.1, 0.5},
         {"headMax", &p.headMax, 0.3, 0.95},      {"targetX", &p.targetX, 0.3, 0.7},
         {"lagSeconds", &p.lagSeconds, 0.0, 0.5}, {"lowMax", &p.lowMax, 0.0, 1.0},
     };
+    constexpr std::size_t kRigFields = 6; // the first six: classic's rig is the zone's own
+    const bool classic = name == "classic";
     for (std::uint32_t i = 0; i < v.size(); ++i) {
         const std::string_view k = v.key(i);
         bool known = false;
-        for (const Field& f : fields) known = known || k == f.name;
+        for (std::size_t f = 0; f < sizeof fields / sizeof fields[0]; ++f) {
+            if (k != fields[f].name) continue;
+            known = true;
+            if (classic && f < kRigFields) return fail(k, "classic's rig is the zone's own");
+        }
         if (!known) return fail(k, "not a known tunable");
     }
     for (const Field& f : fields) {
@@ -40,6 +46,7 @@ bool readPreset(const JsonValue& v, std::string_view name, CameraPreset& p, std:
         if (!(d >= f.lo && d <= f.hi)) return fail(f.name, "out of range");
         *f.value = static_cast<float>(d);
     }
+    if (!(p.cutMin < p.headMax)) return fail("cutMin", "not under headMax");
     return true;
 }
 
@@ -74,13 +81,24 @@ const CameraPreset& cameraPreset(const CameraPresets& presets, CameraPresetId id
     return id == CameraPresetId::Close ? presets.close : presets.classic;
 }
 
-ZoneCamera applyCameraPreset(const ZoneCamera& fit, const CameraPreset& p) {
+ZoneCamera applyCameraPreset(const ZoneCamera& fit, const CameraPresets& presets, CameraPresetId id) {
+    if (id != CameraPresetId::Close) return fit; // classic: the zone's own rig, untouched
     // The zone's rig was checked as the zone's (checkArenaZone: arm >= 3, lockPitch <= -5); this runs after that, on the
     // host's own copy, so a preset outside those (close) never reaches the zone's checks. Only the framing cap is the
     // zone's own (a lens that would sit in a building turned further).
-    ZoneCamera c = p.rig;
+    ZoneCamera c = presets.close.rig;
     c.frameTurnCapDeg = fit.frameTurnCapDeg;
     return c;
+}
+
+float cameraPresetCut(const CameraPreset& p, float head) {
+    if (!(head > 0.f)) return 0.f;
+    const float most = 0.5f * head;
+    return p.cutAt < most ? p.cutAt : most;
+}
+
+float cameraPresetLowCap(const CameraPreset& p, float fit) {
+    return fit > p.lowMax ? p.lowMax : fit; // NaN > x is false: a NaN fit comes back as it went in
 }
 
 ArenaLeadFrameRules cameraPresetLeadRules(const CameraPreset& p) {

@@ -634,14 +634,26 @@ TEST_CASE("settings menu: the camera preset is Classic by default, sits under Lo
     CHECK_FALSE(adjustSetting(s, SettingsRow::CameraPreset, 1, false));
     CHECK(adjustSetting(s, SettingsRow::CameraPreset, 1, true));
     CHECK(s.cameraPreset == CameraPresetId::Classic);
-    // An old file without the field loads as Classic; a number past the last is the last.
+    // An old file without the field loads as Classic; a corrupt number (past the last, or under 0) is Classic too,
+    // the default lens, never the last one.
     out.cameraPreset = CameraPresetId::Close;
     REQUIRE(decodeSettings(R"({"version":1})", out, nullptr));
     CHECK(out.cameraPreset == CameraPresetId::Classic);
+    out.cameraPreset = CameraPresetId::Close;
     REQUIRE(decodeSettings(R"({"version":1,"cameraPreset":9})", out, nullptr));
-    CHECK(out.cameraPreset == CameraPresetId::Close);
+    CHECK(out.cameraPreset == CameraPresetId::Classic);
+    out.cameraPreset = CameraPresetId::Close;
     REQUIRE(decodeSettings(R"({"version":1,"cameraPreset":-1})", out, nullptr));
     CHECK(out.cameraPreset == CameraPresetId::Classic);
+    REQUIRE(decodeSettings(R"({"version":1,"cameraPreset":1})", out, nullptr));
+    CHECK(out.cameraPreset == CameraPresetId::Close);
+    Settings bad;
+    bad.cameraPreset = static_cast<CameraPresetId>(9);
+    clampSettings(bad);
+    CHECK(bad.cameraPreset == CameraPresetId::Classic);
+    bad.cameraPreset = CameraPresetId::Close;
+    clampSettings(bad);
+    CHECK(bad.cameraPreset == CameraPresetId::Close);
     CHECK(static_cast<std::uint32_t>(SettingsRow::CameraPreset) == static_cast<std::uint32_t>(SettingsRow::LockFraming) + 1u);
     CHECK(static_cast<std::uint32_t>(SettingsRow::HudScale) == static_cast<std::uint32_t>(SettingsRow::CameraPreset) + 1u);
 }

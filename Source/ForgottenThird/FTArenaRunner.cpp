@@ -356,12 +356,13 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 			*Setup.Ally->Name, Setup.Table ? TEXT("no entry in Data/Battle/arena.json") : TEXT("no arena table"));
 	}
 	Fit = Setup.Fit;
-	// The camera preset, view only: put on this copy of the fit's camera after the zone's fit was made and checked with
-	// the zone's own rig (the close lens's arm and pitch are outside that check's ranges, ftcore::checkArenaZone). The
-	// fight never reads it: the ring, the starts and the sizing are the fit's own. Fit.cameraBlocked stays the zone
-	// rig's share; the close lens's own blocked share is not measured yet.
+	// The camera preset: put on this copy of the fit's camera after the zone's fit was made and checked with the zone's
+	// own rig (the close lens's arm and pitch are outside that check's ranges, ftcore::checkArenaZone); classic leaves
+	// the fit's camera untouched. The ring, the starts and the sizing are the fit's own; what the fight reads from the
+	// drawn camera (the view yaw, the windup arc's half-angle, the partner's stationing camera) follows the lens, as
+	// ftcore/CameraPreset.h lists. Fit.cameraBlocked stays the zone rig's share; the close lens's own is not measured yet.
 	PickCameraPreset();
-	Fit.camera = ftcore::applyCameraPreset(Fit.camera, CameraLens);
+	Fit.camera = ftcore::applyCameraPreset(Fit.camera, CameraPresetTable, CameraPresetNow);
 	LeadSeat = Setup.LeadSeat;
 	AllySeat = Setup.AllySeat;
 	LeadName = Setup.Lead ? Setup.Lead->Name : FString();
@@ -5107,7 +5108,7 @@ ftcore::ArenaLeadBody UFTArenaRunner::LeadBody() const
 		// The anchor hangs 45 cm over the head (AFTArenaFighter::GetAnchor).
 		Body.head = FMath::Max(0.5f, static_cast<float>(Lead->GetAnchor().Z - Lead->GetActorLocation().Z - 45.0) / 100.f);
 	}
-	Body.cut = CameraLens.cutAt; // the height the preset's lens keeps in the frame (classic: the feet, 0)
+	Body.cut = ftcore::cameraPresetCut(CameraLens, Body.head); // the height the lens keeps in the frame (classic: 0, the feet)
 	return Body;
 }
 
@@ -5420,7 +5421,7 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 			if (FMath::Abs(LensRig.arm - LowFitArm) > 0.05f || Aspect != LowFitAspect || Body.head != LowFitHead)
 			{
 				// No more than the preset allows (CameraPreset::lowMax: classic 1, which every fit is under; close 0).
-				LowFit = FMath::Min(ftcore::arenaLowFit(ftcore::kArenaLook, LeadFrameRules(), LensRig, Aspect, Body, SideRules), CameraLens.lowMax);
+				LowFit = ftcore::cameraPresetLowCap(CameraLens, ftcore::arenaLowFit(ftcore::kArenaLook, LeadFrameRules(), LensRig, Aspect, Body, SideRules));
 				LowFitArm = LensRig.arm;
 				LowFitAspect = Aspect;
 				LowFitHead = Body.head;

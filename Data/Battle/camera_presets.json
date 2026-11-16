@@ -1,3 +1,3 @@
 {"version": 1,
- "classic": {"arm": 6.4, "pivot": 1.5, "side": 1.2, "up": 0.7, "fov": 70, "lockPitch": -20, "cutAt": 0.0, "cutMin": 0.06, "headMax": 0.55, "targetX": 0.5, "lagSeconds": 0.0, "lowMax": 1.0},
+ "classic": {"cutAt": 0.0, "cutMin": 0.06, "headMax": 0.55, "targetX": 0.5, "lagSeconds": 0.0, "lowMax": 1.0},
  "close":   {"arm": 2.6, "pivot": 1.35, "side": 0.2, "up": 0.1, "fov": 60, "lockPitch": -2, "cutAt": 0.6, "cutMin": -0.04, "headMax": 0.75, "targetX": 0.6, "lagSeconds": 0.08, "lowMax": 0.0}}
