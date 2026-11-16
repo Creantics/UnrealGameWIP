@@ -76,7 +76,7 @@ TEST_CASE("camera preset: classic is the zone's rig and the lead's rule exactly;
     const CameraPreset& c = d.close;
     CHECK(c.rig.arm == 2.6f);
     CHECK(c.rig.pivot == 1.35f);
-    CHECK(c.rig.side == 0.2f);
+    CHECK(c.rig.side == 0.55f);
     CHECK(c.rig.up == 0.1f);
     CHECK(c.rig.fov == 60.f);
     CHECK(c.rig.lockPitch == -2.f);
@@ -85,7 +85,7 @@ TEST_CASE("camera preset: classic is the zone's rig and the lead's rule exactly;
     CHECK(c.lowMax == 0.f);
     CHECK(c.headMax == 0.75f);
     CHECK(c.targetX == 0.6f);
-    CHECK(c.lagSeconds == 0.08f);
+    CHECK(c.lagSeconds == 0.f);
     const ArenaLeadFrameRules rc = cameraPresetLeadRules(c);
     CHECK(rc.feetMin == -0.04f);
     CHECK(rc.headMax == 0.75f);
@@ -528,13 +528,15 @@ TEST_CASE("camera preset: under close the stick's up walks into the screen towar
                 CHECK(std::fabs(walkHeading(pose, arenaStickToWorld(0.f, 1.f, 0.f)) - 0.5f) > 0.01f);
             }
             // The step's own lean at the lead is the perspective's alone: the same at every distance, whatever the turn
-            // (classic about 18.6 degrees from its high lens, close about 20.3 from its low one, a lead 0.45 m under it).
+            // (classic about 18.6 degrees from its high lens; close about 45.5 from its low one 0.55 m to the side, the
+            // lead a third of the way in from the left: up on the stick walks it on screen at about 45 degrees toward the
+            // frame's centre, where the old 0.2 m side leaned 20.3).
             lean[k] = screenLean(pose, arenaStickToWorld(drawn, 1.f, 0.f));
             CAPTURE(lean[k]);
-            CHECK(std::fabs(lean[k]) < 22.f);
+            CHECK(std::fabs(lean[k]) < (k == 0 ? 22.f : 47.f));
         }
         CHECK(std::fabs(lean[0]) == doctest::Approx(18.62f).epsilon(2e-3));
-        CHECK(std::fabs(lean[1]) == doctest::Approx(20.29f).epsilon(2e-3));
+        CHECK(std::fabs(lean[1]) == doctest::Approx(45.47f).epsilon(2e-3));
     }
 }
 

@@ -131,7 +131,7 @@ None has been built in Unreal yet, so nobody has seen them in a viewport.
 
 | File | Game event |
 |---|---|
-| `spell_bolt` | The Third's attacks. A flare at the hands, streaking sparks along the line, and a bright head that reaches 3.2 m in 0.2 s at speed scale 1. The effect points along +Y, so the game turns it to the hit point and sets `SpeedScale` to distance / 3.2 m, so the head dies on the hit point. It has no pop of its own: `spell_impact` plays there. |
+| `spell_bolt` | The Third's attacks. A flare at the hands, streaking sparks along the line, and a bright head that reaches 3.2 m in 0.2 s at speed scale 1. The effect points along +Y, so the game turns it to the hit point and sets `SpeedScale` to distance / 3.2 m, so the head dies on the hit point. The game also runs the effect's clock so that 0.2 s spans the flight: it leaves as the cast's startup begins and lands on the hit, flying the startup and never under 0.16 s (`ftcore::arenaBoltFlight`). It has no pop of its own: `spell_impact` plays there. |
 | `spell_impact` | Where the Third's bolt reaches the hit point. A pop and a spray of sparks. |
 | `spell_burst` | The Third's heavy attack and the Release. A flash, a soft wave and a ring of sparks that carry about 3 m out in every direction. |
 | `spell_ward` | The Third while he guards. A loop of motes around him, a faint glow and a ring of motes at his feet. It plays until the guard ends. |

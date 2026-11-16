@@ -78,7 +78,11 @@ TEST_CASE("ui style: the built-in style and Data/UI/style.json pass the accessib
     for (std::size_t w = 0; w < kUiWorldCount; ++w) {
         CHECK(s.rules[w].marksAccent2 == d.rules[w].marksAccent2);
         CHECK(s.rules[w].dangerUnderline == d.rules[w].dangerUnderline);
+        CHECK(s.rules[w].loadBreaks == d.rules[w].loadBreaks);
     }
+    CHECK(s.rules[0].loadBreaks);
+    CHECK_FALSE(s.rules[1].loadBreaks);
+    CHECK_FALSE(s.rules[2].loadBreaks);
     CHECK(s.layers.hairlines);
     CHECK_FALSE(s.layers.worldAnchored);
 }
@@ -247,14 +251,16 @@ TEST_CASE("ui fade: a change shows the block at full, it rests dim after a while
     CHECK(g.alpha == doctest::Approx(0.4f));
 }
 
-TEST_CASE("ui style: one danger red in every world, the weak point in Mark, a danger word ink over red") {
+TEST_CASE("ui style: danger red per world, the weak point in Mark, a danger word ink over red") {
     std::string err;
     std::string text;
     REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
     UiStyle shipped;
     REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
     const UiWorld unw = UiWorld::Unwritten;
-    const UiColor c2{230.f / 255.f, 0.f, 18.f / 255.f, 1.f};   // #E60012
+    const UiColor reds[] = {{230.f / 255.f, 0.f, 18.f / 255.f, 1.f}, // Solhaven #E60012
+        {212.f / 255.f, 0.f, 16.f / 255.f, 1.f},                    // the Lattice #D40010
+        {201.f / 255.f, 0.f, 14.f / 255.f, 1.f}};                   // the Unwritten #C9000E
     const UiColor gold{1.f, 224.f / 255.f, 138.f / 255.f, 1.f}; // #FFE08A
     for (const UiStyle& s : {defaultUiStyle(), shipped}) {
         // No world wears accent2 on its marks; every world draws a danger word in ink over a red underline.
@@ -265,7 +271,7 @@ TEST_CASE("ui style: one danger red in every world, the weak point in Mark, a da
         for (std::size_t w = 0; w < kUiWorldCount; ++w) {
             CAPTURE(w);
             const UiWorld wo = static_cast<UiWorld>(w);
-            CHECK(uiColor(s, wo, UiPalette::Default, UiToken::Danger) == c2);
+            CHECK(uiColor(s, wo, UiPalette::Default, UiToken::Danger) == reds[w]);
             CHECK(uiColor(s, wo, UiPalette::Default, UiToken::WeakPoint) == gold);
             CHECK(uiMarkColor(s, wo, UiPalette::Default, gold) == gold);
         }
@@ -321,38 +327,124 @@ TEST_CASE("ui style: red means harm to the player: the hit cue, the lost hp, the
             CHECK(d.hitDark.r == doctest::Approx(d.hitCue.r * kUiHitDarkK));
             CHECK(d.hitDark.b == doctest::Approx(d.hitCue.b * kUiHitDarkK));
             CHECK(uiContrast(d.hitCue, d.hitDark, black) > 1.5f);
-            // The low line: the white fill where the low underline carries the red, else the red itself.
+            // The low line: the world's fill where the low underline carries the red, else the red itself.
             if (d.lowUnderlined) CHECK(d.lowLine == uiTrackSet(s, wo, p).fill);
             else CHECK(d.lowLine == uiColor(s, wo, p, UiToken::Danger));
         }
-        // Every palette's danger holds 3:1 against both the track's black body and the white fill.
-        for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
-            CAPTURE(p);
-            const UiPalette pal = static_cast<UiPalette>(p);
-            const UiTrackSet t = uiTrackSet(s, UiWorld::Solhaven, pal);
-            const UiColor dg = uiColor(s, UiWorld::Solhaven, pal, UiToken::Danger);
-            CHECK(uiContrast(dg, t.body, black) >= 3.f);
-            CHECK(uiContrast(dg, t.fill, black) >= 3.f);
+        // Every palette's danger holds 3:1 against the track body's own colour and the ink, in every world.
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+                CAPTURE(w);
+                CAPTURE(p);
+                const UiWorld wo = static_cast<UiWorld>(w);
+                const UiPalette pal = static_cast<UiPalette>(p);
+                UiColor body = uiTrackSet(s, wo, pal).body;
+                body.a = 1.f;
+                const UiColor dg = uiColor(s, wo, pal, UiToken::Danger);
+                CHECK(uiContrast(dg, body, black) >= 3.f);
+                CHECK(uiContrast(dg, uiColor(s, wo, pal, UiToken::Ink), black) >= 3.f);
+            }
         }
     }
 }
 
-TEST_CASE("ui style: the LOAD label shows when Load is first held and for 2 s after each change, then goes") {
+TEST_CASE("ui style: LOAD and the hp figure take turns in their column, never both above 0.05") {
+    // A whole fight's first Load: the load held from 1 s to `spent`, the column stepped every frame (60 Hz, or hz).
+    const auto run = [](double spent, float& peakLabel, double& labelFirst, double& figBack, double hz = 60.0) {
+        UiLabelColumn c;
+        UiLoadLabel g;
+        peakLabel = 0.f;
+        labelFirst = -1.0;
+        figBack = -1.0;
+        bool figWasOut = false;
+        for (int i = 0; i <= static_cast<int>(8.0 * hz); ++i) {
+            const double t = i / hz;
+            const int load = t >= 1.0 && t < spent ? 10 : 0;
+            const UiLabelColumnView v = uiLabelColumnStep(c, uiLoadLabelStep(g, load, t), t);
+            CHECK_FALSE((v.label > 0.05f && v.fig > 0.05f));
+            CHECK(v.label >= 0.f);
+            CHECK(v.label <= 1.f);
+            CHECK(v.fig >= 0.f);
+            CHECK(v.fig <= 1.f);
+            if (v.label > 0.f && labelFirst < 0.0) labelFirst = t;
+            peakLabel = std::max(peakLabel, v.label);
+            if (v.fig == 0.f) figWasOut = true;
+            if (figWasOut && v.fig == 1.f && figBack < 0.0) figBack = t;
+        }
+    };
+    float peak = 0.f;
+    double first = 0.0, back = 0.0;
+    // Held throughout: LOAD waits for the figure to leave and the gap, reaches full, and the figure returns after it.
+    run(100.0, peak, first, back);
+    CHECK(peak == 1.f);
+    CHECK(first >= 1.0 + kUiFigOut + kUiColumnGap - 0.02); // the step at 1.0 already moves a frame
+    CHECK(first <= 1.0 + kUiFigOut + kUiColumnGap + 0.05);
+    CHECK(back >= 1.0 + kUiLabelHold + kUiLabelFade + kUiColumnGap + kUiFigReturn - 0.02);
+    CHECK(back <= 1.0 + kUiLabelHold + kUiLabelFade + kUiColumnGap + kUiFigReturn + 0.05);
+    // The Load spent mid-hold: LOAD goes with it and the figure comes back after the gap.
+    run(1.8, peak, first, back);
+    CHECK(peak == 1.f);
+    CHECK(back >= 1.8 + kUiColumnGap + kUiFigReturn - 0.02);
+    CHECK(back <= 1.8 + kUiColumnGap + kUiFigReturn + 0.05);
+    // Spent before the figure has gone: LOAD never shows, the figure comes back.
+    run(1.05, peak, first, back);
+    CHECK(peak == 0.f);
+    CHECK(first < 0.0);
+    // At 30 Hz and at an odd 47 Hz the rule holds the same way.
+    for (const double hz : {30.0, 47.0}) {
+        run(100.0, peak, first, back, hz);
+        CHECK(peak == 1.f);
+        CHECK(back > 4.0);
+        run(1.8, peak, first, back, hz);
+        CHECK(peak == 1.f);
+    }
+    // A big step (a hitch) clears the figure at once, and LOAD still waits the gap.
+    UiLabelColumn h;
+    CHECK(uiLabelColumnStep(h, 1.f, 0.0).label == 0.f);
+    const UiLabelColumnView hv = uiLabelColumnStep(h, 1.f, 1.0);
+    CHECK(hv.fig == 0.f);
+    CHECK(hv.label == 0.f);
+    CHECK(uiLabelColumnStep(h, 1.f, 1.05).label == 0.f);
+    CHECK(uiLabelColumnStep(h, 1.f, 1.11).label == 1.f);
+    // A NaN clock: no label, the figure as it was, the state unmoved.
+    UiLabelColumn n;
+    const UiLabelColumnView nv = uiLabelColumnStep(n, 1.f, std::nan(""));
+    CHECK(nv.label == 0.f);
+    CHECK(nv.fig == 1.f);
+    CHECK_FALSE(n.stepped);
+    // No Load at all: the figure stands, no label.
+    UiLabelColumn z;
+    const UiLabelColumnView zv = uiLabelColumnStep(z, 0.f, 3.0);
+    CHECK(zv.fig == 1.f);
+    CHECK(zv.label == 0.f);
+}
+
+TEST_CASE("ui style: the LOAD label shows on the first Load of a fight for 2 s, fades over 1 s, never again") {
     UiLoadLabel g;
-    CHECK(uiLoadLabelStep(g, 0, 100, false, 0.1f) == 0.f);  // nothing held: no label
-    CHECK(uiLoadLabelStep(g, 10, 100, false, 0.1f) == 1.f); // first held
-    for (int i = 0; i < 19; ++i) uiLoadLabelStep(g, 12, 100, false, 0.1f);
-    CHECK(uiLoadLabelStep(g, 20, 100, false, 0.f) == 1.f);  // 1.9 s: more Load is not a change
-    const float fading = uiLoadLabelStep(g, 20, 100, false, 0.25f);
-    CHECK(fading > 0.f);
-    CHECK(fading < 1.f);
-    CHECK(uiLoadLabelStep(g, 20, 100, false, 0.2f) == 0.f); // gone
-    CHECK(uiLoadLabelStep(g, 40, 100, true, 0.1f) == 1.f);  // the Release opens
-    CHECK(uiLoadLabelStep(g, 40, 100, true, 3.f) == 0.f);
-    CHECK(uiLoadLabelStep(g, 40, 70, true, 0.1f) == 1.f);   // the cap moves
-    CHECK(uiLoadLabelStep(g, 40, 70, true, 3.f) == 0.f);
-    CHECK(uiLoadLabelStep(g, 0, 70, false, 0.1f) == 0.f);   // spent: no label
-    CHECK(uiLoadLabelStep(g, 0, 100, false, 0.1f) == 0.f);  // a cap change with nothing held shows nothing
+    CHECK(uiLoadLabelStep(g, 0, 1.0) == 0.f);  // nothing held: no label
+    CHECK(uiLoadLabelStep(g, 10, 2.0) == 1.f); // first held
+    CHECK(uiLoadLabelStep(g, 12, 3.9) == 1.f); // 1.9 s: more Load is not a change
+    const float fading = uiLoadLabelStep(g, 20, 4.5); // 2.5 s: half way down the 1 s fade
+    CHECK(fading == doctest::Approx(0.5f));
+    CHECK(uiLoadLabelStep(g, 20, 4.5) == fading); // a second step at the same clock time adds nothing
+    CHECK(uiLoadLabelStep(g, 20, 5.0) == 0.f);    // 3 s: gone
+    CHECK(uiLoadLabelStep(g, 0, 6.0) == 0.f);     // spent
+    CHECK(uiLoadLabelStep(g, 40, 7.0) == 0.f);    // held again in the same fight: no label (the Release, the cap: none)
+    g = UiLoadLabel{};                            // a new fight
+    CHECK(uiLoadLabelStep(g, 5, 0.5) == 1.f);
+}
+
+TEST_CASE("ui style: WEAK shows once a fight, while the weak point is open") {
+    UiOnceLabel w;
+    CHECK(uiOnceLabelStep(w, false, 0.0) == 0.f);
+    CHECK(uiOnceLabelStep(w, true, 1.0) == 1.f);
+    CHECK(uiOnceLabelStep(w, false, 1.5) == 0.f); // closed inside the hold: gone with the mark
+    CHECK(uiOnceLabelStep(w, true, 2.0) == 1.f);  // reopened inside the first showing's 2 s: the same showing
+    CHECK(uiOnceLabelStep(w, true, 3.5) == doctest::Approx(0.5f));
+    CHECK(uiOnceLabelStep(w, true, 10.0) == 0.f);
+    CHECK(uiLabelLevel(-0.1) == 0.f);
+    CHECK(uiLabelLevel(2.0) == 1.f);
+    CHECK(uiLabelLevel(3.0) == 0.f);
 }
 
 TEST_CASE("ui style: the hit cue is one red in every world, the danger token of the palette shown") {
@@ -374,47 +466,69 @@ TEST_CASE("ui style: the hit cue is one red in every world, the danger token of 
     }
 }
 
-TEST_CASE("ui style: a value line's three tones: black body, L 0.42 hairline, white fill, in both worlds") {
-    // Relative luminance through the contrast of a colour against black: (L + 0.05) / 0.05.
+TEST_CASE("ui style: a value line's three tones: the world's backing at 0.45, a white hairline, the world's fill") {
     const UiColor black{0.f, 0.f, 0.f, 1.f};
-    const auto lum = [&](UiColor c) { return uiContrast(c, black, black) * 0.05f - 0.05f; };
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle shipped;
+    REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
+    const UiColor fills[] = {{0xF2 / 255.f, 0xDD / 255.f, 0xB4 / 255.f, 1.f}, {0x8F / 255.f, 0xD6 / 255.f, 0xE8 / 255.f, 1.f},
+        {0xBB / 255.f, 0xC0 / 255.f, 0xC3 / 255.f, 1.f}};
+    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
+            for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
+                CAPTURE(w);
+                CAPTURE(p);
+                const UiWorld wo = static_cast<UiWorld>(w);
+                const UiPalette pal = static_cast<UiPalette>(p);
+                const UiTrackSet t = uiTrackSet(s, wo, pal);
+                const UiColor back = uiColor(s, wo, pal, UiToken::Backing);
+                CHECK(t.body.r == back.r);
+                CHECK(t.body.b == back.b);
+                CHECK(t.body.a == (pal == UiPalette::HighContrast ? 1.f : kUiTrackBodyA));
+                CHECK(t.hairline == uiColor(s, wo, pal, UiToken::Track));
+                if (pal == UiPalette::HighContrast) CHECK(t.fill == UiColor{1.f, 1.f, 1.f, 1.f});
+                else CHECK(t.fill == fills[w]);
+                // The fill against its body's own colour: 10:1 or more.
+                UiColor body = t.body;
+                body.a = 1.f;
+                CHECK(uiContrast(t.fill, body, black) >= 10.f);
+            }
+        }
+    }
+}
+
+TEST_CASE("ui style: danger and the hit cue's red hold 3:1 against every world's fill; import refuses less") {
+    const UiColor black{0.f, 0.f, 0.f, 1.f};
     std::string err;
     std::string text;
     REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
     UiStyle shipped;
     REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
     for (const UiStyle& s : {defaultUiStyle(), shipped}) {
-        for (const UiWorld w : {UiWorld::Solhaven, UiWorld::Unwritten, UiWorld::Lattice}) {
+        CHECK(uiDangerFillContrast(s, UiWorld::Solhaven, UiPalette::Default) == doctest::Approx(3.61f).epsilon(0.01));
+        CHECK(uiDangerFillContrast(s, UiWorld::Lattice, UiPalette::Default) == doctest::Approx(3.40f).epsilon(0.01));
+        CHECK(uiDangerFillContrast(s, UiWorld::Unwritten, UiPalette::Default) == doctest::Approx(3.28f).epsilon(0.01));
+        CHECK(uiDangerFillContrast(s, UiWorld::Lattice, UiPalette::HighContrast) >= 4.5f);
+        for (std::size_t w = 0; w < kUiWorldCount; ++w) {
             for (std::size_t p = 0; p < kUiPaletteCount; ++p) {
-                CAPTURE(static_cast<int>(w));
+                CAPTURE(w);
                 CAPTURE(p);
+                const UiWorld wo = static_cast<UiWorld>(w);
                 const UiPalette pal = static_cast<UiPalette>(p);
-                const UiTrackSet t = uiTrackSet(s, w, pal);
-                CHECK(t.body.a == 1.f);
-                CHECK(t.hairline.a == 1.f);
-                CHECK(lum(t.body) == doctest::Approx(0.f).epsilon(0.001));
-                CHECK(lum(t.hairline) == doctest::Approx(kUiTrackHairL).epsilon(0.01));
-                CHECK(t.fill == UiColor{1.f, 1.f, 1.f, 1.f});
-                // The fill against the body it sits beside: 21:1.
-                CHECK(uiContrast(t.fill, t.body, black) >= 20.9f);
-                // Over every stage from black to white one of the two track tones holds 3:1.
-                for (int i = 0; i <= 100; ++i) {
-                    const float g = static_cast<float>(i) / 100.f;
-                    const UiColor stage{g, g, g, 1.f};
-                    CAPTURE(g);
-                    CHECK(std::max(uiContrast(t.body, stage, stage), uiContrast(t.hairline, stage, stage)) >= 3.f);
-                }
-                // The palettes against the new body (each palette's danger, ally and weak point): every cue that may
-                // stand on or beside the track's body holds 3:1 on it. The lost hp in the cue's red is drawn over the
-                // track and covers the hairline under it, so it is never judged against the hairline.
-                for (const UiToken tk : {UiToken::Danger, UiToken::Ally, UiToken::WeakPoint}) {
-                    CAPTURE(static_cast<int>(tk));
-                    CHECK(uiContrast(uiColor(s, w, pal, tk), t.body, black) >= 3.f);
-                }
-                CHECK(uiContrast(uiDangerSet(s, w, pal).hitCue, t.body, black) >= 3.f);
+                CHECK(uiDangerFillContrast(s, wo, pal) >= 3.f);
+                CHECK(uiContrast(uiDangerSet(s, wo, pal).hitCue, uiTrackSet(s, wo, pal).fill, black) >= 3.f);
             }
         }
     }
+    // The old one red (E60012) on the Lattice's cyan fill is 2.96:1: refused.
+    UiStyle t;
+    CHECK_FALSE(importUiStyle(R"({"worlds": {"lattice": {"danger": "#E60012"}}})", t, &err));
+    CHECK(err.find("danger against the fill") != std::string::npos);
+    // The Unwritten's red is the hit cue in every world, so it is held against every world's fill as well.
+    CHECK_FALSE(importUiStyle(R"({"worlds": {"unwritten": {"danger": "#E60012"}}})", t, &err));
+    CHECK(err.find("danger against the fill") != std::string::npos);
 }
 
 TEST_CASE("ui style: the hit cue is full for 100 ms and gone by 350 ms") {
@@ -428,22 +542,22 @@ TEST_CASE("ui style: the hit cue is full for 100 ms and gone by 350 ms") {
     CHECK(kUiHitGlowShare == doctest::Approx(0.06f)); // inside the outer 6 percent of each axis
 }
 
-TEST_CASE("ui style: the hit cue's two layers: a wide dark under a narrower red, both gone at 6 percent in") {
+TEST_CASE("ui style: the hit cue's two layers (fB): red 0.38 over dark 0.30 on one f^1.6 curve, gone at 6 percent") {
     const UiHitLayers e = uiHitLayers(0.f, 1.f);
-    CHECK(e.dark == doctest::Approx(0.7f));
-    CHECK(e.red == doctest::Approx(0.75f));
+    CHECK(e.dark == doctest::Approx(0.30f));
+    CHECK(e.red == doctest::Approx(0.38f));
     const UiHitLayers off = uiHitLayers(0.f, kUiHitOffSide);
-    CHECK(off.dark == doctest::Approx(0.7f * 0.75f));
-    CHECK(off.red == doctest::Approx(0.75f * 0.25f));
-    // Halfway in: (1 - smoothstep(0.5)) = 0.5; the dark falls slower than the red.
+    CHECK(off.dark == doctest::Approx(0.30f * 0.25f)); // one share on every edge
+    CHECK(off.red == doctest::Approx(0.38f * 0.25f));
+    // Halfway in: (1 - smoothstep(0.5)) = 0.5, both layers on the same curve.
     const UiHitLayers h = uiHitLayers(0.5f, 1.f);
-    CHECK(h.dark == doctest::Approx(0.7f * std::pow(0.5f, 0.4f)));
-    CHECK(h.red == doctest::Approx(0.75f * std::pow(0.5f, 0.7f)));
-    CHECK(h.dark / e.dark > h.red / e.red);
+    CHECK(h.dark == doctest::Approx(0.30f * std::pow(0.5f, 1.6f)));
+    CHECK(h.red == doctest::Approx(0.38f * std::pow(0.5f, 1.6f)));
+    CHECK(h.dark / e.dark == doctest::Approx(h.red / e.red));
     CHECK(uiHitLayers(1.f, 1.f).dark == 0.f);
     CHECK(uiHitLayers(1.f, 1.f).red == 0.f);
     CHECK(uiHitLayers(2.f, 1.f).red == 0.f);
-    CHECK(uiHitLayers(-1.f, 1.f).red == doctest::Approx(0.75f));
+    CHECK(uiHitLayers(-1.f, 1.f).red == doctest::Approx(0.38f));
     CHECK(uiHitLayers(0.f, 0.f).dark == 0.f);
     for (int i = 0; i < 10; ++i) {
         const float a = static_cast<float>(i) / 10.f, b = static_cast<float>(i + 1) / 10.f;
@@ -461,36 +575,35 @@ TEST_CASE("ui style: the hit cue's edges: the struck side at full, the others at
     CHECK(uiHitEdges(true, 0.1f, -1.f) == UiHitEdges{0.25f, 0.25f, 0.25f, 1.f});
 }
 
-TEST_CASE("ui style: the GUARD label shows for 2 s after the line appears or its state changes, then goes") {
+TEST_CASE("ui style: the GUARD label shows for 2 s after the line appears or its state changes, fades over 1 s") {
     CHECK(uiGuardState(1.f, false) == UiGuardState::Full);
     CHECK(uiGuardState(0.5f, false) == UiGuardState::Under);
     CHECK(uiGuardState(0.1f, false) == UiGuardState::Under); // low is not a state of its own
     CHECK(uiGuardState(0.f, false) == UiGuardState::Spent);
     CHECK(uiGuardState(0.5f, true) == UiGuardState::Broken);
     UiGuardLabel g;
-    CHECK(uiGuardLabelStep(g, UiGuardState::Full, 0.1f) == 0.f);
-    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 0.1f) == 1.f); // the line appears
-    for (int i = 0; i < 19; ++i) uiGuardLabelStep(g, UiGuardState::Under, 0.1f);
-    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 0.f) == 1.f); // 1.9 s
-    const float fading = uiGuardLabelStep(g, UiGuardState::Under, 0.25f); // 2.15 s
-    CHECK(fading > 0.f);
-    CHECK(fading < 1.f);
-    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 0.2f) == 0.f); // 2.35 s: gone
-    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 5.f) == 0.f);  // steady play: a bare line
-    CHECK(uiGuardLabelStep(g, UiGuardState::Spent, 0.1f) == 1.f); // a change brings it back
-    CHECK(uiGuardLabelStep(g, UiGuardState::Broken, 3.f) == 1.f); // another (the change resets the clock)
-    CHECK(uiGuardLabelStep(g, UiGuardState::Broken, 3.f) == 0.f);
-    CHECK(uiGuardLabelStep(g, UiGuardState::Full, 0.1f) == 0.f); // back to full: the row goes, no label
+    CHECK(uiGuardLabelStep(g, UiGuardState::Full, 0.0) == 0.f);
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 1.0) == 1.f); // the line appears
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 2.9) == 1.f); // 1.9 s
+    const float fading = uiGuardLabelStep(g, UiGuardState::Under, 3.5); // 2.5 s
+    CHECK(fading == doctest::Approx(0.5f));
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 3.5) == fading); // the same clock time: the same alpha
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 4.0) == 0.f);    // 3 s: gone
+    CHECK(uiGuardLabelStep(g, UiGuardState::Under, 9.0) == 0.f);    // steady play: a bare line
+    CHECK(uiGuardLabelStep(g, UiGuardState::Spent, 9.1) == 1.f);    // a change brings it back
+    CHECK(uiGuardLabelStep(g, UiGuardState::Broken, 12.0) == 1.f);  // another (the change resets the clock)
+    CHECK(uiGuardLabelStep(g, UiGuardState::Broken, 15.0) == 0.f);
+    CHECK(uiGuardLabelStep(g, UiGuardState::Full, 15.1) == 0.f);    // back to full: the row goes, no label
 }
 
 TEST_CASE("ui style: a colour-vision palette changes only the tokens it lists; layers are data") {
     UiStyle s;
     std::string err;
-    REQUIRE_MESSAGE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#B06000"}},
+    REQUIRE_MESSAGE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#8C5A00"}},
         "layers": {"plates": true, "world_anchored": true, "hairlines": false}})", s, &err), err);
     const UiColor d = uiColor(s, UiWorld::Solhaven, UiPalette::Deutan, UiToken::Danger);
-    CHECK(d.g == doctest::Approx(96.f / 255.f));
-    // A light danger fails 3:1 against the track's white fill: refused.
+    CHECK(d.g == doctest::Approx(90.f / 255.f));
+    // A light danger fails 3:1 against the ink: refused.
     UiStyle light;
     CHECK_FALSE(importUiStyle(R"({"palettes": {"deutan": {"danger": "#F0A030"}}})", light, &err));
     CHECK(err.find("danger on the track") != std::string::npos);
@@ -990,7 +1103,7 @@ TEST_CASE("ui dialogue view: no reply cursor and no lock reason by default; a cu
     CHECK_FALSE(updateDialogueView(v, p, flags));
 }
 
-TEST_CASE("ui style: the guard row stands at least 10 device px under a low line's underline at every supported scale") {
+TEST_CASE("ui style: the low underline's gap and the guard row's clearance: 8 px, never under 8 device px") {
     // HUD scale 80-130 percent on viewports from 720p to 2160p, at Windows display scales 100-200 percent.
     const float pxs[] = {1.f, 1.f / 1.25f, 1.f / 1.5f, 1.f / 1.75f, 0.5f};
     for (float px : pxs) {
@@ -998,74 +1111,285 @@ TEST_CASE("ui style: the guard row stands at least 10 device px under a low line
             for (int hud = 80; hud <= 130; hud += 5) {
                 const float s = std::max(0.25f, (static_cast<float>(h) * px) / 1080.f * (static_cast<float>(hud) / 100.f));
                 const ftcore::UiLowGuardGaps g = ftcore::uiLowGuardGaps(s, px);
-                CHECK(g.clear >= ftcore::kUiGuardClearMinPx * px * 0.9999f);
-                CHECK(g.gap >= px * 0.9999f);
+                CHECK(g.clear >= ftcore::kUiGapMinPx * px * 0.9999f);
+                CHECK(g.gap >= ftcore::kUiGapMinPx * px * 0.9999f);
                 CHECK(g.under >= px * 0.9999f);
-                const float units = g.clear / px; // whole device pixels
-                CHECK(units == doctest::Approx(std::floor(units + 0.5f)));
+                for (const float v : {g.clear, g.gap, g.under}) {
+                    const float units = v / px; // whole device pixels
+                    CHECK(units == doctest::Approx(std::floor(units + 0.5f)));
+                }
             }
         }
     }
     const ftcore::UiLowGuardGaps one = ftcore::uiLowGuardGaps(1.f, 1.f);
-    CHECK(one.gap == 5.f);
+    CHECK(one.gap == 8.f);
     CHECK(one.under == 2.f);
-    CHECK(one.clear == 12.f);
-    CHECK(ftcore::uiLowGuardGaps(0.75f, 1.f).clear == 10.f); // 720p: 9 px by scale, held at 10
+    CHECK(one.clear == 8.f);
+    CHECK(ftcore::uiLowGuardGaps(0.75f, 1.f).clear == 8.f); // 720p: 6 px by scale, held at 8
+    CHECK(ftcore::uiLowGuardGaps(1.3333f, 1.f).gap == 11.f); // 1440p: 10.7, whole px
 }
 
-TEST_CASE("ui style: the hit flash starts only on a later hit; a retry's reset shows none; a pause lets it finish") {
+TEST_CASE("ui style: the hit flash starts only on a later hit; a retry's reset shows none; ages run on the fight clock") {
     UiHitWatch w;
-    CHECK(uiHitFlashLevel(uiHitWatchStep(w, -1e9, 0.016f)) == 0.f); // the first tick only reads the stamp
-    CHECK(uiHitFlashLevel(uiHitWatchStep(w, 3.0, 0.016f)) == 1.f);  // a hit
-    // A pause: the fight's stamp holds, the view's clock runs on, the flash finishes.
-    for (int i = 0; i < 30; ++i) uiHitWatchStep(w, 3.0, 0.016f);
+    double t = 0.0;
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, -1e9, t += 0.016)) == 0.f); // the first tick only reads the stamp
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, 3.0, t += 0.016)) == 1.f);  // a hit
+    CHECK(uiHitWatchStep(w, 3.0, t) == 0.f);                            // a second step at the same clock time: age 0 still
+    for (int i = 0; i < 30; ++i) uiHitWatchStep(w, 3.0, t += 0.016);
     CHECK(uiHitFlashLevel(w.age) == 0.f);
+    // A held clock (a pause, a capture's hold) holds the cue where it is.
+    UiHitWatch h;
+    uiHitWatchStep(h, -1.0, 1.0);
+    uiHitWatchStep(h, 1.0, 1.05);
+    const float held = uiHitWatchStep(h, 1.0, 1.1);
+    for (int i = 0; i < 10; ++i) CHECK(uiHitWatchStep(h, 1.0, 1.1) == held);
+    // Paused, the cue is hidden at every age; unpaused, the held cue returns at the level it had.
+    CHECK(uiHitCueLevel(held, false) > 0.f);
+    for (const float a : {0.f, 0.05f, 0.1f, 0.2f, 0.3f, 0.34f}) {
+        CHECK(uiHitCueLevel(a, true) == 0.f);
+        CHECK(uiHitCueLevel(a, false) == uiHitFlashLevel(a));
+    }
+    for (int i = 0; i < 10; ++i) CHECK(uiHitCueLevel(uiHitWatchStep(h, 1.0, 1.1), true) == 0.f); // a pause: clock held
+    CHECK(uiHitCueLevel(uiHitWatchStep(h, 1.0, 1.1), false) == uiHitFlashLevel(held)); // resumed: the same cue
     // A retry resets the stamp to "no hit": no flash, whether or not the view also clears its seed.
-    CHECK(uiHitFlashLevel(uiHitWatchStep(w, -1e9, 0.016f)) == 0.f);
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, -1e9, t += 0.016)) == 0.f);
     UiHitWatch r;
-    uiHitWatchStep(r, 2.0, 0.016f);
-    CHECK(uiHitFlashLevel(uiHitWatchStep(r, 2.1, 0.016f)) == 1.f);
+    uiHitWatchStep(r, 2.0, 2.0);
+    CHECK(uiHitFlashLevel(uiHitWatchStep(r, 2.1, 2.1)) == 1.f);
     r.seeded = false;
-    CHECK(uiHitFlashLevel(uiHitWatchStep(r, -1e9, 0.016f)) == 0.f);
+    CHECK(uiHitFlashLevel(uiHitWatchStep(r, -1e9, 2.2)) == 0.f);
     // A stamp that moves earlier but stays non-negative is no hit either.
     UiHitWatch e;
-    uiHitWatchStep(e, 5.0, 0.016f);
-    CHECK(uiHitFlashLevel(uiHitWatchStep(e, 0.5, 0.016f)) == 0.f);
-    // The new fight's first hit, earlier on its clock than the last fight's, flashes.
-    CHECK(uiHitFlashLevel(uiHitWatchStep(w, 0.4, 0.016f)) == 1.f);
+    uiHitWatchStep(e, 5.0, 5.0);
+    CHECK(uiHitFlashLevel(uiHitWatchStep(e, 0.5, 5.1)) == 0.f);
+    // The new fight's first hit, earlier on its clock than the last fight's, flashes; its clock ran back, which ages 0.
+    CHECK(uiHitFlashLevel(uiHitWatchStep(w, 0.4, 0.4)) == 1.f);
     // At most three cues a second: a later hit under kUiHitRepeat after the last cue's start comes in with no new cue.
     UiHitWatch q;
-    uiHitWatchStep(q, -1.0, 0.016f);
-    CHECK(uiHitWatchStep(q, 1.0, 0.1f) == 0.f);
-    CHECK(uiHitWatchStep(q, 1.0, 0.2f) == doctest::Approx(0.2f));
-    CHECK(uiHitWatchStep(q, 1.25, 0.1f) == doctest::Approx(0.3f)); // too soon: the age runs on
+    uiHitWatchStep(q, -1.0, 0.9);
+    CHECK(uiHitWatchStep(q, 1.0, 1.0) == 0.f);
+    CHECK(uiHitWatchStep(q, 1.0, 1.2) == doctest::Approx(0.2f));
+    CHECK(uiHitWatchStep(q, 1.25, 1.3) == doctest::Approx(0.3f)); // too soon: the age runs on
     CHECK(q.seen == 1.25);
-    CHECK(uiHitWatchStep(q, 1.25, 0.1f) == doctest::Approx(0.4f));
-    CHECK(uiHitWatchStep(q, 1.5, 0.1f) == 0.f); // 0.4 s after the last start: a new cue
+    CHECK(uiHitWatchStep(q, 1.25, 1.4) == doctest::Approx(0.4f));
+    CHECK(uiHitWatchStep(q, 1.5, 1.5) == 0.f); // 0.5 s after the last start: a new cue
+}
+
+TEST_CASE("ui style: the clock step: 0 first, 0 on no change or a clock run back, else the change") {
+    double last = -1.0;
+    CHECK(uiClockStep(last, 2.0) == 0.f);
+    CHECK(uiClockStep(last, 2.25) == doctest::Approx(0.25f));
+    CHECK(uiClockStep(last, 2.25) == 0.f);
+    CHECK(uiClockStep(last, 1.0) == 0.f); // a retry's clock
+    CHECK(last == 1.0);
+    CHECK(uiClockStep(last, 1.5) == doctest::Approx(0.5f));
 }
 
 TEST_CASE("ui style: each hit's lost health in red for its own 350 ms, a heal clears it") {
     UiHitSegs s;
-    uiHitSegsStep(s, 1.f, 0.016f); // the first step only reads
+    double t = 0.0;
+    uiHitSegsStep(s, 1.f, t += 0.016); // the first step only reads
     for (const UiHitSeg& g : s.seg) CHECK(uiHitFlashLevel(g.age) == 0.f);
-    uiHitSegsStep(s, 0.8f, 0.016f);
+    uiHitSegsStep(s, 0.8f, t += 0.016);
     CHECK(s.seg[0].lo == doctest::Approx(0.8f));
     CHECK(s.seg[0].hi == doctest::Approx(1.f));
     CHECK(uiHitFlashLevel(s.seg[0].age) == 1.f);
-    uiHitSegsStep(s, 0.7f, 0.1f); // a second blow 100 ms later: its own segment, the first one still live
+    uiHitSegsStep(s, 0.7f, t += 0.1); // a second blow 100 ms later: its own segment, the first one still live
     CHECK(s.seg[1].lo == doctest::Approx(0.7f));
     CHECK(s.seg[1].hi == doctest::Approx(0.8f));
     CHECK(uiHitFlashLevel(s.seg[1].age) == 1.f);
     CHECK(uiHitFlashLevel(s.seg[0].age) > 0.f);
-    for (int i = 0; i < 16; ++i) uiHitSegsStep(s, 0.7f, 0.016f); // 256 ms more: the first gone, the second fading
+    for (int i = 0; i < 16; ++i) uiHitSegsStep(s, 0.7f, t += 0.016); // 256 ms more: the first gone, the second fading
     CHECK(uiHitFlashLevel(s.seg[0].age) == 0.f);
     CHECK(uiHitFlashLevel(s.seg[1].age) > 0.f);
-    for (int i = 0; i < 10; ++i) uiHitSegsStep(s, 0.7f, 0.016f);
+    for (int i = 0; i < 10; ++i) uiHitSegsStep(s, 0.7f, t += 0.016);
     CHECK(uiHitFlashLevel(s.seg[1].age) == 0.f);
-    for (int i = 0; i < 6; ++i) uiHitSegsStep(s, 0.6f - 0.05f * static_cast<float>(i), 0.016f); // more blows than the ring holds
+    for (int i = 0; i < 6; ++i) uiHitSegsStep(s, 0.6f - 0.05f * static_cast<float>(i), t += 0.016); // more blows than the ring holds
     int live = 0;
     for (const UiHitSeg& g : s.seg) live += uiHitFlashLevel(g.age) > 0.f ? 1 : 0;
     CHECK(live == static_cast<int>(kUiHitSegs));
-    uiHitSegsStep(s, 0.9f, 0.016f); // a heal
+    uiHitSegsStep(s, 0.9f, t += 0.016); // a heal
     for (const UiHitSeg& g : s.seg) CHECK(uiHitFlashLevel(g.age) == 0.f);
+}
+
+TEST_CASE("ui style: lost-hp segments: a step at the same time ages nothing; 0.25 s drains to 0.25 of the life; NaN hp") {
+    UiHitSegs s;
+    uiHitSegsStep(s, 1.f, 10.0);
+    uiHitSegsStep(s, 0.5f, 10.0); // a blow
+    CHECK(s.seg[0].age == 0.f);
+    uiHitSegsStep(s, 0.5f, 10.0); // dt 0
+    CHECK(s.seg[0].age == 0.f);
+    uiHitSegsStep(s, 0.5f, 10.25);
+    CHECK(s.seg[0].age == doctest::Approx(0.25f));
+    // Its drawn length lo + (hi - lo) * level: a quarter of a second in, the level by the flash's curve.
+    CHECK(uiHitFlashLevel(s.seg[0].age) == doctest::Approx(uiHitFlashLevel(0.25f)));
+    const float before = s.last;
+    const std::uint8_t next = s.next;
+    uiHitSegsStep(s, std::nanf(""), 10.3);
+    CHECK(s.last == before);
+    CHECK(s.next == next);
+}
+
+TEST_CASE("ui style: the boss's percent: floor, at least 1 alive, 0 dead, none with no hpMax") {
+    CHECK(uiBossPercent(600, 600) == 100);
+    CHECK(uiBossPercent(599, 600) == 99);
+    CHECK(uiBossPercent(1, 600) == 1); // 0.17 percent alive shows 1
+    CHECK(uiBossPercent(0, 600) == 0);
+    CHECK(uiBossPercent(-5, 600) == 0);
+    CHECK(uiBossPercent(700, 600) == 100);
+    CHECK(uiBossPercent(10, 0) == -1);
+    CHECK(uiBossPercent(2000000000, 2000000001) == 99); // no overflow
+}
+
+TEST_CASE("ui style: an end cap follows the fill's end and sits on the track at 0 and full") {
+    CHECK(uiCapX(100.f, 600.f, 0.f, 12.f) == doctest::Approx(106.f));
+    CHECK(uiCapX(100.f, 600.f, 1.f, 12.f) == doctest::Approx(694.f));
+    CHECK(uiCapX(100.f, 600.f, 0.5f, 12.f) == doctest::Approx(400.f));
+    CHECK(uiCapX(100.f, 600.f, std::nanf(""), 12.f) == doctest::Approx(106.f));
+    const UiStyle s = defaultUiStyle();
+    CHECK(s.lines.capGrow == 4.f);
+    CHECK(s.lines.guardDot == 3.f);
+    CHECK(s.lines.guardPitch == 7.f);
+}
+
+TEST_CASE("ui style: the Load's breaks sit at fixed pitch from the start, clear of the fill end and the Release tick") {
+    float b[64];
+    // 300 px filled, 24 px pitch: 24, 48 .. 288 in (none past 300 - 12, half a pitch from the end): 12 breaks.
+    int n = uiLoadBreaks(100.f, 300.f, 24.f, std::nanf(""), 6.f, b, 64);
+    CHECK(n == 12);
+    CHECK(b[0] == doctest::Approx(124.f));
+    CHECK(b[n - 1] == doctest::Approx(388.f));
+    for (int i = 1; i < n; ++i) CHECK(b[i] - b[i - 1] == doctest::Approx(24.f));
+    // Anchored to the start: a shorter fill keeps the same positions, only fewer of them (none crawls as it drains).
+    float c[64];
+    const int m = uiLoadBreaks(100.f, 100.f, 24.f, std::nanf(""), 6.f, c, 64);
+    CHECK(m == 3); // 24, 48, 72; 96 is within 12 of the end
+    for (int i = 0; i < m; ++i) CHECK(c[i] == b[i]);
+    // The Release tick at 172 (48 in): the break at 172 is skipped, the ones 24 px off stay.
+    const int k = uiLoadBreaks(100.f, 300.f, 24.f, 173.f, 6.f, c, 64);
+    CHECK(k == 11);
+    for (int i = 0; i < k; ++i) CHECK(std::fabs(c[i] - 173.f) >= 6.f);
+    // The cap on the count, and the refusals: no fill, no pitch, no room, a NaN start.
+    CHECK(uiLoadBreaks(100.f, 300.f, 24.f, std::nanf(""), 6.f, c, 4) == 4);
+    CHECK(uiLoadBreaks(100.f, 0.f, 24.f, std::nanf(""), 6.f, c, 64) == 0);
+    CHECK(uiLoadBreaks(100.f, 300.f, 0.f, std::nanf(""), 6.f, c, 64) == 0);
+    CHECK(uiLoadBreaks(100.f, 300.f, 24.f, std::nanf(""), 6.f, nullptr, 64) == 0);
+    CHECK(uiLoadBreaks(std::nanf(""), 300.f, 24.f, std::nanf(""), 6.f, c, 64) == 0);
+    CHECK(uiLoadBreaks(100.f, std::nanf(""), 24.f, std::nanf(""), 6.f, c, 64) == 0);
+    // Long segments, thin breaks: never read as the guard's dots.
+    CHECK(kUiLoadBreakPitch >= 8.f * kUiLoadBreakW);
+}
+
+TEST_CASE("ui style: the signature devices are off in every world until a pick flips one row") {
+    std::string err;
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
+    UiStyle shipped;
+    REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
+    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
+        for (const UiWorldRules& r : s.rules) {
+            CHECK_FALSE(r.sigPulse);
+            CHECK_FALSE(r.sigArcs);
+            CHECK_FALSE(r.sigMarginRule);
+        }
+        CHECK(s.marginRule.gap == 12.f);
+        CHECK(s.marginRule.width == 2.f);
+        CHECK(s.marginRule.alpha == doctest::Approx(0.6f));
+    }
+    UiStyle one;
+    REQUIRE_MESSAGE(importUiStyle(R"({"worlds": {"lattice": {"sig_arcs": true, "danger_underline": true}}})", one, &err), err);
+    CHECK(one.rules[1].sigArcs);
+    CHECK_FALSE(one.rules[0].sigArcs);
+    CHECK_FALSE(importUiStyle(R"({"worlds": {"lattice": {"sig_arcs": 1}}})", one, &err));
+    CHECK_FALSE(importUiStyle(R"({"lines": {"guard_dot": 7, "guard_pitch": 7}})", one, &err));
+}
+
+TEST_CASE("ui style: the Release pulse: a rising edge sends it, the peak grows after, repeats while overloaded") {
+    UiReleasePulse p;
+    CHECK(uiReleasePulseStep(p, false, false, 1.0).travel < 0.f);
+    UiReleasePulseView v = uiReleasePulseStep(p, true, false, 2.0); // opens
+    CHECK(v.travel == 0.f);
+    CHECK(v.peak == 1.f);
+    v = uiReleasePulseStep(p, true, false, 2.15);
+    CHECK(v.travel == doctest::Approx(0.5f));
+    const UiReleasePulseView same = uiReleasePulseStep(p, true, false, 2.15); // dt 0 adds nothing
+    CHECK(same.travel == v.travel);
+    v = uiReleasePulseStep(p, true, false, 2.35); // arrived: the peak grows
+    CHECK(v.travel < 0.f);
+    CHECK(v.peak == kUiReleaseGrow);
+    CHECK(uiReleasePulseStep(p, true, false, 2.5).peak == 1.f); // 0.15 s later, back
+    CHECK(uiReleasePulseStep(p, true, false, 9.0).travel < 0.f); // no second pulse while it stays open
+    // Overloaded: the 0.15 s peak every 1.2 s.
+    CHECK(uiReleasePulseStep(p, true, true, 10.0).peak == kUiReleaseGrow);
+    CHECK(uiReleasePulseStep(p, true, true, 10.2).peak == 1.f);
+    CHECK(uiReleasePulseStep(p, true, true, 11.25).peak == kUiReleaseGrow);
+    CHECK(uiReleasePulseStep(p, true, true, 11.4).peak == 1.f);
+    // Shut and open again: a new pulse.
+    uiReleasePulseStep(p, false, false, 12.0);
+    CHECK(uiReleasePulseStep(p, true, false, 13.0).travel == 0.f);
+}
+
+TEST_CASE("ui style: ring arcs: exact ends, the sag at the middle, concentric lines keep their gap") {
+    const float chord = 768.f;
+    const float sag = uiArcSag(chord, 3.f * 1920.f);
+    CHECK(sag == doctest::Approx(12.81f).epsilon(0.01)); // about 13 px over 768 at radius 3 W
+    const UiRingPoint a = uiRingPoint(0.f, chord, sag);
+    const UiRingPoint b = uiRingPoint(1.f, chord, sag);
+    CHECK(a.x == doctest::Approx(0.f).epsilon(1e-4));
+    CHECK(a.y == doctest::Approx(0.f).epsilon(1e-4));
+    CHECK(b.x == doctest::Approx(chord).epsilon(1e-5));
+    CHECK(std::fabs(b.y) < 1e-3f);
+    const UiRingPoint m = uiRingPoint(0.5f, chord, sag);
+    CHECK(m.x == doctest::Approx(chord / 2.f));
+    CHECK(m.y == doctest::Approx(sag));
+    CHECK(m.tx == doctest::Approx(1.f));
+    // A concentric line `gap` outward stays `gap` from the first at every t.
+    for (int i = 0; i <= 10; ++i) {
+        const float t = static_cast<float>(i) / 10.f;
+        const UiRingPoint p0 = uiRingPoint(t, chord, sag);
+        const UiRingPoint p1 = uiRingPoint(t, chord, sag, 14.f);
+        CHECK(std::hypot(p1.x - p0.x, p1.y - p0.y) == doctest::Approx(14.f).epsilon(1e-3));
+        CHECK(std::hypot(p0.tx, p0.ty) == doctest::Approx(1.f));
+    }
+    // Sag 0 is the straight line.
+    const UiRingPoint flat = uiRingPoint(0.25f, chord, 0.f);
+    CHECK(flat.x == doctest::Approx(192.f));
+    CHECK(flat.y == 0.f);
+    CHECK(uiArcSegments(chord, 4.f) == 192);
+    CHECK(uiArcSegments(0.f, 4.f) == 1);
+    CHECK(uiArcSag(100.f, 10.f) == 0.f); // no circle that small: straight
+}
+
+TEST_CASE("ui style: ring arcs: NaN t, zero chord, offsets on the straight line and past the centre") {
+    const float chord = 768.f;
+    const float sag = uiArcSag(chord, 3.f * 1920.f);
+    // A NaN share is the start.
+    const UiRingPoint n = uiRingPoint(std::nanf(""), chord, sag);
+    CHECK(n.x == doctest::Approx(0.f).epsilon(1e-4));
+    CHECK(n.y == doctest::Approx(0.f).epsilon(1e-4));
+    // No chord (zero, negative or NaN) with a sag: one point at the start, the offset outward, tangent along.
+    for (const float c : {0.f, -5.f, std::nanf("")}) {
+        const UiRingPoint z = uiRingPoint(0.7f, c, sag, 3.f);
+        CHECK(z.x == 0.f);
+        CHECK(z.y == 3.f);
+        CHECK(z.tx == 1.f);
+        CHECK(z.ty == 0.f);
+    }
+    // On the straight line an outward offset goes the same way as on a curve: toward the bulge (+y).
+    const float tiny = 1e-3f;
+    CHECK(uiRingPoint(0.5f, chord, 0.f, 6.f).y == 6.f);
+    CHECK(uiRingPoint(0.5f, chord, tiny, 6.f).y == doctest::Approx(6.f + tiny).epsilon(1e-3));
+    CHECK(uiRingPoint(0.5f, chord, 0.f, -6.f).y == -6.f);
+    // An inward offset inside the radius keeps its gap; past the radius every t sits at the centre, never on the far side.
+    const float r = 3.f * 1920.f;
+    const UiRingPoint in = uiRingPoint(0.5f, chord, sag, -20.f);
+    CHECK(in.y == doctest::Approx(sag - 20.f).epsilon(1e-4));
+    for (int i = 0; i <= 4; ++i) {
+        const float t = static_cast<float>(i) / 4.f;
+        const UiRingPoint p = uiRingPoint(t, chord, sag, -(r + 500.f));
+        CHECK(p.x == doctest::Approx(chord / 2.f).epsilon(1e-4));
+        CHECK(p.y == doctest::Approx(sag - r).epsilon(1e-4));
+        CHECK(std::isfinite(p.tx));
+        CHECK(std::hypot(p.tx, p.ty) == doctest::Approx(1.f));
+    }
 }

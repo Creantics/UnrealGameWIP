@@ -16,6 +16,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "CollisionQueryParams.h"
 
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
@@ -24,6 +25,7 @@
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
 #include "ftcore/ArenaCamera.h"
+#include "ftcore/ArenaCloseFrame.h"
 #include "ftcore/ArenaGun.h"
 #include "ftcore/ArenaLockFrame.h"
 #include "ftcore/ArenaLook.h"
@@ -156,6 +158,7 @@ public:
 	static constexpr float StepSeconds = 1.f / 60.f;
 	static constexpr int32 MaxStepsPerFrame = 8;
 	static constexpr float WatchdogSeconds = 180.f;
+	static constexpr float StandOffRunSeconds = 18.f; // -ArenaStandOff: the run ends after this much fight time
 
 	// What the HUD pops up over a body, and when (seconds on the screen's clock, GetNow()).
 	struct FPopup
@@ -502,7 +505,11 @@ private:
 	// settings' Camera row), applied to Fit.camera there. Its lead rule is what the hold, the low fit, the partner's
 	// turn and the lead-frame check all keep (ftcore::cameraPresetLeadRules); its cut is LeadBody's.
 	void PickCameraPreset();
-	ftcore::ArenaLeadFrameRules LeadFrameRules() const { return ftcore::cameraPresetLeadRules(CameraLens); }
+	// The preset's rule; in tall contact the feet margin goes to the lock's (the waist above the bottom margin).
+	ftcore::ArenaLeadFrameRules LeadFrameRules() const
+	{
+		return ftcore::arenaCloseContactLowLeadRules(ftcore::cameraPresetLeadRules(CameraLens), bCloseShape ? CloseContactLow : 0.f);
+	}
 	ftcore::CameraPresets CameraPresetTable;
 	bool bCameraPresetsTried = false;
 	ftcore::CameraPresetId CameraPresetNow = ftcore::CameraPresetId::Classic;
@@ -517,6 +524,90 @@ private:
 	float LowFitArm = -1.f, LowFitAspect = 0.f, LowFitHead = 0.f;
 	float PartnerYawNow = 0.f;    // degrees: the partner's soft turn (ftcore::arenaPartnerYaw), eased
 	float PartnerYawGoal = 0.f;
+	// The close lens's shape (ftcore/ArenaCloseFrame.h), close only (classic reads none of it): each frame ShapeCloseLens
+	// writes the shaped pivot, side and fov on Fit.camera, and the target's share of the width and the cut's least
+	// share on CameraLens, from CloseBase (the preset as picked); LeadBody takes the shaped cut.
+	void ShapeCloseLens(int32 Target, float DeltaSeconds);
+	void PickCloseShoulder(int32 Target);
+	bool bCloseShape = false;     // the close preset is on this fight
+#if !UE_BUILD_SHIPPING
+	bool bPartnerStation = true;  // -ArenaPartnerStation=0 (capture only): no close station handed to the brain
+#else
+	static constexpr bool bPartnerStation = true; // shipping: the close preset always hands the brain its station
+#endif
+	// A ranged partner under the close lens: the partner's kit has its own range and the close station hands it to the brain.
+	bool RangedPartner() const;
+	ftcore::CameraPreset CloseBase;
+	float CloseMelee = 0.f;       // 0..1: the melee share, eased (ftcore::arenaCloseMeleeStep)
+	float CloseTall = 0.f;        // 0..1: the followed target's tallness (ftcore::arenaCloseTallness)
+	float CloseShoulder = 1.f;    // -1..1: the shoulder as eased (+1 right)
+	float CloseShoulderWant = 1.f;
+	int32 CloseShoulderFor = -1;  // the target the shoulder was last picked for
+	float CloseNextPickAt = -1e9f; // fight time a wall may ask for the next pick
+	int32 CloseTargetNow = -1;    // the target followed this frame, its distance and height (the shot log)
+	float CloseDistanceNow = -1.f;
+	float CloseHeightNow = 0.f;
+	float CloseRadiusNow = 0.f;   // m: its body's radius, scaled with its figure
+	// Contact (ftcore::arenaCloseContactWant): a tall or wide target within about 3 m of its body swings the view round
+	// the lead along its flank. The share as blended and as the range asks this frame; whether the shoulder was picked
+	// at the swing since contact was last off; the swing added to the drawn view; the tallness the cut is raised by.
+	float CloseContact = 0.f;
+	float CloseContactWant = 0.f;
+	bool bContactPicked = false;
+	float ContactYawNow = 0.f;    // degrees (ftcore::arenaCloseContactYaw): 0 exactly off contact
+	float CloseCutTall = 0.f;     // 0..1 (ftcore::arenaCloseCutTallness)
+	float CloseContactLow = 0.f;  // 0..1 (ftcore::arenaCloseContactLow): the tall contact's low lens; exactly 0 under a 4 m target
+	float StandOffPitchNow = 0.f; // degrees (ftcore::arenaCloseStandOffPitch): the least look-up that keeps the target's top in
+	bool bStandOffWeak = false;   // and whether it kept the weak point instead of the top
+	static constexpr float CloseMateHead = 1.6f;  // m: the partner's head and waist heights the close still log tests
+	static constexpr float CloseMateWaist = 1.0f;
+	// The partner's close station (ftcore::PartnerCloseView, rule 19): the walls near the lead from the boom's own probe,
+	// CloseWallRays sweeps round it every CloseWallSeconds, each hit a segment 1 m across its surface. No allocation.
+	static constexpr int32 CloseWallRays = 16;
+	static constexpr float CloseWallSeconds = 0.25f;
+	static constexpr float CloseWallReach = 10.f; // m
+	ftcore::PartnerWall CloseWalls[CloseWallRays];
+	int32 CloseWallCount = 0;
+	float CloseWallAge = 1e9f; // s since the last sweep (large: sweep on the next step)
+	// The sweeps' query, kept: its ignored fighters (lead, ally, up to six enemies) pass its inline four, so a fresh
+	// one would allocate on every sweep; refilled in place, it allocates on the first only.
+	FCollisionQueryParams CloseWallParams;
+	void RefreshCloseWalls(float Dt);
+	ftcore::PartnerCloseView CloseStationView(const ftcore::PartnerCameraView& Camera) const;
+	ftcore::ArenaStickBasis StickBasis; // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close swap)
+#if !UE_BUILD_SHIPPING
+	void LogCloseFrameShot(const TCHAR* Shot) const;
+	int32 CloseSwaps = 0;         // shoulder picks that changed the side
+	int32 CloseYawFrames = 0;     // frames held under close, with the partner's turn on, its sum and its most
+	int32 CloseYawOn = 0;
+	float CloseYawSum = 0.f;
+	float CloseYawMost = 0.f;
+	// Held close frames with the boom wall-shortened (under 98% of its arm), and of them the ones with the lead's spine
+	// under 28% of the width (mirrored on the left shoulder).
+	int32 CloseWallFrames = 0, CloseWallLow = 0;
+	int32 CloseWallHeld = 0; // frames the close lens's pitch was held off the lead's rule's dive (ftcore::arenaCloseWallPitch)
+	// Held close frames in contact, the most swing, and shoulder swaps made with the contact share over half.
+	int32 CloseContactFrames = 0, CloseContactSwaps = 0;
+	float CloseContactYawMost = 0.f;
+	// Held close frames in tall contact (low share over half): the lead's highest head and lowest waist share, the most
+	// pitch; the partner's frames there and those in the frame (it is exempt in contact: logged only).
+	int32 CloseTallFrames = 0, CloseTallMateFrames = 0, CloseTallMateIn = 0;
+	float CloseTallHeadMost = 0.f, CloseTallWaistLeast = 1.f, CloseTallPitchMost = 0.f;
+	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
+	float PartnerYawCapSwitch = 0.f; // -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (0: the rules' 24)
+	// Held close frames with a ranged partner (its kit's own range on): those with the turn over the melee cap, the most.
+	int32 CloseRangedFrames = 0, CloseRangedWide = 0;
+	float CloseRangedYawMost = 0.f;
+	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
+	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
+	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
+	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;
+	float MateOutAhead = 0.f, MateOutRight = 0.f;
+	// -ArenaRollAt=<s,s,...>: capture-only dodge presses under the autopilot at these fight times (the dodge strip).
+	static constexpr int32 MaxRollAt = 8;
+	float RollAt[MaxRollAt] = {};
+	int32 RollAtCount = 0, RollAtNext = 0;
+#endif
 	float LastLookInputAt = -1e9f; // fight time of the last look input (the stick or the mouse): the soft turn waits
 	bool bLockAimAbove = false;   // the lock's aim point is above the frame this frame (GetLockAimAbove)
 	float LockAimX = 0.5f;
@@ -1114,7 +1205,7 @@ private:
 	float FrameTurn = 0.f;
 	// The yaw the view is drawn at: what the stick, the crosshair and the fight's view read (the partner's soft turn
 	// included, as the drawn camera and the control rotation have it).
-	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}) + PartnerYawNow; }
+	float ViewYaw() const { return ftcore::arenaFrameViewYaw(ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}) + PartnerYawNow + ContactYawNow; }
 	// The lock framing's rules in this zone: the global ones, held to the zone's own turn cap.
 	ftcore::ArenaFrameRules FrameRules() const
 	{
@@ -1256,7 +1347,11 @@ private:
 	// (ftcore::partnerInFrame on ArenaInput::partnerCamera), and its distinct actions (a new intent other than Wait, or a new string).
 	// PartnerClearSteps: of the steps on screen, those it was not hidden behind the locked target from the lens
 	// (ftcore::arenaHiddenBehind on both its middle and its head).
-	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0, PartnerClearSteps = 0;
+	// PartnerLeadClearSteps: of the steps on screen, those it was not hidden behind the lead (the same test on the lead's body).
+	int32 PartnerSeenSteps = 0, PartnerFrustumSteps = 0, PartnerActions = 0, PartnerClearSteps = 0, PartnerLeadClearSteps = 0;
+	// The same two on the floor plane, as the close station's rule measures them (ftcore::partnerCloseHiddenBehind on the
+	// locked target's radius; ftcore::partnerCloseOverlaps with the lead, 0.4 m each), printed beside the two above.
+	int32 PartnerClearFlatSteps = 0, PartnerLeadClearFlatSteps = 0;
 	float PartnerPlaySeconds = 0.f;
 	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
 	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;
@@ -1441,7 +1536,7 @@ private:
 	bool bAllyStrikeCut = false; // its blow's clip was cut (it was hit, or its target is down) until its next blow
 	int32 AllyTargetDeadLast = -1; // the blow's target when it was already dead the step before (the killing blow is not cut)
 	TWeakObjectPtr<AFTArenaFighter> AllyWeaponsFailed; // the ally figure its driver could not begin on: not tried again
-	// A partner shot's or cast's impact waits for its flight (FFTLeadWeapons::kTracerTime, kBoltTime).
+	// A partner shot's or cast's impact waits for what is left of its flight after the hit (FFTLeadWeapons::FlightOf).
 	ftcore::ArenaEvent PartnerImpactWaiting{};
 	double PartnerImpactDue = -1.0;
 	void PlayWaitingPartnerImpact(double T);
