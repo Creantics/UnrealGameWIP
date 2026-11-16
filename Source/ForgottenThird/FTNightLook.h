@@ -11,8 +11,9 @@
 //   -NightGlow=<scale>  the city glow added to the fog's inscattering (1 = the spec's warm glow, 0 = none)
 //   -NightEV=<ev100>    the night exposure's centre, from half night on
 //   -NightEVRange=<ev>  its half-width: auto exposure moves within centre +- this (0 locks it at the centre)
-//   -NightDuskMinEV=<ev100> -NightDuskMaxEV=<ev100>  the range the exposure blends from once the blend is above 0
-//   -NightLiftAll  the real-time sky lift whole at any exposure blend (the old lift; by default it comes in with it)
+//   -NightDuskLift=a,b,c,d  the dusk table's real-time sky lift at its four knots (NightLook::duskLiftDeg)
+//   -NightDuskMinEV=a,b,c,d  the dusk table's exposure floor (EV100) at its four knots (NightLook::duskMinDeg)
+//   -NightLiftAll  the whole real-time sky lift at every elevation (the old lift; no dusk lift table)
 //   -NightWhiteK=<kelvin> the camera's white balance at full night
 //   -NightLamp=<cd> -NightLampReach=<m> -NightLampK=<kelvin>   the street lamps' pool lights
 //   -NightLampCone=<deg> -NightLampInner=<deg> -NightLampSource=<cm>   their cone half-angles and lens radius

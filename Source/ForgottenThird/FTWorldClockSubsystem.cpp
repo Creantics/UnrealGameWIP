@@ -306,12 +306,13 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	const FRotator Rotation = FTClock::SunRotation(Spec, Clock.hours);
 	const FTNight::FSkyFrame Sky = FTNight::FrameAt(Spec, Clock.hours);
 	const ftcore::NightFrame& Frame = Sky.Night;
+	const float SunElevation = ftcore::sunElevationDeg(Spec, Clock.hours);
 	// The day's shadow floor (eased out on the sun's elevation before the lamps start; 0 by night); only in a world
 	// with a look.
 	const UWorld* ShadeWorld = GetWorld();
 	const UFTLookSubsystem* ShadeLook = ShadeWorld ? ShadeWorld->GetSubsystem<UFTLookSubsystem>() : nullptr;
 	const bool bShade = ShadeLook && !ShadeLook->GetWorldLook().IsEmpty();
-	const float ShadeAmount = bShade ? FTDayShade::AmountAt(Sky, ftcore::sunElevationDeg(Spec, Clock.hours)) : 0.f;
+	const float ShadeAmount = bShade ? FTDayShade::AmountAt(Sky, SunElevation) : 0.f;
 	ftcore::DayShadeFrame Shade = ftcore::dayShadeFrame(FTDayShade::Look(),
 		FTDayShade::BaseFor(bShade ? ShadeLook->GetLook() : ftcore::SceneLook{}), ShadeAmount);
 	// The night's local shadow contrast and film toe, where given (-NightShadowContrast=, -NightToe=), on the exposure
@@ -367,9 +368,10 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 				FPostProcessSettings& S = Volume->Settings;
 				S.bOverride_AutoExposureMinBrightness = bExposureLocked || E.bMin;
 				S.bOverride_AutoExposureMaxBrightness = bExposureLocked || E.bMax;
-				// From the day's range narrowed to the dusk's (NightLook::duskExposureMin/MaxEV100), so it binds from
-				// the blend's first step; exactly the night's at blend 1.
-				const ftcore::ExposureRange Range = ftcore::nightExposureRange(NightSpec, Frame, E.Min, E.Max);
+				// The min on the dusk table (NightLook::duskMinEV) from the blend's first step, the max blended;
+				// exactly the night's at blend 1.
+				const ftcore::ExposureRange Range =
+					ftcore::nightExposureRange(NightSpec, Frame, SunElevation, E.Min, E.Max);
 				S.AutoExposureMinBrightness = Range.minEV100;
 				S.AutoExposureMaxBrightness = Range.maxEV100;
 			}

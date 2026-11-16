@@ -45,6 +45,33 @@ bool ReadNumber(const TCHAR* Cmd, const TCHAR* Key, float& Out)
 	return true;
 }
 
+// A -Key=a,b,c switch over Count numbers: all of them or none (a short or non-numeric list is logged and the defaults
+// kept). Allocates only while reading the command line, once.
+void ReadList(const TCHAR* Cmd, const TCHAR* Key, float* Out, int32 Count)
+{
+	FString Text;
+	if (!FParse::Value(Cmd, Key, Text, false))
+	{
+		return;
+	}
+	TArray<FString> Parts;
+	Text.ParseIntoArray(Parts, TEXT(","));
+	bool bOk = Parts.Num() == Count;
+	for (const FString& P : Parts)
+	{
+		bOk = bOk && !P.IsEmpty() && FCString::IsNumeric(*P);
+	}
+	if (!bOk)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Night: -%s%s is not %d numbers; kept the defaults."), Key, *Text, Count);
+		return;
+	}
+	for (int32 i = 0; i < Count; ++i)
+	{
+		Out[i] = FCString::Atof(*Parts[i]);
+	}
+}
+
 ftcore::NightLook Read()
 {
 	ftcore::NightLook L;
@@ -68,11 +95,11 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightMoonFull="), L.moonFullDeg);
 	ReadNumber(Cmd, TEXT("NightMoonRiseShare="), L.moonRiseShare);
 	ReadNumber(Cmd, TEXT("NightSunSetHalf="), L.sunSetHalfDeg);
-	ReadNumber(Cmd, TEXT("NightDuskMinEV="), L.duskExposureMinEV100);
-	ReadNumber(Cmd, TEXT("NightDuskMaxEV="), L.duskExposureMaxEV100);
+	ReadList(Cmd, TEXT("NightDuskLift="), L.duskLift.data(), static_cast<int32>(L.duskLift.size()));
+	ReadList(Cmd, TEXT("NightDuskMinEV="), L.duskMinEV.data(), static_cast<int32>(L.duskMinEV.size()));
 	if (FParse::Param(Cmd, TEXT("NightLiftAll")))
 	{
-		L.liftByBlend = false;
+		L.duskLiftTable = false;
 	}
 	// Negative (the default) means the world look's own shadow contrast and toe; a ruling sets 0 or more.
 	ReadNumber(Cmd, TEXT("NightShadowContrast="), L.shadowContrast);

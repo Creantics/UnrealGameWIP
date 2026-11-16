@@ -93,14 +93,44 @@ float nightExposureBlend(const NightLook& look, float sunElevationDeg) {
     return easeDown(look.exposureHighDeg, look.exposureLowDeg, sunElevationDeg);
 }
 
-ExposureRange nightExposureRange(const NightLook& look, const NightFrame& frame, float dayMin, float dayMax) {
+namespace {
+// Through (topDeg, top), the knots (descending degrees) and (lowDeg, low): `top` above topDeg, `low` below lowDeg,
+// between neighbours by `mix` (lerp or lerpRatio). Knots out of order or outside (lowDeg, topDeg) are skipped.
+template <std::size_t N, typename Mix>
+float throughKnots(float e, float topDeg, float top, const std::array<float, N>& deg, const std::array<float, N>& val,
+                   float lowDeg, float low, Mix mix) {
+    if (!(e == e) || e >= topDeg) return top;
+    float d0 = topDeg, v0 = top;
+    for (std::size_t i = 0; i < N; ++i) {
+        if (!(deg[i] < d0) || !(deg[i] > lowDeg)) continue;
+        if (e >= deg[i]) return mix(v0, val[i], (d0 - e) / (d0 - deg[i]));
+        d0 = deg[i];
+        v0 = val[i];
+    }
+    if (e <= lowDeg) return low;
+    return mix(v0, low, (d0 - e) / (d0 - lowDeg));
+}
+} // namespace
+
+float duskMinAt(const NightLook& look, float sunElevationDeg, float dayMin, float nightMin) {
+    return throughKnots(sunElevationDeg, look.exposureHighDeg, dayMin, look.duskMinDeg, look.duskMinEV,
+                        look.exposureLowDeg, nightMin, lerp);
+}
+
+float duskLiftAt(const NightLook& look, float sunElevationDeg, float whole) {
+    auto lifts = look.duskLift;
+    for (float& m : lifts) m = std::max(m, 1e-4f);
+    return throughKnots(sunElevationDeg, look.duskLiftTopDeg, whole, look.duskLiftDeg, lifts, look.exposureLowDeg, whole,
+                        lerpRatio);
+}
+
+ExposureRange nightExposureRange(const NightLook& look, const NightFrame& frame, float sunElevationDeg, float dayMin,
+                                 float dayMax) {
     const float b = frame.exposureBlend;
     if (!(b > 0.f)) return {dayMin, dayMax};
     if (b >= 1.f) return {frame.exposureMinEV100, frame.exposureMaxEV100};
-    const float lo = std::max(dayMin, look.duskExposureMinEV100);
-    const float hi = std::max(lo, std::min(dayMax, look.duskExposureMaxEV100));
-    const float mn = lerp(lo, frame.exposureMinEV100, b);
-    return {mn, std::max(mn, lerp(hi, frame.exposureMaxEV100, b))};
+    const float mn = std::max(dayMin, duskMinAt(look, sunElevationDeg, dayMin, frame.exposureMinEV100));
+    return {mn, std::max(mn, lerp(dayMax, frame.exposureMaxEV100, b))};
 }
 
 float nightMoonScale(const NightLook& look, float sunElevationDeg) {
@@ -163,13 +193,12 @@ NightFrame nightFrameAt(const NightLook& look, float night, float sunElevationDe
     // The real-time capture sees the atmosphere lit by that light and the dome's own dimming: lift by both, so the
     // fill stands at skyScale's share of the day's on either side of the horizon.
     // Never divided by less than liftFloorShare (a moonless or overcast night darkens, it doesn't blow out).
-    const float lift = 1.f / std::max(f.sunScale, std::max(look.liftFloorShare, 1e-4f)) / f.skyLuminance;
-    // With liftByBlend it comes in with the exposure blend, in ratio (evenly in EV, as the range blends): 1 while the
-    // camera meters freely, the whole lift (the same expression, bit for bit) from blend 1 on.
-    if (!look.liftByBlend || f.exposureBlend >= 1.f) {
+    // Inside the dusk table's span the lift is the table's; outside it the whole lift, the same expression bit for bit.
+    if (!look.duskLiftTable || !(sunElevationDeg < look.duskLiftTopDeg) || !(sunElevationDeg > look.exposureLowDeg)) {
         f.skyScaleRealTime = f.skyScale / std::max(f.sunScale, std::max(look.liftFloorShare, 1e-4f)) / f.skyLuminance;
     } else {
-        f.skyScaleRealTime = f.skyScale * lerpRatio(1.f, lift, std::max(f.exposureBlend, 0.f));
+        const float lift = 1.f / std::max(f.sunScale, std::max(look.liftFloorShare, 1e-4f)) / f.skyLuminance;
+        f.skyScaleRealTime = f.skyScale * duskLiftAt(look, sunElevationDeg, lift);
     }
     return f;
 }

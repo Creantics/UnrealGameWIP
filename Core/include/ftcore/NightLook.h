@@ -95,15 +95,27 @@ struct NightLook {
     // because the lift divided by a 1e-4 moon). Under it, as on a moonless or overcast night, the capture is lifted no
     // further, so the street falls darker instead of blowing out. The ruled moons (0.03 and up) stay exact.
     float liftFloorShare = 0.01f;
-    // The real-time sky lift comes in with the exposure blend (11-16 dusk ruling): while the camera meters freely
-    // (blend 0) it is 1, since the meter already answers the dimming; it reaches the full lift at blend 1, so every
-    // frame from exposureLowDeg down is exactly as before. False keeps the lift whole at any blend (-NightLiftAll).
-    bool liftByBlend = true;
-    // The range the exposure blends FROM once the blend is above 0 (11-16 dusk ruling): the day's own range narrowed to
-    // this, so the night's range binds from the blend's first step instead of only near its end. The defaults leave
-    // the day's range as it is (-NightDuskMinEV=, -NightDuskMaxEV=).
-    float duskExposureMinEV100 = -10.f;
-    float duskExposureMaxEV100 = 20.f;
+    // The dusk table (11-16 dusk ruling, fitted on blocks 1116e/f). Between duskLiftTopDeg and exposureLowDeg the
+    // real-time sky lift (skyScaleRealTime / skyScale) is the table's, in ratio between its knots, from the whole lift
+    // at duskLiftTopDeg and back to it at exposureLowDeg: so every frame from exposureLowDeg down, and from
+    // duskLiftTopDeg up, is exactly as before. False keeps the whole lift everywhere (-NightLiftAll).
+    // -NightDuskLift=a,b,c,d sets the knots' lifts. Fitted (strip-centre key, target 75/68/60/48 at 18:00/05/10/20):
+    // 18:00 between the measured r 2.14 (36) and 4.27 (93); 18:05 between r 1.30 (47) and 4.35 (93); 18:10 and 18:20 at
+    // the r their EV-pinned arms were shot at (1.68, 17.8), the floor below doing the rest.
+    bool duskLiftTable = true;
+    float duskLiftTopDeg = 3.5f;
+    // The knots sit at the clock's own sun at 18:00, 18:05, 18:10 and 18:20 (WorldClockSpec defaults).
+    std::array<float, 4> duskLiftDeg{0.f, -1.159f, -2.318f, -4.635f};
+    std::array<float, 4> duskLift{3.18f, 2.10f, 1.365f, 13.8f};
+    // The exposure's floor (min EV100) once the blend is above 0: from the day's at exposureHighDeg through these knots
+    // (straight between them) to the night's at exposureLowDeg, so the range binds from the blend's first step and the
+    // camera can't open up past the knot's EV (the meter wants to open further here: the street has no key light
+    // between sunset and the moon). The max blends from the day's to the night's by the blend.
+    // -NightDuskMinEV=a,b,c,d sets the knots' EVs. 18:10 (-5.43) and 18:20 (-3.40) from their pinned arms (1116f: 65 at
+    // -5.5, 21 at -4.5; 55.5 at -3.5, 12.2 at -2.5); 18:15 and 18:25 straight between, unmeasured.
+    // At the clock's sun at 18:10, 18:15, 18:20 and 18:25.
+    std::array<float, 4> duskMinDeg{-2.318f, -3.477f, -4.635f, -5.793f};
+    std::array<float, 4> duskMinEV{-5.43f, -4.42f, -3.40f, -2.80f};
     // The night's local exposure shadow contrast and film toe, reached with the exposure blend. Below 0 keeps the world
     // look's own (the default): set only by ruling (-NightShadowContrast=, -NightToe=).
     float shadowContrast = -1.f;
@@ -200,13 +212,20 @@ FTCORE_API bool nightLampOn(float fraction, std::uint32_t key);
 // allocation.
 FTCORE_API float nightExposureBlend(const NightLook& look, float sunElevationDeg);
 // The auto exposure's range for a frame, from the day's (the volume's own dayMin..dayMax): the day's at blend 0; from
-// above 0 the day's narrowed to duskExposureMin/MaxEV100 blended toward the frame's night range, exactly the night's at
-// blend 1. Min never above max. No allocation.
+// above 0 the min is duskMinAt (never under the day's), the max the day's blended toward the night's; exactly the night's
+// at blend 1. Min never above max. No allocation.
 struct ExposureRange {
     float minEV100 = -10.f;
     float maxEV100 = 20.f;
 };
-FTCORE_API ExposureRange nightExposureRange(const NightLook& look, const NightFrame& frame, float dayMin, float dayMax);
+FTCORE_API ExposureRange nightExposureRange(const NightLook& look, const NightFrame& frame, float sunElevationDeg,
+                                            float dayMin, float dayMax);
+// The dusk table's min EV100 at an elevation: dayMin from exposureHighDeg up, the knots' between, nightMin from
+// exposureLowDeg down; straight between neighbours, continuous everywhere. No allocation.
+FTCORE_API float duskMinAt(const NightLook& look, float sunElevationDeg, float dayMin, float nightMin);
+// The dusk table's real-time lift (on skyScale) at an elevation, given the whole lift there: whole from duskLiftTopDeg
+// up and from exposureLowDeg down, the knots' between, in ratio; continuous everywhere. No allocation.
+FTCORE_API float duskLiftAt(const NightLook& look, float sunElevationDeg, float whole);
 // The moon's share of moonShare with the sun at this elevation (the moon stands opposite it): moonRiseShare at the
 // horizon and below it (the sun up), 1 from moonFullDeg up, eased; continuous everywhere. No allocation.
 FTCORE_API float nightMoonScale(const NightLook& look, float sunElevationDeg);
