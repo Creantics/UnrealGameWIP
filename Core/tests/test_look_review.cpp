@@ -55,6 +55,42 @@ TEST_CASE("look review: the rim direction is behind the lead, raised 30 degrees,
     CHECK(top.z == doctest::Approx(0.5f));
 }
 
+TEST_CASE("look review: the lamp side turns the rim to the camera's left, eased over 0.4 s") {
+    using ftcore::look::rimSideStep;
+    using ftcore::look::rimSideTarget;
+    CHECK(rimSideTarget(1.f) == 1.f);
+    CHECK(rimSideTarget(0.3f) == 1.f);
+    CHECK(rimSideTarget(-0.2f) == -1.f);
+    CHECK(rimSideTarget(0.f) == 1.f);           // 0: the default, camera-right
+    CHECK(rimSideTarget(std::nanf("")) == 1.f); // NaN: the default
+    const auto left = rimDirection({0.f, 0.f, 170.f}, {500.f, 0.f, 100.f}, -1.f);
+    CHECK(std::atan2(left.y, left.x) * 180.f / 3.14159265f == doctest::Approx(-35.f).epsilon(0.001));
+    CHECK(left.z == doctest::Approx(0.5f));
+    const auto mid = rimDirection({0.f, 0.f, 170.f}, {500.f, 0.f, 100.f}, 0.f); // halfway through a flip: straight behind
+    CHECK(mid.y == doctest::Approx(0.f));
+    const auto odd = rimDirection({0.f, 0.f, 170.f}, {500.f, 0.f, 100.f}, std::nanf("")); // NaN side: the default
+    CHECK(std::atan2(odd.y, odd.x) * 180.f / 3.14159265f == doctest::Approx(35.f).epsilon(0.001));
+    const auto wide = rimDirection({0.f, 0.f, 170.f}, {500.f, 0.f, 100.f}, -7.f); // clamped
+    CHECK(wide.y == doctest::Approx(left.y));
+    // A full flip at 60 frames a second takes 0.4 s (24 frames), never jumps more than one frame's step, ends exactly.
+    float side = 1.f;
+    int frames = 0;
+    while (side > -1.f && frames < 1000) {
+        const float next = rimSideStep(side, -1.f, 1.f / 60.f);
+        CHECK(side - next <= 2.f / 60.f / 0.4f + 1e-5f);
+        side = next;
+        ++frames;
+    }
+    CHECK(side == -1.f);
+    CHECK(frames >= 23);
+    CHECK(frames <= 25);
+    CHECK(rimSideStep(-1.f, -1.f, 0.016f) == -1.f);      // at the target, stays
+    CHECK(rimSideStep(0.5f, 1.f, 0.f) == 0.5f);          // no time, holds
+    CHECK(rimSideStep(0.5f, 1.f, std::nanf("")) == 0.5f); // NaN dt, holds
+    CHECK(rimSideStep(std::nanf(""), -1.f, 0.016f) == -1.f); // NaN side restarts at the target
+    CHECK(rimSideStep(1.f, -1.f, 10.f) == -1.f);          // a long frame lands on the target, no overshoot
+}
+
 TEST_CASE("look review: hair and face take less rim, glasses none") {
     CHECK(ftcore::look::kRimHairScale < ftcore::look::kRimFaceScale);
     CHECK(ftcore::look::kRimFaceScale < 1.f);

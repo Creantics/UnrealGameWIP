@@ -4,7 +4,8 @@
 // term and the -ArenaWet review flag. Header only; nothing here allocates.
 //
 //   float s = ftcore::look::rimStrength(cvarValue);                  // 0: the masters add no rim
-//   ftcore::look::Dir3 l = ftcore::look::rimDirection(camera, lead); // the virtual rim direction for this frame
+//   side = ftcore::look::rimSideStep(side, ftcore::look::rimSideTarget(preferred), dt); // eased lamp side
+//   ftcore::look::Dir3 l = ftcore::look::rimDirection(camera, lead, side); // the virtual rim direction for this frame
 //   if (auto w = ftcore::look::findWetReview(commandLine, "ArenaWet")) { /* hold the garments at w->wetness */ }
 
 #include <charconv>
@@ -38,7 +39,8 @@ inline constexpr float kRimFaceScale = 0.5f;
 inline constexpr float kRimHairScale = 0.4f;
 inline constexpr float kRimHairCap = 0.6f;
 inline constexpr float kRimElevationDeg = 30.f; // above the horizon, on the far side of the lead from the camera
-inline constexpr float kRimYawDeg = 35.f;       // turned this far toward the camera's right
+inline constexpr float kRimYawDeg = 35.f;       // turned this far to one side of the camera (right by default)
+inline constexpr float kRimSideFlipSeconds = 0.4f; // a full flip, camera-right to camera-left, eases over this long
 
 // The ft.Rim value as a strength: 0 for 0, negative or NaN.
 constexpr float rimStrength(float cvarValue) { return cvarValue > 0.f ? cvarValue : 0.f; }
@@ -49,10 +51,28 @@ struct Dir3 {
     float z = 0.f;
 };
 
+// The side the rim leans to, from a preferred side's sign (the world lane passes the side its nearest lamp is on):
+// +1 camera-right, -1 camera-left; 0 or NaN gives the default, camera-right.
+constexpr float rimSideTarget(float preferredSign) { return preferredSign < 0.f ? -1.f : 1.f; }
+
+// One frame of the side's ease toward its target: linear, a full flip (-1 to +1) in kRimSideFlipSeconds. A NaN or
+// out-of-range side restarts at the target; a NaN or negative dt holds.
+inline float rimSideStep(float side, float target, float dt) {
+    if (!(side >= -1.f && side <= 1.f)) {
+        return target;
+    }
+    if (!(dt > 0.f)) {
+        return side;
+    }
+    const float step = 2.f * dt / kRimSideFlipSeconds;
+    return side < target ? std::fmin(side + step, target) : std::fmax(side - step, target);
+}
+
 // The rim direction (unit, z up, the engine's axes: x forward, y right) for a camera and a lead: from the lead away from
-// the camera on the ground plane, turned kRimYawDeg toward the camera's right (up x away), raised kRimElevationDeg. With
-// the camera straight above the lead (no ground bearing) the bearing is +x.
-inline Dir3 rimDirection(Dir3 camera, Dir3 lead) {
+// the camera on the ground plane, turned side x kRimYawDeg toward the camera's right (up x away; side -1 turns it to the
+// left, 0 straight behind), raised kRimElevationDeg. With the camera straight above the lead (no ground bearing) the
+// bearing is +x. side is clamped to [-1, 1].
+inline Dir3 rimDirection(Dir3 camera, Dir3 lead, float side = 1.f) {
     float ax = lead.x - camera.x;
     float ay = lead.y - camera.y;
     const float len = std::sqrt(ax * ax + ay * ay);
@@ -66,7 +86,8 @@ inline Dir3 rimDirection(Dir3 camera, Dir3 lead) {
     const float rx = -ay; // up x away
     const float ry = ax;
     constexpr float kDeg = 3.14159265358979f / 180.f;
-    const float cy = std::cos(kRimYawDeg * kDeg), sy = std::sin(kRimYawDeg * kDeg);
+    const float k = side >= -1.f ? (side <= 1.f ? side : 1.f) : (side < -1.f ? -1.f : 1.f); // NaN: the default side
+    const float cy = std::cos(k * kRimYawDeg * kDeg), sy = std::sin(k * kRimYawDeg * kDeg);
     const float ce = std::cos(kRimElevationDeg * kDeg), se = std::sin(kRimElevationDeg * kDeg);
     return {ce * (cy * ax + sy * rx), ce * (cy * ay + sy * ry), se};
 }

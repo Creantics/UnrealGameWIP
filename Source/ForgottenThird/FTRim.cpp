@@ -49,10 +49,12 @@ void UFTRimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 		Params->SetScalarParameterValue(FTRim::Strength, Strength);
 		LoggedAway = FVector::ZeroVector; // log the placement again at the new strength
 	}
-	if (Strength <= 0.f || FTRim::GetDirectionSource() != FTRim::EDirectionSource::Camera)
+	if (Strength <= 0.f)
 	{
-		return; // off, or a world system owns RimDir (FTRim::SetDirectionSource)
+		return;
 	}
+	const float Target = ftcore::look::rimSideTarget(FTRim::GetPreferredSide());
+	Side = ftcore::look::rimSideStep(Side, Target, DeltaTime); // the lamp's side, a flip eased over 0.4 s
 	const APlayerCameraManager* Cam = UGameplayStatics::GetPlayerCameraManager(this, 0); // player 0: one view
 	if (!Cam)
 	{
@@ -61,16 +63,17 @@ void UFTRimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActor
 	const FVector C = Cam->GetCameraLocation();
 	const FVector T = GetComponentLocation();
 	const ftcore::look::Dir3 L = ftcore::look::rimDirection({static_cast<float>(C.X), static_cast<float>(C.Y), static_cast<float>(C.Z)},
-		{static_cast<float>(T.X), static_cast<float>(T.Y), static_cast<float>(T.Z)});
+		{static_cast<float>(T.X), static_cast<float>(T.Y), static_cast<float>(T.Z)}, Side);
 	Params->SetVectorParameterValue(FTRim::Dir, FLinearColor(L.x, L.y, L.z, 0.f));
 	FVector Away = T - C;
 	Away.Z = 0.0;
-	if (Away.Normalize() && FVector::DotProduct(Away, LoggedAway) < 0.94)
+	if (Away.Normalize() && (FVector::DotProduct(Away, LoggedAway) < 0.94 || Target != LoggedSide))
 	{
-		// The direction against the view it was set for, when the strength changes or the camera bearing turns more than
-		// about 20 degrees (a review log can check it points behind the figure as the camera sees it).
+		// The direction against the view it was set for, when the strength or the lamp side changes or the camera bearing
+		// turns more than about 20 degrees (a review log can check it points behind the figure as the camera sees it).
 		LoggedAway = Away;
-		UE_LOG(LogForgottenThird, Display, TEXT("FTRim: %s strength %.2f, camera %s, lead %s, direction (%.2f, %.2f, %.2f)."), *Owner->GetName(),
-			Strength, *C.ToCompactString(), *T.ToCompactString(), L.x, L.y, L.z);
+		LoggedSide = Target;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTRim: %s strength %.2f, side %+.0f, camera %s, lead %s, direction (%.2f, %.2f, %.2f)."),
+			*Owner->GetName(), Strength, Target, *C.ToCompactString(), *T.ToCompactString(), L.x, L.y, L.z);
 	}
 }

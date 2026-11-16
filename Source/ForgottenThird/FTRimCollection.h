@@ -2,7 +2,7 @@
 
 // The character rim as a material term (ftcore::look::rimTerm says what it computes). Its inputs live in their own
 // collection, MPC_FTRim: RimDir (the virtual direction, set once a frame by UFTRimComponent), RimColour (cool white by
-// default; the world lane may drive it from the nearest lamp), RimStrength (0 by default: no rim) and RimHairCap. The
+// default; the world lane may drive it from the nearest lamp, its only write), RimStrength (0 by default: no rim) and RimHairCap. The
 // garment and skin masters take the term through AddTerm, each instance scaling it by its own RimScale (1 by default).
 // The masters' builds make the collection when it is missing (LoadOrBuild); it is saved in place, never deleted.
 
@@ -36,23 +36,18 @@ inline constexpr const TCHAR* Strength = TEXT("RimStrength");
 inline constexpr const TCHAR* HairCap = TEXT("RimHairCap");
 inline const FLinearColor DefaultColour(0.82f, 0.88f, 1.f); // a cool edge, against warm street light
 
-// Who writes RimDir. Camera (the default): UFTRimComponent, once a frame, from player 0's view. World: a world system
-// (for example the nearest lamp) owns RimDir and RimColour; the component then writes RimStrength only. One writer per
-// parameter, so the rim never flips between two directions within a frame. Set it back to Camera when that system stops.
-enum class EDirectionSource : uint8
+// The side the rim leans to. RimDir is always camera-relative and written by UFTRimComponent alone (a rim only reads as
+// an edge from the far side of the lead); the world lane writes RimColour only, and may say which side of the camera its
+// nearest lamp is on: +1 camera-right, -1 camera-left, 0 the default (right). The component eases a flip over
+// ftcore::look::kRimSideFlipSeconds.
+inline float& PreferredSideSlot()
 {
-	Camera,
-	World
-};
-
-inline EDirectionSource& DirectionSourceSlot()
-{
-	static EDirectionSource Source = EDirectionSource::Camera;
-	return Source;
+	static float Sign = 0.f;
+	return Sign;
 }
 
-inline EDirectionSource GetDirectionSource() { return DirectionSourceSlot(); }
-inline void SetDirectionSource(EDirectionSource Source) { DirectionSourceSlot() = Source; }
+inline float GetPreferredSide() { return PreferredSideSlot(); }
+inline void SetPreferredSide(float Sign) { PreferredSideSlot() = Sign; }
 
 inline UMaterialParameterCollection* Load()
 {
