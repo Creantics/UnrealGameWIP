@@ -3704,7 +3704,7 @@ TEST_CASE("arena partner: per-lead kits: partnerReach and partnerStandoff parse,
     // The shipped table with the party member's two keys replaced by `keys`.
     std::string shipped;
     REQUIRE(ftcore_test::readProjectData("Battle/arena.json", shipped));
-    const std::string kShipped = R"("partnerReach": 3.2, "partnerStandoff": 1.8,)";
+    const std::string kShipped = R"("partnerReach": 8.5, "partnerStandoff": 5,)";
     const std::size_t at = shipped.find(kShipped);
     REQUIRE(at != std::string::npos);
     const auto load = [&](const char* keys, std::string* err) {
@@ -3724,7 +3724,10 @@ TEST_CASE("arena partner: per-lead kits: partnerReach and partnerStandoff parse,
     CHECK(got.second.partnerReach == 0.f);
     CHECK(got.second.partnerStandoff == 0.f);
     CHECK_FALSE(load(R"("partnerReach":0.3,)", &err).first);
-    CHECK_FALSE(load(R"("partnerReach":4.5,)", &err).first);
+    got = load(R"("partnerReach":8.5,"partnerStandoff":8.5,)", &err); // the caster band's bound: accepted
+    REQUIRE_MESSAGE(got.first, err);
+    CHECK_FALSE(load(R"("partnerReach":8.6,)", &err).first);
+    CHECK_FALSE(load(R"("partnerReach":3,"partnerStandoff":8.6,)", &err).first);
     CHECK_FALSE(load(R"("partnerReach":2,"partnerStandoff":2.5,)", &err).first);
     got = load(R"("partnerReach":2,"partnerStandoff":2,)", &err); // standoff equal to reach: accepted
     REQUIRE_MESSAGE(got.first, err);
@@ -4002,9 +4005,9 @@ TEST_CASE("arena partner: the partner kit's range: none of it under the classic 
     CHECK(a.hits == b.hits);
     CHECK(a.stats.partnerDamage == b.stats.partnerDamage);
     REQUIRE(a.hits > 0);
-    // The close camera: the range read, its strings start within its reach (3.2 m off the edge) on its walk to its
-    // band (1.8-2.7 m), not walked in to about 1 m: at its hits it stands further off than without the range, and
-    // the bolt (range 3.6) lands from there.
+    // The close camera: the range read (reach 8.5 m off the edge, standoff 5: a band of 5-8 m; the bolt's range 8.5),
+    // so at its hits it stands further off than without the range. Not yet in its band: a string may start anywhere
+    // in reach, so it starts from where it stands (about 2.7 m here), short of the standoff.
     const RangeRun c = rangeRun(true, true), d = rangeRun(false, true);
     MESSAGE("close camera, kit range on: hits " << c.hits << " first at " << c.firstHit << " s, mean "
                                                 << c.meanEdge() << " m off the edge, damage " << c.stats.partnerDamage
@@ -4018,4 +4021,107 @@ TEST_CASE("arena partner: the partner kit's range: none of it under the classic 
     REQUIRE(d.hits > 0);
     CHECK(c.meanEdge() > d.meanEdge());
     CHECK(c.hashes != d.hashes);
+}
+
+TEST_CASE("arena partner: the party member's casts against each shipped boss and the group, no camera and close (report)") {
+    // The balance read on the caster's range: each lead with the third as the partner, against the shipped bosses
+    // (60 s) and the group (20 s), with no camera (as the per-lead report above) and with the close one behind the
+    // lead (3 m back, facing its first standing enemy; the caster band). Damage, the first partner hit, the fight time.
+    const ArenaTable t = shippedTable();
+    for (const char* lead : {"devin", "duy"}) {
+        for (const char* idText : {"kite_boss", "stone_bearer", "white_glove", "group/0"}) {
+            for (const bool close : {false, true}) {
+                const std::string id = idText;
+                const bool group = id.rfind("group", 0) == 0;
+                PRig r(t.fighter(lead));
+                if (group) {
+                    r.def = t.fallback;
+                    r.def.enemyCount = 0;
+                    for (const char* e : {"skirmisher", "hulk", "duelist"})
+                        for (std::size_t j = 0; j < t.enemyIds.size(); ++j)
+                            if (t.enemyIds[j] == e) {
+                                r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(j);
+                                r.def.enemies[r.def.enemyCount++] = t.enemies[j];
+                            }
+                    r.def.attackers = 2;
+                } else {
+                    r.def = shippedBoss(t, idText, false);
+                }
+                r.def.fighter = t.fighter(lead);
+                r.def.partnerKit = t.fighter("third");
+                r.ownPartnerKit = true;
+                r.tuning = shippedTuning();
+                r.goShipped(true, 1);
+                r.autopilot = false; // the autopilot's input is taken below, the camera added to it
+                const float limit = group ? 20.f : 60.f;
+                int hits = 0;
+                float firstHit = -1.f, nearest = 1e9f, farthest = 0.f, sum = 0.f;
+                int strings = 0, stringsInside = 0; // strings begun, and those begun inside the standoff
+                float stringSum = 0.f;              // the partner's edge distance to its nearest standing enemy at each
+                const float standoff = r.def.partnerKit.partnerStandoff;
+                while (!r.fight.over() && r.fight.time() < limit) {
+                    r.in = r.fight.autopilot();
+                    r.in.partnerOrder = 0;
+                    if (close) {
+                        Vec2 to = r.bodies.player;
+                        for (std::size_t e = 0; e < r.fight.enemyCount(); ++e)
+                            if (r.fight.enemyHp(e) > 0) {
+                                to = r.bodies.enemies[e];
+                                break;
+                            }
+                        Vec2 f = sub(to, r.bodies.player);
+                        const float n = length(f);
+                        f = n > 1e-3f ? Vec2{f.x / n, f.y / n} : Vec2{1.f, 0.f};
+                        r.in.cameraOn = true;
+                        r.in.cameraPos = Vec2{r.bodies.player.x - 3.f * f.x, r.bodies.player.y - 3.f * f.y};
+                        r.in.cameraFacing = f;
+                        PartnerCloseView& c = r.in.partnerClose;
+                        c.given = true;
+                        c.halfAngleDegrees = 30.f;
+                        c.standMin = kPartnerCloseCasterMin;
+                        c.standMax = kPartnerCloseCasterMax;
+                    }
+                    const std::size_t from = r.log.size();
+                    const int stringsBefore = r.fight.stats().partnerStrings;
+                    r.tick();
+                    if (r.fight.stats().partnerStrings > stringsBefore) {
+                        float edgeNow = 1e9f;
+                        for (std::size_t e = 0; e < r.fight.enemyCount(); ++e)
+                            if (r.fight.enemyHp(e) > 0)
+                                edgeNow = std::min(edgeNow, length(sub(r.bodies.enemies[e], r.fight.allyPos())) -
+                                                                arenaBodyCylinder(r.def.enemies[e], r.bodies.enemies[e], 0.f).radius);
+                        ++strings;
+                        stringSum += edgeNow;
+                        if (edgeNow < standoff) ++stringsInside;
+                    }
+                    for (std::size_t i = from; i < r.log.size(); ++i)
+                        if (allyHit(r.log[i].e)) {
+                            if (hits == 0) firstHit = r.log[i].t;
+                            ++hits;
+                            // Cast from: the partner's centre to the target's edge (the reach's and the hit's measure).
+                            const ArenaEvent& e = r.log[i].e;
+                            const float radius = e.target < r.def.enemyCount
+                                                     ? arenaBodyCylinder(r.def.enemies[e.target], e.at, 0.f).radius
+                                                     : 0.f;
+                            const float d = length(sub(e.at, r.fight.allyPos())) - radius;
+                            nearest = std::min(nearest, d);
+                            farthest = std::max(farthest, d);
+                            sum += d;
+                        }
+                }
+                const ArenaStats& s = r.fight.stats();
+                MESSAGE("caster report: " << std::string(lead) << " + third, " << id << ", " << std::string(close ? "close" : "no camera")
+                        << ": " << r.fight.time() << " s" << std::string(r.fight.over() ? " (over)" : "") << "; partner damage "
+                        << s.partnerDamage << " in " << hits << " hits, first at " << firstHit << " s, cast from "
+                        << (hits > 0 ? nearest : 0.f) << ".." << farthest << " m (mean " << (hits > 0 ? sum / hits : 0.f)
+                        << "); strings begun " << strings << ", " << stringsInside << " inside the standoff, mean edge "
+                        << (strings > 0 ? stringSum / strings : 0.f) << " m; ring " << r.ring.radius << " m, leash "
+                        << r.tuning.leashMeters << " m, target radius "
+                        << arenaBodyCylinder(r.def.enemies[0], Vec2{0.f, 0.f}, 0.f).radius << " m; lead "
+                        << s.damageDealt << "; strings " << s.partnerStrings << ", ally downed "
+                        << r.count(ArenaEventType::AllyDowned));
+                CHECK(hits >= 0);
+            }
+        }
+    }
 }

@@ -564,7 +564,7 @@ struct ArenaFighter {
     std::uint8_t rounds = 0;
     float reload = 1.2f;
     // As the partner (ArenaDef::partnerKit): the brain's reach and standoff for this kit, in metres off the target's
-    // edge (PartnerTuning::reachMeters, standoffMeters; arena.json "partnerReach" 0.5..4, "partnerStandoff"
+    // edge (PartnerTuning::reachMeters, standoffMeters; arena.json "partnerReach" 0.5..8.5 (kPartnerRangeMax), "partnerStandoff"
     // 0..partnerReach, and only with a partnerReach). 0: unset, the tuning's own. A ranged partner kit sets them; a close-in one leaves them 0.
     // The fight passes them as PartnerInput::range on every step; the brain reads them under the close camera alone.
     float partnerReach = 0.f;

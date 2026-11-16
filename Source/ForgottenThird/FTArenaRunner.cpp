@@ -798,6 +798,10 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaStandOff run ends at %.2f s of fight time."), Fight.time());
 		LogResult();
+		if (bPartner)
+		{
+			LogPartnerChecks(false, false); // the per-step partner lines (in play, on screen, clear of the lead) for the run so far
+		}
 		bQuitOnFinish = false;
 		StandOffAt = 0.f; // once: the exit lands a frame or more later
 		FPlatformMisc::RequestExitWithStatus(false, 0, TEXT("Arena"));
@@ -5275,7 +5279,11 @@ void UFTArenaRunner::RefreshCloseWalls(float Dt)
 		return;
 	}
 	// The boom's own probe (its channel and sphere), swept flat from the lead at 1.2 m; the fighters are not walls.
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(ArenaCloseWalls), false, Lead);
+	FCollisionQueryParams& Params = CloseWallParams;
+	Params.StatId = SCENE_QUERY_STAT_ONLY(ArenaCloseWalls);
+	Params.bTraceComplex = false;
+	Params.ClearIgnoredSourceObjects(); // keeps its room: no allocation after the first sweep
+	Params.AddIgnoredActor(Lead);
 	if (AllyFigure)
 	{
 		Params.AddIgnoredActor(AllyFigure);

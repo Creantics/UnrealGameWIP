@@ -412,8 +412,9 @@ while aiming). The third party slot is a party member only (`"playable": false` 
 partner with the magic kit (`"weapon": "magic"`): its lights are bolts from the casting hand (`spell_bolt`, then
 `spell_impact` at the hit point), its guard the ward (`spell_ward`). Its heavy (a short, slow, high-poise attack) is
 data only: the partner brain throws lights, and `spell_burst` has no spawner (its system stays unbuilt). It sets its own partner
-reach and standoff (`"partnerReach"`, `"partnerStandoff"`, metres off the target's edge; 0 or absent, as on Devin and
-Duy, is the partner brain's own). It is never the lead, so `-ArenaLead=Third` is refused with a warning and the first
+reach and standoff (`"partnerReach"`, `"partnerStandoff"`, metres off the target's edge, reach up to 8.5; 0 or absent,
+as on Devin and Duy, is the partner brain's own): reach 8.5 and standoff 5, the caster's band of 5-8 m under the close
+camera, with its bolts' range 8.5 to match. Under the classic camera the brain's own reach holds, as before. It is never the lead, so `-ArenaLead=Third` is refused with a warning and the first
 playable lead plays. Without the flag the lead is the first such look (Devin in the main checkout).
 
 ```
@@ -793,7 +794,7 @@ Presses are read each frame and handed to the fight on its next step, so no pres
 | `-ArenaCamera=close\|classic` | The camera preset for this run, over the **Camera** setting (see Camera presets), in every build. |
 | `-ArenaCameraLag=<seconds>` | The boom's lag for this run, over the preset's (0: the boom's own, -1: off). Not in shipping builds. |
 | `-ArenaCameraArm=<m>` | The close lens's arm for this run, held to 1.5-3.0 m (classic ignores it). Not in shipping builds. |
-| `-ArenaStandOff=<m>` | The autopilot circles its target at this range at a slow walk, guarding, with no attacks or dodges (stand-off stills); the run ends after 18 s of fight time. Not in shipping builds. |
+| `-ArenaStandOff=<m>` | The autopilot circles its target at this range at a slow walk, guarding, with no attacks or dodges (stand-off stills); the run ends after 18 s of fight time, with the partner's check lines for the run so far. Not in shipping builds. |
 | `-ArenaSharedCount` | With the autopilot: the lead calls the count whenever it can and a scripted partner joins a held blow's window, so a shared count's bonus lands (the `shared count bonus` check line). |
 | `-ArenaIdle` | Nobody plays the lead (no input at all); wins over `-ArenaAutoPlay`. |
 | `-ArenaQuitOnFinish` | Quit when the fight ends, after the result line (exit code 0). |

@@ -16,6 +16,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "CollisionQueryParams.h"
 
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
@@ -557,6 +558,9 @@ private:
 	ftcore::PartnerWall CloseWalls[CloseWallRays];
 	int32 CloseWallCount = 0;
 	float CloseWallAge = 1e9f; // s since the last sweep (large: sweep on the next step)
+	// The sweeps' query, kept: its ignored fighters (lead, ally, up to six enemies) pass its inline four, so a fresh
+	// one would allocate on every sweep; refilled in place, it allocates on the first only.
+	FCollisionQueryParams CloseWallParams;
 	void RefreshCloseWalls(float Dt);
 	ftcore::PartnerCloseView CloseStationView(const ftcore::PartnerCameraView& Camera) const;
 	ftcore::ArenaStickBasis StickBasis; // the stick's basis yaw (ftcore::arenaCloseStickBasis: held through a close swap)

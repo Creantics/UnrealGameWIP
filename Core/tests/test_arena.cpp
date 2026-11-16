@@ -5123,6 +5123,10 @@ TEST_CASE("arena balance: every lead's kit plays the default's fights") {
     for (std::size_t f = 1; f < table.fighterIds.size(); ++f) {
         const std::string& id = table.fighterIds[f];
         if (!table.fighters[f].attacks) continue; // a lead with no attack of his own never fights alone
+        // Nor does a party member only (playable false): the caster's kit casts from 5-8 m, so as a lone lead the
+        // autopilot's stand-off kills a skirmisher before it starts a move, and no Read card is ever dealt. Its kit is
+        // checked as the partner's (test_arena_partner.cpp).
+        if (!table.fighters[f].playable) continue;
         ArenaDef fallback = table.fallback;
         fallback.fighter = table.fighters[f];
         checkBalance(id + ": shipped default fight", fallback);

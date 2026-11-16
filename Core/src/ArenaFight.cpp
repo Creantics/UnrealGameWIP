@@ -4727,10 +4727,11 @@ void arenaParseFighter(JsonValue j, const std::string& path, ArenaFighter& f, Ar
     arenaNum(j, "jumpClearEnd", f.jumpClearEnd, 0, 5, false, path, errors);
     arenaNum(j, "jumpAirControl", f.jumpAirControl, 0, 1000, false, path, errors);
     if (j.has("jumpLight")) arenaParseAttackObject(j["jumpLight"], path + ".jumpLight", f.jumpLight, errors, warnings);
-    arenaNum(j, "partnerReach", f.partnerReach, 0, 4, false, path, errors);
-    arenaNum(j, "partnerStandoff", f.partnerStandoff, 0, 4, false, path, errors);
+    // Up to the brain's own bound (kPartnerRangeMax: the caster band's far end and the tolerance past it).
+    arenaNum(j, "partnerReach", f.partnerReach, 0, kPartnerRangeMax, false, path, errors);
+    arenaNum(j, "partnerStandoff", f.partnerStandoff, 0, kPartnerRangeMax, false, path, errors);
     if (f.partnerReach > 0.f && f.partnerReach < 0.5f)
-        errors.push_back(path + ".partnerReach: expected 0 (unset) or 0.5..4");
+        errors.push_back(path + ".partnerReach: expected 0 (unset) or 0.5..8.5");
     if (f.partnerStandoff > 0.f && f.partnerReach == 0.f) // the default reach may sit below the standoff
         errors.push_back(path + ".partnerStandoff: expected a partnerReach with it");
     else if (f.partnerStandoff > f.partnerReach)
