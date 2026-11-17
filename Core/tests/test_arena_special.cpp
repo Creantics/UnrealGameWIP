@@ -9,6 +9,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
@@ -1621,4 +1622,166 @@ TEST_CASE("arena special: balance (how often the gauge fills, its share of a fig
     // The target: about every 2-3 regular fights.
     CHECK(perFill >= 1.5f);
     CHECK(perFill <= 4.f);
+}
+
+TEST_CASE("arena special: the performance travels as far as the host allows; the body ends where the clip does") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const ArenaSpecialRules& m = specials.moves[0];
+    REQUIRE(m.endTravel == doctest::Approx(1.09f));
+    REQUIRE(m.endSide == doctest::Approx(-0.11f));
+    struct Ended {
+        Vec2 origin, dir, end, body, facing;
+        float travel = 0.f;
+        std::array<Vec2, 2> enemies{};
+        std::array<int, 2> hp{};
+        Vec2 startedAt, targetAt;
+    };
+    const auto run = [&](float travel, float back) {
+        Rig r;
+        r.begin(fightOf({"hulk", "brute"}), 5);
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        r.tick();
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.enemies[0] = Vec2{4.f, 1.f};
+        r.bodies.enemies[1] = Vec2{-6.f, 5.f};
+        r.tick();
+        ArenaInput in;
+        in.special = kArenaPlayer;
+        in.specialTravel = travel;
+        in.specialBack = back;
+        const Vec2 at = r.bodies.player;
+        const ArenaOutput& o = r.tick(in);
+        REQUIRE(r.fight.frozen());
+        Ended e;
+        const ArenaEvent* started = findEvent(o, ArenaEventType::SpecialStarted);
+        REQUIRE(started != nullptr);
+        e.startedAt = started->at;
+        const ArenaSpecialView& v = r.fight.special();
+        e.origin = v.origin;
+        e.dir = v.dir;
+        e.end = v.end;
+        e.travel = v.travel;
+        const float b = back > 0.f ? std::min(back, kArenaSpecialMaxBack) : 0.f; // NaN: none
+        CHECK(std::fabs(v.origin.x - (at.x - v.dir.x * b)) < 1e-4f);
+        CHECK(std::fabs(v.origin.y - (at.y - v.dir.y * b)) < 1e-4f);
+        REQUIRE(v.target < 2);
+        e.targetAt = r.bodies.enemies[v.target]; // frozen: where it stands at the cut back
+        for (int i = 0; i < 20; ++i) {
+            r.tick();
+            CHECK(r.bodies.player.x == v.origin.x); // posed from its start while frozen
+            CHECK(r.bodies.player.y == v.origin.y);
+        }
+        r.runOut();
+        CHECK(r.fight.special().endedThisTick);
+        e.body = r.bodies.player;
+        e.facing = r.fight.output().player.facing;
+        for (std::size_t i = 0; i < 2; ++i) {
+            e.enemies[i] = r.bodies.enemies[i];
+            e.hp[i] = r.fight.enemyHp(i);
+        }
+        r.tick();
+        CHECK_FALSE(r.fight.special().endedThisTick); // placed once, then the body is the host's again
+        return e;
+    };
+    const Ended still = run(0.f, 0.f);
+    const Ended full = run(m.endTravel, 0.f);
+    const Ended over = run(50.f, 0.f);
+    const Ended nan = run(std::nanf(""), std::nanf(""));
+    const Ended half = run(0.5f * m.endTravel, 0.f);
+    // None allowed: it ends where it began.
+    CHECK(still.travel == 0.f);
+    CHECK(still.end.x == still.origin.x);
+    CHECK(still.end.y == still.origin.y);
+    CHECK(still.body.x == still.origin.x);
+    CHECK(still.body.y == still.origin.y);
+    CHECK(nan.travel == 0.f);
+    CHECK(nan.body.x == still.body.x);
+    CHECK(nan.body.y == still.body.y);
+    // All of it: endTravel along the strike's way, endSide to its right; more than endTravel is clipped.
+    const Vec2 right{-full.dir.y, full.dir.x};
+    CHECK(full.travel == doctest::Approx(m.endTravel));
+    CHECK(full.end.x == doctest::Approx(full.origin.x + full.dir.x * m.endTravel + right.x * m.endSide));
+    CHECK(full.end.y == doctest::Approx(full.origin.y + full.dir.y * m.endTravel + right.y * m.endSide));
+    CHECK(full.body.x == doctest::Approx(full.end.x));
+    CHECK(full.body.y == doctest::Approx(full.end.y));
+    CHECK(over.travel == doctest::Approx(m.endTravel));
+    CHECK(over.body.x == doctest::Approx(full.body.x));
+    CHECK(half.end.x == doctest::Approx(half.origin.x + half.dir.x * 0.5f * m.endTravel + right.x * 0.5f * m.endSide));
+    // It faces the target from where it ended.
+    const Vec2 toTarget{full.targetAt.x - full.end.x, full.targetAt.y - full.end.y};
+    const float d = std::sqrt(toTarget.x * toTarget.x + toTarget.y * toTarget.y);
+    CHECK(full.facing.x == doctest::Approx(toTarget.x / d));
+    CHECK(full.facing.y == doctest::Approx(toTarget.y / d));
+    // Nobody else moved for it: the other bodies and hp are the same however far it travelled.
+    for (const Ended* e : {&full, &over, &nan, &half})
+        for (std::size_t i = 0; i < 2; ++i) {
+            CAPTURE(i);
+            CHECK(e->enemies[i].x == still.enemies[i].x);
+            CHECK(e->enemies[i].y == still.enemies[i].y);
+            CHECK(e->hp[i] == still.hp[i]);
+        }
+    // The host's back off: the start (and the travel from it) moves back along the strike's way.
+    const Ended backed = run(m.endTravel, 1.5f);
+    CHECK(backed.startedAt.x == backed.origin.x);
+    CHECK(backed.startedAt.y == backed.origin.y);
+    CHECK(backed.end.x == doctest::Approx(backed.origin.x + backed.dir.x * m.endTravel + right.x * m.endSide));
+    CHECK(backed.body.x == doctest::Approx(backed.end.x));
+    CHECK(backed.body.y == doctest::Approx(backed.end.y));
+}
+
+TEST_CASE("arena special: endTravel and endSide are checked like the other numbers") {
+    ArenaSpecialRules r = shippedSpecials().moves[0];
+    CHECK(validArenaSpecialRules(r));
+    r.endTravel = 20.5f;
+    CHECK_FALSE(validArenaSpecialRules(r));
+    r.endTravel = -0.1f;
+    CHECK_FALSE(validArenaSpecialRules(r));
+    r.endTravel = 1.f;
+    r.endSide = 5.5f;
+    CHECK_FALSE(validArenaSpecialRules(r));
+    r.endSide = -5.f;
+    CHECK(validArenaSpecialRules(r));
+    ArenaSpecialTable t;
+    std::string err;
+    CHECK_FALSE(importArenaSpecials(R"({ "version": 1, "moves": [ { "id": "a", "lead": "devin", "endTravel": 21 } ] })", t, &err));
+    CHECK_FALSE(importArenaSpecials(R"({ "version": 1, "moves": [ { "id": "a", "lead": "devin", "endSide": -6 } ] })", t, &err));
+    REQUIRE(importArenaSpecials(R"({ "version": 1, "moves": [ { "id": "a", "lead": "devin", "endTravel": 2, "endSide": 0.5 } ] })", t, &err));
+    CHECK(t.moves[0].endTravel == 2.f);
+    CHECK(t.moves[0].endSide == 0.5f);
+}
+
+TEST_CASE("arena special: game-thread cost per tick (reported, not checked: 60 fps and up)") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    using Clock = std::chrono::steady_clock;
+    // ns per ArenaFight::tick over `ticks` ticks (the best of five runs), with or without the specials, idle or frozen.
+    const auto cost = [&](bool withSpecials, bool frozen) {
+        double best = 1e30;
+        for (int run = 0; run < 5; ++run) {
+            Rig r;
+            r.begin(fightOf({"brute", "brute", "hulk", "brute"}), 11 + static_cast<std::uint64_t>(run));
+            if (withSpecials) REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", frozen ? 1000.f : 0.f)));
+            r.tick();
+            if (frozen) {
+                r.press();
+                REQUIRE(r.fight.frozen());
+            }
+            const int ticks = frozen ? 400 : 1500;
+            Clock::duration spent{};
+            for (int i = 0; i < ticks; ++i) {
+                const ArenaInput in = r.fight.autopilot();
+                const Clock::time_point t0 = Clock::now();
+                r.fight.tick(kDt, in, r.bodies);
+                spent += Clock::now() - t0;
+                arenaStep(r.fight, r.bodies, kDt);
+                if (frozen) REQUIRE(r.fight.frozen());
+            }
+            best = std::min(best, std::chrono::duration<double, std::nano>(spent).count() / ticks);
+        }
+        return best;
+    };
+    const double off = cost(false, false), idle = cost(true, false), running = cost(true, true);
+    MESSAGE("special cost per tick (4 enemies): fight tick without specials " << off << " ns, with specials idle "
+            << idle << " ns (special share " << (idle - off) << " ns), frozen in a special " << running
+            << " ns; a 60 fps frame is 16.7 ms");
+    CHECK(running > 0.0);
 }

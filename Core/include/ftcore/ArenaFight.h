@@ -881,10 +881,14 @@ struct ArenaInput {
     // player presses it either way, from the prompt. kArenaNobody, the default: none. It starts when
     // ArenaFight::specialRefusal(body) is Ok, else the press is dropped. specialSight: the host's line of sight from
     // that body to the player's target (true, the default, for a host that does not check). specialSkip: cut a
-    // running special to its end when ArenaSpecialView::skippable.
+    // running special to its end when ArenaSpecialView::skippable. Read on the press tick only: specialTravel, the
+    // metres of the move's endTravel the host has room for along the strike's way (clipped to 0..endTravel; 0, the
+    // default, ends it where it started); specialBack, metres to move the start back first (0..kArenaSpecialMaxBack).
     std::uint8_t special = kArenaNobody;
     bool specialSight = true;
     bool specialSkip = false;
+    float specialTravel = 0.f;
+    float specialBack = 0.f;
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).

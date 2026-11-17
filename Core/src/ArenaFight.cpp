@@ -544,6 +544,7 @@ struct ArenaFightImpl {
             specialTick(step, in);
             return;
         }
+        if (step > 0.f) fight.special_.view.endedThisTick = false; // the cut back was the last tick
         out.events.count = 0;
         pl.pairSpent = 0.f;
         if (fight.phase_ == ArenaPhase::NotStarted) return;
@@ -3958,8 +3959,18 @@ struct ArenaFightImpl {
         v.performer = in.special;
         v.slot = static_cast<std::uint8_t>(slot);
         v.target = target;
-        v.origin = specialOrigin(in.special);
         v.dir = specialDir(in.special, target);
+        {   // where it starts (the host's back off) and ends (the clip's travel, as far as the host has room)
+            const float radius = player ? def.fighter.bodyRadius : def.partnerKit.bodyRadius;
+            const float back = in.specialBack > 0.f ? std::min(in.specialBack, kArenaSpecialMaxBack) : 0.f; // NaN: 0
+            v.origin = fight.ring_.clamp(arenaMadd(specialOrigin(in.special), v.dir, -back), radius);
+            if (player) pl.pos = v.origin;
+            else fight.allyPos_ = v.origin;
+            v.travel = m.endTravel > 0.f && in.specialTravel > 0.f ? std::min(in.specialTravel, m.endTravel) : 0.f;
+            const float side = m.endTravel > 0.f ? m.endSide * (v.travel / m.endTravel) : 0.f;
+            const Vec2 right{-v.dir.y, v.dir.x};
+            v.end = fight.ring_.clamp(arenaMadd(arenaMadd(v.origin, v.dir, v.travel), right, side), radius);
+        }
         v.time = 0.f;
         v.duration = m.duration;
         v.impactDone = false;
@@ -4053,6 +4064,8 @@ struct ArenaFightImpl {
             specialImpact(*m);
         }
         const std::uint8_t by = v.performer;
+        if (by == kArenaPlayer) pl.pos = v.end; // the performance travelled: the body ends where the clip does
+        else fight.allyPos_ = v.end;
         for (std::size_t r = 0; m && r < v.resultCount; ++r) {
             const ArenaSpecialResult& res = v.results[r];
             const std::size_t i = res.foe;
@@ -4068,7 +4081,7 @@ struct ArenaFightImpl {
             } else if (!res.boss) {
                 staggerEnemy(i, by);
                 if (m->knockBack > 0.f && m->knockTime > 0.f) {
-                    foe.shoveVel = arenaScaled(arenaUnit(arenaSub(foe.pos, v.origin), v.dir), m->knockBack / m->knockTime);
+                    foe.shoveVel = arenaScaled(arenaUnit(arenaSub(foe.pos, v.end), v.dir), m->knockBack / m->knockTime);
                     foe.shoveLeft = m->knockTime;
                 }
             }
@@ -4082,13 +4095,17 @@ struct ArenaFightImpl {
             pl.bufferAge = 0.f;
             pl.chainLive = false;
             pl.hitMask = 0;
+        }
+        // It faces the target from where it ended (it may have travelled past it), else the strike's way.
+        const Vec2 face = v.target < n && alive(v.target) ? arenaUnit(arenaSub(foes[v.target].pos, v.end), v.dir) : v.dir;
+        if (by == kArenaPlayer) {
             pl.invulnerable = false;
-            pl.facing = v.dir;
-            pl.drawFacing = v.dir;
+            pl.facing = face;
+            pl.drawFacing = face;
         } else {
             clearAlly();
-            fight.ally_.facing = v.dir;
-            fight.ally_.heading = v.dir;
+            fight.ally_.facing = face;
+            fight.ally_.heading = face;
         }
         if (m) sp.seen[v.slot] = true;
         v.running = false;
@@ -4992,7 +5009,13 @@ Vec2 arenaParkSpot(const ArenaRing& ring, Vec2 playerStart, std::size_t i) {
 }
 
 void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
-    if (fight.frozen()) return; // a special runs: the host poses the performer, nobody else moves
+    const ArenaSpecialView& sv = fight.special();
+    if (fight.frozen()) { // a special runs: the host poses the performer (from its start), nobody else moves
+        (sv.performer == kArenaPlayer ? bodies.player : bodies.ally) = sv.origin;
+        return;
+    }
+    const bool placed = sv.endedThisTick && sv.performer == kArenaPlayer; // the cut back: put where the clip ended
+    if (sv.endedThisTick) (sv.performer == kArenaPlayer ? bodies.player : bodies.ally) = sv.end;
     const std::size_t n = fight.enemyCount();
     const ArenaOutput& out = fight.output();
     const ArenaDef& def = fight.def();
@@ -5013,7 +5036,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
         b = arenaMadd(b, dir, push);
     };
     for (int pass = 0; pass < kArenaPushPasses; ++pass) {
-        for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t i = 0; i < n && !placed; ++i) // no push apart on the frame the performer is placed
             if (fight.enemyAlive(i)) separate(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
         for (std::size_t i = 0; i < n; ++i) {
             if (!fight.enemyAlive(i)) continue;
@@ -5896,7 +5919,7 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
     }
     spUnknownKeys(j, path,
                   {"id", "lead", "duration", "impactAt", "range", "laneLength", "laneWidth", "damage", "otherShare",
-                   "bossPhaseShare", "knockBack", "knockTime", "skippable", "cues"},
+                   "bossPhaseShare", "knockBack", "knockTime", "endTravel", "endSide", "skippable", "cues"},
                   warnings);
     for (const char* key : {"id", "lead"}) {
         const JsonValue v = j[key];
@@ -5922,6 +5945,8 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
     spNumber(j, "bossPhaseShare", path, 0.f, 1.f, r.bossPhaseShare, errors);
     spNumber(j, "knockBack", path, 0.f, 20.f, r.knockBack, errors);
     spNumber(j, "knockTime", path, 0.05f, 5.f, r.knockTime, errors);
+    spNumber(j, "endTravel", path, 0.f, 20.f, r.endTravel, errors);
+    spNumber(j, "endSide", path, -5.f, 5.f, r.endSide, errors);
     if (const JsonValue v = j["skippable"]; !v.isAbsent()) {
         if (!v.isBool())
             errors.push_back(path + ".skippable: expected true or false");
@@ -5973,6 +5998,7 @@ bool validArenaSpecialRules(const ArenaSpecialRules& r) {
     if (r.damage < 1 || r.damage > 100000) return false;
     if (!spInRange(r.otherShare, 0.f, 1.f) || !spInRange(r.bossPhaseShare, 0.f, 1.f)) return false;
     if (!spInRange(r.knockBack, 0.f, 20.f) || !spInRange(r.knockTime, 0.05f, 5.f)) return false;
+    if (!spInRange(r.endTravel, 0.f, 20.f) || !spInRange(r.endSide, -5.f, 5.f)) return false;
     if (r.cueCount > kMaxArenaSpecialCues) return false;
     float last = 0.f;
     for (std::size_t i = 0; i < r.cueCount; ++i) {

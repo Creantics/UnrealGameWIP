@@ -34,6 +34,12 @@
 //     results are reported then (ArenaSpecialView::results, the Impact cue) and land at the cut back: hp, then a stagger
 //     and `knockBack` metres away from the performer over `knockTime` for every enemy that is not a boss. Weak points
 //     and the host's blow hook play no part: the hit is guaranteed.
+//   * The performance travels: the performer ends `endTravel` metres along the strike's way and `endSide` to its right
+//     (the clip's own travel), scaled by what the host allows at the press (ArenaInput::specialTravel, 0..endTravel,
+//     after its own sweep for room; the side by the same share). The host may also start it further back
+//     (ArenaInput::specialBack). ArenaSpecialView::origin and ::end say where; the host puts the body at `origin` while
+//     frozen and at `end` on the cut back (arenaStep does), with no push apart on that frame. The cut back's stagger and
+//     shove go away from `end`, and the performer faces the target from there.
 //   * The cue timeline (`cues`): named beats at set times for the camera, effects and sound; each fires once, in order.
 //   * `skippable`: once a lead's move has been seen to its end once (LeadSpecialGauges::seen), a skip input jumps to
 //     the cut back; the results are the same.
@@ -60,6 +66,7 @@ inline constexpr std::size_t kMaxSpecialLeads = 4;
 inline constexpr std::uint8_t kArenaSpecialMove = 13;     // the move id on the special's Hit events (after kArenaAirMove)
 inline constexpr std::uint8_t kArenaSpecialNone = 0xFF;   // no move (an index into ArenaSpecialTable::moves)
 inline constexpr float kArenaSpecialNoLine = -1.0e9f;     // no ready line played yet (LeadSpecialGauges::Lead::lineAt)
+inline constexpr float kArenaSpecialMaxBack = 10.f;       // m: the most ArenaInput::specialBack moves a start back
 
 struct ArenaSpecialCue {
     float at = 0.f;
@@ -81,6 +88,8 @@ struct ArenaSpecialRules {
     float bossPhaseShare = 0.2f; // of a boss's current break phase's hp span (x otherShare when not the target)
     float knockBack = 2.f;      // m, away from the performer, at the cut back (not a boss)
     float knockTime = 0.35f;    // s
+    float endTravel = 0.f;      // m along the strike's way where the performance ends (the clip's travel), 0..20
+    float endSide = 0.f;        // m to the right of that way where it ends (scaled with the travel allowed), -5..5
     bool skippable = true;      // once seen
     std::array<ArenaSpecialCue, kMaxArenaSpecialCues> cues{};
     std::uint8_t cueCount = 0;
@@ -113,7 +122,7 @@ struct ArenaSpecialTable {
 
 // Whether the move's numbers are in range (the loader's rules): duration 0.5..30, impactAt in (0, duration], range
 // 1..200, lane 0.5..100 by 0.5..50, damage 1..100000, otherShare and bossPhaseShare 0..1, knockBack 0..20, knockTime
-// 0.05..5, cues in rising time inside [0, duration] with names of 1..31 letters, digits, _ and -.
+// 0.05..5, endTravel 0..20, endSide -5..5, cues in rising time inside [0, duration] with names of 1..31 letters, digits, _ and -.
 FTCORE_API bool validArenaSpecialRules(const ArenaSpecialRules& r);
 FTCORE_API bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g);
 
@@ -180,8 +189,10 @@ struct ArenaSpecialView {
     std::uint8_t performer = 0xFF;            // kArenaPlayer or kArenaAlly
     std::uint8_t slot = 0;                    // the performer's gauge slot (ArenaFight::setSpecialGauges)
     std::uint8_t target = 0xFF;               // the enemy hit in full (a target gone by the impact: the lane's nearest)
-    Vec2 origin;                              // the performer's spot at the press
+    Vec2 origin;                              // the performer's spot at the press (moved back by specialBack)
     Vec2 dir{1.f, 0.f};                       // toward the target at the press
+    Vec2 end;                                 // where the performer stands at the cut back (inside the ring)
+    float travel = 0.f;                       // m along `dir` from origin to end: the share of endTravel allowed
     float time = 0.f;                         // s since the press
     float duration = 0.f;
     bool impactDone = false;
@@ -191,7 +202,7 @@ struct ArenaSpecialView {
     std::uint8_t cueCount = 0;
     std::array<ArenaSpecialResult, kMaxArenaSpecialTargets> results{}; // from impact on
     std::uint8_t resultCount = 0;
-    bool endedThisTick = false;               // the cut back: the results landed this tick
+    bool endedThisTick = false;               // the cut back: the results landed this tick (the performer is at `end`)
     bool readyPlayer = false;                 // the player lead's gauge is full (the prompt)
     bool readyPartner = false;                // the partner's
     ArenaSpecialRefusal refusalPlayer = ArenaSpecialRefusal::NoMove; // as of the last tick's end
