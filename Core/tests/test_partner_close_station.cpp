@@ -1738,3 +1738,82 @@ TEST_CASE("close station: an intercept off the close lens is taken, and capped a
     c.e[1] = p.e[1];
     for (int s = 0; s < 600; ++s) CHECK_FALSE(c.stepAll().intercept);
 }
+
+TEST_CASE("close station: the intercept cap while its window fills, a checkpoint mid-intercept, and a long step") {
+    // As the capped scene above: enemy 1 outside the lens winds up at the lead without end, from the first step.
+    const auto scene = [](CsSpread& p) {
+        p.e[1].pos = {-4.f, -6.f};
+        p.e[1].radius = 0.5f;
+        p.e[1].state = PartnerEnemyView::State::WindingUp;
+        p.e[1].windupLeft = 0.5f;
+        p.e[1].aim = PartnerEnemyView::Aim::Lead;
+    };
+    const auto walk = [](CsSpread& p, const PartnerIntent& i) {
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+            const Vec2 v = csSub(i.point, p.in.pos);
+            const float l = csLen(v), step = 4.5f / 60.f;
+            p.in.pos = l <= step ? i.point : csAdd(p.in.pos, csMul(v, step / l));
+        }
+    };
+    // The filling window: no intercept before 8 s engaged, and over every prefix past that, the intercept's own
+    // off-lens steps stay under the quarter of the engaged steps.
+    CsSpread p(true);
+    scene(p);
+    int engaged = 0, interceptOff = 0, firstAt = -1;
+    for (int s = 0; s < 20 * 60; ++s) {
+        const PartnerIntent& i = p.stepAll();
+        if (p.b.target() >= 0) ++engaged;
+        if (i.intercept) {
+            if (firstAt < 0) firstAt = engaged;
+            if (std::fabs(p.ndc(p.in.pos)) > 1.f) ++interceptOff;
+        }
+        if (engaged >= 8 * 60) CHECK(interceptOff < kPartnerInterceptShare * static_cast<float>(engaged));
+        walk(p, i);
+    }
+    MESSAGE("first intercept at engaged step " << firstAt << ", its off-lens steps " << interceptOff << " of " << engaged);
+    CHECK(firstAt >= 8 * 60 - 1);
+
+    // A checkpoint mid-intercept: a copy loaded from the save replays to the same hashes.
+    CsSpread a(true);
+    scene(a);
+    int s = 0;
+    for (; s < 60 * 60; ++s) {
+        const PartnerIntent& i = a.stepAll();
+        if (i.intercept && s > 10 * 60) break;
+        walk(a, i);
+    }
+    REQUIRE(s < 60 * 60);
+    REQUIRE(a.b.save().intercept >= 0);
+    CsSpread b(true);
+    scene(b);
+    b.b.load(a.b.save());
+    b.in = a.in;
+    REQUIRE(b.b.hash() == a.b.hash());
+    for (int k = 0; k < 5 * 60; ++k) {
+        const PartnerIntent& ia = a.stepAll();
+        const PartnerIntent& ib = b.stepAll();
+        CHECK(ia.act == ib.act);
+        CHECK(a.b.hash() == b.b.hash());
+        walk(a, ia);
+        b.in.pos = a.in.pos;
+    }
+
+    // The ring past its 20 slots and a step over 1 s: the clock stays finite, the slots are cleared, the cap holds.
+    CsSpread w(true);
+    scene(w);
+    for (int k = 0; k < 25 * 60; ++k) walk(w, w.stepAll());
+    w.stepAll(1.6); // over 1 s: counts as the brain's longest step (kMaxPartnerStep), never skips a slot uncleared
+    for (int k = 0; k < 2 * 60; ++k) walk(w, w.stepAll());
+    const PartnerBrainSave& sv = w.b.save();
+    CHECK(sv.closeClock > 25.0);
+    float en = 0.f, of = 0.f;
+    for (std::size_t k = 0; k < kPartnerInterceptSlots; ++k) {
+        CHECK(sv.closeEngaged[k] >= 0.f);
+        CHECK(sv.closeEngaged[k] <= 1.f + static_cast<float>(kMaxPartnerStep) + 1e-3f); // a step lands whole in its end slot
+        CHECK(sv.closeOff[k] <= sv.closeEngaged[k] + 1e-4f);
+        en += sv.closeEngaged[k];
+        of += sv.closeOff[k];
+    }
+    CHECK(en <= static_cast<float>(kPartnerInterceptSlots) + 1e-2f);
+    MESSAGE("after the wrap: engaged " << en << " s, off " << of << " s in the window");
+}

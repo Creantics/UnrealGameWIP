@@ -301,8 +301,14 @@ inline constexpr double kPartnerCloseSpreadHoldSeconds = 2.0;
 // able to act) stay under kPartnerInterceptShare of its engaged seconds. A new intercept starts only under
 // kPartnerInterceptStartShare and runs on only under kPartnerInterceptRunShare: a string begun runs out and the walk
 // back is off the lens too, so the room left below the cap is about a string, its pause cut and that walk. Its pause
-// ends (a new pick) the step its intercept ends.
+// ends (a new pick) the step its intercept ends. The cap counts all of the partner's off-lens engaged time, its own
+// walks included, not only intercepts (safer: the share it leaves is smaller). While the window fills, its engaged
+// seconds are floored at kPartnerInterceptMinEngagedSeconds, and no intercept starts before that many are in it, so
+// a short engaged history cannot let one run past the share. The window is close-lens Spread play time (the steps
+// it runs), not wall time. The pick's hold is max(kPartnerCloseSpreadHoldSeconds, targetHoldSeconds); it ends early
+// when the held enemy leaves the lens while a new pick stands inside it (intended: the frame wins).
 inline constexpr std::size_t kPartnerInterceptSlots = 20;
+inline constexpr float kPartnerInterceptMinEngagedSeconds = 8.f;
 inline constexpr float kPartnerInterceptShare = 0.25f;
 inline constexpr float kPartnerInterceptStartShare = 0.1f;
 inline constexpr float kPartnerInterceptRunShare = 0.15f;

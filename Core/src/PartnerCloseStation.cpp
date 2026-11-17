@@ -185,6 +185,7 @@ bool partnerCloseInCone(Vec2 cameraPos, Vec2 cameraForward, float halfAngleDegre
 
 bool partnerCloseOverlaps(Vec2 cameraPos, Vec2 p, float pr, Vec2 b, float br) {
     const float dp = len(sub(p, cameraPos)), db = len(sub(b, cameraPos));
+    if (!(dp > 0.f) || !(db > 0.f)) return true; // a body at the lens (a zero radius too): it covers the view
     if (dp <= pr || db <= br) return true; // the lens inside a body: it covers the view
     return apart(cameraPos, p, b) < halfAngle(dp, pr) + halfAngle(db, br);
 }
@@ -199,6 +200,7 @@ bool partnerCloseClearOfLead(Vec2 cameraPos, Vec2 p, Vec2 lead, float bodyRadius
     if (partnerCloseOverlaps(cameraPos, p, bodyRadius, lead, bodyRadius)) return false;
     if (!(gapBodies > 0.f)) return true;
     const float dp = len(sub(p, cameraPos)), dl = len(sub(lead, cameraPos));
+    if (!(dp > 0.f) || !(dl > 0.f)) return false; // a body at the lens: it covers the view, never clear (review fix 5)
     return apart(cameraPos, p, lead) >= halfAngle(dl, bodyRadius) + (1.f + 2.f * gapBodies) * halfAngle(dp, bodyRadius);
 }
 

@@ -922,7 +922,8 @@ bool PartnerBrain::interceptRoom(float share) const {
         engaged += s_.closeEngaged[i];
         off += s_.closeOff[i];
     }
-    return engaged > 0.f && off < share * engaged;
+    // Floored while the window fills (review fix 1): no intercept before kPartnerInterceptMinEngagedSeconds engaged.
+    return engaged >= kPartnerInterceptMinEngagedSeconds && off < share * std::max(engaged, kPartnerInterceptMinEngagedSeconds);
 }
 
 int PartnerBrain::closeSpreadTarget(const PartnerInput& in, std::size_t n) {
@@ -1666,6 +1667,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         }
         closeDoneFor = tgt;
         closeDoneOk = false;
+        closeGapped = false; // a function of this step's computed station only (review fix 4)
         const PartnerCloseView& c = in.station.close;
         const View& v = in.enemies[static_cast<std::size_t>(tgt)];
         std::array<PartnerBody, kMaxPartnerEnemies> bodies{};
@@ -1804,9 +1806,16 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     const bool engageDue = fm && s_.engageFor + 1e-9 >= static_cast<double>(t.engageSeconds);
     // The near field (round 7): a spot is held only while its silhouette is clear of the lead's, with half a body
     // width of screen gap when the station keeps its whole one (the difference is the hold's hysteresis).
+    // The gap flag is the step's station's, computed once a step: asked before any station this step, the held
+    // target's station is computed first (as the near field's own check does), so it is never stale or order-dependent.
     const auto leadClearHere = [&]() {
-        return !nearField || partnerCloseClearOfLead(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius,
-                                                     closeGapped ? 0.5f : 0.f);
+        if (!nearField) return true;
+        if (closeDoneFor < 0 && s_.target >= 0 && static_cast<std::size_t>(s_.target) < n) {
+            Vec2 q{};
+            (void)closeGoal(s_.target, false, q);
+        }
+        return partnerCloseClearOfLead(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius,
+                                       closeGapped ? 0.5f : 0.f);
     };
     // Rule 13's hold: framed, a partner standing within twice stationTolerance of its goal stays put while its own
     // place is in frame and outside both keep-outs, so a drifting station does not start and stop it every few ticks.
