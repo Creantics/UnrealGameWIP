@@ -674,7 +674,8 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                 : key == "sig_pulse" ? &rules->sigPulse
                 : key == "sig_arcs" ? &rules->sigArcs
                 : key == "sig_margin_rule" ? &rules->sigMarginRule
-                : key == "load_breaks" ? &rules->loadBreaks : nullptr;
+                : key == "load_breaks" ? &rules->loadBreaks
+                : key == "special_prompt" ? &rules->specialPrompt : nullptr;
             if (rule) {
                 if (v.type() != JsonType::Bool) return bad(section, key);
                 *rule = v.boolean();

@@ -254,6 +254,12 @@ private:
 	// kUiPartyHold, opens it (a shorter map press is the map); a flick moves the cursor; letting go picks. The partner's
 	// row switches to that lead, FOLLOW / WAIT HERE toggles the followers. PC null: input is taken away, which shuts it.
 	void TickPartyScreen(const APlayerController* PC, float DeltaSeconds);
+	// Esc (the controller's OnBack) while the party screen stands: its cancel, claimed so no pause menu opens.
+	UFUNCTION()
+	void HandlePartyBack();
+	bool bPartyBack = false;     // Esc came since the last party step
+	bool bPartyKeysHeld = false; // the party screen stands, or its confirm key is still held after it shut
+	TWeakObjectPtr<class AFTPlayerController> BackBoundTo;
 	void FindPartyRows();
 	// Wears PartyLooks[Index] as the lead (not from the van or mid-traversal; a crouch ends).
 	void SwitchLeadTo(int32 Index);

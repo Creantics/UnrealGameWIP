@@ -50,7 +50,11 @@ UiEventMark uiEventMark(ArenaEventType type) {
     case ArenaEventType::AllyBlocked:
     case ArenaEventType::AllyRose:
     case ArenaEventType::TookOver:
-    case ArenaEventType::BreakTell: return UiEventMark::None;
+    case ArenaEventType::BreakTell:
+    case ArenaEventType::SpecialReady:   // the prompt and the cinematic are the arena lane's
+    case ArenaEventType::SpecialStarted:
+    case ArenaEventType::SpecialEnded:
+    case ArenaEventType::SpecialUnready: return UiEventMark::None;
     }
     return UiEventMark::None;
 }
