@@ -1776,6 +1776,7 @@ private:
         bool bodyTurn = false;              // this tick a body forced its walk past the hold
         bool intercept = false;             // a report: the intent's intercept this tick (never hashed)
         Vec2 heading{1.f, 0.f};             // its body's drawn heading (ArenaAllyOut::heading)
+        bool headingWalked = false;         // it walked this tick (over 0.05 m/s): no 60 degree gate on a start
     };
 
     ArenaDef def_;

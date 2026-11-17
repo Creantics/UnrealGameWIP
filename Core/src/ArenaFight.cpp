@@ -41,6 +41,8 @@ constexpr float kArenaLockNearWeight = 0.3f;
 // walked over kAllyHeadingMoving m/s this tick, else toward its facing.
 constexpr float kAllyHeadingTurn = 3.f * kArenaPi;
 constexpr float kAllyHeadingMoving = 0.05f;
+constexpr float kAllyHeadingLeadMeters = 1.f;   // ... and toward its target over a walk's last metre ...
+constexpr float kAllyHeadingLeadSeconds = 0.3f; // ... or its last 0.3 s at its pace, the longer
 constexpr float kAllyLinkTurn = 2.f * kArenaPi; // rad/s: the most the partner's facing turns in a blow's recovery (360 deg/s)
 constexpr int kArenaAutoHealPercent = 40;  // the autopilot heals below this share of its hp ...
 constexpr float kArenaAutoParryWindow = 0.12f; // ... and parries only with a window at least this long
@@ -543,11 +545,22 @@ struct ArenaFightImpl {
         pl.pos = bodies.player;
         for (std::size_t i = 0; i < n; ++i) foes[i].pos = bodies.enemies[i];
         fight.ally_.moved = arenaDistance(fight.allyPos_, bodies.ally) > kArenaEps; // the host walked it
-        {   // its drawn heading: toward its walk this tick, else its facing, at most kAllyHeadingTurn
+        {   // its drawn heading: toward its walk this tick, else its facing, at most kAllyHeadingTurn; over a walk's
+            // last kAllyHeadingLeadMeters (or kAllyHeadingLeadSeconds at its pace), toward its target, so a string
+            // starts on arrival with no turn pause (rule 19's 60 degree gate is then a standing start's safety)
             ArenaFight::AllyState& al = fight.ally_;
             const Vec2 walked = arenaSub(bodies.ally, fight.allyPos_);
-            const bool walking = step > 0.f && arenaDistance(fight.allyPos_, bodies.ally) > kAllyHeadingMoving * step;
-            al.heading = arenaTurn(al.heading, walking ? arenaUnit(walked, al.heading) : al.facing, kAllyHeadingTurn * step);
+            const float moved = arenaDistance(fight.allyPos_, bodies.ally);
+            const bool walking = step > 0.f && moved > kAllyHeadingMoving * step;
+            Vec2 want = walking ? arenaUnit(walked, al.heading) : al.facing;
+            if (walking && al.act == static_cast<std::uint8_t>(PartnerAct::MoveTo) && al.target >= 0 &&
+                static_cast<std::size_t>(al.target) < n && alive(static_cast<std::size_t>(al.target))) {
+                const float left = arenaDistance(bodies.ally, al.goal);
+                if (left <= std::max(kAllyHeadingLeadMeters, kAllyHeadingLeadSeconds * moved / step))
+                    want = arenaUnit(arenaSub(foes[static_cast<std::size_t>(al.target)].pos, bodies.ally), want);
+            }
+            al.heading = arenaTurn(al.heading, want, kAllyHeadingTurn * step);
+            al.headingWalked = walking;
         }
         fight.allyPos_ = bodies.ally;
         if (pl.giftLoad > 0 || pl.giftFilled) { // the host's giveLoad since the last tick
@@ -2913,7 +2926,9 @@ struct ArenaFightImpl {
         }
         pin.range = {pk.partnerReach, pk.partnerStandoff}; // rule 19 reads it under the close camera alone
         pin.facing = al.facing; // rule 19: a string starts facing its target (read under the close camera alone)
-        pin.heading = al.heading; // rule 19 (11-17): and with its drawn heading within 60 degrees of it (likewise)
+        // Rule 19 (11-17): and, from a standstill, with its drawn heading within 60 degrees of it (likewise). Arriving
+        // from a walk it is not asked: the heading turned to the target over the walk's end, so no pause.
+        pin.heading = al.headingWalked ? Vec2{} : al.heading;
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
         al.stationed = intent.stationed;

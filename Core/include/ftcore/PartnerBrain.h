@@ -397,7 +397,8 @@ struct PartnerInput {
     Vec2 facing{};
     // Rule 19 (11-17): the partner's drawn heading on the ground, the host's (ArenaAllyOut::heading). Under the close
     // camera a string starts only with it within kPartnerStartHeadingDegrees of its target; until then it waits (why
-    // Pause, enemy its target). Zero: no such hold. Input, not state: never hashed.
+    // Pause, enemy its target). Zero: no such hold (ArenaFight gives zero on a step it walked: its heading turns to the
+    // target over a walk's last metre / 0.3 s, so the gate is a standing start's safety). Input, not state: never hashed.
     Vec2 heading{};
 };
 
