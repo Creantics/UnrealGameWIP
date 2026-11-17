@@ -825,6 +825,10 @@ std::uint64_t PartnerBrainSave::hash() const {
     // Rule 19: only once the close camera was given (closeUsed), so a brain never given it hashes as before.
     if (closeUsed)
         h.add(std::uint8_t{22}).add(closeHold.flank).add(closeHold.angle).add(closeHold.heldFor).add(closeHold.ring);
+    if (closeClock > 0.0) { // rule 19, Spread: the intercept's cap (never run by the classic camera or StayClose)
+        h.add(std::uint8_t{24}).add(closeClock).add(intercept);
+        for (std::size_t i = 0; i < kPartnerInterceptSlots; ++i) h.add(closeEngaged[i]).add(closeOff[i]);
+    }
     if (steppedOut) h.add(std::uint8_t{23}).add(steppedOut); // rule 19's step out (never set by the classic camera)
     return h.value;
 }
@@ -891,6 +895,101 @@ int PartnerBrain::chooseTarget(const PartnerInput& in, bool framed, std::uint32_
     }
     if (count <= 1) return all;
     return free >= 0 ? free : all; // the lead on every standing enemy: the nearest
+}
+
+// Rule 19, Spread (the fault B ruling of 11-17; PartnerBrain.h, kPartnerCloseSpreadHoldSeconds): the target under the
+// close camera, the intercept and the hold included. Updates the intercept held.
+namespace {
+// Rule 19, Spread: enemy i inside the close lens to `lim` (its screen x).
+bool closeLensHas(const PartnerInput& in, std::size_t i, float lim) {
+    float x = 0.f;
+    return partnerCloseNdc(in.station.cameraPos, in.station.cameraForward, in.station.close.halfAngleDegrees,
+                           in.enemies[i].pos, x) &&
+           std::fabs(x) <= lim;
+}
+} // namespace
+
+bool PartnerBrain::interceptThreat(const PartnerInput& in, std::size_t i) const {
+    if (i >= std::min(in.enemies.size(), kMaxPartnerEnemies)) return false;
+    const View& e = in.enemies[i];
+    return standing(e) && e.state == View::State::WindingUp && e.aim == View::Aim::Lead &&
+           !closeLensHas(in, i, 1.f - 2.f * kPartnerCloseConeMargin);
+}
+
+bool PartnerBrain::interceptRoom(float share) const {
+    float engaged = 0.f, off = 0.f;
+    for (std::size_t i = 0; i < kPartnerInterceptSlots; ++i) {
+        engaged += s_.closeEngaged[i];
+        off += s_.closeOff[i];
+    }
+    return engaged > 0.f && off < share * engaged;
+}
+
+int PartnerBrain::closeSpreadTarget(const PartnerInput& in, std::size_t n) {
+    const float enter = 1.f - 2.f * kPartnerCloseConeMargin;
+    const auto framed = [&](std::size_t i) { // picked inside the margin, kept to the lens's edge
+        return closeLensHas(in, i, s_.target >= 0 && static_cast<std::size_t>(s_.target) == i ? 1.f : enter);
+    };
+    const int ended = s_.intercept;
+    if (s_.intercept >= 0 && (!interceptThreat(in, static_cast<std::size_t>(s_.intercept)) ||
+                              !interceptRoom(kPartnerInterceptRunShare)))
+        s_.intercept = -1;
+    if (s_.intercept < 0 && interceptRoom(kPartnerInterceptStartShare)) {
+        float best = 0.f;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!interceptThreat(in, i)) continue;
+            const float d = edge(in.leadPos, in.enemies[i]);
+            if (s_.intercept < 0 || d < best) {
+                s_.intercept = static_cast<int>(i);
+                best = d;
+            }
+        }
+    }
+    if (s_.intercept >= 0) return s_.intercept;
+
+    // Spread's rule 1 among the enemies inside the lens.
+    int count = 0, all = -1, free = -1;
+    float dAll = 0.f, dFree = 0.f;
+    for (std::size_t i = 0; i < n; ++i) {
+        const View& e = in.enemies[i];
+        if (!standing(e) || !framed(i)) continue;
+        ++count;
+        const float d = edge(in.pos, e);
+        if (all < 0 || d < dAll) {
+            all = static_cast<int>(i);
+            dAll = d;
+        }
+        if (!e.leadAttacking && (free < 0 || d < dFree)) {
+            free = static_cast<int>(i);
+            dFree = d;
+        }
+    }
+    int tgt = count <= 1 ? all : (free >= 0 ? free : all);
+    if (tgt < 0) { // none inside: the lens's target
+        const int lt = in.leadTarget;
+        if (lt >= 0 && static_cast<std::size_t>(lt) < n && standing(in.enemies[static_cast<std::size_t>(lt)])) {
+            tgt = lt;
+        } else {
+            float best = 0.f;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!standing(in.enemies[i])) continue;
+                const float d = edge(in.leadPos, in.enemies[i]);
+                if (tgt < 0 || d < best) {
+                    tgt = static_cast<int>(i);
+                    best = d;
+                }
+            }
+        }
+    }
+    // The hold: kept unless it fell, was the intercept just ended, or left the lens with the pick inside it.
+    const int held = s_.target;
+    if (held >= 0 && held != tgt && held != ended && static_cast<std::size_t>(held) < n &&
+        s_.targetFor + 1e-9 < std::max(kPartnerCloseSpreadHoldSeconds, static_cast<double>(s_.t.targetHoldSeconds)) &&
+        standing(in.enemies[static_cast<std::size_t>(held)])) {
+        const bool lost = tgt >= 0 && framed(static_cast<std::size_t>(tgt)) && !framed(static_cast<std::size_t>(held));
+        if (!lost) tgt = held;
+    }
+    return tgt;
 }
 
 // Every window [T - W, T] that would hold any of `seconds` more attack from now, the lead attacking no more. For the
@@ -993,6 +1092,7 @@ void PartnerBrain::rolesSwapped() {
     s_.stillFor = 0.0;
     s_.placeFor = 0.0;
     s_.closeHold = {};
+    s_.intercept = -1; // its cap's ring stays (it is about the pair's play, as the budget's)
     s_.out = PartnerIntent{};
     ++s_.swaps;
 }
@@ -1004,6 +1104,29 @@ const PartnerIntent& PartnerBrain::step(double dt, const PartnerInput& in) {
     if (s_.begun) spend(in.spentSeconds); // counted before this step decides
     decide(dt, in);
     PartnerIntent& o = s_.out;
+    if (s_.begun && closeSpreadStep_) {
+        // Rule 19, Spread: the intercept's cap ring, of this step (the target held, the partner where it stands).
+        const auto slotOf = [](double c) { return static_cast<std::int64_t>(std::floor(c)); };
+        const std::int64_t was = slotOf(s_.closeClock);
+        s_.closeClock += dt;
+        const std::int64_t now = slotOf(s_.closeClock);
+        const std::int64_t m = static_cast<std::int64_t>(kPartnerInterceptSlots);
+        for (std::int64_t b = was + 1; b <= now && b <= was + m; ++b) {
+            const std::size_t k = static_cast<std::size_t>(b % m);
+            s_.closeEngaged[k] = 0.f;
+            s_.closeOff[k] = 0.f;
+        }
+        const std::size_t k = static_cast<std::size_t>(now % m);
+        if (s_.target >= 0 && in.canAct && in.health > 0.f) {
+            s_.closeEngaged[k] += static_cast<float>(dt);
+            float x = 0.f;
+            if (!partnerCloseNdc(in.station.cameraPos, in.station.cameraForward, in.station.close.halfAngleDegrees,
+                                 in.pos, x) || std::fabs(x) > 1.f)
+                s_.closeOff[k] += static_cast<float>(dt);
+        }
+        o.intercept = s_.intercept >= 0 && s_.target == s_.intercept;
+        if (o.intercept) s_.interceptSeconds += dt;
+    }
     // Rule 17 (off: none of it runs); the close camera's rule 19 replaces it.
     if (s_.begun && o.framed && s_.t.circling && !in.station.close.given) skirmishStep(dt, in);
     if (s_.begun) nearWalk(in);                // rule 19's near field: a walk round the far side of the lead
@@ -1401,6 +1524,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     const bool wasStill = out.act != PartnerAct::MoveTo && out.act != PartnerAct::StepBack; // the last step's
     out = PartnerIntent{};
     nearStep_ = false;
+    closeSpreadStep_ = false;
     if (!s_.begun) return out;
     const PartnerTuning& t = tStep_; // the kit's reach and standoff under the close camera (rule 19), else s_.t
     const bool rangeOn = partnerRangeOn(in, s_.t);
@@ -1493,6 +1617,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // (PartnerCloseStation.h, rules 1-2) wherever it stands, steps out to or casts from, and walks round it (nearWalk).
     const bool nearField = closeOn && rangeOn;
     nearStep_ = nearField;
+    closeSpreadStep_ = closeOn && in.order == PartnerOrder::Spread;
     const Vec2 nearLens = in.station.cameraPos, nearForward = in.station.cameraForward;
     const float nearVHalf = in.station.close.verticalHalfDegrees > 0.f
                                 ? in.station.close.verticalHalfDegrees
@@ -1745,7 +1870,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         }
     } else if (s_.phase == Phase::Pause) {
         s_.clock += dt;
-        if (s_.clock + 1e-9 >= s_.pause || staggered || !haveTarget || engageDue) { // rule 14: a pause ends
+        // Rule 19, Spread: a pause on an intercept ends the step its intercept does (its trigger gone, or the cap).
+        const bool interceptOver = closeSpreadStep_ && s_.intercept >= 0 && s_.target == s_.intercept &&
+                                   (!interceptThreat(in, static_cast<std::size_t>(s_.intercept)) ||
+                                    !interceptRoom(kPartnerInterceptRunShare));
+        if (s_.clock + 1e-9 >= s_.pause || staggered || !haveTarget || engageDue || interceptOver) { // rule 14
             s_.phase = Phase::Ready;
             s_.clock = 0.0;
         }
@@ -1935,8 +2064,8 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     if (fm)
         for (std::size_t i = 0; i < n; ++i)
             if (fr.seesWhole(in.enemies[i].pos)) seen |= 1u << i;
-    int tgt = chooseTarget(in, fm, seen);
-    if (in.order == PartnerOrder::Spread && s_.target >= 0 && tgt != s_.target &&
+    int tgt = closeSpreadStep_ ? closeSpreadTarget(in, n) : chooseTarget(in, fm, seen);
+    if (!closeSpreadStep_ && in.order == PartnerOrder::Spread && s_.target >= 0 && tgt != s_.target &&
         static_cast<std::size_t>(s_.target) < n && s_.targetFor + 1e-9 < static_cast<double>(t.targetHoldSeconds)) {
         const View& was = in.enemies[static_cast<std::size_t>(s_.target)];
         // Framed, a target gone from the frame is not held over one in it.

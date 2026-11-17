@@ -1607,3 +1607,134 @@ TEST_CASE("close station: a classic run's whole hash, pinned") {
     MESSAGE("classic whole-run hash " << h);
     CHECK(h == 773648685674569465ull);
 }
+
+namespace {
+
+// Rule 19, Spread (11-17): a pit with `count` enemies; the lens as CsPit's (on enemy 0 from the lead).
+struct CsSpread : CsPit {
+    std::size_t count = 2;
+    explicit CsSpread(bool close, std::size_t k = 2) : CsPit(close), count(k) {}
+    const PartnerIntent& stepAll(double dt = 1.0 / 60.0) {
+        in.enemies = std::span<const PartnerEnemyView>(e.data(), count);
+        return b.step(dt, in);
+    }
+    float ndc(Vec2 p) const {
+        float x = 9.f;
+        return partnerCloseNdc(in.station.cameraPos, in.station.cameraForward, kCsHalf, p, x) ? x : 9.f;
+    }
+};
+
+} // namespace
+
+TEST_CASE("close station: Spread under the close lens takes an enemy inside it, else the lens's target") {
+    // Enemy 0 (the lead's, in the lens) and enemy 1 nearer the partner but outside the lens.
+    const auto scene = [](CsSpread& p) {
+        p.e[0].leadAttacking = true;
+        p.e[1].pos = {-4.f, -6.f};
+        p.e[1].radius = 0.5f;
+    };
+    CsSpread close(true), classic(false);
+    scene(close);
+    scene(classic);
+    REQUIRE(std::fabs(close.ndc(close.e[0].pos)) <= 0.8f);
+    REQUIRE(std::fabs(close.ndc(close.e[1].pos)) > 1.f);
+    close.stepAll();
+    classic.stepAll();
+    CHECK(close.b.target() == 0);   // the only one in the lens, though the lead is on it
+    CHECK(classic.b.target() == 1); // as before: Spread's nearest the lead is not attacking
+
+    // None in the lens (the lens turned away from both): the lens's target, the lead's; with none, the nearest the lead.
+    for (const int lead : {1, 0, -1}) {
+        CsSpread p(true);
+        scene(p);
+        p.in.station.cameraForward = {-1.f, 0.f};
+        REQUIRE(std::fabs(p.ndc(p.e[0].pos)) > 1.f);
+        REQUIRE(std::fabs(p.ndc(p.e[1].pos)) > 1.f);
+        p.in.leadTarget = lead;
+        p.stepAll();
+        CHECK(p.b.target() == (lead >= 0 ? lead : 0));
+    }
+}
+
+TEST_CASE("close station: Spread's pick under the close lens is held 2 s unless it falls") {
+    // Two enemies in the lens, neither the lead's; the partner nearer enemy 0, then put nearer enemy 2.
+    CsSpread p(true, 3);
+    p.in.leadAttacking = false;
+    p.e[1].pos = {-4.f, -30.f}; // far off
+    p.e[2].pos = {0.5f, 2.f};
+    p.e[2].radius = 0.5f;
+    REQUIRE(std::fabs(p.ndc(p.e[2].pos)) <= 0.8f);
+    p.in.pos = {-4.f, -3.f};
+    p.stepAll();
+    REQUIRE(p.b.target() == 0);
+    p.in.pos = {-3.f, 4.f}; // now nearer enemy 2, both out of reach
+    int switchedAt = -1;
+    for (int s = 1; s < 3 * 60 && switchedAt < 0; ++s) {
+        p.stepAll();
+        if (p.b.target() == 2) switchedAt = s;
+    }
+    CHECK(switchedAt >= 2 * 60 - 1);
+    CHECK(switchedAt <= 2 * 60 + 2);
+
+    // Held again, it lets go at once when its target falls.
+    CsSpread q(true, 3);
+    q.in.leadAttacking = false;
+    q.e[1].pos = {-4.f, -30.f};
+    q.e[2].pos = {0.5f, 2.f};
+    q.e[2].radius = 0.5f;
+    q.stepAll();
+    REQUIRE(q.b.target() == 0);
+    q.stepAll();
+    q.e[0].state = PartnerEnemyView::State::Down;
+    q.stepAll();
+    CHECK(q.b.target() == 2);
+}
+
+TEST_CASE("close station: an intercept off the close lens is taken, and capped at a quarter of the engaged time") {
+    // Enemy 0 in the lens (the lead's); enemy 1 outside it, winding up at the lead without end. The partner walks its
+    // intents at 4.5 m/s. Over every 20 s window its time outside the lens while engaged stays under 25%.
+    CsSpread p(true);
+    p.e[1].pos = {-4.f, -6.f};
+    p.e[1].radius = 0.5f;
+    p.e[1].state = PartnerEnemyView::State::WindingUp;
+    p.e[1].windupLeft = 0.5f;
+    p.e[1].aim = PartnerEnemyView::Aim::Lead;
+    constexpr int kSteps = 80 * 60, kWin = 20 * 60;
+    std::array<std::uint8_t, kSteps> engaged{}, off{};
+    int intercepts = 0;
+    for (int s = 0; s < kSteps; ++s) {
+        const PartnerIntent& i = p.stepAll();
+        if (i.intercept) {
+            ++intercepts;
+            CHECK(p.b.target() == 1);
+        }
+        engaged[static_cast<std::size_t>(s)] = p.b.target() >= 0 ? 1 : 0;
+        off[static_cast<std::size_t>(s)] = engaged[static_cast<std::size_t>(s)] && std::fabs(p.ndc(p.in.pos)) > 1.f ? 1 : 0;
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+            const Vec2 v = csSub(i.point, p.in.pos);
+            const float l = csLen(v), step = 4.5f / 60.f;
+            p.in.pos = l <= step ? i.point : csAdd(p.in.pos, csMul(v, step / l));
+        }
+    }
+    CHECK(intercepts > 0);
+    CHECK(p.b.save().closeClock > 0.0);
+    int worstOff = 0, worstEngaged = 1;
+    for (int end = kWin; end <= kSteps; end += 30) {
+        int en = 0, of = 0;
+        for (int s = end - kWin; s < end; ++s) {
+            en += engaged[static_cast<std::size_t>(s)];
+            of += off[static_cast<std::size_t>(s)];
+        }
+        if (en > 0 && of * worstEngaged > worstOff * en) {
+            worstOff = of;
+            worstEngaged = en;
+        }
+        CHECK(of < kPartnerInterceptShare * static_cast<float>(en));
+    }
+    MESSAGE("intercept steps " << intercepts << ", worst 20 s window off " << worstOff << " of " << worstEngaged);
+
+    // Without the close camera the same scene never reports one.
+    CsSpread c(false);
+    c.e[1] = p.e[1];
+    for (int s = 0; s < 600; ++s) CHECK_FALSE(c.stepAll().intercept);
+}

@@ -517,6 +517,7 @@ struct ArenaFightImpl {
             ao.stationed = al.stationed;
             ao.pairSeconds = pl.pairSpent;
             ao.bodyTurn = al.bodyTurn;
+            ao.intercept = al.intercept;
         }
     }
 
@@ -2903,6 +2904,7 @@ struct ArenaFightImpl {
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
         al.stationed = intent.stationed;
+        al.intercept = intent.intercept;
         if (!allyUp()) { // down: it lies where it fell until the brain stands it
             clearAlly();
             if (!intent.rise) return;
