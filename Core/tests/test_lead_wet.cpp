@@ -17,6 +17,16 @@ TEST_CASE("lead wet: dry by default; ft.LeadWet forces, below 0 follows the worl
     CHECK(lw::weather(std::nanf(""), 0.5f) == doctest::Approx(0.5f)); // NaN is not >= 0: follows the world
 }
 
+TEST_CASE("lead wet: skin and hair take the wetter of the weather and the lead's own water") {
+    CHECK(lw::surface(0.f, ftcore::WaterWetness{}) == 0.f); // dry by default
+    CHECK(lw::surface(0.f, ftcore::WaterWetness{0.7f, 0.5f, 0.f}) == doctest::Approx(0.7f)); // wading, no rain
+    CHECK(lw::surface(0.9f, ftcore::WaterWetness{0.2f, 0.3f, 0.f}) == doctest::Approx(0.9f)); // rain
+    CHECK(lw::surface(std::nanf(""), ftcore::WaterWetness{std::nanf(""), 0.f, 0.f}) == 0.f);
+    // Wading alone wears the wet groom and wets the skin.
+    CHECK(lw::groomWet(lw::surface(0.f, ftcore::WaterWetness{0.8f, 1.f, 0.f}), false));
+    CHECK(lw::skin(lw::surface(0.f, ftcore::WaterWetness{0.8f, 1.f, 0.f})) > 0.9f);
+}
+
 TEST_CASE("lead wet: cloth takes the wetter of the water and the weather") {
     const ftcore::WaterWetness wading{0.8f, 0.6f, 0.3f};
     const auto a = lw::cloth(wading, 0.5f); // the water is wetter: unchanged

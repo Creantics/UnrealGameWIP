@@ -52,7 +52,6 @@
 #include "FTNewUi.h"
 #include "FTPartyFollower.h"
 #include "FTSceneLook.h"
-#include "FTLookSubsystem.h"
 #include "Components/DecalComponent.h"
 #include "Misc/PackageName.h"
 #include "ForgottenThird.h"
@@ -3762,7 +3761,7 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 #endif
 		// No water here: the weather alone (dry by default, so this is two early returns).
 		ShowWetness(ftcore::leadwet::cloth(ftcore::WaterWetness{}, Weather));
-		ShowLeadWet(Weather);
+		ShowLeadWet(ftcore::leadwet::surface(Weather, ftcore::WaterWetness{}));
 		return;
 	}
 	// As the surfaces see it now: during the climb out the state is the one it began with, the feet rising out of it.
@@ -3784,8 +3783,9 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 		return; // -ExploreSoakSwap holds its own wetness
 	}
 #endif
-	ShowWetness(ftcore::leadwet::cloth(System->LeadWetness(), Weather));
-	ShowLeadWet(Weather);
+	const ftcore::WaterWetness& Water = System->LeadWetness();
+	ShowWetness(ftcore::leadwet::cloth(Water, Weather));
+	ShowLeadWet(ftcore::leadwet::surface(Weather, Water));
 }
 
 float AFTExploreCharacter::LeadWeather() const
@@ -3795,13 +3795,15 @@ float AFTExploreCharacter::LeadWeather() const
 	{
 		return ftcore::leadwet::weather(Forced, 0.f);
 	}
-	const UWorld* World = GetWorld();
-	const UFTLookSubsystem* Look = World ? World->GetSubsystem<UFTLookSubsystem>() : nullptr;
-	return ftcore::leadwet::weather(Forced, Look ? Look->GetLook().wetness : 0.f);
+	// Below 0 follows the rain: the weather's RainState (ftcore/Weather.h) is hooked up here once its owner, the world
+	// clock, steps one; until then there is no rain, and only the lead's own water wets it (surface). The look's wetness
+	// is the ground's damp floor, never a lead's.
+	return ftcore::leadwet::weather(Forced, 0.f);
 }
 
 void AFTExploreCharacter::ShowLeadWet(float Weather)
 {
+	// Weather here is the lead's surface wetness (ftcore::leadwet::surface): rain or its own water.
 	const bool bGroom = ftcore::leadwet::groomWet(Weather, bGroomWet);
 	if (bGroom != bGroomWet)
 	{

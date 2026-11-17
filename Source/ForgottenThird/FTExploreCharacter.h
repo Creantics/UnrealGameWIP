@@ -625,9 +625,10 @@ private:
 	float WetShown = 0.f;
 	float WetLineShown = 0.f;
 	float WetSiltShown = 0.f;
-	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; 0, the default, is dry; below 0 follows the
-	// world look's wetness) soaks the cloth as the water does (through ShowWetness), wears the look's wet grooms and
-	// writes SkinWet (0..1) to the same dynamic materials; the skin master smooths its high points with it. No drips.
+	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; 0, the default, is no rain; below 0 follows the
+	// rain) soaks the cloth as the water does (through ShowWetness); the lead's surface wetness (that or its own water,
+	// whichever is wetter) wears the look's wet grooms and writes SkinWet (0..1) to the same dynamic materials, where the
+	// skin master smooths its up- and forward-facing open skin. No drips.
 	float LeadWeather() const;
 	void ShowLeadWet(float Weather);
 	bool bGroomWet = false;
