@@ -152,6 +152,7 @@ add_library(ftcore STATIC
     src/SceneLook.cpp
     src/LookBody.cpp
     src/GarmentFront.cpp
+    src/AnimImport.cpp
     src/LookGrade.cpp
     src/LookTable.cpp
     src/ClipBodyAlias.cpp
@@ -342,6 +343,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_mix_state.cpp
         tests/test_look_body.cpp
         tests/test_garment_front.cpp
+        tests/test_anim_import.cpp
         tests/test_backlog.cpp
         tests/test_ui.cpp
         tests/test_ui_budget.cpp
