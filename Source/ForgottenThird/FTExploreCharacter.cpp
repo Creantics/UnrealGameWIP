@@ -55,13 +55,17 @@
 #include "Components/DecalComponent.h"
 #include "Misc/PackageName.h"
 #include "ForgottenThird.h"
-#include "FTRimLight.h"
+#include "FTRim.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
+#include "ftcore/LeadWet.h"
 
 namespace
 {
+TAutoConsoleVariable<float> CVarLeadWet(TEXT("ft.LeadWet"), 0.f,
+	TEXT("The leads' wet switch: 0 dry (the default), 0..1 that wet (cloth soak, wet grooms, wet skin), below 0 follows the world look's wetness."));
+
 // -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
 // The camera comes back round behind a moving lead once the look input has rested this long (s), closing
 // kRecentreRate of the gap a second and never faster than kRecentreMax (deg/s), so it trails into turns.
@@ -144,7 +148,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Camera->bUsePawnControlRotation = false;
 	Camera->SetFieldOfView(kFov);
 
-	Rim = CreateDefaultSubobject<UFTRimLightComponent>(TEXT("Rim"));
+	Rim = CreateDefaultSubobject<UFTRimComponent>(TEXT("Rim"));
 	Rim->SetupAttachment(GetCapsuleComponent());
 	Rim->SetRelativeLocation(FVector(0.0, 0.0, 60.0)); // chest to head on a standing lead
 
@@ -823,6 +827,39 @@ void AFTExploreCharacter::EnterLookDev()
 			Ground->SetMaterial(0, Grey);
 		}
 	}
+	// -ExploreLookDevGrey[=<albedo>]: a set where a dark garment reads against its surround. A grey wall (albedo 0.35
+	// unless given) stands behind the pawn on the far side from the camera, the key sits 45 degrees off the view and
+	// follows the camera round (so a back or elbow crop is key-lit too), and the fill is stronger, about 1.5 stops
+	// under the key. Without the flag the set is as before.
+	float GreyAlbedo = 0.f; // also in the set line logged below, shipped or not
+#if UE_BUILD_SHIPPING
+	const bool bGrey = false; // a review set: never in a shipped game
+#else
+	const bool bGrey = FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDevGrey")) || FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevGrey="), GreyAlbedo);
+	if (bGrey)
+	{
+		if (!FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevGrey="), GreyAlbedo) || GreyAlbedo <= 0.f)
+		{
+			GreyAlbedo = 0.35f;
+		}
+		UStaticMesh* Box = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+		if (Box && Base)
+		{
+			UStaticMeshComponent* Wall = NewObject<UStaticMeshComponent>(this);
+			Wall->SetStaticMesh(Box);
+			Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Wall->SetupAttachment(Boom); // boom space: the camera is at -X, so +X is behind the pawn as it sees it
+			Wall->SetUsingAbsoluteScale(true);
+			Wall->SetWorldScale3D(FVector(0.05, 14.0, 10.0));
+			Wall->SetRelativeLocation(FVector(380.0, 0.0, 150.0));
+			Wall->RegisterComponent();
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, this);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(GreyAlbedo, GreyAlbedo, GreyAlbedo));
+			Wall->SetMaterial(0, Grey);
+		}
+	}
+#endif
 	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevSpin="), LookDevSpin);
 	LookDevPivot = NewObject<USceneComponent>(this);
 	LookDevPivot->SetupAttachment(GetRootComponent());
@@ -841,8 +878,13 @@ void AFTExploreCharacter::EnterLookDev()
 		{LookDevPivot, FVector(-250.0, -170.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key
 		{Boom, FVector(-260.0, 240.0, 30.0), 6.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},        // fill
 	};
+	const FLightSpec GreySpecs[] = {
+		{Boom, FVector(-220.0, -220.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key, 45 degrees off the view
+		{Boom, FVector(-260.0, 240.0, 60.0), 14.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},  // fill
+	};
 	const FVector Target(0.0, 0.0, 20.0);
-	for (const FLightSpec& Spec : Specs)
+	const TConstArrayView<FLightSpec> Chosen = bGrey ? TConstArrayView<FLightSpec>(GreySpecs) : TConstArrayView<FLightSpec>(Specs);
+	for (const FLightSpec& Spec : Chosen)
 	{
 		URectLightComponent* Light = NewObject<URectLightComponent>(this);
 		Light->SetupAttachment(Spec.Parent);
@@ -866,7 +908,7 @@ void AFTExploreCharacter::EnterLookDev()
 	float Bias = 0.f;
 	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevBias="), Bias);
 	FixExposure(Bias);
-	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s)."), Hidden, LookDevSpin);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s, grey wall %.2f)."), Hidden, LookDevSpin, GreyAlbedo);
 }
 
 #if !UE_BUILD_SHIPPING
@@ -973,9 +1015,18 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
 	WornLook = Look;
 	// New pieces: the wet instances are gathered again the next time the lead is wet.
 	WetMaterials.Reset();
+	WetSkinDry.Reset();
 	bWetMaterialsMade = false;
+	WetHairMaterials.Reset();
+	WetHairDry.Reset();
+	bWetHairMade = false;
+	SkinWetEased = 0.f;
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
+	// The grooms come on dry; the wet switch swaps them on its next tick if the weather is wet.
+	bGroomWet = false;
+	WetGroomHold.Reset();
+	FTLook::PreloadWetGrooms(Look.Grooms, WetGroomHold, TEXT("FTExploreCharacter"));
 	FTLook::SwapMaterials(*BodyComponent, Pieces, Look.MaterialSwaps, TEXT("FTExploreCharacter"));
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, Body ? *Body->GetName() : TEXT("none"), BodyComponent->GetRelativeRotation().Yaw, Pieces.Num(), Cloth,
@@ -3704,8 +3755,18 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 {
 	UWorld* World = GetWorld();
 	UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const float Weather = LeadWeather();
 	if (!System || !System->HasBodies())
 	{
+#if !UE_BUILD_SHIPPING
+		if (SoakSwapWet >= 0.f)
+		{
+			return; // -ExploreSoakSwap holds its own wetness
+		}
+#endif
+		// No water here: the weather alone (dry by default, so this is two early returns).
+		ShowWetness(ftcore::leadwet::cloth(ftcore::WaterWetness{}, Weather));
+		ShowLeadWet(ftcore::leadwet::surface(Weather, ftcore::WaterWetness{}), DeltaSeconds);
 		return;
 	}
 	// As the surfaces see it now: during the climb out the state is the one it began with, the feet rising out of it.
@@ -3727,7 +3788,124 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 		return; // -ExploreSoakSwap holds its own wetness
 	}
 #endif
-	ShowWetness(System->LeadWetness());
+	const ftcore::WaterWetness& Water = System->LeadWetness();
+	ShowWetness(ftcore::leadwet::cloth(Water, Weather));
+	ShowLeadWet(ftcore::leadwet::surface(Weather, Water), DeltaSeconds);
+}
+
+float AFTExploreCharacter::LeadWeather() const
+{
+	const float Forced = CVarLeadWet.GetValueOnGameThread();
+	if (Forced >= 0.f)
+	{
+		return ftcore::leadwet::weather(Forced, 0.f);
+	}
+	// Below 0 follows the rain: the weather's RainState (ftcore/Weather.h) is hooked up here once its owner, the world
+	// clock, steps one; until then there is no rain, and only the lead's own water wets it (surface). The look's wetness
+	// is the ground's damp floor, never a lead's.
+	return ftcore::leadwet::weather(Forced, 0.f);
+}
+
+void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
+{
+	// Weather here is the lead's surface wetness (ftcore::leadwet::surface): rain or its own water.
+	const bool bGroom = ftcore::leadwet::groomWet(Weather, bGroomWet);
+	if (bGroom != bGroomWet)
+	{
+		bGroomWet = bGroom;
+		const int32 Swapped = FTLook::SetGroomsWet(GroomComponents, WornLook.Grooms, bGroomWet, TEXT("FTExploreCharacter"));
+		UE_LOG(LogForgottenThird, Display, TEXT("Wet switch: %s grooms on (%d swapped) at weather %.2f."), bGroomWet ? TEXT("wet") : TEXT("dry"),
+			Swapped, Weather);
+	}
+	// The wet-skin amount, eased; it goes to the materials ShowWetness gathered (any skin is wet only when the cloth is,
+	// so they are there) and to the hair without a wet groom.
+	const float Target = ftcore::leadwet::skin(Weather);
+	SkinWetEased = ftcore::leadwet::ease(SkinWetEased, Target, DeltaSeconds);
+	const float Skin = SkinWetEased;
+	// Written when it has moved enough, and once more when it reaches its target (so the last small step lands).
+	const bool bChanged = FMath::Abs(Skin - SkinWetShown) > 0.004f || (Skin == Target && Skin != SkinWetShown);
+	if (!bWetMaterialsMade || !bChanged)
+	{
+		return;
+	}
+	static const FName SkinWetName(TEXT("SkinWet"));
+	static const FName MhRoughName(TEXT("Roughness Global Multiply Post-Bake"));
+	static const FName MhSpecName(TEXT("Specular Global Multiply Post-Bake"));
+	for (int32 Index = 0; Index < WetMaterials.Num(); ++Index)
+	{
+		UMaterialInstanceDynamic* Dynamic = WetMaterials[Index];
+		if (!Dynamic)
+		{
+			continue;
+		}
+		Dynamic->SetScalarParameterValue(SkinWetName, Skin);
+		const FVector2f Dry = WetSkinDry.IsValidIndex(Index) ? WetSkinDry[Index] : FVector2f(-1.f, -1.f);
+		if (Dry.X >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MhRoughName, ftcore::leadwet::mhRoughness(Dry.X, Skin));
+		}
+		if (Dry.Y >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MhSpecName, ftcore::leadwet::mhSpecular(Dry.Y, Skin));
+		}
+	}
+	ShowHairWet(Skin);
+	SkinWetShown = Skin;
+}
+
+void AFTExploreCharacter::ShowHairWet(float Wet)
+{
+	static const FName RoughName(TEXT("Roughness"));
+	static const FName HairRoughName(TEXT("HairRoughness"));
+	static const FName MelaninName(TEXT("hairMelanin"));
+	if (!bWetHairMade)
+	{
+		// The first time the lead is wet with this look: an instance on each groom without a wet groom, dry values kept.
+		bWetHairMade = true;
+		WetHairMaterials.Reset();
+		WetHairDry.Reset();
+		FTLook::MakeHairWetMaterials(GroomComponents, WornLook.Grooms, WetHairMaterials);
+		for (UMaterialInstanceDynamic* Dynamic : WetHairMaterials)
+		{
+			FVector3f Dry(-1.f, -1.f, -1.f);
+			float Value = 0.f;
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(RoughName), Value))
+			{
+				Dry.X = Value;
+			}
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(HairRoughName), Value))
+			{
+				Dry.Y = Value;
+			}
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(MelaninName), Value))
+			{
+				Dry.Z = Value;
+			}
+			WetHairDry.Add(Dry);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Wet switch: %d hair materials without a wet groom take the wet value."), WetHairMaterials.Num());
+	}
+	for (int32 Index = 0; Index < WetHairMaterials.Num(); ++Index)
+	{
+		UMaterialInstanceDynamic* Dynamic = WetHairMaterials[Index];
+		const FVector3f& Dry = WetHairDry[Index];
+		if (!Dynamic)
+		{
+			continue;
+		}
+		if (Dry.X >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(RoughName, ftcore::leadwet::hairRoughness(Dry.X, Wet));
+		}
+		if (Dry.Y >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(HairRoughName, ftcore::leadwet::hairRoughness(Dry.Y, Wet));
+		}
+		if (Dry.Z >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MelaninName, ftcore::leadwet::hairMelanin(Dry.Z, Wet));
+		}
+	}
 }
 
 namespace
@@ -3918,9 +4096,11 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 		bWetMaterialsMade = true;
 		WetMaterialsSerial = FTLook::WornMeshSerial();
 		WetMaterials.Reset();
+		WetSkinDry.Reset();
 		WetShown = -1.f;
 		WetLineShown = -1.0e9f;
 		WetSiltShown = -1.f;
+		SkinWetShown = -1.f;
 		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
 		for (USkeletalMeshComponent* Part : Meshes)
 		{
@@ -3935,6 +4115,18 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 				{
 					Dynamic->SetScalarParameterValue(TEXT("WetLineSoft"), 8.f);
 					WetMaterials.Add(Dynamic);
+					// The MetaHuman skin's dry multipliers (-1 where the material has none), for the wet switch.
+					FVector2f Dry(-1.f, -1.f);
+					float Value = 0.f;
+					if (Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Roughness Global Multiply Post-Bake")), Value))
+					{
+						Dry.X = Value;
+					}
+					if (Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Specular Global Multiply Post-Bake")), Value))
+					{
+						Dry.Y = Value;
+					}
+					WetSkinDry.Add(Dry);
 				}
 			}
 		}
