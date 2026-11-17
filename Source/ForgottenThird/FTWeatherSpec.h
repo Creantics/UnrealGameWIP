@@ -31,10 +31,13 @@ inline bool ReadWeatherSpec(const FString& Params, const TCHAR* Who, ftcore::Sur
 	}
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("WeatherSpec: %s [%s] soakDarken %.3f soakRough %.3f soakKeep %.3f trackRough %.3f track %.2f-%.2f m wander %.2f "
-			 "puddleRough %.3f puddleChance %.2f puddleCover %.2f puddleCellM %.2f radius %.2f-%.2f kerbBias %.2f dampShare %.2f"),
+			 "puddleRough %.3f puddleChance %.2f puddleCover %.2f puddleCellM %.2f radius %.2f-%.2f kerbBias %.2f dampShare %.2f "
+			 "edgePool pitch %.2f phase %.2f side %+.0f inset %.2f across %.2f-%.2f deep %.2f"),
 		Who, Text.IsEmpty() ? TEXT("defaults") : *Text, Out.soakDarken, Out.soakRough, Out.soakKeep, Out.trackRough,
 		2.f * Out.trackHalfLoM, 2.f * Out.trackHalfHiM, Out.trackWanderM, Out.puddleRough, Out.puddleChance, Out.puddleCover,
-		Out.puddleCellM, Out.puddleRadiusLoM, Out.puddleRadiusHiM, Out.kerbBias, Out.dampShare);
+		Out.puddleCellM, Out.puddleRadiusLoM, Out.puddleRadiusHiM, Out.kerbBias, Out.dampShare, Out.edgePoolPitchM,
+		Out.edgePoolPhaseM, Out.edgePoolSide, Out.edgePoolInsetM, 2.f * Out.edgePoolHalfLoM, 2.f * Out.edgePoolHalfHiM,
+		Out.edgePoolDeep);
 	return true;
 }
 } // namespace FT

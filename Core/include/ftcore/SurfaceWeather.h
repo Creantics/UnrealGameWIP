@@ -69,6 +69,19 @@ struct SurfaceWeatherSpec {
     float trackDryPolish = 0.0f;         // dry roughness lost on the track, as a share (0: the dry look as before)
     float kerbBias = 1.0f;               // a flat ground slab's long edges (kerb line, shop steps) deepen its bowls as a
                                          // gutter does, by this share of the gutter weight
+    // Edge pools: one low pool per shop entrance along a flat ground slab's long edge, whatever its cell holds. Off at
+    // pitch 0. The pools sit every edgePoolPitchM along the slab (its local long axis, metres from its centre), the first
+    // at edgePoolPhaseM, each jittered by up to edgePoolJitterM along the edge, its centre edgePoolInsetM in from the
+    // edge. The pitch must leave room for one pool, so it is at least 2 * (jitter + along radius).
+    float edgePoolPitchM = 0.0f;         // a pool per this much edge (a bay's width); 0: none
+    float edgePoolPhaseM = 0.0f;         // the along coordinate of one pool's centre before its jitter
+    float edgePoolSide = 0.0f;           // +1 the edge on the slab's +across side only, -1 the - side only, 0 both
+    float edgePoolJitterM = 0.3f;        // the centre's swing along the edge
+    float edgePoolInsetM = 0.25f;        // the centre's distance in from the edge: at most the half extent, so every pool
+                                         // runs against the step foot
+    float edgePoolHalfLoM = 0.22f, edgePoolHalfHiM = 0.35f;  // its half extent across the edge (0.44-0.7 m across)
+    float edgePoolStretch = 1.2f;        // its along radius over the across one
+    float edgePoolDeep = 1.3f;           // its bowl scale: lower than a cell's puddle, so it fills first
     float tiltMin = 0.005f;              // |world z of the box's Y axis| over which a box counts as cambered
     float gutterM = 0.6f;                // the gutter band's width over the low edge
     float gutterBias = 0.6f;             // a bowl deepened by this share at the low edge, falling to 0 across the band
@@ -346,6 +359,11 @@ FTCORE_API float weatherFlatSlab(float sz, float sx, float sy, float axisYz, con
 FTCORE_API float weatherTrack(float acrossM, float alongM, float longM, float shortM, float flat, const SurfaceWeatherSpec& spec);
 // 0..1 kerb weight on a flat ground slab: edgeM the pixel's metres from the nearer long edge (a gutter's falloff).
 FTCORE_API float weatherKerb(float edgeM, float flat, const SurfaceWeatherSpec& spec);
+// A flat ground slab's edge-pool bowl at a pixel (as weatherPuddleBowl's, scaled by edgePoolDeep): acrossM and alongM
+// as weatherTrack's, shortM the slab's short plan side, rimNoise the wobble noise. Under 0 off every pool, -1 with pitch
+// 0 or off a flat slab. The node takes the larger of this and the cell's bowl.
+FTCORE_API float weatherEdgePoolBowl(float acrossM, float alongM, float shortM, float flat, float rimNoise,
+                                     const SurfaceWeatherSpec& spec);
 // Sets spec fields from "key=value[,key=value...]", the keys the field names above (soakRough=0.22,puddleCellM=3.2).
 // False on an unknown key or a value that isn't a finite number, with that entry in error (when given); fields set by
 // the entries before it stay set. Empty text is true and changes nothing.

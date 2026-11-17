@@ -239,6 +239,102 @@ TEST_CASE("worn track and kerb line: the hero lane (7 x 40 m, flat) streaks down
     CHECK(static_cast<float>(edgeWet) / edgeN > static_cast<float>(midWet) / midN);
 }
 
+TEST_CASE("edge pools: one low pool per bay entrance on the hero lane's shop edge, counted in the kerb band") {
+    SurfaceWeatherSpec off;
+    const float flat = weatherFlatSlab(0.08f, 7.f, 40.f, 0.f, off);
+    CHECK(weatherEdgePoolBowl(3.f, 0.f, 7.f, flat, 0.5f, off) == -1.f);  // pitch 0: off by default
+    // The hero bake: a pool per 8.1 m bay, bay centres at the slab's along 0, +-8.1, +-16.2, the shop (+x) edge only.
+    SurfaceWeatherSpec spec;
+    std::string err;
+    REQUIRE(applySurfaceWeatherOverrides(spec, "edgePoolPitchM=8.1,edgePoolPhaseM=0,edgePoolSide=1", &err));
+    CHECK(weatherEdgePoolBowl(3.f, 0.f, 7.f, 0.f, 0.5f, spec) == -1.f);       // not on a slab that isn't flat
+    CHECK(weatherEdgePoolBowl(-3.f, 0.f, 7.f, flat, 0.5f, spec) < 0.f);      // not on the - edge
+    // Every bay's pool: its across extent 0.5-0.9 m (rim at mid noise), its centre within the jitter of the bay centre.
+    for (int bay = -2; bay <= 2; ++bay) {
+        float a0 = 1e9f, a1 = -1e9f, c0 = 1e9f, c1 = -1e9f;
+        for (int i = 0; i <= 400; ++i) {
+            const float along = bay * 8.1f - 2.f + i * 0.01f;
+            for (int k = 0; k <= 200; ++k) {
+                const float edge = k * 0.01f, across = 3.5f - edge;
+                if (weatherEdgePoolBowl(across, along, 7.f, flat, 0.5f, spec) > 0.f) {
+                    a0 = std::min(a0, along);
+                    a1 = std::max(a1, along);
+                    c0 = std::min(c0, edge);
+                    c1 = std::max(c1, edge);
+                }
+            }
+        }
+        REQUIRE(a1 > a0);
+        CHECK(std::fabs(0.5f * (a0 + a1) - bay * 8.1f) <= spec.edgePoolJitterM + 0.02f);
+        CHECK(c0 == doctest::Approx(0.f));                       // against the step foot
+        const float across = c1;  // the pool runs out from the edge
+        CHECK(across <= spec.edgePoolInsetM + spec.edgePoolHalfHiM + 0.02f);
+        CHECK(across >= spec.edgePoolInsetM + spec.edgePoolHalfLoM - 0.02f);
+        CHECK(a1 - a0 >= 2.f * spec.edgePoolHalfLoM * spec.edgePoolStretch - 0.03f);
+        CHECK(a1 - a0 <= 2.f * spec.edgePoolHalfHiM * spec.edgePoolStretch + 0.03f);
+    }
+    // It fills before the cell's puddles: early in the rain its centre is full where a cell puddle's barely starts.
+    // The bay-0 pool's deepest point (its centre is jittered along, so scan for it).
+    float centre = -1.f;
+    for (int i = 0; i <= 200; ++i) centre = std::max(centre, weatherEdgePoolBowl(3.5f - spec.edgePoolInsetM, -0.5f + i * 0.005f, 7.f, flat, 0.5f, spec));
+    CHECK(centre == doctest::Approx(spec.edgePoolDeep));
+    const float early = 0.05f;
+    const float pool = weatherPuddle(early, 1.f, centre, 0.f, 0.5f, spec);
+    CHECK(pool == doctest::Approx(early * 4.f));  // full in its bowl, only the fade-in ramp under it
+    CHECK(weatherPuddle(early, 1.f, 1.f, 0.f, 0.5f, spec) < 0.25f * pool);
+
+    // The lane's cover at Wetness 1 (every 5 cm, the node's max of the two bowls), the lane under 15%. The hero bake thins the cell`n    // puddles (puddleChance 0.8) so the pools land the kerb band in 10-15% (pools on, cells at 0.9: about 15.5%).
+    for (const char* bake : {"", "puddleChance=0.8"}) {
+        SurfaceWeatherSpec s = spec;
+        REQUIRE(applySurfaceWeatherOverrides(s, bake, &err));
+        int n = 0, wet = 0, edgeN = 0, edgeWet = 0;
+        for (int iy = 0; iy < 800; ++iy) {
+            for (int ix = 0; ix < 140; ++ix) {
+                const float x = 901.f + ix * 0.05f + 0.025f, y = 515.f + iy * 0.05f + 0.025f;
+                const float edge = 3.5f - std::fabs(x - 904.5f);
+                const float rim = weatherRimNoise(x, y, s);
+                const float bowl = std::max(weatherPuddleBowl(x, y, rim, s),
+                                            weatherEdgePoolBowl(x - 904.5f, y - 535.f, 7.f, flat, rim, s));
+                const bool w = weatherPuddle(1.f, 1.f, bowl, weatherKerb(edge, flat, s), 0.5f, s) > 0.f;
+                ++n;
+                wet += w;
+                if (edge < s.gutterM) {
+                    ++edgeN;
+                    edgeWet += w;
+                }
+            }
+        }
+        const float lane = static_cast<float>(wet) / n, band = static_cast<float>(edgeWet) / edgeN;
+        MESSAGE("edge pools [" << std::string(bake) << "]: lane " << lane << ", kerb band " << band);
+        CHECK(lane <= 0.15f);
+        if (*bake != '\0') {
+            CHECK(band >= 0.10f);
+            CHECK(band <= 0.15f);
+        }
+    }
+}
+
+TEST_CASE("HLSL: edge pools only when asked for, on a box frame's flat slab, one block per side") {
+    SurfaceWeatherOptions o;
+    CHECK(surfaceWeatherHlsl(SurfaceWeatherSpec{}, o).find("EpIdx") == std::string::npos);
+    SurfaceWeatherSpec spec;
+    spec.edgePoolPitchM = 8.1f;
+    const std::string both = surfaceWeatherHlsl(spec, o);
+    CHECK(both.find("float EpIdx = floor((TrAlong - ") != std::string::npos);
+    CHECK(both.find("EpHalf - TrAcross") != std::string::npos);
+    CHECK(both.find("EpHalf + TrAcross") != std::string::npos);
+    CHECK(both.find("if (FlatSlab > 0.5) PdBowl = max(PdBowl, ") != std::string::npos);
+    CHECK(both.find("EpIdx") < both.find("float Pud = Up"));
+    spec.edgePoolSide = 1.f;
+    const std::string shop = surfaceWeatherHlsl(spec, o);
+    CHECK(shop.find("EpHalf - TrAcross") != std::string::npos);
+    CHECK(shop.find("EpHalf + TrAcross") == std::string::npos);
+    SurfaceWeatherOptions plain;
+    plain.boxFrame = false;
+    plain.grime = plain.topGrime = false;
+    CHECK(surfaceWeatherHlsl(spec, plain).find("EpIdx") == std::string::npos);
+}
+
 TEST_CASE("weather overrides: -WeatherSpec key=value pairs set the named fields, and refuse what they can't read") {
     SurfaceWeatherSpec spec;
     std::string err;
