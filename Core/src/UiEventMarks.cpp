@@ -53,7 +53,8 @@ UiEventMark uiEventMark(ArenaEventType type) {
     case ArenaEventType::BreakTell:
     case ArenaEventType::SpecialReady:   // the prompt and the cinematic are the arena lane's
     case ArenaEventType::SpecialStarted:
-    case ArenaEventType::SpecialEnded: return UiEventMark::None;
+    case ArenaEventType::SpecialEnded:
+    case ArenaEventType::SpecialUnready: return UiEventMark::None;
     }
     return UiEventMark::None;
 }

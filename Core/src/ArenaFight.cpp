@@ -448,6 +448,7 @@ struct ArenaFightImpl {
         sp.gauge = sp.gaugeAtBegin;
         sp.nextCue = 0;
         sp.view = ArenaSpecialView{};
+        specialArm();
         specialFlags(true);
     }
 
@@ -3300,7 +3301,12 @@ struct ArenaFightImpl {
               : pl.hp <= 0                                               ? ArenaSwitchRefusal::PlayerDown
               : !allyUp()                                                ? ArenaSwitchRefusal::PartnerDown
                                                                          : ArenaSwitchRefusal::Ok;
-        if (why == ArenaSwitchRefusal::Ok) return doSwitch();
+        if (why == ArenaSwitchRefusal::Ok) {
+            const std::size_t outgoing = playerSlot();
+            if (!doSwitch()) return false;
+            specialSwitchLoss(outgoing);
+            return true;
+        }
         ++stats.leadSwitchesRefused;
         if (why == ArenaSwitchRefusal::NotPlayable) ++stats.leadSwitchesNotPlayable;
         return false;
@@ -3728,23 +3734,21 @@ struct ArenaFightImpl {
         return sp.table && slotHasLead(slot) && sp.gauge[slot] >= sp.table->gauge.full;
     }
 
-    // The enemy `lead` would aim its special at: the player's lock, the partner's own target, else the nearest living
-    // enemy in front of it; within the move's range (body centres). kArenaNobody for none.
+    // The enemy a special aims at, whichever body performs it (only the player fires it): the player's lock, else its
+    // attack's soft target, else the nearest living enemy in front of the player; within the move's range of the
+    // performer (body centres). kArenaNobody for none.
     std::uint8_t specialTarget(std::uint8_t lead, const ArenaSpecialRules& m) const {
-        const bool player = lead == kArenaPlayer;
-        const Vec2 from = player ? pl.pos : fight.allyPos_;
-        const Vec2 facing = player ? pl.facing : fight.ally_.facing;
-        const int own = player ? (pl.lock == kArenaNobody ? -1 : static_cast<int>(pl.lock)) : fight.ally_.target;
-        if (own >= 0 && static_cast<std::size_t>(own) < n && alive(static_cast<std::size_t>(own)) &&
-            arenaDistance(from, foes[static_cast<std::size_t>(own)].pos) <= m.range)
-            return id(static_cast<std::size_t>(own));
+        const Vec2 from = lead == kArenaPlayer ? pl.pos : fight.allyPos_;
+        const auto withinRange = [&](std::size_t i) { return arenaDistance(from, foes[i].pos) <= m.range; };
+        for (const std::uint8_t pick : {pl.lock, pl.soft})
+            if (pick < n && alive(pick)) return withinRange(pick) ? id(pick) : kArenaNobody;
         std::uint8_t best = kArenaNobody;
         float bestDist = 0.f;
         for (std::size_t i = 0; i < n; ++i) {
-            if (!alive(i)) continue;
-            const Vec2 to = arenaSub(foes[i].pos, from);
+            if (!alive(i) || !withinRange(i)) continue;
+            const Vec2 to = arenaSub(foes[i].pos, pl.pos);
             const float d = arenaLength(to);
-            if (d > m.range || arenaDot(to, facing) < 0.f) continue;
+            if (arenaDot(to, pl.facing) < 0.f) continue;
             if (best == kArenaNobody || d < bestDist) {
                 best = id(i);
                 bestDist = d;
@@ -3761,6 +3765,7 @@ struct ArenaFightImpl {
         if (lead == kArenaAlly && fight.allyMaxHp_ <= 0) return ArenaSpecialRefusal::NoMove;
         const std::size_t slot = lead == kArenaPlayer ? playerSlot() : 1u - playerSlot();
         if (!sp.table || !slotHasLead(slot) || !sp.move[slot]) return ArenaSpecialRefusal::NoMove;
+        if (lead == kArenaAlly && pk.playable) return ArenaSpecialRefusal::NotControlled;
         if (!slotReady(slot)) return ArenaSpecialRefusal::NotReady;
         if (lead == kArenaPlayer) {
             const ArenaAction a = pl.action;
@@ -3778,11 +3783,39 @@ struct ArenaFightImpl {
     }
 
     // The ready flags and refusals the view shows.
+    // A slot's full gauge shows (a prompt, a Ready): the controlled lead's, or a partner's whose kit is not playable (a
+    // party member the player calls on); a partner lead's fills hidden.
+    bool slotShown(std::size_t slot) const {
+        if (!slotReady(slot)) return false;
+        return bodyOfSlot(slot) == kArenaPlayer || (fight.allyMaxHp_ > 0 && !pk.playable);
+    }
+    static constexpr float kNoLine = -1.0e9f;
+    // The prompts as they stand, with no Ready said (setSpecials, begin, restart): no line has played yet.
+    void specialArm() {
+        ArenaFight::SpecialState& sp = fight.special_;
+        for (std::size_t s = 0; s < 2; ++s) {
+            sp.shown[s] = slotShown(s);
+            sp.lineAt[s] = kNoLine;
+        }
+    }
+    // A lead switch (`outgoing` was the player's slot before it): switchLoss off the gauges the data names.
+    void specialSwitchLoss(std::size_t outgoing) {
+        ArenaFight::SpecialState& sp = fight.special_;
+        if (!sp.table) return;
+        const ArenaSpecialGaugeRules& g = sp.table->gauge;
+        for (std::size_t s = 0; s < 2; ++s) {
+            const bool named = g.switchLossAppliesTo == ArenaSpecialSwitchLoss::Both ||
+                               (g.switchLossAppliesTo == ArenaSpecialSwitchLoss::Outgoing) == (s == outgoing);
+            if (named && slotHasLead(s)) sp.gauge[s] = std::max(0.f, sp.gauge[s] * (1.f - g.switchLoss));
+        }
+        specialFlags(true);
+    }
+
     void specialFlags(bool sight) {
         ArenaSpecialView& v = fight.special_.view;
         const std::size_t ps = playerSlot();
-        v.readyPlayer = slotReady(ps);
-        v.readyPartner = fight.allyMaxHp_ > 0 && slotReady(1u - ps);
+        v.readyPlayer = slotShown(ps);
+        v.readyPartner = slotShown(1u - ps);
         v.refusalPlayer = specialRefusal(kArenaPlayer, sight);
         v.refusalPartner = specialRefusal(kArenaAlly, sight);
     }
@@ -3820,11 +3853,22 @@ struct ArenaFightImpl {
             for (std::size_t s = 0; s < 2; ++s) {
                 if (!slotHasLead(s) || !(add[s] > 0.f) || sp.gauge[s] >= g.full) continue;
                 sp.gauge[s] = std::min(g.full, sp.gauge[s] + add[s]);
-                if (sp.gauge[s] >= g.full) {
-                    const std::uint8_t body = bodyOfSlot(s);
-                    emit(ArenaEventType::SpecialReady, body, kArenaNobody, 0, static_cast<int>(s),
-                         body == kArenaPlayer ? pl.pos : fight.allyPos_);
+            }
+            // The prompts: a full gauge that shows says Ready once (its line at most once per readyLineGap); one that
+            // stops showing (a switch lowered it, or its lead is the partner now) says Unready.
+            for (std::size_t s = 0; s < 2; ++s) {
+                const bool show = slotShown(s);
+                if (show == sp.shown[s]) continue;
+                sp.shown[s] = show;
+                const std::uint8_t body = bodyOfSlot(s);
+                const Vec2 at = body == kArenaPlayer ? pl.pos : fight.allyPos_;
+                if (!show) {
+                    emit(ArenaEventType::SpecialUnready, body, kArenaNobody, 0, static_cast<int>(s), at);
+                    continue;
                 }
+                const bool line = sp.lineAt[s] <= kNoLine || fight.time_ - sp.lineAt[s] >= g.readyLineGap;
+                if (line) sp.lineAt[s] = fight.time_;
+                emit(ArenaEventType::SpecialReady, body, kArenaNobody, line ? 1 : 0, static_cast<int>(s), at);
             }
         }
         specialFlags(sight);
@@ -3856,6 +3900,7 @@ struct ArenaFightImpl {
         v.endedThisTick = false;
         sp.nextCue = 0;
         sp.gauge[slot] = 0.f;
+        sp.shown[slot] = false; // spent: the prompt goes with SpecialStarted
         ++stats.specials;
         emit(ArenaEventType::SpecialStarted, v.performer, target, kArenaSpecialMove, static_cast<int>(slot), v.origin);
         specialCues(0.f);
@@ -4265,6 +4310,7 @@ bool ArenaFight::setSpecials(const ArenaSpecialTable* table, std::string_view fi
         special_.gauge[s] = special_.gaugeAtBegin[s] = value;
         special_.seen[s] = kept && kept->seen;
     }
+    ArenaFightImpl(*this).specialArm();
     ArenaFightImpl(*this).specialFlags(true);
     return true;
 }
@@ -5826,7 +5872,8 @@ bool validArenaSpecialRules(const ArenaSpecialRules& r) {
 
 bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g) {
     return spInRange(g.full, 1.f, 1.0e6f) && spInRange(g.perDamageDealt, 0.f, 1000.f) && spInRange(g.perParry, 0.f, 1.0e5f) &&
-           spInRange(g.perBlock, 0.f, 1.0e5f) && spInRange(g.perDamageTaken, 0.f, 1000.f);
+           spInRange(g.perBlock, 0.f, 1.0e5f) && spInRange(g.perDamageTaken, 0.f, 1000.f) &&
+           spInRange(g.switchLoss, 0.f, 1.f) && spInRange(g.readyLineGap, 0.f, 3600.f);
 }
 
 const ArenaSpecialRules* ArenaSpecialTable::find(std::string_view id) const {
@@ -5860,10 +5907,22 @@ const LeadSpecialGauges::Lead* LeadSpecialGauges::find(std::string_view leadId) 
     return nullptr;
 }
 
+bool LeadSpecialGauges::carry(std::string_view from, std::string_view to) {
+    if (from.empty() || to.empty() || from == to || from.size() > kMaxArenaSpecialId) return false;
+    const Lead* had = find(from);
+    const float value = had ? had->value : 0.f;
+    Lead* dest = entry(to);
+    if (!dest) return false;
+    dest->value = value;
+    if (Lead* src = entry(from)) src->value = 0.f;
+    return true;
+}
+
 const char* arenaSpecialRefusalName(ArenaSpecialRefusal r) {
     switch (r) {
     case ArenaSpecialRefusal::Ok: return "ok";
     case ArenaSpecialRefusal::NoMove: return "no_move";
+    case ArenaSpecialRefusal::NotControlled: return "not_controlled";
     case ArenaSpecialRefusal::NotReady: return "not_ready";
     case ArenaSpecialRefusal::NoTarget: return "no_target";
     case ArenaSpecialRefusal::NoSight: return "no_sight";
@@ -5891,12 +5950,28 @@ bool importArenaSpecials(std::string_view json, ArenaSpecialTable& out, std::str
         spUnknownKeys(root, "", {"version", "gauge", "moves"}, warnings);
         const JsonValue g = root["gauge"];
         if (g.isObject()) {
-            spUnknownKeys(g, "gauge", {"full", "perDamageDealt", "perParry", "perBlock", "perDamageTaken"}, warnings);
+            spUnknownKeys(g, "gauge",
+                          {"full", "perDamageDealt", "perParry", "perBlock", "perDamageTaken", "switchLoss",
+                           "switchLossAppliesTo", "readyLineGap"},
+                          warnings);
             spNumber(g, "full", "gauge", 1.f, 1.0e6f, out.gauge.full, errors);
             spNumber(g, "perDamageDealt", "gauge", 0.f, 1000.f, out.gauge.perDamageDealt, errors);
             spNumber(g, "perParry", "gauge", 0.f, 1.0e5f, out.gauge.perParry, errors);
             spNumber(g, "perBlock", "gauge", 0.f, 1.0e5f, out.gauge.perBlock, errors);
             spNumber(g, "perDamageTaken", "gauge", 0.f, 1000.f, out.gauge.perDamageTaken, errors);
+            spNumber(g, "switchLoss", "gauge", 0.f, 1.f, out.gauge.switchLoss, errors);
+            spNumber(g, "readyLineGap", "gauge", 0.f, 3600.f, out.gauge.readyLineGap, errors);
+            if (const JsonValue a = g["switchLossAppliesTo"]; !a.isAbsent()) {
+                const std::string_view w = a.isString() ? std::string_view(a.string()) : std::string_view{};
+                if (w == "both")
+                    out.gauge.switchLossAppliesTo = ArenaSpecialSwitchLoss::Both;
+                else if (w == "outgoing")
+                    out.gauge.switchLossAppliesTo = ArenaSpecialSwitchLoss::Outgoing;
+                else if (w == "incoming")
+                    out.gauge.switchLossAppliesTo = ArenaSpecialSwitchLoss::Incoming;
+                else
+                    errors.push_back("gauge.switchLossAppliesTo: expected both, outgoing or incoming");
+            }
         } else if (!g.isAbsent()) {
             errors.push_back("gauge: expected an object");
         }

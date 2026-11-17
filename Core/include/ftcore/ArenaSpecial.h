@@ -8,11 +8,18 @@
 // ArenaSpecialGaugeRules: per hp it deals, per parry, per block and per hp it takes; it never decays and stops at full.
 // It is kept between fights within a session of play (LeadSpecialGauges, beside the party's other state): the host
 // gives a fight each lead's value (ArenaFight::setSpecialGauges) and reads them back when it ends. A lead's gauge
-// reaching full raises ArenaEventType::SpecialReady once (the voice line and the prompt); using the move empties it.
+// reaching full raises ArenaEventType::SpecialReady once (the prompt; the voice line unless that lead's line played
+// under `readyLineGap` ago); using the move empties it. A lead switch takes `switchLoss` of the value off the gauges
+// `switchLossAppliesTo` names; a gauge that drops below full, or whose lead is no longer the one controlled, raises
+// SpecialUnready (the prompt goes) and says Ready again when it is full and shown again.
 //
-// The move (ArenaSpecialRules, one per lead, data: Data/Battle/arena_special.json, neutral ids). It needs a living
-// enemy the lead targets, in its line of sight (the host's to say) and within `range`. From the press to `duration`:
-//   * Frozen: the fight's clock does not run, so nothing in it moves or counts down: no enemy, partner, brain, token,
+// The move (ArenaSpecialRules, one per lead, data: Data/Battle/arena_special.json, neutral ids). Only the player fires
+// it, from the prompt (the partner's brain never does): the controlled lead's own move, or the move of a party member
+// who is never played (the partner body when its kit is not playable). A partner lead's move has no input path: its
+// gauge fills, hidden, and its prompt shows once it is the controlled lead. It needs a living enemy, the player's target
+// (its lock, else its attack's soft target, else the nearest living enemy in front of it), in the performer's line of
+// sight (the host's to say) and within `range` of the performer. From the press to `duration`:
+//   * Frozen: the fight's clock does not run, so nothing in it moves or counts down: no enemy, player, partner, brain, token,
 //     cooldown, hit pause or status timer. The host holds its own (projectiles, hazards, weather) while
 //     ArenaFight::frozen() is true, and poses the performer from the cinematic. The performer is out of reach.
 //   * At `impactAt` the results are ruled: the target is always hit for `damage`; every other living enemy whose body
@@ -54,7 +61,8 @@ struct ArenaSpecialCue {
 
 struct ArenaSpecialRules {
     std::array<char, kMaxArenaSpecialId + 1> id{};
-    std::array<char, kMaxArenaSpecialId + 1> lead{}; // the lead whose move it is (arena.json fighter id)
+    std::array<char, kMaxArenaSpecialId + 1> lead{}; // whose move it is: the id the host gives setSpecials (a lead's,
+                                                     // or a party member's current identity id)
     float duration = 8.f;       // s, press to cut back
     float impactAt = 5.6f;      // s: the results are ruled
     float range = 30.f;         // m: the farthest target it may start on (body centre)
@@ -73,12 +81,18 @@ struct ArenaSpecialRules {
     std::string_view leadView() const { return std::string_view(lead.data()); }
 };
 
+// Whose gauge a lead switch lowers: both leads', the one handing over, or the one taking over.
+enum class ArenaSpecialSwitchLoss : std::uint8_t { Both, Outgoing, Incoming };
+
 struct ArenaSpecialGaugeRules {
     float full = 1000.f;
     float perDamageDealt = 1.f; // per hp the lead's blows take
     float perParry = 25.f;
     float perBlock = 8.f;       // the player lead's guard stopping a blow, or the partner's
     float perDamageTaken = 1.5f; // per hp the lead loses
+    float switchLoss = 0.25f;   // of the current value, off the gauges switchLossAppliesTo names, on a lead switch
+    ArenaSpecialSwitchLoss switchLossAppliesTo = ArenaSpecialSwitchLoss::Both;
+    float readyLineGap = 60.f;  // s of fight time: a lead's ready line plays at most once per this
 };
 
 struct ArenaSpecialTable {
@@ -104,7 +118,9 @@ FTCORE_API bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g);
 FTCORE_API bool importArenaSpecials(std::string_view json, ArenaSpecialTable& out, std::string* error = nullptr,
                                     std::vector<std::string>* warnings = nullptr);
 
-// The gauges the host keeps between fights (beside the party's state): by lead id. Plain data.
+// The gauges the host keeps between fights (beside the party's state): by lead id. A party member who changes identity
+// in the story is keyed by its current identity id (neutral, Data/), so each identity may have its own move and lines;
+// the host carries the gauge to the new id when the identity changes (carry: one body, one gauge). Plain data.
 struct LeadSpecialGauges {
     struct Lead {
         std::array<char, kMaxArenaSpecialId + 1> id{};
@@ -116,12 +132,16 @@ struct LeadSpecialGauges {
     // The lead's entry, added (at 0) when there is room; nullptr when full.
     FTCORE_API Lead* entry(std::string_view leadId);
     FTCORE_API const Lead* find(std::string_view leadId) const;
+    // An identity change: `to` takes `from`'s gauge value and `from` empties; `to` keeps its own seen (its move is its
+    // own cinematic). False (nothing changed) when an id is empty or the same, or there is no room for `to`.
+    FTCORE_API bool carry(std::string_view from, std::string_view to);
 };
 
 // Why a special would not start now (ArenaFight::specialRefusal).
 enum class ArenaSpecialRefusal : std::uint8_t {
     Ok,
     NoMove,   // that lead has no move (or no such lead in the fight)
+    NotControlled, // the partner is a lead: only the controlled lead's move may be fired (no input path for it)
     NotReady, // its gauge isn't full
     NoTarget, // no living enemy targeted, or it is out of range
     NoSight,  // the host says the target is out of its line of sight

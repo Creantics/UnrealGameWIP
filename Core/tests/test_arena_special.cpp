@@ -192,6 +192,12 @@ const char* kTwoLeads = R"({ "version": 1, "moves": [
     { "id": "other_special_01", "lead": "duy", "duration": 3, "impactAt": 1, "damage": 50, "otherShare": 0,
       "knockBack": 0, "cues": [ { "at": 1, "cue": "impact" } ] } ] })";
 
+// A party member who is never played: its move is keyed by its current identity id (neutral test ids).
+const char* kMemberMove = R"({ "version": 1, "moves": [
+    { "id": "devin_special_01", "lead": "devin" },
+    { "id": "member_special_01", "lead": "identity_a", "duration": 4, "impactAt": 2, "damage": 60, "otherShare": 0,
+      "knockBack": 0 } ] })";
+
 const char* kNineSeconds = R"({ "version": 1, "moves": [ { "id": "nine", "lead": "devin", "duration": 9, "impactAt": 6.5,
     "cues": [ { "at": 0, "cue": "a" }, { "at": 6.5, "cue": "impact" }, { "at": 9, "cue": "end" } ] } ] })";
 
@@ -308,10 +314,10 @@ TEST_CASE("arena special: a restart puts the gauges back as begin found them; th
     CHECK(next.fight.specialGaugeForTest(1) == doctest::Approx(0.f));
 }
 
-TEST_CASE("arena special: the partner's gauge fills from its own play and says Ready once, with or without a move") {
+TEST_CASE("arena special: the partner's gauge fills from its own play: hidden for a lead, Ready for a party member") {
     const ArenaSpecialTable withMove = specialsFrom(kTwoLeads);
     const ArenaSpecialTable shipped = shippedSpecials();
-    // The partner's kit is "duy" (a move in kTwoLeads) or "third" (no move in the shipped file).
+    // The partner's kit is "duy" (a lead, a move in kTwoLeads) or "third" (a party member, no move in the shipped file).
     for (const char* partner : {"duy", "third"}) {
         CAPTURE(std::string_view(partner));
         const ArenaSpecialTable& specials = std::string_view(partner) == "duy" ? withMove : shipped;
@@ -324,7 +330,8 @@ TEST_CASE("arena special: the partner's gauge fills from its own play and says R
         float expect = 0.f;
         int readies = 0, allyHits = 0, allyTaken = 0;
         const ArenaSpecialGaugeRules& g = specials.gauge;
-        for (int i = 0; i < 60 * 240 && readies == 0 && !r.fight.over(); ++i) {
+        const bool lead = std::string_view(partner) == "duy";
+        for (int i = 0; i < 60 * 240 && readies == 0 && r.fight.specialGaugeForTest(1) < g.full && !r.fight.over(); ++i) {
             const ArenaOutput& o = r.step(r.fight.autopilot());
             for (std::size_t e = 0; e < o.events.count; ++e) {
                 const ArenaEvent& ev = o.events.items[e];
@@ -345,23 +352,24 @@ TEST_CASE("arena special: the partner's gauge fills from its own play and says R
                     if (partnerReady) ++readies;
                 }
             }
-            if (readies == 0) REQUIRE(r.fight.specialGaugeForTest(1) == doctest::Approx(expect).epsilon(1e-4));
+            if (readies == 0 && r.fight.specialGaugeForTest(1) < g.full)
+                REQUIRE(r.fight.specialGaugeForTest(1) == doctest::Approx(expect).epsilon(1e-4));
         }
         MESSAGE("partner " << std::string_view(partner) << ": its blows " << allyHits << ", blows on it " << allyTaken
                            << ", Ready at " << r.fight.time() << " s");
         CHECK(allyHits > 0);
         CHECK(allyTaken > 0);
-        REQUIRE(readies == 1);
+        CHECK(readies == (lead ? 0 : 1)); // a partner lead's full gauge is hidden: no Ready, no prompt
         CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(g.full));
-        CHECK(r.fight.special().readyPartner);
-        CHECK(r.fight.specialRefusal(kArenaAlly) ==
-              (std::string_view(partner) == "duy" ? ArenaSpecialRefusal::Ok : ArenaSpecialRefusal::NoMove));
+        CHECK(r.fight.special().readyPartner == !lead);
+        CHECK(r.fight.specialRefusal(kArenaAlly) == (lead ? ArenaSpecialRefusal::NotControlled : ArenaSpecialRefusal::NoMove));
         // Full stays full: no second Ready.
         for (int i = 0; i < 600 && !r.fight.over(); ++i)
             readies += countEvents(r.step(r.fight.autopilot()), ArenaEventType::SpecialReady, kArenaAlly);
-        CHECK(readies == 1);
-        // A press on the lead with no move is dropped; the gauge stays full.
-        if (std::string_view(partner) == "third") {
+        CHECK(readies == (lead ? 0 : 1));
+        // A press on the partner is dropped either way (no input path for a lead; no move for the member); the gauge
+        // stays full.
+        {
             ArenaInput in = r.fight.autopilot();
             in.special = kArenaAlly;
             r.step(in);
@@ -378,13 +386,14 @@ TEST_CASE("arena special: the gauges go with the kits through a lead switch; a r
     def.partnerKit = arena().fighter("duy");
     r.beginWith(def, 2);
     r.walkAlly = false; // the ally stays out of it: only the player's play fills a gauge
-    REQUIRE(r.fight.setSpecials(&specials, "devin", "duy", storeWith("duy", 500.f)));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "duy", storeWith("duy", 700.f)));
     r.step();
     CHECK_FALSE(r.fight.special().readyPlayer);
     CHECK_FALSE(r.fight.special().readyPartner);
     REQUIRE(r.fight.switchLeads());
     std::swap(r.bodies.player, r.bodies.ally);
     CHECK(r.fight.swapped());
+    CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(525.f)); // the switch took a quarter off
     // The player drives the second lead's body now: its play fills slot 1, its Ready names the player's body.
     r.bodies.player = Vec2{0.f, 0.f};
     r.bodies.ally = Vec2{-20.f, 0.f};
@@ -419,7 +428,7 @@ TEST_CASE("arena special: the gauges go with the kits through a lead switch; a r
     r.fight.restart();
     CHECK_FALSE(r.fight.swapped());
     CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(0.f));
-    CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(500.f));
+    CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(700.f));
 }
 
 // ---- starting ----
@@ -745,33 +754,241 @@ TEST_CASE("arena special: skippable only once seen; a skip lands the same result
     CHECK(unseenTicks > 400);
 }
 
-TEST_CASE("arena special: the partner's press runs its own lead's move (a second move needs no code)") {
+TEST_CASE("arena special: a partner lead's move can't be fired; the controlled lead's can, after a switch") {
     const ArenaSpecialTable specials = specialsFrom(kTwoLeads);
-    Rig r;
+    PartnerRig r;
     ArenaDef def = fightOf({"hulk", "brute"});
     def.partnerKit = arena().fighter("duy");
-    r.fight.setAlly(300, 0.4f);
-    r.begin(def);
+    r.beginWith(def, 3);
+    r.walkAlly = false;
     r.bodies.ally = Vec2{0.f, 2.f};
     r.bodies.enemies[0] = Vec2{6.f, 2.f};
     r.bodies.enemies[1] = Vec2{6.f, -8.f};
-    LeadSpecialGauges store = storeWith("duy", 1000.f);
-    REQUIRE(r.fight.setSpecials(&specials, "devin", "duy", store));
-    CHECK(r.fight.special().readyPartner);
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "duy", storeWith("duy", 1000.f)));
+    CHECK_FALSE(r.fight.special().readyPartner); // full, hidden
     CHECK_FALSE(r.fight.special().readyPlayer);
-    const ArenaOutput& o = r.press(kArenaAlly);
+    CHECK(r.fight.specialRefusal(kArenaAlly) == ArenaSpecialRefusal::NotControlled);
+    CHECK(std::string_view(arenaSpecialRefusalName(ArenaSpecialRefusal::NotControlled)) == "not_controlled");
+    r.press(kArenaAlly);
+    CHECK_FALSE(r.fight.frozen());
+    CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(1000.f));
+    // Controlled, its move fires (a second move needs no code): a switch takes 25% off, so refill to full first.
+    REQUIRE(r.fight.switchLeads());
+    std::swap(r.bodies.player, r.bodies.ally);
+    CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(750.f));
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.ally = Vec2{-20.f, 0.f};
+    r.bodies.enemies[0] = Vec2{2.f, 0.f};
+    for (int i = 0; i < 60 * 120 && r.fight.specialGaugeForTest(1) < 1000.f && !r.fight.over(); ++i)
+        r.tick(r.fight.autopilot());
+    REQUIRE(r.fight.special().readyPlayer);
+    const ArenaOutput& o = r.press(kArenaPlayer);
     REQUIRE(r.fight.frozen());
-    const ArenaEvent* s = findEvent(o, ArenaEventType::SpecialStarted);
-    REQUIRE(s != nullptr);
-    CHECK(s->source == kArenaAlly);
-    CHECK(s->amount == 1);
+    const ArenaEvent* st = findEvent(o, ArenaEventType::SpecialStarted);
+    REQUIRE(st != nullptr);
+    CHECK(st->source == kArenaPlayer);
+    CHECK(st->amount == 1);
     CHECK(r.fight.special().move == specials.find("other_special_01"));
-    CHECK(r.fight.special().target == 0);
-    const int ticks = r.runOut();
-    CHECK(ticks == 180);
-    CHECK(r.fight.enemyHp(0) == fightOf({"hulk"}).enemies[0].hp - 50);
-    CHECK(r.fight.enemyHp(1) == fightOf({"brute"}).enemies[0].hp);
+    r.runOut();
     CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(0.f));
+}
+
+TEST_CASE("arena special: the player fires a party member's move at the player's target, the player frozen too") {
+    const ArenaSpecialTable specials = specialsFrom(kMemberMove);
+    for (const bool lock : {false, true}) {
+        CAPTURE(lock);
+        Rig r;
+        ArenaDef def = fightOf({"hulk", "hulk"});
+        def.partnerKit = arena().fighter("third"); // not playable: a party member
+        r.fight.setAlly(300, 0.4f);
+        r.begin(def);
+        // Enemy 0 in front of the player; enemy 1 behind it, beside the partner (the partner's nearest).
+        const Vec2 f = r.fight.output().player.facing;
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.ally = Vec2{-4.f * f.x - 2.f * f.y, -4.f * f.y + 2.f * f.x};
+        r.bodies.enemies[0] = Vec2{8.f * f.x, 8.f * f.y};
+        r.bodies.enemies[1] = Vec2{-6.f * f.x - 2.f * f.y, -6.f * f.y + 2.f * f.x};
+        r.tick();
+        if (lock) { // the player locks on the one behind it
+            ArenaInput in;
+            in.view = Vec2{-f.x, -f.y};
+            in.lock = true;
+            r.tick(in);
+        }
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "identity_a", storeWith("identity_a", 1000.f)));
+        CHECK(r.fight.special().readyPartner);
+        REQUIRE(r.fight.specialRefusal(kArenaAlly) == ArenaSpecialRefusal::Ok);
+        const ArenaOutput& o = r.press(kArenaAlly);
+        REQUIRE(r.fight.frozen());
+        const ArenaEvent* st = findEvent(o, ArenaEventType::SpecialStarted);
+        REQUIRE(st != nullptr);
+        CHECK(st->source == kArenaAlly);
+        CHECK(r.fight.special().performer == kArenaAlly);
+        CHECK(r.fight.special().move == specials.find("member_special_01"));
+        CHECK(r.fight.special().target == (lock ? 1 : 0));
+        // The controlled lead is frozen with the rest: the player's every press and the host's moves reach nothing.
+        const FrozenSnap snap(r.fight);
+        int frozenTicks = 0;
+        while (r.fight.special().time + kDt < r.fight.special().duration - 1e-3f) {
+            ArenaInput in;
+            in.light = in.heavy = in.dodge = in.guard = in.jump = true;
+            in.move = Vec2{0.f, 1.f};
+            in.special = kArenaPlayer;
+            r.bodies.player = Vec2{0.5f, 0.5f};
+            r.tick(in);
+            ++frozenTicks;
+            if (!snap.same(r.fight)) {
+                FAIL("the frozen state changed at frozen tick " << frozenTicks);
+                break;
+            }
+        }
+        CHECK(frozenTicks > 200);
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.runOut();
+        const std::size_t t = lock ? 1u : 0u;
+        CHECK(r.fight.enemyHp(t) == fightOf({"hulk"}).enemies[0].hp - 60);
+        CHECK(r.fight.enemyHp(1u - t) == fightOf({"hulk"}).enemies[0].hp);
+    }
+}
+
+TEST_CASE("arena special: an identity change carries the one body's gauge to the new identity id") {
+    LeadSpecialGauges store = storeWith("identity_a", 640.f, true);
+    REQUIRE(store.carry("identity_a", "identity_b"));
+    REQUIRE(store.find("identity_b") != nullptr);
+    CHECK(store.find("identity_b")->value == doctest::Approx(640.f));
+    CHECK_FALSE(store.find("identity_b")->seen); // its own move: not seen yet
+    CHECK(store.find("identity_a")->value == doctest::Approx(0.f));
+    CHECK(store.find("identity_a")->seen);
+    CHECK_FALSE(store.carry("identity_b", "identity_b"));
+    CHECK_FALSE(store.carry("", "identity_b"));
+    // A fight under the new id begins from the carried value; with no move for it, its refusal is NoMove.
+    const ArenaSpecialTable specials = specialsFrom(kMemberMove);
+    Rig r;
+    ArenaDef def = fightOf({"hulk"});
+    def.partnerKit = arena().fighter("third");
+    r.fight.setAlly(300, 0.4f);
+    r.begin(def);
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "identity_b", store));
+    CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(640.f));
+    r.tick();
+    CHECK(r.fight.specialRefusal(kArenaAlly) == ArenaSpecialRefusal::NoMove);
+}
+
+namespace {
+// Two leads, both gauges set; `extra` goes into the gauge rules.
+ArenaSpecialTable switchTable(const char* extra) {
+    const std::string text = std::string(R"({ "version": 1, "gauge": { )") + extra +
+                             R"( }, "moves": [ { "id": "devin_special_01", "lead": "devin" },
+        { "id": "other_special_01", "lead": "duy", "duration": 3, "impactAt": 1 } ] })";
+    ArenaSpecialTable t;
+    std::string error;
+    REQUIRE_MESSAGE(importArenaSpecials(text, t, &error), error);
+    return t;
+}
+struct SwitchRig : PartnerRig {
+    explicit SwitchRig(const ArenaSpecialTable& table, float devin, float duy) {
+        ArenaDef def = fightOf({"dummy"});
+        def.partnerKit = arena().fighter("duy");
+        beginWith(def, 1);
+        walkAlly = false;
+        LeadSpecialGauges store = storeWith("devin", devin);
+        store.entry("duy")->value = duy;
+        REQUIRE(fight.setSpecials(&table, "devin", "duy", store));
+    }
+};
+} // namespace
+
+TEST_CASE("arena special: a lead switch lowers the gauges switchLossAppliesTo names by switchLoss") {
+    struct Case { const char* extra; float devin, duy; };
+    const Case cases[] = {
+        {R"("switchLoss": 0.25, "switchLossAppliesTo": "both")", 750.f, 600.f},
+        {R"("switchLoss": 0.25, "switchLossAppliesTo": "outgoing")", 750.f, 800.f},
+        {R"("switchLoss": 0.25, "switchLossAppliesTo": "incoming")", 1000.f, 600.f},
+        {R"("switchLoss": 0)", 1000.f, 800.f},
+    };
+    for (const Case& c : cases) {
+        CAPTURE(std::string_view(c.extra));
+        const ArenaSpecialTable table = switchTable(c.extra);
+        SwitchRig r(table, 1000.f, 800.f);
+        CHECK(r.fight.special().readyPlayer);
+        CHECK(countEvents(r.tick(), ArenaEventType::SpecialReady) == 0); // full at setSpecials: shown, no Ready said
+        REQUIRE(r.fight.switchLeads());
+        std::swap(r.bodies.player, r.bodies.ally);
+        CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(c.devin));
+        CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(c.duy));
+        // The first lead is the partner now: its prompt goes, whether its gauge dropped or not.
+        CHECK_FALSE(r.fight.special().readyPartner);
+        const ArenaOutput& o = r.tick();
+        const ArenaEvent* un = findEvent(o, ArenaEventType::SpecialUnready);
+        REQUIRE(un != nullptr);
+        CHECK(un->source == kArenaAlly);
+        CHECK(un->amount == 0);
+        CHECK(countEvents(o, ArenaEventType::SpecialReady) == 0);
+        CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NotReady);
+    }
+    // The shipped rules: 0.25 off both.
+    const ArenaSpecialTable shipped = shippedSpecials();
+    CHECK(shipped.gauge.switchLoss == doctest::Approx(0.25f));
+    CHECK(shipped.gauge.switchLossAppliesTo == ArenaSpecialSwitchLoss::Both);
+    CHECK(shipped.gauge.readyLineGap == doctest::Approx(60.f));
+}
+
+TEST_CASE("arena special: a switched-in full gauge says Ready again; its line at most once per readyLineGap") {
+    const ArenaSpecialTable table = switchTable(R"("switchLoss": 0, "readyLineGap": 60)");
+    SwitchRig r(table, 1000.f, 1000.f);
+    r.tick();
+    const auto switchAndTick = [&r]() -> const ArenaOutput& {
+        REQUIRE(r.fight.switchLeads());
+        std::swap(r.bodies.player, r.bodies.ally);
+        return r.tick();
+    };
+    // 1: the second lead is controlled: Unready for the first, Ready (with its line) for the second.
+    const ArenaOutput& a = switchAndTick();
+    const ArenaEvent* un = findEvent(a, ArenaEventType::SpecialUnready);
+    const ArenaEvent* re = findEvent(a, ArenaEventType::SpecialReady);
+    REQUIRE(un != nullptr);
+    REQUIRE(re != nullptr);
+    CHECK(un->amount == 0);
+    CHECK(re->amount == 1);
+    CHECK(re->source == kArenaPlayer);
+    CHECK(re->move == 1);
+    // 2: back: the first lead's Ready has its line (none played yet for it).
+    for (int i = 0; i < 30; ++i) r.tick();
+    const ArenaEvent* re2 = findEvent(switchAndTick(), ArenaEventType::SpecialReady);
+    REQUIRE(re2 != nullptr);
+    CHECK(re2->amount == 0);
+    CHECK(re2->move == 1);
+    // 3: again within 60 s: the prompt comes back, the line doesn't.
+    for (int i = 0; i < 30; ++i) r.tick();
+    const ArenaEvent* re3 = findEvent(switchAndTick(), ArenaEventType::SpecialReady);
+    REQUIRE(re3 != nullptr);
+    CHECK(re3->amount == 1);
+    CHECK(re3->move == 0);
+    CHECK(r.fight.special().readyPlayer);
+    // 4: past 60 s since that lead's line: the line again.
+    for (int i = 0; i < 60 * 60; ++i) r.tick();
+    REQUIRE_FALSE(r.fight.over());
+    switchAndTick();
+    const ArenaEvent* re4 = findEvent(switchAndTick(), ArenaEventType::SpecialReady);
+    REQUIRE(re4 != nullptr);
+    CHECK(re4->amount == 1);
+    CHECK(re4->move == 1);
+}
+
+TEST_CASE("arena special: the gauge rules' switch keys load and are checked") {
+    ArenaSpecialTable t;
+    std::string error;
+    CHECK_FALSE(importArenaSpecials(R"({ "version": 1, "gauge": { "switchLoss": 1.5 }, "moves": [] })", t, &error));
+    CHECK(error.find("switchLoss") != std::string::npos);
+    CHECK_FALSE(importArenaSpecials(R"({ "version": 1, "gauge": { "switchLossAppliesTo": "all" }, "moves": [] })", t,
+                                    &error));
+    CHECK(error.find("switchLossAppliesTo") != std::string::npos);
+    CHECK_FALSE(importArenaSpecials(R"({ "version": 1, "gauge": { "readyLineGap": -1 }, "moves": [] })", t, &error));
+    CHECK(error.find("readyLineGap") != std::string::npos);
+    ArenaSpecialGaugeRules g;
+    CHECK(validArenaSpecialGauge(g));
+    g.switchLoss = 2.f;
+    CHECK_FALSE(validArenaSpecialGauge(g));
 }
 
 TEST_CASE("arena special: cues fire once each, in order, on their times") {

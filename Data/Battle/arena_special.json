@@ -1,6 +1,7 @@
 {
   "version": 1,
-  "gauge": { "full": 1000, "perDamageDealt": 1, "perParry": 25, "perBlock": 8, "perDamageTaken": 1.5 },
+  "gauge": { "full": 1000, "perDamageDealt": 1, "perParry": 25, "perBlock": 8, "perDamageTaken": 1.5,
+             "switchLoss": 0.25, "switchLossAppliesTo": "both", "readyLineGap": 60 },
   "moves": [
     {
       "id": "devin_special_01", "lead": "devin",

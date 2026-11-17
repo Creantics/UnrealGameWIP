@@ -876,10 +876,11 @@ struct ArenaInput {
     // on a flank of its target, inside this lens. Not given (the default): as before, to the bit. The walls' span must
     // outlive the step.
     PartnerCloseView partnerClose{};
-    // The special (ftcore/ArenaSpecial.h, ArenaFight::setSpecials): the lead pressing it, kArenaPlayer or kArenaAlly
-    // (the partner, whichever lead it is: the host decides what presses it); kArenaNobody, the default: none. It
-    // starts when ArenaFight::specialRefusal(lead) is Ok, else the press is dropped. specialSight: the host's line of
-    // sight from that lead to its target (true, the default, for a host that does not check). specialSkip: cut a
+    // The special (ftcore/ArenaSpecial.h, ArenaFight::setSpecials): the body that performs it, kArenaPlayer (the
+    // controlled lead's move) or kArenaAlly (only a partner whose kit is not playable: a party member's move); the
+    // player presses it either way, from the prompt. kArenaNobody, the default: none. It starts when
+    // ArenaFight::specialRefusal(body) is Ok, else the press is dropped. specialSight: the host's line of sight from
+    // that body to the player's target (true, the default, for a host that does not check). specialSkip: cut a
     // running special to its end when ArenaSpecialView::skippable.
     std::uint8_t special = kArenaNobody;
     bool specialSight = true;
@@ -1020,12 +1021,15 @@ enum class ArenaEventType : std::uint8_t { // append only
                     // the player stands at `amount` hp in the partner's place; source kArenaAlly, target kArenaPlayer.
                     // Downed (the player, where it fell) comes before it in the tick; the fallen body is the ally now
                     // (AllyDowned follows) (appended)
-    SpecialReady,   // a lead's special gauge filled (the voice line, the prompt): source the body that lead is,
-                    // kArenaPlayer or kArenaAlly; amount its gauge slot (ArenaFight::setSpecials). Once per fill (appended)
+    SpecialReady,   // a lead's special gauge is full and shown (the prompt): source the body that lead is,
+                    // kArenaPlayer or kArenaAlly; amount its gauge slot (ArenaFight::setSpecials); move 1 when its voice
+                    // line plays, 0 when that lead's line played under readyLineGap ago. Once per showing (appended)
     SpecialStarted, // a special began (its gauge spent): source the performer, target its target, amount its slot,
                     // move kArenaSpecialMove. The fight is frozen from this tick (ArenaFight::frozen) (appended)
     SpecialEnded,   // the cut back: the special's Hits (move kArenaSpecialMove, source the performer), Downed and
                     // Staggered come before it in this tick; source the performer, amount 1 when it was skipped (appended)
+    SpecialUnready, // a shown full gauge stopped being shown (a lead switch lowered it, or its lead is the partner now):
+                    // the prompt goes. Source the body that lead is now, amount its slot (appended)
 };
 
 struct ArenaEvent {
@@ -1896,6 +1900,8 @@ private:
         std::array<float, 2> gauge{};
         std::array<float, 2> gaugeAtBegin{};
         std::array<bool, 2> seen{};
+        std::array<bool, 2> shown{};        // a Ready stands (the prompt is up), by slot
+        std::array<float, 2> lineAt{};      // fight time of the slot's last ready line (far below 0: none yet)
         std::uint8_t nextCue = 0;
         ArenaSpecialView view;
     };
