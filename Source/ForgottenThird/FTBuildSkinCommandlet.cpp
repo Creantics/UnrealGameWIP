@@ -57,6 +57,10 @@ const FScalarSpec kScalars[] = {
 	{TEXT("Specular"), 0.35f},        // about 2.8% reflectance at normal incidence
 	{TEXT("CavitySpecular"), 0.3f},   // specular left at the bottom of a pore
 	{TEXT("Scatter"), 1.f},           // subsurface amount (Opacity), before the region mask
+	// The leads' wet switch (ftcore/LeadWet.h): SkinWet 0 dry .. 1 wet, written at runtime; roughness goes toward
+	// SkinWetRoughness on the high points (SkinWetMask R, white by default, times the region's open-skin AO).
+	{TEXT("SkinWet"), 0.f},
+	{TEXT("SkinWetRoughness"), 0.25f},
 };
 
 FString PackageFile(const FString& Package)
@@ -240,6 +244,15 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 			{TEXT("CavityRough"), Scalar(Material, TEXT("CavityRoughness"), 650), 0}, {TEXT("MicroMask"), PoreMask, 2},
 			{TEXT("Micro"), Scalar(Material, TEXT("MicroRoughness"), 750), 0}},
 		0);
+	// Wet skin (ftcore::leadwet::skinRoughness): lowered toward SkinWetRoughness, never raised, only where SkinWetMask
+	// and the region's AO (R, 1 on open convex skin: forehead, nose, cheekbones) both say so; creases stay as dry.
+	UMaterialExpressionTextureSampleParameter2D* WetMask = Sampler(Material, TEXT("SkinWetMask"), White, SAMPLERTYPE_Masks, nullptr, 1200);
+	UMaterialExpressionCustom* WetRoughnessOut = Custom(Material, TEXT("SkinWetRoughness"), CMOT_Float1,
+		TEXT("float k = saturate(Wet) * saturate(Mask) * saturate((AO - 0.55) / 0.4);
+return min(R, lerp(R, WetRough, k));"),
+		{{TEXT("R"), RoughnessOut, 0}, {TEXT("Wet"), Scalar(Material, TEXT("SkinWet"), 1250), 0},
+			{TEXT("WetRough"), Scalar(Material, TEXT("SkinWetRoughness"), 1350), 0}, {TEXT("Mask"), WetMask, 1}, {TEXT("AO"), Region, 1}},
+		150);
 	UMaterialExpressionCustom* SpecularOut = Custom(Material, TEXT("SkinSpecular"), CMOT_Float1,
 		TEXT("return Spec * lerp(CavitySpec, 1.0, Cavity);"),
 		{{TEXT("Spec"), Scalar(Material, TEXT("Specular"), 850), 0}, {TEXT("CavitySpec"), Scalar(Material, TEXT("CavitySpecular"), 950), 0},
@@ -252,7 +265,7 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Albedo);
 	Inputs->Normal.Connect(0, NormalOut);
-	Inputs->Roughness.Connect(0, RoughnessOut);
+	Inputs->Roughness.Connect(0, WetRoughnessOut);
 	Inputs->Specular.Connect(0, SpecularOut);
 	Inputs->AmbientOcclusion.Connect(1, Region);
 	Inputs->Opacity.Connect(0, ScatterOut);

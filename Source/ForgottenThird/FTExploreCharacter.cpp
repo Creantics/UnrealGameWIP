@@ -52,6 +52,7 @@
 #include "FTNewUi.h"
 #include "FTPartyFollower.h"
 #include "FTSceneLook.h"
+#include "FTLookSubsystem.h"
 #include "Components/DecalComponent.h"
 #include "Misc/PackageName.h"
 #include "ForgottenThird.h"
@@ -59,9 +60,13 @@
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
+#include "ftcore/LeadWet.h"
 
 namespace
 {
+TAutoConsoleVariable<float> CVarLeadWet(TEXT("ft.LeadWet"), 0.f,
+	TEXT("The leads' wet switch: 0 dry (the default), 0..1 that wet (cloth soak, wet grooms, wet skin), below 0 follows the world look's wetness."));
+
 // -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
 // The camera comes back round behind a moving lead once the look input has rested this long (s), closing
 // kRecentreRate of the gap a second and never faster than kRecentreMax (deg/s), so it trails into turns.
@@ -1014,6 +1019,10 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
 	bWetMaterialsMade = false;
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
+	// The grooms come on dry; the wet switch swaps them on its next tick if the weather is wet.
+	bGroomWet = false;
+	WetGroomHold.Reset();
+	FTLook::PreloadWetGrooms(Look.Grooms, WetGroomHold, TEXT("FTExploreCharacter"));
 	FTLook::SwapMaterials(*BodyComponent, Pieces, Look.MaterialSwaps, TEXT("FTExploreCharacter"));
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, Body ? *Body->GetName() : TEXT("none"), BodyComponent->GetRelativeRotation().Yaw, Pieces.Num(), Cloth,
@@ -3742,8 +3751,18 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 {
 	UWorld* World = GetWorld();
 	UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const float Weather = LeadWeather();
 	if (!System || !System->HasBodies())
 	{
+#if !UE_BUILD_SHIPPING
+		if (SoakSwapWet >= 0.f)
+		{
+			return; // -ExploreSoakSwap holds its own wetness
+		}
+#endif
+		// No water here: the weather alone (dry by default, so this is two early returns).
+		ShowWetness(ftcore::leadwet::cloth(ftcore::WaterWetness{}, Weather));
+		ShowLeadWet(Weather);
 		return;
 	}
 	// As the surfaces see it now: during the climb out the state is the one it began with, the feet rising out of it.
@@ -3765,7 +3784,48 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 		return; // -ExploreSoakSwap holds its own wetness
 	}
 #endif
-	ShowWetness(System->LeadWetness());
+	ShowWetness(ftcore::leadwet::cloth(System->LeadWetness(), Weather));
+	ShowLeadWet(Weather);
+}
+
+float AFTExploreCharacter::LeadWeather() const
+{
+	const float Forced = CVarLeadWet.GetValueOnGameThread();
+	if (Forced >= 0.f)
+	{
+		return ftcore::leadwet::weather(Forced, 0.f);
+	}
+	const UWorld* World = GetWorld();
+	const UFTLookSubsystem* Look = World ? World->GetSubsystem<UFTLookSubsystem>() : nullptr;
+	return ftcore::leadwet::weather(Forced, Look ? Look->GetLook().wetness : 0.f);
+}
+
+void AFTExploreCharacter::ShowLeadWet(float Weather)
+{
+	const bool bGroom = ftcore::leadwet::groomWet(Weather, bGroomWet);
+	if (bGroom != bGroomWet)
+	{
+		bGroomWet = bGroom;
+		const int32 Swapped = FTLook::SetGroomsWet(GroomComponents, WornLook.Grooms, bGroomWet, TEXT("FTExploreCharacter"));
+		UE_LOG(LogForgottenThird, Display, TEXT("Wet switch: %s grooms on (%d swapped) at weather %.2f."), bGroomWet ? TEXT("wet") : TEXT("dry"),
+			Swapped, Weather);
+	}
+	// SkinWet goes to the materials ShowWetness gathered (any skin is wet only when the cloth is, so they are there).
+	const float Skin = ftcore::leadwet::skin(Weather);
+	const bool bChanged = FMath::Abs(Skin - SkinWetShown) > 0.004f || (Skin <= 0.f && SkinWetShown > 0.f);
+	if (!bWetMaterialsMade || !bChanged)
+	{
+		return;
+	}
+	static const FName SkinWetName(TEXT("SkinWet"));
+	for (UMaterialInstanceDynamic* Dynamic : WetMaterials)
+	{
+		if (Dynamic)
+		{
+			Dynamic->SetScalarParameterValue(SkinWetName, Skin);
+		}
+	}
+	SkinWetShown = Skin;
 }
 
 namespace
@@ -3959,6 +4019,7 @@ void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
 		WetShown = -1.f;
 		WetLineShown = -1.0e9f;
 		WetSiltShown = -1.f;
+		SkinWetShown = -1.f;
 		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
 		for (USkeletalMeshComponent* Part : Meshes)
 		{

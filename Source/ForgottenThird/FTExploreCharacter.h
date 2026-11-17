@@ -625,6 +625,16 @@ private:
 	float WetShown = 0.f;
 	float WetLineShown = 0.f;
 	float WetSiltShown = 0.f;
+	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; 0, the default, is dry; below 0 follows the
+	// world look's wetness) soaks the cloth as the water does (through ShowWetness), wears the look's wet grooms and
+	// writes SkinWet (0..1) to the same dynamic materials; the skin master smooths its high points with it. No drips.
+	float LeadWeather() const;
+	void ShowLeadWet(float Weather);
+	bool bGroomWet = false;
+	float SkinWetShown = 0.f;
+	// The look's wet grooms and bindings, loaded with the look (FTLook::PreloadWetGrooms) so the swap loads nothing.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UObject>> WetGroomHold;
 	// Wet prints (ftcore::WetPrints): on foot on dry ground the lead leaves a print at each plant of its foot phase,
 	// as wet as it is, fading as it dries. A fixed pool of decals, one per Core slot, made once the first time the lead
 	// is wet (in the water, so the hitch is out of sight of any print); a laid

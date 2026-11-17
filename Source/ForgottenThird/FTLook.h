@@ -41,6 +41,12 @@ struct FFTGroomLook
 	FSoftObjectPath Groom;
 	UPROPERTY(EditAnywhere, Category = "Look")
 	FSoftObjectPath Binding;
+	// The same hair soaked, worn in its place while the lead is wet (the wet switch, ftcore/LeadWet.h); empty keeps the
+	// groom as it is. Its binding is its own (a binding is made for one groom); empty wears it unbound.
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath WetGroom;
+	UPROPERTY(EditAnywhere, Category = "Look")
+	FSoftObjectPath WetBinding;
 };
 
 // A material worn in place of another on the body and the pieces: every slot showing From shows To instead (a
@@ -249,6 +255,16 @@ FORGOTTENTHIRD_API int32 AddPieces(AActor& Owner, USkeletalMeshComponent& Body, 
 // when no piece is). Returns how many were added.
 FORGOTTENTHIRD_API int32 AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces,
 	const TArray<FFTGroomLook>& Grooms, TArray<TObjectPtr<USceneComponent>>& OutGrooms, const TCHAR* Who);
+
+// Loads every entry's WetGroom and WetBinding into OutHold (kept referenced there), so the swap does not load in play.
+// Returns how many entries have a wet groom.
+FORGOTTENTHIRD_API int32 PreloadWetGrooms(const TArray<FFTGroomLook>& Grooms, TArray<TObjectPtr<UObject>>& OutHold, const TCHAR* Who);
+
+// Wears each entry's wet groom (bWet) or its dry one on the component showing the other: the component is unregistered,
+// given the groom and its binding, and registered again where it was. Entries without a WetGroom are left alone.
+// Returns how many components changed.
+FORGOTTENTHIRD_API int32 SetGroomsWet(const TArray<TObjectPtr<USceneComponent>>& Components, const TArray<FFTGroomLook>& Grooms,
+	bool bWet, const TCHAR* Who);
 
 // Puts To in every slot of the component that shows From (From itself or an instance made from it), quietly. Returns
 // how many slots changed.
