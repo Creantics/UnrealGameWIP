@@ -103,6 +103,12 @@ const FScalarSpec kScalars[] = {
 	{TEXT("DirtRoughness"), ftcore::look::kFoldDirtRoughness},   // and roughness up by this at full dirt
 	{TEXT("WetRidgeSheen"), ftcore::look::kFoldWetRidgeSheen},   // soaked: roughness on convex ridges (WearTexture R above 0.5) goes this far below WetRoughness
 	{TEXT("DryRidgeRoughness"), ftcore::look::kFoldDryRidgeRoughness}, // dry: roughness on convex ridges held at most this (1 = off)
+	// Dry matte floor (ftcore::look::DryBand), on by default and outside the fold switch: dry roughness held at least
+	// lerp(DryRoughMin, DryRoughMax, ORM G), the metal mask's part by the metal band. Cloth's band here; substances set theirs.
+	{TEXT("DryRoughMin"), ftcore::look::kDryCloth.lo},
+	{TEXT("DryRoughMax"), ftcore::look::kDryCloth.hi},
+	{TEXT("DryMetalRoughMin"), ftcore::look::kDryMetal.lo},
+	{TEXT("DryMetalRoughMax"), ftcore::look::kDryMetal.hi},
 	{TEXT("WetCreaseDarken"), ftcore::look::kFoldWetCreaseDarken},   // soaked: albedo x (1 - this) in the creases (water stands there), on top of WetDarken
 	{TEXT("TintDrift"), ftcore::look::kFoldTintDrift},    // albedo toward DriftTint by up to this, in broad patches of about 25 cm (faded high points)
 	{TEXT("SoleHeight"), -1000.f},    // pre-skinned height (cm) below which a shoe is rubber sole; off by default
@@ -151,7 +157,7 @@ TArray<FSubstance> Substances()
 	// creases; less sky fill and a darker diffuse response so it reads black, not grey-green, under an open sky. Roughness
 	// from a map median of 0.49 lands near 0.3 with the micro and cavity terms (was near 0.4: the broad lobe).
 	Out.Add({TEXT("Leather"), false, GarmentTile::Leather,
-		{{TEXT("Specular"), 0.28f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.2f}, {TEXT("RoughnessOffset"), 0.12f},
+		{{TEXT("DryRoughMin"), ftcore::look::kDryLeather.lo}, {TEXT("DryRoughMax"), ftcore::look::kDryLeather.hi}, {TEXT("Specular"), 0.28f}, {TEXT("CavitySpecular"), 0.6f}, {TEXT("RoughnessScale"), 0.2f}, {TEXT("RoughnessOffset"), 0.12f},
 			{TEXT("MicroRoughness"), 0.1f}, {TEXT("CavityRoughness"), 0.18f}, {TEXT("CreaseRoughness"), 0.1f}, {TEXT("EdgeSmooth"), 0.1f},
 			{TEXT("EdgeLighten"), 0.12f}, {TEXT("CavityDarken"), 0.35f}, {TEXT("DetailSizeA"), 2.6f}, {TEXT("DetailSizeB"), 9.f},
 			{TEXT("DetailStrengthA"), 0.25f}, {TEXT("DetailStrengthB"), 0.12f}, {TEXT("DiffuseResponse"), 1.06f},
@@ -176,7 +182,7 @@ TArray<FSubstance> Substances()
 		FLinearColor::White, FLinearColor::White});
 	// Rubber sole: matte, a faint stipple, slightly dirty.
 	Out.Add({TEXT("Rubber"), false, GarmentTile::Leather,
-		{{TEXT("Specular"), 0.4f}, {TEXT("RoughnessScale"), 0.f}, {TEXT("RoughnessOffset"), 0.82f}, {TEXT("EdgeLighten"), 0.f},
+		{{TEXT("DryRoughMin"), ftcore::look::kDryRubber.lo}, {TEXT("DryRoughMax"), ftcore::look::kDryRubber.hi}, {TEXT("Specular"), 0.4f}, {TEXT("RoughnessScale"), 0.f}, {TEXT("RoughnessOffset"), 0.82f}, {TEXT("EdgeLighten"), 0.f},
 			{TEXT("CavityDarken"), 0.2f}, {TEXT("DetailSizeA"), 0.8f}, {TEXT("DetailStrengthA"), 0.15f}, {TEXT("DetailStrengthB"), 0.05f}},
 		FLinearColor(0.9f, 0.88f, 0.85f), FLinearColor::White});
 	// Zips, snaps and badges.
@@ -297,6 +303,7 @@ r += M.z; // centimetre mottle (0 unless MottleRoughness is set)
 r = lerp(r, SoleRough + D.w * MicroRough, Sole);
 r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
 r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
+r = max(r, lerp(lerp(DryMin, DryMax, saturate(ORM.g)), lerp(DryMetalMin, DryMetalMax, saturate(ORM.g)), Metal)); // dry matte floor
 return saturate(lerp(r, lerp(WetRough, 0.1, Metal), Wet.x));
 )HLSL");
 // With FoldLayers on: matte crease dirt, a soft dry sheen and a sharper soaked sheen on the ridges.
@@ -310,7 +317,8 @@ r = lerp(r, SoleRough + D.w * MicroRough, Sole);
 r = lerp(r, MetalRough + D.w * 0.15, Metal); // scratched, not polished
 r += Wet.w * (1.0 - Metal); // dried silt film dulls the cloth and leather
 r += saturate(Wear.b * DirtStrength) * DirtRough * (1.0 - Metal); // baked fold dirt is matte
-r = min(r, lerp(1.0, DryRidgeRough, edge * (1.0 - Metal))); // dry ridges and seams keep a soft sheen (1: off)
+r = max(r, lerp(lerp(DryMin, DryMax, saturate(ORM.g)), lerp(DryMetalMin, DryMetalMax, saturate(ORM.g)), Metal)); // dry matte floor
+r = min(r, lerp(1.0, max(DryRidgeRough, DryMin), edge * (1.0 - Metal))); // dry ridges and seams keep a soft sheen (1: off), never under the floor's low end
 float wetR = max(WetRough - edge * WetRidgeSheen, 0.02); // soaked ridges catch a sharper sheen than the cloth around them
 return saturate(lerp(r, lerp(wetR, 0.1, Metal), Wet.x));
 )HLSL");
@@ -654,7 +662,8 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("CavityRough"), G.Scalar(TEXT("CavityRoughness")), 0}, {TEXT("CreaseRough"), G.Scalar(TEXT("CreaseRoughness")), 0},
 			{TEXT("EdgeSmooth"), G.Scalar(TEXT("EdgeSmooth")), 0}, {TEXT("MetalRough"), G.Scalar(TEXT("MetalRoughness")), 0},
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0},
-			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0}},
+			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0}, {TEXT("DryMin"), G.Scalar(TEXT("DryRoughMin")), 0}, {TEXT("DryMax"), G.Scalar(TEXT("DryRoughMax")), 0},
+			{TEXT("DryMetalMin"), G.Scalar(TEXT("DryMetalRoughMin")), 0}, {TEXT("DryMetalMax"), G.Scalar(TEXT("DryMetalRoughMax")), 0}},
 		0);
 	UMaterialExpressionCustom* RoughnessFold = Custom(Material, TEXT("GarmentRoughnessFold"), CMOT_Float1, kRoughnessFoldCode,
 		{{TEXT("ORM"), Orm, 0}, {TEXT("Wear"), Wear, 0}, {TEXT("D"), Detail, 0}, {TEXT("RoughScale"), G.Scalar(TEXT("RoughnessScale")), 0},
@@ -662,7 +671,8 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 			{TEXT("CavityRough"), G.Scalar(TEXT("CavityRoughness")), 0}, {TEXT("CreaseRough"), G.Scalar(TEXT("CreaseRoughness")), 0},
 			{TEXT("EdgeSmooth"), G.Scalar(TEXT("EdgeSmooth")), 0}, {TEXT("MetalRough"), G.Scalar(TEXT("MetalRoughness")), 0},
 			{TEXT("Metal"), Metal, 0}, {TEXT("Sole"), Sole, 0}, {TEXT("SoleRough"), G.Scalar(TEXT("SoleRoughness")), 0},
-			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0},
+			{TEXT("Wet"), WetMask, 0}, {TEXT("WetRough"), G.Scalar(TEXT("WetRoughness")), 0}, {TEXT("M"), Mottle, 0}, {TEXT("DryMin"), G.Scalar(TEXT("DryRoughMin")), 0}, {TEXT("DryMax"), G.Scalar(TEXT("DryRoughMax")), 0},
+			{TEXT("DryMetalMin"), G.Scalar(TEXT("DryMetalRoughMin")), 0}, {TEXT("DryMetalMax"), G.Scalar(TEXT("DryMetalRoughMax")), 0},
 			{TEXT("DirtStrength"), G.Scalar(TEXT("DirtStrength")), 0}, {TEXT("DirtRough"), G.Scalar(TEXT("DirtRoughness")), 0},
 			{TEXT("WetRidgeSheen"), G.Scalar(TEXT("WetRidgeSheen")), 0}, {TEXT("DryRidgeRough"), G.Scalar(TEXT("DryRidgeRoughness")), 0}},
 		100);

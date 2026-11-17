@@ -30,6 +30,31 @@ inline constexpr float kFoldDirtRoughness = 0.15f; // scaled by DirtStrength, so
 // sheen on its folds and seams. 1 (the default) never binds: roughness is at most 1 anyway.
 inline constexpr float kFoldDryRidgeRoughness = 1.f;
 
+// Dry matte floor (on by default, with or without the fold layer): a dry garment's roughness is held at least
+// lerp(lo, hi, ORM G) for its family, so the dry state never reads as vinyl gloss and the map's own variation stays;
+// wet lowers it as before (wet is the only glossy state). Metal hardware takes its own band by the metal mask. Dry fold
+// ridges (DryRidgeRoughness) are held at least the family's lo.
+struct DryBand {
+    float lo;
+    float hi;
+};
+inline constexpr DryBand kDryLeather{0.45f, 0.60f};
+inline constexpr DryBand kDryWaxed{0.55f, 0.70f};
+inline constexpr DryBand kDryCloth{0.80f, 0.95f}; // cotton and wool; the master's default
+inline constexpr DryBand kDryRubber{0.75f, 0.90f};
+inline constexpr DryBand kDryMetal{0.45f, 0.60f};
+
+constexpr float dryFloor(DryBand band, float ormG) {
+    const float g = ormG > 0.f ? (ormG < 1.f ? ormG : 1.f) : 0.f;
+    return band.lo + (band.hi - band.lo) * g;
+}
+// Mirrors the garment roughness node's dry floor: r held at least the band's floor (metal's by the metal mask).
+constexpr float dryRoughness(float r, DryBand fabric, DryBand metal, float ormG, float metalMask) {
+    const float m = metalMask > 0.f ? (metalMask < 1.f ? metalMask : 1.f) : 0.f;
+    const float f = dryFloor(fabric, ormG) + (dryFloor(metal, ormG) - dryFloor(fabric, ormG)) * m;
+    return r > f ? r : f;
+}
+
 // The character rim is a material term, not a light: the garment and skin masters add, after lighting (emissive),
 //   rim = pow(1 - saturate(N.V), kRimExponent) * smoothstep(kRimSideLow, kRimSideHigh, saturate(N.L))
 //         * RimStrength * RimScale * RimColour

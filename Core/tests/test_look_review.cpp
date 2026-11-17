@@ -198,3 +198,21 @@ TEST_CASE("look review: -ArenaWet reads wetness and line, with defaults for part
     CHECK(w->wetness == doctest::Approx(1.f));
     CHECK(w->lineCm == doctest::Approx(130.f));
 }
+
+TEST_CASE("look review: the dry matte floor holds each family in its band and leaves wet alone") {
+    namespace lk = ftcore::look;
+    // Old vinyl-gloss leather (about 0.3) comes up into the leather band, by the map's own G.
+    CHECK(lk::dryRoughness(0.3f, lk::kDryLeather, lk::kDryMetal, 0.f, 0.f) == doctest::Approx(0.45f));
+    CHECK(lk::dryRoughness(0.3f, lk::kDryLeather, lk::kDryMetal, 1.f, 0.f) == doctest::Approx(0.60f));
+    CHECK(lk::dryRoughness(0.3f, lk::kDryLeather, lk::kDryMetal, 0.49f, 0.f) > lk::dryRoughness(0.3f, lk::kDryLeather, lk::kDryMetal, 0.2f, 0.f));
+    // Rougher than the floor stays as it is; cloth sits in 0.80..0.95.
+    CHECK(lk::dryRoughness(0.97f, lk::kDryCloth, lk::kDryMetal, 0.5f, 0.f) == doctest::Approx(0.97f));
+    CHECK(lk::dryRoughness(0.5f, lk::kDryCloth, lk::kDryMetal, 0.5f, 0.f) == doctest::Approx(0.875f));
+    // Polished hardware (0.28) comes up into the metal band by the metal mask.
+    CHECK(lk::dryRoughness(0.28f, lk::kDryCloth, lk::kDryMetal, 0.f, 1.f) == doctest::Approx(0.45f));
+    // The bands are the ruling's.
+    CHECK(lk::kDryWaxed.lo == doctest::Approx(0.55f));
+    CHECK(lk::kDryWaxed.hi == doctest::Approx(0.70f));
+    CHECK(lk::dryFloor(lk::kDryLeather, -1.f) == doctest::Approx(0.45f));
+    CHECK(lk::dryFloor(lk::kDryLeather, 2.f) == doctest::Approx(0.60f));
+}
