@@ -39,7 +39,7 @@ class USkeletalMeshComponent;
 class USpringArmComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
-class UFTRimLightComponent;
+class UFTRimComponent;
 
 // How the weapon arm moves through an attack.
 enum class EFTArenaSwing : uint8
@@ -234,7 +234,7 @@ private:
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USceneComponent> Visual;
 	UPROPERTY()
-	TObjectPtr<UFTRimLightComponent> Rim; // character-only rim light on the player's figure (ft.RimLight)
+	TObjectPtr<UFTRimComponent> Rim; // writes the rim term's direction for the player's figure (ft.Rim)
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<UStaticMeshComponent> Body;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
