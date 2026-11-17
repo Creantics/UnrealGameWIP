@@ -40,6 +40,7 @@ add_library(ftcore STATIC
     src/UiBudget.cpp
     src/UiEventMarks.cpp
     src/UiFirstUse.cpp
+    src/UiHudFit.cpp
     src/UiLone.cpp
     src/UiExplore.cpp
     src/UiPartyScreen.cpp
@@ -337,6 +338,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_ui_budget.cpp
         tests/test_ui_event_marks.cpp
         tests/test_ui_first_use.cpp
+        tests/test_ui_hud_fit.cpp
         tests/test_ui_lone.cpp
         tests/test_ui_explore.cpp
         tests/test_ui_party.cpp
