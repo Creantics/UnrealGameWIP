@@ -35,13 +35,15 @@
 //     "aspect": "16:9", "shake": { "profile": "decaying", "amp_m": [x, y, z], "hz": [x, y, z], "decay_s": 0.2 },
 //     "end_feet": [x, y, z], "cuts": [s, ...],
 //     "shots": [ { "id": 1, "name": "...", "in": 0, "out": 0.9, "anchor": "lead", "offset": { "from": [..], "to": [..] },
-//                  "look_anchor": "lead", "look_at": { "from": [..], "to": [..] }, "ease": "smoothstep",
+//                  "look_anchor": "lead", "look_at": { "from": [..], "to": [..] }, "look_anchor_to": "target", "ease": "smoothstep",
 //                  "focal_mm": 40 or { "from": 40, "to": 31 }, "focus_m": 1.8 or { "from": .., "to": .. },
 //                  "shake": false, "follow_bone": "hand_r", "subject": "lead", "note": "..." } ] }
 //   Shots play in order and touch (each "in" is the one before's "out" within 1 ms, the first at 0, each at least
 //   0.1 s), the last "out" is duration_s (within 1 ms). "cuts" must be the shots' inner starts (a mismatch is a
 //   warning). The camera and look-at are eased from "from" to "to" over the shot by its ease ("smoothstep" or
-//   "linear"), and so are the lens and the focus. focus_m 0: the distance to the look-at point. Shake: on a shaking
+//   "linear"), and so are the lens and the focus. "look_anchor_to": the anchor of the look-at's "to" when it differs
+//   from its "from" (default: look_anchor); the two ends are then placed each from its own anchor and eased between in
+//   the world, so a look that starts on the lead can end on the target at whatever range it stands. focus_m 0: the distance to the look-at point. Shake: on a shaking
 //   shot, the eye moves by amp * e^(-u / decay) * sin(2 pi hz u + phase) per axis of the stage frame, u the time into
 //   the shot. "subject": what the shot must show ("lead", "target", "both" or "none"; default "target" when the
 //   look-at is target anchored, else "lead"), checked by specialCineFixShot. "note", "frame", "fps", "aspect" and "name"
@@ -49,8 +51,10 @@
 //
 // The table:
 //   { "version": 1, "moves": [ { "id": "devin_special_01", "shots": "special_devin_01", "release": 7.1, "fstop": 2.8,
-//                                "blend_in": 0, "blend_out": 0.2 } ] }
-//   "shots": the shot file's name under Data/Cutscene (no extension). "release": the move's release beat on its
+//                                "blend_in": 0, "blend_out": 0.2, "near": "special_devin_01_near", "near_within": 4 } ] }
+//   "shots": the shot file's name under Data/Cutscene (no extension). "near" and "near_within" (both or neither): a
+//   second shot file for a target closer than near_within metres (ground distance, feet to feet, at the press), played
+//   over the same clip with the same release, f-stop and blends; at or past it, "shots" plays (find(id, distance)). "release": the move's release beat on its
 //   clock (default: the first shaking shot's "in", else the last shot's). "fstop" 0.7..32 (default 2.8).
 //   "blend_in": seconds from the play camera into the first shot (default 0: a hard cut in). "blend_out": seconds
 //   over which the move's camera is eased into the play camera, ending on it (default: the whole last shot; longer
@@ -87,6 +91,9 @@ struct SpecialCineShot {
     CutsceneVec3 cameraFrom{}, cameraTo{};             // the camera's place at the shot's start and end
     SpecialCineAnchor lookAnchor = SpecialCineAnchor::Lead;
     CutsceneVec3 lookFrom{}, lookTo{};
+    bool lookEndOwn = false;                           // lookTo is placed from lookEndAnchor, not lookAnchor
+    SpecialCineAnchor lookEndAnchor = SpecialCineAnchor::Lead;
+    SpecialCineAnchor lookToAnchor() const { return lookEndOwn ? lookEndAnchor : lookAnchor; }
     SpecialCineEase ease = SpecialCineEase::Smooth;
     float lensFrom = 35.f, lensTo = 35.f; // mm
     float focusFrom = 0.f, focusTo = 0.f; // metres; 0: the distance to the look-at point
@@ -137,6 +144,9 @@ public:
     const CutsceneVec3& endFeet() const { return endFeet_; }
     // The shot on screen at `t` seconds (clamped to the move): the last whose in is at or before it.
     FTCORE_API std::uint32_t shotAt(float t) const;
+    // The near set's shot file (empty: none) and the range under which it plays (0: none).
+    std::string_view nearFile() const { return {nearFile_, nearFileLength_}; }
+    float nearWithin() const { return nearWithin_; }
 
     // Building (the importers and tests). setId/setShotFile/setClip: false, and unchanged, unless the text fits
     // (ids: a-z, 0-9, _; files and clips: those and A-Z). add: false, and unchanged, when the list is full, or the
@@ -155,6 +165,9 @@ public:
     FTCORE_API void setFStop(float fStop);
     FTCORE_API void setShake(const SpecialCineShake& shake);
     FTCORE_API void setEndFeet(const CutsceneVec3& feet);
+    // A near set: false, and unchanged, unless the file fits (as setShotFile) and `within` is in 0.1..50 m. An empty
+    // file: none.
+    FTCORE_API bool setNear(std::string_view file, float within);
     FTCORE_API void clear();
 
 private:
@@ -172,6 +185,9 @@ private:
     float fStop_ = kDefaultFStop;
     SpecialCineShake shake_{};
     CutsceneVec3 endFeet_{};
+    char nearFile_[kFileCapacity] = {};
+    std::uint8_t nearFileLength_ = 0;
+    float nearWithin_ = 0.f;
 };
 
 class SpecialCineTable {
@@ -181,14 +197,22 @@ public:
     const SpecialCineMove& move(std::uint32_t i) const { return moves_[i < count_ ? i : 0]; }
     // For the shot importer: the move at `i` (i < size()).
     SpecialCineMove& edit(std::uint32_t i) { return moves_[i < count_ ? i : 0]; }
-    // The move with this id, or nullptr. No allocation.
+    // The move with this id (its far set), or nullptr. No allocation.
     FTCORE_API const SpecialCineMove* find(std::string_view id) const;
-    // False when full or the id is already there.
+    // The set to play for a target `distance` metres off (specialCineDistance): the near set when the move has one with
+    // shots and the distance is under its near_within, else the far set; nullptr for an unknown id. No allocation.
+    FTCORE_API const SpecialCineMove* find(std::string_view id, float distance) const;
+    // The near set of move `i` (i < size()): the move's id, release, f-stop and blends, its own shot file (nearFile) and
+    // shots; no shots when the move has no near set.
+    const SpecialCineMove& nearMove(std::uint32_t i) const { return near_[i < count_ ? i : 0]; }
+    SpecialCineMove& editNear(std::uint32_t i) { return near_[i < count_ ? i : 0]; }
+    // False when full or the id is already there. A move with a near set gets its near copy here.
     FTCORE_API bool add(const SpecialCineMove& move);
     void clear() { count_ = 0; }
 
 private:
     SpecialCineMove moves_[kMaxMoves];
+    SpecialCineMove near_[kMaxMoves];
     std::uint32_t count_ = 0;
 };
 
@@ -209,8 +233,12 @@ struct SpecialCineStage {
     float targetHeight = 1.8f;               // metres
     float targetRadius = 0.f;                // metres
     float leadHeight = 1.8f;                 // metres
+    float travel = 1.f;                      // the share of end_feet the lead walks (the host's clamp; 0..1, NaN: 1)
     CutsceneVec3 bone;                       // the follow bone, world metres (fed each frame for "bone" shots)
 };
+
+// The ground distance from the lead's feet to the target's at the press (metres): what picks the near set.
+FTCORE_API float specialCineDistance(const SpecialCineStage& stage);
 
 struct SpecialCineFrame {
     CameraPose pose;              // the shot's camera (world metres, z up), shake not included
@@ -265,7 +293,7 @@ FTCORE_API std::string_view specialCineProblemName(SpecialCineProblem problem);
 
 // The framing rules: the subject (its upright line, feet to head) must have some part inside the safe frame, 10% in
 // from each edge, and fill at least kMinFigure of the frame's height (kMinCloseUp when the camera is within
-// kCloseUpRange of it). The lead stands along its travel (end_feet) in step with the move's clock (the clip's own root
+// kCloseUpRange of it). The lead stands along its travel (end_feet times the stage's travel) in step with the move's clock (the clip's own root
 // curve is not known here); "both" needs the lead and the target.
 struct SpecialCineFraming {
     static constexpr float kSafe = 0.8f;         // of the half frame: 10% in from each edge

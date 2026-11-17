@@ -85,6 +85,7 @@ float heightOr(float h) { return std::isfinite(h) && h > 0.1f ? h : kHumanHeight
 // The lead's feet `along` (0..1) its travel, world metres.
 CutsceneVec3 leadFeet(const SpecialCineMove& move, const SpecialCineStage& stage, float along) {
     const CutsceneVec3& end = move.endFeet();
+    along *= std::isfinite(stage.travel) ? std::clamp(stage.travel, 0.f, 1.f) : 1.f;
     return specialCinePoint(stage, SpecialCineAnchor::Lead, {end.x * along, end.y * along, end.z * along});
 }
 
@@ -200,8 +201,22 @@ void SpecialCineMove::setShake(const SpecialCineShake& shake) {
 
 void SpecialCineMove::setEndFeet(const CutsceneVec3& feet) { endFeet_ = finite3(feet) ? feet : CutsceneVec3{}; }
 
+bool SpecialCineMove::setNear(std::string_view file, float within) {
+    if (file.empty()) {
+        nearFileLength_ = 0;
+        std::fill(std::begin(nearFile_), std::end(nearFile_), '\0');
+        nearWithin_ = 0.f;
+        return true;
+    }
+    if (!(std::isfinite(within) && within >= 0.1f && within <= 50.f)) return false;
+    if (!setText(nearFile_, nearFileLength_, file, true)) return false;
+    nearWithin_ = within;
+    return true;
+}
+
 void SpecialCineMove::clear() {
     clearShots();
+    setNear({}, 0.f);
     idLength_ = 0;
     std::fill(std::begin(id_), std::end(id_), '\0');
     fileLength_ = 0;
@@ -218,9 +233,24 @@ const SpecialCineMove* SpecialCineTable::find(std::string_view id) const {
     return nullptr;
 }
 
+const SpecialCineMove* SpecialCineTable::find(std::string_view id, float distance) const {
+    for (std::uint32_t i = 0; i < count_; ++i) {
+        if (moves_[i].id() != id) continue;
+        const bool near = moves_[i].nearWithin() > 0.f && !near_[i].empty() && std::isfinite(distance) && distance < moves_[i].nearWithin();
+        return near ? &near_[i] : &moves_[i];
+    }
+    return nullptr;
+}
+
 bool SpecialCineTable::add(const SpecialCineMove& move) {
     if (count_ >= kMaxMoves || move.id().empty() || find(move.id()) != nullptr) return false;
-    moves_[count_++] = move;
+    moves_[count_] = move;
+    SpecialCineMove& near = near_[count_];
+    near = move;
+    near.clearShots();
+    near.setNear({}, 0.f);
+    if (!move.nearFile().empty()) near.setShotFile(move.nearFile());
+    ++count_;
     return true;
 }
 
@@ -253,6 +283,12 @@ CutsceneVec3 specialCinePoint(const SpecialCineStage& stage, SpecialCineAnchor a
     return {origin.x + ax * fx + ay * rx, origin.y + ax * fy + ay * ry, origin.z + az};
 }
 
+float specialCineDistance(const SpecialCineStage& stage) {
+    const float dx = stage.target.x - stage.origin.x, dy = stage.target.y - stage.origin.y;
+    const float d = std::sqrt(dx * dx + dy * dy);
+    return std::isfinite(d) ? d : 0.f;
+}
+
 SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
                                     const SpecialCineShotFix* fixes) {
     SpecialCineFrame f;
@@ -266,12 +302,18 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     const SpecialCineShotFix fix = fixes != nullptr ? fixes[i] : SpecialCineShotFix{};
     CutsceneVec3 eye = lerp3(s.cameraFrom, s.cameraTo, p);
     CutsceneVec3 look = lerp3(s.lookFrom, s.lookTo, p);
+    CutsceneVec3 lookA = s.lookFrom, lookB = s.lookTo;
     if (fix.mirror) {
         eye.y = -eye.y;
         look.y = -look.y;
+        lookA.y = -lookA.y;
+        lookB.y = -lookB.y;
     }
     f.pose.position = specialCinePoint(stage, s.cameraAnchor, eye);
-    f.pose.lookAt = specialCinePoint(stage, s.lookAnchor, look);
+    // Two anchors: each end placed from its own, eased between in the world.
+    f.pose.lookAt = s.lookToAnchor() != s.lookAnchor
+                        ? lerp3(specialCinePoint(stage, s.lookAnchor, lookA), specialCinePoint(stage, s.lookToAnchor(), lookB), p)
+                        : specialCinePoint(stage, s.lookAnchor, look);
     if (std::isfinite(fix.raise) && fix.raise > 0.f) f.pose.position.z += fix.raise;
     const bool aimed = fix.aim && s.subject != SpecialCineSubject::None;
     if (aimed) f.pose.lookAt = aimPoint(move, s, stage, tc, f.pose.lookAt);
@@ -649,7 +691,7 @@ static bool readSpecialCineTable(std::string_view text, SpecialCineTable& table,
         const JsonValue mv = moves[m];
         const std::string where = "specials: move " + std::to_string(m);
         if (!mv.isObject()) return fail(error, where + " is not an object");
-        warnUnknown(mv, {"id", "shots", "release", "fstop", "blend_in", "blend_out"}, where, warnings);
+        warnUnknown(mv, {"id", "shots", "release", "fstop", "blend_in", "blend_out", "near", "near_within"}, where, warnings);
         SpecialCineMove move;
         if (!move.setId(mv["id"].string())) return fail(error, where + ": \"id\" is not an id (a-z, 0-9, _; 1..23)");
         if (!move.setShotFile(mv["shots"].string())) return fail(error, where + ": \"shots\" is not a file name (a-z, A-Z, 0-9, _; 1..39)");
@@ -665,6 +707,10 @@ static bool readSpecialCineTable(std::string_view text, SpecialCineTable& table,
         if (!(bin >= 0.f && bin <= kMaxBlendIn)) return fail(error, where + ": \"blend_in\" is outside 0..1 s");
         if (!mv["blend_out"].isAbsent() && !(bout >= 0.f && bout <= kMaxLength)) return fail(error, where + ": \"blend_out\" is negative");
         move.setBlends(bin, bout);
+        if (mv["near"].isAbsent() != mv["near_within"].isAbsent()) return fail(error, where + ": \"near\" and \"near_within\" go together");
+        if (!mv["near"].isAbsent() &&
+            (mv["near"].string() == mv["shots"].string() || !move.setNear(mv["near"].string(), static_cast<float>(mv["near_within"].number(-1.0)))))
+            return fail(error, where + ": \"near\" is not another file name, or \"near_within\" is outside 0.1..50 m");
         if (!table.add(move)) return fail(error, where + ": a duplicate id, or more than 8 moves");
     }
     return true;
@@ -719,7 +765,7 @@ static bool readSpecialCineShots(std::string_view text, SpecialCineMove& move, s
             move.clearShots();
             return fail(error, at + " is not an object");
         }
-        warnUnknown(sv, {"id", "name", "in", "out", "anchor", "offset", "look_anchor", "look_at", "ease", "focal_mm", "focus_m", "fstop",
+        warnUnknown(sv, {"id", "name", "in", "out", "anchor", "offset", "look_anchor", "look_at", "look_anchor_to", "ease", "focal_mm", "focus_m", "fstop",
                          "shake", "follow_bone", "subject", "note"},
                     at, warnings);
         SpecialCineShot s;
@@ -728,6 +774,8 @@ static bool readSpecialCineShots(std::string_view text, SpecialCineMove& move, s
         s.out = static_cast<float>(sv["out"].number());
         ok = ok && readAnchor(sv["anchor"], s.cameraAnchor) && readAnchor(sv["look_anchor"], s.lookAnchor);
         ok = ok && readSpan(sv["offset"], s.cameraFrom, s.cameraTo) && readSpan(sv["look_at"], s.lookFrom, s.lookTo);
+        s.lookEndOwn = !sv["look_anchor_to"].isAbsent();
+        ok = ok && (!s.lookEndOwn || readAnchor(sv["look_anchor_to"], s.lookEndAnchor));
         if (!ok) {
             move.clearShots();
             return fail(error, at + ": needs \"in\", \"out\", \"offset\" and \"look_at\" ({from, to}), and anchors lead, world, target or bone");
@@ -760,7 +808,8 @@ static bool readSpecialCineShots(std::string_view text, SpecialCineMove& move, s
         std::copy(name.begin(), name.begin() + static_cast<std::ptrdiff_t>(keep), s.nameText);
         s.nameLength = static_cast<std::uint8_t>(keep);
         const std::string_view bone = sv["follow_bone"].string();
-        const bool needsBone = s.cameraAnchor == SpecialCineAnchor::Bone || s.lookAnchor == SpecialCineAnchor::Bone;
+        const bool needsBone = s.cameraAnchor == SpecialCineAnchor::Bone || s.lookAnchor == SpecialCineAnchor::Bone ||
+                               s.lookToAnchor() == SpecialCineAnchor::Bone;
         if (needsBone && !isIdText(bone, SpecialCineShot::kBoneCapacity - 1, true)) {
             move.clearShots();
             return fail(error, at + ": a \"bone\" anchor needs \"follow_bone\" (a bone name, 1..15)");

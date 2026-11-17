@@ -244,12 +244,12 @@
    "offset": {
     "from": [
      2.2,
-     -1.05,
+     -0.75,
      1.6
     ],
     "to": [
      2.2,
-     -1.05,
+     -0.75,
      1.6
     ]
    },
@@ -261,19 +261,17 @@
      0.45
     ],
     "to": [
-     6.0,
+     -0.3,
      0,
-     0.55
+     1.0
     ]
    },
    "ease": "smoothstep",
    "focal_mm": 40,
-   "focus_m": {
-    "from": 1.37,
-    "to": 4.35
-   },
+   "focus_m": 0,
    "shake": true,
-   "note": "offset is from the target's feet in the lead frame (2.2 m beyond it and 1.05 m to the lead's left, over its right shoulder); look_at stays in the lead frame and rides the wave; ease over the first 0.20 s"
+   "note": "offset is from the target's feet in the lead frame (2.2 m beyond it and 0.75 m to the lead's left, over its right shoulder); the look-at starts in the lead frame and ends 0.3 m short of the target's front, so it rides the wave to the target at any range; focus follows the look-at",
+   "look_anchor_to": "target"
   },
   {
    "id": 7,

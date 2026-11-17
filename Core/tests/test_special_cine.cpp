@@ -1,5 +1,6 @@
 #include "ftcore/SpecialCine.h"
 
+#include "ftcore/ArenaFight.h"
 #include "ftcore/Json.h"
 
 #include "AllocCounter.h"
@@ -8,6 +9,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -66,6 +68,13 @@ bool loadCommitted(SpecialCineTable& t, std::vector<std::string>& warnings, std:
             return false;
         }
         if (!importSpecialCineShots(shots, t.edit(i), &error, &warnings)) return false;
+        const std::string_view nearFile = t.move(i).nearFile();
+        if (nearFile.empty()) continue;
+        if (!ftcore_test::readProjectData("Cutscene/" + std::string(nearFile) + ".json", shots)) {
+            error = "near shot file " + std::string(nearFile) + " not found";
+            return false;
+        }
+        if (!importSpecialCineShots(shots, t.editNear(i), &error, &warnings)) return false;
     }
     return true;
 }
@@ -534,55 +543,289 @@ bool rightWall(const CutsceneVec3& from, const CutsceneVec3& to, void*) { return
 
 } // namespace
 
-TEST_CASE("special cine: the framing check: the captured release frame at 7.33 s shows nothing, a mirror cannot fix it, the aim does") {
-    SpecialCineTable t;
-    std::string error;
-    std::vector<std::string> warnings;
-    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
-    const SpecialCineMove* m = t.find("devin_special_01");
-    REQUIRE(m != nullptr);
+namespace {
+
+// Whether `p` stands inside the frame's safe box (SpecialCineFraming::kSafe of the half-frame), by its own sums.
+bool inSafeFrame(const SpecialCineFrame& f, const CutsceneVec3& p) {
+    CutsceneVec3 fwd = sub3(f.pose.lookAt, f.pose.position);
+    const float n = length3(fwd);
+    fwd = {fwd.x / n, fwd.y / n, fwd.z / n};
+    CutsceneVec3 right{-fwd.y, fwd.x, 0.f}; // right of the view on the ground, Unreal's way
+    const float rn = length3(right);
+    right = {right.x / rn, right.y / rn, 0.f};
+    const CutsceneVec3 up{right.y * fwd.z - right.z * fwd.y, right.z * fwd.x - right.x * fwd.z, right.x * fwd.y - right.y * fwd.x};
+    const CutsceneVec3 d = sub3(p, f.pose.position);
+    const float z = d.x * fwd.x + d.y * fwd.y + d.z * fwd.z;
+    if (z <= 0.f) return false;
+    const float tanX = std::tan(0.5f * f.fovDegrees * kDeg), tanY = tanX / SpecialCineFraming::kAspect;
+    const float x = (d.x * right.x + d.y * right.y + d.z * right.z) / (z * tanX);
+    const float y = (d.x * up.x + d.y * up.y + d.z * up.z) / (z * tanY);
+    return std::fabs(x) <= SpecialCineFraming::kSafe && std::fabs(y) <= SpecialCineFraming::kSafe;
+}
+
+// The lead's travel on a stage `d` metres off with no room behind it: the host's clamp shortens the walk to stop at
+// body contact (with room behind, it starts back instead and the stage is then at least contact + travel off, which
+// is a full walk at a larger distance).
+float travelAt(float d, float contact, float walk) {
+    return walk > 0.f ? std::clamp((d - contact - 0.01f) / walk, 0.f, 1.f) : 1.f;
+}
+
+// Whether every shot that frames someone passes as written (no fix) on `st`, the target its only body.
+bool passesAsWritten(const SpecialCineMove& m, const SpecialCineStage& st, std::uint32_t& failedShot) {
+    SpecialCineBody body;
+    body.feet = st.target;
+    body.radius = st.targetRadius;
+    body.height = st.targetHeight;
+    body.target = true;
+    for (std::uint32_t i = 0; i < m.size(); ++i) {
+        if (m.shot(i).subject == SpecialCineSubject::None) continue;
+        if (specialCineFixShot(m, i, st, &body, 1).first != SpecialCineProblem::None) {
+            failedShot = i;
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("special cine: the aim keeps both figures of a two-shot in frame (the release shot as captured at 7.33 s)") {
+    // The release shot as it was captured (round 1): a camera beside and beyond the target, its look-at riding out
+    // 2.4..6 m ahead of the lead. On the captured stage (a brute 1.98 m off) it faces away from both figures by 92%.
+    SpecialCineMove m;
+    REQUIRE(m.setId("captured_release"));
+    SpecialCineShot s = shotOf(0.f, 1.f, {2.2f, -1.05f, 1.6f});
+    s.cameraAnchor = SpecialCineAnchor::Target;
+    s.lookAnchor = SpecialCineAnchor::Lead;
+    s.lookFrom = {2.4f, 0.f, 0.45f};
+    s.lookTo = {6.f, 0.f, 0.55f};
+    s.lensFrom = s.lensTo = 40.f;
+    s.subject = SpecialCineSubject::Both;
+    REQUIRE(m.add(s));
     const SpecialCineStage st = capturedStage();
     const SpecialCineBody body = bodyOf(st);
-    const std::uint32_t release = 5;
-    const SpecialCineShot& s = m->shot(release);
-    REQUIRE(s.subject == SpecialCineSubject::Both);
-    // 7.33 s in the captured 7.10..7.35 shot: 92% in. Its camera stands beside the target and its look-at rides the
-    // wave out past the camera: it faces away from both figures.
-    const float at = s.in + 0.92f * (s.out - s.in);
+    const float at = 0.92f;
     SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
-    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
-    // Mirrored: both figures stand on the stage's axis, so the mirror swaps the camera and the look-at to the other
-    // side and frames nothing more. Raised: no better.
-    fixes[release] = fixOf(true, 0.f, false);
-    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
-    fixes[release] = fixOf(false, 0.8f, false);
-    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
-    // Aimed at the two figures: both in the safe frame, the target's own body not counted against the two-shot.
-    fixes[release] = fixOf(false, 0.f, true);
-    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::None);
-
+    CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
+    // Mirrored: both figures stand on the stage's axis, so the mirror frames nothing more. Raised: no better.
+    fixes[0] = fixOf(true, 0.f, false);
+    CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
+    fixes[0] = fixOf(false, 0.8f, false);
+    CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
+    // Aimed: the check passes, and by sums of this test's own both chests and both waists stand in the safe frame at
+    // every sample of the shot.
+    fixes[0] = fixOf(false, 0.f, true);
+    CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::None);
+    for (float u = 0.02f; u <= 0.99f; u += 0.24f) {
+        CAPTURE(u);
+        const SpecialCineFrame f = specialCineFrameAt(m, u, st, fixes);
+        CHECK(inSafeFrame(f, {0.f, 0.f, 1.1f}));                   // the lead's chest (no travel in this move)
+        CHECK(inSafeFrame(f, {0.f, 0.f, 0.9f}));                   // its waist
+        CHECK(inSafeFrame(f, {st.target.x, 0.f, 0.6f * st.targetHeight}));
+        CHECK(inSafeFrame(f, {st.target.x, 0.f, 0.5f * st.targetHeight}));
+    }
     // The search: the mirror and the raises are tried first, then the aim.
-    const SpecialCineShotCheck c = specialCineFixShot(*m, release, st, &body, 1);
+    const SpecialCineShotCheck c = specialCineFixShot(m, 0, st, &body, 1);
     CHECK(c.first == SpecialCineProblem::OffFrame);
     CHECK(c.ok);
     CHECK(c.fix.aim);
     CHECK_FALSE(c.fix.mirror);
     CHECK(c.fix.pull == 0.f);
     CHECK(c.tries == 9); // as written, mirrored, 3 raises, 3 mirrored raises, aimed
+}
 
-    // Every shot passes on that stage, moved or not; the last two show the lead as written (the capture's host test
-    // pulled them off a body that was not in their line).
-    for (std::uint32_t i = 0; i < m->size(); ++i) {
+TEST_CASE("special cine: the near set: picked under near_within, the same clock as the far set, every shot clean at the capture") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    for (const std::string& w : warnings) MESSAGE(w);
+    CHECK(warnings.empty());
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const SpecialCineMove& nearSet = t.nearMove(0);
+    REQUIRE(far->nearWithin() > 0.f);
+    CHECK(nearSet.shotFile() == far->nearFile());
+    CHECK(nearSet.id() == far->id());
+    // Picked by distance: under near_within the near set, at it and past it the far one; the far-only find unchanged.
+    CHECK(t.find("devin_special_01", far->nearWithin() - 0.01f) == &nearSet);
+    CHECK(t.find("devin_special_01", 0.f) == &nearSet);
+    CHECK(t.find("devin_special_01", far->nearWithin()) == far);
+    CHECK(t.find("devin_special_01", 15.f) == far);
+    CHECK(t.find("devin_special_01", std::numeric_limits<float>::quiet_NaN()) == far);
+    CHECK(t.find("nope", 1.f) == nullptr);
+    // The same clip clock: shot count, cuts, release, blends, f-stop, travel, shake beat; the last shot's end the same.
+    REQUIRE(nearSet.size() == far->size());
+    CHECK(nearSet.clip() == far->clip());
+    for (std::uint32_t i = 0; i < far->size(); ++i) {
         CAPTURE(i);
-        CHECK(specialCineFixShot(*m, i, st, &body, 1).ok);
+        CHECK(nearSet.shot(i).in == far->shot(i).in);
+        CHECK(nearSet.shot(i).out == far->shot(i).out);
+        CHECK(nearSet.shot(i).shake == far->shot(i).shake);
+        CHECK(nearSet.shot(i).subject == far->shot(i).subject);
     }
-    CHECK(specialCineFixShot(*m, 6, st, &body, 1).first == SpecialCineProblem::None);
-    const SpecialCineShotCheck last = specialCineFixShot(*m, 7, st, &body, 1);
-    CHECK(last.first == SpecialCineProblem::None);
-    CHECK_FALSE(last.fix.moved());
-    // At 2 m shot 1 starts in the brute's body and shot 2 has it in front of the lead: both pulled in.
-    CHECK(specialCineFixShot(*m, 0, st, &body, 1).fix.pull > 0.f);
-    CHECK(specialCineFixShot(*m, 1, st, &body, 1).fix.pull > 0.f);
+    CHECK(nearSet.release() == far->release());
+    CHECK(nearSet.blendIn() == far->blendIn());
+    CHECK(nearSet.blendOut() == far->blendOut());
+    CHECK(nearSet.fStop() == far->fStop());
+    CHECK(nearSet.endFeet().x == far->endFeet().x);
+    const SpecialCineShot& a = nearSet.shot(nearSet.size() - 1);
+    const SpecialCineShot& b = far->shot(far->size() - 1);
+    CHECK(a.cameraTo.x == b.cameraTo.x);
+    CHECK(a.lookTo.z == b.lookTo.z);
+    CHECK(a.lensTo == b.lensTo);
+
+    // The capture's stage (a brute 1.98 m off) picks the near set, and every shot that frames someone passes there as
+    // written: nothing to move.
+    const SpecialCineStage st = capturedStage();
+    REQUIRE(t.find("devin_special_01", specialCineDistance(st)) == &nearSet);
+    std::uint32_t failed = 99;
+    CHECK(passesAsWritten(nearSet, st, failed));
+    CAPTURE(failed);
+    // Its release shot (the strike) is a two-shot whose look-at ends on the target from the target's own anchor.
+    const SpecialCineShot& release = nearSet.shot(5);
+    CHECK(release.subject == SpecialCineSubject::Both);
+    CHECK(release.lookToAnchor() == SpecialCineAnchor::Target);
+    CHECK(far->shot(5).lookToAnchor() == SpecialCineAnchor::Target);
+}
+
+TEST_CASE("special cine: the range sweep: the far set from the switch point to lock range, the near set from contact to it") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable arena;
+    REQUIRE_MESSAGE(importArenaTable(text, arena, &error), error);
+    const ArenaFighter& lead = arena.fighter("devin");
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const SpecialCineMove& nearSet = t.nearMove(0);
+    const float within = far->nearWithin();
+    REQUIRE(within > 0.f);
+    REQUIRE(lead.lockRange > within);
+    const CutsceneVec3 end = far->endFeet();
+    const float walk = std::sqrt(end.x * end.x + end.y * end.y);
+    constexpr float kStep = 0.05f;
+
+    // Every person-sized kind (body radius up to 0.5 m: the bosses and big kinds are not on this list, see below),
+    // every 5 cm from body contact out to lock range, both from arena.json.
+    int kinds = 0;
+    float lastFarFail = -1.f; // the far set's last failing distance over all of them: the switch point sits just past
+    for (std::size_t k = 0; k < arena.enemies.size(); ++k) {
+        const ArenaEnemyKind& kind = arena.enemies[k];
+        if (kind.bodyRadius > 0.5f) continue;
+        ++kinds;
+        CAPTURE(arena.enemyIds[k]);
+        const float contact = lead.bodyRadius + kind.bodyRadius;
+        for (int i = 0;; ++i) {
+            const float d = contact + kStep * static_cast<float>(i);
+            if (d > lead.lockRange + 1e-3f) break;
+            CAPTURE(d);
+            SpecialCineStage st = stageAt(0.f, 0.f, d, 0.f);
+            st.targetRadius = kind.bodyRadius;
+            st.targetHeight = arenaEnemyHeight(kind);
+            st.travel = travelAt(d, contact, walk);
+            st.bone = {0.3f, 0.25f, 1.1f};
+            const SpecialCineMove* picked = t.find("devin_special_01", specialCineDistance(st));
+            REQUIRE(picked != nullptr);
+            std::uint32_t failed = 99;
+            const bool farOk = passesAsWritten(*far, st, failed);
+            if (!farOk) lastFarFail = std::max(lastFarFail, d);
+            if (d >= within) {
+                CHECK(picked == far);
+                CAPTURE(failed);
+                CHECK(farOk);
+            } else {
+                CHECK(picked == &nearSet);
+                CHECK(passesAsWritten(nearSet, st, failed));
+            }
+        }
+    }
+    CHECK(kinds >= 6);
+    // The switch point is where the far set stops failing: near_within is the first 5 cm step past its last failure.
+    CHECK(lastFarFail < within);
+    CHECK(lastFarFail > within - 2.f * kStep);
+    // The big kinds (radius over 0.5 m: hulk, stone bearer, titan, the kite boss) are left out: at contact both sets
+    // put a camera in or behind such a body, and the far set needs 6 to 7.3 m. They wait for a boss rule.
+}
+
+TEST_CASE("special cine: the near keys, the look-at's own end anchor, and the stage's travel") {
+    // The table's near keys: both or neither, a file of its own, a range in 0.1..50 m.
+    SpecialCineTable t;
+    std::string error;
+    REQUIRE(importSpecialCineTable(R"({"moves": [{"id": "m", "shots": "f", "near": "g", "near_within": 4}]})", t, &error));
+    REQUIRE(t.find("m") != nullptr);
+    CHECK(t.find("m")->nearFile() == "g");
+    CHECK(t.find("m")->nearWithin() == 4.f);
+    CHECK(t.nearMove(0).shotFile() == "g");
+    CHECK(t.nearMove(0).nearWithin() == 0.f);
+    // The near copy has no shots until its file is read: the far set plays at any range till then.
+    CHECK(t.find("m", 1.f) == t.find("m"));
+    CHECK_FALSE(importSpecialCineTable(R"({"moves": [{"id": "m", "shots": "f", "near": "g"}]})", t, &error));
+    CHECK(error.find("near") != std::string::npos);
+    CHECK_FALSE(importSpecialCineTable(R"({"moves": [{"id": "m", "shots": "f", "near_within": 4}]})", t, &error));
+    CHECK_FALSE(importSpecialCineTable(R"({"moves": [{"id": "m", "shots": "f", "near": "f", "near_within": 4}]})", t, &error));
+    CHECK_FALSE(importSpecialCineTable(R"({"moves": [{"id": "m", "shots": "f", "near": "g", "near_within": 0}]})", t, &error));
+    CHECK_FALSE(importSpecialCineTable(R"({"moves": [{"id": "m", "shots": "f", "near": "g h", "near_within": 4}]})", t, &error));
+    REQUIRE(importSpecialCineTable(R"({"moves": [{"id": "m", "shots": "f"}]})", t, &error));
+    CHECK(t.find("m")->nearFile().empty());
+    CHECK(t.find("m", 0.5f) == t.find("m"));
+
+    // "look_anchor_to": the look-at starts from its own anchor and ends from the target's, eased between in the world.
+    SpecialCineMove m;
+    REQUIRE(m.setId("m"));
+    std::string text = kShots;
+    const std::string look = R"("look_anchor": "lead", "look_at": {"from": [0, 0, 1]}, "ease": "linear")";
+    const std::size_t at = text.find(look);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, look.size(),
+                 R"("look_anchor": "lead", "look_at": {"from": [0.5, 0, 1], "to": [-0.2, 0, 1]}, "look_anchor_to": "target", "ease": "linear")");
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importSpecialCineShots(text, m, &error, &warnings), error);
+    CHECK(warnings.empty());
+    CHECK(m.shot(0).lookToAnchor() == SpecialCineAnchor::Target);
+    CHECK(m.shot(1).lookToAnchor() == SpecialCineAnchor::Lead); // not given: its look_anchor
+    SpecialCineStage st = stageAt(0.f, 0.f, 6.f, 0.f);
+    st.targetRadius = 0.5f;
+    const CutsceneVec3 a = specialCinePoint(st, SpecialCineAnchor::Lead, {0.5f, 0.f, 1.f});
+    const CutsceneVec3 b = specialCinePoint(st, SpecialCineAnchor::Target, {-0.2f, 0.f, 1.f});
+    CHECK(near(b.x, 5.3f, 1e-4f)); // 0.2 m short of the target's front, pushed out by its radius
+    CHECK(near(specialCineFrameAt(m, 0.f, st).pose.lookAt.x, a.x, 1e-3f));
+    CHECK(near(specialCineFrameAt(m, 0.5f, st).pose.lookAt.x, 0.5f * (a.x + b.x), 1e-3f));
+    CHECK(near(specialCineFrameAt(m, 0.999f, st).pose.lookAt.x, b.x, 0.01f));
+    // The same shot on a nearer stage ends on the nearer target.
+    st = stageAt(0.f, 0.f, 2.f, 0.f);
+    st.targetRadius = 0.5f;
+    CHECK(near(specialCineFrameAt(m, 0.999f, st).pose.lookAt.x, 1.3f, 0.01f));
+    // A bone end needs a follow bone; an unknown anchor is refused.
+    std::string boneEnd = text;
+    boneEnd.replace(boneEnd.find(R"("look_anchor_to": "target")"), 26, R"("look_anchor_to": "bone")");
+    CHECK_FALSE(importSpecialCineShots(boneEnd, m, &error));
+    std::string unknown = text;
+    unknown.replace(unknown.find(R"("look_anchor_to": "target")"), 26, R"("look_anchor_to": "boss")");
+    CHECK_FALSE(importSpecialCineShots(unknown, m, &error));
+
+    // The stage's travel: the share of end_feet the lead walks, as the framing check sees it. A long lens on the
+    // lead's end feet (1 m ahead, kShots's end_feet) from 3 m to the side: the full walk is in frame, none of it is not.
+    SpecialCineMove side = oneShot({1.f, -3.f, 1.f}, {1.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    side.setEndFeet({1.f, 0.f, 0.f});
+    SpecialCineStage walk = stageAt(0.f, 0.f, 6.f, 0.f);
+    walk.travel = 1.f;
+    CHECK(specialCineFrameProblem(side, 0.999f, walk, nullptr, nullptr, 0) == SpecialCineProblem::None);
+    walk.travel = std::numeric_limits<float>::quiet_NaN(); // NaN: the whole walk
+    CHECK(specialCineFrameProblem(side, 0.999f, walk, nullptr, nullptr, 0) == SpecialCineProblem::None);
+    walk.travel = 0.f;
+    SpecialCineMove narrow = side;
+    SpecialCineShot s = side.shot(0);
+    s.lensFrom = s.lensTo = 200.f; // about a 10 degree view: the lead 1 m back is out of it
+    narrow.clearShots();
+    REQUIRE(narrow.add(s));
+    narrow.setEndFeet({1.f, 0.f, 0.f}); // clearShots clears the travel too
+    CHECK(specialCineFrameProblem(narrow, 0.999f, walk, nullptr, nullptr, 0) == SpecialCineProblem::OffFrame);
+    walk.travel = 1.f;
+    CHECK(specialCineFrameProblem(narrow, 0.999f, walk, nullptr, nullptr, 0) != SpecialCineProblem::OffFrame);
 }
 
 TEST_CASE("special cine: the framing check: in frame, too small, behind; a mirror off a side body or wall; the target's own body") {
