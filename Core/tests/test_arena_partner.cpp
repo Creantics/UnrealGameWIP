@@ -5220,8 +5220,9 @@ namespace {
 // The close lens over a big target (the order of 11-16: no station beside the lens). The lead held at `centre` m from
 // a target of `radius` (centre to centre; it never attacks), or circling it at `orbit` degrees a second, the close
 // preset's lens on the right shoulder eased as the game eases it, the party kit's caster (8.5 / 5) walking from a
-// start set by `seed` (or `startLens`: depth and lateral from the lead in the lens's ground space). Measured in the
-// lens's ground space each step from 1 s: depth along its ground forward, lateral (+ right), and the partner's
+// start set by `seed` (or `startLens`: depth and lateral from the lead in the lens's ground space). `leadEvery` (s,
+// given): the lead presses a light this often from the first step (the arena lane's titan runs: 2.5). Measured in the
+// lens's ground space each step from `from` s (1): depth along its ground forward, lateral (+ right), and the partner's
 // projected height (a 1.8 m body at that depth, share of the frame's height).
 struct TitanLensRun {
     int steps = 0, nearOk = 0, sizeOk = 0, seen = 0, seenClear = 0, flankChanges = 0, strings = 0;
@@ -5246,7 +5247,7 @@ bool titanCrossed(Vec2 a, Vec2 b, Vec2 c, Vec2 d) {
 }
 
 TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float orbit = 0.f,
-                          const Vec2* startLens = nullptr, float seconds = 12.f) {
+                          const Vec2* startLens = nullptr, float seconds = 12.f, float leadEvery = 0.f, float from = 1.f) {
     const ArenaTable t = shippedTable();
     PRig r(t.fighter("devin"));
     r.def.fighter.hp = 100000;
@@ -5348,6 +5349,7 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
         v.halfAngleDegrees = std::atan(std::tan(v.verticalHalfDegrees * kRad) * cam.aspect) / kRad;
         v.pitchDegrees = std::asin(std::clamp(cam.forward.z, -1.f, 1.f)) / kRad;
         v.lensHeight = cam.pos.z - cam.groundZ;
+        if (leadEvery > 0.f) r.in.light = k % std::max(1, static_cast<int>(std::lround(leadEvery / kDt))) == 0;
         const Vec2 before = r.bodies.ally;
         r.tick();
         const Vec2 a = r.bodies.ally;
@@ -5362,10 +5364,8 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
         }
         const Vec2 bear = sub(r.bodies.player, tp), rel = sub(a, tp);
         const std::int8_t f = bear.x * rel.y - bear.y * rel.x > 0.f ? std::int8_t{1} : std::int8_t{-1};
-        if (tNow < 1.f) {
-            flank = f;
-            continue;
-        }
+        if (k == 0 || tNow < from) flank = f;
+        if (tNow < from) continue;
         if (f != flank) {
             if (o.flankChanges < static_cast<int>(changes.size())) changes[static_cast<std::size_t>(o.flankChanges)] = tNow;
             ++o.flankChanges;
@@ -5416,8 +5416,8 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
     const int kept = std::min(o.flankChanges, static_cast<int>(changes.size()));
     for (int i = 0; i < kept; ++i) {
         int w = 0;
-        const float from = changes[static_cast<std::size_t>(i)];
-        for (int j = i; j < kept && changes[static_cast<std::size_t>(j)] < from + 3.f; ++j) ++w;
+        const float at0 = changes[static_cast<std::size_t>(i)];
+        for (int j = i; j < kept && changes[static_cast<std::size_t>(j)] < at0 + 3.f; ++j) ++w;
         o.worstFlankRate = std::max(o.worstFlankRate, w);
     }
     o.strings = r.fight.stats().partnerStrings;
@@ -5485,6 +5485,26 @@ TEST_CASE("arena partner: the close lens's near field, the shipped titan in cont
             CHECK(o.hiddenTarget == 0);
             if (centre < 4.f) CHECK(o.hiddenLead <= 6); // in contact (before: 44 steps behind the lead and 12 behind
                                                         // the target walking on seeds 7-8)
+        }
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field over a whole fight from the first step: rule 1 on 95% of steps") {
+    // The arena lane's lens log (round 6): the caster off the right edge beside the lens on 25-35% of frames on the
+    // titan runs, though its stations read well. Its start now: 3 m ahead of the lead along the lens and 1.5 m off
+    // the far side (the lens on the right shoulder: lateral -1.5); its lead throws a light every 2.5 s. Over 20 s
+    // from the first step, rule 1 (2.5 m off the lens, no shallower than the lead less 0.5) holds on at least 95%.
+    const Vec2 start{3.f, -1.5f};
+    for (const float centre : {6.f, 8.f, 10.f}) {
+        for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+            CAPTURE(centre);
+            CAPTURE(seed);
+            const TitanLensRun o = titanLensRun(2.2f, centre, seed, 0.f, &start, 20.f, 2.5f, 0.f);
+            MESSAGE("whole fight titan 2.2 at " << centre << " seed " << seed << ": " << titanLine(o));
+            REQUIRE(o.steps > 0);
+            CHECK(100 * o.nearOk >= 95 * o.steps);
+            CHECK(o.crossings == 0);
+            CHECK(o.strings > 0);
         }
     }
 }

@@ -2963,7 +2963,9 @@ struct ArenaFightImpl {
             fight.ally_.around = -1;
             return fight.allyPos_;
         }
-        const bool circling = intent.skirmish || intent.idle == PartnerIdle::NoBudget;
+        // Rule 17's walk shaping (round bodies, heading held) for its own goals and a wait on the budget; under the
+        // close camera rule 19 replaces rule 17 and its NoBudget walk is the brain's as given (its near field, rule 1).
+        const bool circling = intent.skirmish || (intent.idle == PartnerIdle::NoBudget && !in.partnerClose.given);
         const Vec2 goal = circling ? allyRound(in, intent.point, intent.skirmish ? intent.enemy : -1) : intent.point;
         return intent.act == PartnerAct::StepBack || !circling ? goal : allyHeadingHeld(goal);
     }
