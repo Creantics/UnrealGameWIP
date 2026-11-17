@@ -251,12 +251,13 @@ void AFTArenaFighter::SoakForReview()
 }
 #endif
 
-void AFTArenaFighter::SetCameraLag(float Seconds)
+void AFTArenaFighter::SetCameraLag(float Seconds, float MaxMeters)
 {
 	if (!Boom)
 	{
 		return;
 	}
+	Boom->CameraLagMaxDistance = MaxMeters > 0.f ? MaxMeters * 100.f : 0.f;
 	if (Seconds > 0.f)
 	{
 		Boom->bEnableCameraLag = true;

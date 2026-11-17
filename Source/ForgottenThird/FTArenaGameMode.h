@@ -97,7 +97,8 @@
 // blows instead of the player's (its own effects frozen the same way). With -ArenaShotClose each is 1 m off: a cast's
 // mid-flight view from behind and beside the casting hand, looking along its aim; its landing view from 1 m short of
 // the hit point, on the partner's side, looking at it (no front or forearms views). With -ArenaShotAlly and
-// -ArenaShotSide, -ArenaShotAt's side views of the partner are 1 m off it too, framed low for the ward at its feet.
+// -ArenaShotSide, -ArenaShotAt's side views of the partner are 1 m off it too, at its chest (low for the ward at its
+// feet with -ArenaShotWard).
 //
 // The player's figure wears a lead's look from config (the explore character's PartyLooks, Config/UserGame.ini): the first
 // by default, -ArenaLead=<name> picks another; with none, or none that loads, the test human is worn (one warning).

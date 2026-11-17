@@ -1054,6 +1054,9 @@ struct ArenaAllyOut {
                                       // (pairPartnerSeconds each), for its budget; 0 with no partner on (appended)
     bool bodyTurn = false;            // its walk turned past the heading rule's hold this tick: the held line ran into
                                       // an enemy's body (forced, as a wind-up's step back is) (appended)
+    bool intercept = false;           // a report: the brain's target is an intercept (rule 19, Spread: an enemy
+                                      // outside the close lens winding up at the lead); its off-frame steps are
+                                      // counted apart, "intercept off-frame" (appended)
 };
 
 struct ArenaOutput {
@@ -1767,6 +1770,7 @@ private:
         std::size_t headingNext = 0, headingCount = 0;
         float headingSince = -1.f;          // its last reversal (or its walk's start) at this fight time
         bool bodyTurn = false;              // this tick a body forced its walk past the hold
+        bool intercept = false;             // a report: the intent's intercept this tick (never hashed)
     };
 
     ArenaDef def_;
