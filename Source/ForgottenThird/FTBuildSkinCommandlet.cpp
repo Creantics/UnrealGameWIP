@@ -259,7 +259,7 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 	WetForward->Group = TEXT("Skin");
 	WetForward->UpdateParameterGuid(true, false);
 	UMaterialExpressionCustom* WetRoughnessOut = Custom(Material, TEXT("SkinWetRoughness"), CMOT_Float1,
-		TEXT("float3 n = normalize(N);\nfloat f = max(n.z, dot(n, normalize(Fwd)));\nfloat k = saturate(Wet) * saturate(Mask) * saturate((f - 0.2) / 0.5) * saturate((AO - 0.55) / 0.4);\nreturn min(R, lerp(R, WetRough, k));"),
+		TEXT("float3 n = N * rsqrt(max(dot(N, N), 1e-8));\nfloat3 fw = Fwd * rsqrt(max(dot(Fwd, Fwd), 1e-8));\nfloat f = max(n.z, dot(n, fw));\nfloat k = saturate(Wet) * saturate(Mask) * saturate((f - 0.2) / 0.5) * saturate((AO - 0.55) / 0.4);\nreturn min(R, lerp(R, WetRough, k));"),
 		{{TEXT("R"), RoughnessOut, 0}, {TEXT("Wet"), Scalar(Material, TEXT("SkinWet"), 1250), 0},
 			{TEXT("WetRough"), Scalar(Material, TEXT("SkinWetRoughness"), 1350), 0}, {TEXT("Mask"), WetMask, 1}, {TEXT("AO"), Region, 1},
 			{TEXT("N"), BindNormal, 0}, {TEXT("Fwd"), WetForward, 0}},

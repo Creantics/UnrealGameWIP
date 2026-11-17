@@ -9,7 +9,8 @@
 //     kSkinWetRough by that amount times its wet mask (forehead, nose, cheekbones). No drips: nothing here makes any.
 // Skin and hair take the lead's surface wetness: the weather's or the lead's own water state's (WaterWetness::wetness,
 // from wading and swimming), whichever is wetter, the same rule as the weather's leadSurfaceWetness (ftcore/Weather.h,
-// used through the overload below once it is there). w comes from ft.LeadWet: 0 (the default) is no rain, a value in 0..1
+// used through surfaceFromRain below once it is there; nothing calls it yet: the rain hook-up comes after the world
+// lane's promotion). w comes from ft.LeadWet: 0 (the default) is no rain, a value in 0..1
 // forces it, below 0 follows the rain. The night look's damp floor never wets a lead. Plain C++20, header only, no allocation.
 
 #include "ftcore/WaterBodies.h"
@@ -40,8 +41,9 @@ constexpr float surface(float w, const WaterWetness& water) {
     return a > b ? a : b;
 }
 #ifdef FTCORE_LEADWET_HAS_RAIN
-// The same through the weather's own rule, with the lead's exposure (1 in the open).
-inline float surface(const RainState& rain, const WaterWetness& water, float exposure = 1.f) {
+// The same through the weather's own rule, with the lead's exposure (1 in the open). Its own name, so it never competes
+// with surface(float, ...) in overload resolution.
+inline float surfaceFromRain(const RainState& rain, const WaterWetness& water, float exposure = 1.f) {
     return unit(leadSurfaceWetness(rain, water.wetness, exposure));
 }
 #endif

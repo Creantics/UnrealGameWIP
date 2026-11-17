@@ -1,6 +1,6 @@
 #pragma once
 
-// The character rim as a material term (ftcore::look::rimTerm says what it computes). Its inputs live in their own
+// The character rim as a material term (ftcore::look::rimWeight is its reference). Its inputs live in their own
 // collection, MPC_FTRim: RimDir (the virtual direction, set once a frame by UFTRimComponent), RimColour (cool white by
 // default; the world lane may drive it from the nearest lamp, its only write), RimStrength (0 by default: no rim), RimHairCap and RimHead (the
 // writer's head point, for the hair's head normal). The
