@@ -612,9 +612,9 @@ void AFTPartyFollower::SetHeld(bool bHeld)
 	AirSpeed = 0.f;
 	bFacing = false;
 	Speed = 0.f;
-	if (bPlaced)
+	if (bPlaced && (WaterPhase == ftcore::WaterFollowPhase::Ashore || WaterPhase == ftcore::WaterFollowPhase::Placed))
 	{
-		// Down on the ground below it, and the anim told it stands.
+		// Down on the ground below it, and the anim told it stands (not in the water: no snap to the bed or the bank).
 		Place(FVector2D(At.X, At.Y), static_cast<float>(At.Z), 0.f);
 	}
 }
@@ -813,7 +813,12 @@ void AFTPartyFollower::FillWaterMember(ftcore::WaterFollowMember& Member) const
 {
 	using namespace FTSwimUnits;
 	Member = ftcore::WaterFollowMember{};
-	Member.active = bPlaced && !IsHidden();
+	// The party hidden (P or LB) clears its slot; the director's lens hide (between the camera and the lead) is visual
+	// only, so a swimmer keeps its phase and place through it.
+	const AFTExploreCharacter* WaterLead = LeadExplorer.Get();
+	const bool bPartyHidden = WaterLead && WaterLead->IsPartyHidden();
+	Member.active = bPlaced && !bPartyHidden;
+	Member.lensHidden = IsHidden() && !bPartyHidden;
 	const FVector At = GetActorLocation();
 	Member.position = ToSwim(At + FVector(0.0, 0.0, ToCm(ftcore::kWaterSwimDraft)));
 	Member.held = bHeldByScene;

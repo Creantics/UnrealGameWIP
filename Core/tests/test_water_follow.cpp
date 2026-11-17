@@ -626,6 +626,36 @@ TEST_CASE("water follow: a lead teleported mid-swim, or back from a park on dry 
     CHECK(e.until(0, WaterFollowPhase::ToEntry, 2.f) == doctest::Approx(0.8f).epsilon(0.06));
 }
 
+TEST_CASE("water follow: a lens hide is visual only: the swimmer keeps its phase; a party hide clears the slot") {
+    Scene s;
+    s.bothIn();
+    s.step(30);
+    REQUIRE(s.o(0).phase == WaterFollowPhase::Surface);
+    const SwimVec target = s.o(0).target;
+    s.members[0].lensHidden = true; // the camera passes through it
+    s.step(30);
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(0).target.x == doctest::Approx(target.x));
+    s.members[0].lensHidden = false;
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    // The party hidden (P or LB): inactive, its slot clears.
+    s.members[1].active = false;
+    s.step();
+    CHECK(s.o(1).phase == WaterFollowPhase::Ashore);
+}
+
+TEST_CASE("water follow: a walk to an entry not over in 15 s is given up, and picked again") {
+    Scene s;
+    s.step(30);
+    REQUIRE(s.o(0).phase == WaterFollowPhase::ToEntry);
+    const float t = s.until(0, WaterFollowPhase::Ashore, 20.f); // it never gets there
+    CHECK(t == doctest::Approx(15.f).epsilon(0.02));
+    CHECK(s.o(0).entry.kind == WaterFollowEntryKind::None);
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::ToEntry);
+}
+
 TEST_CASE("water follow: with no water found toward the lead, a follower stays ashore") {
     Scene s;
     s.members[0].hasEdge = false;

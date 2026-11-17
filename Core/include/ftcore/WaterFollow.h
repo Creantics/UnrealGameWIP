@@ -49,6 +49,7 @@ struct WaterFollowTuning {
     float teleport = 10.f;         // m: the lead moved this far in one step (a scene, a fight, a load): lost
     float watchdog = 20.f;         // s: a follower stuck this long in a water phase is placed with the lead
     float stuckFar = 12.f;         // m: at the surface or under, further than this from the lead counts as stuck
+    float entryLimit = 15.f;       // s: a walk to its entry not over by then is given up (ashore; it picks again)
 };
 
 // What a follower is doing in the water.
@@ -158,7 +159,9 @@ struct WaterFollowLead {
 
 // A follower this step (the host's).
 struct WaterFollowMember {
-    bool active = false;        // a party follower in this slot
+    bool active = false;        // a party follower in this slot (the party hidden, P or LB, is not: its slot clears)
+    bool lensHidden = false;    // hidden from the camera's lens only (it came between the camera and the lead): visual,
+                                // the plan ignores it, so a swimmer keeps its phase and place
     SwimVec position;
     bool held = false;          // SetHeld: a scene holds it; no entry starts and it is not moved
     bool traversing = false;    // mid-traversal: no entry starts
@@ -261,7 +264,10 @@ public:
                 go(o, WaterFollowPhase::Placed);
                 o.place = true;
             }
-            if (lost && o.phase == WaterFollowPhase::ToEntry) go(o, WaterFollowPhase::Ashore);
+            if (o.phase == WaterFollowPhase::ToEntry && (lost || s.watch >= tuning_.entryLimit)) {
+                go(o, WaterFollowPhase::Ashore);
+                o.entry = WaterFollowEntry{};
+            }
             // Lost, or stuck past the watchdog (it never reached its exit, its slot or the end of its move): placed.
             if (inWater(o.phase) && (lost || s.watch >= tuning_.watchdog)) {
                 go(o, WaterFollowPhase::Placed);
@@ -269,7 +275,8 @@ public:
             }
             switch (o.phase) {
             case WaterFollowPhase::Ashore:
-                if (!m.held && !lead.exiting && leadSwim_ >= tuning_.trigger) { // mid-traversal it picks its entry; ToEntry waits
+                // Mid-traversal it picks its entry (ToEntry waits); a walk just given up picks again next step.
+                if (was != WaterFollowPhase::ToEntry && !m.held && !lead.exiting && leadSwim_ >= tuning_.trigger) {
                     const Vec2 here{m.position.x, m.position.y};
                     o.entry = waterFollowEntry(exits, exitCount, here, Vec2{lead.position.x, lead.position.y}, m.edge,
                                                m.edgeOut, tuning_.stepsWithin);
@@ -399,7 +406,9 @@ private:
             s.bestGap = gap;
             return;
         }
-        if (!inWater(o.phase) || m.held || (swim && gap <= tuning_.stuckFar)) {
+        if (o.phase == WaterFollowPhase::ToEntry) {
+            s.watch = m.held ? 0.f : s.watch + dt; // the entry's time limit (a traversal on the way counts too)
+        } else if (!inWater(o.phase) || m.held || (swim && gap <= tuning_.stuckFar)) {
             s.watch = 0.f;
             s.bestGap = gap;
         } else if (swim || (o.phase == WaterFollowPhase::ToExit && hasExit)) {
