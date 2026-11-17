@@ -79,6 +79,34 @@ TEST_CASE("lead wet: wet skin goes to about 0.25 on the mask, never rougher") {
     CHECK(lw::skinRoughness(0.15f, 1.f, 1.f) == doctest::Approx(0.15f)); // already smoother: not raised
 }
 
+TEST_CASE("lead wet: the shown skin eases over two seconds, both ways") {
+    float s = 0.f;
+    for (int i = 0; i < 59; ++i) {
+        s = lw::ease(s, 1.f, 1.f / 30.f); // 59 frames at 30 Hz: not yet there
+    }
+    CHECK(s < 1.f);
+    CHECK(s > 0.9f);
+    s = lw::ease(s, 1.f, 1.f);
+    CHECK(s == 1.f); // never past the target
+    CHECK(lw::ease(1.f, 0.f, 1.f) == doctest::Approx(0.5f));
+    CHECK(lw::ease(0.2f, 0.f, 10.f) == 0.f);
+    CHECK(lw::ease(0.3f, 1.f, std::nanf("")) == doctest::Approx(0.3f)); // NaN dt holds
+    CHECK(lw::ease(0.3f, 1.f, -1.f) == doctest::Approx(0.3f));
+    CHECK(lw::ease(0.f, 0.f, 0.016f) == 0.f); // dry stays dry
+}
+
+TEST_CASE("lead wet: MetaHuman skin and wet-less hair follow the wet amount") {
+    CHECK(lw::mhRoughness(1.2f, 0.f) == doctest::Approx(1.2f));
+    CHECK(lw::mhRoughness(1.2f, 1.f) == doctest::Approx(0.6f)); // half of dry
+    CHECK(lw::mhSpecular(1.f, 1.f) == doctest::Approx(1.15f));
+    CHECK(lw::mhSpecular(1.f, 0.f) == doctest::Approx(1.f));
+    CHECK(lw::hairMelanin(0.7f, 1.f) == doctest::Approx(0.9f));
+    CHECK(lw::hairMelanin(0.95f, 1.f) == 1.f);
+    CHECK(lw::hairMelanin(0.7f, 0.f) == doctest::Approx(0.7f));
+    CHECK(lw::hairRoughness(0.6f, 1.f) == doctest::Approx(0.36f));
+    CHECK(lw::hairRoughness(0.6f, 0.f) == doctest::Approx(0.6f));
+}
+
 TEST_CASE("lead wet: the per-frame mapping allocates nothing") {
     const auto before = ftcore_test::allocStats().count;
     float acc = 0.f;

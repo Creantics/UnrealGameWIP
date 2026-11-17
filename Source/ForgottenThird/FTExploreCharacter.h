@@ -628,11 +628,22 @@ private:
 	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; 0, the default, is no rain; below 0 follows the
 	// rain) soaks the cloth as the water does (through ShowWetness); the lead's surface wetness (that or its own water,
 	// whichever is wetter) wears the look's wet grooms and writes SkinWet (0..1) to the same dynamic materials, where the
-	// skin master smooths its up- and forward-facing open skin. No drips.
+	// skin master smooths its up- and forward-facing open skin. The leads' MetaHuman skin takes it through its post-bake
+	// roughness and specular multipliers (their dry values kept in WetSkinDry, one per WetMaterials entry, -1 where the
+	// material has none); hair without a wet groom (a beard, brows) darkens and smooths through its own instances. The
+	// shown amount eases over 2 s. No drips.
 	float LeadWeather() const;
-	void ShowLeadWet(float Weather);
+	void ShowLeadWet(float Weather, float DeltaSeconds);
+	void ShowHairWet(float Wet);
 	bool bGroomWet = false;
 	float SkinWetShown = 0.f;
+	float SkinWetEased = 0.f;
+	TArray<FVector2f> WetSkinDry;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetHairMaterials;
+	// Dry Roughness, HairRoughness and hairMelanin per WetHairMaterials entry (-1 where absent).
+	TArray<FVector3f> WetHairDry;
+	bool bWetHairMade = false;
 	// The look's wet grooms and bindings, loaded with the look (FTLook::PreloadWetGrooms) so the swap loads nothing.
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UObject>> WetGroomHold;

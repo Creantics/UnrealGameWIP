@@ -839,6 +839,41 @@ int32 FTLook::SetGroomsWet(const TArray<TObjectPtr<USceneComponent>>& Components
 	return Changed;
 }
 
+int32 FTLook::MakeHairWetMaterials(const TArray<TObjectPtr<USceneComponent>>& Components, const TArray<FFTGroomLook>& Grooms,
+	TArray<TObjectPtr<UMaterialInstanceDynamic>>& Out)
+{
+	int32 Made = 0;
+	for (const FFTGroomLook& Look : Grooms)
+	{
+		UObject* Groom = Look.WetGroom.IsNull() ? Look.Groom.ResolveObject() : nullptr;
+		if (!Groom)
+		{
+			continue;
+		}
+		for (USceneComponent* Component : Components)
+		{
+			UMeshComponent* Mesh = Cast<UMeshComponent>(Component);
+			if (!Mesh || GetObjectProperty(*Component, TEXT("GroomAsset")) != Groom)
+			{
+				continue;
+			}
+			for (int32 Index = 0; Index < Mesh->GetNumMaterials(); ++Index)
+			{
+				if (!Mesh->GetMaterial(Index))
+				{
+					continue;
+				}
+				if (UMaterialInstanceDynamic* Dynamic = Mesh->CreateAndSetMaterialInstanceDynamic(Index))
+				{
+					Out.Add(Dynamic);
+					++Made;
+				}
+			}
+		}
+	}
+	return Made;
+}
+
 int32 FTLook::SwapSlots(USkeletalMeshComponent& Component, const UMaterialInterface* From, UMaterialInterface* To)
 {
 	if (!From || !To)

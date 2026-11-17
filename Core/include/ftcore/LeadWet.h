@@ -67,6 +67,33 @@ constexpr float skin(float w) {
     return t * t * (3.f - 2.f * t);
 }
 
+// The shown wet-skin amount eases toward its target over kSkinEaseS (both ways), so a swim's exit or a forced value
+// does not snap the face. NaN or negative dt holds it.
+inline constexpr float kSkinEaseS = 2.f;
+constexpr float ease(float shown, float target, float dt) {
+    const float t = unit(target);
+    const float s = unit(shown);
+    const float step = dt > 0.f ? dt / kSkinEaseS : 0.f;
+    if (s < t) {
+        return s + step < t ? s + step : t;
+    }
+    return s - step > t ? s - step : t;
+}
+
+// The MetaHuman baked skin (the leads' face and body): its post-bake roughness multiplier goes to kMhRoughWet of its dry
+// value, its specular multiplier up to kMhSpecWet of it, by the wet-skin amount. Uniform over the face (no mask).
+inline constexpr float kMhRoughWet = 0.5f;
+inline constexpr float kMhSpecWet = 1.15f;
+constexpr float mhRoughness(float dry, float skinWet) { return dry * (1.f + (kMhRoughWet - 1.f) * unit(skinWet)); }
+constexpr float mhSpecular(float dry, float skinWet) { return dry * (1.f + (kMhSpecWet - 1.f) * unit(skinWet)); }
+
+// Hair without a wet groom (a beard, brows, lashes): darker (melanin up by kHairWetMelanin, to 1 at most) and glossier
+// (roughness to kHairWetRough of dry), by the same amount.
+inline constexpr float kHairWetMelanin = 0.2f;
+inline constexpr float kHairWetRough = 0.6f;
+constexpr float hairMelanin(float dry, float wet) { return unit(dry + kHairWetMelanin * unit(wet)); }
+constexpr float hairRoughness(float dry, float wet) { return dry * (1.f + (kHairWetRough - 1.f) * unit(wet)); }
+
 // The skin master's roughness (mirrors its SkinRoughness node's last step): base lowered toward kSkinWetRough by the
 // wet amount times the mask; never raised (a part already smoother stays so).
 constexpr float skinRoughness(float base, float skinWet, float mask) {

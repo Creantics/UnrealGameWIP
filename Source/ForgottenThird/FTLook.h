@@ -25,6 +25,7 @@
 
 class AActor;
 class UAnimSequence;
+class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class USceneComponent;
 class USkeletalMesh;
@@ -265,6 +266,11 @@ FORGOTTENTHIRD_API int32 PreloadWetGrooms(const TArray<FFTGroomLook>& Grooms, TA
 // Returns how many components changed.
 FORGOTTENTHIRD_API int32 SetGroomsWet(const TArray<TObjectPtr<USceneComponent>>& Components, const TArray<FFTGroomLook>& Grooms,
 	bool bWet, const TCHAR* Who);
+
+// A dynamic material instance on every slot of each groom component whose look entry has no WetGroom (a beard, brows,
+// lashes: the wet switch darkens and smooths those through their material instead). Returns how many were added to Out.
+FORGOTTENTHIRD_API int32 MakeHairWetMaterials(const TArray<TObjectPtr<USceneComponent>>& Components, const TArray<FFTGroomLook>& Grooms,
+	TArray<TObjectPtr<UMaterialInstanceDynamic>>& Out);
 
 // Puts To in every slot of the component that shows From (From itself or an instance made from it), quietly. Returns
 // how many slots changed.
