@@ -5841,3 +5841,57 @@ TEST_CASE("arena partner: a target crossing at 6 m/s mid-string: the facing foll
         CHECK(worst <= 30.f);
     }
 }
+
+TEST_CASE("arena partner: the drawn heading turns at most 540 deg/s and is within 60 degrees of the target at a string's start") {
+    // Under the close camera's rule the partner stands with its target behind it (heading reversed), the target jumping
+    // to its other side every 3 s: ArenaAllyOut::heading never turns over 540 deg/s, and on every string's first tick
+    // it is within 60 degrees of the target.
+    const ArenaTable table = shippedTable();
+    PRig r(table.fighter("devin"));
+    r.ownPartnerKit = true;
+    r.def.partnerKit = table.fighter("duy");
+    r.def.fighter.hp = 100000;
+    r.tuning = shippedTuning();
+    r.tuning.budgetAllowanceSeconds = 10.f;
+    REQUIRE(validPartnerTuning(r.tuning));
+    const ArenaEnemyKind dummy = dummyKind();
+    r.enemy(dummy, Vec2{-2.f, 0.f}); // behind its start heading; it jumps to the other side every 3 s
+    r.bodies.player = Vec2{-4.f, -3.f};
+    r.bodies.ally = Vec2{0.f, 0.f};
+    r.go(true, 1000);
+    r.keepView = true; // the close lens: behind the lead, on the target
+    r.in.partnerClose = PartnerCloseView{};
+    r.in.partnerClose.given = true;
+    r.in.partnerClose.halfAngleDegrees = 30.f;
+    Vec2 last{0.f, 0.f};
+    bool was = false, have = false;
+    int starts = 0;
+    float worstTurn = 0.f;
+    for (int k = 0; k < 15 * 60; ++k) {
+        if (k > 0 && k % (3 * 60) == 0) r.bodies.enemies[0] = Vec2{-r.bodies.enemies[0].x, 0.f};
+        const Vec2 look = sub(r.bodies.enemies[0], r.bodies.player);
+        const Vec2 lu{look.x / length(look), look.y / length(look)};
+        r.in.cameraOn = true;
+        r.in.cameraPos = Vec2{r.bodies.player.x - 4.5f * lu.x, r.bodies.player.y - 4.5f * lu.y};
+        r.in.cameraFacing = lu;
+        r.tick();
+        const ArenaAllyOut& al = r.out->ally;
+        if (have) {
+            const float c = std::clamp(al.heading.x * last.x + al.heading.y * last.y, -1.f, 1.f);
+            worstTurn = std::max(worstTurn, std::acos(c) * 57.29578f);
+        }
+        last = al.heading;
+        have = true;
+        if (al.attacking && !was && al.target == 0) {
+            ++starts;
+            const Vec2 to = sub(r.bodies.enemies[0], r.bodies.ally);
+            const float c = (al.heading.x * to.x + al.heading.y * to.y) / std::max(length(to), 1e-5f);
+            CAPTURE(k);
+            CHECK(std::acos(std::clamp(c, -1.f, 1.f)) * 57.29578f <= 60.f + 1.f);
+        }
+        was = al.attacking;
+    }
+    MESSAGE("strings " << starts << ", worst heading turn per tick " << worstTurn << " deg");
+    CHECK(starts >= 2);
+    CHECK(worstTurn <= 540.f * kDt + 0.05f);
+}
