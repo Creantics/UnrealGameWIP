@@ -323,6 +323,99 @@ float arenaCloseStandOffPitch(const ArenaCloseRules& rules, const ArenaLookLimit
     return b;
 }
 
+bool arenaCloseHeadHidden(const ArenaCameraPose& pose, float aspect, const ArenaLeadBody& body, ArenaPoint3 head, float margin) {
+    if (!finite(aspect) || !(aspect > 0.f) || !finite(head.x) || !finite(head.y) || !finite(head.z)) return false;
+    const ArenaFramePoint p = arenaFramePoint(pose, aspect, head);
+    if (!p.ahead || !finite(p.x) || !finite(p.y)) return false;
+    const ArenaLeadShares s = arenaLeadShares(pose, aspect, body);
+    if (!s.ahead) return false;
+    const float m = finite(margin) ? std::max(0.f, margin) : 0.f;
+    return p.x >= s.left - m && p.x <= s.right + m && p.y >= s.feet - m && p.y <= s.head + m;
+}
+
+ArenaLeadBody arenaCloseClearBody(const ArenaCloseRules& rules, ArenaLeadBody body) {
+    if (finite(rules.clearRadius) && (!finite(body.radius) || body.radius < rules.clearRadius)) body.radius = rules.clearRadius;
+    return body;
+}
+
+ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const ArenaCameraPose& pose, float aspect,
+                                        const ArenaLeadBody& leadBody, ArenaPoint3 head, ArenaCloseClear held) {
+    ArenaCloseClear out;
+    if (!finite(pose.side) || !finite(pose.pivot) || !finite(rules.clearMargin)) return out;
+    const ArenaLeadBody body = arenaCloseClearBody(rules, leadBody);
+    const auto hiddenBy = [&](const ArenaCameraPose& q, float margin) { return arenaCloseHeadHidden(q, aspect, body, head, margin); };
+    const auto hidden = [&](const ArenaCameraPose& q) { return hiddenBy(q, rules.clearMargin); };
+    const float sign = pose.side < 0.f ? -1.f : 1.f;
+    const float room = finite(rules.clearSideMax) ? std::max(0.f, rules.clearSideMax - std::fabs(pose.side)) : 0.f;
+    const float rise = finite(rules.clearPivotUp) ? std::max(0.f, rules.clearPivotUp) : 0.f;
+    // The hold: the last clearance is kept while the head is not clear of the bare view by the hold's more margin and
+    // the last still clears it by the hold's less.
+    const float hold = finite(rules.clearHold) ? std::max(0.f, rules.clearHold) : 0.f;
+    if (finite(held.side) && finite(held.pivot) && (held.side != 0.f || held.pivot != 0.f) &&
+        hiddenBy(pose, rules.clearMargin + hold)) {
+        ArenaCameraPose kept = pose;
+        const float add = std::min(room, std::fabs(held.side));
+        const float up = std::min(rise, std::max(0.f, held.pivot));
+        kept.side = pose.side + sign * add;
+        kept.pivot = pose.pivot + up;
+        if (!hiddenBy(kept, std::max(0.f, rules.clearMargin - hold))) {
+            out.side = sign * add;
+            out.pivot = up;
+            return out;
+        }
+    }
+    if (!hidden(pose)) return out;
+    const float step = finite(rules.clearStep) && rules.clearStep > 0.01f ? rules.clearStep : 0.05f;
+    // Each side step (the last landing on the most) with its least pivot step that clears; the least sum kept. At most
+    // 18 x 7 projections of the head and the lead.
+    const int sideSteps = static_cast<int>(std::ceil(room / step - 1e-4f));
+    const int upSteps = static_cast<int>(std::ceil(rise / step - 1e-4f));
+    ArenaCameraPose p = pose;
+    float best = 1e9f;
+    for (int ks = 0; ks <= sideSteps; ++ks) {
+        const float add = std::min(room, static_cast<float>(ks) * step);
+        if (add >= best) break;
+        p.side = pose.side + sign * add;
+        for (int kp = ks == 0 ? 1 : 0; kp <= upSteps; ++kp) {
+            const float up = std::min(rise, static_cast<float>(kp) * step);
+            if (add + up >= best) break;
+            p.pivot = pose.pivot + up;
+            if (hidden(p)) continue;
+            best = add + up;
+            out.side = sign * add;
+            out.pivot = up;
+            break;
+        }
+    }
+    return out; // 0 and 0 when no pair cleared the widened box: a move that does not clear it is not asked
+}
+
+ArenaCloseFrameCheck arenaCloseFrameCheck(const ArenaCloseRules& rules, float shoulder, float leadX, float targetX,
+                                          float distance, bool partnerOn, ArenaFramePoint partner) {
+    ArenaCloseFrameCheck out;
+    const bool left = shoulder < 0.f;
+    // Mirrored onto the right shoulder: the lead on the left, the target right of centre.
+    const float lead = left ? 1.f - leadX : leadX;
+    const float target = left ? 1.f - targetX : targetX;
+    const float slack = finite(rules.frameLeadSlack) ? std::max(0.f, rules.frameLeadSlack) : 0.f;
+    out.lead = finite(lead) && lead >= 0.f && lead <= 1.f / 3.f + slack;
+    const bool nearBand = finite(distance) && finite(rules.frameNearDistance) && finite(rules.frameNearTargetMin) &&
+                          distance < rules.frameNearDistance;
+    const float bandMin = nearBand ? rules.frameNearTargetMin : rules.targetMin;
+    out.target = finite(target) && target >= bandMin && target <= rules.targetMax;
+    out.partner = !partnerOn || (partner.ahead && finite(partner.x) && finite(partner.y) && partner.x >= 0.f && partner.x <= 1.f &&
+                                 partner.y >= 0.f && partner.y <= 1.f);
+    out.all = out.lead && out.target && out.partner;
+    return out;
+}
+
+float arenaCloseClearStep(const ArenaCloseRules& rules, float now, float want, float dt) {
+    const float at = finite(now) ? now : 0.f;
+    if (!finite(want) || !finite(dt) || !(dt > 0.f)) return at;
+    const float tau = finite(rules.clearEase) && rules.clearEase > 1e-4f ? rules.clearEase : 1e-4f;
+    return at + (want - at) * (1.f - std::exp(-dt / tau));
+}
+
 ArenaLensGround arenaLensGround(const ArenaCameraPose& pose, ArenaPoint3 at) {
     const ArenaLensAt lens = arenaCameraLens(pose);
     const float y = pose.yaw * kRad;

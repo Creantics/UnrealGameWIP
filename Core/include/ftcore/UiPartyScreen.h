@@ -20,8 +20,13 @@
 // Confirm: letting go of Party (both keys up) shuts the screen on the cursor's row; under the Toggle hold mode the
 // opening press's release does nothing and the next press shuts it. The cursor opens on the controlled lead, so
 // opening and letting go picks nothing.
-// Cancel: `live` false (a pause, a menu, a scene, the focus lost, the fight over) shuts it with no pick, and a key
-// still held when input comes back is no press (nor, on its release, the map).
+// A tap: the opening press let go within kUiPartyTap with the cursor not moved keeps the screen open (as under Toggle),
+// so it can be worked by keys: the row keys (`upDown`, `downDown`: the arrows, W and S) move the cursor one row per
+// press, `confirmDown` (Enter, a click, pad A) shuts it on the cursor's row, and Party's or the map key's next press
+// does too. These keys work whatever opened it.
+// Cancel: `cancelDown` (Esc, pad B) shuts it with no pick. `live` false (a pause, a menu, a scene, the focus lost, the
+// fight over) shuts it with no pick too, and a key still held when input comes back is no press (nor, on its release,
+// the map).
 //
 // Pure, no allocation. A refused row (UiPartyWhy Down, Wait, FightOver) still takes the cursor and still picks: the
 // rules refuse the request at the step's close, and the HUD says why. NOT HERE is the one refusal that never picks: the
@@ -40,6 +45,8 @@ inline constexpr std::size_t kUiPartyRows = 4;
 
 // Explore: the map key held this long opens the screen; a shorter press is the map.
 inline constexpr float kUiPartyHold = 0.25f;
+// The opening press let go within this long, the cursor not moved: a tap, and the screen stays open.
+inline constexpr float kUiPartyTap = 0.25f;
 // A refused switch's call (SWITCH: DOWN) stands this long in the call slot.
 inline constexpr float kUiPartySwitchShow = 1.5f;
 // A flick: the right stick past kUiPartyStickOut (of 1), or the mouse past kUiPartyMouseOut in one tick; each counts
@@ -59,6 +66,12 @@ struct UiPartyInput {
     float mouseY = 0.f;     // the mouse's vertical move this tick, up positive
     bool partnerHere = true; // false: no partner in this fight (its row NOT HERE), so its row never takes the cursor
     int lead = -1;           // the controlled lead (the host's id; -1: not said); a change while open puts the cursor on Lead
+    bool upDown = false;      // a row key up (the up arrow, W): each press moves the open screen's cursor one row up
+    bool downDown = false;    // a row key down (the down arrow, S)
+    bool confirmDown = false; // Enter, a click or pad A: a press shuts the open screen on the cursor's row
+    bool cancelDown = false;  // Esc or pad B: a press shuts the open screen with no pick
+    bool tapStays = false;    // a tap leaves it open (explore, which feeds the keys above and draws their line); the
+                              // fight's screen feeds none of them, so there a tap still shuts it at once
 };
 
 struct UiPartyScreen {
@@ -74,6 +87,11 @@ struct UiPartyScreen {
     bool mouseArmed = false;
     bool partnerHere = true;        // as of the last step (UiPartyInput::partnerHere)
     int lead = -1;                  // as of the last step (UiPartyInput::lead)
+    float openFor = 0.f;            // seconds open
+    bool moved = false;             // a move was tried since it opened (a flick or a row key)
+    bool byPress = false;           // opened by a press (Party's key, or the fight's map key), not explore's map hold
+    bool stays = false;             // opened by a tap: stands until a confirm, a cancel or Party's next press
+    bool upWas = true, downWas = true, confirmWas = true, cancelWas = true; // the screen's own keys, as of the last step
 };
 
 struct UiPartyOut {

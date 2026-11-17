@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "TestAssets.h"
 #include "ftcore/HeroCorner.h"
 #include "ftcore/MassingDress.h"
 #include "ftcore/Roads.h"
@@ -174,8 +175,8 @@ TEST_CASE("hero corner: lamp slots under the strings, between each pair and over
     const HeroCornerSpec spec;
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
-    REQUIRE(l.lampCount == kHeroLampSlots);
-    CHECK(kHeroLampSlots == 8);
+    REQUIRE(l.lampCount == kHeroStrings + 2 * l.pairCount);
+    CHECK(l.lampCount == 8);  // the default three lit bays (room for a pair at every bay: kHeroLampSlots)
     int strings = 0, pairs = 0, entrances = 0;
     for (int k = 0; k < l.lampCount; ++k) {
         const HeroLampSlot& s = l.lamps[k];
@@ -879,4 +880,255 @@ TEST_CASE("hero corner: each lit front a wide key facing the lane, its room's wi
     CHECK(fronts == lit);
     CHECK(skies == kHeroSkyFloors);
     CHECK(skyLength == doctest::Approx(spec.laneY1 - spec.laneY0));
+}
+
+TEST_CASE("hero corner: four lit bays take four lantern pairs and their lamp slots; the fifth stays a shutter") {
+    HeroCornerSpec spec;
+    for (int i = 0; i < kHeroBays; ++i) spec.bayLit[i] = i < 4;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.pairCount == 4);
+    int large = 0;
+    for (std::size_t k = 0; k < l.lanternCount; ++k) large += l.lanterns[k].large ? 1 : 0;
+    CHECK(large == 8);
+    CHECK(l.lanternCount == static_cast<std::size_t>(8 + kHeroStrings * kHeroStringLanterns));
+    CHECK(l.lampCount == kHeroStrings + 2 * 4);
+    for (int p = 0; p < 4; ++p) CHECK(l.pairBay[p] == p);
+    HeroLots lots;
+    heroCornerLots(spec, lots);
+    CHECK(lots.lots[1].type == LotType::Tiled);
+    CHECK(lots.lots[4].type == LotType::WalkUp);
+    CHECK(lots.lit[3]);
+    CHECK_FALSE(lots.lit[4]);
+}
+TEST_CASE("hero corner: the first bay's south end wall is clad board and batten, flush on the wall") {
+    HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.endCladCount == 20);  // the boards, 17 battens, the fascia, the kick board
+    for (int i = 0; i < l.endCladCount; ++i) {
+        const MassingBox& b = l.endClad[i];
+        CHECK(b.kind == "clad");
+        CHECK(b.id == "HC-CLAD-" + std::to_string(i + 1));
+        // Every piece backs onto the wall and stays inside the bay's width and the cladding's height.
+        CHECK(b.cy + 0.5 * b.sy == doctest::Approx(spec.bayY0));
+        CHECK(b.cx - 0.5 * b.sx >= spec.laneX1 - 1e-9);
+        CHECK(b.cx + 0.5 * b.sx <= spec.laneX1 + spec.bayDepth + 1e-9);
+        CHECK(b.z0 >= spec.ground - 1e-9);
+        CHECK(b.z1 <= spec.ground + spec.cladTop + 1e-9);
+    }
+    const MassingBox& boards = l.endClad[0];
+    CHECK(boards.sx == doctest::Approx(spec.bayDepth));
+    CHECK(boards.sy == doctest::Approx(spec.cladProud));
+    // Battens at both corners, evenly spaced about battenPitch, proud of the boards.
+    CHECK(l.endClad[1].cx - 0.5 * l.endClad[1].sx == doctest::Approx(spec.laneX1));
+    CHECK(l.endClad[17].cx + 0.5 * l.endClad[17].sx == doctest::Approx(spec.laneX1 + spec.bayDepth));
+    const double pitch = l.endClad[2].cx - l.endClad[1].cx;
+    CHECK(pitch == doctest::Approx(spec.battenPitch).epsilon(0.05));
+    CHECK(l.endClad[1].sy == doctest::Approx(spec.cladProud + spec.battenProud));
+    // The fascia under the top, the kick board at the foot.
+    CHECK(l.endClad[18].z1 == doctest::Approx(spec.ground + spec.cladTop));
+    CHECK(l.endClad[19].z0 == doctest::Approx(spec.ground));
+
+    HeroCornerSpec off;
+    off.endClad = false;
+    HeroCornerLayout lo;
+    heroCornerLayout(off, lo);
+    CHECK(lo.endCladCount == 0);
+}
+
+namespace {
+
+// The build's lit set (-HeroLitBays=1,2,3,4), its layout and its dressing, for the frontage checks.
+struct FrontageScene {
+    HeroCornerSpec spec;
+    HeroCornerLayout layout;
+    HeroItem dressing[kHeroDressingMax];
+    int dressingCount = 0;
+    FrontageScene() {
+        for (int i = 0; i < kHeroBays; ++i) spec.bayLit[i] = i < 4;
+        heroCornerLayout(spec, layout);
+        dressingCount = heroCornerDressing(spec, layout, dressing, kHeroDressingMax);
+    }
+};
+
+} // namespace
+
+TEST_CASE("hero frontage: the shipped rows, 40 or more, all kept, no bare run over 3 m, bays 0-1 dense in three layers") {
+    std::string text;
+    if (!ftcore_test::readProjectData("Field/hero_frontage.csv", text)) FAIL("Data/Field/hero_frontage.csv not found");
+    FrontageScene s;
+    HeroItem front[kHeroFrontageMax];
+    int bad = 0;
+    const int n = heroFrontageParse(text, s.spec, front, kHeroFrontageMax, &bad);
+    INFO("bad line " << bad);
+    REQUIRE(n >= 40);
+    bool keep[kHeroFrontageMax] = {};
+    const HeroFrontageCheck c = heroFrontageCheck(s.spec, s.layout, front, n, s.dressing, s.dressingCount, keep);
+    std::string dropped;
+    for (int i = 0; i < n; ++i)
+        if (!keep[i]) dropped += std::string(" ") + heroPieceName(front[i].piece) + "@" + std::to_string(front[i].at.y);
+    INFO("first dropped row " << c.firstDropped << " hit " << c.clashWith << "; dropped:" << dropped);
+    CHECK(c.dropped == 0);
+    CHECK(c.kept == n);
+    INFO("longest bare " << c.longestBare << " m from y " << c.bareFrom);
+    CHECK(c.longestBare <= 3.0);
+    // Awnings over at least two bays, the kit's AC units, vending machine and planters among them.
+    bool awned[kHeroBays] = {};
+    int ac = 0, vending = 0, planters = 0;
+    for (int i = 0; i < n; ++i) {
+        if (front[i].piece == HeroPiece::Awning) awned[front[i].bay] = true;
+        ac += front[i].piece == HeroPiece::AcUnit;
+        vending += front[i].piece == HeroPiece::Vending;
+        planters += front[i].piece == HeroPiece::Planter;
+    }
+    int awnedBays = 0;
+    for (const bool a : awned) awnedBays += a;
+    CHECK(awnedBays >= 2);
+    CHECK(ac >= 2);
+    CHECK(vending >= 1);
+    CHECK(planters >= 2);
+    // The density rule (11-17), rolled out a bay at a time: bays 0 and 1 (F1's still) first; the whole run reported only.
+    const double b1 = s.spec.bayY0;
+    const HeroFrontageDensity d = heroFrontageDensity(s.spec, s.layout, front, n, keep, s.dressing, s.dressingCount, b1,
+                                                      b1 + 2.0 * s.spec.bayWidth);
+    const HeroFrontageDensity all = heroFrontageDensity(s.spec, s.layout, front, n, keep, s.dressing, s.dressingCount,
+                                                        s.spec.bayY0, s.spec.laneY1 - s.spec.gateBack);
+    INFO("bays 0-1: fewest " << d.minCount << " at y " << d.countAt << ", layers " << d.minLayers << " at y " << d.layersAt
+                          << "; whole run: fewest " << all.minCount << " at y " << all.countAt << ", layers " << all.minLayers
+                          << " at y " << all.layersAt);
+    CHECK(d.windows > 1);
+    CHECK(d.minCount >= 6);
+    CHECK(d.minLayers == 3);
+}
+
+TEST_CASE("hero frontage density: six pieces in three layers per window, counted by face and window") {
+    FrontageScene s;
+    const double z = s.spec.ground + s.spec.paveTop, x = s.spec.laneX1, y0 = 600.0;  // past the corner: no dressing
+    HeroItem f[7];
+    const HeroPiece kind[7] = {HeroPiece::Drum, HeroPiece::Crate, HeroPiece::Stool, HeroPiece::Broom,
+                               HeroPiece::MeterBox, HeroPiece::Noticeboard, HeroPiece::Awning};
+    for (int i = 0; i < 7; ++i) {
+        f[i].piece = kind[i];
+        f[i].faceX = -1.0;
+        f[i].faceY = 0.0;
+        f[i].at = {x - 0.4, y0 + 0.6 * i, z};
+    }
+    f[3].at.x = f[4].at.x = f[5].at.x = f[6].at.x = x;  // the wall pieces' origins on the face
+    f[5].at.z = z + 1.0;
+    f[6].at.z = z + 2.95;
+    bool keep[7] = {true, true, true, true, true, true, true};
+    HeroFrontageDensity d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 5.0);
+    CHECK(d.windows == 1);
+    CHECK(d.minCount == 7);
+    CHECK(d.minLayers == 3);
+    keep[6] = false;  // a dropped row doesn't count: no overhead layer left
+    d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 5.0);
+    CHECK(d.minCount == 6);
+    CHECK(d.minLayers == 2);
+    f[0].at.x = x - 2.0;  // out in the lane past reach
+    f[1].at.x = x + 1.0;  // inside the shop
+    d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 5.0);
+    CHECK(d.minCount == 4);
+    // Sliding on: the later windows lose the first pieces; the sparsest is the last.
+    d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 7.0);
+    CHECK(d.windows == 9);
+    CHECK(d.countAt == doctest::Approx(y0 + 2.0));
+    CHECK(heroPieceLayer(HeroPiece::Shelf) == HeroLayer::None);
+    CHECK(heroPieceLayer(HeroPiece::Banner) == HeroLayer::Overhead);
+    CHECK(heroPieceLayer(HeroPiece::SignSmall) == HeroLayer::Wall);
+}
+
+TEST_CASE("hero frontage parse: plan terms from the shop face; a malformed row or an unknown piece names its line") {
+    HeroCornerSpec spec;
+    HeroItem out[4];
+    const int n = heroFrontageParse("# note\npiece,y,out,up,yaw,scale\nDrum,520,0.36,0,0,1\r\n\nAwning,530.5,0,2.95,90,0.8\n", spec, out, 4);
+    REQUIRE(n == 2);
+    CHECK(out[0].piece == HeroPiece::Drum);
+    CHECK(out[0].at.x == doctest::Approx(spec.laneX1 - 0.36));
+    CHECK(out[0].at.z == doctest::Approx(spec.ground + spec.paveTop));
+    CHECK(out[0].faceX == doctest::Approx(-1.0));
+    CHECK(out[0].bay == 0);
+    CHECK(out[1].scale == doctest::Approx(0.8));
+    CHECK(out[1].faceY == doctest::Approx(-1.0));  // 90 degrees counter-clockwise off the lane: down it
+    CHECK(out[1].bay == 1);
+    int bad = 0;
+    CHECK(heroFrontageParse("piece,y,out,up,yaw,scale\nDrum,520,0.36,0,0,1\nTeapot,521,0.3,0,0,1\n", spec, out, 4, &bad) == -1);
+    CHECK(bad == 3);
+    CHECK(heroFrontageParse("Drum,520,0.36,0,0\n", spec, out, 4, &bad) == -1);
+    CHECK(bad == 1);
+    CHECK(heroFrontageParse("Drum,520,x,0,0,1\n", spec, out, 4, &bad) == -1);
+    CHECK(heroFrontageParse("Drum,520,0.3,0,0,0\n", spec, out, 4, &bad) == -1);
+    // The dressing's names (as the meshes: HangSignS) and the new kit; a row past max fails, naming its line.
+    REQUIRE(heroFrontageParse("HangSignS,520,0,3.1,0,1\nUmbrellaStand,521,0.3,0,0,1\nNoticeboard,522,0,1,0,1\nBroom,523,0,0,0,1\n",
+                              spec, out, 4) == 4);
+    CHECK(out[0].piece == HeroPiece::SignSmall);
+    CHECK(out[3].piece == HeroPiece::Broom);
+    CHECK(heroFrontageParse("Drum,520,0.36,0,0,1\nDrum,521,0.36,0,0,1\nDrum,522,0.36,0,0,1\n", spec, out, 2, &bad) == -1);
+    CHECK(bad == 3);
+}
+
+TEST_CASE("hero frontage check: a piece in a lit entrance, out in the lead's corridor or on another is dropped") {
+    FrontageScene s;
+    const double z = s.spec.ground + s.spec.paveTop;
+    HeroItem f[4];
+    for (HeroItem& it : f) {
+        it.piece = HeroPiece::Drum;
+        it.faceX = -1.0;
+        it.faceY = 0.0;
+    }
+    f[0].at = {s.spec.laneX1 - 0.36, s.layout.entranceY[0], z};         // in the first entrance
+    f[1].at = {s.spec.laneX1 - 2.0, s.spec.bayY0 + 1.0, z};             // out in the lane
+    f[2].at = {s.spec.laneX1 - 0.36, s.spec.bayY0 + 1.0, z};            // kept
+    f[3].at = {s.spec.laneX1 - 0.36, s.spec.bayY0 + 1.3, z};            // on f[2]
+    bool keep[4] = {};
+    const HeroFrontageCheck c = heroFrontageCheck(s.spec, s.layout, f, 4, s.dressing, s.dressingCount, keep);
+    CHECK_FALSE(keep[0]);
+    CHECK_FALSE(keep[1]);
+    CHECK(keep[2]);
+    CHECK_FALSE(keep[3]);
+    CHECK(c.firstDropped == 0);
+    CHECK(c.clashWith == -2);
+    CHECK(c.kept == 1);
+    CHECK(c.dropped == 3);
+    // An awning over the door is no obstruction: it hangs above the door's height.
+    HeroItem a;
+    a.piece = HeroPiece::Awning;
+    a.faceX = -1.0;
+    a.faceY = 0.0;
+    a.scale = 0.5;
+    a.at = {s.spec.laneX1, s.layout.entranceY[0], z + 2.95};
+    bool k1 = false;
+    heroFrontageCheck(s.spec, s.layout, &a, 1, nullptr, 0, &k1);
+    CHECK(k1);
+    // With nothing laid, the bare run spans the dark bay's wall past its clutter.
+    bool none[1] = {};
+    const HeroFrontageCheck e = heroFrontageCheck(s.spec, s.layout, f, 0, s.dressing, s.dressingCount, none);
+    CHECK(e.longestBare > 3.0);
+}
+
+TEST_CASE("hero item box: a kit piece facing the lane runs south from its origin, a wall piece stands on the face") {
+    HeroItem v;
+    v.piece = HeroPiece::Vending;
+    v.at = {907.22, 530.9, 4.2};
+    v.faceX = -1.0;
+    v.faceY = 0.0;
+    double x0, x1, y0, y1, z0, z1;
+    REQUIRE(heroItemBox(v, x0, x1, y0, y1, z0, z1));
+    CHECK(y1 == doctest::Approx(530.9));
+    CHECK(y0 == doctest::Approx(529.9));
+    CHECK(x0 == doctest::Approx(907.16));
+    CHECK(x1 == doctest::Approx(907.97));
+    CHECK(z1 == doctest::Approx(4.2 + 1.87));
+    HeroItem p;
+    p.piece = HeroPiece::DownPipe;
+    p.at = {908.0, 520.0, 4.2};
+    p.faceX = -1.0;
+    p.faceY = 0.0;
+    p.scale = 1.0;
+    REQUIRE(heroItemBox(p, x0, x1, y0, y1, z0, z1));
+    CHECK(x1 == doctest::Approx(908.0));
+    CHECK(x0 == doctest::Approx(907.64));
+    p.piece = HeroPiece::Figure;
+    CHECK_FALSE(heroItemBox(p, x0, x1, y0, y1, z0, z1));
 }

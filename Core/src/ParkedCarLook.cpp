@@ -4,15 +4,17 @@ namespace ftcore {
 
 namespace {
 
+// Dark, clear-coated night paints (multipliers on the mesh's base colour): wet cars read as deep colour with sharp
+// lantern highlights, not as pale blocks under the lamps.
 constexpr ParkedCarColor kPaints[kParkedCarPaints] = {
-    {0.255f, 0.306f, 0.366f}, // pale blue
-    {0.78f, 0.78f, 0.74f},    // off-white
-    {0.42f, 0.43f, 0.45f},    // silver
-    {0.68f, 0.60f, 0.42f},    // cream
-    {0.36f, 0.55f, 0.45f},    // mint
-    {0.42f, 0.07f, 0.05f},    // brick red
-    {0.05f, 0.055f, 0.06f},   // charcoal
-    {0.60f, 0.40f, 0.07f},    // mustard
+    {0.035f, 0.037f, 0.040f}, // charcoal
+    {0.030f, 0.075f, 0.050f}, // deep green
+    {0.170f, 0.025f, 0.020f}, // oxblood
+    {0.025f, 0.040f, 0.080f}, // navy
+    {0.090f, 0.095f, 0.100f}, // gunmetal
+    {0.090f, 0.060f, 0.035f}, // dark bronze
+    {0.025f, 0.070f, 0.075f}, // dark teal
+    {0.220f, 0.220f, 0.215f}, // muted silver (the one light paint)
 };
 
 std::uint32_t carMix(std::uint32_t h) {

@@ -498,6 +498,7 @@ private:
 	ftcore::ArenaCameraPose LockRig() const;
 	float BoomWallShare() const;
 	float LockAspect() const;
+	float ViewAspect(const APlayerController& PC) const;
 	ftcore::ArenaLeadBody LeadBody() const;
 	float LockAimHeight(int32 Target, float Base, float Top) const;
 	// The arena camera's preset (ftcore/CameraPreset.h), view only: the presets read once from
@@ -559,6 +560,13 @@ private:
 	float CloseContactLow = 0.f;  // 0..1 (ftcore::arenaCloseContactLow): the tall contact's low lens; exactly 0 under a 4 m target
 	float StandOffPitchNow = 0.f; // degrees (ftcore::arenaCloseStandOffPitch): the least look-up that keeps the target's top in
 	bool bStandOffWeak = false;   // and whether it kept the weak point instead of the top
+	// Stand-off clearance (ftcore::arenaCloseStandOffClear): the extra side (signed) and pivot rise as eased; asked only
+	// off contact (scaled down as contact blends in), 0 with nothing followed. The target's head is its top less this.
+	float ClearSideNow = 0.f;
+	float ClearPivotNow = 0.f;
+	ftcore::ArenaCloseClear ClearHeld; // the clearance asked last (before the contact scale): held against chatter
+	static constexpr float CloseHeadDrop = 0.15f; // m
+	float CloseHeadHeight() const { return FMath::Max(0.3f, CloseHeightNow - CloseHeadDrop); }
 	static constexpr float CloseMateHead = 1.6f;  // m: the partner's head and waist heights the close still log tests
 	static constexpr float CloseMateWaist = 1.0f;
 	// The partner's close station (ftcore::PartnerCloseView, rule 19): the walls near the lead from the boom's own probe,
@@ -588,21 +596,46 @@ private:
 	int32 CloseWallHeld = 0; // frames the close lens's pitch was held off the lead's rule's dive (ftcore::arenaCloseWallPitch)
 	// Held close frames in contact, the most swing, and shoulder swaps made with the contact share over half.
 	int32 CloseContactFrames = 0, CloseContactSwaps = 0;
+	// Held close frames off contact with a target followed, those with its head clear of the lead's box in the drawn
+	// lens (no margin), and the most clearance eased in (side, pivot).
+	int32 CloseClearFrames = 0, CloseClearSeen = 0;
+	float CloseClearSideMost = 0.f, CloseClearPivotMost = 0.f;
 	float CloseContactYawMost = 0.f;
 	// Held close frames in tall contact (low share over half): the lead's highest head and lowest waist share, the most
 	// pitch; the partner's frames there and those in the frame (it is exempt in contact: logged only).
 	int32 CloseTallFrames = 0, CloseTallMateFrames = 0, CloseTallMateIn = 0;
 	float CloseTallHeadMost = 0.f, CloseTallWaistLeast = 1.f, CloseTallPitchMost = 0.f;
 	float CloseArmSwitch = 0.f;   // -ArenaCameraArm=<m>: the close lens's arm for this run (0: the preset's)
-	float PartnerYawCapSwitch = 0.f; // -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (0: the rules' 24)
+	float PartnerYawCapSwitch = 0.f; // -ArenaPartnerYawCap=<deg>: a ranged partner's close yaw most for this run (0: the rules' 12)
 	// Held close frames with a ranged partner (its kit's own range on): those with the turn over the melee cap, the most.
 	int32 CloseRangedFrames = 0, CloseRangedWide = 0;
 	float CloseRangedYawMost = 0.f;
 	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
+	// -ArenaStandOffStrike=<s>: under -ArenaStandOff, a light string every <s> s (0: off); the next press's fight time
+	// and the presses so far.
+	float StandOffStrikeEvery = 0.f, StandOffStrikeNext = 1.f;
+	int32 StandOffStrikePresses = 0;
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
 	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;
 	float MateOutAhead = 0.f, MateOutRight = 0.f;
+	// The partner's facing while a string runs. Steps: Core's facing off the line to its target by over 30 degrees and the
+	// worst (degrees). Drawn frames, read after PlaceAlly: the drawn yaw off Core's by over 30 once the blow is out (its
+	// active or recovery part: a fault) and in its startup (still turning in, logged only), and the worst out.
+	int32 MateCastSteps = 0, MateCastCoreOff = 0;
+	float MateCastCoreWorst = 0.f;
+	int32 MateDrawFrames = 0, MateDrawOff = 0, MateDrawTurning = 0;
+	float MateDrawWorst = 0.f;
+	// The close partner drawn at Core's heading (ArenaAllyOut::heading). Its walk's frames: the drawn yaw off Core's
+	// heading by over 30 degrees, the mean and worst. Its string starts: off a walk (stopped under 1 s before), those
+	// with a visible pause (stood over 0.1 s between its walk's end and the string), the mean such stand; and from a
+	// standstill (a second or more); Core's heading off its target by over 60 degrees at a start.
+	int32 MateHeadFrames = 0, MateHeadOff = 0;
+	float MateHeadSum = 0.f, MateHeadWorst = 0.f;
+	int32 MateStartsWalk = 0, MateStartsPaused = 0, MateStartsStill = 0, MateStartsWide = 0;
+	float MateStandSum = 0.f;
+	double MateWalkEnd = -1.0;
+	bool bMateWasStringing = false;
 	// -ArenaRollAt=<s,s,...>: capture-only dodge presses under the autopilot at these fight times (the dodge strip).
 	static constexpr int32 MaxRollAt = 8;
 	float RollAt[MaxRollAt] = {};
@@ -645,6 +678,8 @@ private:
 	void SpawnAlly(UWorld* World);
 	// Where the ally stands behind the player's left (m), facing `Facing`.
 	ftcore::Vec2 AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
+	// The partner's start under the close camera: 3 m ahead of the lead, 1.5 m to the side away from the shoulder.
+	ftcore::Vec2 PartnerCloseStart(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
 	void MoveAlly();
 	void PlaceAlly(float Alpha);
 	// -ArenaPartner: the brain set on the fight (BeginPartner), the figures' swap on a takeover, the walk to the ally's
@@ -1231,6 +1266,17 @@ private:
 	int32 FrameBandN[4] = {};
 	float FrameBandFoe[4] = {};
 	float FrameBandGap[4] = {};
+	// The close camera's own bar on the same settled frames (ftcore::arenaCloseFrameCheck): all three terms, and each.
+	int32 CloseFrameOk = 0, CloseFrameLead = 0, CloseFrameFoe = 0, CloseFrameMate = 0;
+	// Its misses split by what the frame had, for the target ([0]) and the lead ([1]): the boom wall-shortened (under 98%),
+	// the lens lagging (over 0.15 m further from the pivot than the rig puts it), the framing turn at its cap, the
+	// partner's turn on (over 1 degree), the lead moving over 3 m/s, the target under 3 m. And the target's misses below
+	// and above its band, their mean share, and those with its aim point under 1 m in front of the lens.
+	int32 CloseMissWall[2] = {}, CloseMissLag[2] = {}, CloseMissCap[2] = {}, CloseMissMateTurn[2] = {}, CloseMissFast[2] = {}, CloseMissNear[2] = {};
+	int32 CloseMissFoeLow = 0, CloseMissFoeHigh = 0, CloseMissFoeAtLens = 0;
+	float CloseMissFoeSum = 0.f;
+	int32 FrameShotSkipped = 0; // frames of a capture's view (or a lens past the arm and a metre) left out of the frame check
+	int32 CloseFarSkipped = 0;  // of those, the close camera's frames with the lens past the arm and a metre from the pivot
 	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
 	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
 	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.
@@ -1297,6 +1343,10 @@ private:
 	int32 CarryCap = ftcore::kMaxLoad;
 	const FFTLeadLook* AllyLook = nullptr;
 	double AllyHitTime = -1e9;
+	// The ally's drawn yaw (degrees), turned toward the wanted yaw at kArenaAllyTurnRate at most, and the clock it was
+	// last drawn at (below 0: not drawn yet this session, so the first placement takes the wanted yaw at once).
+	float AllyDrawYaw = 0.f;
+	double AllyDrawYawAt = -1.0;
 	int32 CarrySharedOffers = 0;
 	// -ArenaPartner (outside Shipping; off by default, so ordinary play never has it): the other lead stands in the ring
 	// as the partner, its body driven by Core's PartnerBrain through the fight (ArenaFight::setPartner) with the tuning
@@ -1352,6 +1402,9 @@ private:
 	// The same two on the floor plane, as the close station's rule measures them (ftcore::partnerCloseHiddenBehind on the
 	// locked target's radius; ftcore::partnerCloseOverlaps with the lead, 0.4 m each), printed beside the two above.
 	int32 PartnerClearFlatSteps = 0, PartnerLeadClearFlatSteps = 0;
+	// Under the close camera: the steps measured in its frame, and those the partner stood where the near field's rule 1
+	// allows (ftcore::partnerCloseNearOk on the fed camera's ground place and forward).
+	int32 PartnerNearSteps = 0, PartnerNearOkSteps = 0;
 	float PartnerPlaySeconds = 0.f;
 	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
 	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;
@@ -1360,6 +1413,11 @@ private:
 	// The act in progress for that count: from when, to the last step seen, where the partner stood at its start, and
 	// whether it was carried out (FlushPartnerAction counts it).
 	float PartnerActFrom = -1.f, PartnerActTo = -1.f;
+	// Engaged steps (the lead's last attack within kPartnerEngagedWindow s): their seconds, the counted actions that ran
+	// on one, the lead's last attacking fight time, and whether the act in progress ran on one.
+	float PartnerEngagedSeconds = 0.f, LeadAttackAt = -1e9f;
+	int32 PartnerEngagedActions = 0;
+	bool PartnerActEngaged = false;
 	ftcore::Vec2 PartnerActAt{};
 	bool PartnerActDone = false;
 	void FlushPartnerAction();

@@ -398,7 +398,7 @@ void AFTStoryDirector::ApplySettings()
 	Skip.setMode(S.skipMode);
 	AutoAdvance.setEnabled(S.autoAdvance);
 	AutoAdvance.setDelay(S.autoDelay);
-	SubtitleScale = S.subtitleScale();
+	SubtitleScale = S.subtitleTextScale(); // the subtitle row times the text size, 0.85..2
 }
 
 bool AFTStoryDirector::IsSkipKeyDown() const
@@ -529,6 +529,7 @@ void AFTStoryDirector::CacheBeat()
 	const StoryRunner& Runner = Story->GetRunner();
 	Text = FT::ToFString(Runner.text());
 	Speaker = FT::ToFString(Runner.speaker());
+	UFTGameInstance::NoteSpeaker(this, Speaker); // a line under one of the Third's names makes it the current one
 	Options.Reset();
 	const int32 Count = static_cast<int32>(Runner.optionCount());
 	HiddenOptions = FMath::Max(0, Count - MaxOptions);

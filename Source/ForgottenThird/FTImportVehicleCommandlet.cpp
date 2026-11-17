@@ -78,7 +78,8 @@ constexpr int32 kLodCount = UE_ARRAY_COUNT(kLodTriangles);
 const FVector kBoxMin(-171.13, -74.0, 15.2);
 const FVector kBoxMax(173.1, 74.0, 155.02);
 
-// The car material contract's maths for every slot: the paint tint where the mask's green says paint, the wear map and
+// The car material contract's maths for every slot: the paint tint on the whole Paint slot (slot 0; the trial mask's green
+// is near empty, so gating it by green left the bodies the bare base) and elsewhere where the mask's green says paint, the wear map and
 // rougher finish by the mask's wear times DirtAmount, glass smooth and see-through by its own formula, the lens lit by
 // LampOn at night. Texture2DSample, never Tex.Sample: a ray-tracing hit shader has no derivatives.
 const TCHAR* const kCarCode = TEXT(R"HLSL(float3 bc = Texture2DSample(BaseColorTex, BaseColorTexSampler, UV).rgb;
@@ -94,7 +95,8 @@ AOOut = orm.r;
 NormalOut = UnpackNormalMap(Texture2DSample(NormalTex, NormalTexSampler, UV)).xyz;
 EmissiveOut = IsLens ? bc * m.b * saturate(Lamp) * saturate(Night) * LampGain : float3(0.0, 0.0, 0.0);
 OpacityOut = saturate(0.30 - 0.22 * m.b + 0.5 * d);
-float3 col = lerp(bc, bc * Paint.rgb * 1.25, m.g);
+float pm = abs(Slot) < 0.5 ? 1.0 : m.g;
+float3 col = lerp(bc, bc * Paint.rgb * 1.25, pm);
 return lerp(col, wear, d);)HLSL");
 
 FString PackageFile(const FString& Package)

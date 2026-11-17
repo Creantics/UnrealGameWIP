@@ -363,6 +363,17 @@ AFTExploreSpot* AFTExploreDirector::GetSpot(int32 Id) const
 	return Spots.IsValidIndex(Id) ? Spots[Id].Get() : nullptr;
 }
 
+bool AFTExploreDirector::GetFocusLocation(FVector& Out) const
+{
+	const AFTExploreSpot* Spot = GetSpot(Focus);
+	if (!Spot)
+	{
+		return false;
+	}
+	Out = Spot->GetActorLocation();
+	return true;
+}
+
 void AFTExploreDirector::CacheText()
 {
 	const int32 Objectives = static_cast<int32>(Exploration.objectiveCount());
@@ -1741,7 +1752,7 @@ void AFTExploreDirector::BeginWorld()
 	// -WorldDistrict=<n>: outside a story step the lead starts on district n's spawn, on its floor, instead of the
 	// PlayerStart, and a tour starts there: for looking round a district, or from it with -ExplorePortrait.
 	int32 StartDistrict = -1;
-	if (!bStoryStep && FParse::Value(FCommandLine::Get(), TEXT("WorldDistrict="), StartDistrict))
+	if (!bStoryStep && FParse::Value(FTBootSwitches(), TEXT("WorldDistrict="), StartDistrict))
 	{
 		if (QueueDistrictSpawn(StartDistrict))
 		{
@@ -1755,9 +1766,9 @@ void AFTExploreDirector::BeginWorld()
 	}
 	// -WorldStartAt=<x>,<y>,<z>,<yaw>: outside a story step the lead is set down there instead, facing yaw (degrees, world),
 	// its party behind it: for a still of one spot. x and y are plan metres on a map in the plan frame (engine metres
-	// otherwise), z the floor there (m).
+	// otherwise), z the floor there (m). Both read the map's demo boot switches after the command line (FTBootSwitches).
 	FString StartAt;
-	if (!bStoryStep && FParse::Value(FCommandLine::Get(), TEXT("WorldStartAt="), StartAt, false))
+	if (!bStoryStep && FParse::Value(FTBootSwitches(), TEXT("WorldStartAt="), StartAt, false))
 	{
 		TArray<FString> Parts;
 		StartAt.ParseIntoArray(Parts, TEXT(","));

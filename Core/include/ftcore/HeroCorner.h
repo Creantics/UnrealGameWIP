@@ -48,6 +48,8 @@ inline constexpr int kHeroStringLanterns = 9;
 inline constexpr int kHeroCablePoints = 25;
 // A bay's shopfront: boxFace order face 2 (-u, west for a box turned 0).
 inline constexpr int kHeroShopFace = 2;
+// The south end wall's cladding: its boards, its battens, a fascia and a kick board.
+inline constexpr int kHeroCladMax = 24;
 
 struct HeroCornerSpec {
     double ground = 4.18;  // the lane's ground, z
@@ -64,6 +66,13 @@ struct HeroCornerSpec {
     bool bayKoshi[kHeroBays] = {true, false, true, false, false};
     // The eave.
     double eaveOut = 1.2, eaveUp = 3.65, eaveThick = 0.12;
+    // The first bay's south end wall (bare stucco seen from the lane's south end) clad in dark timber, board and
+    // batten: boards cladProud thick on the wall from the ground to cladTop over it, battens battenWidth wide and
+    // battenProud proud of the boards about battenPitch apart (one at each corner), a fascia fasciaHeight deep under its
+    // top and a kick board kickHeight high at its foot, each trimProud proud of the boards.
+    bool endClad = true;
+    double cladProud = 0.04, cladTop = 6.3, battenWidth = 0.06, battenProud = 0.03, battenPitch = 0.5;
+    double fasciaHeight = 0.25, kickHeight = 0.3, trimProud = 0.05;
     // The large lanterns: a pair flanking each lit bay's entrance (the first kHeroLargeLanterns / 2 lit bays, south to
     // north). Under the eave (a glazed front): largeOut from the shop face, hooked to the eave's underside, the mesh at
     // largeScale, largePairGap apart about the door.
@@ -172,7 +181,9 @@ struct HeroLampSlot {
     HeroLampKind kind = HeroLampKind::String;
     int index = 0;  // the string's, or the pair's (0 the southmost lit bay's)
 };
-inline constexpr int kHeroLampSlots = kHeroStrings + 2 * (kHeroLargeLanterns / 2);
+// Room for a pair at every bay (a spec may light them all); the default spec's three lit bays fill kHeroLargeLanterns.
+inline constexpr int kHeroPairsMax = kHeroBays;
+inline constexpr int kHeroLampSlots = kHeroStrings + 2 * kHeroPairsMax;
 
 struct HeroCornerLayout {
     MassingBox pave;                 // the lane's paving slab (kind "paving")
@@ -181,10 +192,14 @@ struct HeroCornerLayout {
     MassingBox eaves[kHeroBays / 2 + 1];  // the eave's slabs over the lane (kind "eave", ids HC-EAVE-<n> south to north):
                                           // one per run of bays between the lattice fronts
     int eaveCount = 0;
+    // The first bay's south end cladding (kind "clad", ids HC-CLAD-<n>): the boards, the battens west to east, the
+    // fascia, the kick board. None with endClad off.
+    MassingBox endClad[kHeroCladMax];
+    int endCladCount = 0;
     MassingBox bays[kHeroBays];      // the shop bays (kind "kit", ids HC-BAY-<n><letter>)
     bool bayLit[kHeroBays] = {};
     int eateryBay = 0;
-    HeroLantern lanterns[kHeroLargeLanterns + kHeroStrings * kHeroStringLanterns];
+    HeroLantern lanterns[2 * kHeroPairsMax + kHeroStrings * kHeroStringLanterns];
     std::size_t lanternCount = 0;
     HeroPoint cable[kHeroStrings][kHeroCablePoints];
     HeroPoint postFoot[kHeroStrings];  // a post's foot on the ground; it stands postHeight
@@ -194,8 +209,8 @@ struct HeroCornerLayout {
     HeroLampSlot lamps[kHeroLampSlots];
     int lampCount = 0;
     // Per pair (the lit bays' in order, south to north): its bay and the middle of that bay's entrance along the lane.
-    int pairBay[kHeroLargeLanterns / 2] = {-1, -1, -1};
-    double entranceY[kHeroLargeLanterns / 2] = {};
+    int pairBay[kHeroPairsMax] = {-1, -1, -1, -1, -1};
+    double entranceY[kHeroPairsMax] = {};
     int pairCount = 0;
     HeroPoint eye, at;
     double lensMm = 35.0;
@@ -303,9 +318,18 @@ FTCORE_API bool heroCornerKeepsLampOut(const HeroCornerSpec& spec, double x, dou
 // its mesh (/Game/Props/HeroCorner/SM_HC_<heroPieceName>) and leaves out a piece whose mesh isn't imported.
 enum class HeroPiece : int {
     Shelf, Counter, HangGoods, Lantern, Crate, Bucket, Figure, StockPot, Steam, Jars, Sacks, Bottles, GoodsHanging,
-    UmbrellaStand, SignLarge, SignSmall, Banner, Bicycle, Gate, GateLantern, Scooter, Count
+    UmbrellaStand, SignLarge, SignSmall, Banner, Bicycle, Gate, GateLantern, Scooter,
+    // The frontage clutter (Data/Field/hero_frontage.csv); the frontage parse matches names from Drum on, and the
+    // dressing's crate, bucket, umbrella stand, signs and banner.
+    Drum, Bin, DownPipe, Awning, SackPile, Bench, AcUnit, Vending, Planter, Stool, MeterBox, Noticeboard, Broom, Count
 };
 FTCORE_API const char* heroPieceName(HeroPiece piece);
+
+// Where a piece reads on a shop front (the 11-17 density rule's three depth layers): at the foot (on the paving: crates,
+// drums, a stool, a broom), on the wall (a downpipe, a meter box, a noticeboard, a sign on its bracket, an AC unit) or
+// overhead (an awning, a banner, hanging goods). None for the rooms' own pieces and the gate.
+enum class HeroLayer : int { None, Foot, Wall, Overhead };
+FTCORE_API HeroLayer heroPieceLayer(HeroPiece piece);
 
 // A piece's place. Room terms: x along the front from its north end, y in from the front, z over the floor. Plan
 // terms: the plan's x, y and z. face is the way its front (the mesh's -Y) looks, a unit vector in the same terms
@@ -349,6 +373,47 @@ FTCORE_API int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLa
 
 // Whether the n-th large lantern (0-based, in layout order) carries an invented mark: one in three.
 inline bool heroLanternMarked(int largeIndex) { return largeIndex % 3 == 2; }
+
+// Step 3 (2026-11-17): the frontage clutter (Data/Field/hero_frontage.csv), plan terms. A piece's box: its own box
+// turned by its face about item.at, z from item.at.z, all times item.scale; true for the dressing's and the frontage's
+// standing, wall and eave pieces and a hung lantern, false for a room piece. The kit's pieces (AcUnit, Vending,
+// Planter) have their origin at an end (local x from it); the rest about their middle.
+FTCORE_API bool heroItemBox(const HeroItem& item, double& x0, double& x1, double& y0, double& y1, double& z0, double& z1);
+
+// The frontage rows (piece,y,out,up,yaw,scale): at = (laneX1 - out, y, ground + paveTop + up), face (-1, 0) turned yaw
+// degrees counter-clockwise, bay from y. Blank lines, '#' lines and the header are skipped. Returns how many (at most
+// max), or -1 on a malformed row, an unknown piece or a row past max (badLine its 1-based line).
+inline constexpr int kHeroFrontageMax = 160;
+FTCORE_API int heroFrontageParse(std::string_view text, const HeroCornerSpec& spec, HeroItem* out, int max, int* badLine = nullptr);
+
+// Each frontage piece kept or dropped (keep[i]) in order: dropped when its box overlaps a kept one before it, a dressing
+// piece's or a lantern's; or when, standing (its box's foot under doorTop), it reaches into a lit entrance's span within
+// doorOut of the shop face, or past corridorOut. The bare run: the longest stretch along the bays' faces (bayY0 to the
+// gate's face) with nothing within wallNear of the face under doorTop, a lit entrance counting as dressed.
+struct HeroFrontageRules {
+    double doorTop = 2.0, doorOut = 1.2, corridorOut = 1.3, wallNear = 0.6;
+};
+struct HeroFrontageCheck {
+    int kept = 0, dropped = 0;
+    int firstDropped = -1;  // its index
+    int clashWith = -1;     // 0..n-1 a frontage piece, 100 + k the dressing's k-th, 200 + k lantern k, -2 a door, -3 the corridor
+    double longestBare = 0.0, bareFrom = 0.0;
+};
+FTCORE_API HeroFrontageCheck heroFrontageCheck(const HeroCornerSpec& spec, const HeroCornerLayout& layout, const HeroItem* front, int n,
+                                               const HeroItem* dressing, int dressingCount, bool* keep, const HeroFrontageRules& rules = {});
+
+// The density rule (11-17): every window metres of frontage from y0 to y1 (plan y; windows every 0.25 m) holds at least
+// six pieces in all three layers. A piece counts in a window when its box overlaps it along y, stands outside the shop
+// face and within reach of it: the kept frontage rows (keep), the dressing's and the large lanterns (the wall layer).
+// minCount / minLayers are the sparsest window's (-1 with no window); countAt / layersAt where it starts.
+struct HeroFrontageDensity {
+    int windows = 0;
+    int minCount = -1, minLayers = -1;
+    double countAt = 0.0, layersAt = 0.0;
+};
+FTCORE_API HeroFrontageDensity heroFrontageDensity(const HeroCornerSpec& spec, const HeroCornerLayout& layout, const HeroItem* front,
+                                                   int n, const bool* keep, const HeroItem* dressing, int dressingCount, double y0,
+                                                   double y1, double window = 5.0, double reach = 1.5);
 
 // The face ruling's area lights (plan metres): a wide soft key in each lit bay's front (sky false, bay its index) and
 // the cool floor west of the lane in kHeroSkyFloors equal lengths end to end (sky true, bay -1; a light's attenuation

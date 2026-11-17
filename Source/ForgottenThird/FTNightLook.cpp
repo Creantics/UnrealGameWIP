@@ -108,6 +108,10 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightCharFillStops="), L.charFillStops);
 	ReadNumber(Cmd, TEXT("NightCharFillK="), L.charFillKelvin);
 	ReadNumber(Cmd, TEXT("NightCharFillPitch="), L.charFillPitchDeg);
+	ReadNumber(Cmd, TEXT("NightCharFillBayNear="), L.charFillBayNearM);
+	ReadNumber(Cmd, TEXT("NightCharFillBayFar="), L.charFillBayFarM);
+	ReadNumber(Cmd, TEXT("NightCharFillYaw="), L.charFillYawDeg);
+	ReadNumber(Cmd, TEXT("NightCharFillKeyShare="), L.charFillKeyShare);
 	ReadNumber(Cmd, TEXT("NightFog="), L.fogKeep);
 	ReadNumber(Cmd, TEXT("NightEV="), L.exposureEV100);
 	ReadNumber(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
@@ -187,18 +191,33 @@ ftcore::DuskLook ReadDusk()
 constexpr float kDuskStep = 0.01f;
 // A step of the night's sky factor worth writing, as a log ratio (about 2%).
 constexpr float kSkyRatioStep = 0.02f;
+// FTBootSwitches keeps one line per map, so its pointer names the line: these caches read again when it changes (another
+// map's boot row, or the first real map after the engine's transient start world) and otherwise cost a compare.
+template <typename T, typename FRead>
+const T& PerSwitchLine(T& Cache, const TCHAR*& From, FRead&& ReadIt)
+{
+	const TCHAR* Now = FTLookSwitches();
+	if (Now != From)
+	{
+		Cache = ReadIt();
+		From = Now;
+	}
+	return Cache;
+}
 } // namespace
 
 const ftcore::NightLook& FTNight::Look()
 {
-	static const ftcore::NightLook Spec = Read();
-	return Spec;
+	static ftcore::NightLook Spec;
+	static const TCHAR* From = nullptr;
+	return PerSwitchLine(Spec, From, [] { return Read(); });
 }
 
 const ftcore::DuskLook& FTNight::Dusk()
 {
-	static const ftcore::DuskLook Spec = ReadDusk();
-	return Spec;
+	static ftcore::DuskLook Spec;
+	static const TCHAR* From = nullptr;
+	return PerSwitchLine(Spec, From, [] { return ReadDusk(); });
 }
 
 FTNight::FSkyFrame FTNight::FrameAt(const ftcore::WorldClockSpec& Spec, double Hours)
@@ -220,47 +239,51 @@ FTNight::FSkyFrame FTNight::FrameAt(const ftcore::WorldClockSpec& Spec, double H
 
 float FTNight::ProofShopNight()
 {
-	static const float Value = []
+	static float Value = 0.f;
+	static const TCHAR* From = nullptr;
+	return PerSwitchLine(Value, From, []
 	{
 		float Level = FTLook::Table().glassValue("proofShopNight", -1.f);
 		FParse::Value(FTLookSwitches(), TEXT("GlassProofNight="), Level);
 		return Level;
-	}();
-	return Value;
+	});
 }
 
 float FTNight::InteriorDay()
 {
 	// The look table's, or the switch's (a still that measures the pane's mirror alone sets 0).
-	static const float Value = []
+	static float Value = 0.f;
+	static const TCHAR* From = nullptr;
+	return PerSwitchLine(Value, From, []
 	{
 		float Level = FTLook::Table().glassValue("interiorDay", 1.f);
 		FParse::Value(FTLookSwitches(), TEXT("GlassInteriorDay="), Level);
 		return FMath::Max(Level, 0.f);
-	}();
-	return Value;
+	});
 }
 
 float FTNight::BayLampLumens()
 {
-	static const float Value = []
+	static float Value = 0.f;
+	static const TCHAR* From = nullptr;
+	return PerSwitchLine(Value, From, []
 	{
 		float Level = FTLook::Table().glassValue("bayLampLumens", 40.f);
 		FParse::Value(FTLookSwitches(), TEXT("GlassBayLumens="), Level);
 		return FMath::Max(Level, 0.f);
-	}();
-	return Value;
+	});
 }
 
 float FTNight::BayLampDayLumens()
 {
-	static const float Value = []
+	static float Value = 0.f;
+	static const TCHAR* From = nullptr;
+	return PerSwitchLine(Value, From, []
 	{
 		float Level = FTLook::Table().glassValue("bayLampDayLumens", 3000.f);
 		FParse::Value(FTLookSwitches(), TEXT("GlassBayDayLumens="), Level);
 		return FMath::Max(Level, 0.f);
-	}();
-	return Value;
+	});
 }
 
 float FTNight::BayLampAt(float Lights)
@@ -275,7 +298,9 @@ float FTNight::BayLampAt(float Lights)
 int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 {
 	// -NoBayLights (look switch, not in Shipping): the fixtures held dark, for the cost pair with and without them.
-	static const bool bNoBayLights = FParse::Param(FTLookSwitches(), TEXT("NoBayLights"));
+	static bool bNoBayLightsCache = false;
+	static const TCHAR* NoBayFrom = nullptr;
+	const bool bNoBayLights = PerSwitchLine(bNoBayLightsCache, NoBayFrom, [] { return FParse::Param(FTLookSwitches(), TEXT("NoBayLights")); });
 	const float Lumens = bNoBayLights ? 0.f : BayLampAt(Lights);
 	const ftcore::NightLook& L = Look();
 	const float Share = FMath::Clamp(Lights, 0.f, 1.f);

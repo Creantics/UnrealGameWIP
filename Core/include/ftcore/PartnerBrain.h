@@ -290,6 +290,36 @@ inline constexpr float kPartnerNearRoundStep = 0.5f;
 inline constexpr float kPartnerNearRoundMax = 3.f;
 // Rule 19: under the close camera a string starts only with the partner facing within this (degrees) of its target.
 inline constexpr float kPartnerStartFacingDegrees = 30.f;
+// Rule 19 (the arena's ruling of 11-17): under the close camera a string also starts only with the partner's drawn
+// heading (PartnerInput::heading) within this (degrees) of its target; until then it waits and turns.
+inline constexpr float kPartnerStartHeadingDegrees = 60.f;
+// ... and once held so, for up to this (s) it stands where the rules let it start (in reach of that target, within
+// kPartnerStartHeadingHoldMeters of that spot) and turns rather than walk on: a turn from reversed at the host's
+// 540 deg/s takes (180 - 60) / 540 s.
+inline constexpr double kPartnerStartHeadingHoldSeconds = 0.35;
+inline constexpr float kPartnerStartHeadingHoldMeters = 0.3f; // ... within this of where it was held (pushed)
+// Rule 19, Spread (the fault B ruling of 11-17): under the close camera the target is an enemy inside the close lens
+// (kPartnerCloseConeMargin each side to be picked, the lens's edge to be kept), by Spread's rule 1 among those; none
+// there: the lens's target (the lead's, else the standing enemy nearest the lead). A pick is held at least this long
+// (s) unless it falls, an intercept fires, or it leaves the lens while another stands inside it.
+inline constexpr double kPartnerCloseSpreadHoldSeconds = 2.0;
+// Rule 19, Spread: the intercept. An enemy outside the close lens winding up at the lead may be taken (the nearest to
+// the lead), at once, and held only while it still winds up there outside the lens. It is capped: over the last
+// kPartnerInterceptSlots slots of 1 s, the partner's seconds outside the close lens while engaged (a target held and
+// able to act) stay under kPartnerInterceptShare of its engaged seconds. A new intercept starts only under
+// kPartnerInterceptStartShare and runs on only under kPartnerInterceptRunShare: a string begun runs out and the walk
+// back is off the lens too, so the room left below the cap is about a string, its pause cut and that walk. Its pause
+// ends (a new pick) the step its intercept ends. The cap counts all of the partner's off-lens engaged time, its own
+// walks included, not only intercepts (safer: the share it leaves is smaller). While the window fills, its engaged
+// seconds are floored at kPartnerInterceptMinEngagedSeconds, and no intercept starts before that many are in it, so
+// a short engaged history cannot let one run past the share. The window is close-lens Spread play time (the steps
+// it runs), not wall time. The pick's hold is max(kPartnerCloseSpreadHoldSeconds, targetHoldSeconds); it ends early
+// when the held enemy leaves the lens while a new pick stands inside it (intended: the frame wins).
+inline constexpr std::size_t kPartnerInterceptSlots = 20;
+inline constexpr float kPartnerInterceptMinEngagedSeconds = 8.f;
+inline constexpr float kPartnerInterceptShare = 0.25f;
+inline constexpr float kPartnerInterceptStartShare = 0.1f;
+inline constexpr float kPartnerInterceptRunShare = 0.15f;
 // Rule 18: StayClose's growth by a tall target ends only when its edge is this far (m) past closeLeadMeters.
 inline constexpr float kPartnerTallGrowHysteresis = 0.5f;
 // Rule 13: within this long (s) of the held station's last change of side, a new pick keeps to its side (none valid
@@ -365,6 +395,11 @@ struct PartnerInput {
     // starts only facing within kPartnerStartFacingDegrees of its target; until then it waits (why Pause, enemy its
     // target) and the host turns it. Zero (a host that never says): no such hold. Input, not state: never hashed.
     Vec2 facing{};
+    // Rule 19 (11-17): the partner's drawn heading on the ground, the host's (ArenaAllyOut::heading). Under the close
+    // camera a string starts only with it within kPartnerStartHeadingDegrees of its target; until then it waits (why
+    // Pause, enemy its target). Zero: no such hold (ArenaFight gives zero on a step it walked: its heading turns to the
+    // target over a walk's last metre / 0.3 s, so the gate is a standing start's safety). Input, not state: never hashed.
+    Vec2 heading{};
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
@@ -409,6 +444,8 @@ struct PartnerIntent {
     bool skirmish = false;      // rule 17: this step walks its never-still goal (point), facing enemy
     PartnerIdle idle = PartnerIdle::Other; // a report: never in the hash
     std::uint8_t closeTier = 0; // a report: rule 19's station this step (PartnerCloseStation::tier), 0 none; never hashed
+    bool intercept = false;     // a report: rule 19, Spread: its target is an intercept (an enemy outside the close
+                                // lens winding up at the lead); never hashed
 };
 
 struct PartnerTuning {
@@ -575,11 +612,24 @@ struct PartnerBrainSave {
                                    // circling) since begin (sticky): bottom margin and side hold steer, hashed from then
     bool closeUsed = false;        // rule 19: the close camera was given since begin (sticky; its hold hashed from then)
     PartnerCloseHold closeHold{};  // rule 19: the flank held (PartnerCloseStation.h)
+    // Rule 19, Spread (11-17): the intercept's cap, per 1 s slot of its own clock (run only under the close camera
+    // with Spread): seconds engaged, and of those outside the close lens; the enemy intercepted (-1: none). Hashed
+    // once the clock has run.
+    std::array<float, kPartnerInterceptSlots> closeEngaged{};
+    std::array<float, kPartnerInterceptSlots> closeOff{};
+    double closeClock = 0.0;
+    int intercept = -1;
+    // Rule 19 (11-17): a start held for its drawn heading: on this target until this time, from this spot (-1: none).
+    // Hashed when set.
+    int headingTarget = -1;
+    double headingUntil = 0.0;
+    Vec2 headingAt{};
     static_assert(kMaxPartnerEnemies <= 8 && kMaxArenaEnemies <= 8, "tallGrowOn: a bit per target in 8 bits");
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};
     double fallbackSeconds = 0.0;
     std::uint32_t offFrameStarts = 0; // strings begun from off the frame (rule 14's last resort)
+    double interceptSeconds = 0.0;    // rule 19, Spread: seconds with an intercept as its target
     // Rule 17 (framed): its own seeded stream, the goal walked, and the clocks.
     std::uint32_t skirmish = 1;
     std::uint32_t skirmishDraws = 0;
@@ -671,6 +721,9 @@ private:
     void steerRound(const PartnerInput& in);              // rule 18, last, framed
     // seen: bit i set when enemy i stands in the frame (framed only; 0 otherwise).
     int chooseTarget(const PartnerInput& in, bool framed, std::uint32_t seen) const;
+    int closeSpreadTarget(const PartnerInput& in, std::size_t n);
+    bool interceptThreat(const PartnerInput& in, std::size_t i) const; // rule 19, Spread: i may be intercepted
+    bool interceptRoom(float share) const; // the cap's ring: off-lens seconds under share x engaged ones
 
     PartnerBrainSave s_{};
     // This step's tuning (partnerEffectiveTuning of s_.t), set as each step starts: input, not state (never saved or
@@ -678,6 +731,7 @@ private:
     PartnerTuning tStep_{};
     // This step's near field (rule 19, a ranged kit under the close lens), set by decide: input, not state.
     bool nearStep_ = false;
+    bool closeSpreadStep_ = false; // rule 19, Spread: this step's decide ran under the close camera with Spread
 };
 
 } // namespace ftcore

@@ -1909,6 +1909,27 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 		}
 	}
+	// Direction B (2026-11-17): -HeroLitBays=<bays> (1-based, comma list) lights exactly those bays: each a real room,
+	// its front key, its shop slot and a lantern pair; the others are shutters. The spec's 1,3,4 by default.
+	{
+		FString Lit;
+		TArray<FString> Bays;
+		if (FParse::Value(*Params, TEXT("HeroLitBays="), Lit, false) && Lit.ParseIntoArray(Bays, TEXT(","), true) > 0)
+		{
+			for (int32 B = 0; B < ftcore::kHeroBays; ++B)
+			{
+				HeroTune.bayLit[B] = false;
+			}
+			for (const FString& Bay : Bays)
+			{
+				const int32 B = FCString::Atoi(*Bay) - 1;
+				if (B >= 0 && B < ftcore::kHeroBays)
+				{
+					HeroTune.bayLit[B] = true;
+				}
+			}
+		}
+	}
 	FParse::Value(*Params, TEXT("HeroShopBackIn="), HeroTune.shopBackIn);
 	FParse::Value(*Params, TEXT("HeroShopBackUp="), HeroTune.shopBackUp);
 	FParse::Value(*Params, TEXT("HeroShopBackPitch="), HeroTune.shopBackPitch);
@@ -1933,6 +1954,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (bHeroSubLevel && bHeroOnly)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -HeroSubLevel (the strip) and -HeroCornerOnly (the corner) are two runs."));
+		return 1;
+	}
+	// A hero strip bakes the corner inline only on purpose: the 09:16 Strip lacked -HeroSubLevel and every walk after it
+	// showed a default corner, not the built sub-level. -InlineCorner says the inline corner is wanted.
+	if (bHeroCorner && !bHeroSubLevel && !bHeroOnly && !FParse::Param(*Params, TEXT("InlineCorner")))
+	{
+		UE_LOG(LogForgottenThird, Error,
+		       TEXT("FTBuildMassingWorld: -HeroCorner without -HeroSubLevel bakes an inline default corner; pass -HeroSubLevel (or -InlineCorner on purpose)."));
 		return 1;
 	}
 	if (bHeroOnly)
@@ -2924,7 +2953,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (bHeroContent)
 	{
 		ftcore::HeroLots HeroLots;
-		ftcore::heroCornerLots(ftcore::HeroCornerSpec{}, HeroLots);
+		ftcore::heroCornerLots(HeroTune, HeroLots);
 		std::string BayIds[ftcore::kHeroBays];
 		for (int32 B = 0; B < ftcore::kHeroBays; ++B)
 		{
@@ -3359,6 +3388,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			LayCubeWearing(Eave, Timber ? Timber : (bSurfaces ? WearLook(LookSet, Eave) : Finish[static_cast<int32>(ftcore::massingFinish(Eave))]),
 				EFTCellKind::Solid, EFTCellCull::None);
 		}
+		// The first bay's south end wall, board-and-batten in the eave's timber (from the lane's south end it was bare stucco).
+		for (int32 C = 0; C < Hero.endCladCount; ++C)
+		{
+			const ftcore::MassingBox& Clad = Hero.endClad[C];
+			LayCubeWearing(Clad, Timber ? Timber : (bSurfaces ? WearLook(LookSet, Clad) : Finish[static_cast<int32>(ftcore::massingFinish(Clad))]),
+				EFTCellKind::Solid, EFTCellCull::None);
+		}
 		// The meshes (tools/hero_corner_props.py, FTImportProp -Dest=/Game/Props/HeroCorner): each one's origin is its hook
 		// (a lantern's top), its foot (a post) or its facade end (a cable, running along +X). Their paper slots wear the
 		// night glow. The glTF import puts each file's mesh under <Dest>/<file>/StaticMeshes/<mesh>; a mesh moved up to
@@ -3501,6 +3537,75 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			PlaceHero(Mesh, Item.at, FTLots::HeroPropYaw(Item.faceX, Item.faceY, LotBuild.HeroPropTurn),
 				*(FString(TEXT("HC-")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece))), Item.scale, !bLantern);
 			++Dressed;
+		}
+		// Step 3 (2026-11-17): the frontage clutter (Data/Field/hero_frontage.csv, ftcore::heroFrontageParse): drums, bins,
+		// downpipes, awnings, sack piles, crates, buckets and a bench (SM_HC_*), AC units, a vending machine and planters
+		// from the building kit. ftcore::heroFrontageCheck drops a row that would hit the dressing, a lantern, a lit
+		// entrance or the lead's corridor. -HeroFrontage=false leaves them out.
+		int32 FrontPlaced = 0, FrontRows = 0, FrontMissing = 0;
+		bool bFrontage = true;
+		FParse::Bool(*Params, TEXT("HeroFrontage="), bFrontage);
+		FString FrontText;
+		const FString FrontPath = FPaths::ProjectDir() / TEXT("Data/Field/hero_frontage.csv");
+		if (bFrontage && FFileHelper::LoadFileToString(FrontText, *FrontPath))
+		{
+			const FTCHARToUTF8 FrontUtf8(*FrontText);
+			ftcore::HeroItem Front[ftcore::kHeroFrontageMax];
+			int BadLine = 0;
+			FrontRows = ftcore::heroFrontageParse(std::string_view(FrontUtf8.Get(), FrontUtf8.Length()), HeroSpec, Front,
+				ftcore::kHeroFrontageMax, &BadLine);
+			if (FrontRows < 0)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -HeroCorner: %s line %d is malformed; no frontage laid."), *FrontPath, BadLine);
+				FrontRows = 0;
+			}
+			bool Keep[ftcore::kHeroFrontageMax] = {};
+			const ftcore::HeroFrontageCheck FrontCheck = ftcore::heroFrontageCheck(HeroSpec, Hero, Front, FrontRows, Dressing, DressCount, Keep);
+			UStaticMesh* const AcUnit = LoadMesh(TEXT("/Game/Props/BKIT/AC_UNIT/StaticMeshes/AC_UNIT"));
+			UStaticMesh* const Vending = LoadMesh(TEXT("/Game/Props/BKIT/VENDING/StaticMeshes/VENDING"));
+			UStaticMesh* const Planter = LoadMesh(TEXT("/Game/Props/BKIT/PLANTERS/StaticMeshes/PLANTERS"));
+			for (int32 F = 0; F < FrontRows; ++F)
+			{
+				const ftcore::HeroItem& Item = Front[F];
+				if (!Keep[F])
+				{
+					continue;
+				}
+				UStaticMesh* Mesh = nullptr;
+				switch (Item.piece)
+				{
+				case ftcore::HeroPiece::AcUnit: Mesh = AcUnit; break;
+				case ftcore::HeroPiece::Vending: Mesh = Vending; break;
+				case ftcore::HeroPiece::Planter: Mesh = Planter; break;
+				default:
+				{
+					const int32 Key = static_cast<int32>(Item.piece);
+					if (UStaticMesh** Found = DressMeshes.Find(Key))
+					{
+						Mesh = *Found;
+					}
+					else
+					{
+						Mesh = DressMeshes.Add(Key, HeroMesh(*(FString(TEXT("SM_HC_")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece)))));
+					}
+				}
+				}
+				if (!Mesh)
+				{
+					++FrontMissing;
+					continue;
+				}
+				PlaceHero(Mesh, Item.at, FTLots::HeroPropYaw(Item.faceX, Item.faceY, LotBuild.HeroPropTurn),
+					*(FString(TEXT("HC-F-")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece))), Item.scale, true);
+				++FrontPlaced;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: frontage %d of %d rows placed, %d dropped (first row %d, "
+				"hit %d), %d without a mesh; longest bare run %.2f m from y %.2f."), FrontPlaced, FrontRows, FrontCheck.dropped,
+				FrontCheck.firstDropped, FrontCheck.clashWith, FrontMissing, FrontCheck.longestBare, FrontCheck.bareFrom);
+		}
+		else if (bFrontage)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: %s not found; no frontage laid."), *FrontPath);
 		}
 		// The lit rooms' lamps (paper in its glow), figure and steam, laid out by FTLots::Place.
 		USkeletalMesh* const Human = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human"),

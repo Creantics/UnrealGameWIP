@@ -1,0 +1,60 @@
+{
+  "name": "rain_splash",
+  "emitters": [
+    {
+      "name": "rings",
+      "rate": 1200,
+      "rateParam": "RingRate",
+      "colorParam": "Color",
+      "loop": true,
+      "duration": 1.0,
+      "maxParticles": 640,
+      "lifetime": [0.3, 0.45],
+      "shape": "ring",
+      "radius": 13.0,
+      "innerRadius": 0.0,
+      "speed": 0.0,
+      "startSize": [0.08, 0.14],
+      "startColor": [1.0, 1.0, 1.0, 1.0],
+      "sizeOverLife": [{"t": 0.0, "v": 0.25}, {"t": 1.0, "v": 1.6}],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.8, 0.84, 0.88, 0.55]},
+        {"t": 1.0, "color": [0.8, 0.84, 0.88, 0.0]}
+      ],
+      "blend": "alpha",
+      "lit": true,
+      "sprite": "ring",
+      "renderMode": "horizontal",
+      "softness": 0.0
+    },
+    {
+      "name": "drops",
+      "rate": 500,
+      "rateParam": "DropRate",
+      "colorParam": "Color",
+      "loop": true,
+      "duration": 1.0,
+      "maxParticles": 160,
+      "lifetime": [0.18, 0.28],
+      "shape": "ring",
+      "radius": 13.0,
+      "innerRadius": 0.0,
+      "speed": 0.0,
+      "velocityMin": [-0.35, 0.8, -0.35],
+      "velocityMax": [0.35, 1.4, 0.35],
+      "gravity": [0.0, -9.8, 0.0],
+      "startSize": [0.006, 0.01],
+      "startColor": [1.0, 1.0, 1.0, 1.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.8, 0.84, 0.88, 0.6]},
+        {"t": 1.0, "color": [0.8, 0.84, 0.88, 0.0]}
+      ],
+      "blend": "alpha",
+      "lit": true,
+      "sprite": "soft",
+      "stretch": 0.02,
+      "stretchMax": 4.0,
+      "softness": 0.0
+    }
+  ]
+}

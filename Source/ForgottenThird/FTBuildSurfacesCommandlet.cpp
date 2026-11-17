@@ -1299,6 +1299,9 @@ UMaterial* BuildKitGlassMaster(UMaterialParameterCollection* Collection, const F
 	UMaterial* Material = NewMaster(FTShopInteriors::KitGlassMaterial);
 	// The kit's normal maps are tangent space (NewMaster sets world space for the surface masters).
 	Material->bTangentSpaceNormal = true;
+	// A Nanite kit module wearing it needs the usage, or its MI_KitGlass_* falls back to the default material (the demo
+	// smoke of 11-17 saw that on BK-B2 and BK-D1). Takes effect on the next FTBuildSurfaces -Windows -KitGlass run (and a -KitGlassFrontage map rebuild).
+	Material->SetUsageByFlag(MATUSAGE_Nanite, true);
 	auto Sampler = [Material](const TCHAR* Name, UTexture* Default, EMaterialSamplerType Type, int32 Y)
 	{
 		UMaterialExpressionTextureSampleParameter2D* S = AddExpression<UMaterialExpressionTextureSampleParameter2D>(Material, -900, Y);

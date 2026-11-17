@@ -40,7 +40,10 @@ add_library(ftcore STATIC
     src/UiBudget.cpp
     src/UiEventMarks.cpp
     src/UiFirstUse.cpp
+    src/UiHudFit.cpp
     src/UiLone.cpp
+    src/UiExplore.cpp
+    src/UiSpecial.cpp
     src/UiPartyScreen.cpp
     src/Banter.cpp
     src/Battle.cpp
@@ -72,14 +75,17 @@ add_library(ftcore STATIC
     src/WindowFacade.cpp
     src/BayCount.cpp
     src/SurfaceWeather.cpp
+    src/DemoBoot.cpp
     src/SurfaceJoints.cpp
     src/FrameStats.cpp
     src/BenchPath.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
+    src/FarSigns.cpp
     src/HeroCorner.cpp
     src/HeroFarBank.cpp
     src/Weather.cpp
+    src/RainFall.cpp
     src/GlassSurface.cpp
     src/PropGloss.cpp
     src/DayShade.cpp
@@ -340,7 +346,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_ui_budget.cpp
         tests/test_ui_event_marks.cpp
         tests/test_ui_first_use.cpp
+        tests/test_ui_hud_fit.cpp
         tests/test_ui_lone.cpp
+        tests/test_ui_explore.cpp
         tests/test_ui_party.cpp
         tests/test_ui_stroke.cpp
         tests/test_ui_swim.cpp
@@ -388,14 +396,17 @@ if(FTCORE_BUILD_TESTS)
         tests/test_window_facade.cpp
         tests/test_bay_count.cpp
         tests/test_surface_weather.cpp
+        tests/test_demo_boot.cpp
         tests/test_surface_joints.cpp
         tests/test_frame_stats.cpp
         tests/test_bench_path.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
+        tests/test_far_signs.cpp
         tests/test_hero_corner.cpp
         tests/test_hero_far_bank.cpp
         tests/test_weather.cpp
+        tests/test_rain_fall.cpp
         tests/test_glass_surface.cpp
         tests/test_prop_gloss.cpp
         tests/test_backdrop_seat.cpp
@@ -448,6 +459,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_guard.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp
+        tests/test_ui_special.cpp
+        tests/test_ui_screens.cpp
         tests/test_physics.cpp
         tests/test_progression.cpp
         tests/test_qte.cpp
@@ -502,6 +515,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_boss.cpp
         tests/test_arena_boss.cpp
         tests/test_arena_kind_crit.cpp
+        tests/test_arena_special.cpp
         tests/test_arena_rollguard.cpp
         tests/test_arena_soft.cpp
         tests/test_arena_impact.cpp
@@ -610,6 +624,7 @@ if(FTCORE_BUILD_TESTS)
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
         -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
+        -DSETTINGS=${CMAKE_CURRENT_SOURCE_DIR}/src/Settings.cpp
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
     add_test(NAME hints_read COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird

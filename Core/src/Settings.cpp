@@ -3,6 +3,7 @@
 #include "ftcore/Json.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -82,18 +83,22 @@ void clampSettings(Settings& s) {
     s.hudSafeMargin = std::clamp(s.hudSafeMargin, Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin);
     s.showBasicControls =
         clampEnum(static_cast<std::int64_t>(s.showBasicControls), ShowBasicControls::Never, d.showBasicControls);
+    s.textScale = (std::clamp(s.textScale, Settings::kMinTextScale, Settings::kMaxTextScale) + 5) / 10 * 10; // the menu's steps
+    s.palette = clampEnum(static_cast<std::int64_t>(s.palette), UiPalette::HighContrast, d.palette);
+    s.glyphMode = clampEnum(static_cast<std::int64_t>(s.glyphMode), UiGlyphMode::Pad, d.glyphMode);
 }
 
 std::string encodeSettings(const Settings& in) {
     Settings s = in;
     clampSettings(s);
-    char buf[768];
+    char buf[896];
     std::snprintf(buf, sizeof buf,
                   "{\"version\":%d,\"textSpeed\":%d,\"autoAdvance\":%s,\"autoDelay\":%.3f,\"skipMode\":%d,"
                   "\"master\":%.3f,\"music\":%.3f,\"voice\":%.3f,\"sfx\":%.3f,\"defenceAssist\":%d,"
                   "\"aimAssist\":%s,\"subtitleSize\":%d,\"reduceFlashes\":%s,\"qteAutoComplete\":%s,\"holdToggle\":%s,"
                   "\"skipChoices\":%s,\"stickFlicks\":%s,\"cameraShake\":%.3f,\"lockFraming\":%s,\"cameraPreset\":%d,"
-                  "\"uiFirstUse\":%u,\"hudScale\":%d,\"hudSafeMargin\":%d,\"showBasicControls\":%d}",
+                  "\"uiFirstUse\":%u,\"hudScale\":%d,\"hudSafeMargin\":%d,\"showBasicControls\":%d,"
+                  "\"textScale\":%d,\"palette\":%d,\"reduceMotion\":%s,\"glyphMode\":%d}",
                   Settings::kVersion, static_cast<int>(s.textSpeed), s.autoAdvance ? "true" : "false",
                   static_cast<double>(s.autoDelay), static_cast<int>(s.skipMode), static_cast<double>(s.master),
                   static_cast<double>(s.music), static_cast<double>(s.voice), static_cast<double>(s.sfx),
@@ -102,7 +107,8 @@ std::string encodeSettings(const Settings& in) {
                   s.holdToggle ? "true" : "false", s.skipChoices ? "true" : "false",
                   s.stickFlicks ? "true" : "false", static_cast<double>(s.cameraShake), s.lockFraming ? "true" : "false",
                   static_cast<int>(s.cameraPreset), static_cast<unsigned>(s.uiFirstUse), s.hudScale, s.hudSafeMargin,
-                  static_cast<int>(s.showBasicControls));
+                  static_cast<int>(s.showBasicControls), s.textScale, static_cast<int>(s.palette),
+                  s.reduceMotion ? "true" : "false", static_cast<int>(s.glyphMode));
     return buf;
 }
 
@@ -164,6 +170,11 @@ bool decodeSettings(std::string_view text, Settings& out, std::string* error) {
                                                                 Settings::kMinHudSafeMargin, Settings::kMaxHudSafeMargin));
     s.showBasicControls = clampEnum(intField("showBasicControls", static_cast<std::int64_t>(s.showBasicControls)),
                                     ShowBasicControls::Never, s.showBasicControls);
+    s.textScale = static_cast<int>(std::clamp<std::int64_t>(intField("textScale", s.textScale), Settings::kMinTextScale,
+                                                            Settings::kMaxTextScale));
+    s.palette = clampEnum(intField("palette", static_cast<std::int64_t>(s.palette)), UiPalette::HighContrast, s.palette);
+    s.reduceMotion = boolField("reduceMotion", s.reduceMotion);
+    s.glyphMode = clampEnum(intField("glyphMode", static_cast<std::int64_t>(s.glyphMode)), UiGlyphMode::Pad, s.glyphMode);
     clampSettings(s);
     out = s;
     return true;
@@ -193,6 +204,10 @@ const char* settingsRowLabel(SettingsRow row) {
     case SettingsRow::HudScale: return "HUD scale";
     case SettingsRow::HudSafeMargin: return "HUD safe margin";
     case SettingsRow::ShowBasicControls: return "Basic controls";
+    case SettingsRow::TextScale: return "Text size";
+    case SettingsRow::Palette: return "Colours";
+    case SettingsRow::ReduceMotion: return "Reduce motion";
+    case SettingsRow::GlyphMode: return "Button prompts";
     case SettingsRow::Back: return "Back";
     }
     return "";
@@ -227,6 +242,20 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
                : s.showBasicControls == ShowBasicControls::Always    ? "Always"
                                                                      : "Never";
         break;
+    case SettingsRow::Palette:
+        switch (s.palette) {
+        case UiPalette::Protan: word = "Protanopia"; break;
+        case UiPalette::Deutan: word = "Deuteranopia"; break;
+        case UiPalette::Tritan: word = "Tritanopia"; break;
+        case UiPalette::HighContrast: word = "High contrast"; break;
+        case UiPalette::Default: word = "Default"; break;
+        }
+        if (!word) word = "Default";
+        break;
+    case SettingsRow::ReduceMotion: word = s.reduceMotion ? "On" : "Off"; break;
+    case SettingsRow::GlyphMode:
+        word = s.glyphMode == UiGlyphMode::Keys ? "Keyboard" : s.glyphMode == UiGlyphMode::Pad ? "Controller" : "Last used";
+        break;
     case SettingsRow::Back: word = ""; break;
     default: break;
     }
@@ -235,6 +264,8 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
         n = std::snprintf(buf, cap, "%s", word);
     } else if (row == SettingsRow::HudScale) {
         n = std::snprintf(buf, cap, "%d%%", s.hudScale);
+    } else if (row == SettingsRow::TextScale) {
+        n = std::snprintf(buf, cap, "%d%%", s.textScale);
     } else if (row == SettingsRow::HudSafeMargin) {
         n = std::snprintf(buf, cap, "%d%%", s.hudSafeMargin);
     } else if (row == SettingsRow::AutoDelay) {
@@ -252,6 +283,85 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
         return 0;
     }
     return static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1;
+}
+
+const char* settingsRowKey(SettingsRow row) {
+    switch (row) {
+    case SettingsRow::TextSpeed: return "settings.text_speed";
+    case SettingsRow::AutoAdvance: return "settings.auto_advance";
+    case SettingsRow::AutoDelay: return "settings.auto_delay";
+    case SettingsRow::SkipMode: return "settings.skip";
+    case SettingsRow::Master: return "settings.master_volume";
+    case SettingsRow::Music: return "settings.music_volume";
+    case SettingsRow::Voice: return "settings.voice_volume";
+    case SettingsRow::Sfx: return "settings.effects_volume";
+    case SettingsRow::DefenceAssist: return "settings.defence_assist";
+    case SettingsRow::AimAssist: return "settings.aim_assist";
+    case SettingsRow::SubtitleSize: return "settings.subtitle_size";
+    case SettingsRow::ReduceFlashes: return "settings.reduce_flashes";
+    case SettingsRow::QteAutoComplete: return "settings.quick_time";
+    case SettingsRow::HoldToggle: return "settings.hold_inputs";
+    case SettingsRow::SkipChoices: return "settings.skip_choices";
+    case SettingsRow::StickFlicks: return "settings.stick_flicks";
+    case SettingsRow::CameraShake: return "settings.camera_shake";
+    case SettingsRow::LockFraming: return "settings.lock_framing";
+    case SettingsRow::CameraPreset: return "settings.camera";
+    case SettingsRow::HudScale: return "settings.hud_scale";
+    case SettingsRow::HudSafeMargin: return "settings.hud_safe_margin";
+    case SettingsRow::ShowBasicControls: return "settings.basic_controls";
+    case SettingsRow::TextScale: return "settings.text_size";
+    case SettingsRow::Palette: return "settings.colours";
+    case SettingsRow::ReduceMotion: return "settings.reduce_motion";
+    case SettingsRow::GlyphMode: return "settings.button_prompts";
+    case SettingsRow::Back: return "settings.back";
+    }
+    return "";
+}
+
+const char* settingsValueKey(const Settings& s, SettingsRow row) {
+    constexpr const char* on = "settings.on";
+    constexpr const char* off = "settings.off";
+    switch (row) {
+    case SettingsRow::TextSpeed:
+        return s.textSpeed == TextSpeed::Slow     ? "settings.text_speed.slow"
+               : s.textSpeed == TextSpeed::Normal ? "settings.text_speed.normal"
+               : s.textSpeed == TextSpeed::Fast   ? "settings.text_speed.fast"
+                                                  : "settings.text_speed.instant";
+    case SettingsRow::AutoAdvance: return s.autoAdvance ? on : off;
+    case SettingsRow::SkipMode: return s.skipMode == SkipMode::Seen ? "settings.skip.seen" : "settings.skip.all";
+    case SettingsRow::DefenceAssist: return s.defenceAssist == DefenceAssist::Wide ? "settings.defence_assist.wide" : off;
+    case SettingsRow::SubtitleSize:
+        return s.subtitleSize == SubtitleSize::Small    ? "settings.subtitle_size.small"
+               : s.subtitleSize == SubtitleSize::Medium ? "settings.subtitle_size.medium"
+                                                        : "settings.subtitle_size.large";
+    case SettingsRow::ReduceFlashes: return s.reduceFlashes ? on : off;
+    case SettingsRow::QteAutoComplete: return s.qteAutoComplete ? "settings.quick_time.auto" : "settings.quick_time.play";
+    case SettingsRow::HoldToggle: return s.holdToggle ? "settings.hold_inputs.press_once" : "settings.hold_inputs.hold_down";
+    case SettingsRow::SkipChoices: return s.skipChoices ? on : off;
+    case SettingsRow::StickFlicks: return s.stickFlicks ? on : off;
+    case SettingsRow::AimAssist: return s.aimAssist ? on : off;
+    case SettingsRow::LockFraming: return s.lockFraming ? on : off;
+    case SettingsRow::CameraPreset: return s.cameraPreset == CameraPresetId::Close ? "settings.camera.close" : "settings.camera.classic";
+    case SettingsRow::ShowBasicControls:
+        return s.showBasicControls == ShowBasicControls::FirstFights ? "settings.basic_controls.first_fights"
+               : s.showBasicControls == ShowBasicControls::Always    ? "settings.basic_controls.always"
+                                                                     : "settings.basic_controls.never";
+    case SettingsRow::Palette:
+        switch (s.palette) {
+        case UiPalette::Protan: return "settings.colours.protanopia";
+        case UiPalette::Deutan: return "settings.colours.deuteranopia";
+        case UiPalette::Tritan: return "settings.colours.tritanopia";
+        case UiPalette::HighContrast: return "settings.colours.high_contrast";
+        case UiPalette::Default: break;
+        }
+        return "settings.colours.default";
+    case SettingsRow::ReduceMotion: return s.reduceMotion ? on : off;
+    case SettingsRow::GlyphMode:
+        return s.glyphMode == UiGlyphMode::Keys  ? "settings.button_prompts.keyboard"
+               : s.glyphMode == UiGlyphMode::Pad ? "settings.button_prompts.controller"
+                                                 : "settings.button_prompts.last_used";
+    default: return nullptr;
+    }
 }
 
 bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
@@ -289,9 +399,105 @@ bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
         return true;
     }
     case SettingsRow::ShowBasicControls: return stepEnum(s.showBasicControls, dir, ShowBasicControls::Never, wrap);
+    case SettingsRow::TextScale: {
+        const int next = std::clamp(s.textScale + 10 * step, Settings::kMinTextScale, Settings::kMaxTextScale); // a slider
+        if (next == s.textScale) return false;
+        s.textScale = next;
+        return true;
+    }
+    case SettingsRow::Palette: return stepEnum(s.palette, dir, UiPalette::HighContrast, wrap);
+    case SettingsRow::ReduceMotion: return setBool(s.reduceMotion, dir, wrap);
+    case SettingsRow::GlyphMode: return stepEnum(s.glyphMode, dir, UiGlyphMode::Pad, wrap);
     case SettingsRow::Back: break;
     }
     return false;
+}
+
+namespace {
+
+constexpr SettingsGroup groupOf(SettingsRow row) {
+    switch (row) {
+    case SettingsRow::TextSpeed:
+    case SettingsRow::AutoAdvance:
+    case SettingsRow::AutoDelay:
+    case SettingsRow::SkipMode:
+    case SettingsRow::SkipChoices:
+    case SettingsRow::Back: return SettingsGroup::Text;
+    case SettingsRow::Master:
+    case SettingsRow::Music:
+    case SettingsRow::Voice:
+    case SettingsRow::Sfx: return SettingsGroup::Sound;
+    case SettingsRow::DefenceAssist:
+    case SettingsRow::AimAssist:
+    case SettingsRow::StickFlicks:
+    case SettingsRow::GlyphMode: return SettingsGroup::Play;
+    case SettingsRow::CameraShake:
+    case SettingsRow::LockFraming:
+    case SettingsRow::CameraPreset: return SettingsGroup::Camera;
+    case SettingsRow::HudScale:
+    case SettingsRow::HudSafeMargin:
+    case SettingsRow::ShowBasicControls: return SettingsGroup::Display;
+    case SettingsRow::SubtitleSize:
+    case SettingsRow::ReduceFlashes:
+    case SettingsRow::QteAutoComplete:
+    case SettingsRow::HoldToggle:
+    case SettingsRow::TextScale:
+    case SettingsRow::Palette:
+    case SettingsRow::ReduceMotion: return SettingsGroup::Access;
+    }
+    return SettingsGroup::Text;
+}
+
+struct ScreenOrder {
+    std::array<SettingsRow, kSettingsRowCount> row{};
+    std::array<std::uint8_t, kSettingsRowCount> index{};
+};
+
+constexpr ScreenOrder makeScreenOrder() {
+    ScreenOrder o{};
+    std::uint32_t n = 0;
+    for (std::uint32_t g = 0; g < kSettingsGroupCount; ++g) {
+        for (std::uint32_t r = 0; r < kSettingsRowCount; ++r) {
+            const auto row = static_cast<SettingsRow>(r);
+            if (row != SettingsRow::Back && static_cast<std::uint32_t>(groupOf(row)) == g) {
+                o.row[n] = row;
+                o.index[r] = static_cast<std::uint8_t>(n);
+                ++n;
+            }
+        }
+    }
+    o.row[n] = SettingsRow::Back;
+    o.index[static_cast<std::uint32_t>(SettingsRow::Back)] = static_cast<std::uint8_t>(n);
+    return o;
+}
+
+constexpr ScreenOrder kScreenOrder = makeScreenOrder();
+static_assert(kScreenOrder.row[kSettingsRowCount - 1] == SettingsRow::Back);
+static_assert(kScreenOrder.row[0] == SettingsRow::TextSpeed);
+
+} // namespace
+
+SettingsGroup settingsRowGroup(SettingsRow row) { return groupOf(row); }
+
+SettingsRow settingsScreenRow(std::uint32_t index) {
+    return index < kSettingsRowCount ? kScreenOrder.row[index] : SettingsRow::Back;
+}
+
+std::uint32_t settingsScreenIndex(SettingsRow row) {
+    const auto r = static_cast<std::uint32_t>(row);
+    return r < kSettingsRowCount ? kScreenOrder.index[r] : kSettingsRowCount - 1;
+}
+
+const char* settingsGroupLabel(SettingsGroup group) {
+    switch (group) {
+    case SettingsGroup::Text: return "Text";
+    case SettingsGroup::Sound: return "Sound";
+    case SettingsGroup::Play: return "Play";
+    case SettingsGroup::Camera: return "Camera";
+    case SettingsGroup::Display: return "Display";
+    case SettingsGroup::Access: return "Access";
+    }
+    return "";
 }
 
 std::array<OptionFlag, kOptionFlagCount> settingsOptionFlags(const Settings& s) {
@@ -301,15 +507,15 @@ std::array<OptionFlag, kOptionFlagCount> settingsOptionFlags(const Settings& s) 
 }
 
 SettingsAction SettingsMenu::press(Settings& s, SettingsKey key) {
-    const std::uint8_t row = static_cast<std::uint8_t>(selected_);
+    const std::uint32_t at = settingsScreenIndex(selected_);
     switch (key) {
     case SettingsKey::Up:
-        if (row == 0) return SettingsAction::None;
-        selected_ = static_cast<SettingsRow>(row - 1);
+        if (at == 0) return SettingsAction::None;
+        selected_ = settingsScreenRow(at - 1);
         return SettingsAction::Moved;
     case SettingsKey::Down:
-        if (row + 1u >= kSettingsRowCount) return SettingsAction::None;
-        selected_ = static_cast<SettingsRow>(row + 1);
+        if (at + 1u >= kSettingsRowCount) return SettingsAction::None;
+        selected_ = settingsScreenRow(at + 1);
         return SettingsAction::Moved;
     case SettingsKey::Left: return adjustSetting(s, selected_, -1, false) ? SettingsAction::Changed : SettingsAction::None;
     case SettingsKey::Right: return adjustSetting(s, selected_, 1, false) ? SettingsAction::Changed : SettingsAction::None;

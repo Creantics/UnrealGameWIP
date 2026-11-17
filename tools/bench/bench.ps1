@@ -287,7 +287,7 @@ function Invoke-Run($Item, [string]$Note) {
     $dir = Join-Path $Out $tag
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $log = Join-Path $dir 'game.log'
-    $a = @("`"$Project`"", $s.Map, '-game', '-RenderOffScreen', "-ResX=$($wh[0])", "-ResY=$($wh[1])", "-Bench=$tag",
+    $a = @("`"$Project`"", $s.Map, '-game', '-NoDemoBoot', '-RenderOffScreen', "-ResX=$($wh[0])", "-ResY=$($wh[1])", "-Bench=$tag",
         "-BenchOut=`"$dir`"", '-unattended', '-nopause', '-nosplash', '-NoSound', "-abslog=`"$log`"") + $s.Args + $Extra
     $before = Get-MachineState
     $t0 = Get-Date

@@ -23,8 +23,8 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
     std::vector<std::string> warnings;
     REQUIRE_MESSAGE(importLookTable(text, t, &error, &warnings), error);
     CHECK(warnings.empty());
-    CHECK(t.worlds.size() == 3);
-    const char* ids[] = {"solhaven", "lattice", "unwritten"};
+    CHECK(t.worlds.size() == 4);
+    const char* ids[] = {"solhaven", "solhaven_rain", "lattice", "unwritten"};
     for (const char* id : ids) {
         CAPTURE(id);
         const SceneLook* look = t.find(id);
@@ -39,6 +39,10 @@ TEST_CASE("looks: Data/Look/looks.json loads clean with solhaven, lattice and un
         CHECK(*look != SceneLook{});
     }
     CHECK(*t.find("solhaven") != *t.find("lattice"));
+    // The rain night is solhaven under a full starless overcast.
+    CHECK(t.find("solhaven_rain")->cloudCover == 1.f);
+    CHECK(t.find("solhaven_rain")->skyStars == 0.f);
+    CHECK(t.find("solhaven_rain")->practicalCandela == t.find("solhaven")->practicalCandela);
     CHECK(*t.find("lattice") != *t.find("unwritten"));
     // The engine's ray-traced reflections are on for every world.
     REQUIRE(t.render.size() == 2);

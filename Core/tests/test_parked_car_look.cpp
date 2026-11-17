@@ -22,7 +22,7 @@ TEST_CASE("parkedCarLook: every paint shows up, dirt stays in range, no lamps by
     }
     for (int p = 0; p < kParkedCarPaints; ++p) CHECK(seen[p] > 20); // about 50 each
     CHECK(lo < 0.3f);
-    CHECK(hi > 0.85f);
+    CHECK(hi > 0.5f);
 }
 
 TEST_CASE("parkedCarLook: the same id and seed give the same car; the seed changes the street") {
@@ -54,11 +54,27 @@ TEST_CASE("parkedCarCustomData: paint rgb, dirt, lamp in slots 0..4") {
     look.lamp = 1.f;
     float d[kParkedCarCustomFloats] = {};
     parkedCarCustomData(look, d);
-    CHECK(d[0] == doctest::Approx(0.42f));
-    CHECK(d[1] == doctest::Approx(0.07f));
-    CHECK(d[2] == doctest::Approx(0.05f));
+    CHECK(d[0] == doctest::Approx(0.09f));
+    CHECK(d[1] == doctest::Approx(0.06f));
+    CHECK(d[2] == doctest::Approx(0.035f));
     CHECK(d[3] == doctest::Approx(0.4f));
     CHECK(d[4] == 1.f);
-    CHECK(parkedCarPaint(-1).r == doctest::Approx(0.255f));
-    CHECK(parkedCarPaint(kParkedCarPaints).b == doctest::Approx(0.366f));
+    CHECK(parkedCarPaint(-1).r == doctest::Approx(0.035f));
+    CHECK(parkedCarPaint(kParkedCarPaints).b == doctest::Approx(0.040f));
+}
+
+TEST_CASE("parkedCarPaint: the night palette is dark, one light paint at most, dirt capped below a full wear") {
+    int light = 0;
+    float sum = 0.f;
+    for (int p = 0; p < kParkedCarPaints; ++p) {
+        const ParkedCarColor c = parkedCarPaint(p);
+        const float lum = 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+        CHECK(lum > 0.02f);
+        CHECK(lum < 0.25f);
+        light += lum > 0.12f ? 1 : 0;
+        sum += lum;
+    }
+    CHECK(light <= 1);
+    CHECK(sum / kParkedCarPaints < 0.09f);
+    CHECK(kParkedCarDirtMax <= 0.6f);
 }

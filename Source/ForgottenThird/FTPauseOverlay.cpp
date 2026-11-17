@@ -8,6 +8,7 @@
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 
+#include "FTNewUi.h"
 #include "FTPauseSubsystem.h"
 #include "FTSettingsOverlay.h"
 #include "FTSettingsSubsystem.h"
@@ -144,7 +145,7 @@ void DrawMenu(AHUD& Hud, UCanvas& Canvas, UFTPauseSubsystem& Pause, bool bFollow
 
 void FT::DrawPauseOverlay(AHUD& Hud, UCanvas* Canvas)
 {
-	if (!Canvas)
+	if (!Canvas || FT::EnsureMenuScreens()) // the new UI's screens draw both, on the viewport
 	{
 		return;
 	}

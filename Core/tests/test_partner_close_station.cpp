@@ -1468,6 +1468,55 @@ TEST_CASE("close station: a string the lead hides ends no faster than a pause an
     CHECK(shortest + 1e-6 >= 0.6 + static_cast<double>(t.pauseMin));
 }
 
+TEST_CASE("close station: a melee partner's flank is the side with the frame's room, held 2 s unless it has no point") {
+    // Fault B of 11-17: the lead left of the frame's centre, the partner on the right flank; the lens over the other
+    // shoulder (the lead right of the centre), the left. A flank once taken is held kPartnerCloseMeleeHoldSeconds
+    // (2 s), then the room's side again.
+    for (const float shoulder : {0.55f, -0.55f}) {
+        CAPTURE(shoulder);
+        PartnerCloseInput in;
+        in.lead = {-1.2f, 0.f};
+        in.target = {0.f, 0.f};
+        in.targetRadius = 0.5f;
+        csLens(in.lead, in.target, shoulder, 0.f, in.cameraPos, in.cameraForward, 34.f);
+        in.halfAngleDegrees = 34.f;
+        in.leadSide = static_cast<std::int8_t>(shoulder > 0.f ? -1 : 1);
+        in.partner = {-1.5f, shoulder > 0.f ? -2.f : 2.f};
+        in.bodyRadius = 0.4f;
+        in.farFlankFirst = true;
+        in.leadGapBodies = 1.f;
+        in.keepWhileAttacking = true;
+        const Vec2 right = csRight(csUnit(in.cameraForward));
+        float leadX = 0.f;
+        REQUIRE(partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, in.lead, leadX));
+        REQUIRE(leadX * shoulder < 0.f); // the lead on the screen's side away from the shoulder
+        PartnerCloseHold hold;
+        const PartnerCloseStation s = partnerCloseStation(in, hold);
+        REQUIRE(s.valid);
+        const float lateral = csDot(csSub(s.point, in.cameraPos), right);
+        float x = 0.f;
+        REQUIRE(partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, s.point, x));
+        MESSAGE("lead x " << leadX << ": flank " << int{s.flank} << ", x " << x);
+        CHECK(x * leadX < 0.f); // the other half of the frame from the lead: the side with the room
+        CHECK(lateral * shoulder > 0.f);
+        CHECK(std::fabs(x) <= 1.f - 2.f * kPartnerCloseConeMargin);
+        // The other flank held 1.7 s (past the default 1.5 s, inside the melee 2 s), no string: kept.
+        PartnerCloseHold other;
+        other.flank = static_cast<std::int8_t>(-s.flank);
+        other.angle = 60.f;
+        other.heldFor = 1.7;
+        const PartnerCloseStation young = partnerCloseStation(in, other);
+        CHECK(young.valid);
+        CHECK(young.flank == other.flank);
+        // Held 2.1 s: the room's side again.
+        other.flank = static_cast<std::int8_t>(-s.flank);
+        other.heldFor = 2.1;
+        const PartnerCloseStation old = partnerCloseStation(in, other);
+        CHECK(old.valid);
+        CHECK(old.flank == s.flank);
+    }
+}
+
 TEST_CASE("close station: a melee partner takes the far flank, a body width clear of the lead, and keeps it in a string") {
     // Round 6 (11-16): the lead in contact (1.2 m centre to centre) with a target of 0.5 m, the lens over its right
     // shoulder (0.55 m) aimed at the target, the melee band, the partner behind on the lead's side.
@@ -1496,16 +1545,42 @@ TEST_CASE("close station: a melee partner takes the far flank, a body width clea
     CHECK(s.gapped);
     CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, s.point, in.bodyRadius, in.lead, in.bodyRadius));
 
-    // In a string with the near flank held: no new pick (the held flank and angle), whatever the far flank offers.
+    // In a string with a framed angle held: no new pick (the held flank and angle).
+    in.attacking = true;
+    PartnerCloseHold farHeld;
+    farHeld.flank = s.flank;
+    farHeld.angle = s.angle;
+    farHeld.heldFor = 5.0;
+    const PartnerCloseStation farKept = partnerCloseStation(in, farHeld);
+    CHECK(farKept.valid);
+    CHECK(farKept.held);
+    CHECK(farKept.flank == s.flank);
+    CHECK(farKept.angle == doctest::Approx(s.angle));
+    // In a string with the near flank held at 60 degrees, a point out of the frame (fault B of 11-17: the held station
+    // must lie in the frame with the cone's margin): the flank is kept, the station moves into the frame.
     PartnerCloseHold nearHeld;
     nearHeld.flank = static_cast<std::int8_t>(-s.flank);
     nearHeld.angle = 60.f;
     nearHeld.heldFor = 5.0;
-    in.attacking = true;
+    {
+        const Vec2 dir60 = csUnit(csSub(in.lead, in.target)); // the lead's bearing, turned below
+        const float a60 = static_cast<float>(nearHeld.flank) * 60.f * 3.14159265f / 180.f;
+        const Vec2 d{dir60.x * std::cos(a60) - dir60.y * std::sin(a60), dir60.x * std::sin(a60) + dir60.y * std::cos(a60)};
+        // The held station's distance off the edge: the partner's own along that line, within bodyRadius..standMax.
+        const float off = std::clamp(csDot(csSub(in.partner, in.target), d) - in.targetRadius, in.bodyRadius,
+                                     std::max(in.standMax, in.bodyRadius));
+        const Vec2 p60{in.target.x + d.x * (in.targetRadius + off), in.target.y + d.y * (in.targetRadius + off)};
+        float x60 = 0.f;
+        const bool ahead60 = partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, p60, x60);
+        MESSAGE("the near flank at 60 degrees: ndc x " << x60 << ", ahead " << ahead60);
+        REQUIRE((!ahead60 || std::fabs(x60) > 1.f - 2.f * kPartnerCloseConeMargin)); // out of the frame
+    }
     const PartnerCloseStation kept = partnerCloseStation(in, nearHeld);
     CHECK(kept.valid);
     CHECK(kept.flank == nearHeld.flank);
-    CHECK(kept.angle == doctest::Approx(60.f));
+    float keptX = 0.f;
+    CHECK(partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, kept.point, keptX));
+    CHECK(std::fabs(keptX) <= 1.f - 2.f * kPartnerCloseConeMargin);
     CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, kept.point, in.bodyRadius, in.lead, in.bodyRadius));
     // The string over and the hold's time up: the far flank again.
     in.attacking = false;
@@ -1531,4 +1606,253 @@ TEST_CASE("close station: a classic run's whole hash, pinned") {
     const std::uint64_t h = p.b.hash();
     MESSAGE("classic whole-run hash " << h);
     CHECK(h == 773648685674569465ull);
+}
+
+namespace {
+
+// Rule 19, Spread (11-17): a pit with `count` enemies; the lens as CsPit's (on enemy 0 from the lead).
+struct CsSpread : CsPit {
+    std::size_t count = 2;
+    explicit CsSpread(bool close, std::size_t k = 2) : CsPit(close), count(k) {}
+    const PartnerIntent& stepAll(double dt = 1.0 / 60.0) {
+        in.enemies = std::span<const PartnerEnemyView>(e.data(), count);
+        return b.step(dt, in);
+    }
+    float ndc(Vec2 p) const {
+        float x = 9.f;
+        return partnerCloseNdc(in.station.cameraPos, in.station.cameraForward, kCsHalf, p, x) ? x : 9.f;
+    }
+};
+
+} // namespace
+
+TEST_CASE("close station: Spread under the close lens takes an enemy inside it, else the lens's target") {
+    // Enemy 0 (the lead's, in the lens) and enemy 1 nearer the partner but outside the lens.
+    const auto scene = [](CsSpread& p) {
+        p.e[0].leadAttacking = true;
+        p.e[1].pos = {-4.f, -6.f};
+        p.e[1].radius = 0.5f;
+    };
+    CsSpread close(true), classic(false);
+    scene(close);
+    scene(classic);
+    REQUIRE(std::fabs(close.ndc(close.e[0].pos)) <= 0.8f);
+    REQUIRE(std::fabs(close.ndc(close.e[1].pos)) > 1.f);
+    close.stepAll();
+    classic.stepAll();
+    CHECK(close.b.target() == 0);   // the only one in the lens, though the lead is on it
+    CHECK(classic.b.target() == 1); // as before: Spread's nearest the lead is not attacking
+
+    // None in the lens (the lens turned away from both): the lens's target, the lead's; with none, the nearest the lead.
+    for (const int lead : {1, 0, -1}) {
+        CsSpread p(true);
+        scene(p);
+        p.in.station.cameraForward = {-1.f, 0.f};
+        REQUIRE(std::fabs(p.ndc(p.e[0].pos)) > 1.f);
+        REQUIRE(std::fabs(p.ndc(p.e[1].pos)) > 1.f);
+        p.in.leadTarget = lead;
+        p.stepAll();
+        CHECK(p.b.target() == (lead >= 0 ? lead : 0));
+    }
+}
+
+TEST_CASE("close station: Spread's pick under the close lens is held 2 s unless it falls") {
+    // Two enemies in the lens, neither the lead's; the partner nearer enemy 0, then put nearer enemy 2.
+    CsSpread p(true, 3);
+    p.in.leadAttacking = false;
+    p.e[1].pos = {-4.f, -30.f}; // far off
+    p.e[2].pos = {0.5f, 2.f};
+    p.e[2].radius = 0.5f;
+    REQUIRE(std::fabs(p.ndc(p.e[2].pos)) <= 0.8f);
+    p.in.pos = {-4.f, -3.f};
+    p.stepAll();
+    REQUIRE(p.b.target() == 0);
+    p.in.pos = {-3.f, 4.f}; // now nearer enemy 2, both out of reach
+    int switchedAt = -1;
+    for (int s = 1; s < 3 * 60 && switchedAt < 0; ++s) {
+        p.stepAll();
+        if (p.b.target() == 2) switchedAt = s;
+    }
+    CHECK(switchedAt >= 2 * 60 - 1);
+    CHECK(switchedAt <= 2 * 60 + 2);
+
+    // Held again, it lets go at once when its target falls.
+    CsSpread q(true, 3);
+    q.in.leadAttacking = false;
+    q.e[1].pos = {-4.f, -30.f};
+    q.e[2].pos = {0.5f, 2.f};
+    q.e[2].radius = 0.5f;
+    q.stepAll();
+    REQUIRE(q.b.target() == 0);
+    q.stepAll();
+    q.e[0].state = PartnerEnemyView::State::Down;
+    q.stepAll();
+    CHECK(q.b.target() == 2);
+}
+
+TEST_CASE("close station: an intercept off the close lens is taken, and capped at a quarter of the engaged time") {
+    // Enemy 0 in the lens (the lead's); enemy 1 outside it, winding up at the lead without end. The partner walks its
+    // intents at 4.5 m/s. Over every 20 s window its time outside the lens while engaged stays under 25%.
+    CsSpread p(true);
+    p.e[1].pos = {-4.f, -6.f};
+    p.e[1].radius = 0.5f;
+    p.e[1].state = PartnerEnemyView::State::WindingUp;
+    p.e[1].windupLeft = 0.5f;
+    p.e[1].aim = PartnerEnemyView::Aim::Lead;
+    constexpr int kSteps = 80 * 60, kWin = 20 * 60;
+    std::array<std::uint8_t, kSteps> engaged{}, off{};
+    int intercepts = 0;
+    for (int s = 0; s < kSteps; ++s) {
+        const PartnerIntent& i = p.stepAll();
+        if (i.intercept) {
+            ++intercepts;
+            CHECK(p.b.target() == 1);
+        }
+        engaged[static_cast<std::size_t>(s)] = p.b.target() >= 0 ? 1 : 0;
+        off[static_cast<std::size_t>(s)] = engaged[static_cast<std::size_t>(s)] && std::fabs(p.ndc(p.in.pos)) > 1.f ? 1 : 0;
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+            const Vec2 v = csSub(i.point, p.in.pos);
+            const float l = csLen(v), step = 4.5f / 60.f;
+            p.in.pos = l <= step ? i.point : csAdd(p.in.pos, csMul(v, step / l));
+        }
+    }
+    CHECK(intercepts > 0);
+    CHECK(p.b.save().closeClock > 0.0);
+    int worstOff = 0, worstEngaged = 1;
+    for (int end = kWin; end <= kSteps; end += 30) {
+        int en = 0, of = 0;
+        for (int s = end - kWin; s < end; ++s) {
+            en += engaged[static_cast<std::size_t>(s)];
+            of += off[static_cast<std::size_t>(s)];
+        }
+        if (en > 0 && of * worstEngaged > worstOff * en) {
+            worstOff = of;
+            worstEngaged = en;
+        }
+        CHECK(of < kPartnerInterceptShare * static_cast<float>(en));
+    }
+    MESSAGE("intercept steps " << intercepts << ", worst 20 s window off " << worstOff << " of " << worstEngaged);
+
+    // Without the close camera the same scene never reports one.
+    CsSpread c(false);
+    c.e[1] = p.e[1];
+    for (int s = 0; s < 600; ++s) CHECK_FALSE(c.stepAll().intercept);
+}
+
+TEST_CASE("close station: the intercept cap while its window fills, a checkpoint mid-intercept, and a long step") {
+    // As the capped scene above: enemy 1 outside the lens winds up at the lead without end, from the first step.
+    const auto scene = [](CsSpread& p) {
+        p.e[1].pos = {-4.f, -6.f};
+        p.e[1].radius = 0.5f;
+        p.e[1].state = PartnerEnemyView::State::WindingUp;
+        p.e[1].windupLeft = 0.5f;
+        p.e[1].aim = PartnerEnemyView::Aim::Lead;
+    };
+    const auto walk = [](CsSpread& p, const PartnerIntent& i) {
+        if (i.act == PartnerAct::MoveTo || i.act == PartnerAct::StepBack) {
+            const Vec2 v = csSub(i.point, p.in.pos);
+            const float l = csLen(v), step = 4.5f / 60.f;
+            p.in.pos = l <= step ? i.point : csAdd(p.in.pos, csMul(v, step / l));
+        }
+    };
+    // The filling window: no intercept before 8 s engaged, and over every prefix past that, the intercept's own
+    // off-lens steps stay under the quarter of the engaged steps.
+    CsSpread p(true);
+    scene(p);
+    int engaged = 0, interceptOff = 0, firstAt = -1;
+    for (int s = 0; s < 20 * 60; ++s) {
+        const PartnerIntent& i = p.stepAll();
+        if (p.b.target() >= 0) ++engaged;
+        if (i.intercept) {
+            if (firstAt < 0) firstAt = engaged;
+            if (std::fabs(p.ndc(p.in.pos)) > 1.f) ++interceptOff;
+        }
+        if (engaged >= 8 * 60) CHECK(interceptOff < kPartnerInterceptShare * static_cast<float>(engaged));
+        walk(p, i);
+    }
+    MESSAGE("first intercept at engaged step " << firstAt << ", its off-lens steps " << interceptOff << " of " << engaged);
+    CHECK(firstAt >= 8 * 60 - 1);
+
+    // A checkpoint mid-intercept: a copy loaded from the save replays to the same hashes.
+    CsSpread a(true);
+    scene(a);
+    int s = 0;
+    for (; s < 60 * 60; ++s) {
+        const PartnerIntent& i = a.stepAll();
+        if (i.intercept && s > 10 * 60) break;
+        walk(a, i);
+    }
+    REQUIRE(s < 60 * 60);
+    REQUIRE(a.b.save().intercept >= 0);
+    CsSpread b(true);
+    scene(b);
+    b.b.load(a.b.save());
+    b.in = a.in;
+    REQUIRE(b.b.hash() == a.b.hash());
+    for (int k = 0; k < 5 * 60; ++k) {
+        const PartnerIntent& ia = a.stepAll();
+        const PartnerIntent& ib = b.stepAll();
+        CHECK(ia.act == ib.act);
+        CHECK(a.b.hash() == b.b.hash());
+        walk(a, ia);
+        b.in.pos = a.in.pos;
+    }
+
+    // The ring past its 20 slots and a step over 1 s: the clock stays finite, the slots are cleared, the cap holds.
+    CsSpread w(true);
+    scene(w);
+    for (int k = 0; k < 25 * 60; ++k) walk(w, w.stepAll());
+    w.stepAll(1.6); // over 1 s: counts as the brain's longest step (kMaxPartnerStep), never skips a slot uncleared
+    for (int k = 0; k < 2 * 60; ++k) walk(w, w.stepAll());
+    const PartnerBrainSave& sv = w.b.save();
+    CHECK(sv.closeClock > 25.0);
+    float en = 0.f, of = 0.f;
+    for (std::size_t k = 0; k < kPartnerInterceptSlots; ++k) {
+        CHECK(sv.closeEngaged[k] >= 0.f);
+        CHECK(sv.closeEngaged[k] <= 1.f + static_cast<float>(kMaxPartnerStep) + 1e-3f); // a step lands whole in its end slot
+        CHECK(sv.closeOff[k] <= sv.closeEngaged[k] + 1e-4f);
+        en += sv.closeEngaged[k];
+        of += sv.closeOff[k];
+    }
+    CHECK(en <= static_cast<float>(kPartnerInterceptSlots) + 1e-2f);
+    MESSAGE("after the wrap: engaged " << en << " s, off " << of << " s in the window");
+}
+
+TEST_CASE("close station: a string starts only with the drawn heading within 60 degrees; turned away it waits and turns") {
+    // Three pits, the facing always on the target: the heading on it, 50 degrees off it, and reversed until the partner
+    // stands, then turned at 540 deg/s (as ArenaFight's heading). The first two start on the same step; the reversed
+    // one (180 - 60) / 540 s later.
+    const auto turned = [](Vec2 v, float deg) {
+        const float c = std::cos(deg * 3.14159265f / 180.f), s = std::sin(deg * 3.14159265f / 180.f);
+        return Vec2{c * v.x - s * v.y, s * v.x + c * v.y};
+    };
+    const auto run = [&](float offDeg, bool reversedUntilStill) {
+        CsPit p(true);
+        float headingDeg = offDeg; // off the target, measured each step
+        bool still = false;
+        for (int s = 0; s < 6 * 60; ++s) {
+            const Vec2 to = csUnit(csSub(p.e[0].pos, p.in.pos));
+            p.in.facing = to;
+            if (reversedUntilStill && !still) headingDeg = 180.f;
+            p.in.heading = turned(to, headingDeg);
+            const PartnerIntent& i = p.step();
+            if (i.newString) return s;
+            if (i.act == PartnerAct::MoveTo) {
+                const Vec2 v = csSub(i.point, p.in.pos);
+                const float d = csLen(v), step = 4.5f / 60.f;
+                p.in.pos = d <= step ? i.point : csAdd(p.in.pos, csMul(v, step / d));
+            } else {
+                still = true;
+                headingDeg = std::max(0.f, headingDeg - 540.f / 60.f); // standing: the heading turns to the facing
+            }
+        }
+        return -1;
+    };
+    const int on = run(0.f, false), fifty = run(50.f, false), reversed = run(0.f, true);
+    MESSAGE("first string step: heading on " << on << ", 50 deg off " << fifty << ", reversed " << reversed);
+    REQUIRE(on > 0);
+    CHECK(fifty == on);
+    const int want = static_cast<int>(std::ceil((180.f - kPartnerStartHeadingDegrees) / 540.f * 60.f));
+    CHECK(reversed >= on + want - 2);
+    CHECK(reversed <= on + want + 2);
 }

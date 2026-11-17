@@ -138,6 +138,16 @@ public:
 	bool bExplorePartySet = false;
 	bool bExplorePartyHidden = false;
 
+	// The Third's display name as the story has it now: the party rows, the special prompt's CALL tail. A neutral variant
+	// (0: party.name.c1, 1: party.name.c2 in ui.json), never a fixed word in code. It follows the subtitles: a story line
+	// spoken under either name sets it (NoteSpeaker); -ThirdName=c1|c2 sets it at launch. Until then c1, the first the
+	// story uses.
+	int32 ThirdNameVariant = 0;
+	// The name for Ctx's game (c1 with no game instance); the string lives until exit.
+	static const FString& ThirdName(const UObject* Ctx);
+	// A story line's speaker: under one of the Third's names, that name becomes the current one.
+	static void NoteSpeaker(const UObject* Ctx, const FString& Speaker);
+
 private:
 	void LoadWorlds();
 	void LoadEncounters();

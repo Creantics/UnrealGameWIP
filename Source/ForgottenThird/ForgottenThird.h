@@ -6,16 +6,31 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 
+// Demo boot defaults (ftcore/DemoBoot.h, Data/Field/demo_boot.json): the switches a plain launch of a map runs with,
+// after the process's command line so a switch given there wins. The map is the game or play-in-editor world being
+// initialised (or, before any, the launch's map: the command line's map, else GameDefaultMap); none in a commandlet or
+// with -NoDemoBoot. WithCommandLine false: the row's switches alone ("" when none). Shipping always takes the row alone,
+// so no caller (the look switches, -WorldStartAt, -WorldDistrict) reads a Shipping build's command line.
+FORGOTTENTHIRD_API const TCHAR* FTBootSwitches(bool bWithCommandLine = true);
+// Called as each game or play-in-editor world initialises (ForgottenThird.cpp): its map picks the row from then on.
+FORGOTTENTHIRD_API void FTDemoBootSetMap(const FString& MapName);
+// The same for a reader that runs before that: UWorld::InitWorld creates a world's subsystems before it broadcasts
+// OnPreWorldInitialization, so a subsystem reading the switches in ShouldCreateSubsystem or Initialize would get the
+// previous world's row (at launch the engine's transient "Untitled" world, so none). Each such reader calls this with
+// its world first. Game and play-in-editor worlds only; any other leaves the map as it is.
+FORGOTTENTHIRD_API void FTDemoBootNoteWorld(const UObject* WorldOrOuter);
+
 // The one gate on the look and debug switches (-Night*, -Dusk*, -NoDusk, -DayShade*, -NoDayShade, -Glass*, -LampPool*,
 // -LampShadows, -NightCharFill, -TimeOfDay, -NoDayClock, -WindowParallax, -ShopDayLevel, -ShopNightLevel, -WorldEyeShot
 // and so every -WorldEye* still switch, -WorldEyeWet): every reader takes its command line from here. Outside Shipping
-// it is the process's; in Shipping it is empty, so a Shipping build ignores every one of them and runs on the defaults.
+// it is the process's, then the map's demo boot switches; in Shipping the boot switches alone, so a Shipping build
+// ignores every switch on its command line and runs on the defaults and its map's demo boot row.
 inline const TCHAR* FTLookSwitches()
 {
 #if !UE_BUILD_SHIPPING
-	return FCommandLine::Get();
+	return FTBootSwitches(true);
 #else
-	return TEXT("");
+	return FTBootSwitches(false);
 #endif
 }
 

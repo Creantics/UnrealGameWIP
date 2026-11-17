@@ -176,6 +176,7 @@ FRotator FTClock::SunRotation(const ftcore::WorldClockSpec& Spec, double Hours)
 bool UFTWorldClockSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
+	FTDemoBootNoteWorld(Outer); // this world's boot row, not the last one's (see ForgottenThird.h)
 	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) &&
 		!FParse::Param(FTLookSwitches(), TEXT("NoDayClock")) && Super::ShouldCreateSubsystem(Outer);
 }
@@ -227,9 +228,26 @@ void UFTWorldClockSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	}
 	Gather(InWorld);
 	bActive = true;
+	// A level streamed in later (the hero corner sub-level) brings bay fixtures the first write missed, and a fixed
+	// -TimeOfDay never moves the share again: light everything once more on the next tick.
+	LevelAddedHandle = FWorldDelegates::LevelAddedToWorld.AddWeakLambda(this, [this](ULevel*, UWorld* Into)
+	{
+		if (Into == GetWorld())
+		{
+			AppliedHours = -1.0;
+			AppliedBayLights = -1.f;
+		}
+	});
 	Apply(true);
 	UE_LOG(LogForgottenThird, Display, TEXT("WorldClock: %.2f h%s, a day in %.1f real min; %d suns, %d sky lights, %d fogs, %d lamps and shop lights; night %.2f."),
 		Clock.hours, Clock.paused ? TEXT(" (fixed)") : TEXT(""), Clock.dayMinutes, Suns.Num(), Skies.Num(), Fogs.Num(), Lamps.Num(), Night);
+}
+
+void UFTWorldClockSubsystem::Deinitialize()
+{
+	FWorldDelegates::LevelAddedToWorld.Remove(LevelAddedHandle);
+	LevelAddedHandle.Reset();
+	Super::Deinitialize();
 }
 
 void UFTWorldClockSubsystem::Gather(UWorld& World)

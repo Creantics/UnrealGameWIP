@@ -114,6 +114,8 @@ struct UiTextStyle {
 //   sigMarginRule:  a vertical rule down the party block's left edge (UiMarginRule); "sig_margin_rule".
 //   loadBreaks:     the Load line's gold carries short crosswise breaks (uiLoadBreaks), so it reads apart from a warm
 //                   hp fill by pattern, not colour (r19c S1: Solhaven's cream fill); "load_breaks".
+//   specialPrompt:  the fight HUD's special prompt row (UiSpecial.h): reserved in the prompt stack and drawn when the
+//                   lead's special is ready; off, the stack is as it was; "special_prompt".
 struct UiWorldRules {
     bool marksAccent2 = false;
     bool dangerUnderline = false;
@@ -121,6 +123,7 @@ struct UiWorldRules {
     bool sigArcs = false;
     bool sigMarginRule = false;
     bool loadBreaks = false;
+    bool specialPrompt = false;
 };
 
 // Value-line ends and the dotted guard, 1080p px at HUD scale 1 (the painter scales them and rounds each to whole device
@@ -443,6 +446,10 @@ FTCORE_API float uiContrast(UiColor fg, UiColor bg, UiColor under);
 // `c` lifted toward white until its relative luminance is at least `floor` (alpha kept); unchanged when already there.
 FTCORE_API UiColor uiLumaFloor(UiColor c, float floor);
 
+// The least alpha of `backing` in [from, cap] under which `ink` reaches `target` over `picture` (opaque); `from` when it
+// already does there, `cap` when even that falls short (check with uiContrast).
+FTCORE_API float uiLeastBacking(UiColor ink, UiColor backing, UiColor picture, float target, float from, float cap);
+
 // The dim behind the dialogue options: the least alpha of `backing` (0..s.optionsDimMax) under which `ink` reaches
 // s.optionsDimContrast over `picture`; 0 when it already does, the max when even that falls short.
 FTCORE_API float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture);
@@ -456,7 +463,14 @@ struct UiLumaHistogram {
     std::uint32_t total = 0;
 };
 FTCORE_API void uiLumaAdd(UiLumaHistogram& h, UiColor c);
+// The picture reads' path: a pixel decoded through tables and given both ways (sRGB 0..1 and its linear light), binned
+// by the linear luminance with no per-pixel power and summed as sRGB, so the histogram matches uiLumaAdd's for the same
+// pixels. Out-of-range and NaN values are clamped.
+FTCORE_API void uiLumaAddDecoded(UiLumaHistogram& h, UiColor srgb, float lr, float lg, float lb);
 FTCORE_API UiColor uiLumaBrightest(const UiLumaHistogram& h, float share);
+// One sRGB-encoded channel (0..1) in linear light, and back; for decode tables built once.
+FTCORE_API float uiSrgbToLinear(float c);
+FTCORE_API float uiLinearToSrgb(float c);
 
 FTCORE_API UiCueShape uiCueShape(const UiStyle& s, UiToken token);
 

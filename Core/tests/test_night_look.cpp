@@ -472,6 +472,58 @@ TEST_CASE("nightCharacterFillLux: off by day, two stops under the lamp key at ni
     CHECK(nightCharacterFillLux(odd, 1.f) == doctest::Approx(look.lampCandela / 0.01f));
 }
 
+TEST_CASE("nightCharacterFillYaw: a soft key from the nearest light's side of the view") {
+    NightLook look;
+    CHECK(look.charFillYawDeg >= 30.f);
+    CHECK(look.charFillYawDeg <= 45.f);
+    const float yaw = look.charFillYawDeg;
+    // View along +x; Unreal's right is +y. A light on the right: the light's travel turns left (negative yaw), so its
+    // source sits right of the camera.
+    CHECK(nightCharacterFillYaw(look, 1.f, 0.f, 2.f, 3.f) == doctest::Approx(-yaw));
+    CHECK(nightCharacterFillYaw(look, 1.f, 0.f, 2.f, -3.f) == doctest::Approx(yaw));
+    // Turned with the view: looking along +y, right is -x.
+    CHECK(nightCharacterFillYaw(look, 0.f, 1.f, -1.f, 0.f) == doctest::Approx(-yaw));
+    CHECK(nightCharacterFillYaw(look, 0.f, 1.f, 1.f, 0.f) == doctest::Approx(yaw));
+    // No light, or one dead ahead: from the right.
+    CHECK(nightCharacterFillYaw(look, 1.f, 0.f, 0.f, 0.f) == doctest::Approx(-yaw));
+    CHECK(nightCharacterFillYaw(look, 1.f, 0.f, 5.f, 0.f) == doctest::Approx(-yaw));
+    NightLook odd;
+    odd.charFillYawDeg = 200.f;
+    CHECK(nightCharacterFillYaw(odd, 1.f, 0.f, 0.f, -1.f) == doctest::Approx(90.f));
+    odd.charFillYawDeg = -10.f;
+    CHECK(nightCharacterFillYaw(odd, 1.f, 0.f, 0.f, -1.f) == 0.f);
+}
+
+TEST_CASE("nightCharacterFillKeyShare: most of the fill is the key, the rest ambient") {
+    NightLook look;
+    CHECK(nightCharacterFillKeyShare(look) > 0.5f);
+    CHECK(nightCharacterFillKeyShare(look) < 1.f);
+    look.charFillKeyShare = 3.f;
+    CHECK(nightCharacterFillKeyShare(look) == 1.f);
+    look.charFillKeyShare = -1.f;
+    CHECK(nightCharacterFillKeyShare(look) == 0.f);
+}
+
+TEST_CASE("nightCharacterFillShare: gone beside a lit bay, whole away from it, smooth between") {
+    const NightLook look;
+    CHECK(nightCharacterFillShare(look, -1.f) == 1.f);  // no lit bay
+    CHECK(nightCharacterFillShare(look, std::nanf("")) == 1.f);
+    CHECK(nightCharacterFillShare(look, 0.f) == 0.f);
+    CHECK(nightCharacterFillShare(look, look.charFillBayNearM) == 0.f);
+    CHECK(nightCharacterFillShare(look, look.charFillBayFarM) == 1.f);
+    CHECK(nightCharacterFillShare(look, 100.f) == 1.f);
+    const float mid = 0.5f * (look.charFillBayNearM + look.charFillBayFarM);
+    CHECK(nightCharacterFillShare(look, mid) == doctest::Approx(0.5f));
+    CHECK(nightCharacterFillShare(look, mid - 0.5f) < nightCharacterFillShare(look, mid + 0.5f));
+    NightLook odd;
+    odd.charFillBayNearM = 9.f;  // near past far: one edge at far
+    odd.charFillBayFarM = 4.f;
+    CHECK(nightCharacterFillShare(odd, 3.9f) == 0.f);
+    CHECK(nightCharacterFillShare(odd, 4.f) == 1.f);
+    odd.charFillBayFarM = -2.f;  // a negative far: whole everywhere a bay is known
+    CHECK(nightCharacterFillShare(odd, 0.f) == 1.f);
+}
+
 TEST_CASE("nightFrame: exposure locks from half night; no allocation") {
     const auto before = ftcore_test::allocStats().count;
     const bool before49 = nightFrame(NightLook{}, 0.49f).lockExposure;

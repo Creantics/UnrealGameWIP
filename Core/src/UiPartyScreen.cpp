@@ -38,11 +38,16 @@ void openScreen(UiPartyScreen& s, bool explore) {
     s.opening = true;
     s.stickArmed = false;
     s.mouseArmed = false;
+    s.openFor = 0.f;
+    s.moved = false;
+    s.stays = false;
+    s.byPress = false;
 }
 
 void closeScreen(UiPartyScreen& s, UiPartyOut& out, UiPartyRow pick) {
     s.open = false;
     s.opening = false;
+    s.stays = false;
     out.closed = true;
     out.pick = pick;
 }
@@ -72,6 +77,7 @@ UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in, float dt)
         // Taken away: shut with no pick; a key still down when input returns is no press, and its release no map.
         if (s.open) closeScreen(s, out, UiPartyRow::Lead);
         s.partyWas = s.mapWas = true;
+        s.upWas = s.downWas = s.confirmWas = s.cancelWas = true;
         s.mapHeld = 0.f;
         s.mapUsed = true;
         return out;
@@ -80,8 +86,16 @@ UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in, float dt)
     const bool mapPress = in.mapDown && !s.mapWas;
     const bool mapRelease = !in.mapDown && s.mapWas;
     const bool anyDown = in.partyDown || in.mapDown;
+    const bool upPress = in.upDown && !s.upWas;
+    const bool downPress = in.downDown && !s.downWas;
+    const bool confirmPress = in.confirmDown && !s.confirmWas;
+    const bool cancelPress = in.cancelDown && !s.cancelWas;
     s.partyWas = in.partyDown;
     s.mapWas = in.mapDown;
+    s.upWas = in.upDown;
+    s.downWas = in.downDown;
+    s.confirmWas = in.confirmDown;
+    s.cancelWas = in.cancelDown;
     if (mapPress) {
         s.mapHeld = 0.f;
         s.mapUsed = false;
@@ -92,6 +106,7 @@ UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in, float dt)
             openScreen(s, in.explore);
             out.opened = true;
             s.mapUsed = true;
+            s.byPress = true;
         } else if (in.explore && in.mapDown && !s.mapUsed) {
             s.mapHeld += dt > 0.f ? dt : 0.f;
             if (s.mapHeld >= kUiPartyHold) {
@@ -110,22 +125,40 @@ UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in, float dt)
         s.mapUsed = true; // the map key while the screen stands is the screen's
     }
 
-    // Open: the cursor moves one row per flick (the stick's first, else the mouse's).
+    // Open: the cursor moves one row per flick (the stick's first, else the mouse's), else per row key's press.
     int up = flick(s.stickArmed, in.stickY, kUiPartyStickOut, kUiPartyStickRest);
     const int mouseUp = flick(s.mouseArmed, in.mouseY, kUiPartyMouseOut, kUiPartyMouseRest);
     if (up == 0) up = mouseUp;
-    if (up != 0) s.cursor = stepped(s.cursor, up, s.explore, s.partnerHere);
+    if (up == 0 && upPress != downPress) up = upPress ? 1 : -1;
+    if (up != 0) {
+        s.cursor = stepped(s.cursor, up, s.explore, s.partnerHere);
+        s.moved = true; // tried, even where no row would take it: the player is working the screen
+    }
 
     if (out.opened) return out; // the opening tick never confirms
+    if (cancelPress) {
+        closeScreen(s, out, UiPartyRow::Lead);
+        return out;
+    }
+    if (confirmPress) {
+        closeScreen(s, out, s.cursor);
+        return out;
+    }
+    if (dt > 0.f) s.openFor += dt;
     if (s.opening) {
         if (!anyDown) {
             s.opening = false;
-            if (!in.toggle) closeScreen(s, out, s.cursor);
+            // Hold mode: the release confirms, unless it was a tap (opened by a press, let go at once, no move tried):
+            // then it stays. Explore's map-key hold is never a tap.
+            if (!in.toggle) {
+                if (in.tapStays && s.byPress && !s.moved && s.openFor < kUiPartyTap) s.stays = true;
+                else closeScreen(s, out, s.cursor);
+            }
         }
         return out;
     }
-    // Toggle: the opening press was let go; the next press confirms.
-    if (in.toggle ? (partyPress || mapPress) : !anyDown) closeScreen(s, out, s.cursor);
+    // Toggle, or a tap's screen: the opening press was let go; the next press confirms.
+    if ((in.toggle || s.stays) ? (partyPress || mapPress) : !anyDown) closeScreen(s, out, s.cursor);
     return out;
 }
 

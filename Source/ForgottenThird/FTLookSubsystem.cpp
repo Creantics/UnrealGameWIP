@@ -251,19 +251,21 @@ void UFTLookSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	UWorld* World = GetWorld();
+	FTDemoBootNoteWorld(World); // this world's boot row (-Look=), not the last one's (see ForgottenThird.h)
 	Grade = FSceneViewExtensions::NewExtension<FFTLookGradeExtension>(World);
 	if (!FParse::Param(FCommandLine::Get(), TEXT("LookOff")) && CVarLook.GetValueOnGameThread() != 0)
 	{
 		ApplyRenderSettings(*World);
 	}
 
-	// -Look=<world> picks it; otherwise the map's name does. -LookOff (or r.FT.Look 0) keeps the shared look.
+	// -Look=<world> picks it (the command line's, else the map's demo boot row's); otherwise the map's name does. -LookOff
+	// (or r.FT.Look 0) keeps the shared look.
 	FString Want;
 	if (FParse::Param(FCommandLine::Get(), TEXT("LookOff")) || CVarLook.GetValueOnGameThread() == 0)
 	{
 		Want = TEXT("off");
 	}
-	else if (!FParse::Value(FCommandLine::Get(), TEXT("Look="), Want))
+	else if (!FParse::Value(FTLookSwitches(), TEXT("Look="), Want))
 	{
 		const FTCHARToUTF8 Map(*World->GetMapName());
 		const std::string_view Found = ftcore::lookWorldForMap(std::string_view(Map.Get(), static_cast<size_t>(Map.Length())));

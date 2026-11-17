@@ -69,6 +69,9 @@ constexpr std::array<ActionRow, kInputActionCount> kRows{{
     // fights too, so its key is in this table for the validator to see: no other action, of either context, may take
     // it (inputKeyClash). Pad: none (inputPadPending).
     {InputAction::Backlog, "backlog", InputContext::Foot, false, "B", ""},
+    // The lead's special (ruled 2026-11-17), fights only. Z: free in this table and in the player controller's and HUDs'
+    // own keys. Pad: no free button; the shoulders pressed together (route "shoulders_chord").
+    {InputAction::Special, "special", InputContext::Foot, false, "Z", ""},
 }};
 
 const ActionRow& row(InputAction a) { return kRows[static_cast<std::size_t>(a) % kInputActionCount]; }
@@ -109,7 +112,8 @@ bool inputActionHeld(InputAction a) { return row(a).held; }
 InputScope inputActionScope(InputAction a) {
     switch (a) {
     case InputAction::Crouch: return InputScope::Field;
-    case InputAction::Intercept: return InputScope::Fight;
+    case InputAction::Intercept:
+    case InputAction::Special: return InputScope::Fight;
     default: break;
     }
     return InputScope::Any;
@@ -206,6 +210,7 @@ const char* inputActionRoute(InputAction a, InputDevice d) {
     case InputAction::Party: return "map_hold";
     case InputAction::TakeHalf: return pad ? "guard_interact" : nullptr;
     case InputAction::SwitchLead: return pad ? "party_menu" : nullptr;
+    case InputAction::Special: return pad ? "shoulders_chord" : nullptr;
     default: break;
     }
     return nullptr;
@@ -412,8 +417,19 @@ std::string encodeInputBindings(const InputBindings& b) {
         s += ", \"";
         s += deviceKey(static_cast<InputDevice>(d));
         s += "\": {";
+        bool firstKey = true;
         for (std::size_t i = 0; i < kInputActionCount; ++i) {
-            if (i) s += ", ";
+            // An action the import left unbound (NO KEY, its default taken by the player's own key) and which nothing
+            // else reaches on this device is left out: read back, it is new to the file again and comes back NO KEY,
+            // where an entry "" would be refused (an override may unbind a key, not an action).
+            const InputDevice device = static_cast<InputDevice>(d);
+            const InputAction a = kRows[i].action;
+            if (b.keys[d][i].empty() && !inputActionRoute(a, device) &&
+                !(device == InputDevice::Pad &&
+                  (inputPadPending(a) || a == InputAction::GiftHeal || a == InputAction::GiftGuard)))
+                continue;
+            if (!firstKey) s += ", ";
+            firstKey = false;
             s += '"';
             s += kRows[i].key;
             s += "\": \"";
@@ -501,7 +517,8 @@ constexpr InputHintEntry kFieldHint[] = {
 // plays only in carrying runs (a test switch) until it is promoted, so the default controls line stays as it was.
 // PartnerOrder: only -ArenaPartner has a partner to order (off by default), so no controls line names it yet.
 // Backlog: a reading screen's key, not a fight's or the field's, so neither controls line names it.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::PartnerOrder, A::Backlog};
+// Special: its own prompt row names its key while it is ready (UiSpecial.h); a controls line would show it unready.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::PartnerOrder, A::Backlog, A::Special};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {
@@ -566,6 +583,7 @@ std::string_view inputRouteLabel(std::string_view route) {
     if (route == "mouse_flick") return "Mouse flick";
     if (route == "right_stick_flick") return "RS flick";
     if (route == "guard_interact") return "Guard+Interact";
+    if (route == "shoulders_chord") return "Guard+Read";
     return std::string_view(); // party_menu too: the menu, not a key, so the pad's line leaves switch lead out
 }
 
@@ -607,9 +625,10 @@ std::string inputActionKeys(const InputBindings& b, InputAction a, InputDevice d
         const std::string_view map = keyOf(InputAction::Map);
         return map.empty() ? std::string() : std::string(kInputHoldPrefix) + std::string(inputKeyLabel(map));
     }
-    // Guard held plus a second button: the second is the one the route names.
+    // Guard plus a second button (held for take half, pressed together for the special): the one the route names.
     InputAction second = InputAction::Guard;
     if (r == "guard_interact") second = InputAction::Interact;
+    if (r == "shoulders_chord") second = InputAction::Read;
     if (second == InputAction::Guard) return std::string(inputRouteLabel(r));
     const std::string_view guard = keyOf(InputAction::Guard);
     const std::string_view other = keyOf(second);
