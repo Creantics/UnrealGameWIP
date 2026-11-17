@@ -1899,6 +1899,34 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 			bPressTakeHalf = true;
 		}
 	}
+	// The special: its key, and on a pad with none bound, the shoulders' chord (route "shoulders_chord": the pad's Guard
+	// and Read buttons, the second within kInputShoulderChord s of the first). Core refuses it when not ready.
+	if (Pressed(InputAction::Special))
+	{
+		RequestSpecial();
+	}
+	{
+		const FKey& PadSpecial = FTInputBindings::Key(InputAction::Special, ftcore::InputDevice::Pad);
+		const FKey& PadGuard = FTInputBindings::Key(InputAction::Guard, ftcore::InputDevice::Pad);
+		const FKey& PadRead = FTInputBindings::Key(InputAction::Read, ftcore::InputDevice::Pad);
+		if (!PadSpecial.IsValid() && PadGuard.IsValid() && PadRead.IsValid())
+		{
+			const double Clock = World ? World->GetRealTimeSeconds() : 0.0;
+			const bool bGuardNow = PC->WasInputKeyJustPressed(PadGuard);
+			const bool bReadNow = PC->WasInputKeyJustPressed(PadRead);
+			const double Chord = static_cast<double>(ftcore::kInputShoulderChord);
+			if ((bGuardNow && (bReadNow || Clock - PadReadPressedAt <= Chord)) || (bReadNow && Clock - PadGuardPressedAt <= Chord))
+			{
+				RequestSpecial();
+				PadGuardPressedAt = PadReadPressedAt = -1.0e9;
+			}
+			else
+			{
+				PadGuardPressedAt = bGuardNow ? Clock : PadGuardPressedAt;
+				PadReadPressedAt = bReadNow ? Clock : PadReadPressedAt;
+			}
+		}
+	}
 	// A called-blow boss's Intercept (its Guard is the guard above), held or toggled.
 	// Fight only: the pad's stick click is Crouch outside a fight (one button, two places).
 	bInterceptHeld = InterceptInput.tick(ftcore::inputActionLive(InputAction::Intercept, true) && FTInputBindings::IsDown(*PC, InputAction::Intercept),

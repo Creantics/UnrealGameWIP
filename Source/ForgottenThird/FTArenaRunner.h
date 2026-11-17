@@ -1652,6 +1652,8 @@ private:
 	bool bArenaSpecials = false;
 	ftcore::LeadSpecialGauges SpecialGauges;
 	bool bSpecialPress = false;
+	double PadGuardPressedAt = -1.0e9; // real seconds of the pad's last Guard and Read presses (the special's chord)
+	double PadReadPressedAt = -1.0e9;
 	bool bSpecialPressedNow = false; // pressed on this step: a refusal is logged after its tick
 	ftcore::SpecialCinePlayer SpecialPlayer;
 	FFTSpecialFreeze SpecialFreeze;
