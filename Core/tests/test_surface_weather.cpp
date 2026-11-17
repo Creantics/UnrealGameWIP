@@ -29,35 +29,42 @@ TEST_CASE("wet: only up-facing pixels soak, drying patches stay damp, dry looks 
     CHECK(weatherSoak(0.6f, 1.f, 1.f, spec) == doctest::Approx(0.6f));
 }
 
-TEST_CASE("wet: full soak's numbers; soaked stone and timber 0.25-0.40, never a mirror; only standing water under 0.10") {
+TEST_CASE("wet: full soak's numbers; soaked stone and timber 0.22-0.30, never a mirror; only standing water under 0.10") {
     const SurfaceWeatherSpec spec;
-    CHECK(weatherAlbedoScale(0, 1.f, 0.f, 0.f, spec) == doctest::Approx(0.5f));
-    // Fully soaked, dry stone, timber and asphalt (0.65-0.95) land in 0.25-0.40 and keep a little of their spread.
+    // The 11-17 ruling: albedo about x0.62 at full soak (unlit setts 0.65-0.72 of dry in frame luma).
+    CHECK(weatherAlbedoScale(0, 1.f, 0.f, 0.f, spec) == doctest::Approx(0.62f));
+    // Fully soaked, dry stone, timber and asphalt (0.65-0.95) land in 0.22-0.30 and keep a little of their spread.
     CHECK(weatherRough(0.8f, 1.f, 0.f, spec) == doctest::Approx(spec.soakRough + spec.soakKeep * (0.8f - spec.soakRough)));
     for (int i = 0; i <= 30; ++i) {
         const float dry = 0.65f + i * 0.01f;
         const float soaked = weatherRough(dry, 1.f, 0.f, spec);
-        CHECK(soaked >= 0.25f);
-        CHECK(soaked <= 0.40f);
+        CHECK(soaked >= 0.22f);
+        CHECK(soaked <= 0.30f);
         if (i > 0) CHECK(soaked > weatherRough(dry - 0.01f, 1.f, 0.f, spec));
     }
-    // Roof tile (0.55) and lacquer (0.45) soak to about 0.3 too, never under 0.25.
-    CHECK(weatherRough(0.55f, 1.f, 0.f, spec) >= 0.25f);
-    CHECK(weatherRough(0.45f, 1.f, 0.f, spec) >= 0.25f);
-    // Nothing goes under 0.10 at any soak but a puddle's core.
+    // Roof tile (0.55) and lacquer (0.45) soak to about 0.23, never under 0.22.
+    CHECK(weatherRough(0.55f, 1.f, 0.f, spec) >= 0.22f);
+    CHECK(weatherRough(0.45f, 1.f, 0.f, spec) >= 0.22f);
+    // Nothing goes under 0.10 at any soak but a puddle's core, on the worn track too.
     for (int s = 0; s <= 10; ++s)
-        for (int r = 2; r <= 10; ++r) CHECK(weatherRough(r / 10.f, s / 10.f, 0.f, spec) >= 0.1f);
-    CHECK(weatherRough(0.8f, 0.f, 1.f, spec) == doctest::Approx(0.02f));
+        for (int r = 2; r <= 10; ++r) {
+            CHECK(weatherRough(r / 10.f, s / 10.f, 0.f, spec) >= 0.1f);
+            CHECK(weatherRoughTrack(r / 10.f, s / 10.f, 0.f, 1.f, spec) >= 0.1f);
+        }
+    // Standing water 0.03-0.06.
+    CHECK(weatherRough(0.8f, 0.f, 1.f, spec) == doctest::Approx(spec.puddleRough));
+    CHECK(spec.puddleRough >= 0.03f);
+    CHECK(spec.puddleRough <= 0.06f);
     // A puddle's edge darkens before it mirrors: no ring where colour, gloss and normal all change at once.
     CHECK(weatherRough(0.8f, 0.f, spec.puddleCoreFrom * 0.9f, spec) == doctest::Approx(0.8f));
     CHECK(weatherAlbedoScale(0, 0.f, spec.puddleCoreFrom * 0.9f, 0.f, spec) < 1.f);
     // The edge spans a real stretch of the bowl, not a hairline.
     CHECK(spec.puddleEdge >= 0.15f);
-    // Lumen traces reflections under roughness 0.4. Soaked ground (0.34-0.38) sits just under it, so lamps and signs
-    // smear on the wet street as broad glossy streaks, not mirror images; its drying patches (dampShare of the soak,
-    // 0.49-0.62 on 0.65-0.9 stone) stay over it.
-    CHECK(weatherRough(0.85f, 1.f, 0.f, spec) < 0.4f);
-    CHECK(weatherRough(0.85f, 1.f, 0.f, spec) > 0.3f);
+    // Lumen traces reflections under roughness 0.4. Soaked ground (0.22-0.30) sits well under it, so lamps and signs
+    // smear on the wet street as glossy streaks, not mirror images; its drying patches (dampShare of the soak, 0.44-0.58
+    // on 0.65-0.9 stone) stay over it.
+    CHECK(weatherRough(0.85f, 1.f, 0.f, spec) < 0.3f);
+    CHECK(weatherRough(0.85f, 1.f, 0.f, spec) > 0.22f);
     CHECK(weatherRough(0.65f, spec.dampShare, 0.f, spec) > 0.4f);
     CHECK(weatherRough(0.9f, spec.dampShare, 0.f, spec) < 0.65f);
     // Already smooth surfaces (glass) never get rougher from rain.
@@ -154,6 +161,120 @@ TEST_CASE("puddles: low spots only, at most 15% of the ground at Wetness 1, over
     CHECK(open6.any > 0.005f);
     CHECK(open6.any < open1.any);
     CHECK(worst.any > open1.any);
+}
+
+TEST_CASE("worn track and kerb line: the hero lane (7 x 40 m, flat) streaks down a wandering middle, puddles at its edges") {
+    const SurfaceWeatherSpec spec;
+    const float flat = weatherFlatSlab(0.08f, 7.f, 40.f, 0.f, spec);
+    CHECK(flat == 1.f);
+    CHECK(weatherFlatSlab(0.08f, 7.f, 40.f, 0.025f, spec) == 0.f);  // a cambered carriageway half has wheel paths
+    CHECK(weatherFlatSlab(0.6f, 7.f, 40.f, 0.f, spec) == 0.f);      // too thick: a plinth, not ground
+    CHECK(weatherTrack(0.f, 3.f, 6.f, 4.f, 1.f, spec) == 0.f);       // a squarish slab has no middle track
+
+    // Every 25 cm along the lane: the track 1.2-1.8 m across, its centre within the wander, and it wanders.
+    float lo = 1e9f, hi = -1e9f;
+    for (int i = 0; i <= 160; ++i) {
+        const float along = -20.f + i * 0.25f;
+        float a0 = 1e9f, a1 = -1e9f;
+        for (int k = 0; k <= 700; ++k) {
+            const float across = -3.5f + k * 0.01f;
+            if (weatherTrack(across, along, 40.f, 7.f, flat, spec) > 0.f) {
+                a0 = std::min(a0, across);
+                a1 = std::max(a1, across);
+            }
+        }
+        REQUIRE(a1 > a0);
+        CHECK(a1 - a0 >= 2.f * spec.trackHalfLoM - 0.03f);
+        CHECK(a1 - a0 <= 2.f * spec.trackHalfHiM + 0.03f);
+        const float centre = 0.5f * (a0 + a1);
+        CHECK(std::fabs(centre) <= spec.trackWanderM + 0.02f);
+        lo = std::min(lo, centre);
+        hi = std::max(hi, centre);
+    }
+    CHECK(hi - lo > 0.3f);
+
+    // Soaked on the track 0.15-0.20; off it 0.22-0.30; dry (no soak) unchanged on and off it.
+    for (int i = 0; i <= 30; ++i) {
+        const float dry = 0.65f + i * 0.01f;
+        const float onTrack = weatherRoughTrack(dry, 1.f, 0.f, 1.f, spec);
+        CHECK(onTrack >= 0.15f);
+        CHECK(onTrack <= 0.20f);
+        CHECK(weatherRoughTrack(dry, 1.f, 0.f, 0.f, spec) == doctest::Approx(weatherRough(dry, 1.f, 0.f, spec)));
+        for (const float t : {0.f, 0.5f, 1.f}) CHECK(weatherRoughTrack(dry, 0.f, 0.f, t, spec) == doctest::Approx(dry));
+    }
+    // A dry polish, when asked for, smooths the dry track only by its share.
+    SurfaceWeatherSpec polished = spec;
+    polished.trackDryPolish = 0.1f;
+    CHECK(weatherRoughTrack(0.8f, 0.f, 0.f, 1.f, polished) == doctest::Approx(0.72f));
+
+    // The kerb line: a gutter's weight at the long edge, none past gutterM, none on a cambered slab.
+    CHECK(weatherKerb(0.f, flat, spec) == doctest::Approx(spec.kerbBias));
+    CHECK(weatherKerb(spec.gutterM, flat, spec) == doctest::Approx(0.f));
+    CHECK(weatherKerb(0.f, 0.f, spec) == 0.f);
+
+    // Water over the lane at Wetness 1 (every 5 cm): under the 15% cap, wetter along the kerb lines than in the middle.
+    int n = 0, wet = 0, edgeN = 0, edgeWet = 0, midN = 0, midWet = 0;
+    for (int iy = 0; iy < 800; ++iy) {
+        for (int ix = 0; ix < 140; ++ix) {
+            const float x = 901.f + ix * 0.05f + 0.025f, y = 515.f + iy * 0.05f + 0.025f;
+            const float edge = 3.5f - std::fabs(x - 904.5f);
+            const float bowl = weatherPuddleBowl(x, y, weatherRimNoise(x, y, spec), spec);
+            const bool w = weatherPuddle(1.f, 1.f, bowl, weatherKerb(edge, flat, spec), 0.5f, spec) > 0.f;
+            ++n;
+            wet += w;
+            if (edge < spec.gutterM) {
+                ++edgeN;
+                edgeWet += w;
+            } else if (edge > 1.5f) {
+                ++midN;
+                midWet += w;
+            }
+        }
+    }
+    const float share = static_cast<float>(wet) / static_cast<float>(n);
+    MESSAGE("hero lane puddle cover at Wetness 1: " << share << " (kerb band " << static_cast<float>(edgeWet) / edgeN
+            << ", middle " << static_cast<float>(midWet) / midN << ")");
+    CHECK(share <= 0.15f);
+    CHECK(share > 0.04f);
+    CHECK(static_cast<float>(edgeWet) / edgeN > static_cast<float>(midWet) / midN);
+}
+
+TEST_CASE("weather overrides: -WeatherSpec key=value pairs set the named fields, and refuse what they can't read") {
+    SurfaceWeatherSpec spec;
+    std::string err;
+    CHECK(applySurfaceWeatherOverrides(spec, "", &err));
+    CHECK(spec.soakRough == SurfaceWeatherSpec{}.soakRough);
+    CHECK(applySurfaceWeatherOverrides(spec, "soakRough=0.24,,trackRough=0.1,puddleCellM=3.2,kerbBias=0", &err));
+    CHECK(spec.soakRough == doctest::Approx(0.24f));
+    CHECK(spec.trackRough == doctest::Approx(0.1f));
+    CHECK(spec.puddleCellM == doctest::Approx(3.2f));
+    CHECK(spec.kerbBias == 0.f);
+    CHECK_FALSE(applySurfaceWeatherOverrides(spec, "soakDarken=0.6,soakRuff=0.2", &err));
+    CHECK(err == "soakRuff=0.2");
+    CHECK(spec.soakDarken == doctest::Approx(0.6f));  // the entry before the bad one stays set
+    CHECK_FALSE(applySurfaceWeatherOverrides(spec, "soakRough=0.2x", &err));
+    CHECK_FALSE(applySurfaceWeatherOverrides(spec, "soakRough=", &err));
+    CHECK_FALSE(applySurfaceWeatherOverrides(spec, "soakRough", &err));
+    CHECK_FALSE(applySurfaceWeatherOverrides(spec, "soakRough=nan", nullptr));
+    CHECK(spec.soakRough == doctest::Approx(0.24f));
+}
+
+TEST_CASE("HLSL: the worn track and kerb line on box frames, none off them, the street's own pieces left out") {
+    const SurfaceWeatherSpec spec;
+    SurfaceWeatherOptions o;
+    const std::string box = surfaceWeatherHlsl(spec, o);
+    CHECK(box.find("float Track = (max(Sx, Sy) >= ") != std::string::npos);
+    CHECK(box.find("Soak = max(Soak, Wet * Up * Track);") != std::string::npos);
+    CHECK(box.find("Gut = max(Gut, FlatSlab * ") != std::string::npos);
+    CHECK(box.find("Rgh *= 1.0 - ") == std::string::npos);  // no dry polish by default: the dry look as before
+    o.street = true;
+    CHECK(surfaceWeatherHlsl(spec, o).find("&& SK == 0) ? 1.0 : 0.0;") != std::string::npos);
+    SurfaceWeatherOptions plain;
+    plain.boxFrame = false;
+    plain.grime = plain.topGrime = false;
+    const std::string none = surfaceWeatherHlsl(spec, plain);
+    CHECK(none.find("float Track = 0.0;") != std::string::npos);
+    CHECK(none.find("FlatSlab") == std::string::npos);
 }
 
 TEST_CASE("puddles: the noise twin is the HLSL loop's (16-bit lattice, two octaves, z offset)") {
@@ -261,9 +382,9 @@ TEST_CASE("HLSL: inputs, outputs and options") {
     CHECK(surfaceWeatherHlsl(other, SurfaceWeatherOptions{}) != box);
 
     // The puddle cell (the C++ twin's numbers and hash) and the soaked roughness's kept share.
-    for (const char* name : {"floor(WorldPos.xy / 350.0)", "uint3(int3(PdCi, 211 + PdK))", "PdH[0] < 0.800000012",
-                             "float PdBowl =", "PdBowl * max(1.0 + 0.600000024 * Gut, 0.0) - (1.0 - 0.850000024 * Wet)",
-                             "lerp(0.300000012, Rgh, 0.119999997)"})
+    for (const char* name : {"floor(WorldPos.xy / 350.0)", "uint3(int3(PdCi, 211 + PdK))", "PdH[0] < 0.899999976",
+                             "float PdBowl =", "PdBowl * max(1.0 + 0.600000024 * Gut, 0.0) - (1.0 - 0.899999976 * Wet)",
+                             "lerp(lerp(0.200000003, 0.0949999988, Track), Rgh, 0.119999997)"})
         CHECK(box.find(name) != std::string::npos);
     for (const char* name : {"ddx", "ddy", "fwidth", "Water"}) CHECK(box.find(name) == std::string::npos);
 
@@ -391,7 +512,7 @@ TEST_CASE("HLSL: the street layer is an option, branches on Street and keeps the
     // The decal snippet: the same noise and numbers.
     const std::string wet = surfaceWetHlsl(spec);
     for (const char* name : {"WetIn", "GutIn", "WSoak", "WPud", "C *=", "R = lerp(R", "float WPdBowl =",
-                             "WPdBowl * max(1.0 + 0.600000024 * GutIn, 0.0) - (1.0 - 0.850000024 * WetIn)"})
+                             "WPdBowl * max(1.0 + 0.600000024 * GutIn, 0.0) - (1.0 - 0.899999976 * WetIn)"})
         CHECK(wet.find(name) != std::string::npos);
     CHECK(wet.find("WorldPos.xy / 50.0") != std::string::npos);
     CHECK(wet.find("floor(WorldPos.xy / 350.0)") != std::string::npos);

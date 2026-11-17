@@ -5,8 +5,9 @@
 //
 // Wet: the look's Wetness (its parameter collection, 0 when no look is applied) soaks up-facing pixels only: the albedo
 // darkens toward soakDarken, the roughness falls toward a soaked value of soakRough plus soakKeep of the dry one's
-// distance from it (wet stone and timber 0.30-0.38, never a mirror: only standing water goes under 0.10) and the normal
-// flattens a little. A drying-patch noise leaves part of the ground damp (dampShare of the soak). Puddles stand in low
+// distance from it (wet stone and timber 0.22-0.30, never a mirror: only standing water goes under 0.10) and the normal
+// flattens a little. A flat ground slab's worn track (its long middle, wandering) soaks fully and to 0.15-0.20, so lamps
+// stretch down it as streaks; its long edges (kerb line, shop steps) fill its bowls as a gutter does. A drying-patch noise leaves part of the ground damp (dampShare of the soak). Puddles stand in low
 // spots only: at most one per puddleCellM plan cell, an ellipse (area-preserving stretch, its rim wobbled by a fine
 // noise) kept inside its cell, so the share of ground any puddle can cover is capped by construction
 // (weatherPuddleCapShare, under 15%). Inside its bowl the water rises with Wetness: a soft darker edge, then a core with
@@ -33,29 +34,41 @@
 #include "ftcore/Api.h"
 
 #include <string>
+#include <string_view>
 
 namespace ftcore {
 
 struct SurfaceWeatherSpec {
     float upFrom = 0.55f, upTo = 0.85f;  // vertex normal z: dry below upFrom, fully up-facing from upTo
-    float soakDarken = 0.5f;             // albedo multiplier at full soak
-    float soakRough = 0.30f;             // roughness at full soak (plus soakKeep of the dry roughness's distance from it)
-    float soakKeep = 0.12f;              // share of the dry roughness kept at full soak: dry 0.65-0.95 soaks to 0.34-0.38
+    float soakDarken = 0.62f;            // albedo multiplier at full soak (unlit setts read 0.65-0.72 of dry in frame luma)
+    float soakRough = 0.20f;             // roughness at full soak (plus soakKeep of the dry roughness's distance from it)
+    float soakKeep = 0.12f;              // share of the dry roughness kept at full soak: dry 0.65-0.95 soaks to 0.25-0.29
     float roughCurve = 0.8f;             // roughness falls by soak^roughCurve
     float soakFlatten = 0.3f;            // share of the normal flattened at full soak (a wet film, not standing water)
     float dampShare = 0.45f;             // soak in a drying patch, as a share of a wet patch's
     float patchScaleM = 6.0f;            // drying-patch noise cell
     float puddleScaleM = 0.5f;           // the noise cell of a puddle's rim wobble (Noise[0])
     float puddleCellM = 3.5f;            // one puddle at most per plan cell this size
-    float puddleChance = 0.8f;           // share of cells holding one
+    float puddleChance = 0.9f;           // share of cells holding one
     float puddleRadiusLoM = 0.4f, puddleRadiusHiM = 0.66f;  // its radius (an ellipse of the same area)
     float puddleStretch = 1.7f;          // at most this long over its radius (and as much narrower)
     float puddleWobble = 0.15f;          // the rim's radius varies by this share, by the wobble noise
-    float puddleCover = 0.85f;           // the water's level in its bowl: 1 - this at Wetness 1 (bowl 1 at the centre)
+    float puddleCover = 0.9f;            // the water's level in its bowl: 1 - this at Wetness 1 (bowl 1 at the centre)
     float puddleEdge = 0.2f;             // bowl span of a puddle's soft wet-to-dry edge (darkens first)
     float puddleCoreFrom = 0.4f;         // the mirror (puddleRough, flat normal) starts this far into the edge ramp
-    float puddleRough = 0.02f;
+    float puddleRough = 0.045f;          // standing water 0.03-0.06: a mirror with a little ripple, not glass
     float puddleDarken = 0.75f;          // albedo multiplier in a puddle, over the soak's
+    // The worn track down a flat ground slab's long middle (a lane's foot traffic), wandering off the middle by up to
+    // trackWanderM and trackHalfLoM-HiM either side of its centre. It soaks fully (no drying patch) and smoother than
+    // the rest, so a lamp's reflection stretches down it as a streak.
+    float trackRough = 0.095f;           // soaked roughness on the track (plus soakKeep of the dry's distance): 0.15-0.20
+    float trackHalfLoM = 0.6f, trackHalfHiM = 0.9f;  // its half width (1.2-1.8 m across)
+    float trackWanderM = 0.4f;           // its centre's swing off the slab's middle line
+    float trackScaleM = 7.0f;            // the swing's and width's noise cell along the slab
+    float trackAspect = 2.0f;            // a flat ground slab at least this many times longer than wide carries one
+    float trackDryPolish = 0.0f;         // dry roughness lost on the track, as a share (0: the dry look as before)
+    float kerbBias = 1.0f;               // a flat ground slab's long edges (kerb line, shop steps) deepen its bowls as a
+                                         // gutter does, by this share of the gutter weight
     float tiltMin = 0.005f;              // |world z of the box's Y axis| over which a box counts as cambered
     float gutterM = 0.6f;                // the gutter band's width over the low edge
     float gutterBias = 0.6f;             // a bowl deepened by this share at the low edge, falling to 0 across the band
@@ -322,6 +335,21 @@ FTCORE_API float weatherJointDarken(float joint, float wet, float up, float pudd
 FTCORE_API float weatherDirt(float side, float thinnest, float aboveM, float edgeM, float noise, const SurfaceWeatherSpec& spec);
 // The roughness after soak and puddle: never under min(rough, soakRough) outside a puddle's core.
 FTCORE_API float weatherRough(float rough, float soak, float puddle, const SurfaceWeatherSpec& spec);
+// The same on the worn track (track 0..1, weatherTrack): its soaked roughness goes toward trackRough, its dry one loses
+// trackDryPolish of itself. weatherRough is this at track 0.
+FTCORE_API float weatherRoughTrack(float rough, float soak, float puddle, float track, const SurfaceWeatherSpec& spec);
+// 1 when a box (thickness and plan sides, m; axisYz as weatherGutter's) is a flat ground slab: a ground slab
+// (weatherGroundSlab) that isn't cambered.
+FTCORE_API float weatherFlatSlab(float sz, float sx, float sy, float axisYz, const SurfaceWeatherSpec& spec);
+// 0..1 on a flat ground slab's worn track: acrossM the pixel's metres from the slab's long middle line, alongM along it,
+// longM and shortM its plan sides, flat weatherFlatSlab. 0 off the track and on a slab under trackAspect.
+FTCORE_API float weatherTrack(float acrossM, float alongM, float longM, float shortM, float flat, const SurfaceWeatherSpec& spec);
+// 0..1 kerb weight on a flat ground slab: edgeM the pixel's metres from the nearer long edge (a gutter's falloff).
+FTCORE_API float weatherKerb(float edgeM, float flat, const SurfaceWeatherSpec& spec);
+// Sets spec fields from "key=value[,key=value...]", the keys the field names above (soakRough=0.22,puddleCellM=3.2).
+// False on an unknown key or a value that isn't a finite number, with that entry in error (when given); fields set by
+// the entries before it stay set. Empty text is true and changes nothing.
+FTCORE_API bool applySurfaceWeatherOverrides(SurfaceWeatherSpec& spec, std::string_view text, std::string* error);
 // The albedo multiplier on one channel (0 r, 1 g, 2 b) after soak, puddle and dirt.
 FTCORE_API float weatherAlbedoScale(int channel, float soak, float puddle, float dirt, const SurfaceWeatherSpec& spec);
 

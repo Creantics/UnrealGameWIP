@@ -11,6 +11,7 @@
 #include "FTImportMaterials.h"
 #include "FTJointCollection.h"
 #include "FTText.h"
+#include "FTWeatherSpec.h"
 #include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
@@ -444,6 +445,10 @@ UMaterialParameterCollection* LoadLookCollection(const TCHAR* Who)
 	return Look;
 }
 
+// The weather numbers every weather node in this run is written from: the Core defaults, with -WeatherSpec=k=v,k=v
+// (ftcore::applySurfaceWeatherOverrides) over them, so the wet rule is tuned by bakes, not compiles.
+ftcore::SurfaceWeatherSpec GWeatherSpec;
+
 // The weather node (ftcore::surfaceWeatherHlsl: wet up-facing ground, puddles favouring a cambered box's low edge,
 // contact grime and edge darkening) over the shading From gives: its output 0 the albedo, then NormalOut, RoughOut and
 // AOOut at the given outputs. Above (an output of AboveFrom) is the pixel's height over the street floor in metres, or
@@ -465,7 +470,7 @@ UMaterialExpressionCustom* AddWeatherNode(UMaterial* Material, const FSurfaceNod
 	UMaterialExpressionCustom* Weather = AddExpression<UMaterialExpressionCustom>(Material, 300, 0);
 	Weather->Description = TEXT("FTSurfaceWeather");
 	Weather->OutputType = CMOT_Float3;
-	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(ftcore::SurfaceWeatherSpec{}, Options));
+	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(GWeatherSpec, Options));
 	Weather->Inputs.Reset();
 	AddInputFrom(Weather, TEXT("Albedo"), From, 0);
 	AddInputFrom(Weather, TEXT("Normal"), From, NormalOutput);
@@ -1661,6 +1666,10 @@ UFTBuildSurfacesCommandlet::UFTBuildSurfacesCommandlet()
 int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	if (!FT::ReadWeatherSpec(Params, TEXT("FTBuildSurfaces"), FTSurfaceBuild::GWeatherSpec))
+	{
+		return 1;
+	}
 	if (FParse::Param(*Params, TEXT("Windows")))
 	{
 		return FTSurfaceBuild::BuildWindows(Params);
