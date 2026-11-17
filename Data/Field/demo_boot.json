@@ -2,8 +2,8 @@
   "maps": [
     {
       "map": "World_Solhaven_Strip",
-      "status": "E8 hero proof 11-17: night 21:00 fixed, white 5800, hero key 4000, fixed EV -1.85, wet, start 15 m south of the hero corner facing it; rain night and the characters-only cool fill (lead readable away from the bays)",
-      "switches": "-TimeOfDay=21 -NightEV=-1.85 -NightEVRange=0 -NightWhiteK=5800 -NightHeroShopK=4000 -NightHeroLampK=2700 -NightHeroFrontLm=16 -NightHeroSkyLm=80 -WorldEyeWet=1 -Rain=1 -NightCharFill -WorldStartAt=904.5,497,4.18,-90"
+      "status": "E8 hero proof 11-17: night 21:00 fixed, white 5800, hero key 4000, fixed EV -1.85, wet, start on the lane's setts 12 m south of bay 1 facing north up the lane; rain night under a full starless overcast (look solhaven_rain) and the characters-only cool fill (lead readable away from the bays)",
+      "switches": "-TimeOfDay=21 -NightEV=-1.85 -NightEVRange=0 -NightWhiteK=5800 -NightHeroShopK=4000 -NightHeroLampK=2700 -NightHeroFrontLm=12 -NightHeroFrontSpec=0.08 -NightHeroSkyLm=30 -NightHeroSkyTint=1,0.89,0.81 -NightSkyLum=0.008 -NightMoon=0.03 -Look=solhaven_rain -WorldEyeWet=1 -Rain=1 -NightCharFill -WorldStartAt=904.5,509,4.18,-90"
     }
   ]
 }
