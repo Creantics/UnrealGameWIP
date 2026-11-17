@@ -5713,6 +5713,12 @@ public:
 	virtual void Tick(const FGeometry& Geometry, const double, const float DeltaTime) override
 	{
 		Time += DeltaTime;
+#if !UE_BUILD_SHIPPING
+		if (bPlayReads)
+		{
+			NoteFrame(DeltaTime);
+		}
+#endif
 		const AFTExploreDirector* D = GetDirector ? GetDirector() : nullptr;
 		const AFTExploreCharacter* C = GetLead ? GetLead() : nullptr;
 		Size = Geometry.GetLocalSize();
@@ -6199,6 +6205,35 @@ private:
 		return OutPt.X >= 0.f && OutPt.Y >= 0.f && OutPt.X <= Size.X && OutPt.Y <= Size.Y;
 	}
 
+#if !UE_BUILD_SHIPPING
+	// -UiExplorePlayReads: the frame a read stalled against the median of the frames before it (is it a hitch?).
+	void NoteFrame(float Dt)
+	{
+		const float Ms = 1000.f * Dt;
+		if (!bReadLastFrame)
+		{
+			FrameMs[FrameN % kFrameKeep] = Ms;
+			++FrameN;
+			return;
+		}
+		bReadLastFrame = false;
+		const int32 N = FMath::Min(FrameN, kFrameKeep);
+		float Sorted[kFrameKeep];
+		for (int32 I = 0; I < N; ++I)
+		{
+			float V = FrameMs[I];
+			int32 J = I;
+			for (; J > 0 && Sorted[J - 1] > V; --J)
+			{
+				Sorted[J] = Sorted[J - 1];
+			}
+			Sorted[J] = V;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: explore play frame with a read %.2f ms; median of the %d frames before %.2f ms."), Ms, N,
+			N > 0 ? Sorted[N / 2] : 0.f);
+	}
+#endif
+
 	// Non-shipping stills: the turn, the reads of the picture under the words, the still, the exit.
 	void TickShot(const AFTExploreCharacter* C)
 	{
@@ -6317,6 +6352,7 @@ private:
 				const bool bGot = MeasureLine(I);
 				if (bPlayReads && bGot)
 				{
+					bReadLastFrame = true; // the next tick's delta carries this read's stall
 					UE_LOG(LogForgottenThird, Display, TEXT("UI: explore play read %s in %.2f ms at %.1f s: contrast %.2f; contour %.0f px %.2f, shade %.2f."),
 						kGuardName[I], 1000.0 * (FPlatformTime::Seconds() - T0), Time, DrawnRatio(I), Lines[I].G.spread, Lines[I].G.alpha,
 						I >= GuardSub0 ? SubBand() : Lines[I].G.shade);
@@ -6501,6 +6537,10 @@ private:
 	bool bFake = false;
 #if !UE_BUILD_SHIPPING
 	int32 ForcedDevice = -1; // -UiExploreDevice=: the controls line's device (-1: the one in use)
+	static constexpr int32 kFrameKeep = 64; // -UiExplorePlayReads: the frame times kept before a read
+	float FrameMs[kFrameKeep] = {};
+	int32 FrameN = 0;
+	bool bReadLastFrame = false;
 	bool bShot = false;
 	bool bShotTaken = false;
 	bool bExitAsked = false;
