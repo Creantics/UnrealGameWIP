@@ -6765,7 +6765,10 @@ private:
 #if !UE_BUILD_SHIPPING
 		if (bReadsOff)
 		{
+			// The control: no read, but the frames where one would be asked, copied and taken are flagged the same way
+			// (the ask's five, plus the take's re-arm a frame or two later), so on and off compare like for like.
 			ReadFirst = -1;
+			FlagLeft = 7;
 			return;
 		}
 #endif
