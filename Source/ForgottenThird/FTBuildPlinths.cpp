@@ -5,6 +5,7 @@
 
 #include "ForgottenThird.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 
 #include "ftcore/TerrainPocket.h"
@@ -70,6 +71,49 @@ bool FTPlinths::Plan(const ftcore::MassingGround& Ground, const std::vector<ftco
 		// The retaining walls' surface (ftcore::massingLookSurface); the checker's tables keep kind "plinth".
 		Box.kind = "terrace";
 		Out.push_back(std::move(Box));
+	}
+	return true;
+}
+
+bool FTPlinths::ReportFloats(const ftcore::MassingGround& Ground, const std::vector<ftcore::MassingBox>& Boxes, const std::vector<bool>& Visible)
+{
+	if (!FParse::Param(FCommandLine::Get(), TEXT("FloatCheck")))
+	{
+		return true;
+	}
+	const ftcore::FloatSpec Spec;
+	ftcore::FloatReport Report;
+	std::string Error;
+	if (!ftcore::findFloats(Ground, Boxes, Visible, Spec, Report, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: floats: %s"), UTF8_TO_TCHAR(Error.c_str()));
+		return false;
+	}
+	size_t Skirts = 0, Snaps = 0;
+	FString Csv = TEXT("id,kind,gap_m,x,y,base_z,ground_z,ground_min_z,building,failing,crouch,fix\n");
+	for (const ftcore::FloatBox& F : Report.floating)
+	{
+		const ftcore::MassingBox& B = Boxes[F.box];
+		// What item 3's fix pass would do (not done yet): a skirt up to maxSkirt for a building, else a snap when over the line.
+		const TCHAR* Fix = F.building ? (F.gap <= Spec.maxSkirt ? TEXT("skirt") : TEXT("snap")) : (F.gap > Spec.failAny ? TEXT("snap") : TEXT("leave"));
+		Skirts += FCString::Strcmp(Fix, TEXT("skirt")) == 0 ? 1 : 0;
+		Snaps += FCString::Strcmp(Fix, TEXT("snap")) == 0 ? 1 : 0;
+		const FString Id = UTF8_TO_TCHAR(B.id.c_str()), Kind = UTF8_TO_TCHAR(B.kind.c_str());
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: float %s (%s): %.2f m at (%.1f, %.1f), base %.2f over ground %.2f (lowest %.2f)%s%s%s; fix %s."),
+			*Id, *Kind, F.gap, F.x, F.y, F.base, F.ground, F.groundMin, F.building ? TEXT(", building") : TEXT(""),
+			F.failing ? TEXT(", FAILS") : TEXT(""), F.crouch ? TEXT(", crouch-under") : TEXT(""), Fix);
+		Csv += FString::Printf(TEXT("%s,%s,%.3f,%.2f,%.2f,%.3f,%.3f,%.3f,%d,%d,%d,%s\n"), *Id, *Kind, F.gap, F.x, F.y, F.base, F.ground, F.groundMin,
+			F.building ? 1 : 0, F.failing ? 1 : 0, F.crouch ? 1 : 0, Fix);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: floats (report only): %d boxes checked, %d not sunk %.1f m, %d float over %.2f m: %d fail "
+		"(over %.1f m, a building over %.1f m), %d crouch-under (%.1f-%.1f m); the fix pass would skirt %d and snap %d."),
+		static_cast<int32>(Report.checked), static_cast<int32>(Report.shallow), Spec.sink, static_cast<int32>(Report.floating.size()), Spec.visible,
+		static_cast<int32>(Report.failing), Spec.failAny, Spec.failBuilding, static_cast<int32>(Report.crouch), Spec.crouchLow, Spec.crouchHigh,
+		static_cast<int32>(Skirts), static_cast<int32>(Snaps));
+	FString Path;
+	if (FParse::Value(FCommandLine::Get(), TEXT("FloatReport="), Path) && !FFileHelper::SaveStringToFile(Csv, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: floats: couldn't write %s."), *Path);
 	}
 	return true;
 }

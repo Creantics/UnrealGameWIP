@@ -885,4 +885,107 @@ bool planPlinths(const MassingGround& ground, const std::vector<MassingBox>& box
     return true;
 }
 
+bool findFloats(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                const FloatSpec& spec, FloatReport& out, std::string* error) {
+    out = FloatReport{};
+    if (!(spec.sample >= 0.05) || !std::isfinite(spec.sample)) {
+        if (error) *error = "the float check's sample is under 0.05 m";
+        return false;
+    }
+    // The buckets span every box marked.
+    PocketRect r{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest(),
+                 std::numeric_limits<double>::lowest()};
+    for (std::size_t i = 0; i < boxes.size() && i < include.size(); ++i) {
+        if (!include[i] || !usable(boxes[i])) continue;
+        const BoxFrame f = frameOf(boxes[i]);
+        r.minX = std::min(r.minX, boxes[i].cx - f.hx);
+        r.minY = std::min(r.minY, boxes[i].cy - f.hy);
+        r.maxX = std::max(r.maxX, boxes[i].cx + f.hx);
+        r.maxY = std::max(r.maxY, boxes[i].cy + f.hy);
+    }
+    if (r.minX > r.maxX) return true;
+    BoxBuckets buckets;
+    buckets.build(boxes, include, r);
+    for (std::size_t i = 0; i < boxes.size() && i < include.size(); ++i) {
+        const MassingBox& b = boxes[i];
+        if (!include[i] || !usable(b) || (!b.sloped && b.z1 - b.z0 <= kMassingMinHeight)) continue;
+        ++out.checked;
+        const BoxFrame& f = buckets.frames[i];
+        const int nu = std::max(1, static_cast<int>(std::ceil(b.sx / spec.sample - 1e-9)));
+        const int nw = std::max(1, static_cast<int>(std::ceil(b.sy / spec.sample - 1e-9)));
+        FloatBox worst;
+        worst.box = i;
+        worst.gap = std::numeric_limits<double>::lowest();
+        worst.groundMin = std::numeric_limits<double>::max();
+        for (int iu = 0; iu <= nu; ++iu) {
+            for (int iw = 0; iw <= nw; ++iw) {
+                // Just inside the footprint, so the box's own solid holds the point.
+                const double u = (static_cast<double>(iu) / nu - 0.5) * b.sx * 0.999;
+                const double w = (static_cast<double>(iw) / nw - 0.5) * b.sy * 0.999;
+                const double x = b.cx + u * f.c - w * f.s, y = b.cy + u * f.s + w * f.c;
+                double base = 0.0, top = 0.0;
+                if (!solidAt(f, x, y, base, top)) continue;
+                const double z = groundAt(ground, x, y);
+                if (z < spec.seaLevel) continue;
+                worst.groundMin = std::min(worst.groundMin, z);
+                const double gap = base - z;
+                if (gap <= worst.gap) continue;
+                bool held = false;
+                if (const std::vector<std::uint32_t>* list = buckets.at(x, y)) {
+                    for (const std::uint32_t k : *list) {
+                        if (k == i) continue;
+                        double kb = 0.0, kt = 0.0;
+                        if (solidAt(buckets.frames[k], x, y, kb, kt) && kt >= base - spec.support && kb < base) {
+                            held = true;
+                            break;
+                        }
+                    }
+                }
+                if (held) continue;
+                worst.gap = gap;
+                worst.x = x;
+                worst.y = y;
+                worst.base = base;
+                worst.ground = z;
+            }
+        }
+        if (worst.gap == std::numeric_limits<double>::lowest()) continue; // all of it on the water or held up
+        if (worst.gap > -spec.sink) ++out.shallow;
+        if (worst.gap <= spec.visible) continue;
+        worst.building = pocketBuilding(b);
+        worst.failing = worst.gap > spec.failAny || (worst.building && worst.gap > spec.failBuilding);
+        worst.crouch = worst.building && worst.gap >= spec.crouchLow && worst.gap <= spec.crouchHigh;
+        out.failing += worst.failing ? 1 : 0;
+        out.crouch += worst.crouch ? 1 : 0;
+        out.floating.push_back(worst);
+    }
+    std::stable_sort(out.floating.begin(), out.floating.end(), [](const FloatBox& a, const FloatBox& c) { return a.gap > c.gap; });
+    return true;
+}
+
+bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                     const FloatSpec& spec, std::vector<MassingBox>& out, std::vector<FloatSnap>& snaps,
+                     FoundationStats& stats, std::string* error) {
+    stats = FoundationStats{};
+    FloatReport report;
+    if (!findFloats(ground, boxes, include, spec, report, error)) return false;
+    stats.floating = report.floating.size();
+    std::size_t counter = 0;
+    for (const FloatBox& fb : report.floating) {
+        const MassingBox& b = boxes[fb.box];
+        if (fb.building && fb.gap <= spec.maxSkirt) {
+            out.push_back(plinthBox("PL-B-" + std::to_string(++counter), b.cx, b.cy, b.sx, b.sy, b.rot, fb.groundMin - spec.sink, b.z0));
+            ++stats.foundations;
+        } else if (!b.sloped && (fb.building || fb.gap > spec.failAny)) {
+            // Its lowest base point comes down onto the lowest ground under it.
+            const double to = fb.building ? fb.groundMin - spec.sink : fb.groundMin;
+            snaps.push_back(FloatSnap{fb.box, to - frameOf(b).bottomMin});
+            ++stats.snapped;
+        } else {
+            ++stats.left;
+        }
+    }
+    return true;
+}
+
 } // namespace ftcore

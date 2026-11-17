@@ -22,4 +22,10 @@ namespace FTPlinths
 // can't run; true, with Out untouched, without -Plinths.
 FORGOTTENTHIRD_API bool Plan(const ftcore::MassingGround& Ground, const std::vector<ftcore::MassingBox>& Boxes, const std::vector<bool>& Visible,
 	double EntryX, double EntryY, std::vector<ftcore::MassingBox>& Out);
+
+// Playtest item 3, report only for now: with -FloatCheck, ftcore::findFloats over the boxes Visible marks. It logs the
+// totals and each float (id, kind, gap, where, building, failing, crouch-under), and with -FloatReport=<csv> writes them
+// there too. Nothing is sunk, snapped or failed yet. True without the switch; false (logged) when the check can't run.
+FORGOTTENTHIRD_API bool ReportFloats(const ftcore::MassingGround& Ground, const std::vector<ftcore::MassingBox>& Boxes,
+	const std::vector<bool>& Visible);
 } // namespace FTPlinths

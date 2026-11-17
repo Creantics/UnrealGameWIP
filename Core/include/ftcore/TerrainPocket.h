@@ -148,4 +148,69 @@ FTCORE_API bool planPlinths(const MassingGround& ground, const std::vector<Massi
                             const PocketRect& rect, const std::vector<PocketPoint>& anchors, const PlinthSpec& spec,
                             std::vector<MassingBox>& out, PlinthStats& stats, std::string* error = nullptr);
 
+// Floating boxes: a box `include` marks whose base stands over the ground somewhere under its footprint. The check reads
+// its footprint's edge and inside every `sample` m (corners included) and keeps, per point, the base (z0, lifted as the
+// box's rise lifts it) less the ground; a point is held up when another box `include` marks stands there with its top
+// within `support` of the base and its bottom under it, and out of play when its ground lies under seaLevel (decks,
+// piers, boats). A box's gap is its largest over the points neither held up nor out of play. Boxes no taller than
+// kMassingMinHeight (flat paint, pads) aren't checked. The check reads the box (its z0), not a kit mesh laid in its place.
+// The build fails on a float over failAny, or a building's over failBuilding (the 2026-11-17 ruling).
+struct FloatSpec {
+    double sample = 1.0;        // m between the points read
+    double sink = 0.3;          // m: a base this far under the ground everywhere is sound
+    double visible = 0.05;      // m: a gap over this is a float (a crouch-under or a lit seam)
+    double support = 0.05;      // m, a supporter's top within this of the base holds it up
+    double seaLevel = 0.2;      // m: ground under this is water
+    double maxSkirt = 1.5;      // m: a building floating up to this gets a foundation; over it, a placement error (snapped)
+    double failAny = 0.9;       // m: a float over this fails the build
+    double failBuilding = 0.3;  // m: a building's float over this fails the build
+    double crouchLow = 0.9, crouchHigh = 1.4; // m: a building's gap in this band lets the crouched capsule in under it
+};
+
+struct FloatBox {
+    std::size_t box = 0;       // index into boxes
+    double gap = 0.0;          // m, the base over the ground at its worst point
+    double x = 0.0, y = 0.0;   // that point
+    double base = 0.0, ground = 0.0;
+    double groundMin = 0.0;    // the lowest ground under its footprint (points out of play left out)
+    bool building = false;     // pocketBuilding
+    bool failing = false;      // over failAny, or a building over failBuilding
+    bool crouch = false;       // a building whose gap lies in crouchLow..crouchHigh
+};
+
+struct FloatReport {
+    std::size_t checked = 0;
+    std::size_t shallow = 0;           // checked boxes whose gap lies over -sink (not sunk sink everywhere), floats included
+    std::size_t failing = 0, crouch = 0;
+    std::vector<FloatBox> floating;    // gap over visible, largest first
+};
+
+// The check. False (error set) on a sample under 0.05 m.
+FTCORE_API bool findFloats(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                           const FloatSpec& spec, FloatReport& out, std::string* error = nullptr);
+
+// A placement fix: move boxes[box] by dz (m, down when negative), z0 and z1 alike.
+struct FloatSnap {
+    std::size_t box = 0;
+    double dz = 0.0;
+};
+
+struct FoundationStats {
+    std::size_t floating = 0;     // floats the check found
+    std::size_t foundations = 0;  // foundation boxes laid (buildings up to maxSkirt)
+    std::size_t snapped = 0;      // placement fixes (buildings over maxSkirt, other pieces over failAny)
+    std::size_t left = 0;         // floats neither founded nor snapped (under the fail lines, or sloped: ramps stay)
+};
+
+// The fixes for the floats the check finds (planFoundations runs before planPlinths, its boxes fed in):
+//   a building (pocketBuilding) up to maxSkirt over the ground gets a foundation: one box, its footprint and turn, from its
+//   base down to sink under the lowest ground under it (kind "plinth", id PL-B-<n>, source Invented, no cover), solid, so
+//   nothing gets in under it;
+//   a building over maxSkirt, or any other unsloped piece over failAny, is a placement error: snapped down onto the lowest
+//   ground under it (its base sink under that ground for a building, on it for any other piece);
+//   anything else is left (and fails the build only if over a fail line).
+FTCORE_API bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+                                const FloatSpec& spec, std::vector<MassingBox>& out, std::vector<FloatSnap>& snaps,
+                                FoundationStats& stats, std::string* error = nullptr);
+
 } // namespace ftcore

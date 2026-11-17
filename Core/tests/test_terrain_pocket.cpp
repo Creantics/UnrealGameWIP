@@ -251,3 +251,88 @@ TEST_CASE("pocketRectOf grows the boxes' bounds and cuts them to the field") {
     low.z1 = 10.0;
     CHECK_FALSE(pocketBuilding(low));
 }
+
+TEST_CASE("a building raised over sloping ground floats; a foundation closes the gap") {
+    // Ground falls 0.1 m per m along x from 12 at x 0; the building's base sits at 10.5 over x 10..20 (ground 11..10).
+    const Field f([](double x, double) { return 12.0 - 0.1 * x; });
+    std::vector<MassingBox> boxes{building("B", 10.0, 10.0, 20.0, 20.0, 10.5, 16.0)};
+    // A lamp post 2 m up on the flat, a building sunk 0.5 m, and a deck out over the water elsewhere stay out of the list.
+    boxes.push_back(building("LAMP", 30.0, 30.0, 30.3, 30.3, 11.0, 15.0));
+    boxes.back().kind = "lamp";
+    boxes.push_back(building("SUNK", 40.0, 40.0, 50.0, 50.0, 12.0 - 0.1 * 50.0 - 0.5, 15.0));
+    const std::vector<bool> include(boxes.size(), true);
+    FloatReport r;
+    REQUIRE(findFloats(f.ground, boxes, include, FloatSpec{}, r));
+    CHECK(r.checked == 3);
+    REQUIRE(r.floating.size() == 2);
+    CHECK(r.floating[0].box == 1); // the lamp: 11 over ground 9 (largest first)
+    CHECK(r.floating[0].gap == doctest::Approx(2.0).epsilon(0.02));
+    CHECK_FALSE(r.floating[0].building);
+    CHECK(r.floating[1].box == 0);
+    CHECK(r.floating[1].gap == doctest::Approx(0.5).epsilon(0.05)); // over ground 10 at x 20
+    CHECK(r.floating[1].x == doctest::Approx(20.0).epsilon(0.01));
+    CHECK(r.floating[1].building);
+    CHECK(r.shallow == 2);
+    CHECK(r.failing == 2); // the lamp over 0.9 m, the building over 0.3 m
+    CHECK(r.crouch == 0);
+
+    std::vector<MassingBox> plinths;
+    std::vector<FloatSnap> snaps;
+    FoundationStats st;
+    REQUIRE(planFoundations(f.ground, boxes, include, FloatSpec{}, plinths, snaps, st));
+    CHECK(st.floating == 2);
+    CHECK(st.left == 0);
+    REQUIRE(st.snapped == 1);
+    REQUIRE(snaps.size() == 1);
+    CHECK(snaps[0].box == 1); // the lamp comes down onto the ground (8.97 at x 30.3)
+    CHECK(snaps[0].dz == doctest::Approx(-2.03).epsilon(0.01));
+    REQUIRE(st.foundations == 1);
+    REQUIRE(plinths.size() == 1);
+    CHECK(plinths[0].id == "PL-B-1");
+    CHECK(plinths[0].kind == "plinth");
+    CHECK(plinths[0].z1 == doctest::Approx(10.5));
+    CHECK(plinths[0].z0 == doctest::Approx(10.0 - 0.3).epsilon(0.01));
+    CHECK(plinths[0].cx == doctest::Approx(15.0));
+
+    // With the foundation in, the building is held up everywhere: no float left.
+    std::vector<MassingBox> all(boxes);
+    all.push_back(plinths[0]);
+    const std::vector<bool> inc2(all.size(), true);
+    FloatReport r2;
+    REQUIRE(findFloats(f.ground, all, inc2, FloatSpec{}, r2));
+    REQUIRE(r2.floating.size() == 1);
+    CHECK(r2.floating[0].box == 1);
+}
+
+TEST_CASE("the float check skips water and boxes held up by others; a building far up is snapped, not skirted") {
+    // Water (ground 0) for x under 20, 10 m ground beyond.
+    const Field f([](double x, double) { return x < 20.0 ? 0.0 : 10.0; });
+    std::vector<MassingBox> boxes{building("DECK", 5.0, 5.0, 15.0, 15.0, 1.0, 1.5)};
+    boxes.push_back(building("BASE", 30.0, 30.0, 40.0, 40.0, 9.5, 14.0));
+    boxes.push_back(building("TOP", 32.0, 32.0, 38.0, 38.0, 14.0, 20.0)); // stands on BASE
+    boxes.push_back(building("HIGH", 45.0, 45.0, 55.0, 55.0, 16.0, 22.0)); // 6 m up: too deep to found
+    const std::vector<bool> include(boxes.size(), true);
+    FloatReport r;
+    REQUIRE(findFloats(f.ground, boxes, include, FloatSpec{}, r));
+    REQUIRE(r.floating.size() == 1);
+    CHECK(r.floating[0].box == 3);
+    CHECK(r.floating[0].failing);
+    std::vector<MassingBox> plinths;
+    std::vector<FloatSnap> snaps;
+    FoundationStats st;
+    REQUIRE(planFoundations(f.ground, boxes, include, FloatSpec{}, plinths, snaps, st));
+    CHECK(plinths.empty()); // 6 m is a placement error, never a tall skirt
+    REQUIRE(snaps.size() == 1);
+    CHECK(snaps[0].box == 3);
+    CHECK(snaps[0].dz == doctest::Approx(10.0 - 0.3 - 16.0));
+    // A building 1.1 m up is a crouch-under; it is founded.
+    std::vector<MassingBox> one{building("LOW", 30.0, 30.0, 40.0, 40.0, 11.1, 16.0)};
+    FloatReport r3;
+    REQUIRE(findFloats(f.ground, one, std::vector<bool>(1, true), FloatSpec{}, r3));
+    REQUIRE(r3.floating.size() == 1);
+    CHECK(r3.floating[0].crouch);
+    CHECK(r3.crouch == 1);
+    FloatSpec bad;
+    bad.sample = 0.0;
+    CHECK_FALSE(findFloats(f.ground, boxes, include, bad, r));
+}
