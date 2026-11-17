@@ -1468,6 +1468,55 @@ TEST_CASE("close station: a string the lead hides ends no faster than a pause an
     CHECK(shortest + 1e-6 >= 0.6 + static_cast<double>(t.pauseMin));
 }
 
+TEST_CASE("close station: a melee partner's flank is the side with the frame's room, held 2 s unless it has no point") {
+    // Fault B of 11-17: the lead left of the frame's centre, the partner on the right flank; the lens over the other
+    // shoulder (the lead right of the centre), the left. A flank once taken is held kPartnerCloseMeleeHoldSeconds
+    // (2 s), then the room's side again.
+    for (const float shoulder : {0.55f, -0.55f}) {
+        CAPTURE(shoulder);
+        PartnerCloseInput in;
+        in.lead = {-1.2f, 0.f};
+        in.target = {0.f, 0.f};
+        in.targetRadius = 0.5f;
+        csLens(in.lead, in.target, shoulder, 0.f, in.cameraPos, in.cameraForward, 34.f);
+        in.halfAngleDegrees = 34.f;
+        in.leadSide = static_cast<std::int8_t>(shoulder > 0.f ? -1 : 1);
+        in.partner = {-1.5f, shoulder > 0.f ? -2.f : 2.f};
+        in.bodyRadius = 0.4f;
+        in.farFlankFirst = true;
+        in.leadGapBodies = 1.f;
+        in.keepWhileAttacking = true;
+        const Vec2 right = csRight(csUnit(in.cameraForward));
+        float leadX = 0.f;
+        REQUIRE(partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, in.lead, leadX));
+        REQUIRE(leadX * shoulder < 0.f); // the lead on the screen's side away from the shoulder
+        PartnerCloseHold hold;
+        const PartnerCloseStation s = partnerCloseStation(in, hold);
+        REQUIRE(s.valid);
+        const float lateral = csDot(csSub(s.point, in.cameraPos), right);
+        float x = 0.f;
+        REQUIRE(partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, s.point, x));
+        MESSAGE("lead x " << leadX << ": flank " << int{s.flank} << ", x " << x);
+        CHECK(x * leadX < 0.f); // the other half of the frame from the lead: the side with the room
+        CHECK(lateral * shoulder > 0.f);
+        CHECK(std::fabs(x) <= 1.f - 2.f * kPartnerCloseConeMargin);
+        // The other flank held 1.7 s (past the default 1.5 s, inside the melee 2 s), no string: kept.
+        PartnerCloseHold other;
+        other.flank = static_cast<std::int8_t>(-s.flank);
+        other.angle = 60.f;
+        other.heldFor = 1.7;
+        const PartnerCloseStation young = partnerCloseStation(in, other);
+        CHECK(young.valid);
+        CHECK(young.flank == other.flank);
+        // Held 2.1 s: the room's side again.
+        other.flank = static_cast<std::int8_t>(-s.flank);
+        other.heldFor = 2.1;
+        const PartnerCloseStation old = partnerCloseStation(in, other);
+        CHECK(old.valid);
+        CHECK(old.flank == s.flank);
+    }
+}
+
 TEST_CASE("close station: a melee partner takes the far flank, a body width clear of the lead, and keeps it in a string") {
     // Round 6 (11-16): the lead in contact (1.2 m centre to centre) with a target of 0.5 m, the lens over its right
     // shoulder (0.55 m) aimed at the target, the melee band, the partner behind on the lead's side.
@@ -1496,16 +1545,42 @@ TEST_CASE("close station: a melee partner takes the far flank, a body width clea
     CHECK(s.gapped);
     CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, s.point, in.bodyRadius, in.lead, in.bodyRadius));
 
-    // In a string with the near flank held: no new pick (the held flank and angle), whatever the far flank offers.
+    // In a string with a framed angle held: no new pick (the held flank and angle).
+    in.attacking = true;
+    PartnerCloseHold farHeld;
+    farHeld.flank = s.flank;
+    farHeld.angle = s.angle;
+    farHeld.heldFor = 5.0;
+    const PartnerCloseStation farKept = partnerCloseStation(in, farHeld);
+    CHECK(farKept.valid);
+    CHECK(farKept.held);
+    CHECK(farKept.flank == s.flank);
+    CHECK(farKept.angle == doctest::Approx(s.angle));
+    // In a string with the near flank held at 60 degrees, a point out of the frame (fault B of 11-17: the held station
+    // must lie in the frame with the cone's margin): the flank is kept, the station moves into the frame.
     PartnerCloseHold nearHeld;
     nearHeld.flank = static_cast<std::int8_t>(-s.flank);
     nearHeld.angle = 60.f;
     nearHeld.heldFor = 5.0;
-    in.attacking = true;
+    {
+        const Vec2 dir60 = csUnit(csSub(in.lead, in.target)); // the lead's bearing, turned below
+        const float a60 = static_cast<float>(nearHeld.flank) * 60.f * 3.14159265f / 180.f;
+        const Vec2 d{dir60.x * std::cos(a60) - dir60.y * std::sin(a60), dir60.x * std::sin(a60) + dir60.y * std::cos(a60)};
+        // The held station's distance off the edge: the partner's own along that line, within bodyRadius..standMax.
+        const float off = std::clamp(csDot(csSub(in.partner, in.target), d) - in.targetRadius, in.bodyRadius,
+                                     std::max(in.standMax, in.bodyRadius));
+        const Vec2 p60{in.target.x + d.x * (in.targetRadius + off), in.target.y + d.y * (in.targetRadius + off)};
+        float x60 = 0.f;
+        const bool ahead60 = partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, p60, x60);
+        MESSAGE("the near flank at 60 degrees: ndc x " << x60 << ", ahead " << ahead60);
+        REQUIRE((!ahead60 || std::fabs(x60) > 1.f - 2.f * kPartnerCloseConeMargin)); // out of the frame
+    }
     const PartnerCloseStation kept = partnerCloseStation(in, nearHeld);
     CHECK(kept.valid);
     CHECK(kept.flank == nearHeld.flank);
-    CHECK(kept.angle == doctest::Approx(60.f));
+    float keptX = 0.f;
+    CHECK(partnerCloseNdc(in.cameraPos, in.cameraForward, in.halfAngleDegrees, kept.point, keptX));
+    CHECK(std::fabs(keptX) <= 1.f - 2.f * kPartnerCloseConeMargin);
     CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, kept.point, in.bodyRadius, in.lead, in.bodyRadius));
     // The string over and the hold's time up: the far flank again.
     in.attacking = false;

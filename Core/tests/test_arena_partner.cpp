@@ -5794,10 +5794,13 @@ TEST_CASE("arena partner: a target crossing at 6 m/s mid-string: the facing foll
     // The arena's normal 5 (fault C): a fast enemy crossing during a string left the facing up to 57 deg off, since it
     // turned over startup alone. Now recovery turns it too (the kit's turn rate, at most 360 deg/s); the active part
     // never. The partner stands, its target runs back and forth 2 m in front of it at 6 m/s: on every string step
-    // outside the active part the facing is within 30 deg of the target. Both melee kits, under the close camera.
+    // outside the active part the facing is within 30 deg of the target. Both melee kits and the party caster (the
+    // normal 5 run's partner: its own blows' timings; this rig gives no lens, so its range is off and it strikes at
+    // 2 m too), under the close camera's rule.
     const ArenaTable table = shippedTable();
-    for (const char* kit : {"devin", "duy"}) {
+    for (const char* kit : {"devin", "duy", "third"}) {
         CAPTURE(kit);
+        constexpr float lineY = 2.f;
         PRig r(table.fighter("devin"));
         r.ownPartnerKit = true;
         r.def.partnerKit = table.fighter(kit);
@@ -5806,7 +5809,7 @@ TEST_CASE("arena partner: a target crossing at 6 m/s mid-string: the facing foll
         r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way
         REQUIRE(validPartnerTuning(r.tuning));
         const ArenaEnemyKind dummy = dummyKind();
-        r.enemy(dummy, Vec2{-3.f, 2.f});
+        r.enemy(dummy, Vec2{-3.f, lineY});
         r.bodies.player = Vec2{-4.f, -3.f};
         r.bodies.ally = Vec2{0.f, 0.f};
         r.go(true, 1000);
@@ -5819,7 +5822,7 @@ TEST_CASE("arena partner: a target crossing at 6 m/s mid-string: the facing foll
                 x = std::clamp(x, -3.f, 3.f);
                 v = -v;
             }
-            r.bodies.enemies[0] = Vec2{x, 2.f};
+            r.bodies.enemies[0] = Vec2{x, lineY};
             r.tick();
             const ArenaAllyOut& al = r.out->ally;
             if (!al.attacking || al.part == ArenaPart::Active || al.target != 0) continue;

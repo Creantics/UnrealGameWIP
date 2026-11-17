@@ -226,7 +226,10 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     if (!unitOf(sub(in.lead, in.target), bearing) && !unitOf(sub(in.cameraPos, in.target), bearing)) bearing = {1.f, 0.f};
     float leadX = 0.f, leadY = 0.f;
     const bool leadSeen = partnerCloseLens(in, in.lead, leadX, leadY);
-    const bool keep = hold.flank != 0 && (hold.heldFor < kPartnerCloseHoldSeconds || in.attacking);
+    // A melee partner holds a flank longer (kPartnerCloseMeleeHoldSeconds): its far flank is the side with the frame's
+    // room, and a shorter hold let it flip as the lead's screen x wavered about the centre.
+    const double holdFor = in.farFlankFirst ? kPartnerCloseMeleeHoldSeconds : kPartnerCloseHoldSeconds;
+    const bool keep = hold.flank != 0 && (hold.heldFor < holdFor || in.attacking);
     const float lo = in.standMin, hi = in.standMax;
     // A melee partner in a string: no new pick, the held angle where it stands off the target's edge.
     if (in.keepWhileAttacking && in.attacking && hold.flank != 0 && !hold.ring) {
@@ -234,7 +237,12 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         const float off =
             std::clamp(dot(sub(in.partner, in.target), dir) - in.targetRadius, in.bodyRadius, std::max(hi, in.bodyRadius));
         const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
-        if (roomFor(in, p) && clearOfLead(in, p, 0.f)) {
+        // In the frame too, with the cone's margin (the lead's turn or the target's step can carry the held angle out
+        // of it): else a new pick below, the hold kept where that flank has one.
+        float hx = 0.f, hy = 0.f;
+        const bool framed = partnerCloseLens(in, p, hx, hy) && std::fabs(hx) <= 1.f - 2.f * kPartnerCloseConeMargin &&
+                            (in.sees == nullptr || in.sees(in.seesContext, p));
+        if (framed && roomFor(in, p) && clearOfLead(in, p, 0.f)) {
             out.valid = true;
             out.tier = 1;
             out.point = p;
@@ -276,9 +284,12 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     std::int8_t farFlank = 0;
     if (in.farFlankFirst && forwardOk) {
         const Vec2 right = rightOf(lensForward);
-        const float leadLateral = dot(sub(in.lead, in.cameraPos), right);
+        // The frame's room: the lead left of the centre on screen, the right flank; the reverse (its screen x, else
+        // its lateral offset from the axis, else leadSide).
+        const float leadLateral = leadSeen ? leadX : dot(sub(in.lead, in.cameraPos), right);
+        const float leadEps = leadSeen ? 0.02f : 0.05f;
         const float leadSign =
-            std::fabs(leadLateral) > 0.05f ? (leadLateral > 0.f ? 1.f : -1.f) : static_cast<float>(in.leadSide);
+            std::fabs(leadLateral) > leadEps ? (leadLateral > 0.f ? 1.f : -1.f) : static_cast<float>(in.leadSide);
         if (leadSign != 0.f) {
             const float mid = 0.5f * (angleMin + angleMax), reachOut = in.targetRadius + 0.5f * (lo + hi);
             const float minus = dot(sub(add(in.target, mul(turn(bearing, -mid), reachOut)), in.cameraPos), right);
