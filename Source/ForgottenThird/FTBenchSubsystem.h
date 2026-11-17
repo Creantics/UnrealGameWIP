@@ -99,4 +99,11 @@ private:
 	TArray<TPair<double, FString>> Execs; // capture second, console command; sorted by second
 	int32 NextExec = 0;
 	FString Marks;                  // warm-up, teleport and command frames, for the summary
+
+	// "ftcensus" in -BenchExec: logs the ray-tracing dynamic geometry (skinned, groom and WPO meshes visible in ray
+	// tracing) and, a frame later, the primitives whose transform changed in that frame, both by owner class.
+	void CensusStart(UWorld& World);
+	void CensusMoved();
+	TArray<TPair<TWeakObjectPtr<USceneComponent>, FTransform>> CensusSnap;
+	bool bCensusPending = false;
 };

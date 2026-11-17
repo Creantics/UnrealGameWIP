@@ -21,6 +21,10 @@
 #include "UnrealClient.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Engine.h"
+#include "Components/SkinnedMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "EngineUtils.h"
+#include "UObject/UObjectIterator.h"
 
 #include "ftcore/MassingPlan.h"
 
@@ -328,17 +332,26 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Display, TEXT("Bench %s: %s."), *Name, *Mark);
 			Marks += Mark + TEXT("\n");
 		}
+		const bool bCensusDue = bCensusPending; // the census's second half runs on the frame after its first
 		while (NextExec < Execs.Num() && PhaseClock >= Execs[NextExec].Key)
 		{
 			const FString Mark = FString::Printf(TEXT("exec '%s' at capture frame %d (%.1f s)"), *Execs[NextExec].Value,
 				static_cast<int32>(Stats->size()), PhaseClock);
 			UE_LOG(LogForgottenThird, Display, TEXT("Bench %s: %s."), *Name, *Mark);
 			Marks += Mark + TEXT("\n");
-			if (GEngine)
+			if (Execs[NextExec].Value.Equals(TEXT("ftcensus"), ESearchCase::IgnoreCase))
+			{
+				CensusStart(*World);
+			}
+			else if (GEngine)
 			{
 				GEngine->Exec(World, *Execs[NextExec].Value);
 			}
 			++NextExec;
+		}
+		if (bCensusDue)
+		{
+			CensusMoved();
 		}
 		PlaceCamera(PhaseClock + PathOffset);
 		if (bSkipNext)
@@ -427,4 +440,93 @@ void UFTBenchSubsystem::WriteSummary()
 	Text += TEXT("\nsettings:\n") + SettingsReport();
 	IFileManager::Get().MakeDirectory(*OutDir, true);
 	FFileHelper::SaveStringToFile(Text, *(OutDir / Name + TEXT("_summary.txt")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+}
+
+namespace
+{
+FString CensusOwner(const UActorComponent& Component)
+{
+	const AActor* Owner = Component.GetOwner();
+	return FString::Printf(TEXT("%s/%s"), Owner ? *Owner->GetClass()->GetName() : TEXT("(none)"), *Component.GetClass()->GetName());
+}
+
+void CensusLog(const TCHAR* What, TMap<FString, int32>& Counts)
+{
+	Counts.ValueSort([](int32 A, int32 B) { return A > B; });
+	int32 Total = 0;
+	for (const TPair<FString, int32>& Row : Counts)
+	{
+		Total += Row.Value;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Bench census: %s: %d in all."), What, Total);
+	int32 Shown = 0;
+	for (const TPair<FString, int32>& Row : Counts)
+	{
+		if (++Shown > 25)
+		{
+			break;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Bench census:   %5d  %s"), Row.Value, *Row.Key);
+	}
+}
+} // namespace
+
+void UFTBenchSubsystem::CensusStart(UWorld& World)
+{
+	// Ray-tracing dynamic geometry: skinned meshes (r.RayTracing.Geometry.SkeletalMeshes), grooms and static meshes that
+	// evaluate WPO in ray tracing; near = within 30 m of the view.
+	FVector Eye = FVector::ZeroVector;
+	if (const APlayerController* PC = World.GetFirstPlayerController())
+	{
+		FRotator Unused;
+		PC->GetPlayerViewPoint(Eye, Unused);
+	}
+	TMap<FString, int32> Dynamic;
+	TMap<FString, int32> Near;
+	CensusSnap.Reset();
+	for (TObjectIterator<UPrimitiveComponent> It; It; ++It)
+	{
+		UPrimitiveComponent* Prim = *It;
+		if (!Prim || Prim->GetWorld() != &World || !Prim->IsRegistered() || !Prim->ShouldRender())
+		{
+			continue;
+		}
+		CensusSnap.Emplace(Prim, Prim->GetComponentTransform());
+		if (!Prim->bVisibleInRayTracing)
+		{
+			continue;
+		}
+		const UStaticMeshComponent* Static = Cast<UStaticMeshComponent>(Prim);
+		const bool bDynamic = Prim->IsA<USkinnedMeshComponent>() || Prim->GetClass()->GetName().Contains(TEXT("Groom"))
+			|| (Static && Static->bEvaluateWorldPositionOffsetInRayTracing);
+		if (!bDynamic)
+		{
+			continue;
+		}
+		const FString Key = CensusOwner(*Prim);
+		Dynamic.FindOrAdd(Key) += 1;
+		if (FVector::Dist(Prim->Bounds.Origin, Eye) < 3000.0)
+		{
+			Near.FindOrAdd(Key) += 1;
+		}
+	}
+	CensusLog(TEXT("ray-tracing dynamic geometry (skinned, groom, WPO in RT)"), Dynamic);
+	CensusLog(TEXT("of those within 30 m of the view"), Near);
+	bCensusPending = true;
+}
+
+void UFTBenchSubsystem::CensusMoved()
+{
+	bCensusPending = false;
+	TMap<FString, int32> Moved;
+	for (const TPair<TWeakObjectPtr<USceneComponent>, FTransform>& Row : CensusSnap)
+	{
+		const USceneComponent* Component = Row.Key.Get();
+		if (Component && !Component->GetComponentTransform().Equals(Row.Value, 0.01))
+		{
+			Moved.FindOrAdd(CensusOwner(*Component)) += 1;
+		}
+	}
+	CensusLog(TEXT("rendered primitives moved in one frame"), Moved);
+	CensusSnap.Empty();
 }
