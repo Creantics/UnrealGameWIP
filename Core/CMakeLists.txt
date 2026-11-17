@@ -72,6 +72,7 @@ add_library(ftcore STATIC
     src/WindowFacade.cpp
     src/BayCount.cpp
     src/SurfaceWeather.cpp
+    src/DemoBoot.cpp
     src/SurfaceJoints.cpp
     src/FrameStats.cpp
     src/BenchPath.cpp
@@ -388,6 +389,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_window_facade.cpp
         tests/test_bay_count.cpp
         tests/test_surface_weather.cpp
+        tests/test_demo_boot.cpp
         tests/test_surface_joints.cpp
         tests/test_frame_stats.cpp
         tests/test_bench_path.cpp
