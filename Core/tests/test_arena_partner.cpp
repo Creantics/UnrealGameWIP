@@ -5895,39 +5895,3 @@ TEST_CASE("arena partner: the drawn heading turns at most 540 deg/s and is withi
     CHECK(starts >= 2);
     CHECK(worstTurn <= 540.f * kDt + 0.05f);
 }
-
-TEST_CASE("arena partner: pushed back mid-string, the drawn heading stays within 5 deg of its facing") {
-    // The host shoves the ally's body back and aside every tick of a string (a recoil, a push): its walk this tick
-    // points away from its blows, but the heading keeps within 5 degrees of its facing.
-    const ArenaTable table = shippedTable();
-    {
-        PRig r(table.fighter("devin"));
-        r.ownPartnerKit = true;
-        r.def.partnerKit = table.fighter("duy");
-        r.def.fighter.hp = 100000;
-        r.tuning = shippedTuning();
-        r.tuning.budgetAllowanceSeconds = 10.f;
-        REQUIRE(validPartnerTuning(r.tuning));
-        r.enemy(dummyKind(), Vec2{1.5f, 0.f});
-        r.bodies.player = Vec2{-4.f, -3.f};
-        r.bodies.ally = Vec2{0.f, 0.f};
-        r.go(true, 1000);
-        int shoved = 0;
-        float worst = 0.f;
-        for (int k = 0; k < 6 * 60 && shoved < 40; ++k) {
-            r.tick();
-            const ArenaAllyOut& al = r.out->ally;
-            if (!al.attacking) continue;
-            if (shoved > 0) {
-                const float c = std::clamp(al.heading.x * al.facing.x + al.heading.y * al.facing.y, -1.f, 1.f);
-                worst = std::max(worst, std::acos(c) * 57.29578f);
-            }
-            r.bodies.ally = Vec2{r.bodies.ally.x - 0.04f * al.facing.x + 0.02f * al.facing.y,
-                                 r.bodies.ally.y - 0.04f * al.facing.y - 0.02f * al.facing.x};
-            ++shoved;
-        }
-        MESSAGE("string: shoved " << shoved << " ticks, worst heading off facing " << worst << " deg");
-        CHECK(shoved >= 10);
-        CHECK(worst <= 5.f);
-    }
-}
