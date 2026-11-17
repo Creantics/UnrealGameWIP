@@ -339,7 +339,8 @@ FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInter
 		Key.bCastShadow = false;
 		++Totals.FlushNoShadow;
 	}
-	Key.bLumen = InLumenScene(*Mesh, Transform, Key);
+	Key.bEmissive = Options.bEmissive && Kind != EFTCellKind::Hidden;
+	Key.bLumen = Key.bEmissive || InLumenScene(*Mesh, Transform, Key);
 	int32* Found = GroupOf.Find(Key);
 	const int32 G = Found ? *Found : Groups.Num();
 	if (!Found)
@@ -432,7 +433,16 @@ void FFTCellInstancer::Flush()
 				Comp->SetCullDistances(FMath::RoundToInt32(CullTo * FTCells::CullFadeStart), CullTo);
 			}
 			// Small dressing: nothing a ray, a distance field or the bounce lighting needs to know of.
-			if (IsLight(Key))
+			if (Key.bEmissive)
+			{
+				// Lumen's reflection rays (surface-cache hit lighting) find a glow only on a primitive with cards.
+				Comp->SetVisibleInRayTracing(true);
+				Comp->SetAffectDistanceFieldLighting(false);
+				Comp->SetAffectDynamicIndirectLighting(true);
+				Comp->SetEmissiveLightSource(true);
+				++Totals.EmissiveComponents;
+			}
+			else if (IsLight(Key))
 			{
 				Comp->SetVisibleInRayTracing(Key.bRayTraced && Key.Cull != EFTCellCull::Dressing && Key.Cull != EFTCellCull::Interior);
 				Comp->SetAffectDistanceFieldLighting(false);
@@ -473,6 +483,10 @@ void FFTCellInstancer::Flush()
 		{
 			Totals.LumenInstances += Count;
 		}
+		if (Group.Key.bEmissive)
+		{
+			Totals.EmissiveInstances += Count;
+		}
 		const TArray<FTransform> Adding(Group.Transforms.GetData() + Group.Made, Count);
 		const TArray<int32> Indices = Comp->AddInstances(Adding, true, true);
 		const int32 Stride = Comp->NumCustomDataFloats;
@@ -501,8 +515,10 @@ void FFTCellInstancer::Flush()
 	Totals.UnmergedGroups = Unmerged.Num();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: instancer: %.0f m cells; %d components (%d before Solid/Walk and tags shared "
 		"groups); %d light components of %d instances (no ray tracing, distance field or indirect lighting scene); %d ground-flush walked "
-		"pieces cast no shadow; %d plain (Lumen scene) components of %d instances, the rest hierarchical."), CellSize / 100.0, Totals.Components,
-		Totals.UnmergedGroups, Totals.LightComponents, Totals.LightInstances, Totals.FlushNoShadow, Totals.LumenComponents, Totals.LumenInstances);
+		"pieces cast no shadow; %d plain (Lumen scene) components of %d instances, the rest hierarchical; %d emissive light source "
+		"components of %d instances (ray traced, Lumen cards)."), CellSize / 100.0, Totals.Components,
+		Totals.UnmergedGroups, Totals.LightComponents, Totals.LightInstances, Totals.FlushNoShadow, Totals.LumenComponents, Totals.LumenInstances,
+		Totals.EmissiveComponents, Totals.EmissiveInstances);
 	// The census per cell: every instance and component made so far, one line a cell, west to east, then north to south.
 	{
 		TMap<FIntPoint, FIntPoint> PerCell; // X instances, Y components

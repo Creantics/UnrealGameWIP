@@ -3418,6 +3418,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UMaterialInterface* const LargePaper = MakePaper(Large, TEXT("MI_HC_LanternPaper"));
 		UMaterialInterface* const SmallPaper = MakePaper(Small, TEXT("MI_HC_LanternPaperSmall"));
 		UStaticMesh* const LargeMark = HeroMesh(TEXT("SM_HC_LanternLargeMark"));
+		// -HeroLanternLumen=false leaves the lanterns out of ray tracing and the Lumen scene (the A/B for the wet streak
+		// bar): by default they are emissive light sources, so a puddle's reflection ray finds one off screen.
+		bool bLanternLumen = true;
+		FParse::Bool(*Params, TEXT("HeroLanternLumen="), bLanternLumen);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: hero lanterns %s."),
+			bLanternLumen ? TEXT("emissive light sources (ray traced, Lumen cards)") : TEXT("out of ray tracing and the Lumen scene"));
 		// A hero piece at a plan point, turned to an engine yaw; lanterns cast no shadow, the dressing does.
 		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double EngineYaw, const TCHAR* Label, double Scale = 1.0,
 			bool bShadow = false)
@@ -3436,6 +3442,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			FFTCellOptions Opts;
 			Opts.Cull = EFTCellCull::Prop;
 			Opts.bCastShadow = bShadow;
+			Opts.bEmissive = bLanternLumen && (Mesh == Large || Mesh == Small || Mesh == LargeMark);
 			Opts.Label = FString::Printf(TEXT("%s-%d"), Label, HeroPieces + 1);
 			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, EngineYaw, 0.0), Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z)),
 				FVector(Scale)), {}, EFTCellKind::NoCollide, Opts);
