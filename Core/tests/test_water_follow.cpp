@@ -211,23 +211,23 @@ TEST_CASE("water follow: surface slots 2.5 m behind and 1.5 m to alternating sid
     s.bothIn();
     s.lead = swimmingLead({10.f, 0.f, -1.f}, {1.5f, 0.f});
     s.step();
-    // Travelling +X: behind is -X; right of +X is -Y.
+    // Travelling +X: behind is -X; right of +X is +Y (the engine's frame).
     CHECK(s.o(0).target.x == doctest::Approx(7.5f));
-    CHECK(s.o(0).target.y == doctest::Approx(-1.5f));
+    CHECK(s.o(0).target.y == doctest::Approx(1.5f));
     CHECK(s.o(1).target.x == doctest::Approx(7.5f));
-    CHECK(s.o(1).target.y == doctest::Approx(1.5f));
+    CHECK(s.o(1).target.y == doctest::Approx(-1.5f));
     CHECK(s.o(0).target.z == doctest::Approx(0.f)); // at the surface
     // Off the slot: the lead's cap plus 20%.
     CHECK(s.o(0).speed == doctest::Approx(1.5f * 1.2f));
     CHECK(s.o(0).sprint);
     // On the slot: the lead's speed.
-    s.members[0].position = {7.5f, -1.5f, -1.f};
+    s.members[0].position = {7.5f, 1.5f, -1.f};
     s.step();
     CHECK(s.o(0).speed == doctest::Approx(1.5f));
-    // The lead turns to +Y: the slots turn with it.
+    // The lead turns to +Y: the slots turn with it (right of +Y is -X).
     s.lead.velocity = {0.f, 1.5f};
     s.step();
-    CHECK(s.o(0).target.x == doctest::Approx(10.f + 1.5f));
+    CHECK(s.o(0).target.x == doctest::Approx(10.f - 1.5f));
     CHECK(s.o(0).target.y == doctest::Approx(-2.5f));
     // A sprinting lead raises the cap.
     s.lead.sprint = true;
@@ -313,8 +313,8 @@ TEST_CASE("water follow: under water they keep 4-6 m from the lead, out of the s
         CHECK(t.x < s.lead.position.x); // behind
         CHECK(t.z <= -0.6f + 1e-4f);
     }
-    CHECK(s.o(0).target.y < 0.f); // to its side
-    CHECK(s.o(1).target.y > 0.f);
+    CHECK(s.o(0).target.y > 0.f); // to its side
+    CHECK(s.o(1).target.y < 0.f);
     // Inside the band: it drifts with the lead; outside: it catches up at Swim's cap plus 20%.
     s.members[0].position = s.o(0).target;
     s.step();

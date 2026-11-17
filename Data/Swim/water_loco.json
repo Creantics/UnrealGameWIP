@@ -27,12 +27,13 @@
   "leanMax": 20,
   "pitchMax": 70,
   "pitchRate": 180,
-  "strokeSwimSlow": 1.8,
-  "strokeSwimFast": 2.6,
-  "strokeUnderSlow": 2.0,
+  "strokeSwimSlow": 2.4,
+  "strokeSwimFast": 7.7,
+  "strokeUnderSlow": 4.0,
   "strokeUnderFast": 2.8,
   "underSlowSpeed": 2.2,
   "underFastSpeed": 3.2,
   "ladderCycle": 0.6,
-  "gaspBreath": 0.3
+  "gaspBreath": 0.3,
+  "diveEntrySpeed": 4.5
 }

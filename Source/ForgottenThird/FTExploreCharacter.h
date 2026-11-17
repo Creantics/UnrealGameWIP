@@ -98,6 +98,8 @@
 #include "ftcore/Swim.h"
 #include "ftcore/UiPartyScreen.h"
 #include "ftcore/WaterBodies.h"
+#include "ftcore/WaterFollow.h"
+#include "ftcore/WaterLoco.h"
 #include "ftcore/WetPrints.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
@@ -105,6 +107,7 @@
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class AFTPartyFollower;
 class UAnimSequence;
 class AFTPartyVan;
 class APlayerController;
@@ -593,6 +596,38 @@ private:
 	FVector SwimMeshLoc = FVector::ZeroVector;
 	FRotator SwimMeshRot = FRotator::ZeroRotator;
 	bool bSwimMeshSaved = false;
+	// ftcore::WaterLoco (Data/Swim/water_loco.json): the water's own locomotion over Swim, its tread, surface stroke,
+	// entries, dive and breach clips and the exits. Stepped once a tick on every TickWater path the body is in play on
+	// (StepWaterLoco); at the surface its planar velocity, facing and sink move the body (the surface hold), and its
+	// clip layers play over the locomotion (UFTLocomotionAnimInstance::SetWater). With no swim clip loaded for the
+	// lead's body, its layers carry no weight and the stand-in plays as before.
+	void StepWaterLoco(float DeltaSeconds);
+	void LoadWaterLoco(UFTLocomotionAnimInstance* Anim);
+	ftcore::WaterLoco WaterLocoBody;
+	ftcore::WaterLocoPose WaterPose;
+	FVector2D WaterMoveWanted = FVector2D::ZeroVector; // the surface move asked this tick (world planar), AddMovementInput
+	uint64 SwimSteppedFrame = 0;   // the frame TickSwimDeep stepped Swim (its dived and surfaced are that frame's)
+	uint64 WaterLocoFrame = 0;     // the frame WaterLoco was stepped
+	bool bWaterLocoTried = false;
+	int32 WaterClipsFor = -2;      // the LeadIndex the swim clips were looked up for, and the anim instance given them
+	TWeakObjectPtr<UAnimInstance> WaterClipsAnim;
+	bool bWaterUnderClips = false; // the prone under-water clips are loaded: the body is not pitched for them
+	bool bWaterTopFalling = false; // at the top of TickWater: airborne, and its velocity (the entry reads them)
+	FVector WaterTopVelocity = FVector::ZeroVector;
+	bool bWaterClimbLadder = false; // the climb out is a ladder's (TryLadderClimb), else the mantle (TryWaterClimb)
+	int32 WaterLeadExit = -1;       // the ladder's exit index the last climb out used (-1: the mantle, none)
+	// The partners in the water (ftcore::WaterFollowParty): one plan for the party, stepped after WaterLoco, its orders
+	// read by each follower's own Place (AFTPartyFollower::TickWater). The followers are the ones set up with this lead,
+	// looked for again every half second while all are ashore; a slot keeps its member while it is in the water.
+	// -LocoNoFollowerSwim: none of it; the followers hold at the bank as before.
+	void StepWaterParty(float DeltaSeconds);
+	ftcore::WaterFollowParty WaterParty;
+	TWeakObjectPtr<AFTPartyFollower> WaterFollowers[ftcore::kWaterFollowMax];
+	int32 NumWaterFollowers = 0;
+	float WaterFollowersAge = 1.f;
+	bool bWaterPartyLeadSwam = false;
+	bool bNoFollowerSwim = false;
+	bool bNoFollowerSwimRead = false;
 	bool bSwimRescue = false;
 	float SwimRescueTime = 0.f;
 	FVector SwimRescueFrom = FVector::ZeroVector;
@@ -685,6 +720,14 @@ public:
 	bool IsSwimming() const { return bSwimming; }
 	// Under water (diving, under, surfacing) or being carried out by a rescue: the followers hold at the bank.
 	bool IsUnderWater() const { return bSwimUnder || bSwimRescue; }
+	// The water follow's order for the follower in Slot (AFTPartyFollower::SetWaterSlot); null with none (no water on the
+	// map, -LocoNoFollowerSwim, or no such slot).
+	const ftcore::WaterFollowOrder* GetWaterOrder(int32 Slot) const;
+	// The water's locomotion tuning (Data/Swim/water_loco.json, else the built-in), read once for every body.
+	static const ftcore::WaterLocoTuning& SharedWaterLocoTuning();
+	// Gives Anim the swim clips of the body called Name (/Game/Characters/<Name>/Swim/A_<clip>), Devin's where Name has
+	// none; a clip that does not fit BodyAsset is left out. The count found (0: the stand-in plays).
+	static int32 LoadWaterClips(UFTLocomotionAnimInstance& Anim, const USkeletalMesh* BodyAsset, const FString& Name, const TCHAR* LogName);
 	float GetBreathShare() const { return SwimBody.last().breathShare; }
 	bool IsBreathWarning() const { return SwimBody.last().warning; }
 	// For the HUD's breath ring: the swim's last step (breath, breathShare, warning, state, and the canDive and guard

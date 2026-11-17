@@ -40,6 +40,7 @@
 #include "ftcore/ReadyStance.h"
 #include "ftcore/Slide.h"
 #include "ftcore/Traversal.h"
+#include "ftcore/WaterLoco.h"
 
 #include "FTLocomotionAnimInstance.generated.h"
 
@@ -445,6 +446,23 @@ public:
 		}
 	}
 
+	// The water's clips (ftcore::WaterLoco): one per WaterClip, set once (nullptr clears). A swimming owner pushes the
+	// pose's layers every frame with SetWater; they play over the locomotion and any traversal by the water weight (the
+	// actions still over them), each at its phase of its own clip, and the bends, the air pose, the ready stance and the
+	// foot hold give way by that weight. With no clip for any pushed layer the water adds nothing (the locomotion's
+	// stand-in plays). Game thread.
+	static constexpr int32 MaxWaterLayers = 4;
+	void SetWaterClip(ftcore::WaterClip Which, UAnimSequence* Clip);
+	bool HasWaterClip(ftcore::WaterClip Which) const
+	{
+		const int32 I = static_cast<int32>(Which);
+		return I > 0 && I < ftcore::kWaterClipCount && WaterClips[I] != nullptr;
+	}
+	int32 NumWaterClips() const;
+	// Weight 0..1 (0 ends it); Lean (degrees, positive into a right turn) banks the trunk under the water's weight.
+	void SetWater(float Weight, const ftcore::WaterClipLayer* Layers, int32 Count, float Lean);
+	float GetWaterWeight() const { return WaterWeight; }
+
 	ftcore::LocoTuning& Tuning() { return Loco.tuning(); }
 	const ftcore::Locomotion& GetLocomotion() const { return Loco; }
 
@@ -485,6 +503,14 @@ private:
 	};
 	FAction Actions[MaxActions];
 	int32 NumActions = 0;
+	// The water's clips by WaterClip (SetWaterClip) and this frame's layers (SetWater): the clip, its time and weight.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> WaterClips[23];
+	static_assert(ftcore::kWaterClipCount == 23, "WaterClips[] holds one per WaterClip");
+	FAction WaterLayers[MaxWaterLayers];
+	int32 NumWaterLayers = 0;
+	float WaterWeight = 0.f;
+	float WaterLean = 0.f;
 	float ActionUpper = 0.f;
 	int32 ActionLeg = -1;
 	ftcore::TraversalSet Traversal;

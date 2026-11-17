@@ -11,7 +11,8 @@
 //   // surface states: p.velocity is the planar velocity to move at, p.yaw the facing, p.sink the depth offset
 //   // (negative: under the draft) to add to the float height; the anim layer plays p.layers with p.blendSeconds.
 //
-// Metres, seconds, degrees, Z up; yaw is degrees about Z, 0 along +X, 90 along +Y. step() never allocates.
+// Metres, seconds, degrees, Z up, in the engine's frame: +Y is to the right of +X seen from above, and yaw is degrees
+// about Z, 0 along +X, 90 along +Y (a rising yaw turns right). step() never allocates.
 // Breath and rescue stay Swim's: WaterLoco only reads breathShare for the breach gasp.
 
 #include "ftcore/Json.h"
@@ -56,25 +57,51 @@ enum class WaterClip : std::uint8_t {
     UnderIdle, UnderSlow, UnderFast,
     PitchUp, PitchDown,
     Breach,
-    EnterWalk, EnterSplash,
+    EnterWalk, EnterSplash, EnterDive,
     ExitMantle, ExitLadder, ExitLadderTop,
 };
-inline constexpr int kWaterClipCount = 22; // None included
+inline constexpr int kWaterClipCount = 23; // None included
 
-// Each clip's length in seconds (the blocking's 30 fps frame counts). The anim layer samples a clip at phase x length.
+// Each clip's length in seconds (the polish pass r2's 30 fps frame counts). The anim layer samples a clip at phase x
+// length.
 inline constexpr float kWaterClipSeconds[kWaterClipCount] = {
     0.f,                                     // None
-    2.f, 2.f, 2.f, 2.f, 2.f,                 // TreadIdle, Fwd, Back, L, R (60)
+    3.f, 3.f, 3.f, 3.f, 3.f,                 // TreadIdle, Fwd, Back, L, R (90)
     1.2f, 1.2f,                              // TreadTurnL90, R90 (36)
-    1.2f, 32.f / 30.f,                       // SwimSlow (36), SwimFast (32)
+    1.6f, 3.2f,                              // SwimSlow (48: stroke and glide), SwimFast (96: six strokes, a breath each three)
     0.9f,                                    // DiveStart (27)
-    2.4f, 1.2f, 0.8f,                        // UnderIdle (72), UnderSlow (36), UnderFast (24)
+    2.4f, 2.4f, 0.8f,                        // UnderIdle (72), UnderSlow (72: pull and glide), UnderFast (24)
     20.f / 30.f, 20.f / 30.f,                // PitchUp, PitchDown (20)
     0.8f,                                    // Breach (24)
-    1.f, 1.2f,                               // EnterWalk (30), EnterSplash (36)
-    1.4f, 1.f, 1.5f,                         // ExitMantle (42), ExitLadder (30), ExitLadderTop (45)
+    1.f, 85.f / 30.f, 1.8f,                  // EnterWalk (30), EnterSplash (85), EnterDive (54)
+    2.4f, 1.f, 80.f / 30.f,                  // ExitMantle (72), ExitLadder (30), ExitLadderTop (80)
 };
 inline constexpr float waterClipSeconds(WaterClip c) { return kWaterClipSeconds[int(c)]; }
+
+// Each clip's name: its asset is A_<name> (the host's per-body Swim folder) and the blocking's clip of that name.
+inline constexpr const char* kWaterClipNames[kWaterClipCount] = {
+    "None",
+    "TreadIdle", "TreadFwd", "TreadBack", "TreadL", "TreadR",
+    "TreadTurnL90", "TreadTurnR90",
+    "SwimSlow", "SwimFast",
+    "DiveStart",
+    "UnderIdle", "UnderSlow", "UnderFast",
+    "PitchUp", "PitchDown",
+    "Breach",
+    "EnterWalk", "EnterSplash", "EnterDive",
+    "ExitMantle", "ExitLadder", "ExitLadderTop",
+};
+inline constexpr const char* waterClipName(WaterClip c) {
+    return int(c) >= 0 && int(c) < kWaterClipCount ? kWaterClipNames[int(c)] : "?";
+}
+
+inline constexpr const char* kWaterLocoStateNames[kWaterLocoStateCount] = {
+    "Dry", "Wade", "EnterWalk", "EnterSplash", "Recover", "Tread", "TreadTurn", "SurfaceSwim",
+    "Dive", "Under", "Breach", "Exit", "Rescued",
+};
+inline constexpr const char* waterLocoStateName(WaterLocoState s) {
+    return int(s) >= 0 && int(s) < kWaterLocoStateCount ? kWaterLocoStateNames[int(s)] : "?";
+}
 
 // The host's placed climb out, if one is running (it moves the body; WaterLoco only animates it).
 enum class WaterExitMove : std::uint8_t { None, Mantle, Ladder, LadderTop };
@@ -118,14 +145,15 @@ struct WaterLocoTuning {
     float leanMax = 20.f;          // deg (0..60)
     float pitchMax = 70.f;         // deg under water (0..89)
     float pitchRate = 180.f;       // deg/s the pitch follows at (10..1440)
-    float strokeSwimSlow = 1.8f;   // m travelled per SwimSlow cycle (0.2..10)
-    float strokeSwimFast = 2.6f;   // m per SwimFast cycle (0.2..10)
-    float strokeUnderSlow = 2.f;   // m per UnderSlow cycle (0.2..10)
+    float strokeSwimSlow = 2.4f;   // m travelled per SwimSlow cycle (0.2..10): swimSpeed over its 1.6 s
+    float strokeSwimFast = 7.7f;   // m per SwimFast cycle (0.2..10): swimSprintSpeed over its 3.2 s (six strokes)
+    float strokeUnderSlow = 4.f;   // m per UnderSlow cycle (0.2..10): a pull and its glide
     float strokeUnderFast = 2.8f;  // m per UnderFast cycle (0.2..10)
     float underSlowSpeed = 2.2f;   // m/s at which UnderSlow plays alone (Swim's swimSpeed) (0.3..8)
     float underFastSpeed = 3.2f;   // m/s at which UnderFast plays alone (Swim's sprintSpeed) (underSlowSpeed..10)
     float ladderCycle = 0.6f;      // m climbed per ExitLadder cycle (0.1..3)
     float gaspBreath = 0.3f;       // breath share under which a breach gasps (0..1)
+    float diveEntrySpeed = 4.5f;   // m/s level at a fall's entry from which it goes in head first: EnterDive (0..30)
 };
 
 namespace water_loco_detail {
@@ -171,6 +199,7 @@ inline constexpr Range kRanges[] = {
     {"underFastSpeed", &WaterLocoTuning::underFastSpeed, 0.3f, 10.f},
     {"ladderCycle", &WaterLocoTuning::ladderCycle, 0.1f, 3.f},
     {"gaspBreath", &WaterLocoTuning::gaspBreath, 0.f, 1.f},
+    {"diveEntrySpeed", &WaterLocoTuning::diveEntrySpeed, 0.f, 30.f},
 };
 
 // The cross-field pairs: a broken one puts both its fields back to their defaults (the importer).
@@ -267,8 +296,8 @@ struct WaterLocoPose {
     Vec2 velocity;            // surface states: the planar velocity to move at (m/s); else the input's, passed on
     float yaw = 0.f;          // the facing to hold (deg); under water: the input's
     float speed = 0.f;        // m/s (planar at the surface, 3D under water)
-    float turnRate = 0.f;     // deg/s, + to the left (counter-clockwise)
-    float lean = 0.f;         // deg of roll into the turn (+ to the left)
+    float turnRate = 0.f;     // deg/s, + to the right (the yaw rising)
+    float lean = 0.f;         // deg of roll into the turn (+ into a right turn: the turn rate's sign)
     float pitch = 0.f;        // deg under water: + nose up
     float strokePhase = 0.f;  // 0..1 of the playing stroke or kick cycle
     float sink = 0.f;         // m: add to the float height (negative: under the draft); the splash only
@@ -305,6 +334,7 @@ public:
         pitch_ = 0.f;
         sinkK_ = 0.f;
         sinkDepth_ = 0.f;
+        diveEntry_ = false;
         recoverLen_ = 0.f;
         lastFallVz_ = 0.f;
         lastFalling_ = false;
@@ -369,7 +399,9 @@ public:
                 } else if (swimMode) {
                     const float k = splashK(entryVz);
                     if (fellIn && -entryVz > T.splashMinSpeed) {
-                        startSplash(k, in.water);
+                        // Going in fast and level (a running jump): head first.
+                        const float level = std::sqrt(in.velocity.x * in.velocity.x + in.velocity.y * in.velocity.y);
+                        startSplash(k, in.water, level >= T.diveEntrySpeed);
                     } else if (was == WaterLocoState::Wade && !fellIn) {
                         enter(WaterLocoState::EnterWalk);
                     } else {
@@ -481,25 +513,31 @@ public:
             glide(T.swimDrag, dt);
             speedNow = len(vel_);
             float ph;
+            WaterClip clip = WaterClip::EnterSplash;
             if (p.state == WaterLocoState::EnterSplash) {
                 p.sink = sinkAt(p.stateTime);
-                // The sink and rise play the clip to 0.75; the recover beat holds its tail.
+                // The sink and rise play the clip to 0.75; the recover beat holds its tail. Head first, the dive's
+                // clip plays through at its own pace, and the recover is the splash's tail (the head breaking out).
                 ph = 0.75f * d::sat(p.stateTime * T.sinkOmega / 3.f);
+                if (diveEntry_) {
+                    clip = WaterClip::EnterDive;
+                    ph = d::sat(p.stateTime / waterClipSeconds(WaterClip::EnterDive));
+                }
             } else {
                 p.sink = 0.f;
                 ph = 0.75f + 0.25f * (recoverLen_ > 0.f ? d::sat(p.stateTime / recoverLen_) : 1.f);
             }
             p.splashStrength = sinkK_;
-            layer(WaterClip::EnterSplash, 1.f, ph);
+            layer(clip, 1.f, ph);
             break;
         }
         case WaterLocoState::Tread:
         case WaterLocoState::TreadTurn: {
             p.waterWeight = 1.f;
             const float c = std::cos(yaw_ * d::kDeg), s = std::sin(yaw_ * d::kDeg);
-            // Local: x forward, y right (yaw counter-clockwise, so right is -left).
+            // Local: x forward, y right (the right of the facing (c, s) is (-s, c) in this frame).
             const float lx = in.move.x * c + in.move.y * s;
-            const float ly = in.move.x * s - in.move.y * c;
+            const float ly = -in.move.x * s + in.move.y * c;
             p.strafe = {lx, ly};
             if (p.state == WaterLocoState::TreadTurn) {
                 const float want = std::atan2(in.move.y, in.move.x) / d::kDeg;
@@ -508,7 +546,7 @@ public:
                 yaw_ = d::wrapDeg(yaw_ + stepDeg);
                 turnPhase_ = d::frac(turnPhase_ + d::absf(stepDeg) / 90.f);
                 accelerate(Vec2{}, T.treadDrag, T.treadDrag, dt);
-                layer(off >= 0.f ? WaterClip::TreadTurnL90 : WaterClip::TreadTurnR90, 1.f, turnPhase_);
+                layer(off >= 0.f ? WaterClip::TreadTurnR90 : WaterClip::TreadTurnL90, 1.f, turnPhase_);
             } else {
                 const Vec2 want{in.move.x * T.treadSpeed, in.move.y * T.treadSpeed};
                 accelerate(want, T.treadAccel, T.treadDrag, dt);
@@ -737,9 +775,10 @@ private:
         return water_loco_detail::sat((-vz - tuning_.splashMinSpeed) / tuning_.splashSpeedSpan);
     }
 
-    void startSplash(float k, const WaterState& w) {
+    void startSplash(float k, const WaterState& w, bool headFirst) {
         const WaterLocoTuning& T = tuning_;
         sinkK_ = k;
+        diveEntry_ = headFirst;
         // The sink never brings the feet nearer the bed than bedClearance.
         const float room = w.column - kWaterSwimDraft - T.bedClearance;
         sinkDepth_ = water_loco_detail::clampf(T.sinkMin + T.sinkSpan * k, 0.f, room > 0.f ? room : 0.f);
@@ -788,29 +827,45 @@ private:
         if (pose_.layerCount == 0) layer(WaterClip::TreadIdle, 1.f, kickPhase_);
     }
 
-    // The tread's kick loop at its own rate; a kick cue at 0 and 0.5.
+    // The tread's kick loop at its own rate; a kick cue at each of the left leg's eggbeater in-sweeps (the r2 clips'
+    // frames 13, 36, 58 and 81 of 90; the right leg's sit between and stay quiet, so the cue is not doubled).
     void kick(float dt, float cycle, float strength) {
         namespace d = water_loco_detail;
+        static constexpr float kKicks[] = {13.f / 90.f, 36.f / 90.f, 58.f / 90.f, 81.f / 90.f};
         const float dp = dt / cycle;
-        if (d::crossed(kickPhase_, dp, 0.f) || d::crossed(kickPhase_, dp, 0.5f)) {
-            pose_.cue |= kWaterCueKick;
-            pose_.cueStrength = pose_.cueStrength > strength ? pose_.cueStrength : strength;
+        for (float c : kKicks) {
+            if (d::crossed(kickPhase_, dp, c)) {
+                pose_.cue |= kWaterCueKick;
+                pose_.cueStrength = pose_.cueStrength > strength ? pose_.cueStrength : strength;
+            }
         }
         kickPhase_ = d::frac(kickPhase_ + dp);
     }
 
-    // The surface stroke: SwimSlow's two-handed catch at 0; SwimFast's left at 0, right at 0.5.
+    // The surface stroke: SwimSlow's two-handed catch at 0; SwimFast's cycle is six strokes, the r2 clip's catches
+    // left at frames 4, 36 and 68 of 96 and right at 20, 52 and 84.
     void stroke(float dp, float fast, float strength) {
         namespace d = water_loco_detail;
+        static constexpr float kLeft[] = {4.f / 96.f, 36.f / 96.f, 68.f / 96.f};
+        static constexpr float kRight[] = {20.f / 96.f, 52.f / 96.f, 84.f / 96.f};
         if (dp > 0.99f) dp = 0.99f;
         bool any = false;
-        if (d::crossed(phase_, dp, 0.f)) {
-            pose_.cue |= fast < 0.5f ? (kWaterCueStrokeL | kWaterCueStrokeR) : kWaterCueStrokeL;
-            any = true;
-        }
-        if (fast >= 0.5f && d::crossed(phase_, dp, 0.5f)) {
-            pose_.cue |= kWaterCueStrokeR;
-            any = true;
+        if (fast < 0.5f) {
+            if (d::crossed(phase_, dp, 0.f)) {
+                pose_.cue |= kWaterCueStrokeL | kWaterCueStrokeR;
+                any = true;
+            }
+        } else {
+            for (int i = 0; i < 3; ++i) {
+                if (d::crossed(phase_, dp, kLeft[i])) {
+                    pose_.cue |= kWaterCueStrokeL;
+                    any = true;
+                }
+                if (d::crossed(phase_, dp, kRight[i])) {
+                    pose_.cue |= kWaterCueStrokeR;
+                    any = true;
+                }
+            }
         }
         if (any) pose_.cueStrength = pose_.cueStrength > strength ? pose_.cueStrength : strength;
         phase_ = d::frac(phase_ + dp);
@@ -853,6 +908,7 @@ private:
     float pitch_ = 0.f;
     float sinkK_ = 0.f;
     float sinkDepth_ = 0.f;
+    bool diveEntry_ = false; // the splash went in head first (EnterDive)
     float recoverLen_ = 0.f;
     float lastFallVz_ = 0.f;
     bool lastFalling_ = false;

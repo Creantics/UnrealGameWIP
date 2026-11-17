@@ -175,6 +175,34 @@ TEST_CASE("water loco: walking off a slope into swimming depth plays EnterWalk, 
     CHECK(run(still, s2, 1.1f).state == WaterLocoState::Tread);
 }
 
+TEST_CASE("water loco: a fast level entry goes in head first (EnterDive), then the splash's recover") {
+    auto entry = [](float vx) {
+        WaterLoco w;
+        WaterLocoInput air;
+        air.falling = true;
+        air.velocity = {vx, 0.f, -6.f};
+        w.step(air, kDt);
+        WaterLocoInput in;
+        in.water = water(WaterMode::Swim, 6.f);
+        in.velocity = {vx, 0.f, -6.f};
+        w.step(in, kDt);
+        return w;
+    };
+    WaterLoco dive = entry(5.f);
+    REQUIRE(dive.state() == WaterLocoState::EnterSplash);
+    CHECK(dive.pose().layers[0].clip == WaterClip::EnterDive);
+    WaterLoco drop = entry(1.f);
+    REQUIRE(drop.state() == WaterLocoState::EnterSplash);
+    CHECK(drop.pose().layers[0].clip == WaterClip::EnterSplash);
+    // The recover after a head-first entry is the splash's tail: the head breaking out.
+    WaterLocoInput still;
+    still.water = water(WaterMode::Swim, 6.f);
+    for (int i = 0; i < 300 && dive.state() == WaterLocoState::EnterSplash; ++i) dive.step(still, kDt);
+    REQUIRE(dive.state() == WaterLocoState::Recover);
+    CHECK(dive.pose().layers[0].clip == WaterClip::EnterSplash);
+    CHECK(dive.pose().layers[0].phase >= 0.75f);
+}
+
 TEST_CASE("water loco: a slow drop is no splash; it treads at once") {
     WaterLoco w = fallInto(-2.f);
     CHECK(w.state() == WaterLocoState::Tread);
@@ -255,18 +283,18 @@ TEST_CASE("water loco: the tread strafes slowly and blends the directional clips
     const WaterLocoPose& idle = w.pose();
     CHECK(weightOf(idle, WaterClip::TreadIdle) == doctest::Approx(1.f));
     CHECK(idle.headTargetZ == doctest::Approx(0.12f));
-    // A gentle push to the right (yaw 0 faces +X, so right is -Y): strafes, keeps the facing.
-    WaterLocoInput in = swimIn({0.f, -0.4f});
+    // A gentle push to the right (yaw 0 faces +X, and right is +Y in the engine's frame): strafes, keeps the facing.
+    WaterLocoInput in = swimIn({0.f, 0.4f});
     const WaterLocoPose& p = run(w, in, 2.f);
     CHECK(p.state == WaterLocoState::Tread);
     CHECK(p.yaw == doctest::Approx(0.f));
-    CHECK(p.velocity.y == doctest::Approx(-0.4f * 0.6f).epsilon(0.02));
+    CHECK(p.velocity.y == doctest::Approx(0.4f * 0.6f).epsilon(0.02));
     CHECK(p.strafe.y == doctest::Approx(0.4f));
     CHECK(weightOf(p, WaterClip::TreadR) == doctest::Approx(0.4f));
     CHECK(weightOf(p, WaterClip::TreadIdle) == doctest::Approx(0.6f));
     CHECK(weightSum(p) == doctest::Approx(1.f));
     // Back and left at once: both directional clips.
-    const WaterLocoPose& q = run(w, swimIn({-0.3f, 0.3f}), 1.f);
+    const WaterLocoPose& q = run(w, swimIn({-0.3f, -0.3f}), 1.f);
     CHECK(weightOf(q, WaterClip::TreadBack) > 0.f);
     CHECK(weightOf(q, WaterClip::TreadL) > 0.f);
     CHECK(weightSum(q) == doctest::Approx(1.f));
@@ -302,7 +330,7 @@ TEST_CASE("water loco: the surface swim reaches its speeds, turns at its rate, l
     const WaterLocoPose& f = run(w, in, 2.f);
     CHECK(f.speed == doctest::Approx(2.4f).epsilon(0.01));
     CHECK(weightOf(f, WaterClip::SwimFast) == doctest::Approx(1.f));
-    // Turning left: 150 deg/s, a lean to the left.
+    // Turning right (toward +Y): 150 deg/s, a lean into the turn.
     in.sprint = false;
     in.move = {0.f, 1.f};
     in.yaw = f.yaw;
@@ -324,10 +352,10 @@ TEST_CASE("water loco: the stroke phase follows the travel and fires cues at the
     WaterLoco w = treading();
     WaterLocoInput in = swimIn({1.f, 0.f});
     run(w, in, 2.f);
-    // At 1.5 m/s and 1.8 m a cycle: one catch (both hands) every 1.2 s.
+    // At 1.5 m/s and 2.4 m a cycle: one catch (both hands) every 1.6 s.
     int catches = 0;
     float phase0 = w.pose().strokePhase;
-    for (int i = 0; i < 72; ++i) {
+    for (int i = 0; i < 96; ++i) {
         const WaterLocoPose& p = w.step(in, kDt);
         if ((p.cue & kWaterCueStrokeL) && (p.cue & kWaterCueStrokeR)) ++catches;
     }
@@ -335,7 +363,7 @@ TEST_CASE("water loco: the stroke phase follows the travel and fires cues at the
     // Two whole cycles: back where it started.
     const float dp = std::fabs(w.pose().strokePhase - phase0);
     CHECK(std::fmin(dp, 1.f - dp) < 0.02f);
-    // Sprinting (the crawl): left at 0, right at 0.5, apart.
+    // Sprinting (the crawl): three catches an arm a cycle, left and right apart.
     in.sprint = true;
     run(w, in, 2.f);
     int left = 0, right = 0;
@@ -348,11 +376,11 @@ TEST_CASE("water loco: the stroke phase follows the travel and fires cues at the
     }
     CHECK(left >= 2);
     CHECK(std::abs(left - right) <= 1);
-    // Treading: kicks.
+    // Treading: four kicks a 3 s cycle.
     WaterLoco t = treading();
     int kicks = 0;
-    for (int i = 0; i < 60; ++i) kicks += (t.step(swimIn(), kDt).cue & kWaterCueKick) ? 1 : 0;
-    CHECK(kicks == 2);
+    for (int i = 0; i < 90; ++i) kicks += (t.step(swimIn(), kDt).cue & kWaterCueKick) ? 1 : 0;
+    CHECK(kicks == 4);
 }
 
 TEST_CASE("water loco: dive, under by speed and pitch, breach with a gasp on low breath, then the tread") {
@@ -559,4 +587,31 @@ TEST_CASE("water loco: a step allocates nothing") {
         in.yaw = w.pose().yaw;
     }
     CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("water loco: clip and state names are unique and cover every value") {
+    using namespace ftcore;
+    for (int i = 0; i < kWaterClipCount; ++i)
+        for (int j = i + 1; j < kWaterClipCount; ++j)
+            CHECK(std::string_view(kWaterClipNames[i]) != std::string_view(kWaterClipNames[j]));
+    CHECK(std::string_view(waterClipName(WaterClip::ExitLadderTop)) == "ExitLadderTop");
+    CHECK(std::string_view(waterClipName(WaterClip::SwimFast)) == "SwimFast");
+    CHECK(std::string_view(waterLocoStateName(WaterLocoState::Rescued)) == "Rescued");
+    CHECK(std::string_view(waterLocoStateName(WaterLocoState::SurfaceSwim)) == "SurfaceSwim");
+    CHECK(std::string_view(waterLocoStateName(WaterLocoState::Dry)) == "Dry");
+}
+
+TEST_CASE("water loco: the engine's frame: a push toward +Y strafes and turns to the right") {
+    WaterLoco w = treading();
+    // Toward +Y and a little back: a turn to the right (the yaw rising) on TreadTurnR90.
+    const WaterLocoPose& p = w.step(swimIn({-0.2f, 1.f}), kDt);
+    REQUIRE(p.state == WaterLocoState::TreadTurn);
+    CHECK(weightOf(p, WaterClip::TreadTurnR90) == doctest::Approx(1.f));
+    CHECK(p.turnRate > 0.f);
+    // Toward -Y: TreadTurnL90, the yaw falling.
+    WaterLoco v = treading();
+    const WaterLocoPose& q = v.step(swimIn({-0.2f, -1.f}), kDt);
+    REQUIRE(q.state == WaterLocoState::TreadTurn);
+    CHECK(weightOf(q, WaterClip::TreadTurnL90) == doctest::Approx(1.f));
+    CHECK(q.turnRate < 0.f);
 }

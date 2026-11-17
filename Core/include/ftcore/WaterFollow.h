@@ -382,7 +382,7 @@ private:
         // The lead's frame: its travel, or its facing when still.
         const Vec2 fwd = leadSpeed > 0.2f ? Vec2{lead.velocity.x / leadSpeed, lead.velocity.y / leadSpeed}
                                     : Vec2{std::cos(lead.yaw * 0.0174532925f), std::sin(lead.yaw * 0.0174532925f)};
-        const Vec2 right{fwd.y, -fwd.x};
+        const Vec2 right{-fwd.y, fwd.x}; // the engine's frame: +Y is to the right of +X
         const float side = (i % 2 == 0) ? 1.f : -1.f; // even orders to the right, odd to the left
         o.speed = 0.f;
         o.sprint = false;

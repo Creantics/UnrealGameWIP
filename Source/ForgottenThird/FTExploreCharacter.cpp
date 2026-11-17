@@ -39,6 +39,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
@@ -1931,6 +1932,10 @@ void AFTExploreCharacter::HandleJump()
 		return;
 	}
 	// In the water, at a ladder: up it. At any other wall: out onto it (the fallback). A swimmer doesn't jump otherwise.
+	if (bSwimming && WaterPose.lockActions)
+	{
+		return;
+	}
 	if (TryLadderClimb(true) || TryWaterClimb() || bSwimming)
 	{
 		return;
@@ -3047,7 +3052,8 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	// An attack's turn is TickWeapon's.
 	// While aiming, TickAim turns the body to the camera's aim.
 	// Under water (and through a rescue) TickSwimDeep turns the body to its swim.
-	const UFTLocomotionAnimInstance* Steered = bTraversing || Strike.attacking() || Aim.aiming() || bSwimUnder || bSwimRescue ? nullptr : LocoAnim;
+	// Swimming at the surface WaterLoco holds the facing (the surface hold).
+	const UFTLocomotionAnimInstance* Steered = bTraversing || Strike.attacking() || Aim.aiming() || bSwimming || bSwimUnder || bSwimRescue ? nullptr : LocoAnim;
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{
 		// The step holds over a pose with no time passed, so a frame with none (the actor's time dilated to 0)
@@ -3250,6 +3256,14 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		}
 		return;
 	}
+	// The entry reads the fall as it was before this tick set the flying mode; every path below steps WaterLoco once
+	// (the surface hold steps it before it moves the body, so it reads this tick's pose).
+	bWaterTopFalling = Move->IsFalling();
+	WaterTopVelocity = Move->Velocity;
+	ON_SCOPE_EXIT
+	{
+		StepWaterLoco(DeltaSeconds);
+	};
 	// A climb out of the water: up the wall's face, then onto its top.
 	if (bWaterClimbing)
 	{
@@ -3263,6 +3277,9 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		if (T >= 1.f)
 		{
 			bWaterClimbing = false;
+			// Out on the top: WaterLoco reads dry ground this tick (the water state is found again on the next), not the
+			// swim the climb began in.
+			WaterNow = ftcore::WaterState{};
 			Move->SetMovementMode(MOVE_Walking);
 			UE_LOG(LogForgottenThird, Display, TEXT("Water: climbed out onto (%.0f, %.0f, %.0f) cm."), At.X, At.Y, At.Z);
 		}
@@ -3341,10 +3358,11 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		Move->MaxFlySpeed = ftcore::kWaterSwimSpeed * 100.f;
 		Move->BrakingDecelerationFlying = 350.f;
 		Move->SetMovementMode(MOVE_Flying);
-		if (!bSwimSaid)
+		const UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+		if (!bSwimSaid && (!Anim || Anim->NumWaterClips() == 0))
 		{
 			bSwimSaid = true;
-			UE_LOG(LogForgottenThird, Display, TEXT("Water: stand-in clips: no swim, tread or wade clip exists, so the swim plays the locomotion's own idle (treading) and "
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: stand-in clips: no swim clip is loaded for this body, so the swim plays the locomotion's own idle (treading) and "
 				"walk (the stroke) held upright at the surface, and the wade plays the walk slowed; the climb out is a placed move with no clip."));
 		}
 	}
@@ -3387,11 +3405,21 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		}
 		// Held at the surface: the feet eased to the swimmer's draft, never thrown up out of the water.
 		const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		// WaterLoco's step for this tick: its planar velocity and facing move the body, its sink takes an entry under the
+		// draft and back (the movement's own braking off: the velocity is WaterLoco's).
+		StepWaterLoco(DeltaSeconds);
+		const ftcore::WaterLocoTuning& Loco = WaterLocoBody.tuning();
+		Move->MaxFlySpeed = FMath::Max(ftcore::kWaterSwimSpeed, Loco.swimSprintSpeed) * 100.f;
+		Move->BrakingDecelerationFlying = 0.f;
+		Move->Velocity.X = WaterPose.velocity.x * 100.0;
+		Move->Velocity.Y = WaterPose.velocity.y * 100.0;
+		SetActorRotation(FRotator(0.0, WaterPose.yaw, 0.0));
 		// ... nor pressed into a bed that rises under it (a slip, a canal's slope): there the feet skim the bed, so the
 		// body comes up the slope with its stroke until the water is shallow enough to stand in.
 		const double Bed = (WaterNow.surface - WaterNow.column) * 100.0;
-		const double Target = FMath::Max(ftcore::waterSwimFeetZ(WaterNow.surface, System->WaterTime()) * 100.0, Bed + 8.0) + Half;
-		Move->Velocity.Z = FMath::Clamp((Target - GetActorLocation().Z) * 5.0, -250.0, 120.0);
+		const double Target = FMath::Max(ftcore::waterSwimFeetZ(WaterNow.surface, System->WaterTime()) * 100.0 + WaterPose.sink * 100.0, Bed + 8.0) + Half;
+		// A splash's sink goes down at the fall's pace (a 1.5 m sink starts near 16 m/s); the hold's own ease is gentler.
+		Move->Velocity.Z = FMath::Clamp((Target - GetActorLocation().Z) * 5.0, WaterPose.sink < 0.f ? -1600.0 : -250.0, 120.0);
 		const FVector Push(WaterNow.flow.x * 100.0 * DeltaSeconds, WaterNow.flow.y * 100.0 * DeltaSeconds, 0.0);
 		if (!Push.IsNearlyZero())
 		{
@@ -3399,6 +3427,277 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 		}
 	}
 	StirWater(DeltaSeconds);
+}
+
+void AFTExploreCharacter::LoadWaterLoco(UFTLocomotionAnimInstance* Anim)
+{
+	if (!bWaterLocoTried)
+	{
+		bWaterLocoTried = true;
+		WaterLocoBody.reset(SharedWaterLocoTuning());
+		const ftcore::WaterLocoTuning& T = WaterLocoBody.tuning();
+		UE_LOG(LogForgottenThird, Display, TEXT("WaterLoco: %s tuning: tread %.1f m/s, swim %.1f m/s (sprint %.1f)."),
+			WaterLocoBody.tuningOk() ? TEXT("the") : TEXT("refused, the built-in"), T.treadSpeed, T.swimSpeed, T.swimSprintSpeed);
+	}
+	// The swim clips: the lead body's own (/Game/Characters/<Name>/Swim/A_<clip>), looked up again for a new lead or a
+	// new anim instance (SetupLocomotion makes one per look). A clip that does not fit the body is left out.
+	if (!Anim || (WaterClipsFor == LeadIndex && WaterClipsAnim.Get() == Anim))
+	{
+		return;
+	}
+	WaterClipsFor = LeadIndex;
+	WaterClipsAnim = Anim;
+	const FString Name = PartyLooks.IsValidIndex(LeadIndex) && !PartyLooks[LeadIndex].Name.IsEmpty() ? PartyLooks[LeadIndex].Name : FString(TEXT("Devin"));
+	LoadWaterClips(*Anim, GetMesh()->GetSkeletalMeshAsset(), Name, TEXT("WaterLoco"));
+	bWaterUnderClips = Anim->HasWaterClip(ftcore::WaterClip::UnderIdle) && Anim->HasWaterClip(ftcore::WaterClip::UnderSlow);
+}
+
+const ftcore::WaterLocoTuning& AFTExploreCharacter::SharedWaterLocoTuning()
+{
+	static bool bRead = false;
+	static ftcore::WaterLocoTuning Tuning;
+	if (!bRead)
+	{
+		bRead = true;
+		TArray<uint8> Bytes;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Swim/water_loco.json");
+		std::string Error;
+		std::vector<std::string> Notes;
+		if (IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File)
+			&& ftcore::importWaterLocoTuning(FT::BytesAsText(Bytes), Tuning, &Error, &Notes))
+		{
+			for (const std::string& Note : Notes)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("WaterLoco: %s"), *FT::ToFString(Note));
+			}
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("WaterLoco: no usable Data/Swim/water_loco.json; the built-in tuning.\n%s"), *FT::ToFString(Error));
+			Tuning = ftcore::WaterLocoTuning{};
+		}
+	}
+	return Tuning;
+}
+
+int32 AFTExploreCharacter::LoadWaterClips(UFTLocomotionAnimInstance& Anim, const USkeletalMesh* BodyAsset, const FString& Name, const TCHAR* LogName)
+{
+	FString From = Name;
+	int32 Found = 0;
+	for (int32 Pass = 0; Pass < 2 && Found == 0; ++Pass)
+	{
+		// The body's own clips; with none, Devin's (one MetaHuman body skeleton: FitsBody still checks each).
+		if (Pass == 1)
+		{
+			if (Name == TEXT("Devin"))
+			{
+				break;
+			}
+			From = TEXT("Devin");
+		}
+		for (int32 Index = 1; Index < ftcore::kWaterClipCount; ++Index)
+		{
+			const ftcore::WaterClip Which = static_cast<ftcore::WaterClip>(Index);
+			const FString Asset = FString::Printf(TEXT("A_%s"), ANSI_TO_TCHAR(ftcore::waterClipName(Which)));
+			const FString Package = FString::Printf(TEXT("/Game/Characters/%s/Swim/%s"), *From, *Asset);
+			UAnimSequence* Clip = nullptr;
+			if (BodyAsset && FPackageName::DoesPackageExist(Package))
+			{
+				Clip = LoadObject<UAnimSequence>(nullptr, *(Package + TEXT(".") + Asset), nullptr, LOAD_NoWarn | LOAD_Quiet);
+				if (Clip && !UFTLocomotionAnimInstance::FitsBody(*Clip, *BodyAsset, *Name))
+				{
+					Clip = nullptr;
+				}
+			}
+			Anim.SetWaterClip(Which, Clip);
+			Found += Clip ? 1 : 0;
+		}
+	}
+	const bool bUnder = Anim.HasWaterClip(ftcore::WaterClip::UnderIdle) && Anim.HasWaterClip(ftcore::WaterClip::UnderSlow);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: %d of %d swim clips for %s in /Game/Characters/%s/Swim%s."), LogName, Found, ftcore::kWaterClipCount - 1, *Name, *From,
+		Found == 0 ? TEXT(" (none: the stand-in plays)") : bUnder ? TEXT("") : TEXT(" (no prone under-water clips: the body is pitched)"));
+	return Found;
+}
+
+const ftcore::WaterFollowOrder* AFTExploreCharacter::GetWaterOrder(int32 Slot) const
+{
+	if (bNoFollowerSwim || Slot < 0 || Slot >= NumWaterFollowers)
+	{
+		return nullptr;
+	}
+	return &WaterParty.order(Slot);
+}
+
+void AFTExploreCharacter::StepWaterParty(float DeltaSeconds)
+{
+	using namespace FTSwimUnits;
+	if (!bNoFollowerSwimRead)
+	{
+		bNoFollowerSwimRead = true;
+		bNoFollowerSwim = FParse::Param(FCommandLine::Get(), TEXT("LocoNoFollowerSwim"));
+	}
+	UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (bNoFollowerSwim || !System || !System->HasBodies())
+	{
+		NumWaterFollowers = 0;
+		return;
+	}
+	// Who follows: looked for again while every one is ashore; a slot keeps its member while it is in the water.
+	bool bAllAshore = true;
+	for (int32 Slot = 0; Slot < NumWaterFollowers; ++Slot)
+	{
+		bAllAshore = bAllAshore && WaterParty.order(Slot).phase == ftcore::WaterFollowPhase::Ashore;
+	}
+	WaterFollowersAge += DeltaSeconds;
+	if (bAllAshore && WaterFollowersAge >= 0.5f)
+	{
+		WaterFollowersAge = 0.f;
+		AFTPartyFollower* Found[ftcore::kWaterFollowMax] = {};
+		int32 Count = 0;
+		for (TActorIterator<AFTPartyFollower> It(World); It; ++It)
+		{
+			if (It->GetWaterLead() != this || Count >= ftcore::kWaterFollowMax)
+			{
+				continue;
+			}
+			// By name, so a member keeps its slot (and its side) from one look to the next.
+			int32 At = Count++;
+			while (At > 0 && It->GetFName().Compare(Found[At - 1]->GetFName()) < 0)
+			{
+				Found[At] = Found[At - 1];
+				--At;
+			}
+			Found[At] = *It;
+		}
+		for (int32 Slot = 0; Slot < ftcore::kWaterFollowMax; ++Slot)
+		{
+			WaterFollowers[Slot] = Slot < Count ? Found[Slot] : nullptr;
+			if (Slot < Count)
+			{
+				Found[Slot]->SetWaterSlot(Slot);
+			}
+		}
+		if (Count != NumWaterFollowers)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("WaterFollow: %d partners follow the lead into the water."), Count);
+		}
+		NumWaterFollowers = Count;
+	}
+	if (NumWaterFollowers == 0)
+	{
+		return;
+	}
+	ftcore::WaterFollowMember Members[ftcore::kWaterFollowMax];
+	for (int32 Slot = 0; Slot < NumWaterFollowers; ++Slot)
+	{
+		if (const AFTPartyFollower* Follower = WaterFollowers[Slot].Get())
+		{
+			Follower->FillWaterMember(Members[Slot]);
+		}
+	}
+	ftcore::WaterFollowLead Lead;
+	const ftcore::WaterLocoState State = WaterPose.state;
+	Lead.swimming = State != ftcore::WaterLocoState::Dry && State != ftcore::WaterLocoState::Wade;
+	// A new swim: the exit an earlier climb out used is not this one's.
+	if (Lead.swimming && !bWaterPartyLeadSwam)
+	{
+		WaterLeadExit = -1;
+	}
+	bWaterPartyLeadSwam = Lead.swimming;
+	Lead.swim = SwimBody.state();
+	const double Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	Lead.position = RefFromActor(GetActorLocation(), Half);
+	const FVector Vel = GetVelocity();
+	Lead.velocity = {static_cast<float>(Vel.X * 0.01), static_cast<float>(Vel.Y * 0.01)};
+	Lead.yaw = static_cast<float>(GetActorRotation().Yaw);
+	Lead.sprint = bRunOn;
+	Lead.exiting = bWaterClimbing;
+	Lead.exitIndex = WaterLeadExit;
+	Lead.out = !Lead.swimming && !bWaterClimbing;
+	Lead.camera = Camera ? ToSwim(Camera->GetComponentLocation()) : Lead.position;
+	const ftcore::WaterBodies& Bodies = System->Bodies();
+	const std::size_t Exits = Bodies.exitCount();
+	WaterParty.step(Lead, Members, NumWaterFollowers, Exits > 0 ? &Bodies.exit(0) : nullptr, Exits, DeltaSeconds, &Bodies);
+	for (int32 Slot = 0; Slot < NumWaterFollowers; ++Slot)
+	{
+		const ftcore::WaterFollowOrder& Order = WaterParty.order(Slot);
+		if (Order.changed)
+		{
+			const AFTPartyFollower* Follower = WaterFollowers[Slot].Get();
+			UE_LOG(LogForgottenThird, Display, TEXT("WaterFollow: %s to phase %d (entry %d, exit %d) at (%.0f, %.0f, %.0f) cm."),
+				Follower ? *Follower->GetName() : TEXT("(gone)"), static_cast<int32>(Order.phase), static_cast<int32>(Order.entry.kind), Order.exitIndex,
+				Follower ? Follower->GetActorLocation().X : 0.0, Follower ? Follower->GetActorLocation().Y : 0.0, Follower ? Follower->GetActorLocation().Z : 0.0);
+		}
+	}
+}
+
+void AFTExploreCharacter::StepWaterLoco(float DeltaSeconds)
+{
+	using namespace FTSwimUnits;
+	if (WaterLocoFrame == GFrameCounter)
+	{
+		return;
+	}
+	WaterLocoFrame = GFrameCounter;
+	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
+	LoadWaterLoco(Anim);
+	ftcore::WaterLocoInput In;
+	In.water = WaterNow;
+	In.swim = SwimBody.state();
+	// Swim's dived and surfaced are its step's: only on the frame TickSwimDeep stepped it.
+	const ftcore::SwimStep& Last = SwimBody.last();
+	const bool bSwimFresh = SwimSteppedFrame == GFrameCounter;
+	In.dived = bSwimFresh && Last.dived;
+	In.surfaced = bSwimFresh && Last.surfaced;
+	In.breathShare = Last.breathShare;
+	In.swimVelocity = Last.velocity;
+	In.move = {static_cast<float>(WaterMoveWanted.X), static_cast<float>(WaterMoveWanted.Y)};
+	WaterMoveWanted = FVector2D::ZeroVector;
+	In.sprint = bRunOn;
+	In.yaw = static_cast<float>(GetActorRotation().Yaw);
+	In.velocity = ToSwim(WaterTopVelocity);
+	In.falling = bWaterTopFalling;
+	if (bWaterClimbing)
+	{
+		const float T = FMath::Clamp(WaterClimbTime, 0.f, 1.f);
+		if (bWaterClimbLadder)
+		{
+			// Up the rungs, then over the top once TickWater's move across begins (half way).
+			In.exitMove = T < 0.5f ? ftcore::WaterExitMove::Ladder : ftcore::WaterExitMove::LadderTop;
+			In.ladderClimbed = ToMetres(GetActorLocation().Z - WaterClimbFrom.Z);
+			In.exitProgress = T < 0.5f ? 0.f : (T - 0.5f) * 2.f;
+		}
+		else
+		{
+			In.exitMove = ftcore::WaterExitMove::Mantle;
+			In.exitProgress = T;
+		}
+		// The hands reach for the top's edge, a little in from the wall's face toward the place the body ends.
+		const double Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		const FVector Across = (WaterClimbTo - WaterClimbFrom).GetSafeNormal2D();
+		In.exitHand = ToSwim(FVector(WaterClimbFrom.X, WaterClimbFrom.Y, WaterClimbTo.Z - Half) + Across * 35.0);
+	}
+	WaterPose = WaterLocoBody.step(In, DeltaSeconds);
+	const ftcore::WaterLocoPose& Pose = WaterPose;
+	if (Anim)
+	{
+		// WaterLoco's yaw is the engine's (its plan frame is the engine's, in metres), so its lean has the yaw rate's
+		// sign, as the locomotion's lean has.
+		Anim->SetWater(Pose.waterWeight, Pose.layers, Pose.layerCount, Pose.lean);
+	}
+	if (Pose.changed)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("WaterLoco: %s to %s at (%.0f, %.0f, %.0f) cm, %.1f m/s, sink %.2f m, cues 0x%x."),
+			ANSI_TO_TCHAR(ftcore::waterLocoStateName(Pose.from)), ANSI_TO_TCHAR(ftcore::waterLocoStateName(Pose.state)), GetActorLocation().X,
+			GetActorLocation().Y, GetActorLocation().Z, Pose.speed, Pose.sink, Pose.cue);
+	}
+	if (!Pose.inputOk)
+	{
+		UE_LOG(LogForgottenThird, Verbose, TEXT("WaterLoco: an input value was replaced at (%.0f, %.0f, %.0f) cm."), GetActorLocation().X, GetActorLocation().Y,
+			GetActorLocation().Z);
+	}
+	StepWaterParty(DeltaSeconds);
 }
 
 void AFTExploreCharacter::LoadSwimTuning()
@@ -3491,6 +3790,12 @@ bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float De
 	// is taken (a menu, a scene, a fight), which Swim would read as a dive press.
 	In.crouch = TakesInput() && bCrouchKeyWas;
 	In.jump = bJumpHeld;
+	// An entry's splash and recovery, a climb out or a rescue (WaterLoco's lock): no dive and no rise.
+	if (WaterPose.lockActions)
+	{
+		In.crouch = false;
+		In.jump = false;
+	}
 	SwimMoveAxis = FVector2D::ZeroVector;
 #if !UE_BUILD_SHIPPING // -LeadGoDive: the scripted walk dives once, swims its route under water and rises at its end
 	if (bLeadGo && bLeadGoDive)
@@ -3526,6 +3831,7 @@ bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float De
 	const bool bWasUnder = bSwimUnder;
 	// A hitch: Swim clamps its step to kSwimMaxStep and drops the rest, so the movement below carries only that step too.
 	const ftcore::SwimStep& S = SwimBody.step(In, Env, FMath::Min(DeltaSeconds, ftcore::kSwimMaxStep));
+	SwimSteppedFrame = GFrameCounter;
 #if !UE_BUILD_SHIPPING
 	bLeadGoDived = bLeadGoDived || S.dived;
 	bLeadGoRose = bLeadGoRose || S.state == ftcore::SwimState::Surfacing;
@@ -3598,7 +3904,9 @@ bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float De
 	}
 	const bool bStroke = Velocity.Size() > 30.0 && (In.forward != 0.f || In.right != 0.f || S.state != ftcore::SwimState::Under);
 	const float Elevation = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Velocity.Z, FMath::Max(Across, 1.0))));
-	PoseSwim(bStroke ? FMath::Clamp(-(90.f - Elevation), -170.f, 0.f) : -15.f, DeltaSeconds);
+	// The swim clips lie prone and pitch the body themselves (UnderSlow, PitchUp, PitchDown): the mesh stays upright.
+	// Without them the upright stand-in is laid along the travel.
+	PoseSwim(bWaterUnderClips ? 0.f : bStroke ? FMath::Clamp(-(90.f - Elevation), -170.f, 0.f) : -15.f, DeltaSeconds);
 	return true;
 }
 
@@ -4189,7 +4497,8 @@ bool AFTExploreCharacter::TryLadderClimb(bool bPressed)
 	const ftcore::WaterExit& Exit = Bodies.exit(static_cast<std::size_t>(Index));
 	const FVector Out(Exit.out.x, Exit.out.y, 0.0);
 	// Pushing at the wall (the stick or a scripted walk), or facing it when jump is pressed.
-	const FVector Push = GetCharacterMovement()->GetLastInputVector().GetSafeNormal2D();
+	const FVector Push = bSwimming ? FVector(WaterMoveWanted.X, WaterMoveWanted.Y, 0.0).GetSafeNormal2D()
+		: GetCharacterMovement()->GetLastInputVector().GetSafeNormal2D();
 	const bool bPushing = FVector::DotProduct(Push, Out) > 0.5;
 	const bool bToward = FVector::DotProduct(GetActorForwardVector().GetSafeNormal2D(), Out) > 0.3;
 	if (!(bPushing || (bPressed && bToward)))
@@ -4199,6 +4508,8 @@ bool AFTExploreCharacter::TryLadderClimb(bool bPressed)
 	const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
 	const double Feet = At.Z - Half;
 	bWaterClimbing = true;
+	bWaterClimbLadder = true;
+	WaterLeadExit = Index;
 	WaterClimbTime = 0.f;
 	WaterClimbFrom = At;
 	WaterClimbTo = FVector(Exit.top.x * 100.0, Exit.top.y * 100.0, Exit.topZ * 100.0 + Half + 2.0);
@@ -4267,6 +4578,8 @@ bool AFTExploreCharacter::TryWaterClimb()
 		return false;
 	}
 	bWaterClimbing = true;
+	bWaterClimbLadder = false;
+	WaterLeadExit = -1;
 	WaterClimbTime = 0.f;
 	WaterClimbSeconds = 0.9f;
 	WaterClimbFrom = At;
@@ -4292,6 +4605,13 @@ void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleVa
 	if (RollTurnLeft > 0.f)
 	{
 		WorldDirection = WorldDirection.RotateAngleAxis(RollTurn, FVector::UpVector);
+	}
+	// Swimming at the surface: the move is WaterLoco's to make (the surface hold sets the velocity from its step), so
+	// the ask is kept for it rather than given to the movement.
+	if (bSwimming && !bSwimUnder && !bSwimRescue && !bWaterClimbing)
+	{
+		WaterMoveWanted += FVector2D(WorldDirection.X, WorldDirection.Y) * ScaleValue;
+		return;
 	}
 	// Wading: the walk is slowed by the water's depth (the movement caps its speed at the input's share).
 	if (!bSwimming && (WaterNow.mode == ftcore::WaterMode::Wade || WaterNow.mode == ftcore::WaterMode::DeepWade))
