@@ -82,6 +82,8 @@ void UFTBenchSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		OutDir = FPaths::ProfilingDir() / TEXT("Bench");
 	}
 	FParse::Value(Cmd, TEXT("BenchWarmup="), Warmup);
+	FParse::Value(Cmd, TEXT("BenchWarmFrames="), WarmGate.minSmoothFrames);
+	FParse::Value(Cmd, TEXT("BenchWarmMax="), WarmGate.maxSeconds);
 	FParse::Value(Cmd, TEXT("BenchSeconds="), Seconds);
 	FParse::Value(Cmd, TEXT("BenchSide="), MassingSide);
 	FParse::Value(Cmd, TEXT("BenchLeadAhead="), LeadAhead);
@@ -124,6 +126,57 @@ void UFTBenchSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		}
 		PlaceCamera(0.0);
 	}
+	FString Teleport;
+	if (FParse::Value(Cmd, TEXT("BenchTeleport="), Teleport, false) && !Teleport.IsEmpty())
+	{
+		TArray<FString> Parts;
+		Teleport.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() == 2 && bHasPath)
+		{
+			TeleportAt = FCString::Atod(*Parts[0]);
+			TeleportPathTo = FCString::Atod(*Parts[1]);
+		}
+		else if (Parts.Num() == 5)
+		{
+			TeleportAt = FCString::Atod(*Parts[0]);
+			const double X = FCString::Atod(*Parts[1]);
+			const double Y = FCString::Atod(*Parts[2]);
+			const double Z = FCString::Atod(*Parts[3]);
+			if (MassingSide > 0.0)
+			{
+				const ftcore::MassingVec E = ftcore::massingEnginePoint(MassingSide, X, Y, Z);
+				TeleportTo = FVector(E.x, E.y, E.z) * 100.0;
+			}
+			else
+			{
+				TeleportTo = FVector(X, Y, Z) * 100.0;
+			}
+			TeleportYaw = FCString::Atod(*Parts[4]);
+			bTeleportPawn = true;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Bench: -BenchTeleport=%s isn't s,pathSeconds (with -BenchPath) or s,x,y,z,yaw; no teleport."),
+				*Teleport);
+		}
+	}
+	FString ExecList;
+	if (FParse::Value(Cmd, TEXT("BenchExec="), ExecList, false) && !ExecList.IsEmpty())
+	{
+		TArray<FString> Items;
+		ExecList.ParseIntoArray(Items, TEXT("|"));
+		for (const FString& Item : Items)
+		{
+			FString At;
+			FString Line;
+			if (Item.Split(TEXT(":"), &At, &Line) && !Line.TrimStartAndEnd().IsEmpty())
+			{
+				Execs.Emplace(FCString::Atod(*At), Line.TrimStartAndEnd());
+			}
+		}
+		Execs.Sort([](const TPair<double, FString>& A, const TPair<double, FString>& B) { return A.Key < B.Key; });
+	}
+	WarmGate.minSeconds = Warmup;
 	if (!(Seconds > 0.0 && Seconds <= kMaxSeconds && Warmup >= 0.0))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("Bench %s: capture of %.1f s after a %.1f s warm-up refused (0 to %.0f s)."), *Name, Seconds,
@@ -238,7 +291,7 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 	{
 	case EPhase::Warmup:
 		PlaceCamera(0.0);
-		if (PhaseClock >= Warmup)
+		if (RealMs > 0.0 && WarmGate.step(RealMs))
 		{
 			Phase = EPhase::Capture;
 			PhaseClock = 0.0;
@@ -246,12 +299,48 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 			IFileManager::Get().MakeDirectory(*OutDir, true);
 			FCsvProfiler::Get()->BeginCapture(-1, OutDir, Name + TEXT(".csv"));
 			FCsvProfiler::SetMetadata(TEXT("Bench"), *Name);
-			UE_LOG(LogForgottenThird, Display, TEXT("Bench %s: capture begun at frame %d, %.2f s after start."), *Name, Frames, SinceStart());
+			Marks = FString::Printf(TEXT("warm-up %.1f s, %d frames under %.0f ms%s"), WarmGate.seconds(), WarmGate.smoothFrames(),
+				WarmGate.smoothMs, WarmGate.timedOut() ? TEXT(", TIMED OUT (the scene never settled)") : TEXT(""));
+			UE_LOG(LogForgottenThird, Display, TEXT("Bench %s: capture begun at frame %d, %.2f s after start; %s."), *Name, Frames, SinceStart(),
+				*Marks);
+			Marks += TEXT("\n");
 		}
 		break;
 	case EPhase::Capture:
 	{
-		PlaceCamera(PhaseClock);
+		if (TeleportAt >= 0.0 && PhaseClock >= TeleportAt)
+		{
+			TeleportAt = -1.0;
+			APawn* Pawn = Pc ? Pc->GetPawn() : nullptr;
+			if (bTeleportPawn && Pawn)
+			{
+				const FRotator Face(0.0, TeleportYaw, 0.0);
+				Pawn->SetActorLocationAndRotation(TeleportTo + FVector(0.0, 0.0, Pawn->GetSimpleCollisionHalfHeight()), Face, false, nullptr,
+					ETeleportType::TeleportPhysics);
+				Pc->SetControlRotation(Face);
+			}
+			else if (!bTeleportPawn)
+			{
+				PathOffset = TeleportPathTo - PhaseClock;
+			}
+			const FString Mark = FString::Printf(TEXT("teleport at capture frame %d (%.1f s)%s"), static_cast<int32>(Stats->size()), PhaseClock,
+				bTeleportPawn && !Pawn ? TEXT(": no pawn, skipped") : TEXT(""));
+			UE_LOG(LogForgottenThird, Display, TEXT("Bench %s: %s."), *Name, *Mark);
+			Marks += Mark + TEXT("\n");
+		}
+		while (NextExec < Execs.Num() && PhaseClock >= Execs[NextExec].Key)
+		{
+			const FString Mark = FString::Printf(TEXT("exec '%s' at capture frame %d (%.1f s)"), *Execs[NextExec].Value,
+				static_cast<int32>(Stats->size()), PhaseClock);
+			UE_LOG(LogForgottenThird, Display, TEXT("Bench %s: %s."), *Name, *Mark);
+			Marks += Mark + TEXT("\n");
+			if (GEngine)
+			{
+				GEngine->Exec(World, *Execs[NextExec].Value);
+			}
+			++NextExec;
+		}
+		PlaceCamera(PhaseClock + PathOffset);
 		if (bSkipNext)
 		{
 			bSkipNext = false;
@@ -270,7 +359,7 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Warning, TEXT("Bench %s: sample buffer full (%.0f fps over %.0f s); later frames are not kept."), *Name,
 				kMaxFps, Seconds);
 		}
-		if (PhaseClock >= Seconds)
+		if (PhaseClock + PathOffset >= Seconds)
 		{
 			FinishCapture();
 		}
@@ -322,7 +411,7 @@ void UFTBenchSubsystem::WriteSummary()
 		Sum.render.p99, Sum.gpu.median, Sum.gpu.p99, Sum.drawCalls.median, Sum.drawCalls.p99, Sum.primitives.median,
 		BeginPlayAt, FirstFrameAt, FirstPawnAt, Dropped);
 	UE_LOG(LogForgottenThird, Display, TEXT("%s"), *Line);
-	FString Text = Line + TEXT("\n\nframes over 33 ms (capture frame, frame / game / render / GPU ms):\n");
+	FString Text = Line + TEXT("\n\n") + Marks + TEXT("\nframes over 33 ms (capture frame, frame / game / render / GPU ms):\n");
 	ftcore::FrameHitch Hitches[kListedHitches];
 	const std::size_t N = Stats->hitches(ftcore::kHitchMs, Hitches, kListedHitches);
 	for (std::size_t i = 0; i < N && i < kListedHitches; ++i)
