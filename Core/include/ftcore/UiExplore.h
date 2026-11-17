@@ -41,6 +41,8 @@ FTCORE_API void uiObjectiveStep(UiObjectiveFade& f, std::uint32_t serial, float 
 // --- Notices ----------------------------------------------------------------------------------------------------
 
 inline constexpr std::size_t kUiNoticeQueue = 3;  // the one shown and the ones waiting, together
+// A full queue hands its last waiting slot to the new notice; with one slot that would be the one on screen.
+static_assert(kUiNoticeQueue >= 2, "the notice on screen always finishes: one slot shown, at least one waiting");
 inline constexpr float kUiNoticeTime = 2.5f;      // s each notice stands, its fades inside
 inline constexpr float kUiNoticeFadeIn = 0.15f;
 inline constexpr float kUiNoticeFadeOut = 0.35f;

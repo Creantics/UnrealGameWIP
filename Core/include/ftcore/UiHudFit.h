@@ -78,11 +78,13 @@ struct UiHudFit {
 
 // The fit of `n` measured words, `spaceW` px a gap, in `room` px (the slot's room in the viewport's px) with `lines` on
 // screen. One line when it fits or the slot never breaks; else two lines broken at the gap nearest the middle when both
-// fit and the slot shows two; else greedy lines of at most `room` (a page of `lines` at a time).
+// fit and the slot shows two; else greedy lines of at most `room` (a page of `lines` at a time). A room of zero, below
+// zero or NaN fits nothing: the whole text on one line, over.
 FTCORE_API void uiHudFit(const UiHudWord* words, std::size_t n, float spaceW, float room, std::uint8_t lines, UiHudFit& out);
 
 // Pages the fit shows (1 when every line is on screen), and the first line of the page standing `age` s after the text
-// changed (pages turn every kUiHudPageTime s, from the first again after the last).
+// changed (pages turn every kUiHudPageTime s, from the first again after the last). A negative or non-finite age is the
+// first page.
 FTCORE_API std::size_t uiHudPages(const UiHudFit& fit);
 FTCORE_API std::size_t uiHudPageLine(const UiHudFit& fit, float age);
 

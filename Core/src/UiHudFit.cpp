@@ -55,6 +55,14 @@ void uiHudFit(const UiHudWord* words, std::size_t n, float spaceW, float room, s
     float total = 0.f;
     for (std::size_t i = 0; i < n; ++i) total += words[i].w + (i > 0 ? gap : 0.f);
 
+    // No room (zero, negative or NaN): the whole text on one line, over.
+    if (!(room > 0.f)) {
+        put(0, n, total);
+        out.over = true;
+        out.shown = 1;
+        return;
+    }
+
     // Whole: it fits, or the slot never breaks (a name runs over, whole), or it is one word.
     if (total <= room || want == 1 || n == 1) {
         put(0, n, total);
@@ -109,7 +117,7 @@ std::size_t uiHudPages(const UiHudFit& fit) {
 std::size_t uiHudPageLine(const UiHudFit& fit, float age) {
     const std::size_t pages = uiHudPages(fit);
     if (pages <= 1) return 0;
-    const float t = age > 0.f ? age : 0.f; // NaN and negatives: the first page
+    const float t = std::isfinite(age) && age > 0.f ? age : 0.f; // NaN, infinities and negatives: the first page
     const float cycle = static_cast<float>(pages) * kUiHudPageTime;
     const std::size_t page = std::min(static_cast<std::size_t>(std::fmod(t, cycle) / kUiHudPageTime), pages - 1);
     return page * fit.shown;

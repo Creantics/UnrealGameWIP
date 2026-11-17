@@ -200,6 +200,34 @@ TEST_CASE("HUD text scale: nothing to fit") {
     CHECK(f.over);
 }
 
+TEST_CASE("HUD text scale: no room fits nothing: the whole line, over") {
+    std::array<UiHudWord, 3> w{{{0, 4, 60.f}, {5, 9, 60.f}, {10, 14, 60.f}}};
+    const float rooms[] = {0.f, -50.f, std::numeric_limits<float>::quiet_NaN(), -std::numeric_limits<float>::infinity()};
+    for (const float room : rooms) {
+        UiHudFit f;
+        uiHudFit(w.data(), w.size(), 10.f, room, 2, f);
+        REQUIRE(f.count == 1);
+        CHECK(f.shown == 1);
+        CHECK(f.over);
+        CHECK(f.line[0].begin == 0);
+        CHECK(f.line[0].end == 14);
+        CHECK(f.w[0] == doctest::Approx(200.f));
+        CHECK(uiHudPages(f) == 1);
+    }
+}
+
+TEST_CASE("HUD text scale: a non-finite age shows the first page") {
+    std::array<UiHudWord, 10> w{};
+    for (std::size_t i = 0; i < w.size(); ++i) w[i] = UiHudWord{static_cast<std::uint32_t>(3 * i), static_cast<std::uint32_t>(3 * i + 2), 100.f};
+    UiHudFit f;
+    uiHudFit(w.data(), w.size(), 10.f, 230.f, 2, f);
+    REQUIRE(uiHudPages(f) == 3);
+    CHECK(uiHudPageLine(f, std::numeric_limits<float>::infinity()) == 0);
+    CHECK(uiHudPageLine(f, -std::numeric_limits<float>::infinity()) == 0);
+    CHECK(uiHudPageLine(f, std::numeric_limits<float>::quiet_NaN()) == 0);
+    CHECK(uiHudPageLine(f, std::numeric_limits<float>::max()) < static_cast<std::size_t>(f.count));
+}
+
 TEST_CASE("HUD text scale: no allocation") {
     const bool counting = ftcore_test::allocHookInstalled();
     const auto before = ftcore_test::allocStats().count;

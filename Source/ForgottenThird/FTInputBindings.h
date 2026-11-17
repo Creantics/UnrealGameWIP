@@ -262,9 +262,10 @@ inline bool WasJustPressed(const APlayerController& PC, ftcore::InputAction Acti
 inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 {
 	static ftcore::InputDevice Last = ftcore::InputDevice::Keys;
+	static ftcore::UiGlyphMode LastMode = ftcore::UiGlyphMode::Auto; // the Button prompts row as last seen
 	if (!PC)
 	{
-		return Last;
+		return ftcore::uiPromptDevice(LastMode, Last); // no controller to poll: the last device, under the held setting
 	}
 	const auto AnyDown = [PC](ftcore::InputDevice Device)
 	{
@@ -295,7 +296,8 @@ inline ftcore::InputDevice NoteDevice(const APlayerController* PC)
 	const UWorld* World = PC->GetWorld();
 	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
 	const UFTSettingsSubsystem* Settings = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
-	return ftcore::uiPromptDevice(Settings ? Settings->Get().glyphMode : ftcore::UiGlyphMode::Auto, Last);
+	LastMode = Settings ? Settings->Get().glyphMode : LastMode;
+	return ftcore::uiPromptDevice(LastMode, Last);
 }
 
 // A screen's controls line on a device, built from the table (ftcore::inputHintLine) with the words from ui.json

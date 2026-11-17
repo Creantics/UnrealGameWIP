@@ -5650,7 +5650,7 @@ const TCHAR* const kFakePrompt = TEXT("E  Open the gate");
 const TCHAR* const kFakeLine = TEXT("Stay close. The lamps along this street went out an hour ago.");
 #endif
 const TCHAR* const kGuardName[] = {TEXT("lead name"), TEXT("partner name"), TEXT("objective"), TEXT("notice"), TEXT("prompt verb"),
-	TEXT("subtitle line 1"), TEXT("subtitle line 2"), TEXT("subtitle speaker")};
+	TEXT("controls"), TEXT("subtitle line 1"), TEXT("subtitle line 2"), TEXT("subtitle speaker")};
 
 class SFTExploreHud : public SLeafWidget
 {
@@ -5663,9 +5663,22 @@ public:
 		GetDirector = MoveTemp(InGetDirector);
 		GetLead = MoveTemp(InGetLead);
 		SetVisibility(EVisibility::HitTestInvisible);
+		if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			std::atomic<bool>* Flush = &TextRuns.bFlush;
+			FontRelease = FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().AddLambda(
+				[Flush](const FSlateFontCache&) { Flush->store(true); });
+		}
 #if !UE_BUILD_SHIPPING
 		const TCHAR* Cmd = FCommandLine::Get();
 		bFake = FParse::Param(Cmd, TEXT("UiExploreFake"));
+		// -UiExploreDevice=pad|keys: the controls line on that device whatever was used last (the stills of both).
+		FString Dev;
+		if (FParse::Value(Cmd, TEXT("UiExploreDevice="), Dev))
+		{
+			ForcedDevice = Dev.Equals(TEXT("pad"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::InputDevice::Pad)
+				: static_cast<int32>(ftcore::InputDevice::Keys);
+		}
 		bShot = FParse::Value(Cmd, TEXT("UiExploreShot="), ShotPrefix) && !ShotPrefix.IsEmpty();
 		FParse::Value(Cmd, TEXT("UiExploreShotDelay="), ShotDelay);
 		bShotYaw = FParse::Value(Cmd, TEXT("UiExploreShotYaw="), ShotYaw);
@@ -5689,6 +5702,10 @@ public:
 		{
 			GEngine->GameViewport->OnEndDraw().RemoveAll(this);
 		}
+		if (FontRelease.IsValid() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().Remove(FontRelease);
+		}
 	}
 
 	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1920.0, 1080.0); }
@@ -5703,6 +5720,12 @@ public:
 		bOn = D && C && !C->GetPartyScreen().open && !MenuOpen(C);
 		TickShot(C);
 		TickReads();
+		// The controls line's device: noted each frame, also while the HUD is hidden, so the last device used stays fresh
+		// (the Button prompts setting may hold one; FTInputBindings::NoteDevice).
+		ftcore::InputDevice Device = FTInputBindings::NoteDevice(C ? Cast<APlayerController>(C->GetController()) : nullptr);
+#if !UE_BUILD_SHIPPING
+		Device = ForcedDevice >= 0 ? static_cast<ftcore::InputDevice>(ForcedDevice) : Device;
+#endif
 		if (!bOn)
 		{
 			return;
@@ -5713,6 +5736,17 @@ public:
 			BuiltHeight = H;
 			BuiltSubScale = FakeSubScale;
 			BuildFonts(H);
+		}
+		// The field's keys on that device (kept by FTInputBindings::HintLine per device and bindings generation): measured
+		// again only when one of those, or the fonts, change.
+		const uint32 Bindings = FTInputBindings::Generation();
+		if (!CtlText || Device != CtlDevice || Bindings != CtlGeneration)
+		{
+			CtlDevice = Device;
+			CtlGeneration = Bindings;
+			CtlText = &FTInputBindings::HintLine(ftcore::InputHintScreen::Field, Device);
+			CtlW = TextWidth(*CtlText, CtlFont);
+			ReadSoon(GuardControls);
 		}
 		// The cutscene in place has the screen.
 		const AFTCutsceneDirector* Cut = D->GetCutsceneDirector();
@@ -5824,8 +5858,13 @@ public:
 		{
 			return Layer;
 		}
+		FTextRuns* Runs = UiTextCacheOn() ? &TextRuns : nullptr;
+		if (Runs)
+		{
+			Runs->BeginFrame();
+		}
 		const FVector2f Sz = Geometry.GetLocalSize();
-		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Sz.Y / 1080.f)};
+		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Sz.Y / 1080.f), false, Runs};
 		const float S = P.S;
 		const FUiWorldRow& R = Shown();
 		Mesh.Begin(Geometry, S);
@@ -5910,6 +5949,17 @@ public:
 			P.TextGuarded(VX, VY, VerbText, VerbFont, Tok(UiToken::Ink), L.G);
 		}
 
+		// The controls line, centred at the foot under the subtitle band: the field's keys on the device in use.
+		if (CtlText && !CtlText->IsEmpty())
+		{
+			FGuardLine& L = Lines[GuardControls];
+			const float CXl = 0.5f * (Sz.X - CtlW);
+			const float CYl = Sz.Y - kCtlBottom * S - CtlAsc;
+			L.Rect = FBox2f(FVector2f(CXl, CYl), FVector2f(CXl + CtlW, CYl + CtlAsc));
+			LineShade(P, L);
+			P.TextGuarded(CXl, CYl, *CtlText, CtlFont, Tok(UiToken::Ink, kCtlInk), L.G);
+		}
+
 #if !UE_BUILD_SHIPPING
 		// The placeholder subtitle: the dialogue's block and metrics, the speaker in the world's fill, over the band only
 		// where the measured contrast asks for it.
@@ -5954,7 +6004,11 @@ private:
 	};
 
 	// The lines whose picture is read, each drawn under its measured guard.
-	enum EGuardLine : int32 { GuardLead, GuardPartner, GuardObjective, GuardNotice, GuardVerb, GuardSub0, GuardSub1, GuardSpeaker, GuardCount };
+	enum EGuardLine : int32 { GuardLead, GuardPartner, GuardObjective, GuardNotice, GuardVerb, GuardControls, GuardSub0, GuardSub1, GuardSpeaker,
+		GuardCount };
+	static constexpr float kCtlInk = 0.8f;    // the controls line, quieter than the words in play
+	static constexpr float kCtlBottom = 28.f; // its foot above the screen's (the subtitle band ends at kSubBottom)
+	static_assert(kCtlBottom < kSubBottom - 40.f, "the controls line stays under the subtitle band");
 	static_assert(UE_ARRAY_COUNT(kGuardName) == GuardCount, "a name for each read line");
 	static constexpr float kReadEvery = 1.5f; // s between reads in play (one line each)
 	static constexpr float kGuardHold = 3.f;  // s of weaker reads before a guard eases back
@@ -6021,7 +6075,7 @@ private:
 
 	float RestAlpha(int32 I) const
 	{
-		const FSlateFontInfo* F[GuardSub0] = {&LeadFont, &PartnerFont, &ObjFont, &NoteFont, &VerbFont};
+		const FSlateFontInfo* F[GuardSub0] = {&LeadFont, &PartnerFont, &ObjFont, &NoteFont, &VerbFont, &CtlFont};
 		return I < GuardSub0 ? F[I]->OutlineSettings.OutlineColor.A : 0.f;
 	}
 
@@ -6029,7 +6083,7 @@ private:
 	ftcore::UiColor LineInk(int32 I, bool bRest = true) const
 	{
 		ftcore::UiColor C = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), I == GuardSpeaker ? UiToken::Fill : UiToken::Ink);
-		C.a *= I == GuardPartner ? Hud::PartnerInk : (I == GuardObjective && bRest ? Lines[I].Floor : 1.f);
+		C.a *= I == GuardPartner ? Hud::PartnerInk : I == GuardControls ? kCtlInk : (I == GuardObjective && bRest ? Lines[I].Floor : 1.f);
 		return C;
 	}
 
@@ -6084,6 +6138,9 @@ private:
 		KeyAsc = Asc(KeyFont);
 		VerbFont = Spaced(FontPx(UiTextRole::Label, H, Hud::RowPx), Hud::SpacedTracking);
 		VerbAsc = Asc(VerbFont);
+		CtlFont = FontPx(UiTextRole::Label, H, Hud::KeyPx);
+		CtlAsc = Asc(CtlFont);
+		CtlText = nullptr; // measured again in the new font
 		ObjW = 0.f;
 		PromptSeen.Reset(); // measured again in the new fonts
 		LeadRow.bBuilt = false;
@@ -6420,6 +6477,14 @@ private:
 	FVector2f PromptAt = FVector2f::ZeroVector;
 	FString PromptSeen, KeyText, VerbText;
 	float KeyW = 0.f, VerbW = 0.f;
+	// The controls line (its words are FTInputBindings::HintLine's, kept there).
+	FSlateFontInfo CtlFont;
+	float CtlAsc = 0.f, CtlW = 0.f;
+	const FString* CtlText = nullptr;
+	ftcore::InputDevice CtlDevice = ftcore::InputDevice::Keys;
+	uint32 CtlGeneration = 0;
+	mutable FTextRuns TextRuns; // the words' kept glyph runs, drawn from in OnPaint
+	FDelegateHandle FontRelease;
 	// The reads and each line's guard.
 	mutable FGuardLine Lines[GuardCount];
 	TArray<FColor> ReadBuf; // kept between reads
@@ -6435,6 +6500,7 @@ private:
 	float FakeSubScale = 1.f;
 	bool bFake = false;
 #if !UE_BUILD_SHIPPING
+	int32 ForcedDevice = -1; // -UiExploreDevice=: the controls line's device (-1: the one in use)
 	bool bShot = false;
 	bool bShotTaken = false;
 	bool bExitAsked = false;
@@ -6493,8 +6559,15 @@ const FTUiText kMenuYesUi(TEXT("pause.yes"));
 const FTUiText kMenuNoUi(TEXT("pause.no"));
 const FTUiText kMenuHintUi(TEXT("pause.hint"));
 const FTUiText kMenuAskHintUi(TEXT("pause.ask_hint"));
-const TCHAR* const kMenuSettingsTitle = TEXT("Settings");
-const TCHAR* const kMenuSettingsHint = TEXT("Left / Right: change    Esc: back (saved)");
+// The settings screen's hint on the device in use (A cycles a row's value, B goes back), and its section names.
+const FTUiText kMenuSettingsHintUi(TEXT("settings.hint"));
+const FTUiText kMenuSettingsHintPadUi(TEXT("settings.hint_pad"));
+const FTUiText kMenuSectionTextUi(TEXT("settings.section.text"));
+const FTUiText kMenuSectionSoundUi(TEXT("settings.section.sound"));
+const FTUiText kMenuSectionPlayUi(TEXT("settings.section.play"));
+const FTUiText kMenuSectionCameraUi(TEXT("settings.section.camera"));
+const FTUiText kMenuSectionDisplayUi(TEXT("settings.section.display"));
+const FTUiText kMenuSectionAccessUi(TEXT("settings.section.access"));
 
 constexpr float kMenuOffInk = 0.4f;    // a greyed pause item
 constexpr float kMenuRestInk = 0.85f;  // a row, section or button not selected
@@ -6599,10 +6672,12 @@ public:
 #if !UE_BUILD_SHIPPING
 		T = ForcedTextScale > 0.f ? ForcedTextScale : T;
 #endif
-		if (Size.Y != BuiltHeight || T != BuiltScale)
+		const ftcore::InputDevice Device = FTInputBindings::NoteDevice(PC); // the hint names this device's buttons
+		if (Size.Y != BuiltHeight || T != BuiltScale || Device != BuiltDevice)
 		{
 			BuiltHeight = Size.Y;
 			BuiltScale = T;
+			BuiltDevice = Device;
 			ShownSize = Size; // before the fonts: their log line reads it
 			BuildFonts(Size.Y, T, Set);
 		}
@@ -6732,8 +6807,8 @@ private:
 		PauseHint = kMenuHintUi.Get();
 		AskHint = kMenuAskHintUi.Get();
 
-		SettingsTitle = CasedFor(UiTextRole::Title, FString(kMenuSettingsTitle));
-		SettingsHint = FString(kMenuSettingsHint);
+		SettingsTitle = CasedFor(UiTextRole::Title, kMenuSettingsUi.Get());
+		SettingsHint = (BuiltDevice == ftcore::InputDevice::Pad ? kMenuSettingsHintPadUi : kMenuSettingsHintUi).Get();
 		const float Usable = FMath::Max(0.f, ShownSize.X - 2.f * Hud::Margin * FMath::Max(0.25f, H / 1080.f));
 		FitHint(PauseHint, PauseHint2, Usable, NoteFont);
 		FitHint(AskHint, AskHint2, Usable, NoteFont);
@@ -6743,9 +6818,12 @@ private:
 		SettingsHintW = FMath::Max(TextWidth(SettingsHint, NoteFont), TextWidth(SettingsHint2, NoteFont));
 		SettingsTitleW = TextWidth(SettingsTitle, TitleFont);
 		float X = 0.f;
+		const FTUiText* const Sections[] = {&kMenuSectionTextUi, &kMenuSectionSoundUi, &kMenuSectionPlayUi, &kMenuSectionCameraUi,
+			&kMenuSectionDisplayUi, &kMenuSectionAccessUi};
+		static_assert(UE_ARRAY_COUNT(Sections) == ftcore::kSettingsGroupCount, "a name for each section, in SettingsGroup order");
 		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
 		{
-			SectionWord[G] = CasedFor(UiTextRole::Heading, FString(UTF8_TO_TCHAR(ftcore::settingsGroupLabel(static_cast<ftcore::SettingsGroup>(G)))));
+			SectionWord[G] = CasedFor(UiTextRole::Heading, Sections[G]->Get());
 			SectionW[G] = TextWidth(SectionWord[G], HeadFont);
 			SectionX[G] = X; // from the margin
 			X += SectionW[G] + HeadEm; // one em between names
@@ -7323,6 +7401,7 @@ private:
 	float ToVpY = 1.f;
 	float BuiltHeight = 0.f;
 	float BuiltScale = 0.f;
+	ftcore::InputDevice BuiltDevice = ftcore::InputDevice::Keys;
 	FSlateFontInfo TitleFont, HeadFont, RowFont, NoteFont;
 	float TitleAsc = 0.f, HeadAsc = 0.f, RowAsc = 0.f, NoteAsc = 0.f, HeadEm = 0.f, RowEm = 0.f;
 
