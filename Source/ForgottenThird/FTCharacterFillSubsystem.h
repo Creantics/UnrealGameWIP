@@ -14,6 +14,10 @@
 // Near a lit shop bay the shop light shapes the figure: the fill keeps ftcore::nightCharacterFillShare of itself at the
 // pawn's plan distance from the nearest lit bay front (the hero corner's front keys), gone within -NightCharFillBayNear=<m>
 // (3) and whole from -NightCharFillBayFar=<m> (7).
+// Shape: two such lights. The key (ftcore::nightCharacterFillKeyShare, -NightCharFillKeyShare=) swings
+// -NightCharFillYaw=<degrees> (35) off the view toward the side of the local light nearest the pawn
+// (ftcore::nightCharacterFillYaw), so the figure keeps a light and a shadow side; the ambient takes the rest along the view.
+// The local lights are gathered with the bay fronts.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -40,15 +44,21 @@ public:
 
 private:
 	void Spawn(UWorld& World);
+	UDirectionalLightComponent* SpawnOne(UWorld& World);
+	static void Write(UDirectionalLightComponent& L, float Lux, const FRotator& Rotation, float Full);
 	int32 MarkCharacters(UWorld& World);
 	// The lit bays' fronts (the hero corner's front keys, FTNight::HeroFrontTag), looked for on the scan until found
 	// and again after a level streams in.
 	void FindBays(UWorld& World);
 	// Metres in plan from the player's pawn to the nearest lit bay front; negative with none.
 	float BayDistanceM(const UWorld& World) const;
+	// The plan vector (cm) from the pawn to the nearest gathered local light; zero with none.
+	FVector2D ToNearestLight(const UWorld& World) const;
 
-	TWeakObjectPtr<UDirectionalLightComponent> Light;
+	TWeakObjectPtr<UDirectionalLightComponent> Light;    // the soft key
+	TWeakObjectPtr<UDirectionalLightComponent> Ambient;  // the rest, along the view
 	TArray<FVector, TInlineAllocator<8>> BayFronts;
+	TArray<FVector> LocalLights;
 	bool bBaysFound = false;
 	int32 BayLooksLeft = 20;
 	FDelegateHandle LevelAddedHandle;

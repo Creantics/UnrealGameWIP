@@ -171,6 +171,10 @@ struct NightLook {
     // bay's front and whole from charFillBayFarM out (nightCharacterFillShare).
     float charFillBayNearM = 3.f;
     float charFillBayFarM = 7.f;
+    // Its shape: charFillKeyShare of the fill is a soft key charFillYawDeg off the view on the nearest light's side
+    // (nightCharacterFillYaw), so the figure keeps a light and a shadow side; the rest is a weak ambient along the view.
+    float charFillYawDeg = 35.f;
+    float charFillKeyShare = 0.7f;
     float capRadiusM = 15.f;       // lights within this of each other share their light
     float capShare = 0.2f;         // each neighbour within capRadiusM takes this much off (1 / (1 + capShare n))
     float capFloor = 0.4f;         // no light falls under this share of its candela
@@ -276,6 +280,13 @@ FTCORE_API float nightCharacterFillLux(const NightLook& look, float night);
 // The share of that fill kept at bayDistanceM from the nearest lit bay's front (negative: no lit bay): 0 inside
 // charFillBayNearM, 1 from charFillBayFarM out, a smoothstep between. Far under near is read as one edge at far.
 FTCORE_API float nightCharacterFillShare(const NightLook& look, float bayDistanceM);
+// The soft key's yaw off the view in degrees, added to the camera's yaw (Unreal's: positive turns right, x forward, y
+// right), for a view along (viewX, viewY) and the nearest light at (toLightX, toLightY) from the figure: the key comes
+// from that light's side of the view, charFillYawDeg (clamped 0..90) off it. No light (a zero vector) or one dead ahead
+// or behind: from the right. No allocation.
+FTCORE_API float nightCharacterFillYaw(const NightLook& look, float viewX, float viewY, float toLightX, float toLightY);
+// The key's share of the fill (charFillKeyShare clamped 0..1); the ambient along the view takes the rest.
+FTCORE_API float nightCharacterFillKeyShare(const NightLook& look);
 
 // The intensity share of a light with `neighbours` others within capRadiusM.
 FTCORE_API float nightLampScale(const NightLook& look, std::size_t neighbours);
