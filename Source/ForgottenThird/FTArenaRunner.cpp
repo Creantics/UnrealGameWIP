@@ -798,8 +798,9 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		PartnerImpactDue -= static_cast<double>(DeltaSeconds);
 		PlayWaitingPartnerImpact(static_cast<double>(Fight.heldTime()));
 	}
-	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
-	if (bPartner)
+	// Frozen, the fight's clock stands while the accumulator cycles: drawn at the last step, nothing saws.
+	PlaceFigures(Fight.over() || Fight.frozen() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
+	if (bPartner && !Fight.frozen()) // no lead switch mid-special (Core refuses it)
 	{
 		CheckSwapInput(); // the figures as drawn this frame
 		TickHandoff();
@@ -3474,7 +3475,7 @@ void UFTArenaRunner::StepFight()
 	PressSpecial(In);
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	// The press tick or the cut back: the performer put where Core says, and no step (no separation push) this tick.
-	const bool bSpecialPlaced = AfterSpecialTick(Out);
+	const bool bSpecialPut = AfterSpecialTick(Out);
 	ReportFightSpends(Out);
 	if (bPartner && Session)
 	{
@@ -3611,7 +3612,7 @@ void UFTArenaRunner::StepFight()
 	{
 		TakeOverBodies(Out); // before the step: the bodies are the host's (ArenaFight::setPartner)
 	}
-	if (!bSpecialPlaced)
+	if (!bSpecialPut)
 	{
 		ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
 	}

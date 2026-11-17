@@ -70,6 +70,7 @@ void UFTArenaRunner::ReadSpecialTable()
 #if !UE_BUILD_SHIPPING
 	const TCHAR* Cmd = FCommandLine::Get();
 	SpecialTestAt = -1.f;
+	SpecialTestUntil = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialTest="), SpecialTestAt);
 	bSpecialShots = FParse::Param(Cmd, TEXT("ArenaSpecialShots"));
 #endif
@@ -141,11 +142,16 @@ void UFTArenaRunner::ReadSpecialTable()
 			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s: Core ends it at (%.2f, %.2f) m but its shots at end_feet (%.2f, %.2f) m."),
 				UTF8_TO_TCHAR(Id.c_str()), Rules.endTravel, Rules.endSide, Feet.x, Feet.y);
 		}
-		if (FMath::Abs(Shots->release() - Rules.duration) > 0.05f)
+		if (FMath::Abs(Shots->length() - Rules.duration) > 0.05f)
 		{
 			UE_LOG(LogForgottenThird, Warning,
-				TEXT("Arena: specials: %s: Core cuts back at %.2f s, its shots at %.2f s (%.2f s long): the fight is held for the shots' tail."),
-				UTF8_TO_TCHAR(Id.c_str()), Rules.duration, Shots->release(), Shots->length());
+				TEXT("Arena: specials: %s: Core cuts back at %.2f s, its shots end at %.2f s: the fight is held for the shots' tail."),
+				UTF8_TO_TCHAR(Id.c_str()), Rules.duration, Shots->length());
+		}
+		if (FMath::Abs(Shots->release() - Rules.impactAt) > 0.05f)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s: Core lands the hit at %.2f s, its shots' release beat at %.2f s."),
+				UTF8_TO_TCHAR(Id.c_str()), Rules.impactAt, Shots->release());
 		}
 	}
 	UE_LOG(LogForgottenThird, Log, TEXT("Arena: specials: %u move(s) in the fight."), static_cast<uint32>(ArenaSpecials.count));
@@ -396,6 +402,8 @@ bool UFTArenaRunner::AfterSpecialTick(const ftcore::ArenaOutput& Out)
 			break;
 		case ftcore::ArenaEventType::SpecialStarted:
 			bStarted = true;
+			SpecialTestAt = -1.f; // the test press is done
+			SpecialRefusalLogged = -1;
 			break;
 		case ftcore::ArenaEventType::SpecialEnded:
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special cut back%s: %s at (%.2f, %.2f) m, %d result(s)."), Fight.time(),
@@ -407,9 +415,13 @@ bool UFTArenaRunner::AfterSpecialTick(const ftcore::ArenaOutput& Out)
 	}
 	if (bSpecialPressedNow && !bStarted)
 	{
-		// NotControlled (the partner's move), NotReady, NoTarget, NoSight, Down, Running, Over, Unhurt or NoMove.
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special refused: %s."), Fight.time(),
-			UTF8_TO_TCHAR(ftcore::arenaSpecialRefusalName(Fight.specialRefusal(ftcore::kArenaPlayer))));
+		// NotControlled (the partner's move), NotReady, NoTarget, NoSight, Down, Running, Over, Unhurt or NoMove; each new reason once.
+		const ftcore::ArenaSpecialRefusal Why = Fight.specialRefusal(ftcore::kArenaPlayer);
+		if (static_cast<int32>(Why) != SpecialRefusalLogged)
+		{
+			SpecialRefusalLogged = static_cast<int32>(Why);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special refused: %s."), Fight.time(), UTF8_TO_TCHAR(ftcore::arenaSpecialRefusalName(Why)));
+		}
 	}
 	bSpecialPressedNow = false;
 	if (const ftcore::ArenaSpecialRules* Rules = Fight.specialMove())
@@ -553,14 +565,27 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 #if !UE_BUILD_SHIPPING
 		if (SpecialTestAt >= 0.f && Fight.time() >= SpecialTestAt && !Fight.over() && !Fight.frozen())
 		{
-			SpecialTestAt = -1.f; // once a fight
-			if (bArenaSpecials)
+			// Pressed each step until it starts (a hit stun, the air or no target in front refuses one tick), given up after 2 s.
+			if (SpecialTestUntil < 0.f)
 			{
-				Fight.setSpecialGaugeForTest(0, ArenaSpecials.gauge.full); // both kit slots: whichever the lead drives
-				Fight.setSpecialGaugeForTest(1, ArenaSpecials.gauge.full);
+				SpecialTestUntil = Fight.time() + 2.f;
+				if (bArenaSpecials)
+				{
+					Fight.setSpecialGaugeForTest(0, ArenaSpecials.gauge.full); // both kit slots: whichever the lead drives
+					Fight.setSpecialGaugeForTest(1, ArenaSpecials.gauge.full);
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: -ArenaSpecialTest: the gauges full, the special pressed."), Fight.time());
 			}
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: -ArenaSpecialTest: the gauges full, the special pressed."), Fight.time());
-			RequestSpecial();
+			if (Fight.time() > SpecialTestUntil)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("Arena: %.2f: -ArenaSpecialTest: the special never started in 2 s: given up (%s)."), Fight.time(),
+					UTF8_TO_TCHAR(ftcore::arenaSpecialRefusalName(Fight.specialRefusal(ftcore::kArenaPlayer))));
+				SpecialTestAt = -1.f;
+			}
+			else
+			{
+				RequestSpecial();
+			}
 		}
 		// The first frames after the hand-back: the drawn eye's step.
 		APlayerController* PC = GetPC();
