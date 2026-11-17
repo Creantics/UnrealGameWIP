@@ -57,22 +57,23 @@ bm_box, bm_lathe, bm_tube, bm_shell, bm_prism, bm_torus = (hc.bm_box, hc.bm_lath
 
 hc.MATERIALS.update({
     "hb_tarline": ((0.030, 0.024, 0.018), 0.75, 0.0),     # tarred standing rigging and rope
-    "hb_bronze": ((0.30, 0.20, 0.09), 0.40, 1.0),         # tower finial, face rims
-    "hb_pane": ((0.012, 0.014, 0.016), 0.12, 0.0),        # dark cabin windows (unlit)
+    "hb_bronze": ((0.30, 0.20, 0.09), 0.50, 1.0),         # tower finial, face rims (weathered outdoors; was 0.40)
+    "hb_glass_pane": ((0.012, 0.014, 0.016), 0.15, 0.0),        # dark cabin windows (unlit), salt-hazed (needs a guard token)
     "hb_plaster": ((0.46, 0.42, 0.36), 0.85, 0.0),        # tower infill walls
     "hb_canvas": ((0.060, 0.055, 0.045), 0.80, 0.0),      # tarred canvas cabin roof
-    "hb_ring": ((0.25, 0.035, 0.020), 0.35, 0.0),         # the cabin boat's ring
+    "hb_ring": ((0.25, 0.035, 0.020), 0.50, 0.0),         # the cabin boat's ring, painted (was 0.35)
     "tower_paper": ((0.80, 0.62, 0.38), 0.85, 0.0),       # warm shoji paper (Unreal: the night glow)
 })
 hc.TEXTURED.update({
-    "hb_hull_teal": (lambda: hc.gen_worn(51, 0.6, (0.030, 0.075, 0.075), (0.11, 0.075, 0.045), 0.10, 0.5, 0.8,
-                                         grime=0.35, streak=0.6), 0.55),
-    "hb_hull_oxblood": (lambda: hc.gen_worn(52, 0.6, (0.11, 0.025, 0.018), (0.11, 0.075, 0.045), 0.12, 0.5, 0.8,
-                                            grime=0.35, streak=0.6), 0.55),
-    "hb_hull_black": (lambda: hc.gen_worn(53, 0.6, (0.018, 0.018, 0.019), (0.10, 0.07, 0.045), 0.08, 0.4, 0.8,
-                                          grime=0.25, streak=0.5), 0.5),
-    "hb_sail": (lambda: hc.gen_weave(54, 0.3, colour=(0.36, 0.20, 0.11), thread=0.003, mottle=0.12), 0.9),
-    "hb_mat": (lambda: hc.gen_weave(55, 0.3, colour=(0.30, 0.23, 0.12), thread=0.006, mottle=0.10), 0.9),
+    # weathered marine paint over timber (coat 0.55, black 0.52; were 0.5 / 0.4); fallbacks = the maps' medians
+    "hb_hull_teal": (lambda: hc.gen_worn(51, 0.6, (0.030, 0.075, 0.075), (0.11, 0.075, 0.045), 0.10, 0.55, 0.8,
+                                         grime=0.35, streak=0.6), 0.57),
+    "hb_hull_oxblood": (lambda: hc.gen_worn(52, 0.6, (0.11, 0.025, 0.018), (0.11, 0.075, 0.045), 0.12, 0.55, 0.8,
+                                            grime=0.35, streak=0.6), 0.57),
+    "hb_hull_black": (lambda: hc.gen_worn(53, 0.6, (0.018, 0.018, 0.019), (0.10, 0.07, 0.045), 0.08, 0.52, 0.8,
+                                          grime=0.25, streak=0.5), 0.53),
+    "hb_sail": (lambda: hc.gen_weave(54, 0.3, colour=(0.36, 0.20, 0.11), thread=0.003, mottle=0.12), 0.88),
+    "hb_mat": (lambda: hc.gen_weave(55, 0.3, colour=(0.30, 0.23, 0.12), thread=0.006, mottle=0.10), 0.88),
 })
 hc.TILE.update({"hb_hull_teal": 0.6, "hb_hull_oxblood": 0.6, "hb_hull_black": 0.6, "hb_sail": 0.3, "hb_mat": 0.3})
 
@@ -354,7 +355,7 @@ def cabin_boat(name):
     for sg in (-1, 1):  # two windows a side, framed
         for yc in (y0 + 0.32 * (y1 - y0), y0 + 0.72 * (y1 - y0)):
             x = sg * (w + 0.004)
-            b.add(bm_box(x - 0.006, yc - 0.26, zc - 0.17, x + 0.006, yc + 0.26, zc + 0.17), "hb_pane")
+            b.add(bm_box(x - 0.006, yc - 0.26, zc - 0.17, x + 0.006, yc + 0.26, zc + 0.17), "hb_glass_pane")
             for (ya, yb, za, zb2) in ((yc - 0.3, yc + 0.3, zc + 0.17, zc + 0.21), (yc - 0.3, yc + 0.3, zc - 0.21, zc - 0.17),
                                       (yc - 0.3, yc - 0.26, zc - 0.17, zc + 0.17), (yc + 0.26, yc + 0.3, zc - 0.17, zc + 0.17)):
                 b.add(bm_box(x - 0.016, ya, za, x + 0.016, yb, zb2), "hc_timber", grain="y")

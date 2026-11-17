@@ -22,7 +22,7 @@ Writes into <out_dir> (metres, Z up in Blender, glTF +Y up in the files):
                               bounds; origin at the ground under its middle
   SM_HC_StockPot.glb          dented, sooted 0.45 m aluminium stock pot (0.335 m) on a 0.065 m gas ring, rim 0.40 m over
                               the counter; origin at the bottom centre; handles along X, lid slid to +X on the ladle,
-                              gas valve and hose to +Y (the cook's side); slots hc_potsoot / hc_potmetal / hc_broth
+                              gas valve and hose to +Y (the cook's side); slots hc_pot_metal_soot / hc_pot_metal / hc_broth_water
   SM_HC_GoodsBottles.glb      0.42 x 0.26 m tray of bottles (dark glass, slot hc_glass), a flask, two jars, bowls;
                               origin at the bottom centre; labels and marks face -Y
   hero_corner_props.json      triangles, bounds, slots and images per file, from the files read back (merged)
@@ -71,29 +71,31 @@ SEG = 24
 # Flat slots: name: (base colour linear rgb, roughness, metallic)
 MATERIALS = {
     "lantern_paper": ((0.72, 0.16, 0.08), 0.85, 0.0),    # vermilion washi (Unreal: the night glow)
-    "lantern_wood": ((0.030, 0.016, 0.011), 0.32, 0.0),  # black-brown lacquered caps and the cord's bead
-    "lantern_iron": ((0.03, 0.03, 0.03), 0.45, 1.0),     # hook
+    # Dry roughness per the 11-16 gloss order (GLOSS_SETTS_V6_PLAN_1116.md, Order 1): nothing but glaze, glass and
+    # liquid under 0.40; metals stay metal only where the name says so (iron, metal, brass, bronze, steel ...).
+    "lantern_wood": ((0.030, 0.016, 0.011), 0.55, 0.0),  # black-brown lacquered caps and the cord's bead
+    "lantern_iron": ((0.03, 0.03, 0.03), 0.62, 1.0),     # hook
     "lantern_rib": ((0.05, 0.035, 0.02), 0.6, 0.0),      # dark smoked bamboo hoops
-    "lantern_cord": ((0.11, 0.028, 0.018), 0.8, 0.0),    # dark red-brown pull cord
+    "lantern_cord": ((0.11, 0.028, 0.018), 0.88, 0.0),   # dark red-brown pull cord
     "lantern_ink": ((0.012, 0.011, 0.010), 0.7, 0.0),    # near-black ink
     "post_timber": ((0.11, 0.075, 0.05), 0.75, 0.0),
-    "post_iron": ((0.035, 0.035, 0.035), 0.5, 1.0),
-    "hc_glaze_brown": ((0.10, 0.042, 0.018), 0.16, 0.0),  # iron-brown glaze
-    "hc_glaze_green": ((0.11, 0.19, 0.12), 0.18, 0.0),    # grey-green glaze
-    "hc_glaze_cream": ((0.52, 0.47, 0.37), 0.24, 0.0),    # pale bowls
-    "hc_bisque": ((0.36, 0.25, 0.16), 0.85, 0.0),         # unglazed feet
-    "hc_metal": ((0.42, 0.40, 0.37), 0.42, 1.0),          # tinplate
-    "hc_iron": ((0.035, 0.034, 0.033), 0.6, 1.0),         # brackets, hooks, hoops, nails
+    "post_iron": ((0.035, 0.035, 0.035), 0.62, 1.0),
+    "hc_glaze_brown": ((0.10, 0.042, 0.018), 0.28, 0.0),  # iron-brown glaze
+    "hc_glaze_green": ((0.11, 0.19, 0.12), 0.30, 0.0),    # grey-green glaze
+    "hc_glaze_cream": ((0.52, 0.47, 0.37), 0.32, 0.0),    # pale bowls
+    "hc_bisque": ((0.36, 0.25, 0.16), 0.80, 0.0),         # unglazed feet
+    "hc_metal": ((0.42, 0.40, 0.37), 0.55, 1.0),          # tinplate
+    "hc_iron": ((0.035, 0.034, 0.033), 0.65, 1.0),        # brackets, hooks, hoops, nails
     "hc_string": ((0.46, 0.38, 0.26), 0.9, 0.0),          # twine
     "hc_straw": ((0.42, 0.33, 0.15), 0.9, 0.0),           # straw rope
-    "hc_lacquer": ((0.022, 0.011, 0.008), 0.3, 0.0),      # black-brown lacquer
-    "hc_signink": ((0.62, 0.42, 0.14), 0.32, 1.0),        # gold leaf in the carved marks
+    "hc_lacquer": ((0.022, 0.011, 0.008), 0.45, 0.0),     # black-brown lacquer (signs: off the 0.40 edge)
+    "hc_signink": ((0.62, 0.42, 0.14), 0.60, 0.0),        # ochre-gold pigment in the carved marks (not metal)
     "hc_bannerink": ((0.70, 0.66, 0.56), 0.85, 0.0),      # pale dye
-    "hc_bamboo": ((0.30, 0.23, 0.10), 0.45, 0.0),         # aged bamboo
-    "hc_chilli": ((0.30, 0.018, 0.010), 0.38, 0.0),       # dried chillies
+    "hc_bamboo": ((0.30, 0.23, 0.10), 0.60, 0.0),         # aged bamboo
+    "hc_chilli": ((0.30, 0.018, 0.010), 0.48, 0.0),       # dried chillies (waxy skin, dusty)
     "hc_stem": ((0.12, 0.10, 0.04), 0.8, 0.0),
     "hc_herb": ((0.13, 0.12, 0.05), 0.85, 0.0),           # dried leaves
-    "hc_rooftile": ((0.055, 0.06, 0.065), 0.35, 0.0),     # grey fired tile
+    "hc_rooftile": ((0.055, 0.06, 0.065), 0.60, 0.0),     # grey fired tile
 }
 
 # Textured slots: name: (generator, seed, tile metres, fallback roughness)
@@ -142,7 +144,12 @@ def gen_timber(seed, tile, n=1024, worn_post=None):
     c = np.where((pores > 2.6)[..., None], c * 0.88, c)
     st = smooth01(pnoise(rng, 3, n, aniso=(1.0, 20.0)) * 0.35 + 0.1)
     dirt = st * 0.4
-    rough = 0.6 + 0.05 * fig - 0.08 * late
+    # Roughness spread (p10..p90 about 0.64..0.85): weathered / rubbed patches stretched along the grain, the hard
+    # latewood smoother than the eroded earlywood, dirt streaks rougher. The extra noise has its own generator so the
+    # colour and normal maps keep their draws.
+    rng2 = np.random.default_rng(seed + 7000)
+    wpatch = pnoise(rng2, 24, n, aniso=(1.0, 8.0))
+    rough = 0.755 + 0.06 * wpatch + 0.04 * fig - 0.09 * late + 0.08 * st
     h = 0.5 + 0.25 * late + 0.04 * fig
     if worn_post:
         zz = v / tile * worn_post  # metres up the post
@@ -154,6 +161,9 @@ def gen_timber(seed, tile, n=1024, worn_post=None):
         dirt = np.maximum(dirt, foot)
         scuff = smooth01((pnoise(rng, 3, n, aniso=(1.0, 4.0)) - 1.4) / 0.6) * foot
         h = h - 0.3 * scuff
+        # hands polish the post between about 0.9 and 1.7 m: up to 0.10 smoother there (band median about 0.69)
+        hand = smooth01(1 - np.abs(zz - 1.3 - 0.06 * pnoise(rng2, 30, n)) / 0.4)
+        rough = rough - 0.10 * hand
     return np.clip(c, 0, 1), h, 0.0007, _mr(dirt, rough), tile
 
 
@@ -170,8 +180,14 @@ def gen_stone(seed, tile, n=1024):
     grime = smooth01(pnoise(rng, 70, n) * 0.4 + 0.1)
     c = c * (1 - 0.25 * grime[..., None])
     pit = pnoise(rng, 2.2, n)
-    h = 0.5 + 0.15 * blob - 0.35 * smooth01((pit - 1.3) / 0.8) + 0.05 * sp
-    return np.clip(c, 0, 1), h, 0.003, _mr(grime, 0.82 + 0.06 * blob), tile
+    pitm = smooth01((pit - 1.3) / 0.8)
+    h = 0.5 + 0.15 * blob - 0.35 * pitm + 0.05 * sp
+    # Roughness spread (p10..p90 about 0.70..0.91): worn and weathered patches, grime and dust in the chisel pits
+    # rougher, the dark mica flecks smoother (they glint). Own generator: the colour and normal maps keep their draws.
+    rng2 = np.random.default_rng(seed + 7000)
+    wpatch = pnoise(rng2, 20, n)
+    rough = 0.79 + 0.05 * blob + 0.07 * wpatch + 0.08 * grime + 0.10 * pitm - 0.10 * (sp > 1.6)
+    return np.clip(c, 0, 1), h, 0.003, _mr(grime, rough), tile
 
 
 def gen_wrapping(seed, tile, n=1024):
@@ -189,10 +205,16 @@ def gen_wrapping(seed, tile, n=1024):
     c = np.where((fl > 3.1)[..., None], c * 0.88, c)
     c = c * (1 - 0.12 * crease[..., None])
     h = 0.5 + 0.025 * (f1 + f2) - 0.4 * crease
-    return np.clip(c, 0, 1), h, 0.0008, _mr(0.1 * crease, 0.86 + 0.03 * mid), tile
+    # Roughness spread (p10..p90 about 0.77..0.95): fibre direction, broad tone, handled patches smoother (grease from
+    # hands), creases rougher (broken fibres). Own generator: the colour and normal maps keep their draws.
+    rng2 = np.random.default_rng(seed + 7000)
+    wpatch = pnoise(rng2, 12, n)
+    handled = smooth01((pnoise(rng2, 40, n) - 0.8) / 0.8)
+    rough = 0.87 + 0.02 * f1 + 0.02 * f2 + 0.03 * mid + 0.05 * wpatch - 0.10 * handled + 0.06 * crease
+    return np.clip(c, 0, 1), h, 0.0008, _mr(0.1 * crease, rough), tile
 
 
-def gen_weave(seed, tile, n=1024, colour=(0.55, 0.46, 0.33), thread=0.0025, mottle=0.08, rough=0.9):
+def gen_weave(seed, tile, n=1024, colour=(0.55, 0.46, 0.33), thread=0.0025, mottle=0.08, rough=0.88):
     """Plain-weave cloth: over-under threads, slubs, dye mottling."""
     rng = np.random.default_rng(seed)
     u, v = ct._uv(tile, n)
@@ -206,13 +228,20 @@ def gen_weave(seed, tile, n=1024, colour=(0.55, 0.46, 0.33), thread=0.0025, mott
     col = np.array(colour)
     c = col * (1 + 0.10 * (weave[..., None] - 0.5) + 0.04 * slub[..., None] + mottle * mot[..., None])
     h = weave + 0.05 * slub
-    return np.clip(c, 0, 1), h, 0.0006, _mr(smooth01(mot * 0.3 + 0.1) * 0.3, rough + 0.03 * mot), tile
+    # Roughness spread (p10..p90 about rough -0.09..+0.09): thread crowns pressed smoother than the gaps between
+    # them, slubs, dye mottle with its dirt, handled / weathered patches. Own generator: colour and normal keep draws.
+    rng2 = np.random.default_rng(seed + 7000)
+    wpatch = pnoise(rng2, 16, n)
+    r = rough - 0.10 * (weave - 0.818) + 0.03 * slub + 0.02 * mot + 0.05 * wpatch
+    return np.clip(c, 0, 1), h, 0.0006, _mr(smooth01(mot * 0.3 + 0.1) * 0.3, r), tile
 
 
 def gen_worn(seed, tile, base, under, chips, rough_top, rough_under, metal_top=0.0, metal_under=0.0, grime=0.3,
-             n=1024, streak=0.0):
+             n=1024, streak=0.0, wear=0.05):
     """A worn coating over what is under it (paint over rusting steel, leather's dye over its hide, plating over steel):
-    chips and scuffs (fraction chips) down to the under colour, mottle, streaked grime; R dirt, G roughness, B metal."""
+    chips and scuffs (fraction chips) down to the under colour, mottle, streaked grime; R dirt, G roughness, B metal.
+    wear: rubbed (smoother) and weathered (rougher) patches in the roughness only; with the mottle it gives the coat
+    a p10..p90 spread of about 0.18 before chips and grime."""
     rng = np.random.default_rng(seed)
     mot = pnoise(rng, 40, n)
     fine = pnoise(rng, 2, n)
@@ -227,7 +256,9 @@ def gen_worn(seed, tile, base, under, chips, rough_top, rough_under, metal_top=0
     g = smooth01(pnoise(rng, 60, n, aniso=(1.0, 6.0)) * 0.5 + 0.1) * (1.0 + streak)
     c = c * (1 - grime * g[..., None])
     h = 0.5 - 0.35 * m + 0.03 * mot + 0.02 * fine
-    rough = rough_top * (1 - m) + rough_under * m + 0.05 * mot + 0.15 * grime * g
+    rng2 = np.random.default_rng(seed + 7000)  # own generator: the colour and normal maps keep their draws
+    rub = pnoise(rng2, 10, n)
+    rough = rough_top * (1 - m) + rough_under * m + 0.05 * mot + 0.15 * grime * g + wear * rub
     metal = metal_top * (1 - m) + metal_under * m
     mr = np.dstack([np.clip(np.maximum(g * grime, 0.6 * m), 0, 1), np.clip(rough, 0.02, 1), np.clip(metal, 0, 1)])
     return np.clip(c, 0, 1), h, 0.0004, mr, tile
@@ -240,32 +271,34 @@ TEXTURED.update({
     "hc_wrapping": (lambda: gen_wrapping(24, 0.4), 0.86),
     "hc_cloth": (lambda: gen_weave(25, 0.3, colour=(0.52, 0.44, 0.31), thread=0.0028), 0.9),
     "hc_bannercloth": (lambda: gen_weave(26, 0.2, colour=(0.13, 0.20, 0.36), thread=0.0011, mottle=0.035,
-                                         rough=0.88), 0.9),
+                                         rough=0.86), 0.86),
 })
 # The worn post map covers the post's height in v (0.8 m across in u).
 TILE.update({"hc_timber": 0.8, "hc_timber_post": 0.8, "hc_stone": 1.0, "hc_wrapping": 0.4, "hc_cloth": 0.3,
              "hc_bannercloth": 0.2})
 # The bicycle: dark green-black enamel chipped to rust, a rusting wire basket, worn plated steel, a worn black saddle.
 TEXTURED.update({
-    "hc_bikepaint": (lambda: gen_worn(31, 0.5, (0.020, 0.032, 0.026), (0.16, 0.065, 0.025), 0.06, 0.32, 0.85,
-                                      grime=0.25), 0.4),
-    "hc_rust": (lambda: gen_worn(32, 0.4, (0.13, 0.12, 0.11), (0.20, 0.075, 0.03), 0.45, 0.5, 0.9, metal_top=0.8,
-                                 grime=0.35, streak=0.5), 0.8),
-    "hc_steel": (lambda: gen_worn(33, 0.4, (0.50, 0.49, 0.47), (0.17, 0.08, 0.04), 0.04, 0.28, 0.85, metal_top=1.0,
-                                  grime=0.3), 0.35),
-    "hc_saddle": (lambda: gen_worn(34, 0.3, (0.018, 0.016, 0.015), (0.10, 0.07, 0.05), 0.12, 0.45, 0.8, grime=0.2),
-                  0.5),
+    # (the second number is the fallback roughness, unused while the MR map exists: set to the map's median)
+    "hc_bikepaint": (lambda: gen_worn(31, 0.5, (0.020, 0.032, 0.026), (0.16, 0.065, 0.025), 0.06, 0.46, 0.85,
+                                      grime=0.25), 0.47),
+    # grey scale over rusting iron, not bare metal (metal_top was 0.8 on a name without a metal token)
+    "hc_rust": (lambda: gen_worn(32, 0.4, (0.13, 0.12, 0.11), (0.20, 0.075, 0.03), 0.45, 0.55, 0.9, metal_top=0.0,
+                                 grime=0.35, streak=0.5), 0.67),
+    "hc_steel": (lambda: gen_worn(33, 0.4, (0.50, 0.49, 0.47), (0.17, 0.08, 0.04), 0.04, 0.46, 0.85, metal_top=1.0,
+                                  grime=0.3), 0.47),
+    "hc_saddle": (lambda: gen_worn(34, 0.3, (0.018, 0.016, 0.015), (0.10, 0.07, 0.05), 0.12, 0.47, 0.8, grime=0.2),
+                  0.49),
 })
 TILE.update({"hc_bikepaint": 0.5, "hc_rust": 0.4, "hc_steel": 0.4, "hc_saddle": 0.3})
 MATERIALS["hc_rubber"] = ((0.022, 0.021, 0.020), 0.86, 0.0)
-MATERIALS["hc_reflector"] = ((0.32, 0.015, 0.008), 0.25, 0.0)
-MATERIALS["hc_lens"] = ((0.55, 0.53, 0.46), 0.08, 0.0)
+MATERIALS["hc_reflector"] = ((0.32, 0.015, 0.008), 0.42, 0.0)  # dusty, weathered plastic (was 0.25)
+MATERIALS["hc_lens"] = ((0.55, 0.53, 0.46), 0.42, 0.0)  # opaque stand-in for a fogged, aged lens (was 0.08)
 
 
 def gen_sooted(seed, tile, soot_v, fade, n=1024):
     """Worn aluminium (gen_worn's scuffs, scratches and grime) blackened by the flame from v = 0 (the lathe's bottom
     pole) up to about soot_v metres along the profile: a ragged edge in licks, crusty, rough, not metallic."""
-    c, h, depth, mr, _ = gen_worn(seed, tile, (0.46, 0.45, 0.43), (0.27, 0.26, 0.25), 0.05, 0.42, 0.34,
+    c, h, depth, mr, _ = gen_worn(seed, tile, (0.46, 0.45, 0.43), (0.27, 0.26, 0.25), 0.05, 0.48, 0.42,
                                   metal_top=1.0, metal_under=1.0, grime=0.35, n=n, streak=0.4)
     rng = np.random.default_rng(seed + 100)
     u, v = ct._uv(tile, n)
@@ -290,16 +323,18 @@ POT_R, POT_H, POT_T, POT_BEAD, POT_LID_R = 0.225, 0.335, 0.003, 0.0075, 0.236
 _POT_OUT_TILE = 2 * math.pi * (POT_R + POT_BEAD) / 2
 _POT_IN_TILE = 2 * math.pi * (POT_R - 0.001) / 2
 TEXTURED.update({
-    "hc_potsoot": (lambda: gen_sooted(41, _POT_OUT_TILE, 0.30, 0.10), 0.5),
-    "hc_potmetal": (lambda: gen_worn(42, _POT_IN_TILE, (0.47, 0.46, 0.44), (0.30, 0.29, 0.28), 0.04, 0.38, 0.3,
-                                     metal_top=1.0, metal_under=1.0, grime=0.3), 0.4),
+    # hc_pot_metal_soot / hc_pot_metal were hc_potsoot / hc_potmetal: metal 1 needs a whole metal token in the name
+    # (the gloss guard splits names at "_"; "potmetal" is not "metal")
+    "hc_pot_metal_soot": (lambda: gen_sooted(41, _POT_OUT_TILE, 0.30, 0.10), 0.54),
+    "hc_pot_metal": (lambda: gen_worn(42, _POT_IN_TILE, (0.47, 0.46, 0.44), (0.30, 0.29, 0.28), 0.04, 0.48, 0.42,
+                                     metal_top=1.0, metal_under=1.0, grime=0.3), 0.48),
 })
-TILE.update({"hc_potsoot": _POT_OUT_TILE, "hc_potmetal": _POT_IN_TILE})
-MATERIALS["hc_broth"] = ((0.11, 0.055, 0.020), 0.08, 0.0)     # amber stock, glossy
-MATERIALS["hc_brass"] = ((0.45, 0.32, 0.12), 0.38, 1.0)       # gas valve
+TILE.update({"hc_pot_metal_soot": _POT_OUT_TILE, "hc_pot_metal": _POT_IN_TILE})
+MATERIALS["hc_broth_water"] = ((0.11, 0.055, 0.020), 0.08, 0.0)     # amber stock, glossy (a liquid: needs a whitelist token)
+MATERIALS["hc_brass"] = ((0.45, 0.32, 0.12), 0.45, 1.0)       # gas valve, tarnished and greasy (was 0.38)
 # The bottles: opaque dark glass (the only slot named glass), a red plastic cap, label ink.
 MATERIALS["hc_glass"] = ((0.030, 0.022, 0.012), 0.06, 0.0)
-MATERIALS["hc_cap_red"] = ((0.34, 0.025, 0.018), 0.35, 0.0)
+MATERIALS["hc_cap_red"] = ((0.34, 0.025, 0.018), 0.45, 0.0)   # moulded plastic cap (was 0.35)
 MATERIALS["hc_ink"] = ((0.012, 0.011, 0.010), 0.7, 0.0)
 
 
@@ -311,6 +346,10 @@ def material(name):
         rgb, h, depth, mr, tile = gen()
         bc, nm, m = _tex("T_" + name, rgb, h, tile, depth, mr, rgb.shape[0])
         mat = ct.mat_tex(name, bc, nm, rough, mr=m)
+        # print only (the import's gloss guard is the gate): the map's roughness spread and metal, as the guard reads
+        p10, p50, p90 = (float(x) for x in np.quantile(mr[..., 1], (0.1, 0.5, 0.9)))
+        print(f"{name}: MR roughness p10 {p10:.3f} p50 {p50:.3f} p90 {p90:.3f} spread {p90 - p10:.3f}, "
+              f"metal mean {float(mr[..., 2].mean()):.2f}" + ("" if p90 - p10 >= 0.15 else " (spread under 0.15)"))
     else:
         col, rough, metal = MATERIALS[name]
         mat = bpy.data.materials.new(name)
@@ -1970,13 +2009,13 @@ def stock_pot(name):
              [(R, z) for z in zw] +
              [(R, H - 0.012), (R + 0.004, H - 0.0092), (R + POT_BEAD, H - 0.0045), (R + 0.0035, H),
               (R - 0.001, H - 0.002)])
-    b.add(bm_lathe(outer, 36, rfun=f), "hc_potsoot", M=T(0, 0, zb), uv="keep")
+    b.add(bm_lathe(outer, 36, rfun=f), "hc_pot_metal_soot", M=T(0, 0, zb), uv="keep")
     inner = ([(R - 0.001, H - 0.002), (R - t, H - 0.009)] + [(R - t, z) for z in reversed(zw)] +
              [(R - t, 0.03 + 0.002), (R - 0.003 - 0.0028, 0.014 + 0.0015), (R - 0.012 - 0.0015, 0.004 + t),
               (R - 0.03, 0.0008 + t), (R - 0.06, t), (0.0, t)])
-    b.add(bm_lathe(inner, 36, rfun=f), "hc_potmetal", M=T(0, 0, zb), uv="keep")
+    b.add(bm_lathe(inner, 36, rfun=f), "hc_pot_metal", M=T(0, 0, zb), uv="keep")
     zl = 0.8 * H  # the stock's surface, dented with the wall so it never pokes through
-    b.add(bm_lathe([(R - t - 0.001, zl), (0.0, zl)], 36, rfun=f), "hc_broth", M=T(0, 0, zb), uv="keep")
+    b.add(bm_lathe([(R - t - 0.001, zl), (0.0, zl)], 36, rfun=f), "hc_broth_water", M=T(0, 0, zb), uv="keep")
     # two riveted loop handles along X
     zh = zb + H - 0.055
     for sx in (-1, 1):
@@ -1996,7 +2035,7 @@ def stock_pot(name):
            (RL - 0.002, 0.005), (RL - 0.01, 0.007), (0.17, 0.014), (0.09, 0.024), (0.035, 0.028), (0.0, 0.0285)]
     zlid = rim + 0.0025  # the roll's underside (local -0.002) 0.5 mm over the crest
     Ml = T(LX, 0.0, zlid)
-    b.add(bm_lathe(lid, 40, rfun=wobble(rng, 0.003)), "hc_potmetal", M=Ml, uv="keep",
+    b.add(bm_lathe(lid, 40, rfun=wobble(rng, 0.003)), "hc_pot_metal", M=Ml, uv="keep",
           uvscale=2 * _POT_IN_TILE / (2 * math.pi * RL))
     b.add(bm_lathe([(0.0, 0.027), (0.018, 0.027), (0.02, 0.032), (0.014, 0.04), (0.022, 0.05), (0.02, 0.056),
                     (0.0, 0.0565)], 16), "hc_lacquer", M=Ml, uv="keep")

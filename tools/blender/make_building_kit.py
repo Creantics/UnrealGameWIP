@@ -87,7 +87,10 @@ def tex_smalltile(seed, tile=1.0):
     val = np.where(grout, 0.52 + 0.03 * fine, base) * (1 - 0.12 * st)
     pillow = smooth01((d - g / 2) / 0.006)
     h = np.where(grout, 0.0, 0.55 + 0.45 * pillow) + 0.02 * fine
-    rough = np.where(grout, 0.9, 0.22 + 0.08 * t2) + 0.25 * st
+    # Satin-glazed facade tile, weathered (face median about 0.47, p10..p90 about 0.39..0.59), per-tile glaze, patches
+    # and rain streaks rougher; the grout (13%) rough. Own generator for the patches: colour and normal keep draws.
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
+    rough = np.where(grout, 0.88, 0.40 + 0.10 * t2 + 0.05 * wpatch) + 0.20 * st
     return val, h, 0.004, _mr(st, rough), tile
 
 
@@ -105,7 +108,12 @@ def tex_concrete(seed, tile=2.0):
     val = np.where(pores > 2.3, val * 0.7, val)
     val = np.where(joint, val * 0.85, val)
     h = 0.5 + 0.08 * mid + 0.04 * fine - np.where(pores > 2.3, 0.3, 0.0) - np.where(joint, 0.4, 0.0)
-    return val, h, 0.004, _mr(st, 0.86 + 0.06 * mid), tile
+    # roughness p10..p90 about 0.75..0.94: cloudy tone, weathered patches, rain streaks rougher, pores and the
+    # formwork joint rough (cavities). Own generator for the patches: colour and normal keep their draws.
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
+    rough = (0.82 + 0.05 * mid + 0.06 * wpatch + 0.10 * st + np.where(pores > 2.3, 0.06, 0.0)
+             + np.where(joint, 0.06, 0.0))
+    return val, h, 0.004, _mr(st, rough), tile
 
 
 def _blur(img, sigma_px):
@@ -162,16 +170,21 @@ def tex_stucco(seed, tile=2.0, trowel=True):
     blob = fbm(rng, [1.5, 4, 16], [0.5, 0.3, 0.2])
     mid = fbm(rng, [30, 100], [0.6, 0.4])
     st = _streaks(rng, 0.8)
+    # weathered / rubbed patches for the roughness spread, from their own generator (colour and normal keep draws)
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
     if not trowel:
         val = 0.84 * (1 + 0.025 * blob + 0.04 * mid) * (1 - 0.12 * st)
         h = 0.5 + 0.25 * blob
-        return val, h, 0.0025, _mr(st, 0.9 - 0.05 * blob), tile
+        # roughness p10..p90 about 0.76..0.95: fine render, patches, rain streaks rougher
+        return val, h, 0.0025, _mr(st, 0.84 - 0.04 * blob + 0.07 * wpatch + 0.10 * st), tile
     th, tone, pol, lip = _trowel(rng, tile)
     fine = pnoise(rng, 0.9)
     val = 0.84 * (1 + 0.02 * blob + 0.03 * mid + 0.018 * tone + 0.025 * pol - 0.03 * lip) * (1 - 0.12 * st)
     h = 0.15 + 0.7 * th + 0.06 * blob + 0.02 * fine
     dirt = np.clip(st + 0.35 * lip, 0, 1)
-    return val, h, 0.0055, _mr(dirt, 0.92 - 0.16 * pol + 0.03 * lip - 0.04 * blob), tile
+    # roughness p10..p90 about 0.75..0.95: polished smear middles, rough lips, patches, rain streaks rougher
+    rough = 0.90 - 0.16 * pol + 0.03 * lip - 0.04 * blob + 0.04 * wpatch + 0.10 * st
+    return val, h, 0.0055, _mr(dirt, rough), tile
 
 
 def tex_timber(seed, tile=1.2, board=0.18):
@@ -202,7 +215,11 @@ def tex_corrugated(seed, tile=0.8):
     rust = smooth01(pnoise(rng, 6) * 0.5 - 0.3) * st
     val = 0.74 * (1 + 0.05 * fine + 0.08 * (rib - 0.5)) * (1 - 0.2 * st)
     h = rib + 0.02 * fine
-    return val, h, 0.012, _mr(np.maximum(st, rust), 0.42 + 0.25 * rust, 0.0), tile
+    # painted sheet, weathered (median about 0.58, p10..p90 about 0.50..0.69): crests rubbed a little smoother, rain
+    # streaks and rust rougher, patches. Own generator for the patches: colour and normal keep their draws.
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
+    rough = 0.565 - 0.06 * (rib - 0.5) + 0.06 * wpatch + 0.10 * st + 0.25 * rust
+    return val, h, 0.012, _mr(np.maximum(st, rust), rough, 0.0), tile
 
 
 def tex_rooftile(seed, tile=0.9):
@@ -218,7 +235,10 @@ def tex_rooftile(seed, tile=0.9):
     st = _streaks(rng, 1.0)
     val = 0.42 * (1 + 0.10 * t + 0.06 * pool) * (0.85 + 0.15 * edge)
     h = 0.5 + 0.1 * pool
-    rough = 0.28 + 0.1 * pool + 0.3 * st
+    # fired roof tile, weathered (median about 0.60, p10..p90 about 0.50..0.72): glaze pooling, per-tile firing, rain
+    # streaks rougher, dirt where each course laps the next. Own generator for the patches: colour/normal keep draws.
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
+    rough = 0.57 + 0.06 * pool + 0.04 * t + 0.05 * wpatch + 0.20 * st + 0.08 * (1 - edge)
     return val, h, 0.002, _mr(st, rough), tile
 
 
@@ -230,7 +250,10 @@ def tex_metal(seed, tile=1.0):
     st = _streaks(rng, 1.0)
     val = 0.76 * (1 + 0.02 * fine + 0.03 * mid) * (1 - 0.15 * st)
     h = 0.5 + 0.03 * fine - 0.2 * (scratch > 2.6)
-    return val, h, 0.001, _mr(st, 0.38 + 0.08 * mid + 0.2 * st), tile
+    # painted sheet metal (metal 0), weathered: median about 0.58, p10..p90 about 0.49..0.70; patches, streaks rougher.
+    # Own generator for the patches: colour and normal keep their draws.
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
+    return val, h, 0.001, _mr(st, 0.56 + 0.06 * mid + 0.05 * wpatch + 0.2 * st), tile
 
 
 def tex_cloth(seed, tile=0.5):
@@ -239,7 +262,11 @@ def tex_cloth(seed, tile=0.5):
     weave = (np.sin(u * 2 * math.pi / 0.004) * np.sin(v * 2 * math.pi / 0.004)) * 0.5 + 0.5
     mid = fbm(rng, [10, 50], [0.5, 0.5])
     val = 0.86 * (1 + 0.03 * weave + 0.04 * mid)
-    return val, 0.5 + 0.4 * weave, 0.0008, _mr(smooth01(mid * 0.3 + 0.2), 0.92 + 0 * mid), tile
+    # roughness p10..p90 about 0.79..0.97 (was flat 0.92): thread crowns smoother, dirty mottle rougher, patches.
+    # Own generator for the patches: colour and normal keep their draws.
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
+    rough = 0.88 - 0.08 * (weave - 0.5) + 0.04 * mid + 0.06 * wpatch
+    return val, 0.5 + 0.4 * weave, 0.0008, _mr(smooth01(mid * 0.3 + 0.2), rough), tile
 
 
 def tex_plant(seed, tile=0.6):
@@ -361,6 +388,10 @@ TEXFILES = []
 
 def _tex_mat(name, gen, seed, rough_default=0.8, metal=0.0, strength=1.0, flip=True):
     val, h, depth, mr, tile = gen(seed)
+    # print only (the import's gloss guard is the gate): the map's roughness spread
+    p10, p50, p90 = (float(x) for x in np.quantile(mr[..., 1], (0.1, 0.5, 0.9)))
+    print(f"{name}: MR roughness p10 {p10:.3f} p50 {p50:.3f} p90 {p90:.3f} spread {p90 - p10:.3f}"
+          + ("" if p90 - p10 >= 0.15 else " (spread under 0.15)"))
     rgb = np.dstack([val, val, val])
     pre = name.replace("jpk_", "jpk_t_")
     bc = save(pre + "_BC", rgb, "sRGB", "JPEG")
@@ -392,22 +423,24 @@ def _img_mat(name, img_rgb, rough, tile=1.0):
 
 
 def build_materials():
-    _tex_mat("jpk_wall_tile", tex_smalltile, 101, 0.3)
-    _tex_mat("jpk_wall_concrete", tex_concrete, 102, 0.86)
-    _tex_mat("jpk_wall_stucco", tex_stucco, 103, 0.9)
-    _tex_mat("jpk_trim", lambda s: tex_stucco(s, trowel=False), 104, 0.8)
+    # The fallback roughness is unused while the MR map exists (mat_tex links the map): set to each map's median.
+    _tex_mat("jpk_wall_tile", tex_smalltile, 101, 0.48)
+    _tex_mat("jpk_wall_concrete", tex_concrete, 102, 0.84)
+    _tex_mat("jpk_wall_stucco", tex_stucco, 103, 0.85)
+    _tex_mat("jpk_trim", lambda s: tex_stucco(s, trowel=False), 104, 0.85)
     _tex_mat("jpk_timber", tex_timber, 105, 0.78)
-    _tex_mat("jpk_metal", tex_metal, 106, 0.4)
-    _tex_mat("jpk_shutter", tex_corrugated, 107, 0.45)
-    _tex_mat("jpk_rooftile", tex_rooftile, 108, 0.3)
-    _tex_mat("jpk_cloth", tex_cloth, 109, 0.92)
-    _tex_mat("jpk_accent", tex_cloth, 110, 0.85)
+    _tex_mat("jpk_metal", tex_metal, 106, 0.58)
+    _tex_mat("jpk_shutter", tex_corrugated, 107, 0.58)
+    _tex_mat("jpk_rooftile", tex_rooftile, 108, 0.60)
+    _tex_mat("jpk_cloth", tex_cloth, 109, 0.88)
+    _tex_mat("jpk_accent", tex_cloth, 110, 0.88)
     _tex_mat("jpk_plant", tex_plant, 111, 0.6)
     _flat("jpk_glass", (0.25, 0.29, 0.32), 0.05)
     _flat("jpk_dark", (0.05, 0.05, 0.055), 0.6)
     g = glyph_atlas(7)
-    _img_mat("jpk_sign", np.dstack([g, g, g]), 0.35, tile=1.0)
-    _img_mat("jpk_sign_vend", vending_face(9), 0.3, tile=1.0)
+    # signs: painted / lacquered boards and a printed plastic front, off the 0.40 edge (were 0.35 / 0.3)
+    _img_mat("jpk_sign", np.dstack([g, g, g]), 0.45, tile=1.0)
+    _img_mat("jpk_sign_vend", vending_face(9), 0.45, tile=1.0)
     TILES["jpk_glass"] = 1.0
     TILES["jpk_dark"] = 1.0
 

@@ -199,7 +199,12 @@ def tex_tile(prefix, seed, tile=1.2, size=0.15, glaze=(0.10, 0.32, 0.34)):
     col = np.where(grout, np.array([0.58, 0.57, 0.54]) * (1 + 0.05 * fine[..., None]), col)
     pillow = smooth01((dist - 0.002) / 0.01)
     h = np.where(dist < 0.0022, 0.0, 0.6 + 0.4 * pillow) + 0.01 * pool
-    rough = np.where(dist < 0.0022, 0.85, 0.12 + 0.06 * (pool * 0.5 + 0.5))
+    # Satin exterior glaze, weathered (glaze median about 0.44, p10..p90 about 0.35..0.56; was 0.12..0.18): pooling,
+    # per-tile firing, the thin glaze at the arrises rougher, weathered patches; grout (6%) rough. Patches from their
+    # own generator, so the colour and normal maps keep their draws.
+    wpatch = pnoise(np.random.default_rng(seed + 7000), 16)
+    rough = np.where(dist < 0.0022, 0.85,
+                     0.385 + 0.08 * (pool * 0.5 + 0.5) + 0.05 * t + 0.10 * edge + 0.05 * wpatch)
     mr = np.dstack([np.ones_like(u), rough, np.zeros_like(u)])
     return (save_image(prefix + "_BC", col, "sRGB", "JPEG"),
             save_image(prefix + "_N", normal_from_height(h, tile, 0.004), "Non-Color", "PNG"),
@@ -572,21 +577,25 @@ def build_materials():
     M = {}
     M["tower_stone"] = mat_tex("tower_stone", st[0], st[1], 0.82, strength=1.0)
     M["tower_brick"] = mat_tex("tower_brick", br[0], br[1], 0.86, strength=1.0)
-    M["tower_tile"] = mat_tex("tower_tile", tl[0], tl[1], 0.2, mr=tl[2])
-    M["tower_roof"] = mat_tex("tower_roof", rf[0], rf[1], 0.5, metal=0.6)
+    # Dry roughness per the 11-16 gloss order: nothing but glass under 0.40, metal only where the name says so. The
+    # hands and furniture copies in build_materials_hands / build_materials_furniture carry the same values.
+    M["tower_tile"] = mat_tex("tower_tile", tl[0], tl[1], 0.44, mr=tl[2])  # fallback = the map's glaze median
+    # standing-seam roof, pre-weathered / coil-coated: not bare metal (was 0.5, metal 0.6)
+    M["tower_roof"] = mat_tex("tower_roof", rf[0], rf[1], 0.60, metal=0.0)
     M["tower_timber"] = mat_tex("tower_timber", tb[0], tb[1], 0.7)
-    M["tower_iron"] = mat_flat("tower_iron", (0.07, 0.075, 0.08), 0.5, 0.0)
-    M["tower_gold"] = mat_flat("tower_gold", (0.98, 0.78, 0.40), 0.28, 1.0)
-    M["tower_bell"] = mat_flat("tower_bell", (0.30, 0.25, 0.17), 0.45, 1.0)
-    M["tower_dark"] = mat_flat("tower_dark", (0.05, 0.055, 0.06), 0.25, 0.0)
-    M["clock_face"] = mat_flat("clock_face", (0.90, 0.88, 0.80), 0.35, 0.0)
+    M["tower_iron"] = mat_flat("tower_iron", (0.07, 0.075, 0.08), 0.60, 0.0)
+    M["tower_gold"] = mat_flat("tower_gold", (0.98, 0.78, 0.40), 0.42, 1.0)  # weathered oil gilding (was 0.28)
+    # weathered bronze (was 0.45); was "tower_bell": metal 1 needs a metal token in the name (the gloss guard)
+    M["tower_bell_bronze"] = mat_flat("tower_bell_bronze", (0.30, 0.25, 0.17), 0.50, 1.0)
+    M["tower_dark"] = mat_flat("tower_dark", (0.05, 0.055, 0.06), 0.60, 0.0)  # dark painted louvres, fans (was 0.25)
+    M["clock_face"] = mat_flat("clock_face", (0.90, 0.88, 0.80), 0.45, 0.0)  # painted dial (was 0.35)
     M["tower_lamp_glass"] = mat_flat("tower_lamp_glass", (0.80, 0.76, 0.62), 0.15, 0.0)
-    M["hand_iron"] = mat_flat("hand_iron", (0.05, 0.05, 0.055), 0.45, 0.0)
-    M["hand_gold"] = mat_flat("hand_gold", (0.98, 0.78, 0.40), 0.28, 1.0)
+    M["hand_iron"] = mat_flat("hand_iron", (0.05, 0.05, 0.055), 0.60, 0.0)
+    M["hand_gold"] = mat_flat("hand_gold", (0.98, 0.78, 0.40), 0.42, 1.0)
     M["furn_granite"] = mat_tex("furn_granite", gr[0], gr[1], 0.7)
     M["furn_timber"] = mat_tex("furn_timber", bt[0], bt[1], 0.65)
-    M["furn_steel"] = mat_flat("furn_steel", (0.60, 0.62, 0.63), 0.42, 1.0)
-    M["lamp_iron"] = mat_flat("lamp_iron", (0.08, 0.10, 0.09), 0.42, 0.0)
+    M["furn_steel"] = mat_flat("furn_steel", (0.60, 0.62, 0.63), 0.48, 1.0)
+    M["lamp_iron"] = mat_flat("lamp_iron", (0.08, 0.10, 0.09), 0.55, 0.0)
     M["lamp_glass"] = mat_flat("lamp_glass", (0.82, 0.78, 0.66), 0.12, 0.0)
     M["step_granite"] = M["furn_granite"]
     M["step_nosing"] = mat_flat("step_nosing", (0.20, 0.20, 0.20), 0.6, 0.0)
@@ -942,7 +951,7 @@ def build_tower(M):
     A.box(-1.95, -0.12, spring + 0.55, 1.95, 0.12, spring + 0.75, "tower_timber")
     A.lathe([(0, spring - 0.75), (0.62, spring - 0.75), (0.66, spring - 0.68), (0.55, spring - 0.45),
              (0.40, spring - 0.05), (0.33, spring + 0.25), (0.2, spring + 0.38), (0.0, spring + 0.4)], 20,
-            "tower_bell", sharp_deg=60)
+            "tower_bell_bronze", sharp_deg=60)
     A.lathe([(0.0, spring + 0.35), (0.08, spring + 0.35), (0.08, spring + 0.6), (0.0, spring + 0.6)], 8, "tower_iron",
             smooth=False)
 
@@ -1413,8 +1422,8 @@ def build_all(out):
 
 def build_materials_hands():
     M = {}
-    M["hand_iron"] = mat_flat("hand_iron", (0.05, 0.05, 0.055), 0.45, 0.0)
-    M["hand_gold"] = mat_flat("hand_gold", (0.98, 0.78, 0.40), 0.28, 1.0)
+    M["hand_iron"] = mat_flat("hand_iron", (0.05, 0.05, 0.055), 0.60, 0.0)
+    M["hand_gold"] = mat_flat("hand_gold", (0.98, 0.78, 0.40), 0.42, 1.0)
     return M
 
 
@@ -1425,8 +1434,8 @@ def build_materials_furniture():
     M = {}
     M["furn_granite"] = mat_tex("furn_granite", gr[0], gr[1], 0.7)
     M["furn_timber"] = mat_tex("furn_timber", bt[0], bt[1], 0.65)
-    M["furn_steel"] = mat_flat("furn_steel", (0.60, 0.62, 0.63), 0.42, 1.0)
-    M["lamp_iron"] = mat_flat("lamp_iron", (0.08, 0.10, 0.09), 0.42, 0.0)
+    M["furn_steel"] = mat_flat("furn_steel", (0.60, 0.62, 0.63), 0.48, 1.0)
+    M["lamp_iron"] = mat_flat("lamp_iron", (0.08, 0.10, 0.09), 0.55, 0.0)
     M["lamp_glass"] = mat_flat("lamp_glass", (0.82, 0.78, 0.66), 0.12, 0.0)
     M["step_granite"] = M["furn_granite"]
     M["step_nosing"] = mat_flat("step_nosing", (0.20, 0.20, 0.20), 0.6, 0.0)
