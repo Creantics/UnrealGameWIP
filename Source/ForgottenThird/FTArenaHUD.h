@@ -27,6 +27,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/HUD.h"
 
+#include "ftcore/UiScreens.h"
+
 #include "FTArenaHUD.generated.h"
 
 class UFTArenaRunner;
@@ -51,6 +53,9 @@ public:
 	virtual void DrawHUD() override;
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+	// The screens open over the fight (ftcore/UiScreens.h): the runner's party screen, the pause menu and the settings.
+	// Each fight HUD part asks ftcore::uiHudDraws with it.
+	static ftcore::UiScreenMask ScreensOpen(const UFTArenaRunner* Runner);
 
 private:
 	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world); null before either.

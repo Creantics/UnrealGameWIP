@@ -6442,9 +6442,9 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 }
 
 // The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
-// 21100 bytes, ArenaFight 27072).
+// 23728 bytes, ArenaFight 33128 with the special's block).
 static_assert(sizeof(ArenaDef) <= 24 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
-static_assert(sizeof(ArenaFight) <= 32 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
+static_assert(sizeof(ArenaFight) <= 36 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
 TEST_CASE("arena hooks: a Release's spent Load is in the poise the hook sees and scales; no hold after a Defeat") {
     {   // 34 Load spent: 34 poise damage on the upright enemy, halved by the ruling

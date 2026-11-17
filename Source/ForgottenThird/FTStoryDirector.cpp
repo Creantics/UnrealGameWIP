@@ -529,6 +529,7 @@ void AFTStoryDirector::CacheBeat()
 	const StoryRunner& Runner = Story->GetRunner();
 	Text = FT::ToFString(Runner.text());
 	Speaker = FT::ToFString(Runner.speaker());
+	UFTGameInstance::NoteSpeaker(this, Speaker); // a line under one of the Third's names makes it the current one
 	Options.Reset();
 	const int32 Count = static_cast<int32>(Runner.optionCount());
 	HiddenOptions = FMath::Max(0, Count - MaxOptions);

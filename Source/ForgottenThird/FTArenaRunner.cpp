@@ -1678,6 +1678,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CloseMelee = CloseTall = 0.f;
 	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = CloseContactLow = StandOffPitchNow = 0.f;
 	ClearSideNow = ClearPivotNow = 0.f;
+	ClearHeld = ftcore::ArenaCloseClear();
 	CloseWallCount = 0;
 	CloseWallAge = 1e9f;
 	bStandOffWeak = false;
@@ -1706,6 +1707,12 @@ void UFTArenaRunner::PutBodiesAtStart()
 	MateCastCoreWorst = 0.f;
 	MateDrawFrames = MateDrawOff = MateDrawTurning = 0;
 	MateDrawWorst = 0.f;
+	MateHeadFrames = MateHeadOff = 0;
+	MateHeadSum = MateHeadWorst = 0.f;
+	MateStartsWalk = MateStartsPaused = MateStartsStill = MateStartsWide = 0;
+	MateStandSum = 0.f;
+	MateWalkEnd = -1.0;
+	bMateWasStringing = false;
 	RollAtNext = 0;
 #endif
 	AllyDrawYawAt = -1.0;
@@ -5332,10 +5339,10 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 		{
 			Aim = Weak;
 		}
-		// The vertical half-angle's tangent from the drawn fov (horizontal) and the frame's aspect; y as arenaFramePoint
-		// gives it (0 the bottom, 1 the top).
+		// The vertical half-angle's tangent from the drawn fov (horizontal) and the sampled view's own aspect (its
+		// camera's when constrained, else its player's viewport); y as arenaFramePoint gives it (0 the bottom, 1 the top).
 		const FVector Up = FRotationMatrix(View).GetScaledAxis(EAxis::Z);
-		const double TanUp = Tan / FMath::Max(static_cast<double>(LockAspect()), 0.1);
+		const double TanUp = Tan / FMath::Max(static_cast<double>(ViewAspect(*PC)), 0.1);
 		ftcore::ArenaFramePoint Mate;
 		const bool bMateOn = bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0;
 		if (bMateOn)
@@ -5447,6 +5454,23 @@ float UFTArenaRunner::LockAspect() const
 		GEngine->GameViewport->GetViewportSize(Size);
 	}
 	return Size.X > 1.0 && Size.Y > 1.0 ? static_cast<float>(Size.X / Size.Y) : 16.f / 9.f;
+}
+
+float UFTArenaRunner::ViewAspect(const APlayerController& PC) const
+{
+	// The aspect the player's view is drawn at: its camera's own when the camera constrains it, else the player's
+	// viewport (the lock's game viewport when the player has none yet).
+	if (PC.PlayerCameraManager)
+	{
+		const FMinimalViewInfo& View = PC.PlayerCameraManager->GetCameraCacheView();
+		if (View.bConstrainAspectRatio && View.AspectRatio > 0.1f)
+		{
+			return View.AspectRatio;
+		}
+	}
+	int32 X = 0, Y = 0;
+	PC.GetViewportSize(X, Y);
+	return X > 1 && Y > 1 ? static_cast<float>(X) / static_cast<float>(Y) : LockAspect();
 }
 
 void UFTArenaRunner::RefreshCloseWalls(float Dt)
@@ -5611,7 +5635,9 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 	// Stand-off clearance: off contact, a target whose head sits behind the lead on the screen (the lead's box widened by
 	// 5% of the frame) takes the lens further out on its shoulder (to 0.85 m in all) and the pivot up (to 0.3 m), by the
 	// least of the two that clears it, eased in and out over 0.25 s. Asked of the last drawn view with this frame's shape
-	// (the clearance taken off), the arm as the wall leaves it; scaled down as contact blends in.
+	// (the clearance taken off), the arm as the wall leaves it; scaled down as contact blends in. The last ask is held
+	// while it still clears the head (by 2% of the frame less margin) and the bare view does not (by 2% more), so a head
+	// swaying at the edge of a move does not flip it.
 	ftcore::ArenaCloseClear ClearWant;
 	if (bOn && bCameraPoseNow && CloseContact < 1.f && !ArenaAim.aiming())
 	{
@@ -5621,9 +5647,14 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 		View.fov = Shape.fov;
 		const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
 		const ftcore::ArenaPoint3 Head{E.x - Bodies.player.x, E.y - Bodies.player.y, CloseHeadHeight()};
-		ClearWant = ftcore::arenaCloseStandOffClear(R, WallScaled(View, BoomWallShare()), LockAspect(), LeadBody(), Head);
+		ClearWant = ftcore::arenaCloseStandOffClear(R, WallScaled(View, BoomWallShare()), LockAspect(), LeadBody(), Head, ClearHeld);
+		ClearHeld = ClearWant;
 		ClearWant.side *= 1.f - CloseContact;
 		ClearWant.pivot *= 1.f - CloseContact;
+	}
+	else
+	{
+		ClearHeld = ftcore::ArenaCloseClear();
 	}
 	// The side is eased unsigned (ClearWant.side carries the shape's own sign) and drawn on this frame's shoulder.
 	ClearSideNow = ftcore::arenaCloseClearStep(R, ClearSideNow, FMath::Abs(ClearWant.side), DeltaSeconds);
@@ -6512,6 +6543,12 @@ void UFTArenaRunner::LogFeatureChecks() const
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner facing in its strings on %d steps: Core's facing off its target by over 30 degrees on %d (worst %.0f); drawn after placing on %d frames, off Core's by over 30 once the blow is out on %d (worst %.0f), in its startup on %d (turning in at %.0f deg/s at most, logged only)."),
 			MateCastSteps, MateCastCoreOff, MateCastCoreWorst, MateDrawFrames, MateDrawOff, MateDrawWorst, MateDrawTurning, kArenaAllyTurnRate);
+	}
+	if (MateHeadFrames > 0 || MateStartsWalk + MateStartsStill > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close partner drawn at Core's heading on %d walking frames out of its strings and guards: off it by over 30 degrees on %d, mean %.1f, worst %.1f; string starts off a walk %d, with a visible pause (stood over 0.1 s) %d (mean stand %.2f s), from a standstill %d; Core's heading over 60 degrees off its target at a start %d."),
+			MateHeadFrames, MateHeadOff, MateHeadFrames > 0 ? MateHeadSum / static_cast<float>(MateHeadFrames) : 0.f, MateHeadWorst,
+			MateStartsWalk, MateStartsPaused, MateStartsPaused > 0 ? MateStandSum / static_cast<float>(MateStartsPaused) : 0.f, MateStartsStill, MateStartsWide);
 	}
 	if (bCloseShape)
 	{
@@ -8281,9 +8318,17 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 			Pose.Swing = Blow + 1 >= Lights ? EFTArenaSwing::Overhead : ((Blow % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 		}
 	}
+	// The close camera's partner is drawn at Core's heading (ArenaAllyOut::heading): toward its walk, over a walk's
+	// last metre (or 0.3 s) toward its target, standing toward its facing, turned at 540 deg/s at most in Core. Not in
+	// a string or a guard: there its body is pushed or recoils, and the heading follows that move (half a turn off the
+	// target on a step back); its facing is drawn, as before.
+	if (bPartner && bCloseShape && Fight.output().ally.partnerOn && !Fight.output().ally.attacking && !Fight.output().ally.guarding)
+	{
+		Pose.Yaw = ArenaYaw(Fight.output().ally.heading);
+	}
 	// No one-frame snap for the close camera's partner: the drawn figure turns toward the wanted yaw at kArenaAllyTurnRate
-	// at most, so it turns into a string over its startup. The first placement of a session or of a new figure takes the
-	// wanted yaw at once; a held clock holds it. Classic and the plain follower are drawn at the wanted yaw, as before.
+	// at most (a safety: Core's heading already turns no faster). The first placement of a session or of a new figure
+	// takes the wanted yaw at once; a held clock holds it. Classic and the plain follower are drawn at the wanted yaw.
 	if (AllyDrawYawAt < 0.0 || !(bPartner && bCloseShape))
 	{
 		AllyDrawYaw = Pose.Yaw;
@@ -8307,6 +8352,44 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 		MateDrawOff += bOut && DrawOff > 30.f ? 1 : 0;
 		MateDrawTurning += !bOut && DrawOff > 30.f ? 1 : 0;
 		MateDrawWorst = bOut ? FMath::Max(MateDrawWorst, DrawOff) : MateDrawWorst;
+	}
+	if (bPartner && bCloseShape && Fight.output().ally.partnerOn)
+	{
+		const ftcore::ArenaAllyOut& Mate = Fight.output().ally;
+		if (Speed > 0.05f && !Mate.attacking && !Mate.guarding)
+		{
+			const float HeadOff = FMath::Abs(FMath::FindDeltaAngleDegrees(AllyDrawYaw, ArenaYaw(Mate.heading)));
+			++MateHeadFrames;
+			MateHeadOff += HeadOff > 30.f ? 1 : 0;
+			MateHeadSum += HeadOff;
+			MateHeadWorst = FMath::Max(MateHeadWorst, HeadOff);
+			// A walk to a station only: a blow's lunge or a push is not a walk a string starts off.
+			if (Mate.act == static_cast<uint8>(ftcore::PartnerAct::MoveTo))
+			{
+				MateWalkEnd = Now;
+			}
+		}
+		if (Mate.attacking && !bMateWasStringing && Mate.blow == 0)
+		{
+			const double Stood = MateWalkEnd < 0.0 ? 1e9 : Now - MateWalkEnd;
+			if (Stood < 1.0)
+			{
+				++MateStartsWalk;
+				MateStartsPaused += Stood > 0.1 ? 1 : 0;
+				MateStandSum += Stood > 0.1 ? static_cast<float>(Stood) : 0.f;
+			}
+			else
+			{
+				++MateStartsStill;
+			}
+			const int32 T = Mate.target;
+			if (T >= 0 && T < static_cast<int32>(Fight.output().enemies.size()))
+			{
+				const ftcore::Vec2 To{Bodies.enemies[static_cast<size_t>(T)].x - Is.x, Bodies.enemies[static_cast<size_t>(T)].y - Is.y};
+				MateStartsWide += FMath::Abs(FMath::FindDeltaAngleDegrees(ArenaYaw(Mate.heading), ArenaYaw(To))) > 60.f ? 1 : 0;
+			}
+		}
+		bMateWasStringing = Mate.attacking;
 	}
 #endif
 	Pose.Tint = AllyFigure->GetBaseColor();

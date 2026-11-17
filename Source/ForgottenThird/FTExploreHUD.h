@@ -9,6 +9,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/HUD.h"
 
+#include "ftcore/UiScreens.h"
+
 #include "FTExploreHUD.generated.h"
 
 class AFTExploreDirector;
@@ -28,6 +30,9 @@ public:
 	void ToggleMapOverlay();
 	// A review capture's HUD: the aim reticle alone (no objectives, prompts or controls line).
 	bool bReticleOnly = false;
+	// The screens open over play (ftcore/UiScreens.h): the map overlay (Lead's controller's HUD, when an explore HUD),
+	// the party screen (Lead's), the pause menu and the settings. Each play HUD part asks ftcore::uiHudDraws with it.
+	static ftcore::UiScreenMask ScreensOpen(const class AFTExploreCharacter* Lead);
 
 private:
 	AFTExploreDirector* FindDirector();
