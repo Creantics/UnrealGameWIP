@@ -33,17 +33,22 @@ inline constexpr float kFoldDryRidgeRoughness = 1.f;
 // The character rim is a material term, not a light: the garment and skin masters add, after lighting (emissive),
 //   rim = pow(1 - saturate(N.V), kRimExponent) * smoothstep(kRimSideLow, kRimSideHigh, saturate(N.L))
 //         * RimStrength * RimScale * RimColour
-// with N the vertex (interpolated geometric) normal, never the normal-mapped one, so fold ridges, seams and stitch lines
-// inside the silhouette catch nothing; and L a virtual direction set once a frame. The side term has no bias: the
+// with N the vertex (interpolated geometric) normal turned to the face being drawn (TwoSidedSign: a two-sided garment's
+// back faces, such as a collar's inside or a flipped face, would otherwise read as grazing and glow whole), never the
+// normal-mapped one, so fold ridges, seams and stitch lines inside the silhouette catch nothing; and L a virtual direction set once a frame. The side term has no bias: the
 // silhouette edge facing away from L gets nothing, the edge toward it gets the full rim (rimWeight is the reference). Strength 0 (the default) adds nothing. Per instance RimScale: 1 on cloth,
-// leather and skin, kRimFaceScale on the face, kRimHairScale on hair (whose rim is also capped at kRimHairCap times its
-// base colour: a stand-in for "at most 1.6 times its lit value", which a surface material cannot read), none on glasses.
+// leather and skin, 0 on under-layers (a tee or shirt worn beneath an open jacket), kRimFaceScale on the face,
+// kRimHairScale on hair, none on glasses. A strand has no surface normal (its vertex normal is the strand's tangent), so
+// hair takes N from the head instead: from RimHead (the head bone raised kRimHairCentreUpCm, written with RimDir) to the
+// strand; its rim is also capped at kRimHairCap times its base colour (a stand-in for "at most 1.6 times its lit
+// value", which a surface material cannot read).
 inline constexpr float kRimExponent = 5.f;   // edge falloff, pow(1 - N.V, this)
 inline constexpr float kRimSideLow = 0.1f;   // N.L at or below this: no rim on that side
 inline constexpr float kRimSideHigh = 0.6f;  // N.L at or above this: the full rim
 inline constexpr float kRimFaceScale = 0.5f;
 inline constexpr float kRimHairScale = 0.4f;
 inline constexpr float kRimHairCap = 0.6f;
+inline constexpr float kRimHairCentreUpCm = 7.f; // head bone to the middle of the skull, for the hair's head normal
 inline constexpr float kRimElevationDeg = 30.f; // above the horizon, on the far side of the lead from the camera
 inline constexpr float kRimYawDeg = 35.f;       // turned this far to one side of the camera (right by default)
 inline constexpr float kRimSideFlipSeconds = 0.4f; // a full flip, camera-right to camera-left, eases over this long
@@ -110,13 +115,18 @@ inline Dir3 rimDirection(Dir3 camera, Dir3 lead, float side = 1.f) {
     return {ce * (cy * ax + sy * rx), ce * (cy * ay + sy * ry), se};
 }
 
-// The rim term's weight before colour, as the masters compute it (n.v and n.l of the shaded normal).
-inline float rimTerm(float nDotV, float nDotL, float strength) {
-    const float facing = std::fmin(std::fmax(nDotV, 0.f), 1.f);
-    const float side = std::fmin(std::fmax(nDotL * 0.5f + 0.5f, 0.f), 1.f);
-    const float edge = 1.f - facing;
-    return edge * edge * edge * edge * side * rimStrength(strength);
+// The rim's per-frame driver, as rules it can be checked by. The collection is shared, so one component writes it: the
+// holder keeps it while it writes every frame; a figure the arena placed (priority 1) takes it from an explore pawn
+// (priority 0) alive in the same world, since the arena's camera frames that figure; a slot last written before the
+// previous frame is free. Frames are the engine's frame counter.
+constexpr bool rimMayWrite(bool isHolder, bool held, unsigned long long slotFrame, unsigned long long frame, int priority,
+                           int slotPriority) {
+    return isHolder || !held || slotFrame + 1 < frame || priority > slotPriority;
 }
+
+// True when a tick has nothing to do: strength 0 now and 0 last written (the collection's default is 0). It then
+// returns before it touches the collection (a branch), only snapping its side to the target so a switch-on starts there.
+constexpr bool rimIdle(float strength, float writtenStrength) { return !(strength > 0.f) && !(writtenStrength > 0.f); }
 
 // A fixed wet state held on a figure's garments for review: Wetness and the wet line in cm above the feet.
 struct WetReview {

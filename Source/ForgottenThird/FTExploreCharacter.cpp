@@ -827,6 +827,9 @@ void AFTExploreCharacter::EnterLookDev()
 	// unless given) stands behind the pawn on the far side from the camera, the key sits 45 degrees off the view and
 	// follows the camera round (so a back or elbow crop is key-lit too), and the fill is stronger, about 1.5 stops
 	// under the key. Without the flag the set is as before.
+#if UE_BUILD_SHIPPING
+	const bool bGrey = false; // a review set: never in a shipped game
+#else
 	float GreyAlbedo = 0.f;
 	const bool bGrey = FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDevGrey")) || FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevGrey="), GreyAlbedo);
 	if (bGrey)
@@ -852,6 +855,7 @@ void AFTExploreCharacter::EnterLookDev()
 			Wall->SetMaterial(0, Grey);
 		}
 	}
+#endif
 	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevSpin="), LookDevSpin);
 	LookDevPivot = NewObject<USceneComponent>(this);
 	LookDevPivot->SetupAttachment(GetRootComponent());

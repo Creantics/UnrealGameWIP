@@ -2,7 +2,8 @@
 
 // The character rim as a material term (ftcore::look::rimTerm says what it computes). Its inputs live in their own
 // collection, MPC_FTRim: RimDir (the virtual direction, set once a frame by UFTRimComponent), RimColour (cool white by
-// default; the world lane may drive it from the nearest lamp, its only write), RimStrength (0 by default: no rim) and RimHairCap. The
+// default; the world lane may drive it from the nearest lamp, its only write), RimStrength (0 by default: no rim), RimHairCap and RimHead (the
+// writer's head point, for the hair's head normal). The
 // garment and skin masters take the term through AddTerm, each instance scaling it by its own RimScale (1 by default).
 // The masters' builds make the collection when it is missing (LoadOrBuild); it is saved in place, never deleted.
 
@@ -23,6 +24,7 @@
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionTwoSidedSign.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #endif
@@ -34,6 +36,7 @@ inline constexpr const TCHAR* Dir = TEXT("RimDir");
 inline constexpr const TCHAR* Colour = TEXT("RimColour");
 inline constexpr const TCHAR* Strength = TEXT("RimStrength");
 inline constexpr const TCHAR* HairCap = TEXT("RimHairCap");
+inline constexpr const TCHAR* Head = TEXT("RimHead");
 inline const FLinearColor DefaultColour(0.82f, 0.88f, 1.f); // a cool edge, against warm street light
 
 // The side the rim leans to. RimDir is always camera-relative and written by UFTRimComponent alone (a rim only reads as
@@ -55,10 +58,30 @@ inline UMaterialParameterCollection* Load()
 	return LoadObject<UMaterialParameterCollection>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
 }
 
+// The collection, resolved once per process: Load builds a path and goes to disk, so a tick never calls it. A miss is
+// remembered (the game never builds it; the masters' builds call LoadOrBuild, not this).
+inline UMaterialParameterCollection* Resolved()
+{
+	static TWeakObjectPtr<UMaterialParameterCollection> Cached;
+	static bool bMissed = false;
+	if (UMaterialParameterCollection* Asset = Cached.Get())
+	{
+		return Asset;
+	}
+	if (bMissed)
+	{
+		return nullptr;
+	}
+	UMaterialParameterCollection* Asset = Load();
+	Cached = Asset;
+	bMissed = Asset == nullptr;
+	return Asset;
+}
+
 // World's instance of the collection, or null when the collection was never built.
 inline UMaterialParameterCollectionInstance* Params(UWorld& World)
 {
-	UMaterialParameterCollection* Asset = Load();
+	UMaterialParameterCollection* Asset = Resolved();
 	return Asset ? World.GetParameterCollectionInstance(Asset) : nullptr;
 }
 
@@ -110,7 +133,7 @@ inline UMaterialParameterCollection* LoadOrBuild()
 {
 	UMaterialParameterCollection* Asset = Load();
 	if (Asset && Asset->GetParameterId(Dir).IsValid() && Asset->GetParameterId(Colour).IsValid() &&
-		Asset->GetParameterId(Strength).IsValid() && Asset->GetParameterId(HairCap).IsValid())
+		Asset->GetParameterId(Strength).IsValid() && Asset->GetParameterId(HairCap).IsValid() && Asset->GetParameterId(Head).IsValid())
 	{
 		return Asset;
 	}
@@ -136,6 +159,10 @@ inline UMaterialParameterCollection* LoadOrBuild()
 	{
 		Detail::AddScalar(*Asset, HairCap, ftcore::look::kRimHairCap);
 	}
+	if (!Asset->GetParameterId(Head).IsValid())
+	{
+		Detail::AddVector(*Asset, Head, FLinearColor(0.f, 0.f, 0.f, 0.f));
+	}
 	Asset->PostEditChange();
 	Package->MarkPackageDirty();
 	FSavePackageArgs Args;
@@ -145,8 +172,10 @@ inline UMaterialParameterCollection* LoadOrBuild()
 }
 
 // The rim term, as an expression (ftcore::look::rimWeight): pow(1 - saturate(N.V), kRimExponent) *
-// smoothstep(kRimSideLow, kRimSideHigh, saturate(N.L)) * RimStrength * RimScale * RimColour, N the vertex normal, not the
-// normal-mapped one, so fold ridges, seams and stitches inside the silhouette catch nothing. RimScale is a scalar parameter on the master (DefaultScale; an instance sets
+// smoothstep(kRimSideLow, kRimSideHigh, saturate(N.L)) * RimStrength * RimScale * RimColour, N the vertex normal turned
+// to the face drawn (TwoSidedSign: the garment masters are two-sided, and a back face's own normal reads as grazing and
+// glows whole), not the normal-mapped one, so fold ridges, seams and stitches inside the silhouette catch nothing. A
+// zero-length normal gives no rim, never NaN. RimScale is a scalar parameter on the master (DefaultScale; an instance sets
 // its own). Returns null (and the master gets no term) when the collection is missing.
 inline UMaterialExpression* Term(UMaterial* Material, const TCHAR* Group, float DefaultScale, int32 X, int32 Y)
 {
@@ -163,7 +192,7 @@ inline UMaterialExpression* Term(UMaterial* Material, const TCHAR* Group, float 
 	UMaterialExpressionCustom* C = Detail::Node<UMaterialExpressionCustom>(Material, X, Y);
 	C->Description = TEXT("CharacterRim");
 	C->OutputType = CMOT_Float3;
-	C->Code = FString::Printf(TEXT("float3 n = normalize(N);\n"
+	C->Code = FString::Printf(TEXT("float3 n = N * Sign * rsqrt(max(dot(N, N), 1e-8));\n"
 								   "float e = pow(1.0 - saturate(dot(n, V)), %.3f);\n"
 								   "float s = smoothstep(%.3f, %.3f, saturate(dot(n, L.xyz)));\n"
 								   "return e * s * max(Strength, 0.0) * Scale * Colour.rgb;\n"),
@@ -176,6 +205,7 @@ inline UMaterialExpression* Term(UMaterial* Material, const TCHAR* Group, float 
 		Slot.Input.Connect(0, From);
 	};
 	In(TEXT("N"), Detail::Node<UMaterialExpressionVertexNormalWS>(Material, X - 300, Y - 120));
+	In(TEXT("Sign"), Detail::Node<UMaterialExpressionTwoSidedSign>(Material, X - 300, Y - 180));
 	In(TEXT("V"), Detail::Node<UMaterialExpressionCameraVectorWS>(Material, X - 300, Y - 60));
 	In(TEXT("L"), Detail::Read(Material, Asset, Dir, X - 300, Y));
 	In(TEXT("Colour"), Detail::Read(Material, Asset, Colour, X - 300, Y + 60));

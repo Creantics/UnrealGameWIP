@@ -2,6 +2,8 @@
 
 #include "ftcore/LookReview.h"
 
+#include "AllocCounter.h"
+
 #include <doctest/doctest.h>
 
 #include <cmath>
@@ -9,7 +11,7 @@
 using ftcore::look::findWetReview;
 using ftcore::look::rimDirection;
 using ftcore::look::rimStrength;
-using ftcore::look::rimTerm;
+using ftcore::look::rimWeight;
 
 TEST_CASE("look review: the fold-layer parameters default to off") {
     CHECK(ftcore::look::kFoldDirtStrength == 0.f);
@@ -26,18 +28,71 @@ TEST_CASE("look review: the rim term is off at cvar 0, negative or NaN") {
     CHECK(rimStrength(-1.f) == 0.f);
     CHECK(rimStrength(std::nanf("")) == 0.f);
     CHECK(rimStrength(0.25f) == doctest::Approx(0.25f));
-    CHECK(rimTerm(0.f, 1.f, 0.f) == 0.f);
-    CHECK(rimTerm(0.f, 1.f, std::nanf("")) == 0.f);
+    CHECK(rimWeight(0.f, 1.f) * rimStrength(0.f) == 0.f);
+    CHECK(rimWeight(0.f, 1.f) * rimStrength(std::nanf("")) == 0.f);
 }
 
 TEST_CASE("look review: the rim term lives on the silhouette and on the rim side") {
-    CHECK(rimTerm(1.f, 1.f, 1.f) == 0.f);                     // facing the camera: none
-    CHECK(rimTerm(0.f, 1.f, 1.f) == doctest::Approx(1.f));    // grazing, toward the rim direction: full
-    CHECK(rimTerm(0.f, -1.f, 1.f) == doctest::Approx(0.f));   // grazing, away from it: none
-    CHECK(rimTerm(0.f, 0.f, 2.f) == doctest::Approx(1.f));    // half side weight times strength 2
-    CHECK(rimTerm(0.5f, 1.f, 1.f) < 0.07f);                   // 60 degrees off the view: about 6%
-    CHECK(rimTerm(0.8f, 1.f, 1.f) < 0.002f);                  // the body's interior stays dark
-    CHECK(rimTerm(-0.3f, 1.f, 1.f) == doctest::Approx(1.f));  // a back-facing normal clamps to grazing
+    CHECK(rimWeight(1.f, 1.f) == 0.f);                                     // facing the camera: none
+    CHECK(rimWeight(0.f, 1.f) * rimStrength(2.f) == doctest::Approx(2.f)); // grazing, toward the rim: full times strength
+    CHECK(rimWeight(0.8f, 1.f) < 0.001f);                                  // the body's interior stays dark
+    // A two-sided garment's back face (a collar's inside, a flipped face) has a vertex normal pointing away from the
+    // camera: taken as it is, it clamps to grazing and glows whole. The masters turn N to the face drawn first.
+    const float backN = -0.9f;
+    CHECK(rimWeight(backN, 0.9f) == doctest::Approx(1.f)); // the fault, as the term alone would see it
+    CHECK(rimWeight(-backN, -0.9f) == 0.f);                // the same face, N turned to it: dark
+}
+
+TEST_CASE("look review: one rim writer; the arena's figure wins over an explore pawn") {
+    using ftcore::look::rimMayWrite;
+    CHECK(rimMayWrite(false, false, 0, 10, 0, 0));    // a free slot
+    CHECK(rimMayWrite(true, true, 10, 10, 0, 1));     // the holder keeps it
+    CHECK_FALSE(rimMayWrite(false, true, 10, 10, 0, 1)); // the pawn never takes it from the arena figure
+    CHECK_FALSE(rimMayWrite(false, true, 9, 10, 0, 0));  // nor from a pawn that wrote last frame
+    CHECK(rimMayWrite(false, true, 10, 10, 1, 0));    // the arena figure takes it from a pawn
+    CHECK(rimMayWrite(false, true, 8, 10, 0, 1));     // a holder that stopped writing frees it
+}
+
+TEST_CASE("look review: at ft.Rim 0 the rim tick is a branch and allocates nothing") {
+    using ftcore::look::rimIdle;
+    static_assert(rimIdle(0.f, 0.f));
+    CHECK(rimIdle(rimStrength(-1.f), 0.f));
+    CHECK_FALSE(rimIdle(0.f, 0.04f)); // switched off: one write of 0 first
+    CHECK_FALSE(rimIdle(0.04f, 0.f));
+    CHECK(rimIdle(std::nanf(""), std::nanf("")));
+    // The tick's Core part at strength 0, many frames: no heap allocation.
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    float side = 1.f, written = 0.f;
+    int idle = 0;
+    for (int frame = 0; frame < 1000; ++frame) {
+        const float strength = rimStrength(0.f);
+        const float target = ftcore::look::rimSideTarget(frame % 2 ? -1.f : 0.f);
+        if (rimIdle(strength, written)) {
+            side = target;
+            ++idle;
+            continue;
+        }
+        written = strength;
+    }
+    const auto allocs = ftcore_test::allocStats().count - before;
+    CHECK(idle == 1000);
+    CHECK(side == ftcore::look::rimSideTarget(-1.f)); // snapped to the last frame's target (frame 999)
+    if (counting) {
+        CHECK(allocs == 0);
+    }
+    // At strength, the per-frame Core work allocates nothing either.
+    const auto before2 = ftcore_test::allocStats().count;
+    float acc = 0.f;
+    for (int frame = 0; frame < 1000; ++frame) {
+        side = ftcore::look::rimSideStep(side, -1.f, 1.f / 60.f);
+        const auto l = rimDirection({0.f, 0.f, 170.f}, {500.f, static_cast<float>(frame), 100.f}, side);
+        acc += rimWeight(0.1f, l.x);
+    }
+    CHECK(acc >= 0.f);
+    if (counting) {
+        CHECK(ftcore_test::allocStats().count - before2 == 0);
+    }
 }
 
 TEST_CASE("look review: the rim direction is behind the lead, raised 30 degrees, turned 35 to the camera's right") {
