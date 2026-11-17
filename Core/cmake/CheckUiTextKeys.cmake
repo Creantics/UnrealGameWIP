@@ -52,6 +52,16 @@ if(DEFINED HINTS AND EXISTS "${HINTS}")
         list(APPEND used "${key}")
     endforeach()
 endif()
+# The settings rows' labels and value words come from Core (ftcore::settingsRowKey, settingsValueKey): with SETTINGS,
+# every "settings.<word>" that file names counts as used.
+if(DEFINED SETTINGS AND EXISTS "${SETTINGS}")
+    file(READ "${SETTINGS}" settings_text)
+    string(REGEX MATCHALL "\"settings\.[a-z_.]+\"" settings_hits "${settings_text}")
+    foreach(hit IN LISTS settings_hits)
+        string(REPLACE "\"" "" key "${hit}")
+        list(APPEND used "${key}")
+    endforeach()
+endif()
 # A boss's name is looked up at run time from its kind id ("arena.name.<kind>", with the key itself shown
 # when the table has none): every such key in the table counts as used.
 foreach(key IN LISTS known)

@@ -18,66 +18,10 @@
 
 namespace
 {
-// The basic controls row's words come from the interface text table (the other rows still show Core's English).
-const FTUiText kSettingsBasicControlsUi(TEXT("settings.basic_controls"));
-const FTUiText kSettingsBasicFirstFightsUi(TEXT("settings.basic_controls.first_fights"));
-const FTUiText kSettingsBasicAlwaysUi(TEXT("settings.basic_controls.always"));
-const FTUiText kSettingsBasicNeverUi(TEXT("settings.basic_controls.never"));
-constexpr int32 kBasicControlsRow = static_cast<int32>(ftcore::SettingsRow::ShowBasicControls);
-// The rows the new UI added (2026-11-16, item B) too; the older rows follow later.
-const FTUiText kSettingsTextSizeUi(TEXT("settings.text_size"));
-const FTUiText kSettingsColoursUi(TEXT("settings.colours"));
-const FTUiText kSettingsColoursDefaultUi(TEXT("settings.colours.default"));
-const FTUiText kSettingsColoursProtanUi(TEXT("settings.colours.protanopia"));
-const FTUiText kSettingsColoursDeutanUi(TEXT("settings.colours.deuteranopia"));
-const FTUiText kSettingsColoursTritanUi(TEXT("settings.colours.tritanopia"));
-const FTUiText kSettingsColoursHighUi(TEXT("settings.colours.high_contrast"));
-const FTUiText kSettingsReduceMotionUi(TEXT("settings.reduce_motion"));
-const FTUiText kSettingsOnUi(TEXT("settings.on"));
-const FTUiText kSettingsOffUi(TEXT("settings.off"));
-const FTUiText kSettingsPromptsUi(TEXT("settings.button_prompts"));
-const FTUiText kSettingsPromptsKeysUi(TEXT("settings.button_prompts.keyboard"));
-const FTUiText kSettingsPromptsPadUi(TEXT("settings.button_prompts.controller"));
-const FTUiText kSettingsPromptsAutoUi(TEXT("settings.button_prompts.last_used"));
-
-constexpr int32 RowIx(ftcore::SettingsRow Row)
+// Every row's label and value word come from the interface text table, by the keys Core names (a number stays Core's).
+const FString& KeyText(const char* Key)
 {
-	return static_cast<int32>(Row);
-}
-
-const FString& PaletteWord(ftcore::UiPalette Palette)
-{
-	switch (Palette)
-	{
-	case ftcore::UiPalette::Protan: return kSettingsColoursProtanUi.Get();
-	case ftcore::UiPalette::Deutan: return kSettingsColoursDeutanUi.Get();
-	case ftcore::UiPalette::Tritan: return kSettingsColoursTritanUi.Get();
-	case ftcore::UiPalette::HighContrast: return kSettingsColoursHighUi.Get();
-	case ftcore::UiPalette::Default: break;
-	}
-	return kSettingsColoursDefaultUi.Get();
-}
-
-const FString& PromptsWord(ftcore::UiGlyphMode Mode)
-{
-	switch (Mode)
-	{
-	case ftcore::UiGlyphMode::Keys: return kSettingsPromptsKeysUi.Get();
-	case ftcore::UiGlyphMode::Pad: return kSettingsPromptsPadUi.Get();
-	case ftcore::UiGlyphMode::Auto: break;
-	}
-	return kSettingsPromptsAutoUi.Get();
-}
-
-const FString& BasicControlsWord(ftcore::ShowBasicControls Policy)
-{
-	switch (Policy)
-	{
-	case ftcore::ShowBasicControls::Always: return kSettingsBasicAlwaysUi.Get();
-	case ftcore::ShowBasicControls::Never: return kSettingsBasicNeverUi.Get();
-	case ftcore::ShowBasicControls::FirstFights: break;
-	}
-	return kSettingsBasicFirstFightsUi.Get();
+	return FTUiText::Lookup(UTF8_TO_TCHAR(Key));
 }
 } // namespace
 
@@ -90,13 +34,8 @@ void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	SectionRects.Init(FBox2D(ForceInit), static_cast<int32>(ftcore::kSettingsGroupCount));
 	for (int32 I = 0; I < RowCount; ++I)
 	{
-		RowLabels[I] = FString(UTF8_TO_TCHAR(ftcore::settingsRowLabel(static_cast<ftcore::SettingsRow>(I))));
+		RowLabels[I] = KeyText(ftcore::settingsRowKey(static_cast<ftcore::SettingsRow>(I)));
 	}
-	RowLabels[kBasicControlsRow] = kSettingsBasicControlsUi.Get();
-	RowLabels[RowIx(ftcore::SettingsRow::TextScale)] = kSettingsTextSizeUi.Get();
-	RowLabels[RowIx(ftcore::SettingsRow::Palette)] = kSettingsColoursUi.Get();
-	RowLabels[RowIx(ftcore::SettingsRow::ReduceMotion)] = kSettingsReduceMotionUi.Get();
-	RowLabels[RowIx(ftcore::SettingsRow::GlyphMode)] = kSettingsPromptsUi.Get();
 	Load();
 	MarkChanged();
 }
@@ -162,13 +101,17 @@ void UFTSettingsSubsystem::MarkChanged()
 	char Buffer[40];
 	for (int32 I = 0; I < RowCount; ++I)
 	{
-		ftcore::settingsRowValue(Values, static_cast<ftcore::SettingsRow>(I), Buffer, sizeof Buffer);
-		RowValues[I] = FString(UTF8_TO_TCHAR(Buffer));
+		const ftcore::SettingsRow Row = static_cast<ftcore::SettingsRow>(I);
+		if (const char* Key = ftcore::settingsValueKey(Values, Row))
+		{
+			RowValues[I] = KeyText(Key);
+		}
+		else
+		{
+			ftcore::settingsRowValue(Values, Row, Buffer, sizeof Buffer);
+			RowValues[I] = FString(UTF8_TO_TCHAR(Buffer));
+		}
 	}
-	RowValues[kBasicControlsRow] = BasicControlsWord(Values.showBasicControls);
-	RowValues[RowIx(ftcore::SettingsRow::Palette)] = PaletteWord(Values.palette);
-	RowValues[RowIx(ftcore::SettingsRow::ReduceMotion)] = (Values.reduceMotion ? kSettingsOnUi : kSettingsOffUi).Get();
-	RowValues[RowIx(ftcore::SettingsRow::GlyphMode)] = PromptsWord(Values.glyphMode);
 	FT::SetUiPalette(static_cast<uint8>(Values.palette)); // the new UI's colours follow the Colours row at once
 }
 

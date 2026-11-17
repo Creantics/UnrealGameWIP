@@ -285,6 +285,85 @@ std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std:
     return static_cast<std::size_t>(n) < cap ? static_cast<std::size_t>(n) : cap - 1;
 }
 
+const char* settingsRowKey(SettingsRow row) {
+    switch (row) {
+    case SettingsRow::TextSpeed: return "settings.text_speed";
+    case SettingsRow::AutoAdvance: return "settings.auto_advance";
+    case SettingsRow::AutoDelay: return "settings.auto_delay";
+    case SettingsRow::SkipMode: return "settings.skip";
+    case SettingsRow::Master: return "settings.master_volume";
+    case SettingsRow::Music: return "settings.music_volume";
+    case SettingsRow::Voice: return "settings.voice_volume";
+    case SettingsRow::Sfx: return "settings.effects_volume";
+    case SettingsRow::DefenceAssist: return "settings.defence_assist";
+    case SettingsRow::AimAssist: return "settings.aim_assist";
+    case SettingsRow::SubtitleSize: return "settings.subtitle_size";
+    case SettingsRow::ReduceFlashes: return "settings.reduce_flashes";
+    case SettingsRow::QteAutoComplete: return "settings.quick_time";
+    case SettingsRow::HoldToggle: return "settings.hold_inputs";
+    case SettingsRow::SkipChoices: return "settings.skip_choices";
+    case SettingsRow::StickFlicks: return "settings.stick_flicks";
+    case SettingsRow::CameraShake: return "settings.camera_shake";
+    case SettingsRow::LockFraming: return "settings.lock_framing";
+    case SettingsRow::CameraPreset: return "settings.camera";
+    case SettingsRow::HudScale: return "settings.hud_scale";
+    case SettingsRow::HudSafeMargin: return "settings.hud_safe_margin";
+    case SettingsRow::ShowBasicControls: return "settings.basic_controls";
+    case SettingsRow::TextScale: return "settings.text_size";
+    case SettingsRow::Palette: return "settings.colours";
+    case SettingsRow::ReduceMotion: return "settings.reduce_motion";
+    case SettingsRow::GlyphMode: return "settings.button_prompts";
+    case SettingsRow::Back: return "settings.back";
+    }
+    return "";
+}
+
+const char* settingsValueKey(const Settings& s, SettingsRow row) {
+    constexpr const char* on = "settings.on";
+    constexpr const char* off = "settings.off";
+    switch (row) {
+    case SettingsRow::TextSpeed:
+        return s.textSpeed == TextSpeed::Slow     ? "settings.text_speed.slow"
+               : s.textSpeed == TextSpeed::Normal ? "settings.text_speed.normal"
+               : s.textSpeed == TextSpeed::Fast   ? "settings.text_speed.fast"
+                                                  : "settings.text_speed.instant";
+    case SettingsRow::AutoAdvance: return s.autoAdvance ? on : off;
+    case SettingsRow::SkipMode: return s.skipMode == SkipMode::Seen ? "settings.skip.seen" : "settings.skip.all";
+    case SettingsRow::DefenceAssist: return s.defenceAssist == DefenceAssist::Wide ? "settings.defence_assist.wide" : off;
+    case SettingsRow::SubtitleSize:
+        return s.subtitleSize == SubtitleSize::Small    ? "settings.subtitle_size.small"
+               : s.subtitleSize == SubtitleSize::Medium ? "settings.subtitle_size.medium"
+                                                        : "settings.subtitle_size.large";
+    case SettingsRow::ReduceFlashes: return s.reduceFlashes ? on : off;
+    case SettingsRow::QteAutoComplete: return s.qteAutoComplete ? "settings.quick_time.auto" : "settings.quick_time.play";
+    case SettingsRow::HoldToggle: return s.holdToggle ? "settings.hold_inputs.press_once" : "settings.hold_inputs.hold_down";
+    case SettingsRow::SkipChoices: return s.skipChoices ? on : off;
+    case SettingsRow::StickFlicks: return s.stickFlicks ? on : off;
+    case SettingsRow::AimAssist: return s.aimAssist ? on : off;
+    case SettingsRow::LockFraming: return s.lockFraming ? on : off;
+    case SettingsRow::CameraPreset: return s.cameraPreset == CameraPresetId::Close ? "settings.camera.close" : "settings.camera.classic";
+    case SettingsRow::ShowBasicControls:
+        return s.showBasicControls == ShowBasicControls::FirstFights ? "settings.basic_controls.first_fights"
+               : s.showBasicControls == ShowBasicControls::Always    ? "settings.basic_controls.always"
+                                                                     : "settings.basic_controls.never";
+    case SettingsRow::Palette:
+        switch (s.palette) {
+        case UiPalette::Protan: return "settings.colours.protanopia";
+        case UiPalette::Deutan: return "settings.colours.deuteranopia";
+        case UiPalette::Tritan: return "settings.colours.tritanopia";
+        case UiPalette::HighContrast: return "settings.colours.high_contrast";
+        case UiPalette::Default: break;
+        }
+        return "settings.colours.default";
+    case SettingsRow::ReduceMotion: return s.reduceMotion ? on : off;
+    case SettingsRow::GlyphMode:
+        return s.glyphMode == UiGlyphMode::Keys  ? "settings.button_prompts.keyboard"
+               : s.glyphMode == UiGlyphMode::Pad ? "settings.button_prompts.controller"
+                                                 : "settings.button_prompts.last_used";
+    default: return nullptr;
+    }
+}
+
 bool adjustSetting(Settings& s, SettingsRow row, int dir, bool wrap) {
     const int step = dir < 0 ? -1 : 1;
     switch (row) {
