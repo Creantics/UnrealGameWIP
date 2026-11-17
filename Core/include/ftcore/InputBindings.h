@@ -69,8 +69,9 @@ enum class InputAction : std::uint8_t {
     GiftGuard,
     PartnerOrder, // the partner's order: StayClose and Spread in turn (arena)
     Backlog,      // the reading screen's backlog (the story context, on under every screen, so it shares no key)
+    Special,      // the lead's special move, in a fight (its prompt row names the key: UiSpecial.h)
 };
-inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::Backlog) + 1;
+inline constexpr std::size_t kInputActionCount = static_cast<std::size_t>(InputAction::Special) + 1;
 
 enum class InputContext : std::uint8_t { Foot, ReadHeld };
 // Where a Foot action is read: anywhere, only outside a fight (Field), or only inside one (Fight). A Field action and a
@@ -124,8 +125,12 @@ FTCORE_API bool rebindInput(InputBindings& b, InputAction a, InputDevice d, std:
 // pushed all the way runs), "mouse_flick" / "right_stick_flick" (locked on, a flick switches the target),
 // "map_hold" (holding the map button shows or hides the party), "guard_interact" (take half on a pad: the pad's Guard
 // button down plus Interact), "party_menu" (switch lead on a pad, ruled 2026-11-14: the party menu does it, so no
-// controls line names a pad key for it). Null when the action has no such route.
+// controls line names a pad key for it), "shoulders_chord" (the special on a pad, ruled 2026-11-17: the pad's Guard and
+// Read buttons pressed together, the second within kInputShoulderChord s of the first; each starts its own action at
+// once as ever, and the special, when it starts, freezes the rest). Null when the action has no such route.
 FTCORE_API const char* inputActionRoute(InputAction a, InputDevice d);
+// The pad's special chord ("shoulders_chord"): the second shoulder's press counts within this many seconds of the first.
+inline constexpr float kInputShoulderChord = 0.1f;
 // Holding the map button this long, on either device, is the party toggle (inputActionRoute "map_hold").
 inline constexpr float kInputMapHoldForParty = 0.6f;
 // Every action has a key or a route on both devices (the defaults' promise; an override may unbind).
@@ -202,7 +207,7 @@ inline constexpr const char* kInputNoKey = "NO KEY";
 FTCORE_API std::string inputHintKeys(const InputBindings& b, const InputHintEntry& e, InputDevice d,
                                      const InputUnbound* unbound = nullptr);
 // The keys that reach one action on a device, as a key prompt shows them: its own key's label; else, for a route of
-// Guard held plus a second button ("guard_interact"), the two keys' labels with '+' between ("LB+X"); else the
+// Guard plus a second button ("guard_interact", "shoulders_chord"), the two keys' labels with '+' between ("LB+X", "LB+RB"); else the
 // route's label ("LS", or kInputHoldPrefix and the map key); empty when nothing reaches it. Allocates: build it when
 // the device or the bindings change, not every frame.
 FTCORE_API std::string inputActionKeys(const InputBindings& b, InputAction a, InputDevice d);

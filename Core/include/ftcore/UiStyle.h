@@ -114,6 +114,8 @@ struct UiTextStyle {
 //   sigMarginRule:  a vertical rule down the party block's left edge (UiMarginRule); "sig_margin_rule".
 //   loadBreaks:     the Load line's gold carries short crosswise breaks (uiLoadBreaks), so it reads apart from a warm
 //                   hp fill by pattern, not colour (r19c S1: Solhaven's cream fill); "load_breaks".
+//   specialPrompt:  the fight HUD's special prompt row (UiSpecial.h): reserved in the prompt stack and drawn when the
+//                   lead's special is ready; off, the stack is as it was; "special_prompt".
 struct UiWorldRules {
     bool marksAccent2 = false;
     bool dangerUnderline = false;
@@ -121,6 +123,17 @@ struct UiWorldRules {
     bool sigArcs = false;
     bool sigMarginRule = false;
     bool loadBreaks = false;
+    bool specialPrompt = false;
+};
+
+// The special prompt's choices still open with the owner (UiSpecial.h), all off: thirdCall, the player calls the
+// Third's special from the row ("third_call"); thirdActs, the Third acts on his own with one notice ("third_acts");
+// partnerMark, a small closed mark by a ready partner's name ("partner_mark"). Off, only the controlled lead's row
+// exists; style.json "special".
+struct UiSpecialSwitches {
+    bool thirdCall = false;
+    bool thirdActs = false;
+    bool partnerMark = false;
 };
 
 // Value-line ends and the dotted guard, 1080p px at HUD scale 1 (the painter scales them and rounds each to whole device
@@ -176,6 +189,7 @@ struct UiStyle {
     UiBudgetRules budget;
     UiLineShape lines;
     UiMarginRule marginRule;
+    UiSpecialSwitches special;
     float wordLumaFloor = 0.45f; // a coloured word's relative luminance is lifted to at least this (uiLumaFloor)
     float minTextPx = 18.f;     // the floor at 1080p
     float minTextPxAbsolute = 14.f; // the floor at any height

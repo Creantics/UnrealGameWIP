@@ -23,6 +23,7 @@
 #include "ftcore/UiFirstUse.h"
 #include "ftcore/UiLone.h"
 #include "ftcore/UiPartyScreen.h"
+#include "ftcore/UiSpecial.h"
 #include "ftcore/Settings.h"
 #include "ftcore/InputBindings.h"
 #include "ftcore/UiStroke.h"
@@ -185,6 +186,14 @@ static_assert(UE_ARRAY_COUNT(kPromptKeys) == ftcore::kUiPromptCount, "one key pe
 // A prompt's NO KEY, in its key box; and the word after a prompt whose press would be refused now, by ftcore::PressReason
 // (Ok and Busy are taken and have none; Absent draws no prompt).
 const FTUiText kNoKeyUi(TEXT("arena.prompt.no_key"));
+// The special prompt's word, and the reason it stands dim in place of the lead's name, by ftcore::UiSpecialWhy (None, the
+// live row, has none: the lead's name stands there).
+const FTUiText kSpecialUi(TEXT("arena.prompt.special"));
+const FTUiText kSpecialNoTargetUi(TEXT("arena.special.why.no_target"));
+const FTUiText kSpecialOutOfSightUi(TEXT("arena.special.why.out_of_sight"));
+const FTUiText kSpecialNotNowUi(TEXT("arena.special.why.not_now"));
+const FTUiText* const kSpecialWhyUi[] = {nullptr, &kSpecialNoTargetUi, &kSpecialOutOfSightUi, &kSpecialNotNowUi};
+static_assert(UE_ARRAY_COUNT(kSpecialWhyUi) == ftcore::kUiSpecialWhyCount, "one reason word per UiSpecialWhy");
 const FTUiText kWhyDownUi(TEXT("arena.prompt.why.down"));
 const FTUiText kWhyBrokenUi(TEXT("arena.prompt.why.broken"));
 const FTUiText kWhyOverloadedUi(TEXT("arena.prompt.why.overloaded"));
@@ -257,6 +266,9 @@ struct FUiWorldRow
 	bool bSigArcs = false;
 	bool bSigMarginRule = false;
 	bool bLoadBreaks = false; // UiWorldRules::loadBreaks: the Load's gold carries breaks (uiLoadBreaks)
+	// UiWorldRules::specialPrompt: the special prompt's row is reserved in the prompt stack (uiPromptRowAt) and drawn when
+	// the rules say the special is ready. Off, the stack is as it was and nothing is drawn.
+	bool bSpecialPrompt = false;
 	FLinearColor LowLine;  // a low hp or guard line
 	FLinearColor LowUnder; // the 1 px line under it, drawn only where bLowUnder
 	bool bLowUnder = false;
@@ -319,6 +331,7 @@ const FUiTable& Table()
 			R.bSigArcs = T.Style.rules[W].sigArcs;
 			R.bSigMarginRule = T.Style.rules[W].sigMarginRule;
 			R.bLoadBreaks = T.Style.rules[W].loadBreaks;
+			R.bSpecialPrompt = T.Style.rules[W].specialPrompt;
 		}
 		T.Edge = LinOf(T.Style.edge);
 		return T;
@@ -1701,6 +1714,8 @@ enum class EUiStateShot : uint8
 	Defeat,
 	Hit,
 	Refused,
+	Special,    // the special prompt live: ready, a press would start it (arriving: the fade and the pulse)
+	SpecialDim, // the special prompt ready but held: no target
 };
 bool IsLoneShot(EUiStateShot S)
 {
@@ -1733,6 +1748,8 @@ EUiStateShot UiStateShot()
 			: V == TEXT("defeat")                     ? EUiStateShot::Defeat
 			: V == TEXT("hit")                        ? EUiStateShot::Hit
 			: V == TEXT("refused")                    ? EUiStateShot::Refused
+			: V == TEXT("special")                    ? EUiStateShot::Special
+			: V == TEXT("special_dim")                ? EUiStateShot::SpecialDim
 													  : EUiStateShot::None;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena UI: -UiStateShot=%s %s."), *V, S == EUiStateShot::None ? TEXT("is not a state; ignored") : TEXT("held"));
 		return S;
@@ -2137,9 +2154,27 @@ public:
 		TickHall(*Runner, Fight, DeltaTime);
 		TickParty(*Runner, Fight, DeltaTime);
 		TickBudget(*Runner, Fight, Changed, DeltaTime);
+		TickSpecial(*Runner, Fight, DeltaTime);
 		// WEAK steps after TickWorld and TickBudget have set this tick's mark, so the label comes with the diamond.
 		WeakLabelA = ftcore::uiOnceLabelStep(WeakLabel, bWeakOn, FightNow);
 		TickLabels(*Runner);
+	}
+
+	// The special prompt (Core's uiSpecialStep) under the world's switch. The rules' answer is ready and, if it cannot start
+	// now, why: never a level. No gauge reports one yet, so the HUD feeds not ready; -UiStateShot=special or special_dim
+	// holds the live or the dim row for captures. Only the controlled lead's row: the open choices (UiSpecialSwitches, the
+	// Third's and a partner's) are data switches, off, and draw nothing.
+	void TickSpecial(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, float DeltaTime)
+	{
+		ftcore::UiSpecialInput In;
+		const EUiStateShot Shot = UiStateShot();
+		if (!Fight.over() && (Shot == EUiStateShot::Special || Shot == EUiStateShot::SpecialDim))
+		{
+			In.ready = true;
+			In.why = Shot == EUiStateShot::SpecialDim ? ftcore::UiSpecialWhy::NoTarget : ftcore::UiSpecialWhy::None;
+		}
+		const ftcore::Settings* Prefs = Runner.GetSettings();
+		Special = ftcore::uiSpecialStep(SpecialState, Shown().bSpecialPrompt, In, DeltaTime, Prefs && Prefs->reduceMotion);
 	}
 
 	// The element budget (Core): the data asks for marks, the budget grants them in priority order, and what is not granted
@@ -2371,6 +2406,7 @@ public:
 		PaintCall(P, Size);
 		PaintSecondLine(P, Size);
 		PaintPrompts(P, Size);
+		PaintSpecial(P, Size);
 		PaintEvents(P, Size);
 		Mesh.Flush(Out, Layer + 1); // every line, mark and shade in one element under the words
 		return Layer + 5;           // the Load's gold and its bright edge stand over the name's words
@@ -2431,6 +2467,14 @@ private:
 		WeakWord = kWeakUi.Get().ToUpper();
 		// NO KEY for the key box, and the reason words a refused prompt carries, at label size.
 		NoKeyWord = kNoKeyUi.Get().ToUpper();
+		SpecialWord = kSpecialUi.Get().ToUpper();
+		SpecialWordW = TextWidth(SpecialWord, PromptFont);
+		for (int32 I = 0; I < static_cast<int32>(ftcore::kUiSpecialWhyCount); ++I)
+		{
+			SpecialWhyWord[I] = kSpecialWhyUi[I] ? kSpecialWhyUi[I]->Get().ToUpper() : FString();
+			SpecialWhyW[I] = TextWidth(SpecialWhyWord[I], PromptFont);
+		}
+		SpecialNameW = TextWidth(LeadName, PromptFont);
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kPressReasonCount); ++I)
 		{
 			WhyWord[I] = kWhyUi[I] ? kWhyUi[I]->Get().ToUpper() : FString();
@@ -2613,6 +2657,12 @@ private:
 			if (KeyOf(kPromptKeys[I], PromptKey[I], PromptKeyW[I])) PromptNoKey |= Bit;
 			if (!PromptKey[I].IsEmpty()) PromptKeyed |= Bit;
 		}
+		// The special's key: its own action (Z; on a pad the shoulders chord, LB+RB), NO KEY when the import left it unbound.
+		{
+			const ftcore::InputPromptKey K = ftcore::inputPromptKey(*Bound, ftcore::InputAction::Special, Device, Left);
+			SpecialKey = K.noKey ? NoKeyWord : FT::ToFString(K.keys);
+			SpecialKeyW = TextWidth(SpecialKey, KeyFont);
+		}
 		// The jump press reaches the fight only under the jump switch (UFTArenaRunner::JumpBound; never in Shipping):
 		// without it nothing reaches JUMP, so its row is not drawn, whatever the Basic controls setting.
 		if (!UFTArenaRunner::JumpBound())
@@ -2651,7 +2701,12 @@ private:
 				W = TextWidth(Out, F);
 			}
 		};
+		const FString WasLead = LeadName;
 		Build(Runner.GetLeadName(), kLeadUi, LeadNameSeen, LeadName, LeadNameW, LeadNameFont);
+		if (bForce || !WasLead.Equals(LeadName, ESearchCase::CaseSensitive))
+		{
+			SpecialNameW = TextWidth(LeadName, PromptFont); // the special row names the lead in the prompts' face
+		}
 		Build(Runner.GetAllyName(), kPartnerUi, PartnerNameSeen, PartnerName, PartnerNameW, PartnerNameFont);
 	}
 
@@ -3968,6 +4023,7 @@ private:
 	// GUARD's word (or its reason); either alone takes the margin.
 	void PaintPrompts(const FPainter& P, const FVector2f& Size) const
 	{
+		const bool bSpecialRow = ::Shown().bSpecialPrompt; // the special's row reserved: the basic controls stand one row up
 		const ftcore::UiPromptMask Shown = Budget.out.promptsShown;
 		const float S = P.S;
 		const ftcore::UiMargins E = EdgesAt(Size, S);
@@ -4020,7 +4076,7 @@ private:
 				: ((PromptDimmed >> I) & 1u)                       ? Tok(UiToken::Ink, ftcore::kUiRefusedInk)
 																	: Tok(UiToken::Ink);
 			const FLinearColor CapRing = Tok(UiToken::Accent, C.A);
-			const float Row = static_cast<float>(ftcore::uiPromptRow(static_cast<ftcore::UiPrompt>(I)));
+			const float Row = static_cast<float>(ftcore::uiPromptRowAt(static_cast<ftcore::UiPrompt>(I), bSpecialRow));
 			const float MidY = Size.Y - E.bottom - (0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
 			const float CapW = KeyCapW(PromptKeyW[I], S);
 			const FString* Count = CountOf(I);
@@ -4045,6 +4101,52 @@ private:
 			{
 				P.Text(CapRight - CapW - Gap - WhyW[WhyAt], CapTop(MidY, NoteAsc), WhyWord[WhyAt], NoteFont, C);
 			}
+		}
+	}
+
+	// The special prompt (Core uiSpecialStep, the world's special_prompt switch): its own row, kUiSpecialRow up the prompt
+	// stack, reserved while the switch is on so nothing moves when it appears. Right-aligned on the margin, outside the
+	// ledger column (so the column never widens when it comes): the key cap, the word SPECIAL, then the lead's name in
+	// ink_dim, or, while it cannot start, the reason. Live: two outlines round the key (the second kUiSpecialRingGap px
+	// out, always closed), full ink, both outlines in ink (never the accent: Solhaven's is the Load gold). Dim: one
+	// outline, ink_dim. The pulse: the outer outline grows kUiSpecialPulseGrow px and fades, once, on arrival.
+	// Not a meter: nothing here has a level; the view gives only drawn, live, a reason, the fade and the pulse clock.
+	void PaintSpecial(const FPainter& P, const FVector2f& Size) const
+	{
+		if (!Special.drawn || SpecialKey.IsEmpty())
+		{
+			return;
+		}
+		const float S = P.S;
+		const ftcore::UiMargins E = EdgesAt(Size, S);
+		const float RX = Size.X - E.right;
+		const float Gap = 10.f * S;
+		const float A = Special.alpha;
+		const FLinearColor Ink = Special.live ? Tok(UiToken::Ink, A) : Tok(UiToken::InkDim, A);
+		const FLinearColor Dim = Tok(UiToken::InkDim, A);
+		const float MidY = Size.Y - E.bottom - (0.5f * Hud::KeyCapH + static_cast<float>(ftcore::kUiSpecialRow) * Hud::PromptStep) * S;
+		const FString& Tail = Special.live ? LeadName : SpecialWhyWord[static_cast<int32>(Special.why)];
+		const float TailW = Special.live ? SpecialNameW : SpecialWhyW[static_cast<int32>(Special.why)];
+		const float TailX = RX - TailW;
+		P.Text(TailX, CapTop(MidY, PromptAsc), Tail, PromptFont, Dim);
+		const float WordX = TailX - Gap - SpecialWordW;
+		P.Text(WordX, CapTop(MidY, PromptAsc), SpecialWord, PromptFont, Ink);
+		const float CapW = KeyCapW(SpecialKeyW, S);
+		const float CX = WordX - Gap - CapW * 0.5f;
+		KeyCap(P, CX, MidY, CapW, SpecialKey, SpecialKeyW, Ink, &Ink);
+		if (!Special.live)
+		{
+			return;
+		}
+		const float Out = ftcore::kUiSpecialRingGap * S;
+		const float H = Hud::KeyCapH * S;
+		KeyCapStroke(Line, CX, MidY, CapW + 2.f * Out, H + 2.f * Out, 0.5f * S, (Hud::KeyCapCorner + ftcore::kUiSpecialRingGap) * S);
+		Mesh.Stroke(Line, Ink, true);
+		if (Special.pulse >= 0.f)
+		{
+			const float Grow = Out + ftcore::kUiSpecialPulseGrow * S * Special.pulse;
+			KeyCapStroke(Line, CX, MidY, CapW + 2.f * Grow, H + 2.f * Grow, 0.5f * S, Hud::KeyCapCorner * S + Grow);
+			Mesh.Stroke(Line, Tok(UiToken::Ink, A * 0.85f * (1.f - Special.pulse)), true);
 		}
 	}
 
@@ -4746,6 +4848,14 @@ private:
 	ftcore::UiPromptReasons Why{};    // each prompt's answer from the rules this tick
 	ftcore::PressReason GiftWhy[2] = {ftcore::PressReason::Absent, ftcore::PressReason::Absent}; // Gift Heal's, Gift Guard's
 	FString NoKeyWord;                // NO KEY, in the key box
+	// The special prompt: this tick's view (uiSpecialStep) and its state, its key, its word, the reason words by
+	// UiSpecialWhy, and the lead's name's width in the prompts' face.
+	ftcore::UiSpecialState SpecialState;
+	ftcore::UiSpecialView Special;
+	FString SpecialKey, SpecialWord;
+	float SpecialKeyW = 0.f, SpecialWordW = 0.f, SpecialNameW = 0.f;
+	FString SpecialWhyWord[ftcore::kUiSpecialWhyCount];
+	float SpecialWhyW[ftcore::kUiSpecialWhyCount] = {};
 	FString WhyWord[ftcore::kPressReasonCount]; // a refused prompt's reason word, by PressReason (empty: none)
 	float WhyW[ftcore::kPressReasonCount] = {};
 	// The HUD's edges: the platform's title-safe padding as Slate's ratio of half the viewport per side, the viewport size
