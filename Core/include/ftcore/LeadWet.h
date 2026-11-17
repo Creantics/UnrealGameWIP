@@ -104,4 +104,69 @@ constexpr float skinRoughness(float base, float skinWet, float mask) {
     return wet < base ? wet : base;
 }
 
+// The party followers take the same rules as the lead: their weather value is the lead's w and their own water soak
+// starts dry (a default WaterWetness), set later by the party's water step. A dev switch (ft.PartyWet, never in a
+// shipped build) forces one follower's weather value, or every follower's, for a wet-beside-dry still and a cost run:
+// "<slot>,<wetness>" with slot 0.. a party slot and -1 every follower; empty or unreadable text is off.
+struct PartyWetForce {
+    bool on = false;
+    int slot = 0;          // -1: every follower
+    float wetness = 0.f;   // 0..1
+};
+
+// Reads "<slot>,<wetness>" (spaces allowed around both). No allocation; anything else is off.
+constexpr PartyWetForce parsePartyWet(const char* text) {
+    PartyWetForce off{};
+    if (text == nullptr) {
+        return off;
+    }
+    const char* p = text;
+    auto skip = [&p]() { while (*p == ' ') ++p; };
+    skip();
+    bool neg = false;
+    if (*p == '-') {
+        neg = true;
+        ++p;
+    }
+    if (*p < '0' || *p > '9') {
+        return off;
+    }
+    int slot = 0;
+    while (*p >= '0' && *p <= '9' && slot < 1000) {
+        slot = slot * 10 + (*p++ - '0');
+    }
+    if (neg && slot != 1) {
+        return off; // -1 is the only negative slot
+    }
+    skip();
+    if (*p++ != ',') {
+        return off;
+    }
+    skip();
+    float whole = 0.f, frac = 0.f, scale = 1.f;
+    bool digits = false;
+    while (*p >= '0' && *p <= '9') {
+        whole = whole * 10.f + static_cast<float>(*p++ - '0');
+        digits = true;
+    }
+    if (*p == '.') {
+        ++p;
+        while (*p >= '0' && *p <= '9') {
+            scale *= 0.1f;
+            frac += scale * static_cast<float>(*p++ - '0');
+            digits = true;
+        }
+    }
+    skip();
+    if (!digits || *p != '\0') {
+        return off;
+    }
+    return PartyWetForce{true, neg ? -1 : slot, unit(whole + frac)};
+}
+
+// A follower's weather value: the forced wetness when the switch names its slot (or every follower), else the lead's.
+constexpr float partyWeather(float leadW, int slot, const PartyWetForce& force) {
+    return force.on && (force.slot == -1 || force.slot == slot) ? unit(force.wetness) : unit(leadW);
+}
+
 } // namespace ftcore::leadwet
