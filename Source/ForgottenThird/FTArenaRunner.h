@@ -617,10 +617,13 @@ private:
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
 	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;
 	float MateOutAhead = 0.f, MateOutRight = 0.f;
-	// The partner's facing while a string runs (steps): Core's facing off the line to its target by over 30 degrees, the
-	// drawn figure's yaw off Core's by over 30, and the worst of each (degrees). Finds whose a cast facing away is.
-	int32 MateCastSteps = 0, MateCastCoreOff = 0, MateCastDrawOff = 0;
-	float MateCastCoreWorst = 0.f, MateCastDrawWorst = 0.f;
+	// The partner's facing while a string runs. Steps: Core's facing off the line to its target by over 30 degrees and the
+	// worst (degrees). Drawn frames, read after PlaceAlly: the drawn yaw off Core's by over 30 once the blow is out (its
+	// active or recovery part: a fault) and in its startup (still turning in, logged only), and the worst out.
+	int32 MateCastSteps = 0, MateCastCoreOff = 0;
+	float MateCastCoreWorst = 0.f;
+	int32 MateDrawFrames = 0, MateDrawOff = 0, MateDrawTurning = 0;
+	float MateDrawWorst = 0.f;
 	// -ArenaRollAt=<s,s,...>: capture-only dodge presses under the autopilot at these fight times (the dodge strip).
 	static constexpr int32 MaxRollAt = 8;
 	float RollAt[MaxRollAt] = {};
@@ -1253,6 +1256,13 @@ private:
 	float FrameBandGap[4] = {};
 	// The close camera's own bar on the same settled frames (ftcore::arenaCloseFrameCheck): all three terms, and each.
 	int32 CloseFrameOk = 0, CloseFrameLead = 0, CloseFrameFoe = 0, CloseFrameMate = 0;
+	// Its misses split by what the frame had, for the target ([0]) and the lead ([1]): the boom wall-shortened (under 98%),
+	// the lens lagging (over 0.15 m further from the pivot than the rig puts it), the framing turn at its cap, the
+	// partner's turn on (over 1 degree), the lead moving over 3 m/s, the target under 3 m. And the target's misses below
+	// and above its band, their mean share, and those with its aim point under 1 m in front of the lens.
+	int32 CloseMissWall[2] = {}, CloseMissLag[2] = {}, CloseMissCap[2] = {}, CloseMissMateTurn[2] = {}, CloseMissFast[2] = {}, CloseMissNear[2] = {};
+	int32 CloseMissFoeLow = 0, CloseMissFoeHigh = 0, CloseMissFoeAtLens = 0;
+	float CloseMissFoeSum = 0.f;
 	int32 FrameShotSkipped = 0; // frames of a capture's view (or a lens past the arm and a metre) left out of the frame check
 	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
 	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
@@ -1320,6 +1330,10 @@ private:
 	int32 CarryCap = ftcore::kMaxLoad;
 	const FFTLeadLook* AllyLook = nullptr;
 	double AllyHitTime = -1e9;
+	// The ally's drawn yaw (degrees), turned toward the wanted yaw at kArenaAllyTurnRate at most, and the clock it was
+	// last drawn at (below 0: not drawn yet this session, so the first placement takes the wanted yaw at once).
+	float AllyDrawYaw = 0.f;
+	double AllyDrawYawAt = -1.0;
 	int32 CarrySharedOffers = 0;
 	// -ArenaPartner (outside Shipping; off by default, so ordinary play never has it): the other lead stands in the ring
 	// as the partner, its body driven by Core's PartnerBrain through the fight (ArenaFight::setPartner) with the tuning
@@ -1375,6 +1389,9 @@ private:
 	// The same two on the floor plane, as the close station's rule measures them (ftcore::partnerCloseHiddenBehind on the
 	// locked target's radius; ftcore::partnerCloseOverlaps with the lead, 0.4 m each), printed beside the two above.
 	int32 PartnerClearFlatSteps = 0, PartnerLeadClearFlatSteps = 0;
+	// Under the close camera: the steps measured in its frame, and those the partner stood where the near field's rule 1
+	// allows (ftcore::partnerCloseNearOk on the fed camera's ground place and forward).
+	int32 PartnerNearSteps = 0, PartnerNearOkSteps = 0;
 	float PartnerPlaySeconds = 0.f;
 	// The partner standing still (not swinging or guarding, not moving): this run and the fight's longest (s).
 	float PartnerStillFor = 0.f, PartnerStillLongest = 0.f;
