@@ -37,6 +37,10 @@ constexpr float kArenaDodgeBackCos = 0.7071f;
 constexpr float kArenaDodgeTurnShare = 0.3f; // a roll's drawn body turns half a turn over this share of dodgeTime (then eases out)
 constexpr float kArenaAttackTurnShare = 0.6f; // an attack's drawn body turns half a turn over this share of its startup
 constexpr float kArenaLockNearWeight = 0.3f;
+// The partner's drawn heading (ArenaAllyOut::heading): turns at most this (rad/s, 540 deg/s) toward its walk when it
+// walked over kAllyHeadingMoving m/s this tick, else toward its facing.
+constexpr float kAllyHeadingTurn = 3.f * kArenaPi;
+constexpr float kAllyHeadingMoving = 0.05f;
 constexpr float kAllyLinkTurn = 2.f * kArenaPi; // rad/s: the most the partner's facing turns in a blow's recovery (360 deg/s)
 constexpr int kArenaAutoHealPercent = 40;  // the autopilot heals below this share of its hp ...
 constexpr float kArenaAutoParryWindow = 0.12f; // ... and parries only with a window at least this long
@@ -413,6 +417,7 @@ struct ArenaFightImpl {
         fight.tableSeats_ = ArenaTableSeats{};
         fight.ally_ = ArenaFight::AllyState{};
         fight.ally_.facing = fight.playerStartFacing_;
+        fight.ally_.heading = fight.playerStartFacing_;
         fight.ally_.goal = fight.allyPos_;
         fight.swapped_ = false;
         fight.aimStrings_ = 0;
@@ -518,6 +523,7 @@ struct ArenaFightImpl {
             ao.pairSeconds = pl.pairSpent;
             ao.bodyTurn = al.bodyTurn;
             ao.intercept = al.intercept;
+            ao.heading = al.heading;
         }
     }
 
@@ -537,6 +543,12 @@ struct ArenaFightImpl {
         pl.pos = bodies.player;
         for (std::size_t i = 0; i < n; ++i) foes[i].pos = bodies.enemies[i];
         fight.ally_.moved = arenaDistance(fight.allyPos_, bodies.ally) > kArenaEps; // the host walked it
+        {   // its drawn heading: toward its walk this tick, else its facing, at most kAllyHeadingTurn
+            ArenaFight::AllyState& al = fight.ally_;
+            const Vec2 walked = arenaSub(bodies.ally, fight.allyPos_);
+            const bool walking = step > 0.f && arenaDistance(fight.allyPos_, bodies.ally) > kAllyHeadingMoving * step;
+            al.heading = arenaTurn(al.heading, walking ? arenaUnit(walked, al.heading) : al.facing, kAllyHeadingTurn * step);
+        }
         fight.allyPos_ = bodies.ally;
         if (pl.giftLoad > 0 || pl.giftFilled) { // the host's giveLoad since the last tick
             reportGift(pl.giftLoad, pl.giftFilled);
@@ -2901,6 +2913,7 @@ struct ArenaFightImpl {
         }
         pin.range = {pk.partnerReach, pk.partnerStandoff}; // rule 19 reads it under the close camera alone
         pin.facing = al.facing; // rule 19: a string starts facing its target (read under the close camera alone)
+        pin.heading = al.heading; // rule 19 (11-17): and with its drawn heading within 60 degrees of it (likewise)
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
         al.stationed = intent.stationed;
@@ -4133,6 +4146,7 @@ void ArenaFight::setPartner(PartnerBrain* brain, const PartnerTuning* tuning) {
     partnerTuning_ = t;
     ally_ = AllyState{};
     ally_.facing = player_.facing;
+    ally_.heading = player_.facing;
     ally_.goal = allyPos_;
     if (partner_ && phase_ != ArenaPhase::NotStarted) partner_->begin(*partnerTuning_, seed_);
 }

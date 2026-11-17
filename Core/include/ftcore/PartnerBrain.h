@@ -290,6 +290,14 @@ inline constexpr float kPartnerNearRoundStep = 0.5f;
 inline constexpr float kPartnerNearRoundMax = 3.f;
 // Rule 19: under the close camera a string starts only with the partner facing within this (degrees) of its target.
 inline constexpr float kPartnerStartFacingDegrees = 30.f;
+// Rule 19 (the arena's ruling of 11-17): under the close camera a string also starts only with the partner's drawn
+// heading (PartnerInput::heading) within this (degrees) of its target; until then it waits and turns.
+inline constexpr float kPartnerStartHeadingDegrees = 60.f;
+// ... and once held so, for up to this (s) it stands where the rules let it start (in reach of that target, within
+// kPartnerStartHeadingHoldMeters of that spot) and turns rather than walk on: a turn from reversed at the host's
+// 540 deg/s takes (180 - 60) / 540 s.
+inline constexpr double kPartnerStartHeadingHoldSeconds = 0.35;
+inline constexpr float kPartnerStartHeadingHoldMeters = 0.3f; // ... within this of where it was held (pushed)
 // Rule 19, Spread (the fault B ruling of 11-17): under the close camera the target is an enemy inside the close lens
 // (kPartnerCloseConeMargin each side to be picked, the lens's edge to be kept), by Spread's rule 1 among those; none
 // there: the lens's target (the lead's, else the standing enemy nearest the lead). A pick is held at least this long
@@ -381,6 +389,10 @@ struct PartnerInput {
     // starts only facing within kPartnerStartFacingDegrees of its target; until then it waits (why Pause, enemy its
     // target) and the host turns it. Zero (a host that never says): no such hold. Input, not state: never hashed.
     Vec2 facing{};
+    // Rule 19 (11-17): the partner's drawn heading on the ground, the host's (ArenaAllyOut::heading). Under the close
+    // camera a string starts only with it within kPartnerStartHeadingDegrees of its target; until then it waits (why
+    // Pause, enemy its target). Zero: no such hold. Input, not state: never hashed.
+    Vec2 heading{};
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };
@@ -600,6 +612,11 @@ struct PartnerBrainSave {
     std::array<float, kPartnerInterceptSlots> closeOff{};
     double closeClock = 0.0;
     int intercept = -1;
+    // Rule 19 (11-17): a start held for its drawn heading: on this target until this time, from this spot (-1: none).
+    // Hashed when set.
+    int headingTarget = -1;
+    double headingUntil = 0.0;
+    Vec2 headingAt{};
     static_assert(kMaxPartnerEnemies <= 8 && kMaxArenaEnemies <= 8, "tallGrowOn: a bit per target in 8 bits");
     // The report (never hashed, steers nothing): seconds per PartnerIdle, and of rule 13's fallback.
     std::array<double, kPartnerIdleCount> idleSeconds{};

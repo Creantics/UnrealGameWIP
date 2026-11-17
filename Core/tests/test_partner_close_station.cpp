@@ -1738,3 +1738,42 @@ TEST_CASE("close station: an intercept off the close lens is taken, and capped a
     c.e[1] = p.e[1];
     for (int s = 0; s < 600; ++s) CHECK_FALSE(c.stepAll().intercept);
 }
+
+TEST_CASE("close station: a string starts only with the drawn heading within 60 degrees; turned away it waits and turns") {
+    // Three pits, the facing always on the target: the heading on it, 50 degrees off it, and reversed until the partner
+    // stands, then turned at 540 deg/s (as ArenaFight's heading). The first two start on the same step; the reversed
+    // one (180 - 60) / 540 s later.
+    const auto turned = [](Vec2 v, float deg) {
+        const float c = std::cos(deg * 3.14159265f / 180.f), s = std::sin(deg * 3.14159265f / 180.f);
+        return Vec2{c * v.x - s * v.y, s * v.x + c * v.y};
+    };
+    const auto run = [&](float offDeg, bool reversedUntilStill) {
+        CsPit p(true);
+        float headingDeg = offDeg; // off the target, measured each step
+        bool still = false;
+        for (int s = 0; s < 6 * 60; ++s) {
+            const Vec2 to = csUnit(csSub(p.e[0].pos, p.in.pos));
+            p.in.facing = to;
+            if (reversedUntilStill && !still) headingDeg = 180.f;
+            p.in.heading = turned(to, headingDeg);
+            const PartnerIntent& i = p.step();
+            if (i.newString) return s;
+            if (i.act == PartnerAct::MoveTo) {
+                const Vec2 v = csSub(i.point, p.in.pos);
+                const float d = csLen(v), step = 4.5f / 60.f;
+                p.in.pos = d <= step ? i.point : csAdd(p.in.pos, csMul(v, step / d));
+            } else {
+                still = true;
+                headingDeg = std::max(0.f, headingDeg - 540.f / 60.f); // standing: the heading turns to the facing
+            }
+        }
+        return -1;
+    };
+    const int on = run(0.f, false), fifty = run(50.f, false), reversed = run(0.f, true);
+    MESSAGE("first string step: heading on " << on << ", 50 deg off " << fifty << ", reversed " << reversed);
+    REQUIRE(on > 0);
+    CHECK(fifty == on);
+    const int want = static_cast<int>(std::ceil((180.f - kPartnerStartHeadingDegrees) / 540.f * 60.f));
+    CHECK(reversed >= on + want - 2);
+    CHECK(reversed <= on + want + 2);
+}
