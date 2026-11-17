@@ -4,9 +4,10 @@ The hero corner's lane paving (our own generated route; a scanned set may replac
 v6 (default --layout courses): one tile is 400 cm square at 4096 px (0.98 mm a texel, about a screen pixel at 1 m), so
 the same stone comes round only every 4 m (the material can stochastic-sample on top of that; this texture does not
 need it to hold at 1 m). About 40 courses of 8.5, 10 and 12 cm (jittered); each course draws its setts from three or
-four lengths of 9-18 cm (jittered), and no perpend lands within 2.5 cm of one in the course below or above. Bed joints
-change width along the course and perpends from joint to joint, 6-18 mm, and the courses wander a few mm (a periodic
-warp), so no joint runs ruler straight. Each stone carries one hashed random value that sets its tone (+-12%), its warm
+four lengths of 9-18 cm (jittered), and each course is laid again (up to 40 times) until its perpends clear the next
+course's by 2.5 cm (the report's stagger_min_cm). Bed joints change width along the course and perpends from joint to
+joint (8-17 mm nominal, about 7-19 mm measured with the split edges), and the courses wander a few mm (a periodic
+warp) while the perpends lean up to 4 degrees, so no joint runs ruler straight. Each stone carries one hashed random value that sets its tone (+-12%), its warm
 or cool drift (+-4%), its roughness (+-0.12), its height (+-3 mm) and a tilt of up to 2 degrees; 1 in 12 is a replaced
 stone, clearly darker or lighter, and 1 in 40 is cracked or broken at a corner. Dark grime gathers in the joints, on the
 arrises and in the breaks (worn tracks, puddles and wetness are the material's, Core SurfaceWeather).
@@ -40,7 +41,7 @@ HEIGHT_MAX_CM = 2.4               # the height PNG's white
 COURSE_CM = (8.5, 10.0, 12.0)     # course heights, mixed per tile
 SETT_POOL_CM = (9.0, 11.0, 13.0, 15.0, 18.0)   # each course draws three or four of these
 STAGGER_CM = 2.5                  # no perpend this close to one in the next course
-JOINT_CM = (0.6, 1.8)             # joint width range
+JOINT_CM = (0.8, 1.7)             # nominal joint width range (the split edges take +-1.5 mm a side)
 GRID_JOINT_CM = 1.2               # --layout grid's joint
 GRIT = np.array((0.035, 0.032, 0.029), np.float32)   # the joints' fill, linear albedo: near-black grit ...
 SILT = np.array((0.085, 0.077, 0.064), np.float32)   # ... and a dusty silt in places
@@ -134,32 +135,41 @@ def lay_courses(rng, tile):
         def clear(x):
             return near.size == 0 or circ_dist([x % tile], near, tile).min() >= STAGGER_CM
 
-        shift = rng.uniform(0.0, tile)
-        for _ in range(64):
-            if clear(shift):
-                break
+        best = None
+        for _attempt in range(40):                   # lay the course again (new start, new lengths) until it clears
             shift = rng.uniform(0.0, tile)
-        kinds = rng.choice(SETT_POOL_CM, size=int(rng.integers(3, 5)), replace=False)
-        lens, pos = [], 0.0
-        while True:
-            rem = tile - pos
-            if rem <= 1.2 * hi and rem >= 0.8 * lo:
-                lens.append(rem)
+            for _ in range(64):
+                if clear(shift):
+                    break
+                shift = rng.uniform(0.0, tile)
+            kinds = rng.choice(SETT_POOL_CM, size=int(rng.integers(3, 5)), replace=False)
+            lens, pos = [], 0.0
+            while True:
+                rem = tile - pos
+                if rem <= 1.2 * hi and rem >= 0.8 * lo:
+                    lens.append(rem)
+                    break
+                cands = [float(k + rng.uniform(-0.6, 0.6)) for _ in range(4) for k in rng.permutation(kinds)]
+                cands = [c for c in cands if rem - c >= 0.8 * lo]
+                if not cands:                        # cannot happen with this pool; close the course anyway
+                    lens.append(rem)
+                    break
+                pick = next((c for c in cands if clear(shift + pos + c)), None)
+                if pick is None:
+                    pick = max(cands, key=lambda c: circ_dist([(shift + pos + c) % tile], near, tile).min())
+                lens.append(pick)
+                pos += pick
+            lens = np.array(lens)
+            pp = (shift + np.concatenate([[0.0], np.cumsum(lens)[:-1]])) % tile
+            gap_min = circ_dist(pp, near, tile).min() if near.size else tile
+            if best is None or gap_min > best[0]:
+                best = (gap_min, shift, lens, pp)
+            if gap_min >= STAGGER_CM:
                 break
-            cands = [float(k + rng.uniform(-0.6, 0.6)) for k in rng.permutation(kinds)]
-            cands = [c for c in cands if rem - c >= 0.8 * lo]
-            if not cands:                            # cannot happen with this pool; close the course anyway
-                lens.append(rem)
-                break
-            pick = next((c for c in cands if clear(shift + pos + c)), None)
-            if pick is None:
-                pick = max(cands, key=lambda c: circ_dist([(shift + pos + c) % tile], near, tile).min())
-            lens.append(pick)
-            pos += pick
-        lens = np.array(lens)
-        courses.append((shift, lens))
-        perps.append((shift + np.concatenate([[0.0], np.cumsum(lens)[:-1]])) % tile)
-    return heights, courses
+        courses.append((best[1], best[2]))
+        perps.append(best[3])
+    stag = [circ_dist(perps[r], perps[(r + 1) % nc], tile).min() for r in range(nc)]
+    return heights, courses, np.array(stag)
 
 
 def main():
@@ -185,7 +195,7 @@ def main():
 
     # ---- Layout: per pixel the stone id, its local coordinates (cm from the cell's centre) and four joint insets.
     if courses_layout:
-        heights, courses = lay_courses(rng, tile)
+        heights, courses, stagger = lay_courses(rng, tile)
         nc = len(heights)
         y_edges = np.concatenate([[0.0], np.cumsum(heights)])
         cy = 0.5 * (y_edges[:-1] + y_edges[1:])
@@ -226,7 +236,7 @@ def main():
         del xx
 
         # Perpends: one width per joint (each stone owns the joint at its start), split unevenly between the two setts.
-        wj = JOINT_CM[0] + (JOINT_CM[1] - JOINT_CM[0]) * shash(np.arange(stones), 1, seed) ** 2.2  # median ~8.6 mm
+        wj = JOINT_CM[0] + (JOINT_CM[1] - JOINT_CM[0]) * shash(np.arange(stones), 1, seed) ** 2.2  # median ~9.6 mm
         aj = 0.5 + 0.3 * (shash(np.arange(stones), 2, seed) - 0.5)
         insL_s = (wj * (1.0 - aj)).astype(F32)
         insR_s = (wj[nxt] * aj[nxt]).astype(F32)
@@ -235,7 +245,7 @@ def main():
         insL = insL_s[sid] + lean_s[sid] * ly
         insR = insR_s[sid] - lean_s[nxt][sid] * ly
         # Bed joints: width and split change along the course (a periodic noise along x per course boundary).
-        bw = np.clip(0.86 + 0.22 * fl.noise1d(nc, 18.0) + 0.08 * fl.noise1d(nc, 3.0), *JOINT_CM).astype(F32)
+        bw = np.clip(0.98 + 0.2 * fl.noise1d(nc, 18.0) + 0.08 * fl.noise1d(nc, 3.0), *JOINT_CM).astype(F32)
         ba = (0.5 + 0.1 * fl.noise1d(nc, 25.0)).astype(F32)
         col = np.arange(n, dtype=np.int32)[None, :]
         insT = bw[row, col] * (1.0 - ba[row, col])
@@ -275,9 +285,9 @@ def main():
     replaced = shash(ids, 7, seed) < REPLACED_SHARE
     damaged = shash(ids, 8, seed) < DAMAGED_SHARE
     crack = damaged & (shash(ids, 9, seed) < 0.55)                   # else a broken corner
-    lighter = shash(ids, 10, seed) < 0.4
+    lighter = shash(ids, 10, seed) < 0.3
     value = 1.0 + VALUE_VAR * (2.0 * shash(ids, 11, seed) - 1.0)
-    value = np.where(replaced, np.where(lighter, 1.3, 0.7) * (1.0 + 0.04 * (2.0 * u0 - 1.0)), value).astype(F32)
+    value = np.where(replaced, np.where(lighter, 1.2, 0.7) * (1.0 + 0.04 * (2.0 * u0 - 1.0)), value).astype(F32)
     hue = (HUE_VAR * (2.0 * shash(ids, 12, seed) - 1.0)
            + np.where(replaced, 0.05 * np.sign(shash(ids, 13, seed) - 0.5), 0.0)).astype(F32)
     rough_s = (ROUGH_BASE + ROUGH_VAR * (2.0 * shash(ids, 14, seed) - 1.0)).astype(F32)
@@ -291,7 +301,7 @@ def main():
     bevel_s = (0.35 + 0.45 * shash(ids, 20, seed)).astype(F32)
     grime_s = (0.7 + 0.6 * shash(ids, 21, seed)) * np.where(replaced, 0.6, 1.0)
 
-    # ---- The outline: a rounded rectangle inside the four insets, split-stone edges at two scales (held to +-2 mm so
+    # ---- The outline: a rounded rectangle inside the four insets, split-stone edges at two scales (held to +-1.5 mm so
     # a 6 mm joint stays open).
     dl = (lx + 0.5 * Lp) - insL
     dr = (0.5 * Lp - lx) - insR
@@ -311,7 +321,7 @@ def main():
     del ex, ey
     d = np.hypot(np.maximum(qx, 0), np.maximum(qy, 0)) + np.minimum(np.maximum(qx, qy), 0) - r
     del qx, qy, r
-    en = np.clip(0.05 * fl.noise(5.0) + 0.07 * fl.noise(2.0) + 0.04 * fl.noise(0.35), -0.2, 0.2)
+    en = np.clip(0.05 * fl.noise(5.0) + 0.07 * fl.noise(2.0) + 0.04 * fl.noise(0.35), -0.15, 0.15)
     inside = (-d + en).astype(F32)                 # cm inside the sett's outline
     del d
     stone = inside > 0
@@ -442,9 +452,9 @@ def main():
     def p(name):
         return os.path.join(args.out, f"{ID}_{name}")
 
-    Image.fromarray(u8(srgb)).save(p(f"diff_{tag}.jpg"), quality=95)
-    Image.fromarray(u8(nrm * 0.5 + 0.5)).save(p(f"nor_dx_{tag}.jpg"), quality=95)
-    Image.fromarray(u8(np.stack([ao, rgh, np.zeros_like(ao)], axis=-1))).save(p(f"arm_{tag}.jpg"), quality=95)
+    Image.fromarray(u8(srgb)).save(p(f"diff_{tag}.jpg"), quality=95, subsampling=0)
+    Image.fromarray(u8(nrm * 0.5 + 0.5)).save(p(f"nor_dx_{tag}.jpg"), quality=95, subsampling=0)
+    Image.fromarray(u8(np.stack([ao, rgh, np.zeros_like(ao)], axis=-1))).save(p(f"arm_{tag}.jpg"), quality=95, subsampling=0)
     Image.fromarray(np.clip(height / HEIGHT_MAX_CM * 65535.0, 0, 65535).astype(np.uint16)).save(p(f"height_{tag}.png"))
     flags = np.where(damaged, 255, np.where(replaced, 170, 85)).astype(np.uint8)
     stone_map = np.stack([
@@ -500,6 +510,8 @@ def main():
         "units": [0, 0] if courses_layout else [args.units_u, args.units_v],
         "bond": layout_desc,
         "courses": int(len(heights)) if courses_layout else args.units_v,
+        "stagger_min_cm": round(float(stagger.min()), 2) if courses_layout else None,
+        "stagger_under_2_5cm": int((stagger < STAGGER_CM).sum()) if courses_layout else None,
         "stones": int(stones),
         "replaced_share": float(replaced.mean()),
         "damaged_share": float(damaged.mean()),
