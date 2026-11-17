@@ -1532,6 +1532,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
     // Single-sourced: computed once a step (the first call's target and band), later calls this step reuse it.
     int closeDoneFor = -1;
     bool closeDoneOk = false;
+    bool closeGapped = false; // rule 19's station keeps its lead gap (PartnerCloseStation::gapped)
     Vec2 closeDonePoint{};
     const auto closeGoal = [&](int tgt, bool forString, Vec2& p) -> bool {
         if (closeDoneFor == tgt) {
@@ -1587,6 +1588,9 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             ci.standMax = overlap ? bothHi : rangeHi;
             if (nearField) ci.standMax = rangeHi; // the near field's rule 3: the band may stretch to reach
             ci.nearField = nearField;
+            // The near field (round 7): a body width of screen gap from the lead's silhouette (PartnerCloseInput's
+            // leadGapBodies), as a melee kit.
+            if (nearField) ci.leadGapBodies = 1.f;
         } else {
             ci.standMax = forString ? std::min(c.standMax, t.reachMeters - t.stationTolerance) : c.standMax;
             ci.standMin = std::min(forString ? std::min(c.standMin, 0.5f * t.reachMeters) : c.standMin, ci.standMax);
@@ -1607,6 +1611,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         // Tier 5 (the near field's last) stands where the frame need not see it.
         if (!r.valid || (fm && r.tier != 5 && !fr.sees(r.point))) return false;
         capSoft = ci.verticalHalfDegrees > 0.f && !r.capped;
+        closeGapped = r.gapped;
         out.closeTier = r.tier;
         p = r.point;
         closeDoneOk = true;
@@ -1672,6 +1677,12 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         return q;
     };
     const bool engageDue = fm && s_.engageFor + 1e-9 >= static_cast<double>(t.engageSeconds);
+    // The near field (round 7): a spot is held only while its silhouette is clear of the lead's, with half a body
+    // width of screen gap when the station keeps its whole one (the difference is the hold's hysteresis).
+    const auto leadClearHere = [&]() {
+        return !nearField || partnerCloseClearOfLead(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius,
+                                                     closeGapped ? 0.5f : 0.f);
+    };
     // Rule 13's hold: framed, a partner standing within twice stationTolerance of its goal stays put while its own
     // place is in frame and outside both keep-outs, so a drifting station does not start and stop it every few ticks.
     const auto near = [&](Vec2 p, const View* e) {
@@ -1681,11 +1692,12 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         if (d <= t.stationTolerance) {
             if (closeNow && out.closeTier == 5) return true; // the near field's out-of-frame station
             // The near field: within the tolerance of a framed station, only where the frame sees it.
-            if (nearField && fm && closeNow && !fr.sees(in.pos)) return false;
+            if (nearField && fm && closeNow && (!fr.sees(in.pos) || !leadClearHere())) return false;
             return !(fm && e && tallView(*e)) || fr.clear(e, in.pos);
         }
         if (!fm || !wasStill || d > 2.f * t.stationTolerance) return false;
-        return fr.clear(e, in.pos) && !g.inWedge(in.pos, 0.f) && !(e && makeKeep(g, *e).in(in.pos, t.wedgeClearMeters));
+        return fr.clear(e, in.pos) && !g.inWedge(in.pos, 0.f) && !(e && makeKeep(g, *e).in(in.pos, t.wedgeClearMeters)) &&
+               leadClearHere();
     };
 
     // Rule 3: one defence draw per windup aimed at it, when first seen with enough warning.
@@ -1856,7 +1868,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         // too.
         const auto depthOf = [&](Vec2 q) { return (q.x - nearLens.x) * nearForward.x + (q.y - nearLens.y) * nearForward.y; };
         const bool spotClear = nearField && fm && spotOk(in.pos) && fr.clear(&e, in.pos) &&
-                               !rangePartlyHidden(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius);
+                               !rangePartlyHidden(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius) && leadClearHere();
         const bool keepSpot = spotClear && !tallView(e) && depthOf(in.pos) > depthOf(in.leadPos);
         NearRule nr{nearField, nearLens, nearForward, in.leadPos, nearVHalf, nullptr, nullptr};
         if (nearField && fm) {
@@ -1874,7 +1886,7 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         // the target there) and in reach, it holds rather than step out to a band point that is no better (none in the
         // cap, in frame and clear of the lead and the target): that walk would go into the target's shadow.
         const bool holdTall = steps && !stationFramed && outRank > 0 && nearField && fm && tallView(e) && stationHas &&
-                              spotOk(in.pos) && fr.clear(&e, in.pos) && at <= t.reachMeters;
+                              spotOk(in.pos) && fr.clear(&e, in.pos) && leadClearHere() && at <= t.reachMeters;
         if (holdTall) {
             s_.steppedOut = true;
             out.enemy = s_.target;

@@ -239,6 +239,10 @@ FTCORE_API bool partnerCloseInCone(Vec2 cameraPos, Vec2 cameraForward, float hal
 FTCORE_API bool partnerCloseOverlaps(Vec2 cameraPos, Vec2 p, float pr, Vec2 b, float br);
 // From the lens, p's centre is inside the silhouette of the body (radius br) at b and deeper than it.
 FTCORE_API bool partnerCloseHiddenBehind(Vec2 cameraPos, Vec2 p, Vec2 b, float br);
+// From the lens, a body of bodyRadius at p clear of the lead's (same radius) with gapBodies (>= 0) of p's own body
+// widths of screen gap between the silhouettes: the angle apart at least the lead's half-angle plus (1 + 2 x gapBodies)
+// times p's own. 0: only not overlapping.
+FTCORE_API bool partnerCloseClearOfLead(Vec2 cameraPos, Vec2 p, Vec2 lead, float bodyRadius, float gapBodies);
 // Rule 1 of the near field: p at least the lead's depth less kPartnerCloseNearBehindLead along the lens's ground
 // forward, and kPartnerCloseNearLens from the lens. False for a zero forward or a non-finite point.
 FTCORE_API bool partnerCloseNearOk(Vec2 cameraPos, Vec2 cameraForward, Vec2 lead, Vec2 p);

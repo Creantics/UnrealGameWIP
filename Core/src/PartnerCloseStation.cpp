@@ -102,11 +102,7 @@ bool nearFieldOk(const PartnerCloseInput& in, Vec2 p, bool capNow) {
 
 // p's silhouette clear of the lead's, with gapBodies of p's own body widths of screen gap between them (0: only clear).
 bool clearOfLead(const PartnerCloseInput& in, Vec2 p, float gapBodies) {
-    if (partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.lead, in.bodyRadius)) return false;
-    if (!(gapBodies > 0.f)) return true;
-    const float dp = len(sub(p, in.cameraPos)), dl = len(sub(in.lead, in.cameraPos));
-    return apart(in.cameraPos, p, in.lead) >=
-           halfAngle(dl, in.bodyRadius) + (1.f + 2.f * gapBodies) * halfAngle(dp, in.bodyRadius);
+    return partnerCloseClearOfLead(in.cameraPos, p, in.lead, in.bodyRadius, gapBodies);
 }
 
 bool legal(const PartnerCloseInput& in, Vec2 p, bool capNow, float gap, float& ndcX, float& ndcY) {
@@ -197,6 +193,13 @@ bool partnerCloseHiddenBehind(Vec2 cameraPos, Vec2 p, Vec2 b, float br) {
     const float dp = len(sub(p, cameraPos)), db = len(sub(b, cameraPos));
     if (db <= br) return true;
     return dp > db && apart(cameraPos, p, b) < halfAngle(db, br);
+}
+
+bool partnerCloseClearOfLead(Vec2 cameraPos, Vec2 p, Vec2 lead, float bodyRadius, float gapBodies) {
+    if (partnerCloseOverlaps(cameraPos, p, bodyRadius, lead, bodyRadius)) return false;
+    if (!(gapBodies > 0.f)) return true;
+    const float dp = len(sub(p, cameraPos)), dl = len(sub(lead, cameraPos));
+    return apart(cameraPos, p, lead) >= halfAngle(dl, bodyRadius) + (1.f + 2.f * gapBodies) * halfAngle(dp, bodyRadius);
 }
 
 bool partnerCloseNearOk(Vec2 cameraPos, Vec2 cameraForward, Vec2 lead, Vec2 p) {
@@ -292,10 +295,23 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
                 return false;
         return true;
     };
+    // The near field's gapped pass: a walk that would cross the lead's silhouette (the partner clear of it now) is no
+    // station; the partner keeps its own side.
+    const bool startHiddenByLead = !partnerCloseClearOfLead(in.cameraPos, in.partner, in.lead, in.bodyRadius, 0.f);
+    const auto walkCrossesLead = [&](Vec2 p) {
+        if (startHiddenByLead) return false;
+        constexpr int kWalkSamples = 8;
+        for (int k = 1; k < kWalkSamples; ++k) {
+            const Vec2 q = add(in.partner, mul(sub(p, in.partner), static_cast<float>(k) / static_cast<float>(kWalkSamples)));
+            if (!partnerCloseClearOfLead(in.cameraPos, q, in.lead, in.bodyRadius, 0.f)) return true;
+        }
+        return false;
+    };
     // A legal p's score: the walk, the lead clearance, the lower two thirds and the lead's side (no hold terms).
     const auto score = [&](Vec2 p, std::int8_t flank, float& cost) {
         float x = 0.f, y = 0.f;
         if (!legal(in, p, capNow, gapNow, x, y)) return false;
+        if (in.nearField && gapNow > 0.f && walkCrossesLead(p)) return false;
         if (farArc && !farClear(p, farFlank != 0 && flank == farFlank)) return false;
         const float dp = len(sub(p, in.cameraPos));
         const float clear = apart(in.cameraPos, p, in.lead) / (halfAngle(dp, in.bodyRadius) + leadHalf);
@@ -310,6 +326,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     };
     // Tiers 1-2 (or 4) on one flank between aMin and aMax degrees: the band's best, else the farthest legal point
     // short of the band.
+    bool bandOnly = false; // the near field's gapped pass: band points only, no short pick
     const auto onFlank = [&](std::int8_t flank, float aMin, float aMax) {
         Pick band, shortPick;
         for (int i = 0; i <= kSteps; ++i) {
@@ -326,7 +343,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
                 cost -= keepBonus;
                 if (!band.found || cost < band.cost) band = {true, cost, p, flank, angle, off};
             }
-            if (band.found || !(lo > 0.f)) continue; // the short pass only while the band has none on this flank
+            if (band.found || !(lo > 0.f) || bandOnly) continue; // the short pass only while the band has none here
             for (int j = 1; j <= kSteps; ++j) {
                 const float off = lo * (1.f - static_cast<float>(j) / static_cast<float>(kSteps));
                 if (off < in.bodyRadius) break; // never inside the target's own body
@@ -405,8 +422,14 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         capNow = capGiven && pass % 2 == 0;
         gapNow = pass < 2 ? in.leadGapBodies : 0.f;
         farArc = false;
+        // The near field with the lead gap: the band's points only (tier 1); none, and the passes without the gap
+        // follow (a short or a far-arc point with the gap stood the partner behind the lead as the lead circled).
+        const bool gappedNear = in.nearField && gapNow > 0.f;
+        bandOnly = gappedNear;
         best = sweep(angleMin, angleMax, keep);
+        bandOnly = false;
         if (best.found) tier = best.offEdge >= lo - 1e-5f ? 1 : 2;
+        if (gappedNear) continue;
         if (!best.found && in.leashMeters > 0.f) { // tier 3: within the leash, round the lead toward the target's flanks
             Vec2 toTarget;
             if (!unitOf(sub(in.target, in.lead), toTarget)) toTarget = mul(bearing, -1.f);
