@@ -69,7 +69,9 @@ TEST_CASE("demo boot: bad tables are refused and leave nothing")
     CHECK(error.find("TimeOfDay=21") != std::string::npos);
     CHECK_FALSE(ftcore::parseDemoBoot(R"({"maps": [{"map": "A", "switches": "-x"}, {"map": "a", "switches": "-y"}]})", t, &error));
     CHECK(t.rows.empty());
-    CHECK(ftcore::parseDemoBoot(R"({"maps": [{"map": "A", "switches": "-ExecCmds=\"a 1, b 2\" -y"}]})", t, &error));
+    const std::string quoted = "{\"maps\": [{\"map\": \"A\", \"switches\": \"-ExecCmds=\\\"a 1, b 2\\\" -y\"}]}";
+    const bool quotedOk = ftcore::parseDemoBoot(quoted, t, &error);
+    CHECK(quotedOk);
 }
 
 TEST_CASE("demo boot: a play-in-editor world finds its map's row")
