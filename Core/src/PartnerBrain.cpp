@@ -2022,6 +2022,15 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         out.enemy = tgt;
         return out;
     }
+    if (closeOn && (in.facing.x != 0.f || in.facing.y != 0.f)) { // rule 19: it faces its target before it starts
+        const Vec2 to = stUnit(stSub(e.pos, in.pos), Vec2{0.f, 0.f});
+        if (stDot(to, to) > 0.5f &&
+            stDot(stUnit(in.facing, to), to) < std::cos(kPartnerStartFacingDegrees * kStDeg)) {
+            out.why = PartnerWhy::Pause; // the host turns it to its target meanwhile
+            out.enemy = tgt;
+            return out;
+        }
+    }
     s_.drawn = false;
     s_.phase = Phase::String;
     s_.clock = 0.0;

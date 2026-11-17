@@ -288,6 +288,8 @@ inline constexpr float kPartnerSteerClear = 0.6f;
 // wider, this much at a time (m), up to kPartnerNearRoundMax more; samples nearer than a step to its start are skipped.
 inline constexpr float kPartnerNearRoundStep = 0.5f;
 inline constexpr float kPartnerNearRoundMax = 3.f;
+// Rule 19: under the close camera a string starts only with the partner facing within this (degrees) of its target.
+inline constexpr float kPartnerStartFacingDegrees = 30.f;
 // Rule 18: StayClose's growth by a tall target ends only when its edge is this far (m) past closeLeadMeters.
 inline constexpr float kPartnerTallGrowHysteresis = 0.5f;
 // Rule 13: within this long (s) of the held station's last change of side, a new pick keeps to its side (none valid
@@ -359,6 +361,10 @@ struct PartnerInput {
     // Rule 19: the partner kit's own range (ArenaFighter::partnerReach, partnerStandoff), read only under the close
     // camera. Unset (0) or invalid: the tuning's. Input, not state: never in the save or the hash.
     PartnerRange range{};
+    // Rule 19 (the round 6 ruling): the partner's facing on the ground, the host's. Under the close camera a string
+    // starts only facing within kPartnerStartFacingDegrees of its target; until then it waits (why Pause, enemy its
+    // target) and the host turns it. Zero (a host that never says): no such hold. Input, not state: never hashed.
+    Vec2 facing{};
 };
 
 enum class PartnerAct : std::uint8_t { Wait, MoveTo, Attack, Guard, StepBack };

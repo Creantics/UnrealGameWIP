@@ -442,6 +442,38 @@ TEST_CASE("close station: given, the brain walks to a station in the close lens 
     CHECK(partnerCloseInCone(view.cameraPos, view.cameraForward, kCsHalf, 0.f, p.in.pos));
 }
 
+TEST_CASE("close station: given, no string starts until the partner faces its target within 30 degrees") {
+    // The facing given and 90 degrees off its target: it walks to its station but holds there; turned to within
+    // 30 degrees, it strings.
+    CsPit p(true);
+    bool strung = false;
+    int heldThere = 0;
+    for (int s = 0; s < 5 * 60; ++s) {
+        const Vec2 to = csSub(p.e[0].pos, p.in.pos);
+        const float l = csLen(to);
+        p.in.facing = Vec2{-to.y / l, to.x / l}; // a right angle off
+        const PartnerIntent& i = p.step();
+        if (i.newString) strung = true;
+        if (i.act == PartnerAct::MoveTo) {
+            const Vec2 v = csSub(i.point, p.in.pos);
+            const float d = csLen(v), step = 4.5f / 60.f;
+            p.in.pos = d <= step ? i.point : csAdd(p.in.pos, csMul(v, step / d));
+        } else if (i.why == PartnerWhy::Pause) {
+            ++heldThere;
+        }
+    }
+    CHECK_FALSE(strung);
+    CHECK(heldThere > 0);
+    // Turned to 25 degrees off: it strings.
+    for (int s = 0; s < 2 * 60 && !strung; ++s) {
+        const Vec2 to = csSub(p.e[0].pos, p.in.pos);
+        const float l = csLen(to), c = std::cos(25.f * 3.14159265f / 180.f), sn = std::sin(25.f * 3.14159265f / 180.f);
+        p.in.facing = Vec2{(c * to.x - sn * to.y) / l, (sn * to.x + c * to.y) / l};
+        if (p.step().newString) strung = true;
+    }
+    CHECK(strung);
+}
+
 TEST_CASE("close station: stepping it allocates nothing") {
     const bool counting = ftcore_test::allocHookInstalled();
     CsPit p(true);
