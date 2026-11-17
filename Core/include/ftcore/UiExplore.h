@@ -130,4 +130,37 @@ FTCORE_API UiLineGuard uiLineGuard(UiColor ink, UiColor picture, float target, f
 // contour at its cap: a resting line's floor (the objective's quiet level); 1 when even full ink falls short.
 FTCORE_API float uiQuietFloor(UiColor ink, UiColor picture, float target, float quiet);
 
+// ---- skipping a read of the picture when nothing changed (2026-11-17) ----
+// A guarded line's read of the picture under it is skipped (its last read stands) while all of these hold: the line's
+// box is where it was (within kUiReadSkipBoxPx), the camera has moved less than kUiReadSkipMove and turned less than
+// kUiReadSkipTurnDeg since that read, the last two reads' brightest tenth agree within kUiReadSkipLumaShare (or
+// kUiReadSkipLumaAbs, for dark pictures), and the last real read is under kUiReadSkipForceS old.
+
+inline constexpr float kUiReadSkipBoxPx = 1.f;        // px the line's box may move
+inline constexpr float kUiReadSkipMove = 5.f;         // world units (cm) the camera may move
+inline constexpr float kUiReadSkipTurnDeg = 0.5f;     // degrees the camera may turn (yaw or pitch)
+inline constexpr float kUiReadSkipLumaShare = 0.05f;  // the last two reads agree within this share
+inline constexpr float kUiReadSkipLumaAbs = 0.01f;    // or within this much luminance
+inline constexpr float kUiReadSkipForceS = 10.f;      // a real read at least this often
+
+// Where a read was asked from: the line's box (px) and the camera.
+struct UiReadView {
+    float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
+    float px = 0.f, py = 0.f, pz = 0.f;
+    float yaw = 0.f, pitch = 0.f;
+};
+
+struct UiReadMemo {
+    UiReadView view;                  // the last real read's
+    float luma[2] = {-1.f, -1.f};     // the last two real reads' brightest tenth, newest first (-1: none)
+    double at = 0.;                   // the last real read's time, s
+    bool valid = false;
+};
+
+// A real read's result: `view` it was asked from, the picture's brightest tenth, at `now` s.
+FTCORE_API void uiReadNote(UiReadMemo& memo, const UiReadView& view, UiColor picture, double now);
+
+// True when the read asked from `view` at `now` can be skipped. Never with fewer than two reads, or a non-finite input.
+FTCORE_API bool uiReadSkip(const UiReadMemo& memo, const UiReadView& view, double now);
+
 } // namespace ftcore

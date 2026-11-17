@@ -269,3 +269,98 @@ TEST_CASE("explore UI: no allocation") {
     }
     if (counting) CHECK(ftcore_test::allocStats().count == before);
 }
+
+// ---- the read skip (2026-11-17) ----
+
+namespace {
+UiReadView readView(float x = 100.f, float yaw = 10.f) {
+    UiReadView v;
+    v.x0 = x;
+    v.y0 = 900.f;
+    v.x1 = x + 400.f;
+    v.y1 = 940.f;
+    v.px = 1000.f;
+    v.py = -200.f;
+    v.pz = 150.f;
+    v.yaw = yaw;
+    v.pitch = -10.f;
+    return v;
+}
+const UiColor kGrey{0.5f, 0.5f, 0.5f, 1.f};
+} // namespace
+
+TEST_CASE("uiReadSkip: never before two real reads") {
+    UiReadMemo m;
+    CHECK_FALSE(uiReadSkip(m, readView(), 0.0));
+    uiReadNote(m, readView(), kGrey, 1.0);
+    CHECK_FALSE(uiReadSkip(m, readView(), 1.5));
+    uiReadNote(m, readView(), kGrey, 2.0);
+    CHECK(uiReadSkip(m, readView(), 2.5));
+}
+
+TEST_CASE("uiReadSkip: a still view with a steady picture skips until the forced read") {
+    UiReadMemo m;
+    uiReadNote(m, readView(), kGrey, 1.0);
+    uiReadNote(m, readView(), UiColor{0.51f, 0.51f, 0.51f, 1.f}, 2.0);
+    CHECK(uiReadSkip(m, readView(), 2.0 + kUiReadSkipForceS - 0.1));
+    CHECK_FALSE(uiReadSkip(m, readView(), 2.0 + kUiReadSkipForceS));
+    CHECK_FALSE(uiReadSkip(m, readView(), 1.0)); // time ran back: read
+}
+
+TEST_CASE("uiReadSkip: a changing picture, a moved box or a moving camera reads") {
+    UiReadMemo m;
+    uiReadNote(m, readView(), UiColor{0.4f, 0.4f, 0.4f, 1.f}, 1.0);
+    uiReadNote(m, readView(), kGrey, 2.0);
+    CHECK_FALSE(uiReadSkip(m, readView(), 2.5)); // 0.4 to 0.5 is over 5%
+
+    uiReadNote(m, readView(), kGrey, 3.0);
+    REQUIRE(uiReadSkip(m, readView(), 3.5));
+    CHECK(uiReadSkip(m, readView(100.f + kUiReadSkipBoxPx), 3.5));
+    CHECK_FALSE(uiReadSkip(m, readView(100.f + 2.f * kUiReadSkipBoxPx), 3.5));
+    CHECK_FALSE(uiReadSkip(m, readView(100.f, 10.f + 2.f * kUiReadSkipTurnDeg), 3.5));
+    UiReadView moved = readView();
+    moved.py += 2.f * kUiReadSkipMove;
+    CHECK_FALSE(uiReadSkip(m, moved, 3.5));
+    UiReadView tilted = readView();
+    tilted.pitch += 2.f * kUiReadSkipTurnDeg;
+    CHECK_FALSE(uiReadSkip(m, tilted, 3.5));
+}
+
+TEST_CASE("uiReadSkip: the turn is the short way round") {
+    UiReadMemo m;
+    uiReadNote(m, readView(100.f, 179.9f), kGrey, 1.0);
+    uiReadNote(m, readView(100.f, 179.9f), kGrey, 2.0);
+    CHECK(uiReadSkip(m, readView(100.f, -179.9f), 2.5));
+    CHECK(uiReadSkip(m, readView(100.f, 179.9f + 360.f), 2.5));
+}
+
+TEST_CASE("uiReadSkip: dark pictures agree by the absolute margin") {
+    UiReadMemo m;
+    uiReadNote(m, readView(), UiColor{0.010f, 0.010f, 0.010f, 1.f}, 1.0);
+    uiReadNote(m, readView(), UiColor{0.015f, 0.015f, 0.015f, 1.f}, 2.0);
+    CHECK(uiReadSkip(m, readView(), 2.5)); // 50% apart, but under kUiReadSkipLumaAbs
+}
+
+TEST_CASE("uiReadSkip: non-finite input never skips and a bad note forgets") {
+    UiReadMemo m;
+    uiReadNote(m, readView(), kGrey, 1.0);
+    uiReadNote(m, readView(), kGrey, 2.0);
+    UiReadView bad = readView();
+    bad.yaw = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(uiReadSkip(m, bad, 2.5));
+    CHECK_FALSE(uiReadSkip(m, readView(), std::numeric_limits<double>::infinity()));
+    uiReadNote(m, readView(), UiColor{std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f, 1.f}, 3.0);
+    CHECK_FALSE(m.valid);
+    CHECK_FALSE(uiReadSkip(m, readView(), 3.5));
+}
+
+TEST_CASE("uiReadSkip and uiReadNote do not allocate") {
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    UiReadMemo m;
+    for (int i = 0; i < 100; ++i) {
+        uiReadNote(m, readView(), kGrey, i);
+        (void)uiReadSkip(m, readView(), i + 0.5);
+    }
+    if (counting) CHECK(ftcore_test::allocStats().count == before);
+}

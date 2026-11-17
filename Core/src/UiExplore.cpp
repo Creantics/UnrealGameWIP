@@ -231,4 +231,51 @@ float uiQuietFloor(UiColor ink, UiColor picture, float target, float quiet) {
     return hi;
 }
 
+namespace {
+
+// A change detector only: Rec. 709 weights on the picture's values as read.
+float readLuma(UiColor c) { return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b; }
+
+bool viewFinite(const UiReadView& v) {
+    return std::isfinite(v.x0) && std::isfinite(v.y0) && std::isfinite(v.x1) && std::isfinite(v.y1) && std::isfinite(v.px) &&
+           std::isfinite(v.py) && std::isfinite(v.pz) && std::isfinite(v.yaw) && std::isfinite(v.pitch);
+}
+
+// The turn between two angles in degrees, the short way round.
+float turnDeg(float a, float b) {
+    const float d = std::fabs(std::remainder(a - b, 360.f));
+    return d;
+}
+
+} // namespace
+
+void uiReadNote(UiReadMemo& memo, const UiReadView& view, UiColor picture, double now) {
+    const float l = readLuma(picture);
+    if (!viewFinite(view) || !std::isfinite(l) || !std::isfinite(now)) {
+        memo = UiReadMemo{}; // nothing to stand on: the next read is real
+        return;
+    }
+    memo.luma[1] = memo.luma[0];
+    memo.luma[0] = l;
+    memo.view = view;
+    memo.at = now;
+    memo.valid = true;
+}
+
+bool uiReadSkip(const UiReadMemo& memo, const UiReadView& view, double now) {
+    if (!memo.valid || memo.luma[1] < 0.f || !viewFinite(view) || !std::isfinite(now)) return false;
+    if (!(now - memo.at < static_cast<double>(kUiReadSkipForceS)) || now < memo.at) return false;
+    const UiReadView& m = memo.view;
+    if (std::fabs(view.x0 - m.x0) > kUiReadSkipBoxPx || std::fabs(view.y0 - m.y0) > kUiReadSkipBoxPx ||
+        std::fabs(view.x1 - m.x1) > kUiReadSkipBoxPx || std::fabs(view.y1 - m.y1) > kUiReadSkipBoxPx) {
+        return false;
+    }
+    const float dx = view.px - m.px, dy = view.py - m.py, dz = view.pz - m.pz;
+    if (dx * dx + dy * dy + dz * dz > kUiReadSkipMove * kUiReadSkipMove) return false;
+    if (turnDeg(view.yaw, m.yaw) > kUiReadSkipTurnDeg || turnDeg(view.pitch, m.pitch) > kUiReadSkipTurnDeg) return false;
+    const float a = memo.luma[0], b = memo.luma[1];
+    const float d = std::fabs(a - b);
+    return d <= kUiReadSkipLumaAbs || d <= kUiReadSkipLumaShare * std::max(a, b);
+}
+
 } // namespace ftcore
