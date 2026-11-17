@@ -43,6 +43,7 @@ add_library(ftcore STATIC
     src/UiHudFit.cpp
     src/UiLone.cpp
     src/UiExplore.cpp
+    src/UiSpecial.cpp
     src/UiPartyScreen.cpp
     src/Banter.cpp
     src/Battle.cpp
@@ -461,6 +462,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_guard.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp
+        tests/test_ui_special.cpp
+        tests/test_ui_screens.cpp
         tests/test_physics.cpp
         tests/test_progression.cpp
         tests/test_qte.cpp
@@ -518,6 +521,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_boss.cpp
         tests/test_arena_boss.cpp
         tests/test_arena_kind_crit.cpp
+        tests/test_arena_special.cpp
         tests/test_arena_rollguard.cpp
         tests/test_arena_soft.cpp
         tests/test_arena_impact.cpp
