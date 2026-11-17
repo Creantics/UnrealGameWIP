@@ -85,6 +85,7 @@ add_library(ftcore STATIC
     src/HeroFarBank.cpp
     src/Weather.cpp
     src/RainFall.cpp
+    src/RainCover.cpp
     src/GlassSurface.cpp
     src/PropGloss.cpp
     src/DayShade.cpp
@@ -406,6 +407,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_hero_far_bank.cpp
         tests/test_weather.cpp
         tests/test_rain_fall.cpp
+        tests/test_rain_cover.cpp
         tests/test_glass_surface.cpp
         tests/test_prop_gloss.cpp
         tests/test_backdrop_seat.cpp

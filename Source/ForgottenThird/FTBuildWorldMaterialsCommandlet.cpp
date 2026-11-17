@@ -13,6 +13,7 @@
 #include "Materials/MaterialExpressionTextureObject.h"
 #include "Misc/FileHelper.h"
 #include "FTJointCollection.h"
+#include "FTRainCoverCollection.h"
 #include "FTText.h"
 #include "FTWeatherSpec.h"
 #include "HAL/FileManager.h"
@@ -252,7 +253,7 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	AddWeatherInput(Weather, TEXT("AO"), Occlusion, 0);
 	AddWeatherInput(Weather, TEXT("WorldPos"), WorldPos, 0);
 	AddWeatherInput(Weather, TEXT("VertexNormal"), VertexNormal, 0);
-	AddWeatherInput(Weather, TEXT("Wetness"), Wetness, 0);
+	AddWeatherInput(Weather, TEXT("Wetness"), FTRainCover::Sheltered(Material, Wetness, -1200, 600, VertexNormal), 0); // dry under cover
 	AddWeatherInput(Weather, TEXT("Amount"), Amount, 0);
 	AddWeatherInput(Weather, TEXT("LocalPos"), LocalPos, 0);
 	AddWeatherInput(Weather, TEXT("AxisX"), AddWeatherAxis(Material, FLinearColor(1.f, 0.f, 0.f), 1100), 0);

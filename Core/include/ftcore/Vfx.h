@@ -320,6 +320,9 @@ struct VfxEmitter {
     // An alpha sprite that fades out near the camera (a ground tell the follow camera can stand in, rain passing the
     // lens): gone within kVfxNearFadeStart of the lens, whole beyond kVfxNearFadeEnd. Not for an additive sprite.
     bool nearFade = false;
+    // An alpha sprite hidden under cover (ftcore/RainCover.h: rain streaks and splashes, none under a roof). Not for an
+    // additive sprite.
+    bool cover = false;
     // Runtime knobs (user parameters "User.<name>"; empty: none). rateParam: the spawn rate, its default the emitter's
     // `rate` (Niagara reads it once per loop, so keep `duration` short). colorParam: the start colour, its default the
     // emitter's constant `startColor`; colorOverLife still scales it. Emitters of one effect may share a name.
@@ -453,6 +456,7 @@ struct VfxNiagaraEmitter {
     bool additive = false;
     bool lit = false; // the emitter's `lit`, for an alpha sprite only
     bool nearFade = false; // the emitter's `nearFade`, for an alpha sprite only
+    bool cover = false;    // the emitter's `cover`, for a lit alpha sprite only
     VfxSprite sprite = VfxSprite::Soft; // Ring only when lit
     std::string rateParam;  // the emitter's, when it has a rate
     std::string colorParam; // the emitter's; startColor[0] is its default

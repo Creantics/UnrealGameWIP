@@ -112,6 +112,7 @@ TEST_CASE("rain fall: the json effects use the same knob names and full rates") 
     CHECK(streaks->rate == doctest::Approx(spec.streaksPerSAtFull));
     CHECK(streaks->lit);
     CHECK(streaks->nearFade);
+    CHECK(streaks->cover);  // none under a roof (RainCover.h)
     // Short loops: Niagara reads a bound rate once per loop.
     CHECK(streaks->duration <= 1.f);
 
@@ -129,6 +130,8 @@ TEST_CASE("rain fall: the json effects use the same knob names and full rates") 
     CHECK(drops->rate == doctest::Approx(spec.dropsPerSAtFull));
     CHECK(rings->sprite == VfxSprite::Ring);
     CHECK(rings->lit);
+    CHECK(rings->cover);
+    CHECK(drops->cover);
     CHECK(rings->duration <= 1.f);
     CHECK(drops->duration <= 1.f);
 
@@ -139,11 +142,14 @@ TEST_CASE("rain fall: the json effects use the same knob names and full rates") 
     CHECK(plan.emitters[0].rateParam == kRainUserRingRate);
     CHECK(plan.emitters[0].sprite == VfxSprite::Ring);
     CHECK(plan.emitters[0].facing == VfxNiagaraFacing::Horizontal);
+    CHECK(plan.emitters[0].cover);
+    CHECK(plan.emitters[1].cover == plan.emitters[1].lit);
     planVfxNiagara(rain, plan);
     REQUIRE(plan.emitters.size() == 1);
     CHECK(plan.emitters[0].rateParam == kRainUserRate);
     CHECK(plan.emitters[0].lit);
     CHECK(plan.emitters[0].nearFade);
+    CHECK(plan.emitters[0].cover);
     CHECK(plan.emitters[0].facing == VfxNiagaraFacing::VelocityAligned);
 }
 
