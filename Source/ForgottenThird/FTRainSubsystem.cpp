@@ -153,17 +153,25 @@ void UFTRainSubsystem::Tick(float DeltaTime)
 	const FVector Eye = PC->PlayerCameraManager->GetCameraLocation();
 
 	// The floor under the camera; the last one stands when the trace finds none.
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(FTRainFloor), false);
-	if (const APawn* Pawn = PC->GetPawn())
+	const APawn* Pawn = PC->GetPawn();
+	const AActor* View = PC->GetViewTarget();
+	if (!bTraceParamsSet || TracedPawn.Get() != Pawn || TracedView.Get() != View)
 	{
-		Params.AddIgnoredActor(Pawn);
-	}
-	if (const AActor* View = PC->GetViewTarget())
-	{
-		Params.AddIgnoredActor(View);
+		TraceParams = FCollisionQueryParams(SCENE_QUERY_STAT(FTRainFloor), false);
+		if (Pawn)
+		{
+			TraceParams.AddIgnoredActor(Pawn);
+		}
+		if (View && View != Pawn)
+		{
+			TraceParams.AddIgnoredActor(View);
+		}
+		TracedPawn = Pawn;
+		TracedView = View;
+		bTraceParamsSet = true;
 	}
 	FHitResult Hit;
-	if (World->LineTraceSingleByChannel(Hit, Eye, Eye - FVector(0.0, 0.0, kRainTraceCm), ECC_Visibility, Params))
+	if (World->LineTraceSingleByChannel(Hit, Eye, Eye - FVector(0.0, 0.0, kRainTraceCm), ECC_Visibility, TraceParams))
 	{
 		FloorZ = static_cast<float>(Hit.ImpactPoint.Z);
 		bHasFloor = true;

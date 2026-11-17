@@ -85,6 +85,7 @@ UStaticMeshComponent* AddBox(AActor& Holder, UStaticMesh* Cube, UMaterialInterfa
 bool UFTFarSignsSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
+	FTDemoBootNoteWorld(Outer); // this world's boot row, not the last one's (see ForgottenThird.h)
 	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) &&
 		FParse::Param(FTLookSwitches(), TEXT("FarSigns")) && Super::ShouldCreateSubsystem(Outer);
 }
@@ -118,7 +119,7 @@ int32 UFTFarSignsSubsystem::Place(UWorld& World)
 	float CentreX = 404.5f;
 	float CentreY = -25.f;
 	FString At;
-	if (FParse::Value(Switches, TEXT("FarSignsAt="), At))
+	if (FParse::Value(Switches, TEXT("FarSignsAt="), At, false)) // false: keep the comma (x,y)
 	{
 		FString Xs, Ys;
 		if (At.Split(TEXT(","), &Xs, &Ys))

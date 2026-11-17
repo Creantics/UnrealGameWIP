@@ -18,6 +18,7 @@
 // Logs once: "Rain: on at <amount>, NS_rain loaded|missing". Missing NS_rain: a warning and nothing else.
 
 #include "CoreMinimal.h"
+#include "CollisionQueryParams.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
 
@@ -63,4 +64,10 @@ private:
 	float FloorZ = 0.f;     // cm
 	float TopZ = 0.f;       // cm, smoothed
 	float WrittenIntensity = -1.f;
+
+	// The floor trace's query, rebuilt only when the pawn or the view target it ignores changes (not every tick).
+	FCollisionQueryParams TraceParams;
+	TWeakObjectPtr<const AActor> TracedPawn;
+	TWeakObjectPtr<const AActor> TracedView;
+	bool bTraceParamsSet = false;
 };

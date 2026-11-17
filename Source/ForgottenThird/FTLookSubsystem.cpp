@@ -251,6 +251,7 @@ void UFTLookSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	UWorld* World = GetWorld();
+	FTDemoBootNoteWorld(World); // this world's boot row (-Look=), not the last one's (see ForgottenThird.h)
 	Grade = FSceneViewExtensions::NewExtension<FFTLookGradeExtension>(World);
 	if (!FParse::Param(FCommandLine::Get(), TEXT("LookOff")) && CVarLook.GetValueOnGameThread() != 0)
 	{
