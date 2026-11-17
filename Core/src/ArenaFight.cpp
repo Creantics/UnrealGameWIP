@@ -570,7 +570,15 @@ struct ArenaFightImpl {
                 if (left <= std::max(kAllyHeadingLeadMeters, kAllyHeadingLeadSeconds * moved / step))
                     want = arenaUnit(arenaSub(foes[static_cast<std::size_t>(al.target)].pos, bodies.ally), want);
             }
+            // In a string (startup through recovery) or a guard it turns toward its facing, never its walk: a push or
+            // a recoil moves the body, never turns it.
+            // What this turn leaves unused goes to the tick's end, where a string's new blow may have re-aimed the
+            // facing: the heading catches up there in the same tick.
+            if (al.attacking || al.guarding) want = al.facing;
+            const Vec2 was = al.heading;
             al.heading = arenaTurn(al.heading, want, kAllyHeadingTurn * step);
+            al.headingLeft = std::max(0.f, kAllyHeadingTurn * step -
+                                               std::fabs(std::atan2(arenaCross(was, al.heading), arenaDot(was, al.heading))));
             al.headingWalked = walking;
         }
         fight.allyPos_ = bodies.ally;
@@ -660,6 +668,11 @@ struct ArenaFightImpl {
             fight.phase_ != ArenaPhase::Fighting) {
             pl.jumpTime = -1.f;
             pl.airClear = false;
+        }
+        { // the partner's heading, in a string or a guard, catches up with this tick's facing (what is left of its turn)
+            ArenaFight::AllyState& al = fight.ally_;
+            if (al.attacking || al.guarding) al.heading = arenaTurn(al.heading, al.facing, al.headingLeft);
+            al.headingLeft = 0.f;
         }
         fillOutput();
     }
