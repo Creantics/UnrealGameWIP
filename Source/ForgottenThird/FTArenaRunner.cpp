@@ -138,6 +138,9 @@ constexpr float kPartnerEngagedMinSeconds = 5.f;
 // -ArenaStandOffStrike: the presses of one light string and the time between them (s).
 constexpr int32 kStandOffStringPresses = 3;
 constexpr float kStandOffPressGap = 0.45f;
+// The close lens's boom lag held to this far (m): the lead sits about 0.05 of the width inside his third, which at the close
+// arm is about 0.15 m across, and the boom's own lag left the lens up to 0.6 m behind a running lead.
+constexpr float kArenaCloseLagMost = 0.10f;
 // A pose with its arm, shoulder and height scaled by `Share` (the boom's wall probe shortens all three alike).
 ftcore::ArenaCameraPose WallScaled(ftcore::ArenaCameraPose Pose, float Share)
 {
@@ -988,7 +991,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		// The rig from Core's pose (ftcore::arenaCameraPose: the zone's, blended by the aim stance), as every frame sets it.
 		const ftcore::ArenaCameraPose Pose = ftcore::arenaCameraPose(Fit.camera, ArenaAim, ftcore::ArenaFrameYaw{CameraYaw, FrameTurn}, CameraPitch);
 		PlayerFigure->SetCameraRig(Pose.arm, Pose.pivot, Pose.side, Pose.up, Pose.fov);
-		PlayerFigure->SetCameraLag(CameraLag); // the preset's boom lag (classic: the boom's own)
+		PlayerFigure->SetCameraLag(CameraLag, bCloseShape ? kArenaCloseLagMost : 0.f); // the preset's boom lag (classic: the boom's own)
 		// The kit's weapon on the lead's body: its strike clips, props and effects.
 		if (Lead)
 		{
@@ -5984,13 +5987,17 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	const ftcore::Settings* Prefs = GetSettings();
 	Scene.framing = !Prefs || Prefs->lockFraming;
 	Scene.aiming = ArenaAim.aiming(); // the aim camera frames the shot over the shoulder
-	Scene.side = Fit.camera.side;
+	// The shoulder and the distance back as the boom really has them: its wall probe shortens the arm, the shoulder and the
+	// height alike (BoomWallShare), and a shorter shoulder sends the target further across, so the turn is solved on that.
+	const float TurnWallShare = BoomWallShare();
+	Scene.side = Fit.camera.side * TurnWallShare;
 	Scene.lineRate = kArenaLockTurn;
 	// The preset's share of the width the turn puts the target at (classic: 0.5, the centre line, and then the lens and
 	// its distance back are not read), for the lens as the boom has it now.
 	Scene.screenX = CameraLens.targetX;
 	Scene.fov = Fit.camera.fov;
-	Scene.back = ftcore::arenaEyeBack(ArmNow, Fit.camera.up, ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch).boom);
+	Scene.back = ftcore::arenaEyeBack(ArmNow * TurnWallShare, Fit.camera.up * TurnWallShare,
+		ftcore::arenaSplitPitch(ftcore::kArenaLook, CameraPitch).boom);
 #if !UE_BUILD_SHIPPING
 	if (bNoFrame || AimCheckPhase == 2 || AimCheckPhase == 3)
 	{
@@ -6016,7 +6023,7 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	{
 		// Contact: the swing round the lead toward the open side (ftcore::arenaCloseContactSwing), added to the drawn view
 		// like the partner's turn and blended from the framing turn by the contact share (0 exactly off contact).
-		const float Swing = ftcore::arenaCloseContactSwing(ftcore::kArenaClose, CloseShoulder, Fit.camera.side, Scene.distance, CloseRadiusNow,
+		const float Swing = ftcore::arenaCloseContactSwing(ftcore::kArenaClose, CloseShoulder, Scene.side, Scene.distance, CloseRadiusNow,
 			Fit.camera.fov, Scene.back);
 		ContactYawNow = ftcore::arenaCloseContactYaw(FrameTurn, Swing, CloseContact);
 	}
@@ -8719,7 +8726,7 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 	}
 	if (PlayerFigure)
 	{
-		PlayerFigure->SetCameraLag(CameraLag); // the preset's boom lag on the new lead's boom too
+		PlayerFigure->SetCameraLag(CameraLag, bCloseShape ? kArenaCloseLagMost : 0.f); // the preset's boom lag on the new lead's boom too
 	}
 	if (PlayerFigure && bCameraPoseNow)
 	{
