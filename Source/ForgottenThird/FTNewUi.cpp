@@ -4940,16 +4940,20 @@ public:
 	{
 		// The engine holds the extension weakly; a family already gathered keeps it to that frame's end.
 		Ext.Reset();
-		// The render thread unhooks its end of frame after any want still queued, then lets go.
-		ENQUEUE_RENDER_COMMAND(FTPictureReaderDrop)([S = MoveTemp(State)](FRHICommandListImmediate&) mutable
+		// The render thread unhooks its end of frame after any want still queued, frees the readbacks (so none is ever
+		// destroyed on the game thread, wherever the state's last reference drops), then lets go. With the RHI already
+		// gone (engine exit), nothing is enqueued: the hook is removed here and the readbacks are left to the process.
+		if (GIsRHIInitialized)
 		{
-			if (S.IsValid() && S->Hook.IsValid())
+			ENQUEUE_RENDER_COMMAND(FTPictureReaderDrop)([S = MoveTemp(State)](FRHICommandListImmediate&) mutable
 			{
-				FCoreDelegates::OnEndFrameRT.Remove(S->Hook);
-				S->Hook.Reset();
-			}
-			S.Reset();
-		});
+				Drop(S, true);
+			});
+		}
+		else
+		{
+			Drop(State, false);
+		}
 	}
 
 	bool Busy(int32 Slot) const { return Slot < 0 || Slot >= kSlots || Taken[Slot] != Asked[Slot]; }
@@ -5036,6 +5040,35 @@ private:
 		bool bTargetLogged = false;              // the render thread's (not shipping)
 		std::atomic<int32> Outstanding{0};       // wants not yet copied: the game thread adds, the render thread takes
 	};
+
+	// The reader's end: unhook, then free each slot's readback (on the render thread when `bRhi`; at engine exit with the
+	// RHI gone, released unfreed instead), and let go of the state.
+	static void Drop(TSharedPtr<FState, ESPMode::ThreadSafe>& S, bool bRhi)
+	{
+		if (S.IsValid())
+		{
+			if (S->Hook.IsValid())
+			{
+				FCoreDelegates::OnEndFrameRT.Remove(S->Hook);
+				S->Hook.Reset();
+			}
+			S->Outstanding.store(0, std::memory_order_relaxed);
+			for (FSlot& L : S->Slots)
+			{
+				L.bWanted = false;
+				L.bInFlight = false;
+				if (bRhi)
+				{
+					L.Readback.Reset();
+				}
+				else
+				{
+					(void)L.Readback.Release();
+				}
+			}
+		}
+		S.Reset();
+	}
 
 	// The copy's hook in the renderer: active only for the game viewport's family while a want waits.
 	class FExt final : public FSceneViewExtensionBase
