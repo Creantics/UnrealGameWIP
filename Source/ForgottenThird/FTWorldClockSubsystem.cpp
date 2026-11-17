@@ -380,10 +380,10 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 	if (bForce)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Clock: %.2f h, sun %.1f degrees, night %.2f, lamps %.2f, exposure blend %.2f (EV %.2f..%.2f at full), "
-			"sky fill %.4f (real time %.3f), sun/moon %.4f (moon ramp %.2f), lights %.2f, shadow contrast %.2f, toe %.2f%s."), Clock.hours,
-			ftcore::sunElevationDeg(Spec, Clock.hours), Night, Frame.lamps, Frame.exposureBlend, Frame.exposureMinEV100, Frame.exposureMaxEV100,
-			Frame.skyScale, Frame.skyScaleRealTime, Frame.sunScale, Frame.moonScale, Sky.Lights, Shade.shadowContrast, Shade.filmToe,
-			bShade ? TEXT("") : TEXT(" (no world look: not written)"));
+			"sky fill %.4f (real time %.3f), sun/moon %.4f (moon ramp %.2f), lights %.2f, shadow contrast %.2f, toe %.2f, white %.0f K at mix %.2f%s."),
+			Clock.hours, ftcore::sunElevationDeg(Spec, Clock.hours), Night, Frame.lamps, Frame.exposureBlend, Frame.exposureMinEV100,
+			Frame.exposureMaxEV100, Frame.skyScale, Frame.skyScaleRealTime, Frame.sunScale, Frame.moonScale, Sky.Lights, Shade.shadowContrast,
+			Shade.filmToe, Frame.whiteKelvin, Frame.whiteMix, bShade ? TEXT("") : TEXT(" (no world look: not written)"));
 	}
 	if (UWorld* World = GetWorld())
 	{
