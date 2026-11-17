@@ -439,3 +439,13 @@ TEST_CASE("A wader in a storm sea for 30 s: no mode flips and no splash in and o
         CHECK(hi - lo > 0.3f);
     }
 }
+
+TEST_CASE("The water file refuses a storm cap under the calm cap") {
+    WaterSpec spec;
+    std::string err;
+    CHECK_FALSE(parseWaterSpec(R"({"version": 1, "waves": {"riverMaxHsCm": 20, "riverStormHsCm": 10}})", spec, &err));
+    CHECK(err.find("riverStormHsCm") != std::string::npos);
+    CHECK_FALSE(parseWaterSpec(R"({"version": 1, "waves": {"canalMaxHsCm": 8, "canalStormHsCm": 5}})", spec, &err));
+    CHECK(err.find("canalStormHsCm") != std::string::npos);
+    CHECK(parseWaterSpec(R"({"version": 1, "waves": {"riverMaxHsCm": 20, "riverStormHsCm": 20}})", spec, &err));
+}

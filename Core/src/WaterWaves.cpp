@@ -321,6 +321,14 @@ bool parseWaterSpec(std::string_view json, WaterSpec& out, std::string* error) {
             return fail();
         }
     }
+    if (spec.waves.riverStormHsCm < spec.waves.riverMaxHsCm) {
+        why = "waves.riverStormHsCm: under riverMaxHsCm";
+        return fail();
+    }
+    if (spec.waves.canalStormHsCm < spec.waves.canalMaxHsCm) {
+        why = "waves.canalStormHsCm: under canalMaxHsCm";
+        return fail();
+    }
     out = spec;
     return true;
 }
