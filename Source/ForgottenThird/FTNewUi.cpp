@@ -2699,11 +2699,11 @@ private:
 				Seen = Src;
 				Out = (Src.IsEmpty() ? Fallback : Src).ToUpper();
 				W = TextWidth(Out, F);
+				return true;
 			}
+			return false;
 		};
-		const FString WasLead = LeadName;
-		Build(Runner.GetLeadName(), kLeadUi, LeadNameSeen, LeadName, LeadNameW, LeadNameFont);
-		if (bForce || !WasLead.Equals(LeadName, ESearchCase::CaseSensitive))
+		if (Build(Runner.GetLeadName(), kLeadUi, LeadNameSeen, LeadName, LeadNameW, LeadNameFont))
 		{
 			SpecialNameW = TextWidth(LeadName, PromptFont); // the special row names the lead in the prompts' face
 		}

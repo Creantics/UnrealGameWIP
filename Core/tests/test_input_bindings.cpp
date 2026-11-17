@@ -101,7 +101,9 @@ TEST_CASE("input bindings: a file from before the gift keys moves its gift key o
                           Case{R"({"version": 1, "keys": {"guard": "E"}})", InputAction::Guard, "E", InputAction::Interact},
                           Case{R"({"version": 1, "keys": {"interact": "X", "guard": "K"}})", InputAction::Interact, "X", InputAction::PartnerOrder},
                           // The backlog's B, in the table since the partner order left it.
-                          Case{R"({"version": 1, "keys": {"interact": "B", "guard": "K"}})", InputAction::Interact, "B", InputAction::Backlog}}) {
+                          Case{R"({"version": 1, "keys": {"interact": "B", "guard": "K"}})", InputAction::Interact, "B", InputAction::Backlog},
+                          // A file from before the special (its default Z added 2026-11-17) with Z bound elsewhere.
+                          Case{R"({"version": 1, "keys": {"guard": "Z"}})", InputAction::Guard, "Z", InputAction::Special}}) {
         CAPTURE(c.text);
         InputBindings t = defaultInputBindings();
         InputUnbound unbound;
@@ -759,6 +761,38 @@ TEST_CASE("input bindings: the host's reload keeps the table it has when the fil
     CHECK(unbound.count == 0);
 }
 
+TEST_CASE("input bindings: a file with Z taken leaves the special NO KEY, and saved again it reads back the same") {
+    std::string error;
+    InputBindings b = defaultInputBindings();
+    InputUnbound left;
+    REQUIRE(importInputBindings(R"({"version": 1, "keys": {"guard": "Z", "release": "K"}})", b, &error, &left));
+    CHECK(std::string(inputKey(b, InputAction::Guard, InputDevice::Keys)) == "Z");
+    CHECK(std::string(inputKey(b, InputAction::Special, InputDevice::Keys)).empty());
+    CHECK(left.left[0][static_cast<std::size_t>(InputAction::Special)]);
+    CHECK(left.count == 1);
+    const std::string saved = encodeInputBindings(b);
+    // On keys NO KEY is no entry, never "" (the pad's "" stands: its chord reaches it).
+    const std::string keysPart = saved.substr(0, saved.find("\"pad\""));
+    CHECK(keysPart.find("\"special\"") == std::string::npos);
+    InputBindings back = defaultInputBindings();
+    InputUnbound backLeft;
+    CAPTURE(error);
+    REQUIRE(importInputBindings(saved, back, &error, &backLeft));
+    CHECK(encodeInputBindings(back) == saved);
+    CHECK(backLeft.left[0][static_cast<std::size_t>(InputAction::Special)]);
+    CHECK(backLeft.count == 1);
+    const InputPromptKey keys = inputPromptKey(back, InputAction::Special, InputDevice::Keys, &backLeft);
+    CHECK(keys.noKey);
+    CHECK(keys.keys == kInputNoKey);
+    // The pad keeps its chord: the prompt there is LB+RB, not NO KEY.
+    const InputPromptKey pad = inputPromptKey(back, InputAction::Special, InputDevice::Pad, &backLeft);
+    CHECK_FALSE(pad.noKey);
+    CHECK(pad.keys == "LB+RB");
+    // An entry "" for it is still refused: an override may unbind a key, not an action.
+    InputBindings refused = defaultInputBindings();
+    CHECK_FALSE(importInputBindings(R"({"version": 1, "keys": {"special": ""}})", refused, &error));
+}
+
 TEST_CASE("input bindings: the special is Z on keys and the shoulders chord on a pad, live in a fight only") {
     const InputBindings b = defaultInputBindings();
     CHECK(std::string(inputKey(b, InputAction::Special, InputDevice::Keys)) == "Z");
@@ -767,6 +801,12 @@ TEST_CASE("input bindings: the special is Z on keys and the shoulders chord on a
     CHECK(inputActionRoute(InputAction::Special, InputDevice::Keys) == nullptr);
     CHECK(inputActionKeys(b, InputAction::Special, InputDevice::Keys) == "Z");
     CHECK(inputActionKeys(b, InputAction::Special, InputDevice::Pad) == "LB+RB");
+    // The call the HUD makes (BuildKeys): a route alone is a key, never NO KEY.
+    const InputUnbound none;
+    CHECK(inputPromptKey(b, InputAction::Special, InputDevice::Keys, &none).keys == "Z");
+    const InputPromptKey pad = inputPromptKey(b, InputAction::Special, InputDevice::Pad, &none);
+    CHECK_FALSE(pad.noKey);
+    CHECK(pad.keys == "LB+RB");
     CHECK(inputActionScope(InputAction::Special) == InputScope::Fight);
     CHECK(inputActionLive(InputAction::Special, true));
     CHECK_FALSE(inputActionLive(InputAction::Special, false));

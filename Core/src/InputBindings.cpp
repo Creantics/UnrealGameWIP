@@ -417,8 +417,19 @@ std::string encodeInputBindings(const InputBindings& b) {
         s += ", \"";
         s += deviceKey(static_cast<InputDevice>(d));
         s += "\": {";
+        bool firstKey = true;
         for (std::size_t i = 0; i < kInputActionCount; ++i) {
-            if (i) s += ", ";
+            // An action the import left unbound (NO KEY, its default taken by the player's own key) and which nothing
+            // else reaches on this device is left out: read back, it is new to the file again and comes back NO KEY,
+            // where an entry "" would be refused (an override may unbind a key, not an action).
+            const InputDevice device = static_cast<InputDevice>(d);
+            const InputAction a = kRows[i].action;
+            if (b.keys[d][i].empty() && !inputActionRoute(a, device) &&
+                !(device == InputDevice::Pad &&
+                  (inputPadPending(a) || a == InputAction::GiftHeal || a == InputAction::GiftGuard)))
+                continue;
+            if (!firstKey) s += ", ";
+            firstKey = false;
             s += '"';
             s += kRows[i].key;
             s += "\": \"";

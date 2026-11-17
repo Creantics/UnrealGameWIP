@@ -167,7 +167,8 @@ FTCORE_API InputBindingsLoad loadInputBindings(bool fileThere, std::string_view 
 // it go unbound on the pad. The two gifts have D-pad buttons (ruled 2026-11-14) but may still go unbound there, so a
 // version-1 file's NO KEY gifts, saved again, read back.
 FTCORE_API bool inputPadPending(InputAction a);
-// Every binding and every held action's mode; importInputBindings reads it back.
+// Every binding and every held action's mode; importInputBindings reads it back. An action left unbound with nothing else
+// reaching it on a device (an import's NO KEY) has no entry there, so it reads back NO KEY again.
 FTCORE_API std::string encodeInputBindings(const InputBindings& b);
 
 // ---- controls lines ----
