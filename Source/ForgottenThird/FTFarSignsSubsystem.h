@@ -6,7 +6,7 @@
 // Placement is ftcore::placeFarSigns over the plan boxes of the map's tall static meshes (instances too).
 //
 // Off unless -FarSigns is given (game and PIE worlds). Switches (FTLookSwitches, so the demo boot row may carry them):
-//   -FarSignsAt=<x,y metres> the street's centre (904.5,525: the Strip's lane)   -FarSignsCount=<n> (30, at most 40)
+//   -FarSignsAt=<x,y world metres> the street's centre (404.5,-25: the Strip's lane, plan 904.5,525)   -FarSignsCount=<n> (30, at most 40)
 //   -FarSignsNear=<m> (20)  -FarSignsFar=<m> (140)  -FarSignsLum=<SignStrength> (25)
 // Placed once at begin play, again when a level streams in while none were placed. Nothing per tick.
 

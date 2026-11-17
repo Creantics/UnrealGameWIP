@@ -115,8 +115,8 @@ void UFTFarSignsSubsystem::Deinitialize()
 int32 UFTFarSignsSubsystem::Place(UWorld& World)
 {
 	const TCHAR* Switches = FTLookSwitches();
-	float CentreX = 904.5f;
-	float CentreY = 525.f;
+	float CentreX = 404.5f;
+	float CentreY = -25.f;
 	FString At;
 	if (FParse::Value(Switches, TEXT("FarSignsAt="), At))
 	{
@@ -142,6 +142,7 @@ int32 UFTFarSignsSubsystem::Place(UWorld& World)
 	TArray<ftcore::FarSignBlock> Blocks;
 	Blocks.SetNumUninitialized(kMaxBlocks);
 	int32 BlockCount = 0;
+	int32 MeshesSeen = 0;
 	const float MinTallCm = Spec.minHeightM * 100.f;
 	const FVector2D CentreCm(CentreX * 100.f, CentreY * 100.f);
 	const double ReachCm = Spec.farM * 100.0;
@@ -155,10 +156,11 @@ int32 UFTFarSignsSubsystem::Place(UWorld& World)
 		for (const UActorComponent* Comp : Actor->GetComponents())
 		{
 			const UStaticMeshComponent* Mesh = Cast<UStaticMeshComponent>(Comp);
-			if (!Mesh || !Mesh->GetStaticMesh() || !Mesh->IsRegistered() || Mesh->Mobility == EComponentMobility::Movable)
+			if (!Mesh || !Mesh->GetStaticMesh() || !Mesh->IsRegistered())
 			{
 				continue;
 			}
+			++MeshesSeen;
 			if (const UInstancedStaticMeshComponent* Ism = Cast<UInstancedStaticMeshComponent>(Mesh))
 			{
 				const FBox Local = Mesh->GetStaticMesh()->GetBoundingBox();
@@ -188,8 +190,27 @@ int32 UFTFarSignsSubsystem::Place(UWorld& World)
 		CentreY, Spec, Signs, static_cast<std::size_t>(Want)));
 	if (Count == 0)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("FTFarSigns: none placed (%d tall boxes looked at round %.1f,%.1f)."), BlockCount,
-			CentreX, CentreY);
+		// Where things are, to set -FarSignsAt: the player start and the tallest static mesh's box.
+		FBox Tallest(ForceInit);
+		for (TActorIterator<AActor> It(&World); It; ++It)
+		{
+			for (const UActorComponent* Comp : It->GetComponents())
+			{
+				const UStaticMeshComponent* Mesh = Cast<UStaticMeshComponent>(Comp);
+				if (Mesh && Mesh->IsRegistered() && Mesh->Bounds.BoxExtent.X < 4000.0 && Mesh->Bounds.BoxExtent.Y < 4000.0 &&
+					(!Tallest.IsValid || Mesh->Bounds.BoxExtent.Z > Tallest.GetExtent().Z))
+				{
+					Tallest = Mesh->Bounds.GetBox();
+				}
+			}
+			if (It->GetName().StartsWith(TEXT("PlayerStart")))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTFarSigns: player start at %s (cm)."), *It->GetActorLocation().ToString());
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTFarSigns: tallest small-footprint box %s (cm)."), *Tallest.ToString());
+		UE_LOG(LogForgottenThird, Display, TEXT("FTFarSigns: none placed (%d tall boxes from %d static meshes round %.1f,%.1f)."),
+			BlockCount, MeshesSeen, CentreX, CentreY);
 		return 0;
 	}
 
