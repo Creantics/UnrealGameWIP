@@ -154,6 +154,8 @@ add_library(ftcore STATIC
     src/LookTable.cpp
     src/ClipBodyAlias.cpp
     src/SeaWaves.cpp
+    src/WaterWaves.cpp
+    src/WaterStrand.cpp
     src/StylePack.cpp
     src/StorySave.cpp
     src/StoryState.cpp
@@ -481,6 +483,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_look_table.cpp
         tests/test_clip_body_alias.cpp
         tests/test_sea_waves.cpp
+        tests/test_water_waves.cpp
+        tests/test_water_strand.cpp
         tests/test_style.cpp
         tests/test_stub_screen.cpp
         tests/test_title.cpp

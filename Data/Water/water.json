@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "_comment": "Water waves and tides (Core/include/ftcore/WaterWaves.h, ranges in Core/src/WaterWaves.cpp). Waves: cm and m/s; tide: game hours and metres.",
+  "waves": {
+    "stormWindMps": 0.0,
+    "stormSwellM": 1.2,
+    "calmWindMps": 2.5,
+    "riverFlowMin": 0.3,
+    "riverFetchKm": 0.3,
+    "riverMaxHsCm": 12.0,
+    "riverStormHsCm": 25.0,
+    "canalFetchKm": 0.05,
+    "canalMaxHsCm": 3.0,
+    "canalStormHsCm": 8.0,
+    "lapShare": 0.35,
+    "fadeLengths": 0.5,
+    "minFadeCm": 150.0,
+    "gridCm": 25.0
+  },
+  "tide": {
+    "periodHours": 12.0,
+    "rangeM": 1.0,
+    "highHour": 8.5,
+    "riverGain": 0.55,
+    "riverLagHours": 0.75,
+    "canalGain": 0.35,
+    "canalLagHours": 1.5
+  }
+}
