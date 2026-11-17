@@ -129,6 +129,7 @@ add_library(ftcore STATIC
     src/VehicleRules.cpp
     src/MiniMap.cpp
     src/MapOverlay.cpp
+    src/SignScript.cpp
     src/LedgeHang.cpp
     src/Locomotion.cpp
     src/Mini.cpp
@@ -451,6 +452,7 @@ if(FTCORE_BUILD_TESTS)
     tests/test_vehicle_rules.cpp
     tests/test_mini_map.cpp
     tests/test_map_overlay.cpp
+    tests/test_sign_script.cpp
     tests/test_ledge_hang.cpp
         tests/test_locomotion.cpp
         tests/test_mini.cpp

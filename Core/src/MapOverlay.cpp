@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 
 namespace ftcore {
@@ -17,6 +19,16 @@ std::string trimmed(const std::string& s) {
     while (a < b && (s[a] == ' ' || s[a] == '\t')) ++a;
     while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t')) --b;
     return s.substr(a, b - a);
+}
+
+// A whole field as a finite number; false for empty or anything else.
+bool number(const std::string& s, float& out) {
+    if (s.empty()) return false;
+    char* end = nullptr;
+    const float v = std::strtof(s.c_str(), &end);
+    if (end != s.c_str() + s.size() || !std::isfinite(v)) return false;
+    out = v;
+    return true;
 }
 
 // The part of segment a-b inside the box (Liang-Barsky); false when none of it is.
@@ -143,6 +155,27 @@ Vec2 mapOverlayClampCentre(const MiniMapModel& m, const MapOverlayView& v) {
                 hold(v.centre.y, m.minY, m.maxY, v.screenH * v.mPerPx * 0.5f)};
 }
 
+MapOverlayView mapOverlayViewIn(const MiniMapModel& m, Vec2 centre, MapZoom z, float screenW, float screenH, float uiScale) {
+    MapOverlayView v = mapOverlayView(centre, z, screenW, screenH, uiScale);
+    if (z != MapZoom::Far) return v;
+    const float keep = 1.f - 2.f * kMapFarMargin;
+    const float fit = std::max(std::max(m.maxX - m.minX, 0.f) / (v.screenW * keep), std::max(m.maxY - m.minY, 0.f) / (v.screenH * keep));
+    const float mid = mapOverlayView(centre, MapZoom::Mid, screenW, screenH, uiScale).mPerPx;
+    v.mPerPx = std::max(fit, mid * kMapFarOverMid);
+    return v;
+}
+
+int mapSeaSide(const MiniMapModel& m) {
+    if (m.waterW == 0 || m.waterH == 0 || m.water.size() < static_cast<std::size_t>(m.waterW) * m.waterH) return 0;
+    auto wet = [&](std::uint32_t x) {
+        std::uint32_t n = 0;
+        for (std::uint32_t y = 0; y < m.waterH; ++y) n += m.water[static_cast<std::size_t>(y) * m.waterW + x] ? 1u : 0u;
+        return 2u * n > m.waterH;
+    };
+    if (wet(m.waterW - 1)) return 1;
+    return wet(0) ? -1 : 0;
+}
+
 void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::uint8_t>& out, float reach) {
     out.assign(m.buildings.size(), 0);
     // Per door: the best building so far (outside distance, then centre distance).
@@ -178,11 +211,11 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
     while (first < recs.size() && !recs[first].fields.empty() && !recs[first].fields[0].empty() && recs[first].fields[0][0] == '#')
         ++first;
     if (first >= recs.size()) return detail::fail(error, 1, "no header");
-    int col[5] = {-1, -1, -1, -1, -1};
-    const char* want[5] = {"id", "kind", "name", "sign_form", "district"};
+    int col[7] = {-1, -1, -1, -1, -1, -1, -1};
+    const char* want[7] = {"id", "kind", "name", "sign_form", "district", "x", "y"};
     const auto& head = recs[first].fields;
     for (std::size_t i = 0; i < head.size(); ++i)
-        for (int k = 0; k < 5; ++k)
+        for (int k = 0; k < 7; ++k)
             if (trimmed(head[i]) == want[k]) col[k] = static_cast<int>(i);
     if (col[0] < 0 || col[1] < 0 || col[2] < 0)
         return detail::fail(error, recs[first].line, "the header needs id, kind and name");
@@ -206,18 +239,28 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
             byName.emplace(name, idx);
             out.names.push_back(name);
             out.signForms.emplace_back();
+            out.nameKind.push_back(MapNameKind::Place); // until a road row or a water row says otherwise
         }
         const std::string sign = field(rec, col[3]);
         if (out.signForms[idx].empty() && !sign.empty()) out.signForms[idx] = sign;
         if (kind == "district") {
             out.districts.push_back(MapNames::District{id, idx, Vec2{}, false});
+            out.nameKind[idx] = MapNameKind::Road; // never drawn as a place
             continue;
         }
+        const bool water = kind == "river" || kind == "lake" || kind == "canal" || kind == "sea" || kind == "harbour" || kind == "bay";
+        if (water) out.nameKind[idx] = MapNameKind::Water;
         const auto roads = byId.find(id);
         if (roads == byId.end()) {
-            ++out.unmatched;
+            float px = 0.f, py = 0.f;
+            if (number(field(rec, col[5]), px) && number(field(rec, col[6]), py)) {
+                out.places.push_back(MapNames::Spot{idx, Vec2{px, py}});
+            } else {
+                ++out.unmatched;
+            }
             continue;
         }
+        if (!water && out.nameKind[idx] != MapNameKind::Water) out.nameKind[idx] = MapNameKind::Road;
         const std::string district = field(rec, col[4]);
         for (int road : roads->second) {
             out.roadName[static_cast<std::size_t>(road)] = idx;
@@ -326,6 +369,76 @@ void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& 
             if (clear) out.labels[out.count++] = c;
         }
     }
+}
+
+bool mapRoadLabelled(MapRoadClass c, MapZoom z) {
+    switch (c) {
+    case MapRoadClass::Main:
+    case MapRoadClass::Street: return z != MapZoom::Far;
+    case MapRoadClass::Lane: return z == MapZoom::Near;
+    case MapRoadClass::Stair: return false;
+    }
+    return false;
+}
+
+std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, int picked,
+                          MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin) {
+    if (!out || cap == 0) return 0;
+    const std::size_t names = n.names.size();
+    if (seen && names > 0) std::memset(seen, 0, names);
+    std::size_t count = 0;
+    auto take = [&](std::uint16_t name, MapLabelRank rank, bool along, Vec2 at) {
+        if (count >= cap || name == kMapNoName || name >= names) return;
+        if (seen) {
+            if (seen[name]) return;
+            seen[name] = 1;
+        }
+        out[count++] = MapLabelPick{name, rank, along, at};
+    };
+    const Vec2 lo = mapOverlayFromScreen(v, Vec2{-margin, -margin});
+    const Vec2 hi = mapOverlayFromScreen(v, Vec2{v.screenW + margin, v.screenH + margin});
+    auto pointIn = [&](Vec2 p) { return p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y; };
+    auto roadIn = [&](std::size_t r) {
+        const MapRoad& road = m.roads[r];
+        if (road.count == 0 || road.first + road.count > m.points.size()) return false;
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        for (std::uint32_t k = 0; k < road.count; ++k) {
+            const Vec2 p = m.points[road.first + k];
+            x0 = std::min(x0, p.x);
+            y0 = std::min(y0, p.y);
+            x1 = std::max(x1, p.x);
+            y1 = std::max(y1, p.y);
+        }
+        return x1 >= lo.x && x0 <= hi.x && y1 >= lo.y && y0 <= hi.y;
+    };
+    const std::size_t roads = std::min(m.roads.size(), n.roadName.size());
+    if (picked >= 0 && static_cast<std::size_t>(picked) < roads) take(n.roadName[static_cast<std::size_t>(picked)], MapLabelRank::Cursor, true, Vec2{});
+    for (const MapNames::District& d : n.districts)
+        if (d.hasAnchor && pointIn(d.anchor)) take(d.name, MapLabelRank::District, false, d.anchor);
+    auto kindOf = [&](std::uint16_t name) { return name < n.nameKind.size() ? n.nameKind[name] : MapNameKind::Road; };
+    // Water: at its points (every zoom), then along its roads (canals, from Mid).
+    for (const MapNames::Spot& p : n.places)
+        if (kindOf(p.name) == MapNameKind::Water && pointIn(p.at)) take(p.name, MapLabelRank::Water, false, p.at);
+    if (z != MapZoom::Far)
+        for (std::size_t r = 0; r < roads; ++r) {
+            const std::uint16_t name = n.roadName[r];
+            if (name != kMapNoName && kindOf(name) == MapNameKind::Water && (!seen || !seen[name]) && roadIn(r)) take(name, MapLabelRank::Water, true, Vec2{});
+        }
+    // Roads by class, main first.
+    const MapRoadClass order[3] = {MapRoadClass::Main, MapRoadClass::Street, MapRoadClass::Lane};
+    const MapLabelRank rankOf[3] = {MapLabelRank::Main, MapLabelRank::Street, MapLabelRank::Lane};
+    for (int c = 0; c < 3; ++c) {
+        if (c == 2 && z == MapZoom::Near)
+            for (const MapNames::Spot& p : n.places)
+                if (kindOf(p.name) == MapNameKind::Place && pointIn(p.at)) take(p.name, MapLabelRank::Place, false, p.at);
+        if (!mapRoadLabelled(order[c], z)) continue;
+        for (std::size_t r = 0; r < roads; ++r) {
+            const std::uint16_t name = n.roadName[r];
+            if (m.roads[r].cls != order[c] || name == kMapNoName || kindOf(name) == MapNameKind::Water || (seen && seen[name])) continue;
+            if (roadIn(r)) take(name, rankOf[c], true, Vec2{});
+        }
+    }
+    return count;
 }
 
 } // namespace ftcore

@@ -38,6 +38,8 @@
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Engine.h"
+#include "Engine/Font.h"
+#include "UObject/Package.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
@@ -8412,5 +8414,30 @@ bool EnsureMenuScreens()
 	GMenuScreens = W;
 	GMenuViewport = GEngine->GameViewport;
 	return true;
+}
+
+UFont* UiCanvasFont(uint8 Face)
+{
+	// Made once per process and rooted (never freed): a handful of small objects, safe across map loads and PIE.
+	static UFont* Made[ftcore::kUiFontCount] = {};
+	if (Face >= ftcore::kUiFontCount)
+	{
+		return nullptr;
+	}
+	if (!Made[Face])
+	{
+		const TSharedPtr<const FCompositeFont>& Src = Faces().Font[Face];
+		if (!Src.IsValid())
+		{
+			return nullptr;
+		}
+		UFont* F = NewObject<UFont>(GetTransientPackage(), NAME_None, RF_Transient);
+		F->FontCacheType = EFontCacheType::Runtime;
+		F->CompositeFont = *Src;
+		F->LegacyFontSize = 16;
+		F->AddToRoot();
+		Made[Face] = F;
+	}
+	return Made[Face];
 }
 }

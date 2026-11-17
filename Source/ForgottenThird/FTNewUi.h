@@ -16,6 +16,7 @@
 #include "CoreMinimal.h"
 
 class SWidget;
+class UFont;
 class UFTArenaRunner;
 class AFTExploreCharacter;
 class AFTExploreDirector;
@@ -50,4 +51,9 @@ void SetUiPalette(uint8 Palette);
 // it is not mounted yet (again after a map load). True while it is: the Canvas overlays then draw nothing. Called from
 // DrawPauseOverlay and DrawSettingsOverlay, so every screen that drew them gets it.
 bool EnsureMenuScreens();
+
+// The UI's faces as Canvas fonts (the runtime cache; each made once and kept for the process), for the Canvas drawers
+// such as the map overlay (FTMapOverlay): Face is an ftcore::UiFont. Size them with FSlateFontInfo(Font, points).
+// Null when the face's file is missing (the caller keeps an engine font).
+UFont* UiCanvasFont(uint8 Face);
 }

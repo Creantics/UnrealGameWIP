@@ -48,6 +48,16 @@ FTCORE_API Vec2 mapOverlayToScreen(const MapOverlayView& v, Vec2 world);
 FTCORE_API Vec2 mapOverlayFromScreen(const MapOverlayView& v, Vec2 screen);
 // The centre held so the view never leaves the model's area (a side larger than the area centres on it).
 FTCORE_API Vec2 mapOverlayClampCentre(const MiniMapModel& m, const MapOverlayView& v);
+// The view at a zoom over this model: as mapOverlayView, except Far, which shows the model's whole area (the side that
+// binds fills the screen less kMapFarMargin of it each side; the other is letterboxed) and is never nearer than
+// kMapFarOverMid times Mid's scale, so zooming out always widens the view.
+inline constexpr float kMapFarMargin = 0.04f;
+inline constexpr float kMapFarOverMid = 1.25f;
+FTCORE_API MapOverlayView mapOverlayViewIn(const MiniMapModel& m, Vec2 centre, MapZoom z, float screenW, float screenH,
+                                           float uiScale = 1.f);
+// The side the sea lies past the model's area, for the letterbox: +1 east, -1 west, 0 neither (an edge column of the
+// water grid more than half water; east wins a tie).
+FTCORE_API int mapSeaSide(const MiniMapModel& m);
 
 // Which buildings are enterable: each door marks the one building nearest it (distance outside the footprint, ties
 // to the nearer centre), if that is within `reach` m (doors stand just off the wall line). Terraced neighbours share
@@ -57,11 +67,21 @@ FTCORE_API void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::ui
 // The names, joined to the roads by id at load (this allocates; it runs once). The table's text is CSV with the header
 // id,kind,name,sign_form,district; rows with kind "district" are the districts (id = the district's id), and a road
 // row's district column joins the road to its district. A road with no row has no name; rows that name no road in the
-// model are skipped (counted in `unmatched`: water, bridges and squares have no road geometry in the model).
+// model are skipped (counted in `unmatched`: water, bridges and squares have no road geometry in the model), unless the
+// table has the optional columns x and y (engine m) and the row fills them: then it is a place, named at that point.
+// A name is Water when any of its rows' kind is river, lake, canal, sea, harbour or bay (drawn in italics), else a Place
+// when its rows are places only, else a Road.
 inline constexpr std::uint16_t kMapNoName = 0xFFFF;
+enum class MapNameKind : std::uint8_t { Road, Water, Place };
 struct MapNames {
     std::vector<std::string> names;      // each distinct name once
     std::vector<std::string> signForms;  // per name: its sign form ("" none; the glyphs are drawn, not typed)
+    std::vector<MapNameKind> nameKind;   // per name
+    struct Spot {
+        std::uint16_t name = kMapNoName;
+        Vec2 at{};
+    };
+    std::vector<Spot> places; // the rows placed at a point (x, y), in table order
     std::vector<std::uint16_t> roadName; // per model road: index into names, or kMapNoName
     struct District {
         std::string id;
@@ -107,5 +127,23 @@ struct MapLabelSet {
     std::size_t count = 0;
 };
 FTCORE_API void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap = 6.f);
+
+// Which names are tried at a view, best first. Ranks are MapLabel::priority (lower wins): the cursor's road, then the
+// districts (boxed, at every zoom), water, main roads, streets, places, lanes. Roads' names are set along them: main
+// roads and streets from Mid, lanes at Near; stairs and terraces (class Stair) only under the cursor. Water at its point
+// at every zoom, along a canal from Mid; the districts at their anchors; places at Near. A name is picked once, and only when
+// its roads' bounds or its point meet the screen grown by `margin` px.
+enum class MapLabelRank : std::uint8_t { Cursor, District, Water, Main, Street, Place, Lane };
+FTCORE_API bool mapRoadLabelled(MapRoadClass c, MapZoom z);
+struct MapLabelPick {
+    std::uint16_t name = kMapNoName; // into MapNames::names
+    MapLabelRank rank = MapLabelRank::Main;
+    bool along = true; // set along its roads (mapLabelAlong); else centred on `at` (world m), level
+    Vec2 at{};
+};
+// The picks into out (at most cap), cursor first, then by rank, then by table order. `picked` is the cursor's road
+// (-1 none). `seen` is the caller's scratch, one byte per name (cleared here). Returns the count. Zero allocation.
+FTCORE_API std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, int picked,
+                                     MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin = 0.f);
 
 } // namespace ftcore

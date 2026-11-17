@@ -294,3 +294,118 @@ TEST_CASE("map overlay: the water grid merges into one rectangle per run of a ro
     mapWaterRuns(m, w);
     CHECK(w.size() == 1);
 }
+
+TEST_CASE("map overlay: far zoom fits the whole area, letterboxed, and is never nearer than mid") {
+    MiniMapModel m = model(); // 400 x 300 m: small, so far is held off mid
+    const MapOverlayView mid = mapOverlayViewIn(m, {200.f, 150.f}, MapZoom::Mid, 1920.f, 1080.f);
+    const MapOverlayView far = mapOverlayViewIn(m, {200.f, 150.f}, MapZoom::Far, 1920.f, 1080.f);
+    CHECK(mid.mPerPx == doctest::Approx(1.4f));
+    CHECK(far.mPerPx == doctest::Approx(1.4f * kMapFarOverMid));
+    // A tall strip 1300 x 3500 m: height binds; the whole of it is on screen, the width letterboxed.
+    m.maxX = 1300.f;
+    m.maxY = 3500.f;
+    const MapOverlayView tall = mapOverlayViewIn(m, {650.f, 1750.f}, MapZoom::Far, 1920.f, 1080.f);
+    CHECK(tall.mPerPx == doctest::Approx(3500.f / (1080.f * (1.f - 2.f * kMapFarMargin))));
+    const Vec2 c = mapOverlayClampCentre(m, tall);
+    CHECK(c.x == doctest::Approx(650.f));
+    CHECK(c.y == doctest::Approx(1750.f));
+    const Vec2 top = mapOverlayToScreen(tall, {0.f, 0.f}), bottom = mapOverlayToScreen(tall, {1300.f, 3500.f});
+    CHECK(top.y == doctest::Approx(1080.f * kMapFarMargin).epsilon(0.001));
+    CHECK(bottom.y == doctest::Approx(1080.f * (1.f - kMapFarMargin)).epsilon(0.001));
+    CHECK(bottom.x - top.x < 1920.f * 0.5f);
+    // Near and mid stay the table's.
+    CHECK(mapOverlayViewIn(m, c, MapZoom::Near, 1920.f, 1080.f).mPerPx == doctest::Approx(0.6f));
+}
+
+TEST_CASE("map overlay: the sea side comes from the water grid's edge columns") {
+    MiniMapModel m = model();
+    m.water.clear();
+    m.waterW = 0;
+    m.waterH = 0;
+    CHECK(mapSeaSide(m) == 0); // no grid
+    m.waterCell = 2.f;
+    m.waterW = 3;
+    m.waterH = 2;
+    m.water = {0, 0, 1,
+               0, 0, 1};
+    CHECK(mapSeaSide(m) == 1);
+    m.water = {1, 0, 0,
+               1, 0, 1};
+    CHECK(mapSeaSide(m) == -1);
+    m.water = {0, 1, 0,
+               0, 1, 0};
+    CHECK(mapSeaSide(m) == 0);
+}
+
+TEST_CASE("map overlay: water and place rows: water along a canal or at its point, places at theirs, the rest unmatched") {
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D1,district,Pebblewick,Pebi,D1,,\n"
+                      "RD-A,road,Ferrow Road,Feru,D1,,\n"
+                      "LN-A,canal,Ladle Cut,,D1,,\n"
+                      "RV,river,the Wend,Wen,D1,300,40\n"
+                      "SQ-1,square,Tinker Square,,D1,120,200\n"
+                      "QY-1,quay,Mud Quay,,D1,,\n";
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n));
+    REQUIRE(n.names.size() == 6);
+    REQUIRE(n.nameKind.size() == 6);
+    CHECK(n.nameKind[0] == MapNameKind::Road); // the district
+    CHECK(n.nameKind[1] == MapNameKind::Road);
+    CHECK(n.nameKind[2] == MapNameKind::Water); // a canal on a road's geometry
+    CHECK(n.nameKind[3] == MapNameKind::Water);
+    CHECK(n.nameKind[4] == MapNameKind::Place);
+    REQUIRE(n.places.size() == 2);
+    CHECK(n.places[0].name == 3);
+    CHECK(n.places[0].at.x == doctest::Approx(300.f));
+    CHECK(n.places[1].at.y == doctest::Approx(200.f));
+    CHECK(n.unmatched == 1); // the quay: no road and no point
+    CHECK(mapRoadName(n, 3) == 2);
+}
+
+TEST_CASE("map overlay: label picks by zoom: cursor first, districts and water points always, streets from mid, lanes and places near") {
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D1,district,Pebblewick,Pebi,D1,,\n"
+                      "RD-A,road,Ferrow Road,Feru,D1,,\n"
+                      "ST-A1,street,Ashlit Street,,D1,,\n"
+                      "ST-A2,street,Ashlit Street,,D1,,\n"
+                      "LN-A,core_lane,Thimble Lane,,D1,,\n"
+                      "RV,river,the Wend,,D1,300,40\n"
+                      "SQ-1,square,Tinker Square,,D1,120,200\n";
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n));
+    REQUIRE(n.districts.size() == 1);
+    REQUIRE(n.districts[0].hasAnchor);
+    std::vector<std::uint8_t> seen(n.names.size(), 7);
+    MapLabelPick out[16];
+    auto names = [&](MapZoom z, int picked) {
+        const MapOverlayView v = mapOverlayView({200.f, 150.f}, z, 1920.f, 1080.f);
+        const std::size_t k = mapLabelPicks(m, n, v, z, picked, out, 16, seen.data());
+        std::string s;
+        for (std::size_t i = 0; i < k; ++i) s += n.names[out[i].name] + (out[i].along ? "" : "@") + ";";
+        return s;
+    };
+    CHECK(names(MapZoom::Far, -1) == "Pebblewick@;the Wend@;");
+    CHECK(names(MapZoom::Mid, -1) == "Pebblewick@;the Wend@;Ferrow Road;Ashlit Street;");
+    CHECK(names(MapZoom::Near, -1) == "Pebblewick@;the Wend@;Ferrow Road;Ashlit Street;Tinker Square@;Thimble Lane;");
+    // The cursor's road first, once; a lane under the cursor is named at mid.
+    CHECK(names(MapZoom::Mid, 3) == "Thimble Lane;Pebblewick@;the Wend@;Ferrow Road;Ashlit Street;");
+    CHECK(out[0].rank == MapLabelRank::Cursor);
+    CHECK(out[1].rank == MapLabelRank::District);
+    CHECK(out[2].rank == MapLabelRank::Water);
+    // Off screen: a view far east of the model picks nothing; the cap holds.
+    const MapOverlayView away = mapOverlayView({5000.f, 150.f}, MapZoom::Near, 1920.f, 1080.f);
+    CHECK(mapLabelPicks(m, n, away, MapZoom::Near, -1, out, 16, seen.data()) == 0);
+    const MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Near, 1920.f, 1080.f);
+    CHECK(mapLabelPicks(m, n, v, MapZoom::Near, -1, out, 2, seen.data()) == 2);
+    // No allocation.
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const std::size_t k = mapLabelPicks(m, n, v, MapZoom::Near, 1, out, 16, seen.data());
+    const MapOverlayView f = mapOverlayViewIn(m, {200.f, 150.f}, MapZoom::Far, 1920.f, 1080.f);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(k == 6);
+    CHECK(f.mPerPx > 0.f);
+    CHECK_FALSE(mapRoadLabelled(MapRoadClass::Stair, MapZoom::Near));
+}
