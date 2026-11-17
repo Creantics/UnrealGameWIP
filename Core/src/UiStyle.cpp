@@ -502,6 +502,28 @@ void uiLumaAdd(UiLumaHistogram& h, UiColor c) {
     ++h.total;
 }
 
+namespace {
+// 0..1; NaN fails both comparisons and lands at 0, never a bin past the end.
+float unitClamp(float v) { return v > 0.f ? (v < 1.f ? v : 1.f) : 0.f; }
+} // namespace
+
+void uiLumaAddDecoded(UiLumaHistogram& h, UiColor srgb, float lr, float lg, float lb) {
+    const float l = 0.2126f * unitClamp(lr) + 0.7152f * unitClamp(lg) + 0.0722f * unitClamp(lb);
+    const std::size_t i = std::min(UiLumaHistogram::kBins - 1, static_cast<std::size_t>(l * UiLumaHistogram::kBins));
+    ++h.n[i];
+    h.r[i] += unitClamp(srgb.r);
+    h.g[i] += unitClamp(srgb.g);
+    h.b[i] += unitClamp(srgb.b);
+    ++h.total;
+}
+
+float uiSrgbToLinear(float c) { return linear(unitClamp(c)); }
+
+float uiLinearToSrgb(float c) {
+    c = unitClamp(c);
+    return c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.f / 2.4f) - 0.055f;
+}
+
 UiColor uiLumaBrightest(const UiLumaHistogram& h, float share) {
     if (h.total == 0) return UiColor{0.f, 0.f, 0.f, 1.f};
     const std::uint32_t want = std::max<std::uint32_t>(1u, static_cast<std::uint32_t>(std::clamp(share, 0.f, 1.f) * h.total));

@@ -238,7 +238,8 @@ float readLuma(UiColor c) { return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b
 
 bool viewFinite(const UiReadView& v) {
     return std::isfinite(v.x0) && std::isfinite(v.y0) && std::isfinite(v.x1) && std::isfinite(v.y1) && std::isfinite(v.px) &&
-           std::isfinite(v.py) && std::isfinite(v.pz) && std::isfinite(v.yaw) && std::isfinite(v.pitch);
+           std::isfinite(v.py) && std::isfinite(v.pz) && std::isfinite(v.yaw) && std::isfinite(v.pitch) && std::isfinite(v.hours) &&
+           std::isfinite(v.wet);
 }
 
 // The turn between two angles in degrees, the short way round.
@@ -273,6 +274,10 @@ bool uiReadSkip(const UiReadMemo& memo, const UiReadView& view, double now) {
     const float dx = view.px - m.px, dy = view.py - m.py, dz = view.pz - m.pz;
     if (dx * dx + dy * dy + dz * dz > kUiReadSkipMove * kUiReadSkipMove) return false;
     if (turnDeg(view.yaw, m.yaw) > kUiReadSkipTurnDeg || turnDeg(view.pitch, m.pitch) > kUiReadSkipTurnDeg) return false;
+    if (view.text != m.text) return false;
+    if (std::fabs(std::remainder(view.hours - m.hours, 24.f)) > kUiReadSkipHours || std::fabs(view.wet - m.wet) > kUiReadSkipWet) {
+        return false;
+    }
     const float a = memo.luma[0], b = memo.luma[1];
     const float d = std::fabs(a - b);
     return d <= kUiReadSkipLumaAbs || d <= kUiReadSkipLumaShare * std::max(a, b);

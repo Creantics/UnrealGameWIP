@@ -460,7 +460,14 @@ struct UiLumaHistogram {
     std::uint32_t total = 0;
 };
 FTCORE_API void uiLumaAdd(UiLumaHistogram& h, UiColor c);
+// The picture reads' path: a pixel decoded through tables and given both ways (sRGB 0..1 and its linear light), binned
+// by the linear luminance with no per-pixel power and summed as sRGB, so the histogram matches uiLumaAdd's for the same
+// pixels. Out-of-range and NaN values are clamped.
+FTCORE_API void uiLumaAddDecoded(UiLumaHistogram& h, UiColor srgb, float lr, float lg, float lb);
 FTCORE_API UiColor uiLumaBrightest(const UiLumaHistogram& h, float share);
+// One sRGB-encoded channel (0..1) in linear light, and back; for decode tables built once.
+FTCORE_API float uiSrgbToLinear(float c);
+FTCORE_API float uiLinearToSrgb(float c);
 
 FTCORE_API UiCueShape uiCueShape(const UiStyle& s, UiToken token);
 

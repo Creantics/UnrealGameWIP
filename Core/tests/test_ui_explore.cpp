@@ -326,6 +326,40 @@ TEST_CASE("uiReadSkip: a changing picture, a moved box or a moving camera reads"
     CHECK_FALSE(uiReadSkip(m, tilted, 3.5));
 }
 
+TEST_CASE("uiReadSkip: a still camera over a changing scene or new words reads") {
+    CHECK(kUiReadSkipForceS == doctest::Approx(3.f)); // the 2026-11-17 ruling: a stale read at most 3 s
+    UiReadMemo m;
+    UiReadView v = readView();
+    v.hours = 18.f;
+    v.wet = 0.3f;
+    v.text = 7;
+    uiReadNote(m, v, kGrey, 1.0);
+    uiReadNote(m, v, kGrey, 2.0);
+    REQUIRE(uiReadSkip(m, v, 2.5));
+    UiReadView later = v;
+    later.hours += 0.5f * kUiReadSkipHours;
+    CHECK(uiReadSkip(m, later, 2.5));
+    later.hours = v.hours + 2.f * kUiReadSkipHours;
+    CHECK_FALSE(uiReadSkip(m, later, 2.5)); // the clock moved: dusk light changes the picture
+    UiReadView wetter = v;
+    wetter.wet += 2.f * kUiReadSkipWet;
+    CHECK_FALSE(uiReadSkip(m, wetter, 2.5));
+    UiReadView reworded = v;
+    reworded.text = 8;
+    CHECK_FALSE(uiReadSkip(m, reworded, 2.5));
+    // The clock wraps at midnight the short way round.
+    UiReadMemo n;
+    UiReadView late = readView();
+    late.hours = 23.99f;
+    uiReadNote(n, late, kGrey, 1.0);
+    uiReadNote(n, late, kGrey, 2.0);
+    UiReadView early = late;
+    early.hours = 0.01f;
+    CHECK(uiReadSkip(n, early, 2.5));
+    early.hours = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(uiReadSkip(n, early, 2.5));
+}
+
 TEST_CASE("uiReadSkip: the turn is the short way round") {
     UiReadMemo m;
     uiReadNote(m, readView(100.f, 179.9f), kGrey, 1.0);

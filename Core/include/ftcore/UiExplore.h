@@ -134,20 +134,27 @@ FTCORE_API float uiQuietFloor(UiColor ink, UiColor picture, float target, float 
 // A guarded line's read of the picture under it is skipped (its last read stands) while all of these hold: the line's
 // box is where it was (within kUiReadSkipBoxPx), the camera has moved less than kUiReadSkipMove and turned less than
 // kUiReadSkipTurnDeg since that read, the last two reads' brightest tenth agree within kUiReadSkipLumaShare (or
-// kUiReadSkipLumaAbs, for dark pictures), and the last real read is under kUiReadSkipForceS old.
+// kUiReadSkipLumaAbs, for dark pictures), the last real read is under kUiReadSkipForceS old, and the scene and the words
+// are as they were: the world's clock has moved less than kUiReadSkipHours, its look's wetness less than kUiReadSkipWet,
+// and the line's text serial is the same (2026-11-17 review: a still camera over a changing scene held a stale read).
 
 inline constexpr float kUiReadSkipBoxPx = 1.f;        // px the line's box may move
 inline constexpr float kUiReadSkipMove = 5.f;         // world units (cm) the camera may move
 inline constexpr float kUiReadSkipTurnDeg = 0.5f;     // degrees the camera may turn (yaw or pitch)
 inline constexpr float kUiReadSkipLumaShare = 0.05f;  // the last two reads agree within this share
 inline constexpr float kUiReadSkipLumaAbs = 0.01f;    // or within this much luminance
-inline constexpr float kUiReadSkipForceS = 10.f;      // a real read at least this often
+inline constexpr float kUiReadSkipForceS = 3.f;       // a real read at least this often
+inline constexpr float kUiReadSkipHours = 0.05f;      // game hours the world's clock may move (3 game minutes)
+inline constexpr float kUiReadSkipWet = 0.02f;        // the look's wetness (0..1) may move
 
-// Where a read was asked from: the line's box (px) and the camera.
+// Where a read was asked from: the line's box (px), the camera, the world's clock and wetness, and the line's words.
 struct UiReadView {
     float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
     float px = 0.f, py = 0.f, pz = 0.f;
     float yaw = 0.f, pitch = 0.f;
+    float hours = 0.f;          // the world clock, 0..24 (wraps)
+    float wet = 0.f;            // the world look's wetness
+    std::uint32_t text = 0;     // the line's text serial: changes when its words do
 };
 
 struct UiReadMemo {

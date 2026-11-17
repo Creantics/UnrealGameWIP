@@ -7,12 +7,14 @@
 #include "FTExploreCharacter.h"
 #include "ForgottenThird.h"
 #include "FTInputBindings.h"
+#include "FTLookSubsystem.h"
 #include "FTPauseSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
 #include "FTUiText.h"
+#include "FTWorldClockSubsystem.h"
 
 #include "ftcore/ArenaFight.h"
 #include "ftcore/UiBudget.h"
@@ -42,6 +44,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
 #include "GenericPlatform/GenericApplication.h"
+#include "HDRHelper.h"
 #include "HAL/IConsoleManager.h"
 #include "Layout/Clipping.h"
 #include "Misc/App.h"
@@ -57,6 +60,8 @@
 #include "RenderGraphUtils.h"
 #include "RenderingThread.h"
 #include "RHIGPUReadback.h"
+#include "SceneView.h"
+#include "SceneViewExtension.h"
 #include "Styling/CoreStyle.h"
 #include "UnrealClient.h"
 #include "Widgets/SLeafWidget.h"
@@ -4908,29 +4913,40 @@ bool PictureBrightest(const FBox2f& Rc, const FVector2f& Size, ftcore::UiColor& 
 }
 
 // The reads of the picture in play (2026-11-17: the synchronous read cost a +25 ms frame at 1080 and +43 ms at 4K each
-// time). Asked at the end of the game viewport's draw, a render command copies the rectangle's pixels, exact and at full
-// resolution, into a small staging texture (FRHIGPUTextureReadback); at the end of a later render frame, once the GPU has
-// it, the render thread maps it and makes its brightest tenth; the game thread takes that a frame or two after asking.
-// Nothing waits: no ReadPixels and no flush. One request in flight per slot; a slot's staging texture is kept and only
-// grows. Results go to the game thread through an atomic serial, the colour written before it.
+// time). Asked at the end of the game viewport's draw; in the next frame's scene render a view extension, inside the
+// renderer's own graph after post-processing, copies the rectangle's pixels into a small staging texture
+// (FRHIGPUTextureReadback). At the end of a later render frame, once the GPU has it, the render thread maps it and makes
+// its brightest tenth; the game thread takes that a frame or two after asking. Nothing waits: no ReadPixels and no flush.
+// The copy reads the family's own registered target (the back buffer in the standalone game, where the game thread holds
+// no texture), so nothing is kept across frames and the renderer sets the target's final state. One request in flight
+// per slot; a slot's staging texture is kept and only grows. Results go to the game thread through an atomic serial, the
+// colour written before it. With HDR output on, the back buffer is not display-referred sRGB: no reads (logged once).
 class FTPictureReader
 {
 public:
 	static constexpr int32 kSlots = 10;
-	static constexpr int32 kMaxSamples = 262144; // a larger rectangle is read every Stride-th pixel each way
+	// The guard needs a luminance estimate, not every pixel: a larger rectangle is decoded every Stride-th pixel each way.
+	// A small line stays exact; at 4K a line is read every 2nd-3rd pixel, the dialogue's band every 6th-10th.
+	static constexpr int32 kMaxSamples = 16384;
 
-	FTPictureReader() : State(MakeShared<FState, ESPMode::ThreadSafe>()) {}
+	FTPictureReader() : State(MakeShared<FState, ESPMode::ThreadSafe>())
+	{
+		Ext = FSceneViewExtensions::NewExtension<FExt>(State);
+	}
 	FTPictureReader(const FTPictureReader&) = delete;
 	FTPictureReader& operator=(const FTPictureReader&) = delete;
 
 	~FTPictureReader()
 	{
-		// The render thread lets go (and unhooks its end of frame) after any copy still queued.
+		// The engine holds the extension weakly; a family already gathered keeps it to that frame's end.
+		Ext.Reset();
+		// The render thread unhooks its end of frame after any want still queued, then lets go.
 		ENQUEUE_RENDER_COMMAND(FTPictureReaderDrop)([S = MoveTemp(State)](FRHICommandListImmediate&) mutable
 		{
 			if (S.IsValid() && S->Hook.IsValid())
 			{
 				FCoreDelegates::OnEndFrameRT.Remove(S->Hook);
+				S->Hook.Reset();
 			}
 			S.Reset();
 		});
@@ -4939,7 +4955,7 @@ public:
 	bool Busy(int32 Slot) const { return Slot < 0 || Slot >= kSlots || Taken[Slot] != Asked[Slot]; }
 
 	// Asks for the brightest tenth of the game viewport's pixels in Px. Only at the end of the viewport's draw (the
-	// Slate layers are not in the picture yet). False when the slot is busy or there is no viewport.
+	// Slate layers are not in the picture). False when the slot is busy, there is no viewport, or HDR output is on.
 	bool Request(int32 Slot, const FIntRect& Px)
 	{
 		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
@@ -4947,12 +4963,21 @@ public:
 		{
 			return false;
 		}
+		if (IsHDREnabled())
+		{
+			if (!bHdrLogged)
+			{
+				bHdrLogged = true;
+				UE_LOG(LogForgottenThird, Log, TEXT("UI: picture read: HDR output is on; no picture reads, the guards stand at rest."));
+			}
+			return false;
+		}
 		const uint32 Serial = ++Asked[Slot];
 		AskedFrame[Slot] = GFrameCounter;
-		FRenderTarget* RT = VP;
-		ENQUEUE_RENDER_COMMAND(FTPictureRead)([S = State, RT, Px, Slot, Serial](FRHICommandListImmediate& RHICmdList)
+		State->Outstanding.fetch_add(1, std::memory_order_relaxed); // before the want: the next frame's family copies it
+		ENQUEUE_RENDER_COMMAND(FTPictureRead)([S = State, Px, Slot, Serial](FRHICommandListImmediate&)
 		{
-			Copy(*S, RT, Slot, Px, Serial, RHICmdList);
+			Want(S, Slot, Px, Serial);
 		});
 		return true;
 	}
@@ -4990,11 +5015,13 @@ private:
 		TUniquePtr<FRHIGPUTextureReadback> Readback;
 		FIntPoint Extent = FIntPoint::ZeroValue; // the staging texture's size
 		EPixelFormat Format = PF_Unknown;
+		FIntRect WantPx;                         // the asked pixels, until the copy
 		FIntRect Sub;                            // the asked pixels inside the staging copy
 		int32 Stride = 1;
 		uint32 Serial = 0;
-		int32 Frames = 0;                        // render frames ended since the copy
-		bool bInFlight = false;
+		int32 Frames = 0;                        // render frames ended since the want or the copy
+		bool bWanted = false;                    // asked, not copied yet
+		bool bInFlight = false;                  // copied, not read yet
 		// Handed to the game thread (written before Done).
 		ftcore::UiColor Pic{0.f, 0.f, 0.f, 1.f};
 		bool bOk = false;
@@ -5004,15 +5031,75 @@ private:
 	struct FState
 	{
 		FSlot Slots[kSlots];
-		FDelegateHandle Hook;
-		bool bFormatLogged = false;
+		FDelegateHandle Hook;                    // the render thread's
+		bool bFormatLogged = false;              // the render thread's
+		bool bTargetLogged = false;              // the render thread's (not shipping)
+		std::atomic<int32> Outstanding{0};       // wants not yet copied: the game thread adds, the render thread takes
 	};
+
+	// The copy's hook in the renderer: active only for the game viewport's family while a want waits.
+	class FExt final : public FSceneViewExtensionBase
+	{
+	public:
+		FExt(const FAutoRegister& Reg, TSharedPtr<FState, ESPMode::ThreadSafe> InState)
+			: FSceneViewExtensionBase(Reg), St(MoveTemp(InState))
+		{
+		}
+
+		virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& Family) override
+		{
+			if (Family.bIsMainViewFamily && Family.RenderTarget)
+			{
+				CopyWanted(*St, GraphBuilder, Family.RenderTarget->GetRenderTargetTexture().GetReference());
+			}
+		}
+
+	protected:
+		virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Ctx) const override
+		{
+			return St->Outstanding.load(std::memory_order_relaxed) > 0 && Ctx.Viewport && GEngine && GEngine->GameViewport &&
+				Ctx.Viewport == GEngine->GameViewport->Viewport;
+		}
+
+	private:
+		TSharedPtr<FState, ESPMode::ThreadSafe> St;
+	};
+
+	// sRGB and linear light for each 8-bit and 10-bit code, and sRGB for linear light in 4096 steps (the float back
+	// buffer's path): built once, so a pixel costs table loads and no power.
+	struct FLuts
+	{
+		float Lin8[256];
+		float Lin10[1024];
+		float Srgb12[4096];
+		FLuts()
+		{
+			for (int32 I = 0; I < 256; ++I)
+			{
+				Lin8[I] = ftcore::uiSrgbToLinear(I / 255.f);
+			}
+			for (int32 I = 0; I < 1024; ++I)
+			{
+				Lin10[I] = ftcore::uiSrgbToLinear(I / 1023.f);
+			}
+			for (int32 I = 0; I < 4096; ++I)
+			{
+				Srgb12[I] = ftcore::uiLinearToSrgb(I / 4095.f);
+			}
+		}
+	};
+	static const FLuts& Luts()
+	{
+		static const FLuts T;
+		return T;
+	}
 
 	static void Publish(FSlot& L, uint32 Serial, const ftcore::UiColor& Pic, bool bOk, float RtMs)
 	{
 		L.Pic = Pic;
 		L.bOk = bOk;
 		L.RtMs = RtMs;
+		L.bWanted = false;
 		L.bInFlight = false;
 		L.Done.store(Serial, std::memory_order_release);
 	}
@@ -5022,15 +5109,43 @@ private:
 		return F == PF_B8G8R8A8 || F == PF_R8G8B8A8 || F == PF_A2B10G10R10 || F == PF_FloatRGBA;
 	}
 
-	// Render thread: the copy of the asked pixels into the slot's staging texture.
-	static void Copy(FState& S, FRenderTarget* RT, int32 Slot, FIntRect Px, uint32 Serial, FRHICommandListImmediate& RHICmdList)
+	// Render thread: a want, and the end-of-frame hook (held weakly, so a hook outliving the reader does nothing).
+	static void Want(const TSharedPtr<FState, ESPMode::ThreadSafe>& SP, int32 Slot, const FIntRect& Px, uint32 Serial)
 	{
-		FSlot& L = S.Slots[Slot];
+		FState& S = *SP;
 		if (!S.Hook.IsValid())
 		{
-			S.Hook = FCoreDelegates::OnEndFrameRT.AddLambda([P = &S]() { Poll(*P); });
+			S.Hook = FCoreDelegates::OnEndFrameRT.AddLambda([W = TWeakPtr<FState, ESPMode::ThreadSafe>(SP)]()
+			{
+				if (const TSharedPtr<FState, ESPMode::ThreadSafe> P = W.Pin())
+				{
+					Poll(*P);
+				}
+			});
 		}
-		FRHITexture* Tex = RT ? RT->GetShaderResourceTexture().GetReference() : nullptr;
+		FSlot& L = S.Slots[Slot];
+		L.WantPx = Px;
+		L.Serial = Serial;
+		L.Frames = 0;
+		L.bWanted = true;
+	}
+
+	// Render thread, in the game viewport family's graph after post-processing: each wanted slot's copy.
+	static void CopyWanted(FState& S, FRDGBuilder& GraphBuilder, FRHITexture* Tex)
+	{
+		for (FSlot& L : S.Slots)
+		{
+			if (L.bWanted)
+			{
+				S.Outstanding.fetch_sub(1, std::memory_order_relaxed);
+				Copy(S, L, GraphBuilder, Tex);
+			}
+		}
+	}
+
+	static void Copy(FState& S, FSlot& L, FRDGBuilder& GraphBuilder, FRHITexture* Tex)
+	{
+		L.bWanted = false;
 		const EPixelFormat Format = Tex ? Tex->GetFormat() : PF_Unknown;
 		if (!Tex || Tex->IsMultisampled() || !Decodable(Format))
 		{
@@ -5040,14 +5155,22 @@ private:
 				UE_LOG(LogForgottenThird, Warning, TEXT("UI: picture read: the viewport's texture (%s) cannot be read; the guards stand at rest."),
 					Tex ? GetPixelFormatString(Format) : TEXT("none"));
 			}
-			Publish(L, Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
+			Publish(L, L.Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
 			return;
 		}
+#if !UE_BUILD_SHIPPING
+		if (!S.bTargetLogged)
+		{
+			S.bTargetLogged = true;
+			UE_LOG(LogForgottenThird, Log, TEXT("UI: picture read: reading the viewport's %s target in the renderer's graph."), GetPixelFormatString(Format));
+		}
+#endif
+		FIntRect Px = L.WantPx;
 		const FIntPoint TS = Tex->GetSizeXY();
 		Px.Clip(FIntRect(0, 0, TS.X, TS.Y));
 		if (Px.Width() <= 0 || Px.Height() <= 0)
 		{
-			Publish(L, Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
+			Publish(L, L.Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
 			return;
 		}
 		// The staging texture: kept, grown in steps (128 x 64 px) when a larger rectangle or another format comes.
@@ -5064,21 +5187,32 @@ private:
 		{
 			++L.Stride;
 		}
-		L.Serial = Serial;
 		L.Frames = 0;
 		L.bInFlight = true;
-		L.Readback->ResetReady(); // the copy's pass may run later: not ready until it has
-		FRDGBuilder GraphBuilder(RHICmdList);
+		L.Readback->ResetReady(); // the copy's pass runs when the graph executes: not ready until it has
+		// Registered once per graph: this is the renderer's own registration of the family's target, whose end state
+		// the renderer sets.
 		const FRDGTextureRef Src = RegisterExternalTexture(GraphBuilder, Tex, TEXT("FTUiPictureSource"));
 		AddEnqueueCopyPass(GraphBuilder, L.Readback.Get(), Src, FResolveRect(Origin.X, Origin.Y, Origin.X + L.Extent.X, Origin.Y + L.Extent.Y));
-		GraphBuilder.Execute();
 	}
 
 	// Render thread, at each frame's end: the slots whose copies the GPU has finished, mapped and made into their result.
+	// Frames counts render frames ended (a minimised window still ends them), so a want that is never copied or a copy that
+	// never comes lets its slot go after about two seconds.
 	static void Poll(FState& S)
 	{
+		const FLuts& T = Luts();
 		for (FSlot& L : S.Slots)
 		{
+			if (L.bWanted)
+			{
+				if (++L.Frames > 120) // no family copied it (the viewport did not draw): let it go
+				{
+					S.Outstanding.fetch_sub(1, std::memory_order_relaxed);
+					Publish(L, L.Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
+				}
+				continue;
+			}
 			if (!L.bInFlight)
 			{
 				continue;
@@ -5093,7 +5227,7 @@ private:
 				continue;
 			}
 			const double T0 = FPlatformTime::Seconds();
-			int32 Pitch = 0;
+			int32 Pitch = 0; // in pixels
 			const uint8* Data = static_cast<const uint8*>(L.Readback->Lock(Pitch));
 			ftcore::UiLumaHistogram Hist;
 			if (Data && Pitch > 0)
@@ -5105,31 +5239,31 @@ private:
 					for (int32 X = L.Sub.Min.X; X < L.Sub.Max.X; X += L.Stride)
 					{
 						const uint8* Q = Row + static_cast<SIZE_T>(X) * Bpp;
-						ftcore::UiColor C{0.f, 0.f, 0.f, 1.f};
 						switch (L.Format)
 						{
 						case PF_B8G8R8A8:
-							C = ftcore::UiColor{Q[2] / 255.f, Q[1] / 255.f, Q[0] / 255.f, 1.f};
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{Q[2] / 255.f, Q[1] / 255.f, Q[0] / 255.f, 1.f}, T.Lin8[Q[2]], T.Lin8[Q[1]], T.Lin8[Q[0]]);
 							break;
 						case PF_R8G8B8A8:
-							C = ftcore::UiColor{Q[0] / 255.f, Q[1] / 255.f, Q[2] / 255.f, 1.f};
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{Q[0] / 255.f, Q[1] / 255.f, Q[2] / 255.f, 1.f}, T.Lin8[Q[0]], T.Lin8[Q[1]], T.Lin8[Q[2]]);
 							break;
 						case PF_A2B10G10R10:
 						{
 							uint32 V;
 							FMemory::Memcpy(&V, Q, 4);
-							C = ftcore::UiColor{(V & 0x3FF) / 1023.f, ((V >> 10) & 0x3FF) / 1023.f, ((V >> 20) & 0x3FF) / 1023.f, 1.f};
+							const uint32 R = V & 0x3FF, G = (V >> 10) & 0x3FF, B = (V >> 20) & 0x3FF;
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{R / 1023.f, G / 1023.f, B / 1023.f, 1.f}, T.Lin10[R], T.Lin10[G], T.Lin10[B]);
 							break;
 						}
-						default: // PF_FloatRGBA: linear, as ReadPixels gives it (to sRGB)
+						default: // PF_FloatRGBA: linear light, encoded through the table as ReadPixels would
 						{
 							const FFloat16Color* H = reinterpret_cast<const FFloat16Color*>(Q);
-							const FColor G = FLinearColor(H->R.GetFloat(), H->G.GetFloat(), H->B.GetFloat(), 1.f).ToFColor(true);
-							C = ftcore::UiColor{G.R / 255.f, G.G / 255.f, G.B / 255.f, 1.f};
+							const float R = H->R.GetFloat(), G = H->G.GetFloat(), B = H->B.GetFloat();
+							const auto Enc = [&T](float C) { return T.Srgb12[static_cast<int32>((C > 0.f ? (C < 1.f ? C : 1.f) : 0.f) * 4095.f + 0.5f)]; };
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{Enc(R), Enc(G), Enc(B), 1.f}, R, G, B);
 							break;
 						}
 						}
-						ftcore::uiLumaAdd(Hist, C);
 					}
 				}
 			}
@@ -5143,9 +5277,11 @@ private:
 	}
 
 	TSharedPtr<FState, ESPMode::ThreadSafe> State;
+	TSharedPtr<FExt, ESPMode::ThreadSafe> Ext;
 	uint32 Asked[kSlots] = {};
 	uint32 Taken[kSlots] = {};
 	uint64 AskedFrame[kSlots] = {};
+	bool bHdrLogged = false;
 };
 
 // The band behind a subtitle block (2026-11-16 ruling): black at Peak (the least Core uiSubtitleBand measured, up to
@@ -5992,7 +6128,8 @@ public:
 		bPlayReads = FParse::Param(Cmd, TEXT("UiExplorePlayReads"));
 		// -UiExploreReadsOff (with -UiExplorePlayReads): the same run with no reads, the frames' baseline.
 		bReadsOff = bPlayReads && FParse::Param(Cmd, TEXT("UiExploreReadsOff"));
-		bSkipOn = !bPlayReads; // the measured run reads every time (the worst case)
+		// -UiExploreSkipOff (with -UiExplorePlayReads): every read real, the worst case; without it the skip runs as in play.
+		bSkipOn = !(bPlayReads && FParse::Param(Cmd, TEXT("UiExploreSkipOff")));
 		bSweep = bSweep && !bPlayReads; // the sweep reads every line
 		bStills = (bFake || bShot) && !bPlayReads;
 #endif
@@ -6030,6 +6167,16 @@ public:
 			{
 				CamAt = CamPC->PlayerCameraManager->GetCameraLocation();
 				CamRot = CamPC->PlayerCameraManager->GetCameraRotation();
+			}
+			// The scene's clock and wetness, for the read skip: a still camera over a changing scene reads again.
+			const UWorld* SceneWorld = C ? C->GetWorld() : nullptr;
+			if (const UFTWorldClockSubsystem* SceneClock = SceneWorld ? SceneWorld->GetSubsystem<UFTWorldClockSubsystem>() : nullptr)
+			{
+				SceneHours = SceneClock->GetHours();
+			}
+			if (const UFTLookSubsystem* SceneLookSub = SceneWorld ? SceneWorld->GetSubsystem<UFTLookSubsystem>() : nullptr)
+			{
+				SceneWet = SceneLookSub->GetLook().wetness;
 			}
 		}
 		// The party screen has the left side while it is open; the pause and settings screens have the whole screen.
@@ -6418,6 +6565,7 @@ private:
 
 	void ReadSoon(int32 I)
 	{
+		++TextSerial[I]; // new words: the skip reads again
 		ReadFirst = I;
 		ReadFirstAt = Time;
 	}
@@ -6734,6 +6882,9 @@ private:
 		V.pz = static_cast<float>(CamAt.Z);
 		V.yaw = static_cast<float>(CamRot.Yaw);
 		V.pitch = static_cast<float>(CamRot.Pitch);
+		V.hours = SceneHours;
+		V.wet = SceneWet;
+		V.text = TextSerial[I];
 		return V;
 	}
 
@@ -6974,6 +7125,9 @@ private:
 	bool bSkipOn = true;
 	FVector CamAt = FVector::ZeroVector;
 	FRotator CamRot = FRotator::ZeroRotator;
+	float SceneHours = 0.f; // the world clock and the look's wetness, for the read skip
+	float SceneWet = 0.f;
+	uint32 TextSerial[GuardCount] = {}; // each line's words, for the read skip
 	bool bReadBound = false;
 	bool bReadWanted = false;
 	bool bStills = false; // -UiExploreFake or -UiExploreShot: every line each read, logged, only rising
