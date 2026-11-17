@@ -87,6 +87,15 @@ void AFTExploreHUD::BeginPlay()
 			return Self.IsValid() && Self->bShowHUD && !Self->bReticleOnly ? Cast<AFTExploreCharacter>(Self->GetOwningPawn()) : nullptr;
 		});
 		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
+		ExploreHudWidget = FT::MakeExploreHudWidget([Self]() -> const AFTExploreDirector*
+		{
+			return Self.IsValid() && Self->bShowHUD && !Self->bReticleOnly ? Self->FindDirector() : nullptr;
+		},
+		[Self]() -> const AFTExploreCharacter*
+		{
+			return Self.IsValid() && Self->bShowHUD && !Self->bReticleOnly ? Cast<AFTExploreCharacter>(Self->GetOwningPawn()) : nullptr;
+		});
+		Viewport->AddViewportWidgetContent(ExploreHudWidget.ToSharedRef(), 9);
 	}
 }
 
@@ -97,7 +106,12 @@ void AFTExploreHUD::EndPlay(const EEndPlayReason::Type Reason)
 	{
 		Viewport->RemoveViewportWidgetContent(NewUiWidget.ToSharedRef());
 	}
+	if (ExploreHudWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(ExploreHudWidget.ToSharedRef());
+	}
 	NewUiWidget.Reset();
+	ExploreHudWidget.Reset();
 	Super::EndPlay(Reason);
 }
 
@@ -153,9 +167,15 @@ void AFTExploreHUD::DrawHUD()
 		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
+	// Under the new UI the objective, the prompt and the notices are the explore HUD's (a Slate layer); the minimap, the
+	// reticle, the banner, the complete card and the pause stay here.
+	const bool bNewHud = ExploreHudWidget.IsValid();
 	if (Found->IsStoryWalk())
 	{
-		DrawFieldObjective(*Found);
+		if (!bNewHud)
+		{
+			DrawFieldObjective(*Found);
+		}
 	}
 	else if (Found->IsWorldMode() || Found->IsOverworld())
 	{
@@ -164,15 +184,21 @@ void AFTExploreHUD::DrawHUD()
 		{
 			MiniMap->Draw(*this, *Canvas, UiScale);
 		}
-		DrawWorld(*Found);
+		if (!bNewHud)
+		{
+			DrawWorld(*Found);
+		}
 	}
-	else
+	else if (!bNewHud)
 	{
 		DrawObjectives(*Found);
 	}
 	DrawAimReticle();
-	DrawPrompt(*Found);
-	DrawMessages(*Found);
+	if (!bNewHud)
+	{
+		DrawPrompt(*Found);
+	}
+	DrawMessages(*Found, !bNewHud);
 	FT::DrawPauseOverlay(*this, Canvas);
 }
 
@@ -261,14 +287,14 @@ void AFTExploreHUD::DrawPrompt(const AFTExploreDirector& D)
 	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
 }
 
-void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D)
+void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D, bool bNotice)
 {
 	UFont* Large = GEngine->GetLargeFont();
 	UFont* Font = GEngine->GetMediumFont();
 	const float S = UiScale;
 	const float CX = Canvas->ClipX * 0.5f;
 
-	if (!D.GetNotice().IsEmpty())
+	if (bNotice && !D.GetNotice().IsEmpty())
 	{
 		const float A = FieldFade(D.GetNoticeAge(), 1.8, 0.5);
 		if (A > 0.f)

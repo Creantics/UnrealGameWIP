@@ -18,6 +18,7 @@
 class SWidget;
 class UFTArenaRunner;
 class AFTExploreCharacter;
+class AFTExploreDirector;
 class AFTStoryDirector;
 
 namespace FT
@@ -37,4 +38,16 @@ TSharedRef<SWidget> MakeDialogueWidget(TFunction<const AFTStoryDirector*()> GetD
 // Explore's party screen (the fight HUD's party rows, standing alone while the character's screen is open), reading the
 // given character each tick (null: nothing drawn).
 TSharedRef<SWidget> MakeExplorePartyWidget(TFunction<const AFTExploreCharacter*()> GetLead);
+
+// Explore's HUD (the r19 language out of a fight): the party's names over their thin lines, the objective under them,
+// the prompt at the focused spot and the notices at the right edge; nothing drawn while either getter gives null.
+TSharedRef<SWidget> MakeExploreHudWidget(TFunction<const AFTExploreDirector*()> GetDirector, TFunction<const AFTExploreCharacter*()> GetLead);
+
+// The Colours row: the new UI's palette (ftcore::UiPalette) from now on. The settings subsystem calls it on every change.
+void SetUiPalette(uint8 Palette);
+
+// The new UI's pause menu and settings screen (item B): mounts one widget on the game viewport when the new UI is on and
+// it is not mounted yet (again after a map load). True while it is: the Canvas overlays then draw nothing. Called from
+// DrawPauseOverlay and DrawSettingsOverlay, so every screen that drew them gets it.
+bool EnsureMenuScreens();
 }

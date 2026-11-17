@@ -180,6 +180,8 @@ public:
 	// ---- for the HUD (no allocation) ----
 	const ftcore::Exploration& GetExploration() const { return Exploration; }
 	int32 GetFocus() const { return Focus; }
+	// Where the focused spot stands (its actor location, cm), for a prompt drawn at it; false with no focus.
+	bool GetFocusLocation(FVector& Out) const;
 	// The prompt for the focused spot ("E  Pick up"), or empty.
 	const FString& GetPrompt() const;
 	const FString& GetObjectiveText(int32 Objective) const;

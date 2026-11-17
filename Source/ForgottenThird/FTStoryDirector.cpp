@@ -398,7 +398,7 @@ void AFTStoryDirector::ApplySettings()
 	Skip.setMode(S.skipMode);
 	AutoAdvance.setEnabled(S.autoAdvance);
 	AutoAdvance.setDelay(S.autoDelay);
-	SubtitleScale = S.subtitleScale();
+	SubtitleScale = S.subtitleTextScale(); // the subtitle row times the text size, 0.85..2
 }
 
 bool AFTStoryDirector::IsSkipKeyDown() const
