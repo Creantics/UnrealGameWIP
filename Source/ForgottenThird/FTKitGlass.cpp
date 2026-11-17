@@ -18,6 +18,7 @@ namespace FTKitGlass::Impl
 {
 // The imported kits' textured master (FTImportMaterials): the slots worn on it are the ones without night glow.
 constexpr const TCHAR* kTexturedMaster = TEXT("/Game/Characters/Shared/Materials/M_FTCharacterTex");
+constexpr const TCHAR* kPropTexMaster = TEXT("/Game/Props/Shared/Materials/M_FTPropTex"); // kit pieces imported since the prop masters
 constexpr const TCHAR* kDefaultKits = TEXT("BK-B2+BK-D1");
 // M_KitGlass's parameters, named as on the textured master.
 constexpr const TCHAR* kTextures[] = {TEXT("BaseColorTexture"), TEXT("MetallicRoughnessTexture"), TEXT("NormalTexture"), TEXT("OcclusionTexture")};
@@ -108,7 +109,7 @@ TArrayView<UMaterialInterface* const> FOverrides::For(UStaticMesh* Mesh)
 	{
 		UMaterialInterface* Source = Own[S].MaterialInterface.Get();
 		const UMaterial* Base = Source ? Source->GetMaterial() : nullptr;
-		if (Base && Base->GetOutermost()->GetName() == Impl::kTexturedMaster)
+		if (Base && (Base->GetOutermost()->GetName() == Impl::kTexturedMaster || Base->GetOutermost()->GetName() == Impl::kPropTexMaster))
 		{
 			Out[S] = InstanceOf(Source);
 			++Slots;

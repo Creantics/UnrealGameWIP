@@ -5,7 +5,9 @@
 
 #if WITH_EDITOR
 #include "AssetImportTask.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
+#include "ObjectTools.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
@@ -16,6 +18,8 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
+
+#include "ftcore/PropGloss.h"
 #endif
 
 UFTImportPropCommandlet::UFTImportPropCommandlet()
@@ -25,6 +29,49 @@ UFTImportPropCommandlet::UFTImportPropCommandlet()
 	IsServer = false;
 	LogToConsole = true;
 }
+
+#if WITH_EDITOR
+namespace
+{
+// -Fresh: deletes what an earlier import of this file left in <Dest>/<file>/Materials and /Textures, so the re-import
+// makes its material instances and textures anew (otherwise an instance kept on a prop master keeps its old values and
+// textures, and a proof reads a false result). References to them (the mesh's slots) are nulled until the import fills
+// them again. False (logged) if anything there would not delete.
+bool DeleteEarlierImport(const FString& Folder)
+{
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	Registry.ScanPathsSynchronous({ Folder }, true);
+	TArray<UObject*> Objects;
+	for (const TCHAR* Sub : { TEXT("Materials"), TEXT("Textures") })
+	{
+		TArray<FAssetData> Assets;
+		Registry.GetAssetsByPath(FName(*(Folder / Sub)), Assets, true);
+		for (const FAssetData& Asset : Assets)
+		{
+			if (UObject* Object = Asset.GetAsset())
+			{
+				Objects.Add(Object);
+			}
+		}
+	}
+	if (Objects.Num() == 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: -Fresh: nothing under %s/Materials or /Textures (a first import)."), *Folder);
+		return true;
+	}
+	const int32 Deleted = ObjectTools::ForceDeleteObjects(Objects, false);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: -Fresh: deleted %d of %d earlier materials and textures under %s."), Deleted,
+		Objects.Num(), *Folder);
+	if (Deleted != Objects.Num())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: -Fresh: %d earlier assets under %s would not delete; nothing imported."),
+			Objects.Num() - Deleted, *Folder);
+		return false;
+	}
+	return true;
+}
+} // namespace
+#endif
 
 int32 UFTImportPropCommandlet::Main(const FString& Params)
 {
@@ -56,10 +103,32 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 	const bool bNoNanite = FParse::Param(*Params, TEXT("NoNanite"));
 	const bool bKit = FParse::Param(*Params, TEXT("Kit"));
 	const bool bForceNanite = FParse::Param(*Params, TEXT("Nanite")) && !bNoNanite;
+	// -Held: a prop carried in a hand keeps the character masters (no grime, no world-fixed noise).
+	const bool bHeld = FParse::Param(*Params, TEXT("Held"));
+	// The world whose grime the prop masters take: -World=, else -Pack=, else Solhaven (propGrimeFor(None)).
+	FString WorldName;
+	FParse::Value(*Params, TEXT("World="), WorldName);
+	ftcore::AssetPack World = PackKind;
+	if (!WorldName.IsEmpty())
+	{
+		World = ftcore::assetPackFromName(TCHAR_TO_UTF8(*WorldName));
+		if (World == ftcore::AssetPack::None)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: -World=%s is not a world (Solhaven, Lattice, Unwritten, Restored, InkSolhaven)."),
+				*WorldName);
+			return 1;
+		}
+	}
+	const float Grime = ftcore::propGrimeFor(World);
 	const ftcore::AssetRules Rules = bKit ? ftcore::kitRules(PackKind) : ftcore::propRules(PackKind);
 	if (!FT::CheckGlbFile(TEXT("FTImportProp"), Source, Rules))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: %s breaks the asset rules (docs/ASSET_INTAKE.md); nothing imported."), *Source);
+		return 1;
+	}
+
+	if (FParse::Param(*Params, TEXT("Fresh")) && !DeleteEarlierImport(Dest / FPaths::GetBaseFilename(Source)))
+	{
 		return 1;
 	}
 
@@ -201,11 +270,15 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: no static mesh came out of %s."), *Source);
 		return 1;
 	}
-	bOk &= FT::UseProjectMasters(TEXT("FTImportProp"), Materials);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %s, Grime %.2f."),
+		bHeld ? TEXT("-Held: the character masters") : TEXT("the prop masters"), bHeld ? 0.0f : Grime);
+	bOk &= FT::UsePropMasters(TEXT("FTImportProp"), Materials, Grime, bHeld);
 	if (bNanite)
 	{
 		FT::AllowNanite(TEXT("FTImportProp"), Materials);
 	}
+	// The gloss guard, on the values the prop now draws with (no -AllowGloss: a failing material is fixed at its source).
+	bOk &= FT::CheckPropGloss(TEXT("FTImportProp"), Materials);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %d static meshes, %s."), Meshes, bOk ? TEXT("ok") : TEXT("failed"));
 	return bOk ? 0 : 1;
 #else

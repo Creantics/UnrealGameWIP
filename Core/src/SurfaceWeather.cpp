@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 namespace ftcore {
 
@@ -73,6 +75,122 @@ void noiseLoop(std::string& h, const SurfaceWeatherSpec& spec, int channels) {
     h += "\t}\n";
     h += "\tNoise[Ch] = Sum;\n";
     h += "}\n";
+}
+
+// The noise loop's 16-bit lattice hash (and the puddle cell's), as the HLSL writes it.
+float weatherHash16(int x, int y, int z) {
+    std::uint32_t v = (static_cast<std::uint32_t>(x) * 73856093u) ^ (static_cast<std::uint32_t>(y) * 19349663u) ^
+                      (static_cast<std::uint32_t>(z) * 83492791u);
+    v ^= v >> 13;
+    v *= 1274126177u;
+    v ^= v >> 16;
+    return static_cast<float>(v & 0xFFFFu) / 65535.f;
+}
+
+constexpr int kPuddleSalt = 211;  // the puddle cell's hashes: z kPuddleSalt + 0..5 on the cell's plan corner
+constexpr float kTwoPiW = 6.28318531f;
+constexpr int kTrackSalt = 307;   // the worn track's 1D lattice along a slab: (i, 0, kTrackSalt) swing, + 1 width
+constexpr float kTrackCore = 0.7f;  // the track is full out to this share of its half width, then fades to its edge
+constexpr int kEdgePoolSalt = 401;  // an edge pool's hashes: (pool index, side 0 + / 1 -, kEdgePoolSalt + 0 jitter, 1 size)
+
+// The sides an edge pool lies on: side 0 the slab's +across edge, 1 its - edge.
+bool edgePoolOnSide(const SurfaceWeatherSpec& spec, int s) {
+    return s == 0 ? spec.edgePoolSide >= 0.f : spec.edgePoolSide <= 0.f;
+}
+
+// The edge pools (weatherEdgePoolBowl) as HLSL statements after trackKerbHlsl (TrAcross, TrAlong, FlatSlab) and the
+// puddle cell (Noise[0]): raises PdBowl to the pool's bowl on a flat slab. Nothing at pitch 0.
+void edgePoolHlsl(std::string& h, const SurfaceWeatherSpec& spec) {
+    if (spec.edgePoolPitchM <= 0.f) return;
+    h += "float EpHalf = 0.5 * min(Sx, Sy);\n";
+    h += "float EpIdx = floor((TrAlong - " + num(spec.edgePoolPhaseM) + ") / " + num(spec.edgePoolPitchM) + " + 0.5);\n";
+    h += "float EpWob = 1.0 + " + num(spec.puddleWobble) + " * (2.0 * Noise[0] - 1.0);\n";
+    for (int s = 0; s < 2; ++s) {
+        if (!edgePoolOnSide(spec, s)) continue;
+        const std::string S = std::to_string(s);
+        h += "{\n\tfloat EpH[2];\n";
+        h += "\tfor (int EpK = 0; EpK < 2; ++EpK)\n\t{\n";
+        h += "\t\tuint3 EpI = uint3(int3(int(EpIdx), " + S + ", " + std::to_string(kEdgePoolSalt) + " + EpK));\n";
+        h += "\t\tuint EpX = (EpI.x * 73856093u) ^ (EpI.y * 19349663u) ^ (EpI.z * 83492791u);\n";
+        h += "\t\tEpX ^= EpX >> 13;\n";
+        h += "\t\tEpX *= 1274126177u;\n";
+        h += "\t\tEpX ^= EpX >> 16;\n";
+        h += "\t\tEpH[EpK] = float(EpX & 0xFFFFu) / 65535.0;\n";
+        h += "\t}\n";
+        h += "\tfloat EpR = lerp(" + num(spec.edgePoolHalfLoM) + ", " + num(spec.edgePoolHalfHiM) + ", EpH[1]);\n";
+        h += "\tfloat EpDa = TrAlong - (" + num(spec.edgePoolPhaseM) + " + EpIdx * " + num(spec.edgePoolPitchM) + " + " +
+             num(spec.edgePoolJitterM) + " * (2.0 * EpH[0] - 1.0));\n";
+        h += "\tfloat EpDc = EpHalf " + std::string(s == 0 ? "-" : "+") + " TrAcross - " + num(spec.edgePoolInsetM) + ";\n";
+        h += "\tfloat EpRho = length(float2(EpDa / (EpR * " + num(spec.edgePoolStretch) + "), EpDc / EpR)) / EpWob;\n";
+        h += "\tif (FlatSlab > 0.5) PdBowl = max(PdBowl, " + num(spec.edgePoolDeep) + " * (1.0 - EpRho * EpRho));\n";
+        h += "}\n";
+    }
+}
+
+// A flat ground slab's kerb weight and worn track (weatherKerb, weatherTrack) as HLSL statements after the box frame
+// (Sx, Sy, Sz, Uy, Lm, Gut); slabCond an extra condition (the street kind) or empty. Declares Track.
+void trackKerbHlsl(std::string& h, const SurfaceWeatherSpec& spec, const std::string& slabCond) {
+    h += "float FlatSlab = (Sz <= " + num(spec.topSlabMaxZ) + " && min(Sx, Sy) >= " + num(spec.topSlabMinPlan) +
+         " && abs(Uy.z) <= " + num(spec.tiltMin) + (slabCond.empty() ? "" : " && " + slabCond) + ") ? 1.0 : 0.0;\n";
+    h += "float TrAcross = Sx >= Sy ? Lm.y : Lm.x;\n";
+    h += "float TrAlong = Sx >= Sy ? Lm.x : Lm.y;\n";
+    h += "Gut = max(Gut, FlatSlab * " + num(spec.kerbBias) + " * (1.0 - smoothstep(0.0, " + num(spec.gutterM) +
+         ", 0.5 * min(Sx, Sy) - abs(TrAcross))));\n";
+    h += "float TrA = TrAlong / " + num(spec.trackScaleM) + ";\n";
+    h += "float TrC = floor(TrA);\n";
+    h += "float TrF = TrA - TrC;\n";
+    h += "float TrU = TrF * TrF * (3.0 - 2.0 * TrF);\n";
+    h += "float TrN[4];\n";
+    h += "for (int TrK = 0; TrK < 4; ++TrK)\n{\n";
+    h += "\tuint3 TrI = uint3(int3(int(TrC) + (TrK & 1), 0, " + std::to_string(kTrackSalt) + " + (TrK >> 1)));\n";
+    h += "\tuint TrX = (TrI.x * 73856093u) ^ (TrI.y * 19349663u) ^ (TrI.z * 83492791u);\n";
+    h += "\tTrX ^= TrX >> 13;\n";
+    h += "\tTrX *= 1274126177u;\n";
+    h += "\tTrX ^= TrX >> 16;\n";
+    h += "\tTrN[TrK] = float(TrX & 0xFFFFu) / 65535.0;\n";
+    h += "}\n";
+    h += "float TrCtr = " + num(spec.trackWanderM) + " * (2.0 * lerp(TrN[0], TrN[1], TrU) - 1.0);\n";
+    h += "float TrHalf = lerp(" + num(spec.trackHalfLoM) + ", " + num(spec.trackHalfHiM) + ", lerp(TrN[2], TrN[3], TrU));\n";
+    h += "float Track = (max(Sx, Sy) >= " + num(spec.trackAspect) + " * min(Sx, Sy)) ? FlatSlab * (1.0 - smoothstep(" +
+         num(kTrackCore) + " * TrHalf, TrHalf, abs(TrAcross - TrCtr))) : 0.0;\n";
+}
+
+// The puddle cell (weatherPuddleBowl) as HLSL statements: reads WorldPos (cm) and Noise[0]; declares <P>Bowl and its
+// locals, all prefixed P (so a decal node can hold it beside its own names).
+void puddleCellHlsl(std::string& h, const SurfaceWeatherSpec& spec, const std::string& P) {
+    const float cell = spec.puddleCellM;
+    h += "float2 " + P + "B = floor(WorldPos.xy / " + num(cell * 100.f) + ");\n";
+    h += "int2 " + P + "Ci = int2(" + P + "B);\n";
+    h += "float " + P + "H[6];\n";
+    h += "for (int " + P + "K = 0; " + P + "K < 6; ++" + P + "K)\n{\n";
+    h += "\tuint3 " + P + "I = uint3(int3(" + P + "Ci, " + std::to_string(kPuddleSalt) + " + " + P + "K));\n";
+    h += "\tuint " + P + "X = (" + P + "I.x * 73856093u) ^ (" + P + "I.y * 19349663u) ^ (" + P + "I.z * 83492791u);\n";
+    h += "\t" + P + "X ^= " + P + "X >> 13;\n";
+    h += "\t" + P + "X *= 1274126177u;\n";
+    h += "\t" + P + "X ^= " + P + "X >> 16;\n";
+    h += "\t" + P + "H[" + P + "K] = float(" + P + "X & 0xFFFFu) / 65535.0;\n";
+    h += "}\n";
+    h += "float " + P + "R = lerp(" + num(spec.puddleRadiusLoM) + ", " + num(spec.puddleRadiusHiM) + ", " + P + "H[1]);\n";
+    h += "float " + P + "St = lerp(1.0, " + num(spec.puddleStretch) + ", " + P + "H[2]);\n";
+    h += "float " + P + "M = " + P + "R * " + P + "St * " + num(1.f + spec.puddleWobble) + ";\n";
+    h += "float2 " + P + "D = WorldPos.xy / 100.0 - ((" + P + "B + 0.5) * " + num(cell) + " + (float2(" + P + "H[4], " + P +
+         "H[5]) - 0.5) * max(" + num(cell) + " - 2.0 * " + P + "M, 0.0));\n";
+    h += "float " + P + "T = " + num(kTwoPiW) + " * " + P + "H[3];\n";
+    h += "float " + P + "Co = cos(" + P + "T);\n";
+    h += "float " + P + "Sn = sin(" + P + "T);\n";
+    h += "float2 " + P + "E = float2(" + P + "Co * " + P + "D.x + " + P + "Sn * " + P + "D.y, " + P + "Co * " + P + "D.y - " + P +
+         "Sn * " + P + "D.x) / float2(" + P + "R * " + P + "St, " + P + "R / " + P + "St);\n";
+    h += "float " + P + "Rho = length(" + P + "E) / (1.0 + " + num(spec.puddleWobble) + " * (2.0 * Noise[0] - 1.0));\n";
+    h += "float " + P + "Bowl = " + P + "H[0] < " + num(spec.puddleChance) + " ? 1.0 - " + P + "Rho * " + P + "Rho : -1.0;\n";
+}
+
+// The water's level over a bowl (weatherPuddle's argument to its edge ramp) as HLSL: bowl, gut and low (empty: none)
+// are expressions, wet the wetness.
+std::string puddleFillHlsl(const SurfaceWeatherSpec& spec, const std::string& bowl, const std::string& gut,
+                           const std::string& low, const std::string& wet) {
+    std::string deep = "1.0 + " + num(spec.gutterBias) + " * " + gut;
+    if (!low.empty()) deep += " + " + num(spec.lowBias) + " * (2.0 * " + low + " - 1.0)";
+    return bowl + " * max(" + deep + ", 0.0) - (1.0 - " + num(spec.puddleCover) + " * " + wet + ")";
 }
 
 constexpr int kReliefSteps = 3;      // the relief solve's fixed-point iterations
@@ -706,10 +824,71 @@ float weatherGutter(float axisYz, float localY, float sizeY, const SurfaceWeathe
     return 1.f - smoothstep(0.f, spec.gutterM, d);
 }
 
-float weatherPuddle(float wetness, float up, float noise, float gutter, const SurfaceWeatherSpec& spec) {
+float weatherNoise(float px, float py, float pz) {
+    float p[3] = {px, py, pz};
+    float sum = 0.f;
+    float weight = 2.f / 3.f;
+    for (int octave = 0; octave < 2; ++octave) {
+        int corner[3];
+        float fade[3];
+        for (int a = 0; a < 3; ++a) {
+            const float cell = std::floor(p[a]);
+            const float f = p[a] - cell;
+            corner[a] = static_cast<int>(cell);
+            fade[a] = f * f * (3.f - 2.f * f);
+        }
+        float value[8];
+        for (int k = 0; k < 8; ++k)
+            value[k] = weatherHash16(corner[0] + (k & 1), corner[1] + ((k >> 1) & 1), corner[2] + (k >> 2));
+        const float lo = lerp(lerp(value[0], value[1], fade[0]), lerp(value[2], value[3], fade[0]), fade[1]);
+        const float hi = lerp(lerp(value[4], value[5], fade[0]), lerp(value[6], value[7], fade[0]), fade[1]);
+        sum += weight * lerp(lo, hi, fade[2]);
+        for (float& c : p) c = c * 2.03f + 3.7f;
+        weight *= 0.5f;
+    }
+    return sum;
+}
+
+float weatherRimNoise(float xM, float yM, const SurfaceWeatherSpec& spec) {
+    return weatherNoise(xM / spec.puddleScaleM, yM / spec.puddleScaleM, 0.f);
+}
+
+float weatherPuddleBowl(float xM, float yM, float rimNoise, const SurfaceWeatherSpec& spec) {
+    const float cell = spec.puddleCellM;
+    const float bx = std::floor(xM / cell), by = std::floor(yM / cell);
+    const int cx = static_cast<int>(bx), cy = static_cast<int>(by);
+    float hv[6];
+    for (int k = 0; k < 6; ++k) hv[k] = weatherHash16(cx, cy, kPuddleSalt + k);
+    const float r = lerp(spec.puddleRadiusLoM, spec.puddleRadiusHiM, hv[1]);
+    const float st = lerp(1.f, spec.puddleStretch, hv[2]);
+    const float margin = r * st * (1.f + spec.puddleWobble);
+    const float room = std::max(cell - 2.f * margin, 0.f);
+    const float dx = xM - ((bx + 0.5f) * cell + (hv[4] - 0.5f) * room);
+    const float dy = yM - ((by + 0.5f) * cell + (hv[5] - 0.5f) * room);
+    const float t = kTwoPiW * hv[3];
+    const float co = std::cos(t), sn = std::sin(t);
+    const float ex = (co * dx + sn * dy) / (r * st), ey = (co * dy - sn * dx) / (r / st);
+    const float rho = std::sqrt(ex * ex + ey * ey) / (1.f + spec.puddleWobble * (2.f * rimNoise - 1.f));
+    return hv[0] < spec.puddleChance ? 1.f - rho * rho : -1.f;
+}
+
+float weatherPuddleCapShare(const SurfaceWeatherSpec& spec) {
+    const float r = spec.puddleRadiusHiM * (1.f + spec.puddleWobble);
+    return 3.14159265f * r * r / (spec.puddleCellM * spec.puddleCellM);
+}
+
+float weatherPuddle(float wetness, float up, float bowl, float gutter, float low, const SurfaceWeatherSpec& spec) {
     const float wet = saturate(wetness);
-    return up * saturate(wet * kWetRamp) *
-           smoothstep(0.f, spec.puddleEdge, noise + spec.gutterBias * gutter - (1.f - spec.puddleCover * wet));
+    const float deep = std::max(1.f + spec.gutterBias * gutter + spec.lowBias * (2.f * low - 1.f), 0.f);
+    return up * saturate(wet * kWetRamp) * smoothstep(0.f, spec.puddleEdge, bowl * deep - (1.f - spec.puddleCover * wet));
+}
+
+float weatherJointRough(float rough, float joint, float wet, float up, float puddle, const SurfaceWeatherSpec& spec) {
+    return lerp(rough, spec.jointWetRough, saturate(joint) * saturate(wet) * up * (1.f - puddle));
+}
+
+float weatherJointDarken(float joint, float wet, float up, float puddle, const SurfaceWeatherSpec& spec) {
+    return lerp(1.f, spec.jointWetDarken, saturate(joint) * saturate(wet) * up * (1.f - puddle));
 }
 
 float weatherDirt(float side, float thinnest, float aboveM, float edgeM, float noise, const SurfaceWeatherSpec& spec) {
@@ -730,8 +909,130 @@ float weatherTopDirt(float edgeM, float noise, float slab, const SurfaceWeatherS
 }
 
 float weatherRough(float rough, float soak, float puddle, const SurfaceWeatherSpec& spec) {
-    const float r = std::min(rough, lerp(rough, spec.soakRough, std::pow(saturate(soak), spec.roughCurve)));
+    return weatherRoughTrack(rough, soak, puddle, 0.f, spec);
+}
+
+float weatherRoughTrack(float rough, float soak, float puddle, float track, const SurfaceWeatherSpec& spec) {
+    const float dry = rough * (1.f - spec.trackDryPolish * saturate(track));
+    const float soaked = lerp(lerp(spec.soakRough, spec.trackRough, saturate(track)), dry, spec.soakKeep);
+    const float r = std::min(dry, lerp(dry, soaked, std::pow(saturate(soak), spec.roughCurve)));
     return saturate(lerp(r, spec.puddleRough, smoothstep(spec.puddleCoreFrom, 1.f, puddle)));
+}
+
+float weatherFlatSlab(float sz, float sx, float sy, float axisYz, const SurfaceWeatherSpec& spec) {
+    return std::fabs(axisYz) <= spec.tiltMin ? weatherGroundSlab(sz, sx, sy, spec) : 0.f;
+}
+
+float weatherTrack(float acrossM, float alongM, float longM, float shortM, float flat, const SurfaceWeatherSpec& spec) {
+    if (flat <= 0.f || longM < spec.trackAspect * shortM) return 0.f;
+    const float a = alongM / spec.trackScaleM;
+    const float c = std::floor(a);
+    const int i = static_cast<int>(c);
+    const float f = a - c, u = f * f * (3.f - 2.f * f);
+    const float swing = lerp(weatherHash16(i, 0, kTrackSalt), weatherHash16(i + 1, 0, kTrackSalt), u);
+    const float width = lerp(weatherHash16(i, 0, kTrackSalt + 1), weatherHash16(i + 1, 0, kTrackSalt + 1), u);
+    const float centre = spec.trackWanderM * (2.f * swing - 1.f);
+    const float half = lerp(spec.trackHalfLoM, spec.trackHalfHiM, width);
+    return flat * (1.f - smoothstep(kTrackCore * half, half, std::fabs(acrossM - centre)));
+}
+
+float weatherKerb(float edgeM, float flat, const SurfaceWeatherSpec& spec) {
+    return flat * spec.kerbBias * (1.f - smoothstep(0.f, spec.gutterM, edgeM));
+}
+
+float weatherEdgePoolBowl(float acrossM, float alongM, float shortM, float flat, float rimNoise,
+                          const SurfaceWeatherSpec& spec) {
+    if (flat <= 0.5f || spec.edgePoolPitchM <= 0.f) return -1.f;
+    const float half = 0.5f * shortM;
+    const float idx = std::floor((alongM - spec.edgePoolPhaseM) / spec.edgePoolPitchM + 0.5f);
+    const int i = static_cast<int>(idx);
+    const float wob = 1.f + spec.puddleWobble * (2.f * rimNoise - 1.f);
+    float best = -1.f;
+    for (int s = 0; s < 2; ++s) {
+        if (!edgePoolOnSide(spec, s)) continue;
+        const float h0 = weatherHash16(i, s, kEdgePoolSalt), h1 = weatherHash16(i, s, kEdgePoolSalt + 1);
+        const float r = lerp(spec.edgePoolHalfLoM, spec.edgePoolHalfHiM, h1);
+        const float da = alongM - (spec.edgePoolPhaseM + idx * spec.edgePoolPitchM + spec.edgePoolJitterM * (2.f * h0 - 1.f));
+        const float dc = half + (s == 0 ? -acrossM : acrossM) - spec.edgePoolInsetM;
+        const float ea = da / (r * spec.edgePoolStretch), ec = dc / r;
+        const float rho = std::sqrt(ea * ea + ec * ec) / wob;
+        best = std::max(best, spec.edgePoolDeep * (1.f - rho * rho));
+    }
+    return best;
+}
+
+bool applySurfaceWeatherOverrides(SurfaceWeatherSpec& spec, std::string_view text, std::string* error) {
+    struct Field {
+        const char* name;
+        float SurfaceWeatherSpec::* member;
+    };
+    static constexpr Field kFields[] = {
+        {"upFrom", &SurfaceWeatherSpec::upFrom}, {"upTo", &SurfaceWeatherSpec::upTo},
+        {"soakDarken", &SurfaceWeatherSpec::soakDarken}, {"soakRough", &SurfaceWeatherSpec::soakRough},
+        {"soakKeep", &SurfaceWeatherSpec::soakKeep}, {"roughCurve", &SurfaceWeatherSpec::roughCurve},
+        {"soakFlatten", &SurfaceWeatherSpec::soakFlatten}, {"dampShare", &SurfaceWeatherSpec::dampShare},
+        {"patchScaleM", &SurfaceWeatherSpec::patchScaleM}, {"puddleScaleM", &SurfaceWeatherSpec::puddleScaleM},
+        {"puddleCellM", &SurfaceWeatherSpec::puddleCellM}, {"puddleChance", &SurfaceWeatherSpec::puddleChance},
+        {"puddleRadiusLoM", &SurfaceWeatherSpec::puddleRadiusLoM}, {"puddleRadiusHiM", &SurfaceWeatherSpec::puddleRadiusHiM},
+        {"puddleStretch", &SurfaceWeatherSpec::puddleStretch}, {"puddleWobble", &SurfaceWeatherSpec::puddleWobble},
+        {"puddleCover", &SurfaceWeatherSpec::puddleCover}, {"puddleEdge", &SurfaceWeatherSpec::puddleEdge},
+        {"puddleCoreFrom", &SurfaceWeatherSpec::puddleCoreFrom}, {"puddleRough", &SurfaceWeatherSpec::puddleRough},
+        {"puddleDarken", &SurfaceWeatherSpec::puddleDarken}, {"trackRough", &SurfaceWeatherSpec::trackRough},
+        {"trackHalfLoM", &SurfaceWeatherSpec::trackHalfLoM}, {"trackHalfHiM", &SurfaceWeatherSpec::trackHalfHiM},
+        {"trackWanderM", &SurfaceWeatherSpec::trackWanderM}, {"trackScaleM", &SurfaceWeatherSpec::trackScaleM},
+        {"trackAspect", &SurfaceWeatherSpec::trackAspect}, {"trackDryPolish", &SurfaceWeatherSpec::trackDryPolish},
+        {"kerbBias", &SurfaceWeatherSpec::kerbBias}, {"tiltMin", &SurfaceWeatherSpec::tiltMin},
+        {"edgePoolPitchM", &SurfaceWeatherSpec::edgePoolPitchM}, {"edgePoolPhaseM", &SurfaceWeatherSpec::edgePoolPhaseM},
+        {"edgePoolSide", &SurfaceWeatherSpec::edgePoolSide}, {"edgePoolJitterM", &SurfaceWeatherSpec::edgePoolJitterM},
+        {"edgePoolInsetM", &SurfaceWeatherSpec::edgePoolInsetM}, {"edgePoolHalfLoM", &SurfaceWeatherSpec::edgePoolHalfLoM},
+        {"edgePoolHalfHiM", &SurfaceWeatherSpec::edgePoolHalfHiM}, {"edgePoolStretch", &SurfaceWeatherSpec::edgePoolStretch},
+        {"edgePoolDeep", &SurfaceWeatherSpec::edgePoolDeep},
+        {"gutterM", &SurfaceWeatherSpec::gutterM}, {"gutterBias", &SurfaceWeatherSpec::gutterBias},
+        {"lowBias", &SurfaceWeatherSpec::lowBias}, {"jointWetDarken", &SurfaceWeatherSpec::jointWetDarken},
+        {"jointWetRough", &SurfaceWeatherSpec::jointWetRough}, {"grimeHeightM", &SurfaceWeatherSpec::grimeHeightM},
+        {"grimeStrength", &SurfaceWeatherSpec::grimeStrength}, {"grimeScaleM", &SurfaceWeatherSpec::grimeScaleM},
+        {"grimeThinM", &SurfaceWeatherSpec::grimeThinM}, {"edgeWidthM", &SurfaceWeatherSpec::edgeWidthM},
+        {"edgeStrength", &SurfaceWeatherSpec::edgeStrength}, {"dirtR", &SurfaceWeatherSpec::dirtR},
+        {"dirtG", &SurfaceWeatherSpec::dirtG}, {"dirtB", &SurfaceWeatherSpec::dirtB},
+        {"dirtOcclusion", &SurfaceWeatherSpec::dirtOcclusion}, {"grimeCurve", &SurfaceWeatherSpec::grimeCurve},
+        {"topGrimeM", &SurfaceWeatherSpec::topGrimeM}, {"topGrimeStrength", &SurfaceWeatherSpec::topGrimeStrength},
+        {"topSlabMaxZ", &SurfaceWeatherSpec::topSlabMaxZ}, {"topSlabMinPlan", &SurfaceWeatherSpec::topSlabMinPlan},
+    };
+    std::size_t at = 0;
+    while (at < text.size()) {
+        std::size_t end = text.find(',', at);
+        if (end == std::string_view::npos) end = text.size();
+        const std::string_view entry = text.substr(at, end - at);
+        at = end + 1;
+        if (entry.empty()) continue;
+        const std::size_t eq = entry.find('=');
+        const std::string_view key = entry.substr(0, eq);
+        const Field* hit = nullptr;
+        for (const Field& f : kFields)
+            if (eq != std::string_view::npos && key == f.name) hit = &f;
+        const std::string value = eq == std::string_view::npos ? std::string() : std::string(entry.substr(eq + 1));
+        char* stop = nullptr;
+        const float v = value.empty() ? 0.f : std::strtof(value.c_str(), &stop);
+        if (hit == nullptr || value.empty() || stop != value.c_str() + value.size() || !std::isfinite(v)) {
+            if (error != nullptr) *error = std::string(entry);
+            return false;
+        }
+        // Divisors in the shader: zero or below would divide by zero or flip the pattern.
+        static constexpr std::string_view kPositive[] = {"puddleCellM", "trackScaleM", "puddleScaleM",
+                                                         "puddleEdge",  "patchScaleM", "grimeScaleM"};
+        for (const std::string_view p : kPositive) {
+            if (key == p && !(v > 0.f)) {
+                if (error != nullptr) *error = std::string(entry);
+                return false;
+            }
+        }
+        spec.*(hit->member) = v;
+    }
+    if (!(spec.upTo > spec.upFrom)) {
+        if (error != nullptr) *error = "upTo must be above upFrom";
+        return false;
+    }
+    return true;
 }
 
 float weatherAlbedoScale(int channel, float soak, float puddle, float dirt, const SurfaceWeatherSpec& spec) {
@@ -994,13 +1295,36 @@ std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeat
     }
     if (detail) h += "float DetAO = 1.0;\n";
     if (streets) streetHlsl(h, spec, street, relief, detail);
-    h += "float Pud = Up * saturate(Wet * " + num(kWetRamp) + ") * smoothstep(0.0, " + num(spec.puddleEdge) + ", Noise[0] + " +
-         num(spec.gutterBias) + " * Gut - (1.0 - " + num(spec.puddleCover) + " * Wet));\n";
+    // A flat ground slab's kerb line fills its bowls; its worn track soaks fully, smoother (a street piece has its own
+    // wheel paths, so only a non-street slab carries one).
+    if (box) {
+        trackKerbHlsl(h, spec, streets ? "SK == 0" : "");
+        h += "Soak = max(Soak, Wet * Up * Track);\n";
+        if (spec.trackDryPolish > 0.f) h += "Rgh *= 1.0 - " + num(spec.trackDryPolish) + " * Track;\n";
+    } else {
+        h += "float Track = 0.0;\n";
+    }
+    // Joints holding water soak fully (no drying patch in a joint).
+    if (options.waterInput) {
+        h += "float PdJw = saturate(Water.x) * Wet * Up;\n";
+        h += "Soak = max(Soak, PdJw);\n";
+    }
+    // One puddle a cell at most, in its bowl (the header): no puddle outside one, whatever the gutter or low spot.
+    puddleCellHlsl(h, spec, "Pd");
+    if (box) edgePoolHlsl(h, spec);
+    h += "float Pud = Up * saturate(Wet * " + num(kWetRamp) + ") * smoothstep(0.0, " + num(spec.puddleEdge) + ", " +
+         puddleFillHlsl(spec, "PdBowl", "Gut", options.waterInput ? "saturate(Water.y)" : "", "Wet") + ");\n";
     h += "float3 C = Alb * (lerp(1.0, " + num(spec.soakDarken) + ", Soak) * lerp(1.0, " + num(spec.puddleDarken) +
          ", Pud));\n";
-    h += "float R = min(Rgh, lerp(Rgh, " + num(spec.soakRough) + ", pow(saturate(Soak), " + num(spec.roughCurve) + ")));\n";
+    h += "float R = min(Rgh, lerp(Rgh, lerp(lerp(" + num(spec.soakRough) + ", " + num(spec.trackRough) + ", Track), Rgh, " +
+         num(spec.soakKeep) + "), pow(saturate(Soak), " + num(spec.roughCurve) + ")));\n";
     h += "float PudCore = smoothstep(" + num(spec.puddleCoreFrom) + ", 1.0, Pud);\n";
     h += "R = lerp(R, " + num(spec.puddleRough) + ", PudCore);\n";
+    if (options.waterInput) {
+        // A joint holding water: darker, and the wet grit's roughness, not a mirror (a puddle's own numbers win).
+        h += "C *= lerp(1.0, " + num(spec.jointWetDarken) + ", PdJw * (1.0 - Pud));\n";
+        h += "R = lerp(R, " + num(spec.jointWetRough) + ", PdJw * (1.0 - Pud));\n";
+    }
     // The joint floor's roughness floor again after the soak (no glints off a wet joint), but not under a puddle.
     if (relief) h += "R = lerp(R, max(R, RlRw), RlWet * (1.0 - Pud));\n";
     h += "float A = AO;\n";
@@ -1053,10 +1377,12 @@ std::string surfaceWetHlsl(const SurfaceWeatherSpec& spec) {
     noiseLoop(h, spec, 2);
     h += "float WSoak = WetIn * lerp(" + num(spec.dampShare) + ", 1.0, smoothstep(" + num(kPatchFrom) + ", " + num(kPatchTo) +
          ", Noise[1]));\n";
-    h += "float WPud = saturate(WetIn * " + num(kWetRamp) + ") * smoothstep(0.0, " + num(spec.puddleEdge) + ", Noise[0] + " +
-         num(spec.gutterBias) + " * GutIn - (1.0 - " + num(spec.puddleCover) + " * WetIn));\n";
+    puddleCellHlsl(h, spec, "WPd");
+    h += "float WPud = saturate(WetIn * " + num(kWetRamp) + ") * smoothstep(0.0, " + num(spec.puddleEdge) + ", " +
+         puddleFillHlsl(spec, "WPdBowl", "GutIn", "", "WetIn") + ");\n";
     h += "C *= lerp(1.0, " + num(spec.soakDarken) + ", WSoak) * lerp(1.0, " + num(spec.puddleDarken) + ", WPud);\n";
-    h += "R = min(R, lerp(R, " + num(spec.soakRough) + ", pow(saturate(WSoak), " + num(spec.roughCurve) + ")));\n";
+    h += "R = min(R, lerp(R, lerp(" + num(spec.soakRough) + ", R, " + num(spec.soakKeep) + "), pow(saturate(WSoak), " +
+         num(spec.roughCurve) + ")));\n";
     h += "R = lerp(R, " + num(spec.puddleRough) + ", smoothstep(" + num(spec.puddleCoreFrom) + ", 1.0, WPud));\n";
     return h;
 }

@@ -99,6 +99,7 @@ class FORGOTTENTHIRD_API UFTWorldClockSubsystem : public UTickableWorldSubsystem
 public:
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickable() const override { return bActive; }
@@ -209,4 +210,6 @@ private:
 	float AppliedDayShade = -1.f;
 	// The lights' share last written to the proof bay's fixtures (FTNight::WriteBayLights; -1: write on the next step).
 	float AppliedBayLights = -1.f;
+	// A level streamed in (the hero corner sub-level) brings fixtures the last write missed: written again on the next tick.
+	FDelegateHandle LevelAddedHandle;
 };

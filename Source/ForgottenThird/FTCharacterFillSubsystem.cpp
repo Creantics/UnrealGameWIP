@@ -10,6 +10,7 @@
 #include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -20,6 +21,7 @@ namespace
 constexpr float kScanSeconds = 0.5f;
 constexpr float kLuxStep = 0.01f;   // a share of the fill
 constexpr float kTurnStepDeg = 0.5f;
+constexpr int32 kBayLooks = 20;     // scans spent looking for lit bay fronts before giving up (until a level streams in)
 
 // Channel 1 on top of what a primitive had; true when it was added.
 bool AddChannel(UPrimitiveComponent* Prim)
@@ -37,7 +39,7 @@ bool UFTCharacterFillSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
 	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) &&
-		FParse::Param(FCommandLine::Get(), TEXT("NightCharFill")) && Super::ShouldCreateSubsystem(Outer);
+		FParse::Param(FTLookSwitches(), TEXT("NightCharFill")) && Super::ShouldCreateSubsystem(Outer);
 }
 
 void UFTCharacterFillSubsystem::OnWorldBeginPlay(UWorld& InWorld)
@@ -45,6 +47,57 @@ void UFTCharacterFillSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	Super::OnWorldBeginPlay(InWorld);
 	bStillNight = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeNight"));
 	bActive = true;
+	// The hero corner arrives as a streamed sub-level: its front keys are looked for again once a level comes in.
+	LevelAddedHandle = FWorldDelegates::LevelAddedToWorld.AddWeakLambda(this, [this](ULevel*, UWorld* Into)
+	{
+		if (Into == GetWorld())
+		{
+			bBaysFound = false;
+			BayLooksLeft = kBayLooks;
+		}
+	});
+}
+
+void UFTCharacterFillSubsystem::Deinitialize()
+{
+	FWorldDelegates::LevelAddedToWorld.Remove(LevelAddedHandle);
+	LevelAddedHandle.Reset();
+	Super::Deinitialize();
+}
+
+void UFTCharacterFillSubsystem::FindBays(UWorld& World)
+{
+	BayFronts.Reset();
+	for (TActorIterator<AActor> It(&World); It; ++It)
+	{
+		if (It->ActorHasTag(FTNight::HeroFrontTag))
+		{
+			BayFronts.Add(It->GetActorLocation());
+		}
+	}
+	bBaysFound = !BayFronts.IsEmpty();
+	if (bBaysFound)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("CharacterFill: %d lit bay fronts; the fill is gone within %.1f m of one and whole from %.1f m."),
+			BayFronts.Num(), FTNight::Look().charFillBayNearM, FTNight::Look().charFillBayFarM);
+	}
+}
+
+float UFTCharacterFillSubsystem::BayDistanceM(const UWorld& World) const
+{
+	const APlayerController* Player = World.GetFirstPlayerController();
+	const APawn* Pawn = Player ? Player->GetPawn() : nullptr;
+	if (!Pawn || BayFronts.IsEmpty())
+	{
+		return -1.f;
+	}
+	const FVector At = Pawn->GetActorLocation();
+	double Best = TNumericLimits<double>::Max();
+	for (const FVector& Front : BayFronts)
+	{
+		Best = FMath::Min(Best, FVector::DistSquared2D(At, Front));
+	}
+	return static_cast<float>(FMath::Sqrt(Best) / 100.0);
 }
 
 void UFTCharacterFillSubsystem::Spawn(UWorld& World)
@@ -123,11 +176,17 @@ void UFTCharacterFillSubsystem::Tick(float DeltaTime)
 	{
 		ScanIn = kScanSeconds;
 		Marked += MarkCharacters(*World);
+		// A map without a hero corner: a few looks (10 s), then none until a level streams in.
+		if (!bBaysFound && BayLooksLeft > 0)
+		{
+			--BayLooksLeft;
+			FindBays(*World);
+		}
 	}
 	const ftcore::NightLook& Spec = FTNight::Look();
 	const UFTWorldClockSubsystem* Clock = World->GetSubsystem<UFTWorldClockSubsystem>();
 	const float Night = Clock && Clock->IsRunning() ? Clock->GetNightAmount() : (bStillNight ? 1.f : 0.f);
-	const float Lux = ftcore::nightCharacterFillLux(Spec, Night);
+	const float Lux = ftcore::nightCharacterFillLux(Spec, Night) * ftcore::nightCharacterFillShare(Spec, BayDistanceM(*World));
 	const APlayerController* Player = World->GetFirstPlayerController();
 	const APlayerCameraManager* Camera = Player ? Player->PlayerCameraManager.Get() : nullptr;
 	FRotator Rotation = Camera ? Camera->GetCameraRotation() : FRotator::ZeroRotator;

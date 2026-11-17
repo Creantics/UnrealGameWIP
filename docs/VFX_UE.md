@@ -61,6 +61,18 @@ Every system exposes two user parameters, and both default to 1:
 | `User.SpeedScale` | float | the AddVelocity scale (linear, point or cone) |
 | `User.ShapeScale` | vector | ShapeLocation's shape scale |
 
+An emitter can add its own knobs. `"rateParam": "<name>"` binds its spawn rate to a float `User.<name>` whose
+default is `rate`. Niagara reads it once per loop, so keep `duration` short. `"colorParam": "<name>"` binds its start
+colour to a colour `User.<name>` whose default is the first `startColor` stop. Emitters of one effect may share a
+name. `-Verify` lists a bound rate as `SpawnRate:User.<name>`.
+
+`"sprite": "ring"` draws a thin ripple ring (`M_VfxRingLit`). It is for lit alpha sprites only; any other emitter
+draws it with the soft sprite and lists a gap. `nearFade` now works on lit sprites too (`M_VfxSoftLitNearFade`).
+`-Only=<name>` builds either material the first time an effect needs it.
+
+`rain` and `rain_splash` are the falling rain and its floor splashes. `FTRainSubsystem` plays them around the camera
+on Solhaven's maps when the game starts with `-Rain=<0..1>`.
+
 `-run=FTBuildVfx -Verify` reloads the saved systems and lists each emitter's modules and bindings. The
 bindings survive the save. `UFTVfxComponent::SetParameters` pushes them through
 `UNiagaraComponent::SetVariableFloat` and `SetVariableVec3`. It does this when the effect starts and

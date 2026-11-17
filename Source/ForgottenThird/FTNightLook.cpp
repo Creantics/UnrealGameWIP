@@ -23,6 +23,7 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 
+#include "ftcore/HeroCorner.h"
 #include "ftcore/LookTable.h"
 
 namespace
@@ -75,7 +76,7 @@ void ReadList(const TCHAR* Cmd, const TCHAR* Key, float* Out, int32 Count)
 ftcore::NightLook Read()
 {
 	ftcore::NightLook L;
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	ReadNumber(Cmd, TEXT("NightMoon="), L.moonShare);
 	// An explicit deep fill keeps it constant through the night (the floor fit off), so older scripts keep their meaning.
 	if (ReadNumber(Cmd, TEXT("NightSky="), L.skyFill))
@@ -107,6 +108,8 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightCharFillStops="), L.charFillStops);
 	ReadNumber(Cmd, TEXT("NightCharFillK="), L.charFillKelvin);
 	ReadNumber(Cmd, TEXT("NightCharFillPitch="), L.charFillPitchDeg);
+	ReadNumber(Cmd, TEXT("NightCharFillBayNear="), L.charFillBayNearM);
+	ReadNumber(Cmd, TEXT("NightCharFillBayFar="), L.charFillBayFarM);
 	ReadNumber(Cmd, TEXT("NightFog="), L.fogKeep);
 	ReadNumber(Cmd, TEXT("NightEV="), L.exposureEV100);
 	ReadNumber(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
@@ -120,6 +123,13 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightShop="), L.shopCandela);
 	ReadNumber(Cmd, TEXT("NightShopReach="), L.shopReachM);
 	ReadNumber(Cmd, TEXT("NightShopK="), L.shopKelvin);
+	ReadNumber(Cmd, TEXT("NightHeroShopK="), L.heroShopKelvin);
+	ReadNumber(Cmd, TEXT("NightHeroLampK="), L.heroLampKelvin);
+	ReadNumber(Cmd, TEXT("NightHeroFrontLm="), L.heroFrontLumens);
+	ReadNumber(Cmd, TEXT("NightHeroSkyLm="), L.heroSkyLumens);
+	ReadNumber(Cmd, TEXT("NightHeroSkySpec="), L.heroSkySpecular);
+	ReadNumber(Cmd, TEXT("NightHeroFrontSpec="), L.heroFrontSpecular);
+	ReadList(Cmd, TEXT("NightHeroSkyTint="), L.heroSkyTint.data(), static_cast<int32>(L.heroSkyTint.size()));
 	ReadNumber(Cmd, TEXT("NightCap="), L.capShare);
 	ReadNumber(Cmd, TEXT("NightCapFloor="), L.capFloor);
 	ReadNumber(Cmd, TEXT("NightCapRadius="), L.capRadiusM);
@@ -162,7 +172,7 @@ ftcore::DuskLook ReadDusk()
 			"exposure bias %.2f EV, lights on from %.1f to %.1f degrees, daylight from %.1f to %.1f."), UTF8_TO_TCHAR(Row->status.c_str()), D.stillDeg,
 			D.startDeg, D.peakDeg, D.endDeg, D.exposureBias, D.lightsOnDeg, D.lightsFullDeg, D.dayEndDeg, D.dayFullDeg);
 	}
-	const TCHAR* Cmd = FCommandLine::Get();
+	const TCHAR* Cmd = FTLookSwitches();
 	FParse::Value(Cmd, TEXT("DuskPeak="), D.peakDeg);
 	FParse::Value(Cmd, TEXT("DuskStart="), D.startDeg);
 	FParse::Value(Cmd, TEXT("DuskEnd="), D.endDeg);
@@ -215,7 +225,7 @@ float FTNight::ProofShopNight()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("proofShopNight", -1.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassProofNight="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassProofNight="), Level);
 		return Level;
 	}();
 	return Value;
@@ -227,7 +237,7 @@ float FTNight::InteriorDay()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("interiorDay", 1.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassInteriorDay="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassInteriorDay="), Level);
 		return FMath::Max(Level, 0.f);
 	}();
 	return Value;
@@ -238,7 +248,7 @@ float FTNight::BayLampLumens()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("bayLampLumens", 40.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassBayLumens="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassBayLumens="), Level);
 		return FMath::Max(Level, 0.f);
 	}();
 	return Value;
@@ -249,7 +259,7 @@ float FTNight::BayLampDayLumens()
 	static const float Value = []
 	{
 		float Level = FTLook::Table().glassValue("bayLampDayLumens", 3000.f);
-		FParse::Value(FCommandLine::Get(), TEXT("GlassBayDayLumens="), Level);
+		FParse::Value(FTLookSwitches(), TEXT("GlassBayDayLumens="), Level);
 		return FMath::Max(Level, 0.f);
 	}();
 	return Value;
@@ -266,10 +276,42 @@ float FTNight::BayLampAt(float Lights)
 
 int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 {
-	const float Lumens = BayLampAt(Lights);
-	int32 Written = 0;
+	// -NoBayLights (look switch, not in Shipping): the fixtures held dark, for the cost pair with and without them.
+	static const bool bNoBayLights = FParse::Param(FTLookSwitches(), TEXT("NoBayLights"));
+	const float Lumens = bNoBayLights ? 0.f : BayLampAt(Lights);
+	const ftcore::NightLook& L = Look();
+	const float Share = FMath::Clamp(Lights, 0.f, 1.f);
+	int32 Written = 0, Fronts = 0, Skies = 0;
 	for (TActorIterator<ARectLight> It(&World); It; ++It)
 	{
+		URectLightComponent* Hero = It->RectLightComponent.Get();
+		const bool bFront = Hero && It->ActorHasTag(HeroFrontTag);
+		const bool bSky = Hero && !bFront && It->ActorHasTag(HeroSkyTag);
+		if (bFront || bSky)
+		{
+			// The face ruling's hero corner lights: a lit front's wide warm key, and the lane's cool floor (night only; its
+			// lumens shared between its lengths).
+			const float Lm = Share * (bFront ? FMath::Max(0.f, L.heroFrontLumens) : FMath::Max(0.f, L.heroSkyLumens) / ftcore::kHeroSkyFloors);
+			Fronts += bFront ? 1 : 0;
+			Skies += bSky ? 1 : 0;
+			Hero->SetIntensity(Lm);
+			Hero->SetVisibility(Lm > 0.f);
+			Hero->SetVolumetricScatteringIntensity(0.f);
+			if (bFront)
+			{
+				Hero->SetUseTemperature(L.heroShopKelvin > 0.f);
+				Hero->SetTemperature(L.heroShopKelvin > 0.f ? L.heroShopKelvin : L.shopKelvin);
+				Hero->SetSpecularScale(FMath::Max(0.f, L.heroFrontSpecular));
+			}
+			else
+			{
+				Hero->SetUseTemperature(false);
+				Hero->SetLightColor(Color(L.heroSkyTint));
+				Hero->SetSpecularScale(FMath::Max(0.f, L.heroSkySpecular));
+			}
+			++Written;
+			continue;
+		}
 		URectLightComponent* Light = It->ActorHasTag(BayLightTag) ? It->RectLightComponent.Get() : nullptr;
 		if (!Light)
 		{
@@ -280,6 +322,17 @@ int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 		// A shop lamp lights the goods, not fog inside the shop (11-14 haze ruling).
 		Light->SetVolumetricScatteringIntensity(0.f);
 		++Written;
+	}
+	// The values the hero corner's lights resolve to, logged when the share has moved a quarter (or the first time).
+	static float LastLogged = -1.f;
+	if (Fronts + Skies > 0 && FMath::Abs(Share - LastLogged) >= 0.25f)
+	{
+		LastLogged = Share;
+		UE_LOG(LogForgottenThird, Display, TEXT("Night: hero corner at lights %.2f: %d front keys %.1f lm at %.0f K, %d floor lengths %.1f lm (of %.1f) tint %.2f,%.2f,%.2f "
+			"specular %.2f; pool lamps %.0f K, shops %.0f K."), Share, Fronts, Share * L.heroFrontLumens,
+			L.heroShopKelvin > 0.f ? L.heroShopKelvin : L.shopKelvin, Skies, Share * L.heroSkyLumens / ftcore::kHeroSkyFloors, Share * L.heroSkyLumens,
+			L.heroSkyTint[0], L.heroSkyTint[1], L.heroSkyTint[2], L.heroSkySpecular, L.heroLampKelvin > 0.f ? L.heroLampKelvin : L.lampKelvin,
+			L.heroShopKelvin > 0.f ? L.heroShopKelvin : L.shopKelvin);
 	}
 	return Written;
 }

@@ -72,6 +72,22 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(still.exposureMinEV100 == clock.exposureMinEV100);
     // LED shops cooler than the lamps; the moon and sky fill cool.
     CHECK(look.shopKelvin > look.lampKelvin);
+    // The hero corner's timber shops warm (about 2700 K), between the lamps' and the LED shops'.
+    CHECK(look.heroShopKelvin == doctest::Approx(2700.f));
+    CHECK(look.heroShopKelvin >= look.lampKelvin);
+    CHECK(look.heroShopKelvin < look.shopKelvin);
+    // The face ruling: the corner's lamp slots warm white (not the paper's amber), the fronts a key, the floor cool and
+    // far bluer than skin (R/B well under 0.9), with no specular rectangle in the puddles.
+    CHECK(look.heroLampKelvin >= 2400.f);
+    CHECK(look.heroLampKelvin <= 2700.f);
+    CHECK(look.heroFrontLumens > 0.f);
+    CHECK(look.heroSkyLumens > 0.f);
+    CHECK(look.heroSkyLumens < look.heroFrontLumens);
+    CHECK(look.heroSkyTint[0] / look.heroSkyTint[2] < 0.6f);
+    CHECK(look.heroSkySpecular == doctest::Approx(0.f));
+    // The fronts' key: a faint sheen on wet setts, never its source's white rectangle.
+    CHECK(look.heroFrontSpecular > 0.f);
+    CHECK(look.heroFrontSpecular <= 0.25f);
     CHECK(look.moonTint[2] > look.moonTint[0]);
     // Wide, soft lamp pools within the engine's spot cone limit.
     CHECK(look.lampOuterDeg <= 80.f);
@@ -454,6 +470,26 @@ TEST_CASE("nightCharacterFillLux: off by day, two stops under the lamp key at ni
     odd.charFillStops = -3.f; // never over the key
     CHECK(std::isfinite(nightCharacterFillLux(odd, 1.f)));
     CHECK(nightCharacterFillLux(odd, 1.f) == doctest::Approx(look.lampCandela / 0.01f));
+}
+
+TEST_CASE("nightCharacterFillShare: gone beside a lit bay, whole away from it, smooth between") {
+    const NightLook look;
+    CHECK(nightCharacterFillShare(look, -1.f) == 1.f);  // no lit bay
+    CHECK(nightCharacterFillShare(look, std::nanf("")) == 1.f);
+    CHECK(nightCharacterFillShare(look, 0.f) == 0.f);
+    CHECK(nightCharacterFillShare(look, look.charFillBayNearM) == 0.f);
+    CHECK(nightCharacterFillShare(look, look.charFillBayFarM) == 1.f);
+    CHECK(nightCharacterFillShare(look, 100.f) == 1.f);
+    const float mid = 0.5f * (look.charFillBayNearM + look.charFillBayFarM);
+    CHECK(nightCharacterFillShare(look, mid) == doctest::Approx(0.5f));
+    CHECK(nightCharacterFillShare(look, mid - 0.5f) < nightCharacterFillShare(look, mid + 0.5f));
+    NightLook odd;
+    odd.charFillBayNearM = 9.f;  // near past far: one edge at far
+    odd.charFillBayFarM = 4.f;
+    CHECK(nightCharacterFillShare(odd, 3.9f) == 0.f);
+    CHECK(nightCharacterFillShare(odd, 4.f) == 1.f);
+    odd.charFillBayFarM = -2.f;  // a negative far: whole everywhere a bay is known
+    CHECK(nightCharacterFillShare(odd, 0.f) == 1.f);
 }
 
 TEST_CASE("nightFrame: exposure locks from half night; no allocation") {
@@ -875,7 +911,8 @@ TEST_CASE("dusk table: the strip-centre key it predicts from blocks 1116e/f fall
     const float ev1820 = nightExposureRange(look, f1820, e1820, -10.f, 20.f).minEV100;
     const float k1810 = 65.f * std::pow(65.f / 21.f, -5.5f - ev1810);
     const float k1820 = 55.5f * std::pow(55.5f / 12.2f, -3.5f - ev1820);
-    const float keys[] = {101.f, k1800, k1805, k1810, k1820, 39.4f};
+    // The table's own span only; the ends either side are the code's (the sweep below), not hard-coded reads.
+    const float keys[] = {k1800, k1805, k1810, k1820};
     INFO("18:00 " << k1800 << " (r " << r1800 << "), 18:05 " << k1805 << " (r " << r1805 << "), 18:10 " << k1810
                   << " (EV " << ev1810 << "), 18:20 " << k1820 << " (EV " << ev1820 << "); e " << e1810 << ", "
                   << sunElevationDeg(spec, 18.25) << ", " << e1820 << ", " << sunElevationDeg(spec, 18.0 + 25.0 / 60.0)
@@ -888,6 +925,42 @@ TEST_CASE("dusk table: the strip-centre key it predicts from blocks 1116e/f fall
     CHECK(k1805 == doctest::Approx(68.f).epsilon(0.1));
     CHECK(k1810 == doctest::Approx(60.f).epsilon(0.1));
     CHECK(k1820 == doctest::Approx(48.f).epsilon(0.1));
+}
+
+TEST_CASE("dusk: every minute from 17:30 to 18:30, from the code: the key never rises, the camera only closes") {
+    // nightSceneKey (the old tone's model) holds its dayKey clamp through this whole hour, so it can only say the key
+    // never rises; the fall itself is the knot prediction above. What the code alone does guarantee, minute by minute:
+    // once the blend moves, the exposure floor only climbs (the camera only closes); from the 18:10 knot on it never steps
+    // more than 0.6 EV in a minute; the real-time lift never jumps by more than x1.35 in a minute. Known and left for the
+    // later night block (fault 2, 18:00 -> 18:10): between the blend's start (-2 deg, 18:08.6) and the 18:10 knot the floor
+    // climbs from the day's -10 at about 3.3 EV a minute; it binds only if the free meter is under it there.
+    const NightLook look;
+    const NightKeyModel model;
+    const WorldClockSpec spec;
+    float lastKey = 1e9f, lastMin = -1e9f, lastLift = -1.f, worstEV = 0.f, worstLift = 1.f;
+    bool keyHolds = true, closes = true;
+    for (int i = 0; i <= 60; ++i) {
+        const double h = 17.5 + i / 60.0;
+        const float e = sunElevationDeg(spec, h);
+        const float n = nightAmount(spec, h);
+        const NightFrame f = nightFrameAt(look, n, e);
+        const float key = nightSceneKey(look, model, n, e);
+        if (key > lastKey * (1.f + 1e-5f)) keyHolds = false;
+        const float mn = nightExposureRange(look, f, e, -10.f, 20.f).minEV100;
+        if (f.exposureBlend > 0.f && lastMin > -1e8f) {
+            if (mn < lastMin - 1e-4f) closes = false;
+            if (e <= look.duskMinDeg[0]) worstEV = std::max(worstEV, mn - lastMin);
+        }
+        if (lastLift > 0.f) worstLift = std::max(worstLift, std::max(f.skyScaleRealTime / lastLift, lastLift / f.skyScaleRealTime));
+        lastKey = key;
+        lastMin = f.exposureBlend > 0.f ? mn : lastMin;
+        lastLift = f.skyScaleRealTime;
+    }
+    INFO("worst floor step " << worstEV << " EV/min, worst lift step x" << worstLift << "/min");
+    CHECK(keyHolds);
+    CHECK(closes);
+    CHECK(worstEV <= 0.6f);
+    CHECK(worstLift <= 1.35f);
 }
 
 TEST_CASE("nightExposureRange: the day's at blend 0, the night's exactly at 1, the dusk table's floor between") {
@@ -917,4 +990,49 @@ TEST_CASE("nightExposureRange: the day's at blend 0, the night's exactly at 1, t
             CHECK(r.minEV100 <= r.maxEV100);
         }
     }
+}
+TEST_CASE("rim: the lamp that lights the lead most gives the colour and the camera side") {
+    using namespace ftcore;
+    RimLamp lamps[4];
+    // A strong lamp far to the camera's left, a weak one near on the right, one off, one at zero candela.
+    lamps[0].at[0] = -800.f; lamps[0].candela = 24.f; lamps[0].on = true;
+    lamps[1].at[0] = 150.f;  lamps[1].candela = 2.4f; lamps[1].on = true;
+    lamps[2].at[0] = 10.f;   lamps[2].candela = 100.f; lamps[2].on = false;
+    lamps[3].at[0] = -5.f;   lamps[3].candela = 0.f;  lamps[3].on = true;
+    const float lead[3] = {0.f, 0.f, 0.f};
+    const float right[3] = {1.f, 0.f, 0.f};
+    RimPick p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    // 2.4 / 150^2 = 1.07e-4 beats 24 / 800^2 = 3.75e-5; the off and the dark lamps never count.
+    CHECK(p.index == 1);
+    CHECK(p.side == doctest::Approx(1.f));
+    CHECK(p.weight == doctest::Approx(2.4f / (150.f * 150.f)));
+    lamps[1].on = false;
+    p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    CHECK(p.index == 0);
+    CHECK(p.side == doctest::Approx(-1.f));
+    // A lamp at the lead's own point is floored at minDist, not infinite.
+    lamps[0].at[0] = 0.f;
+    p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    CHECK(p.weight == doctest::Approx(24.f / 2500.f));
+    // None lit: no pick, no side.
+    lamps[0].on = false;
+    p = rimPickLamp(lamps, 4, lead, right, 50.f);
+    CHECK(p.index == -1);
+    CHECK(p.side == doctest::Approx(0.f));
+    CHECK(rimPickLamp(nullptr, 0, lead, right, 50.f).index == -1);
+}
+
+TEST_CASE("rim: the colour eases over half a second") {
+    using namespace ftcore;
+    CHECK(rimEaseShare(0.f, kRimColourEaseSeconds) == doctest::Approx(0.f));
+    CHECK(rimEaseShare(1.f / 60.f, kRimColourEaseSeconds) > 0.f);
+    CHECK(rimEaseShare(1.f / 60.f, kRimColourEaseSeconds) < 0.2f);
+    // Thirty 60 Hz frames (0.5 s) cover about 95% of a step, whatever the frame rate.
+    float left = 1.f;
+    for (int i = 0; i < 30; ++i) left *= 1.f - rimEaseShare(1.f / 60.f, kRimColourEaseSeconds);
+    CHECK(1.f - left == doctest::Approx(0.95f).epsilon(0.01));
+    float left30 = 1.f;
+    for (int i = 0; i < 15; ++i) left30 *= 1.f - rimEaseShare(1.f / 30.f, kRimColourEaseSeconds);
+    CHECK(left30 == doctest::Approx(left).epsilon(1e-3));
+    CHECK(rimEaseShare(0.1f, 0.f) == doctest::Approx(1.f));
 }

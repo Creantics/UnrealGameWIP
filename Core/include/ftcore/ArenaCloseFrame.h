@@ -63,8 +63,8 @@ struct ArenaCloseRules {
     float roomFlip = 0.05f;      // share of the arm one side's room must beat the other's by to win on room alone
     // Partner.
     float partnerYawMax = 12.f;  // degrees
-    float partnerYawRangedMax = 24.f; // degrees: the most for a ranged partner (a caster 5-8 m off cannot be kept in
-                                      // the frame by where it stands; the lens turns to it instead)
+    float partnerYawRangedMax = 12.f; // degrees: the most for a ranged partner (ruled 11-16: the melee's 12; a wider
+                                      // turn framed a far caster no better and swung the view four times as fast)
     float partnerRange = 8.f;    // m from the lead
     float targetMin = 0.55f;     // the target's share of the width kept while the partner yaw turns (right shoulder)
     float targetMax = 0.80f;
@@ -94,6 +94,29 @@ struct ArenaCloseRules {
     // A lens pulled in by a wall: the lead's rule keeps the cut in the shortened frame only by looking down (about -13
     // degrees at 80% of the arm, -29 at 60%). Close holds the view at this pitch or over instead and lets the cut give way.
     float wallPitchMin = -6.f;       // degrees (the preset's lock pitch is -2)
+    // Stand-off clearance: off contact, a target whose head falls inside the lead's box on the screen (widened by
+    // clearMargin of the frame) moves the lens further out on its own shoulder (the whole side no more than
+    // clearSideMax) and raises the pivot (by up to clearPivotUp), by the least move of the two together that clears it
+    // (arenaCloseStandOffClear). Both ease in and out over clearEase (arenaCloseClearStep). The side alone clears only a
+    // head near the box's edge (0.3 m out moves the lead about 7% of the width against a target 5 m beyond); the pivot
+    // does most of the work on a head behind the lead's own. The lead's box is taken at clearRadius or its own radius,
+    // the wider (ruled 11-16: the shoulder and hair reach past the body's 0.35 m; arenaCloseClearBody).
+    float clearRadius = 0.45f;  // m
+    float clearMargin = 0.05f;  // share of the frame's width and height
+    float clearSideMax = 0.85f; // m: the most side, the shoulder's own included
+    float clearPivotUp = 0.3f;  // m
+    float clearStep = 0.05f;    // m: the search's step, on the side and the pivot alike
+    float clearEase = 0.25f;    // s: the time constant in and out
+    // Framing check (ruled 11-16; the middle-third bar stays the classic camera's): on settled frames off contact, the
+    // lead's centre in its near-side third (the left third on the right shoulder) with frameLeadSlack of the width over
+    // its inner edge, the target's aim point in targetMin..targetMax (mirrored on the left shoulder) and the partner, when
+    // on, anywhere in the frame; it passes on framePass of the frames or more (arenaCloseFrameCheck). A target nearer the
+    // lead than frameNearDistance sits close to the middle at melee range, so its band starts at frameNearTargetMin
+    // there (ruled 11-16).
+    float frameLeadSlack = 0.05f;     // share of the width
+    float framePass = 0.95f;          // share of the settled frames
+    float frameNearDistance = 3.f;    // m, the lead to the target on the ground
+    float frameNearTargetMin = 0.45f; // share of the width (right shoulder; mirrored on the left)
 };
 inline constexpr ArenaCloseRules kArenaClose{};
 static_assert(kArenaClose.contactLowTall == kArenaLookTallBoss, "the tall contact's low lens starts at the lock's tall boss");
@@ -260,6 +283,47 @@ FTCORE_API float arenaCloseWallPitch(const ArenaCloseRules& rules, float rulePit
 // the cap gives the cap.
 FTCORE_API float arenaCloseStandOffPitch(const ArenaCloseRules& rules, const ArenaLookLimits& limits, const ArenaCameraPose& rig,
                                          float aspect, ArenaPoint3 point, float floorPitch);
+
+// True when the point `head` (relative to the pivot, as arenaFramePoint) is in front of the lens and inside the lead's
+// box on the screen (arenaLeadShares: its sides, its feet or cut and its head), the box widened on every edge by
+// `margin` (a share of the frame; a NaN or negative margin reads as 0). False when the head or the lead is behind
+// the lens or an input is NaN.
+FTCORE_API bool arenaCloseHeadHidden(const ArenaCameraPose& pose, float aspect, const ArenaLeadBody& body, ArenaPoint3 head,
+                                     float margin);
+
+// The stand-off clearance asked for this pose (the drawn view with the shoulder's own side and pivot): 0 and 0 when
+// the target's head is clear of the lead's box widened by clearMargin. Otherwise an extra `side` (signed with the
+// pose's side; a side of 0 counts as the right shoulder; the whole side held to clearSideMax) and a `pivot` rise (up to
+// clearPivotUp), each in clearStep steps, that clear it with the least sum of the two (on a tie the smaller side, so the
+// higher pivot: the lens leaves the lead's shoulder line as little as it can);
+// both at their most when none does. 0 and 0 on a NaN input.
+struct ArenaCloseClear {
+    float side = 0.f;  // m, signed: added to the pose's side
+    float pivot = 0.f; // m: added to the pivot's height
+};
+// The lead's box the clearance (and its check) is judged by: `body` with its radius widened to clearRadius.
+FTCORE_API ArenaLeadBody arenaCloseClearBody(const ArenaCloseRules& rules, ArenaLeadBody body);
+FTCORE_API ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const ArenaCameraPose& pose, float aspect,
+                                                   const ArenaLeadBody& body, ArenaPoint3 head);
+
+// The close camera's framing check on one settled frame off contact. Shares of the frame's width (0 the left edge, 1
+// the right): the lead's centre `leadX` and the target's aim point `targetX` (its weak point or its chest); `partner` is
+// the partner as arenaFramePoint gives it (x and y shares), judged only when `partnerOn`. `distance` is the lead to the
+// target on the ground: under frameNearDistance the target's band starts at frameNearTargetMin (a NaN distance takes
+// the far band). The shoulder's sign mirrors the bands (0 counts as the right shoulder). Each term is false on a NaN
+// share.
+struct ArenaCloseFrameCheck {
+    bool lead = false;    // the lead's centre in its near-side third (plus frameLeadSlack)
+    bool target = false;  // the target's aim point in its band (targetMin, or frameNearTargetMin near), mirrored
+    bool partner = false; // in front of the lens and inside the frame (true when off)
+    bool all = false;
+};
+FTCORE_API ArenaCloseFrameCheck arenaCloseFrameCheck(const ArenaCloseRules& rules, float shoulder, float leadX, float targetX,
+                                                     float distance, bool partnerOn, ArenaFramePoint partner);
+
+// One frame of the clearance's ease: `now` toward `want` with the time constant clearEase. A dt of 0 or less (or
+// NaN) holds `now`; a NaN want holds `now`; a NaN now starts from 0.
+FTCORE_API float arenaCloseClearStep(const ArenaCloseRules& rules, float now, float want, float dt);
 
 // A point in the lens's own ground frame (the capture logs' partner position): `ahead` m along the view's yaw from
 // the lens (under 0: behind the camera) and `right` m to its right, from the lens where arenaCameraLens puts it.

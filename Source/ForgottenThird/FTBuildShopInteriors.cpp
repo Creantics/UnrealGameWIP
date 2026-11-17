@@ -70,7 +70,7 @@ FPlacer::FPlacer(UPackage* Package, const FString& Params)
 }
 
 void FPlacer::Place(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const ftcore::MassingBox& Box, const ftcore::MassingWindowData& Data,
-	const std::vector<ftcore::MassingStreet>& Streets, double SharedUpTo, double Side)
+	const std::vector<ftcore::MassingStreet>& Streets, double SharedUpTo, double Side, int32 ForcedKerb, float ForcedLitShare)
 {
 	if (!bOn || Data.streetBits == 0)
 	{
@@ -81,14 +81,17 @@ void FPlacer::Place(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const f
 	{
 		return;
 	}
-	const std::uint8_t Kerb = ftcore::windowKerbBits(Box, Data.streetBits, Streets, SharedUpTo, ftcore::kWindowKerbReach);
+	const bool bForced = ForcedKerb >= 0;
+	const std::uint8_t Kerb = bForced ? static_cast<std::uint8_t>(ForcedKerb & Data.streetBits & 0xF)
+		: ftcore::windowKerbBits(Box, Data.streetBits, Streets, SharedUpTo, ftcore::kWindowKerbReach);
 	if (Kerb == 0)
 	{
 		return;
 	}
+	const float LitShare = ForcedLitShare >= 0.f ? FMath::Clamp(ForcedLitShare, 0.f, 1.f) : Impl::kShopLit;
 	// Round 11: only ModelShare of the kerbed buildings are modelled; the rest keep no kerb bit, so the master shows
 	// their shops' flat lit picture (no hole, no instances).
-	if (!ftcore::windowShopModelled(Data.seed, ModelShare))
+	if (!bForced && !ftcore::windowShopModelled(Data.seed, ModelShare))
 	{
 		++Flat;
 		return;
@@ -113,7 +116,7 @@ void FPlacer::Place(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const f
 		const float FaceWidth = static_cast<float>(bAcrossX ? Box.sy : Box.sx);
 		const float BoxDepth = static_cast<float>(bAcrossX ? Box.sx : Box.sy);
 		const float FaceHeight = static_cast<float>(Height - Data.base[F]);
-		const std::size_t N = ftcore::windowShopInterior(Spec, Type, Data.seed, FaceWidth, FaceHeight, BoxDepth, Impl::kShopLit, Out.data(),
+		const std::size_t N = ftcore::windowShopInterior(Spec, Type, Data.seed, FaceWidth, FaceHeight, BoxDepth, LitShare, Out.data(),
 			Out.size());
 		if (N == 0)
 		{

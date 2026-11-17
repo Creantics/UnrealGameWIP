@@ -134,9 +134,10 @@ constexpr double kArenaGunDistance = 60.0;
 constexpr double kArenaArmsDistance = 140.0;
 constexpr float kArenaCloseFov = 55.f;
 // -ArenaShotAllyStrikes: the partner's close views, cm off the casting hand, the hit point or (its side views) the
-// partner, and the side views' aim above its feet (low, so the ward on the ground is in the frame).
+// partner, and the side views' aim above its feet: its chest, or low with -ArenaShotWard (the ward on the ground).
 constexpr double kArenaAllyCloseDistance = 100.0;
-constexpr double kArenaAllySideAim = 35.0;
+constexpr double kArenaAllySideAim = 130.0;
+constexpr double kArenaAllyWardAim = 35.0;
 // -ArenaShotWard's hold (s): the ward up long enough for its rise, its held look and (after) its drop.
 constexpr double kArenaShotWardHold = 1.2;
 constexpr double kArenaCloseSettle = 0.6;
@@ -1135,9 +1136,10 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 		if (bShotSide && !bSideAimed && Lead)
 		{
 			// Up with the jump's lift, so the head stays in the view at the top of the arc. The partner's with
-			// -ArenaShotAllyStrikes: 1 m off, low, the ward at its feet in the frame.
+			// -ArenaShotAllyStrikes: 1 m off, at its chest; low with -ArenaShotWard, the ward at its feet in the frame.
 			const bool bAllyClose = bShotAllyStrikes && Lead == Runner->GetAllyFigure();
-			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, (bAllyClose ? kArenaAllySideAim : 80.0) + Lead->GetJumpLift());
+			const double AllyAim = ShotWardAt >= 0.0 ? kArenaAllyWardAim : kArenaAllySideAim;
+			const FVector At = Lead->GetActorLocation() + FVector(0.0, 0.0, (bAllyClose ? AllyAim : 80.0) + Lead->GetJumpLift());
 			FVector Side = bShotWorld ? FVector(0.0, 1.0, 0.0) : Lead->GetActorRightVector().GetSafeNormal2D();
 			if (bShotQuarter)
 			{

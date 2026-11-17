@@ -223,6 +223,16 @@ float nightCharacterFillLux(const NightLook& look, float night) {
     return key * std::exp2(-std::max(look.charFillStops, 0.f)) * std::clamp(night, 0.f, 1.f);
 }
 
+float nightCharacterFillShare(const NightLook& look, float bayDistanceM) {
+    if (!(bayDistanceM >= 0.f)) return 1.f;  // no lit bay (or NaN)
+    const float farM = std::max(look.charFillBayFarM, 0.f);
+    const float nearM = std::clamp(look.charFillBayNearM, 0.f, farM);
+    if (bayDistanceM >= farM) return 1.f;
+    if (bayDistanceM <= nearM || farM - nearM < 1e-4f) return 0.f;
+    const float t = (bayDistanceM - nearM) / (farM - nearM);
+    return t * t * (3.f - 2.f * t);
+}
+
 float nightLampScale(const NightLook& look, std::size_t neighbours) {
     const float share = 1.f / (1.f + std::max(look.capShare, 0.f) * static_cast<float>(neighbours));
     return std::clamp(share, std::clamp(look.capFloor, 0.f, 1.f), 1.f);
@@ -309,6 +319,31 @@ float duskLights(const DuskLook& look, float sunElevationDeg) {
 float duskDaylight(const DuskLook& look, float sunElevationDeg) {
     if (!(look.dayFullDeg > look.dayEndDeg)) return sunElevationDeg > look.dayEndDeg ? 1.f : 0.f;
     return smooth01((sunElevationDeg - look.dayEndDeg) / (look.dayFullDeg - look.dayEndDeg));
+}
+
+RimPick rimPickLamp(const RimLamp* lamps, std::size_t count, const float lead[3], const float cameraRight[3], float minDist) {
+    RimPick best;
+    if (!lamps || !lead || !cameraRight) return best;
+    const float floor2 = std::max(minDist, 0.f) * std::max(minDist, 0.f);
+    for (std::size_t i = 0; i < count; ++i) {
+        const RimLamp& l = lamps[i];
+        if (!l.on || !(l.candela > 0.f)) continue;
+        const float dx = l.at[0] - lead[0], dy = l.at[1] - lead[1], dz = l.at[2] - lead[2];
+        const float d2 = std::max(dx * dx + dy * dy + dz * dz, std::max(floor2, 1e-6f));
+        const float w = l.candela / d2;
+        if (w > best.weight) {
+            best.index = static_cast<int>(i);
+            best.weight = w;
+            best.side = dx * cameraRight[0] + dy * cameraRight[1] + dz * cameraRight[2] >= 0.f ? 1.f : -1.f;
+        }
+    }
+    return best;
+}
+
+float rimEaseShare(float dt, float seconds) {
+    if (!(seconds > 0.f)) return 1.f;
+    if (!(dt > 0.f)) return 0.f;
+    return 1.f - std::exp(-3.f * dt / seconds);
 }
 
 } // namespace ftcore

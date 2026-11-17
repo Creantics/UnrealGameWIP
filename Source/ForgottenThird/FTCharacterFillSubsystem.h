@@ -11,6 +11,9 @@
 // The light is spawned on the first tick, after the world clock and a night still have gathered the map's directional
 // lights, and its intensity, colour and direction are written over theirs when they move a step. Characters are looked
 // for twice a second. No allocation per tick.
+// Near a lit shop bay the shop light shapes the figure: the fill keeps ftcore::nightCharacterFillShare of itself at the
+// pawn's plan distance from the nearest lit bay front (the hero corner's front keys), gone within -NightCharFillBayNear=<m>
+// (3) and whole from -NightCharFillBayFar=<m> (7).
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -28,6 +31,7 @@ class FORGOTTENTHIRD_API UFTCharacterFillSubsystem : public UTickableWorldSubsys
 public:
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickable() const override { return bActive; }
@@ -37,13 +41,20 @@ public:
 private:
 	void Spawn(UWorld& World);
 	int32 MarkCharacters(UWorld& World);
+	// The lit bays' fronts (the hero corner's front keys, FTNight::HeroFrontTag), looked for on the scan until found
+	// and again after a level streams in.
+	void FindBays(UWorld& World);
+	// Metres in plan from the player's pawn to the nearest lit bay front; negative with none.
+	float BayDistanceM(const UWorld& World) const;
 
 	TWeakObjectPtr<UDirectionalLightComponent> Light;
+	TArray<FVector, TInlineAllocator<8>> BayFronts;
+	bool bBaysFound = false;
+	int32 BayLooksLeft = 20;
+	FDelegateHandle LevelAddedHandle;
 	bool bActive = false;
 	bool bStillNight = false;
 	float ScanIn = 0.f;
-	float AppliedLux = -1.f;
-	FRotator AppliedRotation = FRotator(1000.f, 0.f, 0.f);
 	int32 Marked = 0;
 	bool bLogged = false;
 };

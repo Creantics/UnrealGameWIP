@@ -90,6 +90,7 @@ struct WindowFacadeSpec {
     float shopGlow = 0.6f;         // the master's ShopGlow (and the modelled interiors')
     float shopGlowCap = 0.3f;      // the master's ShopGlowCap: no shop glass's light passes this
     float signGlowCap = 0.35f;     // the master's SignGlowCap: no lit sign's
+    bool signMarks = false;        // every shop sign a mark of strokes (ShopFrontSpec::marksOnly); off: the r5 signs
     float lanternNight = 1.1f;     // a lantern's glow by night over its 0.4 by day
     float shopDay = 0.15f;         // the master's ShopDay: a shop's display case by day (its own light: under a sunlit
                                    // wall's and readable in a shaded lane, where the exposure rises; 0.6 was a white pane)

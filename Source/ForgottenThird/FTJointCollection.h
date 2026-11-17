@@ -7,6 +7,7 @@
 // (saved in place, never deleted); FTBuildLookMaterials builds it in. At run time -JointDepth=<0..1> sets it.
 
 #include "CoreMinimal.h"
+#include "ForgottenThird.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/CommandLine.h"
@@ -34,7 +35,7 @@ inline UMaterialParameterCollection* Load()
 inline bool ApplyCommandLine(UWorld& World)
 {
 	float Value = -1.f;
-	if (!FParse::Value(FCommandLine::Get(), TEXT("JointDepth="), Value) || Value < 0.f)
+	if (!FParse::Value(FTLookSwitches(), TEXT("JointDepth="), Value) || Value < 0.f)
 	{
 		return false;
 	}

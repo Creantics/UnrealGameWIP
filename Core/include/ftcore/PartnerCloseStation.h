@@ -77,16 +77,17 @@
 //     or the target, deeper than the lead, nearest the frame, then the walk; the flank held as in tiers 1-2.
 // A melee partner (round 6, the ruling of 11-16; only with the three inputs below, which the brain sets for a kit
 // without range under the close lens; all off: exactly as before):
-//   - farFlankFirst: the far flank, the target's flank across the lens's axis from the lead (the lead's lateral offset
-//     from the axis, else leadSide), is taken whenever it has a pick in tiers 1-2 or 4 and the hold does not keep the
-//     other; the near flank only when the far one has none; a far-flank pick in tier 4 keeps the silhouette test
+//   - farFlankFirst: the far flank, the target's flank across the lens's axis from the lead, the side with the frame's
+//     room (the lead's screen x, else its lateral offset from the axis, else leadSide), held at least
+//     kPartnerCloseMeleeHoldSeconds unless it has no valid point, is taken whenever it has a pick in tiers 1-2 or 4
+//     and the hold does not keep the other; the near flank only when the far one has none; a far-flank pick in tier 4 keeps the silhouette test
 //     but not the straight-walk shadow test (in contact only the far arc is left, and the walk to it crosses);
 //   - leadGapBodies (0..3): a candidate keeps that many of its own body widths of screen gap from the lead's
 //     silhouette (the angle apart from the lens at least the lead's half-angle plus (1 + 2 x leadGapBodies) times its
 //     own); the whole search runs with it, and again without it only when that finds nothing (gapped tells which);
 //   - keepWhileAttacking: while attacking with a flank held (not the lead ring), no new pick: the held angle at the
-//     partner's own distance off the target's edge (bodyRadius..standMax), valid when there is room for it and its
-//     silhouette is clear of the lead's, tier 1.
+//     partner's own distance off the target's edge (bodyRadius..standMax), valid when there is room for it, it is in
+//     the frame (the cone's margin, and sees when given) and its silhouette is clear of the lead's, tier 1.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
@@ -102,6 +103,7 @@ inline constexpr float kPartnerCloseAngleStep = 5.f;
 inline constexpr float kPartnerCloseConeMargin = 0.1f; // share of the whole width kept clear each side
 inline constexpr float kPartnerCloseNear = 0.3f;       // m: a point nearer the lens's plane than this is not seen
 inline constexpr double kPartnerCloseHoldSeconds = 1.5; // a flank is kept at least this long
+inline constexpr double kPartnerCloseMeleeHoldSeconds = 2.0; // ... by a melee partner (farFlankFirst)
 inline constexpr float kPartnerCloseClearWeight = 4.f;  // m of walk per unit of lead clearance (capped at 3)
 inline constexpr float kPartnerCloseSidePenalty = 2.f;  // m of walk: not between the screen's edge and the lead
 inline constexpr float kPartnerCloseKeepBonus = 1.f;    // m of walk: the held angle
@@ -239,6 +241,10 @@ FTCORE_API bool partnerCloseInCone(Vec2 cameraPos, Vec2 cameraForward, float hal
 FTCORE_API bool partnerCloseOverlaps(Vec2 cameraPos, Vec2 p, float pr, Vec2 b, float br);
 // From the lens, p's centre is inside the silhouette of the body (radius br) at b and deeper than it.
 FTCORE_API bool partnerCloseHiddenBehind(Vec2 cameraPos, Vec2 p, Vec2 b, float br);
+// From the lens, a body of bodyRadius at p clear of the lead's (same radius) with gapBodies (>= 0) of p's own body
+// widths of screen gap between the silhouettes: the angle apart at least the lead's half-angle plus (1 + 2 x gapBodies)
+// times p's own. 0: only not overlapping.
+FTCORE_API bool partnerCloseClearOfLead(Vec2 cameraPos, Vec2 p, Vec2 lead, float bodyRadius, float gapBodies);
 // Rule 1 of the near field: p at least the lead's depth less kPartnerCloseNearBehindLead along the lens's ground
 // forward, and kPartnerCloseNearLens from the lens. False for a zero forward or a non-finite point.
 FTCORE_API bool partnerCloseNearOk(Vec2 cameraPos, Vec2 cameraForward, Vec2 lead, Vec2 p);

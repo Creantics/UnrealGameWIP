@@ -7,7 +7,8 @@
 // Every point and box is in the plan frame (x east, y north, metres; ftcore::massingEnginePoint takes them to the
 // engine). Heights come from a uint16 height field read by massingGroundAt. The layouts are seeded and repeatable.
 //
-// Plain C++20. hillDress and skylineBand allocate their results (build time only); heightShapeMask doesn't allocate.
+// Plain C++20. hillDress, hillWindows and skylineBand allocate their results (build time only); heightShapeMask doesn't
+// allocate.
 
 #include "ftcore/Api.h"
 #include "ftcore/MassingPlan.h"
@@ -126,6 +127,76 @@ struct RockFaceLook {
     float normalStrength = 1.25f;
     float shade = 0.9f;            // the rock's tint times this: faces stand in their own shade more than open ground
 };
+
+// The hill by night (the ground master's HillNight* and the dress's night master): moonlight on the planted hill read as
+// day, so with the windows' Night (lamps on) the hill's albedo goes down to `albedo` of its day value and its colour
+// `saturation` of the way from its grey, a dark blue-grey-green mass under the pale moon. By day (Night 0) nothing moves.
+struct HillNightLook {
+    float albedo = 0.3f;     // the albedo's share at full night (0.25-0.35 asked)
+    float saturation = 0.35f; // the colour's distance from its grey at full night (1 keeps it)
+};
+
+// How much of the ground at height zM (m over the datum) is hill: 0 under fromM, 1 from fromM + rampM, smooth between
+// (the plant mask's own ramp, so the town's low ground never darkens). No allocation.
+FTCORE_API float hillNightShare(double zM, double fromM, double rampM);
+
+// The hill's albedo at night, as the ground master's code takes it: in (linear RGB) moved toward its dimmed, greyer self
+// by night x share (each clamped to 0..1). night 0 or share 0 returns in unchanged. No allocation.
+FTCORE_API void hillNightAlbedo(const HillNightLook& look, const float in[3], float night, float share, float out[3]);
+
+// Lit windows low on the hill, the far slopes' hamlets: small houses in clusters, each with 1 to windowsMax windows on
+// its front, the front turned to the town. Only ground in the hill's low band (footM up bandShare of the way to the
+// hill's top inside the rectangle), only where the ground falls toward the town (or is near flat), never steeper than
+// maxSlope, off every box by clearM. Hamlets are taken in a hashed order, not the scan's, so a cap thins them evenly.
+struct HillWindowSpec {
+    float footM = 14.f;           // the hill's foot (HillDressSpec::minHeightM): the band starts here ...
+    float bandShare = 0.25f;      // ... and rises this share of the way to the hill's top
+    float hamletCellM = 80.f;     // one candidate hamlet a cell, jittered within it
+    float hamletChance = 0.55f;
+    float hamletRadiusM = 26.f;   // its houses within this of its centre
+    std::uint32_t housesMin = 2, housesMax = 5;
+    std::uint32_t houseTries = 14; // places tried per hamlet
+    float houseSpacingM = 11.f;   // no two houses' centres nearer
+    float maxSlope = 0.45f;       // rise over run under a house
+    float flatSlope = 0.06f;      // ground this flat faces anywhere
+    float faceMin = 0.2f;         // elsewhere the fall must point at the town at least this squarely (cos)
+    float clearM = 8.f;           // off every box's footprint by this, plus the house's own half diagonal
+    double nearX = 0.0, nearY = 0.0; // the town the fronts turn to (plan m)
+    float houseMinW = 6.f, houseMaxW = 9.f; // the front's width
+    float houseDepthM = 6.f;
+    float eavesM = 4.5f;          // the walls over the house's highest ground
+    float sinkM = 0.8f;           // the foot under its lowest ground
+    std::uint32_t windowsMax = 3;
+    float windowW = 1.0f, windowH = 0.8f, windowDepthM = 0.06f;
+    float windowPitchM = 2.2f;    // centre to centre along the front
+    float sillM = 1.1f;           // the window's foot over the front's ground
+    std::size_t maxWindows = 150; // all houses' windows together
+    std::uint32_t seed = 0x417du;
+    // How the build draws them (the street lamps' head master, lit by the windows' Night): a warm interior's colour and
+    // the head's strength. A town window's glow is capped at 0.2, but one of these is a pixel or two across at 500 m, so
+    // it needs more to read as a light at all.
+    float kelvin = 2700.f;
+    float glow = 2.f;
+};
+struct HillHouse {
+    float x = 0.f, y = 0.f;        // plan m, the footprint's centre
+    float z0 = 0.f, z1 = 0.f;      // its foot and its eaves over the datum
+    float yaw = 0.f;               // degrees counter-clockwise from +x: the way the front faces
+    float w = 6.f, d = 6.f;        // the front's width, the depth back from it
+    float frontZ = 0.f;            // the ground at the front's middle
+    std::uint8_t windows = 1;      // lit windows on the front
+};
+struct HillWindow {
+    float x = 0.f, y = 0.f, z = 0.f; // its centre (plan m, z over the datum), windowDepthM / 2 proud of the front
+    float yaw = 0.f;                 // the house's
+};
+// The hamlets over [x0, x1] x [y0, y1]; at most maxWindows windows in all. Repeatable. Allocates (build time only).
+FTCORE_API std::vector<HillHouse> hillWindows(const HeightField& field, const HillWindowSpec& spec, double x0, double y0, double x1, double y1,
+                                              const MassingBox* boxes, std::size_t boxCount);
+// Window k (0 .. house.windows - 1) of a house, spread windowPitchM apart about the front's middle. No allocation.
+FTCORE_API HillWindow hillHouseWindow(const HillHouse& house, const HillWindowSpec& spec, std::size_t k);
+// The band's top (m over the datum) hillWindows uses over the rectangle: footM + bandShare (top - footM). No allocation.
+FTCORE_API float hillWindowBandTop(const HeightField& field, const HillWindowSpec& spec, double x0, double y0, double x1, double y1);
 
 // The share of the field's samples inside plan [x0, x1] x [y0, y1] (every step m) whose slope (rise over run) is at
 // least minSlope; 0 for an empty field or box. No allocation.

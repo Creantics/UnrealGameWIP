@@ -54,7 +54,8 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
                             {"dealer_deal_tell", 3}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 3}, {"ink_hit", 3},
-                            {"water_splash", 3}, {"water_drips", 1}};
+                            {"water_splash", 3}, {"water_drips", 1}, {"eatery_steam", 1}, {"rain", 1},
+                            {"rain_splash", 2}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -583,7 +584,7 @@ TEST_CASE("vfx: the arena ground tells fade out near the camera") {
     VfxNiagaraPlan plan;
     planVfxNiagara(swoop, plan);
     for (const VfxNiagaraEmitter& p : plan.emitters) CHECK(p.ringRadius >= 740.f);
-    // Off by default, and only for an unlit alpha sprite: an additive one keeps its glow and says so.
+    // Off by default, and only for an alpha sprite (lit or not): an additive one keeps its glow and says so.
     VfxEffect plain;
     REQUIRE(importVfxEffect(R"({"name":"p","emitters":[{"name":"a","rate":1,"lifetime":1}]})", plain));
     planVfxNiagara(plain, plan);
@@ -595,6 +596,45 @@ TEST_CASE("vfx: the arena ground tells fade out near the camera") {
     bool said = false;
     for (const std::string& g : plan.emitters[0].gaps) said = said || g.rfind("nearFade:", 0) == 0;
     CHECK(said);
+}
+
+TEST_CASE("vfx: rate and colour knobs, the ripple ring and lit near-fade") {
+    VfxEffect e;
+    std::string err;
+    REQUIRE(importVfxEffect(
+        R"({"name":"k","emitters":[
+            {"name":"a","rate":100,"rateParam":"Rate","colorParam":"Color","lifetime":1,"lit":true,"nearFade":true},
+            {"name":"b","rate":10,"rateParam":"Rate","colorParam":"Color","lifetime":1,"lit":true,"sprite":"ring"},
+            {"name":"c","bursts":[{"count":3}],"rateParam":"Rate","lifetime":1,"sprite":"ring",
+             "startColor":{"between":[[1,0,0,1],[0,0,1,1]]},"colorParam":"Tint"}]})",
+        e, &err));
+    REQUIRE(e.emitters.size() == 3);
+    CHECK(e.emitters[0].rateParam == "Rate");
+    CHECK(e.emitters[0].colorParam == "Color");
+    CHECK(e.emitters[1].sprite == VfxSprite::Ring);
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, plan);
+    REQUIRE(plan.emitters.size() == 3);
+    // A lit alpha sprite now fades near the lens, and binds its knobs.
+    CHECK(plan.emitters[0].lit);
+    CHECK(plan.emitters[0].nearFade);
+    CHECK(plan.emitters[0].rateParam == "Rate");
+    CHECK(plan.emitters[0].colorParam == "Color");
+    CHECK_FALSE(anyGap(plan.emitters[0], "nearFade"));
+    // A lit ring stays a ring; an unlit one is drawn soft and says so.
+    CHECK(plan.emitters[1].sprite == VfxSprite::Ring);
+    CHECK_FALSE(anyGap(plan.emitters[1], "sprite ring"));
+    CHECK(plan.emitters[2].sprite == VfxSprite::Soft);
+    CHECK(anyGap(plan.emitters[2], "sprite ring"));
+    // No rate: nothing to bind. Several start colours: the knob's default is the first.
+    CHECK(plan.emitters[2].rateParam.empty());
+    CHECK(anyGap(plan.emitters[2], "rateParam"));
+    CHECK(plan.emitters[2].colorParam == "Tint");
+    CHECK(anyGap(plan.emitters[2], "colorParam"));
+    // A knob is a plain name (it becomes "User.<name>").
+    CHECK(contains(importError(R"({"name":"x","rate":1,"rateParam":"User.Rate"})"), "rateParam"));
+    CHECK(contains(importError(R"({"name":"x","rate":1,"colorParam":""})"), "colorParam"));
+    CHECK(contains(importError(R"({"name":"x","rate":1,"sprite":"halo"})"), "sprite"));
 }
 
 TEST_CASE("vfx: one-shot plans report their duration") {
