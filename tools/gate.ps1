@@ -21,7 +21,16 @@ if ($LASTEXITCODE -ne 0) { "CLANG FAILED"; exit 1 }
 if ($LASTEXITCODE -ne 0) { "CMAKE BUILD FAILED"; exit 1 }
 & "$cm\ctest.exe" --test-dir "$repo\Core\build" -C Debug --output-on-failure 2>&1 | Select-String 'Passed|Failed|tests passed|Error|missing|wrapper|reserved|:\d+:'
 if ($LASTEXITCODE -ne 0) { "CTEST FAILED"; exit 1 }
-& "$repo\Core\build\Debug\ftcore_tests.exe" 2>&1 | Select-String 'test cases|assertions'
+# The direct run prints the counts; a failed case fails the gate and its block is printed (case, file:line, values), so a
+# failure that does not come back on a rerun still has a name.
+$dt = & "$repo\Core\build\Debug\ftcore_tests.exe" --no-intro 2>&1 | ForEach-Object { "$_" }
+$dtExit = $LASTEXITCODE
+$dt | Select-String 'test cases|assertions'
+if ($dtExit -ne 0) {
+    # doctest's failure block: the case line two above the ERROR, the values and logged lines under it
+    $dt | Select-String 'ERROR:' -Context 4, 4 | Select-Object -First 20 | ForEach-Object { $_.Context.PreContext; $_.Line; $_.Context.PostContext; '' }
+    "DOCTEST FAILED"; exit 1
+}
 
 if ($Ubt) {
     # Only an editor on this checkout's project locks its binaries; other worktrees' editors are fine.
