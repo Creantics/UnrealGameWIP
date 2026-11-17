@@ -3380,6 +3380,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			LayCubeWearing(Eave, Timber ? Timber : (bSurfaces ? WearLook(LookSet, Eave) : Finish[static_cast<int32>(ftcore::massingFinish(Eave))]),
 				EFTCellKind::Solid, EFTCellCull::None);
 		}
+		// The first bay's south end wall, board-and-batten in the eave's timber (from the lane's south end it was bare stucco).
+		for (int32 C = 0; C < Hero.endCladCount; ++C)
+		{
+			const ftcore::MassingBox& Clad = Hero.endClad[C];
+			LayCubeWearing(Clad, Timber ? Timber : (bSurfaces ? WearLook(LookSet, Clad) : Finish[static_cast<int32>(ftcore::massingFinish(Clad))]),
+				EFTCellKind::Solid, EFTCellCull::None);
+		}
 		// The meshes (tools/hero_corner_props.py, FTImportProp -Dest=/Game/Props/HeroCorner): each one's origin is its hook
 		// (a lantern's top), its foot (a post) or its facade end (a cable, running along +X). Their paper slots wear the
 		// night glow. The glTF import puts each file's mesh under <Dest>/<file>/StaticMeshes/<mesh>; a mesh moved up to

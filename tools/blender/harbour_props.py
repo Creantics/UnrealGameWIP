@@ -563,8 +563,118 @@ def far_tower(name):
     return b.finish()
 
 
+# =====================================================================================================================
+# The quay edge: mooring posts, the rope rail hung between them, a quay lamp
+# =====================================================================================================================
+
+hc.MATERIALS.update({
+    "hb_rope": ((0.30, 0.24, 0.15), 0.90, 0.0),           # weathered hemp rail rope (grey-brown, salt-bleached)
+})
+
+QP_H, QP_SIDE, QP_EYE = 1.05, 0.24, 0.86   # quay post: height, square side, rope-eye height
+
+
+def quay_post(name):
+    """A squared timber mooring post with a chamfered, iron-capped head, two iron bands and an iron eye on each side
+    face (+X and -X) at QP_EYE, the rope rail's attachment. Origin at the ground centre."""
+    b = Builder(name)
+    h = QP_SIDE / 2
+    b.add(bm_box(-h, -h, -0.02, h, h, QP_H - 0.08, bevel=0.03), "hc_timber_post")  # chamfered shaft, 2 cm buried
+    # a pyramid head (weathered cap); lathe seg 4 at 45 degrees: half-side = r / sqrt(2)
+    b.add(bm_lathe([(0.0, QP_H - 0.08), (h * 1.53, QP_H - 0.08), (h * 1.53, QP_H - 0.055), (h * 0.65, QP_H),
+                    (0.0, QP_H + 0.005)], 4, phase=math.pi / 4, smooth=False), "hc_timber_post")
+    b.add(bm_box(-h - 0.012, -h - 0.012, QP_H - 0.11, h + 0.012, h + 0.012, QP_H - 0.08), "hc_rust")
+    b.add(bm_box(-h - 0.010, -h - 0.010, 0.12, h + 0.010, h + 0.010, 0.17), "hc_rust")
+    for sg in (-1, 1):
+        x = sg * (h + 0.004)
+        b.add(bm_box(x - 0.006, -0.035, QP_EYE - 0.05, x + 0.006, 0.035, QP_EYE + 0.05), "hc_rust")  # plate
+        b.add(bm_torus(0.045, 0.011, 14, 6), "hc_rust", M=T(sg * (h + 0.05), 0, QP_EYE) @ R(90, "X"), uv="keep")
+    # bolt heads on the bands
+    for z in (0.145, QP_H - 0.095):
+        for sg in (-1, 1):
+            b.add(bm_lathe([(0.0, 0.0), (0.016, 0.0), (0.014, 0.012), (0.0, 0.014)], 8), "hc_iron",
+                  M=T(0, sg * (h + 0.012), z) @ R(-sg * 90, "X"), uv="keep")
+    print("quay post tris", b.tris())
+    return b.finish()
+
+
+def rope_rail(name, span=2.5, sag=0.13, r=0.022):
+    """A laid three-strand rope from (0, 0, 0) to (span, 0, 0) sagging by sag, ends spliced into short eyes around the
+    posts' rings. Origin at the start eye (the -X post's +X ring); place at the ring, length along +X (span 2.5 m)."""
+    b = Builder(name)
+    n = 40
+    centre = [Vector((span * i / n, 0.0, -4 * sag * (i / n) * (1 - i / n))) for i in range(n + 1)]
+    for k in range(3):  # three strands twisted round the centre line
+        pts = []
+        for i in range(n * 4 + 1):
+            t = i / (n * 4)
+            p = Vector((span * t, 0.0, -4 * sag * t * (1 - t)))
+            a = 2 * math.pi * (k / 3 + t * span / 0.09)  # one lay per 9 cm
+            pts.append(p + Vector((0.0, 0.55 * r * math.cos(a), 0.55 * r * math.sin(a))))
+        b.add(bm_tube(pts, 0.55 * r, seg=6), "hb_rope", uv="keep")
+    b.add(bm_tube(centre, 0.6 * r, seg=6), "hb_rope", uv="keep")  # core: no gaps between strands
+    for x0, sg in ((0.0, 1), (span, -1)):  # spliced eyes and seizing
+        b.add(bm_torus(0.05, 0.6 * r, 14, 6), "hb_rope", M=T(x0 - sg * 0.02, 0, 0) @ R(90, "X"), uv="keep")
+        b.add(bm_tube([(x0 + sg * 0.06, 0, -0.003), (x0 + sg * 0.12, 0, -0.008)], 1.15 * r, seg=8), "hb_tarline",
+              uv="keep")
+    print("rope rail tris", b.tris())
+    return b.finish()
+
+
+def quay_lamp(name):
+    """A 4.3 m quay lamp: a dressed stone plinth, a tapered dark iron post with collars, a scrolled arm to +Y at 3.7 m and
+    a hooded paper lantern hung from it (slot lantern_paper, which Unreal makes glow; no light in the file). Origin at
+    the ground centre; the arm points +Y (over the walk or the water)."""
+    b = Builder(name)
+    # plinth: two stepped stones
+    b.add(bm_box(-0.26, -0.26, 0.0, 0.26, 0.26, 0.22, bevel=0.02), "hc_stone")
+    b.add(bm_box(-0.19, -0.19, 0.22, 0.19, 0.19, 0.52, bevel=0.018), "hc_stone")
+    # base flare and post
+    b.add(bm_lathe([(0.0, 0.52), (0.13, 0.52), (0.13, 0.56), (0.09, 0.62), (0.075, 0.78), (0.0, 0.78)], 16),
+          "hc_iron", uv="keep")
+    b.add(bm_tube([(0, 0, 0.75), (0, 0, 2.2), (0, 0, 3.95)], [0.062, 0.05, 0.042], seg=14), "hc_iron", uv="keep")
+    for z, rr in ((0.80, 0.075), (2.10, 0.062), (3.70, 0.055)):
+        b.add(bm_lathe([(0.0, z - 0.03), (rr, z - 0.03), (rr, z + 0.03), (0.0, z + 0.03)], 14), "hc_iron", uv="keep")
+    b.add(bm_lathe([(0.0, 3.93), (0.06, 3.93), (0.035, 4.05), (0.012, 4.18), (0.0, 4.22)], 12), "hc_iron", uv="keep")
+    # arm: a straight bar with a scroll brace under it
+    ya = 0.85
+    b.add(bm_tube([(0, 0.03, 3.72), (0, ya * 0.5, 3.75), (0, ya, 3.74)], 0.022, seg=8), "hc_iron", uv="keep")
+    scroll = [Vector((0, 0.04, 3.30))]
+    for i in range(1, 13):
+        t = i / 12
+        a = math.pi * 1.4 * t
+        scroll.append(Vector((0, 0.04 + 0.55 * t, 3.30 + 0.40 * math.sin(0.5 * math.pi * t))) +
+                      Vector((0, 0.05 * math.sin(a) * (1 - t), 0)))
+    b.add(bm_tube(scroll, 0.013, seg=6), "hc_iron", uv="keep")
+    b.add(bm_lathe([(0.0, 0.0), (0.03, 0.0), (0.0, 0.05)], 8), "hc_iron", M=T(0, ya, 3.74) @ R(-90, "X"), uv="keep")
+    # hanger and lantern (about 0.55 m tall, 0.32 m across)
+    zl = 3.70
+    b.add(bm_tube([(0, ya - 0.02, zl), (0, ya - 0.02, zl - 0.14)], 0.005, seg=6), "hc_iron", uv="keep")
+    M = T(0, ya - 0.02, zl - 0.14)
+    b.add(bm_lathe([(0.0, 0.03), (0.06, 0.02), (0.2, -0.06), (0.21, -0.08), (0.17, -0.085), (0.0, -0.06)], 20),
+          "hc_iron", M=M, uv="keep")  # hood
+    zt, zb = -0.09, -0.52
+    zc, hz = 0.5 * (zt + zb), 0.5 * (zt - zb)
+    prof = []
+    for i in range(15):
+        zz = zb + (zt - zb) * i / 14
+        e = math.sqrt(max(0.0, 1 - ((zz - zc) / (hz * 1.05)) ** 2))
+        prof.append((max(0.08, 0.16 * e), zz))
+    b.add(bm_lathe(prof, 20), "lantern_paper", M=M, uv="keep")
+    for zz in (-0.20, -0.305, -0.41):  # bamboo hoops proud of the paper
+        e = math.sqrt(max(0.0, 1 - ((zz - zc) / (hz * 1.05)) ** 2))
+        b.add(bm_torus(max(0.08, 0.16 * e) + 0.002, 0.003, 20, 4), "lantern_rib", M=M @ T(0, 0, zz), uv="keep")
+    b.add(bm_lathe([(0.0, -0.545), (0.09, -0.545), (0.10, -0.53), (0.09, -0.515), (0.0, -0.515)], 16), "lantern_wood",
+          M=M, uv="keep")
+    print("quay lamp tris", b.tris())
+    return b.finish()
+
+
 # name: (builder, triangle budget, textured)
 PARTS = {
+    "SM_HB_QuayPost": (quay_post, 4000, True),
+    "SM_HB_RopeRail": (rope_rail, 12000, False),
+    "SM_HB_QuayLamp": (quay_lamp, 12000, True),
     "SM_HB_WorkBoat": (work_boat, 30000, True),
     "SM_HB_CabinBoat": (cabin_boat, 30000, True),
     "SM_HB_Skiff": (skiff, 30000, True),
