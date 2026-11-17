@@ -167,6 +167,10 @@ struct NightLook {
     float charFillRefM = 4.f;
     float charFillKelvin = 8000.f;
     float charFillPitchDeg = -20.f;  // below the camera's own pitch (negative: from above)
+    // Near a lit shop bay the shop light shapes the figure: the fill is gone within charFillBayNearM of the nearest lit
+    // bay's front and whole from charFillBayFarM out (nightCharacterFillShare).
+    float charFillBayNearM = 3.f;
+    float charFillBayFarM = 7.f;
     float capRadiusM = 15.f;       // lights within this of each other share their light
     float capShare = 0.2f;         // each neighbour within capRadiusM takes this much off (1 / (1 + capShare n))
     float capFloor = 0.4f;         // no light falls under this share of its candela
@@ -269,6 +273,9 @@ FTCORE_API float nightMoonKey(const NightLook& look, const NightKeyModel& model,
 // The characters-only fill's illuminance (lux) at a NightAmount: 0 by day, the lamp key's at charFillRefM less
 // charFillStops at full night, in between by the night. No allocation.
 FTCORE_API float nightCharacterFillLux(const NightLook& look, float night);
+// The share of that fill kept at bayDistanceM from the nearest lit bay's front (negative: no lit bay): 0 inside
+// charFillBayNearM, 1 from charFillBayFarM out, a smoothstep between. Far under near is read as one edge at far.
+FTCORE_API float nightCharacterFillShare(const NightLook& look, float bayDistanceM);
 
 // The intensity share of a light with `neighbours` others within capRadiusM.
 FTCORE_API float nightLampScale(const NightLook& look, std::size_t neighbours);

@@ -108,6 +108,8 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightCharFillStops="), L.charFillStops);
 	ReadNumber(Cmd, TEXT("NightCharFillK="), L.charFillKelvin);
 	ReadNumber(Cmd, TEXT("NightCharFillPitch="), L.charFillPitchDeg);
+	ReadNumber(Cmd, TEXT("NightCharFillBayNear="), L.charFillBayNearM);
+	ReadNumber(Cmd, TEXT("NightCharFillBayFar="), L.charFillBayFarM);
 	ReadNumber(Cmd, TEXT("NightFog="), L.fogKeep);
 	ReadNumber(Cmd, TEXT("NightEV="), L.exposureEV100);
 	ReadNumber(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);
