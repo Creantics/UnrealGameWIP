@@ -830,6 +830,8 @@ std::uint64_t PartnerBrainSave::hash() const {
         for (std::size_t i = 0; i < kPartnerInterceptSlots; ++i) h.add(closeEngaged[i]).add(closeOff[i]);
     }
     if (steppedOut) h.add(std::uint8_t{23}).add(steppedOut); // rule 19's step out (never set by the classic camera)
+    if (headingTarget >= 0) // rule 19's heading hold
+        h.add(std::uint8_t{25}).add(headingTarget).add(headingUntil).add(headingAt.x).add(headingAt.y);
     return h.value;
 }
 
@@ -1094,6 +1096,7 @@ void PartnerBrain::rolesSwapped() {
     s_.placeFor = 0.0;
     s_.closeHold = {};
     s_.intercept = -1; // its cap's ring stays (it is about the pair's play, as the budget's)
+    s_.headingTarget = -1;
     s_.out = PartnerIntent{};
     ++s_.swaps;
 }
@@ -2138,11 +2141,24 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             const bool rushed = inside && !tallView(e) && edge(in.pos, e) < t.standoffMeters - kPartnerRangeStepOut &&
                                 out.closeTier >= 3;
             const bool nearHere = !nearField || partnerCloseNearOk(nearLens, nearForward, in.leadPos, in.pos);
-            const bool fromHere =
+            const bool placeOk =
                 inReach && g.roomOk(in.pos) && (!fm || seenHere) && (rushed ? nearHere : spotOk(in.pos)) &&
-                !(nearField && rangePartlyHidden(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius)) &&
-                ((giveUp && !g.inWedge(in.pos, 0.f)) || any || inside ||
-                 (engageDue && !g.inWedge(in.pos, 0.f) && !makeKeep(g, e).in(in.pos, 0.f)));
+                !(nearField && rangePartlyHidden(nearLens, in.pos, in.leadPos, in.station.close.bodyRadius));
+            // Rule 19 (11-17): a start held for its drawn heading stands where the rules let it start and turns, not
+            // walks on, within kPartnerStartHeadingHoldMeters of that spot (its timers are not asked again). A ranged
+            // kit (rushed: its frame and spot shift with the enemy on it) starts from there; a melee kit only while
+            // its place still holds, else it waits there.
+            const bool turning = closeOn && inReach && s_.headingTarget == tgt && s_.now < s_.headingUntil &&
+                                 dist(in.pos, s_.headingAt) <= kPartnerStartHeadingHoldMeters;
+            const bool fromHere =
+                (turning && rangeOn) ||
+                (placeOk && (turning || (giveUp && !g.inWedge(in.pos, 0.f)) || any || inside ||
+                             (engageDue && !g.inWedge(in.pos, 0.f) && !makeKeep(g, e).in(in.pos, 0.f))));
+            if (!fromHere && turning) {
+                out.why = PartnerWhy::Pause;
+                out.enemy = tgt;
+                return out;
+            }
             if (!fromHere) {
                 Vec2 goal = p;
                 if (giveUp && (!inReach || !g.roomOk(in.pos))) inReachSpot(g, t, e, in.order, in.pos, goal);
@@ -2205,7 +2221,22 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
             return out;
         }
     }
+    if (closeOn && (in.heading.x != 0.f || in.heading.y != 0.f)) { // rule 19: its drawn body turned first (11-17)
+        const Vec2 to = stUnit(stSub(e.pos, in.pos), Vec2{0.f, 0.f});
+        if (stDot(to, to) > 0.5f &&
+            stDot(stUnit(in.heading, to), to) < std::cos(kPartnerStartHeadingDegrees * kStDeg) - 1e-6f) {
+            out.why = PartnerWhy::Pause; // it stands and its heading turns meanwhile
+            out.enemy = tgt;
+            if (s_.headingTarget != tgt || s_.now >= s_.headingUntil) {
+                s_.headingTarget = tgt;
+                s_.headingUntil = s_.now + kPartnerStartHeadingHoldSeconds;
+                s_.headingAt = in.pos;
+            }
+            return out;
+        }
+    }
     s_.drawn = false;
+    s_.headingTarget = -1;
     s_.phase = Phase::String;
     s_.clock = 0.0;
     s_.begunBlows = 1;
