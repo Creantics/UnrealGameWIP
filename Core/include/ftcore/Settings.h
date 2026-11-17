@@ -187,6 +187,11 @@ FTCORE_API const char* settingsRowLabel(SettingsRow row);
 // Writes the row's value ("Normal", "On", "70%", "1.5 s") into buf, always NUL-terminated when
 // cap > 0; returns its length. Empty for Back.
 FTCORE_API std::size_t settingsRowValue(const Settings& s, SettingsRow row, char* buf, std::size_t cap);
+// The row's label key in Data/Loc/<culture>/ui.json ("settings.text_speed"); "" for an out-of-range row.
+FTCORE_API const char* settingsRowKey(SettingsRow row);
+// The key of the row's value word now ("settings.on", "settings.text_speed.fast"); nullptr when the value is a number
+// (settingsRowValue writes it) and for Back.
+FTCORE_API const char* settingsValueKey(const Settings& s, SettingsRow row);
 // Steps the row's value by dir (-1 or +1). With wrap, an enum or toggle goes round; a slider always
 // stops at its ends, and without wrap so does every row (a toggle just sets itself). True when the
 // value changed.

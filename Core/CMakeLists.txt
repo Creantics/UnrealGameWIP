@@ -620,6 +620,7 @@ if(FTCORE_BUILD_TESTS)
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
         -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
+        -DSETTINGS=${CMAKE_CURRENT_SOURCE_DIR}/src/Settings.cpp
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
     add_test(NAME hints_read COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird

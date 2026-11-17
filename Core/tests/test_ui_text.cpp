@@ -1,10 +1,14 @@
 #include "ftcore/UiText.h"
 #include "ftcore/InputBindings.h"
+#include "ftcore/Settings.h"
 
 #include "AllocCounter.h"
 #include "TestAssets.h"
 
 #include <doctest/doctest.h>
+
+#include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -113,6 +117,41 @@ TEST_CASE("ui text: the project's English table loads and holds no story") {
     CHECK(en.entries.size() >= 40);
     for (const UiTextEntry& e : en.entries) CHECK_MESSAGE(e.text.size() < 160, e.key);
     CHECK(checkUiTranslation(en, pseudoLocalise(en)).empty());
+}
+
+TEST_CASE("ui text: every settings row's label and value word has its key, with Core's English words") {
+    std::string json;
+    REQUIRE(ftcore_test::readProjectData("Loc/en/ui.json", json));
+    UiTextTable en;
+    REQUIRE(importUiText(json, en));
+    std::vector<std::string> keys;
+    for (std::uint32_t i = 0; i < kSettingsRowCount; ++i) {
+        const SettingsRow row = static_cast<SettingsRow>(i);
+        const std::string key = settingsRowKey(row);
+        REQUIRE_MESSAGE(!key.empty(), i);
+        const std::string* label = en.find(key);
+        REQUIRE_MESSAGE(label != nullptr, key);
+        CHECK_MESSAGE(*label == settingsRowLabel(row), key);
+        for (const std::string& other : keys) CHECK_MESSAGE(other != key, key);
+        keys.push_back(key);
+        // Every value the row can take (stepping round from the defaults): a word has its key with Core's English
+        // word; a number (or Back) has none.
+        Settings s;
+        for (int step = 0; step < 12; ++step) {
+            char buf[40];
+            settingsRowValue(s, row, buf, sizeof buf);
+            if (const char* valueKey = settingsValueKey(s, row)) {
+                const std::string* word = en.find(valueKey);
+                REQUIRE_MESSAGE(word != nullptr, valueKey);
+                CHECK_MESSAGE(*word == buf, valueKey);
+            } else {
+                const std::string text = buf;
+                CHECK_MESSAGE((row == SettingsRow::Back ? text.empty() : text.find_first_of("0123456789") != std::string::npos), key);
+            }
+            if (!adjustSetting(s, row, +1, true)) break;
+        }
+    }
+    CHECK(std::string(settingsRowKey(static_cast<SettingsRow>(kSettingsRowCount))).empty());
 }
 
 TEST_CASE("ui text: every word the controls lines use is in the English table") {
