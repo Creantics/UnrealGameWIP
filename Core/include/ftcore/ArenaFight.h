@@ -1057,6 +1057,10 @@ struct ArenaAllyOut {
     bool intercept = false;           // a report: the brain's target is an intercept (rule 19, Spread: an enemy
                                       // outside the close lens winding up at the lead); its off-frame steps are
                                       // counted apart, "intercept off-frame" (appended)
+    Vec2 heading{1.f, 0.f};           // unit: its body's drawn heading: turned at most 540 deg/s toward its walk
+                                      // (when it walked over 0.05 m/s this tick), else toward its facing.
+                                      // Under the close camera a string starts only with it within 60 degrees of
+                                      // its target (PartnerInput::heading) (appended)
 };
 
 struct ArenaOutput {
@@ -1771,6 +1775,8 @@ private:
         float headingSince = -1.f;          // its last reversal (or its walk's start) at this fight time
         bool bodyTurn = false;              // this tick a body forced its walk past the hold
         bool intercept = false;             // a report: the intent's intercept this tick (never hashed)
+        Vec2 heading{1.f, 0.f};             // its body's drawn heading (ArenaAllyOut::heading)
+        bool headingWalked = false;         // it walked this tick (over 0.05 m/s): no 60 degree gate on a start
     };
 
     ArenaDef def_;
