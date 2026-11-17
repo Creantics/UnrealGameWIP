@@ -28,6 +28,11 @@ bool GBootMapGuessed = false;
 // Per map and mode ("<map>|1" with the command line, "<map>|0" without): the switch line handed out. Boxed so a
 // pointer handed out stays put as the map grows.
 TMap<FString, TUniquePtr<FString>> GBootLines;
+// The last line handed out per form (0 row alone, 1 with the command line) and the map generation it was for: a call
+// with no map change since returns it without building a key (per-frame readers, FTNight::Look).
+uint32 GBootGeneration = 1;
+const TCHAR* GBootLast[2] = {nullptr, nullptr};
+uint32 GBootLastGeneration[2] = {0, 0};
 
 const ftcore::DemoBootTable& BootTable()
 {
@@ -92,10 +97,17 @@ const TCHAR* FTBootSwitches(bool bWithCommandLine)
 		GBootMapGuessed = true;
 		GBootMap = GuessLaunchMap();
 	}
+	const int32 Form = bWithCommandLine ? 1 : 0;
+	if (GBootLast[Form] && GBootLastGeneration[Form] == GBootGeneration)
+	{
+		return GBootLast[Form];
+	}
 	const FString Key = GBootMap + (bWithCommandLine ? TEXT("|1") : TEXT("|0"));
 	if (const TUniquePtr<FString>* Found = GBootLines.Find(Key))
 	{
-		return **Found->Get();
+		GBootLast[Form] = **Found->Get();
+		GBootLastGeneration[Form] = GBootGeneration;
+		return GBootLast[Form];
 	}
 	const FTCHARToUTF8 Map(*GBootMap);
 	const ftcore::DemoBootRow* Row = ftcore::demoBootFind(BootTable(), std::string_view(Map.Get(), static_cast<size_t>(Map.Length())));
@@ -107,13 +119,19 @@ const TCHAR* FTBootSwitches(bool bWithCommandLine)
 			*GBootMap, UTF8_TO_TCHAR(Row->switches.c_str()), UTF8_TO_TCHAR(Row->status.c_str()));
 	}
 	TUniquePtr<FString>& Slot = GBootLines.Add(Key, MakeUnique<FString>(UTF8_TO_TCHAR(Merged.c_str())));
-	return **Slot;
+	GBootLast[Form] = **Slot;
+	GBootLastGeneration[Form] = GBootGeneration;
+	return GBootLast[Form];
 }
 
 void FTDemoBootSetMap(const FString& MapName)
 {
 	FScopeLock Lock(&GBootLock);
-	GBootMap = MapName;
+	if (GBootMap != MapName)
+	{
+		GBootMap = MapName;
+		++GBootGeneration;
+	}
 	GBootMapGuessed = true;
 }
 
