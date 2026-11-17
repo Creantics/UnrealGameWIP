@@ -1264,6 +1264,7 @@ private:
 	int32 CloseMissFoeLow = 0, CloseMissFoeHigh = 0, CloseMissFoeAtLens = 0;
 	float CloseMissFoeSum = 0.f;
 	int32 FrameShotSkipped = 0; // frames of a capture's view (or a lens past the arm and a metre) left out of the frame check
+	int32 CloseFarSkipped = 0;  // of those, the close camera's frames with the lens past the arm and a metre from the pivot
 	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
 	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
 	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.

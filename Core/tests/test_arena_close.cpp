@@ -775,14 +775,18 @@ TEST_CASE("close frame: stand-off clearance moves the lens out on its shoulder, 
                 ArenaCameraPose cleared = pose;
                 cleared.side += c.side;
                 cleared.pivot += c.pivot;
-                if (c.pivot < R.clearPivotUp - 1e-4f) CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, clearBody, hid, R.clearMargin));
+                const float room = R.clearSideMax - std::fabs(pose.side);
+                const bool fallback = std::fabs(c.side) >= room - 1e-4f && c.pivot >= R.clearPivotUp - 1e-4f; // none cleared
+                if (!fallback) CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, clearBody, hid, R.clearMargin));
                 CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, body, hid, 0.f)); // the head itself is seen in every case
                 // The least move: no pair of steps with a smaller sum clears it.
                 const float sum = std::fabs(c.side) + c.pivot;
-                for (int ks = 0; ks <= 6; ++ks)
-                    for (int kp = 0; kp <= 6; ++kp) {
-                        const float add = std::min(R.clearSideMax - std::fabs(pose.side), ks * R.clearStep);
-                        const float up = kp * R.clearStep;
+                const int sideSteps = static_cast<int>(std::ceil(room / R.clearStep - 1e-4f));
+                const int upSteps = static_cast<int>(std::ceil(R.clearPivotUp / R.clearStep - 1e-4f));
+                for (int ks = 0; ks <= sideSteps; ++ks)
+                    for (int kp = 0; kp <= upSteps; ++kp) {
+                        const float add = std::min(room, ks * R.clearStep);
+                        const float up = std::min(R.clearPivotUp, kp * R.clearStep);
                         if (add + up >= sum - 1e-4f) continue;
                         ArenaCameraPose less = pose;
                         less.side += shoulder * add;

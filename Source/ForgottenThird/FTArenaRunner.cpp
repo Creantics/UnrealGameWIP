@@ -135,9 +135,11 @@ constexpr float kPartnerActMin = 0.25f;
 constexpr float kPartnerEngagedWindow = 5.f;
 // Under this many engaged seconds the rate bar is not covered (the line says so and judges the screen share alone).
 constexpr float kPartnerEngagedMinSeconds = 5.f;
+#if !UE_BUILD_SHIPPING
 // -ArenaStandOffStrike: the presses of one light string and the time between them (s).
 constexpr int32 kStandOffStringPresses = 3;
 constexpr float kStandOffPressGap = 0.45f;
+#endif
 // The close lens's boom lag held to this far (m): the lead sits about 0.05 of the width inside his third, which at the close
 // arm is about 0.15 m across, and the boom's own lag left the lens up to 0.6 m behind a running lead.
 constexpr float kArenaCloseLagMost = 0.10f;
@@ -151,8 +153,10 @@ ftcore::ArenaCameraPose WallScaled(ftcore::ArenaCameraPose Pose, float Share)
 }
 
 constexpr float kArenaFaceHeight = ftcore::kArenaLookFaceShare;
+#if !UE_BUILD_SHIPPING
 // The close framing check's aim point on a target with no weak point: its chest, this share of its height up.
 constexpr float kArenaChestShare = 0.72f;
+#endif
 // A skinned enemy's hit reactions and playing rates: the rate that lands a clip's impact at the end of its startup is held
 // to these.
 constexpr float kArenaMinClipRate = 0.25f;
@@ -551,7 +555,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 	CloseMissFoeLow = CloseMissFoeHigh = CloseMissFoeAtLens = 0;
 	CloseMissFoeSum = 0.f;
-	FrameShotSkipped = 0;
+	FrameShotSkipped = CloseFarSkipped = 0;
 	ResetLeadFrameChecks();
 	FrameLeadWorst = FrameFoeWorst = FrameTurnMost = FrameRateMost = FrameLensMost = FrameArmMost = FramePrev = 0.f;
 	for (int32 I = 0; I < 4; ++I)
@@ -1592,6 +1596,9 @@ void UFTArenaRunner::PutBodiesAtStart()
 {
 	Bodies = ftcore::ArenaBodies();
 	Bodies.player = Fight.playerStart();
+	// Each fight starts on the right shoulder (reset again below with the rest of the lens), before the partner's close
+	// start reads it: a restart after a left-shoulder fight would place the partner on the wrong flank otherwise.
+	CloseShoulder = CloseShoulderWant = 1.f;
 	if (bAllyOn)
 	{
 		Bodies.ally = bCloseShape && bPartner ? PartnerCloseStart(Bodies.player, Fight.playerStartFacing())
@@ -5266,10 +5273,16 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 	const FVector Eye = Cam.GetCameraLocation();
 	// Only the lead's play camera is judged (ruled 11-16): a capture's shot or side view, or a lens further from the pivot
 	// than the arm and a metre, is no play frame and is left out of every count here.
-	if (PC->GetViewTarget() != PlayerFigure.Get() ||
+	if (PC->GetViewTarget() != PlayerFigure.Get())
+	{
+		++FrameShotSkipped;
+		return;
+	}
+	if (bCloseShape &&
 		FVector::Dist(Eye, FVector(Bodies.player.x * 100.0, Bodies.player.y * 100.0, ZoneZ + Fit.camera.pivot * 100.0)) > (Fit.camera.arm + 1.f) * 100.0)
 	{
 		++FrameShotSkipped;
+		++CloseFarSkipped; // reported on the miss line: a lens that far off is a lag or cut fault the split must show
 		return;
 	}
 	const FRotator View = ViewRotation(Cam);
@@ -5612,10 +5625,11 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 		ClearWant.side *= 1.f - CloseContact;
 		ClearWant.pivot *= 1.f - CloseContact;
 	}
-	ClearSideNow = ftcore::arenaCloseClearStep(R, ClearSideNow, ClearWant.side, DeltaSeconds);
+	// The side is eased unsigned (ClearWant.side carries the shape's own sign) and drawn on this frame's shoulder.
+	ClearSideNow = ftcore::arenaCloseClearStep(R, ClearSideNow, FMath::Abs(ClearWant.side), DeltaSeconds);
 	ClearPivotNow = ftcore::arenaCloseClearStep(R, ClearPivotNow, ClearWant.pivot, DeltaSeconds);
 	Fit.camera.pivot = Shape.pivot + ClearPivotNow;
-	Fit.camera.side = Shape.side + ClearSideNow;
+	Fit.camera.side = Shape.side + (Shape.side < 0.f ? -ClearSideNow : ClearSideNow);
 	Fit.camera.fov = Shape.fov;
 	CameraLens.targetX = Shape.screenX;
 	CameraLens.cutMin = Shape.cutMin;
@@ -6540,10 +6554,11 @@ void UFTArenaRunner::LogFeatureChecks() const
 				CloseFrameFoe, CloseFrameMate, FrameShotSkipped);
 			const int32 FoeMisses = FrameSettled - CloseFrameFoe;
 			const int32 LeadMisses = FrameSettled - CloseFrameLead;
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close framing misses: target %d (below its band %d, above %d, mean share %.3f, aim point under 1 m in front of the lens %d; with the boom wall-shortened %d, the lens lagging over 0.15 m %d, the turn at its cap %d, the partner's turn on %d, the lead over 3 m/s %d, under 3 m %d); lead out of its third %d (wall-shortened %d, lagging %d, turn at its cap %d, partner's turn %d, over 3 m/s %d, under 3 m %d)."),
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close framing misses: target %d (below its band %d, above %d, mean share %.3f, aim point under 1 m in front of the lens %d; with the boom wall-shortened %d, the lens lagging over 0.15 m %d, the turn at its cap %d, the partner's turn on %d, the lead over 3 m/s %d, under 3 m %d); lead out of its third %d (wall-shortened %d, lagging %d, turn at its cap %d, partner's turn %d, over 3 m/s %d, under 3 m %d); lens over the arm and 1 m from the pivot (left out) %d."),
 				FoeMisses, CloseMissFoeLow, CloseMissFoeHigh, FoeMisses > 0 ? CloseMissFoeSum / static_cast<float>(FoeMisses) : 0.f, CloseMissFoeAtLens,
 				CloseMissWall[0], CloseMissLag[0], CloseMissCap[0], CloseMissMateTurn[0], CloseMissFast[0], CloseMissNear[0],
-				LeadMisses, CloseMissWall[1], CloseMissLag[1], CloseMissCap[1], CloseMissMateTurn[1], CloseMissFast[1], CloseMissNear[1]);
+				LeadMisses, CloseMissWall[1], CloseMissLag[1], CloseMissCap[1], CloseMissMateTurn[1], CloseMissFast[1], CloseMissNear[1],
+				CloseFarSkipped);
 		}
 		const TCHAR* Bands[4] = {TEXT("under 3"), TEXT("3-6"), TEXT("6-10"), TEXT("10 and over")};
 		for (int32 I = 0; I < 4; ++I)
@@ -8181,6 +8196,7 @@ void UFTArenaRunner::SpawnAlly(UWorld* World)
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	AllyFigure = World->SpawnActor<AFTArenaFighter>(AFTArenaFighter::StaticClass(), FTransform::Identity, Params);
+	AllyDrawYawAt = -1.0; // a new figure takes its wanted yaw at once
 	if (AllyFigure)
 	{
 		// A lead's look is worn only by a player-side figure; the view stays on the player's figure.
@@ -8265,9 +8281,10 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 			Pose.Swing = Blow + 1 >= Lights ? EFTArenaSwing::Overhead : ((Blow % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 		}
 	}
-	// No one-frame snap: the drawn figure turns toward the wanted yaw at kArenaAllyTurnRate at most, so it turns into a
-	// string over its startup. The first placement of a session takes the wanted yaw at once; a held clock holds it.
-	if (AllyDrawYawAt < 0.0)
+	// No one-frame snap for the close camera's partner: the drawn figure turns toward the wanted yaw at kArenaAllyTurnRate
+	// at most, so it turns into a string over its startup. The first placement of a session or of a new figure takes the
+	// wanted yaw at once; a held clock holds it. Classic and the plain follower are drawn at the wanted yaw, as before.
+	if (AllyDrawYawAt < 0.0 || !(bPartner && bCloseShape))
 	{
 		AllyDrawYaw = Pose.Yaw;
 	}
@@ -8689,6 +8706,7 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 	PartnerImpactDue = -1.0; // the shot left from the other figure
 	Swap(PlayerFigure, AllyFigure);
 	Swap(PlayerLook, AllyLook);
+	AllyDrawYawAt = -1.0; // the other body is the ally now: it takes its wanted yaw at once, not a sweep from the old one's
 	// The HUD's rows follow the figures: the controlled lead's seat and name are the lead row's (the rows trade places
 	// on the seat change, ftcore::uiRowSwapStep), the other's the partner row's.
 	Swap(LeadSeat, AllySeat);

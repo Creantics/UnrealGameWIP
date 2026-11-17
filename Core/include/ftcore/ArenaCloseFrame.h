@@ -294,7 +294,8 @@ FTCORE_API bool arenaCloseHeadHidden(const ArenaCameraPose& pose, float aspect, 
 // The stand-off clearance asked for this pose (the drawn view with the shoulder's own side and pivot): 0 and 0 when
 // the target's head is clear of the lead's box widened by clearMargin. Otherwise an extra `side` (signed with the
 // pose's side; a side of 0 counts as the right shoulder; the whole side held to clearSideMax) and a `pivot` rise (up to
-// clearPivotUp), each in clearStep steps, that clear it with the least sum of the two (on a tie the lower pivot);
+// clearPivotUp), each in clearStep steps, that clear it with the least sum of the two (on a tie the smaller side, so the
+// higher pivot: the lens leaves the lead's shoulder line as little as it can);
 // both at their most when none does. 0 and 0 on a NaN input.
 struct ArenaCloseClear {
     float side = 0.f;  // m, signed: added to the pose's side
