@@ -1679,10 +1679,10 @@ private:
 	double SpecialEndedAt = -1.0;
 	double SpecialBeganAt = -1.0;
 	int32 SpecialCostSkip = 0;
+	int32 SpecialRefusalLogged = -1; // the last refusal logged: a repeated press logs each new reason once
 #if !UE_BUILD_SHIPPING
 	float SpecialTestAt = -1.f; // -ArenaSpecialTest=<fight s>: the gauges filled and the special pressed then (once a fight)
 	float SpecialTestUntil = -1.f; // the test press is repeated each step until the special starts, given up then
-	int32 SpecialRefusalLogged = -1; // the last refusal logged: a repeated press logs each new reason once
 	bool bSpecialShots = false; // -ArenaSpecialShots
 	float SpecialStillAt[16] = {};
 	int32 SpecialStillCount = 0, SpecialStillNext = 0;

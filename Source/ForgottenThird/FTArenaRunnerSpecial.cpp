@@ -402,7 +402,9 @@ bool UFTArenaRunner::AfterSpecialTick(const ftcore::ArenaOutput& Out)
 			break;
 		case ftcore::ArenaEventType::SpecialStarted:
 			bStarted = true;
+#if !UE_BUILD_SHIPPING
 			SpecialTestAt = -1.f; // the test press is done
+#endif
 			SpecialRefusalLogged = -1;
 			break;
 		case ftcore::ArenaEventType::SpecialEnded:
