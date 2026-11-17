@@ -201,6 +201,41 @@ const char* kMemberMove = R"({ "version": 1, "moves": [
 const char* kNineSeconds = R"({ "version": 1, "moves": [ { "id": "nine", "lead": "devin", "duration": 9, "impactAt": 6.5,
     "cues": [ { "at": 0, "cue": "a" }, { "at": 6.5, "cue": "impact" }, { "at": 9, "cue": "end" } ] } ] })";
 
+// kTwoLeads in the other order (a reloaded table: another address, other indices).
+const char* kTwoLeadsReordered = R"({ "version": 1, "moves": [
+    { "id": "other_special_01", "lead": "duy", "duration": 3, "impactAt": 1, "damage": 50, "otherShare": 0,
+      "knockBack": 0, "cues": [ { "at": 1, "cue": "impact" } ] },
+    { "id": "devin_special_01", "lead": "devin" } ] })";
+
+// Every host call that would change the fight, made while a special runs: each does nothing (false, 0, no write).
+void hostCallsDoNothing(ArenaFight& f, PartnerBrain& brain, const PartnerTuning& otherTuning) {
+    const ArenaSwitchRefusal switchWas = f.switchRefusal();
+    CHECK_FALSE(f.switchLeads());
+    CHECK(f.switchRefusal() == switchWas);
+    CHECK_FALSE(f.hostBlow(0, 50, 0));
+    CHECK_FALSE(f.ruledHostBlow(0, 50, 0, [](void*, const ArenaBlow&) { return ArenaBlowRuling{}; }, nullptr));
+    CHECK(f.giveLoad(5) == 0);
+    CHECK(f.spendLoad(1) == 0);
+    CHECK(f.hostHeal(10) == 0);
+    CHECK(f.hostHurt(10) == 0);
+    CHECK_FALSE(f.holdEnemy(0, ArenaBrain::Open, 2.f));
+    f.setLoadCap(1);
+    f.setLone(true);
+    f.setLoad(3);
+    f.setHealCharges(0);
+    f.setChairs(ArenaChairs{});
+    f.setAlly(999, 0.9f);
+    f.setPartner(&brain, &otherTuning);
+    f.setTableSeats(ArenaTableSeats{});
+    f.releaseEnemy(0);
+    f.setEnemyHpFloor(0, 150);
+    f.setEnemyMoveMask(0, 0u);
+    f.setEnemyFacingHeld(0, true);
+    f.setEnemyTurnHeld(0, true);
+    f.setEnemyFlinch(0, false);
+    f.setEnemyFacing(0, Vec2{0.f, 1.f});
+}
+
 } // namespace
 
 // ---- the data ----
@@ -286,7 +321,7 @@ TEST_CASE("arena special: the gauge fills from the lead's play, says Ready once,
     CHECK(hurt.fight.specialGaugeForTest(0) == doctest::Approx(1.5f * static_cast<float>(hp0 - hurt.fight.hp())));
 }
 
-TEST_CASE("arena special: a restart puts the gauges back as begin found them; the store keeps them between fights") {
+TEST_CASE("arena special: a restart puts the gauges back as setSpecials gave them; the store keeps them between fights") {
     const ArenaSpecialTable specials = shippedSpecials();
     Rig r;
     r.begin(fightOf({"dummy"}));
@@ -421,7 +456,7 @@ TEST_CASE("arena special: the gauges go with the kits through a lead switch; a r
     REQUIRE(s != nullptr);
     CHECK(s->source == kArenaPlayer);
     CHECK(s->amount == 1);
-    CHECK(r.fight.special().move == specials.find("other_special_01"));
+    CHECK(r.fight.specialMove() == specials.find("other_special_01"));
     r.runOut();
     CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(0.f));
     // A restart: the bodies unswapped, the gauges as begin found them.
@@ -458,6 +493,17 @@ TEST_CASE("arena special: the refusals") {
     specials.moves[0].range = 1.f;
     r.tick();
     CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NoTarget);
+    {   // ... but a locked enemy is the target at any range (the cinematic covers the distance).
+        const Vec2 to{r.bodies.enemies[0].x - r.bodies.player.x, r.bodies.enemies[0].y - r.bodies.player.y};
+        REQUIRE(std::sqrt(to.x * to.x + to.y * to.y) > 1.5f);
+        ArenaInput lock;
+        lock.view = Vec2{to.x / std::sqrt(to.x * to.x + to.y * to.y), to.y / std::sqrt(to.x * to.x + to.y * to.y)};
+        lock.lock = true;
+        r.tick(lock);
+        CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Ok);
+        r.tick(lock); // let go: out of range again
+        CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NoTarget);
+    }
     specials.moves[0].range = 30.f;
 
     // In the air: Down.
@@ -514,6 +560,8 @@ TEST_CASE("arena special: a 9 s special leaves every frozen state bit-identical 
     // tick's events, emptied by the first frozen tick).
     const FrozenSnap snap(r.fight);
     REQUIRE(snap.bytes.size() > 1000);
+    const PartnerTuning otherTuning = r.tuning; // another address: setPartner would take it
+    const ArenaSwitchRefusal switchWas = r.fight.switchRefusal();
     int frozenTicks = 0;
     bool impactSeen = false;
     while (r.fight.special().time + kDt < r.fight.special().duration - 1e-3f) {
@@ -525,6 +573,7 @@ TEST_CASE("arena special: a 9 s special leaves every frozen state bit-identical 
         ++frozenTicks;
         CHECK(o.events.count == 0);
         if (r.fight.special().impactDone) impactSeen = true;
+        if (frozenTicks == 60 || frozenTicks == 450) hostCallsDoNothing(r.fight, r.brain, otherTuning); // before and after impact
         if (!snap.same(r.fight) || r.brain.hash() != brain0) {
             FAIL("the frozen state changed at frozen tick " << frozenTicks);
             break;
@@ -536,6 +585,8 @@ TEST_CASE("arena special: a 9 s special leaves every frozen state bit-identical 
     CHECK(r.fight.heldTime() == held0);
     for (std::size_t i = 0; i < 4; ++i) CHECK(r.fight.enemyHp(i) == hp0[i]); // ruled at impact, landed at the end
     CHECK(r.fight.allyHp() == allyHp0);
+    CHECK(r.fight.switchRefusal() == switchWas);
+    CHECK_FALSE(r.fight.swapped());
 
     const ArenaOutput& end = r.step();
     CHECK_FALSE(r.fight.frozen());
@@ -788,7 +839,7 @@ TEST_CASE("arena special: a partner lead's move can't be fired; the controlled l
     REQUIRE(st != nullptr);
     CHECK(st->source == kArenaPlayer);
     CHECK(st->amount == 1);
-    CHECK(r.fight.special().move == specials.find("other_special_01"));
+    CHECK(r.fight.specialMove() == specials.find("other_special_01"));
     r.runOut();
     CHECK(r.fight.specialGaugeForTest(1) == doctest::Approx(0.f));
 }
@@ -824,7 +875,7 @@ TEST_CASE("arena special: the player fires a party member's move at the player's
         REQUIRE(st != nullptr);
         CHECK(st->source == kArenaAlly);
         CHECK(r.fight.special().performer == kArenaAlly);
-        CHECK(r.fight.special().move == specials.find("member_special_01"));
+        CHECK(r.fight.specialMove() == specials.find("member_special_01"));
         CHECK(r.fight.special().target == (lock ? 1 : 0));
         // The controlled lead is frozen with the rest: the player's every press and the host's moves reach nothing.
         const FrozenSnap snap(r.fight);
@@ -911,7 +962,7 @@ TEST_CASE("arena special: a lead switch lowers the gauges switchLossAppliesTo na
         const ArenaSpecialTable table = switchTable(c.extra);
         SwitchRig r(table, 1000.f, 800.f);
         CHECK(r.fight.special().readyPlayer);
-        CHECK(countEvents(r.tick(), ArenaEventType::SpecialReady) == 0); // full at setSpecials: shown, no Ready said
+        CHECK(countEvents(r.tick(), ArenaEventType::SpecialReady) == 1); // full at setSpecials: Ready on the first tick
         REQUIRE(r.fight.switchLeads());
         std::swap(r.bodies.player, r.bodies.ally);
         CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(c.devin));
@@ -936,7 +987,12 @@ TEST_CASE("arena special: a lead switch lowers the gauges switchLossAppliesTo na
 TEST_CASE("arena special: a switched-in full gauge says Ready again; its line at most once per readyLineGap") {
     const ArenaSpecialTable table = switchTable(R"("switchLoss": 0, "readyLineGap": 60)");
     SwitchRig r(table, 1000.f, 1000.f);
-    r.tick();
+    {   // 0: the first lead arrives full: Ready on the first tick, with its line (none played yet).
+        const ArenaEvent* first = findEvent(r.tick(), ArenaEventType::SpecialReady);
+        REQUIRE(first != nullptr);
+        CHECK(first->source == kArenaPlayer);
+        CHECK(first->move == 1);
+    }
     const auto switchAndTick = [&r]() -> const ArenaOutput& {
         REQUIRE(r.fight.switchLeads());
         std::swap(r.bodies.player, r.bodies.ally);
@@ -952,12 +1008,12 @@ TEST_CASE("arena special: a switched-in full gauge says Ready again; its line at
     CHECK(re->amount == 1);
     CHECK(re->source == kArenaPlayer);
     CHECK(re->move == 1);
-    // 2: back: the first lead's Ready has its line (none played yet for it).
+    // 2: back: the first lead's prompt again, not its line (it played on the first tick).
     for (int i = 0; i < 30; ++i) r.tick();
     const ArenaEvent* re2 = findEvent(switchAndTick(), ArenaEventType::SpecialReady);
     REQUIRE(re2 != nullptr);
     CHECK(re2->amount == 0);
-    CHECK(re2->move == 1);
+    CHECK(re2->move == 0);
     // 3: again within 60 s: the prompt comes back, the line doesn't.
     for (int i = 0; i < 30; ++i) r.tick();
     const ArenaEvent* re3 = findEvent(switchAndTick(), ArenaEventType::SpecialReady);
@@ -1037,6 +1093,442 @@ TEST_CASE("arena special: a fight with a special allocates nothing") {
 }
 
 // ---- balance ----
+
+
+// ---- the review's cases ----
+
+TEST_CASE("arena special: the fight keeps table indices, not pointers: a reloaded table rebinds; a lost move ends empty") {
+    const ArenaSpecialTable a = specialsFrom(kTwoLeads);
+    const ArenaSpecialTable b = specialsFrom(kTwoLeadsReordered);
+    const auto pressed = [&](Rig& r, const ArenaSpecialTable& table) {
+        r.begin(fightOf({"brute", "hulk"}), 3);
+        REQUIRE(r.fight.setSpecials(&table, "devin", "", storeWith("devin", 1000.f)));
+        r.bodies.enemies[0] = Vec2{5.f, 0.f};
+        r.bodies.enemies[1] = Vec2{9.f, 1.f};
+        r.press();
+        REQUIRE(r.fight.frozen());
+        for (int i = 0; i < 100; ++i) r.tick();
+        REQUIRE(r.fight.frozen());
+        REQUIRE_FALSE(r.fight.special().impactDone);
+    };
+    Rig r;
+    pressed(r, a);
+    CHECK(r.fight.special().move == 0);
+    CHECK(r.fight.specialMove() == a.find("devin_special_01"));
+    // The same press on another copy of the table: the same state, byte for byte where it holds the move.
+    {
+        const ArenaSpecialTable a2 = a;
+        Rig other;
+        pressed(other, a2);
+        CHECK(other.fight.special().move == r.fight.special().move);
+        CHECK(other.fight.specialMove() == a2.find("devin_special_01"));
+    }
+    // A checkpoint restored after the host reloaded its table (another address and order) ends as the original.
+    Rig copy = r;
+    REQUIRE(copy.fight.setSpecialTable(&b));
+    CHECK(copy.fight.special().move == 1);
+    CHECK(copy.fight.specialMove() == b.find("devin_special_01"));
+    r.runOut();
+    copy.runOut();
+    for (std::size_t i = 0; i < 2; ++i) CHECK(copy.fight.enemyHp(i) == r.fight.enemyHp(i));
+    REQUIRE(copy.fight.special().resultCount == r.fight.special().resultCount);
+    CHECK(r.fight.special().resultCount == 2);
+    for (std::size_t i = 0; i < r.fight.special().resultCount; ++i) {
+        CHECK(copy.fight.special().results[i].foe == r.fight.special().results[i].foe);
+        CHECK(copy.fight.special().results[i].damage == r.fight.special().results[i].damage);
+    }
+
+    // The table gone (nullptr, or one without the move) mid-special: it ends at the next tick, nothing lands, the gauge
+    // stays spent.
+    for (const bool emptyTable : {false, true}) {
+        CAPTURE(emptyTable);
+        const ArenaSpecialTable none{};
+        Rig lost;
+        pressed(lost, a);
+        const int hp0 = lost.fight.enemyHp(0), hp1 = lost.fight.enemyHp(1);
+        REQUIRE(lost.fight.setSpecialTable(emptyTable ? &none : nullptr));
+        CHECK(lost.fight.specialMove() == nullptr);
+        const ArenaOutput& o = lost.tick();
+        CHECK_FALSE(lost.fight.frozen());
+        CHECK(findEvent(o, ArenaEventType::SpecialEnded) != nullptr);
+        CHECK(findEvent(o, ArenaEventType::Hit) == nullptr);
+        CHECK(lost.fight.special().resultCount == 0);
+        CHECK(lost.fight.enemyHp(0) == hp0);
+        CHECK(lost.fight.enemyHp(1) == hp1);
+        CHECK(lost.fight.specialGaugeForTest(0) == 0.f);
+        CHECK(lost.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NoMove);
+    }
+}
+
+TEST_CASE("arena special: begin clears the specials until setSpecials; begin or restart mid-special ends it unlanded") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const int hulkHp = fightOf({"hulk"}).enemies[0].hp;
+    Rig r;
+    r.begin(fightOf({"hulk"}));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f, true)));
+    r.tick();
+    REQUIRE(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Ok);
+    // A new fight with no setSpecials: no move, empty gauges, nothing carried from the last fight.
+    r.begin(fightOf({"hulk"}));
+    CHECK(r.fight.specialGaugeForTest(0) == 0.f);
+    CHECK(r.fight.specialGaugeForTest(1) == 0.f);
+    CHECK(r.fight.specialMove() == nullptr);
+    CHECK_FALSE(r.fight.special().readyPlayer);
+    CHECK(countEvents(r.tick(), ArenaEventType::SpecialReady) == 0);
+    CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NoMove);
+    r.press();
+    CHECK_FALSE(r.fight.frozen());
+    LeadSpecialGauges store = storeWith("devin", 123.f);
+    r.fight.storeSpecialGauges(store);
+    CHECK(store.find("devin")->value == doctest::Approx(123.f)); // no lead in the fight: the store keeps its own
+    CHECK_FALSE(store.find("devin")->seen);
+
+    // begin mid-special: it ends, nothing lands.
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+    r.press();
+    REQUIRE(r.fight.frozen());
+    for (int i = 0; i < 50; ++i) r.tick();
+    r.begin(fightOf({"hulk"}));
+    CHECK_FALSE(r.fight.frozen());
+    CHECK_FALSE(r.fight.special().running);
+    CHECK(r.fight.enemyHp(0) == hulkHp);
+    CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NoMove);
+
+    // restart mid-special (past the impact): it ends, nothing lands, the gauge as setSpecials gave it.
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+    r.press();
+    REQUIRE(r.fight.frozen());
+    while (!r.fight.special().impactDone) r.tick();
+    REQUIRE(r.fight.frozen());
+    r.fight.restart();
+    CHECK_FALSE(r.fight.frozen());
+    CHECK(r.fight.enemyHp(0) == hulkHp);
+    CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(1000.f));
+    const ArenaOutput& o = r.tick();
+    CHECK(findEvent(o, ArenaEventType::Hit) == nullptr);
+    CHECK(countEvents(o, ArenaEventType::SpecialReady) == 1); // armed again: full says Ready
+    CHECK(r.fight.enemyHp(0) == hulkHp);
+}
+
+TEST_CASE("arena special: a gauge arriving full says Ready on the first tick; the line's gap runs on the store's clock") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    REQUIRE(specials.gauge.readyLineGap == doctest::Approx(60.f));
+    LeadSpecialGauges store = storeWith("devin", 1000.f);
+    const auto firstReadyLine = [&](float hostClockOn) {
+        store.clock += hostClockOn; // the host's play outside fights
+        Rig r;
+        r.begin(fightOf({"hulk"}));
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", store));
+        CHECK(r.fight.special().readyPlayer);
+        const ArenaOutput& o = r.tick();
+        REQUIRE(countEvents(o, ArenaEventType::SpecialReady) == 1);
+        const int line = findEvent(o, ArenaEventType::SpecialReady)->move;
+        for (int i = 0; i < 10; ++i) CHECK(countEvents(r.tick(), ArenaEventType::SpecialReady) == 0);
+        const float before = store.clock;
+        r.fight.storeSpecialGauges(store);
+        CHECK(store.clock == doctest::Approx(before + 11.f * kDt));
+        return line;
+    };
+    CHECK(firstReadyLine(0.f) == 1);  // none played yet
+    CHECK(firstReadyLine(0.f) == 0);  // played in the last fight, 11 ticks ago
+    CHECK(firstReadyLine(30.f) == 0); // 30 s on
+    CHECK(firstReadyLine(30.f) == 1); // past 60 s on the host's clock
+    CHECK(firstReadyLine(0.f) == 0);
+
+    // The clock runs on through a restart, never back; the store never runs back either.
+    Rig r;
+    r.begin(fightOf({"hulk"}));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", store));
+    const float c0 = store.clock;
+    for (int i = 0; i < 10; ++i) r.tick();
+    r.fight.restart();
+    for (int i = 0; i < 10; ++i) r.tick();
+    LeadSpecialGauges later = store;
+    r.fight.storeSpecialGauges(later);
+    CHECK(later.clock == doctest::Approx(c0 + 20.f * kDt));
+    LeadSpecialGauges ahead = store;
+    ahead.clock = c0 + 5000.f;
+    r.fight.storeSpecialGauges(ahead);
+    CHECK(ahead.clock == doctest::Approx(c0 + 5000.f));
+}
+
+TEST_CASE("arena special: a special that ends the fight settles it as a blow does: one Victory, no reload left") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    ArenaDef def = fightOf({"brute"});
+    ArenaFighter& f = def.fighter;
+    f.weapon = ArenaWeapon::Guns;
+    f.rounds = 1;
+    f.reload = 3.f;
+    f.shot = f.light[0];
+    f.shot.range = 12.f;
+    Rig r;
+    r.begin(def);
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+    // One aimed shot empties the cylinder: a reload runs at the press.
+    for (int i = 0; i < 120 && !r.fight.reloading(); ++i) {
+        ArenaInput in;
+        in.aim = true;
+        in.light = i % 2 == 0;
+        r.tick(in);
+    }
+    REQUIRE(r.fight.reloading());
+    r.press();
+    REQUIRE(r.fight.frozen());
+    CHECK(r.fight.reloading()); // frozen with the rest
+    int victories = 0;
+    while (r.fight.frozen()) victories += countEvents(r.tick(), ArenaEventType::Victory);
+    CHECK(r.fight.phase() == ArenaPhase::Victory);
+    CHECK(r.fight.enemyHp(0) == 0);
+    CHECK(victories == 1);
+    CHECK_FALSE(r.fight.reloading());
+    CHECK(r.fight.reloadProgress() == 0.f);
+    for (int i = 0; i < 30; ++i) victories += countEvents(r.tick(), ArenaEventType::Victory);
+    CHECK(victories == 1);
+}
+
+TEST_CASE("arena special: setSpecials and setSpecialTable refuse a table the loader would refuse") {
+    const ArenaSpecialTable good = shippedSpecials();
+    Rig r;
+    r.begin(fightOf({"hulk"}));
+    REQUIRE(r.fight.setSpecials(&good, "devin", "", storeWith("devin", 1000.f)));
+    using Spoil = void (*)(ArenaSpecialTable&);
+    const Spoil spoils[] = {
+        [](ArenaSpecialTable& t) { t.moves[0].knockTime = 0.f; }, // an endless shove
+        [](ArenaSpecialTable& t) { t.moves[0].laneWidth = 0.f; },
+        [](ArenaSpecialTable& t) { t.moves[0].damage = 0; },
+        [](ArenaSpecialTable& t) { t.count = t.moves.size() + 1; },
+        [](ArenaSpecialTable& t) { t.gauge.full = 0.f; },
+    };
+    for (const Spoil spoil : spoils) {
+        ArenaSpecialTable t = good;
+        spoil(t);
+        const bool valid = validArenaSpecialRules(t.moves[0]) && validArenaSpecialGauge(t.gauge) && t.count <= t.moves.size();
+        CHECK_FALSE(valid);
+        CHECK_FALSE(r.fight.setSpecials(&t, "devin", "", storeWith("devin", 500.f)));
+        CHECK_FALSE(r.fight.setSpecialTable(&t));
+        CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(1000.f)); // nothing changed
+        CHECK(r.fight.special().readyPlayer);
+    }
+    // The good table still stands: the press runs its move.
+    r.press();
+    REQUIRE(r.fight.frozen());
+    CHECK(r.fight.specialMove() == &good.moves[0]);
+}
+
+TEST_CASE("arena special: no Ready or Unready on the tick the fight ends") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const auto said = [](const ArenaOutput& o) {
+        return countEvents(o, ArenaEventType::SpecialReady) + countEvents(o, ArenaEventType::SpecialUnready);
+    };
+    {   // Victory: the killing blow fills the gauge on the last tick.
+        Rig r;
+        r.begin(fightOf({"dummy"}));
+        r.tick();
+        REQUIRE(r.fight.hostBlow(0, r.fight.enemyHp(0) - 1, 0));
+        r.tick();
+        REQUIRE(r.fight.enemyHp(0) == 1);
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 999.999f)));
+        int count = 0;
+        for (int i = 0; i < 60 * 20 && !r.fight.over(); ++i) count += said(r.tick(r.fight.autopilot()));
+        REQUIRE(r.fight.phase() == ArenaPhase::Victory);
+        CHECK(r.fight.specialGaugeForTest(0) == 1000.f); // full on the tick it ended
+        CHECK(count == 0);
+        for (int i = 0; i < 30; ++i) count += said(r.tick());
+        CHECK(count == 0);
+    }
+    {   // Defeat: the blow that downs the player fills the gauge on the last tick.
+        Rig r;
+        r.begin(fightOf({"brute"}));
+        r.tick();
+        REQUIRE(r.fight.hostHurt(r.fight.hp() - 1) > 0);
+        r.tick();
+        REQUIRE(r.fight.hp() == 1);
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 999.999f)));
+        int count = 0;
+        for (int i = 0; i < 60 * 30 && !r.fight.over(); ++i) count += said(r.tick());
+        REQUIRE(r.fight.phase() == ArenaPhase::Defeat);
+        CHECK(r.fight.specialGaugeForTest(0) == 1000.f);
+        CHECK(count == 0);
+    }
+}
+
+TEST_CASE("arena special: an enemy held unhurt shows the hit and loses nothing; alone in the lane the press is refused") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const ArenaSpecialRules& m = specials.moves[0];
+    CHECK(std::string_view(arenaSpecialRefusalName(ArenaSpecialRefusal::Unhurt)) == "unhurt");
+    // Enemy 0 steps back (held unhurt) when two blows fill its count while enemy 1 holds the only token.
+    const auto steppedBack = [](Rig& r, Vec2 holderAt) {
+        ArenaDef def = fightOf({"brute", "brute"}, 1);
+        for (std::size_t l = 0; l < def.fighter.lightCount; ++l) def.fighter.light[l].poiseDamage = kArenaBreakPoiseUnit;
+        ArenaEnemyKind& k = def.enemies[0];
+        k.breakAt = 2;
+        k.breakMove = 0;
+        k.breakDecay = 5.f;
+        k.poise = 1000.f;
+        k.flinchPoise = 1000.f;
+        k.attackDelay = 1000.f; // never asks for the token
+        r.begin(def);
+        r.fight.setEnemyMoveMask(1, 0u); // the holder never strikes: it keeps the token
+        for (int i = 0; i < 60 * 15 && !r.fight.output().enemies[1].token; ++i) {
+            r.bodies.player = Vec2{0.f, 0.f};
+            r.bodies.enemies[0] = Vec2{1.5f, 0.f};
+            r.tick();
+        }
+        REQUIRE(r.fight.output().enemies[1].token);
+        for (int i = 0; i < 60 * 10 && r.fight.output().enemies[0].brain != ArenaBrain::StepBack; ++i) {
+            r.bodies.player = Vec2{0.f, 0.f};
+            r.bodies.enemies[0] = Vec2{1.5f, 0.f};
+            r.bodies.enemies[1] = holderAt;
+            ArenaInput in;
+            in.light = true;
+            r.tick(in);
+        }
+        REQUIRE(r.fight.output().enemies[0].brain == ArenaBrain::StepBack);
+        REQUIRE(r.fight.output().enemies[1].token);
+        r.bodies.enemies[1] = holderAt;
+    };
+    {   // Nothing else in the lane: refused, the gauge kept.
+        Rig r;
+        steppedBack(r, Vec2{0.f, 8.f});
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Unhurt);
+        r.press();
+        CHECK_FALSE(r.fight.frozen());
+        REQUIRE(r.fight.output().enemies[0].brain == ArenaBrain::StepBack);
+        CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Unhurt);
+        CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(1000.f));
+    }
+    {   // A hurtable enemy down the lane: it runs; the held target shows the hit and loses nothing, the other its share.
+        Rig r;
+        steppedBack(r, Vec2{6.f, 0.f});
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        REQUIRE(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Ok);
+        const int hp0 = r.fight.enemyHp(0), hp1 = r.fight.enemyHp(1);
+        r.press();
+        REQUIRE(r.fight.frozen());
+        CHECK(r.fight.special().target == 0);
+        r.runOut();
+        const ArenaOutput& end = r.fight.output();
+        CHECK(findEvent(end, ArenaEventType::Hit, 0) == nullptr);
+        CHECK(findEvent(end, ArenaEventType::Hit, 1) != nullptr);
+        const ArenaSpecialView& v = r.fight.special();
+        REQUIRE(v.resultCount == 2);
+        const int share = static_cast<int>(std::lround(static_cast<float>(m.damage) * m.otherShare));
+        for (std::size_t i = 0; i < v.resultCount; ++i) {
+            CAPTURE(i);
+            CHECK(v.results[i].target == (v.results[i].foe == 0));
+            CHECK(v.results[i].damage == (v.results[i].foe == 0 ? 0 : share));
+        }
+        CHECK(r.fight.enemyHp(0) == hp0);
+        CHECK(r.fight.enemyHp(1) == hp1 - share);
+        CHECK(r.fight.output().enemies[0].brain != ArenaBrain::Staggered);
+        CHECK(r.fight.stats().specialDamage == share);
+    }
+}
+
+TEST_CASE("arena special: a press on the tick a host blow fills the gauge starts the move, the fill taken first") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    Rig r;
+    r.begin(fightOf({"hulk"}));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 999.f)));
+    r.tick();
+    REQUIRE(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NotReady);
+    REQUIRE(r.fight.hostBlow(0, 10, 0)); // reported (HostHit) at the next tick: 10 toward the gauge
+    const ArenaOutput& o = r.press();
+    REQUIRE(r.fight.frozen());
+    CHECK(findEvent(o, ArenaEventType::HostHit, 0) != nullptr);
+    CHECK(findEvent(o, ArenaEventType::SpecialStarted) != nullptr);
+    CHECK(countEvents(o, ArenaEventType::SpecialReady) == 0); // spent at once: no prompt said
+    CHECK(r.fight.specialGaugeForTest(0) == 0.f);
+}
+
+TEST_CASE("arena special: a boss on a phase boundary loses the next phase's share; inside a phase the share may cross it") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const ArenaSpecialRules& m = specials.moves[0];
+    const ArenaEnemyKind k = fightOf({"kite_boss"}).enemies[0];
+    REQUIRE(k.breakPhases >= 3);
+    const auto after = [&](int startHp) {
+        Rig r;
+        r.begin(fightOf({"kite_boss"}));
+        r.tick();
+        REQUIRE(r.fight.hostBlow(0, k.hp - startHp, 0));
+        r.tick();
+        REQUIRE(r.fight.enemyHp(0) == startHp);
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        r.press();
+        REQUIRE(r.fight.frozen());
+        r.runOut();
+        return r.fight.enemyHp(0);
+    };
+    const float hp = static_cast<float>(k.hp);
+    const int end0 = static_cast<int>(std::lround(k.breakPhaseEnds[0] * hp));
+    const int second = static_cast<int>(std::lround((k.breakPhaseEnds[0] - k.breakPhaseEnds[1]) * hp * m.bossPhaseShare));
+    const int first = static_cast<int>(std::lround((1.f - k.breakPhaseEnds[0]) * hp * m.bossPhaseShare));
+    CHECK(after(end0) == end0 - second);            // on the boundary: in the second phase
+    CHECK(after(end0 + 10) == end0 + 10 - first);   // just above it: the first phase's share, carried past the boundary
+    CHECK(end0 + 10 - first < end0);
+}
+
+TEST_CASE("arena special: the performer at the press: hitstun refuses (Down); a roll does not, and the cut back ends it") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    {
+        Rig r;
+        r.begin(fightOf({"brute"}));
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        for (int i = 0; i < 60 * 20 && r.fight.output().player.action != ArenaAction::Hitstun; ++i) r.tick();
+        REQUIRE(r.fight.output().player.action == ArenaAction::Hitstun);
+        CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Down);
+        r.press();
+        CHECK_FALSE(r.fight.frozen());
+        CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(1000.f));
+    }
+    {
+        Rig r;
+        r.begin(fightOf({"hulk"}));
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        r.tick();
+        const Vec2 to{r.bodies.enemies[0].x - r.bodies.player.x, r.bodies.enemies[0].y - r.bodies.player.y};
+        const float d = std::sqrt(to.x * to.x + to.y * to.y);
+        REQUIRE(d > 4.f);
+        ArenaInput roll; // toward the enemy: it stays the target in front
+        roll.dodge = true;
+        roll.move = Vec2{to.x / d, to.y / d};
+        r.tick(roll);
+        REQUIRE(r.fight.output().player.action == ArenaAction::Dodge);
+        REQUIRE(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Ok);
+        r.press();
+        REQUIRE(r.fight.frozen());
+        r.runOut();
+        CHECK(r.fight.output().player.action == ArenaAction::Idle);
+        CHECK_FALSE(r.fight.output().player.invulnerable);
+    }
+}
+
+TEST_CASE("arena special: a party member performs while the player is in hitstun: Running meanwhile, Down after") {
+    const ArenaSpecialTable specials = specialsFrom(kMemberMove);
+    Rig r;
+    ArenaDef def = fightOf({"brute"});
+    def.partnerKit = arena().fighter("third");
+    r.fight.setAlly(300, 0.4f);
+    r.begin(def);
+    r.bodies.ally = Vec2{-2.f, 2.f};
+    LeadSpecialGauges store = storeWith("identity_a", 1000.f);
+    store.entry("devin")->value = 1000.f;
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "identity_a", store));
+    for (int i = 0; i < 60 * 20 && r.fight.output().player.action != ArenaAction::Hitstun; ++i) r.tick();
+    REQUIRE(r.fight.output().player.action == ArenaAction::Hitstun);
+    CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Down);
+    REQUIRE(r.fight.specialRefusal(kArenaAlly) == ArenaSpecialRefusal::Ok);
+    r.press(kArenaAlly);
+    REQUIRE(r.fight.frozen());
+    CHECK(r.fight.special().performer == kArenaAlly);
+    CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Running);
+    r.runOut();
+    CHECK(r.fight.output().player.action == ArenaAction::Hitstun); // the player's state is its own, untouched
+    CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::Down);
+    CHECK(r.fight.specialGaugeForTest(0) == doctest::Approx(1000.f));
+    CHECK(r.fight.specialGaugeForTest(1) == 0.f);
+}
 
 namespace {
 

@@ -1634,13 +1634,22 @@ public:
     FTCORE_API bool takeHalfDue(float lead) const;
 
     // ---- the special (ftcore/ArenaSpecial.h) ----
-    // The host's specials: the table (it must outlive the fight; nullptr turns them off), the lead in each kit slot
-    // (slot 0 the def's fighter as begun, slot 1 its partnerKit; "" for none) and the gauges kept between fights. Each
-    // slot's gauge starts at the store's value (0 for a lead not in it, clipped to full) and goes with its kit through
-    // a switch or a takeover. Kept across begin and restart; a restart puts the gauges back as begin found them. False
-    // (nothing changes) while a special runs or inside the hook.
+    // The host's specials, given after each begin (begin clears them: no move, empty gauges): the table (it must outlive
+    // the fight; nullptr turns them off), the lead in each kit slot (slot 0 the def's fighter as begun, slot 1 its
+    // partnerKit; "" for none) and the gauges kept between fights. Each slot's gauge starts at the store's value (0 for
+    // a lead not in it, clipped to full) and goes with its kit through a switch or a takeover; its last ready line and
+    // the clock come from the store too. A restart puts the gauges back as setSpecials gave them. False (nothing
+    // changes) while a special runs, inside the hook, or for a table the loader would refuse (validArenaSpecialRules,
+    // validArenaSpecialGauge).
     FTCORE_API bool setSpecials(const ArenaSpecialTable* table, std::string_view fighterLead, std::string_view partnerLead,
                                 const LeadSpecialGauges& gauges);
+    // The table again, after the host reloaded it or restored a copy of the fight (a checkpoint): the fight keeps no
+    // pointer into it but this one, and finds each lead's move by index, else by its lead id. Allowed while a special
+    // runs: if the running move is gone it ends at the next tick with no results (the gauge stays spent). False (nothing
+    // changes) inside the hook or for a table the loader would refuse.
+    FTCORE_API bool setSpecialTable(const ArenaSpecialTable* table);
+    // The move running (or last run) in the host's table (nullptr: none, or it is gone from the table).
+    FTCORE_API const ArenaSpecialRules* specialMove() const;
     // The gauges back into the host's store (each slot's lead: its value and whether its move was seen to its end).
     FTCORE_API void storeSpecialGauges(LeadSpecialGauges& gauges) const;
     // What runs, the ready flags and the refusals, as of the last tick (see ArenaSpecialView). The gauge's value is
@@ -1648,6 +1657,10 @@ public:
     FTCORE_API const ArenaSpecialView& special() const;
     // A special runs: the fight's clock stands still for every body but the performer. The host holds its own
     // (projectiles, hazards, the brain's host-side parts), moves no body (arenaStep doesn't) and poses the performer.
+    // Meanwhile every host call that would change the fight does nothing (returns false or 0): switchLeads (its
+    // switchRefusal is left as it was), hostBlow, ruledHostBlow, giveLoad, spendLoad, setLoad, setLoadCap, setLone,
+    // setHealCharges, hostHeal, hostHurt, setAlly, setPartner, setChairs, setTableSeats, holdEnemy, releaseEnemy and the
+    // setEnemy* calls. begin and restart end it (no results land).
     FTCORE_API bool frozen() const;
     // Why `lead` (kArenaPlayer or kArenaAlly) couldn't start its special now, as of the last tick (Ok: it could).
     FTCORE_API ArenaSpecialRefusal specialRefusal(std::uint8_t lead) const;
@@ -1893,19 +1906,22 @@ private:
     int aimStrings_ = 0;                        // boss strings since begin() or restart(): the partner aim's cap ...
     int aimPartner_ = 0;                        // ... and those aimed at the partner
     // The special's block: last, so everything above it is what a special freezes (frozenBytesForTest).
+    // No pointer in it (a copy hashes the same in any run): moves are table indices (specialTable_ below).
     struct SpecialState {
-        const ArenaSpecialTable* table = nullptr;
+        bool on = false;                    // a table is set (specialTable_)
         std::array<std::array<char, kMaxArenaSpecialId + 1>, 2> lead{}; // by kit slot, as begun
-        std::array<const ArenaSpecialRules*, 2> move{};
+        std::array<std::uint8_t, 2> move{kArenaSpecialNone, kArenaSpecialNone};
         std::array<float, 2> gauge{};
         std::array<float, 2> gaugeAtBegin{};
         std::array<bool, 2> seen{};
         std::array<bool, 2> shown{};        // a Ready stands (the prompt is up), by slot
-        std::array<float, 2> lineAt{};      // fight time of the slot's last ready line (far below 0: none yet)
+        std::array<float, 2> lineAt{kArenaSpecialNoLine, kArenaSpecialNoLine}; // clock of the slot's last ready line
+        float clock = 0.f;                  // the host's clock (LeadSpecialGauges::clock), run on by every tick given
         std::uint8_t nextCue = 0;
         ArenaSpecialView view;
     };
     SpecialState special_;
+    const ArenaSpecialTable* specialTable_ = nullptr; // the host's table (setSpecials, setSpecialTable): a link, not state
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then

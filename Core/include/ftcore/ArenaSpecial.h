@@ -8,8 +8,10 @@
 // ArenaSpecialGaugeRules: per hp it deals, per parry, per block and per hp it takes; it never decays and stops at full.
 // It is kept between fights within a session of play (LeadSpecialGauges, beside the party's other state): the host
 // gives a fight each lead's value (ArenaFight::setSpecialGauges) and reads them back when it ends. A lead's gauge
-// reaching full raises ArenaEventType::SpecialReady once (the prompt; the voice line unless that lead's line played
-// under `readyLineGap` ago); using the move empties it. A lead switch takes `switchLoss` of the value off the gauges
+// reaching full (or arriving full: the first tick after setSpecials or a restart) raises ArenaEventType::SpecialReady
+// once (the prompt; the voice line unless that lead's line played under `readyLineGap` ago on the host's clock, which
+// the store carries between fights: LeadSpecialGauges::clock and Lead::lineAt); using the move empties it. No Ready or
+// Unready is said on the tick the fight ends. A lead switch takes `switchLoss` of the value off the gauges
 // `switchLossAppliesTo` names; a gauge that drops below full, or whose lead is no longer the one controlled, raises
 // SpecialUnready (the prompt goes) and says Ready again when it is full and shown again.
 //
@@ -18,8 +20,12 @@
 // who is never played (the partner body when its kit is not playable). A partner lead's move has no input path: its
 // gauge fills, hidden, and its prompt shows once it is the controlled lead. It needs a living enemy, the player's target
 // (its lock, else its attack's soft target, else the nearest living enemy in front of it), in the performer's line of
-// sight (the host's to say) and within `range` of the performer. From the press to `duration`:
-//   * Frozen: the fight's clock does not run, so nothing in it moves or counts down: no enemy, player, partner, brain, token,
+// sight (the host's to say) and within `range` of the performer; a locked enemy is the target at any range (the
+// cinematic covers the distance). An enemy the fight holds unhurt (a scripted step back) shows the hit and loses
+// nothing; a press whose target is unhurt with no hurtable enemy in the lane is refused (Unhurt), the gauge kept. A
+// target gone by the impact passes the hit to the nearest living enemy in the lane, else nobody. From the press to
+// `duration`:
+//   * Frozen: the fight's time does not run, so nothing in it moves or counts down: no enemy, player, partner, brain, token,
 //     cooldown, hit pause or status timer. The host holds its own (projectiles, hazards, weather) while
 //     ArenaFight::frozen() is true, and poses the performer from the cinematic. The performer is out of reach.
 //   * At `impactAt` the results are ruled: the target is always hit for `damage`; every other living enemy whose body
@@ -52,6 +58,8 @@ inline constexpr std::size_t kMaxArenaSpecialCues = 24;
 inline constexpr std::size_t kMaxArenaSpecialTargets = 8; // >= kMaxArenaEnemies
 inline constexpr std::size_t kMaxSpecialLeads = 4;
 inline constexpr std::uint8_t kArenaSpecialMove = 13;     // the move id on the special's Hit events (after kArenaAirMove)
+inline constexpr std::uint8_t kArenaSpecialNone = 0xFF;   // no move (an index into ArenaSpecialTable::moves)
+inline constexpr float kArenaSpecialNoLine = -1.0e9f;     // no ready line played yet (LeadSpecialGauges::Lead::lineAt)
 
 struct ArenaSpecialCue {
     float at = 0.f;
@@ -92,7 +100,7 @@ struct ArenaSpecialGaugeRules {
     float perDamageTaken = 1.5f; // per hp the lead loses
     float switchLoss = 0.25f;   // of the current value, off the gauges switchLossAppliesTo names, on a lead switch
     ArenaSpecialSwitchLoss switchLossAppliesTo = ArenaSpecialSwitchLoss::Both;
-    float readyLineGap = 60.f;  // s of fight time: a lead's ready line plays at most once per this
+    float readyLineGap = 60.f;  // s of the host's clock (LeadSpecialGauges::clock): a lead's ready line at most once per this
 };
 
 struct ArenaSpecialTable {
@@ -121,14 +129,19 @@ FTCORE_API bool importArenaSpecials(std::string_view json, ArenaSpecialTable& ou
 // The gauges the host keeps between fights (beside the party's state): by lead id. A party member who changes identity
 // in the story is keyed by its current identity id (neutral, Data/), so each identity may have its own move and lines;
 // the host carries the gauge to the new id when the identity changes (carry: one body, one gauge). Plain data.
+// `clock` is the host's play clock (s) as it hands the store to setSpecials; the fight runs it on by every tick it is
+// given (frozen ones too, never back on a restart) and storeSpecialGauges writes it back, so a host with no clock of its
+// own just keeps the store. Each lead's last ready line is on that clock, so the line's gap spans fights.
 struct LeadSpecialGauges {
     struct Lead {
         std::array<char, kMaxArenaSpecialId + 1> id{};
         float value = 0.f;
-        bool seen = false; // its move has run to its end once (skippable from then)
+        bool seen = false;               // its move has run to its end once (skippable from then)
+        float lineAt = kArenaSpecialNoLine; // `clock` when its ready line last played
     };
     std::array<Lead, kMaxSpecialLeads> leads{};
     std::size_t count = 0;
+    float clock = 0.f;
     // The lead's entry, added (at 0) when there is room; nullptr when full.
     FTCORE_API Lead* entry(std::string_view leadId);
     FTCORE_API const Lead* find(std::string_view leadId) const;
@@ -148,12 +161,14 @@ enum class ArenaSpecialRefusal : std::uint8_t {
     Down,     // the lead can't act: down, in hitstun, guard-broken, in the air (the player) or hurt (the partner)
     Running,  // a special is running
     Over,     // the fight isn't running
+    Unhurt,   // the target is held unhurt (a scripted step back) and no hurtable enemy is in the lane
 };
 FTCORE_API const char* arenaSpecialRefusalName(ArenaSpecialRefusal r);
 
 struct ArenaSpecialResult {
     std::uint8_t foe = 0;
-    int damage = 0;      // ruled at impact (before an hp floor: the hp it loses at the cut back may be less)
+    int damage = 0;      // ruled at impact (before an hp floor: the hp it loses at the cut back may be less); 0 for
+                         // an enemy held unhurt (it shows the hit, loses nothing, is neither staggered nor shoved)
     bool target = false;
     bool boss = false;
 };
@@ -161,10 +176,10 @@ struct ArenaSpecialResult {
 // What ArenaFight::special() shows. While nothing runs only the ready flags and refusals mean anything.
 struct ArenaSpecialView {
     bool running = false;
-    const ArenaSpecialRules* move = nullptr;  // the running move (the host's own table: alive while it is)
+    std::uint8_t move = kArenaSpecialNone;    // the running move: its index in the host's table (ArenaFight::specialMove)
     std::uint8_t performer = 0xFF;            // kArenaPlayer or kArenaAlly
     std::uint8_t slot = 0;                    // the performer's gauge slot (ArenaFight::setSpecialGauges)
-    std::uint8_t target = 0xFF;
+    std::uint8_t target = 0xFF;               // the enemy hit in full (a target gone by the impact: the lane's nearest)
     Vec2 origin;                              // the performer's spot at the press
     Vec2 dir{1.f, 0.f};                       // toward the target at the press
     float time = 0.f;                         // s since the press

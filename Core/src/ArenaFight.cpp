@@ -539,6 +539,7 @@ struct ArenaFightImpl {
     // ---- one tick ----
 
     void tick(float step, const ArenaInput& in, const ArenaBodies& bodies) {
+        if (step > 0.f && step < 1.0e6f) fight.special_.clock += step; // the host's clock runs on every tick given
         if (fight.special_.view.running) { // frozen: only the special's own block moves
             specialTick(step, in);
             return;
@@ -605,7 +606,10 @@ struct ArenaFightImpl {
             pl.capFilled = false;
         }
         reportHostBlows(); // the host's hostBlow since the last tick
-        if (step > 0.f && in.special != kArenaNobody && startSpecial(in)) return; // frozen from here
+        if (step > 0.f && in.special != kArenaNobody) {
+            specialFill(); // a blow the host landed since the last tick fills first: the press may use it
+            if (startSpecial(in)) return; // frozen from here (no Ready is said on the press tick)
+        }
         if (!(step > 0.f)) { // only refresh
             fillOutput();
             specialAfterTick(in.specialSight);
@@ -624,6 +628,25 @@ struct ArenaFightImpl {
         if (fight.read_.dealt() && !readStillOpen()) closeRead(); // the active part began, or the move is gone
         endTick();
         specialAfterTick(in.specialSight);
+    }
+
+    // The fight's end, wherever a tick ends it (endTick, a special's cut back): Defeat or Victory with its event; the
+    // read closes, a reload under way is dropped (it never completes: no Reloaded, reloadProgress reads 0) and a jump
+    // ends.
+    void settleOutcome() {
+        if (pl.hp <= 0 || allDead()) closeRead();
+        if (pl.hp <= 0) {
+            fight.phase_ = ArenaPhase::Defeat;
+            emit(ArenaEventType::Defeat, kArenaNobody, kArenaPlayer, 0, 0, pl.pos);
+        } else if (allDead()) {
+            fight.phase_ = ArenaPhase::Victory;
+            emit(ArenaEventType::Victory, kArenaNobody, kArenaNobody, 0, 0, pl.pos);
+        }
+        if (fight.phase_ != ArenaPhase::Fighting) {
+            pl.reloadLeft = 0.f;
+            pl.jumpTime = -1.f;
+            pl.airClear = false;
+        }
     }
 
     void endTick() {
@@ -653,19 +676,9 @@ struct ArenaFightImpl {
         fight.time_ = t1;
         fight.heldTime_ += playerOwn;
         stats.time += dt;
-        if (pl.hp <= 0 || allDead()) closeRead();
-        if (pl.hp <= 0) {
-            fight.phase_ = ArenaPhase::Defeat;
-            emit(ArenaEventType::Defeat, kArenaNobody, kArenaPlayer, 0, 0, pl.pos);
-        } else if (allDead()) {
-            fight.phase_ = ArenaPhase::Victory;
-            emit(ArenaEventType::Victory, kArenaNobody, kArenaNobody, 0, 0, pl.pos);
-        }
-        // The fight's end drops a reload under way: it never completes (no Reloaded), and reloadProgress reads 0.
-        if (fight.phase_ != ArenaPhase::Fighting) pl.reloadLeft = 0.f;
+        settleOutcome();
         // A jump ends with any action that isn't its own (a blow, a stagger, a defeat), or with the fight.
-        if ((pl.action != ArenaAction::Jump && !(pl.action == ArenaAction::Light && pl.move == kArenaAirMove)) ||
-            fight.phase_ != ArenaPhase::Fighting) {
+        if (pl.action != ArenaAction::Jump && !(pl.action == ArenaAction::Light && pl.move == kArenaAirMove)) {
             pl.jumpTime = -1.f;
             pl.airClear = false;
         }
@@ -3729,19 +3742,48 @@ struct ArenaFightImpl {
     std::size_t playerSlot() const { return fight.kitsSwapped_ ? 1u : 0u; }
     std::uint8_t bodyOfSlot(std::size_t slot) const { return slot == playerSlot() ? kArenaPlayer : kArenaAlly; }
     bool slotHasLead(std::size_t slot) const { return fight.special_.lead[slot][0] != '\0'; }
+    const ArenaSpecialTable* specialTable() const { return fight.special_.on ? fight.specialTable_ : nullptr; }
+    // A move by its index in the table, if it is still there and still the lead's (nullptr: gone).
+    static const ArenaSpecialRules* specialMoveAt(const ArenaSpecialTable* t, std::uint8_t index, std::string_view lead) {
+        if (!t || lead.empty() || index >= std::min(t->count, t->moves.size())) return nullptr;
+        const ArenaSpecialRules& m = t->moves[index];
+        return m.leadView() == lead ? &m : nullptr;
+    }
+    // The lead's move as an index into the table (kArenaSpecialNone: none).
+    static std::uint8_t specialIndexOf(const ArenaSpecialTable* t, std::string_view lead) {
+        const ArenaSpecialRules* m = t ? t->forLead(lead) : nullptr;
+        return m ? static_cast<std::uint8_t>(m - t->moves.data()) : kArenaSpecialNone;
+    }
+    std::string_view slotLead(std::size_t slot) const { return std::string_view(fight.special_.lead[slot].data()); }
+    const ArenaSpecialRules* slotMove(std::size_t slot) const {
+        return specialMoveAt(specialTable(), fight.special_.move[slot], slotLead(slot));
+    }
+    // The running move (nullptr: none, or the host's table lost it).
+    const ArenaSpecialRules* runningMove() const {
+        const ArenaSpecialView& v = fight.special_.view;
+        return v.slot < 2 ? specialMoveAt(specialTable(), v.move, slotLead(v.slot)) : nullptr;
+    }
     bool slotReady(std::size_t slot) const {
-        const ArenaFight::SpecialState& sp = fight.special_;
-        return sp.table && slotHasLead(slot) && sp.gauge[slot] >= sp.table->gauge.full;
+        const ArenaSpecialTable* t = specialTable();
+        return t && slotHasLead(slot) && fight.special_.gauge[slot] >= t->gauge.full;
+    }
+    // Whether a table may be set: the loader's own rules (validArenaSpecialRules, validArenaSpecialGauge).
+    static bool specialTableValid(const ArenaSpecialTable* t) {
+        if (!t) return true;
+        if (t->count > t->moves.size() || !validArenaSpecialGauge(t->gauge)) return false;
+        for (std::size_t i = 0; i < t->count; ++i)
+            if (!validArenaSpecialRules(t->moves[i])) return false;
+        return true;
     }
 
-    // The enemy a special aims at, whichever body performs it (only the player fires it): the player's lock, else its
-    // attack's soft target, else the nearest living enemy in front of the player; within the move's range of the
-    // performer (body centres). kArenaNobody for none.
+    // The enemy a special aims at, whichever body performs it (only the player fires it): the player's lock at any
+    // range (the cinematic covers the distance); with no lock its attack's soft target, else the nearest living enemy in
+    // front of the player, within the move's range of the performer (body centres). kArenaNobody for none.
     std::uint8_t specialTarget(std::uint8_t lead, const ArenaSpecialRules& m) const {
         const Vec2 from = lead == kArenaPlayer ? pl.pos : fight.allyPos_;
         const auto withinRange = [&](std::size_t i) { return arenaDistance(from, foes[i].pos) <= m.range; };
-        for (const std::uint8_t pick : {pl.lock, pl.soft})
-            if (pick < n && alive(pick)) return withinRange(pick) ? id(pick) : kArenaNobody;
+        if (pl.lock < n && alive(pl.lock)) return id(pl.lock);
+        if (pl.soft < n && alive(pl.soft)) return withinRange(pl.soft) ? id(pl.soft) : kArenaNobody;
         std::uint8_t best = kArenaNobody;
         float bestDist = 0.f;
         for (std::size_t i = 0; i < n; ++i) {
@@ -3756,6 +3798,20 @@ struct ArenaFightImpl {
         }
         return best;
     }
+    // Where a special by `lead` at `target` starts and which way it strikes.
+    Vec2 specialOrigin(std::uint8_t lead) const { return lead == kArenaPlayer ? pl.pos : fight.allyPos_; }
+    Vec2 specialDir(std::uint8_t lead, std::size_t target) const {
+        return arenaUnit(arenaSub(foes[target].pos, specialOrigin(lead)), lead == kArenaPlayer ? pl.facing : fight.ally_.facing);
+    }
+    // Whether enemy i's body reaches into the move's lane from `origin` along `dir`.
+    bool inLane(std::size_t i, Vec2 origin, Vec2 dir, const ArenaSpecialRules& m) const {
+        const Vec2 side{-dir.y, dir.x};
+        const float r = def.enemies[i].bodyRadius;
+        const Vec2 to = arenaSub(foes[i].pos, origin);
+        const float along = arenaDot(to, dir);
+        const float across = std::fabs(arenaDot(to, side));
+        return along >= -r && along <= m.laneLength + r && across <= 0.5f * m.laneWidth + r;
+    }
 
     ArenaSpecialRefusal specialRefusal(std::uint8_t lead, bool sight, std::uint8_t* target = nullptr) const {
         const ArenaFight::SpecialState& sp = fight.special_;
@@ -3764,7 +3820,8 @@ struct ArenaFightImpl {
         if (lead != kArenaPlayer && lead != kArenaAlly) return ArenaSpecialRefusal::NoMove;
         if (lead == kArenaAlly && fight.allyMaxHp_ <= 0) return ArenaSpecialRefusal::NoMove;
         const std::size_t slot = lead == kArenaPlayer ? playerSlot() : 1u - playerSlot();
-        if (!sp.table || !slotHasLead(slot) || !sp.move[slot]) return ArenaSpecialRefusal::NoMove;
+        const ArenaSpecialRules* m = slotMove(slot);
+        if (!m) return ArenaSpecialRefusal::NoMove;
         if (lead == kArenaAlly && pk.playable) return ArenaSpecialRefusal::NotControlled;
         if (!slotReady(slot)) return ArenaSpecialRefusal::NotReady;
         if (lead == kArenaPlayer) {
@@ -3775,9 +3832,16 @@ struct ArenaFightImpl {
         } else if (!allyUp() || fight.ally_.hurtLeft > 0.f) {
             return ArenaSpecialRefusal::Down;
         }
-        const std::uint8_t t = specialTarget(lead, *sp.move[slot]);
+        const std::uint8_t t = specialTarget(lead, *m);
         if (t == kArenaNobody) return ArenaSpecialRefusal::NoTarget;
         if (!sight) return ArenaSpecialRefusal::NoSight;
+        if (unhurt(foes[t])) { // held unhurt: the press stands only if the lane holds an enemy it can hurt
+            const Vec2 origin = specialOrigin(lead), dir = specialDir(lead, t);
+            bool hurtable = false;
+            for (std::size_t i = 0; i < n && !hurtable; ++i)
+                hurtable = i != t && alive(i) && !unhurt(foes[i]) && inLane(i, origin, dir, *m);
+            if (!hurtable) return ArenaSpecialRefusal::Unhurt;
+        }
         if (target) *target = t;
         return ArenaSpecialRefusal::Ok;
     }
@@ -3789,20 +3853,15 @@ struct ArenaFightImpl {
         if (!slotReady(slot)) return false;
         return bodyOfSlot(slot) == kArenaPlayer || (fight.allyMaxHp_ > 0 && !pk.playable);
     }
-    static constexpr float kNoLine = -1.0e9f;
-    // The prompts as they stand, with no Ready said (setSpecials, begin, restart): no line has played yet.
-    void specialArm() {
-        ArenaFight::SpecialState& sp = fight.special_;
-        for (std::size_t s = 0; s < 2; ++s) {
-            sp.shown[s] = slotShown(s);
-            sp.lineAt[s] = kNoLine;
-        }
-    }
+    // No prompt stands (setSpecials, begin, restart): a gauge that is full says Ready on the first tick of the fight, its
+    // line per the gap on the host's clock.
+    void specialArm() { fight.special_.shown = {false, false}; }
     // A lead switch (`outgoing` was the player's slot before it): switchLoss off the gauges the data names.
     void specialSwitchLoss(std::size_t outgoing) {
         ArenaFight::SpecialState& sp = fight.special_;
-        if (!sp.table) return;
-        const ArenaSpecialGaugeRules& g = sp.table->gauge;
+        const ArenaSpecialTable* t = specialTable();
+        if (!t) return;
+        const ArenaSpecialGaugeRules& g = t->gauge;
         for (std::size_t s = 0; s < 2; ++s) {
             const bool named = g.switchLossAppliesTo == ArenaSpecialSwitchLoss::Both ||
                                (g.switchLossAppliesTo == ArenaSpecialSwitchLoss::Outgoing) == (s == outgoing);
@@ -3820,56 +3879,67 @@ struct ArenaFightImpl {
         v.refusalPartner = specialRefusal(kArenaAlly, sight);
     }
 
-    // After a tick that ran (or refreshed): the gauges take this tick's events, then the flags.
+    // The gauges take this tick's events not yet taken (each event once: the press takes those before it).
+    std::size_t specialFilled = 0;
+    void specialFill() {
+        ArenaFight::SpecialState& sp = fight.special_;
+        const ArenaSpecialTable* t = specialTable();
+        const std::size_t count = std::min<std::size_t>(out.events.count, kMaxArenaEvents);
+        const std::size_t from = std::min(specialFilled, count);
+        specialFilled = count;
+        if (!t) return;
+        const ArenaSpecialGaugeRules& g = t->gauge;
+        const std::size_t ps = playerSlot(), as = 1u - ps;
+        std::array<float, 2> add{};
+        for (std::size_t e = from; e < count; ++e) {
+            const ArenaEvent& ev = out.events.items[e];
+            const bool onFoe = ev.target < n;
+            const bool byLead = ev.source == kArenaPlayer || ev.source == kArenaAlly;
+            const float amount = static_cast<float>(std::max(ev.amount, 0));
+            switch (ev.type) {
+            case ArenaEventType::Hit:
+            case ArenaEventType::HostHit:
+            case ArenaEventType::CounterStagger:
+            case ArenaEventType::ReadCounter:
+                if (onFoe && byLead && ev.move != kArenaSpecialMove)
+                    add[ev.source == kArenaPlayer ? ps : as] += amount * g.perDamageDealt;
+                else if (ev.target == kArenaPlayer)
+                    add[ps] += amount * g.perDamageTaken;
+                break;
+            case ArenaEventType::AllyHit: add[as] += amount * g.perDamageTaken; break;
+            case ArenaEventType::Parried: add[ps] += g.perParry; break;
+            case ArenaEventType::Blocked: add[ps] += g.perBlock; break;
+            case ArenaEventType::AllyBlocked: add[as] += g.perBlock; break;
+            default: break;
+            }
+        }
+        for (std::size_t s = 0; s < 2; ++s) {
+            if (!slotHasLead(s) || !(add[s] > 0.f) || sp.gauge[s] >= g.full) continue;
+            sp.gauge[s] = std::min(g.full, sp.gauge[s] + add[s]);
+        }
+    }
+
+    // After a tick that ran (or refreshed): the gauges take this tick's events, then the prompts, then the flags.
     void specialAfterTick(bool sight) {
         ArenaFight::SpecialState& sp = fight.special_;
-        if (sp.table) {
-            const ArenaSpecialGaugeRules& g = sp.table->gauge;
-            const std::size_t ps = playerSlot(), as = 1u - ps;
-            std::array<float, 2> add{};
-            const std::size_t count = std::min<std::size_t>(out.events.count, kMaxArenaEvents);
-            for (std::size_t e = 0; e < count; ++e) {
-                const ArenaEvent& ev = out.events.items[e];
-                const bool onFoe = ev.target < n;
-                const bool byLead = ev.source == kArenaPlayer || ev.source == kArenaAlly;
-                const float amount = static_cast<float>(std::max(ev.amount, 0));
-                switch (ev.type) {
-                case ArenaEventType::Hit:
-                case ArenaEventType::HostHit:
-                case ArenaEventType::CounterStagger:
-                case ArenaEventType::ReadCounter:
-                    if (onFoe && byLead && ev.move != kArenaSpecialMove)
-                        add[ev.source == kArenaPlayer ? ps : as] += amount * g.perDamageDealt;
-                    else if (ev.target == kArenaPlayer)
-                        add[ps] += amount * g.perDamageTaken;
-                    break;
-                case ArenaEventType::AllyHit: add[as] += amount * g.perDamageTaken; break;
-                case ArenaEventType::Parried: add[ps] += g.perParry; break;
-                case ArenaEventType::Blocked: add[ps] += g.perBlock; break;
-                case ArenaEventType::AllyBlocked: add[as] += g.perBlock; break;
-                default: break;
-                }
+        specialFill();
+        const ArenaSpecialTable* t = specialTable();
+        // The prompts, while the fight runs (none on the tick it ends): a full gauge that shows says Ready once (its
+        // line at most once per readyLineGap of the host's clock); one that stops showing (a switch lowered it, or its
+        // lead is the partner now) says Unready.
+        for (std::size_t s = 0; t && fight.phase_ == ArenaPhase::Fighting && s < 2; ++s) {
+            const bool show = slotShown(s);
+            if (show == sp.shown[s]) continue;
+            sp.shown[s] = show;
+            const std::uint8_t body = bodyOfSlot(s);
+            const Vec2 at = body == kArenaPlayer ? pl.pos : fight.allyPos_;
+            if (!show) {
+                emit(ArenaEventType::SpecialUnready, body, kArenaNobody, 0, static_cast<int>(s), at);
+                continue;
             }
-            for (std::size_t s = 0; s < 2; ++s) {
-                if (!slotHasLead(s) || !(add[s] > 0.f) || sp.gauge[s] >= g.full) continue;
-                sp.gauge[s] = std::min(g.full, sp.gauge[s] + add[s]);
-            }
-            // The prompts: a full gauge that shows says Ready once (its line at most once per readyLineGap); one that
-            // stops showing (a switch lowered it, or its lead is the partner now) says Unready.
-            for (std::size_t s = 0; s < 2; ++s) {
-                const bool show = slotShown(s);
-                if (show == sp.shown[s]) continue;
-                sp.shown[s] = show;
-                const std::uint8_t body = bodyOfSlot(s);
-                const Vec2 at = body == kArenaPlayer ? pl.pos : fight.allyPos_;
-                if (!show) {
-                    emit(ArenaEventType::SpecialUnready, body, kArenaNobody, 0, static_cast<int>(s), at);
-                    continue;
-                }
-                const bool line = sp.lineAt[s] <= kNoLine || fight.time_ - sp.lineAt[s] >= g.readyLineGap;
-                if (line) sp.lineAt[s] = fight.time_;
-                emit(ArenaEventType::SpecialReady, body, kArenaNobody, line ? 1 : 0, static_cast<int>(s), at);
-            }
+            const bool line = sp.lineAt[s] <= kArenaSpecialNoLine || sp.clock - sp.lineAt[s] >= t->gauge.readyLineGap;
+            if (line) sp.lineAt[s] = sp.clock;
+            emit(ArenaEventType::SpecialReady, body, kArenaNobody, line ? 1 : 0, static_cast<int>(s), at);
         }
         specialFlags(sight);
     }
@@ -3881,15 +3951,15 @@ struct ArenaFightImpl {
         ArenaFight::SpecialState& sp = fight.special_;
         const bool player = in.special == kArenaPlayer;
         const std::size_t slot = player ? playerSlot() : 1u - playerSlot();
-        const ArenaSpecialRules& m = *sp.move[slot];
+        const ArenaSpecialRules& m = *slotMove(slot); // the refusal found it
         ArenaSpecialView& v = sp.view;
         v.running = true;
-        v.move = &m;
+        v.move = sp.move[slot];
         v.performer = in.special;
         v.slot = static_cast<std::uint8_t>(slot);
         v.target = target;
-        v.origin = player ? pl.pos : fight.allyPos_;
-        v.dir = arenaUnit(arenaSub(foes[target].pos, v.origin), player ? pl.facing : fight.ally_.facing);
+        v.origin = specialOrigin(in.special);
+        v.dir = specialDir(in.special, target);
         v.time = 0.f;
         v.duration = m.duration;
         v.impactDone = false;
@@ -3903,16 +3973,15 @@ struct ArenaFightImpl {
         sp.shown[slot] = false; // spent: the prompt goes with SpecialStarted
         ++stats.specials;
         emit(ArenaEventType::SpecialStarted, v.performer, target, kArenaSpecialMove, static_cast<int>(slot), v.origin);
-        specialCues(0.f);
+        specialCues(0.f, m);
         specialFlags(in.specialSight);
         return true;
     }
 
     // The cues due by `now` (s since the press), in order, into this tick's list.
-    void specialCues(float now) {
+    void specialCues(float now, const ArenaSpecialRules& m) {
         ArenaFight::SpecialState& sp = fight.special_;
         ArenaSpecialView& v = sp.view;
-        const ArenaSpecialRules& m = *v.move;
         while (sp.nextCue < m.cueCount && m.cues[sp.nextCue].at <= now + kSpecialEps &&
                v.cueCount < kMaxArenaSpecialCues)
             v.cuesFired[v.cueCount++] = sp.nextCue++;
@@ -3932,22 +4001,29 @@ struct ArenaFightImpl {
         return amount;
     }
 
-    // At impact: the target always, every other living enemy whose body reaches into the lane at otherShare.
-    void specialImpact() {
+    // At impact: the target always (one gone by now passes it to the nearest living enemy in the lane, else nobody),
+    // every other living enemy whose body reaches into the lane at otherShare. An enemy held unhurt is in the results
+    // as the target only, at 0.
+    void specialImpact(const ArenaSpecialRules& m) {
         ArenaSpecialView& v = fight.special_.view;
-        const ArenaSpecialRules& m = *v.move;
         v.resultCount = 0;
-        const Vec2 side{-v.dir.y, v.dir.x};
+        if (v.target >= n || !alive(v.target)) { // nothing in the freeze can kill it: kept for safety
+            std::uint8_t next = kArenaNobody;
+            float bestAlong = 0.f;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!alive(i) || !inLane(i, v.origin, v.dir, m)) continue;
+                const float along = arenaDot(arenaSub(foes[i].pos, v.origin), v.dir);
+                if (next == kArenaNobody || along < bestAlong) {
+                    next = id(i);
+                    bestAlong = along;
+                }
+            }
+            v.target = next;
+        }
         for (std::size_t i = 0; i < n && v.resultCount < kMaxArenaSpecialTargets; ++i) {
             if (!alive(i)) continue;
             const bool isTarget = i == v.target;
-            if (!isTarget) {
-                const float r = def.enemies[i].bodyRadius;
-                const Vec2 to = arenaSub(foes[i].pos, v.origin);
-                const float along = arenaDot(to, v.dir);
-                const float across = std::fabs(arenaDot(to, side));
-                if (along < -r || along > m.laneLength + r || across > 0.5f * m.laneWidth + r) continue;
-            }
+            if (!isTarget && (unhurt(foes[i]) || !inLane(i, v.origin, v.dir, m))) continue;
             const bool boss = def.enemies[i].boss;
             const int damage =
                 boss ? specialBossDamage(i, m.bossPhaseShare * (isTarget ? 1.f : m.otherShare))
@@ -3956,25 +4032,31 @@ struct ArenaFightImpl {
             if (damage <= 0 && !isTarget) continue;
             ArenaSpecialResult& res = v.results[v.resultCount++];
             res.foe = id(i);
-            res.damage = std::max(damage, 1);
+            res.damage = unhurt(foes[i]) ? 0 : std::max(damage, 1);
             res.target = isTarget;
             res.boss = boss;
         }
         v.impactDone = true;
     }
 
-    // The cut back: the results land (hp, then a stagger and the knock-back for all but a boss), the performer
-    // stands Idle facing the way it struck, and the fight runs again from the next tick.
+    // The cut back: the results land (hp, then a stagger and the knock-back for all but a boss; nothing on an enemy
+    // held unhurt), the performer stands Idle facing the way it struck, and the fight runs again from the next tick. A
+    // move the host's table lost ends here with no results (the gauge stays spent).
     void specialEnd(bool skipped, bool sight) {
         ArenaFight::SpecialState& sp = fight.special_;
         ArenaSpecialView& v = sp.view;
-        if (!v.impactDone) specialImpact();
-        const ArenaSpecialRules& m = *v.move;
+        const ArenaSpecialRules* m = runningMove();
+        if (!m) {
+            v.resultCount = 0;
+            v.impactDone = true;
+        } else if (!v.impactDone) {
+            specialImpact(*m);
+        }
         const std::uint8_t by = v.performer;
-        for (std::size_t r = 0; r < v.resultCount; ++r) {
+        for (std::size_t r = 0; m && r < v.resultCount; ++r) {
             const ArenaSpecialResult& res = v.results[r];
             const std::size_t i = res.foe;
-            if (!alive(i)) continue;
+            if (!alive(i) || res.damage <= 0 || unhurt(foes[i])) continue;
             Enemy& foe = foes[i];
             const int amount = lose(i, res.damage);
             stats.damageDealt += amount;
@@ -3985,9 +4067,9 @@ struct ArenaFightImpl {
                 killEnemy(i, true, fight.time_, by);
             } else if (!res.boss) {
                 staggerEnemy(i, by);
-                if (m.knockBack > 0.f) {
-                    foe.shoveVel = arenaScaled(arenaUnit(arenaSub(foe.pos, v.origin), v.dir), m.knockBack / m.knockTime);
-                    foe.shoveLeft = m.knockTime;
+                if (m->knockBack > 0.f && m->knockTime > 0.f) {
+                    foe.shoveVel = arenaScaled(arenaUnit(arenaSub(foe.pos, v.origin), v.dir), m->knockBack / m->knockTime);
+                    foe.shoveLeft = m->knockTime;
                 }
             }
         }
@@ -4008,17 +4090,13 @@ struct ArenaFightImpl {
             fight.ally_.facing = v.dir;
             fight.ally_.heading = v.dir;
         }
-        sp.seen[v.slot] = true;
+        if (m) sp.seen[v.slot] = true;
         v.running = false;
         v.endedThisTick = true;
         v.skippable = false;
         emit(ArenaEventType::SpecialEnded, by, v.target, kArenaSpecialMove, skipped ? 1 : 0,
              by == kArenaPlayer ? pl.pos : fight.allyPos_);
-        if (allDead()) {
-            closeRead();
-            fight.phase_ = ArenaPhase::Victory;
-            emit(ArenaEventType::Victory, kArenaNobody, kArenaNobody, 0, 0, pl.pos);
-        }
+        settleOutcome();
         fillOutput();
         specialFlags(sight);
     }
@@ -4031,13 +4109,18 @@ struct ArenaFightImpl {
         ArenaSpecialView& v = sp.view;
         v.cueCount = 0;
         v.endedThisTick = false;
+        const ArenaSpecialRules* m = runningMove();
         const bool skip = in.specialSkip && v.skippable;
-        if (!(step > 0.f) && !skip) return;
+        if (!(step > 0.f) && !skip && m) return;
         dt = step > 0.f ? step : 0.f;
         t0 = t1 = fight.time_;
+        if (!m) { // the host's table lost the move: it ends now
+            specialEnd(false, in.specialSight);
+            return;
+        }
         const float now = skip ? std::max(v.time + dt, v.duration) : v.time + dt;
-        specialCues(now);
-        if (!v.impactDone && now >= v.move->impactAt - kSpecialEps) specialImpact();
+        specialCues(now, *m);
+        if (!v.impactDone && now >= m->impactAt - kSpecialEps) specialImpact(*m);
         v.time = std::min(now, v.duration);
         if (now >= v.duration - kSpecialEps) specialEnd(skip, in.specialSight);
     }
@@ -4262,7 +4345,8 @@ void ArenaFight::begin(const ArenaDef& d, const ArenaRing& where, Vec2 playerPos
     }
     stats_ = ArenaStats{};
     dropped_ = 0;
-    special_.gaugeAtBegin = special_.gauge;
+    special_ = SpecialState{}; // the host gives them again (setSpecials): its store carries the gauges
+    specialTable_ = nullptr;
     ArenaFightImpl(*this).reset();
 }
 
@@ -4295,20 +4379,23 @@ std::uint32_t ArenaFight::droppedEvents() const { return dropped_; }
 
 bool ArenaFight::setSpecials(const ArenaSpecialTable* table, std::string_view fighterLead, std::string_view partnerLead,
                              const LeadSpecialGauges& gauges) {
-    if (inHook_.on || special_.view.running) return false;
-    special_.table = table;
+    if (inHook_.on || special_.view.running || !ArenaFightImpl::specialTableValid(table)) return false;
+    special_.on = table != nullptr;
+    specialTable_ = table;
+    special_.clock = gauges.clock >= 0.f && gauges.clock < 1.0e9f ? gauges.clock : 0.f; // NaN, below 0: 0
     const std::array<std::string_view, 2> leads{fighterLead, partnerLead};
     for (std::size_t s = 0; s < 2; ++s) {
         std::array<char, kMaxArenaSpecialId + 1>& id = special_.lead[s];
         id.fill('\0');
         const std::string_view lead = leads[s].size() <= kMaxArenaSpecialId ? leads[s] : std::string_view{};
         std::copy(lead.begin(), lead.end(), id.begin());
-        special_.move[s] = table && !lead.empty() ? table->forLead(lead) : nullptr;
+        special_.move[s] = ArenaFightImpl::specialIndexOf(table, lead);
         const LeadSpecialGauges::Lead* kept = lead.empty() ? nullptr : gauges.find(lead);
         const float full = table ? table->gauge.full : 0.f;
         const float value = kept && kept->value > 0.f ? std::min(kept->value, full) : 0.f; // NaN: 0
         special_.gauge[s] = special_.gaugeAtBegin[s] = value;
         special_.seen[s] = kept && kept->seen;
+        special_.lineAt[s] = kept && kept->lineAt <= special_.clock ? kept->lineAt : kArenaSpecialNoLine; // NaN: none
     }
     ArenaFightImpl(*this).specialArm();
     ArenaFightImpl(*this).specialFlags(true);
@@ -4322,8 +4409,29 @@ void ArenaFight::storeSpecialGauges(LeadSpecialGauges& gauges) const {
         if (LeadSpecialGauges::Lead* e = gauges.entry(lead)) {
             e->value = special_.gauge[s];
             e->seen = special_.seen[s];
+            e->lineAt = special_.lineAt[s];
         }
     }
+    gauges.clock = std::max(gauges.clock, special_.clock); // the host's clock never runs back
+}
+
+bool ArenaFight::setSpecialTable(const ArenaSpecialTable* table) {
+    if (inHook_.on || !ArenaFightImpl::specialTableValid(table)) return false;
+    special_.on = table != nullptr;
+    specialTable_ = table;
+    for (std::size_t s = 0; s < 2; ++s)
+        special_.move[s] = ArenaFightImpl::specialIndexOf(table, std::string_view(special_.lead[s].data()));
+    ArenaSpecialView& v = special_.view;
+    if (v.running && v.slot < 2) v.move = special_.move[v.slot]; // none: it ends at the next tick
+    ArenaFightImpl(*this).specialFlags(true);
+    return true;
+}
+
+const ArenaSpecialRules* ArenaFight::specialMove() const {
+    const ArenaSpecialView& v = special_.view;
+    return v.slot < 2 ? ArenaFightImpl::specialMoveAt(special_.on ? specialTable_ : nullptr, v.move,
+                                                      std::string_view(special_.lead[v.slot].data()))
+                      : nullptr;
 }
 
 const ArenaSpecialView& ArenaFight::special() const { return special_.view; }
@@ -4406,7 +4514,7 @@ PressReason ArenaFight::pressReason(ArenaPress p) const {
 }
 
 bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {
-    if (phase_ != ArenaPhase::Fighting || !enemyAlive(i) ||
+    if (phase_ != ArenaPhase::Fighting || special_.view.running || !enemyAlive(i) ||
         (brain != ArenaBrain::Open && brain != ArenaBrain::Down && brain != ArenaBrain::Staggered) || !(seconds > 0.f))
         return false;
     EnemyState& foe = enemy_[i];
@@ -4416,28 +4524,28 @@ bool ArenaFight::holdEnemy(std::size_t i, ArenaBrain brain, float seconds) {
     return true;
 }
 void ArenaFight::releaseEnemy(std::size_t i) {
-    if (i < enemyCount_) enemy_[i].holdAsk = HoldAsk::Release;
+    if (i < enemyCount_ && !special_.view.running) enemy_[i].holdAsk = HoldAsk::Release;
 }
 bool ArenaFight::enemyHeld(std::size_t i) const { return enemyAlive(i) && enemy_[i].holdFor >= 0.f; }
 void ArenaFight::setEnemyHpFloor(std::size_t i, int hpFloor) {
-    if (i < enemyCount_) enemy_[i].hpFloor = std::max(0, hpFloor);
+    if (i < enemyCount_ && !special_.view.running) enemy_[i].hpFloor = std::max(0, hpFloor);
 }
 int ArenaFight::enemyHpFloor(std::size_t i) const { return i < enemyCount_ ? enemy_[i].hpFloor : 0; }
 static_assert(kMaxArenaMoves <= 32, "a move mask holds one bit per move");
 void ArenaFight::setEnemyMoveMask(std::size_t i, std::uint32_t mask) {
-    if (i < enemyCount_) enemy_[i].moveMask = mask;
+    if (i < enemyCount_ && !special_.view.running) enemy_[i].moveMask = mask;
 }
 std::uint32_t ArenaFight::enemyMoveMask(std::size_t i) const { return i < enemyCount_ ? enemy_[i].moveMask : 0u; }
 void ArenaFight::setEnemyFacingHeld(std::size_t i, bool held) {
-    if (i < enemyCount_) enemy_[i].facingHeld = held;
+    if (i < enemyCount_ && !special_.view.running) enemy_[i].facingHeld = held;
 }
 bool ArenaFight::enemyFacingHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].facingHeld; }
 void ArenaFight::setEnemyTurnHeld(std::size_t i, bool held) {
-    if (i < enemyCount_) enemy_[i].turnHeld = held;
+    if (i < enemyCount_ && !special_.view.running) enemy_[i].turnHeld = held;
 }
 bool ArenaFight::enemyTurnHeld(std::size_t i) const { return i < enemyCount_ && enemy_[i].turnHeld; }
 void ArenaFight::setEnemyFlinch(std::size_t i, bool allowed) {
-    if (i < enemyCount_) enemy_[i].flinchAllowed = allowed;
+    if (i < enemyCount_ && !special_.view.running) enemy_[i].flinchAllowed = allowed;
 }
 bool ArenaFight::enemyFlinch(std::size_t i) const { return i < enemyCount_ && enemy_[i].flinchAllowed; }
 float ArenaFight::enemyBreakValue(std::size_t i) const {
@@ -4464,7 +4572,7 @@ const ArenaAttack& ArenaFight::enemyAttackOf(std::size_t i, std::uint8_t move) c
     return foe.breakTimed ? foe.breakAttack : foe.unseen ? foe.unseenAttack : def_.enemies[i].moves[move].attack;
 }
 void ArenaFight::setEnemyFacing(std::size_t i, Vec2 facing) {
-    if (i < enemyCount_ && arenaLength(facing) > kArenaEps) enemy_[i].facing = arenaUnit(facing, enemy_[i].facing);
+    if (i < enemyCount_ && !special_.view.running && arenaLength(facing) > kArenaEps) enemy_[i].facing = arenaUnit(facing, enemy_[i].facing);
 }
 void ArenaFight::setBlowHook(ArenaBlowHook hook, void* user) {
     blowHook_ = hook;
@@ -4480,11 +4588,11 @@ void ArenaFight::setCameraHalfAngle(float degrees) {
 float ArenaFight::cameraHalfAngle() const { return cameraHalfAngle_; }
 void* ArenaFight::blowHookUser() const { return blowUser_; }
 bool ArenaFight::hostBlow(std::size_t enemy, int damage, std::uint8_t move) {
-    if (phase_ != ArenaPhase::Fighting) return false;
+    if (phase_ != ArenaPhase::Fighting || special_.view.running) return false;
     return ArenaFightImpl(*this).hostBlow(enemy, damage, move);
 }
 bool ArenaFight::ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move, ArenaBlowHook hook, void* user) {
-    if (phase_ != ArenaPhase::Fighting) return false;
+    if (phase_ != ArenaPhase::Fighting || special_.view.running) return false;
     ArenaFightImpl impl(*this);
     if (!hook || !impl.alive(enemy) || damage <= 0 || ArenaFightImpl::unhurt(enemy_[enemy]))
         return impl.hostBlow(enemy, damage, move);
@@ -4508,39 +4616,42 @@ bool ArenaFight::ruledHostBlow(std::size_t enemy, int damage, std::uint8_t move,
     return scaled > 0 && impl.hostBlow(enemy, scaled, move, r.breakScale);
 }
 int ArenaFight::giveLoad(int amount) {
-    if (phase_ != ArenaPhase::Fighting) return 0;
+    if (phase_ != ArenaPhase::Fighting || special_.view.running) return 0;
     return ArenaFightImpl(*this).giveLoad(amount);
 }
 
-void ArenaFight::setLoadCap(int cap) { ArenaFightImpl(*this).setLoadCap(cap); }
+void ArenaFight::setLoadCap(int cap) {
+    if (!special_.view.running) ArenaFightImpl(*this).setLoadCap(cap);
+}
 int ArenaFight::loadCap() const { return capNow(); }
 int ArenaFight::releaseOpenLoad() const { return capNow() / 3; }
 void ArenaFight::setLone(bool on, const LoneTuning& tuning, float blowCap) {
-    ArenaFightImpl(*this).setLone(on, tuning, blowCap);
+    if (!special_.view.running) ArenaFightImpl(*this).setLone(on, tuning, blowCap);
 }
 bool ArenaFight::lone() const { return lone_; }
 int ArenaFight::spendLoad(int amount) {
-    if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
+    if (phase_ != ArenaPhase::Fighting || special_.view.running || amount <= 0) return 0;
     return ArenaFightImpl(*this).spendLoad(amount);
 }
 void ArenaFight::setLoad(int value) {
-    if (phase_ == ArenaPhase::Fighting) ArenaFightImpl(*this).setLoad(value);
+    if (phase_ == ArenaPhase::Fighting && !special_.view.running) ArenaFightImpl(*this).setLoad(value);
 }
 void ArenaFight::setHealCharges(int charges) {
-    if (phase_ == ArenaPhase::Fighting)
+    if (phase_ == ArenaPhase::Fighting && !special_.view.running)
         player_.charges = static_cast<std::uint8_t>(std::clamp(charges, 0, static_cast<int>(healMax_)));
 }
 int ArenaFight::hostHeal(int amount) {
-    if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
+    if (phase_ != ArenaPhase::Fighting || special_.view.running || amount <= 0) return 0;
     return ArenaFightImpl(*this).hostHeal(amount);
 }
 int ArenaFight::hostHurt(int amount) {
-    if (phase_ != ArenaPhase::Fighting || amount <= 0) return 0;
+    if (phase_ != ArenaPhase::Fighting || special_.view.running || amount <= 0) return 0;
     return ArenaFightImpl(*this).hostHurt(amount);
 }
 void ArenaFight::setCarry(bool blocksStore) { carry_ = blocksStore; }
 bool ArenaFight::carry() const { return carry_; }
 void ArenaFight::setChairs(const ArenaChairs& chairs) {
+    if (special_.view.running) return;
     chairs_ = chairs;
     chairs_.count = static_cast<std::uint8_t>(std::min<std::size_t>(chairs_.count, chairs_.named.size()));
 }
@@ -4557,6 +4668,7 @@ float ArenaFight::reloadProgress() const {
     return std::clamp(1.f - player_.reloadLeft / r, 0.f, 1.f);
 }
 void ArenaFight::setAlly(int maxHp, float radius) {
+    if (special_.view.running) return;
     allyMaxHp_ = std::max(maxHp, 0);
     allyHpGiven_ = allyMaxHp_;
     allyHp_ = allyMaxHp_;
@@ -4569,7 +4681,7 @@ bool ArenaFight::allyAlive() const { return allyMaxHp_ > 0 && allyHp_ > 0; }
 void ArenaFight::setPartner(PartnerBrain* brain, const PartnerTuning* tuning) {
     PartnerBrain* const b = brain && tuning ? brain : nullptr;
     const PartnerTuning* const t = b ? tuning : nullptr;
-    if (inHook_.on || (b == partner_ && t == partnerTuning_)) return;
+    if (inHook_.on || special_.view.running || (b == partner_ && t == partnerTuning_)) return;
     partner_ = b;
     partnerTuning_ = t;
     ally_ = AllyState{};
@@ -4580,11 +4692,12 @@ void ArenaFight::setPartner(PartnerBrain* brain, const PartnerTuning* tuning) {
 }
 
 bool ArenaFight::swapped() const { return swapped_; }
-bool ArenaFight::switchLeads() { return ArenaFightImpl(*this).switchLeads(); }
+bool ArenaFight::switchLeads() { return !special_.view.running && ArenaFightImpl(*this).switchLeads(); }
 ArenaSwitchRefusal ArenaFight::switchRefusal() const { return switchRefusal_; }
 Vec2 ArenaFight::allyPos() const { return allyPos_; }
 float ArenaFight::allyRadius() const { return allyRadius_; }
 void ArenaFight::setTableSeats(const ArenaTableSeats& seats) {
+    if (special_.view.running) return;
     tableSeats_ = seats;
     for (float& v : tableSeats_.enemyShare) v = std::isfinite(v) ? std::clamp(v, 0.f, 4.f) : 0.f;
 }
@@ -5929,6 +6042,7 @@ const char* arenaSpecialRefusalName(ArenaSpecialRefusal r) {
     case ArenaSpecialRefusal::Down: return "down";
     case ArenaSpecialRefusal::Running: return "running";
     case ArenaSpecialRefusal::Over: return "over";
+    case ArenaSpecialRefusal::Unhurt: return "unhurt";
     }
     return "?";
 }
