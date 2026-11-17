@@ -2372,6 +2372,194 @@ def sack_pile(name):
     return b.finish()
 
 
+def bench(name):
+    """A shopfront bench set against the wall: five timber slats 1.6 x 0.42 m at 0.44 m, on two iron frames with a
+    cross stretcher, one slat end split. Origin at the bottom centre; its front (the sitter's knees) at -Y."""
+    b = Builder(name)
+    rng = random.Random(5505)
+    L, Dp, Hs = 1.6, 0.42, 0.44
+    sw, gap, st = 0.072, 0.015, 0.032
+    for k in range(5):  # slats, front to back
+        y0 = -Dp / 2 + k * (sw + gap)
+        sag = rng.uniform(-0.004, 0.0)
+        b.add(bm_box(-L / 2, y0, Hs - st + sag, L / 2 - (0.03 if k == 2 else 0.0), y0 + sw, Hs + sag, bevel=0.005, seg=2,
+                     jitter=0.0008, rng=rng), "hc_timber", grain="x", uvoff=(rng.random(), rng.random()))
+    for x in (-L / 2 + 0.16, L / 2 - 0.16):  # iron frames: two legs, a seat bearer, a foot rail
+        for y in (-Dp / 2 + 0.03, Dp / 2 - 0.03):
+            b.add(bm_box(x - 0.02, y - 0.02, 0.0, x + 0.02, y + 0.02, Hs - st, bevel=0.004, seg=1), "hc_iron")
+        b.add(bm_box(x - 0.025, -Dp / 2 + 0.01, Hs - st - 0.04, x + 0.025, Dp / 2 - 0.01, Hs - st, bevel=0.004, seg=1),
+              "hc_iron")
+        b.add(bm_box(x - 0.015, -Dp / 2 + 0.03, 0.08, x + 0.015, Dp / 2 - 0.03, 0.11, bevel=0.003, seg=1), "hc_iron")
+    b.add(bm_box(-L / 2 + 0.16, -0.015, 0.12, L / 2 - 0.16, 0.015, 0.15, bevel=0.003, seg=1), "hc_iron")  # stretcher
+    return b.finish()
+
+
+MATERIALS["hc_paper"] = ((0.50, 0.47, 0.40), 0.88, 0.0)      # notices, sun-faded and damp-cockled
+MATERIALS["hc_paper_old"] = ((0.38, 0.33, 0.24), 0.9, 0.0)
+MATERIALS["hc_meter_glass"] = ((0.10, 0.11, 0.10), 0.18, 0.0)  # the dial's window (a glass token: under 0.40)
+TEXTURED.update({
+    "hc_meter_paint": (lambda: gen_worn(54, 0.4, (0.25, 0.27, 0.25), (0.17, 0.08, 0.04), 0.07, 0.55, 0.80, grime=0.45),
+                       0.6),
+    "hc_umbrella_cloth": (lambda: gen_weave(55, 0.15, colour=(0.035, 0.045, 0.07), thread=0.0009, mottle=0.04,
+                                            rough=0.82), 0.82),
+    "hc_umbrella_cloth_red": (lambda: gen_weave(56, 0.15, colour=(0.20, 0.035, 0.03), thread=0.0009, mottle=0.05,
+                                                rough=0.82), 0.82),
+})
+TILE.update({"hc_meter_paint": 0.4, "hc_umbrella_cloth": 0.15, "hc_umbrella_cloth_red": 0.15})
+
+
+def umbrella_stand(name):
+    """A glazed stoneware umbrella pot 0.48 m tall, 0.28 m across the lip, with three closed umbrellas leaning in it
+    (two dark, one red; bamboo crooks) up to about 0.92 m. Origin at the bottom centre; front at -Y."""
+    b = Builder(name)
+    rng = random.Random(6606)
+    pot = [(0.0, 0.0), (0.118, 0.0), (0.124, 0.015), (0.128, 0.30), (0.133, 0.45), (0.142, 0.468), (0.140, 0.48),
+           (0.126, 0.478), (0.118, 0.46), (0.113, 0.06), (0.0, 0.06)]
+    b.add(bm_lathe(pot, 40, rfun=wobble(rng, 0.006)), "hc_glaze_green", uv="keep")
+    b.add(bm_lathe([(0.0, -0.004), (0.121, -0.004), (0.121, 0.012), (0.0, 0.012)], 40, smooth=False), "hc_bisque",
+          uv="keep")  # the unglazed foot ring
+    for k, (ang, lean, mat, h) in enumerate(((20, 7, "hc_umbrella_cloth", 0.90), (150, 9, "hc_umbrella_cloth_red", 0.86),
+                                             (265, 6, "hc_umbrella_cloth", 0.92))):
+        a = math.radians(ang)
+        ox, oy = 0.045 * math.cos(a), 0.045 * math.sin(a)
+        Mk = T(ox, oy, 0.065) @ R(ang - 90, "Z") @ R(lean, "X")
+        L = h - 0.20  # the canopy, gathered: tip at the bottom, widest under the hub
+        prof = [(0.0, 0.0), (0.006, 0.02), (0.022, 0.12), (0.034, 0.32), (0.040, L * 0.82), (0.026, L * 0.95),
+                (0.009, L), (0.0, L + 0.004)]
+        b.add(bm_lathe(prof, 16, phase=rng.random(), rfun=wobble(rng, 0.18)), mat, M=Mk, uv="keep")
+        b.add(bm_tube([Vector((0, 0, L * 0.4)), Vector((0, 0, L + 0.13))], 0.0055, seg=8), "hc_iron", M=Mk, uv="keep")
+        b.add(bm_lathe([(0.0, 0.0), (0.004, 0.003), (0.004, 0.02), (0.0, 0.026)], 8), "hc_lacquer",
+              M=Mk @ T(0, 0, -0.02), uv="keep")  # the ferrule
+        crook = [Vector((0, 0, L + 0.10))]
+        for i in range(1, 13):  # a bamboo crook, hooked back
+            t = math.pi * 1.1 * i / 12
+            crook.append(Vector((0.045 * (1 - math.cos(t)), 0, L + 0.13 + 0.045 * math.sin(t))))
+        b.add(bm_tube(crook, 0.011, seg=10), "hc_bamboo", M=Mk, uv="keep")
+        # the strap and its button round the gathered cloth
+        b.add(bm_lathe([(0.041, -0.012), (0.043, -0.01), (0.043, 0.01), (0.041, 0.012)], 16), mat,
+              M=Mk @ T(0, 0, L * 0.7), uv="keep")
+    return b.finish()
+
+
+def stool(name):
+    """A shop stool: a round 0.34 m timber seat 0.46 m up on three splayed legs, a ring of stretchers, the seat's edge
+    worn pale where it is gripped. Origin at the bottom centre; front at -Y."""
+    b = Builder(name)
+    rng = random.Random(7707)
+    H, R0 = 0.46, 0.17
+    b.add(bm_lathe([(0.0, H - 0.035), (R0 - 0.01, H - 0.035), (R0, H - 0.025), (R0, H - 0.008), (R0 - 0.008, H),
+                    (0.0, H + 0.004)], 32, rfun=wobble(rng, 0.004)), "hc_timber", uv="keep")
+    for k in range(3):
+        a = 2 * math.pi * k / 3 + 0.3
+        top = Vector((0.10 * math.cos(a), 0.10 * math.sin(a), H - 0.035))
+        foot = Vector((0.17 * math.cos(a), 0.17 * math.sin(a), 0.0))
+        b.add(bm_tube([foot, top], 0.017, seg=8), "hc_timber", uv="keep")
+        a2 = a + 2 * math.pi / 3
+        p = foot.lerp(top, 0.32)
+        q = Vector((0.17 * math.cos(a2), 0.17 * math.sin(a2), 0.0)).lerp(
+            Vector((0.10 * math.cos(a2), 0.10 * math.sin(a2), H - 0.035)), 0.32)
+        b.add(bm_tube([p, q], 0.010, seg=6), "hc_timber", uv="keep")
+    return b.finish()
+
+
+def meter_box(name):
+    """A painted steel meter box on the wall, 0.36 x 0.52 m, 0.16 m deep, with a dial window, a hinged door with a
+    latch, a conduit dropping from under it into the plinth and two fixing straps. Origin on the wall at the conduit's
+    foot (0.0 is the floor); the box's bottom 1.25 m up; front at -Y."""
+    b = Builder(name)
+    rng = random.Random(8808)
+    W, Hh, D, z0 = 0.36, 0.52, 0.16, 1.25
+    b.add(bm_box(-W / 2, -D, z0, W / 2, 0.0, z0 + Hh, bevel=0.008, seg=2, jitter=0.0005, rng=rng), "hc_meter_paint")
+    b.add(bm_box(-W / 2 + 0.012, -D - 0.008, z0 + 0.012, W / 2 - 0.012, -D + 0.001, z0 + Hh - 0.012, bevel=0.004,
+                 seg=1), "hc_meter_paint")  # the door
+    b.add(bm_box(-0.075, -D - 0.012, z0 + Hh - 0.20, 0.075, -D - 0.006, z0 + Hh - 0.08, bevel=0.003, seg=1),
+          "hc_meter_glass")
+    b.add(bm_box(W / 2 - 0.05, -D - 0.026, z0 + 0.20, W / 2 - 0.03, -D - 0.006, z0 + 0.30, bevel=0.003, seg=1), "hc_iron")
+    b.add(bm_box(-W / 2 - 0.02, -D + 0.01, z0 + Hh, W / 2 + 0.02, 0.0, z0 + Hh + 0.025, bevel=0.004, seg=1),
+          "hc_meter_paint")  # the drip cap
+    pts = [Vector((0.0, -0.04, z0 + 0.005)), Vector((0.0, -0.04, 0.45)), Vector((0.0, -0.035, 0.12)),
+           Vector((0.0, -0.02, 0.0))]
+    b.add(bm_tube(pts, 0.016, seg=10), "hc_iron", uv="keep")
+    for z in (0.35, 0.85):
+        b.add(bm_box(-0.03, -0.06, z, 0.03, 0.0, z + 0.022, bevel=0.003, seg=1), "hc_iron")
+    return b.finish()
+
+
+def noticeboard(name):
+    """A neighbourhood noticeboard on the wall: a 0.90 x 0.60 m timber frame with a small pitched cap, papers of
+    several sizes pinned crooked, layered and curling, two torn to stubs. Blank marks only. Origin on the wall at the
+    board's bottom centre (1.0 m up when laid); front at -Y."""
+    b = Builder(name)
+    rng = random.Random(9909)
+    W, Hh = 0.90, 0.60
+    b.add(bm_box(-W / 2, -0.025, 0.0, W / 2, 0.0, Hh, bevel=0.003, seg=1), "hc_timber", grain="x")  # backboard
+    for (x0, z0, x1, z1) in ((-W / 2 - 0.03, -0.03, W / 2 + 0.03, 0.0), (-W / 2 - 0.03, Hh, W / 2 + 0.03, Hh + 0.03)):
+        b.add(bm_box(x0, -0.05, z0, x1, 0.0, z1, bevel=0.005, seg=2, jitter=0.0006, rng=rng), "hc_timber", grain="x")
+    for x in (-W / 2 - 0.03, W / 2):
+        b.add(bm_box(x, -0.05, 0.0, x + 0.03, 0.0, Hh, bevel=0.005, seg=2, jitter=0.0006, rng=rng), "hc_timber_post")
+    # the cap: one board off the wall, falling 12 degrees to its front edge, on two shaped brackets
+    b.add(bm_box(-W / 2 - 0.07, -0.13, -0.014, W / 2 + 0.07, 0.0, 0.0, bevel=0.003, seg=1, jitter=0.0006, rng=rng),
+          "hc_timber", grain="x", M=T(0, 0, Hh + 0.075) @ R(12, "X"))
+    for x in (-W / 2 + 0.02, W / 2 - 0.04):
+        b.add(bm_box(x, -0.10, Hh + 0.03, x + 0.02, 0.0, Hh + 0.06, bevel=0.003, seg=1), "hc_timber")
+    papers = 0
+    while papers < 9:
+        w, h = rng.uniform(0.12, 0.26), rng.uniform(0.14, 0.30)
+        cx, cz = rng.uniform(-W / 2 + w / 2 + 0.02, W / 2 - w / 2 - 0.02), rng.uniform(h / 2 + 0.02, Hh - h / 2 - 0.02)
+        torn = papers in (3, 7)
+        if torn:
+            h = 0.05
+        nu, nv = 4, 5
+        top, bot = [], []
+        for j in range(nv + 1):
+            rt, rb = [], []
+            for i in range(nu + 1):
+                u, v = i / nu, j / nv
+                curl = 0.012 * (v ** 3) * rng.uniform(0.6, 1.0) + 0.002 * rng.random()  # the bottom lifts off
+                p = Vector(((u - 0.5) * w, -0.026 - 0.0012 * papers - curl, (0.5 - v) * h))
+                rt.append(p)
+                rb.append(p + Vector((0, 0.0006, 0)))
+            top.append(rt)
+            bot.append(rb)
+        uvs = [[((i / nu) * w, (j / nv) * h) for i in range(nu + 1)] for j in range(nv + 1)]
+        mat = "hc_paper_old" if rng.random() < 0.4 else "hc_paper"
+        b.add(bm_shell(top, bot, uvs, smooth=True), mat, M=T(cx, 0, cz + (h / 2 if not torn else Hh / 2 - cz + 0.24))
+              @ R(rng.uniform(-6, 6), "Y"), uv="keep")
+        b.add(bm_lathe([(0.0, 0.0), (0.006, 0.0), (0.006, 0.004), (0.0, 0.005)], 8), "hc_cap_red",
+              M=T(cx, -0.028 - 0.0012 * papers - 0.003, cz + (h / 2 if not torn else Hh / 2 - cz + 0.24) - 0.012) @ R(90, "X"),
+              uv="keep")
+        papers += 1
+    return b.finish()
+
+
+def broom(name):
+    """A straw yard broom leant against the wall: a 1.25 m bamboo handle, the straw head bound in three cords, its
+    bristles splayed and worn short on one side. Origin on the wall at the floor (like the downpipe); the handle's top
+    rests on the wall, the bristles about 0.38 m out; front at -Y."""
+    b = Builder(name)
+    rng = random.Random(1212)
+    lean = math.radians(14)
+    up = Vector((0.0, math.sin(lean), math.cos(lean)))
+    base = Vector((0.0, -1.55 * math.sin(lean) - 0.016, 0.0))
+    top = base + up * 1.55
+    b.add(bm_tube([base + up * 0.28, top], 0.014, seg=10), "hc_bamboo", uv="keep")
+    for t in (0.6, 0.95, 1.3):  # bamboo nodes
+        b.add(bm_lathe([(0.0144, -0.006), (0.0168, 0.0), (0.0144, 0.006)], 10), "hc_bamboo",
+              M=T(*(base + up * t)) @ R(-math.degrees(lean), "X"), uv="keep")
+    n = 70
+    for k in range(n):  # straw: thin flattened tubes from the binding fanned to the floor
+        a = rng.uniform(-1, 1)
+        wear = 0.05 if a > 0.4 else 0.0
+        root = base + up * 0.36 + Vector((0.025 * a, rng.uniform(-0.01, 0.01), 0))
+        tip = Vector((0.15 * a + rng.uniform(-0.01, 0.01), base.y + rng.uniform(-0.03, 0.03), wear + rng.uniform(0, 0.02)))
+        mid = root.lerp(tip, 0.5) + Vector((0.01 * a, 0, 0))
+        b.add(bm_tube([root, mid, tip], 0.0028, seg=3, squash=0.5), "hc_straw", uv="keep")
+    for t in (0.30, 0.34, 0.38):  # three cord bindings
+        b.add(bm_torus(0.033, 0.004, seg=14, tube=5), "hc_string", M=T(*(base + up * t)) @ R(-math.degrees(lean), "X"),
+              uv="keep")
+    return b.finish()
+
+
 # name: (builder, triangle budget, textured)
 PARTS = {
     "SM_HC_LanternLarge": (lambda n: lantern(n, 0.60, 0.45, 16, 0.25), 6000, False),
@@ -2395,6 +2583,12 @@ PARTS = {
     "SM_HC_DownPipe": (down_pipe, 5000, True),
     "SM_HC_Awning": (awning, 4000, True),
     "SM_HC_SackPile": (sack_pile, 5000, True),
+    "SM_HC_Bench": (bench, 3000, True),
+    "SM_HC_UmbrellaStand": (umbrella_stand, 6000, True),
+    "SM_HC_Stool": (stool, 2500, True),
+    "SM_HC_MeterBox": (meter_box, 2000, True),
+    "SM_HC_Noticeboard": (noticeboard, 3000, True),
+    "SM_HC_Broom": (broom, 6000, True),
 }
 
 
