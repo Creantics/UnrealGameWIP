@@ -40,7 +40,9 @@ add_library(ftcore STATIC
     src/UiBudget.cpp
     src/UiEventMarks.cpp
     src/UiFirstUse.cpp
+    src/UiHudFit.cpp
     src/UiLone.cpp
+    src/UiExplore.cpp
     src/UiPartyScreen.cpp
     src/Banter.cpp
     src/Battle.cpp
@@ -343,7 +345,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_ui_budget.cpp
         tests/test_ui_event_marks.cpp
         tests/test_ui_first_use.cpp
+        tests/test_ui_hud_fit.cpp
         tests/test_ui_lone.cpp
+        tests/test_ui_explore.cpp
         tests/test_ui_party.cpp
         tests/test_ui_stroke.cpp
         tests/test_ui_swim.cpp
@@ -617,6 +621,7 @@ if(FTCORE_BUILD_TESTS)
         -DTABLE=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Loc/en/ui.json
         -DITEMS=${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/items.json
         -DHINTS=${CMAKE_CURRENT_SOURCE_DIR}/src/InputBindings.cpp
+        -DSETTINGS=${CMAKE_CURRENT_SOURCE_DIR}/src/Settings.cpp
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckUiTextKeys.cmake)
     add_test(NAME hints_read COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../Source/ForgottenThird

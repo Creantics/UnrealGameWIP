@@ -233,6 +233,17 @@ float nightCharacterFillShare(const NightLook& look, float bayDistanceM) {
     return t * t * (3.f - 2.f * t);
 }
 
+float nightCharacterFillYaw(const NightLook& look, float viewX, float viewY, float toLightX, float toLightY) {
+    const float yaw = std::clamp(look.charFillYawDeg, 0.f, 90.f);
+    const float side = viewX * toLightY - viewY * toLightX;  // > 0: the light is right of the view
+    // The light travels along the view from behind the camera; turning its travel left puts its source on the right.
+    return side < 0.f ? yaw : -yaw;
+}
+
+float nightCharacterFillKeyShare(const NightLook& look) {
+    return std::clamp(look.charFillKeyShare, 0.f, 1.f);
+}
+
 float nightLampScale(const NightLook& look, std::size_t neighbours) {
     const float share = 1.f / (1.f + std::max(look.capShare, 0.f) * static_cast<float>(neighbours));
     return std::clamp(share, std::clamp(look.capFloor, 0.f, 1.f), 1.f);

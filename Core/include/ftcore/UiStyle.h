@@ -443,6 +443,10 @@ FTCORE_API float uiContrast(UiColor fg, UiColor bg, UiColor under);
 // `c` lifted toward white until its relative luminance is at least `floor` (alpha kept); unchanged when already there.
 FTCORE_API UiColor uiLumaFloor(UiColor c, float floor);
 
+// The least alpha of `backing` in [from, cap] under which `ink` reaches `target` over `picture` (opaque); `from` when it
+// already does there, `cap` when even that falls short (check with uiContrast).
+FTCORE_API float uiLeastBacking(UiColor ink, UiColor backing, UiColor picture, float target, float from, float cap);
+
 // The dim behind the dialogue options: the least alpha of `backing` (0..s.optionsDimMax) under which `ink` reaches
 // s.optionsDimContrast over `picture`; 0 when it already does, the max when even that falls short.
 FTCORE_API float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture);
@@ -456,7 +460,14 @@ struct UiLumaHistogram {
     std::uint32_t total = 0;
 };
 FTCORE_API void uiLumaAdd(UiLumaHistogram& h, UiColor c);
+// The picture reads' path: a pixel decoded through tables and given both ways (sRGB 0..1 and its linear light), binned
+// by the linear luminance with no per-pixel power and summed as sRGB, so the histogram matches uiLumaAdd's for the same
+// pixels. Out-of-range and NaN values are clamped.
+FTCORE_API void uiLumaAddDecoded(UiLumaHistogram& h, UiColor srgb, float lr, float lg, float lb);
 FTCORE_API UiColor uiLumaBrightest(const UiLumaHistogram& h, float share);
+// One sRGB-encoded channel (0..1) in linear light, and back; for decode tables built once.
+FTCORE_API float uiSrgbToLinear(float c);
+FTCORE_API float uiLinearToSrgb(float c);
 
 FTCORE_API UiCueShape uiCueShape(const UiStyle& s, UiToken token);
 

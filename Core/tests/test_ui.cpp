@@ -915,6 +915,46 @@ TEST_CASE("ui style: the picture's brightest share, by luminance, with no alloca
     CHECK(uiLumaBrightest(h, 1.f).r == doctest::Approx(0.185f)); // the whole picture's mean
 }
 
+TEST_CASE("ui style: decoded adds match the sRGB path's histogram and colour, with no allocation") {
+    CHECK(uiSrgbToLinear(0.f) == 0.f);
+    CHECK(uiSrgbToLinear(1.f) == doctest::Approx(1.f));
+    CHECK(uiSrgbToLinear(0.5f) == doctest::Approx(0.214f).epsilon(0.01));
+    CHECK(uiSrgbToLinear(2.f) == doctest::Approx(1.f)); // clamped
+    CHECK(uiLinearToSrgb(0.f) == 0.f);
+    CHECK(uiLinearToSrgb(uiSrgbToLinear(0.5f)) == doctest::Approx(0.5f).epsilon(0.001));
+    CHECK(uiLinearToSrgb(std::nanf("")) == 0.f);
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    UiLumaHistogram h;
+    const UiColor dark{0.1f, 0.1f, 0.1f, 1.f}, mid{0.5f, 0.6f, 0.4f, 1.f}, warm{0.95f, 0.9f, 0.8f, 1.f};
+    const auto add = [&h](UiColor c) { uiLumaAddDecoded(h, c, uiSrgbToLinear(c.r), uiSrgbToLinear(c.g), uiSrgbToLinear(c.b)); };
+    for (int i = 0; i < 80; ++i) add(dark);
+    for (int i = 0; i < 10; ++i) add(mid);
+    for (int i = 0; i < 10; ++i) add(warm);
+    if (counting) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(h.total == 100);
+    // The same bins and the same colours as uiLumaAdd for the same pixels: the reads measure what the menus' read does.
+    UiLumaHistogram s;
+    for (int i = 0; i < 80; ++i) uiLumaAdd(s, dark);
+    for (int i = 0; i < 10; ++i) uiLumaAdd(s, mid);
+    for (int i = 0; i < 10; ++i) uiLumaAdd(s, warm);
+    CHECK(s.n == h.n);
+    for (const float share : {0.1f, 0.2f, 1.f}) {
+        const UiColor x = uiLumaBrightest(h, share), y = uiLumaBrightest(s, share);
+        CHECK(x.r == doctest::Approx(y.r).epsilon(0.001));
+        CHECK(x.g == doctest::Approx(y.g).epsilon(0.001));
+        CHECK(x.b == doctest::Approx(y.b).epsilon(0.001));
+    }
+    // Out of range and NaN land inside the bins.
+    UiLumaHistogram e;
+    uiLumaAddDecoded(e, UiColor{4.f, 4.f, 4.f, 1.f}, 4.f, 4.f, 4.f);
+    uiLumaAddDecoded(e, UiColor{-1.f, std::nanf(""), 0.f, 1.f}, -1.f, std::nanf(""), 0.f);
+    CHECK(e.total == 2);
+    CHECK(e.n[UiLumaHistogram::kBins - 1] == 1);
+    CHECK(e.n[0] == 1);
+    CHECK(uiLumaBrightest(e, 0.5f).r == doctest::Approx(1.f));
+}
+
 TEST_CASE("ui load name: the gold fills to the threshold, brightens to the cap, sweeps once and drains in 0.3 s") {
     ArenaHudLead lead;
     lead.loadCap = 9;

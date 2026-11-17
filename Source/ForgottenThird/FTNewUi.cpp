@@ -2,17 +2,24 @@
 
 #include "FTArenaFighter.h"
 #include "FTArenaRunner.h"
+#include "FTCutsceneDirector.h"
+#include "FTExploreDirector.h"
 #include "FTExploreCharacter.h"
 #include "ForgottenThird.h"
 #include "FTInputBindings.h"
+#include "FTLookSubsystem.h"
+#include "FTPauseSubsystem.h"
+#include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
 #include "FTStoryDirector.h"
 #include "FTText.h"
 #include "FTUiText.h"
+#include "FTWorldClockSubsystem.h"
 
 #include "ftcore/ArenaFight.h"
 #include "ftcore/UiBudget.h"
 #include "ftcore/UiEventMarks.h"
+#include "ftcore/UiExplore.h"
 #include "ftcore/UiFirstUse.h"
 #include "ftcore/UiLone.h"
 #include "ftcore/UiPartyScreen.h"
@@ -23,6 +30,7 @@
 #include "ftcore/UiViews.h"
 
 #include "Algo/BinarySearch.h"
+#include "Algo/Sort.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Engine.h"
@@ -36,16 +44,24 @@
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
 #include "GenericPlatform/GenericApplication.h"
+#include "HDRHelper.h"
 #include "HAL/IConsoleManager.h"
 #include "Layout/Clipping.h"
 #include "Misc/App.h"
 #include "Misc/CommandLine.h"
+#include "Math/Float16Color.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateRenderer.h"
+#include "RenderGraphBuilder.h"
+#include "RenderGraphUtils.h"
+#include "RenderingThread.h"
+#include "RHIGPUReadback.h"
+#include "SceneView.h"
+#include "SceneViewExtension.h"
 #include "Styling/CoreStyle.h"
 #include "UnrealClient.h"
 #include "Widgets/SLeafWidget.h"
@@ -251,7 +267,7 @@ struct FUiWorldRow
 struct FUiTable
 {
 	ftcore::UiStyle Style;
-	FUiWorldRow Row[ftcore::kUiWorldCount];
+	FUiWorldRow Row[ftcore::kUiPaletteCount][ftcore::kUiWorldCount]; // by the player's palette, then the world
 	FLinearColor Edge;
 };
 
@@ -271,13 +287,13 @@ const FUiTable& Table()
 				UE_LOG(LogTemp, Warning, TEXT("FTNewUi: %s: %s (the built-in style is used)"), *File, *FT::ToFString(Error));
 			}
 		}
-		// Every world's row; the shown one is picked per frame (ShownWorld). The default palette: the player's choice of
-		// palette has no setting on the screens yet.
-		const ftcore::UiPalette Pal = ftcore::UiPalette::Default;
+		// Every palette's and world's row; the shown one is picked per frame (ShownPalette, ShownWorld).
+		for (size_t P = 0; P < ftcore::kUiPaletteCount; ++P)
 		for (size_t W = 0; W < ftcore::kUiWorldCount; ++W)
 		{
+			const ftcore::UiPalette Pal = static_cast<ftcore::UiPalette>(P);
 			const ftcore::UiWorld World = static_cast<ftcore::UiWorld>(W);
-			FUiWorldRow& R = T.Row[W];
+			FUiWorldRow& R = T.Row[P][W];
 			for (size_t I = 0; I < ftcore::kUiTokenCount; ++I)
 			{
 				R.Token[I] = LinOf(ftcore::uiColor(T.Style, World, Pal, static_cast<UiToken>(I)));
@@ -320,7 +336,28 @@ ftcore::UiWorld ShownWorld()
 #endif
 }
 
-const FUiWorldRow& Shown() { return Table().Row[static_cast<size_t>(ShownWorld())]; }
+// The player's palette (the Colours row), set by the settings subsystem on every change (FT::SetUiPalette); outside
+// Shipping -UiPalette=<0..4> holds one for captures.
+std::atomic<uint8> GUiPalette{0};
+
+ftcore::UiPalette ShownPalette()
+{
+#if !UE_BUILD_SHIPPING
+	static const int32 Forced = []
+	{
+		int32 V = -1;
+		FParse::Value(FCommandLine::Get(), TEXT("-UiPalette="), V);
+		return V < static_cast<int32>(ftcore::kUiPaletteCount) ? V : -1;
+	}();
+	if (Forced >= 0)
+	{
+		return static_cast<ftcore::UiPalette>(Forced);
+	}
+#endif
+	return static_cast<ftcore::UiPalette>(FMath::Min<uint8>(GUiPalette.load(std::memory_order_relaxed), static_cast<uint8>(ftcore::kUiPaletteCount - 1)));
+}
+
+const FUiWorldRow& Shown() { return Table().Row[static_cast<size_t>(ShownPalette())][static_cast<size_t>(ShownWorld())]; }
 
 FLinearColor Tok(UiToken T, float Alpha = 1.f)
 {
@@ -681,7 +718,7 @@ struct FPainter
 	}
 
 	// Shade with no edge: stacked boxes growing outward, so the middle reaches Peak and the rim fades to nothing.
-	void Soft(float CX, float CY, float W, float H, float Peak, float Alpha = 1.f) const
+	void Soft(float CX, float CY, float W, float H, float Peak, float Alpha = 1.f, const FLinearColor* Tint = nullptr) const
 	{
 		// Many thin, round-ended (anti-aliased) bands so no step or corner reads: the backing must never show as an object.
 		static const FSlateRoundedBoxBrush Round(FLinearColor::White, 256.f);
@@ -694,7 +731,7 @@ struct FPainter
 		{
 			return;
 		}
-		const FLinearColor C = Tok(UiToken::Backing, 0.f) + FLinearColor(0.f, 0.f, 0.f, Each);
+		const FLinearColor C = (Tint ? FLinearColor(Tint->R, Tint->G, Tint->B, 0.f) : Tok(UiToken::Backing, 0.f)) + FLinearColor(0.f, 0.f, 0.f, Each);
 		for (int32 I = 0; I < Bands; ++I)
 		{
 			// Bands spaced by the inverse of a smoothstep over the outer part: an even middle, a soft fall, no cone.
@@ -750,6 +787,29 @@ struct FPainter
 
 	void Text(float X, float Y, const FString& Str, const FSlateFontInfo& Font, const FLinearColor& C, int32 Start = 0, int32 End = -1) const
 	{
+		TextIn(X, Y, Str, Font, C, Start, End, 0.f);
+	}
+
+	// A word over a measured contour (Core uiLineGuard): the font's edge G.spread px wide at 1080 (whole device px, never
+	// under its resting width) at G.alpha; a guard at or under the resting contour draws as Text.
+	void TextGuarded(float X, float Y, const FString& Str, const FSlateFontInfo& Font, const FLinearColor& C, const ftcore::UiLineGuard& G) const
+	{
+		const int32 Base = Font.OutlineSettings.OutlineSize;
+		const int32 Want = FMath::Max(Base, FMath::RoundToInt(G.spread * FMath::Max(1.f, S))); // px at 1080, scaled
+		if (Base <= 0 || bShadow || (Want == Base && G.alpha <= Font.OutlineSettings.OutlineColor.A))
+		{
+			TextIn(X, Y, Str, Font, C, 0, -1, 0.f);
+			return;
+		}
+		FSlateFontInfo F = Font;
+		F.OutlineSettings.OutlineSize = Want;
+		F.OutlineSettings.OutlineColor.A = FMath::Max(G.alpha, Font.OutlineSettings.OutlineColor.A);
+		// Slate sets an outlined glyph down and right by its outline's width: set the wider one back by the growth.
+		TextIn(X, Y, Str, F, C, 0, -1, static_cast<float>(Want - Base));
+	}
+
+	void TextIn(float X, float Y, const FString& Str, const FSlateFontInfo& Font, const FLinearColor& C, int32 Start, int32 End, float Grow) const
+	{
 		if (Str.IsEmpty() || C.A <= 0.f)
 		{
 			return;
@@ -801,9 +861,9 @@ struct FPainter
 			OuterF.OutlineSettings.bSeparateFillAlpha = true;
 			// Slate sets an outlined glyph down and right by the outline's growth (measured: 1 px); set the wider pass back so it rings
 			// the letter evenly instead of reading as a drop shadow.
-			Draw(4, OuterF, FLinearColor(C.R, C.G, C.B, 0.004f), 1.f); // a near-zero face: Slate culls a fully clear one
+			Draw(4, OuterF, FLinearColor(C.R, C.G, C.B, 0.004f), 1.f + Grow); // a near-zero face: Slate culls a fully clear one
 		}
-		Draw(InnerF.OutlineSettings.bSeparateFillAlpha ? 6 : 5, InnerF, C, 0.f);
+		Draw(InnerF.OutlineSettings.bSeparateFillAlpha ? 6 : 5, InnerF, C, Grow);
 	}
 
 	// A meter in the style's painter. Ring and Stroke are drawn as Line until their painters land with the pick.
@@ -4803,6 +4863,475 @@ private:
 
 bool IsLowSurrogateUnit(TCHAR C) { return C >= 0xDC00 && C <= 0xDFFF; }
 
+// The subtitle's metrics: the block's foot over the screen's bottom, the line height over the face's, the gap after an
+// inline speaker (px at 1080).
+constexpr float kSubBottom = 96.f;
+constexpr float kSubLineK = 1.15f;
+constexpr float kSubSpeakerGap = 18.f;
+
+// The brightest tenth of the game viewport's picture inside a rectangle of a widget Size big. Read only at the end of
+// the viewport's draw (the Slate layers are not in the picture yet), never per frame; false when nothing could be read.
+// The game viewport's pixels under a rectangle of a widget Size big; false when there is none.
+bool PicturePx(const FBox2f& Rc, const FVector2f& Size, FIntRect& Out)
+{
+	FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+	const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+	if (!Rc.bIsValid || Rc.Max.X <= Rc.Min.X || Rc.Max.Y <= Rc.Min.Y || VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f)
+	{
+		return false;
+	}
+	const float KX = VS.X / Size.X;
+	const float KY = VS.Y / Size.Y;
+	Out = FIntRect(FMath::Clamp(FMath::FloorToInt(Rc.Min.X * KX), 0, VS.X - 1), FMath::Clamp(FMath::FloorToInt(Rc.Min.Y * KY), 0, VS.Y - 1),
+		FMath::Clamp(FMath::CeilToInt(Rc.Max.X * KX), 1, VS.X), FMath::Clamp(FMath::CeilToInt(Rc.Max.Y * KY), 1, VS.Y));
+	return Out.Width() > 0 && Out.Height() > 0;
+}
+
+// The synchronous read: the menus' one read when a screen opens (it waits for the render thread and the GPU; never in
+// play, where FTPictureReader reads instead).
+bool PictureBrightest(const FBox2f& Rc, const FVector2f& Size, ftcore::UiColor& Out, TArray<FColor>* Buf = nullptr)
+{
+	FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+	FIntRect R;
+	if (!VP || !PicturePx(Rc, Size, R))
+	{
+		return false;
+	}
+	TArray<FColor> Local;
+	TArray<FColor>& Px = Buf ? *Buf : Local;
+	if (!VP->ReadPixels(Px, FReadSurfaceDataFlags(), R) || Px.Num() == 0)
+	{
+		return false;
+	}
+	ftcore::UiLumaHistogram Hist;
+	for (const FColor& Q : Px)
+	{
+		ftcore::uiLumaAdd(Hist, ftcore::UiColor{Q.R / 255.f, Q.G / 255.f, Q.B / 255.f, 1.f});
+	}
+	Out = ftcore::uiLumaBrightest(Hist, 0.1f);
+	return Out.r + Out.g + Out.b > 0.f; // all black is no picture yet
+}
+
+// The reads of the picture in play (2026-11-17: the synchronous read cost a +25 ms frame at 1080 and +43 ms at 4K each
+// time). Asked at the end of the game viewport's draw; in the next frame's scene render a view extension, inside the
+// renderer's own graph after post-processing, copies the rectangle's pixels into a small staging texture
+// (FRHIGPUTextureReadback). At the end of a later render frame, once the GPU has it, the render thread maps it and makes
+// its brightest tenth; the game thread takes that a frame or two after asking. Nothing waits: no ReadPixels and no flush.
+// The copy reads the family's own registered target (the back buffer in the standalone game, where the game thread holds
+// no texture), so nothing is kept across frames and the renderer sets the target's final state. One request in flight
+// per slot; a slot's staging texture is kept and only grows. Results go to the game thread through an atomic serial, the
+// colour written before it. With HDR output on, the back buffer is not display-referred sRGB: no reads (logged once).
+class FTPictureReader
+{
+public:
+	static constexpr int32 kSlots = 10;
+	// The guard needs a luminance estimate, not every pixel: a larger rectangle is decoded every Stride-th pixel each way.
+	// A small line stays exact; at 4K a line is read every 2nd-3rd pixel, the dialogue's band every 6th-10th.
+	static constexpr int32 kMaxSamples = 16384;
+
+	FTPictureReader() : State(MakeShared<FState, ESPMode::ThreadSafe>())
+	{
+		Ext = FSceneViewExtensions::NewExtension<FExt>(State);
+	}
+	FTPictureReader(const FTPictureReader&) = delete;
+	FTPictureReader& operator=(const FTPictureReader&) = delete;
+
+	~FTPictureReader()
+	{
+		// The engine holds the extension weakly; a family already gathered keeps it to that frame's end.
+		Ext.Reset();
+		// The render thread unhooks its end of frame after any want still queued, frees the readbacks (so none is ever
+		// destroyed on the game thread, wherever the state's last reference drops), then lets go. With the RHI already
+		// gone (engine exit), nothing is enqueued: the hook is removed here and the readbacks are left to the process.
+		if (GIsRHIInitialized)
+		{
+			ENQUEUE_RENDER_COMMAND(FTPictureReaderDrop)([S = MoveTemp(State)](FRHICommandListImmediate&) mutable
+			{
+				Drop(S, true);
+			});
+		}
+		else
+		{
+			Drop(State, false);
+		}
+	}
+
+	bool Busy(int32 Slot) const { return Slot < 0 || Slot >= kSlots || Taken[Slot] != Asked[Slot]; }
+
+	// Asks for the brightest tenth of the game viewport's pixels in Px. Only at the end of the viewport's draw (the
+	// Slate layers are not in the picture). False when the slot is busy, there is no viewport, or HDR output is on.
+	bool Request(int32 Slot, const FIntRect& Px)
+	{
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		if (!VP || Busy(Slot) || Px.Width() <= 0 || Px.Height() <= 0)
+		{
+			return false;
+		}
+		if (IsHDREnabled())
+		{
+			if (!bHdrLogged)
+			{
+				bHdrLogged = true;
+				UE_LOG(LogForgottenThird, Log, TEXT("UI: picture read: HDR output is on; no picture reads, the guards stand at rest."));
+			}
+			return false;
+		}
+		const uint32 Serial = ++Asked[Slot];
+		AskedFrame[Slot] = GFrameCounter;
+		State->Outstanding.fetch_add(1, std::memory_order_relaxed); // before the want: the next frame's family copies it
+		ENQUEUE_RENDER_COMMAND(FTPictureRead)([S = State, Px, Slot, Serial](FRHICommandListImmediate&)
+		{
+			Want(S, Slot, Px, Serial);
+		});
+		return true;
+	}
+
+	// The slot's result, once per request: true when it came (bOk: a picture was read, not all black).
+	bool Take(int32 Slot, ftcore::UiColor& Out, bool& bOk, int32* OutFrames = nullptr, float* OutRtMs = nullptr)
+	{
+		if (Slot < 0 || Slot >= kSlots || !Busy(Slot))
+		{
+			return false;
+		}
+		const FSlot& L = State->Slots[Slot];
+		if (L.Done.load(std::memory_order_acquire) != Asked[Slot])
+		{
+			return false;
+		}
+		Taken[Slot] = Asked[Slot];
+		Out = L.Pic;
+		bOk = L.bOk;
+		if (OutFrames)
+		{
+			*OutFrames = static_cast<int32>(GFrameCounter - AskedFrame[Slot]);
+		}
+		if (OutRtMs)
+		{
+			*OutRtMs = L.RtMs;
+		}
+		return true;
+	}
+
+private:
+	struct FSlot
+	{
+		// The render thread's.
+		TUniquePtr<FRHIGPUTextureReadback> Readback;
+		FIntPoint Extent = FIntPoint::ZeroValue; // the staging texture's size
+		EPixelFormat Format = PF_Unknown;
+		FIntRect WantPx;                         // the asked pixels, until the copy
+		FIntRect Sub;                            // the asked pixels inside the staging copy
+		int32 Stride = 1;
+		uint32 Serial = 0;
+		int32 Frames = 0;                        // render frames ended since the want or the copy
+		bool bWanted = false;                    // asked, not copied yet
+		bool bInFlight = false;                  // copied, not read yet
+		// Handed to the game thread (written before Done).
+		ftcore::UiColor Pic{0.f, 0.f, 0.f, 1.f};
+		bool bOk = false;
+		float RtMs = 0.f;
+		std::atomic<uint32> Done{0};
+	};
+	struct FState
+	{
+		FSlot Slots[kSlots];
+		FDelegateHandle Hook;                    // the render thread's
+		bool bFormatLogged = false;              // the render thread's
+		bool bTargetLogged = false;              // the render thread's (not shipping)
+		std::atomic<int32> Outstanding{0};       // wants not yet copied: the game thread adds, the render thread takes
+	};
+
+	// The reader's end: unhook, then free each slot's readback (on the render thread when `bRhi`; at engine exit with the
+	// RHI gone, released unfreed instead), and let go of the state.
+	static void Drop(TSharedPtr<FState, ESPMode::ThreadSafe>& S, bool bRhi)
+	{
+		if (S.IsValid())
+		{
+			if (S->Hook.IsValid())
+			{
+				FCoreDelegates::OnEndFrameRT.Remove(S->Hook);
+				S->Hook.Reset();
+			}
+			S->Outstanding.store(0, std::memory_order_relaxed);
+			for (FSlot& L : S->Slots)
+			{
+				L.bWanted = false;
+				L.bInFlight = false;
+				if (bRhi)
+				{
+					L.Readback.Reset();
+				}
+				else
+				{
+					(void)L.Readback.Release();
+				}
+			}
+		}
+		S.Reset();
+	}
+
+	// The copy's hook in the renderer: active only for the game viewport's family while a want waits.
+	class FExt final : public FSceneViewExtensionBase
+	{
+	public:
+		FExt(const FAutoRegister& Reg, TSharedPtr<FState, ESPMode::ThreadSafe> InState)
+			: FSceneViewExtensionBase(Reg), St(MoveTemp(InState))
+		{
+		}
+
+		virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& Family) override
+		{
+			if (Family.bIsMainViewFamily && Family.RenderTarget)
+			{
+				CopyWanted(*St, GraphBuilder, Family.RenderTarget->GetRenderTargetTexture().GetReference());
+			}
+		}
+
+	protected:
+		virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Ctx) const override
+		{
+			return St->Outstanding.load(std::memory_order_relaxed) > 0 && Ctx.Viewport && GEngine && GEngine->GameViewport &&
+				Ctx.Viewport == GEngine->GameViewport->Viewport;
+		}
+
+	private:
+		TSharedPtr<FState, ESPMode::ThreadSafe> St;
+	};
+
+	// sRGB and linear light for each 8-bit and 10-bit code, and sRGB for linear light in 4096 steps (the float back
+	// buffer's path): built once, so a pixel costs table loads and no power.
+	struct FLuts
+	{
+		float Lin8[256];
+		float Lin10[1024];
+		float Srgb12[4096];
+		FLuts()
+		{
+			for (int32 I = 0; I < 256; ++I)
+			{
+				Lin8[I] = ftcore::uiSrgbToLinear(I / 255.f);
+			}
+			for (int32 I = 0; I < 1024; ++I)
+			{
+				Lin10[I] = ftcore::uiSrgbToLinear(I / 1023.f);
+			}
+			for (int32 I = 0; I < 4096; ++I)
+			{
+				Srgb12[I] = ftcore::uiLinearToSrgb(I / 4095.f);
+			}
+		}
+	};
+	static const FLuts& Luts()
+	{
+		static const FLuts T;
+		return T;
+	}
+
+	static void Publish(FSlot& L, uint32 Serial, const ftcore::UiColor& Pic, bool bOk, float RtMs)
+	{
+		L.Pic = Pic;
+		L.bOk = bOk;
+		L.RtMs = RtMs;
+		L.bWanted = false;
+		L.bInFlight = false;
+		L.Done.store(Serial, std::memory_order_release);
+	}
+
+	static bool Decodable(EPixelFormat F)
+	{
+		return F == PF_B8G8R8A8 || F == PF_R8G8B8A8 || F == PF_A2B10G10R10 || F == PF_FloatRGBA;
+	}
+
+	// Render thread: a want, and the end-of-frame hook (held weakly, so a hook outliving the reader does nothing).
+	static void Want(const TSharedPtr<FState, ESPMode::ThreadSafe>& SP, int32 Slot, const FIntRect& Px, uint32 Serial)
+	{
+		FState& S = *SP;
+		if (!S.Hook.IsValid())
+		{
+			S.Hook = FCoreDelegates::OnEndFrameRT.AddLambda([W = TWeakPtr<FState, ESPMode::ThreadSafe>(SP)]()
+			{
+				if (const TSharedPtr<FState, ESPMode::ThreadSafe> P = W.Pin())
+				{
+					Poll(*P);
+				}
+			});
+		}
+		FSlot& L = S.Slots[Slot];
+		L.WantPx = Px;
+		L.Serial = Serial;
+		L.Frames = 0;
+		L.bWanted = true;
+	}
+
+	// Render thread, in the game viewport family's graph after post-processing: each wanted slot's copy.
+	static void CopyWanted(FState& S, FRDGBuilder& GraphBuilder, FRHITexture* Tex)
+	{
+		for (FSlot& L : S.Slots)
+		{
+			if (L.bWanted)
+			{
+				S.Outstanding.fetch_sub(1, std::memory_order_relaxed);
+				Copy(S, L, GraphBuilder, Tex);
+			}
+		}
+	}
+
+	static void Copy(FState& S, FSlot& L, FRDGBuilder& GraphBuilder, FRHITexture* Tex)
+	{
+		L.bWanted = false;
+		const EPixelFormat Format = Tex ? Tex->GetFormat() : PF_Unknown;
+		if (!Tex || Tex->IsMultisampled() || !Decodable(Format))
+		{
+			if (!S.bFormatLogged)
+			{
+				S.bFormatLogged = true;
+				UE_LOG(LogForgottenThird, Warning, TEXT("UI: picture read: the viewport's texture (%s) cannot be read; the guards stand at rest."),
+					Tex ? GetPixelFormatString(Format) : TEXT("none"));
+			}
+			Publish(L, L.Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
+			return;
+		}
+#if !UE_BUILD_SHIPPING
+		if (!S.bTargetLogged)
+		{
+			S.bTargetLogged = true;
+			UE_LOG(LogForgottenThird, Log, TEXT("UI: picture read: reading the viewport's %s target in the renderer's graph."), GetPixelFormatString(Format));
+		}
+#endif
+		FIntRect Px = L.WantPx;
+		const FIntPoint TS = Tex->GetSizeXY();
+		Px.Clip(FIntRect(0, 0, TS.X, TS.Y));
+		if (Px.Width() <= 0 || Px.Height() <= 0)
+		{
+			Publish(L, L.Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
+			return;
+		}
+		// The staging texture: kept, grown in steps (128 x 64 px) when a larger rectangle or another format comes.
+		if (!L.Readback || L.Format != Format || Px.Width() > L.Extent.X || Px.Height() > L.Extent.Y || L.Extent.X > TS.X || L.Extent.Y > TS.Y)
+		{
+			L.Extent = FIntPoint(FMath::Min(Align(FMath::Max(Px.Width(), L.Extent.X), 128), TS.X), FMath::Min(Align(FMath::Max(Px.Height(), L.Extent.Y), 64), TS.Y));
+			L.Format = Format;
+			L.Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("FTUiPictureRead"));
+		}
+		const FIntPoint Origin(FMath::Clamp(Px.Min.X, 0, TS.X - L.Extent.X), FMath::Clamp(Px.Min.Y, 0, TS.Y - L.Extent.Y));
+		L.Sub = FIntRect(Px.Min - Origin, Px.Max - Origin);
+		L.Stride = 1;
+		while ((Px.Width() / L.Stride) * (Px.Height() / L.Stride) > kMaxSamples)
+		{
+			++L.Stride;
+		}
+		L.Frames = 0;
+		L.bInFlight = true;
+		L.Readback->ResetReady(); // the copy's pass runs when the graph executes: not ready until it has
+		// Registered once per graph: this is the renderer's own registration of the family's target, whose end state
+		// the renderer sets.
+		const FRDGTextureRef Src = RegisterExternalTexture(GraphBuilder, Tex, TEXT("FTUiPictureSource"));
+		AddEnqueueCopyPass(GraphBuilder, L.Readback.Get(), Src, FResolveRect(Origin.X, Origin.Y, Origin.X + L.Extent.X, Origin.Y + L.Extent.Y));
+	}
+
+	// Render thread, at each frame's end: the slots whose copies the GPU has finished, mapped and made into their result.
+	// Frames counts render frames ended (a minimised window still ends them), so a want that is never copied or a copy that
+	// never comes lets its slot go after about two seconds.
+	static void Poll(FState& S)
+	{
+		const FLuts& T = Luts();
+		for (FSlot& L : S.Slots)
+		{
+			if (L.bWanted)
+			{
+				if (++L.Frames > 120) // no family copied it (the viewport did not draw): let it go
+				{
+					S.Outstanding.fetch_sub(1, std::memory_order_relaxed);
+					Publish(L, L.Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
+				}
+				continue;
+			}
+			if (!L.bInFlight)
+			{
+				continue;
+			}
+			if (!L.Readback->IsReady())
+			{
+				if (++L.Frames > 120) // never came: let the slot go (a new staging texture next time)
+				{
+					L.Readback.Reset();
+					Publish(L, L.Serial, ftcore::UiColor{0.f, 0.f, 0.f, 1.f}, false, 0.f);
+				}
+				continue;
+			}
+			const double T0 = FPlatformTime::Seconds();
+			int32 Pitch = 0; // in pixels
+			const uint8* Data = static_cast<const uint8*>(L.Readback->Lock(Pitch));
+			ftcore::UiLumaHistogram Hist;
+			if (Data && Pitch > 0)
+			{
+				const int32 Bpp = L.Format == PF_FloatRGBA ? 8 : 4;
+				for (int32 Y = L.Sub.Min.Y; Y < L.Sub.Max.Y; Y += L.Stride)
+				{
+					const uint8* Row = Data + static_cast<SIZE_T>(Y) * Pitch * Bpp;
+					for (int32 X = L.Sub.Min.X; X < L.Sub.Max.X; X += L.Stride)
+					{
+						const uint8* Q = Row + static_cast<SIZE_T>(X) * Bpp;
+						switch (L.Format)
+						{
+						case PF_B8G8R8A8:
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{Q[2] / 255.f, Q[1] / 255.f, Q[0] / 255.f, 1.f}, T.Lin8[Q[2]], T.Lin8[Q[1]], T.Lin8[Q[0]]);
+							break;
+						case PF_R8G8B8A8:
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{Q[0] / 255.f, Q[1] / 255.f, Q[2] / 255.f, 1.f}, T.Lin8[Q[0]], T.Lin8[Q[1]], T.Lin8[Q[2]]);
+							break;
+						case PF_A2B10G10R10:
+						{
+							uint32 V;
+							FMemory::Memcpy(&V, Q, 4);
+							const uint32 R = V & 0x3FF, G = (V >> 10) & 0x3FF, B = (V >> 20) & 0x3FF;
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{R / 1023.f, G / 1023.f, B / 1023.f, 1.f}, T.Lin10[R], T.Lin10[G], T.Lin10[B]);
+							break;
+						}
+						default: // PF_FloatRGBA: linear light, encoded through the table as ReadPixels would
+						{
+							const FFloat16Color* H = reinterpret_cast<const FFloat16Color*>(Q);
+							const float R = H->R.GetFloat(), G = H->G.GetFloat(), B = H->B.GetFloat();
+							const auto Enc = [&T](float C) { return T.Srgb12[static_cast<int32>((C > 0.f ? (C < 1.f ? C : 1.f) : 0.f) * 4095.f + 0.5f)]; };
+							ftcore::uiLumaAddDecoded(Hist, ftcore::UiColor{Enc(R), Enc(G), Enc(B), 1.f}, R, G, B);
+							break;
+						}
+						}
+					}
+				}
+			}
+			if (Data)
+			{
+				L.Readback->Unlock();
+			}
+			const ftcore::UiColor Pic = ftcore::uiLumaBrightest(Hist, 0.1f);
+			Publish(L, L.Serial, Pic, Hist.total > 0 && Pic.r + Pic.g + Pic.b > 0.f, static_cast<float>(1000.0 * (FPlatformTime::Seconds() - T0)));
+		}
+	}
+
+	TSharedPtr<FState, ESPMode::ThreadSafe> State;
+	TSharedPtr<FExt, ESPMode::ThreadSafe> Ext;
+	uint32 Asked[kSlots] = {};
+	uint32 Taken[kSlots] = {};
+	uint64 AskedFrame[kSlots] = {};
+	bool bHdrLogged = false;
+};
+
+// The band behind a subtitle block (2026-11-16 ruling): black at Peak (the least Core uiSubtitleBand measured, up to
+// kUiSubtitleBandMax) under the whole block, fading to nothing on every side, so it never reads as a plate. Painted only
+// where uiSubtitleBand asked for it. The explore HUD lays the same shade under a small line whose contour fell short.
+void PaintSubtitleBand(const FPainter& P, float CX, float Top, float Bottom, float Widest, float LineH, float Peak)
+{
+	if (Peak <= 0.f || Bottom <= Top)
+	{
+		return;
+	}
+	static const FLinearColor Black(0.f, 0.f, 0.f, 1.f);
+	// Soft's even middle is its inner 0.55: the block and a margin of most of a line sit inside it.
+	const float Pad = 0.8f * LineH;
+	P.Soft(CX, 0.5f * (Top + Bottom), (Widest + 2.f * Pad) / 0.55f, (Bottom - Top + Pad) / 0.55f, Peak, 1.f, &Black);
+}
+
 #if !UE_BUILD_SHIPPING
 // -UiChoiceShot placeholders (non-shipping stills only; the script has no choice beats yet). The last cannot be taken.
 const TCHAR* const kFakeOptions[3] = {TEXT("1   First option"), TEXT("2   Second option"), TEXT("3   A locked option")};
@@ -4857,7 +5386,7 @@ public:
 		HiddenFor = 0.f;
 		Shown = D;
 		const FVector2f Size = Geometry.GetLocalSize();
-		const float Scale = D->GetSubtitleScale();
+		const float Scale = FMath::Clamp(D->GetSubtitleScale(), ftcore::Settings::kMinSubtitleScale, ftcore::Settings::kMaxSubtitleScale);
 		if (WrappedSerial != D->GetBeatSerial() || WrappedBeat != View.beatRevision || WrappedSize != Size || WrappedScale != Scale)
 		{
 			Rewrap(*D, Size, Scale);
@@ -4877,6 +5406,21 @@ public:
 			ArriveAt[I] = Time;
 		}
 		SeenRevealed = FMath::Max(SeenRevealed, Revealed);
+		// The page (two lines) the reveal stands in; the block, for the read of the picture under it.
+		{
+			const int32 RevealedUnit = CpToUnit.Num() > 0 ? CpToUnit[FMath::Clamp(Revealed, 0, CpToUnit.Num() - 1)] : 0;
+			PageFirst = static_cast<int32>(ftcore::uiSubtitlePage(Fit, static_cast<std::uint32_t>(RevealedUnit)) * ftcore::kUiSubtitleLines);
+			PageRows = FMath::Clamp(Lines.Num() - PageFirst, 0, static_cast<int32>(ftcore::kUiSubtitleLines));
+			const float S = FMath::Max(0.25f, Size.Y / 1080.f);
+			const float Bottom = Size.Y - kSubBottom * S;
+			float Widest = 0.f;
+			for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
+			{
+				Widest = FMath::Max(Widest, LineW[I] + (I == PageFirst ? SpeakerW : 0.f));
+			}
+			SubWidest = Widest;
+			SubRead = FBox2f(FVector2f(Size.X * 0.5f - 0.5f * Widest, Bottom - LineH * PageRows), FVector2f(Size.X * 0.5f + 0.5f * Widest, Bottom));
+		}
 
 		// The options: the beat's own, or (non-shipping -UiChoiceShot, for stills while the script has no choices)
 		// three placeholders under any finished line.
@@ -4921,7 +5465,7 @@ public:
 			EvenWant = Floor;
 			if (OptionRows > 0)
 			{
-				const float SubTop = Size.Y - 96.f * S - LineH * Lines.Num(); // the subtitle's block, as painted
+				const float SubTop = Size.Y - kSubBottom * S - LineH * PageRows; // the subtitle's block, as painted
 				EvenWant = FMath::Min(Floor, SubTop - LineH * 0.4f - LineH * 1.05f * OptionRows - 1.5f * LineH);
 			}
 			EvenTop = EvenTop < 0.f ? Floor : FMath::Min(EvenTop, Floor);
@@ -4937,8 +5481,11 @@ public:
 			GEngine->GameViewport->OnEndDraw().AddSP(this, &SFTDialogue::MeasureAtEndDraw);
 			bDimBound = true;
 		}
+		TakeReads();
 		const float Target = ConvTarget();
 		ConvDim = FMath::Min(Target, ConvDim + FMath::Max(Target - ConvDim, 0.02f) * FMath::Min(1.f, DeltaTime * 10.f));
+		// The gradient stands behind the replies only (2026-11-16: a plain line has no backing but the measured band).
+		GradK = FMath::Clamp(GradK + (OptionRows > 0 ? DeltaTime : -DeltaTime) / 0.25f, 0.f, 1.f);
 	}
 
 	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
@@ -4955,7 +5502,7 @@ public:
 			{
 				const FVector2f Size = Geometry.GetLocalSize();
 				Mesh.Begin(Geometry, FMath::Max(0.25f, Size.Y / 1080.f));
-				PaintLowGradient(Mesh, Size, ConvDim * Hold, EvenTop);
+				PaintLowGradient(Mesh, Size, ConvDim * Hold * GradK, EvenTop);
 				Mesh.Flush(Out, Layer + 1);
 			}
 			return Layer;
@@ -4964,12 +5511,13 @@ public:
 		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Size.Y / 1080.f)};
 		const float S = P.S;
 		const FString& Text = D->GetText();
-		// The subtitle's block, where it always stands; the replies stand above it.
-		const float Bottom = Size.Y - 96.f * S;
-		const float Top = Bottom - LineH * Lines.Num();
+		// The subtitle's block (the page on show), where it always stands; the replies stand above it.
+		const float Bottom = Size.Y - kSubBottom * S;
+		const float Top = Bottom - LineH * PageRows;
 		const float CX = Size.X * 0.5f;
 		Mesh.Begin(Geometry, S);
-		PaintLowGradient(Mesh, Size, ConvDim, EvenTop);
+		PaintLowGradient(Mesh, Size, ConvDim * GradK, EvenTop);
+		PaintSubtitleBand(P, CX, Top, Bottom, SubWidest, LineH, SubBand * (1.f - GradK));
 		// The keys, once, under the block at the prompt size (never under the 18 px floor); gone after a few quiet seconds,
 		// back on any input.
 		if (HintA > 0.f)
@@ -4980,21 +5528,22 @@ public:
 		const FLinearColor Body = View.kind == ftcore::DialogueViewKind::Direction ? Tok(UiToken::InkDim) : Tok(UiToken::Ink);
 		const int32 RevealedUnits = CpToUnit.Num() > 0 ? CpToUnit[FMath::Min(static_cast<int32>(View.revealedChars), CpToUnit.Num() - 1)] : 0;
 		float LastRight = CX;
-		for (int32 I = 0; I < Lines.Num(); ++I)
+		const FLinearColor SpeakerC = ::Shown().Fill; // the speaker in the world's fill
+		for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
 		{
-			const float Lead = I == 0 ? SpeakerW : 0.f;
+			const float Lead = I == PageFirst ? SpeakerW : 0.f; // the speaker heads each page
 			float X = CX - (LineW[I] + Lead) * 0.5f;
-			const float Y = Top + LineH * I;
-			if (I == 0 && !SpeakerUpper.IsEmpty())
+			const float Y = Top + LineH * (I - PageFirst);
+			if (I == PageFirst && !SpeakerUpper.IsEmpty())
 			{
-				P.Text(X, Y + SpeakerDy, SpeakerUpper, SpeakerFont, Tok(UiToken::Accent));
+				P.Text(X, Y + SpeakerDy, SpeakerUpper, SpeakerFont, SpeakerC);
 			}
 			X += Lead;
 			const int32 End = FMath::Min(Lines[I].Y, RevealedUnits);
 			PaintArriving(P, X, Y, Text, Lines[I].X, End, Body);
 			LastRight = X + LineW[I];
 		}
-		if (OptionRows > 0 && (bReadWanted || ConvDim < ConvTarget() - 0.005f || EvenTop > EvenWant + 1.f) && OptWait < 0.5f)
+		if (OptionRows > 0 && (bReadWanted || ConvDim < ConvTarget() - 0.005f || EvenTop > EvenWant + 1.f || GradK < 0.99f) && OptWait < 0.5f)
 		{
 			// New options wait until the gradient is read and in place (its level and its reach behind them), so they
 			// never show over a lighter one or bare scene; half a second at most.
@@ -5009,9 +5558,9 @@ public:
 			const float RowH = LineH * 1.05f;
 			const float OptTop = Top - LineH * 0.4f - RowH * OptionRows;
 			float X0 = CX;
-			for (int32 I = 0; I < Lines.Num(); ++I)
+			for (int32 I = PageFirst; I < PageFirst + PageRows; ++I)
 			{
-				X0 = FMath::Min(X0, CX - (LineW[I] + (I == 0 ? SpeakerW : 0.f)) * 0.5f);
+				X0 = FMath::Min(X0, CX - (LineW[I] + (I == PageFirst ? SpeakerW : 0.f)) * 0.5f);
 			}
 			std::uint32_t Takeable = 0;
 			for (int32 I = 0; I < OptionRows; ++I)
@@ -5043,7 +5592,7 @@ public:
 		else if (View.continuePrompt)
 		{
 			const float A = 0.55f + 0.45f * FMath::Sin(Time * 5.f);
-			P.Chevron(LastRight + 22.f * S, Top + LineH * (Lines.Num() - 1) + LineH * 0.45f, 18.f * S, Tok(UiToken::Accent, A));
+			P.Chevron(LastRight + 22.f * S, Top + LineH * FMath::Max(PageRows - 1, 0) + LineH * 0.45f, 18.f * S, Tok(UiToken::Accent, A));
 		}
 		Mesh.Flush(Out, Layer + 1);
 		return Layer + 3;
@@ -5058,6 +5607,7 @@ private:
 		{
 			ConvDim = 0.f;
 			ConvNeed = 0.f;
+			SubBand = 0.f;
 			EvenTop = -1.f;
 			bReadWanted = false;
 		}
@@ -5066,55 +5616,99 @@ private:
 	// The gradient's level for the conversation: the soft dialogue backing, or more where a picture asked for it.
 	float ConvTarget() const { return FMath::Max(Table().Style.backingSoftDialogue, ConvNeed); }
 
-	// A new beat's picture under the lower screen, read once (never per frame; never on a screenshot's frame).
+	// A new beat's picture under the lower screen and under the subtitle's block, asked for once (never per frame; never
+	// on a screenshot's frame). FTPictureReader reads it without waiting; TakeReads has it a frame or two later.
 	void MeasureAtEndDraw()
 	{
-		if (!bReadWanted || !Shown.IsValid() || FScreenshotRequest::IsScreenshotRequested())
+		if (!bReadWanted || bAsked || !Shown.IsValid() || FScreenshotRequest::IsScreenshotRequested() || !NeedPx(DimSize, NeedRc))
 		{
 			return;
 		}
-		const float Need = MeasureNeed(DimSize);
+		if (!Reader.Request(kNeedSlot, NeedRc))
+		{
+			return;
+		}
+		FIntRect SubPx;
+		bSubAsked = PicturePx(SubRead, DimSize, SubPx) && Reader.Request(kSubSlot, SubPx);
+		bAsked = true;
+		bNeedIn = bSubIn = false;
+		AskedBeat = ArrivalSerial;
+	}
+
+	// The beat's reads, once both are in: the gradient's need, then the subtitle's band.
+	void TakeReads()
+	{
+		bool bOk = false;
+		ftcore::UiColor Pic;
+		if (Reader.Take(kNeedSlot, Pic, bOk))
+		{
+			bNeedIn = true;
+			NeedOk = bOk;
+			NeedPic = Pic;
+		}
+		if (Reader.Take(kSubSlot, Pic, bOk))
+		{
+			bSubIn = true;
+			SubOk = bOk;
+			SubPic = Pic;
+		}
+		if (!bAsked || !bNeedIn || (bSubAsked && !bSubIn))
+		{
+			return;
+		}
+		bAsked = false;
+		if (!bReadWanted || AskedBeat != ArrivalSerial || !Shown.IsValid())
+		{
+			return; // asked for a beat that has gone (a new beat asks again)
+		}
+		const float Need = NeedOk ? NeedFrom(NeedPic) : -1.f;
 		// Below 0: no picture yet; read again next frame, ten tries at most (a truly black scene needs no more).
 		if (Need >= 0.f || ++ReadTries >= 10)
 		{
 			bReadWanted = false;
 			ReadTries = 0;
 			ConvNeed = FMath::Max(ConvNeed, Need);
+			// The subtitle's band: the off-white over the brightest tenth under the block; within a conversation it only
+			// comes in, never flickers out between beats.
+			if (bSubAsked && SubOk)
+			{
+				const ftcore::UiColor& Pic2 = SubPic;
+				// The words in ink and the speaker in the world's fill: the band the darker of the two asks for.
+				const ftcore::UiColor Ink = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), UiToken::Ink);
+				const ftcore::UiColor Name = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), UiToken::Fill);
+				float Bare = 0.f, Banded = 0.f, NameBare = 0.f, NameBanded = 0.f;
+				const float Want = ftcore::uiSubtitleBand(Ink, Pic2, &Bare, &Banded);
+				const float NameWant = ftcore::uiSubtitleBand(Name, Pic2, &NameBare, &NameBanded);
+				SubBand = FMath::Max3(SubBand, Want, NameWant);
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: subtitle contrast %.2f over the picture (%.2f over the band), speaker %.2f (%.2f); band %.2f."),
+					Bare, Banded, NameBare, NameBanded, SubBand);
+			}
 		}
 	}
 
-	// The level the option ink needs over the brightest tenth of the gradient's even part (Core uiOptionDim); -1 when
-	// nothing could be read.
-	float MeasureNeed(const FVector2f& Size) const
+	// The gradient's even part in the game viewport's pixels; false when there is no viewport.
+	static bool NeedPx(const FVector2f& Size, FIntRect& Rc)
 	{
 		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
 		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
 		if (VS.X <= 0 || VS.Y <= 0 || Size.X <= 0.f || Size.Y <= 0.f)
 		{
-			return -1.f;
+			return false;
 		}
 		const float S = FMath::Max(0.25f, Size.Y / 1080.f);
 		const float KY = VS.Y / Size.Y;
-		const FIntRect Rc(FMath::FloorToInt(VS.X * 0.1f), FMath::Clamp(FMath::FloorToInt(VS.Y * kConvEven), 0, VS.Y - 1),
+		Rc = FIntRect(FMath::FloorToInt(VS.X * 0.1f), FMath::Clamp(FMath::FloorToInt(VS.Y * kConvEven), 0, VS.Y - 1),
 			FMath::CeilToInt(VS.X * 0.9f), FMath::Clamp(FMath::CeilToInt((Size.Y - 40.f * S) * KY), 1, VS.Y));
-		TArray<FColor> Px;
-		if (Rc.Width() <= 0 || Rc.Height() <= 0 || !VP->ReadPixels(Px, FReadSurfaceDataFlags(), Rc) || Px.Num() == 0)
-		{
-			return -1.f;
-		}
-		ftcore::UiLumaHistogram Hist;
-		for (int32 I = 0; I < Px.Num(); I += 2)
-		{
-			ftcore::uiLumaAdd(Hist, ftcore::UiColor{Px[I].R / 255.f, Px[I].G / 255.f, Px[I].B / 255.f, 1.f});
-		}
-		const ftcore::UiColor Pic = ftcore::uiLumaBrightest(Hist, 0.1f);
-		if (Pic.r + Pic.g + Pic.b <= 0.f)
-		{
-			return -1.f; // an all-black read is no picture yet: read again next frame
-		}
+		return Rc.Width() > 0 && Rc.Height() > 0;
+	}
+
+	// The level the option ink needs over the brightest tenth of the gradient's even part (Core uiOptionDim).
+	float NeedFrom(const ftcore::UiColor& Pic) const
+	{
+		const FIntRect& Rc = NeedRc;
 		const ftcore::UiStyle& St = Table().Style;
-		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Ink);
-		const ftcore::UiColor Back = ftcore::uiColor(St, ShownWorld(), ftcore::UiPalette::Default, UiToken::Backing);
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Ink);
+		const ftcore::UiColor Back = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Backing);
 		const float Need = ftcore::uiOptionDim(St, Ink, Back, Pic);
 		UE_LOG(LogForgottenThird, Display, TEXT("UI: conversation gradient %.2f (this beat needs %.2f over the lower screen's brightest tenth (%.2f, %.2f, %.2f), %dx%d px read)."),
 			FMath::Max(ConvTarget(), Need), Need, Pic.r, Pic.g, Pic.b, Rc.Width(), Rc.Height());
@@ -5224,13 +5818,12 @@ private:
 		HintText = kStoryHintUi;
 		HintW = TextWidth(HintText, HintFont);
 		const TSharedRef<FSlateFontMeasure> M = FontMeasure();
-		LineH = M->GetMaxCharacterHeight(TextFont) * 1.15f;
+		LineH = M->GetMaxCharacterHeight(TextFont) * kSubLineK;
 		OptionAsc = M->GetMaxCharacterHeight(OptionFont) + M->GetBaseline(OptionFont); // the baseline under a row's top
 		const bool bSpeakerUpper = Table().Style.text[static_cast<size_t>(UiTextRole::Speaker)].upper;
 		SpeakerUpper = View.kind != ftcore::DialogueViewKind::Line ? FString() : bSpeakerUpper ? D.GetSpeaker().ToUpper() : D.GetSpeaker();
-		SpeakerW = SpeakerUpper.IsEmpty() ? 0.f : TextWidth(SpeakerUpper, SpeakerFont) + 18.f * S;
+		SpeakerW = SpeakerUpper.IsEmpty() ? 0.f : TextWidth(SpeakerUpper, SpeakerFont) + kSubSpeakerGap * S;
 		SpeakerDy = (M->GetMaxCharacterHeight(TextFont) - M->GetMaxCharacterHeight(SpeakerFont)) * 0.62f;
-		MaxW = FMath::Min(Size.X - 160.f * S, 1500.f * S);
 
 		const FString& T = D.GetText();
 		CpToUnit.Reset();
@@ -5243,48 +5836,17 @@ private:
 		}
 		CpToUnit.Add(T.Len());
 
-		// Greedy by spaces; a word wider than a line stands alone.
+		// Core's fit: 42 characters a line at most, broken at spaces (a longer word stands alone), shown two lines a page.
+		static_assert(sizeof(TCHAR) == sizeof(char16_t), "the subtitle's fit reads UTF-16");
+		ftcore::uiSubtitleFit(std::u16string_view(reinterpret_cast<const char16_t*>(*T), static_cast<size_t>(T.Len())), Fit);
 		Lines.Reset();
 		LineW.Reset();
-		const auto Width = [&](int32 From, int32 To) // [From, To)
-		{ return To > From ? static_cast<float>(M->Measure(FStringView(T), From, To - 1, TextFont).X) : 0.f; };
-		int32 Start = 0;
-		int32 Break = -1;
-		float Avail = MaxW - SpeakerW;
-		for (int32 I = 0; I <= T.Len(); ++I)
+		for (int32 I = 0; I < static_cast<int32>(Fit.count); ++I)
 		{
-			const bool bEnd = I == T.Len();
-			if (!bEnd && T[I] != TEXT(' ') && T[I] != TEXT('\n'))
-			{
-				continue;
-			}
-			if (Width(Start, I) > Avail && Break > Start)
-			{
-				Lines.Add(FIntPoint(Start, Break));
-				Start = Break + 1;
-				Avail = MaxW;
-				I = Break; // re-run from the new line's start
-				Break = -1;
-				continue;
-			}
-			if (bEnd)
-			{
-				Lines.Add(FIntPoint(Start, T.Len()));
-				break;
-			}
-			if (T[I] == TEXT('\n'))
-			{
-				Lines.Add(FIntPoint(Start, I));
-				Start = I + 1;
-				Avail = MaxW;
-				Break = -1;
-				continue;
-			}
-			Break = I;
-		}
-		for (const FIntPoint& L : Lines)
-		{
-			LineW.Add(Width(L.X, L.Y));
+			const int32 B = static_cast<int32>(Fit.line[static_cast<size_t>(I)].begin);
+			const int32 E = static_cast<int32>(Fit.line[static_cast<size_t>(I)].end);
+			Lines.Add(FIntPoint(B, E));
+			LineW.Add(E > B ? static_cast<float>(M->Measure(FStringView(T), B, E - 1, TextFont).X) : 0.f);
 		}
 	}
 
@@ -5310,10 +5872,16 @@ private:
 	float SpeakerDy = 0.f;
 	float LineH = 0.f;
 	float OptionAsc = 0.f; // the reply face's ascent: a row's top to its baseline
-	float MaxW = 0.f;
 	TArray<int32> CpToUnit;
-	TArray<FIntPoint> Lines; // [start, end) in UTF-16 units
+	ftcore::UiSubtitleFit Fit; // Core's breaks of the beat's line
+	TArray<FIntPoint> Lines; // [start, end) in UTF-16 units, as Fit
 	TArray<float> LineW;
+	int32 PageFirst = 0; // the first line of the page on show
+	int32 PageRows = 0;  // its lines (two at most)
+	float SubWidest = 0.f; // the page's widest line, the speaker's lead in
+	FBox2f SubRead = FBox2f(ForceInit); // the page's block, for the read of the picture under it
+	float SubBand = 0.f; // the band's black now (0 or the least Core uiSubtitleBand measured); only comes in within a conversation
+	float GradK = 0.f;   // the low gradient's share: 1 while replies show
 	// Line arrival.
 	uint32 ArrivalSerial = MAX_uint32;
 	TArray<float> ArriveAt; // by codepoint: the widget time it came out (sized once per beat)
@@ -5331,6 +5899,14 @@ private:
 	float EvenWant = -1.f;    // px: where that top is going (over the replies while they show)
 	bool bReadWanted = false; // a new beat's picture is still to be read
 	int32 ReadTries = 0;      // reads that found no picture yet for this beat
+	// The beat's two reads (FTPictureReader: asked at the end of the draw, in a frame or two later).
+	static constexpr int32 kNeedSlot = 0;
+	static constexpr int32 kSubSlot = 1;
+	FTPictureReader Reader;
+	FIntRect NeedRc;
+	ftcore::UiColor NeedPic, SubPic;
+	uint32 AskedBeat = 0;
+	bool bAsked = false, bSubAsked = false, bNeedIn = false, bSubIn = false, NeedOk = false, SubOk = false;
 	float OptWait = 0.f;      // seconds the options on show have waited
 	float HiddenFor = 0.f;    // seconds the dialogue has been hidden (the conversation is over after one)
 	FVector2f DimSize = FVector2f::ZeroVector; // the widget size the options are placed in, for the end-of-draw read
@@ -5519,6 +6095,2077 @@ private:
 	mutable FLineMesh Mesh;
 	mutable ftcore::UiStroke Line; // the underline being drawn (Core fills it, the mesh takes it)
 };
+
+// The explore HUD (the new UI, FT::NewUiEnabled; 2026-11-16 ruling, item A): the r19 HUD's language out of a fight. Top
+// left, the party stack: each member's name in capitals over a thin line in the world's fill with its square end cap
+// (no figures: explore carries no hurt state); under the stack the objective, one line in small caps, quieting to 40
+// percent after 4 s without change (Core uiObjectiveStep). The prompt stands at the focused spot on screen: its key in a
+// 1 device px ring and one verb, never centred; with the spot off screen there is none. Notices at the right edge, one
+// at a time, 2.5 s each, a queue of 3 (Core UiNoticeQueue). No plate under any word: the words' own soft contour, measured
+// (the (A) fix, 2026-11-16): each line's contour is raised in spread and alpha, the least that holds it over the brightest
+// tenth of the bare scene under it (Core uiLineGuard: 4.5:1, 3:1 for the names), and at its cap a shade under that line
+// only; the quiet objective rests no lower than holds (uiQuietFloor). Hidden while the pause or settings screen is open.
+// Play reads one line every kReadEvery s (the one whose words just changed first); a guard rises at once and eases back
+// only after kGuardHold s of weaker reads.
+// Non-shipping: -UiExploreFake fills every piece with placeholders (and a two-line subtitle, in the dialogue's metrics,
+// over the measured band of uiSubtitleBand, the most any of its lines needs); -UiExploreShot=<file prefix> takes the still
+// after -UiExploreShotDelay= s (10) and quits; -UiExploreShotYaw= turns the view first; -UiSubScale= sets the placeholder
+// subtitle's text scale. Stills read every line twice a second, only rising, and log each ("UI: explore contrast").
+#if !UE_BUILD_SHIPPING
+const TCHAR* const kFakeObjective = TEXT("Find a way across the canal");
+const TCHAR* const kFakeNotice = TEXT("Map updated");
+const TCHAR* const kFakePrompt = TEXT("E  Open the gate");
+const TCHAR* const kFakeLine = TEXT("Stay close. The lamps along this street went out an hour ago.");
+#endif
+const TCHAR* const kGuardName[] = {TEXT("lead name"), TEXT("partner name"), TEXT("objective"), TEXT("notice"), TEXT("prompt verb"),
+	TEXT("controls"), TEXT("subtitle line 1"), TEXT("subtitle line 2"), TEXT("subtitle speaker")};
+
+class SFTExploreHud : public SLeafWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SFTExploreHud) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&, TFunction<const AFTExploreDirector*()> InGetDirector, TFunction<const AFTExploreCharacter*()> InGetLead)
+	{
+		GetDirector = MoveTemp(InGetDirector);
+		GetLead = MoveTemp(InGetLead);
+		SetVisibility(EVisibility::HitTestInvisible);
+		if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			std::atomic<bool>* Flush = &TextRuns.bFlush;
+			FontRelease = FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().AddLambda(
+				[Flush](const FSlateFontCache&) { Flush->store(true); });
+		}
+#if !UE_BUILD_SHIPPING
+		const TCHAR* Cmd = FCommandLine::Get();
+		bFake = FParse::Param(Cmd, TEXT("UiExploreFake"));
+		// -UiExploreDevice=pad|keys: the controls line on that device whatever was used last (the stills of both).
+		FString Dev;
+		if (FParse::Value(Cmd, TEXT("UiExploreDevice="), Dev))
+		{
+			ForcedDevice = Dev.Equals(TEXT("pad"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::InputDevice::Pad)
+				: static_cast<int32>(ftcore::InputDevice::Keys);
+		}
+		bShot = FParse::Value(Cmd, TEXT("UiExploreShot="), ShotPrefix) && !ShotPrefix.IsEmpty();
+		FParse::Value(Cmd, TEXT("UiExploreShotDelay="), ShotDelay);
+		bShotYaw = FParse::Value(Cmd, TEXT("UiExploreShotYaw="), ShotYaw);
+		bSweep = FParse::Param(Cmd, TEXT("UiExploreShotSweep")); // turn a full circle, shoot the view worst for the subtitle
+		FParse::Value(Cmd, TEXT("UiSubScale="), FakeSubScale);
+		FakeSubScale = FMath::Clamp(FakeSubScale, 1.f, 2.f);
+		if (bFake)
+		{
+			FakeLine = kFakeLine;
+		}
+		// -UiExplorePlayReads: the play path's reads (one line each, easing back) in a still run, each logged with its cost.
+		bPlayReads = FParse::Param(Cmd, TEXT("UiExplorePlayReads"));
+		// -UiExploreReadsOff (with -UiExplorePlayReads): the same run with no reads, the frames' baseline.
+		bReadsOff = bPlayReads && FParse::Param(Cmd, TEXT("UiExploreReadsOff"));
+		// -UiExploreSkipOff (with -UiExplorePlayReads): every read real, the worst case; without it the skip runs as in play.
+		bSkipOn = !(bPlayReads && FParse::Param(Cmd, TEXT("UiExploreSkipOff")));
+		bSweep = bSweep && !bPlayReads; // the sweep reads every line
+		bStills = (bFake || bShot) && !bPlayReads;
+#endif
+	}
+
+	virtual ~SFTExploreHud() override
+	{
+		if (bReadBound && GEngine && GEngine->GameViewport)
+		{
+			GEngine->GameViewport->OnEndDraw().RemoveAll(this);
+		}
+		if (FontRelease.IsValid() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().Remove(FontRelease);
+		}
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1920.0, 1080.0); }
+
+	virtual void Tick(const FGeometry& Geometry, const double, const float DeltaTime) override
+	{
+		Time += DeltaTime;
+#if !UE_BUILD_SHIPPING
+		if (bPlayReads)
+		{
+			NoteRunFrame(DeltaTime);
+		}
+#endif
+		const AFTExploreDirector* D = GetDirector ? GetDirector() : nullptr;
+		const AFTExploreCharacter* C = GetLead ? GetLead() : nullptr;
+		Size = Geometry.GetLocalSize();
+		{
+			const APlayerController* CamPC = C && C->GetWorld() ? C->GetWorld()->GetFirstPlayerController() : nullptr;
+			if (CamPC && CamPC->PlayerCameraManager)
+			{
+				CamAt = CamPC->PlayerCameraManager->GetCameraLocation();
+				CamRot = CamPC->PlayerCameraManager->GetCameraRotation();
+			}
+			// The scene's clock and wetness, for the read skip: a still camera over a changing scene reads again.
+			const UWorld* SceneWorld = C ? C->GetWorld() : nullptr;
+			if (const UFTWorldClockSubsystem* SceneClock = SceneWorld ? SceneWorld->GetSubsystem<UFTWorldClockSubsystem>() : nullptr)
+			{
+				SceneHours = SceneClock->GetHours();
+			}
+			if (const UFTLookSubsystem* SceneLookSub = SceneWorld ? SceneWorld->GetSubsystem<UFTLookSubsystem>() : nullptr)
+			{
+				SceneWet = SceneLookSub->GetLook().wetness;
+			}
+		}
+		// The party screen has the left side while it is open; the pause and settings screens have the whole screen.
+		bOn = D && C && !C->GetPartyScreen().open && !MenuOpen(C);
+		TickShot(C);
+		TickReads();
+		// The controls line's device: noted each frame, also while the HUD is hidden, so the last device used stays fresh
+		// (the Button prompts setting may hold one; FTInputBindings::NoteDevice).
+		ftcore::InputDevice Device = FTInputBindings::NoteDevice(C ? Cast<APlayerController>(C->GetController()) : nullptr);
+#if !UE_BUILD_SHIPPING
+		Device = ForcedDevice >= 0 ? static_cast<ftcore::InputDevice>(ForcedDevice) : Device;
+#endif
+		if (!bOn)
+		{
+			return;
+		}
+		const float H = Size.Y;
+		if (H != BuiltHeight || FakeSubScale != BuiltSubScale)
+		{
+			BuiltHeight = H;
+			BuiltSubScale = FakeSubScale;
+			BuildFonts(H);
+		}
+		// The field's keys on that device (kept by FTInputBindings::HintLine per device and bindings generation): measured
+		// again only when one of those, or the fonts, change.
+		const uint32 Bindings = FTInputBindings::Generation();
+		if (!CtlText || Device != CtlDevice || Bindings != CtlGeneration)
+		{
+			CtlDevice = Device;
+			CtlGeneration = Bindings;
+			CtlText = &FTInputBindings::HintLine(ftcore::InputHintScreen::Field, Device);
+			CtlW = TextWidth(*CtlText, CtlFont);
+			ReadSoon(GuardControls);
+		}
+		// The cutscene in place has the screen.
+		const AFTCutsceneDirector* Cut = D->GetCutsceneDirector();
+		bCutscene = Cut && Cut->IsPlayingInPlace();
+
+		// The party stack's names.
+		const TArray<FFTLeadLook>& Looks = C->PartyLooks;
+		const auto LookName = [&Looks](int32 I) -> const FString& { return Looks.IsValidIndex(I) ? Looks[I].Name : NoName(); };
+		bPartnerHere = C->IsPartnerHere();
+		if (BuildName(LeadRow, LookName(C->GetLeadIndex()), kLeadUi, LeadFont))
+		{
+			ReadSoon(GuardLead);
+		}
+		if (BuildName(PartnerRow, LookName(C->GetPartnerIndex()), kPartnerUi, PartnerFont))
+		{
+			ReadSoon(GuardPartner);
+		}
+
+		// The objective: the story step's, a world's line, or the demo's current one.
+		const FString* Obj = &NoName();
+		if (D->IsStoryWalk())
+		{
+			Obj = &D->GetFieldObjective();
+		}
+		else if (D->IsWorldMode() || D->IsOverworld())
+		{
+			Obj = &D->GetWorldLine();
+		}
+		else
+		{
+			Obj = &D->GetObjectiveText(D->GetExploration().currentObjective());
+		}
+#if !UE_BUILD_SHIPPING
+		static const FString FakeObj(kFakeObjective);
+		Obj = bFake ? &FakeObj : Obj;
+#endif
+		if (!ObjectiveSeen.Equals(*Obj, ESearchCase::CaseSensitive))
+		{
+			ObjectiveSeen = *Obj; // copied once per change of the words
+			++ObjectiveSerial;
+			ObjW = 0.f;
+			ReadSoon(GuardObjective);
+		}
+		if (ObjW <= 0.f && !ObjectiveSeen.IsEmpty())
+		{
+			ObjW = TextWidth(ObjectiveSeen, ObjFont); // once per change (or new fonts)
+		}
+		ftcore::uiObjectiveStep(ObjFade, ObjectiveSerial, DeltaTime);
+
+		// Notices: a new one each time the director's notice restarts its age (the same words again are a new notice).
+		const FString* Note = &D->GetNotice();
+		double NoteAge = D->GetNoticeAge();
+#if !UE_BUILD_SHIPPING
+		static const FString FakeNote(kFakeNotice);
+		if (bFake)
+		{
+			Note = &FakeNote;
+			NoteAge = FMath::Fmod(static_cast<double>(Time), 2.0); // a fresh one every 2 s: the queue always shows one
+		}
+#endif
+		if (!Note->IsEmpty() && NoteAge < LastNoticeAge)
+		{
+			const std::uint8_t Slot = ftcore::uiNoticePush(Notices);
+			NoticeText[Slot] = *Note;
+		}
+		LastNoticeAge = Note->IsEmpty() ? 1e9 : NoteAge;
+		ftcore::uiNoticeStep(Notices, DeltaTime);
+		const int32 NoteShown = ftcore::uiNoticeShown(Notices);
+		if (NoteShown != NoteSlotSeen)
+		{
+			NoteSlotSeen = NoteShown;
+			if (NoteShown >= 0)
+			{
+				ReadSoon(GuardNotice); // a notice's words just came up
+			}
+		}
+
+		// The prompt at its spot, from the director's "<key>  <words>": the key in the ring, the first word the verb.
+		bPrompt = false;
+		const FString* Prompt = &D->GetPrompt();
+		FVector At = FVector::ZeroVector;
+		bool bAt = D->GetFocusLocation(At);
+#if !UE_BUILD_SHIPPING
+		static const FString FakePrompt(kFakePrompt);
+		if (bFake)
+		{
+			Prompt = &FakePrompt;
+			const FRotator Yaw(0.f, C->GetControlRotation().Yaw, 0.f);
+			At = C->GetActorLocation() + Yaw.RotateVector(FVector(450.f, 140.f, 60.f));
+			bAt = true;
+		}
+#endif
+		if (!Prompt->IsEmpty() && bAt)
+		{
+			if (!PromptSeen.Equals(*Prompt, ESearchCase::CaseSensitive))
+			{
+				PromptSeen = *Prompt;
+				SplitPrompt(PromptSeen);
+				ReadSoon(GuardVerb);
+			}
+			bPrompt = Project(C, At, PromptAt);
+		}
+	}
+
+	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
+		const FWidgetStyle&, bool) const override
+	{
+		if (!bOn || bCutscene || BuiltHeight <= 0.f)
+		{
+			return Layer;
+		}
+		FTextRuns* Runs = UiTextCacheOn() ? &TextRuns : nullptr;
+		if (Runs)
+		{
+			Runs->BeginFrame();
+		}
+		const FVector2f Sz = Geometry.GetLocalSize();
+		const FPainter P{Geometry, Out, Layer, FMath::Max(0.25f, Sz.Y / 1080.f), false, Runs};
+		const float S = P.S;
+		const FUiWorldRow& R = Shown();
+		Mesh.Begin(Geometry, S);
+		for (FGuardLine& L : Lines)
+		{
+			L.Rect = FBox2f(ForceInit); // set again by each line drawn
+		}
+
+		// The party stack, top left: name, then its thin line (full: no value shown) with the cap at its end.
+		const float X0 = Hud::Margin * S;
+		float Y = Hud::Margin * S;
+		const auto Member = [&](const FRowName& Row, const FSlateFontInfo& Font, float Asc, float Ink, float LineLen, float LineW, int32 G)
+		{
+			FGuardLine& L = Lines[G];
+			L.Rect = FBox2f(FVector2f(X0, Y), FVector2f(X0 + Row.W, Y + Asc));
+			LineShade(P, L);
+			P.TextGuarded(X0, Y, Row.Text, Font, Tok(UiToken::Ink, Ink), L.G);
+			const float Base = Y + Asc;
+			const float LineY = Base + (0.5f * LineW + 8.f) * S;
+			const float WD = Mesh.WholeDev(LineW * S);
+			const float YS = Mesh.SnapLineY(LineY, WD);
+			ftcore::uiStrokeLine(Line, X0, YS, X0 + LineLen * S, YS, ValueStyle(WD / S, 301, S), 0.f, 1.f);
+			Mesh.ValueStroke(Line, R.Fill);
+			const float Side = Mesh.WholeDev((LineW + Table().Style.lines.capGrow) * S);
+			const float CapL = Mesh.SnapX(ftcore::uiCapX(X0, LineLen * S, 1.f, Side) - 0.5f * Side);
+			const float T = Mesh.SnapLineY(YS, Side) - 0.5f * Side;
+			const FVector2f Pts[4] = {FVector2f(CapL, T), FVector2f(CapL + Side, T), FVector2f(CapL + Side, T + Side), FVector2f(CapL, T + Side)};
+			Mesh.Fill(Pts, 4, Tok(UiToken::Ink));
+			Y = LineY + 0.5f * WD + 18.f * S;
+		};
+		Member(LeadRow, LeadFont, LeadAsc, 1.f, Hud::LeadLine, Hud::PartnerHpW, GuardLead);
+		if (bPartnerHere)
+		{
+			Member(PartnerRow, PartnerFont, PartnerAsc, Hud::PartnerInk, Hud::PartnerLine, Hud::GuardW, GuardPartner);
+		}
+
+		// The objective under the stack, quieting no lower than its measured floor.
+		if (!ObjectiveSeen.IsEmpty())
+		{
+			FGuardLine& L = Lines[GuardObjective];
+			const float OY = Y + 10.f * S;
+			L.Rect = FBox2f(FVector2f(X0, OY), FVector2f(X0 + ObjW, OY + ObjAsc));
+			LineShade(P, L);
+			P.TextGuarded(X0, OY, ObjectiveSeen, ObjFont, Tok(UiToken::Ink, QuietAlpha(ObjFade.alpha, L.Floor)), L.G);
+		}
+
+		// The notice at the right edge, right-aligned.
+		const int32 ShownSlot = ftcore::uiNoticeShown(Notices);
+		if (ShownSlot >= 0)
+		{
+			const FString& N = NoticeText[ShownSlot];
+			const float W = TextWidth(N, NoteFont); // measured while one stands: a few words, no allocation
+			const float NX = Sz.X - Hud::Margin * S - W;
+			const float NY = Sz.Y * 0.38f;
+			FGuardLine& L = Lines[GuardNotice];
+			L.Rect = FBox2f(FVector2f(NX, NY), FVector2f(NX + W, NY + NoteAsc));
+			LineShade(P, L);
+			P.TextGuarded(NX, NY, N, NoteFont, Tok(UiToken::Ink, ftcore::uiNoticeAlpha(Notices)), L.G);
+		}
+
+		// The prompt: the key in a 1 device px ring centred on the spot, the verb after it.
+		if (bPrompt)
+		{
+			const float Rr = 0.5f * Hud::KeyCapH * S;
+			const float CX = FMath::Clamp(PromptAt.X, Hud::Margin * S + Rr, Sz.X - Hud::Margin * S - Rr - VerbW - 12.f * S);
+			const float CY = FMath::Clamp(PromptAt.Y, Hud::Margin * S + Rr, Sz.Y - (kSubBottom + 140.f) * S);
+			constexpr int32 N = 64;
+			FVector2f Pts[N + 1];
+			for (int32 I = 0; I <= N; ++I)
+			{
+				const float A = 2.f * UE_PI * static_cast<float>(I) / N;
+				Pts[I] = FVector2f(CX + Rr * FMath::Cos(A), CY + Rr * FMath::Sin(A));
+			}
+			PolyStroke(Line, Pts, N + 1, 0.5f * Mesh.PxSize());
+			Mesh.Stroke(Line, Tok(UiToken::Ink), true);
+			FGuardLine& L = Lines[GuardVerb];
+			const float VX = CX + Rr + 12.f * S;
+			const float VY = CapTop(CY, VerbAsc);
+			L.Rect = FBox2f(FVector2f(VX, VY), FVector2f(VX + VerbW, VY + VerbAsc));
+			LineShade(P, L);
+			P.TextGuarded(CX - 0.5f * KeyW, CapTop(CY, KeyAsc), KeyText, KeyFont, Tok(UiToken::Ink), L.G); // the key under the verb's guard
+			P.TextGuarded(VX, VY, VerbText, VerbFont, Tok(UiToken::Ink), L.G);
+		}
+
+		// The controls line, centred at the foot under the subtitle band: the field's keys on the device in use.
+		if (CtlText && !CtlText->IsEmpty())
+		{
+			FGuardLine& L = Lines[GuardControls];
+			const float CXl = 0.5f * (Sz.X - CtlW);
+			const float CYl = Sz.Y - kCtlBottom * S - CtlAsc;
+			L.Rect = FBox2f(FVector2f(CXl, CYl), FVector2f(CXl + CtlW, CYl + CtlAsc));
+			LineShade(P, L);
+			P.TextGuarded(CXl, CYl, *CtlText, CtlFont, Tok(UiToken::Ink, kCtlInk), L.G);
+		}
+
+#if !UE_BUILD_SHIPPING
+		// The placeholder subtitle: the dialogue's block and metrics, the speaker in the world's fill, over the band only
+		// where the measured contrast asks for it.
+		if (bFake && Fit.count > 0)
+		{
+			const int32 Rows = FMath::Min<int32>(Fit.count, ftcore::kUiSubtitleLines);
+			const float Bottom = Sz.Y - kSubBottom * S;
+			const float Top = Bottom - SubLineH * Rows;
+			const float CX = Sz.X * 0.5f;
+			float Widest = 0.f;
+			for (int32 I = 0; I < Rows; ++I)
+			{
+				Widest = FMath::Max(Widest, SubLineW[I] + (I == 0 ? SpeakerW : 0.f));
+			}
+			PaintSubtitleBand(P, CX, Top, Bottom, Widest, SubLineH, SubBand());
+			for (int32 I = 0; I < Rows; ++I)
+			{
+				const float Lead = I == 0 ? SpeakerW : 0.f;
+				const float X = CX - (SubLineW[I] + Lead) * 0.5f;
+				const float LY = Top + SubLineH * I;
+				Lines[GuardSub0 + I].Rect = FBox2f(FVector2f(X + Lead, LY), FVector2f(X + Lead + SubLineW[I], LY + SubLineH));
+				if (I == 0)
+				{
+					Lines[GuardSpeaker].Rect = FBox2f(FVector2f(X, LY), FVector2f(X + FMath::Max(1.f, Lead - kSubSpeakerGap * S), LY + SubLineH));
+					P.Text(X, LY + SpeakerDy, SpeakerText, SpeakerFont, R.Fill);
+				}
+				P.Text(X + Lead, LY, FakeLine, SubFont, Tok(UiToken::Ink), static_cast<int32>(Fit.line[I].begin), static_cast<int32>(Fit.line[I].end));
+			}
+		}
+#endif
+		Mesh.Flush(Out, Layer + 1);
+		return Layer + 5;
+	}
+
+private:
+	struct FRowName
+	{
+		FString Seen;
+		FString Text;
+		float W = 0.f; // its width in its font
+		bool bBuilt = false;
+	};
+
+	// The lines whose picture is read, each drawn under its measured guard.
+	enum EGuardLine : int32 { GuardLead, GuardPartner, GuardObjective, GuardNotice, GuardVerb, GuardControls, GuardSub0, GuardSub1, GuardSpeaker,
+		GuardCount };
+	static constexpr float kCtlInk = 0.8f;    // the controls line, quieter than the words in play
+	static constexpr float kCtlBottom = 28.f; // its foot above the screen's (the subtitle band ends at kSubBottom)
+	static_assert(kCtlBottom < kSubBottom - 40.f, "the controls line stays under the subtitle band");
+	static_assert(UE_ARRAY_COUNT(kGuardName) == GuardCount, "a name for each read line");
+	static constexpr float kReadEvery = 1.5f; // s between reads in play (one line each)
+	static constexpr float kGuardHold = 3.f;  // s of weaker reads before a guard eases back
+	struct FGuardLine
+	{
+		FBox2f Rect = FBox2f(ForceInit);              // where it was drawn this frame (invalid: not shown)
+		ftcore::UiLineGuard G;                        // drawn with (the subtitle's lines: shade = their band)
+		float Floor = ftcore::kUiObjectiveQuiet;      // the objective's quiet level
+		float LowSince = -1.f;                        // when a weaker read than G was first seen
+		float Bare = -1.f;                            // the last read's bare contrast
+		ftcore::UiColor Pic{0.f, 0.f, 0.f, 1.f};      // the last read's brightest tenth
+		bool bRead = false;
+	};
+
+	static const FString& NoName()
+	{
+		static const FString Empty;
+		return Empty;
+	}
+
+	// True when the words (or the fonts) changed: measured again.
+	static bool BuildName(FRowName& Row, const FString& Src, const FString& Fallback, const FSlateFontInfo& Font)
+	{
+		if (!Row.bBuilt || !Row.Seen.Equals(Src, ESearchCase::CaseSensitive))
+		{
+			Row.bBuilt = true;
+			Row.Seen = Src;
+			Row.Text = (Src.IsEmpty() ? Fallback : Src).ToUpper();
+			Row.W = TextWidth(Row.Text, Font);
+			return true;
+		}
+		return false;
+	}
+
+	static bool MenuOpen(const AFTExploreCharacter* C)
+	{
+		const UGameInstance* GI = C ? C->GetGameInstance() : nullptr;
+		const UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+		const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+		return (Pause && Pause->IsOpen()) || (Set && Set->IsOpen());
+	}
+
+	// The objective's alpha with its quiet level lifted to Floor: 0..quiet maps to 0..Floor, quiet..1 to Floor..1.
+	static float QuietAlpha(float A, float Floor)
+	{
+		const float Q = ftcore::kUiObjectiveQuiet;
+		return A <= Q ? A * Floor / Q : Floor + (A - Q) * (1.f - Floor) / (1.f - Q);
+	}
+
+	// A small line's shade, under it only, where its contour at the cap fell short.
+	static void LineShade(const FPainter& P, const FGuardLine& L)
+	{
+		if (L.G.shade > 0.f && L.Rect.bIsValid)
+		{
+			const FVector2f Ext = L.Rect.GetSize();
+			PaintSubtitleBand(P, L.Rect.GetCenter().X, L.Rect.Min.Y, L.Rect.Max.Y, Ext.X, Ext.Y, L.G.shade);
+		}
+	}
+
+	// The subtitle's band: the most any of its lines asks for.
+	float SubBand() const { return FMath::Max3(Lines[GuardSub0].G.shade, Lines[GuardSub1].G.shade, Lines[GuardSpeaker].G.shade); }
+
+	float Target(int32 I) const { return I <= GuardPartner ? ftcore::kUiNameMinContrast : ftcore::kUiLineMinContrast; }
+
+	float RestAlpha(int32 I) const
+	{
+		const FSlateFontInfo* F[GuardSub0] = {&LeadFont, &PartnerFont, &ObjFont, &NoteFont, &VerbFont, &CtlFont};
+		return I < GuardSub0 ? F[I]->OutlineSettings.OutlineColor.A : 0.f;
+	}
+
+	// The line's ink as drawn at rest: the partner's dimmed, the objective at its quiet level (bRest), the speaker in fill.
+	ftcore::UiColor LineInk(int32 I, bool bRest = true) const
+	{
+		ftcore::UiColor C = ftcore::uiColor(Table().Style, ShownWorld(), ShownPalette(), I == GuardSpeaker ? UiToken::Fill : UiToken::Ink);
+		C.a *= I == GuardPartner ? Hud::PartnerInk : I == GuardControls ? kCtlInk : (I == GuardObjective && bRest ? Lines[I].Floor : 1.f);
+		return C;
+	}
+
+	// The line's contrast as drawn over its last read.
+	float DrawnRatio(int32 I) const
+	{
+		const FGuardLine& L = Lines[I];
+		if (I >= GuardSub0)
+		{
+			return ftcore::uiContrast(LineInk(I), ftcore::UiColor{0.f, 0.f, 0.f, SubBand()}, L.Pic);
+		}
+		const float K = 1.f - L.G.shade;
+		const float Mean = FMath::Max(ftcore::uiContourMean(1.f, RestAlpha(I)), ftcore::uiContourMean(L.G.spread, L.G.alpha));
+		return ftcore::uiContrast(LineInk(I), ftcore::UiColor{0.f, 0.f, 0.f, Mean}, ftcore::UiColor{L.Pic.r * K, L.Pic.g * K, L.Pic.b * K, 1.f});
+	}
+
+	void ReadSoon(int32 I)
+	{
+		++TextSerial[I]; // new words: the skip reads again
+		ReadFirst = I;
+		ReadFirstAt = Time;
+	}
+
+	void ResetGuards()
+	{
+		++ReadGen; // reads asked before this are dropped when they come
+		for (int32 I = 0; I < GuardCount; ++I)
+		{
+			FGuardLine& L = Lines[I];
+			L.G = ftcore::UiLineGuard();
+			L.Floor = ftcore::kUiObjectiveQuiet;
+			L.LowSince = -1.f;
+			L.bRead = false;
+			Memo[I] = ftcore::UiReadMemo();
+		}
+	}
+
+	void BuildFonts(float H)
+	{
+		const TSharedRef<FSlateFontMeasure> FM = FontMeasure();
+		const auto Asc = [&FM](const FSlateFontInfo& F) { return static_cast<float>(FM->GetMaxCharacterHeight(F) + FM->GetBaseline(F)); };
+		const auto Spaced = [](FSlateFontInfo F, int32 Tracking)
+		{
+			F.LetterSpacing = Tracking;
+			return F;
+		};
+		LeadFont = Spaced(FontPx(UiTextRole::Title, H, Hud::LeadPx), Hud::NameTracking);
+		LeadAsc = Asc(LeadFont);
+		PartnerFont = Spaced(FontPx(UiTextRole::Title, H, Hud::PartnerPx), Hud::NameTracking);
+		PartnerAsc = Asc(PartnerFont);
+		ObjFont = Spaced(FontPx(UiTextRole::Label, H, Hud::RowPx), Hud::SpacedTracking / 2); // small caps (the label face)
+		ObjAsc = Asc(ObjFont);
+		NoteFont = Spaced(FontPx(UiTextRole::Label, H, Hud::RowPx), Hud::SpacedTracking / 2);
+		NoteAsc = Asc(NoteFont);
+		KeyFont = FontPx(UiTextRole::Label, H, Hud::KeyPx);
+		KeyAsc = Asc(KeyFont);
+		VerbFont = Spaced(FontPx(UiTextRole::Label, H, Hud::RowPx), Hud::SpacedTracking);
+		VerbAsc = Asc(VerbFont);
+		CtlFont = FontPx(UiTextRole::Label, H, Hud::KeyPx);
+		CtlAsc = Asc(CtlFont);
+		CtlText = nullptr; // measured again in the new font
+		ObjW = 0.f;
+		PromptSeen.Reset(); // measured again in the new fonts
+		LeadRow.bBuilt = false;
+		PartnerRow.bBuilt = false;
+#if !UE_BUILD_SHIPPING
+		if (bFake)
+		{
+			// The placeholder subtitle in the dialogue's faces at its text scale, broken by Core's 42-character fit.
+			const float S = FMath::Max(0.25f, H / 1080.f);
+			SubFont = FontFor(UiTextRole::Subtitle, H, FakeSubScale);
+			SpeakerFont = FontFor(UiTextRole::Speaker, H, FakeSubScale);
+			SubLineH = FM->GetMaxCharacterHeight(SubFont) * kSubLineK;
+			SpeakerDy = (FM->GetMaxCharacterHeight(SubFont) - FM->GetMaxCharacterHeight(SpeakerFont)) * 0.62f;
+			const AFTExploreCharacter* C = GetLead ? GetLead() : nullptr;
+			const FString Name = C && C->PartyLooks.IsValidIndex(C->GetLeadIndex()) ? C->PartyLooks[C->GetLeadIndex()].Name : kLeadUi.Get();
+			const bool bUpper = Table().Style.text[static_cast<size_t>(UiTextRole::Speaker)].upper;
+			SpeakerText = bUpper ? Name.ToUpper() : Name;
+			SpeakerW = TextWidth(SpeakerText, SpeakerFont) + kSubSpeakerGap * S;
+			ftcore::uiSubtitleFit(std::u16string_view(reinterpret_cast<const char16_t*>(*FakeLine), static_cast<size_t>(FakeLine.Len())), Fit);
+			for (int32 I = 0; I < FMath::Min<int32>(Fit.count, ftcore::kUiSubtitleLines); ++I)
+			{
+				const int32 B = static_cast<int32>(Fit.line[I].begin);
+				const int32 E = static_cast<int32>(Fit.line[I].end);
+				SubLineW[I] = E > B ? static_cast<float>(FM->Measure(FStringView(FakeLine), B, E - 1, SubFont).X) : 0.f;
+			}
+		}
+#endif
+	}
+
+	// "<key>  <words>": the key alone (one token before two spaces), the verb its first word, in capitals.
+	void SplitPrompt(const FString& Src)
+	{
+		int32 Gap = Src.Find(TEXT("  "));
+		FString Key = Gap > 0 ? Src.Left(Gap) : FString();
+		FString Rest = Gap > 0 ? Src.Mid(Gap + 2).TrimStart() : Src;
+		int32 Space = INDEX_NONE;
+		Rest.FindChar(TEXT(' '), Space);
+		VerbText = (Space > 0 ? Rest.Left(Space) : Rest).ToUpper();
+		KeyText = Key.IsEmpty() ? FString(TEXT("E")) : Key.ToUpper();
+		VerbW = TextWidth(VerbText, VerbFont);
+		KeyW = TextWidth(KeyText, KeyFont);
+	}
+
+	// The spot on screen in the widget's units; false when it is behind the view or off the screen.
+	bool Project(const AFTExploreCharacter* C, const FVector& At, FVector2f& OutPt) const
+	{
+		const APlayerController* PC = C ? Cast<APlayerController>(C->GetController()) : nullptr;
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+		FVector2D Screen;
+		if (!PC || VS.X <= 0 || VS.Y <= 0 || !PC->ProjectWorldLocationToScreen(At, Screen, false))
+		{
+			return false;
+		}
+		OutPt = FVector2f(static_cast<float>(Screen.X) * Size.X / VS.X, static_cast<float>(Screen.Y) * Size.Y / VS.Y);
+		return OutPt.X >= 0.f && OutPt.Y >= 0.f && OutPt.X <= Size.X && OutPt.Y <= Size.Y;
+	}
+
+#if !UE_BUILD_SHIPPING
+	// -UiExplorePlayReads: every frame of the run from 4 s to just before the still, each marked when it is within a few
+	// frames of a read's request or result; logged once (p50, p99, max; the frames near a read against the rest).
+	void NoteRunFrame(float Dt)
+	{
+		const bool bNear = FlagLeft > 0;
+		FlagLeft = FMath::Max(0, FlagLeft - 1);
+		if (Time > 4.f && Time < ShotDelay - 0.5f)
+		{
+			if (RunN < kRunKeep)
+			{
+				RunMs[RunN] = 1000.f * Dt;
+				RunNear[RunN] = bNear;
+				++RunN;
+			}
+			return;
+		}
+		if (!bRunLogged && Time >= ShotDelay - 0.5f && RunN > 0)
+		{
+			bRunLogged = true;
+			LogRun();
+		}
+	}
+
+	void LogRun()
+	{
+		FMemory::Memcpy(RunSorted, RunMs, sizeof(float) * RunN);
+		Algo::Sort(MakeArrayView(RunSorted, RunN));
+		const float P50 = RunSorted[RunN / 2];
+		const float P99 = RunSorted[FMath::Min(RunN - 1, static_cast<int32>(0.99f * RunN))];
+		int32 Near = 0, NearOver = 0, OtherOver = 0;
+		float NearMax = 0.f, OtherMax = 0.f;
+		for (int32 I = 0; I < RunN; ++I)
+		{
+			if (RunNear[I])
+			{
+				++Near;
+				NearMax = FMath::Max(NearMax, RunMs[I]);
+				NearOver += RunMs[I] > P99 ? 1 : 0;
+			}
+			else
+			{
+				OtherMax = FMath::Max(OtherMax, RunMs[I]);
+				OtherOver += RunMs[I] > P99 ? 1 : 0;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("UI: explore run frames %d, reads %s: p50 %.2f ms, p99 %.2f, max %.2f; near a read %d frames, max %.2f, %d over p99; other frames max %.2f, %d over p99; reads %d (dropped %d, skipped %d), in %.1f frames mean (max %d), render thread %.3f ms mean (max %.3f)."),
+			RunN, bReadsOff ? TEXT("off") : TEXT("on"), P50, P99, RunSorted[RunN - 1], Near, NearMax, NearOver, OtherMax, OtherOver, RunReads, RunDropped, RunSkipped,
+			RunReads > 0 ? static_cast<float>(RunLatSum) / RunReads : 0.f, RunLatMax, RunReads > 0 ? RunRtSum / RunReads : 0.f, RunRtMax);
+	}
+#endif
+
+	// Non-shipping stills: the turn, the reads of the picture under the words, the still, the exit.
+	void TickShot(const AFTExploreCharacter* C)
+	{
+		(void)C;
+#if !UE_BUILD_SHIPPING
+		if (!bFake && !bShot)
+		{
+			return;
+		}
+		APlayerController* SweepPC = C && C->GetWorld() ? C->GetWorld()->GetFirstPlayerController() : nullptr;
+		if (bSweep && !bSweepDone && SweepPC && Time > 1.f)
+		{
+			if (SweepStepAt < 0.f)
+			{
+				FRotator Rot = SweepPC->GetControlRotation();
+				if (SweepStep == 0)
+				{
+					SweepBase = Rot.Yaw;
+				}
+				Rot.Yaw = SweepBase + kSweepDeg * static_cast<float>(SweepStep);
+				SweepPC->SetControlRotation(Rot);
+				SweepStepAt = Time;
+			}
+			else if (!bSweepPending && Time - SweepStepAt > 0.4f)
+			{
+				bSweepPending = true; // the next read belongs to this step's view
+				bReadWanted = true;
+			}
+			if (SweepStep >= kSweepSteps)
+			{
+				FRotator Rot = SweepPC->GetControlRotation();
+				Rot.Yaw = SweepWorstYaw;
+				SweepPC->SetControlRotation(Rot);
+				bSweepDone = true;
+				ResetGuards(); // every line is judged again over the view that is shot
+				ShotDelay = Time + 3.f;
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: explore sweep: worst subtitle view at yaw %.0f (bare %.2f)."),
+					SweepWorstYaw, SweepWorst);
+			}
+		}
+		if (bShotYaw && !bYawDone && C && Time > 1.f)
+		{
+			if (APlayerController* PC = C->GetWorld() ? C->GetWorld()->GetFirstPlayerController() : nullptr)
+			{
+				FRotator Rot = PC->GetControlRotation();
+				Rot.Yaw = ShotYaw;
+				PC->SetControlRotation(Rot);
+				bYawDone = true;
+				ResetGuards(); // judged over the view that is shot, not the one before the turn
+			}
+		}
+		// Stills only rise: judged afresh over the last 2 s before the still (not the start-up exposure).
+		if (bShot && !bGuardsFresh && (!bSweep || bSweepDone) && Time >= ShotDelay - 2.f)
+		{
+			bGuardsFresh = true;
+			ResetGuards();
+		}
+		if (bShot && !bShotTaken && (!bSweep || bSweepDone) && Time >= ShotDelay)
+		{
+			bShotTaken = true;
+			const FString File = ShotPrefix + TEXT(".png");
+			FScreenshotRequest::RequestScreenshot(File, true, false);
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: explore still %s (world %d, subtitle scale %.1f)."), *File,
+				static_cast<int32>(ShownWorld()), FakeSubScale);
+		}
+		if (bShotTaken && Time >= ShotDelay + 2.f && !bExitAsked)
+		{
+			bExitAsked = true;
+			FPlatformMisc::RequestExit(false, TEXT("UiExploreShot"));
+		}
+#endif
+	}
+
+	// The reads of the picture under the words: asked at the end of the game viewport's draw (the Slate layers are not in
+	// it yet, so each is of the bare scene), read by FTPictureReader without waiting, applied here a frame or two later.
+	// Stills read every line twice a second; play one line every kReadEvery s in turn, a line whose words just changed
+	// first, skipped while nothing under it changed (Core uiReadSkip).
+	void TickReads()
+	{
+		if (!bReadBound && GEngine && GEngine->GameViewport)
+		{
+			GEngine->GameViewport->OnEndDraw().AddSP(this, &SFTExploreHud::ReadAtEndDraw);
+			bReadBound = true;
+		}
+		for (int32 I = 0; I < GuardCount; ++I)
+		{
+			ftcore::UiColor Pic{0.f, 0.f, 0.f, 1.f};
+			bool bOk = false;
+			int32 Frames = 0;
+			float RtMs = 0.f;
+			if (!Reader.Take(I, Pic, bOk, &Frames, &RtMs))
+			{
+				continue;
+			}
+			--Pending;
+			// A result for a line that has since moved, or from before the guards were judged afresh, is dropped.
+			const bool bUse = bOk && AskedGen[I] == ReadGen && NearRect(Lines[I].Rect, AskedRect[I]);
+			if (bUse)
+			{
+				ApplyRead(I, Pic);
+				ftcore::uiReadNote(Memo[I], AskedView[I], Pic, Time);
+			}
+#if !UE_BUILD_SHIPPING
+			if (bPlayReads)
+			{
+				FlagLeft = FMath::Max(FlagLeft, 2);
+				++RunReads;
+				RunDropped += bUse ? 0 : 1;
+				RunLatSum += Frames;
+				RunLatMax = FMath::Max(RunLatMax, Frames);
+				RunRtSum += RtMs;
+				RunRtMax = FMath::Max(RunRtMax, RtMs);
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: explore play read %s %s in %d frames (render thread %.3f ms) at %.1f s: contrast %.2f; contour %.0f px %.2f, shade %.2f."),
+					kGuardName[I], bUse ? TEXT("applied") : TEXT("dropped"), Frames, RtMs, Time, DrawnRatio(I), Lines[I].G.spread, Lines[I].G.alpha,
+					I >= GuardSub0 ? SubBand() : Lines[I].G.shade);
+			}
+			if (bBatch && bUse)
+			{
+				++BatchGot;
+				if (I >= GuardSub0 && I != GuardSpeaker)
+				{
+					BatchSubBare = BatchSubBare < 0.f ? Lines[I].Bare : FMath::Min(BatchSubBare, Lines[I].Bare);
+				}
+			}
+#endif
+		}
+#if !UE_BUILD_SHIPPING
+		if (bBatch && Pending == 0)
+		{
+			FinishBatch();
+		}
+#endif
+		if (bOn)
+		{
+			bReadWanted = bReadWanted || Time - LastRead > (bStills ? 0.5f : kReadEvery) || (ReadFirst >= 0 && Time - ReadFirstAt > 0.1f);
+		}
+	}
+
+	// The same place: a result is kept while the line has moved under half its height.
+	static bool NearRect(const FBox2f& Now, const FBox2f& Asked)
+	{
+		if (!Now.bIsValid || !Asked.bIsValid)
+		{
+			return false;
+		}
+		const float Tol = 0.5f * FMath::Max(1.f, Asked.Max.Y - Asked.Min.Y);
+		return FMath::Abs(Now.Min.X - Asked.Min.X) <= Tol && FMath::Abs(Now.Max.X - Asked.Max.X) <= Tol && FMath::Abs(Now.Min.Y - Asked.Min.Y) <= Tol &&
+			FMath::Abs(Now.Max.Y - Asked.Max.Y) <= Tol;
+	}
+
+	ftcore::UiReadView ViewOf(int32 I) const
+	{
+		const FBox2f& R = Lines[I].Rect;
+		ftcore::UiReadView V;
+		V.x0 = R.Min.X;
+		V.y0 = R.Min.Y;
+		V.x1 = R.Max.X;
+		V.y1 = R.Max.Y;
+		V.px = static_cast<float>(CamAt.X);
+		V.py = static_cast<float>(CamAt.Y);
+		V.pz = static_cast<float>(CamAt.Z);
+		V.yaw = static_cast<float>(CamRot.Yaw);
+		V.pitch = static_cast<float>(CamRot.Pitch);
+		V.hours = SceneHours;
+		V.wet = SceneWet;
+		V.text = TextSerial[I];
+		return V;
+	}
+
+	bool Ask(int32 I)
+	{
+		FIntRect Px;
+		if (!Lines[I].Rect.bIsValid || !PicturePx(Lines[I].Rect, Size, Px) || !Reader.Request(I, Px))
+		{
+			return false;
+		}
+		AskedRect[I] = Lines[I].Rect;
+		AskedView[I] = ViewOf(I);
+		AskedGen[I] = ReadGen;
+		++Pending;
+#if !UE_BUILD_SHIPPING
+		FlagLeft = 5; // this frame and the next four carry the copy and its result
+#endif
+		return true;
+	}
+
+	void ReadAtEndDraw()
+	{
+		if (!bReadWanted || Pending > 0 || FScreenshotRequest::IsScreenshotRequested() || !bOn || bCutscene)
+		{
+			return;
+		}
+		bReadWanted = false;
+		LastRead = Time;
+#if !UE_BUILD_SHIPPING
+		if (bReadsOff)
+		{
+			// The control: no read, but the frames where one would be asked, copied and taken are flagged the same way
+			// (the ask's five, plus the take's re-arm a frame or two later), so on and off compare like for like.
+			ReadFirst = -1;
+			FlagLeft = 7;
+			return;
+		}
+#endif
+		if (!bStills)
+		{
+			// One line a read, the one whose words just changed first.
+			int32 I = ReadFirst;
+			ReadFirst = -1;
+			for (int32 K = 0; (I < 0 || !Lines[I].Rect.bIsValid) && K < GuardCount; ++K)
+			{
+				const int32 J = (ReadNext + K) % GuardCount;
+				if (Lines[J].Rect.bIsValid)
+				{
+					I = J;
+					ReadNext = (J + 1) % GuardCount;
+				}
+			}
+			if (I < 0)
+			{
+				return;
+			}
+			if (bSkipOn && Lines[I].bRead && ftcore::uiReadSkip(Memo[I], ViewOf(I), Time))
+			{
+				ApplyRead(I, Lines[I].Pic); // nothing changed: the last read stands (its hold still runs)
+#if !UE_BUILD_SHIPPING
+				++RunSkipped;
+#endif
+				return;
+			}
+			Ask(I);
+			return;
+		}
+#if !UE_BUILD_SHIPPING
+		// Stills: every line at once; the batch's tail (the sweep's step, the log) once all are in.
+		bBatch = true;
+		bBatchSweep = bSweepPending; // the sweep steps on a batch asked after its view settled
+		BatchGot = 0;
+		BatchSubBare = -1.f;
+		for (int32 I = 0; I < GuardCount; ++I)
+		{
+			Ask(I);
+		}
+		if (Pending == 0)
+		{
+			FinishBatch();
+		}
+#endif
+	}
+
+#if !UE_BUILD_SHIPPING
+	void FinishBatch()
+	{
+		bBatch = false;
+		if (bBatchSweep && bSweepPending)
+		{
+			if (BatchSubBare >= 0.f && BatchSubBare < SweepWorst)
+			{
+				SweepWorst = BatchSubBare;
+				SweepWorstYaw = SweepBase + kSweepDeg * static_cast<float>(SweepStep);
+			}
+			bSweepPending = false;
+			SweepStepAt = -1.f;
+			++SweepStep;
+		}
+		LogLines();
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: explore reads %d lines (in %.2f s)."), BatchGot, Time - LastRead);
+	}
+#endif
+
+	// One line's read: the least guard that holds it (the subtitle's lines: their band); it rises at once and eases back
+	// only after kGuardHold s of weaker reads (never in a still).
+	void ApplyRead(int32 I, const ftcore::UiColor& Pic)
+	{
+		FGuardLine& L = Lines[I];
+		L.Pic = Pic;
+		L.bRead = true;
+		ftcore::UiLineGuard Want;
+		float Floor = ftcore::kUiObjectiveQuiet;
+		if (I >= GuardSub0)
+		{
+			Want.shade = ftcore::uiSubtitleBand(LineInk(I), Pic, &Want.bare, &Want.ratio);
+		}
+		else
+		{
+			ftcore::UiColor Ink = LineInk(I, false);
+			if (I == GuardObjective)
+			{
+				Floor = ftcore::uiQuietFloor(Ink, Pic, Target(I), ftcore::kUiObjectiveQuiet);
+				Ink.a *= Floor; // judged at rest: the quiet line is the worst it stands
+			}
+			Want = ftcore::uiLineGuard(Ink, Pic, Target(I), 1.f, RestAlpha(I));
+		}
+		L.Bare = Want.bare;
+		const auto Strength = [](const ftcore::UiLineGuard& G) { return ftcore::uiContourMean(G.spread, G.alpha) + G.shade; };
+		const bool bUp = Strength(Want) > Strength(L.G) + 1e-4f;
+		const bool bFloorUp = Floor > L.Floor + 1e-4f;
+		if (bUp)
+		{
+			L.G = Want;
+		}
+		if (bFloorUp)
+		{
+			L.Floor = Floor;
+		}
+		const bool bWeaker = Strength(Want) < Strength(L.G) - 1e-4f || Floor < L.Floor - 1e-4f;
+		if (!bWeaker || bStills)
+		{
+			L.LowSince = -1.f;
+		}
+		else if (L.LowSince < 0.f)
+		{
+			L.LowSince = Time;
+		}
+		else if (Time - L.LowSince > kGuardHold)
+		{
+			L.G = Want;
+			L.Floor = Floor;
+			L.LowSince = -1.f;
+		}
+	}
+
+#if !UE_BUILD_SHIPPING
+	// Each line's contrast as drawn over its read, with its pixel box (as the menus' log), then the lowest.
+	void LogLines() const
+	{
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+		const float KX = Size.X > 0.f ? VS.X / Size.X : 1.f;
+		const float KY = Size.Y > 0.f ? VS.Y / Size.Y : 1.f;
+		float Low = -1.f;
+		int32 LowI = -1;
+		int32 N = 0;
+		for (int32 I = 0; I < GuardCount; ++I)
+		{
+			const FGuardLine& L = Lines[I];
+			if (!L.bRead || !L.Rect.bIsValid)
+			{
+				continue;
+			}
+			const float Ratio = DrawnRatio(I);
+			++N;
+			if (LowI < 0 || Ratio < Low)
+			{
+				Low = Ratio;
+				LowI = I;
+			}
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("UI: explore contrast %.2f (bare %.2f, ink %.2f, target %.1f) px %d,%d..%d,%d: %s; contour %.0f px %.2f, shade %.2f."), Ratio,
+				ftcore::uiContrast(LineInk(I), ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, L.Pic), LineInk(I).a, I >= GuardSub0 ? ftcore::kUiSubtitleMinContrast : Target(I),
+				FMath::FloorToInt(L.Rect.Min.X * KX), FMath::FloorToInt(L.Rect.Min.Y * KY), FMath::CeilToInt(L.Rect.Max.X * KX),
+				FMath::CeilToInt(L.Rect.Max.Y * KY), kGuardName[I], I >= GuardSub0 ? 0.f : L.G.spread, I >= GuardSub0 ? 0.f : L.G.alpha,
+				I >= GuardSub0 ? SubBand() : L.G.shade);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: explore contrast lowest %.2f (%s) over %d lines; band %.2f, objective quiet %.2f."), Low,
+			LowI >= 0 ? kGuardName[LowI] : TEXT("none"), N, SubBand(), Lines[GuardObjective].Floor);
+	}
+#endif
+
+	TFunction<const AFTExploreDirector*()> GetDirector;
+	TFunction<const AFTExploreCharacter*()> GetLead;
+	float Time = 0.f;
+	FVector2f Size = FVector2f::ZeroVector;
+	bool bOn = false;
+	bool bCutscene = false;
+	float BuiltHeight = 0.f;
+	float BuiltSubScale = -1.f;
+	bool bPartnerHere = false;
+	FRowName LeadRow, PartnerRow;
+	FSlateFontInfo LeadFont, PartnerFont, ObjFont, NoteFont, KeyFont, VerbFont;
+	float LeadAsc = 0.f, PartnerAsc = 0.f, ObjAsc = 0.f, NoteAsc = 0.f, KeyAsc = 0.f, VerbAsc = 0.f;
+	// The objective.
+	FString ObjectiveSeen;
+	uint32 ObjectiveSerial = 0;
+	float ObjW = 0.f;
+	ftcore::UiObjectiveFade ObjFade;
+	// The notices.
+	ftcore::UiNoticeQueue Notices;
+	FString NoticeText[ftcore::kUiNoticeQueue];
+	double LastNoticeAge = 1e9;
+	// The prompt.
+	bool bPrompt = false;
+	FVector2f PromptAt = FVector2f::ZeroVector;
+	FString PromptSeen, KeyText, VerbText;
+	float KeyW = 0.f, VerbW = 0.f;
+	// The controls line (its words are FTInputBindings::HintLine's, kept there).
+	FSlateFontInfo CtlFont;
+	float CtlAsc = 0.f, CtlW = 0.f;
+	const FString* CtlText = nullptr;
+	ftcore::InputDevice CtlDevice = ftcore::InputDevice::Keys;
+	uint32 CtlGeneration = 0;
+	mutable FTextRuns TextRuns; // the words' kept glyph runs, drawn from in OnPaint
+	FDelegateHandle FontRelease;
+	// The reads and each line's guard.
+	mutable FGuardLine Lines[GuardCount];
+	FTPictureReader Reader; // one slot per line
+	static_assert(GuardCount <= FTPictureReader::kSlots, "a read slot for each guarded line");
+	FBox2f AskedRect[GuardCount];
+	ftcore::UiReadView AskedView[GuardCount];
+	uint32 AskedGen[GuardCount] = {};
+	ftcore::UiReadMemo Memo[GuardCount]; // the skip's memory of each line's real reads
+	uint32 ReadGen = 0;
+	int32 Pending = 0; // reads asked, not yet in
+	bool bSkipOn = true;
+	FVector CamAt = FVector::ZeroVector;
+	FRotator CamRot = FRotator::ZeroRotator;
+	float SceneHours = 0.f; // the world clock and the look's wetness, for the read skip
+	float SceneWet = 0.f;
+	uint32 TextSerial[GuardCount] = {}; // each line's words, for the read skip
+	bool bReadBound = false;
+	bool bReadWanted = false;
+	bool bStills = false; // -UiExploreFake or -UiExploreShot: every line each read, logged, only rising
+	float LastRead = -1.f;
+	int32 ReadFirst = -1;
+	float ReadFirstAt = 0.f;
+	int32 ReadNext = 0;
+	int32 NoteSlotSeen = -1;
+	// The placeholder subtitle and the stills.
+	float FakeSubScale = 1.f;
+	bool bFake = false;
+#if !UE_BUILD_SHIPPING
+	int32 ForcedDevice = -1; // -UiExploreDevice=: the controls line's device (-1: the one in use)
+	// -UiExplorePlayReads: the run's frame times (and -UiExploreReadsOff: the same run without reads).
+	static constexpr int32 kRunKeep = 4096;
+	float RunMs[kRunKeep] = {};
+	float RunSorted[kRunKeep] = {};
+	bool RunNear[kRunKeep] = {};
+	int32 RunN = 0;
+	int32 FlagLeft = 0;
+	bool bRunLogged = false;
+	bool bReadsOff = false;
+	int32 RunReads = 0, RunDropped = 0, RunSkipped = 0, RunLatSum = 0, RunLatMax = 0;
+	float RunRtSum = 0.f, RunRtMax = 0.f;
+	// Stills: a batch of reads (every line), its tail once all are in.
+	bool bBatch = false;
+	bool bBatchSweep = false;
+	int32 BatchGot = 0;
+	float BatchSubBare = -1.f;
+	bool bShot = false;
+	bool bShotTaken = false;
+	bool bExitAsked = false;
+	FString ShotPrefix;
+	float ShotDelay = 10.f;
+	bool bShotYaw = false;
+	bool bYawDone = false;
+	bool bGuardsFresh = false;
+	bool bPlayReads = false;
+	static constexpr int32 kSweepSteps = 12;
+	static constexpr float kSweepDeg = 30.f;
+	bool bSweep = false;
+	bool bSweepDone = false;
+	bool bSweepPending = false;
+	int32 SweepStep = 0;
+	float SweepStepAt = -1.f;
+	float SweepBase = 0.f;
+	float SweepWorst = 1000.f;
+	float SweepWorstYaw = 0.f;
+	float ShotYaw = 0.f;
+	FString FakeLine;
+	ftcore::UiSubtitleFit Fit;
+	FSlateFontInfo SubFont, SpeakerFont;
+	FString SpeakerText;
+	float SubLineH = 0.f, SpeakerDy = 0.f, SpeakerW = 0.f;
+	float SubLineW[ftcore::kUiSubtitleLines] = {};
+#endif
+	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line;
+};
+
+// The pause menu and the settings screen (the new UI, FT::NewUiEnabled; 2026-11-16 ruling, item B): one leaf widget on
+// the game viewport (FT::EnsureMenuScreens, from the Canvas overlays' entry points, which then draw nothing). Words on
+// the left over the world, no panels: the paused world under a light dim and a shade, even under all the words and fading
+// out right of them, whose strength is measured: the least (kMenuShade and up) that holds every text line at 4.5:1 over
+// the brightest tenth of the bare scene under it (one read of the picture when a screen opens or changes). The selection is the r19 value line under the word, in the world's fill, with its square ink end cap. The pause
+// list (Resume, Settings, Quit to Title, Quit Game; a greyed item at kMenuOffInk) or, in its place, a quit item's Yes / No
+// prompt. Settings: its six sections on one line under the title (measured: they fit at 200% text at 1080), the selected
+// row's section marked; under them that section's rows, label and value, the value's two chevrons on the selected row;
+// Back under the rows; a hint at the foot. Everything is drawn at the Text size row's scale (a live preview) and in the
+// Colours row's palette (FT::SetUiPalette). Input stays with the subsystems (controller events); this widget reports
+// where it drew each row, button and section in viewport pixels and passes the mouse on for hover.
+// Non-shipping: -UiMenuShot=<file prefix> opens the menu after -UiMenuShotDelay= s (8) on the map's own HUD, takes the
+// still 1.5 s later and quits; -UiMenuShotOf=pause|settings (settings); -UiMenuShotSection=<0..5> picks the section;
+// -UiTextScale=<100..200> holds the screens' text size; -UiPalette=<0..4> the palette (ShownPalette); -UiMenuShotSweep
+// first turns the camera a full circle in 12 steps and shoots the brightest view. Each read logs "UI: menu contrast".
+const FTUiText kMenuPauseTitleUi(TEXT("pause.title"));
+const FTUiText kMenuResumeUi(TEXT("pause.resume"));
+const FTUiText kMenuSettingsUi(TEXT("pause.settings"));
+const FTUiText kMenuQuitTitleUi(TEXT("pause.quit_title"));
+const FTUiText kMenuQuitGameUi(TEXT("pause.quit_game"));
+const FTUiText kMenuAskTitleUi(TEXT("pause.ask_title"));
+const FTUiText kMenuAskGameUi(TEXT("pause.ask_game"));
+const FTUiText kMenuAskNoteUi(TEXT("pause.ask_note"));
+const FTUiText kMenuYesUi(TEXT("pause.yes"));
+const FTUiText kMenuNoUi(TEXT("pause.no"));
+const FTUiText kMenuHintUi(TEXT("pause.hint"));
+const FTUiText kMenuAskHintUi(TEXT("pause.ask_hint"));
+// The settings screen's hint on the device in use (A cycles a row's value, B goes back), and its section names.
+const FTUiText kMenuSettingsHintUi(TEXT("settings.hint"));
+const FTUiText kMenuSettingsHintPadUi(TEXT("settings.hint_pad"));
+const FTUiText kMenuSectionTextUi(TEXT("settings.section.text"));
+const FTUiText kMenuSectionSoundUi(TEXT("settings.section.sound"));
+const FTUiText kMenuSectionPlayUi(TEXT("settings.section.play"));
+const FTUiText kMenuSectionCameraUi(TEXT("settings.section.camera"));
+const FTUiText kMenuSectionDisplayUi(TEXT("settings.section.display"));
+const FTUiText kMenuSectionAccessUi(TEXT("settings.section.access"));
+
+constexpr float kMenuOffInk = 0.4f;    // a greyed pause item
+constexpr float kMenuRestInk = 0.85f;  // a row, section or button not selected
+constexpr float kMenuDim = 0.35f;      // the whole paused world, in the backing colour
+constexpr float kMenuShade = 0.6f;     // the shade under the words at least: even under all of them, then fading out
+constexpr float kMenuShadeMax = 0.94f; // the most the shade rises to for a bright scene
+constexpr float kMenuShadeFall = 480.f; // px (at 1080) the shade takes to fade out right of the words
+constexpr float kMenuContrast = 4.6f;  // what every text line is held to over the brightest tenth under it (4.5:1 and a margin)
+constexpr int32 kMenuSweepSteps = 12;  // shots: the turn that finds the brightest view (30 degrees a step)
+constexpr float kMenuLineW = 3.f;      // the selection's value line
+constexpr float kMenuLineDrop = 12.f;  // under the word's baseline
+constexpr float kMenuTitleTop = 150.f; // the title's top, down from the top
+constexpr float kMenuRowStep = 1.85f;  // a row's step, in its capitals' ascent
+constexpr float kMenuRowStepMin = 1.2f; // the tightest a settings row's step goes (large text); past it the section shows a window
+constexpr int32 kMenuMaxShown = static_cast<int32>(ftcore::kSettingsRowCount);
+constexpr int32 kMenuMaxLines = 2 * kMenuMaxShown + 16; // every text line a screen draws (the contrast read)
+
+// One text line's box (widget px), its ink alpha and a name for the shots' log.
+struct FMenuLine
+{
+	FBox2f Rc = FBox2f(ForceInit);
+	float InkA = 1.f;
+	FString Name;
+};
+
+ftcore::UiColor MenuOver(const ftcore::UiColor& Under, const ftcore::UiColor& C, float A)
+{
+	return ftcore::UiColor{FMath::Lerp(Under.r, C.r, A), FMath::Lerp(Under.g, C.g, A), FMath::Lerp(Under.b, C.b, A), 1.f};
+}
+
+class SFTMenuScreens : public SLeafWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SFTMenuScreens) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments&)
+	{
+		SetVisibility(EVisibility::HitTestInvisible);
+		if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			std::atomic<bool>* Flush = &TextRuns.bFlush;
+			FontRelease = FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().AddLambda(
+				[Flush](const FSlateFontCache&) { Flush->store(true); });
+		}
+#if !UE_BUILD_SHIPPING
+		const TCHAR* Cmd = FCommandLine::Get();
+		bShot = FParse::Value(Cmd, TEXT("UiMenuShot="), ShotPrefix);
+		FString Of;
+		FParse::Value(Cmd, TEXT("UiMenuShotOf="), Of);
+		bShotPause = Of.Equals(TEXT("pause"), ESearchCase::IgnoreCase);
+		bShotSweep = FParse::Param(Cmd, TEXT("UiMenuShotSweep"));
+		FParse::Value(Cmd, TEXT("UiMenuShotDelay="), ShotDelay);
+		FParse::Value(Cmd, TEXT("UiMenuShotSection="), ShotSection);
+		ShotSection = FMath::Clamp(ShotSection, 0, static_cast<int32>(ftcore::kSettingsGroupCount) - 1);
+		int32 Forced = 0;
+		if (FParse::Value(Cmd, TEXT("UiTextScale="), Forced))
+		{
+			ForcedTextScale = FMath::Clamp(Forced, ftcore::Settings::kMinTextScale, ftcore::Settings::kMaxTextScale) / 100.f;
+		}
+#endif
+	}
+
+	virtual ~SFTMenuScreens() override
+	{
+		if (FontRelease.IsValid() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+		{
+			FSlateApplication::Get().GetRenderer()->GetFontServices()->OnReleaseResources().Remove(FontRelease);
+		}
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(1920.0, 1080.0); }
+
+	virtual void Tick(const FGeometry& Geometry, const double, const float) override
+	{
+		UGameViewportClient* VC = GEngine ? GEngine->GameViewport : nullptr;
+		UWorld* World = VC ? VC->GetWorld() : nullptr;
+		UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+		UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+		UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+		APlayerController* PC = GI ? GI->GetFirstLocalPlayerController() : nullptr;
+		if (!bReadBound && VC)
+		{
+			VC->OnEndDraw().AddSP(this, &SFTMenuScreens::ReadAtEndDraw);
+			bReadBound = true;
+		}
+		const FVector2f Size = Geometry.GetLocalSize();
+		LastSize = Size;
+		TickShot(World, Pause, Set, PC);
+		bSettings = Set && Set->IsOpen();
+		bPause = !bSettings && Pause && Pause->IsOpen();
+		if (!bSettings && !bPause)
+		{
+			ReadKey = 0;
+			return;
+		}
+		if (Size.X <= 0.f || Size.Y <= 0.f)
+		{
+			return;
+		}
+		float T = Set ? Set->Get().uiTextScale() : 1.f;
+#if !UE_BUILD_SHIPPING
+		T = ForcedTextScale > 0.f ? ForcedTextScale : T;
+#endif
+		const ftcore::InputDevice Device = FTInputBindings::NoteDevice(PC); // the hint names this device's buttons
+		if (Size.Y != BuiltHeight || T != BuiltScale || Device != BuiltDevice)
+		{
+			BuiltHeight = Size.Y;
+			BuiltScale = T;
+			BuiltDevice = Device;
+			ShownSize = Size; // before the fonts: their log line reads it
+			BuildFonts(Size.Y, T, Set);
+		}
+		S = FMath::Max(0.25f, Size.Y / 1080.f);
+		ShownSize = Size;
+		FVector2D VP(Size.X, Size.Y);
+		if (VC)
+		{
+			VC->GetViewportSize(VP);
+		}
+		ToVpX = static_cast<float>(VP.X) / Size.X;
+		ToVpY = static_cast<float>(VP.Y) / Size.Y;
+		if (bSettings)
+		{
+			LayoutSettings(*Set);
+		}
+		else
+		{
+			LayoutPause(*Pause);
+		}
+		// A screen that opened or changed what it shows (screen, section, ask, palette, rows' window, size, text size) reads the
+		// scene under it again;
+		// on open the shade starts from its least.
+		uint32 Key = (bSettings ? 2u : 0u) | (bConfirm && !bSettings ? 4u : 0u) | (static_cast<uint32>(ShownGroup) << 3) |
+			(static_cast<uint32>(ShownPalette()) << 6) | (static_cast<uint32>(bSettings ? RowStart : 0) << 9);
+		Key = HashCombineFast(Key, GetTypeHash(FMath::RoundToInt(BuiltScale * 100.f)));
+		Key = HashCombineFast(Key, GetTypeHash(FMath::RoundToInt(Size.Y))) | 1u; // 0 is "no screen open"
+		if (Key != ReadKey)
+		{
+			if (ReadKey == 0)
+			{
+				ShadePeak = kMenuShade;
+			}
+			ReadKey = Key;
+			bReadWanted = true;
+		}
+		float MX = 0.f;
+		float MY = 0.f;
+		if (PC && PC->GetMousePosition(MX, MY))
+		{
+			if (bSettings)
+			{
+				Set->UpdateHover(FVector2D(MX, MY));
+			}
+			else
+			{
+				Pause->UpdateHover(FVector2D(MX, MY));
+			}
+		}
+	}
+
+	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
+		const FWidgetStyle&, bool) const override
+	{
+		if ((!bSettings && !bPause) || BuiltHeight <= 0.f)
+		{
+			return Layer;
+		}
+		FTextRuns* Runs = UiTextCacheOn() ? &TextRuns : nullptr;
+		if (Runs)
+		{
+			Runs->BeginFrame();
+		}
+		const FVector2f Size = Geometry.GetLocalSize();
+		const FPainter P{Geometry, Out, Layer, S, false, Runs};
+		Mesh.Begin(Geometry, S);
+		Mesh.Rect(0.f, 0.f, Size.X, Size.Y, Tok(UiToken::Backing, kMenuDim), false);
+		Mesh.Rect(0.f, 0.f, TextRight, Size.Y, Tok(UiToken::Backing, ShadePeak), false);
+		Mesh.Band(TextRight, 0.f, ShadeRight, Size.Y, false, false, 1.f, ShadePeak, Tok(UiToken::Backing, 1.f));
+		if (bSettings)
+		{
+			PaintSettings(P);
+		}
+		else
+		{
+			PaintPause(P);
+		}
+		Mesh.Flush(Out, Layer + 1);
+		return Layer + 5;
+	}
+
+private:
+	static FSlateFontInfo Tracked(UiTextRole Role, float H, float T)
+	{
+		return FontFor(Role, H, T);
+	}
+
+	static FString CasedFor(UiTextRole Role, const FString& In)
+	{
+		return Table().Style.text[static_cast<size_t>(Role)].upper ? In.ToUpper() : In;
+	}
+
+	void BuildFonts(float H, float T, const UFTSettingsSubsystem* Set)
+	{
+		const TSharedRef<FSlateFontMeasure> FM = FontMeasure();
+		const auto Asc = [&FM](const FSlateFontInfo& F) { return FM->GetMaxCharacterHeight(F) + FM->GetBaseline(F); };
+		TitleFont = Tracked(UiTextRole::Title, H, T);
+		TitleAsc = Asc(TitleFont);
+		HeadFont = Tracked(UiTextRole::Heading, H, T);
+		HeadAsc = Asc(HeadFont);
+		HeadEm = HeadFont.Size / 0.75f;
+		RowFont = Tracked(UiTextRole::Label, H, T);
+		RowAsc = Asc(RowFont);
+		RowEm = RowFont.Size / 0.75f;
+		NoteFont = Tracked(UiTextRole::Label, H, T);
+		NoteFont.Size *= 0.85f;
+		NoteAsc = Asc(NoteFont);
+
+		PauseTitle = CasedFor(UiTextRole::Title, kMenuPauseTitleUi.Get());
+		PauseTitleW = TextWidth(PauseTitle, TitleFont);
+		const FTUiText* const Items[UFTPauseSubsystem::RowCount] = {&kMenuResumeUi, &kMenuSettingsUi, &kMenuQuitTitleUi, &kMenuQuitGameUi};
+		MaxItemW = 0.f;
+		for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+		{
+			ItemWord[I] = CasedFor(UiTextRole::Label, Items[I]->Get());
+			ItemW[I] = TextWidth(ItemWord[I], RowFont);
+			MaxItemW = FMath::Max(MaxItemW, ItemW[I]);
+		}
+		AskTitle = kMenuAskTitleUi.Get();
+		AskGame = kMenuAskGameUi.Get();
+		AskNote = kMenuAskNoteUi.Get();
+		YesWord = CasedFor(UiTextRole::Label, kMenuYesUi.Get());
+		NoWord = CasedFor(UiTextRole::Label, kMenuNoUi.Get());
+		YesW = TextWidth(YesWord, RowFont);
+		NoW = TextWidth(NoWord, RowFont);
+		AskW = FMath::Max3(TextWidth(AskTitle, HeadFont), TextWidth(AskGame, HeadFont), TextWidth(AskNote, NoteFont));
+		PauseHint = kMenuHintUi.Get();
+		AskHint = kMenuAskHintUi.Get();
+
+		SettingsTitle = CasedFor(UiTextRole::Title, kMenuSettingsUi.Get());
+		SettingsHint = (BuiltDevice == ftcore::InputDevice::Pad ? kMenuSettingsHintPadUi : kMenuSettingsHintUi).Get();
+		const float Usable = FMath::Max(0.f, ShownSize.X - 2.f * Hud::Margin * FMath::Max(0.25f, H / 1080.f));
+		FitHint(PauseHint, PauseHint2, Usable, NoteFont);
+		FitHint(AskHint, AskHint2, Usable, NoteFont);
+		FitHint(SettingsHint, SettingsHint2, Usable, NoteFont);
+		PauseHintW = FMath::Max(TextWidth(PauseHint, NoteFont), TextWidth(PauseHint2, NoteFont));
+		AskHintW = FMath::Max(TextWidth(AskHint, NoteFont), TextWidth(AskHint2, NoteFont));
+		SettingsHintW = FMath::Max(TextWidth(SettingsHint, NoteFont), TextWidth(SettingsHint2, NoteFont));
+		SettingsTitleW = TextWidth(SettingsTitle, TitleFont);
+		float X = 0.f;
+		const FTUiText* const Sections[] = {&kMenuSectionTextUi, &kMenuSectionSoundUi, &kMenuSectionPlayUi, &kMenuSectionCameraUi,
+			&kMenuSectionDisplayUi, &kMenuSectionAccessUi};
+		static_assert(UE_ARRAY_COUNT(Sections) == ftcore::kSettingsGroupCount, "a name for each section, in SettingsGroup order");
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			SectionWord[G] = CasedFor(UiTextRole::Heading, Sections[G]->Get());
+			SectionW[G] = TextWidth(SectionWord[G], HeadFont);
+			SectionX[G] = X; // from the margin
+			X += SectionW[G] + HeadEm; // one em between names
+		}
+		SectionLineW = X - HeadEm;
+		MaxLabelW = 0.f;
+		for (int32 R = 0; R < UFTSettingsSubsystem::RowCount; ++R)
+		{
+			LabelW[R] = Set ? TextWidth(Set->GetRowLabel(R), RowFont) : 0.f;
+			MaxLabelW = FMath::Max(MaxLabelW, LabelW[R]);
+		}
+#if !UE_BUILD_SHIPPING
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: menu fonts at text %.0f%%: section line %.0f of %.0f px usable (height %.0f)."), T * 100.f,
+			SectionLineW, FMath::Max(0.f, ShownSize.X - 2.f * Hud::Margin * FMath::Max(0.25f, H / 1080.f)), H);
+#endif
+	}
+
+	// A hint too wide for the line (200% text on a tall screen) breaks at the gap (four spaces) nearest
+	// its middle; it is never shrunk. Second is empty when the hint fits.
+	static void FitHint(FString& Line, FString& Second, float Usable, const FSlateFontInfo& Font)
+	{
+		Second.Reset();
+		const float Full = TextWidth(Line, Font);
+		if (Full <= Usable)
+		{
+			return;
+		}
+		int32 Best = INDEX_NONE;
+		float BestOff = TNumericLimits<float>::Max();
+		for (int32 At = Line.Find(TEXT("    ")); At != INDEX_NONE;
+			 At = Line.Find(TEXT("    "), ESearchCase::CaseSensitive, ESearchDir::FromStart, At + 4))
+		{
+			const float Off = FMath::Abs(TextWidth(Line.Left(At), Font) - 0.5f * Full);
+			if (Off < BestOff)
+			{
+				BestOff = Off;
+				Best = At;
+			}
+		}
+		if (Best != INDEX_NONE)
+		{
+			Second = Line.Mid(Best).TrimStart();
+			Line.LeftInline(Best);
+		}
+	}
+
+	// The hint's first line sits one step above the bottom one when it broke.
+	float HintFirst(const FString& Second) const { return Second.IsEmpty() ? HintTop : HintTop - 1.5f * NoteAsc; }
+
+	void PaintHint(const FPainter& P, const FString& First, const FString& Second) const
+	{
+		P.Text(X0, HintFirst(Second), First, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		if (!Second.IsEmpty())
+		{
+			P.Text(X0, HintTop, Second, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		}
+	}
+
+	FBox2D ToVp(float L, float T, float R, float B) const
+	{
+		return FBox2D(FVector2D(L * ToVpX, T * ToVpY), FVector2D(R * ToVpX, B * ToVpY));
+	}
+
+	// A word's hit box: the capitals with a little air round them.
+	FBox2D WordBox(float X, float Top, float W, float Asc) const
+	{
+		return ToVp(X - 16.f * S, Top - 0.35f * Asc, X + W + 16.f * S, Top + 1.45f * Asc);
+	}
+
+	void LayoutPause(UFTPauseSubsystem& Pause)
+	{
+		const ftcore::PauseMenu& Menu = Pause.GetMenu();
+		X0 = Hud::Margin * S;
+		TitleTop = kMenuTitleTop * S;
+		const float First = TitleTop + TitleAsc + 72.f * S;
+		const float Step = kMenuRowStep * RowAsc;
+		bConfirm = Menu.confirming();
+		bAskGame = Menu.selected() == ftcore::PauseItem::QuitGame;
+		bYes = Menu.confirmYes();
+		Selected = static_cast<int32>(Menu.selected());
+		for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+		{
+			RowTop[I] = First + Step * I;
+			bItemOn[I] = Menu.enabled(static_cast<ftcore::PauseItem>(I));
+			Pause.SetRowRect(I, bConfirm ? FBox2D(ForceInit) : WordBox(X0, RowTop[I], ItemW[I], RowAsc));
+		}
+		AskTop = First;
+		NoteTop = AskTop + HeadAsc + 24.f * S;
+		ChoiceTop = NoteTop + NoteAsc + 56.f * S;
+		NoX = X0 + YesW + 2.f * RowEm;
+		Pause.SetChoiceRect(0, bConfirm ? WordBox(X0, ChoiceTop, YesW, RowAsc) : FBox2D(ForceInit));
+		Pause.SetChoiceRect(1, bConfirm ? WordBox(NoX, ChoiceTop, NoW, RowAsc) : FBox2D(ForceInit));
+		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
+		TextRight = X0 + FMath::Max3(bConfirm ? FMath::Max(AskW, YesW + 2.f * RowEm + NoW) : MaxItemW, PauseTitleW, bConfirm ? AskHintW : PauseHintW);
+		ShadeRight = TextRight + kMenuShadeFall * S;
+	}
+
+	void LayoutSettings(UFTSettingsSubsystem& Set)
+	{
+		X0 = Hud::Margin * S;
+		TitleTop = kMenuTitleTop * S * 0.6f;
+		SectionTop = TitleTop + TitleAsc + 40.f * S;
+		Selected = Set.GetSelectedRow();
+		const ftcore::SettingsRow SelRow = static_cast<ftcore::SettingsRow>(Selected);
+		if (SelRow != ftcore::SettingsRow::Back)
+		{
+			ShownGroup = static_cast<int32>(ftcore::settingsRowGroup(SelRow)); // Back keeps the section it came from
+		}
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			Set.SetSectionRect(G, WordBox(X0 + SectionX[G], SectionTop, SectionW[G], HeadAsc));
+		}
+		ValueX = X0 + MaxLabelW + 3.f * RowEm;
+		ValueColW = 9.f * RowEm;
+		HintTop = ShownSize.Y - Hud::Margin * S - NoteAsc;
+		// The section's rows (Back aside), in screen order.
+		int32 InSection[kMenuMaxShown];
+		int32 NumIn = 0;
+		int32 SelAt = INDEX_NONE;
+		for (uint32 I = 0; I < ftcore::kSettingsRowCount; ++I)
+		{
+			const ftcore::SettingsRow Row = ftcore::settingsScreenRow(I);
+			const int32 R = static_cast<int32>(Row);
+			Set.SetRowRect(R, FBox2D(ForceInit));
+			if (Row != ftcore::SettingsRow::Back && static_cast<int32>(ftcore::settingsRowGroup(Row)) == ShownGroup && NumIn < kMenuMaxShown)
+			{
+				SelAt = R == Selected ? NumIn : SelAt;
+				InSection[NumIn++] = R;
+			}
+		}
+		// Below the section line: a gap, the rows, Back 0.6 of a step under them and 1.6 steps above the hint. At a large text
+		// size that does not fit at kMenuRowStep: the gap tightens, then the step (to kMenuRowStepMin); past that the section
+		// shows a window of its rows that follows the selection, with a chevron on the side rows are hidden.
+		const float Room = HintFirst(SettingsHint2) - SectionTop - HeadAsc;
+		const auto Fits = [Room](float G, float St, int32 N) { return G + St * (static_cast<float>(N) + 2.2f) <= Room; };
+		float Gap = 72.f * S;
+		float Step = kMenuRowStep * RowAsc;
+		if (!Fits(Gap, Step, NumIn))
+		{
+			Gap = 40.f * S;
+			Step = FMath::Clamp((Room - Gap) / (static_cast<float>(NumIn) + 2.2f), kMenuRowStepMin * RowAsc, Step);
+		}
+		int32 Fit = NumIn;
+		while (Fit > 1 && !Fits(Gap, Step, Fit))
+		{
+			--Fit;
+		}
+		RowStart = Fit < NumIn ? FMath::Clamp((SelAt == INDEX_NONE ? NumIn : SelAt) - Fit / 2, 0, NumIn - Fit) : 0;
+		bRowsAbove = RowStart > 0;
+		bRowsBelow = RowStart + Fit < NumIn;
+		const float First = SectionTop + HeadAsc + Gap;
+		const float Half = FMath::Min(0.9f * RowAsc, 0.5f * Step); // a row's hit box, never into its neighbour's
+		NumShown = 0;
+		for (int32 N = RowStart; N < RowStart + Fit && N < NumIn; ++N)
+		{
+			const int32 R = InSection[N];
+			ShownRow[NumShown] = R;
+			RowTop[NumShown] = First + Step * NumShown;
+			const float Mid = RowTop[NumShown] + 0.55f * RowAsc;
+			Set.SetRowRect(R, ToVp(X0 - 16.f * S, Mid - Half, ValueX + ValueColW + 2.f * RowEm, Mid + Half));
+			++NumShown;
+		}
+		BackTop = FMath::Max(First + Step * NumShown + 0.6f * Step, 0.f);
+		BackTop = FMath::Min(BackTop, HintFirst(SettingsHint2) - 1.6f * Step);
+		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
+		Set.SetRowRect(BackRow, WordBox(X0, BackTop, LabelW[BackRow], RowAsc));
+		// Left of the value's middle steps down, right of it up (the subsystem's rule for a click).
+		Set.SetValueColumn((ValueX - 1.5f * RowEm) * ToVpX, (ValueX + 0.5f * ValueColW) * ToVpX);
+		TextRight = X0 + FMath::Max3(FMath::Max(SectionLineW, SettingsTitleW), ValueX - X0 + ValueColW + (bRowsAbove || bRowsBelow ? 3.f * RowEm : 0.f),
+			SettingsHintW);
+		ShadeRight = TextRight + kMenuShadeFall * S;
+		RowsSet = &Set;
+	}
+
+	// The selection: the r19 value line under the word, in the world's fill, its square ink end cap at the word's end.
+	void SelectMark(float X, float W, float Top, float Asc) const
+	{
+		const float Y = Mesh.SnapLineY(Top + Asc + kMenuLineDrop * S, kMenuLineW * S);
+		ftcore::uiStrokeLine(Line, X, Y, X + W, Y, ValueStyle(kMenuLineW, 307, S), 0.f, 1.f);
+		Mesh.ValueStroke(Line, FillTok());
+		const float Side = Mesh.WholeDev((kMenuLineW + Table().Style.lines.capGrow) * S);
+		const float L = Mesh.SnapX(X + W - 0.5f * Side);
+		const float T = Mesh.SnapLineY(Y, Side) - 0.5f * Side;
+		const FVector2f Pts[4] = {FVector2f(L, T), FVector2f(L + Side, T), FVector2f(L + Side, T + Side), FVector2f(L, T + Side)};
+		Mesh.Fill(Pts, 4, Tok(UiToken::Ink));
+	}
+
+	// A value's chevron, pointing left (Dir -1) or right, centred on the capitals' middle.
+	void Chevron(float CX, float MidY, float Dir) const
+	{
+		const float H = 0.32f * RowAsc;
+		const FVector2f Pts[3] = {FVector2f(CX - 0.5f * Dir * H, MidY - H), FVector2f(CX + 0.5f * Dir * H, MidY), FVector2f(CX - 0.5f * Dir * H, MidY + H)};
+		PolyStroke(Line, Pts, 3, FMath::Max(1.f, 1.25f * S));
+		Mesh.Stroke(Line, Tok(UiToken::Ink));
+	}
+
+	// The settings rows' window: a chevron pointing up (Dir -1) or down at the side rows are hidden.
+	void MoreMark(float CX, float MidY, float Dir) const
+	{
+		const float H = 0.32f * RowAsc;
+		const FVector2f Pts[3] = {FVector2f(CX - H, MidY - 0.5f * Dir * H), FVector2f(CX, MidY + 0.5f * Dir * H), FVector2f(CX + H, MidY - 0.5f * Dir * H)};
+		PolyStroke(Line, Pts, 3, FMath::Max(1.f, 1.25f * S));
+		Mesh.Stroke(Line, Tok(UiToken::Ink, kMenuRestInk));
+	}
+
+	void PaintPause(const FPainter& P) const
+	{
+		P.Text(X0, TitleTop, PauseTitle, TitleFont, Tok(UiToken::Ink));
+		if (!bConfirm)
+		{
+			for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+			{
+				const bool bSel = I == Selected && bItemOn[I];
+				P.Text(X0, RowTop[I], ItemWord[I], RowFont, Tok(UiToken::Ink, !bItemOn[I] ? kMenuOffInk : bSel ? 1.f : kMenuRestInk));
+				if (bSel)
+				{
+					SelectMark(X0, ItemW[I], RowTop[I], RowAsc);
+				}
+			}
+			PaintHint(P, PauseHint, PauseHint2);
+			return;
+		}
+		P.Text(X0, AskTop, bAskGame ? AskGame : AskTitle, HeadFont, Tok(UiToken::Ink));
+		P.Text(X0, NoteTop, AskNote, NoteFont, Tok(UiToken::Ink, Hud::NoteInk));
+		P.Text(X0, ChoiceTop, YesWord, RowFont, Tok(UiToken::Ink, bYes ? 1.f : kMenuRestInk));
+		P.Text(NoX, ChoiceTop, NoWord, RowFont, Tok(UiToken::Ink, bYes ? kMenuRestInk : 1.f));
+		if (bYes)
+		{
+			SelectMark(X0, YesW, ChoiceTop, RowAsc);
+		}
+		else
+		{
+			SelectMark(NoX, NoW, ChoiceTop, RowAsc);
+		}
+		PaintHint(P, AskHint, AskHint2);
+	}
+
+	void PaintSettings(const FPainter& P) const
+	{
+		const UFTSettingsSubsystem* Set = RowsSet;
+		if (!Set)
+		{
+			return;
+		}
+		P.Text(X0, TitleTop, SettingsTitle, TitleFont, Tok(UiToken::Ink));
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			const bool bSel = G == ShownGroup;
+			P.Text(X0 + SectionX[G], SectionTop, SectionWord[G], HeadFont, Tok(UiToken::Ink, bSel ? 1.f : kMenuRestInk));
+			if (bSel)
+			{
+				SelectMark(X0 + SectionX[G], SectionW[G], SectionTop, HeadAsc);
+			}
+		}
+		for (int32 N = 0; N < NumShown; ++N)
+		{
+			const int32 R = ShownRow[N];
+			const bool bSel = R == Selected;
+			const float Ink = bSel ? 1.f : kMenuRestInk;
+			P.Text(X0, RowTop[N], Set->GetRowLabel(R), RowFont, Tok(UiToken::Ink, Ink));
+			P.Text(ValueX, RowTop[N], Set->GetRowValue(R), RowFont, Tok(UiToken::Ink, Ink));
+			if (bSel)
+			{
+				SelectMark(X0, LabelW[R], RowTop[N], RowAsc);
+				const float Mid = CapMid(RowTop[N] + RowAsc, RowAsc);
+				Chevron(ValueX - 1.f * RowEm, Mid, -1.f);
+				Chevron(ValueX + ValueColW + 1.f * RowEm, Mid, 1.f);
+			}
+		}
+		if (NumShown > 0 && bRowsAbove)
+		{
+			MoreMark(ValueX + ValueColW + 2.5f * RowEm, CapMid(RowTop[0] + RowAsc, RowAsc), -1.f);
+		}
+		if (NumShown > 0 && bRowsBelow)
+		{
+			MoreMark(ValueX + ValueColW + 2.5f * RowEm, CapMid(RowTop[NumShown - 1] + RowAsc, RowAsc), 1.f);
+		}
+		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
+		const bool bBack = Selected == BackRow;
+		P.Text(X0, BackTop, Set->GetRowLabel(BackRow), RowFont, Tok(UiToken::Ink, bBack ? 1.f : kMenuRestInk));
+		if (bBack)
+		{
+			SelectMark(X0, LabelW[BackRow], BackTop, RowAsc);
+		}
+		PaintHint(P, SettingsHint, SettingsHint2);
+	}
+
+	void AddLine(float X, float Top, float W, float Asc, float InkA, const FString& Name)
+	{
+		if (NumLines >= kMenuMaxLines || W <= 0.f || InkA <= 0.f)
+		{
+			return;
+		}
+		FMenuLine& L = Lines[NumLines++];
+		L.Rc = FBox2f(FVector2f(X, Top - 0.35f * Asc), FVector2f(X + W, Top + 1.45f * Asc));
+		L.InkA = InkA;
+		L.Name = Name;
+	}
+
+	// Every text line the shown screen draws, a choosable one at its resting ink (the selection moves without a new read; the
+	// selected one only reads brighter). A greyed pause item is left out: it says it is off.
+	void CollectLines()
+	{
+		NumLines = 0;
+		const auto HintLines = [this](const FString& First, const FString& Second)
+		{
+			AddLine(X0, HintFirst(Second), TextWidth(First, NoteFont), NoteAsc, Hud::NoteInk, TEXT("hint"));
+			if (!Second.IsEmpty())
+			{
+				AddLine(X0, HintTop, TextWidth(Second, NoteFont), NoteAsc, Hud::NoteInk, TEXT("hint, second line"));
+			}
+		};
+		if (bPause)
+		{
+			AddLine(X0, TitleTop, PauseTitleW, TitleAsc, 1.f, PauseTitle);
+			if (!bConfirm)
+			{
+				for (int32 I = 0; I < UFTPauseSubsystem::RowCount; ++I)
+				{
+					if (bItemOn[I])
+					{
+						AddLine(X0, RowTop[I], ItemW[I], RowAsc, kMenuRestInk, ItemWord[I]);
+					}
+				}
+				HintLines(PauseHint, PauseHint2);
+				return;
+			}
+			const FString& Ask = bAskGame ? AskGame : AskTitle;
+			AddLine(X0, AskTop, TextWidth(Ask, HeadFont), HeadAsc, 1.f, Ask);
+			AddLine(X0, NoteTop, TextWidth(AskNote, NoteFont), NoteAsc, Hud::NoteInk, AskNote);
+			AddLine(X0, ChoiceTop, YesW, RowAsc, kMenuRestInk, YesWord);
+			AddLine(NoX, ChoiceTop, NoW, RowAsc, kMenuRestInk, NoWord);
+			HintLines(AskHint, AskHint2);
+			return;
+		}
+		const UFTSettingsSubsystem* Rows = RowsSet;
+		if (!Rows)
+		{
+			return;
+		}
+		AddLine(X0, TitleTop, SettingsTitleW, TitleAsc, 1.f, SettingsTitle);
+		for (int32 G = 0; G < static_cast<int32>(ftcore::kSettingsGroupCount); ++G)
+		{
+			AddLine(X0 + SectionX[G], SectionTop, SectionW[G], HeadAsc, kMenuRestInk, SectionWord[G]);
+		}
+		for (int32 N = 0; N < NumShown; ++N)
+		{
+			const int32 R = ShownRow[N];
+			const float InkA = kMenuRestInk;
+			AddLine(X0, RowTop[N], LabelW[R], RowAsc, InkA, Rows->GetRowLabel(R));
+			const FString& Value = Rows->GetRowValue(R);
+			AddLine(ValueX, RowTop[N], TextWidth(Value, RowFont), RowAsc, InkA, Value);
+		}
+		const int32 BackRow = static_cast<int32>(ftcore::SettingsRow::Back);
+		AddLine(X0, BackTop, LabelW[BackRow], RowAsc, kMenuRestInk, Rows->GetRowLabel(BackRow));
+		HintLines(SettingsHint, SettingsHint2);
+	}
+
+	// A line's contrast: its ink over the picture under the dim and the shade at Peak.
+	static float MenuRatio(const ftcore::UiColor& Fg, const ftcore::UiColor& Pic, const ftcore::UiColor& Back, float Peak)
+	{
+		const ftcore::UiColor Under = MenuOver(MenuOver(Pic, Back, kMenuDim), Back, Peak);
+		return ftcore::uiContrast(Fg, ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, Under);
+	}
+
+	// At the end of the game viewport's draw (the Slate layers are not in the picture yet, so this is the bare scene), when a
+	// screen opened or changed: one read of the picture under all its words, then for each line the least shade that holds it
+	// at kMenuContrast over the brightest tenth under it; the shade takes the most any line needs (only rising while open).
+	void ReadAtEndDraw()
+	{
+		if (!bReadWanted || FScreenshotRequest::IsScreenshotRequested())
+		{
+			return;
+		}
+		FViewport* VP = GEngine && GEngine->GameViewport ? GEngine->GameViewport->Viewport : nullptr;
+		const FIntPoint VS = VP ? VP->GetSizeXY() : FIntPoint::ZeroValue;
+		if (VS.X <= 0 || VS.Y <= 0 || LastSize.X <= 0.f || LastSize.Y <= 0.f)
+		{
+			return;
+		}
+#if !UE_BUILD_SHIPPING
+		if (bSweepPending)
+		{
+			bReadWanted = false;
+			bSweepPending = false;
+			const float S0 = FMath::Max(0.25f, LastSize.Y / 1080.f);
+			ftcore::UiColor Pic;
+			if (PictureBrightest(FBox2f(FVector2f(Hud::Margin * S0, 0.08f * LastSize.Y), FVector2f(0.6f * LastSize.X, LastSize.Y - Hud::Margin * S0)),
+					LastSize, Pic))
+			{
+				const float Luma = 0.2126f * Pic.r + 0.7152f * Pic.g + 0.0722f * Pic.b;
+				if (Luma > SweepBest)
+				{
+					SweepBest = Luma;
+					SweepBestYaw = SweepBase + 30.f * static_cast<float>(SweepStep);
+				}
+			}
+			SweepStepAt = -1.0;
+			++SweepStep;
+			return;
+		}
+#endif
+		if ((!bSettings && !bPause) || BuiltHeight <= 0.f)
+		{
+			return;
+		}
+		bReadWanted = false;
+		CollectLines();
+		if (NumLines == 0)
+		{
+			return;
+		}
+		const float KX = VS.X / LastSize.X;
+		const float KY = VS.Y / LastSize.Y;
+		const auto ToPx = [KX, KY, VS](const FBox2f& Rc)
+		{
+			return FIntRect(FMath::Clamp(FMath::FloorToInt(Rc.Min.X * KX), 0, VS.X), FMath::Clamp(FMath::FloorToInt(Rc.Min.Y * KY), 0, VS.Y),
+				FMath::Clamp(FMath::CeilToInt(Rc.Max.X * KX), 0, VS.X), FMath::Clamp(FMath::CeilToInt(Rc.Max.Y * KY), 0, VS.Y));
+		};
+		FBox2f All(ForceInit);
+		for (int32 I = 0; I < NumLines; ++I)
+		{
+			All += Lines[I].Rc;
+		}
+		const FIntRect R = ToPx(All);
+		ReadPx.Reset();
+		if (R.Width() <= 0 || R.Height() <= 0 || !VP->ReadPixels(ReadPx, FReadSurfaceDataFlags(), R) || ReadPx.Num() != R.Width() * R.Height())
+		{
+			return;
+		}
+		const ftcore::UiStyle& St = Table().Style;
+		const ftcore::UiColor Ink = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Ink);
+		const ftcore::UiColor Back = ftcore::uiColor(St, ShownWorld(), ShownPalette(), UiToken::Backing);
+		ftcore::UiColor Pics[kMenuMaxLines];
+		bool bRead[kMenuMaxLines] = {};
+		float Need = kMenuShade;
+		for (int32 I = 0; I < NumLines; ++I)
+		{
+			FIntRect Sub = ToPx(Lines[I].Rc);
+			Sub.Clip(R);
+			if (Sub.Width() <= 0 || Sub.Height() <= 0)
+			{
+				continue;
+			}
+			ftcore::UiLumaHistogram Hist;
+			for (int32 Y = Sub.Min.Y; Y < Sub.Max.Y; ++Y)
+			{
+				const FColor* Row = ReadPx.GetData() + static_cast<int64>(Y - R.Min.Y) * R.Width();
+				for (int32 X = Sub.Min.X; X < Sub.Max.X; ++X)
+				{
+					const FColor& Q = Row[X - R.Min.X];
+					ftcore::uiLumaAdd(Hist, ftcore::UiColor{Q.R / 255.f, Q.G / 255.f, Q.B / 255.f, 1.f});
+				}
+			}
+			Pics[I] = ftcore::uiLumaBrightest(Hist, 0.1f);
+			bRead[I] = true;
+			const ftcore::UiColor Fg{Ink.r, Ink.g, Ink.b, Ink.a * Lines[I].InkA};
+			float Peak = kMenuShade;
+			while (Peak < kMenuShadeMax && MenuRatio(Fg, Pics[I], Back, Peak) < kMenuContrast)
+			{
+				Peak += 0.02f;
+			}
+			Need = FMath::Max(Need, FMath::Min(Peak, kMenuShadeMax));
+		}
+		ShadePeak = FMath::Max(ShadePeak, Need);
+#if !UE_BUILD_SHIPPING
+		float Lowest = TNumericLimits<float>::Max();
+		int32 LowestAt = INDEX_NONE;
+		for (int32 I = 0; I < NumLines; ++I)
+		{
+			if (!bRead[I])
+			{
+				continue;
+			}
+			const ftcore::UiColor Fg{Ink.r, Ink.g, Ink.b, Ink.a * Lines[I].InkA};
+			const float Ratio = MenuRatio(Fg, Pics[I], Back, ShadePeak);
+			const FIntRect Px = ToPx(Lines[I].Rc);
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu contrast %.2f (bare %.2f, ink %.2f) px %d,%d..%d,%d: %s"), Ratio,
+				ftcore::uiContrast(Fg, ftcore::UiColor{0.f, 0.f, 0.f, 0.f}, Pics[I]), Lines[I].InkA, Px.Min.X, Px.Min.Y, Px.Max.X, Px.Max.Y,
+				*Lines[I].Name);
+			if (Ratio < Lowest)
+			{
+				Lowest = Ratio;
+				LowestAt = I;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("UI: menu contrast lowest %.2f (%s) over %d lines; shade %.2f, dim %.2f (%s)."), Lowest,
+			LowestAt != INDEX_NONE ? *Lines[LowestAt].Name : TEXT("none"), NumLines, ShadePeak, kMenuDim,
+			bSettings ? TEXT("settings") : TEXT("pause"));
+#endif
+	}
+
+	void TickShot(UWorld* World, UFTPauseSubsystem* Pause, UFTSettingsSubsystem* Set, APlayerController* PC)
+	{
+		(void)World;
+		(void)Pause;
+		(void)Set;
+		(void)PC;
+#if !UE_BUILD_SHIPPING
+		if (!bShot)
+		{
+			return;
+		}
+		const double Now = FPlatformTime::Seconds();
+		if (ShotStart < 0.0)
+		{
+			ShotStart = Now;
+		}
+		// The sweep (-UiMenuShotSweep): a step of the turn, a read of the bare scene half a second later, the next step; then
+		// back to the brightest view, and the menu opens over it.
+		if (bShotSweep && !bSweepDone && PC && Now - ShotStart >= ShotDelay)
+		{
+			if (SweepStep >= kMenuSweepSteps)
+			{
+				FRotator Rot = PC->GetControlRotation();
+				Rot.Yaw = SweepBestYaw;
+				PC->SetControlRotation(Rot);
+				bSweepDone = true;
+				SweepDoneAt = Now;
+				UE_LOG(LogForgottenThird, Display, TEXT("UI: menu sweep: brightest view at yaw %.0f (brightest tenth luma %.2f)."), SweepBestYaw, SweepBest);
+			}
+			else if (SweepStepAt < 0.0)
+			{
+				FRotator Rot = PC->GetControlRotation();
+				if (SweepStep == 0)
+				{
+					SweepBase = Rot.Yaw;
+					SweepBestYaw = Rot.Yaw;
+				}
+				Rot.Yaw = SweepBase + 30.f * static_cast<float>(SweepStep);
+				PC->SetControlRotation(Rot);
+				SweepStepAt = Now;
+			}
+			else if (!bSweepPending && Now - SweepStepAt > 0.5)
+			{
+				bSweepPending = true;
+				bReadWanted = true;
+			}
+		}
+		if (!bShotOpened && Now - ShotStart >= ShotDelay && (!bShotSweep || (bSweepDone && Now - SweepDoneAt >= 1.5)) && World && Pause && Set)
+		{
+			bShotOpened = true;
+			ShotOpenedAt = Now;
+			const bool bOpen = Pause->Open(World);
+			if (!bShotPause)
+			{
+				Set->Open(Cast<AFTPlayerController>(PC));
+				Set->SelectRow(UFTSettingsSubsystem::FirstRowOf(ShotSection));
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu shot opened %s (pause %s, section %d)."), bShotPause ? TEXT("pause") : TEXT("settings"),
+				bOpen ? TEXT("open") : TEXT("refused"), ShotSection);
+		}
+		if (bShotOpened && !bShotTaken && Now - ShotOpenedAt >= 1.5)
+		{
+			bShotTaken = true;
+			ShotTakenAt = Now;
+			const FString File = ShotPrefix + TEXT(".png");
+			FScreenshotRequest::RequestScreenshot(File, true, false);
+			UE_LOG(LogForgottenThird, Display, TEXT("UI: menu still %s (world %d, palette %d, text %.0f%%)."), *File, static_cast<int32>(ShownWorld()),
+				static_cast<int32>(ShownPalette()), BuiltScale * 100.f);
+		}
+		if (bShotTaken && !bExitAsked && Now - ShotTakenAt >= 2.0)
+		{
+			bExitAsked = true;
+			FPlatformMisc::RequestExit(false, TEXT("UiMenuShot"));
+		}
+#endif
+	}
+
+	bool bPause = false;
+	bool bSettings = false;
+	float S = 1.f;
+	FVector2f ShownSize = FVector2f(1920.f, 1080.f);
+	float ToVpX = 1.f;
+	float ToVpY = 1.f;
+	float BuiltHeight = 0.f;
+	float BuiltScale = 0.f;
+	ftcore::InputDevice BuiltDevice = ftcore::InputDevice::Keys;
+	FSlateFontInfo TitleFont, HeadFont, RowFont, NoteFont;
+	float TitleAsc = 0.f, HeadAsc = 0.f, RowAsc = 0.f, NoteAsc = 0.f, HeadEm = 0.f, RowEm = 0.f;
+
+	// pause
+	FString PauseTitle, AskTitle, AskGame, AskNote, YesWord, NoWord, PauseHint, AskHint, PauseHint2, AskHint2;
+	FString ItemWord[UFTPauseSubsystem::RowCount];
+	float ItemW[UFTPauseSubsystem::RowCount] = {};
+	bool bItemOn[UFTPauseSubsystem::RowCount] = {};
+	float MaxItemW = 0.f, YesW = 0.f, NoW = 0.f, AskW = 0.f, PauseTitleW = 0.f, PauseHintW = 0.f, AskHintW = 0.f;
+	bool bConfirm = false, bAskGame = false, bYes = false;
+	float AskTop = 0.f, NoteTop = 0.f, ChoiceTop = 0.f, NoX = 0.f;
+
+	// settings
+	FString SettingsTitle, SettingsHint, SettingsHint2;
+	FString SectionWord[ftcore::kSettingsGroupCount];
+	float SectionW[ftcore::kSettingsGroupCount] = {};
+	float SectionX[ftcore::kSettingsGroupCount] = {};
+	float SectionLineW = 0.f, SettingsTitleW = 0.f, SettingsHintW = 0.f;
+	float LabelW[UFTSettingsSubsystem::RowCount] = {};
+	float MaxLabelW = 0.f;
+	int32 ShownGroup = 0;
+	int32 ShownRow[kMenuMaxShown] = {};
+	int32 NumShown = 0;
+	float SectionTop = 0.f, ValueX = 0.f, ValueColW = 0.f, BackTop = 0.f;
+	int32 RowStart = 0; // the section's first shown row (a window at a large text size)
+	bool bRowsAbove = false, bRowsBelow = false;
+	const UFTSettingsSubsystem* RowsSet = nullptr; // this tick's (the game instance outlives the frame)
+
+	// both
+	int32 Selected = 0;
+	float X0 = 0.f, TitleTop = 0.f, HintTop = 0.f, ShadeRight = 0.f, TextRight = 0.f;
+	float RowTop[kMenuMaxShown] = {};
+
+	// the scrim's measure
+	FVector2f LastSize = FVector2f::ZeroVector;
+	float ShadePeak = kMenuShade;
+	uint32 ReadKey = 0;
+	bool bReadWanted = false;
+	bool bReadBound = false;
+	FMenuLine Lines[kMenuMaxLines];
+	int32 NumLines = 0;
+	TArray<FColor> ReadPx;
+
+#if !UE_BUILD_SHIPPING
+	bool bShot = false;
+	bool bShotPause = false;
+	FString ShotPrefix;
+	float ShotDelay = 8.f;
+	int32 ShotSection = 0;
+	float ForcedTextScale = 0.f;
+	double ShotStart = -1.0;
+	double ShotOpenedAt = 0.0;
+	double ShotTakenAt = 0.0;
+	bool bShotOpened = false;
+	bool bShotTaken = false;
+	bool bExitAsked = false;
+	bool bShotSweep = false;
+	bool bSweepDone = false;
+	bool bSweepPending = false;
+	int32 SweepStep = 0;
+	double SweepStepAt = -1.0;
+	double SweepDoneAt = 0.0;
+	float SweepBase = 0.f;
+	float SweepBest = -1.f;
+	float SweepBestYaw = 0.f;
+#endif
+
+	mutable FTextRuns TextRuns;
+	FDelegateHandle FontRelease;
+	mutable FLineMesh Mesh;
+	mutable ftcore::UiStroke Line;
+};
+
+TWeakPtr<SWidget> GMenuScreens;
+TWeakObjectPtr<UGameViewportClient> GMenuViewport;
 }
 
 namespace FT
@@ -5558,5 +8205,33 @@ TSharedRef<SWidget> MakeDialogueWidget(TFunction<const AFTStoryDirector*()> GetD
 TSharedRef<SWidget> MakeExplorePartyWidget(TFunction<const AFTExploreCharacter*()> GetLead)
 {
 	return SNew(SFTExploreParty, MoveTemp(GetLead));
+}
+
+TSharedRef<SWidget> MakeExploreHudWidget(TFunction<const AFTExploreDirector*()> GetDirector, TFunction<const AFTExploreCharacter*()> GetLead)
+{
+	return SNew(SFTExploreHud, MoveTemp(GetDirector), MoveTemp(GetLead));
+}
+
+void SetUiPalette(uint8 Palette)
+{
+	GUiPalette.store(Palette, std::memory_order_relaxed);
+}
+
+bool EnsureMenuScreens()
+{
+	if (!NewUiEnabled() || !GEngine || !GEngine->GameViewport)
+	{
+		return false;
+	}
+	if (GMenuScreens.IsValid() && GMenuViewport.Get() == GEngine->GameViewport)
+	{
+		return true;
+	}
+	// A map load clears the viewport's widgets (the weak pointer lapses with it): mount again, over every HUD layer.
+	const TSharedRef<SWidget> W = SNew(SFTMenuScreens);
+	GEngine->GameViewport->AddViewportWidgetContent(W, 1000);
+	GMenuScreens = W;
+	GMenuViewport = GEngine->GameViewport;
+	return true;
 }
 }
