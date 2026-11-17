@@ -100,12 +100,14 @@ void UFTRainSubsystem::WriteParameters()
 
 	const ftcore::RainFallFrame Frame = ftcore::rainFallFrame(Spec, Fall, State.intensity);
 	const FLinearColor Color(1.f, 1.f, 1.f, Frame.streakAlpha);
+	// Our own flag, not IsActive(): a deactivated system stays active while its last particles drain.
 	const bool bOn = State.intensity > 0.f;
+	const bool bSwitch = bOn != bSystemsOn;
 	if (Streaks)
 	{
 		Streaks->SetVariableFloat(RateName, Frame.streakRate);
 		Streaks->SetVariableLinearColor(ColorName, Color);
-		if (bOn != Streaks->IsActive())
+		if (bSwitch)
 		{
 			bOn ? Streaks->Activate(true) : Streaks->Deactivate();
 		}
@@ -115,11 +117,12 @@ void UFTRainSubsystem::WriteParameters()
 		Splash->SetVariableFloat(RingRateName, Frame.ringRate);
 		Splash->SetVariableFloat(DropRateName, Frame.dropRate);
 		Splash->SetVariableLinearColor(ColorName, Color);
-		if (bOn != Splash->IsActive())
+		if (bSwitch)
 		{
 			bOn ? Splash->Activate(true) : Splash->Deactivate();
 		}
 	}
+	bSystemsOn = bOn;
 	WrittenIntensity = State.intensity;
 }
 

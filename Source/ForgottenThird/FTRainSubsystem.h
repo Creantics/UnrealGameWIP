@@ -56,6 +56,7 @@ private:
 	ftcore::RainState State;
 	float SwitchTarget = 0.f; // -Rain=
 	bool bActive = false;
+	bool bSystemsOn = false; // activated by WriteParameters (spawned inactive)
 	bool bHasFloor = false;
 	bool bSplashShown = true;
 	bool bTopSet = false;

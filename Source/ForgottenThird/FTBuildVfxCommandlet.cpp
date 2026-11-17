@@ -127,7 +127,7 @@ const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxSoftLitNearFade"), false, false, true, true},
 	{TEXT("M_VfxRingLit"), false, false, true, false, true},
 };
-static_assert(UE_ARRAY_COUNT(SpriteMaterials) == kSpriteMaterials, "one spec per sprite material");
+static_assert(int32(UE_ARRAY_COUNT(SpriteMaterials)) == kSpriteMaterials, "one spec per sprite material");
 
 // The sprite material an emitter draws with: lit (ring, near-faded or plain), near-faded, or the four basic ones.
 int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
