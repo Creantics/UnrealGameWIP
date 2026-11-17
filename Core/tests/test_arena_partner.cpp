@@ -5789,3 +5789,52 @@ TEST_CASE("arena partner: the close lens's near field, in contact with a titan n
         CHECK(o.nearOk == o.steps);
     }
 }
+
+TEST_CASE("arena partner: a target crossing at 6 m/s mid-string: the facing follows it between the hits") {
+    // The arena's normal 5 (fault C): a fast enemy crossing during a string left the facing up to 57 deg off, since it
+    // turned over startup alone. Now recovery turns it too (the kit's turn rate, at most 360 deg/s); the active part
+    // never. The partner stands, its target runs back and forth 2 m in front of it at 6 m/s: on every string step
+    // outside the active part the facing is within 30 deg of the target. Both melee kits, under the close camera.
+    const ArenaTable table = shippedTable();
+    for (const char* kit : {"devin", "duy"}) {
+        CAPTURE(kit);
+        PRig r(table.fighter("devin"));
+        r.ownPartnerKit = true;
+        r.def.partnerKit = table.fighter(kit);
+        r.def.fighter.hp = 100000;
+        r.tuning = shippedTuning();
+        r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way
+        REQUIRE(validPartnerTuning(r.tuning));
+        const ArenaEnemyKind dummy = dummyKind();
+        r.enemy(dummy, Vec2{-3.f, 2.f});
+        r.bodies.player = Vec2{-4.f, -3.f};
+        r.bodies.ally = Vec2{0.f, 0.f};
+        r.go(true, 1000);
+        r.in.partnerClose.given = true; // the close camera's rule (classic keeps main's startup-only turn)
+        float x = -3.f, v = 6.f, worst = 0.f;
+        int counted = 0, over = 0;
+        for (int k = 0; k < 20 * 60; ++k) {
+            x += v * kDt;
+            if (x > 3.f || x < -3.f) {
+                x = std::clamp(x, -3.f, 3.f);
+                v = -v;
+            }
+            r.bodies.enemies[0] = Vec2{x, 2.f};
+            r.tick();
+            const ArenaAllyOut& al = r.out->ally;
+            if (!al.attacking || al.part == ArenaPart::Active || al.target != 0) continue;
+            const Vec2 to = sub(r.bodies.enemies[0], r.bodies.ally);
+            const float c = (al.facing.x * to.x + al.facing.y * to.y) / std::max(length(to), 1e-5f);
+            const float off = std::acos(std::clamp(c, -1.f, 1.f)) * 57.29578f;
+            ++counted;
+            if (off > 30.f) ++over;
+            worst = std::max(worst, off);
+        }
+        MESSAGE(std::string(kit) << ": strings " << r.fight.stats().partnerStrings << ", string steps outside the active part "
+                    << counted << ", over 30 deg " << over << ", worst " << worst << " deg");
+        REQUIRE(r.fight.stats().partnerStrings >= 2);
+        REQUIRE(counted >= 30);
+        CHECK(over == 0);
+        CHECK(worst <= 30.f);
+    }
+}

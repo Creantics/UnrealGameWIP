@@ -37,6 +37,7 @@ constexpr float kArenaDodgeBackCos = 0.7071f;
 constexpr float kArenaDodgeTurnShare = 0.3f; // a roll's drawn body turns half a turn over this share of dodgeTime (then eases out)
 constexpr float kArenaAttackTurnShare = 0.6f; // an attack's drawn body turns half a turn over this share of its startup
 constexpr float kArenaLockNearWeight = 0.3f;
+constexpr float kAllyLinkTurn = 2.f * kArenaPi; // rad/s: the most the partner's facing turns in a blow's recovery (360 deg/s)
 constexpr int kArenaAutoHealPercent = 40;  // the autopilot heals below this share of its hp ...
 constexpr float kArenaAutoParryWindow = 0.12f; // ... and parries only with a window at least this long
 constexpr float kArenaAutoStand = 0.85f;   // it closes in to this share of its reach before it swings
@@ -2927,7 +2928,9 @@ struct ArenaFightImpl {
             al.bodyTurn = false;
             // Rule 19's kit range: under the close camera a kit with its own reach strikes from it (the caster's 5-8 m);
             // otherwise (classic, no camera) the light's own range, as ever.
-            runAllyBlow(partnerRangeOn(pin, *fight.partnerTuning_) ? pin.range.reach : 0.f);
+            // Under the close camera its facing also follows the target in recovery (classic: startup only, as main).
+            runAllyBlow(partnerRangeOn(pin, *fight.partnerTuning_) ? pin.range.reach : 0.f,
+                        in.partnerClose.given ? pk.turnRate : 0.f);
             return;
         }
         const bool walk = intent.act == PartnerAct::MoveTo || intent.act == PartnerAct::StepBack;
@@ -3146,7 +3149,9 @@ struct ArenaFightImpl {
 
     // The partner's running blow: the lead's light's tracking and lunge, and its one landing in the active part, from
     // `closeReach` m when that is further than the light's range (the kit's own reach under the close camera; 0: none).
-    void runAllyBlow(float closeReach) {
+    // Past the active part (recovery, before the string's next blow) its facing follows its target at the kit's
+    // `turnRate`, at most kAllyLinkTurn, so a target crossing mid-string does not leave it behind (0: never).
+    void runAllyBlow(float closeReach, float turnRate) {
         ArenaFight::AllyState& al = fight.ally_;
         const ArenaAttack& a = allyLight(al.blow);
         const float a0 = al.blowTime;
@@ -3165,6 +3170,12 @@ struct ArenaFightImpl {
         }
         if (aimed && !al.landed && a1 > a.startup && a0 < a.startup + a.active)
             allyStrike(static_cast<std::size_t>(al.target), closeReach);
+        const float hitEnd = a.startup + a.active;
+        if (aimed && turnRate > 0.f && a1 > hitEnd) {
+            const Vec2 to = arenaSub(foes[static_cast<std::size_t>(al.target)].pos, fight.allyPos_);
+            const float rate = std::min(turnRate, kAllyLinkTurn);
+            al.facing = arenaTurn(al.facing, arenaUnit(to, al.facing), rate * (a1 - std::max(a0, hitEnd)));
+        }
         // The lunge, spread over startup and active as the lead's: this tick's part of it is in the goal.
         const float span = a.startup + a.active;
         float lunge = 0.f;
