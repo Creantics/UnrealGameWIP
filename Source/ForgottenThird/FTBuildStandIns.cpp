@@ -13,6 +13,7 @@
 #include "Misc/Parse.h"
 #include "StaticMeshAttributes.h"
 
+#include "ftcore/HeroCorner.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/StandIns.h"
 #include "ftcore/TreeMeshes.h"
@@ -396,6 +397,12 @@ bool FTStandIns::Place(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	if (!CheckCorridors(Points, Field))
 	{
 		return false;
+	}
+	// -HeroCorner: the quay masts in the corner's camera have no lamp in the pool, so they give way to rail.
+	if (FParse::Param(FCommandLine::Get(), TEXT("HeroCorner")))
+	{
+		const int Cleared = ftcore::heroCornerClearMasts(ftcore::HeroCornerSpec{}, Points);
+		UE_LOG(LogForgottenThird, Display, TEXT("StandIns -HeroCorner: %d quay masts in the corner's view are rail pieces instead."), Cleared);
 	}
 	if (!Base)
 	{

@@ -237,6 +237,7 @@ UMaterial* BuildMaster(const FString& Path, EMaterialShadingModel Shading, EBlen
 	if (Blend == BLEND_Translucent)
 	{
 		Material->TranslucencyLightingMode = TLM_SurfacePerPixelLighting;
+		Material->TranslucencyPass = MTP_BeforeDOF; // after DOF the windows stay sharp on a blurred car (E1 face stills)
 	}
 
 	UMaterialExpressionCustom* Car = AddExpression<UMaterialExpressionCustom>(Material, -400, 0);

@@ -37,7 +37,7 @@ bool UFTCharacterFillSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
 	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) &&
-		FParse::Param(FCommandLine::Get(), TEXT("NightCharFill")) && Super::ShouldCreateSubsystem(Outer);
+		FParse::Param(FTLookSwitches(), TEXT("NightCharFill")) && Super::ShouldCreateSubsystem(Outer);
 }
 
 void UFTCharacterFillSubsystem::OnWorldBeginPlay(UWorld& InWorld)

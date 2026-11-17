@@ -42,8 +42,6 @@ private:
 	bool bActive = false;
 	bool bStillNight = false;
 	float ScanIn = 0.f;
-	float AppliedLux = -1.f;
-	FRotator AppliedRotation = FRotator(1000.f, 0.f, 0.f);
 	int32 Marked = 0;
 	bool bLogged = false;
 };

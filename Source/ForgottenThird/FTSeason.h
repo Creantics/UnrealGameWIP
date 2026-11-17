@@ -11,6 +11,7 @@
 // sets it in any world, still or played.
 
 #include "CoreMinimal.h"
+#include "ForgottenThird.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/CommandLine.h"
@@ -65,7 +66,7 @@ inline bool ApplyCommandLine(UWorld& World)
 {
 	FString Text;
 	float Value = 0.f;
-	if (!FParse::Value(FCommandLine::Get(), TEXT("Season="), Text) || !Parse(Text, Value))
+	if (!FParse::Value(FTLookSwitches(), TEXT("Season="), Text) || !Parse(Text, Value))
 	{
 		return false;
 	}

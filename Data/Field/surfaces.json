@@ -23,7 +23,8 @@
     { "id": "solhaven_pole_concrete",  "tileCm": 100, "res": "1k", "license": "project" },
     { "id": "solhaven_roof_tile",      "tileCm": 240, "res": "1k", "license": "project" },
     { "id": "solhaven_soot_brick",     "tileCm":  90, "res": "1k", "license": "project" },
-    { "id": "solhaven_tactile_paving", "tileCm": 120, "res": "1k", "license": "project" }
+    { "id": "solhaven_tactile_paving", "tileCm": 120, "res": "1k", "license": "project" },
+    { "id": "solhaven_granite_sett",   "tileCm": 400, "res": "4k", "license": "project" }
   ],
   "kinds": {
     "town": {

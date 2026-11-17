@@ -98,6 +98,7 @@ struct BuildingLot {
     std::uint8_t groundVariant = 0, upperVariant = 0, signSet = 0;
     std::uint32_t clutterSeed = 0;
     std::uint32_t seed = 0;
+    bool flatUppers = false;          // every upper storey flush windows and blanks (nothing out over the street)
     double width() const { return s1 - s0; }
     int units() const;                // width in 0.9 m grid steps
     double groundStorey() const { return type == LotType::TownHouse ? kKoshiStorey : kShopStorey; }

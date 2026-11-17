@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace ftcore {
 
@@ -144,6 +145,186 @@ std::vector<BackdropPoint> hillDress(const HeightField& field, const HillDressSp
         }
     }
     return out;
+}
+
+float hillNightShare(double zM, double fromM, double rampM) {
+    const double t = std::clamp((zM - fromM) / std::max(rampM, 1e-3), 0.0, 1.0);
+    return static_cast<float>(t * t * (3.0 - 2.0 * t));
+}
+
+void hillNightAlbedo(const HillNightLook& look, const float in[3], float night, float share, float out[3]) {
+    const float t = std::clamp(night, 0.f, 1.f) * std::clamp(share, 0.f, 1.f);
+    const float grey = 0.2126f * in[0] + 0.7152f * in[1] + 0.0722f * in[2];
+    for (int k = 0; k < 3; ++k) {
+        const float dim = std::max(grey + (in[k] - grey) * look.saturation, 0.f) * look.albedo;
+        out[k] = in[k] + (dim - in[k]) * t;
+    }
+}
+
+namespace {
+
+// The highest ground inside the rectangle, sampled no finer than 4 m.
+double fieldTop(const HeightField& f, double x0, double y0, double x1, double y1) {
+    const double step = std::max(f.spacing, 4.0);
+    double top = -1e9;
+    for (double y = y0; y <= y1; y += step) {
+        for (double x = x0; x <= x1; x += step) {
+            top = std::max(top, f.at(x, y));
+        }
+    }
+    return top;
+}
+
+// Whether a point is within margin of a box's rotated footprint.
+bool nearBox(const MassingBox& box, double x, double y, double margin) {
+    const double c = std::cos(box.rot * kPi / 180.0), s = std::sin(box.rot * kPi / 180.0);
+    const double dx = x - box.cx, dy = y - box.cy;
+    const double lx = c * dx + s * dy, ly = -s * dx + c * dy;
+    return std::abs(lx) <= 0.5 * box.sx + margin && std::abs(ly) <= 0.5 * box.sy + margin;
+}
+
+} // namespace
+
+float hillWindowBandTop(const HeightField& field, const HillWindowSpec& spec, double x0, double y0, double x1, double y1) {
+    if (!field.grid || field.samplesX == 0 || field.samplesY == 0 || x1 <= x0 || y1 <= y0) {
+        return spec.footM;
+    }
+    const double top = fieldTop(field, x0, y0, x1, y1);
+    return static_cast<float>(spec.footM + std::clamp(static_cast<double>(spec.bandShare), 0.0, 1.0) * std::max(top - spec.footM, 0.0));
+}
+
+std::vector<HillHouse> hillWindows(const HeightField& field, const HillWindowSpec& spec, double x0, double y0, double x1, double y1,
+                                   const MassingBox* boxes, std::size_t boxCount) {
+    std::vector<HillHouse> out;
+    if (!field.grid || field.samplesX == 0 || field.samplesY == 0 || spec.maxWindows == 0 || spec.windowsMax == 0 || x1 <= x0 || y1 <= y0) {
+        return out;
+    }
+    const double foot = spec.footM, bandTop = hillWindowBandTop(field, spec, x0, y0, x1, y1);
+    if (bandTop <= foot) {
+        return out; // no hill to speak of
+    }
+    const double cell = std::max(static_cast<double>(spec.hamletCellM), 1.0);
+    const std::size_t nx = static_cast<std::size_t>(std::ceil((x1 - x0) / cell));
+    const std::size_t ny = static_cast<std::size_t>(std::ceil((y1 - y0) / cell));
+    // Hamlet cells in a hashed order, so the window cap thins the whole hill rather than cutting off its far end.
+    std::vector<std::pair<float, std::uint32_t>> order;
+    order.reserve(nx * ny);
+    for (std::size_t iy = 0; iy < ny; ++iy) {
+        for (std::size_t ix = 0; ix < nx; ++ix) {
+            const auto ux = static_cast<std::uint32_t>(ix), uy = static_cast<std::uint32_t>(iy);
+            order.emplace_back(unit(spec.seed, ux, uy, 11), static_cast<std::uint32_t>(iy * nx + ix));
+        }
+    }
+    std::sort(order.begin(), order.end());
+
+    const auto inBand = [&](double h) { return h >= foot && h <= bandTop; };
+    const auto onBox = [&](double x, double y, double margin) {
+        for (std::size_t b = 0; b < boxCount && boxes; ++b) {
+            if (nearBox(boxes[b], x, y, margin)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::size_t windows = 0;
+    for (const auto& entry : order) {
+        const std::uint32_t index = entry.second;
+        if (windows >= spec.maxWindows) {
+            break;
+        }
+        const auto ux = static_cast<std::uint32_t>(index % nx), uy = static_cast<std::uint32_t>(index / nx);
+        if (unit(spec.seed, ux, uy, 12) >= spec.hamletChance) {
+            continue;
+        }
+        const double hx = x0 + (ux + unit(spec.seed, ux, uy, 13)) * cell;
+        const double hy = y0 + (uy + unit(spec.seed, ux, uy, 14)) * cell;
+        if (!inBand(field.at(hx, hy))) {
+            continue; // a hamlet only where the band runs
+        }
+        const std::uint32_t span = spec.housesMax > spec.housesMin ? spec.housesMax - spec.housesMin + 1 : 1;
+        const std::uint32_t want = spec.housesMin + static_cast<std::uint32_t>(unit(spec.seed, ux, uy, 15) * static_cast<float>(span));
+        std::uint32_t placed = 0;
+        for (std::uint32_t t = 0; t < spec.houseTries && placed < want && windows < spec.maxWindows; ++t) {
+            const double a = 2.0 * kPi * unit(spec.seed, index, t, 16);
+            const double r = spec.hamletRadiusM * std::sqrt(static_cast<double>(unit(spec.seed, index, t, 17)));
+            const double x = hx + r * std::cos(a), y = hy + r * std::sin(a);
+            const double w = spec.houseMinW + (spec.houseMaxW - spec.houseMinW) * unit(spec.seed, index, t, 18);
+            const double d = spec.houseDepthM, half = 0.5 * std::sqrt(w * w + d * d);
+            if (x - half < x0 || x + half > x1 || y - half < y0 || y + half > y1) {
+                continue;
+            }
+            const double h = field.at(x, y);
+            if (!inBand(h) || slopeAt(field, x, y, std::max(half, 1.0)) > spec.maxSlope || onBox(x, y, spec.clearM + half)) {
+                continue;
+            }
+            bool crowded = false;
+            for (const HillHouse& o : out) {
+                const double ox = o.x - x, oy = o.y - y;
+                crowded = crowded || ox * ox + oy * oy < static_cast<double>(spec.houseSpacingM) * spec.houseSpacingM;
+            }
+            if (crowded) {
+                continue;
+            }
+            // The front turns to the town, and the ground must fall that way (or lie near flat): a house on the hill's
+            // back is out of sight.
+            double tx = spec.nearX - x, ty = spec.nearY - y;
+            const double tl = std::sqrt(tx * tx + ty * ty);
+            if (tl < 1e-6) {
+                continue;
+            }
+            tx /= tl;
+            ty /= tl;
+            const double gd = 2.0;
+            const double gx = (field.at(x + gd, y) - field.at(x - gd, y)) / (2.0 * gd);
+            const double gy = (field.at(x, y + gd) - field.at(x, y - gd)) / (2.0 * gd);
+            const double gl = std::sqrt(gx * gx + gy * gy);
+            if (gl > spec.flatSlope && (-gx * tx - gy * ty) / gl < spec.faceMin) {
+                continue;
+            }
+            // The foot under the lowest corner, the eaves over the highest.
+            const double fx = tx * 0.5 * d, fy = ty * 0.5 * d, sx = -ty * 0.5 * w, sy = tx * 0.5 * w;
+            double lo = h, hi = h;
+            for (const double cf : {-1.0, 1.0}) {
+                for (const double cs : {-1.0, 1.0}) {
+                    const double g = field.at(x + cf * fx + cs * sx, y + cf * fy + cs * sy);
+                    lo = std::min(lo, g);
+                    hi = std::max(hi, g);
+                }
+            }
+            const double frontZ = field.at(x + fx, y + fy);
+            if (!inBand(frontZ)) {
+                continue;
+            }
+            HillHouse house;
+            house.x = static_cast<float>(x);
+            house.y = static_cast<float>(y);
+            house.z0 = static_cast<float>(lo - spec.sinkM);
+            house.z1 = static_cast<float>(hi + spec.eavesM);
+            house.yaw = static_cast<float>(std::atan2(ty, tx) * 180.0 / kPi);
+            house.w = static_cast<float>(w);
+            house.d = static_cast<float>(d);
+            house.frontZ = static_cast<float>(frontZ);
+            const std::size_t lit = 1 + static_cast<std::size_t>(unit(spec.seed, index, t, 19) * static_cast<float>(spec.windowsMax));
+            const std::size_t fit = std::max<std::size_t>(1, static_cast<std::size_t>((w - spec.windowW) / spec.windowPitchM) + 1);
+            house.windows = static_cast<std::uint8_t>(std::min({lit, fit, static_cast<std::size_t>(spec.windowsMax), spec.maxWindows - windows}));
+            windows += house.windows;
+            out.push_back(house);
+            ++placed;
+        }
+    }
+    return out;
+}
+
+HillWindow hillHouseWindow(const HillHouse& house, const HillWindowSpec& spec, std::size_t k) {
+    const double a = house.yaw * kPi / 180.0, fx = std::cos(a), fy = std::sin(a);
+    const double along = (static_cast<double>(k) - 0.5 * (house.windows - 1)) * spec.windowPitchM;
+    const double out = 0.5 * house.d + 0.5 * spec.windowDepthM;
+    HillWindow wnd;
+    wnd.x = static_cast<float>(house.x + fx * out - fy * along);
+    wnd.y = static_cast<float>(house.y + fy * out + fx * along);
+    wnd.z = house.frontZ + spec.sillM + 0.5f * spec.windowH;
+    wnd.yaw = house.yaw;
+    return wnd;
 }
 
 std::vector<BackdropBox> skylineBand(const SkylineSpec& spec) {

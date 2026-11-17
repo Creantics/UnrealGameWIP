@@ -54,7 +54,7 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
                             {"dealer_deal_tell", 3}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 3}, {"ink_hit", 3},
-                            {"water_splash", 3}, {"water_drips", 1}};
+                            {"water_splash", 3}, {"water_drips", 1}, {"eatery_steam", 1}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;

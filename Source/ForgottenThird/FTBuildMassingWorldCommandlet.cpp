@@ -4,6 +4,7 @@
 #include "FTBuildStandIns.h"
 #include "FTBuildLawn.h"
 #include "FTBuildLots.h"
+#include "FTBuildHeroFarBank.h"
 #include "FTClockTower.h"
 #include "FTMaterialCheck.h"
 #include "FTBuildPlinths.h"
@@ -18,15 +19,23 @@
 #include "ForgottenThird.h"
 
 #if WITH_EDITOR
+#include "Animation/AnimSequence.h"
+#include "Animation/SkeletalMeshActor.h"
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Builders/CubeBuilder.h"
 #include "Components/BrushComponent.h"
 #include "Components/RectLightComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+#include "NiagaraActor.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSystem.h"
 #include "EditorWorldUtils.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/LevelStreamingAlwaysLoaded.h"
 #include "Engine/Polys.h"
 #include "Engine/RectLight.h"
 #include "Engine/StaticMesh.h"
@@ -69,6 +78,7 @@
 #include "FTSceneLook.h"
 #include "FTWorldClockSubsystem.h"
 
+#include "ftcore/HeroCorner.h"
 #include "ftcore/Json.h"
 #include "ftcore/MassingDress.h"
 #include "ftcore/MassingLayout.h"
@@ -90,6 +100,8 @@ namespace
 {
 #if WITH_EDITOR
 // A Landscape component is 2 x 63 quads.
+// The hero corner's sub-level map is the strip's name with this after it (-HeroSubLevel, -HeroCornerOnly).
+constexpr const TCHAR* kHeroSubLevelSuffix = TEXT("_HeroCorner");
 constexpr int32 kLandSubsections = 2;
 constexpr int32 kLandSubsectionQuads = 63;
 // The sea's plane reaches this far (m) east of its west edge, and as far each way along the square.
@@ -864,11 +876,14 @@ int32 FinishNightLamps(FNightLampParts& Parts)
 }
 
 // A shopfront's spill point (ftcore::massingShopLights, plan frame) in the data: a spot there faces out of its face,
-// pitched FTNightLight::ShopPitch.
-void NightShop(UFTNightLightData& Data, double Side, const ftcore::MassingShopLight& At)
+// pitched Pitch (degrees under the horizontal) at Gain of the shop candela. Every call writes all four lists, so they
+// stay index for index.
+void NightShop(UFTNightLightData& Data, double Side, const ftcore::MassingShopLight& At, float Pitch = FTNightLight::ShopPitch, float Gain = 1.f)
 {
 	Data.ShopAt.Add(FVector3f(Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z))));
 	Data.ShopYaw.Add(static_cast<float>(ftcore::massingEngineYaw(At.face)));
+	Data.ShopSlotPitch.Add(Pitch);
+	Data.ShopGain.Add(Gain);
 }
 
 // A cover plate (ftcore::massingNavObstacle) as a navmesh obstacle: a UFTPlateNavNull on the plate's actor (a sloped
@@ -1789,11 +1804,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("Look="), LookText, false);
 	FParse::Value(*Params, TEXT("Map="), MapName);
 	FParse::Value(*Params, TEXT("World="), WorldText);
+	// -HeroCornerOnly: the hero corner's sub-level alone (see -HeroSubLevel below); the strip's stages are off.
+	const bool bHeroOnly = FParse::Param(*Params, TEXT("HeroCornerOnly"));
 	double Side = 1000.0;
 	FParse::Value(*Params, TEXT("Side="), Side);
 	double SeaWest = 0.0;
-	const bool bSea = FParse::Value(*Params, TEXT("Sea="), SeaWest);
-	const bool bNav = !FParse::Param(*Params, TEXT("NoNav"));
+	const bool bSea = FParse::Value(*Params, TEXT("Sea="), SeaWest) && !bHeroOnly;
+	const bool bNav = !FParse::Param(*Params, TEXT("NoNav")) && !bHeroOnly;
 	const bool bStrict = FParse::Param(*Params, TEXT("Strict"));
 	// The reach check on the saved map as it stands: nothing is built, rebuilt or saved.
 	const bool bLoad = FParse::Param(*Params, TEXT("Load"));
@@ -1816,18 +1833,132 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	FString FrontFile, QuayLampId;
 	FParse::Value(*Params, TEXT("Frontage="), FrontFile);
 	FParse::Value(*Params, TEXT("QuayLamp="), QuayLampId);
-	const bool bKerbs = FParse::Param(*Params, TEXT("Kerbs"));
-	const bool bQuay = FParse::Param(*Params, TEXT("Quay"));
-	const bool bRoofs = FParse::Param(*Params, TEXT("Roofs"));
+	const bool bKerbs = FParse::Param(*Params, TEXT("Kerbs")) && !bHeroOnly;
+	const bool bQuay = FParse::Param(*Params, TEXT("Quay")) && !bHeroOnly;
+	const bool bRoofs = FParse::Param(*Params, TEXT("Roofs")) && !bHeroOnly;
 	// -StandIns: a crane or boat box (a placeholder no kit mesh replaces yet) is built as a frame of steel boxes, legs,
 	// boom and ties or a hull and cabin (ftcore::massingStandIn), in place of one solid.
-	const bool bStandIns = FParse::Param(*Params, TEXT("StandIns"));
+	const bool bStandIns = FParse::Param(*Params, TEXT("StandIns")) && !bHeroOnly;
 	// -NightLamps: a light point under the head of every TQ-04 lamp placed (kit, props, quay) and a lens instance on the
 	// head (tagged FTScene::NightLampHeadTag); and with -Windows a spill point out of each shopfront: data in the map's
 	// AFTNightLights, which the runtime's lamp pool lights at night.
 	const bool bNightLamps = FParse::Param(*Params, TEXT("NightLamps"));
+	// -HeroCorner: the hero corner's step 1 (ftcore/HeroCorner.h): five shop bays appended to the boxes, fronting the lane
+	// on their west faces (lit 1, 3 and 4), the lane's granite setts, the eave, the lanterns and strings from
+	// Content/Props/HeroCorner when imported, and a lamp slot at half a street lamp under each string's middle.
+	//
+	// The corner as a sub-level, so it rebuilds alone in minutes (two runs of this commandlet, the same flags but these):
+	// -HeroSubLevel (the strip's run): the corner's layout holds (street lamps, masts and props kept out of it) and its
+	// bays stand as hidden colliders only (the navmesh goes round them); the map streams in <Map>_HeroCorner, always
+	// loaded. -HeroCornerOnly (the corner's run): the map is <Map>_HeroCorner and holds the corner alone: its bays (kit
+	// lots), setts, eaves, lanterns, cables and its own night lights; no ground, sky, roads, props, navmesh or director.
+	// Both imply -HeroCorner (the stand-ins read the flag from the command line, so pass it too). -HeroLampScale=<x>
+	// and -HeroShopScale=<x> scale the corner's lamp and shop slot gains (default 1); -HeroShopIn=<m>, -HeroShopUp=<m> and
+	// -HeroShopPitch=<deg> move and aim the lit rooms' shop slots, -HeroLanternGlow=<x> sets the lantern paper's strength
+	// (the spec's by default), so the corner's lighting tunes without a compile. FTBuildLots reads the rooms' own glow.
+	// More of them below (-HeroStringGain .. -HeroLanternBase).
+	const bool bHeroSubLevel = FParse::Param(*Params, TEXT("HeroSubLevel"));
+	const bool bHeroCorner = FParse::Param(*Params, TEXT("HeroCorner")) || bHeroSubLevel || bHeroOnly;
+	const bool bHeroContent = bHeroCorner && !bHeroSubLevel;
+	float HeroLampScale = 1.f, HeroShopScale = 1.f;
+	FParse::Value(*Params, TEXT("HeroLampScale="), HeroLampScale);
+	FParse::Value(*Params, TEXT("HeroShopScale="), HeroShopScale);
+	ftcore::HeroCornerSpec HeroTune;
+	FParse::Value(*Params, TEXT("HeroShopIn="), HeroTune.shopLightIn);
+	FParse::Value(*Params, TEXT("HeroShopUp="), HeroTune.shopLightUp);
+	FParse::Value(*Params, TEXT("HeroShopPitch="), HeroTune.shopLightPitch);
+	FParse::Value(*Params, TEXT("HeroLanternGlow="), HeroTune.lanternGlow);
+	// Tune 2's own (2026-11-16): -HeroStringGain, -HeroPairGain, -HeroEntranceGain set each kind of lamp slot's gain (the
+	// spec's by default; -HeroLampScale still scales all of them), -HeroLanternScale the glazed bays' lanterns' scale (the
+	// mesh is 0.6 m tall, so 1.25 is 0.75 m), -HeroLanternColour=<r,g,b> and -HeroLanternBase=<r,g,b> the paper's glow and
+	// its unlit colour. FTBuildLots reads -HeroNorenTint and -HeroNorenBand.
+	FParse::Value(*Params, TEXT("HeroStringGain="), HeroTune.stringLampGain);
+	FParse::Value(*Params, TEXT("HeroPairGain="), HeroTune.pairLampGain);
+	FParse::Value(*Params, TEXT("HeroEntranceGain="), HeroTune.entranceLampGain);
+	FParse::Value(*Params, TEXT("HeroLanternScale="), HeroTune.largeScale);
+	const auto ParseRgb = [&Params](const TCHAR* Key, float (&Rgb)[3])
+	{
+		FString Text;
+		TArray<FString> Parts;
+		if (FParse::Value(*Params, Key, Text, false) && Text.ParseIntoArray(Parts, TEXT(","), true) == 3)
+		{
+			for (int32 K = 0; K < 3; ++K)
+			{
+				Rgb[K] = FMath::Clamp(FCString::Atof(*Parts[K]), 0.f, 4.f);
+			}
+		}
+	};
+	ParseRgb(TEXT("HeroLanternColour="), HeroTune.lanternColour);
+	ParseRgb(TEXT("HeroLanternBase="), HeroTune.lanternBase);
+	HeroTune.largeScale = FMath::Clamp(HeroTune.largeScale, 0.5, 2.0);
+	// Tune 3's own (2026-11-16): -HeroShopBack=<bays> (1-based, comma list: 4 is the glazed bay) gives those lit bays a
+	// second shop slot facing into the room near level (ftcore::heroCornerShopSlots), at -HeroShopBackIn=<m>,
+	// -HeroShopBackUp=<m>, -HeroShopBackPitch=<deg> and -HeroShopBackGain=<x> (times -HeroShopScale); none by default.
+	{
+		FString Back;
+		TArray<FString> Bays;
+		if (FParse::Value(*Params, TEXT("HeroShopBack="), Back, false) && Back.ParseIntoArray(Bays, TEXT(","), true) > 0)
+		{
+			for (const FString& Bay : Bays)
+			{
+				const int32 B = FCString::Atoi(*Bay) - 1;
+				if (B >= 0 && B < ftcore::kHeroBays)
+				{
+					HeroTune.shopBack[B] = true;
+				}
+			}
+		}
+	}
+	FParse::Value(*Params, TEXT("HeroShopBackIn="), HeroTune.shopBackIn);
+	FParse::Value(*Params, TEXT("HeroShopBackUp="), HeroTune.shopBackUp);
+	FParse::Value(*Params, TEXT("HeroShopBackPitch="), HeroTune.shopBackPitch);
+	FParse::Value(*Params, TEXT("HeroShopBackGain="), HeroTune.shopBackGain);
+	// The lantern paper's shape of light (M_NightLamp's LampEdge, LampEdgePower, LampRibs, LampRibWidth; the defaults are
+	// tune 3's, edge 0.6 power 2, width 0.2; ribs 0 since step 2, whose lanterns carry 14 to 18 real ribs of their own;
+	// 0 edge and 0 ribs are the flat glow): -HeroLanternEdge=<0..1> darkens the body toward its silhouette
+	// by (1 - N.V)^-HeroLanternEdgePow=<p>, -HeroLanternRibs=<0..1> darkens the bamboo ribs (-HeroLanternRibPitch=<m> apart on
+	// the 0.6 m lantern, scaled to each mesh's height; 0.04 sits on the mesh's own ridges; -HeroLanternRibWidth=<0..1> of
+	// that pitch wide), faded out as a rib nears two pixels.
+	float HeroLanternEdge = 0.6f, HeroLanternEdgePow = 2.f, HeroLanternRibs = 0.f, HeroLanternRibPitch = 0.04f, HeroLanternRibWidth = 0.2f;
+	FParse::Value(*Params, TEXT("HeroLanternEdge="), HeroLanternEdge);
+	FParse::Value(*Params, TEXT("HeroLanternEdgePow="), HeroLanternEdgePow);
+	FParse::Value(*Params, TEXT("HeroLanternRibs="), HeroLanternRibs);
+	FParse::Value(*Params, TEXT("HeroLanternRibPitch="), HeroLanternRibPitch);
+	FParse::Value(*Params, TEXT("HeroLanternRibWidth="), HeroLanternRibWidth);
+	HeroLanternEdge = FMath::Clamp(HeroLanternEdge, 0.f, 1.f);
+	HeroLanternEdgePow = FMath::Clamp(HeroLanternEdgePow, 0.25f, 8.f);
+	HeroLanternRibs = FMath::Clamp(HeroLanternRibs, 0.f, 1.f);
+	HeroLanternRibPitch = FMath::Clamp(HeroLanternRibPitch, 0.005f, 0.5f);
+	HeroLanternRibWidth = FMath::Clamp(HeroLanternRibWidth, 0.02f, 0.9f);
+	if (bHeroSubLevel && bHeroOnly)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -HeroSubLevel (the strip) and -HeroCornerOnly (the corner) are two runs."));
+		return 1;
+	}
+	if (bHeroOnly)
+	{
+		// Everything but the corner left out: the strip's run builds it.
+		WallsFile.Empty();
+		GoalsFile.Empty();
+		KitFile.Empty();
+		TourFile.Empty();
+		CoverageFile.Empty();
+		ReadBackFile.Empty();
+		WorldText.Empty();
+		LookText.Empty();
+		ClockBox.Empty();
+		PiecesFile.Empty();
+		PropsFile.Empty();
+		FrontFile.Empty();
+		QuayLampId.Empty();
+		MeshCache.Empty();
+		MapName += kHeroSubLevelSuffix;
+	}
+	const FString HeroSubLevelPath = FString::Printf(TEXT("/Game/Maps/%s%s"), *MapName, bHeroOnly ? TEXT("") : kHeroSubLevelSuffix);
+	ftcore::HeroCornerLayout Hero;
+	size_t HeroFirst = 0;
 	// Round 5 roads (FTBuildRoads.h): -Roads=<csv>, -Vehicles, -RoadDoors=<csv>, -LaneLamps=x0,y0,x1,y1, -RoadSeed=<n>.
-	const FTBuildRoads::FOptions RoadOptions = FTBuildRoads::ParseOptions(*Params);
+	const FTBuildRoads::FOptions RoadOptions = bHeroOnly ? FTBuildRoads::FOptions() : FTBuildRoads::ParseOptions(*Params);
 	std::vector<ftcore::RoadSpec> RoadSpecs;
 	std::vector<ftcore::RoadBuild> RoadBuilds;
 	// -Windows: the building boxes wear the window master's instances (FTBuildSurfaces -Windows), each box's seed, street
@@ -1897,6 +2028,48 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		return 1;
 	}
+	if (bHeroOnly)
+	{
+		// The sub-level holds the corner's bays alone; the strip's boxes are the strip's run's.
+		Boxes.clear();
+	}
+	HeroFirst = Boxes.size();
+	if (bHeroCorner)
+	{
+		ftcore::heroCornerLayout(HeroTune, Hero);
+		for (const ftcore::MassingBox& Bay : Hero.bays)
+		{
+			Boxes.push_back(Bay);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d shop bays appended (%s .. %s), lane %.0f..%.0f x %.0f..%.0f, "
+			"%d lanterns, %d strings."), ftcore::kHeroBays, *Utf8(Hero.bays[0].id), *Utf8(Hero.bays[ftcore::kHeroBays - 1].id), Hero.pave.cx - 0.5 * Hero.pave.sx,
+			Hero.pave.cx + 0.5 * Hero.pave.sx, Hero.pave.cy - 0.5 * Hero.pave.sy, Hero.pave.cy + 0.5 * Hero.pave.sy, static_cast<int32>(Hero.lanternCount),
+			ftcore::kHeroStrings);
+		// -HeroProbeOut=<csv>: the corner's luma probe points (ftcore::heroCornerProbes, plan frame m) for the stills' check.
+		FString ProbeFile;
+		if (FParse::Value(*Params, TEXT("HeroProbeOut="), ProbeFile) && !ProbeFile.IsEmpty())
+		{
+			ftcore::HeroProbe Probes[ftcore::kHeroMaxProbes];
+			const int ProbeCount = ftcore::heroCornerProbes(HeroTune, Hero, Probes, ftcore::kHeroMaxProbes);
+			FString Csv = TEXT("name,x,y,z\n");
+			for (int P = 0; P < ProbeCount; ++P)
+			{
+				Csv += FString::Printf(TEXT("%s,%.3f,%.3f,%.3f\n"), UTF8_TO_TCHAR(Probes[P].name), Probes[P].at.x, Probes[P].at.y, Probes[P].at.z);
+			}
+			if (!FFileHelper::SaveStringToFile(Csv, *ProbeFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -HeroProbeOut: couldn't write %s."), *ProbeFile);
+				return 1;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroProbeOut: %d probe points to %s."), ProbeCount, *ProbeFile);
+		}
+	}
+	// The hero corner's bay index of box I, or -1.
+	const auto HeroBayOf = [&](size_t I) -> int
+	{
+		int Index = -1;
+		return bHeroCorner && I >= HeroFirst && I < Boxes.size() && ftcore::heroCornerBay(Boxes[I].id, &Index) ? Index : -1;
+	};
 	if (!FTBuildRoads::Prepare(RoadOptions, ftcore::MassingGround{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
 			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY}, Boxes, RoadSpecs, RoadBuilds))
 	{
@@ -2605,10 +2778,16 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Highest = FMath::Max(Highest, H);
 	}
 	const ftcore::MassingVec Corner = ftcore::massingLandscapeCorner(Side, Field.OriginX, Field.OriginY, Field.Spacing, LandSide);
-	ALandscape* Land = World->SpawnActor<ALandscape>(Cm(Corner), FRotator::ZeroRotator, Spawn);
+	// -HeroCornerOnly: no ground (the strip's stands under the sub-level).
+	ALandscape* Land = bHeroOnly ? nullptr : World->SpawnActor<ALandscape>(Cm(Corner), FRotator::ZeroRotator, Spawn);
 	const ftcore::HeightField Hill{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY), Field.Spacing,
 		Field.OriginX, Field.OriginY};
-	Land->LandscapeMaterial = bSurfaces ? FTBackdrop::HillGround(Package, LookGround(Package, LookSet), Hill, Side) : GroundTint;
+	UMaterialInterface* const LandMaterial = !Land ? nullptr
+		: bSurfaces ? FTBackdrop::HillGround(Package, LookGround(Package, LookSet), Hill, Side) : GroundTint;
+	if (Land)
+	{
+		Land->LandscapeMaterial = LandMaterial;
+	}
 	if (bSurfaces)
 	{
 		// The lawn: the grass surface (or -LawnTex's scanned set) with a broad mottle so a green of 80 m doesn't read as
@@ -2621,32 +2800,36 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			return 1;
 		}
 	}
-	Land->SetActorRelativeScale3D(FVector(Field.Spacing * 100.0, Field.Spacing * 100.0, 100.0));
+	ULandscapeInfo* LandInfo = nullptr;
+	if (Land)
 	{
-		TMap<FGuid, TArray<uint16>> HeightLayers;
-		HeightLayers.Add(FGuid(), MoveTemp(Heights));
-		TMap<FGuid, TArray<FLandscapeImportLayerInfo>> PaintLayers;
-		PaintLayers.Add(FGuid(), TArray<FLandscapeImportLayerInfo>());
-		Land->Import(FGuid::NewGuid(), 0, 0, Samples - 1, Samples - 1, kLandSubsections, kLandSubsectionQuads, HeightLayers, TEXT(""), PaintLayers,
-			ELandscapeImportAlphamapType::Additive, TArrayView<const FLandscapeLayer>());
-	}
-	ULandscapeInfo* LandInfo = Land->GetLandscapeInfo();
-	if (!LandInfo)
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: the ground's Landscape has no info after its import."));
-		World->DestroyWorld(false);
-		return 1;
-	}
-	LandInfo->UpdateLayerInfoMap(Land);
-	Land->SetActorLabel(TEXT("Ground"));
-	{
-		// What the Landscape came to, padding included, read back from it rather than from the height field.
-		FIntRect Quads;
-		LandInfo->GetLandscapeExtent(Quads);
-		const FBox Bounds = Land->GetComponentsBoundingBox(true);
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: ground %d x %d quads of %.1f m, %.1f by %.1f m; plan x %.1f to %.1f, y %.1f to %.1f."),
-			Quads.Width(), Quads.Height(), Field.Spacing, Bounds.GetSize().X / 100.0, Bounds.GetSize().Y / 100.0, Bounds.Min.X / 100.0 + Side * 0.5,
-			Bounds.Max.X / 100.0 + Side * 0.5, Side * 0.5 - Bounds.Max.Y / 100.0, Side * 0.5 - Bounds.Min.Y / 100.0);
+		Land->SetActorRelativeScale3D(FVector(Field.Spacing * 100.0, Field.Spacing * 100.0, 100.0));
+		{
+			TMap<FGuid, TArray<uint16>> HeightLayers;
+			HeightLayers.Add(FGuid(), MoveTemp(Heights));
+			TMap<FGuid, TArray<FLandscapeImportLayerInfo>> PaintLayers;
+			PaintLayers.Add(FGuid(), TArray<FLandscapeImportLayerInfo>());
+			Land->Import(FGuid::NewGuid(), 0, 0, Samples - 1, Samples - 1, kLandSubsections, kLandSubsectionQuads, HeightLayers, TEXT(""), PaintLayers,
+				ELandscapeImportAlphamapType::Additive, TArrayView<const FLandscapeLayer>());
+		}
+		LandInfo = Land->GetLandscapeInfo();
+		if (!LandInfo)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: the ground's Landscape has no info after its import."));
+			World->DestroyWorld(false);
+			return 1;
+		}
+		LandInfo->UpdateLayerInfoMap(Land);
+		Land->SetActorLabel(TEXT("Ground"));
+		{
+			// What the Landscape came to, padding included, read back from it rather than from the height field.
+			FIntRect Quads;
+			LandInfo->GetLandscapeExtent(Quads);
+			const FBox Bounds = Land->GetComponentsBoundingBox(true);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: ground %d x %d quads of %.1f m, %.1f by %.1f m; plan x %.1f to %.1f, y %.1f to %.1f."),
+				Quads.Width(), Quads.Height(), Field.Spacing, Bounds.GetSize().X / 100.0, Bounds.GetSize().Y / 100.0, Bounds.Min.X / 100.0 + Side * 0.5,
+				Bounds.Max.X / 100.0 + Side * 0.5, Side * 0.5 - Bounds.Max.Y / 100.0, Side * 0.5 - Bounds.Min.Y / 100.0);
+		}
 	}
 
 	// The boxes: each built one as an actor labelled with its id.
@@ -2717,9 +2900,40 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -Lots: the boxes on the frontage runs give way to kit buildings (FTBuildLots.h); they take no box, collider,
 	// windows or frontage (the lots' own bodies and pieces collide).
 	FTLots::FBuild LotBuild;
-	if (!FTLots::Plan(*Params, Boxes, LotBuild))
+	if (!bHeroOnly && !FTLots::Plan(*Params, Boxes, LotBuild))
 	{
 		return 1;
+	}
+	// The hero corner's bays are kit lots of their own (ftcore::heroCornerLots): a kit row or a -Lots run that also took
+	// one is refused, so a bay is never built twice.
+	for (size_t I = HeroFirst; bHeroCorner && I < Boxes.size(); ++I)
+	{
+		if (HeroBayOf(I) >= 0 && (Replaced[I] || (I < LotBuild.Replaced.size() && LotBuild.Replaced[I])))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -HeroCorner: %s was given to a lot or kit mesh too; the corner builds its bays."),
+				*Utf8(Boxes[I].id));
+			return 1;
+		}
+	}
+	// -HeroSubLevel: the bays are built in the sub-level; here each stays a hidden collider (Replaced), so the navmesh
+	// goes round them.
+	for (size_t I = HeroFirst; bHeroSubLevel && I < Boxes.size(); ++I)
+	{
+		Replaced[I] = Replaced[I] || HeroBayOf(I) >= 0;
+	}
+	if (bHeroContent)
+	{
+		ftcore::HeroLots HeroLots;
+		ftcore::heroCornerLots(ftcore::HeroCornerSpec{}, HeroLots);
+		std::string BayIds[ftcore::kHeroBays];
+		for (int32 B = 0; B < ftcore::kHeroBays; ++B)
+		{
+			BayIds[B] = Hero.bays[B].id;
+		}
+		if (!FTLots::AddHeroLots(*Params, HeroLots, BayIds, Boxes, LotBuild))
+		{
+			return 1;
+		}
 	}
 	for (size_t I = 0; I < LotBuild.Replaced.size(); ++I)
 	{
@@ -2754,7 +2968,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			continue;
 		}
 		UMaterialInterface* Material = bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))];
-		UMaterialInterface* const Rock = bSurfaces ? FTBackdrop::RockFace(Package, Material, Box, Land->LandscapeMaterial) : nullptr;
+		UMaterialInterface* const Rock = bSurfaces ? FTBackdrop::RockFace(Package, Material, Box, LandMaterial) : nullptr;
 		UMaterialInterface* const WindowMaterial = bWindows ? WindowLook[static_cast<int32>(ftcore::massingLookSurface(Box))] : nullptr;
 		if (WindowMaterial)
 		{
@@ -3082,9 +3296,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// has one (a kerb along a sloping street, a pad on sloping ground: ftcore::massingCubePose). It stays out of the boxes
 	// table.
 	// An instance of its cell: Kind says how it collides (Walk for what is walked on), Cull how far it is drawn.
-	const auto LayCube = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
+	const auto LayCubeWearing = [&](const ftcore::MassingBox& Box, UMaterialInterface* Material, EFTCellKind Kind, EFTCellCull Cull)
 	{
-		UMaterialInterface* const CubeMats[1] = {bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))]};
+		UMaterialInterface* const CubeMats[1] = {Material};
 		const double Height = FMath::Max(Box.z1 - Box.z0, ftcore::kMassingMinHeight);
 		const ftcore::MassingCubePose Pose = ftcore::massingCubePose(Box, Height);
 		FFTCellOptions CubeOpts;
@@ -3094,6 +3308,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			FTransform(FRotator(Pose.pitch, Pose.yaw, Pose.roll), Cm(ftcore::massingEnginePoint(Side, Box.cx, Box.cy, Box.z0 + Height * 0.5 + Pose.lift)),
 				FVector(Pose.scale.x, Pose.scale.y, Pose.scale.z)),
 			{}, Kind, CubeOpts);
+	};
+	const auto LayCube = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
+	{
+		LayCubeWearing(Box, bSurfaces ? WearLook(LookSet, Box) : Finish[static_cast<int32>(ftcore::massingFinish(Box))], Kind, Cull);
 	};
 	// A dressing box that takes room from the props: a kerb, or a quay's rail, post or bollard.
 	const auto Dress = [&](const ftcore::MassingBox& Box, EFTCellKind Kind, EFTCellCull Cull)
@@ -3115,15 +3333,385 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: stand-ins: %d crane and boat boxes built as %d frame pieces in place of solids."),
 			StandInBoxes, static_cast<int32>(StandIns.size()));
 	}
+	// -HeroCorner: the lane's setts (walked on, the props kept off it), the eave, the lanterns and their strings, and the
+	// strings' lamp slots. A surface or mesh that isn't built or imported yet is logged and left out.
+	if (bHeroCorner)
+	{
+		// The corner's lane and the camera's foreground south of it: kept clear of parked cars, scooters and props (the
+		// strip's run too, under its sub-level), never built.
+		Taken.push_back(ftcore::massingBoxFoot(Hero.pave));
+		Taken.push_back(ftcore::massingBoxFoot(Hero.nearClear));
+	}
+	if (bHeroContent)
+	{
+		const auto LoadSurface = [](const TCHAR* Id) -> UMaterialInterface*
+		{
+			const FString Package = FTScene::SurfaceInstancePackage(Id);
+			return LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		};
+		UMaterialInterface* const Setts = LoadSurface(TEXT("solhaven_granite_sett"));
+		UMaterialInterface* const Timber = LoadSurface(TEXT("solhaven_oak_plank"));
+		LayCubeWearing(Hero.pave, Setts ? Setts : (bSurfaces ? WearLook(LookSet, Hero.pave) : Finish[static_cast<int32>(ftcore::massingFinish(Hero.pave))]),
+			EFTCellKind::Walk, EFTCellCull::None);
+		for (int32 R = 0; R < Hero.eaveCount; ++R)
+		{
+			const ftcore::MassingBox& Eave = Hero.eaves[R];
+			LayCubeWearing(Eave, Timber ? Timber : (bSurfaces ? WearLook(LookSet, Eave) : Finish[static_cast<int32>(ftcore::massingFinish(Eave))]),
+				EFTCellKind::Solid, EFTCellCull::None);
+		}
+		// The meshes (tools/hero_corner_props.py, FTImportProp -Dest=/Game/Props/HeroCorner): each one's origin is its hook
+		// (a lantern's top), its foot (a post) or its facade end (a cable, running along +X). Their paper slots wear the
+		// night glow. The glTF import puts each file's mesh under <Dest>/<file>/StaticMeshes/<mesh>; a mesh moved up to
+		// <Dest>/<mesh> is taken too.
+		const auto HeroMesh = [&](const TCHAR* Name) -> UStaticMesh*
+		{
+			const FString Root = FString(TEXT("/Game/Props/HeroCorner/")) + Name;
+			UStaticMesh* Mesh = LoadMesh(Root + TEXT("/StaticMeshes/") + Name);
+			if (!Mesh)
+			{
+				Mesh = LoadMesh(Root);
+			}
+			if (!Mesh)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: %s/StaticMeshes/%s isn't imported; left out."), *Root, Name);
+			}
+			return Mesh;
+		};
+		int32 HeroPieces = 0;
+		// The lanterns' paper: the night lamp head master at the spec's amber and strength, so the paper's ribs and form
+		// read at a metre (the street lamps' own heads keep the master's defaults).
+		const ftcore::HeroCornerSpec& HeroSpec = HeroTune;
+		UStaticMesh* const Large = HeroMesh(TEXT("SM_HC_LanternLarge"));
+		UStaticMesh* const Small = HeroMesh(TEXT("SM_HC_LanternSmall"));
+		// One paper instance per lantern mesh: the ribs' pitch and origin come from the mesh's own bounds (hero_corner_props.py
+		// draws a lantern of height h from its hook's top at 0 down to its tassel at -1.1 h, 12 ribs over the paper from
+		// -0.925 h to -0.125 h, so a rib every h / 15 from -0.925 h), the same for the large and the small.
+		const auto MakePaper = [&](UStaticMesh* Mesh, const TCHAR* Name) -> UMaterialInterface*
+		{
+			if (!NightGlow)
+			{
+				return nullptr;
+			}
+			UMaterialInstanceConstant* Paper = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
+			Paper->SetParentEditorOnly(NightGlow);
+			Paper->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampBase")),
+				FLinearColor(HeroSpec.lanternBase[0], HeroSpec.lanternBase[1], HeroSpec.lanternBase[2]));
+			Paper->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampColor")),
+				FLinearColor(HeroSpec.lanternColour[0], HeroSpec.lanternColour[1], HeroSpec.lanternColour[2]));
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampStrength")), HeroSpec.lanternGlow);
+			const FBox Box = Mesh ? Mesh->GetBoundingBox() : FBox(FVector(0.0), FVector(0.0));
+			const double H = Box.GetSize().Z / 1.1; // the lantern's height (cm), tassel left out
+			const float Pitch = static_cast<float>(HeroLanternRibPitch * 100.0 * H / 60.0);
+			const float Origin = static_cast<float>(Box.Max.Z - 0.925 * H);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampEdge")), HeroLanternEdge);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampEdgePower")), HeroLanternEdgePow);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibs")), H > 1.0 ? HeroLanternRibs : 0.f);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibPitch")), FMath::Max(Pitch, 0.1f));
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibOrigin")), Origin);
+			Paper->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampRibWidth")), HeroLanternRibWidth);
+			Paper->PostEditChange();
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %s: glow %.2f, edge %.2f power %.2f, ribs %.2f every %.2f cm "
+				"from %.1f cm (mesh %.1f cm tall), width %.2f."), Name, HeroSpec.lanternGlow, HeroLanternEdge, HeroLanternEdgePow,
+				H > 1.0 ? HeroLanternRibs : 0.f, Pitch, Origin, H, HeroLanternRibWidth);
+			return Paper;
+		};
+		UMaterialInterface* const LargePaper = MakePaper(Large, TEXT("MI_HC_LanternPaper"));
+		UMaterialInterface* const SmallPaper = MakePaper(Small, TEXT("MI_HC_LanternPaperSmall"));
+		UStaticMesh* const LargeMark = HeroMesh(TEXT("SM_HC_LanternLargeMark"));
+		// -HeroLanternLumen=false leaves the lanterns out of ray tracing and the Lumen scene (the A/B for the wet streak
+		// bar): by default they are emissive light sources, so a puddle's reflection ray finds one off screen.
+		bool bLanternLumen = true;
+		FParse::Bool(*Params, TEXT("HeroLanternLumen="), bLanternLumen);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: hero lanterns %s."),
+			bLanternLumen ? TEXT("emissive light sources (ray traced, Lumen cards)") : TEXT("out of ray tracing and the Lumen scene"));
+		// A hero piece at a plan point, turned to an engine yaw; lanterns cast no shadow, the dressing does.
+		const auto PlaceHero = [&](UStaticMesh* Mesh, const ftcore::HeroPoint& At, double EngineYaw, const TCHAR* Label, double Scale = 1.0,
+			bool bShadow = false)
+		{
+			if (!Mesh)
+			{
+				return;
+			}
+			UMaterialInterface* const LanternGlow = Mesh == Small ? SmallPaper : LargePaper;
+			TArray<UMaterialInterface*, TInlineAllocator<8>> Mats;
+			for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
+			{
+				const bool bPaper = Slot.MaterialSlotName.ToString().Contains(TEXT("paper"));
+				Mats.Add(bPaper && LanternGlow ? LanternGlow : (NightGlow && GlowSlots.Contains(Slot.MaterialSlotName) ? NightGlow : nullptr));
+			}
+			FFTCellOptions Opts;
+			Opts.Cull = EFTCellCull::Prop;
+			Opts.bCastShadow = bShadow;
+			Opts.bEmissive = bLanternLumen && (Mesh == Large || Mesh == Small || Mesh == LargeMark);
+			Opts.Label = FString::Printf(TEXT("%s-%d"), Label, HeroPieces + 1);
+			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, EngineYaw, 0.0), Cm(ftcore::massingEnginePoint(Side, At.x, At.y, At.z)),
+				FVector(Scale)), {}, EFTCellKind::NoCollide, Opts);
+			++HeroPieces;
+		};
+		UStaticMesh* const Post = HeroMesh(TEXT("SM_HC_StringPost"));
+		// Step 2: one large lantern in three carries an invented mark (its own mesh, when imported).
+		int32 LargeIndex = 0, MarkedLanterns = 0;
+		for (size_t L = 0; L < Hero.lanternCount; ++L)
+		{
+			const ftcore::HeroLantern& Lantern = Hero.lanterns[L];
+			UStaticMesh* Mesh = Lantern.large ? Large : Small;
+			if (Lantern.large && ftcore::heroLanternMarked(LargeIndex++) && LargeMark)
+			{
+				Mesh = LargeMark;
+				++MarkedLanterns;
+			}
+			PlaceHero(Mesh, Lantern.hook, 0.0, Lantern.large ? TEXT("HC-LANTERN") : TEXT("HC-STRINGLANTERN"), Lantern.scale);
+		}
+		// Step 2 (2026-11-16): the lane's dressing (ftcore::heroCornerDressing): signs, banners, clutter, the gate with its
+		// lanterns, two scooters; the bicycle from the kit, the scooters from TQ-16. A piece whose mesh isn't imported is
+		// left out (logged once each).
+		UStaticMesh* const Bicycle = LoadMesh(TEXT("/Game/Props/BKIT/BICYCLE/StaticMeshes/BICYCLE"));
+		UStaticMesh* const Scooter = LoadMesh(TEXT("/Game/Props/TQ-16/scooter_downpipe_TQ-16_e4_import/StaticMeshes/SM_TQ16_scooter"));
+		TMap<int32, UStaticMesh*> DressMeshes;
+		ftcore::HeroItem Dressing[ftcore::kHeroDressingMax];
+		const int32 DressCount = ftcore::heroCornerDressing(HeroSpec, Hero, Dressing, ftcore::kHeroDressingMax);
+		int32 Dressed = 0;
+		for (int32 D = 0; D < DressCount; ++D)
+		{
+			const ftcore::HeroItem& Item = Dressing[D];
+			UStaticMesh* Mesh = nullptr;
+			switch (Item.piece)
+			{
+			case ftcore::HeroPiece::Bicycle: Mesh = Bicycle; break;
+			case ftcore::HeroPiece::Scooter: Mesh = Scooter; break;
+			case ftcore::HeroPiece::GateLantern: Mesh = Item.marked && LargeMark ? LargeMark : Large; break;
+			default:
+			{
+				const int32 Key = static_cast<int32>(Item.piece);
+				if (UStaticMesh** Found = DressMeshes.Find(Key))
+				{
+					Mesh = *Found;
+				}
+				else
+				{
+					Mesh = DressMeshes.Add(Key, HeroMesh(*(FString(TEXT("SM_HC_")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece)))));
+				}
+			}
+			}
+			if (!Mesh)
+			{
+				continue;
+			}
+			const bool bLantern = Item.piece == ftcore::HeroPiece::GateLantern;
+			PlaceHero(Mesh, Item.at, FTLots::HeroPropYaw(Item.faceX, Item.faceY, LotBuild.HeroPropTurn),
+				*(FString(TEXT("HC-")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece))), Item.scale, !bLantern);
+			++Dressed;
+		}
+		// The lit rooms' lamps (paper in its glow), figure and steam, laid out by FTLots::Place.
+		USkeletalMesh* const Human = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human"),
+			nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UAnimSequence* const HumanIdle = LoadObject<UAnimSequence>(nullptr,
+			TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_humanidle.test_humanidle"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		UNiagaraSystem* const Steam = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/VFX/NS_eatery_steam.NS_eatery_steam"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		// The cook in dark work clothes on every slot (an indigo charcoal, linear 0.035 to 0.05), so against the lit room it
+		// reads as a figure in shadow, not the test human's pale shirt and skin.
+		UMaterialInstanceConstant* CookCloth = nullptr;
+		if (UMaterialInterface* const CookParent = LoadObject<UMaterialInterface>(nullptr,
+				TEXT("/Game/Characters/Shared/Materials/M_FTCharacter.M_FTCharacter"), nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			CookCloth = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_HC_CookCloth"), RF_Public);
+			CookCloth->SetParentEditorOnly(CookParent);
+			CookCloth->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("BaseColor")), FLinearColor(0.035f, 0.036f, 0.05f));
+			CookCloth->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), 0.85f);
+			CookCloth->PostEditChange();
+		}
+		int32 RoomSpawns = 0;
+		for (const FTLots::FBuild::FHeroSpawn& Item : LotBuild.HeroSpawns)
+		{
+			const FRotator Turn(0.0, Item.Yaw, 0.0);
+			if (Item.Piece == ftcore::HeroPiece::Lantern && Small)
+			{
+				TArray<UMaterialInterface*, TInlineAllocator<8>> Mats;
+				for (const FStaticMaterial& Slot : Small->GetStaticMaterials())
+				{
+					Mats.Add(Slot.MaterialSlotName.ToString().Contains(TEXT("paper")) ? SmallPaper : nullptr);
+				}
+				FFTCellOptions Opts;
+				Opts.Cull = EFTCellCull::Prop;
+				Opts.bCastShadow = false;
+				Opts.Label = FString::Printf(TEXT("HC-ROOMLANTERN-%d"), RoomSpawns + 1);
+				Cells.Add(Small, Mats, FTransform(Turn, Item.At), {}, EFTCellKind::NoCollide, Opts);
+				++RoomSpawns;
+			}
+			else if (Item.Piece == ftcore::HeroPiece::Figure && Human)
+			{
+				// The eatery's cook: the test human in its idle (no working clip yet), turned three-quarter to its pot (its mesh
+				// faces +Y at yaw 0, like the props), in dark clothes.
+				ASkeletalMeshActor* Cook = World->SpawnActor<ASkeletalMeshActor>(Item.At, Turn, Spawn);
+				if (USkeletalMeshComponent* Body = Cook ? Cook->GetSkeletalMeshComponent() : nullptr)
+				{
+					Cook->SetActorLabel(TEXT("HC-EateryCook"));
+					Body->SetSkeletalMesh(Human);
+					for (int32 M = 0; CookCloth && M < Body->GetNumMaterials(); ++M)
+					{
+						Body->SetMaterial(M, CookCloth);
+					}
+					if (HumanIdle)
+					{
+						Body->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+						Body->AnimationData.AnimToPlay = HumanIdle;
+						Body->AnimationData.bSavedLooping = true;
+						Body->AnimationData.bSavedPlaying = true;
+					}
+					++RoomSpawns;
+				}
+			}
+			else if (Item.Piece == ftcore::HeroPiece::Steam && Steam)
+			{
+				ANiagaraActor* Puff = World->SpawnActor<ANiagaraActor>(Item.At, FRotator::ZeroRotator, Spawn);
+				if (UNiagaraComponent* System = Puff ? Puff->GetNiagaraComponent() : nullptr)
+				{
+					Puff->SetActorLabel(TEXT("HC-EaterySteam"));
+					System->SetAsset(Steam);
+					System->SetAutoActivate(true);
+					++RoomSpawns;
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d marked large lanterns (%s); %d of %d dressing pieces; %d of %d room "
+			"spawns (cook %s in %s, steam %s)."), MarkedLanterns, LargeMark ? TEXT("SM_HC_LanternLargeMark") : TEXT("not imported"), Dressed, DressCount,
+			RoomSpawns, LotBuild.HeroSpawns.Num(), Human ? TEXT("test human") : TEXT("missing"),
+			CookCloth ? TEXT("MI_HC_CookCloth") : TEXT("its own materials (no M_FTCharacter)"), Steam ? TEXT("NS_eatery_steam") : TEXT("missing (FTBuildVfx)"));
+		// The face ruling (2026-11-16): each lit front a wide soft warm key onto the lane, and one cool floor from the open
+		// canal side, so a face's shadow side never reads 0 (ftcore::heroCornerAreaLights). Tagged rect lights, dark at build;
+		// FTNight::WriteBayLights gives them their output, colour and specular by the lights' share.
+		ftcore::HeroAreaLight AreaLights[ftcore::kHeroAreaLights];
+		const int AreaCount = ftcore::heroCornerAreaLights(HeroSpec, AreaLights);
+		int32 AreaSpawned = 0;
+		// Shaping the fronts' key without a compile (E1, 11-16; the defaults build what E1 shot): -HeroKeyBarnDoor= cm of
+		// barn door and -HeroKeyBarnAngle= degrees (a soft one-sided edge), -HeroKeyPitch= degrees down onto the lane,
+		// -HeroKeyReach= x the reach, -HeroKeySize= x the source, -HeroKeyShadows=1 lets the fronts cast.
+		float KeyBarnDoor = 0.f, KeyBarnAngle = 88.f, KeyPitch = 0.f, KeyReach = 1.f, KeySize = 1.f;
+		int32 KeyShadows = 0;
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyBarnDoor="), KeyBarnDoor);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyBarnAngle="), KeyBarnAngle);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyPitch="), KeyPitch);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyReach="), KeyReach);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeySize="), KeySize);
+		FParse::Value(FCommandLine::Get(), TEXT("HeroKeyShadows="), KeyShadows);
+		KeyBarnDoor = FMath::Clamp(KeyBarnDoor, 0.f, 100.f);
+		KeyBarnAngle = FMath::Clamp(KeyBarnAngle, 0.f, 90.f);
+		KeyPitch = FMath::Clamp(KeyPitch, 0.f, 80.f);
+		KeyReach = FMath::Clamp(KeyReach, 0.1f, 4.f);
+		KeySize = FMath::Clamp(KeySize, 0.1f, 4.f);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: front keys barn door %.1f cm at %.1f deg, pitch %.1f deg down, reach x%.2f, "
+			"size x%.2f, shadows %s."), KeyBarnDoor, KeyBarnAngle, KeyPitch, KeyReach, KeySize, KeyShadows ? TEXT("on") : TEXT("off"));
+		for (int K = 0; K < AreaCount; ++K)
+		{
+			const ftcore::HeroAreaLight& A = AreaLights[K];
+			const FVector At = Cm(ftcore::massingEnginePoint(Side, A.x, A.y, A.z));
+			const FRotator Face(A.sky ? 0.0 : -static_cast<double>(KeyPitch), FMath::RadiansToDegrees(FMath::Atan2(-A.fy, A.fx)), 0.0);
+			const float Size = A.sky ? 1.f : KeySize;
+			ARectLight* Area = World->SpawnActor<ARectLight>(At, Face, Spawn);
+			URectLightComponent* Light = Area ? Area->RectLightComponent.Get() : nullptr;
+			if (!Light)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: couldn't spawn an area light at %s."), *At.ToString());
+				continue;
+			}
+			Area->SetActorLabel(A.sky ? FString::Printf(TEXT("HC-SkyFloor-%d"), K + 1) : FString::Printf(TEXT("HC-FrontKey-Bay%d"), A.bay + 1));
+			Area->Tags.Add(A.sky ? FTNight::HeroSkyTag : FTNight::HeroFrontTag);
+			Light->SetMobility(EComponentMobility::Movable);
+			Light->SetIntensityUnits(ELightUnits::Lumens);
+			Light->SetIntensity(0.f);
+			Light->SetVisibility(false);
+			Light->SetSourceWidth(static_cast<float>(A.width * 100.0) * Size);
+			Light->SetSourceHeight(static_cast<float>(A.height * 100.0) * Size);
+			Light->SetBarnDoorLength(A.sky ? 0.f : KeyBarnDoor);
+			Light->SetBarnDoorAngle(A.sky ? 88.f : KeyBarnAngle);
+			// The front reaches across the lane; the floor reaches the shop faces, shadowed so it stays out of the rooms.
+			Light->SetAttenuationRadius(static_cast<float>(A.reach * 100.0) * (A.sky ? 1.f : KeyReach));
+			Light->SetCastShadows(A.sky || KeyShadows != 0);
+			Light->SetVolumetricScatteringIntensity(0.f);
+			++AreaSpawned;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d of %d area lights (%d lit fronts, the cool floor in %d lengths), tagged %s / %s."),
+			AreaSpawned, AreaCount, AreaCount - ftcore::kHeroSkyFloors, ftcore::kHeroSkyFloors, FTNight::HeroFrontTag, FTNight::HeroSkyTag);
+		// The cables: a round rod (the engine's cylinder, its axis along the span) per span of the Core's polyline, so the
+		// sag is the tested one and the section holds up at a metre.
+		UMaterialInterface* const Steel = LoadSurface(TEXT("solhaven_painted_steel"));
+		UMaterialInterface* const CableMats[1] = {Steel ? Steel : Finish[static_cast<int32>(ftcore::massingFinish(Hero.pave))]};
+		UStaticMesh* const Rod = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!Rod)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: /Engine/BasicShapes/Cylinder didn't load; the cables are left out."));
+		}
+		const FBox RodBounds = Rod ? Rod->GetBoundingBox() : FBox(FVector(-50.0), FVector(50.0));
+		const FVector RodSize = RodBounds.GetSize().ComponentMax(FVector(1.0));
+		const FVector RodCentre = RodBounds.GetCenter();
+		constexpr double kCableDiameterCm = 1.2;
+		int32 CableSpans = 0;
+		for (int32 S = 0; S < ftcore::kHeroStrings; ++S)
+		{
+			PlaceHero(Post, Hero.postFoot[S], 0.0, TEXT("HC-POST"));
+			for (int32 K = 0; Rod && K + 1 < ftcore::kHeroCablePoints; ++K)
+			{
+				const ftcore::HeroPoint& A = Hero.cable[S][K];
+				const ftcore::HeroPoint& B = Hero.cable[S][K + 1];
+				const FVector From = Cm(ftcore::massingEnginePoint(Side, A.x, A.y, A.z));
+				const FVector To = Cm(ftcore::massingEnginePoint(Side, B.x, B.y, B.z));
+				const FVector Along = To - From;
+				FFTCellOptions Opts;
+				Opts.Cull = EFTCellCull::Prop;
+				Opts.bCastShadow = false;
+				Opts.Label = FString::Printf(TEXT("HC-CABLE-%d-%d"), S + 1, K + 1);
+				// The rod's local Z along the span, a hair longer so the joints close; centred on the span's middle.
+				const FRotator Rot = FRotationMatrix::MakeFromZ(Along).Rotator();
+				const FVector Scale(kCableDiameterCm / RodSize.X, kCableDiameterCm / RodSize.Y, (Along.Size() + 0.5) / RodSize.Z);
+				Cells.Add(Rod, CableMats, FTransform(Rot, 0.5 * (From + To) - Rot.RotateVector(RodCentre * Scale), Scale), {}, EFTCellKind::NoCollide,
+					Opts);
+				++CableSpans;
+			}
+		}
+		HeroPieces += CableSpans;
+		int32 HeroLamps = 0;
+		if (bNightLamps && LampParts.Lights)
+		{
+			UFTNightLightData& Data = *LampParts.Lights->Data;
+			while (Data.LampGain.Num() < Data.LampAt.Num())
+			{
+				Data.LampGain.Add(1.f);
+			}
+			// The Core's slots: under each string, under each lantern pair, over each lit bay's entrance, each at its gain.
+			for (int32 K = 0; K < Hero.lampCount; ++K)
+			{
+				const ftcore::HeroLampSlot& Slot = Hero.lamps[K];
+				Data.LampAt.Add(FVector3f(Cm(ftcore::massingEnginePoint(Side, Slot.at.x, Slot.at.y, Slot.at.z))));
+				Data.LampGain.Add(Slot.gain * HeroLampScale);
+				++HeroLamps;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: setts %s, eave %s, %d lantern/post/cable pieces, %d lamp slots "
+			"(strings %.3f, pairs %.3f, entrances %.3f, all x%.2f)%s; glazed lanterns x%.2f, paper %.2f,%.2f,%.2f on %.2f,%.2f,%.2f at %.2f."),
+			Setts ? TEXT("MI_Surface_solhaven_granite_sett") : TEXT("MISSING (the look's paving)"), Timber ? TEXT("oak plank") : TEXT("the look's"),
+			HeroPieces, HeroLamps, HeroSpec.stringLampGain, HeroSpec.pairLampGain, HeroSpec.entranceLampGain, HeroLampScale,
+			bNightLamps ? TEXT("") : TEXT(" (no -NightLamps, so none)"), HeroSpec.largeScale, HeroSpec.lanternColour[0], HeroSpec.lanternColour[1],
+			HeroSpec.lanternColour[2], HeroSpec.lanternBase[0], HeroSpec.lanternBase[1], HeroSpec.lanternBase[2], HeroSpec.lanternGlow);
+		// The corner's sight line west (E2, 11-16): far-bank fronts, the near quay's rope edge, moored boats, trees.
+		FTHeroFarBank::Build(Cells, Side, nullptr, Timber, Steel, NightGlow, Large, Small, LargePaper, SmallPaper,
+			(bNightLamps && LampParts.Lights) ? LampParts.Lights->Data.Get() : nullptr, HeroLampScale);
+	}
 	// Per box face (box * 4 + face), whether its middle fronts a street: the frontage reads it; the windows' shop fronts
 	// follow it.
 	std::vector<uint8_t> FrontFaces;
+	int32 HeroLampsKept = 0;  // street lamps left out of the hero corner
 	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
 	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance; a
 	// lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
 	{
+		// -HeroCorner: inside the corner the light comes from the lanterns and the shops, so no street lamp stands there.
+		if (bHeroCorner && Mesh->GetPathName().Contains(kNightLampMesh) && ftcore::heroCornerKeepsLampOut(ftcore::HeroCornerSpec{}, Placed.x, Placed.y))
+		{
+			++HeroLampsKept;
+			return false;
+		}
 		const FBox Bounds(Mesh->GetBoundingBox().Min * Scale, Mesh->GetBoundingBox().Max * Scale);
 		const ftcore::MassingVec MeshMin{Bounds.Min.X / 100.0, Bounds.Min.Y / 100.0, Bounds.Min.Z / 100.0};
 		const ftcore::MassingVec MeshMax{Bounds.Max.X / 100.0, Bounds.Max.Y / 100.0, Bounds.Max.Z / 100.0};
@@ -3213,6 +3801,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	FTBuildDecals::Lay(Package, Cells, RoadSpecs, RoadBuilds, Side);
+	if (bHeroCorner)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d street lamps left out of the corner (roads and lanes so far)."), HeroLampsKept);
+	}
 
 	// The quays: a rail, posts and bollards along each deck's seaward edges, and -QuayLamp's lamps, set with the props.
 	std::vector<ftcore::MassingProp> QuayLamps;
@@ -3405,6 +3997,30 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -NightLamps with -Windows: a spill point out of each shopfront (ftcore::massingShopLights) in the night lights' data.
 	int32 ShopLights = 0, ShopFaces = 0;
 	std::vector<ftcore::MassingShopLight> ShopAt;
+	// The hero corner's bays are kit lots (no box, no windows): each lit bay's one light is a pool shop slot inside its room
+	// near the front, facing out (its fixtures are emissive panels, no light actors).
+	if (bHeroContent && bNightLamps)
+	{
+		const ftcore::HeroCornerSpec& ShopSpec = HeroTune;
+		ftcore::HeroShopSlot HeroShops[ftcore::kHeroShopSlots];
+		const int HeroShopCount = ftcore::heroCornerShopSlots(ShopSpec, HeroShops);
+		TArray<FString> Backs;
+		for (int L = 0; L < HeroShopCount; ++L)
+		{
+			const ftcore::HeroShopSlot& S = HeroShops[L];
+			NightShop(*LampParts.Lights->Data, Side, S.at, S.pitch, S.gain * HeroShopScale);
+			if (S.back)
+			{
+				Backs.Add(FString::Printf(TEXT("bay %d at %.2f m in, %.2f m up, pitched %.0f, gain %.2f"), S.bay + 1, S.at.x - ShopSpec.laneX1,
+					S.at.z - ShopSpec.ground, S.pitch, S.gain * HeroShopScale));
+			}
+		}
+		ShopLights += HeroShopCount;
+		ShopFaces += HeroShopCount;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d shop slots, one inside each lit room, pitched %.0f, gain %.2f; "
+			"back slots: %s."), HeroShopCount - Backs.Num(), ShopSpec.shopLightPitch, ShopSpec.shopLightGain * HeroShopScale,
+			Backs.Num() ? *FString::Join(Backs, TEXT("; ")) : TEXT("none"));
+	}
 	if (bWindows)
 	{
 		int32 Windows = 0, StreetFaces = 0;
@@ -3573,23 +4189,28 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		LogLook(LookSet, bSea);
 	}
 
-	// -Lawn: the greens' lawn sheets and their paths, following the ground.
-	if (!FTLawn::Build(World, Spawn, Package, Hill, Side, bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::Lawn)] : nullptr,
-			bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PavingSlab)] : nullptr,
-			bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PoleConcrete)] : nullptr))
+	// -Lawn: the greens' lawn sheets and their paths, following the ground. The sky, sun, haze, backdrop, stand-ins and
+	// player start are the strip's: a -HeroCornerOnly sub-level takes none (a second sun would double the light).
+	if (!bHeroOnly)
 	{
-		World->DestroyWorld(false);
-		return 1;
+		if (!FTLawn::Build(World, Spawn, Package, Hill, Side, bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::Lawn)] : nullptr,
+				bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PavingSlab)] : nullptr,
+				bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::PoleConcrete)] : nullptr))
+		{
+			World->DestroyWorld(false);
+			return 1;
+		}
+		FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);
+		FTBackdrop::Haze(World);
+		FTBackdrop::Dress(Package, Cells, Base, Hill, Side, Boxes, WindowLook[static_cast<int32>(ftcore::MassingLookSurface::BuildingC)]);
+		if (!FTStandIns::Place(Package, Cells, Base, Hill, Side) || !FTStandIns::PlacePlants(Cells, Hill, Side))
+		{
+			return 1;
+		}
 	}
-	FTScene::SpawnLook(World, Spawn, ftcore::SceneLook{}, kMassingSun);
-	FTBackdrop::Haze(World);
-	FTBackdrop::Dress(Package, Cells, Base, Hill, Side, Boxes, WindowLook[static_cast<int32>(ftcore::MassingLookSurface::BuildingC)]);
-	if (!FTStandIns::Place(Package, Cells, Base, Hill, Side) || !FTStandIns::PlacePlants(Cells, Hill, Side))
-	{
-		return 1;
-	}
+	// -HeroCornerOnly: no plinths (the strip's run lays them round its hidden bays).
 	std::vector<ftcore::MassingBox> Plinths;
-	if (!FTPlinths::Plan(Ground, Built, Visible, Entry[0], Entry[1], Plinths))
+	if (!bHeroOnly && !FTPlinths::Plan(Ground, Built, Visible, Entry[0], Entry[1], Plinths))
 	{
 		return 1;
 	}
@@ -3605,8 +4226,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const ftcore::MassingVec From = ftcore::massingEnginePoint(Side, Entry[0], Entry[1], Entry[2]);
 		EntryYaw = FMath::RadiansToDegrees(FMath::Atan2(To.y - From.y, To.x - From.x));
 	}
-	APlayerStart* Start = World->SpawnActor<APlayerStart>(EntryAt + FVector(0.0, 0.0, 100.0), FRotator(0.0, EntryYaw, 0.0), Spawn);
-	Start->SetActorLabel(TEXT("PlayerStart"));
+	if (!bHeroOnly)
+	{
+		APlayerStart* Start = World->SpawnActor<APlayerStart>(EntryAt + FVector(0.0, 0.0, 100.0), FRotator(0.0, EntryYaw, 0.0), Spawn);
+		Start->SetActorLabel(TEXT("PlayerStart"));
+	}
 
 	// With -World, the director that plays the world's story steps and tours here, with the districts where the plan
 	// puts them.
@@ -3867,6 +4491,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		static_cast<int32>(Boxes.size()), Named, Kit, Sloped, Nudged, Raised, Skipped, static_cast<int32>(Walls.size()), Samples, Samples,
 		ftcore::massingHeightFromValue(Lowest), ftcore::massingHeightFromValue(Highest), Actors, Reached, Counted, *ApartLine, *SpawnLine,
 		*PlacedLine, bNav ? TEXT("") : TEXT(" (no navmesh)"));
+
+	// -HeroSubLevel: the corner's sub-level streams in with the strip, always loaded (loaded before BeginPlay, so the lamp
+	// pool gathers both levels' night lights). A sub-level not built yet is simply missing until its run saves it.
+	if (bHeroSubLevel)
+	{
+		ULevelStreamingAlwaysLoaded* Streaming = NewObject<ULevelStreamingAlwaysLoaded>(World, NAME_None, RF_NoFlags);
+		Streaming->SetWorldAssetByPackageName(FName(*HeroSubLevelPath));
+		World->AddStreamingLevel(Streaming);
+		const bool bThere = FPackageName::DoesPackageExist(HeroSubLevelPath);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroSubLevel: %s streams in always loaded%s."), *HeroSubLevelPath,
+			bThere ? TEXT("") : TEXT(" (not built yet: run -HeroCornerOnly)"));
+	}
 
 	FAssetCompilingManager::Get().FinishAllCompilation();
 	FAssetRegistryModule::AssetCreated(World);

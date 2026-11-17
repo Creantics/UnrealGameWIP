@@ -44,9 +44,10 @@ public:
 	bool IsOn() const { return bOn; }
 	// A windowed box (Piece, its instance; Data, its window data): ORs its kerb bits (faces fronting a street wider than
 	// SharedUpTo, of Streets) into its StreetBits and lays its kerbed faces' shop pieces. Side: the world's side (m).
-	// Nothing when off.
+	// Nothing when off. ForcedKerb >= 0 (the hero corner's bays, on a lane no street table holds): those kerb bits, every
+	// such box modelled; ForcedLitShare >= 0: that share of its bays lit in place of the city's.
 	void Place(FFTCellInstancer& Cells, const FFTCellHandle& Piece, const ftcore::MassingBox& Box, const ftcore::MassingWindowData& Data,
-		const std::vector<ftcore::MassingStreet>& Streets, double SharedUpTo, double Side);
+		const std::vector<ftcore::MassingStreet>& Streets, double SharedUpTo, double Side, int32 ForcedKerb = -1, float ForcedLitShare = -1.f);
 	// The census: kerbed faces, bays' pieces and instances.
 	void Log() const;
 

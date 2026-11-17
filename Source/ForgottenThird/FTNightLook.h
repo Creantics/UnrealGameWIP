@@ -79,6 +79,13 @@ FORGOTTENTHIRD_API float InteriorDay();
 // dusk is a middle state. Off at 0 lm. Returns the lights written. Iterates the world's rect lights: call it when the
 // share moves, not every frame.
 inline constexpr const TCHAR* BayLightTag = TEXT("GlassProofBayLight");
+// The hero corner's face-ruling area lights (2026-11-16, ftcore::heroCornerAreaLights), written by WriteBayLights too:
+// HeroFrontTag a lit bay's front, a wide warm key on the lane (heroFrontLumens x the lights' share at heroShopKelvin);
+// HeroSkyTag the lane's cool floor from the open canal side (heroSkyLumens x the share, heroSkyTint, heroSkySpecular).
+// Tagged rect lights, not pool-managed. -NightHeroFrontLm= / -NightHeroSkyLm= / -NightHeroSkyTint=r,g,b /
+// -NightHeroSkySpec= / -NightHeroFrontSpec= over the look table.
+inline constexpr const TCHAR* HeroFrontTag = TEXT("HeroCornerFrontKey");
+inline constexpr const TCHAR* HeroSkyTag = TEXT("HeroCornerSkyFloor");
 FORGOTTENTHIRD_API float BayLampLumens();
 FORGOTTENTHIRD_API float BayLampDayLumens();
 FORGOTTENTHIRD_API float BayLampAt(float Lights);

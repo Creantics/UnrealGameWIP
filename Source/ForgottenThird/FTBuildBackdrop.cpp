@@ -59,12 +59,34 @@ bool Wants(const TCHAR* Switch)
 	return FParse::Param(Cmd, TEXT("Backdrop")) || FParse::Param(Cmd, Switch);
 }
 
-UMaterialInterface* Paint(UPackage* Package, UMaterialInterface* Base, const TCHAR* Name, const FLinearColor& Color, float Roughness)
+// The hill goes dark at night (ftcore::HillNightLook) unless -NoHillNight keeps its day albedo.
+bool HillNight()
+{
+	return !FParse::Param(FCommandLine::Get(), TEXT("NoHillNight"));
+}
+
+// bNight: the surface master's night dim on (FTBuildWorldMaterials' NightDim), for the hill's own dress.
+UMaterialInterface* Paint(UPackage* Package, UMaterialInterface* Base, const TCHAR* Name, const FLinearColor& Color, float Roughness,
+	bool bNight = false)
 {
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, Name, RF_Public);
 	Mic->SetParentEditorOnly(Base);
 	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Color")), Color);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), Roughness);
+	if (bNight && HillNight())
+	{
+		// A master built before the night dim takes the values and does nothing with them: say so.
+		float Probe = 0.f;
+		if (!Base->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("NightDim")), Probe))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Backdrop: %s has no NightDim (rebuild it with FTBuildWorldMaterials); %s stays lit at night."),
+				*Base->GetName(), Name);
+		}
+		const ftcore::HillNightLook Night;
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("NightDim")), 1.f);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("NightAlbedo")), Night.albedo);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("NightSaturation")), Night.saturation);
+	}
 	Mic->PostEditChange();
 	return Mic;
 }
@@ -143,6 +165,25 @@ UMaterialInterface* FTBackdrop::HillGround(UPackage* Package, UMaterialInterface
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("WetSmooth")), 0.f);
 	// A deeper scrub green than a lawn's, near the planting's own tints so the clumps read as thicker growth on it.
 	Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("GroundTint")), FLinearColor(0.36f, 0.66f, 0.27f));
+	// By night the moon lit that green as if by day: with the windows' Night the ground over the planting's foot goes dark
+	// and grey (ftcore::hillNightAlbedo, the master's HillNight*), on the planting's own ramp so the town keeps its ground.
+	if (HillNight())
+	{
+		float Probe = 0.f;
+		if (!Mic->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("HillNight")), Probe))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Backdrop: -HillLook: %s's master has no HillNight (rebuild it with FTBuildGround); the hill stays lit at night."),
+				*Mic->GetName());
+		}
+		const ftcore::HillNightLook Night;
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HillNight")), 1.f);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HillNightAlbedo")), Night.albedo);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HillNightSaturation")), Night.saturation);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HillNightFromCm")), kPlantFromM * 100.f);
+		Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("HillNightRampCm")), kPlantRampM * 100.f);
+		UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -HillLook: by night the hill's albedo to %.2f, its colour %.2f (from %.0f m)."),
+			static_cast<double>(Night.albedo), static_cast<double>(Night.saturation), static_cast<double>(kPlantFromM));
+	}
 	Mic->PostEditChange();
 	UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -HillLook: %.1f%% of the mask planted (ground over %.0f m)."),
 		100.0 * Planted / Plant.Num(), static_cast<double>(kPlantFromM));
@@ -216,9 +257,12 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	const bool bDress = Wants(TEXT("HillDress"));
 	const bool bSkyline = Wants(TEXT("Skyline"));
 	const bool bAviation = Wants(TEXT("AviationLamps"));
+	// The hill's lit windows come with its look or its dress; -NoHillWindows drops them.
+	const bool bWindows = (Wants(TEXT("HillWindows")) || Wants(TEXT("HillDress")) || Wants(TEXT("HillLook")))
+		&& !FParse::Param(FCommandLine::Get(), TEXT("NoHillWindows"));
 	UStaticMesh* Cube = Shape(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	UStaticMesh* Lump = Shape(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-	if ((!bDress && !bSkyline && !bAviation) || !Base || !Cube || !Lump || !Field.grid)
+	if ((!bDress && !bSkyline && !bAviation && !bWindows) || !Base || !Cube || !Lump || !Field.grid)
 	{
 		return;
 	}
@@ -230,21 +274,61 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 	// The far blocks placed, for the aviation lamps on the tallest.
 	std::vector<ftcore::BackdropBox> FarBlocks;
 
+	// The hill's hamlets (ftcore::hillWindows), placed first so the planting keeps off them: no crown hides a window.
+	ftcore::HillWindowSpec WindowSpec;
+	std::vector<ftcore::HillHouse> Houses;
+	std::vector<ftcore::MassingBox> DressBoxes = Boxes;
+	if (bWindows)
+	{
+		// The fronts turn to the town: the middle of its boxes, else the field's.
+		double NearX = 0.5 * (X0 + X1), NearY = 0.5 * (Y0 + Y1);
+		if (!Boxes.empty())
+		{
+			NearX = NearY = 0.0;
+			for (const ftcore::MassingBox& B : Boxes)
+			{
+				NearX += B.cx;
+				NearY += B.cy;
+			}
+			NearX /= static_cast<double>(Boxes.size());
+			NearY /= static_cast<double>(Boxes.size());
+		}
+		WindowSpec.footM = kPlantFromM;
+		WindowSpec.nearX = NearX;
+		WindowSpec.nearY = NearY;
+		FParse::Value(FCommandLine::Get(), TEXT("HillWindowGlow="), WindowSpec.glow);
+		Houses = ftcore::hillWindows(Field, WindowSpec, X0, Y0, X1, Y1, Boxes.data(), Boxes.size());
+		for (const ftcore::HillHouse& H : Houses)
+		{
+			ftcore::MassingBox Foot;
+			Foot.cx = H.x;
+			Foot.cy = H.y;
+			Foot.sx = H.d;
+			Foot.sy = H.w;
+			Foot.rot = H.yaw;
+			Foot.z0 = H.z0;
+			Foot.z1 = H.z1;
+			Foot.kind = "hill_house";
+			DressBoxes.push_back(Foot);
+		}
+	}
+
 	if (bDress)
 	{
 		// Planting tints, both green: canopy green and a fresh mid green, a step under the hill's ground green so a clump
 		// reads as thicker growth on it, not a dark dot on sand. Two materials, not one a tint of
 		// ftcore::kBackdropScrubTints: the third tint takes the first, which saves a component in every hill cell.
-		// Trunks in a bark brown.
-		UMaterialInterface* const ScrubA = Paint(Package, Base, TEXT("MI_Backdrop_Scrub"), FLinearColor(0.085f, 0.17f, 0.05f), 0.85f);
-		UMaterialInterface* const ScrubB = Paint(Package, Base, TEXT("MI_Backdrop_ScrubDry"), FLinearColor(0.13f, 0.23f, 0.065f), 0.88f);
+		// Trunks in a bark brown. All of it darkens with the hill at night (the surface master's night dim).
+		UMaterialInterface* const ScrubA = Paint(Package, Base, TEXT("MI_Backdrop_Scrub"), FLinearColor(0.085f, 0.17f, 0.05f), 0.85f, true);
+		UMaterialInterface* const ScrubB = Paint(Package, Base, TEXT("MI_Backdrop_ScrubDry"), FLinearColor(0.13f, 0.23f, 0.065f), 0.88f, true);
 		UMaterialInterface* const Scrub[ftcore::kBackdropScrubTints] = {ScrubA, ScrubB, ScrubA};
-		UMaterialInterface* Bark = Paint(Package, Base, TEXT("MI_Backdrop_Bark"), FLinearColor(0.07f, 0.055f, 0.04f), 0.9f);
-		UMaterialInterface* Steel = Paint(Package, Base, TEXT("MI_Backdrop_Pylon"), FLinearColor(0.30f, 0.31f, 0.32f), 0.6f);
+		UMaterialInterface* Bark = Paint(Package, Base, TEXT("MI_Backdrop_Bark"), FLinearColor(0.07f, 0.055f, 0.04f), 0.9f, true);
+		UMaterialInterface* Steel = Paint(Package, Base, TEXT("MI_Backdrop_Pylon"), FLinearColor(0.30f, 0.31f, 0.32f), 0.6f, true);
 		ftcore::HillDressSpec Spec;
 		Spec.cellM = 12.f;
 		Spec.maxPoints = 12000;
-		const std::vector<ftcore::BackdropPoint> Points = ftcore::hillDress(Field, Spec, X0, Y0, X1, Y1, Boxes.data(), Boxes.size());
+		const std::vector<ftcore::BackdropPoint> Points =
+			ftcore::hillDress(Field, Spec, X0, Y0, X1, Y1, DressBoxes.data(), DressBoxes.size());
 		int32 Clumps = 0, Lumps = 0, Pylons = 0, Trunks = 0;
 		ftcore::BackdropLump Parts[ftcore::kBackdropClumpMax];
 		const FFTCellOptions Options = Far(TEXT("Backdrop"));
@@ -291,7 +375,7 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 			bFacade ? SkylineFacade : Paint(Package, Base, TEXT("MI_Backdrop_Skyline"), FLinearColor(0.10f, 0.11f, 0.13f), 0.85f);
 		// The land under them: paved grey where it's low, the hill's green from the planted height up.
 		UMaterialInterface* Plate = Paint(Package, Base, TEXT("MI_Backdrop_SkylineGround"), FLinearColor(0.17f, 0.17f, 0.16f), 0.95f);
-		UMaterialInterface* PlateHill = Paint(Package, Base, TEXT("MI_Backdrop_SkylineHill"), FLinearColor(0.12f, 0.21f, 0.09f), 0.95f);
+		UMaterialInterface* PlateHill = Paint(Package, Base, TEXT("MI_Backdrop_SkylineHill"), FLinearColor(0.12f, 0.21f, 0.09f), 0.95f, true);
 		UMaterialInterface* const M[] = {Mass};
 		const FFTCellOptions Options = Far(TEXT("Skyline"));
 		// Two bands past the field's south and north edges, seen from the field's middle. Each stands on land plates that
@@ -395,6 +479,54 @@ void FTBackdrop::Dress(UPackage* Package, FFTCellInstancer& Cells, UMaterialInte
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Backdrop: -Skyline: %d far blocks on %d land plates in 2 bands past the field's south and north edges (%d instances), %s."),
 			Blocks, Plates, Blocks + Plates, bFacade ? *FString::Printf(TEXT("wearing %s"), *SkylineFacade->GetName()) : TEXT("plain mass"));
+	}
+
+	if (bWindows)
+	{
+		// The hamlets: each house a dark block (dimmed with the hill), each lit window a thin warm head proud of its front,
+		// lit by the window collection's Night through the street lamps' head master like the aviation lamps; no lights.
+		const FString GlowPath = FTScene::NightLampMaterial;
+		UMaterialInterface* Glow = LoadObject<UMaterialInterface>(nullptr, *(GlowPath + TEXT(".") + FPackageName::GetShortName(GlowPath)), nullptr,
+			LOAD_NoWarn | LOAD_Quiet);
+		if (!Glow)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Backdrop: -HillWindows: %s not built (FTBuildSurfaces -Windows); no hill windows."), *GlowPath);
+		}
+		else
+		{
+			UMaterialInterface* Wall = Paint(Package, Base, TEXT("MI_Backdrop_HillHouse"), FLinearColor(0.17f, 0.16f, 0.14f), 0.9f, true);
+			UMaterialInstanceConstant* Warm = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_Backdrop_HillWindow"), RF_Public);
+			Warm->SetParentEditorOnly(Glow);
+			// By day a dark pane, not a pale dot on the hill.
+			Warm->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampBase")), FLinearColor(0.035f, 0.04f, 0.045f));
+			Warm->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampColor")), FLinearColor::MakeFromColorTemperature(WindowSpec.kelvin));
+			Warm->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampStrength")), WindowSpec.glow);
+			Warm->PostEditChange();
+			UMaterialInterface* const WallM[] = {Wall};
+			UMaterialInterface* const WarmM[] = {Warm};
+			const FFTCellOptions Options = Far(TEXT("HillWindow"));
+			int32 Lit = 0;
+			for (const ftcore::HillHouse& H : Houses)
+			{
+				const FRotator Yaw(0.0, ftcore::massingEngineYaw(H.yaw), 0.0);
+				const double Tall = static_cast<double>(H.z1) - static_cast<double>(H.z0);
+				Cells.Add(Cube, WallM, FTransform(Yaw, EngineCm(Side, H.x, H.y, H.z0 + 0.5 * Tall), FVector(H.d, H.w, Tall)), NoData,
+					EFTCellKind::NoCollide, Options);
+				for (std::size_t K = 0; K < H.windows; ++K)
+				{
+					const ftcore::HillWindow W = ftcore::hillHouseWindow(H, WindowSpec, K);
+					Cells.Add(Cube, WarmM,
+						FTransform(Yaw, EngineCm(Side, W.x, W.y, W.z), FVector(WindowSpec.windowDepthM, WindowSpec.windowW, WindowSpec.windowH)), NoData,
+						EFTCellKind::NoCollide, Options);
+					++Lit;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("Backdrop: -HillWindows: %d lit windows on %d houses, ground %.0f to %.1f m, fronts to (%.0f, %.0f), %.0f K at %.1f."), Lit,
+				static_cast<int32>(Houses.size()), static_cast<double>(WindowSpec.footM),
+				static_cast<double>(ftcore::hillWindowBandTop(Field, WindowSpec, X0, Y0, X1, Y1)), WindowSpec.nearX, WindowSpec.nearY,
+				static_cast<double>(WindowSpec.kelvin), static_cast<double>(WindowSpec.glow));
+		}
 	}
 
 	if (bAviation)

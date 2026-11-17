@@ -4,12 +4,17 @@
 // surface master's own node (the photographed boxes, the plain tinted master the roads wear, the window master).
 //
 // Wet: the look's Wetness (its parameter collection, 0 when no look is applied) soaks up-facing pixels only: the albedo
-// darkens toward soakDarken, the roughness falls toward soakRough (along a curve, so a half-wet street keeps out of the
-// reflection-traced range) and the normal flattens. A drying-patch noise leaves part of the ground damp (dampShare of
-// the soak). Puddles are a world-noise mask whose cover grows with Wetness: a soft darker edge, then a core with roughness
-// puddleRough and a flat normal (no ring where all three would change at once); they
-// favour gutters: a box tilted across its own Y axis (a carriageway slab falling from the crown to the kerb) has its low
-// long edge as its gutter, and the noise is lifted within gutterM of it. Flat boxes get the noise alone.
+// darkens toward soakDarken, the roughness falls toward a soaked value of soakRough plus soakKeep of the dry one's
+// distance from it (wet stone and timber 0.22-0.30, never a mirror: only standing water goes under 0.10) and the normal
+// flattens a little. A flat ground slab's worn track (its long middle, wandering) soaks fully and to 0.15-0.20, so lamps
+// stretch down it as streaks; its long edges (kerb line, shop steps) fill its bowls as a gutter does. A drying-patch noise leaves part of the ground damp (dampShare of the soak). Puddles stand in low
+// spots only: at most one per puddleCellM plan cell, an ellipse (area-preserving stretch, its rim wobbled by a fine
+// noise) kept inside its cell, so the share of ground any puddle can cover is capped by construction
+// (weatherPuddleCapShare, under 15%). Inside its bowl the water rises with Wetness: a soft darker edge, then a core with
+// roughness puddleRough and a flat normal (no ring where all three would change at once). A gutter (a box tilted across
+// its own Y axis, a carriageway slab falling from the crown to the kerb: its low long edge, within gutterM) and a
+// surface's own low spots (the Water input: worn tracks, sunk stones) fill a bowl further but never widen it.
+// With the Water input a surface's joints hold water: soaked fully, darker and at jointWetRough.
 //
 // Dirt (boxes only): a grime band 0..grimeHeightM over the ground on side faces (the box's bottom, or a given height
 // over the street floor for the window master) and a darkening within edgeWidthM of a side face's vertical edges.
@@ -29,26 +34,60 @@
 #include "ftcore/Api.h"
 
 #include <string>
+#include <string_view>
 
 namespace ftcore {
 
 struct SurfaceWeatherSpec {
     float upFrom = 0.55f, upTo = 0.85f;  // vertex normal z: dry below upFrom, fully up-facing from upTo
-    float soakDarken = 0.5f;             // albedo multiplier at full soak
-    float soakRough = 0.05f;             // roughness at full soak
+    float soakDarken = 0.62f;            // albedo multiplier at full soak (unlit setts read 0.65-0.72 of dry in frame luma)
+    float soakRough = 0.20f;             // roughness at full soak (plus soakKeep of the dry roughness's distance from it)
+    float soakKeep = 0.12f;              // share of the dry roughness kept at full soak: dry 0.65-0.95 soaks to 0.25-0.29
     float roughCurve = 0.8f;             // roughness falls by soak^roughCurve
-    float soakFlatten = 0.7f;            // share of the normal flattened at full soak
+    float soakFlatten = 0.3f;            // share of the normal flattened at full soak (a wet film, not standing water)
     float dampShare = 0.45f;             // soak in a drying patch, as a share of a wet patch's
     float patchScaleM = 6.0f;            // drying-patch noise cell
-    float puddleScaleM = 3.5f;           // puddle noise cell
-    float puddleCover = 0.65f;            // the puddle threshold falls from 1 by this at Wetness 1
-    float puddleEdge = 0.2f;             // noise span of a puddle's soft wet-to-dry edge (darkens first)
+    float puddleScaleM = 0.5f;           // the noise cell of a puddle's rim wobble (Noise[0])
+    float puddleCellM = 3.5f;            // one puddle at most per plan cell this size
+    float puddleChance = 0.9f;           // share of cells holding one
+    float puddleRadiusLoM = 0.4f, puddleRadiusHiM = 0.66f;  // its radius (an ellipse of the same area)
+    float puddleStretch = 1.7f;          // at most this long over its radius (and as much narrower)
+    float puddleWobble = 0.15f;          // the rim's radius varies by this share, by the wobble noise
+    float puddleCover = 0.9f;            // the water's level in its bowl: 1 - this at Wetness 1 (bowl 1 at the centre)
+    float puddleEdge = 0.2f;             // bowl span of a puddle's soft wet-to-dry edge (darkens first)
     float puddleCoreFrom = 0.4f;         // the mirror (puddleRough, flat normal) starts this far into the edge ramp
-    float puddleRough = 0.02f;
+    float puddleRough = 0.045f;          // standing water 0.03-0.06: a mirror with a little ripple, not glass
     float puddleDarken = 0.75f;          // albedo multiplier in a puddle, over the soak's
+    // The worn track down a flat ground slab's long middle (a lane's foot traffic), wandering off the middle by up to
+    // trackWanderM and trackHalfLoM-HiM either side of its centre. It soaks fully (no drying patch) and smoother than
+    // the rest, so a lamp's reflection stretches down it as a streak.
+    float trackRough = 0.095f;           // soaked roughness on the track (plus soakKeep of the dry's distance): 0.15-0.20
+    float trackHalfLoM = 0.6f, trackHalfHiM = 0.9f;  // its half width (1.2-1.8 m across)
+    float trackWanderM = 0.4f;           // its centre's swing off the slab's middle line
+    float trackScaleM = 7.0f;            // the swing's and width's noise cell along the slab
+    float trackAspect = 2.0f;            // a flat ground slab at least this many times longer than wide carries one
+    float trackDryPolish = 0.0f;         // dry roughness lost on the track, as a share (0: the dry look as before)
+    float kerbBias = 1.0f;               // a flat ground slab's long edges (kerb line, shop steps) deepen its bowls as a
+                                         // gutter does, by this share of the gutter weight
+    // Edge pools: one low pool per shop entrance along a flat ground slab's long edge, whatever its cell holds. Off at
+    // pitch 0. The pools sit every edgePoolPitchM along the slab (its local long axis, metres from its centre), the first
+    // at edgePoolPhaseM, each jittered by up to edgePoolJitterM along the edge, its centre edgePoolInsetM in from the
+    // edge. The pitch must leave room for one pool, so it is at least 2 * (jitter + along radius).
+    float edgePoolPitchM = 0.0f;         // a pool per this much edge (a bay's width); 0: none
+    float edgePoolPhaseM = 0.0f;         // the along coordinate of one pool's centre before its jitter
+    float edgePoolSide = 0.0f;           // +1 the edge on the slab's +across side only, -1 the - side only, 0 both
+    float edgePoolJitterM = 0.3f;        // the centre's swing along the edge
+    float edgePoolInsetM = 0.25f;        // the centre's distance in from the edge: at most the half extent, so every pool
+                                         // runs against the step foot
+    float edgePoolHalfLoM = 0.22f, edgePoolHalfHiM = 0.35f;  // its half extent across the edge (0.44-0.7 m across)
+    float edgePoolStretch = 1.2f;        // its along radius over the across one
+    float edgePoolDeep = 1.3f;           // its bowl scale: lower than a cell's puddle, so it fills first
     float tiltMin = 0.005f;              // |world z of the box's Y axis| over which a box counts as cambered
     float gutterM = 0.6f;                // the gutter band's width over the low edge
-    float gutterBias = 0.25f;            // noise lift at the low edge, falling to 0 across the band
+    float gutterBias = 0.6f;             // a bowl deepened by this share at the low edge, falling to 0 across the band
+    float lowBias = 0.8f;                // ... and by this share up or down at a surface's low or high spot (Water.y)
+    float jointWetDarken = 0.6f;         // albedo multiplier on a joint holding water (the Water input's x)
+    float jointWetRough = 0.3f;          // a wet joint's roughness (no glints off the grit, no mirror)
     float grimeHeightM = 1.0f;
     float grimeStrength = 0.8f;
     float grimeScaleM = 0.5f;            // grime noise cell
@@ -274,6 +313,8 @@ struct SurfaceWeatherOptions {
     bool jointDepth = false; // the street's joints as real recesses, by ViewVec and JointDepth inputs (needs street)
     bool streetDetail = false; // the asphalt's baked detail tile, by DetAlb, DetNrm and DetRA texture inputs (needs street)
     bool specOut = false;    // a SpecOut output: the street layer's specular (dry asphalt's own, else 0.5)
+    bool waterInput = false; // a Water input (float2) from the surface node: x its joint share 0..1 (joints hold
+                             // water), y its low spot 0..1 (0.5 level; 1 a worn track or sunk stone, 0 a proud one)
 };
 
 // 0..1, how up-facing a pixel is from its vertex normal's world z.
@@ -285,19 +326,54 @@ FTCORE_API float weatherSoak(float wetness, float up, float patchNoise, const Su
 // 0..1 gutter weight: axisYz the world z of the box's unit Y axis, localY the pixel's metres from the centre along it,
 // sizeY the box's size along it in metres. 0 on a flat box.
 FTCORE_API float weatherGutter(float axisYz, float localY, float sizeY, const SurfaceWeatherSpec& spec);
-// 0..1 puddle: noise 0..1 at puddleScaleM.
-FTCORE_API float weatherPuddle(float wetness, float up, float noise, float gutter, const SurfaceWeatherSpec& spec);
+// The two-octave value noise of the node's Noise loop at p (cells, 3D; the plan channels read z 0), on its 16-bit
+// lattice hash: the HLSL's Noise[ch] is weatherNoise of WorldPos / (scale * 100), plus the channel's offset.
+FTCORE_API float weatherNoise(float px, float py, float pz);
+// The node's Noise[0] (the rim wobble) at a plan point in metres.
+FTCORE_API float weatherRimNoise(float xM, float yM, const SurfaceWeatherSpec& spec);
+// A plan point's puddle bowl (metres): 1 at the centre of its cell's puddle, falling to 0 on its wobbled rim (rimNoise
+// 0..1), under 0 outside it and -1 in a cell holding none.
+FTCORE_API float weatherPuddleBowl(float xM, float yM, float rimNoise, const SurfaceWeatherSpec& spec);
+// The most ground puddles can cover at any wetness (every cell holding one at the largest radius, its rim out fully).
+FTCORE_API float weatherPuddleCapShare(const SurfaceWeatherSpec& spec);
+// 0..1 puddle in a bowl (weatherPuddleBowl): gutter 0..1, low 0..1 (0.5 when the surface gives none). 0 wherever
+// bowl <= 0, at any wetness, gutter or low.
+FTCORE_API float weatherPuddle(float wetness, float up, float bowl, float gutter, float low, const SurfaceWeatherSpec& spec);
+// A joint's roughness and albedo multiplier holding water: rough after the soak, joint its share 0..1, wet and up as the
+// soak's, puddle the puddle over it (a puddle's own numbers win there).
+FTCORE_API float weatherJointRough(float rough, float joint, float wet, float up, float puddle, const SurfaceWeatherSpec& spec);
+FTCORE_API float weatherJointDarken(float joint, float wet, float up, float puddle, const SurfaceWeatherSpec& spec);
 // 0..1 dirt on a face: side 0..1 (how vertical), thinnest the box's thinner plan side (m), aboveM over the ground,
 // edgeM the distance to the face's nearest vertical edge, noise 0..1.
 FTCORE_API float weatherDirt(float side, float thinnest, float aboveM, float edgeM, float noise, const SurfaceWeatherSpec& spec);
-// The roughness after soak and puddle.
+// The roughness after soak and puddle: never under min(rough, soakRough) outside a puddle's core.
 FTCORE_API float weatherRough(float rough, float soak, float puddle, const SurfaceWeatherSpec& spec);
+// The same on the worn track (track 0..1, weatherTrack): its soaked roughness goes toward trackRough, its dry one loses
+// trackDryPolish of itself. weatherRough is this at track 0.
+FTCORE_API float weatherRoughTrack(float rough, float soak, float puddle, float track, const SurfaceWeatherSpec& spec);
+// 1 when a box (thickness and plan sides, m; axisYz as weatherGutter's) is a flat ground slab: a ground slab
+// (weatherGroundSlab) that isn't cambered.
+FTCORE_API float weatherFlatSlab(float sz, float sx, float sy, float axisYz, const SurfaceWeatherSpec& spec);
+// 0..1 on a flat ground slab's worn track: acrossM the pixel's metres from the slab's long middle line, alongM along it,
+// longM and shortM its plan sides, flat weatherFlatSlab. 0 off the track and on a slab under trackAspect.
+FTCORE_API float weatherTrack(float acrossM, float alongM, float longM, float shortM, float flat, const SurfaceWeatherSpec& spec);
+// 0..1 kerb weight on a flat ground slab: edgeM the pixel's metres from the nearer long edge (a gutter's falloff).
+FTCORE_API float weatherKerb(float edgeM, float flat, const SurfaceWeatherSpec& spec);
+// A flat ground slab's edge-pool bowl at a pixel (as weatherPuddleBowl's, scaled by edgePoolDeep): acrossM and alongM
+// as weatherTrack's, shortM the slab's short plan side, rimNoise the wobble noise. Under 0 off every pool, -1 with pitch
+// 0 or off a flat slab. The node takes the larger of this and the cell's bowl.
+FTCORE_API float weatherEdgePoolBowl(float acrossM, float alongM, float shortM, float flat, float rimNoise,
+                                     const SurfaceWeatherSpec& spec);
+// Sets spec fields from "key=value[,key=value...]", the keys the field names above (soakRough=0.22,puddleCellM=3.2).
+// False on an unknown key or a value that isn't a finite number, with that entry in error (when given); fields set by
+// the entries before it stay set. Empty text is true and changes nothing.
+FTCORE_API bool applySurfaceWeatherOverrides(SurfaceWeatherSpec& spec, std::string_view text, std::string* error);
 // The albedo multiplier on one channel (0 r, 1 g, 2 b) after soak, puddle and dirt.
 FTCORE_API float weatherAlbedoScale(int channel, float soak, float puddle, float dirt, const SurfaceWeatherSpec& spec);
 
 // The node's body. Inputs: Albedo, Normal (world), Rough, AO, WorldPos, VertexNormal, Wetness, Amount (0 opts a
 // material out); with boxFrame LocalPos, AxisX, AxisY, AxisZ (the instance's axes in world space, scale included, on the
-// engine's 100 cm cube); with aboveInput Above; with street Street; with street and jointDepth ViewVec (float3, world,
+// engine's 100 cm cube); with aboveInput Above; with waterInput Water; with street Street; with street and jointDepth ViewVec (float3, world,
 // cm, from the pixel to the camera, not normalised) and JointDepth (0..1, a run-time switch). Returns the albedo;
 // outputs NormalOut, RoughOut, AOOut. At Street 0 and Wetness 0, NormalOut is the Normal input, so a mesh's own normal
 // stays as it was; at JointDepth 0 every output is what the node gives without jointDepth.
@@ -322,7 +398,8 @@ FTCORE_API std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const 
 
 // The same soak and puddles as a flat face of that node at Up 1, for a decal over it (so its wet edge matches the ground
 // under it): a snippet for inside another Custom node that reads WorldPos (cm), WetIn (0..1) and GutIn (0..1, the gutter
-// band), declares Noise, WSoak and WPud, and darkens float3 C and smooths float R, which the caller has declared.
+// band), declares Noise, WSoak and WPud (and WPd* locals for the puddle cell), and darkens float3 C and smooths float R,
+// which the caller has declared.
 FTCORE_API std::string surfaceWetHlsl(const SurfaceWeatherSpec& spec);
 
 // The lattice hash under the street layer's and the road decals' value noise (FTStreetNoise, FTRoadDecalNoise N): integer

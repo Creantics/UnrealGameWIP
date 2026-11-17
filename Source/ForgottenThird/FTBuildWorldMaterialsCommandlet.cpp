@@ -14,6 +14,7 @@
 #include "Misc/FileHelper.h"
 #include "FTJointCollection.h"
 #include "FTText.h"
+#include "FTWeatherSpec.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCameraPositionWS.h"
@@ -135,6 +136,9 @@ void AddWeatherInput(UMaterialExpressionCustom* Custom, FName Name, UMaterialExp
 	In.Input.Connect(Output, From);
 }
 
+// The weather numbers this run writes: the Core defaults with -WeatherSpec over them (FT::ReadWeatherSpec).
+ftcore::SurfaceWeatherSpec GWeatherSpec;
+
 // -Weather: ftcore::surfaceWeatherHlsl's node (wet up-facing ground, puddles favouring a cambered box's low edge; no
 // dirt, since this master also dresses sign plates, poles and markings) over the surface node's albedo (output 0) and
 // roughness (output 1), reading the look collection's Wetness; "Weather" (group Weather, 1) scales it per instance.
@@ -240,7 +244,7 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	UMaterialExpressionCustom* Weather = AddExpression<UMaterialExpressionCustom>(Material, -150, 0);
 	Weather->Description = TEXT("FTSurfaceWeather");
 	Weather->OutputType = CMOT_Float3;
-	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(ftcore::SurfaceWeatherSpec{}, Options));
+	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(GWeatherSpec, Options));
 	Weather->Inputs.Reset();
 	AddWeatherInput(Weather, TEXT("Albedo"), Surface, 0);
 	AddWeatherInput(Weather, TEXT("Normal"), VertexNormal, 0);
@@ -306,6 +310,57 @@ void AddWeather(UMaterial* Material, UMaterialExpressionCustom* Surface, UMateri
 	Inputs->Specular.Connect(4, Weather);
 }
 
+// The night dim (ftcore::hillNightAlbedo) over whatever feeds the base colour: with the windows' Night (the lamps on) the
+// albedo goes to NightAlbedo of itself and NightSaturation of the way from its grey, times NightDim. NightDim is 0 here, so
+// only instances that turn it on (the far hill's dress, FTBackdrop::Dress) change, and by day (Night 0) nothing does.
+// Without the windows' collection (FTBuildSurfaces not yet run) a scalar stands in at 0.
+void AddNightDim(UMaterial* Material)
+{
+	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
+	UMaterialExpression* From = Inputs->BaseColor.Expression;
+	const int32 FromOutput = Inputs->BaseColor.OutputIndex;
+	if (!From)
+	{
+		return;
+	}
+	UMaterialExpressionCustom* Dim = AddExpression<UMaterialExpressionCustom>(Material, 100, -300);
+	Dim->Description = TEXT("FTNightDim");
+	Dim->OutputType = CMOT_Float3;
+	Dim->Code = TEXT(
+		"float N = saturate(NightDim) * saturate(Night);\n"
+		"float Grey = dot(Albedo, float3(0.2126, 0.7152, 0.0722));\n"
+		"return lerp(Albedo, max(Grey + (Albedo - Grey) * NightSaturation, 0.0) * NightAlbedo, N);\n");
+	Dim->Inputs.Reset();
+	AddWeatherInput(Dim, TEXT("Albedo"), From, FromOutput);
+	UMaterialParameterCollection* WindowLights = LoadObject<UMaterialParameterCollection>(nullptr,
+		*(FString(FTScene::WindowCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::WindowCollection)), nullptr,
+		LOAD_NoWarn | LOAD_Quiet);
+	if (WindowLights && WindowLights->GetParameterId(TEXT("Night")).IsValid())
+	{
+		UMaterialExpressionCollectionParameter* Night = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, -700);
+		Night->Collection = WindowLights;
+		Night->ParameterName = TEXT("Night");
+		Night->ParameterId = WindowLights->GetParameterId(TEXT("Night"));
+		AddInput(Dim, TEXT("Night"), Night);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildWorldMaterials: no %s; the night dim stays off"), FTScene::WindowCollection);
+		UMaterialExpressionScalarParameter* Night = AddScalar(Material, TEXT("Night"), 0.f, -700);
+		Night->Group = TEXT("Night");
+		AddInput(Dim, TEXT("Night"), Night);
+	}
+	const TCHAR* const Names[] = {TEXT("NightDim"), TEXT("NightAlbedo"), TEXT("NightSaturation")};
+	const float Defaults[] = {0.f, 0.3f, 0.35f}; // ftcore::HillNightLook
+	for (int32 K = 0; K < 3; ++K)
+	{
+		UMaterialExpressionScalarParameter* P = AddScalar(Material, Names[K], Defaults[K], -600 + 100 * K);
+		P->Group = TEXT("Night");
+		AddInput(Dim, Names[K], P);
+	}
+	Inputs->BaseColor.Connect(0, Dim);
+}
+
 // Look (-Weather): the weather node over the surface.
 UMaterial* BuildSurfaceMaterial(UPackage* Package, UMaterialParameterCollection* Look, UTexture2D* const* Detail)
 {
@@ -349,6 +404,7 @@ UMaterial* BuildSurfaceMaterial(UPackage* Package, UMaterialParameterCollection*
 	{
 		AddWeather(Material, Custom, WorldPos, Look, Detail);
 	}
+	AddNightDim(Material);
 	// The world wave's second-world state behind its front (FTWorldWave.h); missing until FTBuildWaveMaterials has run.
 	FTWorldWave::AddState(TEXT("FTBuildWorldMaterials"), Material, 300, -600);
 
@@ -370,6 +426,10 @@ UFTBuildWorldMaterialsCommandlet::UFTBuildWorldMaterialsCommandlet()
 int32 UFTBuildWorldMaterialsCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	if (!FT::ReadWeatherSpec(Params, TEXT("FTBuildWorldMaterials"), FTWorldMaterialsBuild::GWeatherSpec))
+	{
+		return 1;
+	}
 	// -Weather: the master reads the look's Wetness; its collection is found before anything is replaced.
 	UMaterialParameterCollection* Look = nullptr;
 	if (FParse::Param(*Params, TEXT("Weather")))
