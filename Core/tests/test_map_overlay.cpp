@@ -259,3 +259,38 @@ TEST_CASE("map overlay: a door lights only the building nearest it; turned footp
     mapEnterableBuildings(m, e);
     CHECK(e == std::vector<std::uint8_t>{0, 0, 0, 0, 0});
 }
+
+TEST_CASE("map overlay: the cursor picks the nearest road shown at the zoom, within reach") {
+    const MiniMapModel m = model();
+    // 3 m north of the main road, 3 m west of the lane: the lane is hidden at mid zoom, so the main road is picked.
+    CHECK(mapRoadNear(m, {197.f, 147.f}, 10.f, MapZoom::Mid) == 0);
+    CHECK(mapRoadNear(m, {197.f, 20.f}, 10.f, MapZoom::Near) == 3); // only the lane is near
+    CHECK(mapRoadNear(m, {197.f, 20.f}, 10.f, MapZoom::Mid) == -1);
+    CHECK(mapRoadNear(m, {70.f, 23.f}, 10.f, MapZoom::Mid) == 4);   // the unnamed street
+    CHECK(mapRoadNear(m, {70.f, 23.f}, 10.f, MapZoom::Far) == -1);  // streets hidden at far
+    CHECK(mapRoadNear(m, {70.f, 23.f}, 2.f, MapZoom::Mid) == -1);   // out of reach
+}
+
+TEST_CASE("map overlay: the water grid merges into one rectangle per run of a row, after the given rectangles") {
+    MiniMapModel m = model();
+    m.waterRects.push_back(MapRect{10.f, 10.f, 2.f, 2.f, 0.3f});
+    m.waterCell = 2.f;
+    m.waterW = 5;
+    m.waterH = 2;
+    m.water = {1, 1, 0, 1, 0,
+               0, 0, 0, 0, 1};
+    std::vector<MapRect> w;
+    mapWaterRuns(m, w);
+    REQUIRE(w.size() == 4);
+    CHECK(w[0].rot == doctest::Approx(0.3f));
+    CHECK(w[1].cx == doctest::Approx(2.f)); // cells 0-1 of row 0: x 0..4
+    CHECK(w[1].hx == doctest::Approx(2.f));
+    CHECK(w[1].cy == doctest::Approx(1.f));
+    CHECK(w[1].hy == doctest::Approx(1.f));
+    CHECK(w[2].cx == doctest::Approx(7.f)); // cell 3
+    CHECK(w[3].cx == doctest::Approx(9.f)); // row 1, cell 4
+    CHECK(w[3].cy == doctest::Approx(3.f));
+    m.water.resize(3); // short grid: only the rectangles
+    mapWaterRuns(m, w);
+    CHECK(w.size() == 1);
+}

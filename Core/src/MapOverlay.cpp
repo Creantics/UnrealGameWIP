@@ -78,6 +78,41 @@ bool mapRoadShown(MapRoadClass c, MapZoom z) {
     return false;
 }
 
+int mapRoadNear(const MiniMapModel& m, Vec2 world, float maxM, MapZoom z) {
+    int best = -1;
+    float bestD = maxM;
+    for (std::size_t r = 0; r < m.roads.size(); ++r) {
+        if (!mapRoadShown(m.roads[r].cls, z)) continue;
+        const float d = mapRoadDistance(m, static_cast<int>(r), world);
+        if (d < bestD || (d <= bestD && best >= 0 && m.roads[r].cls < m.roads[static_cast<std::size_t>(best)].cls)) {
+            best = static_cast<int>(r);
+            bestD = d;
+        }
+    }
+    return best;
+}
+
+void mapWaterRuns(const MiniMapModel& m, std::vector<MapRect>& out) {
+    out.assign(m.waterRects.begin(), m.waterRects.end());
+    if (m.waterCell <= 0.f || m.water.size() < static_cast<std::size_t>(m.waterW) * m.waterH) return;
+    const float cell = m.waterCell;
+    for (std::uint32_t y = 0; y < m.waterH; ++y) {
+        const std::uint8_t* row = m.water.data() + static_cast<std::size_t>(y) * m.waterW;
+        std::uint32_t x = 0;
+        while (x < m.waterW) {
+            if (!row[x]) {
+                ++x;
+                continue;
+            }
+            const std::uint32_t x0 = x;
+            while (x < m.waterW && row[x]) ++x;
+            const float w = static_cast<float>(x - x0) * cell;
+            out.push_back(MapRect{m.minX + static_cast<float>(x0) * cell + w * 0.5f, m.minY + (static_cast<float>(y) + 0.5f) * cell,
+                                  w * 0.5f, cell * 0.5f, 0.f});
+        }
+    }
+}
+
 MapZoom mapZoomIn(MapZoom z) { return z == MapZoom::Far ? MapZoom::Mid : MapZoom::Near; }
 MapZoom mapZoomOut(MapZoom z) { return z == MapZoom::Near ? MapZoom::Mid : MapZoom::Far; }
 

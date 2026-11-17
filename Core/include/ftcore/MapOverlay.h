@@ -29,6 +29,12 @@ inline constexpr float kMapZoomMPerPx[kMapZooms] = {3.f, 1.4f, 0.6f}; // m per p
 FTCORE_API bool mapRoadShown(MapRoadClass c, MapZoom z);
 FTCORE_API MapZoom mapZoomIn(MapZoom z);  // one step nearer, held at Near
 FTCORE_API MapZoom mapZoomOut(MapZoom z); // one step farther, held at Far
+// The road the cursor picks: of the roads shown at zoom z, the one whose centre line is nearest `world`, if within
+// maxM m; -1 for none. Ties keep the higher class (main over street).
+FTCORE_API int mapRoadNear(const MiniMapModel& m, Vec2 world, float maxM, MapZoom z);
+// The water as rectangles to fill: the model's water rectangles, then the water grid's cells merged along each row
+// into runs (axis-aligned, rot 0). Runs once at load (it sizes `out`).
+FTCORE_API void mapWaterRuns(const MiniMapModel& m, std::vector<MapRect>& out);
 
 // The overlay's view: the world point at the screen's centre and the scale. North up, never rotated.
 struct MapOverlayView {
