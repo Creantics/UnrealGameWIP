@@ -544,7 +544,18 @@ void readEmitter(Reader& r, VfxEmitter& d) {
     r.getEnum("blend", d.blend, {{"alpha", VfxBlend::Alpha}, {"additive", VfxBlend::Additive}});
     r.get("lit", d.lit);
     r.get("nearFade", d.nearFade);
-    r.getEnum("sprite", d.sprite, {{"soft", VfxSprite::Soft}, {"puff", VfxSprite::Puff}, {"spark", VfxSprite::Spark}});
+    r.getEnum("sprite", d.sprite,
+              {{"soft", VfxSprite::Soft}, {"puff", VfxSprite::Puff}, {"spark", VfxSprite::Spark}, {"ring", VfxSprite::Ring}});
+    // A user parameter's name: letters, digits and '_' (Niagara's "User.<name>").
+    const auto paramName = [&r](std::string_view key, std::string& out) {
+        if (!r.get(key, out)) return;
+        bool ok = !out.empty();
+        for (const char c : out)
+            ok = ok && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+        if (!ok) r.errorAt(key, "expected a name of letters, digits and _");
+    };
+    paramName("rateParam", d.rateParam);
+    paramName("colorParam", d.colorParam);
     r.get("stretch", d.stretch);
     r.get("stretchMax", d.stretchMax);
     r.get("softness", d.softness);
@@ -1093,9 +1104,20 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
 
     p.additive = e.blend == VfxBlend::Additive;
     p.lit = e.lit && !p.additive;
-    p.nearFade = e.nearFade && !p.additive && !p.lit;
-    if (e.nearFade && !p.nearFade) p.gaps.push_back("nearFade: alpha unlit sprites only (not faded)");
+    p.nearFade = e.nearFade && !p.additive;
+    if (e.nearFade && !p.nearFade) p.gaps.push_back("nearFade: alpha sprites only (not faded)");
     p.sprite = e.sprite;
+    if (p.sprite == VfxSprite::Ring && !p.lit) {
+        p.sprite = VfxSprite::Soft;
+        p.gaps.push_back("sprite ring: lit alpha sprites only; drawn with the soft round sprite");
+    }
+    if (!e.rateParam.empty()) {
+        if (e.rate > 0.f) p.rateParam = e.rateParam;
+        else p.gaps.push_back("rateParam: the emitter has no rate to bind");
+    }
+    p.colorParam = e.colorParam;
+    if (!p.colorParam.empty() && p.startColor.size() > 1)
+        p.gaps.push_back("colorParam: the parameter's default is the start colour's first stop; the others are dropped");
 
     // Typical and largest start speed, for the velocity stretch.
     float vmax = 0.f;

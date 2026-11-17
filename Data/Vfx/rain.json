@@ -1,0 +1,35 @@
+{
+  "name": "rain",
+  "emitters": [
+    {
+      "name": "streaks",
+      "rate": 12000,
+      "rateParam": "Rate",
+      "colorParam": "Color",
+      "loop": true,
+      "duration": 1.0,
+      "maxParticles": 20000,
+      "lifetime": [1.35, 1.5],
+      "shape": "box",
+      "boxHalfExtents": [15.0, 0.1, 15.0],
+      "speed": 0.0,
+      "velocityMin": [0.9, -9.0, 0.2],
+      "velocityMax": [1.4, -8.0, 0.5],
+      "startSize": [0.01, 0.015],
+      "startColor": [1.0, 1.0, 1.0, 1.0],
+      "colorOverLife": [
+        {"t": 0.0, "color": [0.78, 0.82, 0.86, 0.0]},
+        {"t": 0.06, "color": [0.78, 0.82, 0.86, 0.42]},
+        {"t": 0.9, "color": [0.78, 0.82, 0.86, 0.42]},
+        {"t": 1.0, "color": [0.78, 0.82, 0.86, 0.0]}
+      ],
+      "blend": "alpha",
+      "lit": true,
+      "nearFade": true,
+      "sprite": "soft",
+      "stretch": 0.055,
+      "stretchMax": 60.0,
+      "softness": 0.0
+    }
+  ]
+}
