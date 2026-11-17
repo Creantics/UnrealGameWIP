@@ -77,6 +77,10 @@ FString GuessLaunchMap()
 
 const TCHAR* FTBootSwitches(bool bWithCommandLine)
 {
+#if UE_BUILD_SHIPPING
+	// A Shipping build reads no switch from its command line: the map's boot row alone (none with -NoDemoBoot).
+	bWithCommandLine = false;
+#endif
 	const TCHAR* Cmd = FCommandLine::Get();
 	if (IsRunningCommandlet() || FParse::Param(Cmd, TEXT("NoDemoBoot")))
 	{
@@ -139,7 +143,7 @@ public:
 	{
 		UE_LOG(LogForgottenThird, Log, TEXT("ftcore %s"), UTF8_TO_TCHAR(ftcore::versionString()));
 		// The demo boot row follows the game or play-in-editor world being initialised (before its subsystems start).
-		FWorldDelegates::OnPreWorldInitialization.AddLambda([](UWorld* World, const UWorld::InitializationValues)
+		PreWorldInitHandle = FWorldDelegates::OnPreWorldInitialization.AddLambda([](UWorld* World, const UWorld::InitializationValues)
 		{
 			if (World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE))
 			{
@@ -147,6 +151,15 @@ public:
 			}
 		});
 	}
+
+	virtual void ShutdownModule() override
+	{
+		FWorldDelegates::OnPreWorldInitialization.Remove(PreWorldInitHandle);
+		PreWorldInitHandle.Reset();
+	}
+
+private:
+	FDelegateHandle PreWorldInitHandle;
 };
 
 IMPLEMENT_PRIMARY_GAME_MODULE( FForgottenThirdModule, ForgottenThird, "ForgottenThird" );

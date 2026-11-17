@@ -118,7 +118,7 @@ int32 UFTFarSignsSubsystem::Place(UWorld& World)
 	float CentreX = 404.5f;
 	float CentreY = -25.f;
 	FString At;
-	if (FParse::Value(Switches, TEXT("FarSignsAt="), At))
+	if (FParse::Value(Switches, TEXT("FarSignsAt="), At, false)) // false: keep the comma (x,y)
 	{
 		FString Xs, Ys;
 		if (At.Split(TEXT(","), &Xs, &Ys))

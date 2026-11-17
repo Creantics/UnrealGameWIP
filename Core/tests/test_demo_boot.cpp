@@ -38,6 +38,10 @@ TEST_CASE("demo boot: rows parse and are found by any map-name form")
     CHECK(ftcore::demoBootFind(t, "/Game/Maps/World_Solhaven_Strip.World_Solhaven_Strip") == &t.rows[0]);
     CHECK(ftcore::demoBootFind(t, "UEDPIE_0_World_Solhaven_Strip") == &t.rows[0]);
     CHECK(ftcore::demoBootFind(t, "world_solhaven_strip") == &t.rows[0]);
+    CHECK(ftcore::demoBootFind(t, "D:\\game\\Content\\Maps\\World_Solhaven_Strip.umap") == &t.rows[0]);
+    CHECK(ftcore::demoBootFind(t, "/Game/Maps/World_Solhaven_Strip?listen") == &t.rows[0]);
+    CHECK(ftcore::demoBootFind(t, "World_Solhaven_Strip?game=/Script/X.Y") == &t.rows[0]);
+    CHECK(std::string(ftcore::demoBootMapName("Maps\\World_Solhaven_Strip.umap?listen")) == "World_Solhaven_Strip");
     CHECK(ftcore::demoBootFind(t, "World_Solhaven_Strip_HeroCorner") == nullptr);
     CHECK(ftcore::demoBootFind(t, "Demo") == nullptr);
 }

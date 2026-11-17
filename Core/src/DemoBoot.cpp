@@ -95,7 +95,12 @@ bool parseDemoBoot(std::string_view text, DemoBootTable& out, std::string* error
 
 std::string_view demoBootMapName(std::string_view name)
 {
-    const std::size_t slash = name.find_last_of('/');
+    // A URL's options ("Map?listen", "Map?game=/Script/X.Y") go first: they may hold slashes and dots of their own.
+    const std::size_t option = name.find('?');
+    if (option != std::string_view::npos) {
+        name = name.substr(0, option);
+    }
+    const std::size_t slash = name.find_last_of("/\\");
     if (slash != std::string_view::npos) {
         name.remove_prefix(slash + 1);
     }

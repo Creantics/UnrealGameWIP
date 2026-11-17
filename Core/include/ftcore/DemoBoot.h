@@ -33,7 +33,8 @@ struct DemoBootTable {
 FTCORE_API bool parseDemoBoot(std::string_view text, DemoBootTable& out, std::string* error = nullptr);
 
 // A map name as a short name: the package path's last part ("/Game/Maps/World_X.World_X" -> "World_X"), without a
-// play-in-editor prefix ("UEDPIE_0_World_X" -> "World_X"). A view into `name`.
+// play-in-editor prefix ("UEDPIE_0_World_X" -> "World_X"); file paths with either slash ("Maps\World_X.umap") and a
+// URL's ?options are cut too. A view into `name`.
 FTCORE_API std::string_view demoBootMapName(std::string_view name);
 
 // The row for a map (any form demoBootMapName takes, case-insensitive), or null.
