@@ -25,7 +25,7 @@
 //   * `skippable`: once a lead's move has been seen to its end once (LeadSpecialGauges::seen), a skip input jumps to
 //     the cut back; the results are the same.
 //
-// Nothing here allocates except importArenaSpecials (load time).
+// Nothing here allocates except importArenaSpecials (load time). Implemented in ArenaFight.cpp.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
