@@ -1,13 +1,13 @@
 // UFTArenaRunner's special move (FTArenaRunner.h, "A special move"): the shot list over a frozen fight.
 //
-// Core takes the move's end displacement (the shot file's end_feet, forward toward the target at the press) and puts
-// the performer there when the move ends. This host clamps that end point to walkable ground before the move starts:
-// the capsule swept along the path (static world), the fight's ring and the standing bodies. Blocked: the performer
-// starts back by the missing distance when there is room behind, else the travel is shortened (the clip's root motion
-// scaled to it). The last shot blends into the play camera moved to the end point (SpecialPlayShift).
-//
-// Until Core's calls for that land, the lead stays at its start: the clamp is logged ("travel X of Y m, back Z m") and
-// the play camera is not moved, so the hand-back does not pop either way.
+// Core runs the move (ftcore/ArenaSpecial.h): the gauge, the press, the target, the freeze, the results at the cut back.
+// The press carries the end point this host allows: Core's endTravel/endSide (the shot file's end_feet), forward toward
+// the target, clamped to walkable ground first (the capsule swept along the path through the static world, the ring,
+// the standing bodies). Blocked: the performer starts back by the missing distance when there is room behind
+// (specialBack), else the travel is shortened (specialTravel). Core puts the performer at view.origin at the press and
+// at view.end at the cut back; this host draws it there with no step that tick. While frozen the fight keeps stepping
+// (only the special's clock moves); the world but the performer is held here, the camera plays the shots, and a tail
+// of shots past Core's cut back holds the fight until the last shot has blended into the play camera.
 
 #include "FTArenaRunner.h"
 
@@ -18,6 +18,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "FTArenaFighter.h"
+#include "FTLook.h"
 #include "FTRainSubsystem.h"
 #include "FTSpecialCine.h"
 #include "ForgottenThird.h"
@@ -39,6 +40,7 @@ constexpr float kSpecialFreeze = 0.001f; // the held world's clock
 constexpr float kSpecialRain = 0.02f;    // the rain's
 constexpr double kSpecialCostWindow = 2.0; // s after the end the cost keeps counting
 constexpr int32 kSpecialAfterFrames = 10;   // frames after the end the no-pop check reads
+constexpr float kCoreSpecialEps = 1.0e-4f;  // s: Core's own (ArenaFight.cpp, specialTick): an end due within it is due now
 const FName kSpecialBone(TEXT("hand_r"));
 
 FVector Cm(const ftcore::CutsceneVec3& M) { return FVector(M.x, M.y, M.z) * 100.0; }
@@ -69,8 +71,6 @@ void UFTArenaRunner::ReadSpecialTable()
 	const TCHAR* Cmd = FCommandLine::Get();
 	SpecialTestAt = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialTest="), SpecialTestAt);
-	SpecialTestMove = TEXT("devin_special_01");
-	FParse::Value(Cmd, TEXT("ArenaSpecialMove="), SpecialTestMove);
 	bSpecialShots = FParse::Param(Cmd, TEXT("ArenaSpecialShots"));
 #endif
 	if (bSpecialTableRead)
@@ -108,6 +108,66 @@ void UFTArenaRunner::ReadSpecialTable()
 	}
 	LogWarnings(Warnings);
 	UE_LOG(LogForgottenThird, Log, TEXT("Arena: specials: %u move(s) read."), SpecialTable.size());
+	// Core's moves: the gauge, the press, the results, the end point.
+	Warnings.clear();
+	Error.clear();
+	if (!ReadData(TEXT("Battle/arena_special.json"), Text))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: Data/Battle/arena_special.json not found; no special moves in the fight."));
+		return;
+	}
+	bArenaSpecials = ftcore::importArenaSpecials(Text, ArenaSpecials, &Error, &Warnings);
+	LogWarnings(Warnings);
+	if (!bArenaSpecials)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s; no special moves in the fight."), UTF8_TO_TCHAR(Error.c_str()));
+		return;
+	}
+	// Core's end point and the shot file's end feet are one number twice: they must agree, else the lead ends away
+	// from where the last shot frames it.
+	for (std::size_t I = 0; I < ArenaSpecials.count; ++I)
+	{
+		const ftcore::ArenaSpecialRules& Rules = ArenaSpecials.moves[I];
+		const std::string Id(Rules.idView());
+		const ftcore::SpecialCineMove* Shots = SpecialTable.find(Id);
+		if (!Shots || Shots->empty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s has no shots: it plays under the play camera."), UTF8_TO_TCHAR(Id.c_str()));
+			continue;
+		}
+		const ftcore::CutsceneVec3 Feet = Shots->endFeet();
+		if (FMath::Abs(Feet.x - Rules.endTravel) > 0.005f || FMath::Abs(Feet.y - Rules.endSide) > 0.005f)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s: Core ends it at (%.2f, %.2f) m but its shots at end_feet (%.2f, %.2f) m."),
+				UTF8_TO_TCHAR(Id.c_str()), Rules.endTravel, Rules.endSide, Feet.x, Feet.y);
+		}
+		if (FMath::Abs(Shots->release() - Rules.duration) > 0.05f)
+		{
+			UE_LOG(LogForgottenThird, Warning,
+				TEXT("Arena: specials: %s: Core cuts back at %.2f s, its shots at %.2f s (%.2f s long): the fight is held for the shots' tail."),
+				UTF8_TO_TCHAR(Id.c_str()), Rules.duration, Shots->release(), Shots->length());
+		}
+	}
+	UE_LOG(LogForgottenThird, Log, TEXT("Arena: specials: %u move(s) in the fight."), static_cast<uint32>(ArenaSpecials.count));
+}
+
+void UFTArenaRunner::GiveSpecials()
+{
+	if (!bArenaSpecials)
+	{
+		return;
+	}
+	auto Id = [](const FFTLeadLook* Look) { return Look ? std::string(TCHAR_TO_UTF8(*Look->Name.ToLower())) : std::string(); };
+	const std::string Fighter = Id(PlayerLook);
+	const std::string Partner = bPartner ? Id(AllyLook) : std::string();
+	if (!Fight.setSpecials(&ArenaSpecials, Fighter, Partner, SpecialGauges))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: the fight refused the table."));
+		return;
+	}
+	const ftcore::ArenaSpecialRules* Mine = ArenaSpecials.forLead(Fighter);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: specials: %s (move %s), partner %s."), UTF8_TO_TCHAR(Fighter.c_str()),
+		Mine ? UTF8_TO_TCHAR(std::string(Mine->idView()).c_str()) : TEXT("none"), Partner.empty() ? TEXT("none") : UTF8_TO_TCHAR(Partner.c_str()));
 }
 
 ftcore::SpecialCineStage UFTArenaRunner::SpecialStage() const
@@ -216,94 +276,216 @@ void UFTArenaRunner::ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::
 		return;
 	}
 	SpecialLimit = Why;
-	// Room behind for the missing part: the performer starts back by it and travels the whole way.
-	const float Missing = (1.f - Share) * Length;
+	// Room behind for the missing part: the performer starts back by it (along Core's way, -Forward) and travels the
+	// whole way from there, if that path is clear too.
+	const float Missing = FMath::Min((1.f - Share) * Length + 0.02f, ftcore::kArenaSpecialMaxBack);
 	const TCHAR* BackWhy = TEXT("none");
-	const ftcore::Vec2 Back{-Dir.x, -Dir.y};
-	if (ClearShare(From, Back, Missing, BackWhy) >= 0.999f)
+	const ftcore::Vec2 Back{-Forward.x, -Forward.y};
+	const ftcore::Vec2 Start{From.x - Forward.x * Missing, From.y - Forward.y * Missing};
+	if (ClearShare(From, Back, Missing, BackWhy) >= 0.999f && ClearShare(Start, Dir, Length, BackWhy) >= 0.999f)
 	{
 		SpecialBack = Missing;
-		SpecialEnd = {From.x - Dir.x * Missing + Move.x, From.y - Dir.y * Missing + Move.y};
+		SpecialEnd = {Start.x + Move.x, Start.y + Move.y};
 		return;
 	}
 	SpecialTravel = FMath::Max(0.f, Share - 0.01f); // a hair short of the obstacle
 	SpecialEnd = {From.x + Move.x * SpecialTravel, From.y + Move.y * SpecialTravel};
 }
 
-bool UFTArenaRunner::BeginSpecial(const FString& MoveId)
+void UFTArenaRunner::PressSpecial(ftcore::ArenaInput& In)
 {
-	const ftcore::SpecialCineMove* Move = SpecialTable.find(TCHAR_TO_UTF8(*MoveId));
-	const TCHAR* Refusal = nullptr;
-	if (bSpecialOn)
+	if (!bSpecialPress)
 	{
-		Refusal = TEXT("one is playing");
+		return;
 	}
-	else if (!Move || Move->empty())
+	bSpecialPress = false;
+	bSpecialPressedNow = true;
+	In.special = ftcore::kArenaPlayer;
+	SpecialBack = 0.f;
+	SpecialTravel = 1.f;
+	SpecialLimit = TEXT("none");
+	SpecialTarget = -1;
+	const ftcore::ArenaSpecialRules* Rules =
+		bArenaSpecials && PlayerLook ? ArenaSpecials.forLead(std::string(TCHAR_TO_UTF8(*PlayerLook->Name.ToLower()))) : nullptr;
+	if (!Rules)
 	{
-		Refusal = TEXT("no such move, or it has no shots");
+		return; // Core refuses it (NoMove), logged after the tick
 	}
-	else if (Fight.over())
-	{
-		Refusal = TEXT("the fight is over");
-	}
-	else if (!PlayerFigure)
-	{
-		Refusal = TEXT("no lead figure");
-	}
-	else if (Fight.output().player.action == ftcore::ArenaAction::Downed)
-	{
-		Refusal = TEXT("the lead is down");
-	}
-	// The target: the lock, else the nearest standing enemy.
+	// Core's target (ArenaFight.cpp, specialTarget): the lock at any range, else the soft target within range (none if
+	// it is out of range), else the nearest living enemy in front within range.
+	const ftcore::ArenaPlayerOut& P = Fight.output().player;
+	const int32 Count = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
+	auto Alive = [&](int32 I) { return I >= 0 && I < Count && Fight.enemyHp(static_cast<size_t>(I)) > 0; };
+	auto Away = [&](int32 I) {
+		const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(I)];
+		return ftcore::Vec2{E.x - Bodies.player.x, E.y - Bodies.player.y};
+	};
+	auto Within = [&](int32 I) {
+		const ftcore::Vec2 D = Away(I);
+		return D.x * D.x + D.y * D.y <= Rules->range * Rules->range;
+	};
+	const int32 Lock = P.lock == ftcore::kArenaNobody ? -1 : static_cast<int32>(P.lock);
+	const int32 Soft = P.soft == ftcore::kArenaNobody ? -1 : static_cast<int32>(P.soft);
 	int32 Target = -1;
-	if (!Refusal)
+	if (Alive(Lock))
 	{
-		const int32 Count = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
-		const std::uint8_t Lock = Fight.lock();
-		Target = Lock != ftcore::kArenaNobody && Lock < Count && Fight.enemyHp(Lock) > 0 ? static_cast<int32>(Lock) : -1;
+		Target = Lock;
+	}
+	else if (Alive(Soft))
+	{
+		Target = Within(Soft) ? Soft : -1;
+	}
+	else
+	{
 		float Best = TNumericLimits<float>::Max();
-		for (int32 I = 0; Target < 0 && I < Count; ++I)
+		for (int32 I = 0; I < Count; ++I)
 		{
-			if (Fight.enemyHp(static_cast<size_t>(I)) <= 0)
+			const ftcore::Vec2 D = Away(I);
+			const float Dist = D.x * D.x + D.y * D.y;
+			if (Alive(I) && Within(I) && D.x * P.facing.x + D.y * P.facing.y >= 0.f && Dist < Best)
 			{
-				continue;
-			}
-			const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(I)];
-			const float D = (E.x - Bodies.player.x) * (E.x - Bodies.player.x) + (E.y - Bodies.player.y) * (E.y - Bodies.player.y);
-			Best = FMath::Min(Best, D);
-		}
-		for (int32 I = 0; Target < 0 && I < Count; ++I)
-		{
-			const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(I)];
-			if (Fight.enemyHp(static_cast<size_t>(I)) > 0 &&
-				(E.x - Bodies.player.x) * (E.x - Bodies.player.x) + (E.y - Bodies.player.y) * (E.y - Bodies.player.y) <= Best)
-			{
+				Best = Dist;
 				Target = I;
 			}
 		}
-		if (Target < 0 || !GetEnemyFigure(Target))
+	}
+	if (Target < 0 || Rules->endTravel <= 0.f)
+	{
+		return; // no target (Core refuses it), or a move that ends where it starts
+	}
+	SpecialTarget = Target;
+	const ftcore::Vec2 To = Away(Target);
+	const float Dist = FMath::Sqrt(To.x * To.x + To.y * To.y);
+	SpecialForward = Dist > 1.0e-4f ? ftcore::Vec2{To.x / Dist, To.y / Dist} : P.facing;
+	ClampSpecialTravel(Bodies.player, SpecialForward, ftcore::CutsceneVec3{Rules->endTravel, Rules->endSide, 0.f});
+	In.specialBack = SpecialBack;
+	In.specialTravel = SpecialTravel * Rules->endTravel;
+}
+
+void UFTArenaRunner::PlaceSpecialPerformer(const ftcore::Vec2& At)
+{
+	// Put there, not walked there: no step drawn between, the feet start over.
+	if (Fight.special().performer == ftcore::kArenaAlly)
+	{
+		Bodies.ally = PrevBodies.ally = At;
+		return;
+	}
+	Bodies.player = PrevBodies.player = At;
+	PlayerStepAt = -1;
+	if (PlayerFigure)
+	{
+		PlayerFigure->ResetFeet();
+	}
+}
+
+bool UFTArenaRunner::AfterSpecialTick(const ftcore::ArenaOutput& Out)
+{
+	const ftcore::ArenaSpecialView& V = Fight.special();
+	bool bStarted = false;
+	for (const ftcore::ArenaEvent& E : Out.events)
+	{
+		const TCHAR* Who = E.source == ftcore::kArenaAlly ? TEXT("the partner") : TEXT("the lead");
+		switch (E.type)
 		{
-			Refusal = TEXT("no target standing");
+		case ftcore::ArenaEventType::SpecialReady:
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special ready: %s (slot %d)%s."), Fight.time(), Who, E.amount,
+				E.move ? TEXT(", its ready line") : TEXT(""));
+			break;
+		case ftcore::ArenaEventType::SpecialUnready:
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special no longer shown: %s (slot %d)."), Fight.time(), Who, E.amount);
+			break;
+		case ftcore::ArenaEventType::SpecialStarted:
+			bStarted = true;
+			break;
+		case ftcore::ArenaEventType::SpecialEnded:
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special cut back%s: %s at (%.2f, %.2f) m, %d result(s)."), Fight.time(),
+				E.amount ? TEXT(" (skipped)") : TEXT(""), Who, V.end.x, V.end.y, static_cast<int32>(V.resultCount));
+			break;
+		default:
+			break;
 		}
 	}
-	if (Refusal)
+	if (bSpecialPressedNow && !bStarted)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special %s refused: %s."), Fight.time(), *MoveId, Refusal);
+		// NotControlled (the partner's move), NotReady, NoTarget, NoSight, Down, Running, Over, Unhurt or NoMove.
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special refused: %s."), Fight.time(),
+			UTF8_TO_TCHAR(ftcore::arenaSpecialRefusalName(Fight.specialRefusal(ftcore::kArenaPlayer))));
+	}
+	bSpecialPressedNow = false;
+	if (const ftcore::ArenaSpecialRules* Rules = Fight.specialMove())
+	{
+		for (std::uint8_t I = 0; I < V.cueCount; ++I)
+		{
+			if (V.cuesFired[I] < Rules->cueCount)
+			{
+				UE_LOG(LogForgottenThird, Verbose, TEXT("Arena: special cue %s at %.2f s."), UTF8_TO_TCHAR(Rules->cues[V.cuesFired[I]].name.data()), V.time);
+			}
+		}
+	}
+	if (bStarted)
+	{
+		PlaceSpecialPerformer(V.origin);
+		BeginSpecial();
+		return true;
+	}
+	if (V.endedThisTick)
+	{
+		PlaceSpecialPerformer(V.end);
+		bSpecialPlaced = true;
+		return true;
+	}
+	return false;
+}
+
+bool UFTArenaRunner::StepFrozen()
+{
+	const ftcore::ArenaSpecialView& V = Fight.special();
+	// The cut back's tick takes the whole step (Core's own test, ArenaFight.cpp specialTick): the results land on it and
+	// the fight runs on from it. Every other frozen tick moves nothing but the special's clock: no input, no body.
+	if (!V.running || V.time + StepSeconds >= V.duration - kCoreSpecialEps)
+	{
+		return false;
+	}
+	PrevBodies = Bodies;
+	PrevHeldTime = static_cast<double>(Fight.heldTime());
+	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, ftcore::ArenaInput(), Bodies);
+	if (AfterSpecialTick(Out) && V.endedThisTick)
+	{
+		// Ended on a tick it was not due (its move gone from the host's table): its events all the same.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special ended on a frozen step it was not due (%.2f of %.2f s)."), V.time, V.duration);
+		HandleEvents(Out.events);
+	}
+	return true;
+}
+
+bool UFTArenaRunner::BeginSpecial()
+{
+	const ftcore::ArenaSpecialView& V = Fight.special();
+	const ftcore::ArenaSpecialRules* Rules = Fight.specialMove();
+	const std::string MoveId = Rules ? std::string(Rules->idView()) : std::string();
+	const FString Id = UTF8_TO_TCHAR(MoveId.c_str());
+	const ftcore::SpecialCineMove* Move = SpecialTable.find(MoveId);
+	const int32 Target = static_cast<int32>(V.target);
+	const bool bSameTarget = SpecialTarget == Target; // the press's clamp was for Core's target
+	const AFTArenaFighter* Enemy = Target < MaxEnemies ? GetEnemyFigure(Target) : nullptr;
+	const AFTArenaFighter* Performer = V.performer == ftcore::kArenaAlly ? nullptr : PlayerFigure.Get();
+	if (bSpecialOn || !Move || Move->empty() || !Performer || !Enemy)
+	{
+		// Core runs it all the same (frozen, its results at the cut back) under the play camera.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %.2f: special %s runs with no shots (%s)."), Fight.time(), *Id,
+			bSpecialOn ? TEXT("one is playing") : !Move || Move->empty() ? TEXT("no shots read for it")
+			: !Performer ? TEXT("the partner performs it") : TEXT("no target figure"));
 		return false;
 	}
 	const double Began = FPlatformTime::Seconds();
 	SpecialTarget = Target;
-	const AFTArenaFighter* Enemy = GetEnemyFigure(Target);
-	const ftcore::Vec2 From = Bodies.player;
+	SpecialForward = V.dir;
 	const ftcore::Vec2 To = Bodies.enemies[static_cast<size_t>(Target)];
-	const float Dist = FMath::Sqrt((To.x - From.x) * (To.x - From.x) + (To.y - From.y) * (To.y - From.y));
-	SpecialForward = Dist > 0.01f ? ftcore::Vec2{(To.x - From.x) / Dist, (To.y - From.y) / Dist} : Fight.output().player.facing;
-	ClampSpecialTravel(From, SpecialForward, Move->endFeet());
-	const float FeetZ = static_cast<float>(PlayerFigure->GetActorLocation().Z / 100.0);
+	const float Dist = FMath::Sqrt((To.x - V.origin.x) * (To.x - V.origin.x) + (To.y - V.origin.y) * (To.y - V.origin.y));
+	const float FeetZ = static_cast<float>(Performer->GetActorLocation().Z / 100.0);
 	SpecialStageAt = ftcore::SpecialCineStage();
-	// The frame stays on the lead where it stands: the start-back (SpecialBack) needs Core's placement at the begin.
-	SpecialStageAt.origin = {From.x, From.y, FeetZ};
-	SpecialStageAt.forward = {SpecialForward.x, SpecialForward.y, 0.f};
+	SpecialStageAt.origin = {V.origin.x, V.origin.y, FeetZ};
+	SpecialStageAt.forward = {V.dir.x, V.dir.y, 0.f};
 	SpecialStageAt.target = {To.x, To.y, static_cast<float>(Enemy->GetActorLocation().Z / 100.0)};
 	SpecialStageAt.targetHeight = FMath::Max(0.5f, Enemy->GetHeight() / 100.f);
 	SpecialStageAt.targetRadius = Fight.def().enemies[static_cast<size_t>(Target)].bodyRadius;
@@ -325,7 +507,10 @@ bool UFTArenaRunner::BeginSpecial(const FString& MoveId)
 	}
 	SpecialPlayer.begin(Move);
 	bSpecialOn = true;
-	SpecialPlayShift = FVector::ZeroVector;
+	bSpecialPlaced = false;
+	// The play camera under the blend out, moved to the end while the lead still stands at the start (Core's cut back
+	// after the shots' release); once Core has put the lead there it needs no move.
+	SpecialPlayShift = FVector((V.end.x - V.origin.x) * 100.f, (V.end.y - V.origin.y) * 100.f, 0.f);
 	SpecialBeganAt = Now;
 	SpecialBeginMs = (FPlatformTime::Seconds() - Began) * 1000.0;
 #if !UE_BUILD_SHIPPING
@@ -349,14 +534,14 @@ bool UFTArenaRunner::BeginSpecial(const FString& MoveId)
 		Algo::Sort(MakeArrayView(SpecialStillAt, SpecialStillCount));
 	}
 #endif
-	const ftcore::CutsceneVec3 Feet = Move->endFeet();
+	const float Off = bSameTarget ? FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y)) : -1.f;
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): %u shots, %.2f s; froze %d actors and %d effects in %.2f ms. "
-			 "End feet (%.2f, %.2f) m: travel %.2f of %.2f m, back %.2f m (limited by %s); ends at (%.2f, %.2f) m."),
-		Fight.time(), *MoveId, Target, Dist, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight, Move->size(), Move->length(),
-		SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialBeginMs, Feet.x, Feet.y, SpecialTravel,
-		FMath::Sqrt(Feet.x * Feet.x + Feet.y * Feet.y), SpecialBack, SpecialLimit, SpecialEnd.x, SpecialEnd.y);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the clip %s is not played here yet (the lead holds its own pose): a stand-in."), *MoveId,
+		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): %u shots, %.2f s (Core %.2f s); froze %d actors and %d effects in %.2f ms. ")
+		TEXT("Clamp: travel %.2f m (%.0f%%), back %.2f m (limited by %s); Core: from (%.2f, %.2f) to (%.2f, %.2f) m, %.2f m from the clamped end (-1: Core took another target)."),
+		Fight.time(), *Id, Target, Dist, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight, Move->size(), Move->length(), V.duration,
+		SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialBeginMs, V.travel, SpecialTravel * 100.f, SpecialBack, SpecialLimit,
+		V.origin.x, V.origin.y, V.end.x, V.end.y, Off);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the clip %s is not played here yet (the lead holds its own pose): a stand-in."), *Id,
 		UTF8_TO_TCHAR(std::string(Move->clip()).c_str()));
 	return true;
 }
@@ -366,10 +551,16 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 	if (!bSpecialOn)
 	{
 #if !UE_BUILD_SHIPPING
-		if (SpecialTestAt >= 0.f && Fight.time() >= SpecialTestAt && !Fight.over())
+		if (SpecialTestAt >= 0.f && Fight.time() >= SpecialTestAt && !Fight.over() && !Fight.frozen())
 		{
 			SpecialTestAt = -1.f; // once a fight
-			BeginSpecial(SpecialTestMove);
+			if (bArenaSpecials)
+			{
+				Fight.setSpecialGaugeForTest(0, ArenaSpecials.gauge.full); // both kit slots: whichever the lead drives
+				Fight.setSpecialGaugeForTest(1, ArenaSpecials.gauge.full);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: -ArenaSpecialTest: the gauges full, the special pressed."), Fight.time());
+			RequestSpecial();
 		}
 		// The first frames after the hand-back: the drawn eye's step.
 		APlayerController* PC = GetPC();
@@ -415,8 +606,9 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 		S.ShakeCm = Cm(F.shake);
 		S.PlayWeight = F.playWeight;
 		S.bCut = F.cut;
-		// The play camera moved to the end feet over the blend out (zero until Core places the lead there).
-		S.PlayShiftCm = SpecialPlayer.time() >= Move.length() - Move.blendOut() ? SpecialPlayShift : FVector::ZeroVector;
+		// The play camera moved to the end over the blend out while the lead still stands at the start (none once Core
+		// has put it there).
+		S.PlayShiftCm = !bSpecialPlaced && SpecialPlayer.time() >= Move.length() - Move.blendOut() ? SpecialPlayShift : FVector::ZeroVector;
 		SpecialCamera->SetShot(S);
 	}
 	if (F.release)
@@ -449,7 +641,8 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 	const double Ms = (FPlatformTime::Seconds() - Began) * 1000.0;
 	SpecialTickMs += Ms;
 	SpecialTickMaxMs = FMath::Max(SpecialTickMaxMs, Ms);
-	if (SpecialPlayer.finished())
+	// Over when both are: the shots played out and Core's cut back come (the fight held for any tail of shots past it).
+	if (SpecialPlayer.finished() && !Fight.frozen())
 	{
 		EndSpecial(TEXT("played out"));
 	}
@@ -486,11 +679,12 @@ void UFTArenaRunner::EndSpecial(const TCHAR* Why)
 	SpecialPlayer.stop();
 	SpecialEndMs = (FPlatformTime::Seconds() - Began) * 1000.0;
 	SpecialEndedAt = Now;
-	// The hand-back: Core keeps the lead where it stood (its end-feet call is not in yet): the lead does not move.
+	// The hand-back: the lead where Core's cut back put it.
 	const float Step = FMath::Sqrt((SpecialEnd.x - Bodies.player.x) * (SpecialEnd.x - Bodies.player.x) +
 		(SpecialEnd.y - Bodies.player.y) * (SpecialEnd.y - Bodies.player.y));
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s ends (%s) at %.2f s: the lead stays at its start, %.2f m short of the clamped end (%.2f, %.2f) m, until Core places it there."),
-		*Id, Why, Played, Step, SpecialEnd.x, SpecialEnd.y);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s ends (%s) at %.2f s: the lead %s at (%.2f, %.2f) m, %.2f m from the clamped end."),
+		*Id, Why, Played, bSpecialPlaced ? TEXT("put by Core's cut back") : TEXT("not put (no cut back)"), Bodies.player.x, Bodies.player.y, Step);
+	bSpecialPlaced = false;
 	if (Changed > 0)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special %s: %d held actor(s) had their clock changed while frozen (given back as found at the begin)."), *Id, Changed);

@@ -724,6 +724,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 #endif
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
+	GiveSpecials(); // begin clears them
 	SessionLead = SessionLeadOf(Setup.Lead);
 	StartLead = SessionLead;
 	BeginSession();
@@ -767,9 +768,10 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	// The pose drawn last frame at last frame's placement, before anything moves.
 	Glide.Sample(PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr, DeltaSeconds);
-	// A special move holds Core: no input is read and no step taken while it plays (FTArenaRunnerSpecial.cpp).
-	const bool bCoreHold = bHold || bSpecialOn;
-	if (!bSpecialOn)
+	// A special move: Core freezes itself and keeps stepping (its own clock only); no input is read while it plays, and
+	// the shots' tail past Core's cut back holds the fight until the camera is back (FTArenaRunnerSpecial.cpp).
+	const bool bCoreHold = bHold || (bSpecialOn && !Fight.frozen());
+	if (!bSpecialOn && !Fight.frozen())
 	{
 		PollInput(DeltaSeconds);
 		TickAim(DeltaSeconds);
@@ -812,7 +814,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	ApplyAimCamera();
 	TickSpecial(bHold ? 0.f : DeltaSeconds);
 	TickSpecialCost(DeltaSeconds, bHold);
-	TickImpact(bCoreHold ? 0.f : DeltaSeconds);
+	TickImpact(bCoreHold || bSpecialOn ? 0.f : DeltaSeconds);
 
 	if (Fight.over())
 	{
@@ -864,6 +866,10 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 void UFTArenaRunner::End()
 {
 	EndSpecial(TEXT("the fight ended"));
+	if (bArenaSpecials && bBegun)
+	{
+		Fight.storeSpecialGauges(SpecialGauges); // kept for the next fight
+	}
 	EndTable();
 	EndImpact();
 	EndStoneBearer();
@@ -3130,6 +3136,10 @@ double UFTArenaRunner::GetEnemyMarkUntil(int32 Slot) const
 
 void UFTArenaRunner::StepFight()
 {
+	if (Fight.frozen() && StepFrozen())
+	{
+		return; // a special's frozen step: nothing but its clock moves (FTArenaRunnerSpecial.cpp)
+	}
 	OpenLeadStep(); // per-lead: the controlled lead's values before any press, blow or spend this step
 	ftcore::ArenaInput In;
 	bool bIntercept = false;
@@ -3461,7 +3471,10 @@ void UFTArenaRunner::StepFight()
 		TrackSwapCheck(In); // the input this step takes, after a takeover or a switch
 	}
 	const bool bAllyWasUp = Fight.allyHp() > 0; // the brain stations only a body up before and after the step
+	PressSpecial(In);
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
+	// The press tick or the cut back: the performer put where Core says, and no step (no separation push) this tick.
+	const bool bSpecialPlaced = AfterSpecialTick(Out);
 	ReportFightSpends(Out);
 	if (bPartner && Session)
 	{
@@ -3598,7 +3611,10 @@ void UFTArenaRunner::StepFight()
 	{
 		TakeOverBodies(Out); // before the step: the bodies are the host's (ArenaFight::setPartner)
 	}
-	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	if (!bSpecialPlaced)
+	{
+		ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	}
 	if (bPartner)
 	{
 		WalkPartner(Out);

@@ -200,9 +200,14 @@ public:
 	bool IsBegun() const { return bBegun; }
 	// The fight was refused (no playable lead: Begin's guard, or the session's check): it never runs.
 	bool IsRefused() const { return bLeadRefused; }
-	// A special move's cinematic is playing (FTArenaRunnerSpecial.cpp): Core held, the world frozen but the lead, the
-	// camera on the move's shots.
+	// A special move's cinematic is playing (FTArenaRunnerSpecial.cpp): Core frozen (ArenaFight::frozen), the world
+	// held but the lead, the camera on the move's shots.
 	bool IsSpecialOn() const { return bSpecialOn; }
+	// The press (the UI's binding calls it): the controlled lead's special goes in on the next step, its end point
+	// clamped to walkable ground first; Core refuses it (logged) unless the gauge is full and the lead free.
+	void RequestSpecial() { bSpecialPress = true; }
+	// The controlled lead's gauge is full and shown (the prompt), as of the last step.
+	bool IsSpecialReady() const { return Fight.special().readyPlayer; }
 	// -ArenaSpecialShots: a still due this frame on the special's clock (each shot's middle, the release, the blend out's
 	// middle), once each: true with its name. Shipping: never.
 	bool TakeSpecialStill(FString& OutName);
@@ -670,14 +675,21 @@ private:
 	void TickImpact(float DeltaSeconds);
 	void EndImpact();
 	float ShakeScale() const;
-	// A special move (FTArenaRunnerSpecial.cpp; ftcore/SpecialCine.h, FTSpecialCine.h). BeginSpecial refuses (false, a
-	// log line) with no such move, no target standing, the fight over, or the lead not free. While on: Core does not
-	// step and reads no input, every actor but the lead is held (FFTSpecialFreeze, the rain slowed), the camera plays
-	// the shots (UFTSpecialCineModifier), the lead plays on the frame's clock. The move's end feet are clamped to
-	// walkable ground before it starts (ClampSpecialTravel); at the end the lead is put there and the last shot has
-	// already blended into the play camera over that spot.
+	// A special move (FTArenaRunnerSpecial.cpp; ftcore/ArenaSpecial.h, ftcore/SpecialCine.h, FTSpecialCine.h). Core runs
+	// it (setSpecials after each begin; the press, the freeze, the results). The press carries the end point clamped to
+	// walkable ground (ClampSpecialTravel); Core's SpecialStarted begins the host side (BeginSpecial: every actor but the
+	// lead held by FFTSpecialFreeze, the rain slowed, the camera on the shots by UFTSpecialCineModifier); the lead is put
+	// at Core's origin, then at its end on the cut back, and the last shot blends into the play camera over that spot.
 	void ReadSpecialTable();
-	bool BeginSpecial(const FString& MoveId);
+	void GiveSpecials();
+	// The press on this step's input (specialTravel, specialBack from the clamp); the step after the press tick
+	// (the performer placed, the host side begun, the ready events logged); a frozen step (true: taken) or false when
+	// it is the cut back's, which takes the whole step.
+	void PressSpecial(ftcore::ArenaInput& In);
+	bool AfterSpecialTick(const ftcore::ArenaOutput& Out);
+	bool StepFrozen();
+	void PlaceSpecialPerformer(const ftcore::Vec2& At);
+	bool BeginSpecial();
 	void TickSpecial(float DeltaSeconds);
 	void EndSpecial(const TCHAR* Why);
 	void ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet);
@@ -1633,6 +1645,13 @@ private:
 	// the clock, the freeze, the stage fixed at the press and its target, the clamped travel.
 	ftcore::SpecialCineTable SpecialTable;
 	bool bSpecialTableRead = false;
+	// Core's moves (Data/Battle/arena_special.json), given to the fight after each begin with the gauges kept between
+	// fights (stored back at the end); the press waiting for the next step.
+	ftcore::ArenaSpecialTable ArenaSpecials;
+	bool bArenaSpecials = false;
+	ftcore::LeadSpecialGauges SpecialGauges;
+	bool bSpecialPress = false;
+	bool bSpecialPressedNow = false; // pressed on this step: a refusal is logged after its tick
 	ftcore::SpecialCinePlayer SpecialPlayer;
 	FFTSpecialFreeze SpecialFreeze;
 	ftcore::SpecialCineStage SpecialStageAt;
@@ -1645,7 +1664,8 @@ private:
 	ftcore::Vec2 SpecialEnd{};
 	ftcore::Vec2 SpecialForward{1.f, 0.f};
 	const TCHAR* SpecialLimit = TEXT("none");
-	FVector SpecialPlayShift = FVector::ZeroVector; // cm: the play camera's move to the end feet (zero until Core places the lead)
+	FVector SpecialPlayShift = FVector::ZeroVector; // cm: the play camera's move to the end feet while the lead stands at the start
+	bool bSpecialPlaced = false; // Core's cut back has put the lead at its end (the shots' tail plays over a held fight)
 	// Frame cost (game-thread and GPU ms) for 2 s before, during, and 2 s after the special, frames under a still left
 	// out; the special's own tick and the freeze's begin and end.
 	struct FSpecialCost { double Game = 0.0, Gpu = 0.0, GameMax = 0.0, GpuMax = 0.0; int32 Frames = 0; };
@@ -1655,8 +1675,7 @@ private:
 	double SpecialBeganAt = -1.0;
 	int32 SpecialCostSkip = 0;
 #if !UE_BUILD_SHIPPING
-	float SpecialTestAt = -1.f; // -ArenaSpecialTest=<fight s>: the special plays then (once a fight)
-	FString SpecialTestMove;    // -ArenaSpecialMove=<id> (default devin_special_01)
+	float SpecialTestAt = -1.f; // -ArenaSpecialTest=<fight s>: the gauges filled and the special pressed then (once a fight)
 	bool bSpecialShots = false; // -ArenaSpecialShots
 	float SpecialStillAt[16] = {};
 	int32 SpecialStillCount = 0, SpecialStillNext = 0;
