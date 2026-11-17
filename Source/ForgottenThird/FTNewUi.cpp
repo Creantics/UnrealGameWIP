@@ -2171,7 +2171,7 @@ public:
 
 	// The special row's inputs: ready, and while it cannot start now, why; and the Third's ready (the player calls it):
 	// never a level. ready and why come from ArenaFight::special() (the controlled lead's gauge and refusal); a switch
-	// of lead is the rules' unready (the row leaves). thirdReady has no feed yet (the Third's call is the arena lane's);
+	// of lead is the rules' unready (the row leaves). thirdReady is ArenaSpecialView::readyPartner (a party member's only);
 	// -UiStateShot=special, special_dim or special_call holds the live, the dim or the CALL row for captures.
 	void TickSpecial(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, float DeltaTime)
 	{
@@ -2188,6 +2188,9 @@ public:
 			// refused, why. Nothing ready while a special runs (the gauge empties at the press).
 			const ftcore::ArenaSpecialView& Rules = Fight.special();
 			In.ready = Rules.readyPlayer && !Rules.running;
+			// The Third's: readyPartner is set only for a party member's full gauge (never a partner lead's); the CALL
+			// row is always live, so refusalPartner is not read.
+			In.thirdReady = Rules.readyPartner && !Rules.running;
 			switch (Rules.refusalPlayer)
 			{
 			case ftcore::ArenaSpecialRefusal::Ok:
@@ -2197,7 +2200,11 @@ public:
 			default: In.why = ftcore::UiSpecialWhy::NotNow; break;
 			}
 		}
-		In.thirdReady = !Fight.over() && Shot == EUiStateShot::SpecialCall;
+		if (!Fight.over() && Shot == EUiStateShot::SpecialCall)
+		{
+			In.ready = false;
+			In.thirdReady = true;
+		}
 		const ftcore::Settings* Prefs = Runner.GetSettings();
 		Special = ftcore::uiSpecialStep(SpecialState, Shown().bSpecialPrompt, In, DeltaTime, Prefs && Prefs->reduceMotion);
 		// The tail after the word: the lead's name, the Third's (CALL) or the reason. While the row stands it follows what
