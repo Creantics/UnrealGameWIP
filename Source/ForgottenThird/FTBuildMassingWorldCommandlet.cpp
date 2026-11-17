@@ -3927,6 +3927,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		// -SeaSlip: the quay's rail, posts and bollards stand clear of the slip's mouth.
 		const FTBuildRoads::FOptions SlipOptions = FTBuildRoads::ParseOptions(*Params);
+		// -SeaFaces: the rail opened and the posts and bollards left out at each sea ladder (playtest item 2).
+		{
+			ftcore::SeaAccessTable SeaTable;
+			std::vector<ftcore::SeaLadder> SeaLadderList;
+			if (FTBuildRoads::SeaLadders(SlipOptions, SeaTable, SeaLadderList) && !SeaLadderList.empty())
+			{
+				ftcore::SeaRailCounts RailCounts;
+				Furniture = ftcore::seaRailGaps(Furniture, SeaLadderList, 0.2, 0.5, RailCounts);
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: quay: the rail opened at %d sea ladders (%d bars cut, %d posts and bollards left out)."),
+					static_cast<int32>(SeaLadderList.size()), static_cast<int32>(RailCounts.cut), static_cast<int32>(RailCounts.dropped));
+			}
+		}
 		int32 SlipCleared = 0;
 		for (const ftcore::MassingBox& Piece : Furniture)
 		{
@@ -4315,6 +4327,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	// -HeroCornerOnly: no plinths (the strip's run lays them round its hidden bays).
 	std::vector<ftcore::MassingBox> Plinths;
+	// Playtest item 3: -FloatCheck lists the floating boxes (report only, before any plinth).
+	if (!bHeroOnly && !FTPlinths::ReportFloats(Ground, Built, Visible))
+	{
+		return 1;
+	}
 	if (!bHeroOnly && !FTPlinths::Plan(Ground, Built, Visible, Entry[0], Entry[1], Plinths))
 	{
 		return 1;

@@ -3774,6 +3774,53 @@ std::size_t roadSeaSlipBuild(const RoadSeaSlip& slip, RoadBuild& build) {
     return build.solids.size() - before;
 }
 
+std::size_t roadSeaLaddersBuild(const std::vector<SeaLadder>& ladders, double bedZ, double seaZ, RoadBuild& build) {
+    std::size_t added = 0;
+    char buf[96];
+    for (const SeaLadder& l : ladders) {
+        const double top = l.topZ;
+        if (!(top > seaZ + 0.3)) continue;
+        const double olen = std::hypot(l.outX, l.outY);
+        if (!(olen > 1e-9)) continue;
+        const double ox = l.outX / olen, oy = l.outY / olen, ax = -oy, ay = ox;
+        const double fx = 0.5 * (l.gapX0 + l.gapX1), fy = 0.5 * (l.gapY0 + l.gapY1);
+        const double rot = std::atan2(ay, ax) * 180.0 / 3.14159265358979323846;
+        std::size_t n = 0;
+        // A piece by its place along the face (da) and out of the water (dout, 0 on the face), la along and lout across.
+        auto piece = [&](double da, double dout, double la, double lout, double z0, double z1) {
+            std::snprintf(buf, sizeof buf, "SEA-%s-LADDER-%03zu", l.id.c_str(), ++n);
+            RoadSolid& s = pushSolid(build, buf, l.id, "canal_ladder", fx + ax * da + ox * dout, fy + ay * da + oy * dout, la, lout, z0,
+                                     z1, RoadTint::Steel, false);
+            s.box.rot = rot;
+        };
+        for (const double da : {-0.225, 0.225}) {
+            piece(da, -0.12, 0.05, 0.05, bedZ, top + 1.0);
+            piece(da, 0.19, 0.05, 0.67, top + 0.95, top + 1.0);
+            piece(da, 0.5, 0.05, 0.05, top, top + 0.95);
+            for (const double z : {seaZ + 0.35, top - 0.35}) piece(da, -0.06, 0.04, 0.12, z, z + 0.04);
+        }
+        for (double z = bedZ + 0.3; z < top - 0.02; z += 0.3) piece(0.0, -0.12, 0.45, 0.03, z, z + 0.03);
+        RoadWaterExit e;
+        e.id = l.id;
+        e.canal = "SEA";
+        e.kind = RoadExitKind::Ladder;
+        e.footX = l.footX;
+        e.footY = l.footY;
+        e.topX = l.topX;
+        e.topY = l.topY;
+        e.topZ = top;
+        e.outX = ox;
+        e.outY = oy;
+        e.gapX0 = l.gapX0;
+        e.gapY0 = l.gapY0;
+        e.gapX1 = l.gapX1;
+        e.gapY1 = l.gapY1;
+        build.exits.push_back(std::move(e));
+        ++added;
+    }
+    return added;
+}
+
 RoadPoint roadCanalFlowDir(const RoadCanal& canal) {
     const double len = std::hypot(canal.flowX, canal.flowY);
     if (len > 1e-9) return {canal.flowX / len, canal.flowY / len};
