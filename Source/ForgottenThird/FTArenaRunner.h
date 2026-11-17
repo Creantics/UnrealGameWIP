@@ -498,6 +498,7 @@ private:
 	ftcore::ArenaCameraPose LockRig() const;
 	float BoomWallShare() const;
 	float LockAspect() const;
+	float ViewAspect(const APlayerController& PC) const;
 	ftcore::ArenaLeadBody LeadBody() const;
 	float LockAimHeight(int32 Target, float Base, float Top) const;
 	// The arena camera's preset (ftcore/CameraPreset.h), view only: the presets read once from
@@ -563,6 +564,7 @@ private:
 	// off contact (scaled down as contact blends in), 0 with nothing followed. The target's head is its top less this.
 	float ClearSideNow = 0.f;
 	float ClearPivotNow = 0.f;
+	ftcore::ArenaCloseClear ClearHeld; // the clearance asked last (before the contact scale): held against chatter
 	static constexpr float CloseHeadDrop = 0.15f; // m
 	float CloseHeadHeight() const { return FMath::Max(0.3f, CloseHeightNow - CloseHeadDrop); }
 	static constexpr float CloseMateHead = 1.6f;  // m: the partner's head and waist heights the close still log tests

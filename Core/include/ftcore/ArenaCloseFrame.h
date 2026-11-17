@@ -107,6 +107,10 @@ struct ArenaCloseRules {
     float clearPivotUp = 0.3f;  // m
     float clearStep = 0.05f;    // m: the search's step, on the side and the pivot alike
     float clearEase = 0.25f;    // s: the time constant in and out
+    // The hold against chatter: a clearance already asked is kept while it still clears the head with clearHold of the
+    // frame less margin, and let go only once the bare view clears it with clearHold more (a head swaying 1 cm at the
+    // edge of what a move can clear swung the lens 0.13 m at 2 Hz without it).
+    float clearHold = 0.02f;    // share of the frame's width and height
     // Framing check (ruled 11-16; the middle-third bar stays the classic camera's): on settled frames off contact, the
     // lead's centre in its near-side third (the left third on the right shoulder) with frameLeadSlack of the width over
     // its inner edge, the target's aim point in targetMin..targetMax (mirrored on the left shoulder) and the partner, when
@@ -296,7 +300,11 @@ FTCORE_API bool arenaCloseHeadHidden(const ArenaCameraPose& pose, float aspect, 
 // pose's side; a side of 0 counts as the right shoulder; the whole side held to clearSideMax) and a `pivot` rise (up to
 // clearPivotUp), each in clearStep steps, that clear it with the least sum of the two (on a tie the smaller side, so the
 // higher pivot: the lens leaves the lead's shoulder line as little as it can);
-// both at their most when none does. 0 and 0 on a NaN input.
+// 0 and 0 when no pair clears the lead's widened box with its margin (the lens stays: a move that does not clear the
+// box is not asked, even where the most move would show the head past the lead's own body). 0 and 0 on a NaN input.
+// `held` is the clearance asked last (0 and 0: none): while the head is not clear of the bare view by clearHold more
+// margin and `held` (its side's size taken on this pose's shoulder, held to the room) still clears it with clearHold
+// less, `held` is asked again, so a head at the edge of a move does not flip the want.
 struct ArenaCloseClear {
     float side = 0.f;  // m, signed: added to the pose's side
     float pivot = 0.f; // m: added to the pivot's height
@@ -304,7 +312,7 @@ struct ArenaCloseClear {
 // The lead's box the clearance (and its check) is judged by: `body` with its radius widened to clearRadius.
 FTCORE_API ArenaLeadBody arenaCloseClearBody(const ArenaCloseRules& rules, ArenaLeadBody body);
 FTCORE_API ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const ArenaCameraPose& pose, float aspect,
-                                                   const ArenaLeadBody& body, ArenaPoint3 head);
+                                                   const ArenaLeadBody& body, ArenaPoint3 head, ArenaCloseClear held = {});
 
 // The close camera's framing check on one settled frame off contact. Shares of the frame's width (0 the left edge, 1
 // the right): the lead's centre `leadX` and the target's aim point `targetX` (its weak point or its chest); `partner` is

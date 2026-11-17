@@ -1678,6 +1678,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CloseMelee = CloseTall = 0.f;
 	CloseRadiusNow = CloseContact = CloseContactWant = ContactYawNow = CloseCutTall = CloseContactLow = StandOffPitchNow = 0.f;
 	ClearSideNow = ClearPivotNow = 0.f;
+	ClearHeld = ftcore::ArenaCloseClear();
 	CloseWallCount = 0;
 	CloseWallAge = 1e9f;
 	bStandOffWeak = false;
@@ -5332,10 +5333,10 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 		{
 			Aim = Weak;
 		}
-		// The vertical half-angle's tangent from the drawn fov (horizontal) and the frame's aspect; y as arenaFramePoint
-		// gives it (0 the bottom, 1 the top).
+		// The vertical half-angle's tangent from the drawn fov (horizontal) and the sampled view's own aspect (its
+		// camera's when constrained, else its player's viewport); y as arenaFramePoint gives it (0 the bottom, 1 the top).
 		const FVector Up = FRotationMatrix(View).GetScaledAxis(EAxis::Z);
-		const double TanUp = Tan / FMath::Max(static_cast<double>(LockAspect()), 0.1);
+		const double TanUp = Tan / FMath::Max(static_cast<double>(ViewAspect(*PC)), 0.1);
 		ftcore::ArenaFramePoint Mate;
 		const bool bMateOn = bPartner && Fight.output().ally.partnerOn && Fight.allyHp() > 0;
 		if (bMateOn)
@@ -5447,6 +5448,23 @@ float UFTArenaRunner::LockAspect() const
 		GEngine->GameViewport->GetViewportSize(Size);
 	}
 	return Size.X > 1.0 && Size.Y > 1.0 ? static_cast<float>(Size.X / Size.Y) : 16.f / 9.f;
+}
+
+float UFTArenaRunner::ViewAspect(const APlayerController& PC) const
+{
+	// The aspect the player's view is drawn at: its camera's own when the camera constrains it, else the player's
+	// viewport (the lock's game viewport when the player has none yet).
+	if (PC.PlayerCameraManager)
+	{
+		const FMinimalViewInfo& View = PC.PlayerCameraManager->GetCameraCacheView();
+		if (View.bConstrainAspectRatio && View.AspectRatio > 0.1f)
+		{
+			return View.AspectRatio;
+		}
+	}
+	int32 X = 0, Y = 0;
+	PC.GetViewportSize(X, Y);
+	return X > 1 && Y > 1 ? static_cast<float>(X) / static_cast<float>(Y) : LockAspect();
 }
 
 void UFTArenaRunner::RefreshCloseWalls(float Dt)
@@ -5611,7 +5629,9 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 	// Stand-off clearance: off contact, a target whose head sits behind the lead on the screen (the lead's box widened by
 	// 5% of the frame) takes the lens further out on its shoulder (to 0.85 m in all) and the pivot up (to 0.3 m), by the
 	// least of the two that clears it, eased in and out over 0.25 s. Asked of the last drawn view with this frame's shape
-	// (the clearance taken off), the arm as the wall leaves it; scaled down as contact blends in.
+	// (the clearance taken off), the arm as the wall leaves it; scaled down as contact blends in. The last ask is held
+	// while it still clears the head (by 2% of the frame less margin) and the bare view does not (by 2% more), so a head
+	// swaying at the edge of a move does not flip it.
 	ftcore::ArenaCloseClear ClearWant;
 	if (bOn && bCameraPoseNow && CloseContact < 1.f && !ArenaAim.aiming())
 	{
@@ -5621,9 +5641,14 @@ void UFTArenaRunner::ShapeCloseLens(int32 Target, float DeltaSeconds)
 		View.fov = Shape.fov;
 		const ftcore::Vec2& E = Bodies.enemies[static_cast<size_t>(Target)];
 		const ftcore::ArenaPoint3 Head{E.x - Bodies.player.x, E.y - Bodies.player.y, CloseHeadHeight()};
-		ClearWant = ftcore::arenaCloseStandOffClear(R, WallScaled(View, BoomWallShare()), LockAspect(), LeadBody(), Head);
+		ClearWant = ftcore::arenaCloseStandOffClear(R, WallScaled(View, BoomWallShare()), LockAspect(), LeadBody(), Head, ClearHeld);
+		ClearHeld = ClearWant;
 		ClearWant.side *= 1.f - CloseContact;
 		ClearWant.pivot *= 1.f - CloseContact;
+	}
+	else
+	{
+		ClearHeld = ftcore::ArenaCloseClear();
 	}
 	// The side is eased unsigned (ClearWant.side carries the shape's own sign) and drawn on this frame's shoulder.
 	ClearSideNow = ftcore::arenaCloseClearStep(R, ClearSideNow, FMath::Abs(ClearWant.side), DeltaSeconds);
