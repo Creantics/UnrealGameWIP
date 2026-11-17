@@ -78,6 +78,7 @@ add_library(ftcore STATIC
     src/BenchPath.cpp
     src/LightPicker.cpp
     src/NightLook.cpp
+    src/FarSigns.cpp
     src/HeroCorner.cpp
     src/HeroFarBank.cpp
     src/Weather.cpp
@@ -396,6 +397,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_bench_path.cpp
         tests/test_light_picker.cpp
         tests/test_night_look.cpp
+        tests/test_far_signs.cpp
         tests/test_hero_corner.cpp
         tests/test_hero_far_bank.cpp
         tests/test_weather.cpp
