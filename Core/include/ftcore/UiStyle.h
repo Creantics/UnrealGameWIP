@@ -114,6 +114,8 @@ struct UiTextStyle {
 //   sigMarginRule:  a vertical rule down the party block's left edge (UiMarginRule); "sig_margin_rule".
 //   loadBreaks:     the Load line's gold carries short crosswise breaks (uiLoadBreaks), so it reads apart from a warm
 //                   hp fill by pattern, not colour (r19c S1: Solhaven's cream fill); "load_breaks".
+//   specialPrompt:  the fight HUD's special prompt row (UiSpecial.h): reserved in the prompt stack and drawn when the
+//                   lead's special is ready; off, the stack is as it was; "special_prompt".
 struct UiWorldRules {
     bool marksAccent2 = false;
     bool dangerUnderline = false;
@@ -121,6 +123,7 @@ struct UiWorldRules {
     bool sigArcs = false;
     bool sigMarginRule = false;
     bool loadBreaks = false;
+    bool specialPrompt = false;
 };
 
 // Value-line ends and the dotted guard, 1080p px at HUD scale 1 (the painter scales them and rounds each to whole device

@@ -5,6 +5,8 @@
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/PlayerController.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -15,6 +17,8 @@
 #include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
 #include "FTPauseOverlay.h"
+#include "FTPauseSubsystem.h"
+#include "FTSettingsSubsystem.h"
 #include "FTInputBindings.h"
 #include "FTNewUi.h"
 #include "FTUiText.h"
@@ -137,6 +141,39 @@ void AFTExploreHUD::ToggleMapOverlay()
 	}
 }
 
+ftcore::UiScreenMask AFTExploreHUD::ScreensOpen(const AFTExploreCharacter* Lead)
+{
+	using ftcore::UiScreen;
+	using ftcore::uiScreenBit;
+	ftcore::UiScreenMask Open = 0;
+	if (!Lead)
+	{
+		return Open;
+	}
+	const APlayerController* PC = Cast<APlayerController>(Lead->GetController());
+	const AFTExploreHUD* Hud = PC ? Cast<AFTExploreHUD>(PC->GetHUD()) : nullptr;
+	if (Hud && Hud->MiniMap && Hud->MiniMap->IsOverlay())
+	{
+		Open |= uiScreenBit(UiScreen::Map);
+	}
+	if (Lead->GetPartyScreen().open)
+	{
+		Open |= uiScreenBit(UiScreen::Party);
+	}
+	const UGameInstance* GI = Lead->GetGameInstance();
+	const UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+	const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	if (Pause && Pause->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Pause);
+	}
+	if (Set && Set->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Settings);
+	}
+	return Open;
+}
+
 void AFTExploreHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -150,12 +187,22 @@ void AFTExploreHUD::DrawHUD()
 		DrawAimReticle(); // a review capture: the scene and the reticle, no text
 		return;
 	}
+	// What of play may draw under the screens open now (ftcore::uiHudDraws): nothing of play under the pause menu or the
+	// settings, the overlay alone under the map, the party rows alone under the party screen.
+	const ftcore::UiScreenMask Screens = ScreensOpen(Cast<AFTExploreCharacter>(GetOwningPawn()));
+	const auto Draws = [Screens](ftcore::UiHudPart Part) { return ftcore::uiHudDraws(Part, ftcore::UiHudMode::Explore, Screens); };
 	const AFTExploreDirector* Found = FindDirector();
 	if (!Found)
 	{
 		// A map with no director (a bare world map) still shows the reticle and the controls line.
-		DrawAimReticle();
-		DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * UiScale, GEngine->GetSmallFont(), 1.f);
+		if (Draws(ftcore::UiHudPart::Reticle))
+		{
+			DrawAimReticle();
+		}
+		if (Draws(ftcore::UiHudPart::ControlsLine))
+		{
+			DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * UiScale, GEngine->GetSmallFont(), 1.f);
+		}
 		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
@@ -170,6 +217,21 @@ void AFTExploreHUD::DrawHUD()
 	// Under the new UI the objective, the prompt and the notices are the explore HUD's (a Slate layer); the minimap, the
 	// reticle, the banner, the complete card and the pause stay here.
 	const bool bNewHud = ExploreHudWidget.IsValid();
+	const bool bField = Draws(ftcore::UiHudPart::FieldHud); // the old canvas panels, under the same rule as the new HUD's
+	if (!bField)
+	{
+		if (Found->IsWorldMode() || Found->IsOverworld())
+		{
+			TryMakeMiniMap(*Found);
+			// The map overlay is the map screen: it draws when the map is open and no menu stands over it.
+			if (MiniMap && MiniMap->IsOverlay() && Draws(ftcore::UiHudPart::MapOverlay))
+			{
+				MiniMap->Draw(*this, *Canvas, UiScale);
+			}
+		}
+		FT::DrawPauseOverlay(*this, Canvas);
+		return;
+	}
 	if (Found->IsStoryWalk())
 	{
 		if (!bNewHud)

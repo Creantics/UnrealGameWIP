@@ -48,6 +48,7 @@
 #include "FTGameInstance.h"
 #include "FTInputBindings.h"
 #include "FTPauseSubsystem.h"
+#include "FTPlayerController.h"
 #include "FTMeshFacing.h"
 #include "FTNewUi.h"
 #include "FTPartyFollower.h"
@@ -1219,10 +1220,35 @@ void AFTExploreCharacter::TickPartyScreen(const APlayerController* PC, float Del
 		In.mapDown = FTInputBindings::IsDown(*PC, InputAction::Map);
 		In.toggle = FTInputBindings::PartyToggles(GetWorld());
 		In.stickY = PC->GetInputAnalogKeyState(EKeys::Gamepad_RightY);
+		if (FMath::Abs(In.stickY) < 0.1f)
+		{
+			In.stickY = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY); // either stick works the rows
+		}
 		float MouseDX = 0.f;
 		PC->GetInputMouseDelta(MouseDX, In.mouseY);
+		// The screen's own keys: the move keys' forward and back (W and S by default), the arrows and the D-pad move
+		// the cursor; Enter, a left click or pad A picks; pad B or Esc (the pause key's OnBack, claimed while it
+		// stands) shuts it with no pick.
+		const FKey& Fwd = FTInputBindings::Key(InputAction::MoveForward, ftcore::InputDevice::Keys);
+		const FKey& Back = FTInputBindings::Key(InputAction::MoveBack, ftcore::InputDevice::Keys);
+		In.upDown = (Fwd.IsValid() && PC->IsInputKeyDown(Fwd)) || PC->IsInputKeyDown(EKeys::Up) ||
+			PC->IsInputKeyDown(EKeys::Gamepad_DPad_Up);
+		In.downDown = (Back.IsValid() && PC->IsInputKeyDown(Back)) || PC->IsInputKeyDown(EKeys::Down) ||
+			PC->IsInputKeyDown(EKeys::Gamepad_DPad_Down);
+		In.confirmDown = PC->IsInputKeyDown(EKeys::Enter) || PC->IsInputKeyDown(EKeys::LeftMouseButton) ||
+			PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Bottom);
+		In.cancelDown = bPartyBack || PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Right);
+		In.tapStays = true; // the keys above and the controls line are explore's
+		if (AFTPlayerController* FTPC = Cast<AFTPlayerController>(Controller); FTPC && BackBoundTo.Get() != FTPC)
+		{
+			FTPC->OnBack.AddUniqueDynamic(this, &AFTExploreCharacter::HandlePartyBack);
+			BackBoundTo = FTPC;
+		}
 	}
+	bPartyBack = false;
 	const ftcore::UiPartyOut Out = ftcore::uiPartyScreenStep(PartyScreen, In, DeltaSeconds);
+	// The confirm key still held after the screen shuts is the screen's, not a light (TickAim reads this).
+	bPartyKeysHeld = PartyScreen.open || (bPartyKeysHeld && In.confirmDown);
 	if (Out.opened)
 	{
 		FindPartyRows();
@@ -1250,6 +1276,19 @@ void AFTExploreCharacter::TickPartyScreen(const APlayerController* PC, float Del
 	case ftcore::UiPartyRow::Third:
 	case ftcore::UiPartyRow::Lead:
 		break;
+	}
+}
+
+void AFTExploreCharacter::HandlePartyBack()
+{
+	if (!PartyScreen.open)
+	{
+		return; // Esc opens the pause menu as ever
+	}
+	bPartyBack = true;
+	if (AFTPlayerController* FTPC = Cast<AFTPlayerController>(Controller))
+	{
+		FTPC->ClaimBack();
 	}
 }
 
@@ -1466,11 +1505,12 @@ void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
 		AttackMoveTable = Moves;
 	}
 	const ftcore::AimRules& Rules = Aim.rules();
-	// The mouse buttons count only on foot, with the game taking input: not in the van, a menu, a pause or a scene.
+	// The mouse buttons count only on foot, with the game taking input: not in the van, a menu, a pause or a scene, nor
+	// under the party screen (its click picks; still held after it shuts, it is no light).
 	// Aim and Light from the binding table (right and left mouse, LT and RT by default): Aim held or toggled, Light a
 	// tap for the light and held for the heavy.
 	const APlayerController* PC = Cast<APlayerController>(Controller);
-	const bool bInput = TakesInput();
+	const bool bInput = TakesInput() && !bPartyKeysHeld;
 	const bool bForced = AimFrom >= 0.f && GetWorld()->GetTimeSeconds() >= AimFrom && !Van.IsValid() && !ScenePlaying();
 	// No input (paused or just resumed, a scene): the press states clear before they tick, so a held key let go
 	// meanwhile reads as no press rather than a light (PressHold::tickIf). Out of focus only the held attack clears;
@@ -1844,7 +1884,7 @@ void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
 		return;
 	}
 	const FVector2D Axis = Value.Get<FVector2D>();
-	if (!Controller)
+	if (!Controller || PartyScreen.open) // the party screen takes the move keys and the stick
 	{
 		return;
 	}
@@ -1892,6 +1932,10 @@ void AFTExploreCharacter::HandleRunStart()
 
 void AFTExploreCharacter::HandleJump()
 {
+	if (PartyScreen.open)
+	{
+		return;
+	}
 	if (AFTPartyVan* V = Van.Get())
 	{
 		V->SetHandbrake(true);
@@ -1958,6 +2002,10 @@ void AFTExploreCharacter::HandleJumpRelease()
 
 void AFTExploreCharacter::HandleRoll()
 {
+	if (PartyScreen.open) // pad B: the party screen's cancel
+	{
+		return;
+	}
 	// Not in a van, nor swimming or climbing out of the water.
 	if (Van.IsValid() || bSwimming || bWaterClimbing)
 	{
@@ -2748,6 +2796,10 @@ void AFTExploreCharacter::ResetHeldInput()
 
 void AFTExploreCharacter::HandleInteract()
 {
+	if (PartyScreen.open)
+	{
+		return;
+	}
 	// In the van, interact held is the way out; on foot near the party van, it is the way in.
 	if (AFTPartyVan* V = Van.Get())
 	{
