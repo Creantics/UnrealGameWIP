@@ -192,6 +192,10 @@ public:
     // The whole surface model (tides, waves for every body, wall lap; not owned; null: setWaves' sea or flat). When set,
     // every body's surface is waterSurfaceM and setWaves is not read.
     void setSurface(const WaterSurfaceModel* model) { surface_ = model; }
+    // Bodies the model leaves flat at their level (bit i for body i), as the drawn water does where a body's flat plane
+    // stays (UFTWaterSurfaceDraw); 0: every body rides the model.
+    void setSurfaceFlat(std::uint32_t mask) { surfaceFlat_ = mask; }
+    std::uint32_t surfaceFlat() const { return surfaceFlat_; }
 
     // The body that is the water at p (the overlap rule above), -1 where none is.
     FTCORE_API int bodyAt(Vec2 p) const;
@@ -236,6 +240,8 @@ private:
     std::array<WaterExit, kWaterMaxExits> exits_{};
     const SeaWaves* waves_ = nullptr;
     const WaterSurfaceModel* surface_ = nullptr;
+    std::uint32_t surfaceFlat_ = 0;
+    static_assert(kWaterMaxBodies <= 32, "surfaceFlat_ holds a bit per body");
 };
 
 // The walk's speed share in a column `depth` m deep (not swimming): 1 at 0, kWaterWadeFactor at kWaterWadeDepth,

@@ -206,6 +206,8 @@ int WaterBodies::bodyAt(Vec2 p) const {
 
 float WaterBodies::surfaceOf(std::size_t i, Vec2 p, float t) const {
     const WaterBody& b = bodies_[i];
+    const bool flat = (surfaceFlat_ >> i) & 1u;
+    if (surface_ && flat) return b.level;
     if (surface_) return waterSurfaceM(surface_->spec, surface_->sets, b, p, t, surface_->totalHours);
     if (b.waves && waves_) return b.level + seaHeight(*waves_, p.x * 100.f, p.y * 100.f, t) * 0.01f;
     return b.level;
@@ -213,7 +215,7 @@ float WaterBodies::surfaceOf(std::size_t i, Vec2 p, float t) const {
 
 float WaterBodies::restSurfaceOf(std::size_t i) const {
     const WaterBody& b = bodies_[i];
-    if (!surface_) return b.level;
+    if (!surface_ || ((surfaceFlat_ >> i) & 1u)) return b.level;
     return b.level + waterTideM(surface_->spec.tide, b, waterWaveClass(b, surface_->spec.waves), surface_->totalHours);
 }
 

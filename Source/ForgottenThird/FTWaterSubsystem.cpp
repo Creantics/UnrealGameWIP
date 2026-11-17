@@ -305,6 +305,8 @@ void UFTWaterSubsystem::UpdateSurface(bool bForce)
 		{
 			bForce = true;
 		}
+		// A body whose flat plane stays (or every body, with no tiles) is read flat too, so the swim matches the picture.
+		Water.setSurfaceFlat(~Draw->DrawnBodies());
 	}
 	if (Draw)
 	{

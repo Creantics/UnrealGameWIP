@@ -22,6 +22,8 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
+namespace FTWaterSurfaceBuild
+{
 namespace
 {
 const TCHAR* const kInclude = TEXT("/Plugin/FTLook/Private/Water/Surface.ush");
@@ -205,6 +207,7 @@ void FillTile(FMeshDescription& Desc, int32 Cells)
 	}
 }
 } // namespace
+} // namespace FTWaterSurfaceBuild
 
 namespace FTWaterSurfaceBuild
 {

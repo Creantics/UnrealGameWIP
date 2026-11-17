@@ -259,3 +259,24 @@ TEST_CASE("Each body draws in its group") {
         if (g >= static_cast<int>(WaterDrawGroup::Lake)) CHECK(p.tideM == 0.f);
     }
 }
+
+TEST_CASE("A body the tiles don't draw stays flat at its level under the model") {
+    const WaterSurfaceModel m = stormModel();
+    WaterBodies water;
+    water.add(seaPlane());
+    water.add(canalBox(0.8f));
+    water.setSurface(&m);
+    const Vec2 sea{seaPlane().centre.x + 40.f, seaPlane().centre.y};
+    const Vec2 canal = canalBox(0.8f).centre;
+    const float t = 17.f;
+    const float seaRides = water.surfaceOf(0, sea, t);
+    const float canalRides = water.surfaceOf(1, canal, t);
+    CHECK(canalRides != doctest::Approx(water.body(1).level).epsilon(0.0001));
+    water.setSurfaceFlat(1u << 1);
+    CHECK(water.surfaceFlat() == 2u);
+    CHECK(water.surfaceOf(1, canal, t) == water.body(1).level);
+    CHECK(water.restSurfaceOf(1) == water.body(1).level);
+    CHECK(water.surfaceOf(0, sea, t) == seaRides);
+    water.setSurfaceFlat(0);
+    CHECK(water.surfaceOf(1, canal, t) == canalRides);
+}

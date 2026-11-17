@@ -20,18 +20,18 @@
 namespace
 {
 // Around the bodies the half-plane's tiles are laid across (m).
-constexpr float kBoundsMarginM = 400.f;
+constexpr float kWaterTileMarginM = 400.f;
 // How far the tide moves before it is pushed again (cm).
-constexpr float kTideStepCm = 0.2f;
+constexpr float kWaterTideStepCm = 0.2f;
 
 template <typename T>
-T* LoadPath(const TCHAR* Path)
+T* WaterLoadPath(const TCHAR* Path)
 {
 	const FString P(Path);
 	return LoadObject<T>(nullptr, *(P + TEXT(".") + FPackageName::GetShortName(P)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 }
 
-struct FNames
+struct FWaterParamNames
 {
 	FName Waves[ftcore::kSeaWaveCount];
 	FName Q = TEXT("Q");
@@ -42,7 +42,7 @@ struct FNames
 	FName SurfaceOn = TEXT("SurfaceOn");
 	FName WaveVerts = TEXT("WaveVerts");
 	FName TideCm = TEXT("TideCm");
-	FNames()
+	FWaterParamNames()
 	{
 		for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
 		{
@@ -51,18 +51,18 @@ struct FNames
 	}
 };
 
-const FNames& Names()
+const FWaterParamNames& WaterParamNames()
 {
-	static const FNames N;
+	static const FWaterParamNames N;
 	return N;
 }
 
-ftcore::Vec2 ToM(const FVector& Cm)
+ftcore::Vec2 WaterToM(const FVector& Cm)
 {
 	return {static_cast<float>(Cm.X * 0.01), static_cast<float>(Cm.Y * 0.01)};
 }
 
-void Grow(ftcore::WaterTileBounds& B, bool& bAny, ftcore::Vec2 P)
+void WaterGrow(ftcore::WaterTileBounds& B, bool& bAny, ftcore::Vec2 P)
 {
 	if (!bAny)
 	{
@@ -76,10 +76,10 @@ void Grow(ftcore::WaterTileBounds& B, bool& bAny, ftcore::Vec2 P)
 	B.max.y = FMath::Max(B.max.y, P.y);
 }
 
-bool IsWired(const UMaterialInterface* M)
+bool WaterIsWired(const UMaterialInterface* M)
 {
 	float V = 0.f;
-	return M && M->GetScalarParameterValue(FHashedMaterialParameterInfo(Names().SurfaceOn), V);
+	return M && M->GetScalarParameterValue(FHashedMaterialParameterInfo(WaterParamNames().SurfaceOn), V);
 }
 } // namespace
 
@@ -90,10 +90,10 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 		return bBuilt;
 	}
 	bTried = true;
-	UStaticMesh* Tile = LoadPath<UStaticMesh>(UFTWaterSubsystem::TileMeshPath);
-	UMaterialInterface* SeaMaster = LoadPath<UMaterialInterface>(FTScene::LookWaterMaterial);
-	UMaterialInterface* CanalMaster = LoadPath<UMaterialInterface>(FTScene::LookCanalWaterMaterial);
-	if (!Tile || !IsWired(SeaMaster))
+	UStaticMesh* Tile = WaterLoadPath<UStaticMesh>(UFTWaterSubsystem::TileMeshPath);
+	UMaterialInterface* SeaMaster = WaterLoadPath<UMaterialInterface>(FTScene::LookWaterMaterial);
+	UMaterialInterface* CanalMaster = WaterLoadPath<UMaterialInterface>(FTScene::LookCanalWaterMaterial);
+	if (!Tile || !WaterIsWired(SeaMaster))
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Water: no moving surface (%s); FTBuildWaterSurface builds the tile, FTBuildLookMaterials -Water wires the masters."),
 			!Tile ? TEXT("the tile mesh is missing") : TEXT("the water master has no surface inputs"));
@@ -124,9 +124,11 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 			}
 			FFlat F;
 			F.Component = C;
+			// A plane whose material has no surface inputs keeps its bodies flat (it would vanish with nothing in its place).
+			F.bOutside = !WaterIsWired(M);
 			auto Mark = [&](const FVector& At)
 			{
-				const int B = Water.bodyAt(ToM(At));
+				const int B = Water.bodyAt(WaterToM(At));
 				if (B < 0)
 				{
 					F.bOutside = true;
@@ -168,29 +170,29 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 		{
 			const float Ex = FMath::Abs(B.cosYaw) * B.half.x + FMath::Abs(B.sinYaw) * B.half.y;
 			const float Ey = FMath::Abs(B.sinYaw) * B.half.x + FMath::Abs(B.cosYaw) * B.half.y;
-			Grow(Bounds, bAny, {B.centre.x - Ex, B.centre.y - Ey});
-			Grow(Bounds, bAny, {B.centre.x + Ex, B.centre.y + Ey});
+			WaterGrow(Bounds, bAny, {B.centre.x - Ex, B.centre.y - Ey});
+			WaterGrow(Bounds, bAny, {B.centre.x + Ex, B.centre.y + Ey});
 		}
 		else if (B.shape == ftcore::WaterShape::Polygon)
 		{
 			for (std::size_t P = 0; P < B.pointCount; ++P)
 			{
-				Grow(Bounds, bAny, B.points[P]);
+				WaterGrow(Bounds, bAny, B.points[P]);
 			}
 		}
 		else
 		{
-			Grow(Bounds, bAny, B.centre);
+			WaterGrow(Bounds, bAny, B.centre);
 		}
 	}
 	for (TActorIterator<APlayerStart> It(&World); It; ++It)
 	{
-		Grow(Bounds, bAny, ToM(It->GetActorLocation()));
+		WaterGrow(Bounds, bAny, WaterToM(It->GetActorLocation()));
 	}
-	Bounds.min.x -= kBoundsMarginM;
-	Bounds.min.y -= kBoundsMarginM;
-	Bounds.max.x += kBoundsMarginM;
-	Bounds.max.y += kBoundsMarginM;
+	Bounds.min.x -= kWaterTileMarginM;
+	Bounds.min.y -= kWaterTileMarginM;
+	Bounds.max.x += kWaterTileMarginM;
+	Bounds.max.y += kWaterTileMarginM;
 
 	const ftcore::WaterTileSpec Spec;
 	const std::size_t Need = ftcore::waterTileLayout(Water, Waves, Spec, Bounds, nullptr, 0);
@@ -259,7 +261,7 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 			}
 		}
 		UMaterialInterface* Worn = Source->GetMaterial(0);
-		if (!IsWired(Worn))
+		if (!WaterIsWired(Worn))
 		{
 			continue;
 		}
@@ -274,6 +276,7 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Part->SetCastShadow(false);
 		Part->bAffectDistanceFieldLighting = false;
+		Part->SetVisibleInRayTracing(false); // the traced scene would see the tiles undisplaced
 		Part->SetMobility(EComponentMobility::Movable);
 		Part->SetupAttachment(Root);
 		Part->SetVisibility(false);
@@ -306,7 +309,16 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 			Flats.Add(F.Component);
 		}
 	}
+	DrawnMask = 0;
+	for (int32 I = 0; I < Count; ++I)
+	{
+		DrawnMask |= (Drawn & (1u << I)) != 0 ? (1u << I) : 0u;
+	}
 	bBuilt = TileParts.Num() > 0;
+	if (!bBuilt)
+	{
+		DrawnMask = 0;
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Water: the moving surface: %d tiles over %d bodies, %d flat planes give way, %d far sea planes."), Tiles, TileParts.Num(),
 		Flats.Num(), FarParts.Num());
 	return bBuilt;
@@ -371,6 +383,7 @@ void UFTWaterSurfaceDraw::AddFarSea(UWorld& World, const ftcore::WaterBody& Body
 		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Part->SetCastShadow(false);
 		Part->bAffectDistanceFieldLighting = false;
+		Part->SetVisibleInRayTracing(false); // the traced scene would see the tiles undisplaced
 		Part->SetMobility(EComponentMobility::Movable);
 		Part->SetupAttachment(Host->GetRootComponent());
 		Part->SetVisibility(false);
@@ -388,7 +401,7 @@ void UFTWaterSurfaceDraw::AddFarSea(UWorld& World, const ftcore::WaterBody& Body
 
 void UFTWaterSurfaceDraw::SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts)
 {
-	const FNames& N = Names();
+	const FWaterParamNames& N = WaterParamNames();
 	float Line[ftcore::kWaterEdgeFloats];
 	ftcore::waterEdgeLine(Body, Line);
 	Mid.SetVectorParameterValue(N.EdgeA, FLinearColor(Line[0], Line[1], Line[2], Line[3]));
@@ -433,7 +446,7 @@ void UFTWaterSurfaceDraw::PushWaves(const ftcore::WaterSurfaceModel& Model)
 	{
 		return;
 	}
-	const FNames& N = Names();
+	const FWaterParamNames& N = WaterParamNames();
 	for (int32 G = 0; G < ftcore::kWaterDrawGroups; ++G)
 	{
 		const ftcore::WaterDrawParams P = ftcore::waterDrawParams(Model, static_cast<ftcore::WaterDrawGroup>(G));
@@ -464,11 +477,11 @@ void UFTWaterSurfaceDraw::PushTide(const ftcore::WaterSurfaceModel& Model)
 	{
 		return;
 	}
-	const FNames& N = Names();
+	const FWaterParamNames& N = WaterParamNames();
 	for (int32 G = 0; G < ftcore::kWaterDrawGroups; ++G)
 	{
 		const float Cm = ftcore::waterDrawParams(Model, static_cast<ftcore::WaterDrawGroup>(G)).tideM * 100.f;
-		if (bTideSet[G] && FMath::Abs(Cm - TideCm[G]) < kTideStepCm)
+		if (bTideSet[G] && FMath::Abs(Cm - TideCm[G]) < kWaterTideStepCm)
 		{
 			continue;
 		}

@@ -42,6 +42,8 @@ public:
 	// The tide of each group, pushed to its parts when it has moved.
 	void PushTide(const ftcore::WaterSurfaceModel& Model);
 	int32 TileCount() const { return Tiles; }
+	// The bodies the tiles draw (bit per body); the others keep their flat planes, so the model leaves them flat.
+	uint32 DrawnBodies() const { return DrawnMask; }
 
 private:
 	void AddFarSea(UWorld& World, const ftcore::WaterBody& Body, const FBox& PlaneBounds, UMaterialInstanceDynamic* Mid, const TArray<ftcore::WaterTile>& Laid,
@@ -63,6 +65,7 @@ private:
 	float TideCm[ftcore::kWaterDrawGroups] = {};
 	bool bTideSet[ftcore::kWaterDrawGroups] = {};
 	int32 Tiles = 0;
+	uint32 DrawnMask = 0;
 	bool bBuilt = false;
 	bool bTried = false;
 	bool bShown = false;
