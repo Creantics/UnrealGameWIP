@@ -151,7 +151,7 @@ UiPartyOut uiPartyScreenStep(UiPartyScreen& s, const UiPartyInput& in, float dt)
             // Hold mode: the release confirms, unless it was a tap (opened by a press, let go at once, no move tried):
             // then it stays. Explore's map-key hold is never a tap.
             if (!in.toggle) {
-                if (s.byPress && !s.moved && s.openFor < kUiPartyTap) s.stays = true;
+                if (in.tapStays && s.byPress && !s.moved && s.openFor < kUiPartyTap) s.stays = true;
                 else closeScreen(s, out, s.cursor);
             }
         }

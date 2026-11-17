@@ -1238,6 +1238,7 @@ void AFTExploreCharacter::TickPartyScreen(const APlayerController* PC, float Del
 		In.confirmDown = PC->IsInputKeyDown(EKeys::Enter) || PC->IsInputKeyDown(EKeys::LeftMouseButton) ||
 			PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Bottom);
 		In.cancelDown = bPartyBack || PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Right);
+		In.tapStays = true; // the keys above and the controls line are explore's
 		if (AFTPlayerController* FTPC = Cast<AFTPlayerController>(Controller); FTPC && BackBoundTo.Get() != FTPC)
 		{
 			FTPC->OnBack.AddUniqueDynamic(this, &AFTExploreCharacter::HandlePartyBack);

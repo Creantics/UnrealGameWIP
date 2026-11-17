@@ -20,6 +20,7 @@ struct Pad {
     float stick = 0.f;
     float mouse = 0.f;
     bool up = false, down = false, confirm = false, cancel = false;
+    bool tapStays = true;
 
     UiPartyInput in() const {
         UiPartyInput i;
@@ -34,6 +35,7 @@ struct Pad {
         i.downDown = down;
         i.confirmDown = confirm;
         i.cancelDown = cancel;
+        i.tapStays = tapStays;
         return i;
     }
 };
@@ -996,4 +998,16 @@ TEST_CASE("ui party: a row key, Enter or Esc already down as the screen opens is
     run(s, p, 0.5f);
     CHECK(s.open);
     CHECK(s.cursor == UiPartyRow::Lead);
+}
+
+TEST_CASE("ui party: where a tap does not stay (the fight's screen), a tap's release shuts it at once") {
+    Pad p;
+    p.tapStays = false;
+    UiPartyScreen s = fresh(p);
+    p.party = true;
+    CHECK(step(s, p).opened);
+    p.party = false;
+    const UiPartyOut o = step(s, p);
+    CHECK(o.closed);
+    CHECK(o.pick == UiPartyRow::Lead);
 }

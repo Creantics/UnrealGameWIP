@@ -70,6 +70,8 @@ struct UiPartyInput {
     bool downDown = false;    // a row key down (the down arrow, S)
     bool confirmDown = false; // Enter, a click or pad A: a press shuts the open screen on the cursor's row
     bool cancelDown = false;  // Esc or pad B: a press shuts the open screen with no pick
+    bool tapStays = false;    // a tap leaves it open (explore, which feeds the keys above and draws their line); the
+                              // fight's screen feeds none of them, so there a tap still shuts it at once
 };
 
 struct UiPartyScreen {
