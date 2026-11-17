@@ -1909,6 +1909,27 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 		}
 	}
+	// Direction B (2026-11-17): -HeroLitBays=<bays> (1-based, comma list) lights exactly those bays: each a real room,
+	// its front key, its shop slot and a lantern pair; the others are shutters. The spec's 1,3,4 by default.
+	{
+		FString Lit;
+		TArray<FString> Bays;
+		if (FParse::Value(*Params, TEXT("HeroLitBays="), Lit, false) && Lit.ParseIntoArray(Bays, TEXT(","), true) > 0)
+		{
+			for (int32 B = 0; B < ftcore::kHeroBays; ++B)
+			{
+				HeroTune.bayLit[B] = false;
+			}
+			for (const FString& Bay : Bays)
+			{
+				const int32 B = FCString::Atoi(*Bay) - 1;
+				if (B >= 0 && B < ftcore::kHeroBays)
+				{
+					HeroTune.bayLit[B] = true;
+				}
+			}
+		}
+	}
 	FParse::Value(*Params, TEXT("HeroShopBackIn="), HeroTune.shopBackIn);
 	FParse::Value(*Params, TEXT("HeroShopBackUp="), HeroTune.shopBackUp);
 	FParse::Value(*Params, TEXT("HeroShopBackPitch="), HeroTune.shopBackPitch);
@@ -2924,7 +2945,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (bHeroContent)
 	{
 		ftcore::HeroLots HeroLots;
-		ftcore::heroCornerLots(ftcore::HeroCornerSpec{}, HeroLots);
+		ftcore::heroCornerLots(HeroTune, HeroLots);
 		std::string BayIds[ftcore::kHeroBays];
 		for (int32 B = 0; B < ftcore::kHeroBays; ++B)
 		{

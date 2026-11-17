@@ -174,8 +174,8 @@ TEST_CASE("hero corner: lamp slots under the strings, between each pair and over
     const HeroCornerSpec spec;
     HeroCornerLayout l;
     heroCornerLayout(spec, l);
-    REQUIRE(l.lampCount == kHeroLampSlots);
-    CHECK(kHeroLampSlots == 8);
+    REQUIRE(l.lampCount == kHeroStrings + 2 * l.pairCount);
+    CHECK(l.lampCount == 8);  // the default three lit bays (room for a pair at every bay: kHeroLampSlots)
     int strings = 0, pairs = 0, entrances = 0;
     for (int k = 0; k < l.lampCount; ++k) {
         const HeroLampSlot& s = l.lamps[k];
@@ -879,4 +879,24 @@ TEST_CASE("hero corner: each lit front a wide key facing the lane, its room's wi
     CHECK(fronts == lit);
     CHECK(skies == kHeroSkyFloors);
     CHECK(skyLength == doctest::Approx(spec.laneY1 - spec.laneY0));
+}
+
+TEST_CASE("hero corner: four lit bays take four lantern pairs and their lamp slots; the fifth stays a shutter") {
+    HeroCornerSpec spec;
+    for (int i = 0; i < kHeroBays; ++i) spec.bayLit[i] = i < 4;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.pairCount == 4);
+    int large = 0;
+    for (std::size_t k = 0; k < l.lanternCount; ++k) large += l.lanterns[k].large ? 1 : 0;
+    CHECK(large == 8);
+    CHECK(l.lanternCount == static_cast<std::size_t>(8 + kHeroStrings * kHeroStringLanterns));
+    CHECK(l.lampCount == kHeroStrings + 2 * 4);
+    for (int p = 0; p < 4; ++p) CHECK(l.pairBay[p] == p);
+    HeroLots lots;
+    heroCornerLots(spec, lots);
+    CHECK(lots.lots[1].type == LotType::Tiled);
+    CHECK(lots.lots[4].type == LotType::WalkUp);
+    CHECK(lots.lit[3]);
+    CHECK_FALSE(lots.lit[4]);
 }

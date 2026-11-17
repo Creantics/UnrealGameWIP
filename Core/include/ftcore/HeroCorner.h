@@ -172,7 +172,9 @@ struct HeroLampSlot {
     HeroLampKind kind = HeroLampKind::String;
     int index = 0;  // the string's, or the pair's (0 the southmost lit bay's)
 };
-inline constexpr int kHeroLampSlots = kHeroStrings + 2 * (kHeroLargeLanterns / 2);
+// Room for a pair at every bay (a spec may light them all); the default spec's three lit bays fill kHeroLargeLanterns.
+inline constexpr int kHeroPairsMax = kHeroBays;
+inline constexpr int kHeroLampSlots = kHeroStrings + 2 * kHeroPairsMax;
 
 struct HeroCornerLayout {
     MassingBox pave;                 // the lane's paving slab (kind "paving")
@@ -184,7 +186,7 @@ struct HeroCornerLayout {
     MassingBox bays[kHeroBays];      // the shop bays (kind "kit", ids HC-BAY-<n><letter>)
     bool bayLit[kHeroBays] = {};
     int eateryBay = 0;
-    HeroLantern lanterns[kHeroLargeLanterns + kHeroStrings * kHeroStringLanterns];
+    HeroLantern lanterns[2 * kHeroPairsMax + kHeroStrings * kHeroStringLanterns];
     std::size_t lanternCount = 0;
     HeroPoint cable[kHeroStrings][kHeroCablePoints];
     HeroPoint postFoot[kHeroStrings];  // a post's foot on the ground; it stands postHeight
@@ -194,8 +196,8 @@ struct HeroCornerLayout {
     HeroLampSlot lamps[kHeroLampSlots];
     int lampCount = 0;
     // Per pair (the lit bays' in order, south to north): its bay and the middle of that bay's entrance along the lane.
-    int pairBay[kHeroLargeLanterns / 2] = {-1, -1, -1};
-    double entranceY[kHeroLargeLanterns / 2] = {};
+    int pairBay[kHeroPairsMax] = {-1, -1, -1, -1, -1};
+    double entranceY[kHeroPairsMax] = {};
     int pairCount = 0;
     HeroPoint eye, at;
     double lensMm = 35.0;

@@ -92,8 +92,8 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
     // A pair flanking each lit bay's entrance: under the pent on a lattice front, under the eave on a glazed one.
     out.lanternCount = 0;
     out.pairCount = 0;
-    HeroPoint pairHook[kHeroLargeLanterns / 2];
-    for (int i = 0; i < kHeroBays && out.pairCount < kHeroLargeLanterns / 2; ++i) {
+    HeroPoint pairHook[kHeroPairsMax];
+    for (int i = 0; i < kHeroBays && out.pairCount < kHeroPairsMax; ++i) {
         if (!spec.bayLit[i]) continue;
         const int p = out.pairCount++;
         const bool pent = spec.bayKoshi[i];
