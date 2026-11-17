@@ -118,7 +118,15 @@ TEST_CASE("water loco: the importer is lenient and notes what it replaced") {
     REQUIRE(importWaterLocoTuning(R"({"version":1,"swimSpeed":3,"swimSprintSpeed":2})", t, &err, &notes));
     CHECK(t.swimSpeed == 1.5f);
     CHECK(t.swimSprintSpeed == 2.4f);
-    CHECK(noted("swimSpeed, swimSprintSpeed: expected swimSprintSpeed at least swimSpeed, both defaults used"));
+    CHECK(noted("swimSpeed, swimSprintSpeed: expected swimSprintSpeed above swimSpeed, both defaults used"));
+    // Equal speeds are rejected too (the stroke's blend divides by their difference).
+    REQUIRE(importWaterLocoTuning(R"({"version":1,"swimSpeed":2,"swimSprintSpeed":2})", t, &err, &notes));
+    CHECK(t.swimSpeed == 1.5f);
+    CHECK(t.swimSprintSpeed == 2.4f);
+    CHECK(noted("swimSpeed, swimSprintSpeed: expected swimSprintSpeed above swimSpeed, both defaults used"));
+    WaterLocoTuning same;
+    same.swimSprintSpeed = same.swimSpeed;
+    CHECK_FALSE(validWaterLocoTuning(same));
     // Only an unreadable file fails.
     CHECK_FALSE(importWaterLocoTuning(R"({"version":2})", t, &err, &notes));
     CHECK(err == "version: expected 1");

@@ -126,7 +126,7 @@ struct WaterLocoTuning {
     float treadTurnRate = 120.f;   // deg/s (10..720)
     float treadTurnAngle = 60.f;   // deg: a strong input further off the facing than this turns the treader (10..170)
     float swimSpeed = 1.5f;        // m/s on the surface (0.3..5)
-    float swimSprintSpeed = 2.4f;  // m/s sprinting (swimSpeed..8)
+    float swimSprintSpeed = 2.4f;  // m/s sprinting (above swimSpeed..8)
     float swimAccel = 2.f;         // m/s^2 (0.1..20)
     float swimDrag = 1.2f;         // m/s^2 gliding out (0.1..20)
     float swimTurnRate = 150.f;    // deg/s toward the input (10..720)
@@ -212,7 +212,7 @@ struct Pair {
 };
 inline constexpr Pair kPairs[] = {
     {&WaterLocoTuning::swimSpeed, &WaterLocoTuning::swimSprintSpeed, "swimSpeed, swimSprintSpeed",
-     "swimSprintSpeed at least swimSpeed", [](const WaterLocoTuning& t) { return t.swimSprintSpeed >= t.swimSpeed; }},
+     "swimSprintSpeed above swimSpeed", [](const WaterLocoTuning& t) { return t.swimSprintSpeed > t.swimSpeed; }},
     {&WaterLocoTuning::treadSpeed, &WaterLocoTuning::swimSpeed, "treadSpeed, swimSpeed", "treadSpeed at most swimSpeed",
      [](const WaterLocoTuning& t) { return t.treadSpeed <= t.swimSpeed; }},
     {&WaterLocoTuning::swimStopSpeed, &WaterLocoTuning::swimSpeed, "swimStopSpeed, swimSpeed",

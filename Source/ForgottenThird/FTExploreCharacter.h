@@ -630,7 +630,7 @@ private:
 	ftcore::WaterFollowParty WaterParty;
 	TWeakObjectPtr<AFTPartyFollower> WaterFollowers[ftcore::kWaterFollowMax];
 	int32 NumWaterFollowers = 0;
-	float WaterFollowersAge = 1.f;
+	bool bWaterPartyParked = false;              // the lead was taken out of play since the plan last stepped
 	bool bWaterPartyLeadSwam = false;
 	bool bNoFollowerSwim = false;
 	bool bNoFollowerSwimRead = false;

@@ -3302,6 +3302,7 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 	// under water, so a kept velocity would carry it through the whole scene).
 	if (!Controller || IsHidden() || ScenePlaying())
 	{
+		bWaterPartyParked = true; // the party's plan skips its step too; its next one is told (Core's resumed)
 		if (bSwimming || bWaterClimbing || bSwimRescue)
 		{
 			Move->Velocity = FVector::ZeroVector;
@@ -3595,33 +3596,27 @@ void AFTExploreCharacter::StepWaterParty(float DeltaSeconds)
 		NumWaterFollowers = 0;
 		return;
 	}
-	// Who follows: looked for again while every one is ashore; a slot keeps its member while it is in the water.
-	bool bAllAshore = true;
-	for (int32 Slot = 0; Slot < NumWaterFollowers; ++Slot)
+	// Who follows: the director's followers of this lead, in its order (a member keeps its slot and its side). A new
+	// set (a lead switch respawns them, a member joins or leaves) starts the plan again: every member ashore.
+	AFTPartyFollower* Found[ftcore::kWaterFollowMax] = {};
+	int32 Count = 0;
+	if (AFTExploreDirector* Dir = GetDirector())
 	{
-		bAllAshore = bAllAshore && WaterParty.order(Slot).phase == ftcore::WaterFollowPhase::Ashore;
-	}
-	WaterFollowersAge += DeltaSeconds;
-	if (bAllAshore && WaterFollowersAge >= 0.5f)
-	{
-		WaterFollowersAge = 0.f;
-		AFTPartyFollower* Found[ftcore::kWaterFollowMax] = {};
-		int32 Count = 0;
-		for (TActorIterator<AFTPartyFollower> It(World); It; ++It)
+		for (AFTPartyFollower* Follower : Dir->GetFollowers())
 		{
-			if (It->GetWaterLead() != this || Count >= ftcore::kWaterFollowMax)
+			if (Follower && Follower->GetWaterLead() == this && Count < ftcore::kWaterFollowMax)
 			{
-				continue;
+				Found[Count++] = Follower;
 			}
-			// By name, so a member keeps its slot (and its side) from one look to the next.
-			int32 At = Count++;
-			while (At > 0 && It->GetFName().Compare(Found[At - 1]->GetFName()) < 0)
-			{
-				Found[At] = Found[At - 1];
-				--At;
-			}
-			Found[At] = *It;
 		}
+	}
+	bool bSame = Count == NumWaterFollowers;
+	for (int32 Slot = 0; bSame && Slot < Count; ++Slot)
+	{
+		bSame = WaterFollowers[Slot].Get() == Found[Slot];
+	}
+	if (!bSame)
+	{
 		for (int32 Slot = 0; Slot < ftcore::kWaterFollowMax; ++Slot)
 		{
 			WaterFollowers[Slot] = Slot < Count ? Found[Slot] : nullptr;
@@ -3630,10 +3625,8 @@ void AFTExploreCharacter::StepWaterParty(float DeltaSeconds)
 				Found[Slot]->SetWaterSlot(Slot);
 			}
 		}
-		if (Count != NumWaterFollowers)
-		{
-			UE_LOG(LogForgottenThird, Display, TEXT("WaterFollow: %d partners follow the lead into the water."), Count);
-		}
+		WaterParty.reset();
+		UE_LOG(LogForgottenThird, Display, TEXT("WaterFollow: %d partners follow the lead into the water (the plan starts again)."), Count);
 		NumWaterFollowers = Count;
 	}
 	if (NumWaterFollowers == 0)
@@ -3668,6 +3661,9 @@ void AFTExploreCharacter::StepWaterParty(float DeltaSeconds)
 	Lead.exitIndex = WaterLeadExit;
 	Lead.out = !Lead.swimming && !bWaterClimbing;
 	Lead.camera = Camera ? ToSwim(Camera->GetComponentLocation()) : Lead.position;
+	// Back from a park (a scene, a hidden or uncontrolled lead skips the plan's step): Core places swimmers if it is dry.
+	Lead.resumed = bWaterPartyParked;
+	bWaterPartyParked = false;
 	const ftcore::WaterBodies& Bodies = System->Bodies();
 	const std::size_t Exits = Bodies.exitCount();
 	WaterParty.step(Lead, Members, NumWaterFollowers, Exits > 0 ? &Bodies.exit(0) : nullptr, Exits, DeltaSeconds, &Bodies);

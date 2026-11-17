@@ -187,7 +187,7 @@ private:
 	bool TickWater(const FVector2D& Ground, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	void WaterWalk(const FVector2D& To, float WalkSpeed, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	void SenseWater(const UFTWaterSubsystem& System, const FVector& At, bool bSwimming);
-	void FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt);
+	bool FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt);
 	void StepFollowerWaterLoco(ftcore::WaterLocoInput& In, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	FString WaterName;
 	int32 WaterSlot = -1;
@@ -201,6 +201,8 @@ private:
 	float WaterBedZ = -10.f;                    // m: the bed under it, last looked at
 	ftcore::Vec2 WaterEdge{};                   // m: the bank's edge toward the lead, and the way in there
 	ftcore::Vec2 WaterEdgeOut{1.f, 0.f};
+	bool bWaterHasEdge = false;                 // water was found toward the lead (else no jump in)
+	float WaterEdgeAge = 1.f;                   // s since the edge was last looked for
 	FVector WaterVelocity = FVector::ZeroVector; // cm/s
 	// A placed move (the entry's walk or jump, the climb out): from, to, its time and length, and whether it is over.
 	bool bWaterMove = false;

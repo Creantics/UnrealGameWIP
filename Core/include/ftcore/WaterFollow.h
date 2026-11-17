@@ -44,6 +44,11 @@ struct WaterFollowTuning {
     float surfaceSprint = 2.4f;
     float underSpeed = 2.2f;       // m/s: under water (Swim's swimSpeed, sprintSpeed)
     float underSprint = 3.2f;
+    float exitReturn = 3.f;        // m: a lead swimming again (not exiting) this far from a follower's exit foot...
+    float returnHold = 1.f;        // s: ...this long sends the follower back from its exit queue to the surface
+    float teleport = 10.f;         // m: the lead moved this far in one step (a scene, a fight, a load): lost
+    float watchdog = 20.f;         // s: a follower stuck this long in a water phase is placed with the lead
+    float stuckFar = 12.f;         // m: at the surface or under, further than this from the lead counts as stuck
 };
 
 // What a follower is doing in the water.
@@ -148,6 +153,7 @@ struct WaterFollowLead {
     int exitIndex = -1;         // the exit it uses (-1: none)
     bool out = false;           // the lead's climb is over: it is out of the water
     SwimVec camera;             // the camera, for the keep-out
+    bool resumed = false;       // the first step after the planner was parked (a scene, a hidden or uncontrolled lead)
 };
 
 // A follower this step (the host's).
@@ -164,6 +170,7 @@ struct WaterFollowMember {
     float bedZ = -10.f;
     Vec2 edge{};                // ashore: the bank point nearest it (PartyShore) and the way into the water there
     Vec2 edgeOut{1.f, 0.f};
+    bool hasEdge = true;        // ashore: the host found water toward the lead (else no jump entry: it stays ashore)
 };
 
 // What a follower is to do.
@@ -200,6 +207,7 @@ public:
         lastEntryAt_ = -1.f;
         lastClimbAt_ = -1.f;
         leadUnder_ = false;
+        hasLastLead_ = false;
     }
     const WaterFollowTuning& tuning() const { return tuning_; }
     // The stagger after the member before (s).
@@ -224,6 +232,14 @@ public:
         if (!leadUnder) leadDiveAt_ = -1.f;
         leadUnder_ = leadUnder;
         const bool rescued = lead.swim == SwimState::Rescued;
+        // Lost: the lead jumped (a scene, a fight or a teleport moved it), or it is back from a parked planner on dry
+        // ground. The old plan is not resumed against it: every follower in the water is placed with the lead.
+        const bool leadDry = !lead.swimming && !leadUnder;
+        const bool jumped = hasLastLead_ && dist3(lead.position, lastLead_) > tuning_.teleport;
+        const bool lost = jumped || (lead.resumed && leadDry);
+        if (jumped) leadSwim_ = leadDry ? 0.f : dt; // a new swim: the entry's wait starts again
+        lastLead_ = lead.position;
+        hasLastLead_ = true;
 
         for (int i = 0; i < count; ++i) {
             Slot& s = slots_[i];
@@ -239,8 +255,15 @@ public:
                 s = Slot{};
                 continue;
             }
+            s.held = m.held;
             const WaterFollowPhase was = o.phase;
             if (rescued && inWater(was)) {
+                go(o, WaterFollowPhase::Placed);
+                o.place = true;
+            }
+            if (lost && o.phase == WaterFollowPhase::ToEntry) go(o, WaterFollowPhase::Ashore);
+            // Lost, or stuck past the watchdog (it never reached its exit, its slot or the end of its move): placed.
+            if (inWater(o.phase) && (lost || s.watch >= tuning_.watchdog)) {
                 go(o, WaterFollowPhase::Placed);
                 o.place = true;
             }
@@ -250,7 +273,11 @@ public:
                     const Vec2 here{m.position.x, m.position.y};
                     o.entry = waterFollowEntry(exits, exitCount, here, Vec2{lead.position.x, lead.position.y}, m.edge,
                                                m.edgeOut, tuning_.stepsWithin);
-                    go(o, WaterFollowPhase::ToEntry);
+                    // A jump needs the water's edge; with none found toward the lead it stays ashore.
+                    if (o.entry.kind == WaterFollowEntryKind::Steps || m.hasEdge)
+                        go(o, WaterFollowPhase::ToEntry);
+                    else
+                        o.entry = WaterFollowEntry{};
                 }
                 break;
             case WaterFollowPhase::ToEntry:
@@ -291,10 +318,25 @@ public:
                 }
                 break;
             case WaterFollowPhase::ToExit:
-                if (m.atExit) go(o, WaterFollowPhase::ExitWait);
-                [[fallthrough]];
             case WaterFollowPhase::ExitWait:
-                if (o.phase == WaterFollowPhase::ExitWait && climbTurn(i, lead)) {
+                // The lead turned back from the bank: swimming again, not exiting, away from this exit for returnHold.
+                if ((lead.swimming || leadUnder) && !lead.exiting) {
+                    const bool hasExit = o.exitIndex >= 0 && std::size_t(o.exitIndex) < exitCount;
+                    const float away = hasExit ? water_follow_detail::dist(exits[o.exitIndex].foot,
+                                                                          Vec2{lead.position.x, lead.position.y})
+                                               : tuning_.exitReturn + 1.f;
+                    s.backFor = away > tuning_.exitReturn ? s.backFor + dt : 0.f;
+                    if (s.backFor >= tuning_.returnHold) {
+                        s.backFor = 0.f;
+                        go(o, WaterFollowPhase::Surface);
+                        o.exitIndex = -1;
+                        break;
+                    }
+                } else {
+                    s.backFor = 0.f;
+                }
+                if (o.phase == WaterFollowPhase::ToExit && m.atExit) go(o, WaterFollowPhase::ExitWait);
+                if (o.phase == WaterFollowPhase::ExitWait && !m.held && climbTurn(i, lead)) {
                     go(o, WaterFollowPhase::Climbing);
                     o.startClimb = true;
                     s.climbAt = clock_;
@@ -304,8 +346,9 @@ public:
             case WaterFollowPhase::Climbing:
                 if (m.climbed) go(o, WaterFollowPhase::Ashore);
                 break;
-            case WaterFollowPhase::Placed:
-                if (!rescued && !lead.swimming && !leadUnder) go(o, WaterFollowPhase::Ashore);
+            case WaterFollowPhase::Placed: // held at least the step it was placed in, so the host sees it
+                if (was == WaterFollowPhase::Placed && !rescued && !lead.swimming && !leadUnder)
+                    go(o, WaterFollowPhase::Ashore);
                 break;
             }
             // A follower left in the water when the lead is out by no exit move (a scene, a load): its own way out.
@@ -315,16 +358,79 @@ public:
                 beginExit(o, lead, m, exits, exitCount);
             }
             target(o, lead, m, i, exits, exitCount, water);
+            watch(i, s, o, lead, m, exits, exitCount, dt);
         }
         for (int i = count; i < kWaterFollowMax; ++i) slots_[i] = Slot{};
     }
+
+    // The watchdog's running time for slot i (s): how long it has been stuck in its water phase.
+    float stuckFor(int i) const { return i >= 0 && i < kWaterFollowMax ? slots_[i].watch : 0.f; }
 
 private:
     struct Slot {
         WaterFollowOrder order;
         float entryAt = -1.f;
         float climbAt = -1.f;
+        bool held = false;        // its member is held by a scene: out of the climb queue
+        float backFor = 0.f;      // s the lead has swum away from its exit (the queue's return)
+        WaterFollowPhase watchPhase = WaterFollowPhase::Ashore;
+        float watch = 0.f;        // s stuck in watchPhase
+        float bestGap = 0.f;      // m: ToExit's nearest to its exit's foot so far
     };
+
+    static bool swimPhase(WaterFollowPhase p) {
+        return p == WaterFollowPhase::Surface || p == WaterFollowPhase::DiveWait || p == WaterFollowPhase::Under;
+    }
+
+    // The watchdog: no progress for watchdog seconds places it. At the surface or under: over stuckFar from the lead and
+    // not 0.5 m nearer it than its best; on its way to an exit: not 0.5 m nearer the foot; waiting at the foot: only
+    // while nothing explains the wait (the lead is out, no un-held member before it is still queued); in an entry or a
+    // climb: the phase's time.
+    void watch(int i, Slot& s, const WaterFollowOrder& o, const WaterFollowLead& lead, const WaterFollowMember& m,
+               const WaterExit* exits, std::size_t exitCount, float dt) const {
+        namespace d = water_follow_detail;
+        const bool hasExit = o.exitIndex >= 0 && std::size_t(o.exitIndex) < exitCount;
+        const bool swim = swimPhase(o.phase);
+        const float gap = swim ? dist3(m.position, lead.position)
+                               : hasExit ? d::dist(exits[o.exitIndex].foot, Vec2{m.position.x, m.position.y}) : 0.f;
+        if (o.phase != s.watchPhase) {
+            s.watchPhase = o.phase;
+            s.watch = 0.f;
+            s.bestGap = gap;
+            return;
+        }
+        if (!inWater(o.phase) || m.held || (swim && gap <= tuning_.stuckFar)) {
+            s.watch = 0.f;
+            s.bestGap = gap;
+        } else if (swim || (o.phase == WaterFollowPhase::ToExit && hasExit)) {
+            if (s.watch == 0.f) s.bestGap = gap; // a new count: its best is where it starts
+            if (gap < s.bestGap - 0.5f) {
+                s.bestGap = gap;
+                s.watch = 0.f;
+            } else {
+                s.watch += dt;
+            }
+        } else if (o.phase == WaterFollowPhase::ExitWait) {
+            s.watch = queueClear(i, lead) ? s.watch + dt : 0.f;
+        } else {
+            s.watch += dt;
+        }
+    }
+
+    // The lead is out and no un-held member before slot i is still on its way to, or waiting at, its exit.
+    bool queueClear(int i, const WaterFollowLead& lead) const {
+        if (!lead.out) return false;
+        for (int j = 0; j < i; ++j) {
+            const WaterFollowPhase p = slots_[j].order.phase;
+            if (!slots_[j].held && (p == WaterFollowPhase::ToExit || p == WaterFollowPhase::ExitWait)) return false;
+        }
+        return true;
+    }
+
+    static float dist3(const SwimVec& a, const SwimVec& b) {
+        const float x = a.x - b.x, y = a.y - b.y, z = a.z - b.z;
+        return std::sqrt(x * x + y * y + z * z);
+    }
 
     static bool inWater(WaterFollowPhase p) {
         return p == WaterFollowPhase::Entering || p == WaterFollowPhase::Surface || p == WaterFollowPhase::DiveWait ||
@@ -353,14 +459,10 @@ private:
         return lastEntryAt_ < 0.f || clock_ - lastEntryAt_ >= stagger(i);
     }
 
-    // Its climb may start: the lead is out, every member before it has started its climb (or is not waiting to), and
-    // climbGap has run since the last one started.
+    // Its climb may start: the lead is out, every member before it has started its climb (or is not waiting to, or is
+    // held by a scene and so out of the queue), and climbGap has run since the last one started.
     bool climbTurn(int i, const WaterFollowLead& lead) const {
-        if (!lead.out) return false;
-        for (int j = 0; j < i; ++j) {
-            const WaterFollowPhase p = slots_[j].order.phase;
-            if (p == WaterFollowPhase::ToExit || p == WaterFollowPhase::ExitWait) return false;
-        }
+        if (!queueClear(i, lead)) return false;
         return lastClimbAt_ < 0.f || clock_ - lastClimbAt_ >= tuning_.climbGap;
     }
 
@@ -517,6 +619,8 @@ private:
     float lastEntryAt_ = -1.f;
     float lastClimbAt_ = -1.f;
     bool leadUnder_ = false;
+    SwimVec lastLead_{};
+    bool hasLastLead_ = false;
 };
 
 } // namespace ftcore

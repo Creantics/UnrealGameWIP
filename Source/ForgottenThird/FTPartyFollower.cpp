@@ -826,9 +826,10 @@ void AFTPartyFollower::FillWaterMember(ftcore::WaterFollowMember& Member) const
 	Member.bedZ = WaterBedZ;
 	Member.edge = WaterEdge;
 	Member.edgeOut = WaterEdgeOut;
+	Member.hasEdge = bWaterHasEdge;
 }
 
-void AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt)
+bool AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt)
 {
 	// The bank's edge on the way from where it stands to the lead: the last point short of the water, marched in 25 cm
 	// steps up to 20 m; the way in there is toward the lead.
@@ -845,9 +846,10 @@ void AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FV
 		{
 			const FVector2D Edge = From + Way * FMath::Max(0.0, Along - 30.0);
 			WaterEdge = {FTSwimUnits::ToMetres(Edge.X), FTSwimUnits::ToMetres(Edge.Y)};
-			return;
+			return true;
 		}
 	}
+	return false; // no water toward the lead: it stays ashore (no jump onto land)
 }
 
 void AFTPartyFollower::SenseWater(const UFTWaterSubsystem& System, const FVector& At, bool bSwimming)
@@ -971,10 +973,21 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			ftcore::WaterLocoInput In;
 			StepFollowerWaterLoco(In, DeltaSeconds, Anim);
 		}
-		// Ready for the lead's next swim: where it would go in from.
-		if (System && System->HasBodies() && Lead && Lead->IsSwimming())
+		// Ready for the lead's next swim: where it would go in from. Only while an order may pick an entry (in a slot, the
+		// lead swimming), four times a second.
+		WaterEdgeAge += DeltaSeconds;
+		if (Order && System && System->HasBodies() && Lead && Lead->IsSwimming())
 		{
-			FindWaterEdge(System->Bodies(), At, Lead->GetActorLocation());
+			if (WaterEdgeAge >= 0.25f)
+			{
+				WaterEdgeAge = 0.f;
+				bWaterHasEdge = FindWaterEdge(System->Bodies(), At, Lead->GetActorLocation());
+			}
+		}
+		else
+		{
+			bWaterHasEdge = false;
+			WaterEdgeAge = 1.f;
 		}
 		return false;
 	}
@@ -1026,7 +1039,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 					Into += Way * 50.0;
 				}
 			}
-			WaterMoveTo = FVector(Into.X, Into.Y, SwimFeetZ(Into, At.Z - 150.0));
+			WaterMoveTo = FVector(Into.X, Into.Y, SwimFeetZ(Into, At.Z));
 			WaterMoveLength = bJump ? kWaterJumpSeconds : FMath::Max(0.5f, static_cast<float>(FVector::Dist(WaterMoveFrom, WaterMoveTo) / kWaterStepsSpeed));
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: %s into the water from (%.0f, %.0f, %.0f) to (%.0f, %.0f, %.0f) cm."), *LogName,
 				bJump ? TEXT("jumps") : TEXT("walks down the steps"), At.X, At.Y, At.Z, WaterMoveTo.X, WaterMoveTo.Y, WaterMoveTo.Z);

@@ -301,7 +301,7 @@ TEST_CASE("water follow: they dive 0.3 s x (order + 1) after the lead, and surfa
 TEST_CASE("water follow: under water they keep 4-6 m from the lead, out of the shot, under the surface, over the bed") {
     Scene s;
     s.bothIn();
-    s.lead = swimmingLead({20.f, 0.f, -3.f}, {2.2f, 0.f});
+    s.lead = swimmingLead({14.f, 0.f, -3.f}, {2.2f, 0.f}); // under the 10 m teleport
     s.lead.swim = SwimState::Under;
     s.step(30);
     REQUIRE(s.o(1).phase == WaterFollowPhase::Under);
@@ -323,7 +323,7 @@ TEST_CASE("water follow: under water they keep 4-6 m from the lead, out of the s
     s.step();
     CHECK(s.o(0).speed == doctest::Approx(2.2f * 1.2f));
     // Too close is out of the band too.
-    s.members[0].position = {19.f, -1.f, -3.f};
+    s.members[0].position = {13.f, -1.f, -3.f};
     s.step();
     CHECK(s.o(0).speed > 0.f);
     // A camera straight behind the slot: the slot is pushed out of the 0.8 m keep-out around camera-to-lead.
@@ -428,6 +428,218 @@ TEST_CASE("water follow: left in the water with the lead out by no exit move, th
     s.step();
     CHECK(s.o(0).phase == WaterFollowPhase::ToExit);
     CHECK(s.o(0).exitIndex == 0);
+}
+
+TEST_CASE("water follow: the lead swims again from the bank: the exit queue goes back to the surface") {
+    Scene s;
+    s.exits = {ladder({1.f, 0.f})};
+    s.bothIn();
+    s.lead.swimming = false;
+    s.lead.exiting = true;
+    s.lead.exitIndex = 0;
+    s.step();
+    REQUIRE(s.o(0).phase == WaterFollowPhase::ToExit);
+    s.members[1].atExit = true;
+    s.step();
+    REQUIRE(s.o(1).phase == WaterFollowPhase::ExitWait);
+    // It turns back: swimming, not exiting, 4 m from the ladder's foot.
+    s.lead.swimming = true;
+    s.lead.exiting = false;
+    s.lead.position = {5.f, 0.f, -1.f};
+    s.step(15); // 0.5 s: not yet (the hold)
+    CHECK(s.o(0).phase == WaterFollowPhase::ToExit);
+    CHECK(s.o(1).phase == WaterFollowPhase::ExitWait);
+    CHECK(s.until(0, WaterFollowPhase::Surface, 1.f) >= 0.f);
+    CHECK(s.o(1).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(0).exitIndex == -1);
+    // Near the foot the queue holds (the lead may be lining up its climb).
+    Scene n;
+    n.exits = {ladder({1.f, 0.f})};
+    n.bothIn();
+    n.lead.swimming = false;
+    n.lead.exiting = true;
+    n.lead.exitIndex = 0;
+    n.step();
+    n.lead.swimming = true;
+    n.lead.exiting = false;
+    n.lead.position = {2.5f, 0.f, -1.f};
+    n.step(60);
+    CHECK(n.o(0).phase == WaterFollowPhase::ToExit);
+}
+
+TEST_CASE("water follow: a held follower leaves the climb queue; the ones after it climb") {
+    Scene s;
+    s.exits = {ladder({1.f, 0.f})};
+    s.bothIn();
+    s.lead.swimming = false;
+    s.lead.exiting = true;
+    s.lead.exitIndex = 0;
+    s.lead.out = true;
+    s.members[0].held = true; // a scene holds the first; it never reaches its foot
+    s.step();
+    REQUIRE(s.o(0).phase == WaterFollowPhase::ToExit);
+    s.members[1].atExit = true;
+    CHECK(s.until(1, WaterFollowPhase::Climbing, 1.f) >= 0.f);
+    CHECK(s.o(0).phase == WaterFollowPhase::ToExit);
+    // A held one at its foot does not climb while held.
+    s.members[0].atExit = true;
+    s.step(30);
+    CHECK(s.o(0).phase == WaterFollowPhase::ExitWait);
+    s.members[0].held = false;
+    s.step(2);
+    CHECK(s.o(0).phase == WaterFollowPhase::Climbing);
+}
+
+TEST_CASE("water follow: the watchdog places a follower stuck 20 s (never reaching its exit, or far off the lead)") {
+    Scene s;
+    s.exits = {ladder({1.f, 0.f})};
+    s.bothIn();
+    s.lead.swimming = false;
+    s.lead.exiting = true;
+    s.lead.exitIndex = 0;
+    s.lead.out = true;
+    s.step();
+    REQUIRE(s.o(0).phase == WaterFollowPhase::ToExit);
+    s.members[1].atExit = true;
+    // The first never comes nearer its foot (stuck on something).
+    const float t = s.until(0, WaterFollowPhase::Placed, 25.f);
+    CHECK(t == doctest::Approx(20.f).epsilon(0.02));
+    CHECK(s.o(0).changed);
+    // Placed, the next step it is ashore (the lead is out); the one behind it climbed meanwhile.
+    CHECK(s.o(1).phase != WaterFollowPhase::ExitWait);
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Ashore);
+    // Coming nearer resets it: 15 s each way with progress between is no expiry.
+    Scene p;
+    p.exits = {ladder({30.f, 0.f})};
+    p.bothIn();
+    p.lead.swimming = false;
+    p.lead.exiting = true;
+    p.lead.exitIndex = 0;
+    p.step();
+    REQUIRE(p.o(0).phase == WaterFollowPhase::ToExit);
+    p.step(450);
+    p.members[0].position.x += 5.f;
+    p.step(450);
+    CHECK(p.o(0).phase == WaterFollowPhase::ToExit);
+    CHECK(p.party.stuckFor(0) == doctest::Approx(15.f).epsilon(0.02));
+    // Waiting at the foot behind one still on its way is explained: slot 1 outlasts slot 0's stuck swim.
+    Scene q;
+    q.exits = {ladder({1.f, 0.f})};
+    q.bothIn();
+    q.lead.swimming = false;
+    q.lead.exiting = true;
+    q.lead.exitIndex = 0;
+    q.lead.out = true;
+    q.members[0].position = {20.f, 1.f, -1.f};
+    q.step();
+    q.members[1].atExit = true;
+    for (int k = 0; k < 15; ++k) { // slot 0 comes 1 m nearer a second for 15 s, then sticks
+        q.members[0].position.x -= 1.f;
+        q.step(30);
+    }
+    q.step(30 * 10);
+    CHECK(q.o(0).phase == WaterFollowPhase::ToExit);
+    CHECK(q.o(1).phase == WaterFollowPhase::ExitWait);
+    CHECK(q.party.stuckFor(1) == 0.f);
+    CHECK(q.until(0, WaterFollowPhase::Placed, 12.f) >= 0.f); // then slot 0 is placed and slot 1 climbs
+    CHECK(q.until(1, WaterFollowPhase::Climbing, 3.f) >= 0.f);
+    // The lead treads by the foot (turned back, within exitReturn): the waiting ones are not placed.
+    Scene b;
+    b.exits = {ladder({1.f, 0.f})};
+    b.bothIn();
+    b.lead.swimming = false;
+    b.lead.exiting = true;
+    b.lead.exitIndex = 0;
+    b.step();
+    b.members[0].atExit = b.members[1].atExit = true;
+    b.step();
+    REQUIRE(b.o(0).phase == WaterFollowPhase::ExitWait);
+    b.lead.swimming = true;
+    b.lead.exiting = false;
+    b.lead.position = {2.5f, 0.f, -1.f};
+    b.step(30 * 30);
+    CHECK(b.o(0).phase == WaterFollowPhase::ExitWait);
+    CHECK(b.o(1).phase == WaterFollowPhase::ExitWait);
+    // Catching up from far behind a lead sprinting away is progress, not stuck.
+    Scene c;
+    c.bothIn();
+    c.members[0].position = {-25.f, 0.f, -1.f};
+    for (int k = 0; k < 30 * 30; ++k) {
+        c.lead.position.x += 3.2f / 30.f;
+        c.members[0].position.x += 3.4f / 30.f;
+        c.step();
+    }
+    CHECK(c.o(0).phase == WaterFollowPhase::Surface);
+    // At the surface: far from the lead for 20 s.
+    Scene f;
+    f.bothIn();
+    f.members[0].position = {40.f, 0.f, -1.f}; // 35 m off a lead that does not move
+    CHECK(f.until(0, WaterFollowPhase::Placed, 25.f) == doctest::Approx(20.f).epsilon(0.02));
+    CHECK(f.o(1).phase == WaterFollowPhase::Surface); // the near one is not stuck
+}
+
+TEST_CASE("water follow: a lead teleported mid-swim, or back from a park on dry ground, has the swimmers placed") {
+    Scene s;
+    s.bothIn();
+    s.lead.position = {60.f, 0.f, -1.f}; // a scene or a fight moved it 55 m
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Placed);
+    CHECK(s.o(0).place);
+    CHECK(s.o(1).phase == WaterFollowPhase::Placed);
+    // Placed while the lead still swims: held; out of the water, ashore.
+    s.step(10);
+    CHECK(s.o(0).phase == WaterFollowPhase::Placed);
+    s.lead.swimming = false;
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Ashore);
+    // A teleport onto dry ground.
+    Scene d;
+    d.bothIn();
+    d.lead.swimming = false;
+    d.lead.position = {-40.f, 0.f, 1.f};
+    d.step();
+    CHECK(d.o(0).phase == WaterFollowPhase::Placed);
+    // Back from a park on dry ground without moving far: placed, not a swim to an exit.
+    Scene r;
+    r.exits = {ladder({1.f, 0.f})};
+    r.bothIn();
+    r.lead.swimming = false;
+    r.lead.resumed = true;
+    r.lead.position = {-2.f, 0.f, 0.5f};
+    r.step();
+    CHECK(r.o(0).phase == WaterFollowPhase::Placed);
+    CHECK(r.o(1).phase == WaterFollowPhase::Placed);
+    // Back from a park still swimming: the plan goes on.
+    Scene w;
+    w.bothIn();
+    w.lead.resumed = true;
+    w.step();
+    CHECK(w.o(0).phase == WaterFollowPhase::Surface);
+    // A teleport while one walks to its entry: back ashore, and the swim's wait starts again.
+    Scene e;
+    e.step(30);
+    REQUIRE(e.o(0).phase == WaterFollowPhase::ToEntry);
+    e.lead.position = {40.f, 0.f, -1.f};
+    e.step();
+    CHECK(e.o(0).phase == WaterFollowPhase::Ashore);
+    CHECK(e.until(0, WaterFollowPhase::ToEntry, 2.f) == doctest::Approx(0.8f).epsilon(0.06));
+}
+
+TEST_CASE("water follow: with no water found toward the lead, a follower stays ashore") {
+    Scene s;
+    s.members[0].hasEdge = false;
+    s.step(30);
+    CHECK(s.o(0).phase == WaterFollowPhase::Ashore);
+    CHECK(s.o(0).entry.kind == WaterFollowEntryKind::None);
+    CHECK(s.o(1).phase == WaterFollowPhase::ToEntry);
+    // Steps near its path need no edge.
+    Scene t;
+    t.exits = {steps({-1.f, 1.f}, {1.f, 1.f})};
+    t.members[0].hasEdge = false;
+    t.step(30);
+    CHECK(t.o(0).phase == WaterFollowPhase::ToEntry);
+    CHECK(t.o(0).entry.kind == WaterFollowEntryKind::Steps);
 }
 
 TEST_CASE("water follow: an inactive slot is cleared; a step allocates nothing") {
