@@ -178,7 +178,7 @@ int32 UFTImportAnimCommandlet::Main(const FString& Params)
 
 	UObject* Loaded = LoadObject<UObject>(nullptr, *SkeletonPath);
 	USkeleton* Skeleton = Cast<USkeleton>(Loaded);
-	const USkeletalMesh* Mesh = Cast<USkeletalMesh>(Loaded);
+	USkeletalMesh* Mesh = Cast<USkeletalMesh>(Loaded);
 	if (!Skeleton && Mesh)
 	{
 		Skeleton = Mesh->GetSkeleton();
