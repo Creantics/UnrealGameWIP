@@ -43,6 +43,10 @@ FTCORE_API Vec2 mapOverlayFromScreen(const MapOverlayView& v, Vec2 screen);
 // The centre held so the view never leaves the model's area (a side larger than the area centres on it).
 FTCORE_API Vec2 mapOverlayClampCentre(const MiniMapModel& m, const MapOverlayView& v);
 
+// Which buildings are enterable: those with a door on or inside their footprint (grown by `reach` m, since doors sit
+// on the wall line). One flag per model building, 1 enterable. Runs once at load (it sizes `out`).
+FTCORE_API void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::uint8_t>& out, float reach = 1.f);
+
 // The names, joined to the roads by id at load (this allocates; it runs once). The table's text is CSV with the header
 // id,kind,name,sign_form,district; rows with kind "district" are the districts (id = the district's id). A road with
 // no row has no name; rows that name no road in the model are skipped (counted in `unmatched`).

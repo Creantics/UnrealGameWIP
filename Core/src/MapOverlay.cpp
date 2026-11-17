@@ -108,6 +108,22 @@ Vec2 mapOverlayClampCentre(const MiniMapModel& m, const MapOverlayView& v) {
                 hold(v.centre.y, m.minY, m.maxY, v.screenH * v.mPerPx * 0.5f)};
 }
 
+void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::uint8_t>& out, float reach) {
+    out.assign(m.buildings.size(), 0);
+    for (std::size_t b = 0; b < m.buildings.size(); ++b) {
+        const MapRect& r = m.buildings[b];
+        const float c = std::cos(r.rot), s = std::sin(r.rot);
+        for (const Vec2& d : m.doors) {
+            const float dx = d.x - r.cx, dy = d.y - r.cy;
+            const float u = dx * c + dy * s, v = -dx * s + dy * c; // into the rect's own axes
+            if (std::abs(u) <= r.hx + reach && std::abs(v) <= r.hy + reach) {
+                out[b] = 1;
+                break;
+            }
+        }
+    }
+}
+
 bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error) {
     out = MapNames{};
     out.roadName.assign(m.roads.size(), kMapNoName);

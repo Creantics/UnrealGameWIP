@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -223,4 +224,23 @@ TEST_CASE("map overlay: a dense field of candidates places without overlaps and 
         CHECK(out.labels[i].angleDeg < 90.f);
         for (std::size_t k = i + 1; k < out.count; ++k) CHECK_FALSE(mapLabelsOverlap(out.labels[i], out.labels[k]));
     }
+}
+
+TEST_CASE("map overlay: a building with a door on its wall or inside it is enterable; turned footprints respected") {
+    MiniMapModel m = model();
+    m.buildings.push_back(MapRect{100.f, 100.f, 10.f, 5.f, 0.f});           // door on its south wall
+    m.buildings.push_back(MapRect{300.f, 100.f, 10.f, 5.f, 0.f});           // no door near
+    m.buildings.push_back(MapRect{200.f, 250.f, 20.f, 2.f, 3.14159265f / 2.f}); // turned a quarter: long side north-south
+    m.doors.push_back({104.f, 105.5f});
+    m.doors.push_back({200.f, 268.f}); // 18 m south of the turned one's centre: inside it only because it is turned
+    m.doors.push_back({316.f, 100.f}); // 6 m past the second's east wall: too far
+    std::vector<std::uint8_t> e;
+    mapEnterableBuildings(m, e);
+    REQUIRE(e.size() == 3);
+    CHECK(e[0] == 1);
+    CHECK(e[1] == 0);
+    CHECK(e[2] == 1);
+    m.doors.clear();
+    mapEnterableBuildings(m, e);
+    CHECK(e == std::vector<std::uint8_t>{0, 0, 0});
 }
