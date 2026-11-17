@@ -16,11 +16,26 @@ $srcs = Get-ChildItem "$repo\Core\src\*.cpp" | % FullName
 if ($LASTEXITCODE -ne 0) { "CLANG FAILED"; exit 1 }
 "clang ok ($($srcs.Count) sources)"
 
-& "$cm\cmake.exe" -S "$repo\Core" -B "$repo\Core\build" -DFTCORE_WERROR=ON 2>&1 | Select-String 'Error|error' | Select-Object -First 20
+# The Python tests need numpy: pin the interpreter that has it (FT_PYTHON overrides), so CMake does not pick a newer
+# Python without it and skip them.
+$py = if ($env:FT_PYTHON) { $env:FT_PYTHON } else { "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" }
+$pyArg = @()
+if (Test-Path $py) { $pyArg = @("-DPython3_EXECUTABLE=$($py.Replace('\', '/'))") } else { "python $py not found; CMake picks one" }
+& "$cm\cmake.exe" -S "$repo\Core" -B "$repo\Core\build" -DFTCORE_WERROR=ON @pyArg 2>&1 | Select-String 'Error|error' | Select-Object -First 20
 & "$cm\cmake.exe" --build "$repo\Core\build" --config Debug 2>&1 | Select-String 'warning|error' | Select-Object -First 40
 if ($LASTEXITCODE -ne 0) { "CMAKE BUILD FAILED"; exit 1 }
-& "$cm\ctest.exe" --test-dir "$repo\Core\build" -C Debug --output-on-failure 2>&1 | Select-String 'Passed|Failed|tests passed|Error|missing|wrapper|reserved|:\d+:'
-if ($LASTEXITCODE -ne 0) { "CTEST FAILED"; exit 1 }
+$ct = & "$cm\ctest.exe" --test-dir "$repo\Core\build" -C Debug --output-on-failure 2>&1 | ForEach-Object { "$_" }
+$ctExit = $LASTEXITCODE
+$ct | Select-String 'Passed|Failed|Skipped|Not Run|Disabled|did not run|tests passed|Error|missing|wrapper|reserved|:\d+:'
+if ($ctExit -ne 0) { "CTEST FAILED"; exit 1 }
+# A skipped, disabled or not-run test is not a pass: ctest exits 0 over them, so the gate names them and fails, unless
+# the test is on this allow-list (empty: every registered test must run).
+$allowNotRun = @()
+$notRun = @($ct | ForEach-Object {
+        if ($_ -match 'Test\s+#\d+:\s+(\S+)\s.*\*+(Skipped|Not Run|Disabled)') { $Matches[1] }
+        elseif ($_ -match '^\s*\d+\s+-\s+(\S+)\s+\((Skipped|Not Run|Disabled)\)\s*$') { $Matches[1] }
+    } | Sort-Object -Unique | Where-Object { $allowNotRun -notcontains $_ })
+if ($notRun.Count) { "CTEST FAILED: did not run: $($notRun -join ', ')"; exit 1 }
 # The direct run prints the counts; a failed case fails the gate and its block is printed (case, file:line, values), so a
 # failure that does not come back on a rerun still has a name.
 $dt = & "$repo\Core\build\Debug\ftcore_tests.exe" --no-intro 2>&1 | ForEach-Object { "$_" }
