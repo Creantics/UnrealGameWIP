@@ -78,8 +78,9 @@ struct WaterTile {
 FTCORE_API std::size_t waterTileLayout(const WaterBodies& water, const WaterWaveSpec& waves, const WaterTileSpec& spec,
                                        const WaterTileBounds& bounds, WaterTile* out, std::size_t cap);
 
-// The draw's cap on tiles, all bodies together (a far start or body can't grow the sea's strip past it).
-inline constexpr std::size_t kWaterMaxTiles = 4096;
+// The draw's cap on tiles, all bodies together (a far start or body can't grow the sea's strip past it). A 1 km plan: the sea
+// is about 1.8 km along (with the 400 m margins) by 620 m, some 4 400 tiles; 8192 holds a plan to about 2.4 km.
+inline constexpr std::size_t kWaterMaxTiles = 8192;
 
 // The same, a body at a time and whole: a body whose tiles don't all fit in what is left of cap is laid not at all (its
 // bit in *dropped, the bodies after it still tried). Returns the tiles laid. perBody (kWaterMaxBodies long, may be null):
