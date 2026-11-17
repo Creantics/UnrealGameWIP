@@ -378,3 +378,13 @@ TEST_CASE("Height queries allocate nothing and are cheap enough for a fan of poi
     MESSAGE("waterSurfaceM: " << us << " us a query");
     CHECK(us < 20.0); // generous for debug builds; release is about 1 us
 }
+
+TEST_CASE("The water file refuses a storm cap under the calm cap") {
+    WaterSpec spec;
+    std::string err;
+    CHECK_FALSE(parseWaterSpec(R"({"version": 1, "waves": {"riverMaxHsCm": 20, "riverStormHsCm": 10}})", spec, &err));
+    CHECK(err.find("riverStormHsCm") != std::string::npos);
+    CHECK_FALSE(parseWaterSpec(R"({"version": 1, "waves": {"canalMaxHsCm": 8, "canalStormHsCm": 5}})", spec, &err));
+    CHECK(err.find("canalStormHsCm") != std::string::npos);
+    CHECK(parseWaterSpec(R"({"version": 1, "waves": {"riverMaxHsCm": 20, "riverStormHsCm": 20}})", spec, &err));
+}
