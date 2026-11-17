@@ -1968,7 +1968,7 @@ def stock_pot(name):
     and propped on the ladle's handle, which leans out over -X; the gas valve and hose toward +Y (the cook's side)."""
     b = Builder(name)
     rng = random.Random(4545)
-    R, H, t, hs = POT_R, POT_H, POT_T, 0.065
+    RP, H, t, hs = POT_R, POT_H, POT_T, 0.065
     zb = hs
     rim = zb + H
     # --- the ring stand: base ring on three pads, a cast spider to the burner, four pot supports, ported burner cap
@@ -2005,21 +2005,21 @@ def stock_pot(name):
              (5.6, 0.07, 0.020, 0.25, 0.03)]
     f = _dents(dents, wobble(rng, 0.004))
     zw = [0.035 + (H - 0.055) * k / 9 for k in range(10)]
-    outer = ([(0.0, 0.0), (R - 0.06, 0.0), (R - 0.03, 0.0008), (R - 0.012, 0.004), (R - 0.003, 0.014), (R, 0.03)] +
-             [(R, z) for z in zw] +
-             [(R, H - 0.012), (R + 0.004, H - 0.0092), (R + POT_BEAD, H - 0.0045), (R + 0.0035, H),
-              (R - 0.001, H - 0.002)])
+    outer = ([(0.0, 0.0), (RP - 0.06, 0.0), (RP - 0.03, 0.0008), (RP - 0.012, 0.004), (RP - 0.003, 0.014), (RP, 0.03)] +
+             [(RP, z) for z in zw] +
+             [(RP, H - 0.012), (RP + 0.004, H - 0.0092), (RP + POT_BEAD, H - 0.0045), (RP + 0.0035, H),
+              (RP - 0.001, H - 0.002)])
     b.add(bm_lathe(outer, 36, rfun=f), "hc_pot_metal_soot", M=T(0, 0, zb), uv="keep")
-    inner = ([(R - 0.001, H - 0.002), (R - t, H - 0.009)] + [(R - t, z) for z in reversed(zw)] +
-             [(R - t, 0.03 + 0.002), (R - 0.003 - 0.0028, 0.014 + 0.0015), (R - 0.012 - 0.0015, 0.004 + t),
-              (R - 0.03, 0.0008 + t), (R - 0.06, t), (0.0, t)])
+    inner = ([(RP - 0.001, H - 0.002), (RP - t, H - 0.009)] + [(RP - t, z) for z in reversed(zw)] +
+             [(RP - t, 0.03 + 0.002), (RP - 0.003 - 0.0028, 0.014 + 0.0015), (RP - 0.012 - 0.0015, 0.004 + t),
+              (RP - 0.03, 0.0008 + t), (RP - 0.06, t), (0.0, t)])
     b.add(bm_lathe(inner, 36, rfun=f), "hc_pot_metal", M=T(0, 0, zb), uv="keep")
     zl = 0.8 * H  # the stock's surface, dented with the wall so it never pokes through
-    b.add(bm_lathe([(R - t - 0.001, zl), (0.0, zl)], 36, rfun=f), "hc_broth_water", M=T(0, 0, zb), uv="keep")
+    b.add(bm_lathe([(RP - t - 0.001, zl), (0.0, zl)], 36, rfun=f), "hc_broth_water", M=T(0, 0, zb), uv="keep")
     # two riveted loop handles along X
     zh = zb + H - 0.055
     for sx in (-1, 1):
-        yw = math.sqrt(R * R - 0.05 * 0.05)
+        yw = math.sqrt(RP * RP - 0.05 * 0.05)
         loop = [(yw - 0.005, -0.05), (0.232, -0.05), (0.250, -0.045), (0.261, -0.029), (0.264, 0.0),
                 (0.261, 0.029), (0.250, 0.045), (0.232, 0.05), (yw - 0.005, 0.05)]
         pts = [(sx * x, y, zh + (0.006 if abs(y) < 0.04 else 0.0)) for x, y in loop]
@@ -2027,7 +2027,7 @@ def stock_pot(name):
         for sy in (-1, 1):
             nrm = Vector((sx * yw, sy * 0.05, 0.0)).normalized()
             plate = [(0.0, 0.0), (0.011, 0.0), (0.011, 0.0015), (0.007, 0.0035), (0.0, 0.004)]
-            b.add(bm_lathe(plate, 10), "hc_steel", M=T(*(nrm * (R - 0.0015)), zh) @ _orient(nrm), uv="keep")
+            b.add(bm_lathe(plate, 10), "hc_steel", M=T(*(nrm * (RP - 0.0015)), zh) @ _orient(nrm), uv="keep")
     # the lid, slid toward +X: its edge roll rests on the rim's crest where the two overlap and, at -X, on the ladle
     RL = POT_LID_R
     LX = 0.215
