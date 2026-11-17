@@ -2898,6 +2898,7 @@ struct ArenaFightImpl {
             st.close = in.partnerClose; // rule 19: the close camera (not given: the classic rules)
         }
         pin.range = {pk.partnerReach, pk.partnerStandoff}; // rule 19 reads it under the close camera alone
+        pin.facing = al.facing; // rule 19: a string starts facing its target (read under the close camera alone)
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
         al.stationed = intent.stationed;

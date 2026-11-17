@@ -5237,6 +5237,7 @@ struct TitanLensRun {
     int hiddenFirstAct = -1;
     int castsHidden = 0; // strings or blows begun on a step its body stood hidden behind the lead or the target
     int stringsSeen = 0;
+    float worstStartFacing = 0.f; // degrees: the most its facing was off its target on a string's first step
     float depth = 0.f, lateral = 0.f, height = 0.f; // the last 3 s, averaged
     float leadDepth = 0.f, leadLateral = 0.f; // at the start
 };
@@ -5351,7 +5352,13 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
         v.lensHeight = cam.pos.z - cam.groundZ;
         if (leadEvery > 0.f) r.in.light = k % std::max(1, static_cast<int>(std::lround(leadEvery / kDt))) == 0;
         const Vec2 before = r.bodies.ally;
+        const Vec2 faced = r.out != nullptr ? r.out->ally.facing : Vec2{0.f, 0.f}; // what the brain reads this step
         r.tick();
+        if (r.brain.intent().newString && (faced.x != 0.f || faced.y != 0.f)) {
+            const Vec2 to = sub(tp, before);
+            const float c = (faced.x * to.x + faced.y * to.y) / std::max(1e-6f, std::hypot(faced.x, faced.y) * std::hypot(to.x, to.y));
+            o.worstStartFacing = std::max(o.worstStartFacing, std::acos(std::clamp(c, -1.f, 1.f)) / kRad);
+        }
         const Vec2 a = r.bodies.ally;
         if (titanCrossed(cp, r.bodies.player, before, a)) {
             if (o.crossings == 0) {
@@ -5505,6 +5512,23 @@ TEST_CASE("arena partner: the close lens's near field over a whole fight from th
             CHECK(100 * o.nearOk >= 95 * o.steps);
             CHECK(o.crossings == 0);
             CHECK(o.strings > 0);
+        }
+    }
+}
+
+TEST_CASE("arena partner: the close lens: a string starts with the partner facing its target within 30 degrees") {
+    // The arena lane (round 6): at the titan's 8 and 10 m the caster cast facing the camera: a string begun facing
+    // away turned only by its blow's tracking (about 96 degrees). Now it turns first; the blow's tracking is as it was.
+    const Vec2 start{3.f, -1.5f};
+    for (const float centre : {2.2f + 0.85f, 6.f, 8.f, 10.f}) {
+        for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+            CAPTURE(centre);
+            CAPTURE(seed);
+            const TitanLensRun o = titanLensRun(2.2f, centre, seed, 0.f, centre > 4.f ? &start : nullptr, 20.f, 2.5f);
+            MESSAGE("facing titan 2.2 at " << centre << " seed " << seed << ": worst start " << o.worstStartFacing
+                                           << " deg, strings " << o.strings);
+            CHECK(o.strings > 0);
+            CHECK(o.worstStartFacing <= kPartnerStartFacingDegrees + 1.f);
         }
     }
 }
