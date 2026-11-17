@@ -46,7 +46,7 @@ inline constexpr std::size_t kUiPartyRows = 4;
 // Explore: the map key held this long opens the screen; a shorter press is the map.
 inline constexpr float kUiPartyHold = 0.25f;
 // The opening press let go within this long, the cursor not moved: a tap, and the screen stays open.
-inline constexpr float kUiPartyTap = 0.3f;
+inline constexpr float kUiPartyTap = 0.25f;
 // A refused switch's call (SWITCH: DOWN) stands this long in the call slot.
 inline constexpr float kUiPartySwitchShow = 1.5f;
 // A flick: the right stick past kUiPartyStickOut (of 1), or the mouse past kUiPartyMouseOut in one tick; each counts
