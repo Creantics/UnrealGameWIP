@@ -609,6 +609,10 @@ private:
 	int32 CloseRangedFrames = 0, CloseRangedWide = 0;
 	float CloseRangedYawMost = 0.f;
 	float StandOffAt = 0.f;       // -ArenaStandOff=<m>: the autopilot holds this far from the target (0: off)
+	// -ArenaStandOffStrike=<s>: under -ArenaStandOff, a light string every <s> s (0: off); the next press's fight time
+	// and the presses so far.
+	float StandOffStrikeEvery = 0.f, StandOffStrikeNext = 1.f;
+	int32 StandOffStrikePresses = 0;
 	// Where the partner stood from the drawn lens on held frames (both presets): in the frame, behind the lens, off
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
 	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;
@@ -1379,6 +1383,11 @@ private:
 	// The act in progress for that count: from when, to the last step seen, where the partner stood at its start, and
 	// whether it was carried out (FlushPartnerAction counts it).
 	float PartnerActFrom = -1.f, PartnerActTo = -1.f;
+	// Engaged steps (the lead's last attack within kPartnerEngagedWindow s): their seconds, the counted actions that ran
+	// on one, the lead's last attacking fight time, and whether the act in progress ran on one.
+	float PartnerEngagedSeconds = 0.f, LeadAttackAt = -1e9f;
+	int32 PartnerEngagedActions = 0;
+	bool PartnerActEngaged = false;
 	ftcore::Vec2 PartnerActAt{};
 	bool PartnerActDone = false;
 	void FlushPartnerAction();

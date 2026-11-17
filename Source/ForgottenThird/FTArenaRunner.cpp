@@ -129,6 +129,14 @@ constexpr float kPartnerYawRate = 3.f;
 constexpr float kPartnerYawQuiet = 1.5f;
 // "Arena check: partner in play": an act counts once it lasted this long (s) and was carried out.
 constexpr float kPartnerActMin = 0.25f;
+// Its rate bar is judged over engaged steps alone (ruled 11-16): those with the lead's last attack (a light, heavy,
+// riposte or release) at most this long ago (s), since the partner's attack time is capped by the lead's.
+constexpr float kPartnerEngagedWindow = 5.f;
+// Under this many engaged seconds the rate bar is not covered (the line says so and judges the screen share alone).
+constexpr float kPartnerEngagedMinSeconds = 5.f;
+// -ArenaStandOffStrike: the presses of one light string and the time between them (s).
+constexpr int32 kStandOffStringPresses = 3;
+constexpr float kStandOffPressGap = 0.45f;
 // A pose with its arm, shoulder and height scaled by `Share` (the boom's wall probe shortens all three alike).
 ftcore::ArenaCameraPose WallScaled(ftcore::ArenaCameraPose Pose, float Share)
 {
@@ -385,6 +393,16 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		{
 			StandOffAt = FMath::Clamp(Stand, 1.f, 20.f);
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaStandOff: the autopilot circles its target at %.2f m."), StandOffAt);
+		}
+		// -ArenaStandOffStrike=<s>: with it, a light string from that range every <s> s (1.5 to 10), the guard let go over
+		// it, so a stand-off run's lead fights and the partner's budget (capped by the lead's attack time) is a fair one.
+		StandOffStrikeEvery = 0.f;
+		float Strike = 0.f;
+		if (StandOffAt > 0.f && FParse::Value(FCommandLine::Get(), TEXT("ArenaStandOffStrike="), Strike) && FMath::IsFinite(Strike) && Strike > 0.f)
+		{
+			StandOffStrikeEvery = FMath::Clamp(Strike, 1.5f, 10.f);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaStandOffStrike: a light string of %d presses every %.1f s."),
+				kStandOffStringPresses, StandOffStrikeEvery);
 		}
 	}
 	{
@@ -2078,6 +2096,12 @@ void UFTArenaRunner::BeginSession()
 	LeadWeapons.ResetAimSummary();
 	AllyWeapons.ResetAimSummary();
 	PartnerPlaySeconds = 0.f;
+	PartnerEngagedSeconds = 0.f;
+	LeadAttackAt = -1e9f;
+	PartnerEngagedActions = 0;
+	PartnerActEngaged = false;
+	StandOffStrikeNext = 1.f;
+	StandOffStrikePresses = 0;
 	PartnerStillFor = PartnerStillLongest = 0.f;
 	bPartnerStillAt = false;
 	PartnerLastAct = PartnerIdleWhy = 0xFF;
@@ -3270,6 +3294,24 @@ void UFTArenaRunner::StepFight()
 					In.move = M;
 				}
 			}
+			if (StandOffStrikeEvery > 0.f)
+			{
+				// -ArenaStandOffStrike: the string's presses kStandOffPressGap s apart, the next string <s> s after the last
+				// one began; no guard while one runs.
+				if (Fight.time() >= StandOffStrikeNext)
+				{
+					In.light = true;
+					++StandOffStrikePresses;
+					StandOffStrikeNext += StandOffStrikePresses % kStandOffStringPresses != 0 ? kStandOffPressGap
+						: StandOffStrikeEvery - kStandOffPressGap * static_cast<float>(kStandOffStringPresses - 1);
+				}
+				const ftcore::ArenaAction LeadActNow = Fight.output().player.action;
+				if (In.light || StandOffStrikePresses % kStandOffStringPresses != 0 || LeadActNow == ftcore::ArenaAction::Light
+					|| LeadActNow == ftcore::ArenaAction::Heavy)
+				{
+					In.guard = false;
+				}
+			}
 		}
 #endif
 		if (bPilotHeavy && In.heavy)
@@ -3448,6 +3490,15 @@ void UFTArenaRunner::StepFight()
 			}
 		}
 		PartnerPlaySeconds += StepSeconds;
+		// Engaged: the lead attacked (a light, heavy, riposte or release) within kPartnerEngagedWindow s.
+		const ftcore::ArenaAction LeadAct = Out.player.action;
+		if (LeadAct == ftcore::ArenaAction::Light || LeadAct == ftcore::ArenaAction::Heavy || LeadAct == ftcore::ArenaAction::Riposte
+			|| LeadAct == ftcore::ArenaAction::Release)
+		{
+			LeadAttackAt = Fight.time();
+		}
+		const bool bEngaged = Fight.time() - LeadAttackAt <= kPartnerEngagedWindow;
+		PartnerEngagedSeconds += bEngaged ? StepSeconds : 0.f;
 		// Standing still: not swinging or guarding and moved under 1 cm since the last step; the longest such run.
 		const bool bStill = bPartnerStillAt && !Out.ally.attacking && !Out.ally.guarding &&
 			ArenaLength(ftcore::Vec2{Bodies.ally.x - PartnerStillAt.x, Bodies.ally.y - PartnerStillAt.y}) < 0.01f;
@@ -3465,6 +3516,7 @@ void UFTArenaRunner::StepFight()
 			PartnerActDone = false;
 		}
 		PartnerLastAct = Act;
+		PartnerActEngaged = PartnerActEngaged || bEngaged; // an act counts as engaged when any of its steps was
 		// Carried out: a blow reached its active part, the guard went up, a move covered half a metre. A Wait never
 		// counts.
 		switch (Intent.act)
@@ -5311,9 +5363,11 @@ void UFTArenaRunner::FlushPartnerAction()
 	if (PartnerActFrom >= 0.f && PartnerActDone && PartnerActTo - PartnerActFrom >= kPartnerActMin - 1e-4f)
 	{
 		++PartnerActions;
+		PartnerEngagedActions += PartnerActEngaged ? 1 : 0;
 	}
 	PartnerActFrom = PartnerActTo = -1.f;
 	PartnerActDone = false;
+	PartnerActEngaged = false;
 }
 
 float UFTArenaRunner::LockAspect() const
@@ -9061,7 +9115,9 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 	{
 		// In play: the partner on the screen, and not behind the locked target (ftcore::arenaHiddenBehind), at least 70% of
 		// the steps it was up (ftcore::partnerInFrame at ftcore::kPartnerFrustumMargin) and at least four actions per 20 s
-		// of the fight, each lasting kPartnerActMin s or more and carried out. Under kPartnerPlayMinSteps measured steps: not covered. Then the brain's own report:
+		// of the engaged steps (the lead attacked within kPartnerEngagedWindow s; ruled 11-16), each lasting kPartnerActMin
+		// s or more and carried out; the whole run's rate is printed beside it. Under kPartnerEngagedMinSeconds engaged the
+		// rate is not covered and the screen share alone is judged. Under kPartnerPlayMinSteps measured steps: not covered. Then the brain's own report:
 		// the seconds it spent on each idle reason (None is the time it acted) and the strings it began off the frame.
 		FlushPartnerAction();
 		constexpr int32 kPartnerPlayMinSteps = 200;
@@ -9089,12 +9145,17 @@ void UFTArenaRunner::LogPartnerChecks(bool bWon, bool bLost)
 			const float ClearFlat = static_cast<float>(PartnerClearFlatSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float LeadClearFlat = static_cast<float>(PartnerLeadClearFlatSteps) / static_cast<float>(PartnerFrustumSteps);
 			const float Per20 = PartnerPlaySeconds > 0.f ? static_cast<float>(PartnerActions) * 20.f / PartnerPlaySeconds : 0.f;
+			const bool bRateCovered = PartnerEngagedSeconds >= kPartnerEngagedMinSeconds;
+			const float Engaged20 = bRateCovered ? static_cast<float>(PartnerEngagedActions) * 20.f / PartnerEngagedSeconds : 0.f;
+			const FString Rate = bRateCovered ? FString::Printf(TEXT("%d in %.1f s engaged, %.1f per 20 s, wanted 4"), PartnerEngagedActions,
+				PartnerEngagedSeconds, Engaged20)
+				: FString::Printf(TEXT("not covered (%.1f s engaged, wanted %.0f)"), PartnerEngagedSeconds, kPartnerEngagedMinSeconds);
 			const int32 ClipsStarted = PartnerClipsStarted + AllyWeapons.GetClipsStarted();
 			const int32 ClipsWhole = PartnerClipsWhole + AllyWeapons.GetClipsCompleted();
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; on screen and not behind the lead %.0f%%; on the floor plane (the station's measure) not behind the target %.0f%%, not overlapping the lead %.0f%%; close station %s; %d actions in %.1f s, %.1f per 20 s, wanted 4; blows with a strike clip %d, played whole %d; brain: %s)."),
-				Clear >= 0.7f && Per20 >= 4.f ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, LeadClear * 100.f,
-				ClearFlat * 100.f, LeadClearFlat * 100.f, !bCloseShape ? TEXT("none (classic)") : (bPartnerStation ? TEXT("on") : TEXT("off")), PartnerActions, PartnerPlaySeconds, Per20,
-				ClipsStarted, ClipsWhole, *Brain);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner in play %s (on screen and not behind the locked target %.0f%% of %d steps, wanted 70%%; on screen %.0f%%; on screen and not behind the lead %.0f%%; on the floor plane (the station's measure) not behind the target %.0f%%, not overlapping the lead %.0f%%; close station %s; actions with the lead attacking within %.0f s: %s; over the whole run %d in %.1f s, %.1f per 20 s; blows with a strike clip %d, played whole %d; brain: %s)."),
+				Clear >= 0.7f && (!bRateCovered || Engaged20 >= 4.f) ? TEXT("PASS") : TEXT("FAIL"), Clear * 100.f, PartnerFrustumSteps, Seen * 100.f, LeadClear * 100.f,
+				ClearFlat * 100.f, LeadClearFlat * 100.f, !bCloseShape ? TEXT("none (classic)") : (bPartnerStation ? TEXT("on") : TEXT("off")),
+				kPartnerEngagedWindow, *Rate, PartnerActions, PartnerPlaySeconds, Per20, ClipsStarted, ClipsWhole, *Brain);
 
 		}
 	}
