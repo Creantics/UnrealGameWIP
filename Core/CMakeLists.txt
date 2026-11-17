@@ -157,6 +157,7 @@ add_library(ftcore STATIC
     src/SeaWaves.cpp
     src/WaterWaves.cpp
     src/WaterCue.cpp
+    src/WaterDraw.cpp
     src/WaterStrand.cpp
     src/StylePack.cpp
     src/StorySave.cpp
@@ -489,6 +490,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_sea_waves.cpp
         tests/test_water_waves.cpp
         tests/test_water_cue.cpp
+        tests/test_water_draw.cpp
     tests/test_water_strand.cpp
         tests/test_style.cpp
         tests/test_stub_screen.cpp

@@ -1,0 +1,105 @@
+// The water surface's waves on the GPU: the material copy of ftcore::waterWaveOffset (Core/src/WaterWaves.cpp), which
+// the water's tiles (UFTWaterSubsystem) move each vertex by, so the drawn surface stands where the game's height query
+// says (to 2 cm: Core/tests/test_water_surface_ush.cpp includes this file as C++ and compares).
+//
+// One class's eight waves come in as vectors {k dirX, k dirY, amplitude, phase} (ftcore::packSeaWave), with the set's
+// shared steepness Q. A wave shorter than four of the vertex's grid cells (GridCm, baked per LOD) drops out of the offset
+// (keep = smoothstep(4, 6, wavelength / GridCm)). Near the body's wall or shore the sway fades over FadeCm and the
+// height keeps LapShare of itself at the wall (ftcore::waterEdgeFactors). Edge is the body's edge line
+// (ftcore::waterEdgeLine): {centre x, centre y (cm), axis x, axis y, half across (cm), mode}; mode 0 a box's long walls,
+// 1 a half-plane's shore, 2 none. Time is the material's game time; it wraps at the sea's loop as the CPU's does.
+//
+// Written in the subset of HLSL that also compiles as C++ against a small shim (float2/3/4, the intrinsics): no includes,
+// no out parameters, no swizzles but single members, FT_UNROLL in place of [unroll].
+
+#pragma once
+
+#ifndef FT_UNROLL
+#define FT_UNROLL [unroll]
+#endif
+
+static const float FTWaterGravity = 981.0f;
+static const float FTWaterTwoPi = 6.28318530718f;
+static const float FTWaterLoopS = 1800.0f;
+static const float FTWaterNoEdgeCm = 1000000.0f;
+
+// How far Rest (cm) is in from the body's edge, cm, 0 at it or outside.
+float FTWaterEdgeCm(float2 Rest, float4 EdgeA, float2 EdgeB)
+{
+	const float D = (Rest.x - EdgeA.x) * EdgeA.z + (Rest.y - EdgeA.y) * EdgeA.w;
+	if (EdgeB.y > 1.5f)
+	{
+		return FTWaterNoEdgeCm;
+	}
+	if (EdgeB.y > 0.5f)
+	{
+		return max(D, 0.0f);
+	}
+	return max(EdgeB.x - max(D, -D), 0.0f);
+}
+
+float FTWaterSway(float EdgeCm, float FadeCm)
+{
+	return smoothstep(0.0f, max(FadeCm, 1.0f), EdgeCm);
+}
+
+float FTWaterWrap(float Time)
+{
+	return fmod(Time, FTWaterLoopS);
+}
+
+// Where the point resting at Rest (cm) is at Time, as an offset (cm).
+float3 FTWaterOffset(float2 Rest, float Time, float4 W[8], float Q, float GridCm, float Sway, float LapShare)
+{
+	const float T = FTWaterWrap(Time);
+	const float Height = LapShare + (1.0f - LapShare) * Sway;
+	float OX = 0.0f;
+	float OY = 0.0f;
+	float OZ = 0.0f;
+	FT_UNROLL
+	for (int I = 0; I < 8; ++I)
+	{
+		const float K = max(length(float2(W[I].x, W[I].y)), 0.0000001f);
+		const float DX = W[I].x / K;
+		const float DY = W[I].y / K;
+		const float A = W[I].z > 0.0f ? W[I].z * smoothstep(4.0f, 6.0f, FTWaterTwoPi / (K * max(GridCm, 1.0f))) : 0.0f;
+		const float Th = K * (DX * Rest.x + DY * Rest.y) - sqrt(FTWaterGravity * K) * T + W[I].w;
+		const float H = Sway * Q * A * cos(Th);
+		OX += H * DX;
+		OY += H * DY;
+		OZ += Height * A * sin(Th);
+	}
+	return float3(OX, OY, OZ);
+}
+
+// The surface's normal at the point resting at Rest: the cross of the two tangents along the rest grid, not normalized
+// (its z: 1 flat, lower where the crests crowd). Every wave counts here, the grid's short ones too; the edge factors'
+// own slope (over metres) is left out.
+float3 FTWaterNormal(float2 Rest, float Time, float4 W[8], float Q, float Sway, float LapShare)
+{
+	const float T = FTWaterWrap(Time);
+	const float Height = LapShare + (1.0f - LapShare) * Sway;
+	float XX = 0.0f;
+	float YY = 0.0f;
+	float XY = 0.0f;
+	float SX = 0.0f;
+	float SY = 0.0f;
+	FT_UNROLL
+	for (int I = 0; I < 8; ++I)
+	{
+		const float K = max(length(float2(W[I].x, W[I].y)), 0.0000001f);
+		const float DX = W[I].x / K;
+		const float DY = W[I].y / K;
+		const float A = max(W[I].z, 0.0f);
+		const float Th = K * (DX * Rest.x + DY * Rest.y) - sqrt(FTWaterGravity * K) * T + W[I].w;
+		const float S = Sway * Q * K * A * sin(Th);
+		XX += S * DX * DX;
+		YY += S * DY * DY;
+		XY += S * DX * DY;
+		const float C = Height * K * A * cos(Th);
+		SX += C * DX;
+		SY += C * DY;
+	}
+	// d/dx0 = (1 - XX, -XY, SX), d/dy0 = (-XY, 1 - YY, SY).
+	return float3(-XY * SY - SX * (1.0f - YY), -SX * XY - (1.0f - XX) * SY, (1.0f - XX) * (1.0f - YY) - XY * XY);
+}
