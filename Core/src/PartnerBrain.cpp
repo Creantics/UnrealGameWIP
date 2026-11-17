@@ -1590,6 +1590,11 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         } else {
             ci.standMax = forString ? std::min(c.standMax, t.reachMeters - t.stationTolerance) : c.standMax;
             ci.standMin = std::min(forString ? std::min(c.standMin, 0.5f * t.reachMeters) : c.standMin, ci.standMax);
+            // A melee kit (round 6): the far flank first, a body width of screen gap from the lead's silhouette, and
+            // no new pick while a string runs.
+            ci.farFlankFirst = true;
+            ci.leadGapBodies = 1.f;
+            ci.keepWhileAttacking = true;
         }
         ci.bodyRadius = c.bodyRadius;
         ci.personalSpace = in.station.reviving ? 0.f : t.personalSpaceMeters;
@@ -1608,8 +1613,27 @@ const PartnerIntent& PartnerBrain::decide(double dt, const PartnerInput& in) {
         closeDonePoint = p;
         return true;
     };
+    // The lens's target (the lead's lock, else the standing enemy nearest the lead). A melee kit takes rule 19's
+    // station only on it: on another enemy it fights where the rules below put it (the ruling of 11-16).
+    int lensTarget = -1;
+    if (closeOn && !rangeOn) {
+        if (in.leadTarget >= 0 && static_cast<std::size_t>(in.leadTarget) < n &&
+            standing(in.enemies[static_cast<std::size_t>(in.leadTarget)]))
+            lensTarget = in.leadTarget;
+        const bool locked = lensTarget >= 0;
+        float nearest = kStFar;
+        for (std::size_t i = 0; i < n && !locked; ++i) {
+            if (!standing(in.enemies[i])) continue;
+            const Vec2 d = stSub(in.enemies[i].pos, in.leadPos);
+            const float dd = stDot(d, d);
+            if (dd < nearest) {
+                nearest = dd;
+                lensTarget = static_cast<int>(i);
+            }
+        }
+    }
     const auto goalRaw = [&](int tgt, bool forString) -> Vec2 {
-        if (closeOn && tgt >= 0) {
+        if (closeOn && tgt >= 0 && (rangeOn || tgt == lensTarget)) {
             Vec2 q{};
             if (closeGoal(tgt, forString, q)) { // rule 19; none legal: the rules below, as before
                 s_.noFrame = 0.0;

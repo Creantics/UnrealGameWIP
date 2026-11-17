@@ -75,6 +75,18 @@
 //     off the lead's bearing), with no screen test but rules 1-2 and the bodies, walls, arena, leash and personal
 //     space of the rest, scored in order: in the frame (sees, else ndc x within 1 - margin), not hidden behind the lead
 //     or the target, deeper than the lead, nearest the frame, then the walk; the flank held as in tiers 1-2.
+// A melee partner (round 6, the ruling of 11-16; only with the three inputs below, which the brain sets for a kit
+// without range under the close lens; all off: exactly as before):
+//   - farFlankFirst: the far flank, the target's flank across the lens's axis from the lead (the lead's lateral offset
+//     from the axis, else leadSide), is taken whenever it has a pick in tiers 1-2 or 4 and the hold does not keep the
+//     other; the near flank only when the far one has none; a far-flank pick in tier 4 keeps the silhouette test
+//     but not the straight-walk shadow test (in contact only the far arc is left, and the walk to it crosses);
+//   - leadGapBodies (0..3): a candidate keeps that many of its own body widths of screen gap from the lead's
+//     silhouette (the angle apart from the lens at least the lead's half-angle plus (1 + 2 x leadGapBodies) times its
+//     own); the whole search runs with it, and again without it only when that finds nothing (gapped tells which);
+//   - keepWhileAttacking: while attacking with a flank held (not the lead ring), no new pick: the held angle at the
+//     partner's own distance off the target's edge (bodyRadius..standMax), valid when there is room for it and its
+//     silhouette is clear of the lead's, tier 1.
 
 #include "ftcore/Api.h"
 #include "ftcore/Explore.h" // Vec2
@@ -161,6 +173,9 @@ struct PartnerCloseInput {
     std::span<const PartnerBody> bodies{};
     bool attacking = false;      // the partner is in a string or a blow runs: its flank kept (but tier 4's hand-over)
     bool nearField = false;      // rules 1-3 of the near field and tier 5 (above); off: exactly as before
+    bool farFlankFirst = false;  // a melee partner (above): the far flank first
+    float leadGapBodies = 0.f;   // 0..3 own body widths of screen gap from the lead (above); 0: as before
+    bool keepWhileAttacking = false; // no new pick while attacking with a flank held
     // The host's 3D frame test (none: null): a candidate must pass sees(seesContext, point). The brain gives its
     // rule-13 frame (middle and head of a standing body inside the frustum with its margins; feet not tested) when
     // framed.
@@ -187,6 +202,7 @@ struct PartnerCloseStation {
                            // lead-to-target line), 4 the far arc (band or short of it), 5 round the whole
                            // target, the frame not required (nearField only); 0 not valid
     bool capped = false;   // nearField: rule 2's size cap held (false: no candidate passed it, the soft pass)
+    bool gapped = false;   // leadGapBodies given: the point keeps that screen gap from the lead
 };
 
 // What the host gives the brain under the close camera (PartnerStationView::close); the lens's place and forward are

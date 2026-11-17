@@ -100,7 +100,16 @@ bool nearFieldOk(const PartnerCloseInput& in, Vec2 p, bool capNow) {
            partnerCloseProjectedHeight(in.cameraPos, in.cameraForward, in.verticalHalfDegrees, p) <= kPartnerCloseSizeCap;
 }
 
-bool legal(const PartnerCloseInput& in, Vec2 p, bool capNow, float& ndcX, float& ndcY) {
+// p's silhouette clear of the lead's, with gapBodies of p's own body widths of screen gap between them (0: only clear).
+bool clearOfLead(const PartnerCloseInput& in, Vec2 p, float gapBodies) {
+    if (partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.lead, in.bodyRadius)) return false;
+    if (!(gapBodies > 0.f)) return true;
+    const float dp = len(sub(p, in.cameraPos)), dl = len(sub(in.lead, in.cameraPos));
+    return apart(in.cameraPos, p, in.lead) >=
+           halfAngle(dl, in.bodyRadius) + (1.f + 2.f * gapBodies) * halfAngle(dp, in.bodyRadius);
+}
+
+bool legal(const PartnerCloseInput& in, Vec2 p, bool capNow, float gap, float& ndcX, float& ndcY) {
     if (!partnerCloseLens(in, p, ndcX, ndcY)) return false;
     if (!nearFieldOk(in, p, capNow)) return false;
     if (in.sees != nullptr && !in.sees(in.seesContext, p)) return false;
@@ -113,7 +122,7 @@ bool legal(const PartnerCloseInput& in, Vec2 p, bool capNow, float& ndcX, float&
     if (in.aimConeDegrees > 0.f && std::fabs(dot(r, rightOf(f))) > ahead * std::tan(in.aimConeDegrees * kDeg))
         return false;
     if (!roomFor(in, p)) return false;
-    if (partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.lead, in.bodyRadius)) return false;
+    if (!clearOfLead(in, p, gap)) return false;
     if (partnerCloseHiddenBehind(in.cameraPos, p, in.target, in.targetRadius)) return false;
     for (const PartnerWall& w : in.walls)
         if (segmentsCross(in.cameraPos, p, w.a, w.b)) return false;
@@ -132,7 +141,7 @@ bool partnerCloseWhole(const PartnerCloseInput& in) {
         !within(in.leashMeters, 0.f, 200.f) || !within(in.arenaRadius, 0.f, 1000.f) ||
         !within(in.aimConeDegrees, 0.f, 85.f) || !within(in.minAhead, 0.f, 20.f) ||
         !within(in.pitchDegrees, -85.f, 85.f) || !within(in.verticalHalfDegrees, 0.f, 85.f) ||
-        !within(in.lensHeight, -20.f, 50.f) || !within(in.aimHeight, 0.f, 5.f))
+        !within(in.lensHeight, -20.f, 50.f) || !within(in.aimHeight, 0.f, 5.f) || !within(in.leadGapBodies, 0.f, 3.f))
         return false;
     if (in.verticalHalfDegrees > 0.f && in.verticalHalfDegrees < 1.f) return false;
     if (in.leadSide < -1 || in.leadSide > 1) return false;
@@ -216,6 +225,24 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     const bool leadSeen = partnerCloseLens(in, in.lead, leadX, leadY);
     const bool keep = hold.flank != 0 && (hold.heldFor < kPartnerCloseHoldSeconds || in.attacking);
     const float lo = in.standMin, hi = in.standMax;
+    // A melee partner in a string: no new pick, the held angle where it stands off the target's edge.
+    if (in.keepWhileAttacking && in.attacking && hold.flank != 0 && !hold.ring) {
+        const Vec2 dir = turn(bearing, static_cast<float>(hold.flank) * hold.angle);
+        const float off =
+            std::clamp(dot(sub(in.partner, in.target), dir) - in.targetRadius, in.bodyRadius, std::max(hi, in.bodyRadius));
+        const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
+        if (roomFor(in, p) && clearOfLead(in, p, 0.f)) {
+            out.valid = true;
+            out.tier = 1;
+            out.point = p;
+            out.flank = hold.flank;
+            out.angle = hold.angle;
+            out.offEdge = off;
+            out.held = true;
+            out.gapped = in.leadGapBodies > 0.f && clearOfLead(in, p, in.leadGapBodies);
+            return out;
+        }
+    }
     const float distFromLens = len(sub(in.lead, in.cameraPos));
     const float leadHalf = halfAngle(distFromLens, in.bodyRadius);
     const bool wide = in.targetRadius >= kPartnerCloseWideRadius;
@@ -241,9 +268,24 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     const bool forwardOk = unitOf(in.cameraForward, lensForward);
     const float leadDepth = dot(sub(in.lead, in.cameraPos), lensForward);
     const auto shallow = [&](Vec2 p) { return dot(sub(p, in.cameraPos), lensForward) <= leadDepth; };
-    const auto farClear = [&](Vec2 p) {
+    // A melee partner: the far flank, across the lens's axis from the lead (its lateral offset, else leadSide).
+    float gapNow = 0.f;
+    std::int8_t farFlank = 0;
+    if (in.farFlankFirst && forwardOk) {
+        const Vec2 right = rightOf(lensForward);
+        const float leadLateral = dot(sub(in.lead, in.cameraPos), right);
+        const float leadSign =
+            std::fabs(leadLateral) > 0.05f ? (leadLateral > 0.f ? 1.f : -1.f) : static_cast<float>(in.leadSide);
+        if (leadSign != 0.f) {
+            const float mid = 0.5f * (angleMin + angleMax), reachOut = in.targetRadius + 0.5f * (lo + hi);
+            const float minus = dot(sub(add(in.target, mul(turn(bearing, -mid), reachOut)), in.cameraPos), right);
+            const float plus = dot(sub(add(in.target, mul(turn(bearing, mid), reachOut)), in.cameraPos), right);
+            farFlank = minus * leadSign < plus * leadSign ? std::int8_t{-1} : std::int8_t{1};
+        }
+    }
+    const auto farClear = [&](Vec2 p, bool crossing) {
         if (partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.target, in.targetRadius)) return false;
-        if (startShadowed) return true;
+        if (startShadowed || crossing) return true; // crossing: a melee partner's far flank (no walk test)
         constexpr int kWalkSamples = 8;
         for (int k = 1; k <= kWalkSamples; ++k)
             if (shadowed(add(in.partner, mul(sub(p, in.partner), static_cast<float>(k) / static_cast<float>(kWalkSamples)))))
@@ -251,10 +293,10 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         return true;
     };
     // A legal p's score: the walk, the lead clearance, the lower two thirds and the lead's side (no hold terms).
-    const auto score = [&](Vec2 p, float& cost) {
+    const auto score = [&](Vec2 p, std::int8_t flank, float& cost) {
         float x = 0.f, y = 0.f;
-        if (!legal(in, p, capNow, x, y)) return false;
-        if (farArc && !farClear(p)) return false;
+        if (!legal(in, p, capNow, gapNow, x, y)) return false;
+        if (farArc && !farClear(p, farFlank != 0 && flank == farFlank)) return false;
         const float dp = len(sub(p, in.cameraPos));
         const float clear = apart(in.cameraPos, p, in.lead) / (halfAngle(dp, in.bodyRadius) + leadHalf);
         cost = len(sub(p, in.partner)) - kPartnerCloseClearWeight * std::min(clear, 3.f) +
@@ -280,7 +322,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
             for (const float off : offs) {
                 const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
                 float cost = 0.f;
-                if (!score(p, cost)) continue;
+                if (!score(p, flank, cost)) continue;
                 cost -= keepBonus;
                 if (!band.found || cost < band.cost) band = {true, cost, p, flank, angle, off};
             }
@@ -290,7 +332,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
                 if (off < in.bodyRadius) break; // never inside the target's own body
                 const Vec2 p = add(in.target, mul(dir, in.targetRadius + off));
                 float cost = 0.f;
-                if (!score(p, cost)) continue;
+                if (!score(p, flank, cost)) continue;
                 cost += kPartnerCloseShortPenalty - keepBonus;
                 if (!shortPick.found || off > shortPick.offEdge + 1e-5f ||
                     (off > shortPick.offEdge - 1e-5f && cost < shortPick.cost))
@@ -306,6 +348,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
         Pick picks[2];
         for (const std::int8_t flank : {std::int8_t{-1}, std::int8_t{1}})
             if (!kept || flank == hold.flank) picks[flank > 0 ? 1 : 0] = onFlank(flank, aMin, aMax);
+        if (!kept && farFlank != 0 && picks[farFlank > 0 ? 1 : 0].found) return picks[farFlank > 0 ? 1 : 0];
         Pick chosen;
         if (picks[0].found && picks[1].found && hold.flank != 0) {
             const Pick& held = picks[hold.flank > 0 ? 1 : 0];
@@ -337,7 +380,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
                     const bool lensOk = partnerCloseLens(in, p, x, y);
                     const bool framed =
                         in.sees != nullptr ? in.sees(in.seesContext, p) : lensOk && std::fabs(x) <= inside;
-                    bool hidden = partnerCloseOverlaps(in.cameraPos, p, in.bodyRadius, in.lead, in.bodyRadius) ||
+                    bool hidden = !clearOfLead(in, p, gapNow) ||
                                   partnerCloseHiddenBehind(in.cameraPos, p, in.target, in.targetRadius);
                     for (const PartnerWall& w : in.walls)
                         if (segmentsCross(in.cameraPos, p, w.a, w.b)) hidden = true;
@@ -354,10 +397,13 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     Pick best;
     std::uint8_t tier = 0;
     bool ring = false;
-    // Without the near field one pass, as before; with it, the cap held, then (nothing found) the soft pass.
-    for (int pass = 0; pass < 2 && !best.found; ++pass) {
-        if (pass == 1 && !capGiven) break;
-        capNow = capGiven && pass == 0;
+    // Without the near field one pass, as before; with it, the cap held, then (nothing found) the soft pass. A lead
+    // gap given: those with it, then (nothing found) those without it.
+    const int passes = in.leadGapBodies > 0.f ? 4 : 2;
+    for (int pass = 0; pass < passes && !best.found; ++pass) {
+        if (pass % 2 == 1 && !capGiven) continue;
+        capNow = capGiven && pass % 2 == 0;
+        gapNow = pass < 2 ? in.leadGapBodies : 0.f;
         farArc = false;
         best = sweep(angleMin, angleMax, keep);
         if (best.found) tier = best.offEdge >= lo - 1e-5f ? 1 : 2;
@@ -375,7 +421,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
                         if (!(r > 0.f)) continue;
                         const Vec2 p = add(in.lead, mul(dir, r));
                         float cost = 0.f;
-                        if (!score(p, cost)) continue;
+                        if (!score(p, std::int8_t{0}, cost)) continue;
                         if (hold.flank != 0 && flank != hold.flank) cost += kPartnerCloseFlipMargin;
                         if (!best.found || cost < best.cost)
                             best = {true, cost, p, flank, angle, len(sub(p, in.target)) - in.targetRadius};
@@ -425,6 +471,7 @@ PartnerCloseStation partnerCloseStation(const PartnerCloseInput& in, PartnerClos
     out.offEdge = best.offEdge;
     out.held = keep && best.flank == heldFlank; // a released hold (tier 4) did not keep it
     out.capped = capNow;
+    out.gapped = gapNow > 0.f && clearOfLead(in, best.point, gapNow);
     return out;
 }
 
