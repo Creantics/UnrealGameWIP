@@ -2207,6 +2207,171 @@ def read_back(path, allow_images=False):
             "slots": slots, "images": imgs, "bytes": len(data), "errors": errs}
 
 
+# =====================================================================================================================
+# Frontage clutter (11-17): the lane's bare frontage gets a steel drum, a lidded bin, a downpipe run, a cloth awning
+# and a pile of grain sacks. Each sits on the ground (origin at its bottom centre) except the wall pieces (downpipe,
+# awning), whose origin is on the wall (y = 0) and which stand off it to -Y like the signs.
+# =====================================================================================================================
+
+TEXTURED.update({
+    # painted steel drum over rusting steel: a deep blue-green coat, chipped at the hoops' height, streaked grime
+    "hc_drum_paint": (lambda: gen_worn(51, 0.5, (0.020, 0.045, 0.050), (0.17, 0.07, 0.03), 0.10, 0.45, 0.85,
+                                       grime=0.4, streak=0.6), 0.5),
+    # moulded street-bin plastic: dark green, scuffed paler where hands and wheels rub, grime down the front
+    "hc_bin_plastic": (lambda: gen_worn(52, 0.4, (0.018, 0.035, 0.022), (0.07, 0.08, 0.07), 0.05, 0.55, 0.70,
+                                        grime=0.45, streak=0.4, wear=0.08), 0.56),
+    # awning canvas: faded oxblood, waxed and stained
+    "hc_awning_cloth": (lambda: gen_weave(53, 0.25, colour=(0.16, 0.045, 0.035), thread=0.0018, mottle=0.06,
+                                          rough=0.85), 0.85),
+})
+TILE.update({"hc_drum_paint": 0.5, "hc_bin_plastic": 0.4, "hc_awning_cloth": 0.25})
+
+
+def drum(name):
+    """A 200 l steel drum, 0.58 m across and 0.88 m tall: rolled chimes top and bottom, two rolling hoops, a lid with
+    two bung caps, a dent on the -Y side. Origin at the bottom centre."""
+    b = Builder(name)
+    rng = random.Random(5101)
+    R0, H = 0.286, 0.88
+    dent = wobble(rng, 0.02)
+
+    def rf(a, z):  # one shallow dent facing the lane, low down
+        d = math.exp(-((a + math.pi / 2) ** 2) / 0.12 - ((z - 0.28) ** 2) / 0.02)
+        return dent(a, z) * (1.0 - 0.035 * d)
+
+    prof = [(R0 - 0.006, 0.0), (R0 + 0.004, 0.006), (R0 + 0.004, 0.022), (R0, 0.03)]
+    for zc in (0.29, 0.59):  # rolling hoops: a raised bead each
+        prof += [(R0, zc - 0.018), (R0 + 0.010, zc - 0.006), (R0 + 0.010, zc + 0.006), (R0, zc + 0.018)]
+    prof += [(R0, H - 0.03), (R0 + 0.004, H - 0.022), (R0 + 0.004, H - 0.004), (R0 - 0.010, H), (R0 - 0.016, H - 0.012)]
+    b.add(bm_lathe(prof, 40, rfun=rf), "hc_drum_paint", uv="keep")
+    # the lid, set down 12 mm inside the chime, and the base
+    b.add(bm_lathe([(R0 - 0.016, H - 0.012), (0.0, H - 0.012)], 40, smooth=False), "hc_drum_paint", uv="keep")
+    b.add(bm_lathe([(0.0, 0.012), (R0 - 0.006, 0.012)], 40, smooth=False), "hc_drum_paint", uv="keep")
+    for x, rr in ((0.17, 0.035), (-0.18, 0.022)):  # bung caps
+        b.add(bm_lathe([(rr, 0.0), (rr, 0.012), (rr * 0.7, 0.016), (0.0, 0.016)], 12, smooth=False), "hc_steel",
+              M=T(x, 0.02, H - 0.012), uv="keep")
+    return b.finish()
+
+
+def street_bin(name):
+    """A lidded street bin, 0.58 x 0.50 m and 0.95 m tall to the lid's top: a tapered rounded-square body, a moulded
+    rim, a lid hinged at +Y with a grab lip at -Y, two wheels on an axle at the back. Origin at the bottom centre."""
+    b = Builder(name)
+
+    def sq(p, sx, sy):
+        def f(a, z):
+            c, s = abs(math.cos(a)) / sx, abs(math.sin(a)) / sy
+            return 1.0 / max(1e-6, (c ** p + s ** p)) ** (1.0 / p)
+        return f
+
+    body = sq(6.0, 1.0, 0.86)
+    prof = [(0.0, 0.05), (0.235, 0.05), (0.25, 0.07), (0.30, 0.82), (0.305, 0.84), (0.31, 0.86)]  # open mouth, lid over
+    b.add(bm_lathe(prof, 32, rfun=body), "hc_bin_plastic", uv="keep", crease=35)
+    # the rim lip round the mouth
+    b.add(bm_lathe([(0.30, 0.83), (0.322, 0.835), (0.322, 0.865), (0.30, 0.87)], 32, rfun=body), "hc_bin_plastic",
+          uv="keep", crease=35)
+    # the lid: a shallow dome, closed, a grab lip at -Y
+    lid = sq(6.0, 1.0, 0.86)
+    b.add(bm_lathe([(0.33, 0.87), (0.33, 0.885), (0.30, 0.92), (0.18, 0.945), (0.0, 0.95)], 32, rfun=lid),
+          "hc_bin_plastic", uv="keep", crease=35)
+    b.add(bm_box(-0.12, -0.31, 0.855, 0.12, -0.27, 0.885, bevel=0.006, seg=2), "hc_bin_plastic")
+    # hinge blocks at +Y
+    for x in (-0.18, 0.18):
+        b.add(bm_box(x - 0.04, 0.24, 0.85, x + 0.04, 0.30, 0.90, bevel=0.008, seg=2), "hc_bin_plastic")
+    # wheels and axle at the back
+    for x in (-0.24, 0.24):
+        b.add(bm_lathe([(0.0, -0.025), (0.085, -0.025), (0.10, -0.012), (0.10, 0.012), (0.085, 0.025), (0.0, 0.025)],
+                       20), "hc_saddle", M=T(x, 0.20, 0.10) @ R(90, "Y"), uv="keep")
+    b.add(bm_tube([Vector((-0.27, 0.20, 0.10)), Vector((0.27, 0.20, 0.10))], 0.012, seg=8), "hc_iron", uv="keep")
+    # the moulded number plate on the front: a raised blank panel (no letters)
+    b.add(bm_box(-0.09, -0.268 - 0.006, 0.55, 0.09, -0.262, 0.66, bevel=0.004, seg=2), "hc_bin_plastic")
+    return b.finish()
+
+
+def down_pipe(name):
+    """A 4.2 m cast downpipe with a hopper head under the eave, a swan neck off the wall, five wall brackets and a
+    shoe kicking out at the foot. Origin on the wall at the foot (wall y = 0); the pipe stands 0.09 m off it (-Y)."""
+    b = Builder(name)
+    rng = random.Random(5303)
+    r, off = 0.048, -0.09
+    path = [  # shoe kicking out at the foot, then up the wall
+        Vector((0, off - 0.10, 0.02)), Vector((0, off - 0.05, 0.10)), Vector((0, off, 0.20))]
+    path += [Vector((0, off, z)) for z in (0.6, 1.4, 2.2, 3.0, 3.55)]
+    path += [Vector((0, off - 0.04, 3.70)), Vector((0, off - 0.14, 3.85)), Vector((0, off - 0.16, 3.95))]  # swan neck
+    b.add(bm_tube(path, r, seg=14, caps=True), "hc_rust", uv="keep")
+    # socket collars every joint
+    for z in (0.75, 1.55, 2.35, 3.15):
+        b.add(bm_lathe([(r, -0.03), (r + 0.010, -0.025), (r + 0.010, 0.025), (r, 0.03)], 14), "hc_rust",
+              M=T(0, off, z), uv="keep")
+    # brackets: an iron band round the pipe and a lug into the wall
+    for z in (0.5, 1.3, 2.1, 2.9, 3.45):
+        b.add(bm_torus(r + 0.006, 0.006, 16, 4), "hc_iron", M=T(0, off, z), uv="keep")
+        b.add(bm_box(-0.012, off + r, z - 0.012, 0.012, 0.0, z + 0.012, bevel=0.002), "hc_iron")
+    # hopper head under the eave line
+    hz = 3.95
+    b.add(bm_lathe([(r * 0.9, hz), (0.10, hz + 0.10), (0.15, hz + 0.24), (0.155, hz + 0.27), (0.14, hz + 0.27),
+                    (0.135, hz + 0.25), (0.09, hz + 0.12), (r * 0.8, hz + 0.02)], 4, phase=math.pi / 4, smooth=False,
+                   rfun=wobble(rng, 0.01)), "hc_rust", M=T(0, off - 0.16, 0), uv="keep")
+    return b.finish()
+
+
+def awning(name):
+    """A 2.7 m cloth awning over a shop front: a wall rail, two folding iron arms out 1.1 m and down 0.45 m, the
+    canvas sagging between rail and front bar, a 0.22 m straight valance hanging off the front. Origin on the wall at
+    the rail's centre (wall y = 0, out to -Y, down to -Z)."""
+    b = Builder(name)
+    W, P, D = 2.7, 1.1, 0.45
+    b.add(bm_box(-W / 2, -0.07, -0.05, W / 2, 0.0, 0.03, bevel=0.01, seg=2), "hc_iron")  # rail and roller box
+    bar = [Vector((-W / 2 - 0.02, -P, -D)), Vector((W / 2 + 0.02, -P, -D))]
+    b.add(bm_tube(bar, 0.022, seg=10), "hc_iron", uv="keep")
+    for x in (-W / 2 + 0.08, W / 2 - 0.08):  # arms: elbowed, from the wall low to the front bar
+        arm = [Vector((x, -0.02, -0.75)), Vector((x, -0.45, -0.62)), Vector((x, -P + 0.02, -D))]
+        b.add(bm_tube(arm, 0.014, seg=8), "hc_iron", uv="keep")
+        b.add(bm_box(x - 0.04, -0.02, -0.80, x + 0.04, 0.0, -0.70, bevel=0.004), "hc_iron")
+    # canvas: z drops linearly from rail to bar with a sag between the arms and across
+    nu, nv = 28, 10
+
+    def surf(u, v):
+        x = -W / 2 + W * u
+        y = -0.06 - (P - 0.06) * v
+        z = -0.0 - D * v - 0.06 * math.sin(math.pi * v) * (0.6 + 0.4 * math.sin(math.pi * u)) \
+            - 0.012 * math.sin(9 * math.pi * u) * math.sin(math.pi * v)
+        return Vector((x, y, z))
+    top, bot, uvs = [], [], []
+    for j in range(nv + 1):
+        rt, rb, ru = [], [], []
+        for i in range(nu + 1):
+            p = surf(i / nu, j / nv)
+            rt.append(p)
+            rb.append(p + Vector((0, 0, -0.004)))
+            ru.append((W * i / nu, P * j / nv))
+        top.append(rt)
+        bot.append(rb)
+        uvs.append(ru)
+    b.add(bm_shell(top, bot, uvs), "hc_awning_cloth", uv="keep")
+    # valance: hangs from the bar, a slight ripple
+    top, bot, uvs = cloth_panel(lambda x, z: -P - 0.024 + 0.008 * math.sin(11 * x) * (-z / 0.22), W + 0.02, 0.22,
+                                30, 3, 0.004)
+    top = [[p + Vector((0, 0, -D)) for p in row] for row in top]
+    bot = [[p + Vector((0, 0, -D)) for p in row] for row in bot]
+    b.add(bm_shell(top, bot, uvs), "hc_awning_cloth", uv="keep")
+    return b.finish()
+
+
+def sack_pile(name):
+    """Five grain sacks: three along the bottom, two laid on them, 1.1 x 0.55 m and 0.75 m high. Origin at the
+    bottom centre."""
+    b = Builder(name)
+    rng = random.Random(5404)
+    for k, (x, y) in enumerate(((-0.36, 0.0), (0.0, 0.03), (0.36, -0.02))):
+        sack(b, T(x, y, 0) @ R(rng.uniform(-20, 20), "Z") @ S(1.0, 0.8, 1.0), 0.48 + rng.uniform(-0.03, 0.03), 0.19,
+             rng, seg=14)
+    for x in (-0.18, 0.19):  # the top two lie on their sides along X
+        sack(b, T(x - 0.22, rng.uniform(-0.03, 0.03), 0.42) @ R(90 + rng.uniform(-8, 8), "Y") @ S(0.8, 0.9, 1.0),
+             0.46, 0.17, rng, seg=14)
+    return b.finish()
+
+
 # name: (builder, triangle budget, textured)
 PARTS = {
     "SM_HC_LanternLarge": (lambda n: lantern(n, 0.60, 0.45, 16, 0.25), 6000, False),
@@ -2225,6 +2390,11 @@ PARTS = {
     "BICYCLE": (bicycle, 16000, True),  # the kit's piece: import with -Kit -NoNanite to /Game/Props/BKIT
     "SM_HC_StockPot": (stock_pot, 6500, True),  # 6380 measured on first run (11-16)
     "SM_HC_GoodsBottles": (goods_bottles, 5000, True),
+    "SM_HC_Drum": (drum, 6000, True),
+    "SM_HC_Bin": (street_bin, 6000, True),
+    "SM_HC_DownPipe": (down_pipe, 5000, True),
+    "SM_HC_Awning": (awning, 4000, True),
+    "SM_HC_SackPile": (sack_pile, 5000, True),
 }
 
 
