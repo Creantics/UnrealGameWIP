@@ -198,13 +198,18 @@ centre at 88% or more (mirrored on the left shoulder), the look-up held to 15-25
 blends over 0.5 s (held still mid-attack and in a dodge's first moment, and a held stick keeps its basis through it),
 none while aiming; entering it asks for the shoulder again with each side tried at its swing, and no partner turn runs
 in it. A normal-sized target keeps the melee shape. Off contact, a target whose head sits behind the lead on the screen
-(the lead's box widened by 5% of the frame) moves the lens further out on its shoulder (0.85 m of side at most) and
+(the lead's box, at 0.45 m of radius or its own if wider, widened by 5% of the frame) moves the lens further out on its shoulder (0.85 m of side at most) and
 raises the pivot (0.3 m at most), by the least of the two together that clears it, eased in and out over 0.25 s
 (`ftcore::arenaCloseStandOffClear`); the side alone clears only a head near the box's edge, so the pivot does most of
 it. With `-ArenaFrameCheck` the close camera has its own framing bar: on settled frames off contact, the lead's centre
 in its near-side third (5% of the width of slack), the target's weak point (else its chest) in 0.55-0.80 of the width
-(mirrored on the left shoulder) and the partner anywhere in the frame, passing at 95% (`close framing` line,
-`ftcore::arenaCloseFrameCheck`); the middle-third bar stays the classic camera's. The check line `close lens target head clear of the lead` counts the stand-off frames whose target head is clear in
+(mirrored on the left shoulder; from 0.45 with the target under 3 m away) and the partner anywhere in the frame,
+passing at 95% (`close framing` line, `ftcore::arenaCloseFrameCheck`); the middle-third bar stays the classic camera's.
+Frames drawn by a capture's shot or side view, or with the lens further from the pivot than the arm and a metre, are
+left out of the frame check and counted on that line. Under the close camera the partner starts (and joins) 3 m ahead
+of the lead and 1.5 m to the side away from the shoulder, not beside the lens; the check line `partner facing in its
+strings` counts the steps of its strings with Core's facing off its target, or the drawn figure off Core's, by over
+30 degrees. The check line `close lens target head clear of the lead` counts the stand-off frames whose target head is clear in
 the drawn lens (PASS at 95% or more) and the most clearance used. Between its actions the partner takes its close station from the brain
 (ahead of the lead on a flank of its target, inside the drawn lens): the host hands it the lens's half-angles, pitch and
 height, the lead's side of the screen from the shoulder, the partner kit's band (a magic kit the caster's 5-8 m, the

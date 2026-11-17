@@ -523,6 +523,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	bNoFrame = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoFrame"));
 	FrameFrames = FrameSettled = FrameInThird = 0;
 	CloseFrameOk = CloseFrameLead = CloseFrameFoe = CloseFrameMate = 0;
+	FrameShotSkipped = 0;
 	ResetLeadFrameChecks();
 	FrameLeadWorst = FrameFoeWorst = FrameTurnMost = FrameRateMost = FrameLensMost = FrameArmMost = FramePrev = 0.f;
 	for (int32 I = 0; I < 4; ++I)
@@ -1565,7 +1566,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	Bodies.player = Fight.playerStart();
 	if (bAllyOn)
 	{
-		Bodies.ally = AllyHome(Bodies.player, Fight.playerStartFacing());
+		Bodies.ally = bCloseShape && bPartner ? PartnerCloseStart(Bodies.player, Fight.playerStartFacing())
+			: AllyHome(Bodies.player, Fight.playerStartFacing());
 	}
 	for (size_t I = 0; I < Fight.enemyCount(); ++I)
 	{
@@ -1665,6 +1667,8 @@ void UFTArenaRunner::PutBodiesAtStart()
 	CloseRangedYawMost = 0.f;
 	MateFrames = MateIn = MateBehind = MateLeft = MateRight = MateOffY = 0;
 	MateOutAhead = MateOutRight = 0.f;
+	MateCastSteps = MateCastCoreOff = MateCastDrawOff = 0;
+	MateCastCoreWorst = MateCastDrawWorst = 0.f;
 	RollAtNext = 0;
 #endif
 	LockLow = 0.f;
@@ -5185,6 +5189,14 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 	FramePrev = FrameTurn;
 	const APlayerCameraManager& Cam = *PC->PlayerCameraManager;
 	const FVector Eye = Cam.GetCameraLocation();
+	// Only the lead's play camera is judged (ruled 11-16): a capture's shot or side view, or a lens further from the pivot
+	// than the arm and a metre, is no play frame and is left out of every count here.
+	if (PC->GetViewTarget() != PlayerFigure.Get() ||
+		FVector::Dist(Eye, FVector(Bodies.player.x * 100.0, Bodies.player.y * 100.0, ZoneZ + Fit.camera.pivot * 100.0)) > (Fit.camera.arm + 1.f) * 100.0)
+	{
+		++FrameShotSkipped;
+		return;
+	}
 	const FRotator View = ViewRotation(Cam);
 	const FVector Ahead = View.Vector();
 	const FVector Right = FRotationMatrix(View).GetScaledAxis(EAxis::Y);
@@ -5232,6 +5244,8 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 		{
 			Aim = Weak;
 		}
+		// The vertical half-angle's tangent from the drawn fov (horizontal) and the frame's aspect; y as arenaFramePoint
+		// gives it (0 the bottom, 1 the top).
 		const FVector Up = FRotationMatrix(View).GetScaledAxis(EAxis::Z);
 		const double TanUp = Tan / FMath::Max(static_cast<double>(LockAspect()), 0.1);
 		ftcore::ArenaFramePoint Mate;
@@ -5242,10 +5256,10 @@ void UFTArenaRunner::SampleFrame(int32 Target, float Want, float DeltaSeconds)
 			const double Depth = FVector::DotProduct(M, Ahead);
 			Mate.ahead = Depth > 1.0;
 			Mate.x = 0.5f + 0.5f * static_cast<float>(FVector::DotProduct(M, Right) / FMath::Max(Depth, 1.0) / Tan);
-			Mate.y = 0.5f - 0.5f * static_cast<float>(FVector::DotProduct(M, Up) / FMath::Max(Depth, 1.0) / TanUp);
+			Mate.y = 0.5f + 0.5f * static_cast<float>(FVector::DotProduct(M, Up) / FMath::Max(Depth, 1.0) / TanUp);
 		}
 		const ftcore::ArenaCloseFrameCheck C = ftcore::arenaCloseFrameCheck(ftcore::kArenaClose, CloseShoulder, 0.5f + 0.5f * LeadX,
-			0.5f + 0.5f * Across(Aim, 0.0), bMateOn, Mate);
+			0.5f + 0.5f * Across(Aim, 0.0), ArenaLength(To), bMateOn, Mate);
 		CloseFrameOk += C.all ? 1 : 0;
 		CloseFrameLead += C.lead ? 1 : 0;
 		CloseFrameFoe += C.target ? 1 : 0;
@@ -6135,9 +6149,10 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 		}
 		else if (CloseTargetNow >= 0)
 		{
-			// Stand-off: the target's head in the drawn lens, clear of the lead's box (no margin).
+			// Stand-off: the target's head in the drawn lens, clear of the lead's box (at the clearance's 0.45 m, no margin).
 			++CloseClearFrames;
-			CloseClearSeen += ftcore::arenaCloseHeadHidden(Lens, Aspect, Body, ftcore::ArenaPoint3{To.x, To.y, CloseHeadHeight()}, 0.f) ? 0 : 1;
+			CloseClearSeen += ftcore::arenaCloseHeadHidden(Lens, Aspect, ftcore::arenaCloseClearBody(ftcore::kArenaClose, Body),
+				ftcore::ArenaPoint3{To.x, To.y, CloseHeadHeight()}, 0.f) ? 0 : 1;
 			CloseClearSideMost = FMath::Max(CloseClearSideMost, FMath::Abs(ClearSideNow));
 			CloseClearPivotMost = FMath::Max(CloseClearPivotMost, ClearPivotNow);
 		}
@@ -6365,6 +6380,11 @@ void UFTArenaRunner::LogFeatureChecks() const
 			MateFrames, MateIn, MateBehind, MateLeft, MateRight, MateOffY, Out > 0 ? MateOutAhead / static_cast<float>(Out) : 0.f,
 			Out > 0 ? MateOutRight / static_cast<float>(Out) : 0.f);
 	}
+	if (MateCastSteps > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner facing in its strings on %d steps: Core's facing off its target by over 30 degrees on %d (worst %.0f), the drawn figure off Core's by over 30 on %d (worst %.0f)."),
+			MateCastSteps, MateCastCoreOff, MateCastCoreWorst, MateCastDrawOff, MateCastDrawWorst);
+	}
 	if (bCloseShape)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens partner turn on %d of %d held frames, mean %.2f, most %.2f degrees; shoulder swaps %d, ends %+.2f."),
@@ -6400,9 +6420,10 @@ void UFTArenaRunner::LogFeatureChecks() const
 			FreeLens);
 		if (bCloseShape)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close framing %s on %d of %d settled frames (%.1f%%, bar %.0f%%): lead in its near-side third %d, target's weak point or chest in its band %d, partner in the frame %d."),
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close framing %s on %d of %d settled frames (%.1f%%, bar %.0f%%): lead in its near-side third %d, target's weak point or chest in its band (from %.2f under %.0f m) %d, partner in the frame %d; %d shot-view or far-lens frames left out."),
 				CloseShare >= ftcore::kArenaClose.framePass ? TEXT("PASS") : TEXT("FAIL"), CloseFrameOk, FrameSettled, CloseShare * 100.f,
-				ftcore::kArenaClose.framePass * 100.f, CloseFrameLead, CloseFrameFoe, CloseFrameMate);
+				ftcore::kArenaClose.framePass * 100.f, CloseFrameLead, ftcore::kArenaClose.frameNearTargetMin, ftcore::kArenaClose.frameNearDistance,
+				CloseFrameFoe, CloseFrameMate, FrameShotSkipped);
 		}
 		const TCHAR* Bands[4] = {TEXT("under 3"), TEXT("3-6"), TEXT("6-10"), TEXT("10 and over")};
 		for (int32 I = 0; I < 4; ++I)
@@ -7942,7 +7963,11 @@ namespace
 {
 constexpr int32 kArenaAllyHp = 135;           // the ally's hp in a carrying run
 constexpr float kArenaAllyBack = 0.5f;        // m the ally stands behind the player... (beside it, so a blow that
-constexpr float kArenaAllySide = 2.f;         // ... and to its left                     reaches the player can reach it)
+constexpr float kArenaAllySide = 2.f;         // ... and to its right (+y of a +x facing) reaches the player can reach it)
+// The partner's start under the close camera (PartnerCloseStart): m ahead of the lead, and to the side away from the
+// shoulder.
+constexpr float kArenaPartnerStartAhead = 3.f;
+constexpr float kArenaPartnerStartFlank = 1.5f;
 constexpr float kArenaAllyPace = 0.8f;        // of the fighter's moveSpeed: how fast the ally follows
 constexpr float kArenaAllySettle = 0.15f;     // m: closer than this to its place, the ally stands
 }
@@ -8046,10 +8071,22 @@ void UFTArenaRunner::SpawnAlly(UWorld* World)
 
 ftcore::Vec2 UFTArenaRunner::AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const
 {
-	// Behind (against the facing) and to the left (the facing turned a quarter anticlockwise), kept in the ring.
+	// Behind (against the facing) and to the side (+y of a +x facing: the world's right, a quarter clockwise seen from
+	// above), kept in the ring.
 	const ftcore::Vec2 Home{Player.x - Facing.x * kArenaAllyBack - Facing.y * kArenaAllySide,
 		Player.y - Facing.y * kArenaAllyBack + Facing.x * kArenaAllySide};
 	return Fit.ring.clamp(Home, Fight.def().partnerKit.bodyRadius + 0.5f);
+}
+
+ftcore::Vec2 UFTArenaRunner::PartnerCloseStart(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const
+{
+	// Under the close camera the home beside the lead is beside the lens on a right shoulder (+y is the world's right
+	// of a +x facing): the partner starts ahead of the lead on the far flank instead, the side away from the shoulder,
+	// in the frame and off the line to the target (ruled 11-16). The brain walks it to its station from there.
+	const float Away = CloseShoulderWant < 0.f ? 1.f : -1.f; // +1: the facing's right
+	const ftcore::Vec2 Start{Player.x + Facing.x * kArenaPartnerStartAhead - Facing.y * Away * kArenaPartnerStartFlank,
+		Player.y + Facing.y * kArenaPartnerStartAhead + Facing.x * Away * kArenaPartnerStartFlank};
+	return Fit.ring.clamp(Start, Fight.def().partnerKit.bodyRadius + 0.5f);
 }
 
 void UFTArenaRunner::MoveAlly()
@@ -8207,6 +8244,21 @@ void UFTArenaRunner::TrackAllyWeapons(const ftcore::ArenaOutput& Out)
 	// The ally's light string as the lead's light moves (its blow's index), so the strike clip each lead plays for that
 	// light plays on its body: a new blow is a new index, or the same index begun again (stateTime back).
 	const ftcore::ArenaAllyOut& A = Out.ally;
+#if !UE_BUILD_SHIPPING
+	if (A.attacking && A.target >= 0 && A.target < static_cast<int32>(Fight.enemyCount()))
+	{
+		// Whose a cast facing away is: Core's facing against the line to its target, the drawn yaw against Core's.
+		const ftcore::Vec2& Foe = Bodies.enemies[static_cast<size_t>(A.target)];
+		const ftcore::Vec2 To{Foe.x - Bodies.ally.x, Foe.y - Bodies.ally.y};
+		const float CoreOff = ArenaLength(To) > 0.05f ? FMath::Abs(FMath::FindDeltaAngleDegrees(ArenaYaw(A.facing), ArenaYaw(To))) : 0.f;
+		const float DrawOff = FMath::Abs(FMath::FindDeltaAngleDegrees(static_cast<float>(Ally->GetActorRotation().Yaw), ArenaYaw(A.facing)));
+		++MateCastSteps;
+		MateCastCoreOff += CoreOff > 30.f ? 1 : 0;
+		MateCastDrawOff += DrawOff > 30.f ? 1 : 0;
+		MateCastCoreWorst = FMath::Max(MateCastCoreWorst, CoreOff);
+		MateCastDrawWorst = FMath::Max(MateCastDrawWorst, DrawOff);
+	}
+#endif
 	const int32 Lights = FMath::Max(1, static_cast<int32>(Fight.def().partnerKit.lightCount));
 	const uint8 Move = static_cast<uint8>(static_cast<int32>(A.blow) % Lights);
 	const bool bNewBlow = A.attacking && (!bAllyStruck || Move != AllyStruckBlow || A.stateTime + 1e-4f < AllyStruckTime);
@@ -8390,7 +8442,9 @@ void UFTArenaRunner::BringPartnerIn()
 	// (after a switch, partnerKit.hp is the partner body's max).
 	Fight.setAlly(Fight.def().partnerKit.hp, Fight.def().partnerKit.bodyRadius);
 	Fight.setPartner(&AllyBrain, &AllyTuning);
-	Bodies.ally = PrevBodies.ally = AllyHome(Bodies.player, Fight.output().player.facing);
+	// Under the close camera it joins ahead on the far flank, not beside the lens (PartnerCloseStart).
+	Bodies.ally = PrevBodies.ally = bCloseShape ? PartnerCloseStart(Bodies.player, Fight.output().player.facing)
+		: AllyHome(Bodies.player, Fight.output().player.facing);
 	SpawnAlly(GetWorld());
 	if (AllyFigure)
 	{

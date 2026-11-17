@@ -754,6 +754,7 @@ TEST_CASE("close frame: stand-off clearance moves the lens out on its shoulder, 
                 CAPTURE(head);
                 const ArenaCameraPose pose = lockPose(0.f, shoulder, d, head);
                 const ArenaLeadBody body = closeBody(0.f, 0.f, head);
+                const ArenaLeadBody clearBody = arenaCloseClearBody(R, body); // the box the clearance is judged by (0.45 m)
                 // A target at the lock's own place, clear of the lead: nothing asked.
                 const ArenaPoint3 framed{d, 0.f, 1.7f};
                 CHECK_FALSE(arenaCloseHeadHidden(pose, kAspect, body, framed, R.clearMargin));
@@ -774,7 +775,7 @@ TEST_CASE("close frame: stand-off clearance moves the lens out on its shoulder, 
                 ArenaCameraPose cleared = pose;
                 cleared.side += c.side;
                 cleared.pivot += c.pivot;
-                if (c.pivot < R.clearPivotUp - 1e-4f) CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, body, hid, R.clearMargin));
+                if (c.pivot < R.clearPivotUp - 1e-4f) CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, clearBody, hid, R.clearMargin));
                 CHECK_FALSE(arenaCloseHeadHidden(cleared, kAspect, body, hid, 0.f)); // the head itself is seen in every case
                 // The least move: no pair of steps with a smaller sum clears it.
                 const float sum = std::fabs(c.side) + c.pivot;
@@ -786,7 +787,7 @@ TEST_CASE("close frame: stand-off clearance moves the lens out on its shoulder, 
                         ArenaCameraPose less = pose;
                         less.side += shoulder * add;
                         less.pivot += up;
-                        CHECK(arenaCloseHeadHidden(less, kAspect, body, hid, R.clearMargin));
+                        CHECK(arenaCloseHeadHidden(less, kAspect, clearBody, hid, R.clearMargin));
                     }
                 sideUsed += c.side != 0.f ? 1 : 0;
                 raised += c.pivot > 0.f ? 1 : 0;
@@ -841,6 +842,8 @@ TEST_CASE("close frame: the framing check takes the lead in its near-side third,
     const ArenaCloseRules& R = kArenaClose;
     CHECK(R.frameLeadSlack == 0.05f);
     CHECK(R.framePass == 0.95f);
+    CHECK(R.frameNearDistance == 3.f);
+    CHECK(R.frameNearTargetMin == 0.45f);
     const ArenaFramePoint mateIn{0.5f, 0.5f, true};
     // The lock's own frame at stand-off and melee distances, either shoulder: every term holds.
     for (const float shoulder : {1.f, -1.f}) {
@@ -853,7 +856,7 @@ TEST_CASE("close frame: the framing check takes the lead in its near-side third,
             const ArenaFramePoint chest = arenaFramePoint(pose, kAspect, ArenaPoint3{d, 0.f, 1.3f});
             REQUIRE(lead.ahead);
             REQUIRE(chest.ahead);
-            const ArenaCloseFrameCheck c = arenaCloseFrameCheck(R, shoulder, lead.x, chest.x, true, mateIn);
+            const ArenaCloseFrameCheck c = arenaCloseFrameCheck(R, shoulder, lead.x, chest.x, d, true, mateIn);
             MESSAGE("shoulder " << shoulder << " d " << d << ": lead " << lead.x << ", target " << chest.x);
             CHECK(c.lead);
             CHECK(c.target);
@@ -861,28 +864,54 @@ TEST_CASE("close frame: the framing check takes the lead in its near-side third,
         }
     }
     // The bands, right shoulder and mirrored.
-    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, false, ArenaFramePoint{}).all);
-    CHECK(arenaCloseFrameCheck(R, 1.f, 0.38f, 0.60f, false, ArenaFramePoint{}).lead);
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.40f, 0.60f, false, ArenaFramePoint{}).lead);  // past the third and its slack
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.70f, 0.60f, false, ArenaFramePoint{}).lead);  // the far side
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, -0.01f, 0.60f, false, ArenaFramePoint{}).lead); // off the frame
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.50f, false, ArenaFramePoint{}).target);
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.85f, false, ArenaFramePoint{}).target);
-    CHECK(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.40f, false, ArenaFramePoint{}).all);
-    CHECK(arenaCloseFrameCheck(R, -1.f, 0.62f, 0.40f, false, ArenaFramePoint{}).lead);
-    CHECK_FALSE(arenaCloseFrameCheck(R, -1.f, 0.30f, 0.40f, false, ArenaFramePoint{}).lead);
-    CHECK_FALSE(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.60f, false, ArenaFramePoint{}).target);
-    CHECK(arenaCloseFrameCheck(R, 0.f, 0.30f, 0.60f, false, ArenaFramePoint{}).all); // 0 counts as the right shoulder
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, 5.f, false, ArenaFramePoint{}).all);
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.38f, 0.60f, 5.f, false, ArenaFramePoint{}).lead);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.40f, 0.60f, 5.f, false, ArenaFramePoint{}).lead);  // past the third and its slack
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.70f, 0.60f, 5.f, false, ArenaFramePoint{}).lead);  // the far side
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, -0.01f, 0.60f, 5.f, false, ArenaFramePoint{}).lead); // off the frame
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.50f, 5.f, false, ArenaFramePoint{}).target);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.85f, 5.f, false, ArenaFramePoint{}).target);
+    CHECK(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.40f, 5.f, false, ArenaFramePoint{}).all);
+    CHECK(arenaCloseFrameCheck(R, -1.f, 0.62f, 0.40f, 5.f, false, ArenaFramePoint{}).lead);
+    CHECK_FALSE(arenaCloseFrameCheck(R, -1.f, 0.30f, 0.40f, 5.f, false, ArenaFramePoint{}).lead);
+    CHECK_FALSE(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.60f, 5.f, false, ArenaFramePoint{}).target);
+    CHECK(arenaCloseFrameCheck(R, 0.f, 0.30f, 0.60f, 5.f, false, ArenaFramePoint{}).all); // 0 counts as the right shoulder
     // The partner: anywhere in the frame, judged only when on.
-    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{0.02f, 0.9f, true}).all);
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{1.1f, 0.5f, true}).partner);
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{0.5f, -0.1f, true}).partner);
-    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, true, ArenaFramePoint{0.5f, 0.5f, false}).partner); // behind the lens
-    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, false, ArenaFramePoint{0.5f, 0.5f, false}).partner);
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, 5.f, true, ArenaFramePoint{0.02f, 0.9f, true}).all);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, 5.f, true, ArenaFramePoint{1.1f, 0.5f, true}).partner);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, 5.f, true, ArenaFramePoint{0.5f, -0.1f, true}).partner);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, 5.f, true, ArenaFramePoint{0.5f, 0.5f, false}).partner); // behind the lens
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.60f, 5.f, false, ArenaFramePoint{0.5f, 0.5f, false}).partner);
+    // Under 3 m the band starts at 0.45 (ruled 11-16): the target sits near the middle at melee range.
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.50f, 2.5f, false, ArenaFramePoint{}).target);
+    CHECK(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.45f, 2.9f, false, ArenaFramePoint{}).target);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.44f, 2.9f, false, ArenaFramePoint{}).target);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.50f, 3.f, false, ArenaFramePoint{}).target);  // 3 m: the far band
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.85f, 1.f, false, ArenaFramePoint{}).target);  // the top holds
+    CHECK(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.50f, 2.f, false, ArenaFramePoint{}).target);       // mirrored
+    CHECK_FALSE(arenaCloseFrameCheck(R, -1.f, 0.70f, 0.56f, 2.f, false, ArenaFramePoint{}).target);
+    CHECK_FALSE(arenaCloseFrameCheck(R, 1.f, 0.30f, 0.50f, kNaN, false, ArenaFramePoint{}).target); // NaN: the far band
     // NaN shares fail their own term only.
-    const ArenaCloseFrameCheck n = arenaCloseFrameCheck(R, 1.f, kNaN, kNaN, true, ArenaFramePoint{kNaN, 0.5f, true});
+    const ArenaCloseFrameCheck n = arenaCloseFrameCheck(R, 1.f, kNaN, kNaN, 5.f, true, ArenaFramePoint{kNaN, 0.5f, true});
     CHECK_FALSE(n.lead);
     CHECK_FALSE(n.target);
     CHECK_FALSE(n.partner);
     CHECK_FALSE(n.all);
+}
+
+TEST_CASE("close clear: the lead's box is taken at 0.45 m or its own radius, the wider") {
+    const ArenaCloseRules& R = kArenaClose;
+    CHECK(R.clearRadius == 0.45f);
+    ArenaLeadBody b;
+    CHECK(arenaCloseClearBody(R, b).radius == 0.45f);
+    b.radius = 0.6f;
+    CHECK(arenaCloseClearBody(R, b).radius == 0.6f);
+    b.radius = kNaN;
+    CHECK(arenaCloseClearBody(R, b).radius == 0.45f);
+    b.radius = 0.35f;
+    b.head = 1.7f;
+    b.cut = 0.4f;
+    const ArenaLeadBody w = arenaCloseClearBody(R, b);
+    CHECK(w.head == 1.7f);
+    CHECK(w.cut == 0.4f);
 }

@@ -613,6 +613,10 @@ private:
 	// the left or the right, over or under; and its mean place in the lens's ground frame while out of the frame.
 	int32 MateFrames = 0, MateIn = 0, MateBehind = 0, MateLeft = 0, MateRight = 0, MateOffY = 0;
 	float MateOutAhead = 0.f, MateOutRight = 0.f;
+	// The partner's facing while a string runs (steps): Core's facing off the line to its target by over 30 degrees, the
+	// drawn figure's yaw off Core's by over 30, and the worst of each (degrees). Finds whose a cast facing away is.
+	int32 MateCastSteps = 0, MateCastCoreOff = 0, MateCastDrawOff = 0;
+	float MateCastCoreWorst = 0.f, MateCastDrawWorst = 0.f;
 	// -ArenaRollAt=<s,s,...>: capture-only dodge presses under the autopilot at these fight times (the dodge strip).
 	static constexpr int32 MaxRollAt = 8;
 	float RollAt[MaxRollAt] = {};
@@ -655,6 +659,8 @@ private:
 	void SpawnAlly(UWorld* World);
 	// Where the ally stands behind the player's left (m), facing `Facing`.
 	ftcore::Vec2 AllyHome(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
+	// The partner's start under the close camera: 3 m ahead of the lead, 1.5 m to the side away from the shoulder.
+	ftcore::Vec2 PartnerCloseStart(const ftcore::Vec2& Player, const ftcore::Vec2& Facing) const;
 	void MoveAlly();
 	void PlaceAlly(float Alpha);
 	// -ArenaPartner: the brain set on the fight (BeginPartner), the figures' swap on a takeover, the walk to the ally's
@@ -1243,6 +1249,7 @@ private:
 	float FrameBandGap[4] = {};
 	// The close camera's own bar on the same settled frames (ftcore::arenaCloseFrameCheck): all three terms, and each.
 	int32 CloseFrameOk = 0, CloseFrameLead = 0, CloseFrameFoe = 0, CloseFrameMate = 0;
+	int32 FrameShotSkipped = 0; // frames of a capture's view (or a lens past the arm and a metre) left out of the frame check
 	void SampleFrame(int32 Target, float Want, float DeltaSeconds);
 	// "Arena check: lead in frame": each frame after one held to the lead's rule on a tall target, the rendered
 	// camera's view of the lead (its floor point and its head, its radius each side) and the target's telegraph.

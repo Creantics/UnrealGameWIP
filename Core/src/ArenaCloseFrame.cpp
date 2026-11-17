@@ -333,10 +333,16 @@ bool arenaCloseHeadHidden(const ArenaCameraPose& pose, float aspect, const Arena
     return p.x >= s.left - m && p.x <= s.right + m && p.y >= s.feet - m && p.y <= s.head + m;
 }
 
+ArenaLeadBody arenaCloseClearBody(const ArenaCloseRules& rules, ArenaLeadBody body) {
+    if (finite(rules.clearRadius) && (!finite(body.radius) || body.radius < rules.clearRadius)) body.radius = rules.clearRadius;
+    return body;
+}
+
 ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const ArenaCameraPose& pose, float aspect,
-                                        const ArenaLeadBody& body, ArenaPoint3 head) {
+                                        const ArenaLeadBody& leadBody, ArenaPoint3 head) {
     ArenaCloseClear out;
     if (!finite(pose.side) || !finite(pose.pivot) || !finite(rules.clearMargin)) return out;
+    const ArenaLeadBody body = arenaCloseClearBody(rules, leadBody);
     const auto hidden = [&](const ArenaCameraPose& q) { return arenaCloseHeadHidden(q, aspect, body, head, rules.clearMargin); };
     if (!hidden(pose)) return out;
     const float sign = pose.side < 0.f ? -1.f : 1.f;
@@ -371,7 +377,7 @@ ArenaCloseClear arenaCloseStandOffClear(const ArenaCloseRules& rules, const Aren
 }
 
 ArenaCloseFrameCheck arenaCloseFrameCheck(const ArenaCloseRules& rules, float shoulder, float leadX, float targetX,
-                                          bool partnerOn, ArenaFramePoint partner) {
+                                          float distance, bool partnerOn, ArenaFramePoint partner) {
     ArenaCloseFrameCheck out;
     const bool left = shoulder < 0.f;
     // Mirrored onto the right shoulder: the lead on the left, the target right of centre.
@@ -379,7 +385,10 @@ ArenaCloseFrameCheck arenaCloseFrameCheck(const ArenaCloseRules& rules, float sh
     const float target = left ? 1.f - targetX : targetX;
     const float slack = finite(rules.frameLeadSlack) ? std::max(0.f, rules.frameLeadSlack) : 0.f;
     out.lead = finite(lead) && lead >= 0.f && lead <= 1.f / 3.f + slack;
-    out.target = finite(target) && target >= rules.targetMin && target <= rules.targetMax;
+    const bool nearBand = finite(distance) && finite(rules.frameNearDistance) && finite(rules.frameNearTargetMin) &&
+                          distance < rules.frameNearDistance;
+    const float bandMin = nearBand ? rules.frameNearTargetMin : rules.targetMin;
+    out.target = finite(target) && target >= bandMin && target <= rules.targetMax;
     out.partner = !partnerOn || (partner.ahead && finite(partner.x) && finite(partner.y) && partner.x >= 0.f && partner.x <= 1.f &&
                                  partner.y >= 0.f && partner.y <= 1.f);
     out.all = out.lead && out.target && out.partner;
