@@ -2372,6 +2372,28 @@ def sack_pile(name):
     return b.finish()
 
 
+def bench(name):
+    """A shopfront bench set against the wall: five timber slats 1.6 x 0.42 m at 0.44 m, on two iron frames with a
+    cross stretcher, one slat end split. Origin at the bottom centre; its front (the sitter's knees) at -Y."""
+    b = Builder(name)
+    rng = random.Random(5505)
+    L, Dp, Hs = 1.6, 0.42, 0.44
+    sw, gap, st = 0.072, 0.015, 0.032
+    for k in range(5):  # slats, front to back
+        y0 = -Dp / 2 + k * (sw + gap)
+        sag = rng.uniform(-0.004, 0.0)
+        b.add(bm_box(-L / 2, y0, Hs - st + sag, L / 2 - (0.03 if k == 2 else 0.0), y0 + sw, Hs + sag, bevel=0.005, seg=2,
+                     jitter=0.0008, rng=rng), "hc_timber", grain="x", uvoff=(rng.random(), rng.random()))
+    for x in (-L / 2 + 0.16, L / 2 - 0.16):  # iron frames: two legs, a seat bearer, a foot rail
+        for y in (-Dp / 2 + 0.03, Dp / 2 - 0.03):
+            b.add(bm_box(x - 0.02, y - 0.02, 0.0, x + 0.02, y + 0.02, Hs - st, bevel=0.004, seg=1), "hc_iron")
+        b.add(bm_box(x - 0.025, -Dp / 2 + 0.01, Hs - st - 0.04, x + 0.025, Dp / 2 - 0.01, Hs - st, bevel=0.004, seg=1),
+              "hc_iron")
+        b.add(bm_box(x - 0.015, -Dp / 2 + 0.03, 0.08, x + 0.015, Dp / 2 - 0.03, 0.11, bevel=0.003, seg=1), "hc_iron")
+    b.add(bm_box(-L / 2 + 0.16, -0.015, 0.12, L / 2 - 0.16, 0.015, 0.15, bevel=0.003, seg=1), "hc_iron")  # stretcher
+    return b.finish()
+
+
 # name: (builder, triangle budget, textured)
 PARTS = {
     "SM_HC_LanternLarge": (lambda n: lantern(n, 0.60, 0.45, 16, 0.25), 6000, False),
@@ -2395,6 +2417,7 @@ PARTS = {
     "SM_HC_DownPipe": (down_pipe, 5000, True),
     "SM_HC_Awning": (awning, 4000, True),
     "SM_HC_SackPile": (sack_pile, 5000, True),
+    "SM_HC_Bench": (bench, 3000, True),
 }
 
 

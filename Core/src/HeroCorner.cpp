@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace ftcore {
@@ -462,6 +463,15 @@ const char* heroPieceName(HeroPiece piece) {
     case HeroPiece::Gate: return "Gate";
     case HeroPiece::GateLantern: return "LanternLarge";
     case HeroPiece::Scooter: return "Scooter";
+    case HeroPiece::Drum: return "Drum";
+    case HeroPiece::Bin: return "Bin";
+    case HeroPiece::DownPipe: return "DownPipe";
+    case HeroPiece::Awning: return "Awning";
+    case HeroPiece::SackPile: return "SackPile";
+    case HeroPiece::Bench: return "Bench";
+    case HeroPiece::AcUnit: return "AcUnit";
+    case HeroPiece::Vending: return "Vending";
+    case HeroPiece::Planter: return "Planter";
     case HeroPiece::Count: break;
     }
     return "";
@@ -686,6 +696,204 @@ int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLayout& layou
     add(HeroPiece::Scooter, spec.laneX1 - 1.2, gy - 1.4, floorZ, 0.0, -1.0, -1);
     add(HeroPiece::Scooter, spec.laneX0 + 1.0, gy - 1.2, floorZ, 0.2, -1.0, -1);
     return n;
+}
+
+bool heroItemBox(const HeroItem& item, double& x0, double& x1, double& y0, double& y1, double& z0, double& z1) {
+    // The box at face (0, -1) about the origin: lx across, ly from front (-) to back (+), lz up. Sizes from
+    // tools/blender/hero_corner_props.py and the building kit (tools/blender/make_building_kit.py).
+    double b[6] = {};
+    const auto set = [&](double a0, double a1, double c0, double c1, double e0, double e1) {
+        b[0] = a0; b[1] = a1; b[2] = c0; b[3] = c1; b[4] = e0; b[5] = e1;
+    };
+    switch (item.piece) {
+    case HeroPiece::Crate: set(-0.3, 0.3, -0.2, 0.2, 0.0, 0.37); break;
+    case HeroPiece::Bucket: set(-0.17, 0.17, -0.17, 0.17, 0.0, 0.35); break;
+    case HeroPiece::Sacks: set(-0.3, 0.3, -0.3, 0.3, 0.0, 0.6); break;
+    case HeroPiece::UmbrellaStand: set(-0.15, 0.15, -0.15, 0.15, 0.0, 0.9); break;
+    case HeroPiece::Bicycle: set(-0.3, 0.3, -0.9, 0.9, 0.0, 1.05); break;
+    case HeroPiece::Scooter: set(-0.35, 0.35, -0.9, 0.9, 0.0, 1.2); break;
+    case HeroPiece::SignLarge: set(-0.05, 0.05, -0.75, 0.0, -1.45, 0.08); break;  // the arm 0.7 m out, the board under it
+    case HeroPiece::SignSmall: set(-0.05, 0.05, -0.75, 0.0, -0.95, 0.08); break;
+    case HeroPiece::Banner: set(-0.3, 0.3, -0.05, 0.05, -1.62, 0.03); break;      // the rod across, the cloth under it
+    case HeroPiece::Gate: set(-3.7, 3.7, -0.2, 0.2, 0.0, 3.6); break;
+    case HeroPiece::GateLantern: set(-0.23, 0.23, -0.23, 0.23, -0.8, 0.0); break;  // hung from its hook
+    case HeroPiece::Drum: set(-0.3, 0.3, -0.3, 0.3, 0.0, 0.89); break;
+    case HeroPiece::Bin: set(-0.33, 0.33, -0.32, 0.31, 0.0, 0.95); break;
+    case HeroPiece::DownPipe: set(-0.16, 0.16, -0.36, 0.0, 0.0, 4.22); break;       // origin on the wall at its foot
+    case HeroPiece::Awning: set(-1.37, 1.37, -1.13, 0.0, -0.8, 0.03); break;        // origin on the wall at the rail
+    case HeroPiece::SackPile: set(-0.6, 0.6, -0.32, 0.32, 0.0, 0.75); break;
+    case HeroPiece::Bench: set(-0.8, 0.8, -0.21, 0.21, 0.0, 0.44); break;
+    case HeroPiece::AcUnit: set(-0.02, 0.82, -0.45, 0.0, -0.35, 0.6); break;        // origin at its bracket on the wall
+    case HeroPiece::Vending: set(0.0, 1.0, -0.06, 0.75, 0.0, 1.87); break;          // origin at its front's left foot
+    case HeroPiece::Planter: set(-0.24, 1.3, -0.5, 0.25, 0.0, 0.62); break;         // origin at the first pot's middle
+    default: return false;
+    }
+    const double s = item.scale;
+    const double ax = -item.faceY, ay = item.faceX, bx = -item.faceX, by = -item.faceY;
+    x0 = y0 = 1e30;
+    x1 = y1 = -1e30;
+    for (int k = 0; k < 4; ++k) {
+        const double lx = s * ((k & 1) ? b[1] : b[0]), ly = s * ((k & 2) ? b[3] : b[2]);
+        const double px = item.at.x + lx * ax + ly * bx, py = item.at.y + lx * ay + ly * by;
+        x0 = std::min(x0, px);
+        x1 = std::max(x1, px);
+        y0 = std::min(y0, py);
+        y1 = std::max(y1, py);
+    }
+    z0 = item.at.z + s * b[4];
+    z1 = item.at.z + s * b[5];
+    return true;
+}
+
+namespace {
+
+bool frontNumber(std::string_view field, double& out) {
+    while (!field.empty() && (field.front() == ' ' || field.front() == '\t')) field.remove_prefix(1);
+    while (!field.empty() && (field.back() == ' ' || field.back() == '\t' || field.back() == '\r')) field.remove_suffix(1);
+    char buf[48];
+    if (field.empty() || field.size() >= sizeof(buf)) return false;
+    field.copy(buf, field.size());
+    buf[field.size()] = '\0';
+    char* end = nullptr;
+    out = std::strtod(buf, &end);
+    return end == buf + field.size() && std::isfinite(out);
+}
+
+bool boxesMeet(const double* a, const double* b) {
+    constexpr double e = 1e-6;
+    return a[0] < b[1] - e && b[0] < a[1] - e && a[2] < b[3] - e && b[2] < a[3] - e && a[4] < b[5] - e && b[4] < a[5] - e;
+}
+
+} // namespace
+
+int heroFrontageParse(std::string_view text, const HeroCornerSpec& spec, HeroItem* out, int max, int* badLine) {
+    int n = 0, line = 0;
+    const double floorZ = spec.ground + spec.paveTop;
+    while (!text.empty()) {
+        const std::size_t nl = text.find('\n');
+        std::string_view row = text.substr(0, nl);
+        text = nl == std::string_view::npos ? std::string_view{} : text.substr(nl + 1);
+        ++line;
+        while (!row.empty() && (row.back() == '\r' || row.back() == ' ')) row.remove_suffix(1);
+        if (row.empty() || row.front() == '#' || row.substr(0, 6) == "piece,") continue;
+        std::string_view f[6];
+        int k = 0;
+        for (; k < 6 && !row.empty(); ++k) {
+            const std::size_t c = row.find(',');
+            f[k] = row.substr(0, c);
+            row = c == std::string_view::npos ? std::string_view{} : row.substr(c + 1);
+        }
+        HeroItem it;
+        bool ok = k == 6 && row.empty();
+        bool known = false;
+        for (int p = static_cast<int>(HeroPiece::Drum); ok && p < static_cast<int>(HeroPiece::Count) && !known; ++p)
+            if (f[0] == heroPieceName(static_cast<HeroPiece>(p))) {
+                it.piece = static_cast<HeroPiece>(p);
+                known = true;
+            }
+        if (!known && ok && (f[0] == "Crate" || f[0] == "Bucket")) {
+            it.piece = f[0] == "Crate" ? HeroPiece::Crate : HeroPiece::Bucket;
+            known = true;
+        }
+        double y = 0.0, o = 0.0, up = 0.0, yaw = 0.0, sc = 1.0;
+        ok = ok && known && frontNumber(f[1], y) && frontNumber(f[2], o) && frontNumber(f[3], up) && frontNumber(f[4], yaw) &&
+             frontNumber(f[5], sc) && sc > 0.0;
+        if (!ok) {
+            if (badLine) *badLine = line;
+            return -1;
+        }
+        if (n >= max) continue;
+        const double a = yaw * 3.14159265358979323846 / 180.0;
+        it.at = {spec.laneX1 - o, y, floorZ + up};
+        it.faceX = -std::cos(a);
+        it.faceY = -std::sin(a);
+        it.scale = sc;
+        it.bay = std::clamp(static_cast<int>(std::floor((y - spec.bayY0) / spec.bayWidth)), 0, kHeroBays - 1);
+        out[n++] = it;
+    }
+    return n;
+}
+
+HeroFrontageCheck heroFrontageCheck(const HeroCornerSpec& spec, const HeroCornerLayout& layout, const HeroItem* front, int n,
+                                    const HeroItem* dressing, int dressingCount, bool* keep, const HeroFrontageRules& rules) {
+    HeroFrontageCheck r;
+    const double floorZ = spec.ground + spec.paveTop;
+    const auto boxOf = [](const HeroItem& it, double* b) { return heroItemBox(it, b[0], b[1], b[2], b[3], b[4], b[5]); };
+    const auto lanternBox = [](const HeroLantern& l, double* b) {
+        const double rad = (l.large ? 0.23 : 0.13) * l.scale, drop = (l.large ? 0.8 : 0.45) * l.scale;
+        b[0] = l.hook.x - rad; b[1] = l.hook.x + rad; b[2] = l.hook.y - rad; b[3] = l.hook.y + rad;
+        b[4] = l.hook.z - drop; b[5] = l.hook.z;
+    };
+    for (int i = 0; i < n; ++i) {
+        double b[6] = {};
+        int hit = -1;
+        if (!boxOf(front[i], b)) hit = -3;
+        const bool standing = b[4] < floorZ + rules.doorTop;
+        if (hit == -1 && standing && b[0] < spec.laneX1 - rules.corridorOut) hit = -3;
+        for (int p = 0; hit == -1 && standing && p < layout.pairCount; ++p)
+            if (b[1] > spec.laneX1 - rules.doorOut && b[2] < layout.entranceY[p] + spec.entranceHalf &&
+                b[3] > layout.entranceY[p] - spec.entranceHalf)
+                hit = -2;
+        for (int j = 0; hit == -1 && j < i; ++j) {
+            double c[6];
+            if (keep[j] && boxOf(front[j], c) && boxesMeet(b, c)) hit = j;
+        }
+        for (int d = 0; hit == -1 && d < dressingCount; ++d) {
+            double c[6];
+            if (boxOf(dressing[d], c) && boxesMeet(b, c)) hit = 100 + d;
+        }
+        for (std::size_t k = 0; hit == -1 && k < layout.lanternCount; ++k) {
+            double c[6];
+            lanternBox(layout.lanterns[k], c);
+            if (boxesMeet(b, c)) hit = 200 + static_cast<int>(k);
+        }
+        keep[i] = hit == -1;
+        if (keep[i]) {
+            ++r.kept;
+        } else {
+            ++r.dropped;
+            if (r.firstDropped < 0) {
+                r.firstDropped = i;
+                r.clashWith = hit;
+            }
+        }
+    }
+    // The bare run: spans along the faces covered by a kept piece, a dressing piece or a lit entrance, merged.
+    struct Span {
+        double y0, y1;
+    };
+    constexpr int kSpans = kHeroFrontageMax + kHeroDressingMax + kHeroPairsMax;
+    Span span[kSpans];
+    int m = 0;
+    const auto cover = [&](const HeroItem& it) {
+        double b[6];
+        if (m < kSpans && boxOf(it, b) && b[1] > spec.laneX1 - rules.wallNear &&
+            b[4] < floorZ + rules.doorTop) {
+            span[m] = {b[2], b[3]};
+            ++m;
+        }
+    };
+    for (int i = 0; i < n; ++i)
+        if (keep[i]) cover(front[i]);
+    for (int d = 0; d < dressingCount; ++d)
+        if (dressing[d].piece != HeroPiece::Gate) cover(dressing[d]);
+    for (int p = 0; p < layout.pairCount; ++p) {
+        span[m] = {layout.entranceY[p] - spec.entranceHalf, layout.entranceY[p] + spec.entranceHalf};
+        ++m;
+    }
+    std::sort(span, span + m, [](const Span& a, const Span& b) { return a.y0 < b.y0; });
+    double at = spec.bayY0;
+    const double end = spec.laneY1 - spec.gateBack - 0.2;
+    for (int i = 0; i <= m; ++i) {
+        const double next = i < m ? std::min(span[i].y0, end) : end;
+        if (next - at > r.longestBare) {
+            r.longestBare = next - at;
+            r.bareFrom = at;
+        }
+        if (i < m) at = std::max(at, span[i].y1);
+        if (at >= end) break;
+    }
+    return r;
 }
 
 } // namespace ftcore

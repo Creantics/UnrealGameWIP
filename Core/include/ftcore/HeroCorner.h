@@ -318,7 +318,9 @@ FTCORE_API bool heroCornerKeepsLampOut(const HeroCornerSpec& spec, double x, dou
 // its mesh (/Game/Props/HeroCorner/SM_HC_<heroPieceName>) and leaves out a piece whose mesh isn't imported.
 enum class HeroPiece : int {
     Shelf, Counter, HangGoods, Lantern, Crate, Bucket, Figure, StockPot, Steam, Jars, Sacks, Bottles, GoodsHanging,
-    UmbrellaStand, SignLarge, SignSmall, Banner, Bicycle, Gate, GateLantern, Scooter, Count
+    UmbrellaStand, SignLarge, SignSmall, Banner, Bicycle, Gate, GateLantern, Scooter,
+    // The frontage clutter (Data/Field/hero_frontage.csv); the frontage parse matches names from Drum on.
+    Drum, Bin, DownPipe, Awning, SackPile, Bench, AcUnit, Vending, Planter, Count
 };
 FTCORE_API const char* heroPieceName(HeroPiece piece);
 
@@ -364,6 +366,34 @@ FTCORE_API int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLa
 
 // Whether the n-th large lantern (0-based, in layout order) carries an invented mark: one in three.
 inline bool heroLanternMarked(int largeIndex) { return largeIndex % 3 == 2; }
+
+// Step 3 (2026-11-17): the frontage clutter (Data/Field/hero_frontage.csv), plan terms. A piece's box: its own box
+// turned by its face about item.at, z from item.at.z, all times item.scale; true for the dressing's and the frontage's
+// standing, wall and eave pieces and a hung lantern, false for a room piece. The kit's pieces (AcUnit, Vending,
+// Planter) have their origin at an end (local x from it); the rest about their middle.
+FTCORE_API bool heroItemBox(const HeroItem& item, double& x0, double& x1, double& y0, double& y1, double& z0, double& z1);
+
+// The frontage rows (piece,y,out,up,yaw,scale): at = (laneX1 - out, y, ground + paveTop + up), face (-1, 0) turned yaw
+// degrees counter-clockwise, bay from y. Blank lines, '#' lines and the header are skipped. Returns how many (at most
+// max), or -1 on a malformed row or an unknown piece (badLine its 1-based line).
+inline constexpr int kHeroFrontageMax = 64;
+FTCORE_API int heroFrontageParse(std::string_view text, const HeroCornerSpec& spec, HeroItem* out, int max, int* badLine = nullptr);
+
+// Each frontage piece kept or dropped (keep[i]) in order: dropped when its box overlaps a kept one before it, a dressing
+// piece's or a lantern's; or when, standing (its box's foot under doorTop), it reaches into a lit entrance's span within
+// doorOut of the shop face, or past corridorOut. The bare run: the longest stretch along the bays' faces (bayY0 to the
+// gate's face) with nothing within wallNear of the face under doorTop, a lit entrance counting as dressed.
+struct HeroFrontageRules {
+    double doorTop = 2.0, doorOut = 1.2, corridorOut = 1.3, wallNear = 0.6;
+};
+struct HeroFrontageCheck {
+    int kept = 0, dropped = 0;
+    int firstDropped = -1;  // its index
+    int clashWith = -1;     // 0..n-1 a frontage piece, 100 + k the dressing's k-th, 200 + k lantern k, -2 a door, -3 the corridor
+    double longestBare = 0.0, bareFrom = 0.0;
+};
+FTCORE_API HeroFrontageCheck heroFrontageCheck(const HeroCornerSpec& spec, const HeroCornerLayout& layout, const HeroItem* front, int n,
+                                               const HeroItem* dressing, int dressingCount, bool* keep, const HeroFrontageRules& rules = {});
 
 // The face ruling's area lights (plan metres): a wide soft key in each lit bay's front (sky false, bay its index) and
 // the cool floor west of the lane in kHeroSkyFloors equal lengths end to end (sky true, bay -1; a light's attenuation

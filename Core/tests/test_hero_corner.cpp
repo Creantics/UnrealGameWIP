@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "TestAssets.h"
 #include "ftcore/HeroCorner.h"
 #include "ftcore/MassingDress.h"
 #include "ftcore/Roads.h"
@@ -934,4 +935,145 @@ TEST_CASE("hero corner: the first bay's south end wall is clad board and batten,
     HeroCornerLayout lo;
     heroCornerLayout(off, lo);
     CHECK(lo.endCladCount == 0);
+}
+
+namespace {
+
+// The build's lit set (-HeroLitBays=1,2,3,4), its layout and its dressing, for the frontage checks.
+struct FrontageScene {
+    HeroCornerSpec spec;
+    HeroCornerLayout layout;
+    HeroItem dressing[kHeroDressingMax];
+    int dressingCount = 0;
+    FrontageScene() {
+        for (int i = 0; i < kHeroBays; ++i) spec.bayLit[i] = i < 4;
+        heroCornerLayout(spec, layout);
+        dressingCount = heroCornerDressing(spec, layout, dressing, kHeroDressingMax);
+    }
+};
+
+} // namespace
+
+TEST_CASE("hero frontage: the shipped rows, 40 to 60, all kept, no bare run over 3 m along the bays") {
+    std::string text;
+    if (!ftcore_test::readProjectData("Field/hero_frontage.csv", text)) FAIL("Data/Field/hero_frontage.csv not found");
+    FrontageScene s;
+    HeroItem front[kHeroFrontageMax];
+    int bad = 0;
+    const int n = heroFrontageParse(text, s.spec, front, kHeroFrontageMax, &bad);
+    INFO("bad line " << bad);
+    REQUIRE(n >= 40);
+    CHECK(n <= 60);
+    bool keep[kHeroFrontageMax] = {};
+    const HeroFrontageCheck c = heroFrontageCheck(s.spec, s.layout, front, n, s.dressing, s.dressingCount, keep);
+    std::string dropped;
+    for (int i = 0; i < n; ++i)
+        if (!keep[i]) dropped += std::string(" ") + heroPieceName(front[i].piece) + "@" + std::to_string(front[i].at.y);
+    INFO("first dropped row " << c.firstDropped << " hit " << c.clashWith << "; dropped:" << dropped);
+    CHECK(c.dropped == 0);
+    CHECK(c.kept == n);
+    INFO("longest bare " << c.longestBare << " m from y " << c.bareFrom);
+    CHECK(c.longestBare <= 3.0);
+    // Awnings over at least two bays, the kit's AC units, vending machine and planters among them.
+    bool awned[kHeroBays] = {};
+    int ac = 0, vending = 0, planters = 0;
+    for (int i = 0; i < n; ++i) {
+        if (front[i].piece == HeroPiece::Awning) awned[front[i].bay] = true;
+        ac += front[i].piece == HeroPiece::AcUnit;
+        vending += front[i].piece == HeroPiece::Vending;
+        planters += front[i].piece == HeroPiece::Planter;
+    }
+    int awnedBays = 0;
+    for (const bool a : awned) awnedBays += a;
+    CHECK(awnedBays >= 2);
+    CHECK(ac >= 2);
+    CHECK(vending >= 1);
+    CHECK(planters >= 2);
+}
+
+TEST_CASE("hero frontage parse: plan terms from the shop face; a malformed row or an unknown piece names its line") {
+    HeroCornerSpec spec;
+    HeroItem out[4];
+    const int n = heroFrontageParse("# note\npiece,y,out,up,yaw,scale\nDrum,520,0.36,0,0,1\r\n\nAwning,530.5,0,2.95,90,0.8\n", spec, out, 4);
+    REQUIRE(n == 2);
+    CHECK(out[0].piece == HeroPiece::Drum);
+    CHECK(out[0].at.x == doctest::Approx(spec.laneX1 - 0.36));
+    CHECK(out[0].at.z == doctest::Approx(spec.ground + spec.paveTop));
+    CHECK(out[0].faceX == doctest::Approx(-1.0));
+    CHECK(out[0].bay == 0);
+    CHECK(out[1].scale == doctest::Approx(0.8));
+    CHECK(out[1].faceY == doctest::Approx(-1.0));  // 90 degrees counter-clockwise off the lane: down it
+    CHECK(out[1].bay == 1);
+    int bad = 0;
+    CHECK(heroFrontageParse("piece,y,out,up,yaw,scale\nDrum,520,0.36,0,0,1\nTeapot,521,0.3,0,0,1\n", spec, out, 4, &bad) == -1);
+    CHECK(bad == 3);
+    CHECK(heroFrontageParse("Drum,520,0.36,0,0\n", spec, out, 4, &bad) == -1);
+    CHECK(bad == 1);
+    CHECK(heroFrontageParse("Drum,520,x,0,0,1\n", spec, out, 4, &bad) == -1);
+    CHECK(heroFrontageParse("Drum,520,0.3,0,0,0\n", spec, out, 4, &bad) == -1);
+}
+
+TEST_CASE("hero frontage check: a piece in a lit entrance, out in the lead's corridor or on another is dropped") {
+    FrontageScene s;
+    const double z = s.spec.ground + s.spec.paveTop;
+    HeroItem f[4];
+    for (HeroItem& it : f) {
+        it.piece = HeroPiece::Drum;
+        it.faceX = -1.0;
+        it.faceY = 0.0;
+    }
+    f[0].at = {s.spec.laneX1 - 0.36, s.layout.entranceY[0], z};         // in the first entrance
+    f[1].at = {s.spec.laneX1 - 2.0, s.spec.bayY0 + 1.0, z};             // out in the lane
+    f[2].at = {s.spec.laneX1 - 0.36, s.spec.bayY0 + 1.0, z};            // kept
+    f[3].at = {s.spec.laneX1 - 0.36, s.spec.bayY0 + 1.3, z};            // on f[2]
+    bool keep[4] = {};
+    const HeroFrontageCheck c = heroFrontageCheck(s.spec, s.layout, f, 4, s.dressing, s.dressingCount, keep);
+    CHECK_FALSE(keep[0]);
+    CHECK_FALSE(keep[1]);
+    CHECK(keep[2]);
+    CHECK_FALSE(keep[3]);
+    CHECK(c.firstDropped == 0);
+    CHECK(c.clashWith == -2);
+    CHECK(c.kept == 1);
+    CHECK(c.dropped == 3);
+    // An awning over the door is no obstruction: it hangs above the door's height.
+    HeroItem a;
+    a.piece = HeroPiece::Awning;
+    a.faceX = -1.0;
+    a.faceY = 0.0;
+    a.scale = 0.5;
+    a.at = {s.spec.laneX1, s.layout.entranceY[0], z + 2.95};
+    bool k1 = false;
+    heroFrontageCheck(s.spec, s.layout, &a, 1, nullptr, 0, &k1);
+    CHECK(k1);
+    // With nothing laid, the bare run spans the dark bay's wall past its clutter.
+    bool none[1] = {};
+    const HeroFrontageCheck e = heroFrontageCheck(s.spec, s.layout, f, 0, s.dressing, s.dressingCount, none);
+    CHECK(e.longestBare > 3.0);
+}
+
+TEST_CASE("hero item box: a kit piece facing the lane runs south from its origin, a wall piece stands on the face") {
+    HeroItem v;
+    v.piece = HeroPiece::Vending;
+    v.at = {907.22, 530.9, 4.2};
+    v.faceX = -1.0;
+    v.faceY = 0.0;
+    double x0, x1, y0, y1, z0, z1;
+    REQUIRE(heroItemBox(v, x0, x1, y0, y1, z0, z1));
+    CHECK(y1 == doctest::Approx(530.9));
+    CHECK(y0 == doctest::Approx(529.9));
+    CHECK(x0 == doctest::Approx(907.16));
+    CHECK(x1 == doctest::Approx(907.97));
+    CHECK(z1 == doctest::Approx(4.2 + 1.87));
+    HeroItem p;
+    p.piece = HeroPiece::DownPipe;
+    p.at = {908.0, 520.0, 4.2};
+    p.faceX = -1.0;
+    p.faceY = 0.0;
+    p.scale = 1.0;
+    REQUIRE(heroItemBox(p, x0, x1, y0, y1, z0, z1));
+    CHECK(x1 == doctest::Approx(908.0));
+    CHECK(x0 == doctest::Approx(907.64));
+    p.piece = HeroPiece::Figure;
+    CHECK_FALSE(heroItemBox(p, x0, x1, y0, y1, z0, z1));
 }

@@ -1,0 +1,57 @@
+# The hero corner's frontage clutter along the shop faces (x 908, bays y 514.75..555.25), laid by -HeroCorner over the
+# lane's dressing. Laid out for the build's -HeroLitBays=1,2,3,4: entrances at 517.6..519.9, 525.8..528.1 (glazed),
+# 533.8..536.1 (the eatery) and 542.0..544.3 (glazed); bay 5 dark with the dressing's crates, bucket and banners.
+# piece: Drum Bin DownPipe Awning SackPile Crate Bucket Bench (SM_HC_*), AcUnit Vending Planter (the building kit's).
+# y: plan y of the piece's origin (a kit piece's origin is its north end; the rest their middle); out: metres out from
+# the shop face (west) to the origin; up: metres over the paving's top; yaw: degrees off facing the lane (west),
+# counter-clockwise seen from above; scale: uniform.
+# Checked by Core (test_hero_corner, heroFrontageCheck): 40..60 rows, no bare run over 3 m along the bays, nothing
+# overlapping (each other, the dressing, the lanterns), no standing piece in a lit entrance or past 1.3 m out.
+piece,y,out,up,yaw,scale
+# bay 1 (lit, lattice)
+DownPipe,514.95,0,0,0,1
+Drum,515.5,0.36,0,0,1
+SackPile,516.55,0.42,0,8,1
+Bucket,517.39,0.25,0,0,1
+Planter,521.25,0.27,0,0,1
+AcUnit,522.4,0,0.36,0,1
+# bay 2 (lit, glazed)
+DownPipe,522.75,0,0,0,1
+Awning,521.47,0,2.95,0,0.8
+Crate,522.05,0.75,0,0,1
+Crate,522.07,0.75,0.42,6,1
+Bin,523.45,0.4,0,0,1
+Awning,524.2,0,2.95,0,0.8
+Crate,524.3,0.3,0,0,1
+Crate,524.32,0.3,0.42,9,1
+Bucket,524.6,0.74,0,0,1
+Bucket,524.9,0.25,0,0,1
+Planter,529.6,0.27,0,0,1
+Vending,530.9,0.78,0,0,1
+# bay 3 (lit, lattice, the eatery)
+DownPipe,531.15,0,0,0,1
+AcUnit,532.25,0,0.36,0,1
+SackPile,532.95,0.42,0,-6,1
+Drum,536.45,0.36,0,0,1
+Crate,536.45,1.0,0,12,1
+Drum,537.05,0.36,0,0,0.92
+Bin,537.75,0.4,0,0,1
+Crate,538.45,0.3,0,-5,1
+# bay 4 (lit, glazed)
+DownPipe,539.0,0,0,0,1
+Bucket,539.5,0.25,0,0,1
+Planter,541.2,0.27,0,0,1
+Bench,545.15,0.25,0,0,1
+Awning,545.98,0,2.95,0,0.8
+AcUnit,546.85,0,0.36,0,1
+# bay 5 (dark)
+DownPipe,547.25,0,0,0,1
+Drum,547.75,0.36,0,0,1
+Bin,548.45,0.4,0,0,1
+Bucket,548.45,0.9,0,0,1
+AcUnit,549.0,0,2.3,0,1
+Awning,552.11,0,2.85,0,0.75
+SackPile,551.3,0.42,0,4,1
+Crate,552.25,0.3,0,0,1
+Crate,552.27,0.3,0.42,-8,1
+Planter,554.1,0.27,0,0,1

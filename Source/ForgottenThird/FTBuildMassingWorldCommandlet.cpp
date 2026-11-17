@@ -3530,6 +3530,75 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				*(FString(TEXT("HC-")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece))), Item.scale, !bLantern);
 			++Dressed;
 		}
+		// Step 3 (2026-11-17): the frontage clutter (Data/Field/hero_frontage.csv, ftcore::heroFrontageParse): drums, bins,
+		// downpipes, awnings, sack piles, crates, buckets and a bench (SM_HC_*), AC units, a vending machine and planters
+		// from the building kit. ftcore::heroFrontageCheck drops a row that would hit the dressing, a lantern, a lit
+		// entrance or the lead's corridor. -HeroFrontage=false leaves them out.
+		int32 FrontPlaced = 0, FrontRows = 0, FrontMissing = 0;
+		bool bFrontage = true;
+		FParse::Bool(*Params, TEXT("HeroFrontage="), bFrontage);
+		FString FrontText;
+		const FString FrontPath = FPaths::ProjectDir() / TEXT("Data/Field/hero_frontage.csv");
+		if (bFrontage && FFileHelper::LoadFileToString(FrontText, *FrontPath))
+		{
+			const FTCHARToUTF8 FrontUtf8(*FrontText);
+			ftcore::HeroItem Front[ftcore::kHeroFrontageMax];
+			int BadLine = 0;
+			FrontRows = ftcore::heroFrontageParse(std::string_view(FrontUtf8.Get(), FrontUtf8.Length()), HeroSpec, Front,
+				ftcore::kHeroFrontageMax, &BadLine);
+			if (FrontRows < 0)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -HeroCorner: %s line %d is malformed; no frontage laid."), *FrontPath, BadLine);
+				FrontRows = 0;
+			}
+			bool Keep[ftcore::kHeroFrontageMax] = {};
+			const ftcore::HeroFrontageCheck FrontCheck = ftcore::heroFrontageCheck(HeroSpec, Hero, Front, FrontRows, Dressing, DressCount, Keep);
+			UStaticMesh* const AcUnit = LoadMesh(TEXT("/Game/Props/BKIT/AC_UNIT/StaticMeshes/AC_UNIT"));
+			UStaticMesh* const Vending = LoadMesh(TEXT("/Game/Props/BKIT/VENDING/StaticMeshes/VENDING"));
+			UStaticMesh* const Planter = LoadMesh(TEXT("/Game/Props/BKIT/PLANTERS/StaticMeshes/PLANTERS"));
+			for (int32 F = 0; F < FrontRows; ++F)
+			{
+				const ftcore::HeroItem& Item = Front[F];
+				if (!Keep[F])
+				{
+					continue;
+				}
+				UStaticMesh* Mesh = nullptr;
+				switch (Item.piece)
+				{
+				case ftcore::HeroPiece::AcUnit: Mesh = AcUnit; break;
+				case ftcore::HeroPiece::Vending: Mesh = Vending; break;
+				case ftcore::HeroPiece::Planter: Mesh = Planter; break;
+				default:
+				{
+					const int32 Key = static_cast<int32>(Item.piece);
+					if (UStaticMesh** Found = DressMeshes.Find(Key))
+					{
+						Mesh = *Found;
+					}
+					else
+					{
+						Mesh = DressMeshes.Add(Key, HeroMesh(*(FString(TEXT("SM_HC_")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece)))));
+					}
+				}
+				}
+				if (!Mesh)
+				{
+					++FrontMissing;
+					continue;
+				}
+				PlaceHero(Mesh, Item.at, FTLots::HeroPropYaw(Item.faceX, Item.faceY, LotBuild.HeroPropTurn),
+					*(FString(TEXT("HC-F-")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece))), Item.scale, true);
+				++FrontPlaced;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: frontage %d of %d rows placed, %d dropped (first row %d, "
+				"hit %d), %d without a mesh; longest bare run %.2f m from y %.2f."), FrontPlaced, FrontRows, FrontCheck.dropped,
+				FrontCheck.firstDropped, FrontCheck.clashWith, FrontMissing, FrontCheck.longestBare, FrontCheck.bareFrom);
+		}
+		else if (bFrontage)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -HeroCorner: %s not found; no frontage laid."), *FrontPath);
+		}
 		// The lit rooms' lamps (paper in its glow), figure and steam, laid out by FTLots::Place.
 		USkeletalMesh* const Human = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_human.test_human"),
 			nullptr, LOAD_NoWarn | LOAD_Quiet);
