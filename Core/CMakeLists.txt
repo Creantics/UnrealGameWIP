@@ -418,6 +418,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_wet_prints.cpp
         tests/test_water_exits.cpp
         tests/test_water_loco.cpp
+        tests/test_water_follow.cpp
         tests/test_water_dive.cpp
         tests/test_road_decals.cpp
         tests/test_stand_ins.cpp
