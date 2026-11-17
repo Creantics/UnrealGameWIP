@@ -477,6 +477,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	// Every strike's aim line on a capture run (-ArenaShot) or on asking; else one summary at the fight's end.
 	LeadWeapons.SetLogEachAim(bShots || FParse::Param(FCommandLine::Get(), TEXT("ArenaAimEach")));
 	AllyWeapons.SetLogEachAim(bShots || FParse::Param(FCommandLine::Get(), TEXT("ArenaAimEach")));
+	ReadSpecialTable(); // the special moves' shots (once) and their test switches
 	bFightAgain = Setup.bFightAgain;
 	bReplacePawn = Setup.bReplacePawn;
 	bNoLock = Setup.bNoLock;
@@ -766,15 +767,20 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	// The pose drawn last frame at last frame's placement, before anything moves.
 	Glide.Sample(PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr, DeltaSeconds);
-	PollInput(DeltaSeconds);
-	TickAim(DeltaSeconds);
+	// A special move holds Core: no input is read and no step taken while it plays (FTArenaRunnerSpecial.cpp).
+	const bool bCoreHold = bHold || bSpecialOn;
+	if (!bSpecialOn)
+	{
+		PollInput(DeltaSeconds);
+		TickAim(DeltaSeconds);
+	}
 
 	const float HeldBefore = Fight.heldTime();
 	for (float& Paused : PausedThisFrame)
 	{
 		Paused = 0.f;
 	}
-	if (!Fight.over() && !bHold)
+	if (!Fight.over() && !bCoreHold)
 	{
 		Accumulator = FMath::Min(Accumulator + static_cast<double>(DeltaSeconds), static_cast<double>(StepSeconds * MaxStepsPerFrame));
 		while (Accumulator >= StepSeconds && !Fight.over())
@@ -804,7 +810,9 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	SteerCamera(DeltaSeconds);
 	ApplyAimCamera();
-	TickImpact(bHold ? 0.f : DeltaSeconds);
+	TickSpecial(bHold ? 0.f : DeltaSeconds);
+	TickSpecialCost(DeltaSeconds, bHold);
+	TickImpact(bCoreHold ? 0.f : DeltaSeconds);
 
 	if (Fight.over())
 	{
@@ -855,6 +863,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 
 void UFTArenaRunner::End()
 {
+	EndSpecial(TEXT("the fight ended"));
 	EndTable();
 	EndImpact();
 	EndStoneBearer();
@@ -7181,6 +7190,7 @@ void UFTArenaRunner::AfterHallucinationStep(const ftcore::ArenaOutput& Out)
 
 void UFTArenaRunner::Restart()
 {
+	EndSpecial(TEXT("the fight began again"));
 	if (bPartner)
 	{
 		// The fight as it began: each lead in its own figure, the first lead controlled (Fight.restart clears swapped()).
