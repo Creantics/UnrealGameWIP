@@ -30,6 +30,10 @@ class UMaterialInterface;
 class USceneComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
+namespace ftcore
+{
+struct WaterWetness;
+}
 
 // A groom and the binding that fits it to a skeletal mesh. The groom goes on whichever of the body and the
 // pieces has the binding's target mesh (a MetaHuman build binds brows and lashes to the face).
@@ -182,6 +186,34 @@ struct FFTLeadLook
 	FString ModelId;
 };
 
+// What the wet switch (FTLook::ShowWet) last wrote on one actor: its dynamic instances, their dry values and the shown
+// amounts, so only what moved is written. One per wet-capable actor (the lead keeps its own fields; followers hold this).
+USTRUCT()
+struct FFTWetState
+{
+	GENERATED_BODY()
+
+	// A dynamic instance on every slot of the actor's skeletal meshes (body, face, clothes), and the MetaHuman skin's
+	// dry roughness and specular multipliers per instance (-1 where the material has none).
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> Materials;
+	TArray<FVector2f> SkinDry;
+	// Hair without a wet groom (brows, lashes, a beard): an instance per slot and its dry roughness, hair roughness
+	// and melanin (-1 where missing).
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> HairMaterials;
+	TArray<FVector3f> HairDry;
+	uint32 Serial = 0; // FTLook::WornMeshSerial when Materials were gathered
+	bool bMade = false;
+	bool bHairMade = false;
+	bool bGroomWet = false;
+	float Shown = -1.f;
+	float LineShown = -1.0e9f;
+	float SiltShown = -1.f;
+	float SkinEased = 0.f;
+	float SkinShown = -1.f;
+};
+
 // A look's body and its base locomotion clips (UFTLocomotionAnimInstance::SetBaseClips' order), loaded; null where
 // nothing loaded, and no clips without a body. ClipFolder is where the retargeted clips were looked for.
 struct FFTLoadedLook
@@ -271,6 +303,15 @@ FORGOTTENTHIRD_API int32 SetGroomsWet(const TArray<TObjectPtr<USceneComponent>>&
 // lashes: the wet switch darkens and smooths those through their material instead). Returns how many were added to Out.
 FORGOTTENTHIRD_API int32 MakeHairWetMaterials(const TArray<TObjectPtr<USceneComponent>>& Components, const TArray<FFTGroomLook>& Grooms,
 	TArray<TObjectPtr<UMaterialInstanceDynamic>>& Out);
+
+// The wet switch for any dressed actor (a follower; the lead runs the same rules in AFTExploreCharacter): Cloth is the
+// soak (ftcore::leadwet::cloth) written as Wetness, WetLineZ (the line over FeetZ, in cm) and WetSilt on every skeletal
+// mesh slot of Owner; Surface (ftcore::leadwet::surface) swaps wet grooms (ftcore::leadwet::groomWet), and its eased skin
+// amount goes to SkinWet, the MetaHuman skin multipliers and the hair without a wet groom. Instances are made the first
+// time it is wet and again after a worn mesh swap. Dry and never wet costs two compares. Returns how many material
+// instances were written this call.
+FORGOTTENTHIRD_API int32 ShowWet(AActor& Owner, FFTWetState& State, const ftcore::WaterWetness& Cloth, float Surface, float FeetZ,
+	const TArray<TObjectPtr<USceneComponent>>& Grooms, const TArray<FFTGroomLook>& GroomLooks, float DeltaSeconds, const TCHAR* Who);
 
 // Puts To in every slot of the component that shows From (From itself or an instance made from it), quietly. Returns
 // how many slots changed.
