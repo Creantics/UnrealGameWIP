@@ -4,6 +4,8 @@
 // street has coloured accents in its distance (and in its wet ground). Plain C++; the Unreal side gives the blocks'
 // plan boxes and places a thin lit box at each card.
 
+#include "ftcore/Api.h"
+
 #include <cstddef>
 
 namespace ftcore {
@@ -42,11 +44,11 @@ struct FarSignSpec {
 
 // The palette: 0 red, 1 pink, 2 cyan; red and pink about twice as often as cyan.
 inline constexpr int kFarSignColours = 3;
-int farSignColour(std::size_t index);
+FTCORE_API int farSignColour(std::size_t index);
 
 // Fills out[0..maxOut) with a card on the face of each eligible block nearest to (cx, cy), nearest blocks first;
 // returns how many. A block containing the centre gets none. No allocation: blocks are scanned once per card slot.
-std::size_t placeFarSigns(const FarSignBlock* blocks, std::size_t count, float cx, float cy, const FarSignSpec& spec,
+FTCORE_API std::size_t placeFarSigns(const FarSignBlock* blocks, std::size_t count, float cx, float cy, const FarSignSpec& spec,
                           FarSign* out, std::size_t maxOut);
 
 } // namespace ftcore
