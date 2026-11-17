@@ -514,6 +514,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_beat_boss.cpp
         tests/test_arena_boss.cpp
         tests/test_arena_kind_crit.cpp
+        tests/test_arena_special.cpp
         tests/test_arena_rollguard.cpp
         tests/test_arena_soft.cpp
         tests/test_arena_impact.cpp
