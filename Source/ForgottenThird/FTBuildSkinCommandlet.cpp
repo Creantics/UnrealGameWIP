@@ -16,6 +16,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionPreSkinnedNormal.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
@@ -246,14 +247,22 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 			{TEXT("CavityRough"), Scalar(Material, TEXT("CavityRoughness"), 650), 0}, {TEXT("MicroMask"), PoreMask, 2},
 			{TEXT("Micro"), Scalar(Material, TEXT("MicroRoughness"), 750), 0}},
 		0);
-	// Wet skin (ftcore::leadwet::skinRoughness): lowered toward SkinWetRoughness, never raised, only where SkinWetMask
-	// and the region's AO (R, 1 on open convex skin: forehead, nose, cheekbones) both say so; creases stay as dry.
+	// Wet skin (ftcore::leadwet::skinRoughness): lowered toward SkinWetRoughness, never raised. Until a painted SkinWetMask
+	// (R, white by default) is set, the wet part is procedural: skin whose bind-pose normal faces up or forward (the
+	// mesh's own SkinWetForward, +Y by default: the top of the head, brow, nose, cheekbones, shoulders, the tops of the
+	// forearms and hands, where rain lands) and that is open (the region's AO, R); creases and undersides stay as dry.
 	UMaterialExpressionTextureSampleParameter2D* WetMask = Sampler(Material, TEXT("SkinWetMask"), WhiteMasks, SAMPLERTYPE_Masks, nullptr, 1200);
+	UMaterialExpressionPreSkinnedNormal* BindNormal = AddExpression<UMaterialExpressionPreSkinnedNormal>(Material, -1000, 1500);
+	UMaterialExpressionVectorParameter* WetForward = AddExpression<UMaterialExpressionVectorParameter>(Material, -1000, 1600);
+	WetForward->ParameterName = TEXT("SkinWetForward");
+	WetForward->DefaultValue = FLinearColor(0.f, 1.f, 0.f, 0.f);
+	WetForward->Group = TEXT("Skin");
+	WetForward->UpdateParameterGuid(true, false);
 	UMaterialExpressionCustom* WetRoughnessOut = Custom(Material, TEXT("SkinWetRoughness"), CMOT_Float1,
-		TEXT("float k = saturate(Wet) * saturate(Mask) * saturate((AO - 0.55) / 0.4);
-return min(R, lerp(R, WetRough, k));"),
+		TEXT("float3 n = normalize(N);\nfloat f = max(n.z, dot(n, normalize(Fwd)));\nfloat k = saturate(Wet) * saturate(Mask) * saturate((f - 0.2) / 0.5) * saturate((AO - 0.55) / 0.4);\nreturn min(R, lerp(R, WetRough, k));"),
 		{{TEXT("R"), RoughnessOut, 0}, {TEXT("Wet"), Scalar(Material, TEXT("SkinWet"), 1250), 0},
-			{TEXT("WetRough"), Scalar(Material, TEXT("SkinWetRoughness"), 1350), 0}, {TEXT("Mask"), WetMask, 1}, {TEXT("AO"), Region, 1}},
+			{TEXT("WetRough"), Scalar(Material, TEXT("SkinWetRoughness"), 1350), 0}, {TEXT("Mask"), WetMask, 1}, {TEXT("AO"), Region, 1},
+			{TEXT("N"), BindNormal, 0}, {TEXT("Fwd"), WetForward, 0}},
 		150);
 	UMaterialExpressionCustom* SpecularOut = Custom(Material, TEXT("SkinSpecular"), CMOT_Float1,
 		TEXT("return Spec * lerp(CavitySpec, 1.0, Cavity);"),
