@@ -12,7 +12,7 @@ public class ForgottenThird : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore", "Niagara", "AnimationCore", "AnimGraphRuntime", "PhysicsCore", "CinematicCamera", "NavigationSystem", "FTLook" });
 
 		// RHI: the world eye's GPU frame time.
-		PrivateDependencyModuleNames.AddRange(new string[] { "AudioExtensions", "RHI" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "AudioExtensions", "RenderCore", "RHI" });
 
 		// The game reads its JSON data (story, face presets, emotion map) from the project's Data/
 		// folder at run time. Stage it next to the packaged game at the same relative path.

@@ -473,18 +473,23 @@ UiColor uiLumaFloor(UiColor c, float floor) {
     return UiColor{c.r + (1.f - c.r) * hi, c.g + (1.f - c.g) * hi, c.b + (1.f - c.b) * hi, c.a};
 }
 
-float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture) {
+float uiLeastBacking(UiColor ink, UiColor backing, UiColor picture, float target, float from, float cap) {
     const UiColor pic{picture.r, picture.g, picture.b, 1.f};
     const auto at = [&](float a) { return uiContrast(ink, UiColor{backing.r, backing.g, backing.b, a}, pic); };
-    const float top = std::clamp(s.optionsDimMax, 0.f, 1.f);
-    if (at(0.f) >= s.optionsDimContrast) return 0.f;
-    if (at(top) < s.optionsDimContrast) return top;
-    float lo = 0.f, hi = top; // contrast rises with the dim: bisect the least that reaches the target
+    const float top = std::clamp(cap, 0.f, 1.f);
+    const float bottom = std::clamp(from, 0.f, top);
+    if (at(bottom) >= target) return bottom;
+    if (at(top) < target) return top;
+    float lo = bottom, hi = top; // contrast rises with a dark backing: bisect the least that reaches the target
     for (int i = 0; i < 20; ++i) {
         const float m = 0.5f * (lo + hi);
-        (at(m) >= s.optionsDimContrast ? hi : lo) = m;
+        (at(m) >= target ? hi : lo) = m;
     }
     return hi;
+}
+
+float uiOptionDim(const UiStyle& s, UiColor ink, UiColor backing, UiColor picture) {
+    return uiLeastBacking(ink, backing, picture, s.optionsDimContrast, 0.f, s.optionsDimMax);
 }
 
 void uiLumaAdd(UiLumaHistogram& h, UiColor c) {
@@ -495,6 +500,28 @@ void uiLumaAdd(UiLumaHistogram& h, UiColor c) {
     h.g[i] += c.g;
     h.b[i] += c.b;
     ++h.total;
+}
+
+namespace {
+// 0..1; NaN fails both comparisons and lands at 0, never a bin past the end.
+float unitClamp(float v) { return v > 0.f ? (v < 1.f ? v : 1.f) : 0.f; }
+} // namespace
+
+void uiLumaAddDecoded(UiLumaHistogram& h, UiColor srgb, float lr, float lg, float lb) {
+    const float l = 0.2126f * unitClamp(lr) + 0.7152f * unitClamp(lg) + 0.0722f * unitClamp(lb);
+    const std::size_t i = std::min(UiLumaHistogram::kBins - 1, static_cast<std::size_t>(l * UiLumaHistogram::kBins));
+    ++h.n[i];
+    h.r[i] += unitClamp(srgb.r);
+    h.g[i] += unitClamp(srgb.g);
+    h.b[i] += unitClamp(srgb.b);
+    ++h.total;
+}
+
+float uiSrgbToLinear(float c) { return linear(unitClamp(c)); }
+
+float uiLinearToSrgb(float c) {
+    c = unitClamp(c);
+    return c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.f / 2.4f) - 0.055f;
 }
 
 UiColor uiLumaBrightest(const UiLumaHistogram& h, float share) {

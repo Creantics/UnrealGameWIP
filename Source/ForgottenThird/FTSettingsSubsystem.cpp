@@ -6,6 +6,7 @@
 #include "Misc/Paths.h"
 
 #include "ForgottenThird.h"
+#include "FTNewUi.h"
 #include "FTPlayerController.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
@@ -23,6 +24,50 @@ const FTUiText kSettingsBasicFirstFightsUi(TEXT("settings.basic_controls.first_f
 const FTUiText kSettingsBasicAlwaysUi(TEXT("settings.basic_controls.always"));
 const FTUiText kSettingsBasicNeverUi(TEXT("settings.basic_controls.never"));
 constexpr int32 kBasicControlsRow = static_cast<int32>(ftcore::SettingsRow::ShowBasicControls);
+// The rows the new UI added (2026-11-16, item B) too; the older rows follow later.
+const FTUiText kSettingsTextSizeUi(TEXT("settings.text_size"));
+const FTUiText kSettingsColoursUi(TEXT("settings.colours"));
+const FTUiText kSettingsColoursDefaultUi(TEXT("settings.colours.default"));
+const FTUiText kSettingsColoursProtanUi(TEXT("settings.colours.protanopia"));
+const FTUiText kSettingsColoursDeutanUi(TEXT("settings.colours.deuteranopia"));
+const FTUiText kSettingsColoursTritanUi(TEXT("settings.colours.tritanopia"));
+const FTUiText kSettingsColoursHighUi(TEXT("settings.colours.high_contrast"));
+const FTUiText kSettingsReduceMotionUi(TEXT("settings.reduce_motion"));
+const FTUiText kSettingsOnUi(TEXT("settings.on"));
+const FTUiText kSettingsOffUi(TEXT("settings.off"));
+const FTUiText kSettingsPromptsUi(TEXT("settings.button_prompts"));
+const FTUiText kSettingsPromptsKeysUi(TEXT("settings.button_prompts.keyboard"));
+const FTUiText kSettingsPromptsPadUi(TEXT("settings.button_prompts.controller"));
+const FTUiText kSettingsPromptsAutoUi(TEXT("settings.button_prompts.last_used"));
+
+constexpr int32 RowIx(ftcore::SettingsRow Row)
+{
+	return static_cast<int32>(Row);
+}
+
+const FString& PaletteWord(ftcore::UiPalette Palette)
+{
+	switch (Palette)
+	{
+	case ftcore::UiPalette::Protan: return kSettingsColoursProtanUi.Get();
+	case ftcore::UiPalette::Deutan: return kSettingsColoursDeutanUi.Get();
+	case ftcore::UiPalette::Tritan: return kSettingsColoursTritanUi.Get();
+	case ftcore::UiPalette::HighContrast: return kSettingsColoursHighUi.Get();
+	case ftcore::UiPalette::Default: break;
+	}
+	return kSettingsColoursDefaultUi.Get();
+}
+
+const FString& PromptsWord(ftcore::UiGlyphMode Mode)
+{
+	switch (Mode)
+	{
+	case ftcore::UiGlyphMode::Keys: return kSettingsPromptsKeysUi.Get();
+	case ftcore::UiGlyphMode::Pad: return kSettingsPromptsPadUi.Get();
+	case ftcore::UiGlyphMode::Auto: break;
+	}
+	return kSettingsPromptsAutoUi.Get();
+}
 
 const FString& BasicControlsWord(ftcore::ShowBasicControls Policy)
 {
@@ -42,11 +87,16 @@ void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RowLabels.SetNum(RowCount);
 	RowValues.SetNum(RowCount);
 	RowRects.Init(FBox2D(ForceInit), RowCount);
+	SectionRects.Init(FBox2D(ForceInit), static_cast<int32>(ftcore::kSettingsGroupCount));
 	for (int32 I = 0; I < RowCount; ++I)
 	{
 		RowLabels[I] = FString(UTF8_TO_TCHAR(ftcore::settingsRowLabel(static_cast<ftcore::SettingsRow>(I))));
 	}
 	RowLabels[kBasicControlsRow] = kSettingsBasicControlsUi.Get();
+	RowLabels[RowIx(ftcore::SettingsRow::TextScale)] = kSettingsTextSizeUi.Get();
+	RowLabels[RowIx(ftcore::SettingsRow::Palette)] = kSettingsColoursUi.Get();
+	RowLabels[RowIx(ftcore::SettingsRow::ReduceMotion)] = kSettingsReduceMotionUi.Get();
+	RowLabels[RowIx(ftcore::SettingsRow::GlyphMode)] = kSettingsPromptsUi.Get();
 	Load();
 	MarkChanged();
 }
@@ -116,6 +166,10 @@ void UFTSettingsSubsystem::MarkChanged()
 		RowValues[I] = FString(UTF8_TO_TCHAR(Buffer));
 	}
 	RowValues[kBasicControlsRow] = BasicControlsWord(Values.showBasicControls);
+	RowValues[RowIx(ftcore::SettingsRow::Palette)] = PaletteWord(Values.palette);
+	RowValues[RowIx(ftcore::SettingsRow::ReduceMotion)] = (Values.reduceMotion ? kSettingsOnUi : kSettingsOffUi).Get();
+	RowValues[RowIx(ftcore::SettingsRow::GlyphMode)] = PromptsWord(Values.glyphMode);
+	FT::SetUiPalette(static_cast<uint8>(Values.palette)); // the new UI's colours follow the Colours row at once
 }
 
 void UFTSettingsSubsystem::Open(AFTPlayerController* PC)
@@ -218,6 +272,14 @@ void UFTSettingsSubsystem::HandlePress()
 		{
 			return;
 		}
+		for (int32 G = 0; G < SectionRects.Num(); ++G)
+		{
+			if (SectionRects[G].bIsValid && SectionRects[G].IsInside(FVector2D(MouseX, MouseY)))
+			{
+				SelectRow(FirstRowOf(G));
+				return;
+			}
+		}
 		const int32 Row = HitRow(FVector2D(MouseX, MouseY));
 		if (Row < 0)
 		{
@@ -236,6 +298,27 @@ void UFTSettingsSubsystem::HandleCancel()
 	{
 		Close();
 	}
+}
+
+void UFTSettingsSubsystem::SelectRow(int32 Row)
+{
+	if (Row >= 0 && Row < RowCount)
+	{
+		Menu.select(static_cast<ftcore::SettingsRow>(Row));
+	}
+}
+
+int32 UFTSettingsSubsystem::FirstRowOf(int32 Group)
+{
+	for (uint32 I = 0; I < ftcore::kSettingsRowCount; ++I)
+	{
+		const ftcore::SettingsRow Row = ftcore::settingsScreenRow(I);
+		if (Row != ftcore::SettingsRow::Back && static_cast<int32>(ftcore::settingsRowGroup(Row)) == Group)
+		{
+			return static_cast<int32>(Row);
+		}
+	}
+	return static_cast<int32>(ftcore::SettingsRow::Back);
 }
 
 int32 UFTSettingsSubsystem::HitRow(const FVector2D& Point) const
