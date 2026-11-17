@@ -136,6 +136,24 @@ struct NightLook {
     float shopCandela = 15.f;      // LED shop spill, cooler than the lamps beside them
     float shopReachM = 9.f;
     float shopKelvin = 4000.f;
+    // The hero corner's lit rooms are old timber shops under paper lamps, not LED: their pool shop slots burn at this
+    // (step 2, 2026-11-16: about 2700 K). 0 keeps shopKelvin.
+    float heroShopKelvin = 2700.f;
+    // The face ruling (2026-11-16): the corner's own lamp slots (strings, pairs, entrances) stand for the lanterns, but
+    // their light is warm white, not the paper's deep amber, so skin keeps its hue variation under them. 0 keeps
+    // lampKelvin. Unmeasured: E1 brackets it on the face probes.
+    float heroLampKelvin = 2700.f;
+    // Its lit bays' fronts as a wide soft key (a rect light the size of each front, facing the lane, at heroShopKelvin),
+    // and a cool floor from the lane's open (canal) side: a rect light the lane's length facing the bays, tinted
+    // heroSkyTint (far bluer than skin, so a face's shadow side keeps R/B under 0.9), with no specular (no rectangle in
+    // the puddles). Both at the night's lamp share; lumens unmeasured, bracketed in E1.
+    float heroFrontLumens = 40.f;
+    float heroSkyLumens = 25.f;
+    std::array<float, 3> heroSkyTint{0.45f, 0.62f, 1.f};
+    float heroSkySpecular = 0.f;
+    // The fronts' key has no visible source, so on wet setts its full mirror image (a hard white rectangle, E2 11-16)
+    // gives it away; a low specular keeps a soft sheen and the lanterns make the reflections.
+    float heroFrontSpecular = 0.15f;
     std::array<float, 3> glow{0.030f, 0.019f, 0.010f};   // fog inscattering added at full night (linear luminance)
     // The moon is a pale blue. The sky light captures the atmosphere it lights, which is a far deeper blue than the
     // moon itself, so the fill's tint leans the other way (red over blue): net, an unlit facade reads a grey-blue, dark
@@ -315,5 +333,25 @@ FTCORE_API float duskLights(const DuskLook& look, float sunElevationDeg);
 // The daylight reaching a room behind glass, as a share of a clear day's: 0 from dayEndDeg down, 1 from dayFullDeg up.
 // No allocation.
 FTCORE_API float duskDaylight(const DuskLook& look, float sunElevationDeg);
+
+// The leads' rim colour from the world (2026-11-16 ruling): the lit lamp that lights the lead most (candela over the
+// squared distance, the distance floored at minDist) gives its light colour; which side of the camera it stands on
+// (+1 camera-right, -1 camera-left) goes to the rim's preferred side. Positions in any one unit. No allocation.
+struct RimLamp {
+    float at[3] = {0.f, 0.f, 0.f};
+    float candela = 0.f;
+    bool on = false;
+};
+struct RimPick {
+    int index = -1;       // -1: no lamp lit
+    float side = 0.f;     // +1 / -1, 0 with none
+    float weight = 0.f;   // candela / distance^2
+};
+FTCORE_API RimPick rimPickLamp(const RimLamp* lamps, std::size_t count, const float lead[3], const float cameraRight[3],
+                               float minDist);
+// The share of the way to its target a colour eased over `seconds` moves in dt: 1 - exp(-3 dt / seconds), so about
+// 95% of a step in `seconds`; 1 when seconds <= 0. No allocation.
+FTCORE_API float rimEaseShare(float dt, float seconds);
+inline constexpr float kRimColourEaseSeconds = 0.5f;
 
 } // namespace ftcore

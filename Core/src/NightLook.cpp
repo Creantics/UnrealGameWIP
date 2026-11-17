@@ -311,4 +311,29 @@ float duskDaylight(const DuskLook& look, float sunElevationDeg) {
     return smooth01((sunElevationDeg - look.dayEndDeg) / (look.dayFullDeg - look.dayEndDeg));
 }
 
+RimPick rimPickLamp(const RimLamp* lamps, std::size_t count, const float lead[3], const float cameraRight[3], float minDist) {
+    RimPick best;
+    if (!lamps || !lead || !cameraRight) return best;
+    const float floor2 = std::max(minDist, 0.f) * std::max(minDist, 0.f);
+    for (std::size_t i = 0; i < count; ++i) {
+        const RimLamp& l = lamps[i];
+        if (!l.on || !(l.candela > 0.f)) continue;
+        const float dx = l.at[0] - lead[0], dy = l.at[1] - lead[1], dz = l.at[2] - lead[2];
+        const float d2 = std::max(dx * dx + dy * dy + dz * dz, std::max(floor2, 1e-6f));
+        const float w = l.candela / d2;
+        if (w > best.weight) {
+            best.index = static_cast<int>(i);
+            best.weight = w;
+            best.side = dx * cameraRight[0] + dy * cameraRight[1] + dz * cameraRight[2] >= 0.f ? 1.f : -1.f;
+        }
+    }
+    return best;
+}
+
+float rimEaseShare(float dt, float seconds) {
+    if (!(seconds > 0.f)) return 1.f;
+    if (!(dt > 0.f)) return 0.f;
+    return 1.f - std::exp(-3.f * dt / seconds);
+}
+
 } // namespace ftcore

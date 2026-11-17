@@ -80,6 +80,10 @@ struct FFTCellOptions
 	// A flush piece that casts no shadow still shows in ray-traced reflections and bounce (a street's gutter, grate or
 	// marking: without it a reflected road has none).
 	bool bRayTraced = false;
+	// A glowing piece (a lantern) that wet ground must reflect off screen: a plain instanced component in ray tracing and
+	// the Lumen scene, marked an emissive light source (its cards survive at a fifth of the usual minimum area). It still
+	// casts no shadow and stays out of the distance fields.
+	bool bEmissive = false;
 	FName Tag;     // on the component (ComponentTags); NAME_None for none
 	FString Label; // the actor's label when the piece falls back to an actor
 };
@@ -124,6 +128,8 @@ public:
 		int32 UnmergedGroups = 0;  // the groups there would be were Solid/Walk and the tags still told apart
 		int32 LumenComponents = 0; // plain instanced components, in the Lumen scene
 		int32 LumenInstances = 0;
+		int32 EmissiveComponents = 0; // emissive light sources (bEmissive), in ray tracing and the Lumen scene
+		int32 EmissiveInstances = 0;
 	};
 	const FStats& Stats() const { return Totals; }
 
@@ -138,10 +144,11 @@ private:
 		bool bCastShadow = true;
 		bool bRayTraced = false;
 		bool bLumen = false; // a plain instanced component, in the Lumen scene (InLumenScene)
+		bool bEmissive = false;
 		bool operator==(const FKey& Other) const
 		{
 			return Cell == Other.Cell && Mesh == Other.Mesh && Materials == Other.Materials && Kind == Other.Kind && Cull == Other.Cull &&
-				bCastShadow == Other.bCastShadow && bRayTraced == Other.bRayTraced && bLumen == Other.bLumen;
+				bCastShadow == Other.bCastShadow && bRayTraced == Other.bRayTraced && bLumen == Other.bLumen && bEmissive == Other.bEmissive;
 		}
 		friend uint32 GetTypeHash(const FKey& Key)
 		{
@@ -150,7 +157,7 @@ private:
 			{
 				Hash = HashCombine(Hash, PointerHash(Material));
 			}
-			return HashCombine(Hash, (static_cast<uint32>(Key.Kind) << 8) | (static_cast<uint32>(Key.Cull) << 3) | (Key.bLumen ? 4u : 0u) |
+			return HashCombine(Hash, (Key.bEmissive ? 1u << 16 : 0u) | (static_cast<uint32>(Key.Kind) << 8) | (static_cast<uint32>(Key.Cull) << 3) | (Key.bLumen ? 4u : 0u) |
 				(Key.bRayTraced ? 2u : 0u) | (Key.bCastShadow ? 1u : 0u));
 		}
 	};

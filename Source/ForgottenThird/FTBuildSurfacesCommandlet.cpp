@@ -11,6 +11,7 @@
 #include "FTImportMaterials.h"
 #include "FTJointCollection.h"
 #include "FTText.h"
+#include "FTWeatherSpec.h"
 #include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
@@ -444,6 +445,10 @@ UMaterialParameterCollection* LoadLookCollection(const TCHAR* Who)
 	return Look;
 }
 
+// The weather numbers every weather node in this run is written from: the Core defaults, with -WeatherSpec=k=v,k=v
+// (ftcore::applySurfaceWeatherOverrides) over them, so the wet rule is tuned by bakes, not compiles.
+ftcore::SurfaceWeatherSpec GWeatherSpec;
+
 // The weather node (ftcore::surfaceWeatherHlsl: wet up-facing ground, puddles favouring a cambered box's low edge,
 // contact grime and edge darkening) over the shading From gives: its output 0 the albedo, then NormalOut, RoughOut and
 // AOOut at the given outputs. Above (an output of AboveFrom) is the pixel's height over the street floor in metres, or
@@ -465,7 +470,7 @@ UMaterialExpressionCustom* AddWeatherNode(UMaterial* Material, const FSurfaceNod
 	UMaterialExpressionCustom* Weather = AddExpression<UMaterialExpressionCustom>(Material, 300, 0);
 	Weather->Description = TEXT("FTSurfaceWeather");
 	Weather->OutputType = CMOT_Float3;
-	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(ftcore::SurfaceWeatherSpec{}, Options));
+	Weather->Code = FT::ToFString(ftcore::surfaceWeatherHlsl(GWeatherSpec, Options));
 	Weather->Inputs.Reset();
 	AddInputFrom(Weather, TEXT("Albedo"), From, 0);
 	AddInputFrom(Weather, TEXT("Normal"), From, NormalOutput);
@@ -769,6 +774,8 @@ struct FWindowCaps
 	float Glow = ftcore::WindowFacadeSpec{}.glowCap;
 	float Shop = ftcore::WindowFacadeSpec{}.shopGlowCap;
 	float Sign = ftcore::WindowFacadeSpec{}.signGlowCap;
+	// -SignMarks: every shop sign a mark of strokes (ftcore::WindowFacadeSpec::signMarks), never a word.
+	bool bSignMarks = false;
 };
 
 // The window master: the photographed surface (its parameters as M_WorldSurfaceTex's, so an instance copies a surface's
@@ -901,7 +908,9 @@ UMaterial* BuildWindowMaster(TArrayView<UTexture* const> Defaults, UTexture* Roo
 	UMaterialExpressionCustom* Win = AddExpression<UMaterialExpressionCustom>(Material, -300, 1600);
 	Win->Description = TEXT("FTWindowInterior");
 	Win->OutputType = CMOT_Float4;
-	Win->Code = FT::ToFString(bR5 ? ftcore::windowFacadeHlsl(ftcore::WindowFacadeSpec{}) : ftcore::windowInteriorHlsl(ftcore::WindowGridSpec{}));
+	ftcore::WindowFacadeSpec FacadeSpec;
+	FacadeSpec.signMarks = Caps.bSignMarks;
+	Win->Code = FT::ToFString(bR5 ? ftcore::windowFacadeHlsl(FacadeSpec) : ftcore::windowInteriorHlsl(ftcore::WindowGridSpec{}));
 	Win->Inputs.Reset();
 	AddInputFrom(Win, TEXT("Along"), Face, 0);
 	AddInputFrom(Win, TEXT("Up"), Face, 2);
@@ -1130,14 +1139,51 @@ UMaterial* BuildNightLamp(UMaterialParameterCollection* Collection)
 	Night->ParameterName = kWindowNight;
 	Night->ParameterId = Collection->GetParameterId(kWindowNight);
 
+	// A paper lantern's shape of light (the hero corner's MI_HC_LanternPaper sets them; 0 edge and 0 ribs, the defaults,
+	// leave the flat glow every lamp head had): LampEdge darkens the glow toward the silhouette by (1 - N.V)^LampEdgePower,
+	// so the body reads centre-bright and round; LampRibs darkens the bamboo ribs, one every LampRibPitch cm of the mesh's
+	// own height from LampRibOrigin (cm, mesh space), LampRibWidth of a pitch wide, faded out as a rib nears two pixels
+	// (the footprint taken outside any branch: no moire on a far lantern).
+	UMaterialExpressionScalarParameter* Edge = AddScalar(Material, TEXT("LampEdge"), 0.f, 500);
+	Edge->Group = TEXT("Lamp");
+	UMaterialExpressionScalarParameter* EdgePower = AddScalar(Material, TEXT("LampEdgePower"), 2.f, 600);
+	EdgePower->Group = TEXT("Lamp");
+	UMaterialExpressionScalarParameter* Ribs = AddScalar(Material, TEXT("LampRibs"), 0.f, 700);
+	Ribs->Group = TEXT("Lamp");
+	UMaterialExpressionScalarParameter* RibPitch = AddScalar(Material, TEXT("LampRibPitch"), 4.f, 800);
+	RibPitch->Group = TEXT("Lamp");
+	UMaterialExpressionScalarParameter* RibOrigin = AddScalar(Material, TEXT("LampRibOrigin"), 0.f, 900);
+	RibOrigin->Group = TEXT("Lamp");
+	UMaterialExpressionScalarParameter* RibWidth = AddScalar(Material, TEXT("LampRibWidth"), 0.15f, 1000);
+	RibWidth->Group = TEXT("Lamp");
+
 	UMaterialExpressionCustom* Glow = AddExpression<UMaterialExpressionCustom>(Material, -500, 200);
 	Glow->Description = TEXT("FTNightLampGlow");
 	Glow->OutputType = CMOT_Float3;
-	Glow->Code = TEXT("return LampColor.rgb * LampStrength * Night;");
+	Glow->Code = TEXT(
+		"float Z = LocalPos.z;\n"
+		"float Fz = max(fwidth(Z), 1e-4);\n"
+		"float Pitch = max(LampRibPitch, 0.01);\n"
+		"float Ph = frac((Z - LampRibOrigin) / Pitch);\n"
+		"float D = min(Ph, 1.0 - Ph);\n"
+		"float Aa = Fz / Pitch;\n"
+		"float Rib = 1.0 - smoothstep(0.5 * LampRibWidth, 0.5 * LampRibWidth + Aa, D);\n"
+		"float Fade = saturate((Pitch / Fz - 2.0) / 4.0);\n"
+		"float NdV = saturate(abs(dot(normalize(Parameters.WorldNormal), Parameters.CameraVector)));\n"
+		"float G = (1.0 - saturate(LampEdge) * pow(1.0 - NdV, max(LampEdgePower, 0.25)));\n"
+		"G *= 1.0 - saturate(LampRibs) * Rib * Fade;\n"
+		"return LampColor.rgb * LampStrength * Night * G;");
 	Glow->Inputs.Reset();
 	AddInput(Glow, TEXT("LampColor"), Color);
 	AddInput(Glow, TEXT("LampStrength"), Strength);
 	AddInput(Glow, TEXT("Night"), Night);
+	AddInput(Glow, TEXT("LocalPos"), AddExpression<UMaterialExpressionLocalPosition>(Material, -900, 1100));
+	AddInput(Glow, TEXT("LampEdge"), Edge);
+	AddInput(Glow, TEXT("LampEdgePower"), EdgePower);
+	AddInput(Glow, TEXT("LampRibs"), Ribs);
+	AddInput(Glow, TEXT("LampRibPitch"), RibPitch);
+	AddInput(Glow, TEXT("LampRibOrigin"), RibOrigin);
+	AddInput(Glow, TEXT("LampRibWidth"), RibWidth);
 
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Base);
@@ -1456,6 +1502,12 @@ int32 BuildWindows(const FString& Params)
 	FParse::Value(*Params, TEXT("WindowGlowCap="), Caps.Glow);
 	FParse::Value(*Params, TEXT("ShopGlowCap="), Caps.Shop);
 	FParse::Value(*Params, TEXT("SignGlowCap="), Caps.Sign);
+	Caps.bSignMarks = FParse::Param(*Params, TEXT("SignMarks"));
+	if (Caps.bSignMarks && !bR5)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildSurfaces -Windows: -SignMarks needs -FacadeR5 (the r4 master has no signs)."));
+		return 1;
+	}
 	UMaterial* Master = BuildWindowMaster(MakeArrayView(Defaults), Rooms, Curtains, Collection, bR5, bPrimitiveData, Look, bShopHoles, Caps);
 	UMaterial* Lamp = BuildNightLamp(Collection);
 	UMaterial* ShopInterior = bShopHoles ? BuildShopInteriorMaster(Collection, Caps) : nullptr;
@@ -1516,6 +1568,8 @@ int32 BuildWindows(const FString& Params)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Windows: night caps: windows %.2f, shop glass %.2f, signs %.2f; GlowScale %.2f, "
 		"ShopGlow %.2f, LitShare %.2f, UpperLit %.2f."), Caps.Glow, Caps.Shop, Caps.Sign, ftcore::WindowFacadeSpec{}.glowScale,
 		ftcore::WindowFacadeSpec{}.shopGlow, ftcore::WindowFacadeSpec{}.litShare, ftcore::WindowFacadeSpec{}.upperLit);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Windows: shop signs %s; lamp heads with LampEdge, LampRibs (0 by default)."),
+		Caps.bSignMarks ? TEXT("all marks of strokes (-SignMarks)") : TEXT("words and marks by style"));
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildSurfaces -Windows: Parallax %.0f by default%s%s."), Parallax,
 		bShopHoles ? *FString::Printf(TEXT("; shop holes (masked master) and %s"), FTShopInteriors::ShopMaterial) : TEXT(""),
 		bKitGlass ? *FString::Printf(TEXT("; %s"), FTShopInteriors::KitGlassMaterial) : TEXT(""));
@@ -1612,6 +1666,10 @@ UFTBuildSurfacesCommandlet::UFTBuildSurfacesCommandlet()
 int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	if (!FT::ReadWeatherSpec(Params, TEXT("FTBuildSurfaces"), FTSurfaceBuild::GWeatherSpec))
+	{
+		return 1;
+	}
 	if (FParse::Param(*Params, TEXT("Windows")))
 	{
 		return FTSurfaceBuild::BuildWindows(Params);

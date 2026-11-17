@@ -3,6 +3,30 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+
+// The one gate on the look and debug switches (-Night*, -Dusk*, -NoDusk, -DayShade*, -NoDayShade, -Glass*, -LampPool*,
+// -LampShadows, -NightCharFill, -TimeOfDay, -NoDayClock, -WindowParallax, -ShopDayLevel, -ShopNightLevel, -WorldEyeShot
+// and so every -WorldEye* still switch, -WorldEyeWet): every reader takes its command line from here. Outside Shipping
+// it is the process's; in Shipping it is empty, so a Shipping build ignores every one of them and runs on the defaults.
+inline const TCHAR* FTLookSwitches()
+{
+#if !UE_BUILD_SHIPPING
+	return FCommandLine::Get();
+#else
+	return TEXT("");
+#endif
+}
+
+// -WorldEyeWet=<0..1>: the ground's wetness for a still or a run, in place of the look's times the clock's share; -1 when
+// not given (or in Shipping).
+inline float FTWorldEyeWet()
+{
+	float Wet = -1.f;
+	FParse::Value(FTLookSwitches(), TEXT("WorldEyeWet="), Wet);
+	return Wet < 0.f ? -1.f : FMath::Clamp(Wet, 0.f, 1.f);
+}
 
 
 FORGOTTENTHIRD_API DECLARE_LOG_CATEGORY_EXTERN(LogForgottenThird, Log, All);

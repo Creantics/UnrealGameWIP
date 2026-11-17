@@ -10,6 +10,7 @@
 //       [-WorldEyeSunHour=<hours>] [-WindowParallax=<0..1>] [-WorldEyeCard=<x,y,z> [-WorldEyeCardSize=<m>]]
 //       [-WorldEyeWalkTo=<x,y,z> [-WorldEyeWalkSpeed=1.4] [-WorldEyeWalkFps=60]]
 //       [-WorldEyeFocal=<mm>] [-WorldEyeFocus=<x,y,z>|<m>] [-WorldEyeAperture=<f>] [-WorldEyeBlur=0.5]
+//       [-WorldEyeLeadFace=eye|away]  (with -WorldEyeLead: the placed lead faces the eye or turns his back to it; not shipped)
 // Any of -WorldEyeFocal, -WorldEyeFocus or -WorldEyeAperture switches to the vista camera standard: a cine camera on a
 // full-frame 36 x 24 mm filmback, focal length -WorldEyeFocal (default 50, 35 to 135), focus on a plan point or at a
 // distance in metres (default the -WorldEyeAt point), aperture f/-WorldEyeAperture (default 4.8) and motion blur

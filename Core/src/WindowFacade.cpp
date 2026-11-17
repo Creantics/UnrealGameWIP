@@ -451,7 +451,8 @@ std::size_t windowShopInterior(const WindowFacadeSpec& spec, WindowType type, st
         p.lit = lit;
         p.light = light;
     };
-    const ShopFrontSpec fs{};
+    ShopFrontSpec fs{};
+    fs.marksOnly = spec.signMarks;
     // One floor and one ceiling the face's length, in the first lit bay's light, dim (dark when no bay is lit).
     const float f0 = spec.base.edge, f1 = spec.base.edge + static_cast<float>(grid.bays) * bw;
     WindowShopLight faceLight;
@@ -651,6 +652,8 @@ return Across + 0.5 * Width;)HLSL";
 std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     const WindowGridSpec& s = spec.base;
     const std::string rooms = unum(kWindowRooms), shops = unum(kWindowShops), kinds = unum(kWindowShopKinds);
+    ShopFrontSpec fs{};
+    fs.marksOnly = spec.signMarks;
     std::string h;
     h.reserve(16384);
     h += "struct FTWin {\n";
@@ -734,7 +737,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "float u0 = 0.5 - hw;\n";
     h += "float u1 = 0.5 + hw;\n";
     // The shop front's kind, door and sill (ShopFront.h).
-    h += shopFrontPreHlsl(ShopFrontSpec{});
+    h += shopFrontPreHlsl(fs);
     h += "float v0 = (shop ? shopSill : (loggia ? " + num(kLoggiaFloor) + " : pSill)) / sh;\n";
     h += "float v1 = (shop ? shopTop : pSill + pOpen) / sh;\n";
     h += "v0 = smallWin ? max(v0, v1 - " + num(spec.smallHeight) + " / sh) : v0;\n";
@@ -777,7 +780,7 @@ std::string windowFacadeHlsl(const WindowFacadeSpec& spec) {
     h += "part = railZ ? (parapet ? (railTop ? 9.0 : 0.0) : (railTop || bal ? 18.0 : part)) : part;\n";
     h += "part = part == 1.0 && !shop && (smallWin || (frostLow && gv < v0 + 0.4 * (v1 - v0))) ? 13.0 : part;\n";
     // The shop's front at the glass plane, its fascia, sign and lantern (ShopFront.h).
-    h += shopFrontHlsl(ShopFrontSpec{}, s.fascia);
+    h += shopFrontHlsl(fs, s.fascia);
     // The band: one colour a building, with tile courses; the string course and the lip, concrete.
     h += array("float3", "kBand", kBand, [](const Rgb& c) { return rgb(c.r, c.g, c.b); });
     h += "float3 bandRgb = kBand[W.H(seed ^ " + unum(kBandSalt) + ") % " + unum(kWindowBandColorCount) + "] * (frac(Up / " +
