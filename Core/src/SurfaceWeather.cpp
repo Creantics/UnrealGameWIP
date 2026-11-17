@@ -1017,7 +1017,20 @@ bool applySurfaceWeatherOverrides(SurfaceWeatherSpec& spec, std::string_view tex
             if (error != nullptr) *error = std::string(entry);
             return false;
         }
+        // Divisors in the shader: zero or below would divide by zero or flip the pattern.
+        static constexpr std::string_view kPositive[] = {"puddleCellM", "trackScaleM", "puddleScaleM",
+                                                         "puddleEdge",  "patchScaleM", "grimeScaleM"};
+        for (const std::string_view p : kPositive) {
+            if (key == p && !(v > 0.f)) {
+                if (error != nullptr) *error = std::string(entry);
+                return false;
+            }
+        }
         spec.*(hit->member) = v;
+    }
+    if (!(spec.upTo > spec.upFrom)) {
+        if (error != nullptr) *error = "upTo must be above upFrom";
+        return false;
     }
     return true;
 }

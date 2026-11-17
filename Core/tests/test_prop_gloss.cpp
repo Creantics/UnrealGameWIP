@@ -44,11 +44,11 @@ TEST_CASE("prop gloss: names are matched on whole tokens, with a few endings") {
     // The metals that stay metal, and the ones that are borderline.
     for (const char* name : {"hc_iron", "lantern_iron", "hc_metal", "post_iron", "hc_brass", "hb_bronze", "LanternIron", "hcIronHook",
                              "IRONWORK", "ironwork_gate", "M_Iron01", "bk3iron", "steel2", "hb_galvanised_pail", "CopperPot",
-                             "golden_bell", "SILVERWARE", "chrome_rim", "metallic_paint"})
+                             "gold_bell", "chromed_tap", "SILVERWARE", "chrome_rim", "metallic_paint"})
         CHECK_MESSAGE(propNameMetal(name), name);
     // Not metals: no token is one (no substring match).
     for (const char* name : {"hc_signink", "hc_lens", "hc_broth", "hc_reflector", "hb_pane", "hb_ring", "ironically", "tiny_box",
-                             "goldfish", "alum_block", "tripo_material_6f1c2a90", "BK-M_LOD0_M", "", "_"})
+                             "goldfish", "alum_block", "golden_bell", "irony", "silvery_glaze", "CopperyLeaf", "LeadenSky", "steely", "tripo_material_6f1c2a90", "BK-M_LOD0_M", "", "_"})
         CHECK_MESSAGE(!propNameMetal(name), name);
     // Liquids take no grime; oiled timber, stockpots and teak are not liquids.
     for (const char* name : {"hc_broth_water", "hc_broth", "hb_water", "SoupSurface", "liquid_01"})

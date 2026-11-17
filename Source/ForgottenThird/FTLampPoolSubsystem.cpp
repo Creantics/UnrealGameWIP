@@ -729,6 +729,21 @@ void UFTLampPoolSubsystem::LogHero(const FVector& From)
 void UFTLampPoolSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	// The pool's lights belong to the night-lights actor: when its level streams out they go with it, so drop the
+	// pool (no further writes to freed lights) and stay idle.
+	if (bPoolGone)
+	{
+		return;
+	}
+	if (bPoolMade && !NightLights.IsValid())
+	{
+		LampPool.Reset();
+		ShopPool.Reset();
+		bPoolGone = true;
+		bNight = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("LampPool: the night-lights actor left the world; pool dropped."));
+		return;
+	}
 	// The rim colour eases every frame; the pick sets its target every kPickSeconds.
 	EaseRim(DeltaTime);
 	SincePick += DeltaTime;

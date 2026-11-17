@@ -353,6 +353,17 @@ TEST_CASE("weather overrides: -WeatherSpec key=value pairs set the named fields,
     CHECK_FALSE(applySurfaceWeatherOverrides(spec, "soakRough", &err));
     CHECK_FALSE(applySurfaceWeatherOverrides(spec, "soakRough=nan", nullptr));
     CHECK(spec.soakRough == doctest::Approx(0.24f));
+    // Shader divisors must stay above zero, and the up band must have width.
+    for (const char* bad : {"puddleCellM=0", "trackScaleM=-1", "puddleScaleM=0", "puddleEdge=0", "patchScaleM=-0.5", "grimeScaleM=0"}) {
+        SurfaceWeatherSpec s;
+        CHECK_FALSE(applySurfaceWeatherOverrides(s, bad, &err));
+        CHECK(err == bad);
+    }
+    SurfaceWeatherSpec band;
+    CHECK_FALSE(applySurfaceWeatherOverrides(band, "upFrom=0.9,upTo=0.5", &err));
+    CHECK_FALSE(applySurfaceWeatherOverrides(band, "upTo=0.5,upFrom=0.5", &err));
+    SurfaceWeatherSpec ok;
+    CHECK(applySurfaceWeatherOverrides(ok, "upFrom=0.4,upTo=0.8,puddleEdge=0.05", &err));
 }
 
 TEST_CASE("HLSL: the worn track and kerb line on box frames, none off them, the street's own pieces left out") {

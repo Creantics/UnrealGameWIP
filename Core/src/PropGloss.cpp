@@ -60,14 +60,17 @@ bool pgSameWord(std::string_view a, std::string_view b) {
 }
 
 constexpr std::string_view kPgSuffixes[] = {"s", "es", "d", "ed", "y", "en", "ware", "work"};
+// Metals take no -y or -en: "golden", "silvery", "coppery", "irony" are colours or words, not metal.
+constexpr std::string_view kPgMetalSuffixes[] = {"s", "es", "d", "ed", "ware", "work"};
 
 // Whether a token is the word, or the word plus one of the suffixes, any case.
-bool pgTokenIs(std::string_view token, std::string_view word) {
+template <std::size_t S>
+bool pgTokenIs(std::string_view token, std::string_view word, const std::string_view (&suffixes)[S]) {
     if (token.size() < word.size()) return false;
     if (!pgSameWord(token.substr(0, word.size()), word)) return false;
     const std::string_view rest = token.substr(word.size());
     if (rest.empty()) return true;
-    for (std::string_view suffix : kPgSuffixes)
+    for (std::string_view suffix : suffixes)
         if (pgSameWord(rest, suffix)) return true;
     return false;
 }
@@ -80,8 +83,8 @@ constexpr std::string_view kPgLiquidWords[] = {"water", "broth", "soup", "liquid
 
 // Whether any token of name matches any of the words. Tokens: runs of letters and digits, split at a lower-to-upper
 // case step and between a letter and a digit.
-template <std::size_t N>
-bool pgNameHas(std::string_view name, const std::string_view (&words)[N]) {
+template <std::size_t N, std::size_t S>
+bool pgNameHas(std::string_view name, const std::string_view (&words)[N], const std::string_view (&suffixes)[S]) {
     std::size_t i = 0;
     while (i < name.size()) {
         while (i < name.size() && !pgIsAlnum(name[i])) ++i;
@@ -96,7 +99,7 @@ bool pgNameHas(std::string_view name, const std::string_view (&words)[N]) {
         }
         const std::string_view token = name.substr(start, i - start);
         for (std::string_view word : words)
-            if (pgTokenIs(token, word)) return true;
+            if (pgTokenIs(token, word, suffixes)) return true;
     }
     return false;
 }
@@ -108,11 +111,11 @@ float pgNoiseAt(const PropSurfaceIn& in, float cellM, float offset) {
 
 }  // namespace
 
-bool propNameSmooth(std::string_view name) { return pgNameHas(name, kPgSmoothWords); }
+bool propNameSmooth(std::string_view name) { return pgNameHas(name, kPgSmoothWords, kPgSuffixes); }
 
-bool propNameMetal(std::string_view name) { return pgNameHas(name, kPgMetalWords); }
+bool propNameMetal(std::string_view name) { return pgNameHas(name, kPgMetalWords, kPgMetalSuffixes); }
 
-bool propNameLiquid(std::string_view name) { return pgNameHas(name, kPgLiquidWords); }
+bool propNameLiquid(std::string_view name) { return pgNameHas(name, kPgLiquidWords, kPgSuffixes); }
 
 PropGlossResult propGlossCheck(const PropGlossInput& in) {
     PropGlossResult r;

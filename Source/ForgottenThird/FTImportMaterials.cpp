@@ -983,7 +983,15 @@ bool CheckPropGloss(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Mater
 		{
 			if (Map)
 			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("%s: gloss %s: %s has no source data; checked on its factors alone."), GTag,
+				// A map whose pixels can't be read would pass on its factors alone: refused unless the import says so.
+				if (!FParse::Param(FCommandLine::Get(), TEXT("AllowFactorsOnly")))
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("%s: gloss %s: %s has no source data, so its map can't be checked (-AllowFactorsOnly checks the factors alone)."),
+						GTag, *Material->GetName(), *Map->GetName());
+					++Failed;
+					continue;
+				}
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: gloss %s: %s has no source data; checked on its factors alone (-AllowFactorsOnly)."), GTag,
 					*Material->GetName(), *Map->GetName());
 			}
 			In.p10 = In.p50 = In.p90 = Roughness;
@@ -1012,6 +1020,12 @@ bool CheckPropGloss(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Mater
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: gloss guard: %d materials checked, %d failed."), GTag, Checked, Failed);
+	if (Checked == 0 && Materials.Num() > 0)
+	{
+		// Slots, but none of them the prop's own: nothing was guarded, which is not a pass.
+		UE_LOG(LogForgottenThird, Error, TEXT("%s: gloss guard: %d material slots and none checked."), GTag, Materials.Num());
+		return false;
+	}
 	return Failed == 0;
 }
 

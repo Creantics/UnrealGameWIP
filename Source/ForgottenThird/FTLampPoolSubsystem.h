@@ -143,6 +143,8 @@ private:
 	bool bActive = false;
 	bool bForced = false;
 	bool bPoolMade = false;
+	// The pool's owner left the world (its level streamed out): the pool is dropped and the subsystem stays idle.
+	bool bPoolGone = false;
 	bool bNight = false;
 	bool bLogged = false;
 	// -LampPoolHeroFirst (eyes on the hero corner, default off): the corner's lamps and shop lights within reach take the
