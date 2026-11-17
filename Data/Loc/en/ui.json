@@ -105,6 +105,8 @@
     "arena.party.hostile": "hostile",
     "arena.party.follow": "follow",
     "arena.party.wait_here": "wait here",
+    "party.controls.keys": "arrows or mouse  move     Enter or click  pick     Esc  close",
+    "party.controls.pad": "stick or D-pad  move     A  pick     B  close",
     "arena.prompt.attack": "attack",
     "arena.prompt.gift_heal": "gift heal",
     "arena.prompt.gift_guard": "gift guard",

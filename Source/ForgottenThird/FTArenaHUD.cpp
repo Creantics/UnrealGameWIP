@@ -19,6 +19,9 @@
 #include "Engine/GameViewportClient.h"
 #include "FTUiText.h"
 #include "GameFramework/PlayerController.h"
+#include "Engine/GameInstance.h"
+#include "FTPauseSubsystem.h"
+#include "FTSettingsSubsystem.h"
 
 namespace
 {
@@ -1155,6 +1158,34 @@ void AFTArenaHUD::EndPlay(const EEndPlayReason::Type Reason)
 	Super::EndPlay(Reason);
 }
 
+ftcore::UiScreenMask AFTArenaHUD::ScreensOpen(const UFTArenaRunner* Runner)
+{
+	using ftcore::UiScreen;
+	using ftcore::uiScreenBit;
+	ftcore::UiScreenMask Open = 0;
+	if (!Runner)
+	{
+		return Open;
+	}
+	if (Runner->GetPartyScreen().open)
+	{
+		Open |= uiScreenBit(UiScreen::Party);
+	}
+	const UWorld* World = Runner->GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	const UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+	const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	if (Pause && Pause->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Pause);
+	}
+	if (Set && Set->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Settings);
+	}
+	return Open;
+}
+
 void AFTArenaHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -1175,12 +1206,24 @@ void AFTArenaHUD::DrawHUD()
 	{
 		bStatsBuilt = false; // the next result gets its own counts
 	}
+	// What of the fight may draw under the screens open now (ftcore::uiHudDraws): no reticle under the party screen,
+	// nothing under the pause menu or the settings.
+	const ftcore::UiScreenMask Screens = ScreensOpen(Mode);
+	const bool bReticle = ftcore::uiHudDraws(ftcore::UiHudPart::Reticle, ftcore::UiHudMode::Fight, Screens);
 	if (NewUiWidget.IsValid())
 	{
 		// The Slate layer draws all of the fight's HUD, the wall's cue included. The aim reticle is shared with the other
 		// modes: it stays on the canvas.
-		FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
+		if (bReticle)
+		{
+			FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
+		}
 		FT::DrawPauseOverlay(*this, Canvas);
+		return;
+	}
+	if (!ftcore::uiHudDraws(ftcore::UiHudPart::FightVitals, ftcore::UiHudMode::Fight, Screens))
+	{
+		FT::DrawPauseOverlay(*this, Canvas); // the old canvas HUD under a menu: the menu alone
 		return;
 	}
 
@@ -1202,9 +1245,15 @@ void AFTArenaHUD::DrawHUD()
 		DrawResult(*Mode);
 	}
 	// The aim's centre reticle (right mouse held), faded in with the stance.
-	FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
-	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
-	DrawStrCentered(FTInputBindings::HintLine(UFTArenaRunner::JumpBound() ? ftcore::InputHintScreen::ArenaJump : ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	if (bReticle)
+	{
+		FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
+	}
+	if (ftcore::uiHudDraws(ftcore::UiHudPart::ControlsLine, ftcore::UiHudMode::Fight, Screens))
+	{
+		DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
+		DrawStrCentered(FTInputBindings::HintLine(UFTArenaRunner::JumpBound() ? ftcore::InputHintScreen::ArenaJump : ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	}
 	// At the fight's start, one line naming each action the saved bindings left with no key.
 	if (!FTInputBindings::UnboundLine().IsEmpty() && Fight.time() < kUnboundNoticeTime)
 	{

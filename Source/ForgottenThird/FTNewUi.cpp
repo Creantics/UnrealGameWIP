@@ -5,6 +5,8 @@
 #include "FTCutsceneDirector.h"
 #include "FTExploreDirector.h"
 #include "FTExploreCharacter.h"
+#include "FTExploreHUD.h"
+#include "FTArenaHUD.h"
 #include "ForgottenThird.h"
 #include "FTInputBindings.h"
 #include "FTLookSubsystem.h"
@@ -146,6 +148,9 @@ const FTUiText kVacantUi(TEXT("arena.party.vacant"));
 const FTUiText kHostileUi(TEXT("arena.party.hostile"));
 const FTUiText kFollowUi(TEXT("arena.party.follow"));
 const FTUiText kWaitHereUi(TEXT("arena.party.wait_here"));
+// The explore party screen's controls line, per device (its keys are fixed, not the binding table's).
+const FTUiText kPartyKeysUi(TEXT("party.controls.keys"));
+const FTUiText kPartyPadUi(TEXT("party.controls.pad"));
 // The Read row's move names, by the tell the move shows (arenaTellName).
 const char* const kReadTells[9] = {"strike", "overhead", "backhand", "charge", "thrust", "slash", "sweep", "slam", "shot"};
 const FTUiText kReadStrikeUi(TEXT("arena.read.strike"));
@@ -1888,6 +1893,7 @@ public:
 		Time += DeltaTime;
 		const UFTArenaRunner* Runner = GetRunner ? GetRunner() : nullptr;
 		bLive = Runner && Runner->IsBegun();
+		Screens = AFTArenaHUD::ScreensOpen(Runner); // the party screen, the pause menu, the settings (ftcore::uiHudDraws)
 #if FT_UI_ALLOC_COUNT
 		FUiAllocCount& Count = UiAllocCount();
 		Count.Seen += bLive && Count.Frame > 0 && !Count.bDone ? 1 : 0;
@@ -2365,7 +2371,11 @@ public:
 	virtual int32 OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&, FSlateWindowElementList& Out, int32 Layer,
 		const FWidgetStyle&, bool) const override
 	{
-		if (!bLive)
+		// Under the screens (ftcore::uiHudDraws): nothing under the pause menu or the settings; under the party screen (the
+		// runner's, or a party capture's held one) its rows and the vitals, no aim, prompts or special.
+		const ftcore::UiScreenMask Open = static_cast<ftcore::UiScreenMask>(Screens | (PartyShown.open ? ftcore::uiScreenBit(ftcore::UiScreen::Party) : 0));
+		const auto Draws = [Open](ftcore::UiHudPart Part) { return ftcore::uiHudDraws(Part, ftcore::UiHudMode::Fight, Open); };
+		if (!bLive || (!Draws(ftcore::UiHudPart::FightVitals) && !Draws(ftcore::UiHudPart::PartyRows)))
 		{
 			return Layer;
 		}
@@ -2399,14 +2409,23 @@ public:
 				Tok(UiToken::Backing, 1.f));
 		}
 		PaintWorld(P, Size);
-		PaintAim(P, Size);
+		if (Draws(ftcore::UiHudPart::FightAim))
+		{
+			PaintAim(P, Size);
+		}
 		PaintParty(P, Size);
 		PaintLone(P, Size);
 		PaintTop(P, Size);
 		PaintCall(P, Size);
 		PaintSecondLine(P, Size);
-		PaintPrompts(P, Size);
-		PaintSpecial(P, Size);
+		if (Draws(ftcore::UiHudPart::FightPrompts))
+		{
+			PaintPrompts(P, Size);
+		}
+		if (Draws(ftcore::UiHudPart::FightSpecial))
+		{
+			PaintSpecial(P, Size);
+		}
 		PaintEvents(P, Size);
 		Mesh.Flush(Out, Layer + 1); // every line, mark and shade in one element under the words
 		return Layer + 5;           // the Load's gold and its bright edge stand over the name's words
@@ -4885,6 +4904,7 @@ private:
 	ftcore::UiPartyScreen PartyDrawn; // the screen as last open: its rows' inks and marks while it fades shut
 	ftcore::UiPartyWhy PartnerWhy = ftcore::UiPartyWhy::Unknown;
 	float PartyOpenK = 0.f;
+	ftcore::UiScreenMask Screens = 0; // the screens open over the fight this tick (AFTArenaHUD::ScreensOpen)
 	FString PartyWhyWord[ftcore::kUiPartyWhyCount];
 	float PartyWhyW[ftcore::kUiPartyWhyCount] = {};
 	bool bThirdRow = false;
@@ -6084,6 +6104,8 @@ public:
 		bPartnerHere = C->IsPartnerHere(); // the same truth the screen's step reads
 		bThirdHere = Looks.IsValidIndex(C->GetThirdIndex());
 		bFollowing = !C->IsPartyHidden();
+		// The controls line names the device in use; both lines are built with the fonts, so this only picks.
+		bPad = FTInputBindings::NoteDevice(Cast<APlayerController>(C->GetController())) == ftcore::InputDevice::Pad;
 		BuildName(LeadRow, LookName(C->GetLeadIndex()), kLeadUi, LeadNameFont, bFonts);
 		BuildName(PartnerRow, LookName(C->GetPartnerIndex()), kPartnerUi, PartnerNameFont, bFonts);
 		BuildName(ThirdRow, LookName(C->GetThirdIndex()), kThirdUi, PartnerNameFont, bFonts);
@@ -6135,6 +6157,10 @@ public:
 			const ftcore::UiPartyRowView TView = RowView(ftcore::UiPartyRow::Third, ftcore::UiPartyWhy::Unknown, ThirdRow.W);
 			P.Text(X0, ThirdBase - PartnerNameAsc, ThirdRow.Text, PartnerNameFont, Ink(TView.ink));
 		}
+		// The controls line, centred at the foot where the field's stands (hidden under the screen): how to work it.
+		const FString& Ctl = bPad ? CtlPad : CtlKeys;
+		const float CtlX = 0.5f * (Size.X - (bPad ? CtlPadW : CtlKeysW));
+		P.Text(CtlX, Size.Y - kCtlBottom * S - NoteAsc, Ctl, NoteFont, Ink(kCtlInk));
 		Mesh.Flush(Out, Layer + 1);
 		return Layer + 5;
 	}
@@ -6186,6 +6212,10 @@ private:
 		NotHereWord = kNotHereUi.Get().ToUpper();
 		FollowW = TextWidth(FollowWord, NoteFont);
 		WaitHereW = TextWidth(WaitHereWord, NoteFont);
+		CtlKeys = kPartyKeysUi.Get().ToUpper();
+		CtlPad = kPartyPadUi.Get().ToUpper();
+		CtlKeysW = TextWidth(CtlKeys, NoteFont);
+		CtlPadW = TextWidth(CtlPad, NoteFont);
 	}
 
 	TFunction<const AFTExploreCharacter*()> GetLead;
@@ -6200,6 +6230,11 @@ private:
 	float LeadNameAsc = 0.f, PartnerNameAsc = 0.f, NoteAsc = 0.f;
 	FString FollowWord, WaitHereWord, NotHereWord;
 	float FollowW = 0.f, WaitHereW = 0.f;
+	FString CtlKeys, CtlPad;
+	float CtlKeysW = 0.f, CtlPadW = 0.f;
+	bool bPad = false;
+	static constexpr float kCtlInk = 0.8f;    // as the field's controls line
+	static constexpr float kCtlBottom = 28.f; // its foot above the screen's, as the field's
 	mutable FTextRuns TextRuns;
 	FDelegateHandle FontRelease;
 	mutable FLineMesh Mesh;
@@ -6322,8 +6357,9 @@ public:
 				SceneWet = SceneLookSub->GetLook().wetness;
 			}
 		}
-		// The party screen has the left side while it is open; the pause and settings screens have the whole screen.
-		bOn = D && C && !C->GetPartyScreen().open && !MenuOpen(C);
+		// Under the screens (ftcore::uiHudDraws): the party screen has the left side while it is open, the map overlay
+		// and the pause and settings screens the whole screen; none shows the field's own lines.
+		bOn = D && C && ftcore::uiHudDraws(ftcore::UiHudPart::FieldHud, ftcore::UiHudMode::Explore, AFTExploreHUD::ScreensOpen(C));
 		TickShot(C);
 		TickReads();
 		// The controls line's device: noted each frame, also while the HUD is hidden, so the last device used stays fresh
@@ -6647,14 +6683,6 @@ private:
 			return true;
 		}
 		return false;
-	}
-
-	static bool MenuOpen(const AFTExploreCharacter* C)
-	{
-		const UGameInstance* GI = C ? C->GetGameInstance() : nullptr;
-		const UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
-		const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
-		return (Pause && Pause->IsOpen()) || (Set && Set->IsOpen());
 	}
 
 	// The objective's alpha with its quiet level lifted to Floor: 0..quiet maps to 0..Floor, quiet..1 to Floor..1.

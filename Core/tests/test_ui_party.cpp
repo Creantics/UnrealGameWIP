@@ -19,6 +19,7 @@ struct Pad {
     bool map = false;
     float stick = 0.f;
     float mouse = 0.f;
+    bool up = false, down = false, confirm = false, cancel = false;
 
     UiPartyInput in() const {
         UiPartyInput i;
@@ -29,6 +30,10 @@ struct Pad {
         i.toggle = toggle;
         i.stickY = stick;
         i.mouseY = mouse;
+        i.upDown = up;
+        i.downDown = down;
+        i.confirmDown = confirm;
+        i.cancelDown = cancel;
         return i;
     }
 };
@@ -189,7 +194,11 @@ TEST_CASE("ui party: Party's own key opens explore's screen at once, and is neve
     p.party = true;
     CHECK(step(s, p).opened);
     p.party = false;
-    const UiPartyOut o = step(s, p);
+    UiPartyOut o = step(s, p);
+    CHECK_FALSE(o.closed); // a tap: it stays
+    CHECK_FALSE(o.map);
+    p.party = true;
+    o = step(s, p);
     CHECK(o.closed);
     CHECK_FALSE(o.map);
 }
@@ -864,5 +873,127 @@ TEST_CASE("ui party: a lead change while open moves the cursor to Lead; the firs
     stepLead(0);
     p.party = true;
     CHECK(stepLead(0).opened);
+    CHECK(s.cursor == UiPartyRow::Lead);
+}
+
+TEST_CASE("ui party: a tap of Party leaves the screen open, worked by the row keys, Enter picks") {
+    for (int explore = 0; explore < 2; ++explore) {
+        Pad p;
+        p.explore = explore == 1;
+        UiPartyScreen s = fresh(p);
+        p.party = true;
+        CHECK(step(s, p).opened);
+        p.party = false;
+        CHECK_FALSE(step(s, p).closed); // let go at once, nothing moved: a tap
+        CHECK(run(s, p, 2.f).closed == 0);
+        REQUIRE(s.open);
+        // The up key: one row per press, not per tick held.
+        p.up = true;
+        step(s, p);
+        CHECK(s.cursor == UiPartyRow::Partner);
+        run(s, p, 0.5f);
+        CHECK(s.cursor == UiPartyRow::Partner);
+        p.up = false;
+        step(s, p);
+        p.down = true;
+        step(s, p);
+        CHECK(s.cursor == UiPartyRow::Lead);
+        p.down = false;
+        step(s, p);
+        p.up = true;
+        step(s, p);
+        p.up = false;
+        step(s, p);
+        REQUIRE(s.cursor == UiPartyRow::Partner);
+        p.confirm = true;
+        const UiPartyOut o = step(s, p);
+        CHECK(o.closed);
+        CHECK(o.picked());
+        CHECK(o.pick == UiPartyRow::Partner);
+        CHECK(run(s, p, 0.5f).opened == 0); // Enter held after is nothing
+    }
+}
+
+TEST_CASE("ui party: a tap's screen shuts on Party's next press, on the cursor's row") {
+    Pad p;
+    UiPartyScreen s = fresh(p);
+    p.party = true;
+    step(s, p);
+    p.party = false;
+    step(s, p);
+    REQUIRE(s.open);
+    p.stick = 0.9f;
+    step(s, p);
+    p.stick = 0.f;
+    step(s, p);
+    p.party = true;
+    const UiPartyOut o = step(s, p);
+    CHECK(o.closed);
+    CHECK(o.pick == UiPartyRow::Partner);
+    CHECK(run(s, p, 0.5f).opened == 0); // the confirming press held opens nothing
+    p.party = false;
+    step(s, p);
+    CHECK_FALSE(s.open);
+}
+
+TEST_CASE("ui party: a hold let go after the tap's time, or after a move, still confirms at once") {
+    Pad p;
+    UiPartyScreen s = fresh(p);
+    p.party = true;
+    step(s, p);
+    run(s, p, kUiPartyTap + 0.05f);
+    p.party = false;
+    CHECK(step(s, p).closed);
+    // A quick hold with a flick: the release picks the partner.
+    p.party = true;
+    step(s, p);
+    p.stick = 0.9f;
+    step(s, p);
+    p.stick = 0.f;
+    p.party = false;
+    const UiPartyOut o = step(s, p);
+    CHECK(o.picked());
+    CHECK(o.pick == UiPartyRow::Partner);
+}
+
+TEST_CASE("ui party: Esc or B shuts it with no pick, held or tapped open") {
+    for (int tapped = 0; tapped < 2; ++tapped) {
+        Pad p;
+        UiPartyScreen s = fresh(p);
+        p.party = true;
+        step(s, p);
+        if (tapped == 1) {
+            p.party = false;
+            step(s, p);
+        }
+        p.stick = 0.9f;
+        step(s, p);
+        REQUIRE(s.cursor == UiPartyRow::Partner);
+        p.stick = 0.f;
+        p.cancel = true;
+        const UiPartyOut o = step(s, p);
+        CHECK(o.closed);
+        CHECK_FALSE(o.picked());
+        CHECK_FALSE(s.open);
+        // Still holding Party after the cancel: its release picks nothing and opens nothing.
+        p.cancel = false;
+        p.party = false;
+        CHECK(run(s, p, 0.3f).closed == 0);
+        CHECK_FALSE(s.open);
+    }
+}
+
+TEST_CASE("ui party: a row key, Enter or Esc already down as the screen opens is no press") {
+    Pad p;
+    p.up = true; // walking forward with W
+    p.confirm = true;
+    p.cancel = true;
+    UiPartyScreen s = fresh(p);
+    p.party = true;
+    step(s, p);
+    p.party = false;
+    step(s, p);
+    run(s, p, 0.5f);
+    CHECK(s.open);
     CHECK(s.cursor == UiPartyRow::Lead);
 }
