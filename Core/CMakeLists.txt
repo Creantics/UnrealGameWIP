@@ -99,6 +99,7 @@ add_library(ftcore STATIC
     src/BlockCheck.cpp
     src/TerrainPocket.cpp
     src/SeaAccess.cpp
+    src/Storm.cpp
     src/ParkedCarLook.cpp
     src/RoadDecals.cpp
     src/ShopFront.cpp
@@ -430,6 +431,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_block_check.cpp
         tests/test_terrain_pocket.cpp
         tests/test_sea_access.cpp
+        tests/test_storm.cpp
         tests/test_parked_car_look.cpp
         tests/test_road_graph.cpp
         tests/test_road_net.cpp
