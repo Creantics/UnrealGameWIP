@@ -48,6 +48,7 @@ class APostProcessVolume;
 class UMaterialInstanceDynamic;
 class UMaterialParameterCollection;
 class UNiagaraSystem;
+class UFTWaterSurfaceDraw;
 
 // One body as the map keeps it (the engine's frame, metres): ftcore::WaterBody's fields.
 USTRUCT()
@@ -139,6 +140,9 @@ public:
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickable() const override { return bHasBodies; }
 
+	// The moving surface's tile (FTBuildWaterSurface builds it).
+	static constexpr const TCHAR* TileMeshPath = TEXT("/Game/Look/SM_WaterTile");
+
 	bool HasBodies() const { return bHasBodies; }
 	const ftcore::WaterBodies& Bodies() const { return Water; }
 	// The time the surfaces are read at (the world's seconds).
@@ -226,5 +230,8 @@ private:
 	TObjectPtr<UMaterialParameterCollection> SurfaceParams;
 	UPROPERTY()
 	TObjectPtr<UNiagaraSystem> SplashSystem;
+	// The tiles that draw the surface model while it is on (built the first time it is).
+	UPROPERTY()
+	TObjectPtr<UFTWaterSurfaceDraw> Draw;
 	TWeakObjectPtr<ADirectionalLight> Sun;
 };

@@ -1,4 +1,5 @@
 #include "FTWaterSubsystem.h"
+#include "FTWaterSurfaceDraw.h"
 
 #include "FTCharacterFillSubsystem.h"
 #include "FTExploreDirector.h"
@@ -294,6 +295,28 @@ void UFTWaterSubsystem::UpdateSurface(bool bForce)
 		SurfaceStorm = Storm;
 		SurfaceWind = Look.windMps;
 		SurfaceSwell = Look.seaSwellM;
+		bForce = true;
+	}
+	// The tiles: built the first time the model is on, its waves pushed when the sets move, its tide when it moves.
+	if (bSurfaceOn && !Draw)
+	{
+		Draw = NewObject<UFTWaterSurfaceDraw>(this);
+		if (Draw->Build(*World, Water, Surface.spec.waves))
+		{
+			bForce = true;
+		}
+	}
+	if (Draw)
+	{
+		if (bForce)
+		{
+			Draw->PushWaves(Surface);
+		}
+		else if (bSurfaceOn)
+		{
+			Draw->PushTide(Surface);
+		}
+		Draw->SetShown(bSurfaceOn);
 	}
 }
 
