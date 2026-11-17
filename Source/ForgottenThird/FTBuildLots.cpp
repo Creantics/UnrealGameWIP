@@ -113,7 +113,8 @@ float3 base = bc * tint * lerp(float3(1.0, 1.0, 1.0), float3(0.50, 0.46, 0.40), 
 float rough = HasMR > 0.5 ? lerp(mr.g, 0.95, grime * 0.5) : Rough0;
 float metal = HasMR > 0.5 ? mr.b : 0.0;
 float3 glow = float3(0.0, 0.0, 0.0);
-float spec = 0.5;
+// The instance's Specular (0.5, F0 0.04, unless set): a dark dyed cloth takes less, so it doesn't mirror the lamps.
+float spec = Spec0;
 float night = Night * NightGlow;
 if (s == 5)
 {
@@ -332,6 +333,7 @@ UMaterial* BuildMaster(UPackage* Package, UTexture* White, UTexture* Masks, UTex
 	In(Code, TEXT("Slot"), Scalar(Material, TEXT("Slot"), 9.f, 600));
 	In(Code, TEXT("HasMR"), Scalar(Material, TEXT("HasMR"), 0.f, 700));
 	In(Code, TEXT("Rough0"), Scalar(Material, TEXT("Roughness"), 0.6f, 800));
+	In(Code, TEXT("Spec0"), Scalar(Material, TEXT("Specular"), 0.5f, 850));
 	In(Code, TEXT("WorldUV"), Scalar(Material, TEXT("WorldUV"), 0.f, 900));
 	In(Code, TEXT("TileM"), Scalar(Material, TEXT("TileM"), 2.f, 1000));
 	In(Code, TEXT("SignGlow"), Scalar(Material, TEXT("SignGlow"), 2.f, 1100));
@@ -649,6 +651,11 @@ bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::s
 	FParse::Value(Params, TEXT("HeroPanelGlow="), Out.HeroPanelGlow);
 	FParse::Value(Params, TEXT("HeroWallGlow="), Out.HeroWallGlow);
 	FParse::Value(Params, TEXT("HeroGlowCap="), Out.HeroGlowCap);
+	FParse::Value(Params, TEXT("HeroEateryGlow="), Out.HeroEateryGlow);
+	Out.HeroEateryGlow = FMath::Max(Out.HeroEateryGlow, 0.f);
+	FParse::Value(Params, TEXT("HeroEateryWallGlow="), Out.HeroEateryWallGlow);
+	FParse::Value(Params, TEXT("HeroNorenSpec="), Out.HeroNorenSpec);
+	Out.HeroNorenSpec = FMath::Clamp(Out.HeroNorenSpec, 0.f, 1.f);
 	const auto ParseRgb = [Params](const TCHAR* Key, FLinearColor& Rgb)
 	{
 		FString Value;
@@ -671,6 +678,8 @@ bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::s
 		Out.HeroFloorShare, Out.HeroPropTurn);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: lit rooms' panels glow %.2f, back walls %.2f, cap %s."), Out.HeroPanelGlow,
 		Out.HeroWallGlow, Out.HeroGlowCap > 0.f ? *FString::Printf(TEXT("%.2f"), Out.HeroGlowCap) : TEXT("the master's"));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: the eatery's panels and cap x%.2f, its back wall %.2f; the noren's specular %.3f."),
+		Out.HeroEateryGlow, Out.HeroEateryWallGlow, Out.HeroNorenSpec);
 	const int RunIndex = static_cast<int>(Out.Plan.runs.size());
 	Out.Plan.runs.push_back(Hero.run);
 	for (int32 B = 0; B < ftcore::kHeroBays; ++B)
@@ -978,6 +987,10 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			return Mic;
 		};
 		UMaterialInstanceConstant* const Noren = Plain(TEXT("MI_HC_Noren"), Build.HeroNorenTint, 0.92f);
+		// The dye is near black once decoded (display 0.05,0.09,0.24 is linear 0.002,0.005,0.04), so at the kit's F0 0.04
+		// the cloth showed the warm lamps' reflection, not its own blue: dyed cotton keeps little specular.
+		Noren->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Specular")), Build.HeroNorenSpec);
+		Noren->PostEditChange();
 		UMaterialInstanceConstant* const NorenBand = Plain(TEXT("MI_HC_NorenBand"), Build.HeroNorenBand, 0.85f);
 		for (int32 K = 0; K < Uses.Num(); ++K)
 		{
@@ -1000,15 +1013,17 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				UMaterialInterface* const Wears = Use.TimberMaterials[S];
 				FLinearColor Tint(-1.f, -1.f, -1.f);
 				UTexture* Map = nullptr;
+				float Spec = -1.f;
 				if (Wears)
 				{
 					Wears->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Tint")), Tint);
 					Wears->GetTextureParameterValue(FHashedMaterialParameterInfo(TEXT("BaseColorTexture")), Map);
+					Wears->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Specular")), Spec);
 				}
-				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: SHOP_KOSHI_54 on a timber lot: mesh slot %d (%s, imported %s) wears %s, tint %.2f,%.2f,%.2f, map %s."),
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: SHOP_KOSHI_54 on a timber lot: mesh slot %d (%s, imported %s) wears %s, tint %.2f,%.2f,%.2f, map %s, specular %.3f."),
 					S, *Name, Use.Mesh->GetStaticMaterials().IsValidIndex(S) && Use.Mesh->GetStaticMaterials()[S].MaterialInterface
 						? *Use.Mesh->GetStaticMaterials()[S].MaterialInterface->GetName() : TEXT("-"),
-					Wears ? *Wears->GetName() : TEXT("nothing"), Tint.R, Tint.G, Tint.B, Map ? *Map->GetName() : TEXT("-"));
+					Wears ? *Wears->GetName() : TEXT("nothing"), Tint.R, Tint.G, Tint.B, Map ? *Map->GetName() : TEXT("-"), Spec);
 			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: %d timber lots: timber frames and trims, plaster walls, weathered shutters."),
@@ -1276,15 +1291,20 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			double PieceX = 0.0, PieceY = 0.0;
 			Proof.ToLot(P.x, P.y, PieceX, PieceY);
 			const bool bHeroRoom = Build.TimberLots.Contains(ProofLot);
+			const bool bCounter = Pr->bKoshi && ProofLot == Build.CounterLot;
+			// The eatery's own share of the hero rooms' glow (-HeroEateryGlow): its panels and their cap both, since the
+			// panels sit at the cap.
+			const float RoomGlow = bHeroRoom && bCounter ? Build.HeroEateryGlow : 1.f;
 			const auto BayMaterial =[&](const TCHAR* Name, const FLinearColor& Color, float LampPanel)
 			{
 				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("%s_L%d"), Name, ProofLot), RF_Public);
 				Mic->SetParentEditorOnly(ProofBay);
 				Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Color")), Color);
-				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampPanel")), LampPanel);
-				if (bHeroRoom && Build.HeroGlowCap > 0.f)
+				Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("LampPanel")), LampPanel * RoomGlow);
+				if (bHeroRoom && (Build.HeroGlowCap > 0.f || RoomGlow != 1.f))
 				{
-					Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("ShopGlowCap")), Build.HeroGlowCap);
+					const float Cap = Build.HeroGlowCap > 0.f ? Build.HeroGlowCap : ftcore::WindowFacadeSpec{}.shopGlowCap;
+					Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("ShopGlowCap")), Cap * RoomGlow);
 				}
 				Mic->PostEditChange();
 				return Mic;
@@ -1355,9 +1375,11 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			UMaterialInterface* const PanelPaint = BayMaterial(TEXT("MI_GlassProofBay_Panel"),
 				bHeroRoom ? Build.HeroPanelTint * 0.9f : FLinearColor(0.9f, 0.9f, 0.88f), bHeroRoom ? Build.HeroPanelGlow : 1.f);
 			UMaterialInterface* const BoardPaint = BayMaterial(TEXT("MI_GlassProofBay_Board"), FLinearColor(0.36f, 0.35f, 0.33f), 0.f);
-			// A hero room's back wall may glow a little of its own (-HeroWallGlow), so the lattice's bars read against it.
-			UMaterialInterface* const BackPaint = bHeroRoom && Build.HeroWallGlow > 0.f
-				? BayMaterial(TEXT("MI_GlassProofBay_Back"), Pr->bKoshi ? FLinearColor(0.42f, 0.37f, 0.29f) : FLinearColor(0.38f, 0.37f, 0.34f), Build.HeroWallGlow)
+			// A hero room's back wall may glow a little of its own (-HeroWallGlow), so the lattice's bars read against it; the
+			// eatery's takes -HeroEateryWallGlow (none by default: warm plaster under the room's light, its shelves against it).
+			const float BackGlow = bCounter ? Build.HeroEateryWallGlow : Build.HeroWallGlow;
+			UMaterialInterface* const BackPaint = bHeroRoom && BackGlow > 0.f
+				? BayMaterial(TEXT("MI_GlassProofBay_Back"), Pr->bKoshi ? FLinearColor(0.42f, 0.37f, 0.29f) : FLinearColor(0.38f, 0.37f, 0.34f), BackGlow)
 				: WallPaint;
 			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX1, BayY1, BayZ0 + 0.04, FloorPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(*Pr, BayX0, BayY0, BayZ1 - 0.04, BayX1, BayY1, BayZ1, CeilPaint, Data, EFTCellKind::NoCollide, BayTag);
@@ -1402,7 +1424,6 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				LotBox(*Pr, X0 + 0.02, Y0 + 0.08, Z + 0.03, X1 - 0.02, Y0 + 0.10, Z + 0.03 + RowH, Mic, Data, EFTCellKind::NoCollide, BayTag);
 				++GoodsCount;
 			};
-			const bool bCounter = Pr->bKoshi && ProofLot == Build.CounterLot;
 			// Step 2 (2026-11-16): a hero lattice room furnished with meshes (ftcore::heroRoomFurnish, room terms from the
 			// bay's front north corner); a box shelf run or counter stays only where its mesh isn't imported. The lamp, the
 			// figure and the steam go to the massing build (Build.HeroSpawns): the lamp's paper takes its night glow there.

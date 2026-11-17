@@ -83,7 +83,7 @@ inline constexpr const TCHAR* BayLightTag = TEXT("GlassProofBayLight");
 // HeroFrontTag a lit bay's front, a wide warm key on the lane (heroFrontLumens x the lights' share at heroShopKelvin);
 // HeroSkyTag the lane's cool floor from the open canal side (heroSkyLumens x the share, heroSkyTint, heroSkySpecular).
 // Tagged rect lights, not pool-managed. -NightHeroFrontLm= / -NightHeroSkyLm= / -NightHeroSkyTint=r,g,b /
-// -NightHeroSkySpec= over the look table.
+// -NightHeroSkySpec= / -NightHeroFrontSpec= over the look table.
 inline constexpr const TCHAR* HeroFrontTag = TEXT("HeroCornerFrontKey");
 inline constexpr const TCHAR* HeroSkyTag = TEXT("HeroCornerSkyFloor");
 FORGOTTENTHIRD_API float BayLampLumens();

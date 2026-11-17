@@ -126,6 +126,7 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightHeroFrontLm="), L.heroFrontLumens);
 	ReadNumber(Cmd, TEXT("NightHeroSkyLm="), L.heroSkyLumens);
 	ReadNumber(Cmd, TEXT("NightHeroSkySpec="), L.heroSkySpecular);
+	ReadNumber(Cmd, TEXT("NightHeroFrontSpec="), L.heroFrontSpecular);
 	ReadList(Cmd, TEXT("NightHeroSkyTint="), L.heroSkyTint.data(), static_cast<int32>(L.heroSkyTint.size()));
 	ReadNumber(Cmd, TEXT("NightCap="), L.capShare);
 	ReadNumber(Cmd, TEXT("NightCapFloor="), L.capFloor);
@@ -298,6 +299,7 @@ int32 FTNight::WriteBayLights(UWorld& World, float Lights)
 			{
 				Hero->SetUseTemperature(L.heroShopKelvin > 0.f);
 				Hero->SetTemperature(L.heroShopKelvin > 0.f ? L.heroShopKelvin : L.shopKelvin);
+				Hero->SetSpecularScale(FMath::Max(0.f, L.heroFrontSpecular));
 			}
 			else
 			{

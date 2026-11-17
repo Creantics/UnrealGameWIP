@@ -85,6 +85,9 @@ TEST_CASE("nightFrame: full night is the spec, the same for the clock and a stil
     CHECK(look.heroSkyLumens < look.heroFrontLumens);
     CHECK(look.heroSkyTint[0] / look.heroSkyTint[2] < 0.6f);
     CHECK(look.heroSkySpecular == doctest::Approx(0.f));
+    // The fronts' key: a faint sheen on wet setts, never its source's white rectangle.
+    CHECK(look.heroFrontSpecular > 0.f);
+    CHECK(look.heroFrontSpecular <= 0.25f);
     CHECK(look.moonTint[2] > look.moonTint[0]);
     // Wide, soft lamp pools within the engine's spot cone limit.
     CHECK(look.lampOuterDeg <= 80.f);

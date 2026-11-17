@@ -644,6 +644,16 @@ void checkRoom(const HeroRoomSpec& room, const HeroItem* items, int n) {
         const bool inDoor = x1 > room.doorX0 && x0 < room.doorX1 && y0 < room.doorClear;
         CHECK_FALSE(inDoor);
         for (int j = i + 1; j < n; ++j) CHECK_FALSE(overlaps(it, items[j]));
+        // What stands on a counter stands on one of its slots, clear of the counter's own dressing.
+        if (it.piece == HeroPiece::StockPot || it.piece == HeroPiece::Bottles || it.piece == HeroPiece::Jars) {
+            bool onSlot = false;
+            for (int j = 0; j < n; ++j) {
+                if (items[j].piece != HeroPiece::Counter) continue;
+                const double dx = it.at.x - items[j].at.x;
+                onSlot = onSlot || std::fabs(dx - kHeroCounterSlotLeft) < 1e-9 || std::fabs(dx - kHeroCounterSlotRight) < 1e-9;
+            }
+            CHECK(onSlot);
+        }
     }
 }
 } // namespace
@@ -668,7 +678,7 @@ TEST_CASE("hero room furnish: a lattice shop takes two shelf units, a counter, g
     }
 }
 
-TEST_CASE("hero room furnish: the eatery's cook stands behind the counter, back to the lane, the pot steaming over it") {
+TEST_CASE("hero room furnish: the eatery's cook stands behind the counter, turned three-quarter to the pot steaming over it") {
     HeroRoomSpec room;
     room.eatery = true;
     HeroItem items[kHeroRoomMax];
@@ -677,7 +687,8 @@ TEST_CASE("hero room furnish: the eatery's cook stands behind the counter, back 
     CHECK(countOf(items, n, HeroPiece::Counter) == 2);
     CHECK(countOf(items, n, HeroPiece::StockPot) == 1);
     CHECK(countOf(items, n, HeroPiece::Steam) == 1);
-    CHECK(countOf(items, n, HeroPiece::Shelf) == 1);
+    CHECK(countOf(items, n, HeroPiece::Shelf) == 2);  // pots and bowls on the back wall either side of the cook
+    CHECK(countOf(items, n, HeroPiece::Lantern) == 1);
     checkRoom(room, items, n);
     const HeroItem *fig = nullptr, *pot = nullptr, *steam = nullptr;
     double counterBack = 0.0;
@@ -690,7 +701,17 @@ TEST_CASE("hero room furnish: the eatery's cook stands behind the counter, back 
     REQUIRE(fig);
     REQUIRE(pot);
     REQUIRE(steam);
-    CHECK(fig->faceY == doctest::Approx(1.0));  // its back to the lane
+    // Turned to the pot, 30 to 45 degrees off the lane's line both ways (off the way to the lane, (0, -1), and off the
+    // front's run, x): a three-quarter view from the lane.
+    const double toPotX = pot->at.x - fig->at.x, toPotY = pot->at.y - fig->at.y, toPot = std::sqrt(toPotX * toPotX + toPotY * toPotY);
+    CHECK(fig->faceX * toPotX + fig->faceY * toPotY == doctest::Approx(toPot));
+    const double offLane = std::acos(std::clamp(-fig->faceY, -1.0, 1.0)) * 180.0 / 3.14159265358979;
+    const double offFront = std::acos(std::clamp(std::fabs(fig->faceX), 0.0, 1.0)) * 180.0 / 3.14159265358979;
+    CHECK(offLane >= 30.0 - 1e-6);
+    CHECK(offLane <= 45.0 + 1e-6);
+    CHECK(offFront >= 30.0 - 1e-6);
+    CHECK(offFront <= 45.0 + 1e-6);
+    CHECK(fig->faceX * fig->faceX + fig->faceY * fig->faceY == doctest::Approx(1.0));
     CHECK(fig->at.y > counterBack);
     CHECK(steam->at.x == doctest::Approx(pot->at.x));
     CHECK(steam->at.z > pot->at.z);

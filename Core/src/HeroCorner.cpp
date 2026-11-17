@@ -453,7 +453,7 @@ bool heroItemFootprint(const HeroItem& item, double& x0, double& x1, double& y0,
     case HeroPiece::Counter: set(-1.2, 1.2, -0.6, 0.0); break;  // origin at its back face
     case HeroPiece::Crate: set(-0.25, 0.25, -0.25, 0.25); break;
     case HeroPiece::Bucket: set(-0.17, 0.17, -0.17, 0.17); break;
-    case HeroPiece::Figure: set(-0.25, 0.25, -0.25, 0.25); break;
+    case HeroPiece::Figure: set(-0.2, 0.2, -0.15, 0.15); break;  // shoulders across, chest to back: fits the aisle turned
     case HeroPiece::Sacks: set(-0.3, 0.3, -0.3, 0.3); break;
     case HeroPiece::UmbrellaStand: set(-0.15, 0.15, -0.15, 0.15); break;
     case HeroPiece::Bicycle: set(-0.3, 0.3, -0.9, 0.9); break;
@@ -512,8 +512,8 @@ int heroRoomFurnish(const HeroRoomSpec& room, HeroItem* out, int max) {
         const double cx = std::min(1.5, room.doorX0 - 0.15 - 1.2);
         const double cBack = 1.6;
         if (cx >= 1.25 && D - 0.44 - cBack >= 0.6 && add(HeroPiece::Counter, cx, cBack, 0.0)) {
-            add(HeroPiece::Jars, cx - 0.6, cBack - 0.3, counterH);
-            add(HeroPiece::Bottles, cx + 0.55, cBack - 0.3, counterH);
+            add(HeroPiece::Jars, cx + kHeroCounterSlotLeft, cBack - 0.3, counterH);
+            add(HeroPiece::Bottles, cx + kHeroCounterSlotRight, cBack - 0.3, counterH);
         }
         if (room.doorX0 >= 0.8 && D >= 1.0) add(HeroPiece::Sacks, room.doorX0 - 0.35, 0.4, 0.0);
         add(HeroPiece::HangGoods, std::min(1.0, 0.25 * W), std::min(0.9, 0.4 * D), H - 0.06);
@@ -535,14 +535,28 @@ int heroRoomFurnish(const HeroRoomSpec& room, HeroItem* out, int max) {
         }
     }
     if (counters) {
-        // The cook behind the first counter with its back to the lane; the stock pot steaming on the last.
-        add(HeroPiece::Figure, std::clamp(1.3, 0.3, W - 0.3), D - 0.28, 0.0, 0.0, 1.0);
-        const double potX = two ? std::min(W - 1.4, 0.5 * W + 2.2) : 0.5 * W + 0.6;
-        add(HeroPiece::StockPot, potX, cBack - 0.3, counterH);
-        add(HeroPiece::Steam, potX, cBack - 0.3, counterH + 0.32);
-        add(HeroPiece::Bottles, two ? 0.5 * W - 1.9 : 0.5 * W - 0.7, cBack - 0.3, counterH);
+        // The stock pot steaming on the last counter; the cook behind it, turned three-quarter to the pot (45 degrees off
+        // the lane's line both ways, so the lane sees a working side, not a back), between the two shelf units.
+        // On a counter slot clear of the counter's own dressing (kHeroCounterSlot*): the last counter's right slot, or its
+        // left one where the cook would stand in the end shelf unit (the pot no further than W - 1.4).
+        const double last = two ? 0.5 * W + 1.2 : 0.5 * W, first = two ? 0.5 * W - 1.2 : 0.5 * W;
+        const bool right = last + kHeroCounterSlotRight <= W - 1.4;
+        const double potX = last + (right ? kHeroCounterSlotRight : kHeroCounterSlotLeft);
+        // The bottles on the first counter's left slot, or, on a lone counter, the slot the pot left.
+        const double bottlesX = first + ((two || right) ? kHeroCounterSlotLeft : kHeroCounterSlotRight);
+        const double potY = cBack - 0.3, cookY = D - 0.28;
+        const double cookX = std::clamp(potX - (cookY - potY), 0.3, W - 0.3);
+        const double fx = potX - cookX, fy = potY - cookY, len = std::sqrt(fx * fx + fy * fy);
+        add(HeroPiece::Figure, cookX, cookY, 0.0, len > 0.0 ? fx / len : 0.0, len > 0.0 ? fy / len : -1.0);
+        add(HeroPiece::StockPot, potX, potY, counterH);
+        add(HeroPiece::Steam, potX, potY, counterH + 0.32);
+        add(HeroPiece::Bottles, bottlesX, potY, counterH);
     }
-    if (W >= 2.4 && D >= 1.0) add(HeroPiece::Shelf, W - 1.0, D - 0.04, 0.0);
+    // Shelf units of pots and bowls on the back wall, as in the shop: one at each end, a unit the cook stands in dropped.
+    if (W >= 2.4 && D >= 1.0) {
+        add(HeroPiece::Shelf, W - 1.0, D - 0.04, 0.0);
+        add(HeroPiece::Shelf, 1.0, D - 0.04, 0.0);
+    }
     if (room.doorX0 >= 0.6) add(HeroPiece::Bucket, 0.3, 0.3, 0.0);
     add(HeroPiece::HangGoods, std::min(1.2, 0.3 * W), std::min(0.8, 0.3 * D), H - 0.06);
     add(HeroPiece::Lantern, 0.35 * W, std::min(0.8, 0.4 * D), H - 0.04);

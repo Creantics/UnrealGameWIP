@@ -326,7 +326,8 @@ FTCORE_API bool heroItemFootprint(const HeroItem& item, double& x0, double& x1, 
 // A lit lattice room (room terms): width along the front, depth in, height to the ceiling; the entrance's span along
 // the front. A shop takes two shelf units on its back wall, a counter behind the lattice with jars and bottles, sacks
 // by the door, hanging goods, a crate and one paper lamp; the eatery two counters across the room (the cook's side
-// behind), a shelf, the figure behind the counter with its back to the lane, a stock pot and its steam, a lamp. Floor
+// behind), two shelf units on the back wall, the figure behind the counter turned three-quarter to its stock pot (45
+// degrees off the lane's line), the pot's steam, a lamp. Floor
 // pieces keep out of each other and of the entrance's first doorClear in. Returns how many (at most max).
 struct HeroRoomSpec {
     double width = 5.1, depth = 2.8, height = 2.45;
@@ -334,6 +335,10 @@ struct HeroRoomSpec {
     double doorX0 = 2.85, doorX1 = 5.1, doorClear = 1.2;
 };
 inline constexpr int kHeroRoomMax = 16;
+// SM_HC_Counter (2.4 m) carries its own dressing along its middle (tools/blender/hero_corner_props.py counter()): a
+// packet stack at local x -1.0, a bowl tray at -0.05 and a cash box at +0.98. A piece set on the counter stands at one of
+// these two slots between them (local x, from the counter's centre), clear for a 0.6 m stock pot or a 0.42 m tray.
+inline constexpr double kHeroCounterSlotLeft = -0.56, kHeroCounterSlotRight = 0.47;
 FTCORE_API int heroRoomFurnish(const HeroRoomSpec& room, HeroItem* out, int max);
 
 // The lane's dressing (plan terms): hanging signs and banners, clutter by the walls (crates, buckets, the bicycle, an

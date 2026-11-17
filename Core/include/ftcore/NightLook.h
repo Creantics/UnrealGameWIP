@@ -151,6 +151,9 @@ struct NightLook {
     float heroSkyLumens = 25.f;
     std::array<float, 3> heroSkyTint{0.45f, 0.62f, 1.f};
     float heroSkySpecular = 0.f;
+    // The fronts' key has no visible source, so on wet setts its full mirror image (a hard white rectangle, E2 11-16)
+    // gives it away; a low specular keeps a soft sheen and the lanterns make the reflections.
+    float heroFrontSpecular = 0.15f;
     std::array<float, 3> glow{0.030f, 0.019f, 0.010f};   // fog inscattering added at full night (linear luminance)
     // The moon is a pale blue. The sky light captures the atmosphere it lights, which is a far deeper blue than the
     // moon itself, so the fill's tint leans the other way (red over blue): net, an unlit facade reads a grey-blue, dark

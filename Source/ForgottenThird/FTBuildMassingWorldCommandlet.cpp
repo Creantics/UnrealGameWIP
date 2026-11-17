@@ -4,6 +4,7 @@
 #include "FTBuildStandIns.h"
 #include "FTBuildLawn.h"
 #include "FTBuildLots.h"
+#include "FTBuildHeroFarBank.h"
 #include "FTClockTower.h"
 #include "FTMaterialCheck.h"
 #include "FTBuildPlinths.h"
@@ -3500,6 +3501,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UAnimSequence* const HumanIdle = LoadObject<UAnimSequence>(nullptr,
 			TEXT("/Game/Characters/TestHuman/test_human/SkeletalMeshes/test_humanidle.test_humanidle"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 		UNiagaraSystem* const Steam = LoadObject<UNiagaraSystem>(nullptr, TEXT("/Game/VFX/NS_eatery_steam.NS_eatery_steam"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		// The cook in dark work clothes on every slot (an indigo charcoal, linear 0.035 to 0.05), so against the lit room it
+		// reads as a figure in shadow, not the test human's pale shirt and skin.
+		UMaterialInstanceConstant* CookCloth = nullptr;
+		if (UMaterialInterface* const CookParent = LoadObject<UMaterialInterface>(nullptr,
+				TEXT("/Game/Characters/Shared/Materials/M_FTCharacter.M_FTCharacter"), nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			CookCloth = NewObject<UMaterialInstanceConstant>(Package, TEXT("MI_HC_CookCloth"), RF_Public);
+			CookCloth->SetParentEditorOnly(CookParent);
+			CookCloth->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("BaseColor")), FLinearColor(0.035f, 0.036f, 0.05f));
+			CookCloth->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), 0.85f);
+			CookCloth->PostEditChange();
+		}
 		int32 RoomSpawns = 0;
 		for (const FTLots::FBuild::FHeroSpawn& Item : LotBuild.HeroSpawns)
 		{
@@ -3520,12 +3533,17 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 			else if (Item.Piece == ftcore::HeroPiece::Figure && Human)
 			{
-				// The eatery's cook: the test human in its idle, back to the lane (its mesh faces +Y at yaw 0, like the props).
+				// The eatery's cook: the test human in its idle (no working clip yet), turned three-quarter to its pot (its mesh
+				// faces +Y at yaw 0, like the props), in dark clothes.
 				ASkeletalMeshActor* Cook = World->SpawnActor<ASkeletalMeshActor>(Item.At, Turn, Spawn);
 				if (USkeletalMeshComponent* Body = Cook ? Cook->GetSkeletalMeshComponent() : nullptr)
 				{
 					Cook->SetActorLabel(TEXT("HC-EateryCook"));
 					Body->SetSkeletalMesh(Human);
+					for (int32 M = 0; CookCloth && M < Body->GetNumMaterials(); ++M)
+					{
+						Body->SetMaterial(M, CookCloth);
+					}
 					if (HumanIdle)
 					{
 						Body->SetAnimationMode(EAnimationMode::AnimationSingleNode);
@@ -3549,8 +3567,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d marked large lanterns (%s); %d of %d dressing pieces; %d of %d room "
-			"spawns (cook %s, steam %s)."), MarkedLanterns, LargeMark ? TEXT("SM_HC_LanternLargeMark") : TEXT("not imported"), Dressed, DressCount,
-			RoomSpawns, LotBuild.HeroSpawns.Num(), Human ? TEXT("test human") : TEXT("missing"), Steam ? TEXT("NS_eatery_steam") : TEXT("missing (FTBuildVfx)"));
+			"spawns (cook %s in %s, steam %s)."), MarkedLanterns, LargeMark ? TEXT("SM_HC_LanternLargeMark") : TEXT("not imported"), Dressed, DressCount,
+			RoomSpawns, LotBuild.HeroSpawns.Num(), Human ? TEXT("test human") : TEXT("missing"),
+			CookCloth ? TEXT("MI_HC_CookCloth") : TEXT("its own materials (no M_FTCharacter)"), Steam ? TEXT("NS_eatery_steam") : TEXT("missing (FTBuildVfx)"));
 		// The face ruling (2026-11-16): each lit front a wide soft warm key onto the lane, and one cool floor from the open
 		// canal side, so a face's shadow side never reads 0 (ftcore::heroCornerAreaLights). Tagged rect lights, dark at build;
 		// FTNight::WriteBayLights gives them their output, colour and specular by the lights' share.
@@ -3666,6 +3685,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			HeroPieces, HeroLamps, HeroSpec.stringLampGain, HeroSpec.pairLampGain, HeroSpec.entranceLampGain, HeroLampScale,
 			bNightLamps ? TEXT("") : TEXT(" (no -NightLamps, so none)"), HeroSpec.largeScale, HeroSpec.lanternColour[0], HeroSpec.lanternColour[1],
 			HeroSpec.lanternColour[2], HeroSpec.lanternBase[0], HeroSpec.lanternBase[1], HeroSpec.lanternBase[2], HeroSpec.lanternGlow);
+		// The corner's sight line west (E2, 11-16): far-bank fronts, the near quay's rope edge, moored boats, trees.
+		FTHeroFarBank::Build(Cells, Side, nullptr, Timber, Steel, NightGlow, Large, Small, LargePaper, SmallPaper,
+			(bNightLamps && LampParts.Lights) ? LampParts.Lights->Data.Get() : nullptr, HeroLampScale);
 	}
 	// Per box face (box * 4 + face), whether its middle fronts a street: the frontage reads it; the windows' shop fronts
 	// follow it.
