@@ -442,6 +442,38 @@ TEST_CASE("close station: given, the brain walks to a station in the close lens 
     CHECK(partnerCloseInCone(view.cameraPos, view.cameraForward, kCsHalf, 0.f, p.in.pos));
 }
 
+TEST_CASE("close station: given, no string starts until the partner faces its target within 30 degrees") {
+    // The facing given and 90 degrees off its target: it walks to its station but holds there; turned to within
+    // 30 degrees, it strings.
+    CsPit p(true);
+    bool strung = false;
+    int heldThere = 0;
+    for (int s = 0; s < 5 * 60; ++s) {
+        const Vec2 to = csSub(p.e[0].pos, p.in.pos);
+        const float l = csLen(to);
+        p.in.facing = Vec2{-to.y / l, to.x / l}; // a right angle off
+        const PartnerIntent& i = p.step();
+        if (i.newString) strung = true;
+        if (i.act == PartnerAct::MoveTo) {
+            const Vec2 v = csSub(i.point, p.in.pos);
+            const float d = csLen(v), step = 4.5f / 60.f;
+            p.in.pos = d <= step ? i.point : csAdd(p.in.pos, csMul(v, step / d));
+        } else if (i.why == PartnerWhy::Pause) {
+            ++heldThere;
+        }
+    }
+    CHECK_FALSE(strung);
+    CHECK(heldThere > 0);
+    // Turned to 25 degrees off: it strings.
+    for (int s = 0; s < 2 * 60 && !strung; ++s) {
+        const Vec2 to = csSub(p.e[0].pos, p.in.pos);
+        const float l = csLen(to), c = std::cos(25.f * 3.14159265f / 180.f), sn = std::sin(25.f * 3.14159265f / 180.f);
+        p.in.facing = Vec2{(c * to.x - sn * to.y) / l, (sn * to.x + c * to.y) / l};
+        if (p.step().newString) strung = true;
+    }
+    CHECK(strung);
+}
+
 TEST_CASE("close station: stepping it allocates nothing") {
     const bool counting = ftcore_test::allocHookInstalled();
     CsPit p(true);
@@ -1434,6 +1466,52 @@ TEST_CASE("close station: a string the lead hides ends no faster than a pause an
     REQUIRE(strings >= 3);
     CHECK(blows == strings); // each cut after its first blow
     CHECK(shortest + 1e-6 >= 0.6 + static_cast<double>(t.pauseMin));
+}
+
+TEST_CASE("close station: a melee partner takes the far flank, a body width clear of the lead, and keeps it in a string") {
+    // Round 6 (11-16): the lead in contact (1.2 m centre to centre) with a target of 0.5 m, the lens over its right
+    // shoulder (0.55 m) aimed at the target, the melee band, the partner behind on the lead's side.
+    PartnerCloseInput in;
+    in.lead = {-1.2f, 0.f};
+    in.target = {0.f, 0.f};
+    in.targetRadius = 0.5f;
+    csLens(in.lead, in.target, 0.55f, 0.f, in.cameraPos, in.cameraForward, 34.f);
+    in.halfAngleDegrees = 34.f;
+    in.leadSide = -1;
+    in.partner = {-1.5f, -2.f};
+    in.bodyRadius = 0.4f;
+    in.farFlankFirst = true;
+    in.leadGapBodies = 1.f;
+    in.keepWhileAttacking = true;
+    const Vec2 right = csRight(csUnit(in.cameraForward));
+    const float leadLateral = csDot(csSub(in.lead, in.cameraPos), right);
+    REQUIRE(leadLateral < 0.f); // the lead left of the lens's axis
+    PartnerCloseHold hold;
+    const PartnerCloseStation s = partnerCloseStation(in, hold);
+    REQUIRE(s.valid);
+    MESSAGE("far flank " << int{s.flank} << ", angle " << s.angle << ", off the edge " << s.offEdge << ", tier " << int{s.tier}
+                         << ", gapped " << s.gapped << ", lateral " << csDot(csSub(s.point, in.cameraPos), right));
+    // Across the axis from the lead, its silhouette clear of the lead's, a body width of screen gap between them.
+    CHECK(csDot(csSub(s.point, in.cameraPos), right) > 0.f);
+    CHECK(s.gapped);
+    CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, s.point, in.bodyRadius, in.lead, in.bodyRadius));
+
+    // In a string with the near flank held: no new pick (the held flank and angle), whatever the far flank offers.
+    PartnerCloseHold nearHeld;
+    nearHeld.flank = static_cast<std::int8_t>(-s.flank);
+    nearHeld.angle = 60.f;
+    nearHeld.heldFor = 5.0;
+    in.attacking = true;
+    const PartnerCloseStation kept = partnerCloseStation(in, nearHeld);
+    CHECK(kept.valid);
+    CHECK(kept.flank == nearHeld.flank);
+    CHECK(kept.angle == doctest::Approx(60.f));
+    CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, kept.point, in.bodyRadius, in.lead, in.bodyRadius));
+    // The string over and the hold's time up: the far flank again.
+    in.attacking = false;
+    const PartnerCloseStation after = partnerCloseStation(in, nearHeld);
+    CHECK(after.valid);
+    CHECK(after.flank == s.flank);
 }
 
 TEST_CASE("close station: a classic run's whole hash, pinned") {

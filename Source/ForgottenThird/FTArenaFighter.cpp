@@ -17,7 +17,7 @@
 #include "FTBeatFighterAnimInstance.h"
 #include "FTLocomotionAnimInstance.h"
 #include "FTMeshFacing.h"
-#include "FTRimLight.h"
+#include "FTRim.h"
 #include "ForgottenThird.h"
 
 #include "ftcore/ArenaCamera.h"
@@ -130,7 +130,7 @@ AFTArenaFighter::AFTArenaFighter()
 	Root->SetMobility(EComponentMobility::Movable);
 	Visual = CreateDefaultSubobject<USceneComponent>(TEXT("Visual"));
 	Visual->SetupAttachment(Root);
-	Rim = CreateDefaultSubobject<UFTRimLightComponent>(TEXT("Rim"));
+	Rim = CreateDefaultSubobject<UFTRimComponent>(TEXT("Rim"));
 	Rim->SetupAttachment(Visual);
 	Rim->bAllowed = false; // Setup turns it on for the player's figure
 
@@ -283,6 +283,7 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	SkinKind = ESkin::Shapes;
 	bPlayerFigure = bPlayer;
 	Rim->bAllowed = bPlayer;
+	Rim->bRequirePlayerPawn = false; // the player's figure writes whoever possesses it
 	Rim->SetRelativeLocation(FVector(0.0, 0.0, Height * 0.8));
 	// Wetness proof in the arena, as -ExploreWet does in explore: -ArenaWet=<Wetness>,<line cm above the feet> holds the
 	// player's garments at that state (pieces worn later take it within a second). The world drives these in play.

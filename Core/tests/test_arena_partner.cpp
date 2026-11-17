@@ -4361,6 +4361,9 @@ struct FoughtLensRun {
     float time = 0.f;
     // The steps the lead stood within 1.2 m of its target (centre to centre: bodies touching), and their sums.
     int contact = 0, contactSeen = 0, contactClearSeen = 0;
+    // The steps on screen whose floor-plane silhouette (0.4 m each) does not overlap the lead's from the lens: the
+    // capture's second measure ("not overlapping the lead").
+    int leadClearFlatSeen = 0;
     // The brain's rule-19 tier this step (PartnerIntent::closeTier, 0 none) on the steps hidden behind the lead,
     // and on those behind the target.
     int leadHidTier[5] = {}, targetHidTier[5] = {};
@@ -4369,6 +4372,11 @@ struct FoughtLensRun {
     // windup) with a standing enemy inside its reach: the longest such run (s), and the first time any standing enemy
     // was inside its reach (-1: never).
     float idleLongest = 0.f, firstInReach = -1.f;
+    // The ruling of 11-16 on a melee partner: the steps its target is the lens's (or it has none), on screen of those,
+    // clear of the lead of those; the steps on another enemy, those where that enemy stands out of the near field, and
+    // of those the steps its body (and, walking, its goal) keeps rule 1.
+    int same = 0, sameSeen = 0, sameSeenClear = 0, other = 0, otherAllowed = 0, otherPosOk = 0, otherGoalOk = 0,
+        otherWalk = 0, otherStation = 0;
 };
 
 struct FoughtLens {
@@ -4382,6 +4390,8 @@ struct FoughtLens {
     // The lead pressing into its target (bodies touching) whenever it stands off, as the capture's lead did for
     // about half of its fought steps (3 of the 5 views at 0.85-0.9 m), against the autopilot's fifth.
     bool hug = false;
+    float seconds = 40.f; // the run's length (the fight may end first)
+    bool laneStart = false; // the arena lane's start: 3 m ahead of the lead along the lens, 1.5 m off the far side
 };
 
 float smooth01(float t) {
@@ -4392,7 +4402,8 @@ float smooth01(float t) {
 // kit: 0 the party kit without its range, 1 with its shipped range, 2 a caster's 8.5 / 5 (the ruling of 11-16).
 // The lead's kit and the enemies (one at a time) as named.
 FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit, const char* lead = "devin",
-                            std::initializer_list<const char*> foes = {"brute", "skirmisher", "breaker"}) {
+                            std::initializer_list<const char*> foes = {"brute", "skirmisher", "breaker"},
+                            const char* partner = nullptr) {
     const ArenaTable t = shippedTable();
     PRig r(t.fighter(lead));
     r.def = t.fallback;
@@ -4408,18 +4419,39 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit,
     r.def.attackers = 1;
     r.def.ringRadius = 12.f;
     r.def.spawnDistance = 7.f;
-    ArenaFighter third = t.fighter("third");
-    if (kit == 0) third.partnerReach = third.partnerStandoff = 0.f;
-    if (kit == 2) {
-        third.partnerReach = 8.5f;
-        third.partnerStandoff = 5.f;
+    // The partner's kit: the party caster's by `kit`, or (partner named) that lead's own kit as shipped, as the
+    // runner gives it (FTArenaRunner: the partner fights with the kit of the lead it is), `kit` then unused.
+    ArenaFighter mate = t.fighter(partner != nullptr ? partner : "third");
+    if (partner == nullptr && kit == 0) mate.partnerReach = mate.partnerStandoff = 0.f;
+    if (partner == nullptr && kit == 2) {
+        mate.partnerReach = 8.5f;
+        mate.partnerStandoff = 5.f;
     }
-    r.def.partnerKit = third;
+    r.def.partnerKit = mate;
+    // The host's band and body by the kit (FTArenaRunner::CloseStationView): a magic kit the caster's, the others
+    // the melee one; the party caster keeps the 0.4 m body these runs always gave it.
+    const bool caster = mate.weapon == ArenaWeapon::Magic;
+    const float bandMin = caster ? kPartnerCloseCasterMin : kPartnerCloseMeleeMin;
+    const float bandMax = caster ? kPartnerCloseCasterMax : kPartnerCloseMeleeMax;
+    const float mateRadius = partner != nullptr ? std::clamp(mate.bodyRadius, 0.1f, 1.5f) : 0.4f;
     r.ownPartnerKit = true;
     r.tuning = shippedTuning();
     r.in.partnerOrder = 1; // Spread
     r.goShipped(true, seed);
     r.autopilot = false; // driven here: the autopilot's input each step, the camera on top
+    if (lens.laneStart) {
+        float best = 1e9f;
+        Vec2 fw{1.f, 0.f};
+        for (std::size_t i = 0; i < r.fight.enemyCount(); ++i)
+            if (dist(r.bodies.enemies[i], r.bodies.player) < best) {
+                best = dist(r.bodies.enemies[i], r.bodies.player);
+                const Vec2 d = sub(r.bodies.enemies[i], r.bodies.player);
+                fw = Vec2{d.x / std::max(best, 1e-3f), d.y / std::max(best, 1e-3f)};
+            }
+        const Vec2 rt{-fw.y, fw.x};
+        const float lat = -1.5f * lens.shoulder;
+        r.bodies.ally = r.ring.clamp(Vec2{r.bodies.player.x + 3.f * fw.x + lat * rt.x, r.bodies.player.y + 3.f * fw.y + lat * rt.y}, 0.4f);
+    }
 
     constexpr float kAspect = 16.f / 9.f;
     constexpr float kPartnerHeight = 1.75f;
@@ -4428,7 +4460,8 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit,
     float melee = 0.f;
     FoughtLensRun o;
     float idleRun = 0.f;
-    while (!r.fight.over() && r.fight.time() < 40.f) {
+    int lastTarget = -1; // the lens's target the brain's last step was given (its intent is that step's)
+    while (!r.fight.over() && r.fight.time() < lens.seconds) {
         // The followed target: the lock, else the nearest standing enemy.
         int target = -1;
         if (r.out && r.out->player.lock != kArenaNobody && r.fight.enemyAlive(r.out->player.lock)) target = r.out->player.lock;
@@ -4495,11 +4528,37 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit,
                 o.contactTargetX += 0.5f * (tx + 1.f);
             }
             const bool seen = partnerInFrameClose(cam, kPartnerFrustumMargin, a);
+            {
+                const PartnerIntent& pi = r.brain.intent();
+                const Vec2 cp{cam.pos.x, cam.pos.y}, fw2{cam.forward.x, cam.forward.y};
+                const bool leadHid0 = behind(r.bodies.player, leadBody.radius, leadBody.head);
+                // On another enemy: not the lens's target this step nor the last (the lead's lock may turn inside a step).
+                if (pi.enemy < 0 || pi.enemy == target || pi.enemy == lastTarget) {
+                    ++o.same;
+                    if (seen) {
+                        ++o.sameSeen;
+                        if (!leadHid0) ++o.sameSeenClear;
+                    }
+                } else {
+                    ++o.other;
+                    if (pi.closeTier != 0) ++o.otherStation;
+                    const Vec2 ep = r.bodies.enemies[static_cast<std::size_t>(pi.enemy)];
+                    if (partnerCloseNearOk(cp, fw2, r.bodies.player, ep)) {
+                        ++o.otherAllowed;
+                        if (partnerCloseNearOk(cp, fw2, r.bodies.player, a)) ++o.otherPosOk;
+                        if (pi.act == PartnerAct::MoveTo || pi.act == PartnerAct::StepBack) {
+                            ++o.otherWalk;
+                            if (partnerCloseNearOk(cp, fw2, r.bodies.player, r.out->ally.goal)) ++o.otherGoalOk;
+                        }
+                    }
+                }
+            }
             const bool leadHid = behind(r.bodies.player, leadBody.radius, leadBody.head);
             if (!leadHid) ++o.leadClear;
             if (seen) {
                 ++o.seen;
                 if (!leadHid) ++o.leadClearSeen;
+                if (!partnerCloseOverlaps(Vec2{cam.pos.x, cam.pos.y}, a, 0.4f, r.bodies.player, 0.4f)) ++o.leadClearFlatSeen;
                 if (!behind(tp, tc.radius, tc.top)) ++o.targetClear;
                 else ++o.targetHidTier[std::min<int>(r.brain.intent().closeTier, 4)];
                 if (leadHid) ++o.leadHidTier[std::min<int>(r.brain.intent().closeTier, 4)];
@@ -4528,8 +4587,9 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit,
                 ci.halfAngleDegrees = 0.5f * pose.fov;
                 ci.leadSide = static_cast<std::int8_t>(-lens.shoulder);
                 ci.partner = a;
-                ci.standMin = kPartnerCloseCasterMin;
-                ci.standMax = kPartnerCloseCasterMax;
+                ci.standMin = bandMin;
+                ci.standMax = bandMax;
+                ci.bodyRadius = mateRadius;
                 ci.arenaCentre = r.fight.ring().centre;
                 ci.arenaRadius = r.fight.ring().radius - 0.4f;
                 PartnerCloseHold fresh;
@@ -4549,7 +4609,7 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit,
 
         // Still with a standing enemy in its reach (the kit's under the close lens: the range on), its cooldown clear.
         if (r.out && r.out->ally.partnerOn) {
-            const float reach = third.partnerReach > 0.f ? third.partnerReach : r.tuning.reachMeters;
+            const float reach = mate.partnerReach > 0.f ? mate.partnerReach : r.tuning.reachMeters;
             bool inReach = false;
             for (std::size_t i = 0; i < r.fight.enemyCount(); ++i)
                 if (r.fight.enemyAlive(i) &&
@@ -4570,12 +4630,13 @@ FoughtLensRun foughtLensRun(const FoughtLens& lens, std::uint32_t seed, int kit,
         if (lens.hug && centre > 0.95f) r.in.move = Vec2{(tp.x - r.bodies.player.x) / centre, (tp.y - r.bodies.player.y) / centre};
         r.in.partnerCamera = cam;
         r.in.cameraOn = true;
+        lastTarget = target;
         PartnerCloseView& v = r.in.partnerClose;
         v.given = true;
         v.leadSide = static_cast<std::int8_t>(-lens.shoulder);
-        v.standMin = kPartnerCloseCasterMin;
-        v.standMax = kPartnerCloseCasterMax;
-        v.bodyRadius = 0.4f;
+        v.standMin = bandMin;
+        v.standMax = bandMax;
+        v.bodyRadius = mateRadius;
         const float vertical = 0.5f * cam.verticalFovDegrees * 3.14159265f / 180.f;
         v.verticalHalfDegrees = 0.5f * cam.verticalFovDegrees;
         v.halfAngleDegrees = std::atan(std::tan(vertical) * cam.aspect) * 180.f / 3.14159265f;
@@ -4604,6 +4665,9 @@ std::string foughtLensText(const FoughtLensRun& o) {
         s << " (centre " << o.contactDist / static_cast<float>(o.contact) << " m, target x "
           << o.contactTargetX / static_cast<float>(o.contact) << "; clear of the lead " << pc(o.contactClearSeen, o.contactSeen)
           << " of on-screen)";
+    s << ". RULING: same " << o.same << " seen " << pc(o.sameSeen, o.same) << " clear " << pc(o.sameSeenClear, o.sameSeen)
+      << "; other " << o.other << " station " << o.otherStation << " allowed " << o.otherAllowed << " posOk "
+      << pc(o.otherPosOk, o.otherAllowed) << " walk " << o.otherWalk << " goalOk " << pc(o.otherGoalOk, o.otherWalk);
     s << ". Tiers behind the lead";
     for (const int k : o.leadHidTier) s << " " << k;
     s << ", behind the target";
@@ -4644,6 +4708,89 @@ TEST_CASE("arena partner: rule 19 in a fought run under the close lens, as the g
                 CHECK(100 * all.leadClearSeen >= 75 * all.seen);
                 CHECK(100 * all.contactClearSeen >= 75 * all.contactSeen);
             }
+}
+
+TEST_CASE("arena partner: a melee partner under the close lens, measured as the capture: clear of the lead on 75% of on-screen steps") {
+    // The arena lane's capture (cam6, 11-16): one lead's kit, the other lead as the partner with its own melee kit,
+    // brute / skirmisher / breaker, the close lens. Its measure: the steps on screen AND not behind the lead (the
+    // lines to its middle and head both through the lead's body) over ALL the partner's steps in the play camera,
+    // not over the on-screen ones: 47% with the gauntlets lead and the guns partner, 63% the other way round
+    // (on screen 69% and 85%; not overlapping the lead on the floor plane 27% and 55%). The ruling of 11-16 (round 6):
+    // from the arena lane's start (3 m ahead of the lead along the lens, 1.5 m off the far side), clear of the lead on
+    // at least 75% of the ON-SCREEN steps (off screen is no loss), in contact too; on the lens's target, on screen
+    // at least 60% of those steps and clear on 75% of those on screen; on another enemy no close station, rule 1
+    // kept by its body and its walk goals on 95% (where that enemy stands out of the near field).
+    struct Pair {
+        const char* lead;
+        const char* partner;
+    };
+    // The capture's own runs, seed 1 to its length (11.0 s and 16.3 s): reported.
+    for (const Pair p : {Pair{"devin", "duy"}, Pair{"duy", "devin"}})
+        for (const bool hug : {false, true}) {
+            FoughtLens lens{2.6f, 0.55f, 1.f, true, 0.475f, hug};
+            lens.seconds = std::string(p.lead) == "devin" ? 11.f : 16.3f;
+            const FoughtLensRun o = foughtLensRun(lens, 1, 1, p.lead, {"brute", "skirmisher", "breaker"}, p.partner);
+            MESSAGE("CAPTURE LENGTH melee lead " << std::string(p.lead) << ", hug " << hug << ", " << lens.seconds
+                                                 << " s: on screen and not behind the lead "
+                                                 << 100 * o.leadClearSeen / std::max(o.steps, 1) << "% of " << o.steps
+                                                 << " steps, on screen " << 100 * o.seen / std::max(o.steps, 1)
+                                                 << "%, not overlapping " << 100 * o.leadClearFlatSeen / std::max(o.steps, 1)
+                                                 << "%, in contact " << 100 * o.contact / std::max(o.steps, 1) << "%");
+        }
+    for (const Pair p : {Pair{"devin", "duy"}, Pair{"duy", "devin"}})
+        for (const bool hug : {false, true}) {
+            CAPTURE(p.lead);
+            CAPTURE(hug);
+            FoughtLensRun all;
+            for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+                FoughtLens lens{2.6f, 0.55f, 1.f, true, 0.475f, hug};
+                lens.laneStart = true;
+                const FoughtLensRun o = foughtLensRun(lens, seed, 1, p.lead, {"brute", "skirmisher", "breaker"}, p.partner);
+                MESSAGE("melee lead " << std::string(p.lead) << ", partner " << std::string(p.partner) << ", hug " << hug << ", seed " << seed
+                                      << ": " << foughtLensText(o));
+                REQUIRE(o.steps > 0);
+                all.steps += o.steps;
+                all.seen += o.seen;
+                all.leadClearSeen += o.leadClearSeen;
+                all.leadClearFlatSeen += o.leadClearFlatSeen;
+                all.contact += o.contact;
+                all.contactClearSeen += o.contactClearSeen;
+                all.strings += o.strings;
+                all.contactSeen += o.contactSeen;
+                all.same += o.same;
+                all.sameSeen += o.sameSeen;
+                all.sameSeenClear += o.sameSeenClear;
+                all.other += o.other;
+                all.otherStation += o.otherStation;
+                all.otherAllowed += o.otherAllowed;
+                all.otherPosOk += o.otherPosOk;
+                all.otherWalk += o.otherWalk;
+                all.otherGoalOk += o.otherGoalOk;
+            }
+            const auto pc = [](int n, int d) { return 100 * n / std::max(d, 1); };
+            MESSAGE("CAPTURE melee lead " << std::string(p.lead) << ", partner " << std::string(p.partner) << ", hug " << hug << ": on screen "
+                                          << pc(all.seen, all.steps) << "%, on screen and not behind the lead "
+                                          << pc(all.leadClearSeen, all.steps) << "%, not overlapping the lead "
+                                          << pc(all.leadClearFlatSeen, all.steps) << "%; in contact "
+                                          << pc(all.contact, all.steps) << "% of steps, of those on screen and clear "
+                                          << pc(all.contactClearSeen, all.contact) << "%; strings " << all.strings);
+            MESSAGE("RULING melee lead " << std::string(p.lead) << ", hug " << hug << ": clear of the lead "
+                                         << pc(all.leadClearSeen, all.seen) << "% of on-screen, in contact "
+                                         << pc(all.contactClearSeen, all.contactSeen) << "% of on-screen; on the lens's target "
+                                         << pc(all.same, all.steps) << "% of steps: on screen " << pc(all.sameSeen, all.same)
+                                         << "%, clear " << pc(all.sameSeenClear, all.sameSeen) << "%; on another "
+                                         << all.other << " steps: close stations " << all.otherStation << ", rule 1 body "
+                                         << pc(all.otherPosOk, all.otherAllowed) << "% of " << all.otherAllowed
+                                         << ", walk goals " << pc(all.otherGoalOk, all.otherWalk) << "% of " << all.otherWalk);
+            CHECK(all.strings > 0);
+            CHECK(100 * all.leadClearSeen >= 75 * all.seen);
+            CHECK(100 * all.contactClearSeen >= 75 * all.contactSeen);
+            CHECK(100 * all.sameSeen >= 60 * all.same);
+            CHECK(100 * all.sameSeenClear >= 75 * all.sameSeen);
+            CHECK(all.otherStation == 0);
+            CHECK(100 * all.otherPosOk >= 95 * all.otherAllowed);
+            CHECK(100 * all.otherGoalOk >= 95 * all.otherWalk);
+        }
 }
 
 TEST_CASE("arena partner: a caster's target rushing inside its stand-off: it still casts, and never stands idle in reach") {
@@ -5220,8 +5367,9 @@ namespace {
 // The close lens over a big target (the order of 11-16: no station beside the lens). The lead held at `centre` m from
 // a target of `radius` (centre to centre; it never attacks), or circling it at `orbit` degrees a second, the close
 // preset's lens on the right shoulder eased as the game eases it, the party kit's caster (8.5 / 5) walking from a
-// start set by `seed` (or `startLens`: depth and lateral from the lead in the lens's ground space). Measured in the
-// lens's ground space each step from 1 s: depth along its ground forward, lateral (+ right), and the partner's
+// start set by `seed` (or `startLens`: depth and lateral from the lead in the lens's ground space). `leadEvery` (s,
+// given): the lead presses a light this often from the first step (the arena lane's titan runs: 2.5). Measured in the
+// lens's ground space each step from `from` s (1): depth along its ground forward, lateral (+ right), and the partner's
 // projected height (a 1.8 m body at that depth, share of the frame's height).
 struct TitanLensRun {
     int steps = 0, nearOk = 0, sizeOk = 0, seen = 0, seenClear = 0, flankChanges = 0, strings = 0;
@@ -5236,6 +5384,7 @@ struct TitanLensRun {
     int hiddenFirstAct = -1;
     int castsHidden = 0; // strings or blows begun on a step its body stood hidden behind the lead or the target
     int stringsSeen = 0;
+    float worstStartFacing = 0.f; // degrees: the most its facing was off its target on a string's first step
     float depth = 0.f, lateral = 0.f, height = 0.f; // the last 3 s, averaged
     float leadDepth = 0.f, leadLateral = 0.f; // at the start
 };
@@ -5246,7 +5395,7 @@ bool titanCrossed(Vec2 a, Vec2 b, Vec2 c, Vec2 d) {
 }
 
 TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float orbit = 0.f,
-                          const Vec2* startLens = nullptr, float seconds = 12.f) {
+                          const Vec2* startLens = nullptr, float seconds = 12.f, float leadEvery = 0.f, float from = 1.f) {
     const ArenaTable t = shippedTable();
     PRig r(t.fighter("devin"));
     r.def.fighter.hp = 100000;
@@ -5348,8 +5497,15 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
         v.halfAngleDegrees = std::atan(std::tan(v.verticalHalfDegrees * kRad) * cam.aspect) / kRad;
         v.pitchDegrees = std::asin(std::clamp(cam.forward.z, -1.f, 1.f)) / kRad;
         v.lensHeight = cam.pos.z - cam.groundZ;
+        if (leadEvery > 0.f) r.in.light = k % std::max(1, static_cast<int>(std::lround(leadEvery / kDt))) == 0;
         const Vec2 before = r.bodies.ally;
+        const Vec2 faced = r.out != nullptr ? r.out->ally.facing : Vec2{0.f, 0.f}; // what the brain reads this step
         r.tick();
+        if (r.brain.intent().newString && (faced.x != 0.f || faced.y != 0.f)) {
+            const Vec2 to = sub(tp, before);
+            const float c = (faced.x * to.x + faced.y * to.y) / std::max(1e-6f, std::hypot(faced.x, faced.y) * std::hypot(to.x, to.y));
+            o.worstStartFacing = std::max(o.worstStartFacing, std::acos(std::clamp(c, -1.f, 1.f)) / kRad);
+        }
         const Vec2 a = r.bodies.ally;
         if (titanCrossed(cp, r.bodies.player, before, a)) {
             if (o.crossings == 0) {
@@ -5362,10 +5518,8 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
         }
         const Vec2 bear = sub(r.bodies.player, tp), rel = sub(a, tp);
         const std::int8_t f = bear.x * rel.y - bear.y * rel.x > 0.f ? std::int8_t{1} : std::int8_t{-1};
-        if (tNow < 1.f) {
-            flank = f;
-            continue;
-        }
+        if (k == 0 || tNow < from) flank = f;
+        if (tNow < from) continue;
         if (f != flank) {
             if (o.flankChanges < static_cast<int>(changes.size())) changes[static_cast<std::size_t>(o.flankChanges)] = tNow;
             ++o.flankChanges;
@@ -5416,8 +5570,8 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
     const int kept = std::min(o.flankChanges, static_cast<int>(changes.size()));
     for (int i = 0; i < kept; ++i) {
         int w = 0;
-        const float from = changes[static_cast<std::size_t>(i)];
-        for (int j = i; j < kept && changes[static_cast<std::size_t>(j)] < from + 3.f; ++j) ++w;
+        const float at0 = changes[static_cast<std::size_t>(i)];
+        for (int j = i; j < kept && changes[static_cast<std::size_t>(j)] < at0 + 3.f; ++j) ++w;
         o.worstFlankRate = std::max(o.worstFlankRate, w);
     }
     o.strings = r.fight.stats().partnerStrings;
@@ -5485,6 +5639,43 @@ TEST_CASE("arena partner: the close lens's near field, the shipped titan in cont
             CHECK(o.hiddenTarget == 0);
             if (centre < 4.f) CHECK(o.hiddenLead <= 6); // in contact (before: 44 steps behind the lead and 12 behind
                                                         // the target walking on seeds 7-8)
+        }
+    }
+}
+
+TEST_CASE("arena partner: the close lens's near field over a whole fight from the first step: rule 1 on 95% of steps") {
+    // The arena lane's lens log (round 6): the caster off the right edge beside the lens on 25-35% of frames on the
+    // titan runs, though its stations read well. Its start now: 3 m ahead of the lead along the lens and 1.5 m off
+    // the far side (the lens on the right shoulder: lateral -1.5); its lead throws a light every 2.5 s. Over 20 s
+    // from the first step, rule 1 (2.5 m off the lens, no shallower than the lead less 0.5) holds on at least 95%.
+    const Vec2 start{3.f, -1.5f};
+    for (const float centre : {6.f, 8.f, 10.f}) {
+        for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+            CAPTURE(centre);
+            CAPTURE(seed);
+            const TitanLensRun o = titanLensRun(2.2f, centre, seed, 0.f, &start, 20.f, 2.5f, 0.f);
+            MESSAGE("whole fight titan 2.2 at " << centre << " seed " << seed << ": " << titanLine(o));
+            REQUIRE(o.steps > 0);
+            CHECK(100 * o.nearOk >= 95 * o.steps);
+            CHECK(o.crossings == 0);
+            CHECK(o.strings > 0);
+        }
+    }
+}
+
+TEST_CASE("arena partner: the close lens: a string starts with the partner facing its target within 30 degrees") {
+    // The arena lane (round 6): at the titan's 8 and 10 m the caster cast facing the camera: a string begun facing
+    // away turned only by its blow's tracking (about 96 degrees). Now it turns first; the blow's tracking is as it was.
+    const Vec2 start{3.f, -1.5f};
+    for (const float centre : {2.2f + 0.85f, 6.f, 8.f, 10.f}) {
+        for (std::uint32_t seed = 1; seed <= 4; ++seed) {
+            CAPTURE(centre);
+            CAPTURE(seed);
+            const TitanLensRun o = titanLensRun(2.2f, centre, seed, 0.f, centre > 4.f ? &start : nullptr, 20.f, 2.5f);
+            MESSAGE("facing titan 2.2 at " << centre << " seed " << seed << ": worst start " << o.worstStartFacing
+                                           << " deg, strings " << o.strings);
+            CHECK(o.strings > 0);
+            CHECK(o.worstStartFacing <= kPartnerStartFacingDegrees + 1.f);
         }
     }
 }

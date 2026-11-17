@@ -2898,6 +2898,7 @@ struct ArenaFightImpl {
             st.close = in.partnerClose; // rule 19: the close camera (not given: the classic rules)
         }
         pin.range = {pk.partnerReach, pk.partnerStandoff}; // rule 19 reads it under the close camera alone
+        pin.facing = al.facing; // rule 19: a string starts facing its target (read under the close camera alone)
         const PartnerIntent& intent = brain.step(static_cast<double>(dt), pin);
         al.act = static_cast<std::uint8_t>(intent.act);
         al.stationed = intent.stationed;
@@ -2963,7 +2964,9 @@ struct ArenaFightImpl {
             fight.ally_.around = -1;
             return fight.allyPos_;
         }
-        const bool circling = intent.skirmish || intent.idle == PartnerIdle::NoBudget;
+        // Rule 17's walk shaping (round bodies, heading held) for its own goals and a wait on the budget; under the
+        // close camera rule 19 replaces rule 17 and its NoBudget walk is the brain's as given (its near field, rule 1).
+        const bool circling = intent.skirmish || (intent.idle == PartnerIdle::NoBudget && !in.partnerClose.given);
         const Vec2 goal = circling ? allyRound(in, intent.point, intent.skirmish ? intent.enemy : -1) : intent.point;
         return intent.act == PartnerAct::StepBack || !circling ? goal : allyHeadingHeld(goal);
     }

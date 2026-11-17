@@ -767,6 +767,113 @@ int32 FTLook::AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 	return Added;
 }
 
+int32 FTLook::PreloadWetGrooms(const TArray<FFTGroomLook>& Grooms, TArray<TObjectPtr<UObject>>& OutHold, const TCHAR* Who)
+{
+	int32 Wet = 0;
+	for (const FFTGroomLook& Look : Grooms)
+	{
+		if (Look.WetGroom.IsNull())
+		{
+			continue;
+		}
+		UObject* Groom = Look.WetGroom.TryLoad();
+		if (!Groom)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: no wet groom at %s; the dry one stays on when wet."), Who, *Look.WetGroom.ToString());
+			continue;
+		}
+		// Both sides held: off the component, the dry groom is referenced by nothing else (the look keeps soft paths).
+		OutHold.Add(Groom);
+		for (const FSoftObjectPath* Path : {&Look.WetBinding, &Look.Groom, &Look.Binding})
+		{
+			if (UObject* Held = Path->IsNull() ? nullptr : Path->TryLoad())
+			{
+				OutHold.Add(Held);
+			}
+		}
+		++Wet;
+	}
+	return Wet;
+}
+
+int32 FTLook::SetGroomsWet(const TArray<TObjectPtr<USceneComponent>>& Components, const TArray<FFTGroomLook>& Grooms,
+	bool bWet, const TCHAR* Who)
+{
+	int32 Changed = 0;
+	for (const FFTGroomLook& Look : Grooms)
+	{
+		if (Look.WetGroom.IsNull())
+		{
+			continue;
+		}
+		// Already loaded: the look preloads both (PreloadWetGrooms, and AddGrooms the dry one).
+		UObject* From = (bWet ? Look.Groom : Look.WetGroom).ResolveObject();
+		UObject* To = (bWet ? Look.WetGroom : Look.Groom).ResolveObject();
+		const FSoftObjectPath& BindingPath = bWet ? Look.WetBinding : Look.Binding;
+		UObject* Binding = BindingPath.IsNull() ? nullptr : BindingPath.ResolveObject();
+		if (!From || !To)
+		{
+			continue;
+		}
+		for (USceneComponent* Component : Components)
+		{
+			if (!Component || GetObjectProperty(*Component, TEXT("GroomAsset")) != From)
+			{
+				continue;
+			}
+			// Set while unregistered, as AddGrooms does before registering: registering builds the groom's resources.
+			UObject* OldBinding = GetObjectProperty(*Component, TEXT("BindingAsset"));
+			Component->UnregisterComponent();
+			const bool bSet = SetObjectProperty(*Component, TEXT("BindingAsset"), nullptr) && SetObjectProperty(*Component, TEXT("GroomAsset"), To)
+				&& (!Binding || SetObjectProperty(*Component, TEXT("BindingAsset"), Binding));
+			if (!bSet)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s doesn't fit the groom component; the groom stays."), Who, *To->GetName());
+				SetObjectProperty(*Component, TEXT("GroomAsset"), From);
+				SetObjectProperty(*Component, TEXT("BindingAsset"), OldBinding);
+			}
+			Component->RegisterComponent();
+			Changed += bSet ? 1 : 0;
+		}
+	}
+	return Changed;
+}
+
+int32 FTLook::MakeHairWetMaterials(const TArray<TObjectPtr<USceneComponent>>& Components, const TArray<FFTGroomLook>& Grooms,
+	TArray<TObjectPtr<UMaterialInstanceDynamic>>& Out)
+{
+	int32 Made = 0;
+	for (const FFTGroomLook& Look : Grooms)
+	{
+		UObject* Groom = Look.WetGroom.IsNull() ? Look.Groom.ResolveObject() : nullptr;
+		if (!Groom)
+		{
+			continue;
+		}
+		for (USceneComponent* Component : Components)
+		{
+			UMeshComponent* Mesh = Cast<UMeshComponent>(Component);
+			if (!Mesh || GetObjectProperty(*Component, TEXT("GroomAsset")) != Groom)
+			{
+				continue;
+			}
+			for (int32 Index = 0; Index < Mesh->GetNumMaterials(); ++Index)
+			{
+				if (!Mesh->GetMaterial(Index))
+				{
+					continue;
+				}
+				if (UMaterialInstanceDynamic* Dynamic = Mesh->CreateAndSetMaterialInstanceDynamic(Index))
+				{
+					Out.Add(Dynamic);
+					++Made;
+				}
+			}
+		}
+	}
+	return Made;
+}
+
 int32 FTLook::SwapSlots(USkeletalMeshComponent& Component, const UMaterialInterface* From, UMaterialInterface* To)
 {
 	if (!From || !To)

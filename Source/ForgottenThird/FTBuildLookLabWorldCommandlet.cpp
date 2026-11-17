@@ -307,6 +307,8 @@ int32 UFTBuildLookLabWorldCommandlet::Main(const FString& Params)
 
 	// A stand-in figure on the yard, the size of a lead, and the trick that lifts a character off dark ground: an
 	// unshadowed rim light behind it that lights only lighting channel 1, which only characters join.
+	// Look-lab only: a stand-in in this editor-built lab map. The game's character rim is the material term in
+	// FTRimCollection.h (no light, no channel); nothing outside this lab uses channel 1 for a rim.
 	AStaticMeshActor* Figure = Prop(Sphere, Plain, TEXT("Figure"), FVector(200, 250, 85), FVector(0.45f, 0.35f, 1.7f));
 	Figure->GetStaticMeshComponent()->SetLightingChannels(true, true, false);
 	const FVector RimAt(420, 420, 260);
