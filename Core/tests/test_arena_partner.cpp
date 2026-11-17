@@ -5383,6 +5383,7 @@ struct TitanLensRun {
     float hiddenFirstAt = -1.f; // the first hidden step: its time and act
     int hiddenFirstAct = -1;
     int castsHidden = 0; // strings or blows begun on a step its body stood hidden behind the lead or the target
+    int seenLeadClear = 0; // steps in frame and not behind the lead (the arena capture's measure)
     int stringsSeen = 0;
     float worstStartFacing = 0.f; // degrees: the most its facing was off its target on a string's first step
     float depth = 0.f, lateral = 0.f, height = 0.f; // the last 3 s, averaged
@@ -5552,6 +5553,7 @@ TitanLensRun titanLensRun(float radius, float centre, std::uint32_t seed, float 
         if (partnerInFrameClose(cam, kPartnerFrustumMargin, a)) {
             ++o.seen;
             if (!byLead && !byTarget) ++o.seenClear;
+            if (!byLead) ++o.seenLeadClear;
         }
         const Vec2 g = r.out->ally.goal;
         if (walking && (heightOf(g) > kPartnerCloseSizeCap || !nearOkAt(g))) ++o.goalOver;
@@ -5721,6 +5723,36 @@ TEST_CASE("arena partner: the close lens's near field, the lead circling a titan
     }
 }
 
+TEST_CASE("arena partner: the close lens's near field, a titan stand-off with the lead circling: the partner clear of the lead") {
+    // The arena's cap_r6 (fault A): a 2.2 m titan, the lead at 6, 8 or 10 m from its centre, standing or circling it at 1
+    // or 2 m/s either way and striking every 2.5 s, the partner from a start beside the lens. In frame and not behind
+    // the lead (a body width of screen gap held by rule 19's near field), over 3 seeds of 20 s: at least 60% of the
+    // steps at 6 m and 75% at 8 and 10 m (the capture had 20 / 54 / 84 at 6 / 8 / 10 m). It still fights, and at most
+    // three flank changes in any 3 s (as before the gap: 3 at 8 and 10 m).
+    const Vec2 start{3.f, -1.5f};
+    for (const float centre : {6.f, 8.f, 10.f}) {
+        for (const float v : {0.f, -1.f, 1.f, -2.f}) {
+            CAPTURE(centre);
+            CAPTURE(v);
+            int steps = 0, clear = 0, worstRate = 0, fewestStrings = 1 << 20;
+            for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+                const TitanLensRun o = titanLensRun(2.2f, centre, seed, v * 57.29578f / centre, &start, 20.f, 2.5f, 0.f);
+                INFO(titanLine(o));
+                steps += o.steps;
+                clear += o.seenLeadClear;
+                worstRate = std::max(worstRate, o.worstFlankRate);
+                fewestStrings = std::min(fewestStrings, o.strings);
+            }
+            const float share = static_cast<float>(clear) / static_cast<float>(std::max(steps, 1));
+            MESSAGE("titan " << centre << " m, lead at " << v << " m/s: in frame and clear of the lead " << 100.f * share
+                             << "%, most flank changes in 3 s " << worstRate << ", fewest strings " << fewestStrings);
+            CHECK(share >= (centre < 7.f ? 0.60f : 0.75f));
+            CHECK(fewestStrings >= 1);
+            CHECK(worstRate <= 3);
+        }
+    }
+}
+
 TEST_CASE("arena partner: the close lens's near field, a start between the lens and the lead walks round the far side") {
     // Started behind the lead (lens space, from the lead) on the flank away from its station, so the straight walk to
     // the station would cross the line from the lens to the lead: the waypoint takes it round the lead's far side.
@@ -5755,5 +5787,57 @@ TEST_CASE("arena partner: the close lens's near field, in contact with a titan n
         CHECK(o.crossings <= 1);
         CHECK(o.crossAt <= 0.5f);
         CHECK(o.nearOk == o.steps);
+    }
+}
+
+TEST_CASE("arena partner: a target crossing at 6 m/s mid-string: the facing follows it between the hits") {
+    // The arena's normal 5 (fault C): a fast enemy crossing during a string left the facing up to 57 deg off, since it
+    // turned over startup alone. Now recovery turns it too (the kit's turn rate, at most 360 deg/s); the active part
+    // never. The partner stands, its target runs back and forth 2 m in front of it at 6 m/s: on every string step
+    // outside the active part the facing is within 30 deg of the target. Both melee kits and the party caster (the
+    // normal 5 run's partner: its own blows' timings; this rig gives no lens, so its range is off and it strikes at
+    // 2 m too), under the close camera's rule.
+    const ArenaTable table = shippedTable();
+    for (const char* kit : {"devin", "duy", "third"}) {
+        CAPTURE(kit);
+        constexpr float lineY = 2.f;
+        PRig r(table.fighter("devin"));
+        r.ownPartnerKit = true;
+        r.def.partnerKit = table.fighter(kit);
+        r.def.fighter.hp = 100000;
+        r.tuning = shippedTuning();
+        r.tuning.budgetAllowanceSeconds = 10.f; // no budget in the way
+        REQUIRE(validPartnerTuning(r.tuning));
+        const ArenaEnemyKind dummy = dummyKind();
+        r.enemy(dummy, Vec2{-3.f, lineY});
+        r.bodies.player = Vec2{-4.f, -3.f};
+        r.bodies.ally = Vec2{0.f, 0.f};
+        r.go(true, 1000);
+        r.in.partnerClose.given = true; // the close camera's rule (classic keeps main's startup-only turn)
+        float x = -3.f, v = 6.f, worst = 0.f;
+        int counted = 0, over = 0;
+        for (int k = 0; k < 20 * 60; ++k) {
+            x += v * kDt;
+            if (x > 3.f || x < -3.f) {
+                x = std::clamp(x, -3.f, 3.f);
+                v = -v;
+            }
+            r.bodies.enemies[0] = Vec2{x, lineY};
+            r.tick();
+            const ArenaAllyOut& al = r.out->ally;
+            if (!al.attacking || al.part == ArenaPart::Active || al.target != 0) continue;
+            const Vec2 to = sub(r.bodies.enemies[0], r.bodies.ally);
+            const float c = (al.facing.x * to.x + al.facing.y * to.y) / std::max(length(to), 1e-5f);
+            const float off = std::acos(std::clamp(c, -1.f, 1.f)) * 57.29578f;
+            ++counted;
+            if (off > 30.f) ++over;
+            worst = std::max(worst, off);
+        }
+        MESSAGE(std::string(kit) << ": strings " << r.fight.stats().partnerStrings << ", string steps outside the active part "
+                    << counted << ", over 30 deg " << over << ", worst " << worst << " deg");
+        REQUIRE(r.fight.stats().partnerStrings >= 2);
+        REQUIRE(counted >= 30);
+        CHECK(over == 0);
+        CHECK(worst <= 30.f);
     }
 }
