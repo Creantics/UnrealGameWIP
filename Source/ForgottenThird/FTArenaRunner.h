@@ -626,6 +626,16 @@ private:
 	float MateCastCoreWorst = 0.f;
 	int32 MateDrawFrames = 0, MateDrawOff = 0, MateDrawTurning = 0;
 	float MateDrawWorst = 0.f;
+	// The close partner drawn at Core's heading (ArenaAllyOut::heading). Its walk's frames: the drawn yaw off Core's
+	// heading by over 30 degrees, the mean and worst. Its string starts: off a walk (stopped under 1 s before), those
+	// with a visible pause (stood over 0.1 s between its walk's end and the string), the mean such stand; and from a
+	// standstill (a second or more); Core's heading off its target by over 60 degrees at a start.
+	int32 MateHeadFrames = 0, MateHeadOff = 0;
+	float MateHeadSum = 0.f, MateHeadWorst = 0.f;
+	int32 MateStartsWalk = 0, MateStartsPaused = 0, MateStartsStill = 0, MateStartsWide = 0;
+	float MateStandSum = 0.f;
+	double MateWalkEnd = -1.0;
+	bool bMateWasStringing = false;
 	// -ArenaRollAt=<s,s,...>: capture-only dodge presses under the autopilot at these fight times (the dodge strip).
 	static constexpr int32 MaxRollAt = 8;
 	float RollAt[MaxRollAt] = {};

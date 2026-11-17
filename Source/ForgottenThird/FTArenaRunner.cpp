@@ -1707,6 +1707,12 @@ void UFTArenaRunner::PutBodiesAtStart()
 	MateCastCoreWorst = 0.f;
 	MateDrawFrames = MateDrawOff = MateDrawTurning = 0;
 	MateDrawWorst = 0.f;
+	MateHeadFrames = MateHeadOff = 0;
+	MateHeadSum = MateHeadWorst = 0.f;
+	MateStartsWalk = MateStartsPaused = MateStartsStill = MateStartsWide = 0;
+	MateStandSum = 0.f;
+	MateWalkEnd = -1.0;
+	bMateWasStringing = false;
 	RollAtNext = 0;
 #endif
 	AllyDrawYawAt = -1.0;
@@ -6538,6 +6544,12 @@ void UFTArenaRunner::LogFeatureChecks() const
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: partner facing in its strings on %d steps: Core's facing off its target by over 30 degrees on %d (worst %.0f); drawn after placing on %d frames, off Core's by over 30 once the blow is out on %d (worst %.0f), in its startup on %d (turning in at %.0f deg/s at most, logged only)."),
 			MateCastSteps, MateCastCoreOff, MateCastCoreWorst, MateDrawFrames, MateDrawOff, MateDrawWorst, MateDrawTurning, kArenaAllyTurnRate);
 	}
+	if (MateHeadFrames > 0 || MateStartsWalk + MateStartsStill > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close partner drawn at Core's heading on %d walking frames: off it by over 30 degrees on %d, mean %.1f, worst %.1f; string starts off a walk %d, with a visible pause (stood over 0.1 s) %d (mean stand %.2f s), from a standstill %d; Core's heading over 60 degrees off its target at a start %d."),
+			MateHeadFrames, MateHeadOff, MateHeadFrames > 0 ? MateHeadSum / static_cast<float>(MateHeadFrames) : 0.f, MateHeadWorst,
+			MateStartsWalk, MateStartsPaused, MateStartsPaused > 0 ? MateStandSum / static_cast<float>(MateStartsPaused) : 0.f, MateStartsStill, MateStartsWide);
+	}
 	if (bCloseShape)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close lens partner turn on %d of %d held frames, mean %.2f, most %.2f degrees; shoulder swaps %d, ends %+.2f."),
@@ -8306,9 +8318,15 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 			Pose.Swing = Blow + 1 >= Lights ? EFTArenaSwing::Overhead : ((Blow % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 		}
 	}
+	// The close camera's partner is drawn at Core's heading (ArenaAllyOut::heading): toward its walk, over a walk's
+	// last metre (or 0.3 s) toward its target, standing toward its facing, turned at 540 deg/s at most in Core.
+	if (bPartner && bCloseShape && Fight.output().ally.partnerOn)
+	{
+		Pose.Yaw = ArenaYaw(Fight.output().ally.heading);
+	}
 	// No one-frame snap for the close camera's partner: the drawn figure turns toward the wanted yaw at kArenaAllyTurnRate
-	// at most, so it turns into a string over its startup. The first placement of a session or of a new figure takes the
-	// wanted yaw at once; a held clock holds it. Classic and the plain follower are drawn at the wanted yaw, as before.
+	// at most (a safety: Core's heading already turns no faster). The first placement of a session or of a new figure
+	// takes the wanted yaw at once; a held clock holds it. Classic and the plain follower are drawn at the wanted yaw.
 	if (AllyDrawYawAt < 0.0 || !(bPartner && bCloseShape))
 	{
 		AllyDrawYaw = Pose.Yaw;
@@ -8332,6 +8350,40 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 		MateDrawOff += bOut && DrawOff > 30.f ? 1 : 0;
 		MateDrawTurning += !bOut && DrawOff > 30.f ? 1 : 0;
 		MateDrawWorst = bOut ? FMath::Max(MateDrawWorst, DrawOff) : MateDrawWorst;
+	}
+	if (bPartner && bCloseShape && Fight.output().ally.partnerOn)
+	{
+		const ftcore::ArenaAllyOut& Mate = Fight.output().ally;
+		if (Speed > 0.05f)
+		{
+			const float HeadOff = FMath::Abs(FMath::FindDeltaAngleDegrees(AllyDrawYaw, ArenaYaw(Mate.heading)));
+			++MateHeadFrames;
+			MateHeadOff += HeadOff > 30.f ? 1 : 0;
+			MateHeadSum += HeadOff;
+			MateHeadWorst = FMath::Max(MateHeadWorst, HeadOff);
+			MateWalkEnd = Now;
+		}
+		if (Mate.attacking && !bMateWasStringing && Mate.blow == 0)
+		{
+			const double Stood = MateWalkEnd < 0.0 ? 1e9 : Now - MateWalkEnd;
+			if (Stood < 1.0)
+			{
+				++MateStartsWalk;
+				MateStartsPaused += Stood > 0.1 ? 1 : 0;
+				MateStandSum += Stood > 0.1 ? static_cast<float>(Stood) : 0.f;
+			}
+			else
+			{
+				++MateStartsStill;
+			}
+			const int32 T = Mate.target;
+			if (T >= 0 && T < static_cast<int32>(Fight.output().enemies.size()))
+			{
+				const ftcore::Vec2 To{Bodies.enemies[static_cast<size_t>(T)].x - Is.x, Bodies.enemies[static_cast<size_t>(T)].y - Is.y};
+				MateStartsWide += FMath::Abs(FMath::FindDeltaAngleDegrees(ArenaYaw(Mate.heading), ArenaYaw(To))) > 60.f ? 1 : 0;
+			}
+		}
+		bMateWasStringing = Mate.attacking;
 	}
 #endif
 	Pose.Tint = AllyFigure->GetBaseColor();
