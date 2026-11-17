@@ -6546,7 +6546,7 @@ void UFTArenaRunner::LogFeatureChecks() const
 	}
 	if (MateHeadFrames > 0 || MateStartsWalk + MateStartsStill > 0)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close partner drawn at Core's heading on %d walking frames: off it by over 30 degrees on %d, mean %.1f, worst %.1f; string starts off a walk %d, with a visible pause (stood over 0.1 s) %d (mean stand %.2f s), from a standstill %d; Core's heading over 60 degrees off its target at a start %d."),
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: close partner drawn at Core's heading on %d walking frames out of its strings and guards: off it by over 30 degrees on %d, mean %.1f, worst %.1f; string starts off a walk %d, with a visible pause (stood over 0.1 s) %d (mean stand %.2f s), from a standstill %d; Core's heading over 60 degrees off its target at a start %d."),
 			MateHeadFrames, MateHeadOff, MateHeadFrames > 0 ? MateHeadSum / static_cast<float>(MateHeadFrames) : 0.f, MateHeadWorst,
 			MateStartsWalk, MateStartsPaused, MateStartsPaused > 0 ? MateStandSum / static_cast<float>(MateStartsPaused) : 0.f, MateStartsStill, MateStartsWide);
 	}
@@ -8319,8 +8319,10 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 		}
 	}
 	// The close camera's partner is drawn at Core's heading (ArenaAllyOut::heading): toward its walk, over a walk's
-	// last metre (or 0.3 s) toward its target, standing toward its facing, turned at 540 deg/s at most in Core.
-	if (bPartner && bCloseShape && Fight.output().ally.partnerOn)
+	// last metre (or 0.3 s) toward its target, standing toward its facing, turned at 540 deg/s at most in Core. Not in
+	// a string or a guard: there its body is pushed or recoils, and the heading follows that move (half a turn off the
+	// target on a step back); its facing is drawn, as before.
+	if (bPartner && bCloseShape && Fight.output().ally.partnerOn && !Fight.output().ally.attacking && !Fight.output().ally.guarding)
 	{
 		Pose.Yaw = ArenaYaw(Fight.output().ally.heading);
 	}
@@ -8354,14 +8356,18 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 	if (bPartner && bCloseShape && Fight.output().ally.partnerOn)
 	{
 		const ftcore::ArenaAllyOut& Mate = Fight.output().ally;
-		if (Speed > 0.05f)
+		if (Speed > 0.05f && !Mate.attacking && !Mate.guarding)
 		{
 			const float HeadOff = FMath::Abs(FMath::FindDeltaAngleDegrees(AllyDrawYaw, ArenaYaw(Mate.heading)));
 			++MateHeadFrames;
 			MateHeadOff += HeadOff > 30.f ? 1 : 0;
 			MateHeadSum += HeadOff;
 			MateHeadWorst = FMath::Max(MateHeadWorst, HeadOff);
-			MateWalkEnd = Now;
+			// A walk to a station only: a blow's lunge or a push is not a walk a string starts off.
+			if (Mate.act == static_cast<uint8>(ftcore::PartnerAct::MoveTo))
+			{
+				MateWalkEnd = Now;
+			}
 		}
 		if (Mate.attacking && !bMateWasStringing && Mate.blow == 0)
 		{
