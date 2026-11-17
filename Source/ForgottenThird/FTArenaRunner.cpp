@@ -2100,8 +2100,10 @@ void UFTArenaRunner::BeginSession()
 	LeadAttackAt = -1e9f;
 	PartnerEngagedActions = 0;
 	PartnerActEngaged = false;
+#if !UE_BUILD_SHIPPING
 	StandOffStrikeNext = 1.f;
 	StandOffStrikePresses = 0;
+#endif
 	PartnerStillFor = PartnerStillLongest = 0.f;
 	bPartnerStillAt = false;
 	PartnerLastAct = PartnerIdleWhy = 0xFF;
