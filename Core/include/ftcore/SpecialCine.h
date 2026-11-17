@@ -51,7 +51,8 @@
 //   "shots": the shot file's name under Data/Cutscene (no extension). "release": the move's release beat on its
 //   clock (default: the first shaking shot's "in", else the last shot's). "fstop" 0.7..32 (default 2.8).
 //   "blend_in": seconds from the play camera into the first shot (default 0: a hard cut in). "blend_out": seconds
-//   over which the last shot is eased into the play camera, ending on it (default: the whole last shot).
+//   over which the move's camera is eased into the play camera, ending on it (default: the whole last shot; longer
+//   than the last shot, the blend starts in the shot before and runs over the cut).
 //
 // A bad id, a duplicate move, a gap or an overlap, or a value out of range is an error; unknown keys are warnings.
 // Fixed capacity, copied by value: nothing allocates after load.
@@ -215,12 +216,26 @@ struct SpecialCineFrame {
     bool release = false;         // the release beat was crossed this frame
 };
 
+// A shot moved by the host when its camera, or the camera's line to the lead, would be inside a body or the world
+// (tested once at the start: the world is frozen). Applied in this order: mirrored to the stage's other side (the
+// camera's and the look-at's side offsets negated), raised `raise` metres, then pulled `pull` metres along its own
+// axis toward the look-at (never closer than kMinPullGap). An explicit focus is shortened by the pull.
+struct SpecialCineShotFix {
+    static constexpr float kMinPullGap = 0.5f; // metres left between the pulled camera and its look-at
+    bool mirror = false;
+    float raise = 0.f; // metres, up (negative or NaN: none)
+    float pull = 0.f;  // metres, toward the look-at (negative or NaN: none)
+    bool moved() const { return mirror || raise > 0.f || pull > 0.f; }
+};
+
 // The horizontal fov of a lens in mm on a 36 mm sensor, degrees (10 mm and below as 10 mm).
 FTCORE_API float specialCineFov(float lensMm);
 // A point of the stage frame from `anchor` (see the header). No allocation.
 FTCORE_API CutsceneVec3 specialCinePoint(const SpecialCineStage& stage, SpecialCineAnchor anchor, const CutsceneVec3& at);
-// The camera of `move` at `t` seconds for `stage` (cut and release left false: the player sets them).
-FTCORE_API SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const SpecialCineStage& stage);
+// The camera of `move` at `t` seconds for `stage` (cut and release left false: the player sets them). `fixes`: null,
+// or one per shot of the move (the shot at `t` is moved by its fix).
+FTCORE_API SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
+                                               const SpecialCineShotFix* fixes = nullptr);
 
 class SpecialCinePlayer {
 public:
@@ -230,6 +245,9 @@ public:
     FTCORE_API void step(float seconds);
     // Ends now: finished (the skip; the host's world runs again).
     FTCORE_API void stop();
+    // Moves shot `shot` of the playing move for the rest of this play (a begin clears every fix). False out of range.
+    FTCORE_API bool setFix(std::uint32_t shot, const SpecialCineShotFix& fix);
+    const SpecialCineShotFix& fix(std::uint32_t shot) const { return fixes_[shot < SpecialCineMove::kMaxShots ? shot : 0]; }
     bool active() const { return move_ != nullptr && !finished_; }
     bool finished() const { return finished_; }
     float time() const { return time_; }
@@ -245,6 +263,7 @@ private:
     std::uint32_t lastShot_ = 0;
     bool finished_ = false;
     bool releaseTaken_ = false;
+    SpecialCineShotFix fixes_[SpecialCineMove::kMaxShots]{};
 };
 
 } // namespace ftcore

@@ -5,7 +5,7 @@
   "moves": [
     {
       "id": "devin_special_01", "lead": "devin",
-      "duration": 8.0, "impactAt": 5.6, "range": 30,
+      "duration": 8.5, "impactAt": 5.6, "range": 30,
       "laneLength": 14, "laneWidth": 4,
       "damage": 220, "otherShare": 0.5, "bossPhaseShare": 0.2,
       "knockBack": 2.0, "knockTime": 0.35, "endTravel": 1.09, "endSide": -0.11, "skippable": true,
@@ -19,7 +19,7 @@
         { "at": 5.6, "cue": "impact" },
         { "at": 6.4, "cue": "hold" },
         { "at": 7.4, "cue": "dismiss" },
-        { "at": 8.0, "cue": "cut_back" }
+        { "at": 8.5, "cue": "cut_back" }
       ]
     }
   ]

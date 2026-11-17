@@ -19,6 +19,9 @@ namespace {
 
 constexpr float kDeg = 3.14159265358979f / 180.f;
 
+CutsceneVec3 sub3(const CutsceneVec3& a, const CutsceneVec3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+float length3(const CutsceneVec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+
 SpecialCineShot shotOf(float in, float out, CutsceneVec3 from = {2.f, 0.f, 1.5f}) {
     SpecialCineShot s;
     s.in = in;
@@ -217,10 +220,67 @@ TEST_CASE("special cine: a hard cut in, and the last shot eased into the play ca
         prev = w;
     }
     CHECK(most <= 1.5f / (0.15f * 60.f) + 1e-4f); // smoothstep's steepest slope is 1.5 / blend
-    // NaN or negative blend in: none; a blend out over the last shot: the last shot.
+    // NaN or negative blend in: none; a blend out longer than the move: the whole move.
     m.setBlends(std::numeric_limits<float>::quiet_NaN(), 5.f);
     CHECK(m.blendIn() == 0.f);
-    CHECK(near(m.blendOut(), 1.5f));
+    CHECK(near(m.blendOut(), m.length()));
+    // Longer than the last shot (1.5 s): it starts in the shot before and runs over the cut, still 1 at the end.
+    m.setBlends(0.f, 2.f);
+    CHECK(near(m.blendOut(), 2.f));
+    CHECK(specialCineFrameAt(m, 1.99f, st).playWeight == 0.f);
+    const SpecialCineFrame over = specialCineFrameAt(m, 2.25f, st);
+    CHECK(over.shot == 1);
+    CHECK(over.playWeight > 0.f);
+    CHECK(specialCineFrameAt(m, 4.f, st).playWeight == 1.f);
+}
+
+TEST_CASE("special cine: a shot moved off a body: mirrored, raised, pulled toward its look-at, cleared by a begin") {
+    const SpecialCineMove m = threeShots();
+    const SpecialCineStage st = stageAt(0.f, 0.f, 5.f, 0.f); // forward +x, its right +y
+    const SpecialCineFrame plain = specialCineFrameAt(m, 1.5f, st);
+    CHECK(near(plain.pose.position.y, 3.f));
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    CHECK_FALSE(fixes[1].moved());
+    fixes[1].mirror = true;
+    CHECK(fixes[1].moved());
+    const SpecialCineFrame mirrored = specialCineFrameAt(m, 1.5f, st, fixes);
+    CHECK(near(mirrored.pose.position.x, plain.pose.position.x));
+    CHECK(near(mirrored.pose.position.y, -3.f));
+    CHECK(near(mirrored.pose.position.z, plain.pose.position.z));
+    CHECK(near(mirrored.pose.lookAt.y, -plain.pose.lookAt.y));
+    fixes[1].raise = 0.5f;
+    CHECK(near(specialCineFrameAt(m, 1.5f, st, fixes).pose.position.z, plain.pose.position.z + 0.5f));
+    // Pulled along its own axis: on the line to the look-at, the distance shortened by the pull.
+    fixes[1] = {};
+    fixes[1].pull = 1.f;
+    const SpecialCineFrame pulled = specialCineFrameAt(m, 1.5f, st, fixes);
+    const float was = length3(sub3(plain.pose.lookAt, plain.pose.position));
+    const float now = length3(sub3(pulled.pose.lookAt, pulled.pose.position));
+    CHECK(near(now, was - 1.f, 1e-3f));
+    CHECK(near(pulled.pose.lookAt.z, plain.pose.lookAt.z));
+    CHECK(near(pulled.focus, now, 1e-3f)); // the auto focus follows the camera
+    fixes[1].pull = 50.f;                  // never closer than the gap
+    const SpecialCineFrame most = specialCineFrameAt(m, 1.5f, st, fixes);
+    CHECK(near(length3(sub3(most.pose.lookAt, most.pose.position)), SpecialCineShotFix::kMinPullGap, 1e-3f));
+    fixes[1].pull = std::numeric_limits<float>::quiet_NaN(); // none
+    CHECK(near(specialCineFrameAt(m, 1.5f, st, fixes).pose.position.y, 3.f));
+    // Other shots untouched.
+    CHECK(near(specialCineFrameAt(m, 0.5f, st, fixes).pose.position.y, specialCineFrameAt(m, 0.5f, st).pose.position.y));
+    // The player: a fix lasts the play, a begin clears it, out of range refused.
+    SpecialCinePlayer p;
+    SpecialCineShotFix up;
+    CHECK_FALSE(p.setFix(0, up)); // idle
+    p.begin(&m);
+    up.raise = 1.f;
+    CHECK(p.setFix(1, up));
+    CHECK_FALSE(p.setFix(3, up));
+    CHECK_FALSE(p.setFix(SpecialCineMove::kMaxShots, up));
+    p.step(1.5f);
+    CHECK(near(p.frame(st).pose.position.z, plain.pose.position.z + 1.f));
+    p.begin(&m);
+    CHECK_FALSE(p.fix(1).moved());
+    p.step(1.5f);
+    CHECK(near(p.frame(st).pose.position.z, plain.pose.position.z));
 }
 
 TEST_CASE("special cine: focus, lens, f-stop and the positional shake; the release beat flagged once") {
@@ -377,7 +437,7 @@ TEST_CASE("special cine: the committed move loads, ends on the close camera over
     CHECK(m->size() == 8);
     CHECK(near(m->length(), 8.5f, 1e-3f));
     CHECK(m->blendIn() == 0.f);                              // a hard cut in
-    CHECK(near(m->blendOut(), 0.2f, 1e-3f));                 // the last shot eased into the play camera
+    CHECK(near(m->blendOut(), 0.25f, 1e-3f));                // eased into the play camera over the spec's 0.25 s
     CHECK(m->endFeet().x > 0.5f);                            // it travels toward the target
     int shaking = 0;
     for (std::uint32_t i = 0; i < m->size(); ++i) shaking += m->shot(i).shake ? 1 : 0;

@@ -690,6 +690,7 @@ private:
 	bool StepFrozen();
 	void PlaceSpecialPerformer(const ftcore::Vec2& At);
 	bool BeginSpecial();
+	void FixSpecialShots(const ftcore::SpecialCineMove& Move, int32 Target);
 	void TickSpecial(float DeltaSeconds);
 	void EndSpecial(const TCHAR* Why);
 	void ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet);
@@ -1665,7 +1666,9 @@ private:
 	ftcore::Vec2 SpecialForward{1.f, 0.f};
 	const TCHAR* SpecialLimit = TEXT("none");
 	FVector SpecialPlayShift = FVector::ZeroVector; // cm: the play camera's move to the end feet while the lead stands at the start
-	bool bSpecialPlaced = false; // Core's cut back has put the lead at its end (the shots' tail plays over a held fight)
+	bool bSpecialPlaced = false;
+	int32 SpecialShotsMoved = 0;   // shots moved off a body or the world at the start (FixSpecialShots)
+	int32 SpecialShotsBlocked = 0; // of those, the ones no move cleared // Core's cut back has put the lead at its end (the shots' tail plays over a held fight)
 	// Frame cost (game-thread and GPU ms) for 2 s before, during, and 2 s after the special, frames under a still left
 	// out; the special's own tick and the freeze's begin and end.
 	struct FSpecialCost { double Game = 0.0, Gpu = 0.0, GameMax = 0.0, GpuMax = 0.0; int32 Frames = 0; };

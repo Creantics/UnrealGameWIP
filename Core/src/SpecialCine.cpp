@@ -95,7 +95,7 @@ std::uint32_t SpecialCineMove::shotAt(float t) const {
 float SpecialCineMove::blendOut() const {
     if (count_ == 0) return 0.f;
     const float last = shots_[count_ - 1].out - shots_[count_ - 1].in;
-    return blendOut_ < 0.f ? last : std::min(blendOut_, last);
+    return blendOut_ < 0.f ? last : std::min(blendOut_, length());
 }
 
 float SpecialCineMove::release() const {
@@ -197,7 +197,8 @@ CutsceneVec3 specialCinePoint(const SpecialCineStage& stage, SpecialCineAnchor a
     return {origin.x + ax * fx + ay * rx, origin.y + ax * fy + ay * ry, origin.z + az};
 }
 
-SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const SpecialCineStage& stage) {
+SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
+                                    const SpecialCineShotFix* fixes) {
     SpecialCineFrame f;
     if (move.empty()) return f;
     const float length = move.length();
@@ -206,10 +207,28 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     const SpecialCineShot& s = move.shot(i);
     const float p = ease01(s.ease, (tc - s.in) / std::max(s.out - s.in, kMinShot));
     f.shot = i;
-    f.pose.position = specialCinePoint(stage, s.cameraAnchor, lerp3(s.cameraFrom, s.cameraTo, p));
-    f.pose.lookAt = specialCinePoint(stage, s.lookAnchor, lerp3(s.lookFrom, s.lookTo, p));
+    const SpecialCineShotFix fix = fixes != nullptr ? fixes[i] : SpecialCineShotFix{};
+    CutsceneVec3 eye = lerp3(s.cameraFrom, s.cameraTo, p);
+    CutsceneVec3 look = lerp3(s.lookFrom, s.lookTo, p);
+    if (fix.mirror) {
+        eye.y = -eye.y;
+        look.y = -look.y;
+    }
+    f.pose.position = specialCinePoint(stage, s.cameraAnchor, eye);
+    f.pose.lookAt = specialCinePoint(stage, s.lookAnchor, look);
+    if (std::isfinite(fix.raise) && fix.raise > 0.f) f.pose.position.z += fix.raise;
+    float pulled = 0.f;
+    if (std::isfinite(fix.pull) && fix.pull > 0.f) {
+        const CutsceneVec3 axis = sub3(f.pose.lookAt, f.pose.position);
+        const float d = length3(axis);
+        pulled = std::min(fix.pull, std::max(d - SpecialCineShotFix::kMinPullGap, 0.f));
+        if (d > 1e-4f && pulled > 0.f) {
+            const float k = pulled / d;
+            f.pose.position = {f.pose.position.x + axis.x * k, f.pose.position.y + axis.y * k, f.pose.position.z + axis.z * k};
+        }
+    }
     f.fovDegrees = specialCineFov(s.lensFrom + (s.lensTo - s.lensFrom) * p);
-    const float focus = s.focusFrom + (s.focusTo - s.focusFrom) * p;
+    const float focus = s.focusFrom + (s.focusTo - s.focusFrom) * p - pulled;
     f.focus = focus > 0.f ? focus : std::max(length3(sub3(f.pose.lookAt, f.pose.position)), 0.1f);
     f.fStop = s.fStop > 0.f ? s.fStop : move.fStop();
     if (s.shake) {
@@ -244,6 +263,13 @@ void SpecialCinePlayer::begin(const SpecialCineMove* move) {
     lastShot_ = 0;
     finished_ = false;
     releaseTaken_ = false;
+    std::fill(std::begin(fixes_), std::end(fixes_), SpecialCineShotFix{});
+}
+
+bool SpecialCinePlayer::setFix(std::uint32_t shot, const SpecialCineShotFix& fix) {
+    if (move_ == nullptr || shot >= move_->size()) return false;
+    fixes_[shot] = fix;
+    return true;
 }
 
 void SpecialCinePlayer::step(float seconds) {
@@ -259,7 +285,7 @@ void SpecialCinePlayer::stop() {
 
 SpecialCineFrame SpecialCinePlayer::frame(const SpecialCineStage& stage) {
     if (move_ == nullptr) return {};
-    SpecialCineFrame f = specialCineFrameAt(*move_, time_, stage);
+    SpecialCineFrame f = specialCineFrameAt(*move_, time_, stage, fixes_);
     f.cut = framed_ ? f.shot != lastShot_ : move_->blendIn() <= 0.f;
     if (!releaseTaken_ && time_ >= move_->release()) {
         f.release = true;
