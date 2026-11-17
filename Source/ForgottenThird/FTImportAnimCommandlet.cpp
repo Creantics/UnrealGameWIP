@@ -261,11 +261,9 @@ int32 UFTImportAnimCommandlet::Main(const FString& Params)
 	AnimData->bImportCustomAttribute = false;
 	AnimData->bImportMeshesInBoneHierarchy = false;
 	AnimData->bSnapToClosestFrameBoundary = true;
-	AnimData->bUseDefaultSampleRate = Fps <= 0;
-	if (Fps > 0)
-	{
-		AnimData->CustomSampleRate = Fps;
-	}
+	// Rates are per clip: never the engine's default rate (it resamples to 30). A custom rate of 0 keeps the file's.
+	AnimData->bUseDefaultSampleRate = false;
+	AnimData->CustomSampleRate = FMath::Max(Fps, 0);
 
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = Source;

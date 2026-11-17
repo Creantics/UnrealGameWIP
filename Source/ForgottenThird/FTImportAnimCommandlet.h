@@ -9,7 +9,8 @@
 //
 // -Skeleton names a USkeleton or a USkeletalMesh (its skeleton is used). Before importing, the FBX's bones (its LimbNode
 // models, ftcore/AnimImport.h) are checked against the skeleton: any bone the skeleton lacks is listed and nothing is
-// imported. The clip keeps every key (no redundant-key removal), at -Fps when given, else at the file's rate. After the
+// imported. The clip keeps every key (no redundant-key removal) at the file's own rate (a 60 fps cinematic stays at 60,
+// a 30 fps gameplay clip at 30; never the engine's default rate); -Fps resamples to that rate instead. After the
 // import it logs the clip's frames, rate, length and bone tracks, and fails when the tracks are fewer than
 // -MinTrackShare of the file's bones (0.9 by default). -RootLock locks the root (no root motion, the root held at its
 // first key). A clip of the same name in Dest is deleted first, so a re-import replaces it under the same name (soft
