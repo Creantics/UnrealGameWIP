@@ -5,7 +5,9 @@
 
 #if WITH_EDITOR
 #include "AssetImportTask.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
+#include "ObjectTools.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
@@ -27,6 +29,49 @@ UFTImportPropCommandlet::UFTImportPropCommandlet()
 	IsServer = false;
 	LogToConsole = true;
 }
+
+#if WITH_EDITOR
+namespace
+{
+// -Fresh: deletes what an earlier import of this file left in <Dest>/<file>/Materials and /Textures, so the re-import
+// makes its material instances and textures anew (otherwise an instance kept on a prop master keeps its old values and
+// textures, and a proof reads a false result). References to them (the mesh's slots) are nulled until the import fills
+// them again. False (logged) if anything there would not delete.
+bool DeleteEarlierImport(const FString& Folder)
+{
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	Registry.ScanPathsSynchronous({ Folder }, true);
+	TArray<UObject*> Objects;
+	for (const TCHAR* Sub : { TEXT("Materials"), TEXT("Textures") })
+	{
+		TArray<FAssetData> Assets;
+		Registry.GetAssetsByPath(FName(*(Folder / Sub)), Assets, true);
+		for (const FAssetData& Asset : Assets)
+		{
+			if (UObject* Object = Asset.GetAsset())
+			{
+				Objects.Add(Object);
+			}
+		}
+	}
+	if (Objects.Num() == 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: -Fresh: nothing under %s/Materials or /Textures (a first import)."), *Folder);
+		return true;
+	}
+	const int32 Deleted = ObjectTools::ForceDeleteObjects(Objects, false);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: -Fresh: deleted %d of %d earlier materials and textures under %s."), Deleted,
+		Objects.Num(), *Folder);
+	if (Deleted != Objects.Num())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: -Fresh: %d earlier assets under %s would not delete; nothing imported."),
+			Objects.Num() - Deleted, *Folder);
+		return false;
+	}
+	return true;
+}
+} // namespace
+#endif
 
 int32 UFTImportPropCommandlet::Main(const FString& Params)
 {
@@ -79,6 +124,11 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 	if (!FT::CheckGlbFile(TEXT("FTImportProp"), Source, Rules))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: %s breaks the asset rules (docs/ASSET_INTAKE.md); nothing imported."), *Source);
+		return 1;
+	}
+
+	if (FParse::Param(*Params, TEXT("Fresh")) && !DeleteEarlierImport(Dest / FPaths::GetBaseFilename(Source)))
+	{
 		return 1;
 	}
 

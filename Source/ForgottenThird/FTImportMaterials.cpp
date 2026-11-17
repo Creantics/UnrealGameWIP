@@ -818,8 +818,10 @@ bool UsePropMasters(const TCHAR* Tag, TConstArrayView<UMaterialInterface*> Mater
 		if (FTPropMasterBuild::IsPropMaster(Parent))
 		{
 			// Already on a prop master (an earlier import kept its instance): its values stay; grime and break-up are set
-			// again below.
+			// again below. Loud: a re-import that silently keeps old values reads as a false result (FTImportProp -Fresh).
 			PropMaster(Parent == FTPropMasterBuild::kTexMaster);
+			UE_LOG(LogForgottenThird, Warning, TEXT("%s: %s was kept on %s from an earlier import: its values and textures are the OLD ones "
+				"(re-import with -Fresh to replace them)."), GTag, *Instance->GetName(), *Parent);
 			++Kept;
 		}
 		else if (Parent == kCharacterMaster || Parent == kTexturedMaster)
