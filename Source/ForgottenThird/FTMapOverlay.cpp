@@ -277,14 +277,22 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 		if ((ShotStage - 1) % 2 == 0)
 		{
 			SetZoom(static_cast<ftcore::MapZoom>(Z));
+			if (bShotCursor)
+			{
+				// Each shot is framed on the asked point, not wherever the last zoom left it.
+				View.centre = ShotCursor;
+				View.centre = ftcore::mapOverlayClampCentre(Model, View);
+				Cursor = OvV2(ftcore::mapOverlayToScreen(View, ShotCursor));
+			}
 			StageStart = Now + 1.0;
 		}
 		else
 		{
 			const FString File = ShotPrefix + TEXT("_") + kOvShotNames[Z] + TEXT(".png");
 			FScreenshotRequest::RequestScreenshot(File, true, false);
-			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAYSHOT %s m/px=%.2f centre=%.1f:%.1f labels=%d file=%s"), kOvShotNames[Z],
-				View.mPerPx, View.centre.x, View.centre.y, static_cast<int32>(Placed.count), *File);
+			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAYSHOT %s m/px=%.2f centre=%.1f:%.1f picks=%d candidates=%d labels=%d tris=%d file=%s"),
+				kOvShotNames[Z], View.mPerPx, View.centre.x, View.centre.y, LastPicks, LastCandidates, static_cast<int32>(Placed.count),
+				Geo->TriangleList.Num(), *File);
 			StageStart = Now + 0.8;
 		}
 	}
@@ -529,9 +537,9 @@ void FFTMapOverlay::BuildLabels(int32 Picked, float S)
 	{
 		return;
 	}
-	const size_t NPicks = ftcore::mapLabelPicks(Model, Names, View, Zoom, Picked, Picks, ftcore::kMaxMapLabels, Seen.data(), 24.f * S);
+	const size_t NPicks = ftcore::mapLabelPicks(Model, Names, View, Zoom, Picked, Picks, kMaxPicks, Seen.data(), 24.f * S);
 	size_t Count = 0;
-	for (size_t I = 0; I < NPicks; ++I)
+	for (size_t I = 0; I < NPicks && Count < ftcore::kMaxMapLabels; ++I)
 	{
 		const ftcore::MapLabelPick& P = Picks[I];
 		const bool bWater = P.name < Names.nameKind.size() && Names.nameKind[P.name] == ftcore::MapNameKind::Water;
@@ -571,6 +579,8 @@ void FFTMapOverlay::BuildLabels(int32 Picked, float S)
 		Candidates[Count++] = L;
 	}
 	ftcore::mapPlaceLabels(Candidates, Count, Placed, 6.f * S);
+	LastPicks = static_cast<int32>(NPicks);
+	LastCandidates = static_cast<int32>(Count);
 }
 
 void FFTMapOverlay::DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float S)
@@ -677,7 +687,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 			AddRoof(R, HatchM, FMath::Max(0.8f * S, 0.8f), kOvHatch, kOvRoofLit, kOvRoofShade);
 		}
 	}
-	// Roads: a soft glow under the main roads and streets, then every road in gold (cased when wide enough: the gold
+	// Roads: a soft glow under the roads that carry names from mid (main roads and streets), then every road in gold (cased when wide enough: the gold
 	// full width first, the dark inside after, so the junctions join), then the cursor's road lit along its whole length.
 	auto IsLit = [&](size_t R) {
 		return Picked >= 0 && (static_cast<int32>(R) == Picked || (PickedName != ftcore::kMapNoName && Names.roadName[R] == PickedName));
@@ -696,7 +706,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					continue;
 				}
 				const bool bLit = IsLit(R);
-				if ((Pass == LitPass && !bLit) || (Pass == Glow && Cls > static_cast<int32>(ftcore::MapRoadClass::Street)))
+				if ((Pass == LitPass && !bLit) || (Pass == Glow && !ftcore::mapRoadLabelled(Road.cls, ftcore::MapZoom::Mid)))
 				{
 					continue;
 				}

@@ -85,7 +85,10 @@ private:
 	FCanvasTriangleItem* Geo = nullptr;   // the map: ground, water, blocks, roads
 	FCanvasTriangleItem* Boxes = nullptr; // the labels' boxes and sign forms
 	FCanvasTriangleItem* Marks = nullptr; // the objective, the party, the cursor, the needle, the rule
-	ftcore::MapLabelPick Picks[ftcore::kMaxMapLabels];
+	// More picks than labels: names that do not fit their stretch drop out before the placer, so the lanes still get a turn.
+	static constexpr size_t kMaxPicks = 256;
+	ftcore::MapLabelPick Picks[kMaxPicks];
+	int32 LastPicks = 0, LastCandidates = 0; // for the capture log
 	ftcore::MapLabel Candidates[ftcore::kMaxMapLabels];
 	ftcore::MapLabelSet Placed;
 	// The labels are placed again only when what they depend on moves.
