@@ -1468,6 +1468,52 @@ TEST_CASE("close station: a string the lead hides ends no faster than a pause an
     CHECK(shortest + 1e-6 >= 0.6 + static_cast<double>(t.pauseMin));
 }
 
+TEST_CASE("close station: a melee partner takes the far flank, a body width clear of the lead, and keeps it in a string") {
+    // Round 6 (11-16): the lead in contact (1.2 m centre to centre) with a target of 0.5 m, the lens over its right
+    // shoulder (0.55 m) aimed at the target, the melee band, the partner behind on the lead's side.
+    PartnerCloseInput in;
+    in.lead = {-1.2f, 0.f};
+    in.target = {0.f, 0.f};
+    in.targetRadius = 0.5f;
+    csLens(in.lead, in.target, 0.55f, 0.f, in.cameraPos, in.cameraForward, 34.f);
+    in.halfAngleDegrees = 34.f;
+    in.leadSide = -1;
+    in.partner = {-1.5f, -2.f};
+    in.bodyRadius = 0.4f;
+    in.farFlankFirst = true;
+    in.leadGapBodies = 1.f;
+    in.keepWhileAttacking = true;
+    const Vec2 right = csRight(csUnit(in.cameraForward));
+    const float leadLateral = csDot(csSub(in.lead, in.cameraPos), right);
+    REQUIRE(leadLateral < 0.f); // the lead left of the lens's axis
+    PartnerCloseHold hold;
+    const PartnerCloseStation s = partnerCloseStation(in, hold);
+    REQUIRE(s.valid);
+    MESSAGE("far flank " << int{s.flank} << ", angle " << s.angle << ", off the edge " << s.offEdge << ", tier " << int{s.tier}
+                         << ", gapped " << s.gapped << ", lateral " << csDot(csSub(s.point, in.cameraPos), right));
+    // Across the axis from the lead, its silhouette clear of the lead's, a body width of screen gap between them.
+    CHECK(csDot(csSub(s.point, in.cameraPos), right) > 0.f);
+    CHECK(s.gapped);
+    CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, s.point, in.bodyRadius, in.lead, in.bodyRadius));
+
+    // In a string with the near flank held: no new pick (the held flank and angle), whatever the far flank offers.
+    PartnerCloseHold nearHeld;
+    nearHeld.flank = static_cast<std::int8_t>(-s.flank);
+    nearHeld.angle = 60.f;
+    nearHeld.heldFor = 5.0;
+    in.attacking = true;
+    const PartnerCloseStation kept = partnerCloseStation(in, nearHeld);
+    CHECK(kept.valid);
+    CHECK(kept.flank == nearHeld.flank);
+    CHECK(kept.angle == doctest::Approx(60.f));
+    CHECK_FALSE(partnerCloseOverlaps(in.cameraPos, kept.point, in.bodyRadius, in.lead, in.bodyRadius));
+    // The string over and the hold's time up: the far flank again.
+    in.attacking = false;
+    const PartnerCloseStation after = partnerCloseStation(in, nearHeld);
+    CHECK(after.valid);
+    CHECK(after.flank == s.flank);
+}
+
 TEST_CASE("close station: a classic run's whole hash, pinned") {
     // Review (11-16): the close rules leave the classic brain bit-identical; this pins one whole classic run (the
     // close station off, the frame on, the target walking, the partner walked to each goal) at cb7d028a's value.
