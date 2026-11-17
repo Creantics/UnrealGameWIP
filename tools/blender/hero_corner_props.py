@@ -2027,7 +2027,7 @@ def stock_pot(name):
         for sy in (-1, 1):
             nrm = Vector((sx * yw, sy * 0.05, 0.0)).normalized()
             plate = [(0.0, 0.0), (0.011, 0.0), (0.011, 0.0015), (0.007, 0.0035), (0.0, 0.004)]
-            b.add(bm_lathe(plate, 10), "hc_steel", M=T(*(nrm * (RP - 0.0015)), zh) @ _orient(nrm), uv="keep")
+            b.add(bm_lathe(plate, 10), "hc_steel", M=T((nrm * (RP - 0.0015)).x, (nrm * (RP - 0.0015)).y, zh) @ _orient(nrm), uv="keep")
     # the lid, slid toward +X: its edge roll rests on the rim's crest where the two overlap and, at -X, on the ladle
     RL = POT_LID_R
     LX = 0.215
@@ -2223,7 +2223,7 @@ PARTS = {
     "SM_HC_Bucket": (bucket, 8000, True),
     "SM_HC_Gate": (gate, 15000, True),
     "BICYCLE": (bicycle, 16000, True),  # the kit's piece: import with -Kit -NoNanite to /Game/Props/BKIT
-    "SM_HC_StockPot": (stock_pot, 6000, True),
+    "SM_HC_StockPot": (stock_pot, 6500, True),  # 6380 measured on first run (11-16)
     "SM_HC_GoodsBottles": (goods_bottles, 5000, True),
 }
 
