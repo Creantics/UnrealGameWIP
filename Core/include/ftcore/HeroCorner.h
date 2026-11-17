@@ -319,10 +319,17 @@ FTCORE_API bool heroCornerKeepsLampOut(const HeroCornerSpec& spec, double x, dou
 enum class HeroPiece : int {
     Shelf, Counter, HangGoods, Lantern, Crate, Bucket, Figure, StockPot, Steam, Jars, Sacks, Bottles, GoodsHanging,
     UmbrellaStand, SignLarge, SignSmall, Banner, Bicycle, Gate, GateLantern, Scooter,
-    // The frontage clutter (Data/Field/hero_frontage.csv); the frontage parse matches names from Drum on.
-    Drum, Bin, DownPipe, Awning, SackPile, Bench, AcUnit, Vending, Planter, Count
+    // The frontage clutter (Data/Field/hero_frontage.csv); the frontage parse matches names from Drum on, and the
+    // dressing's crate, bucket, umbrella stand, signs and banner.
+    Drum, Bin, DownPipe, Awning, SackPile, Bench, AcUnit, Vending, Planter, Stool, MeterBox, Noticeboard, Broom, Count
 };
 FTCORE_API const char* heroPieceName(HeroPiece piece);
+
+// Where a piece reads on a shop front (the 11-17 density rule's three depth layers): at the foot (on the paving: crates,
+// drums, a stool, a broom), on the wall (a downpipe, a meter box, a noticeboard, a sign on its bracket, an AC unit) or
+// overhead (an awning, a banner, hanging goods). None for the rooms' own pieces and the gate.
+enum class HeroLayer : int { None, Foot, Wall, Overhead };
+FTCORE_API HeroLayer heroPieceLayer(HeroPiece piece);
 
 // A piece's place. Room terms: x along the front from its north end, y in from the front, z over the floor. Plan
 // terms: the plan's x, y and z. face is the way its front (the mesh's -Y) looks, a unit vector in the same terms
@@ -375,8 +382,8 @@ FTCORE_API bool heroItemBox(const HeroItem& item, double& x0, double& x1, double
 
 // The frontage rows (piece,y,out,up,yaw,scale): at = (laneX1 - out, y, ground + paveTop + up), face (-1, 0) turned yaw
 // degrees counter-clockwise, bay from y. Blank lines, '#' lines and the header are skipped. Returns how many (at most
-// max), or -1 on a malformed row or an unknown piece (badLine its 1-based line).
-inline constexpr int kHeroFrontageMax = 64;
+// max), or -1 on a malformed row, an unknown piece or a row past max (badLine its 1-based line).
+inline constexpr int kHeroFrontageMax = 160;
 FTCORE_API int heroFrontageParse(std::string_view text, const HeroCornerSpec& spec, HeroItem* out, int max, int* badLine = nullptr);
 
 // Each frontage piece kept or dropped (keep[i]) in order: dropped when its box overlaps a kept one before it, a dressing
@@ -394,6 +401,19 @@ struct HeroFrontageCheck {
 };
 FTCORE_API HeroFrontageCheck heroFrontageCheck(const HeroCornerSpec& spec, const HeroCornerLayout& layout, const HeroItem* front, int n,
                                                const HeroItem* dressing, int dressingCount, bool* keep, const HeroFrontageRules& rules = {});
+
+// The density rule (11-17): every window metres of frontage from y0 to y1 (plan y; windows every 0.25 m) holds at least
+// six pieces in all three layers. A piece counts in a window when its box overlaps it along y, stands outside the shop
+// face and within reach of it: the kept frontage rows (keep), the dressing's and the large lanterns (the wall layer).
+// minCount / minLayers are the sparsest window's (-1 with no window); countAt / layersAt where it starts.
+struct HeroFrontageDensity {
+    int windows = 0;
+    int minCount = -1, minLayers = -1;
+    double countAt = 0.0, layersAt = 0.0;
+};
+FTCORE_API HeroFrontageDensity heroFrontageDensity(const HeroCornerSpec& spec, const HeroCornerLayout& layout, const HeroItem* front,
+                                                   int n, const bool* keep, const HeroItem* dressing, int dressingCount, double y0,
+                                                   double y1, double window = 5.0, double reach = 1.5);
 
 // The face ruling's area lights (plan metres): a wide soft key in each lit bay's front (sky false, bay its index) and
 // the cool floor west of the lane in kHeroSkyFloors equal lengths end to end (sky true, bay -1; a light's attenuation

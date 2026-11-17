@@ -954,7 +954,7 @@ struct FrontageScene {
 
 } // namespace
 
-TEST_CASE("hero frontage: the shipped rows, 40 to 60, all kept, no bare run over 3 m along the bays") {
+TEST_CASE("hero frontage: the shipped rows, 40 or more, all kept, no bare run over 3 m, bays 0-1 dense in three layers") {
     std::string text;
     if (!ftcore_test::readProjectData("Field/hero_frontage.csv", text)) FAIL("Data/Field/hero_frontage.csv not found");
     FrontageScene s;
@@ -963,7 +963,6 @@ TEST_CASE("hero frontage: the shipped rows, 40 to 60, all kept, no bare run over
     const int n = heroFrontageParse(text, s.spec, front, kHeroFrontageMax, &bad);
     INFO("bad line " << bad);
     REQUIRE(n >= 40);
-    CHECK(n <= 60);
     bool keep[kHeroFrontageMax] = {};
     const HeroFrontageCheck c = heroFrontageCheck(s.spec, s.layout, front, n, s.dressing, s.dressingCount, keep);
     std::string dropped;
@@ -989,6 +988,55 @@ TEST_CASE("hero frontage: the shipped rows, 40 to 60, all kept, no bare run over
     CHECK(ac >= 2);
     CHECK(vending >= 1);
     CHECK(planters >= 2);
+    // The density rule (11-17), rolled out a bay at a time: bays 0 and 1 (F1's still) first; the whole run reported only.
+    const double b1 = s.spec.bayY0;
+    const HeroFrontageDensity d = heroFrontageDensity(s.spec, s.layout, front, n, keep, s.dressing, s.dressingCount, b1,
+                                                      b1 + 2.0 * s.spec.bayWidth);
+    const HeroFrontageDensity all = heroFrontageDensity(s.spec, s.layout, front, n, keep, s.dressing, s.dressingCount,
+                                                        s.spec.bayY0, s.spec.laneY1 - s.spec.gateBack);
+    INFO("bays 0-1: fewest " << d.minCount << " at y " << d.countAt << ", layers " << d.minLayers << " at y " << d.layersAt
+                          << "; whole run: fewest " << all.minCount << " at y " << all.countAt << ", layers " << all.minLayers
+                          << " at y " << all.layersAt);
+    CHECK(d.windows > 1);
+    CHECK(d.minCount >= 6);
+    CHECK(d.minLayers == 3);
+}
+
+TEST_CASE("hero frontage density: six pieces in three layers per window, counted by face and window") {
+    FrontageScene s;
+    const double z = s.spec.ground + s.spec.paveTop, x = s.spec.laneX1, y0 = 600.0;  // past the corner: no dressing
+    HeroItem f[7];
+    const HeroPiece kind[7] = {HeroPiece::Drum, HeroPiece::Crate, HeroPiece::Stool, HeroPiece::Broom,
+                               HeroPiece::MeterBox, HeroPiece::Noticeboard, HeroPiece::Awning};
+    for (int i = 0; i < 7; ++i) {
+        f[i].piece = kind[i];
+        f[i].faceX = -1.0;
+        f[i].faceY = 0.0;
+        f[i].at = {x - 0.4, y0 + 0.6 * i, z};
+    }
+    f[3].at.x = f[4].at.x = f[5].at.x = f[6].at.x = x;  // the wall pieces' origins on the face
+    f[5].at.z = z + 1.0;
+    f[6].at.z = z + 2.95;
+    bool keep[7] = {true, true, true, true, true, true, true};
+    HeroFrontageDensity d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 5.0);
+    CHECK(d.windows == 1);
+    CHECK(d.minCount == 7);
+    CHECK(d.minLayers == 3);
+    keep[6] = false;  // a dropped row doesn't count: no overhead layer left
+    d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 5.0);
+    CHECK(d.minCount == 6);
+    CHECK(d.minLayers == 2);
+    f[0].at.x = x - 2.0;  // out in the lane past reach
+    f[1].at.x = x + 1.0;  // inside the shop
+    d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 5.0);
+    CHECK(d.minCount == 4);
+    // Sliding on: the later windows lose the first pieces; the sparsest is the last.
+    d = heroFrontageDensity(s.spec, s.layout, f, 7, keep, nullptr, 0, y0, y0 + 7.0);
+    CHECK(d.windows == 9);
+    CHECK(d.countAt == doctest::Approx(y0 + 2.0));
+    CHECK(heroPieceLayer(HeroPiece::Shelf) == HeroLayer::None);
+    CHECK(heroPieceLayer(HeroPiece::Banner) == HeroLayer::Overhead);
+    CHECK(heroPieceLayer(HeroPiece::SignSmall) == HeroLayer::Wall);
 }
 
 TEST_CASE("hero frontage parse: plan terms from the shop face; a malformed row or an unknown piece names its line") {
@@ -1011,6 +1059,13 @@ TEST_CASE("hero frontage parse: plan terms from the shop face; a malformed row o
     CHECK(bad == 1);
     CHECK(heroFrontageParse("Drum,520,x,0,0,1\n", spec, out, 4, &bad) == -1);
     CHECK(heroFrontageParse("Drum,520,0.3,0,0,0\n", spec, out, 4, &bad) == -1);
+    // The dressing's names (as the meshes: HangSignS) and the new kit; a row past max fails, naming its line.
+    REQUIRE(heroFrontageParse("HangSignS,520,0,3.1,0,1\nUmbrellaStand,521,0.3,0,0,1\nNoticeboard,522,0,1,0,1\nBroom,523,0,0,0,1\n",
+                              spec, out, 4) == 4);
+    CHECK(out[0].piece == HeroPiece::SignSmall);
+    CHECK(out[3].piece == HeroPiece::Broom);
+    CHECK(heroFrontageParse("Drum,520,0.36,0,0,1\nDrum,521,0.36,0,0,1\nDrum,522,0.36,0,0,1\n", spec, out, 2, &bad) == -1);
+    CHECK(bad == 3);
 }
 
 TEST_CASE("hero frontage check: a piece in a lit entrance, out in the lead's corridor or on another is dropped") {

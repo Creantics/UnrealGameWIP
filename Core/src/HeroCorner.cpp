@@ -472,6 +472,10 @@ const char* heroPieceName(HeroPiece piece) {
     case HeroPiece::AcUnit: return "AcUnit";
     case HeroPiece::Vending: return "Vending";
     case HeroPiece::Planter: return "Planter";
+    case HeroPiece::Stool: return "Stool";
+    case HeroPiece::MeterBox: return "MeterBox";
+    case HeroPiece::Noticeboard: return "Noticeboard";
+    case HeroPiece::Broom: return "Broom";
     case HeroPiece::Count: break;
     }
     return "";
@@ -698,6 +702,22 @@ int heroCornerDressing(const HeroCornerSpec& spec, const HeroCornerLayout& layou
     return n;
 }
 
+HeroLayer heroPieceLayer(HeroPiece piece) {
+    switch (piece) {
+    case HeroPiece::Crate: case HeroPiece::Bucket: case HeroPiece::Sacks: case HeroPiece::UmbrellaStand: case HeroPiece::Bicycle:
+    case HeroPiece::Scooter: case HeroPiece::Drum: case HeroPiece::Bin: case HeroPiece::SackPile: case HeroPiece::Bench:
+    case HeroPiece::Vending: case HeroPiece::Planter: case HeroPiece::Stool: case HeroPiece::Broom:
+        return HeroLayer::Foot;
+    case HeroPiece::DownPipe: case HeroPiece::AcUnit: case HeroPiece::MeterBox: case HeroPiece::Noticeboard:
+    case HeroPiece::SignLarge: case HeroPiece::SignSmall: case HeroPiece::Lantern:
+        return HeroLayer::Wall;
+    case HeroPiece::Awning: case HeroPiece::Banner: case HeroPiece::HangGoods: case HeroPiece::GoodsHanging:
+        return HeroLayer::Overhead;
+    default:
+        return HeroLayer::None;
+    }
+}
+
 bool heroItemBox(const HeroItem& item, double& x0, double& x1, double& y0, double& y1, double& z0, double& z1) {
     // The box at face (0, -1) about the origin: lx across, ly from front (-) to back (+), lz up. Sizes from
     // tools/blender/hero_corner_props.py and the building kit (tools/blender/make_building_kit.py).
@@ -709,7 +729,7 @@ bool heroItemBox(const HeroItem& item, double& x0, double& x1, double& y0, doubl
     case HeroPiece::Crate: set(-0.3, 0.3, -0.2, 0.2, 0.0, 0.37); break;
     case HeroPiece::Bucket: set(-0.17, 0.17, -0.17, 0.17, 0.0, 0.35); break;
     case HeroPiece::Sacks: set(-0.3, 0.3, -0.3, 0.3, 0.0, 0.6); break;
-    case HeroPiece::UmbrellaStand: set(-0.15, 0.15, -0.15, 0.15, 0.0, 0.9); break;
+    case HeroPiece::UmbrellaStand: set(-0.15, 0.15, -0.15, 0.15, 0.0, 0.97); break;  // the umbrellas' crooks
     case HeroPiece::Bicycle: set(-0.3, 0.3, -0.9, 0.9, 0.0, 1.05); break;
     case HeroPiece::Scooter: set(-0.35, 0.35, -0.9, 0.9, 0.0, 1.2); break;
     case HeroPiece::SignLarge: set(-0.05, 0.05, -0.75, 0.0, -1.45, 0.08); break;  // the arm 0.7 m out, the board under it
@@ -726,6 +746,10 @@ bool heroItemBox(const HeroItem& item, double& x0, double& x1, double& y0, doubl
     case HeroPiece::AcUnit: set(-0.02, 0.82, -0.45, 0.0, -0.35, 0.6); break;        // origin at its bracket on the wall
     case HeroPiece::Vending: set(0.0, 1.0, -0.06, 0.75, 0.0, 1.87); break;          // origin at its front's left foot
     case HeroPiece::Planter: set(-0.24, 1.3, -0.5, 0.25, 0.0, 0.62); break;         // origin at the first pot's middle
+    case HeroPiece::Stool: set(-0.18, 0.18, -0.19, 0.17, 0.0, 0.47); break;
+    case HeroPiece::MeterBox: set(-0.2, 0.2, -0.19, 0.0, 0.0, 1.8); break;          // origin on the wall at the conduit's foot
+    case HeroPiece::Noticeboard: set(-0.53, 0.53, -0.13, 0.0, -0.03, 0.68); break;  // origin on the wall at the board's foot
+    case HeroPiece::Broom: set(-0.14, 0.16, -0.43, 0.0, 0.0, 1.51); break;          // origin on the wall at the floor
     default: return false;
     }
     const double s = item.scale;
@@ -791,18 +815,19 @@ int heroFrontageParse(std::string_view text, const HeroCornerSpec& spec, HeroIte
                 it.piece = static_cast<HeroPiece>(p);
                 known = true;
             }
-        if (!known && ok && (f[0] == "Crate" || f[0] == "Bucket")) {
-            it.piece = f[0] == "Crate" ? HeroPiece::Crate : HeroPiece::Bucket;
-            known = true;
-        }
+        for (const HeroPiece p : {HeroPiece::Crate, HeroPiece::Bucket, HeroPiece::UmbrellaStand, HeroPiece::SignLarge,
+                                  HeroPiece::SignSmall, HeroPiece::Banner})
+            if (!known && ok && f[0] == heroPieceName(p)) {
+                it.piece = p;
+                known = true;
+            }
         double y = 0.0, o = 0.0, up = 0.0, yaw = 0.0, sc = 1.0;
         ok = ok && known && frontNumber(f[1], y) && frontNumber(f[2], o) && frontNumber(f[3], up) && frontNumber(f[4], yaw) &&
              frontNumber(f[5], sc) && sc > 0.0;
-        if (!ok) {
+        if (!ok || n >= max) {  // a row past max fails too: a silently short frontage would pass the checks
             if (badLine) *badLine = line;
             return -1;
         }
-        if (n >= max) continue;
         const double a = yaw * 3.14159265358979323846 / 180.0;
         it.at = {spec.laneX1 - o, y, floorZ + up};
         it.faceX = -std::cos(a);
@@ -892,6 +917,50 @@ HeroFrontageCheck heroFrontageCheck(const HeroCornerSpec& spec, const HeroCorner
         }
         if (i < m) at = std::max(at, span[i].y1);
         if (at >= end) break;
+    }
+    return r;
+}
+
+HeroFrontageDensity heroFrontageDensity(const HeroCornerSpec& spec, const HeroCornerLayout& layout, const HeroItem* front, int n,
+                                        const bool* keep, const HeroItem* dressing, int dressingCount, double y0, double y1,
+                                        double window, double reach) {
+    HeroFrontageDensity r;
+    if (window <= 0.0) return r;
+    constexpr double kStep = 0.25, kInside = 0.05;
+    const auto byFace = [&](const double* b) { return b[0] < spec.laneX1 + kInside && b[1] > spec.laneX1 - reach; };
+    const int windows = std::max(1, static_cast<int>(std::floor((y1 - y0 - window) / kStep + 1e-9)) + 1);
+    for (int w = 0; w < windows; ++w) {
+        const double w0 = y0 + kStep * w, w1 = w0 + window;
+        int count = 0;
+        bool layer[4] = {};
+        const auto take = [&](const HeroItem& it) {
+            const HeroLayer l = heroPieceLayer(it.piece);
+            double b[6];
+            if (l == HeroLayer::None || !heroItemBox(it, b[0], b[1], b[2], b[3], b[4], b[5]) || !byFace(b) || b[3] <= w0 || b[2] >= w1)
+                return;
+            ++count;
+            layer[static_cast<int>(l)] = true;
+        };
+        for (int i = 0; i < n; ++i)
+            if (keep[i]) take(front[i]);
+        for (int d = 0; d < dressingCount; ++d) take(dressing[d]);
+        for (std::size_t k = 0; k < layout.lanternCount; ++k) {
+            const HeroLantern& lan = layout.lanterns[k];
+            const double rad = (lan.large ? 0.23 : 0.13) * lan.scale;
+            if (!lan.large || lan.hook.x < spec.laneX1 - reach || lan.hook.y + rad <= w0 || lan.hook.y - rad >= w1) continue;
+            ++count;
+            layer[static_cast<int>(HeroLayer::Wall)] = true;
+        }
+        const int layers = layer[1] + layer[2] + layer[3];
+        ++r.windows;
+        if (r.minCount < 0 || count < r.minCount) {
+            r.minCount = count;
+            r.countAt = w0;
+        }
+        if (r.minLayers < 0 || layers < r.minLayers) {
+            r.minLayers = layers;
+            r.layersAt = w0;
+        }
     }
     return r;
 }

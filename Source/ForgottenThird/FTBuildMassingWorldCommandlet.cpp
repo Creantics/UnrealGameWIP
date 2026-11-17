@@ -1956,6 +1956,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -HeroSubLevel (the strip) and -HeroCornerOnly (the corner) are two runs."));
 		return 1;
 	}
+	// A hero strip bakes the corner inline only on purpose: the 09:16 Strip lacked -HeroSubLevel and every walk after it
+	// showed a default corner, not the built sub-level. -InlineCorner says the inline corner is wanted.
+	if (bHeroCorner && !bHeroSubLevel && !bHeroOnly && !FParse::Param(*Params, TEXT("InlineCorner")))
+	{
+		UE_LOG(LogForgottenThird, Error,
+		       TEXT("FTBuildMassingWorld: -HeroCorner without -HeroSubLevel bakes an inline default corner; pass -HeroSubLevel (or -InlineCorner on purpose)."));
+		return 1;
+	}
 	if (bHeroOnly)
 	{
 		// Everything but the corner left out: the strip's run builds it.
