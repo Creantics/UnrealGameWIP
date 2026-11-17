@@ -117,6 +117,15 @@ void FTDemoBootSetMap(const FString& MapName)
 	GBootMapGuessed = true;
 }
 
+void FTDemoBootNoteWorld(const UObject* WorldOrOuter)
+{
+	const UWorld* World = Cast<UWorld>(WorldOrOuter);
+	if (World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE))
+	{
+		FTDemoBootSetMap(World->GetMapName());
+	}
+}
+
 void FTRequestExit(int32 Code, const TCHAR* CallSite)
 {
 	const uint8 Status = static_cast<uint8>(FMath::Clamp(Code, 0, 255));

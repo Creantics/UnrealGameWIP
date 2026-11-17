@@ -2,8 +2,8 @@
   "maps": [
     {
       "map": "World_Solhaven_Strip",
-      "status": "E8 hero proof 11-17: night 21:00 fixed, white 5200, hero key 4000, fixed EV -1.85, wet, start on the lane's setts 12 m south of bay 1 facing north up the lane; rain night under a full starless overcast (look solhaven_rain) and the characters-only cool fill (lead readable away from the bays)",
-      "switches": "-TimeOfDay=21 -NightEV=-1.85 -NightEVRange=0 -NightWhiteK=5200 -NightHeroShopK=4000 -NightHeroLampK=2700 -NightHeroFrontLm=12 -NightHeroFrontSpec=0.08 -NightHeroSkyLm=30 -NightHeroSkyTint=0.55,0.75,1.0 -NightSkyLum=0.008 -NightMoon=0.05 -NightGlow=0.25 -NightFog=0.2 -Look=solhaven_rain -WorldEyeWet=1 -Rain=1 -NightCharFill -NightCharFillStops=1 -NightCharFillK=10000 -ShopNightLevel=0.6 -FarSigns -FarSignsLum=40 -WorldStartAt=904.5,509,4.18,-90"
+      "status": "E8 hero proof 11-17: night 21:00 fixed, white 5200, hero key 3000, fixed EV -1.85, wet, start on the lane's setts (plan y521; the setts begin about y515-518) facing north up the lane; warm lanterns 2100 K, shops 2700 K; lead fill half a stop under the key; rain night under a full starless overcast (look solhaven_rain) and the characters-only cool fill (lead readable away from the bays)",
+      "switches": "-TimeOfDay=21 -NightEV=-1.85 -NightEVRange=0 -NightWhiteK=5200 -NightLampK=2100 -NightShopK=2700 -NightHeroShopK=3000 -NightHeroLampK=2300 -NightHeroFrontLm=12 -NightHeroFrontSpec=0.08 -NightHeroSkyLm=30 -NightHeroSkyTint=0.55,0.75,1.0 -NightSkyLum=0.008 -NightMoon=0.05 -NightGlow=0.25 -NightFog=0.2 -Look=solhaven_rain -WorldEyeWet=1 -Rain=1 -NightCharFill -NightCharFillStops=0.5 -NightCharFillK=10000 -ShopNightLevel=0.6 -FarSigns -FarSignsLum=40 -WorldStartAt=904.5,521,4.18,-90"
     }
   ]
 }

@@ -84,6 +84,7 @@ bool ParseTriple(const TCHAR* Key, double& X, double& Y, double& Z)
 bool UFTWorldEyeShotSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
+	FTDemoBootNoteWorld(Outer); // this world's boot row, not the last one's (see ForgottenThird.h)
 	FString Shot;
 	// Through the look switches' gate: no still, so none of the -WorldEye* readers below, in Shipping.
 	return World && World->WorldType == EWorldType::Game && FParse::Value(FTLookSwitches(), TEXT("WorldEyeShot="), Shot) &&

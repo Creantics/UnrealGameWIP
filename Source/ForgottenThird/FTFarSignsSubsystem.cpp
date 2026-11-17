@@ -85,6 +85,7 @@ UStaticMeshComponent* AddBox(AActor& Holder, UStaticMesh* Cube, UMaterialInterfa
 bool UFTFarSignsSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
+	FTDemoBootNoteWorld(Outer); // this world's boot row, not the last one's (see ForgottenThird.h)
 	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) &&
 		FParse::Param(FTLookSwitches(), TEXT("FarSigns")) && Super::ShouldCreateSubsystem(Outer);
 }

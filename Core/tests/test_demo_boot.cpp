@@ -1,6 +1,7 @@
 // Demo boot defaults (ftcore/DemoBoot.h): per-map switches after the command line, the command line winning.
 
 #include "ftcore/DemoBoot.h"
+#include "TestAssets.h"
 
 #include <doctest/doctest.h>
 
@@ -85,4 +86,42 @@ TEST_CASE("demo boot: a play-in-editor world finds its map's row")
     REQUIRE(ftcore::parseDemoBoot(strip, t));
     const std::string line = ftcore::demoBootSwitches("-game", ftcore::demoBootFind(t, "UEDPIE_2_World_Solhaven_Strip"));
     CHECK(firstValue(line, "WorldEyeWet") == "1");
+}
+
+TEST_CASE("demo boot: the shipped table parses and every switch is one well-formed token")
+{
+    std::string text;
+    if (!ftcore_test::readProjectData("Field/demo_boot.json", text)) FAIL("Data/Field/demo_boot.json not found");
+    ftcore::DemoBootTable t;
+    std::string error;
+    REQUIRE(ftcore::parseDemoBoot(text, t, &error));
+    REQUIRE_FALSE(t.rows.empty());
+    for (const ftcore::DemoBootRow& row : t.rows) {
+        std::size_t from = 0;
+        while (from < row.switches.size()) {
+            std::size_t end = row.switches.find(' ', from);
+            if (end == std::string::npos) end = row.switches.size();
+            const std::string token = row.switches.substr(from, end - from);
+            from = end + 1;
+            if (token.empty()) continue;
+            INFO(row.map, ": ", token);
+            CHECK(token.size() > 1);
+            CHECK(token[0] == '-');
+            // A missing space runs two switches together ("-A=2300-B=12"): no '-' then a capital after the first.
+            bool runTogether = false;
+            for (std::size_t i = 1; i + 1 < token.size(); ++i) {
+                if (token[i] == '-' && token[i + 1] >= 'A' && token[i + 1] <= 'Z') runTogether = true;
+            }
+            CHECK_FALSE(runTogether);
+            // "-Key" or "-Key=value": the key is letters and digits only.
+            const std::size_t eq = token.find('=');
+            const std::string key = token.substr(1, eq == std::string::npos ? std::string::npos : eq - 1);
+            bool keyOk = !key.empty();
+            for (char c : key) {
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) keyOk = false;
+            }
+            CHECK(keyOk);
+            if (eq != std::string::npos) CHECK(eq + 1 < token.size());
+        }
+    }
 }
