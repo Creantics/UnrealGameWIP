@@ -1,5 +1,6 @@
 #include "FTGameInstance.h"
 
+#include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
@@ -22,6 +23,47 @@ void UFTGameInstance::Init()
 	LoadEncounters();
 	// Load the interface text now, so a broken table shows up at launch (and in headless runs, which never draw).
 	FTUiText::Culture();
+	FString Name;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ThirdName="), Name))
+	{
+		ThirdNameVariant = Name.Equals(TEXT("c2"), ESearchCase::IgnoreCase) ? 1 : 0;
+	}
+}
+
+namespace
+{
+const FTUiText kThirdNameC1(TEXT("party.name.c1"));
+const FTUiText kThirdNameC2(TEXT("party.name.c2"));
+const FTUiText* const kThirdNameKeys[] = {&kThirdNameC1, &kThirdNameC2};
+
+UFTGameInstance* ThirdNameGame(const UObject* Ctx)
+{
+	const UWorld* W = Ctx ? Ctx->GetWorld() : nullptr;
+	return W ? Cast<UFTGameInstance>(W->GetGameInstance()) : nullptr;
+}
+} // namespace
+
+const FString& UFTGameInstance::ThirdName(const UObject* Ctx)
+{
+	const UFTGameInstance* GI = ThirdNameGame(Ctx);
+	return kThirdNameKeys[GI && GI->ThirdNameVariant == 1 ? 1 : 0]->Get();
+}
+
+void UFTGameInstance::NoteSpeaker(const UObject* Ctx, const FString& Speaker)
+{
+	UFTGameInstance* GI = Speaker.IsEmpty() ? nullptr : ThirdNameGame(Ctx);
+	if (!GI)
+	{
+		return;
+	}
+	for (int32 I = 0; I < 2; ++I)
+	{
+		if (Speaker.Equals(kThirdNameKeys[I]->Get(), ESearchCase::IgnoreCase))
+		{
+			GI->ThirdNameVariant = I;
+			return;
+		}
+	}
 }
 
 void UFTGameInstance::LoadWorlds()

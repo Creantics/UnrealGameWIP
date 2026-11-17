@@ -13,7 +13,8 @@ using namespace ftcore;
 
 TEST_CASE("special prompt: the rules' answer carries no level (bools and a reason only)") {
     // No float, int or count may reach the HUD from the gauge: the input is exactly a bool and a reason.
-    static_assert(sizeof(UiSpecialInput) == sizeof(bool) + sizeof(UiSpecialWhy), "ready and why, nothing else");
+    static_assert(sizeof(UiSpecialInput) == 2 * sizeof(bool) + sizeof(UiSpecialWhy), "ready, why and the Third's ready");
+    static_assert(std::is_same_v<decltype(UiSpecialInput::thirdReady), bool>);
     static_assert(std::is_same_v<decltype(UiSpecialInput::ready), bool>);
     static_assert(std::is_same_v<std::underlying_type_t<UiSpecialWhy>, std::uint8_t>);
     CHECK(kUiSpecialWhyCount == 4);
@@ -73,11 +74,98 @@ TEST_CASE("special prompt: arrival fades in, pulses once, then stands steady unt
     CHECK(v.live == steady.live);
     CHECK(v.alpha == steady.alpha);
     CHECK(v.pulse == steady.pulse);
-    // Used: gone; ready again: a new arrival with its own pulse.
+    // Used: it leaves over the fade-out; ready again: a new arrival with its own pulse.
     v = uiSpecialStep(s, true, UiSpecialInput{}, 0.016f, false);
+    CHECK(v.drawn);
+    v = uiSpecialStep(s, true, UiSpecialInput{}, kUiSpecialFadeOut, false);
     CHECK_FALSE(v.drawn);
     v = uiSpecialStep(s, true, ready, 0.016f, false);
     CHECK(v.pulse == doctest::Approx(0.f));
+}
+
+TEST_CASE("special prompt: unready (a lead switch) leaves over 0.2 s as last shown, no pulse; Ready returns it pulsing") {
+    UiSpecialState s;
+    const UiSpecialInput ready{true, UiSpecialWhy::None, false};
+    UiSpecialView v = uiSpecialStep(s, true, ready, 0.016f, false);
+    v = uiSpecialStep(s, true, ready, 1.f, false);
+    REQUIRE(v.alpha == doctest::Approx(1.f));
+    REQUIRE(v.pulse < 0.f);
+    // The unready: the leave starts at full, held live, never pulsing, falling linearly.
+    v = uiSpecialStep(s, true, UiSpecialInput{}, 0.016f, false);
+    CHECK(v.drawn);
+    CHECK(v.live);
+    CHECK_FALSE(v.call);
+    CHECK(v.alpha == doctest::Approx(1.f));
+    CHECK(v.pulse < 0.f);
+    v = uiSpecialStep(s, true, UiSpecialInput{}, 0.1f, false);
+    CHECK(v.alpha == doctest::Approx(0.5f));
+    CHECK(v.pulse < 0.f);
+    v = uiSpecialStep(s, true, UiSpecialInput{}, 0.1f, false);
+    CHECK_FALSE(v.drawn);
+    v = uiSpecialStep(s, true, UiSpecialInput{}, 1.f, false);
+    CHECK_FALSE(v.drawn);
+    // Ready again: fades in from 0 and pulses.
+    v = uiSpecialStep(s, true, ready, 0.016f, false);
+    CHECK(v.alpha == doctest::Approx(0.f));
+    CHECK(v.pulse == doctest::Approx(0.f));
+}
+
+TEST_CASE("special prompt: Ready mid-leave climbs from the alpha it had and pulses again") {
+    UiSpecialState s;
+    const UiSpecialInput ready{true, UiSpecialWhy::None, false};
+    (void)uiSpecialStep(s, true, ready, 0.016f, false);
+    (void)uiSpecialStep(s, true, ready, 1.f, false);
+    (void)uiSpecialStep(s, true, UiSpecialInput{}, 0.016f, false);
+    UiSpecialView v = uiSpecialStep(s, true, UiSpecialInput{}, 0.1f, false);
+    REQUIRE(v.alpha == doctest::Approx(0.5f));
+    v = uiSpecialStep(s, true, ready, 0.016f, false);
+    CHECK(v.alpha == doctest::Approx(0.5f));
+    CHECK(v.pulse == doctest::Approx(0.f));
+    v = uiSpecialStep(s, true, ready, 0.5f * kUiSpecialFadeIn, false);
+    CHECK(v.alpha == doctest::Approx(1.f));
+}
+
+TEST_CASE("special prompt: reduce motion and the switch off cut the leave") {
+    for (int off = 0; off < 2; ++off) {
+        UiSpecialState s;
+        const UiSpecialInput ready{true, UiSpecialWhy::None, false};
+        (void)uiSpecialStep(s, true, ready, 0.016f, off == 0);
+        (void)uiSpecialStep(s, true, ready, 1.f, off == 0);
+        const UiSpecialView v = off == 0 ? uiSpecialStep(s, true, UiSpecialInput{}, 0.016f, true)
+                                         : uiSpecialStep(s, false, UiSpecialInput{}, 0.016f, false);
+        CHECK_FALSE(v.drawn);
+        CHECK_FALSE(s.leaving);
+    }
+}
+
+TEST_CASE("special prompt: only the Third's ready reads CALL, live, with its pulse; the lead's ready takes the row back") {
+    UiSpecialState s;
+    const UiSpecialInput third{false, UiSpecialWhy::None, true};
+    UiSpecialView v = uiSpecialStep(s, true, third, 0.016f, false);
+    CHECK(v.drawn);
+    CHECK(v.call);
+    CHECK(v.live);
+    CHECK(v.pulse == doctest::Approx(0.f));
+    // The lead's why does not dim his call (only the lead's own row takes a reason).
+    v = uiSpecialStep(s, true, UiSpecialInput{false, UiSpecialWhy::NoTarget, true}, 1.f, false);
+    CHECK(v.call);
+    CHECK(v.live);
+    // Both ready: the lead's row (SPECIAL and the lead's name; a hold calls the Third's), no second pulse.
+    v = uiSpecialStep(s, true, UiSpecialInput{true, UiSpecialWhy::None, true}, 0.016f, false);
+    CHECK_FALSE(v.call);
+    CHECK(v.live);
+    CHECK(v.pulse < 0.f);
+    // The call used, the lead's still ready: the lead's row stands.
+    v = uiSpecialStep(s, true, UiSpecialInput{true, UiSpecialWhy::None, false}, 0.016f, false);
+    CHECK(v.drawn);
+    CHECK_FALSE(v.call);
+    // Nothing ready after a call: it leaves as CALL.
+    s = UiSpecialState{};
+    (void)uiSpecialStep(s, true, third, 0.016f, false);
+    (void)uiSpecialStep(s, true, third, 1.f, false);
+    v = uiSpecialStep(s, true, UiSpecialInput{}, 0.016f, false);
+    CHECK(v.drawn);
+    CHECK(v.call);
 }
 
 TEST_CASE("special prompt: no target dims with a reason and one outline; the pulse waits for the first live tick") {
@@ -119,7 +207,7 @@ TEST_CASE("special prompt: bad time steps hold the clock") {
     CHECK(v.alpha == doctest::Approx(0.f));
 }
 
-TEST_CASE("special prompt: the style's switches (the row per world on; the open choices off)") {
+TEST_CASE("special prompt: the style's switch (the row per world on); the old open-choice switches are gone") {
     std::string err;
     std::string text;
     REQUIRE(ftcore_test::readProjectData("UI/style.json", text));
@@ -127,20 +215,7 @@ TEST_CASE("special prompt: the style's switches (the row per world on; the open 
     REQUIRE_MESSAGE(importUiStyle(text, shipped, &err), err);
     for (const UiWorldRules& r : shipped.rules) CHECK(r.specialPrompt); // the owner's pick, C (2026-11-17)
     for (const UiWorldRules& r : defaultUiStyle().rules) CHECK_FALSE(r.specialPrompt);
-    for (const UiStyle& s : {defaultUiStyle(), shipped}) {
-        CHECK_FALSE(s.special.thirdCall);
-        CHECK_FALSE(s.special.thirdActs);
-        CHECK_FALSE(s.special.partnerMark);
-    }
-    UiStyle one;
-    REQUIRE_MESSAGE(importUiStyle(R"({"special": {"third_call": true, "partner_mark": true}})", one, &err), err);
-    CHECK(one.special.thirdCall);
-    CHECK_FALSE(one.special.thirdActs);
-    CHECK(one.special.partnerMark);
     UiStyle bad = defaultUiStyle();
-    CHECK_FALSE(importUiStyle(R"({"special": {"third_call": true, "third_acts": true}})", bad, &err));
-    CHECK_FALSE(importUiStyle(R"({"special": {"third_call": 1}})", bad, &err));
-    CHECK_FALSE(importUiStyle(R"({"special": {"meter": false}})", bad, &err));
+    CHECK_FALSE(importUiStyle(R"({"special": {"third_call": true}})", bad, &err)); // ruled 2026-11-17: no switch
     CHECK_FALSE(importUiStyle(R"({"worlds": {"lattice": {"special_prompt": "yes"}}})", bad, &err));
-    CHECK_FALSE(bad.special.thirdCall);
 }

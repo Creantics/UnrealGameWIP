@@ -12,7 +12,6 @@
   "budget": { "rest": 3, "marks": 10, "hint": 3 },
   "lines": { "cap_grow": 4, "guard_dot": 3, "guard_pitch": 7 },
   "margin_rule": { "gap": 12, "width": 2, "alpha": 0.6, "tick_w": 2, "tick_h": 16 },
-  "special": { "third_call": false, "third_acts": false, "partner_mark": false },
   "word_luma_floor": 0.45,
   "min_text_px": 18,
   "min_text_px_absolute": 14,

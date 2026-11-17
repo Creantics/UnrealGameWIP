@@ -773,16 +773,6 @@ bool importUiStyle(std::string_view text, UiStyle& out, std::string* error) {
                     : mk == "tick_h" ? &s.marginRule.tickH : nullptr;
                 if (!dst || !number(v.value(j), 0.f, mk == "alpha" ? 1.f : 64.f, *dst)) return bad(key, mk);
             }
-        } else if (key == "special") {
-            if (v.type() != JsonType::Object) return bad("style", key);
-            for (std::uint32_t j = 0; j < v.size(); ++j) {
-                const std::string_view sk = v.key(j);
-                bool* dst = sk == "third_call" ? &s.special.thirdCall : sk == "third_acts" ? &s.special.thirdActs
-                    : sk == "partner_mark" ? &s.special.partnerMark : nullptr;
-                if (!dst || v.value(j).type() != JsonType::Bool) return bad(key, sk);
-                *dst = v.value(j).boolean();
-            }
-            if (s.special.thirdCall && s.special.thirdActs) return bad(key, "third_call and third_acts");
         } else if (key == "word_luma_floor") {
             if (!number(v, 0.f, 1.f, s.wordLumaFloor)) return bad("style", key);
         } else if (key == "budget") {

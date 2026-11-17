@@ -126,16 +126,6 @@ struct UiWorldRules {
     bool specialPrompt = false;
 };
 
-// The special prompt's choices still open with the owner (UiSpecial.h), all off: thirdCall, the player calls the
-// Third's special from the row ("third_call"); thirdActs, the Third acts on his own with one notice ("third_acts");
-// partnerMark, a small closed mark by a ready partner's name ("partner_mark"). Off, only the controlled lead's row
-// exists; style.json "special".
-struct UiSpecialSwitches {
-    bool thirdCall = false;
-    bool thirdActs = false;
-    bool partnerMark = false;
-};
-
 // Value-line ends and the dotted guard, 1080p px at HUD scale 1 (the painter scales them and rounds each to whole device
 // px). An end cap is a square of ink capGrow px wider than its line's weight, on the fill's end: it moves with the end
 // and sits on the track's start at 0 fill (uiCapX); a line with no value has none; the dotted guard has none. The guard
@@ -189,7 +179,6 @@ struct UiStyle {
     UiBudgetRules budget;
     UiLineShape lines;
     UiMarginRule marginRule;
-    UiSpecialSwitches special;
     float wordLumaFloor = 0.45f; // a coloured word's relative luminance is lifted to at least this (uiLumaFloor)
     float minTextPx = 18.f;     // the floor at 1080p
     float minTextPxAbsolute = 14.f; // the floor at any height

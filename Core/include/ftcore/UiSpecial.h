@@ -12,12 +12,15 @@
 // partial), the word SPECIAL and the lead's name. On arrival it fades in over kUiSpecialFadeIn s and its outer outline
 // pulses once (grows kUiSpecialPulseGrow px and fades over kUiSpecialPulse s); then it stands at full ink until the
 // special is used. It never rests or fades with the other prompts. While the special cannot start (no target, out of
-// sight, not now) the row keeps its place with one outline, in ink_dim, and the reason in place of the name. Reduce
-// motion: no pulse, and the fade is a cut.
+// sight, not now) the row keeps its place with one outline, in ink_dim, and the reason in place of the name. When
+// nothing is ready any more (used, or a lead switch lowered the gauge: the rules' unready) the row leaves over
+// kUiSpecialFadeOut s with no pulse, as last shown; ready again, it arrives with the pulse. Reduce motion: no pulse,
+// and both fades are cuts.
 //
-// Per-member choices waiting on the owner (the Third called by the player or acting himself; a mark for a ready
-// partner) are data switches, off (UiStyle::special, UiSpecialSwitches in UiStyle.h; style.json "special"): off, only
-// the controlled lead's row exists.
+// The owner's rulings (2026-11-17): only the controlled lead's special is fired from the row (no partner row, no mark by
+// the partner's name). The Third's special is the player's call: a tap of the key fires the lead's, a hold calls the
+// Third's when both are ready; with only his ready the row reads CALL and his current name (never a fixed word), and a
+// tap calls it. The press is the arena lane's; this row only shows it.
 #pragma once
 
 #include "ftcore/Api.h"
@@ -36,9 +39,11 @@ inline constexpr std::size_t kUiSpecialWhyCount = 4;
 struct UiSpecialInput {
     bool ready = false;                    // the controlled lead's special is ready
     UiSpecialWhy why = UiSpecialWhy::None; // while ready: None if a press would start it now
+    bool thirdReady = false;               // the Third's special is ready (the player calls it)
 };
 
 inline constexpr float kUiSpecialFadeIn = 0.15f;  // s, the arrival fade
+inline constexpr float kUiSpecialFadeOut = 0.2f;  // s, the leaving fade (nothing ready any more)
 inline constexpr float kUiSpecialPulse = 0.5f;    // s, the one pulse of the outer outline
 inline constexpr float kUiSpecialPulseGrow = 16.f; // px at 1080p, how far the pulse's outline grows out
 inline constexpr float kUiSpecialRingGap = 5.f;   // px at 1080p, the second outline's distance out from the first
@@ -53,10 +58,16 @@ constexpr std::uint8_t uiPromptRowAt(UiPrompt p, bool reserve) {
 
 // The row's state between ticks.
 struct UiSpecialState {
-    bool ready = false;  // ready last tick
-    bool pulsed = false; // the one pulse has started (at its first live tick)
-    float since = 0.f;   // s since it became ready
-    float pulseAt = 0.f; // `since` when the pulse started
+    bool ready = false;   // something was ready last tick (the row arriving or standing)
+    bool pulsed = false;  // the one pulse has started (at its first live tick)
+    float since = 0.f;    // s since it became ready; while leaving, s since it began to leave
+    float pulseAt = 0.f;  // `since` when the pulse started
+    bool leaving = false; // nothing ready: the row fades out as last shown
+    float alphaWas = 0.f; // the alpha last drawn while ready: a leave falls from it (a return mid-leave climbs from
+                          // where the leave had got to)
+    bool live = false;    // as last shown, held through the leave
+    bool call = false;
+    UiSpecialWhy why = UiSpecialWhy::None;
 };
 
 // What to draw this tick.
@@ -64,8 +75,9 @@ struct UiSpecialView {
     bool row = false;      // the row is reserved (the world's switch)
     bool drawn = false;    // a special is ready: the row is drawn
     bool live = false;     // ready and a press would start it: two outlines, full ink, the lead's name
+    bool call = false;     // only the Third's is ready: the row reads CALL and his current name
     UiSpecialWhy why = UiSpecialWhy::None; // drawn and not live: the reason shown in place of the name
-    float alpha = 0.f;     // the arrival fade, 0..1 (1 once in, for as long as it is ready)
+    float alpha = 0.f;     // the arrival or leaving fade, 0..1 (1 once in, for as long as it is ready)
     float pulse = -1.f;    // the pulse's progress 0..1 while it runs (outer outline grows and fades), else -1
 };
 
