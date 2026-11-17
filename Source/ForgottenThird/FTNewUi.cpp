@@ -5850,9 +5850,9 @@ public:
 			ftcore::uiStrokeLine(Line, X0, YS, X0 + LineLen * S, YS, ValueStyle(WD / S, 301, S), 0.f, 1.f);
 			Mesh.ValueStroke(Line, R.Fill);
 			const float Side = Mesh.WholeDev((LineW + Table().Style.lines.capGrow) * S);
-			const float L = Mesh.SnapX(ftcore::uiCapX(X0, LineLen * S, 1.f, Side) - 0.5f * Side);
+			const float CapL = Mesh.SnapX(ftcore::uiCapX(X0, LineLen * S, 1.f, Side) - 0.5f * Side);
 			const float T = Mesh.SnapLineY(YS, Side) - 0.5f * Side;
-			const FVector2f Pts[4] = {FVector2f(L, T), FVector2f(L + Side, T), FVector2f(L + Side, T + Side), FVector2f(L, T + Side)};
+			const FVector2f Pts[4] = {FVector2f(CapL, T), FVector2f(CapL + Side, T), FVector2f(CapL + Side, T + Side), FVector2f(CapL, T + Side)};
 			Mesh.Fill(Pts, 4, Tok(UiToken::Ink));
 			Y = LineY + 0.5f * WD + 18.f * S;
 		};
