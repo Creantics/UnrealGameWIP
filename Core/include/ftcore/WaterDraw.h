@@ -84,7 +84,7 @@ inline constexpr std::size_t kWaterMaxTiles = 8192;
 
 // The same, a body at a time and whole: a body whose tiles don't all fit in what is left of cap is laid not at all (its
 // bit in *dropped, the bodies after it still tried). Returns the tiles laid. perBody (kWaterMaxBodies long, may be null):
-// each body's need. Bodies past the 32nd are not laid.
+// each body's need. Bodies past kWaterMaxBodies are not laid.
 FTCORE_API std::size_t waterTileLayoutWhole(const WaterBodies& water, const WaterWaveSpec& waves, const WaterTileSpec& spec,
                                             const WaterTileBounds& bounds, WaterTile* out, std::size_t cap,
                                             std::uint32_t* dropped, std::uint32_t* perBody = nullptr);

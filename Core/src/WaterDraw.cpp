@@ -176,15 +176,18 @@ std::size_t waterTileLayoutWhole(const WaterBodies& water, const WaterWaveSpec& 
     if (!out) cap = 0;
     std::uint32_t left = 0;
     std::size_t laid = 0;
-    for (std::size_t i = 0; i < water.count() && i < 32; ++i) {
-        const std::size_t need = layBody(water, i, waves, spec, bounds, nullptr, 0, 0);
+    const std::size_t count = std::min<std::size_t>(water.count(), kWaterMaxBodies);
+    for (std::size_t i = 0; i < count; ++i) {
+        // Laid from laid up to cap; a body that needs more than is left wrote only what fitted, which the next body
+        // overwrites (laid isn't moved).
+        const std::size_t need = layBody(water, i, waves, spec, bounds, out, cap, laid);
         if (perBody) perBody[i] = static_cast<std::uint32_t>(std::min<std::size_t>(need, 0xFFFFFFFFu));
         if (need == 0) continue;
         if (need > cap - laid) {
             left |= 1u << i;
             continue;
         }
-        laid += layBody(water, i, waves, spec, bounds, out, cap, laid);
+        laid += need;
     }
     if (dropped) *dropped = left;
     return laid;
