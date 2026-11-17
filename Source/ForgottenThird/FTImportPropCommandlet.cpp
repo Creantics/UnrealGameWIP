@@ -16,6 +16,8 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
+
+#include "ftcore/PropGloss.h"
 #endif
 
 UFTImportPropCommandlet::UFTImportPropCommandlet()
@@ -56,6 +58,23 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 	const bool bNoNanite = FParse::Param(*Params, TEXT("NoNanite"));
 	const bool bKit = FParse::Param(*Params, TEXT("Kit"));
 	const bool bForceNanite = FParse::Param(*Params, TEXT("Nanite")) && !bNoNanite;
+	// -Held: a prop carried in a hand keeps the character masters (no grime, no world-fixed noise).
+	const bool bHeld = FParse::Param(*Params, TEXT("Held"));
+	// The world whose grime the prop masters take: -World=, else -Pack=, else Solhaven (propGrimeFor(None)).
+	FString WorldName;
+	FParse::Value(*Params, TEXT("World="), WorldName);
+	ftcore::AssetPack World = PackKind;
+	if (!WorldName.IsEmpty())
+	{
+		World = ftcore::assetPackFromName(TCHAR_TO_UTF8(*WorldName));
+		if (World == ftcore::AssetPack::None)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: -World=%s is not a world (Solhaven, Lattice, Unwritten, Restored, InkSolhaven)."),
+				*WorldName);
+			return 1;
+		}
+	}
+	const float Grime = ftcore::propGrimeFor(World);
 	const ftcore::AssetRules Rules = bKit ? ftcore::kitRules(PackKind) : ftcore::propRules(PackKind);
 	if (!FT::CheckGlbFile(TEXT("FTImportProp"), Source, Rules))
 	{
@@ -201,11 +220,15 @@ int32 UFTImportPropCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportProp: no static mesh came out of %s."), *Source);
 		return 1;
 	}
-	bOk &= FT::UseProjectMasters(TEXT("FTImportProp"), Materials);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %s, Grime %.2f."),
+		bHeld ? TEXT("-Held: the character masters") : TEXT("the prop masters"), bHeld ? 0.0f : Grime);
+	bOk &= FT::UsePropMasters(TEXT("FTImportProp"), Materials, Grime, bHeld);
 	if (bNanite)
 	{
 		FT::AllowNanite(TEXT("FTImportProp"), Materials);
 	}
+	// The gloss guard, on the values the prop now draws with (no -AllowGloss: a failing material is fixed at its source).
+	bOk &= FT::CheckPropGloss(TEXT("FTImportProp"), Materials);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportProp: %d static meshes, %s."), Meshes, bOk ? TEXT("ok") : TEXT("failed"));
 	return bOk ? 0 : 1;
 #else

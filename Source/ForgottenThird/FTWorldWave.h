@@ -76,6 +76,8 @@ inline constexpr const TCHAR* TwinSuffix = TEXT("_WaveCut");
 inline constexpr const TCHAR* PropMasters[] = {
 	TEXT("/Game/Characters/Shared/Materials/M_FTCharacter"),
 	TEXT("/Game/Characters/Shared/Materials/M_FTCharacterTex"),
+	TEXT("/Game/Props/Shared/Materials/M_FTPropFlat"), // the props' own masters (FT::UsePropMasters); built by FTImportProp
+	TEXT("/Game/Props/Shared/Materials/M_FTPropTex"),
 	TEXT("/Game/Rendering/M_WorldSurface"),
 	TEXT("/Game/Rendering/Windows/M_NightLamp"),
 };
