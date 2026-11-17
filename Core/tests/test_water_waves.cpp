@@ -378,3 +378,64 @@ TEST_CASE("Height queries allocate nothing and are cheap enough for a fan of poi
     MESSAGE("waterSurfaceM: " << us << " us a query");
     CHECK(us < 20.0); // generous for debug builds; release is about 1 us
 }
+
+TEST_CASE("Bodies with the surface model set answer waterSurfaceM: wade, swim and eye see the drawn water") {
+    WaterSurfaceModel model;
+    model.sets = waterWaveSets(harbour(), 0.5f, model.spec.waves);
+    model.totalHours = 21.0;
+    WaterBodies water;
+    REQUIRE(water.add(seaBody()));
+    const Vec2 p{30.f, -40.f};
+    const int i = water.bodyAt(p);
+    REQUIRE(i >= 0);
+    const float flat = water.surfaceOf(static_cast<std::size_t>(i), p, 3.f);
+    water.setSurface(&model);
+    const float drawn = waterSurfaceM(model.spec, model.sets, water.body(static_cast<std::size_t>(i)), p, 3.f, 21.0);
+    CHECK(water.surfaceOf(static_cast<std::size_t>(i), p, 3.f) == doctest::Approx(drawn));
+    float out = 0.f;
+    CHECK(water.surfaceHeight(p, 3.f, out));
+    CHECK(out == doctest::Approx(drawn));
+    CHECK(drawn != doctest::Approx(flat));
+    water.setSurface(nullptr);
+    CHECK(water.surfaceOf(static_cast<std::size_t>(i), p, 3.f) == doctest::Approx(flat));
+}
+
+TEST_CASE("A wader in a storm sea for 30 s: no mode flips and no splash in and out; the surface still moves") {
+    WaterSurfaceModel model;
+    model.sets = waterWaveSets(harbour(), 1.f, model.spec.waves);
+    model.totalHours = 21.0;
+    WaterBodies water;
+    REQUIRE(water.add(seaBody()));
+    water.setSurface(&model);
+    const Vec2 p{30.f, -40.f};
+    const int i = water.bodyAt(p);
+    REQUIRE(i >= 0);
+    const float rest = water.restSurfaceOf(static_cast<std::size_t>(i));
+    for (float column : {0.15f, 0.7f, 1.15f}) {
+        CAPTURE(column);
+        WaterCapsule cap;
+        cap.p = p;
+        cap.hasGround = true;
+        cap.groundZ = rest - column;
+        cap.feetZ = cap.groundZ;
+        WaterRipples rings;
+        WaterStir stir;
+        const WaterMode first = waterState(water, cap, 0.f).mode;
+        int flips = 0, entries = 0;
+        float lo = 1e9f, hi = -1e9f;
+        WaterMode last = first;
+        for (int k = 0; k < 900; ++k) {
+            const float t = static_cast<float>(k) / 30.f;
+            const WaterState s = waterState(water, cap, t);
+            flips += s.mode != last ? 1 : 0;
+            last = s.mode;
+            entries += stir.step(rings, s, p, {0.f, 0.f}, 0.f, 1.f / 30.f).entered ? 1 : 0;
+            lo = std::min(lo, s.surface);
+            hi = std::max(hi, s.surface);
+        }
+        CHECK(first != WaterMode::Dry);
+        CHECK(flips == 0);
+        CHECK(entries <= 1);
+        CHECK(hi - lo > 0.3f);
+    }
+}

@@ -11,6 +11,8 @@
 //
 // Metres, metres a second, the engine's frame (Z up). Plain data.
 
+#include "ftcore/Api.h"
+
 #include <cstdint>
 
 namespace ftcore {
@@ -33,5 +35,13 @@ struct WaterToucher {
     float immersion = 0.f;  // 0..1 of its height under
     float massKg = 70.f;    // sizes its splash and wake
 };
+
+class WaterRipples; // ftcore/WaterBodies.h
+
+// The rings a cue sends out on the surface (a catch and a kick small and quick, the head's going under or coming out a
+// slow ring, an exit a splash's pair) and the splash effect it wants, 0..1 (an entry its strength, an exit a third of
+// it; 0 for the rest). The lead's own entry and exit are WaterStir's: its host passes bStirred so they are not sent
+// twice. A hand at rest sends nothing yet. No allocation.
+FTCORE_API float waterCueStir(WaterRipples& rings, const WaterCue& cue, bool bStirred);
 
 } // namespace ftcore

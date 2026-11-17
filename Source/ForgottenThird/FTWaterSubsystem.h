@@ -24,6 +24,13 @@
 // -WaterTune=<Name>=<value>[,<Name>=<value>...] sets scalar parameters of the water collection or of the underwater
 // view by name at the start of play, for tuning from stills without a rebuild. It is compiled out of shipping builds.
 //
+// The surface model (ftcore::WaterSurfaceModel: Data/Water/water.json's waves and tide, the look's wind and swell, the
+// rain's storm, the world clock's hours) is set on the bodies when ft.Water.Surface is 1, so the wade, the swim and the
+// eye read the tide and the waves the drawn surface shows. It is 0 until the surfaces draw them.
+//
+// Cue and Touch are the swimmers' (the lead and each follower, from their movement): a cue sends rings and, for an entry
+// or an exit, a splash; touchers are kept for the tick (up to kMaxTouchers) for the surface's field.
+//
 // The ways out of the canals (ladders and steps, ftcore::WaterExit) are kept with the bodies: the lead climbs a ladder
 // it pushes at, and a jump at any other wall is only the fallback.
 
@@ -31,6 +38,8 @@
 #include "Subsystems/WorldSubsystem.h"
 
 #include "ftcore/WaterBodies.h"
+#include "ftcore/WaterCue.h"
+#include "ftcore/WaterWaves.h"
 
 #include "FTWaterSubsystem.generated.h"
 
@@ -141,6 +150,16 @@ public:
 	// How wet the lead is (the wetness, the line's height over its feet in metres, the silt).
 	const ftcore::WaterWetness& LeadWetness() const { return Wet; }
 	const ftcore::WaterRipples& Ripples() const { return Rings; }
+	// The surface model the bodies read (its sets and hours as of this tick).
+	const ftcore::WaterSurfaceModel& SurfaceModel() const { return Surface; }
+
+	// A swimmer's event this step; bFromLead for the lead, whose entry and exit LeadWater already splashed.
+	void Cue(const ftcore::WaterCue& Event, bool bFromLead);
+	// A body in the water this tick (metres, the engine's frame).
+	void Touch(const ftcore::WaterToucher& Toucher);
+	static constexpr int32 kMaxTouchers = 8;
+	int32 TouchCount() const { return Touchers; }
+	const ftcore::WaterToucher& Toucher(int32 I) const { return Touched[I]; }
 
 	// The view's eye went under a surface (true) or came back out (false).
 	UPROPERTY(BlueprintAssignable, Category = "Water")
@@ -166,11 +185,21 @@ private:
 	// The rings, the lead's place and wake and the sun under water, to the water collection.
 	void PushSurface(float DeltaTime);
 	void ApplyTune();
+	// The model's sets from the look and the rain (rebuilt only when they move) and its hours from the clock.
+	void UpdateSurface(bool bForce);
+	void Splash(const FVector& WhereCm, float Strength);
 
 	ftcore::WaterBodies Water;
 	ftcore::WaterRipples Rings;
 	ftcore::WaterStir Stir;
 	ftcore::WaterWetness Wet;
+	ftcore::WaterSurfaceModel Surface;
+	ftcore::WaterToucher Touched[kMaxTouchers];
+	int32 Touchers = 0;
+	float SurfaceStorm = -1.f;
+	float SurfaceWind = -1.f;
+	float SurfaceSwell = -1.f;
+	bool bSurfaceOn = false;
 	bool bHasBodies = false;
 	bool bUnder = false;
 	bool bMaterialMissing = false;

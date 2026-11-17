@@ -2,7 +2,7 @@
   "version": 1,
   "_comment": "Water waves and tides (Core/include/ftcore/WaterWaves.h, ranges in Core/src/WaterWaves.cpp). Waves: cm and m/s; tide: game hours and metres.",
   "waves": {
-    "stormWindMps": 0.0,
+    "stormWindMps": 6.0,
     "stormSwellM": 1.2,
     "calmWindMps": 2.5,
     "riverFlowMin": 0.3,

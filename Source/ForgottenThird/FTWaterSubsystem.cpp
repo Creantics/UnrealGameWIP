@@ -2,6 +2,10 @@
 
 #include "FTCharacterFillSubsystem.h"
 #include "FTExploreDirector.h"
+#include "FTLookSubsystem.h"
+#include "FTRainSubsystem.h"
+#include "FTText.h"
+#include "FTWorldClockSubsystem.h"
 #include "FTSceneLook.h"
 #include "FTVfxComponent.h"
 #include "ForgottenThird.h"
@@ -16,7 +20,11 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
+#include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Misc/PackageName.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
@@ -24,11 +32,17 @@
 
 #include "ftcore/Vfx.h"
 
+#include <string>
+
 namespace
 {
 // The eye counts as in the water from this far over the surface (m): the near plane's lower edge and a frame's
 // travel; the material cuts at the line itself.
 constexpr float kWaterViewMargin = 0.5f;
+
+TAutoConsoleVariable<int32> CVarWaterSurface(TEXT("ft.Water.Surface"), 0,
+	TEXT("1: the wade, swim and eye read the tide and waves of Data/Water/water.json (ftcore::WaterSurfaceModel); 0: each body flat at its level."),
+	ECVF_Default);
 // The lead's half width where the surface meets it (cm): the surfaces draw the churn and the contact line around it.
 constexpr double kLeadWaterlineCm = 24.0;
 // The underwater view by the body's kind (linear colours): the water's own colour near the surface and far down, and
@@ -176,6 +190,16 @@ void UFTWaterSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Water: %d ways out (%d ladders, %d flights of steps); a jump at any other wall is the fallback."),
 			static_cast<int32>(Water.exitCount()), Ladders, static_cast<int32>(Water.exitCount()) - Ladders);
+		// The tide and the waves (Data/Water/water.json; its defaults when it is missing or refused).
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Water/water.json");
+		TArray<uint8> Bytes;
+		std::string Error;
+		if (!IFileManager::Get().FileExists(*File) || !FFileHelper::LoadFileToArray(Bytes, *File) ||
+			!ftcore::parseWaterSpec(FT::BytesAsText(Bytes), Surface.spec, &Error))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Water: Data/Water/water.json missing or refused (%s); the built-in tide and waves."), *FT::ToFString(Error).TrimEnd());
+		}
+		UpdateSurface(true);
 		// What the surfaces read (rings, the lead, the sun under water) and the splash; each is done without if missing.
 		const FString Path = FTScene::LookWaterCollection;
 		SurfaceParams = LoadObject<UMaterialParameterCollection>(nullptr, *(Path + TEXT(".") + FPackageName::GetShortName(Path)), nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -239,9 +263,82 @@ void UFTWaterSubsystem::ApplyTune()
 #endif
 }
 
+void UFTWaterSubsystem::UpdateSurface(bool bForce)
+{
+	UWorld* World = GetWorld();
+	const bool bOn = CVarWaterSurface.GetValueOnGameThread() != 0;
+	if (bOn != bSurfaceOn)
+	{
+		bSurfaceOn = bOn;
+		Water.setSurface(bOn ? &Surface : nullptr);
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: the surface model is %s."), bOn ? TEXT("on (tide and waves)") : TEXT("off (flat at each level)"));
+		bForce = true;
+	}
+	if (!World)
+	{
+		return;
+	}
+	if (const UFTWorldClockSubsystem* Clock = World->GetSubsystem<UFTWorldClockSubsystem>())
+	{
+		Surface.totalHours = static_cast<double>(Clock->GetClock().day) * 24.0 + Clock->GetClock().hours;
+	}
+	const UFTLookSubsystem* LookSys = World->GetSubsystem<UFTLookSubsystem>();
+	const ftcore::SceneLook Look = LookSys ? LookSys->GetLook() : ftcore::SceneLook{};
+	const UFTRainSubsystem* Rain = World->GetSubsystem<UFTRainSubsystem>();
+	const float Storm = Rain ? FMath::Clamp(Rain->GetIntensity(), 0.f, 1.f) : 0.f;
+	// The sets are rebuilt when the weather moves enough to show (a few times a minute at most in a turning storm).
+	if (bForce || FMath::Abs(Storm - SurfaceStorm) > 0.02f || FMath::Abs(Look.windMps - SurfaceWind) > 0.1f ||
+		FMath::Abs(Look.seaSwellM - SurfaceSwell) > 0.02f)
+	{
+		Surface.sets = ftcore::waterWaveSets(Look, Storm, Surface.spec.waves);
+		SurfaceStorm = Storm;
+		SurfaceWind = Look.windMps;
+		SurfaceSwell = Look.seaSwellM;
+	}
+}
+
+void UFTWaterSubsystem::Splash(const FVector& WhereCm, float Strength)
+{
+	UWorld* World = GetWorld();
+	if (!SplashSystem || !World || !(Strength > 0.f))
+	{
+		return;
+	}
+	if (UNiagaraComponent* Effect = UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, SplashSystem, WhereCm, FRotator::ZeroRotator, FVector::OneVector, true, true,
+			ENCPoolMethod::AutoRelease))
+	{
+		static const FName SpeedScale(UTF8_TO_TCHAR(ftcore::kVfxUserSpeedScale));
+		static const FName ShapeScale(UTF8_TO_TCHAR(ftcore::kVfxUserShapeScale));
+		Effect->SetVariableFloat(SpeedScale, FMath::Lerp(0.55f, 1.25f, Strength));
+		Effect->SetVariableVec3(ShapeScale, FVector(FMath::Lerp(0.7f, 1.3f, Strength)));
+	}
+}
+
+void UFTWaterSubsystem::Cue(const ftcore::WaterCue& Event, bool bFromLead)
+{
+	const float Want = ftcore::waterCueStir(Rings, Event, bFromLead);
+	if (Want > 0.f)
+	{
+		const ftcore::Vec2 P{Event.at[0], Event.at[1]};
+		float SurfaceM = Event.at[2];
+		Water.surfaceHeight(P, WaterTime(), SurfaceM);
+		Splash(FVector(Event.at[0] * 100.0, Event.at[1] * 100.0, SurfaceM * 100.0 + 2.0), Want);
+	}
+}
+
+void UFTWaterSubsystem::Touch(const ftcore::WaterToucher& In)
+{
+	if (Touchers < kMaxTouchers)
+	{
+		Touched[Touchers++] = In;
+	}
+}
+
 void UFTWaterSubsystem::Tick(float DeltaTime)
 {
+	UpdateSurface(false);
 	PushSurface(DeltaTime);
+	Touchers = 0; // the field reads them in PushSurface; the bodies send them again next tick
 	UWorld* World = GetWorld();
 	const APlayerController* Player = World ? World->GetFirstPlayerController() : nullptr;
 	if (!Player || !Player->PlayerCameraManager)
@@ -384,22 +481,10 @@ void UFTWaterSubsystem::LeadWater(AActor& Lead, const ftcore::WaterState& State,
 	const ftcore::WaterKind BodyKind = State.body >= 0 ? Water.body(static_cast<std::size_t>(State.body)).kind : ftcore::WaterKind::Pool;
 	Wet.step(bIn ? State.immersion : 0.f, Height * 0.01f, DeltaSeconds, 1.f, ftcore::waterSilt(BodyKind));
 	const FName Kind(State.body >= 0 ? ANSI_TO_TCHAR(ftcore::waterKindName(BodyKind)) : TEXT("none"));
-	UWorld* World = GetWorld();
 	if (Event.entered)
 	{
 		// The splash: bigger and faster for a harder fall.
-		if (SplashSystem && World)
-		{
-			const FVector Where(At.X, At.Y, State.surface * 100.0 + 2.0);
-			if (UNiagaraComponent* Splash = UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, SplashSystem, Where, FRotator::ZeroRotator, FVector::OneVector, true, true,
-					ENCPoolMethod::AutoRelease))
-			{
-				static const FName SpeedScale(UTF8_TO_TCHAR(ftcore::kVfxUserSpeedScale));
-				static const FName ShapeScale(UTF8_TO_TCHAR(ftcore::kVfxUserShapeScale));
-				Splash->SetVariableFloat(SpeedScale, FMath::Lerp(0.55f, 1.25f, Event.splash));
-				Splash->SetVariableVec3(ShapeScale, FVector(FMath::Lerp(0.7f, 1.3f, Event.splash)));
-			}
-		}
+		Splash(FVector(At.X, At.Y, State.surface * 100.0 + 2.0), Event.splash);
 		UE_LOG(LogForgottenThird, Display, TEXT("Water: splash %.2f (fall %.1f m/s) into the %s at (%.0f, %.0f) cm."), Event.splash, Fall, *Kind.ToString(), At.X, At.Y);
 		OnLeadSplash.Broadcast(Event.splash, Fall, Kind);
 	}

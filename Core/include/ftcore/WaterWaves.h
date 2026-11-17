@@ -44,7 +44,7 @@ inline constexpr int kWaterWaveClasses = 3;
 FTCORE_API const char* waterWaveClassName(WaterWaveClass c);
 
 struct WaterWaveSpec {
-    float stormWindMps = 0.f;    // wind a full storm adds to the look's (0: the weather already raises the look's windMps)
+    float stormWindMps = 6.f;    // wind a full storm adds to the look's; set 0 once the storm look raises windMps itself
     float stormSwellM = 1.2f;    // swell height a full storm adds
     float calmWindMps = 2.5f;    // a river or canal never sees less wind than this: the air is never quite still
     float riverFlowMin = 0.3f;   // m/s: a canal row flowing this fast or faster is a river
@@ -91,6 +91,15 @@ struct WaterWaveSets {
 };
 
 FTCORE_API WaterWaveSets waterWaveSets(const SceneLook& look, float storm, const WaterWaveSpec& spec);
+
+// What WaterBodies::setSurface reads: the spec, the sets and the clock's total hours (day * 24 + hours), kept by the
+// water's host (UFTWaterSubsystem) and updated when the look, the storm or the clock moves. Every body's surface is then
+// waterSurfaceM, so the wade, the swim, the eye and the drawn surface agree.
+struct WaterSurfaceModel {
+    WaterSpec spec;
+    WaterWaveSets sets;
+    double totalHours = 0.0;
+};
 
 FTCORE_API WaterWaveClass waterWaveClass(const WaterBody& body, const WaterWaveSpec& spec);
 

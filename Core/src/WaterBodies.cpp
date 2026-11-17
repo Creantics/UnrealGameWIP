@@ -2,6 +2,7 @@
 
 #include "ftcore/Roads.h"
 #include "ftcore/SeaWaves.h"
+#include "ftcore/WaterWaves.h"
 
 #include <algorithm>
 #include <cmath>
@@ -205,8 +206,15 @@ int WaterBodies::bodyAt(Vec2 p) const {
 
 float WaterBodies::surfaceOf(std::size_t i, Vec2 p, float t) const {
     const WaterBody& b = bodies_[i];
+    if (surface_) return waterSurfaceM(surface_->spec, surface_->sets, b, p, t, surface_->totalHours);
     if (b.waves && waves_) return b.level + seaHeight(*waves_, p.x * 100.f, p.y * 100.f, t) * 0.01f;
     return b.level;
+}
+
+float WaterBodies::restSurfaceOf(std::size_t i) const {
+    const WaterBody& b = bodies_[i];
+    if (!surface_) return b.level;
+    return b.level + waterTideM(surface_->spec.tide, b, waterWaveClass(b, surface_->spec.waves), surface_->totalHours);
 }
 
 bool WaterBodies::surfaceHeight(Vec2 p, float t, float& out) const {
@@ -281,7 +289,7 @@ Vec2 WaterBodies::flowAt(Vec2 p) const {
 bool WaterBodies::overWater(Vec2 p, float groundZ, float margin) const {
     for (std::size_t i = 0; i < count_; ++i) {
         const WaterBody& b = bodies_[i];
-        if (b.covers(p) && !(groundZ > b.level + margin)) return true;
+        if (b.covers(p) && !(groundZ > restSurfaceOf(i) + margin)) return true;
     }
     return false;
 }
@@ -367,13 +375,14 @@ WaterState waterState(const WaterBodies& water, const WaterCapsule& capsule, flo
     const int i = water.bodyAt(capsule.p);
     if (i < 0) return s;
     const WaterBody& b = water.body(static_cast<std::size_t>(i));
-    const float surface = water.surfaceOf(static_cast<std::size_t>(i), capsule.p, t);
+    // The mode and the wet line read the surface at rest (the waves only move it, through s.surface: the bob, the eye).
+    const float surface = water.restSurfaceOf(static_cast<std::size_t>(i));
     const float immersion = surface - capsule.feetZ;
     if (!(immersion > 0.f)) return s; // over the water: on a bridge, in the air
     const float ground = capsule.hasGround && std::isfinite(capsule.groundZ) ? capsule.groundZ : b.bedAt(capsule.p);
     const float column = std::max(surface - ground, 0.f);
     s.body = i;
-    s.surface = surface;
+    s.surface = water.surfaceOf(static_cast<std::size_t>(i), capsule.p, t);
     s.column = column;
     s.immersion = immersion;
     s.submerged = capsule.height > 0.f ? std::clamp(immersion / capsule.height, 0.f, 1.f) : 1.f;

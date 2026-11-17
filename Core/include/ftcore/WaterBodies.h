@@ -44,6 +44,7 @@ namespace ftcore {
 struct RoadWater;     // ftcore/Roads.h
 struct RoadWaterExit; // ftcore/Roads.h
 struct SeaWaves;  // ftcore/SeaWaves.h
+struct WaterSurfaceModel; // ftcore/WaterWaves.h
 
 inline constexpr float kWaterWadeDepth = 0.7f;   // m: a column up to this is a wade
 inline constexpr float kWaterSwimDepth = 1.2f;   // m: a column over this is a swim
@@ -59,7 +60,7 @@ inline constexpr float kWaterBuoyLine = 60.f;    // m out from a sea's edge
 inline constexpr float kWaterBuoyPull = 0.6f;    // m/s of current back for each metre past the line...
 inline constexpr float kWaterBuoyPullMax = 4.f;  // ...up to this
 inline constexpr std::size_t kWaterMaxBodies = 16;
-inline constexpr std::size_t kWaterMaxExits = 64;
+inline constexpr std::size_t kWaterMaxExits = 128;
 inline constexpr float kWaterLadderReach = 0.9f; // m: a body this near a ladder's foot, pushing at the wall, climbs it
 inline constexpr float kWaterStepsWidth = 0.9f;  // m: a flight of steps stands this far off its wall's face
 inline constexpr float kWaterStepsFootIn = 0.3f; // m: a flight's foot (WaterExit::foot) lies this far in from the wall's face
@@ -188,6 +189,9 @@ public:
     // The waves a body with `waves` rides (not owned; null: flat). SeaWaves works in centimetres from this set's
     // origin; the heights come back in metres over the body's level.
     void setWaves(const SeaWaves* waves) { waves_ = waves; }
+    // The whole surface model (tides, waves for every body, wall lap; not owned; null: setWaves' sea or flat). When set,
+    // every body's surface is waterSurfaceM and setWaves is not read.
+    void setSurface(const WaterSurfaceModel* model) { surface_ = model; }
 
     // The body that is the water at p (the overlap rule above), -1 where none is.
     FTCORE_API int bodyAt(Vec2 p) const;
@@ -195,6 +199,9 @@ public:
     FTCORE_API bool surfaceHeight(Vec2 p, float t, float& out) const;
     // Body i's surface over p at t (its level, or its waves').
     FTCORE_API float surfaceOf(std::size_t i, Vec2 p, float t) const;
+    // Body i's surface at rest: its level and, with the surface model set, its tide (no waves). waterState's mode, wet
+    // line and dry test read it, so a wave passing a wader neither flips its mode nor splashes it in and out.
+    FTCORE_API float restSurfaceOf(std::size_t i) const;
     // The column over the body's own bed at p (at rest; a canal's by its section), 0 where no body is.
     FTCORE_API float depth(Vec2 p) const;
     // The ways out. addExit is false (and nothing added) when the set is full or the exit's way out is no direction.
@@ -228,6 +235,7 @@ private:
     std::array<WaterBody, kWaterMaxBodies> bodies_{};
     std::array<WaterExit, kWaterMaxExits> exits_{};
     const SeaWaves* waves_ = nullptr;
+    const WaterSurfaceModel* surface_ = nullptr;
 };
 
 // The walk's speed share in a column `depth` m deep (not swimming): 1 at 0, kWaterWadeFactor at kWaterWadeDepth,
