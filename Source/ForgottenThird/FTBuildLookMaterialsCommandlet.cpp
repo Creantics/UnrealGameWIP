@@ -2,6 +2,7 @@
 
 #include "FTJointCollection.h"
 #include "FTSeason.h"
+#include "FTWaterSurfaceBuild.h"
 #include "FTWorldWave.h"
 
 #include "ForgottenThird.h"
@@ -1029,6 +1030,7 @@ UMaterial* BuildWater(UMaterialParameterCollection* Look, UMaterialParameterColl
 	Inputs->Refraction.Connect(0, AddScalar(Material, TEXT("IOR"), 1.33f, -400));
 	Inputs->Normal.Connect(0, Waves);
 	Inputs->Roughness.Connect(1, Waves);
+	FTWaterSurfaceBuild::WireMaterial(Material);
 	Finish(Material);
 	return Material;
 }
@@ -1092,6 +1094,7 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look, UMaterialParamete
 	Inputs->Normal.Connect(0, Waves);
 	Inputs->Roughness.Connect(1, Waves);
 	Material->SetUsageByFlag(MATUSAGE_InstancedStaticMeshes, true);
+	FTWaterSurfaceBuild::WireMaterial(Material);
 	Finish(Material);
 	return Material;
 }
