@@ -301,6 +301,7 @@
 #include "ftcore/PartnerCloseStation.h" // PartnerCloseView
 #include "ftcore/PressReason.h"
 #include "ftcore/ReadCards.h"
+#include "ftcore/ArenaSpecial.h"
 
 #include <array>
 #include <cmath>
@@ -875,6 +876,14 @@ struct ArenaInput {
     // on a flank of its target, inside this lens. Not given (the default): as before, to the bit. The walls' span must
     // outlive the step.
     PartnerCloseView partnerClose{};
+    // The special (ftcore/ArenaSpecial.h, ArenaFight::setSpecials): the lead pressing it, kArenaPlayer or kArenaAlly
+    // (the partner, whichever lead it is: the host decides what presses it); kArenaNobody, the default: none. It
+    // starts when ArenaFight::specialRefusal(lead) is Ok, else the press is dropped. specialSight: the host's line of
+    // sight from that lead to its target (true, the default, for a host that does not check). specialSkip: cut a
+    // running special to its end when ArenaSpecialView::skippable.
+    std::uint8_t special = kArenaNobody;
+    bool specialSight = true;
+    bool specialSkip = false;
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
@@ -1011,6 +1020,12 @@ enum class ArenaEventType : std::uint8_t { // append only
                     // the player stands at `amount` hp in the partner's place; source kArenaAlly, target kArenaPlayer.
                     // Downed (the player, where it fell) comes before it in the tick; the fallen body is the ally now
                     // (AllyDowned follows) (appended)
+    SpecialReady,   // a lead's special gauge filled (the voice line, the prompt): source the body that lead is,
+                    // kArenaPlayer or kArenaAlly; amount its gauge slot (ArenaFight::setSpecials). Once per fill (appended)
+    SpecialStarted, // a special began (its gauge spent): source the performer, target its target, amount its slot,
+                    // move kArenaSpecialMove. The fight is frozen from this tick (ArenaFight::frozen) (appended)
+    SpecialEnded,   // the cut back: the special's Hits (move kArenaSpecialMove, source the performer), Downed and
+                    // Staggered come before it in this tick; source the performer, amount 1 when it was skipped (appended)
 };
 
 struct ArenaEvent {
@@ -1170,6 +1185,8 @@ struct ArenaStats {
     // Per-lead kits: seconds the partner was up with a kit that has no attacks ("no kit": it starts no blow; the
     // fight gives its brain a spent budget, so the brain never asks for one).
     float partnerNoKitSeconds = 0.f;
+    int specials = 0;          // specials begun (ArenaSpecial.h), either lead
+    int specialDamage = 0;     // hp they took from enemies (also in damageDealt)
 };
 
 // Per-feature verdicts over a fight's stats, for the headless demo's check lines: each is true when the fight
@@ -1610,6 +1627,30 @@ public:
     // takeHalfReach of it: when an autopilot would press take half.
     FTCORE_API bool takeHalfDue(float lead) const;
 
+    // ---- the special (ftcore/ArenaSpecial.h) ----
+    // The host's specials: the table (it must outlive the fight; nullptr turns them off), the lead in each kit slot
+    // (slot 0 the def's fighter as begun, slot 1 its partnerKit; "" for none) and the gauges kept between fights. Each
+    // slot's gauge starts at the store's value (0 for a lead not in it, clipped to full) and goes with its kit through
+    // a switch or a takeover. Kept across begin and restart; a restart puts the gauges back as begin found them. False
+    // (nothing changes) while a special runs or inside the hook.
+    FTCORE_API bool setSpecials(const ArenaSpecialTable* table, std::string_view fighterLead, std::string_view partnerLead,
+                                const LeadSpecialGauges& gauges);
+    // The gauges back into the host's store (each slot's lead: its value and whether its move was seen to its end).
+    FTCORE_API void storeSpecialGauges(LeadSpecialGauges& gauges) const;
+    // What runs, the ready flags and the refusals, as of the last tick (see ArenaSpecialView). The gauge's value is
+    // not here: it is never shown.
+    FTCORE_API const ArenaSpecialView& special() const;
+    // A special runs: the fight's clock stands still for every body but the performer. The host holds its own
+    // (projectiles, hazards, the brain's host-side parts), moves no body (arenaStep doesn't) and poses the performer.
+    FTCORE_API bool frozen() const;
+    // Why `lead` (kArenaPlayer or kArenaAlly) couldn't start its special now, as of the last tick (Ok: it could).
+    FTCORE_API ArenaSpecialRefusal specialRefusal(std::uint8_t lead) const;
+    // Tests only: a slot's gauge, set and read (the game never shows it).
+    FTCORE_API float specialGaugeForTest(std::size_t slot) const;
+    FTCORE_API void setSpecialGaugeForTest(std::size_t slot, float value);
+    // Tests only: the bytes of the fight's state ahead of the special's own block (the freeze test compares them).
+    FTCORE_API std::size_t frozenBytesForTest() const;
+
 private:
     // The fight's state: the implementer's, fixed capacity only (copying a fight never allocates).
     // The rules are in ArenaFightImpl (ArenaFight.cpp), which reads and writes it directly.
@@ -1746,6 +1787,8 @@ private:
         float handedAt = -1.0e9f;           // fight time it was last handed a token by a holder out of sight
         float handedAwayAt = -1.0e9f;       // fight time it last handed its token over
         std::uint8_t aim = 0;               // the string's aim (ArenaEnemyOut::aim), set at its first move
+        Vec2 shoveVel{};                    // a special's knock-back: this velocity added ...
+        float shoveLeft = 0.f;              // ... for these seconds of its own time
     };
 
     // The partner's ally body (setPartner).
@@ -1842,6 +1885,18 @@ private:
     ArenaSwitchRefusal switchRefusal_ = ArenaSwitchRefusal::Ok; // the last switchLeads' answer
     int aimStrings_ = 0;                        // boss strings since begin() or restart(): the partner aim's cap ...
     int aimPartner_ = 0;                        // ... and those aimed at the partner
+    // The special's block: last, so everything above it is what a special freezes (frozenBytesForTest).
+    struct SpecialState {
+        const ArenaSpecialTable* table = nullptr;
+        std::array<std::array<char, kMaxArenaSpecialId + 1>, 2> lead{}; // by kit slot, as begun
+        std::array<const ArenaSpecialRules*, 2> move{};
+        std::array<float, 2> gauge{};
+        std::array<float, 2> gaugeAtBegin{};
+        std::array<bool, 2> seen{};
+        std::uint8_t nextCue = 0;
+        ArenaSpecialView view;
+    };
+    SpecialState special_;
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
