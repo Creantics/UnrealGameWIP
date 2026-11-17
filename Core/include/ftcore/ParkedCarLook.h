@@ -3,7 +3,7 @@
 // A parked car's look when it is drawn as the imported kei car mesh: its paint (one of eight linear presets), how dirty
 // it is, and whether its lamps glow. Chosen by a seeded hash of the car's id, so a rebuild with the same seed gives the
 // same street. The engine side writes it as per-instance custom data (kParkedCarCustomFloats floats):
-//   0..2 PaintColor (linear rgb), 3 DirtAmount (0 clean .. 1 as worn as the sheet), 4 LampOn (0 off, 1 on).
+//   0..2 PaintColor (linear rgb), 3 DirtAmount (0 clean .. 1 as worn as the sheet; kParkedCarDirtMax caps it), 4 LampOn (0 off, 1 on).
 // The car material multiplies LampOn by the night amount, so a lit car stays dark by day.
 //
 // Plain C++20; nothing allocates.
@@ -17,14 +17,16 @@ namespace ftcore {
 
 inline constexpr int kParkedCarPaints = 8;
 inline constexpr int kParkedCarCustomFloats = 5;
-inline constexpr float kParkedCarDirtMin = 0.15f;
-inline constexpr float kParkedCarDirtMax = 1.0f;
+inline constexpr float kParkedCarDirtMin = 0.10f;
+inline constexpr float kParkedCarDirtMax = 0.60f;
 
 struct ParkedCarColor {
     float r = 0.f, g = 0.f, b = 0.f;
 };
 
-// The eight presets in order: pale blue (the default), off-white, silver, cream, mint, brick red, charcoal, mustard.
+// The eight presets in order: charcoal (the default), deep green, oxblood, navy, gunmetal, dark bronze, dark teal,
+// muted silver. Dark on purpose: under the clear coat at night they read wet. Dirt is capped at 0.6, so no car loses
+// its coat entirely.
 // An index out of range gives the default.
 FTCORE_API ParkedCarColor parkedCarPaint(int index);
 

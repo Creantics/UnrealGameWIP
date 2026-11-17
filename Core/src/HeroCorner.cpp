@@ -73,6 +73,29 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
         i = j;
     }
 
+    // The first bay's south end wall, clad board and batten (from the lane's south end it is a blank stucco face).
+    out.endCladCount = 0;
+    if (spec.endClad && spec.bayDepth > 0.0) {
+        const double x0 = spec.laneX1, x1 = spec.laneX1 + spec.bayDepth, wall = spec.bayY0;
+        const double board = wall - spec.cladProud, top = g + spec.cladTop;
+        auto add = [&](double bx0, double bx1, double by0, double z0, double z1) {
+            if (out.endCladCount >= kHeroCladMax) return;
+            MassingBox& b = out.endClad[out.endCladCount];
+            b = flatBox("", "clad", bx0, bx1, by0, wall, z0, z1);
+            b.id = "HC-CLAD-" + std::to_string(++out.endCladCount);
+        };
+        add(x0, x1, board, g, top);
+        const double span = x1 - x0 - spec.battenWidth;
+        const int gaps = std::max(1, static_cast<int>(std::lround(span / std::max(spec.battenPitch, 0.05))));
+        const int battens = std::min(gaps + 1, kHeroCladMax - 3);
+        for (int k = 0; k < battens; ++k) {
+            const double bx = x0 + span * k / std::max(1, battens - 1);
+            add(bx, bx + spec.battenWidth, board - spec.battenProud, g + spec.kickHeight, top - spec.fasciaHeight);
+        }
+        add(x0, x1, board - spec.trimProud, top - spec.fasciaHeight, top);
+        add(x0, x1, board - spec.trimProud, g, g + spec.kickHeight);
+    }
+
     for (int i = 0; i < kHeroBays; ++i) {
         const double y0 = spec.bayY0 + spec.bayWidth * i;
         MassingBox box = flatBox("", "kit", spec.laneX1, spec.laneX1 + spec.bayDepth, y0, y0 + spec.bayWidth,

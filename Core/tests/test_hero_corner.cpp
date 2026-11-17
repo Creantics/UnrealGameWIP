@@ -900,3 +900,38 @@ TEST_CASE("hero corner: four lit bays take four lantern pairs and their lamp slo
     CHECK(lots.lit[3]);
     CHECK_FALSE(lots.lit[4]);
 }
+TEST_CASE("hero corner: the first bay's south end wall is clad board and batten, flush on the wall") {
+    HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.endCladCount == 20);  // the boards, 17 battens, the fascia, the kick board
+    for (int i = 0; i < l.endCladCount; ++i) {
+        const MassingBox& b = l.endClad[i];
+        CHECK(b.kind == "clad");
+        CHECK(b.id == "HC-CLAD-" + std::to_string(i + 1));
+        // Every piece backs onto the wall and stays inside the bay's width and the cladding's height.
+        CHECK(b.cy + 0.5 * b.sy == doctest::Approx(spec.bayY0));
+        CHECK(b.cx - 0.5 * b.sx >= spec.laneX1 - 1e-9);
+        CHECK(b.cx + 0.5 * b.sx <= spec.laneX1 + spec.bayDepth + 1e-9);
+        CHECK(b.z0 >= spec.ground - 1e-9);
+        CHECK(b.z1 <= spec.ground + spec.cladTop + 1e-9);
+    }
+    const MassingBox& boards = l.endClad[0];
+    CHECK(boards.sx == doctest::Approx(spec.bayDepth));
+    CHECK(boards.sy == doctest::Approx(spec.cladProud));
+    // Battens at both corners, evenly spaced about battenPitch, proud of the boards.
+    CHECK(l.endClad[1].cx - 0.5 * l.endClad[1].sx == doctest::Approx(spec.laneX1));
+    CHECK(l.endClad[17].cx + 0.5 * l.endClad[17].sx == doctest::Approx(spec.laneX1 + spec.bayDepth));
+    const double pitch = l.endClad[2].cx - l.endClad[1].cx;
+    CHECK(pitch == doctest::Approx(spec.battenPitch).epsilon(0.05));
+    CHECK(l.endClad[1].sy == doctest::Approx(spec.cladProud + spec.battenProud));
+    // The fascia under the top, the kick board at the foot.
+    CHECK(l.endClad[18].z1 == doctest::Approx(spec.ground + spec.cladTop));
+    CHECK(l.endClad[19].z0 == doctest::Approx(spec.ground));
+
+    HeroCornerSpec off;
+    off.endClad = false;
+    HeroCornerLayout lo;
+    heroCornerLayout(off, lo);
+    CHECK(lo.endCladCount == 0);
+}

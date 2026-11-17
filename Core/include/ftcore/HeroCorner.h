@@ -48,6 +48,8 @@ inline constexpr int kHeroStringLanterns = 9;
 inline constexpr int kHeroCablePoints = 25;
 // A bay's shopfront: boxFace order face 2 (-u, west for a box turned 0).
 inline constexpr int kHeroShopFace = 2;
+// The south end wall's cladding: its boards, its battens, a fascia and a kick board.
+inline constexpr int kHeroCladMax = 24;
 
 struct HeroCornerSpec {
     double ground = 4.18;  // the lane's ground, z
@@ -64,6 +66,13 @@ struct HeroCornerSpec {
     bool bayKoshi[kHeroBays] = {true, false, true, false, false};
     // The eave.
     double eaveOut = 1.2, eaveUp = 3.65, eaveThick = 0.12;
+    // The first bay's south end wall (bare stucco seen from the lane's south end) clad in dark timber, board and
+    // batten: boards cladProud thick on the wall from the ground to cladTop over it, battens battenWidth wide and
+    // battenProud proud of the boards about battenPitch apart (one at each corner), a fascia fasciaHeight deep under its
+    // top and a kick board kickHeight high at its foot, each trimProud proud of the boards.
+    bool endClad = true;
+    double cladProud = 0.04, cladTop = 6.3, battenWidth = 0.06, battenProud = 0.03, battenPitch = 0.5;
+    double fasciaHeight = 0.25, kickHeight = 0.3, trimProud = 0.05;
     // The large lanterns: a pair flanking each lit bay's entrance (the first kHeroLargeLanterns / 2 lit bays, south to
     // north). Under the eave (a glazed front): largeOut from the shop face, hooked to the eave's underside, the mesh at
     // largeScale, largePairGap apart about the door.
@@ -183,6 +192,10 @@ struct HeroCornerLayout {
     MassingBox eaves[kHeroBays / 2 + 1];  // the eave's slabs over the lane (kind "eave", ids HC-EAVE-<n> south to north):
                                           // one per run of bays between the lattice fronts
     int eaveCount = 0;
+    // The first bay's south end cladding (kind "clad", ids HC-CLAD-<n>): the boards, the battens west to east, the
+    // fascia, the kick board. None with endClad off.
+    MassingBox endClad[kHeroCladMax];
+    int endCladCount = 0;
     MassingBox bays[kHeroBays];      // the shop bays (kind "kit", ids HC-BAY-<n><letter>)
     bool bayLit[kHeroBays] = {};
     int eateryBay = 0;
