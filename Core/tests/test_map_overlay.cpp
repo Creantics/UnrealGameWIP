@@ -111,6 +111,13 @@ TEST_CASE("map overlay: names join to roads by id, once per name; districts list
     CHECK(n.districts[0].id == "D1");
     CHECK(n.signForms[n.districts[0].name] == "Pebi");
     CHECK(n.unmatched == 1);
+    // Roads join their district; the district's anchor is the mean of its named roads' midpoints.
+    CHECK(mapRoadDistrict(n, 0) == 0);
+    CHECK(mapRoadDistrict(n, 3) == 0);
+    CHECK(mapRoadDistrict(n, 4) == kMapNoName); // no row
+    REQUIRE(n.districts[0].hasAnchor);
+    CHECK(n.districts[0].anchor.x == doctest::Approx((200.f + 125.f + 275.f + 200.f) / 4.f));
+    CHECK(n.districts[0].anchor.y == doctest::Approx((150.f + 200.f + 100.f + 150.f) / 4.f));
     MapNames bad;
     CHECK_FALSE(mapLoadNames(m, "id,kind\nRD-A,road\n", bad, &err));
     CHECK_FALSE(mapLoadNames(m, "id,kind,name\nRD-A,road,\n", bad, &err));
@@ -226,7 +233,7 @@ TEST_CASE("map overlay: a dense field of candidates places without overlaps and 
     }
 }
 
-TEST_CASE("map overlay: a building with a door on its wall or inside it is enterable; turned footprints respected") {
+TEST_CASE("map overlay: a door lights only the building nearest it; turned footprints respected") {
     MiniMapModel m = model();
     m.buildings.push_back(MapRect{100.f, 100.f, 10.f, 5.f, 0.f});           // door on its south wall
     m.buildings.push_back(MapRect{300.f, 100.f, 10.f, 5.f, 0.f});           // no door near
@@ -240,7 +247,15 @@ TEST_CASE("map overlay: a building with a door on its wall or inside it is enter
     CHECK(e[0] == 1);
     CHECK(e[1] == 0);
     CHECK(e[2] == 1);
+    // Terraced neighbours sharing a wall: a door just off the first one's front, near the shared wall, lights only it.
+    m.buildings.push_back(MapRect{50.f, 50.f, 5.f, 5.f, 0.f});
+    m.buildings.push_back(MapRect{60.f, 50.f, 5.f, 5.f, 0.f});
+    m.doors.push_back({54.6f, 55.3f}); // 0.3 m south of the first's front, 0.4 m from the shared wall
+    mapEnterableBuildings(m, e);
+    REQUIRE(e.size() == 5);
+    CHECK(e[3] == 1);
+    CHECK(e[4] == 0);
     m.doors.clear();
     mapEnterableBuildings(m, e);
-    CHECK(e == std::vector<std::uint8_t>{0, 0, 0});
+    CHECK(e == std::vector<std::uint8_t>{0, 0, 0, 0, 0});
 }

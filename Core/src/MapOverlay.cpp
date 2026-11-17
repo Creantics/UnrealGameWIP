@@ -110,18 +110,28 @@ Vec2 mapOverlayClampCentre(const MiniMapModel& m, const MapOverlayView& v) {
 
 void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::uint8_t>& out, float reach) {
     out.assign(m.buildings.size(), 0);
+    // Per door: the best building so far (outside distance, then centre distance).
+    constexpr std::uint32_t kNone = 0xFFFFFFFFu;
+    std::vector<std::uint32_t> best(m.doors.size(), kNone);
+    std::vector<float> bestOut(m.doors.size(), 0.f), bestCentre(m.doors.size(), 0.f);
     for (std::size_t b = 0; b < m.buildings.size(); ++b) {
         const MapRect& r = m.buildings[b];
         const float c = std::cos(r.rot), s = std::sin(r.rot);
-        for (const Vec2& d : m.doors) {
-            const float dx = d.x - r.cx, dy = d.y - r.cy;
+        for (std::size_t k = 0; k < m.doors.size(); ++k) {
+            const float dx = m.doors[k].x - r.cx, dy = m.doors[k].y - r.cy;
             const float u = dx * c + dy * s, v = -dx * s + dy * c; // into the rect's own axes
-            if (std::abs(u) <= r.hx + reach && std::abs(v) <= r.hy + reach) {
-                out[b] = 1;
-                break;
+            const float outside = std::hypot(std::max(std::abs(u) - r.hx, 0.f), std::max(std::abs(v) - r.hy, 0.f));
+            if (outside > reach) continue;
+            const float centre = std::hypot(dx, dy);
+            if (best[k] == kNone || outside < bestOut[k] - 1e-3f || (outside <= bestOut[k] + 1e-3f && centre < bestCentre[k])) {
+                best[k] = static_cast<std::uint32_t>(b);
+                bestOut[k] = outside;
+                bestCentre[k] = centre;
             }
         }
     }
+    for (std::uint32_t b : best)
+        if (b != kNone) out[b] = 1;
 }
 
 bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error) {
@@ -144,6 +154,7 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
     std::unordered_map<std::string, std::vector<int>> byId;
     for (std::size_t r = 0; r < m.roads.size(); ++r) byId[m.roads[r].id].push_back(static_cast<int>(r));
     std::unordered_map<std::string, std::uint16_t> byName;
+    std::vector<std::string> roadDistrictId(m.roads.size()); // joined to the districts once all rows are read
     auto field = [](const detail::Record& rec, int c) { return c >= 0 && static_cast<std::size_t>(c) < rec.fields.size() ? trimmed(rec.fields[static_cast<std::size_t>(c)]) : std::string(); };
     for (std::size_t r = first + 1; r < recs.size(); ++r) {
         const auto& rec = recs[r];
@@ -164,7 +175,7 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
         const std::string sign = field(rec, col[3]);
         if (out.signForms[idx].empty() && !sign.empty()) out.signForms[idx] = sign;
         if (kind == "district") {
-            out.districts.push_back(MapNames::District{id, idx});
+            out.districts.push_back(MapNames::District{id, idx, Vec2{}, false});
             continue;
         }
         const auto roads = byId.find(id);
@@ -172,9 +183,41 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
             ++out.unmatched;
             continue;
         }
-        for (int road : roads->second) out.roadName[static_cast<std::size_t>(road)] = idx;
+        const std::string district = field(rec, col[4]);
+        for (int road : roads->second) {
+            out.roadName[static_cast<std::size_t>(road)] = idx;
+            roadDistrictId[static_cast<std::size_t>(road)] = district;
+        }
+    }
+    // Roads to their districts, and each district's anchor: the mean of its named roads' midpoints.
+    out.roadDistrict.assign(m.roads.size(), kMapNoName);
+    std::vector<double> sx(out.districts.size(), 0.0), sy(out.districts.size(), 0.0);
+    std::vector<std::size_t> sn(out.districts.size(), 0);
+    for (std::size_t r = 0; r < m.roads.size(); ++r) {
+        if (roadDistrictId[r].empty()) continue;
+        for (std::size_t d = 0; d < out.districts.size(); ++d) {
+            if (out.districts[d].id != roadDistrictId[r]) continue;
+            out.roadDistrict[r] = static_cast<std::uint16_t>(d);
+            const MapRoad& road = m.roads[r];
+            if (road.count == 0 || road.first + road.count > m.points.size()) break;
+            const Vec2 pa = m.points[road.first], pb = m.points[road.first + road.count - 1];
+            sx[d] += 0.5 * (static_cast<double>(pa.x) + static_cast<double>(pb.x));
+            sy[d] += 0.5 * (static_cast<double>(pa.y) + static_cast<double>(pb.y));
+            ++sn[d];
+            break;
+        }
+    }
+    for (std::size_t d = 0; d < out.districts.size(); ++d) {
+        if (sn[d] == 0) continue;
+        const double k = static_cast<double>(sn[d]);
+        out.districts[d].anchor = Vec2{static_cast<float>(sx[d] / k), static_cast<float>(sy[d] / k)};
+        out.districts[d].hasAnchor = true;
     }
     return true;
+}
+
+std::uint16_t mapRoadDistrict(const MapNames& n, int road) {
+    return road >= 0 && static_cast<std::size_t>(road) < n.roadDistrict.size() ? n.roadDistrict[static_cast<std::size_t>(road)] : kMapNoName;
 }
 
 std::uint16_t mapRoadName(const MapNames& n, int road) {

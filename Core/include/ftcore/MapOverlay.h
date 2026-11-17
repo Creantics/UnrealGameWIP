@@ -43,13 +43,15 @@ FTCORE_API Vec2 mapOverlayFromScreen(const MapOverlayView& v, Vec2 screen);
 // The centre held so the view never leaves the model's area (a side larger than the area centres on it).
 FTCORE_API Vec2 mapOverlayClampCentre(const MiniMapModel& m, const MapOverlayView& v);
 
-// Which buildings are enterable: those with a door on or inside their footprint (grown by `reach` m, since doors sit
-// on the wall line). One flag per model building, 1 enterable. Runs once at load (it sizes `out`).
+// Which buildings are enterable: each door marks the one building nearest it (distance outside the footprint, ties
+// to the nearer centre), if that is within `reach` m (doors stand just off the wall line). Terraced neighbours share
+// walls, so a door never lights two. One flag per model building, 1 enterable. Runs once at load (it sizes `out`).
 FTCORE_API void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::uint8_t>& out, float reach = 1.f);
 
 // The names, joined to the roads by id at load (this allocates; it runs once). The table's text is CSV with the header
-// id,kind,name,sign_form,district; rows with kind "district" are the districts (id = the district's id). A road with
-// no row has no name; rows that name no road in the model are skipped (counted in `unmatched`).
+// id,kind,name,sign_form,district; rows with kind "district" are the districts (id = the district's id), and a road
+// row's district column joins the road to its district. A road with no row has no name; rows that name no road in the
+// model are skipped (counted in `unmatched`: water, bridges and squares have no road geometry in the model).
 inline constexpr std::uint16_t kMapNoName = 0xFFFF;
 struct MapNames {
     std::vector<std::string> names;      // each distinct name once
@@ -58,13 +60,18 @@ struct MapNames {
     struct District {
         std::string id;
         std::uint16_t name = kMapNoName;
+        Vec2 anchor{};      // the mean of its named roads' midpoints (its label's place at far zoom)
+        bool hasAnchor = false;
     };
     std::vector<District> districts;
+    std::vector<std::uint16_t> roadDistrict; // per model road: index into districts, or kMapNoName
     std::size_t unmatched = 0;
 };
 FTCORE_API bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error = nullptr);
 // The name of the road at index `road` (kMapNoName for none or out of range).
 FTCORE_API std::uint16_t mapRoadName(const MapNames& n, int road);
+// The district of the road at index `road`: index into n.districts, or kMapNoName.
+FTCORE_API std::uint16_t mapRoadDistrict(const MapNames& n, int road);
 
 // A label: a box of w x h px centred at `at`, turned by `angleDeg` (screen degrees, clockwise, y down), always in
 // [-90, 90) so it reads left to right or, standing, bottom to top.
