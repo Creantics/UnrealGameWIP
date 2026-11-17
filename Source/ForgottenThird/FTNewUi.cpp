@@ -2170,9 +2170,9 @@ public:
 	}
 
 	// The special row's inputs: ready, and while it cannot start now, why; and the Third's ready (the player calls it):
-	// never a level. No gauge reports one yet, so the HUD feeds not ready; -UiStateShot=special, special_dim or
-	// special_call holds the live, the dim or the CALL row for captures. The arena lane's rules fill In when they come:
-	// ready (the controlled lead's), why, thirdReady; a switch of lead is their unready (the row leaves).
+	// never a level. ready and why come from ArenaFight::special() (the controlled lead's gauge and refusal); a switch
+	// of lead is the rules' unready (the row leaves). thirdReady has no feed yet (the Third's call is the arena lane's);
+	// -UiStateShot=special, special_dim or special_call holds the live, the dim or the CALL row for captures.
 	void TickSpecial(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, float DeltaTime)
 	{
 		ftcore::UiSpecialInput In;
@@ -2181,6 +2181,21 @@ public:
 		{
 			In.ready = true;
 			In.why = Shot == EUiStateShot::SpecialDim ? ftcore::UiSpecialWhy::NoTarget : ftcore::UiSpecialWhy::None;
+		}
+		else if (!Fight.over())
+		{
+			// The rules' feed (ArenaFight::special): the controlled lead's full gauge, and while a press would be
+			// refused, why. Nothing ready while a special runs (the gauge empties at the press).
+			const ftcore::ArenaSpecialView& Rules = Fight.special();
+			In.ready = Rules.readyPlayer && !Rules.running;
+			switch (Rules.refusalPlayer)
+			{
+			case ftcore::ArenaSpecialRefusal::Ok:
+			case ftcore::ArenaSpecialRefusal::NotReady: In.why = ftcore::UiSpecialWhy::None; break;
+			case ftcore::ArenaSpecialRefusal::NoTarget: In.why = ftcore::UiSpecialWhy::NoTarget; break;
+			case ftcore::ArenaSpecialRefusal::NoSight: In.why = ftcore::UiSpecialWhy::OutOfSight; break;
+			default: In.why = ftcore::UiSpecialWhy::NotNow; break;
+			}
 		}
 		In.thirdReady = !Fight.over() && Shot == EUiStateShot::SpecialCall;
 		const ftcore::Settings* Prefs = Runner.GetSettings();
