@@ -37,13 +37,15 @@
 //     "shots": [ { "id": 1, "name": "...", "in": 0, "out": 0.9, "anchor": "lead", "offset": { "from": [..], "to": [..] },
 //                  "look_anchor": "lead", "look_at": { "from": [..], "to": [..] }, "ease": "smoothstep",
 //                  "focal_mm": 40 or { "from": 40, "to": 31 }, "focus_m": 1.8 or { "from": .., "to": .. },
-//                  "shake": false, "follow_bone": "hand_r", "note": "..." } ] }
+//                  "shake": false, "follow_bone": "hand_r", "subject": "lead", "note": "..." } ] }
 //   Shots play in order and touch (each "in" is the one before's "out" within 1 ms, the first at 0, each at least
 //   0.1 s), the last "out" is duration_s (within 1 ms). "cuts" must be the shots' inner starts (a mismatch is a
 //   warning). The camera and look-at are eased from "from" to "to" over the shot by its ease ("smoothstep" or
 //   "linear"), and so are the lens and the focus. focus_m 0: the distance to the look-at point. Shake: on a shaking
 //   shot, the eye moves by amp * e^(-u / decay) * sin(2 pi hz u + phase) per axis of the stage frame, u the time into
-//   the shot. "note", "frame", "fps", "aspect" and "name" are read for logs or ignored.
+//   the shot. "subject": what the shot must show ("lead", "target", "both" or "none"; default "target" when the
+//   look-at is target anchored, else "lead"), checked by specialCineFixShot. "note", "frame", "fps", "aspect" and "name"
+//   are read for logs or ignored.
 //
 // The table:
 //   { "version": 1, "moves": [ { "id": "devin_special_01", "shots": "special_devin_01", "release": 7.1, "fstop": 2.8,
@@ -69,9 +71,13 @@ namespace ftcore {
 
 enum class SpecialCineAnchor : std::uint8_t { Lead, World, Target, Bone };
 enum class SpecialCineEase : std::uint8_t { Smooth, Linear };
+// What a shot must show: the lead, the target, both, or nothing in particular (a ground or effect shot).
+enum class SpecialCineSubject : std::uint8_t { Lead, Target, Both, None };
 
 // "lead", "world", "target", "bone".
 FTCORE_API std::string_view specialCineAnchorName(SpecialCineAnchor anchor);
+// "lead", "target", "both", "none".
+FTCORE_API std::string_view specialCineSubjectName(SpecialCineSubject subject);
 
 struct SpecialCineShot {
     static constexpr std::uint32_t kNameCapacity = 24; // 23 characters and a terminator (longer names are cut)
@@ -86,6 +92,7 @@ struct SpecialCineShot {
     float focusFrom = 0.f, focusTo = 0.f; // metres; 0: the distance to the look-at point
     float fStop = 2.8f;
     bool shake = false;
+    SpecialCineSubject subject = SpecialCineSubject::Lead;
     char nameText[kNameCapacity] = {};
     std::uint8_t nameLength = 0;
     char boneText[kBoneCapacity] = {};
@@ -201,6 +208,7 @@ struct SpecialCineStage {
     CutsceneVec3 target;                     // the target's feet
     float targetHeight = 1.8f;               // metres
     float targetRadius = 0.f;                // metres
+    float leadHeight = 1.8f;                 // metres
     CutsceneVec3 bone;                       // the follow bone, world metres (fed each frame for "bone" shots)
 };
 
@@ -216,17 +224,82 @@ struct SpecialCineFrame {
     bool release = false;         // the release beat was crossed this frame
 };
 
-// A shot moved by the host when its camera, or the camera's line to the lead, would be inside a body or the world
-// (tested once at the start: the world is frozen). Applied in this order: mirrored to the stage's other side (the
-// camera's and the look-at's side offsets negated), raised `raise` metres, then pulled `pull` metres along its own
-// axis toward the look-at (never closer than kMinPullGap). An explicit focus is shortened by the pull.
+// A shot moved by the host when its camera, or the camera's line to its subject, would be inside a body or the
+// world, or the subject would leave the frame (tested once at the start: the world is frozen; specialCineFixShot
+// finds it). Applied in this order: mirrored to the stage's other side (the camera's and the look-at's side offsets
+// negated), raised `raise` metres, aimed (the look-at moved onto the subject's chest), then pulled `pull` metres along
+// its own axis toward the look-at (never closer than kMinPullGap). An explicit focus is shortened by the pull; an
+// aimed shot focuses on its look-at.
 struct SpecialCineShotFix {
     static constexpr float kMinPullGap = 0.5f; // metres left between the pulled camera and its look-at
     bool mirror = false;
     float raise = 0.f; // metres, up (negative or NaN: none)
     float pull = 0.f;  // metres, toward the look-at (negative or NaN: none)
-    bool moved() const { return mirror || raise > 0.f || pull > 0.f; }
+    bool aim = false;  // look at the subject (a "none" shot is not aimed)
+    bool moved() const { return mirror || aim || raise > 0.f || pull > 0.f; }
 };
+
+// A body the shots must not enter or look through: an upright cylinder (world metres). `target`: the stage's target
+// (not tested in the lines when the target is one of what the shot shows: a two-shot may overlap its two figures).
+struct SpecialCineBody {
+    CutsceneVec3 feet;
+    float radius = 0.4f;
+    float height = 1.8f;
+    bool target = false;
+};
+
+// The world's test, from the host: true when the segment `from`..`to` (world metres) is blocked; from == to tests the
+// point. `user` is passed through.
+using SpecialCineWorldTest = bool (*)(const CutsceneVec3& from, const CutsceneVec3& to, void* user);
+
+enum class SpecialCineProblem : std::uint8_t {
+    None,
+    InsideBody, // the camera is in a body (its radius and height plus kBodyMargin)
+    BodyInLine, // a body stands between the camera and the subject
+    World,      // the world blocks the camera or its line to the subject
+    OffFrame,   // the subject is behind the camera or outside the safe frame
+    TooSmall,   // the subject is in frame but under the minimum height
+};
+// "none", "inside a body", "a body in the line", "the world", "off frame", "too small".
+FTCORE_API std::string_view specialCineProblemName(SpecialCineProblem problem);
+
+// The framing rules: the subject (its upright line, feet to head) must have some part inside the safe frame, 10% in
+// from each edge, and fill at least kMinFigure of the frame's height (kMinCloseUp when the camera is within
+// kCloseUpRange of it). The lead stands along its travel (end_feet) in step with the move's clock (the clip's own root
+// curve is not known here); "both" needs the lead and the target.
+struct SpecialCineFraming {
+    static constexpr float kSafe = 0.8f;         // of the half frame: 10% in from each edge
+    static constexpr float kMinFigure = 0.12f;   // of the frame's height
+    static constexpr float kMinCloseUp = 0.25f;
+    static constexpr float kCloseUpRange = 2.5f; // metres
+    static constexpr float kBodyMargin = 0.2f;   // metres around a body the camera keeps out of
+    static constexpr float kLineStop = 0.3f;     // metres short of the subject the line test stops
+    static constexpr float kAspect = 16.f / 9.f;
+    static constexpr std::uint32_t kSamples = 5; // times tested per shot
+};
+
+// The first problem of `move`'s frame at `t` (fixes as in specialCineFrameAt). `bodies` (null with `count` 0) and
+// `world` (null: no world) as above. No allocation.
+FTCORE_API SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
+                                                      const SpecialCineShotFix* fixes, const SpecialCineBody* bodies,
+                                                      std::uint32_t count, SpecialCineWorldTest world = nullptr,
+                                                      void* user = nullptr);
+
+struct SpecialCineShotCheck {
+    SpecialCineShotFix fix{};                            // the first fix that passes, else none
+    SpecialCineProblem first = SpecialCineProblem::None; // the problem as written (None: it passed unmoved)
+    SpecialCineProblem last = SpecialCineProblem::None;  // the problem left after the last try (None when one passed)
+    float firstAt = 0.f;                                 // when the first problem shows (seconds on the move's clock)
+    std::uint32_t tries = 0;                             // fixes tried, the shot as written included
+    bool ok = true;                                      // the shot as written, or a fix, passes
+};
+
+// Tests shot `shot` of `move` at kSamples times and, when it fails, tries in order: mirrored; raised 0.4, 0.8, 1.2 m;
+// mirrored and raised; aimed; aimed and mirrored; aimed and raised; then pulled 0.5 to 6 m in 0.5 m steps (each plain,
+// then aimed). The first that passes every sample is returned; none: ok false and the fix left empty. No allocation.
+FTCORE_API SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                                   const SpecialCineBody* bodies, std::uint32_t count,
+                                                   SpecialCineWorldTest world = nullptr, void* user = nullptr);
 
 // The horizontal fov of a lens in mm on a 36 mm sensor, degrees (10 mm and below as 10 mm).
 FTCORE_API float specialCineFov(float lensMm);

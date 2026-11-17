@@ -1785,3 +1785,34 @@ TEST_CASE("arena special: game-thread cost per tick (reported, not checked: 60 f
             << " ns; a 60 fps frame is 16.7 ms");
     CHECK(running > 0.0);
 }
+
+TEST_CASE("arena special: a skipped move ends in the same state as one played out, and a second later still does") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const auto start = [&](Rig& r) {
+        r.begin(fightOf({"hulk"}));
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f, true)));
+        r.press();
+        REQUIRE(r.fight.frozen());
+    };
+    Rig played, skipped;
+    start(played);
+    start(skipped);
+    CHECK(played.runOut(kDt, false) > 400);
+    CHECK(skipped.runOut(kDt, true) == 1);
+    const auto same = [&]() {
+        CHECK_FALSE(played.fight.frozen());
+        CHECK_FALSE(skipped.fight.frozen());
+        CHECK(played.fight.enemyHp(0) == skipped.fight.enemyHp(0));
+        CHECK(played.fight.specialGaugeForTest(0) == doctest::Approx(skipped.fight.specialGaugeForTest(0)));
+        CHECK(played.bodies.player.x == doctest::Approx(skipped.bodies.player.x).epsilon(0.01));
+        CHECK(played.bodies.player.y == doctest::Approx(skipped.bodies.player.y).epsilon(0.01));
+        CHECK(played.bodies.enemies[0].x == doctest::Approx(skipped.bodies.enemies[0].x).epsilon(0.01));
+        CHECK(played.bodies.enemies[0].y == doctest::Approx(skipped.bodies.enemies[0].y).epsilon(0.01));
+    };
+    same();
+    for (int i = 0; i < 60; ++i) {
+        played.tick();
+        skipped.tick();
+    }
+    same();
+}

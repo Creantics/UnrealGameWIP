@@ -488,3 +488,192 @@ TEST_CASE("special cine: the committed move loads, ends on the close camera over
         }
     }
 }
+
+namespace {
+
+// The capture's stage at the press: a brute 1.98 m off, 0.45 m wide, 1.97 m tall, straight ahead.
+SpecialCineStage capturedStage() {
+    SpecialCineStage st = stageAt(0.f, 0.f, 1.98f, 0.f);
+    st.targetRadius = 0.45f;
+    st.targetHeight = 1.97f;
+    st.bone = {0.3f, 0.25f, 1.1f};
+    return st;
+}
+
+SpecialCineBody bodyOf(const SpecialCineStage& st) {
+    SpecialCineBody b;
+    b.feet = st.target;
+    b.radius = st.targetRadius;
+    b.height = st.targetHeight;
+    b.target = true;
+    return b;
+}
+
+SpecialCineShotFix fixOf(bool mirror, float raise, bool aim) {
+    SpecialCineShotFix f;
+    f.mirror = mirror;
+    f.raise = raise;
+    f.aim = aim;
+    return f;
+}
+
+// One shot, 0..1 s, a world-anchored camera at `eye` looking at `look`; it shows `subject`.
+SpecialCineMove oneShot(CutsceneVec3 eye, CutsceneVec3 look, SpecialCineSubject subject) {
+    SpecialCineMove m;
+    REQUIRE(m.setId("framing"));
+    SpecialCineShot s = shotOf(0.f, 1.f, eye);
+    s.cameraAnchor = s.lookAnchor = SpecialCineAnchor::World;
+    s.lookFrom = s.lookTo = look;
+    s.subject = subject;
+    REQUIRE(m.add(s));
+    return m;
+}
+
+// A wall on the stage's right: anything at y over 1 m is in it.
+bool rightWall(const CutsceneVec3& from, const CutsceneVec3& to, void*) { return from.y > 1.f || to.y > 1.f; }
+
+} // namespace
+
+TEST_CASE("special cine: the framing check: the captured release frame at 7.33 s shows nothing, a mirror cannot fix it, the aim does") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* m = t.find("devin_special_01");
+    REQUIRE(m != nullptr);
+    const SpecialCineStage st = capturedStage();
+    const SpecialCineBody body = bodyOf(st);
+    const std::uint32_t release = 5;
+    const SpecialCineShot& s = m->shot(release);
+    REQUIRE(s.subject == SpecialCineSubject::Both);
+    // 7.33 s in the captured 7.10..7.35 shot: 92% in. Its camera stands beside the target and its look-at rides the
+    // wave out past the camera: it faces away from both figures.
+    const float at = s.in + 0.92f * (s.out - s.in);
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
+    // Mirrored: both figures stand on the stage's axis, so the mirror swaps the camera and the look-at to the other
+    // side and frames nothing more. Raised: no better.
+    fixes[release] = fixOf(true, 0.f, false);
+    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
+    fixes[release] = fixOf(false, 0.8f, false);
+    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
+    // Aimed at the two figures: both in the safe frame, the target's own body not counted against the two-shot.
+    fixes[release] = fixOf(false, 0.f, true);
+    CHECK(specialCineFrameProblem(*m, at, st, fixes, &body, 1) == SpecialCineProblem::None);
+
+    // The search: the mirror and the raises are tried first, then the aim.
+    const SpecialCineShotCheck c = specialCineFixShot(*m, release, st, &body, 1);
+    CHECK(c.first == SpecialCineProblem::OffFrame);
+    CHECK(c.ok);
+    CHECK(c.fix.aim);
+    CHECK_FALSE(c.fix.mirror);
+    CHECK(c.fix.pull == 0.f);
+    CHECK(c.tries == 9); // as written, mirrored, 3 raises, 3 mirrored raises, aimed
+
+    // Every shot passes on that stage, moved or not; the last two show the lead as written (the capture's host test
+    // pulled them off a body that was not in their line).
+    for (std::uint32_t i = 0; i < m->size(); ++i) {
+        CAPTURE(i);
+        CHECK(specialCineFixShot(*m, i, st, &body, 1).ok);
+    }
+    CHECK(specialCineFixShot(*m, 6, st, &body, 1).first == SpecialCineProblem::None);
+    const SpecialCineShotCheck last = specialCineFixShot(*m, 7, st, &body, 1);
+    CHECK(last.first == SpecialCineProblem::None);
+    CHECK_FALSE(last.fix.moved());
+    // At 2 m shot 1 starts in the brute's body and shot 2 has it in front of the lead: both pulled in.
+    CHECK(specialCineFixShot(*m, 0, st, &body, 1).fix.pull > 0.f);
+    CHECK(specialCineFixShot(*m, 1, st, &body, 1).fix.pull > 0.f);
+}
+
+TEST_CASE("special cine: the framing check: in frame, too small, behind; a mirror off a side body or wall; the target's own body") {
+    SpecialCineStage st = stageAt(0.f, 0.f, 5.f, 0.f);
+    st.targetRadius = 0.45f;
+    st.targetHeight = 1.8f;
+    const SpecialCineBody target = bodyOf(st);
+
+    // A full figure 4 m off at 35 mm: in frame. 40 m off: under 12% of the frame. Looking away: off frame.
+    SpecialCineMove m = oneShot({-4.f, 0.f, 1.2f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::None);
+    m = oneShot({-40.f, 0.f, 1.2f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::TooSmall);
+    m = oneShot({-4.f, 0.f, 1.2f}, {-8.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::OffFrame);
+    // Off to the side, past the safe frame (10% in from the edge): off frame though the lead is just on screen.
+    m = oneShot({-4.f, 0.f, 1.2f}, {0.f, 1.85f, 1.f}, SpecialCineSubject::Lead);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::OffFrame);
+    // "none": nothing to frame (a ground shot), only the bodies and the world.
+    m = oneShot({0.f, 0.f, 8.f}, {0.01f, 0.f, 0.f}, SpecialCineSubject::None);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::None);
+
+    // A body off the axis between the camera and the lead: the mirror clears it, before any raise or pull.
+    m = oneShot({-3.f, 1.5f, 1.5f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    SpecialCineBody side;
+    side.feet = {-1.5f, 0.75f, 0.f};
+    side.radius = 0.3f;
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &side, 1) == SpecialCineProblem::BodyInLine);
+    SpecialCineShotCheck c = specialCineFixShot(m, 0, st, &side, 1);
+    CHECK(c.ok);
+    CHECK(c.first == SpecialCineProblem::BodyInLine);
+    CHECK(c.fix.mirror);
+    CHECK(c.fix.raise == 0.f);
+    CHECK(c.tries == 2);
+    // The same with a wall on the right instead of a body.
+    c = specialCineFixShot(m, 0, st, nullptr, 0, rightWall, nullptr);
+    CHECK(c.first == SpecialCineProblem::World);
+    CHECK(c.fix.mirror);
+    // Inside a body (its margin included).
+    m = oneShot({4.9f, 0.5f, 1.f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::InsideBody);
+
+    // Beyond the target looking back: the target stands in the line to the lead, but not in its own.
+    m = oneShot({8.f, 0.f, 1.2f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::BodyInLine);
+    m = oneShot({8.f, 0.f, 1.2f}, {5.f, 0.f, 1.f}, SpecialCineSubject::Target);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::None);
+    SpecialCineBody other = target;
+    other.target = false; // the same body as a bystander: it is in the line
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &other, 1) == SpecialCineProblem::BodyInLine);
+
+    // The check and the search allocate nothing.
+    m = oneShot({-3.f, 1.5f, 1.5f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    const auto before = ftcore_test::allocStats().count;
+    c = specialCineFixShot(m, 0, st, &side, 1, rightWall, nullptr);
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("special cine: a shot's subject: read, defaulted from its look-at, refused when unknown; the aim looks at it") {
+    SpecialCineMove m;
+    REQUIRE(m.setId("m"));
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE(importSpecialCineShots(kShots, m, &error, &warnings));
+    CHECK(warnings.empty());
+    CHECK(m.shot(0).subject == SpecialCineSubject::Lead);
+    std::string text = kShots;
+    const std::string name = R"("name": "b")";
+    text.replace(text.find(name), name.size(), R"("name": "b", "subject": "both")");
+    REQUIRE(importSpecialCineShots(text, m, &error, &warnings));
+    CHECK(m.shot(1).subject == SpecialCineSubject::Both);
+    CHECK(specialCineSubjectName(m.shot(1).subject) == "both");
+    const std::string both = R"("subject": "both")";
+    text.replace(text.find(both), both.size(), R"("subject": "boss")");
+    CHECK_FALSE(importSpecialCineShots(text, m, &error, &warnings));
+    CHECK(error.find("subject") != std::string::npos);
+    // No subject and a target-anchored look-at: the target.
+    text = kShots;
+    const std::string look = R"("look_anchor": "lead", "look_at": {"from": [0, 0, 1]}, "focal_mm": 35)";
+    text.replace(text.find(look), std::string(R"("look_anchor": "lead")").size(), R"("look_anchor": "target")");
+    REQUIRE(importSpecialCineShots(text, m, &error, &warnings));
+    CHECK(m.shot(1).subject == SpecialCineSubject::Target);
+
+    // Aimed: the look-at is the subject's chest (the target's, 60% of its height), and the focus its distance.
+    SpecialCineStage st = stageAt(0.f, 0.f, 5.f, 0.f);
+    st.targetHeight = 2.f;
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    fixes[1].aim = true;
+    const SpecialCineFrame f = specialCineFrameAt(m, 1.5f, st, fixes);
+    CHECK(near(f.pose.lookAt.x, 5.f, 1e-3f));
+    CHECK(near(f.pose.lookAt.z, 1.2f, 1e-3f));
+    CHECK(near(f.focus, length3(sub3(f.pose.lookAt, f.pose.position)), 1e-3f));
+    CHECK(specialCineProblemName(SpecialCineProblem::OffFrame) == "off frame");
+}

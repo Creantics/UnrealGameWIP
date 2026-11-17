@@ -71,7 +71,63 @@ void stageAxes(const SpecialCineStage& stage, float& fx, float& fy) {
     fy /= n;
 }
 
+float dot3(const CutsceneVec3& a, const CutsceneVec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+CutsceneVec3 cross3(const CutsceneVec3& a, const CutsceneVec3& b) {
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+CutsceneVec3 scale3(const CutsceneVec3& v, float k) { return {v.x * k, v.y * k, v.z * k}; }
+CutsceneVec3 add3(const CutsceneVec3& a, const CutsceneVec3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+
+constexpr float kChest = 0.6f; // a figure's chest, of its height
+
+float heightOr(float h) { return std::isfinite(h) && h > 0.1f ? h : kHumanHeight; }
+
+// The lead's feet `along` (0..1) its travel, world metres.
+CutsceneVec3 leadFeet(const SpecialCineMove& move, const SpecialCineStage& stage, float along) {
+    const CutsceneVec3& end = move.endFeet();
+    return specialCinePoint(stage, SpecialCineAnchor::Lead, {end.x * along, end.y * along, end.z * along});
+}
+
+// The point an aimed shot looks at, at `t`: the subject's chest (the lead's where its travel puts it then; both: halfway).
+CutsceneVec3 aimPoint(const SpecialCineMove& move, const SpecialCineShot& s, const SpecialCineStage& stage, float t,
+                      const CutsceneVec3& fallback) {
+    const float length = move.length();
+    CutsceneVec3 lead = leadFeet(move, stage, length > 0.f ? std::clamp(t / length, 0.f, 1.f) : 0.f);
+    lead.z += kChest * heightOr(stage.leadHeight);
+    CutsceneVec3 target = stage.target;
+    target.z += kChest * heightOr(stage.targetHeight);
+    switch (s.subject) {
+    case SpecialCineSubject::Lead: return lead;
+    case SpecialCineSubject::Target: return target;
+    case SpecialCineSubject::Both: return lerp3(lead, target, 0.5f);
+    case SpecialCineSubject::None: break;
+    }
+    return fallback;
+}
+
 } // namespace
+
+std::string_view specialCineSubjectName(SpecialCineSubject subject) {
+    switch (subject) {
+    case SpecialCineSubject::Lead: return "lead";
+    case SpecialCineSubject::Target: return "target";
+    case SpecialCineSubject::Both: return "both";
+    case SpecialCineSubject::None: return "none";
+    }
+    return "lead";
+}
+
+std::string_view specialCineProblemName(SpecialCineProblem problem) {
+    switch (problem) {
+    case SpecialCineProblem::None: return "none";
+    case SpecialCineProblem::InsideBody: return "inside a body";
+    case SpecialCineProblem::BodyInLine: return "a body in the line";
+    case SpecialCineProblem::World: return "the world";
+    case SpecialCineProblem::OffFrame: return "off frame";
+    case SpecialCineProblem::TooSmall: return "too small";
+    }
+    return "none";
+}
 
 std::string_view specialCineAnchorName(SpecialCineAnchor anchor) {
     switch (anchor) {
@@ -217,6 +273,8 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     f.pose.position = specialCinePoint(stage, s.cameraAnchor, eye);
     f.pose.lookAt = specialCinePoint(stage, s.lookAnchor, look);
     if (std::isfinite(fix.raise) && fix.raise > 0.f) f.pose.position.z += fix.raise;
+    const bool aimed = fix.aim && s.subject != SpecialCineSubject::None;
+    if (aimed) f.pose.lookAt = aimPoint(move, s, stage, tc, f.pose.lookAt);
     float pulled = 0.f;
     if (std::isfinite(fix.pull) && fix.pull > 0.f) {
         const CutsceneVec3 axis = sub3(f.pose.lookAt, f.pose.position);
@@ -228,7 +286,7 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
         }
     }
     f.fovDegrees = specialCineFov(s.lensFrom + (s.lensTo - s.lensFrom) * p);
-    const float focus = s.focusFrom + (s.focusTo - s.focusFrom) * p - pulled;
+    const float focus = aimed ? 0.f : s.focusFrom + (s.focusTo - s.focusFrom) * p - pulled;
     f.focus = focus > 0.f ? focus : std::max(length3(sub3(f.pose.lookAt, f.pose.position)), 0.1f);
     f.fStop = s.fStop > 0.f ? s.fStop : move.fStop();
     if (s.shake) {
@@ -252,6 +310,220 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     if (bout > 0.f && tc > length - bout)
         f.playWeight = ease01(move.shot(move.size() - 1).ease, (tc - (length - bout)) / bout);
     return f;
+}
+
+// ---- the framing check ----
+
+namespace {
+
+// The camera's axes: forward to the look-at; right and up across it (up along z; straight down: the stage's right).
+struct View {
+    CutsceneVec3 eye, fwd, right, up;
+    float tanX = 1.f, tanY = 1.f;
+};
+
+View viewOf(const SpecialCineFrame& f, const SpecialCineStage& stage) {
+    View v;
+    v.eye = f.pose.position;
+    CutsceneVec3 d = sub3(f.pose.lookAt, f.pose.position);
+    const float n = length3(d);
+    v.fwd = n > 1e-4f ? scale3(d, 1.f / n) : CutsceneVec3{1.f, 0.f, 0.f};
+    CutsceneVec3 r = cross3(v.fwd, {0.f, 0.f, 1.f});
+    float rn = length3(r);
+    if (rn < 1e-3f) {
+        float fx = 1.f, fy = 0.f;
+        stageAxes(stage, fx, fy);
+        r = {-fy, fx, 0.f};
+        rn = 1.f;
+    }
+    v.right = scale3(r, 1.f / rn);
+    v.up = cross3(v.right, v.fwd);
+    v.tanX = std::tan(0.5f * f.fovDegrees * kPi / 180.f);
+    v.tanY = v.tanX / SpecialCineFraming::kAspect;
+    return v;
+}
+
+// The part of the 2D segment a..b inside the box |x|, |y| <= h (Liang-Barsky): false when none.
+bool clipBox(float& ax, float& ay, float& bx, float& by, float h) {
+    float t0 = 0.f, t1 = 1.f;
+    const float dx = bx - ax, dy = by - ay;
+    const float pq[4][2] = {{-dx, ax + h}, {dx, h - ax}, {-dy, ay + h}, {dy, h - ay}};
+    for (const auto& e : pq) {
+        if (std::fabs(e[0]) < 1e-9f) {
+            if (e[1] < 0.f) return false;
+            continue;
+        }
+        const float r = e[1] / e[0];
+        if (e[0] < 0.f) t0 = std::max(t0, r);
+        else t1 = std::min(t1, r);
+        if (t0 > t1) return false;
+    }
+    const float x0 = ax + dx * t0, y0 = ay + dy * t0;
+    bx = ax + dx * t1;
+    by = ay + dy * t1;
+    ax = x0;
+    ay = y0;
+    return true;
+}
+
+// The framing of one upright figure from `feet`, `height` tall.
+SpecialCineProblem figureFraming(const View& v, const CutsceneVec3& feet, float height) {
+    CutsceneVec3 a = sub3(feet, v.eye);
+    CutsceneVec3 b = add3(a, {0.f, 0.f, height});
+    float za = dot3(a, v.fwd), zb = dot3(b, v.fwd);
+    constexpr float kNear = 0.05f;
+    if (za < kNear && zb < kNear) return SpecialCineProblem::OffFrame;
+    if (za < kNear || zb < kNear) { // clip the part behind the lens
+        const float k = (kNear - za) / (zb - za);
+        const CutsceneVec3 c = lerp3(a, b, k);
+        if (za < kNear) a = c;
+        else b = c;
+        za = dot3(a, v.fwd);
+        zb = dot3(b, v.fwd);
+    }
+    float ax = dot3(a, v.right) / (za * v.tanX), ay = dot3(a, v.up) / (za * v.tanY);
+    float bx = dot3(b, v.right) / (zb * v.tanX), by = dot3(b, v.up) / (zb * v.tanY);
+    float sx0 = ax, sy0 = ay, sx1 = bx, sy1 = by;
+    if (!clipBox(sx0, sy0, sx1, sy1, SpecialCineFraming::kSafe)) return SpecialCineProblem::OffFrame;
+    if (!clipBox(ax, ay, bx, by, 1.f)) return SpecialCineProblem::OffFrame;
+    const float shown = 0.5f * std::sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay)); // of the frame's height
+    const CutsceneVec3 mid = add3(feet, {0.f, 0.f, 0.5f * height});
+    const bool close = length3(sub3(mid, v.eye)) < SpecialCineFraming::kCloseUpRange;
+    return shown >= (close ? SpecialCineFraming::kMinCloseUp : SpecialCineFraming::kMinFigure) ? SpecialCineProblem::None
+                                                                                               : SpecialCineProblem::TooSmall;
+}
+
+bool insideCylinder(const CutsceneVec3& p, const SpecialCineBody& b, float margin) {
+    const float dx = p.x - b.feet.x, dy = p.y - b.feet.y;
+    const float r = std::max(b.radius, 0.f) + margin;
+    return dx * dx + dy * dy < r * r && p.z >= b.feet.z - margin && p.z <= b.feet.z + std::max(b.height, 0.f) + margin;
+}
+
+// A body between `from` and `to` (sampled every 5 cm or so; a body is at least that wide).
+bool bodyInLine(const CutsceneVec3& from, const CutsceneVec3& to, const SpecialCineBody* bodies, std::uint32_t count, bool skipTarget) {
+    const float d = length3(sub3(to, from));
+    const int steps = std::clamp(static_cast<int>(d / 0.05f), 1, 400);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (skipTarget && bodies[i].target) continue;
+        for (int k = 1; k <= steps; ++k)
+            if (insideCylinder(lerp3(from, to, static_cast<float>(k) / static_cast<float>(steps)), bodies[i], 0.f)) return true;
+    }
+    return false;
+}
+
+// The line from the eye to a subject's chest, stopped kLineStop short of it.
+SpecialCineProblem lineTo(const View& v, CutsceneVec3 chest, const SpecialCineBody* bodies, std::uint32_t count, bool skipTarget,
+                          SpecialCineWorldTest world, void* user) {
+    const CutsceneVec3 d = sub3(chest, v.eye);
+    const float n = length3(d);
+    if (n <= SpecialCineFraming::kLineStop) return SpecialCineProblem::None;
+    chest = add3(v.eye, scale3(d, (n - SpecialCineFraming::kLineStop) / n));
+    if (bodyInLine(v.eye, chest, bodies, count, skipTarget)) return SpecialCineProblem::BodyInLine;
+    if (world != nullptr && world(v.eye, chest, user)) return SpecialCineProblem::World;
+    return SpecialCineProblem::None;
+}
+
+} // namespace
+
+SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
+                                           const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
+                                           SpecialCineWorldTest world, void* user) {
+    if (move.empty()) return SpecialCineProblem::None;
+    if (bodies == nullptr) count = 0;
+    const SpecialCineFrame f = specialCineFrameAt(move, t, stage, fixes);
+    const View v = viewOf(f, stage);
+    for (std::uint32_t i = 0; i < count; ++i)
+        if (insideCylinder(v.eye, bodies[i], SpecialCineFraming::kBodyMargin)) return SpecialCineProblem::InsideBody;
+    if (world != nullptr && world(v.eye, v.eye, user)) return SpecialCineProblem::World;
+    const SpecialCineSubject subject = move.shot(f.shot).subject;
+    if (subject == SpecialCineSubject::None) return SpecialCineProblem::None;
+    const bool lead = subject == SpecialCineSubject::Lead || subject == SpecialCineSubject::Both;
+    const bool target = subject == SpecialCineSubject::Target || subject == SpecialCineSubject::Both;
+    const float leadH = heightOr(stage.leadHeight), targetH = heightOr(stage.targetHeight);
+    // Framing first (a shot that shows nothing has nothing to block), then the lines.
+    SpecialCineProblem framing = SpecialCineProblem::None;
+    const auto worse = [&framing](SpecialCineProblem p) {
+        if (p == SpecialCineProblem::OffFrame || (p == SpecialCineProblem::TooSmall && framing == SpecialCineProblem::None)) framing = p;
+    };
+    const float length = move.length();
+    const CutsceneVec3 leadAt = leadFeet(move, stage, length > 0.f ? std::clamp(t / length, 0.f, 1.f) : 0.f);
+    if (lead) worse(figureFraming(v, leadAt, leadH));
+    if (target) worse(figureFraming(v, stage.target, targetH));
+    if (framing != SpecialCineProblem::None) return framing;
+    if (lead) {
+        CutsceneVec3 chest = leadAt;
+        chest.z += kChest * leadH;
+        const SpecialCineProblem p = lineTo(v, chest, bodies, count, target, world, user); // a two-shot may overlap them
+        if (p != SpecialCineProblem::None) return p;
+    }
+    if (target) {
+        CutsceneVec3 chest = stage.target;
+        chest.z += kChest * targetH;
+        return lineTo(v, chest, bodies, count, true, world, user);
+    }
+    return SpecialCineProblem::None;
+}
+
+namespace {
+
+// The first problem of shot `shot` under `fix` over its samples, and when.
+SpecialCineProblem shotProblem(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage, const SpecialCineShotFix& fix,
+                               const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user, float& at) {
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    fixes[shot] = fix;
+    const SpecialCineShot& s = move.shot(shot);
+    constexpr std::uint32_t n = SpecialCineFraming::kSamples;
+    for (std::uint32_t k = 0; k < n; ++k) {
+        // Spread over the shot, 2% in from each end (the frame at a cut belongs to the next shot).
+        const float u = 0.02f + 0.96f * static_cast<float>(k) / static_cast<float>(n - 1);
+        const float t = s.in + (s.out - s.in) * u;
+        const SpecialCineProblem p = specialCineFrameProblem(move, t, stage, fixes, bodies, count, world, user);
+        if (p != SpecialCineProblem::None) {
+            at = t;
+            return p;
+        }
+    }
+    return SpecialCineProblem::None;
+}
+
+} // namespace
+
+SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                        const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user) {
+    SpecialCineShotCheck c;
+    if (shot >= move.size()) return c;
+    float at = 0.f;
+    c.tries = 1;
+    c.first = c.last = shotProblem(move, shot, stage, {}, bodies, count, world, user, at);
+    c.firstAt = at;
+    if (c.first == SpecialCineProblem::None) return c;
+    const auto attempt = [&](const SpecialCineShotFix& fix) {
+        ++c.tries;
+        float when = 0.f;
+        c.last = shotProblem(move, shot, stage, fix, bodies, count, world, user, when);
+        if (c.last != SpecialCineProblem::None) return false;
+        c.fix = fix;
+        return true;
+    };
+    constexpr float kRaises[] = {0.4f, 0.8f, 1.2f};
+    if (attempt({true, 0.f, 0.f, false})) return c;
+    for (const float r : kRaises)
+        if (attempt({false, r, 0.f, false})) return c;
+    for (const float r : kRaises)
+        if (attempt({true, r, 0.f, false})) return c;
+    const bool aimable = move.shot(shot).subject != SpecialCineSubject::None;
+    if (aimable) {
+        if (attempt({false, 0.f, 0.f, true}) || attempt({true, 0.f, 0.f, true})) return c;
+        for (const float r : kRaises)
+            if (attempt({false, r, 0.f, true})) return c;
+    }
+    for (int k = 1; k <= 12; ++k) {
+        const float pull = 0.5f * static_cast<float>(k);
+        if (attempt({false, 0.f, pull, false})) return c;
+        if (aimable && attempt({false, 0.f, pull, true})) return c;
+    }
+    c.ok = false;
+    return c;
 }
 
 // ---- the player ----
@@ -448,7 +720,7 @@ static bool readSpecialCineShots(std::string_view text, SpecialCineMove& move, s
             return fail(error, at + " is not an object");
         }
         warnUnknown(sv, {"id", "name", "in", "out", "anchor", "offset", "look_anchor", "look_at", "ease", "focal_mm", "focus_m", "fstop",
-                         "shake", "follow_bone", "note"},
+                         "shake", "follow_bone", "subject", "note"},
                     at, warnings);
         SpecialCineShot s;
         bool ok = sv["in"].isNumber() && sv["out"].isNumber();
@@ -474,6 +746,15 @@ static bool readSpecialCineShots(std::string_view text, SpecialCineMove& move, s
         s.fStop = sv["fstop"].isAbsent() ? 0.f : static_cast<float>(sv["fstop"].number());
         if (s.fStop == 0.f) s.fStop = move.fStop();
         s.shake = sv["shake"].boolean(false);
+        const std::string_view subject = sv["subject"].string(s.lookAnchor == SpecialCineAnchor::Target ? "target" : "lead");
+        if (subject == "lead") s.subject = SpecialCineSubject::Lead;
+        else if (subject == "target") s.subject = SpecialCineSubject::Target;
+        else if (subject == "both") s.subject = SpecialCineSubject::Both;
+        else if (subject == "none") s.subject = SpecialCineSubject::None;
+        else {
+            move.clearShots();
+            return fail(error, at + ": \"subject\" is not \"lead\", \"target\", \"both\" or \"none\"");
+        }
         const std::string_view name = sv["name"].string();
         const std::size_t keep = std::min<std::size_t>(name.size(), SpecialCineShot::kNameCapacity - 1);
         std::copy(name.begin(), name.begin() + static_cast<std::ptrdiff_t>(keep), s.nameText);
