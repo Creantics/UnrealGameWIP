@@ -91,7 +91,7 @@ const TCHAR* FTBootSwitches(bool bWithCommandLine)
 	const FString Key = GBootMap + (bWithCommandLine ? TEXT("|1") : TEXT("|0"));
 	if (const TUniquePtr<FString>* Found = GBootLines.Find(Key))
 	{
-		return **Found;
+		return **Found->Get();
 	}
 	const FTCHARToUTF8 Map(*GBootMap);
 	const ftcore::DemoBootRow* Row = ftcore::demoBootFind(BootTable(), std::string_view(Map.Get(), static_cast<size_t>(Map.Length())));
