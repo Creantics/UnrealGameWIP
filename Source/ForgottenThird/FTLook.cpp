@@ -782,10 +782,14 @@ int32 FTLook::PreloadWetGrooms(const TArray<FFTGroomLook>& Grooms, TArray<TObjec
 			UE_LOG(LogForgottenThird, Warning, TEXT("%s: no wet groom at %s; the dry one stays on when wet."), Who, *Look.WetGroom.ToString());
 			continue;
 		}
+		// Both sides held: off the component, the dry groom is referenced by nothing else (the look keeps soft paths).
 		OutHold.Add(Groom);
-		if (UObject* Binding = Look.WetBinding.IsNull() ? nullptr : Look.WetBinding.TryLoad())
+		for (const FSoftObjectPath* Path : {&Look.WetBinding, &Look.Groom, &Look.Binding})
 		{
-			OutHold.Add(Binding);
+			if (UObject* Held = Path->IsNull() ? nullptr : Path->TryLoad())
+			{
+				OutHold.Add(Held);
+			}
 		}
 		++Wet;
 	}

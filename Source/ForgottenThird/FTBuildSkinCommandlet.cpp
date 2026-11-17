@@ -213,6 +213,8 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 
 	UTexture* White = LoadObject<UTexture>(nullptr, TEXT("/Game/Characters/Shared/Materials/T_FTWhite.T_FTWhite"));
 	UTexture* Flat = LoadObject<UTexture>(nullptr, TEXT("/Game/Characters/Shared/Materials/T_FTFlatNormal.T_FTFlatNormal"));
+	// Linear white for a masks sampler (T_FTWhite is sRGB); FTImportMaterials makes both.
+	UTexture* WhiteMasks = LoadObject<UTexture>(nullptr, TEXT("/Game/Characters/Shared/Materials/T_FTWhiteMasks.T_FTWhiteMasks"));
 
 	UMaterialExpressionTextureCoordinate* UV = AddExpression<UMaterialExpressionTextureCoordinate>(Material, -1700, 0);
 	UMaterialExpressionMultiply* DetailUV = AddExpression<UMaterialExpressionMultiply>(Material, -1250, 300);
@@ -246,7 +248,7 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 		0);
 	// Wet skin (ftcore::leadwet::skinRoughness): lowered toward SkinWetRoughness, never raised, only where SkinWetMask
 	// and the region's AO (R, 1 on open convex skin: forehead, nose, cheekbones) both say so; creases stay as dry.
-	UMaterialExpressionTextureSampleParameter2D* WetMask = Sampler(Material, TEXT("SkinWetMask"), White, SAMPLERTYPE_Masks, nullptr, 1200);
+	UMaterialExpressionTextureSampleParameter2D* WetMask = Sampler(Material, TEXT("SkinWetMask"), WhiteMasks, SAMPLERTYPE_Masks, nullptr, 1200);
 	UMaterialExpressionCustom* WetRoughnessOut = Custom(Material, TEXT("SkinWetRoughness"), CMOT_Float1,
 		TEXT("float k = saturate(Wet) * saturate(Mask) * saturate((AO - 0.55) / 0.4);
 return min(R, lerp(R, WetRough, k));"),
