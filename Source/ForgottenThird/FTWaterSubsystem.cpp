@@ -279,12 +279,23 @@ void UFTWaterSubsystem::UpdateSurface(bool bForce)
 	{
 		return;
 	}
+	// Off: the bodies read flat at their levels (setSurface(nullptr)) and nothing else is done; the next flip on forces
+	// the sets and the waves through.
+	if (!bSurfaceOn)
+	{
+		if (Draw)
+		{
+			Draw->SetShown(false);
+		}
+		return;
+	}
 	if (const UFTWorldClockSubsystem* Clock = World->GetSubsystem<UFTWorldClockSubsystem>())
 	{
 		Surface.totalHours = static_cast<double>(Clock->GetClock().day) * 24.0 + Clock->GetClock().hours;
 	}
 	const UFTLookSubsystem* LookSys = World->GetSubsystem<UFTLookSubsystem>();
-	const ftcore::SceneLook Look = LookSys ? LookSys->GetLook() : ftcore::SceneLook{};
+	static const ftcore::SceneLook kNoLook{};
+	const ftcore::SceneLook& Look = LookSys ? LookSys->GetLook() : kNoLook;
 	const UFTRainSubsystem* Rain = World->GetSubsystem<UFTRainSubsystem>();
 	const float Storm = Rain ? FMath::Clamp(Rain->GetIntensity(), 0.f, 1.f) : 0.f;
 	// The sets are rebuilt when the weather moves enough to show (a few times a minute at most in a turning storm).
@@ -298,7 +309,7 @@ void UFTWaterSubsystem::UpdateSurface(bool bForce)
 		bForce = true;
 	}
 	// The tiles: built the first time the model is on, its waves pushed when the sets move, its tide when it moves.
-	if (bSurfaceOn && !Draw)
+	if (!Draw)
 	{
 		Draw = NewObject<UFTWaterSurfaceDraw>(this);
 		if (Draw->Build(*World, Water, Surface.spec.waves))
@@ -308,18 +319,15 @@ void UFTWaterSubsystem::UpdateSurface(bool bForce)
 		// A body whose flat plane stays (or every body, with no tiles) is read flat too, so the swim matches the picture.
 		Water.setSurfaceFlat(~Draw->DrawnBodies());
 	}
-	if (Draw)
+	if (bForce)
 	{
-		if (bForce)
-		{
-			Draw->PushWaves(Surface);
-		}
-		else if (bSurfaceOn)
-		{
-			Draw->PushTide(Surface);
-		}
-		Draw->SetShown(bSurfaceOn);
+		Draw->PushWaves(Surface);
 	}
+	else
+	{
+		Draw->PushTide(Surface);
+	}
+	Draw->SetShown(true);
 }
 
 void UFTWaterSubsystem::Splash(const FVector& WhereCm, float Strength)

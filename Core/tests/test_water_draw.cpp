@@ -241,6 +241,49 @@ TEST_CASE("Tiles fit a box exactly and run a sea from under the beach out to its
     CHECK(waterTileLayout(water, WaterWaveSpec{}, spec, bounds, nullptr, 0) == n);
 }
 
+TEST_CASE("Under the cap, tiles are laid a whole body at a time and a body that doesn't fit is dropped whole") {
+    WaterBodies water;
+    water.add(canalBox(0.f)); // 4 tiles
+    water.add(seaPlane());    // 8 x 25 within these bounds; a far start stretches it
+    water.add(canalBox(0.f)); // 4 tiles
+    WaterTileSpec spec;
+    spec.seaReachM = 100.f;
+    WaterTile tiles[64];
+    std::uint32_t dropped = 0;
+    std::uint32_t need[kWaterMaxBodies] = {};
+    WaterTileBounds bounds{{-200.f, -50.f}, {200.f, 300.f}};
+    CHECK(waterTileLayoutWhole(water, WaterWaveSpec{}, spec, bounds, tiles, 64, &dropped, need) == 8);
+    CHECK(dropped == 0b010u);
+    CHECK(need[0] == 4);
+    CHECK(need[1] == 200);
+    CHECK(need[2] == 4);
+    CHECK(tiles[0].body == 0);
+    CHECK(tiles[3].body == 0);
+    CHECK(tiles[4].body == 2); // the canal after the dropped sea still gets its tiles
+    CHECK(tiles[7].body == 2);
+    // A start 400 km off: the sea's strip would need some 200 000 tiles; it is dropped, nothing overflows.
+    bounds.max.x = 400000.f;
+    bounds.max.y = 400000.f;
+    CHECK(waterTileLayoutWhole(water, WaterWaveSpec{}, spec, bounds, tiles, 64, &dropped, need) == 8);
+    CHECK(dropped == 0b010u);
+    CHECK(need[1] > 100000u);
+    // Room for everything: nothing dropped, the same tiles as waterTileLayout.
+    WaterTile all[256];
+    WaterTile plain[256];
+    bounds = WaterTileBounds{{-200.f, -50.f}, {200.f, 300.f}};
+    CHECK(waterTileLayoutWhole(water, WaterWaveSpec{}, spec, bounds, all, 256, &dropped) == 208);
+    CHECK(dropped == 0u);
+    CHECK(waterTileLayout(water, WaterWaveSpec{}, spec, bounds, plain, 256) == 208);
+    for (std::size_t i = 0; i < 208; ++i) {
+        CHECK(all[i].body == plain[i].body);
+        CHECK(all[i].centre.x == plain[i].centre.x);
+        CHECK(all[i].centre.y == plain[i].centre.y);
+    }
+    // No array: nothing laid, every body with tiles dropped.
+    CHECK(waterTileLayoutWhole(water, WaterWaveSpec{}, spec, bounds, nullptr, 0, &dropped) == 0);
+    CHECK(dropped == 0b111u);
+}
+
 TEST_CASE("Each body draws in its group") {
     const WaterWaveSpec spec;
     CHECK(waterDrawGroup(seaPlane(), spec) == WaterDrawGroup::Sea);

@@ -1,6 +1,6 @@
 // The water surface's waves on the GPU: the material copy of ftcore::waterWaveOffset (Core/src/WaterWaves.cpp), which
 // the water's tiles (UFTWaterSubsystem) move each vertex by, so the drawn surface stands where the game's height query
-// says (to 2 cm: Core/tests/test_water_surface_ush.cpp includes this file as C++ and compares).
+// says (to 2 cm: Core/tests/test_water_draw.cpp includes this file as C++ and compares).
 //
 // One class's eight waves come in as vectors {k dirX, k dirY, amplitude, phase} (ftcore::packSeaWave), with the set's
 // shared steepness Q. A wave shorter than four of the vertex's grid cells (GridCm, baked per LOD) drops out of the offset

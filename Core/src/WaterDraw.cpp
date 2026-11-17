@@ -127,39 +127,67 @@ float waterEdgeLineCm(const float line[kWaterEdgeFloats], float x, float y) {
     return std::max(line[4] - std::fabs(d), 0.f);
 }
 
+namespace {
+
+// One body's tiles into out from at (up to cap); returns how many the body needs.
+std::size_t layBody(const WaterBodies& water, std::size_t i, const WaterWaveSpec& waves, const WaterTileSpec& spec,
+                    const WaterTileBounds& bounds, WaterTile* out, std::size_t cap, std::size_t at) {
+    const float tileM = spec.tileM > 0.5f ? spec.tileM : 16.f;
+    const WaterBody& b = water.body(i);
+    WaterTile proto;
+    proto.body = static_cast<std::uint16_t>(i);
+    proto.group = waterDrawGroup(b, waves);
+    proto.z = b.level;
+    switch (b.shape) {
+    case WaterShape::Box:
+        return layGrid(proto, b.centre, b.cosYaw, b.sinYaw, -b.half.x, b.half.x, -b.half.y, b.half.y, tileM, out, cap, at);
+    case WaterShape::HalfPlane: {
+        // Along the shore: the bounds' corners projected on the shore's line, (-sin, cos).
+        float lo = 0.f, hi = 0.f;
+        const Vec2 corners[4] = {bounds.min, {bounds.max.x, bounds.min.y}, bounds.max, {bounds.min.x, bounds.max.y}};
+        for (int k = 0; k < 4; ++k) {
+            const float a = -(corners[k].x - b.centre.x) * b.sinYaw + (corners[k].y - b.centre.y) * b.cosYaw;
+            lo = k == 0 ? a : std::min(lo, a);
+            hi = k == 0 ? a : std::max(hi, a);
+        }
+        return layGrid(proto, b.centre, b.cosYaw, b.sinYaw, -std::max(spec.landOverlapM, 0.f), std::max(spec.seaReachM, 0.f), lo, hi,
+                       tileM, out, cap, at);
+    }
+    case WaterShape::Polygon: break;
+    }
+    return 0;
+}
+
+} // namespace
+
 std::size_t waterTileLayout(const WaterBodies& water, const WaterWaveSpec& waves, const WaterTileSpec& spec,
                             const WaterTileBounds& bounds, WaterTile* out, std::size_t cap) {
     if (!out) cap = 0;
-    const float tileM = spec.tileM > 0.5f ? spec.tileM : 16.f;
     std::size_t total = 0;
     for (std::size_t i = 0; i < water.count() && i <= 0xFFFFu; ++i) {
-        const WaterBody& b = water.body(i);
-        WaterTile proto;
-        proto.body = static_cast<std::uint16_t>(i);
-        proto.group = waterDrawGroup(b, waves);
-        proto.z = b.level;
-        const std::size_t at = std::min(total, cap);
-        switch (b.shape) {
-        case WaterShape::Box:
-            total += layGrid(proto, b.centre, b.cosYaw, b.sinYaw, -b.half.x, b.half.x, -b.half.y, b.half.y, tileM, out, cap, at);
-            break;
-        case WaterShape::HalfPlane: {
-            // Along the shore: the bounds' corners projected on the shore's line, (-sin, cos).
-            float lo = 0.f, hi = 0.f;
-            const Vec2 corners[4] = {bounds.min, {bounds.max.x, bounds.min.y}, bounds.max, {bounds.min.x, bounds.max.y}};
-            for (int k = 0; k < 4; ++k) {
-                const float a = -(corners[k].x - b.centre.x) * b.sinYaw + (corners[k].y - b.centre.y) * b.cosYaw;
-                lo = k == 0 ? a : std::min(lo, a);
-                hi = k == 0 ? a : std::max(hi, a);
-            }
-            total += layGrid(proto, b.centre, b.cosYaw, b.sinYaw, -std::max(spec.landOverlapM, 0.f), std::max(spec.seaReachM, 0.f),
-                             lo, hi, tileM, out, cap, at);
-            break;
-        }
-        case WaterShape::Polygon: break;
-        }
+        total += layBody(water, i, waves, spec, bounds, out, cap, std::min(total, cap));
     }
     return total;
+}
+
+std::size_t waterTileLayoutWhole(const WaterBodies& water, const WaterWaveSpec& waves, const WaterTileSpec& spec,
+                                 const WaterTileBounds& bounds, WaterTile* out, std::size_t cap, std::uint32_t* dropped,
+                                 std::uint32_t* perBody) {
+    if (!out) cap = 0;
+    std::uint32_t left = 0;
+    std::size_t laid = 0;
+    for (std::size_t i = 0; i < water.count() && i < 32; ++i) {
+        const std::size_t need = layBody(water, i, waves, spec, bounds, nullptr, 0, 0);
+        if (perBody) perBody[i] = static_cast<std::uint32_t>(std::min<std::size_t>(need, 0xFFFFFFFFu));
+        if (need == 0) continue;
+        if (need > cap - laid) {
+            left |= 1u << i;
+            continue;
+        }
+        laid += layBody(water, i, waves, spec, bounds, out, cap, laid);
+    }
+    if (dropped) *dropped = left;
+    return laid;
 }
 
 } // namespace ftcore

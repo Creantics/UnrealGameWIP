@@ -6,8 +6,12 @@
 //     hidden whole; the tiles wear a dynamic instance of that plane's own material (a canal keeps its Flow and Channel).
 //     A polygon body, or a plane shared with a body that has no tiles, keeps its flat plane.
 //   - One instanced component and one instance per body (16 at most): its edge line is the body's own.
-//   - A sea's plane is replaced past the tiles' reach (and beside them along the shore) by plain planes wearing the
-//     sea's instance with the vertex waves off: the tide and the waves' normals only.
+//   - A sea's plane is replaced past the tiles' reach (and beside them along the shore) by the tile mesh stretched, wearing
+//     the sea's instance with the vertex waves off: the tide and the waves' normals only. The tiles' waves fade out over
+//     the last 150 m of their reach (ReachCm), so the two meet with no step.
+//   - The tiles are capped at ftcore::kWaterMaxTiles, a whole body at a time: one that doesn't fit keeps its flat plane.
+//   - Every part is built once the bodies to draw are settled, from assets already loaded, so a flat plane is hidden only
+//     where its whole replacement stands.
 //   - Built once, the first time the surface is turned on; the waves' parameters are pushed when the sets are rebuilt,
 //     the tide when it has moved 2 mm. Nothing is allocated after the build.
 
@@ -24,6 +28,7 @@ class AActor;
 class UHierarchicalInstancedStaticMeshComponent;
 class UMaterialInstanceDynamic;
 class UPrimitiveComponent;
+class UStaticMesh;
 class UStaticMeshComponent;
 
 UCLASS(Transient)
@@ -46,9 +51,10 @@ public:
 	uint32 DrawnBodies() const { return DrawnMask; }
 
 private:
-	void AddFarSea(UWorld& World, const ftcore::WaterBody& Body, const FBox& PlaneBounds, UMaterialInstanceDynamic* Mid, const TArray<ftcore::WaterTile>& Laid,
+	void AddFarSea(UStaticMesh& Tile, const ftcore::WaterBody& Body, const FBox& PlaneBounds, UMaterialInstanceDynamic* Mid, const TArray<ftcore::WaterTile>& Laid,
 		int32 BodyIndex);
-	void SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts);
+	// ReachCm: a sea's tiles' reach out from its shore, its waves fading out over the last 150 m (0: no fade).
+	void SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts, float ReachCm);
 
 	UPROPERTY()
 	TObjectPtr<AActor> Host;

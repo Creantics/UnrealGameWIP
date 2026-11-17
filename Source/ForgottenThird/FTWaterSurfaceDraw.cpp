@@ -42,6 +42,7 @@ struct FWaterParamNames
 	FName SurfaceOn = TEXT("SurfaceOn");
 	FName WaveVerts = TEXT("WaveVerts");
 	FName TideCm = TEXT("TideCm");
+	FName ReachCm = TEXT("ReachCm");
 	FWaterParamNames()
 	{
 		for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
@@ -194,15 +195,27 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 	Bounds.max.x += kWaterTileMarginM;
 	Bounds.max.y += kWaterTileMarginM;
 
+	// Laid a whole body at a time under the cap: a body that doesn't fit (a sea stretched by a far start) keeps its flat
+	// plane and is read flat.
 	const ftcore::WaterTileSpec Spec;
-	const std::size_t Need = ftcore::waterTileLayout(Water, Waves, Spec, Bounds, nullptr, 0);
 	TArray<ftcore::WaterTile> Laid;
-	Laid.SetNumUninitialized(static_cast<int32>(Need));
-	ftcore::waterTileLayout(Water, Waves, Spec, Bounds, Laid.GetData(), Need);
+	Laid.SetNumUninitialized(static_cast<int32>(ftcore::kWaterMaxTiles));
+	uint32 Dropped = 0;
+	uint32 NeedPerBody[ftcore::kWaterMaxBodies] = {};
+	const std::size_t LaidCount = ftcore::waterTileLayoutWhole(Water, Waves, Spec, Bounds, Laid.GetData(), ftcore::kWaterMaxTiles, &Dropped, NeedPerBody);
+	Laid.SetNum(static_cast<int32>(LaidCount), EAllowShrinking::Yes);
 	uint32 Tiled = 0;
 	for (const ftcore::WaterTile& T : Laid)
 	{
 		Tiled |= 1u << T.body;
+	}
+	for (int32 I = 0; I < Count; ++I)
+	{
+		if (NeedPerBody[I] > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: body %d wants %u tiles%s."), I, NeedPerBody[I],
+				(Dropped & (1u << I)) != 0 ? TEXT(": over the cap, it keeps its flat plane") : TEXT(""));
+		}
 	}
 
 	// A body is drawn by tiles only if every plane over it can be hidden: each of those planes lies on tiled bodies only.
@@ -260,13 +273,12 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 				break;
 			}
 		}
+		// Wired, and so the part can't fail from here: a plane wearing an unwired material is bOutside, which took its
+		// bodies out of Drawn above; the far sea wears the same tile mesh, already loaded.
 		UMaterialInterface* Worn = Source->GetMaterial(0);
-		if (!WaterIsWired(Worn))
-		{
-			continue;
-		}
 		UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Worn, this);
-		SetPartParams(*Mid, Body, true);
+		const bool bSea = Body.shape == ftcore::WaterShape::HalfPlane;
+		SetPartParams(*Mid, Body, true, bSea ? Spec.seaReachM * 100.f : 0.f);
 		Mids.Add(Mid);
 		MidGroup.Add(static_cast<uint8>(ftcore::waterDrawGroup(Body, Waves)));
 
@@ -297,9 +309,9 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 		Tiles += Transforms.Num();
 		TileParts.Add(Part);
 
-		if (Body.shape == ftcore::WaterShape::HalfPlane)
+		if (bSea)
 		{
-			AddFarSea(World, Body, Source->Bounds.GetBox(), Mid, Laid, I);
+			AddFarSea(*Tile, Body, Source->Bounds.GetBox(), Mid, Laid, I);
 		}
 	}
 	for (const FFlat& F : Found)
@@ -324,14 +336,9 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 	return bBuilt;
 }
 
-void UFTWaterSurfaceDraw::AddFarSea(UWorld& World, const ftcore::WaterBody& Body, const FBox& PlaneBounds, UMaterialInstanceDynamic* TileMid,
+void UFTWaterSurfaceDraw::AddFarSea(UStaticMesh& Tile, const ftcore::WaterBody& Body, const FBox& PlaneBounds, UMaterialInstanceDynamic* TileMid,
 	const TArray<ftcore::WaterTile>& Laid, int32 BodyIndex)
 {
-	UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
-	if (!Plane || !TileMid)
-	{
-		return;
-	}
 	// The shore's frame: N out to sea, S along the shore; the tiles' span in it.
 	const FVector2D C(Body.centre.x, Body.centre.y);
 	const FVector2D N(Body.cosYaw, Body.sinYaw);
@@ -367,7 +374,7 @@ void UFTWaterSurfaceDraw::AddFarSea(UWorld& World, const ftcore::WaterBody& Body
 	const double SLo = FMath::Min(S0 - Half, SMin), SHi = FMath::Max(S0 + Half, SMax);
 	const double Far = FMath::Max(Half * 2.0, DMax + 1000.0);
 	UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(TileMid->Parent, this);
-	SetPartParams(*Mid, Body, false);
+	SetPartParams(*Mid, Body, false, 0.f);
 	Mids.Add(Mid);
 	MidGroup.Add(MidGroup.Last());
 	auto Add = [&](double S1, double S2, double D1, double D2)
@@ -378,7 +385,7 @@ void UFTWaterSurfaceDraw::AddFarSea(UWorld& World, const ftcore::WaterBody& Body
 		}
 		const FVector2D At = C + S * (0.5 * (S1 + S2)) + N * (0.5 * (D1 + D2));
 		UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(Host);
-		Part->SetStaticMesh(Plane);
+		Part->SetStaticMesh(&Tile);
 		Part->SetMaterial(0, Mid);
 		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Part->SetCastShadow(false);
@@ -387,19 +394,19 @@ void UFTWaterSurfaceDraw::AddFarSea(UWorld& World, const ftcore::WaterBody& Body
 		Part->SetMobility(EComponentMobility::Movable);
 		Part->SetupAttachment(Host->GetRootComponent());
 		Part->SetVisibility(false);
-		// The engine plane is 1 m square; its x along N, y along S.
+		// The tile mesh stretched (it is kTileCm square, centred); its x along N, y along S.
+		const double Scale = 100.0 / FTWaterSurfaceBuild::kTileCm;
 		Part->SetWorldTransform(FTransform(FRotator(0.0, FMath::RadiansToDegrees(FMath::Atan2(N.Y, N.X)), 0.0), FVector(At.X * 100.0, At.Y * 100.0, Body.level * 100.0),
-			FVector(D2 - D1, S2 - S1, 1.0)));
+			FVector((D2 - D1) * Scale, (S2 - S1) * Scale, 1.0)));
 		Part->RegisterComponent();
 		FarParts.Add(Part);
 	};
 	Add(SLo, SHi, DMax, Far);  // past the tiles' reach
 	Add(SLo, SMin, DMin, DMax); // beside them, either way along the shore
 	Add(SMax, SHi, DMin, DMax);
-	(void)World;
 }
 
-void UFTWaterSurfaceDraw::SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts)
+void UFTWaterSurfaceDraw::SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts, float ReachCm)
 {
 	const FWaterParamNames& N = WaterParamNames();
 	float Line[ftcore::kWaterEdgeFloats];
@@ -408,6 +415,7 @@ void UFTWaterSurfaceDraw::SetPartParams(UMaterialInstanceDynamic& Mid, const ftc
 	Mid.SetVectorParameterValue(N.EdgeB, FLinearColor(Line[4], Line[5], 0.f, 0.f));
 	Mid.SetScalarParameterValue(N.SurfaceOn, 1.f);
 	Mid.SetScalarParameterValue(N.WaveVerts, bWaveVerts ? 1.f : 0.f);
+	Mid.SetScalarParameterValue(N.ReachCm, ReachCm);
 }
 
 void UFTWaterSurfaceDraw::SetShown(bool bOn)

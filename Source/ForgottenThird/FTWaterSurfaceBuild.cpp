@@ -29,17 +29,31 @@ namespace
 const TCHAR* const kInclude = TEXT("/Plugin/FTLook/Private/Water/Surface.ush");
 
 // The vertex offset: the waves at the vertex's rest place (faded out far from the eye, where the grid is too coarse to
-// carry them and nobody swims), the tide everywhere. WaveVerts 0 (the far plane): the tide alone.
+// carry them and nobody swims, and over a sea's last 150 m of tiles, where the far plane takes over with no step), the
+// tide everywhere. WaveVerts 0 (the far plane): the tide alone. A skirt vertex (its drop in Grid.y) folds up to its rim
+// while the eye is under the water line, so the skirts don't hang overhead as a grid.
 const TCHAR* const kOffsetCode = TEXT(R"HLSL(if (SurfaceOn <= 0.0f)
 {
 	return float3(0.0f, 0.0f, 0.0f);
 }
-float4 W[8] = {W0, W1, W2, W3, W4, W5, W6, W7};
 const float2 R = Rest.xy;
-const float Sway = FTWaterSway(FTWaterEdgeCm(R, EdgeA, EdgeB.xy), FadeCm);
-const float Near = WaveVerts * (1.0f - smoothstep(FarStartCm, FarEndCm, length(Eye.xy - R)));
-float3 O = FTWaterOffset(R, Time, W, Q, max(Grid.x, 1.0f), Sway, LapShare) * Near;
+const float EdgeCm = FTWaterEdgeCm(R, EdgeA, EdgeB.xy);
+float Near = WaveVerts * (1.0f - smoothstep(FarStartCm, FarEndCm, length(Eye.xy - R)));
+if (ReachCm > 0.0f && EdgeB.y > 0.5f && EdgeB.y < 1.5f)
+{
+	Near *= 1.0f - smoothstep(ReachCm - 15000.0f, ReachCm, EdgeCm);
+}
+float3 O = float3(0.0f, 0.0f, 0.0f);
+if (Near > 0.0f)
+{
+	float4 W[8] = {W0, W1, W2, W3, W4, W5, W6, W7};
+	O = FTWaterOffset(R, Time, W, Q, max(Grid.x, 1.0f), FTWaterSway(EdgeCm, FadeCm), LapShare) * Near;
+}
 O.z += TideCm;
+if (Grid.y > 0.0f && Eye.z < Rest.z + Grid.y + TideCm)
+{
+	O.z += Grid.y;
+}
 return O;)HLSL");
 
 // The pixel's normal: the waves' slope added to the material's own ripples (both world space, z up).
@@ -168,7 +182,8 @@ void FillTile(FMeshDescription& Desc, int32 Cells)
 		const FVertexInstanceID Id = Desc.CreateVertexInstance(V);
 		const FVector3f P = Positions[V];
 		Uvs.Set(Id, 0, FVector2f(P.X, P.Y) / 100.f);
-		Uvs.Set(Id, 1, FVector2f(Cell, 0.f));
+		// UV1: the grid's cell (cm), and on a skirt's lower rim its drop (cm), which the material folds up under water.
+		Uvs.Set(Id, 1, FVector2f(Cell, P.Z < -1.f ? kSkirtCm : 0.f));
 		return Id;
 	};
 	// The engine draws a face up when its first cross product points down (FTBuildLawn): a, c, b and a, d, c.
@@ -186,7 +201,8 @@ void FillTile(FMeshDescription& Desc, int32 Cells)
 			Quad(Top[J * Side + I], Top[J * Side + I + 1], Top[(J + 1) * Side + I + 1], Top[(J + 1) * Side + I]);
 		}
 	}
-	// The skirt: the rim walked round, each step a wall down, both faces (it is seen from either side of a crack).
+	// The skirt: the rim walked round, each step a wall down, both faces (it is seen from either side of a crack). Under
+	// the water line the material folds it up flat (UV1.y), so a swimmer looking up sees no walls.
 	TArray<FVertexID> Rim;
 	for (int32 I = 0; I < Cells; ++I) Rim.Add(Top[I]);
 	for (int32 J = 0; J < Cells; ++J) Rim.Add(Top[J * Side + Cells]);
@@ -253,6 +269,7 @@ void WireMaterial(UMaterial* Material)
 	AddInput(Offset, TEXT("FarStartCm"), AddScalar(Material, TEXT("FarStartCm"), 30000.f, Y += 60));
 	AddInput(Offset, TEXT("FarEndCm"), AddScalar(Material, TEXT("FarEndCm"), 50000.f, Y += 60));
 	AddInput(Offset, TEXT("TideCm"), AddScalar(Material, TEXT("TideCm"), 0.f, Y += 60));
+	AddInput(Offset, TEXT("ReachCm"), AddScalar(Material, TEXT("ReachCm"), 0.f, Y += 60));
 
 	UMaterialExpressionCustom* Normal = AddCustom(Material, TEXT("FTWaterNormal"), kNormalCode, 2600);
 	AddShared(Normal, In);
@@ -291,7 +308,6 @@ UStaticMesh* BuildTileMesh()
 	Mesh->SetPositiveBoundsExtension(FVector(400.0, 400.0, 600.0));
 	Mesh->SetNegativeBoundsExtension(FVector(400.0, 400.0, 600.0));
 	Mesh->Build(true);
-	Mesh->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Mesh);
 	FSavePackageArgs Save;
 	Save.TopLevelFlags = RF_Public | RF_Standalone;
