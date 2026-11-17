@@ -71,6 +71,7 @@ void UFTCharacterFillSubsystem::FindBays(UWorld& World)
 {
 	BayFronts.Reset();
 	LocalLights.Reset();
+	FollowedLight = INDEX_NONE;
 	for (TActorIterator<AActor> It(&World); It; ++It)
 	{
 		if (It->ActorHasTag(FTNight::HeroFrontTag))
@@ -113,7 +114,7 @@ float UFTCharacterFillSubsystem::BayDistanceM(const UWorld& World) const
 	return static_cast<float>(FMath::Sqrt(Best) / 100.0);
 }
 
-FVector2D UFTCharacterFillSubsystem::ToNearestLight(const UWorld& World) const
+FVector2D UFTCharacterFillSubsystem::ToFollowedLight(const UWorld& World)
 {
 	const APlayerController* Player = World.GetFirstPlayerController();
 	const APawn* Pawn = Player ? Player->GetPawn() : nullptr;
@@ -123,17 +124,25 @@ FVector2D UFTCharacterFillSubsystem::ToNearestLight(const UWorld& World) const
 	}
 	const FVector At = Pawn->GetActorLocation();
 	double Best = TNumericLimits<double>::Max();
-	FVector2D To = FVector2D::ZeroVector;
-	for (const FVector& Local : LocalLights)
+	int32 Nearest = 0;
+	for (int32 I = 0; I < LocalLights.Num(); ++I)
 	{
-		const double D = FVector::DistSquared2D(At, Local);
+		const double D = FVector::DistSquared2D(At, LocalLights[I]);
 		if (D < Best)
 		{
 			Best = D;
-			To = FVector2D(Local.X - At.X, Local.Y - At.Y);
+			Nearest = I;
 		}
 	}
-	return To;
+	const float FollowedM = LocalLights.IsValidIndex(FollowedLight)
+		? static_cast<float>(FVector::Dist2D(At, LocalLights[FollowedLight]) / 100.0) : -1.f;
+	if (Nearest != FollowedLight
+		&& ftcore::nightCharacterFillSwitchLight(FTNight::Look(), FollowedM, static_cast<float>(FMath::Sqrt(Best) / 100.0)))
+	{
+		FollowedLight = Nearest;
+	}
+	const FVector& Local = LocalLights[FollowedLight];
+	return FVector2D(Local.X - At.X, Local.Y - At.Y);
 }
 
 void UFTCharacterFillSubsystem::Spawn(UWorld& World)
@@ -255,10 +264,14 @@ void UFTCharacterFillSubsystem::Tick(float DeltaTime)
 	const float Full = FMath::Max(ftcore::nightCharacterFillLux(Spec, 1.f), 1e-4f);
 	const float KeyShare = ftcore::nightCharacterFillKeyShare(Spec);
 	const FVector View = Rotation.Vector();
-	const FVector2D To = ToNearestLight(*World);
-	FRotator KeyRotation = Rotation;
-	KeyRotation.Yaw += ftcore::nightCharacterFillYaw(Spec, static_cast<float>(View.X), static_cast<float>(View.Y),
+	const FVector2D To = ToFollowedLight(*World);
+	const float TargetYaw = ftcore::nightCharacterFillYaw(Spec, static_cast<float>(View.X), static_cast<float>(View.Y),
 		static_cast<float>(To.X), static_cast<float>(To.Y));
+	// Eased, so the key doesn't jump sides in one frame when the followed light changes or crosses the view line.
+	KeyYawOffset = bKeyYawSet ? ftcore::nightCharacterFillEaseYaw(Spec, KeyYawOffset, TargetYaw, DeltaTime) : TargetYaw;
+	bKeyYawSet = true;
+	FRotator KeyRotation = Rotation;
+	KeyRotation.Yaw += KeyYawOffset;
 	Write(*Light.Get(), Lux * KeyShare, KeyRotation, Full);
 	Write(*Ambient.Get(), Lux * (1.f - KeyShare), Rotation, Full);
 	if (!bLogged && Marked > 0)

@@ -494,6 +494,44 @@ TEST_CASE("nightCharacterFillYaw: a soft key from the nearest light's side of th
     CHECK(nightCharacterFillYaw(odd, 1.f, 0.f, 0.f, -1.f) == 0.f);
 }
 
+TEST_CASE("nightCharacterFillSwitchLight: the key moves to a new light only when it is 20% nearer") {
+    NightLook look;
+    CHECK(look.charFillSwitchNearer == doctest::Approx(0.2f));
+    CHECK(nightCharacterFillSwitchLight(look, -1.f, 9.f));   // nothing followed yet
+    CHECK_FALSE(nightCharacterFillSwitchLight(look, 5.f, 4.5f));  // 10% nearer: keep the old one
+    CHECK_FALSE(nightCharacterFillSwitchLight(look, 5.f, 4.f));   // exactly 20%: keep
+    CHECK(nightCharacterFillSwitchLight(look, 5.f, 3.9f));
+    NightLook odd;
+    odd.charFillSwitchNearer = 3.f;  // clamped to 0.9: a light ten times nearer still wins
+    CHECK(nightCharacterFillSwitchLight(odd, 10.f, 0.5f));
+    odd.charFillSwitchNearer = -1.f;  // clamped to 0: any nearer light wins, an equal one doesn't
+    CHECK(nightCharacterFillSwitchLight(odd, 5.f, 4.99f));
+    CHECK_FALSE(nightCharacterFillSwitchLight(odd, 5.f, 5.f));
+}
+
+TEST_CASE("nightCharacterFillEaseYaw: the key turns at 90 degrees a second, the short way round") {
+    NightLook look;
+    CHECK(look.charFillYawRateDeg == doctest::Approx(90.f));
+    const float yaw = look.charFillYawDeg;
+    // A side flip (+35 to -35) takes 70/90 s: one 60 Hz frame turns 1.5 degrees, not the whole way.
+    CHECK(nightCharacterFillEaseYaw(look, yaw, -yaw, 1.f / 60.f) == doctest::Approx(yaw - 1.5f));
+    float y = yaw;
+    int frames = 0;
+    while (y > -yaw + 1e-3f && frames < 1000) {
+        y = nightCharacterFillEaseYaw(look, y, -yaw, 1.f / 60.f);
+        ++frames;
+    }
+    CHECK(frames == doctest::Approx(60.f * 2.f * yaw / 90.f).epsilon(0.03));
+    CHECK(nightCharacterFillEaseYaw(look, -yaw, -yaw, 1.f) == doctest::Approx(-yaw));  // there: stays
+    // Across +-180 it goes the short way and wraps.
+    CHECK(nightCharacterFillEaseYaw(look, 170.f, -170.f, 0.1f) == doctest::Approx(179.f));
+    CHECK(nightCharacterFillEaseYaw(look, 175.f, -170.f, 0.1f) == doctest::Approx(-176.f));
+    CHECK(nightCharacterFillEaseYaw(look, 0.f, 30.f, -1.f) == doctest::Approx(0.f));  // no time, no turn
+    NightLook snap;
+    snap.charFillYawRateDeg = 0.f;
+    CHECK(nightCharacterFillEaseYaw(snap, yaw, -yaw, 1.f / 60.f) == doctest::Approx(-yaw));
+}
+
 TEST_CASE("nightCharacterFillKeyShare: most of the fill is the key, the rest ambient") {
     NightLook look;
     CHECK(nightCharacterFillKeyShare(look) > 0.5f);

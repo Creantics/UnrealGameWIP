@@ -52,13 +52,17 @@ private:
 	void FindBays(UWorld& World);
 	// Metres in plan from the player's pawn to the nearest lit bay front; negative with none.
 	float BayDistanceM(const UWorld& World) const;
-	// The plan vector (cm) from the pawn to the nearest gathered local light; zero with none.
-	FVector2D ToNearestLight(const UWorld& World) const;
+	// The plan vector (cm) from the pawn to the local light the key follows; zero with none. It moves to a new nearest
+	// light only when that one is charFillSwitchNearer nearer (ftcore::nightCharacterFillSwitchLight).
+	FVector2D ToFollowedLight(const UWorld& World);
 
 	TWeakObjectPtr<UDirectionalLightComponent> Light;    // the soft key
 	TWeakObjectPtr<UDirectionalLightComponent> Ambient;  // the rest, along the view
 	TArray<FVector, TInlineAllocator<8>> BayFronts;
 	TArray<FVector> LocalLights;
+	int32 FollowedLight = INDEX_NONE;  // into LocalLights; reset when it is gathered again
+	float KeyYawOffset = 0.f;          // eased toward nightCharacterFillYaw's target
+	bool bKeyYawSet = false;
 	bool bBaysFound = false;
 	int32 BayLooksLeft = 20;
 	FDelegateHandle LevelAddedHandle;
