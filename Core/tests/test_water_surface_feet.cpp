@@ -1,6 +1,7 @@
 // A surface swimmer's feet height (WaterSurfaceFeet.h): the draft and bob in deep water, the bed floor in a shallow
 // column, the splash's sink. The 11-18 rejoin case: a partner placed by the one rule starts where its swim holds it
-// (the old placement at the draft alone bobbed up 19 cm over a 1.16 m column). The ease's lag on the bob.
+// (the old placement at the draft alone bobbed up 19 cm over a 1.16 m column). The ease's lag on the bob. The open
+// sea's case (11-18, 3.3 cm): the ease alone trails a wave and the bob; the carry rides them and eases only a gap.
 #include "ftcore/WaterSurfaceFeet.h"
 #include "ftcore/WaterBodies.h"
 
@@ -10,7 +11,9 @@
 #include <cmath>
 
 using ftcore::kWaterBedFloat;
+using ftcore::waterFeetCarry;
 using ftcore::waterFeetEase;
+using ftcore::waterFeetOnRide;
 using ftcore::waterSurfaceFeetZ;
 using ftcore::waterSwimFeetZ;
 
@@ -45,6 +48,56 @@ Run swimAfterPlacement(float placedZ, float surface, float bedZ, float t0)
         r.maxFromTarget = std::max(r.maxFromTarget, std::fabs(feet[i] - target[i]));
     }
     r.rise = feet[kFrames] - placedZ;
+    return r;
+}
+
+// A sea with one wave under a swimmer treading in place: its height (m) at time t.
+struct Sea {
+    float level = 2.46f;
+    float amp = 0.f;      // m
+    float period = 4.f;   // s
+    float phase = 0.f;    // rad
+};
+
+float seaAt(const Sea& sea, float t)
+{
+    return sea.level + sea.amp * std::sin(6.2831853f * t / sea.period + sea.phase);
+}
+
+struct SeaRun {
+    float maxFromTarget = 0.f; // m: after each frame's step, the feet off that frame's target
+    float maxBeforeStep = 0.f; // m: the feet before each frame's step off its target (the -SwimProof judge's reading)
+    float lastGap = 0.f;       // m: the last frame's feet off its target
+    float firstGap = 0.f;      // m: the first frame's
+    float lowest = 1e9f;       // m: the lowest feet
+};
+
+// FTPartyFollower's Surface step treading in place on the sea: placed on the target at t0 (no sink), then frames at
+// 60 fps with a sink from the first frame. carry: the host's rule (the ride's move carried while the target is on the
+// ride both frames); else the ease alone (-SwimFeetEaseAll, and the step before 11-18).
+SeaRun swimOnSea(const Sea& sea, float bedZ, float t0, float sink, bool carry, int frames)
+{
+    float rideLast = waterSwimFeetZ(seaAt(sea, t0), t0);
+    bool onLast = waterFeetOnRide(rideLast, 0.f, bedZ);
+    float z = waterSurfaceFeetZ(rideLast, 0.f, bedZ);
+    SeaRun r;
+    for (int i = 1; i <= frames; ++i) {
+        const float t = t0 + static_cast<float>(i) * kDt;
+        const float ride = waterSwimFeetZ(seaAt(sea, t), t);
+        const bool on = waterFeetOnRide(ride, sink, bedZ);
+        const float want = waterSurfaceFeetZ(ride, sink, bedZ);
+        r.maxBeforeStep = std::max(r.maxBeforeStep, std::fabs(z - want));
+        const float move = carry && on && onLast ? ride - rideLast : 0.f;
+        z = waterFeetCarry(z, move, want, kDt, kRiseEase);
+        r.maxFromTarget = std::max(r.maxFromTarget, std::fabs(z - want));
+        r.lowest = std::min(r.lowest, z);
+        if (i == 1) {
+            r.firstGap = std::fabs(z - want);
+        }
+        r.lastGap = std::fabs(z - want);
+        rideLast = ride;
+        onLast = on;
+    }
     return r;
 }
 
@@ -111,5 +164,45 @@ TEST_CASE("surface feet: in deep water the placed feet follow the bob's target w
         CHECK(r.maxFromTarget < 0.03f);
         // The bob alone moves the feet; the gap to the final frame stays within its swing (2 x kWaterBobHeight).
         CHECK(r.maxFromFinal <= 2.f * ftcore::kWaterBobHeight + 1e-3f);
+    }
+}
+
+TEST_CASE("surface feet: on the open sea the ease alone trails a wave and the bob; the carry holds the target")
+{
+    Sea sea;
+    sea.amp = 0.06f; // a 12 cm swell at 4 s
+    const float bed = -4.f;
+    float oldWorst = 0.f;
+    for (int k = 0; k < 13; ++k) {
+        const float t0 = static_cast<float>(k) * ftcore::kWaterBobPeriod / 13.f;
+        CAPTURE(t0);
+        const SeaRun old = swimOnSea(sea, bed, t0, 0.f, false, 240);
+        oldWorst = std::max(oldWorst, old.maxFromTarget);
+        const SeaRun now = swimOnSea(sea, bed, t0, 0.f, true, 240);
+        CHECK(now.maxFromTarget < 1e-3f);
+        // The judge reads the feet before the frame's step: one frame of the ride's move, well under 3 cm.
+        CHECK(now.maxBeforeStep < 0.01f);
+    }
+    // The 11-18 open-sea reading (3.3 cm off): the ease alone lags the moving target past the 3 cm line.
+    CHECK(oldWorst > 0.03f);
+}
+
+TEST_CASE("surface feet: the carry still eases a splash's sink, and the bed floor holds over a shallow swell")
+{
+    Sea sea;
+    sea.amp = 0.06f;
+    // A splash's 30 cm sink from the first frame: eased, not jumped, and closed within 1.5 s.
+    const SeaRun sunk = swimOnSea(sea, -4.f, 0.7f, -0.3f, true, 90);
+    CHECK(sunk.firstGap > 0.25f);
+    CHECK(sunk.lastGap < 0.02f);
+    // A column just under the draft: the swell's troughs reach the floor. The feet never go under it, and stay within
+    // 3 cm of the target as it moves on and off the floor.
+    const float bed = sea.level - ftcore::kWaterSwimDraft - kWaterBedFloat + 0.03f;
+    for (int k = 0; k < 13; ++k) {
+        const float t0 = static_cast<float>(k) * sea.period / 13.f;
+        CAPTURE(t0);
+        const SeaRun r = swimOnSea(sea, bed, t0, 0.f, true, 240);
+        CHECK(r.lowest >= bed + kWaterBedFloat - 1e-4f);
+        CHECK(r.maxFromTarget < 0.03f);
     }
 }

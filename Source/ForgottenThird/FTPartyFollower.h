@@ -231,6 +231,15 @@ private:
 	// Placed in the water (the rejoin at its surface slot, or treading while the lead swims): a held scene leaves it there.
 	bool bPlacedInWater = false;
 	FVector WaterVelocity = FVector::ZeroVector; // cm/s
+	// The surface swim's ride under the feet when last placed or stepped (cm: waterSwimFeetZ there, the waves and the
+	// bob), the frame it was taken, and whether the feet's target was on it (not held up by the bed): the next frame's
+	// step carries the feet by the ride's move (ftcore::waterFeetCarry) only from the frame before, and only on the ride.
+	double WaterRideZ = 0.0;
+	uint64 WaterRideFrame = 0;
+	bool bWaterOnRide = false;
+	// -SwimFeetEaseAll: the surface step eases the whole way to its target, the ride not carried (the fallback; the step
+	// before 11-18, which trailed the waves and the bob by 3.3 cm on the open sea).
+	bool bSwimFeetEaseAll = false;
 	// A placed move (the entry's walk or jump, the climb out): from, to, its time and length, and whether it is over.
 	bool bWaterMove = false;
 	bool bWaterMoveDone = false;

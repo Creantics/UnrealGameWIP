@@ -90,6 +90,7 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	// The lead's vaults, climbs and catches from here on.
 	bNoTraversal = FParse::Param(FCommandLine::Get(), TEXT("LocoNoFollowerTraversal"));
 	bNoCatchUpRamp = FParse::Param(FCommandLine::Get(), TEXT("LocoNoCatchUpRamp"));
+	bSwimFeetEaseAll = FParse::Param(FCommandLine::Get(), TEXT("SwimFeetEaseAll"));
 	LeadExplorer = Cast<AFTExploreCharacter>(Lead);
 	MarksSeen = LeadExplorer.IsValid() ? LeadExplorer->GetTraversalsBegun() : 0;
 	LogName = FString::Printf(TEXT("FTPartyFollower %s"), *Look.Name);
@@ -891,6 +892,9 @@ bool AFTPartyFollower::HoldForProof(const FVector2D& At)
 	const FVector P(At.X, At.Y, ToCm(ftcore::waterSurfaceFeetZ(Draft, 0.f, WaterBedZ)));
 	SetActorLocation(P, false, nullptr, ETeleportType::TeleportPhysics);
 	WaterVelocity = FVector::ZeroVector;
+	WaterRideZ = ToCm(Draft);
+	WaterRideFrame = GFrameCounter;
+	bWaterOnRide = ftcore::waterFeetOnRide(Draft, 0.f, WaterBedZ);
 	bProofHeld = true;
 	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof: %s held for the sweep at (%.0f, %.0f, %.0f) cm."), *LogName, P.X, P.Y, P.Z);
 	return true;
@@ -1091,10 +1095,15 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 	In.surfaced = !bUnder && bWasUnder;
 	WaterSwimWas = Order->swim;
 	// The feet's height swimming at a place: the swim's draft and bob, over the bed.
-	auto SwimFeetZ = [&Bodies, Time](const FVector2D& P, double Fallback)
+	auto SwimFeetZ = [&Bodies, Time](const FVector2D& P, double Fallback, bool* bFound = nullptr)
 	{
 		float Surface = 0.f;
-		return Bodies.surfaceHeight(ftcore::Vec2{ToMetres(P.X), ToMetres(P.Y)}, Time, Surface) ? ToCm(ftcore::waterSwimFeetZ(Surface, Time)) : Fallback;
+		const bool bHas = Bodies.surfaceHeight(ftcore::Vec2{ToMetres(P.X), ToMetres(P.Y)}, Time, Surface);
+		if (bFound)
+		{
+			*bFound = bHas;
+		}
+		return bHas ? ToCm(ftcore::waterSwimFeetZ(Surface, Time)) : Fallback;
 	};
 
 	switch (Phase)
@@ -1200,9 +1209,18 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		StepFollowerWaterLoco(In, DeltaSeconds, Anim);
 		const FVector2D Step(ToCm(WaterPose.velocity.x) * DeltaSeconds, ToCm(WaterPose.velocity.y) * DeltaSeconds);
 		// The one surface rule (ftcore/WaterSurfaceFeet.h): the draft and bob plus the splash's sink, never nearer the
-		// bed than kWaterBedFloat. The rejoin's placement uses the same rule, so it starts where this holds it.
-		const double Want = ToCm(ftcore::waterSurfaceFeetZ(ToMetres(SwimFeetZ(FVector2D(At.X, At.Y) + Step, At.Z)), WaterPose.sink, WaterBedZ));
-		const double Z = ToCm(ftcore::waterFeetEase(ToMetres(At.Z), ToMetres(Want), DeltaSeconds, kWaterRiseEase));
+		// bed than kWaterBedFloat. The rejoin's placement uses the same rule, so it starts where this holds it. The feet
+		// ride with the surface's own move since the last frame (the waves and the bob) and ease only the gap off it
+		// (ftcore::waterFeetCarry); -SwimFeetEaseAll eases the whole way.
+		bool bRideFound = false;
+		const double Ride = SwimFeetZ(FVector2D(At.X, At.Y) + Step, At.Z, &bRideFound);
+		const bool bOnRide = bRideFound && ftcore::waterFeetOnRide(ToMetres(Ride), WaterPose.sink, WaterBedZ);
+		const double Want = ToCm(ftcore::waterSurfaceFeetZ(ToMetres(Ride), WaterPose.sink, WaterBedZ));
+		const double RideMove = !bSwimFeetEaseAll && bOnRide && bWaterOnRide && WaterRideFrame + 1 == GFrameCounter ? Ride - WaterRideZ : 0.0;
+		const double Z = ToCm(ftcore::waterFeetCarry(ToMetres(At.Z), ToMetres(RideMove), ToMetres(Want), DeltaSeconds, kWaterRiseEase));
+		WaterRideZ = Ride;
+		WaterRideFrame = GFrameCounter;
+		bWaterOnRide = bOnRide;
 		const FVector P(At.X + Step.X, At.Y + Step.Y, Z);
 #if !UE_BUILD_SHIPPING
 		if (ProofLogLeft > 0.f)
@@ -1376,12 +1394,16 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			// height), and over a column shallower than the draft the feet start just over the bed, not at the draft
 			// (placed at the draft alone, they rose 19 cm over 1.1 s, 11-18).
 			const FVector2D To(ToCm(Order->target.x), ToCm(Order->target.y));
-			const double Draft = SwimFeetZ(To, Lead->GetActorLocation().Z - Lead->GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+			bool bDraftFound = false;
+			const double Draft = SwimFeetZ(To, Lead->GetActorLocation().Z - Lead->GetCapsuleComponent()->GetScaledCapsuleHalfHeight(), &bDraftFound);
 			SenseWater(*System, FVector(To.X, To.Y, Draft), true);
 			const float BedAt = WaterBedZ;
 			const FVector P(To.X, To.Y, ToCm(ftcore::waterSurfaceFeetZ(ToMetres(Draft), 0.f, BedAt)));
 			SetActorLocationAndRotation(P, FRotator(0.0, Lead->GetActorRotation().Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 			WaterVelocity = FVector::ZeroVector;
+			WaterRideZ = Draft;
+			WaterRideFrame = GFrameCounter;
+			bWaterOnRide = bDraftFound && ftcore::waterFeetOnRide(ToMetres(Draft), 0.f, BedAt);
 			bPlacedInWater = true;
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: rejoined the lead in the water at (%.0f, %.0f, %.0f) cm (the draft's feet %.1f, bed %.1f, surface %.1f cm: %s)."),
 				*LogName, P.X, P.Y, P.Z, Draft, ToCm(BedAt), Draft + ToCm(ftcore::kWaterSwimDraft),
