@@ -8,24 +8,38 @@
 // at view.end at the cut back; this host draws it there with no step that tick. While frozen the fight keeps stepping
 // (only the special's clock moves); the world but the performer is held here, the camera plays the shots, and a tail
 // of shots past Core's cut back holds the fight until the last shot has blended into the play camera.
+//
+// The lead plays the move's clip (the shot file's "clip", found under the worn body's folders) in its special action
+// slot on the shots' clock; a lead with no clip for its move has the press dropped (8.5 s of a frozen fight with no
+// performance), unless -ArenaSpecialNoClip. A press of Special or Interact while it plays is a skip: Core cuts to its
+// end when the move is skippable (seen to its end once), else it is refused (logged once); in the shots' tail past
+// Core's cut back it ends the shots. Every way out (played out, skipped, the fight ended or begun again, the
+// component torn down) gives back the freeze, the rain and the camera.
 
 #include "FTArenaRunner.h"
 
 #include "Algo/Sort.h"
+#include "Animation/AnimSequence.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "CollisionShape.h"
+#include "Containers/Ticker.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "FTArenaFighter.h"
+#include "FTInputBindings.h"
+#include "FTLocomotionAnimInstance.h"
 #include "FTLook.h"
+#include "FTPauseSubsystem.h"
 #include "FTRainSubsystem.h"
 #include "FTSpecialCine.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
+#include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "RHI.h"
@@ -56,6 +70,26 @@ bool ReadData(const FString& Rel, std::string& Out)
 	return true;
 }
 
+// The fix search's world test (ftcore::SpecialCineWorldTest): the eye's sphere swept through the static world.
+constexpr float kSpecialEyeRadius = 10.f; // cm
+struct FSpecialWorld
+{
+	UWorld* World = nullptr;
+	const FCollisionQueryParams* Params = nullptr;
+};
+bool SpecialWorldBlocked(const ftcore::CutsceneVec3& From, const ftcore::CutsceneVec3& To, void* User)
+{
+	const FSpecialWorld* W = static_cast<const FSpecialWorld*>(User);
+	if (!W || !W->World || !W->Params)
+	{
+		return false;
+	}
+	const FVector A = Cm(From), B = Cm(To);
+	FHitResult Hit;
+	return W->World->SweepSingleByObjectType(Hit, A, B.Equals(A) ? A + FVector(0.0, 0.0, 0.1) : B, FQuat::Identity,
+		FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeSphere(kSpecialEyeRadius), *W->Params);
+}
+
 void LogWarnings(const std::vector<std::string>& Warnings)
 {
 	for (const std::string& W : Warnings)
@@ -73,6 +107,9 @@ void UFTArenaRunner::ReadSpecialTable()
 	SpecialTestUntil = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialTest="), SpecialTestAt);
 	bSpecialShots = FParse::Param(Cmd, TEXT("ArenaSpecialShots"));
+	bSpecialClipStandIn = FParse::Param(Cmd, TEXT("ArenaSpecialNoClip"));
+	SpecialPauseAt = -1.f;
+	FParse::Value(Cmd, TEXT("ArenaSpecialPause="), SpecialPauseAt);
 #endif
 	if (bSpecialTableRead)
 	{
@@ -95,6 +132,20 @@ void UFTArenaRunner::ReadSpecialTable()
 	for (uint32 I = 0; I < SpecialTable.size(); ++I)
 	{
 		ftcore::SpecialCineMove& Move = SpecialTable.edit(I);
+		// The near set (its own shot file), played under the move's near_within (SpecialCineTable::find).
+		if (const std::string Near(Move.nearFile()); !Near.empty())
+		{
+			const FString NearFile = FString(TEXT("Cutscene/")) + UTF8_TO_TCHAR(Near.c_str()) + TEXT(".json");
+			Error.clear();
+			if (!ReadData(NearFile, Text))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s not found; that move plays its far set at every range."), *NearFile);
+			}
+			else if (!ftcore::importSpecialCineShots(Text, SpecialTable.editNear(I), &Error, &Warnings))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s"), UTF8_TO_TCHAR(Error.c_str()));
+			}
+		}
 		const FString File = FString(TEXT("Cutscene/")) + UTF8_TO_TCHAR(std::string(Move.shotFile()).c_str()) + TEXT(".json");
 		Error.clear();
 		if (!ReadData(File, Text))
@@ -174,6 +225,84 @@ void UFTArenaRunner::GiveSpecials()
 	const ftcore::ArenaSpecialRules* Mine = ArenaSpecials.forLead(Fighter);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: specials: %s (move %s), partner %s."), UTF8_TO_TCHAR(Fighter.c_str()),
 		Mine ? UTF8_TO_TCHAR(std::string(Mine->idView()).c_str()) : TEXT("none"), Partner.empty() ? TEXT("none") : UTF8_TO_TCHAR(Partner.c_str()));
+	LoadSpecialClip(Mine ? std::string(Mine->idView()) : std::string());
+}
+
+bool UFTArenaRunner::LoadSpecialClip(const std::string& MoveId)
+{
+	PlaySpecialClip(false);
+	SpecialClip = nullptr;
+	bSpecialNoClipLogged = false;
+	SpecialClipFor = PlayerLook ? PlayerLook->Name : FString();
+	const ftcore::SpecialCineMove* Move = MoveId.empty() ? nullptr : SpecialTable.find(MoveId);
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	const USkeletalMeshComponent* Skin = Lead ? Lead->GetLeadSkin() : nullptr;
+	const USkeletalMesh* Body = Skin ? Skin->GetSkeletalMeshAsset() : nullptr;
+	if (!Move || Move->empty() || Move->clip().empty() || !Body || SpecialClipFor.IsEmpty())
+	{
+		return false;
+	}
+	// From the worn body's folder up to the lead's own (/Game/Characters/<Name>): <folder>/Anims/Special/<clip>, then
+	// <folder>/Anims/<clip>. Loaded here, at the fight's begin or a lead switch, never at the press.
+	const FString Name = UTF8_TO_TCHAR(std::string(Move->clip()).c_str());
+	const FString Root = FString::Printf(TEXT("/Game/Characters/%s"), *SpecialClipFor);
+	FString Folder = FPackageName::GetLongPackagePath(Body->GetPackage()->GetName());
+	FString Found;
+	for (int32 Depth = 0; Depth < 8 && !SpecialClip && Folder.StartsWith(Root, ESearchCase::IgnoreCase); ++Depth)
+	{
+		for (const TCHAR* Sub : {TEXT("/Anims/Special/"), TEXT("/Anims/")})
+		{
+			const FString Package = Folder + Sub + Name;
+			if (!FPackageName::DoesPackageExist(Package))
+			{
+				continue;
+			}
+			UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *(Package + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			if (Clip && Clip->GetPlayLength() > 0.f && UFTLocomotionAnimInstance::FitsBody(*Clip, *Body, TEXT("Arena: special")))
+			{
+				SpecialClip = Clip;
+				Found = Package;
+				break;
+			}
+		}
+		if (Folder.Equals(Root, ESearchCase::IgnoreCase))
+		{
+			break;
+		}
+		Folder = FPaths::GetPath(Folder);
+	}
+	if (!SpecialClip)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special: %s: no clip %s under %s for the worn body: the press is dropped%s."),
+			*SpecialClipFor, *Name, *Root, bSpecialClipStandIn ? TEXT(" (but -ArenaSpecialNoClip: it plays with the lead's own pose)") : TEXT(""));
+		return false;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special: %s plays %s (%.2f s; the shots run %.2f s)."), *SpecialClipFor, *Found,
+		SpecialClip->GetPlayLength(), Move->length());
+	return true;
+}
+
+void UFTArenaRunner::PlaySpecialClip(bool bOn)
+{
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	USkeletalMeshComponent* Skin = Lead ? Lead->GetLeadSkin() : nullptr;
+	UFTLocomotionAnimInstance* Anim = Skin ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	if (!Anim)
+	{
+		bSpecialClipPlaying = false;
+		return;
+	}
+	if (bOn && SpecialClip)
+	{
+		bSpecialClipPlaying = Anim->SetActionClip(UFTLocomotionAnimInstance::SpecialActionSlot, SpecialClip);
+		return;
+	}
+	if (bSpecialClipPlaying || Anim->GetActionClip(UFTLocomotionAnimInstance::SpecialActionSlot))
+	{
+		Anim->SetActionClip(UFTLocomotionAnimInstance::SpecialActionSlot, nullptr);
+		Anim->ClearActions(); // the lead's weapons paint this frame's own next frame
+	}
+	bSpecialClipPlaying = false;
 }
 
 ftcore::SpecialCineStage UFTArenaRunner::SpecialStage() const
@@ -300,19 +429,38 @@ void UFTArenaRunner::ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::
 
 void UFTArenaRunner::PressSpecial(ftcore::ArenaInput& In)
 {
+	// A skip read while frozen (PollSpecialSkip) on the cut back's own step: Core reads it there too.
+	In.specialSkip = bSpecialSkip;
+	bSpecialSkip = false;
 	if (!bSpecialPress)
 	{
 		return;
 	}
 	bSpecialPress = false;
-	bSpecialPressedNow = true;
-	In.special = ftcore::kArenaPlayer;
 	SpecialBack = 0.f;
 	SpecialTravel = 1.f;
 	SpecialLimit = TEXT("none");
 	SpecialTarget = -1;
 	const ftcore::ArenaSpecialRules* Rules =
 		bArenaSpecials && PlayerLook ? ArenaSpecials.forLead(std::string(TCHAR_TO_UTF8(*PlayerLook->Name.ToLower()))) : nullptr;
+	if (Rules && PlayerLook && SpecialClipFor != PlayerLook->Name)
+	{
+		LoadSpecialClip(std::string(Rules->idView())); // the lead switched since the clip was found
+	}
+	const ftcore::SpecialCineMove* Shots = Rules ? SpecialTable.find(std::string(Rules->idView())) : nullptr;
+	if (Shots && !Shots->empty() && !SpecialClip && !bSpecialClipStandIn && !Fight.frozen())
+	{
+		// A shot list over a lead that holds its pose is no special: the press is dropped, the gauge kept.
+		if (!bSpecialNoClipLogged)
+		{
+			bSpecialNoClipLogged = true;
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %.2f: special pressed, dropped: no clip %s for %s (-ArenaSpecialNoClip plays it posed)."),
+				Fight.time(), UTF8_TO_TCHAR(std::string(Shots->clip()).c_str()), *SpecialClipFor);
+		}
+		return;
+	}
+	bSpecialPressedNow = true;
+	In.special = ftcore::kArenaPlayer;
 	if (!Rules)
 	{
 		return; // Core refuses it (NoMove), logged after the tick
@@ -408,6 +556,7 @@ bool UFTArenaRunner::AfterSpecialTick(const ftcore::ArenaOutput& Out)
 			SpecialRefusalLogged = -1;
 			break;
 		case ftcore::ArenaEventType::SpecialEnded:
+			bSpecialSkipped = E.amount != 0; // TickSpecial ends the shots with it
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special cut back%s: %s at (%.2f, %.2f) m, %d result(s)."), Fight.time(),
 				E.amount ? TEXT(" (skipped)") : TEXT(""), Who, V.end.x, V.end.y, static_cast<int32>(V.resultCount));
 			break;
@@ -462,26 +611,89 @@ bool UFTArenaRunner::StepFrozen()
 	}
 	PrevBodies = Bodies;
 	PrevHeldTime = static_cast<double>(Fight.heldTime());
-	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, ftcore::ArenaInput(), Bodies);
+	ftcore::ArenaInput In; // nothing but the skip
+	In.specialSkip = bSpecialSkip;
+	bSpecialSkip = false;
+	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	if (AfterSpecialTick(Out) && V.endedThisTick)
 	{
-		// Ended on a tick it was not due (its move gone from the host's table): its events all the same.
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special ended on a frozen step it was not due (%.2f of %.2f s)."), V.time, V.duration);
+		// Skipped: Core jumped to its end on this step (its results land on it). Else it ended on a tick it was not
+		// due (its move gone from the host's table). Its events either way; TickSpecial ends a skipped move's shots.
+		if (!In.specialSkip)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special ended on a frozen step it was not due (%.2f of %.2f s)."), V.time, V.duration);
+		}
 		HandleEvents(Out.events);
 	}
 	return true;
 }
 
-// Each shot's camera tested once at the start (the world is frozen): inside a standing enemy's body or the static
-// world, or its line to what it looks at blocked by either, and it is moved: mirrored to the stage's other side, else
-// raised, else mirrored and raised, else pulled along its own axis toward its look-at. Never through a body; a shot
-// no move clears keeps the furthest pull and is logged. Each sample is the shot's start, quarters and end.
-void UFTArenaRunner::FixSpecialShots(const ftcore::SpecialCineMove& Move, int32 Target)
+void UFTArenaRunner::PollSpecialSkip()
+{
+	const APlayerController* PC = GetPC();
+	using ftcore::InputAction;
+	const bool bPressed = bSpecialPress || (PC && !bAutoPlay && !UFTPauseSubsystem::IsBlocking(this)
+		&& (FTInputBindings::WasJustPressed(*PC, InputAction::Special) || FTInputBindings::WasJustPressed(*PC, InputAction::Interact)));
+	bSpecialPress = false; // a press while one plays is a skip, never a second special
+	if (!bPressed)
+	{
+		return;
+	}
+	if (Fight.frozen())
+	{
+		if (Fight.special().skippable)
+		{
+			bSpecialSkip = true; // sent on the next step
+			return;
+		}
+		if (!bSpecialSkipRefusedLogged)
+		{
+			bSpecialSkipRefusedLogged = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: special skip refused: the move has not been seen to its end yet."), Fight.time());
+		}
+		return;
+	}
+	if (bSpecialOn)
+	{
+		EndSpecial(TEXT("skipped in the tail")); // Core has cut back: only the shots' blend out is left
+	}
+}
+
+// Each shot tested once at the start (the world is frozen) by Core's framing check (ftcore::specialCineFixShot): its
+// camera inside a body or the static world, a body or the world in its line to the subject, or the subject out of the
+// safe frame or too small. A failing shot gets the first fix that passes (mirrored, raised, aimed, pulled; Core's
+// order); none passes: it plays as written and is logged. The bodies are Core's upright cylinders: the living enemies
+// (the target marked) and the partner; the lead is the subject, not a body.
+void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target)
 {
 	SpecialShotsMoved = SpecialShotsBlocked = 0;
-	UWorld* World = GetWorld();
 	ftcore::SpecialCineStage Stage = SpecialStageAt;
 	Stage.bone = {Stage.origin.x, Stage.origin.y, Stage.origin.z + 1.2f}; // the hand's not known ahead: the chest
+	ftcore::SpecialCineBody List[MaxEnemies + 1];
+	uint32 Count = 0;
+	const int32 Enemies = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
+	for (int32 I = 0; I < Enemies; ++I)
+	{
+		const AFTArenaFighter* Figure = GetEnemyFigure(I);
+		if (!Figure || Fight.enemyHp(static_cast<size_t>(I)) <= 0)
+		{
+			continue;
+		}
+		const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(I)];
+		ftcore::SpecialCineBody& B = List[Count++];
+		B.feet = {E.x, E.y, static_cast<float>(Figure->GetActorLocation().Z / 100.0)};
+		B.radius = Fight.def().enemies[static_cast<size_t>(I)].bodyRadius;
+		B.height = FMath::Max(0.5f, Figure->GetHeight() / 100.f);
+		B.target = I == Target;
+	}
+	if (const AFTArenaFighter* Ally = AllyFigure.Get(); Ally && bPartner && Fight.allyHp() > 0)
+	{
+		ftcore::SpecialCineBody& B = List[Count++];
+		B.feet = {Bodies.ally.x, Bodies.ally.y, static_cast<float>(Ally->GetActorLocation().Z / 100.0)};
+		B.radius = Fight.def().fighter.bodyRadius;
+		B.height = FMath::Max(0.5f, Ally->GetHeight() / 100.f);
+	}
+	// The static world only: the figures are tested as the cylinders above.
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FTSpecialShots), false);
 	for (const AActor* Figure : {static_cast<const AActor*>(PlayerFigure.Get()), static_cast<const AActor*>(AllyFigure.Get())})
 	{
@@ -494,119 +706,34 @@ void UFTArenaRunner::FixSpecialShots(const ftcore::SpecialCineMove& Move, int32 
 	{
 		if (const AActor* Figure = GetEnemyFigure(I))
 		{
-			Params.AddIgnoredActor(Figure); // the bodies are tested as Core's cylinders
+			Params.AddIgnoredActor(Figure);
 		}
 	}
-	const int32 Count = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
-	constexpr float Margin = 0.2f;       // m kept between the eye and a body
-	constexpr float NearLook = 0.3f;     // m of the line next to the look-at left untested (the subject itself)
-	constexpr float EyeRadius = 10.f;    // cm, the eye's sphere against the world
-	// Why a camera at Eye looking at Look is blocked, else null. bTargetLook: the target is the subject, not in the way.
-	auto Blocked = [&](const ftcore::CutsceneVec3& Eye, const ftcore::CutsceneVec3& Look, bool bTargetLook) -> const TCHAR* {
-		const FVector A(Eye.x, Eye.y, Eye.z), B(Look.x, Look.y, Look.z);
-		const float Len = static_cast<float>(FVector::Dist(A, B));
-		const float Reach = FMath::Max(0.f, Len - NearLook);
-		const FVector Dir = Len > 1e-3f ? (B - A) / Len : FVector::ZeroVector;
-		for (int32 I = 0; I < Count; ++I)
-		{
-			const AFTArenaFighter* Figure = GetEnemyFigure(I);
-			if (!Figure || Fight.enemyHp(static_cast<size_t>(I)) <= 0)
-			{
-				continue;
-			}
-			const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(I)];
-			const float R = Fight.def().enemies[static_cast<size_t>(I)].bodyRadius + Margin;
-			const float Feet = static_cast<float>(Figure->GetActorLocation().Z / 100.0);
-			const float Top = Feet + FMath::Max(0.5f, Figure->GetHeight() / 100.f) + Margin;
-			auto Inside = [&](const FVector& P) {
-				return (P.X - E.x) * (P.X - E.x) + (P.Y - E.y) * (P.Y - E.y) < R * R && P.Z > Feet - Margin && P.Z < Top;
-			};
-			if (Inside(A))
-			{
-				return TEXT("inside an enemy");
-			}
-			if (bTargetLook && I == Target)
-			{
-				continue;
-			}
-			const int32 Steps = FMath::Max(1, FMath::CeilToInt32(Reach / 0.05f));
-			for (int32 K = 1; K <= Steps; ++K)
-			{
-				if (Inside(A + Dir * (Reach * static_cast<float>(K) / static_cast<float>(Steps))))
-				{
-					return TEXT("an enemy in the line");
-				}
-			}
-		}
-		if (World)
-		{
-			FHitResult Hit;
-			const FVector From = A * 100.0, To = (A + Dir * Reach) * 100.0;
-			if (World->SweepSingleByObjectType(Hit, From, To.Equals(From) ? From + FVector(0.0, 0.0, 0.1) : To, FQuat::Identity,
-					FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionShape::MakeSphere(EyeRadius), Params))
-			{
-				return Hit.bStartPenetrating ? TEXT("inside the world") : TEXT("the world in the line");
-			}
-		}
-		return nullptr;
-	};
-	ftcore::SpecialCineShotFix Fixes[ftcore::SpecialCineMove::kMaxShots]{};
-	auto ShotBlocked = [&](uint32 Shot, const ftcore::SpecialCineShotFix& Fix) -> const TCHAR* {
-		Fixes[Shot] = Fix;
-		const ftcore::SpecialCineShot& S = Move.shot(Shot);
-		const bool bTargetLook = S.lookAnchor == ftcore::SpecialCineAnchor::Target;
-		for (int32 K = 0; K <= 4; ++K)
-		{
-			const float T = FMath::Lerp(S.in + 0.01f, S.out - 0.01f, static_cast<float>(K) / 4.f);
-			const ftcore::SpecialCineFrame F = ftcore::specialCineFrameAt(Move, T, Stage, Fixes);
-			if (const TCHAR* Why = Blocked(F.pose.position, F.pose.lookAt, bTargetLook))
-			{
-				return Why;
-			}
-		}
-		return nullptr;
-	};
+	FSpecialWorld World{GetWorld(), &Params};
 	for (uint32 Shot = 0; Shot < Move.size(); ++Shot)
 	{
-		const TCHAR* Why = ShotBlocked(Shot, {});
-		if (!Why)
+		const ftcore::SpecialCineShotCheck Check =
+			ftcore::specialCineFixShot(Move, Shot, Stage, List, Count, World.World ? &SpecialWorldBlocked : nullptr, &World);
+		if (Check.first == ftcore::SpecialCineProblem::None)
 		{
 			continue;
 		}
-		ftcore::SpecialCineShotFix Tries[24];
-		int32 TryCount = 0;
-		Tries[TryCount++].mirror = true;
-		for (const float Up : {0.4f, 0.8f, 1.2f})
+		const ftcore::SpecialCineShot& S = Move.shot(Shot);
+		const FString First = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.first)).c_str());
+		if (!Check.ok)
 		{
-			Tries[TryCount++].raise = Up;
+			++SpecialShotsBlocked;
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s): played as written."),
+				Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries,
+				UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.last)).c_str()));
+			continue;
 		}
-		for (const float Up : {0.4f, 0.8f, 1.2f})
-		{
-			Tries[TryCount].mirror = true;
-			Tries[TryCount++].raise = Up;
-		}
-		for (int32 K = 1; K <= 12 && TryCount < static_cast<int32>(UE_ARRAY_COUNT(Tries)); ++K)
-		{
-			Tries[TryCount++].pull = 0.5f * static_cast<float>(K);
-		}
-		const TCHAR* Left = Why;
-		int32 Took = TryCount - 1; // nothing clears: the furthest pull
-		for (int32 K = 0; K < TryCount; ++K)
-		{
-			if (!(Left = ShotBlocked(Shot, Tries[K])))
-			{
-				Took = K;
-				break;
-			}
-		}
-		const ftcore::SpecialCineShotFix& Fix = Tries[Took];
-		Fixes[Shot] = Fix;
+		const ftcore::SpecialCineShotFix& Fix = Check.fix;
 		SpecialPlayer.setFix(Shot, Fix);
 		++SpecialShotsMoved;
-		SpecialShotsBlocked += Left ? 1 : 0;
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s: moved: %sraised %.1f m, pulled %.1f m%s."), Shot + 1,
-			Move.shot(Shot).in, Move.shot(Shot).out, Why, Fix.mirror ? TEXT("mirrored, ") : TEXT(""), Fix.raise, Fix.pull,
-			Left ? TEXT(" (STILL BLOCKED: the furthest pull kept)") : TEXT(""));
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s: moved (try %u): %s%sraised %.1f m, pulled %.1f m."),
+			Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, Fix.mirror ? TEXT("mirrored, ") : TEXT(""),
+			Fix.aim ? TEXT("aimed, ") : TEXT(""), Fix.raise > 0.f ? Fix.raise : 0.f, Fix.pull > 0.f ? Fix.pull : 0.f);
 	}
 }
 
@@ -616,7 +743,7 @@ bool UFTArenaRunner::BeginSpecial()
 	const ftcore::ArenaSpecialRules* Rules = Fight.specialMove();
 	const std::string MoveId = Rules ? std::string(Rules->idView()) : std::string();
 	const FString Id = UTF8_TO_TCHAR(MoveId.c_str());
-	const ftcore::SpecialCineMove* Move = SpecialTable.find(MoveId);
+	const ftcore::SpecialCineMove* Move = SpecialTable.find(MoveId); // the far set; the near one is picked below
 	const int32 Target = static_cast<int32>(V.target);
 	const bool bSameTarget = SpecialTarget == Target; // the press's clamp was for Core's target
 	const AFTArenaFighter* Enemy = Target < MaxEnemies ? GetEnemyFigure(Target) : nullptr;
@@ -630,8 +757,15 @@ bool UFTArenaRunner::BeginSpecial()
 		return false;
 	}
 	const double Began = FPlatformTime::Seconds();
+	if (!bSameTarget && Rules)
+	{
+		// Core took another target than the press's guess: the clear room measured again along Core's way, from
+		// Core's start (Core's end stands; the log below says how far it is from the clear one).
+		ClampSpecialTravel(V.origin, V.dir, ftcore::CutsceneVec3{Rules->endTravel, Rules->endSide, 0.f});
+	}
 	SpecialTarget = Target;
 	SpecialForward = V.dir;
+	bSpecialSkip = bSpecialSkipped = bSpecialSkipRefusedLogged = false;
 	const ftcore::Vec2 To = Bodies.enemies[static_cast<size_t>(Target)];
 	const float Dist = FMath::Sqrt((To.x - V.origin.x) * (To.x - V.origin.x) + (To.y - V.origin.y) * (To.y - V.origin.y));
 	const float FeetZ = static_cast<float>(Performer->GetActorLocation().Z / 100.0);
@@ -641,12 +775,24 @@ bool UFTArenaRunner::BeginSpecial()
 	SpecialStageAt.target = {To.x, To.y, static_cast<float>(Enemy->GetActorLocation().Z / 100.0)};
 	SpecialStageAt.targetHeight = FMath::Max(0.5f, Enemy->GetHeight() / 100.f);
 	SpecialStageAt.targetRadius = Fight.def().enemies[static_cast<size_t>(Target)].bodyRadius;
+	SpecialStageAt.leadHeight = FMath::Max(0.5f, Performer->GetHeight() / 100.f);
+	SpecialStageAt.travel = Rules && Rules->endTravel > 0.f ? FMath::Clamp(V.travel / Rules->endTravel, 0.f, 1.f) : 1.f;
+	// The near set inside its range, else the far (SpecialCineTable::find).
+	const float Range = ftcore::specialCineDistance(SpecialStageAt);
+	const ftcore::SpecialCineMove* Far = Move;
+	Move = SpecialTable.find(MoveId, Range);
+	if (!Move || Move->empty())
+	{
+		Move = Far;
+	}
+	const TCHAR* Set = Move == Far ? TEXT("far") : TEXT("near");
 	// Nothing paused on the performer, nothing shaking the camera.
 	LeadWeapons.HitPause(false);
 	Jolt = ftcore::ArenaJolt();
 	SpecialFreeze.Begin(GetWorld(), PlayerFigure, kSpecialFreeze);
 	if (UWorld* World = GetWorld())
 	{
+		// The rain is no actor the freeze holds: slowed here, given back at the end.
 		if (UFTRainSubsystem* Rain = World->GetSubsystem<UFTRainSubsystem>())
 		{
 			Rain->SetTimeScale(kSpecialRain);
@@ -658,7 +804,10 @@ bool UFTArenaRunner::BeginSpecial()
 		SpecialCamera = Cast<UFTSpecialCineModifier>(Camera->AddNewCameraModifier(UFTSpecialCineModifier::StaticClass()));
 	}
 	SpecialPlayer.begin(Move);
-	FixSpecialShots(*Move, Target); // after the begin (it clears the fixes)
+	const double FixFrom = FPlatformTime::Seconds();
+	SpecialCineFixShots(*Move, Target); // after the begin (it clears the fixes)
+	const double FixMs = (FPlatformTime::Seconds() - FixFrom) * 1000.0;
+	PlaySpecialClip(true);
 	bSpecialOn = true;
 	bSpecialPlaced = false;
 	// The play camera under the blend out, moved to the end while the lead still stands at the start (Core's cut back
@@ -687,15 +836,25 @@ bool UFTArenaRunner::BeginSpecial()
 		Algo::Sort(MakeArrayView(SpecialStillAt, SpecialStillCount));
 	}
 #endif
-	const float Off = bSameTarget ? FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y)) : -1.f;
+	const float Off = FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y));
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): %u shots (%d moved off a body, %d still blocked), %.2f s (Core %.2f s); froze %d actors and %d effects in %.2f ms. ")
-		TEXT("Clamp: travel %.2f m (%.0f%%), back %.2f m (limited by %s); Core: from (%.2f, %.2f) to (%.2f, %.2f) m, %.2f m from the clamped end (-1: Core took another target)."),
-		Fight.time(), *Id, Target, Dist, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight, Move->size(), SpecialShotsMoved, SpecialShotsBlocked, Move->length(), V.duration,
-		SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialBeginMs, V.travel, SpecialTravel * 100.f, SpecialBack, SpecialLimit,
-		V.origin.x, V.origin.y, V.end.x, V.end.y, Off);
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the clip %s is not played here yet (the lead holds its own pose): a stand-in."), *Id,
-		UTF8_TO_TCHAR(std::string(Move->clip()).c_str()));
+		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): the %s set (%.2f m, near within %.2f m), %u shots (%d moved, %d still failing; search %.2f ms), %.2f s (Core %.2f s); ")
+		TEXT("froze %d actors, %d effects, %d sounds, %d bodies, %d cloths in %.2f ms. ")
+		TEXT("Clamp%s: travel %.2f m (%.0f%%), back %.2f m (limited by %s); Core: from (%.2f, %.2f) to (%.2f, %.2f) m (travel share %.2f), %.2f m from the clamped end."),
+		Fight.time(), *Id, Target, Dist, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight, Set, Range, Far->nearWithin(), Move->size(), SpecialShotsMoved,
+		SpecialShotsBlocked, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
+		SpecialFreeze.BodyCount(), SpecialFreeze.ClothCount(), SpecialBeginMs, bSameTarget ? TEXT("") : TEXT(" (again, for Core's target)"),
+		V.travel, SpecialTravel * 100.f, SpecialBack, SpecialLimit, V.origin.x, V.origin.y, V.end.x, V.end.y, SpecialStageAt.travel, Off);
+	if (SpecialClip)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the lead plays %s (%.2f s) on the shots' clock."), *Id, *SpecialClip->GetName(),
+			SpecialClip->GetPlayLength());
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: no clip %s (-ArenaSpecialNoClip): the lead holds its own pose."), *Id,
+			UTF8_TO_TCHAR(std::string(Move->clip()).c_str()));
+	}
 	return true;
 }
 
@@ -757,10 +916,29 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 #endif
 		return;
 	}
+	if (bSpecialSkipped && !Fight.frozen())
+	{
+		EndSpecial(TEXT("skipped")); // Core cut to its end: the shots go with it
+		return;
+	}
 	const double Began = FPlatformTime::Seconds();
 	SpecialPlayer.step(DeltaSeconds);
 	const ftcore::SpecialCineFrame F = SpecialPlayer.frame(SpecialStage());
 	const ftcore::SpecialCineMove& Move = *SpecialPlayer.move();
+	// The lead's clip on the shots' clock, over what its weapons painted this frame (FFTLeadWeapons::Paint runs
+	// before this): the whole body, its only action.
+	if (bSpecialClipPlaying)
+	{
+		const AFTArenaFighter* Lead = PlayerFigure.Get();
+		USkeletalMeshComponent* Skin = Lead ? Lead->GetLeadSkin() : nullptr;
+		if (UFTLocomotionAnimInstance* Anim = Skin ? Cast<UFTLocomotionAnimInstance>(Skin->GetAnimInstance()) : nullptr)
+		{
+			Anim->ClearActions();
+			Anim->SetActionUpper(0.f);
+			Anim->SetActionLeg(-1);
+			Anim->AddAction(UFTLocomotionAnimInstance::SpecialActionSlot, FMath::Min(SpecialPlayer.time(), SpecialClip ? SpecialClip->GetPlayLength() : 0.f), 1.f);
+		}
+	}
 	if (SpecialCamera)
 	{
 		UFTSpecialCineModifier::FShot S;
@@ -807,6 +985,32 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 	const double Ms = (FPlatformTime::Seconds() - Began) * 1000.0;
 	SpecialTickMs += Ms;
 	SpecialTickMaxMs = FMath::Max(SpecialTickMaxMs, Ms);
+#if !UE_BUILD_SHIPPING
+	// -ArenaSpecialPause=<s>: the game paused at that time on the shots' clock for 1 s of real time; neither clock
+	// may move while paused (nothing in this module ticks then).
+	if (SpecialPauseAt >= 0.f && SpecialPlayer.time() >= SpecialPauseAt && !SpecialPauseTicker.IsValid())
+	{
+		SpecialPauseAt = -1.f; // once
+		SpecialPauseCoreWas = Fight.special().time;
+		SpecialPauseShotsWas = SpecialPlayer.time();
+		if (UGameplayStatics::SetGamePaused(this, true))
+		{
+			SpecialPauseTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float) {
+				const float CoreNow = Fight.special().time, ShotsNow = SpecialPlayer.time();
+				const bool bHeld = FMath::Abs(CoreNow - SpecialPauseCoreWas) < 1.0e-4f && FMath::Abs(ShotsNow - SpecialPauseShotsWas) < 1.0e-4f;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special pause: 1 s paused at %.2f s: Core's clock %.3f -> %.3f s, the shots' %.3f -> %.3f s: %s."),
+					SpecialPauseShotsWas, SpecialPauseCoreWas, CoreNow, SpecialPauseShotsWas, ShotsNow, bHeld ? TEXT("held") : TEXT("MOVED"));
+				SpecialPauseTicker.Reset();
+				UGameplayStatics::SetGamePaused(this, false);
+				return false;
+			}), 1.0f);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena check: special pause: the world would not pause."));
+		}
+	}
+#endif
 	// Over when both are: the shots played out and Core's cut back come (the fight held for any tail of shots past it).
 	if (SpecialPlayer.finished() && !Fight.frozen())
 	{
@@ -822,7 +1026,11 @@ void UFTArenaRunner::EndSpecial(const TCHAR* Why)
 	}
 	const double Began = FPlatformTime::Seconds();
 	const int32 Changed = SpecialFreeze.CountChanged();
+	const int32 Held[5] = {SpecialFreeze.SoundCount(), SpecialFreeze.BodyCount(), SpecialFreeze.ClothCount(), SpecialFreeze.SpawnCount(), SpecialFreeze.ActorCount()};
 	SpecialFreeze.End();
+	PlaySpecialClip(false);
+	StopSpecialPauseTest();
+	bSpecialSkip = bSpecialSkipped = false;
 	if (UWorld* World = GetWorld())
 	{
 		if (UFTRainSubsystem* Rain = World->GetSubsystem<UFTRainSubsystem>())
@@ -836,6 +1044,10 @@ void UFTArenaRunner::EndSpecial(const TCHAR* Why)
 		if (APlayerController* PC = GetPC(); PC && PC->PlayerCameraManager)
 		{
 			PC->PlayerCameraManager->RemoveCameraModifier(SpecialCamera);
+			if (!SpecialPlayer.finished())
+			{
+				PC->PlayerCameraManager->SetGameCameraCutThisFrame(); // cut short: a hard cut to the play camera
+			}
 		}
 		SpecialCamera = nullptr;
 	}
@@ -848,8 +1060,10 @@ void UFTArenaRunner::EndSpecial(const TCHAR* Why)
 	// The hand-back: the lead where Core's cut back put it.
 	const float Step = FMath::Sqrt((SpecialEnd.x - Bodies.player.x) * (SpecialEnd.x - Bodies.player.x) +
 		(SpecialEnd.y - Bodies.player.y) * (SpecialEnd.y - Bodies.player.y));
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s ends (%s) at %.2f s: the lead %s at (%.2f, %.2f) m, %.2f m from the clamped end."),
-		*Id, Why, Played, bSpecialPlaced ? TEXT("put by Core's cut back") : TEXT("not put (no cut back)"), Bodies.player.x, Bodies.player.y, Step);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s ends (%s) at %.2f s: the lead %s at (%.2f, %.2f) m, %.2f m from the clamped end; ")
+		TEXT("gave back %d actors, %d sounds, %d bodies, %d cloths (%d spawned while frozen)."),
+		*Id, Why, Played, bSpecialPlaced ? TEXT("put by Core's cut back") : TEXT("not put (no cut back)"), Bodies.player.x, Bodies.player.y, Step,
+		Held[4], Held[0], Held[1], Held[2], Held[3]);
 	bSpecialPlaced = false;
 	if (Changed > 0)
 	{
@@ -862,6 +1076,28 @@ void UFTArenaRunner::EndSpecial(const TCHAR* Why)
 	SpecialAfterFrames = 0;
 	SpecialStepAfter = 0.f;
 #endif
+}
+
+void UFTArenaRunner::StopSpecialPauseTest()
+{
+#if !UE_BUILD_SHIPPING
+	if (SpecialPauseTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(SpecialPauseTicker);
+		SpecialPauseTicker.Reset();
+		if (UWorld* World = GetWorld(); World && !World->bIsTearingDown)
+		{
+			UGameplayStatics::SetGamePaused(this, false); // ended while the test held the game paused
+		}
+	}
+#endif
+}
+
+void UFTArenaRunner::EndPlay(const EEndPlayReason::Type Reason)
+{
+	EndSpecial(TEXT("torn down")); // the freeze, the rain and the camera given back before the world goes
+	StopSpecialPauseTest();
+	Super::EndPlay(Reason);
 }
 
 void UFTArenaRunner::TickSpecialCost(float DeltaSeconds, bool bHold)

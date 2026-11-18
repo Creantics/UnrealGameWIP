@@ -48,6 +48,7 @@
 #include "FTKiteVfx.h"
 #include "FTLeadWeapons.h"
 #include "FTSpecialCine.h"
+#include "Containers/Ticker.h"
 #include "FTStoneBearerHost.h"
 
 #include <array>
@@ -193,6 +194,9 @@ public:
 	void Restart();
 	// Destroys the figures (the owner gives the controller its pawn back first).
 	void End();
+	// A special playing when the component goes (a level change, a quit, the owner destroyed) gives back the freeze,
+	// the rain and the camera first.
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	// Puts the player's body at P (metres), for -ArenaShot's edge view.
 	void PutPlayerAt(const ftcore::Vec2& P);
 
@@ -690,7 +694,18 @@ private:
 	bool StepFrozen();
 	void PlaceSpecialPerformer(const ftcore::Vec2& At);
 	bool BeginSpecial();
-	void FixSpecialShots(const ftcore::SpecialCineMove& Move, int32 Target);
+	// Each shot tested once at the begin by Core (specialCineFixShot) and moved by the fix it finds.
+	void SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target);
+	// The skip press while the move plays (the special's own press again, or Interact): Core cuts to its end when it is
+	// skippable (seen once), else logged once.
+	void PollSpecialSkip();
+	// The lead's move clip loaded at the fight's begin (GiveSpecials) and after a lead switch (at the next press); false
+	// when its move has no clip asset for the worn body.
+	bool LoadSpecialClip(const std::string& MoveId);
+	// Puts the clip in (or takes it out of) the lead's special action slot; TickSpecial plays it each frame.
+	void PlaySpecialClip(bool bOn);
+	// -ArenaSpecialPause's ticker removed and the game resumed, when it is still waiting (an end or a teardown).
+	void StopSpecialPauseTest();
 	void TickSpecial(float DeltaSeconds);
 	void EndSpecial(const TCHAR* Why);
 	void ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet);
@@ -828,6 +843,9 @@ private:
 	// The special's camera modifier (added on its begin, removed on its end).
 	UPROPERTY()
 	TObjectPtr<UFTSpecialCineModifier> SpecialCamera;
+	// The lead's special clip (LoadSpecialClip), played in the lead's last action slot while the move plays.
+	UPROPERTY()
+	TObjectPtr<UAnimSequence> SpecialClip;
 	// What each skinned enemy plays: the clip (a table index; -2 none yet) and since when, the last hit reaction.
 	int32 SkinClip[ftcore::kMaxArenaEnemies];
 	double SkinSince[ftcore::kMaxArenaEnemies];
@@ -1669,8 +1687,19 @@ private:
 	const TCHAR* SpecialLimit = TEXT("none");
 	FVector SpecialPlayShift = FVector::ZeroVector; // cm: the play camera's move to the end feet while the lead stands at the start
 	bool bSpecialPlaced = false;
-	int32 SpecialShotsMoved = 0;   // shots moved off a body or the world at the start (FixSpecialShots)
-	int32 SpecialShotsBlocked = 0; // of those, the ones no move cleared // Core's cut back has put the lead at its end (the shots' tail plays over a held fight)
+	int32 SpecialShotsMoved = 0;   // shots moved by a fix at the start (SpecialCineFixShots)
+	int32 SpecialShotsBlocked = 0; // shots no fix cleared (played as written)
+	// The skip: pressed this frame (read by PollSpecialSkip, sent on the next frozen step); a skip refused (not yet
+	// seen once) is logged once a move.
+	bool bSpecialSkip = false;
+	bool bSpecialSkipRefusedLogged = false;
+	bool bSpecialSkipped = false; // Core's cut back was a skip: TickSpecial ends the shots with it
+	// The clip: the lead it was loaded for, and whether a press without it plays (-ArenaSpecialNoClip, tests only:
+	// the lead holds its pose).
+	FString SpecialClipFor;
+	bool bSpecialClipStandIn = false;
+	bool bSpecialClipPlaying = false;
+	bool bSpecialNoClipLogged = false; // a press dropped for want of the clip: logged once a lead
 	// Frame cost (game-thread and GPU ms) for 2 s before, during, and 2 s after the special, frames under a still left
 	// out; the special's own tick and the freeze's begin and end.
 	struct FSpecialCost { double Game = 0.0, Gpu = 0.0, GameMax = 0.0, GpuMax = 0.0; int32 Frames = 0; };
@@ -1694,5 +1723,10 @@ private:
 	FVector SpecialEnemyFrom[6];
 	float SpecialEnemyDrift = 0.f;
 	int32 SpecialFrames = 0, SpecialCuts = 0, SpecialAfterFrames = 0;
+	// -ArenaSpecialPause=<s on the special's clock>: the game paused then for 1 s of real time (a core ticker resumes
+	// it), then a check that neither Core's special clock nor the shots' moved while paused.
+	float SpecialPauseAt = -1.f;
+	float SpecialPauseCoreWas = 0.f, SpecialPauseShotsWas = 0.f;
+	FTSTicker::FDelegateHandle SpecialPauseTicker;
 #endif
 };

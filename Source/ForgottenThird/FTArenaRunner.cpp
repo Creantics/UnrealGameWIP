@@ -768,13 +768,17 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	// The pose drawn last frame at last frame's placement, before anything moves.
 	Glide.Sample(PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr, DeltaSeconds);
-	// A special move: Core freezes itself and keeps stepping (its own clock only); no input is read while it plays, and
+	// A special move: Core freezes itself and keeps stepping (its own clock only); no input but the skip is read while it plays, and
 	// the shots' tail past Core's cut back holds the fight until the camera is back (FTArenaRunnerSpecial.cpp).
 	const bool bCoreHold = bHold || (bSpecialOn && !Fight.frozen());
 	if (!bSpecialOn && !Fight.frozen())
 	{
 		PollInput(DeltaSeconds);
 		TickAim(DeltaSeconds);
+	}
+	else if (!bHold)
+	{
+		PollSpecialSkip(); // a press while it plays: the skip (FTArenaRunnerSpecial.cpp)
 	}
 
 	const float HeldBefore = Fight.heldTime();

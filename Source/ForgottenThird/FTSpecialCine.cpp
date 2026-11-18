@@ -2,12 +2,16 @@
 
 #include "Camera/CameraTypes.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Components/AudioComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/Info.h"
 #include "NiagaraComponent.h"
+#include "PhysicsEngine/BodyInstance.h"
 
 UFTSpecialCineModifier::UFTSpecialCineModifier()
 {
@@ -70,30 +74,97 @@ void FFTSpecialFreeze::Begin(UWorld* World, const AActor* Performer, float Facto
 	}
 	bOn = true;
 	HeldAt = Factor;
+	HeldWorld = World;
+	HeldPerformer = Performer;
+	Spawned = 0;
 	Actors.Reset();
 	Effects.Reset();
+	Sounds.Reset();
+	BodiesHeld.Reset();
+	Cloths.Reset();
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
-		AActor* A = *It;
-		if (!A || A == Performer || (Performer && A->IsAttachedTo(Performer)))
+		Hold(*It);
+	}
+	SpawnHandle = World->AddOnActorSpawnedHandler(FOnActorSpawned::FDelegate::CreateRaw(this, &FFTSpecialFreeze::OnSpawned));
+}
+
+void FFTSpecialFreeze::OnSpawned(AActor* A)
+{
+	const AActor* Performer = HeldPerformer.Get();
+	if (!bOn || !A || (Performer && (A->GetOwner() == Performer || A->GetInstigator() == Performer)))
+	{
+		return; // the performer's own (a strike's effect, a thrown piece) play at its speed
+	}
+	const int32 Before = Actors.Num();
+	Hold(A);
+	Spawned += Actors.Num() > Before ? 1 : 0;
+}
+
+void FFTSpecialFreeze::Hold(AActor* A)
+{
+	const AActor* Performer = HeldPerformer.Get();
+	if (!A || A == Performer || (Performer && A->IsAttachedTo(Performer)))
+	{
+		return;
+	}
+	if (A->IsA<AController>() || A->IsA<APlayerCameraManager>() || A->IsA<AHUD>() || A->IsA<AInfo>())
+	{
+		return;
+	}
+	Actors.Add({A, A->CustomTimeDilation});
+	A->CustomTimeDilation = HeldAt;
+	TInlineComponentArray<UNiagaraComponent*> Niagaras(A);
+	for (UNiagaraComponent* N : Niagaras)
+	{
+		if (N)
+		{
+			// Solo: its own tick, which the owner's dilation scales; its own dilation stays as found.
+			Effects.Add({N, N->GetForceSolo()});
+			N->SetForceSolo(true);
+		}
+	}
+	TInlineComponentArray<UAudioComponent*> Audios(A);
+	for (UAudioComponent* S : Audios)
+	{
+		if (S && S->IsPlaying() && S->GetPlayState() != EAudioComponentPlayState::Paused)
+		{
+			Sounds.Add(S);
+			S->SetPaused(true);
+		}
+	}
+	auto HoldBody = [this](UPrimitiveComponent* C, int32 Index, FBodyInstance* B) {
+		if (!B || !B->IsInstanceSimulatingPhysics())
+		{
+			return;
+		}
+		BodiesHeld.Add({C, Index, B->GetUnrealWorldVelocity(), B->GetUnrealWorldAngularVelocityInRadians(), static_cast<bool>(B->bEnableGravity)});
+		B->SetEnableGravity(false);
+		B->SetLinearVelocity(FVector::ZeroVector, false, false);
+		B->SetAngularVelocityInRadians(FVector::ZeroVector, false, false);
+		B->PutInstanceToSleep();
+	};
+	TInlineComponentArray<UPrimitiveComponent*> Prims(A);
+	for (UPrimitiveComponent* C : Prims)
+	{
+		if (!C)
 		{
 			continue;
 		}
-		if (A->IsA<AController>() || A->IsA<APlayerCameraManager>() || A->IsA<AHUD>() || A->IsA<AInfo>())
+		if (USkeletalMeshComponent* Skel = Cast<USkeletalMeshComponent>(C))
 		{
-			continue;
-		}
-		Actors.Add({A, A->CustomTimeDilation});
-		A->CustomTimeDilation = Factor;
-		TInlineComponentArray<UNiagaraComponent*> Niagaras(A);
-		for (UNiagaraComponent* N : Niagaras)
-		{
-			if (N)
+			for (int32 I = 0; I < Skel->Bodies.Num(); ++I)
 			{
-				Effects.Add({N, N->GetCustomTimeDilation()});
-				N->SetCustomTimeDilation(N->GetCustomTimeDilation() * Factor);
+				HoldBody(Skel, I, Skel->Bodies[I]);
 			}
+			if (!Skel->IsClothingSimulationSuspended())
+			{
+				Cloths.Add(Skel);
+				Skel->SuspendClothingSimulation();
+			}
+			continue;
 		}
+		HoldBody(C, INDEX_NONE, C->GetBodyInstance());
 	}
 }
 
@@ -115,6 +186,11 @@ void FFTSpecialFreeze::End()
 		return;
 	}
 	bOn = false;
+	if (UWorld* World = HeldWorld.Get())
+	{
+		World->RemoveOnActorSpawnedHandler(SpawnHandle);
+	}
+	SpawnHandle.Reset();
 	for (const FActorWas& W : Actors)
 	{
 		if (AActor* A = W.Actor.Get())
@@ -126,9 +202,44 @@ void FFTSpecialFreeze::End()
 	{
 		if (UNiagaraComponent* N = W.Effect.Get())
 		{
-			N->SetCustomTimeDilation(W.Dilation);
+			N->SetForceSolo(W.bSolo);
+		}
+	}
+	for (const TWeakObjectPtr<UAudioComponent>& W : Sounds)
+	{
+		if (UAudioComponent* S = W.Get())
+		{
+			S->SetPaused(false);
+		}
+	}
+	for (const FBodyWas& W : BodiesHeld)
+	{
+		UPrimitiveComponent* C = W.Component.Get();
+		USkeletalMeshComponent* Skel = Cast<USkeletalMeshComponent>(C);
+		FBodyInstance* B = !C ? nullptr
+			: W.Index == INDEX_NONE ? C->GetBodyInstance()
+			: Skel && Skel->Bodies.IsValidIndex(W.Index) ? Skel->Bodies[W.Index] : nullptr;
+		if (!B || !B->IsInstanceSimulatingPhysics())
+		{
+			continue;
+		}
+		B->SetEnableGravity(W.bGravity);
+		B->WakeInstance();
+		B->SetLinearVelocity(W.Linear, false);
+		B->SetAngularVelocityInRadians(W.Angular, false);
+	}
+	for (const TWeakObjectPtr<USkeletalMeshComponent>& W : Cloths)
+	{
+		if (USkeletalMeshComponent* Skel = W.Get())
+		{
+			Skel->ResumeClothingSimulation();
 		}
 	}
 	Actors.Reset();
 	Effects.Reset();
+	Sounds.Reset();
+	BodiesHeld.Reset();
+	Cloths.Reset();
+	HeldWorld.Reset();
+	HeldPerformer.Reset();
 }
