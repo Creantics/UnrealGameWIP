@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -3738,6 +3739,8 @@ struct ArenaFightImpl {
     // ---- the special (ArenaSpecial.h) ----
 
     static constexpr float kSpecialEps = 1.0e-4f; // s: a cue, the impact or the end due within it is due now
+    static constexpr float kSpecialEndStep = 0.05f;  // m: the steps the end's clear way is tested in (as the host's)
+    static constexpr float kSpecialEndShort = 0.01f; // of the way: how far short of a body the end stops
 
     // The kit slot the player holds (setSpecials' slot 0 is the def's fighter as begun), and the partner's.
     std::size_t playerSlot() const { return fight.kitsSwapped_ ? 1u : 0u; }
@@ -3970,6 +3973,31 @@ struct ArenaFightImpl {
             const float side = m.endTravel > 0.f ? m.endSide * (v.travel / m.endTravel) : 0.f;
             const Vec2 right{-v.dir.y, v.dir.x};
             v.end = fight.ring_.clamp(arenaMadd(arenaMadd(v.origin, v.dir, v.travel), right, side), radius);
+            // Clear of every living enemy's body, by the host's own rule (ClampSpecialTravel): 5 cm steps along the
+            // way, stopped a hair short of the first step that would overlap one. What the host sends is clear
+            // already; this bites when Core picked another target than the host's guess, or the host sent too much.
+            const Vec2 path = arenaSub(v.end, v.origin);
+            const float length = std::sqrt(arenaDot(path, path));
+            if (length > 0.01f) {
+                const int steps = std::max(1, static_cast<int>(std::ceil(length / kSpecialEndStep)));
+                float share = 1.f;
+                for (int k = 1; k <= steps && share >= 1.f; ++k) {
+                    const Vec2 p = arenaMadd(v.origin, path, static_cast<float>(k) / static_cast<float>(steps));
+                    for (std::size_t i = 0; i < n; ++i) {
+                        if (!alive(i)) continue;
+                        const Vec2 d = arenaSub(p, foes[i].pos);
+                        const float need = radius + def.enemies[i].bodyRadius;
+                        if (arenaDot(d, d) < need * need) {
+                            share = std::max(0.f, static_cast<float>(k - 1) / static_cast<float>(steps) - kSpecialEndShort);
+                            break;
+                        }
+                    }
+                }
+                if (share < 1.f) {
+                    v.end = arenaMadd(v.origin, path, share);
+                    v.travel *= share;
+                }
+            }
         }
         v.time = 0.f;
         v.duration = m.duration;
@@ -4472,6 +4500,12 @@ void ArenaFight::setSpecialGaugeForTest(std::size_t slot, float value) {
     if (slot >= 2 || inHook_.on) return;
     special_.gauge[slot] = value;
     ArenaFightImpl(*this).specialFlags(true);
+}
+
+void ArenaFight::killEnemyForTest(std::size_t i) {
+    if (i >= enemyCount_ || inHook_.on) return;
+    enemy_[i].hp = 0;
+    enemy_[i].brain = ArenaBrain::Dead;
 }
 
 std::size_t ArenaFight::frozenBytesForTest() const {
@@ -5886,6 +5920,13 @@ bool spId(std::string_view id) {
     return true;
 }
 
+bool spFxId(std::string_view id) {
+    if (id.empty() || id.size() > kMaxArenaSpecialId) return false;
+    for (const char c : id)
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.')) return false;
+    return true;
+}
+
 template <std::size_t N>
 void spCopy(std::string_view s, std::array<char, N>& out) {
     out.fill('\0');
@@ -5893,6 +5934,19 @@ void spCopy(std::string_view s, std::array<char, N>& out) {
 }
 
 bool spInRange(float v, float lo, float hi) { return std::isfinite(v) && v >= lo && v <= hi; }
+
+// Whether a row's start (and its end) land inside [0, duration] at the nearest and the farthest impact, end >= start.
+bool spFxInMove(const ArenaSpecialRules& r, const ArenaSpecialFx& f) {
+    for (const float impact : {r.strikeAt, r.strikeAt + r.maxTravel}) {
+        const float a = arenaSpecialFxAt(r, f.start, impact);
+        if (!spInRange(a, 0.f, r.duration)) return false;
+        if (f.hasEnd) {
+            const float b = arenaSpecialFxAt(r, f.end, impact);
+            if (!spInRange(b, a, r.duration)) return false;
+        }
+    }
+    return true;
+}
 
 void spUnknownKeys(JsonValue j, const std::string& path, std::initializer_list<std::string_view> keys,
                    std::vector<std::string>* warnings) {
@@ -5925,7 +5979,7 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
     }
     spUnknownKeys(j, path,
                   {"id", "lead", "duration", "strikeAt", "waveSpeed", "maxTravel", "range", "laneLength", "laneWidth", "damage", "otherShare",
-                   "bossPhaseShare", "knockBack", "knockTime", "endTravel", "endSide", "skippable", "cues"},
+                   "bossPhaseShare", "knockBack", "knockTime", "endTravel", "endSide", "skippable", "cues", "fx"},
                   warnings);
     for (const char* key : {"id", "lead"}) {
         const JsonValue v = j[key];
@@ -5938,6 +5992,7 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
     }
     spNumber(j, "duration", path, 0.5f, 30.f, r.duration, errors);
     spNumber(j, "strikeAt", path, 0.f, 30.f, r.strikeAt, errors);
+    r.impactAt = r.strikeAt; // the temporary compat member
     spNumber(j, "waveSpeed", path, 1.f, 1000.f, r.waveSpeed, errors);
     spNumber(j, "maxTravel", path, 0.f, 5.f, r.maxTravel, errors);
     spNumber(j, "range", path, 1.f, 200.f, r.range, errors);
@@ -5996,6 +6051,84 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
         else
             spCopy(name.string(), out.name);
     }
+
+    const JsonValue fx = j["fx"];
+    if (fx.isAbsent()) return;
+    if (!fx.isArray() || fx.size() > kMaxArenaSpecialFx) {
+        errors.push_back(path + ".fx: expected an array of 0.." + std::to_string(kMaxArenaSpecialFx) + " rows");
+        return;
+    }
+    // A cue + offset: the cue by name (or "impact"), the offset -5..5 s.
+    const auto readTime = [&](JsonValue t, const std::string& tp, ArenaSpecialFxTime& out) {
+        const JsonValue name = t["cue"];
+        bool found = false;
+        if (name.isString() && name.string() == "impact") {
+            out.cue = kArenaSpecialAtImpact;
+            found = true;
+        } else if (name.isString()) {
+            for (std::uint8_t k = 0; k < r.cueCount && !found; ++k)
+                if (r.cues[k].view() == name.string()) {
+                    out.cue = k;
+                    found = true;
+                }
+        }
+        if (!found) errors.push_back(tp + ".cue: expected a cue of this move, or impact");
+        const JsonValue at = t["at"];
+        const double v = at.number(0.0);
+        if (!at.isAbsent() && (!at.isNumber() || !std::isfinite(v) || v < -5.0 || v > 5.0))
+            errors.push_back(tp + ".at: expected an offset in -5..5 s");
+        else
+            out.offset = static_cast<float>(v);
+        return found;
+    };
+    for (std::uint32_t i = 0; i < fx.size(); ++i) {
+        const std::string fp = path + ".fx[" + std::to_string(i) + "]";
+        const JsonValue f = fx[i];
+        if (!f.isObject()) {
+            errors.push_back(fp + ": expected an object");
+            continue;
+        }
+        spUnknownKeys(f, fp, {"id", "cue", "at", "to", "for", "low", "note"}, warnings);
+        ArenaSpecialFx& out = r.fx[r.fxCount++];
+        const JsonValue id = f["id"];
+        if (!id.isString() || !spFxId(id.string()))
+            errors.push_back(fp + ".id: expected a name of 1.." + std::to_string(kMaxArenaSpecialId) +
+                             " letters, digits, _, - and .");
+        else
+            spCopy(id.string(), out.id);
+        bool ok = readTime(f, fp, out.start);
+        const JsonValue to = f["to"], len = f["for"];
+        if (!to.isAbsent() && !len.isAbsent()) {
+            errors.push_back(fp + ": \"to\" and \"for\" both given");
+            ok = false;
+        } else if (!to.isAbsent()) {
+            if (!to.isObject()) {
+                errors.push_back(fp + ".to: expected { \"cue\": ..., \"at\": s }");
+                ok = false;
+            } else {
+                spUnknownKeys(to, fp + ".to", {"cue", "at"}, warnings);
+                ok = readTime(to, fp + ".to", out.end) && ok;
+                out.hasEnd = true;
+            }
+        } else if (!len.isAbsent()) {
+            const double v = len.number(-1.0);
+            if (!len.isNumber() || !std::isfinite(v) || v <= 0.0 || v > 10.0) {
+                errors.push_back(fp + ".for: expected a length in (0, 10] s");
+                ok = false;
+            } else {
+                out.length = static_cast<float>(v);
+            }
+        }
+        if (const JsonValue low = f["low"]; !low.isAbsent()) {
+            if (!low.isBool())
+                errors.push_back(fp + ".low: expected true or false");
+            else
+                out.low = low.boolean();
+        }
+        if (ok && !spFxInMove(r, out))
+            errors.push_back(fp + ": its start or end lands outside [0, duration] at the nearest or farthest impact, "
+                                  "or ends before it starts");
+    }
 }
 
 } // namespace
@@ -6018,7 +6151,23 @@ bool validArenaSpecialRules(const ArenaSpecialRules& r) {
         if (!spInRange(c.at, last, r.duration) || !spId(c.view())) return false;
         last = c.at;
     }
+    if (r.fxCount > kMaxArenaSpecialFx) return false;
+    for (std::size_t i = 0; i < r.fxCount; ++i) {
+        const ArenaSpecialFx& f = r.fx[i];
+        if (!spFxId(f.view()) || !spFxInMove(r, f)) return false;
+        if (f.hasEnd ? f.length != 0.f : !spInRange(f.length, 0.f, 10.f)) return false;
+    }
     return true;
+}
+
+float arenaSpecialFxAt(const ArenaSpecialRules& r, const ArenaSpecialFxTime& at, float impactAt) {
+    if (at.cue == kArenaSpecialAtImpact) return impactAt + at.offset;
+    if (at.cue >= r.cueCount || at.cue >= kMaxArenaSpecialCues) return std::numeric_limits<float>::quiet_NaN();
+    return r.cues[at.cue].at + at.offset;
+}
+
+float arenaSpecialFxEnd(const ArenaSpecialRules& r, const ArenaSpecialFx& fx, float impactAt) {
+    return fx.hasEnd ? arenaSpecialFxAt(r, fx.end, impactAt) : arenaSpecialFxAt(r, fx.start, impactAt) + fx.length;
 }
 
 float arenaSpecialImpactAt(const ArenaSpecialRules& r, float distance) {

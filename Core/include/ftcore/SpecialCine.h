@@ -109,6 +109,17 @@ struct SpecialCineShot {
     std::string_view followBone() const { return {boneText, boneLength}; }
 };
 
+// What the lead holds out from its body while the move plays (a conjured weapon): the lead's upright cylinder grows to
+// `radius` metres over [from, to] s on the move's clock, and no camera (but a bone shot's: framed on a bone on
+// purpose) may stand inside it (SpecialCineProblem::InsideBody). The framing still needs the lead's own figure: the
+// reach never frames the lead by itself. radius 0: none.
+struct SpecialCineReach {
+    float radius = 0.f; // metres from the lead's upright line
+    float from = 0.f;   // seconds
+    float to = 0.f;
+    bool at(float t) const { return radius > 0.f && t >= from && t <= to; }
+};
+
 struct SpecialCineShake {
     CutsceneVec3 amplitude{}; // metres per axis of the stage frame
     CutsceneVec3 hz{};
@@ -142,6 +153,8 @@ public:
     const SpecialCineShake& shake() const { return shake_; }
     // The lead's feet at the move's end in the stage frame (metres): its travel.
     const CutsceneVec3& endFeet() const { return endFeet_; }
+    // The held weapon's reach (radius 0: none).
+    const SpecialCineReach& reach() const { return reach_; }
     // The shot on screen at `t` seconds (clamped to the move): the last whose in is at or before it.
     FTCORE_API std::uint32_t shotAt(float t) const;
     // The near set's shot file (empty: none) and the range under which it plays (0: none).
@@ -165,6 +178,8 @@ public:
     FTCORE_API void setFStop(float fStop);
     FTCORE_API void setShake(const SpecialCineShake& shake);
     FTCORE_API void setEndFeet(const CutsceneVec3& feet);
+    // radius 0..5 m, 0 <= from < to (else none).
+    FTCORE_API void setReach(const SpecialCineReach& reach);
     // A near set: false, and unchanged, unless the file fits (as setShotFile) and `within` is in 0.1..50 m. An empty
     // file: none.
     FTCORE_API bool setNear(std::string_view file, float within);
@@ -185,6 +200,7 @@ private:
     float fStop_ = kDefaultFStop;
     SpecialCineShake shake_{};
     CutsceneVec3 endFeet_{};
+    SpecialCineReach reach_{};
     char nearFile_[kFileCapacity] = {};
     std::uint8_t nearFileLength_ = 0;
     float nearWithin_ = 0.f;
@@ -293,7 +309,7 @@ FTCORE_API std::string_view specialCineProblemName(SpecialCineProblem problem);
 
 // The framing rules: the subject (its upright line, feet to head) must have some part inside the safe frame, 10% in
 // from each edge, and fill at least kMinFigure of the frame's height (kMinCloseUp when the camera is within
-// kCloseUpRange of it). The lead stands along its travel (end_feet times the stage's travel) in step with the move's clock (the clip's own root
+// kCloseUpRange of it); a big target (kBigTarget) only its strike point inside the safe frame. The lead stands along its travel (end_feet times the stage's travel) in step with the move's clock (the clip's own root
 // curve is not known here); "both" needs the lead and the target.
 struct SpecialCineFraming {
     static constexpr float kSafe = 0.8f;         // of the half frame: 10% in from each edge
@@ -304,6 +320,12 @@ struct SpecialCineFraming {
     static constexpr float kLineStop = 0.3f;     // metres short of the subject the line test stops
     static constexpr float kAspect = 16.f / 9.f;
     static constexpr std::uint32_t kSamples = 5; // times tested per shot
+    // A target wider than this (radius, metres) is big: its shots frame the lead and the strike point, not its whole
+    // figure (cropping it is accepted), an aimed shot tilts up kBigTilt over its aim point. The pull
+    // still applies (it moves the camera in).
+    // The strike point: on the target's side toward the lead, at the lead's chest height.
+    static constexpr float kBigTarget = 0.5f;
+    static constexpr float kBigTilt = 0.5f; // metres
 };
 
 // The first problem of `move`'s frame at `t` (fixes as in specialCineFrameAt). `bodies` (null with `count` 0) and

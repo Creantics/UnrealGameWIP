@@ -89,21 +89,41 @@ CutsceneVec3 leadFeet(const SpecialCineMove& move, const SpecialCineStage& stage
     return specialCinePoint(stage, SpecialCineAnchor::Lead, {end.x * along, end.y * along, end.z * along});
 }
 
-// The point an aimed shot looks at, at `t`: the subject's chest (the lead's where its travel puts it then; both: halfway).
+bool bigTarget(const SpecialCineStage& stage) {
+    return std::isfinite(stage.targetRadius) && stage.targetRadius > SpecialCineFraming::kBigTarget;
+}
+
+// A big target's strike point: on its side toward the lead's feet `lead`, at the lead's chest height.
+CutsceneVec3 strikePoint(const SpecialCineStage& stage, const CutsceneVec3& lead) {
+    CutsceneVec3 d = sub3(lead, stage.target);
+    d.z = 0.f;
+    const float n = length3(d);
+    CutsceneVec3 p = stage.target;
+    if (n > 1e-4f) p = add3(p, scale3(d, std::min(stage.targetRadius, n) / n));
+    p.z = lead.z + kChest * heightOr(stage.leadHeight);
+    return p;
+}
+
+// The point an aimed shot looks at, at `t`: the subject's chest (the lead's where its travel puts it then; both: halfway;
+// a big target's: its strike point, tilted up kBigTilt).
 CutsceneVec3 aimPoint(const SpecialCineMove& move, const SpecialCineShot& s, const SpecialCineStage& stage, float t,
                       const CutsceneVec3& fallback) {
     const float length = move.length();
-    CutsceneVec3 lead = leadFeet(move, stage, length > 0.f ? std::clamp(t / length, 0.f, 1.f) : 0.f);
+    const CutsceneVec3 feet = leadFeet(move, stage, length > 0.f ? std::clamp(t / length, 0.f, 1.f) : 0.f);
+    CutsceneVec3 lead = feet;
     lead.z += kChest * heightOr(stage.leadHeight);
-    CutsceneVec3 target = stage.target;
-    target.z += kChest * heightOr(stage.targetHeight);
+    const bool big = bigTarget(stage);
+    CutsceneVec3 target = big ? strikePoint(stage, feet) : stage.target;
+    if (!big) target.z += kChest * heightOr(stage.targetHeight);
+    CutsceneVec3 at = fallback;
     switch (s.subject) {
     case SpecialCineSubject::Lead: return lead;
-    case SpecialCineSubject::Target: return target;
-    case SpecialCineSubject::Both: return lerp3(lead, target, 0.5f);
-    case SpecialCineSubject::None: break;
+    case SpecialCineSubject::Target: at = target; break;
+    case SpecialCineSubject::Both: at = lerp3(lead, target, 0.5f); break;
+    case SpecialCineSubject::None: return fallback;
     }
-    return fallback;
+    if (big) at.z += SpecialCineFraming::kBigTilt;
+    return at;
 }
 
 } // namespace
@@ -182,6 +202,7 @@ void SpecialCineMove::clearShots() {
     std::fill(std::begin(clip_), std::end(clip_), '\0');
     shake_ = {};
     endFeet_ = {};
+    reach_ = {};
 }
 
 void SpecialCineMove::setBlends(float inSeconds, float outSeconds) {
@@ -200,6 +221,12 @@ void SpecialCineMove::setShake(const SpecialCineShake& shake) {
 }
 
 void SpecialCineMove::setEndFeet(const CutsceneVec3& feet) { endFeet_ = finite3(feet) ? feet : CutsceneVec3{}; }
+
+void SpecialCineMove::setReach(const SpecialCineReach& reach) {
+    const bool ok = std::isfinite(reach.radius) && std::isfinite(reach.from) && std::isfinite(reach.to) && reach.radius >= 0.f &&
+                    reach.radius <= 5.f && reach.from >= 0.f && reach.from < reach.to;
+    reach_ = ok ? reach : SpecialCineReach{};
+}
 
 bool SpecialCineMove::setNear(std::string_view file, float within) {
     if (file.empty()) {
@@ -435,6 +462,16 @@ SpecialCineProblem figureFraming(const View& v, const CutsceneVec3& feet, float 
                                                                                                : SpecialCineProblem::TooSmall;
 }
 
+// A point inside the safe frame, in front of the lens.
+SpecialCineProblem pointFraming(const View& v, const CutsceneVec3& p) {
+    const CutsceneVec3 a = sub3(p, v.eye);
+    const float z = dot3(a, v.fwd);
+    if (z < 0.05f) return SpecialCineProblem::OffFrame;
+    const float x = dot3(a, v.right) / (z * v.tanX), y = dot3(a, v.up) / (z * v.tanY);
+    return std::fabs(x) <= SpecialCineFraming::kSafe && std::fabs(y) <= SpecialCineFraming::kSafe ? SpecialCineProblem::None
+                                                                                                 : SpecialCineProblem::OffFrame;
+}
+
 bool insideCylinder(const CutsceneVec3& p, const SpecialCineBody& b, float margin) {
     const float dx = p.x - b.feet.x, dy = p.y - b.feet.y;
     const float r = std::max(b.radius, 0.f) + margin;
@@ -476,21 +513,31 @@ SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t,
     const View v = viewOf(f, stage);
     for (std::uint32_t i = 0; i < count; ++i)
         if (insideCylinder(v.eye, bodies[i], SpecialCineFraming::kBodyMargin)) return SpecialCineProblem::InsideBody;
+    const float length = move.length();
+    const CutsceneVec3 leadAt = leadFeet(move, stage, length > 0.f ? std::clamp(t / length, 0.f, 1.f) : 0.f);
+    const float leadH = heightOr(stage.leadHeight), targetH = heightOr(stage.targetHeight);
+    const float tc = std::isfinite(t) ? std::clamp(t, 0.f, length) : 0.f; // the clock specialCineFrameAt used
+    if (move.reach().at(tc) && move.shot(f.shot).cameraAnchor != SpecialCineAnchor::Bone) {
+        SpecialCineBody held; // the lead's cylinder, grown by what it holds
+        held.feet = leadAt;
+        held.radius = move.reach().radius;
+        held.height = leadH;
+        if (insideCylinder(v.eye, held, SpecialCineFraming::kBodyMargin)) return SpecialCineProblem::InsideBody;
+    }
     if (world != nullptr && world(v.eye, v.eye, user)) return SpecialCineProblem::World;
     const SpecialCineSubject subject = move.shot(f.shot).subject;
     if (subject == SpecialCineSubject::None) return SpecialCineProblem::None;
     const bool lead = subject == SpecialCineSubject::Lead || subject == SpecialCineSubject::Both;
     const bool target = subject == SpecialCineSubject::Target || subject == SpecialCineSubject::Both;
-    const float leadH = heightOr(stage.leadHeight), targetH = heightOr(stage.targetHeight);
+    const bool big = bigTarget(stage);
+    const CutsceneVec3 strike = big ? strikePoint(stage, leadAt) : CutsceneVec3{};
     // Framing first (a shot that shows nothing has nothing to block), then the lines.
     SpecialCineProblem framing = SpecialCineProblem::None;
     const auto worse = [&framing](SpecialCineProblem p) {
         if (p == SpecialCineProblem::OffFrame || (p == SpecialCineProblem::TooSmall && framing == SpecialCineProblem::None)) framing = p;
     };
-    const float length = move.length();
-    const CutsceneVec3 leadAt = leadFeet(move, stage, length > 0.f ? std::clamp(t / length, 0.f, 1.f) : 0.f);
     if (lead) worse(figureFraming(v, leadAt, leadH));
-    if (target) worse(figureFraming(v, stage.target, targetH));
+    if (target) worse(big ? pointFraming(v, strike) : figureFraming(v, stage.target, targetH));
     if (framing != SpecialCineProblem::None) return framing;
     if (lead) {
         CutsceneVec3 chest = leadAt;
@@ -501,7 +548,7 @@ SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t,
     if (target) {
         CutsceneVec3 chest = stage.target;
         chest.z += kChest * targetH;
-        return lineTo(v, chest, bodies, count, true, world, user);
+        return lineTo(v, big ? strike : chest, bodies, count, true, world, user);
     }
     return SpecialCineProblem::None;
 }
@@ -724,7 +771,7 @@ static bool readSpecialCineShots(std::string_view text, SpecialCineMove& move, s
     if (!doc.parse(text, &parseError)) return fail(error, where + ": " + parseError);
     const JsonValue root = doc.root();
     if (!root.isObject()) return fail(error, where + ": the root is not an object");
-    warnUnknown(root, {"version", "clip", "duration_s", "fps", "frame", "sensor_width_mm", "aspect", "shake", "end_feet", "cuts", "shots"},
+    warnUnknown(root, {"version", "clip", "duration_s", "fps", "frame", "sensor_width_mm", "aspect", "shake", "end_feet", "reach", "cuts", "shots"},
                 where, warnings);
     if (root["version"].integer(1) != 1) return fail(error, where + ": version must be 1");
     if (!root["clip"].isAbsent() && !move.setClip(root["clip"].string()))
@@ -753,6 +800,18 @@ static bool readSpecialCineShots(std::string_view text, SpecialCineMove& move, s
         if (!readVec(root["end_feet"], feet)) return fail(error, where + ": \"end_feet\" is not [x, y, z]");
         if (std::sqrt(feet.x * feet.x + feet.y * feet.y) > 5.f) return fail(error, where + ": \"end_feet\" travels over 5 m");
         move.setEndFeet(feet);
+    }
+    if (!root["reach"].isAbsent()) {
+        const JsonValue r = root["reach"];
+        warnUnknown(r, {"m", "from", "to", "note"}, where + " reach", warnings);
+        SpecialCineReach reach;
+        reach.radius = static_cast<float>(r["m"].number(-1.0));
+        reach.from = static_cast<float>(r["from"].number(-1.0));
+        reach.to = static_cast<float>(r["to"].number(-1.0));
+        if (!r.isObject() || !(reach.radius >= 0.f && reach.radius <= 5.f) || !(reach.from >= 0.f && reach.from < reach.to) ||
+            !std::isfinite(reach.to))
+            return fail(error, where + ": \"reach\" is not { \"m\": 0..5, \"from\": s, \"to\": s after it }");
+        move.setReach(reach);
     }
 
     const JsonValue shots = root["shots"];

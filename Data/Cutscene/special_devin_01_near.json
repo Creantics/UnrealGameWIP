@@ -25,6 +25,12 @@
   -0.11,
   0
  ],
+ "reach": {
+  "m": 1.1,
+  "from": 0.55,
+  "to": 7.8,
+  "note": "the staff: half its 2.2 m length, from the conjure to the dismiss"
+ },
  "cuts": [
   0.9,
   3.6,
@@ -49,7 +55,7 @@
     ],
     "to": [
      0.52,
-     1.2,
+     1.3,
      0.3
     ]
    },
