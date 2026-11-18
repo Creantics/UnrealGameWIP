@@ -3569,13 +3569,13 @@ void AFTExploreCharacter::LogLeadGoTrace(const TCHAR* Why)
 	{
 		Rises += FString::Printf(TEXT("%s%d"), I > 0 ? TEXT(" ") : TEXT(""), LeadGoTraceRise[I]);
 	}
-	FString Ledge;
+	FString LedgeSeen;
 	for (uint32 P = 1; P < 4; ++P)
 	{
 		if (LeadGoTraceLedge & (1u << P))
 		{
-			Ledge += Ledge.IsEmpty() ? TEXT("") : TEXT("+");
-			Ledge += P == 1 ? TEXT("hanging") : P == 2 ? TEXT("climbing") : TEXT("dropping");
+			LedgeSeen += LedgeSeen.IsEmpty() ? TEXT("") : TEXT("+");
+			LedgeSeen += P == 1 ? TEXT("hanging") : P == 2 ? TEXT("climbing") : TEXT("dropping");
 		}
 	}
 	FString Modes;
@@ -3592,7 +3592,7 @@ void AFTExploreCharacter::LogLeadGoTrace(const TCHAR* Why)
 		: FString::Printf(TEXT("at %.2f s, %.0f cm up, on %s"), LeadGoTraceStoodAt, LeadGoTraceStoodRise, *LeadGoTraceStoodOn);
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("LeadGo: jump %d traced to %s (%.2f s; judged at %.2f s): traversal %s; ledge %s; movement modes %s; peak rise %.0f cm at %.2f s; stood %s; rise each 0.1 s (cm): %s."),
-		LeadGoTraceTry, Why, LeadGoTraceTime, LeadGoTraceVerdictAt, *Trav, Ledge.IsEmpty() ? TEXT("none") : *Ledge, *Modes, LeadGoTracePeak, LeadGoTracePeakAt, *Stood, *Rises);
+		LeadGoTraceTry, Why, LeadGoTraceTime, LeadGoTraceVerdictAt, *Trav, LedgeSeen.IsEmpty() ? TEXT("none") : *LedgeSeen, *Modes, LeadGoTracePeak, LeadGoTracePeakAt, *Stood, *Rises);
 #endif
 }
 
