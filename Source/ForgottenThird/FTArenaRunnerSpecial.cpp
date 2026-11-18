@@ -49,6 +49,7 @@
 #include "RHI.h"
 #include "RenderCore.h"
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -67,6 +68,91 @@ FVector Cm(const ftcore::CutsceneVec3& M) { return FVector(M.x, M.y, M.z) * 100.
 // yet; this tracked burst stands in for it until it is.
 const FName kSpecialHitStandIn(TEXT("crit_burst"));
 constexpr float kSpecialHitScale = 1.f;
+
+// The hit's time: the move's impact row (the first FX_ row on the impact cue), else Core's impact itself.
+float SpecialHitTime(const ftcore::ArenaSpecialRules& Rules, float Impact, const TCHAR** Row = nullptr)
+{
+	for (uint8 I = 0; I < Rules.fxCount; ++I)
+	{
+		const ftcore::ArenaSpecialFx& Fx = Rules.fx[I];
+		if (Fx.start.cue == ftcore::kArenaSpecialAtImpact && Fx.view().rfind("FX_", 0) == 0)
+		{
+			if (Row)
+			{
+				*Row = TEXT("its impact row");
+			}
+			return ftcore::arenaSpecialFxAt(Rules, Fx.start, Impact);
+		}
+	}
+	if (Row)
+	{
+		*Row = TEXT("the impact");
+	}
+	return Impact;
+}
+
+// The closed fist's striking pad (as FFTLeadWeapons' KnucklePad finds it): halfway along the middle finger's first
+// bone, kSpecialPadOut cm out from the wrist. Per side: the wrist, the knuckle, the second joint.
+const FName kSpecialPadBones[2][3] = {{FName(TEXT("hand_l")), FName(TEXT("middle_01_l")), FName(TEXT("middle_02_l"))},
+	{FName(TEXT("hand_r")), FName(TEXT("middle_01_r")), FName(TEXT("middle_02_r"))}};
+constexpr double kSpecialPadOut = 2.0;
+FVector SpecialPadOf(const FVector* Wrist, const FVector& Knuckle, const FVector* Mid)
+{
+	FVector Pad = Mid ? (Knuckle + *Mid) * 0.5 : Knuckle;
+	if (Wrist)
+	{
+		Pad += (Knuckle - *Wrist).GetSafeNormal() * kSpecialPadOut;
+	}
+	return Pad;
+}
+// A bone's place in the clip's component space at Time (up its parent chain); false for no such bone.
+bool SpecialClipBone(const UAnimSequence& Clip, const FName Name, double Time, FVector& Out)
+{
+	const USkeleton* Skeleton = Clip.GetSkeleton();
+	const FReferenceSkeleton* Ref = Skeleton ? &Skeleton->GetReferenceSkeleton() : nullptr;
+	const int32 Bone = Ref ? Ref->FindBoneIndex(Name) : INDEX_NONE;
+	if (Bone == INDEX_NONE)
+	{
+		return false;
+	}
+	FTransform CS = FTransform::Identity;
+	const FAnimExtractContext Context(Time, false);
+	for (int32 B = Bone; B != INDEX_NONE; B = Ref->GetParentIndex(B))
+	{
+		FTransform Local;
+		Clip.GetBoneTransform(Local, FSkeletonPoseBoneIndex(B), Context, false);
+		CS = CS * Local;
+	}
+	Out = CS.GetTranslation();
+	return true;
+}
+// The pad in the clip's component space at Time; false with no knuckle bone.
+bool SpecialClipPad(const UAnimSequence& Clip, int32 Side, double Time, FVector& Out)
+{
+	const FName* Bones = kSpecialPadBones[Side == 0 ? 0 : 1];
+	FVector Wrist, Knuckle, Mid;
+	if (!SpecialClipBone(Clip, Bones[1], Time, Knuckle))
+	{
+		return false;
+	}
+	const bool bWrist = SpecialClipBone(Clip, Bones[0], Time, Wrist);
+	const bool bMid = SpecialClipBone(Clip, Bones[2], Time, Mid);
+	Out = SpecialPadOf(bWrist ? &Wrist : nullptr, Knuckle, bMid ? &Mid : nullptr);
+	return true;
+}
+// The pad on the drawn body (world, cm); false with no knuckle bone.
+bool SpecialDrawnPad(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
+{
+	const FName* Bones = kSpecialPadBones[Side == 0 ? 0 : 1];
+	if (!Body.DoesSocketExist(Bones[1]))
+	{
+		return false;
+	}
+	const FVector Wrist = Body.GetSocketLocation(Bones[0]);
+	const FVector Mid = Body.GetSocketLocation(Bones[2]);
+	Out = SpecialPadOf(Body.DoesSocketExist(Bones[0]) ? &Wrist : nullptr, Body.GetSocketLocation(Bones[1]), Body.DoesSocketExist(Bones[2]) ? &Mid : nullptr);
+	return true;
+}
 
 bool ReadData(const FString& Rel, std::string& Out)
 {
@@ -353,8 +439,11 @@ ftcore::SpecialCineStage UFTArenaRunner::SpecialStage() const
 	return Stage;
 }
 
-void UFTArenaRunner::ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet)
+void UFTArenaRunner::ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet,
+	int32 ContactTarget)
 {
+	SpecialContact = ftcore::ArenaSpecialContact();
+	SpecialContactKept = TEXT("no solve");
 	const ftcore::Vec2 Right{-Forward.y, Forward.x};
 	const ftcore::Vec2 Move{Forward.x * EndFeet.x + Right.x * EndFeet.y, Forward.y * EndFeet.x + Right.y * EndFeet.y};
 	const float Length = FMath::Sqrt(Move.x * Move.x + Move.y * Move.y);
@@ -433,27 +522,114 @@ void UFTArenaRunner::ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::
 		}
 		return Share;
 	};
-	const TCHAR* Why = TEXT("none");
-	const float Share = ClearShare(From, Dir, Length, Why);
-	if (Share >= 0.999f)
-	{
-		return;
-	}
-	SpecialLimit = Why;
-	// Room behind for the missing part: the performer starts back by it (along Core's way, -Forward) and travels the
-	// whole way from there, if that path is clear too.
-	const float Missing = FMath::Min((1.f - Share) * Length + 0.02f, ftcore::kArenaSpecialMaxBack);
-	const TCHAR* BackWhy = TEXT("none");
 	const ftcore::Vec2 Back{-Forward.x, -Forward.y};
-	const ftcore::Vec2 Start{From.x - Forward.x * Missing, From.y - Forward.y * Missing};
-	if (ClearShare(From, Back, Missing, BackWhy) >= 0.999f && ClearShare(Start, Dir, Length, BackWhy) >= 0.999f)
+	[&]() {
+		const TCHAR* Why = TEXT("none");
+		const float Share = ClearShare(From, Dir, Length, Why);
+		if (Share >= 0.999f)
+		{
+			return;
+		}
+		SpecialLimit = Why;
+		// Room behind for the missing part: the performer starts back by it (along Core's way, -Forward) and travels the
+		// whole way from there, if that path is clear too.
+		const float Missing = FMath::Min((1.f - Share) * Length + 0.02f, ftcore::kArenaSpecialMaxBack);
+		const TCHAR* BackWhy = TEXT("none");
+		const ftcore::Vec2 Start{From.x - Forward.x * Missing, From.y - Forward.y * Missing};
+		if (ClearShare(From, Back, Missing, BackWhy) >= 0.999f && ClearShare(Start, Dir, Length, BackWhy) >= 0.999f)
+		{
+			SpecialBack = Missing;
+			SpecialEnd = {Start.x + Move.x, Start.y + Move.y};
+			return;
+		}
+		SpecialTravel = FMath::Max(0.f, Share - 0.01f); // a hair short of the obstacle
+		SpecialEnd = {From.x + Move.x * SpecialTravel, From.y + Move.y * SpecialTravel};
+	}();
+	// The fist at the contact: a start further back when the clip's fist would be inside the target's body there (the
+	// whole way travelled only: a shortened one moves the body, not the clip's reach), if that room is clear too.
+	const int32 Count = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
+	if (ContactTarget < 0 || ContactTarget >= Count || !bSpecialReach || SpecialTravel < 0.999f)
 	{
-		SpecialBack = Missing;
-		SpecialEnd = {Start.x + Move.x, Start.y + Move.y};
+		SpecialContactKept = ContactTarget < 0 ? TEXT("no target") : !bSpecialReach ? TEXT("no clip reach") : TEXT("a shortened way");
 		return;
 	}
-	SpecialTravel = FMath::Max(0.f, Share - 0.01f); // a hair short of the obstacle
-	SpecialEnd = {From.x + Move.x * SpecialTravel, From.y + Move.y * SpecialTravel};
+	const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(ContactTarget)];
+	const ftcore::Vec2 To{E.x - From.x, E.y - From.y};
+	SpecialContact = ftcore::arenaSpecialContact(To.x * Forward.x + To.y * Forward.y, To.x * Right.x + To.y * Right.y,
+		Fight.def().enemies[static_cast<size_t>(ContactTarget)].bodyRadius, SpecialReach, SpecialBack);
+	if (!SpecialContact.moved)
+	{
+		SpecialContactKept = SpecialContact.inside() ? TEXT("inside, no room") : TEXT("not inside");
+		return;
+	}
+	const TCHAR* ContactWhy = TEXT("none");
+	const ftcore::Vec2 Start{From.x - Forward.x * SpecialContact.back, From.y - Forward.y * SpecialContact.back};
+	if (ClearShare(From, Back, SpecialContact.back, ContactWhy) >= 0.999f && ClearShare(Start, Dir, Length, ContactWhy) >= 0.999f)
+	{
+		SpecialBack = SpecialContact.back;
+		SpecialEnd = {Start.x + Move.x, Start.y + Move.y};
+		SpecialContactKept = TEXT("moved back");
+		return;
+	}
+	SpecialContactKept = ContactWhy; // no room behind: the clamp's start stands
+}
+
+void UFTArenaRunner::SampleSpecialReach(const ftcore::ArenaSpecialRules& Rules, float Distance)
+{
+	bSpecialReach = false;
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	const USkeletalMeshComponent* Skin = Lead ? Lead->GetLeadSkin() : nullptr;
+	if (!SpecialClip || !Skin)
+	{
+		return;
+	}
+	// The clip plays on the shots' clock (TickSpecial) with the lead's actor at the start feet: its fist at the hit,
+	// through the mesh's place on the actor, is the reach from there (the clip's own travel in it).
+	SpecialReachAt = FMath::Clamp(SpecialHitTime(Rules, ftcore::arenaSpecialImpactAt(Rules, Distance)), 0.f, SpecialClip->GetPlayLength());
+	const FTransform ToActor = Skin->GetComponentTransform().GetRelativeTransform(Lead->GetActorTransform());
+	double Best = -1.0e9;
+	for (int32 Side = 0; Side < 2; ++Side)
+	{
+		FVector Pad;
+		if (!SpecialClipPad(*SpecialClip, Side, SpecialReachAt, Pad))
+		{
+			continue;
+		}
+		const FVector Local = ToActor.TransformPosition(Pad) / 100.0;
+		if (Local.X > Best)
+		{
+			Best = Local.X;
+			SpecialReach = {static_cast<float>(Local.X), static_cast<float>(Local.Y)};
+			SpecialReachSide = Side;
+			bSpecialReach = true;
+		}
+	}
+}
+
+void UFTArenaRunner::LogSpecialContact()
+{
+	bSpecialContactDue = false;
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	const USkeletalMeshComponent* Skin = Lead ? Lead->GetLeadSkin() : nullptr;
+	const AFTArenaFighter* Enemy = SpecialTarget >= 0 && SpecialTarget < MaxEnemies ? GetEnemyFigure(SpecialTarget) : nullptr;
+	if (!Skin || !Enemy)
+	{
+		return;
+	}
+	// The pose drawn now is the one asked for last frame (the clip's time then); the clip's own pad at the hit through
+	// the drawn mesh is the contact frame itself.
+	const FVector Centre = Enemy->GetActorLocation();
+	const float Radius = SpecialStageAt.targetRadius * 100.f;
+	FVector Drawn;
+	const float DrawnGap = SpecialDrawnPad(*Skin, SpecialReachSide, Drawn) ? static_cast<float>(FVector::Dist2D(Drawn, Centre)) - Radius : std::numeric_limits<float>::quiet_NaN();
+	FVector Pad;
+	const float ClipGap = SpecialClip && SpecialClipPad(*SpecialClip, SpecialReachSide, SpecialHit.time, Pad)
+		? static_cast<float>(FVector::Dist2D(Skin->GetComponentTransform().TransformPosition(Pad), Centre)) - Radius : std::numeric_limits<float>::quiet_NaN();
+	const bool bTouch = FMath::IsFinite(ClipGap) && ClipGap >= -ftcore::ArenaSpecialContact::kIn * 100.f && ClipGap <= ftcore::ArenaSpecialContact::kOut * 100.f;
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena check: special contact at %.3f s: the %s fist is %.1f cm off the target's surface (clip at the hit, on the drawn mesh), %.1f cm drawn at %.3f s; touching (-%.0f..+%.0f cm): %s."),
+		SpecialHit.time, SpecialReachSide == 0 ? TEXT("left") : TEXT("right"), ClipGap, DrawnGap, SpecialPlayer.time(),
+		ftcore::ArenaSpecialContact::kIn * 100.f, ftcore::ArenaSpecialContact::kOut * 100.f, bTouch ? TEXT("yes") : TEXT("no"));
 }
 
 void UFTArenaRunner::PressSpecial(ftcore::ArenaInput& In)
@@ -545,7 +721,13 @@ void UFTArenaRunner::PressSpecial(ftcore::ArenaInput& In)
 	const ftcore::Vec2 To = Away(Target);
 	const float Dist = FMath::Sqrt(To.x * To.x + To.y * To.y);
 	SpecialForward = Dist > 1.0e-4f ? ftcore::Vec2{To.x / Dist, To.y / Dist} : P.facing;
-	ClampSpecialTravel(Bodies.player, SpecialForward, ftcore::CutsceneVec3{Rules->endTravel, Rules->endSide, 0.f});
+	SampleSpecialReach(*Rules, Dist);
+	ClampSpecialTravel(Bodies.player, SpecialForward, ftcore::CutsceneVec3{Rules->endTravel, Rules->endSide, 0.f}, Target);
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena: %.2f: special contact: the %s fist at %.3f s reaches (%.2f, %.2f) m from the start feet%s; enemy %d's surface %.1f cm away at the clamp's back, %.1f cm at back %.2f m (%s; kept back %.2f m)."),
+		Fight.time(), SpecialReachSide == 0 ? TEXT("left") : TEXT("right"), SpecialReachAt, SpecialReach.x, SpecialReach.y,
+		bSpecialReach ? TEXT("") : TEXT(" (no clip reach)"), Target, SpecialContact.gapBefore * 100.f, SpecialContact.gap * 100.f,
+		SpecialContact.back, SpecialContactKept, SpecialBack);
 	In.specialBack = SpecialBack;
 	In.specialTravel = SpecialTravel * Rules->endTravel;
 }
@@ -824,20 +1006,11 @@ bool UFTArenaRunner::BeginSpecial()
 	}
 	const TCHAR* Set = Move == Far ? TEXT("far") : TEXT("near");
 	// The hit: the impact row's time (the impact itself when the move has none), at the contact the framing tests.
-	float HitAt = V.impactTime;
 	const TCHAR* HitRow = TEXT("the impact");
-	for (uint8 I = 0; Rules && I < Rules->fxCount; ++I)
-	{
-		const ftcore::ArenaSpecialFx& Row = Rules->fx[I];
-		if (Row.start.cue == ftcore::kArenaSpecialAtImpact && Row.view().rfind("FX_", 0) == 0)
-		{
-			HitAt = ftcore::arenaSpecialFxAt(*Rules, Row.start, V.impactTime);
-			HitRow = TEXT("its impact row");
-			break;
-		}
-	}
+	const float HitAt = Rules ? SpecialHitTime(*Rules, V.impactTime, &HitRow) : V.impactTime;
 	SpecialHit = ftcore::specialCineHit(*Move, SpecialStageAt, HitAt, SpecialStageAt.targetRadius);
 	bSpecialHitPlayed = false;
+	bSpecialContactDue = false;
 	// Nothing paused on the performer, nothing shaking the camera.
 	LeadWeapons.HitPause(false);
 	Jolt = ftcore::ArenaJolt();
@@ -986,6 +1159,10 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 		EndSpecial(TEXT("skipped")); // Core cut to its end: the shots go with it
 		return;
 	}
+	if (bSpecialContactDue)
+	{
+		LogSpecialContact(); // before the step: the pose drawn is the hit frame's
+	}
 	const double Began = FPlatformTime::Seconds();
 	SpecialPlayer.step(DeltaSeconds);
 	if (!bSpecialHitPlayed && SpecialPlayer.time() >= SpecialHit.time)
@@ -1098,6 +1275,7 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 void UFTArenaRunner::PlaySpecialHit()
 {
 	bSpecialHitPlayed = true;
+	bSpecialContactDue = true; // the fist against the surface, once this frame's pose is drawn
 	AFTArenaFighter* Lead = PlayerFigure.Get();
 	if (!bSpecialHitFx || !Lead)
 	{

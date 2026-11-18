@@ -6176,6 +6176,29 @@ float arenaSpecialImpactAt(const ArenaSpecialRules& r, float distance) {
     return r.strikeAt + std::min(travel, r.maxTravel);
 }
 
+ArenaSpecialContact arenaSpecialContact(float along, float side, float radius, Vec2 reach, float back, float maxBack) {
+    ArenaSpecialContact c;
+    c.back = back;
+    if (!std::isfinite(along) || !std::isfinite(side) || !std::isfinite(radius) || !std::isfinite(reach.x) ||
+        !std::isfinite(reach.y) || !std::isfinite(back) || !std::isfinite(maxBack)) {
+        c.gapBefore = c.gap = std::numeric_limits<float>::infinity();
+        return c;
+    }
+    const float r = std::max(radius, 0.f);
+    const float lateral = side - reach.y;
+    auto gapAt = [&](float b) { return std::hypot(along - reach.x + b, lateral) - r; };
+    c.gapBefore = c.gap = gapAt(back);
+    const float aim = r + ArenaSpecialContact::kAim;
+    if (c.gapBefore >= -ArenaSpecialContact::kIn || std::fabs(lateral) >= aim) return c;
+    const float solved = std::min(reach.x - along + std::sqrt(aim * aim - lateral * lateral), std::max(maxBack, back));
+    if (solved > back + 1e-4f) {
+        c.back = solved;
+        c.gap = gapAt(solved);
+        c.moved = true;
+    }
+    return c;
+}
+
 bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g) {
     return spInRange(g.full, 1.f, 1.0e6f) && spInRange(g.perDamageDealt, 0.f, 1000.f) && spInRange(g.perParry, 0.f, 1.0e5f) &&
            spInRange(g.perBlock, 0.f, 1.0e5f) && spInRange(g.perDamageTaken, 0.f, 1000.f) &&

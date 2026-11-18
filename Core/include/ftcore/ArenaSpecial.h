@@ -167,6 +167,26 @@ FTCORE_API float arenaSpecialFxAt(const ArenaSpecialRules& r, const ArenaSpecial
 // When a row ends: its end, else its start plus its length (a one-shot: its start).
 FTCORE_API float arenaSpecialFxEnd(const ArenaSpecialRules& r, const ArenaSpecialFx& fx, float impact);
 
+// The contact solve: the striking hand kept out of the target's body at the contact frame. `reach` is the hand then,
+// in the strike's way from the performer's start feet (x along the way, y to its right; the clip's own travel in it);
+// the target's centre is `along` m ahead of the press spot and `side` m to the way's right, its body `radius` m; the
+// performance starts `back` m behind the press spot (the host's clamp). A hand deeper than kIn inside the body moves the
+// start back (no further than `maxBack`) so it sits kAim out of the surface; a hand short of it is left (the wave hits).
+// Non-finite numbers: no contact, nothing moved. No allocation.
+struct ArenaSpecialContact {
+    static constexpr float kAim = 0.01f; // m out of the surface: the fist's pad touching
+    static constexpr float kIn = 0.02f;  // m inside the surface at most
+    static constexpr float kOut = 0.05f; // m outside it at most for a touch
+    float back = 0.f;      // m: the start behind the press spot, solved
+    float gapBefore = 0.f; // m: the hand from the surface at the clamp's back (negative: inside)
+    float gap = 0.f;       // m: at the solved back
+    bool moved = false;
+    bool touches() const { return gap >= -kIn && gap <= kOut; }
+    bool inside() const { return gap < -kIn; }
+};
+FTCORE_API ArenaSpecialContact arenaSpecialContact(float along, float side, float radius, Vec2 reach, float back,
+                                                   float maxBack = kArenaSpecialMaxBack);
+
 // Reads Data/Battle/arena_special.json:
 //   { "version": 1,
 //     "gauge": { "full": 1000, "perDamageDealt": 1, "perParry": 25, "perBlock": 8, "perDamageTaken": 1.5 },

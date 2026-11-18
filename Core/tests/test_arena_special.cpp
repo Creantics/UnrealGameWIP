@@ -2099,6 +2099,65 @@ TEST_CASE("arena special: the performance travels as far as the host allows; the
     CHECK(backed.body.y == doctest::Approx(backed.end.y));
 }
 
+TEST_CASE("arena special: the contact solve keeps the fist on the target's surface") {
+    auto close = [](float a, float b, float eps = 1e-4f) { return std::fabs(a - b) <= eps; };
+    const auto before = ftcore_test::allocStats().count;
+    // r2b_big: the hulk (radius 1.2) 1.60 m ahead of the press, the clamp's back 0.76 m (the performance ends at the
+    // press spot); the fist at the contact frame 0.60 m ahead of the end feet (0.73 m of travel): 0.17 m inside.
+    {
+        const ArenaSpecialContact c = arenaSpecialContact(1.60f, 0.f, 1.2f, Vec2{1.33f, 0.f}, 0.76f);
+        CHECK(close(c.gapBefore, -0.17f, 1e-3f));
+        CHECK(c.moved);
+        CHECK(c.touches());
+        CHECK(close(c.gap, ArenaSpecialContact::kAim, 1e-4f));
+        CHECK(close(c.back, 0.76f + 0.17f + ArenaSpecialContact::kAim, 1e-3f));
+    }
+    // Every depth, side and size: a fist inside by more than kIn ends within [-kIn, kOut] of the surface (kAim out),
+    // moved back only; one short of it or touching is left as it was.
+    int cases = 0, moved = 0;
+    for (const float radius : {0.35f, 0.45f, 1.2f, 2.5f}) {
+        for (float depth = -0.6f; depth <= 0.6f + 1e-3f; depth += 0.05f) {
+            for (const float lateral : {-0.3f, -0.1f, 0.f, 0.15f, 0.3f}) {
+                if (std::fabs(lateral) >= radius) continue;
+                // The hand `depth` m into the body along the way (negative: short of it), `lateral` m off its axis.
+                const float along = 3.f, back = 0.5f;
+                const float handAlong = along - std::sqrt(radius * radius - lateral * lateral) + depth;
+                const Vec2 reach{handAlong + back, -lateral};
+                const ArenaSpecialContact c = arenaSpecialContact(along, 0.f, radius, reach, back);
+                ++cases;
+                CHECK(c.back >= back);
+                if (c.gapBefore < -ArenaSpecialContact::kIn) {
+                    ++moved;
+                    CHECK(c.moved);
+                    CHECK(c.touches());
+                    CHECK(close(c.gap, ArenaSpecialContact::kAim, 1e-3f));
+                } else {
+                    CHECK_FALSE(c.moved);
+                    CHECK(close(c.gap, c.gapBefore));
+                    CHECK(close(c.back, back));
+                }
+            }
+        }
+    }
+    CHECK(cases > 150);
+    CHECK(moved > 50);
+    // No room behind (the most back reached): moved as far as allowed, still inside, said so.
+    const ArenaSpecialContact capped = arenaSpecialContact(1.60f, 0.f, 1.2f, Vec2{1.33f, 0.f}, 0.76f, 0.80f);
+    CHECK(capped.moved);
+    CHECK(close(capped.back, 0.80f));
+    CHECK(capped.inside());
+    CHECK_FALSE(capped.touches());
+    // A hand passing beside the body: never inside, left.
+    const ArenaSpecialContact beside = arenaSpecialContact(1.60f, 0.f, 0.45f, Vec2{1.6f, 0.5f}, 0.f);
+    CHECK_FALSE(beside.moved);
+    CHECK(beside.gapBefore > 0.f);
+    // Non-finite: no contact.
+    const ArenaSpecialContact none = arenaSpecialContact(std::numeric_limits<float>::quiet_NaN(), 0.f, 1.f, Vec2{1.f, 0.f}, 0.f);
+    CHECK_FALSE(none.moved);
+    CHECK(std::isinf(none.gap));
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+}
+
 TEST_CASE("arena special: endTravel and endSide are checked like the other numbers") {
     ArenaSpecialRules r = shippedSpecials().moves[0];
     CHECK(validArenaSpecialRules(r));

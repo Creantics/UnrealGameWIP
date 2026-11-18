@@ -712,7 +712,14 @@ private:
 	// on a component of the performer's figure, which the freeze does not hold.
 	void PlaySpecialHit();
 	void EndSpecial(const TCHAR* Why);
-	void ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet);
+	// The clear room for the move; with a target (the press's), the start moved back further so the striking fist
+	// (SampleSpecialReach) sits on the target's surface at the contact, not inside it (arenaSpecialContact).
+	void ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet,
+		int32 ContactTarget = -1);
+	// The striking fist's pad at the hit, read from the move's clip in the lead's actor frame (m: x ahead, y right).
+	void SampleSpecialReach(const ftcore::ArenaSpecialRules& Rules, float Distance);
+	// The drawn fist against the target's surface at the contact frame (logged one frame on, once the pose is drawn).
+	void LogSpecialContact();
 	ftcore::SpecialCineStage SpecialStage() const;
 	void TickSpecialCost(float DeltaSeconds, bool bHold);
 	// The aim stance this frame (right mouse held) and its reticle point; the camera pulled in by it.
@@ -1688,6 +1695,14 @@ private:
 	bool bSpecialHitPlayed = false;
 	bool bSpecialHitFx = true;
 	TWeakObjectPtr<class UFTVfxComponent> SpecialHitFx;
+	// The fist at the hit from the clip (SampleSpecialReach), the contact solve on it, and the drawn check's due flag.
+	ftcore::Vec2 SpecialReach{};
+	float SpecialReachAt = 0.f;
+	int32 SpecialReachSide = 1;
+	bool bSpecialReach = false;
+	ftcore::ArenaSpecialContact SpecialContact;
+	const TCHAR* SpecialContactKept = TEXT("no solve");
+	bool bSpecialContactDue = false;
 	// The clamp: how far back the lead starts (m, along -forward), the share of the travel kept (0..1), the end feet in
 	// the world (m), and what limited it.
 	float SpecialBack = 0.f;
