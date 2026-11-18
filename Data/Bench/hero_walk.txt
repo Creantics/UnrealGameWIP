@@ -1,0 +1,16 @@
+# Bench walk (perf-smooth, 2026-11-17): the hero lane on World_Solhaven_Strip at 1.4 m/s, eye 1.6 m over the setts
+# (floor 4.18 m), plan y 500 to 560 and back and out again (136 s), then the teleport segment at the old start
+# (806, 663; floor 7.0) panning for 45 s. Run it with -BenchSide=1000 -BenchTeleport=136,300: the rail jumps from the
+# end of the lane to the old start, so the keys between 136 and 300 are never sampled. Plan metres: t  eye x y z  look-at x y z.
+0     904.5 500.0 5.78   904.5 510.0 5.6
+43    904.5 560.0 5.78   904.5 570.0 5.6
+44.5  904.5 560.0 5.78   914.5 560.0 5.6
+46    904.5 560.0 5.78   904.5 550.0 5.6
+89    904.5 500.0 5.78   904.5 490.0 5.6
+90.5  904.5 500.0 5.78   894.5 500.0 5.6
+92    904.5 500.0 5.78   904.5 510.0 5.6
+135   904.5 560.0 5.78   904.5 570.0 5.6
+136   904.5 560.0 5.78   904.5 570.0 5.6
+300   806.0 663.0 8.60   797.3 658.2 8.4
+322   806.0 663.0 8.60   796.0 663.0 8.4
+345   806.0 663.0 8.60   801.2 671.8 8.4

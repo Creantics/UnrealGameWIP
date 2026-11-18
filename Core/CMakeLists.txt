@@ -54,6 +54,7 @@ add_library(ftcore STATIC
     src/ComboSequence.cpp
     src/Conductor.cpp
     src/Cutscene.cpp
+    src/SpecialCine.cpp
     src/DefenceTimeline.cpp
     src/WeakPoint.cpp
     src/Dialogue.cpp
@@ -88,7 +89,9 @@ add_library(ftcore STATIC
     src/HeroCorner.cpp
     src/HeroFarBank.cpp
     src/Weather.cpp
+    src/StillCam.cpp
     src/RainFall.cpp
+    src/RainCover.cpp
     src/GlassSurface.cpp
     src/PropGloss.cpp
     src/DayShade.cpp
@@ -101,6 +104,8 @@ add_library(ftcore STATIC
     src/BlockGen.cpp
     src/BlockCheck.cpp
     src/TerrainPocket.cpp
+    src/SeaAccess.cpp
+    src/Storm.cpp
     src/ParkedCarLook.cpp
     src/RoadDecals.cpp
     src/ShopFront.cpp
@@ -274,6 +279,16 @@ else()
     target_compile_options(ftcore_pocketcheck PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_floatcheck: the float check, fix pass and span-rule rerun on a box table and its height field (offline).
+add_executable(ftcore_floatcheck tools/ftcore_floatcheck.cpp)
+target_link_libraries(ftcore_floatcheck PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_floatcheck PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_floatcheck PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_floatcheck PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 # ftcore_standincheck: the stand-ins' corridor rule on the point and street tables (an offline build guard).
 add_executable(ftcore_standincheck tools/ftcore_standincheck.cpp)
 target_link_libraries(ftcore_standincheck PRIVATE ftcore ftcore_warnings)
@@ -382,6 +397,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_combo.cpp
         tests/test_conductor.cpp
         tests/test_cutscene.cpp
+        tests/test_special_cine.cpp
         tests/test_defence.cpp
         tests/test_weakpoint.cpp
         tests/test_dialogue.cpp
@@ -403,6 +419,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_surface_weather.cpp
         tests/test_demo_boot.cpp
         tests/test_surface_joints.cpp
+        tests/test_bench_warmup.cpp
+        tests/test_gc_pacing.cpp
+        tests/test_tier_detect.cpp
         tests/test_frame_stats.cpp
         tests/test_bench_path.cpp
         tests/test_light_picker.cpp
@@ -411,7 +430,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_hero_corner.cpp
         tests/test_hero_far_bank.cpp
         tests/test_weather.cpp
+        tests/test_still_cam.cpp
         tests/test_rain_fall.cpp
+        tests/test_rain_cover.cpp
         tests/test_glass_surface.cpp
         tests/test_prop_gloss.cpp
         tests/test_backdrop_seat.cpp
@@ -432,6 +453,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_block_gen.cpp
         tests/test_block_check.cpp
         tests/test_terrain_pocket.cpp
+        tests/test_sea_access.cpp
+        tests/test_storm.cpp
         tests/test_parked_car_look.cpp
         tests/test_road_graph.cpp
         tests/test_road_net.cpp

@@ -779,6 +779,12 @@ void AFTExploreDirector::OnLeadChanged(const FString& Lead)
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: lead is %s."), *Lead);
 }
 
+FVector AFTExploreDirector::PlanToWorldCm(double X, double Y, double ZM) const
+{
+	const bool bPlan = PlanSide > 0.f;
+	return FVector((bPlan ? X - PlanSide * 0.5 : X) * 100.0, (bPlan ? PlanSide * 0.5 - Y : Y) * 100.0, ZM * 100.0);
+}
+
 void AFTExploreDirector::SetPartyHidden(bool bHide)
 {
 	for (AFTPartyFollower* Follower : Followers)
@@ -1774,10 +1780,7 @@ void AFTExploreDirector::BeginWorld()
 		StartAt.ParseIntoArray(Parts, TEXT(","));
 		if (Parts.Num() == 4)
 		{
-			const double X = FCString::Atod(*Parts[0]);
-			const double Y = FCString::Atod(*Parts[1]);
-			const bool bPlan = PlanSide > 0.f;
-			const FVector At((bPlan ? X - PlanSide * 0.5 : X) * 100.0, (bPlan ? PlanSide * 0.5 - Y : Y) * 100.0, FCString::Atod(*Parts[2]) * 100.0);
+			const FVector At = PlanToWorldCm(FCString::Atod(*Parts[0]), FCString::Atod(*Parts[1]), FCString::Atod(*Parts[2]));
 			QueueStopSetDown(At, FCString::Atof(*Parts[3]));
 			UE_LOG(LogForgottenThird, Display, TEXT("World %s: -WorldStartAt: the lead starts at (%.0f, %.0f, %.0f) cm, facing %.0f."), *WorldId, At.X, At.Y,
 				At.Z, FCString::Atof(*Parts[3]));

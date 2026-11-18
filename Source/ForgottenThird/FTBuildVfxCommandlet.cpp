@@ -38,6 +38,7 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
+#include "FTRainCoverCollection.h"
 #include "ftcore/Vfx.h"
 
 #include <string>
@@ -109,12 +110,16 @@ struct FSpriteMaterialSpec
 	bool bLit = false; // lit by the scene (an emitter's "lit"): drops of water, which must not glow at night
 	bool bNearFade = false; // faded out near the camera (an emitter's "nearFade"): a ground tell the camera stands in
 	bool bRing = false; // the ripple ring mask (sprite "ring")
+	bool bCover = false; // hidden under cover (an emitter's "cover", lit alpha only): FTRainCover's openness
 };
-constexpr int32 kSpriteMaterials = 9;
+constexpr int32 kSpriteMaterials = 12;
 constexpr int32 kLitSprite = 4;
 constexpr int32 kNearFadeSprite = 5; // the soft one; the spark's is next
 constexpr int32 kLitNearFadeSprite = 7;
 constexpr int32 kLitRingSprite = 8;
+constexpr int32 kLitCoverSprite = 9; // the lit three again, hidden under cover
+constexpr int32 kLitNearFadeCoverSprite = 10;
+constexpr int32 kLitRingCoverSprite = 11;
 
 const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxSoft"), false, false},
@@ -126,16 +131,30 @@ const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxSparkNearFade"), true, false, false, true},
 	{TEXT("M_VfxSoftLitNearFade"), false, false, true, true},
 	{TEXT("M_VfxRingLit"), false, false, true, false, true},
+	{TEXT("M_VfxSoftLitCover"), false, false, true, false, false, true},
+	{TEXT("M_VfxSoftLitNearFadeCover"), false, false, true, true, false, true},
+	{TEXT("M_VfxRingLitCover"), false, false, true, false, true, true},
 };
 static_assert(int32(UE_ARRAY_COUNT(SpriteMaterials)) == kSpriteMaterials, "one spec per sprite material");
 
-// The sprite material an emitter draws with: lit (ring, near-faded or plain), near-faded, or the four basic ones.
-int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
+// The sprite material an emitter draws with: lit (ring, near-faded or plain; each with or without cover), near-faded,
+// or the four basic ones. The cover ones only when they were built (-RainCover, ftcore::rainCoverEmitter); else an
+// emitter marked "cover" draws with its plain lit material, as before the cover.
+int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P, bool bCoverBuilt)
 {
 	const bool bSpark = P.sprite == ftcore::VfxSprite::Spark;
 	if (P.lit)
 	{
-		return P.sprite == ftcore::VfxSprite::Ring ? kLitRingSprite : P.nearFade ? kLitNearFadeSprite : kLitSprite;
+		const bool bCover = ftcore::rainCoverEmitter(P.cover, bCoverBuilt);
+		if (P.sprite == ftcore::VfxSprite::Ring)
+		{
+			return bCover ? kLitRingCoverSprite : kLitRingSprite;
+		}
+		if (P.nearFade)
+		{
+			return bCover ? kLitNearFadeCoverSprite : kLitNearFadeSprite;
+		}
+		return bCover ? kLitCoverSprite : kLitSprite;
 	}
 	if (P.nearFade)
 	{
@@ -217,11 +236,25 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	if (!Spec.bAdditive)
 	{
 		// Near-faded: none within ftcore::kVfxNearFadeStart of the lens (the pixel's view depth), all beyond kVfxNearFadeEnd.
-		const FString OpacityCode = Spec.bNearFade
-			? FString::Printf(TEXT("return saturate(Color.a * Mask) * saturate((Depth - %.1f) / %.1f);"), ftcore::kVfxNearFadeStart,
+		// Cover: times the openness at the pixel (0 under a roof, an awning or a deck: no streak or splash there).
+		FString OpacityCode = Spec.bNearFade
+			? FString::Printf(TEXT("return saturate(Color.a * Mask) * saturate((Depth - %.1f) / %.1f)"), ftcore::kVfxNearFadeStart,
 				  ftcore::kVfxNearFadeEnd - ftcore::kVfxNearFadeStart)
-			: FString(TEXT("return saturate(Color.a * Mask);"));
+			: FString(TEXT("return saturate(Color.a * Mask)"));
+		OpacityCode += Spec.bCover ? TEXT(" * Cover;") : TEXT(";");
 		UMaterialExpressionCustom* Opacity = AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1, OpacityCode, Color, Mask);
+		if (Spec.bCover)
+		{
+			UMaterialExpression* Cover = FTRainCover::Term(Material, true, -600, 600);
+			if (!Cover)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: the rain cover assets could not be built for %s."), Spec.Name);
+				return nullptr;
+			}
+			FCustomInput& InCover = Opacity->Inputs.AddDefaulted_GetRef();
+			InCover.InputName = TEXT("Cover");
+			InCover.Input.Connect(0, Cover);
+		}
 		if (Spec.bNearFade)
 		{
 			UMaterialExpressionPixelDepth* Depth = AddVfxExpression<UMaterialExpressionPixelDepth>(Material, -600, 300);
@@ -585,7 +618,7 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 		return false;
 	}
 	const bool bSpark = P.sprite == VfxSprite::Spark;
-	UMaterialInterface* const Picked = Materials[SpriteMaterialIndex(P)];
+	UMaterialInterface* const Picked = Materials[SpriteMaterialIndex(P, Materials[kLitCoverSprite] != nullptr)];
 	Sprite->Material = Picked ? Picked : Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
 	Sprite->SortMode = P.additive ? ENiagaraSortMode::None : ENiagaraSortMode::ViewDistance;
 	Sprite->FacingMode = ENiagaraSpriteFacingMode::FaceCamera;
@@ -857,6 +890,14 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 	// that effect's asset goes, and the materials already built are used.
 	bool bOk = true;
 	UMaterialInterface* Materials[kSpriteMaterials] = {};
+	// The cover sprites only with -RainCover and its assets (made here when missing); else none is built or loaded and
+	// every emitter draws as before the cover. A failed save leaves the cover off, logged, rather than failing the build.
+	bool bCoverSprites = FTRainCover::Enabled();
+	if (bCoverSprites && (!FTRainCover::LoadOrBuild() || !FTRainCover::LoadOrBuildTarget()))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildVfx: -RainCover, but the rain cover assets could not be built; rain draws without cover."));
+		bCoverSprites = false;
+	}
 	if (Only.IsEmpty())
 	{
 		TArray<FString> Old;
@@ -879,8 +920,16 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 
 		for (int32 I = 0; I < kSpriteMaterials; ++I)
 		{
+			if (SpriteMaterials[I].bCover && !bCoverSprites)
+			{
+				continue;
+			}
 			UPackage* Package = CreatePackage(*MaterialPackage(SpriteMaterials[I]));
 			UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
+			if (!Material)
+			{
+				return 1;
+			}
 			Materials[I] = Material;
 			FAssetCompilingManager::Get().FinishAllCompilation();
 			bOk &= SaveVfxAsset(Package, Material);
@@ -894,6 +943,10 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		}
 		for (int32 I = 0; I < kSpriteMaterials; ++I)
 		{
+			if (SpriteMaterials[I].bCover && !bCoverSprites)
+			{
+				continue;
+			}
 			const FString Package = MaterialPackage(SpriteMaterials[I]);
 			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
 			if (!Materials[I] && (SpriteMaterials[I].bLit || SpriteMaterials[I].bNearFade))
@@ -901,6 +954,10 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 				// The lit and near-fade sprites came after the others were built: made here once, the rest untouched.
 				UPackage* LitPackage = CreatePackage(*Package);
 				UMaterial* Lit = BuildSpriteMaterial(LitPackage, SpriteMaterials[I]);
+				if (!Lit)
+				{
+					return 1;
+				}
 				Materials[I] = Lit;
 				FAssetCompilingManager::Get().FinishAllCompilation();
 				bOk &= SaveVfxAsset(LitPackage, Lit);

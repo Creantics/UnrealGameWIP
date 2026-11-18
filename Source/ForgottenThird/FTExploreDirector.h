@@ -149,6 +149,9 @@ public:
 	// the lines give engine metres.
 	UPROPERTY(EditAnywhere, Category = "Explore|Tour")
 	float PlanSide = 0.f;
+	// A switch's point (-WorldStartAt, -StillCam) in the engine frame, cm: x and y plan metres when PlanSide is known
+	// (engine metres otherwise), z metres.
+	FVector PlanToWorldCm(double X, double Y, double ZM) const;
 	// The HUD minimap's model (ftcore::saveMiniMap), baked by FTBuildMiniMap; empty: no minimap on this level.
 	UPROPERTY()
 	TArray<uint8> MiniMapBlob;
