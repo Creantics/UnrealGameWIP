@@ -559,3 +559,225 @@ TEST_CASE("map overlay: a stretch of pieces stops at the screen's margin") {
     REQUIRE(mapLabelAlong(f.m, f.n, mapRoadName(f.n, 0), f.v, 1500.f, 10.f, l, 24.f, 0.f));
     CHECK_FALSE(l.fits);
 }
+
+namespace {
+
+// The shared run of the brief's rows (plan side 1000: engine x = plan x - 500, y = 500 - plan y): an alley running
+// straight east-west through plan (812.4, 498.8), its row's point, and plan (865, 500), the zone row's point; and a
+// coast road 60 m south in another district.
+struct ZoneFixture {
+    MiniMapModel m;
+    MapNames n;
+};
+Vec2 alleyAt(float x) { // the alley's line through engine (312.4, 1.2) and (365, 0)
+    return Vec2{x, 1.2f + (x - 312.4f) * (-1.2f / 52.6f)};
+}
+ZoneFixture zoneFixture() {
+    ZoneFixture f;
+    MiniMapModel& m = f.m;
+    m.minX = 200.f;
+    m.minY = -100.f;
+    m.maxX = 500.f;
+    m.maxY = 100.f;
+    auto road = [&](const char* id, MapRoadClass cls, std::initializer_list<Vec2> pts) {
+        MapRoad r;
+        r.id = id;
+        r.cls = cls;
+        r.width = 4.f;
+        r.first = static_cast<std::uint32_t>(m.points.size());
+        r.count = static_cast<std::uint32_t>(pts.size());
+        for (const Vec2& p : pts) m.points.push_back(p);
+        m.roads.push_back(r);
+    };
+    road("SB1N-E-A2", MapRoadClass::Lane, {alleyAt(280.f), alleyAt(330.f), alleyAt(420.f)});
+    road("RD-C", MapRoadClass::Main, {{300.f, 60.f}, {420.f, 60.f}});
+    mapBuildGrid(m);
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D2,district,Lanternfall,,D2,,\n"
+                      "D4,district,Saltreach,,D4,,\n"
+                      "SB1N-E-A2,alley,Lefthand Alley,,D2,812.4,498.8\n"
+                      "Z25,street,Lantern Row,,D2,865.0,500.0\n"
+                      "RD-C,coast_road,Coast Road,,D4,,\n";
+    std::string err;
+    REQUIRE_MESSAGE(mapLoadNames(m, csv, f.n, &err, 1000.0), err);
+    return f;
+}
+std::uint16_t nameIndex(const MapNames& n, const char* name) {
+    for (std::size_t i = 0; i < n.names.size(); ++i)
+        if (n.names[i] == name) return static_cast<std::uint16_t>(i);
+    return kMapNoName;
+}
+
+} // namespace
+
+TEST_CASE("map overlay: a zone sharing a road's run names its own part; the split is at the anchors' midpoint") {
+    const ZoneFixture f = zoneFixture();
+    const MiniMapModel& m = f.m;
+    const MapNames& n = f.n;
+    const std::uint16_t row = nameIndex(n, "Lantern Row"), alley = nameIndex(n, "Lefthand Alley");
+    REQUIRE(row != kMapNoName);
+    REQUIRE(alley != kMapNoName);
+    REQUIRE(n.segments.size() == 1);
+    REQUIRE(n.roadSegments.size() == m.roads.size() + 1);
+    CHECK(n.segments[0].road == 0);
+    CHECK(n.segments[0].name == row);
+    REQUIRE(n.segments[0].district != kMapNoName);
+    CHECK(n.names[n.districts[n.segments[0].district].name] == "Lanternfall");
+    // The zone is no longer a point place: it names the segment.
+    for (const MapNames::Spot& s : n.places) CHECK(s.name != row);
+    // The split: midway between plan x 812.4 and 865, at plan 838.7 (engine 338.7).
+    float d = 0.f;
+    CHECK(n.segments[0].s0 == doctest::Approx(mapRoadAlong(m, 0, alleyAt(338.7f), &d)).epsilon(1e-3));
+    CHECK(d < 0.01f);
+    CHECK(n.segments[0].s1 == doctest::Approx(mapRoadAlong(m, 0, alleyAt(420.f))).epsilon(1e-4));
+    // One rule names a point on the road: plan (865, 500) is Lantern Row, plan (812, 499) Lefthand Alley.
+    CHECK(mapNameAt(m, n, 0, Vec2{365.f, 0.f}).name == row);
+    CHECK(mapNameAt(m, n, 0, Vec2{312.f, 1.f}).name == alley);
+    CHECK(mapNameAt(m, n, 0, alleyAt(338.f)).name == alley);
+    CHECK(mapNameAt(m, n, 0, alleyAt(339.4f)).name == row);
+    CHECK(mapNameAt(m, n, 1, Vec2{365.f, 60.f}).name == nameIndex(n, "Coast Road"));
+    CHECK(mapNameAt(m, n, -1, Vec2{365.f, 0.f}).name == kMapNoName);
+    // The caption's lookup: the nearest road in reach and the name there, with its district.
+    const MapHere here = mapHereAt(m, n, Vec2{365.f, 2.f});
+    CHECK(here.road == 0);
+    CHECK(here.name == row);
+    REQUIRE(here.district != kMapNoName);
+    CHECK(n.names[n.districts[here.district].name] == "Lanternfall");
+    CHECK(mapHereAt(m, n, Vec2{312.f, 1.f}).name == alley);
+    const MapHere coast = mapHereAt(m, n, Vec2{404.f, 57.f});
+    CHECK(coast.road == 1);
+    CHECK(coast.name == nameIndex(n, "Coast Road"));
+    REQUIRE(coast.district != kMapNoName);
+    CHECK(n.names[n.districts[coast.district].name] == "Saltreach");
+    // No road in reach: no street; the district whose anchor is nearest.
+    const MapHere none = mapHereAt(m, n, Vec2{330.f, 25.f});
+    CHECK(none.road == -1);
+    CHECK(none.name == kMapNoName);
+    REQUIRE(none.district != kMapNoName);
+    CHECK(n.names[n.districts[none.district].name] == "Lanternfall");
+}
+
+TEST_CASE("map overlay: each name sharing a run is labelled on its own side of the split") {
+    const ZoneFixture f = zoneFixture();
+    const std::uint16_t row = nameIndex(f.n, "Lantern Row"), alley = nameIndex(f.n, "Lefthand Alley");
+    const MapOverlayView v = mapOverlayView({350.f, 0.f}, MapZoom::Near, 1920.f, 1080.f); // the whole alley on screen
+    MapLabel a, b;
+    REQUIRE(mapLabelAlong(f.m, f.n, row, v, 40.f, 14.f, a));
+    REQUIRE(mapLabelAlong(f.m, f.n, alley, v, 40.f, 14.f, b));
+    const Vec2 wa = mapOverlayFromScreen(v, a.at), wb = mapOverlayFromScreen(v, b.at);
+    CHECK(wa.x > 338.7f);
+    CHECK(wb.x < 338.7f);
+    CHECK(wa.x == doctest::Approx((338.7f + 420.f) * 0.5f).epsilon(2e-3)); // centred on its own part
+    CHECK(wb.x == doctest::Approx((280.f + 338.7f) * 0.5f).epsilon(2e-3));
+    // Both names are picked at Near (the alley's class), and the cursor's pick is the name at the cursor.
+    MapLabelPick out[16];
+    std::vector<std::uint8_t> seen(f.n.names.size());
+    const std::size_t k = mapLabelPicks(f.m, f.n, v, MapZoom::Near, -1, out, 16, seen.data());
+    bool hasRow = false, hasAlley = false;
+    for (std::size_t i = 0; i < k; ++i) {
+        hasRow = hasRow || out[i].name == row;
+        hasAlley = hasAlley || out[i].name == alley;
+    }
+    CHECK(hasRow);
+    CHECK(hasAlley);
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const MapPlaceName at = mapNameAt(f.m, f.n, 0, Vec2{365.f, 0.f});
+    const std::size_t c = mapLabelPicks(f.m, f.n, v, MapZoom::Near, 0, out, 16, seen.data(), 0.f, at.name);
+    const MapHere here = mapHereAt(f.m, f.n, Vec2{365.f, 2.f});
+    MapLabel l;
+    const bool placed = mapLabelAlong(f.m, f.n, row, v, 40.f, 14.f, l);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    REQUIRE(c > 0);
+    CHECK(out[0].rank == MapLabelRank::Cursor);
+    CHECK(out[0].name == row);
+    CHECK(here.name == row);
+    CHECK(placed);
+}
+
+TEST_CASE("map overlay: a zone with no road anchor on the run takes the run's half nearer it") {
+    const ZoneFixture f = zoneFixture();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D2,district,Lanternfall,,D2,,\n"
+                      "SB1N-E-A2,alley,Lefthand Alley,,D2,,\n"
+                      "Z25,street,Lantern Row,,D2,865.0,500.0\n";
+    MapNames n;
+    REQUIRE(mapLoadNames(f.m, csv, n, nullptr, 1000.0));
+    REQUIRE(n.segments.size() == 1);
+    const float mid = 0.5f * mapRoadAlong(f.m, 0, alleyAt(420.f));
+    CHECK(n.segments[0].s0 == doctest::Approx(mid).epsilon(1e-4)); // the zone (east of the middle) takes the east half
+    CHECK(mapNameAt(f.m, n, 0, alleyAt(360.f)).name == nameIndex(n, "Lantern Row"));
+    CHECK(mapNameAt(f.m, n, 0, alleyAt(340.f)).name == nameIndex(n, "Lefthand Alley"));
+}
+
+TEST_CASE("map overlay: the caption's box is reserved; the halo counts as part of every label, turned ones too") {
+    const MapLabel cap = mapCaptionBox(1920.f, 1080.f);
+    CHECK(cap.w == doctest::Approx(kMapCaptionW + 2.f * kMapCaptionPad));
+    CHECK(cap.h == doctest::Approx(kMapCaptionH + 2.f * kMapCaptionPad));
+    CHECK(cap.at.x - cap.w * 0.5f == doctest::Approx(kMapCaptionX - kMapCaptionPad));
+    CHECK(cap.at.y - cap.h * 0.5f == doctest::Approx(1080.f - kMapCaptionUp - kMapCaptionPad));
+    const MapLabel cap4k = mapCaptionBox(3840.f, 2160.f, 2.f);
+    CHECK(cap4k.w == doctest::Approx(cap.w * 2.f));
+    CHECK(cap4k.at.y == doctest::Approx(cap.at.y * 2.f));
+    // A label over the caption is dropped when the caption is a blocker, kept when not.
+    const MapLabel over{{200.f, 1000.f}, 0.f, 120.f, 16.f, 7, 0, true};
+    MapLabelSet out;
+    mapPlaceLabels(&over, 1, out);
+    CHECK(out.count == 1);
+    mapPlaceLabels(&over, 1, out, 6.f, &cap, 1);
+    CHECK(out.count == 0);
+    // Two labels 8 px apart: clear with the 6 px gap alone, overlapping once each carries a 3 px halo.
+    for (const float angle : {0.f, 45.f, -30.f}) {
+        const float rad = angle * 3.14159265f / 180.f;
+        const Vec2 normal{-std::sin(rad), std::cos(rad)}; // the box's own down, on screen
+        const MapLabel a{{500.f, 500.f}, angle, 100.f, 20.f, 1, 2, true};
+        const MapLabel b{{500.f + 28.f * normal.x, 500.f + 28.f * normal.y}, angle, 100.f, 20.f, 2, 2, true};
+        const MapLabel both[] = {a, b};
+        CAPTURE(angle);
+        mapPlaceLabels(both, 2, out, 6.f);
+        CHECK(out.count == 2);
+        mapPlaceLabels(both, 2, out, 6.f, nullptr, 0, kMapLabelHaloPx);
+        CHECK(out.count == 1);
+        // The halo's own corners: the box grown by 3 px all round.
+        Vec2 k[4];
+        mapLabelCorners(a, kMapLabelHaloPx, k);
+        CHECK(std::hypot(k[0].x - k[2].x, k[0].y - k[2].y) == doctest::Approx(std::hypot(106.f, 26.f)).epsilon(1e-4));
+    }
+}
+
+TEST_CASE("map overlay: the sea's name is read from its row, named once over the sea, never as a point place") {
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "W1,harbour,Fixture Harbour,,,120,40\n"
+                      "W2,sea,Fixture Sea,,,300,40\n"
+                      "W3,bay,Fixture Bay,,,200,40\n"
+                      "P1,park,Fixture Green,,,100,100\n";
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n));
+    REQUIRE(n.seaName != kMapNoName);
+    CHECK(n.names[n.seaName] == "Fixture Sea"); // the sea row beats a harbour before it and a bay after it
+    bool seaPlace = false, harbourPlace = false;
+    for (const MapNames::Spot& s : n.places) {
+        seaPlace = seaPlace || s.name == n.seaName;
+        harbourPlace = harbourPlace || n.names[s.name] == "Fixture Harbour";
+    }
+    CHECK_FALSE(seaPlace);
+    CHECK(harbourPlace); // a beaten one stays a water name at its point
+    CHECK(n.places.back().green);
+    const MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Far, 1920.f, 1080.f);
+    MapLabelPick out[16];
+    std::vector<std::uint8_t> seen(n.names.size());
+    const Vec2 seaAt{350.f, 30.f};
+    const std::size_t k = mapLabelPicks(m, n, v, MapZoom::Far, -1, out, 16, seen.data(), 0.f, kMapNoName, &seaAt);
+    std::size_t seas = 0;
+    for (std::size_t i = 0; i < k; ++i)
+        if (out[i].name == n.seaName) {
+            ++seas;
+            CHECK_FALSE(out[i].along);
+            CHECK(out[i].rank == MapLabelRank::Water);
+            CHECK(out[i].at.x == doctest::Approx(350.f));
+        }
+    CHECK(seas == 1);
+    // No place for it on screen: not picked.
+    CHECK(mapLabelPicks(m, n, v, MapZoom::Far, -1, out, 16, seen.data()) == k - 1);
+}

@@ -51,6 +51,9 @@ inline constexpr float kUiSpecialRingGap = 5.f;   // px at 1080p, the second out
 // The prompt stack's row for a prompt with the special row reserved or not. Reserved: rows 0-2 as today (HEAL, GIFT,
 // PARTNER), the special at kUiSpecialRow, the basic controls one row up. Not reserved: uiPromptRow.
 inline constexpr std::uint8_t kUiSpecialRow = 3;
+// Whether the row is reserved: the world's switch (UiWorldRules::specialPrompt) and a fight with specials
+// (ArenaFight::specialsOn: a table set since the fight began, steady through it). Without both the stack is as it was.
+constexpr bool uiSpecialRowReserved(bool worldSwitch, bool fightHasSpecials) { return worldSwitch && fightHasSpecials; }
 constexpr std::uint8_t uiPromptRowAt(UiPrompt p, bool reserve) {
     const std::uint8_t r = uiPromptRow(p);
     return reserve && r >= kUiSpecialRow ? static_cast<std::uint8_t>(r + 1) : r;

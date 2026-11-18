@@ -102,6 +102,47 @@ bool separated(const Vec2 a[4], const Vec2 b[4], Vec2 axis) {
     return amax <= bmin || bmax <= amin;
 }
 
+// The distance from p to segment a-b, and how far along it (0..1) its nearest point lies.
+float nearestOn(Vec2 p, Vec2 a, Vec2 b, float& t) {
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float len2 = dx * dx + dy * dy;
+    t = len2 > 0.f ? std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / len2, 0.f, 1.f) : 0.f;
+    return std::hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+}
+
+// Whether a road's points are all in the model.
+bool roadOk(const MiniMapModel& m, std::size_t r) {
+    const MapRoad& road = m.roads[r];
+    return road.count > 0 && static_cast<std::size_t>(road.first) + road.count <= m.points.size();
+}
+
+// The point `s` m along road r's centre line (held to its ends).
+Vec2 pointAtArc(const MiniMapModel& m, std::size_t r, float s) {
+    const MapRoad& road = m.roads[r];
+    float at = 0.f;
+    for (std::uint32_t k = 0; k + 1 < road.count; ++k) {
+        const Vec2 a = m.points[road.first + k], b = m.points[road.first + k + 1];
+        const float len = std::hypot(b.x - a.x, b.y - a.y);
+        if (s <= at + len && len > 0.f) {
+            const float u = std::clamp((s - at) / len, 0.f, 1.f);
+            return Vec2{a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u};
+        }
+        at += len;
+    }
+    return m.points[road.first + road.count - 1];
+}
+
+bool overlapGrown(const MapLabel& a, float growA, const MapLabel& b, float growB) {
+    Vec2 ca[4], cb[4];
+    corners(a, growA, ca);
+    corners(b, growB, cb);
+    const float ra = a.angleDeg * kPi / 180.f, rb = b.angleDeg * kPi / 180.f;
+    const Vec2 axes[4] = {{std::cos(ra), std::sin(ra)}, {-std::sin(ra), std::cos(ra)}, {std::cos(rb), std::sin(rb)}, {-std::sin(rb), std::cos(rb)}};
+    for (const Vec2& ax : axes)
+        if (separated(ca, cb, ax)) return false;
+    return true;
+}
+
 } // namespace
 
 bool mapRoadShown(MapRoadClass c, MapZoom z) {
@@ -226,9 +267,18 @@ void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::uint8_t>& out
         if (b != kNone) out[b] = 1;
 }
 
+bool mapGreenKind(std::string_view kind) {
+    static constexpr std::string_view kGreen[] = {"park", "green", "garden", "grove", "lawn", "orchard", "cemetery", "square", "plaza"};
+    for (std::string_view g : kGreen)
+        if (kind == g) return true;
+    return false;
+}
+
 bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error, double planSide) {
     out = MapNames{};
     out.roadName.assign(m.roads.size(), kMapNoName);
+    out.roadAnchor.assign(m.roads.size(), Vec2{});
+    out.roadHasAnchor.assign(m.roads.size(), 0);
     std::vector<detail::Record> recs;
     if (!detail::splitCsv(csv, recs, error)) return false;
     std::size_t first = 0;
@@ -247,6 +297,18 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
     for (std::size_t r = 0; r < m.roads.size(); ++r) byId[m.roads[r].id].push_back(static_cast<int>(r));
     std::unordered_map<std::string, std::uint16_t> byName;
     std::vector<std::string> roadDistrictId(m.roads.size()); // joined to the districts once all rows are read
+    // Zone rows of a road kind (they may share a named road's run) stay in places until the end, which drops the ones
+    // that name a segment instead.
+    struct Zone {
+        std::uint16_t name = kMapNoName;
+        Vec2 at{};
+        std::string district;
+        std::size_t place = 0;
+    };
+    std::vector<Zone> zones;
+    constexpr std::size_t kNoPlace = static_cast<std::size_t>(-1);
+    std::size_t seaPlace = kNoPlace;
+    int seaRank = 3;
     auto field = [](const detail::Record& rec, int c) { return c >= 0 && static_cast<std::size_t>(c) < rec.fields.size() ? trimmed(rec.fields[static_cast<std::size_t>(c)]) : std::string(); };
     // A row's point, in engine metres; false when it has none.
     auto point = [&](const detail::Record& rec, Vec2& at) {
@@ -288,40 +350,64 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
         }
         const bool water = kind == "river" || kind == "lake" || kind == "canal" || kind == "sea" || kind == "harbour" || kind == "bay";
         if (water) out.nameKind[idx] = MapNameKind::Water;
+        const int seaKind = kind == "sea" ? 0 : kind == "bay" ? 1 : kind == "harbour" ? 2 : 3;
         const auto roads = byId.find(id);
         if (roads == byId.end()) {
             Vec2 at{};
-            if ((zoneId(id) || !lineKind(kind)) && point(rec, at)) {
-                out.places.push_back(MapNames::Spot{idx, at});
-            } else {
+            const bool placed = point(rec, at);
+            if (seaKind < seaRank) { // the open sea's name: the first sea row, else bay, else harbour
+                if (seaPlace != kNoPlace) seaPlace = kNoPlace; // the one it beats goes back to its point
+                seaRank = seaKind;
+                out.seaName = idx;
+                if (placed) {
+                    seaPlace = out.places.size();
+                    out.places.push_back(MapNames::Spot{idx, at, false});
+                }
+                continue;
+            }
+            if ((zoneId(id) || !lineKind(kind)) && placed) {
+                MapRoadClass zc{};
+                if (zoneId(id) && !water && mapRoadClass(kind, zc)) zones.push_back(Zone{idx, at, field(rec, col[4]), out.places.size()});
+                out.places.push_back(MapNames::Spot{idx, at, mapGreenKind(kind)});
+            } else if (!(seaKind < 3)) {
                 ++out.unmatched;
             }
             continue;
         }
         if (!water && out.nameKind[idx] != MapNameKind::Water) out.nameKind[idx] = MapNameKind::Road;
         const std::string district = field(rec, col[4]);
+        Vec2 anchor{};
+        const bool anchored = point(rec, anchor);
         for (int road : roads->second) {
-            out.roadName[static_cast<std::size_t>(road)] = idx;
-            roadDistrictId[static_cast<std::size_t>(road)] = district;
+            const std::size_t ri = static_cast<std::size_t>(road);
+            out.roadName[ri] = idx;
+            roadDistrictId[ri] = district;
+            if (anchored) {
+                out.roadAnchor[ri] = anchor;
+                out.roadHasAnchor[ri] = 1;
+            }
         }
     }
+    auto districtOf = [&](const std::string& did) {
+        if (did.empty()) return kMapNoName;
+        for (std::size_t d = 0; d < out.districts.size(); ++d)
+            if (out.districts[d].id == did) return static_cast<std::uint16_t>(d);
+        return kMapNoName;
+    };
     // Roads to their districts, and each district without a point of its own: the mean of its named roads' midpoints.
     out.roadDistrict.assign(m.roads.size(), kMapNoName);
     std::vector<double> sx(out.districts.size(), 0.0), sy(out.districts.size(), 0.0);
     std::vector<std::size_t> sn(out.districts.size(), 0);
     for (std::size_t r = 0; r < m.roads.size(); ++r) {
-        if (roadDistrictId[r].empty()) continue;
-        for (std::size_t d = 0; d < out.districts.size(); ++d) {
-            if (out.districts[d].id != roadDistrictId[r]) continue;
-            out.roadDistrict[r] = static_cast<std::uint16_t>(d);
-            const MapRoad& road = m.roads[r];
-            if (road.count == 0 || road.first + road.count > m.points.size()) break;
-            const Vec2 pa = m.points[road.first], pb = m.points[road.first + road.count - 1];
-            sx[d] += 0.5 * (static_cast<double>(pa.x) + static_cast<double>(pb.x));
-            sy[d] += 0.5 * (static_cast<double>(pa.y) + static_cast<double>(pb.y));
-            ++sn[d];
-            break;
-        }
+        const std::uint16_t d = districtOf(roadDistrictId[r]);
+        if (d == kMapNoName) continue;
+        out.roadDistrict[r] = d;
+        if (!roadOk(m, r)) continue;
+        const MapRoad& road = m.roads[r];
+        const Vec2 pa = m.points[road.first], pb = m.points[road.first + road.count - 1];
+        sx[d] += 0.5 * (static_cast<double>(pa.x) + static_cast<double>(pb.x));
+        sy[d] += 0.5 * (static_cast<double>(pa.y) + static_cast<double>(pb.y));
+        ++sn[d];
     }
     for (std::size_t d = 0; d < out.districts.size(); ++d) {
         if (sn[d] == 0 || out.districts[d].hasAnchor) continue; // a row's own point wins
@@ -329,7 +415,261 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
         out.districts[d].anchor = Vec2{static_cast<float>(sx[d] / k), static_cast<float>(sy[d] / k)};
         out.districts[d].hasAnchor = true;
     }
+    // Each road's bounds, once (the picks test them every frame).
+    out.roadBox.assign(m.roads.size() * 4, 0.f);
+    for (std::size_t r = 0; r < m.roads.size(); ++r) {
+        float* box = &out.roadBox[r * 4];
+        box[0] = box[1] = 1e30f;
+        box[2] = box[3] = -1e30f;
+        if (!roadOk(m, r)) continue;
+        for (std::uint32_t k = 0; k < m.roads[r].count; ++k) {
+            const Vec2 p = m.points[m.roads[r].first + k];
+            box[0] = std::min(box[0], p.x);
+            box[1] = std::min(box[1], p.y);
+            box[2] = std::max(box[2], p.x);
+            box[3] = std::max(box[3], p.y);
+        }
+    }
+    // Zones that share a named road's straight run: split the run between the anchors on it (MapOverlay.h).
+    std::vector<std::uint8_t> drop(out.places.size(), 0);
+    if (seaPlace != kNoPlace) drop[seaPlace] = 1; // named over the open sea instead
+    if (!zones.empty()) {
+        struct Run {
+            std::uint32_t road = 0, k0 = 0, k1 = 0; // pieces [k0, k1)
+            float s0 = 0.f, s1 = 0.f;              // m along the road
+        };
+        std::vector<Run> runs;
+        const float bendCos = std::cos(kMapAlongBendDeg * kPi / 180.f);
+        for (std::size_t r = 0; r < m.roads.size(); ++r) {
+            const std::uint16_t nm = out.roadName[r];
+            if (nm == kMapNoName || out.nameKind[nm] == MapNameKind::Water || !roadOk(m, r) || m.roads[r].count < 2) continue;
+            const MapRoad& road = m.roads[r];
+            float s = 0.f;
+            bool open = false;
+            Run cur{};
+            Vec2 dir{};
+            for (std::uint32_t k = 0; k + 1 < road.count; ++k) {
+                const Vec2 a = m.points[road.first + k], b = m.points[road.first + k + 1];
+                const float len = std::hypot(b.x - a.x, b.y - a.y);
+                if (len > 0.f) {
+                    const Vec2 d{(b.x - a.x) / len, (b.y - a.y) / len};
+                    if (open && d.x * dir.x + d.y * dir.y < bendCos) {
+                        runs.push_back(cur);
+                        open = false;
+                    }
+                    if (!open) {
+                        cur = Run{static_cast<std::uint32_t>(r), k, k, s, s};
+                        dir = d;
+                        open = true;
+                    }
+                }
+                s += len;
+                if (open) {
+                    cur.k1 = k + 1;
+                    cur.s1 = s;
+                }
+            }
+            if (open) runs.push_back(cur);
+        }
+        // The distance from p to a run, and the m along the road of its nearest point.
+        auto onRun = [&](const Run& run, Vec2 p, float& along) {
+            const MapRoad& road = m.roads[run.road];
+            float best = 1e30f, s = run.s0;
+            along = run.s0;
+            for (std::uint32_t k = run.k0; k < run.k1; ++k) {
+                const Vec2 a = m.points[road.first + k], b = m.points[road.first + k + 1];
+                const float len = std::hypot(b.x - a.x, b.y - a.y);
+                float u = 0.f;
+                const float d = nearestOn(p, a, b, u);
+                if (d < best) {
+                    best = d;
+                    along = s + u * len;
+                }
+                s += len;
+            }
+            return best;
+        };
+        std::vector<int> zoneRun(zones.size(), -1);
+        std::vector<float> zoneAt(zones.size(), 0.f);
+        for (std::size_t z = 0; z < zones.size(); ++z) {
+            float bestD = kMapZoneReachM;
+            const Vec2 p = zones[z].at;
+            for (std::size_t q = 0; q < runs.size(); ++q) {
+                const Run& run = runs[q];
+                if (out.roadName[run.road] == zones[z].name) continue;
+                const float* box = &out.roadBox[static_cast<std::size_t>(run.road) * 4];
+                if (p.x < box[0] - bestD || p.x > box[2] + bestD || p.y < box[1] - bestD || p.y > box[3] + bestD) continue;
+                float along = 0.f;
+                const float d = onRun(run, p, along);
+                const bool higher = zoneRun[z] >= 0 && m.roads[run.road].cls < m.roads[runs[static_cast<std::size_t>(zoneRun[z])].road].cls;
+                if (d < bestD - 1e-4f || (d <= bestD + 1e-4f && (zoneRun[z] < 0 || higher))) {
+                    bestD = d;
+                    zoneRun[z] = static_cast<int>(q);
+                    zoneAt[z] = along;
+                }
+            }
+        }
+        struct Anchor {
+            float at = 0.f;
+            std::size_t zone = 0; // into zones; the road's own anchor: zones.size()
+        };
+        std::vector<Anchor> anchors;
+        for (std::size_t q = 0; q < runs.size(); ++q) {
+            anchors.clear();
+            for (std::size_t z = 0; z < zones.size(); ++z)
+                if (zoneRun[z] == static_cast<int>(q)) anchors.push_back(Anchor{zoneAt[z], z});
+            if (anchors.empty()) continue;
+            const Run& run = runs[q];
+            const std::size_t zn = anchors.size();
+            bool roadAnchored = false;
+            if (out.roadHasAnchor[run.road]) {
+                float along = 0.f;
+                if (onRun(run, out.roadAnchor[run.road], along) <= kMapZoneReachM) {
+                    anchors.push_back(Anchor{along, zones.size()});
+                    roadAnchored = true;
+                }
+            }
+            std::stable_sort(anchors.begin(), anchors.end(), [](const Anchor& x, const Anchor& y) { return x.at < y.at; });
+            float lo = run.s0, hi = run.s1;
+            if (!roadAnchored) { // the zones keep the half of the run nearer them
+                float mean = 0.f;
+                for (const Anchor& an : anchors) mean += an.at;
+                mean /= static_cast<float>(zn);
+                const float mid = 0.5f * (run.s0 + run.s1);
+                if (mean >= mid) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            for (std::size_t i = 0; i < anchors.size(); ++i) {
+                if (anchors[i].zone >= zones.size()) continue;
+                const float sa = i == 0 ? lo : std::max(lo, 0.5f * (anchors[i - 1].at + anchors[i].at));
+                const float sb = i + 1 == anchors.size() ? hi : std::min(hi, 0.5f * (anchors[i].at + anchors[i + 1].at));
+                if (!(sb > sa)) continue;
+                const Zone& zone = zones[anchors[i].zone];
+                MapNames::Segment seg;
+                seg.road = run.road;
+                seg.s0 = sa;
+                seg.s1 = sb;
+                seg.name = zone.name;
+                seg.district = districtOf(zone.district);
+                if (seg.district == kMapNoName) seg.district = out.roadDistrict[run.road];
+                // Bounds: the ends and every point between them.
+                const Vec2 pa = pointAtArc(m, run.road, sa), pb = pointAtArc(m, run.road, sb);
+                seg.x0 = std::min(pa.x, pb.x);
+                seg.y0 = std::min(pa.y, pb.y);
+                seg.x1 = std::max(pa.x, pb.x);
+                seg.y1 = std::max(pa.y, pb.y);
+                const MapRoad& road = m.roads[run.road];
+                float s = 0.f;
+                for (std::uint32_t k = 0; k < road.count; ++k) {
+                    const Vec2 p = m.points[road.first + k];
+                    if (s > sa && s < sb) {
+                        seg.x0 = std::min(seg.x0, p.x);
+                        seg.y0 = std::min(seg.y0, p.y);
+                        seg.x1 = std::max(seg.x1, p.x);
+                        seg.y1 = std::max(seg.y1, p.y);
+                    }
+                    if (k + 1 < road.count) s += std::hypot(m.points[road.first + k + 1].x - p.x, m.points[road.first + k + 1].y - p.y);
+                }
+                out.segments.push_back(seg);
+                drop[zone.place] = 1;
+                out.nameKind[zone.name] = MapNameKind::Road;
+            }
+        }
+        std::stable_sort(out.segments.begin(), out.segments.end(), [](const MapNames::Segment& x, const MapNames::Segment& y) {
+            return x.road != y.road ? x.road < y.road : x.s0 < y.s0;
+        });
+    }
+    out.roadSegments.assign(m.roads.size() + 1, 0);
+    for (const MapNames::Segment& seg : out.segments) ++out.roadSegments[seg.road + 1];
+    for (std::size_t r = 0; r < m.roads.size(); ++r) out.roadSegments[r + 1] += out.roadSegments[r];
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < out.places.size(); ++i)
+        if (!drop[i]) out.places[kept++] = out.places[i];
+    out.places.resize(kept);
     return true;
+}
+
+float mapRoadAlong(const MiniMapModel& m, int road, Vec2 world, float* distance) {
+    if (distance) *distance = 1e30f;
+    if (road < 0 || static_cast<std::size_t>(road) >= m.roads.size() || !roadOk(m, static_cast<std::size_t>(road))) return 0.f;
+    const MapRoad& r = m.roads[static_cast<std::size_t>(road)];
+    float best = 1e30f, along = 0.f, s = 0.f;
+    if (r.count == 1) {
+        best = std::hypot(world.x - m.points[r.first].x, world.y - m.points[r.first].y);
+    }
+    for (std::uint32_t k = 0; k + 1 < r.count; ++k) {
+        const Vec2 a = m.points[r.first + k], b = m.points[r.first + k + 1];
+        const float len = std::hypot(b.x - a.x, b.y - a.y);
+        float u = 0.f;
+        const float d = nearestOn(world, a, b, u);
+        if (d < best) {
+            best = d;
+            along = s + u * len;
+        }
+        s += len;
+    }
+    if (distance) *distance = best;
+    return along;
+}
+
+MapPlaceName mapNameAt(const MiniMapModel& m, const MapNames& n, int road, Vec2 world) {
+    MapPlaceName out;
+    if (road < 0 || static_cast<std::size_t>(road) >= m.roads.size()) return out;
+    const std::size_t r = static_cast<std::size_t>(road);
+    out.name = mapRoadName(n, road);
+    out.district = mapRoadDistrict(n, road);
+    if (r + 1 >= n.roadSegments.size() || n.roadSegments[r] == n.roadSegments[r + 1]) return out;
+    const float s = mapRoadAlong(m, road, world);
+    for (std::uint32_t i = n.roadSegments[r]; i < n.roadSegments[r + 1] && i < n.segments.size(); ++i) {
+        const MapNames::Segment& seg = n.segments[i];
+        if (s >= seg.s0 && s <= seg.s1) {
+            out.name = seg.name;
+            if (seg.district != kMapNoName) out.district = seg.district;
+            break;
+        }
+    }
+    return out;
+}
+
+MapHere mapHereAt(const MiniMapModel& m, const MapNames& n, Vec2 world, float reach) {
+    MapHere out;
+    float bestD = reach;
+    const std::size_t roads = std::min(m.roads.size(), n.roadName.size());
+    const bool boxes = n.roadBox.size() >= roads * 4;
+    for (std::size_t r = 0; r < roads; ++r) {
+        const std::uint16_t nm = n.roadName[r];
+        if (nm == kMapNoName || (nm < n.nameKind.size() && n.nameKind[nm] == MapNameKind::Water)) continue;
+        if (boxes) {
+            const float* box = &n.roadBox[r * 4];
+            if (world.x < box[0] - bestD || world.x > box[2] + bestD || world.y < box[1] - bestD || world.y > box[3] + bestD) continue;
+        }
+        const float d = mapRoadDistance(m, static_cast<int>(r), world);
+        const bool higher = out.road >= 0 && m.roads[r].cls < m.roads[static_cast<std::size_t>(out.road)].cls;
+        if (d < bestD - 1e-3f || (d <= bestD + 1e-3f && (out.road < 0 || higher))) {
+            bestD = d;
+            out.road = static_cast<int>(r);
+        }
+    }
+    if (out.road >= 0) {
+        const MapPlaceName here = mapNameAt(m, n, out.road, world);
+        out.name = here.name;
+        out.district = here.district;
+    }
+    if (out.district == kMapNoName) { // the district whose anchor is nearest
+        float bestA = 1e30f;
+        for (std::size_t d = 0; d < n.districts.size(); ++d) {
+            if (!n.districts[d].hasAnchor) continue;
+            const float a = std::hypot(world.x - n.districts[d].anchor.x, world.y - n.districts[d].anchor.y);
+            if (a < bestA) {
+                bestA = a;
+                out.district = static_cast<std::uint16_t>(d);
+            }
+        }
+    }
+    return out;
 }
 
 std::uint16_t mapRoadDistrict(const MapNames& n, int road) {
@@ -369,36 +709,81 @@ bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name,
             bb = rb;
         }
     };
+    // One stretch of centre line (world m) that carries the name: clipped to the screen, then joined to the open run
+    // or starting one.
+    auto piece = [&](Vec2 wa, Vec2 wb) {
+        Vec2 a = mapOverlayToScreen(v, wa), b = mapOverlayToScreen(v, wb);
+        if (!clipSegment(a, b, x0, y0, x1, y1)) {
+            endRun();
+            return;
+        }
+        const float len = std::hypot(b.x - a.x, b.y - a.y);
+        if (len <= 0.f) { // a point on screen still places a label, as before, when nothing longer does
+            if (best < 0.f) {
+                best = 0.f;
+                ba = bb = a;
+            }
+            return;
+        }
+        const Vec2 d{(b.x - a.x) / len, (b.y - a.y) / len};
+        if (open && std::hypot(a.x - rb.x, a.y - rb.y) <= kMapAlongJoinPx && d.x * dir.x + d.y * dir.y >= bendCos) {
+            rb = b;
+            return;
+        }
+        endRun();
+        open = true;
+        ra = a;
+        rb = b;
+        dir = d;
+    };
     const std::size_t roads = std::min(m.roads.size(), n.roadName.size());
     for (std::size_t r = 0; r < roads; ++r) {
-        if (n.roadName[r] != name) continue;
         const MapRoad& road = m.roads[r];
+        const bool own = n.roadName[r] == name;
+        std::uint32_t g0 = 0, g1 = 0; // the road's segments
+        if (r + 1 < n.roadSegments.size()) {
+            g0 = n.roadSegments[r];
+            g1 = std::min(n.roadSegments[r + 1], static_cast<std::uint32_t>(n.segments.size()));
+        }
+        bool any = own;
+        for (std::uint32_t g = g0; g < g1 && !any; ++g) any = n.segments[g].name == name;
+        if (!any) continue;
+        float s = 0.f; // m along the road
         for (std::uint32_t k = 0; k + 1 < road.count; ++k) {
             const std::size_t i = road.first + k;
             if (i + 1 >= m.points.size()) break;
-            Vec2 a = mapOverlayToScreen(v, m.points[i]), b = mapOverlayToScreen(v, m.points[i + 1]);
-            if (!clipSegment(a, b, x0, y0, x1, y1)) {
-                endRun();
+            const Vec2 a = m.points[i], b = m.points[i + 1];
+            if (g0 == g1) { // no segments: the whole piece is the road's
+                piece(a, b);
                 continue;
             }
             const float len = std::hypot(b.x - a.x, b.y - a.y);
-            if (len <= 0.f) { // a point on screen still places a label, as before, when nothing longer does
-                if (best < 0.f) {
-                    best = 0.f;
-                    ba = bb = a;
+            const float end = s + len;
+            float cur = s;
+            for (;;) { // the piece in parts, split where a segment starts or ends
+                std::uint16_t here = n.roadName[r];
+                float next = end;
+                for (std::uint32_t g = g0; g < g1; ++g) {
+                    const MapNames::Segment& seg = n.segments[g];
+                    if (seg.s1 <= cur) continue;
+                    if (seg.s0 <= cur) {
+                        here = seg.name;
+                        next = std::min(next, seg.s1);
+                    } else {
+                        next = std::min(next, seg.s0);
+                    }
+                    break;
                 }
-                continue;
+                const float u0 = len > 0.f ? (cur - s) / len : 0.f, u1 = len > 0.f ? (next - s) / len : 1.f;
+                if (here == name) {
+                    piece(Vec2{a.x + (b.x - a.x) * u0, a.y + (b.y - a.y) * u0}, Vec2{a.x + (b.x - a.x) * u1, a.y + (b.y - a.y) * u1});
+                } else {
+                    endRun();
+                }
+                if (next >= end) break;
+                cur = next;
             }
-            const Vec2 d{(b.x - a.x) / len, (b.y - a.y) / len};
-            if (open && std::hypot(a.x - rb.x, a.y - rb.y) <= kMapAlongJoinPx && d.x * dir.x + d.y * dir.y >= bendCos) {
-                rb = b;
-                continue;
-            }
-            endRun();
-            open = true;
-            ra = a;
-            rb = b;
-            dir = d;
+            s = end;
         }
         endRun(); // a run never crosses into another road
     }
@@ -413,20 +798,15 @@ bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name,
     return true;
 }
 
-bool mapLabelsOverlap(const MapLabel& a, const MapLabel& b, float gap) {
-    Vec2 ca[4], cb[4];
-    corners(a, gap * 0.5f, ca);
-    corners(b, gap * 0.5f, cb);
-    const float ra = a.angleDeg * kPi / 180.f, rb = b.angleDeg * kPi / 180.f;
-    const Vec2 axes[4] = {{std::cos(ra), std::sin(ra)}, {-std::sin(ra), std::cos(ra)}, {std::cos(rb), std::sin(rb)}, {-std::sin(rb), std::cos(rb)}};
-    for (const Vec2& ax : axes)
-        if (separated(ca, cb, ax)) return false;
-    return true;
-}
+bool mapLabelsOverlap(const MapLabel& a, const MapLabel& b, float gap) { return overlapGrown(a, gap * 0.5f, b, gap * 0.5f); }
 
-void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap) {
+void mapLabelCorners(const MapLabel& l, float grow, Vec2 out[4]) { corners(l, grow, out); }
+
+void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap, const MapLabel* blockers,
+                    std::size_t blockerCount, float halo) {
     out.count = 0;
     if (!candidates) return;
+    const float grow = gap * 0.5f + std::max(halo, 0.f); // a label and its halo
     // By priority, then input order: one pass per priority level (256 at most), no sort buffer.
     for (int p = 0; p < 256 && out.count < kMaxMapLabels; ++p) {
         for (std::size_t i = 0; i < count && out.count < kMaxMapLabels; ++i) {
@@ -434,10 +814,22 @@ void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& 
             if (c.priority != p) continue;
             if (!(c.w > 0.f && c.h > 0.f)) continue;
             bool clear = true;
-            for (std::size_t k = 0; k < out.count && clear; ++k) clear = !mapLabelsOverlap(c, out.labels[k], gap);
+            for (std::size_t k = 0; blockers && k < blockerCount && clear; ++k) clear = !overlapGrown(c, grow, blockers[k], gap * 0.5f);
+            for (std::size_t k = 0; k < out.count && clear; ++k) clear = !overlapGrown(c, grow, out.labels[k], grow);
             if (clear) out.labels[out.count++] = c;
         }
     }
+}
+
+MapLabel mapCaptionBox(float screenW, float screenH, float scale) {
+    const float s = scale > 0.f ? scale : 1.f;
+    MapLabel b;
+    b.w = (kMapCaptionW + 2.f * kMapCaptionPad) * s;
+    if (screenW > 0.f) b.w = std::min(b.w, screenW);
+    b.h = (kMapCaptionH + 2.f * kMapCaptionPad) * s;
+    const float left = (kMapCaptionX - kMapCaptionPad) * s, top = screenH - (kMapCaptionUp + kMapCaptionPad) * s;
+    b.at = Vec2{left + b.w * 0.5f, top + b.h * 0.5f};
+    return b;
 }
 
 bool mapRoadLabelled(MapRoadClass c, MapZoom z) {
@@ -451,7 +843,8 @@ bool mapRoadLabelled(MapRoadClass c, MapZoom z) {
 }
 
 std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, int picked,
-                          MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin) {
+                          MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin, std::uint16_t pickedName,
+                          const Vec2* seaAt) {
     if (!out || cap == 0) return 0;
     const std::size_t names = n.names.size();
     if (seen && names > 0) std::memset(seen, 0, names);
@@ -467,25 +860,31 @@ std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOve
     const Vec2 lo = mapOverlayFromScreen(v, Vec2{-margin, -margin});
     const Vec2 hi = mapOverlayFromScreen(v, Vec2{v.screenW + margin, v.screenH + margin});
     auto pointIn = [&](Vec2 p) { return p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y; };
+    auto boxIn = [&](float bx0, float by0, float bx1, float by1) { return bx1 >= lo.x && bx0 <= hi.x && by1 >= lo.y && by0 <= hi.y; };
+    const std::size_t roads = std::min(m.roads.size(), n.roadName.size());
+    const bool boxes = n.roadBox.size() >= roads * 4;
     auto roadIn = [&](std::size_t r) {
-        const MapRoad& road = m.roads[r];
+        if (boxes) return boxIn(n.roadBox[r * 4], n.roadBox[r * 4 + 1], n.roadBox[r * 4 + 2], n.roadBox[r * 4 + 3]);
+        const MapRoad& road = m.roads[r]; // names not from mapLoadNames: measure here
         if (road.count == 0 || road.first + road.count > m.points.size()) return false;
-        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
         for (std::uint32_t k = 0; k < road.count; ++k) {
             const Vec2 p = m.points[road.first + k];
-            x0 = std::min(x0, p.x);
-            y0 = std::min(y0, p.y);
-            x1 = std::max(x1, p.x);
-            y1 = std::max(y1, p.y);
+            bx0 = std::min(bx0, p.x);
+            by0 = std::min(by0, p.y);
+            bx1 = std::max(bx1, p.x);
+            by1 = std::max(by1, p.y);
         }
-        return x1 >= lo.x && x0 <= hi.x && y1 >= lo.y && y0 <= hi.y;
+        return boxIn(bx0, by0, bx1, by1);
     };
-    const std::size_t roads = std::min(m.roads.size(), n.roadName.size());
-    if (picked >= 0 && static_cast<std::size_t>(picked) < roads) take(n.roadName[static_cast<std::size_t>(picked)], MapLabelRank::Cursor, true, Vec2{});
+    if (picked >= 0 && static_cast<std::size_t>(picked) < roads)
+        take(pickedName != kMapNoName ? pickedName : n.roadName[static_cast<std::size_t>(picked)], MapLabelRank::Cursor, true, Vec2{});
     for (const MapNames::District& d : n.districts)
         if (d.hasAnchor && pointIn(d.anchor)) take(d.name, MapLabelRank::District, false, d.anchor);
     auto kindOf = [&](std::uint16_t name) { return name < n.nameKind.size() ? n.nameKind[name] : MapNameKind::Road; };
-    // Water: at its points (every zoom), then along its roads (canals, from Mid).
+    // The sea, once, where it is widest on screen; then water at its points (every zoom), then along its roads (canals,
+    // from Mid).
+    if (seaAt && n.seaName != kMapNoName) take(n.seaName, MapLabelRank::Water, false, *seaAt);
     for (const MapNames::Spot& p : n.places)
         if (kindOf(p.name) == MapNameKind::Water && pointIn(p.at)) take(p.name, MapLabelRank::Water, false, p.at);
     if (z != MapZoom::Far)
@@ -493,7 +892,7 @@ std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOve
             const std::uint16_t name = n.roadName[r];
             if (name != kMapNoName && kindOf(name) == MapNameKind::Water && (!seen || !seen[name]) && roadIn(r)) take(name, MapLabelRank::Water, true, Vec2{});
         }
-    // Roads by class, main first.
+    // Roads by class, main first; a road's segments (zones sharing its run) with it.
     const MapRoadClass order[3] = {MapRoadClass::Main, MapRoadClass::Street, MapRoadClass::Lane};
     const MapLabelRank rankOf[3] = {MapLabelRank::Main, MapLabelRank::Street, MapLabelRank::Lane};
     for (int c = 0; c < 3; ++c) {
@@ -502,9 +901,14 @@ std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOve
                 if (kindOf(p.name) == MapNameKind::Place && pointIn(p.at)) take(p.name, MapLabelRank::Place, false, p.at);
         if (!mapRoadLabelled(order[c], z)) continue;
         for (std::size_t r = 0; r < roads; ++r) {
+            if (m.roads[r].cls != order[c]) continue;
             const std::uint16_t name = n.roadName[r];
-            if (m.roads[r].cls != order[c] || name == kMapNoName || kindOf(name) == MapNameKind::Water || (seen && seen[name])) continue;
-            if (roadIn(r)) take(name, rankOf[c], true, Vec2{});
+            if (name != kMapNoName && kindOf(name) != MapNameKind::Water && (!seen || !seen[name]) && roadIn(r)) take(name, rankOf[c], true, Vec2{});
+            if (r + 1 >= n.roadSegments.size()) continue;
+            for (std::uint32_t g = n.roadSegments[r]; g < n.roadSegments[r + 1] && g < n.segments.size(); ++g) {
+                const MapNames::Segment& seg = n.segments[g];
+                if ((!seen || !seen[seg.name]) && boxIn(seg.x0, seg.y0, seg.x1, seg.y1)) take(seg.name, rankOf[c], true, Vec2{});
+            }
         }
     }
     return count;

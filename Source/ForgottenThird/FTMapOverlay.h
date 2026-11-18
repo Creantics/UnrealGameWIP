@@ -4,17 +4,24 @@
 // a lit north edge (until the top-down relief bake exists), near-black water, roads cased in thin gold with a soft glow,
 // serif names along the roads, the districts' names in small caps in gold-ruled boxes with their sign forms drawn small
 // above, water named in italics, the objective as a hollow diamond, the party as gold marks, a small N needle and the
-// where-am-I line bottom left over a gold rule. It opens on the player at the near zoom; the far zoom shows the whole
-// area, letterboxed by hills and the sea. Which names show at each zoom is Core's (mapLabelPicks). Names come from the
+// where-am-I line bottom left over a gold rule. It opens on the player at the near zoom. Every zoom is framed by Core
+// (ftcore/MapLook.h, mapOverlayFrame): the land at least three quarters of the frame, the player kept in its middle; the
+// far zoom fits the land. Past the area the ground runs on, and the sea on its side and past its edge rows. The look
+// built at load (mapBuildLook): the coast in gold, wave lines off it, the canals' edges, parks hatched faintly, yards
+// edged in dots, the sea named once over open sea. Which names show at each zoom is Core's (mapLabelPicks); each has a
+// 3 px halo and none covers the where-am-I line (mapCaptionBox). Names come from the
 // world lane's names table (-MapNames=<csv>, else Data/Map/solhaven_names.csv; none: no names drawn). Fonts are the new
 // UI's (FT::UiCanvasFont). Without the switch UFTMiniMap draws its old whole-map overlay.
 //
 // Captures: -MapOverlayShots=<path prefix> [-MapOverlayShotAt=<s>, default 8] [-MapOverlayCursor=x:y, engine m]: the
-// overlay opens at that time and a shot is taken at each zoom (_far, _mid, _near), then the game quits.
+// overlay opens at that time and a shot is taken at each zoom (_far, _mid, _near), each framed on the player (or the
+// cursor's point), then the game quits. Per shot: MAPOVERLAY SHOT <far|mid|near> centre=<x>:<y> mpp=<m per px>
+// land=<share, two places, truncated> caption='<DISTRICT> (middle dot) <STREET>' labels=<n>.
 #pragma once
 
 #include "CoreMinimal.h"
 
+#include "ftcore/MapLook.h"
 #include "ftcore/MapOverlay.h"
 #include "ftcore/SignScript.h"
 
@@ -51,6 +58,8 @@ private:
 	void OnOpen(AHUD& Hud, float ScreenW, float ScreenH);
 	void ReadInput(APlayerController& PC, float S, float Dt);
 	void SetZoom(ftcore::MapZoom Z);
+	// Frames the view at the zoom on a world point (mapOverlayFrame) and puts the cursor on it.
+	void FrameOn(const ftcore::Vec2& At);
 	void AddTri(FCanvasTriangleItem& To, const FVector2D& A, const FVector2D& B, const FVector2D& C, const FLinearColor& Color);
 	void AddScreenRect(FCanvasTriangleItem& To, float X0, float Y0, float X1, float Y1, const FLinearColor& Color);
 	void AddRect(const ftcore::MapRect& R, const FLinearColor& Color);
@@ -63,8 +72,10 @@ private:
 	// A name's size at Px (screen px) in a face: measured once per name and face at a reference size, then scaled.
 	FVector2D NameSize(int32 Name, EFace Face, float Px);
 	FVector2D Measure(FStringView Text, EFace Face, float Px) const;
-	void DrawText(UCanvas& Canvas, FStringView Text, EFace Face, float Px, const FVector2D& TopLeft, const FLinearColor& Color) const;
-	void BuildLabels(int32 Picked, float S);
+	// HaloPx > 0: a soft dark halo that far round the glyphs, under the text's own dark rim.
+	void DrawText(UCanvas& Canvas, FStringView Text, EFace Face, float Px, const FVector2D& TopLeft, const FLinearColor& Color,
+		float HaloPx = 0.f) const;
+	void BuildLabels(int32 Picked, uint16 PickedHere, float S);
 	void DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float S);
 
 	const ftcore::MiniMapModel& Model;
@@ -73,6 +84,9 @@ private:
 	std::vector<float> RoadBox; // per road: x0, y0, x1, y1 (m)
 	int32 SeaSide = 0;          // ftcore::mapSeaSide
 	ftcore::MapNames Names;
+	ftcore::MapLook Look; // built once at load from the model and the names
+	// The sea along the north and south edges: the edge rows' sea runs, the outer ones run on past the area.
+	std::vector<ftcore::MapRect> SeaEdge;
 	TArray<FString> NameText;               // per name
 	TArray<FVector2f> NameRef[FaceCount];   // per face, per name: its size at the reference size (x < 0: not measured yet)
 	FVector2f NeedleRef{-1.f, -1.f};        // the needle's "N" at the reference size
@@ -96,12 +110,19 @@ private:
 	ftcore::MapOverlayView LabelView;
 	ftcore::MapZoom LabelZoom = ftcore::MapZoom::Near;
 	int32 LabelPicked = -2;
+	uint16 LabelPickedName = ftcore::kMapNoName;
 
 	ftcore::MapZoom Zoom = ftcore::MapZoom::Near;
 	ftcore::MapOverlayView View;
 	FVector2D Cursor = FVector2D::ZeroVector; // screen px
 	uint64 LastFrame = 0;
-	int32 PlayerRoad = -1;
+	ftcore::Vec2 Focus{};  // the player (or the capture's cursor point) when the map opened
+	ftcore::Vec2 Framed{}; // the last framed centre: a pan may always come back to it (mapOverlayHold)
+	float FramedLand = 1.f;
+	bool bFramedReached = true;
+	// The where-am-I line's names, as last drawn (for the capture log).
+	uint16 CaptionDistrict = ftcore::kMapNoName;
+	uint16 CaptionStreet = ftcore::kMapNoName;
 	TWeakObjectPtr<AFTPartyVan> Van;
 	TWeakObjectPtr<AFTPartyFollower> Followers[2];
 

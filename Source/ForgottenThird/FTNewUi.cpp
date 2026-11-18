@@ -2210,7 +2210,7 @@ public:
 			In.thirdReady = true;
 		}
 		const ftcore::Settings* Prefs = Runner.GetSettings();
-		Special = ftcore::uiSpecialStep(SpecialState, Shown().bSpecialPrompt && bSpecialsOn, In, DeltaTime,
+		Special = ftcore::uiSpecialStep(SpecialState, ftcore::uiSpecialRowReserved(Shown().bSpecialPrompt, bSpecialsOn), In, DeltaTime,
 			Prefs && Prefs->reduceMotion, Prefs && Prefs->reduceFlashes);
 		// The tail after the word: the lead's name, the Third's (CALL) or the reason. While the row stands it follows what
 		// is shown (copied on a change only); a leave keeps the last one, so a lead switch never shows the new name fading.
@@ -4090,7 +4090,7 @@ private:
 	void PaintPrompts(const FPainter& P, const FVector2f& Size) const
 	{
 		// The special's row reserved (the switch, and the fight has specials): the basic controls stand one row up.
-		const bool bSpecialRow = ::Shown().bSpecialPrompt && bSpecialsOn;
+		const bool bSpecialRow = ftcore::uiSpecialRowReserved(::Shown().bSpecialPrompt, bSpecialsOn);
 		const ftcore::UiPromptMask Shown = Budget.out.promptsShown;
 		const float S = P.S;
 		const ftcore::UiMargins E = EdgesAt(Size, S);
