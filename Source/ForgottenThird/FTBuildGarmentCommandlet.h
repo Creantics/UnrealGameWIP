@@ -8,12 +8,13 @@
 // -AllowCommandletRendering is required: without it the masters never compile here and their errors go unseen.
 //
 // Writes, under /Game/Characters/Shared/Materials/Garment (replacing what is there):
-// - T_FTGarment{Leather,Twill,Knit}N / ...M: tiling detail tiles from ftcore::makeGarmentHeight (tangent-space
+// - T_FTGarment{Leather,Twill,Knit,Plain}N / ...M: tiling detail tiles from ftcore::makeGarmentHeight (tangent-space
 //   normals; masks R cavity, G micro roughness); -DumpDir also saves them as PNGs;
 // - T_FTGarmentFlatNormal, T_FTGarmentORM (occlusion 1, roughness 0.5, metal 0) and T_FTGarmentWear (curvature 0.5,
 //   flat), the texture defaults;
-// - M_FTGarment (default lit) and M_FTGarmentCloth (cloth shading: fuzz colour and cloth amount), built by one
-//   function with the same parameters. The garment's own maps come in over its UVs (BaseColorTexture,
+// - M_FTGarment (default lit), M_FTGarmentCloth (cloth shading: fuzz colour and cloth amount) and
+//   M_FTGarmentClothMasked (the cloth master cut by the base colour's alpha at 0.5, for fibre cards, frayed hems and
+//   moth holes), built by one function with the same parameters. The garment's own maps come in over its UVs (BaseColorTexture,
 //   MetallicRoughnessTexture packed R occlusion / G roughness / B metal, NormalTexture, WearTexture R curvature).
 //   The detail tile is projected three ways in the mesh's pre-skinned space, so its scale is in centimetres on every
 //   UV island and it moves with the cloth: scale A (fine) and B (coarse) each fade out with distance. The detail adds

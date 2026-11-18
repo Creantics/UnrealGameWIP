@@ -884,7 +884,8 @@ int32 UFTBuildWaveMaterialsCommandlet::Main(const FString& Params)
 	{
 		TArray<FString> Worn = {TEXT("/Game/Characters/Shared/Materials/M_FTCharacter"), TEXT("/Game/Characters/Shared/Materials/M_FTCharacterTex"),
 			TEXT("/Game/Characters/Shared/Materials/M_FTHair"), TEXT("/Game/Characters/Shared/Materials/M_FTSkin"),
-			TEXT("/Game/Characters/Shared/Materials/Garment/M_FTGarment"), TEXT("/Game/Characters/Shared/Materials/Garment/M_FTGarmentCloth")};
+			TEXT("/Game/Characters/Shared/Materials/Garment/M_FTGarment"), TEXT("/Game/Characters/Shared/Materials/Garment/M_FTGarmentCloth"),
+			TEXT("/Game/Characters/Shared/Materials/Garment/M_FTGarmentClothMasked")};
 		TArray<FString> More;
 		WornExtra.ParseIntoArray(More, TEXT(";"), true);
 		Worn.Append(More);

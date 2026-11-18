@@ -14,6 +14,9 @@
 // - Twill: a 2/1 twill, diagonal wales of yarn floats; `repeats` is the number of yarns along a side.
 // - Knit: single jersey, columns of V-shaped loops; `repeats` is the number of columns along a side
 //   (rows are 1.3 times as many, so a loop is taller than wide).
+// - Plain: a 1/1 plain weave (a cape's wool or canvas), warp and weft over one and under one in a
+//   checker, with uneven (slubbed) yarns and a fine fuzz; `repeats` is the number of yarns along a side
+//   and must be even.
 //
 // Every tile wraps at its edges. The same settings always give the same tile. Building a tile
 // allocates (load time only).
@@ -25,7 +28,7 @@
 
 namespace ftcore {
 
-enum class GarmentTile : uint8_t { Leather, Twill, Knit };
+enum class GarmentTile : uint8_t { Leather, Twill, Knit, Plain };
 
 struct GarmentTileSettings {
     uint32_t size = 512;        // pixels per side; a power of two from 32 up
