@@ -1700,7 +1700,7 @@ private:
 	FString SpecialClipFor;
 	bool bSpecialClipStandIn = false;
 	bool bSpecialClipPlaying = false;
-	bool bSpecialNoClipLogged = false; // a press dropped for want of the clip: logged once a lead
+	FString SpecialClipSought; // the clip looked for and not found ("<name> under <folder>"), for the drop's lines
 	// Frame cost (game-thread and GPU ms) for 2 s before, during, and 2 s after the special, frames under a still left
 	// out; the special's own tick and the freeze's begin and end.
 	struct FSpecialCost { double Game = 0.0, Gpu = 0.0, GameMax = 0.0, GpuMax = 0.0; int32 Frames = 0; };

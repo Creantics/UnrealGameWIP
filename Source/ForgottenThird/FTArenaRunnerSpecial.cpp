@@ -25,6 +25,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "CollisionShape.h"
 #include "Containers/Ticker.h"
+#include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
@@ -239,7 +240,7 @@ bool UFTArenaRunner::LoadSpecialClip()
 	}
 	PlaySpecialClip(false);
 	SpecialClip = nullptr;
-	bSpecialNoClipLogged = false;
+	SpecialClipSought.Reset();
 	SpecialClipFor.Reset();
 	const ftcore::ArenaSpecialRules* Rules =
 		bArenaSpecials && PlayerLook ? ArenaSpecials.forLead(std::string(TCHAR_TO_UTF8(*PlayerLook->Name.ToLower()))) : nullptr;
@@ -291,6 +292,7 @@ bool UFTArenaRunner::LoadSpecialClip()
 	}
 	if (!SpecialClip)
 	{
+		SpecialClipSought = FString::Printf(TEXT("%s under %s"), *Name, *Root);
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special: %s: no clip %s under %s for the worn body: the press is dropped%s."),
 			*SpecialClipFor, *Name, *Root, bSpecialClipStandIn ? TEXT(" (but -ArenaSpecialNoClip: it plays with the lead's own pose)") : TEXT(""));
 		return false;
@@ -468,13 +470,18 @@ void UFTArenaRunner::PressSpecial(ftcore::ArenaInput& In)
 	const ftcore::SpecialCineMove* Shots = Rules ? SpecialTable.find(std::string(Rules->idView())) : nullptr;
 	if (Shots && !Shots->empty() && !SpecialClip && !bSpecialClipStandIn && !Fight.frozen())
 	{
-		// A shot list over a lead that holds its pose is no special: the press is dropped, the gauge kept.
-		if (!bSpecialNoClipLogged)
+		// A shot list over a lead that holds its pose is no special: the press is dropped, the gauge kept. Loud on
+		// purpose: one line per dropped press, naming the missing asset, and (not in Shipping) a line on screen.
+		const FString Missing = SpecialClipSought.IsEmpty() ? FString(UTF8_TO_TCHAR(std::string(Shots->clip()).c_str())) : SpecialClipSought;
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %.2f: special pressed, dropped: missing asset %s for %s (-ArenaSpecialNoClip plays it posed)."),
+			Fight.time(), *Missing, *SpecialClipFor);
+#if !UE_BUILD_SHIPPING
+		if (GEngine)
 		{
-			bSpecialNoClipLogged = true;
-			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %.2f: special pressed, dropped: no clip %s for %s (-ArenaSpecialNoClip plays it posed)."),
-				Fight.time(), UTF8_TO_TCHAR(std::string(Shots->clip()).c_str()), *SpecialClipFor);
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Orange,
+				FString::Printf(TEXT("Special dropped: missing asset %s (dev builds only)"), *Missing));
 		}
+#endif
 		return;
 	}
 	bSpecialPressedNow = true;
