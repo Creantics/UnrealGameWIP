@@ -114,6 +114,8 @@ void UFTArenaRunner::ReadSpecialTable()
 	bSpecialClipStandIn = FParse::Param(Cmd, TEXT("ArenaSpecialNoClip")) || SpecialTestAt >= 0.f;
 	SpecialPauseAt = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialPause="), SpecialPauseAt);
+	SpecialSkipAt = -1.f;
+	FParse::Value(Cmd, TEXT("ArenaSpecialSkipAt="), SpecialSkipAt);
 #endif
 	if (bSpecialTableRead)
 	{
@@ -1041,6 +1043,14 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("Arena check: special pause: the world would not pause."));
 		}
+	}
+	// -ArenaSpecialSkipAt=<s>: a skip press then, taken by PollSpecialSkip like the pad's.
+	if (SpecialSkipAt >= 0.f && SpecialPlayer.time() >= SpecialSkipAt)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special skip press at %.2f s (skippable: %s)."), SpecialPlayer.time(),
+			Fight.special().skippable ? TEXT("yes") : TEXT("no"));
+		SpecialSkipAt = -1.f; // once
+		bSpecialPress = true;
 	}
 #endif
 	// Over when both are: the shots played out and Core's cut back come (the fight held for any tail of shots past it).

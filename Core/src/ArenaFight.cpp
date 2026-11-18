@@ -4005,7 +4005,7 @@ struct ArenaFightImpl {
             const float share = m.duration > 0.f ? std::clamp(m.strikeAt / m.duration, 0.f, 1.f) : 1.f;
             const Vec2 at = arenaMadd(v.origin, arenaSub(v.end, v.origin), share);
             const Vec2 to = target < n ? arenaSub(foes[target].pos, at) : Vec2{};
-            v.impactAt = std::min(arenaSpecialImpactAt(m, std::sqrt(arenaDot(to, to))), m.duration);
+            v.impactTime = std::min(arenaSpecialImpactAt(m, std::sqrt(arenaDot(to, to))), m.duration);
         }
         v.impactDone = false;
         v.skippable = m.skippable && sp.seen[slot];
@@ -4171,7 +4171,7 @@ struct ArenaFightImpl {
         }
         const float now = skip ? std::max(v.time + dt, v.duration) : v.time + dt;
         specialCues(now, *m);
-        if (!v.impactDone && now >= v.impactAt - kSpecialEps) specialImpact(*m);
+        if (!v.impactDone && now >= v.impactTime - kSpecialEps) specialImpact(*m);
         v.time = std::min(now, v.duration);
         if (now >= v.duration - kSpecialEps) specialEnd(skip, in.specialSight);
     }
@@ -5992,7 +5992,6 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
     }
     spNumber(j, "duration", path, 0.5f, 30.f, r.duration, errors);
     spNumber(j, "strikeAt", path, 0.f, 30.f, r.strikeAt, errors);
-    r.impactAt = r.strikeAt; // the temporary compat member
     spNumber(j, "waveSpeed", path, 1.f, 1000.f, r.waveSpeed, errors);
     spNumber(j, "maxTravel", path, 0.f, 5.f, r.maxTravel, errors);
     spNumber(j, "range", path, 1.f, 200.f, r.range, errors);
@@ -6160,14 +6159,14 @@ bool validArenaSpecialRules(const ArenaSpecialRules& r) {
     return true;
 }
 
-float arenaSpecialFxAt(const ArenaSpecialRules& r, const ArenaSpecialFxTime& at, float impactAt) {
-    if (at.cue == kArenaSpecialAtImpact) return impactAt + at.offset;
+float arenaSpecialFxAt(const ArenaSpecialRules& r, const ArenaSpecialFxTime& at, float impact) {
+    if (at.cue == kArenaSpecialAtImpact) return impact + at.offset;
     if (at.cue >= r.cueCount || at.cue >= kMaxArenaSpecialCues) return std::numeric_limits<float>::quiet_NaN();
     return r.cues[at.cue].at + at.offset;
 }
 
-float arenaSpecialFxEnd(const ArenaSpecialRules& r, const ArenaSpecialFx& fx, float impactAt) {
-    return fx.hasEnd ? arenaSpecialFxAt(r, fx.end, impactAt) : arenaSpecialFxAt(r, fx.start, impactAt) + fx.length;
+float arenaSpecialFxEnd(const ArenaSpecialRules& r, const ArenaSpecialFx& fx, float impact) {
+    return fx.hasEnd ? arenaSpecialFxAt(r, fx.end, impact) : arenaSpecialFxAt(r, fx.start, impact) + fx.length;
 }
 
 float arenaSpecialImpactAt(const ArenaSpecialRules& r, float distance) {

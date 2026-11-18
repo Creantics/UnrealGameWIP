@@ -264,11 +264,6 @@ TEST_CASE("arena special: the shipped file loads, one move for the first lead") 
     CHECK(m->bossPhaseShare <= 0.22f);
 }
 
-TEST_CASE("arena special: the temporary impactAt compat member is strikeAt") {
-    CHECK(ArenaSpecialRules{}.impactAt == ArenaSpecialRules{}.strikeAt);
-    CHECK(shippedSpecials().moves[0].impactAt == shippedSpecials().moves[0].strikeAt);
-}
-
 TEST_CASE("arena special: the shipped cues follow the take: two at 0, the hold before the strike, strike on strikeAt") {
     const ArenaSpecialTable t = shippedSpecials();
     const ArenaSpecialRules* m = t.find("devin_special_01");
@@ -417,12 +412,12 @@ TEST_CASE("arena special: the impact is the strike plus the wave's travel to the
     const float d = std::sqrt(to.x * to.x + to.y * to.y);
     CHECK(d > 1.f);
     CHECK(v.travel > 0.f);
-    CHECK(v.impactAt == doctest::Approx(arenaSpecialImpactAt(sm, d)));
-    CHECK(v.impactAt > sm.strikeAt);
+    CHECK(v.impactTime == doctest::Approx(arenaSpecialImpactAt(sm, d)));
+    CHECK(v.impactTime > sm.strikeAt);
     while (r.fight.frozen() && !v.impactDone) r.tick();
     CHECK(v.impactDone);
-    CHECK(v.time >= v.impactAt - 1e-3f);
-    CHECK(v.time < v.impactAt + kDt + 1e-3f);
+    CHECK(v.time >= v.impactTime - 1e-3f);
+    CHECK(v.time < v.impactTime + kDt + 1e-3f);
 }
 
 TEST_CASE("arena special: a skip before, at or after the impact rules it exactly once") {
@@ -1979,7 +1974,7 @@ TEST_CASE("arena special: Core stops the end short of an enemy's body on the way
     const float at = m.strikeAt / m.duration;
     const Vec2 strike = madd(origin, sub(v.end, origin), at);
     const Vec2 to = sub(hulk, strike);
-    CHECK(v.impactAt == doctest::Approx(arenaSpecialImpactAt(m, std::sqrt(dot(to, to)))));
+    CHECK(v.impactTime == doctest::Approx(arenaSpecialImpactAt(m, std::sqrt(dot(to, to)))));
 }
 
 TEST_CASE("arena special: the performance travels as far as the host allows; the body ends where the clip does") {

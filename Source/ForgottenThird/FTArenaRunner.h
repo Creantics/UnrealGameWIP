@@ -1727,6 +1727,8 @@ private:
 	// -ArenaSpecialPause=<s on the special's clock>: the game paused then for 1 s of real time (a core ticker resumes
 	// it), then a check that neither Core's special clock nor the shots' moved while paused.
 	float SpecialPauseAt = -1.f;
+	// -ArenaSpecialSkipAt=<s on the special's clock>: a skip press then, as the pad's (refused on a first viewing).
+	float SpecialSkipAt = -1.f;
 	float SpecialPauseCoreWas = 0.f, SpecialPauseShotsWas = 0.f;
 	FTSTicker::FDelegateHandle SpecialPauseTicker;
 #endif

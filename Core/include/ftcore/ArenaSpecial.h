@@ -31,7 +31,7 @@
 //   * At the impact the results are ruled. The staff strikes at `strikeAt`; its wave reaches the target
 //     min(distance / `waveSpeed`, `maxTravel`) later (arenaSpecialImpactAt), the distance from the performer's spot at
 //     the strike (origin to end, linear in time) to the target's centre, fixed at the press (nothing moves while
-//     frozen; ArenaSpecialView::impactAt). Then: the target is always hit for `damage`; every other living enemy whose body
+//     frozen; ArenaSpecialView::impactTime). Then: the target is always hit for `damage`; every other living enemy whose body
 //     reaches into the lane (`laneLength` x `laneWidth` from the performer toward the target) for damage x `otherShare`.
 //     A boss loses `bossPhaseShare` of its current break phase's hp span instead, never a kill from full hp. The
 //     results are reported then (ArenaSpecialView::results and ::impactDone; no cue marks it) and land at the cut back: hp, then a stagger
@@ -107,7 +107,6 @@ struct ArenaSpecialRules {
                                                      // or a party member's current identity id)
     float duration = 8.5f;      // s, press to cut back
     float strikeAt = 7.1f;      // s: the staff strikes; the wave leaves the performer
-    float impactAt = 7.1f;      // TEMPORARY compat for an older host: always strikeAt (the loader sets it). Removed in round 2.
     float waveSpeed = 40.f;     // m/s: the wave's speed to the target (the impact: arenaSpecialImpactAt)
     float maxTravel = 0.5f;     // s: the longest the wave travels, whatever the range
     float range = 30.f;         // m: the farthest target it may start on (body centre)
@@ -163,10 +162,10 @@ FTCORE_API bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g);
 // strike: strikeAt + min(distance / waveSpeed, maxTravel). A negative or NaN distance counts as 0.
 FTCORE_API float arenaSpecialImpactAt(const ArenaSpecialRules& r, float distance);
 
-// An effect time in s since the press: its cue's time (or `impactAt`) plus its offset. A cue index past the move's: NaN.
-FTCORE_API float arenaSpecialFxAt(const ArenaSpecialRules& r, const ArenaSpecialFxTime& at, float impactAt);
+// An effect time in s since the press: its cue's time (or `impact`) plus its offset. A cue index past the move's: NaN.
+FTCORE_API float arenaSpecialFxAt(const ArenaSpecialRules& r, const ArenaSpecialFxTime& at, float impact);
 // When a row ends: its end, else its start plus its length (a one-shot: its start).
-FTCORE_API float arenaSpecialFxEnd(const ArenaSpecialRules& r, const ArenaSpecialFx& fx, float impactAt);
+FTCORE_API float arenaSpecialFxEnd(const ArenaSpecialRules& r, const ArenaSpecialFx& fx, float impact);
 
 // Reads Data/Battle/arena_special.json:
 //   { "version": 1,
@@ -242,7 +241,7 @@ struct ArenaSpecialView {
     float travel = 0.f;                       // m along `dir` from origin to end: the share of endTravel allowed
     float time = 0.f;                         // s since the press
     float duration = 0.f;
-    float impactAt = 0.f;                     // s since the press when the results are ruled (arenaSpecialImpactAt)
+    float impactTime = 0.f;                   // s since the press when the results are ruled (arenaSpecialImpactAt)
     bool impactDone = false;
     bool skippable = false;                   // a skip input would cut to the end now
     std::uint32_t uses = 0;                   // specials begun since begin() (both leads)
