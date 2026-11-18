@@ -613,6 +613,10 @@ private:
 	int32 SwimProofPath = 0;           // 0 not placed yet, 1 placed by this kind's own path, -1 placed some other way
 	bool bSwimProofPass = false;       // placed by its own path, then Placed -> Surface (the rejoin swims on)
 	bool bSwimProofLeadPlaced = false; // the harness put the lead in the water after 3 held-up jumps that didn't clear
+	float SwimProofPlaceDue = -1.f;    // SwimProofTime the placement became due (it waits for the body to be down)
+	float SwimProofPlacedAt = -1.f;    // SwimProofTime of the last placement (checked: swimming within 3 s)
+	int32 SwimProofPlaceCount = 0;
+	bool bSwimProofLeadSwims = false;  // the placed lead was seen swimming
 	// Item 5 (the boom through a partner): during the sweep, the camera's distance to the nearest partner's capsule; under
 	// 50 cm with that partner's mesh drawn is the clip. Counted per tick and per still (the still numbers kept, first 32).
 	int32 SwimProofClipTicks = 0;

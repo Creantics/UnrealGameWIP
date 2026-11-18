@@ -3294,17 +3294,22 @@ void AFTExploreCharacter::LogLeadGoHold()
 	const FVector Feet = FeetLocation();
 	const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
 	const double Reach = Capsule->GetScaledCapsuleRadius() + 80.0;
-	// What blocks the capsule: 6 cm balls swept ahead every 10 cm from 10 cm over the feet to 3 m (a row per height,
-	// 'x' where one hit). Then a look down 3 cm past the highest row's hit finds the top itself.
+	// What blocks the capsule: 6 cm balls swept ahead every 10 cm from 10 cm over the feet to 2 m (a row per height,
+	// 'x' where one hit). The lowest unbroken run of hits from the bottom is the wall or railing in the way; the highest
+	// hit is told too (a post or a lamp can be it). A look down 3 cm past each one's hit finds its top.
 	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTLeadGoHold), false, this);
 	const FCollisionResponseParams Responses(Capsule->GetCollisionResponseToChannels());
 	const ECollisionChannel Channel = Capsule->GetCollisionObjectType();
 	const FCollisionShape Ball = FCollisionShape::MakeSphere(6.f);
-	TCHAR Rows[31] = {};
+	constexpr int32 KRows = 20;
+	TCHAR Rows[KRows + 1] = {};
+	double RunRow = -1.0;
+	FVector RunHit = FVector::ZeroVector;
+	bool bRunOver = false;
 	double HighRow = -1.0;
 	FVector HighHit = FVector::ZeroVector;
 	FHitResult Hit;
-	for (int32 Row = 0; Row < 30; ++Row)
+	for (int32 Row = 0; Row < KRows; ++Row)
 	{
 		const double Up = 10.0 * (Row + 1);
 		const FVector From = Feet + FVector(0.0, 0.0, Up);
@@ -3314,21 +3319,32 @@ void AFTExploreCharacter::LogLeadGoHold()
 		{
 			HighRow = Up;
 			HighHit = Hit.ImpactPoint;
+			if (!bRunOver)
+			{
+				RunRow = Up;
+				RunHit = Hit.ImpactPoint;
+			}
 		}
-	}
-	double Top = -1.0;
-	double TopAhead = 0.0;
-	if (HighRow > 0.0)
-	{
-		const FVector Over = HighHit + Ahead * 3.0;
-		TopAhead = FVector::DotProduct(HighHit - Feet, Ahead);
-		Top = HighRow + 6.0; // the row's ball top, if the look down finds nothing
-		if (World->LineTraceSingleByChannel(Hit, FVector(Over.X, Over.Y, Feet.Z + HighRow + 20.0), FVector(Over.X, Over.Y, Feet.Z - 50.0), Channel, Query, Responses)
-			&& !Hit.bStartPenetrating)
+		else if (RunRow > 0.0)
 		{
-			Top = Hit.ImpactPoint.Z - Feet.Z;
+			bRunOver = true;
 		}
 	}
+	// A row's top over the feet: the look down past its hit, else the row's ball top.
+	auto TopOf = [&](double RowUp, const FVector& RowHit)
+	{
+		const FVector Over = RowHit + Ahead * 3.0;
+		FHitResult Down;
+		if (World->LineTraceSingleByChannel(Down, FVector(Over.X, Over.Y, Feet.Z + RowUp + 20.0), FVector(Over.X, Over.Y, Feet.Z - 50.0), Channel, Query, Responses)
+			&& !Down.bStartPenetrating)
+		{
+			return Down.ImpactPoint.Z - Feet.Z;
+		}
+		return RowUp + 6.0;
+	};
+	const double Top = RunRow > 0.0 ? TopOf(RunRow, RunHit) : -1.0;
+	const double HighTop = HighRow > 0.0 ? TopOf(HighRow, HighHit) : -1.0;
+	const double TopAhead = RunRow > 0.0 ? FVector::DotProduct(RunHit - Feet, Ahead) : 0.0;
 	// The lead's own jump, from its movement's values: the rise of the feet (ftcore::jumpRise).
 	const float Gravity = -Move->GetGravityZ();
 	const float Rise = ftcore::jumpRise(Move->JumpZVelocity, Gravity, GetJumpMaxHoldTime());
@@ -3350,9 +3366,10 @@ void AFTExploreCharacter::LogLeadGoHold()
 	}
 	const FVector At = GetActorLocation();
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump %d. In the way: top %.0f cm over the feet, %.0f cm ahead (rows 10..300 cm: %s); jump rise %.0f cm (JumpZ %.0f, gravity %.0f, hold %.2f s): %s; traversal probe %s (%.0f cm top, %.0f cm ahead)."),
-		At.X, At.Y, At.Z, LeadGoTry.tries(), Top, TopAhead, Rows, Rise, Move->JumpZVelocity, Gravity, GetJumpMaxHoldTime(),
-		Top < 0.0 ? TEXT("nothing in the way found") : ftcore::jumpClears(Rise, static_cast<float>(Top)) ? TEXT("CLEARS it") : TEXT("does NOT clear it"), Probe, ProbeHeight, ProbeAhead);
+		TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump %d. In the way: lowest run tops at %.0f cm over the feet, %.0f cm ahead; highest hit tops at %.0f cm (rows 10..200 cm: %s); jump rise %.0f cm (JumpZ %.0f, gravity %.0f, hold %.2f s): %s the lowest run, %s the highest; traversal probe %s (%.0f cm top, %.0f cm ahead)."),
+		At.X, At.Y, At.Z, LeadGoTry.tries(), Top, TopAhead, HighTop, Rows, Rise, Move->JumpZVelocity, Gravity, GetJumpMaxHoldTime(),
+		Top < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(Top)) ? TEXT("CLEARS") : TEXT("does NOT clear"),
+		HighTop < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(HighTop)) ? TEXT("CLEARS") : TEXT("does NOT clear"), Probe, ProbeHeight, ProbeAhead);
 #endif
 }
 
@@ -4223,7 +4240,12 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof %s: slot 0 %s after 30 s; going on."), *SwimProofKind,
 				Slot0Body ? *FString::Printf(TEXT("is %.0f m away"), FVector::Dist2D(Slot0Body->GetActorLocation(), GetActorLocation()) / 100.0) : TEXT("has no member"));
 		}
-		// The scripted walk (LeadGo) takes the route: in, then out to the far point, where it treads.
+		// The scripted walk (LeadGo) takes the route: in, then out to the far point, where it treads. A held-up jump counts
+		// as cleared only when it ends in the water or at the "in" point (no progress counts: a catch or a hop onto a lip
+		// that leaves the lead dry is not cleared).
+		ftcore::HeldUpJumpRules OnlyWater;
+		OnlyWater.minProgress = 1.0e6f;
+		LeadGoTry.setRules(OnlyWater);
 		BeginLeadGo(FVector(SwimProofWet.X, SwimProofWet.Y, 0.0), true); // jumps a quay's railing
 		LeadGoNext.Add(FVector(SwimProofFar.X, SwimProofFar.Y, 0.0));
 		SwimProofStage = 2;
@@ -4231,10 +4253,34 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 	}
 	if (SwimProofStage >= 2)
 	{
-		// Three held-up jumps that didn't clear (a quay's railing): the harness puts the lead in the water at the "in" point,
-		// at the surface, and the walk goes on from there. Said loudly, and the run's lines say "lead placed" from then on,
-		// so the run can't be read as a walk-in (the 11-18 ruling's option 3).
-		if (SwimProofStage == 2 && !bSwimProofLeadPlaced && LeadGoTry.failed() >= 3 && System)
+		// Three held-up jumps that didn't clear (a quay's railing), or three tries and still not in at 45 s: the harness puts
+		// the lead in the water at the "in" point, at the surface, and the walk goes on from there. It waits for the body to
+		// be down (not in the air, a traversal, a hang or a climb), then checks it swims within 3 s (once more if not).
+		// Said loudly, and the run's lines say "lead placed" from then on, so the run can't be read as a walk-in (the 11-18
+		// ruling's option 3).
+		const bool bLeadBusy = GetCharacterMovement()->IsFalling() || bTraversing || bWaterClimbing || LedgeNow.phase != ftcore::LedgePhase::None;
+		if (SwimProofStage == 2 && !bSwimProofLeadPlaced && SwimProofPlaceDue < 0.f && (LeadGoTry.failed() >= 3 || (LeadGoTry.tries() >= 3 && SwimProofTime >= 45.f)))
+		{
+			SwimProofPlaceDue = SwimProofTime;
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: lead placement due at %.1f s (%d jumps, %d not cleared; %s)."), *SwimProofKind, SwimProofTime,
+				LeadGoTry.tries(), LeadGoTry.failed(), LeadGoTry.failed() >= 3 ? TEXT("3 not cleared") : TEXT("backstop: 3 tries and not in at 45 s"));
+		}
+		const bool bPlaceAgain = bSwimProofLeadPlaced && !bSwimProofLeadSwims && SwimProofPlaceCount < 2 && SwimProofTime >= SwimProofPlacedAt + 3.f;
+		if (bSwimProofLeadPlaced && !bSwimProofLeadSwims)
+		{
+			if (bSwimming)
+			{
+				bSwimProofLeadSwims = true;
+				UE_LOG(LogForgottenThird, Display, TEXT("SWIMPROOF: placed lead swimming %.1f s after the placement."), SwimProofTime - SwimProofPlacedAt);
+			}
+			else if (SwimProofPlaceCount >= 2 && SwimProofTime >= SwimProofPlacedAt + 3.f && SwimProofPlacedAt >= 0.f)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("SWIMPROOF: placed lead NOT swimming 3 s after the second placement (water %s); no proof from this run."),
+					ANSI_TO_TCHAR(ftcore::waterModeName(WaterNow.mode)));
+				SwimProofPlacedAt = -1.f; // said once
+			}
+		}
+		if (SwimProofPlaceDue >= 0.f && System && ((SwimProofStage == 2 && !bSwimProofLeadPlaced && !bLeadBusy) || bPlaceAgain))
 		{
 			if (LeadGoTry.holding())
 			{
@@ -4248,8 +4294,16 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			GetCharacterMovement()->StopMovementImmediately();
 			SetActorLocation(Put, false, nullptr, ETeleportType::TeleportPhysics);
 			bSwimProofLeadPlaced = true;
-			UE_LOG(LogForgottenThird, Warning, TEXT("SWIMPROOF: LEAD PLACED BY HARNESS after %d jumps at (%.0f, %.0f, %.0f) (%d of them not cleared; %s run at %.1f s)."),
-				LeadGoTry.tries(), Put.X, Put.Y, Put.Z, LeadGoTry.failed(), *SwimProofKind, SwimProofTime);
+			SwimProofPlacedAt = SwimProofTime;
+			++SwimProofPlaceCount;
+			UE_LOG(LogForgottenThird, Warning, TEXT("SWIMPROOF: LEAD PLACED BY HARNESS after %d jumps at (%.0f, %.0f, %.0f) (%d of them not cleared; placement %d, %.1f s after it was due; %s run at %.1f s)."),
+				LeadGoTry.tries(), Put.X, Put.Y, Put.Z, LeadGoTry.failed(), SwimProofPlaceCount, SwimProofTime - SwimProofPlaceDue, *SwimProofKind, SwimProofTime);
+		}
+		else if (SwimProofStage == 2 && SwimProofPlaceDue >= 0.f && !bSwimProofLeadPlaced && SwimProofTime >= SwimProofPlaceDue + 10.f && SwimProofPlacedAt > -2.f)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("SWIMPROOF: LEAD NOT PLACED: still busy 10 s after it was due (falling %d, traversing %d, climbing out %d, ledge phase %d); no proof from this run."),
+				GetCharacterMovement()->IsFalling() ? 1 : 0, bTraversing ? 1 : 0, bWaterClimbing ? 1 : 0, static_cast<int32>(LedgeNow.phase));
+			SwimProofPlacedAt = -2.f; // said once
 		}
 		const FVector To = SwimProofStage == 2 ? SwimProofWet : SwimProofFar;
 		if (SwimProofStage < 4 && FVector::Dist2D(To, GetActorLocation()) <= 100.0)
@@ -4315,14 +4369,13 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			View.Yaw += Turn;
 			Controller->SetControlRotation(View);
 		}
-		// Item 5, logged only (no fix): while the sweep turns, the camera's distance to the nearest partner's body (its physics
-		// bodies where it has them, else its bounds box; 0 or less is inside), and whether that body's mesh is drawn.
-		// Under 50 cm and drawn is the clip.
+		// Item 5, logged only (no fix): while the sweep turns, the camera's distance to the nearest bone of the nearest
+		// partner's body (the followers' meshes have no collision to measure to; the skin is ~10-20 cm out from the bones),
+		// and whether any of that partner's meshes (body or worn pieces) is drawn. Under 50 cm and drawn is the clip.
 		const bool bSweeping = SwimProofSweep >= 0.f && SwimProofSweep < 360.f;
 		float CamNear = -1.f;
 		int32 CamSlot = -1;
 		bool bCamDrawn = false;
-		bool bCamBox = false;
 		if (bSweeping && Camera)
 		{
 			const FVector Eye = Camera->GetComponentLocation();
@@ -4334,19 +4387,25 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 				{
 					continue;
 				}
-				FVector Closest;
-				float D = PartnerBody->GetDistanceToCollision(Eye, Closest);
-				const bool bBox = D < 0.f;
-				if (bBox)
+				const FTransform ToWorld = PartnerBody->GetComponentTransform();
+				double Nearest = TNumericLimits<double>::Max();
+				for (const FTransform& Bone : PartnerBody->GetComponentSpaceTransforms())
 				{
-					D = static_cast<float>(FMath::Sqrt(PartnerBody->Bounds.GetBox().ComputeSquaredDistanceToPoint(Eye)));
+					Nearest = FMath::Min(Nearest, FVector::Dist(Eye, ToWorld.TransformPosition(Bone.GetLocation())));
 				}
+				if (Nearest == TNumericLimits<double>::Max())
+				{
+					continue;
+				}
+				const float D = static_cast<float>(Nearest);
 				if (CamSlot < 0 || D < CamNear)
 				{
 					CamNear = D;
 					CamSlot = I;
-					bCamBox = bBox;
-					bCamDrawn = !Partner->IsHidden() && PartnerBody->IsVisible() && PartnerBody->WasRecentlyRendered(0.1f);
+					bool bAnyDrawn = false;
+					Partner->ForEachComponent<USkeletalMeshComponent>(false, [&bAnyDrawn](const USkeletalMeshComponent* Piece)
+						{ bAnyDrawn = bAnyDrawn || (Piece->IsVisible() && Piece->WasRecentlyRendered(0.1f)); });
+					bCamDrawn = !Partner->IsHidden() && bAnyDrawn;
 				}
 			}
 			if (CamSlot >= 0)
@@ -4367,9 +4426,8 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			if (bSweeping && CamSlot >= 0)
 			{
 				const bool bClip = CamNear < 50.f && bCamDrawn;
-				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: sweep still %03d at %.0f deg: camera %.0f cm from slot %d's body (%s), mesh %s%s."), *SwimProofKind, Shot,
-					SwimProofSweep, CamNear, CamSlot, bCamBox ? TEXT("bounds box") : TEXT("physics bodies"), bCamDrawn ? TEXT("drawn") : TEXT("not drawn"),
-					bClip ? TEXT(": CLIP") : TEXT(""));
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: sweep still %03d at %.0f deg: camera %.0f cm from slot %d's nearest bone, mesh %s%s."), *SwimProofKind, Shot,
+					SwimProofSweep, CamNear, CamSlot, bCamDrawn ? TEXT("drawn") : TEXT("not drawn"), bClip ? TEXT(": CLIP (candidate; check the still)") : TEXT(""));
 				if (bClip && SwimProofClipShotCount < static_cast<int32>(UE_ARRAY_COUNT(SwimProofClipShots)))
 				{
 					SwimProofClipShots[SwimProofClipShotCount++] = Shot;
