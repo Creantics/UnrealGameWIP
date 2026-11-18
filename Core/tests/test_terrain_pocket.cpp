@@ -200,6 +200,85 @@ TEST_CASE("the skirts of two buildings in one line join into one box") {
     CHECK(joinedSum == doctest::Approx(splitSum));
 }
 
+namespace {
+
+// A wall's foot at x 20 with a cliff right past it: the ground is 10 at the foot and climbs 40 m in the first metre
+// out (4 m in the first 0.1 m), then stands at 50. Under the building (x under 19.5) it lies at 4.
+double cliffPastWall(double x, double) { return x < 19.5 ? 4.0 : (x < 20.5 ? 10.0 : 50.0); }
+
+// The skirts among `made` that float, by the float check read every 0.1 m over the buildings and the skirts alone (no
+// fill or stair to hold one up).
+std::vector<std::string> floatingSkirts(const Field& f, const std::vector<MassingBox>& boxes, const std::vector<MassingBox>& made) {
+    std::vector<MassingBox> all(boxes);
+    for (const MassingBox& b : made)
+        if (b.id.rfind("PL-S-", 0) == 0) all.push_back(b);
+    const std::vector<bool> include(all.size(), true);
+    FloatSpec spec;
+    spec.sample = 0.1;
+    FloatReport r;
+    REQUIRE(findFloats(f.ground, all, include, spec, r));
+    std::vector<std::string> ids;
+    for (const FloatBox& fb : r.floating)
+        if (all[fb.box].id.rfind("PL-S-", 0) == 0) ids.push_back(all[fb.box].id + " " + std::to_string(fb.gap));
+    return ids;
+}
+
+} // namespace
+
+TEST_CASE("a skirt reaches the lowest ground under it where the ground climbs steeply off the wall") {
+    const Field f(cliffPastWall);
+    const std::vector<MassingBox> boxes = {building("BLD", 5, 15, 20, 45, 3.5, 20.0)};
+    std::vector<MassingBox> made;
+    PlinthStats stats;
+    REQUIRE(planPlinths(f.ground, boxes, {true}, kRect, {}, PlinthSpec{}, made, stats));
+    bool east = false;
+    for (const MassingBox& b : made) {
+        if (b.id.rfind("PL-S-", 0) != 0 || b.cx <= 20.0 || b.cx >= 22.5) continue;
+        east = true;
+        // The lowest ground under it is the foot's 10 m (the 4 m lies under the building): a sink under that, no deeper.
+        CHECK(b.z0 == doctest::Approx(10.0 - 0.3));
+        CHECK(b.z1 == doctest::Approx(50.0));
+    }
+    CHECK(east);
+    const std::vector<std::string> floating = floatingSkirts(f, boxes, made);
+    CHECK_MESSAGE(floating.empty(), (floating.empty() ? std::string() : floating.front()));
+}
+
+TEST_CASE("a turned building's skirts and joined skirts reach the lowest ground under them") {
+    SUBCASE("turned 30 degrees, the cliff past its +u wall") {
+        const double a = 30.0 * 3.14159265358979323846 / 180.0;
+        const Field f([a](double x, double y) {
+            const double u = (x - 30.0) * std::cos(a) + (y - 30.0) * std::sin(a);
+            return u > 6.0 ? 50.0 : 10.0;
+        });
+        MassingBox b = building("TURNED", 24, 26, 36, 34, 9.0, 20.0);
+        b.rot = 30.0;
+        const std::vector<MassingBox> boxes = {b};
+        std::vector<MassingBox> made;
+        PlinthStats stats;
+        REQUIRE(planPlinths(f.ground, boxes, {true}, kRect, {}, PlinthSpec{}, made, stats));
+        CHECK(stats.skirts > 0);
+        for (const MassingBox& m : made)
+            if (m.id.rfind("PL-S-", 0) == 0) CHECK(m.z0 >= 10.0 - 0.3 - 1e-9); // no ground node lies under 10
+        const std::vector<std::string> floating = floatingSkirts(f, boxes, made);
+        CHECK_MESSAGE(floating.empty(), (floating.empty() ? std::string() : floating.front()));
+    }
+    SUBCASE("two buildings in one line, their skirts joined and apart") {
+        const Field f(cliffPastWall);
+        const std::vector<MassingBox> boxes = {building("A", 5, 15, 20, 30, 3.5, 20.0), building("B", 5, 30, 20, 45, 3.5, 20.0)};
+        for (const bool join : {true, false}) {
+            PlinthSpec spec;
+            spec.joinSkirts = join;
+            std::vector<MassingBox> made;
+            PlinthStats stats;
+            REQUIRE(planPlinths(f.ground, boxes, {true, true}, kRect, {}, spec, made, stats));
+            CHECK(stats.skirts > 0);
+            const std::vector<std::string> floating = floatingSkirts(f, boxes, made);
+            CHECK_MESSAGE(floating.empty(), (std::string(join ? "joined: " : "apart: ") + (floating.empty() ? std::string() : floating.front())));
+        }
+    }
+}
+
 TEST_CASE("a wide pit gets a stair out, not a fill; an exempt rect drops it from the report") {
     const Field f([](double x, double y) { return (x >= 20.0 && x <= 30.0 && y >= 20.0 && y <= 30.0) ? 7.0 : 10.0; });
     std::vector<MassingBox> made;

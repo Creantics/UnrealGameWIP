@@ -457,6 +457,59 @@ double slopeNz(const MassingGround& ground, double x, double y) {
     return 1.0 / std::sqrt(1.0 + gx * gx + gy * gy);
 }
 
+// The lowest ground node of every ground cell a box's footprint overlaps. The ground is bilinear between its nodes, so
+// no ground point under the footprint lies lower: a base a sink under this never floats, however steeply the ground
+// climbs between the points a sampler reads. Cells only touching an edge are left out; a footprint reaching past the
+// grid takes every cell its bounds cover (the ground read clamps there).
+double footprintFloor(const MassingGround& g, const MassingBox& b) {
+    if (!g.grid || g.samplesX == 0 || g.samplesY == 0 || !(g.spacing > 0.0)) return 0.0; // as the ground read has it
+    const double a = b.rot * kTpPi / 180.0;
+    const double c = std::cos(a), s = std::sin(a);
+    const double hu = 0.5 * b.sx, hw = 0.5 * b.sy;
+    const double ex = std::fabs(hu * c) + std::fabs(hw * s), ey = std::fabs(hu * s) + std::fabs(hw * c);
+    const double lastX = static_cast<double>(g.samplesX - 1), lastY = static_cast<double>(g.samplesY - 1);
+    constexpr double kHair = 1e-9; // node units: a bound on a node line takes no cell past it
+    const double fx0 = (b.cx - ex - g.originX) / g.spacing + kHair, fx1 = (b.cx + ex - g.originX) / g.spacing - kHair;
+    const double fy0 = (b.cy - ey - g.originY) / g.spacing + kHair, fy1 = (b.cy + ey - g.originY) / g.spacing - kHair;
+    const bool inside = fx0 >= 0.0 && fy0 >= 0.0 && fx1 <= lastX && fy1 <= lastY;
+    const auto span = [](double f0, double f1, double last, std::size_t& n0, std::size_t& n1) {
+        f0 = std::clamp(f0, 0.0, last);
+        f1 = std::clamp(std::max(f0, f1), 0.0, last);
+        n0 = static_cast<std::size_t>(std::floor(f0));
+        n1 = static_cast<std::size_t>(std::max(std::floor(f0), std::ceil(f1) - 1.0));
+    };
+    std::size_t i0 = 0, i1 = 0, j0 = 0, j1 = 0; // cells: cell (i, j) spans nodes i..i+1, j..j+1
+    span(fx0, fx1, lastX, i0, i1);
+    span(fy0, fy1, lastY, j0, j1);
+    const auto node = [&](std::size_t i, std::size_t j) {
+        return massingHeightFromValue(g.grid[std::min(j, g.samplesY - 1) * g.samplesX + std::min(i, g.samplesX - 1)]);
+    };
+    // Whether cell (i, j) overlaps the footprint across the box's own axes (its bounds' axes hold by the cell range).
+    const auto overlaps = [&](std::size_t i, std::size_t j) {
+        double uMin = std::numeric_limits<double>::max(), uMax = std::numeric_limits<double>::lowest();
+        double wMin = uMin, wMax = uMax;
+        for (int k = 0; k < 4; ++k) {
+            const double x = g.originX + static_cast<double>(i + (k & 1)) * g.spacing - b.cx;
+            const double y = g.originY + static_cast<double>(j + (k >> 1)) * g.spacing - b.cy;
+            const double u = x * c + y * s, w = -x * s + y * c;
+            uMin = std::min(uMin, u);
+            uMax = std::max(uMax, u);
+            wMin = std::min(wMin, w);
+            wMax = std::max(wMax, w);
+        }
+        const double hair = kHair * g.spacing;
+        return uMax > -hu + hair && uMin < hu - hair && wMax > -hw + hair && wMin < hw - hair;
+    };
+    double lo = std::numeric_limits<double>::max();
+    for (std::size_t j = j0; j <= j1; ++j) {
+        for (std::size_t i = i0; i <= i1; ++i) {
+            if (inside && !overlaps(i, j)) continue;
+            lo = std::min({lo, node(i, j), node(i + 1, j), node(i, j + 1), node(i + 1, j + 1)});
+        }
+    }
+    return lo;
+}
+
 // The skirts of one building, appended to out.
 void skirtsOf(const MassingGround& ground, const std::vector<MassingBox>& boxes, std::size_t self, const BoxBuckets& buckets,
               const PlinthSpec& spec, std::vector<MassingBox>& out, std::size_t& counter, bool& sloped) {
@@ -840,6 +893,9 @@ bool planPlinths(const MassingGround& ground, const std::vector<MassingBox>& box
             stats.slopedBuildings += sloped ? 1 : 0;
         }
         if (spec.joinSkirts) joinSkirts(out, first, spec.band);
+        // Each skirt as it stands (joined or not) reaches a sink under the lowest ground anywhere under it: the pieces
+        // read the ground at a few points, and off a wall's foot it can climb metres between them.
+        for (std::size_t i = first; i < out.size(); ++i) out[i].z0 = std::min(out[i].z0, footprintFloor(ground, out[i]) - spec.sink);
         stats.skirts = out.size() - first;
     }
     for (std::size_t i = first; i < out.size(); ++i) {
