@@ -1659,6 +1659,9 @@ public:
     // What runs, the ready flags and the refusals, as of the last tick (see ArenaSpecialView). The gauge's value is
     // not here: it is never shown.
     FTCORE_API const ArenaSpecialView& special() const;
+    // A table is set (setSpecials since the last begin): steady through the fight, so the HUD may reserve the special's
+    // prompt row on it without the row coming and going with a lead switch.
+    FTCORE_API bool specialsOn() const;
     // A special runs: the fight's clock stands still for every body but the performer. The host holds its own
     // (projectiles, hazards, the brain's host-side parts), moves no body (arenaStep doesn't) and poses the performer.
     // Meanwhile every host call that would change the fight does nothing (returns false or 0): switchLeads (its
