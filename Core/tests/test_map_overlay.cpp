@@ -409,3 +409,30 @@ TEST_CASE("map overlay: label picks by zoom: cursor first, districts and water p
     CHECK(f.mPerPx > 0.f);
     CHECK_FALSE(mapRoadLabelled(MapRoadClass::Stair, MapZoom::Near));
 }
+
+TEST_CASE("map overlay: plan-metre points turn to engine metres, and a district's own point is its anchor") {
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D1,district,Pebblewick,Pebi,D1,100,900\n"
+                      "D2,district,Hobcross,,D2,,\n"
+                      "RD-A,road,Ferrow Road,Feru,D2,,\n"
+                      "SQ-1,square,Tinker Square,,D1,250,500\n"
+                      "ST-9,stair,Crook Steps,,D1,300,300\n" // a line off the model: never a point name
+                      "LS-9,link_stair,Gull Steps,,D1,310,300\n";
+    MapNames plan;
+    REQUIRE(mapLoadNames(m, csv, plan, nullptr, 1000.0));
+    REQUIRE(plan.places.size() == 1);
+    CHECK(plan.unmatched == 2);
+    CHECK(plan.places[0].at.x == doctest::Approx(-250.f)); // 250 - 500
+    CHECK(plan.places[0].at.y == doctest::Approx(0.f));    // 500 - 500
+    REQUIRE(plan.districts.size() == 2);
+    CHECK(plan.districts[0].hasAnchor);
+    CHECK(plan.districts[0].anchor.x == doctest::Approx(-400.f));
+    CHECK(plan.districts[0].anchor.y == doctest::Approx(-400.f));
+    CHECK(plan.districts[1].hasAnchor); // no point: from its road
+    // No plan side: read as engine metres.
+    MapNames eng;
+    REQUIRE(mapLoadNames(m, csv, eng));
+    CHECK(eng.places[0].at.x == doctest::Approx(250.f));
+    CHECK(eng.districts[0].anchor.y == doctest::Approx(900.f));
+}

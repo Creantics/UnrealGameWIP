@@ -34,8 +34,9 @@ class FFTMapOverlay
 public:
 	static bool Wanted(); // -MapOverlayC
 
-	// The model is UFTMiniMap's (it outlives this); White is its plain white texture.
-	FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& White);
+	// The model is UFTMiniMap's (it outlives this); White is its plain white texture. PlanSide (m) turns the names
+	// table's plan-metre points to engine metres (0: read them as engine metres).
+	FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& White, double PlanSide);
 	~FFTMapOverlay();
 	FFTMapOverlay(const FFTMapOverlay&) = delete;
 	FFTMapOverlay& operator=(const FFTMapOverlay&) = delete;

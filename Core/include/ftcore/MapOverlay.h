@@ -86,14 +86,17 @@ struct MapNames {
     struct District {
         std::string id;
         std::uint16_t name = kMapNoName;
-        Vec2 anchor{};      // the mean of its named roads' midpoints (its label's place at far zoom)
+        Vec2 anchor{};      // its row's x, y, else the mean of its named roads' midpoints (its label's place at far zoom)
         bool hasAnchor = false;
     };
     std::vector<District> districts;
     std::vector<std::uint16_t> roadDistrict; // per model road: index into districts, or kMapNoName
     std::size_t unmatched = 0;
 };
-FTCORE_API bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error = nullptr);
+// The table's x, y are plan metres (the build tables' frame) when planSide > 0, turned to engine metres with
+// massingEnginePoint; else they are read as engine metres. A district row's own x, y, when given, is its anchor.
+FTCORE_API bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error = nullptr,
+                             double planSide = 0.0);
 // The name of the road at index `road` (kMapNoName for none or out of range).
 FTCORE_API std::uint16_t mapRoadName(const MapNames& n, int road);
 // The district of the road at index `road`: index into n.districts, or kMapNoName.

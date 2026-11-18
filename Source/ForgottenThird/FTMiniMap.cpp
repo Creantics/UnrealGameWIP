@@ -206,7 +206,7 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 	MarkItem->TriangleList.Reserve(512 + static_cast<int32>(Model.doors.size()) * 2);
 	if (!MapC && FFTMapOverlay::Wanted())
 	{
-		MapC = new FFTMapOverlay(Model, *WhiteTexture);
+		MapC = new FFTMapOverlay(Model, *WhiteTexture, PlanSide);
 	}
 
 	// Captures.

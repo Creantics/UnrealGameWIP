@@ -121,7 +121,7 @@ bool FFTMapOverlay::Wanted()
 	return FParse::Param(FCommandLine::Get(), TEXT("MapOverlayC"));
 }
 
-FFTMapOverlay::FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& White) : Model(InModel)
+FFTMapOverlay::FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& White, double PlanSide) : Model(InModel)
 {
 	using namespace FTMapOverlayDetail;
 	ftcore::mapEnterableBuildings(Model, Enterable);
@@ -160,7 +160,7 @@ FFTMapOverlay::FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& Wh
 	{
 		const FTCHARToUTF8 Utf8(*Csv);
 		std::string Why;
-		if (ftcore::mapLoadNames(Model, std::string_view(Utf8.Get(), Utf8.Length()), Names, &Why))
+		if (ftcore::mapLoadNames(Model, std::string_view(Utf8.Get(), Utf8.Length()), Names, &Why, PlanSide))
 		{
 			for (const std::string& N : Names.names)
 			{
@@ -245,10 +245,10 @@ FFTMapOverlay::FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& Wh
 		}
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("MAPOVERLAY READY option=C look=gold names=%d roads_named=%d/%d districts=%d places=%d unmatched=%d enterable=%d/%d water_rects=%d sea=%d sign_strokes=%d fonts_missing=%d"),
+		TEXT("MAPOVERLAY READY option=C look=gold names=%d roads_named=%d/%d districts=%d places=%d unmatched=%d enterable=%d/%d water_rects=%d sea=%d sign_strokes=%d fonts_missing=%d plan_side=%.0f"),
 		NameText.Num(), Named, static_cast<int32>(Model.roads.size()), static_cast<int32>(Names.districts.size()),
 		static_cast<int32>(Names.places.size()), static_cast<int32>(Names.unmatched), Lit, static_cast<int32>(Enterable.size()),
-		static_cast<int32>(Water.size()), SeaSide, static_cast<int32>(SignStrokes.size()), Missing);
+		static_cast<int32>(Water.size()), SeaSide, static_cast<int32>(SignStrokes.size()), Missing, PlanSide);
 }
 
 FFTMapOverlay::~FFTMapOverlay()

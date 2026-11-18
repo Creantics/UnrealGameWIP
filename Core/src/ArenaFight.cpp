@@ -4452,6 +4452,7 @@ const ArenaSpecialRules* ArenaFight::specialMove() const {
 }
 
 const ArenaSpecialView& ArenaFight::special() const { return special_.view; }
+bool ArenaFight::specialsOn() const { return special_.on; }
 bool ArenaFight::frozen() const { return special_.view.running; }
 
 ArenaSpecialRefusal ArenaFight::specialRefusal(std::uint8_t lead) const {

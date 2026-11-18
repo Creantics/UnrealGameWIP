@@ -299,7 +299,9 @@ TEST_CASE("arena special: the gauge fills from the lead's play, says Ready once,
     const ArenaSpecialTable specials = shippedSpecials();
     Rig r;
     r.begin(fightOf({"dummy"}));
+    CHECK_FALSE(r.fight.specialsOn());
     REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 990.f)));
+    CHECK(r.fight.specialsOn());
     CHECK_FALSE(r.fight.special().readyPlayer);
     CHECK(r.fight.specialRefusal(kArenaPlayer) == ArenaSpecialRefusal::NotReady);
     int readies = 0;

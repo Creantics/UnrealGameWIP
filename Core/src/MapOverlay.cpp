@@ -1,6 +1,7 @@
 #include "ftcore/MapOverlay.h"
 
 #include "CsvRead.h"
+#include "ftcore/MassingPlan.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,6 +30,21 @@ bool number(const std::string& s, float& out) {
     if (end != s.c_str() + s.size() || !std::isfinite(v)) return false;
     out = v;
     return true;
+}
+
+// A kind drawn as a line (a road, a street, a stair...): named along its road, never at a point, so a line the model
+// leaves off is unmatched rather than a stray point name.
+bool lineKind(const std::string& k) {
+    static const char* const kLine[] = {"road", "street", "lane", "alley", "stair", "terrace", "walk", "bridge",
+                                        "footbridge", "causeway", "core_lane", "coast_road", "wall_walk"};
+    for (const char* l : kLine)
+        if (k == l) return true;
+    static const char* const kEnds[] = {"_road", "_street", "_lane", "_stair", "_alley", "_walk"};
+    for (const char* e : kEnds) {
+        const std::size_t n = std::strlen(e);
+        if (k.size() > n && k.compare(k.size() - n, n, e) == 0) return true;
+    }
+    return false;
 }
 
 // The part of segment a-b inside the box (Liang-Barsky); false when none of it is.
@@ -202,7 +218,7 @@ void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::uint8_t>& out
         if (b != kNone) out[b] = 1;
 }
 
-bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error) {
+bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error, double planSide) {
     out = MapNames{};
     out.roadName.assign(m.roads.size(), kMapNoName);
     std::vector<detail::Record> recs;
@@ -224,6 +240,18 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
     std::unordered_map<std::string, std::uint16_t> byName;
     std::vector<std::string> roadDistrictId(m.roads.size()); // joined to the districts once all rows are read
     auto field = [](const detail::Record& rec, int c) { return c >= 0 && static_cast<std::size_t>(c) < rec.fields.size() ? trimmed(rec.fields[static_cast<std::size_t>(c)]) : std::string(); };
+    // A row's point, in engine metres; false when it has none.
+    auto point = [&](const detail::Record& rec, Vec2& at) {
+        float px = 0.f, py = 0.f;
+        if (!number(field(rec, col[5]), px) || !number(field(rec, col[6]), py)) return false;
+        if (planSide > 0.0) {
+            const MassingVec e = massingEnginePoint(planSide, static_cast<double>(px), static_cast<double>(py), 0.0);
+            at = Vec2{static_cast<float>(e.x), static_cast<float>(e.y)};
+        } else {
+            at = Vec2{px, py};
+        }
+        return true;
+    };
     for (std::size_t r = first + 1; r < recs.size(); ++r) {
         const auto& rec = recs[r];
         if (!rec.fields.empty() && !rec.fields[0].empty() && rec.fields[0][0] == '#') continue;
@@ -244,7 +272,9 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
         const std::string sign = field(rec, col[3]);
         if (out.signForms[idx].empty() && !sign.empty()) out.signForms[idx] = sign;
         if (kind == "district") {
-            out.districts.push_back(MapNames::District{id, idx, Vec2{}, false});
+            Vec2 at{};
+            const bool given = point(rec, at);
+            out.districts.push_back(MapNames::District{id, idx, at, given});
             out.nameKind[idx] = MapNameKind::Road; // never drawn as a place
             continue;
         }
@@ -252,9 +282,9 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
         if (water) out.nameKind[idx] = MapNameKind::Water;
         const auto roads = byId.find(id);
         if (roads == byId.end()) {
-            float px = 0.f, py = 0.f;
-            if (number(field(rec, col[5]), px) && number(field(rec, col[6]), py)) {
-                out.places.push_back(MapNames::Spot{idx, Vec2{px, py}});
+            Vec2 at{};
+            if (!lineKind(kind) && point(rec, at)) {
+                out.places.push_back(MapNames::Spot{idx, at});
             } else {
                 ++out.unmatched;
             }
@@ -267,7 +297,7 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
             roadDistrictId[static_cast<std::size_t>(road)] = district;
         }
     }
-    // Roads to their districts, and each district's anchor: the mean of its named roads' midpoints.
+    // Roads to their districts, and each district without a point of its own: the mean of its named roads' midpoints.
     out.roadDistrict.assign(m.roads.size(), kMapNoName);
     std::vector<double> sx(out.districts.size(), 0.0), sy(out.districts.size(), 0.0);
     std::vector<std::size_t> sn(out.districts.size(), 0);
@@ -286,7 +316,7 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
         }
     }
     for (std::size_t d = 0; d < out.districts.size(); ++d) {
-        if (sn[d] == 0) continue;
+        if (sn[d] == 0 || out.districts[d].hasAnchor) continue; // a row's own point wins
         const double k = static_cast<double>(sn[d]);
         out.districts[d].anchor = Vec2{static_cast<float>(sx[d] / k), static_cast<float>(sy[d] / k)};
         out.districts[d].hasAnchor = true;
