@@ -980,8 +980,6 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 				static_cast<int32>(Phase), At.Z, At.X, At.Y);
 		}
 	}
-#else
-	const bool bProofStuck = false;
 #endif
 
 	if (Phase == WaterFollowPhase::Ashore)
@@ -1046,6 +1044,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		{
 			return false; // the traversal carries it; the entry starts once it ends
 		}
+#if !UE_BUILD_SHIPPING
 		if (bProofStuck)
 		{
 			if (Anim)
@@ -1055,6 +1054,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			}
 			return true; // held where it stands (-SwimProof=land): its walk is given up twice
 		}
+#endif
 		const FVector2D To(ToCm(Order->entry.point.x), ToCm(Order->entry.point.y));
 		WaterWalk(To, kWaterWalkSpeed, DeltaSeconds, Anim);
 		bWaterAtEntry = FVector2D::Distance(To, FVector2D(GetActorLocation().X, GetActorLocation().Y)) <= kWaterAtEntry;
@@ -1123,10 +1123,16 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		const float Cap = bSprint ? Tune.swimSprintSpeed : Tune.swimSpeed;
 		float Share = Cap > 0.f ? FMath::Clamp(Order->speed / Cap, 0.f, 1.f) : 0.f;
 		Share *= static_cast<float>(FMath::Clamp(Far / 60.0, 0.0, 1.0));
-		if (Far < 5.0 || (bProofStuck && Phase == WaterFollowPhase::Surface))
+		if (Far < 5.0)
 		{
-			Share = 0.f; // or held treading where it is (-SwimProof=watchdog)
+			Share = 0.f;
 		}
+#if !UE_BUILD_SHIPPING
+		if (bProofStuck && Phase == WaterFollowPhase::Surface)
+		{
+			Share = 0.f; // held treading where it is (-SwimProof=watchdog)
+		}
+#endif
 		const FVector2D Way = Far > 1.0 ? Gap / Far : FVector2D::ZeroVector;
 		In.move = {static_cast<float>(Way.X) * Share, static_cast<float>(Way.Y) * Share};
 		In.sprint = bSprint;

@@ -4105,8 +4105,17 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		SwimProofTime = 0.f;
 		return;
 	}
-	if (SwimProofStage == 1 && SwimProofTime >= 6.f) // the party gathers at the edge
+	// The party gathers at the edge: at least 6 s, and slot 0 within 10 m of the lead (else it may stay ashore with no
+	// edge, and neither path can start); 30 s at most, then on with a warning.
+	const AFTPartyFollower* Slot0Body = WaterFollowers[0].Get();
+	const bool bSlot0Near = Slot0Body && FVector::Dist2D(Slot0Body->GetActorLocation(), GetActorLocation()) <= 1000.0;
+	if (SwimProofStage == 1 && SwimProofTime >= 6.f && (bSlot0Near || SwimProofTime >= 30.f))
 	{
+		if (!bSlot0Near)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof %s: slot 0 %s after 30 s; going on."), *SwimProofKind,
+				Slot0Body ? *FString::Printf(TEXT("is %.0f m away"), FVector::Dist2D(Slot0Body->GetActorLocation(), GetActorLocation()) / 100.0) : TEXT("has no member"));
+		}
 		// The scripted walk (LeadGo) takes the route: in, then out to the far point, where it treads.
 		BeginLeadGo(FVector(SwimProofWet.X, SwimProofWet.Y, 0.0), true); // jumps a quay's railing
 		LeadGoNext.Add(FVector(SwimProofFar.X, SwimProofFar.Y, 0.0));

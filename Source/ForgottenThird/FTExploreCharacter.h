@@ -590,8 +590,9 @@ private:
 	void BeginSwimRescue(const UFTWaterSubsystem& System);
 	void TickSwimRescue(float DeltaSeconds);
 	// -SwimProof=land|watchdog [-SwimProofShots=<dir>] (dev, not shipped): the swim follow's capture run. It finds water
-	// near the start, walks the lead from its dry edge in and 20 m or more out, and holds follower slot 0 stuck (its walk
-	// to an entry for land, its swim for watchdog) so it rejoins the lead; a still each second, quits at 80 s.
+	// near the start, walks the lead from its dry edge in and out to a far point (16 m or more for watchdog), and holds
+	// follower slot 0 stuck (its walk to an entry for land, its swim for watchdog) so it rejoins the lead; a still every
+	// 0.5 s, a camera sweep after the rejoin; exit 0 only on the kind's own pass line, at 80-110 s.
 	void TickSwimProof(float DeltaSeconds);
 	int32 SwimProofStage = -1; // -1 off; 0 settle, 1 at the dry edge, 2 walking in, 3 out to the far point, 4 holding
 	float SwimProofTime = 0.f;
