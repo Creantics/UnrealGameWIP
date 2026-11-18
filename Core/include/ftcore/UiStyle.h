@@ -301,6 +301,18 @@ struct UiHitEdges {
     bool operator==(const UiHitEdges&) const = default;
 };
 FTCORE_API UiHitEdges uiHitEdges(bool hasSide, float rightX, float aheadY);
+
+// The legacy arena HUD's flashes (AFTArenaHUD::DrawFlashes, the new UI off), from the hit and parry pulses (1 at the
+// event, falling to 0): the red hit edges, the gold parry bars and the parry's full-screen wash, as alphas. Reduce
+// flashes (Settings::reduceFlashes) drops the hit edges and the wash, as the new UI's hit cue does, and keeps the parry
+// bars soft (kUiCalmParryBar of full) so a parry still reads.
+struct UiArenaFlashes {
+    float hitEdge = 0.f;
+    float parryBar = 0.f;
+    float parryWash = 0.f;
+};
+inline constexpr float kUiCalmParryBar = 0.33f;
+FTCORE_API UiArenaFlashes uiArenaFlashes(float hit, float parry, bool reduceFlashes);
 // The cue's age on the runner's fight clock (`now`, GetNow(); it holds in a capture's hold and when the game is paused,
 // so the painter hides the cue while paused). `stamp` is the host's last hit time on that clock, negative when the
 // fight has had no hit. A second step at the same `now` adds nothing. The cue starts (age exactly 0) only when the stamp

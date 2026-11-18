@@ -57,6 +57,7 @@
 #include "Misc/PackageName.h"
 #include "ForgottenThird.h"
 #include "FTRim.h"
+#include "FTGcPacingSubsystem.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
@@ -1707,6 +1708,7 @@ void AFTExploreCharacter::TickUnstick(float DeltaSeconds)
 		{
 			PC->PlayerCameraManager->StartCameraFade(1.f, 0.f, Unstick.rules().fadeTime, FLinearColor::Black, false, false);
 		}
+		UFTGcPacingSubsystem::HiddenMoment(this, TEXT("unstick fade"));
 		return;
 	}
 	// Too steep to stand on: down the slope at slideSpeed at least (jump stays open, HandleJump).

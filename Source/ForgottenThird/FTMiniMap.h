@@ -25,6 +25,7 @@ class AFTPartyVan;
 class AHUD;
 class APlayerController;
 class FCanvasTriangleItem;
+class FFTMapOverlay;
 class UCanvas;
 class UTexture2D;
 struct FCanvasUVTri;
@@ -69,6 +70,7 @@ private:
 	FCanvasTriangleItem* DiscItem = nullptr;
 	FCanvasTriangleItem* RimItem = nullptr;
 	FCanvasTriangleItem* MarkItem = nullptr;
+	FFTMapOverlay* MapC = nullptr; // the option C overlay (FTMapOverlay.h), only with -MapOverlayC
 
 	TWeakObjectPtr<AFTPartyVan> Van;
 	TWeakObjectPtr<AFTPartyFollower> Followers[2];

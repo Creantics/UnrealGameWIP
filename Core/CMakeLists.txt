@@ -134,6 +134,8 @@ add_library(ftcore STATIC
     src/VehicleDrive.cpp
     src/VehicleRules.cpp
     src/MiniMap.cpp
+    src/MapOverlay.cpp
+    src/SignScript.cpp
     src/LedgeHang.cpp
     src/Locomotion.cpp
     src/Mini.cpp
@@ -417,6 +419,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_surface_weather.cpp
         tests/test_demo_boot.cpp
         tests/test_surface_joints.cpp
+        tests/test_bench_warmup.cpp
+        tests/test_gc_pacing.cpp
+        tests/test_tier_detect.cpp
         tests/test_frame_stats.cpp
         tests/test_bench_path.cpp
         tests/test_light_picker.cpp
@@ -473,6 +478,8 @@ if(FTCORE_BUILD_TESTS)
     tests/test_vehicle_drive.cpp
     tests/test_vehicle_rules.cpp
     tests/test_mini_map.cpp
+    tests/test_map_overlay.cpp
+    tests/test_sign_script.cpp
     tests/test_ledge_hang.cpp
         tests/test_locomotion.cpp
         tests/test_mini.cpp

@@ -38,6 +38,8 @@
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Engine.h"
+#include "Engine/Font.h"
+#include "UObject/Package.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
@@ -2171,12 +2173,14 @@ public:
 
 	// The special row's inputs: ready, and while it cannot start now, why; and the Third's ready (the player calls it):
 	// never a level. ready and why come from ArenaFight::special() (the controlled lead's gauge and refusal); a switch
-	// of lead is the rules' unready (the row leaves). thirdReady has no feed yet (the Third's call is the arena lane's);
+	// of lead is the rules' unready (the row leaves). thirdReady is ArenaSpecialView::readyPartner (a party member's only);
 	// -UiStateShot=special, special_dim or special_call holds the live, the dim or the CALL row for captures.
 	void TickSpecial(const UFTArenaRunner& Runner, const ftcore::ArenaFight& Fight, float DeltaTime)
 	{
 		ftcore::UiSpecialInput In;
 		const EUiStateShot Shot = UiStateShot();
+		bSpecialsOn = Fight.specialsOn() || Shot == EUiStateShot::Special || Shot == EUiStateShot::SpecialDim
+			|| Shot == EUiStateShot::SpecialCall;
 		if (!Fight.over() && (Shot == EUiStateShot::Special || Shot == EUiStateShot::SpecialDim))
 		{
 			In.ready = true;
@@ -2188,6 +2192,9 @@ public:
 			// refused, why. Nothing ready while a special runs (the gauge empties at the press).
 			const ftcore::ArenaSpecialView& Rules = Fight.special();
 			In.ready = Rules.readyPlayer && !Rules.running;
+			// The Third's: readyPartner is set only for a party member's full gauge (never a partner lead's); the CALL
+			// row is always live, so refusalPartner is not read.
+			In.thirdReady = Rules.readyPartner && !Rules.running;
 			switch (Rules.refusalPlayer)
 			{
 			case ftcore::ArenaSpecialRefusal::Ok:
@@ -2197,9 +2204,14 @@ public:
 			default: In.why = ftcore::UiSpecialWhy::NotNow; break;
 			}
 		}
-		In.thirdReady = !Fight.over() && Shot == EUiStateShot::SpecialCall;
+		if (!Fight.over() && Shot == EUiStateShot::SpecialCall)
+		{
+			In.ready = false;
+			In.thirdReady = true;
+		}
 		const ftcore::Settings* Prefs = Runner.GetSettings();
-		Special = ftcore::uiSpecialStep(SpecialState, Shown().bSpecialPrompt, In, DeltaTime, Prefs && Prefs->reduceMotion);
+		Special = ftcore::uiSpecialStep(SpecialState, Shown().bSpecialPrompt && bSpecialsOn, In, DeltaTime,
+			Prefs && Prefs->reduceMotion, Prefs && Prefs->reduceFlashes);
 		// The tail after the word: the lead's name, the Third's (CALL) or the reason. While the row stands it follows what
 		// is shown (copied on a change only); a leave keeps the last one, so a lead switch never shows the new name fading.
 		if (SpecialState.ready)
@@ -4077,7 +4089,8 @@ private:
 	// GUARD's word (or its reason); either alone takes the margin.
 	void PaintPrompts(const FPainter& P, const FVector2f& Size) const
 	{
-		const bool bSpecialRow = ::Shown().bSpecialPrompt; // the special's row reserved: the basic controls stand one row up
+		// The special's row reserved (the switch, and the fight has specials): the basic controls stand one row up.
+		const bool bSpecialRow = ::Shown().bSpecialPrompt && bSpecialsOn;
 		const ftcore::UiPromptMask Shown = Budget.out.promptsShown;
 		const float S = P.S;
 		const ftcore::UiMargins E = EdgesAt(Size, S);
@@ -4904,6 +4917,9 @@ private:
 	// words by UiSpecialWhy, and the tail drawn after the word (held through the leave) with its width in the prompts' face.
 	ftcore::UiSpecialState SpecialState;
 	ftcore::UiSpecialView Special;
+	// The fight has specials (ArenaFight::specialsOn), or a special capture holds the row: only then is the row reserved,
+	// so with no specials wired the basic controls keep their rows. Steady through a fight (never a lead switch's).
+	bool bSpecialsOn = false;
 	FString SpecialKey, SpecialWord, CallWord, SpecialTail;
 	float SpecialKeyW = 0.f, SpecialWordW = 0.f, CallWordW = 0.f, SpecialTailW = 0.f;
 	FString SpecialWhyWord[ftcore::kUiSpecialWhyCount];
@@ -8405,5 +8421,30 @@ bool EnsureMenuScreens()
 	GMenuScreens = W;
 	GMenuViewport = GEngine->GameViewport;
 	return true;
+}
+
+UFont* UiCanvasFont(uint8 Face)
+{
+	// Made once per process and rooted (never freed): a handful of small objects, safe across map loads and PIE.
+	static UFont* Made[ftcore::kUiFontCount] = {};
+	if (Face >= ftcore::kUiFontCount)
+	{
+		return nullptr;
+	}
+	if (!Made[Face])
+	{
+		const TSharedPtr<const FCompositeFont>& Src = Faces().Font[Face];
+		if (!Src.IsValid())
+		{
+			return nullptr;
+		}
+		UFont* F = NewObject<UFont>(GetTransientPackage(), NAME_None, RF_Transient);
+		F->FontCacheType = EFontCacheType::Runtime;
+		F->GetMutableInternalCompositeFont() = *Src;
+		F->LegacyFontSize = 16;
+		F->AddToRoot();
+		Made[Face] = F;
+	}
+	return Made[Face];
 }
 }
