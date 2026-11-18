@@ -53,7 +53,8 @@ void UFTRainSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
 	float Want = 0.f;
-	if (!FParse::Value(FTLookSwitches(), TEXT("Rain="), Want) || !(Want > 0.f))
+	// -Weather=dry: no rain all run, whatever -Rain or the map's boot row says (the subsystem stays inactive).
+	if (FTWeatherDry() || !FParse::Value(FTLookSwitches(), TEXT("Rain="), Want) || !(Want > 0.f))
 	{
 		return;
 	}

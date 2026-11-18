@@ -85,6 +85,7 @@ add_library(ftcore STATIC
     src/HeroCorner.cpp
     src/HeroFarBank.cpp
     src/Weather.cpp
+    src/StillCam.cpp
     src/RainFall.cpp
     src/RainCover.cpp
     src/GlassSurface.cpp
@@ -421,6 +422,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_hero_corner.cpp
         tests/test_hero_far_bank.cpp
         tests/test_weather.cpp
+        tests/test_still_cam.cpp
         tests/test_rain_fall.cpp
         tests/test_rain_cover.cpp
         tests/test_glass_surface.cpp
