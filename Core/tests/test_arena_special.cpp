@@ -519,6 +519,21 @@ TEST_CASE("arena special: loader errors name their path and leave the table empt
     CHECK(warnings[0] == "moves[0]: unknown key: colour");
 }
 
+TEST_CASE("arena special: a stale impactAt key is unknown, sets nothing, and the shipped table has none") {
+    // The impact is no longer a data time: it is the strike plus the wave's travel. An old file's key only warns.
+    ArenaSpecialTable t;
+    std::vector<std::string> warnings;
+    CHECK(importArenaSpecials(R"({ "moves": [ { "id": "a", "lead": "devin", "impactAt": 3.0 } ] })", t, nullptr, &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "moves[0]: unknown key: impactAt");
+    REQUIRE(t.moves.size() == 1);
+    CHECK(t.moves[0].strikeAt == doctest::Approx(ArenaSpecialRules{}.strikeAt));
+
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_special.json", text));
+    CHECK(text.find("impactAt") == std::string::npos);
+}
+
 // ---- the gauge ----
 
 TEST_CASE("arena special: the gauge fills from the lead's play, says Ready once, and is never shown") {
