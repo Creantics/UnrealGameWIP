@@ -802,6 +802,47 @@ bool mapLabelsOverlap(const MapLabel& a, const MapLabel& b, float gap) { return 
 
 void mapLabelCorners(const MapLabel& l, float grow, Vec2 out[4]) { corners(l, grow, out); }
 
+bool mapLabelOnRoad(const MiniMapModel& m, int road, const MapOverlayView& v, float widthPx, const MapLabel& l, float grow) {
+    if (road < 0 || static_cast<std::size_t>(road) >= m.roads.size() || !roadOk(m, static_cast<std::size_t>(road))) return false;
+    const MapRoad& r = m.roads[static_cast<std::size_t>(road)];
+    const float wd = std::max(widthPx, 0.f);
+    const float reachL = std::hypot(l.w * 0.5f + grow, l.h * 0.5f + grow); // the label's half diagonal, for a quick reject
+    for (std::uint32_t k = 0; k + 1 < r.count; ++k) {
+        const Vec2 a = mapOverlayToScreen(v, m.points[r.first + k]);
+        const Vec2 b = mapOverlayToScreen(v, m.points[r.first + k + 1]);
+        const float dx = b.x - a.x, dy = b.y - a.y;
+        const float len = std::hypot(dx, dy);
+        MapLabel piece;
+        piece.at = Vec2{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
+        piece.angleDeg = len > 0.f ? std::atan2(dy, dx) * 180.f / kPi : 0.f;
+        piece.w = len + wd;
+        piece.h = wd;
+        const float reachP = std::hypot(piece.w * 0.5f, piece.h * 0.5f);
+        if (std::hypot(piece.at.x - l.at.x, piece.at.y - l.at.y) > reachL + reachP) continue;
+        if (overlapGrown(l, grow, piece, 0.f)) return true;
+    }
+    return false;
+}
+
+bool mapLabelKeepInside(MapLabel& l, float screenW, float screenH, float grow) {
+    Vec2 k[4];
+    corners(l, grow, k);
+    float x0 = k[0].x, x1 = k[0].x, y0 = k[0].y, y1 = k[0].y;
+    for (int i = 1; i < 4; ++i) {
+        x0 = std::min(x0, k[i].x);
+        x1 = std::max(x1, k[i].x);
+        y0 = std::min(y0, k[i].y);
+        y1 = std::max(y1, k[i].y);
+    }
+    const float in = kMapLabelInsetPx;
+    if (x1 - x0 > screenW - 2.f * in || y1 - y0 > screenH - 2.f * in) return false;
+    const float dx = x0 < in ? in - x0 : (x1 > screenW - in ? screenW - in - x1 : 0.f);
+    const float dy = y0 < in ? in - y0 : (y1 > screenH - in ? screenH - in - y1 : 0.f);
+    l.at.x += dx;
+    l.at.y += dy;
+    return true;
+}
+
 void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap, const MapLabel* blockers,
                     std::size_t blockerCount, float halo) {
     out.count = 0;

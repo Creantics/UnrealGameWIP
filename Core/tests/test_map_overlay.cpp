@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -743,6 +744,91 @@ TEST_CASE("map overlay: the caption's box is reserved; the halo counts as part o
         mapLabelCorners(a, kMapLabelHaloPx, k);
         CHECK(std::hypot(k[0].x - k[2].x, k[0].y - k[2].y) == doctest::Approx(std::hypot(106.f, 26.f)).epsilon(1e-4));
     }
+}
+
+TEST_CASE("map overlay: a label meets a road's drawn line, its capped ends and its halo; never a box beside a diagonal") {
+    const MiniMapModel m = model();
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f; // RD-A runs on screen from (760, 540) to (1160, 540)
+    const float wd = 4.f;
+    CHECK(mapLabelOnRoad(m, 0, v, wd, MapLabel{{960.f, 540.f}, 0.f, 100.f, 16.f, 1, 3, true}));
+    // 4 px clear above the line (its top at 538, the label's foot at 534): clear with the halo, over it past 4 px.
+    const MapLabel above{{960.f, 526.f}, 0.f, 100.f, 16.f, 1, 3, true};
+    CHECK_FALSE(mapLabelOnRoad(m, 0, v, wd, above));
+    CHECK_FALSE(mapLabelOnRoad(m, 0, v, wd, above, kMapLabelHaloPx));
+    CHECK(mapLabelOnRoad(m, 0, v, wd, above, 4.5f));
+    // Past the east end: the cap reaches 2 px past the last point (1162), the label starts at 1170.
+    const MapLabel past{{1220.f, 540.f}, 0.f, 100.f, 16.f, 1, 3, true};
+    CHECK_FALSE(mapLabelOnRoad(m, 0, v, wd, past));
+    CHECK(mapLabelOnRoad(m, 0, v, wd, past, 10.f));
+    // ST-A1 runs from (810, 640) to (960, 540): a label inside the piece's bounds but 40 px off its line is clear; on it,
+    // turned along it or level, it meets it.
+    CHECK_FALSE(mapLabelOnRoad(m, 1, v, wd, MapLabel{{930.f, 620.f}, 0.f, 20.f, 10.f, 1, 3, true}, kMapLabelHaloPx));
+    CHECK(mapLabelOnRoad(m, 1, v, wd, MapLabel{{885.f, 590.f}, mapUprightDeg(std::atan2(-100.f, 150.f) * 180.f / 3.14159265f), 60.f, 10.f, 1, 3, true}));
+    CHECK(mapLabelOnRoad(m, 1, v, wd, MapLabel{{885.f, 590.f}, 0.f, 20.f, 10.f, 1, 3, true}));
+    // A road that is not there, or of one point, is never met.
+    CHECK_FALSE(mapLabelOnRoad(m, -1, v, wd, MapLabel{{960.f, 540.f}, 0.f, 100.f, 16.f, 1, 3, true}));
+    CHECK_FALSE(mapLabelOnRoad(m, 99, v, wd, MapLabel{{960.f, 540.f}, 0.f, 100.f, 16.f, 1, 3, true}));
+    MiniMapModel one = m;
+    MapRoad dot;
+    dot.cls = MapRoadClass::Street;
+    dot.width = 8.f;
+    dot.first = static_cast<std::uint32_t>(one.points.size());
+    dot.count = 1;
+    one.points.push_back({200.f, 150.f});
+    one.roads.push_back(dot);
+    CHECK_FALSE(mapLabelOnRoad(one, static_cast<int>(one.roads.size()) - 1, v, wd, MapLabel{{960.f, 540.f}, 0.f, 100.f, 16.f, 1, 3, true}, 10.f));
+}
+
+TEST_CASE("map overlay: a label is kept inside the screen by the least move, its halo and turn counted; too big, left out") {
+    const float in = kMapLabelInsetPx, g = kMapLabelHaloPx;
+    auto box = [&](const MapLabel& l, float& x0, float& y0, float& x1, float& y1) {
+        Vec2 k[4];
+        mapLabelCorners(l, g, k);
+        x0 = x1 = k[0].x;
+        y0 = y1 = k[0].y;
+        for (const Vec2& q : k) {
+            x0 = std::min(x0, q.x);
+            x1 = std::max(x1, q.x);
+            y0 = std::min(y0, q.y);
+            y1 = std::max(y1, q.y);
+        }
+    };
+    struct Case {
+        Vec2 at;
+        float angle;
+        Vec2 want;
+    };
+    // Left, right, top, bottom, a corner, a standing label at the top, and one already inside.
+    const Case cases[] = {
+        {{10.f, 540.f}, 0.f, {50.f + g + in, 540.f}},
+        {{1900.f, 540.f}, 0.f, {1920.f - 50.f - g - in, 540.f}},
+        {{960.f, 5.f}, 0.f, {960.f, 10.f + g + in}},
+        {{960.f, 1075.f}, 0.f, {960.f, 1080.f - 10.f - g - in}},
+        {{0.f, 1080.f}, 0.f, {50.f + g + in, 1080.f - 10.f - g - in}},
+        {{960.f, 30.f}, 90.f, {960.f, 50.f + g + in}},
+        {{960.f, 540.f}, 0.f, {960.f, 540.f}},
+    };
+    for (const Case& c : cases) {
+        MapLabel l{c.at, c.angle, 100.f, 20.f, 1, 3, true};
+        CAPTURE(c.at.x);
+        CAPTURE(c.at.y);
+        REQUIRE(mapLabelKeepInside(l, 1920.f, 1080.f, g));
+        CHECK(l.at.x == doctest::Approx(c.want.x).epsilon(1e-4));
+        CHECK(l.at.y == doctest::Approx(c.want.y).epsilon(1e-4));
+        float x0, y0, x1, y1;
+        box(l, x0, y0, x1, y1);
+        CHECK(x0 >= 0.f);
+        CHECK(y0 >= 0.f);
+        CHECK(x1 <= 1920.f);
+        CHECK(y1 <= 1080.f);
+    }
+    MapLabel wide{{960.f, 540.f}, 0.f, 1920.f, 20.f, 1, 3, true};
+    CHECK_FALSE(mapLabelKeepInside(wide, 1920.f, 1080.f, g));
+    CHECK(wide.at.x == doctest::Approx(960.f));
+    MapLabel tall{{960.f, 540.f}, 90.f, 1100.f, 20.f, 1, 3, true};
+    CHECK_FALSE(mapLabelKeepInside(tall, 1920.f, 1080.f));
 }
 
 TEST_CASE("map overlay: the sea's name is read from its row, named once over the sea, never as a point place") {

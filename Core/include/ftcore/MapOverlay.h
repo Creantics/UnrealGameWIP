@@ -185,6 +185,15 @@ FTCORE_API void mapLabelCorners(const MapLabel& l, float grow, Vec2 out[4]);
 // The halo: every label's text has a band this wide (px at 1080p) in the ground's colour behind it, so no line runs
 // through a name; the placer counts it as part of the label.
 inline constexpr float kMapLabelHaloPx = 3.f;
+// Whether a label's box grown by `grow` px meets road `road`'s line as drawn at view v: each piece a box `widthPx` wide,
+// capped half that width past its points. False for a road out of range or with fewer than two points. The host keeps
+// every name but the cursor's off the cursor's lit road, which is drawn wider than the halo.
+FTCORE_API bool mapLabelOnRoad(const MiniMapModel& m, int road, const MapOverlayView& v, float widthPx, const MapLabel& l,
+                               float grow = 0.f);
+// Moves a label the least it takes for its box grown by `grow` px to lie inside the screen with kMapLabelInsetPx to
+// spare, turned boxes too. False, the label unchanged, when the grown box will not fit on the screen.
+inline constexpr float kMapLabelInsetPx = 0.5f;
+FTCORE_API bool mapLabelKeepInside(MapLabel& l, float screenW, float screenH, float grow = 0.f);
 
 // The placer: candidates in, the shown labels out by priority (then by input order), each kept only if it overlaps
 // nothing kept before it and no blocker (screen boxes already taken: the caption's, mapCaptionBox). `halo` px grows
