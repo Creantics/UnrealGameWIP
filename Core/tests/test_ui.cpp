@@ -1433,3 +1433,21 @@ TEST_CASE("ui style: ring arcs: NaN t, zero chord, offsets on the straight line 
         CHECK(std::hypot(p.tx, p.ty) == doctest::Approx(1.f));
     }
 }
+
+TEST_CASE("ui: the legacy arena flashes: reduce flashes drops the hit edges and the wash, keeps the parry bars soft") {
+    const UiArenaFlashes full = uiArenaFlashes(1.f, 1.f, false);
+    CHECK(full.hitEdge == doctest::Approx(0.5f));
+    CHECK(full.parryBar == doctest::Approx(0.45f));
+    CHECK(full.parryWash == doctest::Approx(0.12f));
+    const UiArenaFlashes calm = uiArenaFlashes(1.f, 1.f, true);
+    CHECK(calm.hitEdge == 0.f);
+    CHECK(calm.parryWash == 0.f);
+    CHECK(calm.parryBar > 0.f);
+    CHECK(calm.parryBar <= full.parryBar * kUiCalmParryBar + 1e-6f);
+    // Out of range pulses clamp; none: nothing.
+    CHECK(uiArenaFlashes(2.f, -1.f, false).hitEdge == doctest::Approx(0.5f));
+    const UiArenaFlashes none = uiArenaFlashes(0.f, 0.f, false);
+    CHECK(none.hitEdge == 0.f);
+    CHECK(none.parryBar == 0.f);
+    CHECK(none.parryWash == 0.f);
+}

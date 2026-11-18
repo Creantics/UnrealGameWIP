@@ -175,6 +175,12 @@ struct NightLook {
     // (nightCharacterFillYaw), so the figure keeps a light and a shadow side; the rest is a weak ambient along the view.
     float charFillYawDeg = 35.f;
     float charFillKeyShare = 0.7f;
+    // The key's easing, off by default (0, 0: it follows the nearest light and its yaw snaps, as before the easing).
+    // nightCharacterFillEase (-NightFillEase) turns it on: the key follows a new nearest light only when it is
+    // charFillSwitchNearer (a share) nearer than the one followed (nightCharacterFillSwitchLight), and its yaw turns at
+    // charFillYawRateDeg per second at most (nightCharacterFillEaseYaw), so it never flips sides in one frame.
+    float charFillSwitchNearer = 0.f;
+    float charFillYawRateDeg = 0.f;
     float capRadiusM = 15.f;       // lights within this of each other share their light
     float capShare = 0.2f;         // each neighbour within capRadiusM takes this much off (1 / (1 + capShare n))
     float capFloor = 0.4f;         // no light falls under this share of its candela
@@ -285,6 +291,17 @@ FTCORE_API float nightCharacterFillShare(const NightLook& look, float bayDistanc
 // from that light's side of the view, charFillYawDeg (clamped 0..90) off it. No light (a zero vector) or one dead ahead
 // or behind: from the right. No allocation.
 FTCORE_API float nightCharacterFillYaw(const NightLook& look, float viewX, float viewY, float toLightX, float toLightY);
+// The eased key (-NightFillEase, off by default): it switches lights at 20% nearer and turns at 90 degrees a second.
+inline constexpr float kNightFillEaseSwitchNearer = 0.2f;
+inline constexpr float kNightFillEaseYawRateDeg = 90.f;
+FTCORE_API void nightCharacterFillEase(NightLook& look);
+// Whether the key moves from the light it follows (followedM away; negative: none followed) to a nearer one newM away:
+// only when the new one is charFillSwitchNearer (clamped to 0.9) nearer; 0 or less (the default): always, so the key
+// follows the nearest light. No allocation.
+FTCORE_API bool nightCharacterFillSwitchLight(const NightLook& look, float followedM, float newM);
+// The key's yaw offset (degrees) a step of dtSeconds on from currentDeg toward targetDeg, turning the short way round
+// at charFillYawRateDeg per second at most, the result wrapped to -180..180; 0 or less (the default): targetDeg itself.
+FTCORE_API float nightCharacterFillEaseYaw(const NightLook& look, float currentDeg, float targetDeg, float dtSeconds);
 // The key's share of the fill (charFillKeyShare clamped 0..1); the ambient along the view takes the rest.
 FTCORE_API float nightCharacterFillKeyShare(const NightLook& look);
 

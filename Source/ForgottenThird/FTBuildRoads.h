@@ -61,6 +61,9 @@ struct FOptions
 	// the buoy lines round the water off it (ftcore::roadSeaSlipBuild; plan metres).
 	bool bSeaSlip = false;
 	double SeaSlip[7] = {0, 0, 0, 0, 0, 0, 0};
+	// -SeaFaces=<csv>: ladders up the sea's faces (ftcore::importSeaAccess's table; seaLadders, roadSeaLaddersBuild), the
+	// quay rail opened at each (seaRailGaps) and the farthest swimmable water from a way out logged (seaExitReach).
+	FString SeaFacesFile;
 	bool bLaneLamps = false; // -LaneLamps=x0,y0,x1,y1
 	bool bFootways = false;  // -Footways
 	FString StreetsFile;     // -Streets= (read for -Footways; -PropStreets= without it)
@@ -76,6 +79,10 @@ FOptions ParseOptions(const TCHAR* Params);
 // -Footways the streets table's footways and alley paving go into Builds[0] last (clear of every road's band).
 bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::vector<ftcore::MassingBox>& Boxes,
 	std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::RoadBuild>& Builds);
+
+// -SeaFaces: reads the table and lays its ladders (the same each call). False, logged, on a bad table; true and
+// nothing out without the switch.
+bool SeaLadders(const FOptions& Options, ftcore::SeaAccessTable& Table, std::vector<ftcore::SeaLadder>& Ladders);
 
 // Takes the roads' own rows (same id) out of a streets table, so -Kerbs doesn't kerb them twice. Returns how many.
 size_t DropRoadStreets(const std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::MassingStreet>& Streets);

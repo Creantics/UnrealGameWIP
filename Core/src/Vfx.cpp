@@ -544,6 +544,7 @@ void readEmitter(Reader& r, VfxEmitter& d) {
     r.getEnum("blend", d.blend, {{"alpha", VfxBlend::Alpha}, {"additive", VfxBlend::Additive}});
     r.get("lit", d.lit);
     r.get("nearFade", d.nearFade);
+    r.get("cover", d.cover);
     r.getEnum("sprite", d.sprite,
               {{"soft", VfxSprite::Soft}, {"puff", VfxSprite::Puff}, {"spark", VfxSprite::Spark}, {"ring", VfxSprite::Ring}});
     // A user parameter's name: letters, digits and '_' (Niagara's "User.<name>").
@@ -1106,6 +1107,8 @@ void planLook(const VfxEmitter& e, VfxNiagaraEmitter& p) {
     p.lit = e.lit && !p.additive;
     p.nearFade = e.nearFade && !p.additive;
     if (e.nearFade && !p.nearFade) p.gaps.push_back("nearFade: alpha sprites only (not faded)");
+    p.cover = e.cover && p.lit;
+    if (e.cover && !p.cover) p.gaps.push_back("cover: lit alpha sprites only (shown under cover)");
     p.sprite = e.sprite;
     if (p.sprite == VfxSprite::Ring && !p.lit) {
         p.sprite = VfxSprite::Soft;

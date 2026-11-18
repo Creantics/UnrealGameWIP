@@ -34,10 +34,19 @@ inline const TCHAR* FTLookSwitches()
 #endif
 }
 
+// -Weather=dry (ftcore/StillCam.h): clear weather for the whole run, whatever the hour: no rain, the ground's wetness 0
+// (so no puddles), and a rain look's dry sibling. Read once (FTLookSwitches, so the command line wins over the boot
+// row), logged once; a value that is not "dry" is a warning. Review only: always false in Shipping.
+FORGOTTENTHIRD_API bool FTWeatherDry();
+
 // -WorldEyeWet=<0..1>: the ground's wetness for a still or a run, in place of the look's times the clock's share; -1 when
-// not given (or in Shipping).
+// not given (or in Shipping). 0 under -Weather=dry.
 inline float FTWorldEyeWet()
 {
+	if (FTWeatherDry())
+	{
+		return 0.f;
+	}
 	float Wet = -1.f;
 	FParse::Value(FTLookSwitches(), TEXT("WorldEyeWet="), Wet);
 	return Wet < 0.f ? -1.f : FMath::Clamp(Wet, 0.f, 1.f);

@@ -354,6 +354,7 @@ FOptions ParseOptions(const TCHAR* Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -SeaSlip=%s is not <edge x>,<y>,<width>,<top z>[,<pen y0>,<pen y1>,<buoy x>]."), *Slip);
 		}
 	}
+	FParse::Value(Params, TEXT("SeaFaces="), Options.SeaFacesFile);
 	FString Box;
 	if (FParse::Value(Params, TEXT("LaneLamps="), Box, false)) // false: the commas are part of the value
 	{
@@ -384,6 +385,27 @@ FOptions ParseOptions(const TCHAR* Params)
 		Options.Seed = Seed;
 	}
 	return Options;
+}
+
+bool SeaLadders(const FOptions& Options, ftcore::SeaAccessTable& Table, std::vector<ftcore::SeaLadder>& Ladders)
+{
+	Table = ftcore::SeaAccessTable{};
+	Ladders.clear();
+	if (Options.SeaFacesFile.IsEmpty())
+	{
+		return true;
+	}
+	std::string Text, Error;
+	if (!RoadsReadText(Options.SeaFacesFile, Text))
+	{
+		return false;
+	}
+	if (!ftcore::importSeaAccess(Text, Table, &Error) || !ftcore::seaLadders(Table.faces, Table.avoid, ftcore::SeaLadderSpec{}, Ladders, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -SeaFaces %s: %s"), *Options.SeaFacesFile, *RoadsUtf8(Error));
+		return false;
+	}
+	return true;
 }
 
 // Box rows (pads, slabs, plinths, footbridges under 4.8 m) standing in a road's carriageway: hidden like the rows the
@@ -550,6 +572,40 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: sea slip at x %.1f, y %.1f: %.1f m wide from %.2f m down to %.2f m, %d solids "
 				"(buoy line at x %.1f, y %.1f to %.1f)."), Slip.edgeX, Slip.y, Slip.width, Slip.topZ, Slip.endZ, static_cast<int32>(Added), Slip.buoyX,
 				Slip.penY0, Slip.penY1);
+		}
+		ftcore::SeaAccessTable SeaTable;
+		std::vector<ftcore::SeaLadder> SeaLadderList;
+		if (!SeaLadders(Options, SeaTable, SeaLadderList))
+		{
+			return false;
+		}
+		if (!Options.SeaFacesFile.IsEmpty())
+		{
+			const size_t ExitsBefore = Builds[0].exits.size();
+			const size_t Added = ftcore::roadSeaLaddersBuild(SeaLadderList, SeaTable.bedZ, SeaTable.seaZ, Builds[0]);
+			std::vector<ftcore::SeaPoint> Ways = SeaTable.exits;
+			for (size_t I = ExitsBefore; I < Builds[0].exits.size(); ++I)
+			{
+				const ftcore::RoadWaterExit& Exit = Builds[0].exits[I];
+				Ways.push_back({Exit.footX, Exit.footY});
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: sea ladder %s: foot (%.2f, %.2f), top (%.2f, %.2f, %.2f)."), *RoadsUtf8(Exit.id),
+					Exit.footX, Exit.footY, Exit.topX, Exit.topY, Exit.topZ);
+			}
+			ftcore::SeaReach Reach;
+			std::string Error2;
+			if (!SeaTable.water.empty() && ftcore::seaExitReach(SeaTable.water, SeaTable.solid, Ways, 1.0, 25.0, Reach, &Error2))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -SeaFaces %s: %d faces, %d ladders (%d under the water line left out), %d more ways "
+					"out; %d water cells, the farthest %.1f m from a way out at (%.1f, %.1f), %d cells over 25 m."), *Options.SeaFacesFile,
+					static_cast<int32>(SeaTable.faces.size()), static_cast<int32>(Added), static_cast<int32>(SeaLadderList.size() - Added),
+					static_cast<int32>(SeaTable.exits.size()), static_cast<int32>(Reach.cells), Reach.worst, Reach.worstX, Reach.worstY,
+					static_cast<int32>(Reach.over));
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: -SeaFaces %s: %d ladders; no reach check (%s)."), *Options.SeaFacesFile,
+					static_cast<int32>(Added), SeaTable.water.empty() ? TEXT("no water rows") : *RoadsUtf8(Error2));
+			}
 		}
 		for (const ftcore::RoadNetStreet& Street : Net)
 		{

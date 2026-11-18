@@ -81,7 +81,9 @@ struct UiSpecialView {
     float pulse = -1.f;    // the pulse's progress 0..1 while it runs (outer outline grows and fades), else -1
 };
 
-// One tick: `reserve` is the world's switch; with it off nothing is drawn and the state is cleared.
-FTCORE_API UiSpecialView uiSpecialStep(UiSpecialState& s, bool reserve, const UiSpecialInput& in, float dt, bool reduceMotion);
+// One tick: `reserve` is the world's switch; with it off nothing is drawn and the state is cleared. reduceMotion drops
+// the fades and the pulse; reduceFlashes drops the pulse only (the fades are not a flash).
+FTCORE_API UiSpecialView uiSpecialStep(UiSpecialState& s, bool reserve, const UiSpecialInput& in, float dt, bool reduceMotion,
+                                       bool reduceFlashes = false);
 
 } // namespace ftcore

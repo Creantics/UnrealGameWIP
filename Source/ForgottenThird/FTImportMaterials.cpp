@@ -5,6 +5,7 @@
 #include "Engine/Texture2D.h"
 #include "FileHelpers.h"
 #include "ForgottenThird.h"
+#include "FTRainCoverCollection.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
 #include "FTWorldWave.h"
@@ -444,9 +445,9 @@ void AddSurface(UMaterial* Material, UMaterialExpression* Albedo, int32 AlbedoOu
 	Dust->Group = FName(kGroup);
 	UMaterialExpressionScalarParameter* WetRough = Scalar(Material, TEXT("WetRough"), ftcore::kPropWetRoughDefault, 1400);
 	UMaterialExpressionScalarParameter* Weather = Scalar(Material, TEXT("Weather"), 1.f, 1500);
-	UMaterialExpression* Wet = Wetness(Material, 1600);
 	UMaterialExpressionWorldPosition* WorldPos = AddNode<UMaterialExpressionWorldPosition>(Material, -400, 1700);
 	UMaterialExpressionVertexNormalWS* VertexNormal = AddNode<UMaterialExpressionVertexNormalWS>(Material, -400, 1800);
+	UMaterialExpression* Wet = FTRainCover::Sheltered(Material, Wetness(Material, 1600), -700, 1600, VertexNormal); // dry under cover
 
 	UMaterialExpressionCustom* Custom = AddNode<UMaterialExpressionCustom>(Material, 0, 0);
 	Custom->Description = kSurfaceNode;
