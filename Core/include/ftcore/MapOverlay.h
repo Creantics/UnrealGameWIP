@@ -68,7 +68,10 @@ FTCORE_API void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::ui
 // id,kind,name,sign_form,district; rows with kind "district" are the districts (id = the district's id), and a road
 // row's district column joins the road to its district. A road with no row has no name; rows that name no road in the
 // model are skipped (counted in `unmatched`: water, bridges and squares have no road geometry in the model), unless the
-// table has the optional columns x and y (engine m) and the row fills them: then it is a place, named at that point.
+// table has the optional columns x and y and the row fills them: then it is a place, named at that point. x, y are plan m
+// when `planSide` > 0 (turned to engine m by massingEnginePoint), else engine m. A line kind (street, lane, stair,
+// bridge, *_walk...) off the model is never a point name and stays unmatched; a zone row (id Z + digits) always is one.
+// A district row's own x, y is its anchor; without one the anchor is the mean of its roads.
 // A name is Water when any of its rows' kind is river, lake, canal, sea, harbour or bay (drawn in italics), else a Place
 // when its rows are places only, else a Road.
 inline constexpr std::uint16_t kMapNoName = 0xFFFF;

@@ -13,6 +13,7 @@
 #include "FTArenaHost.h"
 #include "FTArenaRunner.h"
 #include "ftcore/Settings.h"
+#include "ftcore/UiStyle.h"
 #include "FTPauseOverlay.h"
 #include "FTInputBindings.h"
 #include "FTNewUi.h"
@@ -938,25 +939,30 @@ void AFTArenaHUD::DrawFlashes(const UFTArenaRunner& Mode)
 {
 	const float S = UiScale;
 	const double Now = Mode.GetNow();
-	const float Hit = ArenaPulse(Now, Mode.GetPlayerHitTime(), kArenaHitEdgeLife);
-	const float Parry = ArenaPulse(Now, Mode.GetParryTime(), kArenaParryEdgeLife);
+	const ftcore::Settings* Prefs = Mode.GetSettings();
+	// Core's rule (uiArenaFlashes): reduce flashes drops the hit edges and the wash and softens the parry bars.
+	const ftcore::UiArenaFlashes F = ftcore::uiArenaFlashes(ArenaPulse(Now, Mode.GetPlayerHitTime(), kArenaHitEdgeLife),
+		ArenaPulse(Now, Mode.GetParryTime(), kArenaParryEdgeLife), Prefs && Prefs->reduceFlashes);
 	const float W = Canvas->ClipX;
 	const float H = Canvas->ClipY;
 	const float T = 34.f * S;
-	if (Hit > 0.f)
+	if (F.hitEdge > 0.f)
 	{
-		const FLinearColor C(0.9f, 0.05f, 0.05f, 0.5f * Hit);
+		const FLinearColor C(0.9f, 0.05f, 0.05f, F.hitEdge);
 		DrawRect(C, 0.f, 0.f, W, T);
 		DrawRect(C, 0.f, H - T, W, T);
 		DrawRect(C, 0.f, T, T, H - 2.f * T);
 		DrawRect(C, W - T, T, T, H - 2.f * T);
 	}
-	if (Parry > 0.f)
+	if (F.parryBar > 0.f)
 	{
-		const FLinearColor C(1.f, 0.84f, 0.3f, 0.45f * Parry);
+		const FLinearColor C(1.f, 0.84f, 0.3f, F.parryBar);
 		DrawRect(C, 0.f, 0.f, W, T * 0.6f);
 		DrawRect(C, 0.f, H - T * 0.6f, W, T * 0.6f);
-		DrawRect(FLinearColor(1.f, 0.95f, 0.8f, 0.12f * Parry), 0.f, 0.f, W, H);
+	}
+	if (F.parryWash > 0.f)
+	{
+		DrawRect(FLinearColor(1.f, 0.95f, 0.8f, F.parryWash), 0.f, 0.f, W, H);
 	}
 }
 

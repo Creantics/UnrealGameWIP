@@ -436,3 +436,42 @@ TEST_CASE("map overlay: plan-metre points turn to engine metres, and a district'
     CHECK(eng.places[0].at.x == doctest::Approx(250.f));
     CHECK(eng.districts[0].anchor.y == doctest::Approx(900.f));
 }
+
+TEST_CASE("map overlay: the names table's own anchors land where plan metres say (Lanternfall, the Hearth, Crumb Lane)") {
+    // Rows as the world lane's table has them (plan m); a 1300 m plan turns plan (x, y) to engine (x - 650, 650 - y).
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D2,district,Lanternfall,Tavren,D2,747.8,479.8\n"
+                      "Z22,square,the Hearth,,D2,730.0,495.0\n"
+                      "Z23,lane,Crumb Lane,,D2,790.0,410.0\n"
+                      "Z25,street,Lantern Row,,D2,865.0,500.0\n";
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n, nullptr, 1300.0));
+    REQUIRE(n.districts.size() == 1);
+    CHECK(n.districts[0].anchor.x == doctest::Approx(97.8f));
+    CHECK(n.districts[0].anchor.y == doctest::Approx(170.2f));
+    REQUIRE(n.places.size() == 3); // zone rows are points whatever their kind
+    CHECK(n.names[n.places[0].name] == "the Hearth");
+    CHECK(n.places[0].at.x == doctest::Approx(80.f));
+    CHECK(n.places[0].at.y == doctest::Approx(155.f));
+    CHECK(n.names[n.places[1].name] == "Crumb Lane");
+    CHECK(n.places[1].at.x == doctest::Approx(140.f));
+    CHECK(n.places[1].at.y == doctest::Approx(240.f));
+    CHECK(n.names[n.places[2].name] == "Lantern Row");
+    CHECK(n.places[2].at.x == doctest::Approx(215.f));
+    CHECK(n.places[2].at.y == doctest::Approx(150.f));
+    CHECK(n.unmatched == 0);
+}
+
+TEST_CASE("map overlay: a bridge or a *_walk row off the model stays unmatched, never a point name") {
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "BR-01,bridge,Tide Bridge,,,700.0,600.0\n"
+                      "W-01,harbour_walk,Quay Walk,,,710.0,610.0\n"
+                      "P-01,park,Kiln Green,,,720.0,620.0\n";
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n, nullptr, 1300.0));
+    REQUIRE(n.places.size() == 1);
+    CHECK(n.names[n.places[0].name] == "Kiln Green");
+    CHECK(n.unmatched == 2);
+}

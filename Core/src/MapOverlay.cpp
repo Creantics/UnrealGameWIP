@@ -33,7 +33,7 @@ bool number(const std::string& s, float& out) {
 }
 
 // A kind drawn as a line (a road, a street, a stair...): named along its road, never at a point, so a line the model
-// leaves off is unmatched rather than a stray point name.
+// leaves off is unmatched rather than a stray point name (a zone row excepted: zoneId).
 bool lineKind(const std::string& k) {
     static const char* const kLine[] = {"road", "street", "lane", "alley", "stair", "terrace", "walk", "bridge",
                                         "footbridge", "causeway", "core_lane", "coast_road", "wall_walk"};
@@ -45,6 +45,14 @@ bool lineKind(const std::string& k) {
         if (k.size() > n && k.compare(k.size() - n, n, e) == 0) return true;
     }
     return false;
+}
+
+// A zone row (Z and digits: the build tables' zones): named at its plan point whatever its kind.
+bool zoneId(const std::string& id) {
+    if (id.size() < 2 || id[0] != 'Z') return false;
+    for (std::size_t i = 1; i < id.size(); ++i)
+        if (id[i] < '0' || id[i] > '9') return false;
+    return true;
 }
 
 // The part of segment a-b inside the box (Liang-Barsky); false when none of it is.
@@ -283,7 +291,7 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
         const auto roads = byId.find(id);
         if (roads == byId.end()) {
             Vec2 at{};
-            if (!lineKind(kind) && point(rec, at)) {
+            if ((zoneId(id) || !lineKind(kind)) && point(rec, at)) {
                 out.places.push_back(MapNames::Spot{idx, at});
             } else {
                 ++out.unmatched;

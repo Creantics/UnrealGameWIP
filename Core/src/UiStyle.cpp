@@ -275,6 +275,19 @@ UiHitLayers uiHitLayers(float in, float edge) {
     return l;
 }
 
+UiArenaFlashes uiArenaFlashes(float hit, float parry, bool reduceFlashes) {
+    const float h = std::clamp(hit, 0.f, 1.f), p = std::clamp(parry, 0.f, 1.f);
+    UiArenaFlashes f;
+    if (reduceFlashes) {
+        f.parryBar = 0.45f * kUiCalmParryBar * p;
+        return f;
+    }
+    f.hitEdge = 0.5f * h;
+    f.parryBar = 0.45f * p;
+    f.parryWash = 0.12f * p;
+    return f;
+}
+
 UiHitEdges uiHitEdges(bool hasSide, float rightX, float aheadY) {
     UiHitEdges e;
     const float ax = std::fabs(rightX), ay = std::fabs(aheadY);
