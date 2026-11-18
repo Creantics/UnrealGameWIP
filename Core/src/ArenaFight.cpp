@@ -3973,6 +3973,12 @@ struct ArenaFightImpl {
         }
         v.time = 0.f;
         v.duration = m.duration;
+        {   // the wave's travel from the performer's spot at the strike to the target, fixed now: nothing moves while frozen
+            const float share = m.duration > 0.f ? std::clamp(m.strikeAt / m.duration, 0.f, 1.f) : 1.f;
+            const Vec2 at = arenaMadd(v.origin, arenaSub(v.end, v.origin), share);
+            const Vec2 to = target < n ? arenaSub(foes[target].pos, at) : Vec2{};
+            v.impactAt = std::min(arenaSpecialImpactAt(m, std::sqrt(arenaDot(to, to))), m.duration);
+        }
         v.impactDone = false;
         v.skippable = m.skippable && sp.seen[slot];
         ++v.uses;
@@ -4137,7 +4143,7 @@ struct ArenaFightImpl {
         }
         const float now = skip ? std::max(v.time + dt, v.duration) : v.time + dt;
         specialCues(now, *m);
-        if (!v.impactDone && now >= m->impactAt - kSpecialEps) specialImpact(*m);
+        if (!v.impactDone && now >= v.impactAt - kSpecialEps) specialImpact(*m);
         v.time = std::min(now, v.duration);
         if (now >= v.duration - kSpecialEps) specialEnd(skip, in.specialSight);
     }
@@ -5918,7 +5924,7 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
         return;
     }
     spUnknownKeys(j, path,
-                  {"id", "lead", "duration", "impactAt", "range", "laneLength", "laneWidth", "damage", "otherShare",
+                  {"id", "lead", "duration", "strikeAt", "waveSpeed", "maxTravel", "range", "laneLength", "laneWidth", "damage", "otherShare",
                    "bossPhaseShare", "knockBack", "knockTime", "endTravel", "endSide", "skippable", "cues"},
                   warnings);
     for (const char* key : {"id", "lead"}) {
@@ -5931,7 +5937,9 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
         spCopy(v.string(), key[0] == 'i' ? r.id : r.lead);
     }
     spNumber(j, "duration", path, 0.5f, 30.f, r.duration, errors);
-    spNumber(j, "impactAt", path, 0.f, 30.f, r.impactAt, errors);
+    spNumber(j, "strikeAt", path, 0.f, 30.f, r.strikeAt, errors);
+    spNumber(j, "waveSpeed", path, 1.f, 1000.f, r.waveSpeed, errors);
+    spNumber(j, "maxTravel", path, 0.f, 5.f, r.maxTravel, errors);
     spNumber(j, "range", path, 1.f, 200.f, r.range, errors);
     spNumber(j, "laneLength", path, 0.5f, 100.f, r.laneLength, errors);
     spNumber(j, "laneWidth", path, 0.5f, 50.f, r.laneWidth, errors);
@@ -5953,8 +5961,10 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
         else
             r.skippable = v.boolean();
     }
-    if (!(r.impactAt > 0.f && r.impactAt <= r.duration))
-        errors.push_back(path + ".impactAt: expected a time in (0, duration]");
+    if (!(r.strikeAt > 0.f && r.strikeAt <= r.duration))
+        errors.push_back(path + ".strikeAt: expected a time in (0, duration]");
+    else if (!(r.strikeAt + r.maxTravel + r.knockTime <= r.duration))
+        errors.push_back(path + ".maxTravel: strikeAt + maxTravel + knockTime must be within duration");
 
     const JsonValue cues = j["cues"];
     if (cues.isAbsent()) return;
@@ -5992,7 +6002,9 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
 
 bool validArenaSpecialRules(const ArenaSpecialRules& r) {
     if (!spId(r.idView()) || !spId(r.leadView())) return false;
-    if (!spInRange(r.duration, 0.5f, 30.f) || !(r.impactAt > 0.f && r.impactAt <= r.duration)) return false;
+    if (!spInRange(r.duration, 0.5f, 30.f) || !(r.strikeAt > 0.f && r.strikeAt <= r.duration)) return false;
+    if (!spInRange(r.waveSpeed, 1.f, 1000.f) || !spInRange(r.maxTravel, 0.f, 5.f)) return false;
+    if (!(r.strikeAt + r.maxTravel + r.knockTime <= r.duration)) return false;
     if (!spInRange(r.range, 1.f, 200.f) || !spInRange(r.laneLength, 0.5f, 100.f) || !spInRange(r.laneWidth, 0.5f, 50.f))
         return false;
     if (r.damage < 1 || r.damage > 100000) return false;
@@ -6007,6 +6019,12 @@ bool validArenaSpecialRules(const ArenaSpecialRules& r) {
         last = c.at;
     }
     return true;
+}
+
+float arenaSpecialImpactAt(const ArenaSpecialRules& r, float distance) {
+    const float d = distance > 0.f ? distance : 0.f; // NaN: 0
+    const float travel = r.waveSpeed > 0.f ? d / r.waveSpeed : 0.f;
+    return r.strikeAt + std::min(travel, r.maxTravel);
 }
 
 bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g) {

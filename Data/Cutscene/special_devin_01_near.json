@@ -3,7 +3,7 @@
  "clip": "A_Devin_Special_01",
  "duration_s": 8.5,
  "fps": 60,
- "frame": "lead start: x forward (toward the target), y right, z up; metres; origin = lead root at t=0",
+ "frame": "lead start: x forward (toward the target), y right, z up; metres; origin = lead root at t=0; re-based: pelvis over the root at t=0",
  "sensor_width_mm": 36.0,
  "aspect": "16:9",
  "shake": {
@@ -21,7 +21,7 @@
   "decay_s": 0.2
  },
  "end_feet": [
-  1.09,
+  0.61,
   -0.11,
   0
  ],
@@ -43,12 +43,12 @@
    "anchor": "lead",
    "offset": {
     "from": [
-     0.9,
+     0.42,
      1.5,
      0.3
     ],
     "to": [
-     1.0,
+     0.52,
      1.2,
      0.3
     ]
@@ -56,12 +56,12 @@
    "look_anchor": "lead",
    "look_at": {
     "from": [
-     0.2,
+     -0.28,
      0,
      0.15
     ],
     "to": [
-     0.4,
+     -0.08,
      0,
      0.15
     ]
@@ -79,12 +79,12 @@
    "anchor": "lead",
    "offset": {
     "from": [
-     0.6,
+     0.12,
      -3.2,
      1.15
     ],
     "to": [
-     0.7,
+     0.22,
      -2.8,
      1.1
     ]
@@ -92,12 +92,12 @@
    "look_anchor": "lead",
    "look_at": {
     "from": [
-     0.5,
+     0.02,
      0,
      1.0
     ],
     "to": [
-     0.5,
+     0.02,
      0,
      1.0
     ]
@@ -116,12 +116,12 @@
    "anchor": "lead",
    "offset": {
     "from": [
-     0.85,
+     0.37,
      0,
      7.5
     ],
     "to": [
-     0.85,
+     0.37,
      0,
      8.0
     ]
@@ -129,12 +129,12 @@
    "look_anchor": "lead",
    "look_at": {
     "from": [
-     0.851,
+     0.371,
      0,
      0
     ],
     "to": [
-     0.851,
+     0.371,
      0,
      0
     ]
@@ -196,12 +196,12 @@
    "anchor": "lead",
    "offset": {
     "from": [
-     1.2,
+     0.72,
      3.6,
      0.45
     ],
     "to": [
-     0.9,
+     0.42,
      2.9,
      0.45
     ]
@@ -209,12 +209,12 @@
    "look_anchor": "lead",
    "look_at": {
     "from": [
-     0.6,
+     0.12,
      0,
      0.8
     ],
     "to": [
-     0.6,
+     0.12,
      0,
      0.8
     ]
@@ -233,12 +233,12 @@
    "anchor": "lead",
    "offset": {
     "from": [
-     -1.5,
+     -1.98,
      0.75,
      1.55
     ],
     "to": [
-     -1.4,
+     -1.88,
      0.7,
      1.5
     ]
@@ -246,7 +246,7 @@
    "look_anchor": "lead",
    "look_at": {
     "from": [
-     1.6,
+     1.12,
      0,
      1.0
     ],
@@ -270,12 +270,12 @@
    "anchor": "lead",
    "offset": {
     "from": [
-     0.6,
+     0.12,
      -3.8,
      0.7
     ],
     "to": [
-     0.7,
+     0.22,
      -3.6,
      0.72
     ]
@@ -283,12 +283,12 @@
    "look_anchor": "lead",
    "look_at": {
     "from": [
-     0.6,
+     0.12,
      0,
      0.7
     ],
     "to": [
-     0.6,
+     0.12,
      0,
      0.7
     ]
@@ -306,12 +306,12 @@
    "anchor": "lead",
    "offset": {
     "from": [
-     -0.808,
+     -1.288,
      0.19,
      1.291
     ],
     "to": [
-     -1.508,
+     -1.988,
      0.44,
      1.541
     ]
@@ -319,12 +319,12 @@
    "look_anchor": "lead",
    "look_at": {
     "from": [
-     8.485,
+     8.005,
      0.44,
      1.192
     ],
     "to": [
-     8.485,
+     8.005,
      0.44,
      1.192
     ]
