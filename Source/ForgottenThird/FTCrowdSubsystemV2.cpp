@@ -201,6 +201,7 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d streets, %u nodes, %u edges, %u components, %u spawnable; pool %u, drawn %u, target %u."),
 		static_cast<int32>(Streets.size()), Graph.nodeCount(), Graph.edgeCount() / 2, Graph.componentCount(), Graph.spawnableCount(),
 		Tuning.maxAgents, Tuning.maxDrawn, Tuning.targetAgents);
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: the rework runs (-CrowdV2), tuning %s."), *TuningPath);
 
 	LoadArt();
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
