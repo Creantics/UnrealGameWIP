@@ -58,6 +58,7 @@ const FLinearColor kOvWaterLabel(0.36f, 0.45f, 0.56f, 1.f);
 const FLinearColor kOvDistrictLabel(0.92f, 0.64f, 0.26f, 1.f);
 const FLinearColor kOvStreetHere(0.82f, 0.76f, 0.62f, 1.f);
 const FLinearColor kOvBoxFill(0.004f, 0.006f, 0.012f, 0.88f);
+const FLinearColor kOvCaptionPlate(0.004f, 0.006f, 0.012f, 1.f); // the where-am-I line's plate: opaque, so no line shows through
 const FLinearColor kOvHalo(0.001f, 0.0015f, 0.003f, 0.9f);
 const FLinearColor kOvHaloSoft(0.001f, 0.0015f, 0.003f, 0.35f); // a label's halo: copies overlap, dark at the glyph, soft at 3 px
 // The look's strokes (ftcore/MapLook.h), all gold: the coast at half a main road's line, the wave lines fading out to
@@ -1036,7 +1037,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 		const ftcore::MapLabel Kept = ftcore::mapCaptionBox(View.screenW, View.screenH, TS);
 		const float Pad = ftcore::kMapCaptionPad * TS;
 		AddScreenRect(*Boxes, FMath::Max(HereX - Pad, Kept.at.x - Kept.w * 0.5f), FMath::Max(HereY - Pad, Kept.at.y - Kept.h * 0.5f),
-			FMath::Min(CaptionRight + Pad, Kept.at.x + Kept.w * 0.5f), FMath::Min(CaptionBottom + Pad, Kept.at.y + Kept.h * 0.5f), kOvBoxFill);
+			FMath::Min(CaptionRight + Pad, Kept.at.x + Kept.w * 0.5f), FMath::Min(CaptionBottom + Pad, Kept.at.y + Kept.h * 0.5f), kOvCaptionPlate);
 	}
 	if (Boxes->TriangleList.Num() > 0) // the item asserts on an empty list
 	{
