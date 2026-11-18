@@ -494,8 +494,27 @@ TEST_CASE("nightCharacterFillYaw: a soft key from the nearest light's side of th
     CHECK(nightCharacterFillYaw(odd, 1.f, 0.f, 0.f, -1.f) == 0.f);
 }
 
-TEST_CASE("nightCharacterFillSwitchLight: the key moves to a new light only when it is 20% nearer") {
+TEST_CASE("night fill easing: off by default, the key follows the nearest light and its yaw snaps (as before)") {
+    const NightLook look;
+    CHECK(look.charFillSwitchNearer == 0.f);
+    CHECK(look.charFillYawRateDeg == 0.f);
+    CHECK(nightCharacterFillSwitchLight(look, -1.f, 9.f));
+    CHECK(nightCharacterFillSwitchLight(look, 5.f, 4.99f));  // any other nearest light: followed at once
+    CHECK(nightCharacterFillSwitchLight(look, 5.f, 5.f));    // ... an equally near one too (the nearest, as before)
+    const float yaw = look.charFillYawDeg;
+    CHECK(nightCharacterFillEaseYaw(look, yaw, -yaw, 1.f / 60.f) == -yaw);  // the target itself, in one frame
+    CHECK(nightCharacterFillEaseYaw(look, 0.f, 30.f, 0.f) == 30.f);
+    NightLook eased;
+    nightCharacterFillEase(eased);  // -NightFillEase
+    CHECK(eased.charFillSwitchNearer == kNightFillEaseSwitchNearer);
+    CHECK(eased.charFillYawRateDeg == kNightFillEaseYawRateDeg);
+    CHECK_FALSE(nightCharacterFillSwitchLight(eased, 5.f, 4.99f));
+    CHECK(nightCharacterFillEaseYaw(eased, yaw, -yaw, 1.f / 60.f) != doctest::Approx(-yaw));
+}
+
+TEST_CASE("nightCharacterFillSwitchLight, eased: the key moves to a new light only when it is 20% nearer") {
     NightLook look;
+    nightCharacterFillEase(look);
     CHECK(look.charFillSwitchNearer == doctest::Approx(0.2f));
     CHECK(nightCharacterFillSwitchLight(look, -1.f, 9.f));   // nothing followed yet
     CHECK_FALSE(nightCharacterFillSwitchLight(look, 5.f, 4.5f));  // 10% nearer: keep the old one
@@ -504,13 +523,14 @@ TEST_CASE("nightCharacterFillSwitchLight: the key moves to a new light only when
     NightLook odd;
     odd.charFillSwitchNearer = 3.f;  // clamped to 0.9: a light ten times nearer still wins
     CHECK(nightCharacterFillSwitchLight(odd, 10.f, 0.5f));
-    odd.charFillSwitchNearer = -1.f;  // clamped to 0: any nearer light wins, an equal one doesn't
+    odd.charFillSwitchNearer = -1.f;  // 0 or less is off: the nearest light, an equal one too
     CHECK(nightCharacterFillSwitchLight(odd, 5.f, 4.99f));
-    CHECK_FALSE(nightCharacterFillSwitchLight(odd, 5.f, 5.f));
+    CHECK(nightCharacterFillSwitchLight(odd, 5.f, 5.f));
 }
 
-TEST_CASE("nightCharacterFillEaseYaw: the key turns at 90 degrees a second, the short way round") {
+TEST_CASE("nightCharacterFillEaseYaw, eased: the key turns at 90 degrees a second, the short way round") {
     NightLook look;
+    nightCharacterFillEase(look);
     CHECK(look.charFillYawRateDeg == doctest::Approx(90.f));
     const float yaw = look.charFillYawDeg;
     // A side flip (+35 to -35) takes 70/90 s: one 60 Hz frame turns 1.5 degrees, not the whole way.

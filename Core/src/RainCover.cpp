@@ -12,6 +12,10 @@ bool finite(float v) { return std::isfinite(v); }
 
 }  // namespace
 
+bool rainCoverEnabled(bool rainCoverGiven, bool noRainCoverGiven) { return rainCoverGiven && !noRainCoverGiven; }
+
+bool rainCoverEmitter(bool emitterCover, bool coverEnabled) { return emitterCover && coverEnabled; }
+
 float rainCoverTexel(const RainCoverSpec& spec) {
     if (!(spec.sizeM > 0.f) || spec.resolution <= 0) return 0.f;
     return spec.sizeM / static_cast<float>(spec.resolution);

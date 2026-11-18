@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "ftcore/RainCover.h"
 #include "ftcore/RainFall.h"
 #include "ftcore/Vfx.h"
 #include "AllocCounter.h"
@@ -113,6 +114,7 @@ TEST_CASE("rain fall: the json effects use the same knob names and full rates") 
     CHECK(streaks->lit);
     CHECK(streaks->nearFade);
     CHECK(streaks->cover);  // none under a roof (RainCover.h)
+    CHECK_FALSE(rainCoverEmitter(streaks->cover, rainCoverEnabled(false, false)));  // off by default: drawn plain
     // Short loops: Niagara reads a bound rate once per loop.
     CHECK(streaks->duration <= 1.f);
 

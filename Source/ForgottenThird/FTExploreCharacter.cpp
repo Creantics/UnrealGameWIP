@@ -549,6 +549,14 @@ void AFTExploreCharacter::HoldStillCam()
 	{
 		Attached->SetActorHiddenInGame(true);
 	}
+	// Every hold: a partner spawned after the first is hidden too (quietly; SetPartyHidden logs, so once below).
+	for (AFTPartyFollower* Follower : D->GetFollowers())
+	{
+		if (Follower && !Follower->IsHidden())
+		{
+			Follower->SetActorHiddenInGame(true);
+		}
+	}
 	if (!bStillCamHeld)
 	{
 		bStillCamHeld = true;

@@ -31,9 +31,9 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		return;
 	}
-	if (FParse::Param(FTLookSwitches(), TEXT("NoRainCover")))
+	if (!FTRainCover::Enabled())
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("RainCover: off (-NoRainCover); rain falls and soaks everywhere."));
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover: off (on only with -RainCover); rain falls and soaks everywhere."));
 		return;
 	}
 	Target = FTRainCover::LoadTarget();

@@ -9,7 +9,8 @@
 // capture's snapped centre, then writes MPC_RainCover (CoverFrame, CoverOn 1). With no capture CoverOn stays 0 (all
 // open: rain everywhere, as before).
 //
-// Switches (FTLookSwitches): -NoRainCover keeps it off (A/B stills). -RainCoverProbe logs the first capture's occluder
+// Switches (FTLookSwitches): off unless -RainCover is given (FTRainCover::Enabled; the material and rain builds need it
+// too, or nothing reads the capture); -NoRainCover wins over it. -RainCoverProbe logs the first capture's occluder
 // heights at the centre and 4 m along +X and +Y, and the covered share of the square (a readback: proof runs only).
 // Logs once: "RainCover: on, <size> m at <res>" or why it is off; on shutdown the capture count.
 

@@ -35,6 +35,16 @@ inline constexpr const char* kRainCoverParamOn = "CoverOn";        // scalar: 1 
 // The capture's render target asset, sampled by every material that reads the cover.
 inline constexpr const char* kRainCoverTarget = "/Game/Rendering/Rain/RT_RainCover";
 
+// Off by default: only with -RainCover (kRainCoverSwitch) does the game run the capture and do the material and rain
+// builds put the cover term in; -NoRainCover (kRainCoverOffSwitch) wins over it. Off, nothing is created and every
+// material and rain sprite builds and draws as before the cover (an emitter's "cover" is ignored). The game and the
+// builds both need the switch: a sprite built without the term isn't hidden by a capture.
+inline constexpr const char* kRainCoverSwitch = "RainCover";
+inline constexpr const char* kRainCoverOffSwitch = "NoRainCover";
+FTCORE_API bool rainCoverEnabled(bool rainCoverGiven, bool noRainCoverGiven);
+// Whether an emitter draws with a cover sprite material: its "cover" with the cover on (else its plain material).
+FTCORE_API bool rainCoverEmitter(bool emitterCover, bool coverEnabled);
+
 struct RainCoverSpec {
     float sizeM = 64.f;          // the capture square (the streak box is 30 m, the splashes 13 m: room for a 5 m drift)
     int resolution = 512;        // texels a side (12.5 cm at 64 m)

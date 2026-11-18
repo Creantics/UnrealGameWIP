@@ -7,6 +7,24 @@
 
 using namespace ftcore;
 
+TEST_CASE("rainCover: off by default, on only with -RainCover; -NoRainCover wins") {
+    CHECK(std::string(kRainCoverSwitch) == "RainCover");
+    CHECK(std::string(kRainCoverOffSwitch) == "NoRainCover");
+    CHECK_FALSE(rainCoverEnabled(false, false));  // no switch: off (no capture, no term, no assets made)
+    CHECK(rainCoverEnabled(true, false));
+    CHECK_FALSE(rainCoverEnabled(true, true));
+    CHECK_FALSE(rainCoverEnabled(false, true));
+    // Off, an emitter marked "cover" draws with its plain material (as before the cover).
+    CHECK_FALSE(rainCoverEmitter(true, rainCoverEnabled(false, false)));
+    CHECK(rainCoverEmitter(true, rainCoverEnabled(true, false)));
+    CHECK_FALSE(rainCoverEmitter(false, true));
+    // A material built with the term reads open everywhere with no capture (CoverOn 0): sprite and surface alike.
+    const RainCoverSpec spec;
+    const std::string none = "if (On < 0.5) return 1.0;";
+    CHECK(rainCoverHlsl(spec, true).find(none) != std::string::npos);
+    CHECK(rainCoverHlsl(spec, false).find(none) != std::string::npos);
+}
+
 TEST_CASE("rainCover: texel, snap and recapture") {
     const RainCoverSpec spec;
     CHECK(rainCoverTexel(spec) == doctest::Approx(0.125f));

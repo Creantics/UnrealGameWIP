@@ -5,6 +5,8 @@
 // CoverOn (1 with a capture). Materials read it through Term: a sprite's openness (0 under cover: no streak or splash)
 // or a surface's wet share (0 deep under cover, a fringe at the open sides). With no capture CoverOn is 0 and every
 // point reads open, so a material built with the term looks as it did before.
+// Off by default (ftcore::rainCoverEnabled): only with -RainCover do the builds put the term in (Term and Sheltered;
+// off, Term is null and Sheltered passes the wetness through) and make the assets, and the game run the capture.
 // The builds make both assets when missing (LoadOrBuild, LoadOrBuildTarget); they are saved in place, never deleted.
 
 #include "CoreMinimal.h"
@@ -13,7 +15,9 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/PackageName.h"
+#include "Misc/Parse.h"
 
+#include "ForgottenThird.h"
 #include "ftcore/RainCover.h"
 
 #if WITH_EDITOR
@@ -33,6 +37,14 @@
 namespace FTRainCover
 {
 inline constexpr const TCHAR* Collection = TEXT("/Game/Rendering/Rain/MPC_RainCover");
+
+// -RainCover given and -NoRainCover not (FTLookSwitches: the command line in a commandlet, the boot row too in a game).
+inline bool Enabled()
+{
+	const TCHAR* Switches = FTLookSwitches();
+	return ftcore::rainCoverEnabled(FParse::Param(Switches, UTF8_TO_TCHAR(ftcore::kRainCoverSwitch)),
+		FParse::Param(Switches, UTF8_TO_TCHAR(ftcore::kRainCoverOffSwitch)));
+}
 
 inline FName Frame() { return FName(UTF8_TO_TCHAR(ftcore::kRainCoverParamFrame)); }
 inline FName On() { return FName(UTF8_TO_TCHAR(ftcore::kRainCoverParamOn)); }
@@ -159,9 +171,14 @@ inline UTextureRenderTarget2D* LoadOrBuildTarget()
 
 // The cover term as a custom node (ftcore::rainCoverHlsl): bSprite gives the openness at the pixel (0 under cover),
 // else the wet share with the fringe, read out from a wall's face along Normal (the vertex normal when null: never the
-// normal-mapped one, which would feed back into the normal). Null when either asset is missing.
+// normal-mapped one, which would feed back into the normal). Null when either asset is missing, and without -RainCover
+// (Enabled: then nothing is built or saved).
 inline UMaterialExpression* Term(UMaterial* Material, bool bSprite, int32 X, int32 Y, UMaterialExpression* Normal = nullptr)
 {
+	if (!Enabled())
+	{
+		return nullptr;
+	}
 	UMaterialParameterCollection* Asset = LoadOrBuild();
 	UTextureRenderTarget2D* Target = LoadOrBuildTarget();
 	if (!Asset || !Target)
@@ -201,13 +218,14 @@ inline UMaterialExpression* Term(UMaterial* Material, bool bSprite, int32 X, int
 	return C;
 }
 
-// Wetness under cover: Wetness times the cover's wet share (Term, surface kind), or Wetness itself, logged, when the
-// cover assets are missing. Normal as in Term; a deferred decal (no vertex normal) passes a constant up vector.
+// Wetness under cover: Wetness times the cover's wet share (Term, surface kind); Wetness itself without -RainCover (as
+// before the cover), or, logged, when the cover assets are missing. Normal as in Term; a deferred decal (no vertex
+// normal) passes a constant up vector.
 inline UMaterialExpression* Sheltered(UMaterial* Material, UMaterialExpression* Wetness, int32 X, int32 Y, UMaterialExpression* Normal = nullptr)
 {
-	if (!Wetness)
+	if (!Wetness || !Enabled())
 	{
-		return nullptr;
+		return Wetness;
 	}
 	UMaterialExpression* Cover = Term(Material, false, X, Y, Normal);
 	if (!Cover)
