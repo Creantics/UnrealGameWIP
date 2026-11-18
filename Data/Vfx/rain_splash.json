@@ -23,6 +23,7 @@
       ],
       "blend": "alpha",
       "lit": true,
+      "cover": true,
       "sprite": "ring",
       "renderMode": "horizontal",
       "softness": 0.0
@@ -51,6 +52,7 @@
       ],
       "blend": "alpha",
       "lit": true,
+      "cover": true,
       "sprite": "soft",
       "stretch": 0.02,
       "stretchMax": 4.0,

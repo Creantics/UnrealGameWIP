@@ -95,6 +95,7 @@
 #include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
+#include "ftcore/StillCam.h"
 #include "ftcore/Swim.h"
 #include "ftcore/UiPartyScreen.h"
 #include "ftcore/WaterBodies.h"
@@ -337,6 +338,11 @@ private:
 	int32 SoakSwapStage = 0;
 	bool bSoakSwapBefore = false;
 	FTimerHandle SoakSwapTimer;
+	// -StillCam=x,y,z,yaw,pitch,fov: review only (see the .cpp).
+	void HoldStillCam();
+	ftcore::StillCam StillCamView;
+	FTimerHandle StillCamTimer;
+	bool bStillCamHeld = false;
 #endif
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);

@@ -17,6 +17,7 @@
 
 #include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
+#include "FTMapOverlay.h"
 #include "FTMiniMapSource.h"
 #include "FTPartyFollower.h"
 #include "FTPartyVan.h"
@@ -139,6 +140,7 @@ UFTMiniMap::~UFTMiniMap()
 	delete DiscItem;
 	delete RimItem;
 	delete MarkItem;
+	delete MapC;
 }
 
 bool UFTMiniMap::Init(const AFTExploreDirector& Director)
@@ -202,6 +204,10 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 	DiscItem->TriangleList.Reserve(kDiscSegments);
 	RimItem->TriangleList.Reserve(kDiscSegments);
 	MarkItem->TriangleList.Reserve(512 + static_cast<int32>(Model.doors.size()) * 2);
+	if (!MapC && FFTMapOverlay::Wanted())
+	{
+		MapC = new FFTMapOverlay(Model, *WhiteTexture, PlanSide);
+	}
 
 	// Captures.
 	if (FParse::Value(FCommandLine::Get(), TEXT("MiniMapShots="), ShotPrefix))
@@ -311,9 +317,20 @@ void UFTMiniMap::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	{
 		TickShots(*PC, Now);
 	}
+	if (MapC)
+	{
+		MapC->TickShots(*PC, Now, bOverlay);
+	}
 	if (bOverlay)
 	{
-		DrawOverlay(Hud, Canvas, S);
+		if (MapC)
+		{
+			MapC->Draw(Hud, Canvas, S);
+		}
+		else
+		{
+			DrawOverlay(Hud, Canvas, S);
+		}
 		return;
 	}
 	// Top right inside the safe margin; the box it draws in, gutter and all, is kept clear of the other HUD corners (see

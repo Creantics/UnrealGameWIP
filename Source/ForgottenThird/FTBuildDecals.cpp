@@ -1,6 +1,7 @@
 #include "FTBuildDecals.h"
 
 #include "FTCellInstancer.h"
+#include "FTRainCoverCollection.h"
 #include "FTSceneLook.h"
 #include "ForgottenThird.h"
 
@@ -131,7 +132,8 @@ UMaterial* BuildMaterial(UPackage* Package, bool bPaint)
 		Wet->Collection = Look;
 		Wet->ParameterName = WetName;
 		Wet->ParameterId = Look->GetParameterId(WetName);
-		Wetness = Wet;
+		// Dry under cover (a decal has no vertex normal: it reads straight up).
+		Wetness = FTRainCover::Sheltered(Material, Wet, -1200, 500, FTRainCover::Up(Material, -1500, 500));
 	}
 	else
 	{

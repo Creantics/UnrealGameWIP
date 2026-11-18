@@ -14,6 +14,7 @@
 #include "FTAudioSubsystem.h"
 #include "FTGameInstance.h"
 #include "FTGameMode.h"
+#include "FTGcPacingSubsystem.h"
 #include "FTPlayerController.h"
 #include "FTSettingsSubsystem.h"
 #include "FTStepHost.h"
@@ -148,6 +149,7 @@ bool UFTPauseSubsystem::Open(UWorld* World)
 	LastMouse = FVector2D(-1.0, -1.0);
 	PausedWorld = World;
 	BeginClockPause();
+	UFTGcPacingSubsystem::HiddenMoment(World, TEXT("pause menu")); // the hitch lands behind the menu
 
 	// The story's hold timer ticks outside the world's pause: stop it too (a story that runs, not one idle on a screen).
 	UFTStorySubsystem* Story = GameInstance->GetSubsystem<UFTStorySubsystem>();

@@ -477,6 +477,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	// Every strike's aim line on a capture run (-ArenaShot) or on asking; else one summary at the fight's end.
 	LeadWeapons.SetLogEachAim(bShots || FParse::Param(FCommandLine::Get(), TEXT("ArenaAimEach")));
 	AllyWeapons.SetLogEachAim(bShots || FParse::Param(FCommandLine::Get(), TEXT("ArenaAimEach")));
+	ReadSpecialTable(); // the special moves' shots (once) and their test switches
 	bFightAgain = Setup.bFightAgain;
 	bReplacePawn = Setup.bReplacePawn;
 	bNoLock = Setup.bNoLock;
@@ -723,6 +724,7 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 	}
 #endif
 	Fight.begin(Def, Fit.ring, Fit.playerStart, Fit.playerFacing, Seed);
+	GiveSpecials(); // begin clears them
 	SessionLead = SessionLeadOf(Setup.Lead);
 	StartLead = SessionLead;
 	BeginSession();
@@ -766,15 +768,25 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	// The pose drawn last frame at last frame's placement, before anything moves.
 	Glide.Sample(PlayerFigure ? PlayerFigure->GetLeadSkin() : nullptr, DeltaSeconds);
-	PollInput(DeltaSeconds);
-	TickAim(DeltaSeconds);
+	// A special move: Core freezes itself and keeps stepping (its own clock only); no input but the skip is read while it plays, and
+	// the shots' tail past Core's cut back holds the fight until the camera is back (FTArenaRunnerSpecial.cpp).
+	const bool bCoreHold = bHold || (bSpecialOn && !Fight.frozen());
+	if (!bSpecialOn && !Fight.frozen())
+	{
+		PollInput(DeltaSeconds);
+		TickAim(DeltaSeconds);
+	}
+	else if (!bHold)
+	{
+		PollSpecialSkip(); // a press while it plays: the skip (FTArenaRunnerSpecial.cpp)
+	}
 
 	const float HeldBefore = Fight.heldTime();
 	for (float& Paused : PausedThisFrame)
 	{
 		Paused = 0.f;
 	}
-	if (!Fight.over() && !bHold)
+	if (!Fight.over() && !bCoreHold)
 	{
 		Accumulator = FMath::Min(Accumulator + static_cast<double>(DeltaSeconds), static_cast<double>(StepSeconds * MaxStepsPerFrame));
 		while (Accumulator >= StepSeconds && !Fight.over())
@@ -790,8 +802,9 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		PartnerImpactDue -= static_cast<double>(DeltaSeconds);
 		PlayWaitingPartnerImpact(static_cast<double>(Fight.heldTime()));
 	}
-	PlaceFigures(Fight.over() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
-	if (bPartner)
+	// Frozen, the fight's clock stands while the accumulator cycles: drawn at the last step, nothing saws.
+	PlaceFigures(Fight.over() || Fight.frozen() ? 1.f : static_cast<float>(Accumulator / StepSeconds));
+	if (bPartner && !Fight.frozen()) // no lead switch mid-special (Core refuses it)
 	{
 		CheckSwapInput(); // the figures as drawn this frame
 		TickHandoff();
@@ -804,7 +817,9 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	}
 	SteerCamera(DeltaSeconds);
 	ApplyAimCamera();
-	TickImpact(bHold ? 0.f : DeltaSeconds);
+	TickSpecial(bHold ? 0.f : DeltaSeconds);
+	TickSpecialCost(DeltaSeconds, bHold);
+	TickImpact(bCoreHold || bSpecialOn ? 0.f : DeltaSeconds);
 
 	if (Fight.over())
 	{
@@ -855,6 +870,11 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 
 void UFTArenaRunner::End()
 {
+	EndSpecial(TEXT("the fight ended"));
+	if (bArenaSpecials && bBegun)
+	{
+		Fight.storeSpecialGauges(SpecialGauges); // kept for the next fight
+	}
 	EndTable();
 	EndImpact();
 	EndStoneBearer();
@@ -1001,6 +1021,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		{
 			LeadWeapons.Begin(PlayerFigure, *Lead, Def.fighter);
 			PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLandLock);
+			LoadSpecialClip(); // its special's clip, for the body it wears
 		}
 	}
 	if (PC)
@@ -1881,6 +1902,34 @@ void UFTArenaRunner::PollInput(float DeltaSeconds)
 			&& PC->WasInputKeyJustPressed(PadInteract))
 		{
 			bPressTakeHalf = true;
+		}
+	}
+	// The special: its key, and on a pad with none bound, the shoulders' chord (route "shoulders_chord": the pad's Guard
+	// and Read buttons, the second within kInputShoulderChord s of the first). Core refuses it when not ready.
+	if (Pressed(InputAction::Special))
+	{
+		RequestSpecial();
+	}
+	{
+		const FKey& PadSpecial = FTInputBindings::Key(InputAction::Special, ftcore::InputDevice::Pad);
+		const FKey& PadGuard = FTInputBindings::Key(InputAction::Guard, ftcore::InputDevice::Pad);
+		const FKey& PadRead = FTInputBindings::Key(InputAction::Read, ftcore::InputDevice::Pad);
+		if (!PadSpecial.IsValid() && PadGuard.IsValid() && PadRead.IsValid())
+		{
+			const double Clock = World ? World->GetRealTimeSeconds() : 0.0;
+			const bool bGuardNow = PC->WasInputKeyJustPressed(PadGuard);
+			const bool bReadNow = PC->WasInputKeyJustPressed(PadRead);
+			const double Chord = static_cast<double>(ftcore::kInputShoulderChord);
+			if ((bGuardNow && (bReadNow || Clock - PadReadPressedAt <= Chord)) || (bReadNow && Clock - PadGuardPressedAt <= Chord))
+			{
+				RequestSpecial();
+				PadGuardPressedAt = PadReadPressedAt = -1.0e9;
+			}
+			else
+			{
+				PadGuardPressedAt = bGuardNow ? Clock : PadGuardPressedAt;
+				PadReadPressedAt = bReadNow ? Clock : PadReadPressedAt;
+			}
 		}
 	}
 	// A called-blow boss's Intercept (its Guard is the guard above), held or toggled.
@@ -3121,6 +3170,10 @@ double UFTArenaRunner::GetEnemyMarkUntil(int32 Slot) const
 
 void UFTArenaRunner::StepFight()
 {
+	if (Fight.frozen() && StepFrozen())
+	{
+		return; // a special's frozen step: nothing but its clock moves (FTArenaRunnerSpecial.cpp)
+	}
 	OpenLeadStep(); // per-lead: the controlled lead's values before any press, blow or spend this step
 	ftcore::ArenaInput In;
 	bool bIntercept = false;
@@ -3452,7 +3505,10 @@ void UFTArenaRunner::StepFight()
 		TrackSwapCheck(In); // the input this step takes, after a takeover or a switch
 	}
 	const bool bAllyWasUp = Fight.allyHp() > 0; // the brain stations only a body up before and after the step
+	PressSpecial(In);
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
+	// The press tick or the cut back: the performer put where Core says, and no step (no separation push) this tick.
+	const bool bSpecialPut = AfterSpecialTick(Out);
 	ReportFightSpends(Out);
 	if (bPartner && Session)
 	{
@@ -3589,7 +3645,10 @@ void UFTArenaRunner::StepFight()
 	{
 		TakeOverBodies(Out); // before the step: the bodies are the host's (ArenaFight::setPartner)
 	}
-	ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	if (!bSpecialPut)
+	{
+		ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+	}
 	if (bPartner)
 	{
 		WalkPartner(Out);
@@ -7181,6 +7240,7 @@ void UFTArenaRunner::AfterHallucinationStep(const ftcore::ArenaOutput& Out)
 
 void UFTArenaRunner::Restart()
 {
+	EndSpecial(TEXT("the fight began again"));
 	if (bPartner)
 	{
 		// The fight as it began: each lead in its own figure, the first lead controlled (Fight.restart clears swapped()).
@@ -8802,6 +8862,7 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 		const ftcore::ArenaFighter& Kit = bFiguresSwapped ? Def.partnerKit : Def.fighter;
 		LeadWeapons.Begin(PlayerFigure, *PlayerLook, Kit);
 		PlayerFigure->SetJumpTiming(Kit.jumpStartup, Kit.jumpAir, Kit.jumpLandLock);
+		LoadSpecialClip(); // the lead now controlled: its special's clip
 	}
 	if (PlayerFigure)
 	{

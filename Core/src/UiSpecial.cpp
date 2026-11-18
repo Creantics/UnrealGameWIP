@@ -4,7 +4,7 @@
 
 namespace ftcore {
 
-UiSpecialView uiSpecialStep(UiSpecialState& s, bool reserve, const UiSpecialInput& in, float dt, bool reduceMotion) {
+UiSpecialView uiSpecialStep(UiSpecialState& s, bool reserve, const UiSpecialInput& in, float dt, bool reduceMotion, bool reduceFlashes) {
     UiSpecialView v;
     v.row = reserve;
     if (!reserve) {
@@ -66,7 +66,7 @@ UiSpecialView uiSpecialStep(UiSpecialState& s, bool reserve, const UiSpecialInpu
     v.alpha = s.since >= kUiSpecialFadeIn ? 1.f : s.since / kUiSpecialFadeIn;
     s.alphaWas = v.alpha;
     const float p = s.since - s.pulseAt;
-    if (v.live && s.pulsed && p < kUiSpecialPulse) v.pulse = p / kUiSpecialPulse;
+    if (v.live && s.pulsed && !reduceFlashes && p < kUiSpecialPulse) v.pulse = p / kUiSpecialPulse;
     return v;
 }
 

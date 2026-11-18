@@ -11,6 +11,7 @@
 #include "ftcore/MassingDress.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/MassingProps.h"
+#include "ftcore/SeaAccess.h"
 
 #include <array>
 #include <cstddef>
@@ -624,6 +625,12 @@ struct RoadSeaSlip {
 // top mark, every 10 m, no collision) and between them the line's small floats (sea_float, every 2 m). Returns the
 // solids added.
 FTCORE_API std::size_t roadSeaSlipBuild(const RoadSeaSlip& slip, RoadBuild& build);
+// The sea's ladders (seaLadders, ftcore/SeaAccess.h) built into `build`: each a steel ladder set in its face like a
+// canal's (two stiles from bedZ to 1 m over the deck, rungs every 0.3 m, a grab hoop over the deck; canal_ladder
+// pieces, no collision, turned to the face) and a way out (RoadWaterExit, canal "SEA", kind Ladder, id the ladder's)
+// with its foot, top, out and rail gap. A ladder whose top stands no higher than seaZ + 0.3 is skipped. Returns the ways
+// out added.
+FTCORE_API std::size_t roadSeaLaddersBuild(const std::vector<SeaLadder>& ladders, double bedZ, double seaZ, RoadBuild& build);
 // The point table as CSV: '#' comment rows, then kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck.
 FTCORE_API std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points);
 

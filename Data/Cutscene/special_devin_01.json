@@ -1,0 +1,365 @@
+{
+ "version": 1,
+ "clip": "A_Devin_Special_01",
+ "duration_s": 8.5,
+ "fps": 60,
+ "frame": "lead start: x forward (toward the target), y right, z up; metres; origin = lead root at t=0; re-based: pelvis over the root at t=0",
+ "sensor_width_mm": 36.0,
+ "aspect": "16:9",
+ "shake": {
+  "profile": "decaying",
+  "amp_m": [
+   0.03,
+   0.05,
+   0.04
+  ],
+  "hz": [
+   21,
+   28,
+   25
+  ],
+  "decay_s": 0.2
+ },
+ "end_feet": [
+  0.61,
+  -0.11,
+  0
+ ],
+ "reach": {
+  "m": 1.1,
+  "from": 0.55,
+  "to": 7.8,
+  "note": "the staff: half its 2.2 m length, from the conjure to the dismiss"
+ },
+ "cuts": [
+  0.9,
+  3.6,
+  4.0,
+  4.7,
+  7.1,
+  7.35,
+  8.3
+ ],
+ "shots": [
+  {
+   "id": 1,
+   "name": "CU feet",
+   "in": 0.0,
+   "out": 0.9,
+   "anchor": "lead",
+   "offset": {
+    "from": [
+     1.62,
+     0.7,
+     0.3
+    ],
+    "to": [
+     1.72,
+     0.4,
+     0.3
+    ]
+   },
+   "look_anchor": "lead",
+   "look_at": {
+    "from": [
+     -0.03,
+     0,
+     0.15
+    ],
+    "to": [
+     0.32,
+     0,
+     0.15
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": 40,
+   "focus_m": {
+    "from": 1.8,
+    "to": 1.46
+   },
+   "shake": false
+  },
+  {
+   "id": 2,
+   "name": "MS front",
+   "in": 0.9,
+   "out": 3.6,
+   "anchor": "lead",
+   "offset": {
+    "from": [
+     4.12,
+     0.5,
+     1.15
+    ],
+    "to": [
+     3.52,
+     0.4,
+     1.1
+    ]
+   },
+   "look_anchor": "lead",
+   "look_at": {
+    "from": [
+     0.32,
+     0,
+     1.0
+    ],
+    "to": [
+     0.32,
+     0,
+     1.0
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": 35,
+   "focus_m": {
+    "from": 3.84,
+    "to": 3.23
+   },
+   "shake": false
+  },
+  {
+   "id": 3,
+   "subject": "none",
+   "name": "top-down",
+   "in": 3.6,
+   "out": 4.0,
+   "anchor": "lead",
+   "offset": {
+    "from": [
+     0.37,
+     0,
+     7.5
+    ],
+    "to": [
+     0.37,
+     0,
+     8.0
+    ]
+   },
+   "look_anchor": "lead",
+   "look_at": {
+    "from": [
+     0.371,
+     0,
+     0
+    ],
+    "to": [
+     0.371,
+     0,
+     0
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": 30,
+   "focus_m": {
+    "from": 7.5,
+    "to": 8.0
+   },
+   "shake": false
+  },
+  {
+   "id": 4,
+   "subject": "none",
+   "name": "ECU fist",
+   "in": 4.0,
+   "out": 4.7,
+   "anchor": "bone",
+   "offset": {
+    "from": [
+     0.62,
+     0.4,
+     0.12
+    ],
+    "to": [
+     0.62,
+     0.4,
+     0.12
+    ]
+   },
+   "look_anchor": "bone",
+   "look_at": {
+    "from": [
+     0,
+     0,
+     0.02
+    ],
+    "to": [
+     0,
+     0,
+     0.02
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": 85,
+   "focus_m": {
+    "from": 0.74,
+    "to": 0.74
+   },
+   "shake": false,
+   "follow_bone": "hand_r",
+   "note": "offset and look_at are added to hand_r world position, axes of the lead frame (not the bone)"
+  },
+  {
+   "id": 5,
+   "name": "wide low",
+   "in": 4.7,
+   "out": 7.1,
+   "anchor": "lead",
+   "offset": {
+    "from": [
+     3.72,
+     3.0,
+     0.45
+    ],
+    "to": [
+     2.82,
+     2.2,
+     0.45
+    ]
+   },
+   "look_anchor": "lead",
+   "look_at": {
+    "from": [
+     0.52,
+     0,
+     0.8
+    ],
+    "to": [
+     0.52,
+     0,
+     0.8
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": 28,
+   "focus_m": {
+    "from": 4.4,
+    "to": 3.2
+   },
+   "shake": false
+  },
+  {
+   "id": 6,
+   "subject": "both",
+   "name": "target side",
+   "in": 7.1,
+   "out": 7.35,
+   "anchor": "target",
+   "offset": {
+    "from": [
+     2.2,
+     -0.75,
+     1.6
+    ],
+    "to": [
+     2.2,
+     -0.75,
+     1.6
+    ]
+   },
+   "look_anchor": "lead",
+   "look_at": {
+    "from": [
+     1.92,
+     0,
+     0.45
+    ],
+    "to": [
+     -0.3,
+     0,
+     1.0
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": 40,
+   "focus_m": 0,
+   "shake": true,
+   "note": "offset is from the target's feet in the lead frame (2.2 m beyond it and 0.75 m to the lead's left, over its right shoulder); the look-at starts in the lead frame and ends 0.3 m short of the target's front, so it rides the wave to the target at any range; focus follows the look-at",
+   "look_anchor_to": "target"
+  },
+  {
+   "id": 7,
+   "name": "wide lunge",
+   "in": 7.35,
+   "out": 8.3,
+   "anchor": "lead",
+   "offset": {
+    "from": [
+     3.12,
+     -2.6,
+     0.7
+    ],
+    "to": [
+     3.02,
+     -2.5,
+     0.72
+    ]
+   },
+   "look_anchor": "lead",
+   "look_at": {
+    "from": [
+     0.72,
+     0,
+     0.7
+    ],
+    "to": [
+     0.72,
+     0,
+     0.7
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": 32,
+   "focus_m": {
+    "from": 3.54,
+    "to": 3.4
+   },
+   "shake": false
+  },
+  {
+   "id": 8,
+   "name": "to play camera",
+   "in": 8.3,
+   "out": 8.5,
+   "anchor": "lead",
+   "offset": {
+    "from": [
+     -1.288,
+     0.19,
+     1.291
+    ],
+    "to": [
+     -1.988,
+     0.44,
+     1.541
+    ]
+   },
+   "look_anchor": "lead",
+   "look_at": {
+    "from": [
+     8.005,
+     0.44,
+     1.192
+    ],
+    "to": [
+     8.005,
+     0.44,
+     1.192
+    ]
+   },
+   "ease": "smoothstep",
+   "focal_mm": {
+    "from": 40,
+    "to": 31.18
+   },
+   "focus_m": {
+    "from": 9.3,
+    "to": 10.0
+   },
+   "shake": false,
+   "note": "ends exactly on the close preset (arm 2.6, pivot 1.35, side 0.55, up 0.1, pitch -2, hfov 60) over the lead's end feet; at out the player hands back to the arena camera with no blend"
+  }
+ ]
+}

@@ -43,6 +43,8 @@ public:
 
 	// 0..1 now (0 when off).
 	float GetIntensity() const { return bActive ? State.intensity : 0.f; }
+	// The streaks' and splashes' own clock (1: normal; a special's freeze slows them to a hang). Not the intensity.
+	void SetTimeScale(float Scale);
 
 private:
 	void WriteParameters();

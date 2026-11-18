@@ -20,6 +20,7 @@
 #include "SceneViewExtension.h"
 
 #include "ftcore/LookTable.h"
+#include "ftcore/StillCam.h"
 
 #include <string>
 #include <vector>
@@ -270,6 +271,17 @@ void UFTLookSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		const FTCHARToUTF8 Map(*World->GetMapName());
 		const std::string_view Found = ftcore::lookWorldForMap(std::string_view(Map.Get(), static_cast<size_t>(Map.Length())));
 		Want = Found.empty() ? TEXT("off") : FT::ToFString(std::string(Found));
+	}
+	// -Weather=dry: a rain look (its full overcast) gives way to its world's clear look.
+	if (FTWeatherDry())
+	{
+		const std::string Asked = FT::ToUtf8(Want);
+		const FString Dry = FT::ToFString(std::string(ftcore::dryLookFor(Asked)));
+		if (Dry != Want)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Look: -Weather=dry wears %s in place of %s."), *Dry, *Want);
+			Want = Dry;
+		}
 	}
 	if (!SetWorldLook(Want))
 	{

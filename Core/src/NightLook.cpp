@@ -240,6 +240,25 @@ float nightCharacterFillYaw(const NightLook& look, float viewX, float viewY, flo
     return side < 0.f ? yaw : -yaw;
 }
 
+void nightCharacterFillEase(NightLook& look) {
+    look.charFillSwitchNearer = kNightFillEaseSwitchNearer;
+    look.charFillYawRateDeg = kNightFillEaseYawRateDeg;
+}
+
+bool nightCharacterFillSwitchLight(const NightLook& look, float followedM, float newM) {
+    if (followedM < 0.f || look.charFillSwitchNearer <= 0.f) return true;  // off: the nearest light, as before
+    const float nearer = std::min(look.charFillSwitchNearer, 0.9f);
+    return newM < followedM * (1.f - nearer);
+}
+
+float nightCharacterFillEaseYaw(const NightLook& look, float currentDeg, float targetDeg, float dtSeconds) {
+    const float rate = look.charFillYawRateDeg;
+    if (rate <= 0.f) return targetDeg;  // off: the yaw snaps, as before
+    const float step = rate * std::max(dtSeconds, 0.f);
+    const float diff = std::clamp(std::remainder(targetDeg - currentDeg, 360.f), -step, step);  // the short way round
+    return std::remainder(currentDeg + diff, 360.f);
+}
+
 float nightCharacterFillKeyShare(const NightLook& look) {
     return std::clamp(look.charFillKeyShare, 0.f, 1.f);
 }
