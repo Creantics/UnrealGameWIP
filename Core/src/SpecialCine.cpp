@@ -616,6 +616,32 @@ SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStag
     return hit;
 }
 
+SpecialCinePartnerStrike specialCinePartnerStrike(const SpecialCineMove& move, const SpecialCineStage& stage,
+                                                  const SpecialCineHit& hit, const CutsceneVec3& partnerChest, float radius) {
+    SpecialCinePartnerStrike strike;
+    const float own = std::isfinite(stage.targetRadius) ? std::max(stage.targetRadius, 0.f) : 0.f;
+    const float out = std::isfinite(radius) ? std::max(own, radius) : own;
+    CutsceneVec3 d = sub3(partnerChest, stage.target);
+    d.z = 0.f;
+    const float n = length3(d);
+    strike.at = stage.target;
+    if (n > 1e-4f) strike.at = add3(strike.at, scale3(d, std::min(out, n) / n));
+    strike.at.z = partnerChest.z;
+    const float length = move.length();
+    CutsceneVec3 lead = leadFeet(move, stage, length > 0.f ? std::clamp(hit.time / length, 0.f, 1.f) : 0.f);
+    lead.z += kChest * heightOr(stage.leadHeight);
+    const CutsceneVec3 line = sub3(hit.at, lead);
+    const float span = length3(line);
+    const CutsceneVec3 rel = sub3(strike.at, lead);
+    if (span < 1e-4f) {
+        strike.offLine = length3(rel);
+        return strike;
+    }
+    strike.along = (rel.x * line.x + rel.y * line.y + rel.z * line.z) / (span * span);
+    strike.offLine = length3(sub3(rel, scale3(line, strike.along)));
+    return strike;
+}
+
 SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
                                            const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
                                            SpecialCineWorldTest world, void* user) {

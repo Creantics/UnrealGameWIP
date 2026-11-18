@@ -1352,3 +1352,45 @@ TEST_CASE("special cine: the hit at any range: Core's impact time, the contact t
     CHECK(near(specialCineHit(*far, st, std::numeric_limits<float>::quiet_NaN()).time, far->release()));
     CHECK(near(specialCineHit(*far, st, 99.f).time, far->length()));
 }
+
+TEST_CASE("special cine: the partner's strike point against the contact line at the hit") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    // r2b_far: a brute (0.45 m, 1.97 m) 6.59 m off; the hit at Core's impact.
+    SpecialCineStage st = stageAt(0.f, 0.f, 6.59f, 0.f);
+    st.targetRadius = 0.45f;
+    st.targetHeight = 1.97f;
+    const SpecialCineHit hit = specialCineHit(*far, st, 7.1f + 6.59f / 40.f, 0.45f);
+    const float chest = 0.6f * 1.8f;
+    const auto before = ftcore_test::allocStats().count;
+    // A partner on the lead's side of the target, at any range: its blow lands on the surface toward it, near the
+    // contact; within the cone whose surface point stays 0.15 m off the line, on it.
+    for (const float range : {1.f, 2.f, 3.5f, 6.f}) {
+        for (float deg = -60.f; deg <= 60.f + 1e-3f; deg += 5.f) {
+            const float a = (180.f + deg) * 3.14159265f / 180.f;
+            const CutsceneVec3 partner{6.59f + range * std::cos(a), range * std::sin(a), chest};
+            const SpecialCinePartnerStrike s = specialCinePartnerStrike(*far, st, hit, partner, 0.45f);
+            CHECK(near(std::sqrt((s.at.x - 6.59f) * (s.at.x - 6.59f) + s.at.y * s.at.y), 0.45f, 1e-3f));
+            CHECK(near(s.at.z, chest));
+            // The contact line runs from the lead (about 6 m back) to the contact, near the target's axis: the strike
+            // point's distance from it is the surface chord, about radius x sin(angle).
+            const float expect = 0.45f * std::sin(std::fabs(deg) * 3.14159265f / 180.f);
+            CHECK(std::fabs(s.offLine - expect) < 0.06f);
+            if (std::fabs(deg) <= 10.f) CHECK(s.onLine());
+            if (std::fabs(deg) >= 30.f) CHECK_FALSE(s.onLine());
+            CHECK(s.along > 0.9f);
+        }
+    }
+    // Beside the target, square to the lead's way: the blow is the radius off the line.
+    const SpecialCinePartnerStrike side = specialCinePartnerStrike(*far, st, hit, CutsceneVec3{6.59f, 2.f, chest}, 0.45f);
+    CHECK(near(side.offLine, 0.45f, 0.06f));
+    CHECK_FALSE(side.onLine());
+    // Standing in the target (no direction): its centre, about on the line.
+    const SpecialCinePartnerStrike inside = specialCinePartnerStrike(*far, st, hit, CutsceneVec3{6.59f, 0.f, chest}, 0.45f);
+    CHECK(inside.offLine < SpecialCinePartnerStrike::kOnLine);
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+}

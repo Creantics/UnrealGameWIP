@@ -1141,6 +1141,25 @@ void UFTArenaRunner::PlaySpecialHit()
 		TEXT("Arena check: special hit at %.3f s (shot %u): played %s, %s at (%.0f, %.0f, %.0f) cm, %.1f cm from the contact, %.1f cm off the target's surface."),
 		SpecialPlayer.time(), SpecialPlayer.move() ? SpecialPlayer.move()->shotAt(SpecialPlayer.time()) + 1 : 0u, bPlayed ? TEXT("true") : TEXT("false (no effect asset)"),
 		*Vfx->Effect.ToString(), Drawn.X, Drawn.Y, Drawn.Z, FVector::Dist(Drawn, At), Surface);
+	// The partner at the hit (held where the press found it): its strike point (as PartnerImpact puts one) against the
+	// contact line, and its body's distance from the drawn camera's sight line to the contact.
+	const AFTArenaFighter* Ally = AllyFigure.Get();
+	if (Ally && bPartner && Fight.allyHp() > 0 && SpecialPlayer.move())
+	{
+		const FVector Chest = Ally->GetChest() / 100.0;
+		const ftcore::SpecialCinePartnerStrike S = ftcore::specialCinePartnerStrike(*SpecialPlayer.move(), SpecialStageAt, SpecialHit,
+			ftcore::CutsceneVec3{static_cast<float>(Chest.X), static_cast<float>(Chest.Y), static_cast<float>(Chest.Z)}, SpecialStageAt.targetRadius);
+		float Sight = -1.f;
+		if (const APlayerController* PC = GetPC(); PC && PC->PlayerCameraManager)
+		{
+			const FVector Eye = PC->PlayerCameraManager->GetCameraLocation();
+			const FVector Axis = Ally->GetActorLocation();
+			Sight = static_cast<float>(FMath::PointDistToSegment(FVector(Axis.X, Axis.Y, At.Z), Eye, At)) / 100.f;
+		}
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("Arena check: special hit: the partner's strike point (%.2f, %.2f, %.2f) m is %.2f m off the contact line (at %.2f along it; on it within %.2f: %s); the partner's axis %.2f m from the camera's sight line to the contact."),
+			S.at.x, S.at.y, S.at.z, S.offLine, S.along, ftcore::SpecialCinePartnerStrike::kOnLine, S.onLine() ? TEXT("yes") : TEXT("no"), Sight);
+	}
 }
 
 void UFTArenaRunner::EndSpecial(const TCHAR* Why)

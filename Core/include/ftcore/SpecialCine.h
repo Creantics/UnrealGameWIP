@@ -407,6 +407,21 @@ struct SpecialCineHit {
 FTCORE_API SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime,
                                          float radius = 0.f);
 
+// The partner's strike point at the hit, as the host's PartnerImpact puts a partner blow: on the target's surface
+// (radius `radius`, or the stage's when wider) toward the partner, at `partnerChest`'s height; `offLine` its distance (m)
+// from the contact line (the lead's chest at the hit through the hit's contact, as a line), `along` where it falls on
+// it (0 the lead's chest, 1 the contact). No allocation.
+struct SpecialCinePartnerStrike {
+    static constexpr float kOnLine = 0.15f; // m: a strike point this near the contact line is on it
+    CutsceneVec3 at;
+    float offLine = 0.f;
+    float along = 0.f;
+    bool onLine() const { return offLine <= kOnLine; }
+};
+FTCORE_API SpecialCinePartnerStrike specialCinePartnerStrike(const SpecialCineMove& move, const SpecialCineStage& stage,
+                                                             const SpecialCineHit& hit, const CutsceneVec3& partnerChest,
+                                                             float radius = 0.f);
+
 class SpecialCinePlayer {
 public:
     // Starts `move` at 0. Null or empty: stays idle. A begin while playing starts again.
