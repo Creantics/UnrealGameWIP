@@ -1359,8 +1359,9 @@ TEST_CASE("terrain: the shape mask reads ridges over 128, hollows under it and f
         const bool counting = ftcore_test::allocHookInstalled();
         const std::uint64_t before = ftcore_test::allocStats().count;
         shapeMask(t, kShape, mask.data());
+        const std::uint64_t after = ftcore_test::allocStats().count;
         if (counting) {
-            CHECK(ftcore_test::allocStats().count == before);
+            CHECK_MESSAGE(after == before, "shapeMask allocated " << after - before << " times");
         }
         // Every byte is written: a buffer that starts out otherwise ends the same.
         shapeMask(t, kShape, again.data());

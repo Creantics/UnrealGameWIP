@@ -66,8 +66,9 @@ bool UFTCrowdSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
 	FString Streets;
-	return World && World->WorldType == EWorldType::Game && FParse::Value(FCommandLine::Get(), TEXT("CrowdStreets="), Streets) &&
-		!Streets.IsEmpty() && Super::ShouldCreateSubsystem(Outer);
+	// -CrowdV2 runs the crowd rework (UFTCrowdSubsystemV2) instead of this one.
+	return World && World->WorldType == EWorldType::Game && !FParse::Param(FCommandLine::Get(), TEXT("CrowdV2")) &&
+		FParse::Value(FCommandLine::Get(), TEXT("CrowdStreets="), Streets) && !Streets.IsEmpty() && Super::ShouldCreateSubsystem(Outer);
 }
 
 bool UFTCrowdSubsystem::Fail(const TCHAR* Why, const FString& What)

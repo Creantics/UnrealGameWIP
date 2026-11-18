@@ -4,7 +4,8 @@
 
 namespace ftcore_test {
 
-// Process-wide heap allocation totals since start. Only meaningful when the replacement global
+// The calling thread's heap allocation totals since it started (a count over a window measures only what that
+// thread allocated in it, whatever other threads do). Only meaningful when the replacement global
 // operator new from AllocHook.cpp is linked into the executable (allocHookInstalled() tells);
 // otherwise the totals stay at zero.
 struct AllocStats {
