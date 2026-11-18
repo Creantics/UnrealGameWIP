@@ -607,6 +607,9 @@ private:
 	int32 SwimProofSlotFails = 0;
 	float SwimProofRejoinAt = -1.f;    // SwimProofTime when slot 0 was rejoined
 	float SwimProofSweep = -1.f;       // degrees the camera has turned round the lead (-1: not yet)
+	int32 SwimProofGaveUp = 0;         // slot 0's ToEntry -> Ashore changes (a given-up entry walk)
+	int32 SwimProofPath = 0;           // 0 not placed yet, 1 placed by this kind's own path, -1 placed some other way
+	bool bSwimProofPass = false;       // placed by its own path, then Placed -> Surface (the rejoin swims on)
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;

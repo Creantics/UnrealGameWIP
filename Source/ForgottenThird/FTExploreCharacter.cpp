@@ -4130,6 +4130,30 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			{
 				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: slot 0 phase %d -> %d at %.1f s (rejoin %d; before it: stuck %.1f s, failed entries %d)."), *SwimProofKind,
 					SwimProofSlotPhase, Now, SwimProofTime, Slot0->rejoin ? 1 : 0, SwimProofSlotStuck, SwimProofSlotFails);
+				// Each kind passes only on its own path into Placed (WaterFollow.h): land from ToEntry after one given-up walk,
+				// failed entries 1 the step before (Core's ++ to 2 is that step); watchdog from Surface, stuck ~20 s, no failed
+				// entry. A teleport or the other path is no proof, whatever else follows.
+				constexpr int32 KAshore = static_cast<int32>(ftcore::WaterFollowPhase::Ashore);
+				constexpr int32 KToEntry = static_cast<int32>(ftcore::WaterFollowPhase::ToEntry);
+				constexpr int32 KSurface = static_cast<int32>(ftcore::WaterFollowPhase::Surface);
+				constexpr int32 KPlaced = static_cast<int32>(ftcore::WaterFollowPhase::Placed);
+				if (SwimProofSlotPhase == KToEntry && Now == KAshore)
+				{
+					++SwimProofGaveUp;
+				}
+				if (Now == KPlaced && SwimProofPath == 0)
+				{
+					const bool bLand = SwimProofKind == TEXT("land") && SwimProofSlotPhase == KToEntry && SwimProofGaveUp >= 1 && SwimProofSlotFails == 1;
+					const bool bWatch = SwimProofKind == TEXT("watchdog") && SwimProofSlotPhase == KSurface && SwimProofSlotStuck >= 19.f && SwimProofSlotFails == 0;
+					SwimProofPath = bLand || bWatch ? 1 : -1;
+					UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: slot 0 placed by %s."), *SwimProofKind,
+						SwimProofPath > 0 ? TEXT("its own path (PATH OK)") : TEXT("another path (PATH WRONG: no proof)"));
+				}
+				if (SwimProofSlotPhase == KPlaced && Now == KSurface && SwimProofPath > 0 && SwimProofRejoinAt >= 0.f && !bSwimProofPass)
+				{
+					bSwimProofPass = true;
+					UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: PASS LINE: own path, rejoined, then Surface at %.1f s."), *SwimProofKind, SwimProofTime);
+				}
 				SwimProofSlotPhase = Now;
 			}
 			if (Slot0->phase == ftcore::WaterFollowPhase::Placed && Slot0->rejoin && SwimProofRejoinAt < 0.f)
@@ -4162,9 +4186,9 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		const float End = SwimProofSweep >= 360.f ? 0.f : 110.f; // after the sweep, or at 110 s
 		if ((SwimProofSweep >= 360.f && SwimProofTime >= 80.f) || (End > 0.f && SwimProofTime >= End))
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: done at %.1f s, %d stills, rejoin %s."), *SwimProofKind, SwimProofTime, SwimProofShotCount,
-				SwimProofRejoinAt >= 0.f ? TEXT("seen") : TEXT("NOT seen"));
-			FTRequestExit(SwimProofRejoinAt >= 0.f ? 0 : 2, TEXT("SwimProof"));
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: done at %.1f s, %d stills, rejoin %s, path %d, %s."), *SwimProofKind, SwimProofTime, SwimProofShotCount,
+				SwimProofRejoinAt >= 0.f ? TEXT("seen") : TEXT("NOT seen"), SwimProofPath, bSwimProofPass ? TEXT("PASS") : TEXT("NO PASS"));
+			FTRequestExit(bSwimProofPass ? 0 : 2, TEXT("SwimProof"));
 			SwimProofStage = -2;
 		}
 	}
