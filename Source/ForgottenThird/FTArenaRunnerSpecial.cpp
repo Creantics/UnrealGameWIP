@@ -36,6 +36,7 @@
 #include "FTPauseSubsystem.h"
 #include "FTRainSubsystem.h"
 #include "FTSpecialCine.h"
+#include "FTVfxComponent.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
@@ -61,6 +62,11 @@ constexpr float kCoreSpecialEps = 1.0e-4f;  // s: Core's own (ArenaFight.cpp, sp
 const FName kSpecialBone(TEXT("hand_r"));
 
 FVector Cm(const ftcore::CutsceneVec3& M) { return FVector(M.x, M.y, M.z) * 100.0; }
+
+// The hit's effect: the move's impact row (FX_DS_Wave.hit in Data/Battle/arena_special.json) names an asset not built
+// yet; this tracked burst stands in for it until it is.
+const FName kSpecialHitStandIn(TEXT("crit_burst"));
+constexpr float kSpecialHitScale = 1.f;
 
 bool ReadData(const FString& Rel, std::string& Out)
 {
@@ -116,6 +122,7 @@ void UFTArenaRunner::ReadSpecialTable()
 	FParse::Value(Cmd, TEXT("ArenaSpecialPause="), SpecialPauseAt);
 	SpecialSkipAt = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialSkipAt="), SpecialSkipAt);
+	bSpecialHitFx = !FParse::Param(Cmd, TEXT("ArenaSpecialNoHitFx"));
 #endif
 	if (bSpecialTableRead)
 	{
@@ -816,6 +823,21 @@ bool UFTArenaRunner::BeginSpecial()
 		Move = Far;
 	}
 	const TCHAR* Set = Move == Far ? TEXT("far") : TEXT("near");
+	// The hit: the impact row's time (the impact itself when the move has none), at the contact the framing tests.
+	float HitAt = V.impactTime;
+	const TCHAR* HitRow = TEXT("the impact");
+	for (uint8 I = 0; Rules && I < Rules->fxCount; ++I)
+	{
+		const ftcore::ArenaSpecialFx& Row = Rules->fx[I];
+		if (Row.start.cue == ftcore::kArenaSpecialAtImpact && Row.view().rfind("FX_", 0) == 0)
+		{
+			HitAt = ftcore::arenaSpecialFxAt(*Rules, Row.start, V.impactTime);
+			HitRow = TEXT("its impact row");
+			break;
+		}
+	}
+	SpecialHit = ftcore::specialCineHit(*Move, SpecialStageAt, HitAt, SpecialStageAt.targetRadius);
+	bSpecialHitPlayed = false;
 	// Nothing paused on the performer, nothing shaking the camera.
 	LeadWeapons.HitPause(false);
 	Jolt = ftcore::ArenaJolt();
@@ -863,9 +885,16 @@ bool UFTArenaRunner::BeginSpecial()
 			SpecialStillAt[SpecialStillCount++] = 0.5f * (Move->shot(I).in + Move->shot(I).out);
 		}
 		SpecialStillAt[SpecialStillCount++] = Move->release() + 0.05f;
+		if (SpecialStillCount < static_cast<int32>(UE_ARRAY_COUNT(SpecialStillAt)))
+		{
+			SpecialStillAt[SpecialStillCount++] = SpecialHit.stillAt; // the hit's effect, just after it spawned
+		}
 		Algo::Sort(MakeArrayView(SpecialStillAt, SpecialStillCount));
 	}
 #endif
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the hit at %.3f s (%s; Core's impact %.3f s), shot %u, its still at %.3f s; contact (%.2f, %.2f, %.2f) m%s."),
+		*Id, SpecialHit.time, HitRow, V.impactTime, SpecialHit.shot + 1, SpecialHit.stillAt, SpecialHit.at.x, SpecialHit.at.y, SpecialHit.at.z,
+		bSpecialHitFx ? TEXT("") : TEXT(" (-ArenaSpecialNoHitFx: no effect)"));
 	const float Off = FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y));
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): the %s set (%.2f m, near within %.2f m), %u shots (%d moved, %d still failing; search %.2f ms), %.2f s (Core %.2f s); ")
@@ -959,6 +988,10 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 	}
 	const double Began = FPlatformTime::Seconds();
 	SpecialPlayer.step(DeltaSeconds);
+	if (!bSpecialHitPlayed && SpecialPlayer.time() >= SpecialHit.time)
+	{
+		PlaySpecialHit();
+	}
 	const ftcore::SpecialCineFrame F = SpecialPlayer.frame(SpecialStage());
 	const ftcore::SpecialCineMove& Move = *SpecialPlayer.move();
 	// The lead's clip on the shots' clock, over what its weapons painted this frame (FFTLeadWeapons::Paint runs
@@ -1060,6 +1093,54 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 	{
 		EndSpecial(TEXT("played out"));
 	}
+}
+
+void UFTArenaRunner::PlaySpecialHit()
+{
+	bSpecialHitPlayed = true;
+	AFTArenaFighter* Lead = PlayerFigure.Get();
+	if (!bSpecialHitFx || !Lead)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special hit at %.3f s: played false (%s)."), SpecialPlayer.time(),
+			!bSpecialHitFx ? TEXT("-ArenaSpecialNoHitFx") : TEXT("no lead figure"));
+		return;
+	}
+	UFTVfxComponent* Vfx = SpecialHitFx.Get();
+	if (Vfx && Vfx->GetOwner() != Lead)
+	{
+		Vfx->DestroyComponent(); // the figures swapped: made again on the performer's
+		Vfx = nullptr;
+	}
+	if (!Vfx)
+	{
+		// On the performer's figure, placed in the world: the freeze holds every other actor (and what it spawns).
+		Vfx = NewObject<UFTVfxComponent>(Lead);
+		Vfx->Effect = kSpecialHitStandIn;
+		Vfx->bPlayOnBeginPlay = false;
+		Vfx->SetupAttachment(Lead->GetRootComponent());
+		Vfx->SetUsingAbsoluteLocation(true);
+		Vfx->SetUsingAbsoluteRotation(true);
+		Vfx->SetUsingAbsoluteScale(true);
+		Vfx->RegisterComponent();
+		Vfx->SetWorldScale3D(FVector(kSpecialHitScale));
+		Vfx->SetParameters(kSpecialHitScale, kSpecialHitScale);
+		SpecialHitFx = Vfx;
+	}
+	const FVector At = Cm(SpecialHit.at);
+	Vfx->SetWorldLocationAndRotation(At, FFTLeadWeapons::ImpactFacing(Lead->GetActorLocation(), At));
+	const bool bPlayed = Vfx->Play();
+	// Measured on the drawn figures: the effect's distance from the contact, and from the target's surface (its centre
+	// less its radius, on the ground plane).
+	const FVector Drawn = Vfx->GetComponentLocation();
+	float Surface = -1.f;
+	if (const AFTArenaFighter* Enemy = SpecialTarget >= 0 && SpecialTarget < MaxEnemies ? GetEnemyFigure(SpecialTarget) : nullptr)
+	{
+		Surface = static_cast<float>(FVector::Dist2D(Drawn, Enemy->GetActorLocation())) - SpecialStageAt.targetRadius * 100.f;
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena check: special hit at %.3f s (shot %u): played %s, %s at (%.0f, %.0f, %.0f) cm, %.1f cm from the contact, %.1f cm off the target's surface."),
+		SpecialPlayer.time(), SpecialPlayer.move() ? SpecialPlayer.move()->shotAt(SpecialPlayer.time()) + 1 : 0u, bPlayed ? TEXT("true") : TEXT("false (no effect asset)"),
+		*Vfx->Effect.ToString(), Drawn.X, Drawn.Y, Drawn.Z, FVector::Dist(Drawn, At), Surface);
 }
 
 void UFTArenaRunner::EndSpecial(const TCHAR* Why)
@@ -1220,7 +1301,8 @@ bool UFTArenaRunner::TakeSpecialStill(FString& OutName)
 	}
 	const ftcore::SpecialCineMove& Move = *SpecialPlayer.move();
 	const uint32 Shot = Move.shotAt(SpecialPlayer.time());
-	OutName = FString::Printf(TEXT("sp_%05.2f_shot%u"), SpecialPlayer.time(), Shot + 1);
+	const bool bHit = SpecialStillAt[SpecialStillNext] == SpecialHit.stillAt;
+	OutName = FString::Printf(TEXT("sp_%05.2f_shot%u%s"), SpecialPlayer.time(), Shot + 1, bHit ? TEXT("_hit") : TEXT(""));
 	++SpecialStillNext;
 	return true;
 #endif

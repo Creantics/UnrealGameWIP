@@ -603,6 +603,19 @@ float contactRadius(const SpecialCineStage& stage, const SpecialCineBody* bodies
 
 } // namespace
 
+SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime, float radius) {
+    SpecialCineHit hit;
+    const float length = move.length();
+    const float t = std::isfinite(impactTime) ? impactTime : move.release();
+    hit.time = std::clamp(t, 0.f, std::max(length, 0.f));
+    hit.stillAt = std::min(hit.time + SpecialCineHit::kStillLag, std::max(length, 0.f));
+    hit.shot = move.empty() ? 0 : move.shotAt(hit.time);
+    const CutsceneVec3 feet = leadFeet(move, stage, length > 0.f ? hit.time / length : 0.f);
+    const float own = std::isfinite(stage.targetRadius) ? std::max(stage.targetRadius, 0.f) : 0.f;
+    hit.at = contactPoint(stage, feet, std::isfinite(radius) ? std::max(own, radius) : own);
+    return hit;
+}
+
 SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
                                            const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
                                            SpecialCineWorldTest world, void* user) {

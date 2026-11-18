@@ -1286,3 +1286,69 @@ TEST_CASE("special cine: a shot no fix clears is counted as still failing, its f
         if (!specialCineFixShot(m, i, st, ring, 8).ok) ++stillFailing;
     CHECK(stillFailing == 1);
 }
+
+TEST_CASE("special cine: the hit at any range: Core's impact time, the contact the framing tests, the shot and its still") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_special.json", text));
+    ArenaSpecialTable specials;
+    REQUIRE_MESSAGE(importArenaSpecials(text, specials, &error), error);
+    const ArenaSpecialRules* rules = specials.forLead("devin");
+    REQUIRE(rules != nullptr);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const SpecialCineMove& nearSet = t.nearMove(0);
+    const float strike = rules->strikeAt, reach = rules->waveSpeed * rules->maxTravel;
+    REQUIRE(near(far->release(), strike)); // the shots' release is Core's strike
+    // The run that showed no effect: a brute (0.45 m, 1.97 m tall) 6.59 m off, full travel; the hit lands in shot 6.
+    {
+        SpecialCineStage st = stageAt(0.f, 0.f, 6.59f, 0.f);
+        st.targetRadius = 0.45f;
+        st.targetHeight = 1.97f;
+        const float impact = arenaSpecialImpactAt(*rules, 6.59f);
+        CHECK(near(impact, strike + 6.59f / rules->waveSpeed));
+        const SpecialCineHit hit = specialCineHit(*far, st, impact, 0.45f);
+        CHECK(near(hit.time, impact));
+        CHECK(hit.shot == 5);
+        CHECK(far->shotAt(hit.stillAt) == 5);
+        CHECK(near(hit.at.x, 6.59f - 0.45f - SpecialCineFraming::kContactOut, 1e-3f));
+        CHECK(std::fabs(hit.at.y) < 0.05f); // toward the feet, which end a little to the side
+        CHECK(near(hit.at.z, std::min(0.6f * 1.8f, 0.6f * 1.97f)));
+    }
+    // Every 0.25 m from body contact to 30 m, both sets, a person and a big body: the time is the strike plus the
+    // wave's travel (capped), the point on the target's surface toward the lead (kContactOut out, chest height capped
+    // at the target's), in shot 6 while the wave is under 10 m and shot 7 past it; the still kStillLag after it.
+    const auto before = ftcore_test::allocStats().count;
+    int cases = 0;
+    for (const float radius : {0.35f, 0.45f, 1.2f}) {
+        const float height = radius > 1.f ? 3.5f : (radius < 0.4f ? 0.9f : 1.97f);
+        for (float d = radius + 1.f; d <= 30.f + 1e-3f; d += 0.25f) {
+            SpecialCineStage st = stageAt(0.f, 0.f, d, 0.f);
+            st.targetRadius = radius;
+            st.targetHeight = height;
+            const SpecialCineMove& m = d < far->nearWithin() ? nearSet : *far;
+            const float impact = arenaSpecialImpactAt(*rules, d);
+            const SpecialCineHit hit = specialCineHit(m, st, impact, radius);
+            ++cases;
+            CHECK(near(impact, strike + std::min(d, reach) / rules->waveSpeed, 1e-4f));
+            CHECK(near(hit.time, impact));
+            const CutsceneVec3 toLead = sub3(hit.at, st.target);
+            const float ground = std::sqrt(toLead.x * toLead.x + toLead.y * toLead.y);
+            CHECK(near(ground, std::min(radius + SpecialCineFraming::kContactOut, d), 1e-3f));
+            CHECK(toLead.x < 0.f); // on the lead's side
+            CHECK(hit.at.z <= 0.6f * height + 1e-4f);
+            CHECK(hit.shot == (impact < 7.35f ? 5u : 6u));
+            CHECK(near(hit.stillAt, impact + SpecialCineHit::kStillLag));
+            CHECK(m.shotAt(hit.stillAt) >= hit.shot);
+        }
+    }
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(cases > 300);
+    // NaN: the release; past the move: its end.
+    SpecialCineStage st = stageAt(0.f, 0.f, 6.f, 0.f);
+    CHECK(near(specialCineHit(*far, st, std::numeric_limits<float>::quiet_NaN()).time, far->release()));
+    CHECK(near(specialCineHit(*far, st, 99.f).time, far->length()));
+}

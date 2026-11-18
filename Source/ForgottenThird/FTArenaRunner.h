@@ -708,6 +708,9 @@ private:
 	// -ArenaSpecialPause's ticker removed and the game resumed, when it is still waiting (an end or a teardown).
 	void StopSpecialPauseTest();
 	void TickSpecial(float DeltaSeconds);
+	// The hit's effect at the contact the framing tests, once, when the shots' clock reaches Core's impact (any range);
+	// on a component of the performer's figure, which the freeze does not hold.
+	void PlaySpecialHit();
 	void EndSpecial(const TCHAR* Why);
 	void ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::Vec2& Forward, const ftcore::CutsceneVec3& EndFeet);
 	ftcore::SpecialCineStage SpecialStage() const;
@@ -1679,6 +1682,12 @@ private:
 	ftcore::SpecialCineStage SpecialStageAt;
 	int32 SpecialTarget = -1;
 	bool bSpecialOn = false;
+	// The hit (specialCineHit at the begin): when and where its effect plays, played once a move; its effect off with
+	// -ArenaSpecialNoHitFx (tests only).
+	ftcore::SpecialCineHit SpecialHit;
+	bool bSpecialHitPlayed = false;
+	bool bSpecialHitFx = true;
+	TWeakObjectPtr<class UFTVfxComponent> SpecialHitFx;
 	// The clamp: how far back the lead starts (m, along -forward), the share of the travel kept (0..1), the end feet in
 	// the world (m), and what limited it.
 	float SpecialBack = 0.f;

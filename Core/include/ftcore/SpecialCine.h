@@ -391,6 +391,22 @@ FTCORE_API CutsceneVec3 specialCinePoint(const SpecialCineStage& stage, SpecialC
 FTCORE_API SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
                                                const SpecialCineShotFix* fixes = nullptr);
 
+// The special's hit as the shots show it (the host's hit effect and its still), for any range: `time` is Core's impact
+// on the move's clock (ArenaSpecialView::impactTime: the strike plus min(distance / waveSpeed, maxTravel)), clamped to
+// the move (NaN: the release); `at` the contact the framing tests then (on the target's surface toward the lead's feet
+// where its travel puts them at `time`, kContactOut out, at the lead's chest height but no higher than the target's
+// chest; `radius` the target body's when wider than the stage's); `shot` the shot playing at `time`, and `stillAt` the
+// still that shows it (kStillLag later, inside the move). No allocation.
+struct SpecialCineHit {
+    static constexpr float kStillLag = 0.03f; // s: the hit's still, after the effect has spawned
+    CutsceneVec3 at;
+    float time = 0.f;
+    float stillAt = 0.f;
+    std::uint32_t shot = 0;
+};
+FTCORE_API SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime,
+                                         float radius = 0.f);
+
 class SpecialCinePlayer {
 public:
     // Starts `move` at 0. Null or empty: stays idle. A begin while playing starts again.
