@@ -396,6 +396,8 @@ public:
 
     // The watchdog's running time for slot i (s): how long it has been stuck in its water phase.
     float stuckFor(int i) const { return i >= 0 && i < kWaterFollowMax ? slots_[i].watch : 0.f; }
+    // Walks to an entry given up this swim (the second places it with the lead).
+    int entryFailsFor(int i) const { return i >= 0 && i < kWaterFollowMax ? slots_[i].entryFails : 0; }
 
 private:
     struct Slot {

@@ -723,6 +723,18 @@ TEST_CASE("water follow: a walk to an entry not over in 15 s is given up, and pi
     f.lead.swimming = true;
     REQUIRE(f.until(0, WaterFollowPhase::ToEntry, 2.f) >= 0.f);
     CHECK(f.until(0, WaterFollowPhase::Ashore, 20.f) == doctest::Approx(15.f).epsilon(0.02));
+    // A walk given up because the lead was lost (moved past the teleport distance in one step) is no failed entry.
+    Scene g;
+    g.step(30);
+    REQUIRE(g.o(0).phase == WaterFollowPhase::ToEntry);
+    g.lead.position.x += 20.f;
+    g.step();
+    CHECK(g.o(0).phase == WaterFollowPhase::Ashore);
+    CHECK(g.party.entryFailsFor(0) == 0);
+    REQUIRE(g.until(0, WaterFollowPhase::ToEntry, 2.f) >= 0.f);
+    // Its next walk given up is the first failure: ashore again, not placed.
+    CHECK(g.until(0, WaterFollowPhase::Ashore, 20.f) == doctest::Approx(15.f).epsilon(0.02));
+    CHECK(g.party.entryFailsFor(0) == 1);
 }
 
 TEST_CASE("water follow: with no water found toward the lead, a follower stays ashore") {
