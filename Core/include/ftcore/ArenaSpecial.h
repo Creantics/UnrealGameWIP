@@ -28,10 +28,13 @@
 //   * Frozen: the fight's time does not run, so nothing in it moves or counts down: no enemy, player, partner, brain, token,
 //     cooldown, hit pause or status timer. The host holds its own (projectiles, hazards, weather) while
 //     ArenaFight::frozen() is true, and poses the performer from the cinematic. The performer is out of reach.
-//   * At `impactAt` the results are ruled: the target is always hit for `damage`; every other living enemy whose body
+//   * At the impact the results are ruled. The staff strikes at `strikeAt`; its wave reaches the target
+//     min(distance / `waveSpeed`, `maxTravel`) later (arenaSpecialImpactAt), the distance from the performer's spot at
+//     the strike (origin to end, linear in time) to the target's centre, fixed at the press (nothing moves while
+//     frozen; ArenaSpecialView::impactAt). Then: the target is always hit for `damage`; every other living enemy whose body
 //     reaches into the lane (`laneLength` x `laneWidth` from the performer toward the target) for damage x `otherShare`.
 //     A boss loses `bossPhaseShare` of its current break phase's hp span instead, never a kill from full hp. The
-//     results are reported then (ArenaSpecialView::results, the Impact cue) and land at the cut back: hp, then a stagger
+//     results are reported then (ArenaSpecialView::results and ::impactDone; no cue marks it) and land at the cut back: hp, then a stagger
 //     and `knockBack` metres away from the performer over `knockTime` for every enemy that is not a boss. Weak points
 //     and the host's blow hook play no part: the hit is guaranteed.
 //   * The performance travels: the performer ends `endTravel` metres along the strike's way and `endSide` to its right
@@ -78,8 +81,10 @@ struct ArenaSpecialRules {
     std::array<char, kMaxArenaSpecialId + 1> id{};
     std::array<char, kMaxArenaSpecialId + 1> lead{}; // whose move it is: the id the host gives setSpecials (a lead's,
                                                      // or a party member's current identity id)
-    float duration = 8.f;       // s, press to cut back
-    float impactAt = 5.6f;      // s: the results are ruled
+    float duration = 8.5f;      // s, press to cut back
+    float strikeAt = 7.1f;      // s: the staff strikes; the wave leaves the performer
+    float waveSpeed = 40.f;     // m/s: the wave's speed to the target (the impact: arenaSpecialImpactAt)
+    float maxTravel = 0.5f;     // s: the longest the wave travels, whatever the range
     float range = 30.f;         // m: the farthest target it may start on (body centre)
     float laneLength = 14.f;    // m, from the performer toward the target
     float laneWidth = 4.f;      // m, whole
@@ -120,16 +125,21 @@ struct ArenaSpecialTable {
     FTCORE_API const ArenaSpecialRules* forLead(std::string_view leadId) const; // its move, or nullptr
 };
 
-// Whether the move's numbers are in range (the loader's rules): duration 0.5..30, impactAt in (0, duration], range
+// Whether the move's numbers are in range (the loader's rules): duration 0.5..30, strikeAt in (0, duration], waveSpeed
+// 1..1000, maxTravel 0..5, strikeAt + maxTravel + knockTime <= duration (the latest impact's shove inside the move), range
 // 1..200, lane 0.5..100 by 0.5..50, damage 1..100000, otherShare and bossPhaseShare 0..1, knockBack 0..20, knockTime
 // 0.05..5, endTravel 0..20, endSide -5..5, cues in rising time inside [0, duration] with names of 1..31 letters, digits, _ and -.
 FTCORE_API bool validArenaSpecialRules(const ArenaSpecialRules& r);
 FTCORE_API bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g);
 
+// When the move's results are ruled, in s since the press, for a target `distance` m from the performer's spot at the
+// strike: strikeAt + min(distance / waveSpeed, maxTravel). A negative or NaN distance counts as 0.
+FTCORE_API float arenaSpecialImpactAt(const ArenaSpecialRules& r, float distance);
+
 // Reads Data/Battle/arena_special.json:
 //   { "version": 1,
 //     "gauge": { "full": 1000, "perDamageDealt": 1, "perParry": 25, "perBlock": 8, "perDamageTaken": 1.5 },
-//     "moves": [ { "id": "...", "lead": "...", "duration": 8, "impactAt": 5.6, ..., "cues": [ { "at": 0, "cue": "..." } ] } ] }
+//     "moves": [ { "id": "...", "lead": "...", "duration": 8.5, "strikeAt": 7.1, "waveSpeed": 40, "maxTravel": 0.5, ..., "cues": [ { "at": 0, "cue": "..." } ] } ] }
 // Every move key is optional but id and lead (ArenaSpecialRules' defaults); ids unique, one move per lead. An unknown
 // key is a warning; anything else wrong is an error with its path, and `out` is left empty.
 FTCORE_API bool importArenaSpecials(std::string_view json, ArenaSpecialTable& out, std::string* error = nullptr,
@@ -195,6 +205,7 @@ struct ArenaSpecialView {
     float travel = 0.f;                       // m along `dir` from origin to end: the share of endTravel allowed
     float time = 0.f;                         // s since the press
     float duration = 0.f;
+    float impactAt = 0.f;                     // s since the press when the results are ruled (arenaSpecialImpactAt)
     bool impactDone = false;
     bool skippable = false;                   // a skip input would cut to the end now
     std::uint32_t uses = 0;                   // specials begun since begin() (both leads)
