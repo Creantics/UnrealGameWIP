@@ -5120,7 +5120,10 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 					bBoomExercised ? TEXT("within 50 cm") : TEXT("never within 50 cm"), SwimProofClipTicks, SwimProofBoomPulled, SwimProofBoomHidden, SwimProofSweepTicks,
 					SwimProofBoomNear, SwimProofBoomNearHidden, SwimProofClipShotCount,
 					!bBoomMeasured ? TEXT("NO MEASURE") : !bSwimProofBoomLine ? TEXT("NO MEASURE (slot 0 not on the boom line)") : bSwimProofBoomLost ? TEXT("NO PASS (slot 0's hold lost)")
-					: SwimProofClipShotCount > 0 ? TEXT("NO PASS: CLIP (check the stills)") : !bBoomGuarded ? TEXT("NO PASS (neither pulled in nor hidden)") : TEXT("PASS"));
+					: SwimProofClipShotCount > 0 ? TEXT("NO PASS: CLIP (check the stills)") : !bBoomGuarded ? TEXT("NO PASS (neither pulled in nor hidden)")
+					: SwimProofBoomHidden > 0 && SwimProofBoomPulled > 0 ? TEXT("PASS on the hide (slot 0 hidden; the pull-ins are not shown to be slot 0's)")
+					: SwimProofBoomHidden > 0 ? TEXT("PASS on the hide (slot 0 hidden)")
+					: TEXT("PASS on the pull-in only (not shown to be slot 0's: rv_boom pulled in with nothing on the line)"));
 			}
 			FString ClipList;
 			for (int32 I = 0; I < SwimProofClipShotCount; ++I)
@@ -5385,7 +5388,15 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 				FCollisionQueryParams Query(SCENE_QUERY_STAT(SwimProofBed), false, this);
 				Query.AddIgnoredActor(Partner);
 				FHitResult Bed;
-				if (GetWorld()->LineTraceSingleByChannel(Bed, FVector(At.X, At.Y, Top), FVector(At.X, At.Y, At.Z - 1000.0), ECC_Visibility, Query))
+				const bool bBedHit = GetWorld()->LineTraceSingleByChannel(Bed, FVector(At.X, At.Y, Top), FVector(At.X, At.Y, At.Z - 1000.0), ECC_Visibility, Query);
+				if (SwimProofSwitchBedTicks[I]++ == 0)
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: +%.2f s slot %d's bed trace from %.0f cm: %s."), Since, I, Top,
+						bBedHit ? *FString::Printf(TEXT("ground at %.0f cm (%s), feet at %.0f cm"), Bed.ImpactPoint.Z, Bed.GetActor() ? *Bed.GetActor()->GetName() : TEXT("?"), At.Z)
+								: TEXT("NO BED FOUND (an under-the-bed count of 0 means nothing here)"));
+				}
+				SwimProofSwitchBedHit[I] += bBedHit ? 1 : 0;
+				if (bBedHit)
 				{
 					const float Under = static_cast<float>(Bed.ImpactPoint.Z - At.Z);
 					if (Under > 10.f)
@@ -5416,27 +5427,36 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 				SwimProofSwitchStuckWorst[I] = FMath::Max(SwimProofSwitchStuckWorst[I], SwimProofSwitchOff[I]);
 			}
 		}
+		// Ends on resolution: both at their slots from 10.5 s (the 20th still after the switch is taken by then), or a
+		// stretch off a slot past 25 s (the watchdog's 20 s and its placement have had their time), or 45 s (a stretch that
+		// starts after 10.5 s still gets one full watchdog cycle).
 		const bool bBothAtSlots = SwimProofSwitchSettled[0] >= 0.f && SwimProofSwitchSettled[1] >= 0.f && SwimProofSwitchOff[0] <= 0.f && SwimProofSwitchOff[1] <= 0.f;
-		if (Since < 10.f || (!bBothAtSlots && Since < 30.f))
+		const bool bStretchOver = SwimProofSwitchStuckWorst[0] > 25.f || SwimProofSwitchStuckWorst[1] > 25.f;
+		if (Since < 10.5f || (!bBothAtSlots && !bStretchOver && Since < 45.f))
 		{
 			return;
 		}
-		// The verdict (ruled 11-18): the new lead answers within 1 s; no partner under the bed in any frame; none stuck (off
-		// its surface slot) more than 20 s, a watchdog placement allowed and logged.
+		// The verdict (ruled 11-18): the new lead answers within 1 s; no partner under the bed in any frame; none stuck more
+		// than 20 s on the water plan's own clock (its watchdog places it at 20 s: a placement is allowed and logged), and
+		// both at their surface slots at the end. The longest stretch off the slot is logged, not judged.
+		constexpr float KStuckLine = 20.25f; // the watchdog's 20 s and the step that places it
 		const bool bControlOk = SwimProofSwitchControl >= 0.f && SwimProofSwitchControl <= 1.f;
 		bool bPartnersOk = true;
 		for (int32 I = 0; I < Partners; ++I)
 		{
-			const bool bOk = SwimProofSwitchSeen[I] >= 0.f && SwimProofSwitchUnder[I] == 0 && SwimProofSwitchSettled[I] >= 0.f && SwimProofSwitchStuckWorst[I] <= 20.f;
+			const bool bAtEnd = SwimProofSwitchSettled[I] >= 0.f && SwimProofSwitchOff[I] <= 0.f;
+			const bool bOk = SwimProofSwitchSeen[I] >= 0.f && SwimProofSwitchUnder[I] == 0 && SwimProofSwitchWatchWorst[I] <= KStuckLine && bAtEnd;
 			bPartnersOk = bPartnersOk && bOk;
-			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: slot %d %s: seen at +%.2f s, first at its surface slot at +%.2f s, longest off it %.1f s, the watchdog's longest %.1f s, placements %d, frames under the bed %d (deepest %.1f cm): %s."),
-				I, SwimProofSwitchName[I].IsEmpty() ? TEXT("(none)") : *SwimProofSwitchName[I], SwimProofSwitchSeen[I], SwimProofSwitchSettled[I], SwimProofSwitchStuckWorst[I],
-				SwimProofSwitchWatchWorst[I], SwimProofSwitchPlaced[I], SwimProofSwitchUnder[I], SwimProofSwitchUnderWorst[I], bOk ? TEXT("OK") : TEXT("FAIL"));
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: slot %d %s: seen at +%.2f s, first at its surface slot at +%.2f s, at it at the end %d, longest off it %.1f s, the watchdog's longest %.1f s, placements %d, frames under the bed %d (deepest %.1f cm; the bed found in %d of %d frames): %s."),
+				I, SwimProofSwitchName[I].IsEmpty() ? TEXT("(none)") : *SwimProofSwitchName[I], SwimProofSwitchSeen[I], SwimProofSwitchSettled[I], bAtEnd ? 1 : 0, SwimProofSwitchStuckWorst[I],
+				SwimProofSwitchWatchWorst[I], SwimProofSwitchPlaced[I], SwimProofSwitchUnder[I], SwimProofSwitchUnderWorst[I], SwimProofSwitchBedHit[I], SwimProofSwitchBedTicks[I],
+				bOk ? TEXT("OK") : TEXT("FAIL"));
 		}
 		const bool bPass = bControlOk && bPartnersOk;
-		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch (no flag): the new lead answers the stick at +%.2f s %s; partners %s; lead dry frames %d, feet worst %.1f cm off; stills %03d-%03d every 0.5 s; judged %.1f s: %s."),
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch (no flag): the new lead answers the stick at +%.2f s %s; partners %s; lead dry frames %d, feet worst %.1f cm off; stills %03d-%03d every 0.5 s; judged %.1f s (%s): %s."),
 			SwimProofSwitchControl, bControlOk ? TEXT("OK") : TEXT("FAIL"), bPartnersOk ? TEXT("OK") : TEXT("FAIL"), SwimProofSwitchLeadDry, SwimProofSwitchLeadWorst,
-			SwimProofSwitchShot0, SwimProofSwitchShot0 + 19, Since, bPass ? TEXT("PASS") : TEXT("FAIL"));
+			SwimProofSwitchShot0, SwimProofShotCount - 1, Since, bBothAtSlots ? TEXT("both at their slots") : bStretchOver ? TEXT("a stretch off a slot over 25 s") : TEXT("the 45 s cap"),
+			bPass ? TEXT("PASS") : TEXT("FAIL"));
 		Finish(bPass ? 0 : 2);
 		return;
 	}

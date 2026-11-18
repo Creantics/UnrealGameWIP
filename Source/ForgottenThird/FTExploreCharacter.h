@@ -713,9 +713,10 @@ private:
 	int32 SwimProofSwitchFell[2] = {0, 0};
 	// The switch without -SwimSwitchKeep (the 11-18 rerun): from the switch frame the stick pushes the new lead 5 m on out
 	// (LeadGo, the stick's own AddMovementInput path); when it first answers (20 cm along the push). Per partner: frames
-	// its feet were more than 10 cm under the topmost ground below it (the bed) and the deepest, when it was first at its
-	// surface slot, the longest stretch off it (not at the surface within 3 m of its slot: stuck), the water plan's
-	// watchdog time and its placements. Judged for 10 s at least, until both partners are at their slots (30 s at most).
+	// its feet were more than 10 cm under the topmost ground below it (the bed) and the deepest, the frames the trace found
+	// a bed at all, when it was first at its surface slot, the longest stretch off it (not at the surface within 3 m of
+	// its slot; logged), the water plan's watchdog time (stuck is judged on that clock) and its placements. Judged from
+	// 10.5 s until both partners are at their slots; ended early by a stretch off the slot over 25 s; 45 s at most.
 	FVector SwimProofSwitchFrom = FVector::ZeroVector;
 	FVector SwimProofSwitchWay = FVector::ZeroVector;
 	float SwimProofSwitchControl = -1.f;
@@ -728,6 +729,8 @@ private:
 	float SwimProofSwitchWatchWorst[2] = {0.f, 0.f};
 	int32 SwimProofSwitchPlaced[2] = {0, 0};
 	int32 SwimProofSwitchPhase[2] = {-2, -2};
+	int32 SwimProofSwitchBedHit[2] = {0, 0};
+	int32 SwimProofSwitchBedTicks[2] = {0, 0};
 	bool bSwimProofStartFrame1 = false;
 	// -SwimProof=cost (item 4 of 11-18, a measurement only): one fixed camera, the party idle on land, then the same party
 	// treading in the sea; each window's frame, game-thread, render-thread and GPU ms.
