@@ -1024,12 +1024,11 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		}
 		if (ProofLogLeft <= 0.f)
 		{
-			// Steady (ruled 11-18): within 3 cm of the final value from the first frame. The bob (+-4 cm) is part of the
-			// swim's own target, so both are told: the spread against the final frame, and the most off the target.
+			// Steady (ruled 11-18, second ruling): within 3 cm of the swim's steady target, bob included, from the first
+			// frame. The raw feet (final, low, high, spread against the final) are logged beside it.
 			const double OffFinal = FMath::Max(At.Z - ProofZMin, ProofZMax - At.Z);
 			const TCHAR* Verdict = !bProofWant ? TEXT("NO SURFACE FRAMES (no target)")
-				: ProofWantOff > 3.0 ? TEXT("NOT STEADY")
-				: OffFinal <= 3.0 ? TEXT("STEADY (final and target)") : TEXT("STEADY on the target (the bob moves the final)");
+				: ProofWantOff > 3.0 ? TEXT("NOT STEADY") : TEXT("STEADY (within 3 cm of the target)");
 			UE_LOG(LogForgottenThird, Display,
 				TEXT("SwimProof %s: %s feet over 2 s after the rejoin (%d frames): final %.1f cm, low %.1f, high %.1f, most off the final %.1f cm, most off the swim's target %.1f cm: %s."),
 				*ProofKind, *LogName, ProofFrames, At.Z, ProofZMin, ProofZMax, OffFinal, ProofWantOff, Verdict);

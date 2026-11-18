@@ -4694,14 +4694,12 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: camera sweep starts at %.1f s."), *SwimProofKind, SwimProofTime);
 			if (bBoomRun && Camera)
 			{
-				// Item 5 forced: slot 0 1 m behind the camera (the ruling's place); slot 1 where the camera will be 40 deg into
-				// the sweep (the yaw turns +, and the boom turns with it about its root), so the camera runs into it.
+				// Item 5 forced (ruled 11-18): slot 0 on the sweep circle 90 deg ahead of the camera (the yaw turns +, and the
+				// boom turns with it about its root), so the camera passes through its body; slot 1 at 270 deg, a second pass.
 				const FVector Eye = Camera->GetComponentLocation();
-				const FVector Back = -Camera->GetForwardVector().GetSafeNormal2D();
 				const FVector Pivot = Boom ? Boom->GetComponentLocation() : GetActorLocation();
-				const FVector Ahead = Pivot + FRotator(0.0, 40.0, 0.0).RotateVector(Eye - Pivot);
-				const FVector Spots[2] = {Eye + Back * 100.0, Ahead};
-				const TCHAR* Names[2] = {TEXT("1 m behind the camera"), TEXT("on the camera's path 40 deg into the sweep")};
+				const FVector Spots[2] = {Pivot + FRotator(0.0, 90.0, 0.0).RotateVector(Eye - Pivot), Pivot + FRotator(0.0, 270.0, 0.0).RotateVector(Eye - Pivot)};
+				const TCHAR* Names[2] = {TEXT("on the sweep circle 90 deg ahead"), TEXT("on the sweep circle 270 deg ahead")};
 				for (int32 I = 0; I < 2 && I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
 				{
 					AFTPartyFollower* Partner = WaterFollowers[I].Get();

@@ -624,8 +624,8 @@ private:
 	int32 SwimProofPlaceCount = 0;
 	bool bSwimProofLeadSwims = false;  // the placed lead was seen swimming
 	bool bSwimProofSpotFallback = false; // no water spot passed the check; the watchdog took one blocked on the way in
-	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts, and slot 0 is put 1 m
-	// behind the camera (the ruling's place), slot 1 on the boom 1 m in front of it (toward the lead); both tread there
+	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts, and slot 0 is put on the
+	// sweep circle 90 deg ahead of the camera, slot 1 at 270 deg; both tread there
 	// for the sweep. The run ends after the sweep; exit 0 when a partner was held and the sweep measured.
 	float SwimProofHoldAt = -1.f;      // SwimProofTime the lead reached the far point
 	int32 SwimProofBoomHeld = 0;       // partners held for the sweep
