@@ -158,5 +158,9 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 		Npcs->ResetMemory();
 		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory not loaded from the save: %s"), *NpcError);
 	}
+	else if (Npcs)
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("NPC memory loaded from the save: %d chars."), NpcSaveJson.Len());
+	}
 	return true;
 }

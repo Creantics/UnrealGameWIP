@@ -381,7 +381,8 @@ bool UFTStorySubsystem::Autosave()
 	// While the NPC tables aren't loaded, CaptureFrom keeps the object's NPC block, and a fresh object has none: copy
 	// the slot's in first, so this autosave doesn't write an empty block over the remembered NPCs.
 	const UFTNpcSubsystem* Npcs = GetGameInstance()->GetSubsystem<UFTNpcSubsystem>();
-	if ((!Npcs || !Npcs->IsReady()) && UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
+	const bool bNpcReady = Npcs && Npcs->IsReady();
+	if (!bNpcReady && UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
 	{
 		if (const UFTStorySaveGame* Old = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0)))
 		{
@@ -397,7 +398,8 @@ bool UFTStorySubsystem::Autosave()
 		UE_LOG(LogFTStory, Warning, TEXT("Save: writing the slot failed."));
 		return false;
 	}
-	UE_LOG(LogFTStory, Log, TEXT("Save: slot written at scene %s."), *GetSceneId());
+	UE_LOG(LogFTStory, Log, TEXT("Save: slot written at scene %s; NPC block %d chars (%s)."), *GetSceneId(), Slot->NpcSaveJson.Len(),
+		bNpcReady ? TEXT("captured") : TEXT("kept from the slot: the NPC tables aren't loaded"));
 	return true;
 }
 

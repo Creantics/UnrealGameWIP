@@ -60,7 +60,17 @@ void UFTNpcSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 	World = MakeUnique<ftcore::NpcMemoryWorld>();
 	FString Error;
-	if (!Load(Error))
+	bool bHeld = false;
+#if !UE_BUILD_SHIPPING
+	// Test runs: the tables stay unloaded, as with a missing data file, so a save run can show that an autosave made
+	// meanwhile keeps the slot's NPC block.
+	bHeld = FParse::Param(FCommandLine::Get(), TEXT("NpcTablesHeld"));
+#endif
+	if (bHeld)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory off: -NpcTablesHeld (the tables stay unloaded)."));
+	}
+	else if (!Load(Error))
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory off: %s"), *Error);
 	}
