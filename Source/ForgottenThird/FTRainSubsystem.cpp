@@ -1,6 +1,7 @@
 #include "FTRainSubsystem.h"
 
 #include "FTVfxComponent.h"
+#include "FTWaterSubsystem.h"
 #include "ForgottenThird.h"
 
 #include "Camera/PlayerCameraManager.h"
@@ -184,9 +185,18 @@ void UFTRainSubsystem::Tick(float DeltaTime)
 	bTopSet = true;
 	Streaks->SetWorldLocation(FVector(Eye.X, Eye.Y, TopZ));
 
+	// Under water neither shows (ftcore::rainShown); visibility is written only when it changes.
+	const UFTWaterSubsystem* WaterSys = World->GetSubsystem<UFTWaterSubsystem>();
+	const ftcore::RainShown Shown = ftcore::rainShown(Fall, EyeZM, bHasFloor, FloorZ * 0.01f, WaterSys && WaterSys->IsCameraUnder());
+	if (Shown.streaks != bStreaksShown)
+	{
+		Streaks->SetVisibility(Shown.streaks);
+		bStreaksShown = Shown.streaks;
+	}
+
 	if (Splash)
 	{
-		const bool bShow = ftcore::rainSplashOn(Fall, EyeZM, bHasFloor, FloorZ * 0.01f);
+		const bool bShow = Shown.splash;
 		if (bShow != bSplashShown)
 		{
 			Splash->SetVisibility(bShow);

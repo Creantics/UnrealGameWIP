@@ -34,4 +34,9 @@ bool rainSplashOn(const RainFallSpec& spec, float camZ, bool hasFloor, float flo
     return over >= -spec.splashBelowM && over <= spec.splashMaxDropM;
 }
 
+RainShown rainShown(const RainFallSpec& spec, float camZ, bool hasFloor, float floorZ, bool cameraUnder) {
+    if (cameraUnder) return {};
+    return {true, rainSplashOn(spec, camZ, hasFloor, floorZ)};
+}
+
 }  // namespace ftcore

@@ -102,6 +102,26 @@ TEST_CASE("rain fall: splashes show only near a found floor") {
     CHECK_FALSE(rainSplashOn(spec, std::numeric_limits<float>::quiet_NaN(), true, 0.f));
 }
 
+TEST_CASE("rain fall: nothing shows while the camera is under water") {
+    const RainFallSpec spec;
+    // Above the surface: streaks always, splashes as rainSplashOn says.
+    const RainShown dry = rainShown(spec, 1.7f, true, 0.f, false);
+    CHECK(dry.streaks);
+    CHECK(dry.splash);
+    const RainShown high = rainShown(spec, spec.splashMaxDropM + 1.f, true, 0.f, false);
+    CHECK(high.streaks);
+    CHECK_FALSE(high.splash);
+    CHECK(rainShown(spec, 1.7f, false, 0.f, false).streaks);
+    // Under: neither, wherever the floor is (a bed found or not, the camera near it or not).
+    for (const bool hasFloor : {true, false}) {
+        for (const float camZ : {-0.4f, -1.5f, 1.7f}) {
+            const RainShown under = rainShown(spec, camZ, hasFloor, 0.f, true);
+            CHECK_FALSE(under.streaks);
+            CHECK_FALSE(under.splash);
+        }
+    }
+}
+
 TEST_CASE("rain fall: the json effects use the same knob names and full rates") {
     const RainFallSpec spec;
     VfxEffect rain;

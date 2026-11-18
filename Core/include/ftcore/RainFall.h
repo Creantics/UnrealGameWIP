@@ -49,4 +49,13 @@ FTCORE_API float rainColumnTop(const RainFallSpec& spec, float camZ, bool hasFlo
 // Whether the splashes show: a floor was found, the camera at most splashMaxDropM above it and splashBelowM below it.
 FTCORE_API bool rainSplashOn(const RainFallSpec& spec, float camZ, bool hasFloor, float floorZ);
 
+// What shows this frame. With the camera under water, nothing: the streaks and splashes are drawn in world space and
+// would otherwise fall through the surface into the underwater view. Above it, the streaks, and the splashes per
+// rainSplashOn.
+struct RainShown {
+    bool streaks = false;
+    bool splash = false;
+};
+FTCORE_API RainShown rainShown(const RainFallSpec& spec, float camZ, bool hasFloor, float floorZ, bool cameraUnder);
+
 }  // namespace ftcore

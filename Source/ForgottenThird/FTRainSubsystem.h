@@ -8,6 +8,8 @@
 //   space, so the streaks move with it). Its top sits ftcore::RainFallSpec::aboveCamM over the camera, capped at columnM
 //   over the floor found by a 30 m trace straight down (ECC_Visibility).
 // - NS_rain_splash: ripple rings and small drops on that floor, out to 13 m, shown while the camera is near it.
+// While UFTWaterSubsystem::IsCameraUnder() neither shows (ftcore::rainShown); SetVisibility is called only on a change.
+// The water subsystem may tick after this one, so the hide can trail the dive by one frame.
 // The intensity is a ftcore::RainState: settled at -Rain at the start, then ramped (ftcore::rainStep) toward
 // r.FT.Rain when that is 0..1 (default -1: the switch). Rates and the streak opacity come from ftcore::rainFallFrame and
 // are written only when the intensity moves.
@@ -62,6 +64,7 @@ private:
 	bool bSystemsOn = false; // activated by WriteParameters (spawned inactive)
 	bool bHasFloor = false;
 	bool bSplashShown = true;
+	bool bStreaksShown = true;
 	bool bTopSet = false;
 	float FloorZ = 0.f;     // cm
 	float TopZ = 0.f;       // cm, smoothed
