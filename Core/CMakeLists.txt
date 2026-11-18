@@ -274,6 +274,16 @@ else()
     target_compile_options(ftcore_pocketcheck PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_floatcheck: the float check, fix pass and span-rule rerun on a box table and its height field (offline).
+add_executable(ftcore_floatcheck tools/ftcore_floatcheck.cpp)
+target_link_libraries(ftcore_floatcheck PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_floatcheck PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_floatcheck PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_floatcheck PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 # ftcore_standincheck: the stand-ins' corridor rule on the point and street tables (an offline build guard).
 add_executable(ftcore_standincheck tools/ftcore_standincheck.cpp)
 target_link_libraries(ftcore_standincheck PRIVATE ftcore ftcore_warnings)

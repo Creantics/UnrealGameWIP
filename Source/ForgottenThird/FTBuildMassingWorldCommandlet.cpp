@@ -2968,6 +2968,22 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		Replaced[I] = Replaced[I] || LotBuild.Replaced[I];
 	}
+	// Playtest item 3's fix pass (-FloatFix, FTBuildPlinths.h): the floats' bases and piers fixed in Boxes before anything
+	// is laid; its added boxes are laid with the plinths below. A kit mesh's box keeps its shape (a box under it instead).
+	FTPlinths::FFloatFix FloatFix;
+	{
+		std::vector<bool> KitFitted(Boxes.size(), false);
+		for (const FKitRow& Row : KitRows)
+		{
+			KitFitted[static_cast<size_t>(Row.BoxAt)] = true;
+		}
+		const ftcore::MassingGround FixGround{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX), static_cast<size_t>(Field.SamplesY),
+			Field.Spacing, Field.OriginX, Field.OriginY};
+		if (!bHeroOnly && !FTPlinths::FixFloats(FixGround, Boxes, Nudges, Visible, KitFitted, FloatFix))
+		{
+			return 1;
+		}
+	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
 	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its cell
@@ -4328,17 +4344,44 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// -HeroCornerOnly: no plinths (the strip's run lays them round its hidden bays).
 	std::vector<ftcore::MassingBox> Plinths;
 	// Playtest item 3: -FloatCheck lists the floating boxes (report only, before any plinth).
-	if (!bHeroOnly && !FTPlinths::ReportFloats(Ground, Built, Visible))
+	if (!bHeroOnly && !FTPlinths::ReportFloats(Ground, Built, Visible, &FloatFix))
 	{
 		return 1;
 	}
-	if (!bHeroOnly && !FTPlinths::Plan(Ground, Built, Visible, Entry[0], Entry[1], Plinths))
+	// -FloatFix's added boxes: skirts, podium tops, under-boxes and end posts in the surface of the box each wears, the
+	// podiums' terrace stone under them; walked on, and fed to the plinths and the check after.
+	std::vector<ftcore::MassingBox> FixBuilt = Built;
+	std::vector<bool> FixVisible = Visible;
+	for (size_t A = 0; A < FloatFix.Plan.added.size(); ++A)
+	{
+		ftcore::MassingBox Added = FloatFix.Plan.added[A];
+		const size_t Wears = FloatFix.Plan.wears[A];
+		if (Wears == ftcore::kFoundationTerrace || Wears >= Boxes.size())
+		{
+			Added.kind = "terrace";
+			LayCube(Added, EFTCellKind::Walk, EFTCellCull::None);
+		}
+		else
+		{
+			LayCubeWearing(Added, bSurfaces ? WearLook(LookSet, Boxes[Wears]) : Finish[static_cast<int32>(ftcore::massingFinish(Boxes[Wears]))],
+				EFTCellKind::Walk, EFTCellCull::None);
+		}
+		FixBuilt.push_back(Added);
+		FixVisible.push_back(true);
+	}
+	if (!bHeroOnly && !FTPlinths::Plan(Ground, FixBuilt, FixVisible, Entry[0], Entry[1], Plinths))
 	{
 		return 1;
 	}
 	for (const ftcore::MassingBox& Plinth : Plinths)
 	{
 		LayCube(Plinth, EFTCellKind::Walk, EFTCellCull::None);
+		FixBuilt.push_back(Plinth);
+		FixVisible.push_back(true);
+	}
+	if (!bHeroOnly && !FTPlinths::ReportFixed(Ground, FixBuilt, FixVisible, FloatFix))
+	{
+		return 1;
 	}
 
 	double EntryYaw = 0.0;

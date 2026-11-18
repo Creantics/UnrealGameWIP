@@ -42,6 +42,7 @@
 #include "ftcore/MassingPlan.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -155,6 +156,24 @@ FTCORE_API bool planPlinths(const MassingGround& ground, const std::vector<Massi
 // piers, boats). A box's gap is its largest over the points neither held up nor out of play. Boxes no taller than
 // kMassingMinHeight (flat paint, pads) aren't checked. The check reads the box (its z0), not a kit mesh laid in its place.
 // The build fails on a float over failAny, or a building's over failBuilding (the 2026-11-17 ruling).
+//
+// With spanRule (the 2026-11-17 20:04 ruling) a box of a spanKinds kind need not be held at every point. Its supporters are
+// the boxes that hold at least one of its points; the points left hanging (gap over visible, neither held nor out of play)
+// pass when they lie inside the plan hull of the supporters' footprint corners and no more than maxSpan / 2 from the
+// nearest supporter's footprint (a span of up to maxSpan between two held points), or outside that hull by no more than
+// maxEave (an eave past the outermost held point). A box all of whose hanging points pass is spanned (FloatReport::
+// spanned), not floating. Only sound boxes hold up others: the `sound` mask when given, and with chainCheck, no box that
+// itself floats (the check reruns until no supporter drops out, so no chain of floating pieces holds anything).
+// A kind's own eave in place of FloatSpec::maxEave (the 2026-11-18 ruling: a viaduct deck's wing is a cantilever off a
+// continuous deck, so decks reach 3.5 m past their outermost held point; every other kind keeps maxEave).
+// maxDepth caps the box's height (z1 - z0) the own eave applies to: a stepped viaduct segment rises at most ~9.3 m, so
+// a piece of that kind deeper than this (one segment rising 35 m) is judged at maxEave like any other kind.
+struct KindEave {
+    std::string kind;
+    double eave = 0.0;      // m
+    double maxDepth = 1e9;  // m
+};
+
 struct FloatSpec {
     double sample = 1.0;        // m between the points read
     double sink = 0.3;          // m: a base this far under the ground everywhere is sound
@@ -165,14 +184,26 @@ struct FloatSpec {
     double failAny = 0.9;       // m: a float over this fails the build
     double failBuilding = 0.3;  // m: a building's float over this fails the build
     double crouchLow = 0.9, crouchHigh = 1.4; // m: a building's gap in this band lets the crouched capsule in under it
+    bool spanRule = false;      // carried boxes pass by span and eave (above)
+    std::vector<std::string> spanKinds = {"deck", "bridge", "gate"}; // the kinds that span (the rest are held everywhere)
+    double maxSpan = 30.0;      // m, the longest span between two held points
+    double maxEave = 1.5;       // m, the furthest a box reaches past its outermost held point
+    std::vector<KindEave> kindEaves = {{"deck", 3.5, 12.0}}; // kinds with their own eave (spanKinds only)
+    bool chainCheck = true;     // with spanRule: a floating box holds nothing up
+    double podiumCut = 1.0;     // m: a podium wears its building's surface this far down, terrace stone under that
+    double postLength = 1.0;    // m along a bridge, each end post (planFoundations)
 };
 
 struct FloatBox {
     std::size_t box = 0;       // index into boxes
-    double gap = 0.0;          // m, the base over the ground at its worst point
+    double gap = 0.0;          // m, the base over the ground at its worst point (spanned: its worst hanging point)
     double x = 0.0, y = 0.0;   // that point
     double base = 0.0, ground = 0.0;
+    double top = 0.0;          // the box's top at that point (a ramp's or landing's lip there: top less ground)
     double groundMin = 0.0;    // the lowest ground under its footprint (points out of play left out)
+    double span = 0.0;         // spanRule: m, twice the furthest hanging point inside the hull from its nearest supporter
+    double overhang = 0.0;     // spanRule: m, the furthest hanging point outside the hull from it
+    std::size_t supporters = 0; // spanRule: the sound boxes holding at least one of its points
     bool building = false;     // pocketBuilding
     bool failing = false;      // over failAny, or a building over failBuilding
     bool crouch = false;       // a building whose gap lies in crouchLow..crouchHigh
@@ -183,34 +214,90 @@ struct FloatReport {
     std::size_t shallow = 0;           // checked boxes whose gap lies over -sink (not sunk sink everywhere), floats included
     std::size_t failing = 0, crouch = 0;
     std::vector<FloatBox> floating;    // gap over visible, largest first
+    std::vector<FloatBox> spanned;     // spanRule: carried boxes passed by span and eave, largest gap first
+    int passes = 0;                    // chainCheck passes run
 };
 
-// The check. False (error set) on a sample under 0.05 m.
+// The check. False (error set) on a sample under 0.05 m. `sound` (when given, by box): the boxes that may hold others up.
 FTCORE_API bool findFloats(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
-                           const FloatSpec& spec, FloatReport& out, std::string* error = nullptr);
+                           const FloatSpec& spec, FloatReport& out, std::string* error = nullptr,
+                           const std::vector<bool>* sound = nullptr);
 
-// A placement fix: move boxes[box] by dz (m, down when negative), z0 and z1 alike.
-struct FloatSnap {
+// What the fix pass does to a float.
+enum class FloatFix : std::uint8_t {
+    None,      // no fix of its own (spanned in the plan, or held once a supporter is fixed)
+    Skirt,     // a building up to maxSkirt: a foundation box in its own surface (PL-B-<n>)
+    Podium,    // a building over maxSkirt: podiumCut of its own surface (PL-P-<n>), terrace stone under it (PL-T-<n>)
+    Lower,     // any other piece: its base down to sink under the lowest ground under it, its top, x and y kept
+    UnderBox,  // a piece whose shape is kept (a kit mesh is fitted to it): a box under it in its surface (PL-U-<n>)
+    Snap,      // a marking (flat paint): moved down onto the ground, never thickened
+    Drop,      // a mast: moved down onto the highest sound top under its middle (the ground when there is none)
+    RaisePiers, // a deck: the piers under it whose tops stand short of its base raised to it
+    EndPosts,  // a bridge: a post at each end, its width and postLength long, down from its base (PL-E-<n>)
+    Left,      // a deck with no pier to raise: stays failing, by name
+};
+FTCORE_API const char* floatFixName(FloatFix fix);
+
+// A box the fix pass changes: boxes[box] becomes `to` (same id; only its z0, z1 and slope fields differ).
+struct FloatEdit {
     std::size_t box = 0;
-    double dz = 0.0;
+    MassingBox to;
+};
+
+struct FloatFixRow {
+    std::size_t box = 0;
+    FloatFix fix = FloatFix::None;
+    double gap = 0.0;          // the float the plan pass saw
+};
+
+inline constexpr std::size_t kFoundationTerrace = static_cast<std::size_t>(-1);
+
+struct FoundationPlan {
+    std::vector<MassingBox> added;     // new boxes, to lay after the boxes (kind "plinth")
+    std::vector<std::size_t> wears;    // per added box: the box whose surface it wears, or kFoundationTerrace
+    std::vector<FloatEdit> edits;      // at most one per box
+    std::vector<FloatFixRow> rows;     // per float the plan pass found, largest first
+    int passes = 0;                    // plan passes (a deck left by name stops holding; the plan reruns)
 };
 
 struct FoundationStats {
-    std::size_t floating = 0;     // floats the check found
-    std::size_t foundations = 0;  // foundation boxes laid (buildings up to maxSkirt)
-    std::size_t snapped = 0;      // placement fixes (buildings over maxSkirt, other pieces over failAny)
-    std::size_t left = 0;         // floats neither founded nor snapped (under the fail lines, or sloped: ramps stay)
+    std::size_t floating = 0;     // floats the plan pass found
+    std::size_t skirts = 0, podiums = 0, lowered = 0, underBoxes = 0, snapped = 0, dropped = 0;
+    std::size_t piersRaised = 0;  // pier boxes raised (RaisePiers)
+    std::size_t endPosts = 0;     // bridges given end posts
+    std::size_t left = 0;         // floats left by name
 };
 
-// The fixes for the floats the check finds (planFoundations runs before planPlinths, its boxes fed in):
-//   a building (pocketBuilding) up to maxSkirt over the ground gets a foundation: one box, its footprint and turn, from its
-//   base down to sink under the lowest ground under it (kind "plinth", id PL-B-<n>, source Invented, no cover), solid, so
-//   nothing gets in under it;
-//   a building over maxSkirt, or any other unsloped piece over failAny, is a placement error: snapped down onto the lowest
-//   ground under it (its base sink under that ground for a building, on it for any other piece);
-//   anything else is left (and fails the build only if over a fail line).
+// The fixes for the floats the check (spanRule on, chainCheck off) finds; planFoundations runs before planPlinths, its
+// boxes fed in. `keepShape` (when given, by box): boxes whose shape can't change (a kit mesh fitted to them). By kind,
+// never by id: a building (pocketBuilding) gets a skirt or a podium; a marking a Snap; a mast a Drop; a deck RaisePiers
+// (Left without a pier under it to raise); a bridge EndPosts; any other piece Lower (UnderBox when its shape is kept). A
+// deck left stops holding others up and the plan runs again, until nothing more is left (at most 8 passes).
 FTCORE_API bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
-                                const FloatSpec& spec, std::vector<MassingBox>& out, std::vector<FloatSnap>& snaps,
+                                const std::vector<bool>* keepShape, const FloatSpec& spec, FoundationPlan& plan,
                                 FoundationStats& stats, std::string* error = nullptr);
+
+// The boxes with the plan's edits made and its boxes appended (include: true for them).
+FTCORE_API void applyFoundations(const std::vector<MassingBox>& boxes, const std::vector<bool>& include, const FoundationPlan& plan,
+                                 std::vector<MassingBox>& outBoxes, std::vector<bool>& outInclude);
+
+// Each float of the check before the fix pass, as the check after it (spanRule and chainCheck on, on applyFoundations'
+// boxes with any plinths appended) finds it: Failing when it still floats, Spanned when it passes by span and eave,
+// Fixed otherwise.
+enum class FloatOutcome : std::uint8_t { Fixed, Spanned, Failing };
+struct FloatOutcomeRow {
+    std::size_t box = 0;
+    double before = 0.0;       // its gap before
+    FloatFix fix = FloatFix::None;
+    FloatOutcome outcome = FloatOutcome::Fixed;
+    double after = 0.0;        // its gap after (Failing, Spanned)
+    double span = 0.0, overhang = 0.0;
+};
+struct FloatOutcomes {
+    std::vector<FloatOutcomeRow> rows; // before's floats, in its order
+    std::size_t fixed = 0, spanned = 0, failing = 0;
+    std::size_t newFloats = 0;         // floats after that weren't floats before
+};
+FTCORE_API void classifyFloats(const FloatReport& before, const FoundationPlan& plan, const FloatReport& after, FloatOutcomes& out);
 
 } // namespace ftcore
