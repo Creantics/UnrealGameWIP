@@ -4363,8 +4363,23 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		else
 		{
-			LayCubeWearing(Added, bSurfaces ? WearLook(LookSet, Boxes[Wears]) : Finish[static_cast<int32>(ftcore::massingFinish(Boxes[Wears]))],
-				EFTCellKind::Walk, EFTCellCull::None);
+			UMaterialInterface* const Wear = bSurfaces ? WearLook(LookSet, Boxes[Wears]) : Finish[static_cast<int32>(ftcore::massingFinish(Boxes[Wears]))];
+			// -DeckPosts: a deck's posts (PL-D) and braces (kind "brace") stand under it, never walked on.
+			const bool bDeckSupport = Added.kind == "brace" || Added.id.rfind("PL-D-", 0) == 0;
+			if (Added.sloped)
+			{
+				// A ramp's post, its top along the ramp's underside: its own mesh in the map (the mesh cache was warmed
+				// before the fix pass).
+				ftcore::MassingMesh Shape;
+				const FVector Pivot = SlopedShape(Added, Side, Shape);
+				const FString AddedId = Utf8(Added.id);
+				UStaticMesh* const Mesh = SlopedMesh(Package, FString::Printf(TEXT("SM_Massing_%s"), *AddedId), RF_Public, Shape, Pivot, Wear);
+				Block(World, Spawn, Mesh, nullptr, AddedId, Pivot, FVector::OneVector, 0.0);
+			}
+			else
+			{
+				LayCubeWearing(Added, Wear, bDeckSupport ? EFTCellKind::Solid : EFTCellKind::Walk, EFTCellCull::None);
+			}
 		}
 		FixBuilt.push_back(Added);
 		FixVisible.push_back(true);

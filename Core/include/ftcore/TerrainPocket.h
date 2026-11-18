@@ -185,14 +185,28 @@ struct FloatSpec {
     double failBuilding = 0.3;  // m: a building's float over this fails the build
     double crouchLow = 0.9, crouchHigh = 1.4; // m: a building's gap in this band lets the crouched capsule in under it
     bool spanRule = false;      // carried boxes pass by span and eave (above)
-    std::vector<std::string> spanKinds = {"deck", "bridge", "gate"}; // the kinds that span (the rest are held everywhere)
+    std::vector<std::string> spanKinds = {"deck", "bridge", "gate", "brace"}; // the kinds that span (the rest are held everywhere)
     double maxSpan = 30.0;      // m, the longest span between two held points
     double maxEave = 1.5;       // m, the furthest a box reaches past its outermost held point
     std::vector<KindEave> kindEaves = {{"deck", 3.5, 12.0}}; // kinds with their own eave (spanKinds only)
     bool chainCheck = true;     // with spanRule: a floating box holds nothing up
     double podiumCut = 1.0;     // m: a podium wears its building's surface this far down, terrace stone under that
     double postLength = 1.0;    // m along a bridge, each end post (planFoundations)
+    // Deck posts (the 2026-11-18 ruling, behind the Strip's -DeckPosts; off, the plan is as before): a floating deck gets
+    // posts down to the ground or the seabed, a grid at most postSpacing apart along and across it, flush with its ends
+    // and set in from its sides by its eave less half a metre, each postSize square, its top along the deck's underside
+    // (a ramp's posts slope with it), wearing the deck's surface (PL-D-<n>); and between neighbouring posts, along each
+    // row and across each bent, diagonal braces braceSize square in zig-zag panels of about 45 degrees (PL-K-<n>, kind
+    // "brace": spanned between the posts they sit in).
+    bool deckPosts = false;
+    double postSpacing = 6.0;   // m, the most between neighbouring posts' centres
+    double postSize = 1.0;      // m, a post's side
+    double braceSize = 0.3;     // m, a brace's side
 };
+
+// The furthest the box may reach past its outermost held point under spanRule: its kind's own eave (kindEaves, up to its
+// maxDepth), else maxEave.
+FTCORE_API double floatEave(const FloatSpec& spec, const MassingBox& box);
 
 struct FloatBox {
     std::size_t box = 0;       // index into boxes
@@ -235,6 +249,7 @@ enum class FloatFix : std::uint8_t {
     RaisePiers, // a deck: the piers under it whose tops stand short of its base raised to it
     EndPosts,  // a bridge: a post at each end, its width and postLength long, down from its base (PL-E-<n>)
     Left,      // a deck with no pier to raise: stays failing, by name
+    Posts,     // deckPosts: a deck gets posts and braces under it (PL-D-<n>, PL-K-<n>), short piers raised as well
 };
 FTCORE_API const char* floatFixName(FloatFix fix);
 
@@ -266,13 +281,16 @@ struct FoundationStats {
     std::size_t piersRaised = 0;  // pier boxes raised (RaisePiers)
     std::size_t endPosts = 0;     // bridges given end posts
     std::size_t left = 0;         // floats left by name
+    std::size_t posted = 0;       // deckPosts: decks given posts
+    std::size_t posts = 0, braces = 0; // deckPosts: the boxes added
 };
 
 // The fixes for the floats the check (spanRule on, chainCheck off) finds; planFoundations runs before planPlinths, its
 // boxes fed in. `keepShape` (when given, by box): boxes whose shape can't change (a kit mesh fitted to them). By kind,
 // never by id: a building (pocketBuilding) gets a skirt or a podium; a marking a Snap; a mast a Drop; a deck RaisePiers
 // (Left without a pier under it to raise); a bridge EndPosts; any other piece Lower (UnderBox when its shape is kept). A
-// deck left stops holding others up and the plan runs again, until nothing more is left (at most 8 passes).
+// deck left stops holding others up and the plan runs again, until nothing more is left (at most 8 passes). With
+// deckPosts, a deck floating over failAny is never left: it gets Posts (its short piers raised too).
 FTCORE_API bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                                 const std::vector<bool>* keepShape, const FloatSpec& spec, FoundationPlan& plan,
                                 FoundationStats& stats, std::string* error = nullptr);
