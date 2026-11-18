@@ -93,6 +93,7 @@
 #include "ftcore/AttackMove.h"
 #include "ftcore/FieldUnstick.h"
 #include "ftcore/FieldStrike.h"
+#include "ftcore/FrameStats.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/HeldUpJump.h"
 #include "ftcore/LedgeHang.h"
@@ -703,6 +704,16 @@ private:
 	int32 SwimProofSwitchLand[2] = {0, 0};
 	int32 SwimProofSwitchFell[2] = {0, 0};
 	bool bSwimProofStartFrame1 = false;
+	// -SwimProof=cost (item 4 of 11-18, a measurement only): one fixed camera, the party idle on land, then the same party
+	// treading in the sea; each window's frame, game-thread, render-thread and GPU ms.
+	void TickSwimProofCost(float DeltaSeconds);
+	bool SwimProofCostParty(bool bWantWater, FString& OutWhy) const;
+	static constexpr int32 kSwimProofCostCap = 16384; // frames per window (10 s uncapped at Low fits)
+	int32 SwimProofCostStage = 0; // 0 settle on land, 1 land window, 2 settle in the sea, 3 water window
+	float SwimProofCostTime = 0.f;
+	bool bSwimProofCostShot = false;
+	TWeakObjectPtr<AActor> SwimProofCostCam;
+	TUniquePtr<ftcore::FrameStats> SwimProofCostStats[2];
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;

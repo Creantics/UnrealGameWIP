@@ -6,6 +6,7 @@
 #include "ftcore/WaterSurfaceFeet.h"
 
 #include "Animation/AnimSequence.h"
+#include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
@@ -23,6 +24,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/StaticMeshComponent.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformMisc.h"
 #include "TimerManager.h"
 #include "Engine/Engine.h"
@@ -30,6 +32,8 @@
 #include "CollisionQueryParams.h"
 #include "Engine/GameViewportClient.h"
 #include "UnrealClient.h"
+#include "RHI.h"
+#include "RenderCore.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
@@ -40,6 +44,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/App.h"
 #include "Misc/ScopeExit.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -4635,7 +4640,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 				}
 				// The watchdog's run needs the lead well past stuckFar (12 m) from a partner treading by the entry.
 				if ((SwimProofKind == TEXT("watchdog") || SwimProofKind == TEXT("boom") || SwimProofKind == TEXT("exit") || SwimProofKind == TEXT("switch")
-					|| SwimProofKind == TEXT("start")) && FVector::Dist2D(P, Far) < 1600.0)
+					|| SwimProofKind == TEXT("start") || SwimProofKind == TEXT("cost")) && FVector::Dist2D(P, Far) < 1600.0)
 				{
 					continue;
 				}
@@ -4696,6 +4701,12 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		SwimProofTime = 0.f;
 		return;
 	}
+	if (SwimProofStage == 10)
+	{
+		// -SwimProof=cost: only its windows from here (as little harness work inside them as can be).
+		TickSwimProofCost(DeltaSeconds);
+		return;
+	}
 	// The party gathers at the edge: at least 6 s, and slot 0 within 10 m of the lead (else it may stay ashore with no
 	// edge, and neither path can start); 30 s at most, then on with a warning.
 	const AFTPartyFollower* Slot0Body = WaterFollowers[0].Get();
@@ -4706,6 +4717,52 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof %s: slot 0 %s after 30 s; going on."), *SwimProofKind,
 				Slot0Body ? *FString::Printf(TEXT("is %.0f m away"), FVector::Dist2D(Slot0Body->GetActorLocation(), GetActorLocation()) / 100.0) : TEXT("has no member"));
+		}
+		if (SwimProofKind == TEXT("cost"))
+		{
+			// Item 4 of 11-18, a measurement only. One fixed camera on the perpendicular bisector of the land spot (the dry
+			// edge, where the party gathered) and the swim spot (the far point): both at the same distance and angle, the
+			// camera over the water where it can be, 5 m above the edge, looking at their midpoint. Far enough back (25 m)
+			// that the director's lens hide (a follower 20% nearer the camera than the lead) keeps all three drawn. The party
+			// idle on land, then treading at the far point (StartInWater); each window's frame, game-thread, render-thread
+			// and GPU ms (TickSwimProofCost).
+			const FVector2D CostSpan(SwimProofFar.X - SwimProofDry.X, SwimProofFar.Y - SwimProofDry.Y);
+			const FVector2D CostAlong = CostSpan.GetSafeNormal();
+			const FVector2D CostSide(-CostAlong.Y, CostAlong.X);
+			const FVector CostMid((SwimProofDry.X + SwimProofFar.X) * 0.5, (SwimProofDry.Y + SwimProofFar.Y) * 0.5, SwimProofDry.Z);
+			const double CostBack = FMath::Max(2500.0, CostSpan.Size() * 0.9);
+			const FVector CostA(CostMid.X + CostSide.X * CostBack, CostMid.Y + CostSide.Y * CostBack, SwimProofDry.Z + 500.0);
+			const FVector CostB(CostMid.X - CostSide.X * CostBack, CostMid.Y - CostSide.Y * CostBack, SwimProofDry.Z + 500.0);
+			float CostSurface = 0.f;
+			const bool bCostA = System && System->Bodies().surfaceHeight(FTSwimUnits::ToPlan(CostA), System->WaterTime(), CostSurface);
+			const bool bCostB = System && System->Bodies().surfaceHeight(FTSwimUnits::ToPlan(CostB), System->WaterTime(), CostSurface);
+			const FVector CostFrom = (bCostA || !bCostB) ? CostA : CostB;
+			FActorSpawnParameters CostParams;
+			CostParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ACameraActor* CostCam = World ? World->SpawnActor<ACameraActor>(CostFrom, (CostMid - CostFrom).Rotation(), CostParams) : nullptr;
+			APlayerController* CostPc = Cast<APlayerController>(Controller);
+			if (!CostCam || !CostPc)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("SwimProof cost: no fixed camera (spawn %d, player controller %d); no figures from this run."),
+					CostCam ? 1 : 0, CostPc ? 1 : 0);
+				FTRequestExit(2, TEXT("SwimProof"));
+				SwimProofStage = -2;
+				return;
+			}
+			CostPc->SetViewTarget(CostCam);
+			SwimProofCostCam = CostCam;
+			for (int32 I = 0; I < 2; ++I)
+			{
+				SwimProofCostStats[I] = MakeUnique<ftcore::FrameStats>(static_cast<std::size_t>(kSwimProofCostCap)); // once, before any window
+			}
+			SwimProofStage = 10;
+			SwimProofCostStage = 0;
+			SwimProofCostTime = 0.f;
+			bSwimProofCostShot = false;
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof cost: fixed camera at (%.0f, %.0f, %.0f) cm (%s side, %s), %.0f m from the land spot (%.0f, %.0f) and the swim spot (%.0f, %.0f); land window first."),
+				CostFrom.X, CostFrom.Y, CostFrom.Z, CostFrom == CostA ? TEXT("A") : TEXT("B"), (CostFrom == CostA ? bCostA : bCostB) ? TEXT("over water") : TEXT("over land"),
+				FVector::Dist2D(CostFrom, SwimProofDry) / 100.0, SwimProofDry.X, SwimProofDry.Y, SwimProofFar.X, SwimProofFar.Y);
+			return;
 		}
 		if (SwimProofKind == TEXT("start"))
 		{
@@ -5268,6 +5325,142 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 			*SwimProofSwitchOldLook, bOldThere ? TEXT("among the partners") : TEXT("NOT among the partners"), bSwimSwitchKeep ? TEXT("on") : TEXT("off"), bPass ? TEXT("PASS") : TEXT("FAIL"));
 	}
 	Finish(bPass ? 0 : 2);
+#endif
+}
+
+bool AFTExploreCharacter::SwimProofCostParty(bool bWantWater, FString& OutWhy) const
+{
+	// Who is where, read once at a window's start and end (never per frame): on land nobody swims; in the sea the lead
+	// swims at the surface and both partners keep their surface slots. All three drawn in both.
+	const bool bLeadIn = bSwimming || bSwimUnder;
+	int32 Swimmers = bLeadIn ? 1 : 0;
+	int32 Shown = IsHidden() ? 0 : 1;
+	int32 Partners = 0;
+	for (int32 I = 0; I < 2 && I < NumWaterFollowers; ++I)
+	{
+		const AFTPartyFollower* Partner = WaterFollowers[I].Get();
+		if (!Partner)
+		{
+			continue;
+		}
+		++Partners;
+		Shown += Partner->IsHidden() ? 0 : 1;
+		Swimmers += Partner->GetWaterPhase() == ftcore::WaterFollowPhase::Surface ? 1 : 0;
+	}
+	OutWhy = FString::Printf(TEXT("%d of 3 swimming (lead %s), %d of 3 drawn, %d partners"), Swimmers,
+		bSwimUnder ? TEXT("under") : bSwimming ? TEXT("at the surface") : TEXT("dry"), Shown, Partners);
+	return Partners == 2 && Shown == 3 && (bWantWater ? (Swimmers == 3 && bSwimming && !bSwimUnder) : Swimmers == 0);
+}
+
+void AFTExploreCharacter::TickSwimProofCost(float DeltaSeconds)
+{
+#if UE_BUILD_SHIPPING
+	(void)DeltaSeconds;
+#else
+	auto Finish = [this](int32 Code)
+	{
+		FTRequestExit(Code, TEXT("SwimProof"));
+		SwimProofStage = -2;
+	};
+	// A window's frames: the same reads as -FrameStats (UFTFrameStatsSubsystem), into storage made before the first.
+	if (SwimProofCostStage == 1 || SwimProofCostStage == 3)
+	{
+		ftcore::FrameStats* Stats = SwimProofCostStats[SwimProofCostStage / 2].Get();
+		const double FrameMs = FApp::GetDeltaTime() * 1000.0;
+		if (Stats && FrameMs < 2000.0)
+		{
+			ftcore::FrameSample S;
+			S.frameMs = static_cast<float>(FrameMs);
+			S.gameMs = static_cast<float>(FPlatformTime::ToMilliseconds(GGameThreadTime));
+			S.renderMs = static_cast<float>(FPlatformTime::ToMilliseconds(GRenderThreadTime));
+			S.gpuMs = static_cast<float>(FPlatformTime::ToMilliseconds64(RHIGetGPUFrameCycles(0)));
+			S.drawCalls = static_cast<float>(GNumDrawCallsRHI[0]);
+			S.primitives = static_cast<float>(GNumPrimitivesDrawnRHI[0]);
+			Stats->add(S);
+		}
+	}
+	SwimProofCostTime += DeltaSeconds;
+	const bool bWater = SwimProofCostStage >= 2;
+	const TCHAR* Window = bWater ? TEXT("water") : TEXT("land");
+	// One still per window, 2 s before its frames start (the still's read-back lands outside the window).
+	if ((SwimProofCostStage == 0 || SwimProofCostStage == 2) && !bSwimProofCostShot && SwimProofCostTime >= 2.f)
+	{
+		bSwimProofCostShot = true;
+		if (!SwimProofShots.IsEmpty())
+		{
+			FScreenshotRequest::RequestScreenshot(FPaths::Combine(SwimProofShots, FString::Printf(TEXT("swimproof_cost_%s.png"), Window)), false, false);
+		}
+	}
+	// Settle 4 s on land, 5 s after the start in the sea (the partners respawn at their surface slots); 10 s windows.
+	const float Settle = bWater ? 5.f : 4.f;
+	if ((SwimProofCostStage == 0 || SwimProofCostStage == 2) && SwimProofCostTime >= Settle)
+	{
+		FString Why;
+		if (!SwimProofCostParty(bWater, Why))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof cost: the %s window cannot start: %s; no figures from this run."), Window, *Why);
+			Finish(2);
+			return;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof cost: %s window starts (%s)."), Window, *Why);
+		++SwimProofCostStage;
+		SwimProofCostTime = 0.f;
+		return;
+	}
+	if ((SwimProofCostStage == 1 || SwimProofCostStage == 3) && SwimProofCostTime >= 10.f)
+	{
+		FString Why;
+		const bool bStill = SwimProofCostParty(bWater, Why);
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof cost: %s window ends (%s)."), Window, *Why);
+		if (!bStill)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof cost: the party left its %s state during the window; no figures from this run."), Window);
+			Finish(2);
+			return;
+		}
+		if (SwimProofCostStage == 1)
+		{
+			const FVector2D Way(SwimProofWet.X - SwimProofDry.X, SwimProofWet.Y - SwimProofDry.Y);
+			if (!StartInWater(SwimProofFar, FMath::RadiansToDegrees(FMath::Atan2(Way.Y, Way.X))))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("SwimProof cost: the start in the water at the far point was refused; no water window."));
+				Finish(2);
+				return;
+			}
+			SwimProofCostStage = 2;
+			SwimProofCostTime = 0.f;
+			bSwimProofCostShot = false;
+			return;
+		}
+		// Both windows: each one's medians and p95, then the difference, with the settings the frames were drawn at.
+		ftcore::FrameSummary Sum[2];
+		for (int32 I = 0; I < 2; ++I)
+		{
+			ftcore::FrameStats& Stats = *SwimProofCostStats[I];
+			Sum[I] = Stats.summary();
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof cost %s: %d frames%s; frame %.2f ms median (p95 %.2f); game %.2f (p95 %.2f); render %.2f (p95 %.2f); GPU %.2f (p95 %.2f); draw calls %.0f (p95 %.0f); primitives %.0f; over 33 ms %d."),
+				I == 0 ? TEXT("land") : TEXT("water"), static_cast<int32>(Sum[I].count), Stats.size() >= static_cast<std::size_t>(kSwimProofCostCap) ? TEXT(" (storage full)") : TEXT(""),
+				Sum[I].frame.median, Sum[I].frame.p95, Sum[I].game.median, Sum[I].game.p95, Sum[I].render.median, Sum[I].render.p95,
+				Sum[I].gpu.median, Sum[I].gpu.p95, Sum[I].drawCalls.median, Sum[I].drawCalls.p95, Sum[I].primitives.median, static_cast<int32>(Sum[I].over33));
+		}
+		auto Cvar = [](const TCHAR* Name) -> float
+		{
+			IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(Name);
+			return Var ? Var->GetFloat() : -1.f;
+		};
+		FIntPoint View(0, 0);
+		if (GEngine && GEngine->GameViewport && GEngine->GameViewport->Viewport)
+		{
+			View = GEngine->GameViewport->Viewport->GetSizeXY();
+		}
+		const bool bNoGpu = Sum[0].gpu.median <= 0.f || Sum[1].gpu.median <= 0.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof cost: three swimmers minus land (medians): frame %+.2f ms, game %+.2f, render %+.2f, GPU %+.2f%s; viewport %dx%d, r.ScreenPercentage %.0f, sg.ResolutionQuality %.0f, sg.ViewDistance %.0f, sg.Shadow %.0f, sg.GI %.0f, sg.Reflection %.0f, sg.PostProcess %.0f, sg.Effects %.0f, sg.Shading %.0f."),
+			Sum[1].frame.median - Sum[0].frame.median, Sum[1].game.median - Sum[0].game.median, Sum[1].render.median - Sum[0].render.median,
+			Sum[1].gpu.median - Sum[0].gpu.median, bNoGpu ? TEXT(" (NO GPU TIMES: not valid)") : TEXT(""), View.X, View.Y, Cvar(TEXT("r.ScreenPercentage")),
+			Cvar(TEXT("sg.ResolutionQuality")), Cvar(TEXT("sg.ViewDistanceQuality")), Cvar(TEXT("sg.ShadowQuality")), Cvar(TEXT("sg.GlobalIlluminationQuality")),
+			Cvar(TEXT("sg.ReflectionQuality")), Cvar(TEXT("sg.PostProcessQuality")), Cvar(TEXT("sg.EffectsQuality")), Cvar(TEXT("sg.ShadingQuality")));
+		Finish(bNoGpu ? 2 : 0);
+	}
 #endif
 }
 
