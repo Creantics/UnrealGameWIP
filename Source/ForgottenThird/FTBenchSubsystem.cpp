@@ -173,9 +173,16 @@ void UFTBenchSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		{
 			FString At;
 			FString Line;
-			if (Item.Split(TEXT(":"), &At, &Line) && !Line.TrimStartAndEnd().IsEmpty())
+			const bool bSplit = Item.Split(TEXT(":"), &At, &Line);
+			At.TrimStartAndEndInline();
+			Line.TrimStartAndEndInline();
+			if (bSplit && At.IsNumeric() && !Line.IsEmpty())
 			{
-				Execs.Emplace(FCString::Atod(*At), Line.TrimStartAndEnd());
+				Execs.Emplace(FCString::Atod(*At), Line);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("Bench: -BenchExec item '%s' isn't seconds:command; skipped."), *Item);
 			}
 		}
 		Execs.Sort([](const TPair<double, FString>& A, const TPair<double, FString>& B) { return A.Key < B.Key; });

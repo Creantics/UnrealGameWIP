@@ -1,11 +1,11 @@
 #pragma once
 
-// Garbage collection at hidden moments (ftcore::GcPacing). Config/DefaultEngine.ini turns on incremental reachability
-// (the mark phase sliced at 2 ms a frame) and raises the engine's periodic pass to 300 s, a ceiling; the game asks for
-// a full collection where nobody sees the hitch: the pause menu opening, the unstick fade, and (later) fast travel
-// and loads. UFTGcPacingSubsystem::HiddenMoment does it once 30 s have passed since the last collection of any kind.
-// -GcNoHidden turns the hidden-moment collections off (the engine's pass alone); the fallback for the experimental
-// incremental mode is -dpcvars=gc.AllowIncrementalReachability=0,gc.AllowIncrementalGather=0 or the two ini lines.
+// Garbage collection at hidden moments (ftcore::GcPacing): a full collection where nobody sees the hitch, i.e. the pause
+// menu opening, the unstick fade, and (later) fast travel and loads, once 30 s have passed since the last collection of
+// any kind. OFF by default (11-18 ruling): only -GcHidden turns it on; without the flag HiddenMoment does nothing and
+// the engine's GC settings are main's. The trial's engine settings (incremental reachability, purge ceiling) are passed
+// as -dpcvars by the bench, never from the ini. Default-on waits for a trial under 20 ms and a 10-minute soak with no
+// memory growth.
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 
@@ -30,5 +30,4 @@ private:
 
 	ftcore::GcPacing Pacing;
 	FDelegateHandle PostGcHandle;
-	bool bEnabled = true;
 };

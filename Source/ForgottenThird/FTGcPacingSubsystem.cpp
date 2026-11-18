@@ -13,7 +13,7 @@
 void UFTGcPacingSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	bEnabled = !FParse::Param(FCommandLine::Get(), TEXT("GcNoHidden"));
+	Pacing.enabled = FParse::Param(FCommandLine::Get(), TEXT("GcHidden"));
 	Pacing.collected(FPlatformTime::Seconds()); // the start's load has just collected
 	PostGcHandle = FCoreUObjectDelegates::GetPostGarbageCollect().AddUObject(this, &UFTGcPacingSubsystem::OnPostGarbageCollect);
 }
@@ -34,7 +34,7 @@ void UFTGcPacingSubsystem::HiddenMoment(const UObject* WorldContext, const TCHAR
 	const UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
 	const UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
 	UFTGcPacingSubsystem* Self = GameInstance ? GameInstance->GetSubsystem<UFTGcPacingSubsystem>() : nullptr;
-	if (!Self || !Self->bEnabled || !GEngine)
+	if (!Self || !Self->Pacing.enabled || !GEngine)
 	{
 		return;
 	}
