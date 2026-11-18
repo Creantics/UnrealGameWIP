@@ -116,8 +116,15 @@ UMaterialExpressionCustom* AddCustom(UMaterial* Material, const TCHAR* Descripti
 	return Custom;
 }
 
+// A vector parameter's output 0 is its RGB (float3): the custom nodes read the waves and the edge line as float4, so
+// a vector parameter is joined by its RGBA (output 5).
 void AddInput(UMaterialExpressionCustom* Custom, const FName Name, UMaterialExpression* From, int32 Output = 0)
 {
+	if (Output == 0 && From && From->IsA<UMaterialExpressionVectorParameter>())
+	{
+		Output = 5;
+		check(From->GetOutputs().IsValidIndex(Output) && From->GetOutputs()[Output].OutputName == TEXT("RGBA"));
+	}
 	FCustomInput& In = Custom->Inputs.AddDefaulted_GetRef();
 	In.InputName = Name;
 	In.Input.Connect(Output, From);
