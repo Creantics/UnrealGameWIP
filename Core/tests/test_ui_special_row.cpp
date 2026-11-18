@@ -107,3 +107,111 @@ TEST_CASE("special row gating: specialsOn is off until a table is set, steady th
     CHECK_FALSE(fight.specialsOn());
     CHECK_FALSE(uiSpecialRowReserved(true, fight.specialsOn()));
 }
+
+TEST_CASE("special row gating: a lead with no move and no partner (Duy alone) holds the row but never draws it") {
+    const ArenaSpecialTable table = shippedSpecialTable();
+    REQUIRE_MESSAGE(table.forLead("duy") == nullptr, "the shipped table gave Duy a move: pick another lead for this case");
+    ArenaFight fight;
+    beginFight(fight, "hulk");
+    // The host's store with Duy's gauge full: a full gauge with no move must still never light the row.
+    LeadSpecialGauges gauges;
+    LeadSpecialGauges::Lead* duy = gauges.entry("duy");
+    REQUIRE(duy != nullptr);
+    duy->value = 1000.f;
+    REQUIRE(fight.setSpecials(&table, "duy", "", gauges));
+    REQUIRE(fight.specialsOn());
+    const bool reserved = uiSpecialRowReserved(true, fight.specialsOn());
+    CHECK(reserved);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    UiSpecialState s;
+    bool everFed = false, everRowMissing = false, everDrawn = false, everRunning = false, alwaysNoMove = true;
+    const float dt = 1.f / 60.f;
+    int ticks = 0;
+    for (; ticks < 180 && !fight.over(); ++ticks) {
+        fight.tick(dt, ArenaInput{}, bodies);
+        arenaStep(fight, bodies, dt);
+        const ArenaSpecialView& rules = fight.special();
+        // As the host feeds it (FTNewUi TickSpecial). The rules' own ready flag is theirs (the gauge is full); the row
+        // reads the feed only.
+        const UiSpecialInput in = uiSpecialInputFrom(rules);
+        const UiSpecialView v = uiSpecialStep(s, reserved, in, dt, false);
+        everFed = everFed || in.ready || in.thirdReady;
+        everRunning = everRunning || rules.running;
+        alwaysNoMove = alwaysNoMove && (fight.over() || rules.refusalPlayer == ArenaSpecialRefusal::NoMove);
+        everRowMissing = everRowMissing || !v.row;
+        everDrawn = everDrawn || v.drawn;
+    }
+    CHECK(ticks > 60);
+    CHECK(alwaysNoMove);
+    CHECK_FALSE(everRunning);
+    CHECK_FALSE(everFed);
+    CHECK_FALSE(everRowMissing); // the row is held: a lead switch would never move the stack
+    CHECK_FALSE(everDrawn);      // and nothing is drawn in it
+}
+
+TEST_CASE("special row feed: a full gauge with no move, or while a special runs, never shows; each refusal's reason") {
+    ArenaSpecialView rules;
+    rules.readyPlayer = true;
+    rules.refusalPlayer = ArenaSpecialRefusal::Ok;
+    UiSpecialInput in = uiSpecialInputFrom(rules);
+    CHECK(in.ready);
+    CHECK(in.why == UiSpecialWhy::None);
+    CHECK_FALSE(in.thirdReady);
+    // A full gauge whose lead has no move: nothing to press, nothing shown.
+    rules.refusalPlayer = ArenaSpecialRefusal::NoMove;
+    in = uiSpecialInputFrom(rules);
+    CHECK_FALSE(in.ready);
+    // Not full: nothing shown, whatever the refusal.
+    rules.readyPlayer = false;
+    rules.refusalPlayer = ArenaSpecialRefusal::NotReady;
+    CHECK_FALSE(uiSpecialInputFrom(rules).ready);
+    // Each refusal of a full gauge with a move: the reason (NotReady can't come with a full gauge; it reads as none).
+    rules.readyPlayer = true;
+    const struct {
+        ArenaSpecialRefusal r;
+        UiSpecialWhy why;
+    } reasons[] = {{ArenaSpecialRefusal::Ok, UiSpecialWhy::None},          {ArenaSpecialRefusal::NotReady, UiSpecialWhy::None},
+                   {ArenaSpecialRefusal::NoTarget, UiSpecialWhy::NoTarget}, {ArenaSpecialRefusal::NoSight, UiSpecialWhy::OutOfSight},
+                   {ArenaSpecialRefusal::Down, UiSpecialWhy::NotNow},       {ArenaSpecialRefusal::NotControlled, UiSpecialWhy::NotNow},
+                   {ArenaSpecialRefusal::Unhurt, UiSpecialWhy::NotNow}};
+    for (const auto& e : reasons) {
+        CAPTURE(arenaSpecialRefusalName(e.r));
+        rules.refusalPlayer = e.r;
+        in = uiSpecialInputFrom(rules);
+        CHECK(in.ready);
+        CHECK(in.why == e.why);
+    }
+    // While a special runs nothing is ready, the lead's or the Third's.
+    rules.refusalPlayer = ArenaSpecialRefusal::Running;
+    rules.readyPartner = true;
+    rules.refusalPartner = ArenaSpecialRefusal::Running;
+    rules.running = true;
+    in = uiSpecialInputFrom(rules);
+    CHECK_FALSE(in.ready);
+    CHECK_FALSE(in.thirdReady);
+    // The Third's: a full gauge with a move calls; with no move, never.
+    rules.running = false;
+    rules.readyPlayer = false;
+    rules.refusalPlayer = ArenaSpecialRefusal::NotReady;
+    rules.refusalPartner = ArenaSpecialRefusal::NoTarget;
+    in = uiSpecialInputFrom(rules);
+    CHECK_FALSE(in.ready);
+    CHECK(in.thirdReady);
+    rules.refusalPartner = ArenaSpecialRefusal::NoMove;
+    CHECK_FALSE(uiSpecialInputFrom(rules).thirdReady);
+    // Through the row: the CALL row stands for the Third's alone, and a moveless lead's full gauge draws nothing.
+    UiSpecialState s;
+    rules.refusalPartner = ArenaSpecialRefusal::Ok;
+    UiSpecialView v = uiSpecialStep(s, true, uiSpecialInputFrom(rules), 0.016f, true);
+    CHECK(v.drawn);
+    CHECK(v.call);
+    UiSpecialState t;
+    rules.readyPartner = false;
+    rules.readyPlayer = true;
+    rules.refusalPlayer = ArenaSpecialRefusal::NoMove;
+    v = uiSpecialStep(t, true, uiSpecialInputFrom(rules), 0.016f, true);
+    CHECK(v.row);
+    CHECK_FALSE(v.drawn);
+}

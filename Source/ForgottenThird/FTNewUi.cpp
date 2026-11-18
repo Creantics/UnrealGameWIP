@@ -2188,21 +2188,10 @@ public:
 		}
 		else if (!Fight.over())
 		{
-			// The rules' feed (ArenaFight::special): the controlled lead's full gauge, and while a press would be
-			// refused, why. Nothing ready while a special runs (the gauge empties at the press).
-			const ftcore::ArenaSpecialView& Rules = Fight.special();
-			In.ready = Rules.readyPlayer && !Rules.running;
-			// The Third's: readyPartner is set only for a party member's full gauge (never a partner lead's); the CALL
-			// row is always live, so refusalPartner is not read.
-			In.thirdReady = Rules.readyPartner && !Rules.running;
-			switch (Rules.refusalPlayer)
-			{
-			case ftcore::ArenaSpecialRefusal::Ok:
-			case ftcore::ArenaSpecialRefusal::NotReady: In.why = ftcore::UiSpecialWhy::None; break;
-			case ftcore::ArenaSpecialRefusal::NoTarget: In.why = ftcore::UiSpecialWhy::NoTarget; break;
-			case ftcore::ArenaSpecialRefusal::NoSight: In.why = ftcore::UiSpecialWhy::OutOfSight; break;
-			default: In.why = ftcore::UiSpecialWhy::NotNow; break;
-			}
+			// The rules' feed (ArenaFight::special, Core uiSpecialInputFrom): the controlled lead's full gauge and, while a
+			// press would be refused, why; the Third's (readyPartner, a party member's only; the CALL row is always live).
+			// Nothing while a special runs, and never for a lead with no move (a full gauge with nothing to press).
+			In = ftcore::uiSpecialInputFrom(Fight.special());
 		}
 		if (!Fight.over() && Shot == EUiStateShot::SpecialCall)
 		{

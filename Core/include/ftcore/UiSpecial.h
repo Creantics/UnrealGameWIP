@@ -24,6 +24,7 @@
 #pragma once
 
 #include "ftcore/Api.h"
+#include "ftcore/ArenaSpecial.h"
 #include "ftcore/UiBudget.h"
 
 #include <cstddef>
@@ -41,6 +42,25 @@ struct UiSpecialInput {
     UiSpecialWhy why = UiSpecialWhy::None; // while ready: None if a press would start it now
     bool thirdReady = false;               // the Third's special is ready (the player calls it)
 };
+
+// The rules' feed (ArenaFight::special(), read while the fight runs): the controlled lead's full gauge, and while a
+// press would be refused, why; the Third's full gauge (readyPartner: a party member's only). Nothing is ready while a
+// special runs (the gauge empties at the press), and a full gauge whose lead has no move (refusal NoMove: no row for
+// that lead in the table) never shows: there is nothing to press. A moveless lead's gauge still fills (the rules');
+// the row only ever offers a move that exists.
+inline UiSpecialInput uiSpecialInputFrom(const ArenaSpecialView& rules) {
+    UiSpecialInput in;
+    in.ready = rules.readyPlayer && !rules.running && rules.refusalPlayer != ArenaSpecialRefusal::NoMove;
+    in.thirdReady = rules.readyPartner && !rules.running && rules.refusalPartner != ArenaSpecialRefusal::NoMove;
+    switch (rules.refusalPlayer) {
+    case ArenaSpecialRefusal::Ok:
+    case ArenaSpecialRefusal::NotReady: in.why = UiSpecialWhy::None; break;
+    case ArenaSpecialRefusal::NoTarget: in.why = UiSpecialWhy::NoTarget; break;
+    case ArenaSpecialRefusal::NoSight: in.why = UiSpecialWhy::OutOfSight; break;
+    default: in.why = UiSpecialWhy::NotNow; break;
+    }
+    return in;
+}
 
 inline constexpr float kUiSpecialFadeIn = 0.15f;  // s, the arrival fade
 inline constexpr float kUiSpecialFadeOut = 0.2f;  // s, the leaving fade (nothing ready any more)
