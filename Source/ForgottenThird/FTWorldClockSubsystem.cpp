@@ -30,10 +30,13 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "SceneView.h"
+#include "SceneViewExtension.h"
 
 #include "ftcore/LookTable.h"
 #include "ftcore/WindowInterior.h"
 
+#include <atomic>
 #include <string>
 
 namespace
@@ -127,6 +130,26 @@ bool FTDayShade::Enabled()
 	static const bool bOff = FParse::Param(FTLookSwitches(), TEXT("NoDayShade"));
 	return !bOff && CVarDayShade.GetValueOnGameThread() != 0;
 }
+
+// The game view's eye adaptation as the renderer last read it back (FSceneView::GetLastEyeAdaptationExposure: the scale
+// applied to scene light, bias included; 0 until the first read-back), taken on the game thread as each view is set up.
+class FFTExposureProbe final : public FSceneViewExtensionBase
+{
+public:
+	explicit FFTExposureProbe(const FAutoRegister& Reg) : FSceneViewExtensionBase(Reg) {}
+	virtual void SetupView(FSceneViewFamily& Family, FSceneView& InView) override
+	{
+		if (!Family.bIsMainViewFamily) { return; }
+		const float E = InView.GetLastEyeAdaptationExposure();
+		if (E > 0.f)
+		{
+			Exposure.store(E, std::memory_order_relaxed);
+			Luminance.store(InView.GetLastAverageSceneLuminance(), std::memory_order_relaxed);
+		}
+	}
+	std::atomic<float> Exposure{0.f};
+	std::atomic<float> Luminance{0.f};
+};
 
 bool FTDayLook::Enabled()
 {
@@ -678,16 +701,30 @@ void UFTWorldClockSubsystem::Tick(float DeltaTime)
 	ftcore::worldClockTick(Clock, DeltaTime);
 	Apply(false);
 	const UWorld* LightWorld = GetWorld();
+	if (!bDayExposureLogged && !ExposureProbe.IsValid() && LightWorld && LightWorld->IsGameWorld())
+	{
+		ExposureProbe = FSceneViewExtensions::NewExtension<FFTExposureProbe>();
+	}
+	if (bDayLightLogged && !bDayExposureLogged && LightWorld && LightWorld->GetTimeSeconds() >= 20.0)
+	{
+		bDayExposureLogged = true;
+		const float E = ExposureProbe.IsValid() ? ExposureProbe->Exposure.load(std::memory_order_relaxed) : 0.f;
+		const float Lum = ExposureProbe.IsValid() ? ExposureProbe->Luminance.load(std::memory_order_relaxed) : 0.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("DayExposure at %.1f s: %.2f h, settled exposure scale %.6g (log2 %.2f stops), average scene luminance %.6g (log2 %.2f)."),
+			LightWorld->GetTimeSeconds(), Clock.hours, E, E > 0.f ? FMath::Log2(E) : 0.f, Lum, Lum > 0.f ? FMath::Log2(Lum) : 0.f);
+		ExposureProbe.Reset();
+	}
 	if (!bDayLightLogged && !bWetPending && LightWorld && LightWorld->GetTimeSeconds() >= 12.0)
 	{
 		bDayLightLogged = true;
+		const float ProbeE = ExposureProbe.IsValid() ? ExposureProbe->Exposure.load(std::memory_order_relaxed) : 0.f;
 		const ULightComponent* Sun = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
 		const UDirectionalLightComponent* SunDir = Cast<UDirectionalLightComponent>(Sun);
 		const USkyLightComponent* SkyLight = Skies.Num() > 0 ? Skies[0].Light.Get() : nullptr;
 		const APostProcessVolume* Volume = Exposures.Num() > 0 ? Exposures[0].Volume.Get() : nullptr;
 		const UFTLookSubsystem* LightLook = LightWorld->GetSubsystem<UFTLookSubsystem>();
 		const FPostProcessSettings* Post = Volume ? &Volume->Settings : nullptr;
-		UE_LOG(LogForgottenThird, Display, TEXT("DayLight at %.1f s: %.2f h, sun %.1f degrees; sun %.3f lux, temperature %s %.0f K; sky light %.3f (%d sky lights); exposure method %d, bias %.2f, min %.2f, max %.2f EV100 (%d volumes); white balance %s %.0f K; clouds cover %.2f, sun cloud shadows %d strength %.2f/%.2f; day look %s, held wind and cover %d."),
+		UE_LOG(LogForgottenThird, Display, TEXT("DayLight at %.1f s: %.2f h, sun %.1f degrees; sun %.3f lux, temperature %s %.0f K; sky light %.3f (%d sky lights); exposure method %d, bias %.2f, min %.2f, max %.2f EV100 (%d volumes); white balance %s %.0f K; clouds cover %.2f, sun cloud shadows %d strength %.2f/%.2f; day look %s, held wind and cover %d; exposure scale now %.6g (log2 %.2f)."),
 			LightWorld->GetTimeSeconds(), Clock.hours, ftcore::sunElevationDeg(Spec, Clock.hours),
 			Sun ? Sun->Intensity : -1.f, (Sun && Sun->bUseTemperature) ? TEXT("on") : TEXT("off"), Sun ? Sun->Temperature : 0.f,
 			SkyLight ? SkyLight->Intensity : -1.f, Skies.Num(),
@@ -696,7 +733,8 @@ void UFTWorldClockSubsystem::Tick(float DeltaTime)
 			(Post && Post->bOverride_WhiteTemp) ? TEXT("set") : TEXT("default"), Post ? Post->WhiteTemp : 6500.f,
 			LightLook ? LightLook->GetLook().cloudCover : -1.f, SunDir ? static_cast<int32>(SunDir->bCastCloudShadows) : -1,
 			SunDir ? SunDir->CloudShadowStrength : -1.f, SunDir ? SunDir->CloudShadowOnSurfaceStrength : -1.f,
-			FTDayLook::Enabled() ? TEXT("on") : TEXT("off"), (LightLook && LightLook->IsDayHeld()) ? 1 : 0);
+			FTDayLook::Enabled() ? TEXT("on") : TEXT("off"), (LightLook && LightLook->IsDayHeld()) ? 1 : 0,
+			ProbeE, ProbeE > 0.f ? FMath::Log2(ProbeE) : 0.f);
 	}
 }
 

@@ -52,7 +52,8 @@ struct DayLookSpec {
     float sunKelvin = 5400.f;
     float contactShadowLength = 0.02f;
     float windMps = 4.f;
-    float cloudCover = 0.5f;
+    // Off by default (2026-11-18 ruling: cover 0.5 took the sun off the whole frame); -DayLookCover=<x> sets one.
+    float cloudCover = -1.f;
     float signWhiteRatio = 1.75f;
     float signSkyShare = 0.25f;
 };

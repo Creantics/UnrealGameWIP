@@ -87,8 +87,14 @@ TEST_CASE("dayLookScene: amount 0 keeps the row; a rain night comes back exactly
     const SceneLook dry = dryRow();
     SceneLook expect = dry;
     expect.windMps = spec.windMps;
-    expect.cloudCover = spec.cloudCover;
     CHECK(dayLookScene(dry, spec, 0.f) == expect);
+    // Clouds are off by default: the row keeps its own cover.
+    CHECK(spec.cloudCover < 0.f);
+    CHECK(dayLookScene(dry, spec, 1.f).cloudCover == dry.cloudCover);
+    DayLookSpec cover = spec;
+    cover.cloudCover = 0.3f;
+    expect.cloudCover = 0.3f;
+    CHECK(dayLookScene(dry, cover, 0.f) == expect);
 }
 
 TEST_CASE("dayLookScene: a look set at night keeps the row's wind and cover all session") {
@@ -103,7 +109,10 @@ TEST_CASE("dayLookScene: a look set at night keeps the row's wind and cover all 
     CHECK(day.fogDensity == doctest::Approx(spec.fogDensity));
     // Held by day: the day's at every hour, the night included.
     CHECK(dayLookScene(dry, spec, 0.f, true).windMps == std::max(dry.windMps, spec.windMps));
-    CHECK(dayLookScene(dry, spec, 0.f, true).cloudCover == doctest::Approx(spec.cloudCover));
+    DayLookSpec cover = spec;
+    cover.cloudCover = 0.3f;
+    CHECK(dayLookScene(dry, cover, 0.f, true).cloudCover == doctest::Approx(0.3f));
+    CHECK(dayLookScene(dry, cover, 1.f, false).cloudCover == dry.cloudCover);
     // The rain night is the row either way.
     const SceneLook rain = rainRow();
     CHECK(dayLookScene(rain, spec, 0.f, false) == rain);
@@ -121,7 +130,10 @@ TEST_CASE("dayLookScene: full day takes the day's fog, split tone and sun") {
     CHECK(d.highlightTintChroma == doctest::Approx(spec.highlightTintChroma));
     // The wind and the cover hold at every amount.
     CHECK(d.windMps == spec.windMps);
-    CHECK(d.cloudCover == spec.cloudCover);
+    CHECK(d.cloudCover == dryRow().cloudCover);
+    DayLookSpec cover = spec;
+    cover.cloudCover = 0.3f;
+    CHECK(dayLookScene(dryRow(), cover, 1.f).cloudCover == doctest::Approx(0.3f));
     CHECK(dayLookScene(dryRow(), spec, 0.3f).windMps == spec.windMps);
     // A row's own stronger wind and own cover win.
     SceneLook windy = dryRow();

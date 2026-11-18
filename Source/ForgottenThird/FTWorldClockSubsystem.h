@@ -71,6 +71,7 @@ class UMaterialParameterCollectionInstance;
 class UWorld;
 class ULightComponent;
 class USkyLightComponent;
+class FFTExposureProbe;
 
 namespace FTClock
 {
@@ -241,6 +242,10 @@ private:
 	int32 MapCloudShadows = -1;
 	// One DayLight line (sun, sky, exposure, white balance, clouds) 12 s in, flag on or off, for before/after reads.
 	bool bDayLightLogged = false;
+	// The settled exposure for those lines: the game view's eye adaptation, read back on the game thread, and a second
+	// line 20 s in (the stills' window) so a still's exposure is in its log, not only the limits.
+	bool bDayExposureLogged = false;
+	TSharedPtr<FFTExposureProbe, ESPMode::ThreadSafe> ExposureProbe;
 	// The lights' share last written to the proof bay's fixtures (FTNight::WriteBayLights; -1: write on the next step).
 	float AppliedBayLights = -1.f;
 	// A level streamed in (the hero corner sub-level) brings fixtures the last write missed: written again on the next tick.
