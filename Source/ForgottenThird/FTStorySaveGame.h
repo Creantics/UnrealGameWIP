@@ -33,7 +33,8 @@ public:
 	TArray<uint8> StoryBlock;
 
 	// Stores the subsystem's current story progress, the story state's block when its subsystem is there,
-	// and the NPC memory when the NPC tables are loaded (else NpcSaveJson keeps what it held). False
+	// and the NPC memory when the NPC tables are loaded (else NpcSaveJson keeps what it held: a fresh object
+	// needs the slot's block copied in first, as UFTStorySubsystem::Autosave does). False
 	// (SaveJson, NpcSaveJson and StoryBlock untouched) when the story isn't on a scene, or when the state
 	// refused to encode and has no block for this position (UFTStoryStateSubsystem::EncodeBlock).
 	UFUNCTION(BlueprintCallable, Category = "Story")

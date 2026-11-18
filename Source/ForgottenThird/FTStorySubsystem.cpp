@@ -1,5 +1,6 @@
 #include "FTStorySubsystem.h"
 
+#include "FTNpcSubsystem.h"
 #include "FTSettingsSubsystem.h"
 #include "FTStorySaveGame.h"
 #include "FTStoryStateSubsystem.h"
@@ -373,7 +374,21 @@ bool UFTStorySubsystem::IsHeadlessRun()
 bool UFTStorySubsystem::Autosave()
 {
 	UFTStorySaveGame* Slot = Cast<UFTStorySaveGame>(UGameplayStatics::CreateSaveGameObject(UFTStorySaveGame::StaticClass()));
-	if (!Slot || !Slot->CaptureFrom(this))
+	if (!Slot)
+	{
+		return false;
+	}
+	// While the NPC tables aren't loaded, CaptureFrom keeps the object's NPC block, and a fresh object has none: copy
+	// the slot's in first, so this autosave doesn't write an empty block over the remembered NPCs.
+	const UFTNpcSubsystem* Npcs = GetGameInstance()->GetSubsystem<UFTNpcSubsystem>();
+	if ((!Npcs || !Npcs->IsReady()) && UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
+	{
+		if (const UFTStorySaveGame* Old = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0)))
+		{
+			Slot->NpcSaveJson = Old->NpcSaveJson;
+		}
+	}
+	if (!Slot->CaptureFrom(this))
 	{
 		return false;
 	}

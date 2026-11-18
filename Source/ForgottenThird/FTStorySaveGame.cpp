@@ -6,6 +6,7 @@
 #include "ForgottenThird.h"
 #include "FTText.h"
 
+#include "ftcore/NpcMemory.h"
 #include "ftcore/Seen.h"
 #include "ftcore/StorySave.h"
 
@@ -77,11 +78,12 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
 	const UGameInstance* GI = Story->GetGameInstance();
 	const UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
-	if (Npcs && Npcs->IsReady())
-	{
-		NpcSaveJson = Npcs->CaptureSaveJson();
-	}
-	// Else the NPC tables aren't loaded: the block this save already holds stays, rather than an empty one over it.
+	// While the NPC tables aren't loaded, the block this object already holds stays (ftcore::npcSaveBlockToWrite);
+	// a fresh object holds the slot's when its caller copied it in (UFTStorySubsystem::Autosave), else none.
+	const bool bNpcReady = Npcs && Npcs->IsReady();
+	const std::string Captured = bNpcReady ? FT::ToUtf8(Npcs->CaptureSaveJson()) : std::string();
+	const std::string Kept = bNpcReady ? std::string() : FT::ToUtf8(NpcSaveJson);
+	NpcSaveJson = FT::ToFString(ftcore::npcSaveBlockToWrite(bNpcReady, Captured, Kept));
 	if (Block.Num() > 0)
 	{
 		StoryBlock = MoveTemp(Block);

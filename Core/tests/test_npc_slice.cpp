@@ -145,6 +145,27 @@ TEST_CASE("npc save text: damaged text is refused and leaves the save untouched"
     CHECK(s.npcs[0].axes[1] == -32768);
 }
 
+TEST_CASE("npc save text: a save before the NPC tables load writes the slot's block, not an empty one") {
+    NpcMemorySave remembered;
+    remembered.now = 9;
+    remembered.npcs.emplace_back().id = "npc_a";
+    const std::string slotBlock = encodeNpcMemorySave(remembered);
+    const std::string emptyCapture = encodeNpcMemorySave(NpcMemorySave{});
+    // Tables not loaded: the slot's block goes back out unchanged, and decodes to what was remembered.
+    const std::string_view written = npcSaveBlockToWrite(false, std::string_view{}, slotBlock);
+    CHECK(written == slotBlock);
+    NpcMemorySave back;
+    REQUIRE(decodeNpcMemorySave(written, back));
+    REQUIRE(back.npcs.size() == 1u);
+    CHECK(back.npcs[0].id == "npc_a");
+    CHECK(back.now == remembered.now);
+    // No slot yet and no tables: nothing (an empty block, which loads as nobody remembering).
+    CHECK(npcSaveBlockToWrite(false, emptyCapture, std::string_view{}).empty());
+    // Tables loaded: the live memory wins, even an empty one (a real "nobody remembers yet").
+    CHECK(npcSaveBlockToWrite(true, emptyCapture, slotBlock) == emptyCapture);
+    CHECK(npcSaveBlockToWrite(true, slotBlock, std::string_view{}) == slotBlock);
+}
+
 TEST_CASE("npc save text: an empty save and awkward ids survive the round trip") {
     SUBCASE("the default save") {
         const NpcMemorySave empty;

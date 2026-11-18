@@ -512,5 +512,12 @@ FTCORE_API NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& 
 // npcApplySave rebuilds). On failure `out` is untouched and `*error` says why.
 FTCORE_API std::string encodeNpcMemorySave(const NpcMemorySave& s);
 FTCORE_API bool decodeNpcMemorySave(std::string_view text, NpcMemorySave& out, std::string* error = nullptr);
+// The NPC block a story save writes: `captured` (the live memory) while the NPC tables are loaded, even when it is
+// empty (nobody remembers anything yet); else `kept`, the block the slot already holds (empty with no slot yet). A
+// save made before the tables load, such as an autosave into a fresh save object, never writes an empty block over
+// the remembered NPCs: the host passes the slot's block as `kept`.
+constexpr std::string_view npcSaveBlockToWrite(bool tablesReady, std::string_view captured, std::string_view kept) {
+    return tablesReady ? captured : kept;
+}
 
 }  // namespace ftcore
