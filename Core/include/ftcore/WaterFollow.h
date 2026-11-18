@@ -51,6 +51,8 @@ struct WaterFollowTuning {
     float stuckFar = 12.f;         // m: at the surface or under, further than this from the lead counts as stuck
     float entryLimit = 15.f;       // s: a walk to its entry not over by then is given up (ashore; it picks again)
     float rejoinNear = 1.5f;       // m: a rejoined follower this near its rejoin target is at the surface (else asked again)
+    float startHold = 1.f;         // s: a start in the water (startInWater) waits this long for the lead's swim to reach the
+                                   // party; a lead still out of the water then sends the members ashore
     // The host's climb out (FTPartyFollower), here so a test can budget it: up a ladder and over its top, a mantle onto
     // the bank (no exit), a walk up a flight of steps (at least 0.5 s), and how near its place in the queue is "at" it.
     float ladderSeconds = 2.2f;
@@ -323,7 +325,25 @@ public:
         leadExitAt_ = -1.f;
         leadUnder_ = false;
         hasLastLead_ = false;
+        startLeft_ = 0.f;
+        starting_ = false;
     }
+    // A start in the water (a scene or hold that begins in the sea, a lead switch while swimming): the plan starts with
+    // every member Placed, so the first step asks the host to put each at its surface slot (a rejoin) instead of starting
+    // ashore and walking to an entry. While the lead's swim has not reached the party yet (its flag lags the placement by
+    // a frame or so) that holds for at most startHold: the rejoin is asked each step and nobody is sent ashore, to an
+    // entry or to an exit; a lead climbing out meanwhile takes them out with it. After the hold, a lead still out of the
+    // water sends them ashore as after any placement.
+    void startInWater() {
+        reset();
+        for (Slot& s : slots_) {
+            s.order.phase = WaterFollowPhase::Placed;
+            s.watchPhase = WaterFollowPhase::Placed;
+        }
+        startLeft_ = tuning_.startHold > 0.f ? tuning_.startHold : 0.f;
+    }
+    // In a start's hold (startInWater, the lead's swim not seen yet).
+    bool starting() const { return starting_; }
     const WaterFollowTuning& tuning() const { return tuning_; }
     // The stagger after the member before (s).
     float stagger(int order) const {
@@ -354,6 +374,10 @@ public:
         // Lost: the lead jumped (a scene, a fight or a teleport moved it), or it is back from a parked planner on dry
         // ground. The old plan is not resumed against it: every follower in the water is placed with the lead.
         const bool leadDry = !lead.swimming && !leadUnder;
+        // A start in the water holds until the lead's swim is seen, or startHold has run.
+        if (!leadDry) startLeft_ = 0.f;
+        starting_ = startLeft_ > 0.f;
+        startLeft_ = startLeft_ > dt ? startLeft_ - dt : 0.f;
         const bool jumped = hasLastLead_ && dist3(lead.position, lastLead_) > tuning_.teleport;
         const bool lost = jumped || (lead.resumed && leadDry);
         if (jumped) leadSwim_ = leadDry ? 0.f : dt; // a new swim: the entry's wait starts again
@@ -481,15 +505,17 @@ public:
                 // there on the rejoin step), so it never stays frozen while the lead swims on.
                 // Only once the host has put it there (within rejoinNear of the rejoin's target): a missed rejoin step
                 // asks again. Rejoined and the lead out since: Placed one more step, so the host lands it beside the lead.
+                // In a start's hold (startInWater) it is asked to rejoin each step; a lead climbing out meanwhile counts as in
+                // the water, so the rejoined member goes to the surface and from there follows it out.
                 if (was == WaterFollowPhase::Placed && !rescued) {
-                    if (lead.swimming || leadUnder) {
+                    if (lead.swimming || leadUnder || (starting_ && lead.exiting)) {
                         const float dx = m.position.x - rejoinTo.x;
                         const float dy = m.position.y - rejoinTo.y;
                         if (rejoined && dx * dx + dy * dy <= tuning_.rejoinNear * tuning_.rejoinNear) {
                             go(o, WaterFollowPhase::Surface);
                             s.entryFails = 0;
                         }
-                    } else if (!rejoined) {
+                    } else if (!rejoined && !starting_) {
                         go(o, WaterFollowPhase::Ashore);
                     }
                 }
@@ -646,8 +672,9 @@ private:
         o.target = m.position;
         switch (o.phase) {
         case WaterFollowPhase::Placed:
-            // Placed while the lead swims (a teleport, the watchdog, a second failed entry): rejoin at the surface slot.
-            if (lead.swim != SwimState::Rescued && (lead.swimming || leadUnder_)) {
+            // Placed while the lead swims (a teleport, the watchdog, a second failed entry), or in a start's hold: rejoin
+            // at the surface slot.
+            if (lead.swim != SwimState::Rescued && (lead.swimming || leadUnder_ || starting_)) {
                 const Vec2 slot = inWaterToward(water, leadP,
                                                 Vec2{leadP.x - fwd.x * T.slotBack + right.x * T.slotSide * side,
                                                      leadP.y - fwd.y * T.slotBack + right.y * T.slotSide * side});
@@ -789,6 +816,8 @@ private:
     bool leadUnder_ = false;
     SwimVec lastLead_{};
     bool hasLastLead_ = false;
+    float startLeft_ = 0.f; // s left of a start's hold (startInWater)
+    bool starting_ = false; // this step is in it
 };
 
 } // namespace ftcore

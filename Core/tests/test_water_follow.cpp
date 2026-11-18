@@ -987,3 +987,181 @@ TEST_CASE("water follow (fast exit): the climb path: the swim to the foot, up, a
     CHECK(w.climb == doctest::Approx(0.f));
     CHECK(w.across == doctest::Approx(std::sqrt(16.f + 2.28f * 2.28f) / t.stepsSpeed));
 }
+
+namespace {
+
+// A start in the water (11-18 items 3 and 5): both members spawned at the lead's place, the plan started in the water,
+// and the host's first step (dt 0, before the first placement).
+void startAtLead(Scene& s) {
+    s.members[0].position = s.members[1].position = s.lead.position;
+    s.party.startInWater();
+    s.party.step(s.lead, s.members, 2, s.exits.data(), s.exits.size(), 0.f, &s.water);
+}
+
+// The host puts each member asked to rejoin at its target.
+void hostRejoins(Scene& s) {
+    for (int i = 0; i < 2; ++i)
+        if (s.o(i).rejoin) s.members[i].position = s.o(i).target;
+}
+
+bool landPhase(WaterFollowPhase p) {
+    return p == WaterFollowPhase::Ashore || p == WaterFollowPhase::ToEntry || p == WaterFollowPhase::Entering;
+}
+
+} // namespace
+
+TEST_CASE("water follow (start in the water): rejoined at the surface slots on the first step, then swimming") {
+    Scene s;
+    startAtLead(s);
+    for (int i = 0; i < 2; ++i) {
+        CHECK(s.o(i).phase == WaterFollowPhase::Placed);
+        CHECK(s.o(i).rejoin);
+        CHECK(s.water.depth(Vec2{s.o(i).target.x, s.o(i).target.y}) > kWaterSwimDepth);
+    }
+    CHECK(s.o(0).target.x == doctest::Approx(5.f - 2.5f).epsilon(0.05));
+    CHECK(s.o(0).target.y > 0.f);
+    CHECK(s.o(1).target.y < 0.f);
+    hostRejoins(s);
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(1).phase == WaterFollowPhase::Surface);
+    CHECK_FALSE(s.o(0).rejoin);
+    CHECK_FALSE(s.party.starting());
+    // It swims on with the lead from there: never ashore, never to an entry.
+    s.lead.velocity = {1.5f, 0.f};
+    for (int k = 0; k < 90; ++k) {
+        s.lead.position.x += 1.5f / 30.f;
+        s.step();
+        CHECK_FALSE(landPhase(s.o(0).phase));
+        CHECK_FALSE(landPhase(s.o(1).phase));
+    }
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    // The same with a first step of a frame's length.
+    Scene f;
+    f.members[0].position = f.members[1].position = f.lead.position;
+    f.party.startInWater();
+    f.step();
+    CHECK(f.o(0).rejoin);
+    hostRejoins(f);
+    f.step();
+    CHECK(f.o(0).phase == WaterFollowPhase::Surface);
+}
+
+TEST_CASE("water follow (start in the water): the lead's swim seen late is waited for, at most the start's hold") {
+    // Seen 10 frames late: asked to rejoin each frame meanwhile, never ashore, to an entry or to an exit; then swimming.
+    Scene s;
+    s.exits = {ladder({1.f, 0.f})};
+    s.lead.swimming = false;
+    startAtLead(s);
+    for (int k = 0; k < 10; ++k) {
+        CHECK(s.party.starting());
+        CHECK(s.o(0).phase == WaterFollowPhase::Placed);
+        CHECK(s.o(1).phase == WaterFollowPhase::Placed);
+        CHECK(s.o(0).rejoin);
+        CHECK(s.o(1).rejoin);
+        hostRejoins(s);
+        s.step();
+    }
+    s.lead.swimming = true;
+    hostRejoins(s);
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(1).phase == WaterFollowPhase::Surface);
+    CHECK_FALSE(s.party.starting());
+    s.step(60);
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    // Never seen: the hold runs out (1 s), one more placed step without a rejoin (the host lands it), then ashore.
+    Scene n;
+    n.exits = {ladder({1.f, 0.f})};
+    n.lead.swimming = false;
+    n.lead.position = {-2.f, 0.f, 0.5f};
+    startAtLead(n);
+    float rejoinFor = 0.f;
+    while (n.o(0).rejoin && rejoinFor < 3.f) {
+        hostRejoins(n);
+        n.step();
+        rejoinFor += kDt;
+    }
+    CHECK(rejoinFor >= n.party.tuning().startHold - 0.01f);
+    CHECK(rejoinFor <= n.party.tuning().startHold + 3.f * kDt);
+    CHECK(n.o(0).phase == WaterFollowPhase::Placed);
+    n.step();
+    CHECK(n.o(0).phase == WaterFollowPhase::Ashore);
+    CHECK(n.o(1).phase == WaterFollowPhase::Ashore);
+    n.step(60); // no swim: no entry
+    CHECK(n.o(0).phase == WaterFollowPhase::Ashore);
+}
+
+TEST_CASE("water follow (start in the water): a lead under water, or climbing out, at the start") {
+    // Under: rejoined at the surface, then it dives after its delay as after the lead's own dive.
+    Scene u;
+    u.lead.swim = SwimState::Under;
+    u.lead.position.z = -4.f;
+    startAtLead(u);
+    CHECK(u.o(0).rejoin);
+    CHECK(u.o(0).target.z == doctest::Approx(0.f));
+    hostRejoins(u);
+    u.step();
+    CHECK(u.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(u.until(1, WaterFollowPhase::Under, 2.f) > 0.f);
+    CHECK(u.o(0).phase == WaterFollowPhase::Under);
+    // Climbing out by a ladder: rejoined at the surface, then out by the lead's ladder, never to an entry.
+    Scene e;
+    e.exits = {ladder({1.f, 0.f}), ladder({1.f, 12.f})};
+    e.lead.swimming = false;
+    e.lead.exiting = true;
+    e.lead.exitIndex = 1;
+    startAtLead(e);
+    CHECK(e.o(0).rejoin);
+    hostRejoins(e);
+    e.step();
+    CHECK(e.o(0).phase == WaterFollowPhase::Surface);
+    e.step();
+    CHECK(e.o(0).phase == WaterFollowPhase::ToExit);
+    CHECK(e.o(1).phase == WaterFollowPhase::ToExit);
+    CHECK(e.o(0).exitIndex == 1);
+    for (int k = 0; k < 60; ++k) {
+        e.step();
+        CHECK_FALSE(landPhase(e.o(0).phase));
+    }
+}
+
+TEST_CASE("water follow (start in the water): without the start, the plan begins ashore as before; slots kept in water") {
+    // No start: members at the lead are ashore to the plan, with no rejoin, and walk to an entry after the 0.8 s.
+    Scene d;
+    d.step();
+    CHECK(d.o(0).phase == WaterFollowPhase::Ashore);
+    CHECK_FALSE(d.o(0).rejoin);
+    CHECK_FALSE(d.party.starting());
+    CHECK(d.until(0, WaterFollowPhase::ToEntry, 2.f) == doctest::Approx(0.8f - kDt).epsilon(0.08));
+    // By the quay, swimming away from it: the slots behind would be on land; they are pulled into the water.
+    Scene q;
+    q.lead = swimmingLead({1.5f, 0.f, -1.f}, {1.5f, 0.f});
+    startAtLead(q);
+    for (int i = 0; i < 2; ++i) {
+        CHECK(q.o(i).rejoin);
+        CHECK(q.o(i).target.x >= 0.f);
+        CHECK(q.water.depth(Vec2{q.o(i).target.x, q.o(i).target.y}) > kWaterSwimDepth);
+    }
+    // A member not active at the start (not yet in the party) is not in the plan: its slot is cleared.
+    Scene a;
+    a.members[1].active = false;
+    startAtLead(a);
+    CHECK(a.o(0).phase == WaterFollowPhase::Placed);
+    CHECK(a.o(1).phase == WaterFollowPhase::Ashore);
+    CHECK_FALSE(a.o(1).rejoin);
+    // A start after a swim drops the old plan (an exit queue, a dive) for the start's.
+    Scene r;
+    r.exits = {ladder({1.f, 0.f})};
+    r.bothIn();
+    r.lead.swimming = false;
+    r.lead.exiting = true;
+    r.step();
+    REQUIRE(r.o(0).phase == WaterFollowPhase::ToExit);
+    r.lead.exiting = false;
+    r.lead.swimming = true;
+    r.party.startInWater();
+    r.step();
+    CHECK(r.o(0).phase == WaterFollowPhase::Placed);
+    CHECK(r.o(0).rejoin);
+}
