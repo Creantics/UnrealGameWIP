@@ -1,0 +1,431 @@
+#pragma once
+
+// Weather on the world's surfaces: wet ground, puddles and contact grime, written as one material node that runs after a
+// surface master's own node (the photographed boxes, the plain tinted master the roads wear, the window master).
+//
+// Wet: the look's Wetness (its parameter collection, 0 when no look is applied) soaks up-facing pixels only: the albedo
+// darkens toward soakDarken, the roughness falls toward a soaked value of soakRough plus soakKeep of the dry one's
+// distance from it (wet stone and timber 0.22-0.30, never a mirror: only standing water goes under 0.10) and the normal
+// flattens a little. A flat ground slab's worn track (its long middle, wandering) soaks fully and to 0.15-0.20, so lamps
+// stretch down it as streaks; its long edges (kerb line, shop steps) fill its bowls as a gutter does. A drying-patch noise leaves part of the ground damp (dampShare of the soak). Puddles stand in low
+// spots only: at most one per puddleCellM plan cell, an ellipse (area-preserving stretch, its rim wobbled by a fine
+// noise) kept inside its cell, so the share of ground any puddle can cover is capped by construction
+// (weatherPuddleCapShare, under 15%). Inside its bowl the water rises with Wetness: a soft darker edge, then a core with
+// roughness puddleRough and a flat normal (no ring where all three would change at once). A gutter (a box tilted across
+// its own Y axis, a carriageway slab falling from the crown to the kerb: its low long edge, within gutterM) and a
+// surface's own low spots (the Water input: worn tracks, sunk stones) fill a bowl further but never widen it.
+// With the Water input a surface's joints hold water: soaked fully, darker and at jointWetRough.
+//
+// Dirt (boxes only): a grime band 0..grimeHeightM over the ground on side faces (the box's bottom, or a given height
+// over the street floor for the window master) and a darkening within edgeWidthM of a side face's vertical edges.
+// Pieces thinner than grimeThinM (sign plates, poles, rails) take neither. Top grime (boxes, its own option): on the top
+// of a ground slab (a street piece, or any box at most topSlabMaxZ thick and topSlabMinPlan across) a dark band along
+// its low (gutter) edge when it is cambered, else along both long edges (a pavement's kerb line and wall foot).
+//
+// Street (the plain master, its own option): a street piece's texture by its "Street" kind (StreetKind; 0 none):
+// asphalt with aggregate, a 14 m tone layer, polished wheel paths per lane, a worn lane centre and edges, a damp
+// gutter, tar-sealed joints every 20-40 m and sealed crack lines; markings at paint albedo 0.75, faded and chipped,
+// worn where wheels cross; pavements in tiles with sunk joints and per-tile tone; kerbs in stones with joints; lanes in
+// old concrete panels with patches. Fine detail fades with the pixel's footprint. It runs before the weather.
+//
+// The C++ functions mirror the HLSL, one term each, for tests. Plain C++20; surfaceWeatherHlsl allocates (build time
+// only), the rest doesn't.
+
+#include "ftcore/Api.h"
+
+#include <string>
+#include <string_view>
+
+namespace ftcore {
+
+struct SurfaceWeatherSpec {
+    float upFrom = 0.55f, upTo = 0.85f;  // vertex normal z: dry below upFrom, fully up-facing from upTo
+    float soakDarken = 0.62f;            // albedo multiplier at full soak (unlit setts read 0.65-0.72 of dry in frame luma)
+    float soakRough = 0.20f;             // roughness at full soak (plus soakKeep of the dry roughness's distance from it)
+    float soakKeep = 0.12f;              // share of the dry roughness kept at full soak: dry 0.65-0.95 soaks to 0.25-0.29
+    float roughCurve = 0.8f;             // roughness falls by soak^roughCurve
+    float soakFlatten = 0.3f;            // share of the normal flattened at full soak (a wet film, not standing water)
+    float dampShare = 0.45f;             // soak in a drying patch, as a share of a wet patch's
+    float patchScaleM = 6.0f;            // drying-patch noise cell
+    float puddleScaleM = 0.5f;           // the noise cell of a puddle's rim wobble (Noise[0])
+    float puddleCellM = 3.5f;            // one puddle at most per plan cell this size
+    float puddleChance = 0.9f;           // share of cells holding one
+    float puddleRadiusLoM = 0.4f, puddleRadiusHiM = 0.66f;  // its radius (an ellipse of the same area)
+    float puddleStretch = 1.7f;          // at most this long over its radius (and as much narrower)
+    float puddleWobble = 0.15f;          // the rim's radius varies by this share, by the wobble noise
+    float puddleCover = 0.9f;            // the water's level in its bowl: 1 - this at Wetness 1 (bowl 1 at the centre)
+    float puddleEdge = 0.2f;             // bowl span of a puddle's soft wet-to-dry edge (darkens first)
+    float puddleCoreFrom = 0.4f;         // the mirror (puddleRough, flat normal) starts this far into the edge ramp
+    float puddleRough = 0.045f;          // standing water 0.03-0.06: a mirror with a little ripple, not glass
+    float puddleDarken = 0.75f;          // albedo multiplier in a puddle, over the soak's
+    // The worn track down a flat ground slab's long middle (a lane's foot traffic), wandering off the middle by up to
+    // trackWanderM and trackHalfLoM-HiM either side of its centre. It soaks fully (no drying patch) and smoother than
+    // the rest, so a lamp's reflection stretches down it as a streak.
+    float trackRough = 0.095f;           // soaked roughness on the track (plus soakKeep of the dry's distance): 0.15-0.20
+    float trackHalfLoM = 0.6f, trackHalfHiM = 0.9f;  // its half width (1.2-1.8 m across)
+    float trackWanderM = 0.4f;           // its centre's swing off the slab's middle line
+    float trackScaleM = 7.0f;            // the swing's and width's noise cell along the slab
+    float trackAspect = 2.0f;            // a flat ground slab at least this many times longer than wide carries one
+    float trackDryPolish = 0.0f;         // dry roughness lost on the track, as a share (0: the dry look as before)
+    float kerbBias = 1.0f;               // a flat ground slab's long edges (kerb line, shop steps) deepen its bowls as a
+                                         // gutter does, by this share of the gutter weight
+    // Edge pools: one low pool per shop entrance along a flat ground slab's long edge, whatever its cell holds. Off at
+    // pitch 0. The pools sit every edgePoolPitchM along the slab (its local long axis, metres from its centre), the first
+    // at edgePoolPhaseM, each jittered by up to edgePoolJitterM along the edge, its centre edgePoolInsetM in from the
+    // edge. The pitch must leave room for one pool, so it is at least 2 * (jitter + along radius).
+    float edgePoolPitchM = 0.0f;         // a pool per this much edge (a bay's width); 0: none
+    float edgePoolPhaseM = 0.0f;         // the along coordinate of one pool's centre before its jitter
+    float edgePoolSide = 0.0f;           // +1 the edge on the slab's +across side only, -1 the - side only, 0 both
+    float edgePoolJitterM = 0.3f;        // the centre's swing along the edge
+    float edgePoolInsetM = 0.25f;        // the centre's distance in from the edge: at most the half extent, so every pool
+                                         // runs against the step foot
+    float edgePoolHalfLoM = 0.22f, edgePoolHalfHiM = 0.35f;  // its half extent across the edge (0.44-0.7 m across)
+    float edgePoolStretch = 1.2f;        // its along radius over the across one
+    float edgePoolDeep = 1.3f;           // its bowl scale: lower than a cell's puddle, so it fills first
+    float tiltMin = 0.005f;              // |world z of the box's Y axis| over which a box counts as cambered
+    float gutterM = 0.6f;                // the gutter band's width over the low edge
+    float gutterBias = 0.6f;             // a bowl deepened by this share at the low edge, falling to 0 across the band
+    float lowBias = 0.8f;                // ... and by this share up or down at a surface's low or high spot (Water.y)
+    float jointWetDarken = 0.6f;         // albedo multiplier on a joint holding water (the Water input's x)
+    float jointWetRough = 0.3f;          // a wet joint's roughness (no glints off the grit, no mirror)
+    float grimeHeightM = 1.0f;
+    float grimeStrength = 0.8f;
+    float grimeScaleM = 0.5f;            // grime noise cell
+    float grimeThinM = 0.12f;            // pieces thinner than this (either plan side) take no dirt
+    float edgeWidthM = 0.12f;
+    float edgeStrength = 0.35f;
+    float dirtR = 0.55f, dirtG = 0.5f, dirtB = 0.44f;  // albedo multiplier at full dirt
+    float dirtOcclusion = 0.5f;          // AO lost at full dirt
+    float grimeCurve = 1.0f;             // the band's falloff exponent over its height
+    float topGrimeM = 0.35f;             // a ground slab's dirty band, in from its edge
+    float topGrimeStrength = 0.45f;
+    float topSlabMaxZ = 0.45f;           // a box no thicker than this and ...
+    float topSlabMinPlan = 1.5f;         // ... at least this across both ways counts as a ground slab
+};
+
+// The street kinds the plain master's "Street" parameter takes (the road tints' MICs set it; roadStreetKind).
+enum class StreetKind : int { None = 0, Asphalt = 1, Pavement = 2, Kerb = 3, Marking = 4, Lane = 5 };
+
+struct StreetSurfaceSpec {
+    float laneM = 3.4f;                  // a carriageway half has round(width / laneM) lanes, at least 1
+    float wheelOffM = 0.85f;             // wheel paths at a lane's centre plus and minus this
+    float wheelWideM = 0.22f;
+    float wheelDarken = 0.12f;           // albedo lost in a wheel path
+    float wheelPolish = 0.25f;           // share of roughness lost in a wheel path
+    float wornCentre = 0.07f;            // albedo gained along a lane's centre
+    float wornEdge = 0.06f;              // albedo gained 0.35-0.9 m off the gutter and along the crown
+    float gutterDampM = 0.35f;           // the damp strip at the gutter: smoother
+    float gutterDampPolish = 0.2f;
+    float macroScaleM = 14.0f;           // the tone layer's cell
+    float macroTone = 0.1f;              // its albedo swing, plus and minus
+    float aggregateM = 0.025f;           // aggregate cell
+    float aggregateSlope = 0.08f;        // its normal's tilt at most
+    float jointEveryM = 30.0f;           // asphalt joints: one per cell of this, jittered +-jointJitterM (20-40 m apart)
+    float jointJitterM = 5.0f;
+    float jointWideM = 0.02f;
+    float sealDarken = 0.5f;             // albedo multiplier on tar seal (joints and cracks)
+    float crackScaleM = 3.0f;            // sealed-crack noise cell
+    // Asphalt detail tile (SurfaceWeatherOptions::streetDetail): a baked 1 m tile of stones and binder, world-mapped on
+    // the asphalt; it replaces the procedural aggregate near by (the mips carry it to its mean far off).
+    float detailTileM = 1.0f;            // the tile's side in the world
+    // The asphalt's tint (RoadTint::Asphalt's colour, and the paint's and decals' stand-in for the road under them).
+    // The tile v5's albedo mean equals its luminance, so the tile lands at its own values: binder 0.03-0.05, bare
+    // stone tops 0.10-0.20.
+    float asphaltR = 0.066f, asphaltG = 0.065f, asphaltB = 0.063f;
+    float asphaltTintRough = 0.89f;      // its roughness (about the tile's mean, so the tile's roughness lands as is)
+    float detailAlbedoMean = 0.065f;     // the albedo map's linear luminance mean (the tile adds grain, not tone)
+    float detailRoughMean = 0.892f;      // the roughness channel's mean
+    float detailAOMean = 0.912f;         // the AO channel's mean, and the stone-peak channel's (the paint's stand-ins)
+    float detailPeakMean = 0.235f;
+    // The asphalt's final range (after every tone and roughness term, before the weather): albedo luminance clamped to
+    // asphaltAlbedoLo..Hi (binder about 0.03-0.05, stone tips never past 0.20); off the wheel paths roughness clamped to
+    // asphaltRoughLo..Hi (worn stone tops 0.78-0.85 inside it); in a wheel band it goes to
+    // wheelBandRough..wheelBandRoughTop (the latter on polished stone peaks); tar seal (joints, sealed cracks) to
+    // sealRough, black and glossy. Dry asphalt's specular is asphaltSpecular (F0 about 0.028), the rest 0.5.
+    float asphaltAlbedoLo = 0.03f;
+    float asphaltAlbedoHi = 0.20f;
+    float asphaltRoughLo = 0.75f;
+    float asphaltRoughHi = 0.95f;
+    float asphaltSpecular = 0.35f;
+    float wheelBandRough = 0.7f;
+    float wheelBandRoughTop = 0.6f;
+    float sealRough = 0.35f;
+    // Street class by the asphalt slab's width (its short side, or a cambered half's): side lanes up to sideLaneM wide
+    // get crackSideMul times the sealed cracks, a main road from mainRoadM wide crackMainMul times.
+    float sideLaneM = 3.5f;
+    float mainRoadM = 6.0f;
+    float crackSideMul = 2.0f;
+    float crackMainMul = 0.7f;
+    // With the tile, a wheel path polishes the exposed stone tops (the tile's blue channel) toward wheelTopRough and the
+    // binder only by wheelPolishBinder (the dense binder stays matt; wheelPolish is the tile-less road's).
+    float wheelTopRough = 0.55f;
+    float wheelPolishBinder = 0.1f;
+    float wheelRunM = 4.0f;              // a wheel path's strength wanders along it on this cell (0.75-1)
+    // Kerb litter (asphalt, a cambered half): pale silt and fallen blossom petals in from the gutter.
+    float litterM = 0.5f;                // the litter's band from the gutter edge
+    float litterDust = 0.25f;            // albedo gained at full silt
+    float petalCellM = 0.035f;           // one petal at most per cell this size
+    float petalShare = 0.35f;            // the share of cells at the gutter holding one (falling to 0 across the band)
+    float petalR = 0.68f, petalG = 0.5f, petalB = 0.52f; // a fresh petal's albedo (aged ones brown toward the road)
+    float detailTone = 1.0f;             // share of the tile's albedo ratio taken into the tone
+    float detailSlope = 0.5f;            // share of the tile's true slope taken into the normal
+    float detailRough = 1.0f;            // share of the tile's roughness ratio taken (all: the tile's spread survives)
+    float detailAO = 0.7f;               // share of the tile's cavity AO taken
+    // Anti-repetition of the tile (stochastic hex tiling): three reads on a triangular lattice this far apart, each
+    // vertex turned and offset at random, blended with weights raised to detailHexSharp and the contrast restored.
+    // detailHexM <= 0 reads the tile once, straight (the repeat shows at 1 m on long roads).
+    float detailHexM = 0.6f;
+    float detailHexSharp = 4.0f;
+    float detailHexTurn = 1.0f;          // share of a full turn a vertex may take (asphalt has no grain direction)
+    // Past this camera distance (m) the tile is read once, straight (a read per map against three): the repeat the hex
+    // reads hide no longer shows there. From 0.8 of it the two blend on the distance. 0 keeps the three reads everywhere.
+    float detailHexFarM = 30.0f;
+    float tileM = 0.4f;                  // pavement tile
+    float tileJointM = 0.005f;           // half a joint
+    float tileBevelM = 0.008f;
+    float tileDepthM = 0.004f;
+    float tileTone = 0.08f;              // per-tile albedo swing, plus and minus
+    float kerbStoneM = 0.9f;
+    float paintAlbedo = 0.75f;           // a marking's brightest channel
+    float laneSlabM = 3.6f;              // a lane's concrete panel
+    float cornerSlabM = 0.311f;          // a pavement box this thick (within 4 mm) is a junction corner's piece: its
+                                         // tiles lie on the world's grid, not the box's (Roads.h kRoadCornerPaveDeep)
+    // Joint depth (SurfaceWeatherOptions::jointDepth): real groove depths, an imperfect grid and parallax near by.
+    float paveJointDepthM = 0.0065f;     // a pavement tile's joint floor under its face
+    float paverJointDepthM = 0.005f;     // a lane paver's
+    float kerbJointDepthM = 0.008f;      // a kerb stone's
+    float sunkShare = 0.06f;             // tiles (by their hash) sunk sinkMinM..sinkMaxM
+    float tiltShare = 0.06f;             // tiles tilted tiltMinRad..tiltMaxRad across (a constant slope, any direction)
+    float chipShare = 0.05f;             // tiles with one chipped corner, chipMinM..chipMaxM across (not kerbs)
+    float sinkMinM = 0.001f, sinkMaxM = 0.003f;
+    float tiltMinRad = 0.003f, tiltMaxRad = 0.008f;  // 0.17-0.46 degrees
+    float chipMinM = 0.02f, chipMaxM = 0.03f;
+    float parallaxNearM = 12.0f;         // parallax full within this of the camera, gone by parallaxFarM
+    float parallaxFarM = 15.0f;
+    float parallaxNdVFull = 0.25f;       // ... and full where the view's cosine to the face is over this, gone under
+    float parallaxNdVNone = 0.12f;       // parallaxNdVNone
+    float parallaxSlopeClamp = 0.2f;     // the view's cosine floor in the relief solve's slope
+    float jointCavityAO = 0.6f;          // AO on a joint's floor (a narrow, deep joint) ...
+    float jointOpenAO = 0.75f;           // ... and on the widest, shallowest (light reaches in)
+    float jointWidthMin = 0.7f, jointWidthMax = 1.4f;  // each joint's width factor (its own cell's hash, a noise along it)
+    float jointDepthMin = 0.7f, jointDepthMax = 1.3f;  // and its depth factor
+    float jointNoiseM = 0.35f;           // the noise along a joint, its lattice step: tiles, pavers, kerbs (about a
+    float paverNoiseM = 0.08f;           // segment's length, so none is even end to end)
+    float kerbNoiseM = 0.12f;
+    float jointNoiseShare = 0.3f;        // the noise's share of each factor (the rest the joint's hash)
+    float jointBevelScale = 1.5f;        // the relief's arrises this much wider than the plain layer's
+    float jointFloorToneHi = 0.6f;       // a joint floor's tone against its unit's, by its grit (never black) ...
+    float jointFloorToneLo = 0.45f;
+    float jointDirtTone = 0.8f;          // ... dirt patches on the floor darker by this, wet by jointWetTone
+    float jointWetTone = 0.9f;
+    float jointRoughDry = 0.6f;          // a joint floor's roughness at least this dry, jointRoughWet wet, plus
+    float jointRoughWet = 0.45f;         // jointRoughGrit by the grit noise
+    float jointRoughGrit = 0.15f;
+    float jointSlopeMax = 1.7320508f;    // the relief's normal tips at most 60 degrees from the face's
+    float jointNormalFrom = 0.5f;        // the joint normal full until the footprint across the joint is this share
+    float jointNormalTo = 1.0f;          // of the groove (joint and both arrises), gone at this
+    float paverFlawScale = 0.25f;        // lane pavers' sunk, tilt and chip shares against the tiles'
+    float unitToneExtra = 0.04f;         // per-unit tone swing the relief adds (plus and minus)
+    float unitRoughSwing = 0.08f;        // per-unit roughness swing (plus and minus)
+};
+
+// A jointed grid's numbers for the relief: cells cellX by cellY (m), every other row offset by bond cells, joints
+// halfJointM half wide, arrises bevelM round, the floor depthM under the face, flaw shares scaled by flawScale, the
+// noise along a joint noiseM a step.
+struct StreetJointGrid {
+    float cellX = 0.4f, cellY = 0.4f, bond = 0.f, halfJointM = 0.005f, bevelM = 0.008f, depthM = 0.0065f;
+    float flawScale = 1.f, noiseM = 0.35f;
+};
+// The factors on the joints nearest a point: the one across x (widthX, depthX) and the one across y.
+struct StreetJointFactors {
+    float widthX = 1.f, widthY = 1.f, depthX = 1.f, depthY = 1.f;
+};
+// The relief at a point: height z (m), its gradient (gx, gy; slope-clamped, joint part faded by the footprint), the
+// floor share (1 in a joint or chip) and how open its joint is (0 narrow and deep .. 1 wide and shallow).
+struct StreetJointSample {
+    float z = 0.f, gx = 0.f, gy = 0.f, floorShare = 0.f, open = 0.5f;
+};
+// A tile's flaws from its key (its cell id plus the box's offset, as the HLSL's): sinkM down, a tilt (rad, x and y),
+// a chipped corner (chipX, chipY its signs, chipR its size in m; 0 none).
+struct StreetTileFlaw {
+    float sinkM = 0.f, tiltX = 0.f, tiltY = 0.f;
+    float chipX = 0.f, chipY = 0.f, chipR = 0.f;
+};
+struct StreetPoint {
+    float x = 0.f, y = 0.f;
+};
+
+// 0..1 wheel-path weight at fromLowM across a carriageway half from its low edge, the half sizeY across.
+FTCORE_API float streetWheelPath(float fromLowM, float sizeY, const StreetSurfaceSpec& spec);
+// Distance (m) from posM along a slab's run to its nearest asphalt joint; the joints depend on the run's position and
+// the slab's length alone, so both halves of a road line up.
+FTCORE_API float streetJointDistance(float posM, float lengthM, const StreetSurfaceSpec& spec);
+// 0..1 paint left on a marking: fade noise 0..1, wheel 0..1 (how much a wheel path crosses there), chip noise 0..1.
+FTCORE_API float streetPaintLeft(float fade, float wheel, float chip);
+// Whether a pavement box sz thick (m) is a junction corner's piece (tiles on the world's grid).
+FTCORE_API bool streetCornerSlab(float sz, const StreetSurfaceSpec& spec);
+// A pavement tile's height, 0 (a joint's floor) to 1 (its face), dM from its nearest edge.
+FTCORE_API float streetTileHeight(float dM, const StreetSurfaceSpec& spec);
+// The jointDepth grids: StreetKind::Pavement (tiles), Lane (pavers, running bond) or Kerb (stones along x; the grid
+// is 10 km across y, so pass y = 5000 and there are no corners). Any other kind gives the pavement's.
+FTCORE_API StreetJointGrid streetJointGrid(StreetKind kind, const StreetSurfaceSpec& spec);
+// The HLSL's FTRelief.Hs flaws for a tile key (cell id + box offset), the shares scaled by shareScale.
+FTCORE_API StreetTileFlaw streetTileFlaw(float keyX, float keyY, const StreetSurfaceSpec& spec, float shareScale = 1.f);
+// The HLSL's FTRelief.Fac: the width and depth factors of the joints nearest (x, y) (each joint keyed by its own cell,
+// so both sides of it agree), with the noise along it.
+FTCORE_API StreetJointFactors streetJointFactors(float x, float y, float keyX, float keyY, const StreetJointGrid& grid,
+                                                 const StreetSurfaceSpec& spec);
+// The HLSL's FTRelief.Z: the relief at (x, y) m in the grid's frame with the factors f and the footprint (m) across
+// the x joints (footX) and the y joints (footY); 0 for none.
+FTCORE_API StreetJointSample streetJointSample(float x, float y, float keyX, float keyY, const StreetJointFactors& f,
+                                               float footX, float footY, const StreetJointGrid& grid,
+                                               const StreetSurfaceSpec& spec);
+// Its height (m; 0 the nominal face, -depthM times the depth factor a joint's floor), the factors at (x, y), no
+// footprint. Sunk, tilted and chipped tiles included.
+FTCORE_API float streetJointZ(float x, float y, float keyX, float keyY, const StreetJointGrid& grid,
+                              const StreetSurfaceSpec& spec);
+// The footprint across a joint (m): the pixel's footprint foot (its long axis or more), nDotV the view's cosine to the
+// face, viewAcross the view's unit vector's component across the joint. foot for a joint across the view, foot *
+// nDotV for one along it.
+FTCORE_API float streetJointFootprint(float foot, float nDotV, float viewAcross);
+// A joint floor's tone against its unit's: grit, dirt and wet 0..1.
+FTCORE_API float streetJointFloorTone(float grit, float dirt, float wet, const StreetSurfaceSpec& spec);
+// A joint floor's roughness from rough: at least jointRoughDry (dry) to jointRoughWet (wet), plus the grit's share.
+FTCORE_API float streetJointFloorRough(float rough, float grit, float wet, const StreetSurfaceSpec& spec);
+// The HLSL's parallax weight RlW on a top face (the HLSL also multiplies by TopF): switch 0..1, distM to the camera,
+// nDotV the view's cosine to the face, fine the detail fade (1 near).
+FTCORE_API float streetParallaxWeight(float distM, float nDotV, float jointDepth, float fine, const StreetSurfaceSpec& spec);
+// The HLSL's relief solve (before its weight): the point (x, y) shifted for a view whose unit vector toward the
+// camera has (viewX, viewY) in the grid's plane and nDotV along its normal.
+FTCORE_API StreetPoint streetReliefShift(float x, float y, float viewX, float viewY, float nDotV, float keyX, float keyY,
+                                         const StreetJointGrid& grid, const StreetSurfaceSpec& spec);
+// 1 when a box (thickness and plan sides, m) counts as a ground slab.
+FTCORE_API float weatherGroundSlab(float sz, float sx, float sy, const SurfaceWeatherSpec& spec);
+// Top grime on a ground slab: edgeM from its dirty edge, noise 0..1, slab 0..1.
+FTCORE_API float weatherTopDirt(float edgeM, float noise, float slab, const SurfaceWeatherSpec& spec);
+
+struct SurfaceWeatherOptions {
+    bool boxFrame = true;    // the node reads LocalPos and AxisX/Y/Z (gutters, and dirt when grime)
+    bool grime = true;       // dirt: contact grime and edge darkening (needs boxFrame)
+    bool aboveInput = false; // dirt measures height from an Above input (m over the ground), not the box's bottom
+    bool topGrime = true;    // dirt along a ground slab's top edges (needs boxFrame)
+    bool street = false;     // the street layer, by a Street input (needs boxFrame)
+    bool jointDepth = false; // the street's joints as real recesses, by ViewVec and JointDepth inputs (needs street)
+    bool streetDetail = false; // the asphalt's baked detail tile, by DetAlb, DetNrm and DetRA texture inputs (needs street)
+    bool specOut = false;    // a SpecOut output: the street layer's specular (dry asphalt's own, else 0.5)
+    bool waterInput = false; // a Water input (float2) from the surface node: x its joint share 0..1 (joints hold
+                             // water), y its low spot 0..1 (0.5 level; 1 a worn track or sunk stone, 0 a proud one)
+};
+
+// 0..1, how up-facing a pixel is from its vertex normal's world z.
+FTCORE_API float weatherUp(float normalZ, const SurfaceWeatherSpec& spec);
+// 0..1, how much a pixel is a side face (vertical) from its vertex normal's world z.
+FTCORE_API float weatherSide(float normalZ);
+// The soak: wetness (0..1) on an up-facing share up, less in a drying patch (patchNoise 0..1 low).
+FTCORE_API float weatherSoak(float wetness, float up, float patchNoise, const SurfaceWeatherSpec& spec);
+// 0..1 gutter weight: axisYz the world z of the box's unit Y axis, localY the pixel's metres from the centre along it,
+// sizeY the box's size along it in metres. 0 on a flat box.
+FTCORE_API float weatherGutter(float axisYz, float localY, float sizeY, const SurfaceWeatherSpec& spec);
+// The two-octave value noise of the node's Noise loop at p (cells, 3D; the plan channels read z 0), on its 16-bit
+// lattice hash: the HLSL's Noise[ch] is weatherNoise of WorldPos / (scale * 100), plus the channel's offset.
+FTCORE_API float weatherNoise(float px, float py, float pz);
+// The node's Noise[0] (the rim wobble) at a plan point in metres.
+FTCORE_API float weatherRimNoise(float xM, float yM, const SurfaceWeatherSpec& spec);
+// A plan point's puddle bowl (metres): 1 at the centre of its cell's puddle, falling to 0 on its wobbled rim (rimNoise
+// 0..1), under 0 outside it and -1 in a cell holding none.
+FTCORE_API float weatherPuddleBowl(float xM, float yM, float rimNoise, const SurfaceWeatherSpec& spec);
+// The most ground puddles can cover at any wetness (every cell holding one at the largest radius, its rim out fully).
+FTCORE_API float weatherPuddleCapShare(const SurfaceWeatherSpec& spec);
+// 0..1 puddle in a bowl (weatherPuddleBowl): gutter 0..1, low 0..1 (0.5 when the surface gives none). 0 wherever
+// bowl <= 0, at any wetness, gutter or low.
+FTCORE_API float weatherPuddle(float wetness, float up, float bowl, float gutter, float low, const SurfaceWeatherSpec& spec);
+// A joint's roughness and albedo multiplier holding water: rough after the soak, joint its share 0..1, wet and up as the
+// soak's, puddle the puddle over it (a puddle's own numbers win there).
+FTCORE_API float weatherJointRough(float rough, float joint, float wet, float up, float puddle, const SurfaceWeatherSpec& spec);
+FTCORE_API float weatherJointDarken(float joint, float wet, float up, float puddle, const SurfaceWeatherSpec& spec);
+// 0..1 dirt on a face: side 0..1 (how vertical), thinnest the box's thinner plan side (m), aboveM over the ground,
+// edgeM the distance to the face's nearest vertical edge, noise 0..1.
+FTCORE_API float weatherDirt(float side, float thinnest, float aboveM, float edgeM, float noise, const SurfaceWeatherSpec& spec);
+// The roughness after soak and puddle: never under min(rough, soakRough) outside a puddle's core.
+FTCORE_API float weatherRough(float rough, float soak, float puddle, const SurfaceWeatherSpec& spec);
+// The same on the worn track (track 0..1, weatherTrack): its soaked roughness goes toward trackRough, its dry one loses
+// trackDryPolish of itself. weatherRough is this at track 0.
+FTCORE_API float weatherRoughTrack(float rough, float soak, float puddle, float track, const SurfaceWeatherSpec& spec);
+// 1 when a box (thickness and plan sides, m; axisYz as weatherGutter's) is a flat ground slab: a ground slab
+// (weatherGroundSlab) that isn't cambered.
+FTCORE_API float weatherFlatSlab(float sz, float sx, float sy, float axisYz, const SurfaceWeatherSpec& spec);
+// 0..1 on a flat ground slab's worn track: acrossM the pixel's metres from the slab's long middle line, alongM along it,
+// longM and shortM its plan sides, flat weatherFlatSlab. 0 off the track and on a slab under trackAspect.
+FTCORE_API float weatherTrack(float acrossM, float alongM, float longM, float shortM, float flat, const SurfaceWeatherSpec& spec);
+// 0..1 kerb weight on a flat ground slab: edgeM the pixel's metres from the nearer long edge (a gutter's falloff).
+FTCORE_API float weatherKerb(float edgeM, float flat, const SurfaceWeatherSpec& spec);
+// A flat ground slab's edge-pool bowl at a pixel (as weatherPuddleBowl's, scaled by edgePoolDeep): acrossM and alongM
+// as weatherTrack's, shortM the slab's short plan side, rimNoise the wobble noise. Under 0 off every pool, -1 with pitch
+// 0 or off a flat slab. The node takes the larger of this and the cell's bowl.
+FTCORE_API float weatherEdgePoolBowl(float acrossM, float alongM, float shortM, float flat, float rimNoise,
+                                     const SurfaceWeatherSpec& spec);
+// Sets spec fields from "key=value[,key=value...]", the keys the field names above (soakRough=0.22,puddleCellM=3.2).
+// False on an unknown key or a value that isn't a finite number, with that entry in error (when given); fields set by
+// the entries before it stay set. Empty text is true and changes nothing.
+FTCORE_API bool applySurfaceWeatherOverrides(SurfaceWeatherSpec& spec, std::string_view text, std::string* error);
+// The albedo multiplier on one channel (0 r, 1 g, 2 b) after soak, puddle and dirt.
+FTCORE_API float weatherAlbedoScale(int channel, float soak, float puddle, float dirt, const SurfaceWeatherSpec& spec);
+
+// The node's body. Inputs: Albedo, Normal (world), Rough, AO, WorldPos, VertexNormal, Wetness, Amount (0 opts a
+// material out); with boxFrame LocalPos, AxisX, AxisY, AxisZ (the instance's axes in world space, scale included, on the
+// engine's 100 cm cube); with aboveInput Above; with waterInput Water; with street Street; with street and jointDepth ViewVec (float3, world,
+// cm, from the pixel to the camera, not normalised) and JointDepth (0..1, a run-time switch). Returns the albedo;
+// outputs NormalOut, RoughOut, AOOut. At Street 0 and Wetness 0, NormalOut is the Normal input, so a mesh's own normal
+// stays as it was; at JointDepth 0 every output is what the node gives without jointDepth.
+//
+// streetDetail: texture-object inputs DetAlb (sRGB albedo), DetNrm (DirectX normal map) and DetRA (linear: roughness in
+// red, AO in green), all on a detailTileM tile mapped on the world's plan. On asphalt (Street 1) the tile's albedo over
+// detailAlbedoMean scales the tone, its slope (detailSlope of it) joins the normal, its roughness over detailRoughMean
+// the roughness, and its AO the AO; the procedural aggregate's near terms are left out.
+//
+// jointDepth: pavement tiles, lane pavers and kerb stones get joints paveJointDepthM, paverJointDepthM and
+// kerbJointDepthM deep (each joint's width and depth varied by its hash and a noise along it) with wide, convex
+// arrises; by a per-tile hash sunkShare of tiles sit sunk, tiltShare tilt slightly and chipShare (not kerbs) lose a
+// corner to the joint floor (pavers a paverFlawScale of those). The normal is the height's true slope, at most
+// jointSlopeMax, faded per joint by the footprint across it (and the arris widened to that footprint), so joints along
+// the view hold further than joints across it. The joint floor is a gritty grey (jointFloorToneLo..Hi of its unit,
+// dirt patches darker), rough (jointRoughDry, jointRoughWet wet, except under a puddle), its AO jointCavityAO to
+// jointOpenAO. Units get extra tone and roughness swings. Near by (parallaxNearM..parallaxFarM, and not glancing) the
+// tile coordinate is shifted by an analytic relief solve on the top face (a kerb's side faces get no parallax). No new
+// screen derivatives: the only one is the street layer's footprint, as before.
+FTCORE_API std::string surfaceWeatherHlsl(const SurfaceWeatherSpec& spec, const SurfaceWeatherOptions& options,
+                                          const StreetSurfaceSpec& street = StreetSurfaceSpec{});
+
+// The same soak and puddles as a flat face of that node at Up 1, for a decal over it (so its wet edge matches the ground
+// under it): a snippet for inside another Custom node that reads WorldPos (cm), WetIn (0..1) and GutIn (0..1, the gutter
+// band), declares Noise, WSoak and WPud (and WPd* locals for the puddle cell), and darkens float3 C and smooths float R,
+// which the caller has declared.
+FTCORE_API std::string surfaceWetHlsl(const SurfaceWeatherSpec& spec);
+
+// The lattice hash under the street layer's and the road decals' value noise (FTStreetNoise, FTRoadDecalNoise N): integer
+// mixing on a cell's corner, so a corner reads the same from each of the four cells round it at any distance from the
+// origin. (A float hash of the corner's coordinate amplifies one rounding step into a new value, and the shader compiler
+// rounds a corner differently from its two sides: the cells' edges then tear.) 0..1, in 2^-24 steps.
+FTCORE_API float streetLatticeValue(int x, int y);
+// The value noise on it at p (cells): the corners blended by smoothstep, as the HLSL N.
+FTCORE_API float streetNoise(float x, float y);
+// The hash as an HLSL member function, "float L(int2 c) { ... }", one line.
+FTCORE_API const char* streetLatticeHlsl();
+// The asphalt tile's hex anti-repetition UVs (st.detailHexM > 0), as HLSL statements at `indent`, reading Pw (world plan,
+// m) and `noise`.L (streetLatticeHlsl): declares HxVar (the contrast restore) and, for j = 0..2, DUvj (the tile UV),
+// HxWtj (its weight), HxCj and HxSnj (its turn). The street layer and the paint decal both use it, so the paint wears on
+// the same stones the road shows under it.
+//
+// distM, when not empty (and st.detailHexFarM > 0), is an HLSL expression for the pixel's camera distance in metres: the
+// snippet then also declares HxNear (1 near, 0 past detailHexFarM), HxFar (1 - HxNear) and DUvF (the one straight read's
+// UV), scales every HxWtj by HxNear and HxVar toward 1 with it. The caller reads the three under
+// "[branch] if (HxNear > 0.0)" and the straight one, weighted HxFar, under "[branch] if (HxFar > 0.0)": a pixel takes
+// three reads near, one far, four only in the blend band. Each branch's own edge lies where its weight is 0, so the
+// implicit mips' quads that straddle it weigh nothing.
+FTCORE_API std::string streetHexUvHlsl(const StreetSurfaceSpec& st, const std::string& noise, const std::string& indent,
+                                       const std::string& distM = std::string());
+// The street class's crack (and patch) multiplier for an asphalt slab `widthM` across (0: a squarish fill, class 1):
+// crackSideMul up to sideLaneM, crackMainMul from mainRoadM, smoothstep between; as the street layer's CrackCls.
+FTCORE_API float streetCrackClass(float widthM, const StreetSurfaceSpec& st);
+
+}  // namespace ftcore

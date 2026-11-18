@@ -121,6 +121,37 @@ TEST_CASE("fight animator: too short a lead joins part way at the top rate; a pa
     CHECK(find(b, FightClip::HitReact)->time == doctest::Approx(0.3f)); // key 0.05 at 0.8: 0.25 later at 1.05
 }
 
+TEST_CASE("fight animator: a clip joined part way is in by half way to its key; a given top rate joins it sooner") {
+    FightAnimator a = makeAnimator(); // StrikeLeft's key at 0.4 s, fadeIn 0.1, maxRate 1.6
+    a.play(FightClip::StrikeLeft, 0.0, 0.1); // joined at 0.24 s
+    a.update(0.025);
+    REQUIRE(find(a, FightClip::StrikeLeft) != nullptr);
+    CHECK(find(a, FightClip::StrikeLeft)->weight == doctest::Approx(0.5f));
+    a.update(0.05);
+    CHECK(find(a, FightClip::StrikeLeft)->weight == doctest::Approx(1.f));
+    CHECK(find(a, FightClip::StrikeLeft)->time == doctest::Approx(0.32f));
+
+    FightAnimator b = makeAnimator();
+    b.play(FightClip::StrikeLeft, 0.0, 0.1, 3.f); // joined at 0.1 s, at three times its pace
+    b.update(0.05);
+    REQUIRE(find(b, FightClip::StrikeLeft) != nullptr);
+    CHECK(find(b, FightClip::StrikeLeft)->weight == doctest::Approx(1.f));
+    CHECK(find(b, FightClip::StrikeLeft)->time == doctest::Approx(0.25f));
+    b.update(0.1);
+    CHECK(find(b, FightClip::StrikeLeft)->time == doctest::Approx(0.4f));
+    CHECK(b.lastKeyTime() == doctest::Approx(0.1));
+    b.update(0.3); // past its key at its own pace, in full: the follow-through not hurried too
+    REQUIRE(find(b, FightClip::StrikeLeft) != nullptr);
+    CHECK(find(b, FightClip::StrikeLeft)->time == doctest::Approx(0.6f));
+    CHECK(find(b, FightClip::StrikeLeft)->weight == doctest::Approx(1.f));
+
+    FightAnimator c = makeAnimator();
+    c.play(FightClip::StrikeLeft, 0.0, 0.3); // only faster, from its start: the tuning's fade
+    c.update(0.05);
+    REQUIRE(find(c, FightClip::StrikeLeft) != nullptr);
+    CHECK(find(c, FightClip::StrikeLeft)->weight == doctest::Approx(0.5f));
+}
+
 TEST_CASE("fight animator: a chained strike waits for the key frame of the one before it") {
     FightAnimator a = makeAnimator();
     a.play(FightClip::StrikeLeft, 0.0, 0.5);  // starts at 0.1, impact at 0.5

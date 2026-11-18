@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "title": "Walk fixture",
+  "start": "../s1",
+  "flags": [
+    {"id": "sf.f_pick", "default": 0},
+    {"id": "sf.f_seen", "default": false},
+    {"id": "branch", "default": 0}
+  ],
+  "chapters": [{"id": "c1", "title": "C", "scenes": ["../s1", "s2"]}]
+}

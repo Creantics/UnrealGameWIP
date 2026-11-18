@@ -33,9 +33,10 @@ struct FFTKiteVfx
 	// Again before Reset: nothing. With -ArenaNoKiteFx: nothing, with one note.
 	void Spawn(AFTArenaFighter* Figure);
 	// One step. Events are this tick's, Host the kite's host (already stepped) and Fight the fight; KiteGround is the kite's
-	// position on the floor and LeadChest the lead's chest (world, cm).
+	// position on the floor and LeadHit the lead's chest across the floor at the height its blows land (its aim point's;
+	// world, cm): a fist's puff goes there.
 	void Feed(const ftcore::ArenaEvents& Events, const FFTKiteHost& Host, const ftcore::ArenaFight& Fight, const FVector& KiteGround,
-		const FVector& LeadChest);
+		const FVector& LeadHit);
 	// Stops every effect (a restart, after FFTKiteHost::Begin; the end of the fight).
 	void Stop();
 	// Stops them and forgets the components (the figure is going).

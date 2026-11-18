@@ -310,6 +310,47 @@ void roadGraphStreetLanes(const MassingStreet& street, double speedKmh, bool one
     }
 }
 
+void roadGraphNetLanes(const RoadNetStreet& street, RoadGraph& out) {
+    const MassingStreet m = roadNetStreet(street);
+    if (street.lanes != 4) {
+        roadGraphStreetLanes(m, street.speedKmh, street.oneWay, 0.0, out);
+        return;
+    }
+    const std::vector<RoadPoint> p = pointsOf(m);
+    if (p.size() < 2) return;
+    const double lw = (street.width - 2.0 * street.pavement - street.median) * 0.25;
+    const std::vector<RoadPoint> back(p.rbegin(), p.rend());
+    for (const int dir : {1, -1})
+        for (int k = 0; k < 2; ++k) {
+            RoadGraphLane l;
+            char buf[16];
+            std::snprintf(buf, sizeof buf, "-%c%d", dir > 0 ? 'F' : 'B', k + 1);
+            l.id = street.id + buf;
+            l.street = street.id;
+            l.dir = dir;
+            l.width = lw;
+            l.speedKmh = street.speedKmh;
+            l.oneWay = false;
+            l.pts = offsetLine(dir > 0 ? p : back, roadNetLaneOffset(street, k));
+            out.lanes.push_back(std::move(l));
+        }
+}
+
+void roadGraphFootLanes(const MassingStreet& street, double speedKmh, RoadGraph& out) {
+    if (roadFootClass(street) != RoadFootClass::Vehicle) return;
+    const RoadFootSection sc = roadFootSection(street);
+    if (!(sc.cwHi > sc.cwLo)) return;
+    MassingStreet c = street;
+    c.width = sc.cwHi - sc.cwLo;
+    c.pavement = 0.0;
+    const std::size_t first = out.lanes.size();
+    roadGraphStreetLanes(c, speedKmh, street.width <= kFootLaneUpTo + 1e-9, 0.0, out);
+    const double mid = (sc.cwLo + sc.cwHi) * 0.5; // the carriageway's centre, left of the street's
+    if (std::fabs(mid) > 1e-9)
+        for (std::size_t i = first; i < out.lanes.size(); ++i)
+            out.lanes[i].pts = offsetLine(out.lanes[i].pts, out.lanes[i].dir > 0 ? mid : -mid);
+}
+
 void roadGraphJunctions(const std::vector<MassingStreet>& streets, double snap, double pavementShare, RoadGraph& out) {
     const Net net = buildNet(streets, snap);
     int count = 0;
@@ -449,12 +490,20 @@ void roadGraphFromNet(const std::vector<RoadNetStreet>& streets, const RoadBuild
     std::vector<MassingStreet> ms;
     for (const RoadNetStreet& s : streets) {
         ms.push_back(roadNetStreet(s));
-        roadGraphStreetLanes(ms.back(), s.speedKmh, s.oneWay, 0.0, out);
+        roadGraphNetLanes(s, out);
     }
     // The junctions and their phases; the zebras are the build's.
     RoadGraph jg;
     roadGraphJunctions(ms, kRoadGraphSnap, 0.0, jg);
-    for (RoadGraphJunction& j : jg.junctions) out.junctions.push_back(std::move(j));
+    for (RoadGraphJunction& j : jg.junctions) {
+        // A scramble (as roadNetBuild finds it): an all-walk phase after the vehicle phases.
+        bool scramble = false;
+        for (const RoadNetStreet& s : streets)
+            for (const RoadPoint& q : s.scramble)
+                scramble = scramble || std::hypot(q.x - j.at.x, q.y - j.at.y) <= kRoadGraphSnap;
+        if (scramble && !j.phases.empty()) j.phases += ";W:all-walk";
+        out.junctions.push_back(std::move(j));
+    }
     for (const RoadQuad& q : build.crossings) {
         RoadGraphCrossing c;
         c.id = q.id;

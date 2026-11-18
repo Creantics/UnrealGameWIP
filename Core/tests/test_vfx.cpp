@@ -53,7 +53,9 @@ TEST_CASE("vfx: every Data/Vfx effect loads without warnings") {
     const Expect files[] = {{"ember_swirl", 1}, {"falling_leaves", 1}, {"fireworks", 3}, {"flipbook_fire", 1},
                             {"heal", 2},        {"heal_ring", 1},      {"hit_spark", 2}, {"magic_ribbon", 2},
                             {"perfect_burst", 2}, {"smoke", 1},        {"speed_sparks", 1}, {"stretched_sparks", 2}, {"dust_puff", 2},
-                            {"dealer_deal_tell", 3}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 3}, {"ink_hit", 3}};
+                            {"dealer_deal_tell", 3}, {"dealer_seam_open", 3}, {"dealer_seam_crit", 3}, {"ink_hit", 3},
+                            {"water_splash", 3}, {"water_drips", 1}, {"eatery_steam", 1}, {"rain", 1},
+                            {"rain_splash", 2}};
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -150,14 +152,28 @@ TEST_CASE("vfx: the leads' weapon effects load without warnings and keep their p
         std::uint32_t budget; // the sum of the emitters' maxParticles
         bool loops;
     };
-    const Expect files[] = {{"spell_bolt", 3, 24, false},
+    const Expect files[] = {{"spell_bolt", 6, 50, false},
+                            {"spell_cast", 2, 40, false},
                             {"spell_burst", 5, 140, false},
                             {"spell_ward", 3, 150, true},
-                            {"spell_impact", 2, 16, false},
+                            {"spell_impact", 5, 140, false},
                             {"muzzle_flash", 4, 17, false},
                             {"gun_tracer", 1, 2, false},
                             {"gun_impact", 3, 19, false},
-                            {"gauntlet_spark", 2, 34, false}};
+                            {"gauntlet_spark", 2, 14, false}};
+    // Only the spell effects layered dark under bright draw in listed order; the rest keep their look on a rebuild.
+    for (const char* name : {"spell_bolt", "spell_cast", "spell_impact", "spell_ward", "spell_burst", "muzzle_flash",
+                             "gun_impact"}) {
+        CAPTURE(name);
+        const std::string n = name;
+        const bool sorted = n != "spell_burst" && n.rfind("spell_", 0) == 0;
+        VfxEffect e;
+        REQUIRE(loadEffect(name, e));
+        CHECK(e.sorted == sorted);
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        CHECK(plan.sorted == sorted);
+    }
     for (const Expect& f : files) {
         CAPTURE(f.file);
         VfxEffect e;
@@ -196,17 +212,45 @@ TEST_CASE("vfx: the weapon effects keep their timing and reach") {
     REQUIRE(loadEffect("gun_tracer", e));
     CHECK(e.emitters[0].speed.hi * e.emitters[0].lifetime.hi == doctest::Approx(3.f));
 
-    // The bolt's head covers 3.2 m (speed x lifetime, no drag), and its streaks do not pass it.
+    // The bolt's head covers 3.2 m (speed x lifetime, no drag); nothing else passes it. Its dark shell is alpha
+    // blended and drawn first, so it holds on bright ground under the additive core.
     REQUIRE(loadEffect("spell_bolt", e));
     const int head = findVfxEmitter(e, "head");
     REQUIRE(head >= 0);
     const VfxEmitter& h = e.emitters[static_cast<std::size_t>(head)];
     CHECK(h.speed.hi * h.lifetime.hi == doctest::Approx(3.2f));
-    const int streaks = findVfxEmitter(e, "streaks");
-    REQUIRE(streaks >= 0);
-    const VfxEmitter& s = e.emitters[static_cast<std::size_t>(streaks)];
-    CHECK(s.speed.hi * s.lifetime.hi <= doctest::Approx(3.2f));
+    for (const VfxEmitter& b : e.emitters) {
+        CAPTURE(b.name);
+        CHECK(b.speed.hi * b.lifetime.hi <= doctest::Approx(3.2f));
+    }
     CHECK(h.subEmitters.empty()); // the pop at the end is spell_impact, played at the hit point by the game
+    const int shell = findVfxEmitter(e, "shell");
+    REQUIRE(shell >= 0);
+    CHECK(shell < head);
+    CHECK(e.emitters[static_cast<std::size_t>(shell)].blend == VfxBlend::Alpha);
+    CHECK(h.blend == VfxBlend::Additive);
+
+    // The cast's rings close on the palm, inside the shortest light startup (0.16 s).
+    REQUIRE(loadEffect("spell_cast", e));
+    for (const VfxEmitter& c : e.emitters) {
+        CAPTURE(c.name);
+        const float at = c.bursts.empty() ? 0.f : c.bursts[0].time;
+        CHECK(c.speed.hi < 0.f);
+        CHECK(c.radius + c.speed.hi * c.lifetime.hi > 0.f);
+        CHECK(c.radius + c.speed.hi * c.lifetime.hi < 0.03f);
+        CHECK(at + c.lifetime.hi <= doctest::Approx(0.16f));
+    }
+
+    // The impact's ring opens to 0.9 m in 0.18 s; its glow fades near the lens.
+    REQUIRE(loadEffect("spell_impact", e));
+    const int iring = findVfxEmitter(e, "ring");
+    REQUIRE(iring >= 0);
+    const VfxEmitter& ir = e.emitters[static_cast<std::size_t>(iring)];
+    CHECK(ir.radius + ir.speed.hi * ir.lifetime.hi == doctest::Approx(0.92f));
+    CHECK(ir.lifetime.hi == doctest::Approx(0.18f));
+    const int glow = findVfxEmitter(e, "glow");
+    REQUIRE(glow >= 0);
+    CHECK(e.emitters[static_cast<std::size_t>(glow)].nearFade);
 
     // The burst's ring travels about 3 m before it fades: v/drag * (1 - exp(-drag t)).
     REQUIRE(loadEffect("spell_burst", e));
@@ -488,6 +532,109 @@ TEST_CASE("vfx: Niagara plan stretches and lays flat") {
     CHECK(m.acceleration.z == doctest::Approx(90.f).epsilon(0.01)); // mean of 1.4 -> 0.4 m/s^2
     CHECK(anyGap(m, "limitVelocity"));
     CHECK(anyGap(m, "octaves"));
+}
+
+TEST_CASE("vfx: the water's drips are lit streaks, not glowing beads") {
+    VfxEffect e;
+    REQUIRE(loadEffect("water_drips", e));
+    REQUIRE(e.emitters.size() == 1);
+    const VfxEmitter& drops = e.emitters[0];
+    // Lit by the scene and laid over it, so they do not glow at night; drawn out along their fall.
+    CHECK(drops.lit);
+    CHECK(drops.blend == VfxBlend::Alpha);
+    CHECK(drops.stretch > 0.03f);
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, plan);
+    REQUIRE(plan.emitters.size() == 1);
+    CHECK(plan.emitters[0].lit);
+    CHECK_FALSE(plan.emitters[0].additive);
+    CHECK(plan.emitters[0].facing == VfxNiagaraFacing::VelocityAligned);
+    // An additive emitter is never lit, whatever its spec says; the splash keeps its own colour.
+    VfxEffect glow;
+    REQUIRE(importVfxEffect(R"({"name":"g","emitters":[{"name":"a","rate":1,"lifetime":1,"blend":"additive","lit":true}]})", glow));
+    planVfxNiagara(glow, plan);
+    CHECK_FALSE(plan.emitters[0].lit);
+    VfxEffect splash;
+    REQUIRE(loadEffect("water_splash", splash));
+    planVfxNiagara(splash, plan);
+    for (const VfxNiagaraEmitter& p : plan.emitters) CHECK_FALSE(p.lit);
+}
+
+TEST_CASE("vfx: the arena ground tells fade out near the camera") {
+    // The follow camera can stand inside the swoop's 8 m ring: every emitter fades near the lens, the ring unmoved. The
+    // stone tell's ring (under 1 m, at the boss's feet) and the deal tell (a glow on the dealer) need none.
+    CHECK(kVfxNearFadeStart == doctest::Approx(150.f));
+    CHECK(kVfxNearFadeEnd == doctest::Approx(350.f));
+    for (const char* file : {"kite_swoop_tell"}) {
+        CAPTURE(file);
+        VfxEffect e;
+        REQUIRE(loadEffect(file, e));
+        VfxNiagaraPlan plan;
+        planVfxNiagara(e, plan);
+        REQUIRE_FALSE(plan.emitters.empty());
+        for (const VfxNiagaraEmitter& p : plan.emitters) {
+            CAPTURE(p.name);
+            CHECK(p.nearFade);
+            CHECK(p.shape == VfxNiagaraShape::Ring);
+        }
+    }
+    // The swoop's ring stays at its reach (8 m out, 7.4 m in).
+    VfxEffect swoop;
+    REQUIRE(loadEffect("kite_swoop_tell", swoop));
+    VfxNiagaraPlan plan;
+    planVfxNiagara(swoop, plan);
+    for (const VfxNiagaraEmitter& p : plan.emitters) CHECK(p.ringRadius >= 740.f);
+    // Off by default, and only for an alpha sprite (lit or not): an additive one keeps its glow and says so.
+    VfxEffect plain;
+    REQUIRE(importVfxEffect(R"({"name":"p","emitters":[{"name":"a","rate":1,"lifetime":1}]})", plain));
+    planVfxNiagara(plain, plan);
+    CHECK_FALSE(plan.emitters[0].nearFade);
+    VfxEffect glow;
+    REQUIRE(importVfxEffect(R"({"name":"g","emitters":[{"name":"a","rate":1,"lifetime":1,"blend":"additive","nearFade":true}]})", glow));
+    planVfxNiagara(glow, plan);
+    CHECK_FALSE(plan.emitters[0].nearFade);
+    bool said = false;
+    for (const std::string& g : plan.emitters[0].gaps) said = said || g.rfind("nearFade:", 0) == 0;
+    CHECK(said);
+}
+
+TEST_CASE("vfx: rate and colour knobs, the ripple ring and lit near-fade") {
+    VfxEffect e;
+    std::string err;
+    REQUIRE(importVfxEffect(
+        R"({"name":"k","emitters":[
+            {"name":"a","rate":100,"rateParam":"Rate","colorParam":"Color","lifetime":1,"lit":true,"nearFade":true},
+            {"name":"b","rate":10,"rateParam":"Rate","colorParam":"Color","lifetime":1,"lit":true,"sprite":"ring"},
+            {"name":"c","bursts":[{"count":3}],"rateParam":"Rate","lifetime":1,"sprite":"ring",
+             "startColor":{"between":[[1,0,0,1],[0,0,1,1]]},"colorParam":"Tint"}]})",
+        e, &err));
+    REQUIRE(e.emitters.size() == 3);
+    CHECK(e.emitters[0].rateParam == "Rate");
+    CHECK(e.emitters[0].colorParam == "Color");
+    CHECK(e.emitters[1].sprite == VfxSprite::Ring);
+    VfxNiagaraPlan plan;
+    planVfxNiagara(e, plan);
+    REQUIRE(plan.emitters.size() == 3);
+    // A lit alpha sprite now fades near the lens, and binds its knobs.
+    CHECK(plan.emitters[0].lit);
+    CHECK(plan.emitters[0].nearFade);
+    CHECK(plan.emitters[0].rateParam == "Rate");
+    CHECK(plan.emitters[0].colorParam == "Color");
+    CHECK_FALSE(anyGap(plan.emitters[0], "nearFade"));
+    // A lit ring stays a ring; an unlit one is drawn soft and says so.
+    CHECK(plan.emitters[1].sprite == VfxSprite::Ring);
+    CHECK_FALSE(anyGap(plan.emitters[1], "sprite ring"));
+    CHECK(plan.emitters[2].sprite == VfxSprite::Soft);
+    CHECK(anyGap(plan.emitters[2], "sprite ring"));
+    // No rate: nothing to bind. Several start colours: the knob's default is the first.
+    CHECK(plan.emitters[2].rateParam.empty());
+    CHECK(anyGap(plan.emitters[2], "rateParam"));
+    CHECK(plan.emitters[2].colorParam == "Tint");
+    CHECK(anyGap(plan.emitters[2], "colorParam"));
+    // A knob is a plain name (it becomes "User.<name>").
+    CHECK(contains(importError(R"({"name":"x","rate":1,"rateParam":"User.Rate"})"), "rateParam"));
+    CHECK(contains(importError(R"({"name":"x","rate":1,"colorParam":""})"), "colorParam"));
+    CHECK(contains(importError(R"({"name":"x","rate":1,"sprite":"halo"})"), "sprite"));
 }
 
 TEST_CASE("vfx: one-shot plans report their duration") {

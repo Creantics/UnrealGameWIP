@@ -1,5 +1,7 @@
 #include "FTArenaHUD.h"
 
+#include "FTAimReticle.h"
+
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -10,14 +12,23 @@
 #include "FTArenaGameMode.h"
 #include "FTArenaHost.h"
 #include "FTArenaRunner.h"
+#include "ftcore/Settings.h"
 #include "FTPauseOverlay.h"
+#include "FTInputBindings.h"
+#include "FTNewUi.h"
+#include "Engine/GameViewportClient.h"
 #include "FTUiText.h"
 #include "GameFramework/PlayerController.h"
+#include "Engine/GameInstance.h"
+#include "FTPauseSubsystem.h"
+#include "FTSettingsSubsystem.h"
 
 namespace
 {
 const FLinearColor kArenaWhite(1.f, 1.f, 1.f);
 const FLinearColor kArenaDim(0.6f, 0.62f, 0.68f);
+// How long the fight's start shows the unbound-actions line (seconds of fight time).
+constexpr float kUnboundNoticeTime = 8.f;
 const FLinearColor kArenaPanel(0.02f, 0.02f, 0.05f, 0.62f);
 const FLinearColor kArenaBack(0.1f, 0.1f, 0.13f, 0.85f);
 const FLinearColor kArenaHpBack(0.18f, 0.05f, 0.05f, 0.85f);
@@ -32,10 +43,11 @@ const FLinearColor kArenaGold(1.f, 0.84f, 0.3f);
 const FLinearColor kArenaLoad(1.f, 0.5f, 0.12f);
 // The tell's colours: the answer it asks for.
 const FLinearColor kArenaTellParry(1.f, 0.84f, 0.3f);
-const FLinearColor kArenaTellBlock(1.f, 0.55f, 0.15f);
+const FLinearColor kArenaTellBlock(0.63f, 0.615f, 0.575f); // the floor's blockable tell (AFTArenaFighter): pale ink
 const FLinearColor kArenaTellDodge(1.f, 0.16f, 0.12f);
 
 const FTUiText kHpArena(TEXT("arena.hp"));
+const FTUiText kAllyArena(TEXT("arena.ally"));
 const FTUiText kStaminaArena(TEXT("arena.stamina"));
 const FTUiText kPoiseArena(TEXT("arena.poise"));
 const FTUiText kHealsArena(TEXT("arena.heals"));
@@ -52,7 +64,6 @@ const FTUiText kNoStaminaArena(TEXT("arena.no_stamina"));
 const FTUiText kAutoPlayArena(TEXT("arena.autoplay"));
 const FTUiText kIdleArena(TEXT("arena.idle"));
 const FTUiText kStatsArena(TEXT("arena.stats"));
-const FTUiText kHintArena(TEXT("arena.hint"));
 const FTUiText kLoadArena(TEXT("arena.load"));
 const FTUiText kLoadPlusArena(TEXT("arena.load_plus"));
 const FTUiText kReleaseReadyArena(TEXT("arena.release_ready"));
@@ -102,6 +113,7 @@ const FTUiText kAgainArena(TEXT("battle.again"));
 
 constexpr double kArenaPopupLife = 0.9;
 constexpr double kArenaImpactLife = 0.3;  // the tell's flash once the move is active
+constexpr double kArenaOnsetLife = 0.35;  // an off-frame windup marker's onset swell
 constexpr double kArenaHitEdgeLife = 0.45; // the red edge when the player is hit
 constexpr double kArenaParryEdgeLife = 0.4;
 constexpr double kArenaResultFade = 0.3;
@@ -304,9 +316,23 @@ void AFTArenaHUD::DrawPlayerPanel(const UFTArenaRunner& Mode)
 	DrawText(kStaminaArena, kArenaDim, X, Top + 50.f * S, Small, 1.1f * S);
 	DrawBar(X, Top + 70.f * S, W, 12.f * S, Stamina, Stamina < 0.05f ? kArenaDim : kArenaStamina, kArenaBack);
 
-	// Load, beside stamina and never in its place: a mark at a third (the Release opens above it), RELEASE READY
-	// once past it, OVERLOADED (pulsing) at the top with the verbs it locks.
+	// The ally (carrying runs only): a thin bar under the hp, labelled ALLY with its hp after it, dark once it is down.
+	if (Fight.allyMaxHp() > 0)
+	{
+		const float Ally = static_cast<float>(Fight.allyHp()) / static_cast<float>(Fight.allyMaxHp());
+		const FLinearColor AllyColor = Fight.allyAlive() ? kArenaGreen : kArenaDim;
+		DrawBar(X, Top + 44.f * S, W * 0.6f, 5.f * S, Ally, AllyColor, kArenaBack);
+		DrawText(kAllyArena, kArenaDim, X + W * 0.6f + 10.f * S, Top + 40.f * S, Small, 0.9f * S);
+		DrawText(ArenaNumberOf(AllyText, Fight.allyHp(), Fight.allyMaxHp()), AllyColor, X + W * 0.6f + 50.f * S, Top + 40.f * S, Small,
+			0.9f * S);
+	}
+
+	// Load, beside stamina and never in its place: a mark at a third of the cap (the Release opens above it), RELEASE
+	// READY once past it, OVERLOADED (pulsing) at the cap with the verbs it locks. Under a cap below 100 (the named
+	// places, carrying runs only) a notch stands at the cap and the bar past it is dimmed.
 	const int32 Load = Fight.load();
+	const int32 Cap = Fight.loadCap();
+	const int32 ReleaseAt = Fight.releaseOpenLoad();
 	const float LoadShare = static_cast<float>(Load) / static_cast<float>(ftcore::kMaxLoad);
 	const bool bOver = Fight.overloaded();
 	const float Pulse = bOver ? 0.65f + 0.35f * FMath::Sin(static_cast<float>(Mode.GetNow()) * 10.f) : 1.f;
@@ -318,13 +344,28 @@ void AFTArenaHUD::DrawPlayerPanel(const UFTArenaRunner& Mode)
 		DrawText(kOverloadedArena, LoadColor, X + 110.f * S, Y + 50.f * S, Small, 1.1f * S);
 		DrawText(kOverloadLockedArena, kArenaWhite, X + 215.f * S, Y + 50.f * S, Small, 1.1f * S);
 	}
-	else if (Load > ftcore::kArenaReleaseOpenLoad)
+	else if (Load > ReleaseAt)
 	{
 		DrawText(kReleaseReadyArena, kArenaLoad, X + 110.f * S, Y + 50.f * S, Small, 1.1f * S);
 	}
 	DrawBar(X, Y + 70.f * S, W, 12.f * S, LoadShare, LoadColor, kArenaBack);
-	const float Mark = X + W * static_cast<float>(ftcore::kArenaReleaseOpenLoad) / static_cast<float>(ftcore::kMaxLoad);
+	if (Cap < ftcore::kMaxLoad)
+	{
+		const float CapX = X + W * static_cast<float>(Cap) / static_cast<float>(ftcore::kMaxLoad);
+		DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.6f), CapX, Y + 70.f * S, X + W - CapX, 12.f * S);
+		DrawRect(kArenaLoad, CapX - 1.5f * S, Y + 64.f * S, 3.f * S, 24.f * S);
+	}
+	const float Mark = X + W * static_cast<float>(ReleaseAt) / static_cast<float>(ftcore::kMaxLoad);
 	DrawRect(kArenaWhite, Mark - 1.f * S, Y + 66.f * S, 2.f * S, 20.f * S);
+	// The named chairs: a pip each at the bar's end, coloured by what the chair gives.
+	const ftcore::ArenaChairs& Chairs = Fight.chairs();
+	for (int32 I = 0; I < static_cast<int32>(Chairs.count); ++I)
+	{
+		const ftcore::ChairKind Kind = Chairs.named[static_cast<size_t>(I)].kind;
+		const FLinearColor Pip = Kind == ftcore::ChairKind::LoadGain ? kArenaLoad
+			: Kind == ftcore::ChairKind::HealCharges ? kArenaGreen : kArenaWhite;
+		DrawRect(Pip, X + W + 12.f * S + static_cast<float>(I) * 14.f * S, Y + 70.f * S, 10.f * S, 10.f * S);
+	}
 
 	const float Poise = F.poise > 0.f ? Fight.poise() / F.poise : 0.f;
 	DrawText(kPoiseArena, kArenaDim, X, Y + 90.f * S, Small, 1.1f * S);
@@ -333,7 +374,7 @@ void AFTArenaHUD::DrawPlayerPanel(const UFTArenaRunner& Mode)
 	// the heal charges: a pip each, filled while unused
 	DrawText(kHealsArena, kArenaDim, X, Y + 126.f * S, Small, 1.1f * S);
 	const int32 Left = static_cast<int32>(Fight.healCharges());
-	for (int32 I = 0; I < static_cast<int32>(F.healCharges); ++I)
+	for (int32 I = 0; I < static_cast<int32>(Fight.healChargesMax()); ++I)
 	{
 		const float PX = X + 90.f * S + static_cast<float>(I) * 28.f * S;
 		const float PY = Y + 128.f * S;
@@ -422,25 +463,40 @@ void AFTArenaHUD::DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVecto
 	{
 		return;
 	}
-	const float Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup, 0.01f), 0.f, 1.f) : 1.f;
+	const float Fill = bStartup ? FMath::Clamp(E.stateTime / FMath::Max(Move->attack.startup + (E.unseen ? ftcore::kArenaUnseenWindup : 0.f), 0.01f), 0.f, 1.f) : 1.f;
 
 	const ftcore::ArenaFight& Fight = Mode.GetFight();
 	const bool bCards = bStartup && Fight.readFoe() == static_cast<uint8>(Enemy) && Fight.readCards().dealt();
-	if (!bOnScreen)
+	// Out of the camera's view (the runner's off-frame test, the one the stinger answers to), or off the screen.
+	// An unseen start (a regular enemy that waited out of sight, ArenaEnemyOut::unseen) is always marked at the edge.
+	const bool bOffFrame = bStartup && (Mode.IsOffFrame(Enemy) || E.unseen);
+	if (!bOnScreen || bOffFrame)
 	{
 		if (bCards)
 		{
 			// The cards still want a pick: bottom centre, over the key hint.
 			DrawReadCards(Mode, Canvas->ClipX * 0.5f, Canvas->ClipY - 70.f * S);
 		}
-		// Off the screen: an arrow at the edge, toward the enemy, in the tell's colour (white at impact).
+		// Off the screen: an arrow at the edge, toward the enemy, in the tell's colour (white at impact). Through a
+		// windup it also swells at the onset (a steady ring with reduce flashes on), fills toward the hit and names the
+		// answer: the marker is the tell, the stinger only doubles it.
 		const AFTArenaFighter* Figure = Mode.GetEnemyFigure(Enemy);
 		const APlayerController* PC = GetOwningPlayerController();
 		if (Figure && PC && PC->PlayerCameraManager)
 		{
 			const FVector Local = PC->PlayerCameraManager->GetCameraRotation().UnrotateVector(
 				Figure->GetChest() - PC->PlayerCameraManager->GetCameraLocation());
-			DrawEdgeArrow(FVector2D(Local.Y, -Local.Z), bStartup ? Color : kArenaWhite);
+			if (bStartup)
+			{
+				const ftcore::Settings* Settings = Mode.GetSettings();
+				const bool bCalm = Settings && Settings->reduceFlashes;
+				const float Onset = bOffFrame ? ArenaPulse(Now, Mode.GetOffFrameSince(Enemy), kArenaOnsetLife) : 0.f;
+				DrawEdgeArrow(FVector2D(Local.Y, -Local.Z), Color, bCalm ? 0.f : Onset, Fill, Word);
+			}
+			else
+			{
+				DrawEdgeArrow(FVector2D(Local.Y, -Local.Z), kArenaWhite);
+			}
 		}
 		return;
 	}
@@ -449,7 +505,17 @@ void AFTArenaHUD::DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVecto
 	const float W = 170.f * S;
 	const float H = 14.f * S;
 	const float BX = Over.X - W * 0.5f;
-	const float BY = Over.Y - 30.f * S;
+	// A tall body's bar (over its head) can be above the frame: then it is pinned under the top edge, with its word
+	// and the Read cards above it in the frame, and a chevron over it points up to where the body goes on.
+	const float Room = (44.f + 24.f + (bCards ? 62.f : 0.f)) * S;
+	const bool bPinned = Over.Y - 30.f * S < Room;
+	const float BY = bPinned ? Room : Over.Y - 30.f * S;
+	if (bPinned)
+	{
+		const float CY = BY - 6.f * S;
+		DrawLine(Over.X - 10.f * S, CY, Over.X, CY - 8.f * S, Color, 3.f * S);
+		DrawLine(Over.X, CY - 8.f * S, Over.X + 10.f * S, CY, Color, 3.f * S);
+	}
 	if (bStartup)
 	{
 		DrawBar(BX, BY, W, H, Fill, Color, kArenaBack);
@@ -517,7 +583,7 @@ void AFTArenaHUD::DrawReadCards(const UFTArenaRunner& Mode, float X, float Botto
 	}
 }
 
-void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color)
+void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color, float Pulse, float Fill, const FString* Word)
 {
 	const float S = UiScale;
 	FVector2D Dir = Toward;
@@ -535,7 +601,8 @@ void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Col
 		Dir.Y != 0.0 ? HalfH / FMath::Abs(static_cast<float>(Dir.Y)) : 1e9f);
 	const float TipX = CX + static_cast<float>(Dir.X) * T;
 	const float TipY = CY + static_cast<float>(Dir.Y) * T;
-	const float Len = 44.f * S;
+	Pulse = FMath::Clamp(Pulse, 0.f, 1.f);
+	const float Len = 44.f * S * (1.f + 0.35f * Pulse);
 	const float BackX = TipX - static_cast<float>(Dir.X) * Len;
 	const float BackY = TipY - static_cast<float>(Dir.Y) * Len;
 	const float SideX = -static_cast<float>(Dir.Y) * Len * 0.55f;
@@ -543,7 +610,32 @@ void AFTArenaHUD::DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Col
 	DrawLine(TipX, TipY, BackX + SideX, BackY + SideY, Color, 6.f * S);
 	DrawLine(TipX, TipY, BackX - SideX, BackY - SideY, Color, 6.f * S);
 	DrawLine(BackX + SideX, BackY + SideY, BackX - SideX, BackY - SideY, Color, 4.f * S);
-	DrawRing(TipX - static_cast<float>(Dir.X) * Len * 0.45f, TipY - static_cast<float>(Dir.Y) * Len * 0.45f, Len * 0.9f, ArenaAlpha(Color, 0.5f), 3.f * S);
+	const float RingX = TipX - static_cast<float>(Dir.X) * Len * 0.45f;
+	const float RingY = TipY - static_cast<float>(Dir.Y) * Len * 0.45f;
+	DrawRing(RingX, RingY, Len * 0.9f, ArenaAlpha(Color, 0.5f), 3.f * S);
+	if (Pulse > 0.f)
+	{
+		// The onset: a ring spreading out from the marker as it fades.
+		DrawRing(RingX, RingY, Len * (0.9f + 1.4f * (1.f - Pulse)), ArenaAlpha(Color, Pulse), 6.f * S * Pulse + 2.f * S);
+	}
+	if (Fill < 0.f && !Word)
+	{
+		return;
+	}
+	// Beside the marker, toward the screen's centre: the answer, and under it the windup filling toward the hit.
+	const float InX = RingX - static_cast<float>(Dir.X) * (Len * 0.9f + 64.f * S);
+	const float InY = RingY - static_cast<float>(Dir.Y) * (Len * 0.9f + 40.f * S);
+	if (Word)
+	{
+		DrawStrCentered(*Word, Color, InX, InY - 26.f * S, GEngine->GetLargeFont(), 0.9f);
+	}
+	if (Fill >= 0.f)
+	{
+		const float BW = 96.f * S;
+		const float BH = 9.f * S;
+		DrawBar(InX - BW * 0.5f, InY + 4.f * S, BW, BH, FMath::Clamp(Fill, 0.f, 1.f), Color, kArenaBack);
+		DrawRect(kArenaWhite, InX + BW * 0.5f - 2.f * S, InY + 1.f * S, 2.f * S, BH + 6.f * S);
+	}
 }
 
 void AFTArenaHUD::DrawTargetBar(const UFTArenaRunner& Mode)
@@ -608,19 +700,22 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	const double T = Fight.time();
 	DrawRect(kArenaPanel, X - 12.f * S, Y - 6.f * S, W + 24.f * S, 34.f * S);
 
-	// The stacks, as pips.
-	DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
-	const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
-	for (int32 I = 0; I < Cap; ++I)
+	// The stacks, as pips (the Slate layer draws them when the new UI is on).
+	if (!NewUiWidget.IsValid())
 	{
-		const float PX = X + 86.f * S + static_cast<float>(I) * 22.f * S;
-		if (I < Boss.stacks())
+		DrawText(kBossWeightArena, kArenaDim, X, Y, Small, 1.1f * S);
+		const int32 Cap = FMath::Clamp(Host->GetDef().weight.cap, 0, 8);
+		for (int32 I = 0; I < Cap; ++I)
 		{
-			DrawRect(kArenaLoad, PX, Y + 2.f * S, 16.f * S, 16.f * S);
-		}
-		else
-		{
-			DrawFrame(PX, Y + 2.f * S, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+			const float PX = X + 86.f * S + static_cast<float>(I) * 22.f * S;
+			if (I < Boss.stacks())
+			{
+				DrawRect(kArenaLoad, PX, Y + 2.f * S, 16.f * S, 16.f * S);
+			}
+			else
+			{
+				DrawFrame(PX, Y + 2.f * S, 16.f * S, 16.f * S, kArenaDim, 2.f * S);
+			}
 		}
 	}
 
@@ -636,6 +731,7 @@ void AFTArenaHUD::DrawBossPanel(const UFTArenaRunner& Mode)
 	}
 	else if (Run.crit().isOpen(Run.now()))
 	{
+		if (!NewUiWidget.IsValid()) // the Slate layer shows the open weak point
 		DrawStrCentered(kBossWeakPointArena, ArenaAlpha(kArenaGold, 0.7f + 0.3f * FMath::Sin(static_cast<float>(Mode.GetNow()) * 10.f)), Mid, Y, Small, 1.2f);
 	}
 	else if (Boss.down())
@@ -1028,6 +1124,68 @@ void AFTArenaHUD::DrawEdgeCue(const UFTArenaRunner& Mode)
 	}
 }
 
+const UFTArenaRunner* AFTArenaHUD::FindRunner() const
+{
+	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
+	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
+	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
+	{
+		Mode = It->GetRunner();
+	}
+	return Mode;
+}
+
+void AFTArenaHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (FT::NewUiEnabled() && Viewport)
+	{
+		TWeakObjectPtr<const AFTArenaHUD> Self(this);
+		NewUiWidget = FT::MakeArenaHudWidget([Self]() -> const UFTArenaRunner* { return Self.IsValid() && Self->bShowHUD ? Self->FindRunner() : nullptr; });
+		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
+	}
+}
+
+void AFTArenaHUD::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (NewUiWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(NewUiWidget.ToSharedRef());
+	}
+	NewUiWidget.Reset();
+	Super::EndPlay(Reason);
+}
+
+ftcore::UiScreenMask AFTArenaHUD::ScreensOpen(const UFTArenaRunner* Runner)
+{
+	using ftcore::UiScreen;
+	using ftcore::uiScreenBit;
+	ftcore::UiScreenMask Open = 0;
+	if (!Runner)
+	{
+		return Open;
+	}
+	if (Runner->GetPartyScreen().open)
+	{
+		Open |= uiScreenBit(UiScreen::Party);
+	}
+	const UWorld* World = Runner->GetWorld();
+	const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	const UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+	const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	if (Pause && Pause->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Pause);
+	}
+	if (Set && Set->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Settings);
+	}
+	return Open;
+}
+
 void AFTArenaHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -1035,13 +1193,7 @@ void AFTArenaHUD::DrawHUD()
 	{
 		return;
 	}
-	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world).
-	const AFTArenaGameMode* Arena = GetWorld() ? GetWorld()->GetAuthGameMode<AFTArenaGameMode>() : nullptr;
-	const UFTArenaRunner* Mode = Arena ? Arena->GetRunner() : nullptr;
-	for (TActorIterator<AFTArenaHost> It(GetWorld()); !Mode && It; ++It)
-	{
-		Mode = It->GetRunner();
-	}
+	const UFTArenaRunner* Mode = FindRunner();
 	if (!Mode || !Mode->IsBegun())
 	{
 		FT::DrawPauseOverlay(*this, Canvas);
@@ -1053,6 +1205,26 @@ void AFTArenaHUD::DrawHUD()
 	if (!Fight.over())
 	{
 		bStatsBuilt = false; // the next result gets its own counts
+	}
+	// What of the fight may draw under the screens open now (ftcore::uiHudDraws): no reticle under the party screen,
+	// nothing under the pause menu or the settings.
+	const ftcore::UiScreenMask Screens = ScreensOpen(Mode);
+	const bool bReticle = ftcore::uiHudDraws(ftcore::UiHudPart::Reticle, ftcore::UiHudMode::Fight, Screens);
+	if (NewUiWidget.IsValid())
+	{
+		// The Slate layer draws all of the fight's HUD, the wall's cue included. The aim reticle is shared with the other
+		// modes: it stays on the canvas.
+		if (bReticle)
+		{
+			FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
+		}
+		FT::DrawPauseOverlay(*this, Canvas);
+		return;
+	}
+	if (!ftcore::uiHudDraws(ftcore::UiHudPart::FightVitals, ftcore::UiHudMode::Fight, Screens))
+	{
+		FT::DrawPauseOverlay(*this, Canvas); // the old canvas HUD under a menu: the menu alone
+		return;
 	}
 
 	DrawEdgeCue(*Mode);
@@ -1072,7 +1244,20 @@ void AFTArenaHUD::DrawHUD()
 	{
 		DrawResult(*Mode);
 	}
-	DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
-	DrawStrCentered(kHintArena, kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	// The aim's centre reticle (right mouse held), faded in with the stance.
+	if (bReticle)
+	{
+		FT::DrawAimReticle(*this, Canvas, Mode->GetAimAlpha(), Mode->IsReticleOutOfReach(), Mode->IsReticleBlocked());
+	}
+	if (ftcore::uiHudDraws(ftcore::UiHudPart::ControlsLine, ftcore::UiHudMode::Fight, Screens))
+	{
+		DrawRect(kArenaPanel, 0.f, Canvas->ClipY - 46.f * S, Canvas->ClipX, 46.f * S);
+		DrawStrCentered(FTInputBindings::HintLine(UFTArenaRunner::JumpBound() ? ftcore::InputHintScreen::ArenaJump : ftcore::InputHintScreen::Arena, FTInputBindings::NoteDevice(GetOwningPlayerController())), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.2f);
+	}
+	// At the fight's start, one line naming each action the saved bindings left with no key.
+	if (!FTInputBindings::UnboundLine().IsEmpty() && Fight.time() < kUnboundNoticeTime)
+	{
+		DrawStrCentered(FTInputBindings::UnboundLine(), kArenaWhite, Canvas->ClipX * 0.5f, Canvas->ClipY - 70.f * S, GEngine->GetSmallFont(), 1.2f);
+	}
 	FT::DrawPauseOverlay(*this, Canvas);
 }

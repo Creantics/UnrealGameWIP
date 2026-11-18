@@ -100,11 +100,32 @@ void UFTVfxComponent::Stop()
 	}
 }
 
+void UFTVfxComponent::Clear()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReplayTimer);
+	}
+	if (Niagara)
+	{
+		Niagara->DeactivateImmediate();
+	}
+}
+
 void UFTVfxComponent::SetParameters(float InSpeedScale, float InShapeScale)
 {
 	SpeedScale = InSpeedScale;
 	ShapeScale = InShapeScale;
 	PushParameters();
+}
+
+void UFTVfxComponent::SetTimeDilation(float InDilation)
+{
+	TimeDilation = FMath::IsFinite(InDilation) ? FMath::Clamp(InDilation, 0.05f, 20.f) : 1.f;
+	if (Niagara)
+	{
+		Niagara->SetCustomTimeDilation(TimeDilation);
+	}
 }
 
 void UFTVfxComponent::PushParameters()
@@ -119,6 +140,7 @@ void UFTVfxComponent::PushParameters()
 	{
 		Niagara->SetVariableFloat(SpeedScaleName(), P.speedScale);
 		Niagara->SetVariableVec3(ShapeScaleName(), FVector(P.shapeScale));
+		Niagara->SetCustomTimeDilation(TimeDilation);
 	}
 }
 

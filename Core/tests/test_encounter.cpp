@@ -1,3 +1,5 @@
+#include "ftcore/ArenaFight.h"
+#include "ftcore/ArenaZone.h"
 #include "ftcore/BattleDemo.h"
 #include "ftcore/Dialogue.h"
 #include "ftcore/Encounter.h"
@@ -12,6 +14,7 @@
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
 
+#include <cstdio>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -241,6 +244,35 @@ TEST_CASE("an encounter's combat tag says which system it plays; untagged fights
     CHECK(err.find("default.combat") != std::string::npos);
 }
 
+TEST_CASE("an arena encounter may name its stage; only arena fights take one") {
+    EnemyRoster roster;
+    REQUIRE(importEnemyRoster(kRoster, roster));
+    EncounterTable table;
+    std::string err;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(importEncounterTable(R"({"default": {"enemies": ["brute"]}, "encounters": [
+        {"scene": "S", "beat": 1, "combat": "arena", "stage": "sand_ring", "enemies": ["brute", "brute", "shade"]},
+        {"scene": "S", "beat": 2, "combat": "arena", "enemies": ["brute"]}]})",
+                                         roster, table, &err, &warnings),
+                    err);
+    CHECK(warnings.empty()); // `stage` is a known key
+    REQUIRE(table.findEntry("S", 1, 0));
+    CHECK(table.findEntry("S", 1, 0)->stage == "sand_ring");
+    CHECK(table.findEntry("S", 1, 0)->lineup.enemies.size() == 3);
+    CHECK(table.findEntry("S", 2, 0)->stage.empty()); // no stage: the fight plays in its world
+    CHECK(EncounterEntry{}.stage.empty());
+
+    for (const char* bad : {R"("combat": "arena", "stage": "Sand Ring")", R"("combat": "arena", "stage": "")",
+                            R"("combat": "arena", "stage": 3)", R"("stage": "sand_ring")",
+                            R"("combat": "beat", "stage": "sand_ring")"}) {
+        CAPTURE(bad);
+        const std::string text = std::string(R"({"default": {"enemies": ["brute"]}, "encounters": [{"scene": "S", "beat": 1, )") + bad +
+                                 R"(, "enemies": ["brute"]}]})";
+        CHECK_FALSE(importEncounterTable(text, roster, table, &err));
+        CHECK(err.find("encounters[0].stage") != std::string::npos);
+    }
+}
+
 TEST_CASE("enemy phases load with their patterns, thresholds and bonuses; bad ones are refused") {
     constexpr const char* kPhased = R"J({ "enemies": [ { "id": "boss", "stats": { "maxHp": 400, "attack": 20 },
       "skills": [ { "id": "a" }, { "id": "b" }, { "id": "c" } ],
@@ -360,11 +392,13 @@ TEST_CASE("Data/Battle: the bosses' fights are tagged, the finals play Beat and 
         const CombatKind kind = table.combatFor(e.scene, e.beat, e.step);
         CHECK(kind == e.combat);
         ++kinds[static_cast<std::size_t>(kind)];
-        CHECK(boss == (kind != CombatKind::Rhythm)); // minor enemies are always Turns
+        // Minor enemies are Turns, except a staged arena fight (a pack on an arena stage, 11-12 ruling).
+        if (e.stage.empty()) CHECK(boss == (kind != CombatKind::Rhythm));
+        else CHECK(kind == CombatKind::Arena);
         if (kind == CombatKind::Beat) CHECK(e.lineup.enemies.size() == 1); // a world's final: one boss
     }
     CHECK(kinds[static_cast<std::size_t>(CombatKind::Beat)] == 3); // one final per world
-    CHECK(kinds[static_cast<std::size_t>(CombatKind::Arena)] == 13);
+    CHECK(kinds[static_cast<std::size_t>(CombatKind::Arena)] == 15); // 13 in-world, 2 on stages (p04)
     CHECK(kinds[static_cast<std::size_t>(CombatKind::Rhythm)] == 24);
     CHECK(table.combatFor("SC-NOPE", 0, 0) == CombatKind::Rhythm); // an unlisted fight plays the default, Turns
 }
@@ -704,29 +738,29 @@ TEST_CASE("tiers toughen a line-up and stay within bounds") {
     CHECK(err.find("tier") != std::string::npos);
 }
 
-TEST_CASE("every listed encounter is a real battle step of the script") {
-    FTCORE_REQUIRE_REAL_STORY(s);
-    const LoadedData d = loadBattleData();
-    REQUIRE(d.ok);
+namespace {
+struct BattleStep {
+    std::string scene;
+    std::uint32_t beat, step;
+};
 
-    struct Key {
-        std::string scene;
-        std::uint32_t beat, step;
-    };
-    std::vector<Key> real;
-    StoryRunner r(&s.db);
+// Walks the script from scene `from` (empty: the default start) on autoplay, appending each battle step reached. With
+// `onlyThat`, the walk keeps to `from` and stops when the story leaves it. Returns whether the walk ended cleanly.
+bool walkBattleSteps(const StoryDatabase& db, std::string_view from, bool onlyThat, std::vector<BattleStep>& out) {
+    StoryRunner r(&db);
     DialoguePresenter p(&r);
     p.setRevealRate(0.f);
     GameplayPlan plan;
-    REQUIRE(r.start());
+    if (!r.start(from)) return false;
     int moves = 0;
     while (!r.finished() && moves < 200000) {
+        if (onlyThat && r.position().scene != from) return true;
         if (r.waitingForGameplay()) {
-            REQUIRE(plan.lower(r));
+            if (!plan.lower(r)) return false;
             for (std::uint32_t i = 0; i < plan.size(); ++i)
                 if (plan.step(i).screen == GameplayScreen::Battle)
-                    real.push_back({std::string(r.position().scene), static_cast<std::uint32_t>(r.position().beat), i});
-            REQUIRE(r.resume());
+                    out.push_back({std::string(r.position().scene), static_cast<std::uint32_t>(r.position().beat), i});
+            if (!r.resume()) return false;
             ++moves;
             continue;
         }
@@ -735,14 +769,65 @@ TEST_CASE("every listed encounter is a real battle step of the script") {
         if (c.none() || !applyDialogueCommand(r, c)) break;
         ++moves;
     }
-    CHECK(r.finished());
-    CHECK(real.size() >= d.table.entries.size());
+    return r.finished();
+}
+
+// Every battle step the script reaches, in the order the table lists fights: the walk from the default start, then
+// each listed scene that walk never enters (a scene played on its own, e.g. a later chapter's scene), walked alone.
+// A listed scene the loaded script does not have at all is put in `absent` (one per table row) and not walked;
+// it must be one of kNewerDraftScenes, or the walk fails (a typo or a deleted scene must not slip by).
+// The scenes the newer draft (the game's Data/Story) has and this test script does not: the game's own walk
+// checks their fights. Add a scene here only when its rows are new in the newer draft.
+constexpr std::string_view kNewerDraftScenes[] = {"p04"};
+
+bool newerDraftScene(std::string_view scene) {
+    for (const std::string_view s : kNewerDraftScenes)
+        if (s == scene) return true;
+    return false;
+}
+
+bool scriptBattleSteps(const StoryDatabase& db, const EncounterTable& table, std::vector<BattleStep>& out,
+                       std::vector<std::string>& absent) {
+    absent.clear();
+    if (!walkBattleSteps(db, {}, false, out)) return false;
+    for (const EncounterEntry& e : table.entries) {
+        if (db.findScene(e.scene) == kNone) {
+            absent.push_back(e.scene + " beat " + std::to_string(e.beat) + " step " + std::to_string(e.step));
+            if (!newerDraftScene(e.scene)) return false; // not a known newer-draft scene: a typo or a deletion
+            continue;
+        }
+        bool seen = false;
+        for (const BattleStep& k : out) seen = seen || k.scene == e.scene;
+        if (!seen) {
+            const std::size_t before = out.size();
+            if (!walkBattleSteps(db, e.scene, true, out)) return false;
+            if (out.size() == before) return false; // a listed scene with no battle step at all
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("every listed encounter is a real battle step of the script") {
+    FTCORE_REQUIRE_REAL_STORY(s);
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    std::vector<BattleStep> real;
+    std::vector<std::string> absent;
+    CHECK(scriptBattleSteps(s.db, d.table, real, absent));
+    std::string absentList;
+    for (const std::string& a : absent) absentList += (absentList.empty() ? "" : ", ") + a;
+    // A plain line, so it shows in a ctest run (a doctest MESSAGE shows only with -s or on a failure).
+    std::printf("ENCOUNTERS %zu listed in newer-draft scenes, not checked here: %s\n", absent.size(),
+                absentList.empty() ? "none" : absentList.c_str());
+    CHECK(real.size() + absent.size() >= d.table.entries.size());
     for (const EncounterEntry& e : d.table.entries) {
+        if (s.db.findScene(e.scene) == kNone) continue;
         CAPTURE(e.scene);
         CAPTURE(e.beat);
         CAPTURE(e.step);
         bool found = false;
-        for (const Key& k : real) found = found || (k.scene == e.scene && k.beat == e.beat && k.step == e.step);
+        for (const BattleStep& k : real) found = found || (k.scene == e.scene && k.beat == e.beat && k.step == e.step);
         CHECK(found);
     }
 }
@@ -751,50 +836,77 @@ TEST_CASE("every battle step of the script has its own line-up") {
     FTCORE_REQUIRE_REAL_STORY(s);
     const LoadedData d = loadBattleData();
     REQUIRE(d.ok);
-
+    std::vector<BattleStep> real;
+    std::vector<std::string> absent;
+    CHECK(scriptBattleSteps(s.db, d.table, real, absent));
     std::size_t steps = 0, missing = 0, outOfOrder = 0;
-    StoryRunner r(&s.db);
-    DialoguePresenter p(&r);
-    p.setRevealRate(0.f);
-    GameplayPlan plan;
-    REQUIRE(r.start());
-    int moves = 0;
-    while (!r.finished() && moves < 200000) {
-        if (r.waitingForGameplay()) {
-            REQUIRE(plan.lower(r));
-            for (std::uint32_t i = 0; i < plan.size(); ++i) {
-                if (plan.step(i).screen != GameplayScreen::Battle) continue;
-                ++steps;
-                const std::string scene(r.position().scene);
-                const auto beat = static_cast<std::uint32_t>(r.position().beat);
-                const EncounterEntry* entry = d.table.findEntry(scene, beat, i);
-                const bool listed = entry != nullptr;
-                if (listed) {
-                    // The table lists the fights in the order the script reaches them.
-                    const auto index = static_cast<std::size_t>(entry - d.table.entries.data());
-                    if (index != steps - 1) {
-                        ++outOfOrder;
-                        MESSAGE("encounter " << scene << " beat " << beat << " step " << i << " is entry " << index
-                                             << ", but the script reaches it as fight " << steps - 1);
-                    }
-                }
-                if (!listed) {
-                    ++missing;
-                    MESSAGE("no encounter for " << scene << " beat " << beat << " step " << i);
-                }
-            }
-            REQUIRE(r.resume());
-            ++moves;
+    for (const BattleStep& k : real) {
+        ++steps;
+        const EncounterEntry* entry = d.table.findEntry(k.scene, k.beat, k.step);
+        if (!entry) {
+            ++missing;
+            MESSAGE("no encounter for " << k.scene << " beat " << k.beat << " step " << k.step);
             continue;
         }
-        p.update(1.f / 60.f);
-        const DialogueCommand c = p.autoplay();
-        if (c.none() || !applyDialogueCommand(r, c)) break;
-        ++moves;
+        // The table lists the fights in the order the script reaches them.
+        const auto index = static_cast<std::size_t>(entry - d.table.entries.data());
+        if (index != steps - 1) {
+            ++outOfOrder;
+            MESSAGE("encounter " << k.scene << " beat " << k.beat << " step " << k.step << " is entry " << index
+                                 << ", but the script reaches it as fight " << steps - 1);
+        }
     }
-    CHECK(r.finished());
     CHECK(steps > 0);
     CHECK(missing == 0);
     CHECK(outOfOrder == 0);
-    CHECK(d.table.entries.size() == steps); // no entry for a step that does not exist
+    CHECK(d.table.entries.size() == steps + absent.size()); // no entry for a step that does not exist
+}
+
+TEST_CASE("a staged line-up becomes the roster's ids; a bad one is refused") {
+    EnemyRoster roster;
+    REQUIRE(importEnemyRoster(kRoster, roster));
+    EncounterLineup lineup;
+    std::string ids = "stale";
+    CHECK_FALSE(lineupIds(roster, lineup, ids)); // empty: no fight
+    CHECK(ids.empty());
+    lineup.enemies = {0, 0, 1};
+    REQUIRE(lineupIds(roster, lineup, ids));
+    CHECK(ids == roster.enemies[0].id + "," + roster.enemies[0].id + "," + roster.enemies[1].id);
+    lineup.enemies.push_back(static_cast<std::uint32_t>(roster.enemies.size()));
+    CHECK_FALSE(lineupIds(roster, lineup, ids)); // one index outside the roster: no fight
+    CHECK(ids.empty());
+}
+
+TEST_CASE("every staged encounter names a stage in arenas.json and arena kinds in arena.json") {
+    const LoadedData d = loadBattleData();
+    REQUIRE(d.ok);
+    std::string text, err;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable arena;
+    REQUIRE_MESSAGE(importArenaTable(text, arena, &err), err);
+    REQUIRE(ftcore_test::readProjectData("Field/worlds.json", text));
+    WorldTable worlds;
+    REQUIRE_MESSAGE(importWorldTable(text, worlds, &err), err);
+    REQUIRE(ftcore_test::readProjectData("Battle/arenas.json", text));
+    ArenaZoneTable zones;
+    REQUIRE_MESSAGE(importArenaZoneTable(text, arena, worlds, zones, &err), err);
+    std::size_t staged = 0;
+    for (const EncounterEntry& e : d.table.entries) {
+        if (e.stage.empty()) continue;
+        ++staged;
+        CAPTURE(e.scene);
+        CAPTURE(e.beat);
+        CAPTURE(e.step);
+        CHECK_MESSAGE(zones.find(e.stage) != nullptr, "no stage " << e.stage << " in arenas.json");
+        std::string ids;
+        REQUIRE(lineupIds(d.roster, e.lineup, ids));
+        CHECK(e.lineup.enemies.size() <= kMaxArenaEnemies);
+        for (const std::uint32_t index : e.lineup.enemies) {
+            const std::string& id = d.roster.enemies[index].id;
+            bool kind = false;
+            for (const std::string& k : arena.enemyIds) kind = kind || k == id;
+            CHECK_MESSAGE(kind, "no arena kind " << id << " in arena.json");
+        }
+    }
+    CHECK(staged >= 2); // p04's two stages
 }

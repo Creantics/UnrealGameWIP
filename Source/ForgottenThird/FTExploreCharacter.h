@@ -20,7 +20,9 @@
 // (leader pose) and face shapes; grooms bind to the piece they were built for (see FTLook.h).
 //
 // With a party in config (PartyLooks) the pawn wears one member's look and the rest follow it
-// (AFTExploreDirector): Tab or RB switches to the next member, P or LB hides or shows the followers.
+// (AFTExploreDirector). Under the new UI (FT::NewUiEnabled, the default) the party screen takes P and the map key's
+// hold (its last row shows or hides the followers), and Tab alone switches. Under -FTOldUi, as before: Tab or RB
+// switches to the next member, P or LB (or the map key held) hides or shows the followers.
 // StartLead and bStartSolo set the start (-ExploreLead=<Name> and -ExploreSolo for -game runs); the
 // player's last choice is kept across a fight (UFTGameInstance).
 //
@@ -70,8 +72,12 @@
 // -ExplorePortraitYaw= (180 front, 90 side, 0 back), -ExplorePortraitArm=, -ExplorePortraitHeight= and
 // -ExplorePortraitPitch= move it, e.g. Arm=330 Height=0 Pitch=0 frames the whole body.
 //
-// The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse, J or pad RT throws the kit's light attack (its chain),
-// right mouse, K or pad Y its heavy; ftcore::FieldStrike runs the attack from Data/Battle/arena.json's kit for the lead
+// The lead's weapon (FTLeadWeapons.h, as in the arena): left mouse (a tap), J or pad RT throws the kit's light attack (its
+// chain), left mouse held ftcore::AimRules::heavyHold, K or pad Y its heavy. Right mouse held aims (ftcore::AimStance,
+// Data/Battle/aim.json): the camera pulls in over the right shoulder, the HUD shows a centre reticle, the lead turns to
+// the camera's aim and slows to a strafe, and an attack goes at the reticle point (a traced line from the camera): the
+// pistol fires at it, the bolt flies at it, the gauntlets' light lunges toward it. Not in the van, a menu or a pause.
+// -ExploreAim=<s> holds aim from s seconds of play on (for captures); ftcore::FieldStrike runs the attack from Data/Battle/arena.json's kit for the lead
 // worn (its name, lower case; else the default) and hits any AFTFieldDummy in reach. The props, clips and effects are
 // the arena's. -ExploreDummy stands a dummy ahead, within the first light attack's reach (at most 3 m; -ExploreDummyAt=<cm> sets it); -ExploreAttackEvery=<s> presses light every s seconds (every
 // fourth press a heavy), for captures.
@@ -82,21 +88,34 @@
 
 #include "FTLeadWeapons.h"
 #include "FTLocomotionAnimInstance.h"
+#include "ftcore/AimStance.h"
+#include "ftcore/InputBindings.h"
+#include "ftcore/AttackMove.h"
+#include "ftcore/FieldUnstick.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/LedgeHang.h"
+#include "ftcore/Swim.h"
+#include "ftcore/UiPartyScreen.h"
+#include "ftcore/WaterBodies.h"
+#include "ftcore/WetPrints.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
 
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class UAnimSequence;
 class AFTPartyVan;
+class APlayerController;
 class UCameraComponent;
+class UDecalComponent;
 class UInputAction;
 class UInputMappingContext;
 class URectLightComponent;
 class USpringArmComponent;
+class UFTWaterSubsystem;
+class UFTRimComponent;
 
 UCLASS(Config = Game)
 class FORGOTTENTHIRD_API AFTExploreCharacter : public ACharacter
@@ -126,6 +145,10 @@ public:
 	// the look above (as the first of ftcore::demo::kPartyNames) and the default followers.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
 	TArray<FFTLeadLook> PartyLooks;
+	// Looks the story's cast wears that are not party members' (a lead's other outfit, keyed by ModelId).
+	// Dialogue scenes search PartyLooks first, then these. Not part of the party.
+	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
+	TArray<FFTLeadLook> CastLooks;
 	// The member to start as, by name; empty or unknown starts as the first.
 	UPROPERTY(Config, EditAnywhere, Category = "Explore|Party")
 	FString StartLead;
@@ -161,9 +184,21 @@ public:
 	// The PartyLooks entry the pawn wears (-1 when PartyLooks is empty), and whether the followers are hidden.
 	int32 GetLeadIndex() const { return LeadIndex; }
 	bool IsPartyHidden() const { return bPartyHidden; }
+	// The party screen under the new UI (FT::NewUiEnabled; its explore layer draws it while open) and its rows'
+	// PartyLooks entries (-1: none), found at begin play and after every lead change: the partner is the first other
+	// playable look, the Third the first look the player may not play.
+	const ftcore::UiPartyScreen& GetPartyScreen() const { return PartyScreen; }
+	int32 GetPartnerIndex() const { return PartnerIndex; }
+	int32 GetThirdIndex() const { return ThirdIndex; }
+	// Whether the partner's row has a lead to switch to (else it reads NOT HERE and never takes the cursor): the one
+	// truth the screen's step (UiPartyInput::partnerHere) and its drawing read.
+	bool IsPartnerHere() const { return PartyLooks.IsValidIndex(PartnerIndex) && PartnerIndex != LeadIndex; }
 	// Whether a traversal (a vault, a climb, a catch, a roll or a slide) is carrying the body: a scene played in place waits
 	// for it to end.
 	bool IsTraversing() const { return bTraversing; }
+	// The aim stance (right mouse held): whether the lead aims now and the stance's blend (0..1), for the HUD's reticle.
+	bool IsAiming() const { return Aim.aiming(); }
+	float GetAimAlpha() const { return Aim.alpha(); }
 	// The dodge roll's state (stamina, cooldown, the one going on), and whether a hit now does nothing (its cover).
 	const ftcore::DodgeState& GetDodge() const { return DodgeNow; }
 	bool IsInvulnerable() const { return Dodge.invulnerable(DodgeNow); }
@@ -189,6 +224,9 @@ protected:
 
 private:
 	void CreateInputObjects();
+	// Maps the context's keys from FTInputBindings (unmapping the old ones first) and notes their generation; Tick calls
+	// it again when the bindings' generation moves (a reload).
+	void MapBoundKeys();
 	UInputAction* MakeAction(const TCHAR* Name, bool bAxis2D);
 
 	void HandleMove(const FInputActionValue& Value);
@@ -203,11 +241,45 @@ private:
 	void HandleInteractRelease();
 	void HandleSwitchLead();
 	void HandleToggleParty();
-	void HandleLight();
-	void HandleHeavy();
+	// Run, crouch, and the map button held for the party toggle: polled from the binding table each frame, so a held
+	// action can be held or toggled (FTInputBindings).
+	void TickHeldKeys(float DeltaSeconds);
+	// Whether the game takes the player's keys this frame: on foot, no menu, pause or scene.
+	bool TakesInput();
+	void HandleToggleMap();
+	// The party screen (ftcore::UiPartyScreen, under the new UI only): Party's own key down, or the map key held
+	// kUiPartyHold, opens it (a shorter map press is the map); a flick moves the cursor; letting go picks. The partner's
+	// row switches to that lead, FOLLOW / WAIT HERE toggles the followers. PC null: input is taken away, which shuts it.
+	void TickPartyScreen(const APlayerController* PC, float DeltaSeconds);
+	// Esc (the controller's OnBack) while the party screen stands: its cancel, claimed so no pause menu opens.
+	UFUNCTION()
+	void HandlePartyBack();
+	bool bPartyBack = false;     // Esc came since the last party step
+	bool bPartyKeysHeld = false; // the party screen stands, or its confirm key is still held after it shut
+	TWeakObjectPtr<class AFTPlayerController> BackBoundTo;
+	void FindPartyRows();
+	// Wears PartyLooks[Index] as the lead (not from the van or mid-traversal; a crouch ends).
+	void SwitchLeadTo(int32 Index);
 	// The worn look's weapon: its kit from Data/Battle/arena.json and the props, clips and effects on the body.
 	void BeginWeapon(const FFTLeadLook& Look);
+	// Reads Data/Battle/arena.json into WeaponTable once (logged, built-in kits when missing or refused).
+	void LoadWeaponTable();
+	// Whether the player may play this look as the lead: its kit has attacks (ftcore::arenaPlayable).
+	bool IsPlayableLead(const FFTLeadLook& Look);
 	void TickWeapon(float DeltaSeconds);
+	// The aim and the attack button for this frame (TickWeapon, before the strike's step): the presses, the stance, the
+	// camera, the body's turn and speed, the reticle point.
+	void TickAim(float DeltaSeconds, ftcore::FieldBody Body);
+	// What the attack under way allows (Data/Battle/attack_move.json): walking pace share and turn rate; off attack
+	// full pace and no limit.
+	ftcore::AttackMoveOut AttackMoveNow() const;
+	float BaseWalkSpeed() const;
+	bool ScenePlaying();
+	// The way out of a too-steep slope or a wedge (ftcore::FieldUnstick, Data/Movement/unstick.json): the slide
+	// downhill, and the step back to safe ground with a short fade.
+	void TickUnstick(float DeltaSeconds);
+	// The camera at the aim stance's alpha (0: the usual follow camera).
+	void ApplyAimCamera();
 	void TickWeaponShots();
 	void SpawnFieldDummy();
 	// Puts on a look, replacing the body, clips, pieces and grooms worn (FTLook).
@@ -237,8 +309,38 @@ private:
 	// Where the soles are: the capsule's bottom less the floor hover, the frame traversals and slides are planned in.
 	FVector FeetLocation() const;
 	void SpawnTraversalCourse();
+	// -ExploreWedge: a V trench of two 60-degree slabs ahead, the lead dropped into it (the unstick's test).
+	void SpawnWedge();
+	void TickWedge();
 	void AddPortraitLights();
+	// -ExploreLookDev: a neutral set for judging materials (see the .cpp).
+	void EnterLookDev();
+	void FixExposure(float Bias);
+	void GreyGround();
+#if !UE_BUILD_SHIPPING
+	void Nightfall(); // -ExploreNight
+	void SoakForReview(); // -ExploreWet
+#endif
+	// -ExploreWet=<Wetness>,<wet line cm above the feet>,<WetSilt>: review only (see the .cpp); unused in shipping builds.
+	FVector WetReview = FVector::ZeroVector;
+	FTimerHandle WetTimer;
+	int32 WetSlots = -1;
+#if !UE_BUILD_SHIPPING
+	// -ExploreSoakSwap=<wetness>,<word>@<off s>[+<on s>]: review only (see the .cpp).
+	void StepSoakSwap();
+	void LogSoakSwap(const TCHAR* Stage);
+	FString SoakSwapWord;
+	float SoakSwapWet = -1.f;
+	float SoakSwapOff = -1.f;
+	float SoakSwapOn = -1.f;
+	double SoakSwapStart = 0.0;
+	int32 SoakSwapStage = 0;
+	bool bSoakSwapBefore = false;
+	FTimerHandle SoakSwapTimer;
+#endif
 	void StepPortraitShots();
+	void HoldFaceAt(float Time);
+	void HoldBodyAt(float Time);
 
 	AFTExploreDirector* GetDirector();
 
@@ -246,6 +348,9 @@ private:
 	TObjectPtr<USpringArmComponent> Boom;
 	UPROPERTY(VisibleAnywhere, Category = "Components")
 	TObjectPtr<UCameraComponent> Camera;
+
+	UPROPERTY(VisibleAnywhere, Category = "Explore|Look")
+	TObjectPtr<UFTRimComponent> Rim; // writes the rim term's direction while player 0 controls this lead (ft.Rim)
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> Context;
@@ -258,22 +363,21 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> RollAction;
 	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> RunAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> CrouchAction;
-	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> InteractAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> SwitchLeadAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> PartyAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> LightAction;
-	UPROPERTY(Transient)
-	TObjectPtr<UInputAction> HeavyAction;
+	uint32 KeyGeneration = 0; // the bindings' generation Context's keys were mapped from (FTInputBindings::Generation)
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
+	// The look worn (WearLook), for taking a piece off or putting it on later (FTLook::SetPieceWorn).
+	UPROPERTY(Transient)
+	FFTLeadLook WornLook;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USceneComponent>> GroomComponents;
 	UPROPERTY(Transient)
@@ -287,6 +391,21 @@ private:
 	FTimerHandle ShotTimer;
 	// -ExplorePortraitShotEvery=<s>: the step between aiming and shooting (a shot every two steps).
 	float ShotEvery = 2.5f;
+	// -ExploreLookDevSpin=<deg/s>: the look-dev key circles the pawn at this rate (0 holds it still).
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> LookDevPivot;
+	float LookDevSpin = 0.f;
+	// -ExplorePortraitFaceClip=<anim> with -ExplorePortraitFaceTimes=<s,s,..>: each shot holds the face piece on that
+	// clip at its time (one shot per time, yaws repeat), to check expressions in the game.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> FaceClip;
+	TArray<float> FaceTimes;
+	// -ExplorePortraitBodyClip=<anim> with -ExplorePortraitBodyTimes=<s,s,..>: each shot holds the whole body (and every
+	// leader-posed piece with it) on that clip at its time, so garments are judged posed in the game (a crouch, an arm
+	// raise), not in a Blender render. Not with a face clip; the walk circle is off while a pose is held.
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> BodyClip;
+	TArray<float> BodyTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	TWeakObjectPtr<AFTPartyVan> Van;
@@ -310,6 +429,9 @@ private:
 	float LookRest = 0.f; // seconds since the last look input
 	float FaceBy = 0.f;   // -LocoFace=<deg>
 	bool bPortraitWalk = false;   // -ExplorePortraitWalk
+	float PortraitMoveScale = 0.5f; // -ExplorePortraitMoveScale=<0..1> (1 runs)
+	bool bPortraitJump = false;   // -ExplorePortraitJump
+	double PortraitJumpAt = -10.0;
 	TWeakObjectPtr<AActor> Watched; // WatchFrom: the body the camera frames and recentres behind
 	bool bFacing = false;
 	// -LocoSideView: each turn of the framed body is watched from its side, the camera held where the turn began.
@@ -382,6 +504,40 @@ private:
 	FFTLeadWeapons Weapons;
 	bool bPressLight = false;
 	bool bPressHeavy = false;
+	// The aim (right mouse held) and the attack button's tap and hold (left mouse), their rules from Data/Battle/aim.json
+	// (loaded once), what an aimed attack does for the kit worn, the reticle point (world, cm), the walk speed the
+	// movement handlers last set (the aim scales it) and what the aim set it to, -ExploreAim's start (below 0: off).
+	ftcore::AimStance Aim;
+	ftcore::PressHold AttackHold;
+	// The held actions' hold or toggle latches, the crouch key's last state, whether the run is on, how long the map
+	// button has been held (the party toggle) and whether that hold already toggled.
+	ftcore::HeldInput AimInput;
+	ftcore::HeldInput RunInput;
+	bool bCrouchKeyWas = true;
+	bool bRunOn = false;
+	float MapHeld = 0.f;
+	bool bMapHoldUsed = false;
+	// The new UI's party screen, read once with the input objects: it takes the Party action and the map key's hold, and
+	// SwitchLead stays on the keyboard alone.
+	bool bNewUiParty = false;
+	ftcore::UiPartyScreen PartyScreen;
+	int32 PartnerIndex = -1;
+	int32 ThirdIndex = -1;
+	bool bAimRulesTried = false;
+	ftcore::AttackMoveRules AttackMoveTable;
+	ftcore::FieldUnstick Unstick;
+	bool bUnstickTried = false;
+	bool bWedgePending = false;  // -ExploreWedge
+	FString WedgeShotPrefix;     // -ExploreWedgeShot=<path prefix>
+	double WedgeDropAt = -1.0;
+	double WedgeRescueAt = -1.0;
+	int32 WedgeShotsTaken = 0;
+	ftcore::AimKind AimKindNow = ftcore::AimKind::Focus;
+	FVector ReticlePoint = FVector::ZeroVector;
+	float AimSpeedBase = 0.f;
+	float AimSpeedSet = -1.f;
+	bool bAimCamera = false;
+	float AimFrom = -1.f;
 	float AttackEvery = 0.f;
 	float AttackTimer = 0.f;
 	int32 AttackPresses = 0;
@@ -399,4 +555,147 @@ private:
 	int32 WeaponShotSeen = 0;
 	double WeaponShotDue = -1.0; // Strike time of the next shot; below 0: none
 	float WeaponQuitIn = 0.f;
+	// -ExploreWeaponStrip=<n>: in place of one shot per attack, n shots StripStep seconds apart from the first walking
+	// light attack after the delay (StripAt: its Strike time; below 0: not begun), each frame's speed and upper share
+	// logged while it runs.
+	int32 StripShots = 0;
+	float StripStep = 0.1f;
+	double StripAt = -1.0;
+
+	// Water (ftcore::WaterBodies through UFTWaterSubsystem), read each tick: a wade and a deep wade slow the walk by
+	// the state's factor (AddMovementInput); over the swim depth the body is held at the surface (the movement's
+	// flying mode at the swim speed, the feet eased to the swimmer's draft with its bob, the flow pushing it) until
+	// the column is a wade's again. Jump in the water, facing a wall whose top is within reach, climbs out onto it (a
+	// stand-in for a ladder or steps; TryWaterClimb).
+	// In a swimDeep body's dive area (ftcore::WaterBodies::dive) a crouch press at the surface dives: from then on
+	// ftcore::Swim (Data/Swim/swim.json) moves the body in 3D along the camera's look (TickSwimDeep) until it is back at
+	// the surface, with its breath, the outer edge's push and, at no vitality left, a rescue to the nearest way out
+	// (TickSwimRescue). The Third never dives (only a playable lead does), and the followers hold at the bank while the
+	// lead is under. While swimming, at the surface too, the swim's flags hold: no attack, no dodge, weapons stowed.
+	void TickWater(float DeltaSeconds);
+	bool TryWaterClimb();
+	ftcore::WaterState WaterNow;
+	bool bSwimming = false;
+	bool bSwimSaid = false;
+	float SwimSavedFly = 0.f;
+	float SwimSavedBrake = 0.f;
+	// The free swim. False: at the surface (the surface hold moves the body).
+	bool TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds);
+	void LoadSwimTuning();
+	void BeginSwimRescue(const UFTWaterSubsystem& System);
+	void TickSwimRescue(float DeltaSeconds);
+	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
+	void PoseSwim(float TargetPitch, float DeltaSeconds);
+	ftcore::Swim SwimBody;
+	ftcore::SwimFlags SwimFlagsNow;
+	bool bSwimTuningTried = false;
+	bool bSwimUnder = false;       // Diving, Under or Surfacing last step
+	bool bSwimWarned = false;      // the breath warning is logged once a dive
+	bool bSwimHolstered = false;   // the swim stowed the weapons
+	bool bSwimLeadDives = false;   // the lead is a playable lead (the Third never dives)
+	int32 SwimLeadChecked = -2;    // the LeadIndex bSwimLeadDives was found for
+	FVector2D SwimMoveAxis = FVector2D::ZeroVector; // the move stick under water (HandleMove), read by TickSwimDeep
+	float SwimPitch = 0.f;         // the mesh's pitch shown (degrees, nose down negative)
+	FVector SwimMeshLoc = FVector::ZeroVector;
+	FRotator SwimMeshRot = FRotator::ZeroRotator;
+	bool bSwimMeshSaved = false;
+	bool bSwimRescue = false;
+	float SwimRescueTime = 0.f;
+	FVector SwimRescueFrom = FVector::ZeroVector;
+	FVector SwimRescueUp = FVector::ZeroVector;  // over the start at the surface
+	FVector SwimRescueTo = FVector::ZeroVector;
+	bool bLeadGoDive = false;      // -LeadGoDive: a crouch press once in the dive area, a jump press when the route ends
+	bool bLeadGoDived = false;
+	bool bLeadGoRose = false;
+	bool bWaterClimbing = false;
+	float WaterClimbTime = 0.f;
+	float WaterClimbSeconds = 0.9f; // the placed move's length: longer up a ladder
+	// At a ladder (a way out of the map's water) within reach whose wall the body faces or pushes at: up it.
+	bool TryLadderClimb(bool bPressed);
+	FVector WaterClimbFrom = FVector::ZeroVector;
+	FVector WaterClimbTo = FVector::ZeroVector;
+	// What the lead does to the water and the water to it (UFTWaterSubsystem::LeadWater, each tick): splash, rings,
+	// wake, and its wetness on its materials. The four scalar parameters Wetness (0..1), WetLineZ (world cm),
+	// WetLineSoft (cm) and WetSilt (0..1, the water's stain; it stays when dry, with its line) are set on dynamic
+	// instances of the materials of its skeletal meshes, made the first time it is wet and again after a look or a mesh
+	// swap; a material that has no
+	// such parameter ignores them. WetDrip is never set (the drips are off), so it stays at its default 0.
+	void StirWater(float DeltaSeconds);
+	void ShowWetness(const ftcore::WaterWetness& Wet);
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetMaterials;
+	bool bWetMaterialsMade = false;
+	// FTLook::WornMeshSerial() when WetMaterials were gathered: a piece's mesh swapped since (an under layer's cut, a
+	// front) has new slots, so they are gathered again and every value written anew.
+	uint32 WetMaterialsSerial = 0;
+	float WetShown = 0.f;
+	float WetLineShown = 0.f;
+	float WetSiltShown = 0.f;
+	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; 0, the default, is no rain; below 0 follows the
+	// rain) soaks the cloth as the water does (through ShowWetness); the lead's surface wetness (that or its own water,
+	// whichever is wetter) wears the look's wet grooms and writes SkinWet (0..1) to the same dynamic materials, where the
+	// skin master smooths its up- and forward-facing open skin. The leads' MetaHuman skin takes it through its post-bake
+	// roughness and specular multipliers (their dry values kept in WetSkinDry, one per WetMaterials entry, -1 where the
+	// material has none); hair without a wet groom (a beard, brows) darkens and smooths through its own instances. The
+	// shown amount eases over 2 s. No drips.
+	float LeadWeather() const;
+	void ShowLeadWet(float Weather, float DeltaSeconds);
+	void ShowHairWet(float Wet);
+	bool bGroomWet = false;
+	float SkinWetShown = 0.f;
+	float SkinWetEased = 0.f;
+	TArray<FVector2f> WetSkinDry;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetHairMaterials;
+	// Dry Roughness, HairRoughness and hairMelanin per WetHairMaterials entry (-1 where absent).
+	TArray<FVector3f> WetHairDry;
+	bool bWetHairMade = false;
+	// The look's wet grooms and bindings, loaded with the look (FTLook::PreloadWetGrooms) so the swap loads nothing.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UObject>> WetGroomHold;
+	// Wet prints (ftcore::WetPrints): on foot on dry ground the lead leaves a print at each plant of its foot phase,
+	// as wet as it is, fading as it dries. A fixed pool of decals, one per Core slot, made once the first time the lead
+	// is wet (in the water, so the hitch is out of sight of any print); a laid
+	// print's decal is placed by a short trace down at the foot (dry walkable ground only, never over water), its colour
+	// carries the print and the engine's fade its age, so what shows is the Core's strength. The party's meshes take no
+	// decals. While the lead is out of the water and wet, or prints show, the live count is logged every 2 s.
+	void TickWetPrints(float DeltaSeconds);
+	void PlaceWetPrint(int32 Index, float DryScale);
+	ftcore::WetPrints WetPrints;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UDecalComponent>> WetPrintDecals;
+	float WetPrintLook = 0.f;  // to the next sweep for faded decals and decal-taking party meshes
+	float WetPrintOut = -1.f;  // seconds out of the water (-1 in it, or before it was ever in)
+	float WetPrintLogAt = 0.f; // the out-of-water time of the next log line
+	bool bWetPrintLoggedDry = true;
+	// A scripted walk for captures and checks (BeginLeadGo, or -LeadGo=<x,y> in the plan frame of -WorldEyeSide after
+	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it presses jump (with -LeadGoJump); the run
+	// quits -LeadGoQuit=<s> after it began. -LeadGoPace=<0.1..1> walks it slower (the stick's push).
+	float LeadGoPace = 1.f;
+	bool bLeadGo = false;
+	bool bLeadGoJump = false;
+	FVector LeadGoTo = FVector::ZeroVector;
+	float LeadGoAfter = -1.f;
+	float LeadGoQuit = 0.f;
+	float LeadGoStuck = 0.f;
+	float LeadGoRan = 0.f;
+	TArray<FVector> LeadGoNext; // the scripted walk's further points, taken in turn as each is reached
+
+public:
+	// The lead walks at a point (cm) from now on.
+	void BeginLeadGo(const FVector& To, bool bJumpWhenHeld);
+	void EndLeadGo() { bLeadGo = false; }
+	// One more point (cm) for the scripted walk, taken once the points before it are reached.
+	void AddLeadGo(const FVector& To) { LeadGoNext.Add(To); }
+	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
+	bool IsSwimming() const { return bSwimming; }
+	// Under water (diving, under, surfacing) or being carried out by a rescue: the followers hold at the bank.
+	bool IsUnderWater() const { return bSwimUnder || bSwimRescue; }
+	float GetBreathShare() const { return SwimBody.last().breathShare; }
+	bool IsBreathWarning() const { return SwimBody.last().warning; }
+	// For the HUD's breath ring: the swim's last step (breath, breathShare, warning, state, and the canDive and guard
+	// flags the core lane is adding) and the tuning it ran on (breathSeconds, warningSeconds). Both are the lead's own
+	// Swim object, read by const reference; the HUD never steps it.
+	const ftcore::SwimStep& GetSwimStep() const { return SwimBody.last(); }
+	const ftcore::SwimTuning& GetSwimTuning() const { return SwimBody.tuning(); }
 };

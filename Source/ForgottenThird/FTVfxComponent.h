@@ -54,9 +54,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	void Stop();
 
+	// Stops the effect and removes the particles already out (a wind-up cut short leaves nothing behind).
+	void Clear();
+
 	// Sets and pushes the user parameters (clamped by ftcore::sanitizeVfxUserParameters).
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	void SetParameters(float InSpeedScale, float InShapeScale);
+
+	// The effect's own clock rate (Niagara custom time dilation; 1 by default, kept on later plays): a one-shot whose
+	// lifetimes are built for one flight runs over another (a cast's bolt over its startup). Clamped to 0.05..20.
+	void SetTimeDilation(float InDilation);
 
 	UNiagaraComponent* GetNiagara() const { return Niagara; }
 
@@ -70,6 +77,8 @@ protected:
 private:
 	void PushParameters();
 	void Replay();
+
+	float TimeDilation = 1.f;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UNiagaraComponent> Niagara;

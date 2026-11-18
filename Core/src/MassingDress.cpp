@@ -700,10 +700,10 @@ bool importMassingFront(std::string_view csv, std::vector<MassingFrontRule>& out
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Asset, Width, Depth, Height, Out, Gap, Turn, Dz, Weight, Run, Cap, Scale, Kinds, Count };
+    enum Col { Id, Asset, Width, Depth, Height, Out, Gap, Turn, Dz, Weight, Run, Cap, Scale, Kinds, Stack, Within, Count };
     constexpr const char* kNames[Count] = {"id",    "asset", "width_m", "depth_m", "height_m", "out_m", "gap_m",
                                            "turn",  "dz",    "weight",  "run",     "cap",      "scale",
-                                           "kinds"};
+                                           "kinds", "stack", "within"};
     constexpr std::size_t kRequired = 5; // id, asset, width_m, depth_m, height_m
     std::size_t col[Count] = {};
     std::size_t width = 0;
@@ -760,6 +760,26 @@ bool importMassingFront(std::string_view csv, std::vector<MassingFrontRule>& out
             return fail(error, r.line, rule.id + ": cap must be a whole number >= 0");
         if (!optionalNumber(field(Scale), rule.scale) || !(rule.scale > 0.0))
             return fail(error, r.line, rule.id + ": scale must be a number > 0");
+        if (!optionalWhole(field(Stack), 1.0, rule.stack))
+            return fail(error, r.line, rule.id + ": stack must be a whole number >= 1");
+        std::string_view box = trim(field(Within));
+        if (!box.empty()) {
+            int n = 0;
+            bool good = true;
+            for (;;) {
+                const std::size_t colon = box.find(':');
+                if (n == 4 || !parseNumber(trim(box.substr(0, colon)), rule.within[n])) {
+                    good = false;
+                    break;
+                }
+                ++n;
+                if (colon == std::string_view::npos) break;
+                box = box.substr(colon + 1);
+            }
+            if (!good || n != 4 || !(rule.within[0] < rule.within[2]) || !(rule.within[1] < rule.within[3]))
+                return fail(error, r.line, rule.id + ": within must be x0:y0:x1:y1 with x0 < x1 and y0 < y1");
+            rule.bounded = true;
+        }
         std::string_view kinds = trim(field(Kinds));
         while (!kinds.empty()) {
             const std::size_t semi = kinds.find(';');
@@ -954,6 +974,10 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
                         const std::string_view kind = kindAt(kx, ky, f.nx, f.ny);
                         const auto eligible = [&](std::size_t r) {
                             if (!holds(rules[r], kind)) return false;
+                            if (rules[r].bounded) {
+                                const double* const w = rules[r].within;
+                                if (kx < w[0] || kx > w[2] || ky < w[1] || ky > w[3]) return false;
+                            }
                             return accept[r] >= 1.0 || hashUnit(hashText(placeHash, rules[r].id)) < accept[r];
                         };
                         order.clear();
@@ -1076,10 +1100,25 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
     }
     if (outFronting) *outFronting = fronting;
 
+    // Stacks: copies of a piece up its face, after the caps so a column is never thinned. Not crowded or padded.
+    const std::size_t placedPieces = out.size();
+    for (std::size_t k = 0; k < placedPieces; ++k) {
+        const std::size_t r = out[k].rule;
+        if (rules[r].stack <= 1) continue;
+        const Solid stackHost = makeSolid(boxes[faceOf[k] / 4]);
+        for (std::size_t up = 1; up < rules[r].stack; ++up) {
+            MassingProp copy = out[k];
+            copy.z += static_cast<double>(up) * rules[r].height;
+            if (stackHost.lowTop < copy.z + rules[r].height) break;
+            out.push_back(copy);
+            ++counts[r].stacked;
+        }
+    }
+
     // The ground pieces' paving pads.
     if (!outPads) return;
     std::vector<std::size_t> padsOf(boxes.size(), 0);
-    for (std::size_t k = 0; k < out.size(); ++k) {
+    for (std::size_t k = 0; k < placedPieces; ++k) {
         const MassingProp& p = out[k];
         const MassingFrontRule& rule = rules[p.rule];
         if (rule.dz >= kMassingPropBody) continue;

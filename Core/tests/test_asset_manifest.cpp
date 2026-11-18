@@ -161,3 +161,31 @@ TEST_CASE("the speaker cast maps script labels to character models") {
     REQUIRE(importSpeakerCast(R"({ "version": 1, "speakers": [ { "speaker": "ALPHA", "model": "MDL-777" } ] })", cast));
     CHECK(cast.modelFor("ALPHA") == "MDL-777");
 }
+
+TEST_CASE("the speaker cast gives a look per scene, else the default") {
+    const char* models = R"({ "version": 1, "models": [
+        { "id": "MDL-001", "kind": "character" }, { "id": "MDL-002", "kind": "character" },
+        { "id": "MDL-003", "kind": "prop" } ] })";
+    ModelTable t;
+    REQUIRE(importModelManifest(models, t));
+    SpeakerCast cast;
+    std::string error;
+    REQUIRE_MESSAGE(importSpeakerCast(R"({ "version": 1, "speakers": [ { "speaker": "ALPHA", "model": "MDL-001",
+        "scenes": [ { "scene": "s2", "model": "MDL-002" }, { "scene": "s3", "model": "MDL-002" } ] } ] })",
+                                      cast, &t, &error),
+                    error);
+    CHECK(cast.modelFor("ALPHA") == "MDL-001");
+    CHECK(cast.modelFor("ALPHA", "s1") == "MDL-001");
+    CHECK(cast.modelFor("ALPHA", "s2") == "MDL-002");
+    CHECK(cast.modelFor("ALPHA", "s3") == "MDL-002");
+    CHECK(cast.modelFor("BRAVO", "s2").empty());
+
+    const char* bad = R"({ "version": 1, "speakers": [ { "speaker": "ALPHA", "model": "MDL-001",
+        "scenes": [ { "scene": "s2", "model": "MDL-003" }, { "scene": "s2", "model": "MDL-002" }, { "model": "MDL-002" } ] } ] })";
+    CHECK_FALSE(importSpeakerCast(bad, cast, &t, &error));
+    CHECK(error.find("speakers[0].scenes[0].model") != std::string::npos);
+    CHECK(error.find("speakers[0].scenes[1].scene: listed twice") != std::string::npos);
+    CHECK(error.find("speakers[0].scenes[2].scene") != std::string::npos);
+    CHECK(error.find("ALPHA") == std::string::npos);
+    CHECK_FALSE(importSpeakerCast(R"({ "version": 1, "speakers": [ { "speaker": "A", "model": "MDL-001", "scenes": 4 } ] })", cast, &t, &error));
+}

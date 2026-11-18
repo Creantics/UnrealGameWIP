@@ -1,4 +1,5 @@
 #include "FTPlayerController.h"
+#include "FTInputBindings.h"
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -21,6 +22,10 @@ void AFTPlayerController::CreateInputObjects()
 	{
 		return;
 	}
+	// A map's controller sets its input up: a bindings file added, removed or edited since the last map is read again
+	// now, before the table's keys (Backlog, Pause) are mapped from it (the explore pawn's keys follow the generation
+	// if it maps first).
+	FTInputBindings::ReloadIfChanged();
 
 	MappingContext = NewObject<UInputMappingContext>(this, TEXT("IMC_ForgottenThird"));
 
@@ -60,9 +65,11 @@ void AFTPlayerController::CreateInputObjects()
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_RightShoulder);
 	MappingContext->MapKey(TapAction, EKeys::Gamepad_FaceButton_Left);
 
-	// Reading keys: the backlog, the mouse wheel, and skip (held).
+	// Reading keys: the backlog, the mouse wheel, and skip (held). The backlog's key comes from the binding table
+	// (B by default), so the table's validator keeps every other action off it; MapTableKeys maps it, again after
+	// each reload of the table.
 	BacklogAction = MakeAction(TEXT("IA_Backlog"));
-	MappingContext->MapKey(BacklogAction, EKeys::B);
+	MapTableKeys();
 	WheelUpAction = MakeAction(TEXT("IA_WheelUp"));
 	MappingContext->MapKey(WheelUpAction, EKeys::MouseScrollUp);
 	WheelDownAction = MakeAction(TEXT("IA_WheelDown"));
@@ -292,8 +299,7 @@ void AFTPlayerController::CreatePauseInput()
 	PauseAction = MakeAction(TEXT("IA_Pause"));
 	PauseAction->bTriggerWhenPaused = true;
 	PauseContext = NewObject<UInputMappingContext>(this, TEXT("IMC_Pause"));
-	PauseContext->MapKey(PauseAction, EKeys::Escape);
-	PauseContext->MapKey(PauseAction, EKeys::Gamepad_Special_Right);
+	MapTableKeys();
 
 	// Added only while the pause menu is open, above every screen's own context: the keys it and the
 	// settings overlay need, on the same actions the menu context and the story context use. Esc and
@@ -318,6 +324,59 @@ void AFTPlayerController::CreatePauseInput()
 	PauseMenuContext->MapKey(ConfirmAction, EKeys::Enter);
 	PauseMenuContext->MapKey(CancelAction, EKeys::BackSpace);
 	PauseMenuContext->MapKey(CancelAction, EKeys::Gamepad_FaceButton_Right);
+}
+
+void AFTPlayerController::MapTableKeys()
+{
+	// Every key this controller maps from the binding table (FTInputBindings), again after each reload of it: the
+	// backlog's (B by default) on the story context, Pause's (Esc and Start) on its own context. Each context there is
+	// yet (the story's is made first, Pause's after). Only the table's own mappings go: the story context's other keys
+	// stay. UnmapAllKeysFromAction, UnmapAll and MapKey ask Enhanced Input to rebuild the mappings of every player
+	// using the context.
+	TableKeyGeneration = FTInputBindings::Generation();
+	if (MappingContext && BacklogAction)
+	{
+		MappingContext->UnmapAllKeysFromAction(BacklogAction);
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& Key = FTInputBindings::Key(ftcore::InputAction::Backlog, Device);
+			if (Key.IsValid())
+			{
+				MappingContext->MapKey(BacklogAction, Key);
+			}
+		}
+	}
+	if (PauseContext && PauseAction)
+	{
+		PauseContext->UnmapAll();
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& Key = FTInputBindings::Key(ftcore::InputAction::Pause, Device);
+			if (Key.IsValid())
+			{
+				PauseContext->MapKey(PauseAction, Key);
+			}
+		}
+	}
+}
+
+void AFTPlayerController::PlayerTick(float DeltaTime)
+{
+	// Back in the game window: a bindings file edited meanwhile is read again (one stat of it, on that edge only). Not
+	// called while the game is paused (EndPauseMenuInput checks the file then). After any reload (this one, a map's
+	// start, the pause menu closing, a rebinding screen's Reload) the table's keys (Backlog, Pause) follow the bindings'
+	// generation on the next unpaused tick.
+	const bool bFocus = FApp::HasFocus();
+	if (bFocus && !bHadFocus && !FTInputBindings::FocusGateOff())
+	{
+		FTInputBindings::ReloadIfChanged();
+	}
+	bHadFocus = bFocus;
+	if ((MappingContext || PauseContext) && FTInputBindings::Generation() != TableKeyGeneration)
+	{
+		MapTableKeys();
+	}
+	Super::PlayerTick(DeltaTime);
 }
 
 void AFTPlayerController::BindPauseInput(UEnhancedInputComponent& Input)
@@ -384,6 +443,9 @@ void AFTPlayerController::EndPauseMenuInput()
 	{
 		Subsystem->RemoveMappingContext(PauseMenuContext);
 	}
+	// PlayerTick does not run while paused, so a focus lost and regained in the pause menu is not seen there: the
+	// bindings file is checked again as the menu closes (one stat), and the keys follow on the next PlayerTick.
+	FTInputBindings::ReloadIfChanged();
 }
 
 void AFTPlayerController::HandlePause()

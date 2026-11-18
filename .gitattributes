@@ -38,3 +38,6 @@
 *.txt text
 *.yml text
 *.cmake text
+
+# Kept byte for byte: a test input with a byte order mark and CRLF line ends.
+Core/tests/data/storywalk_inputs/inputs_bom_crlf.txt -text

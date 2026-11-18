@@ -139,8 +139,9 @@ struct VfxGradient {
 enum class VfxBlend : std::uint8_t { Alpha, Additive };
 enum class VfxShape : std::uint8_t { Point, Sphere, Cone, Box, Ring };
 enum class VfxSpace : std::uint8_t { World, Local };
-// Procedural sprite when an emitter has no texture: Soft (round glow), Puff (eroded cloud), Spark (hot core).
-enum class VfxSprite : std::uint8_t { Soft, Puff, Spark };
+// Procedural sprite when an emitter has no texture: Soft (round glow), Puff (eroded cloud), Spark (hot core), Ring (a
+// thin ring: a ripple on standing water; lit alpha sprites only, others draw it soft).
+enum class VfxSprite : std::uint8_t { Soft, Puff, Spark, Ring };
 enum class VfxRenderMode : std::uint8_t { Billboard, Stretched, Horizontal, Vertical, Mesh };
 enum class VfxSortMode : std::uint8_t { Auto, None, ByDistance, OldestInFront, YoungestInFront };
 enum class VfxNoiseQuality : std::uint8_t { Low, Medium, High };
@@ -150,6 +151,11 @@ enum class VfxSheetRowMode : std::uint8_t { Custom, Random };
 enum class VfxSheetTimeMode : std::uint8_t { Lifetime, Speed, Fps };
 enum class VfxTrailMode : std::uint8_t { PerParticle, Ribbon };
 enum class VfxSubEmitterEvent : std::uint8_t { Birth, Death };
+
+// The camera near-fade of an emitter's `nearFade` (cm from the lens): no opacity within the start, all of it beyond
+// the end, a straight ramp between.
+inline constexpr float kVfxNearFadeStart = 150.f;
+inline constexpr float kVfxNearFadeEnd = 350.f;
 
 // Properties a sub-emitter's particles take from the parent particle (VfxSubEmitter::inherit bits).
 inline constexpr std::uint32_t kVfxInheritColor = 1u << 0;
@@ -310,6 +316,15 @@ struct VfxEmitter {
     VfxCurve startRotation = VfxCurve::constant(0.f);   // radians
     VfxCurve angularVelocity = VfxCurve::constant(0.f); // radians / second
     VfxBlend blend = VfxBlend::Alpha;
+    bool lit = false; // an alpha sprite that takes the scene's light (drops of water) instead of showing its own colour
+    // An alpha sprite that fades out near the camera (a ground tell the follow camera can stand in, rain passing the
+    // lens): gone within kVfxNearFadeStart of the lens, whole beyond kVfxNearFadeEnd. Not for an additive sprite.
+    bool nearFade = false;
+    // Runtime knobs (user parameters "User.<name>"; empty: none). rateParam: the spawn rate, its default the emitter's
+    // `rate` (Niagara reads it once per loop, so keep `duration` short). colorParam: the start colour, its default the
+    // emitter's constant `startColor`; colorOverLife still scales it. Emitters of one effect may share a name.
+    std::string rateParam;
+    std::string colorParam;
     VfxSprite sprite = VfxSprite::Soft;
     float stretch = 0.f; // seconds of travel the billboard stretches along its velocity
     float stretchMax = 8.f;
@@ -342,6 +357,9 @@ struct VfxEmitter {
 struct VfxEffect {
     std::string name;
     std::vector<VfxEmitter> emitters;
+    // `sorted`: the emitters draw in the listed order (an alpha layer listed first stays under an additive one).
+    // Off by default, so an effect without the key keeps Niagara's own order when it is rebuilt.
+    bool sorted = false;
 };
 
 // Reads an effect file: {"name", "emitters": [...]}, or a single emitter object without "emitters". False
@@ -433,7 +451,11 @@ struct VfxNiagaraEmitter {
 
     // Renderer
     bool additive = false;
-    VfxSprite sprite = VfxSprite::Soft;
+    bool lit = false; // the emitter's `lit`, for an alpha sprite only
+    bool nearFade = false; // the emitter's `nearFade`, for an alpha sprite only
+    VfxSprite sprite = VfxSprite::Soft; // Ring only when lit
+    std::string rateParam;  // the emitter's, when it has a rate
+    std::string colorParam; // the emitter's; startColor[0] is its default
     VfxNiagaraFacing facing = VfxNiagaraFacing::Camera;
     bool scaleBySpeed = false; // ScaleSpriteSizeBySpeed: scale lerps min..max as speed goes 0..threshold
     float speedThreshold = 0.f; // cm/s
@@ -449,6 +471,7 @@ struct VfxNiagaraEmitter {
 struct VfxNiagaraPlan {
     std::string name;
     std::vector<VfxNiagaraEmitter> emitters;
+    bool sorted = false;   // the effect's `sorted`: the renderers draw in emitter order
     bool loops = false;    // any emitter loops
     float duration = 0.f;  // one-shot effects: seconds until the last particle can have died
 };

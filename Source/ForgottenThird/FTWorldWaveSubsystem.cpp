@@ -1,0 +1,1998 @@
+#include "FTWorldWaveSubsystem.h"
+
+#include "FTCellInstancer.h"
+#include "FTClockTower.h"
+#include "FTExploreCharacter.h"
+#include "FTLookSubsystem.h"
+#include "FTSceneLook.h"
+#include "FTWorldWave.h"
+#include "ForgottenThird.h"
+
+#include "Camera/PlayerCameraManager.h"
+#include "CollisionQueryParams.h"
+#include "CollisionShape.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/CollisionProfile.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/HitResult.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/PostProcessVolume.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionFunctionInput.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialFunctionInterface.h"
+#include "MaterialCachedData.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
+#include "Misc/CommandLine.h"
+#include "Misc/PackageName.h"
+#include "Misc/Parse.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "HAL/PlatformTime.h"
+#include "SceneView.h"
+#include "TimerManager.h"
+#include "UObject/UObjectIterator.h"
+#include "UnrealClient.h"
+#include "WorldCollision.h"
+
+#include "ftcore/LookTable.h"
+#include "ftcore/WaveLook.h"
+
+namespace
+{
+// What the proof dressing takes from the first world.
+enum class EPick : uint8
+{
+	None,
+	Tree, // a /Game/Props/TREE- mesh (not the pit's grate)
+	Lamp, // the TQ-04 street lamp
+	Lens, // a lamp's night lens (the night lights' instanced mesh tagged FTScene::NightLampHeadTag)
+	Car,  // the parked kei car
+	Road, // road furniture standing on the street: signal masts and heads, their lenses, sign posts, stand-in vehicles
+};
+constexpr int32 kPickCount = 6;
+const TCHAR* const kPickNames[kPickCount] = {
+	TEXT("none"), TEXT("street trees"), TEXT("lamp posts"), TEXT("lamp lenses"), TEXT("kei cars"), TEXT("road furniture")};
+
+// Road furniture (FTBuildRoads): a cell's instanced mesh drawn to the props' or the cars' distance (the ground and the
+// markings are drawn at any distance) carrying a road tag. Its instances are taken one by one when they stand up off the
+// street (their top RoadMinRiseCm over the ground at the origin), so grates, tactile strips and wires stay with the
+// ground while a mast's arm, head and lenses go with it.
+constexpr double RoadMinRiseCm = 40.0;
+
+// The ground under a point: one trace straight down (50 m); FallbackDrop under it when nothing is hit.
+double GroundUnder(const UWorld& World, const FVector& At, double FallbackDrop)
+{
+	FHitResult Hit;
+	FCollisionQueryParams Query(TEXT("FTWorldWaveGround"), true);
+	if (World.LineTraceSingleByChannel(Hit, At, At - FVector(0.0, 0.0, 5000.0), ECC_Visibility, Query))
+	{
+		return Hit.ImpactPoint.Z;
+	}
+	return At.Z - FallbackDrop;
+}
+
+bool IsRoadFurniture(const UInstancedStaticMeshComponent& Ism)
+{
+	if (Ism.InstanceEndCullDistance != FTCells::PropCull && Ism.InstanceEndCullDistance != FTCells::CarCull)
+	{
+		return false;
+	}
+	for (const FName& Tag : Ism.ComponentTags)
+	{
+		const FString Name = Tag.ToString();
+		if (Name.StartsWith(TEXT("FTRoad")) || Name.StartsWith(TEXT("FTSignal_")) || Name.StartsWith(TEXT("FTPedSignal_")) ||
+			Name.StartsWith(TEXT("FTVehicle_")))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+EPick PickOf(const UStaticMesh& Mesh)
+{
+	const FString Path = Mesh.GetPathName();
+	if (Path.StartsWith(TEXT("/Game/Props/TREE-")) && !Path.Contains(TEXT("grate")))
+	{
+		return EPick::Tree;
+	}
+	if (Path.StartsWith(TEXT("/Game/Props/TQ-04/")))
+	{
+		return EPick::Lamp;
+	}
+	if (Path.StartsWith(TEXT("/Game/Vehicles/KeiCar/SM_KeiCar")))
+	{
+		return EPick::Car;
+	}
+	return EPick::None;
+}
+
+// The second world's own things: real meshes, bare trees and standing boards in turn, set in a ring round the point.
+struct FArrival
+{
+	const TCHAR* Path;
+	bool bTree;
+	double RingM; // metres out from the point (capped at 0.9 of the dressing's radius)
+};
+constexpr FArrival kArrivals[] = {
+	{TEXT("/Game/Props/TREE-broadleaf-a/TREE-broadleaf-a.TREE-broadleaf-a"), true, 9.0},
+	{TEXT("/Game/Props/BKIT/SIGN_VERT_L/StaticMeshes/SIGN_VERT_L.SIGN_VERT_L"), false, 15.0},
+	{TEXT("/Game/Props/TREE-park-a/TREE-park-a.TREE-park-a"), true, 21.0},
+	{TEXT("/Game/Props/BKIT/SIGN_VERT_M/StaticMeshes/SIGN_VERT_M.SIGN_VERT_M"), false, 12.0},
+	{TEXT("/Game/Props/TREE-broadleaf-a/TREE-broadleaf-a.TREE-broadleaf-a"), true, 18.0},
+	{TEXT("/Game/Props/BKIT/SIGN_VERT_L/StaticMeshes/SIGN_VERT_L.SIGN_VERT_L"), false, 24.0},
+	{TEXT("/Game/Props/TREE-park-a/TREE-park-a.TREE-park-a"), true, 10.0},
+	{TEXT("/Game/Props/BKIT/SIGN_VERT_M/StaticMeshes/SIGN_VERT_M.SIGN_VERT_M"), false, 16.0},
+};
+constexpr int32 kArrivalCount = static_cast<int32>(UE_ARRAY_COUNT(kArrivals));
+
+// The masters with the cut wired in (FTImportPlant -Masters, FTImportVehicle, and the prop twins under the wave folder).
+const TCHAR* const kCutMasters[] = {
+	TEXT("/Game/Rendering/Foliage/M_FTFoliage"),
+	TEXT("/Game/Rendering/Foliage/M_FTBark"),
+	TEXT("/Game/Vehicles/KeiCar/Materials/M_KeiCar"),
+	TEXT("/Game/Vehicles/KeiCar/Materials/M_KeiCar_ClearCoat"),
+	TEXT("/Game/Vehicles/KeiCar/Materials/M_KeiCar_Glass"),
+};
+
+FString BasePackageOf(UMaterialInterface* Material)
+{
+	UMaterial* Base = Material ? Material->GetMaterial() : nullptr;
+	return Base ? Base->GetPackage()->GetName() : FString();
+}
+
+bool HasCut(UMaterialInterface* Material)
+{
+	const FString Package = BasePackageOf(Material);
+	if (Package.StartsWith(FString(FTWorldWave::Folder) + TEXT("/")))
+	{
+		return true;
+	}
+	for (const TCHAR* Master : kCutMasters)
+	{
+		if (Package == Master)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// "a,b,c,..." after Key on the command line as Count numbers, or false.
+bool ParseList(const TCHAR* Key, double* Out, int32 Count)
+{
+	FString Text;
+	if (!FParse::Value(FCommandLine::Get(), Key, Text, false))
+	{
+		return false;
+	}
+	TArray<FString> Parts;
+	Text.ParseIntoArray(Parts, TEXT(","));
+	if (Parts.Num() != Count)
+	{
+		return false;
+	}
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		if (!Parts[Index].IsNumeric())
+		{
+			return false;
+		}
+		Out[Index] = FCString::Atod(*Parts[Index]);
+	}
+	return true;
+}
+
+ftcore::WaveVec3 ToMetres(const FVector& Cm)
+{
+	ftcore::WaveVec3 Metres;
+	Metres.x = static_cast<float>(Cm.X / 100.0);
+	Metres.y = static_cast<float>(Cm.Y / 100.0);
+	Metres.z = static_cast<float>(Cm.Z / 100.0);
+	return Metres;
+}
+
+// A world point through the view: its viewport UV, +1 in front of the camera or -1 behind, and its view depth (cm).
+struct FScreenPoint
+{
+	float U = 0.5f;
+	float V = 0.5f;
+	float Side = 1.f;
+	float Depth = 0.f;
+};
+
+FScreenPoint Project(const FMatrix& ViewProjection, const FVector& Point)
+{
+	const FVector4 Clip = ViewProjection.TransformFVector4(FVector4(Point, 1.0));
+	const double W = Clip.W;
+	const double Safe = W >= 0.0 ? FMath::Max(W, 1.0) : FMath::Min(W, -1.0);
+	FScreenPoint Out;
+	Out.U = static_cast<float>(0.5 + 0.5 * Clip.X / Safe);
+	Out.V = static_cast<float>(0.5 - 0.5 * Clip.Y / Safe);
+	Out.Side = W > 0.0 ? 1.f : -1.f;
+	Out.Depth = static_cast<float>(W);
+	return Out;
+}
+
+// The ground under a plan point: a world-static floor facing up within 3 m of the point's height, with nothing standing
+// at walking height over the footprint (HalfFoot, cm). False on a roof, a wall, a slope or a cluttered spot.
+bool FindGround(const UWorld& World, const FVector& Point, const FVector& HalfFoot, FVector& OutGround)
+{
+	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTWorldWaveGround), false);
+	FCollisionObjectQueryParams Floor;
+	Floor.AddObjectTypesToQuery(ECC_WorldStatic);
+	FHitResult Hit;
+	if (!World.LineTraceSingleByObjectType(Hit, Point + FVector(0.0, 0.0, 3000.0), Point - FVector(0.0, 0.0, 5000.0), Floor, Query))
+	{
+		return false;
+	}
+	if (Hit.ImpactNormal.Z < 0.8 || FMath::Abs(Hit.ImpactPoint.Z - Point.Z) > 300.0)
+	{
+		return false;
+	}
+	FCollisionObjectQueryParams Standing;
+	Standing.AddObjectTypesToQuery(ECC_WorldStatic);
+	Standing.AddObjectTypesToQuery(ECC_WorldDynamic);
+	const double HalfHeight = 110.0;
+	const FVector Clear = Hit.ImpactPoint + FVector(0.0, 0.0, 30.0 + HalfHeight);
+	if (World.OverlapAnyTestByObjectType(Clear, FQuat::Identity, Standing, FCollisionShape::MakeBox(FVector(HalfFoot.X, HalfFoot.Y, HalfHeight)), Query))
+	{
+		return false;
+	}
+	OutGround = Hit.ImpactPoint;
+	return true;
+}
+
+// ft.WorldWave <x> <y> <z> [reverse] | off
+void WorldWaveCommand(const TArray<FString>& Args, UWorld* World)
+{
+	UFTWorldWaveSubsystem* Wave = World ? World->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr;
+	if (!Wave)
+	{
+		return;
+	}
+	if (Args.Num() == 1 && Args[0].Equals(TEXT("off"), ESearchCase::IgnoreCase))
+	{
+		Wave->StopWave();
+		return;
+	}
+	const bool bReverse = Args.Num() == 4 && Args[3].Equals(TEXT("reverse"), ESearchCase::IgnoreCase);
+	if ((Args.Num() != 3 && !bReverse) || !Args[0].IsNumeric() || !Args[1].IsNumeric() || !Args[2].IsNumeric())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("ft.WorldWave <x> <y> <z> [reverse]: a wave from that world point (cm) starting now; ft.WorldWave off ends it."));
+		return;
+	}
+	Wave->StartWave(FVector(FCString::Atod(*Args[0]), FCString::Atod(*Args[1]), FCString::Atod(*Args[2])), Wave->GetClock(), bReverse);
+}
+
+FAutoConsoleCommandWithWorldAndArgs GWorldWaveCommand(TEXT("ft.WorldWave"),
+	TEXT("Travel between worlds: ft.WorldWave <x> <y> <z> [reverse] starts a wave from that world point (cm) now; ft.WorldWave off ends it."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&WorldWaveCommand));
+
+// ft.WorldWaveDress <x> <y> <z> <r>
+void WorldWaveDressCommand(const TArray<FString>& Args, UWorld* World)
+{
+	UFTWorldWaveSubsystem* Wave = World ? World->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr;
+	if (!Wave)
+	{
+		return;
+	}
+	if (Args.Num() != 4 || !Args[0].IsNumeric() || !Args[1].IsNumeric() || !Args[2].IsNumeric() || !Args[3].IsNumeric())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("ft.WorldWaveDress <x> <y> <z> <r>: the world wave's proof dressing round that world point (cm), within r cm."));
+		return;
+	}
+	Wave->Dress(FVector(FCString::Atod(*Args[0]), FCString::Atod(*Args[1]), FCString::Atod(*Args[2])), FCString::Atod(*Args[3]));
+}
+
+FAutoConsoleCommandWithWorldAndArgs GWorldWaveDressCommand(TEXT("ft.WorldWaveDress"),
+	TEXT("The world wave's proof dressing: ft.WorldWaveDress <x> <y> <z> <r> tags the street trees, lamps and parked cars within r cm "
+		 "of the world point (cm) as the first world's, and sets the second world's bare trees and boards round it."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&WorldWaveDressCommand));
+} // namespace
+
+bool UFTWorldWaveSubsystem::ShouldCreateSubsystem(UObject* Outer) const
+{
+	const UWorld* World = Cast<UWorld>(Outer);
+	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) && Super::ShouldCreateSubsystem(Outer);
+}
+
+void UFTWorldWaveSubsystem::Initialize(FSubsystemCollectionBase& InCollection)
+{
+	Super::Initialize(InCollection);
+	static_assert(UE_ARRAY_COUNT(FTWorldWave::VectorNames) == UE_ARRAY_COUNT(VectorParams), "one name for each vector parameter");
+	static_assert(UE_ARRAY_COUNT(FTWorldWave::ScalarNames) == UE_ARRAY_COUNT(ScalarParams), "one name for each scalar parameter");
+	int32 Next = 0;
+	for (const TCHAR* Name : FTWorldWave::VectorNames)
+	{
+		VectorParams[Next++] = FName(Name);
+	}
+	Next = 0;
+	for (const TCHAR* Name : FTWorldWave::ScalarNames)
+	{
+		ScalarParams[Next++] = FName(Name);
+	}
+	// The look's collection loads on the first wave (EnsureCollection), so a map that never runs one never loads it.
+#if !UE_BUILD_SHIPPING // the proof's overrides of the wave's definition (front and kept lights): not in a shipped game
+	for (int32 K = 0; K < ftcore::kWaveKeepLights; ++K)
+	{
+		double Keep[4];
+		if (ParseList(K == 0 ? TEXT("WorldWaveKeep0=") : TEXT("WorldWaveKeep1="), Keep, 4))
+		{
+			bDevKeep[K] = true;
+			DevKeep[K].centre = ToMetres(FVector(Keep[0], Keep[1], Keep[2]));
+			DevKeep[K].radius = static_cast<float>(Keep[3] * 0.01);
+		}
+	}
+	// -WorldWaveFront=A ink in water (the definition's default), B blot dissolve, Band the old refraction band.
+	FString FrontName;
+	if (FParse::Value(FCommandLine::Get(), TEXT("WorldWaveFront="), FrontName))
+	{
+		DevFront = FrontName.Equals(TEXT("A"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::WaveFront::Ink)
+			: FrontName.Equals(TEXT("B"), ESearchCase::IgnoreCase) ? static_cast<int32>(ftcore::WaveFront::Blots)
+			: static_cast<int32>(ftcore::WaveFront::Band);
+	}
+#endif
+	Pawns.Reserve(16);
+	Fogs.Reserve(8);
+	AuditRoots.Reserve(64);
+	Spawned.Reserve(32);
+	WornDepth.Reserve(256);
+	AwareMarkers.Reserve(32);
+	AuditActors.Reserve(16);
+	AuditUsed.Reserve(32);
+	// No tick bound yet: a map with no wave pays nothing (BindTick binds it for a boot switch or a wave).
+}
+
+void UFTWorldWaveSubsystem::BindTick(bool bOn)
+{
+	if (bOn && !PostTickHandle.IsValid())
+	{
+		PostTickHandle = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &UFTWorldWaveSubsystem::PostActorTick);
+	}
+	else if (!bOn && PostTickHandle.IsValid())
+	{
+		FWorldDelegates::OnWorldPostActorTick.Remove(PostTickHandle);
+		PostTickHandle.Reset();
+	}
+}
+
+void UFTWorldWaveSubsystem::Deinitialize()
+{
+	BindTick(false);
+	// The world is going: the worn pieces' custom depth goes back as it was, then the state.
+	RestoreWorn();
+	bWave = false;
+	bBootPending = false;
+	Tracked.Empty();
+	Pawns.Empty();
+	Fogs.Empty();
+	Super::Deinitialize();
+}
+
+void UFTWorldWaveSubsystem::OnWorldBeginPlay(UWorld& InWorld)
+{
+	Super::OnWorldBeginPlay(InWorld);
+#if !UE_BUILD_SHIPPING // the proof's boot switches: not in a shipped game (its waves start from game code)
+	double Values[4] = {0.0, 0.0, 0.0, 0.0};
+	if (ParseList(TEXT("WorldWaveDress="), Values, 4))
+	{
+		bBootDress = true;
+		BootDressAt = FVector(Values[0], Values[1], Values[2]);
+		BootDressRadius = Values[3];
+	}
+	if (ParseList(TEXT("WorldWaveAt="), Values, 4))
+	{
+		bBootWave = true;
+		BootWaveAt = FVector(Values[0], Values[1], Values[2]);
+		BootWaveTime = Values[3];
+		bBootReverse = FParse::Param(FCommandLine::Get(), TEXT("WorldWaveReverse"));
+	}
+	bBootPending = bBootDress || bBootWave;
+	if (bBootPending)
+	{
+		BindTick(true);
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: on the first frame%s%s."),
+			bBootDress ? *FString::Printf(TEXT(", the dressing round %s within %.0f cm"), *BootDressAt.ToString(), BootDressRadius) : TEXT(""),
+			bBootWave ? *FString::Printf(TEXT(", a %s wave from %s at %.3f s on the wave clock"), bBootReverse ? TEXT("reverse") : TEXT("forward"), *BootWaveAt.ToString(), BootWaveTime) : TEXT(""));
+	}
+#endif
+}
+
+void UFTWorldWaveSubsystem::SetClock(double Seconds)
+{
+	Clock.hold(Seconds);
+}
+
+void UFTWorldWaveSubsystem::ReleaseClock()
+{
+	// ftcore::WorldWaveClock: with a wave set the clock goes on from the held time; a second release keeps the offset.
+	const UWorld* World = GetWorld();
+	Clock.release(World ? World->GetTimeSeconds() : 0.0, bWave);
+}
+
+double UFTWorldWaveSubsystem::GetClock() const
+{
+	const UWorld* World = GetWorld();
+	return Clock.now(World ? World->GetTimeSeconds() : 0.0);
+}
+
+void UFTWorldWaveSubsystem::PostActorTick(UWorld* InWorld, ELevelTick, float)
+{
+	if (!InWorld || InWorld != GetWorld() || InWorld->bIsTearingDown)
+	{
+		return;
+	}
+	Clock.settle(bWave); // the release's offset lasts only while a wave runs on it
+	if (bBootPending)
+	{
+		bBootPending = false;
+		if (bBootDress)
+		{
+			Dress(BootDressAt, BootDressRadius);
+		}
+		if (bBootWave)
+		{
+			StartWave(BootWaveAt, BootWaveTime, bBootReverse);
+		}
+	}
+	if (bWave && bStepping)
+	{
+		Step(*InWorld);
+	}
+	if (!bWave || !bStepping)
+	{
+		BindTick(false); // no wave, or it has settled: nothing moves until the next one
+	}
+}
+
+void UFTWorldWaveSubsystem::EnsureCollection()
+{
+	if (bCollectionTried)
+	{
+		return;
+	}
+	bCollectionTried = true;
+	MpcLook = FTWorldWave::Load();
+	if (!MpcLook)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no %s; the wave runs with no look (build it with FTBuildLookMaterials)."), FTWorldWave::CollectionPath);
+	}
+	else if (!MpcLook->GetScalarParameterByName(ScalarParams[0]))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s has no wave parameters yet (run FTBuildWaveMaterials, then FTBuildLookMaterials)."), FTWorldWave::CollectionPath);
+	}
+}
+
+void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, bool bReverse)
+{
+	// The street wave's definition: ink in water (front A) unless it says otherwise.
+	ftcore::WorldWaveParams Definition = ftcore::streetWaveParams();
+	Definition.direction = bReverse ? ftcore::WaveDirection::Reverse : ftcore::WaveDirection::Forward;
+	StartWave(Origin, StartTime, Definition);
+}
+
+void UFTWorldWaveSubsystem::StartWave(const FVector& Origin, double StartTime, const ftcore::WorldWaveParams& Definition)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	EnsureCollection();
+	// The definition with this start's origin and time, built and checked before a running wave is stopped, so a
+	// refused start leaves that wave as it was.
+	ftcore::WorldWaveParams Wanted = Definition;
+	Wanted.origin = ToMetres(Origin);
+	Wanted.startTime = StartTime;
+	const bool bReverse = Wanted.direction == ftcore::WaveDirection::Reverse;
+#if !UE_BUILD_SHIPPING
+	if (DevFront >= 0) { Wanted.front = static_cast<ftcore::WaveFront>(DevFront); }
+	for (int32 K = 0; K < ftcore::kWaveKeepLights; ++K)
+	{
+		if (bDevKeep[K]) { Wanted.keep[K] = DevKeep[K]; }
+	}
+#endif
+	// The second world through worldWaveWorldId: a static-storage id (never a pointer into a cue). An unknown one is
+	// refused before anything starts: no wave, one warning.
+	const char* SecondId = Wanted.toWorld ? ftcore::worldWaveWorldId(Wanted.toWorld) : nullptr;
+	if (!SecondId)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no wave from %s: unknown second world '%s'."), *Origin.ToString(),
+			Wanted.toWorld ? UTF8_TO_TCHAR(Wanted.toWorld) : TEXT("(null)"));
+		return;
+	}
+	Wanted.toWorld = SecondId;
+	// A cutscene's wave cue comes here through AFTCutsceneDirector (CutscenePlayer::takeWaveCues, then
+	// ftcore::worldWaveParamsForCue for the definition), its world checked again just above. No shipped plan carries a
+	// cue yet: the path is wired, not yet proven in game.
+	// Bad parameters (a non-finite origin or start time, a bad speed or shape) are refused before a running wave is
+	// stopped, as the unknown world is above: a refused start leaves the wave that runs as it was.
+	if (const ftcore::WorldWaveRefusal Early = ftcore::checkWorldWaveParams(Wanted); Early != ftcore::WorldWaveRefusal::None)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no wave from %s at %f s: %s."), *Origin.ToString(), StartTime,
+			ANSI_TO_TCHAR(ftcore::worldWaveRefusalName(Early)));
+		return;
+	}
+	if (bWave)
+	{
+		StopWave();
+	}
+	// A wave already set is replaced (Core's restart rule: from zero), after StopWave above has put its things back.
+	const ftcore::WorldWaveRefusal Refusal = ftcore::beginWorldWave(State, Wanted);
+	if (Refusal != ftcore::WorldWaveRefusal::None)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no wave from %s at %f s: %s."), *Origin.ToString(), StartTime,
+			ANSI_TO_TCHAR(ftcore::worldWaveRefusalName(Refusal)));
+		return;
+	}
+	Params = Wanted;
+	bStepping = true;
+	SettledAt = -1.0;
+	Frame = ftcore::WorldWaveFrame{};
+	CollectionAge = 0.f;
+	OriginCm = Origin;
+	// The prelude's streak stands on the road under the origin (the origin itself is over it).
+	StreakFootCm = FVector(Origin.X, Origin.Y, GroundUnder(*World, Origin, 0.0));
+	// The fogs at the map's own density (StopWave above has put back any a last wave thinned).
+	Fogs.Reset();
+	for (TActorIterator<AExponentialHeightFog> It(World); It; ++It)
+	{
+		if (UExponentialHeightFogComponent* FogComponent = It->GetComponent())
+		{
+			FFog& Entry = Fogs.AddDefaulted_GetRef();
+			Entry.Component = FogComponent;
+			Entry.Density = FogComponent->FogDensity;
+			Entry.Written = FogComponent->FogDensity;
+		}
+	}
+	// The look it crosses to: the definition's second world (the Unwritten unless it names another), from the look the map
+	// has now.
+	// Checked above, before the wave began.
+	ToWorld = UTF8_TO_TCHAR(SecondId);
+	FromWorld.Reset();
+	bLookBlend = false;
+	Cover = bReverse ? 1.f : 0.f;
+	CoverShare = Cover;
+	CloudT = Cover;
+	SkyCover = CloudT >= 1.f ? 0.f : 1.f;
+	LastLookTime = -1.0;
+	bLookTimed = false;
+	LastLookLog = -1.0;
+	if (const UFTLookSubsystem* Looks = World->GetSubsystem<UFTLookSubsystem>())
+	{
+		FromWorld = Looks->GetWorldLook();
+		if (const ftcore::SceneLook* Second = FTLook::Table().find(SecondId))
+		{
+			LookFrom = Looks->GetLook();
+			LookTo = *Second;
+			LookStart = ftcore::waveSkyStart(LookFrom, LookTo);
+			LookOnActors = LookFrom;
+			bLookBlend = true;
+		}
+	}
+	bSkyRealTime = false;
+	for (TObjectIterator<USkyLightComponent> It; It; ++It)
+	{
+		if (It->GetWorld() == World && It->bRealTimeCapture)
+		{
+			bSkyRealTime = true;
+			break;
+		}
+	}
+	if (!bLookBlend)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no look subsystem or no \"%s\" look in looks.json; the sky stays as it is."), *ToWorld);
+	}
+	// The audit's characters: the leads, then every other skeletal actor within the wave's reach (one pass over the
+	// world here; later spawns come through the spawn handler).
+	AuditRoots.Reset();
+	Spawned.Reset();
+	GatherPawns(*World);
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (IsAuditRoot(**It))
+		{
+			AddAuditRoot(**It);
+		}
+	}
+	// Before the front moves everything is on the side beyond it: the first world for Forward, the second for Reverse.
+	for (FTracked& Item : Tracked)
+	{
+		ResetThing(Item, !bReverse);
+	}
+	EnsureVolume(*World);
+	if (Volume)
+	{
+		Volume->bEnabled = true;
+	}
+	bWave = true;
+	BindTick(true);
+	// The worn pieces' custom depth now, then again every AuditPeriod while the wave (or its settled state) is shown.
+	ReAudit();
+	World->GetTimerManager().SetTimer(AuditTimer, this, &UFTWorldWaveSubsystem::ReAudit, AuditPeriod, true);
+	if (!SpawnHandle.IsValid())
+	{
+		SpawnHandle = World->AddOnActorSpawnedHandler(FOnActorSpawned::FDelegate::CreateUObject(this, &UFTWorldWaveSubsystem::OnActorSpawned));
+	}
+#if !UE_BUILD_SHIPPING
+	// -WorldWaveAuditBench=<n>: the re-audit's cost, as n audits of the first lead (every piece already set, so each is a
+	// re-audit's steady state); n 30 stands for 30 characters dressed like it.
+	int32 Bench = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("WorldWaveAuditBench="), Bench) && Bench > 0 && Pawns.Num() > 0 && Pawns[0].IsValid())
+	{
+		const double Begin = FPlatformTime::Seconds();
+		for (int32 K = 0; K < Bench; ++K)
+		{
+			AuditWorn(*Pawns[0].Get());
+		}
+		const double Ms = (FPlatformTime::Seconds() - Begin) * 1000.0;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: audit bench: %d audits of %s in %.3f ms (%.4f ms each), once every %.1f s."), Bench,
+			*Pawns[0]->GetName(), Ms, Ms / Bench, AuditPeriod);
+	}
+#endif
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: a %s wave from %s (cm) at %.3f s on the wave clock (now %.3f); %d things tracked, %d fogs, %d leads, %d characters audited."),
+		bReverse ? TEXT("reverse") : TEXT("forward"), *Origin.ToString(), StartTime, GetClock(), Tracked.Num(), Fogs.Num(), Pawns.Num(), AuditRoots.Num());
+}
+
+ftcore::WaveClass UFTWorldWaveSubsystem::WhichWorldAt(const FVector& WorldCm) const
+{
+	if (!bWave)
+	{
+		return ftcore::WaveClass{};
+	}
+	return ftcore::classifyWorldWave(Frame, Params.origin, ToMetres(WorldCm));
+}
+
+ftcore::WaveClass UFTWorldWaveSubsystem::WhichWorldAtShader(const FVector& WorldCm) const
+{
+	if (!bWave)
+	{
+		return ftcore::WaveClass{};
+	}
+	// The constants Step wrote to MPC_Look this frame, made again from the same state (a few multiplies, no allocation).
+	return ftcore::classifyWorldWaveShader(ftcore::worldWaveShaderConstants(Params, Frame), ToMetres(WorldCm));
+}
+
+void UFTWorldWaveSubsystem::StopWave()
+{
+	const bool bWas = bWave;
+	bWave = false;
+	bStepping = false;
+	BindTick(false);
+	SetExposureHold(false);
+	if (Volume)
+	{
+		Volume->bEnabled = false;
+	}
+	for (FFog& Fog : Fogs)
+	{
+		if (UExponentialHeightFogComponent* FogComponent = Fog.Component.Get())
+		{
+			FogComponent->SetFogDensity(Fog.Density);
+		}
+	}
+	Fogs.Reset();
+	for (FTracked& Item : Tracked)
+	{
+		ResetThing(Item, true);
+	}
+	if (UWorld* World = GetWorld())
+	{
+		RestoreLook(*World);
+		ClearCollection(*World);
+	}
+	// No state left to show: the worn pieces' custom depth back as it was.
+	RestoreWorn();
+	if (bWas)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: ended; the first world back."));
+	}
+}
+
+void UFTWorldWaveSubsystem::Step(UWorld& World)
+{
+	double Time = GetClock();
+
+	// The eye: the first player's view as the renderer will draw it this frame (the cameras have updated).
+	APlayerController* Player = World.GetFirstPlayerController();
+	FVector Eye = OriginCm;
+	FMatrix ViewProjection = FMatrix::Identity;
+	bool bView = false;
+	if (Player)
+	{
+		if (Player->PlayerCameraManager)
+		{
+			Eye = Player->PlayerCameraManager->GetCameraLocation();
+		}
+		ULocalPlayer* LocalView = Player->GetLocalPlayer();
+		FViewport* Viewport = LocalView && LocalView->ViewportClient ? LocalView->ViewportClient->Viewport : nullptr;
+		FSceneViewProjectionData Projection;
+		if (Viewport && LocalView->GetProjectionData(Viewport, Projection))
+		{
+			Eye = Projection.ViewOrigin;
+			ViewProjection = Projection.ComputeViewProjectionMatrix();
+			bView = true;
+		}
+	}
+
+	const ftcore::WorldWaveStep Result = ftcore::updateWorldWave(State, Params, Time, ToMetres(Eye));
+	Frame = Result.frame;
+	if (Time >= Params.startTime)
+	{
+		Time = Result.time; // Core's clock: never backward once started, never non-finite
+	}
+	static constexpr ftcore::WorldWaveCue kCues[] = {
+		ftcore::WorldWaveCue::Prelude, ftcore::WorldWaveCue::FrontPassedListener, ftcore::WorldWaveCue::Settled};
+	for (const ftcore::WorldWaveCue Cue : kCues)
+	{
+		if (!ftcore::hasWorldWaveCue(Result.cues, Cue))
+		{
+			continue;
+		}
+		// No sound yet: the cue's line is its place in time.
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s at %.3f s (radius %.2f m, band %.2f m, camera inside %.2f)."),
+			ANSI_TO_TCHAR(ftcore::worldWaveCueName(Cue)), Time - Params.startTime, Frame.radius, Frame.bandWidth, Frame.cameraInside);
+		if (Cue == ftcore::WorldWaveCue::Prelude)
+		{
+			// Leads spawned since the start.
+			GatherPawns(World);
+		}
+		// For the HUD and sound: the cue as an event too (FrontPassedListener is the front passing the listener).
+		OnCue.Broadcast(Cue, Time - Params.startTime);
+	}
+	// The eye holds its exposure from the wave's start, so the change reads as the world's.
+	if (!bExposureHeld && Time >= Params.startTime)
+	{
+		SetExposureHold(true);
+	}
+	else if (bExposureHeld && Time < Params.startTime)
+	{
+		// A held clock set back before the start (a capture's settle): the eye adapts freely again until it starts.
+		SetExposureHold(false);
+	}
+
+	if (UMaterialParameterCollectionInstance* Mpc = MpcLook ? World.GetParameterCollectionInstance(MpcLook) : nullptr)
+	{
+		FScreenPoint Foot;
+		FScreenPoint Tip;
+		if (bView)
+		{
+			Foot = Project(ViewProjection, StreakFootCm);
+			Tip = Project(ViewProjection, StreakFootCm + FVector(0.0, 0.0, FTWorldWave::StreakHeightCm));
+		}
+		const float Drawable = bView && Foot.Depth > 10.f && Tip.Depth > 10.f ? 1.f : 0.f;
+		// Every wave constant from Core's state (WhichWorldAt answers from the same), so the pixels and gameplay agree.
+		const ftcore::WorldWaveShaderConstants C = ftcore::worldWaveShaderConstants(Params, Frame);
+		Mpc->SetVectorParameterValue(VectorParams[0], FLinearColor(C.originCm[0], C.originCm[1], C.originCm[2], C.front));
+		Mpc->SetVectorParameterValue(VectorParams[1], FLinearColor(Foot.U, Foot.V, Foot.Side, 1.f));
+		Mpc->SetVectorParameterValue(VectorParams[2], FLinearColor(Foot.U, Foot.V, Drawable, Foot.Depth));
+		Mpc->SetVectorParameterValue(VectorParams[3], FLinearColor(Tip.U, Tip.V, Drawable, Tip.Depth));
+		// The materials' band runs from the inner edge (r - w) to the tongues' reach (r + lead w): the collection's radius
+		// is the reach and its band the whole span, so the tear's tongues can run ahead of the outer edge the cues use.
+		Mpc->SetScalarParameterValue(ScalarParams[0], C.reachCm);
+		Mpc->SetScalarParameterValue(ScalarParams[1], C.spanCm);
+		Mpc->SetScalarParameterValue(ScalarParams[2], Frame.preludeProgress);
+		Mpc->SetScalarParameterValue(ScalarParams[3], C.reverse);
+		Mpc->SetScalarParameterValue(ScalarParams[4], Frame.cameraInside);
+		// The age the materials hold until the next Step (a settled wave stops stepping, so they keep this one).
+		CollectionAge = static_cast<float>(FMath::Max(Time - Params.startTime, 0.0));
+		Mpc->SetScalarParameterValue(ScalarParams[5], CollectionAge);
+		Mpc->SetScalarParameterValue(ScalarParams[6], static_cast<float>(StreakFootCm.Z));
+		Mpc->SetVectorParameterValue(VectorParams[4], FLinearColor(C.keepCm[0][0], C.keepCm[0][1], C.keepCm[0][2], C.keepCm[0][3]));
+		Mpc->SetVectorParameterValue(VectorParams[5], FLinearColor(C.keepCm[1][0], C.keepCm[1][1], C.keepCm[1][2], C.keepCm[1][3]));
+	}
+
+	// The sky, light and air (and the post-process's gains) in step with the view's cover.
+	const APawn* PlayerPawn = Player ? Player->GetPawn() : nullptr;
+	StepLook(World, Eye, ViewProjection, bView, Time, PlayerPawn);
+
+	// The tagged things: shown, solid and cut as the front has them.
+	bool bThingsMoving = false;
+	for (FTracked& Item : Tracked)
+	{
+		UPrimitiveComponent* Component = Item.Component.Get();
+		if (!Component)
+		{
+			continue;
+		}
+		const bool bPawn = Item.Thing.tag != ftcore::WorldTag::Both && PawnInFootprint(Item, PlayerPawn);
+		const ftcore::WorldWaveThingStep Cut = ftcore::updateWorldWaveThing(Item.Thing, Params, Frame, Time, bPawn);
+		if (Cut.drawn != Item.bDrawn)
+		{
+			Component->SetVisibility(Cut.drawn);
+			Item.bDrawn = Cut.drawn;
+		}
+		if (Cut.collisionOn != Item.bSolid)
+		{
+			Component->SetCollisionEnabled(Cut.collisionOn ? Item.Collision.GetValue() : ECollisionEnabled::NoCollision);
+			Item.bSolid = Cut.collisionOn;
+		}
+		const float Local = Cut.localFront ? FMath::Max(Cut.localRadius * 100.f, 1.f) : 0.f;
+		if (Local != Item.Local)
+		{
+			Component->SetCustomPrimitiveDataFloat(FTWorldWave::kLocalSlot, Local);
+			Item.Local = Local;
+		}
+		if (Cut.held != Item.bHeld)
+		{
+			Item.bHeld = Cut.held;
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s %s at %.3f s."), Cut.held ? TEXT("holds") : TEXT("releases"),
+				*Component->GetReadableName(), Time - Params.startTime);
+		}
+		// Still to change: held, cutting in on its own front, or its collision not yet past the delay.
+		const ftcore::WorldWaveThing& Thing = Item.Thing;
+		const double Delay = static_cast<double>(Params.collisionDelay);
+		if (Thing.held || Cut.localFront || (Thing.released && (!Thing.localPassed || Time < Thing.localPassTime + Delay)) ||
+			(Thing.passed && Time < Thing.passTime + Delay))
+		{
+			bThingsMoving = true;
+		}
+	}
+
+	// Settled: the radius at its end, the camera's ramp done and every thing at rest. The tick then unbinds
+	// (PostActorTick); the collection, the volume and the things keep the settled wave until StopWave or the next wave.
+	if (Frame.settled && SettledAt < 0.0)
+	{
+		SettledAt = Time;
+	}
+	const double Rest = static_cast<double>(Params.insideRamp) + static_cast<double>(Params.collisionDelay);
+	const bool bCloudMoving = (Cover >= ftcore::kWaveCloudFull && CloudT < 1.f) || (Cover <= ftcore::kWaveCloudNone && CloudT > 0.f);
+	const bool bSkyCoverMoving = SkyCover != (CloudT >= 1.f ? 0.f : 1.f);
+	const bool bSkyMoving = bLookBlend && (FMath::Abs(Cover - CoverShare) > 0.005f || bCloudMoving || bSkyCoverMoving);
+	if (SettledAt >= 0.0 && Time >= SettledAt + Rest && !bThingsMoving && !bSkyMoving)
+	{
+		bStepping = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: settled at %.3f s; the step stops until the next wave."), Time - Params.startTime);
+	}
+}
+
+void UFTWorldWaveSubsystem::EnsureVolume(UWorld& World)
+{
+	if (IsValid(Volume))
+	{
+		return;
+	}
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	Spawn.ObjectFlags |= RF_Transient;
+	APostProcessVolume* Made = World.SpawnActor<APostProcessVolume>(Spawn);
+	if (!Made)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: could not spawn the wave's post-process volume."));
+		return;
+	}
+	Made->bUnbound = true;
+	Made->BlendWeight = 1.f;
+	Made->Priority = 1000.f;
+	// The world keeps its volumes sorted by priority as they are added: added again, it goes last (on top).
+	if (World.RemovePostProcessVolume(Made))
+	{
+		World.AddPostProcessVolume(Made);
+	}
+	const FString PostPath = FString(FTWorldWave::PostMaterialPath) + TEXT(".") + FPackageName::GetShortName(FTWorldWave::PostMaterialPath);
+	if (UMaterialInterface* Post = LoadObject<UMaterialInterface>(nullptr, *PostPath, nullptr, LOAD_NoWarn | LOAD_Quiet))
+	{
+		Made->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1.f, Post));
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no %s (run FTBuildWaveMaterials); the wave runs without its post-process."), FTWorldWave::PostMaterialPath);
+	}
+	Made->bEnabled = false;
+	Volume = Made;
+	SetExposureHold(bExposureHeld);
+}
+
+void UFTWorldWaveSubsystem::StepLook(UWorld& World, const FVector& Eye, const FMatrix& ViewProjection, bool bView, double Time,
+	const APawn* PlayerPawn)
+{
+	UMaterialParameterCollectionInstance* Mpc = MpcLook ? World.GetParameterCollectionInstance(MpcLook) : nullptr;
+	if (!bLookBlend)
+	{
+		if (Mpc)
+		{
+			Mpc->SetVectorParameterValue(VectorParams[6], FLinearColor(1.f, 1.f, 0.f, 0.f));
+		}
+		return;
+	}
+	// How much of the view the second world has: a 12 x 7 grid of rays from the eye, each to what it meets (or the sky).
+	if (bView)
+	{
+		constexpr int32 kCols = 12;
+		constexpr int32 kRows = 7;
+		constexpr double kTraceCm = 100000.0;
+		ftcore::WaveViewSample Samples[kCols * kRows];
+		const FMatrix InvViewProjection = ViewProjection.Inverse();
+		const FIntRect Rect(0, 0, kCols, kRows);
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(WorldWaveCover), false);
+		if (PlayerPawn)
+		{
+			Query.AddIgnoredActor(PlayerPawn);
+		}
+		int32 Count = 0;
+		for (int32 Row = 0; Row < kRows; ++Row)
+		{
+			for (int32 Col = 0; Col < kCols; ++Col)
+			{
+				FVector RayFrom;
+				FVector RayDir;
+				FSceneView::DeprojectScreenToWorld(FVector2D(Col + 0.5, Row + 0.5), Rect, InvViewProjection, RayFrom, RayDir);
+				ftcore::WaveViewSample& Sample = Samples[Count++];
+				FHitResult Hit;
+				if (World.LineTraceSingleByChannel(Hit, Eye, Eye + RayDir * kTraceCm, ECC_Visibility, Query))
+				{
+					Sample.point = ToMetres(Hit.ImpactPoint);
+					Sample.hit = true;
+				}
+				else
+				{
+					Sample.dir = {static_cast<float>(RayDir.X), static_cast<float>(RayDir.Y), static_cast<float>(RayDir.Z)};
+					Sample.hit = false;
+				}
+			}
+		}
+		CoverShare = ftcore::worldWaveViewShare(Frame, Params.origin, ToMetres(Eye), Samples, Count);
+	}
+	// The cover follows the share at a limited rate, on the wave clock (a held clock, as in a still's settle, steps on the
+	// world's own frames so the sky still reaches its share).
+	double Dt = bLookTimed ? Time - LastLookTime : 0.0;
+	if (Dt <= 0.0 && bLookTimed)
+	{
+		Dt = World.GetDeltaSeconds();
+	}
+	LastLookTime = Time;
+	bLookTimed = true;
+	constexpr float kCoverRate = 0.8f;
+	Cover = ftcore::stepWaveCover(Cover, CoverShare, static_cast<float>(FMath::Clamp(Dt, 0.0, 0.25)), kCoverRate);
+	// The cloud layer's shape changes only once the whole view is one world, behind the post-process's sky (a layer
+	// reshaped every frame never settles its reconstruction and shows a dot pattern).
+	constexpr float kCloudRate = 1.f;
+	CloudT = ftcore::stepWaveCloud(CloudT, Cover, static_cast<float>(FMath::Clamp(Dt, 0.0, 0.25)), kCloudRate);
+	// The post-process's overcast hides the layer until it has changed, then hands the sky to it (0.75 s).
+	constexpr float kSkyCoverRate = 1.333f;
+	SkyCover = ftcore::stepWaveCover(SkyCover, CloudT >= 1.f ? 0.f : 1.f, static_cast<float>(FMath::Clamp(Dt, 0.0, 0.25)), kSkyCoverRate);
+
+	const ftcore::SceneLook Now = ftcore::waveSkyLook(LookStart, LookTo, Cover, CloudT);
+	// A real-time capture dims with the sun already: its intensity is lifted by the sun lost, so the fill lands where the
+	// look says (ftcore::waveCaptureSkyLight).
+	ftcore::SceneLook Written = Now;
+	if (bSkyRealTime)
+	{
+		Written.skyLight = ftcore::waveCaptureSkyLight(LookFrom, Now);
+	}
+	if (Written != LookOnActors)
+	{
+		if (FTScene::ApplyLook(&World, Written, LookOnActors) >= 0)
+		{
+			// The changed world's cover shades the ground; the map's own flag is kept to give back (RestoreLook).
+			if ((Written.cloudCover > 0.f) != (LookOnActors.cloudCover > 0.f))
+			{
+				const int32 Had = FTScene::SetSunCloudShadows(&World, Written.cloudCover > 0.f);
+				if (SunCloudShadowsMap < 0)
+				{
+					SunCloudShadowsMap = Had;
+				}
+			}
+			LookOnActors = Written;
+		}
+		FTScene::ApplyLookParameters(&World, Now);
+	}
+	if (Mpc)
+	{
+		const ftcore::WaveGains Gains = ftcore::waveGains(LookFrom, Now);
+		Mpc->SetVectorParameterValue(VectorParams[6], FLinearColor(Gains.outside, Gains.inside, Cover, SkyCover));
+		// Twice a second of the wave: the cover and the gains, so a take's brightness can be read against them.
+		const double Since = Time - Params.startTime;
+		if (Since >= 0.0 && (LastLookLog < 0.0 || Since >= LastLookLog + 0.5))
+		{
+			LastLookLog = Since;
+			// The lights as the components have them (the look is not their only writer: a still's day shade sets the sky's).
+			float SunLux = -1.f, SkyIntensity = -1.f;
+			for (TObjectIterator<UDirectionalLightComponent> It; It; ++It)
+			{
+				if (It->GetWorld() == &World && It->IsVisible() && It->bAtmosphereSunLight)
+				{
+					SunLux = It->Intensity;
+					break;
+				}
+			}
+			for (TObjectIterator<USkyLightComponent> It; It; ++It)
+			{
+				if (It->GetWorld() == &World && It->IsVisible())
+				{
+					SkyIntensity = It->Intensity;
+					break;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: look at %.2f s: cover %.3f (share %.3f), key %.2f of %.2f, gains outside %.2f inside %.2f; clouds %.2f, post sky %.2f; sun %.3f lux, sky light %.3f."),
+				Since, Cover, CoverShare, ftcore::waveKeyLight(Now), ftcore::waveKeyLight(LookFrom), Gains.outside, Gains.inside, CloudT, SkyCover,
+				SunLux, SkyIntensity);
+		}
+	}
+}
+
+void UFTWorldWaveSubsystem::RestoreLook(UWorld& World)
+{
+	if (!bLookBlend)
+	{
+		return;
+	}
+	bLookBlend = false;
+	if (LookOnActors != LookFrom && FTScene::ApplyLook(&World, LookFrom, LookOnActors) >= 0)
+	{
+		LookOnActors = LookFrom;
+	}
+	if (SunCloudShadowsMap >= 0)
+	{
+		FTScene::SetSunCloudShadows(&World, SunCloudShadowsMap != 0);
+		SunCloudShadowsMap = -1;
+	}
+	FTScene::ApplyLookParameters(&World, LookFrom);
+}
+
+void UFTWorldWaveSubsystem::SetExposureHold(bool bHold)
+{
+	bExposureHeld = bHold;
+	if (!Volume)
+	{
+		return;
+	}
+	// Speed 0.001 (under the editor's 0.02 floor, which is only the slider's): the eye stays where it stood.
+	FPostProcessSettings& Post = Volume->Settings;
+	Post.bOverride_AutoExposureSpeedUp = bHold;
+	Post.bOverride_AutoExposureSpeedDown = bHold;
+	Post.AutoExposureSpeedUp = 0.001f;
+	Post.AutoExposureSpeedDown = 0.001f;
+}
+
+void UFTWorldWaveSubsystem::GatherPawns(UWorld& World)
+{
+	Pawns.Reset();
+	for (TActorIterator<AFTExploreCharacter> It(&World); It; ++It)
+	{
+		Pawns.Add(*It);
+		AddAuditRoot(**It);
+	}
+}
+
+bool UFTWorldWaveSubsystem::IsAuditRoot(const AActor& Actor) const
+{
+	if (Actor.GetAttachParentActor() || !Actor.FindComponentByClass<USkeletalMeshComponent>())
+	{
+		return false; // an attached one is audited with what it hangs from
+	}
+	if (Actor.IsA<AFTExploreCharacter>())
+	{
+		return true;
+	}
+	// The wave's whole reach: the radius at its end and the widest band beyond it (the tongues' lead).
+	const double Band = static_cast<double>(FMath::Max(Params.bandAtOrigin, Params.bandAtFar));
+	const double Reach = (static_cast<double>(Params.maxRadius) + Band * (1.0 + static_cast<double>(Params.tongueLead))) * 100.0;
+	return FVector::DistSquared(Actor.GetActorLocation(), OriginCm) <= Reach * Reach;
+}
+
+void UFTWorldWaveSubsystem::AddAuditRoot(AActor& Actor)
+{
+	for (const TWeakObjectPtr<AActor>& Root : AuditRoots)
+	{
+		if (Root.Get() == &Actor)
+		{
+			return;
+		}
+	}
+	AuditRoots.Add(&Actor);
+}
+
+void UFTWorldWaveSubsystem::OnActorSpawned(AActor* Actor)
+{
+	// Taken at the next re-audit (its components and materials are set up by then).
+	if (Actor && bWave)
+	{
+		Spawned.Add(Actor);
+	}
+}
+
+void UFTWorldWaveSubsystem::ReAudit()
+{
+	if (!bWave)
+	{
+		return;
+	}
+	const double Begin = FPlatformTime::Seconds();
+	for (const TWeakObjectPtr<AActor>& New : Spawned)
+	{
+		if (AActor* Actor = New.Get(); Actor && IsAuditRoot(*Actor))
+		{
+			AddAuditRoot(*Actor);
+		}
+	}
+	Spawned.Reset();
+	AuditRoots.RemoveAllSwap([](const TWeakObjectPtr<AActor>& Root) { return !Root.IsValid(); });
+	++AuditPass;
+	FAuditCount Total;
+	for (const TWeakObjectPtr<AActor>& Root : AuditRoots)
+	{
+		if (const AActor* Actor = Root.Get())
+		{
+			const FAuditCount One = AuditWorn(*Actor);
+			Total.Actors += One.Actors;
+			Total.Catch += One.Catch;
+			Total.Aware += One.Aware;
+			Total.Unconverted += One.Unconverted;
+			Total.Changed += One.Changed;
+		}
+	}
+	// A piece this pass didn't see on any root (a weapon dropped or detached) goes back as it was; a dead one is dropped.
+	int32 Untagged = 0;
+	for (auto It = WornDepth.CreateIterator(); It; ++It)
+	{
+		FWornDepth& Entry = It.Value();
+		UPrimitiveComponent* Primitive = Entry.Component.Get();
+		if (!IsValid(Primitive))
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+		if (Entry.Pass != AuditPass)
+		{
+			Primitive->SetCustomDepthStencilValue(Entry.Stencil);
+			Primitive->SetRenderCustomDepth(Entry.bRender);
+			It.RemoveCurrent();
+			++Untagged;
+		}
+	}
+	if (Total.Changed > 0 || Untagged > 0)
+	{
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("WorldWave: re-audit: %d characters (%d actors), %d primitives at %d, %d at %d, %d slots unconverted, %d changed, %d no longer worn ")
+			TEXT("put back; %.3f ms."),
+			AuditRoots.Num(), Total.Actors, Total.Catch, FTWorldWave::kCatchStencil, Total.Aware, FTWorldWave::kAwareStencil, Total.Unconverted,
+			Total.Changed, Untagged, (FPlatformTime::Seconds() - Begin) * 1000.0);
+	}
+}
+
+bool UFTWorldWaveSubsystem::EnsureStencil()
+{
+	if (bStencilRefused)
+	{
+		return false;
+	}
+	IConsoleVariable* Mode = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth"));
+	if (!Mode)
+	{
+		bStencilRefused = true;
+		UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no r.CustomDepth; no worn piece tagged, the catch-all is off."));
+		return false;
+	}
+	// The stencil needs 3 (2 or lower allocates none, and the catch-all would see none). The project starts with it
+	// (Config/DefaultEngine.ini): raising it at run time stalled the first frame about 8 s, so this only checks and warns.
+	if (Mode->GetInt() < 3)
+	{
+		bStencilRefused = true;
+		UE_LOG(LogForgottenThird, Warning,
+			TEXT("WorldWave: r.CustomDepth is %d, not 3 (the project's setting); the worn pieces' stencil can't work, so none is tagged and ")
+			TEXT("the pieces not wave-aware keep their own world across the front."),
+			Mode->GetInt());
+		return false;
+	}
+	return true;
+}
+
+float UFTWorldWaveSubsystem::AwareMarker(const UMaterialInterface& Material)
+{
+	const UMaterial* Master = Material.GetMaterial();
+	const FObjectKey Key(Master ? static_cast<const UObject*>(Master) : static_cast<const UObject*>(&Material));
+	if (const float* Found = AwareMarkers.Find(Key))
+	{
+		return *Found;
+	}
+	float Marker = -1.f;
+	if (Master)
+	{
+		FTWorldWave::WaveAware(*Master, &Marker);
+	}
+	AwareMarkers.Add(Key, Marker);
+	return Marker;
+}
+
+void UFTWorldWaveSubsystem::RestoreWorn()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(AuditTimer);
+		if (SpawnHandle.IsValid())
+		{
+			World->RemoveOnActorSpawnedHandler(SpawnHandle);
+		}
+	}
+	SpawnHandle.Reset();
+	// Each piece takes back what it had before the audit first set it. Assumed: nothing else in the game changes a worn
+	// piece's custom depth while a wave state is shown (nothing else uses custom depth today); a setting made by someone
+	// else in that time would be overwritten here.
+	int32 Restored = 0;
+	for (const TPair<FObjectKey, FWornDepth>& Pair : WornDepth)
+	{
+		const FWornDepth& Entry = Pair.Value;
+		if (UPrimitiveComponent* Primitive = Entry.Component.Get(); IsValid(Primitive))
+		{
+			Primitive->SetCustomDepthStencilValue(Entry.Stencil);
+			Primitive->SetRenderCustomDepth(Entry.bRender);
+			++Restored;
+		}
+	}
+	WornDepth.Reset();
+	AwareMarkers.Reset();
+	AuditLogged.Reset();
+	bStencilRefused = false;
+	AuditRoots.Reset();
+	Spawned.Reset();
+	if (Restored > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %d worn pieces' custom depth as it was."), Restored);
+	}
+}
+
+namespace
+{
+// Whether a master has MF_WorldWaveState among its functions (the cached data a cooked build keeps too): only for the
+// log's wording; the audit's test is the FTWaveAware marker.
+bool HasStateFunction(const UMaterial& Master)
+{
+	const FString StatePath = FString(FTWorldWave::StateFunctionPath) + TEXT(".") + FPackageName::GetShortName(FTWorldWave::StateFunctionPath);
+	for (const FMaterialFunctionInfo& Info : Master.GetCachedExpressionData().FunctionInfos)
+	{
+		if (Info.Function && Info.Function->GetPathName() == StatePath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void GatherWorn(const AActor& Actor, TArray<const AActor*>& Out)
+{
+	if (Out.Contains(&Actor))
+	{
+		return;
+	}
+	Out.Add(&Actor);
+	Actor.ForEachAttachedActors([&Out](AActor* Child)
+	{
+		if (Child)
+		{
+			GatherWorn(*Child, Out);
+		}
+		return true;
+	});
+}
+// The materials' field on the CPU: FTWaveSecond's edge (Plugins/FTLook/Shaders/Private/Wave/Common.ush, FTWaveFns::Edge
+// with its Tongue lobes and jitter), ported line for line in float as the shader runs it. Kept by hand beside the HLSL;
+// only LogBodyBoundary reads it.
+namespace WaveField
+{
+float Hash3(int32 X, int32 Y, int32 Z, uint32 Seed)
+{
+	uint32 H = static_cast<uint32>(X) * 1597334677u ^ static_cast<uint32>(Y) * 3812015801u ^ static_cast<uint32>(Z) * 2798796415u ^
+			   Seed * 2654435761u;
+	H = (H ^ (H >> 16)) * 0x7feb352du;
+	H = (H ^ (H >> 15)) * 0x846ca68bu;
+	H ^= H >> 16;
+	return static_cast<float>(H >> 8) * (1.f / 16777216.f);
+}
+float Lerp(float A, float B, float S) { return A + S * (B - A); }
+float VNoise3(const FVector3f& P, uint32 Seed)
+{
+	const FVector3f I(FMath::FloorToFloat(P.X), FMath::FloorToFloat(P.Y), FMath::FloorToFloat(P.Z));
+	FVector3f F = P - I;
+	F = F * F * (FVector3f(3.f) - 2.f * F);
+	const int32 X = static_cast<int32>(I.X), Y = static_cast<int32>(I.Y), Z = static_cast<int32>(I.Z);
+	const float X0 = Lerp(Lerp(Hash3(X, Y, Z, Seed), Hash3(X + 1, Y, Z, Seed), F.X), Lerp(Hash3(X, Y + 1, Z, Seed), Hash3(X + 1, Y + 1, Z, Seed), F.X), F.Y);
+	const float X1 = Lerp(Lerp(Hash3(X, Y, Z + 1, Seed), Hash3(X + 1, Y, Z + 1, Seed), F.X),
+		Lerp(Hash3(X, Y + 1, Z + 1, Seed), Hash3(X + 1, Y + 1, Z + 1, Seed), F.X), F.Y);
+	return Lerp(X0, X1, F.Z);
+}
+float Tongue(const FVector3f& Wp, float T)
+{
+	const float A = VNoise3(Wp / 600.f + FVector3f(0.f, 0.f, 0.30f * T), 7u);
+	const float B = VNoise3(Wp / 220.f + FVector3f(3.1f, 0.f, 0.55f * T), 8u);
+	const float C = VNoise3(Wp / 90.f + FVector3f(0.f, 5.7f, 0.2f * T), 15u);
+	const float Body = FMath::Clamp((0.55f * A + 0.3f * B + 0.15f * C - 0.2f) / 0.6f, 0.f, 1.f);
+	return Lerp(0.25f, 1.f, Body);
+}
+// The new world's edge at Wp, cm from the origin (Edge in the shader; w taken as max(w, 1) as FTWaveSecond passes it).
+float Edge(float R, float W, float T, const FVector3f& Wp)
+{
+	W = FMath::Max(W, 1.f);
+	const float J = (VNoise3(Wp / 80.f + FVector3f(0.f, 0.f, 0.4f * T), 13u) - 0.5f) * 60.f + (VNoise3(Wp / 25.f, 14u) - 0.5f) * 20.f;
+	return FMath::Clamp(R - W * Tongue(Wp, T) + J, R - W, R);
+}
+} // namespace WaveField
+} // namespace
+
+void UFTWorldWaveSubsystem::LogBodyBoundary(const AActor& Lead) const
+{
+	const UWorld* World = GetWorld();
+	const USkeletalMeshComponent* Body = Lead.FindComponentByClass<USkeletalMeshComponent>();
+	if (!bWave || !World || !Body)
+	{
+		return;
+	}
+	// The values the collection holds (the last Step's): the reach as the radius, the whole span as the band, and the age
+	// the materials were given, not the clock's (after the wave settles Step stops and the materials keep that age).
+	const ftcore::WorldWaveShaderConstants C = ftcore::worldWaveShaderConstants(Params, Frame);
+	const FVector3f Origin(C.originCm[0], C.originCm[1], C.originCm[2]);
+	const float R = C.reachCm, W = C.spanCm;
+	const float T = CollectionAge;
+	const FBox Box = Body->Bounds.GetBox();
+	const FVector Axis = Box.GetCenter();
+	FHitResult Hit;
+	FCollisionQueryParams Query(TEXT("FTWorldWaveBodyGround"), true, &Lead);
+	const double GroundZ = World->LineTraceSingleByChannel(Hit, FVector(Axis.X, Axis.Y, Box.Min.Z + 50.0),
+							   FVector(Axis.X, Axis.Y, Box.Min.Z - 500.0), ECC_Visibility, Query)
+							   ? Hit.ImpactPoint.Z
+							   : Box.Min.Z;
+	const double Height = Box.Max.Z - Box.Min.Z;
+	const double Heights[] = {GroundZ, Box.Min.Z, Box.Min.Z + 0.72 * Height, Box.Min.Z + 0.94 * Height}; // ground, feet, chest, head
+	// Along the horizontal line from the origin through the body's axis, at each height: where the field's 0.5 contour
+	// (edge e = distance d) lies, as the horizontal distance from the origin. Stepped at 1 cm across the band (d from r - w
+	// to r, where the edge can lie), then halved to 1 mm; the first crossing from the second world's side. -1: none.
+	FVector2f Out(static_cast<float>(Axis.X) - Origin.X, static_cast<float>(Axis.Y) - Origin.Y);
+	const float AxisAcross = Out.Size();
+	Out = AxisAcross > 1.f ? Out / AxisAcross : FVector2f(1.f, 0.f);
+	const auto Crossing = [&](double Z)
+	{
+		const float Dz = static_cast<float>(Z) - Origin.Z;
+		const auto Point = [&](float S) { return FVector3f(Origin.X + Out.X * S, Origin.Y + Out.Y * S, static_cast<float>(Z)); };
+		const auto Inside = [&](float S) { const FVector3f P = Point(S); return WaveField::Edge(R, W, T, P) - (P - Origin).Size(); };
+		const float Inner = FMath::Max(R - FMath::Max(W, 1.f), 0.f), Outer = R;
+		if (Outer <= FMath::Abs(Dz))
+		{
+			return -1.0;
+		}
+		float S0 = FMath::Sqrt(FMath::Max(Inner * Inner - Dz * Dz, 0.f));
+		const float S1 = FMath::Sqrt(Outer * Outer - Dz * Dz);
+		float F0 = Inside(S0);
+		for (float S = S0 + 1.f; S <= S1 + 1.f; S += 1.f)
+		{
+			const float F = Inside(S);
+			if (F0 > 0.f && F <= 0.f)
+			{
+				float A = S - 1.f, B = S;
+				for (int32 K = 0; K < 10; ++K)
+				{
+					const float M = 0.5f * (A + B);
+					(Inside(M) > 0.f ? A : B) = M;
+				}
+				return static_cast<double>(0.5f * (A + B));
+			}
+			F0 = F;
+		}
+		return -1.0;
+	};
+	double Across[4];
+	for (int32 K = 0; K < 4; ++K)
+	{
+		Across[K] = Crossing(Heights[K]);
+	}
+	const auto Gap = [&Across](int32 K)
+	{
+		return Across[K] >= 0.0 && Across[0] >= 0.0 ? FString::Printf(TEXT("%+.1f"), Across[K] - Across[0]) : FString(TEXT("n/a"));
+	};
+	const auto FromAxis = [&Across, AxisAcross](int32 K)
+	{
+		return Across[K] >= 0.0 ? FString::Printf(TEXT("%+.1f"), Across[K] - AxisAcross) : FString(TEXT("none"));
+	};
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("WorldWave: body boundary for %s (the materials' field, FTWaveSecond's edge on the CPU): reach %.1f cm, span %.1f cm, age %.2f s; ")
+		TEXT("origin z %.1f, ground z %.1f, feet z %.1f, chest z %.1f, head z %.1f; the edge against the ground's at the feet %s cm, chest %s cm, head %s cm; ")
+		TEXT("from the body's axis (%.1f cm out): ground %s, feet %s, chest %s, head %s cm."),
+		*Lead.GetName(), R, W, T, Origin.Z, Heights[0], Heights[1], Heights[2], Heights[3], *Gap(1), *Gap(2), *Gap(3), AxisAcross, *FromAxis(0),
+		*FromAxis(1), *FromAxis(2), *FromAxis(3));
+}
+
+UFTWorldWaveSubsystem::FAuditCount UFTWorldWaveSubsystem::AuditWorn(const AActor& Root)
+{
+	FAuditCount Count;
+	AuditActors.Reset();
+	GatherWorn(Root, AuditActors);
+	Count.Actors = AuditActors.Num();
+	for (const AActor* Actor : AuditActors)
+	{
+		TInlineComponentArray<UPrimitiveComponent*> Primitives(Actor);
+		for (UPrimitiveComponent* Primitive : Primitives)
+		{
+			// Hidden ones too: a jacket's other state or a stowed weapon is shown later and must already be set. Not the
+			// editor's own helpers (the camera's proxy mesh): no worn piece, never drawn in the game.
+			if (!Primitive || Primitive->IsEditorOnly())
+			{
+				continue;
+			}
+#if WITH_EDITORONLY_DATA
+			if (Primitive->IsVisualizationComponent())
+			{
+				continue;
+			}
+#endif
+			AuditUsed.Reset();
+			Primitive->GetUsedMaterials(AuditUsed);
+			int32 Aware = 0, Other = 0;
+			for (UMaterialInterface* Material : AuditUsed)
+			{
+				if (!Material)
+				{
+					continue;
+				}
+				++Count.Slots;
+				const float Marker = AwareMarker(*Material);
+				if (Marker > 0.5f)
+				{
+					++Aware;
+					const UMaterial* Master = Material->GetMaterial();
+					if (Master && !AuditLogged.Contains(FObjectKey(Master)))
+					{
+						AuditLogged.Add(FObjectKey(Master));
+						UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: master %s has %s %.0f (wave-aware)."), *Root.GetName(), *Master->GetPathName(),
+							FTWorldWave::AwareParameter, Marker);
+					}
+					continue;
+				}
+				++Other;
+				const UMaterial* Master = Material->GetMaterial();
+				const UObject* Key = Master ? static_cast<const UObject*>(Master) : static_cast<const UObject*>(Material);
+				if (AuditLogged.Contains(FObjectKey(Key)))
+				{
+					continue;
+				}
+				AuditLogged.Add(FObjectKey(Key));
+				UE_LOG(LogForgottenThird, Warning,
+					TEXT("WorldWave: %s wears %s on %s (%s, %s) whose master %s %s; the post's catch-all gives that piece the character state."),
+					*Root.GetName(), *Material->GetPathName(), *Primitive->GetName(), *Primitive->GetClass()->GetName(), *Actor->GetName(),
+					*Key->GetPathName(),
+					Marker >= 0.f ? *FString::Printf(TEXT("has %s %.0f"), FTWorldWave::AwareParameter, Marker)
+					: Master && HasStateFunction(*Master) ? TEXT("takes the world-wave state but has no marker (rebuild it)")
+														   : TEXT("takes no world-wave state"));
+			}
+			if (Aware + Other == 0)
+			{
+				continue;
+			}
+			Count.Other += Other;
+			// Every worn primitive renders custom depth, so the buffer keeps the nearest worn surface: 222 all wave-aware (the
+			// post leaves it), 223 any other (the post gives it the state). The stencil is per primitive, so a mixed one
+			// takes 223 and its wave-aware slots take the state twice.
+			const int32 Wanted = Other > 0 ? FTWorldWave::kCatchStencil : FTWorldWave::kAwareStencil;
+			const int32 Now = Primitive->CustomDepthStencilValue;
+			const bool bOurs = Primitive->bRenderCustomDepth && (Now == FTWorldWave::kCatchStencil || Now == FTWorldWave::kAwareStencil);
+			const FObjectKey PrimitiveKey(Primitive);
+			FWornDepth* Entry = WornDepth.Find(PrimitiveKey);
+			if (!bOurs)
+			{
+				if (Primitive->bRenderCustomDepth && Now != 0)
+				{
+					// Someone else's stencil on this piece: left alone (and no longer ours to put back), its other slots counted
+					// unconverted (logged once).
+					if (Entry)
+					{
+						WornDepth.Remove(PrimitiveKey);
+					}
+					Count.Unconverted += Other;
+					if (!AuditLogged.Contains(PrimitiveKey))
+					{
+						AuditLogged.Add(PrimitiveKey);
+						UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: %s: %s already renders custom depth with stencil %d; left as it is."),
+							*Root.GetName(), *Primitive->GetName(), Now);
+					}
+					continue;
+				}
+				if (!EnsureStencil())
+				{
+					Count.Unconverted += Other;
+					continue;
+				}
+				// Its own settings, the first time they change (a piece set back by someone since keeps its first record).
+				if (!Entry)
+				{
+					Entry = &WornDepth.Add(PrimitiveKey);
+					Entry->Component = Primitive;
+					Entry->bRender = Primitive->bRenderCustomDepth;
+					Entry->Stencil = Now;
+				}
+				Primitive->SetCustomDepthStencilValue(Wanted);
+				Primitive->SetRenderCustomDepth(true);
+				++Count.Changed;
+			}
+			else if (Now != Wanted)
+			{
+				Primitive->SetCustomDepthStencilValue(Wanted); // a slot changed kind since the last audit
+				++Count.Changed;
+			}
+			if (Entry)
+			{
+				Entry->Pass = AuditPass; // still worn: the re-audit keeps it
+			}
+			++(Wanted == FTWorldWave::kCatchStencil ? Count.Catch : Count.Aware);
+			if (Aware > 0 && Other > 0 && !AuditLogged.Contains(FObjectKey(Primitive)))
+			{
+				AuditLogged.Add(FObjectKey(Primitive));
+				UE_LOG(LogForgottenThird, Warning,
+					TEXT("WorldWave: %s: %s (%s) mixes %d wave-aware and %d other slots; stencil %d, so its wave-aware slots take the character state twice."),
+					*Root.GetName(), *Primitive->GetName(), *Actor->GetName(), Aware, Other, FTWorldWave::kCatchStencil);
+			}
+		}
+	}
+	if (Count.Changed > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: %s: %d actors, %d material slots, %d not wave-aware; %d primitives at stencil %d (the catch-all), ")
+			TEXT("%d at %d (wave-aware), %d changed now, %d slots unconverted; the pieces attached to it at any depth."),
+			*Root.GetName(), Count.Actors, Count.Slots, Count.Other, Count.Catch, FTWorldWave::kCatchStencil, Count.Aware, FTWorldWave::kAwareStencil,
+			Count.Changed, Count.Unconverted);
+	}
+	return Count;
+}
+
+bool UFTWorldWaveSubsystem::PawnInFootprint(const FTracked& Item, const APawn* PlayerPawn) const
+{
+	const auto Overlaps = [&Item](const APawn* Pawn)
+	{
+		if (!Pawn)
+		{
+			return false;
+		}
+		float PawnRadius = 0.f;
+		float PawnHalfHeight = 0.f;
+		Pawn->GetSimpleCollisionCylinder(PawnRadius, PawnHalfHeight);
+		const FVector Apart = (Pawn->GetActorLocation() - Item.FootCentre).GetAbs();
+		return Apart.X <= Item.FootExtent.X + PawnRadius && Apart.Y <= Item.FootExtent.Y + PawnRadius &&
+			   Apart.Z <= Item.FootExtent.Z + PawnHalfHeight;
+	};
+	if (Overlaps(PlayerPawn))
+	{
+		return true;
+	}
+	for (const TWeakObjectPtr<APawn>& Lead : Pawns)
+	{
+		if (Overlaps(Lead.Get()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void UFTWorldWaveSubsystem::ResetThing(FTracked& Item, bool bOldSide)
+{
+	ftcore::WorldWaveThing Fresh;
+	Fresh.pivot = Item.Thing.pivot;
+	Fresh.radius = Item.Thing.radius;
+	Fresh.tag = Item.Thing.tag;
+	Item.Thing = Fresh;
+	const bool bShow = Fresh.tag == ftcore::WorldTag::Both || ((Fresh.tag == ftcore::WorldTag::OldOnly) == bOldSide);
+	Item.bDrawn = bShow;
+	Item.bSolid = bShow;
+	Item.bHeld = false;
+	Item.Local = 0.f;
+	if (UPrimitiveComponent* Component = Item.Component.Get())
+	{
+		Component->SetVisibility(bShow);
+		Component->SetCollisionEnabled(bShow ? Item.Collision.GetValue() : ECollisionEnabled::NoCollision);
+		Component->SetCustomPrimitiveDataFloat(FTWorldWave::kLocalSlot, 0.f);
+	}
+}
+
+void UFTWorldWaveSubsystem::Track(UPrimitiveComponent& Component, ftcore::WorldTag Tag, const UStaticMesh& Mesh, const FTransform& WorldTransform)
+{
+	Component.SetCustomPrimitiveDataFloat(FTWorldWave::kTagSlot, static_cast<float>(static_cast<uint8>(Tag)));
+	Component.SetCustomPrimitiveDataFloat(FTWorldWave::kLocalSlot, 0.f);
+	FTracked& Item = Tracked.AddDefaulted_GetRef();
+	Item.Component = &Component;
+	const FBoxSphereBounds Bounds = Mesh.GetBounds().TransformBy(WorldTransform);
+	Item.Thing.pivot = ToMetres(Bounds.Origin);
+	Item.Thing.radius = static_cast<float>(Bounds.SphereRadius / 100.0);
+	Item.Thing.tag = Tag;
+	// The footprint a pawn must be clear of: the collision's box (a tree's trunk, not its crown), else the bounds'.
+	FBox Foot = Bounds.GetBox();
+	if (const UBodySetup* Body = Mesh.GetBodySetup(); Body && Body->AggGeom.GetElementCount() > 0)
+	{
+		Foot = Body->AggGeom.CalcAABB(WorldTransform);
+	}
+	Item.FootCentre = Foot.GetCenter();
+	Item.FootExtent = Foot.GetExtent();
+	Item.Collision = Component.GetCollisionEnabled();
+	ResetThing(Item, true);
+}
+
+UMaterialInterface* UFTWorldWaveSubsystem::CutMaterialFor(UMaterialInterface* Material)
+{
+	if (!Material)
+	{
+		return nullptr;
+	}
+	if (const TObjectPtr<UMaterialInterface>* Found = CutFor.Find(Material))
+	{
+		return Found->Get();
+	}
+	UMaterialInterface* Chosen = Material;
+	const FString Package = BasePackageOf(Material);
+	for (const TCHAR* Master : FTWorldWave::PropMasters)
+	{
+		if (Package != Master)
+		{
+			continue;
+		}
+		const FString TwinName = FPackageName::GetShortName(Master) + FTWorldWave::TwinSuffix;
+		const FString TwinPath = FString(FTWorldWave::Folder) + TEXT("/") + TwinName + TEXT(".") + TwinName;
+		if (UMaterialInterface* Twin = LoadObject<UMaterialInterface>(nullptr, *TwinPath, nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			UMaterialInstanceDynamic* Instance = UMaterialInstanceDynamic::Create(Twin, this);
+			Instance->CopyMaterialUniformParameters(Material);
+			Instances.Add(Instance);
+			Chosen = Instance;
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: no %s (run FTBuildWaveMaterials); %s keeps its uncut master."), *TwinPath, *Material->GetName());
+		}
+		break;
+	}
+	CutFor.Add(Material, Chosen);
+	return Chosen;
+}
+
+void UFTWorldWaveSubsystem::ClearCollection(UWorld& World)
+{
+	CollectionAge = 0.f; // the collection's age goes to 0 with it, so the boundary log never reads a stale one
+	UMaterialParameterCollectionInstance* Mpc = MpcLook ? World.GetParameterCollectionInstance(MpcLook) : nullptr;
+	if (!Mpc)
+	{
+		return;
+	}
+	for (const FName& Name : VectorParams)
+	{
+		Mpc->SetVectorParameterValue(Name, FLinearColor(0.f, 0.f, 0.f, 0.f));
+	}
+	for (const FName& Name : ScalarParams)
+	{
+		Mpc->SetScalarParameterValue(Name, 0.f);
+	}
+}
+
+int32 UFTWorldWaveSubsystem::Dress(const FVector& Origin, double Radius)
+{
+	UWorld* World = GetWorld();
+	if (!World || Radius <= 0.0)
+	{
+		return Tracked.Num();
+	}
+	const double RadiusSq = Radius * Radius;
+	const FName LensTag(FTScene::NightLampHeadTag);
+	const double RoadTopMin = GroundUnder(*World, Origin, 150.0) + RoadMinRiseCm;
+
+	// What lies within the radius: instances of a cell's instanced meshes, and fallback actors' meshes.
+	struct FSplit
+	{
+		UInstancedStaticMeshComponent* Source = nullptr;
+		EPick Pick = EPick::None;
+		TArray<int32> Indices;
+	};
+	struct FPlain
+	{
+		UStaticMeshComponent* Component = nullptr;
+		EPick Pick = EPick::None;
+	};
+	TArray<FSplit> Splits;
+	TArray<FPlain> Plains;
+	TMap<const UStaticMesh*, EPick> Picks;
+	int32 Towers = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (Actor->IsA<AFTClockTower>())
+		{
+			++Towers;
+			continue;
+		}
+		TInlineComponentArray<UStaticMeshComponent*> Meshes(Actor);
+		for (UStaticMeshComponent* MeshComponent : Meshes)
+		{
+			UStaticMesh* Mesh = MeshComponent ? MeshComponent->GetStaticMesh() : nullptr;
+			if (!Mesh || !MeshComponent->IsRegistered() || !MeshComponent->IsVisible())
+			{
+				continue;
+			}
+			// Tagged already (a split piece, an arrival, a fallback dressed before).
+			const TArray<float>& Cpd = MeshComponent->GetCustomPrimitiveData().Data;
+			if (Cpd.IsValidIndex(FTWorldWave::kTagSlot) && Cpd[FTWorldWave::kTagSlot] != 0.f)
+			{
+				continue;
+			}
+			EPick Pick = EPick::None;
+			UInstancedStaticMeshComponent* AsIsm = Cast<UInstancedStaticMeshComponent>(MeshComponent);
+			if (MeshComponent->ComponentHasTag(LensTag))
+			{
+				Pick = EPick::Lens;
+			}
+			else if (AsIsm && IsRoadFurniture(*AsIsm))
+			{
+				// Per component: the road's engine shapes are shared with every other builder's.
+				Pick = EPick::Road;
+			}
+			else if (const EPick* Cached = Picks.Find(Mesh))
+			{
+				Pick = *Cached;
+			}
+			else
+			{
+				Pick = Picks.Add(Mesh, PickOf(*Mesh));
+			}
+			if (Pick == EPick::None)
+			{
+				continue;
+			}
+			if (UInstancedStaticMeshComponent* Ism = AsIsm)
+			{
+				FSplit* Split = nullptr;
+				for (int32 Index = 0; Index < Ism->GetInstanceCount(); ++Index)
+				{
+					FTransform Placed;
+					if (Ism->GetInstanceTransform(Index, Placed, true) && FVector::DistSquared(Placed.GetLocation(), Origin) <= RadiusSq)
+					{
+						if (Pick == EPick::Road && Mesh->GetBounds().TransformBy(Placed).GetBox().Max.Z < RoadTopMin)
+						{
+							continue;
+						}
+						if (!Split)
+						{
+							Split = &Splits.AddDefaulted_GetRef();
+							Split->Source = Ism;
+							Split->Pick = Pick;
+						}
+						Split->Indices.Add(Index);
+					}
+				}
+			}
+			else if (FVector::DistSquared(MeshComponent->GetComponentLocation(), Origin) <= RadiusSq)
+			{
+				FPlain& Plain = Plains.AddDefaulted_GetRef();
+				Plain.Component = MeshComponent;
+				Plain.Pick = Pick;
+			}
+		}
+	}
+
+	int32 Count = 0;
+	for (const FSplit& Split : Splits)
+	{
+		Count += Split.Indices.Num();
+	}
+	Tracked.Reserve(Tracked.Num() + Count + Plains.Num() + kArrivalCount);
+
+	int32 PickCounts[kPickCount] = {};
+	TMap<FString, int32> PickedMeshes;
+	TSet<UMaterialInterface*> Uncut;
+	const auto NoteSlots = [&Uncut](const UStaticMeshComponent& Dressed)
+	{
+		for (int32 Slot = 0; Slot < Dressed.GetNumMaterials(); ++Slot)
+		{
+			UMaterialInterface* Material = Dressed.GetMaterial(Slot);
+			if (Material && !HasCut(Material))
+			{
+				Uncut.Add(Material);
+			}
+		}
+	};
+
+	// One instance of a cell's instanced mesh becomes a one-instance instanced mesh of its own on the same holder, as the
+	// tag is per primitive.
+	for (const FSplit& Split : Splits)
+	{
+		UInstancedStaticMeshComponent* Source = Split.Source;
+		AActor* Holder = Source->GetOwner();
+		UStaticMesh* Mesh = Source->GetStaticMesh();
+		if (!Holder || !Mesh)
+		{
+			continue;
+		}
+		USceneComponent* Root = Holder->GetRootComponent();
+		const FTransform RootTransform = Root ? Root->GetComponentTransform() : FTransform::Identity;
+		const int32 NumCustom = Source->NumCustomDataFloats;
+		for (const int32 Index : Split.Indices)
+		{
+			FTransform Placed;
+			Source->GetInstanceTransform(Index, Placed, true);
+			UInstancedStaticMeshComponent* Piece = NewObject<UInstancedStaticMeshComponent>(
+				Holder, MakeUniqueObjectName(Holder, UInstancedStaticMeshComponent::StaticClass(), FName(TEXT("WaveOld"))), RF_Transient);
+			Piece->CreationMethod = EComponentCreationMethod::Instance;
+			Piece->SetMobility(Source->Mobility);
+			Piece->SetStaticMesh(Mesh);
+			for (int32 Slot = 0; Slot < Source->GetNumMaterials(); ++Slot)
+			{
+				UMaterialInterface* Want = CutMaterialFor(Source->GetMaterial(Slot));
+				if (Want != Piece->GetMaterial(Slot))
+				{
+					Piece->SetMaterial(Slot, Want);
+				}
+			}
+			Piece->SetCollisionProfileName(Source->GetCollisionProfileName(), false);
+			Piece->SetCollisionObjectType(Source->GetCollisionObjectType());
+			Piece->SetCollisionResponseToChannels(Source->GetCollisionResponseToChannels());
+			Piece->SetCollisionEnabled(Source->GetCollisionEnabled());
+			Piece->SetGenerateOverlapEvents(false);
+			Piece->SetCanEverAffectNavigation(false);
+			Piece->CastShadow = Source->CastShadow;
+			Piece->bCastDynamicShadow = Source->bCastDynamicShadow;
+			Piece->bCastStaticShadow = Source->bCastStaticShadow;
+			Piece->bVisibleInRayTracing = Source->bVisibleInRayTracing;
+			Piece->bAffectDistanceFieldLighting = Source->bAffectDistanceFieldLighting;
+			Piece->bAffectDynamicIndirectLighting = Source->bAffectDynamicIndirectLighting;
+			Piece->bReceivesDecals = Source->bReceivesDecals;
+			Piece->InstanceStartCullDistance = Source->InstanceStartCullDistance;
+			Piece->InstanceEndCullDistance = Source->InstanceEndCullDistance;
+			Piece->InstancingRandomSeed = Source->InstancingRandomSeed;
+			Piece->ComponentTags = Source->ComponentTags;
+			Piece->SetNumCustomDataFloats(NumCustom);
+			// The instance goes in before the piece registers, relative to the holder's root it attaches to.
+			Piece->AddInstance(Placed.GetRelativeTransform(RootTransform), false);
+			if (NumCustom > 0 && Source->PerInstanceSMCustomData.Num() >= (Index + 1) * NumCustom)
+			{
+				Piece->SetCustomData(0, TArrayView<const float>(Source->PerInstanceSMCustomData.GetData() + Index * NumCustom, NumCustom), false);
+			}
+			if (Root)
+			{
+				Piece->SetupAttachment(Root);
+			}
+			Holder->AddInstanceComponent(Piece);
+			Piece->RegisterComponent();
+			Track(*Piece, ftcore::WorldTag::OldOnly, *Mesh, Placed);
+			NoteSlots(*Piece);
+			++PickCounts[static_cast<int32>(Split.Pick)];
+			++PickedMeshes.FindOrAdd(Mesh->GetPathName());
+		}
+		TArray<int32> Removed = Split.Indices;
+		Removed.Sort(TGreater<int32>());
+		Source->RemoveInstances(Removed, true);
+		if (UHierarchicalInstancedStaticMeshComponent* Tree = Cast<UHierarchicalInstancedStaticMeshComponent>(Source))
+		{
+			Tree->BuildTreeIfOutdated(false, true);
+		}
+	}
+
+	// A fallback actor's mesh is tagged where it stands.
+	for (const FPlain& Plain : Plains)
+	{
+		UStaticMeshComponent* Dressed = Plain.Component;
+		for (int32 Slot = 0; Slot < Dressed->GetNumMaterials(); ++Slot)
+		{
+			UMaterialInterface* Was = Dressed->GetMaterial(Slot);
+			UMaterialInterface* Want = CutMaterialFor(Was);
+			if (Want != Was)
+			{
+				Dressed->SetMaterial(Slot, Want);
+			}
+		}
+		Track(*Dressed, ftcore::WorldTag::OldOnly, *Dressed->GetStaticMesh(), Dressed->GetComponentTransform());
+		NoteSlots(*Dressed);
+		++PickCounts[static_cast<int32>(Plain.Pick)];
+		++PickedMeshes.FindOrAdd(Dressed->GetStaticMesh()->GetPathName());
+	}
+
+	// The second world's own things, set down round the point and facing it. They start hidden and not solid.
+	int32 Arrived = 0;
+	for (int32 Slot = 0; Slot < kArrivalCount; ++Slot)
+	{
+		const FArrival& Arrival = kArrivals[Slot];
+		UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, Arrival.Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!Mesh)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("WorldWave: dressing: no %s; that arrival is left out."), Arrival.Path);
+			continue;
+		}
+		const FBoxSphereBounds Local = Mesh->GetBounds();
+		const double Half = FMath::Max(FMath::Max(Local.BoxExtent.X, Local.BoxExtent.Y) * 0.5, 20.0);
+		const FVector HalfFoot(Half, Half, 0.0);
+		const double Angle = FMath::DegreesToRadians(22.5 + 45.0 * Slot);
+		const FVector Out(FMath::Cos(Angle), FMath::Sin(Angle), 0.0);
+		const double Ring = FMath::Min(Arrival.RingM * 100.0, Radius * 0.9);
+		FVector Ground = FVector::ZeroVector;
+		bool bFound = false;
+		const double Tries[] = {Ring, Ring - 300.0, Ring + 300.0};
+		for (const double Try : Tries)
+		{
+			if (Try >= 100.0 && Try <= Radius && FindGround(*World, Origin + Out * Try, HalfFoot, Ground))
+			{
+				bFound = true;
+				break;
+			}
+		}
+		if (!bFound)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: dressing: no clear ground for %s at %.1f m, %.1f degrees; left out."),
+				*Mesh->GetName(), Ring / 100.0, 22.5 + 45.0 * Slot);
+			continue;
+		}
+		const FVector ToPoint(Origin.X - Ground.X, Origin.Y - Ground.Y, 0.0);
+		const FRotator Facing = FRotationMatrix::MakeFromX(ToPoint.GetSafeNormal()).Rotator();
+		const FTransform Placed(Facing, FVector(Ground.X, Ground.Y, Ground.Z - (Local.Origin.Z - Local.BoxExtent.Z)));
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Spawn.ObjectFlags |= RF_Transient;
+		AStaticMeshActor* Actor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Placed, Spawn);
+		UStaticMeshComponent* Dressed = Actor ? Actor->GetStaticMeshComponent() : nullptr;
+		if (!Dressed)
+		{
+			continue;
+		}
+		Dressed->SetMobility(EComponentMobility::Movable);
+		Dressed->SetStaticMesh(Mesh);
+		Dressed->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
+		Dressed->SetGenerateOverlapEvents(false);
+		Dressed->SetCanEverAffectNavigation(false);
+		for (int32 Material = 0; Material < Dressed->GetNumMaterials(); ++Material)
+		{
+			UMaterialInterface* Was = Dressed->GetMaterial(Material);
+			if (!Was)
+			{
+				continue;
+			}
+			if (Arrival.bTree)
+			{
+				// Bare: the leaves and the far billboard gone whatever the season.
+				const FString Name = Was->GetName();
+				if (Name.EndsWith(TEXT("_Leaf")) || Name.EndsWith(TEXT("_Billboard")))
+				{
+					UMaterialInstanceDynamic* Instance = UMaterialInstanceDynamic::Create(Was, this);
+					Instance->SetScalarParameterValue(TEXT("Bare"), 1.f);
+					Instances.Add(Instance);
+					Dressed->SetMaterial(Material, Instance);
+				}
+			}
+			else
+			{
+				UMaterialInterface* Want = CutMaterialFor(Was);
+				if (Want != Was)
+				{
+					Dressed->SetMaterial(Material, Want);
+				}
+			}
+		}
+		Track(*Dressed, ftcore::WorldTag::NewOnly, *Mesh, Actor->GetActorTransform());
+		NoteSlots(*Dressed);
+		++Arrived;
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: dressing: arrival %s at %s (%.1f m out)."), *Mesh->GetPathName(),
+			*Placed.GetLocation().ToString(), FVector::Dist2D(Placed.GetLocation(), Origin) / 100.0);
+	}
+
+	// The picks.
+	UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: dressing round %s within %.0f cm: first world's only %d %s, %d %s, %d %s, %d %s; "
+		"second world's only %d arrivals; the ground, the buildings and the clock tower (%d) left to both."),
+		*Origin.ToString(), Radius,
+		PickCounts[1], kPickNames[1], PickCounts[2], kPickNames[2], PickCounts[3], kPickNames[3], PickCounts[4], kPickNames[4],
+		Arrived, Towers);
+	for (const TPair<FString, int32>& Picked : PickedMeshes)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: dressing: %d x %s."), Picked.Value, *Picked.Key);
+	}
+	for (UMaterialInterface* Material : Uncut)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldWave: dressing: %s has no cut in its master (%s): its thing goes by visibility alone."),
+			*Material->GetPathName(), *BasePackageOf(Material));
+	}
+	return Tracked.Num();
+}

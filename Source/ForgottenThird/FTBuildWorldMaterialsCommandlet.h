@@ -11,6 +11,11 @@
 // albedo is held to a plausible 0.04-0.8 whatever colour a tint asks for (a brighter one is scaled down,
 // keeping its hue). The file is replaced, and nothing is saved if the material doesn't compile. See
 // docs/SCENE_LOOK.md.
+//
+// -StreetDetail=<dir> (with -Weather): imports the asphalt detail tile from <dir> (street_detail_D.jpg sRGB albedo,
+// street_detail_N.jpg DirectX normal, street_detail_RA.jpg linear roughness R and AO G) as /Game/Look/T_StreetDetail_*,
+// replacing earlier imports. Whenever all three are in Content, -Weather wires them into the street layer's asphalt
+// (ftcore SurfaceWeatherOptions::streetDetail); without them the asphalt keeps its procedural aggregate.
 
 #include "CoreMinimal.h"
 #include "Commandlets/Commandlet.h"

@@ -27,6 +27,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/HUD.h"
 
+#include "ftcore/UiScreens.h"
+
 #include "FTArenaHUD.generated.h"
 
 class UFTArenaRunner;
@@ -49,8 +51,16 @@ public:
 	AFTArenaHUD();
 
 	virtual void DrawHUD() override;
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+	// The screens open over the fight (ftcore/UiScreens.h): the runner's party screen, the pause menu and the settings.
+	// Each fight HUD part asks ftcore::uiHudDraws with it.
+	static ftcore::UiScreenMask ScreensOpen(const UFTArenaRunner* Runner);
 
 private:
+	// The arena demo's fight, else the one this map's arena host runs (an arena step in a world); null before either.
+	const UFTArenaRunner* FindRunner() const;
+
 	void DrawStrCentered(const FString& Text, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale);
 	void DrawRing(float X, float Y, float Radius, const FLinearColor& Color, float Thickness);
 	void DrawFrame(float X, float Y, float W, float H, const FLinearColor& Color, float Thickness);
@@ -66,7 +76,11 @@ private:
 	void DrawTell(const UFTArenaRunner& Mode, int32 Enemy, const FVector2D& Over, const FVector2D& Chest, bool bOnScreen);
 	// The open Read deal's cards, centred on X with their bottom at Bottom.
 	void DrawReadCards(const UFTArenaRunner& Mode, float X, float Bottom);
-	void DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color);
+	// An arrow at the screen's edge toward Toward (screen space, + right and down). For an off-frame windup: Pulse 1..0
+	// swells it and rings it at the windup's onset, Fill (0..1; below 0: none) fills a bar beside it toward the hit, and
+	// Word (the answer) is written beside it, so the tell reads with the sound off.
+	void DrawEdgeArrow(const FVector2D& Toward, const FLinearColor& Color, float Pulse = 0.f, float Fill = -1.f,
+		const FString* Word = nullptr);
 	void DrawLock(const UFTArenaRunner& Mode);
 	void DrawPopups(const UFTArenaRunner& Mode);
 	void DrawFlashes(const UFTArenaRunner& Mode);
@@ -79,6 +93,7 @@ private:
 	float UiScale = 1.f;
 
 	FArenaNumberText HpText;
+	FArenaNumberText AllyText;
 	FArenaNumberText TargetText;
 	FArenaNumberText LoadText;
 	FArenaNumberText ReleaseText;
@@ -86,4 +101,6 @@ private:
 	FArenaNumberText PopupText[16];
 	FString StatsText;
 	bool bStatsBuilt = false;
+	// The new UI's Slate layer on the viewport (FTNewUi.h), while it is on.
+	TSharedPtr<class SWidget> NewUiWidget;
 };

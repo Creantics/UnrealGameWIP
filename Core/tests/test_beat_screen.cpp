@@ -244,6 +244,7 @@ TEST_CASE("beat screen: autoplay retries a lost fight three times, then ends the
     CHECK(s.outcome() == BeatOutcome::Lost);
     CHECK_FALSE(s.won());
     CHECK(s.gaveUp());
+    CHECK_FALSE(s.quitChosen()); // the autopilot never quits
     CHECK(s.autoRetries() == BeatScreen::kAutoRetries);
     CHECK(s.stats().restarts == BeatScreen::kAutoRetries);
     CHECK(s.fight().phase() == BeatPhase::Defeat);
@@ -326,6 +327,7 @@ TEST_CASE("beat screen: Retry and Quit wait out the prompt's grace, and mean not
     CHECK(s.outcome() == BeatOutcome::Lost);
     CHECK_FALSE(s.won());
     CHECK_FALSE(s.gaveUp()); // the player quit; autoplay didn't give up
+    CHECK(s.quitChosen());
     CHECK(s.stats().restarts == 0);
 
     // Done is final.

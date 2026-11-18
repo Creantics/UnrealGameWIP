@@ -21,14 +21,16 @@
 #include "NiagaraSystem.h"
 #include "NiagaraSystemInstanceController.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/SoftObjectPath.h"
 
+#include "ftcore/ArenaGun.h"
 #include "ftcore/BeatChoreo.h"
 
 #include <string>
 #include <vector>
 
-static_assert(static_cast<int32>(ftcore::FightClip::Count) <= UFTLocomotionAnimInstance::MaxActionClips,
-	"an action slot per fight clip");
+static_assert(static_cast<int32>(ftcore::FightClip::Count) + 2 <= UFTLocomotionAnimInstance::MaxActionClips,
+	"an action slot per fight clip, then the gun's reload and dry flinch");
 
 namespace
 {
@@ -40,6 +42,8 @@ constexpr FightClip kStrikeClips[] = {FightClip::StrikeLeft, FightClip::StrikeRi
 constexpr const TCHAR* kBeatClipsFile = TEXT("Data/Anim/beat_clips.json");
 // A clip with no impact in the table meets its beat this far through.
 constexpr float kDefaultKeyShare = 0.4f;
+// The fastest a riposte's counter or finisher plays to reach its impact (a strike's: FightTuning::maxRate).
+constexpr float kQuickClipRate = 3.f;
 bool IsAttack(ftcore::ArenaAction A)
 {
 	return A == ftcore::ArenaAction::Light || A == ftcore::ArenaAction::Heavy || A == ftcore::ArenaAction::Riposte
@@ -57,6 +61,8 @@ FRotator ConeTo(const FVector& Dir)
 	return FRotationMatrix::MakeFromZ(Dir.GetSafeNormal(UE_SMALL_NUMBER, FVector::ForwardVector)).Rotator();
 }
 
+// The gauntlet hands' fist curl in guard (UFTLocomotionAnimInstance::SetHandCurl); a punch closes its hand fully.
+constexpr float kGuardCurl = 0.5f;
 // The arm aim comes in over the startup's last share and goes out over this share of the recovery.
 constexpr float kAimInShare = 0.7f;
 constexpr float kAimOutShare = 0.6f;
@@ -80,15 +86,71 @@ struct FArmBones
 	FName Shoulder;
 	FName Hand;
 	FName Knuckle;
+	FName KnuckleMid; // the middle finger's second joint: with Knuckle, the closed fist's striking pad between them
 };
 const FArmBones& ArmBones(int32 Side)
 {
-	static const FArmBones Bones[2] = {{FName(TEXT("upperarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l"))},
-		{FName(TEXT("upperarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r"))}};
+	static const FArmBones Bones[2] = {
+		{FName(TEXT("upperarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l")), FName(TEXT("middle_02_l"))},
+		{FName(TEXT("upperarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r")), FName(TEXT("middle_02_r"))}};
 	return Bones[Side == 0 ? 0 : 1];
+}
+// The closed fist's striking pad: halfway along the middle finger's first bone, out from the wrist by kPadOut (the
+// knuckle bone alone when the second joint is missing). False with no knuckle bone.
+constexpr double kPadOut = 2.0;
+bool KnucklePad(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
+{
+	const FArmBones& Bones = ArmBones(Side);
+	if (!Body.DoesSocketExist(Bones.Knuckle))
+	{
+		return false;
+	}
+	const FVector Knuckle = Body.GetSocketLocation(Bones.Knuckle);
+	Out = Body.DoesSocketExist(Bones.KnuckleMid) ? (Knuckle + Body.GetSocketLocation(Bones.KnuckleMid)) * 0.5 : Knuckle;
+	if (Body.DoesSocketExist(Bones.Hand))
+	{
+		Out += (Knuckle - Body.GetSocketLocation(Bones.Hand)).GetSafeNormal() * kPadOut;
+	}
+	return true;
+}
+// The open hand's palm, where a spell gathers and leaves: kPalmAlong of the way from the wrist to the middle finger's
+// knuckle (the wrist alone without the knuckle bone). False with no hand bone.
+constexpr double kPalmAlong = 0.6;
+bool PalmPoint(const USkeletalMeshComponent& Body, int32 Side, FVector& Out)
+{
+	const FArmBones& Bones = ArmBones(Side);
+	if (!Body.DoesSocketExist(Bones.Hand))
+	{
+		return false;
+	}
+	Out = Body.GetSocketLocation(Bones.Hand);
+	if (Body.DoesSocketExist(Bones.Knuckle))
+	{
+		Out = FMath::Lerp(Out, Body.GetSocketLocation(Bones.Knuckle), kPalmAlong);
+	}
+	return true;
 }
 // A view of a strike's impact, this long after it.
 constexpr double kViewLag = 0.03;
+// A bone's place in the clip's component space at Time (up its parent chain); zero for no such bone.
+FVector ClipBoneAt(const UAnimSequence& Clip, int32 Bone, double Time)
+{
+	const USkeleton* Skeleton = Clip.GetSkeleton();
+	if (!Skeleton || Bone == INDEX_NONE)
+	{
+		return FVector::ZeroVector;
+	}
+	const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+	FTransform CS = FTransform::Identity;
+	const FAnimExtractContext Context(Time, false);
+	for (int32 B = Bone; B != INDEX_NONE; B = Ref.GetParentIndex(B))
+	{
+		FTransform Local;
+		Clip.GetBoneTransform(Local, FSkeletonPoseBoneIndex(B), Context, false);
+		CS = CS * Local;
+	}
+	return CS.GetTranslation();
+}
 } // namespace
 
 FString FTWeaponProps::FindMeshPath(const FPiece& Piece)
@@ -170,6 +232,13 @@ void FFTLeadWeapons::Begin(AActor* Owner, USkeletalMeshComponent* Body, const FF
 		*FT::ToFString(ftcore::fightClipName(ftcore::arenaHeavyStrike(Kit))));
 
 	LoadClips(Look);
+	GauntletMorphs.Reset();
+	for (const FString& Morph : Look.GauntletMorphs)
+	{
+		GauntletMorphs.Add(FName(*Morph));
+	}
+	GauntletBracer[0] = Look.GauntletBracerR;
+	GauntletBracer[1] = Look.GauntletBracerL;
 	AttachProps();
 	SpawnEffects();
 	Restart();
@@ -227,13 +296,69 @@ void FFTLeadWeapons::LoadClips(const FFTLeadLook& Look)
 		++Loaded;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: %s plays %s (%.2f s, impact %.2f s)."),
 			*FT::ToFString(ftcore::fightClipName(StrikeClip)), *Name, Length, Key);
+		// The clip's own travel (its root, the balls of its feet in its space) to its impact and to its end (cm).
+		if (const USkeleton* Skeleton = Clip->GetSkeleton())
+		{
+			const FReferenceSkeleton& Ref = Skeleton->GetReferenceSkeleton();
+			const int32 BallL = Ref.FindBoneIndex(TEXT("ball_l")), BallR = Ref.FindBoneIndex(TEXT("ball_r"));
+			const FVector R0 = ClipBoneAt(*Clip, 0, 0.0), RK = ClipBoneAt(*Clip, 0, Key), RE = ClipBoneAt(*Clip, 0, Length);
+			const FVector L0 = ClipBoneAt(*Clip, BallL, 0.0), LK = ClipBoneAt(*Clip, BallL, Key), LE = ClipBoneAt(*Clip, BallL, Length);
+			const FVector F0 = ClipBoneAt(*Clip, BallR, 0.0), FK = ClipBoneAt(*Clip, BallR, Key), FE = ClipBoneAt(*Clip, BallR, Length);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: %s travel: root to impact %s end %s; ball_l %s / %s; ball_r %s / %s; root motion %s."),
+				*Name, *(RK - R0).ToCompactString(), *(RE - R0).ToCompactString(), *(LK - L0).ToCompactString(), *(LE - L0).ToCompactString(),
+				*(FK - F0).ToCompactString(), *(FE - F0).ToCompactString(), Clip->HasRootMotion() ? TEXT("on") : TEXT("off"));
+		}
 	}
 	bClips = Loaded > 0;
+	ReloadClipLength = FlinchClipLength = 0.f;
+	if (Kit.rounds > 0)
+	{
+		ReloadClipLength = LoadGunClip(Folder, TEXT("lead_reload"), kReloadSlot);
+		FlinchClipLength = LoadGunClip(Folder, TEXT("lead_dry_flinch"), kFlinchSlot);
+	}
 	if (!Missing.IsEmpty())
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: lead weapon: no %s for %s in %s (retarget them with FTBuildRig -Names=..., docs/ARENA_DEMO.md)%s."),
 			*Missing, *Body->GetName(), *Folder, bClips ? TEXT("; the strikes without one are thrown as the punch on their side") : TEXT("; the attacks play no clips"));
 	}
+}
+
+float FFTLeadWeapons::LoadGunClip(const FString& Folder, const TCHAR* Name, int32 Slot)
+{
+	UFTLocomotionAnimInstance* Instance = Anim.Get();
+	const USkeletalMesh* Body = Skin.IsValid() ? Skin->GetSkeletalMeshAsset() : nullptr;
+	const FString Package = Folder / Name;
+	UAnimSequence* Clip = Instance && Body && !Folder.IsEmpty() && FPackageName::DoesPackageExist(Package)
+		? LoadObject<UAnimSequence>(nullptr, *(Package + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet)
+		: nullptr;
+	if (!Clip || !UFTLocomotionAnimInstance::FitsBody(*Clip, *Body, TEXT("Arena: lead weapon")) || Clip->GetPlayLength() <= 0.f)
+	{
+		// Not made yet: the reload and the dry press play their sounds only.
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: no %s in %s; the gun plays no clip for it."), Name, *Folder);
+		return 0.f;
+	}
+	Instance->SetActionClip(Slot, Clip);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: lead weapon: the gun plays %s (%.2f s)."), Name, Clip->GetPlayLength());
+	return Clip->GetPlayLength();
+}
+
+void FFTLeadWeapons::PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight)
+{
+	const float Age = DryAt >= 0.0 && T >= DryAt ? static_cast<float>(T - DryAt) : -1.f;
+	const ftcore::ArenaGunLayer Flinch = ftcore::arenaFlinchLayer(ftcore::kArenaGun, Age, FlinchClipLength);
+	const ftcore::ArenaGunLayer Reload = ftcore::arenaReloadLayer(ftcore::kArenaGun, bReloading, ReloadProgress, ReloadClipLength);
+	// A strike's clip keeps its share of the arms; the flinch goes over the reload.
+	const float Room = 1.f - FMath::Clamp(StrikeWeight, 0.f, 1.f);
+	const float FlinchWeight = Flinch.weight * Room;
+	const float ReloadWeight = Reload.weight * Room * (1.f - Flinch.weight);
+	if (FlinchWeight + ReloadWeight <= 0.f)
+	{
+		return;
+	}
+	// The gun's clips play on the upper body only, over the locomotion's legs.
+	Instance.SetActionUpper(FMath::Max(ActionUpper, Room));
+	Instance.AddAction(kReloadSlot, Reload.time, ReloadWeight);
+	Instance.AddAction(kFlinchSlot, Flinch.time, FlinchWeight);
 }
 
 void FFTLeadWeapons::AttachProps()
@@ -249,9 +374,86 @@ void FFTLeadWeapons::AttachProps()
 	}
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 	{
-		for (int32 I = 0; I < FTWeaponProps::NumGauntletPieces; ++I)
+		// Skinned to the body's skeleton, posed by it.
+		TArray<FSoftObjectPath> Paths;
+		for (const TCHAR* Name : FTWeaponProps::GauntletPieces)
 		{
-			Gauntlet[I] = AttachProp(FTWeaponProps::GauntletPieces[I]);
+			Paths.Emplace(FString::Printf(TEXT("%s/%s.%s"), FTWeaponProps::GauntletFolder, Name, Name));
+		}
+		// The look's bracers, where it names them (fitted over its sleeve), in place of the kit's bare-skin ones.
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const int32 At = FTWeaponProps::GauntletBracerIndex[Side];
+			if (!GauntletBracer[Side].IsNull())
+			{
+				Paths[At] = GauntletBracer[Side];
+			}
+		}
+		TArray<TObjectPtr<USkeletalMeshComponent>> Added;
+		FTLook::AddPieces(*Figure.Get(), *Skin.Get(), Paths, Added, Prefix());
+		// Each bracer as it came out: fitted only when a worn piece has its mesh (a path that did not load is skipped).
+		for (int32 Side = 0; Side < 2; ++Side)
+		{
+			const FSoftObjectPath& Want = Paths[FTWeaponProps::GauntletBracerIndex[Side]];
+			bool bFitted = false;
+			for (const TObjectPtr<USkeletalMeshComponent>& Piece : Added)
+			{
+				bFitted = bFitted || (Piece && Piece->GetSkeletalMeshAsset() && FSoftObjectPath(Piece->GetSkeletalMeshAsset()) == Want);
+			}
+			if (!bFitted && FTLook::PieceLeftOff(Want))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s left off by the piece filter."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.GetAssetName());
+			}
+			else if (bFitted)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %s bracer %s fitted (%s)."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.GetAssetName(), GauntletBracer[Side].IsNull() ? TEXT("the kit's, bare-skin fit") : TEXT("the look's"));
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: lead weapon: %s bracer %s FAILED to load (%s): not worn."), Prefix(), Side == 0 ? TEXT("right") : TEXT("left"),
+					*Want.ToString(), GauntletBracer[Side].IsNull() ? TEXT("the kit's") : TEXT("the look's"));
+			}
+		}
+		for (int32 I = 0; I < Added.Num() && I < FTWeaponProps::NumGauntletPieces; ++I)
+		{
+			Gauntlet[I] = Added[I];
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d of %d gauntlet pieces on %s."), Prefix(), Added.Num(),
+			FTWeaponProps::NumGauntletPieces, *Skin->GetSkeletalMeshAsset()->GetName());
+		// The look's gauntlet morphs (a cuff tucked under the bracer) on while the pieces are worn: set on the body, the
+		// leader, so each piece whose mesh has the morph takes it; the pieces stay on this body for the fight.
+		if (Added.Num() > 0)
+		{
+			int32 Found = 0;
+			for (const FName& Morph : GauntletMorphs)
+			{
+				Skin->SetMorphTarget(Morph, 1.f);
+				bool bOnPiece = false;
+				for (const USceneComponent* Child : Skin->GetAttachChildren())
+				{
+					const USkeletalMeshComponent* Piece = Cast<USkeletalMeshComponent>(Child);
+					if (Piece && Piece->GetSkeletalMeshAsset() && Piece->GetSkeletalMeshAsset()->FindMorphTarget(Morph))
+					{
+						bOnPiece = true;
+						break;
+					}
+				}
+				Found += bOnPiece ? 1 : 0;
+				// A morph no worn piece has: named once per run (each switch begins the kit again).
+				static TSet<FName> NamedMissing;
+				if (!bOnPiece && !NamedMissing.Contains(Morph))
+				{
+					NamedMissing.Add(Morph);
+					UE_LOG(LogForgottenThird, Warning, TEXT("%s: lead weapon: gauntlet morph %s is on no worn piece (it does nothing)."), Prefix(), *Morph.ToString());
+				}
+			}
+			if (GauntletMorphs.Num() > 0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: lead weapon: %d gauntlet morph(s) on at 1, %d found on a worn piece (a missing one does nothing)."),
+					Prefix(), GauntletMorphs.Num(), Found);
+			}
 		}
 	}
 	else
@@ -288,6 +490,12 @@ UStaticMeshComponent* FFTLeadWeapons::AttachProp(const FTWeaponProps::FPiece& Pi
 	return C;
 }
 
+FRotator FFTLeadWeapons::ImpactFacing(const FVector& From, const FVector& At)
+{
+	const FVector Facing = (From - At).GetSafeNormal2D(UE_SMALL_NUMBER, -FVector::ForwardVector);
+	return FRotationMatrix::MakeFromZX(Facing, FVector::UpVector).Rotator();
+}
+
 void FFTLeadWeapons::SpawnEffects()
 {
 	if (FParse::Param(FCommandLine::Get(), TEXT("ArenaNoWeaponFx")))
@@ -299,10 +507,9 @@ void FFTLeadWeapons::SpawnEffects()
 	USceneComponent* Root = Figure->GetRootComponent();
 	FxName[Muzzle] = TEXT("muzzle_flash");
 	FxName[Travel] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_bolt") : TEXT("gun_tracer");
-	FxName[Impact] = Kit.weapon == ftcore::ArenaWeapon::Magic ? TEXT("spell_impact")
-		: Kit.weapon == ftcore::ArenaWeapon::Guns ? TEXT("gun_impact")
-		: TEXT("gauntlet_spark");
+	FxName[Impact] = ImpactEffectOf(Kit.weapon);
 	FxName[Ward] = TEXT("spell_ward");
+	FxName[WindUp] = TEXT("spell_cast");
 	switch (Kit.weapon)
 	{
 	case ftcore::ArenaWeapon::Guns:
@@ -339,11 +546,12 @@ void FFTLeadWeapons::SpawnEffects()
 		Fx[Travel] = MakeEffect(FxName[Travel], Root, NAME_None);
 		Fx[Impact] = MakeEffect(FxName[Impact], Root, NAME_None);
 		Fx[Ward] = MakeEffect(FxName[Ward], Root, NAME_None);
+		Fx[WindUp] = MakeEffect(FxName[WindUp], Root, NAME_None); // put at the palm each step of the wind-up
 		break;
 	case ftcore::ArenaWeapon::None:
 		break;
 	}
-	for (const EEffect E : {Travel, Impact})
+	for (const EEffect E : {Travel, Impact, WindUp})
 	{
 		if (Fx[E].IsValid())
 		{
@@ -461,8 +669,10 @@ void FFTLeadWeapons::Freeze(double T)
 		{
 			// From its start again, then on to its age at T (the order matters: a paused system doesn't advance).
 			Vfx->Play();
-			const int32 Ticks = FMath::Max(1, FMath::CeilToInt32(static_cast<float>(Age) / kFreezeTick));
-			Niagara->AdvanceSimulation(Ticks, static_cast<float>(Age) / static_cast<float>(Ticks));
+			// On its own clock (a bolt's runs at its flight's rate).
+			const double SimAge = Age * static_cast<double>(Niagara->GetCustomTimeDilation());
+			const int32 Ticks = FMath::Max(1, FMath::CeilToInt32(static_cast<float>(SimAge) / kFreezeTick));
+			Niagara->AdvanceSimulation(Ticks, static_cast<float>(SimAge) / static_cast<float>(Ticks));
 			bRerun = true;
 		}
 		Niagara->SetPaused(true);
@@ -476,6 +686,31 @@ void FFTLeadWeapons::Freeze(double T)
 	if (Running == 0)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: view frame %.3f: no weapon fx running."), T);
+	}
+}
+
+void FFTLeadWeapons::HitPause(bool bOn)
+{
+	if (bOn == bHitPaused)
+	{
+		return;
+	}
+	bHitPaused = bOn;
+	AActor* Body = Figure.Get();
+	if (!Body)
+	{
+		return;
+	}
+	// While a view frame holds the figure, its clock is Thaw's to give back: the pause changes what Thaw restores.
+	float& Dilation = bFrozen ? FrozenDilation : Body->CustomTimeDilation;
+	if (bOn)
+	{
+		HitPauseDilation = Dilation;
+		Dilation = 0.f;
+	}
+	else
+	{
+		Dilation = HitPauseDilation;
 	}
 }
 
@@ -534,6 +769,9 @@ void FFTLeadWeapons::End()
 	if (UFTLocomotionAnimInstance* Instance = Anim.Get())
 	{
 		Instance->ClearActions();
+		Instance->SetHandCurl(-1.f, -1.f);
+		Instance->SetHandGrip(false, false);
+		Instance->SetSupportHand(0.f);
 		if (AimSide >= 0)
 		{
 			Instance->SetArmAim(AimSide, AimPoint, 0.f, FVector::ForwardVector, 0.f);
@@ -543,7 +781,15 @@ void FFTLeadWeapons::End()
 			Instance->SetActionClip(static_cast<int32>(StrikeClip), nullptr);
 		}
 	}
-	for (TWeakObjectPtr<UStaticMeshComponent>& Piece : Gauntlet)
+	// The look's gauntlet morphs off the body (the leader, so its pieces too): a benched figure keeps no tucked cuff.
+	if (USkeletalMeshComponent* Body = Skin.Get())
+	{
+		for (const FName& Morph : GauntletMorphs)
+		{
+			Body->SetMorphTarget(Morph, 0.f);
+		}
+	}
+	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{
 		if (Piece.IsValid())
 		{
@@ -596,48 +842,14 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 		switch (E.type)
 		{
 		case ftcore::ArenaEventType::AttackStarted:
-		{
-			if (E.source != ftcore::kArenaPlayer)
+			if (E.source == Source)
 			{
-				break;
-			}
-			const FightClip Want = ftcore::arenaPlayerStrike(Kit, E.move);
-			if (Want == FightClip::Stance)
-			{
-				break;
-			}
-			Strike = Want;
-			if (!bClips)
-			{
-				break;
-			}
-			// A strike cut short and fading: the new one starts clean.
-			if (FadeSince >= 0.0)
-			{
-				Animator.reset();
-				FadeSince = -1.0;
-			}
-			// Its impact as the attack goes active.
-			const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, E.move);
-			const double KeyAt = Attack ? T + static_cast<double>(Attack->startup) : -1.0;
-			FightClip Played = FightClip::Stance;
-			if (Want == FightClip::Counter || Want == FightClip::Finisher)
-			{
-				Played = Animator.play(Want, T, KeyAt) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
-			}
-			else
-			{
-				Played = Animator.playStrike(Want, T, KeyAt);
-			}
-			if (Played != FightClip::Stance)
-			{
-				Strike = Played;
+				StartStrike(E.move, T);
 			}
 			break;
-		}
 		case ftcore::ArenaEventType::Hit:
 			// The fist's spark on the hit point (a shot's or cast's impact plays as it arrives, in Track).
-			if (E.source == ftcore::kArenaPlayer && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+			if (E.source == Source && bImpacts && !bSparked && Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
 			{
 				ImpactAt = AimPoint;
 				ImpactDue = T;
@@ -654,6 +866,105 @@ void FFTLeadWeapons::Feed(const ftcore::ArenaEvents& Events, double T)
 	}
 }
 
+double FFTLeadWeapons::FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move)
+{
+	switch (Kit.weapon)
+	{
+	case ftcore::ArenaWeapon::Guns:
+		return ftcore::arenaPlayerStrike(Kit, Move) == FightClip::WeaponRight ? kTracerTime : 0.0;
+	case ftcore::ArenaWeapon::Magic:
+	{
+		const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, Move);
+		return static_cast<double>(ftcore::arenaBoltLate(Attack ? Attack->startup : 0.f));
+	}
+	default:
+		return 0.0;
+	}
+}
+
+void FFTLeadWeapons::LaunchBolt(double T, double Flight)
+{
+	// From the palm (the wrist without the knuckle bone).
+	USkeletalMeshComponent* Body = Skin.Get();
+	FVector From = Chest();
+	const FName Hand = StrikesLeft() ? TEXT("hand_l") : TEXT("hand_r");
+	if (Body && !PalmPoint(*Body, StrikesLeft() ? 0 : 1, From) && Body->DoesSocketExist(Hand))
+	{
+		From = Body->GetSocketLocation(Hand);
+	}
+	Flight = FMath::Max(Flight, static_cast<double>(ftcore::kArenaBoltFlightMin));
+	const FVector Path = AimPoint - From;
+	if (UFTVfxComponent* Vfx = Fx[Travel].Get())
+	{
+		// The head is stretched or shrunk to die on the hit point at its lifetime, and its clock run so that lifetime
+		// is the flight.
+		Vfx->SetWorldLocationAndRotation(From, ConeTo(Path));
+		Vfx->SetParameters(static_cast<float>(FMath::Max(Path.Size(), 1.0) / kBoltReach), 1.f);
+		Vfx->SetTimeDilation(static_cast<float>(kBoltTime / Flight));
+	}
+	Play(Travel, T);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: bolt cast at %.3f, flight %.3f s, due at %.3f"), Prefix(), T, Flight, T + Flight);
+	bBoltOut = true;
+	BoltLaunch = T;
+	BoltFlight = Flight;
+	if (bImpacts)
+	{
+		ImpactAt = AimPoint;
+		ImpactFrom = From;
+		ImpactDue = T + Flight;
+	}
+}
+
+void FFTLeadWeapons::StartStrike(uint8 Move, double T)
+{
+	// The blow before (a string's) ends here: its clip counted whole when it got into its recovery.
+	if (bStrikeClip)
+	{
+		ClipsCompleted += LastPart == ftcore::ArenaPart::Recovery ? 1 : 0;
+		bStrikeClip = false;
+	}
+	StrikeStartAt = T;
+	if (!IsOn())
+	{
+		return;
+	}
+	const FightClip Want = ftcore::arenaPlayerStrike(Kit, Move);
+	if (Want == FightClip::Stance)
+	{
+		return;
+	}
+	Strike = Want;
+	if (!bClips)
+	{
+		return;
+	}
+	// A strike cut short and fading: the new one starts clean.
+	if (FadeSince >= 0.0)
+	{
+		Animator.reset();
+		FadeSince = -1.0;
+	}
+	// Its impact as the attack goes active.
+	const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, Move);
+	const double KeyAt = Attack ? T + static_cast<double>(Attack->startup) : -1.0;
+	FightClip Played = FightClip::Stance;
+	if (Want == FightClip::Counter || Want == FightClip::Finisher)
+	{
+		// Long clips (a second of wind-up) on a riposte's short startup: faster, so less of the wind-up is skipped.
+		Played = Animator.play(Want, T, KeyAt, kQuickClipRate) ? Want : Animator.playStrike(FightClip::StrikeRight, T, KeyAt);
+	}
+	else
+	{
+		Played = Animator.playStrike(Want, T, KeyAt);
+	}
+	if (Played != FightClip::Stance)
+	{
+		Strike = Played;
+		bStrikeClip = true;
+		++ClipsStarted;
+	}
+}
+
 void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 {
 	if (!IsOn())
@@ -661,8 +972,62 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		return;
 	}
 	const bool bAttacking = IsAttack(P.action);
+	if (!bAttacking && IsAttack(LastAction) && bStrikeClip)
+	{
+		ClipsCompleted += LastPart == ftcore::ArenaPart::Recovery ? 1 : 0;
+		bStrikeClip = false;
+	}
 	const bool bWentActive = bAttacking && P.part == ftcore::ArenaPart::Active
 		&& (LastPart != ftcore::ArenaPart::Active || LastMove != P.move || LastAction != P.action);
+	// A cast's wind-up: two rings close on the palm through the startup (the emitters are in the component's space,
+	// so they ride the hand while it is moved here each step).
+	if (Kit.weapon == ftcore::ArenaWeapon::Magic && bAttacking && P.part == ftcore::ArenaPart::Startup)
+	{
+		bCasting = true;
+		const USkeletalMeshComponent* Body = Skin.Get();
+		FVector Palm;
+		if (UFTVfxComponent* Vfx = Fx[WindUp].Get(); Vfx && Body && PalmPoint(*Body, StrikesLeft() ? 0 : 1, Palm))
+		{
+			Vfx->SetWorldLocationAndRotation(Palm, ConeTo(AimPoint - Palm));
+			if (LastPart != ftcore::ArenaPart::Startup || LastMove != P.move || LastAction != P.action)
+			{
+				Play(WindUp, T);
+			}
+		}
+		// The bolt leaves as the startup begins and flies the rest of it, arriving on the hit (never under the floor).
+		if (LastPart != ftcore::ArenaPart::Startup || LastMove != P.move || LastAction != P.action)
+		{
+			const ftcore::ArenaAttack* Attack = ftcore::arenaPlayerAttack(Kit, P.move);
+			const double Startup = Attack ? static_cast<double>(Attack->startup) : 0.0;
+			const double Left = Startup - FMath::Clamp(T - StrikeStartAt, 0.0, Startup);
+			LaunchBolt(T, static_cast<double>(ftcore::arenaBoltFlight(static_cast<float>(Left))));
+		}
+	}
+	else if (bCasting)
+	{
+		// The wind-up ended: at the release the rings finish on their own; cut short (hit, down, guard, another
+		// move) they go at once.
+		bCasting = false;
+		if (!bWentActive)
+		{
+			if (UFTVfxComponent* Vfx = Fx[WindUp].Get())
+			{
+				Vfx->Clear();
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[WindUp], T);
+			}
+			// Its bolt never lands: it goes, and its impact with it.
+			if (bBoltOut)
+			{
+				bBoltOut = false;
+				ImpactDue = -1.0;
+				if (UFTVfxComponent* Vfx = Fx[Travel].Get())
+				{
+					Vfx->Clear();
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: weapon fx %s cut short at %.2f"), Prefix(), FxName[Travel], T);
+			}
+		}
+	}
 	if (bWentActive)
 	{
 		++ActiveCount;
@@ -693,17 +1058,13 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 			}
 			break;
 		case ftcore::ArenaWeapon::Magic:
-		{
-			const FName Hand = StrikesLeft() ? TEXT("hand_l") : TEXT("hand_r");
-			if (Body && Body->DoesSocketExist(Hand))
+			// The bolt left as the startup began and arrives now; with no startup tracked it leaves now, flying the floor.
+			if (!bBoltOut)
 			{
-				From = Body->GetSocketLocation(Hand);
+				LaunchBolt(T, static_cast<double>(ftcore::kArenaBoltFlightMin));
 			}
-			Reach = kBoltReach;
-			Flight = kBoltTime;
-			bTravel = true;
+			bBoltOut = false;
 			break;
-		}
 		case ftcore::ArenaWeapon::Gauntlets:
 		case ftcore::ArenaWeapon::None:
 			break;
@@ -718,8 +1079,12 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				Vfx->SetParameters(static_cast<float>(FMath::Max(Path.Size(), 1.0) / Reach), 1.f);
 			}
 			Play(Travel, T);
-			ImpactAt = AimPoint;
-			ImpactDue = T + Flight;
+			if (bImpacts)
+			{
+				ImpactAt = AimPoint;
+				ImpactFrom = From;
+				ImpactDue = T + Flight;
+			}
 		}
 	}
 	if (ImpactDue >= 0.0 && T + 1e-6 >= ImpactDue)
@@ -727,7 +1092,19 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		ImpactDue = -1.0;
 		if (UFTVfxComponent* Vfx = Fx[Impact].Get())
 		{
-			Vfx->SetWorldLocationAndRotation(ImpactAt, FRotator::ZeroRotator);
+			// The fist's spark at its knuckles (a kick's at the foot), where it lands.
+			if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+			{
+				FName Limb;
+				bool bLeft = false;
+				const USkeletalMeshComponent* Body = Skin.Get();
+				if (!(Body && Strike != FightClip::KickLeft && Strike != FightClip::KickRight && KnucklePad(*Body, StrikesLeft() ? 0 : 1, ImpactAt)))
+				{
+					GetStrikeLimb(Limb, ImpactAt, bLeft);
+				}
+			}
+			Vfx->SetWorldLocationAndRotation(ImpactAt,
+				Kit.weapon == ftcore::ArenaWeapon::Magic ? ImpactFacing(ImpactFrom, ImpactAt) : FRotator::ZeroRotator);
 			Play(Impact, T);
 			LastImpactTime = T;
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: impact %s %.1f cm from the hit point"), Prefix(), FxName[Impact],
@@ -740,7 +1117,13 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 		AimCheckDue = -1.0;
 		LogAim();
 	}
-	const bool bWard = Kit.weapon == ftcore::ArenaWeapon::Magic && P.action == ftcore::ArenaAction::Guard;
+	if (WardRaiseFor > 0.0)
+	{
+		WardHeldUntil = T + WardRaiseFor;
+		WardRaiseFor = 0.0;
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: ward raised for the capture from %.2f to %.2f"), Prefix(), T, WardHeldUntil);
+	}
+	const bool bWard = Kit.weapon == ftcore::ArenaWeapon::Magic && (P.action == ftcore::ArenaAction::Guard || T < WardHeldUntil);
 	if (bWard != bWarding)
 	{
 		bWarding = bWard;
@@ -775,7 +1158,8 @@ double FFTLeadWeapons::GetViewTime(bool bImpact) const
 	case ftcore::ArenaWeapon::Guns:
 		return bImpact ? LastActiveTime + kTracerTime + kViewLag : LastActiveTime + kTracerTime * 0.5;
 	case ftcore::ArenaWeapon::Magic:
-		return bImpact ? LastActiveTime + kBoltTime + kViewLag : LastActiveTime + kBoltTime * 0.5;
+		// The bolt's arrival; its mid-flight is in the startup, before the attack went active, so no earlier than that.
+		return bImpact ? BoltLaunch + BoltFlight + kViewLag : FMath::Max(LastActiveTime, BoltLaunch + BoltFlight * 0.5);
 	default:
 		return LastActiveTime + kViewLag;
 	}
@@ -826,6 +1210,24 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			W = 1.f - FMath::SmoothStep(0.f, 1.f, (Time - S - A) / Out);
 		}
 	}
+	// Held aim: the pistol arm (the right) or the casting hand stays raised at the aim point between attacks.
+	if (AimHold > 0.f && !bKick && Kit.weapon != ftcore::ArenaWeapon::Gauntlets && Kit.weapon != ftcore::ArenaWeapon::None)
+	{
+		if (Side < 0)
+		{
+			Side = 1;
+		}
+		W = FMath::Max(W, AimHold);
+	}
+	// Gauntlets: both hands half closed in guard, the striking one closing into a full fist as the arm comes in.
+	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets)
+	{
+		float Curl[2] = {kGuardCurl, kGuardCurl};
+		Curl[Side == 0 ? 0 : 1] += (1.f - kGuardCurl) * W;
+		Instance->SetHandCurl(Curl[0], Curl[1]);
+	}
+	// The pistol: the right hand shaped round its grip while it is in the hand.
+	Instance->SetHandGrip(false, Kit.weapon == ftcore::ArenaWeapon::Guns && Pistol.IsValid() && !bHolstered);
 	// Only at a point in front of the body: a target behind waits for the body to turn.
 	if (W > 0.f)
 	{
@@ -838,6 +1240,8 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 			W *= FMath::SmoothStep(kAimSideCos, kAimFrontCos, Cos);
 		}
 	}
+	// Aim held with the pistol: the left hand joins the right on the grip (a two-handed hold).
+	Instance->SetSupportHand(Kit.weapon == ftcore::ArenaWeapon::Guns && Side == 1 ? FMath::Min(AimHold, W) : 0.f);
 	if (W <= 0.f || Side < 0)
 	{
 		if (AimSide >= 0)
@@ -876,6 +1280,54 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 	}
 	AimSide = Side;
 	Instance->SetArmAim(Side, AimPoint, W, Axis, Reach);
+}
+
+void FFTLeadWeapons::SetAimAtBody(const FVector& Surface, double Bottom, double Top, const FVector& Ranged)
+{
+	SetAim(Ranged, true);
+	const USkeletalMeshComponent* Body = Skin.Get();
+	if (Kit.weapon != ftcore::ArenaWeapon::Gauntlets || !Body)
+	{
+		return;
+	}
+	// The limb's chain, root first: the arm from the shoulder to the knuckles, a kick's leg from the hip to the ball.
+	static const FName ArmChain[2][4] = {
+		{FName(TEXT("upperarm_l")), FName(TEXT("lowerarm_l")), FName(TEXT("hand_l")), FName(TEXT("middle_01_l"))},
+		{FName(TEXT("upperarm_r")), FName(TEXT("lowerarm_r")), FName(TEXT("hand_r")), FName(TEXT("middle_01_r"))}};
+	static const FName LegChain[2][4] = {
+		{FName(TEXT("thigh_l")), FName(TEXT("calf_l")), FName(TEXT("foot_l")), FName(TEXT("ball_l"))},
+		{FName(TEXT("thigh_r")), FName(TEXT("calf_r")), FName(TEXT("foot_r")), FName(TEXT("ball_r"))}};
+	static const FName Head(TEXT("head"));
+	const bool bKick = Strike == FightClip::KickLeft || Strike == FightClip::KickRight;
+	const int32 Side = bKick ? (Strike == FightClip::KickLeft ? 0 : 1) : (StrikesLeft() ? 0 : 1);
+	const FName* Chain = bKick ? LegChain[Side] : ArmChain[Side];
+	FVector Joint[4];
+	for (int32 I = 0; I < 4; ++I)
+	{
+		if (!Body->DoesSocketExist(Chain[I]))
+		{
+			return; // not a body with these bones: the chest as before
+		}
+		Joint[I] = Body->GetSocketLocation(Chain[I]);
+	}
+	const double Reach = FVector::Dist(Joint[0], Joint[1]) + FVector::Dist(Joint[1], Joint[2]) + FVector::Dist(Joint[2], Joint[3]);
+	// The strike height: the shoulder's, or the middle of the hip-to-knee line; within the body, never over the head.
+	double Z = bKick ? (Joint[0].Z + Joint[1].Z) * 0.5 : Joint[0].Z;
+	// A target shorter than that (its top under the strike height): its own chest, not its top (its head).
+	if (Z > FMath::Max(Bottom, Top))
+	{
+		Z = Bottom + 0.6 * (Top - Bottom);
+	}
+	Z = FMath::Clamp(Z, FMath::Min(Bottom, Top), FMath::Max(Bottom, Top));
+	if (Body->DoesSocketExist(Head))
+	{
+		Z = FMath::Min(Z, Body->GetSocketLocation(Head).Z);
+	}
+	const FVector OnBody(Surface.X, Surface.Y, Z);
+	const FVector Arm = OnBody - Joint[0];
+	const double Length = Arm.Size();
+	AimPoint = Length > Reach && Length > 1e-3 ? Joint[0] + Arm * (Reach / Length) : OnBody;
+	ContactPull = FVector::Dist(AimPoint, OnBody);
 }
 
 void FFTLeadWeapons::LogAim()
@@ -919,12 +1371,46 @@ void FFTLeadWeapons::LogAim()
 	const FVector To = AimPoint - From;
 	const double Cos = FVector::DotProduct(Dir.GetSafeNormal(), To.GetSafeNormal());
 	const double Deg = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Cos, -1.0, 1.0)));
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: aim %s %.1f deg (%s%s)"), Prefix(), GetLastStrikeName(), Deg, What,
-		bAimed ? TEXT(", at the target") : TEXT(", straight ahead"));
+	++AimCount;
+	AimDegSum += Deg;
+	AimDegWorst = FMath::Max(AimDegWorst, Deg);
+	if (bLogEachAim)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: aim %s %.1f deg (%s%s)"), Prefix(), GetLastStrikeName(), Deg, What,
+			bAimed ? TEXT(", at the target") : TEXT(", straight ahead"));
+	}
 	if (Kit.weapon == ftcore::ArenaWeapon::Gauntlets && Body->DoesSocketExist(Knuckle))
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point"), Prefix(),
-			FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint));
+		const double Fist = FVector::Dist(Body->GetSocketLocation(Knuckle), AimPoint);
+		++FistCount;
+		FistSum += Fist;
+		FistWorst = FMath::Max(FistWorst, Fist);
+		if (bLogEachAim)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: fist %.1f cm from the hit point (%.0f cm up; reach pulled it %.1f cm off the body)"),
+				Prefix(), Fist, AimPoint.Z - Body->GetComponentLocation().Z, ContactPull);
+		}
+	}
+}
+
+void FFTLeadWeapons::ResetAimSummary()
+{
+	AimCount = FistCount = 0;
+	AimDegSum = AimDegWorst = FistSum = FistWorst = 0.0;
+}
+
+void FFTLeadWeapons::LogAimSummary() const
+{
+	if (AimCount == 0)
+	{
+		return; // no strike aimed (no fighter, or none struck)
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: aim summary: %d strikes, mean %.1f deg, worst %.1f deg"), Prefix(), AimCount,
+		AimDegSum / AimCount, AimDegWorst);
+	if (FistCount > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: fist summary: %d strikes, mean %.1f cm from the hit point, worst %.1f cm"), Prefix(),
+			FistCount, FistSum / FistCount, FistWorst);
 	}
 }
 
@@ -936,7 +1422,10 @@ void FFTLeadWeapons::Paint(double T)
 		return;
 	}
 	Instance->ClearActions();
+	Instance->SetActionUpper(ActionUpper);
+	Instance->SetActionLeg(ActionLeg);
 	float Fade = 1.f;
+	bool bStrikes = true;
 	if (FadeSince >= 0.0)
 	{
 		Fade = static_cast<float>(1.0 - (T - FadeSince) / kFadeOut);
@@ -944,23 +1433,30 @@ void FFTLeadWeapons::Paint(double T)
 		{
 			Animator.reset();
 			FadeSince = -1.0;
-			return;
+			bStrikes = false;
 		}
 		Fade = FMath::Min(Fade, 1.f);
 	}
-	Animator.update(T);
-	for (std::size_t I = 0; I < Animator.layerCount(); ++I)
+	float StrikeWeight = 0.f;
+	if (bStrikes)
 	{
-		const ftcore::FightLayer& Layer = Animator.layer(I);
-		if (Layer.clip != FightClip::Stance)
+		Animator.update(T);
+		for (std::size_t I = 0; I < Animator.layerCount(); ++I)
 		{
-			Instance->AddAction(static_cast<int32>(Layer.clip), Layer.time, Layer.weight * Fade);
+			const ftcore::FightLayer& Layer = Animator.layer(I);
+			if (Layer.clip != FightClip::Stance)
+			{
+				Instance->AddAction(static_cast<int32>(Layer.clip), Layer.time, Layer.weight * Fade);
+				StrikeWeight += Layer.weight * Fade;
+			}
 		}
 	}
+	PaintGun(*Instance, T, StrikeWeight);
 }
 
 void FFTLeadWeapons::Restart()
 {
+	HitPause(false);
 	Thaw();
 	for (double& At : StartAt)
 	{
@@ -968,13 +1464,21 @@ void FFTLeadWeapons::Restart()
 	}
 	Animator.reset();
 	FadeSince = -1.0;
+	bReloading = false;
+	ReloadProgress = 0.f;
+	DryAt = -1.0;
 	Strike = FightClip::Stance;
 	LastAction = ftcore::ArenaAction::Idle;
 	LastPart = ftcore::ArenaPart::None;
 	LastMove = 0;
 	ActiveCount = 0;
 	LastActiveTime = -1e9;
+	ClipsStarted = ClipsCompleted = 0;
+	bStrikeClip = false;
 	bWarding = false;
+	bCasting = false;
+	WardRaiseFor = 0.0;
+	WardHeldUntil = -1.0;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;
 	LastImpactTime = -1e9;
@@ -999,6 +1503,7 @@ void FFTLeadWeapons::Restart()
 
 void FFTLeadWeapons::Reset()
 {
+	HitPause(false);
 	Thaw();
 	for (double& At : StartAt)
 	{
@@ -1008,8 +1513,9 @@ void FFTLeadWeapons::Reset()
 	ArenaFigure.Reset();
 	Skin.Reset();
 	Anim.Reset();
+	GauntletMorphs.Reset(); // no stale names for a Begin that returns before filling them
 	bClips = false;
-	for (TWeakObjectPtr<UStaticMeshComponent>& Piece : Gauntlet)
+	for (TWeakObjectPtr<USkeletalMeshComponent>& Piece : Gauntlet)
 	{
 		Piece.Reset();
 	}
@@ -1024,12 +1530,18 @@ void FFTLeadWeapons::Reset()
 	Strike = FightClip::Stance;
 	ActiveCount = 0;
 	LastActiveTime = -1e9;
+	ClipsStarted = ClipsCompleted = 0;
+	bStrikeClip = false;
 	bWarding = false;
+	bCasting = false;
+	WardRaiseFor = 0.0;
+	WardHeldUntil = -1.0;
 	ImpactDue = -1.0;
 	AimCheckDue = -1.0;
 	LastImpactTime = -1e9;
 	AimSide = -1;
 	bAimed = false;
+	AimHold = 0.f;
 }
 
 const TCHAR* FFTLeadWeapons::GetLastStrikeName() const

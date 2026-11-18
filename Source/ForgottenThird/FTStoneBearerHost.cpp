@@ -102,7 +102,8 @@ bool FFTStoneBearerHost::Load(std::string_view Json, std::string* Error, std::ve
 	return bLoaded;
 }
 
-bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::ArenaFighter& Lead, std::string* Error) const
+bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::ArenaFighter& Lead, std::string* Error,
+	std::string* BreakError) const
 {
 	if (!bLoaded)
 	{
@@ -122,6 +123,7 @@ bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::A
 		return false;
 	}
 	ftcore::ArenaEnemyKind Out = Kind;
+	std::array<bool, ftcore::kMaxArenaMoves> Dodged{}; // a dodge answers it (Dodge or Any)
 	Out.hp = Def.boss.hp;
 	Out.poise = Def.boss.poise;
 	Out.staggerTime = Def.boss.staggerTime;
@@ -187,6 +189,7 @@ bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::A
 			// The run answers an intercept move (ArenaFight only lands it); a dodge, jump, tile or cover move is not
 			// one a guard stops.
 			Move.parryable = Template->parryable && Src.answer == ftcore::ArenaBossAnswer::Any;
+			Dodged[Next] = Src.answer == ftcore::ArenaBossAnswer::Dodge || Src.answer == ftcore::ArenaBossAnswer::Any;
 			Move.unblockable = Src.answer == ftcore::ArenaBossAnswer::Dodge || Src.answer == ftcore::ArenaBossAnswer::Jump
 				|| Src.answer == ftcore::ArenaBossAnswer::Tile || Src.answer == ftcore::ArenaBossAnswer::Cover;
 			Move.clipText = {};
@@ -197,6 +200,41 @@ bool FFTStoneBearerHost::BuildKind(ftcore::ArenaEnemyKind& Kind, const ftcore::A
 		}
 	}
 	Out.moveCount = static_cast<std::uint8_t>(Count);
+	// The break move (ArenaFight's boss break) was an index into the arena kind's moves: here it is the boss file's
+	// single-impact move of the same clip. When none matches, the first single-impact move a dodge answers (never a
+	// chain's head: beginMove would throw the chain after it), with BreakError set; with no such move either, -1 and a
+	// break that comes due is spent unthrown (bossBreakBarred).
+	Out.breakMove = -1;
+	const auto Head = [&Out](std::size_t M) { return M == 0 || Out.moves[M - 1].chain != static_cast<std::int8_t>(M); };
+	std::string_view BreakClip;
+	if (Kind.breakMove >= 0 && Kind.breakMove < static_cast<int>(Kind.moveCount))
+	{
+		BreakClip = Kind.moves[static_cast<std::size_t>(Kind.breakMove)].clip();
+		for (std::size_t M = 0; M < Count && Out.breakMove < 0; ++M)
+		{
+			if (Head(M) && Out.moves[M].chain < 0 && Out.moves[M].clip() == BreakClip)
+			{
+				Out.breakMove = static_cast<int>(M);
+			}
+		}
+	}
+	if (Out.breakMove < 0)
+	{
+		for (std::size_t M = 0; M < Count && Out.breakMove < 0; ++M)
+		{
+			if (Head(M) && Dodged[M] && Out.moves[M].chain < 0)
+			{
+				Out.breakMove = static_cast<int>(M);
+			}
+		}
+		if (BreakError)
+		{
+			*BreakError = "stone_bearer: no single-impact move of the break move's clip '" + std::string(BreakClip) +
+				"'; " + (Out.breakMove >= 0 ? "breaks with the first single-impact move a dodge answers ('" +
+					std::string(Out.moves[static_cast<std::size_t>(Out.breakMove)].clip()) + "')"
+					: std::string("no single-impact move a dodge answers either, so every break is spent unthrown"));
+		}
+	}
 	Kind = Out;
 	return true;
 }
@@ -654,6 +692,22 @@ void FFTStoneBearerHost::OnAttackStarted(std::uint8_t Move, float StateTime, con
 	}
 }
 
+void FFTStoneBearerHost::OpenWeakPointFor(float Seconds)
+{
+	if (IsActive())
+	{
+		Absorb(Boss.openCrit(static_cast<double>(FightPtr->time()), static_cast<double>(Seconds)));
+	}
+}
+
+void FFTStoneBearerHost::SetWeakPointShut(bool bShut)
+{
+	if (IsActive() && Boss.run().critShut() != bShut)
+	{
+		Absorb(Boss.shutCrit(bShut, static_cast<double>(FightPtr->time())));
+	}
+}
+
 void FFTStoneBearerHost::Absorb(const ftcore::ArenaBossEvents& Events)
 {
 	ftcore::ArenaFight& Fight = *FightPtr;
@@ -748,9 +802,29 @@ ftcore::ArenaBlowRuling FFTStoneBearerHost::RuleBlow(void* User, const ftcore::A
 	{
 		return ftcore::ArenaBlowRuling();
 	}
+	if (Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer && Blow.type == ftcore::ArenaEventType::HostHit)
+	{
+		// A held blow's bonus: vetoed on the pedestal, else whole (its base already carries onHit's takenScale);
+		// no hit counted.
+		ftcore::ArenaBlowRuling Ruling;
+		Ruling.damage = Host->Boss.bonusScale();
+		Ruling.veto = Host->Boss.invulnerable();
+		return Ruling;
+	}
 	if (Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer)
 	{
 		return Host->RuleLeadBlow(Blow);
+	}
+	if (Blow.target == Host->Slot && Blow.source == ftcore::kArenaAlly)
+	{
+		// The partner's body's blow (-ArenaPartner): the boss's armour as the lead's blow meets it (StoneBearer::onHit:
+		// nothing on the pedestal, else its weight's taken scale and no poise while its poise is frozen); no crit judged,
+		// no part hit, no stack answered.
+		const bool bHeld = Host->Boss.invulnerable();
+		ftcore::ArenaBlowRuling Ruling;
+		Ruling.damage = bHeld ? 0.f : Host->Boss.takenScale();
+		Ruling.poise = bHeld || Host->Boss.poiseFrozen() ? 0.f : 1.f;
+		return Ruling;
 	}
 	if (Blow.source == Host->Slot && Blow.target == ftcore::kArenaPlayer)
 	{

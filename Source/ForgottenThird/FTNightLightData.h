@@ -47,11 +47,21 @@ public:
 	// The light point under each lamp's head; a spot there aims straight down.
 	UPROPERTY()
 	TArray<FVector3f> LampAt;
+	// Each lamp's share of LampCandela, same index as LampAt (ftcore::lampSlotGain): empty, or shorter than LampAt, for
+	// 1 (a map built before it). The hero corner's lantern strings take half a street lamp.
+	UPROPERTY()
+	TArray<float> LampGain;
 	// Each shopfront's spill point; a spot there faces ShopYaw (degrees, same index) pitched ShopPitch.
 	UPROPERTY()
 	TArray<FVector3f> ShopAt;
 	UPROPERTY()
 	TArray<float> ShopYaw;
+	// Per shop (same index as ShopAt), its own pitch (degrees under the horizontal) and its share of the shop candela:
+	// empty, or shorter than ShopAt, for ShopPitch and 1 (the city's shops; the hero corner's lit rooms set theirs).
+	UPROPERTY()
+	TArray<float> ShopSlotPitch;
+	UPROPERTY()
+	TArray<float> ShopGain;
 
 	UPROPERTY()
 	float LampCandela;

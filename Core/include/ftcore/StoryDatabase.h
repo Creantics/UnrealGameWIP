@@ -92,6 +92,9 @@ struct Beat {
     bool scripted = false;
     std::uint32_t firstOption = 0, optionCount = 0;
     // gameplay
+    std::uint32_t setsFlag = kNone; // the `sets` param's flag: what resume(value) sets
+    bool hasStub = false;           // a `stub` param: the value a plain resume() sets
+    std::int64_t stub = 0;
     GameplayKind kind = GameplayKind::Other;
     Str kindName;                                 // "CMB", "PLAY", ...
     std::uint32_t firstParam = 0, paramCount = 0; // key/value pairs (StoryDatabase::param)
@@ -242,7 +245,8 @@ public:
     // An effect of the last option: Set or Clear.
     FTCORE_API void effect(FlagOp op, std::string_view flagId, FlagValue value = FlagValue::boolean(true));
     FTCORE_API void gameplay(std::string_view kindName, std::string_view text, std::string_view loc = {});
-    // A parameter of the last beat, which must be a gameplay beat.
+    // A parameter of the last beat, which must be a gameplay beat. Two keys are read by the runner: `sets`
+    // (a flag id, declared like any flag a beat uses) and `stub` (an integer; anything else is an error).
     FTCORE_API void param(std::string_view key, std::string_view value);
     // set / clear / require take a flag; end (closing a require block) takes none.
     FTCORE_API void flag(FlagOp op, std::string_view flagId = {}, FlagValue value = FlagValue::boolean(true));

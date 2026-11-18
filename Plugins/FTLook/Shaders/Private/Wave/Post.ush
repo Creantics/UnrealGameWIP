@@ -1,0 +1,733 @@
+// The world wave's post-process (PP_WorldWave, built by FTBuildWaveMaterials), before depth of field, on the linear
+// scene colour: the light and air of the second world, masked per pixel by the front so the change never pops over the
+// whole screen. Behind the front: near grey with a faint cold tone (full tonal range, true blacks), a thin ground fog to
+// about knee height; ahead of it the first world keeps its own light (the host's gains make up for the sun and sky the
+// second world is taking down over the whole view). On the front: a band of refraction, a heat-haze shiver where the
+// view crosses the front's shell. Distances in cm. Functions only (the material's custom node does the scene lookups).
+
+#pragma once
+
+#include "/Plugin/FTLook/Private/Wave/Common.ush"
+
+// The ragged edge's sphere along a view ray: the edge's radius at the ray's closest approach to the origin, whether the
+// ray passes through it ahead of the eye (or the eye is inside it). o3: the eye less the origin; rd: unit ray.
+// Returns (radius, hit, eye inside, closest-approach distance from the origin).
+float4 FTWaveDome(float3 o3, float3 rd, float3 origin, float r, float w, float t)
+{
+	FTWaveFns W;
+	float b = dot(o3, rd);
+	float closeT = max(-b, 0.0);
+	float3 pc = o3 + rd * closeT;
+	float m = length(pc);
+	float3 dirc = pc / max(m, 0.01);
+	float domeR = r > 0.0 ? W.Edge(r, max(w, 1.0), dirc, t, origin + pc) : 0.0;
+	bool camIn = length(o3) < domeR;
+	bool hit = domeR > 0.0 && (camIn || (b < 0.0 && m < domeR));
+	return float4(domeR, hit ? 1.0 : 0.0, camIn ? 1.0 : 0.0, m);
+}
+
+// The haze's weight, 0..1, for a view ray of length rayLen (cm) against the front's shell of radius R: where it crosses
+// the shell before the scene, by the path through a shell shellCm thick (long at the limb, short head on), and the limb's
+// graze just outside it.
+float FTWaveHaze(float3 o3, float3 rd, float rayLen, float R, float shellCm)
+{
+	if (R <= 0.0)
+	{
+		return 0.0;
+	}
+	float b = dot(o3, rd);
+	float c = dot(o3, o3) - R * R;
+	float disc = b * b - c;
+	float weight = 0.0;
+	if (disc > 0.0)
+	{
+		float sq = sqrt(disc);
+		float cosT = saturate(sq / R);
+		float path = shellCm / max(cosT, 0.06);
+		float each = saturate(path / 240.0);
+		float t1 = -b - sq;
+		float t2 = -b + sq;
+		weight += (t1 > 0.0 && t1 < rayLen) ? each : 0.0;
+		weight += (t2 > 0.0 && t2 < rayLen) ? each : 0.0;
+	}
+	// The limb: the closest approach within the ray, just outside the shell.
+	float closeT = -b;
+	if (closeT > 0.0 && closeT < rayLen)
+	{
+		float m = length(o3 + rd * closeT);
+		weight = max(weight, 1.0 - saturate(abs(m - R) / (2.0 * shellCm)));
+	}
+	return saturate(weight);
+}
+
+// The ground fog's share along the view segment from the eye's height to the point's (cm, both over the ground under the
+// origin, the collection's WorldWaveGround), segLen cm long: density 1/kmPerCm at the ground falling by e every
+// heightCm, integrated exactly along the segment, at most maxFog.
+float FTWaveGroundFog(float eyeZ, float pointZ, float segLen, float ground, float heightCm, float densityPerCm, float maxFog)
+{
+	float h0 = eyeZ - ground;
+	float h1 = pointZ - ground;
+	float dz = h1 - h0;
+	float e0 = exp(-max(h0, -200.0) / heightCm);
+	float e1 = exp(-max(h1, -200.0) / heightCm);
+	float mean = abs(dz) > 1.0 ? heightCm * (e0 - e1) / dz : 0.5 * (e0 + e1);
+	float optical = densityPerCm * segLen * max(mean, 0.0);
+	return maxFog * (1.0 - exp(-optical));
+}
+
+// The grade: c is linear scene colour (pre-exposed). m: the second world's share at the pixel. gains: x the first world's
+// lift, y the second's. fog: the ground fog's share; fogLum: the fog's brightness (linear).
+float3 FTWaveGrade(float3 c, float m, float2 gains, float fog, float fogLum)
+{
+	float3 outside = c * gains.x;
+	if (m <= 0.0)
+	{
+		return outside;
+	}
+	float3 inC = c * gains.y;
+	float lum = dot(inC, FTWaveLuma);
+	// Near grey: 8 % of the colour, with a faint cold cast.
+	float3 cold = float3(0.95, 0.99, 1.07);
+	float3 graded = lerp(lum.xxx, inC, 0.08) * cold;
+	// A touch more contrast about mid grey (in stops), so the mids stay readable and the blacks stay black.
+	float l = max(dot(graded, FTWaveLuma), 1e-5);
+	float l2 = 0.18 * pow(l / 0.18, 1.15);
+	graded *= l2 / l;
+	// The mood: half a stop under on top of the light it has lost (the exposure stays the first world's, so the second
+	// reads darker, not lifted back; 0.7 stop under in all), and a toe lifted so the darkest shadow in frame keeps its
+	// detail (no block at 0).
+	graded *= 0.7071;
+	float l3 = dot(graded, FTWaveLuma);
+	graded += (0.007 * (1.0 - smoothstep(0.0, 0.04, l3))) * cold;
+	// The ground fog: a cold grey, lit like the scene round it.
+	graded = lerp(graded, fogLum * float3(0.92, 0.97, 1.05), saturate(fog));
+	return lerp(outside, graded, saturate(m));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The fronts. WorldWaveOrigin.w picks one: 0 the refraction band (v3), 1 ink in water (A), 2 blot dissolve (B). The
+// worlds either side are the same in all three; only the front differs.
+
+// Seconds since the new world's edge passed a point, from cm behind the edge (State.ush's kWaveFrontCmPerS).
+float FTWaveSince(float behindCm)
+{
+	return behindCm / 2000.0;
+}
+
+// The second world's own sky deck: its brightness against the scene's (the nine-point mean) overhead and at the
+// horizon; and the depth (cm) past which a pixel is the true sky, not the far sea or backdrop.
+static const float kFTWaveDeckTop = 0.16;
+static const float kFTWaveDeckHorizon = 0.22;
+static const float kFTWaveTrueSkyDepth = 1e7;
+// 1: the pass shows its working instead (r the second world's share, g log10 of the depth / 10, b the composed light's
+// lens and the true sky's deck).
+#define FT_WAVE_DEBUG 0
+// The custom stencil value of the post's catch-all (FTWorldWave::kCatchStencil, the same number).
+static const float kFTWaveCatchStencil = 223.0;
+
+// The scene colour at a viewport UV.
+float3 FTWaveScene(float2 vuv)
+{
+	float2 uv = ClampSceneTextureUV(ViewportUVToSceneTextureUV(vuv, PPI_PostProcessInput0), PPI_PostProcessInput0);
+	return SceneTextureLookup(uv, PPI_PostProcessInput0, false).rgb;
+}
+
+// A unit ray's entry and exit distances through the sphere of radius R round its origin (o3: the eye less the
+// centre); (1, -1) for a miss.
+float2 FTWaveSphereHit(float3 o3, float3 rd, float R)
+{
+	float b = dot(o3, rd);
+	float c = dot(o3, o3) - R * R;
+	float disc = b * b - c;
+	if (R <= 0.0 || disc <= 0.0)
+	{
+		return float2(1.0, -1.0);
+	}
+	float sq = sqrt(disc);
+	return float2(-b - sq, -b + sq);
+}
+
+// Front A's ink, extinction per cm at a world point p. s is the point's distance ahead of the new world's edge (the
+// cut's and the surfaces' own edge, W.Edge): an opaque core from just behind the edge to coreT (40-100 cm) ahead of it,
+// its face eaten by billows; plumes and tendrils from the core to reach (1-3 m) ahead, thinning with distance; fine wisps
+// where they fray. The density is a domain-warped noise in world space (a slow roll and rise), so it holds its place
+// and parallax as the eye moves. shape: a slow noise taken once per ray (the core's thickness against the plumes'
+// reach). rBall: the prelude's drop at the origin (0 once the front moves).
+// h: the point's height over what it hangs on (the nearer of the visible surface and the street's ground, cm). The core
+// keeps to the first coreH (40-100 cm) over a surface, the plumes and tendrils to 3 m; above that, in the open air and
+// against the sky, only kFTWaveInkFreeAir of the plumes' ink (1 would be the whole sphere's shell in ink, which blacks
+// the screen out as it crosses the eye).
+static const float kFTWaveInkFreeAir = 0.06;
+float FTWaveInkSigma(float3 p, float3 origin, float r, float w, float t, float shape, float rBall, float h)
+{
+	FTWaveFns W;
+	float d = length(p - origin);
+	// Cheap outs before any noise: outside the shell the ink can fill, or high in the open air with no ball.
+	bool inShell = r > 0.0 && d > r - w - 90.0 && d < r + 340.0 && h < 450.0;
+	if (!inShell && d > rBall + 5.0)
+	{
+		return 0.0;
+	}
+	float3 q = p / 140.0 + float3(0.0, 0.0, -0.25 * t);
+	float wx = W.VNoise3(q, 81u) - 0.5;
+	float wy = W.VNoise3(q + 17.0, 82u) - 0.5;
+	float3 qw = p / 55.0 + float3(wx, wy, wx + wy) * 2.6 + float3(0.0, 0.0, 0.35 * t);
+	float n = 0.62 * W.VNoise3(qw, 84u) + 0.38 * W.VNoise3(qw * 2.6 + 5.0, 85u);
+	float sigma = 0.0;
+	if (rBall > 0.0)
+	{
+		float ball = 1.0 - smoothstep(0.5 * rBall, rBall, d + (n - 0.5) * 0.9 * rBall);
+		sigma = 0.14 * ball;
+	}
+	if (inShell)
+	{
+		// The edge, cheaply (the march takes it at every step): Edge's broadest octave (the 220 cm one at its mean) and its
+		// 80 cm jitter; the core starts 80 cm behind it, so the finer terms it leaves out never show.
+		float ta = W.VNoise3(p / 600.0 + float3(0.0, 0.0, 0.30 * t), 7u);
+		float tongue = lerp(0.25, 1.0, saturate((0.55 * ta + 0.15 + 0.075 - 0.2) / 0.6));
+		float jit = (W.VNoise3(p / 80.0 + float3(0.0, 0.0, 0.4 * t), 13u) - 0.5) * 60.0;
+		float s = d - clamp(r - w * tongue + jit, r - w, r);
+		float grow = saturate(0.3 + r / 500.0);
+		float coreT = lerp(40.0, 100.0, shape) * grow;
+		float reach = lerp(100.0, 300.0, saturate(1.2 - shape)) * grow;
+		if (s > -90.0 && s < coreT + reach + 20.0)
+		{
+			// The core: an ink sheet on the surfaces, its top billowing 40-110 cm over them.
+			float coreH = lerp(40.0, 110.0, n) * grow;
+			float core = smoothstep(-80.0, -25.0, s) * (1.0 - smoothstep(coreT - 20.0, coreT + 15.0, s))
+				* smoothstep(0.18, 0.5, n + 0.3) * (1.0 - smoothstep(0.6 * coreH, coreH, h));
+			// The plumes: thin filaments (the ridges of the warped noise) lifting off the core and off the surfaces ahead
+			// of it, fewer and finer with distance and height; a mean optical depth under 1 through them, the filaments 2+.
+			float ahead = saturate((s - coreT) / max(reach, 1.0));
+			float ridge = 1.0 - abs(2.0 * n - 1.0);
+			float fil = smoothstep(0.7 + 0.15 * ahead, 0.9 + 0.08 * ahead, ridge);
+			float lift = lerp(1.0, kFTWaveInkFreeAir, smoothstep(120.0, 300.0, h));
+			float plume = s > coreT - 40.0 ? fil * (1.0 - ahead * ahead) * lift : 0.0;
+			sigma = max(sigma, max(0.12 * core, 0.03 * plume));
+		}
+	}
+	return sigma;
+}
+
+// Front A along a view ray (rayLen cm to the scene, or far for the sky): the ink marched through the shell it can
+// occupy, in two pieces when the ray crosses the hollow behind it. ambient: the second world's light round the eye. Returns
+// the light the thin ink scatters (rgb) and what the ink lets through (a).
+float4 FTWaveInkMarch(float3 camPos, float3 rd, float rayLen, float3 origin, float r, float w, float t, float rBall, float2 pix,
+	float ambient, bool sky, float3 sceneNormal, float ground)
+{
+	float3 nrm = sceneNormal / max(length(sceneNormal), 1e-3);
+	float cosN = max(abs(dot(rd, nrm)), 0.05);
+	FTWaveFns W;
+	float3 o3 = camPos - origin;
+	float rOut = max(r > 0.0 ? r + 340.0 : 0.0, rBall + 10.0);
+	float rIn = r > 0.0 ? max(r - w - 90.0, 0.0) : 0.0;
+	float2 hOut = FTWaveSphereHit(o3, rd, rOut);
+	if (hOut.y <= 0.0 || hOut.x > rayLen)
+	{
+		return float4(0.0, 0.0, 0.0, 1.0);
+	}
+	float2 hIn = rIn > 0.0 ? FTWaveSphereHit(o3, rd, rIn) : float2(1.0, -1.0);
+	float2 segA = hOut;
+	float2 segB = float2(1.0, -1.0);
+	if (hIn.y > hIn.x)
+	{
+		segA = float2(hOut.x, hIn.x);
+		segB = float2(hIn.y, hOut.y);
+	}
+	// An interleaved-gradient dither stepped each frame: the pass runs before depth of field, so the temporal upscaler
+	// after it resolves the steps into a smooth volume instead of a fixed speckle.
+	// Each pixel's start is an integer hash of its position (no spatial structure: the gradient noise's own diagonals
+	// left a faint grain in the thinnest ink, and shifting that pattern left a diagonal mesh), and it steps by the golden
+	// ratio a frame, so every pixel runs evenly through its offsets.
+	uint2 jp = uint2(pix);
+	uint jh = (jp.x * 1597334677u) ^ (jp.y * 3812015801u);
+	jh = (jh ^ (jh >> 16u)) * 0x45d9f3bu;
+	jh ^= jh >> 16u;
+	float jitter = frac(float(jh) * (1.0 / 4294967296.0) + 0.618034 * float(View.StateFrameIndex & 1023u));
+	// Once the front has run on past the eye it thins out: 8 m beyond it the ink starts to go, 25 m beyond it is gone, so
+	// the leaving front does not stand as a black hedge along the sea's horizon in the settled view.
+	float recede = 1.0 - smoothstep(800.0, 2500.0, r - length(o3));
+	// The height band the ink can fill (FTWaveInkSigma's shell keeps to h < 450): the stretch of the ray within 450 cm
+	// over the street's ground, and the last 450/cosN cm before the surface it meets. The march keeps to that band's hull,
+	// so its steps go where the ink can be; the prelude's drop at the origin fills a ball, so it marches the whole shell.
+	float bandLo = -1e9;
+	float bandHi = 1e9;
+	if (rBall <= 0.0)
+	{
+		bandLo = 1e9;
+		bandHi = -1e9;
+		if (abs(rd.z) > 1e-4)
+		{
+			float tG = (ground - camPos.z) / rd.z;
+			float tTop = (ground + 450.0 - camPos.z) / rd.z;
+			bandLo = min(tG, tTop);
+			bandHi = max(tG, tTop);
+		}
+		else if (camPos.z >= ground && camPos.z < ground + 450.0)
+		{
+			bandLo = -1e9;
+			bandHi = 1e9;
+		}
+		if (!sky)
+		{
+			bandLo = min(bandLo, rayLen - 450.0 / cosN);
+			bandHi = max(bandHi, rayLen);
+		}
+	}
+	float T = 1.0;
+	float3 L = float3(0.0, 0.0, 0.0);
+	[unroll]
+	for (int k = 0; k < 2; ++k)
+	{
+		float2 seg = k == 0 ? segA : segB;
+		float a = max(seg.x, 0.0);
+		float b = min(seg.y, rayLen);
+		// The per-ray shape is taken on the whole piece of shell, before the band trims it (only for a piece the march walks).
+		float mid = 0.5 * (a + b);
+		a = max(a, bandLo);
+		b = min(b, bandHi);
+		if (b > a && T > 0.02)
+		{
+			float shape = W.VNoise3((camPos + rd * mid) / 260.0 + float3(0.0, 0.0, 0.2 * t), 86u);
+			// Steps of about 25 cm: under the core's 40-110 cm height and 40-100 cm thickness, so no step steps over it
+			// (longer steps left it as a dither the temporal upscaler couldn't fill in, a screen-door hatch in the band).
+			int steps = int(clamp(ceil((b - a) / 25.0), 4.0, 64.0));
+			float ds = (b - a) / float(steps);
+			[loop]
+			for (int i = 0; i < steps; ++i)
+			{
+				float ti = a + (float(i) + jitter) * ds;
+				float3 p = camPos + rd * ti;
+				float hs = sky ? 1e6 : max(rayLen - ti, 0.0) * cosN;
+				// Below the ground under the origin (the sea, a dock) the height is the one over the surface the ray meets,
+				// so the core on the water stays a sheet and does not stand as a wall up to the ground's level.
+				float h = p.z < ground ? hs : min(hs, p.z - ground);
+				// The first 2.5 m from the eye stay thin, so the core crossing the eye is a dark sweep and not a frame of
+				// solid black between two clear ones (a whole-screen pop).
+				float sg = FTWaveInkSigma(p, origin, r, w, t, shape, rBall, h) * recede * smoothstep(30.0, 250.0, ti);
+				if (sg > 1e-4)
+				{
+					float a1 = 1.0 - exp(-sg * ds);
+					float albedo = lerp(0.06, 0.01, saturate(sg / 0.06));
+					L += T * a1 * albedo * ambient;
+					T *= 1.0 - a1;
+					if (T < 0.02)
+					{
+						break;
+					}
+				}
+			}
+		}
+	}
+	return float4(L * float3(0.92, 0.96, 1.0), T);
+}
+
+// Front A behind the core: the pigment dispersing, grey veils over the new world for 0.5-0.8 s after the edge passed, in
+// slow world-space billows. Returns the veil's share at a scene point (or the sky's crossing): 0.2 in the billows' gaps
+// to 0.6 in their cores at the peak, so no patch is ever veiled flat.
+float FTWaveVeil(float tau, float3 p, float t)
+{
+	if (tau <= 0.0 || tau > 0.85)
+	{
+		return 0.0;
+	}
+	FTWaveFns W;
+	// Each octave in its own turned frame and warped by the broad one, so no value-noise cell lines up into a visible grid.
+	const float3x3 turn = float3x3(0.00, 0.80, 0.60, -0.80, 0.36, -0.48, -0.60, -0.48, 0.64);
+	float3 q0 = mul(turn, p / 220.0) + float3(0.0, 0.0, 0.3 * t);
+	float warp = W.VNoise3(q0 * 0.5 + 7.0, 88u) - 0.5;
+	float3 q1 = mul(turn, q0 * 2.3) + warp * 1.6 + float3(0.0, 0.4 * t, 0.0);
+	float3 q2 = mul(turn, q1 * 2.1) + float3(0.5 * t, 0.0, 0.0);
+	float billow = 0.55 * W.VNoise3(q0 + warp * 1.2, 89u) + 0.3 * W.VNoise3(q1, 90u) + 0.15 * W.VNoise3(q2, 87u);
+	float life = lerp(0.5, 0.8, billow);
+	return smoothstep(0.0, 0.06, tau) * (1.0 - smoothstep(0.15, life, tau)) * lerp(0.2, 0.6, smoothstep(0.15, 0.85, billow));
+}
+
+// Front B: one level of blots, cells S wide round plane point q (cm on a surface's own plane, or pixels on the sky).
+// Each live cell (density) holds one elliptical gaussian blot, stretched 1.25-2x along axis (the front's outward
+// direction in the plane) and turned up to 23 degrees off it, coloured by the scene at its undrifted centre and pulled
+// toward ink black by darken; drift moves it outward. Adds g x colour to sumC, g to sumG, and multiplies keep (the share
+// no blot covers). Surfaces: the centre's colour is the scene where the centre projects (twPix: the pixel's translated
+// world point, T3/B3: the plane's axes); the sky: the scene at the centre's pixel (invView).
+void FTWaveBlotLevel(float2 q, float S, int level, bool sky, float2 invView, float3 twPix, float3 T3, float3 B3, float2 axis,
+	float2 drift, float density, float darken, inout float3 sumC, inout float sumG, inout float keep)
+{
+	FTWaveFns W;
+	float2 cell = floor(q / S);
+	[unroll]
+	for (int j = -1; j <= 1; ++j)
+	{
+		[unroll]
+		for (int i = -1; i <= 1; ++i)
+		{
+			int3 id = int3(int(cell.x) + i, int(cell.y) + j, level + (sky ? 64 : 0));
+			if (W.Hash3(id, 101u) <= density)
+			{
+				float h1 = W.Hash3(id, 102u);
+				float h2 = W.Hash3(id, 103u);
+				float h3 = W.Hash3(id, 104u);
+				float h4 = W.Hash3(id, 105u);
+				float2 home = (float2(id.xy) + 0.15 + 0.7 * float2(h1, h2)) * S;
+				float2 dq = q - (home + drift);
+				float ang = (h4 - 0.5) * 0.8;
+				float cs = cos(ang);
+				float sn = sin(ang);
+				float2 ax = float2(axis.x * cs - axis.y * sn, axis.x * sn + axis.y * cs);
+				float2 lq = float2(dot(dq, ax), dot(dq, float2(-ax.y, ax.x)));
+				float sig = S * lerp(0.26, 0.4, h3);
+				float an = lerp(1.25, 2.0, h1);
+				float g = exp(-0.5 * (lq.x * lq.x / (sig * sig * an * an) + lq.y * lq.y * an * an / (sig * sig)));
+				if (g > 0.01)
+				{
+					float2 cuv;
+					if (sky)
+					{
+						cuv = home * invView;
+					}
+					else
+					{
+						float3 ctw = twPix + T3 * (home.x - q.x) + B3 * (home.y - q.y);
+						float4 clip = mul(float4(ctw, 1.0), View.TranslatedWorldToClip);
+						cuv = clip.xy / max(clip.w, 1e-3) * float2(0.5, -0.5) + 0.5;
+					}
+					float3 col = FTWaveScene(saturate(cuv)) * lerp(1.0, 0.12 + 0.3 * h2, darken);
+					sumC += g * col;
+					sumG += g;
+					keep *= 1.0 - 0.94 * g;
+				}
+			}
+		}
+	}
+}
+
+// Front B at a pixel: the blots of a band 2.5 m deep across the edge (s: cm ahead of it; 1 m ahead to 1.5 m behind),
+// large (30 px at 1080p) and sparse at its front, small (5 px) and dense at its back, where they sharpen into the new
+// world. Two power-of-two cell sizes blended, so a blot's size changes with no pop. cmPerPx: the plane's cm per pixel (1 on
+// the sky, in pixels). bg: what shows between blots (the scene, near black). Returns the blotted colour (before the grade)
+// and the band's weight (a).
+float4 FTWaveBlots(float s, float2 q, float cmPerPx, float pxScale, bool sky, float2 invView, float3 twPix, float3 T3,
+	float3 B3, float2 axis, float3 bg)
+{
+	float u = saturate((100.0 - s) / 250.0);
+	float band = smoothstep(0.0, 0.2, u) * (1.0 - smoothstep(0.75, 1.0, u));
+	if (band <= 0.001)
+	{
+		return float4(0.0, 0.0, 0.0, 0.0);
+	}
+	float sizeCm = lerp(30.0, 5.0, u) * pxScale * cmPerPx;
+	float lv = log2(max(sizeCm, 1e-3));
+	float l0 = floor(lv);
+	float f = lv - l0;
+	float density = lerp(0.4, 0.95, u);
+	float darken = band * (1.0 - 0.6 * u);
+	float2 drift = axis * (0.4 * band);
+	float3 img[2];
+	[unroll]
+	for (int k = 0; k < 2; ++k)
+	{
+		float S = exp2(l0 + float(k));
+		float3 sumC = float3(0.0, 0.0, 0.0);
+		float sumG = 0.0;
+		float keep = 1.0;
+		FTWaveBlotLevel(q, S, int(l0) + k + 32, sky, invView, twPix, T3, B3, axis, drift * S, density, darken, sumC, sumG, keep);
+		float A = 1.0 - keep;
+		img[k] = sumC / max(sumG, 1e-4) * A + bg * (1.0 - A);
+	}
+	return float4(lerp(img[0], img[1], f), band);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The post-process at a pixel (FTWorldWavePostBody): the second world's grade and ground fog by the front's share, then
+// the front's own look by WOrigin.w. src: the scene colour; rawDepth: SceneDepth (cm); sceneNormal: the world normal.
+float3 FTWavePostMain(FMaterialPixelParameters Parameters, float3 src, float rawDepth, float3 sceneNormal, float3 WorldPos,
+	float3 CamPos, float4 WOrigin, float4 WOriginScreen, float4 WFoot, float4 WTip, float WRadius, float WBand, float WPrelude,
+	float WDirection, float WTime, float WGround, float4 WGain, float4 WKeep0, float SkyDepth, float customDepth,
+	float customStencil)
+{
+	FTWaveFns W;
+	float2 pix = GetPixelPosition(Parameters);
+#if POST_PROCESS_MATERIAL
+	float2 invView = PostProcessOutput_ViewportSizeInverse;
+#else
+	float2 invView = View.ViewSizeAndInvSize.zw;
+#endif
+	float2 viewSize = 1.0 / max(invView, float2(1e-6, 1e-6));
+	float2 vuv = pix * invView;
+	float pxScale = max(viewSize.y, 1.0) / 1080.0;
+
+	// No wave set: the input, untouched.
+	if (WOriginScreen.w < 0.5)
+	{
+		return src;
+	}
+	int style = int(round(WOrigin.w));
+	bool sky = rawDepth >= SkyDepth;
+	bool forward = WDirection < 0.5;
+	float r = WRadius;
+	float w = max(WBand, 1.0);
+	float2 gains = WGain.x > 0.0 ? WGain.xy : float2(1.0, 1.0);
+
+	// The view ray from the pixel (at a 10 m depth: the sky's own world position is too far out to keep its precision).
+	float3 o3 = CamPos - WOrigin.xyz;
+	float4 rayAt = mul(float4(float2(2.0 * vuv.x - 1.0, 1.0 - 2.0 * vuv.y) * 1000.0, 1000.0, 1.0), View.ScreenToTranslatedWorld);
+	float3 rd = normalize(rayAt.xyz / max(rayAt.w, 1e-6) - View.TranslatedWorldCameraOrigin);
+	float4 dome = FTWaveDome(o3, rd, WOrigin.xyz, r, w, WTime);
+
+	// The second world's share at the pixel: the sky by whether the view passes through the front's sphere, the scene by
+	// its point.
+	float m;
+	float rayLen;
+	float pointZ;
+	if (sky)
+	{
+		m = forward ? dome.y : 1.0 - dome.y;
+		rayLen = 1e8;
+		pointZ = CamPos.z + rd.z * 10000.0;
+	}
+	else
+	{
+		m = FTWaveSecond(WorldPos, WOrigin.xyz, r, w, WDirection, WTime, 1.0);
+		rayLen = length(WorldPos - CamPos);
+		pointZ = WorldPos.z;
+		// The far field (150 to 450 m past the front: the sea to the horizon, the backdrop) goes over with the sky, by the
+		// cover (WGain.z, the share of the view the front has reached, followed at a limited rate), never ahead of it. Its
+		// near edge comes in to the front's inner edge as the cover fills, so a settled wave leaves nothing past its end
+		// in the first world (the sea and the cranes beyond the radius went over with the rest).
+		if (forward)
+		{
+			float c = saturate(WGain.z);
+			float k = 1.0 - c;
+			float lo = r - w + (15000.0 + w) * k;
+			float far = smoothstep(lo, lo + 100.0 + 30000.0 * k, length(WorldPos - WOrigin.xyz));
+			m = max(m, c * far);
+		}
+	}
+
+	// cm the point stands ahead of the new world's edge (behind it: negative), on the surfaces; on the sky, the view's
+	// closest approach against the edge there.
+	float ahead = 1e6;
+	float3 rel = WorldPos - WOrigin.xyz;
+	if (r > 0.0)
+	{
+		if (sky)
+		{
+			ahead = (dome.z > 0.5 || dot(o3, rd) >= 0.0) ? 1e6 : dome.w - dome.x;
+		}
+		else
+		{
+			float dist = length(rel);
+			ahead = dist - W.Edge(r, w, rel / max(dist, 0.01), WTime, WorldPos);
+		}
+	}
+
+	// Front 0: a band of refraction where the view crosses its shell, and 30 cm either side of the edge on the surfaces
+	// it is crossing; it grows in over the front's first 3 m.
+	if (style == 0 && r > 0.0)
+	{
+		float haze = FTWaveHaze(o3, rd, rayLen, dome.x, 15.0);
+		if (!sky)
+		{
+			haze = max(haze, 1.0 - saturate(abs(ahead) / 30.0));
+		}
+		haze *= saturate(r / 300.0);
+		if (haze > 0.002)
+		{
+			float2 q = pix / (7.0 * pxScale);
+			float2 nz = float2(W.VNoise3(float3(q, WTime * 7.0), 61u), W.VNoise3(float3(q + 17.3, WTime * 7.0), 62u)) * 2.0 - 1.0;
+			float2 duv = nz * (3.0 * pxScale * haze) * invView;
+			src = FTWaveScene(vuv + duv);
+		}
+	}
+
+	// The ground fog's light: the scene's own brightness over nine fixed points, as the second world lights it.
+	float fogLum = 0.0;
+	[unroll]
+	for (int k = 0; k < 9; ++k)
+	{
+		float2 tuv = float2(0.2 + 0.3 * float(k % 3), 0.3 + 0.22 * float(k / 3));
+		fogLum += min(dot(FTWaveScene(tuv), FTWaveLuma), 1.5);
+	}
+	fogLum = 0.8 * gains.y * fogLum / 9.0;
+	float fog = m > 0.0 ? FTWaveGroundFog(CamPos.z, pointZ, sky ? 10000.0 : rayLen, WGround, 40.0, 1.0 / 2500.0, 0.6) : 0.0;
+	// The sea (its plane stands at the datum, well under the streets the wave starts on): in the second world near-black
+	// water keeping only a faint cold sheen of what it reflects, the ground fog thin over it, so the horizon is a dark strip.
+	if (!sky && m > 0.0 && WorldPos.z < WGround - 150.0 && rawDepth > 3000.0)
+	{
+		float sea = saturate(m) * smoothstep(3000.0, 6000.0, rawDepth);
+		src *= lerp(1.0, 0.2, sea);
+		fog *= lerp(1.0, 0.25, sea);
+	}
+
+	// The second world's sky, its own overcast (WGain.w) until the cloud layer has changed behind it: a layer reshaped
+	// while in view never settles its reconstruction. The true sky only (not the far sea and backdrop past SkyDepth): a
+	// low dead cloud deck lit like the scene, lighter toward the horizon, softly mottled on its plane.
+	float skyCover = saturate(WGain.w) * smoothstep(0.0, 0.3, m);
+	if (rawDepth >= kFTWaveTrueSkyDepth && skyCover > 0.0)
+	{
+		float elev = max(rd.z, 0.0);
+		float hor = 1.0 - smoothstep(0.0, 0.35, elev);
+		float2 cp = rd.xy / max(rd.z, 0.04);
+		float n = 0.65 * W.VNoise3(float3(cp * 0.9, WTime * 0.03), 91u) + 0.35 * W.VNoise3(float3(cp * 2.7 + 3.1, WTime * 0.05), 92u);
+		float mottle = lerp(lerp(0.84, 1.14, n), 1.0, 0.7 * hor);
+		float3 deck = (fogLum / max(0.8 * gains.y, 1e-3)) * lerp(kFTWaveDeckTop, kFTWaveDeckHorizon, hor) * mottle * float3(0.97, 1.0, 1.04);
+		src = lerp(src, deck, skyCover);
+	}
+
+	// Front B: the picture breaks into blots across the band before the grade (the grade then takes the blots as the
+	// pixel's own colour).
+	if (style == 2 && r > 0.0 && forward && ahead < 110.0)
+	{
+		float3 T3;
+		float3 B3;
+		float2 q;
+		float2 axis;
+		float cmPerPx;
+		float3 twPix = View.TranslatedWorldCameraOrigin + (WorldPos - CamPos);
+		if (sky)
+		{
+			// The sky: blots in pixels, stretched along the dome's outline (across the view's closest approach).
+			T3 = float3(1.0, 0.0, 0.0);
+			B3 = float3(0.0, 1.0, 0.0);
+			q = pix;
+			cmPerPx = 1.0;
+			float2 os = WOriginScreen.xy * viewSize;
+			float2 out2 = pix - os;
+			axis = out2 / max(length(out2), 1e-3);
+		}
+		else
+		{
+			float3 n = sceneNormal / max(length(sceneNormal), 1e-3);
+			float3 refAxis = abs(n.z) < 0.7 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+			T3 = normalize(cross(refAxis, n));
+			B3 = cross(n, T3);
+			q = float2(dot(rel, T3), dot(rel, B3));
+			float2 rad2 = float2(dot(rel, T3), dot(rel, B3));
+			float rl = length(rad2);
+			axis = rl > 1.0 ? rad2 / rl : float2(1.0, 0.0);
+			cmPerPx = rawDepth * 2.0 / max(View.ViewToClip[1][1] * viewSize.y, 1e-3);
+		}
+		float3 bg = src * 0.06;
+		float4 blot = FTWaveBlots(ahead, q, cmPerPx, pxScale, sky, invView, twPix, T3, B3, axis, bg);
+		src = lerp(src, blot.rgb, blot.a);
+	}
+
+	// The catch-all: a worn piece whose master takes no character state (stencil kFTWaveCatchStencil from the audit) gets
+	// it here, by the same share m: near grey, half the light (the base's 0.5 and the grime's mean), and for front A the
+	// thin matt line at the cut. Every worn piece of an audited character renders custom depth (wave-aware ones with 222),
+	// so the custom depth buffer holds the nearest worn surface: cloth over skin reads 222 and is left to its own
+	// material. The depth test only rejects what is not that character (a wall or prop in front): 1 cm or 0.05%.
+	if (!sky && m > 0.0 && abs(customStencil - kFTWaveCatchStencil) < 0.5 && abs(customDepth - rawDepth) < max(1.0, 0.0005 * rawDepth))
+	{
+		float lumC = dot(src, FTWaveLuma);
+		float3 state = lerp(lumC.xxx, src, 0.07) * float3(0.97, 0.99, 1.03) * (0.5 * 0.875);
+		src = lerp(src, state, saturate(m));
+		if (style == 1 && r > 0.0)
+		{
+			src *= lerp(1.0, 0.1, 1.0 - smoothstep(0.4, 0.7, abs(ahead)));
+		}
+	}
+
+	float3 c = FTWaveGrade(src, m, gains, fog, fogLum);
+
+	// The composed light (WKeep0: xyz cm, w the lens's radius cm): the one lamp left burning in the second world, weak
+	// and cold. Its lens glows, it spills on the surfaces round it (by their facing, out to 3.5 m), and a small halo
+	// sits over it where nothing stands in front; all by the second world's share at the lamp, under the ink.
+	float lens = 0.0;
+	if (WKeep0.w > 0.0)
+	{
+		float lampM = FTWaveSecond(WKeep0.xyz, WOrigin.xyz, r, w, WDirection, WTime, 1.0);
+		if (lampM > 0.0)
+		{
+			float3 cold = float3(0.72, 0.86, 1.0);
+			float flick = 0.97 + 0.03 * W.VNoise3(float3(WTime * 3.0, 0.0, 0.0), 95u);
+			float lampL = fogLum * 4.0 * flick * lampM;
+			if (!sky)
+			{
+				float3 toL = WKeep0.xyz - WorldPos;
+				float d = length(toL);
+				lens = 1.0 - smoothstep(0.6 * WKeep0.w, WKeep0.w, d);
+				float3 n = sceneNormal / max(length(sceneNormal), 1e-3);
+				float facing = saturate(dot(n, toL / max(d, 1.0)));
+				float spill = facing / (1.0 + (d / 70.0) * (d / 70.0)) * (1.0 - smoothstep(200.0, 350.0, d));
+				c += (c * 2.2 + fogLum * 0.12) * cold * (spill * flick * lampM);
+				c = lerp(c, lampL * cold, lens);
+			}
+			float3 lampTW = View.TranslatedWorldCameraOrigin + (WKeep0.xyz - CamPos);
+			float4 lampClip = mul(float4(lampTW, 1.0), View.TranslatedWorldToClip);
+			if (lampClip.w > 1.0)
+			{
+				float2 lampUV = lampClip.xy / lampClip.w * float2(0.5, -0.5) + 0.5;
+				float2 suv = ClampSceneTextureUV(ViewportUVToSceneTextureUV(saturate(lampUV), PPI_SceneDepth), PPI_SceneDepth);
+				float seen = SceneTextureLookup(suv, PPI_SceneDepth, false).r > lampClip.w - 2.0 * WKeep0.w ? 1.0 : 0.0;
+				float lensPx = WKeep0.w / lampClip.w * View.ViewToClip[1][1] * 0.5 * viewSize.y;
+				float dpx = length(pix - lampUV * viewSize) / max(3.0 * lensPx, 2.0 * pxScale);
+				c += lampL * 0.18 * cold * exp(-dpx * dpx) * seen;
+			}
+		}
+	}
+
+	if (style == 1)
+	{
+		// Front A behind the core: grey veils of dispersing pigment for 0.5-0.8 s, the new world resolving through them.
+		// The sky once the eye is inside: the veil runs on from the moment the edge passed the eye, so it thins out over
+		// the same 0.5-0.8 s instead of going off as the eye crosses.
+		float vAhead = ahead;
+		if (sky && r > 0.0 && length(o3) < r)
+		{
+			vAhead = length(o3) - r;
+		}
+		if (r > 0.0 && forward && vAhead < 0.0)
+		{
+			// The sky takes the veil on a near shell (25 m), so its billows are broad soft shapes and not a fine mottle,
+			// and it comes up over 0.3 s from the crossing at half strength, so the eye's crossing is no whole-sky step.
+			float tauV = FTWaveSince(-vAhead);
+			float3 vp = sky ? CamPos + rd * 2500.0 : WorldPos;
+			float veil = FTWaveVeil(tauV, vp, WTime) * (sky ? 0.5 * smoothstep(0.0, 0.3, tauV) : 1.0);
+			// The pigment greys and darkens the pixel's own colour (60% toward its own luminance, cool, times 0.7) and never
+			// lifts it toward a tone of its own: a grey taken from the frame, still mostly the sunlit first world just after
+			// the edge, turned dark cloth to flat pale plaster. Linear in c, so the surface's shading and texture stay.
+			float lumV = dot(c, float3(0.2126, 0.7152, 0.0722));
+			c = lerp(c, lerp(c, lumV * float3(0.92, 0.96, 1.0), 0.6) * 0.7, veil);
+		}
+		// The ink itself, in the volume: the drop at the origin through the prelude (a black bloom 8 to 45 cm), then the
+		// core and its plumes on the front. Near things are swallowed before far ones: the march stops at the scene.
+		float rBall = WPrelude > 0.0 ? lerp(8.0, 45.0, sqrt(saturate(WPrelude))) : (r > 0.0 && r < 120.0 ? 45.0 * (1.0 - r / 120.0) : 0.0);
+		if (forward && (r > 0.0 || rBall > 0.0))
+		{
+			float4 ink = FTWaveInkMarch(CamPos, rd, rayLen, WOrigin.xyz, r, w, WTime, rBall, pix, fogLum, sky, sceneNormal, WGround);
+			c = c * ink.a + ink.rgb;
+		}
+	}
+	else
+	{
+		// The prelude: a thin dark wisp of smoke 2 m tall at the origin, drawn up in the first 0.12 s (0.4 of the
+		// prelude), hidden where the scene is in front of it, fading as the front spreads past 6 m.
+		float streakFade = 1.0 - saturate(r / 600.0);
+		if (WPrelude > 0.0 && streakFade > 0.0 && WFoot.z > 0.5 && WTip.z > 0.5)
+		{
+			float grow = saturate(WPrelude / 0.4);
+			float2 foot = WFoot.xy * viewSize;
+			float2 tip = lerp(WFoot.xy, WTip.xy, grow) * viewSize;
+			float2 seg = tip - foot;
+			float segLen = max(length(seg), 1e-3);
+			float2 along = seg / segLen;
+			float2 across = float2(-along.y, along.x);
+			float2 p = pix - foot;
+			float t = saturate(dot(p, along) / segLen);
+			float sway = 4.0 * pxScale * sin(6.2831853 * (t * 1.7 - WTime * 1.3)) * t;
+			float off = dot(p, across) - sway;
+			float onSeg = step(0.0, dot(p, along)) * step(dot(p, along), segLen);
+			float smoke = W.VNoise3(float3(pix / (4.0 * pxScale), WTime * 5.0), 71u);
+			float halfW = 5.0 * pxScale * (1.0 - 0.4 * t) * (0.7 + 0.6 * smoke);
+			float body = (1.0 - smoothstep(0.4 * halfW, 1.6 * halfW, abs(off))) * onSeg * (0.55 + 0.45 * smoke);
+			float sDepth = lerp(WFoot.w, WTip.w, t * grow);
+			float shown = rawDepth + 15.0 >= sDepth ? 1.0 : 0.0;
+			c = lerp(c, c * 0.12, 0.9 * body * shown * streakFade);
+		}
+	}
+#if FT_WAVE_DEBUG
+	return float3(saturate(m), saturate(log10(max(rawDepth, 1.0)) / 10.0),
+		max(lens, rawDepth >= kFTWaveTrueSkyDepth ? 0.5 * skyCover : 0.0));
+#endif
+	return max(c, float3(0.0, 0.0, 0.0));
+}

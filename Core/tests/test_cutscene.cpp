@@ -920,3 +920,332 @@ TEST_CASE("a mark walk carries the height along and ends at the mark's") {
     walkToMark(walk, {0.f, 5.f, 0.f}, 0.f);
     CHECK(walk.position().z == doctest::Approx(0.4));
 }
+
+// ---- Wave cues ----
+
+namespace {
+
+CutsceneWaveCue markCue(float time, std::string_view mark) {
+    CutsceneWaveCue c;
+    c.time = time;
+    REQUIRE(c.setMark(mark));
+    return c;
+}
+
+// threeShots (6 s) with wave cues at 0, 1.5, 3 and 6 s on marks a..d.
+CutscenePlan cuedShots() {
+    CutscenePlan p = threeShots();
+    REQUIRE(p.addWaveCue(markCue(3.f, "mark_c")));
+    REQUIRE(p.addWaveCue(markCue(0.f, "mark_a")));
+    REQUIRE(p.addWaveCue(markCue(6.f, "mark_d")));
+    REQUIRE(p.addWaveCue(markCue(1.5f, "mark_b")));
+    return p;
+}
+
+std::string_view crossedMark(const CutscenePlayer& player, std::uint32_t i) {
+    return player.plan().waveCue(player.firstCueThisUpdate() + i).mark();
+}
+
+} // namespace
+
+TEST_CASE("a wave cue holds ids that fit, and is valid with its origin's ids") {
+    CutsceneWaveCue c;
+    CHECK(c.preset() == "street");
+    CHECK(c.world() == "unwritten");
+    CHECK(c.origin == WaveCueOrigin::Mark);
+    CHECK_FALSE(c.reverse);
+    CHECK(c.time == 0.f);
+    CHECK_FALSE(c.valid()); // a mark cue needs its mark
+    CHECK(c.setMark("mark_a"));
+    CHECK(c.valid());
+
+    CHECK(c.setBone("bone_6789012345")); // 15 characters
+    CHECK_FALSE(c.setBone("bone_67890123456")); // 16
+    CHECK(c.bone() == "bone_6789012345");
+    CHECK_FALSE(c.setBone("Hand_R"));
+    CHECK_FALSE(c.setPreset(""));
+    CHECK_FALSE(c.setPreset("slow cross"));
+    CHECK(c.preset() == "street");
+    CHECK(c.setPreset("slow_cross"));
+    CHECK(c.setWorld("world_b"));
+    CHECK(c.world() == "world_b");
+    CHECK_FALSE(c.setWorld(""));
+
+    // A bone cue needs its subject and its bone; the mark does not matter.
+    c.origin = WaveCueOrigin::Bone;
+    CHECK(c.setSubject(""));
+    CHECK_FALSE(c.valid());
+    CHECK(c.setSubject("subj_a"));
+    CHECK(c.valid());
+    CHECK(c.setMark(""));
+    CHECK(c.valid());
+    CHECK(c.setBone(""));
+    CHECK_FALSE(c.valid());
+    CHECK(c.setBone("hand_r"));
+    CHECK(c.valid());
+
+    // The time, and the buffers read back as they stand.
+    CutsceneWaveCue t = c;
+    t.time = std::nanf("");
+    CHECK_FALSE(t.valid());
+    t.time = -0.5f;
+    CHECK_FALSE(t.valid());
+    CutsceneWaveCue l = c;
+    l.presetLength = 20;
+    CHECK_FALSE(l.valid());
+    CutsceneWaveCue b = c;
+    b.boneId[0] = 'H';
+    CHECK_FALSE(b.valid());
+    CutsceneWaveCue o = c;
+    o.origin = static_cast<WaveCueOrigin>(7);
+    CHECK_FALSE(o.valid());
+}
+
+TEST_CASE("a cutscene plan keeps up to four wave cues in time order") {
+    CutscenePlan none;
+    CHECK_FALSE(none.addWaveCue(markCue(0.f, "mark_a"))); // shots first
+
+    CutscenePlan p = threeShots(); // 6 s
+    CHECK(p.addWaveCue(markCue(4.f, "mark_d")));
+    CHECK(p.addWaveCue(markCue(1.f, "mark_b")));
+    CHECK(p.addWaveCue(markCue(4.f, "mark_e"))); // the same time: after the one added first
+    CHECK_FALSE(p.addWaveCue(markCue(6.5f, "mark_x"))); // past the shots
+    CutsceneWaveCue noMark;
+    noMark.time = 2.f;
+    CHECK_FALSE(p.addWaveCue(noMark));
+    CHECK(p.addWaveCue(markCue(6.f, "mark_f"))); // the shots' very end
+    CHECK(p.waveCueCount() == 4u);
+    CHECK_FALSE(p.addWaveCue(markCue(2.f, "mark_g"))); // a fifth
+    CHECK(p.waveCueCount() == 4u);
+    CHECK(p.waveCue(0).mark() == "mark_b");
+    CHECK(p.waveCue(1).mark() == "mark_d");
+    CHECK(p.waveCue(2).mark() == "mark_e");
+    CHECK(p.waveCue(3).mark() == "mark_f");
+
+    p.clear();
+    CHECK(p.waveCueCount() == 0u);
+    CHECK(p.empty());
+}
+
+TEST_CASE("the player crosses each wave cue once, in order, at any frame rate") {
+    const CutscenePlan plan = cuedShots();
+    for (const double dt : {1.0 / 30.0, 1.0 / 60.0, 1.0 / 144.0, 1.0 / 7.0, 0.5, 2.5, 10.0}) {
+        CutscenePlayer player;
+        player.begin(plan);
+        CHECK(player.planTime() == 0.0);
+        CHECK(player.cuesThisUpdate() == 0u);
+        int seen[CutscenePlan::kMaxWaveCues] = {};
+        std::uint32_t expected = 0;
+        int updates = 0;
+        while (!player.finished() && updates < 10000) {
+            const double before = player.planTime();
+            player.update(dt);
+            ++updates;
+            CHECK(player.planTime() >= before); // never back
+            CHECK(player.firstCueThisUpdate() == expected);
+            for (std::uint32_t j = 0; j < player.cuesThisUpdate(); ++j) {
+                const std::uint32_t i = player.firstCueThisUpdate() + j;
+                ++seen[i];
+                const double at = static_cast<double>(plan.waveCue(i).time);
+                // Crossed on the update that reached it, not before and not after.
+                CHECK(at <= player.planTime() + 1e-4);
+                CHECK((at > before || (at == 0.0 && before == 0.0)));
+            }
+            expected += player.cuesThisUpdate();
+        }
+        MESSAGE("dt " << dt << " updates " << updates);
+        CHECK(player.finished());
+        CHECK(expected == 4u);
+        for (const int n : seen) CHECK(n == 1);
+        CHECK(player.planTime() == doctest::Approx(6.0).epsilon(1e-6));
+        player.update(dt);
+        CHECK(player.cuesThisUpdate() == 0u);
+    }
+    // One update past the end crosses them all, in order.
+    CutscenePlayer once;
+    once.begin(plan);
+    once.update(10.0);
+    REQUIRE(once.cuesThisUpdate() == 4u);
+    CHECK(crossedMark(once, 0) == "mark_a");
+    CHECK(crossedMark(once, 1) == "mark_b");
+    CHECK(crossedMark(once, 2) == "mark_c");
+    CHECK(crossedMark(once, 3) == "mark_d");
+    // A new begin plays them again.
+    once.begin(plan);
+    CHECK(once.cuesThisUpdate() == 0u);
+    CHECK(once.planTime() == 0.0);
+    once.update(0.1);
+    CHECK(once.cuesThisUpdate() == 1u);
+    CHECK(crossedMark(once, 0) == "mark_a");
+}
+
+TEST_CASE("in place, the plan clock waits out the blend in and holds through the blend out") {
+    const CutscenePlan plan = cuedShots(); // blends of 0.8 s
+    CutscenePlayer player;
+    player.begin(plan, false, true);
+    player.update(0.5);
+    CHECK(player.blendingIn());
+    CHECK(player.planTime() == 0.0);
+    CHECK(player.cuesThisUpdate() == 0u); // a cue at 0 waits for the first shot
+    player.update(0.5);
+    CHECK(player.playing());
+    CHECK(player.planTime() == doctest::Approx(0.2));
+    REQUIRE(player.cuesThisUpdate() == 1u);
+    CHECK(crossedMark(player, 0) == "mark_a");
+    // The host starts that wave when the shots began: game time 1.0 - (0.2 - 0).
+    CHECK(player.elapsed() - player.planTime() == doctest::Approx(0.8));
+    std::uint32_t crossed = 1;
+    while (!player.blendingOut()) {
+        player.update(0.25);
+        crossed += player.cuesThisUpdate();
+        REQUIRE(player.active());
+    }
+    CHECK(crossed == 4u);
+    const double held = player.planTime();
+    CHECK(held == doctest::Approx(6.0).epsilon(1e-6));
+    while (player.blendingOut()) {
+        player.update(0.1);
+        CHECK(player.planTime() == held);
+        CHECK(player.cuesThisUpdate() == 0u);
+    }
+    CHECK(player.finished());
+}
+
+TEST_CASE("a skip crosses every cue still ahead, after the ones this frame's update crossed") {
+    const CutscenePlan plan = cuedShots();
+
+    // In one frame: the update crosses the first cue, the skip the other three.
+    CutscenePlayer a;
+    a.begin(plan);
+    a.update(0.1);
+    REQUIRE(a.cuesThisUpdate() == 1u);
+    CHECK(a.skip());
+    CHECK(a.firstCueThisUpdate() == 0u);
+    REQUIRE(a.cuesThisUpdate() == 4u);
+    CHECK(crossedMark(a, 3) == "mark_d");
+    CHECK(a.planTime() == doctest::Approx(6.0));
+    a.update(0.1);
+    CHECK(a.cuesThisUpdate() == 0u);
+
+    // Mid-run, in a later frame: only the cues still ahead.
+    CutscenePlayer b;
+    b.begin(plan);
+    b.update(1.6);
+    CHECK(b.cuesThisUpdate() == 2u);
+    b.update(0.1);
+    CHECK(b.cuesThisUpdate() == 0u);
+    CHECK_FALSE(b.press()); // within the input grace: no skip, nothing crossed
+    CHECK(b.cuesThisUpdate() == 0u);
+    CHECK(b.skip());
+    CHECK(b.firstCueThisUpdate() == 2u);
+    REQUIRE(b.cuesThisUpdate() == 2u);
+    CHECK(crossedMark(b, 0) == "mark_c");
+    CHECK(crossedMark(b, 1) == "mark_d");
+    CHECK_FALSE(b.skip()); // already ended: the window stays
+    CHECK(b.cuesThisUpdate() == 2u);
+    b.update(0.0);
+    CHECK(b.cuesThisUpdate() == 0u);
+
+    // Skipped while blending in: all four, and none again through the blend out.
+    CutscenePlayer c;
+    c.begin(plan, false, true);
+    c.update(0.3);
+    CHECK(c.cuesThisUpdate() == 0u);
+    CHECK(c.skip());
+    CHECK(c.cuesThisUpdate() == 4u);
+    CHECK(c.planTime() == doctest::Approx(6.0));
+    while (c.active()) {
+        c.update(0.05);
+        CHECK(c.cuesThisUpdate() == 0u);
+    }
+
+    // The autoplay cap skips from tickReal, after the frame's update.
+    CutscenePlayer d;
+    d.begin(plan, true);
+    d.update(0.1);
+    d.tickReal(CutscenePlayer::kAutoPlayRealLimit);
+    CHECK(d.finished());
+    CHECK(d.skipped());
+    CHECK(d.firstCueThisUpdate() == 0u);
+    CHECK(d.cuesThisUpdate() == 4u);
+}
+
+TEST_CASE("a skip or press before the frame's update gives no cue twice: takeWaveCues reads since the last take") {
+    const CutscenePlan plan = cuedShots();
+    CutscenePlayer a;
+    a.begin(plan);
+    a.update(0.1); // frame 1: crosses the first cue
+    CutscenePlayer::CueWindow w = a.takeWaveCues();
+    CHECK(w.first == 0u);
+    REQUIRE(w.count == 1u);
+    CHECK(a.cuesThisUpdate() == 0u); // taken: the window no longer reaches back to it
+    CHECK(a.skip());                 // frame 2: the skip comes before the update
+    CHECK(a.firstCueThisUpdate() == 1u);
+    CHECK(a.cuesThisUpdate() == 3u);
+    w = a.takeWaveCues();
+    CHECK(w.first == 1u);
+    CHECK(w.count == 3u);
+    CHECK(a.plan().waveCue(w.first).mark() == "mark_b");
+    a.update(0.1);
+    CHECK(a.takeWaveCues().count == 0u);
+    CHECK(a.cuesThisUpdate() == 0u);
+
+    // The same with press, past the input grace, and a frame the host did not take: its cues come with the next take.
+    CutscenePlayer b;
+    b.begin(plan);
+    b.update(0.1);
+    b.tickReal(1.0);
+    REQUIRE(b.takeWaveCues().count == 1u);
+    b.update(1.5); // crosses the second cue; not taken this frame
+    REQUIRE(b.press());
+    w = b.takeWaveCues();
+    CHECK(w.first == 1u);
+    CHECK(w.count == 3u);
+    b.update(0.1);
+    CHECK(b.takeWaveCues().count == 0u);
+    // A new begin gives them again from the first.
+    b.begin(plan);
+    b.update(10.0);
+    w = b.takeWaveCues();
+    CHECK(w.first == 0u);
+    CHECK(w.count == 4u);
+}
+
+TEST_CASE("two updates, then one read: takeWaveCues gives both frames' cues once, in order") {
+    const CutscenePlan plan = cuedShots();
+    CutscenePlayer p;
+    p.begin(plan);
+    p.update(0.1); // crosses mark_a (0 s)
+    p.update(1.5); // 1.6 s: crosses mark_b (1.5 s); the host took nothing between
+    CHECK(p.firstCueThisUpdate() == 1u); // the frame's own window is the last update's
+    CHECK(p.cuesThisUpdate() == 1u);
+    CutscenePlayer::CueWindow w = p.takeWaveCues();
+    CHECK(w.first == 0u);
+    REQUIRE(w.count == 2u);
+    CHECK(p.plan().waveCue(w.first).mark() == "mark_a");
+    CHECK(p.plan().waveCue(w.first + 1u).mark() == "mark_b");
+    CHECK(p.takeWaveCues().count == 0u); // a second read in the frame gives nothing
+    p.update(1.5); // 3.1 s: crosses mark_c
+    w = p.takeWaveCues();
+    CHECK(w.first == 2u);
+    REQUIRE(w.count == 1u);
+    CHECK(p.plan().waveCue(w.first).mark() == "mark_c");
+}
+
+TEST_CASE("crossing wave cues does not allocate") {
+    const CutscenePlan plan = cuedShots();
+    CutscenePlayer player;
+    const auto before = ftcore_test::allocStats().count;
+    std::uint32_t crossed = 0;
+    for (int run = 0; run < 3; ++run) {
+        player.begin(plan, run == 1, run == 2);
+        for (int i = 0; i < 600 && player.active(); ++i) {
+            player.update(1.0 / 60.0);
+            player.tickReal(1.0 / 60.0);
+            crossed += player.cuesThisUpdate();
+        }
+    }
+    const auto after = ftcore_test::allocStats().count;
+    if (ftcore_test::allocHookInstalled()) CHECK(after == before);
+    CHECK(crossed == 12u);
+}

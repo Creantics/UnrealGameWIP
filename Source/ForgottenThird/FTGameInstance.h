@@ -67,9 +67,22 @@ struct FFTStoryCarry
 	// Set when the last field step was in another world: the step opens the overworld first, the
 	// player walks from this world's gate to World's, and entering it opens World's map.
 	FString FromWorld;
+	// An arena fight on a stage (its encounter's `stage`): the arenas.json zone id, and the line-up's
+	// enemy ids, comma-separated, as arena enemy kinds. Empty for every other step.
+	FString Stage;
+	FString Lineup;
 	bool bAutoPlay = false; // the screen plays itself (a headless hand-off run)
+	// The beat's `lose` param is "never" (a spar): a lost fight counts as won (ftcore::judgeStep). A
+	// screen may keep the lead standing instead; either way the story never retries it.
+	bool bCannotLose = false;
+	// The beat's `lose` param is "branch" and it names a `sets` flag: a lost fight ends the beat with
+	// resume(0), so a screen may hand a loss back instead of offering only a retry.
+	bool bLossBranch = false;
+	// The fight's third slot (ftcore::SlotState): the beat's `third` param (companion, vacant, hostile).
+	// Companion when the beat names none; an arena fight begins its session with it (FightSessionDef::thirdSlot).
+	uint8 ThirdSlot = 0;
 	bool bDone = false;
-	bool bWon = false;
+	bool bWon = false; // a fight's result; a fight that comes back done but not won is lost
 };
 
 UCLASS(Config = Game)
@@ -87,7 +100,7 @@ public:
 	// -AlphaFast: the alpha run's gameplay screens apply time dilation to their autopilot.
 	bool IsAlphaFast() const { return bAlphaFast; }
 
-	// Loads StoryDir again (after editing the story files).
+	// Loads StoryDir again (after editing the story files), the story state's registry with it.
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool ReloadStory();
 
@@ -98,6 +111,7 @@ public:
 	// fight plays (ftcore::EncounterTable::combatFor). Empty when missing or refused, so every fight
 	// is a Turns fight. The battle screens load their own copy for the line-ups.
 	const ftcore::EncounterTable& GetEncounters() const { return Encounters; }
+	const ftcore::EnemyRoster& GetRoster() const { return Roster; }
 
 	FFTExploreCarry ExploreCarry;
 	FFTStoryCarry StoryCarry;
@@ -105,6 +119,8 @@ public:
 	// The lowered plan of the gameplay beat in progress and the step it is on; the director on the
 	// story map reads it when a screen comes back.
 	ftcore::StoryChain Chain;
+	// Losses of the chain's current fight step that opened it again (FTStep::FinishCarried); 0 on a new step.
+	int32 StepRetries = 0;
 	// The tallies of an -AlphaAutoPlay run, kept across map changes.
 	ftcore::AlphaCounters Alpha;
 	// The beat a screen gave up on (alpha runs skip it instead of retrying it forever).
@@ -121,6 +137,16 @@ public:
 	FString ExploreLead;
 	bool bExplorePartySet = false;
 	bool bExplorePartyHidden = false;
+
+	// The Third's display name as the story has it now: the party rows, the special prompt's CALL tail. A neutral variant
+	// (0: party.name.c1, 1: party.name.c2 in ui.json), never a fixed word in code. It follows the subtitles: a story line
+	// spoken under either name sets it (NoteSpeaker); -ThirdName=c1|c2 sets it at launch. Until then c1, the first the
+	// story uses.
+	int32 ThirdNameVariant = 0;
+	// The name for Ctx's game (c1 with no game instance); the string lives until exit.
+	static const FString& ThirdName(const UObject* Ctx);
+	// A story line's speaker: under one of the Third's names, that name becomes the current one.
+	static void NoteSpeaker(const UObject* Ctx, const FString& Speaker);
 
 private:
 	void LoadWorlds();

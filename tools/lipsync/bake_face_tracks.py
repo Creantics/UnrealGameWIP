@@ -19,8 +19,13 @@ plan's F1/F2/F4 gate asks for. `eval` says which reference it used in every repo
 
 Only the Python standard library is needed, plus `espeakng_loader` (pip) for the espeak backend.
 
-  python3 tools/lipsync/bake_face_tracks.py gold  --csv design/.../draft56_04a.csv --out tools/lipsync/gold_set.json
-  python3 tools/lipsync/bake_face_tracks.py synth --gold tools/lipsync/gold_set.json --work W
+  python3 tools/lipsync/bake_face_tracks.py gold  --csv DIRECTIONS.csv --out GOLD.json [--require LINE_ID ...]
+  python3 tools/lipsync/bake_face_tracks.py synth --gold GOLD.json --work W
+
+The gold set holds script lines, so it lives outside the repo: pass --gold, or set LIPSYNC_GOLD.
+tools/lipsync/gold_sample.json is a made-up three-line set for trying the pipeline. A gold set's optional
+"voices" table, {SPEAKER: [espeak_voice, pitch 0-99]}, picks the synth voice per speaker on top of the built-in
+DEFAULT_VOICES (a gold set without one gets a warning); `gold` carries over the table of the file it overwrites.
   python3 tools/lipsync/bake_face_tracks.py align-mfa --work W --mfa-cmd "micromamba run -p ENV mfa" \
           --dict english_us_arpa.dict --model english_us_arpa.zip
   python3 tools/lipsync/bake_face_tracks.py align-rhubarb --work W --rhubarb /path/to/rhubarb
@@ -301,14 +306,28 @@ def phone_features(text):
     }
 
 
-GOLD_REQUIRED = ["SC-P0-01#001", "SC-P0-01#002"]
-
-
 def cmd_gold(a):
-    rows = list(csv.DictReader(open(a.csv, encoding="utf-8")))
+    try:
+        with open(a.csv, encoding="utf-8-sig", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+    except (OSError, UnicodeDecodeError, csv.Error) as e:
+        print("gold: cannot read the CSV: %s" % e, file=sys.stderr)
+        return 2
+    cols = ("line_id", "kind", "spoken_text", "speaker", "volume")
+    lacking = [c for c in cols if not rows or c not in rows[0]]
+    if lacking:
+        print("gold: the CSV has no rows or lacks the columns: %s" % ", ".join(lacking), file=sys.stderr)
+        return 2
+    if any(r.get(c) is None for r in rows for c in cols):
+        print("gold: the CSV has rows with too few fields", file=sys.stderr)
+        return 2
     by_id = {r["line_id"]: r for r in rows}
-    pick = [by_id[i] for i in GOLD_REQUIRED]
-    pool = [r for r in rows if r["kind"] == "line" and r["line_id"] not in GOLD_REQUIRED
+    missing = [i for i in a.require if i not in by_id]
+    if missing:
+        print("gold: --require ids not in the CSV: %s" % ", ".join(missing), file=sys.stderr)
+        return 2
+    pick = [by_id[i] for i in a.require]
+    pool = [r for r in rows if r["kind"] == "line" and r["line_id"] not in a.require
             and 3 <= len(lab_text(r["spoken_text"]).split()) <= 14]
     # greedy: cover phone classes, volumes and speakers; deterministic (rows are in script order)
     need = {"bilabial": 8, "labiodental": 6, "rounded": 8, "th": 5, "ch": 4}
@@ -327,31 +346,88 @@ def cmd_gold(a):
             score += 0.8 * (r["speaker"] not in speakers) + 0.8 * (r["volume"] not in volumes)
             if score > best_score:
                 best, best_score = r, score
+        if best is None:
+            print("gold: only %d lines fit (3 to 14 words); --count asks for %d" % (len(pick), a.count),
+                  file=sys.stderr)
+            return 2
         pick.append(best)
         speakers.add(best["speaker"])
         volumes.add(best["volume"])
     keep = ["line_id", "vo_id", "text_hash", "speaker", "spoken_text", "emotion_primary", "emotion_secondary",
             "intensity", "pace", "pace_wpm", "volume", "pitch_contour", "pauses", "emphasis"]
-    out = {"source": os.path.relpath(a.csv, os.path.join(HERE, "..", "..")),
-           "note": "20-line lip-sync gold set (rigging plan §6, §13.2). The first two lines are required by the plan "
-                   "(a minor's human line and an UNKNOWN speaker). Hand-marked TextGrids do not exist yet; eval uses "
-                   "espeak's phone timings for its own synthetic audio as a machine reference.",
+    out = {"source": os.path.basename(a.csv),
+           "note": "%d-line lip-sync gold set; the first %d lines were required (--require). Hand-marked TextGrids "
+                   "do not exist yet; eval uses espeak's phone timings for its own synthetic audio as a machine "
+                   "reference." % (len(pick), len(a.require)),
            "lines": [{k: r.get(k, "") for k in keep} | {"key": line_key(r)} for r in pick]}
+    if os.path.exists(a.out):  # hand-made per-speaker synth voices survive a regeneration
+        try:
+            with open(a.out, encoding="utf-8") as fh:
+                old = json.load(fh).get("voices", {})
+        except (OSError, ValueError, AttributeError) as e:
+            print("gold: cannot read the old %s (%s); stopping so its voices table is not lost" % (a.out, e),
+                  file=sys.stderr)
+            return 2
+        err = check_voices(old)
+        if err:
+            print("gold: the old %s: %s" % (a.out, err), file=sys.stderr)
+            return 2
+        if old:
+            out["voices"] = old
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
         f.write("\n")
     print(f"wrote {a.out}: {len(pick)} lines, {len(speakers)} speakers, volumes {sorted(volumes)}")
 
 
+class GoldError(Exception):
+    pass
+
+
+DEFAULT_VOICES = {"CHILD": ("en-us+f4", 80)}   # a gold set's "voices" table adds to or overrides these
+
+
+def check_voices(voices):
+    """An error string when a "voices" table is not {SPEAKER: [espeak_voice, pitch 0-99]}, else None."""
+    if not isinstance(voices, dict) or not all(
+            isinstance(v, list) and len(v) == 2 and isinstance(v[0], str) and v[0]
+            and isinstance(v[1], int) and not isinstance(v[1], bool) and 0 <= v[1] <= 99
+            for v in voices.values()):
+        return '"voices" must be an object of {SPEAKER: [espeak_voice, pitch 0-99]}'
+    return None
+
+
 def load_gold(path):
-    return json.load(open(path, encoding="utf-8"))["lines"]
+    """The gold set's lines. Its optional "voices" table, {SPEAKER: [espeak_voice, pitch 0-99]}, sets the
+    espeak voice per speaker on top of DEFAULT_VOICES; each line of such a speaker gets it as "voice"."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        lines = d["lines"]
+        voices = d.get("voices", {})
+        if not isinstance(lines, list) or not all(isinstance(ln, dict) for ln in lines):
+            raise TypeError('"lines" must be a list of objects')
+        err = check_voices(voices)
+        if err:
+            raise TypeError(err)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        raise GoldError("cannot read the gold set %s: %s" % (path, e))
+    if "voices" not in d:
+        print("lipsync: warning: %s has no \"voices\" table; using the built-in voices" % path, file=sys.stderr)
+    table = dict(DEFAULT_VOICES) | {str(k).upper(): (v[0], v[1]) for k, v in voices.items()}
+    for ln in lines:
+        v = table.get(str(ln.get("speaker", "")).upper())
+        if v:
+            ln["voice"] = v
+    return lines
 
 
 def voice_for(line):
-    spk = line["speaker"].upper()
-    if spk == "CHILD":
-        return "en-us+f4", 80
-    if spk.startswith("UNKNOWN"):
+    """(espeak voice, pitch) for a gold line: its "voice" (the gold set's table or DEFAULT_VOICES, set by
+    load_gold), else a lower voice for the parser's UNKNOWN speakers, else the default."""
+    if line.get("voice"):
+        return tuple(line["voice"])
+    if line["speaker"].upper().startswith("UNKNOWN"):
         return "en-us+m3", 40
     return "en-us", 50
 
@@ -1171,11 +1247,12 @@ def print_table(report):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    default_gold = os.path.join(HERE, "gold_set.json")
+    default_gold = os.environ.get("LIPSYNC_GOLD")  # the gold set holds script lines: kept outside the repo
     g = sub.add_parser("gold", help="pick the 20-line gold set from a direction CSV")
     g.add_argument("--csv", required=True)
-    g.add_argument("--out", default=default_gold)
+    g.add_argument("--out", required=True)
     g.add_argument("--count", type=int, default=20)
+    g.add_argument("--require", nargs="*", default=[], help="line ids the set must start with")
     s = sub.add_parser("synth", help="synthesise gold-set audio with espeak-ng + reference phones")
     s.add_argument("--gold", default=default_gold)
     s.add_argument("--work", required=True)
@@ -1199,8 +1276,15 @@ def main(argv=None):
     e.add_argument("--backends", nargs="+", default=["espeak", "mfa", "rhubarb", "elevenlabs", "textgrid"])
     e.add_argument("--report", required=True)
     a = ap.parse_args(argv)
-    return {"gold": cmd_gold, "synth": cmd_synth, "align-mfa": cmd_align_mfa, "align-rhubarb": cmd_align_rhubarb,
-            "bake": cmd_bake, "eval": cmd_eval}[a.cmd](a) or 0
+    if a.cmd in ("synth", "bake", "eval") and not a.gold:
+        print("%s: no gold set: pass --gold or set LIPSYNC_GOLD" % a.cmd, file=sys.stderr)
+        return 2
+    try:
+        return {"gold": cmd_gold, "synth": cmd_synth, "align-mfa": cmd_align_mfa, "align-rhubarb": cmd_align_rhubarb,
+                "bake": cmd_bake, "eval": cmd_eval}[a.cmd](a) or 0
+    except GoldError as e:
+        print("%s: %s" % (a.cmd, e), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

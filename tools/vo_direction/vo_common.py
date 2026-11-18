@@ -15,7 +15,7 @@ SKELETON_COLUMNS = [
     'parse_note', 'source_line',
 ]
 
-# Direction columns, in schema order (design/forgotten_third/voice/line_direction_schema.md).
+# Direction columns, in schema order (the design package's voice/line_direction_schema.md).
 DIRECTION_COLUMNS = [
     'context', 'emotion_primary', 'emotion_secondary', 'intensity',
     'pace', 'pace_wpm', 'volume', 'distance', 'pitch_contour',

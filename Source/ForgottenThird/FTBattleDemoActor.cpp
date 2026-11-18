@@ -1284,9 +1284,30 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 	}
 	if (GI && GI->StoryCarry.bValid && !GI->StoryCarry.bDone)
 	{
-		// Handed here by the story: a win goes back to it; a loss offers Retry and Quit to title (the
-		// autopilot always retries, so a headless run never stops on a defeat).
-		if (bWon)
+		// Handed here by the story: a win goes back to it. A loss goes back too when the fight cannot
+		// be lost (the story counts it as won), on a beat with a loss branch (the defeat is the result)
+		// or for the autopilot (the story retries the step, or takes the beat's loss branch:
+		// ftcore::judgeStep). Otherwise a player gets Retry here, and Quit, which leaves for the title.
+		const bool bLossBack = !bWon && (GI->StoryCarry.bCannotLose || GI->StoryCarry.bLossBranch || bAutoPlay);
+		if (bLossBack)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: the defeat goes back to the story (%s)."),
+				GI->StoryCarry.bCannotLose ? TEXT("this fight cannot be lost")
+				: GI->StoryCarry.bLossBranch ? TEXT("loss branch") : TEXT("autoplay"));
+			GI->StoryCarry.bDone = true;
+			GI->StoryCarry.bWon = false;
+			// This screen's autopilot (-BattleAutoPlay, -BattleIdle, ...) hands the loss back: the story
+			// caps its retries as for an autoplay hand-off, so a pilot that can't win never loops.
+			GI->StoryCarry.bAutoPlay = GI->StoryCarry.bAutoPlay || bAutoPlay;
+			bReturningToStory = true;
+			ContinuePrompt = bAutoPlay ? TEXT("Returning to the story") : TEXT("Enter  Continue");
+			if (bAutoPlay)
+			{
+				FTimerHandle Timer;
+				GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::Continue, 1.2f, false);
+			}
+		}
+		else if (bWon)
 		{
 			if (UFTStorySubsystem* Story = GI->GetSubsystem<UFTStorySubsystem>())
 			{
@@ -1308,11 +1329,6 @@ void AFTBattleDemoActor::HandleOutcome(EFTBattleOutcome Outcome)
 			{
 				ContinuePrompt = TEXT("Enter  Continue");
 			}
-		}
-		else if (bAutoPlay)
-		{
-			FTimerHandle Timer;
-			GetWorldTimerManager().SetTimer(Timer, this, &AFTBattleDemoActor::RetryAfterDefeat, 1.2f, false);
 		}
 		else
 		{
@@ -1397,9 +1413,9 @@ void AFTBattleDemoActor::HandleQuit()
 		return;
 	}
 	bQuitting = true;
-	// The carry stays unfinished (bDone false); the story map reads ?Title and shows the title screen.
+	// Leaves for the title: the step's story writes roll back and the carry clears (never a retry, never a result).
 	UE_LOG(LogForgottenThird, Display, TEXT("BattleDemo: quitting to the title via %s."), *GI->StoryCarry.ReturnMap);
-	FTStep::OpenMap(this, GI->StoryCarry.ReturnMap, TEXT("Title"));
+	FTStep::QuitToTitle(this, GI->StoryCarry.ReturnMap, TEXT("the battle"));
 }
 
 void AFTBattleDemoActor::ReturnToField()

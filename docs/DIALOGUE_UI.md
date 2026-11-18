@@ -65,6 +65,7 @@ too). The story is paused behind it.
 | Skip | seen lines only / all lines | skip |
 | Master, music, voice, effects volume | 0 to 100 % in steps of 10 | stored; no audio yet |
 | Defence window assist | off / wide | stored; the combat stream reads it |
+| Aim assist | on / off | the arena's aimed crosshair turns slower over a body its round would take (ARENA_DEMO.md) |
 | Subtitle size | small 0.85x, medium, large 1.3x | the dialogue box's text size |
 | Reduce flashes | on / off | stored; the style controller reads it |
 | Quick-time events | play / auto-complete | the QTE screen (see QTE_SCREEN.md) |

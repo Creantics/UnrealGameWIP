@@ -1,5 +1,6 @@
 {
   "name": "spell_ward",
+  "sorted": true,
   "emitters": [
     {
       "name": "shell",

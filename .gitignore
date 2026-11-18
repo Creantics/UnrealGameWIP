@@ -35,3 +35,22 @@ __pycache__/
 
 # Local config overrides (e.g. which private character the explore pawn wears)
 Config/User*.ini
+
+# Marketplace content claimed by the user: local only, never committed
+Content/Fab/
+
+# The Solhaven strip is built by FTBuildMassingWorld from the plan's tables (docs/WORLDS.md): a build product
+Content/Maps/World_Solhaven_Strip.umap
+
+# The massing builder's sloped-mesh cache (FTBuildMassingWorld -MeshCache): rebuilt from the tables, local only
+Content/WorldCache/
+
+# Local-only content the Solhaven strip references: scanned, generated and third-party meshes and textures, copied
+# between checkouts and never committed (nothing under these paths is tracked).
+Content/Props/
+Content/Vehicles/
+Content/Look/Env/
+Content/Look/MPC_Env.uasset
+Content/Look/T_Look_Goods.uasset
+# Scanned third-party surfaces, never committed
+Content/Megascans/

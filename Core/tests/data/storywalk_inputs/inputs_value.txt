@@ -1,0 +1,3 @@
+gameplay PLAY sf.f_pick=2
+gameplay PLAY sf.f_pick=1
+gameplay CMB

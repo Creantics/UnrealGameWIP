@@ -332,6 +332,14 @@ TEST_CASE("arena kind crit: a Deal opens the seam at the end of its active part,
     CHECK(crit.lastCritAt() == doctest::Approx(12.5));
     CHECK(crit.points().points[crit.lastPoint()].id() == "fingertip_seam");
 
+    // A held blow's bonus (HostHit) inside it is no second crit: plain, nothing counted.
+    ArenaBlow bonus = leadBlow(front, 12.6f);
+    bonus.type = ArenaEventType::HostHit;
+    r = crit.rule(bonus, kSlot, kBoss, kFacing);
+    CHECK(r.damage == 1.0f);
+    CHECK_FALSE(r.veto);
+    CHECK(crit.crits() == 1);
+
     // Every blow inside it crits, not only the first.
     r = crit.rule(leadBlow(front, 13.0f), kSlot, kBoss, kFacing);
     CHECK(r.damage == doctest::Approx(2.0));
@@ -537,7 +545,7 @@ DealerRun playDealer(const char* lead, std::uint32_t seed) {
 
 // Its poise breaks a few times a fight, whoever fights it: the demo's seed (1), each lead's kit.
 TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopilot") {
-    for (const std::string lead : {"devin", "duy", "third"}) {
+    for (const std::string lead : {"devin", "duy"}) { // the Third has no attack of his own
         const DealerRun run = playDealer(lead.c_str(), 1);
         MESSAGE(lead << ": " << std::string(run.phase == ArenaPhase::Victory ? "won" : "lost") << " in " << run.time << " s, hp " << run.hp
                      << ", staggers " << run.staggers << ", crits " << run.crits);
@@ -594,4 +602,34 @@ TEST_CASE("arena kind crit: the shipped Dealer's moves name clips of its table, 
     for (const char* id : {"hit_light", "hit_heavy"}) CHECK_MESSAGE(clips[static_cast<std::size_t>(clips.find(id))].additiveIn, id);
     for (const char* id : {"idle", "stagger", "open", "face_down", "deal"})
         CHECK_FALSE_MESSAGE(clips[static_cast<std::size_t>(clips.find(id))].additiveIn, id);
+}
+
+TEST_CASE("arena kind crit: the host's own opening, and a shut that bars every opening") {
+    ArenaKindCrit crit = armed();
+    const ArenaEnemyKind kind = dealer();
+    CHECK(crit.openFor(5.0, 2.0));
+    CHECK(crit.isOpen(5.0));
+    CHECK(crit.isOpen(6.9));
+    CHECK_FALSE(crit.isOpen(7.0));
+    CHECK(crit.openFor(6.0, 0.5)); // the longer one stays
+    CHECK(crit.closesAt() == doctest::Approx(7.0));
+    CHECK_FALSE(crit.openFor(6.0, 0.0));
+    CHECK_FALSE(crit.openFor(6.0, -1.0));
+    CHECK_FALSE(crit.openFor(std::numeric_limits<double>::infinity(), 1.0)); // not finite
+
+    crit.setShut(true);
+    CHECK(crit.shut());
+    CHECK_FALSE(crit.isOpen(6.5)); // the open window closed
+    CHECK_FALSE(crit.openFor(8.0, 2.0));
+    CHECK_FALSE(crit.onAttackStarted(0, 10.0, kind));
+    CHECK_FALSE(crit.isOpen(12.5));
+
+    crit.setShut(false);
+    CHECK_FALSE(crit.isOpen(12.5)); // nothing reopens
+    CHECK(crit.onAttackStarted(0, 20.0, kind));
+    CHECK(crit.isOpen(22.5));
+    crit.setShut(true); // a due or open window closes
+    CHECK_FALSE(crit.isOpen(22.5));
+    crit.reset(*testTable().find("white_glove"));
+    CHECK_FALSE(crit.shut()); // reset unshuts
 }

@@ -123,6 +123,7 @@ void UFTAudioSubsystem::HandleBeat(EFTStoryState State)
 	USoundBase* Sound = LoadObject<USoundBase>(nullptr, *VoiceAssetPath(LineId), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	if (!Sound)
 	{
+		UE_LOG(LogForgottenThird, Verbose, TEXT("Audio: line %s: no voice"), *LineId);
 		if (!bLoggedNoVoice)
 		{
 			bLoggedNoVoice = true;
@@ -142,6 +143,7 @@ void UFTAudioSubsystem::HandleBeat(EFTStoryState State)
 		Voice->Play();
 	}
 	VoiceLineId = LineId;
+	UE_LOG(LogForgottenThird, Verbose, TEXT("Audio: line %s: voice %.2f s"), *LineId, Sound->GetDuration());
 	OnVoiceLine.Broadcast(LineId, Sound->GetDuration());
 }
 

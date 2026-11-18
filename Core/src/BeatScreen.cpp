@@ -23,6 +23,7 @@ void BeatScreen::begin(bool hasStep, const BeatSetup& setup, std::uint32_t seed,
     fresh_.count = 0;
     outcome_ = BeatOutcome::None;
     gaveUp_ = false;
+    quit_ = false;
     autoRetries_ = 0;
     now_ = now;
     playSeconds_ = 0.0;
@@ -143,6 +144,7 @@ bool BeatScreen::choose(BeatChoice choice) {
     } else {
         outcome_ = BeatOutcome::Lost;
         phase_ = BeatScreenPhase::Done;
+        quit_ = true;
     }
     return true;
 }

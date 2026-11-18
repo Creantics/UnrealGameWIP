@@ -414,7 +414,7 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
             errors.push_back(path + ": expected an object");
             continue;
         }
-        encUnknownKeys(j, path, {"scene", "beat", "step", "tier", "enemies", "combat"}, warnings);
+        encUnknownKeys(j, path, {"scene", "beat", "step", "tier", "enemies", "combat", "stage"}, warnings);
         EncounterEntry e;
         e.scene = encStr(j["scene"].string());
         if (e.scene.empty()) errors.push_back(path + ".scene: expected a scene id");
@@ -429,6 +429,14 @@ bool importEncounterTable(std::string_view json, const EnemyRoster& roster, Enco
         const JsonValue combat = j["combat"];
         if (!combat.isAbsent() && !(combat.isString() && parseCombatKind(combat.string(), e.combat)))
             errors.push_back(path + ".combat: expected rhythm, arena or beat");
+        const JsonValue stage = j["stage"];
+        if (!stage.isAbsent()) {
+            e.stage = encStr(stage.string());
+            if (!stage.isString() || !encId(e.stage))
+                errors.push_back(path + ".stage: expected an arena stage id (lower-case letters, digits and _)");
+            else if (e.combat != CombatKind::Arena)
+                errors.push_back(path + ".stage: only an arena fight (\"combat\": \"arena\") plays on a stage");
+        }
         if (beat >= 0 && !e.scene.empty() && table.findEntry(e.scene, e.beat, e.step))
             errors.push_back(path + ": duplicate entry for " + e.scene + " beat " + std::to_string(e.beat) + " step " +
                              std::to_string(e.step));
@@ -477,6 +485,19 @@ void makeEnemies(const EnemyRoster& roster, const EncounterLineup& lineup, std::
         c.child = e.child;
         out.push_back(std::move(c));
     }
+}
+
+bool lineupIds(const EnemyRoster& roster, const EncounterLineup& lineup, std::string& out) {
+    out.clear();
+    for (const std::uint32_t index : lineup.enemies) {
+        if (index >= roster.enemies.size()) {
+            out.clear();
+            return false;
+        }
+        if (!out.empty()) out += ',';
+        out += roster.enemies[index].id;
+    }
+    return !out.empty();
 }
 
 } // namespace ftcore

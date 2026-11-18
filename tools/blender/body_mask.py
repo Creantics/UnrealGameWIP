@@ -13,7 +13,7 @@ A LOD0 body vertex is hidden when all of these hold:
     UV splits welded by position; on an MH body it runs over the shoulder tops and dips at the front): the face's edge
     sits on it, and a void under that edge would show down a loose collar.
     seam_neck=<m> (top mode) keeps that band only within <m> of the neck opening (the highest boundary loop): a top
-    rests on the shoulders, so the band shows nothing elsewhere, and there it poked through the cloth (Devin's tunic in
+    rests on the shoulders, so the band shows nothing elsewhere, and there it poked through the cloth (a lead's tunic in
     the run pose, the shoulder front beside the collar, 4-8 mm under the cloth and 11 cm or more below the opening).
 A face is stripped when all its vertices are hidden; so is any kept island that lies wholly in the band with no such
 weight and nothing within `seam` of the seam (the garment is closed there except at its openings).

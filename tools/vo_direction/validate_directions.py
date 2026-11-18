@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check a VO directions CSV against the schema (and, optionally, against its skeleton).
 
-    python3 validate_directions.py directions/draft56_04a.csv \
-        --skeleton directions/draft56_skeleton.csv --files 04a
+    python3 validate_directions.py DIRECTIONS.csv \
+        --skeleton SKELETON.csv --files 04a
 
 Errors (exit 1):
   * a skeleton line_id missing, duplicated, or not in the skeleton

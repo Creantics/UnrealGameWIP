@@ -14,10 +14,14 @@
 // (UFTLocomotionAnimInstance's actions), and fade out over kFadeOut once the attack is over or cut short. While they
 // are on, the figure's shapes blade is hidden.
 //
-// Props (FTImportProp into /Game/Props/Weapons; the sockets made by -run=FTWeaponSockets, see FTWeaponSocketsCommandlet.h):
-//   - gauntlets: four pieces, each on its mesh-only socket on the body (ft_gauntlet_vambrace_r/l on the forearms,
-//     ft_gauntlet_plate_r/l on the hands);
-//   - guns: the pistol in ft_pistol_grip_r (on hand_r), moved to ft_pistol_holster_r (on thigh_r) once the fight is over.
+// Props:
+//   - gauntlets: six skinned pieces per FTWeaponProps::GauntletPieces (glove, wrist strap and bracer for each hand), fitted
+//     to the gauntlet lead's body at rest and skinned to its skeleton, so they ride it by leader pose (FTLook::AddPieces)
+//     and the fingers bend with the hand; they are on whenever the kit's weapon is gauntlets, both hands half closed in
+//     guard and the striking one closing into a full fist through its punch (SetHandCurl);
+//   - guns: the pistol (FTImportProp into /Game/Props/Weapons; sockets by -run=FTWeaponSockets, see
+//     FTWeaponSocketsCommandlet.h) in ft_pistol_grip_r (on hand_r), moved to ft_pistol_holster_r (on thigh_r) once the
+//     fight is over.
 // A missing mesh or socket leaves that piece off, with one warning.
 //
 // Aim (SetAim, each step before Track): the hit point the host gives (the target's chest on the near side of its body,
@@ -30,10 +34,17 @@
 //   - muzzle_flash on the pistol's `muzzle` socket as a shot goes active;
 //   - gun_tracer from the muzzle to the hit point as a shot goes active (its speed scaled so its head ends on the hit
 //     point at its lifetime, kTracerTime), then gun_impact at the hit point;
-//   - spell_bolt from the casting hand to the hit point as any magic attack goes active (the same way, kBoltTime), then
-//     spell_impact at the hit point;
-//   - gauntlet_spark at the hit point on the lead's hit;
+//   - spell_bolt from the casting hand to the hit point as a magic attack's startup begins, arriving on the hit: its
+//     flight the rest of the startup, never under ftcore::kArenaBoltFlightMin (ftcore::arenaBoltFlight), its clock run
+//     so its kBoltTime lifetime spans the flight; an attack with no startup tracked casts it as it goes active, flying
+//     the floor; a cast cut short in its startup clears it; then spell_impact at the hit point;
+//   - gauntlet_spark at the striking fist's knuckles (the foot for a kick) on the lead's hit;
 //   - spell_ward at the feet while a magic lead guards.
+// The magic kit (ftcore::ArenaWeapon::Magic, "weapon": "magic" in arena.json: its cast, spell effects and ward) is the
+// third party slot's: a party member only (playable false) that fights as the partner, its lights bolts from the
+// casting hand, its guard the ward. Its heavy is data only: the partner brain throws lights, and nothing spawns
+// spell_burst (its system stays unbuilt until a heavy is ruled for the partner). Data/Anim/beat_clips.json's lead_cast
+// has no asset yet; the bolt leaves the casting hand whatever the body plays. Core's arena tests pin what it plays.
 // Each start logs one line, "<Arena|Field>: weapon fx <effect> at <fight time>". Run checks, one line each:
 // "<Arena|Field>: aim <clip> <deg> deg (<what>)" once the attack has been active a moment, only on capture runs
 // (-ArenaShot= or -ExploreWeaponShot=) (the angle between the
@@ -65,19 +76,22 @@ namespace FTWeaponProps
 // Where FTImportProp puts them.
 inline constexpr const TCHAR* Folder = TEXT("/Game/Props/Weapons");
 
+// The gauntlets: skeletal meshes on the gauntlet lead's skeleton, each <GauntletFolder>/<name>.<name>.
+inline constexpr const TCHAR* GauntletFolder = TEXT("/Game/Props/Weapons/Devin_Gauntlet");
+inline constexpr int32 NumGauntletPieces = 6;
+inline constexpr const TCHAR* GauntletPieces[NumGauntletPieces] = {
+	TEXT("SKM_DevinGauntlet_R_Glove"), TEXT("SKM_DevinGauntlet_R_Strap"), TEXT("SKM_DevinGauntlet_R_Bracer"),
+	TEXT("SKM_DevinGauntlet_L_Glove"), TEXT("SKM_DevinGauntlet_L_Strap"), TEXT("SKM_DevinGauntlet_L_Bracer"),
+};
+// Where the right and left bracers are in GauntletPieces (a look's GauntletBracerR/L replaces them).
+inline constexpr int32 GauntletBracerIndex[2] = {2, 5};
+
 struct FPiece
 {
 	const TCHAR* Mesh;   // the mesh's name in the source file
 	const TCHAR* Socket; // the body's mesh-only socket it rides
 	const TCHAR* Bone;   // the bone that socket is on
 	const TCHAR* File;   // the source file's name (Data's .glb stem), which the importer names the mesh's folder after
-};
-inline constexpr int32 NumGauntletPieces = 4;
-inline constexpr FPiece GauntletPieces[NumGauntletPieces] = {
-	{TEXT("SM_DevinGauntlet_R_Vambrace"), TEXT("ft_gauntlet_vambrace_r"), TEXT("lowerarm_r"), TEXT("Devin_Gauntlet_R")},
-	{TEXT("SM_DevinGauntlet_R_HandPlate"), TEXT("ft_gauntlet_plate_r"), TEXT("hand_r"), TEXT("Devin_Gauntlet_R")},
-	{TEXT("SM_DevinGauntlet_L_Vambrace"), TEXT("ft_gauntlet_vambrace_l"), TEXT("lowerarm_l"), TEXT("Devin_Gauntlet_L")},
-	{TEXT("SM_DevinGauntlet_L_HandPlate"), TEXT("ft_gauntlet_plate_l"), TEXT("hand_l"), TEXT("Devin_Gauntlet_L")},
 };
 inline constexpr FPiece PistolGrip = {TEXT("SM_DuyPistol"), TEXT("ft_pistol_grip_r"), TEXT("hand_r"), TEXT("Duy_Pistol")};
 inline constexpr FPiece PistolHolster = {TEXT("SM_DuyPistol"), TEXT("ft_pistol_holster_r"), TEXT("thigh_r"), TEXT("Duy_Pistol")};
@@ -93,6 +107,11 @@ FORGOTTENTHIRD_API UStaticMesh* FindMesh(const FPiece& Piece);
 
 struct FFTLeadWeapons
 {
+	// The landed-blow effect of a weapon kit (an NS_ name under /Game/VFX): the lead's, and the partner's at its scale.
+	static const TCHAR* ImpactEffectOf(ftcore::ArenaWeapon W)
+	{
+		return W == ftcore::ArenaWeapon::Magic ? TEXT("spell_impact") : W == ftcore::ArenaWeapon::Guns ? TEXT("gun_impact") : TEXT("gauntlet_spark");
+	}
 	// The clips' fade-out once the attack is over or cut short (s).
 	static constexpr double kFadeOut = 0.15;
 
@@ -102,16 +121,64 @@ struct FFTLeadWeapons
 	// The same on any actor wearing a lead's body (the explore character, fed by ftcore::FieldStrike): Body is its
 	// skinned body, which the props and effects attach to and the clips play on. Again on the same body: nothing.
 	void Begin(AActor* Owner, USkeletalMeshComponent* Body, const FFTLeadLook& Look, const ftcore::ArenaFighter& Kit);
-	// Removes the props and effects it made from the body and forgets it (a look swapped on a body that stays).
+	// Removes the props and effects it made from the body, sets the look's gauntlet morphs back to 0 on it and forgets
+	// it (a look swapped on a body that stays, a lead switch or a takeover).
 	void End();
+	// The look's gauntlet morphs this Begin set on the body (empty: none, or no gauntlets).
+	const TArray<FName>& GauntletMorphNames() const { return GauntletMorphs; }
 	// Where the attacks are aimed this step (world, cm), and whether at a target (else straight ahead).
 	void SetAim(const FVector& HitPoint, bool bAtTarget)
 	{
 		AimPoint = HitPoint;
 		bAimed = bAtTarget;
+		ContactPull = 0.0;
 	}
+	// The attacks aimed at a target's body (world, cm): Surface its surface point toward this fighter (its XY used),
+	// Bottom..Top the height the body spans, Ranged the point a shot or a cast goes at (the chest or a weak point). A
+	// melee kit (the gauntlets) aims at the point it can reach: the body's surface at the striking shoulder's height (a
+	// kick's: the middle of its hip-to-knee line; a target shorter than that, at 0.6 of its own height), never over the
+	// fighter's head, pulled in to the arm's (the leg's)
+	// reach from the shoulder (the hip). Its spark lands there, at the fist that reaches it.
+	void SetAimAtBody(const FVector& Surface, double Bottom, double Top, const FVector& Ranged);
+	// Where the attacks are aimed this step (world, cm): SetAim's or SetAimAtBody's point.
+	const FVector& GetAimPoint() const { return AimPoint; }
+	// The aim stance's weight (0..1, ftcore::AimStance::alpha): the pistol arm and the casting hand are raised at the aim
+	// point by it between attacks (the gauntlets keep their guard; kicks are not aimed).
+	void SetAimHold(float Weight) { AimHold = FMath::Clamp(Weight, 0.f, 1.f); }
+	// The share of the strike clips played on the upper body only (ftcore::attackUpperShare), for Paint.
+	void SetActionUpper(float Share) { ActionUpper = Share; }
+	// The leg (0 left, 1 right; -1 none) that keeps the strike clip under that share, for Paint.
+	void SetActionLeg(int32 Side) { ActionLeg = Side; }
+	// The gun between shots (ftcore::arenaReloadLayer, arenaFlinchLayer): the reload overlay posed by the fight's reload
+	// (ArenaFight::reloading, reloadProgress), and the last dry press's fight time. Each a no-op without its clip
+	// (lead_reload, lead_dry_flinch in the look's clip folder; a guns kit only).
+	void SetReload(bool bOn, float Progress)
+	{
+		bReloading = bOn;
+		ReloadProgress = Progress;
+	}
+	void DryPressed(double T) { DryAt = T; }
 	// One step's events (after the step; T the fight's time).
 	void Feed(const ftcore::ArenaEvents& Events, double T);
+	// Whose events and state these are: the player's (the default) or the partner's body (ftcore::kArenaAlly). Core
+	// gives the partner's blows no AttackStarted, so its host calls StartStrike as each blow begins.
+	void SetSource(uint8 InSource) { Source = InSource; }
+	// Off: no impact of its own (the fist's spark, a shot's or cast's arrival); the host plays the blow's impact (the
+	// partner's, UFTArenaRunner::PartnerImpact), so it is drawn once. The strike clips, muzzle and travel stay.
+	void SetImpacts(bool bOn) { bImpacts = bOn; }
+	// A move's strike clip from its start at T, keyed so its impact lands as it goes active (what AttackStarted plays).
+	void StartStrike(uint8 Move, double T);
+	// The blows whose strike clip played into their recovery uncut (whole), and the blows that started a clip.
+	int32 GetClipsCompleted() const { return ClipsCompleted; }
+	int32 GetClipsStarted() const { return ClipsStarted; }
+	// The run check's aim log: one end-of-fight summary per fighter (the strikes aimed, the mean and worst aim angle,
+	// and for the gauntlets the mean and worst fist-to-hit distance). bEach also logs every strike's line (the capture
+	// runs). Reset at a fight's begin; a lead switch or a takeover (End, Begin) keeps the sums.
+	void SetLogEachAim(bool bEach) { bLogEachAim = bEach; }
+	void ResetAimSummary();
+	void LogAimSummary() const;
+	// The strike clip under way's name ("" when none plays), for the capture runs' per-view log.
+	const TCHAR* GetPlayingStrikeName() const { return Animator.actionCount() > 0 && FadeSince < 0.0 ? GetLastStrikeName() : TEXT(""); }
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
 	// fade when the attack ends.
 	void Track(const ftcore::ArenaPlayerOut& P, double T);
@@ -131,12 +198,15 @@ struct FFTLeadWeapons
 	// The fight time to view the last strike at: its impact (bImpact; the hit or the shot's or cast's arrival) or, for a
 	// shot or cast, half way along its flight. Each a moment after, for the effect to show.
 	double GetViewTime(bool bImpact) const;
-	// A shot's and a cast's flight from the hand to the hit point (s): gun_tracer's and spell_bolt's head lifetime, and
-	// the distance their heads cover at speed scale 1 (cm).
+	// A shot's and a cast's flight from the hand to the hit point (s): gun_tracer's and spell_bolt's head lifetime as
+	// built, and the distance their heads cover at speed scale 1 (cm). A bolt's clock is run so kBoltTime spans its flight.
 	static constexpr double kTracerTime = 0.1;
 	static constexpr double kTracerReach = 300.0;
 	static constexpr double kBoltTime = 0.2;
 	static constexpr double kBoltReach = 320.0;
+	// How long after the hit Kit's light Move's impact plays: a shot kTracerTime (it leaves on the hit), a cast
+	// ftcore::arenaBoltLate of its startup (it leaves as the startup begins: 0 unless under the floor), a blow 0.
+	static double FlightOf(const ftcore::ArenaFighter& Kit, uint8 Move);
 
 	// For -ArenaShotClose's views. The strike under way's limb (after the clip played: hand_l or hand_r, foot_l or
 	// foot_r for a kick), where it is now and whether it is the lead's left; the middle of both forearms (elbows and
@@ -145,6 +215,8 @@ struct FFTLeadWeapons
 	bool GetForearms(FVector& OutMid) const;
 	bool GetMuzzle(FVector& OutAt) const;
 	bool HasGauntlets() const { return IsOn() && Kit.weapon == ftcore::ArenaWeapon::Gauntlets; }
+	// The pistol into its holster (true) or back in the hand, as a fight's end puts it; for the close views.
+	void SetHolstered(bool bPut) { Holster(bPut); }
 
 	// -ArenaShotStrikes: holds the lead at fight time T (the time the figures are drawn at) for a view, whatever the
 	// world's clock does while the fight is held. Each effect still running is started again and run to its age at T
@@ -156,7 +228,17 @@ struct FFTLeadWeapons
 	static constexpr float kFreezeTick = 1.f / 240.f;
 	void Freeze(double T);
 	void Thaw();
+	// The lead's hit pause: its body's clock stands still while on (Core's hitStopLeft), and is given back after. Works
+	// with Freeze/Thaw in either order.
+	void HitPause(bool bOn);
 	bool IsFrozen() const { return bFrozen; }
+	// A capture's ward (-ArenaShotWard): a magic kit's ward raised for Seconds from the next Track, as a guard would
+	// (the fight itself unchanged).
+	void RaiseWard(double Seconds) { WardRaiseFor = Seconds; }
+	// A spell impact's turn at At, cast from From: its ring stands upright facing the caster across the ground (the
+	// height between them is dropped, so +X, the spec's gravity axis, stays world up and the shards fall straight).
+	// The lead's bolt and the partner's impact both use it.
+	static FRotator ImpactFacing(const FVector& From, const FVector& At);
 
 private:
 	enum EEffect : int32
@@ -165,11 +247,19 @@ private:
 		Travel, // the tracer or the bolt
 		Impact,
 		Ward,
+		WindUp, // a spell's wind-up at the palm
 		EffectCount,
 	};
 
 	void LoadClips(const FFTLeadLook& Look);
+	// The gun's own clips (a guns kit): its length, or 0 when Folder has none that fits the body.
+	float LoadGunClip(const FString& Folder, const TCHAR* Name, int32 Slot);
+	// The reload and flinch layers after the strike's (StrikeWeight, 0..1, keeps its share of the arms).
+	void PaintGun(UFTLocomotionAnimInstance& Instance, double T, float StrikeWeight);
 	void AttachProps();
+	// The look's GauntletMorphs and bracers (empty: the kit's own), kept from Begin for AttachProps.
+	TArray<FName> GauntletMorphs;
+	FSoftObjectPath GauntletBracer[2];
 	UStaticMeshComponent* AttachProp(const FTWeaponProps::FPiece& Piece);
 	void SpawnEffects();
 	UFTVfxComponent* MakeEffect(const TCHAR* Effect, USceneComponent* Parent, FName Socket);
@@ -181,10 +271,23 @@ private:
 	FVector Chest() const;
 	// The arm aim onto the anim instance for this state (weight 0 when nothing is aimed).
 	void PushArmAim(const ftcore::ArenaPlayerOut& P);
-	// The run check: the aimed direction's angle to the hit point, logged once per attack.
+	// The run check: the aimed direction's angle to the hit point (and the fist's distance to it), summed once per
+	// attack for LogAimSummary and logged per attack when bLogEachAim.
 	void LogAim();
 	const TCHAR* Prefix() const;
 
+	uint8 Source = ftcore::kArenaPlayer;
+	bool bImpacts = true;
+	bool bStrikeClip = false; // the blow under way plays a strike clip
+	int32 ClipsStarted = 0;
+	int32 ClipsCompleted = 0;
+	bool bLogEachAim = false;
+	int32 AimCount = 0;
+	double AimDegSum = 0.0;
+	double AimDegWorst = 0.0;
+	int32 FistCount = 0;
+	double FistSum = 0.0;
+	double FistWorst = 0.0;
 	TWeakObjectPtr<AActor> Figure;
 	TWeakObjectPtr<AFTArenaFighter> ArenaFigure;
 	TWeakObjectPtr<USkeletalMeshComponent> Skin;
@@ -193,17 +296,19 @@ private:
 	ftcore::FightAnimator Animator;
 	bool bClips = false;
 
-	TWeakObjectPtr<UStaticMeshComponent> Gauntlet[FTWeaponProps::NumGauntletPieces];
+	TWeakObjectPtr<USkeletalMeshComponent> Gauntlet[FTWeaponProps::NumGauntletPieces];
 	TWeakObjectPtr<UStaticMeshComponent> Pistol;
 	bool bHolstered = false;
 	TWeakObjectPtr<UFTVfxComponent> Fx[EffectCount];
 	const TCHAR* FxName[EffectCount] = {};
 	// When each effect last started (fight time; below 0: not since the fight began) and which Freeze paused.
-	static_assert(EffectCount == 4, "StartAt's initializer has one entry per effect");
-	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0};
+	static_assert(EffectCount == 5, "StartAt's initializer has one entry per effect");
+	double StartAt[EffectCount] = {-1.0, -1.0, -1.0, -1.0, -1.0};
 	bool bPaused[EffectCount] = {};
 	bool bFrozen = false;
 	float FrozenDilation = 1.f;
+	bool bHitPaused = false;
+	float HitPauseDilation = 1.f;
 
 	// The strike playing (Stance: none), when the clips began fading (-1: not fading), the player's last state.
 	ftcore::FightClip Strike = ftcore::FightClip::Stance;
@@ -213,6 +318,15 @@ private:
 	ftcore::ArenaPart LastPart = ftcore::ArenaPart::None;
 	uint8 LastMove = 0;
 	bool bWarding = false;
+	bool bCasting = false;        // a cast's wind-up was tracked last step (its rings are out)
+	double WardRaiseFor = 0.0;    // RaiseWard's hold, taken up by the next Track
+	double WardHeldUntil = -1.0;  // a raised ward's end (fight time)
+	FVector ImpactFrom = FVector::ZeroVector; // where the travelling bolt left from (its impact faces back to it)
+	double StrikeStartAt = -1e9; // the strike under way's start (StartStrike's T): a cast's bolt flies the rest of its startup
+	bool bBoltOut = false;       // this cast's bolt has left (in its startup) and is on its way to the hit
+	double BoltLaunch = -1e9;    // the last bolt's launch and flight (fight time, s), for the view times
+	double BoltFlight = 0.0;
+	void LaunchBolt(double T, double Flight);
 	int32 ActiveCount = 0;
 	double LastActiveTime = -1e9;
 
@@ -220,8 +334,20 @@ private:
 	// none) and when the last strike's aim is checked (below 0: done).
 	FVector AimPoint = FVector::ZeroVector;
 	bool bAimed = false;
+	double ContactPull = 0.0; // cm the reach pulled the melee contact point in from the body's surface (for the log)
+	float AimHold = 0.f;
+	float ActionUpper = 0.f;
+	int32 ActionLeg = -1;
 	int32 AimSide = -1;
 	double ImpactDue = -1.0;
+	// The gun's slots (after the fight clips'), its clips' lengths (0: none), the reload's state and the last dry press.
+	static constexpr int32 kReloadSlot = static_cast<int32>(ftcore::FightClip::Count);
+	static constexpr int32 kFlinchSlot = kReloadSlot + 1;
+	float ReloadClipLength = 0.f;
+	float FlinchClipLength = 0.f;
+	bool bReloading = false;
+	float ReloadProgress = 0.f;
+	double DryAt = -1.0;
 	FVector ImpactAt = FVector::ZeroVector;
 	double LastImpactTime = -1e9;
 	double AimCheckDue = -1.0;

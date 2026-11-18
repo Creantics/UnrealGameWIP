@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "glider",
+  "hp": 3000,
+  "critMultiplier": 2.5,
+  "restSeconds": 1.2,
+  "lock": {
+    "keys": [
+      "shared_blow"
+    ],
+    "openSeconds": 3.0
+  },
+  "moves": [
+    {
+      "id": "swoop",
+      "counter": "guard",
+      "tell": 1.4,
+      "window": 0.4,
+      "recover": 1.0,
+      "exposeSeconds": 2.5
+    },
+    {
+      "id": "tail_lash",
+      "counter": "dodge",
+      "tell": 0.9,
+      "window": 0.35,
+      "recover": 1.2
+    },
+    {
+      "id": "lull",
+      "counter": "strike_on_count",
+      "tell": 2.0,
+      "window": 1.5,
+      "recover": 0.8
+    },
+    {
+      "id": "grab",
+      "counter": "take_half",
+      "tell": 1.2,
+      "window": 1.0,
+      "recover": 1.0
+    },
+    {
+      "id": "updraft",
+      "counter": "recover",
+      "tell": 1.0,
+      "window": 0.8,
+      "recover": 0.6
+    }
+  ],
+  "offer": {
+    "id": "offer",
+    "counter": "answer",
+    "tell": 2.0,
+    "window": 6.0,
+    "recover": 1.0,
+    "needsAnswer": true
+  },
+  "phases": [
+    {
+      "moves": [
+        "swoop",
+        "tail_lash",
+        "grab",
+        "updraft"
+      ]
+    },
+    {
+      "enterAt": 0.5,
+      "moves": [
+        "swoop",
+        "lull",
+        "tail_lash",
+        "grab"
+      ]
+    },
+    {
+      "enterAt": 0.1,
+      "moves": [
+        "swoop"
+      ]
+    }
+  ]
+}

@@ -9,11 +9,14 @@
 #include "Engine/SubsurfaceProfile.h"
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
+#include "FTRimCollection.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionPreSkinnedNormal.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
@@ -55,6 +58,10 @@ const FScalarSpec kScalars[] = {
 	{TEXT("Specular"), 0.35f},        // about 2.8% reflectance at normal incidence
 	{TEXT("CavitySpecular"), 0.3f},   // specular left at the bottom of a pore
 	{TEXT("Scatter"), 1.f},           // subsurface amount (Opacity), before the region mask
+	// The leads' wet switch (ftcore/LeadWet.h): SkinWet 0 dry .. 1 wet, written at runtime; roughness goes toward
+	// SkinWetRoughness on the high points (SkinWetMask R, white by default, times the region's open-skin AO).
+	{TEXT("SkinWet"), 0.f},
+	{TEXT("SkinWetRoughness"), 0.25f},
 };
 
 FString PackageFile(const FString& Package)
@@ -207,6 +214,8 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 
 	UTexture* White = LoadObject<UTexture>(nullptr, TEXT("/Game/Characters/Shared/Materials/T_FTWhite.T_FTWhite"));
 	UTexture* Flat = LoadObject<UTexture>(nullptr, TEXT("/Game/Characters/Shared/Materials/T_FTFlatNormal.T_FTFlatNormal"));
+	// Linear white for a masks sampler (T_FTWhite is sRGB); FTImportMaterials makes both.
+	UTexture* WhiteMasks = LoadObject<UTexture>(nullptr, TEXT("/Game/Characters/Shared/Materials/T_FTWhiteMasks.T_FTWhiteMasks"));
 
 	UMaterialExpressionTextureCoordinate* UV = AddExpression<UMaterialExpressionTextureCoordinate>(Material, -1700, 0);
 	UMaterialExpressionMultiply* DetailUV = AddExpression<UMaterialExpressionMultiply>(Material, -1250, 300);
@@ -238,6 +247,23 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 			{TEXT("CavityRough"), Scalar(Material, TEXT("CavityRoughness"), 650), 0}, {TEXT("MicroMask"), PoreMask, 2},
 			{TEXT("Micro"), Scalar(Material, TEXT("MicroRoughness"), 750), 0}},
 		0);
+	// Wet skin (ftcore::leadwet::skinRoughness): lowered toward SkinWetRoughness, never raised. Until a painted SkinWetMask
+	// (R, white by default) is set, the wet part is procedural: skin whose bind-pose normal faces up or forward (the
+	// mesh's own SkinWetForward, +Y by default: the top of the head, brow, nose, cheekbones, shoulders, the tops of the
+	// forearms and hands, where rain lands) and that is open (the region's AO, R); creases and undersides stay as dry.
+	UMaterialExpressionTextureSampleParameter2D* WetMask = Sampler(Material, TEXT("SkinWetMask"), WhiteMasks, SAMPLERTYPE_Masks, nullptr, 1200);
+	UMaterialExpressionPreSkinnedNormal* BindNormal = AddExpression<UMaterialExpressionPreSkinnedNormal>(Material, -1000, 1500);
+	UMaterialExpressionVectorParameter* WetForward = AddExpression<UMaterialExpressionVectorParameter>(Material, -1000, 1600);
+	WetForward->ParameterName = TEXT("SkinWetForward");
+	WetForward->DefaultValue = FLinearColor(0.f, 1.f, 0.f, 0.f);
+	WetForward->Group = TEXT("Skin");
+	WetForward->UpdateParameterGuid(true, false);
+	UMaterialExpressionCustom* WetRoughnessOut = Custom(Material, TEXT("SkinWetRoughness"), CMOT_Float1,
+		TEXT("float3 n = N * rsqrt(max(dot(N, N), 1e-8));\nfloat3 fw = Fwd * rsqrt(max(dot(Fwd, Fwd), 1e-8));\nfloat f = max(n.z, dot(n, fw));\nfloat k = saturate(Wet) * saturate(Mask) * saturate((f - 0.2) / 0.5) * saturate((AO - 0.55) / 0.4);\nreturn min(R, lerp(R, WetRough, k));"),
+		{{TEXT("R"), RoughnessOut, 0}, {TEXT("Wet"), Scalar(Material, TEXT("SkinWet"), 1250), 0},
+			{TEXT("WetRough"), Scalar(Material, TEXT("SkinWetRoughness"), 1350), 0}, {TEXT("Mask"), WetMask, 1}, {TEXT("AO"), Region, 1},
+			{TEXT("N"), BindNormal, 0}, {TEXT("Fwd"), WetForward, 0}},
+		150);
 	UMaterialExpressionCustom* SpecularOut = Custom(Material, TEXT("SkinSpecular"), CMOT_Float1,
 		TEXT("return Spec * lerp(CavitySpec, 1.0, Cavity);"),
 		{{TEXT("Spec"), Scalar(Material, TEXT("Specular"), 850), 0}, {TEXT("CavitySpec"), Scalar(Material, TEXT("CavitySpecular"), 950), 0},
@@ -250,10 +276,17 @@ UMaterial* BuildMaster(USubsurfaceProfile* Profile, UTexture* Pores, UTexture* P
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(0, Albedo);
 	Inputs->Normal.Connect(0, NormalOut);
-	Inputs->Roughness.Connect(0, RoughnessOut);
+	Inputs->Roughness.Connect(0, WetRoughnessOut);
 	Inputs->Specular.Connect(0, SpecularOut);
 	Inputs->AmbientOcclusion.Connect(1, Region);
 	Inputs->Opacity.Connect(0, ScatterOut);
+	// The world wave's character state, as the other worn masters take it (FTImportMaterials).
+	// The character rim (FTRimCollection.h): RimScale 1 on skin; a face instance sets ftcore::look::kRimFaceScale.
+	if (!FTRim::AddTerm(Material, TEXT("Skin"), 1.f, 0, 1500))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildSkin: MPC_FTRim could not be built or saved; %s has no rim term."), *Material->GetName());
+	}
+	FTWorldWave::AddState(TEXT("FTBuildSkin"), Material, 300, 1300, true);
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();

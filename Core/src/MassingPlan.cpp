@@ -640,6 +640,7 @@ MassingLookSurface massingLookSurface(const MassingBox& box) {
     if (lookStartsWith(box.id, "V1-KB") || kind == "kerb" || (box.source == MassingSource::Invented && kind == "wall"))
         return MassingLookSurface::PoleConcrete;
     if (kind == "ramp" || kind == "landing") return MassingLookSurface::PavingSlab;
+    if (kind == "lawn") return MassingLookSurface::Lawn;
     // A lane's flush dressing (massingLaneDress): a pale gutter and give-way bars, steel drain covers, concrete patches.
     if (kind == "gutter" || kind == "marking") return MassingLookSurface::PoleConcrete;
     if (kind == "drain") return MassingLookSurface::GalvSteel;
@@ -687,6 +688,7 @@ std::string_view massingLookSurfaceId(MassingLookSurface surface) {
     case MassingLookSurface::BuildingRender: return "pole_concrete";
     case MassingLookSurface::BuildingTile: return "ceramic_tile";
     case MassingLookSurface::BuildingBoard: return "board_concrete";
+    case MassingLookSurface::Lawn: return "lawn";
     }
     return "board_concrete";
 }

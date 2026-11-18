@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "walkableZ": 0.7071,
+  "slideSpeed": 4,
+  "stuckTime": 1.5,
+  "stuckMove": 0.5,
+  "fallTime": 4,
+  "ringSpacing": 1,
+  "backoff": 1.5,
+  "fadeTime": 0.35,
+  "slideAccel": 8,
+  "teleportJump": 3
+}

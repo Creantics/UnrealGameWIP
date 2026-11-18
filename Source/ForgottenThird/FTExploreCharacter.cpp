@@ -1,10 +1,18 @@
 #include "FTExploreCharacter.h"
 #include "FTPartyVan.h"
+#include "FTSwimUnits.h"
+#include "FTWaterSubsystem.h"
+#include "ftcore/MassingPlan.h"
 
 #include "Animation/AnimSequence.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/LightComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Components/RectLightComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EngineUtils.h"
 #include "EnhancedInputComponent.h"
@@ -17,7 +25,10 @@
 #include "HAL/PlatformMisc.h"
 #include "TimerManager.h"
 #include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "CollisionQueryParams.h"
 #include "Engine/GameViewportClient.h"
+#include "UnrealClient.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
@@ -31,16 +42,31 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
+#include "FTExploreHUD.h"
+#include "FTCutsceneDirector.h"
 #include "FTFieldDummy.h"
 #include "FTGameInstance.h"
+#include "FTInputBindings.h"
+#include "FTPauseSubsystem.h"
+#include "FTPlayerController.h"
 #include "FTMeshFacing.h"
+#include "FTNewUi.h"
+#include "FTPartyFollower.h"
+#include "FTSceneLook.h"
+#include "Components/DecalComponent.h"
+#include "Misc/PackageName.h"
 #include "ForgottenThird.h"
+#include "FTRim.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
+#include "ftcore/LeadWet.h"
 
 namespace
 {
+TAutoConsoleVariable<float> CVarLeadWet(TEXT("ft.LeadWet"), 0.f,
+	TEXT("The leads' wet switch: 0 dry (the default), 0..1 that wet (cloth soak, wet grooms, wet skin), below 0 follows the world look's wetness."));
+
 // -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
 // The camera comes back round behind a moving lead once the look input has rested this long (s), closing
 // kRecentreRate of the gap a second and never faster than kRecentreMax (deg/s), so it trails into turns.
@@ -65,6 +91,9 @@ constexpr float kRollBuffer = 0.2f;
 constexpr float kRollTurnTime = 0.05f;
 // An attack turns the lead to the target it aims at this fast (s, exponential).
 constexpr float kAttackTurnTime = 0.04f;
+// The follow camera's shoulder offset and field of view off aim (the aim stance lerps to Data/Battle/aim.json's).
+const FVector kShoulder(0.0, 70.0, 60.0);
+constexpr float kFov = 70.f;
 constexpr float kRollTurnHold = 1.f;
 // A wall a slide meets this squarely or more (the cosine between its way and into the wall) stops it; one met at more
 // of a glance turns it along the wall.
@@ -109,7 +138,7 @@ AFTExploreCharacter::AFTExploreCharacter()
 	// Low and over the right shoulder, the lead filling about 45% of the frame's height (at 16:9), so
 	// the ground moving past reads as speed and the run reads whole.
 	Boom->TargetArmLength = kArm;
-	Boom->SocketOffset = FVector(0.0, 70.0, 60.0);
+	Boom->SocketOffset = kShoulder;
 	Boom->bUsePawnControlRotation = true;
 	Boom->bEnableCameraLag = true;
 	Boom->CameraLagSpeed = 12.f;
@@ -118,7 +147,11 @@ AFTExploreCharacter::AFTExploreCharacter()
 	Camera->SetupAttachment(Boom, USpringArmComponent::SocketName);
 	Camera->SetRelativeRotation(FRotator(-10.0, 0.0, 0.0));
 	Camera->bUsePawnControlRotation = false;
-	Camera->SetFieldOfView(70.f);
+	Camera->SetFieldOfView(kFov);
+
+	Rim = CreateDefaultSubobject<UFTRimComponent>(TEXT("Rim"));
+	Rim->SetupAttachment(GetCapsuleComponent());
+	Rim->SetRelativeLocation(FVector(0.0, 0.0, 60.0)); // chest to head on a standing lead
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> Devin(TEXT("/Game/Characters/Devin/devin/SkeletalMeshes/devin.devin"));
 	// The mesh's origin is at its feet; the capsule's is at its middle, and the capsule hovers over the floor.
@@ -133,12 +166,46 @@ AFTExploreCharacter::AFTExploreCharacter()
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+#if !UE_BUILD_SHIPPING // capture and check switches: not in a shipped game
+	{
+		// -LeadGo=<x,y> (plan frame of -WorldEyeSide, default 1000 m) [-LeadGoAfter=<s>] [-LeadGoJump] [-LeadGoQuit=<s>].
+		FString Go;
+		FString GoX, GoY;
+		if (FParse::Value(FCommandLine::Get(), TEXT("LeadGo="), Go, false) && Go.Split(TEXT(","), &GoX, &GoY))
+		{
+			double GoSide = 1000.0;
+			FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), GoSide);
+			const ftcore::MassingVec To = ftcore::massingEnginePoint(GoSide, FCString::Atod(*GoX), FCString::Atod(*GoY), 0.0);
+			LeadGoTo = FVector(To.x * 100.0, To.y * 100.0, 0.0);
+			LeadGoAfter = 3.f;
+			FParse::Value(FCommandLine::Get(), TEXT("LeadGoAfter="), LeadGoAfter);
+			LeadGoAfter = FMath::Max(LeadGoAfter, 0.f);
+			bLeadGoJump = FParse::Param(FCommandLine::Get(), TEXT("LeadGoJump"));
+			// -LeadGoDive: swimming in a dive area the lead dives once, swims the route under water along it, and
+			// rises when the route ends.
+			bLeadGoDive = FParse::Param(FCommandLine::Get(), TEXT("LeadGoDive"));
+			FParse::Value(FCommandLine::Get(), TEXT("LeadGoQuit="), LeadGoQuit);
+		}
+		FParse::Value(FCommandLine::Get(), TEXT("LeadGoPace="), LeadGoPace);
+		LeadGoPace = FMath::Clamp(LeadGoPace, 0.1f, 1.f);
+	}
+#endif
 	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
 	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
 	Dodge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().dodge);
 	Ledge.setTuning(UFTLocomotionAnimInstance::GetMoveTuning().ledge);
 	DodgeNow = Dodge.fresh();
+	// The portrait and look-dev captures (-ExplorePortrait and every -ExplorePortrait*/-ExploreLookDev*/-ExploreFixedExposure/
+	// -ExploreGreyGround flag under it) are capture tools: compiled out of shipping.
+#if UE_BUILD_SHIPPING
+	const bool bPortrait = false;
+	const bool bShowAnyLook = false;
+#else
 	const bool bPortrait = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortrait"));
+	// -ExploreShowLook: a capture may wear a look that is not playable (a party member only) on this character, so a
+	// still of that member never needs the arena data changed. Review only.
+	const bool bShowAnyLook = FParse::Param(FCommandLine::Get(), TEXT("ExploreShowLook"));
+#endif
 	// The lead and the party toggle: the player's last choice this session, else the command line, else config. A
 	// portrait shows the lead alone.
 	FString Lead = StartLead;
@@ -167,8 +234,20 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			return Member.Name.Equals(Lead, ESearchCase::IgnoreCase);
 		}));
+		// A party member that is not playable (its kit's data flag) is never the lead: the first playable look starts instead.
+		if (!bShowAnyLook && !IsPlayableLead(PartyLooks[LeadIndex]))
+		{
+			const int32 Playable = PartyLooks.IndexOfByPredicate([this](const FFTLeadLook& Member)
+			{
+				return IsPlayableLead(Member);
+			});
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: %s is a party member only (not playable) and can't be the lead; starting as %s."),
+				*PartyLooks[LeadIndex].Name, Playable >= 0 ? *PartyLooks[Playable].Name : TEXT("that look anyway (no look is playable)"));
+			LeadIndex = Playable >= 0 ? Playable : LeadIndex;
+		}
 		WearLook(PartyLooks[LeadIndex]);
 	}
+	FindPartyRows(); // the party screen's rows, again whenever the lead changes (SwitchLeadTo)
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
 	// -LocoPulse=<s> drops the movement input for -LocoRest=<s> seconds (default 2) after every s seconds
 	// of it, for starts and stops; with -LocoFace=<deg> the body turns on the spot by that much in each
@@ -179,15 +258,30 @@ void AFTExploreCharacter::BeginPlay()
 		GetCharacterMovement()->MaxWalkSpeed = RunSpeed;
 	}
 	FParse::Value(FCommandLine::Get(), TEXT("LocoJump="), JumpEvery);
+	// -ExploreWalk: the lead walks the portrait's slow circle outside a portrait too (moving attacks in captures).
+	bPortraitWalk = FParse::Param(FCommandLine::Get(), TEXT("ExploreWalk"));
+	// -ExploreWedge drops the lead into a V trench too steep to stand in; -ExploreWedgeShot=<path prefix> films it
+	// in the trench and after the step back (<prefix>_in.png, <prefix>_out.png), then quits.
+	bWedgePending = FParse::Param(FCommandLine::Get(), TEXT("ExploreWedge"));
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreWedgeShot="), WedgeShotPrefix);
 	// -ExploreDummy stands a field dummy ahead once the lead is on the floor; -ExploreAttackEvery=<s> presses light.
 	bDummyPending = FParse::Param(FCommandLine::Get(), TEXT("ExploreDummy"));
 	FParse::Value(FCommandLine::Get(), TEXT("ExploreAttackEvery="), AttackEvery);
+	// -ExploreAim=<s>: aim is held from s seconds of play on, as right mouse held would.
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreAim="), AimFrom);
 	// -ExploreWeaponShot=<path prefix>: once -ExploreWeaponShotDelay=<s> (default 12) has passed, a 1600x900 shot (HUD
 	// hidden) as each attack goes active, <prefix>_<n>_<clip>.png, -ExploreWeaponShots=<n> of them (default 3), then quit.
 	if (FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShot="), WeaponShotPrefix) && !WeaponShotPrefix.IsEmpty())
 	{
 		FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShots="), WeaponShotsLeft);
 		FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponShotDelay="), WeaponShotDelay);
+		// -ExploreWeaponStrip=<n> [-ExploreWeaponStripStep=<s>, default 0.1]: one walking light attack filmed n times,
+		// s seconds apart from its start (the proof the feet keep walking), speed and upper share logged each frame.
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponStrip="), StripShots) && StripShots > 0)
+		{
+			FParse::Value(FCommandLine::Get(), TEXT("ExploreWeaponStripStep="), StripStep);
+			WeaponShotsLeft = StripShots;
+		}
 	}
 	// -LocoCrouch holds a crouch; -LocoCrouchEvery=<s> gets down or up every s seconds (sprinting, as with -LocoRun,
 	// down is a slide).
@@ -227,11 +321,103 @@ void AFTExploreCharacter::BeginPlay()
 		Boom->SocketOffset = FVector(0.0, 0.0, Height);
 		Camera->SetRelativeRotation(FRotator(Pitch, 0.0, 0.0));
 		// -ExplorePortraitWalk: the body walks a slow circle (about 5.7 m across) so shots catch it mid-stride.
-		bPortraitWalk = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitWalk"));
-		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
+		bPortraitWalk = bPortraitWalk || FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitWalk"));
+		// -ExplorePortraitMoveScale=<0..1>: the circle's input scale (0.5 walks, 1 runs); it implies the walk circle.
+		// -ExplorePortraitJump: on the circle, the body jumps every 1.5 s, so shots catch the jump clips.
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitMoveScale="), PortraitMoveScale))
+		{
+			PortraitMoveScale = FMath::Clamp(PortraitMoveScale, 0.f, 1.f);
+			bPortraitWalk = true;
+		}
+		bPortraitJump = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitJump"));
+		bPortraitWalk = bPortraitWalk || bPortraitJump;
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDev")))
+		{
+			EnterLookDev();
+		}
+		else if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitLights")))
 		{
 			AddPortraitLights();
 		}
+		// Map-light diagnosis (the look-dev set has both built in): -ExploreGreyGround paints the map's green ground,
+		// path and leaves a neutral 0.18 grey; -ExploreFixedExposure turns auto-exposure off (EV100 0, shifted by
+		// -ExploreExposureBias=<stops>).
+		if (!FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDev")))
+		{
+			if (FParse::Param(FCommandLine::Get(), TEXT("ExploreGreyGround")))
+			{
+				GreyGround();
+			}
+			if (FParse::Param(FCommandLine::Get(), TEXT("ExploreFixedExposure")))
+			{
+				float Bias = 0.f;
+				FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureBias="), Bias);
+				FixExposure(Bias);
+			}
+		}
+#if !UE_BUILD_SHIPPING // review checks only, never in a shipped game
+		// Exposure-range check: -ExploreNight dims the sun to moonlight and the sky to a night sky (the gate lamps stay
+		// lit); -ExploreExposureRange=<min>,<max> meters auto-exposure within that EV100 range instead of the map's.
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExploreNight")))
+		{
+			Nightfall();
+		}
+		// Wetness proof for the lead materials: -ExploreWet=<Wetness>,<line cm above the feet>,<WetSilt> sets the garment
+		// wet inputs (Wetness, WetLineZ, WetSilt) on every slot that has them, once a second so the garments ApplyLook
+		// makes later (and a look switch) take them too. The world drives these in play; this only shows a fixed state.
+		FString Wet;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreWet="), Wet, false))
+		{
+			TArray<FString> Parts;
+			Wet.ParseIntoArray(Parts, TEXT(","));
+			WetReview = FVector(Parts.Num() > 0 ? FCString::Atof(*Parts[0]) : 1.f, Parts.Num() > 1 ? FCString::Atof(*Parts[1]) : 130.f,
+				Parts.Num() > 2 ? FCString::Atof(*Parts[2]) : 0.f);
+			GetWorldTimerManager().SetTimer(WetTimer, this, &AFTExploreCharacter::SoakForReview, 1.f, true, 0.5f);
+		}
+		// Wet state across a piece's mesh swap: -ExploreSoakSwap=<wetness>,<word>@<off s>[+<on s>] holds the lead at that
+		// wetness through the game's own path (ShowWetness; the water's drive is off), takes off every piece whose asset name
+		// holds the word at <off s> and puts it back at <on s> (FTLook::SetPieceWorn, so an under layer swaps its cut).
+		// SOAK_SWAP lines give each slot's material and Wetness value at each stage; stills before and after show it.
+		FString SoakSwap;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreSoakSwap="), SoakSwap, false))
+		{
+			FString Head, Times, Off, On;
+			if (SoakSwap.Split(TEXT("@"), &Head, &Times) && Head.Split(TEXT(","), &Off, &SoakSwapWord))
+			{
+				SoakSwapWet = FMath::Clamp(FCString::Atof(*Off), 0.f, 1.f);
+				if (!Times.Split(TEXT("+"), &Off, &On))
+				{
+					Off = Times;
+				}
+				SoakSwapOff = FCString::Atof(*Off);
+				SoakSwapOn = On.IsEmpty() ? -1.f : FCString::Atof(*On);
+				SoakSwapStart = FPlatformTime::Seconds();
+				GetWorldTimerManager().SetTimer(SoakSwapTimer, this, &AFTExploreCharacter::StepSoakSwap, 0.25f, true, 0.25f);
+				UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP wetness %.2f, pieces holding '%s' off at %.1f s, on at %.1f s."),
+					SoakSwapWet, *SoakSwapWord, SoakSwapOff, SoakSwapOn);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("SOAK_SWAP: '%s' is not <wetness>,<word>@<off s>[+<on s>]."), *SoakSwap);
+			}
+		}
+		FString Range;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
+		{
+			FString Lo, Hi;
+			if (Range.Split(TEXT(","), &Lo, &Hi) && Camera)
+			{
+				FPostProcessSettings& Post = Camera->PostProcessSettings;
+				Post.bOverride_AutoExposureMinBrightness = true;
+				Post.AutoExposureMinBrightness = FCString::Atof(*Lo);
+				Post.bOverride_AutoExposureMaxBrightness = true;
+				Post.AutoExposureMaxBrightness = FCString::Atof(*Hi);
+				Camera->PostProcessBlendWeight = 1.f;
+				UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: auto-exposure range %.2f..%.2f EV100."),
+					Post.AutoExposureMinBrightness, Post.AutoExposureMaxBrightness);
+			}
+		}
+#endif
 		// -ExplorePortraitShot=<path prefix>: the renderer saves one 1400x1100 shot (HUD hidden) per yaw in
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
@@ -249,6 +435,64 @@ void AFTExploreCharacter::BeginPlay()
 			if (ShotYaws.IsEmpty())
 			{
 				ShotYaws.Add(Yaw);
+			}
+			FString ClipPath;
+			FString TimeList;
+			if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFaceClip="), ClipPath)
+				&& FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFaceTimes="), TimeList, false))
+			{
+				FaceClip = LoadObject<UAnimSequence>(nullptr, *ClipPath);
+				TArray<FString> Parts;
+				TimeList.ParseIntoArray(Parts, TEXT(","));
+				for (const FString& Part : Parts)
+				{
+					FaceTimes.Add(FCString::Atof(*Part));
+				}
+				if (!FaceClip || FaceTimes.IsEmpty())
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: face clip %s not loaded or no times; face shots off."), *ClipPath);
+					FaceClip = nullptr;
+					FaceTimes.Reset();
+				}
+				else
+				{
+					// One shot per time; the yaw list repeats round them.
+					const TArray<float> Yaws = ShotYaws;
+					ShotYaws.Reset();
+					for (int32 Index = 0; Index < FaceTimes.Num(); ++Index)
+					{
+						ShotYaws.Add(Yaws[Index % Yaws.Num()]);
+					}
+				}
+			}
+			if (!FaceClip && FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyClip="), ClipPath)
+				&& FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitBodyTimes="), TimeList, false))
+			{
+				BodyClip = LoadObject<UAnimSequence>(nullptr, *ClipPath);
+				TArray<FString> Parts;
+				TimeList.ParseIntoArray(Parts, TEXT(","));
+				for (const FString& Part : Parts)
+				{
+					BodyTimes.Add(FCString::Atof(*Part));
+				}
+				if (!BodyClip || BodyTimes.IsEmpty())
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: body clip %s not loaded or no times; body poses off."), *ClipPath);
+					BodyClip = nullptr;
+					BodyTimes.Reset();
+				}
+				else
+				{
+					// One shot per time; the yaw list repeats round them.
+					const TArray<float> Yaws = ShotYaws;
+					ShotYaws.Reset();
+					for (int32 Index = 0; Index < BodyTimes.Num(); ++Index)
+					{
+						ShotYaws.Add(Yaws[Index % Yaws.Num()]);
+					}
+					bPortraitWalk = false;
+					bPortraitJump = false;
+				}
 			}
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
@@ -287,10 +531,22 @@ void AFTExploreCharacter::StepPortraitShots()
 		{
 			Hud->bShowHUD = false;
 		}
+		if (FaceClip)
+		{
+			HoldFaceAt(FaceTimes[ShotIndex]);
+		}
+		else if (BodyClip)
+		{
+			HoldBodyAt(BodyTimes[ShotIndex]);
+		}
 		bShotAimed = true;
 		return;
 	}
-	const FString File = FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
+	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
+	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
 	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
@@ -302,6 +558,43 @@ void AFTExploreCharacter::StepPortraitShots()
 		*File, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0, GetVelocity().Size2D());
 	bShotAimed = false;
 	++ShotIndex;
+}
+
+void AFTExploreCharacter::HoldFaceAt(float Time)
+{
+	// A leader-posed piece copies the body's bones and never runs its own animation, so the MetaHuman face rig
+	// (its post-process blueprint) would stay neutral. The face piece leaves the leader pose and holds the clip.
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		const USkeletalMesh* PieceMesh = Piece ? Piece->GetSkeletalMeshAsset() : nullptr;
+		if (!PieceMesh || !PieceMesh->GetName().Contains(TEXT("FaceMesh")))
+		{
+			continue;
+		}
+		Piece->SetLeaderPoseComponent(nullptr);
+		Piece->PlayAnimation(FaceClip, false);
+		Piece->SetPosition(FMath::Clamp(Time, 0.f, FaceClip->GetPlayLength()), false);
+		Piece->Stop();
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: face %s held on %s at %.2f s."), *PieceMesh->GetName(),
+			*FaceClip->GetName(), Time);
+		return;
+	}
+	UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no FaceMesh piece to hold the face clip on."));
+}
+
+void AFTExploreCharacter::HoldBodyAt(float Time)
+{
+	// The body leaves its anim blueprint and holds the clip's frame; the leader-posed pieces (garments, shoes, face)
+	// copy its bones, so the outfit is seen in that pose. The clip's root is not applied, so the capsule stays put.
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!Body || !BodyClip)
+	{
+		return;
+	}
+	Body->PlayAnimation(BodyClip, false);
+	Body->SetPosition(FMath::Clamp(Time, 0.f, BodyClip->GetPlayLength()), false);
+	Body->Stop();
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body held on %s at %.2f s."), *BodyClip->GetName(), Time);
 }
 
 void AFTExploreCharacter::AddPortraitLights()
@@ -341,8 +634,350 @@ void AFTExploreCharacter::AddPortraitLights()
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait lights on (key, fill, rim)."));
 }
 
-void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
+void AFTExploreCharacter::FixExposure(float Bias)
 {
+	if (!Camera)
+	{
+		return;
+	}
+	FPostProcessSettings& Post = Camera->PostProcessSettings;
+	Post.bOverride_AutoExposureMethod = true;
+	Post.AutoExposureMethod = AEM_Manual;
+	Post.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+	Post.AutoExposureApplyPhysicalCameraExposure = false;
+	Post.bOverride_AutoExposureBias = true;
+	Post.AutoExposureBias = Bias;
+	Camera->PostProcessBlendWeight = 1.f;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: fixed exposure, bias %.2f."), Bias);
+}
+
+#if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::LogSoakSwap(const TCHAR* Stage)
+{
+	static const FHashedMaterialParameterInfo WetnessInfo(TEXT("Wetness"));
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (!Piece || !Piece->GetSkeletalMeshAsset())
+		{
+			continue;
+		}
+		for (int32 Slot = 0; Slot < Piece->GetNumMaterials(); ++Slot)
+		{
+			UMaterialInterface* Material = Piece->GetMaterial(Slot);
+			float Value = -1.f;
+			const bool bHas = Material && Material->GetScalarParameterValue(WetnessInfo, Value);
+			UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP %s: %s%s slot %d %s Wetness %s (serial %u, %d gathered)."), Stage,
+				*Piece->GetSkeletalMeshAsset()->GetName(), Piece->GetVisibleFlag() ? TEXT("") : TEXT(" (off)"), Slot,
+				Material ? *Material->GetName() : TEXT("none"), bHas ? *FString::Printf(TEXT("%.2f"), Value) : TEXT("n/a"),
+				FTLook::WornMeshSerial(), WetMaterials.Num());
+		}
+	}
+}
+
+void AFTExploreCharacter::StepSoakSwap()
+{
+	ShowWetness(ftcore::WaterWetness{SoakSwapWet, 3.f, 0.f});
+	const double Now = FPlatformTime::Seconds() - SoakSwapStart;
+	const bool bOff = SoakSwapStage == 0 && Now >= SoakSwapOff;
+	const bool bOn = SoakSwapStage == 1 && SoakSwapOn >= 0.f && Now >= SoakSwapOn;
+	if (SoakSwapStage == 0 && Now >= SoakSwapOff - 1.0 && !bSoakSwapBefore)
+	{
+		bSoakSwapBefore = true;
+		LogSoakSwap(TEXT("before"));
+	}
+	if (!bOff && !bOn)
+	{
+		return;
+	}
+	int32 Changed = 0;
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (Piece && Piece->GetSkeletalMeshAsset() && Piece->GetSkeletalMeshAsset()->GetName().Contains(SoakSwapWord))
+		{
+			Changed += FTLook::SetPieceWorn(WornLook, WornFronts, *GetMesh(), Pieces, *Piece, bOn, TEXT("FTExploreCharacter"));
+		}
+	}
+	// The carried materials as the swap left them, before ShowWetness gathers them again.
+	LogSoakSwap(bOn ? TEXT("swapped on") : TEXT("swapped off"));
+	++SoakSwapStage;
+	ShowWetness(ftcore::WaterWetness{SoakSwapWet, 3.f, 0.f});
+	UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP %s at %.1f s: %d under piece(s) swapped."), bOn ? TEXT("on") : TEXT("off"), Now, Changed);
+	LogSoakSwap(bOn ? TEXT("after on") : TEXT("after off"));
+}
+
+void AFTExploreCharacter::SoakForReview()
+{
+	const float FeetZ = GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	int32 Slots = 0;
+	TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+	for (USkeletalMeshComponent* Skin : Meshes)
+	{
+		for (int32 Slot = 0; Slot < Skin->GetNumMaterials(); ++Slot)
+		{
+			UMaterialInterface* Material = Skin->GetMaterial(Slot);
+			float Unused = 0.f;
+			if (!Material || !Material->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Wetness")), Unused))
+			{
+				continue;
+			}
+			UMaterialInstanceDynamic* Dynamic = Skin->CreateAndSetMaterialInstanceDynamic(Slot);
+			Dynamic->SetScalarParameterValue(TEXT("Wetness"), WetReview.X);
+			Dynamic->SetScalarParameterValue(TEXT("WetLineZ"), FeetZ + WetReview.Y);
+			Dynamic->SetScalarParameterValue(TEXT("WetSilt"), WetReview.Z);
+			++Slots;
+		}
+	}
+	if (Slots != WetSlots)
+	{
+		WetSlots = Slots;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: wet review on %d garment slots (wetness %.2f, line %.0f cm above the feet, silt %.2f)."),
+			Slots, WetReview.X, WetReview.Y, WetReview.Z);
+	}
+}
+
+void AFTExploreCharacter::Nightfall()
+{
+	int32 Dimmed = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UDirectionalLightComponent*> Suns(*It);
+		for (UDirectionalLightComponent* Sun : Suns)
+		{
+			Sun->SetIntensity(Sun->Intensity * 0.002f); // about 0.2 lux of moonlight from a 100 lux sun
+			Sun->SetLightColor(FLinearColor(0.6f, 0.7f, 1.f));
+			++Dimmed;
+		}
+		TInlineComponentArray<USkyLightComponent*> Skies(*It);
+		for (USkyLightComponent* Sky : Skies)
+		{
+			Sky->SetIntensity(Sky->Intensity * 0.01f);
+			++Dimmed;
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: night (%d sun and sky lights dimmed)."), Dimmed);
+}
+#endif
+
+void AFTExploreCharacter::GreyGround()
+{
+	// The Explore map's surfaces are tints of one material (MI_Explore_<name>); the green and earth ones go grey.
+	int32 Painted = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		TInlineComponentArray<UMeshComponent*> Meshes(*It);
+		for (UMeshComponent* Surface : Meshes)
+		{
+			for (int32 Slot = 0; Slot < Surface->GetNumMaterials(); ++Slot)
+			{
+				UMaterialInterface* Material = Surface->GetMaterial(Slot);
+				const FString Name = Material ? Material->GetName() : FString();
+				if (Name == TEXT("MI_Explore_Ground") || Name == TEXT("MI_Explore_Path") || Name == TEXT("MI_Explore_Leaves"))
+				{
+					UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Material, this);
+					Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+					Surface->SetMaterial(Slot, Grey);
+					++Painted;
+				}
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: grey ground on %d slots."), Painted);
+}
+
+void AFTExploreCharacter::EnterLookDev()
+{
+	// A neutral look-development set, so a material is judged without the map's coloured bounce: every other actor
+	// and every light, sky and fog in the level is hidden (the floor still collides), leaving a black surround; a
+	// mid-grey (0.18) disc goes under the feet; one warm-neutral key high on the camera's left and one soft dim fill
+	// on its right light the pawn. The key hangs off a pivot at the pawn, which -ExploreLookDevSpin=<deg/s> turns.
+	int32 Hidden = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+	{
+		AActor* Actor = *It;
+		if (Actor == this || Actor->IsA<AController>() || Actor->IsA<AHUD>() || Actor->IsA<APlayerCameraManager>())
+		{
+			continue;
+		}
+		Actor->SetActorHiddenInGame(true);
+		TInlineComponentArray<USceneComponent*> Components(Actor);
+		for (USceneComponent* Component : Components)
+		{
+			Component->SetVisibility(false, false);
+			if (ULightComponent* Light = Cast<ULightComponent>(Component))
+			{
+				Light->SetIntensity(0.f);
+			}
+		}
+		++Hidden;
+	}
+	if (UStaticMesh* Disc = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder")))
+	{
+		UStaticMeshComponent* Ground = NewObject<UStaticMeshComponent>(this);
+		Ground->SetStaticMesh(Disc);
+		Ground->SetUsingAbsoluteRotation(true);
+		Ground->SetUsingAbsoluteScale(true);
+		Ground->SetWorldScale3D(FVector(8.0, 8.0, 0.01));
+		Ground->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Ground->SetupAttachment(GetRootComponent());
+		Ground->RegisterComponent();
+		Ground->SetWorldLocation(FeetLocation() + FVector(0.0, 0.0, 0.2));
+		if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
+		{
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, this);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+			Ground->SetMaterial(0, Grey);
+		}
+	}
+	// -ExploreLookDevGrey[=<albedo>]: a set where a dark garment reads against its surround. A grey wall (albedo 0.35
+	// unless given) stands behind the pawn on the far side from the camera, the key sits 45 degrees off the view and
+	// follows the camera round (so a back or elbow crop is key-lit too), and the fill is stronger, about 1.5 stops
+	// under the key. Without the flag the set is as before.
+	float GreyAlbedo = 0.f; // also in the set line logged below, shipped or not
+#if UE_BUILD_SHIPPING
+	const bool bGrey = false; // a review set: never in a shipped game
+#else
+	const bool bGrey = FParse::Param(FCommandLine::Get(), TEXT("ExploreLookDevGrey")) || FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevGrey="), GreyAlbedo);
+	if (bGrey)
+	{
+		if (!FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevGrey="), GreyAlbedo) || GreyAlbedo <= 0.f)
+		{
+			GreyAlbedo = 0.35f;
+		}
+		UStaticMesh* Box = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+		if (Box && Base)
+		{
+			UStaticMeshComponent* Wall = NewObject<UStaticMeshComponent>(this);
+			Wall->SetStaticMesh(Box);
+			Wall->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Wall->SetupAttachment(Boom); // boom space: the camera is at -X, so +X is behind the pawn as it sees it
+			Wall->SetUsingAbsoluteScale(true);
+			Wall->SetWorldScale3D(FVector(0.05, 14.0, 10.0));
+			Wall->SetRelativeLocation(FVector(380.0, 0.0, 150.0));
+			Wall->RegisterComponent();
+			UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, this);
+			Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(GreyAlbedo, GreyAlbedo, GreyAlbedo));
+			Wall->SetMaterial(0, Grey);
+		}
+	}
+#endif
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevSpin="), LookDevSpin);
+	LookDevPivot = NewObject<USceneComponent>(this);
+	LookDevPivot->SetupAttachment(GetRootComponent());
+	LookDevPivot->SetUsingAbsoluteRotation(true);
+	LookDevPivot->RegisterComponent();
+	// Pivot space at yaw 0: the light sits at -X, so it starts on the side the default (yaw 180) camera looks from.
+	struct FLightSpec
+	{
+		USceneComponent* Parent;
+		FVector Location;
+		float Candelas;
+		float Width;
+		FLinearColor Color;
+	};
+	const FLightSpec Specs[] = {
+		{LookDevPivot, FVector(-250.0, -170.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key
+		{Boom, FVector(-260.0, 240.0, 30.0), 6.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},        // fill
+	};
+	const FLightSpec GreySpecs[] = {
+		{Boom, FVector(-220.0, -220.0, 190.0), 40.f, 90.f, FLinearColor(1.f, 0.97f, 0.92f)}, // key, 45 degrees off the view
+		{Boom, FVector(-260.0, 240.0, 60.0), 14.f, 240.f, FLinearColor(0.95f, 0.97f, 1.f)},  // fill
+	};
+	const FVector Target(0.0, 0.0, 20.0);
+	const TConstArrayView<FLightSpec> Chosen = bGrey ? TConstArrayView<FLightSpec>(GreySpecs) : TConstArrayView<FLightSpec>(Specs);
+	for (const FLightSpec& Spec : Chosen)
+	{
+		URectLightComponent* Light = NewObject<URectLightComponent>(this);
+		Light->SetupAttachment(Spec.Parent);
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->SetRelativeLocation(Spec.Location);
+		Light->SetRelativeRotation((Target - Spec.Location).Rotation());
+		Light->SetIntensityUnits(ELightUnits::Candelas);
+		Light->SetIntensity(Spec.Candelas);
+		Light->SetSourceWidth(Spec.Width);
+		Light->SetSourceHeight(Spec.Width);
+		Light->SetLightColor(Spec.Color);
+		Light->SetAttenuationRadius(1500.f);
+		Light->RegisterComponent();
+		PortraitLights.Add(Light);
+	}
+	// The default camera looks from yaw 180; turn the key round to its side.
+	LookDevPivot->SetWorldRotation(FRotator(0.0, 180.0, 0.0));
+	// Fixed exposure: auto-exposure in a black surround brightens everything, so albedo could not be judged between
+	// shots. Manual exposure at EV100 0: the 40 cd key at about 3.3 m lights a 0.18 grey to about 0.18 on screen.
+	// -ExploreLookDevBias=<stops> shifts it.
+	float Bias = 0.f;
+	FParse::Value(FCommandLine::Get(), TEXT("ExploreLookDevBias="), Bias);
+	FixExposure(Bias);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: look-dev set on (%d actors hidden, key spin %.1f deg/s, grey wall %.2f)."), Hidden, LookDevSpin, GreyAlbedo);
+}
+
+#if !UE_BUILD_SHIPPING
+namespace
+{
+// -LookFrontProbe=<closed>+<open> (look-dev, headless): the look worn with one garment pair (in place of its own) made of two existing
+// meshes, so the runtime open/closed switch (FTLook::SetFront) can be exercised before a real open mesh exists. The
+// closed half is added to the pieces unless either half is listed. False without the flag or when it doesn't parse.
+bool FrontProbeLook(const FFTLeadLook& Look, FFTLeadLook& Out)
+{
+	FString Arg;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("LookFrontProbe="), Arg))
+	{
+		return false;
+	}
+	FString Closed, Open;
+	if (!Arg.Split(TEXT("+"), &Closed, &Open) || Closed.IsEmpty() || Open.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: -LookFrontProbe=%s isn't <closed>+<open>; ignored."), *Arg);
+		return false;
+	}
+	Out = Look;
+	FFTGarmentFronts Pair;
+	Pair.Closed = FSoftObjectPath(Closed);
+	Pair.Open = FSoftObjectPath(Open);
+	Pair.bOpen = false;
+	Out.Fronts = {Pair};  // alone: a configured pair naming the same mesh would match first
+	if (!Out.PiecePaths.Contains(Pair.Closed) && !Out.PiecePaths.Contains(Pair.Open))
+	{
+		Out.PiecePaths.Add(Pair.Closed);
+	}
+	return true;
+}
+
+// One line per piece: its mesh, whether the body leads its pose, and what each slot shows.
+void LogPieces(const TCHAR* Step, const USkeletalMeshComponent& Body, const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces)
+{
+	for (const USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (!Piece)
+		{
+			continue;
+		}
+		FString Slots;
+		for (int32 I = 0; I < Piece->GetNumMaterials(); ++I)
+		{
+			const UMaterialInterface* Material = Piece->GetMaterial(I);
+			Slots += FString::Printf(TEXT(" [%d]%s"), I, Material ? *Material->GetName() : TEXT("none"));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FRONT_PROBE %s: %s leader=%s slots:%s"), Step,
+			Piece->GetSkeletalMeshAsset() ? *Piece->GetSkeletalMeshAsset()->GetName() : TEXT("none"),
+			Piece->LeaderPoseComponent.Get() == &Body ? TEXT("body") : TEXT("OTHER"), *Slots);
+	}
+}
+}
+#endif
+
+void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
+{
+#if !UE_BUILD_SHIPPING
+	FFTLeadLook ProbeLook;
+	const bool bFrontProbe = FrontProbeLook(InLook, ProbeLook);
+	const FFTLeadLook& Look = bFrontProbe ? ProbeLook : InLook;
+#else
+	const FFTLeadLook& Look = InLook;
+#endif
+	// A new look is a swap: the safe points the last lead walked stay with it.
+	Unstick.reset();
 	// Grooms first: they may be bound to a piece.
 	for (USceneComponent* Groom : GroomComponents)
 	{
@@ -377,11 +1012,37 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 		// Turn the body to face the capsule's forward (+X).
 		BodyComponent->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Body), 0.0));
 	}
-	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Look.PiecePaths, Pieces, TEXT("FTExploreCharacter"));
+	WornFronts = Loaded.Fronts;
+	WornLook = Look;
+	// New pieces: the wet instances are gathered again the next time the lead is wet.
+	WetMaterials.Reset();
+	WetSkinDry.Reset();
+	bWetMaterialsMade = false;
+	WetHairMaterials.Reset();
+	WetHairDry.Reset();
+	bWetHairMade = false;
+	SkinWetEased = 0.f;
+	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
+	// The grooms come on dry; the wet switch swaps them on its next tick if the weather is wet.
+	bGroomWet = false;
+	WetGroomHold.Reset();
+	FTLook::PreloadWetGrooms(Look.Grooms, WetGroomHold, TEXT("FTExploreCharacter"));
+	FTLook::SwapMaterials(*BodyComponent, Pieces, Look.MaterialSwaps, TEXT("FTExploreCharacter"));
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, Body ? *Body->GetName() : TEXT("none"), BodyComponent->GetRelativeRotation().Yaw, Pieces.Num(), Cloth,
 		GroomComponents.Num(), *Loaded.ClipFolder);
+#if !UE_BUILD_SHIPPING
+	if (bFrontProbe)
+	{
+		LogPieces(TEXT("setup"), *BodyComponent, Pieces);
+		const int32 Opened = FTLook::SetFront(Look, WornFronts, *BodyComponent, Pieces, FString(), true, TEXT("FTExploreCharacter"));
+		LogPieces(TEXT("open"), *BodyComponent, Pieces);
+		const int32 Closed = FTLook::SetFront(Look, WornFronts, *BodyComponent, Pieces, FString(), false, TEXT("FTExploreCharacter"));
+		LogPieces(TEXT("closed"), *BodyComponent, Pieces);
+		UE_LOG(LogForgottenThird, Display, TEXT("FRONT_PROBE done: %d piece(s) opened, %d closed."), Opened, Closed);
+	}
+#endif
 	// A body that didn't load keeps the clips worn with it.
 	if (Loaded.Body)
 	{
@@ -390,7 +1051,7 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& Look)
 	BeginWeapon(Look);
 }
 
-void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
+void AFTExploreCharacter::LoadWeaponTable()
 {
 	if (!bWeaponTableTried)
 	{
@@ -408,11 +1069,26 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 			WeaponTable = ftcore::ArenaTable();
 		}
 	}
+}
+
+bool AFTExploreCharacter::IsPlayableLead(const FFTLeadLook& Look)
+{
+	LoadWeaponTable();
+	// The runner's lookup, no fallback to the first kit: a look with no kit in arena.json is not playable.
+	const ftcore::ArenaFighter* Kit = WeaponTable.findFighter(FT::ToUtf8(Look.Name.ToLower()));
+	return Kit && ftcore::arenaPlayable(*Kit);
+}
+
+void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
+{
+	LoadWeaponTable();
 	const ftcore::ArenaFighter& Kit = WeaponTable.fighter(FT::ToUtf8(Look.Name.ToLower()));
 	// The body and its anim instance may be new: the props, effects and clips go on again.
 	Weapons.End();
 	Weapons.Begin(this, GetMesh(), Look, Kit);
 	Strike.begin(Kit);
+	AimKindNow = ftcore::aimKindOf(Kit);
+	AttackHold.reset();
 	bPressLight = bPressHeavy = false;
 	bWeaponBodyBusy = false;
 	ChestBone = INDEX_NONE;
@@ -434,14 +1110,207 @@ void AFTExploreCharacter::BeginWeapon(const FFTLeadLook& Look)
 		Kit.heavy.total(), Weapons.IsOn() ? TEXT("props and clips on") : TEXT("no body to wear them"));
 }
 
-void AFTExploreCharacter::HandleLight()
+bool AFTExploreCharacter::TakesInput()
 {
-	bPressLight = !Van.IsValid(); // the van's inputs never reach the weapon
+	const APlayerController* PC = Cast<APlayerController>(Controller);
+	return PC && !Van.IsValid() && !PC->bShowMouseCursor && !UFTPauseSubsystem::IsBlocking(this) &&
+		!UFTPauseSubsystem::IsJustResumed(this) && !ScenePlaying();
 }
 
-void AFTExploreCharacter::HandleHeavy()
+void AFTExploreCharacter::TickHeldKeys(float DeltaSeconds)
 {
-	bPressHeavy = !Van.IsValid();
+	using ftcore::InputAction;
+	const APlayerController* PC = Cast<APlayerController>(Controller);
+	if (!TakesInput())
+	{
+		// Taken away (the van, a menu, a pause, a scene): the latches let go. Getting into the van stops the run
+		// itself (ResetHeldInput); the van's own speed is not ours to touch.
+		RunInput.reset();
+		bCrouchKeyWas = true;
+		MapHeld = 0.f;
+		bMapHoldUsed = true;
+		if (bNewUiParty)
+		{
+			TickPartyScreen(nullptr, DeltaSeconds); // shuts the screen with no pick
+		}
+		if (bRunOn && !Van.IsValid())
+		{
+			bRunOn = false;
+			HandleRunStop();
+		}
+		return;
+	}
+	// Run: its key held or toggled, or on a pad the left stick pushed all the way.
+	const float StickX = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftX);
+	const float StickY = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY);
+	const bool bStickFull = StickX * StickX + StickY * StickY >= 0.95f * 0.95f;
+	const bool bRunKey = RunInput.tick(FTInputBindings::IsDown(*PC, InputAction::Run), FTInputBindings::Toggles(GetWorld(), InputAction::Run));
+	const bool bRun = bRunKey || bStickFull;
+	if (bRun != bRunOn)
+	{
+		bRunOn = bRun;
+		if (bRun)
+		{
+			HandleRunStart();
+		}
+		else
+		{
+			HandleRunStop();
+		}
+	}
+	// Crouch: the press crouches (or slides in a sprint, or lets go of a ledge); held, letting go stands up; toggled,
+	// the next press does.
+	// Field only (the pad's stick click is Intercept in a fight). This body takes no input in a fight: the arena host
+	// possesses the fighter figure, so here is always outside one.
+	constexpr bool bInFight = false;
+	const bool bCrouchKey = ftcore::inputActionLive(InputAction::Crouch, bInFight) && FTInputBindings::IsDown(*PC, InputAction::Crouch);
+	if (bCrouchKey && !bCrouchKeyWas)
+	{
+		HandleCrouch();
+	}
+	else if (!bCrouchKey && bCrouchKeyWas && !FTInputBindings::Toggles(GetWorld(), InputAction::Crouch)
+		&& GetCharacterMovement()->bWantsToCrouch)
+	{
+		UnCrouch();
+	}
+	bCrouchKeyWas = bCrouchKey;
+	// Under the new UI the party screen takes the map button's hold (and Party's own key); its short press is still the
+	// map.
+	if (bNewUiParty)
+	{
+		TickPartyScreen(PC, DeltaSeconds);
+		return;
+	}
+	// The map button held shows or hides the party (the pad has no button of its own for it); a short press, on
+	// letting go, is the map.
+	if (FTInputBindings::IsDown(*PC, InputAction::Map))
+	{
+		MapHeld += DeltaSeconds;
+		if (!bMapHoldUsed && MapHeld >= ftcore::kInputMapHoldForParty)
+		{
+			bMapHoldUsed = true;
+			HandleToggleParty();
+		}
+	}
+	else
+	{
+		if (MapHeld > 0.f && !bMapHoldUsed)
+		{
+			HandleToggleMap();
+		}
+		MapHeld = 0.f;
+		bMapHoldUsed = false;
+	}
+}
+
+void AFTExploreCharacter::TickPartyScreen(const APlayerController* PC, float DeltaSeconds)
+{
+	using ftcore::InputAction;
+	ftcore::UiPartyInput In;
+	In.live = PC != nullptr && !FTInputBindings::LostFocus();
+	In.explore = true;
+	// The rows' truth, the same the screen draws (IsPartnerHere): with no other playable look the partner's row reads
+	// NOT HERE and a flick skips it, so a release never picks it. The rows are kept current (FindPartyRows at begin
+	// play and after every lead change), so this frame's step sees them before it opens.
+	In.partnerHere = IsPartnerHere();
+	In.lead = LeadIndex;
+	if (In.live)
+	{
+		In.partyDown = FTInputBindings::IsDown(*PC, InputAction::Party);
+		In.mapDown = FTInputBindings::IsDown(*PC, InputAction::Map);
+		In.toggle = FTInputBindings::PartyToggles(GetWorld());
+		In.stickY = PC->GetInputAnalogKeyState(EKeys::Gamepad_RightY);
+		if (FMath::Abs(In.stickY) < 0.1f)
+		{
+			In.stickY = PC->GetInputAnalogKeyState(EKeys::Gamepad_LeftY); // either stick works the rows
+		}
+		float MouseDX = 0.f;
+		PC->GetInputMouseDelta(MouseDX, In.mouseY);
+		// The screen's own keys: the move keys' forward and back (W and S by default), the arrows and the D-pad move
+		// the cursor; Enter, a left click or pad A picks; pad B or Esc (the pause key's OnBack, claimed while it
+		// stands) shuts it with no pick.
+		const FKey& Fwd = FTInputBindings::Key(InputAction::MoveForward, ftcore::InputDevice::Keys);
+		const FKey& Back = FTInputBindings::Key(InputAction::MoveBack, ftcore::InputDevice::Keys);
+		In.upDown = (Fwd.IsValid() && PC->IsInputKeyDown(Fwd)) || PC->IsInputKeyDown(EKeys::Up) ||
+			PC->IsInputKeyDown(EKeys::Gamepad_DPad_Up);
+		In.downDown = (Back.IsValid() && PC->IsInputKeyDown(Back)) || PC->IsInputKeyDown(EKeys::Down) ||
+			PC->IsInputKeyDown(EKeys::Gamepad_DPad_Down);
+		In.confirmDown = PC->IsInputKeyDown(EKeys::Enter) || PC->IsInputKeyDown(EKeys::LeftMouseButton) ||
+			PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Bottom);
+		In.cancelDown = bPartyBack || PC->IsInputKeyDown(EKeys::Gamepad_FaceButton_Right);
+		In.tapStays = true; // the keys above and the controls line are explore's
+		if (AFTPlayerController* FTPC = Cast<AFTPlayerController>(Controller); FTPC && BackBoundTo.Get() != FTPC)
+		{
+			FTPC->OnBack.AddUniqueDynamic(this, &AFTExploreCharacter::HandlePartyBack);
+			BackBoundTo = FTPC;
+		}
+	}
+	bPartyBack = false;
+	const ftcore::UiPartyOut Out = ftcore::uiPartyScreenStep(PartyScreen, In, DeltaSeconds);
+	// The confirm key still held after the screen shuts is the screen's, not a light (TickAim reads this).
+	bPartyKeysHeld = PartyScreen.open || (bPartyKeysHeld && In.confirmDown);
+	if (Out.opened)
+	{
+		FindPartyRows();
+	}
+	if (Out.map)
+	{
+		HandleToggleMap();
+	}
+	if (!Out.picked())
+	{
+		return;
+	}
+	switch (Out.pick)
+	{
+	case ftcore::UiPartyRow::Partner:
+		// Guarded as well: only a partner that is here (a valid other look) is ever sent.
+		if (IsPartnerHere())
+		{
+			SwitchLeadTo(PartnerIndex);
+		}
+		break;
+	case ftcore::UiPartyRow::Follow:
+		HandleToggleParty();
+		break;
+	case ftcore::UiPartyRow::Third:
+	case ftcore::UiPartyRow::Lead:
+		break;
+	}
+}
+
+void AFTExploreCharacter::HandlePartyBack()
+{
+	if (!PartyScreen.open)
+	{
+		return; // Esc opens the pause menu as ever
+	}
+	bPartyBack = true;
+	if (AFTPlayerController* FTPC = Cast<AFTPlayerController>(Controller))
+	{
+		FTPC->ClaimBack();
+	}
+}
+
+void AFTExploreCharacter::FindPartyRows()
+{
+	PartnerIndex = -1;
+	ThirdIndex = -1;
+	for (int32 I = 0; I < PartyLooks.Num(); ++I)
+	{
+		if (I == LeadIndex)
+		{
+			continue;
+		}
+		if (IsPlayableLead(PartyLooks[I]))
+		{
+			PartnerIndex = PartnerIndex < 0 ? I : PartnerIndex;
+		}
+		else
+		{
+			ThirdIndex = ThirdIndex < 0 ? I : ThirdIndex;
+		}
+	}
 }
 
 void AFTExploreCharacter::SpawnFieldDummy()
@@ -455,6 +1324,12 @@ void AFTExploreCharacter::SpawnFieldDummy()
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	const AFTFieldDummy* Dummy = GetWorld()->SpawnActor<AFTFieldDummy>(At, FRotator::ZeroRotator, Params);
+	// A forced aim (-ExploreAim) looks at the post, as a player holding aim would: the camera's line on it for every
+	// lead, the body turning to that line.
+	if (APlayerController* PC = Cast<APlayerController>(Controller); PC && Dummy && AimFrom >= 0.f)
+	{
+		PC->SetControlRotation(FRotator(-5.0, Forward.Rotation().Yaw, 0.0));
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Field: dummy %s at %s."), Dummy ? TEXT("stood") : TEXT("not spawned"), *At.ToCompactString());
 }
 
@@ -495,11 +1370,23 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 	{
 		Body = ftcore::FieldBody::Rolling;
 	}
+	else if ((bSwimming || bSwimRescue) && !SwimFlagsNow.attack)
+	{
+		Body = ftcore::FieldBody::Seated; // swimming (ftcore::Swim's flags): no weapon
+	}
 	else if (GetCharacterMovement()->IsFalling())
 	{
 		Body = ftcore::FieldBody::Falling;
 	}
+	// The swim stows the weapons while its flags say so, and hands them back when it ends.
+	const bool bStow = (bSwimming || bSwimRescue) && !SwimFlagsNow.weaponsOut;
+	if (bStow != bSwimHolstered)
+	{
+		bSwimHolstered = bStow;
+		Weapons.SetHolstered(bStow);
+	}
 	Strike.setBody(Body);
+	TickAim(DeltaSeconds, Body);
 	const bool bBusy = !Strike.canAttack();
 	if (bBusy && !bWeaponBodyBusy)
 	{
@@ -536,6 +1423,15 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 		Strike.setChestHeight(float((GetMesh()->GetBoneTransform(ChestBone).GetLocation().Z - FeetZ) / 100.0));
 	}
 	const FVector Face = GetActorForwardVector().GetSafeNormal2D();
+	// On the move the attack turns with the body: toward the way the stick pushes, else (aiming) the camera's.
+	{
+		FVector Want = GetLastMovementInputVector().GetSafeNormal2D();
+		if (Want.IsNearlyZero() && Aim.aiming() && Controller)
+		{
+			Want = FRotator(0.0, Controller->GetControlRotation().Yaw, 0.0).Vector();
+		}
+		Strike.setSteer(ftcore::Vec2{float(Want.X), float(Want.Y)}, AttackMoveNow().turnRate);
+	}
 	const ftcore::ArenaOutput& Out = Strike.tick(DeltaSeconds, bPressLight, bPressHeavy,
 		ftcore::Vec2{float(Pos.X / 100.0), float(Pos.Y / 100.0)}, ftcore::Vec2{float(Face.X), float(Face.Y)}, Targets, Count);
 	bPressLight = bPressHeavy = false;
@@ -558,13 +1454,224 @@ void AFTExploreCharacter::TickWeapon(float DeltaSeconds)
 		const float Gap = FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), Want);
 		AddActorWorldRotation(FRotator(0.0, Gap * (1.f - FMath::Exp(-DeltaSeconds / kAttackTurnTime)), 0.0));
 	}
-	const ftcore::FieldAim& Aim = Strike.aim();
-	Weapons.SetAim(FVector(Aim.at.x * 100.0, Aim.at.y * 100.0, FeetZ + Aim.height * 100.0), Aim.aimed);
+	// An aimed gauntlet strike's lunge toward the reticle (m/s), swept so it stops at a wall.
+	if (Out.player.velocity.x != 0.f || Out.player.velocity.y != 0.f)
+	{
+		AddActorWorldOffset(FVector(Out.player.velocity.x * 100.0 * DeltaSeconds, Out.player.velocity.y * 100.0 * DeltaSeconds, 0.0), true);
+	}
+	const ftcore::FieldAim& StrikeAim = Strike.aim();
+	if (Aim.alpha() > 0.f && !Strike.attacking())
+	{
+		Weapons.SetAim(ReticlePoint, true); // the raised pistol or casting hand follows the reticle between attacks
+	}
+	else
+	{
+		Weapons.SetAim(FVector(StrikeAim.at.x * 100.0, StrikeAim.at.y * 100.0, FeetZ + StrikeAim.height * 100.0), StrikeAim.aimed);
+	}
+	Weapons.SetAimHold(Aim.alpha());
+	// Walking, the strike plays from the spine up and the legs keep the walk; standing, on the whole body.
+	Weapons.SetActionUpper(ftcore::attackUpperShare(AttackMoveTable, static_cast<float>(GetVelocity().Size2D() / 100.0)));
 	const double T = Strike.time();
 	Weapons.Feed(Out.events, T);
 	Weapons.Track(Out.player, T);
 	Weapons.Paint(T);
 	TickWeaponShots();
+}
+
+void AFTExploreCharacter::TickAim(float DeltaSeconds, ftcore::FieldBody Body)
+{
+	if (!bAimRulesTried)
+	{
+		bAimRulesTried = true;
+		ftcore::AimRules Rules;
+		TArray<uint8> Bytes;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Battle/aim.json");
+		std::string Error;
+		if (!(IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File)
+			&& ftcore::importAimRules(FT::BytesAsText(Bytes), Rules, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Field: no usable Data/Battle/aim.json; the aim uses its built-in rules.\n%s"), *FT::ToFString(Error));
+			Rules = ftcore::AimRules();
+		}
+		Aim.setRules(Rules);
+		ftcore::AttackMoveRules Moves;
+		const FString MoveFile = FPaths::ProjectDir() / TEXT("Data/Battle/attack_move.json");
+		Bytes.Reset();
+		if (!(FFileHelper::LoadFileToArray(Bytes, *MoveFile) && ftcore::importAttackMoveRules(FT::BytesAsText(Bytes), Moves, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Field: no usable Data/Battle/attack_move.json; attacks use built-in move rules: %s"), *FT::ToFString(Error));
+			Moves = ftcore::AttackMoveRules();
+		}
+		AttackMoveTable = Moves;
+	}
+	const ftcore::AimRules& Rules = Aim.rules();
+	// The mouse buttons count only on foot, with the game taking input: not in the van, a menu, a pause or a scene, nor
+	// under the party screen (its click picks; still held after it shuts, it is no light).
+	// Aim and Light from the binding table (right and left mouse, LT and RT by default): Aim held or toggled, Light a
+	// tap for the light and held for the heavy.
+	const APlayerController* PC = Cast<APlayerController>(Controller);
+	const bool bInput = TakesInput() && !bPartyKeysHeld;
+	const bool bForced = AimFrom >= 0.f && GetWorld()->GetTimeSeconds() >= AimFrom && !Van.IsValid() && !ScenePlaying();
+	// No input (paused or just resumed, a scene): the press states clear before they tick, so a held key let go
+	// meanwhile reads as no press rather than a light (PressHold::tickIf). Out of focus only the held attack clears;
+	// the toggled latches (run, aim, crouch) stay.
+	if (!bInput)
+	{
+		AimInput.reset();
+	}
+	const bool bHeld = (bInput && AimInput.tick(FTInputBindings::IsDown(*PC, ftcore::InputAction::Aim),
+		FTInputBindings::Toggles(GetWorld(), ftcore::InputAction::Aim))) || bForced;
+	// A gun kit aiming fires one round per press, at the press, and never a heavy.
+	const ftcore::PressHold::Out Press = AttackHold.tickIf(bInput && !FTInputBindings::LostFocus(), DeltaSeconds, bInput && FTInputBindings::IsDown(*PC, ftcore::InputAction::Light),
+		Rules.heavyHold, Strike.attacking(), bHeld && Strike.kit().weapon == ftcore::ArenaWeapon::Guns);
+	bPressLight |= Press.light;
+	bPressHeavy |= Press.heavy;
+	Aim.tick(DeltaSeconds, bHeld, Body);
+	ApplyAimCamera();
+	// The walk speed: whatever the movement handlers last set, scaled while aiming.
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	if (Move->MaxWalkSpeed != AimSpeedSet)
+	{
+		AimSpeedBase = Move->MaxWalkSpeed;
+	}
+	if (!Van.IsValid())
+	{
+		// An attack under way slows the walk too; a fist's or spell's heavy stops it through its active part (speed 0:
+		// the movement brakes the body to a stop at its own braking rate).
+		Move->MaxWalkSpeed = AimSpeedBase * Aim.speedScale() * AttackMoveNow().speedScale;
+		AimSpeedSet = Move->MaxWalkSpeed;
+	}
+	// The reticle: the camera's line to the first thing it meets within reticleRange, the lead itself not counted.
+	const bool bAiming = Aim.aiming();
+	if (Aim.alpha() > 0.f && Camera)
+	{
+		const FVector From = Camera->GetComponentLocation();
+		const FVector To = From + Camera->GetForwardVector() * (double(Rules.reticleRange) * 100.0);
+		const FCollisionQueryParams Params(SCENE_QUERY_STAT(FTAimReticle), false, this);
+		FHitResult Hit;
+		ReticlePoint = GetWorld()->LineTraceSingleByChannel(Hit, From, To, ECC_Visibility, Params) ? FVector(Hit.ImpactPoint) : To;
+	}
+	const double FeetZ = GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	Strike.setReticle(bAiming, ftcore::Vec2{float(ReticlePoint.X / 100.0), float(ReticlePoint.Y / 100.0)},
+		float((ReticlePoint.Z - FeetZ) / 100.0), AimKindNow == ftcore::AimKind::Focus ? Rules.lungeScale : 0.f, Rules.lungeStop);
+	// The body turns to the camera's aim (an attack under way turns itself, to the reticle).
+	if (bAiming && Controller && !Strike.attacking() && DeltaSeconds > 0.f)
+	{
+		const float Want = static_cast<float>(Controller->GetControlRotation().Yaw);
+		const float Gap = FMath::DegreesToRadians(FMath::FindDeltaAngleDegrees(static_cast<float>(GetActorRotation().Yaw), Want));
+		AddActorWorldRotation(FRotator(0.0, FMath::RadiansToDegrees(ftcore::aimTurnStep(Rules, Gap, DeltaSeconds)), 0.0));
+	}
+}
+
+float AFTExploreCharacter::BaseWalkSpeed() const
+{
+	// The walk speed before the aim's and the attack's scaling (TickAim): what the ledge catch, the slide and the gait read.
+	const float Max = GetCharacterMovement()->MaxWalkSpeed;
+	return Max == AimSpeedSet ? AimSpeedBase : Max;
+}
+
+bool AFTExploreCharacter::ScenePlaying()
+{
+	// An in-place cutscene or a scene holding the party: the mouse's attack and aim are off too.
+	const AFTExploreDirector* D = GetDirector();
+	if (!D)
+	{
+		return false;
+	}
+	const AFTCutsceneDirector* Cut = D->GetCutsceneDirector();
+	return (Cut && Cut->IsPlayingInPlace()) || D->IsPartyHeld();
+}
+
+ftcore::AttackMoveOut AFTExploreCharacter::AttackMoveNow() const
+{
+	const ftcore::ArenaAttack* Attack = Strike.attack();
+	// By the move's own kind: a gun kit's shot fires, its kicks take the focus numbers.
+	return Attack ? ftcore::attackMove(AttackMoveTable, ftcore::aimKindOfMove(Strike.kit(), Strike.moveNow()), Strike.heavyNow(),
+		*Attack, Strike.actionTime()) : ftcore::AttackMoveOut();
+}
+
+void AFTExploreCharacter::TickUnstick(float DeltaSeconds)
+{
+	if (!bUnstickTried)
+	{
+		bUnstickTried = true;
+		ftcore::UnstickRules Rules;
+		TArray<uint8> Bytes;
+		std::string Error;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Movement/unstick.json");
+		if (!(FFileHelper::LoadFileToArray(Bytes, *File) && ftcore::importUnstickRules(FT::BytesAsText(Bytes), Rules, &Error)))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Field: no usable Data/Movement/unstick.json; the unstick uses built-in rules: %s"), *FT::ToFString(Error));
+			Rules = ftcore::UnstickRules();
+		}
+		Unstick.setRules(Rules);
+	}
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	// Only on foot, walking or in the air: the van, a traversal, a hang or a swim carry the body their own way.
+	if (DeltaSeconds <= 0.f)
+	{
+		return; // a paused frame: nothing moved
+	}
+	if (Van.IsValid() || bTraversing || !(Move->IsMovingOnGround() || Move->IsFalling()))
+	{
+		Unstick.reset();
+		return;
+	}
+	FFindFloorResult Floor = Move->CurrentFloor;
+	if (Move->IsFalling())
+	{
+		Move->FindFloor(GetActorLocation(), Floor, false);
+	}
+	// The movement's own walkable test wins (a stair's edge can show a steep normal on walkable ground).
+	const bool bOnGround = Floor.bBlockingHit && Floor.FloorDist < 10.f;
+	const FVector N = bOnGround ? FVector(Floor.HitResult.ImpactNormal) : FVector::UpVector;
+	const double HalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const FVector At = GetActorLocation();
+	const bool bRescue = Unstick.tick(DeltaSeconds, ftcore::Vec2{float(At.X / 100.0), float(At.Y / 100.0)}, float((At.Z - HalfHeight) / 100.0),
+		bOnGround, ftcore::Vec2{float(N.X), float(N.Y)}, float(N.Z), Move->IsFalling(), bOnGround ? (Floor.bWalkableFloor ? 1 : 0) : -1);
+	if (bRescue)
+	{
+		const ftcore::UnstickPoint& To = Unstick.rescueTo();
+		SetActorLocation(FVector(To.at.x * 100.0, To.at.y * 100.0, To.z * 100.0 + HalfHeight + 2.0), false, nullptr, ETeleportType::TeleportPhysics);
+		Move->StopMovementImmediately();
+		if (WedgeDropAt >= 0.0 && WedgeRescueAt < 0.0)
+		{
+			WedgeRescueAt = GetWorld()->GetTimeSeconds();
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Field: the lead was stuck off walkable ground; stepped back to (%.0f, %.0f, %.0f)."),
+			To.at.x * 100.0, To.at.y * 100.0, To.z * 100.0);
+		if (APlayerController* PC = Cast<APlayerController>(Controller); PC && PC->PlayerCameraManager)
+		{
+			PC->PlayerCameraManager->StartCameraFade(1.f, 0.f, Unstick.rules().fadeTime, FLinearColor::Black, false, false);
+		}
+		return;
+	}
+	// Too steep to stand on: down the slope at slideSpeed at least (jump stays open, HandleJump).
+	if (Unstick.sliding() && Move->IsFalling())
+	{
+		const ftcore::Vec2 V = Unstick.slideVelocity(ftcore::Vec2{float(Move->Velocity.X / 100.0), float(Move->Velocity.Y / 100.0)}, DeltaSeconds);
+		Move->Velocity.X = V.x * 100.0;
+		Move->Velocity.Y = V.y * 100.0;
+	}
+}
+
+void AFTExploreCharacter::ApplyAimCamera()
+{
+	// The look and side cameras of the capture flags own the boom; the aim leaves them be.
+	if (!Boom || !Camera || !Boom->bUsePawnControlRotation || bSideAlways || bSideView)
+	{
+		return;
+	}
+	const float A = Aim.alpha();
+	if (A <= 0.f && !bAimCamera)
+	{
+		return;
+	}
+	bAimCamera = A > 0.f;
+	const ftcore::AimRules& Rules = Aim.rules();
+	Boom->TargetArmLength = Aim.blend(kArm, kArm * Rules.armScale);
+	Boom->SocketOffset = FMath::Lerp(kShoulder, FVector(0.0, Rules.shoulderRight, Rules.shoulderUp), double(A));
+	Camera->SetFieldOfView(Aim.blend(kFov, Rules.fov));
 }
 
 void AFTExploreCharacter::TickWeaponShots()
@@ -586,8 +1693,23 @@ void AFTExploreCharacter::TickWeaponShots()
 		}
 		return;
 	}
+	const float Speed = static_cast<float>(GetVelocity().Size2D() / 100.0);
+	if (StripShots > 0)
+	{
+		// The strip: the first light attack begun while walking, filmed from its start every StripStep seconds.
+		if (StripAt < 0.0 && bNew && GetWorld()->GetTimeSeconds() >= WeaponShotDelay && !Strike.heavyNow() && Speed > 0.5f)
+		{
+			StripAt = Strike.time();
+			WeaponShotDue = StripAt;
+		}
+		if (StripAt >= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Field: strip frame t=%.3f speed=%.2f m/s upper=%.2f attacking=%d"),
+				Strike.time() - StripAt, Speed, ftcore::attackUpperShare(AttackMoveTable, Speed), Strike.attacking() ? 1 : 0);
+		}
+	}
 	// Each new attack is filmed at its impact, or (every second one) a shot's or cast's mid-flight.
-	if (bNew && GetWorld()->GetTimeSeconds() >= WeaponShotDelay)
+	else if (bNew && GetWorld()->GetTimeSeconds() >= WeaponShotDelay)
 	{
 		WeaponShotDue = Weapons.GetViewTime(WeaponShotIndex % 2 == 0);
 	}
@@ -595,19 +1717,19 @@ void AFTExploreCharacter::TickWeaponShots()
 	{
 		return;
 	}
-	WeaponShotDue = -1.0;
+	WeaponShotDue = StripShots > 0 ? WeaponShotDue + StripStep : -1.0;
 	const APlayerController* Player = Cast<APlayerController>(GetController());
-	if (AHUD* Hud = Player ? Player->GetHUD() : nullptr)
+	if (AFTExploreHUD* Hud = Player ? Cast<AFTExploreHUD>(Player->GetHUD()) : nullptr)
 	{
-		Hud->bShowHUD = false;
+		Hud->bReticleOnly = true;
 	}
 	++WeaponShotIndex;
 	const FString File = FString::Printf(TEXT("%s_%d_%s.png"), *WeaponShotPrefix, WeaponShotIndex, Weapons.GetLastStrikeName());
-	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
-	{
-		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
-	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon shot %s at %.2f s."), *File, Strike.time());
+	// The viewport's own frame with the UI drawn (HighResShot leaves the HUD out, and with it the aim reticle); the
+	// size is the window's (-ResX/-ResY).
+	FScreenshotRequest::RequestScreenshot(File, true, false);
+	UE_LOG(LogForgottenThird, Display, TEXT("Field: weapon shot %s at %.2f s, speed %.2f m/s, upper %.2f."), *File, Strike.time(), Speed,
+		ftcore::attackUpperShare(AttackMoveTable, Speed));
 	if (--WeaponShotsLeft <= 0)
 	{
 		WeaponQuitIn = 2.f; // the last shot is written before the exit
@@ -627,8 +1749,23 @@ void AFTExploreCharacter::CreateInputObjects()
 		return;
 	}
 	Context = NewObject<UInputMappingContext>(this, TEXT("IMC_Explore"));
-
 	MoveAction = MakeAction(TEXT("IA_ExploreMove"), true);
+	LookAction = MakeAction(TEXT("IA_ExploreLook"), true);
+	JumpAction = MakeAction(TEXT("IA_ExploreJump"), false);
+	RollAction = MakeAction(TEXT("IA_ExploreRoll"), false);
+	InteractAction = MakeAction(TEXT("IA_ExploreInteract"), false);
+	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
+	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
+	MapBoundKeys();
+	// Run, Crouch, Aim, Light and the map button's party hold are polled (TickHeldKeys, TickAim): held or toggled.
+}
+
+void AFTExploreCharacter::MapBoundKeys()
+{
+	// From scratch each time: the actions stay (their BindActions with them), the keys are mapped again. UnmapAll and
+	// MapKey ask Enhanced Input to rebuild the mappings of every player using the context.
+	Context->UnmapAll();
+	KeyGeneration = FTInputBindings::Generation();
 	// Keys give X = right, Y = forward. W and S swizzle their 1D value into Y.
 	auto MapMove = [this](const FKey& Key, bool bSwizzle, bool bNegate)
 	{
@@ -642,59 +1779,58 @@ void AFTExploreCharacter::CreateInputObjects()
 			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(Context));
 		}
 	};
-	MapMove(EKeys::W, true, false);
-	MapMove(EKeys::S, true, true);
-	MapMove(EKeys::D, false, false);
-	MapMove(EKeys::A, false, true);
-	MapMove(EKeys::Up, true, false);
-	MapMove(EKeys::Down, true, true);
-	MapMove(EKeys::Right, false, false);
-	MapMove(EKeys::Left, false, true);
+	// Every key from the binding table (FTInputBindings); the left stick and the look axes are analog and fixed.
+	for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+	{
+		const auto Move = [&MapMove, Device](ftcore::InputAction Bound, bool bSwizzle, bool bNegate)
+		{
+			const FKey& Key = FTInputBindings::Key(Bound, Device);
+			if (Key.IsValid())
+			{
+				MapMove(Key, bSwizzle, bNegate);
+			}
+		};
+		Move(ftcore::InputAction::MoveForward, true, false);
+		Move(ftcore::InputAction::MoveBack, true, true);
+		Move(ftcore::InputAction::MoveRight, false, false);
+		Move(ftcore::InputAction::MoveLeft, false, true);
+	}
 	MapMove(EKeys::Gamepad_Left2D, false, false);
-
-	LookAction = MakeAction(TEXT("IA_ExploreLook"), true);
+	const auto Both = [this](UInputAction* Action, ftcore::InputAction Bound)
+	{
+		for (const ftcore::InputDevice Device : {ftcore::InputDevice::Keys, ftcore::InputDevice::Pad})
+		{
+			const FKey& Key = FTInputBindings::Key(Bound, Device);
+			if (Key.IsValid())
+			{
+				Context->MapKey(Action, Key);
+			}
+		}
+	};
 	Context->MapKey(LookAction, EKeys::Mouse2D);
 	Context->MapKey(LookAction, EKeys::Gamepad_Right2D);
+	Both(JumpAction, ftcore::InputAction::Jump);
+	Both(RollAction, ftcore::InputAction::Roll);
+	Both(InteractAction, ftcore::InputAction::Interact);
 
-	JumpAction = MakeAction(TEXT("IA_ExploreJump"), false);
-	Context->MapKey(JumpAction, EKeys::SpaceBar);
-	Context->MapKey(JumpAction, EKeys::Gamepad_FaceButton_Bottom);
+	// Under the new UI the pad switches leads on the party screen only, so SwitchLead keeps its keyboard key alone.
+	bNewUiParty = FT::NewUiEnabled();
+	if (bNewUiParty)
+	{
+		const FKey& SwitchKey = FTInputBindings::Key(ftcore::InputAction::SwitchLead, ftcore::InputDevice::Keys);
+		if (SwitchKey.IsValid())
+		{
+			Context->MapKey(SwitchLeadAction, SwitchKey);
+		}
+	}
+	else
+	{
+		Both(SwitchLeadAction, ftcore::InputAction::SwitchLead);
+	}
 
-	RollAction = MakeAction(TEXT("IA_ExploreRoll"), false);
-	Context->MapKey(RollAction, EKeys::LeftAlt);
-	Context->MapKey(RollAction, EKeys::Gamepad_FaceButton_Right);
-
-	RunAction = MakeAction(TEXT("IA_ExploreRun"), false);
-	Context->MapKey(RunAction, EKeys::LeftShift);
-	Context->MapKey(RunAction, EKeys::Gamepad_LeftTrigger);
-
-	CrouchAction = MakeAction(TEXT("IA_ExploreCrouch"), false);
-	Context->MapKey(CrouchAction, EKeys::C);
-	Context->MapKey(CrouchAction, EKeys::LeftControl);
-	Context->MapKey(CrouchAction, EKeys::Gamepad_RightThumbstick);
-
-	InteractAction = MakeAction(TEXT("IA_ExploreInteract"), false);
-	Context->MapKey(InteractAction, EKeys::E);
-	Context->MapKey(InteractAction, EKeys::Enter);
-	Context->MapKey(InteractAction, EKeys::Gamepad_FaceButton_Left);
-
-	SwitchLeadAction = MakeAction(TEXT("IA_ExploreSwitchLead"), false);
-	Context->MapKey(SwitchLeadAction, EKeys::Tab);
-	Context->MapKey(SwitchLeadAction, EKeys::Gamepad_RightShoulder);
-
-	PartyAction = MakeAction(TEXT("IA_ExploreParty"), false);
-	Context->MapKey(PartyAction, EKeys::P);
-	Context->MapKey(PartyAction, EKeys::Gamepad_LeftShoulder);
-
-	LightAction = MakeAction(TEXT("IA_ExploreLight"), false);
-	Context->MapKey(LightAction, EKeys::LeftMouseButton);
-	Context->MapKey(LightAction, EKeys::J);
-	Context->MapKey(LightAction, EKeys::Gamepad_RightTrigger);
-
-	HeavyAction = MakeAction(TEXT("IA_ExploreHeavy"), false);
-	Context->MapKey(HeavyAction, EKeys::RightMouseButton);
-	Context->MapKey(HeavyAction, EKeys::K);
-	Context->MapKey(HeavyAction, EKeys::Gamepad_FaceButton_Top);
+	Both(PartyAction, ftcore::InputAction::Party);
+	// Run, Crouch, Aim, Light and the map button's party hold are polled (TickHeldKeys, TickAim): held or toggled; under
+	// the new UI so is Party (the party screen, TickPartyScreen).
 }
 
 UInputAction* AFTExploreCharacter::MakeAction(const TCHAR* Name, bool bAxis2D)
@@ -731,15 +1867,13 @@ void AFTExploreCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInput
 	Input->BindAction(JumpAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleJump);
 	Input->BindAction(JumpAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleJumpRelease);
 	Input->BindAction(RollAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRoll);
-	Input->BindAction(RunAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleRunStart);
-	Input->BindAction(RunAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleRunStop);
-	Input->BindAction(CrouchAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleCrouch);
 	Input->BindAction(InteractAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleInteract);
 	Input->BindAction(InteractAction, ETriggerEvent::Completed, this, &AFTExploreCharacter::HandleInteractRelease);
 	Input->BindAction(SwitchLeadAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleSwitchLead);
-	Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
-	Input->BindAction(LightAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleLight);
-	Input->BindAction(HeavyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleHeavy);
+	if (!bNewUiParty)
+	{
+		Input->BindAction(PartyAction, ETriggerEvent::Started, this, &AFTExploreCharacter::HandleToggleParty);
+	}
 }
 
 void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
@@ -750,8 +1884,14 @@ void AFTExploreCharacter::HandleMove(const FInputActionValue& Value)
 		return;
 	}
 	const FVector2D Axis = Value.Get<FVector2D>();
-	if (!Controller)
+	if (!Controller || PartyScreen.open) // the party screen takes the move keys and the stick
 	{
+		return;
+	}
+	// Under water the stick goes to the free swim (TickSwimDeep), which moves along the camera's look in 3D.
+	if (bSwimUnder || bSwimRescue)
+	{
+		SwimMoveAxis = Axis;
 		return;
 	}
 	const FRotator Yaw(0.0, Controller->GetControlRotation().Yaw, 0.0);
@@ -767,9 +1907,9 @@ void AFTExploreCharacter::HandleLook(const FInputActionValue& Value)
 		return;
 	}
 	const FVector2D Axis = Value.Get<FVector2D>();
-	if (bNoLook)
+	if (bNoLook || PartyScreen.open)
 	{
-		return;
+		return; // the party screen holds the camera: the stick and the mouse move its cursor
 	}
 	if (!Axis.IsNearlyZero())
 	{
@@ -792,6 +1932,10 @@ void AFTExploreCharacter::HandleRunStart()
 
 void AFTExploreCharacter::HandleJump()
 {
+	if (PartyScreen.open)
+	{
+		return;
+	}
 	if (AFTPartyVan* V = Van.Get())
 	{
 		V->SetHandbrake(true);
@@ -800,6 +1944,11 @@ void AFTExploreCharacter::HandleJump()
 	// Crouched, jump stands the body up; standing in front of a low wall or a ledge, it goes over or up; otherwise it jumps.
 	// Held in the air, it catches a ledge within reach (Tick).
 	bJumpHeld = true;
+	// Under water the held jump is the free swim's (its press rises to the surface); nothing else takes it.
+	if (bSwimUnder || bSwimRescue)
+	{
+		return;
+	}
 	// Mid-slide, the press is kept a moment for TickSlide, which cancels the slide into a jump once Core allows it.
 	if (SlideNow.sliding())
 	{
@@ -821,8 +1970,20 @@ void AFTExploreCharacter::HandleJump()
 		UnCrouch();
 		return;
 	}
-	if (TryTraverse(true))
+	if (!bSwimming && TryTraverse(true))
 	{
+		return;
+	}
+	// In the water, at a ladder: up it. At any other wall: out onto it (the fallback). A swimmer doesn't jump otherwise.
+	if (TryLadderClimb(true) || TryWaterClimb() || bSwimming)
+	{
+		return;
+	}
+	// Sliding down a too-steep bank the body is in the air to the movement, where Jump won't go: kick off it.
+	if (Unstick.sliding() && GetCharacterMovement()->IsFalling())
+	{
+		const FVector Off(Unstick.slideDir().x, Unstick.slideDir().y, 0.0);
+		LaunchCharacter(Off * 200.0 + FVector(0.0, 0.0, GetCharacterMovement()->JumpZVelocity), true, true);
 		return;
 	}
 	Jump();
@@ -841,7 +2002,12 @@ void AFTExploreCharacter::HandleJumpRelease()
 
 void AFTExploreCharacter::HandleRoll()
 {
-	if (Van.IsValid())
+	if (PartyScreen.open) // pad B: the party screen's cancel
+	{
+		return;
+	}
+	// Not in a van, nor swimming or climbing out of the water.
+	if (Van.IsValid() || bSwimming || bWaterClimbing)
 	{
 		return;
 	}
@@ -939,7 +2105,7 @@ bool AFTExploreCharacter::TryCatch(bool bLog)
 	// at is the one the stick asks for.
 	const ftcore::TravPoint Velocity{VIn, static_cast<float>(V.X * In.Y - V.Y * In.X), static_cast<float>(V.Z)};
 	const float Gravity = -Move->GetGravityZ();
-	const float Speed = Move->MaxWalkSpeed * FMath::Min(static_cast<float>(Stick.Size2D()) / FMath::Max(Move->GetMaxAcceleration(), 1.f), 1.f);
+	const float Speed = BaseWalkSpeed() * FMath::Min(static_cast<float>(Stick.Size2D()) / FMath::Max(Move->GetMaxAcceleration(), 1.f), 1.f);
 	const ftcore::TraversalPlan Plan = Set.planCatch(Obstacle, Velocity, Gravity, Speed);
 	if (!Plan.ok())
 	{
@@ -1269,7 +2435,7 @@ bool AFTExploreCharacter::TrySlide()
 {
 	UCharacterMovementComponent* Move = GetCharacterMovement();
 	UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
-	if (bTraversing || !Anim || !Move->IsMovingOnGround() || bIsCrouched || Move->MaxWalkSpeed < RunSpeed)
+	if (bTraversing || !Anim || !Move->IsMovingOnGround() || bIsCrouched || BaseWalkSpeed() < RunSpeed)
 	{
 		return false;
 	}
@@ -1324,9 +2490,9 @@ void AFTExploreCharacter::TickSlide(float DeltaSeconds)
 	const bool bStick = Stick.SizeSquared2D() > 1.0;
 	ftcore::SlideInput In;
 	In.slope = static_cast<float>(Rise / FMath::Sqrt(1.0 + Rise * Rise));
-	In.wantSpeed = bStick ? Move->MaxWalkSpeed * Move->GetAnalogInputModifier() : 0.f;
+	In.wantSpeed = bStick ? BaseWalkSpeed() * Move->GetAnalogInputModifier() : 0.f;
 	In.turn = bStick ? FMath::FindDeltaAngleDegrees(SlideHeading, static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Stick.Y, Stick.X)))) : 0.f;
-	In.sprint = Move->MaxWalkSpeed >= RunSpeed;
+	In.sprint = BaseWalkSpeed() >= RunSpeed;
 	In.crouch = Move->bWantsToCrouch;
 	In.blocked = bSlideBlocked;
 	In.jump = SlideJumpAsked > 0.f;
@@ -1490,9 +2656,95 @@ void AFTExploreCharacter::SpawnTraversalCourse()
 	bVaultCourse = true;
 }
 
+void AFTExploreCharacter::SpawnWedge()
+{
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UWorld* World = GetWorld();
+	if (!Cube || !World)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Wedge: no cube mesh; nothing built."));
+		return;
+	}
+	const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
+	const FVector Across = FVector::CrossProduct(FVector::UpVector, Ahead);
+	const FVector Feet = GetActorLocation() - FVector(0.0, 0.0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	const FVector Bottom = Feet + Ahead * 400.0;
+	// Two slabs 4 m up the slope, 3 m along the trench, meeting at the bottom at 60 degrees from level.
+	const double Slope = FMath::DegreesToRadians(60.0);
+	for (const double Side : {1.0, -1.0})
+	{
+		const FVector Up = (Across * Side * FMath::Cos(Slope) + FVector::UpVector * FMath::Sin(Slope)).GetSafeNormal();
+		const FVector Centre = Bottom + Up * 200.0;
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AStaticMeshActor* Slab = World->SpawnActor<AStaticMeshActor>(Centre, FRotationMatrix::MakeFromXY(Ahead, Up).Rotator(), Params);
+		if (!Slab)
+		{
+			continue;
+		}
+		Slab->SetMobility(EComponentMobility::Movable);
+		Slab->GetStaticMeshComponent()->SetStaticMesh(Cube);
+		Slab->SetActorScale3D(FVector(3.0, 4.0, 0.2));
+	}
+	SetActorLocation(Bottom + FVector(0.0, 0.0, 250.0), false, nullptr, ETeleportType::TeleportPhysics);
+	GetCharacterMovement()->StopMovementImmediately();
+	WedgeDropAt = World->GetTimeSeconds();
+	UE_LOG(LogForgottenThird, Display, TEXT("Wedge: a 60-degree V trench 4 m ahead; the lead dropped in at %.2f s."), WedgeDropAt);
+}
+
+void AFTExploreCharacter::TickWedge()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	const double Now = World->GetTimeSeconds();
+	if (bWedgePending && Now > 3.0 && GetCharacterMovement()->IsMovingOnGround())
+	{
+		bWedgePending = false;
+		SpawnWedge();
+		return;
+	}
+	if (WedgeShotPrefix.IsEmpty() || WedgeDropAt < 0.0)
+	{
+		return;
+	}
+	const auto Shot = [&](const TCHAR* Tag)
+	{
+		const APlayerController* Player = Cast<APlayerController>(GetController());
+		if (AHUD* Hud = Player ? Player->GetHUD() : nullptr)
+		{
+			Hud->bShowHUD = false;
+		}
+		const FString File = FString::Printf(TEXT("%s_%s.png"), *WedgeShotPrefix, Tag);
+		if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+		{
+			Viewport->Exec(World, *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *File), *GLog);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Wedge: shot %s at %.2f s."), *File, Now);
+		++WedgeShotsTaken;
+	};
+	if (WedgeShotsTaken == 0 && Now > WedgeDropAt + 1.0)
+	{
+		Shot(TEXT("in"));
+	}
+	else if (WedgeShotsTaken == 1 && WedgeRescueAt >= 0.0 && Now > WedgeRescueAt + 1.0)
+	{
+		Shot(TEXT("out"));
+	}
+	else if ((WedgeShotsTaken == 2 && Now > WedgeRescueAt + 3.0) || Now > WedgeDropAt + 15.0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Wedge: done (rescued %d); quitting."), WedgeRescueAt >= 0.0 ? 1 : 0);
+		WedgeShotPrefix.Reset();
+		FPlatformMisc::RequestExit(false, TEXT("ExploreWedge"));
+	}
+}
+
 void AFTExploreCharacter::HandleCrouch()
 {
-	if (Van.IsValid())
+	// Not in a van, nor swimming or climbing out of the water.
+	if (Van.IsValid() || bSwimming || bWaterClimbing)
 	{
 		return;
 	}
@@ -1529,6 +2781,9 @@ void AFTExploreCharacter::HandleRunStop()
 void AFTExploreCharacter::ResetHeldInput()
 {
 	HandleRunStop();
+	bRunOn = false;
+	RunInput.reset();
+	AimInput.reset();
 	RollAsked = 0.f;
 	bRollAskedAir = false;
 	SlideJumpAsked = 0.f;
@@ -1541,10 +2796,19 @@ void AFTExploreCharacter::ResetHeldInput()
 
 void AFTExploreCharacter::HandleInteract()
 {
+	if (PartyScreen.open)
+	{
+		return;
+	}
 	// In the van, interact held is the way out; on foot near the party van, it is the way in.
 	if (AFTPartyVan* V = Van.Get())
 	{
 		V->SetExitHeld(true);
+		return;
+	}
+	// Swimming, interact only where the swim allows it (its flags); never while a rescue carries the lead.
+	if (bSwimRescue || (bSwimming && !SwimFlagsNow.interact))
+	{
 		return;
 	}
 	for (TActorIterator<AFTPartyVan> It(GetWorld()); It; ++It)
@@ -1562,9 +2826,9 @@ void AFTExploreCharacter::HandleInteract()
 
 void AFTExploreCharacter::HandleSwitchLead()
 {
-	if (Van.IsValid())
+	if (Van.IsValid() || PartyScreen.open)
 	{
-		return;
+		return; // on the party screen its cursor picks
 	}
 	if (PartyLooks.Num() < 2)
 	{
@@ -1576,8 +2840,46 @@ void AFTExploreCharacter::HandleSwitchLead()
 	{
 		return;
 	}
+	// The next look the player may play; a party member that is not playable is passed over, with its reason logged.
+	int32 Next = LeadIndex;
+	for (int32 Step = 1; Step < PartyLooks.Num(); ++Step)
+	{
+		const int32 Try = (LeadIndex + Step) % PartyLooks.Num();
+		if (IsPlayableLead(PartyLooks[Try]))
+		{
+			Next = Try;
+			break;
+		}
+		UE_LOG(LogForgottenThird, Log, TEXT("FTExploreCharacter: lead switch passes over %s: a party member only (not playable)."), *PartyLooks[Try].Name);
+	}
+	if (Next == LeadIndex)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: no other playable lead in PartyLooks."));
+		return;
+	}
+	SwitchLeadTo(Next);
+}
+
+void AFTExploreCharacter::SwitchLeadTo(int32 Index)
+{
+	if (Van.IsValid() || bTraversing || !PartyLooks.IsValidIndex(Index) || Index == LeadIndex)
+	{
+		return;
+	}
 	UnCrouch();
-	LeadIndex = (LeadIndex + 1) % PartyLooks.Num();
+	// A swim pose saved for the old look's mesh is its own: put that rest back before the new look is worn, so the new
+	// look's rest is saved afresh on the next posed step (never the old look's offset and turn on the new mesh).
+	if (bSwimMeshSaved)
+	{
+		if (USkeletalMeshComponent* Body = GetMesh())
+		{
+			Body->SetRelativeLocationAndRotation(SwimMeshLoc, SwimMeshRot);
+		}
+		bSwimMeshSaved = false;
+		SwimPitch = 0.f;
+	}
+	LeadIndex = Index;
+	FindPartyRows(); // the old lead takes the partner's row
 	const FFTLeadLook& Look = PartyLooks[LeadIndex];
 	WearLook(Look);
 	if (UFTGameInstance* GI = GetGameInstance<UFTGameInstance>())
@@ -1587,6 +2889,15 @@ void AFTExploreCharacter::HandleSwitchLead()
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		D->OnLeadChanged(Look.Name);
+	}
+}
+
+void AFTExploreCharacter::HandleToggleMap()
+{
+	const APlayerController* Player = Cast<APlayerController>(GetController());
+	if (AFTExploreHUD* Hud = Player ? Cast<AFTExploreHUD>(Player->GetHUD()) : nullptr)
+	{
+		Hud->ToggleMapOverlay();
 	}
 }
 
@@ -1626,6 +2937,9 @@ bool AFTExploreCharacter::CanBoardVan() const
 void AFTExploreCharacter::BoardVan(AFTPartyVan* InVan)
 {
 	ResetHeldInput(); // before Van is set, or the run and jump resets are routed to the van and lost
+	Aim.reset();
+	AttackHold.reset();
+	ApplyAimCamera();
 	Van = InVan;
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->DisableMovement();
@@ -1685,6 +2999,12 @@ FVector2D AFTExploreCharacter::GetFacing2D() const
 void AFTExploreCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	// The bindings were read again (a changed file, a rebinding): the context's keys follow. Per frame an int compare.
+	if (Context && FTInputBindings::Generation() != KeyGeneration)
+	{
+		MapBoundKeys();
+	}
+	TickHeldKeys(DeltaSeconds);
 	// A frame after a traversal or slide hands back: how far CharacterMovement moved the capsule (a pop if not ~0).
 	if (bHandBackPending)
 	{
@@ -1693,10 +3013,24 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 		UE_LOG(LogForgottenThird, Display, TEXT("Hand-back: on CharacterMovement's first frame the mesh moved %+.2f cm, the capsule %+.2f (crouched %d; floor dist %.2f cm, walkable %d)."),
 			GetMesh()->GetComponentLocation().Z - HandBackMeshZ, GetActorLocation().Z - HandBackZ, bIsCrouched ? 1 : 0, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0);
 	}
+	if (LookDevPivot && LookDevSpin != 0.f)
+	{
+		LookDevPivot->AddWorldRotation(FRotator(0.0, LookDevSpin * DeltaSeconds, 0.0));
+	}
 	if (bPortraitWalk)
 	{
 		const double Turn = GetWorld()->GetTimeSeconds() * (2.0 * UE_DOUBLE_PI / 8.0);
-		AddMovementInput(FVector(FMath::Cos(Turn), FMath::Sin(Turn), 0.0), 0.5f);
+		AddMovementInput(FVector(FMath::Cos(Turn), FMath::Sin(Turn), 0.0), PortraitMoveScale);
+		const double Now = GetWorld()->GetTimeSeconds();
+		if (bPortraitJump && Now - PortraitJumpAt > 1.5 && GetCharacterMovement()->IsMovingOnGround())
+		{
+			PortraitJumpAt = Now;
+			Jump();
+		}
+		else if (bPortraitJump && Now - PortraitJumpAt > 0.3)
+		{
+			StopJumping();
+		}
 	}
 	const UFTLocomotionAnimInstance* LocoAnim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance());
 	// -LocoVaultWall (or -LocoCatch) builds the course once the body has settled where the map puts it, then runs along
@@ -1763,7 +3097,9 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	// A vault or a climb holds the facing it began with; a roll or a slide turns to its way, a catch square into the face
 	// (TickTraversal, TickSlide).
 	// An attack's turn is TickWeapon's.
-	const UFTLocomotionAnimInstance* Steered = bTraversing || Strike.attacking() ? nullptr : LocoAnim;
+	// While aiming, TickAim turns the body to the camera's aim.
+	// Under water (and through a rescue) TickSwimDeep turns the body to its swim.
+	const UFTLocomotionAnimInstance* Steered = bTraversing || Strike.attacking() || Aim.aiming() || bSwimUnder || bSwimRescue ? nullptr : LocoAnim;
 	if (const UFTLocomotionAnimInstance* Anim = Steered)
 	{
 		// The step holds over a pose with no time passed, so a frame with none (the actor's time dilated to 0)
@@ -1888,7 +3224,1115 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		RollTurnLeft = FMath::Max(RollTurnLeft - DeltaSeconds, 0.f);
 	}
+	TickWater(DeltaSeconds);
+	TickWetPrints(DeltaSeconds);
 	TickWeapon(DeltaSeconds);
+	TickUnstick(DeltaSeconds);
+	TickWedge();
+}
+
+void AFTExploreCharacter::BeginLeadGo(const FVector& To, bool bJumpWhenHeld)
+{
+	bLeadGo = true;
+	bLeadGoJump = bJumpWhenHeld;
+	LeadGoTo = To;
+	LeadGoAfter = -1.f;
+	LeadGoStuck = 0.f;
+	LeadGoRan = 0.f;
+	LeadGoNext.Reset();
+	UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: walking from (%.0f, %.0f, %.0f) at (%.0f, %.0f) cm%s."), GetActorLocation().X, GetActorLocation().Y,
+		GetActorLocation().Z, To.X, To.Y, bJumpWhenHeld ? TEXT(", jumping when held up") : TEXT(""));
+}
+
+void AFTExploreCharacter::TickWater(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+#if !UE_BUILD_SHIPPING // the scripted walk (captures and checks): not in a shipped game
+	if (LeadGoAfter >= 0.f && (LeadGoAfter -= DeltaSeconds) < 0.f)
+	{
+		BeginLeadGo(LeadGoTo, bLeadGoJump);
+	}
+	if (bLeadGo)
+	{
+		LeadGoRan += DeltaSeconds;
+		// A route: the next point once this one is reached.
+		if (LeadGoNext.Num() > 0 && FVector::Dist2D(LeadGoTo, GetActorLocation()) <= 55.0 && !bWaterClimbing)
+		{
+			LeadGoTo = LeadGoNext[0];
+			LeadGoNext.RemoveAt(0, EAllowShrinking::No);
+			LeadGoStuck = 0.f;
+			UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: on to (%.0f, %.0f) cm from (%.0f, %.0f, %.0f), water %s."), LeadGoTo.X, LeadGoTo.Y, GetActorLocation().X,
+				GetActorLocation().Y, GetActorLocation().Z, ANSI_TO_TCHAR(ftcore::waterModeName(WaterNow.mode)));
+		}
+		const FVector Way = (LeadGoTo - GetActorLocation()).GetSafeNormal2D();
+		// Under water the free swim takes the route itself (TickSwimDeep).
+		if (FVector::Dist2D(LeadGoTo, GetActorLocation()) > 30.0 && !bWaterClimbing && !bSwimUnder && !bSwimRescue)
+		{
+			AddMovementInput(Way, LeadGoPace);
+			LeadGoStuck = GetVelocity().Size2D() < 15.0 ? LeadGoStuck + DeltaSeconds : 0.f;
+			if (bLeadGoJump && LeadGoStuck > 1.f)
+			{
+				LeadGoStuck = 0.f;
+				SetActorRotation(FRotator(0.0, Way.Rotation().Yaw, 0.0));
+				UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump."), GetActorLocation().X, GetActorLocation().Y,
+					GetActorLocation().Z);
+				HandleJump();
+				HandleJumpRelease();
+			}
+		}
+		if (LeadGoQuit > 0.f && LeadGoRan >= LeadGoQuit)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: ends at (%.0f, %.0f, %.0f) cm, feet %.0f, water %s."), GetActorLocation().X, GetActorLocation().Y,
+				GetActorLocation().Z, GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight(), ANSI_TO_TCHAR(ftcore::waterModeName(WaterNow.mode)));
+			LeadGoQuit = 0.f;
+			FTRequestExit(0, TEXT("LeadGo"));
+		}
+	}
+#endif
+	// Taken out of play (a fight's figure stands in and the body is hidden, a scene holds the lead, no controller): the
+	// water waits. Nothing steps the swim, its breath, a climb out or a rescue (each picks up where it stopped), and
+	// nothing forces the flying mode on a parked body; a body that was swimming stops where it is (flying braking is 0
+	// under water, so a kept velocity would carry it through the whole scene).
+	if (!Controller || IsHidden() || ScenePlaying())
+	{
+		if (bSwimming || bWaterClimbing || bSwimRescue)
+		{
+			Move->Velocity = FVector::ZeroVector;
+		}
+		return;
+	}
+	// A climb out of the water: up the wall's face, then onto its top.
+	if (bWaterClimbing)
+	{
+		WaterClimbTime += DeltaSeconds / FMath::Max(WaterClimbSeconds, 0.3f);
+		const float T = FMath::Min(WaterClimbTime, 1.f);
+		const float Up = FMath::SmoothStep(0.f, 0.65f, T);
+		const float Over = FMath::SmoothStep(0.5f, 1.f, T);
+		FVector At = FMath::Lerp(WaterClimbFrom, WaterClimbTo, Over);
+		At.Z = FMath::Lerp(WaterClimbFrom.Z, WaterClimbTo.Z, Up);
+		SetActorLocation(At, false, nullptr, ETeleportType::TeleportPhysics);
+		if (T >= 1.f)
+		{
+			bWaterClimbing = false;
+			Move->SetMovementMode(MOVE_Walking);
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: climbed out onto (%.0f, %.0f, %.0f) cm."), At.X, At.Y, At.Z);
+		}
+		StirWater(DeltaSeconds);
+		return;
+	}
+	// Out of breath and vitality under water: carried to the way out, a placed move.
+	if (bSwimRescue)
+	{
+		TickSwimRescue(DeltaSeconds);
+		StirWater(DeltaSeconds);
+		return;
+	}
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const ftcore::WaterMode Was = WaterNow.mode;
+	const bool bOut = !System || !System->HasBodies() || Van.IsValid();
+	if (bOut)
+	{
+		WaterNow = ftcore::WaterState{};
+	}
+	else
+	{
+		const FVector At = GetActorLocation();
+		const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		ftcore::WaterCapsule Body;
+		Body.p = {static_cast<float>(At.X * 0.01), static_cast<float>(At.Y * 0.01)};
+		Body.feetZ = static_cast<float>((At.Z - Half) * 0.01);
+		Body.height = 2.f * Half * 0.01f;
+		Body.swimming = bSwimming;
+		if (System->Bodies().bodyAt(Body.p) >= 0)
+		{
+			if (Move->IsMovingOnGround())
+			{
+				Body.groundZ = Body.feetZ;
+				Body.hasGround = true;
+			}
+			else
+			{
+				// Off the ground (falling in, swimming): the bed under it, as far down as matters.
+				FHitResult Bed;
+				FCollisionQueryParams Query(SCENE_QUERY_STAT(FTWaterBed), false, this);
+				const bool bBed = World->LineTraceSingleByChannel(Bed, At, At - FVector(0.0, 0.0, Half + 400.0), ECC_Visibility, Query);
+				Body.groundZ = bBed ? static_cast<float>(Bed.ImpactPoint.Z * 0.01) : Body.feetZ - 4.f;
+				Body.hasGround = true;
+			}
+		}
+		WaterNow = ftcore::waterState(System->Bodies(), Body, System->WaterTime());
+	}
+	if (WaterNow.mode != Was)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: the lead is %s (column %.2f m, %.0f%% under, walk x%.2f) at (%.0f, %.0f, %.0f) cm."),
+			WaterNow.mode == ftcore::WaterMode::Dry ? TEXT("dry") : WaterNow.mode == ftcore::WaterMode::Wade ? TEXT("wading")
+			: WaterNow.mode == ftcore::WaterMode::DeepWade ? TEXT("wading deep") : TEXT("swimming"),
+			WaterNow.column, WaterNow.submerged * 100.f, WaterNow.speedFactor, GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z);
+	}
+	// Set down out of the water column while dived (a fight or a scene ended on dry ground, or on a pier inside a body's
+	// footprint): the swim ends this frame, its state and pose reset below, its vitality kept. Out of the column: inside a
+	// body with the feet at or over its surface (the depth test), or outside every body and every dive area.
+	const bool bFeetDry = WaterNow.body >= 0 && WaterNow.immersion <= 0.f;
+	if (bSwimUnder && !bOut &&
+		(bFeetDry || (WaterNow.body < 0 && System->Bodies().dive(FTSwimUnits::ToPlan(GetActorLocation())).body < 0)))
+	{
+		bSwimUnder = false;
+	}
+	// Under water the lead swims on whatever the column under it (ftcore::Swim never ejects it).
+	const bool bSwimNow = (WaterNow.mode == ftcore::WaterMode::Swim || (bSwimUnder && !bOut)) && !bTraversing;
+	if (bSwimNow && !bSwimming)
+	{
+		bSwimming = true;
+		if (bIsCrouched)
+		{
+			UnCrouch();
+		}
+		SwimSavedFly = Move->MaxFlySpeed;
+		SwimSavedBrake = Move->BrakingDecelerationFlying;
+		Move->MaxFlySpeed = ftcore::kWaterSwimSpeed * 100.f;
+		Move->BrakingDecelerationFlying = 350.f;
+		Move->SetMovementMode(MOVE_Flying);
+		if (!bSwimSaid)
+		{
+			bSwimSaid = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: stand-in clips: no swim, tread or wade clip exists, so the swim plays the locomotion's own idle (treading) and "
+				"walk (the stroke) held upright at the surface, and the wade plays the walk slowed; the climb out is a placed move with no clip."));
+		}
+	}
+	else if (!bSwimNow && bSwimming)
+	{
+		bSwimming = false;
+		bSwimUnder = false;
+		Move->MaxFlySpeed = SwimSavedFly;
+		Move->BrakingDecelerationFlying = SwimSavedBrake;
+		if (Move->MovementMode == MOVE_Flying)
+		{
+			Move->SetMovementMode(MOVE_Falling);
+		}
+		PoseSwim(0.f, 1.f); // upright at once (a full step of the ease)
+		// Taken out from under water (a scene, the van): at the surface again, its vitality kept.
+		if (SwimBody.state() != ftcore::SwimState::Surface && SwimBody.state() != ftcore::SwimState::Rescued)
+		{
+			const float Vitality = SwimBody.vitality();
+			SwimBody.reset();
+			SwimBody.setVitality(Vitality);
+		}
+	}
+	// At a ladder, pushing at its wall: up it (the jump at any other wall is the fallback). Not from under water.
+	if (!bSwimUnder && WaterNow.mode != ftcore::WaterMode::Dry && TryLadderClimb(false))
+	{
+		StirWater(DeltaSeconds);
+		return;
+	}
+	if (bSwimming)
+	{
+		if (Move->MovementMode != MOVE_Flying)
+		{
+			Move->SetMovementMode(MOVE_Flying);
+		}
+		// Dived (or diving, or rising): the free swim moves the body. At the surface it only watches for a dive.
+		if (System && TickSwimDeep(*System, DeltaSeconds))
+		{
+			StirWater(DeltaSeconds);
+			return;
+		}
+		// Held at the surface: the feet eased to the swimmer's draft, never thrown up out of the water.
+		const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		// ... nor pressed into a bed that rises under it (a slip, a canal's slope): there the feet skim the bed, so the
+		// body comes up the slope with its stroke until the water is shallow enough to stand in.
+		const double Bed = (WaterNow.surface - WaterNow.column) * 100.0;
+		const double Target = FMath::Max(ftcore::waterSwimFeetZ(WaterNow.surface, System->WaterTime()) * 100.0, Bed + 8.0) + Half;
+		Move->Velocity.Z = FMath::Clamp((Target - GetActorLocation().Z) * 5.0, -250.0, 120.0);
+		const FVector Push(WaterNow.flow.x * 100.0 * DeltaSeconds, WaterNow.flow.y * 100.0 * DeltaSeconds, 0.0);
+		if (!Push.IsNearlyZero())
+		{
+			AddActorWorldOffset(Push, true);
+		}
+	}
+	StirWater(DeltaSeconds);
+}
+
+void AFTExploreCharacter::LoadSwimTuning()
+{
+	if (bSwimTuningTried)
+	{
+		return;
+	}
+	bSwimTuningTried = true;
+	TArray<uint8> Bytes;
+	const FString File = FPaths::ProjectDir() / TEXT("Data/Swim/swim.json");
+	ftcore::SwimTuning Tuning;
+	std::string Error;
+	std::vector<std::string> Notes;
+	if (IFileManager::Get().FileExists(*File) && FFileHelper::LoadFileToArray(Bytes, *File)
+		&& ftcore::importSwimTuning(FT::BytesAsText(Bytes), Tuning, &Error, &Notes))
+	{
+		SwimBody.reset(FTSwimUnits::TuningForRef(Tuning));
+		for (const std::string& Note : Notes)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Swim: %s"), *FT::ToFString(Note));
+		}
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Swim: no usable Data/Swim/swim.json; the built-in tuning.\n%s"), *FT::ToFString(Error));
+		SwimBody.reset(FTSwimUnits::TuningForRef(ftcore::SwimTuning{}));
+	}
+	const ftcore::SwimTuning& T = SwimBody.tuning();
+	UE_LOG(LogForgottenThird, Display, TEXT("Swim: %s tuning: %.1f m/s (sprint %.1f), breath %.0f s (warning at %.0f s), dive %.1f m, edge push %.1f m/s over %.0f m."),
+		SwimBody.tuningOk() ? TEXT("the") : TEXT("refused, the built-in"), T.swimSpeed, T.sprintSpeed, T.breathSeconds, T.warningSeconds,
+		T.diveDepth, T.edgePushSpeed, T.edgeRampMetres);
+}
+
+bool AFTExploreCharacter::TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds)
+{
+	using namespace FTSwimUnits;
+	LoadSwimTuning();
+	UWorld* World = GetWorld();
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	const FVector At = GetActorLocation();
+	const double Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const ftcore::WaterBodies& Water = System.Bodies();
+	const ftcore::Vec2 P = ToPlan(At);
+	// Only a playable lead dives (the Third never does); found again when the lead changes.
+	if (SwimLeadChecked != LeadIndex)
+	{
+		SwimLeadChecked = LeadIndex;
+		bSwimLeadDives = PartyLooks.IsValidIndex(LeadIndex) && IsPlayableLead(PartyLooks[LeadIndex]);
+	}
+	const ftcore::WaterDive Dive = Water.dive(P);
+	const int BodyIndex = Dive.body >= 0 ? Dive.body : WaterNow.body;
+	if (BodyIndex < 0)
+	{
+		bSwimUnder = false;
+		return false;
+	}
+
+	// The water at the lead (m): the surface over it, the bed under it (the ground a trace down finds, else the body's
+	// own bed), the dive area and its outer edge.
+	ftcore::SwimEnv Env;
+	Env.position = RefFromActor(At, Half);
+	Env.surfaceZ = Water.surfaceOf(static_cast<std::size_t>(BodyIndex), P, System.WaterTime());
+	float BedZ = Water.body(static_cast<std::size_t>(BodyIndex)).bedAt(P);
+	if (World)
+	{
+		FHitResult Bed;
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(FTSwimBed), false, this);
+		if (World->LineTraceSingleByChannel(Bed, At, At - FVector(0.0, 0.0, Half + 1500.0), ECC_Visibility, Query))
+		{
+			BedZ = ToMetres(Bed.ImpactPoint.Z);
+		}
+	}
+	Env.bedZ = FMath::Min(BedZ, Env.surfaceZ - 0.01f);
+	Env.column = Env.surfaceZ - Env.bedZ;
+	Env.deepAllowed = Dive.allowed && bSwimLeadDives;
+	Env.airPocket = false; // the strip's basin has none
+	Env.edgeDistance = Dive.edgeDistance;
+	Env.edgeInward = {Dive.edgeInward.x, Dive.edgeInward.y, 0.f};
+
+	// What the player asks: the camera's look, the stick (under water HandleMove keeps it here), sprint, and the held
+	// crouch and jump (Swim takes their presses).
+	ftcore::SwimInput In;
+	const FRotator View = Controller ? Controller->GetControlRotation() : GetActorRotation();
+	In.look = DirectionToSwim(View.Vector());
+	In.forward = static_cast<float>(SwimMoveAxis.Y);
+	In.right = static_cast<float>(SwimMoveAxis.X);
+	In.sprint = bRunOn;
+	// The crouch key's real state, and only while the player steers: TickHeldKeys latches bCrouchKeyWas true while input
+	// is taken (a menu, a scene, a fight), which Swim would read as a dive press.
+	In.crouch = TakesInput() && bCrouchKeyWas;
+	In.jump = bJumpHeld;
+	SwimMoveAxis = FVector2D::ZeroVector;
+#if !UE_BUILD_SHIPPING // -LeadGoDive: the scripted walk dives once, swims its route under water and rises at its end
+	if (bLeadGo && bLeadGoDive)
+	{
+		const ftcore::SwimState Now = SwimBody.state();
+		// The presses: down every other frame until taken (Swim's buttons are edge-triggered, and the held key's state
+		// is not known here).
+		const bool bPressFrame = (GFrameCounter & 1) != 0;
+		if (!bLeadGoDived && Now == ftcore::SwimState::Surface && SwimBody.last().canDive)
+		{
+			In.crouch = bPressFrame;
+		}
+		else if (Now == ftcore::SwimState::Under || Now == ftcore::SwimState::Diving)
+		{
+			// Along the route, held about 2.5 m under the surface (or over the bed where it is shallower).
+			const double Flat = FVector::Dist2D(LeadGoTo, At);
+			const double CruiseZ = ToCm(FMath::Max(Env.surfaceZ - 2.5f, Env.bedZ + 1.f)) - (ToCm(ftcore::kWaterSwimDraft) - Half);
+			const FVector Way = FVector(LeadGoTo.X - At.X, LeadGoTo.Y - At.Y, (CruiseZ - At.Z) * 2.0).GetSafeNormal();
+			if (!Way.IsNearlyZero())
+			{
+				In.look = DirectionToSwim(Way);
+			}
+			In.forward = Flat > 30.0 ? LeadGoPace : 0.f;
+			In.right = 0.f;
+			if (!bLeadGoRose && LeadGoNext.Num() == 0 && Flat <= 55.0 && Now == ftcore::SwimState::Under)
+			{
+				In.jump = bPressFrame;
+			}
+		}
+	}
+#endif
+
+	const bool bWasUnder = bSwimUnder;
+	// A hitch: Swim clamps its step to kSwimMaxStep and drops the rest, so the movement below carries only that step too.
+	const ftcore::SwimStep& S = SwimBody.step(In, Env, FMath::Min(DeltaSeconds, ftcore::kSwimMaxStep));
+#if !UE_BUILD_SHIPPING
+	bLeadGoDived = bLeadGoDived || S.dived;
+	bLeadGoRose = bLeadGoRose || S.state == ftcore::SwimState::Surfacing;
+#endif
+	SwimFlagsNow = S.flags;
+	bSwimUnder = S.state == ftcore::SwimState::Diving || S.state == ftcore::SwimState::Under || S.state == ftcore::SwimState::Surfacing;
+	if (S.dived)
+	{
+		bSwimWarned = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: dived at (%.0f, %.0f, %.0f) cm, column %.1f m, %.0f m inside the outer edge, breath %.0f s."), At.X, At.Y,
+			At.Z, Env.column, FMath::Min(Env.edgeDistance, 9999.f), S.breath);
+	}
+	if (S.diveRefused)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: no dive at (%.0f, %.0f) cm: %s."), At.X, At.Y,
+			!bSwimLeadDives ? TEXT("this lead does not dive") : !Dive.allowed ? TEXT("not in a dive area") : TEXT("the water is too shallow"));
+	}
+	if (S.warning && !bSwimWarned)
+	{
+		bSwimWarned = true;
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: breath warning, %.1f s left at (%.0f, %.0f, %.0f) cm."), S.breath, At.X, At.Y, At.Z);
+	}
+	if (S.surfaced)
+	{
+		bSwimWarned = false;
+		UE_LOG(LogForgottenThird, Display, TEXT("Swim: surfaced at (%.0f, %.0f) cm, breath %.0f%%, vitality %.0f%%."), At.X, At.Y, S.breathShare * 100.f,
+			S.vitality * 100.f);
+	}
+	if (!S.envOk || !S.inputOk)
+	{
+		UE_LOG(LogForgottenThird, Verbose, TEXT("Swim: a value was replaced (env %s, input %s) at (%.0f, %.0f, %.0f) cm."), S.envOk ? TEXT("ok") : TEXT("bad"),
+			S.inputOk ? TEXT("ok") : TEXT("bad"), At.X, At.Y, At.Z);
+	}
+	if (S.rescue)
+	{
+		bSwimUnder = false;
+		BeginSwimRescue(System);
+		return true;
+	}
+
+	if (!bSwimUnder)
+	{
+		// At the surface (or back at it): the surface hold's speed and braking again, the body upright.
+		if (bWasUnder)
+		{
+			Move->MaxFlySpeed = ftcore::kWaterSwimSpeed * 100.f;
+			Move->BrakingDecelerationFlying = 350.f;
+		}
+		PoseSwim(0.f, DeltaSeconds);
+		return false;
+	}
+
+	// Under water: the movement carries the body at the swim's velocity (its sweep stops it at a wall or the bed), with
+	// room for a sprint plus the edge's push and no braking of its own.
+	const ftcore::SwimTuning& T = SwimBody.tuning();
+	Move->MaxFlySpeed = (T.sprintSpeed + T.edgePushSpeed) * 100.f;
+	Move->BrakingDecelerationFlying = 0.f;
+	const FVector Velocity = PositionValid(S) ? VelocityToEngine(S.velocity) : FVector::ZeroVector;
+	// The movement integrates the whole frame: over a hitch the velocity is scaled so the frame moves only Swim's step
+	// (its surface, bed and edge clamps hold).
+	Move->Velocity = DeltaSeconds > S.dt && DeltaSeconds > 0.f ? Velocity * (S.dt / DeltaSeconds) : Velocity;
+	// The body turns to its way across, and pitches along it: head first along the travel, upright (a slight lean) in
+	// a glide or a rise with no stroke.
+	const double Across = Velocity.Size2D();
+	if (Across > 20.0 && DeltaSeconds > 0.f)
+	{
+		const FRotator Was = GetActorRotation();
+		const float Yaw = FMath::FixedTurn(static_cast<float>(Was.Yaw), static_cast<float>(Velocity.Rotation().Yaw), 270.f * DeltaSeconds);
+		SetActorRotation(FRotator(0.0, Yaw, 0.0));
+	}
+	const bool bStroke = Velocity.Size() > 30.0 && (In.forward != 0.f || In.right != 0.f || S.state != ftcore::SwimState::Under);
+	const float Elevation = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Velocity.Z, FMath::Max(Across, 1.0))));
+	PoseSwim(bStroke ? FMath::Clamp(-(90.f - Elevation), -170.f, 0.f) : -15.f, DeltaSeconds);
+	return true;
+}
+
+void AFTExploreCharacter::PoseSwim(float TargetPitch, float DeltaSeconds)
+{
+	USkeletalMeshComponent* Body = GetMesh();
+	if (!Body)
+	{
+		return;
+	}
+	if (!bSwimMeshSaved)
+	{
+		if (FMath::IsNearlyZero(TargetPitch))
+		{
+			return; // upright and not posed: nothing to do
+		}
+		SwimMeshLoc = Body->GetRelativeLocation();
+		SwimMeshRot = Body->GetRelativeRotation();
+		bSwimMeshSaved = true;
+		SwimPitch = 0.f;
+	}
+	// The dive's and the surfacing's 0.4 s blend: an ease of rate 5.
+	SwimPitch = FMath::FInterpTo(SwimPitch, TargetPitch, DeltaSeconds, 5.f);
+	if (FMath::IsNearlyZero(TargetPitch) && FMath::Abs(SwimPitch) < 0.5f)
+	{
+		Body->SetRelativeLocationAndRotation(SwimMeshLoc, SwimMeshRot);
+		bSwimMeshSaved = false;
+		SwimPitch = 0.f;
+		return;
+	}
+	// About the capsule's centre (the actor's origin), on the actor's own right axis: the mesh's rest offset and its
+	// facing turned together.
+	const FQuat Pitch = FRotator(SwimPitch, 0.0, 0.0).Quaternion();
+	Body->SetRelativeLocationAndRotation(Pitch.RotateVector(SwimMeshLoc), Pitch * SwimMeshRot.Quaternion());
+}
+
+void AFTExploreCharacter::BeginSwimRescue(const UFTWaterSubsystem& System)
+{
+	using namespace FTSwimUnits;
+	UWorld* World = GetWorld();
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	const FVector At = GetActorLocation();
+	const double Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const ftcore::WaterBodies& Water = System.Bodies();
+	const ftcore::Vec2 P = ToPlan(At);
+	bSwimRescue = true;
+	SwimRescueTime = 0.f;
+	SwimRescueFrom = At;
+	float Surface = WaterNow.surface;
+	Water.surfaceHeight(P, System.WaterTime(), Surface);
+	SwimRescueUp = FVector(At.X, At.Y, ActorFromRef({P.x, P.y, Surface}, Half).Z);
+	// To the nearest way out within 40 m (on its bank, a step past its top)...
+	const TCHAR* Kind = TEXT("the surface");
+	SwimRescueTo = SwimRescueUp;
+	const int Exit = Water.nearestExit(P, 40.f);
+	if (Exit >= 0)
+	{
+		const ftcore::WaterExit& E = Water.exit(static_cast<std::size_t>(Exit));
+		SwimRescueTo = FVector(ToCm(E.top.x + E.out.x * 0.6f), ToCm(E.top.y + E.out.y * 0.6f), ToCm(E.topZ) + Half + 2.0);
+		Kind = TEXT("the nearest way out");
+	}
+	else if (World)
+	{
+		// ... else the nearest dry ground: rings of 16 looks down at 4, 8, 16, 32 and 64 m, the first ring with walkable
+		// ground that is no water's (a one-off search, at the rescue only).
+		FCollisionQueryParams Query(SCENE_QUERY_STAT(FTSwimRescue), false, this);
+		bool bFound = false;
+		for (const double Radius : {400.0, 800.0, 1600.0, 3200.0, 6400.0})
+		{
+			double Best = TNumericLimits<double>::Max();
+			for (int32 I = 0; I < 16; ++I)
+			{
+				const double A = UE_DOUBLE_TWO_PI * I / 16.0;
+				// From 4 m over the surface: a quay or a bank, never a roof.
+				const FVector Look(At.X + Radius * FMath::Cos(A), At.Y + Radius * FMath::Sin(A), ToCm(Surface));
+				FHitResult Ground;
+				if (!World->LineTraceSingleByChannel(Ground, Look + FVector(0.0, 0.0, 400.0), Look - FVector(0.0, 0.0, 500.0), ECC_Visibility, Query)
+					|| Ground.ImpactNormal.Z < 0.7 || Ground.bStartPenetrating
+					|| Water.overWater(ToPlan(Ground.ImpactPoint), ToMetres(Ground.ImpactPoint.Z)))
+				{
+					continue;
+				}
+				const double Gap = FVector::Dist2D(Ground.ImpactPoint, At);
+				if (Gap < Best)
+				{
+					Best = Gap;
+					SwimRescueTo = Ground.ImpactPoint + FVector(0.0, 0.0, Half + 2.0);
+					bFound = true;
+				}
+			}
+			if (bFound)
+			{
+				Kind = TEXT("the nearest dry ground");
+				break;
+			}
+		}
+	}
+	Move->StopMovementImmediately();
+	Move->SetMovementMode(MOVE_Flying);
+	UE_LOG(LogForgottenThird, Display, TEXT("Swim: out of breath and vitality at (%.0f, %.0f, %.0f) cm; rescued to %s at (%.0f, %.0f, %.0f) cm."), At.X, At.Y, At.Z,
+		Kind, SwimRescueTo.X, SwimRescueTo.Y, SwimRescueTo.Z);
+}
+
+void AFTExploreCharacter::TickSwimRescue(float DeltaSeconds)
+{
+	// A placed carry: up to the surface (0.8 s), then over to the way out (1.4 s), rising first so it clears the wall.
+	constexpr float Rise = 0.8f;
+	constexpr float Carry = 1.4f;
+	SwimRescueTime += DeltaSeconds;
+	FVector At;
+	if (SwimRescueTime < Rise)
+	{
+		At = FMath::Lerp(SwimRescueFrom, SwimRescueUp, FMath::SmoothStep(0.f, 1.f, SwimRescueTime / Rise));
+	}
+	else
+	{
+		const float A = FMath::Min((SwimRescueTime - Rise) / Carry, 1.f);
+		At = FMath::Lerp(SwimRescueUp, SwimRescueTo, FMath::SmoothStep(0.3f, 1.f, A));
+		At.Z = FMath::Lerp(SwimRescueUp.Z, SwimRescueTo.Z, FMath::SmoothStep(0.f, 0.5f, A));
+	}
+	SetActorLocation(At, false, nullptr, ETeleportType::TeleportPhysics);
+	UCharacterMovementComponent* Move = GetCharacterMovement();
+	Move->Velocity = FVector::ZeroVector;
+	PoseSwim(0.f, DeltaSeconds);
+	if (SwimRescueTime < Rise + Carry)
+	{
+		return;
+	}
+	// There: the swim starts again at the surface with a full breath and the rescue's vitality; on dry ground the lead
+	// is out of the water (it lands from just over the ground).
+	bSwimRescue = false;
+	bSwimWarned = false;
+	SwimBody.reset();
+	SwimFlagsNow = SwimBody.last().flags;
+	PoseSwim(0.f, 1.f);
+	const bool bAshore = !SwimRescueTo.Equals(SwimRescueUp, 1.0);
+	if (bAshore)
+	{
+		bSwimming = false;
+		Move->MaxFlySpeed = SwimSavedFly;
+		Move->BrakingDecelerationFlying = SwimSavedBrake;
+		Move->SetMovementMode(MOVE_Falling);
+	}
+	else
+	{
+		Move->MaxFlySpeed = ftcore::kWaterSwimSpeed * 100.f;
+		Move->BrakingDecelerationFlying = 350.f;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Swim: rescued, %s at (%.0f, %.0f, %.0f) cm, vitality %.0f%%."), bAshore ? TEXT("ashore") : TEXT("at the surface"),
+		At.X, At.Y, At.Z, SwimBody.vitality() * 100.f);
+}
+
+void AFTExploreCharacter::StirWater(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const float Weather = LeadWeather();
+	if (!System || !System->HasBodies())
+	{
+#if !UE_BUILD_SHIPPING
+		if (SoakSwapWet >= 0.f)
+		{
+			return; // -ExploreSoakSwap holds its own wetness
+		}
+#endif
+		// No water here: the weather alone (dry by default, so this is two early returns).
+		ShowWetness(ftcore::leadwet::cloth(ftcore::WaterWetness{}, Weather));
+		ShowLeadWet(ftcore::leadwet::surface(Weather, ftcore::WaterWetness{}), DeltaSeconds);
+		return;
+	}
+	// As the surfaces see it now: during the climb out the state is the one it began with, the feet rising out of it.
+	const FVector At = GetActorLocation();
+	const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	ftcore::WaterState State = WaterNow;
+	if (State.mode != ftcore::WaterMode::Dry)
+	{
+		State.immersion = FMath::Max(State.surface - static_cast<float>((At.Z - Half) * 0.01), 0.f);
+		if (State.immersion <= 0.f)
+		{
+			State.mode = ftcore::WaterMode::Dry;
+		}
+	}
+	System->LeadWater(*this, State, At, GetVelocity(), 2.f * Half, DeltaSeconds);
+#if !UE_BUILD_SHIPPING
+	if (SoakSwapWet >= 0.f)
+	{
+		return; // -ExploreSoakSwap holds its own wetness
+	}
+#endif
+	const ftcore::WaterWetness& Water = System->LeadWetness();
+	ShowWetness(ftcore::leadwet::cloth(Water, Weather));
+	ShowLeadWet(ftcore::leadwet::surface(Weather, Water), DeltaSeconds);
+}
+
+float AFTExploreCharacter::LeadWeather() const
+{
+	const float Forced = CVarLeadWet.GetValueOnGameThread();
+	if (Forced >= 0.f)
+	{
+		return ftcore::leadwet::weather(Forced, 0.f);
+	}
+	// Below 0 follows the rain: the weather's RainState (ftcore/Weather.h) is hooked up here once its owner, the world
+	// clock, steps one; until then there is no rain, and only the lead's own water wets it (surface). The look's wetness
+	// is the ground's damp floor, never a lead's.
+	return ftcore::leadwet::weather(Forced, 0.f);
+}
+
+void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
+{
+	// Weather here is the lead's surface wetness (ftcore::leadwet::surface): rain or its own water.
+	const bool bGroom = ftcore::leadwet::groomWet(Weather, bGroomWet);
+	if (bGroom != bGroomWet)
+	{
+		bGroomWet = bGroom;
+		const int32 Swapped = FTLook::SetGroomsWet(GroomComponents, WornLook.Grooms, bGroomWet, TEXT("FTExploreCharacter"));
+		UE_LOG(LogForgottenThird, Display, TEXT("Wet switch: %s grooms on (%d swapped) at weather %.2f."), bGroomWet ? TEXT("wet") : TEXT("dry"),
+			Swapped, Weather);
+	}
+	// The wet-skin amount, eased; it goes to the materials ShowWetness gathered (any skin is wet only when the cloth is,
+	// so they are there) and to the hair without a wet groom.
+	const float Target = ftcore::leadwet::skin(Weather);
+	SkinWetEased = ftcore::leadwet::ease(SkinWetEased, Target, DeltaSeconds);
+	const float Skin = SkinWetEased;
+	// Written when it has moved enough, and once more when it reaches its target (so the last small step lands).
+	const bool bChanged = FMath::Abs(Skin - SkinWetShown) > 0.004f || (Skin == Target && Skin != SkinWetShown);
+	if (!bWetMaterialsMade || !bChanged)
+	{
+		return;
+	}
+	static const FName SkinWetName(TEXT("SkinWet"));
+	static const FName MhRoughName(TEXT("Roughness Global Multiply Post-Bake"));
+	static const FName MhSpecName(TEXT("Specular Global Multiply Post-Bake"));
+	for (int32 Index = 0; Index < WetMaterials.Num(); ++Index)
+	{
+		UMaterialInstanceDynamic* Dynamic = WetMaterials[Index];
+		if (!Dynamic)
+		{
+			continue;
+		}
+		Dynamic->SetScalarParameterValue(SkinWetName, Skin);
+		const FVector2f Dry = WetSkinDry.IsValidIndex(Index) ? WetSkinDry[Index] : FVector2f(-1.f, -1.f);
+		if (Dry.X >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MhRoughName, ftcore::leadwet::mhRoughness(Dry.X, Skin));
+		}
+		if (Dry.Y >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MhSpecName, ftcore::leadwet::mhSpecular(Dry.Y, Skin));
+		}
+	}
+	ShowHairWet(Skin);
+	SkinWetShown = Skin;
+}
+
+void AFTExploreCharacter::ShowHairWet(float Wet)
+{
+	static const FName RoughName(TEXT("Roughness"));
+	static const FName HairRoughName(TEXT("HairRoughness"));
+	static const FName MelaninName(TEXT("hairMelanin"));
+	if (!bWetHairMade)
+	{
+		// The first time the lead is wet with this look: an instance on each groom without a wet groom, dry values kept.
+		bWetHairMade = true;
+		WetHairMaterials.Reset();
+		WetHairDry.Reset();
+		FTLook::MakeHairWetMaterials(GroomComponents, WornLook.Grooms, WetHairMaterials);
+		for (UMaterialInstanceDynamic* Dynamic : WetHairMaterials)
+		{
+			FVector3f Dry(-1.f, -1.f, -1.f);
+			float Value = 0.f;
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(RoughName), Value))
+			{
+				Dry.X = Value;
+			}
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(HairRoughName), Value))
+			{
+				Dry.Y = Value;
+			}
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(MelaninName), Value))
+			{
+				Dry.Z = Value;
+			}
+			WetHairDry.Add(Dry);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Wet switch: %d hair materials without a wet groom take the wet value."), WetHairMaterials.Num());
+	}
+	for (int32 Index = 0; Index < WetHairMaterials.Num(); ++Index)
+	{
+		UMaterialInstanceDynamic* Dynamic = WetHairMaterials[Index];
+		const FVector3f& Dry = WetHairDry[Index];
+		if (!Dynamic)
+		{
+			continue;
+		}
+		if (Dry.X >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(RoughName, ftcore::leadwet::hairRoughness(Dry.X, Wet));
+		}
+		if (Dry.Y >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(HairRoughName, ftcore::leadwet::hairRoughness(Dry.Y, Wet));
+		}
+		if (Dry.Z >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MelaninName, ftcore::leadwet::hairMelanin(Dry.Z, Wet));
+		}
+	}
+}
+
+namespace
+{
+// No wet print on the party: every primitive of `Actor` and of what hangs on it (clothes, weapons) takes no decals.
+void NoPrintsOn(AActor* Actor)
+{
+	if (!Actor)
+	{
+		return;
+	}
+	TInlineComponentArray<UPrimitiveComponent*> Parts(Actor);
+	for (UPrimitiveComponent* Part : Parts)
+	{
+		if (Part && Part->bReceivesDecals)
+		{
+			Part->SetReceivesDecals(false);
+		}
+	}
+	Actor->ForEachAttachedActors([](AActor* Attached)
+	{
+		NoPrintsOn(Attached);
+		return true;
+	});
+}
+} // namespace
+
+void AFTExploreCharacter::TickWetPrints(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (!System || !System->HasBodies())
+	{
+		return;
+	}
+	const float Wetness = System->LeadWetness().wetness;
+	// The pool, once, the first time the lead is wet (in the water, out of sight of any print).
+	if (WetPrintDecals.Num() == 0 && Wetness > 0.f)
+	{
+		const FString Path = FString(FTScene::LookWetPrintMaterial) + TEXT(".") + FPackageName::GetShortName(FTScene::LookWetPrintMaterial);
+		UMaterialInterface* PrintMaterial = LoadObject<UMaterialInterface>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		if (!PrintMaterial)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Wet prints: %s is missing (FTBuildLookMaterials -Prints); none show."), FTScene::LookWetPrintMaterial);
+		}
+		WetPrintDecals.Reserve(static_cast<int32>(ftcore::kWetPrintCap));
+		for (std::size_t I = 0; I < ftcore::kWetPrintCap; ++I)
+		{
+			UDecalComponent* Decal = NewObject<UDecalComponent>(this);
+			Decal->SetUsingAbsoluteLocation(true);
+			Decal->SetUsingAbsoluteRotation(true);
+			Decal->SetUsingAbsoluteScale(true);
+			// Down 5 cm into the ground and up 5 out of it; the print's whole side across.
+			Decal->DecalSize = FVector(5.0, 0.5 * FTScene::WetPrintSpan, 0.5 * FTScene::WetPrintSpan);
+			Decal->FadeScreenSize = 0.f;
+			Decal->SetDecalMaterial(PrintMaterial);
+			Decal->SetVisibility(false);
+			Decal->RegisterComponent();
+			WetPrintDecals.Add(Decal);
+		}
+		NoPrintsOn(this);
+		for (TActorIterator<AFTPartyFollower> It(World); It; ++It)
+		{
+			NoPrintsOn(*It);
+		}
+		WetPrintLook = 2.f;
+	}
+	// On foot on dry ground: walking or running, not falling, swimming, wading, climbing or vaulting.
+	const UFTLocomotionAnimInstance* Anim = GetMesh() ? Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()) : nullptr;
+	const UCharacterMovementComponent* Move = GetCharacterMovement();
+	const bool bInWater = bSwimming || bWaterClimbing || WaterNow.mode != ftcore::WaterMode::Dry;
+	bool bOnFoot = Anim && Move && Move->IsMovingOnGround() && !bInWater && !bTraversing;
+	if (bOnFoot)
+	{
+		const ftcore::Locomotion& Loco = Anim->GetLocomotion();
+		bOnFoot = Loco.state() == ftcore::LocoState::Ground && GetVelocity().Size2D() >= Loco.tuning().moveStop;
+	}
+	const float Phase = Anim ? Anim->LeadPhaseAtFrameStart() : -1.f;
+	// The body dries at the water's rate (UFTWaterSubsystem steps it at dryScale 1); its prints age at the same.
+	constexpr float DryScale = 1.f;
+	const int Laid = WetPrints.step(Phase, bOnFoot, Wetness, DeltaSeconds, DryScale);
+	if (Laid >= 0 && Laid < WetPrintDecals.Num())
+	{
+		PlaceWetPrint(Laid, DryScale);
+	}
+	// Now and then: the faded decals hidden; a follower come in since takes no prints.
+	if ((WetPrintLook -= DeltaSeconds) <= 0.f && WetPrintDecals.Num() > 0)
+	{
+		WetPrintLook = 2.f;
+		for (int32 I = 0; I < WetPrintDecals.Num(); ++I)
+		{
+			UDecalComponent* Decal = WetPrintDecals[I];
+			if (Decal && Decal->IsVisible() && !(WetPrints.strength(static_cast<std::size_t>(I)) > 0.f))
+			{
+				Decal->SetVisibility(false);
+			}
+		}
+		NoPrintsOn(this);
+		for (TActorIterator<AFTPartyFollower> It(World); It; ++It)
+		{
+			NoPrintsOn(*It);
+		}
+	}
+	// The low-rate log: from leaving the water, every 2 s while the lead is wet or prints show, and once when both end.
+	if (bInWater)
+	{
+		WetPrintOut = 0.f;
+		WetPrintLogAt = 0.f;
+		bWetPrintLoggedDry = false;
+	}
+	else if (WetPrintOut >= 0.f)
+	{
+		WetPrintOut += DeltaSeconds;
+		if (!bWetPrintLoggedDry && WetPrintOut >= WetPrintLogAt)
+		{
+			WetPrintLogAt += 2.f;
+			const int32 Live = static_cast<int32>(WetPrints.live());
+			int32 Shown = 0;
+			for (const UDecalComponent* Decal : WetPrintDecals)
+			{
+				Shown += Decal && Decal->IsVisible() ? 1 : 0;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Wet prints: %d live (%d shown), %u laid, wetness %.2f, %.0f s out of the water, frame %llu."), Live, Shown,
+				WetPrints.laid(), Wetness, WetPrintOut, static_cast<unsigned long long>(GFrameCounter));
+			bWetPrintLoggedDry = Live == 0 && !(Wetness > 0.f);
+		}
+	}
+}
+
+void AFTExploreCharacter::PlaceWetPrint(int32 Index, float DryScale)
+{
+	UDecalComponent* Decal = WetPrintDecals[Index];
+	if (!Decal)
+	{
+		return;
+	}
+	const ftcore::WetPrint& Print = WetPrints.print(static_cast<std::size_t>(Index));
+	const bool bLeft = Print.foot == ftcore::WetFoot::Left;
+	// The foot: between its ankle and its ball, else a hand's width to the body's side.
+	const USkeletalMeshComponent* Body = GetMesh();
+	const FName Ankle = bLeft ? FName(TEXT("foot_l")) : FName(TEXT("foot_r"));
+	const FName Ball = bLeft ? FName(TEXT("ball_l")) : FName(TEXT("ball_r"));
+	const FVector At = GetActorLocation();
+	const float FeetZ = static_cast<float>(At.Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	FVector Foot = At + GetActorRightVector() * (bLeft ? -11.0 : 11.0);
+	if (Body && Body->GetBoneIndex(Ankle) != INDEX_NONE && Body->GetBoneIndex(Ball) != INDEX_NONE)
+	{
+		Foot = 0.5 * (Body->GetSocketLocation(Ankle) + Body->GetSocketLocation(Ball));
+	}
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(FTWetPrint), false, this);
+	FHitResult Hit;
+	const bool bGround = GetWorld()->LineTraceSingleByChannel(Hit, FVector(Foot.X, Foot.Y, FeetZ + 30.0), FVector(Foot.X, Foot.Y, FeetZ - 60.0), ECC_Visibility, Params);
+	// Dry walkable ground only: never on water, a slope or inside something.
+	if (!bGround || Hit.bStartPenetrating || Hit.ImpactNormal.Z < 0.7)
+	{
+		Decal->SetVisibility(false);
+		return;
+	}
+	const UFTWaterSubsystem* System = GetWorld()->GetSubsystem<UFTWaterSubsystem>();
+	const ftcore::Vec2 Plan{static_cast<float>(Hit.ImpactPoint.X * 0.01), static_cast<float>(Hit.ImpactPoint.Y * 0.01)};
+	if (System && System->HasBodies() && System->Bodies().overWater(Plan, static_cast<float>(Hit.ImpactPoint.Z * 0.01), 0.02f))
+	{
+		Decal->SetVisibility(false);
+		return;
+	}
+	// Down the decal's X; its u (the material's along) is the body's heading, its v the body's right.
+	Decal->SetWorldLocationAndRotation(Hit.ImpactPoint, FRotator(-90.0, GetActorRotation().Yaw, 0.0));
+	Decal->SetDecalColor(FLinearColor(bLeft ? 0.f : 1.f, Print.drops, FMath::Frac(static_cast<float>(Print.serial) * 0.618034f), Print.stamp));
+	Decal->SetVisibility(true);
+	// The engine's fade last, from this frame (a colour or visibility change re-makes the decal's proxy, which starts
+	// its fade from when it is made): 1 to 0 over the print's life, so the stamp x fade is the Core's strength. The
+	// fade's own end would destroy the component; the pool keeps it.
+	Decal->SetFadeOut(0.f, ftcore::WetPrints::life(Print.stamp) / DryScale, false);
+	Decal->SetLifeSpan(0.f);
+}
+
+void AFTExploreCharacter::ShowWetness(const ftcore::WaterWetness& Wet)
+{
+	if (!(Wet.wetness > 0.f) && !(WetShown > 0.f) && !(Wet.silt > 0.f) && !(WetSiltShown > 0.f))
+	{
+		return;
+	}
+	if (!bWetMaterialsMade || WetMaterialsSerial != FTLook::WornMeshSerial())
+	{
+		// A dynamic instance of every material on the lead's skeletal meshes (body, head, clothes): the first time it is
+		// wet, and again once a piece's mesh was swapped (its slots are new; FTLook carries an instance across a swap, so
+		// this mostly finds the same ones). The shown values are forgotten so every one is written to them all.
+		bWetMaterialsMade = true;
+		WetMaterialsSerial = FTLook::WornMeshSerial();
+		WetMaterials.Reset();
+		WetSkinDry.Reset();
+		WetShown = -1.f;
+		WetLineShown = -1.0e9f;
+		WetSiltShown = -1.f;
+		SkinWetShown = -1.f;
+		TInlineComponentArray<USkeletalMeshComponent*> Meshes(this);
+		for (USkeletalMeshComponent* Part : Meshes)
+		{
+			const int32 Count = Part ? Part->GetNumMaterials() : 0;
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				if (!Part->GetMaterial(Index))
+				{
+					continue;
+				}
+				if (UMaterialInstanceDynamic* Dynamic = Part->CreateAndSetMaterialInstanceDynamic(Index))
+				{
+					Dynamic->SetScalarParameterValue(TEXT("WetLineSoft"), 8.f);
+					WetMaterials.Add(Dynamic);
+					// The MetaHuman skin's dry multipliers (-1 where the material has none), for the wet switch.
+					FVector2f Dry(-1.f, -1.f);
+					float Value = 0.f;
+					if (Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Roughness Global Multiply Post-Bake")), Value))
+					{
+						Dry.X = Value;
+					}
+					if (Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Specular Global Multiply Post-Bake")), Value))
+					{
+						Dry.Y = Value;
+					}
+					WetSkinDry.Add(Dry);
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: wetness goes to %d dynamic materials on %d skeletal meshes (Wetness, WetLineZ, WetLineSoft, WetSilt)."),
+			WetMaterials.Num(), Meshes.Num());
+	}
+	// The line is kept over the feet, so it travels with the body; it is written when it has moved a centimetre.
+	const float LineZ = static_cast<float>(GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight()) + Wet.line * 100.f;
+	const bool bWet = FMath::Abs(Wet.wetness - WetShown) > 0.004f || (Wet.wetness <= 0.f && WetShown != 0.f);
+	const bool bLine = FMath::Abs(LineZ - WetLineShown) > 1.f;
+	const bool bSilt = Wet.silt != WetSiltShown;
+	if (!bWet && !bLine && !bSilt)
+	{
+		return;
+	}
+	static const FName WetnessName(TEXT("Wetness"));
+	static const FName LineName(TEXT("WetLineZ"));
+	static const FName SiltName(TEXT("WetSilt"));
+	for (UMaterialInstanceDynamic* Dynamic : WetMaterials)
+	{
+		if (!Dynamic)
+		{
+			continue;
+		}
+		if (bWet)
+		{
+			Dynamic->SetScalarParameterValue(WetnessName, Wet.wetness);
+		}
+		if (bLine)
+		{
+			Dynamic->SetScalarParameterValue(LineName, LineZ);
+		}
+		if (bSilt)
+		{
+			Dynamic->SetScalarParameterValue(SiltName, Wet.silt);
+		}
+	}
+	WetShown = bWet ? Wet.wetness : WetShown;
+	WetLineShown = bLine ? LineZ : WetLineShown;
+	WetSiltShown = Wet.silt;
+}
+
+bool AFTExploreCharacter::TryLadderClimb(bool bPressed)
+{
+	UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (!System || bWaterClimbing || WaterNow.mode == ftcore::WaterMode::Dry)
+	{
+		return false;
+	}
+	const FVector At = GetActorLocation();
+	const ftcore::WaterBodies& Bodies = System->Bodies();
+	// Within reach of a ladder's foot (a little further for a pressed jump).
+	const int32 Index = Bodies.nearestExit(ftcore::Vec2{static_cast<float>(At.X * 0.01), static_cast<float>(At.Y * 0.01)},
+		ftcore::kWaterLadderReach * (bPressed ? 1.5f : 1.f));
+	if (Index < 0 || Bodies.exit(static_cast<std::size_t>(Index)).kind != ftcore::WaterExitKind::Ladder)
+	{
+		return false;
+	}
+	const ftcore::WaterExit& Exit = Bodies.exit(static_cast<std::size_t>(Index));
+	const FVector Out(Exit.out.x, Exit.out.y, 0.0);
+	// Pushing at the wall (the stick or a scripted walk), or facing it when jump is pressed.
+	const FVector Push = GetCharacterMovement()->GetLastInputVector().GetSafeNormal2D();
+	const bool bPushing = FVector::DotProduct(Push, Out) > 0.5;
+	const bool bToward = FVector::DotProduct(GetActorForwardVector().GetSafeNormal2D(), Out) > 0.3;
+	if (!(bPushing || (bPressed && bToward)))
+	{
+		return false;
+	}
+	const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const double Feet = At.Z - Half;
+	bWaterClimbing = true;
+	WaterClimbTime = 0.f;
+	WaterClimbFrom = At;
+	WaterClimbTo = FVector(Exit.top.x * 100.0, Exit.top.y * 100.0, Exit.topZ * 100.0 + Half + 2.0);
+	// A rung at a time: about a second and a half for a quay wall.
+	WaterClimbSeconds = FMath::Clamp(static_cast<float>((WaterClimbTo.Z - Half - Feet) * 0.01) * 0.5f, 0.9f, 2.4f);
+	if (bSwimming)
+	{
+		bSwimming = false;
+		GetCharacterMovement()->MaxFlySpeed = SwimSavedFly;
+		GetCharacterMovement()->BrakingDecelerationFlying = SwimSavedBrake;
+	}
+	SetActorRotation(FRotator(0.0, Out.Rotation().Yaw, 0.0));
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->SetMovementMode(MOVE_None);
+	UE_LOG(LogForgottenThird, Display, TEXT("Water: climbing the ladder at (%.0f, %.0f) cm, %.2f m up in %.1f s."), Exit.foot.x * 100.f, Exit.foot.y * 100.f,
+		(WaterClimbTo.Z - Half - Feet) * 0.01, WaterClimbSeconds);
+	return true;
+}
+
+bool AFTExploreCharacter::TryWaterClimb()
+{
+	// Facing a wall within arm's reach whose top is dry, walkable and no more than a reach over the feet: up and onto it.
+	constexpr double kReach = 90.0;    // cm ahead
+	constexpr double kTopMost = 330.0; // cm over the feet
+	UWorld* World = GetWorld();
+	if (!World || bWaterClimbing || WaterNow.mode == ftcore::WaterMode::Dry)
+	{
+		return false;
+	}
+	const FVector At = GetActorLocation();
+	const float Half = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const float Radius = GetCapsuleComponent()->GetScaledCapsuleRadius();
+	const double Feet = At.Z - Half;
+	const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
+	FCollisionQueryParams Query(SCENE_QUERY_STAT(FTWaterClimb), false, this);
+	FHitResult Wall;
+	// The wall is looked for just over the surface and at the body's middle (a wall that ends under the surface is a step).
+	const FVector Chest(At.X, At.Y, FMath::Max(At.Z, WaterNow.surface * 100.0 + 10.0));
+	if (!World->LineTraceSingleByChannel(Wall, Chest, Chest + Ahead * kReach, ECC_Visibility, Query) || FMath::Abs(Wall.ImpactNormal.Z) > 0.5)
+	{
+		return false;
+	}
+	// Onto the top just past the wall's face, or, where something stands there (a railing along the edge), past it.
+	FVector Onto = FVector::ZeroVector;
+	FHitResult Top;
+	bool bFound = false;
+	for (const double Past : {Radius + 12.0, Radius + 55.0, Radius + 95.0})
+	{
+		Onto = Wall.ImpactPoint + Ahead * Past;
+		if (!World->LineTraceSingleByChannel(Top, FVector(Onto.X, Onto.Y, Feet + kTopMost), FVector(Onto.X, Onto.Y, Feet + 20.0), ECC_Visibility, Query)
+			|| Top.bStartPenetrating || Top.ImpactNormal.Z < 0.7 || Top.ImpactPoint.Z <= WaterNow.surface * 100.0)
+		{
+			continue;
+		}
+		const FVector Stand(Onto.X, Onto.Y, Top.ImpactPoint.Z + Half + 2.0);
+		if (!World->OverlapBlockingTestByChannel(Stand, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeCapsule(Radius, Half), Query))
+		{
+			bFound = true;
+			break;
+		}
+	}
+	if (!bFound)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: no way out up this wall at (%.0f, %.0f) cm (no clear dry top within %.1f m of the feet)."),
+			Wall.ImpactPoint.X, Wall.ImpactPoint.Y, kTopMost * 0.01);
+		return false;
+	}
+	bWaterClimbing = true;
+	WaterClimbTime = 0.f;
+	WaterClimbSeconds = 0.9f;
+	WaterClimbFrom = At;
+	WaterClimbTo = FVector(Onto.X, Onto.Y, Top.ImpactPoint.Z + Half + 2.0);
+	if (bSwimming)
+	{
+		bSwimming = false;
+		GetCharacterMovement()->MaxFlySpeed = SwimSavedFly;
+		GetCharacterMovement()->BrakingDecelerationFlying = SwimSavedBrake;
+	}
+	GetCharacterMovement()->StopMovementImmediately();
+	GetCharacterMovement()->SetMovementMode(MOVE_None);
+	UE_LOG(LogForgottenThird, Display, TEXT("Water: climbing out (the fallback: no ladder or steps here), %.2f m up the wall at (%.0f, %.0f) cm."), (Top.ImpactPoint.Z - Feet) * 0.01, Onto.X, Onto.Y);
+	return true;
 }
 
 void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)
@@ -1900,6 +4344,11 @@ void AFTExploreCharacter::AddMovementInput(FVector WorldDirection, float ScaleVa
 	if (RollTurnLeft > 0.f)
 	{
 		WorldDirection = WorldDirection.RotateAngleAxis(RollTurn, FVector::UpVector);
+	}
+	// Wading: the walk is slowed by the water's depth (the movement caps its speed at the input's share).
+	if (!bSwimming && (WaterNow.mode == ftcore::WaterMode::Wade || WaterNow.mode == ftcore::WaterMode::DeepWade))
+	{
+		ScaleValue *= WaterNow.speedFactor;
 	}
 	Super::AddMovementInput(WorldDirection, ScaleValue, bForce);
 }

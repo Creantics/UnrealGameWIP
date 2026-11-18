@@ -6,11 +6,24 @@
 #include "Misc/Paths.h"
 
 #include "ForgottenThird.h"
+#include "FTNewUi.h"
 #include "FTPlayerController.h"
 #include "FTStorySubsystem.h"
 #include "FTText.h"
+#include "FTUiText.h"
+
+#include "ftcore/UiFirstUse.h"
 
 #include <string>
+
+namespace
+{
+// Every row's label and value word come from the interface text table, by the keys Core names (a number stays Core's).
+const FString& KeyText(const char* Key)
+{
+	return FTUiText::Lookup(UTF8_TO_TCHAR(Key));
+}
+} // namespace
 
 void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -18,9 +31,10 @@ void UFTSettingsSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RowLabels.SetNum(RowCount);
 	RowValues.SetNum(RowCount);
 	RowRects.Init(FBox2D(ForceInit), RowCount);
+	SectionRects.Init(FBox2D(ForceInit), static_cast<int32>(ftcore::kSettingsGroupCount));
 	for (int32 I = 0; I < RowCount; ++I)
 	{
-		RowLabels[I] = FString(UTF8_TO_TCHAR(ftcore::settingsRowLabel(static_cast<ftcore::SettingsRow>(I))));
+		RowLabels[I] = KeyText(ftcore::settingsRowKey(static_cast<ftcore::SettingsRow>(I)));
 	}
 	Load();
 	MarkChanged();
@@ -70,15 +84,35 @@ bool UFTSettingsSubsystem::Save() const
 	return true;
 }
 
+void UFTSettingsSubsystem::MarkUiFirstUse(uint32 Counts)
+{
+	const uint32 Joined = ftcore::uiFirstUseMerge(Values.uiFirstUse, Counts);
+	if (Joined == Values.uiFirstUse)
+	{
+		return;
+	}
+	Values.uiFirstUse = Joined;
+	Save();
+}
+
 void UFTSettingsSubsystem::MarkChanged()
 {
 	++Revision;
 	char Buffer[40];
 	for (int32 I = 0; I < RowCount; ++I)
 	{
-		ftcore::settingsRowValue(Values, static_cast<ftcore::SettingsRow>(I), Buffer, sizeof Buffer);
-		RowValues[I] = FString(UTF8_TO_TCHAR(Buffer));
+		const ftcore::SettingsRow Row = static_cast<ftcore::SettingsRow>(I);
+		if (const char* Key = ftcore::settingsValueKey(Values, Row))
+		{
+			RowValues[I] = KeyText(Key);
+		}
+		else
+		{
+			ftcore::settingsRowValue(Values, Row, Buffer, sizeof Buffer);
+			RowValues[I] = FString(UTF8_TO_TCHAR(Buffer));
+		}
 	}
+	FT::SetUiPalette(static_cast<uint8>(Values.palette)); // the new UI's colours follow the Colours row at once
 }
 
 void UFTSettingsSubsystem::Open(AFTPlayerController* PC)
@@ -181,6 +215,14 @@ void UFTSettingsSubsystem::HandlePress()
 		{
 			return;
 		}
+		for (int32 G = 0; G < SectionRects.Num(); ++G)
+		{
+			if (SectionRects[G].bIsValid && SectionRects[G].IsInside(FVector2D(MouseX, MouseY)))
+			{
+				SelectRow(FirstRowOf(G));
+				return;
+			}
+		}
 		const int32 Row = HitRow(FVector2D(MouseX, MouseY));
 		if (Row < 0)
 		{
@@ -199,6 +241,27 @@ void UFTSettingsSubsystem::HandleCancel()
 	{
 		Close();
 	}
+}
+
+void UFTSettingsSubsystem::SelectRow(int32 Row)
+{
+	if (Row >= 0 && Row < RowCount)
+	{
+		Menu.select(static_cast<ftcore::SettingsRow>(Row));
+	}
+}
+
+int32 UFTSettingsSubsystem::FirstRowOf(int32 Group)
+{
+	for (uint32 I = 0; I < ftcore::kSettingsRowCount; ++I)
+	{
+		const ftcore::SettingsRow Row = ftcore::settingsScreenRow(I);
+		if (Row != ftcore::SettingsRow::Back && static_cast<int32>(ftcore::settingsRowGroup(Row)) == Group)
+		{
+			return static_cast<int32>(Row);
+		}
+	}
+	return static_cast<int32>(ftcore::SettingsRow::Back);
 }
 
 int32 UFTSettingsSubsystem::HitRow(const FVector2D& Point) const

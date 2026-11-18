@@ -225,6 +225,16 @@ struct LocoTuning {
     float airGrace = 0.12f;     // falling shorter than this (a step down) keeps the ground clips
     float landMinAir = 0.3f;    // a shorter time in the air skips the landing
     float landHoldMoving = 0.2f; // landing plays at least this long before a moving body resumes its gait
+    float jumpAir = 0.f;        // > 0: a host with its own arc (the arena) is this long (s) in the air; a take-off then plays at
+                                // the rate that brings it from where its root leaves the ground to where it comes down in that
+                                // time (rate 1 when the clip has no such span), so the landing meets it at its contact...
+    float jumpLead = 0.f;       // ...entered this long (s, at that rate) before it leaves the ground: the push-off, which the
+                                // host plays on the floor before its arc starts
+    float landPlay = 0.f;       // > 0: a landing (standing or moving) hands back to the ground this long (s) after touchdown, not near its
+                                // clip's end (the host's own landing lock is shorter than the clip's recovery)...
+    float landRate = 1.f;       // ...and a standing one plays at this rate (a moving one keeps its speed's)
+    float landPlayMoving = 0.f; // > 0: a moving landing's own hand-back (s), in place of landPlay: its crouch is deeper,
+                                // so leaving it sooner keeps the stand-up from jumping
     float movingAir = 150.f;    // at this ground speed or more, jumps and landings use the moving clips
     float minLandRate = 0.5f;   // the moving jump's and landing's rate range
     float maxLandRate = 2.f;
@@ -237,6 +247,9 @@ struct LocoTuning {
                                 // to the last one: trimming down adds to the forward slip of the plants, trimming up takes from it
     float gaitDeadBand = 0.03f; // a gait with less of the mix than this drops out, the nearer gait playing alone (the
                                 // blend steps by this much in a frame where it crosses)
+    float gaitShareFade = 0.08f; // the gaits' split eases toward its speed's at this time constant (95% in three): a
+                                 // speed that drops in a frame (a body checked at a strike's contact) swapped run
+                                 // for walk at once, the planted foot jumping between the two poses
     float gaitBand = 0.12f;     // the faster of two gaits plays alone from this share short of its own ground speed (a
                                 // little slowed: the stride rate follows the speed); the MetaHuman bodies' run (483-489)
                                 // would hold 13% walk at the 450 jog, which takes from its arm pump and knee lift
@@ -477,6 +490,8 @@ private:
     void matchGaits(LocoClip g, const LocoFeet& feet, const LocoFeet& velocity, float speed);
     void retarget(LocoClip next);
     void advance(float dt, float speed, float leadPhase, float leadStride);
+    // Eases shown_ toward share_; from no gaits playing it takes share_ as it is.
+    void easeShares(float dt);
     // Takes up the stance asked for: getting down or up when standing still.
     void changeStance(bool crouch, float speed);
     LocoClip idleClip() const { return crouched_ ? LocoClip::CrouchIdle : LocoClip::Idle; }
@@ -486,6 +501,7 @@ private:
     std::array<float, kLocoClipCount> time_{};
     std::array<float, kLocoClipCount> rate_{};
     std::array<float, kLocoClipCount> share_{}; // each gait's part of the ground blend at this speed
+    std::array<float, kLocoClipCount> shown_{}; // and the part it plays: share_ eased (gaitShareFade)
     std::array<int, kLocoClipCount> stride_{};  // which of its loop's strides each gait is in
     std::array<LocoLayer, kLocoClipCount> layers_{};
     std::size_t layerCount_ = 1;

@@ -141,6 +141,9 @@ struct MassingYards {
     double maxRise = 1.5;               // m: the ground under a yard rises no more than this
     double fenceHigh = 1.8, fenceThick = 0.25, fencePiece = 40.0; // m; a fence side is laid in pieces up to fencePiece
     double gateWide = 5.0;              // m: the gate's gap, in the side nearest a street
+    // The side nearest a street (one within 12 cells) is a low wall, not a fence: frontHigh high, in pieces of frontPiece with frontGap
+    // between them, so the street sees into the yard (frontHigh <= 0: a fence like the other sides).
+    double frontHigh = 0.9, frontPiece = 2.5, frontGap = 1.25; // m
     double storey = 3.5;                // m: a shed's storey
     std::vector<MassingRect> keepClear; // nothing goes into these (an entry, a goal, a square)
     std::string prefix = "YD";          // ids "<prefix>-<n>" (the shed) and "<prefix>-<n>-F<k>" (its fence pieces)
@@ -158,7 +161,7 @@ struct MassingYardCounts {
 // with every cell free, its ground within maxRise, and `gap` clear of the yards before it, becomes a yard: a shed (kind
 // "kit", source Invented, 1-3 storeys by its id's hash) across the half away from the nearest street, and a fence
 // (kind "wall", fenceHigh over the highest ground under each piece, its bottom 0.1 m under the lowest) round the lot
-// with a gateWide gap in the side nearest a street. Each box's terr_min/terr_max are left 0 (the table's own columns
+// with a gateWide gap in the side nearest a street, that side a low wall in pieces (frontHigh, frontPiece, frontGap). Each box's terr_min/terr_max are left 0 (the table's own columns
 // are the caller's). Appends to `boxes` (the rest unchanged).
 FTCORE_API MassingYardCounts massingYardFill(std::vector<MassingBox>& boxes, const std::vector<MassingStreet>& streets,
                                              const std::vector<MassingFoot>& taken, const MassingGround& ground,

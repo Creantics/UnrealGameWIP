@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "about": "Bodies with no retargeted clips under their own name use another body's set (same skeleton). The Real4 bodies are Real3 copies with the KeemFace heads.",
+  "aliases": {
+    "SKM_MHC_DevinReal4_BodyMesh": "SKM_MHC_DevinReal3_BodyMesh",
+    "SKM_MHC_DuyReal4_BodyMesh": "SKM_MHC_DuyReal3_BodyMesh",
+    "SKM_MHC_ThirdReal4_BodyMesh": "SKM_MHC_ThirdReal3_BodyMesh"
+  }
+}

@@ -164,6 +164,45 @@ TEST_CASE("shop signs: every style inks part of its panel, never all of it") {
     CHECK_FALSE(shopSignInk(b, w, h, (x0 + 0.5f * p) / w, (y0 + 0.5f * p) / h));
 }
 
+TEST_CASE("shop signs: marksOnly turns every sign to strokes, keeping each bay's style, word and ink") {
+    ShopFrontSpec off;
+    ShopFrontSpec on;
+    on.marksOnly = true;
+    int words = 0;
+    for (std::uint32_t col = 0; col < 64; ++col) {
+        const ShopBay a = shopFrontBay(off, 11u, col);
+        const ShopBay b = shopFrontBay(on, 11u, col);
+        CHECK(a.marks == (a.style == ShopSignStyle::Strokes));
+        CHECK(b.marks);
+        CHECK(b.style == a.style);
+        CHECK(b.word == a.word);
+        CHECK(b.ink == a.ink);
+        CHECK(b.kind == a.kind);
+        if (a.marks) continue;
+        ++words;
+        // The marked bay inks as a Strokes bay with the same word and ink would, not as its word.
+        ShopBay strokes = a;
+        strokes.style = ShopSignStyle::Strokes;
+        int same = 0, differ = 0;
+        for (int y = 0; y < 30; ++y)
+            for (int x = 0; x < 200; ++x) {
+                const float u = (x + 0.5f) / 200.0f, v = (y + 0.5f) / 30.0f;
+                const bool m = shopSignInk(b, 3.0f, 0.36f, u, v);
+                same += m == shopSignInk(strokes, 3.0f, 0.36f, u, v) ? 1 : 0;
+                differ += m != shopSignInk(a, 3.0f, 0.36f, u, v) ? 1 : 0;
+            }
+        CHECK(same == 6000);
+        CHECK(differ > 0);
+    }
+    CHECK(words > 0);
+    // The GPU's fragment: the switch is the only change, and only when on.
+    const std::string mainOff = shopFrontHlsl(off, 0.35f), mainOn = shopFrontHlsl(on, 0.35f);
+    CHECK(mainOff.find("bool sfStrokes = sfStyle == 2u;") != std::string::npos);
+    CHECK(mainOn.find("bool sfStrokes = true;") != std::string::npos);
+    CHECK(mainOn.find("bool sfStrokes = sfStyle == 2u;") == std::string::npos);
+    CHECK(shopFrontPreHlsl(on) == shopFrontPreHlsl(off));
+}
+
 TEST_CASE("shop fronts: the choices allocate nothing") {
     const ShopFrontSpec spec;
     const auto before = ftcore_test::allocStats().count;
@@ -201,4 +240,6 @@ TEST_CASE("shop fronts: the HLSL fragments keep their contract") {
     CHECK(shopFrontPreHlsl(ShopFrontSpec{}) == pre);
     // No sign word is spelt out in the HLSL (packed only), and no fragment names a real shop.
     CHECK(main.find("NOODLES") == std::string::npos);
+    // The panel reads from 1 - u (the face's u runs to the viewer's left), so its words aren't mirrored.
+    CHECK(main.find("float sfX = (1.0 - u) * bw - 0.12 * bw;") != std::string::npos);
 }

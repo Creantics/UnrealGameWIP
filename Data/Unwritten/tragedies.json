@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "places": ["playground", "school"],
+  "keys": [
+    { "id": "trag_a02", "lead": "a", "places": ["playground"], "voice": "vo_trag_a02", "figure": "fig_trag_a02" },
+    { "id": "trag_b01", "lead": "b", "places": ["school"], "voice": "vo_trag_b01", "figure": "fig_trag_b01" }
+  ]
+}

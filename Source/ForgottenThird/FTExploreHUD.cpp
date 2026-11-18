@@ -1,14 +1,26 @@
 #include "FTExploreHUD.h"
 
+#include "FTMiniMap.h"
+
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/PlayerController.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
 
+#include "FTAimReticle.h"
 #include "FTCutsceneDirector.h"
 #include "FTCutsceneHUD.h"
+#include "FTExploreCharacter.h"
 #include "FTExploreDirector.h"
 #include "FTPauseOverlay.h"
+#include "FTPauseSubsystem.h"
+#include "FTSettingsSubsystem.h"
+#include "FTInputBindings.h"
+#include "FTNewUi.h"
 #include "FTUiText.h"
 
 #include "ftcore/Explore.h"
@@ -25,7 +37,6 @@ const FLinearColor kPanelField(0.02f, 0.02f, 0.05f, 0.6f);
 const FTUiText kTitleField(TEXT("explore.objectives"));
 const FString kTickField(TEXT("v"));
 const FString kArrowField(TEXT(">"));
-const FTUiText kHintField(TEXT("explore.hint"));
 const FTUiText kCompleteField(TEXT("explore.complete"));
 const FTUiText kWorldField(TEXT("explore.world"));
 const FTUiText kOverworldField(TEXT("explore.overworld"));
@@ -63,6 +74,106 @@ AFTExploreDirector* AFTExploreHUD::FindDirector()
 	return CachedDirector.Get();
 }
 
+void AFTExploreHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	if (const AFTExploreDirector* Found = FindDirector())
+	{
+		TryMakeMiniMap(*Found);
+	}
+	// Under the new UI the party screen is a Slate layer over the Canvas HUD, drawn only while the screen is open.
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (FT::NewUiEnabled() && Viewport)
+	{
+		TWeakObjectPtr<AFTExploreHUD> Self(this);
+		NewUiWidget = FT::MakeExplorePartyWidget([Self]() -> const AFTExploreCharacter*
+		{
+			return Self.IsValid() && Self->bShowHUD && !Self->bReticleOnly ? Cast<AFTExploreCharacter>(Self->GetOwningPawn()) : nullptr;
+		});
+		Viewport->AddViewportWidgetContent(NewUiWidget.ToSharedRef(), 10);
+		ExploreHudWidget = FT::MakeExploreHudWidget([Self]() -> const AFTExploreDirector*
+		{
+			return Self.IsValid() && Self->bShowHUD && !Self->bReticleOnly ? Self->FindDirector() : nullptr;
+		},
+		[Self]() -> const AFTExploreCharacter*
+		{
+			return Self.IsValid() && Self->bShowHUD && !Self->bReticleOnly ? Cast<AFTExploreCharacter>(Self->GetOwningPawn()) : nullptr;
+		});
+		Viewport->AddViewportWidgetContent(ExploreHudWidget.ToSharedRef(), 9);
+	}
+}
+
+void AFTExploreHUD::EndPlay(const EEndPlayReason::Type Reason)
+{
+	UGameViewportClient* Viewport = GetWorld() ? GetWorld()->GetGameViewport() : nullptr;
+	if (NewUiWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(NewUiWidget.ToSharedRef());
+	}
+	if (ExploreHudWidget.IsValid() && Viewport)
+	{
+		Viewport->RemoveViewportWidgetContent(ExploreHudWidget.ToSharedRef());
+	}
+	NewUiWidget.Reset();
+	ExploreHudWidget.Reset();
+	Super::EndPlay(Reason);
+}
+
+void AFTExploreHUD::TryMakeMiniMap(const AFTExploreDirector& D)
+{
+	if (bMiniMapTried)
+	{
+		return;
+	}
+	bMiniMapTried = true;
+	MiniMap = NewObject<UFTMiniMap>(this);
+	if (!MiniMap->Init(D))
+	{
+		MiniMap = nullptr;
+	}
+}
+
+void AFTExploreHUD::ToggleMapOverlay()
+{
+	if (MiniMap)
+	{
+		MiniMap->ToggleOverlay();
+	}
+}
+
+ftcore::UiScreenMask AFTExploreHUD::ScreensOpen(const AFTExploreCharacter* Lead)
+{
+	using ftcore::UiScreen;
+	using ftcore::uiScreenBit;
+	ftcore::UiScreenMask Open = 0;
+	if (!Lead)
+	{
+		return Open;
+	}
+	const APlayerController* PC = Cast<APlayerController>(Lead->GetController());
+	const AFTExploreHUD* Hud = PC ? Cast<AFTExploreHUD>(PC->GetHUD()) : nullptr;
+	if (Hud && Hud->MiniMap && Hud->MiniMap->IsOverlay())
+	{
+		Open |= uiScreenBit(UiScreen::Map);
+	}
+	if (Lead->GetPartyScreen().open)
+	{
+		Open |= uiScreenBit(UiScreen::Party);
+	}
+	const UGameInstance* GI = Lead->GetGameInstance();
+	const UFTPauseSubsystem* Pause = GI ? GI->GetSubsystem<UFTPauseSubsystem>() : nullptr;
+	const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	if (Pause && Pause->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Pause);
+	}
+	if (Set && Set->IsOpen())
+	{
+		Open |= uiScreenBit(UiScreen::Settings);
+	}
+	return Open;
+}
+
 void AFTExploreHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -70,13 +181,31 @@ void AFTExploreHUD::DrawHUD()
 	{
 		return;
 	}
+	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
+	if (bReticleOnly)
+	{
+		DrawAimReticle(); // a review capture: the scene and the reticle, no text
+		return;
+	}
+	// What of play may draw under the screens open now (ftcore::uiHudDraws): nothing of play under the pause menu or the
+	// settings, the overlay alone under the map, the party rows alone under the party screen.
+	const ftcore::UiScreenMask Screens = ScreensOpen(Cast<AFTExploreCharacter>(GetOwningPawn()));
+	const auto Draws = [Screens](ftcore::UiHudPart Part) { return ftcore::uiHudDraws(Part, ftcore::UiHudMode::Explore, Screens); };
 	const AFTExploreDirector* Found = FindDirector();
 	if (!Found)
 	{
+		// A map with no director (a bare world map) still shows the reticle and the controls line.
+		if (Draws(ftcore::UiHudPart::Reticle))
+		{
+			DrawAimReticle();
+		}
+		if (Draws(ftcore::UiHudPart::ControlsLine))
+		{
+			DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, Canvas->ClipX * 0.5f, Canvas->ClipY - 36.f * UiScale, GEngine->GetSmallFont(), 1.f);
+		}
 		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
-	UiScale = FMath::Max(0.5f, Canvas->ClipY / 1080.f);
 	// A cutscene playing in place has the screen: its letterbox, and none of the field's own lines.
 	const AFTCutsceneDirector* Cutscene = Found->GetCutsceneDirector();
 	if (Cutscene && Cutscene->IsPlayingInPlace())
@@ -85,21 +214,60 @@ void AFTExploreHUD::DrawHUD()
 		FT::DrawPauseOverlay(*this, Canvas);
 		return;
 	}
+	// Under the new UI the objective, the prompt and the notices are the explore HUD's (a Slate layer); the minimap, the
+	// reticle, the banner, the complete card and the pause stay here.
+	const bool bNewHud = ExploreHudWidget.IsValid();
+	const bool bField = Draws(ftcore::UiHudPart::FieldHud); // the old canvas panels, under the same rule as the new HUD's
+	if (!bField)
+	{
+		if (Found->IsWorldMode() || Found->IsOverworld())
+		{
+			TryMakeMiniMap(*Found);
+			// The map overlay is the map screen: it draws when the map is open and no menu stands over it.
+			if (MiniMap && MiniMap->IsOverlay() && Draws(ftcore::UiHudPart::MapOverlay))
+			{
+				MiniMap->Draw(*this, *Canvas, UiScale);
+			}
+		}
+		FT::DrawPauseOverlay(*this, Canvas);
+		return;
+	}
 	if (Found->IsStoryWalk())
 	{
-		DrawFieldObjective(*Found);
+		if (!bNewHud)
+		{
+			DrawFieldObjective(*Found);
+		}
 	}
 	else if (Found->IsWorldMode() || Found->IsOverworld())
 	{
-		DrawWorld(*Found);
+		TryMakeMiniMap(*Found); // a director that came after BeginPlay
+		if (MiniMap)
+		{
+			MiniMap->Draw(*this, *Canvas, UiScale);
+		}
+		if (!bNewHud)
+		{
+			DrawWorld(*Found);
+		}
 	}
-	else
+	else if (!bNewHud)
 	{
 		DrawObjectives(*Found);
 	}
-	DrawPrompt(*Found);
-	DrawMessages(*Found);
+	DrawAimReticle();
+	if (!bNewHud)
+	{
+		DrawPrompt(*Found);
+	}
+	DrawMessages(*Found, !bNewHud);
 	FT::DrawPauseOverlay(*this, Canvas);
+}
+
+void AFTExploreHUD::DrawAimReticle()
+{
+	const AFTExploreCharacter* Lead = Cast<AFTExploreCharacter>(GetOwningPawn());
+	FT::DrawAimReticle(*this, Canvas, Lead ? Lead->GetAimAlpha() : 0.f);
 }
 
 void AFTExploreHUD::DrawStr(const FString& S, const FLinearColor& Color, float X, float Y, UFont* Font, float Scale)
@@ -178,17 +346,17 @@ void AFTExploreHUD::DrawPrompt(const AFTExploreDirector& D)
 		DrawRect(kPanelField, CX - W * 0.5f - 16.f * S, Y - 8.f * S, W + 32.f * S, H + 16.f * S);
 		DrawStrCentered(Prompt, kWhiteField, CX, Y, Font, 1.2f);
 	}
-	DrawStrCentered(kHintField, kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
+	DrawStrCentered(FTInputBindings::HintLine(ftcore::InputHintScreen::Field, FTInputBindings::NoteDevice(GetOwningPlayerController())), kDimField, CX, Canvas->ClipY - 36.f * S, GEngine->GetSmallFont(), 1.f);
 }
 
-void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D)
+void AFTExploreHUD::DrawMessages(const AFTExploreDirector& D, bool bNotice)
 {
 	UFont* Large = GEngine->GetLargeFont();
 	UFont* Font = GEngine->GetMediumFont();
 	const float S = UiScale;
 	const float CX = Canvas->ClipX * 0.5f;
 
-	if (!D.GetNotice().IsEmpty())
+	if (bNotice && !D.GetNotice().IsEmpty())
 	{
 		const float A = FieldFade(D.GetNoticeAge(), 1.8, 0.5);
 		if (A > 0.f)

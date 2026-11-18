@@ -9,6 +9,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionParticleColor.h"
+#include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -93,20 +94,55 @@ const TCHAR* const SparkMaskCode = TEXT(
 	"float2 d = UV * 2.0 - 1.0;\n"
 	"float r2 = saturate(dot(d, d));\n"
 	"return saturate(exp(-r2 * 18.0) + 0.45 * pow(1.0 - r2, 3.0));\n");
+// A thin soft ring at 0.78 of the radius, nothing inside or outside: a rain ripple on a puddle.
+const TCHAR* const RingMaskCode = TEXT(
+	"float2 d = UV * 2.0 - 1.0;\n"
+	"float r2 = dot(d, d);\n"
+	"float w = (sqrt(saturate(r2)) - 0.78) / 0.12;\n"
+	"return exp(-w * w) * (1.0 - step(1.0, r2));\n");
 
 struct FSpriteMaterialSpec
 {
 	const TCHAR* Name;
 	bool bSpark;
 	bool bAdditive;
+	bool bLit = false; // lit by the scene (an emitter's "lit"): drops of water, which must not glow at night
+	bool bNearFade = false; // faded out near the camera (an emitter's "nearFade"): a ground tell the camera stands in
+	bool bRing = false; // the ripple ring mask (sprite "ring")
 };
+constexpr int32 kSpriteMaterials = 9;
+constexpr int32 kLitSprite = 4;
+constexpr int32 kNearFadeSprite = 5; // the soft one; the spark's is next
+constexpr int32 kLitNearFadeSprite = 7;
+constexpr int32 kLitRingSprite = 8;
 
 const FSpriteMaterialSpec SpriteMaterials[] = {
 	{TEXT("M_VfxSoft"), false, false},
 	{TEXT("M_VfxSoftAdditive"), false, true},
 	{TEXT("M_VfxSpark"), true, false},
 	{TEXT("M_VfxSparkAdditive"), true, true},
+	{TEXT("M_VfxSoftLit"), false, false, true},
+	{TEXT("M_VfxSoftNearFade"), false, false, false, true},
+	{TEXT("M_VfxSparkNearFade"), true, false, false, true},
+	{TEXT("M_VfxSoftLitNearFade"), false, false, true, true},
+	{TEXT("M_VfxRingLit"), false, false, true, false, true},
 };
+static_assert(int32(UE_ARRAY_COUNT(SpriteMaterials)) == kSpriteMaterials, "one spec per sprite material");
+
+// The sprite material an emitter draws with: lit (ring, near-faded or plain), near-faded, or the four basic ones.
+int32 SpriteMaterialIndex(const ftcore::VfxNiagaraEmitter& P)
+{
+	const bool bSpark = P.sprite == ftcore::VfxSprite::Spark;
+	if (P.lit)
+	{
+		return P.sprite == ftcore::VfxSprite::Ring ? kLitRingSprite : P.nearFade ? kLitNearFadeSprite : kLitSprite;
+	}
+	if (P.nearFade)
+	{
+		return kNearFadeSprite + (bSpark ? 1 : 0);
+	}
+	return (bSpark ? 2 : 0) + (P.additive ? 1 : 0);
+}
 
 FString MaterialPackage(const FSpriteMaterialSpec& Spec)
 {
@@ -147,16 +183,20 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	UMaterial* Material = NewObject<UMaterial>(Package, Spec.Name, RF_Public | RF_Standalone | RF_Transactional);
 	Material->MaterialDomain = MD_Surface;
 	Material->BlendMode = Spec.bAdditive ? BLEND_Additive : BLEND_Translucent;
-	Material->SetShadingModel(MSM_Unlit);
+	Material->SetShadingModel(Spec.bLit ? MSM_DefaultLit : MSM_Unlit);
+	if (Spec.bLit)
+	{
+		Material->TranslucencyLightingMode = TLM_VolumetricNonDirectional;
+	}
 	Material->SetUsageByFlag(MATUSAGE_NiagaraSprites, true);
 
 	UMaterialExpressionTextureCoordinate* UV = AddVfxExpression<UMaterialExpressionTextureCoordinate>(Material, -900, 0);
 	UMaterialExpressionParticleColor* Color = AddVfxExpression<UMaterialExpressionParticleColor>(Material, -900, 150);
 
 	UMaterialExpressionCustom* Mask = AddVfxExpression<UMaterialExpressionCustom>(Material, -600, 0);
-	Mask->Description = Spec.bSpark ? TEXT("SparkMask") : TEXT("SoftMask");
+	Mask->Description = Spec.bRing ? TEXT("RingMask") : Spec.bSpark ? TEXT("SparkMask") : TEXT("SoftMask");
 	Mask->OutputType = CMOT_Float1;
-	Mask->Code = Spec.bSpark ? SparkMaskCode : SoftMaskCode;
+	Mask->Code = Spec.bRing ? RingMaskCode : Spec.bSpark ? SparkMaskCode : SoftMaskCode;
 	Mask->Inputs.Reset();
 	FCustomInput& InUV = Mask->Inputs.AddDefaulted_GetRef();
 	InUV.InputName = TEXT("UV");
@@ -165,11 +205,30 @@ UMaterial* BuildSpriteMaterial(UPackage* Package, const FSpriteMaterialSpec& Spe
 	// Additive: light adds in proportion to alpha. Translucent: the colour over a masked alpha.
 	UMaterialExpressionCustom* Emissive = AddCustom(Material, 0, TEXT("Emissive"), CMOT_Float3,
 		Spec.bAdditive ? TEXT("return Color.rgb * Color.a * Mask;") : TEXT("return Color.rgb;"), Color, Mask);
-	Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Emissive);
+	if (Spec.bLit)
+	{
+		// The colour is the drop's own; the scene lights it.
+		Material->GetEditorOnlyData()->BaseColor.Connect(0, Emissive);
+	}
+	else
+	{
+		Material->GetEditorOnlyData()->EmissiveColor.Connect(0, Emissive);
+	}
 	if (!Spec.bAdditive)
 	{
-		UMaterialExpressionCustom* Opacity =
-			AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1, TEXT("return saturate(Color.a * Mask);"), Color, Mask);
+		// Near-faded: none within ftcore::kVfxNearFadeStart of the lens (the pixel's view depth), all beyond kVfxNearFadeEnd.
+		const FString OpacityCode = Spec.bNearFade
+			? FString::Printf(TEXT("return saturate(Color.a * Mask) * saturate((Depth - %.1f) / %.1f);"), ftcore::kVfxNearFadeStart,
+				  ftcore::kVfxNearFadeEnd - ftcore::kVfxNearFadeStart)
+			: FString(TEXT("return saturate(Color.a * Mask);"));
+		UMaterialExpressionCustom* Opacity = AddCustom(Material, 150, TEXT("Opacity"), CMOT_Float1, OpacityCode, Color, Mask);
+		if (Spec.bNearFade)
+		{
+			UMaterialExpressionPixelDepth* Depth = AddVfxExpression<UMaterialExpressionPixelDepth>(Material, -600, 300);
+			FCustomInput& InDepth = Opacity->Inputs.AddDefaulted_GetRef();
+			InDepth.InputName = TEXT("Depth");
+			InDepth.Input.Connect(0, Depth);
+		}
 		Material->GetEditorOnlyData()->Opacity.Connect(0, Opacity);
 	}
 
@@ -303,6 +362,12 @@ FNiagaraVariable ShapeScaleVariable()
 	return FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), FName(FString(TEXT("User.")) + UTF8_TO_TCHAR(ftcore::kVfxUserShapeScale)));
 }
 
+// An emitter's own knobs (rateParam, colorParam): "User.<name>".
+FNiagaraVariable UserKnobVariable(const FNiagaraTypeDefinition& Type, const std::string& Name)
+{
+	return FNiagaraVariable(Type, FName(FString(TEXT("User.")) + UTF8_TO_TCHAR(Name.c_str())));
+}
+
 FVector3f ToVector(const ftcore::VfxVec3& V)
 {
 	return FVector3f(V.x, V.y, V.z);
@@ -329,7 +394,7 @@ TValue* EmitterProperty(UNiagaraStatelessEmitter* Emitter, const TCHAR* Name)
 	return Property->ContainerPtrToValuePtr<TValue>(Emitter);
 }
 
-bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[4])
+bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmitter& P, UMaterialInterface* const Materials[kSpriteMaterials])
 {
 	using namespace ftcore;
 
@@ -372,7 +437,12 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 	{
 		FNiagaraStatelessSpawnInfo& Info = Emitter->AddSpawnInfo();
 		Info.Type = ENiagaraStatelessSpawnInfoType::Rate;
-		Info.Rate.InitConstant(P.rate);
+		Info.Rate.InitConstant(P.rate); // kept under a binding: a spawn info with no rate is dropped as invalid
+		if (!P.rateParam.empty())
+		{
+			// Read from the user parameter at each loop start.
+			Bind(Info.Rate, UserKnobVariable(FNiagaraTypeDefinition::GetFloatDef(), P.rateParam));
+		}
 	}
 	for (const VfxNiagaraBurst& B : P.bursts)
 	{
@@ -394,6 +464,10 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 	SetRange(Init->SpriteSizeDistribution, P.spriteSize);
 	SetRange(Init->SpriteRotationDistribution, P.spriteRotation);
 	SetColorStops(Init->ColorDistribution, P.startColor, P.startColorRandom ? 0xff : 0);
+	if (!P.colorParam.empty() && !P.startColor.empty())
+	{
+		Bind(Init->ColorDistribution, UserKnobVariable(FNiagaraTypeDefinition::GetColorDef(), P.colorParam));
+	}
 
 	// ShapeLocation.
 	if (P.shape != VfxNiagaraShape::None)
@@ -511,7 +585,8 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 		return false;
 	}
 	const bool bSpark = P.sprite == VfxSprite::Spark;
-	Sprite->Material = Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
+	UMaterialInterface* const Picked = Materials[SpriteMaterialIndex(P)];
+	Sprite->Material = Picked ? Picked : Materials[(bSpark ? 2 : 0) + (P.additive ? 1 : 0)];
 	Sprite->SortMode = P.additive ? ENiagaraSortMode::None : ENiagaraSortMode::ViewDistance;
 	Sprite->FacingMode = ENiagaraSpriteFacingMode::FaceCamera;
 	Sprite->Alignment = ENiagaraSpriteAlignment::Unaligned;
@@ -541,7 +616,7 @@ bool BuildEmitter(UNiagaraStatelessEmitter* Emitter, const ftcore::VfxNiagaraEmi
 }
 
 UNiagaraSystem* BuildSystem(UPackage* Package, UNiagaraSystem* Template, const ftcore::VfxNiagaraPlan& Plan,
-	UMaterialInterface* const Materials[4])
+	UMaterialInterface* const Materials[kSpriteMaterials])
 {
 	const FString Name = FPackageName::GetShortName(Package->GetName());
 	UNiagaraSystem* System = CastChecked<UNiagaraSystem>(StaticDuplicateObject(Template, Package, *Name,
@@ -571,6 +646,28 @@ UNiagaraSystem* BuildSystem(UPackage* Package, UNiagaraSystem* Template, const f
 	User.SetParameterValue(1.0f, Speed);
 	User.AddParameter(ShapeScale, true, false);
 	User.SetParameterValue(FVector3f(1.0f), ShapeScale);
+	// Emitter knobs, at the spec's values. A name shared by several emitters is added once, with the first one's default.
+	for (const ftcore::VfxNiagaraEmitter& E : Plan.emitters)
+	{
+		if (!E.rateParam.empty())
+		{
+			const FNiagaraVariable Rate = UserKnobVariable(FNiagaraTypeDefinition::GetFloatDef(), E.rateParam);
+			if (User.IndexOf(Rate) == INDEX_NONE)
+			{
+				User.AddParameter(Rate, true, false);
+				User.SetParameterValue(E.rate, Rate);
+			}
+		}
+		if (!E.colorParam.empty() && !E.startColor.empty())
+		{
+			const FNiagaraVariable Color = UserKnobVariable(FNiagaraTypeDefinition::GetColorDef(), E.colorParam);
+			if (User.IndexOf(Color) == INDEX_NONE)
+			{
+				User.AddParameter(Color, true, false);
+				User.SetParameterValue(ToLinear(E.startColor[0].color), Color);
+			}
+		}
+	}
 
 	for (int32 I = 0; I < System->GetEmitterHandles().Num(); ++I)
 	{
@@ -579,6 +676,15 @@ UNiagaraSystem* BuildSystem(UPackage* Package, UNiagaraSystem* Template, const f
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: couldn't build emitter %d of %s."), I, *Name);
 			return nullptr;
+		}
+		// A `sorted` effect draws in the spec's order: an alpha layer listed before an additive one stays under it
+		// (a dark shell under a bright core holds on bright ground). Other effects keep Niagara's default order.
+		if (Plan.sorted)
+		{
+			for (UNiagaraRendererProperties* R : Emitter->GetRenderers())
+			{
+				R->SortOrderHint = I;
+			}
 		}
 		Emitter->PostEditChange();
 	}
@@ -625,6 +731,13 @@ void Describe(const UNiagaraSystem* System)
 				FNiagaraDistributionBase::ForEachParameterBinding(M,
 					[&Bindings, &ModuleName](const FNiagaraVariableBase& V)
 					{ Bindings += ModuleName + TEXT(":") + V.GetName().ToString() + TEXT(" "); });
+			}
+		}
+		for (const FNiagaraStatelessSpawnInfo& Info : *EmitterProperty<TArray<FNiagaraStatelessSpawnInfo>>(Emitter, TEXT("SpawnInfos")))
+		{
+			if (Info.Type == ENiagaraStatelessSpawnInfoType::Rate && Info.Rate.IsBinding())
+			{
+				Bindings += TEXT("SpawnRate:") + Info.Rate.ParameterBinding.GetName().ToString() + TEXT(" ");
 			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx:   %s: %d spawn infos; modules %s; bindings %s"),
@@ -743,7 +856,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 	// Start from nothing: delete every NS_* and the sprite materials up front, before anything loads them. With -Only just
 	// that effect's asset goes, and the materials already built are used.
 	bool bOk = true;
-	UMaterialInterface* Materials[4] = {};
+	UMaterialInterface* Materials[kSpriteMaterials] = {};
 	if (Only.IsEmpty())
 	{
 		TArray<FString> Old;
@@ -764,7 +877,7 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		}
 		IFileManager::Get().MakeDirectory(*FPaths::GetPath(PackageFile(MaterialPackage(SpriteMaterials[0]))), true);
 
-		for (int32 I = 0; I < 4; ++I)
+		for (int32 I = 0; I < kSpriteMaterials; ++I)
 		{
 			UPackage* Package = CreatePackage(*MaterialPackage(SpriteMaterials[I]));
 			UMaterial* Material = BuildSpriteMaterial(Package, SpriteMaterials[I]);
@@ -779,10 +892,22 @@ int32 UFTBuildVfxCommandlet::Main(const FString& Params)
 		{
 			return 1;
 		}
-		for (int32 I = 0; I < 4; ++I)
+		for (int32 I = 0; I < kSpriteMaterials; ++I)
 		{
 			const FString Package = MaterialPackage(SpriteMaterials[I]);
-			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)));
+			Materials[I] = LoadObject<UMaterialInterface>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+			if (!Materials[I] && (SpriteMaterials[I].bLit || SpriteMaterials[I].bNearFade))
+			{
+				// The lit and near-fade sprites came after the others were built: made here once, the rest untouched.
+				UPackage* LitPackage = CreatePackage(*Package);
+				UMaterial* Lit = BuildSpriteMaterial(LitPackage, SpriteMaterials[I]);
+				Materials[I] = Lit;
+				FAssetCompilingManager::Get().FinishAllCompilation();
+				bOk &= SaveVfxAsset(LitPackage, Lit);
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildVfx: built the %s sprite material %s."),
+					SpriteMaterials[I].bLit ? TEXT("lit") : TEXT("near-fade"), *Package);
+				continue;
+			}
 			if (!Materials[I])
 			{
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildVfx: sprite material %s is missing; run FTBuildVfx without -Only first."), *Package);

@@ -17,6 +17,7 @@ void FFTKiteHost::Begin(ftcore::ArenaFight& Fight, std::size_t InSlot)
 	Slot = InSlot;
 	Crit.reset(Weak);
 	bWasOpen = false;
+	bShut = false;
 	NoteTotal = 0;
 	Crits = 0;
 	Fight.setBlowHook(&FFTKiteHost::RuleBlow, this);
@@ -84,8 +85,44 @@ void FFTKiteHost::AfterTick(const ftcore::ArenaEvents& Events)
 	bWasOpen = bOpen;
 }
 
+void FFTKiteHost::OnUnlocked(double At, double Seconds)
+{
+	if (IsActive() && IsLocked() && Seconds > 0.0)
+	{
+		OpenWindow(At, static_cast<float>(Seconds));
+	}
+}
+
+void FFTKiteHost::OpenFor(double At, float Seconds)
+{
+	if (!IsActive() || !(Seconds > 0.f) || (Crit.isOpen(At) && Crit.closesAt() >= At + static_cast<double>(Seconds)))
+	{
+		return; // a longer window stays
+	}
+	OpenWindow(At, Seconds);
+}
+
+void FFTKiteHost::SetShut(bool bInShut)
+{
+	if (bInShut && !bShut && IsActive())
+	{
+		const double T = static_cast<double>(FightPtr->time());
+		if (Crit.isOpen(T))
+		{
+			Crit.close();
+			Note(FFTKiteNote::EKind::CritClosed, T);
+		}
+		bWasOpen = false;
+	}
+	bShut = bInShut;
+}
+
 void FFTKiteHost::OpenWindow(double At, float Seconds)
 {
+	if (bShut)
+	{
+		return;
+	}
 	Crit.open(At, static_cast<double>(Seconds));
 	bWasOpen = true;
 	OnCritOpened(At, Crit.closesAt());
@@ -104,17 +141,39 @@ FFTKiteNote& FFTKiteHost::Note(FFTKiteNote::EKind Kind, double At)
 ftcore::ArenaBlowRuling FFTKiteHost::RuleBlow(void* User, const ftcore::ArenaBlow& Blow)
 {
 	FFTKiteHost* Host = static_cast<FFTKiteHost*>(User);
-	if (Host && Host->IsActive() && Blow.target == Host->Slot && Blow.source == ftcore::kArenaPlayer)
+	if (!Host || !Host->IsActive() || Blow.target != Host->Slot)
 	{
-		return Host->RuleLeadBlow(Blow);
+		return ftcore::ArenaBlowRuling();
 	}
-	return ftcore::ArenaBlowRuling();
+	if (Blow.source == ftcore::kArenaAlly)
+	{
+		// The partner's body's blow (-ArenaPartner): the bars rule it as they rule the lead's; it judges no crit.
+		return Host->Bars(Blow);
+	}
+	if (Blow.source != ftcore::kArenaPlayer)
+	{
+		return ftcore::ArenaBlowRuling();
+	}
+	// A held blow's bonus (HostHit) is not a hit: no crit judged, none noted; only the bars rule it. The Kite-Mother has
+	// no invulnerable phase, so today Bars passes everything and the bonus lands whole. A phase that bars blows goes in
+	// Bars, which rules the lead's blows and the bonus alike, so the bonus can never slip past it.
+	const ftcore::ArenaBlowRuling Barred = Host->Bars(Blow);
+	if (Blow.type == ftcore::ArenaEventType::HostHit || Barred.veto)
+	{
+		return Barred;
+	}
+	return Host->RuleLeadBlow(Blow);
 }
 
 ftcore::ArenaBlowRuling FFTKiteHost::RuleLeadBlow(const ftcore::ArenaBlow& Blow)
 {
 	// Locked on (no aim point): the judge takes the best point whose gate the lead's side of the boss passes.
 	const double T = static_cast<double>(Blow.time);
+	if (IsLocked() && !LockSession->weakPointOpen())
+	{
+		OnHitTaken(false, T); // locked: the seam takes no crit, whatever opened the window
+		return ftcore::ArenaBlowRuling();
+	}
 	const ftcore::CritResult Result = Crit.judgeLockOn(Blow.from, Blow.at, BossFacing(), T);
 	ftcore::ArenaBlowRuling Ruling;
 	if (Result.crit)

@@ -44,6 +44,9 @@ struct FieldTarget {
     std::uint32_t id = 0;
 };
 
+// How far (m) beyond a target's body the reticle point may lie and still pick it as the aim's target.
+inline constexpr float kFieldReticleSlack = 0.3f;
+
 // How long attacks stay blocked after a move of the body's own ends (s): the time its pose takes to fade back.
 inline constexpr float kFieldHandBack = 0.25f;
 
@@ -68,10 +71,12 @@ public:
     // Takes the kit and stops any attack. The clock goes back to 0.
     void begin(const ArenaFighter& kit);
 
-    // One host frame of dt seconds. light / heavy: pressed this frame (heavy wins). A press while an attack can't
+    // One host frame of dt seconds. light / heavy: pressed this frame (heavy wins; both dropped for a kit with no
+    // attacks of its own, ArenaFighter::attacks). A press while an attack can't
     // start yet is kept for the kit's bufferTime and starts as soon as it can (from the cancel share of the
     // recovery on, as in the arena). The light chain goes on when the next light starts during the recovery or
-    // within chainGap after it, and wraps after lightCount. Hits are tested on each frame that ends in the active
+    // within chainGap after it, and wraps after lightCount. A guns kit's light while the reticle is on (setReticle) is
+    // its shot (kArenaShotMove), one round per press; it and the heavy end a chain. Hits are tested on each frame that ends in the active
     // part, and on a frame that passes over it whole (a long frame): each target once per attack, at most maxTargets of
     // them (0: all), nearest first. Hit events carry the target's index in this frame's list.
     const ArenaOutput& tick(float dt, bool light, bool heavy, Vec2 pos, Vec2 facing, const FieldTarget* targets,
@@ -93,6 +98,34 @@ public:
     const ArenaOutput& output() const { return out_; }
     // The aim of the attack under way (or the last one); straight ahead when none has started.
     const FieldAim& aim() const { return aim_; }
+    // The aim's reticle (AimStance): while on, an attack faces the reticle point `at` (m on the ground plane) and aims
+    // at it, `height` m above the lead's feet, instead of at the nearest target; the hit test is the attack's own along
+    // that facing. A target whose body (radius + kFieldReticleSlack) holds the point is the aim's target. With
+    // lungeScale > 0 the attack lunges toward the point: lungeScale times its own lunge, spread over startup and active
+    // (output().player.velocity, for the host to move the body by), ending lungeStop times its range short of the point.
+    void setReticle(bool on, Vec2 at, float height, float lungeScale = 0.f, float lungeStop = 0.6f) {
+        reticleOn_ = on;
+        reticleAt_ = at;
+        reticleHeight_ = height;
+        lungeScale_ = lungeScale > 0.f ? lungeScale : 0.f;
+        lungeStop_ = lungeStop > 0.f ? lungeStop : 0.f;
+    }
+    bool reticleOn() const { return reticleOn_; }
+    // Attacking on the move (AttackMove): on the next tick an attack under way that has no target or reticle to face
+    // (or is aimed at a target but past its active part) turns toward `want` (the body's move or the camera's way, on
+    // the ground) by at most rate rad/s, and its hit test goes with it. Rate 0 (the default): its facing holds as it
+    // started.
+    void setSteer(Vec2 want, float rate) {
+        steerWant_ = want;
+        steerRate_ = rate > 0.f ? rate : 0.f;
+    }
+    // The attack under way (null: none), whether it is the heavy, and how far into it (s).
+    const ArenaAttack* attack() const { return attack_; }
+    bool heavyNow() const { return attack_ != nullptr && move_ == kArenaHeavyMove; }
+    // The move id of the attack under way (or the last one): a light's chain index, kArenaHeavyMove or kArenaShotMove.
+    std::uint8_t moveNow() const { return move_; }
+    const ArenaFighter& kit() const { return kit_; }
+    float actionTime() const { return actionTime_; }
     // The lead's own chest height (m) for an aim with no target. Default kFieldChestHeight.
     void setChestHeight(float height) { chest_ = height; }
     float time() const { return time_; }
@@ -130,6 +163,14 @@ private:
     Vec2 facing_{1.f, 0.f};
     FieldAim aim_{};
     float chest_ = kFieldChestHeight;
+    bool reticleOn_ = false;
+    Vec2 reticleAt_{};
+    float reticleHeight_ = kFieldChestHeight;
+    float lungeScale_ = 0.f;
+    float lungeStop_ = 0.6f;
+    Vec2 steerWant_{};
+    float steerRate_ = 0.f;
+    float lunge_ = 0.f; // m the attack under way lunges (set as it is aimed at the reticle)
     std::uint32_t hitKeys_[kMaxFieldTargets] = {}; // the keys hit by this attack
     std::uint8_t hitCount_ = 0;
     std::uint8_t near_[kMaxFieldTargets] = {};

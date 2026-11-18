@@ -61,6 +61,18 @@ Every system exposes two user parameters, and both default to 1:
 | `User.SpeedScale` | float | the AddVelocity scale (linear, point or cone) |
 | `User.ShapeScale` | vector | ShapeLocation's shape scale |
 
+An emitter can add its own knobs. `"rateParam": "<name>"` binds its spawn rate to a float `User.<name>` whose
+default is `rate`. Niagara reads it once per loop, so keep `duration` short. `"colorParam": "<name>"` binds its start
+colour to a colour `User.<name>` whose default is the first `startColor` stop. Emitters of one effect may share a
+name. `-Verify` lists a bound rate as `SpawnRate:User.<name>`.
+
+`"sprite": "ring"` draws a thin ripple ring (`M_VfxRingLit`). It is for lit alpha sprites only; any other emitter
+draws it with the soft sprite and lists a gap. `nearFade` now works on lit sprites too (`M_VfxSoftLitNearFade`).
+`-Only=<name>` builds either material the first time an effect needs it.
+
+`rain` and `rain_splash` are the falling rain and its floor splashes. `FTRainSubsystem` plays them around the camera
+on Solhaven's maps when the game starts with `-Rain=<0..1>`.
+
 `-run=FTBuildVfx -Verify` reloads the saved systems and lists each emitter's modules and bindings. The
 bindings survive the save. `UFTVfxComponent::SetParameters` pushes them through
 `UNiagaraComponent::SetVariableFloat` and `SetVariableVec3`. It does this when the effect starts and
@@ -131,7 +143,7 @@ None has been built in Unreal yet, so nobody has seen them in a viewport.
 
 | File | Game event |
 |---|---|
-| `spell_bolt` | The Third's attacks. A flare at the hands, streaking sparks along the line, and a bright head that reaches 3.2 m in 0.2 s at speed scale 1. The effect points along +Y, so the game turns it to the hit point and sets `SpeedScale` to distance / 3.2 m, so the head dies on the hit point. It has no pop of its own: `spell_impact` plays there. |
+| `spell_bolt` | The Third's attacks. A flare at the hands, streaking sparks along the line, and a bright head that reaches 3.2 m in 0.2 s at speed scale 1. The effect points along +Y, so the game turns it to the hit point and sets `SpeedScale` to distance / 3.2 m, so the head dies on the hit point. The game also runs the effect's clock so that 0.2 s spans the flight: it leaves as the cast's startup begins and lands on the hit, flying the startup and never under 0.16 s (`ftcore::arenaBoltFlight`). It has no pop of its own: `spell_impact` plays there. |
 | `spell_impact` | Where the Third's bolt reaches the hit point. A pop and a spray of sparks. |
 | `spell_burst` | The Third's heavy attack and the Release. A flash, a soft wave and a ring of sparks that carry about 3 m out in every direction. |
 | `spell_ward` | The Third while he guards. A loop of motes around him, a faint glow and a ring of motes at his feet. It plays until the guard ends. |

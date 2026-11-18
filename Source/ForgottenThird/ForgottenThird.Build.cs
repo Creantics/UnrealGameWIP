@@ -9,10 +9,10 @@ public class ForgottenThird : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore", "Niagara", "AnimationCore", "PhysicsCore", "CinematicCamera", "NavigationSystem", "FTLook" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "ForgottenCore", "Niagara", "AnimationCore", "AnimGraphRuntime", "PhysicsCore", "CinematicCamera", "NavigationSystem", "FTLook" });
 
 		// RHI: the world eye's GPU frame time.
-		PrivateDependencyModuleNames.AddRange(new string[] { "AudioExtensions", "RHI" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "AudioExtensions", "RenderCore", "RHI" });
 
 		// The game reads its JSON data (story, face presets, emotion map) from the project's Data/
 		// folder at run time. Stage it next to the packaged game at the same relative path.
@@ -21,7 +21,7 @@ public class ForgottenThird : ModuleRules
 		if (Target.bBuildEditor)
 		{
 			// The demo-world, character-import and rig commandlets.
-			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor", "Slate", "SlateCore" });
+			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor" });
 
 			// FTBuildExploreWorld imports each big world's ground as a Landscape. FTBuildMassingWorld's read-back includes
 			// LandscapeEdit.h, which includes InstancedFoliageActor.h: Foliage is only a private dependency of Landscape.
@@ -31,6 +31,8 @@ public class ForgottenThird : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription" });
 			// ImageCore: FTBuildSurfaces -Windows resizes the window atlases (FImage::ResizeTo).
 			PrivateDependencyModuleNames.Add("ImageCore");
+			// FTMaterialStats reads the masters' shader instruction counts (UMaterialEditingLibrary::GetStatistics).
+			PrivateDependencyModuleNames.Add("MaterialEditor");
 
 			// FTBuildCloth makes Chaos cloth from an imported mesh section.
 			PrivateDependencyModuleNames.AddRange(new string[] { "ClothingSystemEditor", "ClothingSystemEditorInterface", "ClothingSystemRuntimeCommon", "ClothingSystemRuntimeInterface", "SkeletalMeshEditor" });
@@ -43,8 +45,8 @@ public class ForgottenThird : ModuleRules
 			PrivateIncludePaths.Add(Path.Combine(NiagaraSource, "NiagaraShader", "Internal"));
 		}
 
-		// Uncomment if you are using Slate UI
-		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
+		// Slate: the new game UI (FTNewUi.h; always on in Shipping, else on unless -FTOldUi or ft.NewUi 0), drawn as viewport widgets built in code.
+		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 		
 		// Uncomment if you are using online features
 		// PrivateDependencyModuleNames.Add("OnlineSubsystem");

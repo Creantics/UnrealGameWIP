@@ -14,6 +14,9 @@
 //     for the kind's openTime, Staggered for its staggerTime; the window shuts itself at its end (CritClosed);
 //   - the blow hook: a lead's blow on the kite is judged with the gated points, locked on as the stone_bearer's are
 //     (CritWindow::judgeLockOn), and a crit scales the blow's damage and poise by the point's multiplier;
+//   - the lock (only when the runner hands it a session, -ArenaCountLift): with the json's `lock`, the seam takes no crit
+//     while the session's lock is shut, and OnUnlocked opens the window for the lock's open time (a shared blow: a joined
+//     count or a take half);
 //   - every opening, crit and close is kept as a note, and the runner logs each as one line, "Arena: kite ...".
 //
 // Named hook points, each leaving a note: OnTelegraph, OnCritOpened, OnCritLanded, OnHitTaken. The effects (FTKiteVfx.h)
@@ -23,6 +26,7 @@
 
 #include "ftcore/ArenaBoss.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/FightSession.h"
 
 #include <array>
 #include <cstddef>
@@ -72,6 +76,17 @@ public:
 	// After the tick: the fight's events and the window's end.
 	void AfterTick(const ftcore::ArenaEvents& Events);
 
+	// The session whose lock gates the seam (null: no gate, as before). Only a file with a `lock` is gated.
+	void SetLock(const ftcore::FightSession* Session) { LockSession = Session; }
+	bool IsLocked() const { return LockSession != nullptr && Weak.locked; }
+	// The lock opened (or its open time restarted): the window opens from At for Seconds.
+	void OnUnlocked(double At, double Seconds);
+	// The host's own opening (a refusal's): the window opens from At for Seconds (a longer one open is kept).
+	void OpenFor(double At, float Seconds);
+	// Shut: nothing opens the window (a parry, a stagger, an unlock or OpenFor) and an open one closes now. Begin unshuts.
+	void SetShut(bool bInShut);
+	bool IsShut() const { return bShut; }
+
 	// ---- for the HUD ----
 	const ftcore::CritWindow& GetCrit() const { return Crit; }
 	// The weak point is open to crits now.
@@ -85,6 +100,9 @@ public:
 private:
 	static ftcore::ArenaBlowRuling RuleBlow(void* User, const ftcore::ArenaBlow& Blow);
 	ftcore::ArenaBlowRuling RuleLeadBlow(const ftcore::ArenaBlow& Blow);
+	// What bars a blow on the boss whatever it is (an invulnerable phase): none, the Kite-Mother has no such phase.
+	// The bonus of a held blow is ruled by this alone.
+	ftcore::ArenaBlowRuling Bars(const ftcore::ArenaBlow&) const { return ftcore::ArenaBlowRuling(); }
 	// Opens the window for Seconds from At.
 	void OpenWindow(double At, float Seconds);
 	FFTKiteNote& Note(FFTKiteNote::EKind Kind, double At);
@@ -102,8 +120,10 @@ private:
 
 	ftcore::ArenaFight* FightPtr = nullptr;
 	std::size_t Slot = 0;
+	const ftcore::FightSession* LockSession = nullptr;
 	// The window was open at the last step (so its end is noted once).
 	bool bWasOpen = false;
+	bool bShut = false;
 
 	std::array<FFTKiteNote, MaxNotes> Notes{};
 	int32_t NoteTotal = 0;

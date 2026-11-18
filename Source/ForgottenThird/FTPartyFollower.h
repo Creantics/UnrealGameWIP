@@ -21,6 +21,7 @@
 #include "GameFramework/Actor.h"
 
 #include "FTLocomotionAnimInstance.h"
+#include "FTLook.h"
 #include "FTTraversalProbe.h"
 
 #include "FTPartyFollower.generated.h"
@@ -104,6 +105,9 @@ private:
 	TObjectPtr<USkeletalMeshComponent> Body;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USceneComponent>> GroomComponents;
 

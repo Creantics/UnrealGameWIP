@@ -1,12 +1,15 @@
 // Road networks (ftcore/Roads.h roadNetBuild): the network table, junction fills and corners, the carriageway kept
 // clear, bays, steps, grades, decks and the junction ids the road graph shares. Made-up tables only.
 
+#include "ftcore/RoadDecals.h"
 #include "ftcore/RoadGraph.h"
 #include "ftcore/Roads.h"
+#include "ftcore/SurfaceWeather.h"
 
 #include <ostream>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -34,6 +37,13 @@ MassingFoot shrunk(MassingFoot f, double by) {
     f.hx = std::max(0.0, f.hx - by);
     f.hy = std::max(0.0, f.hy - by);
     return f;
+}
+
+// A box's top over a plan point (its tilt from its centre).
+double boxTop(const MassingBox& b, double x, double y) {
+    const double r = b.rot * 3.14159265358979323846 / 180.0, c = std::cos(r), sn = std::sin(r);
+    const double dx = x - b.cx, dy = y - b.cy;
+    return b.z1 + b.riseU * (dx * c + dy * sn) + b.riseW * (-dx * sn + dy * c);
 }
 
 MassingFoot solidFoot(const RoadSolid& s) {
@@ -114,6 +124,71 @@ TEST_CASE("road net: a T is signalised, its corners kerbed at 6 m, its ids the r
     CHECK(ped == 6);
 }
 
+TEST_CASE("road net: a junction's surface has no holes round its corners and no step where an arm meets its fill") {
+    RoadBuild b;
+    roadNetBuild(net(kTee), MassingGround{}, b, nullptr);
+    // The top of the road's surface (asphalt, kerb, pavement) over a 36 m square round the node, every 0.2 m.
+    constexpr int n = 180;
+    constexpr double res = 0.2, x0 = 82.0, y0 = -18.0;
+    std::vector<double> top(n * n, -1e9);
+    std::vector<char> tar(n * n, 0);
+    for (const RoadSolid& sd : b.solids) {
+        const MassingBox& x = sd.box;
+        if (!sd.collide || (sd.tint != RoadTint::Asphalt && sd.tint != RoadTint::Kerb && sd.tint != RoadTint::Pavement))
+            continue;
+        const double ra = x.rot * 3.14159265358979323846 / 180.0, c = std::cos(ra), sn = std::sin(ra);
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const double dx = x0 + (i + 0.5) * res - x.cx, dy = y0 + (j + 0.5) * res - x.cy;
+                double z = x.z1;
+                if (sd.shape == RoadShape::Cylinder) {
+                    if (dx * dx + dy * dy > x.sx * x.sx * 0.25) continue;
+                } else {
+                    const double u = dx * c + dy * sn, w = -dx * sn + dy * c;
+                    if (std::fabs(u) > x.sx * 0.5 || std::fabs(w) > x.sy * 0.5) continue;
+                    z += x.riseU * u + x.riseW * w;
+                }
+                const std::size_t k = static_cast<std::size_t>(j * n + i);
+                if (z > top[k]) {
+                    top[k] = z;
+                    tar[k] = sd.tint == RoadTint::Asphalt ? 1 : 0;
+                }
+            }
+    }
+    // No hole: every uncovered cell is joined to the square's edge (the blocks behind the pavements).
+    std::vector<char> seen(n * n, 0);
+    std::vector<int> todo;
+    for (int i = 0; i < n; ++i)
+        for (const int k : {i, (n - 1) * n + i, i * n, i * n + n - 1})
+            if (top[static_cast<std::size_t>(k)] < -1e8 && !seen[static_cast<std::size_t>(k)]) {
+                seen[static_cast<std::size_t>(k)] = 1;
+                todo.push_back(k);
+            }
+    while (!todo.empty()) {
+        const int k = todo.back();
+        todo.pop_back();
+        const int i = k % n, j = k / n;
+        for (const int m : {i > 0 ? k - 1 : -1, i + 1 < n ? k + 1 : -1, j > 0 ? k - n : -1, j + 1 < n ? k + n : -1})
+            if (m >= 0 && top[static_cast<std::size_t>(m)] < -1e8 && !seen[static_cast<std::size_t>(m)]) {
+                seen[static_cast<std::size_t>(m)] = 1;
+                todo.push_back(m);
+            }
+    }
+    int holes = 0;
+    for (std::size_t k = 0; k < top.size(); ++k)
+        if (top[k] < -1e8 && !seen[k]) ++holes;
+    CHECK(holes == 0);
+    // No step on the asphalt: neighbouring cells differ by no more than the crossfall over a cell (and a little).
+    double step = 0.0;
+    for (int j = 0; j + 1 < n; ++j)
+        for (int i = 0; i + 1 < n; ++i) {
+            const std::size_t k = static_cast<std::size_t>(j * n + i);
+            for (const std::size_t m : {k + 1, k + static_cast<std::size_t>(n)})
+                if (tar[k] && tar[m]) step = std::max(step, std::fabs(top[k] - top[m]));
+        }
+    CHECK(step < 0.006);
+}
+
 TEST_CASE("road net: nothing solid stands in the carriageway; furniture keeps off the kerb; bays stay off it") {
     const std::vector<RoadNetStreet> s = net(
         "id,kind,width_m,pts,pavement_m,parking\n"
@@ -140,8 +215,8 @@ TEST_CASE("road net: nothing solid stands in the carriageway; furniture keeps of
         CHECK(bay.street == "ST-H");
         CHECK_FALSE(roadInCarriageway(b, shrunk(bay.foot, 0.02), 0.0));
     }
-    // The step where a crowned arm meets the level fill.
-    CHECK(rep.maxStep <= kRoadCrossfall * 0.5 * 5.4 + 1e-9);
+    // The fill carries the arms' crown: no step where an arm meets it.
+    CHECK(rep.maxStep == 0.0);
 }
 
 TEST_CASE("road net: pieces follow the ground and report what is too steep; decks stand on piers") {
@@ -358,4 +433,1097 @@ TEST_CASE("road net: poles and signs on the network, laid as instances, off the 
         }
     std::vector<RoadNetStreet> out;
     CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,poles\nA,road,14,0:0;0:50,3.5,Q\n", out));
+}
+
+TEST_CASE("road net: a tilted cube's top is centred over its box, so a crown's two halves meet") {
+    MassingBox x;
+    x.cx = 10.0;
+    x.cy = -4.0;
+    x.sx = 20.0;
+    x.sy = 3.5;
+    x.rot = 30.0;
+    x.z0 = 1.0;
+    x.z1 = 4.3;
+    const MassingVec level = roadCubeCentre(x, 3.3);
+    CHECK(level.x == doctest::Approx(10.0));
+    CHECK(level.y == doctest::Approx(-4.0));
+    CHECK(level.z == doctest::Approx(2.65));
+    x.riseU = 0.08;
+    x.riseW = -kRoadCrossfall;
+    const MassingCubePose pose = massingCubePose(x, 3.3);
+    const double p = pose.pitch * 3.14159265358979323846 / 180.0, r = pose.roll * 3.14159265358979323846 / 180.0;
+    const double a = x.rot * 3.14159265358979323846 / 180.0;
+    // Local Z in (u, w, z), then the top's middle half the height along it from the centre.
+    const double zu = -std::cos(r) * std::sin(p), zw = -std::sin(r), zz = std::cos(r) * std::cos(p);
+    const MassingVec c = roadCubeCentre(x, 3.3);
+    CHECK(c.x + 1.65 * (zu * std::cos(a) - zw * std::sin(a)) == doctest::Approx(10.0).epsilon(1e-9));
+    CHECK(c.y + 1.65 * (zu * std::sin(a) + zw * std::cos(a)) == doctest::Approx(-4.0).epsilon(1e-9));
+    CHECK(c.z + 1.65 * zz == doctest::Approx(4.3).epsilon(1e-9));
+    // Off the plumb line by more than a centimetre: the slit it closes.
+    CHECK(std::hypot(c.x - 10.0, c.y + 4.0) > 0.01);
+}
+
+TEST_CASE("road net: a square junction corner's pavement carries on into the block's corner as an apron") {
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(net(kTee), MassingGround{}, b, &rep);
+    // The T's two corners (north of ST-H, either side of ST-V): back lines at y 7 and x 100 -/+ 7.
+    CHECK(rep.aprons == 2);
+    int found = 0;
+    for (const RoadSolid& sd : b.solids) {
+        const MassingBox& x = sd.box;
+        if (x.kind != "pavement" || std::fabs(x.sx - (kRoadCornerApron + kRoadApronLap)) > 1e-6) continue;
+        CHECK(std::fabs(x.sy - (kRoadCornerApron + kRoadApronLap)) < 1e-6);
+        const double mid = 7.0 + (kRoadCornerApron - kRoadApronLap) * 0.5; // back line 7 (14 m wide, pavements in it)
+        CHECK(std::fabs(x.cy - mid) < 1e-6);
+        CHECK(std::fabs(std::fabs(x.cx - 100.0) - mid) < 1e-6);
+        CHECK(std::fabs(x.z1 - (kRoadSurfaceLift + kRoadKerbRise)) < 1e-9);
+        CHECK(sd.tint == RoadTint::Pavement);
+        ++found;
+    }
+    CHECK(found == 2);
+}
+
+TEST_CASE("road net: a scramble gets an all-walk phase and one diagonal zebra laid on its fill") {
+    const char* const csv = "id,kind,width_m,pts,pavement_m,speed_kmh,one_way,deck_z,parking,scramble\n"
+                            "ST-H,street,14,0:0;200:0,2.8,40,0,,0,100.5:0.5\n"
+                            "ST-V,street,14,100:0;100:150,2.8,40,0,,0,\n";
+    const std::vector<RoadNetStreet> s = net(csv);
+    REQUIRE(s[0].scramble.size() == 1);
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(s, MassingGround{}, b, &rep);
+    CHECK(rep.junctions == 1);
+    CHECK(rep.scrambles == 1);
+    // The three arms' zebras and one diagonal: the second candidate crosses the first's band and is not laid.
+    CHECK(b.crossings.size() == 4);
+    int diag = 0;
+    for (const RoadQuad& q : b.crossings) {
+        if (q.id.find("-ZD") == std::string::npos) continue;
+        ++diag;
+        CHECK(q.junction == "JN-0001");
+        const double dx = q.pts[1].x - q.pts[0].x, dy = q.pts[1].y - q.pts[0].y;
+        const double a = std::atan2(std::fabs(dy), std::fabs(dx)) * 180.0 / 3.14159265358979;
+        CHECK(a >= 25.0);
+        CHECK(a <= 65.0);
+        // Its walk line's ends inside the carriageway, near the centre.
+        for (const RoadPoint& p : {RoadPoint{(q.pts[0].x + q.pts[3].x) * 0.5, (q.pts[0].y + q.pts[3].y) * 0.5},
+                                   RoadPoint{(q.pts[1].x + q.pts[2].x) * 0.5, (q.pts[1].y + q.pts[2].y) * 0.5}}) {
+            CHECK(p.y > -4.2);
+            CHECK(std::hypot(p.x - 100.0, p.y) < 20.0);
+        }
+    }
+    CHECK(diag == 1);
+    // Every pedestrian head on the all-walk phase; vehicle phases unchanged.
+    int walk = 0, other = 0, vehicle = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.tag.rfind("FTPedSignal_JN-0001_", 0) == 0 && sd.tag.find("_red") != std::string::npos)
+            (sd.tag.rfind("FTPedSignal_JN-0001_W_", 0) == 0 ? walk : other)++;
+        if (sd.tag.rfind("FTSignal_JN-0001_", 0) == 0 && sd.tag.find("_red") != std::string::npos) ++vehicle;
+    }
+    CHECK(walk == 6);
+    CHECK(other == 0);
+    CHECK(vehicle == 3);
+    // The diagonal bars sit on the fill: none under its top, none more than 3 cm over it.
+    std::vector<const RoadSolid*> fill;
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.row == "JN-0001" && sd.box.kind == "fill") fill.push_back(&sd);
+    int bars = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.row != "JN-0001" || sd.box.kind != "mark") continue;
+        ++bars;
+        CHECK_FALSE(sd.collide);
+        CHECK(sd.box.z1 > 0.0);
+        CHECK(sd.box.z1 < kRoadSurfaceLift + kRoadCrossfall * 4.2 + 0.05);
+        // Never over a kerb: south of the main road's north kerb only between the corners, never inside a corner's kerb.
+        CHECK(sd.box.cy > -4.2);
+        CHECK(std::hypot(sd.box.cx - 110.2, sd.box.cy - 10.2) > kRoadCornerRadius);
+        CHECK(std::hypot(sd.box.cx - 89.8, sd.box.cy - 10.2) > kRoadCornerRadius);
+    }
+    // 13 rows of four 1 m pieces: the bars the quad spans, nothing else.
+    CHECK(bars == 52);
+    // Each bar is a skin 1 cm thick at most, tilted to the fill: over each of its corners the fill's top (the highest
+    // slab there) lies 6 mm to 2.5 cm under it, so no bar stands as a step. No two bars overlap: where the diagonals
+    // cross, only the first's show.
+    std::vector<const RoadSolid*> barList;
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.row == "JN-0001" && sd.box.kind == "mark") barList.push_back(&sd);
+    bool tilted = false;
+    for (const RoadSolid* bar : barList) {
+        const MassingBox& m = bar->box;
+        CHECK(m.z1 - m.z0 <= 0.01 + 1e-9);
+        tilted = tilted || std::fabs(m.riseU) > 1e-4 || std::fabs(m.riseW) > 1e-4;
+        const double r = m.rot * 3.14159265358979323846 / 180.0, c = std::cos(r), sn = std::sin(r);
+        for (int k = 0; k < 4; ++k) {
+            const double u = ((k & 1) ? 0.49 : -0.49) * m.sx, w = ((k & 2) ? 0.49 : -0.49) * m.sy;
+            const double px = m.cx + u * c - w * sn, py = m.cy + u * sn + w * c;
+            double under = -1e9;
+            for (const RoadSolid* fl : fill) {
+                const double fr = fl->box.rot * 3.14159265358979323846 / 180.0;
+                const double fx = px - fl->box.cx, fy = py - fl->box.cy;
+                const double fu = fx * std::cos(fr) + fy * std::sin(fr), fw = -fx * std::sin(fr) + fy * std::cos(fr);
+                if (fl->shape == RoadShape::Cylinder ? std::hypot(fx, fy) >= fl->box.sx * 0.5
+                                                     : (std::fabs(fu) >= fl->box.sx * 0.5 || std::fabs(fw) >= fl->box.sy * 0.5))
+                    continue;
+                under = std::max(under, boxTop(fl->box, px, py));
+            }
+            REQUIRE(under > -1e8);
+            CHECK(boxTop(m, px, py) - under >= 0.005);
+            CHECK(boxTop(m, px, py) - under <= 0.025);
+        }
+    }
+    CHECK(tilted);
+    int stacked = 0;
+    for (std::size_t i = 0; i < barList.size(); ++i)
+        for (std::size_t j = i + 1; j < barList.size(); ++j)
+            if (massingFeetOverlap(shrunk(solidFoot(*barList[i]), 0.01), shrunk(solidFoot(*barList[j]), 0.01), 0.0)) ++stacked;
+    CHECK(stacked == 0);
+    // No two crossings overlap in plan and no two markings lie over each other; a doubled zebra is a reject of the road
+    // check.
+    CHECK(roadCrossingOverlaps(b).empty());
+    {
+        RoadBuild twice = b;
+        const RoadQuad* arm = nullptr; // an arm's zebra
+        for (const RoadQuad& q : b.crossings)
+            if (arm == nullptr && q.id.find("-ZD") == std::string::npos) arm = &q;
+        REQUIRE(arm != nullptr);
+        RoadQuad again = *arm;
+        again.id += "-again";
+        for (RoadPoint& q : again.pts) q.x += 0.5;
+        twice.crossings.push_back(again);
+        const std::vector<RoadFace> over = roadCrossingOverlaps(twice);
+        REQUIRE(over.size() == 1);
+        CHECK(over[0].piece == arm->id);
+        CHECK(over[0].fault == "crossing " + again.id);
+        bool listed = false;
+        for (const RoadFace& fc : roadKerbFaces(twice, nullptr)) listed = listed || fc.fault == over[0].fault;
+        CHECK(listed);
+        // Side by side, touching: not an overlap.
+        RoadQuad beside = *arm;
+        beside.id += "-beside";
+        const double ex = beside.pts[1].x - beside.pts[0].x, ey = beside.pts[1].y - beside.pts[0].y;
+        for (RoadPoint& q : beside.pts) {
+            q.x += ex;
+            q.y += ey;
+        }
+        RoadBuild next;
+        next.crossings = {*arm, beside};
+        CHECK(roadCrossingOverlaps(next).empty());
+    }
+    // A corner's pavement pieces carry the depth the surface master reads (tiles on the world's grid); the straight
+    // pavements never do.
+    int cornerPave = 0, straightPave = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.kind != "pavement") continue;
+        const bool corner = streetCornerSlab(static_cast<float>(sd.box.z1 - sd.box.z0), StreetSurfaceSpec{});
+        CHECK(corner == (sd.box.row == "JN-0001"));
+        (corner ? cornerPave : straightPave)++;
+    }
+    CHECK(cornerPave >= 4);
+    CHECK(straightPave >= 4);
+    CHECK(static_cast<double>(StreetSurfaceSpec{}.cornerSlabM) == doctest::Approx(kRoadCornerPaveDeep));
+
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    REQUIRE(g.junctions.size() == 1);
+    CHECK(g.junctions[0].phases.find(";W:all-walk") != std::string::npos);
+    CHECK(g.crossings.size() == 4);
+
+    // The diagonal's bars are one unbroken run: whole rows of four pieces 0.9 m apart from the quad's first end to its
+    // last, and the quad spans exactly them.
+    const RoadQuad* zd = nullptr;
+    for (const RoadQuad& q : b.crossings)
+        if (q.id == "JN-0001-ZD1") zd = &q;
+    REQUIRE(zd != nullptr);
+    {
+        const double ax = zd->pts[1].x - zd->pts[0].x, ay = zd->pts[1].y - zd->pts[0].y, al = std::hypot(ax, ay);
+        const double ux = ax / al, uy = ay / al;
+        std::vector<double> starts; // along the walk, the near end of each piece
+        for (const RoadSolid& sd : b.solids) {
+            if (sd.box.row != "JN-0001" || sd.box.kind != "mark") continue;
+            const double along = (sd.box.cx - zd->pts[0].x) * ux + (sd.box.cy - zd->pts[0].y) * uy;
+            starts.push_back(along - kRoadZebraBar * 0.5);
+        }
+        std::sort(starts.begin(), starts.end());
+        REQUIRE(starts.size() % 4 == 0);
+        const std::size_t rows = starts.size() / 4;
+        CHECK(rows == 13);
+        for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t c = 0; c < 4; ++c) CHECK(std::fabs(starts[r * 4 + c] - 0.9 * static_cast<double>(r)) < 1e-6);
+        CHECK(std::fabs(al - (0.9 * static_cast<double>(rows) - kRoadZebraBar)) < 1e-6);
+    }
+
+    // Without the column: no all-walk phase, no diagonals.
+    const std::vector<RoadNetStreet> plain = net(kTee);
+    RoadBuild pb;
+    roadNetBuild(plain, MassingGround{}, pb);
+    RoadGraph pg;
+    roadGraphFromNet(plain, pb, pg);
+    REQUIRE(pg.junctions.size() == 1);
+    CHECK(pg.junctions[0].phases.find("W:") == std::string::npos);
+    CHECK(pb.crossings.size() == 3);
+
+    std::vector<RoadNetStreet> bad;
+    CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,scramble\nST-H,street,14,0:0;200:0,2.8,100\n", bad));
+}
+
+TEST_CASE("road net: a canal between two roads gets railing spans, closing posts, masts and a footbridge") {
+    const char* const csv = "id,kind,width_m,pts,pavement_m\n"
+                            "ST-W,street,14,0:0;0:200,2.8\n"
+                            "ST-E,street,14,30:0;30:200,2.8\n";
+    const std::vector<RoadNetStreet> s = net(csv);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    RoadCanal canal;
+    canal.id = "CN-T";
+    canal.x0 = 7.0;
+    canal.x1 = 23.0;
+    canal.y0 = 20.0;
+    canal.y1 = 180.0;
+    canal.bridgeAt = 100.0;
+    std::vector<RoadQuayPoint> pts;
+    RoadQuayCounts c;
+    roadQuayPoints(canal, b, MassingGround{}, pts, &c);
+    CHECK(c.roadInWater == 0);
+    CHECK(c.bridgeAt > 89.0);
+    CHECK(c.bridgeAt < 111.0);
+    double pave = 0.0;
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.kind == "pavement") pave = std::max(pave, sd.box.z1);
+    int spans = 0, posts = 0, masts = 0, deck = 0, ramps = 0, landings = 0;
+    std::vector<double> mastW, mastE;
+    for (const RoadQuayPoint& p : pts) {
+        CHECK(p.x >= 7.0 - 1e-6);
+        CHECK(p.x <= 23.0 + 1e-6);
+        CHECK(p.y >= 20.0 - 1e-6);
+        CHECK(p.y <= 180.0 + 1e-6);
+        if (p.kind == "railing_span") {
+            ++spans;
+            CHECK(p.length <= kQuaySpanMax + 1e-9);
+            CHECK(p.length > 0.25);
+            CHECK(p.z1 - p.z0 == doctest::Approx(kQuayRailHigh));
+            if (p.group.rfind("QR-", 0) == 0) {
+                CHECK((std::fabs(p.x - 7.25) < 1e-6 || std::fabs(p.x - 22.75) < 1e-6));
+                CHECK(p.z0 == doctest::Approx(pave).epsilon(0.01));
+                // Off the bridge's gap.
+                CHECK(std::fabs(p.y - c.bridgeAt) >= kQuayBridgeWide * 0.5 + p.length * 0.5 - 1e-6);
+            }
+        } else if (p.kind == "bridge_pier") {
+            ++posts;
+            CHECK(p.length == doctest::Approx(kQuayPost));
+        } else if (p.kind == "lamp_mast") {
+            ++masts;
+            (p.x < 15.0 ? mastW : mastE).push_back(p.y);
+            CHECK(p.z1 - p.z0 == doctest::Approx(kQuayMastHigh));
+            for (const MassingFoot& f : b.furniture)
+                CHECK(std::hypot(p.x - f.x, p.y - f.y) - std::max(f.hx, f.hy) >= kQuayMastClear - 1e-9);
+        } else if (p.kind == "bridge_deck") {
+            ++deck;
+            CHECK(p.z1 == doctest::Approx(pave + kQuayBridgeRise).epsilon(0.01));
+            CHECK(p.length == doctest::Approx(kQuayBridgeDeck));
+        } else if (p.kind == "bridge_stair") {
+            ++ramps;
+            CHECK(p.slope > 0.0);
+            CHECK(p.slope <= 0.6);
+        } else if (p.kind == "bridge_landing") {
+            ++landings;
+        }
+    }
+    CHECK(deck == 1);
+    CHECK(ramps == 2);
+    CHECK(landings == 2);
+    CHECK(spans == static_cast<int>(c.spans));
+    CHECK(masts == static_cast<int>(c.masts));
+    // A closing post per run: each bank's runs (one more than its breaks: the bridge and its masts) and the bridge's two.
+    CHECK(posts == static_cast<int>(c.posts));
+    CHECK(posts == static_cast<int>(mastW.size() + mastE.size()) + 2 + 2 + 2);
+    CHECK(mastW.size() >= 5);
+    CHECK(mastE.size() >= 5);
+    for (const std::vector<double>* m : {&mastW, &mastE})
+        for (std::size_t i = 1; i < m->size(); ++i) {
+            const double gap = (*m)[i] - (*m)[i - 1];
+            if (std::fabs(gap - 25.0) > 6.0 * 2.0 + 1e-9) CHECK(((*m)[i] > c.bridgeAt && (*m)[i - 1] < c.bridgeAt));
+        }
+    const std::string table = roadQuayCsv(pts);
+    CHECK(table.find("kind,id,group,x,y,z0,z1,rot,length_m,width_m,slope,deck\n") != std::string::npos);
+    std::size_t rows = 0;
+    for (const char ch : table) rows += ch == '\n';
+    CHECK(rows == pts.size() + 2);
+
+    // A canal laid over a road's pavement is reported.
+    RoadCanal bad = canal;
+    bad.x0 = 3.0;
+    roadQuayPoints(bad, b, MassingGround{}, pts, &c);
+    CHECK(c.roadInWater > 0);
+}
+
+TEST_CASE("road net: a canal row builds its channel: walls, copings at the bank top, floor and water") {
+    const char* const csv = "id,kind,width_m,pts,pavement_m,canal\n"
+                            "ST-W,street,14,0:0;0:200,2.8,\n"
+                            "ST-E,street,14,30:0;30:200,2.8,\n"
+                            "CN-T,canal,,7:20;23:180,,1.5:2.5:100\n";
+    std::vector<RoadNetStreet> s;
+    std::vector<RoadCanal> canals;
+    REQUIRE(importRoadNet(csv, s, nullptr, &canals));
+    CHECK(s.size() == 2); // the canal row is no street
+    REQUIRE(canals.size() == 1);
+    const RoadCanal& c = canals[0];
+    CHECK(c.id == "CN-T");
+    CHECK(c.x0 == doctest::Approx(7.0));
+    CHECK(c.y1 == doctest::Approx(180.0));
+    CHECK(c.floorZ == doctest::Approx(1.5));
+    CHECK(c.waterZ == doctest::Approx(2.5));
+    CHECK(c.bridgeAt == doctest::Approx(100.0));
+    // Without the canals list the row is skipped; a bad canal column or water under the floor fails.
+    std::vector<RoadNetStreet> s2;
+    REQUIRE(importRoadNet(csv, s2));
+    CHECK(s2.size() == 2);
+    std::vector<RoadCanal> cx;
+    CHECK_FALSE(importRoadNet("id,kind,pts,canal\nCN-X,canal,0:0;10:50,3:2\n", s2, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,canal\nCN-X,canal,0:0;10:50,a:2\n", s2, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts\nCN-X,canal,0:0\n", s2, nullptr, &cx));
+
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    const std::size_t before = b.solids.size(), collide0 = b.counts.collide;
+    // The channel alone: a flat floor and no ways out (the section and the exits have their own cases).
+    RoadCanal plain = c;
+    plain.deep = 0.0;
+    plain.exitEvery = 0.0;
+    const std::size_t added = roadCanalBuild(plain, MassingGround{}, b);
+    // 16 bank pieces a side (158 m in 10 m pieces) and two ends, each a wall and a coping; the floor and the water.
+    CHECK(added == (2 * 16 + 2) * 2 + 2);
+    CHECK(b.solids.size() == before + added);
+    CHECK(b.counts.collide == collide0 + added - 1);
+    double bankTop = 0.0;
+    for (const RoadSolid& r : b.solids)
+        if (r.box.kind == "pavement" && std::fabs(r.box.cx - (7.0 - 0.3)) < 2.0 && r.box.cy > 50.0 && r.box.cy < 150.0) {
+            bankTop = r.box.z1;
+            break;
+        }
+    for (std::size_t i = before; i < b.solids.size(); ++i) {
+        const RoadSolid& r = b.solids[i];
+        const MassingBox& x = r.box;
+        CHECK(x.id.rfind("CN-T-", 0) == 0);
+        CHECK(x.cx - 0.5 * x.sx >= 7.0 - 1e-9);
+        CHECK(x.cx + 0.5 * x.sx <= 23.0 + 1e-9);
+        CHECK(x.cy - 0.5 * x.sy >= 20.0 - 1e-9);
+        CHECK(x.cy + 0.5 * x.sy <= 180.0 + 1e-9);
+        if (x.kind == "canal_water") {
+            CHECK(r.tint == RoadTint::Water);
+            CHECK_FALSE(r.collide);
+            CHECK(x.z1 == doctest::Approx(2.5));
+            CHECK(x.sx == doctest::Approx(16.0 - 2.0 * c.wall));
+        } else if (x.kind == "canal_floor") {
+            CHECK(x.z1 == doctest::Approx(1.5));
+            CHECK(r.collide);
+        } else if (x.kind == "canal_coping") {
+            CHECK(r.tint == RoadTint::Kerb);
+            CHECK(x.z1 - x.z0 == doctest::Approx(c.coping));
+            if (x.cx < 10.0 && x.sy < 11.0) CHECK(x.z1 == doctest::Approx(bankTop)); // the west bank: the pavement's top
+        } else {
+            CHECK(x.kind == "canal_wall");
+            CHECK(x.z0 == doctest::Approx(1.2));
+        }
+    }
+    // Its water surface: the rectangle between the walls, running north (the long side) at the default speed.
+    REQUIRE(b.waters.size() == 1);
+    const RoadWater& w = b.waters[0];
+    CHECK(w.id == "CN-T");
+    CHECK(w.cx == doctest::Approx(15.0));
+    CHECK(w.cy == doctest::Approx(100.0));
+    CHECK(w.sx == doctest::Approx(16.0 - 2.0 * c.wall));
+    CHECK(w.sy == doctest::Approx(160.0 - 2.0 * c.wall));
+    CHECK(w.z == doctest::Approx(2.5));
+    CHECK(w.depth == doctest::Approx(1.0));
+    CHECK(w.flowX == doctest::Approx(0.0));
+    CHECK(w.flowY == doctest::Approx(1.0));
+    CHECK(w.flow == doctest::Approx(kCanalFlow));
+    CHECK(w.halfWidth == doctest::Approx(0.5 * (16.0 - 2.0 * c.wall)));
+    // Too small a rectangle: nothing.
+    RoadCanal tiny = c;
+    tiny.x1 = tiny.x0 + 2.5;
+    CHECK(roadCanalBuild(tiny, MassingGround{}, b) == 0);
+    CHECK(b.waters.size() == 1);
+}
+
+TEST_CASE("road net: a canal row's flow column gives the water's speed and way; without it the long side") {
+    std::vector<RoadNetStreet> s;
+    std::vector<RoadCanal> canals;
+    const char* const csv = "id,kind,pts,canal,flow\n"
+                            "CN-A,canal,0:0;10:50,1.5:2.5,\n"       // none: the default, north
+                            "CN-B,canal,0:100;60:112,1.5:2.5,0.1\n"  // a speed only: east along its long side
+                            "CN-C,canal,0:200;60:212,1:2.5,0.6:180\n" // west
+                            "CN-D,canal,100:0;110:50,1.5:2.5,0\n";   // still
+    REQUIRE(importRoadNet(csv, s, nullptr, &canals));
+    REQUIRE(canals.size() == 4);
+    CHECK(canals[0].flow == doctest::Approx(kCanalFlow));
+    CHECK(roadCanalFlowDir(canals[0]).y == doctest::Approx(1.0));
+    CHECK(canals[1].flow == doctest::Approx(0.1));
+    CHECK(roadCanalFlowDir(canals[1]).x == doctest::Approx(1.0));
+    CHECK(roadCanalFlowDir(canals[1]).y == doctest::Approx(0.0));
+    CHECK(canals[2].flow == doctest::Approx(0.6));
+    CHECK(roadCanalFlowDir(canals[2]).x == doctest::Approx(-1.0));
+    CHECK(std::fabs(roadCanalFlowDir(canals[2]).y) < 1e-9);
+    CHECK(canals[3].flow == doctest::Approx(0.0));
+    // Across the flow: the short side of an east-west channel, whichever way it runs along it.
+    RoadBuild b;
+    REQUIRE(roadCanalBuild(canals[2], MassingGround{}, b) > 0);
+    REQUIRE(b.waters.size() == 1);
+    CHECK(b.waters[0].flowX == doctest::Approx(-1.0));
+    CHECK(b.waters[0].halfWidth == doctest::Approx(0.5 * (12.0 - 2.0 * canals[2].wall)));
+    CHECK(b.waters[0].depth == doctest::Approx(1.5));
+    // A speed that is no number, under 0 or over the cap, or a heading that is no number, fails.
+    std::vector<RoadCanal> cx;
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,fast\n", s, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,-0.1\n", s, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,3.5\n", s, nullptr, &cx));
+    CHECK_FALSE(importRoadNet("id,kind,pts,flow\nCN-X,canal,0:0;10:50,0.2:north\n", s, nullptr, &cx));
+}
+
+TEST_CASE("road net: tints carry the surface master's street kind; the ramps' tactile strips wear Tactile") {
+    CHECK(roadTintStreet(RoadTint::Asphalt) == 1);
+    CHECK(roadTintStreet(RoadTint::AsphaltPatch) == 1);
+    CHECK(roadTintStreet(RoadTint::Pavement) == 2);
+    CHECK(roadTintStreet(RoadTint::Kerb) == 3);
+    CHECK(roadTintStreet(RoadTint::LineWhite) == 4);
+    CHECK(roadTintStreet(RoadTint::LineYellow) == 4);
+    CHECK(roadTintStreet(RoadTint::Footway) == 5);
+    CHECK(roadTintStreet(RoadTint::Tactile) == kRoadStreetTactile);
+    CHECK(roadTintStreet(RoadTint::Water) == 0);
+    CHECK(roadTintStreet(RoadTint::Steel) == 0);
+    CHECK(std::string(roadTintName(RoadTint::Tactile)) == "Tactile");
+    CHECK(std::string(roadTintName(RoadTint::Footway)) == "Footway");
+    CHECK(std::string(roadTintName(RoadTint::Water)) == "Water");
+    for (int t = 0; t < static_cast<int>(RoadTint::Count); ++t)
+        CHECK(std::string(roadTintName(static_cast<RoadTint>(t))) != "Unknown");
+    CHECK(roadTint(RoadTint::Water).roughness < 0.1f);
+
+    const std::vector<RoadNetStreet> s = net(kTee);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    std::size_t tactile = 0;
+    for (const RoadSolid& r : b.solids) {
+        if (r.box.kind != "tactile") continue;
+        ++tactile;
+        CHECK(r.tint == RoadTint::Tactile);
+    }
+    CHECK(tactile > 0);
+}
+
+// ---- Footways (roadFootways): kerbed lanes, paved alleys ----
+
+namespace {
+
+MassingStreet footStreet(const char* id, const char* kind, double width, std::vector<MassingVec> pts) {
+    MassingStreet s;
+    s.id = id;
+    s.kind = kind;
+    s.width = width;
+    s.points = std::move(pts);
+    return s;
+}
+
+// Flat ground at 4 m, 1 m samples over x -10..90, y -50..60.
+struct FlatFour {
+    std::vector<std::uint16_t> grid;
+    MassingGround ground;
+    FlatFour() : grid(101 * 111, static_cast<std::uint16_t>(32768 + 4 * 128)) {
+        ground.grid = grid.data();
+        ground.samplesX = 101;
+        ground.samplesY = 111;
+        ground.spacing = 1.0;
+        ground.originX = -10.0;
+        ground.originY = -50.0;
+    }
+};
+
+} // namespace
+
+TEST_CASE("footways: classes and sections per width") {
+    CHECK(roadFootClass(footStreet("a", "stair", 4.0, {})) == RoadFootClass::None);
+    CHECK(roadFootClass(footStreet("a", "link_stair", 6.0, {})) == RoadFootClass::None);
+    CHECK(roadFootClass(footStreet("a", "alley", 3.0, {})) == RoadFootClass::Pedestrian);
+    CHECK(roadFootClass(footStreet("a", "market_arcade", 6.0, {})) == RoadFootClass::Pedestrian);
+    CHECK(roadFootClass(footStreet("a", "terrace", 3.0, {})) == RoadFootClass::Pedestrian);
+    CHECK(roadFootClass(footStreet("a", "terrace", 6.0, {})) == RoadFootClass::Vehicle);
+    CHECK(roadFootClass(footStreet("a", "lane", 4.0, {})) == RoadFootClass::Vehicle);
+
+    RoadFootSection s = roadFootSection(footStreet("a", "lane", 6.0, {}));
+    CHECK(s.footLeft == doctest::Approx(1.5));
+    CHECK(s.footRight == doctest::Approx(1.5));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(3.0));
+    s = roadFootSection(footStreet("a", "lane", 5.0, {}));
+    CHECK(s.footLeft == doctest::Approx(1.0));
+    CHECK(s.footRight == doctest::Approx(1.0));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(3.0));
+    s = roadFootSection(footStreet("a", "lane", 4.0, {}));
+    CHECK(s.footLeft == doctest::Approx(1.0));
+    CHECK(s.footRight == 0.0);
+    CHECK(s.cwLo == doctest::Approx(-2.0));
+    CHECK(s.cwHi == doctest::Approx(1.0));
+    s = roadFootSection(footStreet("a", "link_road", 10.0, {}));
+    CHECK(s.footLeft == doctest::Approx(2.0));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(6.0));
+    s = roadFootSection(footStreet("a", "causeway", 14.0, {}));
+    CHECK(s.footLeft == doctest::Approx(2.8));
+    MassingStreet paved = footStreet("a", "road", 12.0, {});
+    paved.pavement = 2.5;
+    CHECK(roadFootSection(paved).footRight == doctest::Approx(2.5));
+    s = roadFootSection(footStreet("a", "lane", 3.5, {}));
+    CHECK(s.footLeft == 0.0);
+    CHECK(s.footRight == 0.0);
+    // A lane's own footway column, when it leaves the 3 m carriageway; a 10 m street's too.
+    MassingStreet ward = footStreet("a", "lane", 6.0, {});
+    ward.pavement = 1.5;
+    s = roadFootSection(ward);
+    CHECK(s.footLeft == doctest::Approx(1.5));
+    CHECK(s.cwHi - s.cwLo == doctest::Approx(3.0));
+    ward.pavement = 2.0; // would leave 2 m: the class's own widths
+    CHECK(roadFootSection(ward).footLeft == doctest::Approx(1.5));
+    MassingStreet seam = footStreet("a", "street", 10.0, {});
+    seam.pavement = 2.0;
+    CHECK(roadFootClass(seam) == RoadFootClass::Vehicle);
+    CHECK(roadFootSection(seam).cwHi - roadFootSection(seam).cwLo == doctest::Approx(6.0));
+}
+
+TEST_CASE("footways: a kerbed street's lanes follow its carriageway, one way up to 6 m") {
+    RoadGraph g;
+    roadGraphFootLanes(footStreet("L6", "lane", 6.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    REQUIRE(g.lanes.size() == 1);
+    CHECK(g.lanes[0].oneWay);
+    CHECK(g.lanes[0].width == doctest::Approx(3.0));
+    CHECK(g.lanes[0].pts[0].y == doctest::Approx(0.0));
+    g = RoadGraph{};
+    roadGraphFootLanes(footStreet("L4", "lane", 4.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    REQUIRE(g.lanes.size() == 1);
+    CHECK(g.lanes[0].pts[0].y == doctest::Approx(-0.5)); // the carriageway -2..1: the footway on the left
+    g = RoadGraph{};
+    roadGraphFootLanes(footStreet("R10", "street", 10.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    CHECK(g.lanes.size() == 2);
+    CHECK_FALSE(g.lanes[0].oneWay);
+    g = RoadGraph{};
+    roadGraphFootLanes(footStreet("S", "stair", 6.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    roadGraphFootLanes(footStreet("A", "alley", 3.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    CHECK(g.lanes.empty());
+}
+
+TEST_CASE("footways: kerbed lanes with drop kerbs at a mouth, an alley with bollards, and the rejects") {
+    const FlatFour flat;
+    std::vector<MassingStreet> st;
+    st.push_back(footStreet("LN-A", "lane", 6.0, {{0, 0, 0}, {60, 0, 0}}));
+    st.push_back(footStreet("LN-B", "lane", 6.0, {{30, 0, 0}, {30, 40, 0}}));
+    st.push_back(footStreet("AL-1", "alley", 3.0, {{45, -3, 0}, {45, -30, 0}}));
+    st.push_back(footStreet("SS-1", "stair", 4.0, {{70, 10, 0}, {80, 10, 0}}));
+
+    RoadBuild b;
+    RoadFootReport rep;
+    roadFootways(st, {}, flat.ground, nullptr, b, &rep);
+    CHECK(rep.vehicle == 2);
+    CHECK(rep.pedestrian == 1);
+    CHECK(rep.skipped == 1);
+    CHECK(b.laneWays.size() == 2);
+    // LN-A's north footway breaks for LN-B's carriageway: a drop kerb each side, a tactile strip on each.
+    CHECK(rep.ramps == 2);
+    CHECK(rep.tactiles == 2);
+    CHECK(rep.mouths == 1);
+    CHECK(rep.drains > 0);
+    CHECK(rep.buried == 0);
+    CHECK(rep.floating == 0);
+    REQUIRE(rep.streets.size() == 2);
+    CHECK(rep.streets[0].kerbed[1] == doctest::Approx(60.0).epsilon(0.02)); // the south side: unbroken
+    CHECK(rep.streets[0].kerbed[0] < 58.0);
+    // The footway's top: the gutter plus the kerb's rise, both sides of each lane; the carriageway is not a footway.
+    double top = 0.0;
+    REQUIRE(roadFootwayTop(b, 10.0, -2.2, top));
+    CHECK(top == doctest::Approx(4.0 + kRoadSurfaceLift + kRoadKerbRise));
+    REQUIRE(roadFootwayTop(b, 10.0, 2.2, top));
+    CHECK(top == doctest::Approx(4.0 + kRoadSurfaceLift + kRoadKerbRise));
+    CHECK_FALSE(roadFootwayTop(b, 10.0, 0.0, top));
+    CHECK_FALSE(roadFootwayTop(b, 30.0, 2.2, top)); // LN-B's mouth
+    REQUIRE(roadFootwayTop(b, 31.8, 10.0, top));    // LN-B's own footway
+    // The alley: paved wall to wall, two bollards across its mouth on LN-A, no kerb.
+    REQUIRE(roadFootwayTop(b, 45.0, -15.0, top));
+    CHECK(top == doctest::Approx(4.05));
+    CHECK(rep.paving > 0);
+    CHECK(rep.bollards == 2);
+    REQUIRE(rep.alleyMouths.size() == 1);
+    CHECK(rep.alleyMouths[0].street == "LN-A");
+    CHECK(b.furniture.size() == 2);
+    std::size_t gutters = 0, kerbs = 0, grates = 0, ramps = 0;
+    CHECK(roadTint(RoadTint::Gutter).roughness >= 0.8f); // matt: a glossy strip reads as a trench of metal
+    CHECK(roadTint(RoadTint::Drain).r < 0.08f);
+    for (const RoadSolid& s : b.solids) {
+        CHECK(s.instanced);
+        if (s.box.kind == "gutter") {
+            ++gutters;
+            CHECK(s.tint == RoadTint::Gutter);
+            // Flush with the lane (the ground): 12 mm over it, 0.3 m wide at most.
+            CHECK(s.box.z1 == doctest::Approx(4.012));
+            CHECK(s.box.sy <= 0.3 + 1e-9);
+        }
+        if (s.box.kind == "drain") {
+            ++grates;
+            CHECK(s.box.z1 == doctest::Approx(4.018)); // a skin on its gutter strip
+            CHECK(s.box.riseU == doctest::Approx(0.0));
+        }
+        if (s.box.id.find("-ramp-") != std::string::npos) {
+            ++ramps;
+            // A ramp, not a floating slab: its top falls from the kerb's top to the gutter, and its underside (the box
+            // is as deep all along) is under the ground at its high end too.
+            CHECK(std::fabs(s.box.riseU) * s.box.sx == doctest::Approx(kRoadKerbRise - 0.01));
+            CHECK(s.box.z0 + std::fabs(s.box.riseU) * s.box.sx * 0.5 < 4.0);
+        }
+        if (s.box.kind == "kerb") {
+            ++kerbs;
+            CHECK(s.box.sy == doctest::Approx(kRoadKerbWide));
+            CHECK(s.box.sx <= kFootLongest + 2.0);
+        }
+        CHECK(s.box.kind != "asphalt"); // nothing for the decals or the clash passes
+    }
+    // One gutter strip per kerb run on level ground, not one per piece.
+    CHECK(gutters == rep.gutters);
+    CHECK(gutters >= 4);
+    CHECK(gutters < kerbs);
+    CHECK(kerbs == rep.pieces);
+    CHECK(rep.hidden == 0);
+    CHECK(grates == rep.drains);
+    CHECK(ramps == rep.ramps);
+    CHECK(roadFootRejects(rep, b).empty());
+
+    // Skipping LN-B (a network row): no mouth on LN-A.
+    RoadBuild b2;
+    RoadFootReport rep2;
+    roadFootways(st, {"LN-B"}, flat.ground, nullptr, b2, &rep2);
+    CHECK(rep2.ramps == 0);
+    CHECK(rep2.skipped == 2);
+
+    // A vehicle street too narrow for a footway, and a mouth left open, are rejected.
+    st.push_back(footStreet("LN-N", "lane", 3.5, {{0, 30, 0}, {20, 30, 0}}));
+    RoadBuild b3;
+    RoadFootReport rep3;
+    roadFootways(st, {}, flat.ground, nullptr, b3, &rep3);
+    rep3.alleyMouths[0].bollards = 0;
+    const std::vector<std::string> rj = roadFootRejects(rep3, b3);
+    REQUIRE(rj.size() == 1); // the mouth still has LN-A's footway within reach: a step
+    CHECK(rj[0].find("LN-N") != std::string::npos);
+    b3.footways.clear();
+    CHECK(roadFootRejects(rep3, b3).size() == 2);
+
+    // Over the sea (ground under kFootDryAbove): nothing, and nothing to reject.
+    RoadBuild b4;
+    RoadFootReport rep4;
+    roadFootways({st[0]}, {}, MassingGround{}, nullptr, b4, &rep4);
+    CHECK(rep4.pieces == 0);
+    CHECK(roadFootRejects(rep4, b4).empty());
+}
+
+TEST_CASE("footways: a bend laps its outer corner and the network's band stops a lane") {
+    const FlatFour flat;
+    std::vector<MassingStreet> st;
+    st.push_back(footStreet("LN-L", "lane", 6.0, {{0, 0, 0}, {30, 0, 0}, {30, 30, 0}}));
+    RoadBuild net;
+    MassingFoot band;
+    band.x = 30.0;
+    band.y = 40.0;
+    band.hx = 20.0;
+    band.hy = 7.0;
+    net.band.push_back(band);
+    RoadBuild b;
+    RoadFootReport rep;
+    roadFootways(st, {}, flat.ground, &net, b, &rep);
+    double top = 0.0;
+    // The bend's outer (south-east) corner is covered; nothing inside the band.
+    CHECK(roadFootwayTop(b, 32.2, -2.2, top));
+    CHECK_FALSE(roadFootwayTop(b, 31.8, 34.0, top));
+    CHECK(roadFootwayTop(b, 31.8, 30.0 - 4.0, top));
+    CHECK(rep.ramps == 0);
+}
+
+namespace {
+
+RoadSolid markSolid(const char* id, RoadTint tint, double cx, double cy, double sx, double sy, double rot, double top) {
+    RoadSolid sd;
+    sd.tint = tint;
+    sd.box.id = id;
+    sd.box.row = "R";
+    sd.box.kind = "mark";
+    sd.box.cx = cx;
+    sd.box.cy = cy;
+    sd.box.sx = sx;
+    sd.box.sy = sy;
+    sd.box.rot = rot;
+    sd.box.z0 = top - 0.008;
+    sd.box.z1 = top;
+    return sd;
+}
+
+} // namespace
+
+TEST_CASE("road check: a second diagonal crossing the first is a reject") {
+    RoadQuad a, b;
+    a.id = "JN-0009-ZD1";
+    b.id = "JN-0009-ZD2";
+    a.junction = b.junction = "JN-0009";
+    // Two 12 m by 4 m bands crossing at their middles, 90 degrees apart.
+    a.pts = {RoadPoint{-6.0, -2.0}, RoadPoint{6.0, -2.0}, RoadPoint{6.0, 2.0}, RoadPoint{-6.0, 2.0}};
+    b.pts = {RoadPoint{2.0, -6.0}, RoadPoint{2.0, 6.0}, RoadPoint{-2.0, 6.0}, RoadPoint{-2.0, -6.0}};
+    RoadBuild bd;
+    bd.crossings = {a, b};
+    const std::vector<RoadFace> over = roadCrossingOverlaps(bd);
+    REQUIRE(over.size() == 1);
+    CHECK(over[0].piece == "JN-0009-ZD1");
+    CHECK(over[0].fault == "crossing JN-0009-ZD2");
+    // Apart, side by side: fine.
+    for (RoadPoint& q : b.pts) q.x += 20.0;
+    bd.crossings = {a, b};
+    CHECK(roadCrossingOverlaps(bd).empty());
+}
+
+TEST_CASE("road check: white and yellow markings laid over each other are a reject; abutting pieces are not") {
+    RoadBuild bd;
+    // A bar of three 1 m pieces end to end (abutting), then a line crossing the middle one.
+    bd.solids.push_back(markSolid("R-mark-1", RoadTint::LineWhite, 0.5, 0.0, 1.0, 0.45, 0.0, 4.0));
+    bd.solids.push_back(markSolid("R-mark-2", RoadTint::LineWhite, 1.5, 0.0, 1.0, 0.45, 0.0, 4.0));
+    bd.solids.push_back(markSolid("R-mark-3", RoadTint::LineWhite, 2.5, 0.0, 1.0, 0.45, 0.0, 4.0));
+    CHECK(roadCrossingOverlaps(bd).empty());
+    // Side by side across the run (abutting along t): no overlap either.
+    bd.solids.push_back(markSolid("R-mark-4", RoadTint::LineYellow, 1.5, 0.45, 3.0, 0.45, 0.0, 4.0));
+    CHECK(roadCrossingOverlaps(bd).empty());
+    // A yellow line across the middle piece and the yellow bar beside it: a row for each pair.
+    bd.solids.push_back(markSolid("R-mark-5", RoadTint::LineYellow, 1.5, 0.0, 0.15, 3.0, 0.0, 4.0));
+    std::vector<RoadFace> over = roadCrossingOverlaps(bd);
+    REQUIRE(over.size() == 2);
+    CHECK(over[0].piece == "R-mark-2");
+    CHECK(over[0].fault == "marking R-mark-5");
+    CHECK(over[0].x == doctest::Approx(1.5));
+    CHECK(over[0].y == doctest::Approx(0.0));
+    CHECK(over[1].piece == "R-mark-4");
+    CHECK(over[1].fault == "marking R-mark-5");
+    // The same pair on another level (a deck over a road): not a pair. Other tints are not markings.
+    bd.solids.back().box.z1 += 3.0;
+    bd.solids.back().box.z0 += 3.0;
+    CHECK(roadCrossingOverlaps(bd).empty());
+    bd.solids.back().box.z1 -= 3.0;
+    bd.solids.back().box.z0 -= 3.0;
+    bd.solids.back().tint = RoadTint::Asphalt;
+    CHECK(roadCrossingOverlaps(bd).empty());
+    // Turned pieces: identical ones overlap; one moved across by all but 1 cm of its width no longer does.
+    RoadBuild t;
+    t.solids.push_back(markSolid("T-1", RoadTint::LineWhite, 0.0, 0.0, 4.0, 0.15, 30.0, 4.0));
+    t.solids.push_back(markSolid("T-2", RoadTint::LineWhite, 0.0, 0.0, 4.0, 0.15, 30.0, 4.0));
+    CHECK(roadCrossingOverlaps(t).size() == 1);
+    const double turn = 30.0 * 3.14159265358979 / 180.0;
+    t.solids[1].box.cx += -std::sin(turn) * 0.14;
+    t.solids[1].box.cy += std::cos(turn) * 0.14;
+    CHECK(roadCrossingOverlaps(t).empty());
+}
+
+TEST_CASE("road check: a whole network's markings check in one sweep") {
+    // 20000 abutting bars in a plan grid and a line crossing it: the grid keeps it near linear.
+    RoadBuild bd;
+    for (int i = 0; i < 200; ++i)
+        for (int j = 0; j < 100; ++j) {
+            const std::string id = "G-" + std::to_string(i) + "-" + std::to_string(j);
+            bd.solids.push_back(markSolid(id.c_str(), RoadTint::LineWhite, i * 1.0 + 0.5, j * 5.0, 1.0, 0.45, 0.0, 4.0));
+        }
+    CHECK(roadCrossingOverlaps(bd).empty());
+    bd.solids.push_back(markSolid("G-line", RoadTint::LineWhite, 100.5, 247.5, 0.15, 5.0, 0.0, 4.0));
+    const std::vector<RoadFace> over = roadCrossingOverlaps(bd);
+    CHECK(over.size() == 2); // the line crosses the two bars it spans
+}
+
+TEST_CASE("road net: a built network's markings never lie over each other") {
+    // Parking streets and a cut across a bay: no doubled bay lines, stop lines clear of the edge lines.
+    const char* const csv = "id,kind,width_m,pts,pavement_m,parking\n"
+                            "ST-H,street,18,0:0;240:0,3.6,1\n"
+                            "ST-V,street,14,120:-150;120:150,2.8,0\n"
+                            "ST-B,street,14,0:0;-60:60;-60:200,2.8,0\n";
+    const std::vector<RoadNetStreet> s = net(csv);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    CHECK(roadCrossingOverlaps(b).empty());
+}
+
+TEST_CASE("road net: every white or yellow solid on a network is paint, laid flat in place of its box") {
+    // Parking streets, a T, a four-lane boulevard with its median: every line, bay, stop line and zebra bar.
+    const char* const csvs[] = {"id,kind,width_m,pts,pavement_m,parking\n"
+                                "ST-H,street,18,0:0;240:0,3.6,1\n"
+                                "ST-V,street,14,120:-150;120:150,2.8,0\n"
+                                "ST-B,street,14,0:0;-60:60;-60:200,2.8,0\n",
+                                kTee,
+                                "id,kind,width_m,pts,pavement_m,lanes,median_m\n"
+                                "BV,street,25,0:0;300:0,3.5,4,4\n"
+                                "ST-W,street,14,0:-100;0:100,2.8,,\n"
+                                "ST-E,street,14,300:-100;300:100,2.8,,\n"};
+    for (const char* csv : csvs) {
+        RoadBuild b;
+        roadNetBuild(net(csv), MassingGround{}, b);
+        std::size_t lines = 0, paint = 0;
+        for (const RoadSolid& sd : b.solids) {
+            if (sd.tint != RoadTint::LineWhite && sd.tint != RoadTint::LineYellow) continue;
+            ++lines;
+            CHECK_MESSAGE(roadPaintSolid(sd), sd.box.id);
+            paint += roadPaintSolid(sd) ? 1u : 0u;
+        }
+        CHECK(lines > 0);
+        CHECK(paint == lines);
+        CHECK(paint == b.counts.markings);
+        std::vector<RoadDecal> out;
+        RoadDecalCounts counts;
+        roadMarkingDecals(b, out, counts);
+        CHECK(out.size() == paint);
+        CHECK(counts.total() == paint);
+    }
+}
+
+namespace {
+
+// A 300 m boulevard (25 m: 3.5 m pavements, a 4 m median, four 3.5 m lanes) between two 14 m streets.
+const char* const kBoulevard = "id,kind,width_m,pts,pavement_m,lanes,median_m\n"
+                               "BV,street,25,0:0;300:0,3.5,4,4\n"
+                               "ST-W,street,14,0:-100;0:100,2.8,,\n"
+                               "ST-E,street,14,300:-100;300:100,2.8,,\n";
+
+bool feetOverlap(const MassingFoot& a, const MassingFoot& b) { return massingFeetOverlap(a, b, 0.0); }
+
+MassingFoot rectFoot(double x0, double y0, double x1, double y1) {
+    MassingFoot f;
+    f.x = (x0 + x1) * 0.5;
+    f.y = (y0 + y1) * 0.5;
+    f.hx = (x1 - x0) * 0.5;
+    f.hy = (y1 - y0) * 0.5;
+    return f;
+}
+
+} // namespace
+
+TEST_CASE("road net: the lanes and median_m columns read, default and refuse bad values") {
+    for (const RoadNetStreet& st : net(kTee)) {
+        CHECK(st.lanes == 2);
+        CHECK(st.median == 0.0);
+    }
+    const std::vector<RoadNetStreet> s = net(kBoulevard);
+    REQUIRE(s.size() == 3);
+    CHECK(s[0].lanes == 4);
+    CHECK(s[0].median == doctest::Approx(4.0));
+    CHECK(s[1].lanes == 2);
+    CHECK(s[1].median == 0.0);
+    CHECK(roadNetLaneOffset(s[0], 0) == doctest::Approx(3.75));
+    CHECK(roadNetLaneOffset(s[0], 1) == doctest::Approx(7.25));
+
+    std::vector<RoadNetStreet> out;
+    std::string err;
+    const std::string head = "id,kind,width_m,pts,pavement_m,one_way,lanes,median_m\n";
+    REQUIRE(importRoadNet(head + "A,street,20,0:0;50:0,3,,4,\n", out, &err));
+    CHECK(out[0].lanes == 4);
+    CHECK(out[0].median == 0.0);
+    REQUIRE(importRoadNet(head + "A,street,20,0:0;50:0,2.5,,4,1.5\n", out, &err)); // 15 - 1.5: 3.375 m lanes
+    CHECK(out[0].median == doctest::Approx(1.5));
+    REQUIRE(importRoadNet(head + "A,street,14,0:0;50:0,2.8,,2,0\n", out, &err));
+    CHECK(out[0].lanes == 2);
+    const char* bad[] = {
+        "A,street,20,0:0;50:0,3,,3,\n",   // three lanes
+        "A,street,20,0:0;50:0,3,,x,\n",   // not a number
+        "A,street,20,0:0;50:0,3,,4.5,\n", // not 2 or 4
+        "A,street,20,0:0;50:0,3,,2,2\n",  // a median on two lanes
+        "A,street,20,0:0;50:0,3,,,2\n",   // ... the default two
+        "A,street,20,0:0;50:0,3,,4,1\n",  // a median under 1.5 m
+        "A,street,20,0:0;50:0,3,,4,-1\n", // a negative median
+        "A,street,20,0:0;50:0,3,,4,x\n",  // not a number
+        "A,street,16,0:0;50:0,3,,4,\n",   // 10 m: 2.5 m lanes
+        "A,street,20,0:0;50:0,3,,4,4\n",  // 14 - 4: 2.5 m lanes
+        "A,street,20,0:0;50:0,3,1,4,\n",  // one way
+    };
+    for (const char* row : bad) {
+        INFO(row);
+        err.clear();
+        CHECK_FALSE(importRoadNet(head + "# a comment\n" + row, out, &err));
+        CHECK(err.find("line 3") != std::string::npos);
+    }
+}
+
+TEST_CASE("road net: a four-lane boulevard with a median: halves, lane lines, an island the zebras cross, four lanes") {
+    const std::vector<RoadNetStreet> s = net(kBoulevard);
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(s, MassingGround{}, b, &rep);
+    CHECK(rep.junctions == 2);
+    CHECK(rep.tight == 0);
+    CHECK(rep.pruned == 0); // the wide arm's corner fills stop short of the 14 m streets' far kerbs
+    int farKerbs = 0;       // ST-W's far kerb runs on through the T (x -4.2, |y| under 15)
+    for (const RoadSolid& sd : b.solids)
+        if (sd.box.kind == "kerb" && sd.box.id.rfind("ST-W-", 0) == 0 && sd.box.cx < -4.0 && std::fabs(sd.box.cy) < 15.0)
+            ++farKerbs;
+    CHECK(farKerbs == 2);
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    for (const RoadFace& f : roadKerbFaces(b, &g)) {
+        INFO(f.piece << " at " << f.x << ", " << f.y << ": " << f.fault);
+        CHECK(false);
+    }
+    CHECK(roadCrossingOverlaps(b).empty());
+
+    // hc 9, the median's half 2, lanes 3.5; the corners 4.2 + 6 m in from each end (sA 10.2, sB 289.8), the zebras
+    // 2 m past them and 4 m wide, the island 1.5 m past the zebras (17.7 to 282.3).
+    const double hc = 9.0, hm = 2.0;
+    // The carriageway beside the island: two half rectangles (one piece on flat ground), none over the island.
+    int halves = 0;
+    const MassingFoot isle = rectFoot(20.0, -hm + 0.05, 280.0, hm - 0.05);
+    for (const MassingFoot& f : b.carriageway) {
+        if (std::fabs(f.hy - (hc - hm) * 0.5) < 1e-6 && std::fabs(std::fabs(f.y) - (hc + hm) * 0.5) < 1e-6) ++halves;
+        CHECK_FALSE(feetOverlap(f, isle));
+    }
+    CHECK(halves == 2);
+
+    // The island: kerbs and a Verge top from 17.7 to 282.3, kRoadKerbRise over the road beside it.
+    double vergeLen = 0.0;
+    const double road = kRoadSurfaceLift + kRoadCrossfall * (hc - hm); // the carriageway's top beside the island
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.kind != "median_lawn") continue;
+        CHECK(sd.tint == RoadTint::Verge);
+        CHECK(sd.collide);
+        CHECK(sd.box.sy == doctest::Approx(2.0 * hm - 2.0 * kRoadKerbWide));
+        vergeLen += sd.box.sx;
+        CHECK(sd.box.z1 == doctest::Approx(road + kRoadKerbRise));
+    }
+    CHECK(vergeLen == doctest::Approx(282.3 - 17.7 - 2.0 * kRoadKerbWide));
+    // Its kerbs: along both long edges, a 0.15 m upstand over the road beside them, level with the planted top.
+    CHECK(kRoadKerbRise == doctest::Approx(0.15));
+    int edgeL = 0, edgeR = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.box.kind != "kerb" || sd.box.row.rfind("BV", 0) != 0 || sd.box.sx < 10.0) continue;
+        if (std::fabs(sd.box.cy - (hm - kRoadKerbWide * 0.5)) > 1e-6 && std::fabs(sd.box.cy + (hm - kRoadKerbWide * 0.5)) > 1e-6)
+            continue;
+        (sd.box.cy > 0.0 ? edgeL : edgeR) += 1;
+        CHECK(sd.tint == RoadTint::Kerb);
+        CHECK(sd.collide);
+        CHECK(sd.box.sy == doctest::Approx(kRoadKerbWide));
+        CHECK(sd.box.z1 - road == doctest::Approx(0.15));
+    }
+    CHECK(edgeL >= 1);
+    CHECK(edgeR >= 1);
+    CHECK(roadTintStreet(RoadTint::Verge) == 0);
+    CHECK(std::string(roadTintName(RoadTint::Verge)) == "Verge");
+
+    // The boulevard's two zebras span its whole carriageway and nothing solid of its own (but the asphalt) stands on
+    // them; no kerb, pavement or island inside either half.
+    int zebras = 0;
+    for (const RoadQuad& q : b.crossings) {
+        if (q.street != "BV") continue;
+        ++zebras;
+        double x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+        for (const RoadPoint& p : q.pts) {
+            x0 = std::min(x0, p.x);
+            x1 = std::max(x1, p.x);
+            y0 = std::min(y0, p.y);
+            y1 = std::max(y1, p.y);
+        }
+        CHECK(y1 - y0 == doctest::Approx(2.0 * hc));
+        for (const RoadSolid& sd : b.solids)
+            if (sd.collide && sd.box.row.rfind("BV", 0) == 0 && sd.box.kind != "asphalt") {
+                INFO(sd.box.id);
+                CHECK_FALSE(feetOverlap(shrunk(solidFoot(sd), 0.01), rectFoot(x0, y0, x1, y1)));
+            }
+    }
+    CHECK(zebras == 2);
+    for (const double sg : {1.0, -1.0}) { // along the edge (sA 10.2 to sB 289.8; a corner chord leans 4 cm past)
+        const MassingFoot half = rectFoot(10.3, std::min(sg * (hm + 0.05), sg * (hc - 0.05)), 289.7,
+                                          std::max(sg * (hm + 0.05), sg * (hc - 0.05)));
+        for (const RoadSolid& sd : b.solids)
+            if (sd.box.kind == "kerb" || sd.box.kind == "pavement" || sd.box.kind == "median_lawn") {
+                INFO(sd.box.id);
+                CHECK_FALSE(feetOverlap(shrunk(solidFoot(sd), 0.01), half));
+            }
+    }
+
+    // Markings: a dashed lane line 5.5 m each side of the centre, 26 dashes each (stop line to stop line), no centre
+    // line.
+    int lineL = 0, lineR = 0, centre = 0;
+    for (const RoadSolid& sd : b.solids) {
+        if (sd.tint != RoadTint::LineWhite || sd.box.row.rfind("BV", 0) != 0) continue;
+        if (sd.box.sy > 0.2 || sd.box.sx < 1.0) continue; // along the street: lines, not bars
+        if (std::fabs(sd.box.cy - 5.5) < 1e-6) ++lineL;
+        if (std::fabs(sd.box.cy + 5.5) < 1e-6) ++lineR;
+        if (std::fabs(sd.box.cy) < 0.5) ++centre;
+    }
+    CHECK(lineL == 26);
+    CHECK(lineR == 26);
+    CHECK(centre == 0);
+
+    // The road graph: four lanes on the boulevard, two each way, centred on the marked lanes.
+    std::vector<const RoadGraphLane*> bv;
+    for (const RoadGraphLane& l : g.lanes)
+        if (l.street == "BV") bv.push_back(&l);
+    REQUIRE(bv.size() == 4);
+    const char* ids[] = {"BV-F1", "BV-F2", "BV-B1", "BV-B2"};
+    const double ys[] = {3.75, 7.25, -3.75, -7.25};
+    for (std::size_t i = 0; i < 4; ++i) {
+        CHECK(bv[i]->id == ids[i]);
+        CHECK(bv[i]->dir == (i < 2 ? 1 : -1));
+        CHECK(bv[i]->width == doctest::Approx(3.5));
+        CHECK(bv[i]->pts.front().y == doctest::Approx(ys[i]));
+        CHECK(bv[i]->pts.back().y == doctest::Approx(ys[i]));
+    }
+    CHECK(bv[0]->pts.front().x == doctest::Approx(0.0));
+    CHECK(bv[2]->pts.front().x == doctest::Approx(300.0));
+    int cross = 0;
+    for (const RoadGraphLane& l : g.lanes) cross += l.street == "ST-W" ? 1 : 0;
+    CHECK(cross == 2);
+}
+
+TEST_CASE("road net: four lanes and no median: a double solid centre line, no island; two-lane nets unchanged") {
+    const std::vector<RoadNetStreet> s = net("id,kind,width_m,pts,pavement_m,lanes\n"
+                                             "BV,street,20,0:0;300:0,3,4\n"
+                                             "ST-W,street,14,0:-100;0:100,2.8,\n"
+                                             "ST-E,street,14,300:-100;300:100,2.8,\n");
+    RoadBuild b;
+    RoadNetReport rep;
+    roadNetBuild(s, MassingGround{}, b, &rep);
+    CHECK(rep.pruned == 0);
+    RoadGraph g;
+    roadGraphFromNet(s, b, g);
+    CHECK(roadKerbFaces(b, &g).empty());
+    CHECK(roadCrossingOverlaps(b).empty());
+    int doubles = 0, lane = 0, verge = 0;
+    for (const RoadSolid& sd : b.solids) {
+        verge += sd.box.kind == "median_lawn" || sd.tint == RoadTint::Verge ? 1 : 0;
+        if (sd.tint != RoadTint::LineWhite || sd.box.row.rfind("BV", 0) != 0 || sd.box.sx < 1.0 || sd.box.sy > 0.2)
+            continue;
+        if (std::fabs(std::fabs(sd.box.cy) - 0.125) < 1e-6) {
+            ++doubles;
+            CHECK(sd.box.sx > 200.0);
+        }
+        if (std::fabs(std::fabs(sd.box.cy) - 3.5) < 1e-6) ++lane;
+    }
+    CHECK(doubles == 2);
+    CHECK(lane == 52);
+    CHECK(verge == 0);
+    int lanes = 0;
+    for (const RoadGraphLane& l : g.lanes)
+        if (l.street == "BV") {
+            ++lanes;
+            CHECK(std::fabs(l.pts.front().y) == doctest::Approx(l.id.back() == '1' ? 1.75 : 5.25));
+        }
+    CHECK(lanes == 4);
+
+    // Two-lane networks build as before: the T's and the cross's solids, markings and graph lanes.
+    RoadBuild tb;
+    roadNetBuild(net(kTee), MassingGround{}, tb);
+    CHECK(tb.solids.size() == 211);
+    CHECK(tb.counts.markings == 70);
+    RoadGraph tg;
+    roadGraphFromNet(net(kTee), tb, tg);
+    CHECK(tg.lanes.size() == 4);
+    const std::vector<RoadNetStreet> cs = net("id,kind,width_m,pts,pavement_m,parking\n"
+                                              "ST-H,street,18,0:0;240:0,3.6,1\n"
+                                              "ST-V,street,14,120:-150;120:150,2.8,0\n"
+                                              "ST-B,street,14,0:0;-60:60;-60:200,2.8,0\n");
+    RoadBuild cb;
+    roadNetBuild(cs, MassingGround{}, cb);
+    CHECK(cb.solids.size() == 648);
+    CHECK(cb.counts.markings == 199);
+    RoadGraph cg;
+    roadGraphFromNet(cs, cb, cg);
+    CHECK(cg.lanes.size() == 6);
 }

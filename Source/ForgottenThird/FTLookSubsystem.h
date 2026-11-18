@@ -21,6 +21,23 @@
 #include "FTLookSubsystem.generated.h"
 
 class FFTLookGradeExtension;
+namespace ftcore
+{
+struct LookTable;
+}
+
+namespace FTLook
+{
+// Data/Look/looks.json, read once (empty when it is missing or refused; the problems are logged).
+FORGOTTENTHIRD_API const ftcore::LookTable& Table();
+// Sets looks.json's render tier for this use ("play" or "cutscene": the table's pick for it), or the tier named by
+// -LookTier= when given, at the game-setting priority (a -dpcvars= value keeps its own). False when there's no such tier.
+// The look subsystem calls it for "play" only on a map renderTiers.maps names (or with -LookTier=); every other map gets
+// the values from before the run's first tier back. Nothing calls it for "cutscene" yet.
+FORGOTTENTHIRD_API bool ApplyRenderTierFor(const TCHAR* Use);
+// Sets the render tier of this name; false when looks.json has no such tier.
+FORGOTTENTHIRD_API bool ApplyRenderTier(const FString& Tier);
+} // namespace FTLook
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTLookSubsystem : public UTickableWorldSubsystem
@@ -41,6 +58,9 @@ public:
 	bool SetWorldLook(const FString& World);
 	// The world whose look is on, or empty when it's the shared look.
 	const FString& GetWorldLook() const { return WorldId; }
+	// The look wanted on the scene, and whether it (and its material parameters) has been written or given up on.
+	const ftcore::SceneLook& GetLook() const { return Wanted; }
+	bool IsSettled() const { return !bWaiting; }
 
 	// The fight's accent: the grade keeps the chroma of hues within WidthDegrees of HueDegrees (OKLab hue) at Chroma
 	// times their own. ClearFightAccent turns it off.
@@ -49,6 +69,8 @@ public:
 
 private:
 	void PushGrade();
+	// A day world-eye still (FTDayShade::StillAmount): the day's shadow floor over the look just written.
+	void ApplyStillDayShade();
 
 	TSharedPtr<FFTLookGradeExtension, ESPMode::ThreadSafe> Grade;
 	FString WorldId;

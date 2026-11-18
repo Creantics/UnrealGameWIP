@@ -1045,7 +1045,8 @@ TEST_CASE("massing look: the surface ids") {
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingRender) == "pole_concrete");
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingTile) == "ceramic_tile");
     CHECK(massingLookSurfaceId(MassingLookSurface::BuildingBoard) == "board_concrete");
-    CHECK(kMassingLookSurfaceCount == 11);
+    CHECK(massingLookSurfaceId(MassingLookSurface::Lawn) == "lawn");
+    CHECK(kMassingLookSurfaceCount == 12);
 }
 
 TEST_CASE("massing streets: the table is read by id, width_m and pts") {

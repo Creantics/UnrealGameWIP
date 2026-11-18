@@ -3,6 +3,7 @@
 #include "Camera/CameraActor.h"
 #include "Engine/GameViewportClient.h"
 #include "EngineUtils.h"
+#include "FTExploreCharacter.h"
 #include "ForgottenThird.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
@@ -29,6 +30,12 @@ AFTLookLabGameMode::AFTLookLabGameMode()
 {
 	HUDClass = nullptr;
 	bHostsStory = false;
+	// -LookLabLead: the player's pawn is the lead (for a world-eye still that sets it down with -WorldEyeLead, to judge
+	// it in the lab's glass and mirrors); without it the lab has no pawn to steer.
+	if (FParse::Param(FCommandLine::Get(), TEXT("LookLabLead")))
+	{
+		DefaultPawnClass = AFTExploreCharacter::StaticClass();
+	}
 	PrimaryActorTick.bCanEverTick = true;
 }
 

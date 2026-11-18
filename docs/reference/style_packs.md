@@ -9,7 +9,7 @@ and paper are treated. v1 has four packs plus `None`, and any blend of them:
 *`post_demo --style solhaven | lattice | unwritten | restored`. In the Unwritten, the pale sphere
 stands inside a colour-authority island.*
 
-The pack values follow **art direction v2** (`design/forgotten_third/art_direction_v2.md`, §3 and §7),
+The pack values follow **art direction v2** (the design package's art direction, §3 and §7),
 which retuned Solhaven, the Lattice and the Unwritten and left Restored as it was:
 
 ![Solhaven and the Lattice before (left) and after (right) art direction v2](style_v2_solhaven_lattice.png)
@@ -327,7 +327,7 @@ These are not in v1. They are listed roughly in the order the NDD leans on them:
 - **Object-ID buffer** and a real **normal buffer** (MRT) for edges (8.15.2). Normals are implicit in
   the depth curvature, so a crease between two faces at the same depth slope is missed, and
   coplanar touching objects get no line between them.
-- **The Third's own line** as a separate, jitter-exempt layer (8.15.2).
+- **A non-human lead's own line** as a separate, jitter-exempt layer (8.15.2).
 - **Ink bleed** (blur-and-threshold on an edge buffer).
 - **The full colour-authority buffer** (8.15.5):
   - RGBA mask channels for gold, violet, overlap rose and blank;

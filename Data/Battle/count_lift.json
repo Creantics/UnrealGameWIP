@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "countLoad": 10,
+  "countLoadEvery": 8,
+  "soloCountLoad": 5,
+  "liftThreshold": 120,
+  "liftMultiplier": 1.5,
+  "liftCost": 30,
+  "blowCap": 6
+}

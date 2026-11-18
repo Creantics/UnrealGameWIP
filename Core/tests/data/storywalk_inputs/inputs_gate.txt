@@ -1,0 +1,4 @@
+# side 1 opens only once f_after is set
+gameplay PLAY sf.f_pick=2 press 1:0
+gameplay PLAY
+gameplay CMB

@@ -20,6 +20,7 @@ AFTCharacterPreview::AFTCharacterPreview()
 
 	Face = CreateDefaultSubobject<UFTFaceComponent>(TEXT("Face"));
 	Face->FaceMeshComponentName = TEXT("Body");
+	Face->bStandIn = true; // the dialogue map's only face speaks for the cast
 
 	CycleExpressions = {
 		TEXT("neutral"), TEXT("warm"), TEXT("amused"), TEXT("wry"), TEXT("proud"),

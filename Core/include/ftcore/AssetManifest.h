@@ -62,14 +62,22 @@ FTCORE_API std::vector<std::string> voiceLineIds(const StoryDatabase& db);
 // line's lip-sync track plays on the right face. The labels are script text, so the file lives in
 // the local Data/Voice/speakers.json (gitignored), never in the repo:
 //   { "version": 1, "speakers": [ { "speaker": "<script label>", "model": "<model id>" }, ... ] }
+// A speaker's look depends on the scene: "model" is the default (the lead's master look) and "scenes" lists
+// the scenes that put the speaker in another look:
+//   { "speaker": "<label>", "model": "MDL-001", "scenes": [ { "scene": "<scene id>", "model": "MDL-002" } ] }
 struct SpeakerCast {
+    struct SceneModel {
+        std::string scene, model;
+    };
     struct Entry {
         std::string speaker, model;
+        std::vector<SceneModel> scenes;
     };
     std::vector<Entry> entries;
 
-    // The model id for a speaker label, or "" when the label isn't cast.
-    FTCORE_API std::string_view modelFor(std::string_view speaker) const;
+    // The model id for a speaker label in a scene (the scene's own look, else the default), or "" when the
+    // label isn't cast. An empty scene gives the default.
+    FTCORE_API std::string_view modelFor(std::string_view speaker, std::string_view scene = {}) const;
 };
 
 // On failure `out` is empty and *error lists each problem, one per line. When `models` is given,

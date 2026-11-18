@@ -25,6 +25,11 @@
 
 #include "FTArenaFighter.generated.h"
 
+namespace ftcore
+{
+struct ReadyStance;
+}
+
 class UAnimSequence;
 class UCameraComponent;
 class UMaterialInstanceDynamic;
@@ -34,6 +39,7 @@ class USkeletalMeshComponent;
 class USpringArmComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
+class UFTRimComponent;
 
 // How the weapon arm moves through an attack.
 enum class EFTArenaSwing : uint8
@@ -50,6 +56,10 @@ struct FFTArenaPose
 	FVector Feet = FVector::ZeroVector; // world, centimetres
 	float Yaw = 0.f;                    // degrees
 	float Speed = 0.f;                  // m/s on the ground: idle or walk
+	float LegYaw = 0.f;                 // degrees the legs turn from Yaw toward the way the body moves (+ right)
+	bool bFootLock = false;             // the feet held where they stand (a strike whose clip has the legs)
+	float WantSpeed = -1.f;             // m/s the walk heads for (0: braking to a stand; below 0 unknown: no starts or stops)
+	float StopDistance = -1.f;          // m left to slide while braking to a stand (below 0 unknown)
 
 	// The attack under way: its part, how far through that part (0..1) and how the arm moves.
 	bool bAttacking = false;
@@ -62,10 +72,22 @@ struct FFTArenaPose
 	bool bDodging = false;
 	FVector2D DodgeLocal = FVector2D(-1.0, 0.0); // the roll's way in the figure's own frame (x forward)
 	float DodgeFraction = 0.f;
+	float DodgeTime = 0.f; // s: the whole roll (the land-roll clip is fitted to it)
+	bool bDodgeBack = false; // a locked dodge back from the target: drawn facing it, a hop back on the dash clip
+	int8 DodgeSide = 0;      // a locked side dash across it (ftcore dodgeSide): +1 to the body's right, -1 to its left
 	float LeanBack = 0.f;  // degrees: hitstun, guard break, stagger, open
 	float Wobble = 0.f;    // degrees of side-to-side sway (a stagger)
 	bool bLying = false;   // downed, down or dead
+	// The ready stance wanted (a live fight, the body not acting) and the lead's (the runner's table; null keeps the
+	// last): UFTLocomotionAnimInstance::SetReady. Off while lying, dodging, swinging, in the air or knocked back.
+	bool bReady = false;
+	const ftcore::ReadyStance* ReadyStance = nullptr;
 	bool bHealing = false;
+	bool bAir = false;      // a jump from take-off to touch-down: the clips' jump, fall and land (UFTLocomotionAnimInstance::SetAir)
+	float AirHeight = 0.f;  // cm the body is drawn over the floor (the jump's arc)
+	float AirRise = 0.f;    // cm/s the arc climbs (below 0: coming down)
+	float JumpClock = -1.f; // s on the jump's clock (Core's jumpTime; -1: not jumping), for -ArenaJumpFloor
+	float AirFraction = -1.f; // 0..1 through the arc from leaving the ground to touching down (-1: on the ground)
 
 	FLinearColor Tint = FLinearColor::White; // the body's colour this frame
 
@@ -105,10 +127,15 @@ public:
 	// its locomotion clips); with none, or when its body doesn't load (one warning), the test human is.
 	void Setup(bool bPlayer, float BodyRadius, const FLinearColor& BaseColor, float HeightMeters = 0.f,
 		const FFTLeadLook* Look = nullptr);
+	// Whether the lead's body has both side-dash clips (left and right) to draw a locked side dash with, and the dashes
+	// are not swapped for the squash (-ArenaNoDash). Call after Setup.
+	bool CanSideDash() const;
 	// Draws an enemy as Mesh instead of the shapes: lifted HoverMeters off the ground, scaled, turned YawOffset degrees
 	// from the mesh's own facing. Its height (for the HUD's markers) is HeightMeters x Scale over the hover. Call after
 	// Setup. False when the mesh is null.
-	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters);
+	// bBreakPulse: the body can glow (SetBodyPulse; a boss with a break move), its materials made dynamic here;
+	// otherwise they are left as they are and SetBodyPulse does nothing.
+	bool SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters, bool bBreakPulse = false);
 	// A skinned figure shows Clip at Time (seconds into it; looping wraps) over a short crossfade from the clip before it.
 	// bHoldRoot false lets the clip's root travel through (a fall). Call every frame; a null clip changes nothing.
 	// Blend: the crossfade into a new clip, seconds; 0 the anim instance's own. bAdditiveIn: a new clip fades in additively
@@ -120,7 +147,30 @@ public:
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's
 	// height over the feet, the shoulder offset sideways and up, and the field of view in degrees.
 	void SetCameraRig(float ArmMeters, float PivotMeters, float SideMeters, float UpMeters, float FovDegrees);
+	// The boom's location lag (ftcore::CameraPreset::lagSeconds): Seconds > 0 lags by about that long (a lag speed of
+	// 1 / Seconds), 0 is the boom's own (on, at the constructor's speed), under 0 turns the lag off. MaxMeters > 0 holds
+	// the lens at most that far behind where the boom would put it (USpringArmComponent::CameraLagMaxDistance); 0 no hold.
+	void SetCameraLag(float Seconds, float MaxMeters = 0.f);
+	// The lens tilted up on the boom's end by this much (degrees; ftcore::arenaSplitPitch's tilt): a look steeper than
+	// the boom may swing.
+	void SetCameraTilt(float Degrees);
+	// The boom's rotation (the host's control rotation): a figure the controller possesses follows it as before; one
+	// it does not (a lead switched to) is turned to it here, as its own facing is not the view.
+	void SetBoomRotation(const FRotator& Rotation);
 	void ApplyPose(const FFTArenaPose& Pose);
+	// The jump's clock from the fighter's kit (s), so a lead's take-off and landing clips fit Core's arc and landing.
+	void SetJumpTiming(float Startup, float Air, float LandLock) { JumpStartup = Startup; JumpAirTime = Air; JumpLandLock = LandLock; }
+	// How far the body is drawn lifted off its feet' floor for the jump (cm), for a view that follows it.
+	float GetJumpLift() const { return AirLift; }
+	// The ready stance's clock on a lead's body (0 relaxed .. 1 ready); 0 for other bodies.
+	float GetReadyAlpha() const;
+	// Drops the lead's held feet and sunk pelvis (UFTLocomotionAnimInstance::ResetFeet): the body was put somewhere
+	// else. ApplyPose does it itself when the body goes down.
+	void ResetFeet();
+	// Every skeletal mesh on the figure poses after Host ticks (it places the figure), now and for any mesh the figure
+	// makes later (a look worn or a skin set again). Followers and grooms tick after the mesh they follow already.
+	void PoseAfter(AActor* Host);
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
 	// Where the HUD hangs this figure's markers: above its head, and its chest.
 	FVector GetAnchor() const;
@@ -149,9 +199,22 @@ public:
 	USkeletalMeshComponent* GetLeadSkin() const { return WearsLook() ? Skin.Get() : nullptr; }
 	// Shows or hides the shapes' blade (a lead whose own clips strike hides it).
 	void SetBladeShown(bool bShown);
+	// A skinned figure's body glow (the boss break's tell): Glow of warm white added to the Emissive of each of its
+	// materials that has one (the shared character masters, M_FTCharacter and M_FTCharacterTex: emissive = its texture
+	// x Emissive x EmissiveStrength); 0 puts each back. SetupSkinned makes them dynamic for a break-move boss only (bBreakPulse).
+	void SetBodyPulse(float Glow);
 
 private:
 	void SetTellVisible(bool bVisible);
+#if !UE_BUILD_SHIPPING
+	// -ArenaWet review (not in Shipping): once a second, puts the fixed wet state on garment slots that don't carry it yet
+	// (pieces worn later). Each slot gets one dynamic instance, made once and kept in WetMids.
+	void SoakForReview();
+	FTimerHandle WetTimer;
+	FVector2f WetReview = FVector2f(0.f, 130.f);
+	int32 WetSlots = -1;
+	TArray<TWeakObjectPtr<UMaterialInstanceDynamic>> WetMids;
+#endif
 	void ShowSlot(USkeletalMesh* Mesh, FName HideSlot, bool bShow);
 	void MakeCarried(USkeletalMesh* Mesh, TConstArrayView<FFTCarriedPiece> Split, bool bVisible);
 	// Puts Look on the player's skin: false (nothing changed) when its body doesn't load.
@@ -171,6 +234,8 @@ private:
 	// Leans, crouches and lies down; everything visible hangs off it.
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USceneComponent> Visual;
+	UPROPERTY()
+	TObjectPtr<UFTRimComponent> Rim; // writes the rim term's direction for the player's figure (ft.Rim)
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<UStaticMeshComponent> Body;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
@@ -182,6 +247,9 @@ private:
 	// The lead's look: pieces worn on the body (clothes, a face) and the grooms bound to them.
 	UPROPERTY()
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
+	// The look's garment pairs, both halves held (FTLook::PrepareFronts), for switching open or closed.
+	UPROPERTY(Transient)
+	FFTWornFronts WornFronts;
 	UPROPERTY()
 	TArray<TObjectPtr<USceneComponent>> Grooms;
 	// The carried piece's parts in the hands, after SplitCarried.
@@ -217,6 +285,12 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> ShieldMaterial;
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> TellMaterial;
+	// SetBodyPulse's materials and each one's own Emissive.
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> PulseMaterials;
+	TArray<FLinearColor> PulseBase;
+	float PulseGlow = 0.f;
+	void MakePulseMaterials();
 
 	FLinearColor BaseColor = FLinearColor::White;
 	float Height = 180.f; // cm
@@ -226,6 +300,38 @@ private:
 	bool bWalking = false;
 	bool bTellShown = true;
 	bool bShieldShown = true;
+	bool bWasLying = false;
+	// A lead's roll: the land-roll traversal clip playing for it (-1: none), from its touchdown to back up.
+	int32 RollClip = -1;
+	float RollFrom = 0.f;
+	float RollTo = 0.f;
+	float RollRate = 1.f;
+	float RollFraction = 0.f;
+	bool bRollPlanFailed = false;
+	// The roll's lift off the floor (cm), and the balls' height standing (read once; 1e9: not yet).
+	float RollLift = 0.f;
+	float RollLiftFall = 0.f; // cm/s the lift comes down at as the clip fades out
+	float AirLift = 0.f;      // cm: the jump's lift as drawn (floor hold, the arc and the head kept on it; eased)
+	float LastFloorNeed = 0.f; // cm: last frame's floor hold, before its lead
+	// The jump's clock (Core's jumpStartup, jumpAir, jumpLandLock; SetJumpTiming), handed to the locomotion so its take-off
+	// and landing clips fit it. 0: not set, the clips keep their own timing.
+	float JumpStartup = 0.f;
+	float JumpAirTime = 0.f;
+	float JumpLandLock = 0.f;
+	float StandHead = 0.f; // the head bone's height in the reference pose (cm, unscaled; 0: not read yet)
+	void ReadFloorBones();
+	float JumpFloorAfter = 0.f; // s left to log after a jump (-ArenaJumpFloor)
+	// -ArenaRollFloor: how long the clip's fade-out after a roll or dash is still logged.
+	float RollFadeLog = 0.f;
+	// The dashes tightened (not -ArenaDashTall): the trunk pitched back under the dash clip, held through its fade.
+	bool bDashPitched = false;
+	float RollFloorBall = 1e9f;
+	// Whether the land-roll clip plays for this roll (picked by the planted foot), or the squash stands in for it.
+	bool RollWithClip(const FFTArenaPose& Pose);
+	TWeakObjectPtr<AActor> PoseHost;
+	void TieMeshTicks();
+	void UntieMeshTicks();
+	bool bPlayerFigure = false; // the player's figure never shows the guard plate
 	FLinearColor LastTint = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastShield = FLinearColor(-1.f, -1.f, -1.f);
 	FLinearColor LastTell = FLinearColor(-1.f, -1.f, -1.f);

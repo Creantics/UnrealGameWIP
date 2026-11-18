@@ -9,8 +9,10 @@
 #include "Engine/Texture2D.h"
 #include "FTImportMaterials.h"
 #include "FTText.h"
+#include "FTWorldWave.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionPixelDepth.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
@@ -18,6 +20,7 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/Package.h"
@@ -260,6 +263,15 @@ RoughOut = saturate(lerp(lerp(GroundRough, RockRough, RockW), RoadRough, RoadW) 
 float3 Pack = lerp(lerp(GroundPack, RockPack, RockW), RoadPack, RoadW);
 MetalOut = Pack.b;
 AOOut = Pack.r;
+// The hill by night (ftcore::hillNightAlbedo): the moon lit the planted hill as if by day, so with the windows' Night (the
+// lamps on) the ground over the hill's foot goes darker and greyer. Height, not the plant mask, picks the hill, since the
+// mask marks steep hill as it does the town. HillNight is 0 in the master, so only the hill's instance turns it on, the
+// road keeps its own colour, and by day (Night 0) nothing moves.
+float HillN = saturate(HillNight) * saturate(Night)
+	* smoothstep(HillNightFromCm, HillNightFromCm + max(HillNightRampCm, 1.0), WorldPos.z) * (1.0 - RoadW);
+float NightGrey = dot(Color, float3(0.2126, 0.7152, 0.0722));
+float3 NightColor = max(NightGrey + (Color - NightGrey) * HillNightSaturation, 0.0) * HillNightAlbedo;
+Color = lerp(Color, NightColor, HillN);
 return Layers.Hold(Color);
 )HLSL");
 
@@ -405,12 +417,37 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads, U
 		{TEXT("RockFarScale"), 15.f, TEXT("Far")},
 		{TEXT("FarBlend"), 0.6f, TEXT("Far")},
 		{TEXT("FarNormalStrength"), 0.4f, TEXT("Far")},
+		// The hill by night: off in the master; FTBackdrop::HillGround sets these from ftcore::HillNightLook.
+		{TEXT("HillNight"), 0.f, TEXT("Night")},
+		{TEXT("HillNightAlbedo"), 0.3f, TEXT("Night")},
+		{TEXT("HillNightSaturation"), 0.35f, TEXT("Night")},
+		{TEXT("HillNightFromCm"), 1400.f, TEXT("Night")},
+		{TEXT("HillNightRampCm"), 800.f, TEXT("Night")},
 	};
 	for (const FLookScalar& Scalar : Look)
 	{
 		AddInput(Custom, Scalar.Name, AddScalar(Material, Scalar.Name, Scalar.Value, Scalar.Group, Y));
 		Y += 100;
 	}
+	// The windows' Night (FTNight::WriteWindowLights: the lamps' share, 0 by day). Without the collection (FTBuildSurfaces
+	// not yet run) a scalar stands in at 0, so the hill keeps its day look.
+	UMaterialParameterCollection* WindowLights = LoadObject<UMaterialParameterCollection>(nullptr,
+		*(FString(FTScene::WindowCollection) + TEXT(".") + FPackageName::GetShortName(FTScene::WindowCollection)), nullptr,
+		LOAD_NoWarn | LOAD_Quiet);
+	if (WindowLights && WindowLights->GetParameterId(TEXT("Night")).IsValid())
+	{
+		UMaterialExpressionCollectionParameter* Night = AddExpression<UMaterialExpressionCollectionParameter>(Material, -900, Y);
+		Night->Collection = WindowLights;
+		Night->ParameterName = TEXT("Night");
+		Night->ParameterId = WindowLights->GetParameterId(TEXT("Night"));
+		AddInput(Custom, TEXT("Night"), Night);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildGround: no %s; the hill keeps its day look at night"), FTScene::WindowCollection);
+		AddInput(Custom, TEXT("Night"), AddScalar(Material, TEXT("Night"), 0.f, TEXT("Night"), Y));
+	}
+	Y += 100;
 	AddInput(Custom, TEXT("WorldPos"), AddExpression<UMaterialExpressionWorldPosition>(Material, -900, Y));
 	AddInput(Custom, TEXT("VertexNormal"), AddExpression<UMaterialExpressionVertexNormalWS>(Material, -900, Y + 100));
 	AddInput(Custom, TEXT("EyeDepth"), AddExpression<UMaterialExpressionPixelDepth>(Material, -900, Y + 200));
@@ -427,6 +464,8 @@ UMaterial* BuildMaster(TConstArrayView<UTexture*> Defaults, UTexture* NoRoads, U
 	Inputs->Roughness.Connect(2, Custom);
 	Inputs->Metallic.Connect(3, Custom);
 	Inputs->AmbientOcclusion.Connect(4, Custom);
+	// The world wave's second-world state behind its front (FTWorldWave.h); missing until FTBuildWaveMaterials has run.
+	FTWorldWave::AddState(TEXT("FTBuildGround"), Material, 300, -600);
 
 	Material->PreEditChange(nullptr);
 	Material->PostEditChange();

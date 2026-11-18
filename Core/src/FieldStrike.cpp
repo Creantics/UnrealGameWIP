@@ -1,5 +1,7 @@
 #include "ftcore/FieldStrike.h"
 
+#include "ftcore/AttackMove.h"
+
 #include <cmath>
 
 namespace ftcore {
@@ -82,6 +84,30 @@ void FieldStrike::takeAim(Vec2 pos, const FieldTarget* targets) {
     aim_.aimed = false;
     aim_.target = 0xFF;
     aim_.id = 0;
+    if (reticleOn_) {
+        const float dx = reticleAt_.x - pos.x;
+        const float dy = reticleAt_.y - pos.y;
+        const float d = std::sqrt(dx * dx + dy * dy);
+        if (d > 1e-4f) facing_ = unit(Vec2{dx, dy});
+        aim_.aimed = true;
+        aim_.at = reticleAt_;
+        aim_.height = reticleHeight_;
+        for (std::uint8_t k = 0; k < nearCount_; ++k) {
+            const FieldTarget& t = targets[near_[k]];
+            const float ox = t.at.x - reticleAt_.x;
+            const float oy = t.at.y - reticleAt_.y;
+            if (std::sqrt(ox * ox + oy * oy) > t.radius + kFieldReticleSlack) continue;
+            aim_.target = near_[k];
+            aim_.id = t.id;
+            break;
+        }
+        const float reach = attack_ ? attack_->range * lungeStop_ : 0.f;
+        const float room = d - reach;
+        const float want = attack_ ? attack_->lunge * lungeScale_ : 0.f;
+        lunge_ = room > 0.f ? (want < room ? want : room) : 0.f;
+        return;
+    }
+    lunge_ = 0.f;
     for (std::uint8_t k = 0; attack_ && k < nearCount_; ++k) {
         const FieldTarget& t = targets[near_[k]];
         const float dx = t.at.x - pos.x;
@@ -144,6 +170,7 @@ void FieldStrike::begin(const ArenaFighter& kit) {
     bufferedAt_ = 0.f;
     facing_ = Vec2{1.f, 0.f};
     aim_ = FieldAim{};
+    lunge_ = 0.f;
     hitCount_ = 0;
     nearCount_ = 0;
     hits_ = 0;
@@ -164,7 +191,7 @@ void FieldStrike::push(ArenaEventType type, std::uint8_t target, int amount, Vec
 
 bool FieldStrike::start(std::uint8_t move, Vec2 facing) {
     std::uint8_t m = move;
-    if (m != kArenaHeavyMove) {
+    if (m != kArenaHeavyMove && m != kArenaShotMove) {
         // The chain: the next light during the last light's recovery or within chainGap after it. A heavy (or a cut)
         // in between ends it: the next light opens a new chain.
         const bool chained = chainLive_
@@ -179,7 +206,7 @@ bool FieldStrike::start(std::uint8_t move, Vec2 facing) {
     move_ = m;
     actionTime_ = 0.f;
     facing_ = unit(facing);
-    lastWasLight_ = m != kArenaHeavyMove;
+    lastWasLight_ = m != kArenaHeavyMove && m != kArenaShotMove; // a chain light: the shot and the heavy end a chain
     chainLive_ = lastWasLight_;
     if (lastWasLight_) lastLight_ = m;
     hitCount_ = 0;
@@ -213,12 +240,23 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
     }
 
     gather(pos, targets, targetCount);
-    if (heavy || light) {
-        buffered_ = heavy ? kArenaHeavyMove : 0;
+    // A kit with no attacks of its own (ArenaFighter::attacks) drops every press. A guns kit's light on the reticle is
+    // its shot, decided at the press.
+    if ((heavy || light) && kit_.attacks) {
+        // A gun kit on the reticle fires a round, light or heavy pressed: aiming is the pistol only.
+        buffered_ = reticleOn_ && kit_.weapon == ArenaWeapon::Guns ? kArenaShotMove : heavy ? kArenaHeavyMove : 0;
         bufferedAt_ = time_;
     }
     if (buffered_ != kNoMove && time_ - bufferedAt_ > kit_.bufferTime) buffered_ = kNoMove;
 
+    // On the move with nothing to face: the attack under way turns with the body, capped, before its hit test. Aimed at
+    // a target it holds on it only until its hit is over: through the recovery it turns with the body too.
+    const bool pastHit = attack_ && actionTime_ >= attack_->startup + attack_->active;
+    if (attack_ && steerRate_ > 0.f && (!aim_.aimed || pastHit) && !reticleOn_ && dt > 0.f) {
+        facing_ = turnCapped(facing_, steerWant_, steerRate_ * dt);
+        // An aimed attack keeps its hit point (the arm eases off it through the recovery).
+        if (!aim_.aimed) aim_.at = Vec2{pos.x + facing_.x * attack_->range, pos.y + facing_.y * attack_->range};
+    }
     // The attack under way runs on. A frame that reaches into its active part, or passes over it whole, tests hits.
     if (attack_) {
         const float from = actionTime_;
@@ -251,6 +289,16 @@ const ArenaOutput& FieldStrike::tick(float dt, bool light, bool heavy, Vec2 pos,
         p.move = move_;
         p.actionTime = actionTime_;
         p.facing = facing_;
+        // The aimed lunge, spread over startup and active.
+        const float span = attack_->startup + attack_->active;
+        if (lunge_ > 0.f && span > 1e-4f && dt > 0.f) {
+            const float before = actionTime_ - dt;
+            const float lo = before > 0.f ? before : 0.f;
+            const float hi = actionTime_ < span ? actionTime_ : span;
+            const float moving = hi > lo ? hi - lo : 0.f;
+            const float speed = lunge_ / span * moving / dt;
+            p.velocity = Vec2{facing_.x * speed, facing_.y * speed};
+        }
         if (actionTime_ < attack_->startup) {
             p.part = ArenaPart::Startup;
         } else if (actionTime_ < attack_->startup + attack_->active) {

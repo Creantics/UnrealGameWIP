@@ -222,6 +222,7 @@ ShopBay shopFrontBay(const ShopFrontSpec& spec, std::uint32_t seed, std::uint32_
     b.colour = (kh >> 20) & 3u;
     const std::uint32_t sh = windowHash(seed ^ windowHash(column + kSignSalt));
     b.style = static_cast<ShopSignStyle>(sh % kShopSignStyles);
+    b.marks = b.style == ShopSignStyle::Strokes || spec.marksOnly;
     const ShopWordGroup g = kGroups[k];
     b.word = g.first + (sh >> 8) % g.count;
     b.ink = (sh >> 16) % kShopInkCount;
@@ -260,7 +261,7 @@ bool shopGlyphInk(char letter, std::uint32_t x, std::uint32_t y) {
 bool shopSignInk(const ShopBay& bay, float width, float height, float x, float y) {
     const float pw = std::max(width, 0.05f), ph = std::max(height, 0.05f);
     const float X = x * pw, Y = y * ph;
-    if (bay.style == ShopSignStyle::Strokes) {
+    if (bay.marks || bay.style == ShopSignStyle::Strokes) {
         // The cell count and stroke hash come from the word and ink, as the HLSL.
         const std::uint32_t k = 2u + (bay.ink + bay.word) % 3u;
         const float span = static_cast<float>(k) + 0.3f * static_cast<float>(k - 1u);
@@ -457,7 +458,9 @@ std::string shopFrontHlsl(const ShopFrontSpec& spec, float fasciaHeight) {
     h += "float3 sfInkC = kInk[sfInkI];\n";
     h += "float sfPanW = 0.76 * bw;\n";
     h += "float sfPanH = max(" + num(fasciaHeight - 2.0f * m) + ", 0.05);\n";
-    h += "float sfX = u * bw - 0.12 * bw;\n";
+    // The facade's across coordinate u runs to the viewer's left on every face (Unreal's frame is left-handed), so the
+    // panel reads from 1 - u: its words start at the viewer's left and aren't mirrored.
+    h += "float sfX = (1.0 - u) * bw - 0.12 * bw;\n";
     h += "float sfY = Up - shopTop - " + num(m) + ";\n";
     h += "bool panel = fascia && inBay && sfX >= 0.0 && sfX <= sfPanW && sfY >= 0.0 && sfY <= sfPanH;\n";
     // A word (shopSignInk): letters sfPanH / 9 a pixel, narrower to fit 92% of the panel, centred.
@@ -499,7 +502,7 @@ std::string shopFrontHlsl(const ShopFrontSpec& spec, float fasciaHeight) {
     h += "    sfMark = sfMark || (s < ns && across == pos && along >= from && along < from + len);\n";
     h += "  }\n";
     h += "}\n";
-    h += "bool sfStrokes = sfStyle == 2u;\n";
+    h += spec.marksOnly ? "bool sfStrokes = true;\n" : "bool sfStrokes = sfStyle == 2u;\n";
     h += "bool sfInked = panel && (sfStrokes ? sfMark : sfInk);\n";
     h += "float sfInkLum = dot(sfInkC, float3(0.3, 0.59, 0.11));\n";
     h += "float sfFcLum = dot(fc, float3(0.3, 0.59, 0.11));\n";

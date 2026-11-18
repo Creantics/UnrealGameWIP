@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "common": { "rounds": 6, "reload": 1.2, "shot": { "stamina": 0 } },
+  "briefs": [
+    {
+      "id": "bailiff",
+      "base": [14, 7, 12, 9, 8],
+      "growth": [85, 30, 70, 35, 30],
+      "change": { "kickDamage": 1.10, "kickPoiseDamage": 1.20, "poise": 1.25, "guardLeak": 0.80 },
+      "kit": { "shot": { "startup": 0.26, "recovery": 0.38 } }
+    },
+    {
+      "id": "notary",
+      "base": [7, 15, 9, 10, 9],
+      "growth": [25, 90, 45, 45, 45],
+      "change": { "kickDamage": 0.90, "shotDamage": 1.15, "shotPoiseDamage": 1.25, "termDuration": 1.25 },
+      "kit": { "shot": { "range": 36 } }
+    }
+  ]
+}
