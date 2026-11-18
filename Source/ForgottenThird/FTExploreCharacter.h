@@ -94,6 +94,7 @@
 #include "ftcore/FieldUnstick.h"
 #include "ftcore/FieldStrike.h"
 #include "ftcore/DodgeRoll.h"
+#include "ftcore/HeldUpJump.h"
 #include "ftcore/LedgeHang.h"
 #include "ftcore/Swim.h"
 #include "ftcore/UiPartyScreen.h"
@@ -611,6 +612,14 @@ private:
 	int32 SwimProofGaveUp = 0;         // slot 0's ToEntry -> Ashore changes (a given-up entry walk)
 	int32 SwimProofPath = 0;           // 0 not placed yet, 1 placed by this kind's own path, -1 placed some other way
 	bool bSwimProofPass = false;       // placed by its own path, then Placed -> Surface (the rejoin swims on)
+	bool bSwimProofLeadPlaced = false; // the harness put the lead in the water after 3 held-up jumps that didn't clear
+	// Item 5 (the boom through a partner): during the sweep, the camera's distance to the nearest partner's capsule; under
+	// 50 cm with that partner's mesh drawn is the clip. Counted per tick and per still (the still numbers kept, first 32).
+	int32 SwimProofClipTicks = 0;
+	int32 SwimProofSweepTicks = 0;
+	float SwimProofSweepNearest = -1.f;
+	int32 SwimProofClipShots[32] = {};
+	int32 SwimProofClipShotCount = 0;
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;
@@ -728,22 +737,36 @@ private:
 	float WetPrintLogAt = 0.f; // the out-of-water time of the next log line
 	bool bWetPrintLoggedDry = true;
 	// A scripted walk for captures and checks (BeginLeadGo, or -LeadGo=<x,y> in the plan frame of -WorldEyeSide after
-	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it presses jump (with -LeadGoJump); the run
-	// quits -LeadGoQuit=<s> after it began. -LeadGoPace=<0.1..1> walks it slower (the stick's push).
+	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it holds jump for 0.25 s with its push kept on
+	// (with -LeadGoJump; ftcore::HeldUpJump counts and judges the tries); the run quits -LeadGoQuit=<s> after it began.
+	// -LeadGoPace=<0.1..1> walks it slower (the stick's push).
 	float LeadGoPace = 1.f;
 	bool bLeadGo = false;
 	bool bLeadGoJump = false;
 	FVector LeadGoTo = FVector::ZeroVector;
 	float LeadGoAfter = -1.f;
 	float LeadGoQuit = 0.f;
-	float LeadGoStuck = 0.f;
 	float LeadGoRan = 0.f;
+	ftcore::HeldUpJump LeadGoTry;
 	TArray<FVector> LeadGoNext; // the scripted walk's further points, taken in turn as each is reached
+	// The held-up jump's events this frame (the release and the verdict, logged).
+	void LeadGoTryEvents(float Distance);
+	// What held the walk up, measured at a press (dev, not shipped): the top of what stands in the way ahead, over the
+	// feet (cm; < 0 when nothing was found within reach), and whether the lead's own jump rises over it.
+	void LogLeadGoHold();
 
 public:
 	// The lead walks at a point (cm) from now on.
 	void BeginLeadGo(const FVector& To, bool bJumpWhenHeld);
-	void EndLeadGo() { bLeadGo = false; }
+	void EndLeadGo()
+	{
+		if (LeadGoTry.holding())
+		{
+			HandleJumpRelease();
+		}
+		LeadGoTry.reset();
+		bLeadGo = false;
+	}
 	// One more point (cm) for the scripted walk, taken once the points before it are reached.
 	void AddLeadGo(const FVector& To) { LeadGoNext.Add(To); }
 	const ftcore::WaterState& GetWaterState() const { return WaterNow; }

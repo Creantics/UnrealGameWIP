@@ -85,6 +85,8 @@ public:
 	// the surface and a dive-follow under, the climb out, and set beside the lead after a rescue. Back on the land it
 	// eases onto its slot from where it came out.
 	const AFTExploreCharacter* GetWaterLead() const { return LeadExplorer.Get(); }
+	// The member's body mesh (the capture checks measure the camera's distance to it).
+	const USkeletalMeshComponent* GetBody() const;
 	void SetWaterSlot(int32 Slot) { WaterSlot = Slot; }
 	void FillWaterMember(ftcore::WaterFollowMember& Member) const;
 

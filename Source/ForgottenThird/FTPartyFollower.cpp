@@ -57,6 +57,11 @@ const TCHAR* const kMissNames[] = {TEXT("not looked for: not going its way, or o
 	TEXT("nothing ahead to go over, onto or catch"), TEXT("the face ahead not the lead's"), TEXT("still out of reach"), TEXT("no clip fits")};
 }
 
+const USkeletalMeshComponent* AFTPartyFollower::GetBody() const
+{
+	return Body;
+}
+
 AFTPartyFollower::AFTPartyFollower()
 {
 	PrimaryActorTick.bCanEverTick = false;
