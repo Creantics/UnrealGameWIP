@@ -364,6 +364,10 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 				{
 					Viewport->Exec(World, *Line, *GLog);
 					ShotAt = Execs[NextExec].Key;
+					// One shot a frame: a second request in the same frame replaces the first, so a slow frame that makes
+					// two shots due sends the later one on the next frame (still at its own rail second).
+					++NextExec;
+					break;
 				}
 				else if (Pc && Line.StartsWith(TEXT("viewmode "), ESearchCase::IgnoreCase))
 				{
