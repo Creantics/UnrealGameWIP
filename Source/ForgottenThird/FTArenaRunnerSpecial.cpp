@@ -1,7 +1,8 @@
 // UFTArenaRunner's special move (FTArenaRunner.h, "A special move"): the shot list over a frozen fight.
 //
 // Core runs the move (ftcore/ArenaSpecial.h): the gauge, the press, the target, the freeze, the results at the cut back.
-// The press carries the end point this host allows: Core's endTravel/endSide (the shot file's end_feet), forward toward
+// The press carries the end point this host allows: Core's endTravel/endSide (the body's end: the clip's pelvis; the shot
+// file's end_feet are its feet, which may end a little behind, the slip hidden by the cut back), forward toward
 // the target, clamped to walkable ground first (the capsule swept along the path through the static world, the ring,
 // the standing bodies). Blocked: the performer starts back by the missing distance when there is room behind
 // (specialBack), else the travel is shortened (specialTravel). Core puts the performer at view.origin at the press and
@@ -190,7 +191,8 @@ void UFTArenaRunner::ReadSpecialTable()
 			continue;
 		}
 		const ftcore::CutsceneVec3 Feet = Shots->endFeet();
-		if (FMath::Abs(Feet.x - Rules.endTravel) > 0.005f || FMath::Abs(Feet.y - Rules.endSide) > 0.005f)
+		// The feet may end up to 20 cm behind the body (the clip's pelvis over its last step); not to the side.
+		if (Feet.x > Rules.endTravel + 0.005f || Rules.endTravel - Feet.x > 0.2f || FMath::Abs(Feet.y - Rules.endSide) > 0.005f)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s: Core ends it at (%.2f, %.2f) m but its shots at end_feet (%.2f, %.2f) m."),
 				UTF8_TO_TCHAR(Id.c_str()), Rules.endTravel, Rules.endSide, Feet.x, Feet.y);
@@ -201,10 +203,10 @@ void UFTArenaRunner::ReadSpecialTable()
 				TEXT("Arena: specials: %s: Core cuts back at %.2f s, its shots end at %.2f s: the fight is held for the shots' tail."),
 				UTF8_TO_TCHAR(Id.c_str()), Rules.duration, Shots->length());
 		}
-		if (FMath::Abs(Shots->release() - Rules.impactAt) > 0.05f)
+		if (FMath::Abs(Shots->release() - Rules.strikeAt) > 0.05f)
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s: Core lands the hit at %.2f s, its shots' release beat at %.2f s."),
-				UTF8_TO_TCHAR(Id.c_str()), Rules.impactAt, Shots->release());
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: specials: %s: Core strikes at %.2f s, its shots' release beat at %.2f s."),
+				UTF8_TO_TCHAR(Id.c_str()), Rules.strikeAt, Shots->release());
 		}
 	}
 	UE_LOG(LogForgottenThird, Log, TEXT("Arena: specials: %u move(s) in the fight."), static_cast<uint32>(ArenaSpecials.count));
