@@ -157,6 +157,10 @@ FTCORE_API WaterExit waterExitToEngine(const WaterExit& planExit, float side);
 FTCORE_API WaterBody waterBodyFromCanal(const RoadWater& canal);
 // A sea over x >= edgeX (the plan frame's east), flat at `level`.
 FTCORE_API WaterBody waterSea(float edgeX, float level, float bed, float buoyLine = kWaterBuoyLine);
+// The same sea with its swimming water starting at swimEdgeX instead (the quay's face, say, where the sea's edge runs
+// on under the quay): over x >= max(edgeX, swimEdgeX), its buoy line still `buoyLine` out from edgeX (at least 0 out
+// from the new edge), so the swim's land side is the open quay, not the ground under the buildings behind it.
+FTCORE_API WaterBody waterSeaSwimEdge(float edgeX, float swimEdgeX, float level, float bed, float buoyLine = kWaterBuoyLine);
 // The body in the engine's frame for a square `side` metres across (massingEnginePoint: x - side/2, side/2 - y).
 FTCORE_API WaterBody waterBodyToEngine(const WaterBody& planBody, float side);
 

@@ -4472,7 +4472,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		if (bSea)
 		{
-			ftcore::WaterBody Sea = ftcore::waterSea(static_cast<float>(SeaWest), 0.f, static_cast<float>(-kSeaBedDeepest));
+			// -SeaSwimEdge=<x> (plan m; off by default): the sea's swimming water starts at x (the quay's face) instead
+			// of -Sea='s edge, which runs on under the quay and its buildings; its buoy line stays where it was.
+			double SwimEdge = SeaWest;
+			if (FParse::Value(*Params, TEXT("SeaSwimEdge="), SwimEdge) && SwimEdge > SeaWest)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: water: the sea is swum from x %.1f, %.1f m out from its edge (-SeaSwimEdge)."),
+					SwimEdge, SwimEdge - SeaWest);
+			}
+			ftcore::WaterBody Sea = ftcore::waterSeaSwimEdge(static_cast<float>(SeaWest), static_cast<float>(SwimEdge), 0.f, static_cast<float>(-kSeaBedDeepest));
 			// The free swim's dive area, in the plan frame (waterBodyToEngine turns it over with the rest).
 			FString DiveText;
 			const bool bDiveGiven = FParse::Value(*Params, TEXT("SeaDive="), DiveText);

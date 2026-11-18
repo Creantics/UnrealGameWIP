@@ -129,6 +129,13 @@ WaterBody waterSea(float edgeX, float level, float bed, float buoyLine) {
     return body;
 }
 
+WaterBody waterSeaSwimEdge(float edgeX, float swimEdgeX, float level, float bed, float buoyLine) {
+    const float from = std::isfinite(swimEdgeX) ? std::max(edgeX, swimEdgeX) : edgeX;
+    // The buoy line stays where it was: buoyLine out from edgeX. One already passed stays at the new edge (0: none).
+    const float line = buoyLine > 0.f ? std::max(edgeX + buoyLine - from, 0.f) : 0.f;
+    return waterSea(from, level, bed, line);
+}
+
 WaterExit waterExitFromRoad(const RoadWaterExit& exit) {
     WaterExit e;
     e.kind = exit.kind == RoadExitKind::Steps ? WaterExitKind::Steps : WaterExitKind::Ladder;
