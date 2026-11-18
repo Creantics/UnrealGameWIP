@@ -536,11 +536,11 @@ void AFTExploreCharacter::HoldStillCam()
 		return;
 	}
 	const FVector At = D->PlanToWorldCm(StillCamView.x, StillCamView.y, StillCamView.z);
-	const FRotator Aim(StillCamView.pitchDeg, StillCamView.yawDeg, 0.0);
+	const FRotator ViewRot(StillCamView.pitchDeg, StillCamView.yawDeg, 0.0);
 	Camera->bUsePawnControlRotation = false;
 	Camera->SetUsingAbsoluteLocation(true);
 	Camera->SetUsingAbsoluteRotation(true);
-	Camera->SetWorldLocationAndRotation(At, Aim);
+	Camera->SetWorldLocationAndRotation(At, ViewRot);
 	Camera->SetFieldOfView(static_cast<float>(StillCamView.fovDeg));
 	SetActorHiddenInGame(true);
 	TArray<AActor*> Held;
