@@ -522,6 +522,8 @@ inline constexpr double kQuayMastHigh = 8.0;   // m
 inline constexpr double kQuayMastPlate = 0.3;  // m: a mast's base plate side; the rail breaks round it
 inline constexpr double kQuayMastClear = 1.0;  // m a mast keeps from the road's furniture feet
 inline constexpr double kQuayBridgeWide = 2.4; // m: the footbridge's walking width
+inline constexpr double kCanalOpeningReach = 15.0; // m along a bank to the nearest flight's rail gap, at most (RoadCanal::openings)
+inline constexpr double kCanalOpeningWide = 1.2;   // m: a flight of steps' width with openings (0.9 without)
 inline constexpr double kQuayBridgeRise = 0.45; // m: its middle deck over the higher bank
 inline constexpr double kQuayBridgeDeck = 2.2;  // m: its level middle's length
 inline constexpr double kQuaySlab = 0.35;       // m: a deck's, landing's or ramp's thickness
@@ -550,6 +552,12 @@ struct RoadCanal {
     // (its water no more than kWaterSwimExit), the bed drops sheer at the shelf's outer edge to kWaterLipDepth (no
     // deeper than `deep`) and the slope runs on from there, so a swimmer past the shelf never rests on the bed.
     bool lip = false;
+    // The openings (the build's -CanalOpenings; off: today's ways out): every flight of steps kCanalOpeningWide wide,
+    // and more flights along each long wall, each moved along clear of the other ways out, the footbridge and what
+    // stands over the water, until every point of each bank (the rectangle's length; bank under a deck passed over)
+    // is within kCanalOpeningReach, along that bank, of a flight's rail gap (roadCanalOpeningWorst). Nothing is added
+    // where exitEvery is 0.
+    bool openings = false;
     double exitEvery = 40.0; // m between the ways out along each long wall, about (30 where the water is over 12 m wide,
                              // which also gets a ladder on each end wall); 0: none
 };
@@ -608,6 +616,12 @@ struct RoadCanalSection {
     double depth = 0.0, shelf = 0.0, batter = 0.0, deep = 0.0, lip = 0.0;
 };
 FTCORE_API RoadCanalSection roadCanalSection(const RoadCanal& canal);
+// The farthest a point of either long bank (the rectangle's length, walked every 0.25 m) lies, along that bank, from the
+// middle of the rail gap of a flight of steps on the same wall, over `canal`'s ways out in `build` (by its id); bank
+// with something other than a canal's pieces over the water beside it (a road's deck) is no edge and is passed over.
+// Infinity where a bank has an edge and no flight. RoadCanal::openings' rule holds where this is kCanalOpeningReach or
+// less.
+FTCORE_API double roadCanalOpeningWorst(const RoadCanal& canal, const RoadBuild& build);
 // The exits as CSV: '#' comment rows, then id,canal,kind,foot_x,foot_y,top_x,top_y,top_z,out_x,out_y,gap_x0,gap_y0,gap_x1,gap_y1.
 FTCORE_API std::string roadExitCsv(const std::vector<RoadWaterExit>& exits);
 

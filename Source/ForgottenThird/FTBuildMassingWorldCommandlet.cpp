@@ -4444,6 +4444,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		// and the sea, taken to the engine's frame.
 		Director->WaterBodies.Reset();
 		Director->WaterExits.Reset();
+		int32 ExitsDropped = 0;
 		for (const ftcore::RoadBuild& RoadBuilt : RoadBuilds)
 		{
 			for (const ftcore::RoadWater& Canal : RoadBuilt.waters)
@@ -4456,7 +4457,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				{
 					Director->WaterExits.Add(FFTWaterExitRow::From(ftcore::waterExitToEngine(ftcore::waterExitFromRoad(Exit), static_cast<float>(Side))));
 				}
+				else
+				{
+					++ExitsDropped;
+				}
 			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %d of %d ways out kept for the swim (canals)."), Director->WaterExits.Num(),
+			static_cast<int32>(ftcore::kWaterMaxExits));
+		if (ExitsDropped > 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %d ways out of the canals past ftcore::kWaterMaxExits (%d) dropped."), ExitsDropped,
+				static_cast<int32>(ftcore::kWaterMaxExits));
 		}
 		if (bSea)
 		{
