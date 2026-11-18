@@ -12,8 +12,10 @@
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FTFarSignsSubsystem.h"
 #include "FTNightLightData.h"
 #include "FTLookSubsystem.h"
+#include "FTWorldWaveSubsystem.h"
 #include "FTNightLook.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
@@ -48,9 +50,51 @@ TAutoConsoleVariable<int32> CVarDayShade(TEXT("r.FT.DayShade"), 1,
 	TEXT("The day's shadow floor (FTWorldClockSubsystem.h): 1 lifts the shade by day, 0 leaves the world look's own values."),
 	ECVF_Default);
 
+ftcore::DayLookSpec ReadDayLook()
+{
+	ftcore::DayLookSpec Spec;
+	const TCHAR* Cmd = FTLookSwitches();
+	FParse::Value(Cmd, TEXT("DayLookStep="), Spec.shadeStep);
+	FParse::Value(Cmd, TEXT("DayLookFog="), Spec.fogDensity);
+	FParse::Value(Cmd, TEXT("DayLookKelvin="), Spec.sunKelvin);
+	FParse::Value(Cmd, TEXT("DayLookWind="), Spec.windMps);
+	FParse::Value(Cmd, TEXT("DayLookCover="), Spec.cloudCover);
+	FParse::Value(Cmd, TEXT("DayLookContact="), Spec.contactShadowLength);
+	FParse::Value(Cmd, TEXT("DayLookSigns="), Spec.signWhiteRatio);
+	FParse::Value(Cmd, TEXT("DayLookShadowTint="), Spec.shadowTintChroma);
+	FString Off;
+	if (FParse::Value(Cmd, TEXT("DayLookOff="), Off, false))
+	{
+		TArray<FString> Levers;
+		Off.ParseIntoArray(Levers, TEXT(","));
+		for (const FString& Lever : Levers)
+		{
+			if (Lever.Equals(TEXT("shade"), ESearchCase::IgnoreCase)) { Spec.shadeStep = 0; }
+			else if (Lever.Equals(TEXT("fog"), ESearchCase::IgnoreCase)) { Spec.fogDensity = -1.f; }
+			else if (Lever.Equals(TEXT("cap"), ESearchCase::IgnoreCase)) { Spec.fogMaxOpacity = -1.f; }
+			else if (Lever.Equals(TEXT("tone"), ESearchCase::IgnoreCase)) { Spec.shadowTintChroma = -1.f; Spec.highlightTintChroma = -1.f; }
+			else if (Lever.Equals(TEXT("sun"), ESearchCase::IgnoreCase)) { Spec.sunKelvin = 0.f; }
+			else if (Lever.Equals(TEXT("wind"), ESearchCase::IgnoreCase)) { Spec.windMps = -1.f; }
+			else if (Lever.Equals(TEXT("clouds"), ESearchCase::IgnoreCase)) { Spec.cloudCover = -1.f; }
+			else if (Lever.Equals(TEXT("contact"), ESearchCase::IgnoreCase)) { Spec.contactShadowLength = -1.f; }
+			else if (Lever.Equals(TEXT("signs"), ESearchCase::IgnoreCase)) { Spec.signWhiteRatio = -1.f; }
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("DayLook: -DayLookOff= has no lever %s (shade, fog, cap, tone, sun, wind, clouds, contact, signs)."), *Lever);
+			}
+		}
+	}
+	return Spec;
+}
+
 ftcore::DayShadeLook ReadDayShade()
 {
 	ftcore::DayShadeLook Look;
+	if (FTDayLook::Enabled())
+	{
+		// The day look's bracket step and fog cap; the -DayShade* switches below still go over them.
+		Look = ftcore::dayLookShade(Look, FTDayLook::Spec());
+	}
 	const TCHAR* Cmd = FTLookSwitches();
 	FParse::Value(Cmd, TEXT("DayShadeSky="), Look.skyScale);
 	FParse::Value(Cmd, TEXT("DayShadeContrast="), Look.shadowContrast);
@@ -81,6 +125,23 @@ bool FTDayShade::Enabled()
 {
 	static const bool bOff = FParse::Param(FTLookSwitches(), TEXT("NoDayShade"));
 	return !bOff && CVarDayShade.GetValueOnGameThread() != 0;
+}
+
+bool FTDayLook::Enabled()
+{
+	static const bool bOn = FParse::Param(FTLookSwitches(), TEXT("DayLook"));
+	return bOn;
+}
+
+const ftcore::DayLookSpec& FTDayLook::Spec()
+{
+	static const ftcore::DayLookSpec Spec = ReadDayLook();
+	return Spec;
+}
+
+bool FTDayLook::CloudShadows(const ftcore::SceneLook& Look)
+{
+	return Spec().cloudCover >= 0.f && Look.cloudCover > 0.f && Look.hasClouds();
 }
 
 ftcore::DayShadeBase FTDayShade::BaseFor(const ftcore::SceneLook& WorldLook)
@@ -265,7 +326,7 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 		if (ULightComponent* Light = It->GetLightComponent())
 		{
 			Light->SetMobility(EComponentMobility::Movable);
-			Suns.Add({Light, Light->Intensity, Light->GetLightColor()});
+			Suns.Add({Light, Light->Intensity, Light->GetLightColor(), Light->ContactShadowLength});
 		}
 	}
 	for (TActorIterator<ASkyLight> It(&World); It; ++It)
@@ -431,6 +492,73 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 				AppliedDayShade = ShadeAmount;
 			}
 		}
+		// The day's own look (FTDayLook): the row toward the day in the look subsystem and the sun's contact shadows,
+		// written when its amount has moved a step or reached an end; the sun's cloud shadows when the night fills or
+		// empties; the far signs on the lights' share. Nothing while a world wave writes the look; all of it after.
+		if (bShade && FTDayLook::Enabled())
+		{
+			const float DayAmount = ftcore::dayShadeAmount(FTDayShade::Fade(), Sky.NightAmount, SunElevation);
+			UFTLookSubsystem* DayLooks = World->GetSubsystem<UFTLookSubsystem>();
+			const UFTWorldWaveSubsystem* Wave = World->GetSubsystem<UFTWorldWaveSubsystem>();
+			if (Wave && Wave->HasWave())
+			{
+				AppliedDayLook = -1.f;
+				AppliedCloudShadows = -1;
+			}
+			else if (DayLooks)
+			{
+				if (bForce || AppliedDayLook < 0.f || FMath::Abs(DayAmount - AppliedDayLook) >= kDayShadeStep ||
+					(DayAmount != AppliedDayLook && (DayAmount == 0.f || DayAmount == 1.f)))
+				{
+					DayLooks->SetDayLook(DayAmount);
+					AppliedDayLook = DayAmount;
+					for (const FLit& S : Suns)
+					{
+						if (ULightComponent* Light = S.Light.Get())
+						{
+							const float Contact = ftcore::dayLookContactShadow(FTDayLook::Spec(), S.ContactShadow, DayAmount);
+							if (Light->ContactShadowLength != Contact)
+							{
+								Light->ContactShadowLength = Contact;
+								Light->MarkRenderStateDirty();
+							}
+						}
+					}
+				}
+				const int32 Clouds = ftcore::dayLookCloudsOn(Sky.NightAmount) && FTDayLook::CloudShadows(DayLooks->GetLook()) ? 1 : 0;
+				if (Clouds != AppliedCloudShadows)
+				{
+					if (Clouds != 0)
+					{
+						const int32 Had = FTScene::SetSunCloudShadows(World, true);
+						MapCloudShadows = MapCloudShadows < 0 ? Had : MapCloudShadows;
+					}
+					else if (MapCloudShadows >= 0)
+					{
+						// Only ever put back what the day look changed: a night it never touched keeps the map's own.
+						FTScene::SetSunCloudShadows(World, MapCloudShadows != 0);
+					}
+					AppliedCloudShadows = Clouds;
+				}
+			}
+			UFTFarSignsSubsystem* Signs = World->GetSubsystem<UFTFarSignsSubsystem>();
+			if (Signs)
+			{
+				const ULightComponent* SunLight = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
+				Signs->SetDayLight(SunLight ? SunLight->Intensity : 0.f, SunElevation, Sky.Lights);
+			}
+			if (bForce)
+			{
+				const ftcore::SceneLook& Day = DayLooks ? DayLooks->GetLook() : ftcore::SceneLook{};
+				const ULightComponent* SunLight = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
+				UE_LOG(LogForgottenThird, Display, TEXT("DayLook: amount %.2f at sun %.1f degrees (step %d, shade sky %.2f, contrast %.2f, highlight %.2f, boost %.2f, fog cap %.2f); fog %.4f, sun %.0f K, shadow tint %.0f/%.3f, highlight tint %.0f/%.3f, wind %.1f m/s, cover %.2f; contact %.3f, cloud shadows %d (map's %d); signs %.2f%s."),
+					DayAmount, SunElevation, FTDayLook::Spec().shadeStep, FTDayShade::Look().skyScale, FTDayShade::Look().shadowContrast,
+					FTDayShade::Look().highlightContrast, FTDayShade::Look().diffuseBoost, FTDayShade::Look().fogMaxOpacity, Day.fogDensity,
+					Day.sunKelvin, Day.shadowTintHue, Day.shadowTintChroma, Day.highlightTintHue, Day.highlightTintChroma, Day.windMps,
+					Day.cloudCover, SunLight ? SunLight->ContactShadowLength : -1.f, AppliedCloudShadows, MapCloudShadows,
+					Signs ? Signs->GetSignStrength() : -1.f, (Wave && Wave->HasWave()) ? TEXT(" (a wave runs: not written)") : TEXT(""));
+			}
+		}
 	}
 	// The white balance toward the night's by NightAmount (the volume's own by day); written when it has moved a step,
 	// never by full day, so the world look's own white balance stands. The day's is read again as dusk starts, after
@@ -543,6 +671,7 @@ void UFTWorldClockSubsystem::Tick(float DeltaTime)
 			// even under a paused -TimeOfDay, with the day's shadow floor over the look's values.
 			AppliedHours = -1.0;
 			AppliedDayShade = -1.f;
+			AppliedDayLook = -1.f;
 		}
 	}
 	ftcore::worldClockTick(Clock, DeltaTime);

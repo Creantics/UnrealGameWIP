@@ -61,6 +61,10 @@ public:
 	// The look wanted on the scene, and whether it (and its material parameters) has been written or given up on.
 	const ftcore::SceneLook& GetLook() const { return Wanted; }
 	bool IsSettled() const { return !bWaiting; }
+	// -DayLook (FTDayLook): the world's row blended toward the day by Amount (0..1, the clock's day amount), written
+	// through the same diff as a switch. Nothing without the flag or with the shared look on; nothing when the blend
+	// equals what's wanted already.
+	void SetDayLook(float Amount);
 
 	// The fight's accent: the grade keeps the chroma of hues within WidthDegrees of HueDegrees (OKLab hue) at Chroma
 	// times their own. ClearFightAccent turns it off.
@@ -77,6 +81,9 @@ private:
 	// What the scene's actors carry now, so a switch rewrites only what differs.
 	ftcore::SceneLook Applied;
 	ftcore::SceneLook Wanted;
+	// The world's own row (Wanted without the day's blend) and the last day amount the clock gave.
+	ftcore::SceneLook Row;
+	float DayAmount = 0.f;
 	ftcore::FightAccent Accent;
 	// Waiting for the level's look actors (the arena spawns them after the world begins).
 	bool bWaiting = false;
