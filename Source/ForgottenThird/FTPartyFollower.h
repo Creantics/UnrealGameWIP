@@ -89,6 +89,12 @@ public:
 	const USkeletalMeshComponent* GetBody() const;
 	void SetWaterSlot(int32 Slot) { WaterSlot = Slot; }
 	void FillWaterMember(ftcore::WaterFollowMember& Member) const;
+	// -SwimProof=boom (dev, the 11-18 ruling's item 5): put now at a place (cm; its feet's x and y) and held treading there
+	// for the camera's sweep, only while it swims at the surface; false (nothing done) otherwise. ReleaseProofHold lets
+	// it follow again.
+	bool HoldForProof(const FVector2D& At);
+	void ReleaseProofHold() { bProofHeld = false; }
+	ftcore::WaterFollowPhase GetWaterPhase() const { return WaterPhase; }
 
 private:
 	// Takes the lead's vaults, climbs and catches begun since the last call, and forgets those the body at Feet is past or
@@ -206,10 +212,17 @@ private:
 	bool bWaterHasEdge = false;                 // water was found toward the lead (else no jump in)
 	float WaterEdgeAge = 1.f;                   // s since the edge was last looked for
 	// -SwimProof (AFTExploreCharacter::TickSwimProof; dev): slot 0 is held stuck until it is rejoined, then its feet
-	// height is logged four times a second for 2 s.
+	// height is logged four times a second for 2 s, then its spread over those 2 s (cm): the lowest and highest feet, and
+	// the most they stood off the height the surface swim held them at that frame (bProofWant: a surface frame was seen).
 	bool bProofFreed = false;
 	float ProofLogLeft = 0.f;
 	float ProofLogAt = 0.f;
+	double ProofZMin = 0.0;
+	double ProofZMax = 0.0;
+	double ProofWantOff = 0.0;
+	bool bProofWant = false;
+	int32 ProofFrames = 0;
+	bool bProofHeld = false; // HoldForProof: treading where it was put
 	FVector WaterVelocity = FVector::ZeroVector; // cm/s
 	// A placed move (the entry's walk or jump, the climb out): from, to, its time and length, and whether it is over.
 	bool bWaterMove = false;

@@ -623,6 +623,13 @@ private:
 	float SwimProofPlacedAt = -1.f;    // SwimProofTime of the last placement (checked: swimming within 3 s)
 	int32 SwimProofPlaceCount = 0;
 	bool bSwimProofLeadSwims = false;  // the placed lead was seen swimming
+	bool bSwimProofSpotFallback = false; // no water spot passed the check; the watchdog took one blocked on the way in
+	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts, and slot 0 is put 1 m
+	// behind the camera (the ruling's place), slot 1 on the boom 1 m in front of it (toward the lead); both tread there
+	// for the sweep. The run ends after the sweep; exit 0 when a partner was held and the sweep measured.
+	float SwimProofHoldAt = -1.f;      // SwimProofTime the lead reached the far point
+	int32 SwimProofBoomHeld = 0;       // partners held for the sweep
+	FString SwimProofBoomWhere;
 	// Item 5 (the boom through a partner): during the sweep, the camera's distance to the nearest partner's capsule; under
 	// 50 cm with that partner's mesh drawn is the clip. Counted per tick and per still (the still numbers kept, first 32).
 	int32 SwimProofClipTicks = 0;
@@ -764,6 +771,30 @@ private:
 	// What held the walk up, measured at a press (dev, not shipped): the top of what stands in the way ahead, over the
 	// feet (cm; < 0 when nothing was found within reach), and whether the lead's own jump rises over it.
 	void LogLeadGoHold();
+	// How each held-up jump went (11-18 ruling, item 4; dev): from its press until the body swims, the next press or 3 s,
+	// whether a traversal began (a vault from the ground or a catch in the air, its clip), the ledge phases and movement
+	// modes seen, the feet's rise over the press every 0.1 s and its peak, and where the body first stood again 40 cm or
+	// more up (what it stood on); logged in one line at the end.
+	void TraceLeadGoJump(float DeltaSeconds, bool bPressed);
+	void LogLeadGoTrace(const TCHAR* Why);
+	bool bLeadGoTrace = false;
+	float LeadGoTraceTime = 0.f;
+	double LeadGoTraceFeet0 = 0.0;
+	uint32 LeadGoTraceTraversals0 = 0;
+	int32 LeadGoTraceTry = 0;
+	float LeadGoTraceTravAt = -1.f;      // s after the press a traversal began (-1: none)
+	bool bLeadGoTraceCatch = false;      // that traversal was a catch in the air (else a vault from the ground)
+	int32 LeadGoTraceClip = -1;
+	uint8 LeadGoTraceLedge = 0;          // bit per ftcore::LedgePhase seen
+	uint32 LeadGoTraceModes = 0;         // bit per EMovementMode seen
+	double LeadGoTracePeak = 0.0;        // cm: the feet's highest rise over the press
+	float LeadGoTracePeakAt = 0.f;
+	int16 LeadGoTraceRise[30] = {};      // cm over the press, each 0.1 s
+	int32 LeadGoTraceSamples = 0;
+	float LeadGoTraceStoodAt = -1.f;     // s after the press the body first stood 40 cm or more up (-1: never)
+	double LeadGoTraceStoodRise = 0.0;
+	FString LeadGoTraceStoodOn;          // what it stood on then (actor/component, and the floor's normal z)
+	float LeadGoTraceVerdictAt = -1.f;   // s after the press the try was judged
 
 public:
 	// The lead walks at a point (cm) from now on.

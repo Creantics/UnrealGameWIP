@@ -14,6 +14,7 @@
 #include "ForgottenThird.h"
 
 #include "ftcore/PartyShore.h"
+#include "ftcore/WaterSurfaceFeet.h"
 #include "FTSwimUnits.h"
 #include "FTWaterSubsystem.h"
 #include "ftcore/PartyTrail.h"
@@ -862,6 +863,35 @@ bool AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FV
 	return false; // no water toward the lead: it stays ashore (no jump onto land)
 }
 
+bool AFTPartyFollower::HoldForProof(const FVector2D& At)
+{
+#if UE_BUILD_SHIPPING
+	(void)At;
+	return false;
+#else
+	using namespace FTSwimUnits;
+	UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	float Surface = 0.f;
+	if (!System || WaterPhase != ftcore::WaterFollowPhase::Surface
+		|| !System->Bodies().surfaceHeight(ftcore::Vec2{ToMetres(At.X), ToMetres(At.Y)}, System->WaterTime(), Surface))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof: %s not held at (%.0f, %.0f): phase %d%s."), *LogName, At.X, At.Y, static_cast<int32>(WaterPhase),
+			System && WaterPhase == ftcore::WaterFollowPhase::Surface ? TEXT(", no water there") : TEXT(" (not at the surface)"));
+		return false;
+	}
+	// At the surface swim's own height there (the one rule), the bed looked at first.
+	const float Draft = ftcore::waterSwimFeetZ(Surface, System->WaterTime());
+	SenseWater(*System, FVector(At.X, At.Y, ToCm(Draft)), true);
+	const FVector P(At.X, At.Y, ToCm(ftcore::waterSurfaceFeetZ(Draft, 0.f, WaterBedZ)));
+	SetActorLocation(P, false, nullptr, ETeleportType::TeleportPhysics);
+	WaterVelocity = FVector::ZeroVector;
+	bProofHeld = true;
+	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof: %s held for the sweep at (%.0f, %.0f, %.0f) cm."), *LogName, P.X, P.Y, P.Z);
+	return true;
+#endif
+}
+
 void AFTPartyFollower::SenseWater(const UFTWaterSubsystem& System, const FVector& At, bool bSwimming)
 {
 	using namespace FTSwimUnits;
@@ -971,11 +1001,19 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		bProofFreed = true;
 		ProofLogLeft = 2.f;
 		ProofLogAt = 0.f;
+		ProofFrames = 0;
+		bProofWant = false;
+		ProofWantOff = 0.0;
 	}
 	const bool bProofStuck = WaterSlot == 0 && !bProofFreed
 		&& ((ProofKind == TEXT("land") && Phase == WaterFollowPhase::ToEntry) || (ProofKind == TEXT("watchdog") && Phase == WaterFollowPhase::Surface));
 	if (ProofLogLeft > 0.f && Phase != WaterFollowPhase::Placed)
 	{
+		// Each frame after the rejoin: the feet's lowest and highest (the surface swim adds how far they stand off its
+		// target that frame, ProofWantOff).
+		ProofZMin = ProofFrames == 0 ? At.Z : FMath::Min(ProofZMin, At.Z);
+		ProofZMax = ProofFrames == 0 ? At.Z : FMath::Max(ProofZMax, At.Z);
+		++ProofFrames;
 		ProofLogAt -= DeltaSeconds;
 		ProofLogLeft -= DeltaSeconds;
 		if (ProofLogAt <= 0.f)
@@ -983,6 +1021,18 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			ProofLogAt = 0.25f;
 			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: %s after the rejoin, phase %d, feet z %.1f cm at (%.0f, %.0f)."), *ProofKind, *LogName,
 				static_cast<int32>(Phase), At.Z, At.X, At.Y);
+		}
+		if (ProofLogLeft <= 0.f)
+		{
+			// Steady (ruled 11-18): within 3 cm of the final value from the first frame. The bob (+-4 cm) is part of the
+			// swim's own target, so both are told: the spread against the final frame, and the most off the target.
+			const double OffFinal = FMath::Max(At.Z - ProofZMin, ProofZMax - At.Z);
+			const TCHAR* Verdict = !bProofWant ? TEXT("NO SURFACE FRAMES (no target)")
+				: ProofWantOff > 3.0 ? TEXT("NOT STEADY")
+				: OffFinal <= 3.0 ? TEXT("STEADY (final and target)") : TEXT("STEADY on the target (the bob moves the final)");
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("SwimProof %s: %s feet over 2 s after the rejoin (%d frames): final %.1f cm, low %.1f, high %.1f, most off the final %.1f cm, most off the swim's target %.1f cm: %s."),
+				*ProofKind, *LogName, ProofFrames, At.Z, ProofZMin, ProofZMax, OffFinal, ProofWantOff, Verdict);
 		}
 	}
 #endif
@@ -1133,9 +1183,9 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			Share = 0.f;
 		}
 #if !UE_BUILD_SHIPPING
-		if (bProofStuck && Phase == WaterFollowPhase::Surface)
+		if ((bProofStuck || bProofHeld) && Phase == WaterFollowPhase::Surface)
 		{
-			Share = 0.f; // held treading where it is (-SwimProof=watchdog)
+			Share = 0.f; // held treading where it is (-SwimProof=watchdog, or put in the boom's way for -SwimProof=boom)
 		}
 #endif
 		const FVector2D Way = Far > 1.0 ? Gap / Far : FVector2D::ZeroVector;
@@ -1143,9 +1193,18 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		In.sprint = bSprint;
 		StepFollowerWaterLoco(In, DeltaSeconds, Anim);
 		const FVector2D Step(ToCm(WaterPose.velocity.x) * DeltaSeconds, ToCm(WaterPose.velocity.y) * DeltaSeconds);
-		const double Want = FMath::Max(SwimFeetZ(FVector2D(At.X, At.Y) + Step, At.Z) + ToCm(WaterPose.sink), ToCm(WaterBedZ) + 8.0);
-		const double Z = At.Z + (Want - At.Z) * (DeltaSeconds > 0.f ? 1.f - FMath::Exp(-DeltaSeconds / kWaterRiseEase) : 1.f);
+		// The one surface rule (ftcore/WaterSurfaceFeet.h): the draft and bob plus the splash's sink, never nearer the
+		// bed than kWaterBedFloat. The rejoin's placement uses the same rule, so it starts where this holds it.
+		const double Want = ToCm(ftcore::waterSurfaceFeetZ(ToMetres(SwimFeetZ(FVector2D(At.X, At.Y) + Step, At.Z)), WaterPose.sink, WaterBedZ));
+		const double Z = ToCm(ftcore::waterFeetEase(ToMetres(At.Z), ToMetres(Want), DeltaSeconds, kWaterRiseEase));
 		const FVector P(At.X + Step.X, At.Y + Step.Y, Z);
+#if !UE_BUILD_SHIPPING
+		if (ProofLogLeft > 0.f)
+		{
+			ProofWantOff = FMath::Max(ProofWantOff, FMath::Abs(At.Z - Want)); // -SwimProof: this frame's feet off its target
+			bProofWant = true;
+		}
+#endif
 		WaterVelocity = DeltaSeconds > 0.f ? (P - At) / DeltaSeconds : FVector::ZeroVector;
 		SetActorLocationAndRotation(P, FRotator(0.0, WaterPose.yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 		if (Phase == WaterFollowPhase::ToExit)
@@ -1173,7 +1232,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		WaterVelocity += (Wanted - WaterVelocity) * (DeltaSeconds > 0.f ? 1.f - FMath::Exp(-DeltaSeconds / kWaterUnderEase) : 1.f);
 		FVector P = At + WaterVelocity * DeltaSeconds;
 		SenseWater(*System, P, true);
-		P.Z = FMath::Max(P.Z, ToCm(WaterBedZ) + 8.0);
+		P.Z = FMath::Max(P.Z, ToCm(WaterBedZ + ftcore::kWaterBedFloat));
 		FRotator Rot = GetActorRotation();
 		if (WaterVelocity.Size2D() > 20.0 && DeltaSeconds > 0.f)
 		{
@@ -1275,11 +1334,20 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		{
 			// Placed while the lead swims on (a teleport, the watchdog, a second failed entry): put at its surface slot by the
 			// lead, in the water, facing the lead's way; the next step it swims from there.
+			// Its feet go where the surface swim will hold them (the one rule, ftcore/WaterSurfaceFeet.h), so there is no
+			// ease after the placement: the bed under the slot is looked at first (SenseWater's trace, from the draft's
+			// height), and over a column shallower than the draft the feet start just over the bed, not at the draft
+			// (placed at the draft alone, they rose 19 cm over 1.1 s, 11-18).
 			const FVector2D To(ToCm(Order->target.x), ToCm(Order->target.y));
-			const FVector P(To.X, To.Y, SwimFeetZ(To, Lead->GetActorLocation().Z - Lead->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+			const double Draft = SwimFeetZ(To, Lead->GetActorLocation().Z - Lead->GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+			SenseWater(*System, FVector(To.X, To.Y, Draft), true);
+			const float BedAt = WaterBedZ;
+			const FVector P(To.X, To.Y, ToCm(ftcore::waterSurfaceFeetZ(ToMetres(Draft), 0.f, BedAt)));
 			SetActorLocationAndRotation(P, FRotator(0.0, Lead->GetActorRotation().Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 			WaterVelocity = FVector::ZeroVector;
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: rejoined the lead in the water at (%.0f, %.0f, %.0f) cm."), *LogName, P.X, P.Y, P.Z);
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: rejoined the lead in the water at (%.0f, %.0f, %.0f) cm (the draft's feet %.1f, bed %.1f, surface %.1f cm: %s)."),
+				*LogName, P.X, P.Y, P.Z, Draft, ToCm(BedAt), Draft + ToCm(ftcore::kWaterSwimDraft),
+				P.Z > Draft + 0.5 ? TEXT("the column is shallower than the draft, feet over the bed") : TEXT("at the draft"));
 			SenseWater(*System, P, true);
 			StepFollowerWaterLoco(In, DeltaSeconds, Anim);
 			return true;
