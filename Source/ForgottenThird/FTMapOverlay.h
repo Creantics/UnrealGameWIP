@@ -9,14 +9,16 @@
 // far zoom fits the land. Past the area the ground runs on, and the sea on its side and past its edge rows. The look
 // built at load (mapBuildLook): the coast in gold, wave lines off it, the canals' edges, parks hatched faintly, yards
 // edged in dots, the sea named once over open sea. Which names show at each zoom is Core's (mapLabelPicks); each has a
-// 3 px halo and none covers the where-am-I line (mapCaptionBox). Names come from the
+// 3 px halo and none covers the where-am-I line (mapCaptionBox). Under -UiHudTextScale the names, their boxes and halos,
+// the N and the where-am-I line (and its kept box) grow with the text size setting (FT::HudTextScale). Names come from the
 // world lane's names table (-MapNames=<csv>, else Data/Map/solhaven_names.csv; none: no names drawn). Fonts are the new
 // UI's (FT::UiCanvasFont). Without the switch UFTMiniMap draws its old whole-map overlay.
 //
 // Captures: -MapOverlayShots=<path prefix> [-MapOverlayShotAt=<s>, default 8] [-MapOverlayCursor=x:y, engine m]: the
 // overlay opens at that time and a shot is taken at each zoom (_far, _mid, _near), each framed on the player (or the
 // cursor's point), then the game quits. Per shot: MAPOVERLAY SHOT <far|mid|near> centre=<x>:<y> mpp=<m per px>
-// land=<share, two places, truncated> caption='<DISTRICT> (middle dot) <STREET>' labels=<n>.
+// land=<share, two places, truncated> caption='<DISTRICT> (middle dot) <STREET>' labels=<n>; then MAPOVERLAY TEXT <zoom> ts=<text
+// scale> clipped=<labels whose halo leaves the screen> caption_right=<px> caption_bottom=<px> screen=<w>x<h>.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -75,8 +77,9 @@ private:
 	// HaloPx > 0: a soft dark halo that far round the glyphs, under the text's own dark rim.
 	void DrawText(UCanvas& Canvas, FStringView Text, EFace Face, float Px, const FVector2D& TopLeft, const FLinearColor& Color,
 		float HaloPx = 0.f) const;
-	void BuildLabels(int32 Picked, uint16 PickedHere, float S);
-	void DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float S);
+	// TS: the text's scale (S times the player's text size); S: the map's own lengths.
+	void BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS);
+	void DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float TS);
 
 	const ftcore::MiniMapModel& Model;
 	std::vector<std::uint8_t> Enterable;
@@ -111,6 +114,7 @@ private:
 	ftcore::MapZoom LabelZoom = ftcore::MapZoom::Near;
 	int32 LabelPicked = -2;
 	uint16 LabelPickedName = ftcore::kMapNoName;
+	float LabelTS = -1.f; // the text scale the labels were placed at
 
 	ftcore::MapZoom Zoom = ftcore::MapZoom::Near;
 	ftcore::MapOverlayView View;
@@ -123,6 +127,7 @@ private:
 	// The where-am-I line's names, as last drawn (for the capture log).
 	uint16 CaptionDistrict = ftcore::kMapNoName;
 	uint16 CaptionStreet = ftcore::kMapNoName;
+	float CaptionRight = 0.f, CaptionBottom = 0.f; // its rule's right and bottom ends, px (0: no line drawn yet)
 	TWeakObjectPtr<AFTPartyVan> Van;
 	TWeakObjectPtr<AFTPartyFollower> Followers[2];
 

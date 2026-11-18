@@ -374,6 +374,22 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			const FString Street = NameText.IsValidIndex(CaptionStreet) && CaptionStreet != CaptionDistrict ? NameText[CaptionStreet].ToUpper() : FString();
 			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY SHOT %s centre=%.1f:%.1f mpp=%.3f land=%.2f caption='%s \u00B7 %s' labels=%d"),
 				kOvShotNames[Z], View.centre.x, View.centre.y, View.mPerPx, Land, *District, *Street, static_cast<int32>(Placed.count));
+			// The text at its size: labels whose halo runs off the screen (0: none clipped), and the where-am-I line's right
+			// and bottom ends (its rule) against the screen's.
+			int32 Clipped = 0;
+			for (size_t I = 0; I < Placed.count; ++I)
+			{
+				ftcore::Vec2 K[4];
+				ftcore::mapLabelCorners(Placed.labels[I], ftcore::kMapLabelHaloPx * LabelTS, K);
+				bool bOut = false;
+				for (const ftcore::Vec2& Q : K)
+				{
+					bOut = bOut || Q.x < 0.f || Q.y < 0.f || Q.x > View.screenW || Q.y > View.screenH;
+				}
+				Clipped += bOut ? 1 : 0;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY TEXT %s ts=%.2f clipped=%d caption_right=%.0f caption_bottom=%.0f screen=%.0fx%.0f"),
+				kOvShotNames[Z], LabelTS, Clipped, CaptionRight, CaptionBottom, View.screenW, View.screenH);
 			if (!bFramedReached)
 			{
 				UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY FRAME %s unreached: no allowed shift brings the land to 0.75; the best share %.3f"),
@@ -639,7 +655,7 @@ void FFTMapOverlay::DrawText(UCanvas& Canvas, FStringView Text, EFace Face, floa
 	Canvas.DrawItem(Item);
 }
 
-void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S)
+void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS)
 {
 	using namespace FTMapOverlayDetail;
 	Placed.count = 0;
@@ -653,7 +669,7 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S)
 	if (Names.seaName != ftcore::kMapNoName)
 	{
 		const FOvStyle SeaStyle = OvStyle(ftcore::MapLabelRank::Water, true);
-		const FVector2D SeaSize = NameSize(Names.seaName, static_cast<EFace>(SeaStyle.Face), SeaStyle.Px * S);
+		const FVector2D SeaSize = NameSize(Names.seaName, static_cast<EFace>(SeaStyle.Face), SeaStyle.Px * TS);
 		bSeaName = ftcore::mapSeaLabelAt(Model, Look, View, static_cast<float>(SeaSize.X), static_cast<float>(SeaSize.Y), SeaAt);
 	}
 	// The cursor's name is the one at the cursor on its road (a zone's part of a shared run names itself).
@@ -665,13 +681,13 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S)
 		const ftcore::MapLabelPick& P = Picks[I];
 		const bool bWater = P.name < Names.nameKind.size() && Names.nameKind[P.name] == ftcore::MapNameKind::Water;
 		const FOvStyle St = OvStyle(P.rank, bWater);
-		const FVector2D Text = NameSize(P.name, static_cast<EFace>(St.Face), St.Px * S);
+		const FVector2D Text = NameSize(P.name, static_cast<EFace>(St.Face), St.Px * TS);
 		float W = static_cast<float>(Text.X), H = static_cast<float>(Text.Y);
 		if (St.bBox)
 		{
-			const float Sign = SignCount.IsValidIndex(P.name) && SignCount[P.name] > 0 ? SignWidth[P.name] * kOvSignPx * S : 0.f;
-			W = FMath::Max(W + 2.f * kOvBoxPadX * S, Sign);
-			H += 2.f * kOvBoxPadY * S + (Sign > 0.f ? (kOvSignPx + kOvSignGap) * S : 0.f);
+			const float Sign = SignCount.IsValidIndex(P.name) && SignCount[P.name] > 0 ? SignWidth[P.name] * kOvSignPx * TS : 0.f;
+			W = FMath::Max(W + 2.f * kOvBoxPadX * TS, Sign);
+			H += 2.f * kOvBoxPadY * TS + (Sign > 0.f ? (kOvSignPx + kOvSignGap) * TS : 0.f);
 		}
 		ftcore::MapLabel L;
 		if (P.along)
@@ -700,13 +716,13 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S)
 		Candidates[Count++] = L;
 	}
 	// No two labels overlap, each one's halo included, and none covers the where-am-I line's box.
-	const ftcore::MapLabel CaptionBox = ftcore::mapCaptionBox(View.screenW, View.screenH, S);
-	ftcore::mapPlaceLabels(Candidates, Count, Placed, 6.f * S, &CaptionBox, 1, ftcore::kMapLabelHaloPx * S);
+	const ftcore::MapLabel CaptionBox = ftcore::mapCaptionBox(View.screenW, View.screenH, TS);
+	ftcore::mapPlaceLabels(Candidates, Count, Placed, 6.f * TS, &CaptionBox, 1, ftcore::kMapLabelHaloPx * TS);
 	LastPicks = static_cast<int32>(NPicks);
 	LastCandidates = static_cast<int32>(Count);
 }
 
-void FFTMapOverlay::DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float S)
+void FFTMapOverlay::DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float TS)
 {
 	using namespace FTMapOverlayDetail;
 	if (!NameText.IsValidIndex(L.name))
@@ -716,13 +732,13 @@ void FFTMapOverlay::DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float 
 	const bool bWater = L.name < Names.nameKind.size() && Names.nameKind[L.name] == ftcore::MapNameKind::Water;
 	const FOvStyle St = OvStyle(static_cast<ftcore::MapLabelRank>(L.priority), bWater);
 	const EFace Face = static_cast<EFace>(St.Face);
-	const float Px = St.Px * S;
+	const float Px = St.Px * TS;
 	const FVector2D Text = NameSize(L.name, Face, Px);
 	FVector2D TopLeft(L.at.x - Text.X * 0.5, L.at.y - Text.Y * 0.5);
 	if (St.bBox)
 	{
 		// The text sits in the box at the label's foot; the sign form is above it.
-		TopLeft.Y = L.at.y + L.h * 0.5f - kOvBoxPadY * S - Text.Y;
+		TopLeft.Y = L.at.y + L.h * 0.5f - kOvBoxPadY * TS - Text.Y;
 	}
 	FCanvas* C = Canvas.Canvas;
 	const bool bTurn = FMath::Abs(L.angleDeg) > 0.5f;
@@ -737,7 +753,7 @@ void FFTMapOverlay::DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float 
 		}
 		C->PushRelativeTransform(FTranslationMatrix(-At) * Shear * FRotationMatrix(FRotator(0.0, L.angleDeg, 0.0)) * FTranslationMatrix(At));
 	}
-	DrawText(Canvas, NameText[L.name], Face, Px, TopLeft, St.Color, ftcore::kMapLabelHaloPx * S);
+	DrawText(Canvas, NameText[L.name], Face, Px, TopLeft, St.Color, ftcore::kMapLabelHaloPx * TS);
 	if (C && (bTurn || bLean))
 	{
 		C->PopTransform();
@@ -749,6 +765,9 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	using namespace FTMapOverlayDetail;
 	APlayerController* PC = Hud.GetOwningPlayerController();
 	const float SW = Canvas.ClipX, SH = Canvas.ClipY;
+	// The names and the where-am-I line at the player's text size (FT::HudTextScale: 1 without -UiHudTextScale); the map's
+	// own lines and marks stay at S.
+	const float TS = S * FT::HudTextScale();
 	if (GFrameCounter > LastFrame + 1 || View.screenW != SW || View.screenH != SH)
 	{
 		OnOpen(Hud, SW, SH);
@@ -916,13 +935,14 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	// The labels, placed again only when the view, the zoom or the cursor's road changes.
 	if (LabelPicked != Picked || LabelPickedName != PickedHere || LabelZoom != Zoom || LabelView.centre.x != View.centre.x ||
 		LabelView.centre.y != View.centre.y || LabelView.mPerPx != View.mPerPx || LabelView.screenW != View.screenW ||
-		LabelView.screenH != View.screenH)
+		LabelView.screenH != View.screenH || LabelTS != TS)
 	{
-		BuildLabels(Picked, PickedHere, S);
+		BuildLabels(Picked, PickedHere, S, TS);
 		LabelPicked = Picked;
 		LabelPickedName = PickedHere;
 		LabelZoom = Zoom;
 		LabelView = View;
+		LabelTS = TS;
 	}
 	// The districts' boxes: a dark fill, a thin gold rule, the sign form small above.
 	Boxes->TriangleList.Reset();
@@ -934,9 +954,9 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 			continue;
 		}
 		const bool bSign = SignCount.IsValidIndex(L.name) && SignCount[L.name] > 0;
-		const FVector2D Text = NameSize(L.name, SerifSc, 15.f * S);
-		const float BoxW = static_cast<float>(Text.X) + 2.f * kOvBoxPadX * S;
-		const float BoxH = static_cast<float>(Text.Y) + 2.f * kOvBoxPadY * S;
+		const FVector2D Text = NameSize(L.name, SerifSc, 15.f * TS);
+		const float BoxW = static_cast<float>(Text.X) + 2.f * kOvBoxPadX * TS;
+		const float BoxH = static_cast<float>(Text.Y) + 2.f * kOvBoxPadY * TS;
 		const float X0 = L.at.x - BoxW * 0.5f, X1 = L.at.x + BoxW * 0.5f, Y1 = L.at.y + L.h * 0.5f, Y0 = Y1 - BoxH;
 		AddScreenRect(*Boxes, X0, Y0, X1, Y1, kOvBoxFill);
 		const float T = FMath::Max(1.f * S, 1.f);
@@ -947,7 +967,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 		AddScreenRect(*Boxes, X1 - T, Y0 + T, X1, Y1 - T, Rule);
 		if (bSign)
 		{
-			const float G = kOvSignPx * S;
+			const float G = kOvSignPx * TS;
 			const FVector2D Origin(L.at.x - SignWidth[L.name] * G * 0.5f, L.at.y - L.h * 0.5f);
 			for (int32 K = 0; K < SignCount[L.name]; ++K)
 			{
@@ -962,7 +982,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	}
 	for (size_t I = 0; I < Placed.count; ++I)
 	{
-		DrawLabel(Canvas, Placed.labels[I], S);
+		DrawLabel(Canvas, Placed.labels[I], TS);
 	}
 
 	// The marks: the objective, the party, the player, the cursor, the north needle, the where-am-I rule.
@@ -1056,20 +1076,23 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	}
 	CaptionDistrict = HereDistrict;
 	CaptionStreet = HereStreet;
-	const float HerePx = 18.f * S, HereX = ftcore::kMapCaptionX * S, HereY = SH - ftcore::kMapCaptionUp * S;
+	const float HerePx = 18.f * TS, HereX = ftcore::kMapCaptionX * TS, HereY = SH - ftcore::kMapCaptionUp * TS;
 	const FVector2D DistrictSize = NameText.IsValidIndex(HereDistrict) ? NameSize(HereDistrict, SerifSc, HerePx) : FVector2D::ZeroVector;
 	const FVector2D StreetSize = NameText.IsValidIndex(HereStreet) && HereStreet != HereDistrict ? NameSize(HereStreet, SerifSc, HerePx) : FVector2D::ZeroVector;
-	const float Gap = 22.f * S;
+	const float Gap = 22.f * TS;
 	const float LineW = static_cast<float>(DistrictSize.X + (StreetSize.X > 0.0 ? Gap + StreetSize.X : 0.0));
+	CaptionRight = CaptionBottom = 0.f;
 	if (LineW > 0.f)
 	{
 		const float LineH = static_cast<float>(FMath::Max(DistrictSize.Y, StreetSize.Y));
-		const float RuleY = HereY + LineH + 5.f * S;
-		AddScreenRect(*Marks, HereX, RuleY, HereX + LineW + 28.f * S, RuleY + FMath::Max(1.f * S, 1.f), kOvGold);
+		const float RuleY = HereY + LineH + 5.f * TS;
+		AddScreenRect(*Marks, HereX, RuleY, HereX + LineW + 28.f * TS, RuleY + FMath::Max(1.f * S, 1.f), kOvGold);
+		CaptionRight = HereX + LineW + 28.f * TS;
+		CaptionBottom = RuleY + FMath::Max(1.f * S, 1.f);
 		if (DistrictSize.X > 0.0 && StreetSize.X > 0.0)
 		{
 			const FVector2D Dot(HereX + DistrictSize.X + Gap * 0.5f, HereY + LineH * 0.55f);
-			const float R = 3.f * S;
+			const float R = 3.f * TS;
 			AddTri(*Marks, Dot + FVector2D(0, -R), Dot + FVector2D(R, 0), Dot + FVector2D(0, R), kOvGold);
 			AddTri(*Marks, Dot + FVector2D(0, -R), Dot + FVector2D(0, R), Dot + FVector2D(-R, 0), kOvGold);
 		}
@@ -1082,16 +1105,16 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 		const FVector2D M = Measure(kOvNorth, SerifSc, kOvRefPx);
 		NeedleRef = FVector2f(static_cast<float>(M.X), static_cast<float>(M.Y));
 	}
-	const float NPx = 14.f * S;
+	const float NPx = 14.f * TS;
 	const FVector2D NSize(NeedleRef.X * NPx / kOvRefPx, NeedleRef.Y * NPx / kOvRefPx);
 	DrawText(Canvas, kOvNorth, SerifSc, NPx, FVector2D(Needle.X - NSize.X * 0.5, Needle.Y - 22.f * S - 4.f * S - NSize.Y), kOvGold);
 	if (DistrictSize.X > 0.0)
 	{
-		DrawText(Canvas, NameText[HereDistrict], SerifSc, HerePx, FVector2D(HereX, HereY), kOvDistrictLabel, ftcore::kMapLabelHaloPx * S);
+		DrawText(Canvas, NameText[HereDistrict], SerifSc, HerePx, FVector2D(HereX, HereY), kOvDistrictLabel, ftcore::kMapLabelHaloPx * TS);
 	}
 	if (StreetSize.X > 0.0)
 	{
 		DrawText(Canvas, NameText[HereStreet], SerifSc, HerePx, FVector2D(HereX + (DistrictSize.X > 0.0 ? DistrictSize.X + Gap : 0.0), HereY),
-			kOvStreetHere, ftcore::kMapLabelHaloPx * S);
+			kOvStreetHere, ftcore::kMapLabelHaloPx * TS);
 	}
 }
