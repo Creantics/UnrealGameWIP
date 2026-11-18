@@ -1,6 +1,7 @@
 #include "FTBuildLookMaterialsCommandlet.h"
 
 #include "FTJointCollection.h"
+#include "FTRainCoverCollection.h"
 #include "FTSeason.h"
 #include "FTWorldWave.h"
 
@@ -1348,7 +1349,7 @@ UMaterial* BuildGlassPane(UMaterialParameterCollection* Look, bool bMirror)
 	AddInput(Pane, TEXT("Seed"), AddScalar(Material, TEXT("Seed"), 0.37f, 200));
 	AddInput(Pane, TEXT("Age"), AddScalar(Material, TEXT("Age"), 0.15f, 300));
 	AddInput(Pane, TEXT("Thick"), AddScalar(Material, TEXT("ThicknessM"), 0.008f, 400));
-	AddInput(Pane, TEXT("Wet"), AddLook(Material, Look, TEXT("Wetness"), 500));
+	AddInput(Pane, TEXT("Wet"), FTRainCover::Sheltered(Material, AddLook(Material, Look, TEXT("Wetness"), 500), -1200, 500)); // dry under cover
 	AddInput(Pane, TEXT("Mode"), AddScalar(Material, TEXT("MirrorLayer"), bMirror ? 1.f : 0.f, 600));
 	// 1 in play; 0 only for a diagnostic still of the pane with no reflection (-WorldEyeGlassNoSpec).
 	AddInput(Pane, TEXT("SpecScale"), AddScalar(Material, TEXT("SpecScale"), 1.f, 700));
@@ -1453,7 +1454,7 @@ UMaterial* BuildGlassOver(UMaterialParameterCollection* Look, UTexture* Goods)
 	AddInput(Over, TEXT("Seed"), AddScalar(Material, TEXT("Seed"), 0.37f, 200));
 	AddInput(Over, TEXT("Age"), AddScalar(Material, TEXT("Age"), 0.15f, 300));
 	AddInput(Over, TEXT("Thick"), AddScalar(Material, TEXT("ThicknessM"), 0.008f, 400));
-	AddInput(Over, TEXT("Wet"), AddLook(Material, Look, TEXT("Wetness"), 500));
+	AddInput(Over, TEXT("Wet"), FTRainCover::Sheltered(Material, AddLook(Material, Look, TEXT("Wetness"), 500), -1200, 500)); // dry under cover
 	AddInput(Over, TEXT("FloorCm"), AddScalar(Material, TEXT("FloorCm"), 0.f, 600));
 	AddInput(Over, TEXT("Shop"), AddScalar(Material, TEXT("Shop"), 1.f, 700));
 	AddInput(Over, TEXT("Lights"), AddScalar(Material, TEXT("Lights"), 0.f, 800));
@@ -1592,7 +1593,7 @@ UMaterial* BuildWetStone(UMaterialParameterCollection* Look, UTexture* const (&M
 	}
 	AddInput(Stone, TEXT("TileCm"), AddScalar(Material, TEXT("TileCm"), kStoneTileCm, -100));
 	AddInput(Stone, TEXT("Roughness"), AddScalar(Material, TEXT("Roughness"), -1.f, 0));
-	AddInput(Stone, TEXT("Wetness"), AddLook(Material, Look, TEXT("Wetness"), 100));
+	AddInput(Stone, TEXT("Wetness"), FTRainCover::Sheltered(Material, AddLook(Material, Look, TEXT("Wetness"), 100), -1200, 100)); // dry under cover
 	AddInput(Stone, TEXT("WetDarken"), AddScalar(Material, TEXT("WetDarken"), 0.5f, 200));
 	AddInput(Stone, TEXT("WetRich"), AddScalar(Material, TEXT("WetRich"), 0.35f, 300));
 	AddInput(Stone, TEXT("WetSmooth"), AddScalar(Material, TEXT("WetSmooth"), 0.85f, 400));
