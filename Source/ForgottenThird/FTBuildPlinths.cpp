@@ -100,15 +100,15 @@ bool FTPlinths::ReportFloats(const ftcore::MassingGround& Ground, const std::vec
 	{
 		const ftcore::MassingBox& B = Boxes[F.box];
 		// What item 3's fix pass would do (not done yet): a skirt up to maxSkirt for a building, else a snap when over the line.
-		const TCHAR* Fix = F.building ? (F.gap <= Spec.maxSkirt ? TEXT("skirt") : TEXT("snap")) : (F.gap > Spec.failAny ? TEXT("snap") : TEXT("leave"));
-		Skirts += FCString::Strcmp(Fix, TEXT("skirt")) == 0 ? 1 : 0;
-		Snaps += FCString::Strcmp(Fix, TEXT("snap")) == 0 ? 1 : 0;
+		const TCHAR* WouldFix = F.building ? (F.gap <= Spec.maxSkirt ? TEXT("skirt") : TEXT("snap")) : (F.gap > Spec.failAny ? TEXT("snap") : TEXT("leave"));
+		Skirts += FCString::Strcmp(WouldFix, TEXT("skirt")) == 0 ? 1 : 0;
+		Snaps += FCString::Strcmp(WouldFix, TEXT("snap")) == 0 ? 1 : 0;
 		const FString Id = UTF8_TO_TCHAR(B.id.c_str()), Kind = UTF8_TO_TCHAR(B.kind.c_str());
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: float %s (%s): %.2f m at (%.1f, %.1f), base %.2f over ground %.2f (lowest %.2f)%s%s%s; fix %s."),
 			*Id, *Kind, F.gap, F.x, F.y, F.base, F.ground, F.groundMin, F.building ? TEXT(", building") : TEXT(""),
-			F.failing ? TEXT(", FAILS") : TEXT(""), F.crouch ? TEXT(", crouch-under") : TEXT(""), Fix);
+			F.failing ? TEXT(", FAILS") : TEXT(""), F.crouch ? TEXT(", crouch-under") : TEXT(""), WouldFix);
 		Csv += FString::Printf(TEXT("%s,%s,%.3f,%.2f,%.2f,%.3f,%.3f,%.3f,%d,%d,%d,%s\n"), *Id, *Kind, F.gap, F.x, F.y, F.base, F.ground, F.groundMin,
-			F.building ? 1 : 0, F.failing ? 1 : 0, F.crouch ? 1 : 0, Fix);
+			F.building ? 1 : 0, F.failing ? 1 : 0, F.crouch ? 1 : 0, WouldFix);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: floats (report only): %d boxes checked, %d not sunk %.1f m, %d float over %.2f m: %d fail "
 		"(over %.1f m, a building over %.1f m), %d crouch-under (%.1f-%.1f m); the fix pass would skirt %d and snap %d."),
