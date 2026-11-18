@@ -10,15 +10,15 @@
 
 namespace
 {
-constexpr float kHalfHeight = 90.f;
-constexpr float kRadius = 34.f;
+constexpr float kNpcHalfHeight = 90.f;
+constexpr float kNpcRadius = 34.f;
 } // namespace
 
 AFTNpcActor::AFTNpcActor()
 {
 	PrimaryActorTick.bCanEverTick = false;
 	Capsule = CreateDefaultSubobject<UCapsuleComponent>(TEXT("Capsule"));
-	Capsule->InitCapsuleSize(kRadius, kHalfHeight);
+	Capsule->InitCapsuleSize(kNpcRadius, kNpcHalfHeight);
 	Capsule->SetCollisionProfileName(TEXT("Pawn"));
 	RootComponent = Capsule;
 
@@ -30,12 +30,12 @@ AFTNpcActor::AFTNpcActor()
 	{
 		Body->SetStaticMesh(Cylinder.Object);
 		// The 1 m engine cylinder, scaled to the capsule.
-		Body->SetRelativeScale3D(FVector(kRadius * 2.f / 100.f, kRadius * 2.f / 100.f, kHalfHeight * 2.f / 100.f));
+		Body->SetRelativeScale3D(FVector(kNpcRadius * 2.f / 100.f, kNpcRadius * 2.f / 100.f, kNpcHalfHeight * 2.f / 100.f));
 	}
 
 	Label = CreateDefaultSubobject<UTextRenderComponent>(TEXT("Label"));
 	Label->SetupAttachment(Capsule);
-	Label->SetRelativeLocation(FVector(0.f, 0.f, kHalfHeight + 30.f));
+	Label->SetRelativeLocation(FVector(0.f, 0.f, kNpcHalfHeight + 30.f));
 	Label->SetHorizontalAlignment(EHTA_Center);
 	Label->SetWorldSize(18.f);
 	Label->SetHiddenInGame(UE_BUILD_SHIPPING != 0);
@@ -43,7 +43,7 @@ AFTNpcActor::AFTNpcActor()
 
 FVector AFTNpcActor::GetEyes() const
 {
-	return GetActorLocation() + FVector(0.f, 0.f, kHalfHeight * 0.75f);
+	return GetActorLocation() + FVector(0.f, 0.f, kNpcHalfHeight * 0.75f);
 }
 
 void AFTNpcActor::SetLabel(const FString& Text)

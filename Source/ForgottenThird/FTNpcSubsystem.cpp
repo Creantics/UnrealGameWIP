@@ -38,7 +38,7 @@ const TCHAR* StanceName(ftcore::NpcStance S)
 	return I >= 0 && I < 5 ? kStanceNames[I] : TEXT("?");
 }
 
-bool ReadData(const TCHAR* Name, std::string& Out, FString& OutError)
+bool ReadNpcData(const TCHAR* Name, std::string& Out, FString& OutError)
 {
 	const FString Path = FPaths::ProjectDir() / TEXT("Data") / Name;
 	FString Text;
@@ -105,7 +105,7 @@ bool UFTNpcSubsystem::Load(FString& OutError)
 	std::string Text[10];
 	for (int32 I = 0; I < 10; ++I)
 	{
-		if (!ReadData(kNames[I], Text[I], OutError))
+		if (!ReadNpcData(kNames[I], Text[I], OutError))
 		{
 			return false;
 		}

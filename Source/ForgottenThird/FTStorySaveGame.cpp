@@ -81,9 +81,9 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 	// While the NPC tables aren't loaded, the block this object already holds stays (ftcore::npcSaveBlockToWrite);
 	// a fresh object holds the slot's when its caller copied it in (UFTStorySubsystem::Autosave), else none.
 	const bool bNpcReady = Npcs && Npcs->IsReady();
-	const std::string Captured = bNpcReady ? FT::ToUtf8(Npcs->CaptureSaveJson()) : std::string();
+	const std::string NpcCaptured = bNpcReady ? FT::ToUtf8(Npcs->CaptureSaveJson()) : std::string();
 	const std::string Kept = bNpcReady ? std::string() : FT::ToUtf8(NpcSaveJson);
-	NpcSaveJson = FT::ToFString(ftcore::npcSaveBlockToWrite(bNpcReady, Captured, Kept));
+	NpcSaveJson = FT::ToFString(ftcore::npcSaveBlockToWrite(bNpcReady, NpcCaptured, Kept));
 	if (Block.Num() > 0)
 	{
 		StoryBlock = MoveTemp(Block);
