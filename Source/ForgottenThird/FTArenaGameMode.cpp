@@ -611,6 +611,28 @@ void AFTArenaGameMode::BuildDef(bool bTable)
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(W));
 	}
 	Fit.apply(Def);
+#if !UE_BUILD_SHIPPING
+	// A capture switch, never in a shipping build: the enemies this far in front of the player (the special's far
+	// cases), the player moved back along its facing so both stand inside the ring, half the distance either side of
+	// its centre. Refused when that leaves less than 1 m to the edge.
+	float SpawnAt = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaSpawn="), SpawnAt) && SpawnAt > 0.f)
+	{
+		const float Half = 0.5f * SpawnAt;
+		if (Half <= Fit.ring.radius - 1.f)
+		{
+			Fit.playerStart = ftcore::Vec2{Fit.ring.centre.x - Fit.playerFacing.x * Half, Fit.ring.centre.y - Fit.playerFacing.y * Half};
+			Fit.spawnDistance = SpawnAt;
+			Fit.apply(Def);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaSpawn: enemies %.2f m in front of the player, who starts at (%.2f, %.2f) m."),
+				SpawnAt, Fit.playerStart.x, Fit.playerStart.y);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaSpawn=%.2f refused: the ring (%.1f m) has no room for it."), SpawnAt, Fit.ring.radius);
+		}
+	}
+#endif
 }
 
 void AFTArenaGameMode::BuildPlainGround()

@@ -1713,7 +1713,8 @@ private:
 	FVector SpecialPlayShift = FVector::ZeroVector; // cm: the play camera's move to the end feet while the lead stands at the start
 	bool bSpecialPlaced = false;
 	int32 SpecialShotsMoved = 0;   // shots moved by a fix at the start (SpecialCineFixShots)
-	int32 SpecialShotsBlocked = 0; // shots no fix cleared (played as written)
+	int32 SpecialShotsBlocked = 0; // shots no fix cleared and no cover hid (played as written)
+	int32 SpecialShotsSkipped = 0; // shots no fix cleared, skipped under the shot next to them (a cover)
 	// The skip: pressed this frame (read by PollSpecialSkip, sent on the next frozen step); a skip refused (not yet
 	// seen once) is logged once a move.
 	bool bSpecialSkip = false;

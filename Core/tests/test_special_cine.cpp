@@ -590,11 +590,14 @@ bool passesAsWritten(const SpecialCineMove& m, const SpecialCineStage& st, std::
 
 // The same with the target its only body, split: `oldOk` whether every shot that frames someone passes as written
 // every check before the contact and lead ones (the switch point's measure), `fixedOk` whether every one passes as
-// written or with a fix; `reframed` counts the shots moved for the contact or the lead alone.
+// written, with a fix, or skipped under a cover that passes (the host's two passes); `reframed` counts the shots moved
+// for the contact or the lead alone, `skipped` the shots covered (`skippedShot` the last).
 void framedOnStage(const SpecialCineMove& m, const SpecialCineStage& st, bool& oldOk, bool& fixedOk, int& reframed,
-                   std::uint32_t& failedShot) {
+                   std::uint32_t& failedShot, int& skipped, std::uint32_t& skippedShot) {
     const SpecialCineBody body = bodyOf(st);
     oldOk = fixedOk = true;
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    bool blocked[SpecialCineMove::kMaxShots]{};
     for (std::uint32_t i = 0; i < m.size(); ++i) {
         if (m.shot(i).subject == SpecialCineSubject::None) continue;
         const SpecialCineShotCheck c = specialCineFixShot(m, i, st, &body, 1);
@@ -606,10 +609,20 @@ void framedOnStage(const SpecialCineMove& m, const SpecialCineStage& st, bool& o
         } else if (c.ok) {
             ++reframed;
         }
-        if (!c.ok) {
+        fixes[i] = c.fix;
+        blocked[i] = !c.ok;
+    }
+    for (std::uint32_t i = 0; i < m.size(); ++i) {
+        if (!blocked[i]) continue;
+        const SpecialCineCover cover = specialCineCoverShot(m, i, st, fixes, &body, 1);
+        if (cover == SpecialCineCover::None) {
             fixedOk = false;
             failedShot = i;
+            continue;
         }
+        fixes[i].cover = cover;
+        ++skipped;
+        skippedShot = i;
     }
 }
 
@@ -752,8 +765,8 @@ TEST_CASE("special cine: the range sweep: the far set from the switch point to l
     // every 5 cm from body contact out to lock range, both from arena.json.
     // The far set is measured by the checks before the contact and lead ones (the switch point's measure); a shot it
     // loses only to those is reframed, and must be at every range past the switch point.
-    int kinds = 0, reframed = 0, unfixed = 0;
-    float firstUnfixed = 1e9f;
+    int kinds = 0, reframed = 0, skips = 0;
+    float firstSkip = 1e9f;
     float lastFarFail = -1.f; // the far set's last failing distance over all of them: the switch point sits just past
     for (std::size_t k = 0; k < arena.enemies.size(); ++k) {
         const ArenaEnemyKind& kind = arena.enemies[k];
@@ -772,25 +785,29 @@ TEST_CASE("special cine: the range sweep: the far set from the switch point to l
             st.bone = {0.3f, 0.25f, 1.1f};
             const SpecialCineMove* picked = t.find("devin_special_01", specialCineDistance(st));
             REQUIRE(picked != nullptr);
-            std::uint32_t failed = 99;
+            std::uint32_t failed = 99, skippedShot = 99;
             bool farOk = true, farFixed = true;
-            int moved = 0;
-            framedOnStage(*far, st, farOk, farFixed, moved, failed);
+            int moved = 0, skipped = 0;
+            framedOnStage(*far, st, farOk, farFixed, moved, failed, skipped, skippedShot);
             if (!farOk) lastFarFail = std::max(lastFarFail, d);
             if (d >= within) {
                 CHECK(picked == far);
                 CAPTURE(failed);
                 CHECK(farOk);
                 reframed += moved;
-                if (!farFixed) {
-                    // Measured: only the smallest kind (0.9 m tall) past 12.3 m, only shot 6. From beyond it the
-                    // contact is hidden; from over the lead's shoulder it is under the minimum figure; no swing to 60
-                    // degrees frames both. Counted as still failing (the host plays it as written and logs it).
-                    ++unfixed;
-                    firstUnfixed = std::min(firstUnfixed, d);
+                // No shot is left failing: each is framed as written, moved, or skipped under a neighbour that frames
+                // over its window.
+                CHECK(farFixed);
+                if (skipped > 0) {
+                    // Measured: only the smallest kind (0.9 m tall) from 13.35 m, only shot 6. From beyond it the
+                    // contact is hidden; from over the lead's shoulder, even pulled 2 m in, it is under the minimum
+                    // figure. Shot 7 starts early over its window (the cut list logs it).
+                    skips += skipped;
+                    firstSkip = std::min(firstSkip, d);
+                    CHECK(skipped == 1);
                     CHECK(arenaEnemyHeight(kind) < 1.f);
-                    CHECK(d > 12.3f);
-                    CHECK(failed == 5);
+                    CHECK(d > 13.3f);
+                    CHECK(skippedShot == 5);
                 }
             } else {
                 CHECK(picked == &nearSet);
@@ -803,10 +820,11 @@ TEST_CASE("special cine: the range sweep: the far set from the switch point to l
     CHECK(lastFarFail < within);
     CHECK(lastFarFail > within - 2.f * kStep);
     // Past it the far set's release shot (6) loses the contact behind the target at every range, and is reframed
-    // (but for the smallest kind far out, above).
+    // (but for the smallest kind far out, pulled in or skipped, above).
     CHECK(reframed > 0);
     MESSAGE("the far set past the switch point: " << reframed << " shots reframed for a hidden contact or lead; "
-            << unfixed << " with no fix, from " << firstUnfixed << " m");
+            << skips << " skipped under a cover, from " << firstSkip << " m; none left failing");
+    CHECK(skips > 0);
     // The big kinds (radius over 0.5 m: hulk, stone bearer, titan, the kite boss) are left out: at contact both sets
     // put a camera in or behind such a body, and the far set needs 6 to 7.3 m. They wait for a boss rule.
 }
@@ -1348,9 +1366,13 @@ TEST_CASE("special cine: a shot no fix clears is counted as still failing, its f
     CHECK(c.first == SpecialCineProblem::BodyInLine);
     CHECK(c.last != SpecialCineProblem::None);
     CHECK_FALSE(c.ok);
-    CHECK(c.tries == 153); // every fix tried: as written, 36 of the old fixes, 32 orbits, 4 reverses, 80 reverse swings
+    CHECK(c.tries == 185); // every fix tried: as written, 36 of the old fixes, 32 orbits, 4 reverses, 80 reverse swings,
+                           // 32 reverses pulled in
     CHECK(c.alike == 0);
     CHECK_FALSE(c.fix.moved());
+    // A move of one shot has no neighbour to cover it: played as written.
+    CHECK(specialCineCoverShot(m, 0, st, nullptr, ring, 8) == SpecialCineCover::None);
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
     // Counted as the host counts it: one shot still failing.
     int stillFailing = 0;
     for (std::uint32_t i = 0; i < m.size(); ++i)
@@ -1464,4 +1486,202 @@ TEST_CASE("special cine: the partner's strike point against the contact line at 
     const SpecialCinePartnerStrike inside = specialCinePartnerStrike(*far, st, hit, CutsceneVec3{6.59f, 0.f, chest}, 0.45f);
     CHECK(inside.offLine < SpecialCinePartnerStrike::kOnLine);
     if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+}
+
+TEST_CASE("special cine: the smallest kind far out: shot 6 pulled in, past that skipped under shot 7; never a failing shot shown") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable arena;
+    REQUIRE_MESSAGE(importArenaTable(text, arena, &error), error);
+    const ArenaFighter& lead = arena.fighter("devin");
+    const ArenaEnemyKind* pup = nullptr;
+    for (std::size_t k = 0; k < arena.enemies.size(); ++k)
+        if (arena.enemyIds[k] == "maw_pup") pup = &arena.enemies[k];
+    REQUIRE(pup != nullptr);
+    REQUIRE(arenaEnemyHeight(*pup) < 1.f);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const std::uint32_t six = far->shotAt(7.16f), seven = six + 1, eight = six + 2;
+    REQUIRE(six == 5);
+    const SpecialCineShot& s6 = far->shot(six);
+    const CutsceneVec3 end = far->endFeet();
+    const float walk = std::sqrt(end.x * end.x + end.y * end.y);
+    const float contact = lead.bodyRadius + pup->bodyRadius;
+    const float length = far->length();
+    int pulled = 0, skipped = 0;
+    float firstPulled = 1e9f, lastPulled = -1.f, firstSkip = 1e9f, leastTurn = 360.f, worst = -1e9f;
+    for (int k = 0;; ++k) {
+        const float d = 12.35f + 0.05f * static_cast<float>(k);
+        if (d > lead.lockRange + 1e-3f) break;
+        CAPTURE(d);
+        SpecialCineStage st = stageAt(0.f, 0.f, d, 0.f);
+        st.targetRadius = pup->bodyRadius;
+        st.targetHeight = arenaEnemyHeight(*pup);
+        st.travel = travelAt(d, contact, walk);
+        st.bone = {0.3f, 0.25f, 1.1f};
+        REQUIRE(t.find("devin_special_01", specialCineDistance(st)) == far);
+        const SpecialCineBody body = bodyOf(st);
+        // The host's two passes: every shot's fix, then the cover for a shot none frames.
+        const auto before = ftcore_test::allocStats().count;
+        SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+        SpecialCineShotCheck c;
+        bool othersOk = true;
+        for (std::uint32_t i = 0; i < far->size(); ++i) {
+            if (far->shot(i).subject == SpecialCineSubject::None) continue;
+            const SpecialCineShotCheck ci = specialCineFixShot(*far, i, st, &body, 1);
+            if (i != six && !ci.ok) othersOk = false;
+            fixes[i] = ci.fix;
+            if (i == six) c = ci;
+        }
+        const SpecialCineCover cover = c.ok ? SpecialCineCover::None : specialCineCoverShot(*far, six, st, fixes, &body, 1);
+        SpecialCineCut cuts[SpecialCineMove::kMaxShots];
+        if (!c.ok) fixes[six].cover = cover;
+        const std::uint32_t n = specialCineCutList(*far, fixes, cuts, SpecialCineMove::kMaxShots);
+        if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+        CHECK(othersOk);
+        if (c.ok) {
+            // Framed by a fix up to 13.3 m. From 12.4 m it is the reverse pulled in, mirrored, off shot 8 by 30 degrees
+            // or more, and no farther from its look-at than as written (the cap).
+            CHECK(d < 13.32f);
+            if (c.fix.pull > 0.f) {
+                ++pulled;
+                firstPulled = std::min(firstPulled, d);
+                lastPulled = std::max(lastPulled, d);
+                CHECK(c.fix.orbit == doctest::Approx(SpecialCineFraming::kOrbitReverse));
+                CHECK(c.fix.mirror);
+                const SpecialCineShotView mine = specialCineShotView(*far, six, st, fixes);
+                const SpecialCineShotView last = specialCineShotView(*far, eight, st);
+                CHECK_FALSE(specialCineViewsAlike(mine, last));
+                float turn = std::fabs(mine.azimuth - last.azimuth);
+                if (turn > 180.f) turn = 360.f - turn;
+                CHECK(turn >= SpecialCineShotView::kAlikeAzimuth);
+                leastTurn = std::min(leastTurn, turn);
+                SpecialCineShotFix written[SpecialCineMove::kMaxShots]{};
+                written[six].mirror = c.fix.mirror;
+                written[six].orbit = c.fix.orbit;
+                for (int q = 0; q <= 4; ++q) {
+                    const float at = s6.in + (s6.out - s6.in) * (0.02f + 0.96f * static_cast<float>(q) / 4.f);
+                    const SpecialCineFrame a = specialCineFrameAt(*far, at, st, written);
+                    const SpecialCineFrame b = specialCineFrameAt(*far, at, st, fixes);
+                    const float authored = length3(sub3(a.pose.lookAt, a.pose.position));
+                    const float now = length3(sub3(a.pose.lookAt, b.pose.position));
+                    const float raise = std::isfinite(c.fix.raise) && c.fix.raise > 0.f ? c.fix.raise : 0.f;
+                    CHECK(now <= authored + raise + 1e-3f);
+                    worst = std::max(worst, now - authored - raise);
+                }
+            }
+            CHECK(n == far->size());
+            continue;
+        }
+        // Past 13.3 m no fix inside the cap frames it: skipped, shot 7 starting early over its window.
+        ++skipped;
+        firstSkip = std::min(firstSkip, d);
+        CHECK(d > 13.3f);
+        CHECK(c.last != SpecialCineProblem::None); // the last try, pulled 2 m, ends in the lead
+        REQUIRE(cover == SpecialCineCover::Next);
+        CHECK(specialCineShownShot(*far, six, fixes) == seven);
+        CHECK(fixes[six].moved());
+        // Every frame over the window, at 120 per second: shot 7 shown, passing every check.
+        int frames = 0, failing = 0, notSeven = 0;
+        for (int q = 0;; ++q) {
+            const float at = s6.in + static_cast<float>(q) / 120.f;
+            if (at >= s6.out) break;
+            ++frames;
+            if (specialCineFrameAt(*far, at, st, fixes).shot != seven) ++notSeven;
+            if (specialCineFrameProblem(*far, at, st, fixes, &body, 1) != SpecialCineProblem::None) ++failing;
+        }
+        CHECK(frames >= 29);
+        CHECK(notSeven == 0);
+        CHECK(failing == 0);
+        // The cut list: one cut fewer, from 0 to the move's end without a gap, no shot 6; shot 7 from shot 6's in.
+        REQUIRE(n == far->size() - 1);
+        CHECK(cuts[0].in == 0.f);
+        CHECK(cuts[n - 1].out == doctest::Approx(length));
+        for (std::uint32_t q = 0; q < n; ++q) {
+            CHECK(cuts[q].shot != six);
+            if (q > 0) CHECK(cuts[q].in == doctest::Approx(cuts[q - 1].out));
+            if (cuts[q].shot == seven) {
+                CHECK(cuts[q].in == doctest::Approx(s6.in));
+                CHECK(cuts[q].out == doctest::Approx(far->shot(seven).out));
+                CHECK(cuts[q].skipped == 1);
+            } else {
+                CHECK(cuts[q].skipped == 0);
+            }
+        }
+        // The hit lands in shot 6's window; its shot is the one shown.
+        CHECK(specialCineHit(*far, st, s6.in + 0.1f, 0.f, fixes).shot == seven);
+        CHECK(specialCineHit(*far, st, s6.in + 0.1f).shot == six); // as written
+    }
+    MESSAGE("maw_pup: shot 6 pulled in from ", firstPulled, " to ", lastPulled, " m (", pulled, " ranges, at least ", leastTurn,
+            " deg from shot 8, at most ", worst, " m past the cap); skipped under shot 7 from ", firstSkip, " m (", skipped,
+            " ranges)");
+    CHECK(pulled > 0);
+    CHECK(skipped > 0);
+    CHECK(firstPulled < 12.45f);
+    CHECK(firstSkip < 13.45f);
+    CHECK(worst <= 1e-3f);
+}
+
+TEST_CASE("special cine: a skipped shot as played: the cut lands on its in, the release still fires once, its shake plays") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const std::uint32_t six = 5, seven = 6;
+    const SpecialCineShot& s6 = far->shot(six);
+    REQUIRE(s6.shake);
+    REQUIRE_FALSE(far->shot(seven).shake);
+    const float release = far->release();
+    REQUIRE(release == doctest::Approx(s6.in));
+    SpecialCineStage st = stageAt(0.f, 0.f, 14.f, 0.f);
+    st.targetRadius = 0.35f;
+    st.targetHeight = 0.9f;
+    st.bone = {0.3f, 0.25f, 1.1f};
+    for (const SpecialCineCover cover : {SpecialCineCover::Next, SpecialCineCover::Previous}) {
+        CAPTURE(static_cast<int>(cover));
+        const std::uint32_t shown = cover == SpecialCineCover::Next ? seven : six - 1;
+        SpecialCinePlayer player;
+        player.begin(far);
+        SpecialCineShotFix skip;
+        skip.cover = cover;
+        REQUIRE(player.setFix(six, skip));
+        int releases = 0, cutsInWindow = 0, shakes = 0, wrongShot = 0;
+        bool sawSix = false, cutOnIn = false;
+        float releaseAt = -1.f;
+        const float dt = 1.f / 60.f;
+        while (player.active()) {
+            const SpecialCineFrame f = player.frame(st);
+            const float now = player.time();
+            if (f.shot == six) sawSix = true;
+            if (f.release) {
+                ++releases;
+                releaseAt = now;
+            }
+            if (now >= s6.in && now < s6.out) {
+                if (f.shot != shown) ++wrongShot;
+                if (f.cut) ++cutsInWindow;
+                if (f.shake.x != 0.f || f.shake.y != 0.f || f.shake.z != 0.f) ++shakes;
+                if (f.cut && f.shot == seven && now < s6.in + dt + 1e-4f) cutOnIn = true;
+            }
+            player.step(dt);
+        }
+        CHECK_FALSE(sawSix);
+        CHECK(wrongShot == 0);
+        CHECK(releases == 1);
+        CHECK(releaseAt >= release - 1e-4f);
+        CHECK(releaseAt < release + dt + 1e-4f);
+        CHECK(shakes > 0);
+        if (cover == SpecialCineCover::Next) {
+            CHECK(cutsInWindow == 1); // shot 7 cuts in on shot 6's in, and nothing cuts at its out
+            CHECK(cutOnIn);
+        } else {
+            CHECK(cutsInWindow == 0); // the shot before holds through; shot 7 cuts in on its own in
+        }
+    }
 }

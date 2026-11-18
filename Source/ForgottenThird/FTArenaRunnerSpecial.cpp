@@ -884,7 +884,7 @@ void UFTArenaRunner::PollSpecialSkip()
 // (the target marked) and the partner; the lead is the subject, not a body.
 void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target)
 {
-	SpecialShotsMoved = SpecialShotsBlocked = 0;
+	SpecialShotsMoved = SpecialShotsBlocked = SpecialShotsSkipped = 0;
 	ftcore::SpecialCineStage Stage = SpecialStageAt;
 	Stage.bone = {Stage.origin.x, Stage.origin.y, Stage.origin.z + 1.2f}; // the hand's not known ahead: the chest
 	ftcore::SpecialCineBody List[MaxEnemies + 1];
@@ -928,10 +928,15 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		}
 	}
 	FSpecialWorld World{GetWorld(), &Params};
+	const ftcore::SpecialCineWorldTest Test = World.World ? &SpecialWorldBlocked : nullptr;
+	// Two passes: every shot's fix first, then a cover (the shot next to it played over its window) for a shot no fix
+	// frames, tested against the fixes of the shots around it. A shot neither frames is played as written and logged.
+	ftcore::SpecialCineShotCheck Blocked[ftcore::SpecialCineMove::kMaxShots];
+	uint32 BlockedShot[ftcore::SpecialCineMove::kMaxShots];
+	uint32 BlockedCount = 0;
 	for (uint32 Shot = 0; Shot < Move.size(); ++Shot)
 	{
-		const ftcore::SpecialCineShotCheck Check =
-			ftcore::specialCineFixShot(Move, Shot, Stage, List, Count, World.World ? &SpecialWorldBlocked : nullptr, &World);
+		const ftcore::SpecialCineShotCheck Check = ftcore::specialCineFixShot(Move, Shot, Stage, List, Count, Test, &World);
 		if (Check.first == ftcore::SpecialCineProblem::None)
 		{
 			continue;
@@ -940,10 +945,8 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		const FString First = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.first)).c_str());
 		if (!Check.ok)
 		{
-			++SpecialShotsBlocked;
-			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s; %u like another shot): played as written."),
-				Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries,
-				UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.last)).c_str()), Check.alike);
+			Blocked[BlockedCount] = Check;
+			BlockedShot[BlockedCount++] = Shot;
 			continue;
 		}
 		const ftcore::SpecialCineShotFix& Fix = Check.fix;
@@ -954,6 +957,44 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 			Fix.aim ? TEXT("aimed, ") : TEXT(""), FMath::IsFinite(Fix.orbit) ? Fix.orbit : 0.f, Fix.raise > 0.f ? Fix.raise : 0.f,
 			Fix.pull > 0.f ? Fix.pull : 0.f);
 	}
+	for (uint32 K = 0; K < BlockedCount; ++K)
+	{
+		const uint32 Shot = BlockedShot[K];
+		const ftcore::SpecialCineShotCheck& Check = Blocked[K];
+		const ftcore::SpecialCineShot& S = Move.shot(Shot);
+		const FString First = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.first)).c_str());
+		const FString Last = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.last)).c_str());
+		const ftcore::SpecialCineCover Cover = ftcore::specialCineCoverShot(Move, Shot, Stage, SpecialPlayer.fixes(), List, Count, Test, &World);
+		ftcore::SpecialCineShotFix Skip;
+		Skip.cover = Cover;
+		if (Cover != ftcore::SpecialCineCover::None && SpecialPlayer.setFix(Shot, Skip))
+		{
+			++SpecialShotsSkipped;
+			const uint32 Shown = ftcore::specialCineShownShot(Move, Shot, SpecialPlayer.fixes());
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s; %u like another shot): skipped, shot %u plays over its window (%s)."),
+				Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, *Last, Check.alike, Shown + 1,
+				Cover == ftcore::SpecialCineCover::Next ? TEXT("starting early") : TEXT("held on"));
+			continue;
+		}
+		++SpecialShotsBlocked;
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s; %u like another shot) and no shot next to it covers it: played as written."),
+			Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, *Last, Check.alike);
+	}
+	// The cut list as it will play: each shown shot with its span, and the shots it plays over.
+	ftcore::SpecialCineCut Cuts[ftcore::SpecialCineMove::kMaxShots];
+	const uint32 CutCount = FMath::Min(ftcore::specialCineCutList(Move, SpecialPlayer.fixes(), Cuts, ftcore::SpecialCineMove::kMaxShots),
+		static_cast<uint32>(ftcore::SpecialCineMove::kMaxShots));
+	FString CutText;
+	for (uint32 C = 0; C < CutCount; ++C)
+	{
+		CutText += FString::Printf(TEXT("%s%u %.2f-%.2f"), C ? TEXT(", ") : TEXT(""), Cuts[C].shot + 1, Cuts[C].in, Cuts[C].out);
+		if (Cuts[C].skipped)
+		{
+			CutText += FString::Printf(TEXT(" (over %u skipped)"), Cuts[C].skipped);
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special cut list: %u cuts for %u shots, %d skipped: %s."), CutCount, Move.size(),
+		SpecialShotsSkipped, *CutText);
 }
 
 bool UFTArenaRunner::BeginSpecial()
@@ -1008,7 +1049,6 @@ bool UFTArenaRunner::BeginSpecial()
 	// The hit: the impact row's time (the impact itself when the move has none), at the contact the framing tests.
 	const TCHAR* HitRow = TEXT("the impact");
 	const float HitAt = Rules ? SpecialHitTime(*Rules, V.impactTime, &HitRow) : V.impactTime;
-	SpecialHit = ftcore::specialCineHit(*Move, SpecialStageAt, HitAt, SpecialStageAt.targetRadius);
 	bSpecialHitPlayed = false;
 	bSpecialContactDue = false;
 	// Nothing paused on the performer, nothing shaking the camera.
@@ -1032,6 +1072,8 @@ bool UFTArenaRunner::BeginSpecial()
 	const double FixFrom = FPlatformTime::Seconds();
 	SpecialCineFixShots(*Move, Target); // after the begin (it clears the fixes)
 	const double FixMs = (FPlatformTime::Seconds() - FixFrom) * 1000.0;
+	// After the fixes: a skipped shot's window shows the shot over it, and the hit's shot is the one shown.
+	SpecialHit = ftcore::specialCineHit(*Move, SpecialStageAt, HitAt, SpecialStageAt.targetRadius, SpecialPlayer.fixes());
 	PlaySpecialClip(true);
 	bSpecialOn = true;
 	bSpecialPlaced = false;
@@ -1070,11 +1112,11 @@ bool UFTArenaRunner::BeginSpecial()
 		bSpecialHitFx ? TEXT("") : TEXT(" (-ArenaSpecialNoHitFx: no effect)"));
 	const float Off = FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y));
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): the %s set (%.2f m, near within %.2f m), %u shots (%d moved, %d still failing; search %.2f ms), %.2f s (Core %.2f s); ")
+		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): the %s set (%.2f m, near within %.2f m), %u shots (%d moved, %d skipped, %d still failing; search %.2f ms), %.2f s (Core %.2f s); ")
 		TEXT("froze %d actors, %d effects, %d sounds, %d bodies, %d cloths in %.2f ms. ")
 		TEXT("Clamp%s: travel %.2f m (%.0f%%), back %.2f m (limited by %s); Core: from (%.2f, %.2f) to (%.2f, %.2f) m (travel share %.2f), %.2f m from the clamped end."),
 		Fight.time(), *Id, Target, Dist, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight, Set, Range, Far->nearWithin(), Move->size(), SpecialShotsMoved,
-		SpecialShotsBlocked, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
+		SpecialShotsSkipped, SpecialShotsBlocked, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
 		SpecialFreeze.BodyCount(), SpecialFreeze.ClothCount(), SpecialBeginMs, bSameTarget ? TEXT("") : TEXT(" (again, for Core's target)"),
 		V.travel, SpecialTravel * 100.f, SpecialBack, SpecialLimit, V.origin.x, V.origin.y, V.end.x, V.end.y, SpecialStageAt.travel, Off);
 	if (Off > 0.05f)
@@ -1497,9 +1539,11 @@ bool UFTArenaRunner::TakeSpecialStill(FString& OutName)
 		return false;
 	}
 	const ftcore::SpecialCineMove& Move = *SpecialPlayer.move();
-	const uint32 Shot = Move.shotAt(SpecialPlayer.time());
+	const uint32 Timed = Move.shotAt(SpecialPlayer.time());
+	const uint32 Shot = ftcore::specialCineShownShot(Move, Timed, SpecialPlayer.fixes()); // the shot shown (a cover's)
 	const bool bHit = SpecialStillAt[SpecialStillNext] == SpecialHit.stillAt;
-	OutName = FString::Printf(TEXT("sp_%05.2f_shot%u%s"), SpecialPlayer.time(), Shot + 1, bHit ? TEXT("_hit") : TEXT(""));
+	const FString Over = Shot != Timed ? FString::Printf(TEXT("_over%u"), Timed + 1) : FString();
+	OutName = FString::Printf(TEXT("sp_%05.2f_shot%u%s%s"), SpecialPlayer.time(), Shot + 1, *Over, bHit ? TEXT("_hit") : TEXT(""));
 	++SpecialStillNext;
 	return true;
 #endif

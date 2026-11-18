@@ -276,6 +276,15 @@ struct SpecialCineFrame {
 // look-at for "none"; positive toward the stage's right), aimed (the look-at moved onto the subject's chest), then
 // pulled `pull` metres along its own axis toward the look-at (never closer than kMinPullGap). An explicit focus is
 // shortened by the pull; an aimed shot focuses on its look-at.
+// A shot no fix frames is skipped instead when a neighbour framed over its window passes (specialCineCoverShot): its
+// `cover` names the shot shown over its window, the next one started early (held at its first key until its own in)
+// or the one before held at its last key; the shown shot keeps its own fix, and a neighbour that is itself skipped
+// covers nothing. The skipped shot's shake still plays over its window (it belongs to the beat, not to the camera).
+enum class SpecialCineCover : std::uint8_t {
+    None,     // the shot plays
+    Next,     // skipped: the next shot starts at this one's in
+    Previous, // skipped: the shot before holds to this one's out
+};
 struct SpecialCineShotFix {
     static constexpr float kMinPullGap = 0.5f; // metres left between the pulled camera and its look-at
     bool mirror = false;
@@ -283,7 +292,10 @@ struct SpecialCineShotFix {
     float pull = 0.f;  // metres, toward the look-at (negative or NaN: none)
     bool aim = false;  // look at the subject (a "none" shot is not aimed)
     float orbit = 0.f; // degrees about the subject (NaN: none)
-    bool moved() const { return mirror || aim || raise > 0.f || pull > 0.f || orbit > 0.f || orbit < 0.f; }
+    SpecialCineCover cover = SpecialCineCover::None;
+    bool moved() const {
+        return mirror || aim || raise > 0.f || pull > 0.f || orbit > 0.f || orbit < 0.f || cover != SpecialCineCover::None;
+    }
 };
 
 // A body the shots must not enter or look through: an upright cylinder (world metres). `target`: the stage's target
@@ -363,6 +375,11 @@ struct SpecialCineFraming {
     // shoulder. 2.5 last: it clears the 30 degrees by the least, and is needed only at lock range (14.75 m and more,
     // where 5 already loses a figure).
     static constexpr float kReverseSwings[5] = {5.f, 15.f, 30.f, 45.f, 2.5f};
+    // The reverse angle pulled in toward its look-at by these (metres; in, so inside the cap), mirrored first, when far
+    // out the smallest kinds stand under the minimum figure from over the lead's shoulder (maw_pup, 0.9 m tall: the
+    // far set's shot 6 mirrored and pulled 1 m frames both from 12.4 to 13.3 m, 31.6 degrees from shot 8; past that no
+    // fix inside the cap frames it, and the shot is skipped).
+    static constexpr float kReversePulls[4] = {0.5f, 1.f, 1.5f, 2.f};
 };
 
 // The first problem of `move`'s frame at `t` (fixes as in specialCineFrameAt). `bodies` (null with `count` 0) and
@@ -401,21 +418,44 @@ FTCORE_API bool specialCineViewsAlike(const SpecialCineShotView& a, const Specia
 // then aimed); then orbited 15, 30, 45, 60 degrees (each to the right, then the left; each plain, then aimed), and
 // all of that again raised kOrbitRaise; then the reverse angle (180 degrees) the same way: plain, aimed, raised,
 // raised and aimed; last, the reverse swung 5, 15, 30, 45 and 2.5 degrees (kReverseSwings), each to the right then the
-// left, each as written then mirrored, each plain then aimed, and all of that again raised kOrbitRaise. A shot with
-// subject "none" is never aimed. A fix that passes every sample but reads like another shot of the move as written
-// that frames someone (specialCineViewsAlike) is refused (AlikeShot, counted in `alike`). The first that passes is
-// returned; none: ok false and the fix left empty (the host plays it as written and counts it as still failing). At
-// most 153 tries. No allocation.
+// left, each as written then mirrored, each plain then aimed, and all of that again raised kOrbitRaise; last, the
+// reverse pulled 0.5, 1, 1.5 and 2 m (kReversePulls), each mirrored then as written, each plain then aimed, and all of
+// that again raised kOrbitRaise. A shot with subject "none" is never aimed. A fix that passes every sample but reads
+// like another shot of the move as written that frames someone (specialCineViewsAlike) is refused (AlikeShot, counted
+// in `alike`). The first that passes is returned; none: ok false and the fix left empty (the host then tries the
+// cover, specialCineCoverShot, once every shot's fix is known). At most 185 tries. No allocation.
 FTCORE_API SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                                    const SpecialCineBody* bodies, std::uint32_t count,
                                                    SpecialCineWorldTest world = nullptr, void* user = nullptr);
+
+// The shot shown at shot `shot`'s place: its cover's (a neighbour that is not itself skipped) when `fixes` (null, or one
+// per shot) skips it, else `shot`. No allocation.
+FTCORE_API std::uint32_t specialCineShownShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineShotFix* fixes);
+// For a shot no fix frames, with every other shot's fix known (`fixes`: one per shot, the shot's own ignored): the
+// neighbour that, framed over this shot's window (kSamples times, the next one first), passes every check, else None
+// (the host plays it as written and counts it as still failing). A shot with subject "none" or one already skipped
+// never covers. No allocation.
+FTCORE_API SpecialCineCover specialCineCoverShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                                 const SpecialCineShotFix* fixes, const SpecialCineBody* bodies,
+                                                 std::uint32_t count, SpecialCineWorldTest world = nullptr, void* user = nullptr);
+// The cut list as played under `fixes` (null, or one per shot): the shots shown in order, each from its in to its
+// out, a cover's run grown over the shot it covers; `skipped` counts the shots it covers. Written into `out` (up to
+// `capacity`); returns how many cuts there are (more than `capacity`: the rest not written). No allocation.
+struct SpecialCineCut {
+    std::uint32_t shot = 0;
+    float in = 0.f;
+    float out = 0.f;
+    std::uint32_t skipped = 0;
+};
+FTCORE_API std::uint32_t specialCineCutList(const SpecialCineMove& move, const SpecialCineShotFix* fixes, SpecialCineCut* out,
+                                            std::uint32_t capacity);
 
 // The horizontal fov of a lens in mm on a 36 mm sensor, degrees (10 mm and below as 10 mm).
 FTCORE_API float specialCineFov(float lensMm);
 // A point of the stage frame from `anchor` (see the header). No allocation.
 FTCORE_API CutsceneVec3 specialCinePoint(const SpecialCineStage& stage, SpecialCineAnchor anchor, const CutsceneVec3& at);
 // The camera of `move` at `t` seconds for `stage` (cut and release left false: the player sets them). `fixes`: null,
-// or one per shot of the move (the shot at `t` is moved by its fix).
+// or one per shot of the move (the shot at `t` is moved by its fix; a skipped one shows its cover, `shot` the cover's).
 FTCORE_API SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
                                                const SpecialCineShotFix* fixes = nullptr);
 
@@ -423,7 +463,8 @@ FTCORE_API SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, floa
 // on the move's clock (ArenaSpecialView::impactTime: the strike plus min(distance / waveSpeed, maxTravel)), clamped to
 // the move (NaN: the release); `at` the contact the framing tests then (on the target's surface toward the lead's feet
 // where its travel puts them at `time`, kContactOut out, at the lead's chest height but no higher than the target's
-// chest; `radius` the target body's when wider than the stage's); `shot` the shot playing at `time`, and `stillAt` the
+// chest; `radius` the target body's when wider than the stage's); `shot` the shot shown at `time` (under `fixes`: null,
+// or one per shot; a skipped shot's cover), and `stillAt` the
 // still that shows it (kStillLag later, inside the move). No allocation.
 struct SpecialCineHit {
     static constexpr float kStillLag = 0.03f; // s: the hit's still, after the effect has spawned
@@ -433,7 +474,7 @@ struct SpecialCineHit {
     std::uint32_t shot = 0;
 };
 FTCORE_API SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime,
-                                         float radius = 0.f);
+                                         float radius = 0.f, const SpecialCineShotFix* fixes = nullptr);
 
 // The partner's strike point at the hit, as the host's PartnerImpact puts a partner blow: on the target's surface
 // (radius `radius`, or the stage's when wider) toward the partner, at `partnerChest`'s height; `offLine` its distance (m)
@@ -461,6 +502,7 @@ public:
     // Moves shot `shot` of the playing move for the rest of this play (a begin clears every fix). False out of range.
     FTCORE_API bool setFix(std::uint32_t shot, const SpecialCineShotFix& fix);
     const SpecialCineShotFix& fix(std::uint32_t shot) const { return fixes_[shot < SpecialCineMove::kMaxShots ? shot : 0]; }
+    const SpecialCineShotFix* fixes() const { return fixes_; } // one per shot (kMaxShots)
     bool active() const { return move_ != nullptr && !finished_; }
     bool finished() const { return finished_; }
     float time() const { return time_; }

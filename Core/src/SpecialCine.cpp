@@ -339,7 +339,8 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     if (move.empty()) return f;
     const float length = move.length();
     const float tc = std::isfinite(t) ? std::clamp(t, 0.f, length) : 0.f;
-    const std::uint32_t i = move.shotAt(tc);
+    const std::uint32_t timed = move.shotAt(tc);
+    const std::uint32_t i = specialCineShownShot(move, timed, fixes); // a skipped shot shows its cover, clamped to its keys
     const SpecialCineShot& s = move.shot(i);
     const float p = ease01(s.ease, (tc - s.in) / std::max(s.out - s.in, kMinShot));
     f.shot = i;
@@ -395,9 +396,10 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     const float focus = aimed ? 0.f : s.focusFrom + (s.focusTo - s.focusFrom) * p - pulled;
     f.focus = focus > 0.f ? focus : std::max(length3(sub3(f.pose.lookAt, f.pose.position)), 0.1f);
     f.fStop = s.fStop > 0.f ? s.fStop : move.fStop();
-    if (s.shake) {
+    const SpecialCineShot& beat = move.shot(timed); // the shake belongs to the beat: a skipped shot's still plays
+    if (beat.shake) {
         const SpecialCineShake& k = move.shake();
-        const float u = tc - s.in;
+        const float u = tc - beat.in;
         const float fall = std::exp(-u / k.decay);
         const float w = 2.f * kPi * u;
         // Fixed phases per axis, so the three do not start together.
@@ -605,13 +607,14 @@ float contactRadius(const SpecialCineStage& stage, const SpecialCineBody* bodies
 
 } // namespace
 
-SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime, float radius) {
+SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime, float radius,
+                              const SpecialCineShotFix* fixes) {
     SpecialCineHit hit;
     const float length = move.length();
     const float t = std::isfinite(impactTime) ? impactTime : move.release();
     hit.time = std::clamp(t, 0.f, std::max(length, 0.f));
     hit.stillAt = std::min(hit.time + SpecialCineHit::kStillLag, std::max(length, 0.f));
-    hit.shot = move.empty() ? 0 : move.shotAt(hit.time);
+    hit.shot = move.empty() ? 0 : specialCineShownShot(move, move.shotAt(hit.time), fixes);
     const CutsceneVec3 feet = leadFeet(move, stage, length > 0.f ? hit.time / length : 0.f);
     const float own = std::isfinite(stage.targetRadius) ? std::max(stage.targetRadius, 0.f) : 0.f;
     hit.at = contactPoint(stage, feet, std::isfinite(radius) ? std::max(own, radius) : own);
@@ -701,11 +704,10 @@ SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t,
 
 namespace {
 
-// The first problem of shot `shot` under `fix` over its samples, and when.
-SpecialCineProblem shotProblem(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage, const SpecialCineShotFix& fix,
-                               const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user, float& at) {
-    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
-    fixes[shot] = fix;
+// The first problem over shot `shot`'s window at its samples under `fixes` (one per shot), and when.
+SpecialCineProblem windowProblem(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                 const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
+                                 SpecialCineWorldTest world, void* user, float& at) {
     const SpecialCineShot& s = move.shot(shot);
     constexpr std::uint32_t n = SpecialCineFraming::kSamples;
     for (std::uint32_t k = 0; k < n; ++k) {
@@ -719,6 +721,14 @@ SpecialCineProblem shotProblem(const SpecialCineMove& move, std::uint32_t shot, 
         }
     }
     return SpecialCineProblem::None;
+}
+
+// The first problem of shot `shot` under `fix` (every other shot as written) over its samples, and when.
+SpecialCineProblem shotProblem(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage, const SpecialCineShotFix& fix,
+                               const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user, float& at) {
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    fixes[shot] = fix;
+    return windowProblem(move, shot, stage, fixes, bodies, count, world, user, at);
 }
 
 // Whether shot `shot` under `fix` stands where another shot of the move stands as written (one that frames someone:
@@ -824,8 +834,64 @@ SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32
                     const float orbit = SpecialCineFraming::kOrbitReverse + sign * swing;
                     if (attempt({mirror, raise, 0.f, false, orbit}) || (aimable && attempt({mirror, raise, 0.f, true, orbit}))) return c;
                 }
+    // The reverse pulled in (inside the cap), mirrored first, for the smallest kinds far out.
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        for (const float pull : SpecialCineFraming::kReversePulls)
+            for (const bool mirror : {true, false}) {
+                const float orbit = SpecialCineFraming::kOrbitReverse;
+                if (attempt({mirror, raise, pull, false, orbit}) || (aimable && attempt({mirror, raise, pull, true, orbit}))) return c;
+            }
     c.ok = false;
     return c;
+}
+
+std::uint32_t specialCineShownShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineShotFix* fixes) {
+    if (fixes == nullptr || shot >= move.size()) return shot;
+    switch (fixes[shot].cover) {
+    case SpecialCineCover::Next:
+        return shot + 1 < move.size() && fixes[shot + 1].cover == SpecialCineCover::None ? shot + 1 : shot;
+    case SpecialCineCover::Previous:
+        return shot > 0 && fixes[shot - 1].cover == SpecialCineCover::None ? shot - 1 : shot;
+    case SpecialCineCover::None: break;
+    }
+    return shot;
+}
+
+SpecialCineCover specialCineCoverShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                      const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
+                                      SpecialCineWorldTest world, void* user) {
+    if (shot >= move.size()) return SpecialCineCover::None;
+    SpecialCineShotFix trial[SpecialCineMove::kMaxShots]{};
+    if (fixes != nullptr) std::copy(fixes, fixes + move.size(), trial);
+    for (const SpecialCineCover cover : {SpecialCineCover::Next, SpecialCineCover::Previous}) {
+        trial[shot] = SpecialCineShotFix{};
+        trial[shot].cover = cover;
+        const std::uint32_t shown = specialCineShownShot(move, shot, trial);
+        if (shown == shot || move.shot(shown).subject == SpecialCineSubject::None) continue;
+        float at = 0.f;
+        if (windowProblem(move, shot, stage, trial, bodies, count, world, user, at) == SpecialCineProblem::None) return cover;
+    }
+    return SpecialCineCover::None;
+}
+
+std::uint32_t specialCineCutList(const SpecialCineMove& move, const SpecialCineShotFix* fixes, SpecialCineCut* out,
+                                 std::uint32_t capacity) {
+    std::uint32_t n = 0;
+    SpecialCineCut run;
+    for (std::uint32_t i = 0; i < move.size(); ++i) {
+        const SpecialCineShot& s = move.shot(i);
+        const std::uint32_t shown = specialCineShownShot(move, i, fixes);
+        if (n > 0 && run.shot == shown) {
+            run.out = s.out;
+        } else {
+            if (n > 0 && out != nullptr && n <= capacity) out[n - 1] = run;
+            run = SpecialCineCut{shown, s.in, s.out, 0};
+            ++n;
+        }
+        if (shown != i) ++run.skipped;
+    }
+    if (n > 0 && out != nullptr && n <= capacity) out[n - 1] = run;
+    return n;
 }
 
 // ---- the player ----
