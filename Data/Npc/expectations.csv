@@ -1,0 +1,2 @@
+exp_id,npc_id,kind,due,window_min,remind_lead_min,kept_by,broken_by,deed_kept,deed_broken,deed_missed
+exp_meet_dusk,npc_fixer_01,promise,1:19:00,120,60,promise_meet_dusk,,promise_kept,promise_broken,promise_broken
