@@ -526,7 +526,7 @@ TEST_CASE("arena special: a stale impactAt key is unknown, sets nothing, and the
     CHECK(importArenaSpecials(R"({ "moves": [ { "id": "a", "lead": "devin", "impactAt": 3.0 } ] })", t, nullptr, &warnings));
     REQUIRE(warnings.size() == 1);
     CHECK(warnings[0] == "moves[0]: unknown key: impactAt");
-    REQUIRE(t.moves.size() == 1);
+    REQUIRE(t.count == 1);
     CHECK(t.moves[0].strikeAt == doctest::Approx(ArenaSpecialRules{}.strikeAt));
 
     std::string text;
