@@ -5,7 +5,8 @@
 // span rule on every box. An offline build step on the private tables.
 //
 //   ftcore_floatcheck --boxes B --r16 H --samples N --origin X,Y --spacing M [--hero 1] [--kit K] [--eave E]
-//                     [--plinths 1 --anchor X,Y [--exempt-rect X0,Y0,X1,Y1[;...]]] [--out CSV] [--report R]
+//                     [--plinths 1 --anchor X,Y [--exempt-rect X0,Y0,X1,Y1[;...]]] [--fix 0] [--out CSV] [--report R]
+// --fix 0: no fix pass (the plinths and the check after on the boxes as they stand).
 //
 // --kit K: the kit table (first column the box id); those boxes keep their shape (an under-box, never lowered).
 // --eave E: the span rule's maxEave (default 1.5 m; decks keep their own 3.5 m, FloatSpec::kindEaves). Prints the three lists (fixed, spanned, failing) by id and their
@@ -116,7 +117,7 @@ const char* outcomeName(FloatOutcome o) {
 int main(int argc, char** argv) {
     std::string boxesPath, r16Path, kitPath, roadsPath, outPath, reportPath, anchorText, exemptText;
     double samples = 0.0, origin[2] = {0.0, 0.0}, spacing = 1.0, eave = 1.5;
-    bool hero = false, plinths = false;
+    bool hero = false, plinths = false, fix = true;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i], v = argv[i + 1];
         if (k == "--boxes") boxesPath = v;
@@ -129,6 +130,7 @@ int main(int argc, char** argv) {
         else if (k == "--kit") kitPath = v;
         else if (k == "--eave") eave = std::atof(v.c_str());
         else if (k == "--plinths") plinths = v == "1";
+        else if (k == "--fix") fix = v != "0";
         else if (k == "--anchor") anchorText = v;
         else if (k == "--exempt-rect") exemptText = v;
         else if (k == "--roads") roadsPath = v;
@@ -223,7 +225,7 @@ int main(int argc, char** argv) {
     spec.maxEave = eave;
     FoundationPlan plan;
     FoundationStats st;
-    if (!planFoundations(ground, boxes, visible, &keep, spec, plan, st, &err)) return die(err);
+    if (fix && !planFoundations(ground, boxes, visible, &keep, spec, plan, st, &err)) return die(err);
     out += "fix pass (" + std::to_string(plan.passes) + " passes, eave " + num(eave, 1) + " m): " + std::to_string(st.floating) +
            " floats; " + std::to_string(st.skirts) + " skirts, " + std::to_string(st.podiums) + " podiums, " + std::to_string(st.lowered) +
            " lowered, " + std::to_string(st.underBoxes) + " under-boxes, " + std::to_string(st.snapped) + " snapped, " +
