@@ -689,8 +689,9 @@ void UFTArenaRunner::PollSpecialSkip()
 
 // Each shot tested once at the start (the world is frozen) by Core's framing check (ftcore::specialCineFixShot): its
 // camera inside a body or the static world, a body or the world in its line to the subject, or the subject out of the
-// safe frame or too small. A failing shot gets the first fix that passes (mirrored, raised, aimed, pulled; Core's
-// order); none passes: it plays as written and is logged. The bodies are Core's upright cylinders: the living enemies
+// safe frame or too small, or the contact or most of the lead hidden behind a body. A failing shot gets the first fix
+// that passes (mirrored, raised, aimed, pulled, then orbited about the subject; Core's order); none passes: it plays as
+// written and is logged as still failing. The bodies are Core's upright cylinders: the living enemies
 // (the target marked) and the partner; the lead is the subject, not a body.
 void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target)
 {
@@ -759,9 +760,10 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		const ftcore::SpecialCineShotFix& Fix = Check.fix;
 		SpecialPlayer.setFix(Shot, Fix);
 		++SpecialShotsMoved;
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s: moved (try %u): %s%sraised %.1f m, pulled %.1f m."),
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s: moved (try %u): %s%sorbited %.0f deg, raised %.1f m, pulled %.1f m."),
 			Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, Fix.mirror ? TEXT("mirrored, ") : TEXT(""),
-			Fix.aim ? TEXT("aimed, ") : TEXT(""), Fix.raise > 0.f ? Fix.raise : 0.f, Fix.pull > 0.f ? Fix.pull : 0.f);
+			Fix.aim ? TEXT("aimed, ") : TEXT(""), FMath::IsFinite(Fix.orbit) ? Fix.orbit : 0.f, Fix.raise > 0.f ? Fix.raise : 0.f,
+			Fix.pull > 0.f ? Fix.pull : 0.f);
 	}
 }
 

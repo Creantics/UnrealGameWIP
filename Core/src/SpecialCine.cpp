@@ -104,6 +104,19 @@ CutsceneVec3 strikePoint(const SpecialCineStage& stage, const CutsceneVec3& lead
     return p;
 }
 
+// The contact: on the target's surface (radius `radius`) toward the lead's feet `lead`, out the fist's depth
+// (kContactOut), at the lead's chest height but no higher than the target's chest.
+CutsceneVec3 contactPoint(const SpecialCineStage& stage, const CutsceneVec3& lead, float radius) {
+    CutsceneVec3 d = sub3(lead, stage.target);
+    d.z = 0.f;
+    const float n = length3(d);
+    CutsceneVec3 p = stage.target;
+    const float out = (std::isfinite(radius) ? std::max(radius, 0.f) : 0.f) + SpecialCineFraming::kContactOut;
+    if (n > 1e-4f) p = add3(p, scale3(d, std::min(out, n) / n));
+    p.z = std::min(lead.z + kChest * heightOr(stage.leadHeight), stage.target.z + kChest * heightOr(stage.targetHeight));
+    return p;
+}
+
 // The point an aimed shot looks at, at `t`: the subject's chest (the lead's where its travel puts it then; both: halfway;
 // a big target's: its strike point, tilted up kBigTilt).
 CutsceneVec3 aimPoint(const SpecialCineMove& move, const SpecialCineShot& s, const SpecialCineStage& stage, float t,
@@ -146,6 +159,8 @@ std::string_view specialCineProblemName(SpecialCineProblem problem) {
     case SpecialCineProblem::World: return "the world";
     case SpecialCineProblem::OffFrame: return "off frame";
     case SpecialCineProblem::TooSmall: return "too small";
+    case SpecialCineProblem::ContactHidden: return "the contact hidden";
+    case SpecialCineProblem::LeadHidden: return "the lead hidden";
     }
     return "none";
 }
@@ -342,6 +357,26 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
                         ? lerp3(specialCinePoint(stage, s.lookAnchor, lookA), specialCinePoint(stage, s.lookToAnchor(), lookB), p)
                         : specialCinePoint(stage, s.lookAnchor, look);
     if (std::isfinite(fix.raise) && fix.raise > 0.f) f.pose.position.z += fix.raise;
+    if (std::isfinite(fix.orbit) && fix.orbit != 0.f) {
+        // Camera and look-at turned together about the upright line through the subject.
+        const CutsceneVec3 feet = leadFeet(move, stage, length > 0.f ? std::clamp(tc / length, 0.f, 1.f) : 0.f);
+        const CutsceneVec3 contact = contactPoint(stage, feet, stage.targetRadius);
+        CutsceneVec3 pivot = f.pose.lookAt;
+        switch (s.subject) {
+        case SpecialCineSubject::Lead: pivot = feet; break;
+        case SpecialCineSubject::Target: pivot = contact; break;
+        case SpecialCineSubject::Both: pivot = lerp3(feet, contact, 0.5f); break;
+        case SpecialCineSubject::None: break;
+        }
+        const float a = fix.orbit * kPi / 180.f, ca = std::cos(a), sa = std::sin(a);
+        const auto turn = [&pivot, ca, sa](CutsceneVec3& q) {
+            const float x = q.x - pivot.x, y = q.y - pivot.y;
+            q.x = pivot.x + x * ca - y * sa;
+            q.y = pivot.y + x * sa + y * ca;
+        };
+        turn(f.pose.position);
+        turn(f.pose.lookAt);
+    }
     const bool aimed = fix.aim && s.subject != SpecialCineSubject::None;
     if (aimed) f.pose.lookAt = aimPoint(move, s, stage, tc, f.pose.lookAt);
     float pulled = 0.f;
@@ -502,6 +537,70 @@ SpecialCineProblem lineTo(const View& v, CutsceneVec3 chest, const SpecialCineBo
     return SpecialCineProblem::None;
 }
 
+// The segment a..b crosses body `body`'s upright cylinder (exact: the part of the segment inside its circle, then
+// its heights there against the body's).
+bool segmentHitsBody(const CutsceneVec3& a, const CutsceneVec3& b, const SpecialCineBody& body) {
+    const float r = std::max(body.radius, 0.f), h = std::max(body.height, 0.f);
+    const float bottom = body.feet.z, top = body.feet.z + h;
+    const float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const float ox = a.x - body.feet.x, oy = a.y - body.feet.y;
+    const float qa = dx * dx + dy * dy, qb = 2.f * (ox * dx + oy * dy), qc = ox * ox + oy * oy - r * r;
+    float t0 = 0.f, t1 = 1.f;
+    if (qa < 1e-10f) { // upright: inside the circle or not
+        if (qc >= 0.f) return false;
+    } else {
+        const float disc = qb * qb - 4.f * qa * qc;
+        if (disc <= 0.f) return false;
+        const float root = std::sqrt(disc);
+        t0 = std::max(t0, (-qb - root) / (2.f * qa));
+        t1 = std::min(t1, (-qb + root) / (2.f * qa));
+        if (t0 >= t1) return false;
+    }
+    const float z0 = a.z + dz * t0, z1 = a.z + dz * t1;
+    return std::max(z0, z1) >= bottom && std::min(z0, z1) <= top;
+}
+
+bool segmentHitsAny(const CutsceneVec3& a, const CutsceneVec3& b, const SpecialCineBody* bodies, std::uint32_t count) {
+    for (std::uint32_t i = 0; i < count; ++i)
+        if (segmentHitsBody(a, b, bodies[i])) return true;
+    return false;
+}
+
+// The share of the lead's sample points (feet `feet`, `height` tall) the eye sees past the bodies.
+float leadShare(const CutsceneVec3& eye, const CutsceneVec3& feet, float height, const SpecialCineStage& stage,
+                const SpecialCineBody* bodies, std::uint32_t count) {
+    constexpr std::uint32_t axis = SpecialCineFraming::kLeadAxisPoints;
+    std::uint32_t seen = 0;
+    for (std::uint32_t k = 0; k < axis; ++k) {
+        const float z = feet.z + height * static_cast<float>(k) / static_cast<float>(axis - 1);
+        if (!segmentHitsAny(eye, {feet.x, feet.y, z}, bodies, count)) ++seen;
+    }
+    // The shoulders: square to the eye's line on the ground (from straight above: the stage's right).
+    float sx = -(feet.y - eye.y), sy = feet.x - eye.x;
+    const float n = std::sqrt(sx * sx + sy * sy);
+    if (n > 1e-3f) {
+        sx /= n;
+        sy /= n;
+    } else {
+        float fx = 1.f, fy = 0.f;
+        stageAxes(stage, fx, fy);
+        sx = -fy;
+        sy = fx;
+    }
+    const float z = feet.z + SpecialCineFraming::kShoulderHeight * height, w = SpecialCineFraming::kShoulderHalf;
+    if (!segmentHitsAny(eye, {feet.x + sx * w, feet.y + sy * w, z}, bodies, count)) ++seen;
+    if (!segmentHitsAny(eye, {feet.x - sx * w, feet.y - sy * w, z}, bodies, count)) ++seen;
+    return static_cast<float>(seen) / static_cast<float>(axis + 2);
+}
+
+// The radius the contact sits out from: the stage's, or the target body's when wider.
+float contactRadius(const SpecialCineStage& stage, const SpecialCineBody* bodies, std::uint32_t count) {
+    float r = std::isfinite(stage.targetRadius) ? std::max(stage.targetRadius, 0.f) : 0.f;
+    for (std::uint32_t i = 0; i < count; ++i)
+        if (bodies[i].target && std::isfinite(bodies[i].radius)) r = std::max(r, bodies[i].radius);
+    return r;
+}
+
 } // namespace
 
 SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
@@ -548,8 +647,14 @@ SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t,
     if (target) {
         CutsceneVec3 chest = stage.target;
         chest.z += kChest * targetH;
-        return lineTo(v, big ? strike : chest, bodies, count, true, world, user);
+        const SpecialCineProblem p = lineTo(v, big ? strike : chest, bodies, count, true, world, user);
+        if (p != SpecialCineProblem::None) return p;
     }
+    // Last, so either means every check above passed: the contact and the lead must read past every body.
+    if (target && segmentHitsAny(v.eye, contactPoint(stage, leadAt, contactRadius(stage, bodies, count)), bodies, count))
+        return SpecialCineProblem::ContactHidden;
+    if (lead && leadShare(v.eye, leadAt, leadH, stage, bodies, count) < SpecialCineFraming::kMinLeadShare)
+        return SpecialCineProblem::LeadHidden;
     return SpecialCineProblem::None;
 }
 
@@ -611,6 +716,17 @@ SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32
         if (attempt({false, 0.f, pull, false})) return c;
         if (aimable && attempt({false, 0.f, pull, true})) return c;
     }
+    // The reframe: swung about the subject each way (each plain, then aimed), then raised and swung again; last, the
+    // reverse angle the same way. A turned look-at that rode past the subject looks away; the aim brings it back.
+    const auto orbited = [&](float raise, float orbit) {
+        return attempt({false, raise, 0.f, false, orbit}) || (aimable && attempt({false, raise, 0.f, true, orbit}));
+    };
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        for (int k = 1; static_cast<float>(k) * SpecialCineFraming::kOrbitStep <= SpecialCineFraming::kOrbitMax + 0.01f; ++k)
+            for (const float sign : {1.f, -1.f})
+                if (orbited(raise, sign * SpecialCineFraming::kOrbitStep * static_cast<float>(k))) return c;
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        if (orbited(raise, SpecialCineFraming::kOrbitReverse)) return c;
     c.ok = false;
     return c;
 }

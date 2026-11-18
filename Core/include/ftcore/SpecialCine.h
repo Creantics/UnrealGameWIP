@@ -269,18 +269,21 @@ struct SpecialCineFrame {
 };
 
 // A shot moved by the host when its camera, or the camera's line to its subject, would be inside a body or the
-// world, or the subject would leave the frame (tested once at the start: the world is frozen; specialCineFixShot
-// finds it). Applied in this order: mirrored to the stage's other side (the camera's and the look-at's side offsets
-// negated), raised `raise` metres, aimed (the look-at moved onto the subject's chest), then pulled `pull` metres along
-// its own axis toward the look-at (never closer than kMinPullGap). An explicit focus is shortened by the pull; an
-// aimed shot focuses on its look-at.
+// world, or the subject would leave the frame or be hidden (tested once at the start: the world is frozen;
+// specialCineFixShot finds it). Applied in this order: mirrored to the stage's other side (the camera's and the
+// look-at's side offsets negated), raised `raise` metres, orbited (camera and look-at turned together `orbit` degrees
+// about the upright axis through the subject: the lead's feet, the contact, halfway between them for "both", the
+// look-at for "none"; positive toward the stage's right), aimed (the look-at moved onto the subject's chest), then
+// pulled `pull` metres along its own axis toward the look-at (never closer than kMinPullGap). An explicit focus is
+// shortened by the pull; an aimed shot focuses on its look-at.
 struct SpecialCineShotFix {
     static constexpr float kMinPullGap = 0.5f; // metres left between the pulled camera and its look-at
     bool mirror = false;
     float raise = 0.f; // metres, up (negative or NaN: none)
     float pull = 0.f;  // metres, toward the look-at (negative or NaN: none)
     bool aim = false;  // look at the subject (a "none" shot is not aimed)
-    bool moved() const { return mirror || aim || raise > 0.f || pull > 0.f; }
+    float orbit = 0.f; // degrees about the subject (NaN: none)
+    bool moved() const { return mirror || aim || raise > 0.f || pull > 0.f || orbit > 0.f || orbit < 0.f; }
 };
 
 // A body the shots must not enter or look through: an upright cylinder (world metres). `target`: the stage's target
@@ -303,8 +306,12 @@ enum class SpecialCineProblem : std::uint8_t {
     World,      // the world blocks the camera or its line to the subject
     OffFrame,   // the subject is behind the camera or outside the safe frame
     TooSmall,   // the subject is in frame but under the minimum height
+    // Tested last, so either one means every check above passed:
+    ContactHidden, // a body (the target's own included) hides the contact from the camera (target and "both" shots)
+    LeadHidden,    // under kMinLeadShare of the lead's sample points can be seen (lead and "both" shots)
 };
-// "none", "inside a body", "a body in the line", "the world", "off frame", "too small".
+// "none", "inside a body", "a body in the line", "the world", "off frame", "too small", "the contact hidden",
+// "the lead hidden".
 FTCORE_API std::string_view specialCineProblemName(SpecialCineProblem problem);
 
 // The framing rules: the subject (its upright line, feet to head) must have some part inside the safe frame, 10% in
@@ -326,6 +333,26 @@ struct SpecialCineFraming {
     // The strike point: on the target's side toward the lead, at the lead's chest height.
     static constexpr float kBigTarget = 0.5f;
     static constexpr float kBigTilt = 0.5f; // metres
+    // The contact: on the target's surface toward the lead (any target), kContactOut out (the fist's depth), at the
+    // lead's chest height but no higher than the target's chest. The camera's line to it may cross no body, the
+    // target's own included: from behind the target the contact is hidden.
+    static constexpr float kContactOut = 0.1f; // metres
+    // The lead's sample points: kLeadAxisPoints from feet to head on its upright line, and one each side at
+    // kShoulderHeight of its height, kShoulderHalf metres off the line (square to the camera's line). Each is seen
+    // when its line to the camera crosses no other body; at least kMinLeadShare of them must be seen.
+    static constexpr std::uint32_t kLeadAxisPoints = 9;
+    static constexpr float kShoulderHeight = 0.82f;
+    static constexpr float kShoulderHalf = 0.22f; // metres
+    static constexpr float kMinLeadShare = 0.75f;
+    // The reframe tried last (specialCineFixShot): orbits of kOrbitStep degrees out to kOrbitMax each way, plain and
+    // raised kOrbitRaise metres, each also aimed; then the reverse angle (kOrbitReverse) the same. A two-shot from close behind
+    // a target with the lead far beyond cannot swing far enough to see the contact before a figure leaves the frame
+    // (the far set's shot 6: hidden at 15 degrees, off frame from 30 at 4.65 to 12 m); its reverse, over the lead's
+    // shoulder, frames both and sees the contact.
+    static constexpr float kOrbitStep = 15.f;
+    static constexpr float kOrbitMax = 60.f;
+    static constexpr float kOrbitRaise = 0.5f;
+    static constexpr float kOrbitReverse = 180.f;
 };
 
 // The first problem of `move`'s frame at `t` (fixes as in specialCineFrameAt). `bodies` (null with `count` 0) and
@@ -346,7 +373,11 @@ struct SpecialCineShotCheck {
 
 // Tests shot `shot` of `move` at kSamples times and, when it fails, tries in order: mirrored; raised 0.4, 0.8, 1.2 m;
 // mirrored and raised; aimed; aimed and mirrored; aimed and raised; then pulled 0.5 to 6 m in 0.5 m steps (each plain,
-// then aimed). The first that passes every sample is returned; none: ok false and the fix left empty. No allocation.
+// then aimed); then orbited 15, 30, 45, 60 degrees (each to the right, then the left; each plain, then aimed), and
+// all of that again raised kOrbitRaise; then the reverse angle (180 degrees) the same way: plain, aimed, raised,
+// raised and aimed. A shot with subject "none" is never aimed. The first that passes every sample is returned; none:
+// ok false and the fix left empty (the host plays it as written and counts it as still failing). At most 73 tries.
+// No allocation.
 FTCORE_API SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                                    const SpecialCineBody* bodies, std::uint32_t count,
                                                    SpecialCineWorldTest world = nullptr, void* user = nullptr);

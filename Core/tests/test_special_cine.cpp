@@ -588,6 +588,31 @@ bool passesAsWritten(const SpecialCineMove& m, const SpecialCineStage& st, std::
     return true;
 }
 
+// The same with the target its only body, split: `oldOk` whether every shot that frames someone passes as written
+// every check before the contact and lead ones (the switch point's measure), `fixedOk` whether every one passes as
+// written or with a fix; `reframed` counts the shots moved for the contact or the lead alone.
+void framedOnStage(const SpecialCineMove& m, const SpecialCineStage& st, bool& oldOk, bool& fixedOk, int& reframed,
+                   std::uint32_t& failedShot) {
+    const SpecialCineBody body = bodyOf(st);
+    oldOk = fixedOk = true;
+    for (std::uint32_t i = 0; i < m.size(); ++i) {
+        if (m.shot(i).subject == SpecialCineSubject::None) continue;
+        const SpecialCineShotCheck c = specialCineFixShot(m, i, st, &body, 1);
+        if (c.first == SpecialCineProblem::None) continue;
+        const bool hidden = c.first == SpecialCineProblem::ContactHidden || c.first == SpecialCineProblem::LeadHidden;
+        if (!hidden) {
+            oldOk = false;
+            failedShot = i;
+        } else if (c.ok) {
+            ++reframed;
+        }
+        if (!c.ok) {
+            fixedOk = false;
+            failedShot = i;
+        }
+    }
+}
+
 } // namespace
 
 TEST_CASE("special cine: the aim keeps both figures of a two-shot in frame (the release shot as captured at 7.33 s)") {
@@ -613,10 +638,11 @@ TEST_CASE("special cine: the aim keeps both figures of a two-shot in frame (the 
     CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
     fixes[0] = fixOf(false, 0.8f, false);
     CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::OffFrame);
-    // Aimed: the check passes, and by sums of this test's own both chests and both waists stand in the safe frame at
-    // every sample of the shot.
+    // Aimed: by sums of this test's own both chests and both waists stand in the safe frame at every sample of the
+    // shot, and every check up to the contact passes; but the camera stands beyond the target looking back, so the
+    // target hides the contact on its far side (the contact check is tested last).
     fixes[0] = fixOf(false, 0.f, true);
-    CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::None);
+    CHECK(specialCineFrameProblem(m, at, st, fixes, &body, 1) == SpecialCineProblem::ContactHidden);
     for (float u = 0.02f; u <= 0.99f; u += 0.24f) {
         CAPTURE(u);
         const SpecialCineFrame f = specialCineFrameAt(m, u, st, fixes);
@@ -625,14 +651,26 @@ TEST_CASE("special cine: the aim keeps both figures of a two-shot in frame (the 
         CHECK(inSafeFrame(f, {st.target.x, 0.f, 0.6f * st.targetHeight}));
         CHECK(inSafeFrame(f, {st.target.x, 0.f, 0.5f * st.targetHeight}));
     }
-    // The search: the mirror and the raises are tried first, then the aim.
+    // The search: as written the contact is hidden from the first sample on; the mirror, the raises, the aims and the
+    // pulls all keep the camera on the target's line, so the reframe finds it: swung 30 degrees to the stage's left
+    // (beside the target, the contact in view past its edge) and aimed; every plain swing before it fails.
     const SpecialCineShotCheck c = specialCineFixShot(m, 0, st, &body, 1);
-    CHECK(c.first == SpecialCineProblem::OffFrame);
+    CHECK(c.first == SpecialCineProblem::ContactHidden);
     CHECK(c.ok);
+    CHECK(c.fix.orbit == doctest::Approx(-30.f));
     CHECK(c.fix.aim);
     CHECK_FALSE(c.fix.mirror);
+    CHECK(c.fix.raise == 0.f);
     CHECK(c.fix.pull == 0.f);
-    CHECK(c.tries == 9); // as written, mirrored, 3 raises, 3 mirrored raises, aimed
+    CHECK(c.tries == 45); // as written, 36 of the old fixes, then 15 and 30 degrees each way, each plain and aimed
+    fixes[0] = c.fix;
+    for (float u = 0.02f; u <= 0.99f; u += 0.24f) {
+        CAPTURE(u);
+        CHECK(specialCineFrameProblem(m, u, st, fixes, &body, 1) == SpecialCineProblem::None);
+        const SpecialCineFrame f = specialCineFrameAt(m, u, st, fixes);
+        CHECK(inSafeFrame(f, {0.f, 0.f, 1.1f}));
+        CHECK(inSafeFrame(f, {st.target.x, 0.f, 0.6f * st.targetHeight}));
+    }
 }
 
 TEST_CASE("special cine: the near set: picked under near_within, the same clock as the far set, every shot clean at the capture") {
@@ -712,7 +750,10 @@ TEST_CASE("special cine: the range sweep: the far set from the switch point to l
 
     // Every person-sized kind (body radius up to 0.5 m: the bosses and big kinds are not on this list, see below),
     // every 5 cm from body contact out to lock range, both from arena.json.
-    int kinds = 0;
+    // The far set is measured by the checks before the contact and lead ones (the switch point's measure); a shot it
+    // loses only to those is reframed, and must be at every range past the switch point.
+    int kinds = 0, reframed = 0, unfixed = 0;
+    float firstUnfixed = 1e9f;
     float lastFarFail = -1.f; // the far set's last failing distance over all of them: the switch point sits just past
     for (std::size_t k = 0; k < arena.enemies.size(); ++k) {
         const ArenaEnemyKind& kind = arena.enemies[k];
@@ -732,12 +773,25 @@ TEST_CASE("special cine: the range sweep: the far set from the switch point to l
             const SpecialCineMove* picked = t.find("devin_special_01", specialCineDistance(st));
             REQUIRE(picked != nullptr);
             std::uint32_t failed = 99;
-            const bool farOk = passesAsWritten(*far, st, failed);
+            bool farOk = true, farFixed = true;
+            int moved = 0;
+            framedOnStage(*far, st, farOk, farFixed, moved, failed);
             if (!farOk) lastFarFail = std::max(lastFarFail, d);
             if (d >= within) {
                 CHECK(picked == far);
                 CAPTURE(failed);
                 CHECK(farOk);
+                reframed += moved;
+                if (!farFixed) {
+                    // Measured: only the smallest kind (0.9 m tall) past 12.3 m, only shot 6. From beyond it the
+                    // contact is hidden; from over the lead's shoulder it is under the minimum figure; no swing to 60
+                    // degrees frames both. Counted as still failing (the host plays it as written and logs it).
+                    ++unfixed;
+                    firstUnfixed = std::min(firstUnfixed, d);
+                    CHECK(arenaEnemyHeight(kind) < 1.f);
+                    CHECK(d > 12.3f);
+                    CHECK(failed == 5);
+                }
             } else {
                 CHECK(picked == &nearSet);
                 CHECK(passesAsWritten(nearSet, st, failed));
@@ -748,6 +802,11 @@ TEST_CASE("special cine: the range sweep: the far set from the switch point to l
     // The switch point is where the far set stops failing: near_within is the first 5 cm step past its last failure.
     CHECK(lastFarFail < within);
     CHECK(lastFarFail > within - 2.f * kStep);
+    // Past it the far set's release shot (6) loses the contact behind the target at every range, and is reframed
+    // (but for the smallest kind far out, above).
+    CHECK(reframed > 0);
+    MESSAGE("the far set past the switch point: " << reframed << " shots reframed for a hidden contact or lead; "
+            << unfixed << " with no fix, from " << firstUnfixed << " m");
     // The big kinds (radius over 0.5 m: hulk, stone bearer, titan, the kite boss) are left out: at contact both sets
     // put a camera in or behind such a body, and the far set needs 6 to 7.3 m. They wait for a boss rule.
 }
@@ -892,6 +951,7 @@ TEST_CASE("special cine: on a big target no fix ends farther from the authored l
                     REQUIRE(m->size() <= fixes.size());
                     fixes[i] = c.fix;
                     written[i].mirror = c.fix.mirror; // the mirror moves nothing nearer or farther
+                    written[i].orbit = c.fix.orbit;   // nor the orbit: camera and look-at turned together
                     const SpecialCineShot& s = m->shot(i);
                     for (int k = 0; k <= 4; ++k) {
                         const float at = s.in + (s.out - s.in) * static_cast<float>(k) / 4.f;
@@ -1037,11 +1097,16 @@ TEST_CASE("special cine: the framing check: in frame, too small, behind; a mirro
     m = oneShot({4.9f, 0.5f, 1.f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
     CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::InsideBody);
 
-    // Beyond the target looking back: the target stands in the line to the lead, but not in its own.
+    // Beyond the target looking back: the target stands in the line to the lead, but not in its own; its contact,
+    // though, is on its side toward the lead, behind it from here: every other check passes and the contact fails it.
     m = oneShot({8.f, 0.f, 1.2f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
     CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::BodyInLine);
     m = oneShot({8.f, 0.f, 1.2f}, {5.f, 0.f, 1.f}, SpecialCineSubject::Target);
+    CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::ContactHidden);
+    // From the lead's side the same target shot sees its contact.
+    m = oneShot({2.f, 0.f, 1.2f}, {5.f, 0.f, 1.f}, SpecialCineSubject::Target);
     CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::None);
+    m = oneShot({8.f, 0.f, 1.2f}, {5.f, 0.f, 1.f}, SpecialCineSubject::Target);
     SpecialCineBody other = target;
     other.target = false; // the same body as a bystander: it is in the line
     CHECK(specialCineFrameProblem(m, 0.5f, st, nullptr, &other, 1) == SpecialCineProblem::BodyInLine);
@@ -1088,4 +1153,136 @@ TEST_CASE("special cine: a shot's subject: read, defaulted from its look-at, ref
     CHECK(near(f.pose.lookAt.z, 1.2f, 1e-3f));
     CHECK(near(f.focus, length3(sub3(f.pose.lookAt, f.pose.position)), 1e-3f));
     CHECK(specialCineProblemName(SpecialCineProblem::OffFrame) == "off frame");
+    CHECK(specialCineProblemName(SpecialCineProblem::ContactHidden) == "the contact hidden");
+    CHECK(specialCineProblemName(SpecialCineProblem::LeadHidden) == "the lead hidden");
+}
+
+TEST_CASE("special cine: round 2b's far shot 6 rebuilt: the old checks passed it with the contact behind the target; the reverse angle frames it") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    // The press as the r2b_far log gives it: the lead's feet at (-3.89, -0.04) m, its walk to (-3.18, -0.24) m along
+    // end_feet (travel share 1), so the stage's forward is about (0.9954, -0.0960); a brute 6.59 m ahead, 0.45 m wide,
+    // 1.97 m tall. The other brute's and the partner's places are not in the log: the target is the one body here.
+    SpecialCineStage st;
+    st.origin = {-3.89f, -0.04f, 0.f};
+    const float fx = 0.9954f, fy = -0.0960f;
+    st.forward = {fx, fy, 0.f};
+    st.target = {st.origin.x + 6.59f * fx, st.origin.y + 6.59f * fy, 0.f};
+    st.targetRadius = 0.45f;
+    st.targetHeight = 1.97f;
+    st.travel = 1.f;
+    st.bone = {st.origin.x, st.origin.y, 1.2f}; // the host's: the chest
+    REQUIRE(specialCineDistance(st) == doctest::Approx(6.59f).epsilon(1e-3));
+    REQUIRE(t.find("devin_special_01", specialCineDistance(st)) == far);
+    const SpecialCineBody body = bodyOf(st);
+    const std::uint32_t six = far->shotAt(7.16f);
+    REQUIRE(far->shotAt(7.23f) == six);
+    REQUIRE(far->shot(six).in == doctest::Approx(7.1f));
+    REQUIRE(far->shot(six).out == doctest::Approx(7.35f));
+    REQUIRE(far->shot(six).subject == SpecialCineSubject::Both);
+    // How far past the target's centre the eye stands, along the stage's forward (the lead is on the minus side).
+    const auto past = [&](const SpecialCineFrame& f) {
+        return (f.pose.position.x - st.target.x) * fx + (f.pose.position.y - st.target.y) * fy;
+    };
+
+    // As written and as the host moved it (mirrored, try 2): at both stills every check before the contact passes
+    // (the contact and lead checks are tested last, so ContactHidden says so), the camera stands past the target's
+    // far side, and the target hides the contact.
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    for (const bool mirrored : {false, true}) {
+        fixes[six] = fixOf(mirrored, 0.f, false);
+        for (const float at : {7.16f, 7.23f}) {
+            CAPTURE(mirrored);
+            CAPTURE(at);
+            CHECK(specialCineFrameProblem(*far, at, st, fixes, &body, 1) == SpecialCineProblem::ContactHidden);
+            CHECK(past(specialCineFrameAt(*far, at, st, fixes)) > st.targetRadius);
+        }
+    }
+
+    // The search: the mirror, the raises, the aims, the pulls and every orbit to 60 degrees fail; the reverse angle,
+    // over the lead's shoulder, passes at every sample.
+    const SpecialCineShotCheck c = specialCineFixShot(*far, six, st, &body, 1);
+    CHECK(c.first == SpecialCineProblem::ContactHidden);
+    CHECK(c.ok);
+    CHECK(c.fix.orbit == doctest::Approx(SpecialCineFraming::kOrbitReverse));
+    CHECK_FALSE(c.fix.mirror);
+    CHECK_FALSE(c.fix.aim);
+    CHECK(c.fix.raise == 0.f);
+    CHECK(c.fix.pull == 0.f);
+    CHECK(c.tries == 70); // as written, 36 of the old fixes, 32 orbits (plain and aimed), then the reverse
+    fixes[six] = c.fix;
+    for (const float at : {7.11f, 7.16f, 7.23f, 7.34f}) {
+        CAPTURE(at);
+        CHECK(specialCineFrameProblem(*far, at, st, fixes, &body, 1) == SpecialCineProblem::None);
+        CHECK(past(specialCineFrameAt(*far, at, st, fixes)) < -st.targetRadius); // on the lead's side now
+    }
+    // Every other shot that frames someone passes as written on this stage: shot 6 is the only one moved.
+    for (std::uint32_t i = 0; i < far->size(); ++i) {
+        if (i == six || far->shot(i).subject == SpecialCineSubject::None) continue;
+        CAPTURE(i);
+        CHECK(specialCineFixShot(*far, i, st, &body, 1).first == SpecialCineProblem::None);
+    }
+}
+
+TEST_CASE("special cine: a clear two-shot passes untouched; a low body hides the lead's legs though its chest is in view") {
+    SpecialCineStage st = stageAt(0.f, 0.f, 5.f, 0.f);
+    st.targetRadius = 0.45f;
+    st.targetHeight = 1.8f;
+    const SpecialCineBody target = bodyOf(st);
+    // From the side, 7 m out at 35 mm: both figures in frame, the contact (the target's side toward the lead) in view.
+    const SpecialCineMove side = oneShot({2.5f, -7.f, 1.4f}, {2.5f, 0.f, 1.f}, SpecialCineSubject::Both);
+    CHECK(specialCineFrameProblem(side, 0.5f, st, nullptr, &target, 1) == SpecialCineProblem::None);
+    const SpecialCineShotCheck c = specialCineFixShot(side, 0, st, &target, 1);
+    CHECK(c.first == SpecialCineProblem::None);
+    CHECK(c.ok);
+    CHECK(c.tries == 1);
+    CHECK_FALSE(c.fix.moved());
+
+    // A bystander 1 m tall, 1 m in front of the lead on the camera's line: the line to the lead's chest passes over
+    // it (no body in the line), but it hides the lead's feet to its knees, 4 of its 11 points: under 75% seen.
+    const SpecialCineMove lead = oneShot({-4.f, 0.f, 1.5f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    SpecialCineBody low;
+    low.feet = {-1.f, 0.f, 0.f};
+    low.radius = 0.3f;
+    low.height = 1.f;
+    CHECK(specialCineFrameProblem(lead, 0.5f, st, nullptr, &low, 1) == SpecialCineProblem::LeadHidden);
+    const SpecialCineShotCheck h = specialCineFixShot(lead, 0, st, &low, 1);
+    CHECK(h.first == SpecialCineProblem::LeadHidden);
+    CHECK(h.ok);
+    CHECK(h.fix.moved());
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    fixes[0] = h.fix;
+    CHECK(specialCineFrameProblem(lead, 0.5f, st, fixes, &low, 1) == SpecialCineProblem::None);
+}
+
+TEST_CASE("special cine: a shot no fix clears is counted as still failing, its fix left empty, and the search allocates nothing") {
+    SpecialCineStage st = stageAt(0.f, 0.f, 5.f, 0.f);
+    st.targetRadius = 0.45f;
+    // The lead walled in: eight bystanders 4 m tall in a ring 1 m round it, touching. No raise sees over them, no
+    // orbit finds a gap, and a pull that would clear them puts the camera inside one.
+    SpecialCineBody ring[8];
+    for (int k = 0; k < 8; ++k) {
+        const float a = static_cast<float>(k) * 45.f * kDeg;
+        ring[k].feet = {std::cos(a), std::sin(a), 0.f};
+        ring[k].radius = 0.45f;
+        ring[k].height = 4.f;
+    }
+    const SpecialCineMove m = oneShot({-4.f, 0.f, 1.2f}, {0.f, 0.f, 1.f}, SpecialCineSubject::Lead);
+    const auto before = ftcore_test::allocStats().count;
+    const SpecialCineShotCheck c = specialCineFixShot(m, 0, st, ring, 8);
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(c.first == SpecialCineProblem::BodyInLine);
+    CHECK(c.last != SpecialCineProblem::None);
+    CHECK_FALSE(c.ok);
+    CHECK(c.tries == 73); // every fix tried: as written, 36 of the old fixes, 32 orbits, 4 reverse angles
+    CHECK_FALSE(c.fix.moved());
+    // Counted as the host counts it: one shot still failing.
+    int stillFailing = 0;
+    for (std::uint32_t i = 0; i < m.size(); ++i)
+        if (!specialCineFixShot(m, i, st, ring, 8).ok) ++stillFailing;
+    CHECK(stillFailing == 1);
 }
