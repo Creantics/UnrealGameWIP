@@ -1165,3 +1165,63 @@ TEST_CASE("water follow (start in the water): without the start, the plan begins
     CHECK(r.o(0).phase == WaterFollowPhase::Placed);
     CHECK(r.o(0).rejoin);
 }
+
+TEST_CASE("water follow (switch while swimming): the switch's start decision") {
+    // swimming, under, climbing out, rescued
+    CHECK(waterSwitchStart(true, false, false, false) == WaterSwitchStart::InWater);
+    CHECK(waterSwitchStart(false, true, false, false) == WaterSwitchStart::InWater);
+    CHECK(waterSwitchStart(true, true, false, false) == WaterSwitchStart::InWater);
+    CHECK(waterSwitchStart(false, false, false, false) == WaterSwitchStart::Ashore);
+    CHECK(waterSwitchStart(true, false, true, false) == WaterSwitchStart::Refused);
+    CHECK(waterSwitchStart(false, false, true, false) == WaterSwitchStart::Refused);
+    CHECK(waterSwitchStart(true, false, false, true) == WaterSwitchStart::Refused);
+    CHECK(waterSwitchStart(false, true, false, true) == WaterSwitchStart::Refused);
+    CHECK(waterSwitchStart(false, false, true, true) == WaterSwitchStart::Refused);
+}
+
+TEST_CASE("water follow (start in the water): a lead seen out of the water and resumed holds the start, not lost") {
+    // The host's first step after a switch or a scene: the new lead's swim flag not set yet, its last climb's out flag
+    // still up, and the planner just resumed. The members stay placed and are asked to rejoin; none is sent ashore,
+    // placed back on land or queued for an exit.
+    Scene s;
+    s.exits = {ladder({1.f, 0.f})};
+    s.lead.swimming = false;
+    s.lead.out = true;
+    s.lead.resumed = true;
+    startAtLead(s);
+    for (int i = 0; i < 2; ++i) {
+        CHECK(s.o(i).phase == WaterFollowPhase::Placed);
+        CHECK(s.o(i).rejoin);
+        CHECK_FALSE(s.o(i).place);
+    }
+    s.lead.resumed = false;
+    for (int k = 0; k < 5; ++k) {
+        hostRejoins(s);
+        s.step();
+        CHECK(s.o(0).phase == WaterFollowPhase::Placed);
+        CHECK(s.o(1).phase == WaterFollowPhase::Placed);
+        CHECK_FALSE(s.o(0).place);
+        CHECK(s.party.starting());
+    }
+    // The swim is seen: both at the surface, then swimming on.
+    s.lead.swimming = true;
+    s.lead.out = false;
+    hostRejoins(s);
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(1).phase == WaterFollowPhase::Surface);
+    s.step(30);
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(1).phase == WaterFollowPhase::Surface);
+    // Resumed with the swim already seen (a lead switch where the flag is up on the first step): straight to the surface.
+    Scene r;
+    r.lead.resumed = true;
+    startAtLead(r);
+    CHECK(r.o(0).rejoin);
+    CHECK_FALSE(r.o(0).place);
+    hostRejoins(r);
+    r.lead.resumed = false;
+    r.step();
+    CHECK(r.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(r.o(1).phase == WaterFollowPhase::Surface);
+}

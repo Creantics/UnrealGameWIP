@@ -820,4 +820,15 @@ private:
     bool starting_ = false; // this step is in it
 };
 
+// A lead switch (the party menu) while the lead is in the water (11-18 item 3): what the new party starts as. A lead
+// swimming or under water starts the new party in the water (WaterFollowParty::startInWater, the new lead put at the
+// surface); a lead on its way out of the water (a climb) or being rescued refuses the switch, as both move the lead by
+// a path the new lead would not take over; anywhere else (wading, on land) the party starts ashore as before.
+enum class WaterSwitchStart : std::uint8_t { Ashore, InWater, Refused };
+
+inline WaterSwitchStart waterSwitchStart(bool swimming, bool under, bool climbingOut, bool rescued) {
+    if (climbingOut || rescued) return WaterSwitchStart::Refused;
+    return swimming || under ? WaterSwitchStart::InWater : WaterSwitchStart::Ashore;
+}
+
 } // namespace ftcore
