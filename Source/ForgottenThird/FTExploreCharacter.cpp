@@ -3027,6 +3027,9 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		LookDevPivot->AddWorldRotation(FRotator(0.0, LookDevSpin * DeltaSeconds, 0.0));
 	}
+#if !UE_BUILD_SHIPPING
+	TickSwimProof(DeltaSeconds);
+#endif
 	if (bPortraitWalk)
 	{
 		const double Turn = GetWorld()->GetTimeSeconds() * (2.0 * UE_DOUBLE_PI / 8.0);
@@ -3994,6 +3997,133 @@ void AFTExploreCharacter::PoseSwim(float TargetPitch, float DeltaSeconds)
 	// facing turned together.
 	const FQuat Pitch = FRotator(SwimPitch, 0.0, 0.0).Quaternion();
 	Body->SetRelativeLocationAndRotation(Pitch.RotateVector(SwimMeshLoc), Pitch * SwimMeshRot.Quaternion());
+}
+
+void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
+{
+#if UE_BUILD_SHIPPING
+	(void)DeltaSeconds;
+#else
+	if (SwimProofStage == -1)
+	{
+		if (!FParse::Value(FCommandLine::Get(), TEXT("SwimProof="), SwimProofKind) || SwimProofKind.IsEmpty())
+		{
+			SwimProofStage = -2; // off for good
+			return;
+		}
+		FParse::Value(FCommandLine::Get(), TEXT("SwimProofShots="), SwimProofShots);
+		SwimProofStage = 0;
+	}
+	if (SwimProofStage < 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	SwimProofTime += DeltaSeconds;
+	if (SwimProofStage == 0)
+	{
+		if (SwimProofTime < 3.f || !System || !System->HasBodies())
+		{
+			if (SwimProofTime > 20.f)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("SwimProof: no water bodies on this map; quitting."));
+				FPlatformMisc::RequestExit(false, TEXT("SwimProof"));
+				SwimProofStage = -2;
+			}
+			return;
+		}
+		// The nearest swimmable point (rings 4 m apart, 24 bearings), then back toward the start to its dry edge.
+		const ftcore::WaterBodies& Bodies = System->Bodies();
+		const FVector Start = GetActorLocation();
+		auto Depth = [&Bodies](const FVector& P) { return Bodies.depth(ftcore::Vec2{static_cast<float>(P.X / 100.0), static_cast<float>(P.Y / 100.0)}); };
+		bool bFound = false;
+		for (int32 Ring = 1; Ring <= 100 && !bFound; ++Ring)
+		{
+			for (int32 Bear = 0; Bear < 24 && !bFound; ++Bear)
+			{
+				const double A = Bear * (2.0 * UE_DOUBLE_PI / 24.0);
+				const FVector Dir(FMath::Cos(A), FMath::Sin(A), 0.0);
+				const FVector P = Start + Dir * (Ring * 400.0);
+				if (Depth(P) < ftcore::kWaterSwimDepth + 0.8f)
+				{
+					continue;
+				}
+				FVector Q = P;
+				for (int32 Back = 0; Back < 200 && Depth(Q) > 0.f; ++Back)
+				{
+					Q -= Dir * 50.0;
+				}
+				if (Depth(Q) > 0.f)
+				{
+					continue;
+				}
+				SwimProofDry = Q - Dir * 300.0;
+				SwimProofWet = P;
+				SwimProofFar = P;
+				for (int32 Out = 1; Out <= 30 && Depth(P + Dir * (Out * 100.0)) >= ftcore::kWaterSwimDepth + 0.5f; ++Out)
+				{
+					SwimProofFar = P + Dir * (Out * 100.0);
+				}
+				bFound = true;
+			}
+		}
+		if (!bFound)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof: no swimmable water within 400 m; quitting."));
+			FPlatformMisc::RequestExit(false, TEXT("SwimProof"));
+			SwimProofStage = -2;
+			return;
+		}
+		FHitResult Hit;
+		const FCollisionQueryParams Params(SCENE_QUERY_STAT(SwimProof), false, this);
+		// Down from a little over the start's height (a quay or a street, not a roof).
+		SwimProofDry.Z = Start.Z;
+		if (World->LineTraceSingleByChannel(Hit, SwimProofDry + FVector(0.0, 0.0, 400.0), SwimProofDry - FVector(0.0, 0.0, 3000.0), ECC_Visibility, Params))
+		{
+			SwimProofDry.Z = Hit.ImpactPoint.Z + GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.0;
+		}
+		const FVector2D Way(SwimProofWet.X - SwimProofDry.X, SwimProofWet.Y - SwimProofDry.Y);
+		SetActorLocationAndRotation(SwimProofDry, FRotator(0.0, FMath::RadiansToDegrees(FMath::Atan2(Way.Y, Way.X)), 0.0), false, nullptr, ETeleportType::TeleportPhysics);
+		if (Controller)
+		{
+			Controller->SetControlRotation(FRotator(-12.0, GetActorRotation().Yaw, 0.0));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: dry edge (%.0f, %.0f, %.0f), in at (%.0f, %.0f), far (%.0f, %.0f) cm, %.0f m out."), *SwimProofKind,
+			SwimProofDry.X, SwimProofDry.Y, SwimProofDry.Z, SwimProofWet.X, SwimProofWet.Y, SwimProofFar.X, SwimProofFar.Y, FVector::Dist2D(SwimProofWet, SwimProofFar) / 100.0);
+		SwimProofStage = 1;
+		SwimProofTime = 0.f;
+		return;
+	}
+	if (SwimProofStage == 1 && SwimProofTime >= 6.f) // the party gathers at the edge
+	{
+		// The scripted walk (LeadGo) takes the route: in, then out to the far point, where it treads.
+		BeginLeadGo(FVector(SwimProofWet.X, SwimProofWet.Y, 0.0), false);
+		LeadGoNext.Add(FVector(SwimProofFar.X, SwimProofFar.Y, 0.0));
+		SwimProofStage = 2;
+		SwimProofTime = 0.f;
+	}
+	if (SwimProofStage >= 2)
+	{
+		const FVector To = SwimProofStage == 2 ? SwimProofWet : SwimProofFar;
+		if (SwimProofStage < 4 && FVector::Dist2D(To, GetActorLocation()) <= 100.0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: stage %d reached at %.1f s (swimming %d)."), *SwimProofKind, SwimProofStage, SwimProofTime, bSwimming ? 1 : 0);
+			++SwimProofStage;
+		}
+		if (!SwimProofShots.IsEmpty() && SwimProofTime >= SwimProofShotAt)
+		{
+			SwimProofShotAt = SwimProofTime + 1.f;
+			FScreenshotRequest::RequestScreenshot(FPaths::Combine(SwimProofShots, FString::Printf(TEXT("swimproof_%s_%03d.png"), *SwimProofKind, SwimProofShotCount++)), false, false);
+		}
+		if (SwimProofTime >= 80.f)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: done, %d stills."), *SwimProofKind, SwimProofShotCount);
+			FPlatformMisc::RequestExit(false, TEXT("SwimProof"));
+			SwimProofStage = -2;
+		}
+	}
+#endif
 }
 
 void AFTExploreCharacter::BeginSwimRescue(const UFTWaterSubsystem& System)

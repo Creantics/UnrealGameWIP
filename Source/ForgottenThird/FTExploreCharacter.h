@@ -589,6 +589,19 @@ private:
 	void LoadSwimTuning();
 	void BeginSwimRescue(const UFTWaterSubsystem& System);
 	void TickSwimRescue(float DeltaSeconds);
+	// -SwimProof=land|watchdog [-SwimProofShots=<dir>] (dev, not shipped): the swim follow's capture run. It finds water
+	// near the start, walks the lead from its dry edge in and 20 m or more out, and holds follower slot 0 stuck (its walk
+	// to an entry for land, its swim for watchdog) so it rejoins the lead; a still each second, quits at 80 s.
+	void TickSwimProof(float DeltaSeconds);
+	int32 SwimProofStage = -1; // -1 off; 0 settle, 1 at the dry edge, 2 walking in, 3 out to the far point, 4 holding
+	float SwimProofTime = 0.f;
+	float SwimProofShotAt = 0.f;
+	int32 SwimProofShotCount = 0;
+	FString SwimProofShots;
+	FString SwimProofKind;
+	FVector SwimProofDry = FVector::ZeroVector;
+	FVector SwimProofWet = FVector::ZeroVector;
+	FVector SwimProofFar = FVector::ZeroVector;
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;

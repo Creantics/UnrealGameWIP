@@ -203,6 +203,11 @@ private:
 	ftcore::Vec2 WaterEdgeOut{1.f, 0.f};
 	bool bWaterHasEdge = false;                 // water was found toward the lead (else no jump in)
 	float WaterEdgeAge = 1.f;                   // s since the edge was last looked for
+	// -SwimProof (AFTExploreCharacter::TickSwimProof; dev): slot 0 is held stuck until it is rejoined, then its feet
+	// height is logged four times a second for 2 s.
+	bool bProofFreed = false;
+	float ProofLogLeft = 0.f;
+	float ProofLogAt = 0.f;
 	FVector WaterVelocity = FVector::ZeroVector; // cm/s
 	// A placed move (the entry's walk or jump, the climb out): from, to, its time and length, and whether it is over.
 	bool bWaterMove = false;
