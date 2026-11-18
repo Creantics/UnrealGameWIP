@@ -4687,18 +4687,21 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		}
 		const bool bBoomDue = bBoomRun && SwimProofHoldAt >= 0.f && SwimProofTime >= SwimProofHoldAt + 3.f
 			&& (bPartnersTread || SwimProofTime >= SwimProofHoldAt + 25.f);
-		if (SwimProofSweep < 0.f && ((SwimProofRejoinAt >= 0.f && SwimProofTime >= SwimProofRejoinAt + 3.f) || SwimProofTime >= 60.f || bBoomDue))
+		const bool bOtherDue = !bBoomRun && ((SwimProofRejoinAt >= 0.f && SwimProofTime >= SwimProofRejoinAt + 3.f) || SwimProofTime >= 60.f);
+		if (SwimProofSweep < 0.f && (bOtherDue || bBoomDue))
 		{
 			SwimProofSweep = 0.f;
 			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: camera sweep starts at %.1f s."), *SwimProofKind, SwimProofTime);
 			if (bBoomRun && Camera)
 			{
-				// Item 5 forced: slot 0 1 m behind the camera, slot 1 on the boom 1 m in front of it.
+				// Item 5 forced: slot 0 1 m behind the camera (the ruling's place); slot 1 where the camera will be 40 deg into
+				// the sweep (the yaw turns +, and the boom turns with it about its root), so the camera runs into it.
 				const FVector Eye = Camera->GetComponentLocation();
 				const FVector Back = -Camera->GetForwardVector().GetSafeNormal2D();
-				const FVector ToLead = (GetActorLocation() - Eye).GetSafeNormal2D();
-				const FVector Spots[2] = {Eye + Back * 100.0, Eye + ToLead * 100.0};
-				const TCHAR* Names[2] = {TEXT("1 m behind the camera"), TEXT("on the boom 1 m in front of the camera")};
+				const FVector Pivot = Boom ? Boom->GetComponentLocation() : GetActorLocation();
+				const FVector Ahead = Pivot + FRotator(0.0, 40.0, 0.0).RotateVector(Eye - Pivot);
+				const FVector Spots[2] = {Eye + Back * 100.0, Ahead};
+				const TCHAR* Names[2] = {TEXT("1 m behind the camera"), TEXT("on the camera's path 40 deg into the sweep")};
 				for (int32 I = 0; I < 2 && I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
 				{
 					AFTPartyFollower* Partner = WaterFollowers[I].Get();
@@ -4706,8 +4709,10 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 					SwimProofBoomHeld += bHeld ? 1 : 0;
 					SwimProofBoomWhere += FString::Printf(TEXT("%sslot %d %s %s"), I > 0 ? TEXT("; ") : TEXT(""), I, bHeld ? TEXT("held") : TEXT("NOT held"), Names[I]);
 				}
-				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: camera at (%.0f, %.0f, %.0f), %.0f cm from the lead; %s."), Eye.X, Eye.Y, Eye.Z,
-					FVector::Dist(Eye, GetActorLocation()), *SwimProofBoomWhere);
+				const AFTPartyFollower* First = WaterFollowers[0].Get();
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: camera at (%.0f, %.0f, %.0f), %.0f cm from the lead, %.0f cm above slot 0's feet (the draft is %.0f cm); probe %s; %s."),
+					Eye.X, Eye.Y, Eye.Z, FVector::Dist(Eye, GetActorLocation()), First ? Eye.Z - First->GetActorLocation().Z : -1.0, ftcore::kWaterSwimDraft * 100.f,
+					Boom && Boom->bDoCollisionTest ? TEXT("on") : TEXT("off"), *SwimProofBoomWhere);
 			}
 		}
 		if (SwimProofSweep >= 0.f && SwimProofSweep < 360.f && Controller)
@@ -4757,6 +4762,10 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 					bCamDrawn = !Partner->IsHidden() && bAnyDrawn;
 				}
 			}
+			if (Boom && Boom->IsCollisionFixApplied())
+			{
+				++SwimProofBoomPulled;
+			}
 			if (CamSlot >= 0)
 			{
 				++SwimProofSweepTicks;
@@ -4793,12 +4802,16 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 					Partner->ReleaseProofHold();
 				}
 			}
-			const bool bBoomOk = SwimProofBoomHeld > 0 && SwimProofSweepTicks > 0;
+			// The boom run's verdict: it tests the clip only if the camera came within 50 cm of a held partner's bones.
+			const bool bBoomMeasured = SwimProofBoomHeld > 0 && SwimProofSweepTicks > 0;
+			const bool bBoomExercised = bBoomMeasured && SwimProofSweepNearest >= 0.f && SwimProofSweepNearest < 50.f;
+			const bool bBoomOk = bBoomExercised;
 			if (bBoomRun)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: done at %.1f s, %d stills, %s; %d sweep ticks, nearest %.0f cm, %d ticks under 50 cm with the mesh drawn: %s."),
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: done at %.1f s, %d stills, %s; %d sweep ticks, nearest %.0f cm, %d ticks under 50 cm with the mesh drawn, %d ticks the probe pulled the camera in: %s."),
 					SwimProofTime, SwimProofShotCount, SwimProofBoomWhere.IsEmpty() ? TEXT("no partner placed") : *SwimProofBoomWhere, SwimProofSweepTicks, SwimProofSweepNearest,
-					SwimProofClipTicks, !bBoomOk ? TEXT("NO MEASURE") : SwimProofClipTicks > 0 ? TEXT("CLIP CONFIRMED (check the stills)") : TEXT("no clip (cleared for these places)"));
+					SwimProofClipTicks, SwimProofBoomPulled, !bBoomMeasured ? TEXT("NO MEASURE") : !bBoomExercised ? TEXT("NOT EXERCISED (the camera never came within 50 cm)")
+					: SwimProofClipTicks > 0 ? TEXT("CLIP CONFIRMED (check the stills)") : TEXT("no clip (cleared: within 50 cm, mesh not drawn)"));
 			}
 			FString ClipList;
 			for (int32 I = 0; I < SwimProofClipShotCount; ++I)

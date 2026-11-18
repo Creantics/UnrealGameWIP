@@ -629,6 +629,7 @@ private:
 	// for the sweep. The run ends after the sweep; exit 0 when a partner was held and the sweep measured.
 	float SwimProofHoldAt = -1.f;      // SwimProofTime the lead reached the far point
 	int32 SwimProofBoomHeld = 0;       // partners held for the sweep
+	int32 SwimProofBoomPulled = 0;     // sweep ticks the spring arm's probe pulled the camera in (a capsule or the world in the way)
 	FString SwimProofBoomWhere;
 	// Item 5 (the boom through a partner): during the sweep, the camera's distance to the nearest partner's capsule; under
 	// 50 cm with that partner's mesh drawn is the clip. Counted per tick and per still (the still numbers kept, first 32).
