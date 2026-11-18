@@ -62,6 +62,7 @@ FFTWaterBodyRow FFTWaterBodyRow::From(const ftcore::WaterBody& Body)
 	Row.ShelfBed = Body.shelfBed;
 	Row.Shelf = Body.shelf;
 	Row.Batter = Body.batter;
+	Row.Lip = Body.lip;
 	for (std::size_t I = 0; I < Body.pointCount; ++I)
 	{
 		Row.Points.Add(FVector2D(Body.points[I].x, Body.points[I].y));
@@ -90,6 +91,7 @@ ftcore::WaterBody FFTWaterBodyRow::ToBody() const
 	Body.shelfBed = ShelfBed;
 	Body.shelf = Shelf;
 	Body.batter = Batter;
+	Body.lip = Lip;
 	const int32 Count = FMath::Min(Points.Num(), static_cast<int32>(ftcore::kWaterMaxPoints));
 	Body.pointCount = static_cast<std::uint8_t>(Count);
 	for (int32 I = 0; I < Count; ++I)
@@ -170,8 +172,9 @@ void UFTWaterSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 			const ftcore::WaterBody& Body = Water.body(I);
 			if (Body.batter > 0.f)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("Water: body %d (%s): %.2f m at its walls on a %.1f m shelf, %.2f m in the middle."), static_cast<int32>(I),
-					ANSI_TO_TCHAR(ftcore::waterKindName(Body.kind)), Body.level - Body.shelfBed, Body.shelf, Body.level - Body.bed);
+				UE_LOG(LogForgottenThird, Display, TEXT("Water: body %d (%s): %.2f m at its walls on a %.1f m shelf, %.2f m past its lip, %.2f m in the middle."),
+					static_cast<int32>(I), ANSI_TO_TCHAR(ftcore::waterKindName(Body.kind)), Body.level - Body.shelfBed, Body.shelf,
+					Body.level - Body.shelfBed + Body.lip, Body.level - Body.bed);
 			}
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Water: %d ways out (%d ladders, %d flights of steps); a jump at any other wall is the fallback."),

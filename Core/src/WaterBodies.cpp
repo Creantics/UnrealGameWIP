@@ -90,7 +90,7 @@ float WaterBody::bedAt(Vec2 p) const {
     // Across the shorter side, in from the nearer long wall.
     const float fromWall = half.y <= half.x ? half.y - std::fabs(l.y) : half.x - std::fabs(l.x);
     if (!(fromWall >= 0.f)) return bed;
-    return level - waterSectionDepth(fromWall, level - shelfBed, shelf, batter, level - bed);
+    return level - waterSectionDepth(fromWall, level - shelfBed, shelf, batter, level - bed, lip);
 }
 
 bool WaterBody::divesAt(Vec2 p) const {
@@ -109,6 +109,7 @@ WaterBody waterBodyFromCanal(const RoadWater& canal) {
     body.shelfBed = static_cast<float>(canal.z - canal.depth);
     body.shelf = cut ? static_cast<float>(canal.shelf) : 0.f;
     body.batter = cut ? static_cast<float>(canal.batter) : 0.f;
+    body.lip = cut && canal.lip > 0.0 ? static_cast<float>(canal.lip) : 0.f;
     body.centre = {static_cast<float>(canal.cx), static_cast<float>(canal.cy)};
     body.half = {static_cast<float>(canal.sx * 0.5), static_cast<float>(canal.sy * 0.5)};
     body.flow = {static_cast<float>(canal.flowX * canal.flow), static_cast<float>(canal.flowY * canal.flow)};
@@ -173,7 +174,7 @@ bool WaterBodies::add(const WaterBody& body) {
         break;
     }
     if (!std::isfinite(body.shelfBed) || !std::isfinite(body.shelf) || !std::isfinite(body.batter) || body.shelf < 0.f ||
-        body.batter < 0.f)
+        body.batter < 0.f || !std::isfinite(body.lip) || body.lip < 0.f)
         return false;
     // A dive area is a real box: finite corners, min under max on both axes.
     if (body.hasDiveArea && !(std::isfinite(body.diveMin.x) && std::isfinite(body.diveMin.y) && std::isfinite(body.diveMax.x) &&

@@ -540,14 +540,18 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 		Builds.resize(Net.size());
 		ftcore::RoadNetReport Report;
 		ftcore::roadNetBuild(Net, Ground, Builds[0], &Report);
-		for (const ftcore::RoadCanal& Canal : Canals)
+		// -CanalLip (off by default): each shelf that is a wade drops sheer at its edge to ftcore::kWaterLipDepth, so no bed
+		// past it holds a swimmer's feet (RoadCanal::lip).
+		const bool bCanalLip = FParse::Param(FCommandLine::Get(), TEXT("CanalLip"));
+		for (ftcore::RoadCanal& Canal : Canals)
 		{
+			Canal.lip = bCanalLip;
 			// The channel's walls, copings, floor and water (canal rows; the quay's rails and masts are -QuayPoints').
 			const size_t Added = ftcore::roadCanalBuild(Canal, Ground, Builds[0]);
 			const ftcore::RoadCanalSection Section = ftcore::roadCanalSection(Canal);
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canal %s: %d solids, floor %.2f m, water %.2f m; %.2f m of water on a %.1f m shelf at "
-				"the walls, %.2f m mid-channel past a %.1f m slope."), *RoadsUtf8(Canal.id), static_cast<int32>(Added), Canal.floorZ, Canal.waterZ, Section.depth,
-				Section.shelf, Section.deep, Section.batter);
+				"the walls, a %.2f m lip, %.2f m mid-channel past a %.1f m slope."), *RoadsUtf8(Canal.id), static_cast<int32>(Added), Canal.floorZ, Canal.waterZ,
+				Section.depth, Section.shelf, Section.lip, Section.deep, Section.batter);
 		}
 		int32 Ladders = 0;
 		for (const ftcore::RoadWaterExit& Exit : Builds[0].exits)

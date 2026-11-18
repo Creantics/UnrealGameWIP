@@ -247,8 +247,8 @@ struct RoadWater {
     double halfWidth = 0.0;         // m: from the channel's middle line to a wall, across the flow
     // The bed across the channel (waterSectionDepth): `depth` is the water at each long wall, on a shelf `shelf` m
     // wide; from there the bed batters down over `batter` m to `deep` m of water, which the middle holds. deep <= depth
-    // or batter 0: a flat bed.
-    double shelf = 0.0, batter = 0.0, deep = 0.0;
+    // or batter 0: a flat bed. `lip`: the bed's sheer drop at the shelf's outer edge before the slope (0: none).
+    double shelf = 0.0, batter = 0.0, deep = 0.0, lip = 0.0;
     bool alongY = false;            // the long walls run along y (else along x)
 };
 
@@ -546,6 +546,10 @@ struct RoadCanal {
                              // floor is the shelf's along each long wall. No more than the row's own depth: a flat bed
     double shelf = 0.6;      // m: the shelf's width along each long wall
     double batter = 1.5;     // m: the run of the slope from the shelf down to the deep floor
+    // The shelf's lip (the build's -CanalLip; off: today's section): where the section is cut and the shelf is a wade
+    // (its water no more than kWaterSwimExit), the bed drops sheer at the shelf's outer edge to kWaterLipDepth (no
+    // deeper than `deep`) and the slope runs on from there, so a swimmer past the shelf never rests on the bed.
+    bool lip = false;
     double exitEvery = 40.0; // m between the ways out along each long wall, about (30 where the water is over 12 m wide,
                              // which also gets a ladder on each end wall); 0: none
 };
@@ -598,9 +602,10 @@ FTCORE_API void roadQuayPoints(const RoadCanal& canal, const RoadBuild& build, c
 // 4 x (2 wall + 1) m).
 FTCORE_API std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, RoadBuild& build);
 // The section roadCanalBuild gives a canal's floor: the water at the long walls (the row's own), the shelf, the
-// batter and the water mid-channel, as RoadWater carries them (shelf and batter 0 and deep = depth for a flat bed).
+// batter and the water mid-channel, as RoadWater carries them (shelf and batter 0 and deep = depth for a flat bed), and
+// the lip's drop (RoadCanal::lip; 0 without it, on a flat bed, or where the shelf's water is over kWaterSwimExit).
 struct RoadCanalSection {
-    double depth = 0.0, shelf = 0.0, batter = 0.0, deep = 0.0;
+    double depth = 0.0, shelf = 0.0, batter = 0.0, deep = 0.0, lip = 0.0;
 };
 FTCORE_API RoadCanalSection roadCanalSection(const RoadCanal& canal);
 // The exits as CSV: '#' comment rows, then id,canal,kind,foot_x,foot_y,top_x,top_y,top_z,out_x,out_y,gap_x0,gap_y0,gap_x1,gap_y1.

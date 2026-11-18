@@ -1,6 +1,7 @@
 #include "ftcore/Roads.h"
 #include "ftcore/RoadGraph.h"
 #include "ftcore/SurfaceWeather.h"
+#include "ftcore/WaterBodies.h"
 
 #include "CsvRead.h"
 
@@ -3469,6 +3470,8 @@ RoadCanalSection roadCanalSection(const RoadCanal& canal) {
         s.shelf = canal.shelf;
         s.batter = canal.batter;
         s.deep = canal.deep;
+        if (canal.lip && s.depth <= static_cast<double>(kWaterSwimExit) + 1e-9)
+            s.lip = std::max(0.0, std::min(static_cast<double>(kWaterLipDepth), s.deep) - s.depth);
     }
     return s;
 }
@@ -3558,8 +3561,10 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     const double cx = 0.5 * (x0 + x1), cy = 0.5 * (y0 + y1), sx = x1 - x0 - 2.0 * t, sy = y1 - y0 - 2.0 * t;
     put("FLOOR", "canal_floor", cx, cy, sx, sy, base, deepZ, RoadTint::PoleConcrete, true);
     if (cut) {
-        // A shelf along each long wall and the slope from it down to the floor.
-        const double drop = (section.deep - section.depth) / section.batter;
+        // A shelf along each long wall and the slope from it down to the floor; with a lip the slope starts that much
+        // under the shelf's top, the shelf's own outer face the sheer drop.
+        const double topZ = canal.floorZ - section.lip;
+        const double drop = (section.deep - section.depth - section.lip) / section.batter;
         for (int side = 0; side < 2; ++side) {
             const bool high = side == 1;
             const double wall = high ? hi - t : lo + t, in = high ? -1.0 : 1.0;
@@ -3569,7 +3574,7 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
                 put("SHELF", "canal_floor", alongY ? sc : cu, alongY ? cu : sc, alongY ? section.shelf : lu,
                     alongY ? lu : section.shelf, base, canal.floorZ, RoadTint::PoleConcrete, true);
             RoadSolid& slope = put("BATTER", "canal_floor", alongY ? bc : cu, alongY ? cu : bc, alongY ? section.batter : lu,
-                                   alongY ? lu : section.batter, 0.5 * (canal.floorZ + deepZ) - 0.3, 0.5 * (canal.floorZ + deepZ),
+                                   alongY ? lu : section.batter, 0.5 * (topZ + deepZ) - 0.3, 0.5 * (topZ + deepZ),
                                    RoadTint::PoleConcrete, true);
             // Falling toward the middle: the box's u is the plan's x, its w the plan's y.
             (alongY ? slope.box.riseU : slope.box.riseW) = -in * drop;
@@ -3587,6 +3592,7 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     w.shelf = section.shelf;
     w.batter = section.batter;
     w.deep = section.deep;
+    w.lip = section.lip;
     w.alongY = alongY;
     const RoadPoint dir = roadCanalFlowDir(canal);
     w.flowX = dir.x;

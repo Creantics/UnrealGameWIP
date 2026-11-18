@@ -426,3 +426,98 @@ TEST_CASE("sea slip: a ramp from the quay's top to under the sea, its fill under
     bare.fall = 0.0;
     CHECK(roadSeaSlipBuild(bare, b2) == 0);
 }
+
+TEST_CASE("canal lip: no bed past the shelf between the swim's exit and the lip's depth; a swimmer still gets out") {
+    // The lip's depth: the draft, the bob and the clearance; the face over a swimmer's lowest feet is a step up
+    // (CharacterMovement's 45 cm MaxStepHeight, which the flying swim steps up too).
+    CHECK(kWaterLipDepth == doctest::Approx(1.48f));
+    CHECK(kWaterLipDepth > kWaterSwimDepth);
+    CHECK(waterSectionDepth(0.6f, 1.f, 0.6f, 1.5f, 2.f, 0.48f) == doctest::Approx(1.f));
+    CHECK(waterSectionDepth(0.61f, 1.f, 0.6f, 1.5f, 2.f, 0.48f) == doctest::Approx(1.4835f).epsilon(0.001));
+    CHECK(waterSectionDepth(2.1f, 1.f, 0.6f, 1.5f, 2.f, 0.48f) == doctest::Approx(2.f));
+    CHECK(waterSectionDepth(1.f, 1.f, 0.6f, 1.5f, 1.2f, 0.48f) == doctest::Approx(1.2f)); // no deeper than the middle
+    CHECK(waterSectionDepth(1.f, 1.f, 0.6f, 0.f, 2.f, 0.48f) == doctest::Approx(1.f));    // a flat bed has none
+    for (const RoadCanal& base : {canalOf("CN-N", 892.0, 664.0, 901.0, 814.0, 700.0), canalOf("CN-P", 744.0, 786.0, 892.0, 814.0, 830.0)}) {
+        CAPTURE(base.id);
+        CHECK(roadCanalSection(base).lip == doctest::Approx(0.0)); // off by default: today's section
+        RoadCanal canal = base;
+        canal.lip = true;
+        const RoadCanalSection section = roadCanalSection(canal);
+        CHECK(section.lip == doctest::Approx(kWaterLipDepth - 1.0));
+        CHECK(section.deep == doctest::Approx(2.0));
+        RoadBuild build;
+        RoadBuild before;
+        Banks banks;
+        REQUIRE(roadCanalBuild(canal, banks.ground(), build) > 0);
+        REQUIRE(roadCanalBuild(base, banks.ground(), before) > 0);
+        CHECK(build.solids.size() == before.solids.size()); // same pieces, same ids
+        REQUIRE(build.waters.size() == 1);
+        const RoadWater& w = build.waters[0];
+        CHECK(w.lip == doctest::Approx(section.lip));
+        WaterBodies water;
+        REQUIRE(water.add(waterBodyFromCanal(w)));
+        CHECK(water.body(0).lip == doctest::Approx(static_cast<float>(section.lip)));
+        for (std::size_t i = 0; i < build.exits.size(); ++i) REQUIRE(water.addExit(waterExitFromRoad(build.exits[i])));
+        const bool alongY = w.sy >= w.sx;
+        const double across = alongY ? w.sx : w.sy;
+        int band = 0, checked = 0;
+        for (double d = 0.005; d < across; d += 0.01) {
+            const double x = alongY ? w.cx - 0.5 * w.sx + d : w.cx + 3.0;
+            const double y = alongY ? w.cy + 3.0 : w.cy - 0.5 * w.sy + d;
+            const Vec2 p{static_cast<float>(x), static_cast<float>(y)};
+            const float column = water.depth(p);
+            // The builder and the body share the section.
+            CHECK(column == doctest::Approx(w.z - builtFloor(build, x, y)).epsilon(0.01));
+            band += column > kWaterSwimExit && column < kWaterLipDepth - 1e-3f ? 1 : 0;
+            ++checked;
+        }
+        CHECK(checked > 600);
+        CHECK(band == 0);
+        // Without the lip the slope crosses the band (the 1.16 m column a partner rested in).
+        WaterBodies old;
+        REQUIRE(old.add(waterBodyFromCanal(before.waters[0])));
+        const double at = 0.6 + (1.16 - 1.0) * 1.5;
+        const Vec2 q{static_cast<float>(alongY ? w.cx - 0.5 * w.sx + at : w.cx + 3.0), static_cast<float>(alongY ? w.cy + 3.0 : w.cy - 0.5 * w.sy + at)};
+        CHECK(old.depth(q) == doctest::Approx(1.16f).epsilon(0.01));
+        CHECK(water.depth(q) >= kWaterLipDepth - 1e-3f);
+        // The face over a swimmer's lowest feet at the lip is a step up of 45 cm or less.
+        const float face = kWaterSwimDraft + kWaterBobHeight - static_cast<float>(section.depth);
+        CHECK(face > 0.f);
+        CHECK(face <= 0.45f);
+        // A swimmer held at the lip (a 34 cm capsule against the shelf's face) in front of a ladder is in its reach.
+        int ladders = 0;
+        for (std::size_t i = 0; i < water.exitCount(); ++i) {
+            const WaterExit& e = water.exit(i);
+            // The long walls' ladders (an end wall's, on water over 12 m wide, has no shelf before it).
+            if (e.kind != WaterExitKind::Ladder || std::fabs(alongY ? e.out.x : e.out.y) < 0.5f) continue;
+            ++ladders;
+            const Vec2 face0{e.foot.x + e.out.x * 0.35f, e.foot.y + e.out.y * 0.35f}; // the wall's face behind the foot
+            const float off = static_cast<float>(section.shelf) + 0.34f;
+            const Vec2 held{face0.x - e.out.x * off, face0.y - e.out.y * off};
+            CAPTURE(i);
+            CHECK(water.depth(held) >= kWaterLipDepth - 1e-3f);
+            CHECK(std::hypot(held.x - e.foot.x, held.y - e.foot.y) <= kWaterLadderReach);
+            CHECK(water.nearestExit(held, kWaterLadderReach) >= 0);
+            // On the shelf in front of it a body wades.
+            WaterCapsule c;
+            c.p = {face0.x - e.out.x * 0.4f, face0.y - e.out.y * 0.4f};
+            c.feetZ = static_cast<float>(w.z - section.depth);
+            c.swimming = true;
+            CHECK(waterState(water, c, 0.f).mode == WaterMode::DeepWade);
+        }
+        CHECK(ladders > 0);
+    }
+    // A shelf that is no wade (its water over the swim's exit) gets no lip; nor does a flat bed.
+    RoadCanal deepShelf = canalOf("CN-D", 892.0, 424.0, 901.0, 636.0, 560.0);
+    deepShelf.floorZ = 1.3;
+    deepShelf.lip = true;
+    CHECK(roadCanalSection(deepShelf).lip == doctest::Approx(0.0));
+    RoadCanal narrow = canalOf("CN-S", 0.0, 0.0, 6.0, 60.0, 0.0);
+    narrow.lip = true;
+    CHECK(roadCanalSection(narrow).lip == doctest::Approx(0.0));
+    // A middle shallower than the lip's depth: the lip drops to it and the slope lies flat there.
+    RoadCanal shallow = canalOf("CN-H", 892.0, 424.0, 901.0, 636.0, 560.0);
+    shallow.deep = 1.4;
+    shallow.lip = true;
+    CHECK(roadCanalSection(shallow).lip == doctest::Approx(0.4));
+}
