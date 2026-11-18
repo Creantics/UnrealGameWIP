@@ -321,6 +321,7 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 	{
 		if (TeleportAt >= 0.0 && PhaseClock >= TeleportAt)
 		{
+			const double TeleportSetAt = TeleportAt;
 			TeleportAt = -1.0;
 			APawn* Pawn = Pc ? Pc->GetPawn() : nullptr;
 			if (bTeleportPawn && Pawn)
@@ -332,7 +333,9 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 			}
 			else if (!bTeleportPawn)
 			{
-				PathOffset = TeleportPathTo - PhaseClock;
+				// From the teleport's set second, not this frame's: a shot at a set second then lands on the same pose
+				// in every run (the rail runs on at most one frame ahead of the jump's own key).
+				PathOffset = TeleportPathTo - TeleportSetAt;
 			}
 			const FString Mark = FString::Printf(TEXT("teleport at capture frame %d (%.1f s)%s"), static_cast<int32>(Stats->size()), PhaseClock,
 				bTeleportPawn && !Pawn ? TEXT(": no pawn, skipped") : TEXT(""));
@@ -340,6 +343,7 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 			Marks += Mark + TEXT("\n");
 		}
 		const bool bCensusDue = bCensusPending; // the census's second half runs on the frame after its first
+		double ShotAt = -1.0; // a HighResShot's own second: the rail is placed there on its frame, so runs shoot the same poses
 		while (NextExec < Execs.Num() && PhaseClock >= Execs[NextExec].Key)
 		{
 			const FString Mark = FString::Printf(TEXT("exec '%s' at capture frame %d (%.1f s)"), *Execs[NextExec].Value,
@@ -352,7 +356,23 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 			}
 			else if (GEngine)
 			{
-				GEngine->Exec(World, *Execs[NextExec].Value);
+				// HighResShot is the game viewport's command and viewmode the player's (it needs the cheat manager): the
+				// engine's own Exec takes neither, so the shot was never saved. Every other command keeps the engine's Exec.
+				UGameViewportClient* Viewport = GEngine->GameViewport.Get();
+				const FString& Line = Execs[NextExec].Value;
+				if (Viewport && Line.StartsWith(TEXT("HighResShot"), ESearchCase::IgnoreCase))
+				{
+					Viewport->Exec(World, *Line, *GLog);
+					ShotAt = Execs[NextExec].Key;
+				}
+				else if (Pc && Line.StartsWith(TEXT("viewmode "), ESearchCase::IgnoreCase))
+				{
+					Pc->ConsoleCommand(Line);
+				}
+				else
+				{
+					GEngine->Exec(World, *Execs[NextExec].Value);
+				}
 			}
 			++NextExec;
 		}
@@ -360,7 +380,7 @@ void UFTBenchSubsystem::Tick(float DeltaTime)
 		{
 			CensusMoved();
 		}
-		PlaceCamera(PhaseClock + PathOffset);
+		PlaceCamera((ShotAt >= 0.0 ? ShotAt : PhaseClock) + PathOffset);
 		if (bSkipNext)
 		{
 			bSkipNext = false;

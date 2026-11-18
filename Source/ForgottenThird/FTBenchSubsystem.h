@@ -22,8 +22,9 @@
 // -BenchWarmMax seconds (default 120, logged as timed out): a cold start's compile frames no longer end it at frame 2.
 // -BenchTeleport at capture second s jumps the rail to path second <path s> (with -BenchPath), or sets the possessed
 // pawn down at x,y,z (m; plan metres with -BenchSide) facing yaw: a scripted streaming jump inside the capture.
-// -BenchExec runs console commands at capture seconds (ProfileGPU, stat dumpave ...). The summary names the capture
-// frame of the teleport and of each command, so their own hitches can be told apart.
+// -BenchExec runs console commands at capture seconds (ProfileGPU, stat dumpave ...; HighResShot goes to the game
+// viewport, with the rail placed at the shot's own second so every run shoots the same pose; viewmode goes to the
+// player). The summary names the capture frame of the teleport and of each command, so their own hitches can be told apart.
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
