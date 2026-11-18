@@ -418,6 +418,9 @@ if(FTCORE_BUILD_TESTS)
         tests/test_surface_weather.cpp
         tests/test_demo_boot.cpp
         tests/test_surface_joints.cpp
+        tests/test_bench_warmup.cpp
+        tests/test_gc_pacing.cpp
+        tests/test_tier_detect.cpp
         tests/test_frame_stats.cpp
         tests/test_bench_path.cpp
         tests/test_light_picker.cpp
