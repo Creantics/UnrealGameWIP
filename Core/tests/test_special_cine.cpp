@@ -1204,17 +1204,44 @@ TEST_CASE("special cine: round 2b's far shot 6 rebuilt: the old checks passed it
     }
 
     // The search: the mirror, the raises, the aims, the pulls and every orbit to 60 degrees fail; the reverse angle,
-    // over the lead's shoulder, passes at every sample.
+    // over the lead's right shoulder, frames both at every sample but stands where shot 8 stands (round 2c's stills:
+    // shot 6 read like shot 8), so it is refused, plain, aimed, raised and both, as is the reverse swung 5 degrees
+    // (closer still to shot 8); mirrored and swung 5 degrees it frames both over the lead's left shoulder.
     const SpecialCineShotCheck c = specialCineFixShot(*far, six, st, &body, 1);
     CHECK(c.first == SpecialCineProblem::ContactHidden);
     CHECK(c.ok);
-    CHECK(c.fix.orbit == doctest::Approx(SpecialCineFraming::kOrbitReverse));
-    CHECK_FALSE(c.fix.mirror);
+    CHECK(c.fix.orbit == doctest::Approx(SpecialCineFraming::kOrbitReverse + SpecialCineFraming::kReverseSwings[0]));
+    CHECK(c.fix.mirror);
     CHECK_FALSE(c.fix.aim);
     CHECK(c.fix.raise == 0.f);
     CHECK(c.fix.pull == 0.f);
-    CHECK(c.tries == 70); // as written, 36 of the old fixes, 32 orbits (plain and aimed), then the reverse
+    CHECK(c.tries == 76); // as written, 36 of the old fixes, 32 orbits, 4 reverses, 2 swung, then swung and mirrored
+    CHECK(c.alike == 6);  // the 4 reverses and the 2 swung as written
+    // Row 4's pass: shot 6 as moved and shot 8 differ by 30 degrees or more about the lead, or 40% or more of distance.
+    const std::uint32_t eight = far->shotAt(8.4f);
+    REQUIRE(eight == six + 2);
     fixes[six] = c.fix;
+    const SpecialCineShotView moved = specialCineShotView(*far, six, st, fixes);
+    const SpecialCineShotView last = specialCineShotView(*far, eight, st);
+    SpecialCineShotFix reversed[SpecialCineMove::kMaxShots]{};
+    reversed[six].orbit = SpecialCineFraming::kOrbitReverse;
+    const SpecialCineShotView before = specialCineShotView(*far, six, st, reversed);
+    const auto turn = [](const SpecialCineShotView& a, const SpecialCineShotView& b) {
+        const float d = std::fabs(a.azimuth - b.azimuth);
+        return d > 180.f ? 360.f - d : d;
+    };
+    const auto apart = [](const SpecialCineShotView& a, const SpecialCineShotView& b) {
+        return std::fabs(a.distance - b.distance) / std::max(a.distance, b.distance);
+    };
+    MESSAGE("far shot 6 reversed (round 2c): azimuth ", before.azimuth, " deg, ", before.distance, " m; shot 8: ", last.azimuth,
+            " deg, ", last.distance, " m: ", turn(before, last), " deg and ", 100.f * apart(before, last), "% apart");
+    MESSAGE("far shot 6 now: azimuth ", moved.azimuth, " deg, ", moved.distance, " m: ", turn(moved, last), " deg and ",
+            100.f * apart(moved, last), "% from shot 8");
+    CHECK(specialCineViewsAlike(before, last)); // what the stills showed
+    CHECK(turn(before, last) < 10.f);
+    CHECK_FALSE(specialCineViewsAlike(moved, last));
+    CHECK((turn(moved, last) >= SpecialCineShotView::kAlikeAzimuth || apart(moved, last) >= SpecialCineShotView::kAlikeDistance));
+    CHECK(turn(moved, last) >= 30.f);
     for (const float at : {7.11f, 7.16f, 7.23f, 7.34f}) {
         CAPTURE(at);
         CHECK(specialCineFrameProblem(*far, at, st, fixes, &body, 1) == SpecialCineProblem::None);
@@ -1225,6 +1252,49 @@ TEST_CASE("special cine: round 2b's far shot 6 rebuilt: the old checks passed it
         if (i == six || far->shot(i).subject == SpecialCineSubject::None) continue;
         CAPTURE(i);
         CHECK(specialCineFixShot(*far, i, st, &body, 1).first == SpecialCineProblem::None);
+    }
+}
+
+TEST_CASE("special cine: two views are alike under 30 degrees about the lead and 40% of distance; the turn wraps") {
+    const auto view = [](float azimuth, float distance) {
+        SpecialCineShotView v;
+        v.azimuth = azimuth;
+        v.distance = distance;
+        return v;
+    };
+    CHECK(specialCineViewsAlike(view(10.f, 3.f), view(10.f, 3.f)));
+    CHECK(specialCineViewsAlike(view(0.f, 3.f), view(29.f, 3.f)));
+    CHECK_FALSE(specialCineViewsAlike(view(0.f, 3.f), view(30.f, 3.f)));
+    CHECK_FALSE(specialCineViewsAlike(view(0.f, 3.f), view(-30.5f, 3.f)));
+    CHECK(specialCineViewsAlike(view(0.f, 3.f), view(0.f, 1.85f)));      // 38% nearer
+    CHECK_FALSE(specialCineViewsAlike(view(0.f, 3.f), view(0.f, 1.8f))); // 40% nearer
+    CHECK_FALSE(specialCineViewsAlike(view(0.f, 2.f), view(0.f, 3.4f))); // 41% farther, measured on the farther
+    CHECK(specialCineViewsAlike(view(170.f, 3.f), view(-170.f, 3.f)));   // 20 degrees across the back
+    CHECK(specialCineViewsAlike(view(355.f, 3.f), view(5.f, 3.f)));
+    CHECK_FALSE(specialCineViewsAlike(view(160.f, 3.f), view(-160.f, 3.f)));
+    CHECK(specialCineViewsAlike(view(0.f, 0.f), view(10.f, 0.f))); // both on the lead: the turn decides
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(specialCineViewsAlike(view(nan, 3.f), view(0.f, 3.f)));
+    CHECK_FALSE(specialCineViewsAlike(view(0.f, 3.f), view(0.f, nan)));
+    // A shot out of range has no view, and so is like nothing.
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const SpecialCineStage st = stageAt(0.f, 0.f, 6.6f, 0.f);
+    const SpecialCineShotView none = specialCineShotView(*far, far->size(), st);
+    CHECK(std::isnan(none.azimuth));
+    CHECK(std::isnan(none.distance));
+    CHECK_FALSE(specialCineViewsAlike(none, none));
+    // The committed move's shots on a plain stage: every framing shot has a view, finite and off the lead.
+    for (std::uint32_t i = 0; i < far->size(); ++i) {
+        if (far->shot(i).subject == SpecialCineSubject::None) continue;
+        CAPTURE(i);
+        const SpecialCineShotView v = specialCineShotView(*far, i, st);
+        CHECK(std::isfinite(v.azimuth));
+        CHECK(v.distance > 0.5f);
     }
 }
 
@@ -1278,7 +1348,8 @@ TEST_CASE("special cine: a shot no fix clears is counted as still failing, its f
     CHECK(c.first == SpecialCineProblem::BodyInLine);
     CHECK(c.last != SpecialCineProblem::None);
     CHECK_FALSE(c.ok);
-    CHECK(c.tries == 73); // every fix tried: as written, 36 of the old fixes, 32 orbits, 4 reverse angles
+    CHECK(c.tries == 153); // every fix tried: as written, 36 of the old fixes, 32 orbits, 4 reverses, 80 reverse swings
+    CHECK(c.alike == 0);
     CHECK_FALSE(c.fix.moved());
     // Counted as the host counts it: one shot still failing.
     int stillFailing = 0;

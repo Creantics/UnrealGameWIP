@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <string>
 
 namespace ftcore {
@@ -161,6 +162,7 @@ std::string_view specialCineProblemName(SpecialCineProblem problem) {
     case SpecialCineProblem::TooSmall: return "too small";
     case SpecialCineProblem::ContactHidden: return "the contact hidden";
     case SpecialCineProblem::LeadHidden: return "the lead hidden";
+    case SpecialCineProblem::AlikeShot: return "like another shot";
     }
     return "none";
 }
@@ -719,7 +721,50 @@ SpecialCineProblem shotProblem(const SpecialCineMove& move, std::uint32_t shot, 
     return SpecialCineProblem::None;
 }
 
+// Whether shot `shot` under `fix` stands where another shot of the move stands as written (one that frames someone:
+// a "none" shot is composed on its own, top-down or on a bone).
+bool alikeAnother(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage, const SpecialCineShotFix& fix) {
+    SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+    fixes[shot] = fix;
+    const SpecialCineShotView mine = specialCineShotView(move, shot, stage, fixes);
+    for (std::uint32_t i = 0; i < move.size(); ++i) {
+        if (i == shot || move.shot(i).subject == SpecialCineSubject::None) continue;
+        if (specialCineViewsAlike(mine, specialCineShotView(move, i, stage))) return true;
+    }
+    return false;
+}
+
 } // namespace
+
+SpecialCineShotView specialCineShotView(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                        const SpecialCineShotFix* fixes) {
+    SpecialCineShotView v;
+    if (shot >= move.size()) {
+        v.azimuth = v.distance = std::numeric_limits<float>::quiet_NaN();
+        return v;
+    }
+    const SpecialCineShot& s = move.shot(shot);
+    const float t = 0.5f * (s.in + s.out);
+    const float length = move.length();
+    const CutsceneVec3 eye = specialCineFrameAt(move, t, stage, fixes).pose.position;
+    const CutsceneVec3 feet = leadFeet(move, stage, length > 0.f ? std::clamp(t / length, 0.f, 1.f) : 0.f);
+    float fx = 1.f, fy = 0.f;
+    stageAxes(stage, fx, fy);
+    const float dx = eye.x - feet.x, dy = eye.y - feet.y;
+    v.azimuth = std::atan2(dx * -fy + dy * fx, dx * fx + dy * fy) * 180.f / kPi;
+    v.distance = std::sqrt(dx * dx + dy * dy);
+    return v;
+}
+
+bool specialCineViewsAlike(const SpecialCineShotView& a, const SpecialCineShotView& b) {
+    if (!std::isfinite(a.azimuth) || !std::isfinite(b.azimuth) || !std::isfinite(a.distance) || !std::isfinite(b.distance)) return false;
+    float turn = std::fabs(a.azimuth - b.azimuth);
+    turn = std::fmod(turn, 360.f);
+    if (turn > 180.f) turn = 360.f - turn;
+    const float farther = std::max(a.distance, b.distance);
+    const float apart = farther > 1e-4f ? std::fabs(a.distance - b.distance) / farther : 0.f;
+    return turn < SpecialCineShotView::kAlikeAzimuth && apart < SpecialCineShotView::kAlikeDistance;
+}
 
 SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                         const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user) {
@@ -735,6 +780,11 @@ SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32
         float when = 0.f;
         c.last = shotProblem(move, shot, stage, fix, bodies, count, world, user, when);
         if (c.last != SpecialCineProblem::None) return false;
+        if (alikeAnother(move, shot, stage, fix)) {
+            c.last = SpecialCineProblem::AlikeShot;
+            ++c.alike;
+            return false;
+        }
         c.fix = fix;
         return true;
     };
@@ -766,6 +816,14 @@ SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32
                 if (orbited(raise, sign * SpecialCineFraming::kOrbitStep * static_cast<float>(k))) return c;
     for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
         if (orbited(raise, SpecialCineFraming::kOrbitReverse)) return c;
+    // The reverse swung off the line, as written and mirrored, for a reverse that stands where another shot stands.
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        for (const float swing : SpecialCineFraming::kReverseSwings)
+            for (const float sign : {1.f, -1.f})
+                for (const bool mirror : {false, true}) {
+                    const float orbit = SpecialCineFraming::kOrbitReverse + sign * swing;
+                    if (attempt({mirror, raise, 0.f, false, orbit}) || (aimable && attempt({mirror, raise, 0.f, true, orbit}))) return c;
+                }
     c.ok = false;
     return c;
 }

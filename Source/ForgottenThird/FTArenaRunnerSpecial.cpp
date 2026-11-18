@@ -941,16 +941,16 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		if (!Check.ok)
 		{
 			++SpecialShotsBlocked;
-			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s): played as written."),
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s; %u like another shot): played as written."),
 				Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries,
-				UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.last)).c_str()));
+				UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.last)).c_str()), Check.alike);
 			continue;
 		}
 		const ftcore::SpecialCineShotFix& Fix = Check.fix;
 		SpecialPlayer.setFix(Shot, Fix);
 		++SpecialShotsMoved;
-		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s: moved (try %u): %s%sorbited %.0f deg, raised %.1f m, pulled %.1f m."),
-			Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, Fix.mirror ? TEXT("mirrored, ") : TEXT(""),
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s: moved (try %u, %u refused as like another shot): %s%sorbited %.0f deg, raised %.1f m, pulled %.1f m."),
+			Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, Check.alike, Fix.mirror ? TEXT("mirrored, ") : TEXT(""),
 			Fix.aim ? TEXT("aimed, ") : TEXT(""), FMath::IsFinite(Fix.orbit) ? Fix.orbit : 0.f, Fix.raise > 0.f ? Fix.raise : 0.f,
 			Fix.pull > 0.f ? Fix.pull : 0.f);
 	}

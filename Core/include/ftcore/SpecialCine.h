@@ -309,9 +309,12 @@ enum class SpecialCineProblem : std::uint8_t {
     // Tested last, so either one means every check above passed:
     ContactHidden, // a body (the target's own included) hides the contact from the camera (target and "both" shots)
     LeadHidden,    // under kMinLeadShare of the lead's sample points can be seen (lead and "both" shots)
+    // specialCineFixShot's only, for a moved shot that passes every check above: it stands where another shot of the
+    // move stands (specialCineViewsAlike).
+    AlikeShot,
 };
 // "none", "inside a body", "a body in the line", "the world", "off frame", "too small", "the contact hidden",
-// "the lead hidden".
+// "the lead hidden", "like another shot".
 FTCORE_API std::string_view specialCineProblemName(SpecialCineProblem problem);
 
 // The framing rules: the subject (its upright line, feet to head) must have some part inside the safe frame, 10% in
@@ -353,6 +356,13 @@ struct SpecialCineFraming {
     static constexpr float kOrbitMax = 60.f;
     static constexpr float kOrbitRaise = 0.5f;
     static constexpr float kOrbitReverse = 180.f;
+    // The reverse angle swung each way by these (degrees), as written and mirrored, when the reverse itself reads like
+    // another shot (the far set's shot 6 reversed stands over the lead's right shoulder as shot 8 does). The swing is
+    // about the subject's pivot, so far out a small one turns the camera a long way about the lead: past 7.8 m every
+    // swing of 30 degrees loses a figure off frame, while the reverse mirrored and swung 5 frames both over the other
+    // shoulder. 2.5 last: it clears the 30 degrees by the least, and is needed only at lock range (14.75 m and more,
+    // where 5 already loses a figure).
+    static constexpr float kReverseSwings[5] = {5.f, 15.f, 30.f, 45.f, 2.5f};
 };
 
 // The first problem of `move`'s frame at `t` (fixes as in specialCineFrameAt). `bodies` (null with `count` 0) and
@@ -368,16 +378,34 @@ struct SpecialCineShotCheck {
     SpecialCineProblem last = SpecialCineProblem::None;  // the problem left after the last try (None when one passed)
     float firstAt = 0.f;                                 // when the first problem shows (seconds on the move's clock)
     std::uint32_t tries = 0;                             // fixes tried, the shot as written included
+    std::uint32_t alike = 0;                             // fixes that framed it but read like another shot (refused)
     bool ok = true;                                      // the shot as written, or a fix, passes
 };
+
+// Where a shot's camera stands about the lead at the shot's middle (`fixes`: null, or one per shot), on the ground
+// plane about the lead's feet there: its azimuth (degrees from the stage's forward, positive toward the stage's right,
+// -180..180) and its distance (metres). Two shots read alike when they stand under kAlikeAzimuth degrees AND under
+// kAlikeDistance of the farther one's distance apart (NaN: not alike). No allocation.
+struct SpecialCineShotView {
+    static constexpr float kAlikeAzimuth = 30.f;
+    static constexpr float kAlikeDistance = 0.4f;
+    float azimuth = 0.f;
+    float distance = 0.f;
+};
+FTCORE_API SpecialCineShotView specialCineShotView(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                                   const SpecialCineShotFix* fixes = nullptr);
+FTCORE_API bool specialCineViewsAlike(const SpecialCineShotView& a, const SpecialCineShotView& b);
 
 // Tests shot `shot` of `move` at kSamples times and, when it fails, tries in order: mirrored; raised 0.4, 0.8, 1.2 m;
 // mirrored and raised; aimed; aimed and mirrored; aimed and raised; then pulled 0.5 to 6 m in 0.5 m steps (each plain,
 // then aimed); then orbited 15, 30, 45, 60 degrees (each to the right, then the left; each plain, then aimed), and
 // all of that again raised kOrbitRaise; then the reverse angle (180 degrees) the same way: plain, aimed, raised,
-// raised and aimed. A shot with subject "none" is never aimed. The first that passes every sample is returned; none:
-// ok false and the fix left empty (the host plays it as written and counts it as still failing). At most 73 tries.
-// No allocation.
+// raised and aimed; last, the reverse swung 5, 15, 30, 45 and 2.5 degrees (kReverseSwings), each to the right then the
+// left, each as written then mirrored, each plain then aimed, and all of that again raised kOrbitRaise. A shot with
+// subject "none" is never aimed. A fix that passes every sample but reads like another shot of the move as written
+// that frames someone (specialCineViewsAlike) is refused (AlikeShot, counted in `alike`). The first that passes is
+// returned; none: ok false and the fix left empty (the host plays it as written and counts it as still failing). At
+// most 153 tries. No allocation.
 FTCORE_API SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                                    const SpecialCineBody* bodies, std::uint32_t count,
                                                    SpecialCineWorldTest world = nullptr, void* user = nullptr);
