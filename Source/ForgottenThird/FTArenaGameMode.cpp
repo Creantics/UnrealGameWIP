@@ -1121,6 +1121,16 @@ bool AFTArenaGameMode::Shots(float DeltaSeconds)
 	{
 		return true;
 	}
+	// -ArenaSpecialShots: the special's stills on its own clock (the fight's stands still while it plays).
+	if (ShotsTaken > 0)
+	{
+		FString SpecialName;
+		if (Runner->TakeSpecialStill(SpecialName))
+		{
+			TakeShot(*SpecialName, false);
+			return true;
+		}
+	}
 	// -ArenaShotAt's views, on the fight's clock, once the ring view is in (uncounted: the six views and the quit are
 	// unchanged).
 	if (NextShotAt < ShotAt.Num() && ShotsTaken > 0 && static_cast<double>(Runner->GetFight().time()) >= ShotAt[NextShotAt])

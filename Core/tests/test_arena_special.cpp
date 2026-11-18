@@ -190,21 +190,21 @@ struct PartnerRig : Rig {
 
 const char* kTwoLeads = R"({ "version": 1, "moves": [
     { "id": "devin_special_01", "lead": "devin" },
-    { "id": "other_special_01", "lead": "duy", "duration": 3, "impactAt": 1, "damage": 50, "otherShare": 0,
+    { "id": "other_special_01", "lead": "duy", "duration": 3, "strikeAt": 1, "damage": 50, "otherShare": 0,
       "knockBack": 0, "cues": [ { "at": 1, "cue": "impact" } ] } ] })";
 
 // A party member who is never played: its move is keyed by its current identity id (neutral test ids).
 const char* kMemberMove = R"({ "version": 1, "moves": [
     { "id": "devin_special_01", "lead": "devin" },
-    { "id": "member_special_01", "lead": "identity_a", "duration": 4, "impactAt": 2, "damage": 60, "otherShare": 0,
+    { "id": "member_special_01", "lead": "identity_a", "duration": 4, "strikeAt": 2, "damage": 60, "otherShare": 0,
       "knockBack": 0 } ] })";
 
-const char* kNineSeconds = R"({ "version": 1, "moves": [ { "id": "nine", "lead": "devin", "duration": 9, "impactAt": 6.5,
+const char* kNineSeconds = R"({ "version": 1, "moves": [ { "id": "nine", "lead": "devin", "duration": 9, "strikeAt": 6.5,
     "cues": [ { "at": 0, "cue": "a" }, { "at": 6.5, "cue": "impact" }, { "at": 9, "cue": "end" } ] } ] })";
 
 // kTwoLeads in the other order (a reloaded table: another address, other indices).
 const char* kTwoLeadsReordered = R"({ "version": 1, "moves": [
-    { "id": "other_special_01", "lead": "duy", "duration": 3, "impactAt": 1, "damage": 50, "otherShare": 0,
+    { "id": "other_special_01", "lead": "duy", "duration": 3, "strikeAt": 1, "damage": 50, "otherShare": 0,
       "knockBack": 0, "cues": [ { "at": 1, "cue": "impact" } ] },
     { "id": "devin_special_01", "lead": "devin" } ] })";
 
@@ -253,17 +253,222 @@ TEST_CASE("arena special: the shipped file loads, one move for the first lead") 
     CHECK(validArenaSpecialGauge(t.gauge));
     CHECK(m->duration >= 7.f);
     CHECK(m->duration <= 9.f);
-    CHECK(m->impactAt > 0.f);
-    CHECK(m->impactAt < m->duration);
+    CHECK(m->duration == doctest::Approx(8.5f)); // the take of record: 8.50 s at 60 fps
+    CHECK(m->strikeAt == doctest::Approx(7.1f)); // staff contact
+    CHECK(m->waveSpeed == doctest::Approx(40.f));
+    CHECK(m->maxTravel == doctest::Approx(0.5f));
+    CHECK(m->strikeAt + m->maxTravel + m->knockTime <= m->duration);
     CHECK(m->laneLength == doctest::Approx(14.f));
     CHECK(m->laneWidth == doctest::Approx(4.f));
     CHECK(m->bossPhaseShare >= 0.18f);
     CHECK(m->bossPhaseShare <= 0.22f);
-    REQUIRE(m->cueCount >= 2);
-    bool impact = false;
-    for (std::size_t i = 0; i < m->cueCount; ++i)
-        if (m->cues[i].view() == "impact") impact = std::fabs(m->cues[i].at - m->impactAt) < 1e-4f;
-    CHECK(impact); // the impact cue is on the impact time
+}
+
+TEST_CASE("arena special: the shipped cues follow the take: two at 0, the hold before the strike, strike on strikeAt") {
+    const ArenaSpecialTable t = shippedSpecials();
+    const ArenaSpecialRules* m = t.find("devin_special_01");
+    REQUIRE(m != nullptr);
+    const char* const order[] = {"freeze", "camera_close", "conjure", "whirl",  "ring",    "fist",    "step_in",
+                                 "hold",   "wind_up",      "strike",  "lunge",  "dismiss", "cut_back"};
+    REQUIRE(m->cueCount == sizeof(order) / sizeof(order[0]));
+    float last = 0.f;
+    for (std::size_t i = 0; i < m->cueCount; ++i) {
+        CAPTURE(i);
+        CHECK(m->cues[i].view() == order[i]);
+        CHECK(m->cues[i].at >= last);
+        last = m->cues[i].at;
+    }
+    const auto at = [&](std::string_view name) {
+        for (std::size_t i = 0; i < m->cueCount; ++i)
+            if (m->cues[i].view() == name) return m->cues[i].at;
+        return -1.f;
+    };
+    CHECK(at("freeze") == 0.f);
+    CHECK(at("camera_close") == 0.f); // two cues on one time load
+    CHECK(at("hold") < at("wind_up"));
+    CHECK(at("wind_up") < at("strike"));
+    CHECK(at("strike") == doctest::Approx(m->strikeAt));
+    CHECK(at("dismiss") > m->strikeAt + m->maxTravel); // the latest impact comes before the staff goes
+    CHECK(at("cut_back") == doctest::Approx(m->duration));
+    for (const char* gone : {"gather", "impact", "fx_flash", "fx_dust_wall"}) CHECK(at(gone) < 0.f);
+}
+
+TEST_CASE("arena special: every effect and sound row lands inside the move at the nearest and the farthest impact") {
+    const ArenaSpecialTable t = shippedSpecials();
+    const ArenaSpecialRules* m = t.find("devin_special_01");
+    REQUIRE(m != nullptr);
+    REQUIRE(m->fxCount == 49);
+    CHECK(validArenaSpecialRules(*m));
+    const float nearest = arenaSpecialImpactAt(*m, 0.f), farthest = arenaSpecialImpactAt(*m, 1000.f);
+    CHECK(nearest == doctest::Approx(7.1f));
+    CHECK(farthest == doctest::Approx(7.6f));
+    int pastCut = 0;
+    for (std::size_t i = 0; i < m->fxCount; ++i) {
+        const ArenaSpecialFx& f = m->fx[i];
+        const std::string rowId(f.view());
+        CAPTURE(rowId);
+        for (const float impact : {nearest, farthest}) {
+            const float a = arenaSpecialFxAt(*m, f.start, impact);
+            CHECK(a >= 0.f);
+            CHECK(a <= 8.5f);
+            const float b = arenaSpecialFxEnd(*m, f, impact);
+            CHECK(b >= a);
+            if (f.hasEnd) CHECK(b <= 8.5f);
+            if (!f.hasEnd && b > m->duration + 1e-4f && impact == nearest) {
+                ++pastCut;
+                MESSAGE((std::string("rings past the cut back: ") + std::string(f.view()) + " to " + std::to_string(b) + " s"));
+            }
+        }
+    }
+    CHECK(pastCut <= 1); // the dust wall's 1.2 s sound (lunge + 1.2 = 8.55)
+    const auto row = [&](std::string_view id) -> const ArenaSpecialFx& {
+        for (std::size_t i = 0; i < m->fxCount; ++i)
+            if (m->fx[i].view() == id) return m->fx[i];
+        CHECK_MESSAGE(false, (std::string("no row ") + std::string(id)));
+        return m->fx[0];
+    };
+    // The impact's rows move with the range, never a fixed time.
+    for (const char* id : {"FX_DS_Wave.hit", "SFX_DS_Impact"}) {
+        CAPTURE(id);
+        CHECK(row(id).start.cue == kArenaSpecialAtImpact);
+        CHECK(arenaSpecialFxAt(*m, row(id).start, arenaSpecialImpactAt(*m, 0.f)) == doctest::Approx(7.1f));
+        CHECK(arenaSpecialFxAt(*m, row(id).start, arenaSpecialImpactAt(*m, 10.f)) == doctest::Approx(7.35f));
+        CHECK(arenaSpecialFxAt(*m, row(id).start, arenaSpecialImpactAt(*m, 30.f)) == doctest::Approx(7.6f));
+    }
+    // A few rows by the spec's numbers.
+    CHECK(arenaSpecialFxAt(*m, row("FX_DS_Conjure").start, nearest) == doctest::Approx(0.5f));
+    CHECK(arenaSpecialFxEnd(*m, row("FX_DS_Conjure"), nearest) == doctest::Approx(0.9f));
+    CHECK(arenaSpecialFxAt(*m, row("FX_DS_Charge.bulge").start, nearest) == doctest::Approx(6.6f));
+    CHECK(arenaSpecialFxEnd(*m, row("FX_DS_Wave"), nearest) == doctest::Approx(8.3f));
+    CHECK(arenaSpecialFxEnd(*m, row("FX_DS_Dissolve.flare"), nearest) == doctest::Approx(8.45f));
+    CHECK(arenaSpecialFxAt(*m, row("SFX_DS_Step.knee").start, nearest) == doctest::Approx(3.62f));
+    CHECK(arenaSpecialFxAt(*m, row("SFX_DS_Unfreeze").start, nearest) == doctest::Approx(8.3f));
+    CHECK_FALSE(row("FX_DS_Smear").low);
+    CHECK(row("FX_DS_Ring").low);
+    // A retime moves a row with its cue.
+    ArenaSpecialRules moved = *m;
+    for (std::size_t i = 0; i < moved.cueCount; ++i)
+        if (moved.cues[i].view() == "conjure") moved.cues[i].at += 0.1f;
+    CHECK(arenaSpecialFxAt(moved, row("FX_DS_Conjure").start, nearest) == doctest::Approx(0.6f));
+    // A bad cue index is NaN.
+    ArenaSpecialFxTime bad;
+    bad.cue = 200;
+    CHECK(std::isnan(arenaSpecialFxAt(*m, bad, nearest)));
+}
+
+TEST_CASE("arena special: the fx rows' file errors") {
+    const auto load = [](const char* rows, std::string& error) {
+        const std::string json = std::string(R"({"version": 1, "moves": [{"id": "m", "lead": "devin", "cues": [)"
+                                             R"({"at": 0, "cue": "freeze"}, {"at": 7.1, "cue": "strike"}, {"at": 8.5, "cue": "cut_back"}],)"
+                                             R"( "fx": [)") + rows + "]}]}";
+        ArenaSpecialTable t;
+        const bool ok = importArenaSpecials(json, t, &error);
+        CHECK((ok ? t.count : 0u) == (ok ? 1u : 0u));
+        return ok;
+    };
+    std::string e;
+    CHECK(load(R"({"id": "A.b", "cue": "strike", "at": 0.1, "to": {"cue": "cut_back", "at": -0.2}})", e));
+    CHECK(load(R"({"id": "A", "cue": "impact", "for": 2})", e)); // a length may ring past the cut back
+    CHECK_FALSE(load(R"({"id": "A", "cue": "nope"})", e));
+    CHECK(e.find("moves[0].fx[0].cue") != std::string::npos);
+    CHECK_FALSE(load(R"({"id": "A", "cue": "strike", "to": {"cue": "cut_back"}, "for": 1})", e));
+    CHECK_FALSE(load(R"({"id": "A", "cue": "cut_back", "at": 0.1})", e)); // past the duration
+    CHECK(e.find("outside") != std::string::npos);
+    CHECK_FALSE(load(R"({"id": "A", "cue": "freeze", "at": -0.1})", e)); // before the press
+    CHECK_FALSE(load(R"({"id": "A", "cue": "impact", "at": 0.95})", e)); // inside at the nearest, past it at the farthest
+    CHECK_FALSE(load(R"({"id": "A", "cue": "strike", "to": {"cue": "freeze"}})", e)); // ends before it starts
+    CHECK_FALSE(load(R"({"id": "A b", "cue": "strike"})", e));
+    CHECK_FALSE(load(R"({"id": "A", "cue": "strike", "at": 6})", e)); // offset out of range
+    CHECK_FALSE(load(R"({"id": "A", "cue": "strike", "low": 1})", e));
+}
+
+TEST_CASE("arena special: the impact is the strike plus the wave's travel to the target, capped") {
+    const ArenaSpecialRules m; // the defaults are the shipped numbers: strike 7.1 s, 40 m/s, at most 0.5 s
+    CHECK(arenaSpecialImpactAt(m, 0.f) == doctest::Approx(7.10f));
+    CHECK(arenaSpecialImpactAt(m, 6.f) == doctest::Approx(7.25f));
+    CHECK(arenaSpecialImpactAt(m, 10.f) == doctest::Approx(7.35f));
+    CHECK(arenaSpecialImpactAt(m, 18.f) == doctest::Approx(7.55f));
+    CHECK(arenaSpecialImpactAt(m, 20.f) == doctest::Approx(7.60f)); // the cap's reach
+    CHECK(arenaSpecialImpactAt(m, 30.f) == doctest::Approx(7.60f)); // the range: capped
+    CHECK(arenaSpecialImpactAt(m, -1.f) == doctest::Approx(7.10f));
+    CHECK(arenaSpecialImpactAt(m, std::nanf("")) == doctest::Approx(7.10f));
+    CHECK(arenaSpecialImpactAt(m, 30.f) + m.knockTime <= m.duration); // 7.95 inside 8.5
+
+    // In a fight: from the performer's spot at the strike to the target, ruled on the first tick at or past it.
+    const ArenaSpecialTable specials = shippedSpecials();
+    Rig r;
+    r.begin(fightOf({"hulk"}));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+    ArenaInput in;
+    in.special = kArenaPlayer;
+    in.specialTravel = 10.f;
+    r.tick(in);
+    REQUIRE(r.fight.frozen());
+    const ArenaSpecialView& v = r.fight.special();
+    const ArenaSpecialRules& sm = *specials.find("devin_special_01");
+    const float share = sm.strikeAt / sm.duration;
+    const Vec2 at{v.origin.x + (v.end.x - v.origin.x) * share, v.origin.y + (v.end.y - v.origin.y) * share};
+    const Vec2 to{r.bodies.enemies[0].x - at.x, r.bodies.enemies[0].y - at.y};
+    const float d = std::sqrt(to.x * to.x + to.y * to.y);
+    CHECK(d > 1.f);
+    CHECK(v.travel > 0.f);
+    CHECK(v.impactTime == doctest::Approx(arenaSpecialImpactAt(sm, d)));
+    CHECK(v.impactTime > sm.strikeAt);
+    while (r.fight.frozen() && !v.impactDone) r.tick();
+    CHECK(v.impactDone);
+    CHECK(v.time >= v.impactTime - 1e-3f);
+    CHECK(v.time < v.impactTime + kDt + 1e-3f);
+}
+
+TEST_CASE("arena special: a skip before, at or after the impact rules it exactly once") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const auto start = [&](Rig& r, int& hits) {
+        r.begin(fightOf({"hulk"}));
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f, true)));
+        hits = countEvents(r.press(), ArenaEventType::Hit);
+        REQUIRE(r.fight.frozen());
+        REQUIRE(r.fight.special().skippable);
+    };
+    // The played-out run: the tick the impact is ruled on.
+    int impactTick = 0, playedHits = 0, playedHp = 0;
+    {
+        Rig r;
+        start(r, playedHits);
+        bool was = false;
+        for (int k = 1; r.fight.frozen() && k < 100000; ++k) {
+            playedHits += countEvents(r.tick(), ArenaEventType::Hit);
+            if (!was && r.fight.special().impactDone) impactTick = k;
+            was = r.fight.special().impactDone;
+        }
+        playedHp = r.fight.enemyHp(0);
+    }
+    REQUIRE(impactTick > 400);
+    CHECK(playedHits == 1);
+    for (const int skipAt : {1, impactTick - 1, impactTick, impactTick + 1, impactTick + 10}) {
+        CAPTURE(skipAt);
+        Rig r;
+        int hits = 0;
+        start(r, hits);
+        bool was = false;
+        int rulings = 0, damage = -1;
+        for (int k = 1; r.fight.frozen() && k < 100000; ++k) {
+            ArenaInput in;
+            in.specialSkip = k == skipAt;
+            hits += countEvents(r.tick(in), ArenaEventType::Hit);
+            const ArenaSpecialView& v = r.fight.special();
+            if (!was && v.impactDone) {
+                ++rulings;
+                damage = v.resultCount ? v.results[0].damage : -1;
+            } else if (was && v.resultCount) {
+                CHECK(v.results[0].damage == damage); // never ruled again
+            }
+            was = v.impactDone;
+        }
+        CHECK(rulings == 1);
+        CHECK(hits == 1);
+        CHECK(damage > 0);
+        CHECK(r.fight.enemyHp(0) == playedHp);
+    }
 }
 
 TEST_CASE("arena special: loader errors name their path and leave the table empty") {
@@ -277,7 +482,28 @@ TEST_CASE("arena special: loader errors name their path and leave the table empt
     bad("{", "arena special:");
     bad(R"({ "moves": {} })", "moves: expected an array");
     bad(R"({ "moves": [ { "lead": "devin" } ] })", "moves[0].id");
-    bad(R"({ "moves": [ { "id": "a", "lead": "devin", "duration": 4, "impactAt": 5 } ] })", "moves[0].impactAt");
+    bad(R"({ "moves": [ { "id": "a", "lead": "devin", "duration": 4, "strikeAt": 5 } ] })", "moves[0].strikeAt");
+    bad(R"({ "moves": [ { "id": "a", "lead": "devin", "strikeAt": 0 } ] })", "moves[0].strikeAt");
+    bad(R"({ "moves": [ { "id": "a", "lead": "devin", "strikeAt": -1 } ] })", "moves[0].strikeAt");
+    // The latest impact's shove must fit: 8.0 + 0.5 + 0.35 > 8.5.
+    bad(R"({ "moves": [ { "id": "a", "lead": "devin", "strikeAt": 8.0 } ] })", "moves[0].maxTravel");
+    bad(R"({ "moves": [ { "id": "a", "lead": "devin", "maxTravel": 1.2 } ] })", "moves[0].maxTravel");
+    bad(R"({ "moves": [ { "id": "a", "lead": "devin", "waveSpeed": 0 } ] })", "moves[0].waveSpeed");
+    {
+        ArenaSpecialTable ok; // 7.65 + 0.5 + 0.35 = 8.5 exactly
+        CHECK(importArenaSpecials(R"({ "moves": [ { "id": "a", "lead": "devin", "strikeAt": 7.65 } ] })", ok));
+        ArenaSpecialRules r = ok.moves[0];
+        CHECK(validArenaSpecialRules(r));
+        r.strikeAt = 7.7f;
+        CHECK_FALSE(validArenaSpecialRules(r));
+        r.strikeAt = 0.f;
+        CHECK_FALSE(validArenaSpecialRules(r));
+        r.strikeAt = 9.f;
+        CHECK_FALSE(validArenaSpecialRules(r));
+        r = ok.moves[0];
+        r.waveSpeed = 0.f;
+        CHECK_FALSE(validArenaSpecialRules(r));
+    }
     bad(R"({ "moves": [ { "id": "a", "lead": "devin" }, { "id": "a", "lead": "duy" } ] })", "moves[1].id: duplicate");
     bad(R"({ "moves": [ { "id": "a", "lead": "devin" }, { "id": "b", "lead": "devin" } ] })", "moves[1].lead");
     bad(R"({ "moves": [ { "id": "a", "lead": "devin", "cues": [ { "at": 2, "cue": "x" }, { "at": 1, "cue": "y" } ] } ] })",
@@ -291,6 +517,21 @@ TEST_CASE("arena special: loader errors name their path and leave the table empt
     CHECK(importArenaSpecials(R"({ "moves": [ { "id": "a", "lead": "devin", "colour": 1 } ] })", t, nullptr, &warnings));
     REQUIRE(warnings.size() == 1);
     CHECK(warnings[0] == "moves[0]: unknown key: colour");
+}
+
+TEST_CASE("arena special: a stale impactAt key is unknown, sets nothing, and the shipped table has none") {
+    // The impact is no longer a data time: it is the strike plus the wave's travel. An old file's key only warns.
+    ArenaSpecialTable t;
+    std::vector<std::string> warnings;
+    CHECK(importArenaSpecials(R"({ "moves": [ { "id": "a", "lead": "devin", "impactAt": 3.0 } ] })", t, nullptr, &warnings));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0] == "moves[0]: unknown key: impactAt");
+    REQUIRE(t.count == 1);
+    CHECK(t.moves[0].strikeAt == doctest::Approx(ArenaSpecialRules{}.strikeAt));
+
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_special.json", text));
+    CHECK(text.find("impactAt") == std::string::npos);
 }
 
 // ---- the gauge ----
@@ -726,6 +967,73 @@ TEST_CASE("arena special: the target always, the lane's others at the reduced sh
     CHECK(r.fight.stats().specialDamage == 330);
 }
 
+TEST_CASE("arena special: a target dead before the impact hands the hit to the nearest living enemy in the lane") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    Rig r;
+    r.begin(fightOf({"hulk", "duelist", "duelist", "breaker"}, 1));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+    // The target nearest in front; two more down the lane (the nearer at 9 m), one behind the lead.
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.enemies[0] = Vec2{6.f, 0.f};
+    r.bodies.enemies[1] = Vec2{11.f, 1.f};
+    r.bodies.enemies[2] = Vec2{9.f, -0.5f};
+    r.bodies.enemies[3] = Vec2{-5.f, 0.f};
+    r.press();
+    REQUIRE(r.fight.frozen());
+    REQUIRE(r.fight.special().target == 0);
+    const int duelistHp = r.fight.enemyHp(2);
+    const int breakerHp = r.fight.enemyHp(3);
+    // Mid-freeze, well before the impact.
+    for (int k = 0; k < 120; ++k) r.tick();
+    REQUIRE(r.fight.frozen());
+    REQUIRE_FALSE(r.fight.special().impactDone);
+    r.fight.killEnemyForTest(0);
+    REQUIRE_FALSE(r.fight.enemyAlive(0));
+    r.runOut();
+    const ArenaSpecialView& v = r.fight.special();
+    CHECK(v.target == 2); // the nearest along the lane of those alive in it
+    REQUIRE(v.resultCount == 2);
+    int seenTarget = 0, seenLane = 0;
+    for (std::size_t i = 0; i < v.resultCount; ++i) {
+        CHECK(v.results[i].foe != 0); // the dead one takes nothing
+        CHECK(v.results[i].foe != 3); // behind the lead: not in the lane
+        if (v.results[i].foe == 2) {
+            ++seenTarget;
+            CHECK(v.results[i].target);
+            CHECK(v.results[i].damage == 220);
+        } else {
+            CHECK(v.results[i].foe == 1);
+            CHECK_FALSE(v.results[i].target);
+            CHECK(v.results[i].damage == 110);
+            ++seenLane;
+        }
+    }
+    CHECK(seenTarget == 1);
+    CHECK(seenLane == 1);
+    CHECK(r.fight.enemyHp(2) == std::max(0, duelistHp - 220));
+    CHECK(r.fight.enemyHp(3) == breakerHp);
+    CHECK(r.fight.stats().specialDamage == 330);
+}
+
+TEST_CASE("arena special: a target dead before the impact with nobody alive in the lane: no results") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    Rig r;
+    r.begin(fightOf({"hulk", "breaker"}, 1));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+    r.bodies.player = Vec2{0.f, 0.f};
+    r.bodies.enemies[0] = Vec2{6.f, 0.f};
+    r.bodies.enemies[1] = Vec2{-5.f, 0.f};
+    r.press();
+    REQUIRE(r.fight.frozen());
+    const int breakerHp = r.fight.enemyHp(1);
+    r.tick();
+    r.fight.killEnemyForTest(0);
+    r.runOut();
+    CHECK(r.fight.special().resultCount == 0);
+    CHECK(r.fight.enemyHp(1) == breakerHp);
+    CHECK(r.fight.stats().specialDamage == 0);
+}
+
 TEST_CASE("arena special: the target is hit even with a host blow hook that vetoes everything") {
     const ArenaSpecialTable specials = shippedSpecials();
     Rig r;
@@ -933,7 +1241,7 @@ namespace {
 ArenaSpecialTable switchTable(const char* extra) {
     const std::string text = std::string(R"({ "version": 1, "gauge": { )") + extra +
                              R"( }, "moves": [ { "id": "devin_special_01", "lead": "devin" },
-        { "id": "other_special_01", "lead": "duy", "duration": 3, "impactAt": 1 } ] })";
+        { "id": "other_special_01", "lead": "duy", "duration": 3, "strikeAt": 1 } ] })";
     ArenaSpecialTable t;
     std::string error;
     REQUIRE_MESSAGE(importArenaSpecials(text, t, &error), error);
@@ -1626,10 +1934,70 @@ TEST_CASE("arena special: balance (how often the gauge fills, its share of a fig
     CHECK(perFill <= 4.f);
 }
 
+TEST_CASE("arena special: Core stops the end short of an enemy's body on the way, by the host's rule") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const ArenaSpecialRules& m = specials.moves[0];
+    const auto madd = [](Vec2 a, Vec2 d, float k) { return Vec2{a.x + d.x * k, a.y + d.y * k}; };
+    const auto sub = [](Vec2 a, Vec2 b) { return Vec2{a.x - b.x, a.y - b.y}; };
+    const auto dot = [](Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; };
+    const auto run = [&](Vec2 enemy, float travel, Vec2& hulk, float& need) {
+        Rig r;
+        r.begin(fightOf({"hulk"}), 5);
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        r.tick();
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.enemies[0] = enemy;
+        r.tick();
+        hulk = r.bodies.enemies[0];
+        need = r.fight.def().fighter.bodyRadius + r.fight.def().enemies[0].bodyRadius;
+        ArenaInput in;
+        in.special = kArenaPlayer;
+        in.specialTravel = travel;
+        r.tick(in);
+        REQUIRE(r.fight.frozen());
+        return r.fight.special();
+    };
+    Vec2 hulk{}, origin{};
+    float need = 0.f;
+    // Far off: the whole travel, as the host sent it.
+    {
+        const ArenaSpecialView v = run(Vec2{6.f, 0.f}, m.endTravel, hulk, need);
+        CHECK(v.travel == doctest::Approx(m.endTravel));
+    }
+    // In the way: the host sent all of it (as when Core picks another target than the host's guess).
+    const ArenaSpecialView v = run(Vec2{1.9f, 0.f}, m.endTravel, hulk, need);
+    origin = v.origin;
+    const Vec2 right{-v.dir.y, v.dir.x};
+    const Vec2 whole = madd(madd(origin, v.dir, m.endTravel), right, m.endSide); // the way as sent
+    const Vec2 path = sub(whole, origin);
+    const float length = std::sqrt(dot(path, path));
+    REQUIRE(length > 0.1f);
+    const auto clear = [&](Vec2 p) {
+        const Vec2 d = sub(p, hulk);
+        return dot(d, d) >= need * need;
+    };
+    CHECK_FALSE(clear(whole)); // the test is a real one: the end as sent overlaps the hulk
+    CHECK(clear(v.end));
+    CHECK(v.travel < m.endTravel);
+    CHECK(v.travel > 0.f);
+    // On the way, not off it: the travel's share is the end's share of the way.
+    const float share = v.travel / m.endTravel;
+    CHECK(v.end.x == doctest::Approx(origin.x + path.x * share).epsilon(1e-4));
+    CHECK(v.end.y == doctest::Approx(origin.y + path.y * share).epsilon(1e-4));
+    // Tight: one 5 cm step and the 1% beyond it overlaps.
+    const int steps = static_cast<int>(std::ceil(length / 0.05f));
+    CHECK_FALSE(clear(madd(origin, path, share + 1.f / static_cast<float>(steps) + 0.01f + 1e-3f)));
+    // The impact is measured from the clamped way.
+    const float at = m.strikeAt / m.duration;
+    const Vec2 strike = madd(origin, sub(v.end, origin), at);
+    const Vec2 to = sub(hulk, strike);
+    CHECK(v.impactTime == doctest::Approx(arenaSpecialImpactAt(m, std::sqrt(dot(to, to)))));
+}
+
 TEST_CASE("arena special: the performance travels as far as the host allows; the body ends where the clip does") {
     const ArenaSpecialTable specials = shippedSpecials();
     const ArenaSpecialRules& m = specials.moves[0];
-    REQUIRE(m.endTravel == doctest::Approx(1.09f));
+    REQUIRE(m.endTravel == doctest::Approx(0.73f)); // the re-based clip: the pelvis bone's end offset
     REQUIRE(m.endSide == doctest::Approx(-0.11f));
     struct Ended {
         Vec2 origin, dir, end, body, facing;
@@ -1786,4 +2154,35 @@ TEST_CASE("arena special: game-thread cost per tick (reported, not checked: 60 f
             << idle << " ns (special share " << (idle - off) << " ns), frozen in a special " << running
             << " ns; a 60 fps frame is 16.7 ms");
     CHECK(running > 0.0);
+}
+
+TEST_CASE("arena special: a skipped move ends in the same state as one played out, and a second later still does") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const auto start = [&](Rig& r) {
+        r.begin(fightOf({"hulk"}));
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f, true)));
+        r.press();
+        REQUIRE(r.fight.frozen());
+    };
+    Rig played, skipped;
+    start(played);
+    start(skipped);
+    CHECK(played.runOut(kDt, false) > 400);
+    CHECK(skipped.runOut(kDt, true) == 1);
+    const auto same = [&]() {
+        CHECK_FALSE(played.fight.frozen());
+        CHECK_FALSE(skipped.fight.frozen());
+        CHECK(played.fight.enemyHp(0) == skipped.fight.enemyHp(0));
+        CHECK(played.fight.specialGaugeForTest(0) == doctest::Approx(skipped.fight.specialGaugeForTest(0)));
+        CHECK(played.bodies.player.x == doctest::Approx(skipped.bodies.player.x).epsilon(0.01));
+        CHECK(played.bodies.player.y == doctest::Approx(skipped.bodies.player.y).epsilon(0.01));
+        CHECK(played.bodies.enemies[0].x == doctest::Approx(skipped.bodies.enemies[0].x).epsilon(0.01));
+        CHECK(played.bodies.enemies[0].y == doctest::Approx(skipped.bodies.enemies[0].y).epsilon(0.01));
+    };
+    same();
+    for (int i = 0; i < 60; ++i) {
+        played.tick();
+        skipped.tick();
+    }
+    same();
 }
