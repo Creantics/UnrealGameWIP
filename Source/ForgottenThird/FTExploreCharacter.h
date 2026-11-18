@@ -411,6 +411,8 @@ private:
 	TArray<float> BodyTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
+	// When the last search for a director found none (real seconds): a world without one is searched once a second, not per call (ScenePlaying asks every tick).
+	double DirectorMissAt = -1.0e9;
 	TWeakObjectPtr<AFTPartyVan> Van;
 	bool bPartyHiddenBeforeVan = false;
 	FFTFootSlideProbe SlideProbe;

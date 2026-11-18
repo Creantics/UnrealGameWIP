@@ -50,6 +50,7 @@ struct WaterFollowTuning {
     float watchdog = 20.f;         // s: a follower stuck this long in a water phase is placed with the lead
     float stuckFar = 12.f;         // m: at the surface or under, further than this from the lead counts as stuck
     float entryLimit = 15.f;       // s: a walk to its entry not over by then is given up (ashore; it picks again)
+    float rejoinNear = 1.5f;       // m: a rejoined follower this near its rejoin target is at the surface (else asked again)
 };
 
 // What a follower is doing in the water.
@@ -190,6 +191,8 @@ struct WaterFollowOrder {
     int exitIndex = -1;         // ToExit, ExitWait, Climbing: its exit
     bool startClimb = false;    // this step: start the climb
     bool place = false;         // this step: place it with the lead (the lead's rescue)
+    bool rejoin = false;        // Placed with the lead swimming: put it at target (its surface slot, in the water),
+                                // swimming; the next step it is at the surface and follows from there
     // For the follower's WaterLoco: Swim's state, as if it had one, and the step's events.
     SwimState swim = SwimState::Surface;
     bool dived = false;
@@ -252,6 +255,9 @@ public:
             o.startEntry = false;
             o.startClimb = false;
             o.place = false;
+            const bool rejoined = o.rejoin; // last step asked the host to put it at o.target, in the water
+            const Vec2 rejoinTo{o.target.x, o.target.y};
+            o.rejoin = false;
             o.dived = false;
             o.surfaced = false;
             if (!m.active) {
@@ -264,9 +270,13 @@ public:
                 go(o, WaterFollowPhase::Placed);
                 o.place = true;
             }
+            if (leadSwim_ <= 0.f) s.entryFails = 0;
             if (o.phase == WaterFollowPhase::ToEntry && (lost || s.watch >= tuning_.entryLimit)) {
-                go(o, WaterFollowPhase::Ashore);
+                // A second walk given up while the lead still swims: it is placed with the lead, in the water.
+                const bool again = !lost && ++s.entryFails >= 2 && (lead.swimming || leadUnder);
+                go(o, again ? WaterFollowPhase::Placed : WaterFollowPhase::Ashore);
                 o.entry = WaterFollowEntry{};
+                o.place = again;
             }
             // Lost, or stuck past the watchdog (it never reached its exit, its slot or the end of its move): placed.
             if (inWater(o.phase) && (lost || s.watch >= tuning_.watchdog)) {
@@ -354,8 +364,22 @@ public:
                 if (m.climbed) go(o, WaterFollowPhase::Ashore);
                 break;
             case WaterFollowPhase::Placed: // held at least the step it was placed in, so the host sees it
-                if (was == WaterFollowPhase::Placed && !rescued && !lead.swimming && !leadUnder)
-                    go(o, WaterFollowPhase::Ashore);
+                // Then: ashore with the lead out of the water; with it swimming, at its surface slot (the host put it
+                // there on the rejoin step), so it never stays frozen while the lead swims on.
+                // Only once the host has put it there (within rejoinNear of the rejoin's target): a missed rejoin step
+                // asks again. Rejoined and the lead out since: Placed one more step, so the host lands it beside the lead.
+                if (was == WaterFollowPhase::Placed && !rescued) {
+                    if (lead.swimming || leadUnder) {
+                        const float dx = m.position.x - rejoinTo.x;
+                        const float dy = m.position.y - rejoinTo.y;
+                        if (rejoined && dx * dx + dy * dy <= tuning_.rejoinNear * tuning_.rejoinNear) {
+                            go(o, WaterFollowPhase::Surface);
+                            s.entryFails = 0;
+                        }
+                    } else if (!rejoined) {
+                        go(o, WaterFollowPhase::Ashore);
+                    }
+                }
                 break;
             }
             // A follower left in the water when the lead is out by no exit move (a scene, a load): its own way out.
@@ -379,6 +403,7 @@ private:
         float entryAt = -1.f;
         float climbAt = -1.f;
         bool held = false;        // its member is held by a scene: out of the climb queue
+        int entryFails = 0;       // walks to an entry given up this swim
         float backFor = 0.f;      // s the lead has swum away from its exit (the queue's return)
         WaterFollowPhase watchPhase = WaterFollowPhase::Ashore;
         float watch = 0.f;        // s stuck in watchPhase
@@ -499,10 +524,19 @@ private:
         o.sprint = false;
         o.target = m.position;
         switch (o.phase) {
+        case WaterFollowPhase::Placed:
+            // Placed while the lead swims (a teleport, the watchdog, a second failed entry): rejoin at the surface slot.
+            if (lead.swim != SwimState::Rescued && (lead.swimming || leadUnder_)) {
+                const Vec2 slot = inWaterToward(water, leadP,
+                                                Vec2{leadP.x - fwd.x * T.slotBack + right.x * T.slotSide * side,
+                                                     leadP.y - fwd.y * T.slotBack + right.y * T.slotSide * side});
+                o.target = SwimVec{slot.x, slot.y, m.surfaceZ};
+                o.rejoin = true;
+            }
+            break;
         case WaterFollowPhase::Ashore:
         case WaterFollowPhase::Entering:
         case WaterFollowPhase::Climbing:
-        case WaterFollowPhase::Placed:
             break; // the party's own follow, or the host's placed move
         case WaterFollowPhase::ToEntry:
             o.target = SwimVec{o.entry.point.x, o.entry.point.y, m.position.z};

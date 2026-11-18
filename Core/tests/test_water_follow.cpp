@@ -577,6 +577,12 @@ TEST_CASE("water follow: the watchdog places a follower stuck 20 s (never reachi
     f.members[0].position = {40.f, 0.f, -1.f}; // 35 m off a lead that does not move
     CHECK(f.until(0, WaterFollowPhase::Placed, 25.f) == doctest::Approx(20.f).epsilon(0.02));
     CHECK(f.o(1).phase == WaterFollowPhase::Surface); // the near one is not stuck
+    // Placed in open water with the lead swimming: rejoined by the lead, not frozen 35 m off.
+    CHECK(f.o(0).rejoin);
+    CHECK(std::fabs(f.o(0).target.x - f.lead.position.x) < 4.f);
+    f.members[0].position = f.o(0).target;
+    f.step();
+    CHECK(f.o(0).phase == WaterFollowPhase::Surface);
 }
 
 TEST_CASE("water follow: a lead teleported mid-swim, or back from a park on dry ground, has the swimmers placed") {
@@ -587,12 +593,60 @@ TEST_CASE("water follow: a lead teleported mid-swim, or back from a park on dry 
     CHECK(s.o(0).phase == WaterFollowPhase::Placed);
     CHECK(s.o(0).place);
     CHECK(s.o(1).phase == WaterFollowPhase::Placed);
-    // Placed while the lead still swims: held; out of the water, ashore.
-    s.step(10);
-    CHECK(s.o(0).phase == WaterFollowPhase::Placed);
-    s.lead.swimming = false;
+    // The lead still swims: the placed step rejoins them at their surface slots by the lead (not frozen where they were).
+    CHECK(s.o(0).rejoin);
+    CHECK(s.o(0).target.x == doctest::Approx(60.f - 2.5f).epsilon(0.05));
+    CHECK(s.o(0).target.y > 0.f);
+    CHECK(s.o(1).target.y < 0.f);
+    s.members[0].position = s.o(0).target; // the host put them there
+    s.members[1].position = s.o(1).target;
     s.step();
-    CHECK(s.o(0).phase == WaterFollowPhase::Ashore);
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(1).phase == WaterFollowPhase::Surface);
+    CHECK_FALSE(s.o(0).rejoin);
+    // It swims on with the lead from there.
+    s.lead.velocity = {1.5f, 0.f};
+    for (int k = 0; k < 60; ++k) {
+        s.lead.position.x += 1.5f / 30.f;
+        s.step();
+    }
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(s.o(0).speed > 0.f);
+    // A rejoin step the host missed (the member not moved): asked again, still Placed, until it is there.
+    Scene m;
+    m.bothIn();
+    m.lead.position = {60.f, 0.f, -1.f};
+    m.step();
+    REQUIRE(m.o(0).rejoin);
+    m.step(3);
+    CHECK(m.o(0).phase == WaterFollowPhase::Placed);
+    CHECK(m.o(0).rejoin);
+    m.members[0].position = m.o(0).target;
+    m.step();
+    CHECK(m.o(0).phase == WaterFollowPhase::Surface);
+    // Rejoined, then the lead is out of the water: Placed one more step without a rejoin (the host lands it), then ashore.
+    Scene rj;
+    rj.bothIn();
+    rj.lead.position = {60.f, 0.f, -1.f};
+    rj.step();
+    REQUIRE(rj.o(0).rejoin);
+    rj.members[0].position = rj.o(0).target;
+    rj.lead.swimming = false;
+    rj.step();
+    CHECK(rj.o(0).phase == WaterFollowPhase::Placed);
+    CHECK_FALSE(rj.o(0).rejoin);
+    rj.step();
+    CHECK(rj.o(0).phase == WaterFollowPhase::Ashore);
+    // Placed with the lead out of the water: ashore the next step.
+    Scene a;
+    a.bothIn();
+    a.lead.position = {60.f, 0.f, 1.f};
+    a.lead.swimming = false;
+    a.step();
+    REQUIRE(a.o(0).phase == WaterFollowPhase::Placed);
+    CHECK_FALSE(a.o(0).rejoin);
+    a.step();
+    CHECK(a.o(0).phase == WaterFollowPhase::Ashore);
     // A teleport onto dry ground.
     Scene d;
     d.bothIn();
@@ -654,6 +708,21 @@ TEST_CASE("water follow: a walk to an entry not over in 15 s is given up, and pi
     CHECK(s.o(0).entry.kind == WaterFollowEntryKind::None);
     s.step();
     CHECK(s.o(0).phase == WaterFollowPhase::ToEntry);
+    // The second walk given up while the lead swims: placed with the lead, in the water (a rejoin), then at the surface.
+    CHECK(s.until(0, WaterFollowPhase::Placed, 20.f) == doctest::Approx(15.f).epsilon(0.02));
+    CHECK(s.o(0).rejoin);
+    s.members[0].position = s.o(0).target;
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    // A lead out of the water between the two forgets the first.
+    Scene f;
+    f.step(30);
+    REQUIRE(f.until(0, WaterFollowPhase::Ashore, 20.f) >= 0.f);
+    f.lead.swimming = false;
+    f.step(2);
+    f.lead.swimming = true;
+    REQUIRE(f.until(0, WaterFollowPhase::ToEntry, 2.f) >= 0.f);
+    CHECK(f.until(0, WaterFollowPhase::Ashore, 20.f) == doctest::Approx(15.f).epsilon(0.02));
 }
 
 TEST_CASE("water follow: with no water found toward the lead, a follower stays ashore") {

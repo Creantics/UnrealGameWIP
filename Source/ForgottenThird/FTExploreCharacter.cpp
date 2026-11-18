@@ -2984,12 +2984,17 @@ void AFTExploreCharacter::LeaveVan(const FVector& At, double Yaw)
 
 AFTExploreDirector* AFTExploreCharacter::GetDirector()
 {
-	if (!Director.IsValid())
+	UWorld* World = GetWorld();
+	if (!Director.IsValid() && World && World->GetRealTimeSeconds() - DirectorMissAt >= 1.0)
 	{
-		for (TActorIterator<AFTExploreDirector> It(GetWorld()); It; ++It)
+		for (TActorIterator<AFTExploreDirector> It(World); It; ++It)
 		{
 			Director = *It;
 			break;
+		}
+		if (!Director.IsValid())
+		{
+			DirectorMissAt = World->GetRealTimeSeconds();
 		}
 	}
 	return Director.Get();

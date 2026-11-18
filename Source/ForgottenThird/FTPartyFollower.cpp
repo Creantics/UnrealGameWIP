@@ -1225,6 +1225,19 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 	case WaterFollowPhase::Placed:
 	{
 		// The lead was rescued: once it is out of the water, it is put beside the lead (its side by its slot), standing.
+		if (Order->rejoin)
+		{
+			// Placed while the lead swims on (a teleport, the watchdog, a second failed entry): put at its surface slot by the
+			// lead, in the water, facing the lead's way; the next step it swims from there.
+			const FVector2D To(ToCm(Order->target.x), ToCm(Order->target.y));
+			const FVector P(To.X, To.Y, SwimFeetZ(To, Lead->GetActorLocation().Z - Lead->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
+			SetActorLocationAndRotation(P, FRotator(0.0, Lead->GetActorRotation().Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
+			WaterVelocity = FVector::ZeroVector;
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: rejoined the lead in the water at (%.0f, %.0f, %.0f) cm."), *LogName, P.X, P.Y, P.Z);
+			SenseWater(*System, P, true);
+			StepFollowerWaterLoco(In, DeltaSeconds, Anim);
+			return true;
+		}
 		if (Lead->IsSwimming() || Lead->IsUnderWater())
 		{
 			SenseWater(*System, At, true);
