@@ -32,6 +32,7 @@
 #include "NiagaraSystem.h"
 
 #include "ftcore/Vfx.h"
+#include "ftcore/WaterDraw.h"
 
 #include <string>
 
@@ -44,6 +45,27 @@ constexpr float kWaterViewMargin = 0.5f;
 TAutoConsoleVariable<int32> CVarWaterSurface(TEXT("ft.Water.Surface"), 0,
 	TEXT("1: the wade, swim and eye read the tide and waves of Data/Water/water.json (ftcore::WaterSurfaceModel); 0: each body flat at its level."),
 	ECVF_Default);
+TAutoConsoleVariable<float> CVarWaterCanalSkyLow(TEXT("r.FT.Water.CanalSkyLow"), ftcore::kWaterCanalSkyLow,
+	TEXT("The canal's sky reflection, 0..1, on a tier with no screen-space and no Lumen reflections (Low; ftcore::waterCanalSky): the engine adds the open sky there with nothing to hide it, so a walled canal reads cream. 1 turns this off."),
+	ECVF_Default);
+TAutoConsoleVariable<int32> CVarWaterRainRings(TEXT("r.FT.Water.RainRings"), 0,
+	TEXT("1 lays rain rings on the sea's and the canals' surfaces, as many as the rain is hard (the water collection's RainRings; ftcore::waterRainRings). 0 (the default): the water's surfaces take no rain."),
+	ECVF_Default);
+
+// The tier's reflections as the single-layer water sees them, from the engine's own switches (looked up once).
+ftcore::WaterReflectTier ReadReflectTier()
+{
+	static IConsoleVariable* const WaterReflection = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Water.SingleLayer.Reflection"));
+	static IConsoleVariable* const SsrQuality = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SSR.Quality"));
+	static IConsoleVariable* const LumenAllow = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Lumen.Reflections.Allow"));
+	static IConsoleVariable* const Method = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ReflectionMethod"));
+	ftcore::WaterReflectTier Tier;
+	Tier.waterReflection = WaterReflection ? WaterReflection->GetInt() : 1;
+	// A switch not found reads as reflections on, so the canal is left as it is.
+	Tier.ssrQuality = SsrQuality ? SsrQuality->GetInt() : 1;
+	Tier.lumenReflections = (!LumenAllow || LumenAllow->GetInt() != 0) && (!Method || Method->GetInt() == 1);
+	return Tier;
+}
 // The lead's half width where the surface meets it (cm): the surfaces draw the churn and the contact line around it.
 constexpr double kLeadWaterlineCm = 24.0;
 // The underwater view by the body's kind (linear colours): the water's own colour near the surface and far down, and
@@ -449,6 +471,35 @@ void UFTWaterSubsystem::PushSurface(float DeltaTime)
 	if (!Params)
 	{
 		return;
+	}
+	// The canal's sky (ftcore::waterCanalSky): written when the tier or r.FT.Water.CanalSkyLow moves it, before
+	// -WaterTune so a tune of CanalSky stands until they do.
+	static const FName CanalSkyName(TEXT("CanalSky"));
+	const ftcore::WaterReflectTier Tier = ReadReflectTier();
+	const float CanalSky = ftcore::waterCanalSky(Tier, CVarWaterCanalSkyLow.GetValueOnGameThread());
+	if (CanalSky != CanalSkyWritten)
+	{
+		CanalSkyWritten = CanalSky;
+		const bool bSet = Params->SetScalarParameterValue(CanalSkyName, CanalSky);
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: the canal's sky at %.3f (%s)%s."), CanalSky,
+			ftcore::waterSkyOnly(Tier) ? TEXT("a tier that reflects only the sky") : TEXT("reflections traced"),
+			bSet ? TEXT("") : TEXT("; the water collection has no CanalSky (FTBuildLookMaterials -Water builds it)"));
+	}
+	// Rain on the water (ftcore::waterRainRings): the rain's intensity in steps while r.FT.Water.RainRings is 1, else 0;
+	// written when a step moves, logged when it starts or stops.
+	static const FName RainRingsName(TEXT("RainRings"));
+	const UFTRainSubsystem* RainSys = World->GetSubsystem<UFTRainSubsystem>();
+	const float RainRings = ftcore::waterRainRings(CVarWaterRainRings.GetValueOnGameThread() != 0, RainSys ? RainSys->GetIntensity() : 0.f);
+	if (RainRings != RainRingsWritten)
+	{
+		const bool bLog = RainRingsWritten < 0.f || (RainRings > 0.f) != (RainRingsWritten > 0.f);
+		RainRingsWritten = RainRings;
+		const bool bSet = Params->SetScalarParameterValue(RainRingsName, RainRings);
+		if (bLog || !bSet)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: rain rings at %.3f%s."), RainRings,
+				bSet ? TEXT("") : TEXT("; the water collection has no RainRings (FTBuildLookMaterials -Water builds it)"));
+		}
 	}
 	if (!bTuned)
 	{

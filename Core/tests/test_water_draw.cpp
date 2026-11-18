@@ -4,8 +4,10 @@
 #include <doctest/doctest.h>
 
 #include "ftcore/WaterDraw.h"
+#include "AllocCounter.h"
 
 #include <cmath>
+#include <limits>
 
 namespace ftwatershader {
 
@@ -322,4 +324,104 @@ TEST_CASE("A body the tiles don't draw stays flat at its level under the model")
     CHECK(water.surfaceOf(0, sea, t) == seaRides);
     water.setSurfaceFlat(0);
     CHECK(water.surfaceOf(1, canal, t) == canalRides);
+}
+
+TEST_CASE("water draw: the canal's sky is scaled only on a tier that reflects nothing but the sky") {
+    using namespace ftcore;
+    // Low: no SSR, no Lumen reflections, the water's reflections as the scene's.
+    WaterReflectTier low;
+    low.waterReflection = 1;
+    low.ssrQuality = 0;
+    low.lumenReflections = false;
+    CHECK(waterSkyOnly(low));
+    CHECK(waterCanalSky(low, kWaterCanalSkyLow) == doctest::Approx(kWaterCanalSkyLow));
+    CHECK(kWaterCanalSkyLow > 0.f);
+    CHECK(kWaterCanalSkyLow < 1.f);
+    // Play (Lumen reflections) and Medium (SSR): unchanged.
+    WaterReflectTier play = low;
+    play.lumenReflections = true;
+    CHECK_FALSE(waterSkyOnly(play));
+    CHECK(waterCanalSky(play, 0.025f) == 1.f);
+    WaterReflectTier medium = low;
+    medium.ssrQuality = 2;
+    CHECK_FALSE(waterSkyOnly(medium));
+    CHECK(waterCanalSky(medium, 0.025f) == 1.f);
+    // A negative SSR quality is off.
+    WaterReflectTier negative = low;
+    negative.ssrQuality = -1;
+    CHECK(waterSkyOnly(negative));
+    // The water's reflections off: nothing to scale. Forced captures and sky: sky only whatever the tier.
+    WaterReflectTier off = low;
+    off.waterReflection = 0;
+    CHECK_FALSE(waterSkyOnly(off));
+    CHECK(waterCanalSky(off, 0.025f) == 1.f);
+    WaterReflectTier captures = play;
+    captures.waterReflection = 2;
+    captures.ssrQuality = 3;
+    CHECK(waterSkyOnly(captures));
+    // Forced SSR: sky only when SSR is off.
+    WaterReflectTier ssr = play;
+    ssr.waterReflection = 3;
+    ssr.ssrQuality = 0;
+    CHECK(waterSkyOnly(ssr));
+    ssr.ssrQuality = 1;
+    CHECK_FALSE(waterSkyOnly(ssr));
+}
+
+TEST_CASE("water draw: the canal's sky scale is clamped; not finite is no change; nothing is allocated") {
+    using namespace ftcore;
+    const WaterReflectTier low{1, 0, false};
+    const float inf = std::numeric_limits<float>::infinity();
+    CHECK(waterCanalSky(low, -1.f) == 0.f);
+    CHECK(waterCanalSky(low, 0.f) == 0.f);
+    CHECK(waterCanalSky(low, 1.f) == 1.f);
+    CHECK(waterCanalSky(low, 3.f) == 1.f);
+    CHECK(waterCanalSky(low, std::numeric_limits<float>::quiet_NaN()) == 1.f);
+    CHECK(waterCanalSky(low, inf) == 1.f);
+    CHECK(waterCanalSky(low, -inf) == 1.f);
+    const auto before = ftcore_test::allocStats().count;
+    float sink = 0.f;
+    for (int k = 0; k < 100; ++k) {
+        WaterReflectTier t{k % 4, k % 3, (k & 1) != 0};
+        sink += waterCanalSky(t, float(k) / 100.f);
+    }
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(sink > 0.f);
+}
+
+TEST_CASE("water draw: rain rings follow the rain only while on, in steps, and allocate nothing") {
+    using namespace ftcore;
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    // Off: none, whatever the rain.
+    CHECK(waterRainRings(false, 0.f) == 0.f);
+    CHECK(waterRainRings(false, 0.7f) == 0.f);
+    CHECK(waterRainRings(false, 1.f) == 0.f);
+    // On: the rain's intensity, clamped.
+    CHECK(waterRainRings(true, 0.f) == 0.f);
+    CHECK(waterRainRings(true, 0.5f) == 0.5f);
+    CHECK(waterRainRings(true, 1.f) == 1.f);
+    CHECK(waterRainRings(true, 3.f) == 1.f);
+    CHECK(waterRainRings(true, -1.f) == 0.f);
+    // Not finite: none.
+    CHECK(waterRainRings(true, nan) == 0.f);
+    CHECK(waterRainRings(true, inf) == 0.f);
+    CHECK(waterRainRings(true, -inf) == 0.f);
+    // Steps of 1/kWaterRainRingSteps: a ramp moves it only a step at a time, and a drizzle under half a step is none.
+    CHECK(waterRainRings(true, 0.51f) == 0.5f);
+    CHECK(waterRainRings(true, 0.5f + 0.4f / kWaterRainRingSteps) == 0.5f);
+    CHECK(waterRainRings(true, 0.4f / kWaterRainRingSteps) == 0.f);
+    CHECK(waterRainRings(true, 1.f / kWaterRainRingSteps) == doctest::Approx(1.f / kWaterRainRingSteps));
+    int moves = 0;
+    float last = 0.f;
+    const auto before = ftcore_test::allocStats().count;
+    for (int k = 0; k <= 1000; ++k) {
+        const float r = waterRainRings(true, float(k) / 1000.f);
+        CHECK(r >= last);
+        if (r != last) ++moves;
+        last = r;
+    }
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(moves == int(kWaterRainRingSteps));
+    CHECK(last == 1.f);
 }

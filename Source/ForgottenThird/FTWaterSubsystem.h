@@ -24,6 +24,15 @@
 // -WaterTune=<Name>=<value>[,<Name>=<value>...] sets scalar parameters of the water collection or of the underwater
 // view by name at the start of play, for tuning from stills without a rebuild. It is compiled out of shipping builds.
 //
+// The canal's sky: on a tier with no screen-space and no Lumen reflections (Low) the engine reflects the open sky in
+// every canal with nothing to hide it, so the water reads cream between dark walls. The collection's CanalSky, which the
+// canal master multiplies its Specular by, is written here from ftcore::waterCanalSky: r.FT.Water.CanalSkyLow on such a
+// tier, 1 on every other (1 in the cvar turns it off). Written only when it moves; logged then.
+//
+// Rain on the water: with r.FT.Water.RainRings 1 the collection's RainRings is the rain's intensity (ftcore::waterRainRings,
+// in steps), by which the sea and canal masters lay rain rings on their surfaces; 0 (the default) leaves them untouched.
+// The underwater view's own ripples (the window) take no rain.
+//
 // The surface model (ftcore::WaterSurfaceModel: Data/Water/water.json's waves and tide, the look's wind and swell, the
 // rain's storm, the world clock's hours) is set on the bodies when ft.Water.Surface is 1, so the wade, the swim and the
 // eye read the tide and the waves the drawn surface shows. It is 0 until the surfaces draw them.
@@ -221,6 +230,9 @@ private:
 	float WakeSpeed = 0.f;
 	float WakeAmount = 0.f;
 	float SunSought = 0.f;
+	// The CanalSky and RainRings last written to the water collection (-1: not yet).
+	float CanalSkyWritten = -1.f;
+	float RainRingsWritten = -1.f;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> Underwater;

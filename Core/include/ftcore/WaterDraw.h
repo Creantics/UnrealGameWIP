@@ -89,4 +89,26 @@ FTCORE_API std::size_t waterTileLayoutWhole(const WaterBodies& water, const Wate
                                             const WaterTileBounds& bounds, WaterTile* out, std::size_t cap,
                                             std::uint32_t* dropped, std::uint32_t* perBody = nullptr);
 
+// The canal's sky on a tier that reflects nothing but the sky. With no screen-space and no Lumen reflections (Low:
+// r.SSR.Quality 0, r.Lumen.Reflections.Allow 0) the engine's single-layer-water composite adds the sky light's cubemap
+// with nothing to hide it, so a canal between walls mirrors the open night sky and reads cream. The canal master
+// multiplies its Specular by the water collection's CanalSky: lowScale on a sky-only tier, 1 on every other (and with the
+// water's reflections off). Below an F0 of 2 % the engine's EnvBRDF is linear in the specular, so the sky's share falls
+// in proportion. lowScale is clamped to 0..1; not finite reads 1 (no change).
+struct WaterReflectTier {
+    int waterReflection = 1;       // r.Water.SingleLayer.Reflection: 0 off, 1 as the scene, 2 captures and sky, 3 SSR
+    int ssrQuality = 0;            // r.SSR.Quality
+    bool lumenReflections = false; // r.Lumen.Reflections.Allow on, with Lumen the reflection method
+};
+// The canal's sky scale on a sky-only tier (r.FT.Water.CanalSkyLow's default).
+inline constexpr float kWaterCanalSkyLow = 0.04f;
+FTCORE_API bool waterSkyOnly(const WaterReflectTier& tier);
+FTCORE_API float waterCanalSky(const WaterReflectTier& tier, float lowScale);
+
+// Rain on the water: the water collection's RainRings, by which the sea and canal masters lay rain rings on the surface
+// (none at 0, their block skipped). The rain's intensity, clamped to 0..1 and kept to steps of 1/kWaterRainRingSteps (so
+// the host writes it only when a step moves), while on (r.FT.Water.RainRings); 0 while off. Not finite reads 0.
+inline constexpr float kWaterRainRingSteps = 32.f;
+FTCORE_API float waterRainRings(bool on, float intensity);
+
 } // namespace ftcore

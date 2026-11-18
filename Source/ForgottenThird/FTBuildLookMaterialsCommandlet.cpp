@@ -25,6 +25,7 @@
 #include "Materials/MaterialExpressionCameraPositionWS.h"
 #include "Materials/MaterialExpressionCameraVectorWS.h"
 #include "Materials/MaterialExpressionLocalPosition.h"
+#include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionThinTranslucentMaterialOutput.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionCustom.h"
@@ -139,6 +140,7 @@ float2 GradB = 0.035 * float2(CosB * G.x - SinB * G.y, SinB * G.x + CosB * G.y);
 float Deep = saturate(max(BehindDepth - EyeDepth, 0.0) / 40.0);
 float2 Grad = (GradA + GradB) * max(WaveStrength, 0.0) * lerp(0.35, 1.0, Deep);
 FLookWaves W;
+//RAIN
 //REACT
 Grad += ReactGrad;
 float Foam = saturate(ReactFoam);
@@ -235,6 +237,40 @@ float ReactDark = 0.0;
 		float TrailW = 12.0 + 0.1 * max(WakeBack, 0.0);
 		float Trail = exp(-WakeOff * WakeOff / (TrailW * TrailW)) * smoothstep(0.0, 25.0, WakeBack) * (1.0 - smoothstep(40.0, 180.0, WakeBack));
 		ReactFoam += WakeFoam * Wake.w * WakeTail * (ArmLine * Feather + 0.35 * Trail);
+	}
+}
+)HLSL");
+
+// The rain on a water surface, put into a surface's code where it says //RAIN (P the world place in cm, Time, EyeDepth
+// and Grad as the surface has them). RainRings is the water collection's (ftcore::waterRainRings: the rain's intensity
+// while r.FT.Water.RainRings is 1, else 0, and at 0 nothing here runs). Drops land on three world grids of cells 24, 31
+// and 38 cm across, offset from each other so no grid reads; in a share of the cells (as large as RainRings) a drop
+// lands once in each period (about 0.9 s) at its own time and place and sends out one ring, two crests and a trough,
+// that widens to a third of its cell and fades as it goes. Too fine to draw far off: they fade out between 5 and 16 m.
+const TCHAR* const kWaterRainCode = TEXT(R"HLSL(if (RainRings > 0.001)
+{
+	float RainNear = saturate(1.0 - (EyeDepth - 500.0) / 1100.0);
+	if (RainNear > 0.0)
+	{
+		float2 RainGrad = 0.0;
+		for (int RainK = 0; RainK < 3; ++RainK)
+		{
+			float2 RainQ = P / (24.0 + 7.0 * RainK) + float2(0.31, 0.67) * RainK;
+			float2 RainId = floor(RainQ);
+			float3 RainP3 = frac(float3(RainId.xyx + 19.0 * RainK) * float3(0.1031, 0.1030, 0.0973));
+			RainP3 += dot(RainP3, RainP3.yxz + 33.33);
+			float3 RainH = frac((RainP3.xxy + RainP3.yzz) * RainP3.zyx);
+			if (RainH.z < RainRings)
+			{
+				float RainAge = frac(Time * 1.1 + RainH.x * 7.0);
+				float2 RainRel = (RainQ - RainId - 0.5) - (RainH.xy - 0.5) * 0.2;
+				float RainR = max(length(RainRel), 1e-3);
+				float RainX = (RainR - 0.34 * RainAge) / 0.05;
+				float RainFade = (1.0 - RainAge) * (1.0 - RainAge);
+				RainGrad += (RainRel / RainR) * (sin(RainX * 2.0) * exp(-0.5 * RainX * RainX) * RainFade);
+			}
+		}
+		Grad += RainGrad * (0.12 * RainNear);
 	}
 }
 )HLSL");
@@ -336,7 +372,9 @@ if (Gust * FineStrength > 0.001)
 	float2 Mg = float2(W.Noise(Mq + float2(Me, 0.0)) - W.Noise(Mq - float2(Me, 0.0)), W.Noise(Mq + float2(0.0, Me)) - W.Noise(Mq - float2(0.0, Me))) / (2.0 * Me);
 	Grad += 0.03 * FineStrength * Gust * Mg;
 }
-// What the lead does to it: rings, the waterline on the body, the wake (kWaterReactCode). Its foam is paler than the scum.
+// The rain on it (kWaterRainCode), then what the lead does to it: rings, the waterline on the body, the wake
+// (kWaterReactCode). Its foam is paler than the scum.
+//RAIN
 //REACT
 Grad += ReactGrad;
 float Froth = saturate(ReactFoam);
@@ -952,11 +990,17 @@ UMaterialParameterCollection* BuildWaterCollection()
 	PutScalar(TEXT("BedCaustic"), 0.9f);
 	PutScalar(TEXT("WakeSlope"), 0.45f);
 	PutScalar(TEXT("WakeFoam"), 0.4f);
+	// The canal's sky: what the canal master's Specular is multiplied by. 1, but on a tier that reflects only the sky
+	// (Low), where the water subsystem writes ftcore::waterCanalSky (r.FT.Water.CanalSkyLow).
+	PutScalar(TEXT("CanalSky"), 1.f);
+	// Rain on the water: how many rain rings the sea and canal masters lay (kWaterRainCode). 0, but while
+	// r.FT.Water.RainRings is 1, when the water subsystem writes the rain's intensity (ftcore::waterRainRings).
+	PutScalar(TEXT("RainRings"), 0.f);
 	Collection->PostEditChange();
 	return Collection;
 }
 
-// The inputs kWaterReactCode reads, from the water collection.
+// The inputs kWaterReactCode and kWaterRainCode read, from the water collection.
 void AddReactInputs(UMaterial* Material, UMaterialExpressionCustom* Custom, UMaterialParameterCollection* Water, int32 Y)
 {
 	for (int32 I = 0; I < 8; ++I)
@@ -964,17 +1008,17 @@ void AddReactInputs(UMaterial* Material, UMaterialExpressionCustom* Custom, UMat
 		const FName Name(*FString::Printf(TEXT("Ring%d"), I));
 		AddInput(Custom, Name, AddLook(Material, Water, Name, Y + 60 * I));
 	}
-	for (const TCHAR* Name : {TEXT("Lead"), TEXT("Wake"), TEXT("RingSlope"), TEXT("RingFoam"), TEXT("ContactFoam"), TEXT("ContactDark"), TEXT("WakeSlope"), TEXT("WakeFoam")})
+	for (const TCHAR* Name : {TEXT("Lead"), TEXT("Wake"), TEXT("RingSlope"), TEXT("RingFoam"), TEXT("ContactFoam"), TEXT("ContactDark"), TEXT("WakeSlope"), TEXT("WakeFoam"), TEXT("RainRings")})
 	{
 		Y += 60;
 		AddInput(Custom, Name, AddLook(Material, Water, Name, Y + 480));
 	}
 }
 
-// A surface's code with the lead's part put in.
+// A surface's code with the rain's part and the lead's put in.
 FString WithReact(const TCHAR* Code)
 {
-	return FString(Code).Replace(TEXT("//REACT"), kWaterReactCode, ESearchCase::CaseSensitive);
+	return FString(Code).Replace(TEXT("//RAIN"), kWaterRainCode, ESearchCase::CaseSensitive).Replace(TEXT("//REACT"), kWaterReactCode, ESearchCase::CaseSensitive);
 }
 
 UMaterial* BuildWater(UMaterialParameterCollection* Look, UMaterialParameterCollection* WaterParams)
@@ -1090,7 +1134,11 @@ UMaterial* BuildCanalWater(UMaterialParameterCollection* Look, UMaterialParamete
 	UMaterialEditorOnlyData* Inputs = Material->GetEditorOnlyData();
 	Inputs->BaseColor.Connect(3, Waves);
 	Inputs->Opacity.Connect(2, Waves);
-	Inputs->Specular.Connect(0, AddScalar(Material, TEXT("Specular"), 0.25f, -100));
+	// Specular x the water collection's CanalSky (1 but on a sky-only tier: the walls can't hide the open sky there).
+	UMaterialExpressionMultiply* Specular = AddExpression<UMaterialExpressionMultiply>(Material, -600, -100);
+	Specular->A.Connect(0, AddScalar(Material, TEXT("Specular"), 0.25f, -100));
+	Specular->B.Connect(0, AddLook(Material, WaterParams, TEXT("CanalSky"), -50));
+	Inputs->Specular.Connect(0, Specular);
 	Inputs->Refraction.Connect(0, AddScalar(Material, TEXT("IOR"), 1.33f, -400));
 	Inputs->Normal.Connect(0, Waves);
 	Inputs->Roughness.Connect(1, Waves);

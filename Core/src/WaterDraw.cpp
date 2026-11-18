@@ -193,4 +193,23 @@ std::size_t waterTileLayoutWhole(const WaterBodies& water, const WaterWaveSpec& 
     return laid;
 }
 
+bool waterSkyOnly(const WaterReflectTier& tier) {
+    switch (tier.waterReflection) {
+    case 0: return false;                    // no reflections: nothing to scale
+    case 2: return true;                     // captures and sky, forced
+    case 3: return tier.ssrQuality <= 0;     // SSR forced; with SSR off it falls back to the sky
+    default: return tier.ssrQuality <= 0 && !tier.lumenReflections;
+    }
+}
+
+float waterCanalSky(const WaterReflectTier& tier, float lowScale) {
+    if (!waterSkyOnly(tier) || !std::isfinite(lowScale)) return 1.f;
+    return std::clamp(lowScale, 0.f, 1.f);
+}
+
+float waterRainRings(bool on, float intensity) {
+    if (!on || !std::isfinite(intensity)) return 0.f;
+    return std::round(std::clamp(intensity, 0.f, 1.f) * kWaterRainRingSteps) / kWaterRainRingSteps;
+}
+
 } // namespace ftcore
