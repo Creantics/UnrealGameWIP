@@ -469,3 +469,172 @@ TEST_CASE("map look: a canal rectangle is edged on its long sides, and open wher
     CHECK(northGap);
     CHECK(southLen == doctest::Approx(200.f));
 }
+
+// ---- Edges found in turns 8 and 9: a second build into one look, no roads, no water grid, an empty model ----
+
+namespace {
+
+// The strip with a ring of streets inland, buildings in its west half and a park's point in its east half.
+MiniMapModel stripWithRing(MapNames& n) {
+    MiniMapModel m = strip();
+    auto road = [&](Vec2 a, Vec2 b) {
+        MapRoad r;
+        r.cls = MapRoadClass::Main;
+        r.width = 8.f;
+        r.first = static_cast<std::uint32_t>(m.points.size());
+        r.count = 2;
+        m.points.push_back(a);
+        m.points.push_back(b);
+        m.roads.push_back(r);
+    };
+    road({1220.f, 420.f}, {1380.f, 420.f});
+    road({1220.f, 580.f}, {1380.f, 580.f});
+    road({1220.f, 420.f}, {1220.f, 580.f});
+    road({1380.f, 420.f}, {1380.f, 580.f});
+    road({1300.f, 420.f}, {1300.f, 580.f});
+    m.buildings.push_back(MapRect{1252.f, 500.f, 2.f, 9.f, 0.f});
+    m.buildings.push_back(MapRect{1268.f, 500.f, 2.f, 9.f, 0.f});
+    mapBuildGrid(m);
+    std::string err;
+    REQUIRE_MESSAGE(mapLoadNames(m, "id,kind,name,sign_form,district,x,y\nP1,park,Kettle Green,,,1340,500\n", n, &err), err);
+    return m;
+}
+
+void checkSameLook(const MapLook& a, const MapLook& b) {
+    CHECK(a.sea == b.sea);
+    CHECK(a.seaSum == b.seaSum);
+    CHECK(a.cell == b.cell);
+    CHECK(a.x0 == b.x0);
+    CHECK(a.y0 == b.y0);
+    CHECK(a.w == b.w);
+    CHECK(a.h == b.h);
+    CHECK(a.seaSide == b.seaSide);
+    CHECK(a.landX0 == b.landX0);
+    CHECK(a.landY0 == b.landY0);
+    CHECK(a.landX1 == b.landX1);
+    CHECK(a.landY1 == b.landY1);
+    for (int k = 0; k < kMapStrokeKinds; ++k) {
+        CAPTURE(k);
+        const std::vector<MapStroke>& sa = a.strokes[static_cast<std::size_t>(k)];
+        const std::vector<MapStroke>& sb = b.strokes[static_cast<std::size_t>(k)];
+        REQUIRE(sa.size() == sb.size());
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < sa.size(); ++i)
+            differ += sa[i].a.x != sb[i].a.x || sa[i].a.y != sb[i].a.y || sa[i].b.x != sb[i].b.x || sa[i].b.y != sb[i].b.y ||
+                              sa[i].level != sb[i].level
+                          ? 1
+                          : 0;
+        CHECK(differ == 0);
+        CHECK(a.tileFirst[static_cast<std::size_t>(k)] == b.tileFirst[static_cast<std::size_t>(k)]);
+    }
+    CHECK(a.tilesW == b.tilesW);
+    CHECK(a.tilesH == b.tilesH);
+    CHECK(a.tileX0 == b.tileX0);
+    CHECK(a.tileY0 == b.tileY0);
+    REQUIRE(a.seaSpots.size() == b.seaSpots.size());
+    for (std::size_t i = 0; i < a.seaSpots.size(); ++i) {
+        CHECK(a.seaSpots[i].at.x == b.seaSpots[i].at.x);
+        CHECK(a.seaSpots[i].at.y == b.seaSpots[i].at.y);
+        CHECK(a.seaSpots[i].depth == b.seaSpots[i].depth);
+    }
+    CHECK(a.parks == b.parks);
+    CHECK(a.yards == b.yards);
+    CHECK(a.slivers == b.slivers);
+    CHECK(a.open == b.open);
+}
+
+bool finiteStrokes(const MapLook& look) {
+    for (const std::vector<MapStroke>& kind : look.strokes)
+        for (const MapStroke& s : kind)
+            if (!std::isfinite(s.a.x) || !std::isfinite(s.a.y) || !std::isfinite(s.b.x) || !std::isfinite(s.b.y)) return false;
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("map look edges: building into a look that held another model gives the same look as a fresh one") {
+    MapNames n;
+    const MiniMapModel m = stripWithRing(n);
+    MapLook fresh;
+    mapBuildLook(m, &n, fresh);
+    REQUIRE(fresh.parks == 1);
+    // A second Init: the same look object first built from another model (a west sea, a different grid), then this one.
+    MapLook reused;
+    const MiniMapModel west = waterModel(800.f, 600.f, [](float x, float) { return x < 200.f; });
+    mapBuildLook(west, nullptr, reused);
+    REQUIRE(reused.seaSide == -1);
+    mapBuildLook(m, &n, reused);
+    checkSameLook(reused, fresh);
+    // And again on itself.
+    mapBuildLook(m, &n, reused);
+    checkSameLook(reused, fresh);
+    // The frames from it are the same at every zoom, by the coast and inland.
+    for (const Vec2 focus : {Vec2{1450.f, 600.f}, Vec2{600.f, 600.f}})
+        for (int z = 0; z < kMapZooms; ++z) {
+            CAPTURE(z);
+            const MapFrame a = mapOverlayFrame(m, fresh, focus, static_cast<MapZoom>(z), 1920.f, 1080.f);
+            const MapFrame b = mapOverlayFrame(m, reused, focus, static_cast<MapZoom>(z), 1920.f, 1080.f);
+            CHECK(a.view.centre.x == b.view.centre.x);
+            CHECK(a.view.centre.y == b.view.centre.y);
+            CHECK(a.view.mPerPx == b.view.mPerPx);
+            CHECK(a.land == b.land);
+            CHECK(a.reached == b.reached);
+        }
+}
+
+TEST_CASE("map look edges: no roads and no water grid; an empty model; a one-point road") {
+    // No roads, no water grid: no sea, no coast, no waves, no sea name; land everywhere, every zoom reached.
+    MiniMapModel m;
+    m.maxX = 300.f;
+    m.maxY = 200.f;
+    mapBuildGrid(m);
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    CHECK(look.sea.empty());
+    CHECK(look.seaSide == 0);
+    CHECK(look.seaSpots.empty());
+    for (int k = 0; k <= static_cast<int>(MapStrokeKind::Canal); ++k) CHECK(look.strokes[static_cast<std::size_t>(k)].empty());
+    CHECK(look.parks == 0);
+    CHECK(look.landX0 == doctest::Approx(0.f));
+    CHECK(look.landX1 == doctest::Approx(300.f));
+    CHECK(look.landY1 == doctest::Approx(200.f));
+    for (int z = 0; z < kMapZooms; ++z) {
+        CAPTURE(z);
+        const MapFrame f = mapOverlayFrame(m, look, Vec2{150.f, 100.f}, static_cast<MapZoom>(z), 1920.f, 1080.f);
+        CHECK(f.reached);
+        CHECK(f.land == doctest::Approx(1.f));
+        Vec2 at;
+        CHECK_FALSE(mapSeaLabelAt(m, look, f.view, 120.f, 20.f, at));
+    }
+    // An empty model (a load that found no blob): the look is empty and its frames are finite.
+    const MiniMapModel empty{};
+    MapLook none;
+    mapBuildLook(empty, nullptr, none);
+    CHECK(none.seaSpots.empty());
+    CHECK(finiteStrokes(none));
+    for (int z = 0; z < kMapZooms; ++z) {
+        CAPTURE(z);
+        const MapFrame f = mapOverlayFrame(empty, none, Vec2{0.f, 0.f}, static_cast<MapZoom>(z), 1920.f, 1080.f);
+        CHECK(std::isfinite(f.view.centre.x));
+        CHECK(std::isfinite(f.view.centre.y));
+        CHECK(std::isfinite(f.view.mPerPx));
+        CHECK(f.view.mPerPx > 0.f);
+        CHECK(f.land >= 0.f);
+        CHECK(f.land <= 1.f);
+    }
+    // A one-point road among others: its blocks and strokes are finite, and the ring's blocks still come out.
+    MapNames n;
+    MiniMapModel ring = stripWithRing(n);
+    MapRoad dot;
+    dot.cls = MapRoadClass::Street;
+    dot.width = 6.f;
+    dot.first = static_cast<std::uint32_t>(ring.points.size());
+    dot.count = 1;
+    ring.points.push_back(Vec2{1340.f, 460.f});
+    ring.roads.push_back(dot);
+    mapBuildGrid(ring);
+    MapLook withDot;
+    mapBuildLook(ring, &n, withDot);
+    CHECK(finiteStrokes(withDot));
+    CHECK(withDot.parks == 1);
+}
