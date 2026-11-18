@@ -239,6 +239,8 @@ private:
 	float AppliedDayLook = -1.f;
 	int32 AppliedCloudShadows = -1;
 	int32 MapCloudShadows = -1;
+	// One DayLight line (sun, sky, exposure, white balance, clouds) 12 s in, flag on or off, for before/after reads.
+	bool bDayLightLogged = false;
 	// The lights' share last written to the proof bay's fixtures (FTNight::WriteBayLights; -1: write on the next step).
 	float AppliedBayLights = -1.f;
 	// A level streamed in (the hero corner sub-level) brings fixtures the last write missed: written again on the next tick.

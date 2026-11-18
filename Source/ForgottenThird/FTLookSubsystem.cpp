@@ -323,7 +323,10 @@ bool UFTLookSubsystem::SetWorldLook(const FString& World)
 	}
 	WorldId = Id;
 	Row = Look;
-	Wanted = (FTDayLook::Enabled() && !Id.IsEmpty()) ? ftcore::dayLookScene(Row, FTDayLook::Spec(), DayAmount) : Row;
+	// The held wind and cover latch now when the clock's day amount is known, else on its first one (SetDayLook).
+	bDayLatched = bDayKnown;
+	bDayHeld = bDayKnown && DayAmount > 0.f;
+	Wanted = (FTDayLook::Enabled() && !Id.IsEmpty()) ? ftcore::dayLookScene(Row, FTDayLook::Spec(), DayAmount, bDayHeld) : Row;
 	PushGrade();
 	bParametersPending = true;
 	// The scene's actors may not be there yet; Tick keeps trying.
@@ -336,11 +339,17 @@ bool UFTLookSubsystem::SetWorldLook(const FString& World)
 void UFTLookSubsystem::SetDayLook(float Amount)
 {
 	DayAmount = Amount;
+	bDayKnown = true;
 	if (!FTDayLook::Enabled() || WorldId.IsEmpty())
 	{
 		return;
 	}
-	const ftcore::SceneLook Next = ftcore::dayLookScene(Row, FTDayLook::Spec(), DayAmount);
+	if (!bDayLatched)
+	{
+		bDayLatched = true;
+		bDayHeld = DayAmount > 0.f;
+	}
+	const ftcore::SceneLook Next = ftcore::dayLookScene(Row, FTDayLook::Spec(), DayAmount, bDayHeld);
 	if (Next == Wanted)
 	{
 		return;

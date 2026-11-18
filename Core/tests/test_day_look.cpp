@@ -91,6 +91,25 @@ TEST_CASE("dayLookScene: amount 0 keeps the row; a rain night comes back exactly
     CHECK(dayLookScene(dry, spec, 0.f) == expect);
 }
 
+TEST_CASE("dayLookScene: a look set at night keeps the row's wind and cover all session") {
+    const DayLookSpec spec;
+    const SceneLook dry = dryRow();
+    // The night it was set at: the row exactly.
+    CHECK(dayLookScene(dry, spec, 0.f, false) == dry);
+    // Into the day: the blended fields move, the held two stay the row's.
+    const SceneLook day = dayLookScene(dry, spec, 1.f, false);
+    CHECK(day.windMps == dry.windMps);
+    CHECK(day.cloudCover == dry.cloudCover);
+    CHECK(day.fogDensity == doctest::Approx(spec.fogDensity));
+    // Held by day: the day's at every hour, the night included.
+    CHECK(dayLookScene(dry, spec, 0.f, true).windMps == std::max(dry.windMps, spec.windMps));
+    CHECK(dayLookScene(dry, spec, 0.f, true).cloudCover == doctest::Approx(spec.cloudCover));
+    // The rain night is the row either way.
+    const SceneLook rain = rainRow();
+    CHECK(dayLookScene(rain, spec, 0.f, false) == rain);
+    CHECK(dayLookScene(rain, spec, 0.f, true) == rain);
+}
+
 TEST_CASE("dayLookScene: full day takes the day's fog, split tone and sun") {
     const DayLookSpec spec;
     const SceneLook d = dayLookScene(dryRow(), spec, 1.f);

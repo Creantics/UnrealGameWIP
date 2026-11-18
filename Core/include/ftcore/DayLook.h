@@ -11,7 +11,9 @@
 //   dayLookScene        the row blended toward the day by the amount: the fog's density (aerial perspective), the split
 //                       tone (the shadow tint toward a cool hue and the highlight tint toward a warm one, blended in OKLab
 //                       a/b so the hue never jumps) and the sun's colour temperature. Two fields are not blended, since
-//                       a moving value would pop:
+//                       a moving value would pop, so both are held all session from the moment the look is set
+//                       (heldDay: the day amount then was over 0); a look set at night keeps the row's own all session,
+//                       so a night start is the row exactly:
 //                         windMps     the larger of the row's and the day's, at every hour: the clouds, the sea and
 //                                     the plants all move by wind times time, so a wind that changes speed jumps them.
 //                         cloudCover  the day's cover at every hour when the row has none of its own; the row's
@@ -61,9 +63,9 @@ inline constexpr int kDayLookShadeSteps = 3;
 FTCORE_API DayShadeLook dayLookShade(const DayShadeLook& defaults, const DayLookSpec& spec);
 
 // The row blended toward the day by amount (clamped to 0..1; NaN reads as 0). At amount 0 the result equals the row in
-// every field except windMps and cloudCover (see above); a row with wind of at least spec.windMps and a cover of its
-// own (the rain night's) comes back exactly.
-FTCORE_API SceneLook dayLookScene(const SceneLook& row, const DayLookSpec& spec, float amount);
+// every field except windMps and cloudCover, which take the day's only when heldDay (see above); a row with wind of at
+// least spec.windMps and a cover of its own (the rain night's) comes back exactly either way.
+FTCORE_API SceneLook dayLookScene(const SceneLook& row, const DayLookSpec& spec, float amount, bool heldDay = true);
 
 // On until the night is full: night (0..1) under 1. NaN reads as full night.
 FTCORE_API bool dayLookCloudsOn(float night);

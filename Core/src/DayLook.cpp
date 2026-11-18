@@ -46,11 +46,12 @@ DayShadeLook dayLookShade(const DayShadeLook& defaults, const DayLookSpec& spec)
     return l;
 }
 
-SceneLook dayLookScene(const SceneLook& row, const DayLookSpec& spec, float amount) {
+SceneLook dayLookScene(const SceneLook& row, const DayLookSpec& spec, float amount, bool heldDay) {
     SceneLook l = row;
-    // Held at every hour (see the header): the wind never changes speed, the cloud layer never changes material.
-    if (spec.windMps >= 0.f) l.windMps = std::max(row.windMps, std::min(spec.windMps, 40.f));
-    if (!(row.cloudCover > 0.f) && spec.cloudCover >= 0.f) l.cloudCover = clamp01(spec.cloudCover);
+    // Held at every hour (see the header): the wind never changes speed, the cloud layer never changes material. A look
+    // set at night (heldDay false) keeps the row's own all session.
+    if (heldDay && spec.windMps >= 0.f) l.windMps = std::max(row.windMps, std::min(spec.windMps, 40.f));
+    if (heldDay && !(row.cloudCover > 0.f) && spec.cloudCover >= 0.f) l.cloudCover = clamp01(spec.cloudCover);
     const float a = amountOf(amount);
     if (a <= 0.f) return l;
     if (spec.fogDensity >= 0.f) l.fogDensity = mix(row.fogDensity, std::min(spec.fogDensity, 1.f), a);

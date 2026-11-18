@@ -4,6 +4,7 @@
 #include "FTSeason.h"
 
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/DirectionalLightComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/DirectionalLight.h"
@@ -676,6 +677,27 @@ void UFTWorldClockSubsystem::Tick(float DeltaTime)
 	}
 	ftcore::worldClockTick(Clock, DeltaTime);
 	Apply(false);
+	const UWorld* LightWorld = GetWorld();
+	if (!bDayLightLogged && !bWetPending && LightWorld && LightWorld->GetTimeSeconds() >= 12.0)
+	{
+		bDayLightLogged = true;
+		const ULightComponent* Sun = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
+		const UDirectionalLightComponent* SunDir = Cast<UDirectionalLightComponent>(Sun);
+		const USkyLightComponent* SkyLight = Skies.Num() > 0 ? Skies[0].Light.Get() : nullptr;
+		const APostProcessVolume* Volume = Exposures.Num() > 0 ? Exposures[0].Volume.Get() : nullptr;
+		const UFTLookSubsystem* LightLook = LightWorld->GetSubsystem<UFTLookSubsystem>();
+		const FPostProcessSettings* Post = Volume ? &Volume->Settings : nullptr;
+		UE_LOG(LogForgottenThird, Display, TEXT("DayLight at %.1f s: %.2f h, sun %.1f degrees; sun %.3f lux, temperature %s %.0f K; sky light %.3f (%d sky lights); exposure method %d, bias %.2f, min %.2f, max %.2f EV100 (%d volumes); white balance %s %.0f K; clouds cover %.2f, sun cloud shadows %d strength %.2f/%.2f; day look %s, held wind and cover %d."),
+			LightWorld->GetTimeSeconds(), Clock.hours, ftcore::sunElevationDeg(Spec, Clock.hours),
+			Sun ? Sun->Intensity : -1.f, (Sun && Sun->bUseTemperature) ? TEXT("on") : TEXT("off"), Sun ? Sun->Temperature : 0.f,
+			SkyLight ? SkyLight->Intensity : -1.f, Skies.Num(),
+			Post ? static_cast<int32>(Post->AutoExposureMethod.GetValue()) : -1, Post ? Post->AutoExposureBias : 0.f,
+			Post ? Post->AutoExposureMinBrightness : 0.f, Post ? Post->AutoExposureMaxBrightness : 0.f, Exposures.Num(),
+			(Post && Post->bOverride_WhiteTemp) ? TEXT("set") : TEXT("default"), Post ? Post->WhiteTemp : 6500.f,
+			LightLook ? LightLook->GetLook().cloudCover : -1.f, SunDir ? static_cast<int32>(SunDir->bCastCloudShadows) : -1,
+			SunDir ? SunDir->CloudShadowStrength : -1.f, SunDir ? SunDir->CloudShadowOnSurfaceStrength : -1.f,
+			FTDayLook::Enabled() ? TEXT("on") : TEXT("off"), (LightLook && LightLook->IsDayHeld()) ? 1 : 0);
+	}
 }
 
 TStatId UFTWorldClockSubsystem::GetStatId() const
