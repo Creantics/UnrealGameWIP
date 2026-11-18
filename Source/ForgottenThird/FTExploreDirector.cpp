@@ -746,6 +746,8 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		}
 		Followers.Add(Follower);
 	}
+	// A start in the water: the lead's water plan takes the new set before its first placement (at the surface slots).
+	Player.OnFollowersSpawned();
 	PlaceFollowers(Player, 0.f);
 	// -LocoWatchFollower: the camera follows the first follower instead, for locomotion captures.
 	if (FParse::Param(FCommandLine::Get(), TEXT("LocoWatchFollower")) && !Followers.IsEmpty() && Followers[0])
@@ -769,6 +771,16 @@ void AFTExploreDirector::ClearFollowers()
 	}
 	Followers.Reset();
 	bFollowersSpawned = false;
+}
+
+void AFTExploreDirector::RespawnFollowers(AFTExploreCharacter& Player)
+{
+	if (!bFollowersSpawned)
+	{
+		return;
+	}
+	ClearFollowers();
+	TickFollowers(Player, 0.f); // spawns them, and holds them if the party is held
 }
 
 void AFTExploreDirector::OnLeadChanged(const FString& Lead)

@@ -618,11 +618,19 @@ void AFTPartyFollower::SetHeld(bool bHeld)
 	AirSpeed = 0.f;
 	bFacing = false;
 	Speed = 0.f;
-	if (bPlaced && (WaterPhase == ftcore::WaterFollowPhase::Ashore || WaterPhase == ftcore::WaterFollowPhase::Placed))
+	if (bPlaced && (WaterPhase == ftcore::WaterFollowPhase::Ashore || (WaterPhase == ftcore::WaterFollowPhase::Placed && !bPlacedInWater)))
 	{
-		// Down on the ground below it, and the anim told it stands (not in the water: no snap to the bed or the bank).
+		// Down on the ground below it, and the anim told it stands (not in the water: no snap to the bed or the bank; a
+		// member placed at its surface slot stays there).
 		Place(FVector2D(At.X, At.Y), static_cast<float>(At.Z), 0.f);
 	}
+}
+
+void AFTPartyFollower::BeginInWater()
+{
+	const FVector At = GetActorLocation();
+	bPlaced = true;
+	LastGround = LastSlot = FVector2D(At.X, At.Y);
 }
 
 void AFTPartyFollower::SetSea(float SeaLevel)
@@ -993,7 +1001,8 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 	// -SwimProof=land|watchdog (AFTExploreCharacter::TickSwimProof): slot 0 is held (it does not walk to its entry, or it treads
 	// where it is) until the plan rejoins it, then its feet height is logged four times a second for 2 s.
 	static const FString ProofKind = []() { FString K; FParse::Value(FCommandLine::Get(), TEXT("SwimProof="), K); return K; }();
-	if (Phase == WaterFollowPhase::Placed && Order && Order->rejoin && !ProofKind.IsEmpty() && WaterSlot == 0 && !bProofFreed)
+	if (Phase == WaterFollowPhase::Placed && Order && Order->rejoin && !ProofKind.IsEmpty()
+		&& (WaterSlot == 0 || ProofKind == TEXT("switch") || ProofKind == TEXT("start")) && !bProofFreed)
 	{
 		bProofFreed = true;
 		ProofLogLeft = 2.f;
@@ -1037,6 +1046,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 	{
 		if (Was != WaterFollowPhase::Ashore)
 		{
+			bPlacedInWater = false;
 			// Out on the land (its climb over, or the plan let it go; or back from its way to an entry): it eases back onto its slot from where it stands.
 			LastDry = FVector2D(At.X, At.Y);
 			bHasLastDry = true;
@@ -1372,6 +1382,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			const FVector P(To.X, To.Y, ToCm(ftcore::waterSurfaceFeetZ(ToMetres(Draft), 0.f, BedAt)));
 			SetActorLocationAndRotation(P, FRotator(0.0, Lead->GetActorRotation().Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 			WaterVelocity = FVector::ZeroVector;
+			bPlacedInWater = true;
 			UE_LOG(LogForgottenThird, Display, TEXT("%s: rejoined the lead in the water at (%.0f, %.0f, %.0f) cm (the draft's feet %.1f, bed %.1f, surface %.1f cm: %s)."),
 				*LogName, P.X, P.Y, P.Z, Draft, ToCm(BedAt), Draft + ToCm(ftcore::kWaterSwimDraft),
 				P.Z > Draft + 0.5 ? TEXT("the column is shallower than the draft, feet over the bed") : TEXT("at the draft"));
@@ -1381,6 +1392,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		}
 		if (Lead->IsSwimming() || Lead->IsUnderWater())
 		{
+			bPlacedInWater = true;
 			SenseWater(*System, At, true);
 			StepFollowerWaterLoco(In, DeltaSeconds, Anim);
 			return true;
@@ -1397,6 +1409,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		SetActorLocationAndRotation(P, FRotator(0.0, Lead->GetActorRotation().Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 		WaterVelocity = FVector::ZeroVector;
 		WaterNow = ftcore::WaterState{};
+		bPlacedInWater = false;
 		StepFollowerWaterLoco(In, DeltaSeconds, Anim);
 		if (Anim)
 		{

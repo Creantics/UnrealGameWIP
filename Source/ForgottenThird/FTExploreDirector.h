@@ -164,6 +164,9 @@ public:
 	// From the pawn (AFTExploreCharacter): it switched to another lead, so the followers are spawned
 	// again in a line behind it; or it hid or showed them (hidden ones keep walking the trail).
 	void OnLeadChanged(const FString& Lead);
+	// The followers spawned again now, about the lead where it is (AFTExploreCharacter::StartInWater); nothing if they
+	// are not spawned yet (the first tick spawns them). A held party stays held.
+	void RespawnFollowers(AFTExploreCharacter& Player);
 	void SetPartyHidden(bool bHide);
 	// For a scene played in place: held, the followers stand where they are and nothing here moves them, so the
 	// scene can (AFTPartyFollower::Place walks one to a mark); none hides for being in the camera's way, only while

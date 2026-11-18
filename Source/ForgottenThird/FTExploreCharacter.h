@@ -591,6 +591,17 @@ private:
 	bool bSwimSaid = false;
 	float SwimSavedFly = 0.f;
 	float SwimSavedBrake = 0.f;
+	// The surface swim begun (the movement's fly mode and speeds saved); nothing if it already swims.
+	void BeginSurfaceSwim(UCharacterMovementComponent& Move);
+	// Where the surface swim holds feet at At (cm): the swim's draft over the surface there, with Sink, and never under
+	// the bed (ftcore::waterSurfaceFeetZ; the bed traced down from just under the surface). False with no water there.
+	bool SurfaceSwimFeet(const UFTWaterSubsystem& System, const FVector& At, float Sink, double& OutFeet, float* OutColumn = nullptr,
+		const AActor* AlsoIgnore = nullptr) const;
+	// -SwimSwitchKeep (11-18 item 3; off until its proof passes): a lead switch while swimming keeps the party in the water.
+	bool bSwimSwitchKeep = false;
+	// A start in the water is due (a lead switch while swimming, StartInWater): the next new set of followers starts in
+	// the water (StepWaterParty); one shot.
+	bool bWaterStartNext = false;
 	// The free swim. False: at the surface (the surface hold moves the body).
 	bool TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds);
 	void LoadSwimTuning();
@@ -658,6 +669,40 @@ private:
 	int32 SwimProofExitPhase[2] = {-1, -1};
 	FVector SwimProofExitLast[2] = {FVector::ZeroVector, FVector::ZeroVector};
 	bool bSwimProofExitHasLast[2] = {false, false};
+	// -SwimProof=switch [-SwimSwitchKeep] (11-18 item 3): 3 s after the lead holds at the far point (its partners treading,
+	// 25 s at the most), 1 s of baseline, then the lead switch the party menu makes. Judged for 3 s: the worst real frame
+	// in the first 0.5 s, when the camera's step about the lead settles, the new lead's feet against its surface swim's
+	// target, and each new partner's (seen when, first and worst off its target, frames in a land phase or 30 cm under).
+	// -SwimProof=start (item 5): the lead put in the sea at the far point (StartInWater) after the party gathers; frame 1
+	// and then 3 s are judged the same way.
+	void TickSwimProofSwitch(const UFTWaterSubsystem& System, float DeltaSeconds);
+	int32 SwimProofSwitchStage = 0; // 0 waiting for the hold, 1 the baseline, 2 judged
+	float SwimProofSwitchAt = -1.f;
+	double SwimProofSwitchClock = 0.0;
+	FVector SwimProofSwitchCamOff = FVector::ZeroVector;
+	bool bSwimProofSwitchCamHas = false;
+	float SwimProofSwitchBaseFrame = 0.f;
+	float SwimProofSwitchBaseCam = 0.f;
+	float SwimProofSwitchBaseLead = 0.f;
+	FString SwimProofSwitchOldLook;
+	TWeakObjectPtr<AFTPartyFollower> SwimProofSwitchOld[2];
+	bool bSwimProofSwitchJudged = false;
+	float SwimProofSwitchWorstFrame = 0.f;
+	float SwimProofSwitchSumFrame = 0.f;
+	int32 SwimProofSwitchFrames = 0;
+	float SwimProofSwitchCamLast = -1.f;
+	float SwimProofSwitchCamWorst = 0.f;
+	int32 SwimProofSwitchLeadDry = 0;
+	float SwimProofSwitchLeadFirst = -1.f;
+	float SwimProofSwitchLeadWorst = 0.f;
+	float SwimProofSwitchLog = 0.f;
+	float SwimProofSwitchSeen[2] = {-1.f, -1.f};
+	FString SwimProofSwitchName[2];
+	float SwimProofSwitchFirst[2] = {-1.f, -1.f};
+	float SwimProofSwitchWorst[2] = {0.f, 0.f};
+	int32 SwimProofSwitchLand[2] = {0, 0};
+	int32 SwimProofSwitchFell[2] = {0, 0};
+	bool bSwimProofStartFrame1 = false;
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;
@@ -835,6 +880,13 @@ public:
 	bool IsSwimming() const { return bSwimming; }
 	// Under water (diving, under, surfacing) or being carried out by a rescue: the followers hold at the bank.
 	bool IsUnderWater() const { return bSwimUnder || bSwimRescue; }
+	// A start in the water (11-18 item 5: a scene or hold that begins in the sea): the lead put at At (cm; x and y) at its
+	// surface swim's height, facing Yaw, swimming from this frame, and the partners respawned at their surface slots
+	// (WaterFollowParty::startInWater). False (nothing done) with no water there deep enough to swim, the van, a
+	// traversal, a climb out, a rescue or a dive.
+	bool StartInWater(const FVector& At, double Yaw);
+	// From the director (AFTExploreDirector::SpawnFollowers) before it first places a new set of followers.
+	void OnFollowersSpawned();
 	// The water follow's order for the follower in Slot (AFTPartyFollower::SetWaterSlot); null with none (no water on the
 	// map, -LocoNoFollowerSwim, or no such slot).
 	const ftcore::WaterFollowOrder* GetWaterOrder(int32 Slot) const;

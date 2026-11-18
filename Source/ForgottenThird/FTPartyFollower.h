@@ -95,6 +95,11 @@ public:
 	bool HoldForProof(const FVector2D& At);
 	void ReleaseProofHold() { bProofHeld = false; }
 	ftcore::WaterFollowPhase GetWaterPhase() const { return WaterPhase; }
+	// A start in the water (a lead switch while swimming, AFTExploreCharacter::StartInWater): counted as placed where it
+	// is, so the water plan's first step takes it and the placement puts it at its surface slot, never on land.
+	void BeginInWater();
+	// The member's name in the water follow's lines (and the proofs').
+	const FString& GetWaterName() const { return WaterName; }
 
 private:
 	// Takes the lead's vaults, climbs and catches begun since the last call, and forgets those the body at Feet is past or
@@ -223,6 +228,8 @@ private:
 	bool bProofWant = false;
 	int32 ProofFrames = 0;
 	bool bProofHeld = false; // HoldForProof: treading where it was put
+	// Placed in the water (the rejoin at its surface slot, or treading while the lead swims): a held scene leaves it there.
+	bool bPlacedInWater = false;
 	FVector WaterVelocity = FVector::ZeroVector; // cm/s
 	// A placed move (the entry's walk or jump, the climb out): from, to, its time and length, and whether it is over.
 	bool bWaterMove = false;
