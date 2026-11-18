@@ -23,6 +23,8 @@
 #include "FTLocomotionAnimInstance.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
+#include "ftcore/WaterFollow.h"
+#include "ftcore/WaterLoco.h"
 
 #include "FTPartyFollower.generated.h"
 
@@ -30,6 +32,7 @@ class ACharacter;
 class AFTExploreCharacter;
 class USceneComponent;
 class USkeletalMeshComponent;
+class UFTWaterSubsystem;
 struct FFTLeadLook;
 
 UCLASS(NotBlueprintable)
@@ -76,6 +79,27 @@ public:
 	// Let go, its next Place counts the move from wherever it stands then, and the lead's vaults, climbs and catches from
 	// then on are followed.
 	void SetHeld(bool bHeld);
+	// The water follow: the lead it goes into the water after (AFTExploreCharacter::StepWaterParty plans for the party),
+	// its slot in that plan, and what it tells the plan of itself. In the water (its order's phase past Ashore) Place moves
+	// it by its order instead of on the trail: the walk to its entry, the walk down or the jump in, its own WaterLoco at
+	// the surface and a dive-follow under, the climb out, and set beside the lead after a rescue. Back on the land it
+	// eases onto its slot from where it came out.
+	const AFTExploreCharacter* GetWaterLead() const { return LeadExplorer.Get(); }
+	// The member's body mesh (the capture checks measure the camera's distance to it).
+	const USkeletalMeshComponent* GetBody() const;
+	void SetWaterSlot(int32 Slot) { WaterSlot = Slot; }
+	void FillWaterMember(ftcore::WaterFollowMember& Member) const;
+	// -SwimProof=boom (dev, the 11-18 ruling's item 5): put now at a place (cm; its feet's x and y) and held treading there
+	// for the camera's sweep, only while it swims at the surface; false (nothing done) otherwise. ReleaseProofHold lets
+	// it follow again.
+	bool HoldForProof(const FVector2D& At);
+	void ReleaseProofHold() { bProofHeld = false; }
+	ftcore::WaterFollowPhase GetWaterPhase() const { return WaterPhase; }
+	// A start in the water (a lead switch while swimming, AFTExploreCharacter::StartInWater): counted as placed where it
+	// is, so the water plan's first step takes it and the placement puts it at its surface slot, never on land.
+	void BeginInWater();
+	// The member's name in the water follow's lines (and the proofs').
+	const FString& GetWaterName() const { return WaterName; }
 
 private:
 	// Takes the lead's vaults, climbs and catches begun since the last call, and forgets those the body at Feet is past or
@@ -172,4 +196,60 @@ private:
 	bool bAtWall = false;
 	FVector WallFace = FVector::ZeroVector;
 	FVector WallIn = FVector::ForwardVector;
+	// The water follow (TickWater: true when its order moved the body this frame, Place then does nothing more).
+	bool TickWater(const FVector2D& Ground, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
+	void WaterWalk(const FVector2D& To, float WalkSpeed, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
+	void SenseWater(const UFTWaterSubsystem& System, const FVector& At, bool bSwimming);
+	bool FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt);
+	void StepFollowerWaterLoco(ftcore::WaterLocoInput& In, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
+	FString WaterName;
+	int32 WaterSlot = -1;
+	ftcore::WaterFollowPhase WaterPhase = ftcore::WaterFollowPhase::Ashore; // the order's phase it last acted on
+	ftcore::SwimState WaterSwimWas = ftcore::SwimState::Surface;
+	ftcore::WaterLoco WaterLocoBody;
+	ftcore::WaterLocoPose WaterPose;
+	ftcore::WaterState WaterNow;
+	bool bWaterLocoReady = false;
+	TWeakObjectPtr<UAnimInstance> WaterClipsAnim;
+	float WaterBedZ = -10.f;                    // m: the bed under it, last looked at
+	ftcore::Vec2 WaterEdge{};                   // m: the bank's edge toward the lead, and the way in there
+	ftcore::Vec2 WaterEdgeOut{1.f, 0.f};
+	bool bWaterHasEdge = false;                 // water was found toward the lead (else no jump in)
+	float WaterEdgeAge = 1.f;                   // s since the edge was last looked for
+	// -SwimProof (AFTExploreCharacter::TickSwimProof; dev): slot 0 is held stuck until it is rejoined, then its feet
+	// height is logged four times a second for 2 s, then its spread over those 2 s (cm): the lowest and highest feet, and
+	// the most they stood off the height the surface swim held them at that frame (bProofWant: a surface frame was seen).
+	bool bProofFreed = false;
+	float ProofLogLeft = 0.f;
+	float ProofLogAt = 0.f;
+	double ProofZMin = 0.0;
+	double ProofZMax = 0.0;
+	double ProofWantOff = 0.0;
+	bool bProofWant = false;
+	int32 ProofFrames = 0;
+	bool bProofHeld = false; // HoldForProof: treading where it was put
+	// Placed in the water (the rejoin at its surface slot, or treading while the lead swims): a held scene leaves it there.
+	bool bPlacedInWater = false;
+	FVector WaterVelocity = FVector::ZeroVector; // cm/s
+	// The surface swim's ride under the feet when last placed or stepped (cm: waterSwimFeetZ there, the waves and the
+	// bob), the frame it was taken, and whether the feet's target was on it (not held up by the bed): the next frame's
+	// step carries the feet by the ride's move (ftcore::waterFeetCarry) only from the frame before, and only on the ride.
+	double WaterRideZ = 0.0;
+	uint64 WaterRideFrame = 0;
+	bool bWaterOnRide = false;
+	// -SwimFeetEaseAll: the surface step eases the whole way to its target, the ride not carried (the fallback; the step
+	// before 11-18, which trailed the waves and the bob by 3.3 cm on the open sea).
+	bool bSwimFeetEaseAll = false;
+	// A placed move (the entry's walk or jump, the climb out): from, to, its time and length, and whether it is over.
+	bool bWaterMove = false;
+	bool bWaterMoveDone = false;
+	FVector WaterMoveFrom = FVector::ZeroVector;
+	FVector WaterMoveTo = FVector::ZeroVector;
+	float WaterMoveTime = 0.f;
+	float WaterMoveLength = 1.f;
+	// The climb out on Core's path (-PartyExitFast: the swim to the foot, up, across), taken when the climb starts.
+	bool bWaterClimbPath = false;
+	ftcore::WaterClimbPath WaterClimb;
+	bool bWaterAtEntry = false;
+	bool bWaterAtExit = false;
 };
