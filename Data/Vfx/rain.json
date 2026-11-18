@@ -26,6 +26,7 @@
       "blend": "alpha",
       "lit": true,
       "nearFade": true,
+      "cover": true,
       "sprite": "soft",
       "stretch": 0.055,
       "stretchMax": 60.0,

@@ -112,6 +112,10 @@ ftcore::NightLook Read()
 	ReadNumber(Cmd, TEXT("NightCharFillBayFar="), L.charFillBayFarM);
 	ReadNumber(Cmd, TEXT("NightCharFillYaw="), L.charFillYawDeg);
 	ReadNumber(Cmd, TEXT("NightCharFillKeyShare="), L.charFillKeyShare);
+	if (FParse::Param(Cmd, TEXT("NightFillEase")))
+	{
+		ftcore::nightCharacterFillEase(L); // off by default: the nearest light, the yaw snapping
+	}
 	ReadNumber(Cmd, TEXT("NightFog="), L.fogKeep);
 	ReadNumber(Cmd, TEXT("NightEV="), L.exposureEV100);
 	ReadNumber(Cmd, TEXT("NightEVRange="), L.exposureRangeEV);

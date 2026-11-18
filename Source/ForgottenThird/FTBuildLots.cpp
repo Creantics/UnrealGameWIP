@@ -5,6 +5,7 @@
 
 #include "ForgottenThird.h"
 #include "FTCellInstancer.h"
+#include "FTRainCoverCollection.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
 #include "Engine/StaticMesh.h"
@@ -354,7 +355,7 @@ UMaterial* BuildMaster(UPackage* Package, UTexture* White, UTexture* Masks, UTex
 	In(Code, TEXT("CamV"), AddNode<UMaterialExpressionCameraVectorWS>(Material, 2700));
 	In(Code, TEXT("Daylight"), Night(Material, Collection, TEXT("Daylight"), 1.f, 2800));
 	In(Code, TEXT("ProofNight"), Night(Material, Collection, TEXT("ProofShopNight"), ftcore::WindowFacadeSpec{}.shopGlowCap, 2900));
-	In(Code, TEXT("Wet"), Night(Material, LookParams, TEXT("Wetness"), 0.f, 3000));
+	In(Code, TEXT("Wet"), FTRainCover::Sheltered(Material, Night(Material, LookParams, TEXT("Wetness"), 0.f, 3000), -1200, 3000)); // dry under cover
 	In(Code, TEXT("DayLevel"), Scalar(Material, TEXT("GlassDayLevel"), 0.35f, 3100));
 	// The goods on a shop's shelves are cut from the shelf-front picture (white when it has not been imported); the eye's
 	// distance picks its mip (the Nanite slot takes no derivatives).

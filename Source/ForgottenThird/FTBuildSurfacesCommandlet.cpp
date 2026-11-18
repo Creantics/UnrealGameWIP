@@ -10,6 +10,7 @@
 #include "FTBuildShopInteriors.h"
 #include "FTImportMaterials.h"
 #include "FTJointCollection.h"
+#include "FTRainCoverCollection.h"
 #include "FTText.h"
 #include "FTWeatherSpec.h"
 #include "FTWorldWave.h"
@@ -478,7 +479,8 @@ UMaterialExpressionCustom* AddWeatherNode(UMaterial* Material, const FSurfaceNod
 	AddInputFrom(Weather, TEXT("AO"), From, AOOutput);
 	AddInput(Weather, TEXT("WorldPos"), Wall.WorldPos);
 	AddInput(Weather, TEXT("VertexNormal"), Wall.VertexNormal);
-	AddInput(Weather, TEXT("Wetness"), Wetness);
+	// Under cover the ground stays dry: the wetness times the cover's wet share (a fringe blows in at the open sides).
+	AddInput(Weather, TEXT("Wetness"), FTRainCover::Sheltered(Material, Wetness, -300, -1400, Wall.VertexNormal));
 	AddInput(Weather, TEXT("Amount"), Amount);
 	AddInput(Weather, TEXT("LocalPos"), LocalPos);
 	AddInput(Weather, TEXT("AxisX"), Wall.Axis[0]);
