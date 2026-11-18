@@ -51,7 +51,30 @@ struct WaterFollowTuning {
     float stuckFar = 12.f;         // m: at the surface or under, further than this from the lead counts as stuck
     float entryLimit = 15.f;       // s: a walk to its entry not over by then is given up (ashore; it picks again)
     float rejoinNear = 1.5f;       // m: a rejoined follower this near its rejoin target is at the surface (else asked again)
+    // The host's climb out (FTPartyFollower), here so a test can budget it: up a ladder and over its top, a mantle onto
+    // the bank (no exit), a walk up a flight of steps (at least 0.5 s), and how near its place in the queue is "at" it.
+    float ladderSeconds = 2.2f;
+    float mantleSeconds = 1.6f;
+    float stepsSpeed = 1.2f;       // m/s
+    float atExit = 0.6f;           // m
+    // -PartyExitFast (item 2 of 11-18; all off until its proof passes):
+    bool exitCatchUp = false;      // ToExit off its place by over slotSlack swims at the surface speed plus catchUp
+    bool climbPath = false;        // a ladder's climb or a mantle as one WaterClimbPath at the speeds below, never a jump
+    float footSwimSpeed = 2.f;     // m/s: from its place in the queue to the ladder's foot
+    float ladderSpeed = 2.5f;      // m/s up the ladder, or up the bank in a mantle (the lead's: 6 m in its 2.4 s at most)
+    float acrossSpeed = 2.f;       // m/s over the top onto the bank
+    float climbBehindLead = -1.f;  // s into the lead's ladder climb the first may start up behind it (< 0: once it is out)
+    bool exitPickNear = false;     // the lead's way out (its ladder, or the flight it walked out by); else the nearest
+                                   // within exitWithin; else none (a mantle by the lead), never one in other water
 };
+
+// -PartyExitFast: the party out of the water within 4 s of the lead (11-18 item 2). A flight of steps is as before.
+inline void waterFollowFastExit(WaterFollowTuning& t) {
+    t.exitCatchUp = true;
+    t.climbPath = true;
+    t.climbBehindLead = 1.f;
+    t.exitPickNear = true;
+}
 
 // What a follower is doing in the water.
 enum class WaterFollowPhase : std::uint8_t {
@@ -128,7 +151,9 @@ inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t cou
 
 // The exit: the lead's own (leadExit, -1 when it left by none) when its foot is within `within` m of the follower;
 // else the exit whose foot is nearest. -1: there are none.
-inline int waterFollowExit(const WaterExit* exits, std::size_t count, int leadExit, Vec2 at, float within = 25.f) {
+// With `nearOnly`, none (-1) when the nearest is further than `within` too.
+inline int waterFollowExit(const WaterExit* exits, std::size_t count, int leadExit, Vec2 at, float within = 25.f,
+                           bool nearOnly = false) {
     namespace d = water_follow_detail;
     if (leadExit >= 0 && std::size_t(leadExit) < count && d::dist(exits[leadExit].foot, at) <= within) return leadExit;
     int best = -1;
@@ -140,7 +165,90 @@ inline int waterFollowExit(const WaterExit* exits, std::size_t count, int leadEx
             bestD = dd;
         }
     }
+    return nearOnly && best >= 0 && bestD > within ? -1 : best;
+}
+
+// The flight of steps a lead out of the water with no climb walked out by: the one whose foot-to-top line passes within
+// `within` m of it (the nearest such); -1 if none.
+inline int waterFollowWalkedOut(const WaterExit* exits, std::size_t count, Vec2 lead, float within = 1.5f) {
+    int best = -1;
+    float bestD = within;
+    for (std::size_t i = 0; i < count; ++i) {
+        if (exits[i].kind != WaterExitKind::Steps) continue;
+        const Vec2 a = exits[i].foot, b = exits[i].top;
+        const float abx = b.x - a.x, aby = b.y - a.y, ll = abx * abx + aby * aby;
+        float f = ll > 1e-6f ? ((lead.x - a.x) * abx + (lead.y - a.y) * aby) / ll : 0.f;
+        f = f < 0.f ? 0.f : f > 1.f ? 1.f : f;
+        const float dd = water_follow_detail::dist(lead, Vec2{a.x + abx * f, a.y + aby * f});
+        if (dd <= bestD) {
+            best = int(i);
+            bestD = dd;
+        }
+    }
     return best;
+}
+
+// The host's climb out (s) without climbPath: a ladder's, a flight of steps' (`metres` from where the climb starts to the
+// top), or a mantle's with no exit.
+inline float waterFollowClimbSeconds(const WaterFollowTuning& t, const WaterExit* exit, float metres) {
+    if (!exit) return t.mantleSeconds;
+    if (exit->kind != WaterExitKind::Steps) return t.ladderSeconds;
+    const float s = t.stepsSpeed > 0.f ? metres / t.stepsSpeed : 0.5f;
+    return s > 0.5f ? s : 0.5f;
+}
+
+// climbPath's climb out, sampled by the host each frame (feet positions, m): a swim from where it waits to the ladder's
+// foot, up it to the top's height, then across onto the top; with no exit the same up and across to the host's landing;
+// a flight of steps one walk from where it waits to the top, as without climbPath. Each leg runs at a set speed, so two
+// frames are never more than that speed x dt apart.
+struct WaterClimbPath {
+    SwimVec from, foot, up, to;
+    float swim = 0.f, climb = 0.f, across = 0.f; // each leg's seconds
+    float seconds() const { return swim + climb + across; }
+    int leg(float t) const { return t < swim ? 0 : t < swim + climb ? 1 : 2; } // 0 the swim, 1 up, 2 across (or the walk)
+    float legProgress(float t) const {
+        const int l = leg(t);
+        const float l0 = l == 0 ? 0.f : l == 1 ? swim : swim + climb;
+        const float len = l == 0 ? swim : l == 1 ? climb : across;
+        const float f = len > 0.f ? (t - l0) / len : 1.f;
+        return f < 0.f ? 0.f : f > 1.f ? 1.f : f;
+    }
+    SwimVec at(float t) const {
+        if (t <= 0.f) return from;
+        if (t < swim) return mix(from, foot, t / swim);
+        t -= swim;
+        if (t < climb) return mix(foot, up, t / climb);
+        t -= climb;
+        if (t < across) return mix(up, to, t / across);
+        return to;
+    }
+    static SwimVec mix(const SwimVec& a, const SwimVec& b, float f) {
+        return SwimVec{a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f};
+    }
+};
+
+inline WaterClimbPath waterClimbPath(const WaterFollowTuning& t, const WaterExit* exit, SwimVec from, SwimVec landing) {
+    const auto secs = [](float metres, float speed) { return speed > 0.f && metres > 0.f ? metres / speed : 0.f; };
+    const auto flat = [](const SwimVec& a, const SwimVec& b) {
+        return std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+    };
+    WaterClimbPath p;
+    p.from = from;
+    if (exit && exit->kind == WaterExitKind::Steps) {
+        p.foot = p.up = from;
+        p.to = SwimVec{exit->top.x, exit->top.y, exit->topZ};
+        const float dx = p.to.x - from.x, dy = p.to.y - from.y, dz = p.to.z - from.z;
+        const float walk = secs(std::sqrt(dx * dx + dy * dy + dz * dz), t.stepsSpeed);
+        p.across = walk > 0.5f ? walk : 0.5f;
+        return p;
+    }
+    p.foot = exit ? SwimVec{exit->foot.x, exit->foot.y, from.z} : from;
+    p.to = exit ? SwimVec{exit->top.x, exit->top.y, exit->topZ} : landing;
+    p.up = SwimVec{p.foot.x, p.foot.y, p.to.z > from.z ? p.to.z : from.z};
+    p.swim = secs(flat(from, p.foot), t.footSwimSpeed);
+    p.climb = secs(p.up.z - p.foot.z, t.ladderSpeed);
+    p.across = secs(flat(p.up, p.to), t.acrossSpeed);
+    return p;
 }
 
 // The lead this step.
@@ -212,6 +320,7 @@ public:
         leadDiveAt_ = -1.f;
         lastEntryAt_ = -1.f;
         lastClimbAt_ = -1.f;
+        leadExitAt_ = -1.f;
         leadUnder_ = false;
         hasLastLead_ = false;
     }
@@ -237,6 +346,10 @@ public:
         if (leadUnder && !leadUnder_) leadDiveAt_ = clock_;
         if (!leadUnder) leadDiveAt_ = -1.f;
         leadUnder_ = leadUnder;
+        if (!lead.exiting)
+            leadExitAt_ = -1.f;
+        else if (leadExitAt_ < 0.f)
+            leadExitAt_ = clock_;
         const bool rescued = lead.swim == SwimState::Rescued;
         // Lost: the lead jumped (a scene, a fight or a teleport moved it), or it is back from a parked planner on dry
         // ground. The old plan is not resumed against it: every follower in the water is placed with the lead.
@@ -453,9 +566,12 @@ private:
         }
     }
 
-    // The lead is out and no un-held member before slot i is still on its way to, or waiting at, its exit.
+    // The lead is out (with climbBehindLead: or that far into its ladder climb) and no un-held member before slot i is
+    // still on its way to, or waiting at, its exit.
     bool queueClear(int i, const WaterFollowLead& lead) const {
-        if (!lead.out) return false;
+        const bool behind =
+            tuning_.climbBehindLead >= 0.f && leadExitAt_ >= 0.f && clock_ - leadExitAt_ >= tuning_.climbBehindLead;
+        if (!lead.out && !behind) return false;
         for (int j = 0; j < i; ++j) {
             const WaterFollowPhase p = slots_[j].order.phase;
             if (!slots_[j].held && (p == WaterFollowPhase::ToExit || p == WaterFollowPhase::ExitWait)) return false;
@@ -504,8 +620,11 @@ private:
 
     void beginExit(WaterFollowOrder& o, const WaterFollowLead& lead, const WaterFollowMember& m, const WaterExit* exits,
                    std::size_t exitCount) {
-        o.exitIndex = waterFollowExit(exits, exitCount, lead.exitIndex, Vec2{m.position.x, m.position.y},
-                                      tuning_.exitWithin);
+        int leadExit = lead.exitIndex;
+        if (leadExit < 0 && tuning_.exitPickNear && lead.out)
+            leadExit = waterFollowWalkedOut(exits, exitCount, Vec2{lead.position.x, lead.position.y});
+        o.exitIndex = waterFollowExit(exits, exitCount, leadExit, Vec2{m.position.x, m.position.y}, tuning_.exitWithin,
+                                      tuning_.exitPickNear);
         go(o, WaterFollowPhase::ToExit);
     }
 
@@ -598,7 +717,10 @@ private:
                 const Vec2 out = exits[o.exitIndex].out;
                 const float back = 1.2f * float(i);
                 o.target = SwimVec{f.x - out.x * back, f.y - out.y * back, m.surfaceZ};
-                o.speed = o.phase == WaterFollowPhase::ToExit ? T.surfaceSpeed : 0.f;
+                const bool behind = d::dist(here, Vec2{o.target.x, o.target.y}) > T.slotSlack;
+                o.speed = o.phase != WaterFollowPhase::ToExit ? 0.f
+                          : T.exitCatchUp && behind ? T.surfaceSpeed * (1.f + T.catchUp) : T.surfaceSpeed;
+                o.sprint = o.speed > T.surfaceSpeed;
             }
             break;
         }
@@ -663,6 +785,7 @@ private:
     float leadDiveAt_ = -1.f;
     float lastEntryAt_ = -1.f;
     float lastClimbAt_ = -1.f;
+    float leadExitAt_ = -1.f; // when the lead's ladder climb began (-1: not climbing)
     bool leadUnder_ = false;
     SwimVec lastLead_{};
     bool hasLastLead_ = false;

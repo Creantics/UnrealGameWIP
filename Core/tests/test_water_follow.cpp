@@ -7,6 +7,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -773,4 +774,216 @@ TEST_CASE("water follow: an inactive slot is cleared; a step allocates nothing")
         s.step();
     }
     CHECK(ftcore_test::allocStats().count == before);
+}
+
+namespace {
+
+WaterFollowTuning fastExit() {
+    WaterFollowTuning t;
+    waterFollowFastExit(t);
+    return t;
+}
+
+// A sea ladder as the road net builds one (Roads.cpp): its foot 0.35 m out from the wall's face, its top 1.2 m onto the
+// quay, the quay `top` m over the water (0 here).
+WaterExit seaLadder(float top) {
+    WaterExit e = ladder({3.f, 0.f});
+    e.top = {3.f - 1.55f, 0.f};
+    e.topZ = top;
+    return e;
+}
+
+// The lead climbs the ladder (the host: up in clamp(rise x 0.5, 0.9, 2.4) s) from its foot with both partners at their
+// surface slots behind it; a simulated host swims each to its place in the queue at the order's speed and climbs it out,
+// by the WaterClimbPath (climbPath) or by the host's own ladder move without it (up in 2.2 s, its first sixth the swim to
+// the foot). Times from the lead out; the largest step a partner's feet make between two frames.
+struct ExitRun {
+    float leadOut = 0.f;
+    float ashore[2] = {-1.f, -1.f};
+    float worstStep = 0.f;
+    float closestUnderLead = 99.f; // m: a climbing partner's head under the climbing lead's feet, the least
+};
+
+ExitRun ladderExit(const WaterFollowTuning& tuning, float wallTop, float fps) {
+    constexpr float kDraft = 1.28f;
+    const float dt = 1.f / fps;
+    WaterFollowParty party(tuning);
+    const WaterExit exit = seaLadder(wallTop);
+    const WaterBodies water = sea();
+    WaterFollowLead lead = swimmingLead({3.f, 0.f, -0.4f});
+    lead.yaw = 180.f;
+    WaterFollowMember m[2];
+    for (int i = 0; i < 2; ++i) {
+        m[i].active = true;
+        m[i].position = {5.5f, i == 0 ? -1.5f : 1.5f, -kDraft};
+        m[i].surfaceZ = 0.f;
+        m[i].bedZ = -10.f;
+    }
+    // In the water at their slots: the party's phases as after a swim (an entry each, then the surface).
+    for (int k = 0; k < 120; ++k) {
+        for (WaterFollowMember& x : m) x.atEntry = x.entered = true;
+        party.step(lead, m, 2, &exit, 1, dt, &water);
+    }
+    REQUIRE(party.order(0).phase == WaterFollowPhase::Surface);
+    REQUIRE(party.order(1).phase == WaterFollowPhase::Surface);
+    for (int i = 0; i < 2; ++i) m[i].position = {5.5f, i == 0 ? -1.5f : 1.5f, -kDraft};
+    ExitRun r;
+    const float rise = wallTop + kDraft;
+    r.leadOut = std::clamp(rise * 0.5f, 0.9f, 2.4f);
+    lead.swimming = false;
+    lead.exitIndex = 0;
+    WaterClimbPath path[2];
+    SwimVec from[2];
+    float climbT[2] = {-1.f, -1.f};
+    for (float t = 0.f; t < 12.f; t += dt) {
+        lead.out = t >= r.leadOut;
+        lead.exiting = !lead.out;
+        const float leadFeet = lead.out ? wallTop : -kDraft + rise * (t / r.leadOut);
+        party.step(lead, m, 2, &exit, 1, dt, &water);
+        for (int i = 0; i < 2; ++i) {
+            const WaterFollowOrder& o = party.order(i);
+            const SwimVec was = m[i].position;
+            if (o.phase == WaterFollowPhase::ToExit) {
+                const float dx = o.target.x - was.x, dy = o.target.y - was.y, d = std::sqrt(dx * dx + dy * dy);
+                const float go = std::min(d, o.speed * dt);
+                if (d > 1e-4f) m[i].position = {was.x + dx / d * go, was.y + dy / d * go, was.z};
+                m[i].atExit = d - go <= tuning.atExit;
+            } else if (o.phase == WaterFollowPhase::Climbing) {
+                if (climbT[i] < 0.f) {
+                    climbT[i] = 0.f;
+                    from[i] = was;
+                    path[i] = waterClimbPath(tuning, &exit, was, {});
+                }
+                climbT[i] += dt;
+                if (tuning.climbPath) {
+                    m[i].position = path[i].at(climbT[i]);
+                    m[i].climbed = climbT[i] >= path[i].seconds();
+                } else {
+                    // FTPartyFollower's ladder move: up in the first half, across in the second, the first sixth the
+                    // swim from its place in the queue to the foot.
+                    const float u = std::min(climbT[i] / tuning.ladderSeconds, 1.f);
+                    const float up = std::clamp(u * 2.f, 0.f, 1.f), across = std::clamp(u * 2.f - 1.f, 0.f, 1.f);
+                    const float sw = std::clamp(u * 6.f, 0.f, 1.f);
+                    const Vec2 flat = across > 0.f ? Vec2{exit.foot.x + (exit.top.x - exit.foot.x) * across,
+                                                          exit.foot.y + (exit.top.y - exit.foot.y) * across}
+                                                   : Vec2{from[i].x + (exit.foot.x - from[i].x) * sw,
+                                                          from[i].y + (exit.foot.y - from[i].y) * sw};
+                    m[i].position = {flat.x, flat.y, from[i].z + (wallTop - from[i].z) * up};
+                    m[i].climbed = u >= 1.f;
+                }
+                if (!lead.out && m[i].position.z > -kDraft + 0.01f)
+                    r.closestUnderLead = std::min(r.closestUnderLead, leadFeet - (m[i].position.z + 1.8f));
+            } else if (o.phase == WaterFollowPhase::Ashore && climbT[i] >= 0.f && r.ashore[i] < 0.f) {
+                r.ashore[i] = t - r.leadOut;
+            }
+            r.worstStep = std::max(r.worstStep, dist(was, m[i].position));
+        }
+    }
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("water follow (fast exit): the way out is the lead's ladder, the flight it walked out by, else one within 25 m") {
+    const WaterExit ex[] = {ladder({1.f, 0.f}), steps({-1.f, 10.f}, {1.f, 6.f})};
+    CHECK(waterFollowWalkedOut(ex, 2, {0.f, 8.f}) == 1);   // on the flight's line, foot to top
+    CHECK(waterFollowWalkedOut(ex, 2, {0.9f, 0.f}) == -1); // by the ladder: no flight
+    CHECK(waterFollowExit(ex, 2, -1, {40.f, 0.f}, 25.f, true) == -1);
+    CHECK(waterFollowExit(ex, 2, -1, {40.f, 0.f}) == 0); // without nearOnly, as before: the nearest however far
+    // The lead walked out by the flight with the ladder nearer both partners: they take the flight.
+    Scene s;
+    s.party = WaterFollowParty(fastExit());
+    s.exits = {ladder({1.f, 0.f}), steps({-1.f, 10.f}, {1.f, 6.f})};
+    s.bothIn();
+    s.lead.swimming = false;
+    s.lead.out = true;
+    s.lead.position = {0.5f, 7.5f, 0.5f};
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::ToExit);
+    CHECK(s.o(0).exitIndex == 1);
+    CHECK(s.o(1).exitIndex == 1);
+    // Without the switch each takes the exit nearest itself.
+    Scene d;
+    d.exits = s.exits;
+    d.bothIn();
+    d.lead.swimming = false;
+    d.lead.out = true;
+    d.lead.position = {0.5f, 7.5f, 0.5f};
+    d.step();
+    CHECK(d.o(0).exitIndex == 0);
+    // The lead's ladder climb within 25 m: that ladder.
+    Scene c;
+    c.party = WaterFollowParty(fastExit());
+    c.exits = {ladder({1.f, 0.f}), ladder({1.f, 20.f})};
+    c.bothIn();
+    c.lead.swimming = false;
+    c.lead.exiting = true;
+    c.lead.exitIndex = 1;
+    c.step();
+    CHECK(c.o(0).exitIndex == 1);
+    CHECK(c.o(1).exitIndex == 1);
+    // A mantle (no exit) with the only way out 60 m off, in water that may not be this one: none, the host's mantle.
+    Scene f;
+    f.party = WaterFollowParty(fastExit());
+    f.exits = {ladder({1.f, 60.f})};
+    f.bothIn();
+    f.lead.swimming = false;
+    f.lead.out = true;
+    f.lead.position = {-1.f, 0.f, 0.5f};
+    f.step();
+    CHECK(f.o(0).phase == WaterFollowPhase::ToExit);
+    CHECK(f.o(0).exitIndex == -1);
+    CHECK(f.o(1).exitIndex == -1);
+}
+
+TEST_CASE("water follow (fast exit): up a sea ladder both partners are out within 4 s of the lead, 20 cm a frame at most") {
+    // The open sea's quay at the watchdog spot stands 4-5 m over the water; a canal's bank about 1 m.
+    for (const float wall : {4.9f, 4.f, 1.f}) {
+        for (const float fps : {30.f, 20.f}) {
+            const ExitRun r = ladderExit(fastExit(), wall, fps);
+            MESSAGE("fast exit, wall " << wall << " m at " << fps << " fps: lead out at " << r.leadOut
+                                       << " s; partners on the quay " << r.ashore[0] << " s and " << r.ashore[1]
+                                       << " s after it; worst step " << r.worstStep * 100.f
+                                       << " cm; least head room under the lead " << r.closestUnderLead << " m");
+            CHECK(r.ashore[0] >= 0.f);
+            CHECK(r.ashore[1] >= 0.f);
+            CHECK(r.ashore[0] <= 4.f);
+            CHECK(r.ashore[1] <= 4.f);
+            CHECK(r.worstStep <= 0.2f);
+            CHECK(r.closestUnderLead >= 0.f); // never climbing into the lead's feet
+        }
+    }
+    // Without the switch (the host's ladder move): the same quay is climbed in 2.2 s, its first sixth a dash to the foot,
+    // and the climb waits for the lead to be out; that is the jump the path removes.
+    const ExitRun d = ladderExit(WaterFollowTuning{}, 4.9f, 30.f);
+    MESSAGE("default, wall 4.9 m at 30 fps: partners " << d.ashore[0] << " s and " << d.ashore[1]
+                                                     << " s after the lead; worst step " << d.worstStep * 100.f << " cm");
+    CHECK(d.worstStep > 0.2f);
+}
+
+TEST_CASE("water follow (fast exit): the climb path: the swim to the foot, up, across; a flight one walk as before") {
+    const WaterFollowTuning t = fastExit();
+    const WaterExit l = seaLadder(4.f);
+    const WaterClimbPath p = waterClimbPath(t, &l, {4.2f, 0.f, -1.28f}, {});
+    CHECK(p.swim == doctest::Approx(1.2f / t.footSwimSpeed));
+    CHECK(p.climb == doctest::Approx(5.28f / t.ladderSpeed));
+    CHECK(p.across == doctest::Approx(1.55f / t.acrossSpeed));
+    CHECK(p.leg(0.1f) == 0);
+    CHECK(p.leg(p.swim + 0.1f) == 1);
+    CHECK(p.leg(p.swim + p.climb + 0.1f) == 2);
+    CHECK(p.at(p.swim).x == doctest::Approx(3.f));
+    CHECK(p.at(p.swim + p.climb).z == doctest::Approx(4.f));
+    CHECK(p.at(p.seconds() + 1.f).x == doctest::Approx(1.45f));
+    // A mantle (no exit): up the bank where it is, then across to the host's landing.
+    const WaterClimbPath mt = waterClimbPath(t, nullptr, {1.f, 0.f, -1.28f}, {-1.f, 0.f, 0.5f});
+    CHECK(mt.swim == doctest::Approx(0.f));
+    CHECK(mt.climb == doctest::Approx(1.78f / t.ladderSpeed));
+    CHECK(mt.at(mt.seconds()).x == doctest::Approx(-1.f));
+    // A flight: one walk at the steps' speed, at least 0.5 s, as the host's own.
+    WaterExit st = steps({-1.f, 0.f}, {3.f, 0.f});
+    st.topZ = 1.f;
+    const WaterClimbPath w = waterClimbPath(t, &st, {3.f, 0.f, -1.28f}, {});
+    CHECK(w.swim == doctest::Approx(0.f));
+    CHECK(w.climb == doctest::Approx(0.f));
+    CHECK(w.across == doctest::Approx(std::sqrt(16.f + 2.28f * 2.28f) / t.stepsSpeed));
 }
