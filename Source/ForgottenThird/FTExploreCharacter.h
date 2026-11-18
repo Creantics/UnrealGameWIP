@@ -638,6 +638,26 @@ private:
 	float SwimProofSweepNearest = -1.f;
 	int32 SwimProofClipShots[32] = {};
 	int32 SwimProofClipShotCount = 0;
+	// -SwimProof=exit (item 2 of 11-18): 3 s after the lead holds at the far point (its partners treading, 25 s at the most)
+	// it swims to the nearest ladder in its water and climbs it. Each partner is timed from the lead out (its climb over,
+	// standing on the quay) to its own Climbing -> Ashore (the strict line) and to its feet at the exit's top (dry feet);
+	// the most it moves between two frames from the lead's climb on is kept with that frame's time and its phase.
+	void TickSwimProofExit(const UFTWaterSubsystem& System, float DeltaSeconds);
+	int32 SwimProofExitStage = 0;      // 0 not begun, 1 to the ladder, 2 the lead climbing, 3 the lead out
+	int32 SwimProofExitLadder = -1;
+	float SwimProofExitAt = -1.f;      // SwimProofTime the route to the ladder began
+	float SwimProofLeadClimbAt = -1.f;
+	float SwimProofLeadOutAt = -1.f;
+	float SwimProofExitClimbAt[2] = {-1.f, -1.f};
+	float SwimProofExitAshoreAt[2] = {-1.f, -1.f};
+	float SwimProofExitDryAt[2] = {-1.f, -1.f};
+	int32 SwimProofExitIndex[2] = {-2, -2};
+	float SwimProofExitWorst[2] = {0.f, 0.f}; // cm
+	float SwimProofExitWorstDt[2] = {0.f, 0.f};
+	int32 SwimProofExitWorstPhase[2] = {-1, -1};
+	int32 SwimProofExitPhase[2] = {-1, -1};
+	FVector SwimProofExitLast[2] = {FVector::ZeroVector, FVector::ZeroVector};
+	bool bSwimProofExitHasLast[2] = {false, false};
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;
@@ -818,6 +838,8 @@ public:
 	// The water follow's order for the follower in Slot (AFTPartyFollower::SetWaterSlot); null with none (no water on the
 	// map, -LocoNoFollowerSwim, or no such slot).
 	const ftcore::WaterFollowOrder* GetWaterOrder(int32 Slot) const;
+	// The water follow's tuning: the climb out's times and speeds, and -PartyExitFast's switches.
+	const ftcore::WaterFollowTuning& GetWaterFollowTuning() const { return WaterParty.tuning(); }
 	// The water's locomotion tuning (Data/Swim/water_loco.json, else the built-in), read once for every body.
 	static const ftcore::WaterLocoTuning& SharedWaterLocoTuning();
 	// Gives Anim the swim clips of the body called Name (/Game/Characters/<Name>/Swim/A_<clip>), Devin's where Name has

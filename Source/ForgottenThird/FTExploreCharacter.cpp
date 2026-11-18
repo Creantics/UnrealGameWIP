@@ -169,6 +169,15 @@ AFTExploreCharacter::AFTExploreCharacter()
 void AFTExploreCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+	// -PartyExitFast (item 2 of 11-18; off until its proof passes): the partners climb out 1 s behind the lead by its ladder
+	// or the flight it walked out by, on Core's climb path (ftcore::waterFollowFastExit).
+	if (FParse::Param(FCommandLine::Get(), TEXT("PartyExitFast")))
+	{
+		ftcore::WaterFollowTuning Fast = WaterParty.tuning();
+		ftcore::waterFollowFastExit(Fast);
+		WaterParty = ftcore::WaterFollowParty(Fast);
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: -PartyExitFast: the partners climb out 1 s behind the lead, by its way out, on the climb path."));
+	}
 #if !UE_BUILD_SHIPPING // capture and check switches: not in a shipped game
 	{
 		// -LeadGo=<x,y> (plan frame of -WorldEyeSide, default 1000 m) [-LeadGoAfter=<s>] [-LeadGoJump] [-LeadGoQuit=<s>].
@@ -4485,7 +4494,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 					Far = P + Dir * (Out * 100.0);
 				}
 				// The watchdog's run needs the lead well past stuckFar (12 m) from a partner treading by the entry.
-				if ((SwimProofKind == TEXT("watchdog") || SwimProofKind == TEXT("boom")) && FVector::Dist2D(P, Far) < 1600.0)
+				if ((SwimProofKind == TEXT("watchdog") || SwimProofKind == TEXT("boom") || SwimProofKind == TEXT("exit")) && FVector::Dist2D(P, Far) < 1600.0)
 				{
 					continue;
 				}
@@ -4678,6 +4687,15 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		// 3 s after the rejoin (or at 60 s without one) the camera turns once round the lead over 12 s, its boom through
 		// the swimming partners (item 5).
 		const bool bBoomRun = SwimProofKind == TEXT("boom");
+		const bool bExitRun = SwimProofKind == TEXT("exit");
+		if (bExitRun && System)
+		{
+			TickSwimProofExit(*System, DeltaSeconds);
+			if (SwimProofStage < 0)
+			{
+				return;
+			}
+		}
 		// The boom run waits for its partners to tread (only a treading partner can be held), 25 s at the most.
 		bool bPartnersTread = NumWaterFollowers > 0;
 		for (int32 I = 0; I < 2 && I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
@@ -4687,7 +4705,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		}
 		const bool bBoomDue = bBoomRun && SwimProofHoldAt >= 0.f && SwimProofTime >= SwimProofHoldAt + 3.f
 			&& (bPartnersTread || SwimProofTime >= SwimProofHoldAt + 25.f);
-		const bool bOtherDue = !bBoomRun && ((SwimProofRejoinAt >= 0.f && SwimProofTime >= SwimProofRejoinAt + 3.f) || SwimProofTime >= 60.f);
+		const bool bOtherDue = !bBoomRun && !bExitRun && ((SwimProofRejoinAt >= 0.f && SwimProofTime >= SwimProofRejoinAt + 3.f) || SwimProofTime >= 60.f);
 		if (SwimProofSweep < 0.f && (bOtherDue || bBoomDue))
 		{
 			SwimProofSweep = 0.f;
@@ -4791,7 +4809,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			}
 		}
 		const float End = SwimProofSweep >= 360.f ? 0.f : 110.f; // after the sweep (at 80 s at the soonest, but the boom run's), or at 110 s
-		if ((SwimProofSweep >= 360.f && (SwimProofTime >= 80.f || bBoomRun)) || (End > 0.f && SwimProofTime >= End))
+		if (!bExitRun && ((SwimProofSweep >= 360.f && (SwimProofTime >= 80.f || bBoomRun)) || (End > 0.f && SwimProofTime >= End)))
 		{
 			for (int32 I = 0; I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
 			{
@@ -4826,6 +4844,192 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			SwimProofStage = -2;
 		}
 	}
+#endif
+}
+
+void AFTExploreCharacter::TickSwimProofExit(const UFTWaterSubsystem& System, float DeltaSeconds)
+{
+#if UE_BUILD_SHIPPING
+	(void)System;
+	(void)DeltaSeconds;
+#else
+	const ftcore::WaterBodies& Bodies = System.Bodies();
+	const int32 Partners = FMath::Min(FMath::Min(NumWaterFollowers, ftcore::kWaterFollowMax), 2);
+	const bool bFast = GetWaterFollowTuning().climbPath;
+	auto Finish = [this](int32 Code)
+	{
+		for (int32 I = 0; I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
+		{
+			if (AFTPartyFollower* Partner = WaterFollowers[I].Get())
+			{
+				Partner->ReleaseProofHold();
+			}
+		}
+		FTRequestExit(Code, TEXT("SwimProof"));
+		SwimProofStage = -2;
+	};
+	if (SwimProofExitStage == 0)
+	{
+		// 3 s after the lead holds at the far point, once both partners tread (25 s at the most): the nearest ladder in the
+		// lead's own water, approached from 2.5 m out, then pushed at (TryLadderClimb takes it within reach).
+		bool bTread = Partners > 0;
+		for (int32 I = 0; I < Partners; ++I)
+		{
+			const AFTPartyFollower* Partner = WaterFollowers[I].Get();
+			bTread = bTread && Partner && Partner->GetWaterPhase() == ftcore::WaterFollowPhase::Surface;
+		}
+		if (SwimProofHoldAt < 0.f || SwimProofTime < SwimProofHoldAt + 3.f || (!bTread && SwimProofTime < SwimProofHoldAt + 25.f))
+		{
+			return;
+		}
+		const FVector At = GetActorLocation();
+		const int32 Here = Bodies.bodyAt(FTSwimUnits::ToPlan(At));
+		double Best = TNumericLimits<double>::Max();
+		for (std::size_t E = 0; E < Bodies.exitCount(); ++E)
+		{
+			const ftcore::WaterExit& Ex = Bodies.exit(E);
+			if (Ex.kind != ftcore::WaterExitKind::Ladder || Bodies.bodyAt(Ex.foot) != Here)
+			{
+				continue;
+			}
+			const double D = FVector2D::Distance(FVector2D(FTSwimUnits::ToCm(Ex.foot.x), FTSwimUnits::ToCm(Ex.foot.y)), FVector2D(At.X, At.Y));
+			if (D < Best)
+			{
+				Best = D;
+				SwimProofExitLadder = static_cast<int32>(E);
+			}
+		}
+		if (SwimProofExitLadder < 0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof exit: no ladder in the lead's water (body %d, %d exits on the map); NO PASS."), Here, static_cast<int32>(Bodies.exitCount()));
+			Finish(2);
+			return;
+		}
+		const ftcore::WaterExit& L = Bodies.exit(static_cast<std::size_t>(SwimProofExitLadder));
+		const FVector Foot(FTSwimUnits::ToCm(L.foot.x), FTSwimUnits::ToCm(L.foot.y), 0.0);
+		const FVector Out(L.out.x, L.out.y, 0.0);
+		BeginLeadGo(Foot - Out * 250.0, false);
+		LeadGoNext.Add(Foot + Out * 100.0);
+		SwimProofExitStage = 1;
+		SwimProofExitAt = SwimProofTime;
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof exit: to ladder %d, foot (%.0f, %.0f) cm, top (%.0f, %.0f, %.0f) cm, %.1f m away; partners %s; fast exit %s."),
+			SwimProofExitLadder, Foot.X, Foot.Y, FTSwimUnits::ToCm(L.top.x), FTSwimUnits::ToCm(L.top.y), FTSwimUnits::ToCm(L.topZ), Best / 100.0,
+			bTread ? TEXT("treading") : TEXT("NOT all treading after 25 s"), bFast ? TEXT("ON (-PartyExitFast)") : TEXT("off (the default)"));
+		return;
+	}
+	if (SwimProofExitStage == 1)
+	{
+		if (bWaterClimbing)
+		{
+			SwimProofExitStage = 2;
+			SwimProofLeadClimbAt = SwimProofTime;
+			bLeadGo = false; // the climb carries it; once out it stands
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof exit: the lead climbs %s %d at %.1f s (%.1f s after the route began), %.1f s up."),
+				bWaterClimbLadder ? TEXT("ladder") : TEXT("a wall (not the ladder), exit"), WaterLeadExit, SwimProofTime, SwimProofTime - SwimProofExitAt, WaterClimbSeconds);
+		}
+		else if (SwimProofTime >= SwimProofExitAt + 90.f)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof exit: the lead never climbed out 90 s after the route began (at (%.0f, %.0f, %.0f), swimming %d); NO PASS."),
+				GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z, bSwimming ? 1 : 0);
+			Finish(2);
+		}
+		return;
+	}
+	if (SwimProofExitStage == 2 && !bWaterClimbing)
+	{
+		if (bSwimming)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof exit: the lead's climb ended with it swimming again; NO PASS."));
+			Finish(2);
+			return;
+		}
+		SwimProofExitStage = 3;
+		SwimProofLeadOutAt = SwimProofTime;
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof exit: the lead out at %.2f s, feet at (%.0f, %.0f, %.0f) cm."), SwimProofTime, GetActorLocation().X,
+			GetActorLocation().Y, GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+	}
+	// From the lead's climb on: each partner's phases, its feet on the exit's top, and the most it moves between two frames.
+	const float FromOut = SwimProofLeadOutAt >= 0.f ? SwimProofTime - SwimProofLeadOutAt : -1.f;
+	for (int32 I = 0; I < Partners; ++I)
+	{
+		const AFTPartyFollower* Partner = WaterFollowers[I].Get();
+		if (!Partner)
+		{
+			continue;
+		}
+		const FVector Now = Partner->GetActorLocation();
+		const int32 Phase = static_cast<int32>(Partner->GetWaterPhase());
+		if (bSwimProofExitHasLast[I])
+		{
+			const float Step = static_cast<float>(FVector::Dist(Now, SwimProofExitLast[I]));
+			if (Step > SwimProofExitWorst[I])
+			{
+				SwimProofExitWorst[I] = Step;
+				SwimProofExitWorstDt[I] = DeltaSeconds;
+				SwimProofExitWorstPhase[I] = Phase;
+			}
+		}
+		SwimProofExitLast[I] = Now;
+		bSwimProofExitHasLast[I] = true;
+		if (Phase != SwimProofExitPhase[I])
+		{
+			const ftcore::WaterFollowOrder* Order = GetWaterOrder(I);
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof exit: slot %d phase %d -> %d at %.2f s (%s), exit %d, feet (%.0f, %.0f, %.0f) cm."), I, SwimProofExitPhase[I], Phase,
+				SwimProofTime, FromOut >= 0.f ? *FString::Printf(TEXT("%.2f s after the lead out"), FromOut) : TEXT("the lead not out yet"), Order ? Order->exitIndex : -9, Now.X, Now.Y, Now.Z);
+			if (Phase == static_cast<int32>(ftcore::WaterFollowPhase::Climbing) && SwimProofExitClimbAt[I] < 0.f)
+			{
+				SwimProofExitClimbAt[I] = SwimProofTime;
+				SwimProofExitIndex[I] = Order ? Order->exitIndex : -1;
+			}
+			if (Phase == static_cast<int32>(ftcore::WaterFollowPhase::Ashore) && SwimProofExitPhase[I] == static_cast<int32>(ftcore::WaterFollowPhase::Climbing)
+				&& SwimProofExitAshoreAt[I] < 0.f)
+			{
+				SwimProofExitAshoreAt[I] = SwimProofTime;
+			}
+			SwimProofExitPhase[I] = Phase;
+		}
+		const int32 Ex = SwimProofExitIndex[I];
+		if (SwimProofExitClimbAt[I] >= 0.f && SwimProofExitDryAt[I] < 0.f && Ex >= 0 && static_cast<std::size_t>(Ex) < Bodies.exitCount()
+			&& Now.Z >= FTSwimUnits::ToCm(Bodies.exit(static_cast<std::size_t>(Ex)).topZ) - 5.0)
+		{
+			SwimProofExitDryAt[I] = SwimProofTime;
+		}
+	}
+	if (SwimProofExitStage < 3)
+	{
+		return;
+	}
+	bool bAllOut = Partners > 0;
+	float LastOut = 0.f;
+	for (int32 I = 0; I < Partners; ++I)
+	{
+		bAllOut = bAllOut && SwimProofExitAshoreAt[I] >= 0.f;
+		LastOut = FMath::Max(LastOut, SwimProofExitAshoreAt[I]);
+	}
+	if (!((bAllOut && SwimProofTime >= LastOut + 2.f) || FromOut >= 20.f))
+	{
+		return;
+	}
+	// The verdict: strict (every partner Climbing -> Ashore within 4 s of the lead out), dry feet (its feet at the exit's top
+	// within 4 s), and no step over 20 cm between two frames.
+	bool bStrict = Partners > 0, bDry = Partners > 0, bSteps = true;
+	FString Lines;
+	for (int32 I = 0; I < Partners; ++I)
+	{
+		const float Ashore = SwimProofExitAshoreAt[I] >= 0.f ? SwimProofExitAshoreAt[I] - SwimProofLeadOutAt : -1.f;
+		const float Dry = SwimProofExitDryAt[I] >= 0.f ? SwimProofExitDryAt[I] - SwimProofLeadOutAt : Ashore;
+		const float Climb = SwimProofExitClimbAt[I] >= 0.f ? SwimProofExitClimbAt[I] - SwimProofLeadOutAt : -99.f;
+		bStrict = bStrict && Ashore >= 0.f && Ashore <= 4.f;
+		bDry = bDry && Dry >= -10.f && Dry <= 4.f && SwimProofExitAshoreAt[I] >= 0.f;
+		bSteps = bSteps && SwimProofExitWorst[I] <= 20.f;
+		Lines += FString::Printf(TEXT("%sslot %d by exit %d: climb from %+.2f s, feet at the top %s, ashore %s, worst step %.1f cm (dt %.3f s, phase %d)"), I > 0 ? TEXT("; ") : TEXT(""), I,
+			SwimProofExitIndex[I], Climb, SwimProofExitDryAt[I] >= 0.f ? *FString::Printf(TEXT("%+.2f s"), Dry) : TEXT("n/a"),
+			Ashore >= 0.f ? *FString::Printf(TEXT("%.2f s"), Ashore) : TEXT("NOT OUT in 20 s"), SwimProofExitWorst[I], SwimProofExitWorstDt[I], SwimProofExitWorstPhase[I]);
+	}
+	const TCHAR* Verdict = !bSteps ? TEXT("FAIL (a step over 20 cm)") : bStrict ? TEXT("PASS") : bDry ? TEXT("PASS ON DRY FEET ONLY (Ashore later than 4 s)") : TEXT("FAIL (later than 4 s)");
+	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof exit: done at %.1f s, fast exit %s, lead climbed at %.2f s and out at %.2f s; %s; %s."), SwimProofTime, bFast ? TEXT("ON") : TEXT("off"),
+		SwimProofLeadClimbAt, SwimProofLeadOutAt, *Lines, Verdict);
+	Finish(bStrict && bSteps ? 0 : 2);
 #endif
 }
 

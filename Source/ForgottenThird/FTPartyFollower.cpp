@@ -795,17 +795,14 @@ void AFTPartyFollower::ReplayTurn(float Delta)
 
 namespace
 {
-// The walk to an entry and down a flight of steps (cm/s), the jump in (s, and its rise over the line, cm), the climb out
-// by a ladder and the mantle with no exit (s).
+// The walk to an entry and down a flight of steps (cm/s), the jump in (s, and its rise over the line, cm); the climb
+// out's times and speeds are the water follow's tuning (ftcore::WaterFollowTuning, the lead's).
 constexpr float kWaterWalkSpeed = 220.f;
 constexpr float kWaterStepsSpeed = 120.f;
 constexpr float kWaterJumpSeconds = 0.75f;
 constexpr float kWaterJumpRise = 60.f;
-constexpr float kWaterLadderSeconds = 2.2f;
-constexpr float kWaterMantleSeconds = 1.6f;
-// Near enough (cm) to an entry's point or an exit's waiting place to count as there.
+// Near enough (cm) to an entry's point to count as there (an exit's waiting place: the tuning's atExit).
 constexpr double kWaterAtEntry = 30.0;
-constexpr double kWaterAtExit = 60.0;
 // Under water its velocity follows the order's with this time constant (s); at the surface its height eases to the
 // swim's with this one (a breach, a dive's start).
 constexpr float kWaterUnderEase = 0.5f;
@@ -1209,7 +1206,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		if (Phase == WaterFollowPhase::ToExit)
 		{
 			// At its place in the queue (or with no exit to go to, straight to its own way out).
-			bWaterAtExit = Order->exitIndex < 0 || Far <= kWaterAtExit;
+			bWaterAtExit = Order->exitIndex < 0 || Far <= ToCm(Lead->GetWaterFollowTuning().atExit);
 		}
 		if (Anim)
 		{
@@ -1256,6 +1253,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		const ftcore::WaterExit* Exit = bHasExit ? &Bodies.exit(static_cast<std::size_t>(Order->exitIndex)) : nullptr;
 		const bool bSteps = Exit && Exit->kind == ftcore::WaterExitKind::Steps;
 		const bool bLadder = Exit && Exit->kind == ftcore::WaterExitKind::Ladder;
+		const ftcore::WaterFollowTuning& Tun = Lead->GetWaterFollowTuning();
 		if (!bWaterMove)
 		{
 			// Out: up the ladder and over its top, up the steps, or with no exit a mantle onto the bank behind the lead.
@@ -1273,15 +1271,45 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 				const FVector Back = -Lead->GetActorForwardVector().GetSafeNormal2D();
 				WaterMoveTo = LeadFeet + Back * 150.0 + Lead->GetActorRightVector().GetSafeNormal2D() * (WaterSlot % 2 == 0 ? 100.0 : -100.0);
 			}
-			WaterMoveLength = bLadder ? kWaterLadderSeconds : bSteps ? FMath::Max(0.5f, static_cast<float>(FVector::Dist(WaterMoveFrom, WaterMoveTo) / kWaterStepsSpeed))
-				: kWaterMantleSeconds;
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: climbs out by %s to (%.0f, %.0f, %.0f) cm."), *LogName,
-				bLadder ? TEXT("the ladder") : bSteps ? TEXT("the steps") : TEXT("a mantle"), WaterMoveTo.X, WaterMoveTo.Y, WaterMoveTo.Z);
+			WaterMoveLength = bLadder ? Tun.ladderSeconds : bSteps ? FMath::Max(0.5f, static_cast<float>(FVector::Dist(WaterMoveFrom, WaterMoveTo) / ToCm(Tun.stepsSpeed)))
+				: Tun.mantleSeconds;
+			bWaterClimbPath = Tun.climbPath;
+			if (bWaterClimbPath)
+			{
+				// The path from where it is (feet): a ladder's foot at its own speed, then up and across; a flight one walk.
+				WaterClimb = ftcore::waterClimbPath(Tun, Exit, ToSwim(WaterMoveFrom), ToSwim(WaterMoveTo));
+				WaterMoveLength = FMath::Max(WaterClimb.seconds(), 0.05f);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: climbs out by %s to (%.0f, %.0f, %.0f) cm in %.2f s%s."), *LogName,
+				bLadder ? TEXT("the ladder") : bSteps ? TEXT("the steps") : TEXT("a mantle"), WaterMoveTo.X, WaterMoveTo.Y, WaterMoveTo.Z, WaterMoveLength,
+				bWaterClimbPath ? *FString::Printf(TEXT(" on the climb path (swim %.2f, up %.2f, across %.2f s)"), WaterClimb.swim, WaterClimb.climb, WaterClimb.across) : TEXT(""));
 		}
 		WaterMoveTime += DeltaSeconds;
 		const float T = FMath::Clamp(WaterMoveTime / WaterMoveLength, 0.f, 1.f);
 		FVector P;
-		if (bSteps)
+		if (bWaterClimbPath)
+		{
+			const float Tm = FMath::Min(WaterMoveTime, WaterClimb.seconds());
+			P = ToEngine(WaterClimb.at(Tm));
+			const int Leg = WaterClimb.leg(Tm);
+			if (!bSteps && Leg == 0)
+			{
+				// The swim to the ladder's foot: the stroke toward it.
+				const FVector2D ToFoot(ToCm(WaterClimb.foot.x) - At.X, ToCm(WaterClimb.foot.y) - At.Y);
+				const FVector2D Dir = ToFoot.GetSafeNormal();
+				In.move = {static_cast<float>(Dir.X), static_cast<float>(Dir.Y)};
+			}
+			else if (!bSteps)
+			{
+				const float Up = WaterClimb.climb + WaterClimb.across;
+				In.exitMove = bLadder ? (Leg == 1 ? ftcore::WaterExitMove::Ladder : ftcore::WaterExitMove::LadderTop) : ftcore::WaterExitMove::Mantle;
+				In.exitProgress = bLadder ? (Leg == 1 ? 0.f : WaterClimb.legProgress(Tm)) : (Up > 0.f ? FMath::Clamp((Tm - WaterClimb.swim) / Up, 0.f, 1.f) : 1.f);
+				In.ladderClimbed = ToMetres(P.Z - WaterMoveFrom.Z);
+				const FVector Way = (WaterMoveTo - WaterMoveFrom).GetSafeNormal2D();
+				In.exitHand = ToSwim(FVector(WaterMoveFrom.X, WaterMoveFrom.Y, WaterMoveTo.Z) + Way * 35.0);
+			}
+		}
+		else if (bSteps)
 		{
 			P = FMath::Lerp(WaterMoveFrom, WaterMoveTo, T);
 		}
@@ -1319,7 +1347,7 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		StepFollowerWaterLoco(In, DeltaSeconds, Anim);
 		if (Anim)
 		{
-			Speed = bSteps ? kWaterStepsSpeed : 0.f;
+			Speed = bSteps ? static_cast<float>(ToCm(Tun.stepsSpeed)) : 0.f;
 			Anim->SetGroundSpeed(Speed);
 			Anim->SetIntent(-1.f, -1.f);
 			Anim->SetAir(false, 0.f);

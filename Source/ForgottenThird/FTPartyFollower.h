@@ -231,6 +231,9 @@ private:
 	FVector WaterMoveTo = FVector::ZeroVector;
 	float WaterMoveTime = 0.f;
 	float WaterMoveLength = 1.f;
+	// The climb out on Core's path (-PartyExitFast: the swim to the foot, up, across), taken when the climb starts.
+	bool bWaterClimbPath = false;
+	ftcore::WaterClimbPath WaterClimb;
 	bool bWaterAtEntry = false;
 	bool bWaterAtExit = false;
 };
