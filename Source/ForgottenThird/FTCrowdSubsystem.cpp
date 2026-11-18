@@ -204,7 +204,6 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	LoadArt();
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
 	FootSeen.Init(false, static_cast<int32>(Sim.capacity()));
-	BuildMassing();
 
 	double TestAt = 20.0;
 	if (FParse::Param(Cmd, TEXT("CrowdTestFight")) || FParse::Value(Cmd, TEXT("CrowdTestFight="), TestAt))
@@ -212,6 +211,10 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		TestFightAt = TestAt;
 	}
 	FParse::Value(Cmd, TEXT("CrowdQuitAfter="), QuitAfter);
+	if (QuitAfter > 0.0)
+	{
+		BuildMassing(); // only the footprint check reads the boxes, and it runs with -CrowdQuitAfter only
+	}
 	FString MoveTo, MX, MY;
 	if (FParse::Value(Cmd, TEXT("CrowdPlayerAt="), MoveTo) && MoveTo.Split(TEXT(","), &MX, &MY))
 	{
