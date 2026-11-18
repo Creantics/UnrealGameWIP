@@ -132,19 +132,22 @@ bool FTDayShade::Enabled()
 }
 
 // The game view's eye adaptation as the renderer last read it back (FSceneView::GetLastEyeAdaptationExposure: the scale
-// applied to scene light, bias included; 0 until the first read-back), taken on the game thread as each view is set up.
+// applied to scene light, bias included; 0 until the first read-back), taken on the game thread as the family starts to
+// render. Not in SetupView: the game viewport marks its family as the main one (bIsMainViewFamily) only after its views
+// are set up, so a SetupView check on that flag never passes (block 4's probe logged 0 in every run).
 class FFTExposureProbe final : public FSceneViewExtensionBase
 {
 public:
 	explicit FFTExposureProbe(const FAutoRegister& Reg) : FSceneViewExtensionBase(Reg) {}
-	virtual void SetupView(FSceneViewFamily& Family, FSceneView& InView) override
+	virtual void BeginRenderViewFamily(FSceneViewFamily& Family) override
 	{
-		if (!Family.bIsMainViewFamily) { return; }
-		const float E = InView.GetLastEyeAdaptationExposure();
+		if (!Family.bIsMainViewFamily || Family.Views.Num() == 0 || !Family.Views[0]) { return; }
+		const FSceneView& View = *Family.Views[0];
+		const float E = View.GetLastEyeAdaptationExposure();
 		if (E > 0.f)
 		{
 			Exposure.store(E, std::memory_order_relaxed);
-			Luminance.store(InView.GetLastAverageSceneLuminance(), std::memory_order_relaxed);
+			Luminance.store(View.GetLastAverageSceneLuminance(), std::memory_order_relaxed);
 		}
 	}
 	std::atomic<float> Exposure{0.f};
