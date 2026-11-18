@@ -118,8 +118,12 @@ struct MapLabel {
 // An angle (screen degrees) turned by half turns into [-90, 90).
 FTCORE_API float mapUprightDeg(float deg);
 // The label along the roads named `name` at view v: on the longest stretch of their centre lines inside the screen
-// (less `margin` px all round), centred on it, turned along it, upright. fits says the stretch is at least w + 2 * pad.
-// False when no stretch of them is on screen.
+// (less `margin` px all round), centred on it, turned along it, upright. A stretch is a run of one road's pieces that
+// meet end to end, each heading within kMapAlongBendDeg of the run's first piece; its length is its chord (start to
+// end), so a lane drawn in short pieces is named along its whole straight run. fits says the stretch is at least
+// w + 2 * pad. False when no stretch of them is on screen.
+inline constexpr float kMapAlongBendDeg = 12.f; // the most a piece may turn from the run's first heading
+inline constexpr float kMapAlongJoinPx = 0.5f;  // pieces closer than this end to end meet
 FTCORE_API bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name, const MapOverlayView& v,
                               float w, float h, MapLabel& out, float margin = 24.f, float pad = 8.f);
 // Whether two labels' turned boxes, each grown by gap / 2 all round, overlap.

@@ -475,3 +475,87 @@ TEST_CASE("map overlay: a bridge or a *_walk row off the model stays unmatched, 
     CHECK(n.names[n.places[0].name] == "Kiln Green");
     CHECK(n.unmatched == 2);
 }
+
+namespace {
+
+// One road named "Seam Run" from the points given (engine m), viewed 1 m per px centred on `centre`.
+struct AlongFixture {
+    MiniMapModel m;
+    MapNames n;
+    MapOverlayView v;
+};
+
+AlongFixture alongFixture(std::initializer_list<Vec2> pts, Vec2 centre) {
+    AlongFixture f;
+    f.m.minX = -2000.f;
+    f.m.minY = -2000.f;
+    f.m.maxX = 4000.f;
+    f.m.maxY = 2000.f;
+    MapRoad r;
+    r.id = "AL-1";
+    r.cls = MapRoadClass::Lane;
+    r.width = 3.f;
+    r.count = static_cast<std::uint32_t>(pts.size());
+    for (const Vec2& p : pts) f.m.points.push_back(p);
+    f.m.roads.push_back(r);
+    mapBuildGrid(f.m);
+    REQUIRE(mapLoadNames(f.m, "id,kind,name,sign_form,district\nAL-1,alley,Seam Run,,\n", f.n));
+    f.v = MapOverlayView{centre, 1.f, 1920.f, 1080.f};
+    return f;
+}
+
+} // namespace
+
+TEST_CASE("map overlay: a lane drawn in short straight pieces is one stretch for its name") {
+    // Three 10 m pieces in a line: the name (25 px, 2 px pad each end) fits the 30 m run, not any one piece.
+    const AlongFixture f = alongFixture({{100.f, 100.f}, {110.f, 100.f}, {120.f, 100.f}, {130.f, 100.f}}, {115.f, 100.f});
+    MapLabel l;
+    REQUIRE(mapLabelAlong(f.m, f.n, mapRoadName(f.n, 0), f.v, 25.f, 10.f, l, 24.f, 2.f));
+    CHECK(l.fits);
+    CHECK(l.at.x == doctest::Approx(960.f));
+    CHECK(l.at.y == doctest::Approx(540.f));
+    CHECK(l.angleDeg == doctest::Approx(0.f));
+    REQUIRE(mapLabelAlong(f.m, f.n, mapRoadName(f.n, 0), f.v, 27.f, 10.f, l, 24.f, 2.f));
+    CHECK_FALSE(l.fits);
+}
+
+TEST_CASE("map overlay: a corner splits the stretch; a gentle curve joins up to the bend limit") {
+    // An L of two 10 m legs: two stretches of 10, so a 15 px name does not fit.
+    const AlongFixture corner = alongFixture({{100.f, 100.f}, {110.f, 100.f}, {110.f, 110.f}}, {105.f, 105.f});
+    MapLabel l;
+    REQUIRE(mapLabelAlong(corner.m, corner.n, mapRoadName(corner.n, 0), corner.v, 15.f, 10.f, l, 24.f, 0.f));
+    CHECK_FALSE(l.fits);
+    // Pieces turning 5 degrees each (headings 0, 5, 10, 15): the first three stay within the limit of the first
+    // heading, the fourth starts a new stretch. The label sits on the first three's chord.
+    const float rad = 3.14159265f / 180.f;
+    Vec2 p[5] = {{100.f, 100.f}};
+    for (int i = 0; i < 4; ++i) {
+        const float a = 5.f * static_cast<float>(i) * rad;
+        p[i + 1] = Vec2{p[i].x + 10.f * std::cos(a), p[i].y + 10.f * std::sin(a)};
+    }
+    REQUIRE(kMapAlongBendDeg > 10.f);
+    REQUIRE(kMapAlongBendDeg < 15.f);
+    const AlongFixture curve = alongFixture({p[0], p[1], p[2], p[3], p[4]}, {100.f, 100.f});
+    const float chord = std::hypot(p[3].x - p[0].x, p[3].y - p[0].y);
+    REQUIRE(mapLabelAlong(curve.m, curve.n, mapRoadName(curve.n, 0), curve.v, chord - 1.f, 10.f, l, 24.f, 0.f));
+    CHECK(l.fits);
+    CHECK(l.at.x == doctest::Approx(960.f + (p[0].x + p[3].x) * 0.5f - 100.f));
+    CHECK(l.at.y == doctest::Approx(540.f + (p[0].y + p[3].y) * 0.5f - 100.f));
+    CHECK(l.angleDeg == doctest::Approx(std::atan2(p[3].y - p[0].y, p[3].x - p[0].x) / rad).epsilon(1e-3));
+}
+
+TEST_CASE("map overlay: a stretch of pieces stops at the screen's margin") {
+    // Pieces every 10 m from x 0 to x 2000; on screen (1 m/px, centre x 500) x runs -460..1460, the margin cuts at
+    // 1436, so the stretch is screen px 460..1896.
+    std::vector<Vec2> pts;
+    for (int i = 0; i <= 200; ++i) pts.push_back(Vec2{10.f * static_cast<float>(i), 100.f});
+    AlongFixture f = alongFixture({{0.f, 100.f}}, {500.f, 100.f});
+    f.m.points = pts;
+    f.m.roads[0].count = static_cast<std::uint32_t>(pts.size());
+    MapLabel l;
+    REQUIRE(mapLabelAlong(f.m, f.n, mapRoadName(f.n, 0), f.v, 1400.f, 10.f, l, 24.f, 0.f));
+    CHECK(l.fits);
+    CHECK(l.at.x == doctest::Approx((460.f + 1896.f) * 0.5f));
+    REQUIRE(mapLabelAlong(f.m, f.n, mapRoadName(f.n, 0), f.v, 1500.f, 10.f, l, 24.f, 0.f));
+    CHECK_FALSE(l.fits);
+}

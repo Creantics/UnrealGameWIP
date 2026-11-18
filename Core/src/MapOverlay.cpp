@@ -352,8 +352,23 @@ bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name,
                    MapLabel& out, float margin, float pad) {
     if (name == kMapNoName) return false;
     const float x0 = margin, y0 = margin, x1 = v.screenW - margin, y1 = v.screenH - margin;
+    const float bendCos = std::cos(kMapAlongBendDeg * kPi / 180.f);
     float best = -1.f;
     Vec2 ba{}, bb{};
+    // A run: clipped segments of one road that meet end to end and each turn less than the bend limit from the run's
+    // first direction. Its length is its chord, so a wiggle never counts as straight.
+    bool open = false;
+    Vec2 ra{}, rb{}, dir{};
+    auto endRun = [&]() {
+        if (!open) return;
+        open = false;
+        const float chord = std::hypot(rb.x - ra.x, rb.y - ra.y);
+        if (chord > best) {
+            best = chord;
+            ba = ra;
+            bb = rb;
+        }
+    };
     const std::size_t roads = std::min(m.roads.size(), n.roadName.size());
     for (std::size_t r = 0; r < roads; ++r) {
         if (n.roadName[r] != name) continue;
@@ -362,14 +377,30 @@ bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name,
             const std::size_t i = road.first + k;
             if (i + 1 >= m.points.size()) break;
             Vec2 a = mapOverlayToScreen(v, m.points[i]), b = mapOverlayToScreen(v, m.points[i + 1]);
-            if (!clipSegment(a, b, x0, y0, x1, y1)) continue;
-            const float len = std::hypot(b.x - a.x, b.y - a.y);
-            if (len > best) {
-                best = len;
-                ba = a;
-                bb = b;
+            if (!clipSegment(a, b, x0, y0, x1, y1)) {
+                endRun();
+                continue;
             }
+            const float len = std::hypot(b.x - a.x, b.y - a.y);
+            if (len <= 0.f) { // a point on screen still places a label, as before, when nothing longer does
+                if (best < 0.f) {
+                    best = 0.f;
+                    ba = bb = a;
+                }
+                continue;
+            }
+            const Vec2 d{(b.x - a.x) / len, (b.y - a.y) / len};
+            if (open && std::hypot(a.x - rb.x, a.y - rb.y) <= kMapAlongJoinPx && d.x * dir.x + d.y * dir.y >= bendCos) {
+                rb = b;
+                continue;
+            }
+            endRun();
+            open = true;
+            ra = a;
+            rb = b;
+            dir = d;
         }
+        endRun(); // a run never crosses into another road
     }
     if (best < 0.f) return false;
     out = MapLabel{};
