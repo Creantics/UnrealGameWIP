@@ -1,6 +1,6 @@
 // S-332: where a run ends (most walk on, a few look back with room of their own), no run pose below walking speed,
 // and nobody popping in or out in front of a camera.
-#include "ftcore/Crowd.h"
+#include "ftcore/CrowdV2.h"
 
 #include <doctest/doctest.h>
 
@@ -8,6 +8,7 @@
 #include <vector>
 
 using namespace ftcore;
+using namespace ftcore::crowdv2;
 
 namespace {
 

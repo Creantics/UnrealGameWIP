@@ -25,7 +25,7 @@ bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStre
     // The optional kind and pavement_m columns, row for row with importMassingStreets (same comment and header rules).
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
-    std::size_t kindCol = SIZE_MAX, paveCol = SIZE_MAX, sideCol = SIZE_MAX;
+    std::size_t kindCol = SIZE_MAX, paveCol = SIZE_MAX;
     bool haveHeader = false;
     std::size_t row = 0;
     out.resize(geo.size());
@@ -36,7 +36,6 @@ bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStre
                 const std::string_view name = trim(r.fields[f]);
                 if (name == "kind") kindCol = f;
                 if (name == "pavement_m") paveCol = f;
-                if (name == "pavement_side") sideCol = f;
             }
             haveHeader = true;
             continue;
@@ -58,77 +57,7 @@ bool importCrowdStreets(std::string_view csv, double side, std::vector<CrowdStre
                 s.pavement = static_cast<float>(d);
             }
         }
-        if (sideCol < r.fields.size()) {
-            const std::string_view v = trim(r.fields[sideCol]);
-            if (!v.empty()) {
-                if (v != "L" && v != "R") return detail::fail(error, r.line, g.id + ": pavement_side must be L, R or blank");
-                if (s.pavement <= 0.f) return detail::fail(error, r.line, g.id + ": pavement_side needs a pavement_m above 0");
-                s.pavementSide = v == "L" ? -1 : 1; // the engine frame flips Y, so the plan's left is the right here
-            }
-        }
     }
-    return true;
-}
-
-bool importCrowdDoors(std::string_view csv, double side, std::vector<CrowdDoor>& out, std::string* error) {
-    out.clear();
-    std::vector<Record> records;
-    if (!splitCsv(csv, records, error)) return false;
-    std::size_t idCol = SIZE_MAX, ptsCol = SIZE_MAX;
-    bool haveHeader = false;
-    struct Room {
-        std::string id;
-        Vec2 middle;
-    };
-    std::vector<Room> rooms;
-    for (const Record& r : records) {
-        if (isComment(r)) continue;
-        if (!haveHeader) {
-            for (std::size_t f = 0; f < r.fields.size(); ++f) {
-                const std::string_view name = trim(r.fields[f]);
-                if (name == "id") idCol = f;
-                if (name == "pts") ptsCol = f;
-            }
-            if (idCol == SIZE_MAX || ptsCol == SIZE_MAX) return detail::fail(error, r.line, "the door table needs id and pts columns");
-            haveHeader = true;
-            continue;
-        }
-        if (idCol >= r.fields.size()) continue;
-        const std::string_view id = trim(r.fields[idCol]);
-        const bool isDoor = id.substr(0, 5) == "DOOR-", isRoom = id.substr(0, 5) == "ROOM-";
-        if (!isDoor && !isRoom) continue;
-        const std::string_view pts = ptsCol < r.fields.size() ? trim(r.fields[ptsCol]) : std::string_view{};
-        double sx = 0.0, sy = 0.0;
-        int n = 0;
-        bool bad = false;
-        for (std::size_t at = 0; at <= pts.size() && !pts.empty();) {
-            std::size_t end = pts.find(';', at);
-            if (end == std::string_view::npos) end = pts.size();
-            const std::string_view p = trim(pts.substr(at, end - at));
-            const std::size_t c1 = p.find(':');
-            double x = 0.0, y = 0.0;
-            if (c1 == std::string_view::npos || !parseNumber(p.substr(0, c1), x)) bad = true;
-            else {
-                const std::string_view rest = p.substr(c1 + 1);
-                if (!parseNumber(rest.substr(0, rest.find(':')), y)) bad = true;
-            }
-            if (bad) break;
-            sx += x;
-            sy += y;
-            ++n;
-            at = end + 1;
-        }
-        if (bad || n == 0 || (isDoor && n != 2))
-            return detail::fail(error, r.line, std::string(id) + ": pts must be x:y:z points separated by ; (a door: its two ends)");
-        const MassingVec m = side > 0.0 ? massingEnginePoint(side, sx / n, sy / n, 0.0) : MassingVec{sx / n, sy / n, 0.0};
-        const Vec2 p{static_cast<float>(m.x), static_cast<float>(m.y)};
-        if (isDoor) out.push_back(CrowdDoor{std::string(id.substr(5)), p, p});
-        else rooms.push_back(Room{std::string(id.substr(5)), p});
-    }
-    for (CrowdDoor& d : out)
-        for (const Room& r : rooms)
-            if (r.id == d.id) d.inside = r.middle;
-    if (out.empty()) return detail::fail(error, 0, "the door table has no DOOR- rows");
     return true;
 }
 
@@ -139,7 +68,6 @@ float dist(Vec2 a, Vec2 b) { return std::hypot(b.x - a.x, b.y - a.y); }
 struct BuildEdge {
     std::uint32_t a = 0, b = 0;
     float lane = 0.f, laneHalf = 0.f, half = 0.f; // half: the street's half width
-    std::int8_t side = 0;                         // a -> b's one pavement side (CrowdEdge::side)
     bool dead = false;
 };
 
@@ -150,8 +78,6 @@ struct Split {
 };
 
 std::int64_t cellKey(std::int64_t x, std::int64_t y) { return (x << 32) ^ (y & 0xffffffffLL); }
-
-constexpr float kSameSpot = 0.5f; // m: crossings or feet this close are one node (a nearer pair would make a sliver walkers jam in)
 
 class NodeMaker {
 public:
@@ -176,18 +102,8 @@ public:
         cells_[cellKey(cx, cy)].push_back(n);
         return n;
     }
-    // A node exactly here (crossings and junction feet): not snapped to street points, but two feet or crossings on
-    // the same spot share one node, so the streets meeting there stay joined.
+    // A node exactly here, never merged (crossings and junction feet).
     std::uint32_t fresh(Vec2 p) {
-        const std::int64_t cx = static_cast<std::int64_t>(std::floor(p.x / snap_));
-        const std::int64_t cy = static_cast<std::int64_t>(std::floor(p.y / snap_));
-        for (std::int64_t dy = -1; dy <= 1; ++dy)
-            for (std::int64_t dx = -1; dx <= 1; ++dx) {
-                const auto it = cells_.find(cellKey(cx + dx, cy + dy));
-                if (it == cells_.end()) continue;
-                for (const std::uint32_t n : it->second)
-                    if (dist(pos_[n], p) < kSameSpot) return n;
-            }
         pos_.push_back(p);
         const auto n = static_cast<std::uint32_t>(pos_.size() - 1);
         cells_[cellKey(static_cast<std::int64_t>(std::floor(p.x / snap_)), static_cast<std::int64_t>(std::floor(p.y / snap_)))]
@@ -230,21 +146,12 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
             continue;
         BuildEdge proto;
         proto.half = s.width * 0.5f;
-        // The walking band stays wallInset off the street's outer edge (the frontage), whatever the pavement: on a
-        // narrow pavement it reaches over the kerb rather than up to the wall; on a street too narrow for both, the
-        // centre line.
-        const float outer = proto.half - tuning.wallInset;
-        if (outer <= 0.f) {
-            proto.lane = 0.f;
-            proto.laneHalf = 0.f;
-        } else if (s.pavement > 0.f) {
-            const float inner = std::max(0.f, std::min(proto.half - s.pavement + 0.2f, outer - 0.2f));
-            proto.lane = (inner + outer) * 0.5f;
-            proto.laneHalf = (outer - inner) * 0.5f;
-            proto.side = s.pavementSide;
+        if (s.pavement > 0.f) {
+            proto.lane = proto.half - s.pavement * 0.5f;
+            proto.laneHalf = std::max(0.1f, s.pavement * 0.5f - 0.2f);
         } else {
             proto.lane = 0.f;
-            proto.laneHalf = std::max(0.f, proto.half - std::max(tuning.edgeMargin, tuning.wallInset));
+            proto.laneHalf = std::max(0.f, proto.half - tuning.edgeMargin);
         }
         std::uint32_t prev = UINT32_MAX;
         for (const Vec2& p : s.points) {
@@ -371,15 +278,14 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     // CSR, both directions, duplicates dropped.
     struct Dir {
         std::uint32_t from, to;
-        float lane, laneHalf, half;
-        std::int8_t side;
+        float lane, laneHalf;
     };
     std::vector<Dir> dirs;
     dirs.reserve(edges.size() * 2);
     for (const BuildEdge& e : edges) {
         if (e.dead || e.a == e.b) continue;
-        dirs.push_back({e.a, e.b, e.lane, e.laneHalf, e.half, e.side});
-        dirs.push_back({e.b, e.a, e.lane, e.laneHalf, e.half, static_cast<std::int8_t>(-e.side)});
+        dirs.push_back({e.a, e.b, e.lane, e.laneHalf});
+        dirs.push_back({e.b, e.a, e.lane, e.laneHalf});
     }
     std::sort(dirs.begin(), dirs.end(), [](const Dir& l, const Dir& r) { return l.from != r.from ? l.from < r.from : l.to < r.to; });
     dirs.erase(std::unique(dirs.begin(), dirs.end(), [](const Dir& l, const Dir& r) { return l.from == r.from && l.to == r.to; }),
@@ -391,7 +297,7 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     edges_.resize(dirs.size());
     for (std::size_t i = 0; i < dirs.size(); ++i) {
         const Dir& d = dirs[i];
-        edges_[i] = {d.to, std::max(0.01f, dist(pos_[d.from], pos_[d.to])), d.lane, d.laneHalf, d.half, d.side};
+        edges_[i] = {d.to, std::max(0.01f, dist(pos_[d.from], pos_[d.to])), d.lane, d.laneHalf};
     }
 
     // Components: islands smaller than minComponent are never spawned on.

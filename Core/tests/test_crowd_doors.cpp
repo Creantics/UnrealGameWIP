@@ -1,6 +1,6 @@
 // S-275 doors and S-283 street density for the crowd: the door table, doors on streets, going in and out, the
 // streets' share by time of day, runners taking a door away from a fight.
-#include "ftcore/Crowd.h"
+#include "ftcore/CrowdV2.h"
 
 #include "AllocCounter.h"
 
@@ -11,6 +11,7 @@
 #include <vector>
 
 using namespace ftcore;
+using namespace ftcore::crowdv2;
 
 namespace {
 

@@ -70,6 +70,9 @@ add_library(ftcore STATIC
     src/NpcPlaces.cpp
     src/CrowdGraph.cpp
     src/CrowdTuning.cpp
+    src/CrowdV2.cpp
+    src/CrowdV2Graph.cpp
+    src/CrowdV2Tuning.cpp
     src/Terrain.cpp
     src/MassingPlan.cpp
     src/MassingProps.cpp
@@ -489,6 +492,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_party_trail.cpp
         tests/test_party_shore.cpp
         tests/test_crowd.cpp
+        tests/test_crowd_v2.cpp
+        tests/test_crowd_off_default.cpp
         tests/test_crowd_doors.cpp
         tests/test_crowd_views.cpp
         tests/test_npc_memory.cpp

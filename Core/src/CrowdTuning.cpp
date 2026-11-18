@@ -79,7 +79,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
 
     s = rd.section(root, "move");
     rd.only(s, "move", {"walkSpeed", "walkSpeedJitter", "runSpeed", "backSpeed", "turnRate", "laneSpeed", "idleChance", "idleMin",
-                        "idleMax", "headingKeep", "headingChange", "avoidRadius", "avoidPlayer", "minGap"});
+                        "idleMax", "headingKeep", "headingChange", "avoidRadius", "avoidPlayer"});
     rd.number(s, "move", "walkSpeed", t.walkSpeed, 0.1, 5.0);
     rd.number(s, "move", "walkSpeedJitter", t.walkSpeedJitter, 0.0, 2.0);
     rd.number(s, "move", "runSpeed", t.runSpeed, 0.1, 12.0);
@@ -93,20 +93,16 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
     rd.number(s, "move", "headingChange", t.headingChange, 0.0, 1.0);
     rd.number(s, "move", "avoidRadius", t.avoidRadius, 0.0, 10.0);
     rd.number(s, "move", "avoidPlayer", t.avoidPlayer, 0.0, 20.0);
-    rd.number(s, "move", "minGap", t.minGap, 0.0, 5.0);
     if (rd.ok && t.idleMin > t.idleMax) rd.fail("move", "idleMin", "above idleMax");
 
     s = rd.section(root, "perceive");
-    rd.only(s, "perceive", {"fov", "feelRadius", "reactBase", "reactPerMetre", "reactJitter", "occludedHearing", "occlusionBudget",
-                            "reactRadius", "reactCloseMax"});
+    rd.only(s, "perceive", {"fov", "feelRadius", "reactBase", "reactPerMetre", "reactJitter", "occludedHearing", "occlusionBudget"});
     rd.number(s, "perceive", "fov", t.fov, 0.0, 360.0);
     rd.number(s, "perceive", "feelRadius", t.feelRadius, 0.0, 50.0);
     rd.number(s, "perceive", "reactBase", t.reactBase, 0.0, 10.0);
     rd.number(s, "perceive", "reactPerMetre", t.reactPerMetre, 0.0, 1.0);
     rd.number(s, "perceive", "reactJitter", t.reactJitter, 0.0, 10.0);
     rd.number(s, "perceive", "occludedHearing", t.occludedHearing, 0.0, 1.0);
-    rd.number(s, "perceive", "reactRadius", t.reactRadius, 0.0, 500.0);
-    rd.number(s, "perceive", "reactCloseMax", t.reactCloseMax, 0.0, 10.0);
     rd.count(s, "perceive", "occlusionBudget", t.occlusionBudget, 0, 100000);
 
     s = rd.section(root, "events");
@@ -137,7 +133,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
 
     s = rd.section(root, "react");
     rd.only(s, "react", {"noticeFear", "backFear", "fleeFear", "fearMax", "fearDecay", "cowerDecay", "calmFear", "noticeTime", "backTime",
-                         "calmTime", "recoverTime", "threatMemory", "quietAfter", "quietDecay", "returnChance", "timidScale", "boldScale"});
+                         "calmTime", "recoverTime", "threatMemory", "timidScale", "boldScale"});
     rd.number(s, "react", "noticeFear", t.noticeFear, 0.0, 10.0);
     rd.number(s, "react", "backFear", t.backFear, 0.0, 10.0);
     rd.number(s, "react", "fleeFear", t.fleeFear, 0.0, 10.0);
@@ -150,18 +146,13 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
     rd.number(s, "react", "calmTime", t.calmTime, 0.0, 600.0);
     rd.number(s, "react", "recoverTime", t.recoverTime, 0.0, 600.0);
     rd.number(s, "react", "threatMemory", t.threatMemory, 0.0, 3600.0);
-    rd.number(s, "react", "quietAfter", t.quietAfter, 0.0, 600.0);
-    rd.number(s, "react", "quietDecay", t.quietDecay, 0.0, 10.0);
-    rd.number(s, "react", "returnChance", t.returnChance, 0.0, 1.0);
     rd.number(s, "react", "timidScale", t.timidScale, 0.01, 10.0);
     rd.number(s, "react", "boldScale", t.boldScale, 0.01, 10.0);
     if (rd.ok && !(t.noticeFear < t.backFear && t.backFear < t.fleeFear)) rd.fail("react", "backFear", "needs noticeFear < backFear < fleeFear");
 
     s = rd.section(root, "flee");
-    rd.only(s, "flee", {"safeDist", "threatPenaltyRadius", "threatPenalty", "blockRadius", "searchLimit", "plansPerStep", "cowerRetry",
-                        "resumeHeading"});
+    rd.only(s, "flee", {"safeDist", "threatPenaltyRadius", "threatPenalty", "blockRadius", "searchLimit", "plansPerStep", "cowerRetry"});
     rd.number(s, "flee", "safeDist", t.safeDist, 1.0, 2000.0);
-    rd.number(s, "flee", "resumeHeading", t.resumeHeading, 0.0, 1.0);
     rd.number(s, "flee", "threatPenaltyRadius", t.threatPenaltyRadius, 0.0, 2000.0);
     rd.number(s, "flee", "threatPenalty", t.threatPenalty, 0.0, 1000.0);
     rd.number(s, "flee", "blockRadius", t.blockRadius, 0.0, 500.0);
@@ -183,11 +174,10 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
     rd.count(s, "step", "maxSteps", t.maxSteps, 1, 64);
 
     s = rd.section(root, "graph");
-    rd.only(s, "graph", {"snap", "junctionReach", "edgeMargin", "wallInset", "minComponent", "walkKinds"});
+    rd.only(s, "graph", {"snap", "junctionReach", "edgeMargin", "minComponent", "walkKinds"});
     rd.number(s, "graph", "snap", t.graph.snap, 0.01, 50.0);
     rd.number(s, "graph", "junctionReach", t.graph.junctionReach, 0.0, 50.0);
     rd.number(s, "graph", "edgeMargin", t.graph.edgeMargin, 0.0, 50.0);
-    rd.number(s, "graph", "wallInset", t.graph.wallInset, 0.0, 50.0);
     rd.count(s, "graph", "minComponent", t.graph.minComponent, 1, 1000000);
     const JsonValue kinds = s["walkKinds"];
     if (rd.ok && !kinds.isAbsent()) {

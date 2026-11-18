@@ -17,6 +17,7 @@
 #include "Misc/Paths.h"
 
 #include "FTCrowdSubsystem.h"
+#include "FTCrowdSubsystemV2.h"
 #include "FTExploreCharacter.h"
 #include "FTNpcSubsystem.h"
 #include "FTPartyFollower.h"
@@ -614,6 +615,21 @@ void AFTPartyVan::SensePedestrian(float& Ahead, float& Side, AActor*& Who, int32
 		for (uint32 I = 0; I < Sim.capacity(); ++I)
 		{
 			const ftcore::CrowdAgentView& V = Sim.agent(I);
+			if (V.live && Consider(FVector(V.pos.x * 100.0, V.pos.y * 100.0, Z)))
+			{
+				Who = nullptr;
+				CrowdSlot = static_cast<int32>(I);
+			}
+		}
+	}
+	else if (const UFTCrowdSubsystemV2* CrowdV2 = UFTCrowdSubsystemV2::Get(GetWorld()))
+	{
+		// -CrowdV2: members indoors (behind a door) aren't on the street.
+		const ftcore::crowdv2::CrowdSim& Sim = CrowdV2->GetSim();
+		const float Z = static_cast<float>(GetActorLocation().Z);
+		for (uint32 I = 0; I < Sim.capacity(); ++I)
+		{
+			const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(I);
 			if (V.live && !V.indoors && Consider(FVector(V.pos.x * 100.0, V.pos.y * 100.0, Z)))
 			{
 				Who = nullptr;
@@ -656,6 +672,11 @@ void AFTPartyVan::ReactPedestrian(float Ahead, float Side, AActor* Who, int32 Cr
 	{
 		// The crowd scatters from a van passing close, and a knock-down frightens it like a fall.
 		Crowd->RaiseEvent(O.react == ftcore::PedReact::Dodge ? ftcore::CrowdEventKind::PlayerSprint : ftcore::CrowdEventKind::LoudNoise, At);
+	}
+	else if (UFTCrowdSubsystemV2* CrowdV2 = Who ? nullptr : UFTCrowdSubsystemV2::Get(GetWorld()))
+	{
+		CrowdV2->RaiseEvent(O.react == ftcore::PedReact::Dodge ? ftcore::crowdv2::CrowdEventKind::PlayerSprint
+															 : ftcore::crowdv2::CrowdEventKind::LoudNoise, At);
 	}
 	if (O.react == ftcore::PedReact::KnockDown)
 	{
