@@ -506,9 +506,10 @@ FTCORE_API NpcMemorySave npcCaptureSave(const NpcMemoryWorld& w, const NpcTables
 // Rebuilds the world from tables + save; unknown ids are dropped and reported, values clamped.
 FTCORE_API NpcMemoryLoadReport npcApplySave(NpcMemoryWorld& w, const NpcTables& t, const NpcLineTable& lines,
                                             const NpcMemorySave& s);
-// The save as JSON text (NpcMemorySave.cpp), for a save slot. Decoding fails on bad JSON, an unknown format or a
-// record without its id; numbers out of range are clamped, missing ones read as their defaults (an older text without
-// `leads` reads 0, which npcApplySave rebuilds). On failure `out` is untouched and `*error` says why.
+// The save as JSON text (NpcMemorySave.cpp), for a save slot. Decoding fails on bad JSON, an unknown format, a
+// record without its id, a list that isn't an array or a number of the wrong type (a string, null, a fraction); numbers
+// out of range are clamped, missing ones read as their defaults (an older text without `leads` reads 0, which
+// npcApplySave rebuilds). On failure `out` is untouched and `*error` says why.
 FTCORE_API std::string encodeNpcMemorySave(const NpcMemorySave& s);
 FTCORE_API bool decodeNpcMemorySave(std::string_view text, NpcMemorySave& out, std::string* error = nullptr);
 

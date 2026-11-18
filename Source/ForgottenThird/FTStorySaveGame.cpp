@@ -77,7 +77,11 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
 	const UGameInstance* GI = Story->GetGameInstance();
 	const UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
-	NpcSaveJson = Npcs ? Npcs->CaptureSaveJson() : FString();
+	if (Npcs && Npcs->IsReady())
+	{
+		NpcSaveJson = Npcs->CaptureSaveJson();
+	}
+	// Else the NPC tables aren't loaded: the block this save already holds stays, rather than an empty one over it.
 	if (Block.Num() > 0)
 	{
 		StoryBlock = MoveTemp(Block);
@@ -138,7 +142,11 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 	const UGameInstance* GI = Story->GetGameInstance();
 	UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
 	FString NpcError;
-	if (Npcs && NpcSaveJson.IsEmpty())
+	if (Npcs && !Npcs->IsReady())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory not loaded from the save: the NPC tables aren't loaded"));
+	}
+	else if (Npcs && NpcSaveJson.IsEmpty())
 	{
 		Npcs->ResetMemory(); // a save from before NPC memory: nobody remembers this session's deeds
 	}

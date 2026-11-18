@@ -35,8 +35,13 @@ void num(std::string& out, const char* key, std::int64_t v, bool comma = true) {
     out += std::to_string(v);
 }
 
-template <class T> T clampInt(const JsonValue& v, T fallback = T{}) {
-    if (!v.isInteger()) return fallback;
+// An absent number reads `fallback`; a present one that isn't an integer sets `bad` (a damaged file).
+template <class T> T clampInt(bool& bad, const JsonValue& v, T fallback = T{}) {
+    if (v.isAbsent()) return fallback;
+    if (!v.isInteger()) {
+        bad = true;
+        return fallback;
+    }
     const std::int64_t x = v.integer();
     const std::int64_t lo = static_cast<std::int64_t>(std::numeric_limits<T>::min());
     const std::int64_t hi = static_cast<std::int64_t>(std::numeric_limits<T>::max());
@@ -191,10 +196,11 @@ bool decodeNpcMemorySave(std::string_view text, NpcMemorySave& out, std::string*
         if (!root[key].isAbsent() && !root[key].isArray()) return fail(error, "npc save: a list is not an array");
 
     NpcMemorySave s;
+    bool bad = false;
     s.format = static_cast<int>(root["format"].integer());
-    s.now = clampInt<std::uint32_t>(root["now"]);
-    s.nextSeq = clampInt<std::uint32_t>(root["nextSeq"], 1);
-    s.droppedRumours = clampInt<std::uint32_t>(root["droppedRumours"]);
+    s.now = clampInt<std::uint32_t>(bad, root["now"]);
+    s.nextSeq = clampInt<std::uint32_t>(bad, root["nextSeq"], 1);
+    s.droppedRumours = clampInt<std::uint32_t>(bad, root["droppedRumours"]);
 
     const JsonValue npcs = root["npcs"];
     s.npcs.reserve(npcs.size());
@@ -203,46 +209,46 @@ bool decodeNpcMemorySave(std::string_view text, NpcMemorySave& out, std::string*
         if (!v["id"].isString()) return fail(error, "npc save: an npc has no id");
         NpcMemorySaveNpc& n = s.npcs.emplace_back();
         n.id = std::string(v["id"].string());
-        for (std::uint32_t a = 0; a < 3; ++a) n.axes[a] = clampInt<std::int16_t>(v["axes"][a]);
-        n.axesTs = clampInt<std::uint32_t>(v["axesTs"]);
+        for (std::uint32_t a = 0; a < 3; ++a) n.axes[a] = clampInt<std::int16_t>(bad, v["axes"][a]);
+        n.axesTs = clampInt<std::uint32_t>(bad, v["axesTs"]);
         for (std::uint32_t l = 0; l < n.offsets.size(); ++l) {
-            for (std::uint32_t a = 0; a < 3; ++a) n.offsets[l][a] = clampInt<std::int8_t>(v["offsets"][l][a]);
-            n.offsetsTs[l] = clampInt<std::uint32_t>(v["offsetsTs"][l]);
+            for (std::uint32_t a = 0; a < 3; ++a) n.offsets[l][a] = clampInt<std::int8_t>(bad, v["offsets"][l][a]);
+            n.offsetsTs[l] = clampInt<std::uint32_t>(bad, v["offsetsTs"][l]);
         }
-        for (std::uint32_t l = 0; l < n.stance.size(); ++l) n.stance[l] = clampInt<std::uint8_t>(v["stance"][l]);
+        for (std::uint32_t l = 0; l < n.stance.size(); ++l) n.stance[l] = clampInt<std::uint8_t>(bad, v["stance"][l]);
         n.dead = v["dead"].boolean();
-        n.deadAt = clampInt<std::uint32_t>(v["deadAt"]);
+        n.deadAt = clampInt<std::uint32_t>(bad, v["deadAt"]);
         const JsonValue mem = v["mem"];
         for (std::uint32_t m = 0; m < mem.size(); ++m) {
             const JsonValue e = mem[m];
             if (!e["type"].isString()) return fail(error, "npc save: a memory has no type");
             NpcMemorySaveEntry& o = n.mem.emplace_back();
             o.type = std::string(e["type"].string());
-            o.seq = clampInt<std::uint32_t>(e["seq"]);
-            o.deedMinute = clampInt<std::uint32_t>(e["deedMinute"]);
-            o.ts = clampInt<std::uint32_t>(e["ts"]);
-            o.learned = clampInt<std::uint32_t>(e["learned"]);
-            o.place = clampInt<std::uint16_t>(e["place"]);
-            o.s0 = clampInt<std::int16_t>(e["s0"]);
-            o.hops = clampInt<std::uint8_t>(e["hops"]);
-            o.count = clampInt<std::uint8_t>(e["count"]);
-            o.lead = clampInt<std::uint8_t>(e["lead"], kNoLead);
-            o.leads = clampInt<std::uint8_t>(e["leads"]);  // absent in older text: npcApplySave rebuilds it
+            o.seq = clampInt<std::uint32_t>(bad, e["seq"]);
+            o.deedMinute = clampInt<std::uint32_t>(bad, e["deedMinute"]);
+            o.ts = clampInt<std::uint32_t>(bad, e["ts"]);
+            o.learned = clampInt<std::uint32_t>(bad, e["learned"]);
+            o.place = clampInt<std::uint16_t>(bad, e["place"]);
+            o.s0 = clampInt<std::int16_t>(bad, e["s0"]);
+            o.hops = clampInt<std::uint8_t>(bad, e["hops"]);
+            o.count = clampInt<std::uint8_t>(bad, e["count"]);
+            o.lead = clampInt<std::uint8_t>(bad, e["lead"], kNoLead);
+            o.leads = clampInt<std::uint8_t>(bad, e["leads"]);  // absent in older text: npcApplySave rebuilds it
             o.pinned = e["pinned"].boolean();
         }
         const JsonValue agg = v["aggregates"];
         for (std::uint32_t a = 0; a < agg.size(); ++a) {
             if (!agg[a]["tag"].isString()) return fail(error, "npc save: an aggregate has no tag");
             NpcTagAggregate g;
-            g.count = clampInt<std::uint16_t>(agg[a]["count"]);
-            g.lastMinute = clampInt<std::uint32_t>(agg[a]["lastMinute"]);
+            g.count = clampInt<std::uint16_t>(bad, agg[a]["count"]);
+            g.lastMinute = clampInt<std::uint32_t>(bad, agg[a]["lastMinute"]);
             n.aggregates.emplace_back(std::string(agg[a]["tag"].string()), g);
         }
-        for (std::uint32_t q = 0; q < v["seen"].size(); ++q) n.seen.push_back(clampInt<std::uint32_t>(v["seen"][q]));
+        for (std::uint32_t q = 0; q < v["seen"].size(); ++q) n.seen.push_back(clampInt<std::uint32_t>(bad, v["seen"][q]));
         const JsonValue recent = v["recent"];
         for (std::uint32_t r = 0; r < recent.size(); ++r) {
             if (!recent[r]["type"].isString()) return fail(error, "npc save: a recent deed has no type");
-            n.recent.emplace_back(std::string(recent[r]["type"].string()), clampInt<std::uint32_t>(recent[r]["minute"]));
+            n.recent.emplace_back(std::string(recent[r]["type"].string()), clampInt<std::uint32_t>(bad, recent[r]["minute"]));
         }
     }
     const JsonValue deeds = root["deeds"];
@@ -252,12 +258,12 @@ bool decodeNpcMemorySave(std::string_view text, NpcMemorySave& out, std::string*
         NpcMemorySaveDeed& d = s.deeds.emplace_back();
         d.type = std::string(v["type"].string());
         d.victim = std::string(v["victim"].string());
-        d.seq = clampInt<std::uint32_t>(v["seq"]);
-        d.minute = clampInt<std::uint32_t>(v["minute"]);
-        d.place = clampInt<std::uint16_t>(v["place"]);
-        d.district = clampInt<std::uint16_t>(v["district"]);
-        d.lead = clampInt<std::uint8_t>(v["lead"], kNoLead);
-        d.flags = clampInt<std::uint8_t>(v["flags"]);
+        d.seq = clampInt<std::uint32_t>(bad, v["seq"]);
+        d.minute = clampInt<std::uint32_t>(bad, v["minute"]);
+        d.place = clampInt<std::uint16_t>(bad, v["place"]);
+        d.district = clampInt<std::uint16_t>(bad, v["district"]);
+        d.lead = clampInt<std::uint8_t>(bad, v["lead"], kNoLead);
+        d.flags = clampInt<std::uint8_t>(bad, v["flags"]);
         for (std::uint32_t k = 0; k < v["witnesses"].size(); ++k)
             d.witnesses.emplace_back(v["witnesses"][k].string());
     }
@@ -267,22 +273,23 @@ bool decodeNpcMemorySave(std::string_view text, NpcMemorySave& out, std::string*
         if (!v["target"].isString()) return fail(error, "npc save: a rumour has no target");
         NpcMemorySaveRumour& r = s.rumours.emplace_back();
         r.target = std::string(v["target"].string());
-        r.seq = clampInt<std::uint32_t>(v["seq"]);
-        r.due = clampInt<std::uint32_t>(v["due"]);
-        r.hops = clampInt<std::uint8_t>(v["hops"], 1);
-        r.lead = clampInt<std::uint8_t>(v["lead"], kNoLead);
-        r.closeness = clampInt<std::uint8_t>(v["closeness"]);
+        r.seq = clampInt<std::uint32_t>(bad, v["seq"]);
+        r.due = clampInt<std::uint32_t>(bad, v["due"]);
+        r.hops = clampInt<std::uint8_t>(bad, v["hops"], 1);
+        r.lead = clampInt<std::uint8_t>(bad, v["lead"], kNoLead);
+        r.closeness = clampInt<std::uint8_t>(bad, v["closeness"]);
     }
     const JsonValue exps = root["expectations"];
     for (std::uint32_t i = 0; i < exps.size(); ++i) {
         if (!exps[i]["id"].isString()) return fail(error, "npc save: an expectation has no id");
-        s.expectations.emplace_back(std::string(exps[i]["id"].string()), clampInt<std::uint8_t>(exps[i]["state"]));
+        s.expectations.emplace_back(std::string(exps[i]["id"].string()), clampInt<std::uint8_t>(bad, exps[i]["state"]));
     }
     const JsonValue said = root["said"];
     for (std::uint32_t i = 0; i < said.size(); ++i) {
         if (!said[i]["line"].isString()) return fail(error, "npc save: a said line has no id");
-        s.said.emplace_back(std::string(said[i]["line"].string()), clampInt<std::uint32_t>(said[i]["at"]));
+        s.said.emplace_back(std::string(said[i]["line"].string()), clampInt<std::uint32_t>(bad, said[i]["at"]));
     }
+    if (bad) return fail(error, "npc save: a number has the wrong type");
     out = std::move(s);
     return true;
 }

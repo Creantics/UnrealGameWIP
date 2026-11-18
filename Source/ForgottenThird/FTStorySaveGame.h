@@ -3,7 +3,8 @@
 // The story save slot: Core's JSON text for a StorySave (ftcore::encodeStorySave) in one string.
 // Save with UGameplayStatics::SaveGameToSlot as usual; the text format, not the UPROPERTY layout,
 // is what survives changes to the story data. The text (format 2) also carries which beats the
-// player has seen, for "skip only seen lines", and the party's xp and gold.
+// player has seen, for "skip only seen lines", and the party's xp and gold. Beside it: the story state's
+// block and the important NPCs' memories (NpcSaveJson, from UFTNpcSubsystem).
 
 #include "CoreMinimal.h"
 #include "GameFramework/SaveGame.h"
@@ -31,14 +32,16 @@ public:
 	UPROPERTY(SaveGame)
 	TArray<uint8> StoryBlock;
 
-	// Stores the subsystem's current story progress, and the story state's block when its subsystem is
-	// there. False (SaveJson and StoryBlock untouched) when the story isn't on a scene, or when the state
+	// Stores the subsystem's current story progress, the story state's block when its subsystem is there,
+	// and the NPC memory when the NPC tables are loaded (else NpcSaveJson keeps what it held). False
+	// (SaveJson, NpcSaveJson and StoryBlock untouched) when the story isn't on a scene, or when the state
 	// refused to encode and has no block for this position (UFTStoryStateSubsystem::EncodeBlock).
 	UFUNCTION(BlueprintCallable, Category = "Story")
 	bool CaptureFrom(const UFTStorySubsystem* Story);
 
 	// Loads SaveJson into the subsystem, then StoryBlock into the story state (a refused or empty block: a
-	// new game's state, with a warning for a refused one; it never fails the load). False when the text is
+	// new game's state, with a warning for a refused one; it never fails the load), then NpcSaveJson into
+	// the NPC memory (empty: nobody remembers; damaged: nobody remembers, with a warning; never fails the load). False when the text is
 	// empty or invalid (OutError says why; the story and its state are untouched) or the saved scene no
 	// longer exists (the story is then stopped, the state untouched).
 	UFUNCTION(BlueprintCallable, Category = "Story")

@@ -124,7 +124,13 @@ TEST_CASE("npc save text: damaged text is refused and leaves the save untouched"
     s.now = 77;
     for (const char* bad : {"", "[]", "{\"format\":9}", "{\"now\":1}", "{\"format\":1}", "{\"format\":1,\"npcs\":{}}",
                             "{\"format\":1,\"npcs\":[{\"axes\":[1,2,3]}]}",
-                            "{\"format\":1,\"npcs\":[],\"deeds\":[{\"seq\":1}]}", "{\"format\":1,\"npcs\":[],\"said\":[{\"at\":2}]}"}) {
+                            "{\"format\":1,\"npcs\":[],\"deeds\":[{\"seq\":1}]}", "{\"format\":1,\"npcs\":[],\"said\":[{\"at\":2}]}",
+                            // truncated text, formats that aren't a supported integer, numbers of the wrong type
+                            "{\"format\":1,\"npcs\":[{\"id\":\"a\"", "{\"format\":\"1\",\"npcs\":[]}",
+                            "{\"format\":0,\"npcs\":[]}", "{\"format\":-1,\"npcs\":[]}", "{\"format\":1.5,\"npcs\":[]}",
+                            "{\"format\":1,\"now\":\"x\",\"npcs\":[]}", "{\"format\":1,\"now\":null,\"npcs\":[]}",
+                            "{\"format\":1,\"now\":2.5,\"npcs\":[]}", "{\"format\":1,\"npcs\":[{\"id\":\"a\",\"axes\":[\"a\",0,0]}]}",
+                            "{\"format\":1,\"npcs\":[],\"deeds\":[{\"type\":\"help\",\"seq\":true}]}"}) {
         INFO(bad);
         std::string err;
         CHECK_FALSE(decodeNpcMemorySave(bad, s, &err));
@@ -137,6 +143,37 @@ TEST_CASE("npc save text: damaged text is refused and leaves the save untouched"
     REQUIRE(s.npcs.size() == 1u);
     CHECK(s.npcs[0].axes[0] == 32767);
     CHECK(s.npcs[0].axes[1] == -32768);
+}
+
+TEST_CASE("npc save text: an empty save and awkward ids survive the round trip") {
+    SUBCASE("the default save") {
+        const NpcMemorySave empty;
+        const std::string text = encodeNpcMemorySave(empty);
+        NpcMemorySave read;
+        read.now = 5;
+        std::string err;
+        REQUIRE(decodeNpcMemorySave(text, read, &err));
+        CHECK(read.format == empty.format);
+        CHECK(read.now == empty.now);
+        CHECK(read.nextSeq == empty.nextSeq);
+        CHECK(read.npcs.empty());
+        CHECK(read.deeds.empty());
+        CHECK(encodeNpcMemorySave(read) == text);
+    }
+    SUBCASE("ids with quotes, backslashes and control characters") {
+        NpcMemorySave s;
+        const std::string id = std::string("a\"b\\c\n\x01") + "d";
+        s.npcs.emplace_back().id = id;
+        s.said.emplace_back(id, 3u);
+        const std::string text = encodeNpcMemorySave(s);
+        NpcMemorySave read;
+        REQUIRE(decodeNpcMemorySave(text, read));
+        REQUIRE(read.npcs.size() == 1u);
+        CHECK(read.npcs[0].id == id);
+        REQUIRE(read.said.size() == 1u);
+        CHECK(read.said[0].first == id);
+        CHECK(encodeNpcMemorySave(read) == text);
+    }
 }
 
 TEST_CASE("npc lines: a fact clause reads a story fact through the fact source") {
