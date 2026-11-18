@@ -203,3 +203,15 @@ TStatId UFTRainSubsystem::GetStatId() const
 {
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UFTRainSubsystem, STATGROUP_Tickables);
 }
+
+void UFTRainSubsystem::SetTimeScale(float Scale)
+{
+	const float Rate = FMath::Clamp(FMath::IsFinite(Scale) ? Scale : 1.f, 0.f, 1.f);
+	for (UNiagaraComponent* System : {Streaks.Get(), Splash.Get()})
+	{
+		if (System)
+		{
+			System->SetCustomTimeDilation(Rate);
+		}
+	}
+}

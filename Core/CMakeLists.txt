@@ -54,6 +54,7 @@ add_library(ftcore STATIC
     src/ComboSequence.cpp
     src/Conductor.cpp
     src/Cutscene.cpp
+    src/SpecialCine.cpp
     src/DefenceTimeline.cpp
     src/WeakPoint.cpp
     src/Dialogue.cpp
@@ -393,6 +394,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_combo.cpp
         tests/test_conductor.cpp
         tests/test_cutscene.cpp
+        tests/test_special_cine.cpp
         tests/test_defence.cpp
         tests/test_weakpoint.cpp
         tests/test_dialogue.cpp

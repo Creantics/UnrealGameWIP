@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "moves": [
+    {"id": "devin_special_01", "shots": "special_devin_01", "fstop": 2.8, "blend_out": 0.25,
+     "near": "special_devin_01_near", "near_within": 4.65}
+  ]
+}

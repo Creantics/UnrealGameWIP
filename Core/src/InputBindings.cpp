@@ -518,7 +518,9 @@ constexpr InputHintEntry kFieldHint[] = {
 // PartnerOrder: only -ArenaPartner has a partner to order (off by default), so no controls line names it yet.
 // Backlog: a reading screen's key, not a fight's or the field's, so neither controls line names it.
 // Special: its own prompt row names its key while it is ready (UiSpecial.h); a controls line would show it unready.
-constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::PartnerOrder, A::Backlog, A::Special};
+// Read: the arena host names it only as the second button of the special's pad chord ("shoulders_chord"), shown by
+// the special's prompt row ("LB+RB"); no controls line names Read itself.
+constexpr InputAction kUnhinted[] = {A::Map, A::Pause, A::TakeHalf, A::PartnerOrder, A::Backlog, A::Special, A::Read};
 static_assert(std::size(kUnhinted) > 0);
 
 struct KeyLabel {
