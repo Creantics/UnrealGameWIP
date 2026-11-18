@@ -990,7 +990,16 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		CutText += FString::Printf(TEXT("%s%u %.2f-%.2f"), C ? TEXT(", ") : TEXT(""), Cuts[C].shot + 1, Cuts[C].in, Cuts[C].out);
 		if (Cuts[C].skipped)
 		{
-			CutText += FString::Printf(TEXT(" (over %u skipped)"), Cuts[C].skipped);
+			// The shots it plays over, by number.
+			CutText += TEXT(" (skips");
+			for (uint32 T = 0; T < Move.size(); ++T)
+			{
+				if (T != Cuts[C].shot && ftcore::specialCineShownShot(Move, T, SpecialPlayer.fixes()) == Cuts[C].shot)
+				{
+					CutText += FString::Printf(TEXT(" %u"), T + 1);
+				}
+			}
+			CutText += TEXT(")");
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special cut list: %u cuts for %u shots, %d skipped: %s."), CutCount, Move.size(),
