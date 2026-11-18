@@ -699,9 +699,10 @@ private:
 	// The skip press while the move plays (the special's own press again, or Interact): Core cuts to its end when it is
 	// skippable (seen once), else logged once.
 	void PollSpecialSkip();
-	// The lead's move clip loaded at the fight's begin (GiveSpecials) and after a lead switch (at the next press); false
-	// when its move has no clip asset for the worn body.
-	bool LoadSpecialClip(const std::string& MoveId);
+	// The controlled lead's move clip, loaded when its weapons are put on (the figures' spawn, a lead switch); a press
+	// for a lead it was not loaded for loads it then. False when the lead has no move, no body yet, or no clip asset
+	// for the worn body.
+	bool LoadSpecialClip();
 	// Puts the clip in (or takes it out of) the lead's special action slot; TickSpecial plays it each frame.
 	void PlaySpecialClip(bool bOn);
 	// -ArenaSpecialPause's ticker removed and the game resumed, when it is still waiting (an end or a teardown).

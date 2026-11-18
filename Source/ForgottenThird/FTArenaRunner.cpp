@@ -1021,6 +1021,7 @@ void UFTArenaRunner::SpawnFigures(const FFTLeadLook* Lead)
 		{
 			LeadWeapons.Begin(PlayerFigure, *Lead, Def.fighter);
 			PlayerFigure->SetJumpTiming(Def.fighter.jumpStartup, Def.fighter.jumpAir, Def.fighter.jumpLandLock);
+			LoadSpecialClip(); // its special's clip, for the body it wears
 		}
 	}
 	if (PC)
@@ -8861,6 +8862,7 @@ void UFTArenaRunner::SwapLeadFigures(EHandoff Handoff)
 		const ftcore::ArenaFighter& Kit = bFiguresSwapped ? Def.partnerKit : Def.fighter;
 		LeadWeapons.Begin(PlayerFigure, *PlayerLook, Kit);
 		PlayerFigure->SetJumpTiming(Kit.jumpStartup, Kit.jumpAir, Kit.jumpLandLock);
+		LoadSpecialClip(); // the lead now controlled: its special's clip
 	}
 	if (PlayerFigure)
 	{

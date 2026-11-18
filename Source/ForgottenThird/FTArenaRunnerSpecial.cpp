@@ -25,6 +25,7 @@
 #include "CollisionShape.h"
 #include "Containers/Ticker.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "FTArenaFighter.h"
 #include "FTInputBindings.h"
@@ -107,7 +108,8 @@ void UFTArenaRunner::ReadSpecialTable()
 	SpecialTestUntil = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialTest="), SpecialTestAt);
 	bSpecialShots = FParse::Param(Cmd, TEXT("ArenaSpecialShots"));
-	bSpecialClipStandIn = FParse::Param(Cmd, TEXT("ArenaSpecialNoClip"));
+	// A test press (-ArenaSpecialTest) plays with no clip too: the check runs on a checkout without the lead's clip.
+	bSpecialClipStandIn = FParse::Param(Cmd, TEXT("ArenaSpecialNoClip")) || SpecialTestAt >= 0.f;
 	SpecialPauseAt = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialPause="), SpecialPauseAt);
 #endif
@@ -225,23 +227,37 @@ void UFTArenaRunner::GiveSpecials()
 	const ftcore::ArenaSpecialRules* Mine = ArenaSpecials.forLead(Fighter);
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: specials: %s (move %s), partner %s."), UTF8_TO_TCHAR(Fighter.c_str()),
 		Mine ? UTF8_TO_TCHAR(std::string(Mine->idView()).c_str()) : TEXT("none"), Partner.empty() ? TEXT("none") : UTF8_TO_TCHAR(Partner.c_str()));
-	LoadSpecialClip(Mine ? std::string(Mine->idView()) : std::string());
 }
 
-bool UFTArenaRunner::LoadSpecialClip(const std::string& MoveId)
+bool UFTArenaRunner::LoadSpecialClip()
 {
+	if (bSpecialOn)
+	{
+		return SpecialClip != nullptr; // not mid-move (Core refuses a lead switch while frozen)
+	}
 	PlaySpecialClip(false);
 	SpecialClip = nullptr;
 	bSpecialNoClipLogged = false;
-	SpecialClipFor = PlayerLook ? PlayerLook->Name : FString();
-	const ftcore::SpecialCineMove* Move = MoveId.empty() ? nullptr : SpecialTable.find(MoveId);
+	SpecialClipFor.Reset();
+	const ftcore::ArenaSpecialRules* Rules =
+		bArenaSpecials && PlayerLook ? ArenaSpecials.forLead(std::string(TCHAR_TO_UTF8(*PlayerLook->Name.ToLower()))) : nullptr;
+	const ftcore::SpecialCineMove* Move = Rules ? SpecialTable.find(std::string(Rules->idView())) : nullptr;
+	if (!Move || Move->empty() || Move->clip().empty())
+	{
+		SpecialClipFor = PlayerLook ? PlayerLook->Name : FString(); // no move or no shots: nothing to find
+		return false;
+	}
 	const AFTArenaFighter* Lead = PlayerFigure.Get();
 	const USkeletalMeshComponent* Skin = Lead ? Lead->GetLeadSkin() : nullptr;
 	const USkeletalMesh* Body = Skin ? Skin->GetSkeletalMeshAsset() : nullptr;
-	if (!Move || Move->empty() || Move->clip().empty() || !Body || SpecialClipFor.IsEmpty())
+	if (!Body)
 	{
+		// Left unloaded: the next press tries again.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special: %s wears no body yet: its clip is looked for at the press."),
+			PlayerLook ? *PlayerLook->Name : TEXT("the lead"));
 		return false;
 	}
+	SpecialClipFor = PlayerLook->Name;
 	// From the worn body's folder up to the lead's own (/Game/Characters/<Name>): <folder>/Anims/Special/<clip>, then
 	// <folder>/Anims/<clip>. Loaded here, at the fight's begin or a lead switch, never at the press.
 	const FString Name = UTF8_TO_TCHAR(std::string(Move->clip()).c_str());
@@ -445,7 +461,7 @@ void UFTArenaRunner::PressSpecial(ftcore::ArenaInput& In)
 		bArenaSpecials && PlayerLook ? ArenaSpecials.forLead(std::string(TCHAR_TO_UTF8(*PlayerLook->Name.ToLower()))) : nullptr;
 	if (Rules && PlayerLook && SpecialClipFor != PlayerLook->Name)
 	{
-		LoadSpecialClip(std::string(Rules->idView())); // the lead switched since the clip was found
+		LoadSpecialClip(); // not looked for yet for this lead (a hitch here, logged by the load)
 	}
 	const ftcore::SpecialCineMove* Shots = Rules ? SpecialTable.find(std::string(Rules->idView())) : nullptr;
 	if (Shots && !Shots->empty() && !SpecialClip && !bSpecialClipStandIn && !Fight.frozen())
@@ -632,7 +648,8 @@ void UFTArenaRunner::PollSpecialSkip()
 {
 	const APlayerController* PC = GetPC();
 	using ftcore::InputAction;
-	const bool bPressed = bSpecialPress || (PC && !bAutoPlay && !UFTPauseSubsystem::IsBlocking(this)
+	// Not the press that closed the pause menu (Interact or its own key resumes it).
+	const bool bPressed = bSpecialPress || (PC && !bAutoPlay && !UFTPauseSubsystem::IsBlocking(this) && !UFTPauseSubsystem::IsJustResumed(this)
 		&& (FTInputBindings::WasJustPressed(*PC, InputAction::Special) || FTInputBindings::WasJustPressed(*PC, InputAction::Interact)));
 	bSpecialPress = false; // a press while one plays is a skip, never a second special
 	if (!bPressed)
@@ -845,6 +862,12 @@ bool UFTArenaRunner::BeginSpecial()
 		SpecialShotsBlocked, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
 		SpecialFreeze.BodyCount(), SpecialFreeze.ClothCount(), SpecialBeginMs, bSameTarget ? TEXT("") : TEXT(" (again, for Core's target)"),
 		V.travel, SpecialTravel * 100.f, SpecialBack, SpecialLimit, V.origin.x, V.origin.y, V.end.x, V.end.y, SpecialStageAt.travel, Off);
+	if (Off > 0.05f)
+	{
+		// Core fixed its end at the press; the host can only say so (a corrected travel would need Core to take one now).
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special %s: Core's end is %.2f m from the clear end along its way (%s; limited by %s)."),
+			*Id, Off, bSameTarget ? TEXT("the press's target") : TEXT("Core took another target"), SpecialLimit);
+	}
 	if (SpecialClip)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the lead plays %s (%.2f s) on the shots' clock."), *Id, *SpecialClip->GetName(),
