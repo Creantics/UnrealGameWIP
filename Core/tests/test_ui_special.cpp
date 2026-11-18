@@ -219,3 +219,14 @@ TEST_CASE("special prompt: the style's switch (the row per world on); the old op
     CHECK_FALSE(importUiStyle(R"({"special": {"third_call": true}})", bad, &err)); // ruled 2026-11-17: no switch
     CHECK_FALSE(importUiStyle(R"({"worlds": {"lattice": {"special_prompt": "yes"}}})", bad, &err));
 }
+
+TEST_CASE("special prompt: reduce flashes drops the pulse only; the fade stays") {
+    UiSpecialState s;
+    const UiSpecialInput ready{true, UiSpecialWhy::None};
+    UiSpecialView v = uiSpecialStep(s, true, ready, 0.016f, false, true);
+    CHECK(v.drawn);
+    CHECK(v.pulse < 0.f);
+    v = uiSpecialStep(s, true, ready, 0.1f, false, true);
+    CHECK(v.alpha == doctest::Approx(0.1f / kUiSpecialFadeIn));
+    CHECK(v.pulse < 0.f);
+}
