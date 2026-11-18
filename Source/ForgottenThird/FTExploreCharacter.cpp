@@ -58,6 +58,7 @@
 #include "Misc/PackageName.h"
 #include "ForgottenThird.h"
 #include "FTRim.h"
+#include "FTGcPacingSubsystem.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
@@ -503,7 +504,70 @@ void AFTExploreCharacter::BeginPlay()
 			GetWorldTimerManager().SetTimer(ShotTimer, this, &AFTExploreCharacter::StepPortraitShots, ShotEvery, true, Delay);
 		}
 	}
+#if !UE_BUILD_SHIPPING
+	// -StillCam=x,y,z,yaw,pitch,fov (-WorldStartAt's units, ftcore/StillCam.h): a still of a place, not of the lead. The
+	// view holds that fixed point from the first tenth of a second (so streaming and lighting settle on it), and the lead
+	// and the party are hidden in game (hidden, they cast no shadow). The portrait writer (-ExplorePortrait
+	// -ExplorePortraitShot=) saves as usual; its yaws turn the boom, not this camera. Review only.
+	FString StillCamText;
+	if (FParse::Value(FCommandLine::Get(), TEXT("StillCam="), StillCamText, false))
+	{
+		StillCamView = ftcore::parseStillCam(FT::ToUtf8(StillCamText));
+		if (StillCamView.on)
+		{
+			bPartyHidden = true;
+			SetActorHiddenInGame(true);
+			GetWorldTimerManager().SetTimer(StillCamTimer, this, &AFTExploreCharacter::HoldStillCam, 0.25f, true, 0.1f);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("StillCam: -StillCam=%s isn't x,y,z,yaw,pitch,fov (pitch -89..89, fov 10..150); the view is the usual one."),
+				*StillCamText);
+		}
+	}
+#endif
 }
+
+#if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::HoldStillCam()
+{
+	// Held every quarter second: anything that shows the lead again (a look switch) or moves the camera is undone.
+	AFTExploreDirector* D = GetDirector();
+	if (!D || !Camera)
+	{
+		return;
+	}
+	const FVector At = D->PlanToWorldCm(StillCamView.x, StillCamView.y, StillCamView.z);
+	const FRotator ViewRot(StillCamView.pitchDeg, StillCamView.yawDeg, 0.0);
+	Camera->bUsePawnControlRotation = false;
+	Camera->SetUsingAbsoluteLocation(true);
+	Camera->SetUsingAbsoluteRotation(true);
+	Camera->SetWorldLocationAndRotation(At, ViewRot);
+	Camera->SetFieldOfView(static_cast<float>(StillCamView.fovDeg));
+	SetActorHiddenInGame(true);
+	TArray<AActor*> Held;
+	GetAttachedActors(Held, true, true);
+	for (AActor* Attached : Held)
+	{
+		Attached->SetActorHiddenInGame(true);
+	}
+	// Every hold: a partner spawned after the first is hidden too (quietly; SetPartyHidden logs, so once below).
+	for (AFTPartyFollower* Follower : D->GetFollowers())
+	{
+		if (Follower && !Follower->IsHidden())
+		{
+			Follower->SetActorHiddenInGame(true);
+		}
+	}
+	if (!bStillCamHeld)
+	{
+		bStillCamHeld = true;
+		D->SetPartyHidden(true);
+		UE_LOG(LogForgottenThird, Display, TEXT("StillCam: view held at (%.0f, %.0f, %.0f) cm, yaw %.1f, pitch %.1f, fov %.1f; lead, %d attached and party hidden."),
+			At.X, At.Y, At.Z, StillCamView.yawDeg, StillCamView.pitchDeg, StillCamView.fovDeg, Held.Num());
+	}
+}
+#endif
 
 void AFTExploreCharacter::WatchFrom(USceneComponent* Root)
 {
@@ -1645,6 +1709,7 @@ void AFTExploreCharacter::TickUnstick(float DeltaSeconds)
 		{
 			PC->PlayerCameraManager->StartCameraFade(1.f, 0.f, Unstick.rules().fadeTime, FLinearColor::Black, false, false);
 		}
+		UFTGcPacingSubsystem::HiddenMoment(this, TEXT("unstick fade"));
 		return;
 	}
 	// Too steep to stand on: down the slope at slideSpeed at least (jump stays open, HandleJump).

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 using namespace ftcore;
@@ -199,6 +200,85 @@ TEST_CASE("the skirts of two buildings in one line join into one box") {
     CHECK(joinedSum == doctest::Approx(splitSum));
 }
 
+namespace {
+
+// A wall's foot at x 20 with a cliff right past it: the ground is 10 at the foot and climbs 40 m in the first metre
+// out (4 m in the first 0.1 m), then stands at 50. Under the building (x under 19.5) it lies at 4.
+double cliffPastWall(double x, double) { return x < 19.5 ? 4.0 : (x < 20.5 ? 10.0 : 50.0); }
+
+// The skirts among `made` that float, by the float check read every 0.1 m over the buildings and the skirts alone (no
+// fill or stair to hold one up).
+std::vector<std::string> floatingSkirts(const Field& f, const std::vector<MassingBox>& boxes, const std::vector<MassingBox>& made) {
+    std::vector<MassingBox> all(boxes);
+    for (const MassingBox& b : made)
+        if (b.id.rfind("PL-S-", 0) == 0) all.push_back(b);
+    const std::vector<bool> include(all.size(), true);
+    FloatSpec spec;
+    spec.sample = 0.1;
+    FloatReport r;
+    REQUIRE(findFloats(f.ground, all, include, spec, r));
+    std::vector<std::string> ids;
+    for (const FloatBox& fb : r.floating)
+        if (all[fb.box].id.rfind("PL-S-", 0) == 0) ids.push_back(all[fb.box].id + " " + std::to_string(fb.gap));
+    return ids;
+}
+
+} // namespace
+
+TEST_CASE("a skirt reaches the lowest ground under it where the ground climbs steeply off the wall") {
+    const Field f(cliffPastWall);
+    const std::vector<MassingBox> boxes = {building("BLD", 5, 15, 20, 45, 3.5, 20.0)};
+    std::vector<MassingBox> made;
+    PlinthStats stats;
+    REQUIRE(planPlinths(f.ground, boxes, {true}, kRect, {}, PlinthSpec{}, made, stats));
+    bool east = false;
+    for (const MassingBox& b : made) {
+        if (b.id.rfind("PL-S-", 0) != 0 || b.cx <= 20.0 || b.cx >= 22.5) continue;
+        east = true;
+        // The lowest ground under it is the foot's 10 m (the 4 m lies under the building): a sink under that, no deeper.
+        CHECK(b.z0 == doctest::Approx(10.0 - 0.3));
+        CHECK(b.z1 == doctest::Approx(50.0));
+    }
+    CHECK(east);
+    const std::vector<std::string> floating = floatingSkirts(f, boxes, made);
+    CHECK_MESSAGE(floating.empty(), (floating.empty() ? std::string() : floating.front()));
+}
+
+TEST_CASE("a turned building's skirts and joined skirts reach the lowest ground under them") {
+    SUBCASE("turned 30 degrees, the cliff past its +u wall") {
+        const double a = 30.0 * 3.14159265358979323846 / 180.0;
+        const Field f([a](double x, double y) {
+            const double u = (x - 30.0) * std::cos(a) + (y - 30.0) * std::sin(a);
+            return u > 6.0 ? 50.0 : 10.0;
+        });
+        MassingBox b = building("TURNED", 24, 26, 36, 34, 9.0, 20.0);
+        b.rot = 30.0;
+        const std::vector<MassingBox> boxes = {b};
+        std::vector<MassingBox> made;
+        PlinthStats stats;
+        REQUIRE(planPlinths(f.ground, boxes, {true}, kRect, {}, PlinthSpec{}, made, stats));
+        CHECK(stats.skirts > 0);
+        for (const MassingBox& m : made)
+            if (m.id.rfind("PL-S-", 0) == 0) CHECK(m.z0 >= 10.0 - 0.3 - 1e-9); // no ground node lies under 10
+        const std::vector<std::string> floating = floatingSkirts(f, boxes, made);
+        CHECK_MESSAGE(floating.empty(), (floating.empty() ? std::string() : floating.front()));
+    }
+    SUBCASE("two buildings in one line, their skirts joined and apart") {
+        const Field f(cliffPastWall);
+        const std::vector<MassingBox> boxes = {building("A", 5, 15, 20, 30, 3.5, 20.0), building("B", 5, 30, 20, 45, 3.5, 20.0)};
+        for (const bool join : {true, false}) {
+            PlinthSpec spec;
+            spec.joinSkirts = join;
+            std::vector<MassingBox> made;
+            PlinthStats stats;
+            REQUIRE(planPlinths(f.ground, boxes, {true, true}, kRect, {}, spec, made, stats));
+            CHECK(stats.skirts > 0);
+            const std::vector<std::string> floating = floatingSkirts(f, boxes, made);
+            CHECK_MESSAGE(floating.empty(), (std::string(join ? "joined: " : "apart: ") + (floating.empty() ? std::string() : floating.front())));
+        }
+    }
+}
+
 TEST_CASE("a wide pit gets a stair out, not a fill; an exempt rect drops it from the report") {
     const Field f([](double x, double y) { return (x >= 20.0 && x <= 30.0 && y >= 20.0 && y <= 30.0) ? 7.0 : 10.0; });
     std::vector<MassingBox> made;
@@ -250,4 +330,321 @@ TEST_CASE("pocketRectOf grows the boxes' bounds and cuts them to the field") {
     MassingBox low = boxes[0];
     low.z1 = 10.0;
     CHECK_FALSE(pocketBuilding(low));
+}
+
+TEST_CASE("a building raised over sloping ground floats; a foundation closes the gap") {
+    // Ground falls 0.1 m per m along x from 12 at x 0; the building's base sits at 10.5 over x 10..20 (ground 11..10).
+    const Field f([](double x, double) { return 12.0 - 0.1 * x; });
+    std::vector<MassingBox> boxes{building("B", 10.0, 10.0, 20.0, 20.0, 10.5, 16.0)};
+    // A lamp post 2 m up on the flat, a building sunk 0.5 m, and a deck out over the water elsewhere stay out of the list.
+    boxes.push_back(building("LAMP", 30.0, 30.0, 30.3, 30.3, 11.0, 15.0));
+    boxes.back().kind = "lamp";
+    boxes.push_back(building("SUNK", 40.0, 40.0, 50.0, 50.0, 12.0 - 0.1 * 50.0 - 0.5, 15.0));
+    const std::vector<bool> include(boxes.size(), true);
+    FloatReport r;
+    REQUIRE(findFloats(f.ground, boxes, include, FloatSpec{}, r));
+    CHECK(r.checked == 3);
+    REQUIRE(r.floating.size() == 2);
+    CHECK(r.floating[0].box == 1); // the lamp: 11 over ground 9 (largest first)
+    CHECK(r.floating[0].gap == doctest::Approx(2.0).epsilon(0.02));
+    CHECK_FALSE(r.floating[0].building);
+    CHECK(r.floating[1].box == 0);
+    CHECK(r.floating[1].gap == doctest::Approx(0.5).epsilon(0.05)); // over ground 10 at x 20
+    CHECK(r.floating[1].x == doctest::Approx(20.0).epsilon(0.01));
+    CHECK(r.floating[1].building);
+    CHECK(r.shallow == 2);
+    CHECK(r.failing == 2); // the lamp over 0.9 m, the building over 0.3 m
+    CHECK(r.crouch == 0);
+
+    FoundationPlan plan;
+    FoundationStats st;
+    REQUIRE(planFoundations(f.ground, boxes, include, nullptr, FloatSpec{}, plan, st));
+    CHECK(st.floating == 2);
+    CHECK(st.left == 0);
+    REQUIRE(st.lowered == 1);
+    REQUIRE(plan.edits.size() == 1);
+    CHECK(plan.edits[0].box == 1); // the lamp's base goes down under the ground (8.97 at x 30.3), its top kept
+    CHECK(plan.edits[0].to.z0 == doctest::Approx(8.97 - 0.3).epsilon(0.01));
+    CHECK(plan.edits[0].to.z1 == doctest::Approx(15.0));
+    REQUIRE(st.skirts == 1);
+    REQUIRE(plan.added.size() == 1);
+    CHECK(plan.added[0].id == "PL-B-1");
+    CHECK(plan.added[0].kind == "plinth");
+    CHECK(plan.wears[0] == 0); // in the building's own surface
+    CHECK(plan.added[0].z1 == doctest::Approx(10.5));
+    CHECK(plan.added[0].z0 == doctest::Approx(10.0 - 0.3).epsilon(0.01));
+    CHECK(plan.added[0].cx == doctest::Approx(15.0));
+    REQUIRE(plan.rows.size() == 2);
+    CHECK(plan.rows[0].fix == FloatFix::Lower);
+    CHECK(plan.rows[1].fix == FloatFix::Skirt);
+
+    // With the fixes in, nothing floats.
+    std::vector<MassingBox> all;
+    std::vector<bool> inc2;
+    applyFoundations(boxes, include, plan, all, inc2);
+    CHECK(all.size() == 4);
+    FloatReport r2;
+    REQUIRE(findFloats(f.ground, all, inc2, FloatSpec{}, r2));
+    CHECK(r2.floating.empty());
+    FloatOutcomes o;
+    classifyFloats(r, plan, r2, o);
+    CHECK(o.fixed == 2);
+    CHECK(o.spanned + o.failing + o.newFloats == 0);
+}
+
+TEST_CASE("the float check skips water and boxes held up by others; a building far up is snapped, not skirted") {
+    // Water (ground 0) for x under 20, 10 m ground beyond.
+    const Field f([](double x, double) { return x < 20.0 ? 0.0 : 10.0; });
+    std::vector<MassingBox> boxes{building("DECK", 5.0, 5.0, 15.0, 15.0, 1.0, 1.5)};
+    boxes.push_back(building("BASE", 30.0, 30.0, 40.0, 40.0, 9.5, 14.0));
+    boxes.push_back(building("TOP", 32.0, 32.0, 38.0, 38.0, 14.0, 20.0)); // stands on BASE
+    boxes.push_back(building("HIGH", 45.0, 45.0, 55.0, 55.0, 16.0, 22.0)); // 6 m up: too deep to found
+    const std::vector<bool> include(boxes.size(), true);
+    FloatReport r;
+    REQUIRE(findFloats(f.ground, boxes, include, FloatSpec{}, r));
+    REQUIRE(r.floating.size() == 1);
+    CHECK(r.floating[0].box == 3);
+    CHECK(r.floating[0].failing);
+    FoundationPlan plan;
+    FoundationStats st;
+    REQUIRE(planFoundations(f.ground, boxes, include, nullptr, FloatSpec{}, plan, st));
+    // 6 m up: a podium, 1 m of its own surface and terrace stone under that, never a tall skirt or a move.
+    CHECK(plan.edits.empty());
+    CHECK(st.podiums == 1);
+    REQUIRE(plan.added.size() == 2);
+    CHECK(plan.added[0].id == "PL-P-1");
+    CHECK(plan.wears[0] == 3);
+    CHECK(plan.added[0].z0 == doctest::Approx(15.0));
+    CHECK(plan.added[0].z1 == doctest::Approx(16.0));
+    CHECK(plan.added[1].id == "PL-T-2");
+    CHECK(plan.wears[1] == kFoundationTerrace);
+    CHECK(plan.added[1].z0 == doctest::Approx(10.0 - 0.3));
+    CHECK(plan.added[1].z1 == doctest::Approx(15.0));
+    // A building 1.1 m up is a crouch-under; it is founded.
+    std::vector<MassingBox> one{building("LOW", 30.0, 30.0, 40.0, 40.0, 11.1, 16.0)};
+    FloatReport r3;
+    REQUIRE(findFloats(f.ground, one, std::vector<bool>(1, true), FloatSpec{}, r3));
+    REQUIRE(r3.floating.size() == 1);
+    CHECK(r3.floating[0].crouch);
+    CHECK(r3.crouch == 1);
+    FloatSpec bad;
+    bad.sample = 0.0;
+    CHECK_FALSE(findFloats(f.ground, boxes, include, bad, r));
+}
+
+namespace {
+
+MassingBox piece(const char* id, const char* kind, double x0, double y0, double x1, double y1, double z0, double z1) {
+    MassingBox b = building(id, x0, y0, x1, y1, z0, z1);
+    b.kind = kind;
+    return b;
+}
+
+FloatSpec spanSpec(double eave = 1.5) {
+    FloatSpec s;
+    s.spanRule = true;
+    s.maxEave = eave;
+    return s;
+}
+
+FloatReport floats(const Field& f, const std::vector<MassingBox>& boxes, const FloatSpec& spec) {
+    FloatReport r;
+    REQUIRE(findFloats(f.ground, boxes, std::vector<bool>(boxes.size(), true), spec, r));
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("span rule: a deck on two piers passes; a span over 30 m, a long tail, a short pier or a floating pier fails") {
+    const Field f([](double, double) { return 10.0; });
+    // A 30 m deck 5 m up on 2 m piers at its ends: 26 m clear between them.
+    std::vector<MassingBox> boxes{piece("D", "deck", 10, 20, 40, 24, 15.0, 15.5), piece("P1", "pier", 10, 20, 12, 24, 9.7, 15.0),
+                                  piece("P2", "pier", 38, 20, 40, 24, 9.7, 15.0)};
+    FloatReport plain = floats(f, boxes, FloatSpec{});
+    REQUIRE(plain.floating.size() == 1); // held everywhere, as before: the deck floats 5 m
+    CHECK(plain.floating[0].gap == doctest::Approx(5.0));
+    FloatReport r = floats(f, boxes, spanSpec());
+    CHECK(r.floating.empty());
+    REQUIRE(r.spanned.size() == 1);
+    CHECK(r.spanned[0].box == 0);
+    CHECK(r.spanned[0].supporters == 2);
+    CHECK(r.spanned[0].span == doctest::Approx(26.0).epsilon(0.05));
+    CHECK(r.spanned[0].overhang == doctest::Approx(0.0));
+
+    SUBCASE("30 m clear passes, 32 m fails") {
+        boxes = {piece("D", "deck", 10, 20, 42, 24, 15.0, 15.5), piece("P1", "pier", 10, 20, 11, 24, 9.7, 15.0),
+                 piece("P2", "pier", 41, 20, 42, 24, 9.7, 15.0)};
+        CHECK(floats(f, boxes, spanSpec()).spanned.size() == 1);
+        boxes = {piece("D", "deck", 10, 20, 44, 24, 15.0, 15.5), piece("P1", "pier", 10, 20, 11, 24, 9.7, 15.0),
+                 piece("P2", "pier", 43, 20, 44, 24, 9.7, 15.0)};
+        r = floats(f, boxes, spanSpec());
+        REQUIRE(r.floating.size() == 1);
+        CHECK(r.floating[0].span > 30.0);
+    }
+    SUBCASE("a tail past the outer pier: 1.4 m passes, 5 m fails") {
+        boxes[0] = piece("D", "deck", 10, 20, 41.4, 24, 15.0, 15.5);
+        r = floats(f, boxes, spanSpec());
+        REQUIRE(r.spanned.size() == 1);
+        CHECK(r.spanned[0].overhang == doctest::Approx(1.4).epsilon(0.05));
+        boxes[0] = piece("D", "deck", 10, 20, 45, 24, 15.0, 15.5);
+        r = floats(f, boxes, spanSpec());
+        REQUIRE(r.floating.size() == 1);
+        CHECK(r.floating[0].overhang == doctest::Approx(5.0).epsilon(0.05));
+        CHECK(r.floating[0].x > 41.5); // its worst point is out on the tail
+    }
+    SUBCASE("a deck's own eave is 3.5 m; a gate or bridge reaching 3.5 m still fails at the 1.5 m eave") {
+        // A wing 3.4 m out sideways past the piers (y 24..27.4), as a viaduct deck's.
+        boxes[0] = piece("D", "deck", 10, 20, 40, 27.4, 15.0, 15.5);
+        r = floats(f, boxes, spanSpec());
+        REQUIRE(r.spanned.size() == 1);
+        CHECK(r.spanned[0].overhang == doctest::Approx(3.4).epsilon(0.05));
+        boxes[0] = piece("D", "deck", 10, 20, 40, 28.0, 15.0, 15.5); // 4 m out: past the deck's eave
+        r = floats(f, boxes, spanSpec());
+        REQUIRE(r.floating.size() == 1);
+        CHECK(r.floating[0].overhang == doctest::Approx(4.0).epsilon(0.05));
+        for (const char* kind : {"gate", "bridge"}) {
+            boxes[0] = piece("G", kind, 10, 20, 40, 27.5, 15.0, 15.5); // 3.5 m out
+            r = floats(f, boxes, spanSpec());
+            REQUIRE(r.floating.size() == 1);
+            CHECK(r.floating[0].overhang == doctest::Approx(3.5).epsilon(0.05));
+        }
+        FloatSpec none = spanSpec();
+        none.kindEaves.clear(); // without the deck's own eave, the 3.4 m wing fails too
+        boxes[0] = piece("D", "deck", 10, 20, 40, 27.4, 15.0, 15.5);
+        CHECK(floats(f, boxes, none).floating.size() == 1);
+        // The own eave holds only up to the kind's maxDepth (12 m): an 11.5 m rise keeps it, a 13 m rise is judged at 1.5.
+        boxes[0] = piece("D", "deck", 10, 20, 40, 27.4, 15.0, 26.5);
+        CHECK(floats(f, boxes, spanSpec()).spanned.size() == 1);
+        boxes[0] = piece("D", "deck", 10, 20, 40, 27.4, 15.0, 28.0);
+        r = floats(f, boxes, spanSpec());
+        REQUIRE(r.floating.size() == 1);
+        CHECK(r.floating[0].overhang == doctest::Approx(3.4).epsilon(0.05));
+    }
+    SUBCASE("a pier short of the base holds nothing; the fix pass raises it to the base") {
+        boxes[2].z1 = 14.5;
+        r = floats(f, boxes, spanSpec());
+        REQUIRE(r.floating.size() == 1);
+        CHECK(r.floating[0].supporters == 1);
+        FoundationPlan plan;
+        FoundationStats st;
+        REQUIRE(planFoundations(f.ground, boxes, std::vector<bool>(3, true), nullptr, FloatSpec{}, plan, st));
+        REQUIRE(plan.rows.size() == 1);
+        CHECK(plan.rows[0].fix == FloatFix::RaisePiers);
+        REQUIRE(plan.edits.size() == 1);
+        CHECK(plan.edits[0].box == 2);
+        CHECK(plan.edits[0].to.z1 == doctest::Approx(15.0));
+        std::vector<MassingBox> all;
+        std::vector<bool> inc;
+        applyFoundations(boxes, std::vector<bool>(3, true), plan, all, inc);
+        CHECK(floats(f, all, spanSpec()).spanned.size() == 1);
+    }
+    SUBCASE("a pier that floats itself holds nothing (no chains); lowered, it holds") {
+        boxes[1].z0 = 10.5;
+        boxes[2].z0 = 10.5;
+        r = floats(f, boxes, spanSpec());
+        CHECK(r.floating.size() == 3);
+        CHECK(r.passes == 3); // the piers drop out, then the deck they held, then nothing changes
+        FloatSpec noChain = spanSpec();
+        noChain.chainCheck = false;
+        CHECK(floats(f, boxes, noChain).floating.size() == 2);
+        FoundationPlan plan;
+        FoundationStats st;
+        REQUIRE(planFoundations(f.ground, boxes, std::vector<bool>(3, true), nullptr, FloatSpec{}, plan, st));
+        CHECK(st.lowered == 2); // the piers; the deck is spanned once they hold
+        REQUIRE(plan.rows.size() == 2);
+        std::vector<MassingBox> all;
+        std::vector<bool> inc;
+        applyFoundations(boxes, std::vector<bool>(3, true), plan, all, inc);
+        const FloatReport after = floats(f, all, spanSpec());
+        CHECK(after.floating.empty());
+        FloatOutcomes o;
+        classifyFloats(floats(f, boxes, FloatSpec{}), plan, after, o);
+        CHECK(o.rows.size() == 3);
+        CHECK(o.fixed == 2);
+        CHECK(o.spanned == 1);
+        CHECK(o.failing == 0);
+    }
+    SUBCASE("a wide deck on narrow piers: 3.5 m out sideways passes on the deck's own eave, fails at 1.5 m without it") {
+        boxes = {piece("D", "deck", 10, 20, 40, 30, 15.0, 15.5), piece("P1", "pier", 10, 23.5, 13, 26.5, 9.7, 15.0),
+                 piece("P2", "pier", 37, 23.5, 40, 26.5, 9.7, 15.0)};
+        CHECK(floats(f, boxes, spanSpec()).spanned.size() == 1);
+        FloatSpec noKind = spanSpec();
+        noKind.kindEaves.clear();
+        r = floats(f, boxes, noKind);
+        REQUIRE(r.floating.size() == 1);
+        CHECK(r.floating[0].overhang == doctest::Approx(3.5).epsilon(0.05));
+        CHECK(floats(f, boxes, spanSpec(3.5)).spanned.size() == 1);
+        FoundationPlan plan;
+        FoundationStats st;
+        FloatSpec planSpec;
+        planSpec.kindEaves.clear();
+        REQUIRE(planFoundations(f.ground, boxes, std::vector<bool>(3, true), nullptr, planSpec, plan, st));
+        REQUIRE(plan.rows.size() == 1);
+        CHECK(plan.rows[0].fix == FloatFix::Left); // no short pier to raise: left, by name
+        CHECK(st.left == 1);
+    }
+    SUBCASE("a wall is never spanned: held everywhere, or lowered") {
+        boxes[0].kind = "wall";
+        CHECK(floats(f, boxes, spanSpec()).floating.size() == 1);
+    }
+    SUBCASE("a pier under two short decks goes up to the higher base, and counts once") {
+        boxes = {piece("A", "deck", 10, 20, 30, 24, 15.0, 15.5), piece("B", "deck", 10, 24, 30, 28, 16.0, 16.5),
+                 piece("P", "pier", 10, 20, 12, 28, 9.7, 14.0)};
+        FoundationPlan plan;
+        FoundationStats st;
+        REQUIRE(planFoundations(f.ground, boxes, std::vector<bool>(3, true), nullptr, FloatSpec{}, plan, st));
+        REQUIRE(plan.edits.size() == 1);
+        CHECK(plan.edits[0].box == 2);
+        CHECK(plan.edits[0].to.z1 == doctest::Approx(16.0));
+        CHECK(st.piersRaised == 1);
+    }
+}
+
+TEST_CASE("span rule: a deck resting on its bank at one end is held there, like a pier") {
+    // A bank 5 m up west of x = 14; the deck lies on it, then crosses to a pier at x 38..40.
+    const Field f([](double x, double) { return x < 14.0 ? 15.0 : 10.0; });
+    std::vector<MassingBox> boxes{piece("D", "deck", 10, 20, 40, 24, 15.0, 15.5), piece("P", "pier", 38, 20, 40, 24, 9.7, 15.0)};
+    const FloatReport r = floats(f, boxes, spanSpec());
+    CHECK(r.floating.empty());
+    REQUIRE(r.spanned.size() == 1);
+    CHECK(r.spanned[0].span < 30.0);
+    CHECK(r.spanned[0].supporters == 1);
+    boxes.pop_back(); // no pier: the far end hangs 26 m past the bank
+    REQUIRE(floats(f, boxes, spanSpec()).floating.size() == 1);
+}
+
+TEST_CASE("fix pass by kind: a marking snaps, a mast drops onto its slab, a bridge gets end posts, a kit-fitted post an under-box") {
+    const Field f([](double, double) { return 10.0; });
+    std::vector<MassingBox> boxes{piece("M", "marking", 5, 5, 9, 6, 10.2, 10.8), piece("SL", "slab", 20, 20, 30, 30, 9.7, 12.0),
+                                  piece("MA", "mast", 24, 24, 25, 25, 20.0, 30.0), piece("BR", "bridge", 30, 40, 54, 43, 16.0, 17.0),
+                                  piece("PO", "post", 50, 5, 50.4, 5.4, 11.0, 16.0)};
+    const std::vector<bool> inc(boxes.size(), true);
+    std::vector<bool> keep(boxes.size(), false);
+    keep[4] = true;
+    FoundationPlan plan;
+    FoundationStats st;
+    REQUIRE(planFoundations(f.ground, boxes, inc, &keep, FloatSpec{}, plan, st));
+    CHECK(st.snapped == 1);
+    CHECK(st.dropped == 1);
+    CHECK(st.endPosts == 1);
+    CHECK(st.underBoxes == 1);
+    std::vector<MassingBox> all;
+    std::vector<bool> inc2;
+    applyFoundations(boxes, inc, plan, all, inc2);
+    CHECK(all[0].z0 == doctest::Approx(10.0)); // flat paint on the ground, as thick as it was
+    CHECK(all[0].z1 - all[0].z0 == doctest::Approx(0.6));
+    CHECK(all[2].z0 == doctest::Approx(12.0)); // down 8 m onto the slab
+    CHECK(all[2].z1 == doctest::Approx(22.0));
+    CHECK(all[4].z0 == doctest::Approx(11.0)); // the post's shape kept
+    REQUIRE(plan.added.size() == 3);
+    CHECK(plan.added[0].id == "PL-E-1");
+    CHECK(plan.added[0].z1 == doctest::Approx(16.0));
+    CHECK(plan.wears[0] == 3);
+    CHECK(plan.added[2].id == "PL-U-3");
+    CHECK(plan.added[2].z1 == doctest::Approx(11.0));
+    const FloatReport after = floats(f, all, spanSpec());
+    CHECK(after.floating.empty());
+    REQUIRE(after.spanned.size() == 1); // the bridge, 22 m clear between its posts
+    CHECK(after.spanned[0].box == 3);
+    CHECK(std::string(floatFixName(FloatFix::EndPosts)) == "end-posts");
 }

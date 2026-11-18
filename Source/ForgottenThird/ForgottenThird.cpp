@@ -12,6 +12,7 @@
 #include "Templates/UniquePtr.h"
 
 #include "ftcore/DemoBoot.h"
+#include "ftcore/StillCam.h"
 #include "ftcore/Version.h"
 
 #include <string>
@@ -133,6 +134,36 @@ void FTDemoBootSetMap(const FString& MapName)
 		++GBootGeneration;
 	}
 	GBootMapGuessed = true;
+}
+
+bool FTWeatherDry()
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	static const bool bDry = []()
+	{
+		FString Text;
+		if (!FParse::Value(FTLookSwitches(), TEXT("Weather="), Text))
+		{
+			return false;
+		}
+		bool bKnown = false;
+		const FTCHARToUTF8 Utf8(*Text);
+		const bool bIsDry = ftcore::parseWeatherForce(std::string_view(Utf8.Get(), static_cast<size_t>(Utf8.Length())), &bKnown)
+			== ftcore::WeatherForce::dry;
+		if (bIsDry)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Weather: -Weather=dry: clear for the whole run (no rain, ground wetness 0, a rain look's dry sibling)."));
+		}
+		else if (!bKnown)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Weather: -Weather=%s is not a known weather (dry); the weather is as it would be."), *Text);
+		}
+		return bIsDry;
+	}();
+	return bDry;
+#endif
 }
 
 void FTDemoBootNoteWorld(const UObject* WorldOrOuter)
