@@ -4952,32 +4952,51 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		const bool bBoomDue = bBoomRun && SwimProofHoldAt >= 0.f && SwimProofTime >= SwimProofHoldAt + 3.f
 			&& (bPartnersTread || SwimProofTime >= SwimProofHoldAt + 25.f);
 		const bool bOtherDue = !bBoomRun && !bExitRun && !bSwitchRun && ((SwimProofRejoinAt >= 0.f && SwimProofTime >= SwimProofRejoinAt + 3.f) || SwimProofTime >= 60.f);
+		// The boom line at the camera's height (the 11-18 rerun): 1 m in front of the camera toward the arm's root, along
+		// the line the probe sweeps, from the arm's unfixed camera spot (so the probe's own pull-in does not move it).
+		auto BoomLineSpot = [this]()
+		{
+			const FVector Eye = Boom ? Boom->GetUnfixedCameraPosition() : Camera->GetComponentLocation();
+			const FVector Root = Boom ? Boom->GetComponentLocation() + Boom->TargetOffset : GetActorLocation();
+			const FVector2D Along = FVector2D(Root.X - Eye.X, Root.Y - Eye.Y).GetSafeNormal();
+			return FVector(Eye.X + Along.X * 100.0, Eye.Y + Along.Y * 100.0, Eye.Z);
+		};
 		if (SwimProofSweep < 0.f && (bOtherDue || bBoomDue))
 		{
 			SwimProofSweep = 0.f;
 			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: camera sweep starts at %.1f s."), *SwimProofKind, SwimProofTime);
 			if (bBoomRun && Camera)
 			{
-				// Item 5 forced (ruled 11-18): slot 0 on the sweep circle 90 deg ahead of the camera (the yaw turns +, and the
-				// boom turns with it about its root), so the camera passes through its body; slot 1 at 270 deg, a second pass.
+				// Item 5, the 11-18 rerun: slot 0 ON the boom line at the camera's height, its middle 1 m in front of the camera,
+				// kept there each tick while the camera turns, so the boom points through its body all the way round; slot 1 on
+				// the sweep circle 270 deg ahead (the yaw turns +, the boom with it about its root), so the camera passes over
+				// it. The sweep waits 0.3 s after slot 0 is put there.
 				const FVector Eye = Camera->GetComponentLocation();
 				const FVector Pivot = Boom ? Boom->GetComponentLocation() : GetActorLocation();
-				const FVector Spots[2] = {Pivot + FRotator(0.0, 90.0, 0.0).RotateVector(Eye - Pivot), Pivot + FRotator(0.0, 270.0, 0.0).RotateVector(Eye - Pivot)};
-				const TCHAR* Names[2] = {TEXT("on the sweep circle 90 deg ahead"), TEXT("on the sweep circle 270 deg ahead")};
+				const FVector Spot1 = Pivot + FRotator(0.0, 270.0, 0.0).RotateVector(Eye - Pivot);
+				const FVector Line = BoomLineSpot();
+				const TCHAR* Names[2] = {TEXT("on the boom line 1 m in front of the camera at its height"), TEXT("on the sweep circle 270 deg ahead")};
 				for (int32 I = 0; I < 2 && I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
 				{
 					AFTPartyFollower* Partner = WaterFollowers[I].Get();
-					const bool bHeld = Partner && Partner->HoldForProof(FVector2D(Spots[I].X, Spots[I].Y));
+					const bool bHeld = Partner && (I == 0 ? Partner->HoldForProofAt(Line) : Partner->HoldForProof(FVector2D(Spot1.X, Spot1.Y)));
+					bSwimProofBoomLine = bSwimProofBoomLine || (I == 0 && bHeld);
 					SwimProofBoomHeld += bHeld ? 1 : 0;
 					SwimProofBoomWhere += FString::Printf(TEXT("%sslot %d %s %s"), I > 0 ? TEXT("; ") : TEXT(""), I, bHeld ? TEXT("held") : TEXT("NOT held"), Names[I]);
 				}
+				SwimProofBoomSettle = 0.3f;
 				const AFTPartyFollower* First = WaterFollowers[0].Get();
-				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: camera at (%.0f, %.0f, %.0f), %.0f cm from the lead, %.0f cm above slot 0's feet (the draft is %.0f cm); probe %s; %s."),
-					Eye.X, Eye.Y, Eye.Z, FVector::Dist(Eye, GetActorLocation()), First ? Eye.Z - First->GetActorLocation().Z : -1.0, ftcore::kWaterSwimDraft * 100.f,
-					Boom && Boom->bDoCollisionTest ? TEXT("on") : TEXT("off"), *SwimProofBoomWhere);
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: camera at (%.0f, %.0f, %.0f), %.0f cm from the lead (%.0f cm in plan), arm %.0f cm; boom line spot (%.0f, %.0f, %.0f), slot 0's feet %.0f cm under the camera; probe %s (channel %d); %s."),
+					Eye.X, Eye.Y, Eye.Z, FVector::Dist(Eye, GetActorLocation()), FVector::Dist2D(Eye, GetActorLocation()), Boom ? Boom->TargetArmLength : -1.f,
+					Line.X, Line.Y, Line.Z, First ? Eye.Z - First->GetActorLocation().Z : -1.0,
+					Boom && Boom->bDoCollisionTest ? TEXT("on") : TEXT("off"), Boom ? static_cast<int32>(Boom->ProbeChannel.GetValue()) : -1, *SwimProofBoomWhere);
 			}
 		}
-		if (SwimProofSweep >= 0.f && SwimProofSweep < 360.f && Controller)
+		if (SwimProofBoomSettle > 0.f)
+		{
+			SwimProofBoomSettle -= DeltaSeconds;
+		}
+		else if (SwimProofSweep >= 0.f && SwimProofSweep < 360.f && Controller)
 		{
 			const float Turn = FMath::Min(30.f * DeltaSeconds, 360.f - SwimProofSweep);
 			SwimProofSweep += Turn;
@@ -4988,8 +5007,19 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		// Item 5, logged only (no fix): while the sweep turns, the camera's distance to the nearest bone of the nearest
 		// partner's body (the followers' meshes have no collision to measure to; the skin is ~10-20 cm out from the bones),
 		// and whether any of that partner's meshes (body or worn pieces) is drawn. Under 50 cm and drawn is the clip.
-		const bool bSweeping = SwimProofSweep >= 0.f && SwimProofSweep < 360.f;
+		// Slot 0 kept on the boom line each tick (the rerun), the settle included.
+		if (bBoomRun && bSwimProofBoomLine && !bSwimProofBoomLost && SwimProofSweep >= 0.f && SwimProofSweep < 360.f && Camera)
+		{
+			AFTPartyFollower* First = NumWaterFollowers > 0 ? WaterFollowers[0].Get() : nullptr;
+			if (!First || !First->HoldForProofAt(BoomLineSpot()))
+			{
+				bSwimProofBoomLost = true;
+				UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof boom: slot 0's hold on the boom line lost at %.0f deg (%.1f s)."), SwimProofSweep, SwimProofTime);
+			}
+		}
+		const bool bSweeping = SwimProofSweep >= 0.f && SwimProofSweep < 360.f && SwimProofBoomSettle <= 0.f;
 		float CamNear = -1.f;
+		float Slot0Near = -1.f;
 		int32 CamSlot = -1;
 		bool bCamDrawn = false;
 		if (bSweeping && Camera)
@@ -5014,6 +5044,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 					continue;
 				}
 				const float D = static_cast<float>(Nearest);
+				Slot0Near = I == 0 ? D : Slot0Near;
 				if (CamSlot < 0 || D < CamNear)
 				{
 					CamNear = D;
@@ -5027,6 +5058,17 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			if (Boom && Boom->IsCollisionFixApplied())
 			{
 				++SwimProofBoomPulled;
+			}
+			if (bBoomRun && bSwimProofBoomLine)
+			{
+				const AFTPartyFollower* First = NumWaterFollowers > 0 ? WaterFollowers[0].Get() : nullptr;
+				const bool bHid = First && First->IsHidden();
+				SwimProofBoomHidden += bHid ? 1 : 0;
+				if (Slot0Near >= 0.f && Slot0Near < 50.f)
+				{
+					++SwimProofBoomNear;
+					SwimProofBoomNearHidden += bHid ? 1 : 0;
+				}
 			}
 			if (CamSlot >= 0)
 			{
@@ -5067,13 +5109,18 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			// The boom run's verdict: it tests the clip only if the camera came within 50 cm of a held partner's bones.
 			const bool bBoomMeasured = SwimProofBoomHeld > 0 && SwimProofSweepTicks > 0;
 			const bool bBoomExercised = bBoomMeasured && SwimProofSweepNearest >= 0.f && SwimProofSweepNearest < 50.f;
-			const bool bBoomOk = bBoomExercised;
+			// The rerun's pass (ruled 11-18): slot 0 kept on the boom line through the whole sweep, the probe pulled the camera
+			// in or slot 0's mesh hid, and no CLIP still.
+			const bool bBoomGuarded = SwimProofBoomPulled > 0 || SwimProofBoomHidden > 0;
+			const bool bBoomOk = bBoomMeasured && bSwimProofBoomLine && !bSwimProofBoomLost && bBoomGuarded && SwimProofClipShotCount == 0;
 			if (bBoomRun)
 			{
-				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: done at %.1f s, %d stills, %s; %d sweep ticks, nearest %.0f cm, %d ticks under 50 cm with the mesh drawn, %d ticks the probe pulled the camera in: %s."),
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof boom: done at %.1f s, %d stills, %s; %d sweep ticks, nearest %.0f cm (%s), %d ticks under 50 cm with the mesh drawn, %d ticks the probe pulled the camera in; slot 0 hidden %d of %d ticks, within 50 cm of its bones %d ticks (hidden in %d); CLIP stills %d: %s."),
 					SwimProofTime, SwimProofShotCount, SwimProofBoomWhere.IsEmpty() ? TEXT("no partner placed") : *SwimProofBoomWhere, SwimProofSweepTicks, SwimProofSweepNearest,
-					SwimProofClipTicks, SwimProofBoomPulled, !bBoomMeasured ? TEXT("NO MEASURE") : !bBoomExercised ? TEXT("NOT EXERCISED (the camera never came within 50 cm)")
-					: SwimProofClipTicks > 0 ? TEXT("CLIP CONFIRMED (check the stills)") : TEXT("no clip (cleared: within 50 cm, mesh not drawn)"));
+					bBoomExercised ? TEXT("within 50 cm") : TEXT("never within 50 cm"), SwimProofClipTicks, SwimProofBoomPulled, SwimProofBoomHidden, SwimProofSweepTicks,
+					SwimProofBoomNear, SwimProofBoomNearHidden, SwimProofClipShotCount,
+					!bBoomMeasured ? TEXT("NO MEASURE") : !bSwimProofBoomLine ? TEXT("NO MEASURE (slot 0 not on the boom line)") : bSwimProofBoomLost ? TEXT("NO PASS (slot 0's hold lost)")
+					: SwimProofClipShotCount > 0 ? TEXT("NO PASS: CLIP (check the stills)") : !bBoomGuarded ? TEXT("NO PASS (neither pulled in nor hidden)") : TEXT("PASS"));
 			}
 			FString ClipList;
 			for (int32 I = 0; I < SwimProofClipShotCount; ++I)
@@ -5188,6 +5235,19 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: %s -> %s at %.1f s (the call %.1f ms); baseline: worst frame %.1f ms, camera step %.1f cm, lead feet off its target %.1f cm."),
 			*SwimProofSwitchOldLook, *PartyLooks[LeadIndex].Name, SwimProofTime, CallMs, SwimProofSwitchBaseFrame * 1000.f, SwimProofSwitchBaseCam, SwimProofSwitchBaseLead);
+		if (!bSwimSwitchKeep)
+		{
+			// The no-flag rerun: from this frame the stick pushes the new lead 5 m on out (away from the dry edge).
+			FVector Way = SwimProofFar - SwimProofDry;
+			Way.Z = 0.0;
+			Way = Way.IsNearlyZero() ? GetActorForwardVector().GetSafeNormal2D() : Way.GetSafeNormal();
+			SwimProofSwitchFrom = GetActorLocation();
+			SwimProofSwitchWay = Way;
+			BeginLeadGo(SwimProofSwitchFrom + Way * 500.0, false);
+			SwimProofSwitchShot0 = SwimProofShotCount;
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: no flag: the stick pushes the new lead 5 m on out (LeadGo, pace %.2f); stills every 0.5 s from %03d."),
+				LeadGoPace, SwimProofSwitchShot0);
+		}
 		SwimProofSwitchStage = 2;
 		SwimProofSwitchAt = SwimProofTime;
 		return;
@@ -5284,6 +5344,101 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 			SwimProofSwitchFirst[0] >= 0.f ? *FString::Printf(TEXT("off %.1f cm"), SwimProofSwitchFirst[0]) : TEXT("NOT THERE"),
 			SwimProofSwitchFirst[1] >= 0.f ? *FString::Printf(TEXT("off %.1f cm"), SwimProofSwitchFirst[1]) : TEXT("NOT THERE"),
 			bSwimProofStartFrame1 ? TEXT("OK") : TEXT("FAIL"));
+	}
+	if (!bStart && !bSwimSwitchKeep)
+	{
+		// The switch without the flag (the 11-18 rerun). The new lead answers the stick: 20 cm along the push from where it
+		// switched, its move input open (no party screen, not ignored).
+		using namespace FTSwimUnits;
+		const bool bInputOpen = Controller && !PartyScreen.open && !Controller->IsMoveInputIgnored();
+		const double Along = FVector::DotProduct(Me - SwimProofSwitchFrom, SwimProofSwitchWay);
+		if (SwimProofSwitchControl < 0.f && bInputOpen && Along >= 20.0)
+		{
+			SwimProofSwitchControl = Since;
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: the new lead answers the stick at +%.2f s (%.0f cm on, swimming %d)."), Since, Along, bLeadSwims ? 1 : 0);
+		}
+		constexpr int32 KPlaced = static_cast<int32>(ftcore::WaterFollowPhase::Placed);
+		for (int32 I = 0; I < Partners; ++I)
+		{
+			const AFTPartyFollower* Partner = WaterFollowers[I].Get();
+			const bool bNewMember = Partner && WaterFollowers[I] != SwimProofSwitchOld[I];
+			const ftcore::WaterFollowOrder* Order = bNewMember ? GetWaterOrder(I) : nullptr;
+			const int32 PhaseNow = Order ? static_cast<int32>(Order->phase) : -1;
+			SwimProofSwitchWatchWorst[I] = FMath::Max(SwimProofSwitchWatchWorst[I], WaterParty.stuckFor(I));
+			if (PhaseNow != SwimProofSwitchPhase[I])
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: +%.2f s slot %d phase %d -> %d (the watchdog at %.1f s)%s."), Since, I, SwimProofSwitchPhase[I], PhaseNow,
+					WaterParty.stuckFor(I), PhaseNow == KPlaced ? TEXT(": PLACED") : TEXT(""));
+				SwimProofSwitchPlaced[I] += PhaseNow == KPlaced ? 1 : 0;
+				SwimProofSwitchPhase[I] = PhaseNow;
+			}
+			bool bAtSlot = false;
+			if (bNewMember)
+			{
+				// Under the bed: the topmost ground under it, traced down from just under the water's surface there (as
+				// SurfaceSwimFeet does: the surface itself is not the bed), or from 3 m over its feet where it is dry; its feet
+				// more than 10 cm under that is a fall through.
+				const FVector At = Partner->GetActorLocation();
+				float Surface = 0.f;
+				const bool bWet = System.Bodies().surfaceHeight(ToPlan(At), System.WaterTime(), Surface);
+				const double Top = bWet ? FMath::Max(ToCm(Surface) - 5.0, At.Z) : At.Z + 300.0;
+				FCollisionQueryParams Query(SCENE_QUERY_STAT(SwimProofBed), false, this);
+				Query.AddIgnoredActor(Partner);
+				FHitResult Bed;
+				if (GetWorld()->LineTraceSingleByChannel(Bed, FVector(At.X, At.Y, Top), FVector(At.X, At.Y, At.Z - 1000.0), ECC_Visibility, Query))
+				{
+					const float Under = static_cast<float>(Bed.ImpactPoint.Z - At.Z);
+					if (Under > 10.f)
+					{
+						if (SwimProofSwitchUnder[I]++ == 0)
+						{
+							UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof switch: +%.2f s slot %d UNDER THE BED: feet at %.0f cm, the ground at %.0f cm (%s)."), Since, I, At.Z,
+								Bed.ImpactPoint.Z, Bed.GetActor() ? *Bed.GetActor()->GetName() : TEXT("?"));
+						}
+						SwimProofSwitchUnderWorst[I] = FMath::Max(SwimProofSwitchUnderWorst[I], Under);
+					}
+				}
+				bAtSlot = Order && Order->phase == ftcore::WaterFollowPhase::Surface
+					&& FVector::Dist2D(At, FVector(ToCm(Order->target.x), ToCm(Order->target.y), 0.0)) <= 300.0;
+			}
+			if (bAtSlot)
+			{
+				if (SwimProofSwitchSettled[I] < 0.f)
+				{
+					SwimProofSwitchSettled[I] = Since;
+					UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: +%.2f s slot %d first at its surface slot."), Since, I);
+				}
+				SwimProofSwitchOff[I] = 0.f;
+			}
+			else
+			{
+				SwimProofSwitchOff[I] += DeltaSeconds;
+				SwimProofSwitchStuckWorst[I] = FMath::Max(SwimProofSwitchStuckWorst[I], SwimProofSwitchOff[I]);
+			}
+		}
+		const bool bBothAtSlots = SwimProofSwitchSettled[0] >= 0.f && SwimProofSwitchSettled[1] >= 0.f && SwimProofSwitchOff[0] <= 0.f && SwimProofSwitchOff[1] <= 0.f;
+		if (Since < 10.f || (!bBothAtSlots && Since < 30.f))
+		{
+			return;
+		}
+		// The verdict (ruled 11-18): the new lead answers within 1 s; no partner under the bed in any frame; none stuck (off
+		// its surface slot) more than 20 s, a watchdog placement allowed and logged.
+		const bool bControlOk = SwimProofSwitchControl >= 0.f && SwimProofSwitchControl <= 1.f;
+		bool bPartnersOk = true;
+		for (int32 I = 0; I < Partners; ++I)
+		{
+			const bool bOk = SwimProofSwitchSeen[I] >= 0.f && SwimProofSwitchUnder[I] == 0 && SwimProofSwitchSettled[I] >= 0.f && SwimProofSwitchStuckWorst[I] <= 20.f;
+			bPartnersOk = bPartnersOk && bOk;
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: slot %d %s: seen at +%.2f s, first at its surface slot at +%.2f s, longest off it %.1f s, the watchdog's longest %.1f s, placements %d, frames under the bed %d (deepest %.1f cm): %s."),
+				I, SwimProofSwitchName[I].IsEmpty() ? TEXT("(none)") : *SwimProofSwitchName[I], SwimProofSwitchSeen[I], SwimProofSwitchSettled[I], SwimProofSwitchStuckWorst[I],
+				SwimProofSwitchWatchWorst[I], SwimProofSwitchPlaced[I], SwimProofSwitchUnder[I], SwimProofSwitchUnderWorst[I], bOk ? TEXT("OK") : TEXT("FAIL"));
+		}
+		const bool bPass = bControlOk && bPartnersOk;
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch (no flag): the new lead answers the stick at +%.2f s %s; partners %s; lead dry frames %d, feet worst %.1f cm off; stills %03d-%03d every 0.5 s; judged %.1f s: %s."),
+			SwimProofSwitchControl, bControlOk ? TEXT("OK") : TEXT("FAIL"), bPartnersOk ? TEXT("OK") : TEXT("FAIL"), SwimProofSwitchLeadDry, SwimProofSwitchLeadWorst,
+			SwimProofSwitchShot0, SwimProofSwitchShot0 + 19, Since, bPass ? TEXT("PASS") : TEXT("FAIL"));
+		Finish(bPass ? 0 : 2);
+		return;
 	}
 	if (Since < 3.f)
 	{

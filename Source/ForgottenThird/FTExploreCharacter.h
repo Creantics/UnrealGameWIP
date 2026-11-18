@@ -636,13 +636,21 @@ private:
 	int32 SwimProofPlaceCount = 0;
 	bool bSwimProofLeadSwims = false;  // the placed lead was seen swimming
 	bool bSwimProofSpotFallback = false; // no water spot passed the check; the watchdog took one blocked on the way in
-	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts, and slot 0 is put on the
-	// sweep circle 90 deg ahead of the camera, slot 1 at 270 deg; both tread there
-	// for the sweep. The run ends after the sweep; exit 0 when a partner was held and the sweep measured.
+	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts. Slot 0 is kept on the
+	// boom line, its middle 1 m in front of the camera at the camera's height (the 11-18 rerun); slot 1 treads on the sweep
+	// circle 270 deg ahead. The run ends after the sweep; exit 0 on the rerun's pass (pulled in or hidden, no CLIP still).
 	float SwimProofHoldAt = -1.f;      // SwimProofTime the lead reached the far point
 	int32 SwimProofBoomHeld = 0;       // partners held for the sweep
 	int32 SwimProofBoomPulled = 0;     // sweep ticks the spring arm's probe pulled the camera in (a capsule or the world in the way)
 	FString SwimProofBoomWhere;
+	// The 11-18 rerun: slot 0 kept on the boom line at the camera's height; the sweep waits this long (s) after it is put
+	// there, then counts the sweep ticks slot 0 is hidden (the director's lens hide) and whether its hold was lost.
+	float SwimProofBoomSettle = 0.f;
+	int32 SwimProofBoomHidden = 0;
+	int32 SwimProofBoomNear = 0;       // sweep ticks the camera was within 50 cm of slot 0's bones
+	int32 SwimProofBoomNearHidden = 0; // of those, the ticks slot 0 was hidden
+	bool bSwimProofBoomLine = false;
+	bool bSwimProofBoomLost = false;
 	// Item 5 (the boom through a partner): during the sweep, the camera's distance to the nearest partner's capsule; under
 	// 50 cm with that partner's mesh drawn is the clip. Counted per tick and per still (the still numbers kept, first 32).
 	int32 SwimProofClipTicks = 0;
@@ -703,6 +711,23 @@ private:
 	float SwimProofSwitchWorst[2] = {0.f, 0.f};
 	int32 SwimProofSwitchLand[2] = {0, 0};
 	int32 SwimProofSwitchFell[2] = {0, 0};
+	// The switch without -SwimSwitchKeep (the 11-18 rerun): from the switch frame the stick pushes the new lead 5 m on out
+	// (LeadGo, the stick's own AddMovementInput path); when it first answers (20 cm along the push). Per partner: frames
+	// its feet were more than 10 cm under the topmost ground below it (the bed) and the deepest, when it was first at its
+	// surface slot, the longest stretch off it (not at the surface within 3 m of its slot: stuck), the water plan's
+	// watchdog time and its placements. Judged for 10 s at least, until both partners are at their slots (30 s at most).
+	FVector SwimProofSwitchFrom = FVector::ZeroVector;
+	FVector SwimProofSwitchWay = FVector::ZeroVector;
+	float SwimProofSwitchControl = -1.f;
+	int32 SwimProofSwitchShot0 = -1;
+	int32 SwimProofSwitchUnder[2] = {0, 0};
+	float SwimProofSwitchUnderWorst[2] = {0.f, 0.f};
+	float SwimProofSwitchOff[2] = {0.f, 0.f};
+	float SwimProofSwitchStuckWorst[2] = {0.f, 0.f};
+	float SwimProofSwitchSettled[2] = {-1.f, -1.f};
+	float SwimProofSwitchWatchWorst[2] = {0.f, 0.f};
+	int32 SwimProofSwitchPlaced[2] = {0, 0};
+	int32 SwimProofSwitchPhase[2] = {-2, -2};
 	bool bSwimProofStartFrame1 = false;
 	// -SwimProof=cost (item 4 of 11-18, a measurement only): one fixed camera, the party idle on land, then the same party
 	// treading in the sea; each window's frame, game-thread, render-thread and GPU ms.

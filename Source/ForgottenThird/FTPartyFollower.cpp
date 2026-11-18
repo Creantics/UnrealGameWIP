@@ -834,6 +834,9 @@ void AFTPartyFollower::FillWaterMember(ftcore::WaterFollowMember& Member) const
 	const FVector At = GetActorLocation();
 	Member.position = ToSwim(At + FVector(0.0, 0.0, ToCm(ftcore::kWaterSwimDraft)));
 	Member.held = bHeldByScene;
+#if !UE_BUILD_SHIPPING
+	Member.held = Member.held || bProofAir; // -SwimProof=boom: kept over the water by the run, as a scene would hold it
+#endif
 	Member.traversing = bTraversing;
 	Member.atEntry = WaterPhase == ftcore::WaterFollowPhase::ToEntry && bWaterAtEntry;
 	Member.entered = WaterPhase == ftcore::WaterFollowPhase::Entering && bWaterMoveDone;
@@ -897,6 +900,38 @@ bool AFTPartyFollower::HoldForProof(const FVector2D& At)
 	bWaterOnRide = ftcore::waterFeetOnRide(Draft, 0.f, WaterBedZ);
 	bProofHeld = true;
 	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof: %s held for the sweep at (%.0f, %.0f, %.0f) cm."), *LogName, P.X, P.Y, P.Z);
+	return true;
+#endif
+}
+
+bool AFTPartyFollower::HoldForProofAt(const FVector& Centre)
+{
+#if UE_BUILD_SHIPPING
+	(void)Centre;
+	return false;
+#else
+	if (!bProofAir && WaterPhase != ftcore::WaterFollowPhase::Surface)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof: %s not held on the boom line: phase %d (not at the surface)."), *LogName, static_cast<int32>(WaterPhase));
+		return false;
+	}
+	// The middle of its bones' box (the camera's measure is to the bones) put at Centre: the actor moves by the gap.
+	FBox Bones(ForceInit);
+	const FTransform ToWorld = Body->GetComponentTransform();
+	for (const FTransform& Bone : Body->GetComponentSpaceTransforms())
+	{
+		Bones += ToWorld.TransformPosition(Bone.GetLocation());
+	}
+	const FVector Mid = Bones.IsValid ? Bones.GetCenter() : GetActorLocation();
+	SetActorLocation(GetActorLocation() + (Centre - Mid), false, nullptr, ETeleportType::TeleportPhysics);
+	WaterVelocity = FVector::ZeroVector;
+	if (!bProofAir)
+	{
+		const FVector Feet = GetActorLocation();
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof: %s held on the boom line: its middle at (%.0f, %.0f, %.0f) cm, its feet at (%.0f, %.0f, %.0f) cm."), *LogName,
+			Centre.X, Centre.Y, Centre.Z, Feet.X, Feet.Y, Feet.Z);
+	}
+	bProofAir = true;
 	return true;
 #endif
 }
@@ -1002,6 +1037,16 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 	}
 	const FVector At = GetActorLocation();
 #if !UE_BUILD_SHIPPING
+	// -SwimProof=boom: kept on the boom line by the run (HoldForProofAt) while the plan has it at the surface; any other
+	// phase (a dive, an exit) ends the hold and it swims again.
+	if (bProofAir)
+	{
+		if (Phase == WaterFollowPhase::Surface)
+		{
+			return true;
+		}
+		bProofAir = false;
+	}
 	// -SwimProof=land|watchdog (AFTExploreCharacter::TickSwimProof): slot 0 is held (it does not walk to its entry, or it treads
 	// where it is) until the plan rejoins it, then its feet height is logged four times a second for 2 s.
 	static const FString ProofKind = []() { FString K; FParse::Value(FCommandLine::Get(), TEXT("SwimProof="), K); return K; }();
