@@ -356,6 +356,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_main.cpp
         tests/AllocCounter.cpp
         tests/AllocHook.cpp
+        tests/test_alloc_counter.cpp
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
         tests/test_audio_pick.cpp
