@@ -926,8 +926,8 @@ void AFTPartyFollower::WaterWalk(const FVector2D& To, float WalkSpeed, float Del
 	bPlaced = true;
 	if (DeltaSeconds > 0.f)
 	{
-		const float Going = static_cast<float>(Step / DeltaSeconds);
-		Speed += (Going - Speed) * (1.f - FMath::Exp(-DeltaSeconds * kSpeedResponse));
+		const float WalkSpeedNow = static_cast<float>(Step / DeltaSeconds);
+		Speed += (WalkSpeedNow - Speed) * (1.f - FMath::Exp(-DeltaSeconds * kSpeedResponse));
 	}
 	if (Anim)
 	{
