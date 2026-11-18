@@ -39,7 +39,8 @@
 //     and the host's blow hook play no part: the hit is guaranteed.
 //   * The performance travels: the performer ends `endTravel` metres along the strike's way and `endSide` to its right
 //     (the clip's own travel), scaled by what the host allows at the press (ArenaInput::specialTravel, 0..endTravel,
-//     after its own sweep for room; the side by the same share). The host may also start it further back
+//     after its own sweep for room; the side by the same share). Core then stops the end short of any living enemy's
+//     body on the way (5 cm steps, 1% short, the host's rule) and inside the ring. The host may also start it further back
 //     (ArenaInput::specialBack). ArenaSpecialView::origin and ::end say where; the host puts the body at `origin` while
 //     frozen and at `end` on the cut back (arenaStep does), with no push apart on that frame. The cut back's stagger and
 //     shove go away from `end`, and the performer faces the target from there.
@@ -64,6 +65,8 @@ namespace ftcore {
 inline constexpr std::size_t kMaxArenaSpecialId = 31;
 inline constexpr std::size_t kMaxArenaSpecials = 8;
 inline constexpr std::size_t kMaxArenaSpecialCues = 24;
+inline constexpr std::size_t kMaxArenaSpecialFx = 64;      // effect and sound rows per move
+inline constexpr std::uint8_t kArenaSpecialAtImpact = 0xFE; // an effect time keyed off the impact, not a cue
 inline constexpr std::size_t kMaxArenaSpecialTargets = 8; // >= kMaxArenaEnemies
 inline constexpr std::size_t kMaxSpecialLeads = 4;
 inline constexpr std::uint8_t kArenaSpecialMove = 13;     // the move id on the special's Hit events (after kArenaAirMove)
@@ -77,12 +80,34 @@ struct ArenaSpecialCue {
     std::string_view view() const { return std::string_view(name.data()); }
 };
 
+// A time of an effect or a sound: a cue of the move (an index into its cues) or the impact (kArenaSpecialAtImpact),
+// plus an offset in s. A retime moves the row with its cue; the impact moves with the range.
+struct ArenaSpecialFxTime {
+    std::uint8_t cue = 0;
+    float offset = 0.f;
+};
+
+// One row of the move's effect and sound timing: an asset id (a key point of one: "<asset>.<point>"), when it
+// starts, and when it ends (`end`), or how long it lasts (`length`), or neither (a one-shot). `low`: it also plays on
+// the low tier (each effect's low-tier look is the effect's own; false: off there). The host reads these; Core keeps
+// only the numbers.
+struct ArenaSpecialFx {
+    std::array<char, kMaxArenaSpecialId + 1> id{};
+    ArenaSpecialFxTime start{};
+    ArenaSpecialFxTime end{};
+    bool hasEnd = false;
+    float length = 0.f; // s, with no end (0: a one-shot)
+    bool low = true;
+    std::string_view view() const { return std::string_view(id.data()); }
+};
+
 struct ArenaSpecialRules {
     std::array<char, kMaxArenaSpecialId + 1> id{};
     std::array<char, kMaxArenaSpecialId + 1> lead{}; // whose move it is: the id the host gives setSpecials (a lead's,
                                                      // or a party member's current identity id)
     float duration = 8.5f;      // s, press to cut back
     float strikeAt = 7.1f;      // s: the staff strikes; the wave leaves the performer
+    float impactAt = 7.1f;      // TEMPORARY compat for an older host: always strikeAt (the loader sets it). Removed in round 2.
     float waveSpeed = 40.f;     // m/s: the wave's speed to the target (the impact: arenaSpecialImpactAt)
     float maxTravel = 0.5f;     // s: the longest the wave travels, whatever the range
     float range = 30.f;         // m: the farthest target it may start on (body centre)
@@ -98,6 +123,8 @@ struct ArenaSpecialRules {
     bool skippable = true;      // once seen
     std::array<ArenaSpecialCue, kMaxArenaSpecialCues> cues{};
     std::uint8_t cueCount = 0;
+    std::array<ArenaSpecialFx, kMaxArenaSpecialFx> fx{}; // the effect and sound rows (`fx` in the file)
+    std::uint8_t fxCount = 0;
 
     std::string_view idView() const { return std::string_view(id.data()); }
     std::string_view leadView() const { return std::string_view(lead.data()); }
@@ -136,10 +163,20 @@ FTCORE_API bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g);
 // strike: strikeAt + min(distance / waveSpeed, maxTravel). A negative or NaN distance counts as 0.
 FTCORE_API float arenaSpecialImpactAt(const ArenaSpecialRules& r, float distance);
 
+// An effect time in s since the press: its cue's time (or `impactAt`) plus its offset. A cue index past the move's: NaN.
+FTCORE_API float arenaSpecialFxAt(const ArenaSpecialRules& r, const ArenaSpecialFxTime& at, float impactAt);
+// When a row ends: its end, else its start plus its length (a one-shot: its start).
+FTCORE_API float arenaSpecialFxEnd(const ArenaSpecialRules& r, const ArenaSpecialFx& fx, float impactAt);
+
 // Reads Data/Battle/arena_special.json:
 //   { "version": 1,
 //     "gauge": { "full": 1000, "perDamageDealt": 1, "perParry": 25, "perBlock": 8, "perDamageTaken": 1.5 },
-//     "moves": [ { "id": "...", "lead": "...", "duration": 8.5, "strikeAt": 7.1, "waveSpeed": 40, "maxTravel": 0.5, ..., "cues": [ { "at": 0, "cue": "..." } ] } ] }
+//     "moves": [ { "id": "...", "lead": "...", "duration": 8.5, "strikeAt": 7.1, "waveSpeed": 40, "maxTravel": 0.5, ..., "cues": [ { "at": 0, "cue": "..." } ],
+//                  "fx": [ { "id": "FX_X", "cue": "<a cue above, or impact>", "at": -0.05, "to": { "cue": "...", "at": 0 } },
+//                          { "id": "SFX_X", "cue": "...", "at": 0, "for": 1.2, "low": false } ] } ] }
+// An fx row's id is 1..31 letters, digits, _, - and .; its offsets -5..5 s; "for" 0..10 s; "to" and "for" not both. Its start,
+// and its "to", must land inside [0, duration] at the nearest and the farthest impact, the "to" not before the start
+// (a "for" may ring past the cut back).
 // Every move key is optional but id and lead (ArenaSpecialRules' defaults); ids unique, one move per lead. An unknown
 // key is a warning; anything else wrong is an error with its path, and `out` is left empty.
 FTCORE_API bool importArenaSpecials(std::string_view json, ArenaSpecialTable& out, std::string* error = nullptr,

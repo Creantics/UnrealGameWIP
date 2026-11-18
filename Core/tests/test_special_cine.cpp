@@ -10,6 +10,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -749,6 +750,174 @@ TEST_CASE("special cine: the range sweep: the far set from the switch point to l
     CHECK(lastFarFail > within - 2.f * kStep);
     // The big kinds (radius over 0.5 m: hulk, stone bearer, titan, the kite boss) are left out: at contact both sets
     // put a camera in or behind such a body, and the far set needs 6 to 7.3 m. They wait for a boss rule.
+}
+
+TEST_CASE("special cine: the held reach keeps the camera out over its window, not a bone shot's, and frames nothing") {
+    // A lead-anchored camera 1.2 m beside the lead, on its chest: clear of the lead itself, inside a 1.1 m reach.
+    SpecialCineMove m;
+    REQUIRE(m.setId("reach"));
+    SpecialCineShot s = shotOf(0.f, 8.5f, {0.f, 1.2f, 1.2f});
+    s.cameraAnchor = s.lookAnchor = SpecialCineAnchor::Lead;
+    s.lookFrom = s.lookTo = {0.f, 0.f, 1.f};
+    s.subject = SpecialCineSubject::Lead;
+    REQUIRE(m.add(s));
+    SpecialCineStage st = stageAt(0.f, 0.f, 6.f, 0.f);
+    st.targetRadius = 0.4f;
+    st.bone = {0.3f, 0.25f, 1.1f};
+    const auto at = [&](const SpecialCineMove& mv, float t) { return specialCineFrameProblem(mv, t, st, nullptr, nullptr, 0); };
+    for (const float t : {0.3f, 4.f, 8.f}) CHECK(at(m, t) == SpecialCineProblem::None); // no reach: it passes
+    m.setReach({1.1f, 0.55f, 7.8f});
+    CHECK(m.reach().radius == doctest::Approx(1.1f));
+    CHECK(at(m, 0.3f) == SpecialCineProblem::None); // before the conjure
+    CHECK(at(m, 0.55f) == SpecialCineProblem::InsideBody);
+    CHECK(at(m, 4.f) == SpecialCineProblem::InsideBody);
+    CHECK(at(m, 7.8f) == SpecialCineProblem::InsideBody);
+    CHECK(at(m, 8.f) == SpecialCineProblem::None); // dismissed
+    // Out of it: 1.4 m off passes in the window.
+    {
+        SpecialCineMove w = m;
+        w.clearShots();
+        w.setReach({1.1f, 0.55f, 7.8f});
+        SpecialCineShot o = s;
+        o.cameraFrom = o.cameraTo = {0.f, 1.4f, 1.2f};
+        REQUIRE(w.add(o));
+        CHECK(at(w, 4.f) == SpecialCineProblem::None);
+    }
+    // The fix search finds a way out of the reach (raised over it).
+    const SpecialCineShotCheck fix = specialCineFixShot(m, 0, st, nullptr, 0);
+    CHECK(fix.first == SpecialCineProblem::InsideBody);
+    CHECK(fix.ok);
+    CHECK(fix.fix.moved());
+    CHECK(specialCineFrameProblem(m, 4.f, st, &fix.fix, nullptr, 0) == SpecialCineProblem::None);
+    // A bone shot is framed on a bone on purpose: the reach does not move it.
+    {
+        SpecialCineMove b = m;
+        b.clearShots();
+        b.setReach({1.1f, 0.55f, 7.8f});
+        SpecialCineShot o = s;
+        o.cameraAnchor = SpecialCineAnchor::Bone;
+        o.cameraFrom = o.cameraTo = {0.f, 0.6f, 0.1f};
+        REQUIRE(b.add(o));
+        CHECK(at(b, 4.f) != SpecialCineProblem::InsideBody);
+    }
+    // The reach frames nothing: a long lens on a point of the staff 1 m beside the lead, the lead itself off frame.
+    {
+        SpecialCineMove o = m;
+        o.clearShots();
+        o.setReach({1.1f, 0.55f, 7.8f});
+        SpecialCineShot q = s;
+        q.cameraFrom = q.cameraTo = {0.f, 5.f, 1.f};
+        q.lookFrom = q.lookTo = {1.f, 0.f, 1.f};
+        q.lensFrom = q.lensTo = 200.f;
+        REQUIRE(o.add(q));
+        CHECK(at(o, 4.f) == SpecialCineProblem::OffFrame);
+    }
+    // Bad reaches are none.
+    SpecialCineMove bad = m;
+    bad.setReach({-1.f, 0.f, 1.f});
+    CHECK(bad.reach().radius == 0.f);
+    bad.setReach({1.f, 2.f, 1.f});
+    CHECK(bad.reach().radius == 0.f);
+}
+
+TEST_CASE("special cine: the committed shots carry the staff's reach from the conjure to the dismiss") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    for (const SpecialCineMove* m : {far, &t.nearMove(0)}) {
+        CHECK(m->reach().radius == doctest::Approx(1.1f));
+        CHECK(m->reach().from == doctest::Approx(0.55f));
+        CHECK(m->reach().to == doctest::Approx(7.8f));
+    }
+}
+
+TEST_CASE("special cine: a big target frames the lead and its strike point; an aimed shot tilts up over it") {
+    // A hulk-sized target (1.2 m wide, 3.5 m tall) 2.8 m off: its strike point is its near side at the lead's chest.
+    SpecialCineStage st = stageAt(0.f, 0.f, 2.8f, 0.f);
+    st.targetRadius = 1.2f;
+    st.targetHeight = 3.5f;
+    const float chest = 0.6f * st.leadHeight;
+    // A camera that sees the strike point but not the hulk's whole figure passes: cropping it is accepted.
+    const SpecialCineMove crop = oneShot({1.6f, -1.6f, chest}, {1.6f, 0.f, chest}, SpecialCineSubject::Target);
+    CHECK(specialCineFrameProblem(crop, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::None);
+    // Looking away from the strike point fails, however much of the hulk is in frame.
+    const SpecialCineMove away = oneShot({1.6f, -1.6f, chest}, {4.f, 0.f, 3.f}, SpecialCineSubject::Target);
+    CHECK(specialCineFrameProblem(away, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::OffFrame);
+    // Aimed: the look-at is the strike point, tilted up kBigTilt.
+    SpecialCineShotFix aim;
+    aim.aim = true;
+    const SpecialCineFrame f = specialCineFrameAt(away, 0.5f, st, &aim);
+    CHECK(f.pose.lookAt.x == doctest::Approx(2.8f - 1.2f));
+    CHECK(f.pose.lookAt.y == doctest::Approx(0.f));
+    CHECK(f.pose.lookAt.z == doctest::Approx(chest + SpecialCineFraming::kBigTilt));
+    // A target of 0.5 m or less is not big: its chest, untilted.
+    st.targetRadius = 0.5f;
+    const SpecialCineFrame g = specialCineFrameAt(away, 0.5f, st, &aim);
+    CHECK(g.pose.lookAt.x == doctest::Approx(2.8f));
+    CHECK(g.pose.lookAt.z == doctest::Approx(0.6f * st.targetHeight));
+}
+
+TEST_CASE("special cine: on a big target no fix ends farther from the authored look-at than the shot plus its raise, or wider") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const SpecialCineMove& nearSet = t.nearMove(0);
+    float worst = 0.f;     // the most a fix's eye ended farther from the authored look-at (metres)
+    float worstRaise = 0.f;
+    int fixed = 0, failed = 0;
+    for (const float radius : {0.6f, 1.2f, 2.f}) {
+        for (float d = 0.4f + radius + 0.01f; d <= 12.f; d += 0.25f) {
+            SpecialCineStage st = stageAt(0.f, 0.f, d, 0.f);
+            st.targetRadius = radius;
+            st.targetHeight = 3.5f;
+            st.bone = {0.3f, 0.25f, 1.1f};
+            const SpecialCineBody body = bodyOf(st);
+            for (const SpecialCineMove* m : {far, &nearSet}) {
+                for (std::uint32_t i = 0; i < m->size(); ++i) {
+                    if (m->shot(i).subject == SpecialCineSubject::None) continue;
+                    const SpecialCineShotCheck c = specialCineFixShot(*m, i, st, &body, 1);
+                    if (!c.ok) {
+                        ++failed;
+                        continue;
+                    }
+                    if (!c.fix.moved()) continue;
+                    ++fixed;
+                    std::array<SpecialCineShotFix, 16> fixes{}, written{};
+                    REQUIRE(m->size() <= fixes.size());
+                    fixes[i] = c.fix;
+                    written[i].mirror = c.fix.mirror; // the mirror moves nothing nearer or farther
+                    const SpecialCineShot& s = m->shot(i);
+                    for (int k = 0; k <= 4; ++k) {
+                        const float at = s.in + (s.out - s.in) * static_cast<float>(k) / 4.f;
+                        const SpecialCineFrame a = specialCineFrameAt(*m, at, st, written.data());
+                        const SpecialCineFrame b = specialCineFrameAt(*m, at, st, fixes.data());
+                        if (a.shot != i || b.shot != i) continue;
+                        const float authored = length3(sub3(a.pose.lookAt, a.pose.position));
+                        const float now = length3(sub3(a.pose.lookAt, b.pose.position));
+                        const float raise = std::isfinite(c.fix.raise) && c.fix.raise > 0.f ? c.fix.raise : 0.f;
+                        CAPTURE(radius);
+                        CAPTURE(d);
+                        CAPTURE(i);
+                        CHECK(now <= authored + raise + 1e-3f);
+                        CHECK(b.fovDegrees == doctest::Approx(a.fovDegrees));
+                        if (now - authored > worst) {
+                            worst = now - authored;
+                            worstRaise = raise;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    MESSAGE("big targets: " << fixed << " shots fixed, " << failed << " with no fix; the farthest a fix moved the camera from "
+            "the authored look-at: " << worst << " m (raise " << worstRaise << " m)");
+    CHECK(fixed > 0);
 }
 
 TEST_CASE("special cine: the near keys, the look-at's own end anchor, and the stage's travel") {
