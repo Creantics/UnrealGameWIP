@@ -602,6 +602,11 @@ private:
 	FVector SwimProofDry = FVector::ZeroVector;
 	FVector SwimProofWet = FVector::ZeroVector;
 	FVector SwimProofFar = FVector::ZeroVector;
+	int32 SwimProofSlotPhase = -1;     // slot 0's last phase (its changes are logged with the watchdog's and the entry's counts)
+	float SwimProofSlotStuck = 0.f;
+	int32 SwimProofSlotFails = 0;
+	float SwimProofRejoinAt = -1.f;    // SwimProofTime when slot 0 was rejoined
+	float SwimProofSweep = -1.f;       // degrees the camera has turned round the lead (-1: not yet)
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;

@@ -4028,7 +4028,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			if (SwimProofTime > 20.f)
 			{
 				UE_LOG(LogForgottenThird, Error, TEXT("SwimProof: no water bodies on this map; quitting."));
-				FPlatformMisc::RequestExit(false, TEXT("SwimProof"));
+				FTRequestExit(1, TEXT("SwimProof"));
 				SwimProofStage = -2;
 			}
 			return;
@@ -4058,20 +4058,26 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 				{
 					continue;
 				}
-				SwimProofDry = Q - Dir * 300.0;
-				SwimProofWet = P;
-				SwimProofFar = P;
+				FVector Far = P;
 				for (int32 Out = 1; Out <= 30 && Depth(P + Dir * (Out * 100.0)) >= ftcore::kWaterSwimDepth + 0.5f; ++Out)
 				{
-					SwimProofFar = P + Dir * (Out * 100.0);
+					Far = P + Dir * (Out * 100.0);
 				}
+				// The watchdog's run needs the lead well past stuckFar (12 m) from a partner treading by the entry.
+				if (SwimProofKind == TEXT("watchdog") && FVector::Dist2D(P, Far) < 1600.0)
+				{
+					continue;
+				}
+				SwimProofDry = Q - Dir * 300.0;
+				SwimProofWet = P;
+				SwimProofFar = Far;
 				bFound = true;
 			}
 		}
 		if (!bFound)
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof: no swimmable water within 400 m; quitting."));
-			FPlatformMisc::RequestExit(false, TEXT("SwimProof"));
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof: no swimmable water within 400 m (16 m of open water for the watchdog); quitting."));
+			FTRequestExit(1, TEXT("SwimProof"));
 			SwimProofStage = -2;
 			return;
 		}
@@ -4079,10 +4085,14 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		const FCollisionQueryParams Params(SCENE_QUERY_STAT(SwimProof), false, this);
 		// Down from a little over the start's height (a quay or a street, not a roof).
 		SwimProofDry.Z = Start.Z;
-		if (World->LineTraceSingleByChannel(Hit, SwimProofDry + FVector(0.0, 0.0, 400.0), SwimProofDry - FVector(0.0, 0.0, 3000.0), ECC_Visibility, Params))
+		if (!World->LineTraceSingleByChannel(Hit, SwimProofDry + FVector(0.0, 0.0, 400.0), SwimProofDry - FVector(0.0, 0.0, 3000.0), ECC_Visibility, Params))
 		{
-			SwimProofDry.Z = Hit.ImpactPoint.Z + GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.0;
+			UE_LOG(LogForgottenThird, Error, TEXT("SwimProof: no ground under the dry edge (%.0f, %.0f); quitting."), SwimProofDry.X, SwimProofDry.Y);
+			FTRequestExit(1, TEXT("SwimProof"));
+			SwimProofStage = -2;
+			return;
 		}
+		SwimProofDry.Z = Hit.ImpactPoint.Z + GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 2.0;
 		const FVector2D Way(SwimProofWet.X - SwimProofDry.X, SwimProofWet.Y - SwimProofDry.Y);
 		SetActorLocationAndRotation(SwimProofDry, FRotator(0.0, FMath::RadiansToDegrees(FMath::Atan2(Way.Y, Way.X)), 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 		if (Controller)
@@ -4098,7 +4108,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 	if (SwimProofStage == 1 && SwimProofTime >= 6.f) // the party gathers at the edge
 	{
 		// The scripted walk (LeadGo) takes the route: in, then out to the far point, where it treads.
-		BeginLeadGo(FVector(SwimProofWet.X, SwimProofWet.Y, 0.0), false);
+		BeginLeadGo(FVector(SwimProofWet.X, SwimProofWet.Y, 0.0), true); // jumps a quay's railing
 		LeadGoNext.Add(FVector(SwimProofFar.X, SwimProofFar.Y, 0.0));
 		SwimProofStage = 2;
 		SwimProofTime = 0.f;
@@ -4111,15 +4121,50 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: stage %d reached at %.1f s (swimming %d)."), *SwimProofKind, SwimProofStage, SwimProofTime, bSwimming ? 1 : 0);
 			++SwimProofStage;
 		}
+		// Slot 0's phase changes, with the counts it had the step before (which path placed it: two given-up entries, or
+		// the watchdog).
+		if (const ftcore::WaterFollowOrder* Slot0 = GetWaterOrder(0))
+		{
+			const int32 Now = static_cast<int32>(Slot0->phase);
+			if (Now != SwimProofSlotPhase)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: slot 0 phase %d -> %d at %.1f s (rejoin %d; before it: stuck %.1f s, failed entries %d)."), *SwimProofKind,
+					SwimProofSlotPhase, Now, SwimProofTime, Slot0->rejoin ? 1 : 0, SwimProofSlotStuck, SwimProofSlotFails);
+				SwimProofSlotPhase = Now;
+			}
+			if (Slot0->phase == ftcore::WaterFollowPhase::Placed && Slot0->rejoin && SwimProofRejoinAt < 0.f)
+			{
+				SwimProofRejoinAt = SwimProofTime;
+			}
+			SwimProofSlotStuck = WaterParty.stuckFor(0);
+			SwimProofSlotFails = WaterParty.entryFailsFor(0);
+		}
+		// 3 s after the rejoin (or at 60 s without one) the camera turns once round the lead over 12 s, its boom through
+		// the swimming partners (item 5).
+		if (SwimProofSweep < 0.f && ((SwimProofRejoinAt >= 0.f && SwimProofTime >= SwimProofRejoinAt + 3.f) || SwimProofTime >= 60.f))
+		{
+			SwimProofSweep = 0.f;
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: camera sweep starts at %.1f s."), *SwimProofKind, SwimProofTime);
+		}
+		if (SwimProofSweep >= 0.f && SwimProofSweep < 360.f && Controller)
+		{
+			const float Turn = FMath::Min(30.f * DeltaSeconds, 360.f - SwimProofSweep);
+			SwimProofSweep += Turn;
+			FRotator View = Controller->GetControlRotation();
+			View.Yaw += Turn;
+			Controller->SetControlRotation(View);
+		}
 		if (!SwimProofShots.IsEmpty() && SwimProofTime >= SwimProofShotAt)
 		{
-			SwimProofShotAt = SwimProofTime + 1.f;
+			SwimProofShotAt = SwimProofTime + 0.5f;
 			FScreenshotRequest::RequestScreenshot(FPaths::Combine(SwimProofShots, FString::Printf(TEXT("swimproof_%s_%03d.png"), *SwimProofKind, SwimProofShotCount++)), false, false);
 		}
-		if (SwimProofTime >= 80.f)
+		const float End = SwimProofSweep >= 360.f ? 0.f : 110.f; // after the sweep, or at 110 s
+		if ((SwimProofSweep >= 360.f && SwimProofTime >= 80.f) || (End > 0.f && SwimProofTime >= End))
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: done, %d stills."), *SwimProofKind, SwimProofShotCount);
-			FPlatformMisc::RequestExit(false, TEXT("SwimProof"));
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: done at %.1f s, %d stills, rejoin %s."), *SwimProofKind, SwimProofTime, SwimProofShotCount,
+				SwimProofRejoinAt >= 0.f ? TEXT("seen") : TEXT("NOT seen"));
+			FTRequestExit(SwimProofRejoinAt >= 0.f ? 0 : 2, TEXT("SwimProof"));
 			SwimProofStage = -2;
 		}
 	}
