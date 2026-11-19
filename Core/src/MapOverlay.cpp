@@ -865,6 +865,27 @@ bool mapRoadLit(const MapNames& n, std::size_t r, int picked, std::uint16_t pick
     return pickedName != kMapNoName && r < n.roadName.size() && n.roadName[r] == pickedName;
 }
 
+void mapRoadOffEnds(const MiniMapModel& m, std::vector<std::uint8_t>& out, float touchM) {
+    out.assign(m.roads.size(), 0);
+    if (m.points.empty()) return;
+    float x0 = m.points[0].x, y0 = m.points[0].y, x1 = x0, y1 = y0;
+    for (const Vec2& p : m.points) {
+        x0 = std::min(x0, p.x);
+        y0 = std::min(y0, p.y);
+        x1 = std::max(x1, p.x);
+        y1 = std::max(y1, p.y);
+    }
+    const auto off = [&](const Vec2& p) { return p.x - x0 <= touchM || x1 - p.x <= touchM || p.y - y0 <= touchM || y1 - p.y <= touchM; };
+    for (std::size_t r = 0; r < m.roads.size(); ++r) {
+        const MapRoad& road = m.roads[r];
+        if (road.count == 0 || static_cast<std::size_t>(road.first) + road.count > m.points.size()) continue;
+        std::uint8_t ends = 0;
+        if (off(m.points[road.first])) ends |= kMapRoadOffFirst;
+        if (off(m.points[road.first + road.count - 1])) ends |= kMapRoadOffLast;
+        out[r] = ends;
+    }
+}
+
 int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
                       const MapLabel& l, float grow, int picked, std::uint16_t pickedName, bool litOnly) {
     if (!(v.mPerPx > 0.f)) return -1;

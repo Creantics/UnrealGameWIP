@@ -70,7 +70,13 @@ private:
 	void AddRoof(const ftcore::MapRect& R, float StepM, float WidthPx, const FLinearColor& Hatch, const FLinearColor& Lit,
 		const FLinearColor& Shade);
 	void AddSegment(FCanvasTriangleItem& To, const FVector2D& A, const FVector2D& B, float WidthPx, const FLinearColor& Color, bool bCaps);
+	// A segment shaded from ColorA at A to ColorB at B, each end capped or not on its own.
+	void AddShadedSegment(FCanvasTriangleItem& To, const FVector2D& A, const FVector2D& B, float WidthPx, const FLinearColor& ColorA,
+		const FLinearColor& ColorB, bool bCapA, bool bCapB);
 	void AddRoadSegment(const ftcore::Vec2& A, const ftcore::Vec2& B, float WidthPx, const FLinearColor& Color, bool bCaps);
+	// Road R's segment K (S0: how far along the road it starts, m), faded out toward an end that runs off the model
+	// (ftcore::mapRoadFade over FadeM): split where the fade starts, so the rest is drawn whole.
+	void AddFadedRoadSegment(size_t R, uint32 K, float S0, float FadeM, float WidthPx, const FLinearColor& Color, bool bCaps);
 	// A name's size at Px (screen px) in a face: measured once per name and face at a reference size, then scaled.
 	FVector2D NameSize(int32 Name, EFace Face, float Px);
 	FVector2D Measure(FStringView Text, EFace Face, float Px) const;
@@ -86,6 +92,8 @@ private:
 	std::vector<std::uint8_t> Enterable;
 	std::vector<ftcore::MapRect> Water;
 	std::vector<float> RoadBox; // per road: x0, y0, x1, y1 (m)
+	std::vector<float> RoadLen; // per road: its length (m)
+	std::vector<std::uint8_t> RoadOff; // per road: its ends that run off the model (ftcore::mapRoadOffEnds)
 	int32 SeaSide = 0;          // ftcore::mapSeaSide
 	ftcore::MapNames Names;
 	ftcore::MapLook Look; // built once at load from the model and the names

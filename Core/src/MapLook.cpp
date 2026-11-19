@@ -389,6 +389,47 @@ void mapBuildLook(const MiniMapModel& m, const MapNames* names, MapLook& out) {
                     if (best > 0.f) out.seaSpots.push_back(MapLook::SeaSpot{at, best});
                 }
         }
+        // The coast past the model's edges (mapIsSea there): the contours stop at the edge cells' middles.
+        const auto seaAt = [&](std::uint32_t x, std::uint32_t y) { return out.sea[static_cast<std::size_t>(y) * w + x] != 0; };
+        const bool offSea[2] = {out.seaSide < 0, out.seaSide > 0}; // west, east of the model
+        const auto colX = [&](std::uint32_t x) {
+            return x == 0 ? m.minX : x >= w ? m.maxX : std::min(m.maxX, m.minX + static_cast<float>(x) * out.cell);
+        };
+        const auto rowY = [&](std::uint32_t y) {
+            return y == 0 ? m.minY : y >= h ? m.maxY : std::min(m.maxY, m.minY + static_cast<float>(y) * out.cell);
+        };
+        const auto edge = [&](Vec2 a, Vec2 b) { out.edgeCoast.push_back(MapStroke{a, b, 0}); };
+        // North and south: the edge row runs on; a line out from the row's middle at each change along it.
+        for (int side = 0; side < 2; ++side) {
+            const std::uint32_t y = side == 0 ? 0 : h - 1;
+            const float mid = m.minY + (static_cast<float>(y) + 0.5f) * out.cell;
+            const float edgeY = side == 0 ? m.minY : m.maxY, outY = side == 0 ? m.minY - kMapEdgeRunM : m.maxY + kMapEdgeRunM;
+            for (std::uint32_t x = 0; x <= w; ++x) {
+                const bool left = x == 0 ? offSea[0] : seaAt(x - 1, y), right = x == w ? offSea[1] : seaAt(x, y);
+                if (left == right) continue;
+                const bool corner = x == 0 || x == w; // the edge column's own line runs to the corner
+                edge(Vec2{colX(x), corner ? edgeY : std::clamp(mid, m.minY, m.maxY)}, Vec2{colX(x), outY});
+            }
+        }
+        // West and east: the edge column against what lies off that side, joined to the contours where a run ends inside.
+        for (int side = 0; side < 2; ++side) {
+            const std::uint32_t col = side == 0 ? 0 : w - 1;
+            const float edgeX = side == 0 ? m.minX : m.maxX;
+            const float cx = std::clamp(m.minX + (static_cast<float>(col) + 0.5f) * out.cell, m.minX, m.maxX);
+            for (std::uint32_t y = 0; y < h;) {
+                if (seaAt(col, y) == offSea[side]) {
+                    ++y;
+                    continue;
+                }
+                std::uint32_t end = y;
+                while (end < h && seaAt(col, end) != offSea[side]) ++end;
+                const float a = rowY(y), b = rowY(end);
+                edge(Vec2{edgeX, a}, Vec2{edgeX, b});
+                if (y > 0) edge(Vec2{cx, a}, Vec2{edgeX, a});
+                if (end < h) edge(Vec2{cx, b}, Vec2{edgeX, b});
+                y = end;
+            }
+        }
         // Water the sea never reaches: its edge, as a canal's.
         std::vector<std::uint8_t> basin(cells, 0);
         bool basins = false;
@@ -398,6 +439,10 @@ void mapBuildLook(const MiniMapModel& m, const MapNames* names, MapLook& out) {
             signedField(basin, w, h, out.cell, field);
             contour(field, w, h, m.minX, m.minY, out.cell, 0.f, [&](Vec2 a, Vec2 b) { push(out, MapStrokeKind::Canal, a, b, 0); });
         }
+    } else if (out.seaSide != 0 && m.maxY > m.minY) {
+        // No grid: the model is all ground, the sea off its sea side all the way.
+        const float x = out.seaSide > 0 ? m.maxX : m.minX;
+        out.edgeCoast.push_back(MapStroke{Vec2{x, m.minY - kMapEdgeRunM}, Vec2{x, m.maxY + kMapEdgeRunM}, 0});
     }
     canalSides(m, out);
 
@@ -665,32 +710,28 @@ float mapLandShare(const MiniMapModel& m, const MapLook& look, const MapOverlayV
     const double fx0 = v.centre.x - hw, fx1 = v.centre.x + hw, fy0 = v.centre.y - hh, fy1 = v.centre.y + hh;
     const double frame = (fx1 - fx0) * (fy1 - fy0);
     if (!(frame > 0.0)) return 1.f;
-    double sea = 0.0;
+    // The model's part of the frame: the ground past its edges is not land (nothing is mapped there).
+    const double gx0 = std::max<double>(fx0, m.minX), gx1 = std::min<double>(fx1, m.maxX);
+    const double gy0 = std::max<double>(fy0, m.minY), gy1 = std::min<double>(fy1, m.maxY);
+    if (!(gx1 > gx0) || !(gy1 > gy0)) return 0.f;
+    double land = (gx1 - gx0) * (gy1 - gy0);
     if (look.w > 0 && look.h > 0 && look.seaSum.size() == static_cast<std::size_t>(look.w + 1) * (look.h + 1) && look.cell > 0.f) {
-        const double gx0 = std::max<double>(fx0, m.minX), gx1 = std::min<double>(fx1, m.maxX);
-        const double gy0 = std::max<double>(fy0, m.minY), gy1 = std::min<double>(fy1, m.maxY);
         const double c = look.cell;
         const double ax = (gx0 - look.x0) / c, bx = (gx1 - look.x0) / c;
-        if (gx1 > gx0 && gy1 > gy0) {
-            const double ay = (gy0 - look.y0) / c, by = (gy1 - look.y0) / c;
-            const double cellsIn = seaBelow(look, bx, by) - seaBelow(look, ax, by) - seaBelow(look, bx, ay) + seaBelow(look, ax, ay);
-            sea += std::max(cellsIn, 0.0) * c * c;
-        }
-        // Past the north and south edges, the edge row's sea (mapIsSea) at the band's height.
-        if (gx1 > gx0) {
-            auto rowSea = [&](double r) { // metres of sea across [gx0, gx1] in grid row r
-                return std::max(seaBelow(look, bx, r + 1) - seaBelow(look, ax, r + 1) - seaBelow(look, bx, r) + seaBelow(look, ax, r), 0.0) * c;
-            };
-            if (fy0 < m.minY) sea += rowSea(0.0) * (std::min<double>(fy1, m.minY) - fy0);
-            if (fy1 > m.maxY) sea += rowSea(static_cast<double>(look.h - 1)) * (fy1 - std::max<double>(fy0, m.maxY));
-        }
+        const double ay = (gy0 - look.y0) / c, by = (gy1 - look.y0) / c;
+        const double cellsIn = seaBelow(look, bx, by) - seaBelow(look, ax, by) - seaBelow(look, bx, ay) + seaBelow(look, ax, ay);
+        land -= std::max(cellsIn, 0.0) * c * c;
     }
-    if (look.seaSide > 0 && fx1 > m.maxX) sea += (fx1 - std::max<double>(fx0, m.maxX)) * (fy1 - fy0);
-    if (look.seaSide < 0 && fx0 < m.minX) sea += (std::min<double>(fx1, m.minX) - fx0) * (fy1 - fy0);
-    return static_cast<float>(std::clamp(1.0 - sea / frame, 0.0, 1.0));
+    return static_cast<float>(std::clamp(land / frame, 0.0, 1.0));
 }
 
 MapFrame mapOverlayFrame(const MiniMapModel& m, const MapLook& look, Vec2 focus, MapZoom z, float screenW, float screenH, float uiScale) {
+    // A screen of no size (under a pixel, or not a number) is framed as 1920 x 1080, as mapOverlayView does; a scale out of
+    // reason as 1; a focus not finite as the model's middle. The frame is always finite.
+    if (!(screenW >= 1.f && screenW <= kMapFrameMaxScreenPx)) screenW = 1920.f;
+    if (!(screenH >= 1.f && screenH <= kMapFrameMaxScreenPx)) screenH = 1080.f;
+    if (!(uiScale >= 0.1f && uiScale <= 10.f)) uiScale = 1.f;
+    if (!std::isfinite(focus.x) || !std::isfinite(focus.y)) focus = Vec2{0.5f * (m.minX + m.maxX), 0.5f * (m.minY + m.maxY)};
     MapFrame out;
     MapOverlayView v = mapOverlayView(focus, z, screenW, screenH, uiScale);
     float lo[2], hi[2]; // the centre's room, per axis
@@ -736,7 +777,10 @@ MapFrame mapOverlayFrame(const MiniMapModel& m, const MapLook& look, Vec2 focus,
                 sy += p.y;
                 ++n;
             }
-        if (n == 0) return out;
+        if (n == 0) { // no sea to move away from: what is short is the ground past the model, and no shift helps
+            out.reached = false;
+            return out;
+        }
         const float ax = c.x - static_cast<float>(sx / n), ay = c.y - static_cast<float>(sy / n);
         const float len = std::hypot(ax, ay);
         if (!(len > 1e-3f)) {

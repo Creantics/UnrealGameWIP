@@ -51,6 +51,7 @@ const float kOvRoadLinePx[ftcore::kMapRoadClasses] = {1.7f, 1.3f, 1.f, 0.9f}; //
 constexpr float kOvCasePx = 5.f;  // a road this wide on screen (px at 1080p) or more is cased: two gold edges
 constexpr float kOvEdgeLinePx = 1.2f;
 constexpr float kOvGlowPx = 7.f;
+constexpr float kOvRoadFadePx = 40.f; // a road that runs off the model fades out over this much of its end (px at 1080p)
 const FLinearColor kOvLabel(0.80f, 0.62f, 0.34f, 1.f);
 const FLinearColor kOvLabelDim(0.52f, 0.42f, 0.26f, 1.f);
 const FLinearColor kOvCursorLabel(1.f, 0.78f, 0.42f, 1.f);
@@ -161,6 +162,8 @@ FFTMapOverlay::FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& Wh
 	ftcore::mapWaterRuns(Model, Water);
 	SeaSide = ftcore::mapSeaSide(Model);
 	RoadBox.resize(Model.roads.size() * 4);
+	RoadLen.assign(Model.roads.size(), 0.f);
+	ftcore::mapRoadOffEnds(Model, RoadOff);
 	size_t Segments = 0;
 	for (size_t R = 0; R < Model.roads.size(); ++R)
 	{
@@ -173,6 +176,11 @@ FFTMapOverlay::FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& Wh
 			Y0 = FMath::Min(Y0, P.y);
 			X1 = FMath::Max(X1, P.x);
 			Y1 = FMath::Max(Y1, P.y);
+			if (K > 0)
+			{
+				const ftcore::Vec2 Q = Model.points[Road.first + K - 1];
+				RoadLen[R] += FMath::Sqrt((P.x - Q.x) * (P.x - Q.x) + (P.y - Q.y) * (P.y - Q.y));
+			}
 		}
 		const float Half = Road.width * 0.5f;
 		RoadBox[R * 4 + 0] = X0 - Half;
@@ -339,13 +347,19 @@ FFTMapOverlay::FFTMapOverlay(const ftcore::MiniMapModel& InModel, UTexture2D& Wh
 		NameText.Num(), Named, static_cast<int32>(Model.roads.size()), static_cast<int32>(Names.districts.size()),
 		static_cast<int32>(Names.places.size()), static_cast<int32>(Names.unmatched), Lit, static_cast<int32>(Enterable.size()),
 		static_cast<int32>(Water.size()), SeaSide, static_cast<int32>(SignStrokes.size()), Missing, PlanSide);
+	int32 OffEnds = 0;
+	for (const uint8 E : RoadOff)
+	{
+		OffEnds += (E & ftcore::kMapRoadOffFirst ? 1 : 0) + (E & ftcore::kMapRoadOffLast ? 1 : 0);
+	}
 	auto StrokeCount = [this](ftcore::MapStrokeKind Kind) { return static_cast<int32>(Look.strokes[static_cast<size_t>(Kind)].size()); };
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("MAPOVERLAY LOOK parks=%d yards=%d slivers=%d open=%d coast=%d waves=%d/%d/%d canal=%d hatch=%d dots=%d sea_spots=%d sea_edge=%d sea_name=%s ms=%.0f"),
+		TEXT("MAPOVERLAY LOOK parks=%d yards=%d slivers=%d open=%d coast=%d waves=%d/%d/%d canal=%d hatch=%d dots=%d sea_spots=%d sea_edge=%d edge_coast=%d road_off=%d sea_name=%s ms=%.0f"),
 		static_cast<int32>(Look.parks), static_cast<int32>(Look.yards), static_cast<int32>(Look.slivers), static_cast<int32>(Look.open),
 		StrokeCount(ftcore::MapStrokeKind::Coast), StrokeCount(ftcore::MapStrokeKind::Wave12), StrokeCount(ftcore::MapStrokeKind::Wave24),
 		StrokeCount(ftcore::MapStrokeKind::Wave40), StrokeCount(ftcore::MapStrokeKind::Canal), StrokeCount(ftcore::MapStrokeKind::ParkHatch),
 		StrokeCount(ftcore::MapStrokeKind::YardDot), static_cast<int32>(Look.seaSpots.size()), static_cast<int32>(SeaEdge.size()),
+		static_cast<int32>(Look.edgeCoast.size()), OffEnds,
 		NameText.IsValidIndex(Names.seaName) ? *NameText[Names.seaName] : TEXT("none"), LookMs);
 }
 
@@ -644,6 +658,12 @@ void FFTMapOverlay::AddRoof(const ftcore::MapRect& R, float StepM, float WidthPx
 
 void FFTMapOverlay::AddSegment(FCanvasTriangleItem& To, const FVector2D& Pa, const FVector2D& Pb, float WidthPx, const FLinearColor& Color, bool bCaps)
 {
+	AddShadedSegment(To, Pa, Pb, WidthPx, Color, Color, bCaps, bCaps);
+}
+
+void FFTMapOverlay::AddShadedSegment(FCanvasTriangleItem& To, const FVector2D& Pa, const FVector2D& Pb, float WidthPx, const FLinearColor& ColorA,
+	const FLinearColor& ColorB, bool bCapA, bool bCapB)
+{
 	FVector2D D = Pb - Pa;
 	const double Len = D.Size();
 	if (Len < 1e-3)
@@ -652,15 +672,70 @@ void FFTMapOverlay::AddSegment(FCanvasTriangleItem& To, const FVector2D& Pa, con
 	}
 	D /= Len;
 	const FVector2D N(-D.Y * WidthPx * 0.5f, D.X * WidthPx * 0.5f);
-	const FVector2D Cap = bCaps ? D * WidthPx * 0.5f : FVector2D::ZeroVector; // square caps close a road's joints
-	AddTri(To, Pa - Cap + N, Pb + Cap + N, Pb + Cap - N, Color);
-	AddTri(To, Pa - Cap + N, Pb + Cap - N, Pa - Cap - N, Color);
+	// Square caps close a road's joints.
+	const FVector2D A = bCapA ? Pa - D * WidthPx * 0.5f : Pa;
+	const FVector2D B = bCapB ? Pb + D * WidthPx * 0.5f : Pb;
+	FCanvasUVTri T0 = FTMapOverlayDetail::OvTri(A + N, B + N, B - N, ColorB);
+	T0.V0_Color = ColorA;
+	FCanvasUVTri T1 = FTMapOverlayDetail::OvTri(A + N, B - N, A - N, ColorA);
+	T1.V1_Color = ColorB;
+	To.TriangleList.Add(T0);
+	To.TriangleList.Add(T1);
 }
 
 void FFTMapOverlay::AddRoadSegment(const ftcore::Vec2& A, const ftcore::Vec2& B, float WidthPx, const FLinearColor& Color, bool bCaps)
 {
 	AddSegment(*Geo, FTMapOverlayDetail::OvV2(ftcore::mapOverlayToScreen(View, A)), FTMapOverlayDetail::OvV2(ftcore::mapOverlayToScreen(View, B)),
 		WidthPx, Color, bCaps);
+}
+
+void FFTMapOverlay::AddFadedRoadSegment(size_t R, uint32 K, float S0, float FadeM, float WidthPx, const FLinearColor& Color, bool bCaps)
+{
+	const ftcore::MapRoad& Road = Model.roads[R];
+	const ftcore::Vec2 A = Model.points[Road.first + K];
+	const ftcore::Vec2 B = Model.points[Road.first + K + 1];
+	const uint8 Off = R < RoadOff.size() ? RoadOff[R] : 0;
+	const float Len = R < RoadLen.size() ? RoadLen[R] : 0.f;
+	if (Off == 0 || !(FadeM > 0.f))
+	{
+		AddRoadSegment(A, B, WidthPx, Color, bCaps);
+		return;
+	}
+	const float SegLen = FMath::Sqrt((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
+	if (SegLen < 1e-4f)
+	{
+		return;
+	}
+	// The pieces: cut where the fade begins at each off end, inside this segment.
+	float Cut[4] = {0.f, 0.f, 0.f, SegLen};
+	int32 Cuts = 1;
+	const float C0 = (Off & ftcore::kMapRoadOffFirst) ? FadeM - S0 : -1.f;
+	const float C1 = (Off & ftcore::kMapRoadOffLast) ? Len - FadeM - S0 : -1.f;
+	for (const float C : {FMath::Min(C0, C1), FMath::Max(C0, C1)})
+	{
+		if (C > Cut[Cuts - 1] && C < SegLen)
+		{
+			Cut[Cuts++] = C;
+		}
+	}
+	Cut[Cuts] = SegLen;
+	for (int32 I = 0; I < Cuts; ++I)
+	{
+		const float T0 = Cut[I], T1 = Cut[I + 1];
+		const float F0 = ftcore::mapRoadFade(S0 + T0, Len, Off, FadeM), F1 = ftcore::mapRoadFade(S0 + T1, Len, Off, FadeM);
+		if (F0 <= 0.f && F1 <= 0.f)
+		{
+			continue;
+		}
+		const ftcore::Vec2 P0{A.x + (B.x - A.x) * (T0 / SegLen), A.y + (B.y - A.y) * (T0 / SegLen)};
+		const ftcore::Vec2 P1{A.x + (B.x - A.x) * (T1 / SegLen), A.y + (B.y - A.y) * (T1 / SegLen)};
+		FLinearColor Ca = Color, Cb = Color;
+		Ca.A *= F0;
+		Cb.A *= F1;
+		// Caps only at the segment's own ends, so the cut pieces do not overlap.
+		AddShadedSegment(*Geo, FTMapOverlayDetail::OvV2(ftcore::mapOverlayToScreen(View, P0)),
+			FTMapOverlayDetail::OvV2(ftcore::mapOverlayToScreen(View, P1)), WidthPx, Ca, Cb, bCaps && I == 0, bCaps && I + 1 == Cuts);
+	}
 }
 
 FVector2D FFTMapOverlay::Measure(FStringView Text, EFace Face, float Px) const
@@ -922,8 +997,9 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	};
 
 	Geo->TriangleList.Reset();
-	// The ground runs on past the map's area (the framing counts it as land); the sea past the area on the sea's side,
-	// at full height, and past the north and south edges over their sea (ftcore::mapIsSea).
+	// The ground runs on past the map's area (drawn, though the framing does not count it as land: nothing is mapped
+	// there); the sea past the area on the sea's side, at full height, and past the north and south edges over their sea
+	// (ftcore::mapIsSea).
 	{
 		const ftcore::Vec2 A = ftcore::mapOverlayToScreen(View, {Model.minX, Model.minY});
 		const ftcore::Vec2 B = ftcore::mapOverlayToScreen(View, {Model.maxX, Model.maxY});
@@ -980,7 +1056,21 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 		Strokes(Waves[K], FinePx, GoldAt(kOvWaveAlpha[K]));
 	}
 	Strokes(ftcore::MapStrokeKind::Canal, FinePx, GoldAt(kOvCanalAlpha));
-	Strokes(ftcore::MapStrokeKind::Coast, FMath::Max(kOvRoadLinePx[0] * 0.5f * S, kOvFinePx), GoldAt(kOvCoastAlpha));
+	const float CoastPx = FMath::Max(kOvRoadLinePx[0] * 0.5f * S, kOvFinePx);
+	Strokes(ftcore::MapStrokeKind::Coast, CoastPx, GoldAt(kOvCoastAlpha));
+	// The coast past the model's edges, wherever the sea drawn there meets ground: level or upright lines, clipped to the
+	// view (they run on for kilometres).
+	for (const ftcore::MapStroke& Sk : Look.edgeCoast)
+	{
+		const float X0 = FMath::Max(FMath::Min(Sk.a.x, Sk.b.x), Lo.x), X1 = FMath::Min(FMath::Max(Sk.a.x, Sk.b.x), Hi.x);
+		const float Y0 = FMath::Max(FMath::Min(Sk.a.y, Sk.b.y), Lo.y), Y1 = FMath::Min(FMath::Max(Sk.a.y, Sk.b.y), Hi.y);
+		if (X1 < X0 || Y1 < Y0)
+		{
+			continue;
+		}
+		AddSegment(*Geo, OvV2(ftcore::mapOverlayToScreen(View, {X0, Y0})), OvV2(ftcore::mapOverlayToScreen(View, {X1, Y1})), CoastPx,
+			GoldAt(kOvCoastAlpha), false);
+	}
 	// The blocks: dark roofs; from mid, a faint hatch and lit edges (until the top-down relief bake replaces them).
 	const bool bRoofs = Zoom != ftcore::MapZoom::Far;
 	const float HatchM = Zoom == ftcore::MapZoom::Near ? 5.f * S * View.mPerPx : 0.f;
@@ -1001,6 +1091,8 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	// full width first, the dark inside after, so the junctions join), then the cursor's road lit along its whole length.
 	auto IsLit = [&](size_t R) { return ftcore::mapRoadLit(Names, R, Picked, PickedName); };
 	const ftcore::MapRoadInk Ink = OvInk(S);
+	// Roads that run off the model fade out over their last kOvRoadFadePx, so none stops dead at the model's edge.
+	const float FadeM = kOvRoadFadePx * S * View.mPerPx;
 	enum EPass { Glow, Gold, Fill, LitPass };
 	for (int32 Pass = Glow; Pass <= LitPass; ++Pass)
 	{
@@ -1052,9 +1144,12 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					Color = kOvLit;
 					break;
 				}
+				float S0 = 0.f;
 				for (uint32 K = 0; K + 1 < Road.count && Road.first + K + 1 < Model.points.size(); ++K)
 				{
-					AddRoadSegment(Model.points[Road.first + K], Model.points[Road.first + K + 1], Width, Color, bCaps);
+					AddFadedRoadSegment(R, K, S0, FadeM, Width, Color, bCaps);
+					const ftcore::Vec2 A = Model.points[Road.first + K], B = Model.points[Road.first + K + 1];
+					S0 += FMath::Sqrt((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
 				}
 			}
 		}

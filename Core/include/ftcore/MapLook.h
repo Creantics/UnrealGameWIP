@@ -52,6 +52,8 @@ inline constexpr float kMapYardDotStepM = 3.f;
 // middle kMapKeepInner of the frame (each axis) at Mid and Near.
 inline constexpr float kMapLandShareMin = 0.75f;
 inline constexpr float kMapKeepInner = 0.8f;
+// How far the coast past the model's north and south edges runs on (m), as the sea drawn there does.
+inline constexpr float kMapEdgeRunM = 20000.f;
 
 struct MapLook {
     // The sea, per cell of the model's water grid (same size and origin): 1 for the sea. Water the sea never reaches
@@ -69,6 +71,12 @@ struct MapLook {
     std::array<std::vector<std::uint32_t>, kMapStrokeKinds> tileFirst;
     std::uint32_t tilesW = 0, tilesH = 0;
     float tileX0 = 0.f, tileY0 = 0.f;
+    // The coast past the model's edges, where the sea meets ground that the grid's contours never reach (mapIsSea): along
+    // an edge column whose cells differ from what lies off that side (the sea side's strip, else ground), and north and
+    // south of the model, from the edge row's middle out to kMapEdgeRunM, at each change between sea and ground along that
+    // row (its ends against what lies off the sides). Joins of half a cell meet the contours where a run in an edge column
+    // ends inside the model. Every line is level or upright (a.x == b.x or a.y == b.y); the host clips them to its view.
+    std::vector<MapStroke> edgeCoast;
     // The sea's deepest cell per 8 x 8 cells (its distance to land, m): where its name can go.
     struct SeaSpot {
         Vec2 at{};
@@ -85,18 +93,22 @@ FTCORE_API void mapBuildLook(const MiniMapModel& m, const MapNames* names, MapLo
 // Whether a world point is sea as the overlay draws it: a sea cell in the model, off the model on its sea side, or
 // north or south of the model over a sea cell of its edge row (the edge rows run on past the edge).
 FTCORE_API bool mapIsSea(const MiniMapModel& m, const MapLook& look, Vec2 world);
-// The land's share of view v's frame (0..1): everything but the sea as drawn (mapIsSea: the model's sea cells, the
-// sea side's strip at the frame's full height, and the edge rows' sea run on north and south). Canals, basins and the
-// hills off the model's other sides are land.
+// The land's share of view v's frame (0..1): the model's own ground in the frame (every part of the model that is not a
+// sea cell; canals and basins are land) over the whole frame. The ground past the model's edges is not land: nothing is
+// mapped there. 1 for a frame of no area.
 FTCORE_API float mapLandShare(const MiniMapModel& m, const MapLook& look, const MapOverlayView& v);
 
 // The frame for a player (or cursor) at `focus`. Mid and Near: centred on the focus (held inside the model as
-// mapOverlayClampCentre does), then, when the sea takes more than a quarter of it, moved straight away from the sea
-// (west for an east sea) by the least amount that brings the land to kMapLandShareMin, never so far that the focus
-// leaves the middle kMapKeepInner of the frame. Far: the scale fits the land's bounds (kMapFarMargin all round, at
+// mapOverlayClampCentre does), then, when its land (mapLandShare) is under kMapLandShareMin, moved straight away from
+// the sea (west for an east sea) by the least amount that brings the land to kMapLandShareMin, never so far that the
+// focus leaves the middle kMapKeepInner of the frame. Far: the scale fits the land's bounds (kMapFarMargin all round, at
 // least kMapFarOverMid times Mid's), centred as near the focus as keeps the land's bounds in the frame, then moved away
-// from the sea in the same way inside that room. When no allowed shift reaches the share, the frame takes the best
-// share found (the least shift among equals) and `reached` is false.
+// from the sea in the same way inside that room. When no allowed shift reaches the share (no sea on screen to move from
+// included), the frame takes the best share found (the least shift among equals) and `reached` is false. A screen
+// under 1 px or over kMapFrameMaxScreenPx
+// either way (or not a number) is framed as 1920 x 1080, a uiScale outside 0.1..10 as 1, a focus not finite as the
+// model's middle: the frame is always finite.
+inline constexpr float kMapFrameMaxScreenPx = 65536.f;
 struct MapFrame {
     MapOverlayView view;
     float land = 1.f;

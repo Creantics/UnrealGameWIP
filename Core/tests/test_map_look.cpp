@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -68,29 +69,32 @@ TEST_CASE("map look: the sea is the water that reaches the sea-side edge; land b
     CHECK_FALSE(coastInland);
 }
 
-TEST_CASE("map look: off-model sea counts as sea, the other sides as land, the edge rows run on north and south") {
+TEST_CASE("map look: the land share is the model's own ground; the sea and the ground past the model's edges are not land") {
     const MiniMapModel m = strip();
     MapLook look;
     mapBuildLook(m, nullptr, look);
     // Near (0.6 m/px at 1080p: 1152 x 648 m) centred on the east edge: 500 m of model sea and 576 m off the model.
     MapOverlayView v = mapOverlayView({2000.f, 600.f}, MapZoom::Near, 1920.f, 1080.f);
     CHECK(mapLandShare(m, look, v) == doctest::Approx(76.f / 1152.f).epsilon(1e-3));
-    // On the west edge: half the frame off the model, all of it land.
+    // On the west edge: half the frame off the model, where nothing is mapped: not land.
     v.centre = Vec2{0.f, 600.f};
-    CHECK(mapLandShare(m, look, v) == doctest::Approx(1.f));
+    CHECK(mapLandShare(m, look, v) == doctest::Approx(0.5f).epsilon(1e-4));
+    // Wholly off the model: no land at all.
+    v.centre = Vec2{-2000.f, 600.f};
+    CHECK(mapLandShare(m, look, v) == doctest::Approx(0.f));
     // A share is exact for a part cell: the frame's edge 2 m into the first sea cell column.
     v.centre = Vec2{1502.f - 576.f, 600.f};
     CHECK(mapLandShare(m, look, v) == doctest::Approx(1.f - 2.f / 1152.f).epsilon(1e-4));
-    // North and south of the model the edge rows run on, so the share counts the sea that is drawn there: at the
-    // north-east corner (frame x 924..2076, y -324..324) the sea is x 1500..2076 at the frame's full height.
+    // North and south of the model the edge rows run on as sea and ground, but neither is land: at the north-east corner
+    // (frame x 924..2076, y -324..324) the land is the model's ground alone, x 924..1500, y 0..324.
     CHECK(mapIsSea(m, look, {1700.f, -50.f}));
     CHECK_FALSE(mapIsSea(m, look, {1000.f, -50.f}));
     CHECK(mapIsSea(m, look, {1700.f, 1250.f}));
     CHECK_FALSE(mapIsSea(m, look, {1000.f, 1250.f}));
     v.centre = Vec2{1500.f, 0.f};
-    CHECK(mapLandShare(m, look, v) == doctest::Approx(576.f / 1152.f).epsilon(1e-4));
+    CHECK(mapLandShare(m, look, v) == doctest::Approx(0.25f).epsilon(1e-4));
     v.centre = Vec2{1500.f, 1200.f};
-    CHECK(mapLandShare(m, look, v) == doctest::Approx(576.f / 1152.f).epsilon(1e-4));
+    CHECK(mapLandShare(m, look, v) == doctest::Approx(0.25f).epsilon(1e-4));
 }
 
 TEST_CASE("map look: a dry margin of up to four rows at the south or north edge takes the sea; a deeper dry band is a shore") {
@@ -219,15 +223,18 @@ TEST_CASE("map look: when three quarters can't be reached, the frame takes the b
     CHECK(f.view.centre.x >= 1276.f - 460.8f / 40.f - 0.01f);
 }
 
-TEST_CASE("map look: Far fits the land, keeps it whole, and holds the sea to a quarter with the sea on one side") {
+TEST_CASE("map look: Far fits the land and keeps it whole; its share is honest, so no shift reaches three quarters") {
     const MiniMapModel m = strip();
     MapLook look;
     mapBuildLook(m, nullptr, look);
     const MapFrame f = mapOverlayFrame(m, look, {1400.f, 600.f}, MapZoom::Far, 1920.f, 1080.f);
-    CHECK(f.reached);
-    CHECK(f.land >= kMapLandShareMin);
     // The scale fits the land (1500 x 1200 m in 92% of the screen: 1.21 m/px) but is never nearer than 1.25 x Mid.
     CHECK(f.view.mPerPx == doctest::Approx(kMapZoomMPerPx[1] * kMapFarOverMid));
+    // 3360 x 1890 m holding all 1500 x 1200 m of land: no frame in the room holds more, so it stays on the player.
+    CHECK_FALSE(f.reached);
+    CHECK(f.land == doctest::Approx(1500.f * 1200.f / (3360.f * 1890.f)).epsilon(1e-3));
+    CHECK(f.view.centre.x == doctest::Approx(1400.f));
+    CHECK(f.view.centre.y == doctest::Approx(600.f));
     // Every land cell is in the frame.
     const Vec2 lo = mapOverlayFromScreen(f.view, {0.f, 0.f}), hi = mapOverlayFromScreen(f.view, {1920.f, 1080.f});
     CHECK(lo.x <= look.landX0);
@@ -240,7 +247,8 @@ TEST_CASE("map look: Far fits the land, keeps it whole, and holds the sea to a q
     mapBuildLook(wide, nullptr, wl);
     const MapFrame w = mapOverlayFrame(wide, wl, {6900.f, 300.f}, MapZoom::Far, 1920.f, 1080.f);
     CHECK(w.view.mPerPx == doctest::Approx(7000.f / (1920.f * (1.f - 2.f * kMapFarMargin))));
-    CHECK(w.land >= kMapLandShareMin);
+    CHECK_FALSE(w.reached);
+    CHECK(w.land == doctest::Approx(7000.f * 600.f / (1920.f * 1080.f * w.view.mPerPx * w.view.mPerPx)).epsilon(1e-3));
 }
 
 TEST_CASE("map look: the coast is a smooth line at the water's edge, the waves at 12, 24 and 40 m out") {
@@ -404,9 +412,11 @@ TEST_CASE("map look: blocks are the empty ground between roads, buildings and wa
         CHECK_FALSE(mapStrokeShown(s, MapZoom::Far));
     });
     CHECK(dots > 0);
-    // No water grid: everything is land; no coast.
+    // No water grid: the model is all land (the ground past it none); no coast.
     CHECK(look.strokes[static_cast<std::size_t>(MapStrokeKind::Coast)].empty());
-    CHECK(mapLandShare(m, look, mapOverlayView({100.f, 100.f}, MapZoom::Near, 1920.f, 1080.f)) == doctest::Approx(1.f));
+    CHECK(look.edgeCoast.empty());
+    CHECK(mapLandShare(m, look, mapOverlayView({100.f, 100.f}, MapZoom::Near, 1920.f, 1080.f)) ==
+          doctest::Approx(200.f * 200.f / (1152.f * 648.f)).epsilon(1e-4));
 }
 
 TEST_CASE("map look: ground that opens onto the sea is shore, not a block, even with a park's point on it") {
@@ -527,6 +537,13 @@ void checkSameLook(const MapLook& a, const MapLook& b) {
         CHECK(differ == 0);
         CHECK(a.tileFirst[static_cast<std::size_t>(k)] == b.tileFirst[static_cast<std::size_t>(k)]);
     }
+    REQUIRE(a.edgeCoast.size() == b.edgeCoast.size());
+    for (std::size_t i = 0; i < a.edgeCoast.size(); ++i) {
+        CHECK(a.edgeCoast[i].a.x == b.edgeCoast[i].a.x);
+        CHECK(a.edgeCoast[i].a.y == b.edgeCoast[i].a.y);
+        CHECK(a.edgeCoast[i].b.x == b.edgeCoast[i].b.x);
+        CHECK(a.edgeCoast[i].b.y == b.edgeCoast[i].b.y);
+    }
     CHECK(a.tilesW == b.tilesW);
     CHECK(a.tilesH == b.tilesH);
     CHECK(a.tileX0 == b.tileX0);
@@ -583,7 +600,8 @@ TEST_CASE("map look edges: building into a look that held another model gives th
 }
 
 TEST_CASE("map look edges: no roads and no water grid; an empty model; a one-point road") {
-    // No roads, no water grid: no sea, no coast, no waves, no sea name; land everywhere, every zoom reached.
+    // No roads, no water grid: no sea, no coast, no waves, no sea name; the model is all land, but every frame is bigger
+    // than it and the ground past it is not land, so no zoom reaches three quarters (with no sea, nothing to move from).
     MiniMapModel m;
     m.maxX = 300.f;
     m.maxY = 200.f;
@@ -601,8 +619,8 @@ TEST_CASE("map look edges: no roads and no water grid; an empty model; a one-poi
     for (int z = 0; z < kMapZooms; ++z) {
         CAPTURE(z);
         const MapFrame f = mapOverlayFrame(m, look, Vec2{150.f, 100.f}, static_cast<MapZoom>(z), 1920.f, 1080.f);
-        CHECK(f.reached);
-        CHECK(f.land == doctest::Approx(1.f));
+        CHECK_FALSE(f.reached);
+        CHECK(f.land == doctest::Approx(300.f * 200.f / (1920.f * 1080.f * f.view.mPerPx * f.view.mPerPx)).epsilon(1e-4));
         Vec2 at;
         CHECK_FALSE(mapSeaLabelAt(m, look, f.view, 120.f, 20.f, at));
     }
@@ -761,4 +779,181 @@ TEST_CASE("map look: a water name on the grid's water stays within reach of its 
     CHECK(std::hypot(seat.x - 165.f, seat.y - 200.f) <= kMapWaterReachM);
     checkSeat(m, n, look, one, MapZoom::Mid, l, kMapLabelHaloPx);
     CHECK(mapWaterLabelAt(m, n, look, one, MapZoom::Mid, ink, {165.f, 200.f}, 60.f, 19.f, kMapLabelHaloPx, l, -1, kMapNoName, 10.f) == MapWaterSeat::NoSeat);
+}
+
+namespace {
+
+// Whether an edge-coast line stands upright at some x in (x0, x1] across height y.
+bool edgeLineBetween(const MapLook& look, float x0, float x1, float y) {
+    for (const MapStroke& s : look.edgeCoast)
+        if (s.a.x == s.b.x && s.a.x > x0 && s.a.x <= x1 && y >= std::min(s.a.y, s.b.y) && y <= std::max(s.a.y, s.b.y)) return true;
+    return false;
+}
+
+// The edge coast agrees with mapIsSea past the model: along the lines 60 m north and south of it, and across its west
+// and east edges at every metre, sea and ground differ exactly where a line stands; and every line has sea on one side.
+void checkEdgeCoast(const MiniMapModel& m, const MapLook& look) {
+    for (const float y : {m.minY - 60.f, m.maxY + 60.f}) {
+        CAPTURE(y);
+        std::size_t wrong = 0;
+        for (float x = m.minX - 500.5f; x < m.maxX + 500.f; x += 1.f) {
+            const bool differ = mapIsSea(m, look, {x, y}) != mapIsSea(m, look, {x + 1.f, y});
+            wrong += differ != edgeLineBetween(look, x, x + 1.f, y) ? 1 : 0;
+        }
+        CHECK(wrong == 0);
+    }
+    std::size_t wrongSides = 0;
+    for (float y = m.minY + 0.5f; y < m.maxY; y += 1.f) {
+        const bool w = mapIsSea(m, look, {m.minX - 0.5f, y}) != mapIsSea(m, look, {m.minX + 0.5f, y});
+        const bool e = mapIsSea(m, look, {m.maxX - 0.5f, y}) != mapIsSea(m, look, {m.maxX + 0.5f, y});
+        wrongSides += w != edgeLineBetween(look, m.minX - 0.5f, m.minX + 0.5f, y) ? 1 : 0;
+        wrongSides += e != edgeLineBetween(look, m.maxX - 0.5f, m.maxX + 0.5f, y) ? 1 : 0;
+    }
+    CHECK(wrongSides == 0);
+    for (const MapStroke& s : look.edgeCoast) {
+        CHECK((s.a.x == s.b.x || s.a.y == s.b.y));
+        const Vec2 mid{0.5f * (s.a.x + s.b.x), 0.5f * (s.a.y + s.b.y)};
+        const Vec2 off = s.a.x == s.b.x ? Vec2{0.5f, 0.f} : Vec2{0.f, 0.5f};
+        CAPTURE(mid.x);
+        CAPTURE(mid.y);
+        CHECK(mapIsSea(m, look, {mid.x - off.x, mid.y - off.y}) != mapIsSea(m, look, {mid.x + off.x, mid.y + off.y}));
+    }
+}
+
+} // namespace
+
+TEST_CASE("map look: a coast is drawn wherever the sea past the model's edges meets ground, and nowhere else") {
+    // The strip: the coast at x 1500 runs on north and south from the edge rows' middles; none along the east edge (sea
+    // both sides) or the west (ground both sides).
+    const MiniMapModel m = strip();
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    REQUIRE(look.edgeCoast.size() == 2);
+    for (const MapStroke& s : look.edgeCoast) {
+        CHECK(s.a.x == doctest::Approx(1500.f));
+        CHECK(s.b.x == doctest::Approx(1500.f));
+        CHECK(s.level == 0);
+    }
+    CHECK(look.edgeCoast[0].a.y == doctest::Approx(2.f));
+    CHECK(look.edgeCoast[0].b.y == doctest::Approx(-kMapEdgeRunM));
+    CHECK(look.edgeCoast[1].a.y == doctest::Approx(1198.f));
+    CHECK(look.edgeCoast[1].b.y == doctest::Approx(1200.f + kMapEdgeRunM));
+    checkEdgeCoast(m, look);
+    // Land against the east edge (the sea past it): a spit at y 400..600, its line on the edge joined to the contour at
+    // both ends; and a corner at the north-east, whose line runs on north from the corner itself.
+    const MiniMapModel spit = waterModel(2000.f, 1200.f, [](float x, float y) {
+        return x >= 1500.f && !(x >= 1800.f && y >= 400.f && y < 600.f) && !(x >= 1800.f && y < 100.f);
+    });
+    MapLook sl;
+    mapBuildLook(spit, nullptr, sl);
+    bool side = false, corner = false, joins = false;
+    for (const MapStroke& s : sl.edgeCoast) {
+        side = side || (s.a.x == 2000.f && s.b.x == 2000.f && std::abs(s.a.y - 400.f) < 0.01f && std::abs(s.b.y - 600.f) < 0.01f);
+        corner = corner || (s.a.x == 2000.f && s.b.x == 2000.f && std::abs(s.a.y) < 0.01f && std::abs(s.b.y + kMapEdgeRunM) < 0.01f);
+        joins = joins || (std::abs(s.a.y - 400.f) < 0.01f && std::abs(s.a.x - 1998.f) < 0.01f && s.b.x == 2000.f);
+    }
+    CHECK(side);
+    CHECK(corner);
+    CHECK(joins);
+    checkEdgeCoast(spit, sl);
+    // A sea on the west: its coast runs on at x 200; the ground past the east edge meets no sea.
+    const MiniMapModel west = waterModel(800.f, 600.f, [](float x, float) { return x < 200.f; });
+    MapLook wl;
+    mapBuildLook(west, nullptr, wl);
+    REQUIRE(wl.seaSide == -1);
+    REQUIRE(wl.edgeCoast.size() == 2);
+    checkEdgeCoast(west, wl);
+    // No water grid: no sea side, no edge coast.
+    MiniMapModel bare;
+    bare.maxX = 300.f;
+    bare.maxY = 200.f;
+    MapLook bl;
+    mapBuildLook(bare, nullptr, bl);
+    CHECK(bl.edgeCoast.empty());
+}
+
+TEST_CASE("map look: roads that run off the model are found by their ends, and fade out there") {
+    MiniMapModel m;
+    m.maxX = 250.f;
+    m.maxY = 150.f;
+    auto road = [&](std::initializer_list<Vec2> pts) {
+        MapRoad r;
+        r.first = static_cast<std::uint32_t>(m.points.size());
+        r.count = static_cast<std::uint32_t>(pts.size());
+        for (const Vec2 p : pts) m.points.push_back(p);
+        m.roads.push_back(r);
+    };
+    // The roads' bounds: x 0..200, y 10..100.
+    road({{0.f, 50.f}, {100.f, 50.f}});    // runs off west at its first end
+    road({{100.f, 50.f}, {100.f, 100.f}}); // runs off south at its last end
+    road({{100.f, 50.f}, {193.f, 50.f}});  // a dead end 7 m short of the east bound: not off
+    road({{200.f, 10.f}, {200.f, 98.f}});  // both ends on the east bound
+    road({{0.f, 52.f}});                   // one point on the bound: both ends
+    std::vector<std::uint8_t> off;
+    mapRoadOffEnds(m, off);
+    REQUIRE(off.size() == 5);
+    CHECK(off[0] == kMapRoadOffFirst);
+    CHECK(off[1] == kMapRoadOffLast);
+    CHECK(off[2] == 0);
+    CHECK(off[3] == (kMapRoadOffFirst | kMapRoadOffLast));
+    CHECK(off[4] == (kMapRoadOffFirst | kMapRoadOffLast));
+    // A wider touch takes the dead end too.
+    mapRoadOffEnds(m, off, 8.f);
+    CHECK(off[2] == kMapRoadOffLast);
+    // A road whose points run past the list is skipped, not read.
+    MapRoad bad;
+    bad.first = static_cast<std::uint32_t>(m.points.size());
+    bad.count = 3;
+    m.roads.push_back(bad);
+    mapRoadOffEnds(m, off);
+    REQUIRE(off.size() == 6);
+    CHECK(off[5] == 0);
+    // The fade: 0 at an off end, straight up to 1 at fadeM, 1 elsewhere.
+    CHECK(mapRoadFade(0.f, 100.f, kMapRoadOffFirst, 10.f) == doctest::Approx(0.f));
+    CHECK(mapRoadFade(5.f, 100.f, kMapRoadOffFirst, 10.f) == doctest::Approx(0.5f));
+    CHECK(mapRoadFade(10.f, 100.f, kMapRoadOffFirst, 10.f) == doctest::Approx(1.f));
+    CHECK(mapRoadFade(100.f, 100.f, kMapRoadOffFirst, 10.f) == doctest::Approx(1.f));
+    CHECK(mapRoadFade(100.f, 100.f, kMapRoadOffLast, 10.f) == doctest::Approx(0.f));
+    CHECK(mapRoadFade(95.f, 100.f, kMapRoadOffLast, 10.f) == doctest::Approx(0.5f));
+    CHECK(mapRoadFade(0.f, 100.f, kMapRoadOffLast, 10.f) == doctest::Approx(1.f));
+    CHECK(mapRoadFade(5.f, 10.f, kMapRoadOffFirst | kMapRoadOffLast, 10.f) == doctest::Approx(0.5f));
+    CHECK(mapRoadFade(0.f, 100.f, 0, 10.f) == doctest::Approx(1.f));
+    CHECK(mapRoadFade(0.f, 100.f, kMapRoadOffFirst, 0.f) == doctest::Approx(1.f));
+    CHECK(mapRoadFade(-3.f, 100.f, kMapRoadOffFirst, 10.f) == doctest::Approx(0.f));
+}
+
+TEST_CASE("map look edges: a screen of no size, or not a number, still gives a finite frame") {
+    const MiniMapModel m = strip();
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    struct Case {
+        float w, h, ui;
+        Vec2 focus;
+    };
+    const Vec2 p{1400.f, 600.f};
+    const Case cases[] = {{0.f, 0.f, 1.f, p},       {-5.f, 100.f, 1.f, p},     {nan, 1080.f, 1.f, p},       {inf, 1080.f, 1.f, p},
+                          {1920.f, 1e-40f, 1.f, p}, {1920.f, inf, 1.f, p},     {1920.f, 1080.f, nan, p},    {1920.f, 1080.f, inf, p},
+                          {1920.f, 1080.f, 0.f, p}, {1920.f, 1080.f, 1e-30f, p}, {1920.f, 1080.f, 1.f, {nan, 600.f}},
+                          {1920.f, 1080.f, 1.f, {1400.f, inf}}};
+    std::size_t bad = 0;
+    for (const Case& k : cases)
+        for (int z = 0; z < kMapZooms; ++z) {
+            const MapFrame f = mapOverlayFrame(m, look, k.focus, static_cast<MapZoom>(z), k.w, k.h, k.ui);
+            const bool ok = std::isfinite(f.view.centre.x) && std::isfinite(f.view.centre.y) && std::isfinite(f.view.mPerPx) &&
+                            f.view.mPerPx > 0.f && std::isfinite(f.view.screenW) && f.view.screenW >= 1.f &&
+                            std::isfinite(f.view.screenH) && f.view.screenH >= 1.f && f.land >= 0.f && f.land <= 1.f;
+            bad += ok ? 0 : 1;
+        }
+    CHECK(bad == 0);
+    // A screen of no size frames as the default screen does.
+    for (int z = 0; z < kMapZooms; ++z) {
+        CAPTURE(z);
+        const MapFrame a = mapOverlayFrame(m, look, p, static_cast<MapZoom>(z), 0.f, 0.f);
+        const MapFrame b = mapOverlayFrame(m, look, p, static_cast<MapZoom>(z), 1920.f, 1080.f);
+        CHECK(a.view.centre.x == b.view.centre.x);
+        CHECK(a.view.centre.y == b.view.centre.y);
+        CHECK(a.view.mPerPx == b.view.mPerPx);
+        CHECK(a.land == b.land);
+    }
 }

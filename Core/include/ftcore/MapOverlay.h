@@ -213,6 +213,24 @@ FTCORE_API float mapRoadLitPx(const MapRoad& road, const MapOverlayView& v, cons
 // Whether road r is lit for the cursor: the picked road, and every road carrying `pickedName` (the picked road's own
 // name; kMapNoName lights the picked road alone). Nothing is lit when picked < 0.
 FTCORE_API bool mapRoadLit(const MapNames& n, std::size_t r, int picked, std::uint16_t pickedName);
+// The roads that run off the model: per road, bit 1 when its first point and bit 2 when its last point lies within touchM
+// of the bounds of all the roads' points (the road net is cut at the area's edge there; a dead end stops short of it).
+// out is resized to the road count (allocates; once, at load).
+inline constexpr float kMapRoadEdgeTouchM = 4.f;
+inline constexpr std::uint8_t kMapRoadOffFirst = 1, kMapRoadOffLast = 2;
+FTCORE_API void mapRoadOffEnds(const MiniMapModel& m, std::vector<std::uint8_t>& out, float touchM = kMapRoadEdgeTouchM);
+// A road's ink at distance s (m) along it, of len, fading out where it runs off the model: 0 at an off end (`ends`, from
+// mapRoadOffEnds), rising straight to 1 at fadeM from it; 1 everywhere when fadeM <= 0 or no end runs off.
+inline float mapRoadFade(float s, float len, std::uint8_t ends, float fadeM) {
+    if (!(fadeM > 0.f)) return 1.f;
+    float a = 1.f;
+    if (ends & kMapRoadOffFirst) a = s / fadeM;
+    if (ends & kMapRoadOffLast) {
+        const float b = (len - s) / fadeM;
+        a = b < a ? b : a;
+    }
+    return a < 0.f ? 0.f : a > 1.f ? 1.f : a;
+}
 // The first road whose ink at view v meets the label's box grown by `grow` px, or -1 for none: every road drawn at zoom
 // z (mapRoadShown) at mapRoadDrawnPx, and the lit roads at the wider of that and mapRoadLitPx, at every zoom (lit roads
 // are drawn at every zoom). litOnly tests the lit roads alone (a name set along its own road lies on it by design).
