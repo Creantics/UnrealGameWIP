@@ -1184,6 +1184,65 @@ TEST_CASE("crowd knot check: the one-step close-reaction stop is not a standing 
     }
 }
 
+TEST_CASE("crowd spawn cap: with one dead-end street in the spawn ring the target packs onto it; spawnNearMax spreads it") {
+    // One 100 m street, a dead end at each end, 60 m off the player: the only street in the spawn ring. With the cap off
+    // (the default) the streets' whole target lands on it and walks into its two ends. With it on, a spot that already
+    // has spawnNearMax members within spawnNearRadius is passed over.
+    CrowdGraph g;
+    REQUIRE(g.build({line({-50.f, 60.f}, {50.f, 60.f})}, loose()));
+    const Vec2 player{0.f, 0.f};
+    const Vec2 ends[2] = {{-50.f, 60.f}, {50.f, 60.f}};
+    struct Seen {
+        std::uint32_t live = 0, densest = 0, atEnds = 0;
+        std::uint64_t missDense = 0;
+    };
+    auto runWith = [&](std::uint32_t cap) {
+        CrowdTuning t; // as shipped: jitter, idling and the close-range rule on
+        t.spawnNearMax = cap;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 11));
+        Seen s;
+        for (int k = 0; k < 45 * 15; ++k) {
+            sim.tick(t.step, player, {0.f, 0.f});
+            if (k % 15 != 14) continue;
+            std::uint32_t atEnds = 0, densest = 0;
+            for (std::uint32_t i = 0; i < sim.capacity(); ++i) {
+                const CrowdAgentView& a = sim.agent(i);
+                if (!a.live || a.indoors) continue;
+                atEnds += dist(a.pos, ends[0]) < 10.f || dist(a.pos, ends[1]) < 10.f ? 1u : 0u;
+                std::uint32_t around = 0;
+                for (std::uint32_t j = 0; j < sim.capacity(); ++j) {
+                    const CrowdAgentView& b = sim.agent(j);
+                    around += j != i && b.live && !b.indoors && dist(a.pos, b.pos) < 10.f ? 1u : 0u;
+                }
+                densest = std::max(densest, around);
+            }
+            s.atEnds = std::max(s.atEnds, atEnds);
+            s.densest = std::max(s.densest, densest);
+        }
+        s.live = sim.liveCount();
+        s.missDense = sim.counts().missDense;
+        return s;
+    };
+    const Seen off = runWith(0), on = runWith(6);
+    MESSAGE("off: live " << off.live << ", densest " << off.densest << ", at the ends " << off.atEnds);
+    MESSAGE("on: live " << on.live << ", densest " << on.densest << ", at the ends " << on.atEnds << ", passed over " << on.missDense);
+    CHECK(off.missDense == 0u);
+    CHECK(on.missDense > 0u);
+    CHECK(off.live > 100u);
+    CHECK(on.live < off.live / 2);
+    CHECK(off.densest > 25u);
+    CHECK(on.densest < off.densest / 2);
+    CHECK(on.atEnds < off.atEnds / 2);
+
+    CrowdTuning u;
+    std::string err;
+    REQUIRE_MESSAGE(importCrowdTuning(R"({"population": {"spawnNearMax": 6, "spawnNearRadius": 12}})", u, &err), err);
+    CHECK(u.spawnNearMax == 6u);
+    CHECK(u.spawnNearRadius == doctest::Approx(12.f));
+    CHECK(CrowdTuning{}.spawnNearMax == 0u); // off unless the tuning file turns it on
+}
+
 TEST_CASE("crowd on a real street table (opt-in)") {
     const std::string path = envText("FT_CROWD_STREETS");
     if (path.empty()) return;

@@ -466,8 +466,21 @@ void CrowdSim::spawnSome(Vec2 player) {
         // The spot itself must lie in the ring (S-332: and out of sight): a member born past despawnDist was freed
         // again on the next step (the Strip's churn: 437 of 593 freed, 156 live of 300).
         const float at = dist(agents_[i].pos, player);
+        // Too many round the spot already (spawnNearMax; off at 0): this step's earlier spawns count too.
+        auto dense = [&]() {
+            if (tuning_.spawnNearMax == 0) return false;
+            const Vec2 q = agents_[i].pos;
+            const float nr = tuning_.spawnNearRadius;
+            std::uint32_t around = 0;
+            forEachNear(q, nr, [&](std::uint32_t j) {
+                if (j != i && agents_[j].state != CrowdState::Free) ++around;
+            });
+            for (std::uint32_t b = 0; b < bornCount_; ++b) around += dist2(born_[b], q) <= nr * nr ? 1u : 0u;
+            return around >= tuning_.spawnNearMax;
+        };
         std::uint64_t* miss = at < rMin || at > rMax ? &counts_.missSpotRing
                               : crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f) ? &counts_.missCrowded
+                              : dense()                                                ? &counts_.missDense
                               : viewCount_ > 0 && inView(agents_[i].pos, 10.f, 5.f) ? &counts_.missSpotView
                                                                                     : nullptr;
         if (miss) {

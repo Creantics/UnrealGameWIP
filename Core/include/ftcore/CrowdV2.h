@@ -180,6 +180,10 @@ struct CrowdTuning {
     float despawnDist = 180.f;
     float fillMin = 8.f;             // m: while under half the target (the first ticks), members appear this close
     std::uint32_t spawnPerStep = 8;
+    // A spawn spot with this many members already within spawnNearRadius is passed over (0 = off, the default): where
+    // little street lies in the spawn ring (one or two dead-end streets), the target would otherwise pack onto them.
+    std::uint32_t spawnNearMax = 0;
+    float spawnNearRadius = 10.f;    // m
     // movement
     float walkSpeed = 1.3f;          // m/s
     float walkSpeedJitter = 0.25f;   // +- m/s per member
@@ -327,6 +331,7 @@ struct CrowdCounts {
     // point, no free slot, the spot outside the ring, the spot crowded, the spot in a view. Despawns (all past
     // despawnDist, out of every view): within kCrowdNewborn s of the spawn (born out there) or later (walked out).
     std::uint64_t missNoStreet = 0, missSlot = 0, missSpotRing = 0, missCrowded = 0, missSpotView = 0;
+    std::uint64_t missDense = 0; // spawn spots passed over for spawnNearMax
     std::uint64_t despawnNewborn = 0, despawnWalkedOut = 0;
 };
 inline constexpr float kCrowdNewborn = 1.f;
