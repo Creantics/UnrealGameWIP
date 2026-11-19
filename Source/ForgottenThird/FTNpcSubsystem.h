@@ -20,6 +20,7 @@
 // runs the slice's scripted day once and logs every step as NPCSLICE lines (the doctest walk, in the game).
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
@@ -136,6 +137,11 @@ public:
 	bool ApplySaveJson(const FString& Json, FString& OutError);
 	// Back to the tables' baselines, nothing remembered (loading a save from before NPC memory, a new game).
 	void ResetMemory();
+	// A save's NPC block that loaded before the tables (ftcore::npcSaveBlockAction Hold): Load applies it once they are
+	// in, and a save made meanwhile writes it. A later block replaces it.
+	void HoldSaveJson(const FString& Json);
+	bool IsHoldingSave() const { return bHoldingSave; }
+	const FString& GetHeldSaveJson() const { return HeldSaveJson; }
 
 	// ---- for the slice run ----
 	// Stops following the world clock (the scripted day sets the memory clock itself).
@@ -170,6 +176,9 @@ private:
 	bool bReady = false;
 	bool bHoldClock = false;
 	uint32 LastMinute = MAX_uint32;
+	FString HeldSaveJson;
+	bool bHoldingSave = false;
+	FTimerHandle LateLoadTimer; // -NpcTablesHeld=<seconds> (test runs)
 
 	// The last pick per NPC, for the overlay.
 	TArray<int32> LastPick;

@@ -144,9 +144,11 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 	const UGameInstance* GI = Story->GetGameInstance();
 	UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
 	FString NpcError;
-	if (Npcs && !Npcs->IsReady())
+	if (Npcs && ftcore::npcSaveBlockAction(Npcs->IsReady(), NpcSaveJson.IsEmpty()) == ftcore::NpcSaveBlockAction::Hold)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory not loaded from the save: the NPC tables aren't loaded"));
+		// The tables load later (UFTNpcSubsystem::Load applies it then); a save made meanwhile writes this block.
+		Npcs->HoldSaveJson(NpcSaveJson);
+		UE_LOG(LogForgottenThird, Log, TEXT("NPC memory block held until the NPC tables load: %d chars."), NpcSaveJson.Len());
 	}
 	else if (Npcs && NpcSaveJson.IsEmpty())
 	{

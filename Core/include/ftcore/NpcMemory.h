@@ -520,4 +520,13 @@ constexpr std::string_view npcSaveBlockToWrite(bool tablesReady, std::string_vie
     return tablesReady ? captured : kept;
 }
 
+// What a host does with a loaded save's NPC block. Tables loaded: apply it, or reset everyone when it is empty (a save
+// from before NPC memory). Not loaded yet: hold it and ask again with tablesReady true once they load, so a save
+// loaded early still brings its NPCs back; while one is held, a save passes the held block as npcSaveBlockToWrite's
+// `kept`, and a later save's block replaces it.
+enum class NpcSaveBlockAction : std::uint8_t { Apply = 0, Reset = 1, Hold = 2 };
+constexpr NpcSaveBlockAction npcSaveBlockAction(bool tablesReady, bool blockEmpty) {
+    return !tablesReady ? NpcSaveBlockAction::Hold : blockEmpty ? NpcSaveBlockAction::Reset : NpcSaveBlockAction::Apply;
+}
+
 }  // namespace ftcore

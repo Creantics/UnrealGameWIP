@@ -166,6 +166,39 @@ TEST_CASE("npc save text: a save before the NPC tables load writes the slot's bl
     CHECK(npcSaveBlockToWrite(true, slotBlock, std::string_view{}) == slotBlock);
 }
 
+TEST_CASE("npc save text: a save loaded before the NPC tables is held, kept by a save meanwhile, applied when they load") {
+    Town a;
+    const std::uint16_t shop = a.npc("npc_shop_01");
+    const int delivery = a.t.deedIndex("delivery_made");
+    a.at(1, 9.0);
+    npcOnDelivery(*a.w, a.t, a.g, a.where(0), shop);
+    a.at(1, 12.0);
+    const std::string block = a.saveText();
+    REQUIRE(npcRecall(*a.w, a.t, shop, delivery, -1) != nullptr);
+
+    // The save loads while the tables aren't loaded: its block is held, not dropped (an empty one too).
+    CHECK(npcSaveBlockAction(false, block.empty()) == NpcSaveBlockAction::Hold);
+    CHECK(npcSaveBlockAction(false, true) == NpcSaveBlockAction::Hold);
+    const std::string held = block;
+    // A save made meanwhile writes the held block.
+    CHECK(npcSaveBlockToWrite(false, std::string_view{}, held) == block);
+
+    // The tables load into a world that remembers nothing; the held block is applied and the world writes it again.
+    Town b;
+    CHECK(npcRecall(*b.w, b.t, shop, delivery, -1) == nullptr);
+    REQUIRE(npcSaveBlockAction(true, held.empty()) == NpcSaveBlockAction::Apply);
+    NpcMemorySave read;
+    REQUIRE(decodeNpcMemorySave(held, read));
+    CHECK(npcApplySave(*b.w, b.t, b.lines, read).unknownIds.empty());
+    CHECK(b.saveText() == block);
+    CHECK(npcRecall(*b.w, b.t, shop, delivery, -1) != nullptr);
+
+    // A held empty block (a save from before NPC memory) resets everyone when the tables load; a loaded table set
+    // applies a block at once.
+    CHECK(npcSaveBlockAction(true, true) == NpcSaveBlockAction::Reset);
+    CHECK(npcSaveBlockAction(true, false) == NpcSaveBlockAction::Apply);
+}
+
 TEST_CASE("npc save text: an empty save and awkward ids survive the round trip") {
     SUBCASE("the default save") {
         const NpcMemorySave empty;

@@ -382,7 +382,11 @@ bool UFTStorySubsystem::Autosave()
 	// the slot's in first, so this autosave doesn't write an empty block over the remembered NPCs.
 	const UFTNpcSubsystem* Npcs = GetGameInstance()->GetSubsystem<UFTNpcSubsystem>();
 	const bool bNpcReady = Npcs && Npcs->IsReady();
-	if (!bNpcReady && UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
+	if (!bNpcReady && Npcs && Npcs->IsHoldingSave())
+	{
+		Slot->NpcSaveJson = Npcs->GetHeldSaveJson(); // a loaded save's block, waiting for the tables
+	}
+	else if (!bNpcReady && UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
 	{
 		if (const UFTStorySaveGame* Old = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0)))
 		{
@@ -399,7 +403,9 @@ bool UFTStorySubsystem::Autosave()
 		return false;
 	}
 	UE_LOG(LogFTStory, Log, TEXT("Save: slot written at scene %s; NPC block %d chars (%s)."), *GetSceneId(), Slot->NpcSaveJson.Len(),
-		bNpcReady ? TEXT("captured") : TEXT("kept from the slot: the NPC tables aren't loaded"));
+		bNpcReady ? TEXT("captured")
+				  : Npcs && Npcs->IsHoldingSave() ? TEXT("held from the loaded save: the NPC tables aren't loaded")
+												  : TEXT("kept from the slot: the NPC tables aren't loaded"));
 	return true;
 }
 
