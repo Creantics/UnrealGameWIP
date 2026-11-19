@@ -280,7 +280,8 @@ FORGOTTENTHIRD_API int32 SetPieceWorn(const FFTLeadLook& Look, const FFTWornFron
 	const TArray<TObjectPtr<USkeletalMeshComponent>>& Pieces, USkeletalMeshComponent& Piece, bool bWorn, const TCHAR* Who);
 
 // Adds a component per piece mesh, attached to the body and posed by it (leader pose). Missing meshes are skipped
-// with a warning that names `Who`. Returns how many of the added pieces have cloth.
+// with a warning that names `Who`. Returns how many of the added pieces simulate cloth. With -CapeStatic (off by
+// default) a cloth piece whose asset name holds "Cape" is worn skinned, with no cloth actors, and isn't counted.
 FORGOTTENTHIRD_API int32 AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArray<FSoftObjectPath>& Paths,
 	TArray<TObjectPtr<USkeletalMeshComponent>>& OutPieces, const TCHAR* Who);
 

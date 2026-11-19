@@ -707,8 +707,18 @@ int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 		Piece->SetSkeletalMesh(PieceMesh);
 		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Piece->bCollideWithEnvironment = true; // cloth pieces (FTBuildCloth) also push off the level, not just the body
+		const bool bHasCloth = PieceMesh->GetMeshClothingAssets().Num() > 0;
+		// -CapeStatic (off by default): a cloth piece named *Cape* is worn as its skinned mesh, with no cloth actors at all.
+		static const bool bCapeStatic = FParse::Param(FCommandLine::Get(), TEXT("CapeStatic"));
+		const bool bStatic = bHasCloth && bCapeStatic && Name.Contains(TEXT("Cape"));
+		if (bStatic)
+		{
+			Piece->bAllowClothActors = false;
+			Piece->bDisableClothSimulation = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: piece %s worn skinned, cloth off (-CapeStatic)."), Who, *Name);
+		}
 		Piece->RegisterComponent();
-		Cloth += PieceMesh->GetMeshClothingAssets().Num() > 0;
+		Cloth += bHasCloth && !bStatic;
 		Piece->SetLeaderPoseComponent(&Body);
 		OutPieces.Add(Piece);
 	}
