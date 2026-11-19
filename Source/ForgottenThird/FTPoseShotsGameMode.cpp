@@ -26,6 +26,30 @@
 #include <string>
 #include <vector>
 
+#if UE_BUILD_SHIPPING
+// A tool for development builds: in Shipping the class stays declared (UHT reflects it in every configuration) but none
+// of its code is compiled. Picked by ?game=, it is the plain game mode it derives from: no -Pose flag is read, nothing is
+// spawned or shot.
+AFTPoseShotsGameMode::AFTPoseShotsGameMode() = default;
+
+void AFTPoseShotsGameMode::StartPlay()
+{
+	Super::StartPlay();
+}
+
+void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+}
+#else
+AFTPoseShotsGameMode::AFTPoseShotsGameMode()
+{
+	HUDClass = nullptr;
+	DefaultPawnClass = nullptr;
+	bHostsStory = false;
+	PrimaryActorTick.bCanEverTick = true;
+}
+
 namespace FTPoseShots
 {
 constexpr double kStep = 1.0 / 48.0;
@@ -37,6 +61,9 @@ const FVector kSpot(300.0, 0.0, 0.0);
 constexpr float kFov = 30.f;
 // An unskinned bone farther than this from the skinned bones' box is left out of the frame (FrameBox).
 constexpr double kNearSkin = 40.0;
+// The framed angle has to move by more than this before Tick aims again: a window dragged to a new size would otherwise
+// aim, and wait to settle, on every tick.
+constexpr double kReaimDeg = 0.5;
 
 // The box that frames a mesh as it stands now: its skinned bones (LOD 0's sections) and any other bone within kNearSkin
 // of them. An unskinned helper left at its rest pose (an IK target, an attach point a metre off the body) would pull the
@@ -138,14 +165,6 @@ void Freeze(USkeletalMeshComponent& Component, UAnimSequence* Anim)
 	Component.SetPlayRate(0.f);
 }
 } // namespace FTPoseShots
-
-AFTPoseShotsGameMode::AFTPoseShotsGameMode()
-{
-	HUDClass = nullptr;
-	DefaultPawnClass = nullptr;
-	bHostsStory = false;
-	PrimaryActorTick.bCanEverTick = true;
-}
 
 void AFTPoseShotsGameMode::Fail(const FString& Why)
 {
@@ -492,8 +511,10 @@ void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
 		return;
 	}
 	// Setup aims before the window has its size (it reads 0x0 there, so the angle falls back to the full 30 degrees and
-	// the first still came out framed too tight): aim again, and settle, whenever the window's angle has changed since.
-	if (const double Half = FTPoseShots::HalfAngle(GetWorld()); !FMath::IsNearlyEqual(Half, AimedHalf, 1e-6))
+	// the first still came out framed too tight): aim again, and settle, whenever the framed angle has moved by more than
+	// kReaimDeg since.
+	if (const double Half = FTPoseShots::HalfAngle(GetWorld());
+		FMath::Abs(FMath::RadiansToDegrees(Half - AimedHalf) * 2.0) > FTPoseShots::kReaimDeg)
 	{
 		const FIntPoint Window = FTPoseShots::WindowSize(GetWorld());
 		UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: window now %dx%d; aimed again, framed to %.1f degrees (was %.1f)."),
@@ -517,3 +538,4 @@ void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
 	Pending = File;
 	PendingTicks = 0;
 }
+#endif // UE_BUILD_SHIPPING

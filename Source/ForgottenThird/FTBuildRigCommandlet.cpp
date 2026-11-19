@@ -276,6 +276,9 @@ FQuat RootTurn(const FQuat& RootNow, const FReferenceSkeleton& Skeleton)
 // raised from hanging down (90 = level), and the pelvis-to-head line's lean forward (+X) and sideways.
 // Also the neck_01-to-head line's lean forward, and how far the head is turned chin down from its own
 // rest (its rotation against the ref pose's, applied to the way the body faces).
+// Facing: Lean, Side, Neck, ChinDown and Hand are read as if the body's ref pose faces +Y once the root's turn is taken
+// out (RootTurn). Unlike LimbDirections they don't correct for FacingYaw, so on a body that rests facing elsewhere they
+// come out turned by that angle (a forward lean leaks into Side). Elbow, Knee and Arm don't depend on facing.
 struct FPoseAngles
 {
 	double Elbow[2] = {}, Arm[2] = {}, Knee[2] = {}, Lean = 0.0, Side = 0.0, Neck = 0.0, ChinDown = 0.0;
@@ -410,7 +413,8 @@ void LimbDirections(const UAnimSequence& Clip, double Share, TArray<FVector>& Ou
 // -ComparePose=<source clip>,<retargeted clip>[,<retargeted clip>...]: logs both clips' joint angles
 // at ten points through each (-PoseSteps=<n> for more), so a retarget that straightens the arms or legs
 // shows as numbers; then each retargeted clip's limb directions against the source's, the worst per point
-// and over the clip.
+// and over the clip. The lean, side, neck, chin and hand columns assume a body that rests facing +Y (FPoseAngles);
+// the limb directions correct for facing.
 int32 ComparePoses(const FString& List, int32 Steps)
 {
 	TArray<FString> Paths;
@@ -1348,7 +1352,11 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 	// The probe: the run loop if there is one (its elbows bend the most and swing through the whole range), else the clip
 	// whose elbows bend the most at any of eleven points. An idle bends them only 13-25 degrees, where both modes agree to
 	// a tenth (TestHuman's arms went FK on one and under-bent by 24-41 degrees on a hit reaction).
+	// Before the scan below the probe was the run loop, else the first clip. A probe that differs from that one is logged
+	// with both names, as it can pick a different arm mode for the same clips.
 	UAnimSequence* const* Probe = Sources.FindByPredicate([](const UAnimSequence* Clip) { return Clip->GetName().Contains(TEXT("Run_Loop_F")); });
+	UAnimSequence* const* const OldProbe = Probe ? Probe : &Sources[0];
+	FString Why = TEXT("the run loop");
 	if (!Probe)
 	{
 		double Most = -1.0;
@@ -1364,28 +1372,61 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 				}
 			}
 		}
+		Why = Probe ? FString::Printf(TEXT("its elbows bend the most, %.1f degrees"), Most) : FString(TEXT("no clip has an elbow to measure; the first clip"));
 		Probe = Probe ? Probe : &Sources[0];
 	}
+	if (Probe == OldProbe)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: arm probe %s (%s), as before the scan."), *(*Probe)->GetName(), *Why);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: arm probe %s (%s), was %s before the scan (the first clip)."),
+			*(*Probe)->GetName(), *Why, *(*OldProbe)->GetName());
+	}
+	// A mode's mean elbow error on the probe, in degrees; kNoScore when its retarget makes no clip or a point can't be
+	// measured (an elbow bone missing on either side).
+	constexpr double kNoScore = 1e6;
 	auto ElbowError = [&](EFKChainRotationMode Mode)
 	{
 		SetArms(Mode);
 		const TArray<FAssetData> Out = Run(TArrayView<UAnimSequence* const>(Probe, 1));
 		const UAnimSequence* Result = Out.Num() == 1 ? Cast<UAnimSequence>(Out[0].GetAsset()) : nullptr;
+		if (!Result)
+		{
+			return kNoScore;
+		}
 		double Error = 0.0;
-		for (int32 I = 0; I <= 10 && Result; ++I)
+		for (int32 I = 0; I <= 10; ++I)
 		{
 			const FPoseAngles From = MeasurePose(**Probe, I / 10.0), To = MeasurePose(*Result, I / 10.0);
-			Error += From.bValid && To.bValid ? FMath::Abs(From.Elbow[0] - To.Elbow[0]) + FMath::Abs(From.Elbow[1] - To.Elbow[1]) : 1e6;
+			if (!From.bValid || !To.bValid)
+			{
+				return kNoScore;
+			}
+			Error += FMath::Abs(From.Elbow[0] - To.Elbow[0]) + FMath::Abs(From.Elbow[1] - To.Elbow[1]);
 		}
-		return Result ? Error / 22.0 : 1e6;
+		return Error / 22.0;
 	};
 	const double Matched = ElbowError(EFKChainRotationMode::MatchChain);
 	const double Interpolated = ElbowError(EFKChainRotationMode::Interpolated);
-	const EFKChainRotationMode Arms = Matched < Interpolated ? EFKChainRotationMode::MatchChain : EFKChainRotationMode::Interpolated;
-	SetArms(Arms);
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: arms %s (%s elbows off the mocap by %.1f degrees on average, matched %.1f, interpolated %.1f)."),
-		Arms == EFKChainRotationMode::MatchChain ? TEXT("match the source chain, FK only") : TEXT("interpolated, with IK"), *(*Probe)->GetName(),
-		FMath::Min(Matched, Interpolated), Matched, Interpolated);
+	if (Matched >= kNoScore && Interpolated >= kNoScore)
+	{
+		// Neither mode can be judged: keep the default (as with no clips) and fail the run rather than pick one blind.
+		SetArms(EFKChainRotationMode::Interpolated);
+		UE_LOG(LogForgottenThird, Error,
+			TEXT("FTBuildRig: arms: neither mode retargets %s to a pose with both elbows to measure; the arms keep the default, interpolated, with IK."),
+			*(*Probe)->GetName());
+		bOk = false;
+	}
+	else
+	{
+		const EFKChainRotationMode Arms = Matched < Interpolated ? EFKChainRotationMode::MatchChain : EFKChainRotationMode::Interpolated;
+		SetArms(Arms);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: arms %s (%s elbows off the mocap by %.1f degrees on average, matched %.1f, interpolated %.1f)."),
+			Arms == EFKChainRotationMode::MatchChain ? TEXT("match the source chain, FK only") : TEXT("interpolated, with IK"), *(*Probe)->GetName(),
+			FMath::Min(Matched, Interpolated), Matched, Interpolated);
+	}
 	if (!SaveAsset(Asset))
 	{
 		return false;

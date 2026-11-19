@@ -17,7 +17,8 @@
 // character's facing (+Y of its mesh, turned by -PoseYaw about Z; 90 faces the room's sun). -PoseNear logs, per time,
 // the distance between a body bone and a prop bone (a hand and its grip). Each still is <out>/<clip>_t<s>_<view>.png
 // and logs one line "FTPoseShots: still <file> ..." with the assets, the time and the frame. Exits 0 when every still
-// is saved, 1 when an asset doesn't load or an argument doesn't parse.
+// is saved, 1 when an asset doesn't load or an argument doesn't parse. Development builds only: in Shipping the class is
+// declared but its code is compiled out, so ?game= gives the plain AFTGameMode it derives from, which reads no -Pose flags.
 #include "CoreMinimal.h"
 #include "FTGameMode.h"
 #include "FTLook.h"
