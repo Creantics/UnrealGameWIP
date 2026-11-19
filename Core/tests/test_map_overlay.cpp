@@ -982,6 +982,69 @@ TEST_CASE("map overlay: a point name on a road moves the least to clear every ro
     CHECK_FALSE(mapLabelOffRoads(ladder, none, tiny, MapZoom::Mid, ink, big, kMapLabelHaloPx));
 }
 
+TEST_CASE("map overlay: a district's name moves the least to clear the lit road, earlier names and the caption") {
+    const MiniMapModel m = model();
+    MapNames n;
+    REQUIRE(mapLoadNames(m, kNames, n));
+    const MapRoadInk ink;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f; // LN-A (road 3) runs down x 960
+    const float halo = kMapLabelHaloPx, gap = 6.f;
+    // The first of a label's moves (mapLabelMoves, in order) that is clear: what mapLabelMoveClear must give.
+    const auto firstClear = [&](const MapLabel& l, const auto& isClear) {
+        Vec2 mv[kMapLabelMoves];
+        mapLabelMoves(l, mv);
+        for (const Vec2& d : mv) {
+            MapLabel t = l;
+            t.at.x += d.x;
+            t.at.y += d.y;
+            if (isClear(t)) return t;
+        }
+        return l;
+    };
+    // On the lane lit for the cursor: moved off it by the first clear move; unlit, the lane is no obstacle.
+    const MapLabel onLane{{960.f, 640.f}, 0.f, 40.f, 14.f, 1, 1, true};
+    MapLabel l = onLane;
+    REQUIRE(mapLabelMoveClear(m, n, v, MapZoom::Mid, ink, l, halo, gap, nullptr, 0, nullptr, 0, 3));
+    const MapLabel wantLit = firstClear(onLane, [&](const MapLabel& t) { return mapLabelOnAnyRoad(m, n, v, MapZoom::Mid, ink, t, halo, 3, kMapNoName, true) < 0; });
+    CHECK(l.at.x == doctest::Approx(wantLit.at.x));
+    CHECK(l.at.y == doctest::Approx(wantLit.at.y));
+    CHECK((l.at.x != onLane.at.x || l.at.y != onLane.at.y));
+    l = onLane;
+    REQUIRE(mapLabelMoveClear(m, n, v, MapZoom::Mid, ink, l, halo, gap, nullptr, 0, nullptr, 0));
+    CHECK(l.at.x == onLane.at.x);
+    CHECK(l.at.y == onLane.at.y);
+    // Under an earlier name (the cursor's): moved to the first spot `gap` px clear of it, both halos included.
+    const MapLabel cursor{{1300.f, 300.f}, 0.f, 80.f, 16.f, 2, 0, true};
+    const MapLabel under{{1310.f, 302.f}, 0.f, 50.f, 14.f, 1, 1, true};
+    l = under;
+    REQUIRE(mapLabelMoveClear(m, n, v, MapZoom::Mid, ink, l, halo, gap, &cursor, 1, nullptr, 0));
+    CHECK_FALSE(mapLabelsOverlap(l, cursor, gap + 2.f * halo));
+    const MapLabel wantOff = firstClear(under, [&](const MapLabel& t) { return !mapLabelsOverlap(t, cursor, gap + 2.f * halo); });
+    CHECK(l.at.x == doctest::Approx(wantOff.at.x));
+    CHECK(l.at.y == doctest::Approx(wantOff.at.y));
+    // Under the caption's kept box: moved clear of it as the placer tests a blocker (the label grown by its halo).
+    const MapLabel kept = mapCaptionBox(1920.f, 1080.f, 1.f);
+    const MapLabel inCaption{{kept.at.x, kept.at.y - 0.5f * kept.h + 4.f}, 0.f, 50.f, 14.f, 1, 1, true}; // its top edge
+    l = inCaption;
+    REQUIRE(mapLabelMoveClear(m, n, v, MapZoom::Mid, ink, l, halo, gap, nullptr, 0, &kept, 1));
+    MapLabel grown = l;
+    grown.w += 2.f * halo;
+    grown.h += 2.f * halo;
+    CHECK_FALSE(mapLabelsOverlap(grown, kept, gap));
+    // A blocker over the whole screen: no move is clear; the label is unchanged and the answer is no. Zero allocation.
+    const MapLabel wall{{960.f, 540.f}, 0.f, 1920.f, 1080.f, 0, 0, true};
+    l = onLane;
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const bool moved = mapLabelMoveClear(m, n, v, MapZoom::Mid, ink, l, halo, gap, &cursor, 1, &wall, 1, 3);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    CHECK_FALSE(moved);
+    CHECK(l.at.x == onLane.at.x);
+    CHECK(l.at.y == onLane.at.y);
+}
+
 TEST_CASE("map overlay: water is a cell of the water grid or a point inside a water rectangle, turned ones too") {
     MiniMapModel m;
     m.maxX = 40.f;

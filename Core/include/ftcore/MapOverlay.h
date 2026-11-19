@@ -282,6 +282,15 @@ FTCORE_API bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const
 // whole heights -2..2 up and down, nearest first, up before down, left before right. Zero allocation.
 inline constexpr int kMapLabelMoves = 24;
 FTCORE_API void mapLabelMoves(const MapLabel& l, Vec2 out[kMapLabelMoves]);
+// A name (a district's) kept clear of the names placed before it, of the screen's kept boxes and of the cursor's lit
+// roads: the label as it is when it is clear, else the nearest of its moves (mapLabelMoves, in their order) that is whole
+// on the screen (mapLabelKeepInside, which may move it in) and clear. Clear, as mapPlaceLabels keeps labels apart: its box
+// grown by `halo` stands `gap` px off each of `labels` grown by theirs and off each of `blockers` as they are, and meets
+// no lit road (mapLabelOnAnyRoad, litOnly). False, the label unchanged, when no move is clear. Zero allocation.
+FTCORE_API bool mapLabelMoveClear(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z,
+                                  const MapRoadInk& ink, MapLabel& l, float halo, float gap, const MapLabel* labels,
+                                  std::size_t labelCount, const MapLabel* blockers, std::size_t blockerCount, int picked = -1,
+                                  std::uint16_t pickedName = kMapNoName);
 // Whether a world point is water in the model: a cell of its water grid, or inside one of its water rectangles.
 FTCORE_API bool mapIsWater(const MiniMapModel& m, Vec2 world);
 

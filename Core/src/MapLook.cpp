@@ -967,6 +967,85 @@ MapWaterSeat mapWaterLabelAt(const MiniMapModel& m, const MapNames& n, const Map
     return MapWaterSeat::Seated;
 }
 
+MapBankSeat mapBankLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v, MapZoom z,
+                           const MapRoadInk& ink, Vec2 at, float w, float h, float grow, const MapLabel* others,
+                           std::size_t otherCount, float apart, MapLabel& out, int picked, std::uint16_t pickedName,
+                           float gapMaxM) {
+    constexpr float kPi = 3.14159265358979f;
+    const MapRect* body = nullptr;
+    for (const MapRect& r : m.waterRects) {
+        const float c = std::cos(r.rot), s = std::sin(r.rot);
+        const float dx = at.x - r.cx, dy = at.y - r.cy;
+        if (std::abs(dx * c + dy * s) <= r.hx && std::abs(-dx * s + dy * c) <= r.hy) {
+            body = &r;
+            break;
+        }
+    }
+    if (!body) return MapBankSeat::NoRect;
+    if (!(w > 0.f && h > 0.f && v.mPerPx > 0.f && v.screenW > 0.f && v.screenH > 0.f && std::isfinite(gapMaxM)))
+        return MapBankSeat::NoSeat;
+    // The long axis: its direction, half length and the half width across it.
+    const float cr = std::cos(body->rot), sr = std::sin(body->rot);
+    const bool alongX = body->hx >= body->hy;
+    const Vec2 axis = alongX ? Vec2{cr, sr} : Vec2{-sr, cr};
+    const Vec2 across{-axis.y, axis.x};
+    const float halfL = alongX ? body->hx : body->hy, halfS = alongX ? body->hy : body->hx;
+    const float mpp = v.mPerPx;
+    const float halfLen = 0.5f * w * mpp;
+    if (halfLen > halfL) return MapBankSeat::TooLong;
+    const float lo = -halfL + halfLen, hi = halfL - halfLen;
+    const float t0 = std::clamp((at.x - body->cx) * axis.x + (at.y - body->cy) * axis.y, lo, hi);
+    const float deg = mapUprightDeg((alongX ? body->rot : body->rot + 0.5f * kPi) * 180.f / kPi);
+    const float step = std::max(0.125f * w, 2.f) * mpp;     // along the side: an eighth of the label, 2 px at least
+    const float gapStep = std::max(mpp, gapMaxM / 64.f);    // away from the water: 1 px, 64 steps at most
+    auto wet = [&](Vec2 p) { return mapIsWater(m, p) || mapIsSea(m, look, p); };
+    auto clear = [&](const MapLabel& l) {
+        Vec2 k[4];
+        mapLabelCorners(l, grow, k);
+        for (const Vec2& q : k)
+            if (q.x < kMapLabelInsetPx || q.y < kMapLabelInsetPx || q.x > v.screenW - kMapLabelInsetPx || q.y > v.screenH - kMapLabelInsetPx)
+                return false;
+        for (std::size_t i = 0; others && i < otherCount; ++i)
+            if (mapLabelsOverlap(l, others[i], 2.f * grow + apart)) return false;
+        if (mapLabelOnAnyRoad(m, n, v, z, ink, l, grow, picked, pickedName) >= 0) return false;
+        // The grown box dry: probes no more than 4 px apart along each side, corners included (k: the box's corners in
+        // order, so k[0]-k[1] and k[3]-k[2] are its long sides).
+        const float bw = l.w + 2.f * grow, bh = l.h + 2.f * grow;
+        const int nx = std::max(2, static_cast<int>(std::ceil(bw / 4.f)) + 1), ny = std::max(2, static_cast<int>(std::ceil(bh / 4.f)) + 1);
+        for (int i = 0; i < nx; ++i) {
+            const float u = static_cast<float>(i) / static_cast<float>(nx - 1);
+            const Vec2 top{k[0].x + (k[1].x - k[0].x) * u, k[0].y + (k[1].y - k[0].y) * u};
+            const Vec2 bot{k[3].x + (k[2].x - k[3].x) * u, k[3].y + (k[2].y - k[3].y) * u};
+            for (int j = 0; j < ny; ++j) {
+                const float t = static_cast<float>(j) / static_cast<float>(ny - 1);
+                if (wet(mapOverlayFromScreen(v, Vec2{top.x + (bot.x - top.x) * t, top.y + (bot.y - top.y) * t}))) return false;
+            }
+        }
+        return !mapLabelOnCoast(look, v, z, l, grow);
+    };
+    const float lift = (0.5f * h + grow) * mpp; // the label's centre past the grown box's edge, in m
+    const int slides = static_cast<int>(std::ceil((hi - lo) / step)) * 2 + 1;
+    for (float g = 2.f * mpp; g <= gapMaxM + 1e-4f; g += gapStep)
+        for (int k = 0; k < slides; ++k) {
+            const float d = static_cast<float>((k + 1) / 2) * step;
+            if (t0 + d > hi && t0 - d < lo) break;
+            const float t = (k & 1) ? t0 + d : t0 - d;
+            if (t < lo || t > hi) continue;
+            for (const float side : {1.f, -1.f}) {
+                const float off = (halfS + g + lift) * side;
+                MapLabel l;
+                l.at = mapOverlayToScreen(v, Vec2{body->cx + axis.x * t + across.x * off, body->cy + axis.y * t + across.y * off});
+                l.angleDeg = deg;
+                l.w = w;
+                l.h = h;
+                if (!clear(l)) continue;
+                out = l;
+                return MapBankSeat::Seated;
+            }
+        }
+    return MapBankSeat::NoSeat;
+}
+
 bool mapLabelOnCoast(const MapLook& look, const MapOverlayView& v, MapZoom z, const MapLabel& l, float grow) {
     if (!(v.mPerPx > 0.f)) return false;
     constexpr float kPi = 3.14159265358979f;

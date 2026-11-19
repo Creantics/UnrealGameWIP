@@ -137,6 +137,25 @@ FTCORE_API MapWaterSeat mapWaterLabelAt(const MiniMapModel& m, const MapNames& n
                                         MapZoom z, const MapRoadInk& ink, Vec2 at, float w, float h, float grow, MapLabel& out,
                                         int picked = -1, std::uint16_t pickedName = kMapNoName, float reachM = kMapWaterReachM);
 
+// Where a water name goes beside its water, the fallback when mapWaterLabelAt finds no seat on it or its seat meets an
+// earlier water name: along the long side of the water rectangle that holds `at`, upright (mapUprightDeg), on either
+// bank. The label (w x h px, its lean included) stays within the rectangle's length; its box grown by `grow` stands off
+// the water's edge by a gap from 2 px out to gapMaxM. kMapBankGapMaxM is 20 m because the roads along the canal banks
+// are 12 and 18 m wide: a seat clear of them lies past their far edge. Seats are tried nearest the water first, then
+// nearest `at` along the side (steps of an eighth of the label's length), the positive side of the rectangle's long
+// axis (its left, looking along it) before the other. A seat is taken when the grown box is whole on the screen, clears
+// each of `others` (apart px between the two grown boxes, as mapPlaceLabels keeps them), meets no road
+// (mapLabelOnAnyRoad, the cursor's lit roads included), no water or sea (mapIsWater, mapIsSea at probes no more than
+// 4 px apart, corners included) and no coast (mapLabelOnCoast). NoRect: no water rectangle holds `at`; TooLong: the
+// label is longer than the rectangle; NoSeat: no seat passed. Zero allocation.
+enum class MapBankSeat : std::uint8_t { Seated, NoRect, TooLong, NoSeat };
+inline constexpr float kMapBankGapMaxM = 20.f;
+FTCORE_API MapBankSeat mapBankLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v,
+                                      MapZoom z, const MapRoadInk& ink, Vec2 at, float w, float h, float grow,
+                                      const MapLabel* others, std::size_t otherCount, float apart, MapLabel& out,
+                                      int picked = -1, std::uint16_t pickedName = kMapNoName,
+                                      float gapMaxM = kMapBankGapMaxM);
+
 // Whether a label's box grown by `grow` px meets the sea's coast as drawn at zoom z: the coast strokes shown at z
 // (MapStrokeKind::Coast) and the coast past the model's edges (edgeCoast). Canal edges are not coast. Zero allocation.
 FTCORE_API bool mapLabelOnCoast(const MapLook& look, const MapOverlayView& v, MapZoom z, const MapLabel& l, float grow = 0.f);

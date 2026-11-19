@@ -781,6 +781,66 @@ TEST_CASE("map look: a water name on the grid's water stays within reach of its 
     CHECK(mapWaterLabelAt(m, n, look, one, MapZoom::Mid, ink, {165.f, 200.f}, 60.f, 19.f, kMapLabelHaloPx, l, -1, kMapNoName, 10.f) == MapWaterSeat::NoSeat);
 }
 
+TEST_CASE("map look: a water name with no seat on its canal goes beside it, past the bank road, upright along it") {
+    const MiniMapModel m = waterSeatModel();
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    const MapNames n;
+    const MapRoadInk ink;
+    const float halo = kMapLabelHaloPx;
+    const MapOverlayView nearV = mapOverlayView({300.f, 200.f}, MapZoom::Near, 1920.f, 1080.f); // 0.6 m per px
+    MapLabel l;
+    // The canal is too narrow for the name: no seat on it.
+    REQUIRE(mapWaterLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, 150.f}, 60.f, 19.f, halo, l) == MapWaterSeat::NoSeat);
+    // Beside it: the west bank first (the long axis runs north, its left is west), past the 14 m bank road (x 181.5 to
+    // 195.5) by less than a step, level with the point and standing along the canal.
+    const auto box = [&](const MapLabel& s, float& x0, float& x1) {
+        Vec2 k[4];
+        mapLabelCorners(s, halo, k);
+        x0 = 1e30f;
+        x1 = -1e30f;
+        for (const Vec2& q : k) {
+            x0 = std::min(x0, mapOverlayFromScreen(nearV, q).x);
+            x1 = std::max(x1, mapOverlayFromScreen(nearV, q).x);
+        }
+    };
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const MapBankSeat west = mapBankLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, 150.f}, 60.f, 19.f, halo, nullptr, 0, 6.f, l);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    REQUIRE(west == MapBankSeat::Seated);
+    CHECK(l.angleDeg == -90.f);
+    CHECK(mapOverlayFromScreen(nearV, l.at).y == doctest::Approx(150.f).epsilon(0.001));
+    float x0 = 0.f, x1 = 0.f;
+    box(l, x0, x1);
+    CHECK(x1 < 181.5f);
+    CHECK(x1 > 181.5f - 0.6f - 0.01f);
+    CHECK(mapLabelOnAnyRoad(m, n, nearV, MapZoom::Near, ink, l, halo) == -1);
+    // With that seat taken (an earlier water name), the next one goes to the east bank, past its road (x 204.5 to 218.5).
+    const MapLabel first = l;
+    REQUIRE(mapBankLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, 150.f}, 60.f, 19.f, halo, &first, 1, 6.f, l) == MapBankSeat::Seated);
+    box(l, x0, x1);
+    CHECK(x0 > 218.5f);
+    CHECK(x0 < 218.5f + 0.6f + 0.01f);
+    CHECK_FALSE(mapLabelsOverlap(l, first, 2.f * halo + 6.f));
+    // The label stays within the canal's length: from near its north end it slides back in (100 - 18 m from the middle).
+    REQUIRE(mapBankLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, 245.f}, 60.f, 19.f, halo, nullptr, 0, 6.f, l) == MapBankSeat::Seated);
+    CHECK(mapOverlayFromScreen(nearV, l.at).y == doctest::Approx(232.f).epsilon(0.001));
+    // A 12 m cap seats nothing past a 14 m road; a name longer than the canal is too long; a point on no rectangle has no
+    // bank.
+    CHECK(mapBankLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, 150.f}, 60.f, 19.f, halo, nullptr, 0, 6.f, l, -1, kMapNoName, 12.f) == MapBankSeat::NoSeat);
+    CHECK(mapBankLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, 150.f}, 340.f, 19.f, halo, nullptr, 0, 6.f, l) == MapBankSeat::TooLong);
+    CHECK(mapBankLabelAt(m, n, look, nearV, MapZoom::Near, ink, {100.f, 100.f}, 60.f, 19.f, halo, nullptr, 0, 6.f, l) == MapBankSeat::NoRect);
+    // Every seat's grown box is dry: no probe of it on the canal or the basin.
+    for (const float y : {60.f, 150.f, 240.f}) {
+        CAPTURE(y);
+        REQUIRE(mapBankLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, y}, 60.f, 19.f, halo, nullptr, 0, 6.f, l) == MapBankSeat::Seated);
+        Vec2 k[4];
+        mapLabelCorners(l, halo, k);
+        for (const Vec2& q : k) CHECK_FALSE(mapIsWater(m, mapOverlayFromScreen(nearV, q)));
+    }
+}
+
 namespace {
 
 // Whether an edge-coast line stands upright at some x in (x0, x1] across height y.

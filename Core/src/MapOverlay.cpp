@@ -1063,6 +1063,32 @@ bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const MapOverlay
     return false;
 }
 
+bool mapLabelMoveClear(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                       MapLabel& l, float halo, float gap, const MapLabel* labels, std::size_t labelCount,
+                       const MapLabel* blockers, std::size_t blockerCount, int picked, std::uint16_t pickedName) {
+    const float h = std::max(halo, 0.f), g = std::max(gap, 0.f);
+    const auto clear = [&](const MapLabel& t) {
+        for (std::size_t k = 0; labels && k < labelCount; ++k)
+            if (overlapGrown(t, g * 0.5f + h, labels[k], g * 0.5f + h)) return false;
+        for (std::size_t k = 0; blockers && k < blockerCount; ++k)
+            if (overlapGrown(t, g * 0.5f + h, blockers[k], g * 0.5f)) return false;
+        return mapLabelOnAnyRoad(m, n, v, z, ink, t, h, picked, pickedName, true) < 0;
+    };
+    if (clear(l)) return true;
+    Vec2 moves[kMapLabelMoves];
+    mapLabelMoves(l, moves);
+    for (const Vec2& mv : moves) {
+        MapLabel t = l;
+        t.at.x += mv.x;
+        t.at.y += mv.y;
+        if (!mapLabelKeepInside(t, v.screenW, v.screenH, h)) return false;
+        if (!clear(t)) continue;
+        l = t;
+        return true;
+    }
+    return false;
+}
+
 bool mapIsWater(const MiniMapModel& m, Vec2 p) {
     for (const MapRect& r : m.waterRects) {
         const float c = std::cos(r.rot), s = std::sin(r.rot);
