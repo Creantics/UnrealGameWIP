@@ -1104,7 +1104,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	// Roads: a soft glow under the roads that carry names from mid (main roads and streets), then every road in gold (cased when wide enough: the gold
 	// full width first, the dark inside after, so the junctions join), then the cursor's road lit along its whole length.
 	auto IsLit = [&](size_t R) { return ftcore::mapRoadLit(Names, R, Picked, PickedName); };
-	const ftcore::MapRoadInk Ink = OvInk(S);
+	const ftcore::MapRoadInk RoadInk = OvInk(S);
 	// Roads that run off the model fade out over their last kOvRoadFadePx, so none stops dead at the model's edge.
 	const float FadeM = kOvRoadFadePx * S * View.mPerPx;
 	enum EPass { Glow, Gold, Fill, LitPass };
@@ -1130,7 +1130,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					continue;
 				}
 				const float Px = Road.width / View.mPerPx;
-				const bool bCased = ftcore::mapRoadCased(Road, View, Ink);
+				const bool bCased = ftcore::mapRoadCased(Road, View, RoadInk);
 				float Width = 0.f;
 				FLinearColor Color = kOvGold;
 				bool bCaps = true;
@@ -1142,7 +1142,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					bCaps = false;
 					break;
 				case Gold:
-					Width = ftcore::mapRoadDrawnPx(Road, View, Ink);
+					Width = ftcore::mapRoadDrawnPx(Road, View, RoadInk);
 					Color.A = kOvRoadAlpha[Cls];
 					break;
 				case Fill:
@@ -1154,7 +1154,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					Color = kOvRoadFill;
 					break;
 				default:
-					Width = ftcore::mapRoadLitPx(Road, View, Ink);
+					Width = ftcore::mapRoadLitPx(Road, View, RoadInk);
 					Color = kOvLit;
 					break;
 				}
