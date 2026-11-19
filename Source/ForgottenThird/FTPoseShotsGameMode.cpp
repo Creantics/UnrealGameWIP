@@ -321,7 +321,7 @@ bool AFTPoseShotsGameMode::SetupStatic(const FString& MeshPath)
 	StillBase = Mesh->GetName();
 	SpawnCamera();
 	Describe = FString::Printf(TEXT("static=%s lods=%d lod=%s nanite=%d bounds=%s cm dist=%s at=%s fov=%.0f"), *Mesh->GetPathName(),
-		Mesh->GetNumLODs(), Lod >= 0 ? *FString::FromInt(Lod) : TEXT("auto"), Mesh->IsNaniteEnabled() ? 1 : 0,
+		Mesh->GetNumLODs(), Lod >= 0 ? *FString::FromInt(Lod) : TEXT("auto"), Mesh->HasValidNaniteData() ? 1 : 0,
 		*Still->Bounds.GetBox().GetSize().ToString(), FixedDist > 0.0 ? *FString::Printf(TEXT("%.0f"), FixedDist) : TEXT("framed"),
 		bAimAt ? *AimAt.ToString() : TEXT("centre"), Fov);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: %s."), *Describe);
