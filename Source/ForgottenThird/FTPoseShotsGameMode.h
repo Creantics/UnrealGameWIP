@@ -1,7 +1,9 @@
 #pragma once
 // Off-screen pose stills of any clip on any character: the character (a lead look from config, or a bare skeletal mesh)
 // stands in the stub room (/Game/Maps/Stub, a lit floor and wall), holds its clip at each time asked, and is shot from
-// each view, framed on its bones (and its prop's). Nothing else is in the room: no story, HUD or pawn.
+// each view, framed on its bones (and its prop's; unskinned helpers far off the body don't count) to the narrower of the
+// window's two angles, so a square still from a wide window still holds the whole body. Nothing else is in the room: no
+// story, HUD or pawn.
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject "/Game/Maps/Stub?game=/Script/ForgottenThird.FTPoseShotsGameMode"
 //       -game -RenderOffScreen -unattended -nosplash -nosound
