@@ -182,8 +182,13 @@ void AFTExploreCharacter::BeginPlay()
 	{
 		ftcore::WaterFollowTuning Fast = WaterParty.tuning();
 		ftcore::waterFollowFastExit(Fast);
+		// -PartyExitInOrder (with -PartyExitFast): the 11-19 rules, the partners climbing strictly in index order; the
+		// off switch for exitReadyFirst (one at its place in the queue climbs ahead of one still swimming to its own).
+		const bool bInOrder = FParse::Param(FCommandLine::Get(), TEXT("PartyExitInOrder"));
+		Fast.exitReadyFirst = !bInOrder;
 		WaterParty = ftcore::WaterFollowParty(Fast);
-		UE_LOG(LogForgottenThird, Display, TEXT("Water: -PartyExitFast: the partners climb out 1 s behind the lead, by its way out, on the climb path."));
+		UE_LOG(LogForgottenThird, Display, TEXT("Water: -PartyExitFast: the partners climb out 1 s behind the lead, by its way out, on the climb path (%s)."),
+			bInOrder ? TEXT("-PartyExitInOrder: strictly in index order") : TEXT("one ready at its place climbs first"));
 	}
 	// -SwimSwitchKeep (item 3 of 11-18; off until its proof passes): a lead switch (the party menu) while swimming keeps the
 	// party in the water: the new lead at the surface swim, the partners respawned at their surface slots
@@ -279,6 +284,7 @@ void AFTExploreCharacter::BeginPlay()
 	{
 		PartyHold = FTLook::HoldLooks(PartyLooks, TEXT("Party hold"));
 	}
+	FTLook::LogLevelStart(PartyHold.IsValid() ? TEXT("lead BeginPlay, party hold requested") : TEXT("lead BeginPlay, no party hold"));
 	FindPartyRows(); // the party screen's rows, again whenever the lead changes (SwitchLeadTo)
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
 	// -LocoPulse=<s> drops the movement input for -LocoRest=<s> seconds (default 2) after every s seconds
@@ -4077,6 +4083,11 @@ void AFTExploreCharacter::OnFollowersSpawned()
 			UE_LOG(LogForgottenThird, Display, TEXT("Party hold: %d clips held (%d new)."), PartyClipHold.Num(), PartyClipHold.Num() - HeldBefore);
 		}
 	}
+	if (!bLevelStartPartyLogged)
+	{
+		bLevelStartPartyLogged = true;
+		FTLook::LogLevelStart(bNoHold ? TEXT("party set up, no clip hold") : TEXT("party set up, clips held"));
+	}
 	// A start in the water (a lead switch while swimming, StartInWater): the new partners' plan starts in the water before
 	// the director's first placement, so that placement puts them at their surface slots (the rejoin), not on land.
 	if (bWaterStartNext)
@@ -4534,6 +4545,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		}
 		FParse::Value(FCommandLine::Get(), TEXT("SwimProofShots="), SwimProofShots);
 		SwimProofStage = 0;
+		FTLook::LogLevelStart(TEXT("proof's first tick"));
 	}
 	if (SwimProofStage < 0)
 	{
@@ -5189,6 +5201,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: done at %.1f s, %d stills, %s%s, %d held-up jumps (%d not cleared), rejoin %s, path %d, %s."), *SwimProofKind,
 				SwimProofTime, SwimProofShotCount, LeadHow, bSwimProofSpotFallback ? TEXT(" (water spot fallback)") : TEXT(""), LeadGoTry.tries(), LeadGoTry.failed(),
 				SwimProofRejoinAt >= 0.f ? TEXT("seen") : TEXT("NOT seen"), SwimProofPath, bSwimProofPass ? TEXT("PASS") : TEXT("NO PASS"));
+			FTLook::LogLevelStart(TEXT("proof's end"));
 			FTRequestExit((bBoomRun ? bBoomOk : bSwimProofPass) ? 0 : 2, TEXT("SwimProof"));
 			SwimProofStage = -2;
 		}
@@ -5206,6 +5219,7 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 	const TCHAR* Kind = bStart ? TEXT("start") : TEXT("switch");
 	auto Finish = [this](int32 Code)
 	{
+		FTLook::LogLevelStart(TEXT("proof's end"));
 		FTRequestExit(Code, TEXT("SwimProof"));
 		SwimProofStage = -2;
 	};
@@ -5600,6 +5614,7 @@ void AFTExploreCharacter::TickSwimProofCost(float DeltaSeconds)
 #else
 	auto Finish = [this](int32 Code)
 	{
+		FTLook::LogLevelStart(TEXT("proof's end"));
 		FTRequestExit(Code, TEXT("SwimProof"));
 		SwimProofStage = -2;
 	};
@@ -5723,6 +5738,7 @@ void AFTExploreCharacter::TickSwimProofExit(const UFTWaterSubsystem& System, flo
 				Partner->ReleaseProofHold();
 			}
 		}
+		FTLook::LogLevelStart(TEXT("proof's end"));
 		FTRequestExit(Code, TEXT("SwimProof"));
 		SwimProofStage = -2;
 	};

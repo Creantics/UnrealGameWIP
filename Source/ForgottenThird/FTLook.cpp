@@ -11,6 +11,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
+#include "CoreGlobals.h"
+#include "HAL/PlatformMemory.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
@@ -958,8 +960,19 @@ int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPt
 	return Total;
 }
 
+void FTLook::LogLevelStart(const TCHAR* Stage)
+{
+	const FPlatformMemoryStats Mem = FPlatformMemory::GetStats();
+	constexpr double MB = 1024.0 * 1024.0;
+	UE_LOG(LogForgottenThird, Display, TEXT("Level start: %s at %.2f s since the process started; physical %.0f MB (peak %.0f), virtual %.0f MB (peak %.0f)."),
+		Stage, FPlatformTime::Seconds() - GStartTime, static_cast<double>(Mem.UsedPhysical) / MB, static_cast<double>(Mem.PeakUsedPhysical) / MB,
+		static_cast<double>(Mem.UsedVirtual) / MB, static_cast<double>(Mem.PeakUsedVirtual) / MB);
+}
+
 TSharedPtr<FStreamableHandle> FTLook::HoldLooks(const TArray<FFTLeadLook>& Looks, const TCHAR* Who)
 {
+	// The path check below runs on the game thread at BeginPlay (one DoesPackageExist per path): timed for item 3's cost.
+	const double CheckStart = FPlatformTime::Seconds();
 	TArray<FSoftObjectPath> Paths;
 	int32 Absent = 0;
 	auto Add = [&Paths, &Absent](const FSoftObjectPath& Path)
@@ -1018,11 +1031,12 @@ TSharedPtr<FStreamableHandle> FTLook::HoldLooks(const TArray<FFTLeadLook>& Looks
 		Add(Look.GauntletBracerR);
 		Add(Look.GauntletBracerL);
 	}
+	const double CheckSeconds = FPlatformTime::Seconds() - CheckStart;
 	UAssetManager* Manager = UAssetManager::GetIfInitialized();
 	if (Paths.IsEmpty() || !Manager)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("%s: nothing held (%d paths, %d absent, asset manager %s)."), Who, Paths.Num(), Absent,
-			Manager ? TEXT("up") : TEXT("not up"));
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: nothing held (%d paths, %d absent, asset manager %s; the path check took %.3f s)."), Who, Paths.Num(), Absent,
+			Manager ? TEXT("up") : TEXT("not up"), CheckSeconds);
 		return nullptr;
 	}
 	const FString Label = Who;
@@ -1039,7 +1053,9 @@ TSharedPtr<FStreamableHandle> FTLook::HoldLooks(const TArray<FFTLeadLook>& Looks
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("%s: %d of %d assets loaded and held, %.2f s after the request."), *Label, Loaded, Requested,
 			FPlatformTime::Seconds() - Start);
+		LogLevelStart(TEXT("party hold loaded"));
 	});
-	UE_LOG(LogForgottenThird, Display, TEXT("%s: loading %d assets of %d looks in the background (%d absent)."), Who, Paths.Num(), Looks.Num(), Absent);
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: loading %d assets of %d looks in the background (%d absent; the path check took %.3f s on the game thread)."),
+		Who, Paths.Num(), Looks.Num(), Absent, CheckSeconds);
 	return Manager->GetStreamableManager().RequestAsyncLoad(MoveTemp(Params), FString(TEXT("FTLook party hold")));
 }

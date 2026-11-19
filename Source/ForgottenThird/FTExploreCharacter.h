@@ -603,6 +603,8 @@ private:
 	// A start in the water is due (a lead switch while swimming, StartInWater): the next new set of followers starts in
 	// the water (StepWaterParty); one shot.
 	bool bWaterStartNext = false;
+	// The "Level start:" line for the party's first set up is logged (FTLook::LogLevelStart; the 11-19 ruling, item 3).
+	bool bLevelStartPartyLogged = false;
 	// The first frame after a start in the water (StartInWater) sets the lead's feet on its swim's target again, before
 	// anything reads them: the put-in's frame is long, the next one steps the water's time, and the surface hold only eases
 	// (a velocity). One shot; -SwimStartNoSnap leaves it to the hold. The water's time at the put-in, for the log.

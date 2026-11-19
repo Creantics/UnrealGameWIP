@@ -267,6 +267,10 @@ FORGOTTENTHIRD_API int32 PreloadWetGrooms(const TArray<FFTGroomLook>& Grooms, TA
 // memory. The handle keeps them referenced while it lives; null when nothing exists to load. Logs the count when loaded.
 FORGOTTENTHIRD_API TSharedPtr<FStreamableHandle> HoldLooks(const TArray<FFTLeadLook>& Looks, const TCHAR* Who);
 
+// One "Level start:" line: seconds since the process started, and the process's physical and virtual memory now and at
+// its peak (MB). For the party hold's cost (the 11-19 ruling, item 3): called once at each stage, never per frame.
+FORGOTTENTHIRD_API void LogLevelStart(const TCHAR* Stage);
+
 // Wears each entry's wet groom (bWet) or its dry one on the component showing the other: the component is unregistered,
 // given the groom and its binding, and registered again where it was. Entries without a WetGroom are left alone.
 // Returns how many components changed.
