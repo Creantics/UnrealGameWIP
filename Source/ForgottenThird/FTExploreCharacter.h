@@ -603,6 +603,13 @@ private:
 	// A start in the water is due (a lead switch while swimming, StartInWater): the next new set of followers starts in
 	// the water (StepWaterParty); one shot.
 	bool bWaterStartNext = false;
+	// The "Level start:" line for the party's first set up is logged (FTLook::LogLevelStart; the 11-19 ruling, item 3).
+	bool bLevelStartPartyLogged = false;
+	// The first frame after a start in the water (StartInWater) sets the lead's feet on its swim's target again, before
+	// anything reads them: the put-in's frame is long, the next one steps the water's time, and the surface hold only eases
+	// (a velocity). One shot; -SwimStartNoSnap leaves it to the hold. The water's time at the put-in, for the log.
+	bool bWaterStartSnap = false;
+	float WaterStartSnapTime = 0.f;
 	// The free swim. False: at the surface (the surface hold moves the body).
 	bool TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds);
 	void LoadSwimTuning();
@@ -636,13 +643,21 @@ private:
 	int32 SwimProofPlaceCount = 0;
 	bool bSwimProofLeadSwims = false;  // the placed lead was seen swimming
 	bool bSwimProofSpotFallback = false; // no water spot passed the check; the watchdog took one blocked on the way in
-	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts, and slot 0 is put on the
-	// sweep circle 90 deg ahead of the camera, slot 1 at 270 deg; both tread there
-	// for the sweep. The run ends after the sweep; exit 0 when a partner was held and the sweep measured.
+	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts. Slot 0 is kept on the
+	// boom line, its middle 1 m in front of the camera at the camera's height (the 11-18 rerun); slot 1 treads on the sweep
+	// circle 270 deg ahead. The run ends after the sweep; exit 0 on the rerun's pass (pulled in or hidden, no CLIP still).
 	float SwimProofHoldAt = -1.f;      // SwimProofTime the lead reached the far point
 	int32 SwimProofBoomHeld = 0;       // partners held for the sweep
 	int32 SwimProofBoomPulled = 0;     // sweep ticks the spring arm's probe pulled the camera in (a capsule or the world in the way)
 	FString SwimProofBoomWhere;
+	// The 11-18 rerun: slot 0 kept on the boom line at the camera's height; the sweep waits this long (s) after it is put
+	// there, then counts the sweep ticks slot 0 is hidden (the director's lens hide) and whether its hold was lost.
+	float SwimProofBoomSettle = 0.f;
+	int32 SwimProofBoomHidden = 0;
+	int32 SwimProofBoomNear = 0;       // sweep ticks the camera was within 50 cm of slot 0's bones
+	int32 SwimProofBoomNearHidden = 0; // of those, the ticks slot 0 was hidden
+	bool bSwimProofBoomLine = false;
+	bool bSwimProofBoomLost = false;
 	// Item 5 (the boom through a partner): during the sweep, the camera's distance to the nearest partner's capsule; under
 	// 50 cm with that partner's mesh drawn is the clip. Counted per tick and per still (the still numbers kept, first 32).
 	int32 SwimProofClipTicks = 0;
@@ -703,6 +718,31 @@ private:
 	float SwimProofSwitchWorst[2] = {0.f, 0.f};
 	int32 SwimProofSwitchLand[2] = {0, 0};
 	int32 SwimProofSwitchFell[2] = {0, 0};
+	// The switch without -SwimSwitchKeep (the 11-18 rerun): from the switch frame the stick pushes the new lead 5 m on out
+	// (LeadGo, the stick's own AddMovementInput path); when it first answers (20 cm along the push). Per partner: frames
+	// its feet were more than 10 cm under the topmost ground below it (the bed) and the deepest, the frames the trace found
+	// a bed at all, when it was first at its surface slot, the longest stretch off it (not at the surface within 3 m of
+	// its slot; logged), the water plan's watchdog time (stuck is judged on that clock) and its placements. Judged from
+	// 10.5 s until both partners are at their slots; ended early by a stretch off the slot over 25 s; 45 s at most.
+	FVector SwimProofSwitchFrom = FVector::ZeroVector;
+	FVector SwimProofSwitchWay = FVector::ZeroVector;
+	float SwimProofSwitchControl = -1.f;
+	// The switch's press on the wall clock (FPlatformTime, just before SwitchLeadTo) and, from it, when the new lead answered
+	// the stick (no flag) and when its move input was first open (either way): control is judged on these, not game time.
+	double SwimProofSwitchPress = 0.0;
+	float SwimProofSwitchControlWall = -1.f;
+	float SwimProofSwitchOpenWall = -1.f;
+	int32 SwimProofSwitchShot0 = -1;
+	int32 SwimProofSwitchUnder[2] = {0, 0};
+	float SwimProofSwitchUnderWorst[2] = {0.f, 0.f};
+	float SwimProofSwitchOff[2] = {0.f, 0.f};
+	float SwimProofSwitchStuckWorst[2] = {0.f, 0.f};
+	float SwimProofSwitchSettled[2] = {-1.f, -1.f};
+	float SwimProofSwitchWatchWorst[2] = {0.f, 0.f};
+	int32 SwimProofSwitchPlaced[2] = {0, 0};
+	int32 SwimProofSwitchPhase[2] = {-2, -2};
+	int32 SwimProofSwitchBedHit[2] = {0, 0};
+	int32 SwimProofSwitchBedTicks[2] = {0, 0};
 	bool bSwimProofStartFrame1 = false;
 	// -SwimProof=cost (item 4 of 11-18, a measurement only): one fixed camera, the party idle on land, then the same party
 	// treading in the sea; each window's frame, game-thread, render-thread and GPU ms.
@@ -815,6 +855,13 @@ private:
 	// The look's wet grooms and bindings, loaded with the look (FTLook::PreloadWetGrooms) so the swap loads nothing.
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UObject>> WetGroomHold;
+	// Every party look's assets, loading in the background from BeginPlay and held while the handle lives
+	// (FTLook::HoldLooks), so a lead switch loads nothing; -NoPartyHold leaves them to load at the switch.
+	TSharedPtr<FStreamableHandle> PartyHold;
+	// Every party member's clips from the followers' first setup on (UFTLocomotionAnimInstance::AppendClips), so a switch's
+	// respawn finds them loaded and their measures kept; -NoPartyHold holds none.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UObject>> PartyClipHold;
 	// Wet prints (ftcore::WetPrints): on foot on dry ground the lead leaves a print at each plant of its foot phase,
 	// as wet as it is, fading as it dries. A fixed pool of decals, one per Core slot, made once the first time the lead
 	// is wet (in the water, so the hitch is out of sight of any print); a laid

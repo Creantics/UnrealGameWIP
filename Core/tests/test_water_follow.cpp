@@ -990,6 +990,139 @@ TEST_CASE("water follow (fast exit): the climb path: the swim to the foot, up, a
 
 namespace {
 
+// The 11-19 Strip run (it2_exit3.log) replayed: ladder 0 (foot (39335, 5750), top 1.55 m onto the quay, 2.95 m up from
+// the swimmers' feet), the lead 1.51 s up it, both partners sent to the queue as it starts up, from where they were:
+// slot 0 at (39680, 5505), slot 1 at (39732, 5742) cm (here in metres from the sea ladder's foot at (3, 0)). The host
+// as measured there: each swims to its place at its own mean speed (slot 0 1.36 m/s, slot 1 1.41 m/s), and one waiting
+// at its place drifts on toward the foot, slowing at 1.1 m/s^2 (slot 1 drifted 0.9 m); the climb is Core's path.
+struct ReplayRun {
+    float ashore[2] = {-1.f, -1.f};
+    float footAt[2] = {-1.f, -1.f}; // when each reached the ladder's foot (its climb path's swim over)
+    float worstStep = 0.f;
+};
+
+ReplayRun stripExitReplay(const WaterFollowTuning& tuning) {
+    constexpr float kDraft = 1.28f, kRise = 2.95f, kLeadUp = 1.51f, kDt60 = 1.f / 60.f;
+    const float speed[2] = {1.36f, 1.41f};
+    WaterFollowParty party(tuning);
+    const WaterExit exit = seaLadder(kRise - kDraft);
+    const WaterBodies water = sea();
+    WaterFollowLead lead = swimmingLead({3.f, 0.f, -0.4f});
+    lead.yaw = 180.f;
+    WaterFollowMember m[2];
+    const SwimVec start[2] = {{3.f + 3.45f, -2.45f, -kDraft}, {3.f + 3.97f, -0.08f, -kDraft}};
+    for (int i = 0; i < 2; ++i) {
+        m[i].active = true;
+        m[i].position = start[i];
+        m[i].surfaceZ = 0.f;
+        m[i].bedZ = -10.f;
+    }
+    for (int k = 0; k < 120; ++k) {
+        for (WaterFollowMember& x : m) x.atEntry = x.entered = true;
+        party.step(lead, m, 2, &exit, 1, kDt60, &water);
+    }
+    REQUIRE(party.order(0).phase == WaterFollowPhase::Surface);
+    REQUIRE(party.order(1).phase == WaterFollowPhase::Surface);
+    for (int i = 0; i < 2; ++i) m[i].position = start[i];
+    ReplayRun r;
+    lead.swimming = false;
+    lead.exitIndex = 0;
+    WaterClimbPath path[2];
+    float climbT[2] = {-1.f, -1.f}, drift[2] = {0.f, 0.f};
+    Vec2 way[2] = {};
+    for (float t = 0.f; t < 12.f; t += kDt60) {
+        lead.out = t >= kLeadUp;
+        lead.exiting = !lead.out;
+        party.step(lead, m, 2, &exit, 1, kDt60, &water);
+        for (int i = 0; i < 2; ++i) {
+            const WaterFollowOrder& o = party.order(i);
+            const SwimVec was = m[i].position;
+            if (o.phase == WaterFollowPhase::ToExit) {
+                const float dx = o.target.x - was.x, dy = o.target.y - was.y, d = std::sqrt(dx * dx + dy * dy);
+                const float go = std::min(d, speed[i] * kDt60);
+                if (d > 1e-4f) {
+                    way[i] = {dx / d, dy / d};
+                    m[i].position = {was.x + way[i].x * go, was.y + way[i].y * go, was.z};
+                }
+                drift[i] = speed[i];
+                m[i].atExit = d - go <= tuning.atExit;
+            } else if (o.phase == WaterFollowPhase::ExitWait) {
+                drift[i] = std::max(0.f, drift[i] - 1.1f * kDt60);
+                m[i].position = {was.x + way[i].x * drift[i] * kDt60, was.y + way[i].y * drift[i] * kDt60, was.z};
+            } else if (o.phase == WaterFollowPhase::Climbing) {
+                if (climbT[i] < 0.f) {
+                    climbT[i] = 0.f;
+                    path[i] = waterClimbPath(tuning, &exit, was, {});
+                }
+                climbT[i] += kDt60;
+                m[i].position = path[i].at(climbT[i]);
+                m[i].climbed = climbT[i] >= path[i].seconds();
+                if (r.footAt[i] < 0.f && climbT[i] >= path[i].swim) r.footAt[i] = t - kLeadUp;
+            } else if (o.phase == WaterFollowPhase::Ashore && climbT[i] >= 0.f && r.ashore[i] < 0.f) {
+                r.ashore[i] = t - kLeadUp;
+            }
+            r.worstStep = std::max(r.worstStep, dist(was, m[i].position));
+        }
+    }
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("water follow (fast exit): the 11-19 Strip exit replayed; one at its place climbs ahead of one still swimming") {
+    // In index order (the 11-19 rules): slot 1 waits at its place for slot 0, still swimming to the foot, then climbGap;
+    // ashore past 4 s, as measured (4.25 s).
+    WaterFollowTuning inOrder = fastExit();
+    inOrder.exitReadyFirst = false;
+    const ReplayRun a = stripExitReplay(inOrder);
+    MESSAGE("index order: partners ashore " << a.ashore[0] << " s and " << a.ashore[1] << " s after the lead out");
+    CHECK(a.ashore[1] > 4.f);
+    CHECK(a.ashore[1] < 4.6f);
+    // Ready first: slot 1 climbs from its place at once; slot 0 reaches the foot climbGap after it. Both by 3.7 s.
+    const WaterFollowTuning t = fastExit();
+    REQUIRE(t.exitReadyFirst);
+    const ReplayRun b = stripExitReplay(t);
+    MESSAGE("ready first: partners ashore " << b.ashore[0] << " s and " << b.ashore[1] << " s after the lead out; at the foot "
+                                            << b.footAt[1] << " s then " << b.footAt[0] << " s; worst step "
+                                            << b.worstStep * 100.f << " cm");
+    CHECK(b.ashore[0] >= 0.f);
+    CHECK(b.ashore[1] >= 0.f);
+    CHECK(b.ashore[0] <= 3.7f);
+    CHECK(b.ashore[1] <= 3.7f);
+    CHECK(b.footAt[1] < b.footAt[0]);
+    CHECK(b.footAt[0] - b.footAt[1] >= t.climbGap - 0.02f);
+    CHECK(b.worstStep <= 0.2f);
+}
+
+TEST_CASE("water follow (fast exit): ready first keeps the index order when both wait at their places") {
+    // Both at their places before the lead is out: slot 0 first, slot 1 climbGap later (and its foot climbGap later).
+    Scene s;
+    s.party = WaterFollowParty(fastExit());
+    s.exits = {seaLadder(1.f)};
+    s.bothIn();
+    s.lead.swimming = false;
+    s.lead.exiting = true;
+    s.lead.exitIndex = 0;
+    s.lead.position = {3.f, 0.f, 0.f};
+    s.step();
+    REQUIRE(s.o(0).phase == WaterFollowPhase::ToExit);
+    REQUIRE(s.o(1).phase == WaterFollowPhase::ToExit);
+    s.members[0].position = {3.3f, 0.f, -1.28f};
+    s.members[1].position = {4.5f, 0.f, -1.28f};
+    s.members[0].atExit = s.members[1].atExit = true;
+    s.step();
+    REQUIRE(s.o(0).phase == WaterFollowPhase::ExitWait);
+    REQUIRE(s.o(1).phase == WaterFollowPhase::ExitWait);
+    s.lead.exiting = false;
+    s.lead.out = true;
+    CHECK(s.until(0, WaterFollowPhase::Climbing, 2.f) >= 0.f);
+    CHECK(s.o(1).phase == WaterFollowPhase::ExitWait);
+    const float gap = s.until(1, WaterFollowPhase::Climbing, 3.f);
+    CHECK(gap >= fastExit().climbGap - kDt);
+}
+
+namespace {
+
 // A start in the water (11-18 items 3 and 5): both members spawned at the lead's place, the plan started in the water,
 // and the host's first step (dt 0, before the first placement).
 void startAtLead(Scene& s) {
