@@ -73,17 +73,40 @@ FTCORE_API void mapEnterableBuildings(const MiniMapModel& m, std::vector<std::ui
 // bridge, *_walk...) off the model is never a point name and stays unmatched; a zone row (id Z + digits) always is one.
 // A district row's own x, y is its anchor; without one the anchor is the mean of its roads.
 // A name is Water when any of its rows' kind is river, lake, canal, sea, harbour or bay (drawn in italics), else a Place
-// when its rows are places only, else a Road.
+// when its rows are places only, else a Road. The optional column built, "no" on a row, marks a point the world does not
+// hold yet (its name is never drawn there; the host logs it unbuilt).
 inline constexpr std::uint16_t kMapNoName = 0xFFFF;
 enum class MapNameKind : std::uint8_t { Road, Water, Place };
+
+// The label tier table: each name has a tier and each zoom draws a set of tiers. A name outside its zoom's tiers is out
+// of tier (never picked, not absent); a name inside them must draw or be logged with a reason. The label cap
+// (kMaxMapLabels) cuts only the zoom's lowest tier. The cursor's name stands outside the table (always tried).
+//   tier       far      mid                           near
+//   District   lowest   yes                           yes
+//   Water      -        yes (canals along the bank)   yes
+//   Main       -        yes                           yes
+//   Street     -        lowest                        yes
+//   Place      -        -                             yes
+//   Lane       -        -                             lowest
+//   Stair      -        -                             -
+// A name's tier: a district's name District; a Water name Water; a Place name (point rows only, a zone point of a road
+// kind among them) Place; a road's name the best class of the roads and segments that carry it (Main, Street, Lane,
+// Stair).
+enum class MapTier : std::uint8_t { District, Water, Main, Street, Place, Lane, Stair };
+inline constexpr int kMapTiers = 7;
+FTCORE_API bool mapTierShown(MapTier t, MapZoom z);
+FTCORE_API MapTier mapTierLowest(MapZoom z);
+FTCORE_API const char* mapTierName(MapTier t); // "district", "water", "main", "street", "place", "lane", "stair"
 struct MapNames {
     std::vector<std::string> names;      // each distinct name once
     std::vector<std::string> signForms;  // per name: its sign form ("" none; the glyphs are drawn, not typed)
     std::vector<MapNameKind> nameKind;   // per name
+    std::vector<MapTier> nameTier;       // per name (the tier table above), set at load
     struct Spot {
         std::uint16_t name = kMapNoName;
         Vec2 at{};
-        bool green = false; // its row's kind is open public ground (mapGreenKind): the block it stands in is a park
+        bool green = false;   // its row's kind is open public ground (mapGreenKind): the block it stands in is a park
+        bool unbuilt = false; // its row's built column is "no": the world does not hold it yet (never green)
     };
     std::vector<Spot> places; // the rows placed at a point (x, y), in table order
     std::vector<std::uint16_t> roadName; // per model road: index into names, or kMapNoName
@@ -124,6 +147,8 @@ FTCORE_API bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNam
 FTCORE_API std::uint16_t mapRoadName(const MapNames& n, int road);
 // The district of the road at index `road`: index into n.districts, or kMapNoName.
 FTCORE_API std::uint16_t mapRoadDistrict(const MapNames& n, int road);
+// A name's tier (MapNames::nameTier); a name past it (names not from mapLoadNames) by its kind, a road's as Main.
+FTCORE_API MapTier mapNameTier(const MapNames& n, std::uint16_t name);
 
 // Naming per named segment. A zone row (id Z + digits) of a road kind (mapRoadClass knows it) whose point lies within
 // kMapZoneReachM of a named road's straight run (the run rule of mapLabelAlong, on the road's own centre line: pieces
@@ -153,6 +178,10 @@ struct MapHere {
     std::uint16_t district = kMapNoName;
 };
 FTCORE_API MapHere mapHereAt(const MiniMapModel& m, const MapNames& n, Vec2 world, float reach = kMapHereReachM);
+// The cursor's name where no road's name stands at it (no road in the cursor's reach, or its road unnamed): the
+// district there, that of the nearest named road at any distance (mapHereAt with no reach), else the nearest district
+// anchor's. Index into n.districts, or kMapNoName. Zero allocation.
+FTCORE_API std::uint16_t mapCursorDistrict(const MiniMapModel& m, const MapNames& n, Vec2 world);
 
 // A label: a box of w x h px centred at `at`, turned by `angleDeg` (screen degrees, clockwise, y down), always in
 // [-90, 90) so it reads left to right or, standing, bottom to top.
@@ -177,6 +206,10 @@ inline constexpr float kMapAlongBendDeg = 12.f; // the most a piece may turn fro
 inline constexpr float kMapAlongJoinPx = 0.5f;  // pieces closer than this end to end meet
 FTCORE_API bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name, const MapOverlayView& v,
                               float w, float h, MapLabel& out, float margin = 24.f, float pad = 8.f, float* runPx = nullptr);
+// The longest stretch (px, the rule of mapLabelAlong) of the roads named `name` at v's scale with no frame round it: the
+// whole run. A name too long for its stretch on screen is too long for the road itself when it is also longer than this
+// less 2 * pad (the host logs whole), else the frame cut the stretch (cut). -1 when no road carries the name.
+FTCORE_API float mapLabelRunWholePx(const MiniMapModel& m, const MapNames& n, std::uint16_t name, const MapOverlayView& v);
 // Whether two labels' turned boxes, each grown by gap / 2 all round, overlap.
 FTCORE_API bool mapLabelsOverlap(const MapLabel& a, const MapLabel& b, float gap = 6.f);
 // A label's turned box grown by `grow` px all round, as its four corners (clockwise on screen from the top left of
@@ -311,27 +344,37 @@ struct MapCaption {
 FTCORE_API MapCaption mapCaptionLayout(float screenW, float screenH, float scale, float districtW, float streetW, float lineH,
                                        float ruleT = 1.f);
 
-// Which names are tried at a view, best first. Ranks are MapLabel::priority (lower wins): the cursor's road, then the
-// districts (boxed, at every zoom), water, main roads, streets, places, lanes. Roads' names are set along them: main
-// roads and streets from Mid, lanes at Near; stairs and terraces (class Stair) only under the cursor. Water at its point
-// at every zoom, along a canal from Mid; the districts at their anchors; places at Near. A name is picked once, and only when
-// its roads' bounds or its point meet the screen grown by `margin` px.
+// Which names are tried at a view, best first: the cursor's name, then the names whose tier the zoom draws (the tier
+// table above), by tier. Ranks are MapLabel::priority (lower wins) and follow the tiers: the cursor, districts (boxed,
+// at their anchors), water (at its point; a canal along it), main roads, streets, places (at their points), lanes. A
+// road's name is set along its roads and picked with its tier when any road or segment that carries it meets the
+// screen. A name is picked once, and only when its roads' bounds or its point meet the screen grown by `margin` px.
 enum class MapLabelRank : std::uint8_t { Cursor, District, Water, Main, Street, Place, Lane };
 FTCORE_API bool mapRoadLabelled(MapRoadClass c, MapZoom z);
+// The tier a rank's picks hold (the cursor's: District, above every tier, so never cut).
+FTCORE_API MapTier mapRankTier(MapLabelRank r);
 struct MapLabelPick {
     std::uint16_t name = kMapNoName; // into MapNames::names
     MapLabelRank rank = MapLabelRank::Main;
-    bool along = true; // set along its roads (mapLabelAlong); else centred on `at` (world m), level
+    bool along = true;    // set along its roads (mapLabelAlong); else centred on `at` (world m), level
+    bool unbuilt = false; // a point the world does not hold yet (MapNames::Spot::unbuilt): logged, never drawn
     Vec2 at{};
 };
 // The picks into out (at most cap), cursor first, then by rank, then by table order. `picked` is the cursor's road
-// (-1 none); `pickedName` the name at the cursor on it (mapNameAt), kMapNoName for the road's own. A zone's segment is
-// picked with its road's class, when its bounds meet the screen. `seaAt` (world m, from mapSeaLabelAt), when given and
-// the table names the sea (MapNames::seaName), sets the sea's name there once, level, at every zoom. `seen` is the
-// caller's scratch, one byte per name (cleared here). Returns the count. Zero allocation: the roads' bounds are the
-// ones measured at load (MapNames::roadBox).
+// (-1 none); `pickedName` the name at the cursor on it (mapNameAt), kMapNoName for the road's own. With no name there
+// (no road picked, or an unnamed one) and `cursorAt` given (world m), the cursor's name is the district there
+// (mapCursorDistrict), level at cursorAt, and that district is not picked again. A zone's segment is picked with its
+// name's tier, when its bounds meet the screen. `seaAt` (world m, from mapSeaLabelAt), when given, the table names the
+// sea (MapNames::seaName) and the zoom draws Water, sets the sea's name there once, level. `seen` is the caller's
+// scratch, one byte per name (cleared here). Returns the count. Zero allocation: the roads' bounds are the ones measured
+// at load (MapNames::roadBox).
 FTCORE_API std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, int picked,
                                      MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin = 0.f,
-                                     std::uint16_t pickedName = kMapNoName, const Vec2* seaAt = nullptr);
+                                     std::uint16_t pickedName = kMapNoName, const Vec2* seaAt = nullptr,
+                                     const Vec2* cursorAt = nullptr);
+// The cap budget: of `count` picks in pick order, those past the first `cap` whose tier is above the zoom's lowest (the
+// cursor's included). The cap may cut only the lowest tier, so the host reports any as cap_cut_above_lowest.
+FTCORE_API std::size_t mapCapCutAboveLowest(const MapLabelPick* picks, std::size_t count, MapZoom z,
+                                            std::size_t cap = kMaxMapLabels);
 
 } // namespace ftcore

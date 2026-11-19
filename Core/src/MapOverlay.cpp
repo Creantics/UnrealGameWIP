@@ -285,11 +285,11 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
     while (first < recs.size() && !recs[first].fields.empty() && !recs[first].fields[0].empty() && recs[first].fields[0][0] == '#')
         ++first;
     if (first >= recs.size()) return detail::fail(error, 1, "no header");
-    int col[7] = {-1, -1, -1, -1, -1, -1, -1};
-    const char* want[7] = {"id", "kind", "name", "sign_form", "district", "x", "y"};
+    int col[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    const char* want[8] = {"id", "kind", "name", "sign_form", "district", "x", "y", "built"};
     const auto& head = recs[first].fields;
     for (std::size_t i = 0; i < head.size(); ++i)
-        for (int k = 0; k < 7; ++k)
+        for (int k = 0; k < 8; ++k)
             if (trimmed(head[i]) == want[k]) col[k] = static_cast<int>(i);
     if (col[0] < 0 || col[1] < 0 || col[2] < 0)
         return detail::fail(error, recs[first].line, "the header needs id, kind and name");
@@ -368,7 +368,8 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
             if ((zoneId(id) || !lineKind(kind)) && placed) {
                 MapRoadClass zc{};
                 if (zoneId(id) && !water && mapRoadClass(kind, zc)) zones.push_back(Zone{idx, at, field(rec, col[4]), out.places.size()});
-                out.places.push_back(MapNames::Spot{idx, at, mapGreenKind(kind)});
+                const bool unbuilt = field(rec, col[7]) == "no"; // not in the world yet: no park drawn for it either
+                out.places.push_back(MapNames::Spot{idx, at, mapGreenKind(kind) && !unbuilt, unbuilt});
             } else if (!(seaKind < 3)) {
                 ++out.unmatched;
             }
@@ -589,7 +590,72 @@ bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, st
     for (std::size_t i = 0; i < out.places.size(); ++i)
         if (!drop[i]) out.places[kept++] = out.places[i];
     out.places.resize(kept);
+    // Each name's tier: water and places by kind; a road's name by the best class carrying it; a district's name last.
+    out.nameTier.assign(out.names.size(), MapTier::Stair);
+    for (std::size_t i = 0; i < out.names.size(); ++i)
+        if (out.nameKind[i] != MapNameKind::Road) out.nameTier[i] = out.nameKind[i] == MapNameKind::Water ? MapTier::Water : MapTier::Place;
+    auto raise = [&](std::uint16_t nm, MapRoadClass c) {
+        if (nm == kMapNoName || nm >= out.names.size() || out.nameKind[nm] != MapNameKind::Road) return;
+        const MapTier t = c == MapRoadClass::Main ? MapTier::Main : c == MapRoadClass::Street ? MapTier::Street
+                        : c == MapRoadClass::Lane ? MapTier::Lane : MapTier::Stair;
+        if (t < out.nameTier[nm]) out.nameTier[nm] = t;
+    };
+    for (std::size_t r = 0; r < m.roads.size(); ++r) raise(out.roadName[r], m.roads[r].cls);
+    for (const MapNames::Segment& seg : out.segments) raise(seg.name, m.roads[seg.road].cls);
+    for (const MapNames::District& d : out.districts) out.nameTier[d.name] = MapTier::District;
     return true;
+}
+
+bool mapTierShown(MapTier t, MapZoom z) {
+    switch (t) {
+    case MapTier::District: return true;
+    case MapTier::Water:
+    case MapTier::Main:
+    case MapTier::Street: return z != MapZoom::Far;
+    case MapTier::Place:
+    case MapTier::Lane: return z == MapZoom::Near;
+    case MapTier::Stair: return false;
+    }
+    return false;
+}
+
+MapTier mapTierLowest(MapZoom z) {
+    return z == MapZoom::Far ? MapTier::District : z == MapZoom::Mid ? MapTier::Street : MapTier::Lane;
+}
+
+const char* mapTierName(MapTier t) {
+    static const char* const kNames[kMapTiers] = {"district", "water", "main", "street", "place", "lane", "stair"};
+    const int i = static_cast<int>(t);
+    return i >= 0 && i < kMapTiers ? kNames[i] : "?";
+}
+
+MapTier mapNameTier(const MapNames& n, std::uint16_t name) {
+    if (name < n.nameTier.size()) return n.nameTier[name];
+    if (name < n.nameKind.size() && n.nameKind[name] != MapNameKind::Road)
+        return n.nameKind[name] == MapNameKind::Water ? MapTier::Water : MapTier::Place;
+    return MapTier::Main;
+}
+
+MapTier mapRankTier(MapLabelRank r) {
+    switch (r) {
+    case MapLabelRank::Cursor:
+    case MapLabelRank::District: return MapTier::District;
+    case MapLabelRank::Water: return MapTier::Water;
+    case MapLabelRank::Main: return MapTier::Main;
+    case MapLabelRank::Street: return MapTier::Street;
+    case MapLabelRank::Place: return MapTier::Place;
+    case MapLabelRank::Lane: return MapTier::Lane;
+    }
+    return MapTier::Lane;
+}
+
+std::size_t mapCapCutAboveLowest(const MapLabelPick* picks, std::size_t count, MapZoom z, std::size_t cap) {
+    if (!picks) return 0;
+    const MapTier lowest = mapTierLowest(z);
+    std::size_t cut = 0;
+    for (std::size_t i = cap; i < count; ++i)
+        if (picks[i].rank == MapLabelRank::Cursor || mapRankTier(picks[i].rank) != lowest) ++cut;
+    return cut;
 }
 
 float mapRoadAlong(const MiniMapModel& m, int road, Vec2 world, float* distance) {
@@ -670,6 +736,10 @@ MapHere mapHereAt(const MiniMapModel& m, const MapNames& n, Vec2 world, float re
         }
     }
     return out;
+}
+
+std::uint16_t mapCursorDistrict(const MiniMapModel& m, const MapNames& n, Vec2 world) {
+    return mapHereAt(m, n, world, 1e30f).district;
 }
 
 std::uint16_t mapRoadDistrict(const MapNames& n, int road) {
@@ -797,6 +867,37 @@ bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name,
     out.fits = best >= w + 2.f * pad;
     if (runPx) *runPx = best;
     return true;
+}
+
+float mapLabelRunWholePx(const MiniMapModel& m, const MapNames& n, std::uint16_t name, const MapOverlayView& v) {
+    if (name == kMapNoName || !(v.mPerPx > 0.f)) return -1.f;
+    // The bounds of every road that carries the name (its own, or a segment of it), then a view round them all.
+    float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
+    const std::size_t roads = std::min(m.roads.size(), n.roadName.size());
+    for (std::size_t r = 0; r < roads; ++r) {
+        bool any = n.roadName[r] == name;
+        if (r + 1 < n.roadSegments.size())
+            for (std::uint32_t g = n.roadSegments[r]; g < n.roadSegments[r + 1] && g < n.segments.size() && !any; ++g)
+                any = n.segments[g].name == name;
+        if (!any) continue;
+        const MapRoad& road = m.roads[r];
+        for (std::uint32_t k = 0; k < road.count && road.first + k < m.points.size(); ++k) {
+            const Vec2 p = m.points[road.first + k];
+            bx0 = std::min(bx0, p.x);
+            by0 = std::min(by0, p.y);
+            bx1 = std::max(bx1, p.x);
+            by1 = std::max(by1, p.y);
+        }
+    }
+    if (bx0 > bx1) return -1.f;
+    MapOverlayView whole = v;
+    whole.centre = Vec2{0.5f * (bx0 + bx1), 0.5f * (by0 + by1)};
+    whole.screenW = (bx1 - bx0) / v.mPerPx + 64.f;
+    whole.screenH = (by1 - by0) / v.mPerPx + 64.f;
+    MapLabel l;
+    float run = -1.f;
+    if (!mapLabelAlong(m, n, name, whole, 0.f, 0.f, l, 0.f, 0.f, &run)) return -1.f;
+    return run;
 }
 
 bool mapLabelsOverlap(const MapLabel& a, const MapLabel& b, float gap) { return overlapGrown(a, gap * 0.5f, b, gap * 0.5f); }
@@ -1145,18 +1246,18 @@ bool mapRoadLabelled(MapRoadClass c, MapZoom z) {
 
 std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, int picked,
                           MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin, std::uint16_t pickedName,
-                          const Vec2* seaAt) {
+                          const Vec2* seaAt, const Vec2* cursorAt) {
     if (!out || cap == 0) return 0;
     const std::size_t names = n.names.size();
     if (seen && names > 0) std::memset(seen, 0, names);
     std::size_t count = 0;
-    auto take = [&](std::uint16_t name, MapLabelRank rank, bool along, Vec2 at) {
+    auto take = [&](std::uint16_t name, MapLabelRank rank, bool along, Vec2 at, bool unbuilt = false) {
         if (count >= cap || name == kMapNoName || name >= names) return;
         if (seen) {
             if (seen[name]) return;
             seen[name] = 1;
         }
-        out[count++] = MapLabelPick{name, rank, along, at};
+        out[count++] = MapLabelPick{name, rank, along, unbuilt, at};
     };
     const Vec2 lo = mapOverlayFromScreen(v, Vec2{-margin, -margin});
     const Vec2 hi = mapOverlayFromScreen(v, Vec2{v.screenW + margin, v.screenH + margin});
@@ -1178,37 +1279,55 @@ std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOve
         }
         return boxIn(bx0, by0, bx1, by1);
     };
+    // The cursor's name: the name at the cursor on its road, else the district there. Outside the tier table.
+    std::uint16_t cursorName = kMapNoName;
     if (picked >= 0 && static_cast<std::size_t>(picked) < roads)
-        take(pickedName != kMapNoName ? pickedName : n.roadName[static_cast<std::size_t>(picked)], MapLabelRank::Cursor, true, Vec2{});
+        cursorName = pickedName != kMapNoName ? pickedName : n.roadName[static_cast<std::size_t>(picked)];
+    if (cursorName != kMapNoName) {
+        take(cursorName, MapLabelRank::Cursor, true, Vec2{});
+    } else if (cursorAt) {
+        const std::uint16_t d = mapCursorDistrict(m, n, *cursorAt);
+        if (d < n.districts.size()) take(n.districts[d].name, MapLabelRank::Cursor, false, *cursorAt);
+    }
     for (const MapNames::District& d : n.districts)
         if (d.hasAnchor && pointIn(d.anchor)) take(d.name, MapLabelRank::District, false, d.anchor);
     auto kindOf = [&](std::uint16_t name) { return name < n.nameKind.size() ? n.nameKind[name] : MapNameKind::Road; };
-    // The sea, once, where it is widest on screen; then water at its points (every zoom), then along its roads (canals,
-    // from Mid).
-    if (seaAt && n.seaName != kMapNoName) take(n.seaName, MapLabelRank::Water, false, *seaAt);
-    for (const MapNames::Spot& p : n.places)
-        if (kindOf(p.name) == MapNameKind::Water && pointIn(p.at)) take(p.name, MapLabelRank::Water, false, p.at);
-    if (z != MapZoom::Far)
+    // Water, where the zoom draws it: the sea, once, where it is widest on screen; water at its points; then along its
+    // roads (canals).
+    if (mapTierShown(MapTier::Water, z)) {
+        if (seaAt && n.seaName != kMapNoName) take(n.seaName, MapLabelRank::Water, false, *seaAt);
+        for (const MapNames::Spot& p : n.places)
+            if (kindOf(p.name) == MapNameKind::Water && pointIn(p.at)) take(p.name, MapLabelRank::Water, false, p.at, p.unbuilt);
         for (std::size_t r = 0; r < roads; ++r) {
             const std::uint16_t name = n.roadName[r];
             if (name != kMapNoName && kindOf(name) == MapNameKind::Water && (!seen || !seen[name]) && roadIn(r)) take(name, MapLabelRank::Water, true, Vec2{});
         }
-    // Roads by class, main first; a road's segments (zones sharing its run) with it.
-    const MapRoadClass order[3] = {MapRoadClass::Main, MapRoadClass::Street, MapRoadClass::Lane};
+    }
+    // Roads' names by tier, main first (places before lanes): a name is taken with its own tier (the best class that
+    // carries it) when any road or segment that carries it meets the screen. A road's name not from mapLoadNames takes
+    // the road's class.
+    const MapTier tierOf[3] = {MapTier::Main, MapTier::Street, MapTier::Lane};
     const MapLabelRank rankOf[3] = {MapLabelRank::Main, MapLabelRank::Street, MapLabelRank::Lane};
+    auto nameTier = [&](std::uint16_t name, MapRoadClass cls) {
+        if (name < n.nameTier.size()) return n.nameTier[name];
+        return cls == MapRoadClass::Main ? MapTier::Main : cls == MapRoadClass::Street ? MapTier::Street
+             : cls == MapRoadClass::Lane ? MapTier::Lane : MapTier::Stair;
+    };
     for (int c = 0; c < 3; ++c) {
-        if (c == 2 && z == MapZoom::Near)
+        if (c == 2 && mapTierShown(MapTier::Place, z))
             for (const MapNames::Spot& p : n.places)
-                if (kindOf(p.name) == MapNameKind::Place && pointIn(p.at)) take(p.name, MapLabelRank::Place, false, p.at);
-        if (!mapRoadLabelled(order[c], z)) continue;
+                if (kindOf(p.name) == MapNameKind::Place && pointIn(p.at)) take(p.name, MapLabelRank::Place, false, p.at, p.unbuilt);
+        if (!mapTierShown(tierOf[c], z)) continue;
         for (std::size_t r = 0; r < roads; ++r) {
-            if (m.roads[r].cls != order[c]) continue;
+            const MapRoadClass cls = m.roads[r].cls;
             const std::uint16_t name = n.roadName[r];
-            if (name != kMapNoName && kindOf(name) != MapNameKind::Water && (!seen || !seen[name]) && roadIn(r)) take(name, rankOf[c], true, Vec2{});
+            if (name != kMapNoName && kindOf(name) != MapNameKind::Water && nameTier(name, cls) == tierOf[c] && (!seen || !seen[name]) && roadIn(r))
+                take(name, rankOf[c], true, Vec2{});
             if (r + 1 >= n.roadSegments.size()) continue;
             for (std::uint32_t g = n.roadSegments[r]; g < n.roadSegments[r + 1] && g < n.segments.size(); ++g) {
                 const MapNames::Segment& seg = n.segments[g];
-                if ((!seen || !seen[seg.name]) && boxIn(seg.x0, seg.y0, seg.x1, seg.y1)) take(seg.name, rankOf[c], true, Vec2{});
+                if (nameTier(seg.name, cls) == tierOf[c] && (!seen || !seen[seg.name]) && boxIn(seg.x0, seg.y0, seg.x1, seg.y1))
+                    take(seg.name, rankOf[c], true, Vec2{});
             }
         }
     }

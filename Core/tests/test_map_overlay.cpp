@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -364,7 +366,7 @@ TEST_CASE("map overlay: water and place rows: water along a canal or at its poin
     CHECK(mapRoadName(n, 3) == 2);
 }
 
-TEST_CASE("map overlay: label picks by zoom: cursor first, districts and water points always, streets from mid, lanes and places near") {
+TEST_CASE("map overlay: label picks by tier: cursor first, districts at every zoom, water and streets from mid, lanes and places near") {
     const MiniMapModel m = model();
     const char* csv = "id,kind,name,sign_form,district,x,y\n"
                       "D1,district,Pebblewick,Pebi,D1,,\n"
@@ -387,7 +389,7 @@ TEST_CASE("map overlay: label picks by zoom: cursor first, districts and water p
         for (std::size_t i = 0; i < k; ++i) s += n.names[out[i].name] + (out[i].along ? "" : "@") + ";";
         return s;
     };
-    CHECK(names(MapZoom::Far, -1) == "Pebblewick@;the Wend@;");
+    CHECK(names(MapZoom::Far, -1) == "Pebblewick@;"); // water is out of tier at far
     CHECK(names(MapZoom::Mid, -1) == "Pebblewick@;the Wend@;Ferrow Road;Ashlit Street;");
     CHECK(names(MapZoom::Near, -1) == "Pebblewick@;the Wend@;Ferrow Road;Ashlit Street;Tinker Square@;Thimble Lane;");
     // The cursor's road first, once; a lane under the cursor is named at mid.
@@ -1126,11 +1128,14 @@ TEST_CASE("map overlay: the sea's name is read from its row, named once over the
     CHECK_FALSE(seaPlace);
     CHECK(harbourPlace); // a beaten one stays a water name at its point
     CHECK(n.places.back().green);
-    const MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Far, 1920.f, 1080.f);
+    const MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Mid, 1920.f, 1080.f);
     MapLabelPick out[16];
     std::vector<std::uint8_t> seen(n.names.size());
     const Vec2 seaAt{350.f, 30.f};
-    const std::size_t k = mapLabelPicks(m, n, v, MapZoom::Far, -1, out, 16, seen.data(), 0.f, kMapNoName, &seaAt);
+    // Water is out of tier at far: the sea is not picked there.
+    const MapOverlayView farView = mapOverlayView({200.f, 150.f}, MapZoom::Far, 1920.f, 1080.f);
+    CHECK(mapLabelPicks(m, n, farView, MapZoom::Far, -1, out, 16, seen.data(), 0.f, kMapNoName, &seaAt) == 0);
+    const std::size_t k = mapLabelPicks(m, n, v, MapZoom::Mid, -1, out, 16, seen.data(), 0.f, kMapNoName, &seaAt);
     std::size_t seas = 0;
     for (std::size_t i = 0; i < k; ++i)
         if (out[i].name == n.seaName) {
@@ -1141,7 +1146,7 @@ TEST_CASE("map overlay: the sea's name is read from its row, named once over the
         }
     CHECK(seas == 1);
     // No place for it on screen: not picked.
-    CHECK(mapLabelPicks(m, n, v, MapZoom::Far, -1, out, 16, seen.data()) == k - 1);
+    CHECK(mapLabelPicks(m, n, v, MapZoom::Mid, -1, out, 16, seen.data()) == k - 1);
 }
 
 // ---- Edges found in turns 8 and 9: a second Init, no roads, a one-point road, two names on one run ----
@@ -1154,6 +1159,7 @@ void checkSameNames(const MapNames& a, const MapNames& b) {
     CHECK(a.names == b.names);
     CHECK(a.signForms == b.signForms);
     CHECK(a.nameKind == b.nameKind);
+    CHECK(a.nameTier == b.nameTier);
     REQUIRE(a.places.size() == b.places.size());
     for (std::size_t i = 0; i < a.places.size(); ++i) {
         CHECK(a.places[i].name == b.places[i].name);
@@ -1439,4 +1445,257 @@ TEST_CASE("map overlay edges: two names on one run: one flip, the ends and past 
     CHECK(swapped.n.names[swapped.n.segments[0].name] == "Lantern Row");
     REQUIRE(swapped.n.segments[0].district != kMapNoName);
     CHECK(swapped.n.names[swapped.n.districts[swapped.n.segments[0].district].name] == "Lanternfall");
+}
+
+// ---- Turn 13: the label tier table, the cap's lowest tier, the cursor's district, unbuilt rows, whole runs ----
+
+TEST_CASE("map overlay tiers: districts at every zoom, water, main and streets from mid, places and lanes near, stairs never") {
+    const MapZoom zs[3] = {MapZoom::Far, MapZoom::Mid, MapZoom::Near};
+    // Rows: District, Water, Main, Street, Place, Lane, Stair; columns: far, mid, near.
+    const bool table[kMapTiers][3] = {{true, true, true},   {false, true, true}, {false, true, true}, {false, true, true},
+                                      {false, false, true}, {false, false, true}, {false, false, false}};
+    for (int t = 0; t < kMapTiers; ++t)
+        for (int z = 0; z < 3; ++z) {
+            CAPTURE(t);
+            CAPTURE(z);
+            CHECK(mapTierShown(static_cast<MapTier>(t), zs[z]) == table[t][z]);
+        }
+    CHECK(mapTierLowest(MapZoom::Far) == MapTier::District);
+    CHECK(mapTierLowest(MapZoom::Mid) == MapTier::Street);
+    CHECK(mapTierLowest(MapZoom::Near) == MapTier::Lane);
+    for (MapZoom z : zs) CHECK(mapTierShown(mapTierLowest(z), z)); // the lowest tier is one the zoom draws
+    CHECK(std::string(mapTierName(MapTier::District)) == "district");
+    CHECK(std::string(mapTierName(MapTier::Stair)) == "stair");
+    CHECK(mapRankTier(MapLabelRank::Cursor) == MapTier::District);
+    CHECK(mapRankTier(MapLabelRank::Water) == MapTier::Water);
+    CHECK(mapRankTier(MapLabelRank::Place) == MapTier::Place);
+    CHECK(mapRankTier(MapLabelRank::Lane) == MapTier::Lane);
+}
+
+TEST_CASE("map overlay tiers: a name's tier is its kind's; a road's name takes the best class that carries it") {
+    MiniMapModel m = model();
+    MapRoad stair;
+    stair.id = "SR-A";
+    stair.cls = MapRoadClass::Stair;
+    stair.width = 3.f;
+    stair.first = static_cast<std::uint32_t>(m.points.size());
+    stair.count = 2;
+    m.points.push_back({260.f, 260.f});
+    m.points.push_back({340.f, 260.f});
+    m.roads.push_back(stair);
+    mapBuildGrid(m);
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D1,district,Pebblewick,Pebi,D1,,\n"
+                      "RD-A,road,Ferrow Road,Feru,D1,,\n"
+                      "LN-A,core_lane,Ferrow Road,,D1,,\n" // the same name on a lane: still a main road's name
+                      "ST-A1,street,Ashlit Street,,D1,,\n"
+                      "SR-A,stair,Kettle Steps,,D1,,\n"
+                      "RV,river,the Wend,,D1,300,40\n"
+                      "SQ-1,square,Tinker Square,,D1,120,200\n"
+                      "Z31,stair,Pail Stair,,D1,60,280\n"; // a zone point of a road kind on no run: a place
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n));
+    REQUIRE(n.nameTier.size() == n.names.size());
+    auto tier = [&](const char* s) {
+        for (std::size_t i = 0; i < n.names.size(); ++i)
+            if (n.names[i] == s) return mapNameTier(n, static_cast<std::uint16_t>(i));
+        return MapTier::Stair;
+    };
+    CHECK(tier("Pebblewick") == MapTier::District);
+    CHECK(tier("Ferrow Road") == MapTier::Main);
+    CHECK(tier("Ashlit Street") == MapTier::Street);
+    CHECK(tier("Kettle Steps") == MapTier::Stair);
+    CHECK(tier("the Wend") == MapTier::Water);
+    CHECK(tier("Tinker Square") == MapTier::Place);
+    CHECK(tier("Pail Stair") == MapTier::Place);
+    // Picks follow the tiers: the main road's name with rank Main, the stair's never (but under the cursor).
+    std::vector<std::uint8_t> seen(n.names.size());
+    MapLabelPick out[16];
+    const MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Near, 1920.f, 1080.f);
+    std::size_t k = mapLabelPicks(m, n, v, MapZoom::Near, -1, out, 16, seen.data());
+    bool stairs = false;
+    for (std::size_t i = 0; i < k; ++i) {
+        stairs = stairs || n.names[out[i].name] == "Kettle Steps";
+        if (n.names[out[i].name] == "Ferrow Road") CHECK(out[i].rank == MapLabelRank::Main);
+        CHECK(mapTierShown(mapNameTier(n, out[i].name), MapZoom::Near));
+    }
+    CHECK_FALSE(stairs);
+    k = mapLabelPicks(m, n, v, MapZoom::Near, 5, out, 16, seen.data());
+    REQUIRE(k > 0);
+    CHECK(n.names[out[0].name] == "Kettle Steps");
+    CHECK(out[0].rank == MapLabelRank::Cursor);
+    // A name past nameTier (names not from mapLoadNames) goes by its kind.
+    MapNames bare;
+    bare.names = {"a", "b"};
+    bare.nameKind = {MapNameKind::Water, MapNameKind::Road};
+    CHECK(mapNameTier(bare, 0) == MapTier::Water);
+    CHECK(mapNameTier(bare, 1) == MapTier::Main);
+}
+
+TEST_CASE("map overlay tiers: the cap budget counts only names above the lowest tier that fall past the cap") {
+    MapLabelPick picks[80];
+    auto fill = [&](std::size_t from, std::size_t to, MapLabelRank r) {
+        for (std::size_t i = from; i < to; ++i) picks[i] = MapLabelPick{static_cast<std::uint16_t>(i), r, true, false, Vec2{}};
+    };
+    // Mid: 60 main names, then 20 streets (the lowest tier): the cap cuts streets only.
+    fill(0, 60, MapLabelRank::Main);
+    fill(60, 80, MapLabelRank::Street);
+    CHECK(mapCapCutAboveLowest(picks, 80, MapZoom::Mid) == 0);
+    // Upper tiers over the cap: 70 main names, then 10 streets; six main names fall past it.
+    fill(0, 70, MapLabelRank::Main);
+    fill(70, 80, MapLabelRank::Street);
+    CHECK(mapCapCutAboveLowest(picks, 80, MapZoom::Mid) == 6);
+    // Near: streets are above the lowest tier (lanes).
+    fill(0, 66, MapLabelRank::Street);
+    fill(66, 80, MapLabelRank::Lane);
+    CHECK(mapCapCutAboveLowest(picks, 80, MapZoom::Near) == 2);
+    // The cursor's pick is never the lowest tier; a short list is never cut.
+    picks[70].rank = MapLabelRank::Cursor;
+    CHECK(mapCapCutAboveLowest(picks, 80, MapZoom::Near) == 3);
+    CHECK(mapCapCutAboveLowest(picks, 64, MapZoom::Near) == 0);
+    CHECK(mapCapCutAboveLowest(nullptr, 80, MapZoom::Near) == 0);
+}
+
+TEST_CASE("map overlay tiers: with no road name at the cursor, its name is the district there, picked once") {
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y\n"
+                      "D1,district,Pebblewick,Pebi,D1,,\n"
+                      "D2,district,Hobcross,,D2,,\n"
+                      "RD-A,road,Ferrow Road,Feru,D1,,\n"
+                      "ST-A1,street,Ashlit Street,,D1,,\n"
+                      "ST-A2,street,Ashlit Street,,D1,,\n"
+                      "ST-B,street,Brine Street,,D2,,\n"; // LN-A has no row: unnamed
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n));
+    REQUIRE(n.districts.size() == 2);
+    CHECK(mapCursorDistrict(m, n, {70.f, 30.f}) == 1);   // nearest named road: Brine Street
+    CHECK(mapCursorDistrict(m, n, {200.f, 140.f}) == 0); // Ferrow Road
+    CHECK(mapCursorDistrict(m, n, {5000.f, 5000.f}) == 0); // far off: still the nearest named road's district
+    std::vector<std::uint8_t> seen(n.names.size());
+    MapLabelPick out[16];
+    const MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Mid, 1920.f, 1080.f);
+    auto count = [&](std::size_t k, const char* s) {
+        std::size_t c = 0;
+        for (std::size_t i = 0; i < k; ++i) c += n.names[out[i].name] == s ? 1u : 0u;
+        return c;
+    };
+    // No road in reach: the district at the cursor, level at the cursor, once (its district pick is not repeated).
+    const Vec2 at{70.f, 30.f};
+    std::size_t k = mapLabelPicks(m, n, v, MapZoom::Mid, -1, out, 16, seen.data(), 0.f, kMapNoName, nullptr, &at);
+    REQUIRE(k > 0);
+    CHECK(n.names[out[0].name] == "Hobcross");
+    CHECK(out[0].rank == MapLabelRank::Cursor);
+    CHECK_FALSE(out[0].along);
+    CHECK(out[0].at.x == doctest::Approx(70.f));
+    CHECK(count(k, "Hobcross") == 1);
+    // The cursor on the unnamed lane: the district there.
+    const Vec2 lane{200.f, 100.f};
+    k = mapLabelPicks(m, n, v, MapZoom::Mid, 3, out, 16, seen.data(), 0.f, kMapNoName, nullptr, &lane);
+    REQUIRE(k > 0);
+    CHECK(n.names[out[0].name] == "Pebblewick");
+    CHECK(out[0].rank == MapLabelRank::Cursor);
+    CHECK(count(k, "Pebblewick") == 1);
+    // Without cursorAt, as before: no cursor's name.
+    k = mapLabelPicks(m, n, v, MapZoom::Mid, -1, out, 16, seen.data());
+    REQUIRE(k > 0);
+    CHECK(out[0].rank == MapLabelRank::District);
+    // A named road at the cursor keeps its own name. No allocation.
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    k = mapLabelPicks(m, n, v, MapZoom::Mid, 0, out, 16, seen.data(), 0.f, kMapNoName, nullptr, &at);
+    const std::uint16_t distant = mapCursorDistrict(m, n, {5000.f, 5000.f});
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    REQUIRE(k > 0);
+    CHECK(n.names[out[0].name] == "Ferrow Road");
+    CHECK(distant == 0);
+}
+
+TEST_CASE("map overlay tiers: a row marked built no is flagged unbuilt, never green, and picked with the flag") {
+    const MiniMapModel m = model();
+    const char* csv = "id,kind,name,sign_form,district,x,y,built\n"
+                      "D1,district,Pebblewick,Pebi,D1,,,\n"
+                      "PARK,park,Moss Park,,D1,120,200,no\n"
+                      "LAKE,lake,the Brim,,D1,300,40,no\n"
+                      "P2,park,Fen Green,,D1,320,240,\n";
+    MapNames n;
+    REQUIRE(mapLoadNames(m, csv, n));
+    REQUIRE(n.places.size() == 3);
+    CHECK(n.places[0].unbuilt);
+    CHECK_FALSE(n.places[0].green); // an unbuilt park paints no park
+    CHECK(n.places[1].unbuilt);
+    CHECK_FALSE(n.places[2].unbuilt);
+    CHECK(n.places[2].green);
+    std::vector<std::uint8_t> seen(n.names.size());
+    MapLabelPick out[16];
+    const MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Near, 1920.f, 1080.f);
+    const std::size_t k = mapLabelPicks(m, n, v, MapZoom::Near, -1, out, 16, seen.data());
+    std::size_t unbuilt = 0, built = 0;
+    for (std::size_t i = 0; i < k; ++i) {
+        unbuilt += out[i].unbuilt ? 1u : 0u;
+        built += n.names[out[i].name] == "Fen Green" && !out[i].unbuilt ? 1u : 0u;
+    }
+    CHECK(unbuilt == 2);
+    CHECK(built == 1);
+    // The table without the column: every row built.
+    MapNames plain;
+    REQUIRE(mapLoadNames(m, "id,kind,name,sign_form,district,x,y\nPARK,park,Moss Park,,D1,120,200\n", plain));
+    REQUIRE(plain.places.size() == 1);
+    CHECK_FALSE(plain.places[0].unbuilt);
+    CHECK(plain.places[0].green);
+}
+
+TEST_CASE("map overlay tiers: the whole run is the road's own length at the view's scale, whatever the frame cuts") {
+    const MiniMapModel m = model();
+    MapNames n;
+    REQUIRE(mapLoadNames(m, kNames, n));
+    // Ferrow Road runs 400 m: 285.7 px at mid's 1.4 m per px.
+    MapOverlayView v = mapOverlayView({200.f, 150.f}, MapZoom::Mid, 1920.f, 1080.f);
+    v.mPerPx = 1.4f;
+    CHECK(mapLabelRunWholePx(m, n, 1, v) == doctest::Approx(400.f / 1.4f).epsilon(0.001));
+    // A 300 px screen cuts the run on screen to 300 less the margins; the whole run stays.
+    MapOverlayView narrow = v;
+    narrow.screenW = 300.f;
+    MapLabel l;
+    float run = 0.f;
+    REQUIRE(mapLabelAlong(m, n, 1, narrow, 100.f, 20.f, l, 24.f, 8.f, &run));
+    CHECK(run == doctest::Approx(252.f).epsilon(0.001));
+    CHECK(mapLabelRunWholePx(m, n, 1, narrow) == doctest::Approx(400.f / 1.4f).epsilon(0.001));
+    // Ashlit Street: two rows, two roads; a run never crosses into another road, so the longest is one row's 180.3 m.
+    CHECK(mapLabelRunWholePx(m, n, 2, v) == doctest::Approx(std::hypot(150.f, 100.f) / 1.4f).epsilon(0.001));
+    CHECK(mapLabelRunWholePx(m, n, kMapNoName, v) == -1.f);
+    CHECK(mapLabelRunWholePx(m, n, 0, v) == -1.f); // the district's name: no road carries it
+}
+
+TEST_CASE("map overlay tiers: the real names table: zone points of road kinds are places; the lake, park and isle unbuilt") {
+    std::ifstream f(std::string(FTCORE_PROJECT_DATA_DIR) + "/Map/solhaven_names.csv", std::ios::binary);
+    REQUIRE(f.good());
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string text = ss.str();
+    const MiniMapModel m = model(); // the fixture's roads match no row: every row with a point is a point name
+    MapNames n;
+    std::string err;
+    REQUIRE_MESSAGE(mapLoadNames(m, text, n, &err, 1000.0), err);
+    REQUIRE(n.nameTier.size() == n.names.size());
+    auto find = [&](const char* s) {
+        for (std::size_t i = 0; i < n.names.size(); ++i)
+            if (n.names[i] == s) return static_cast<std::uint16_t>(i);
+        return kMapNoName;
+    };
+    for (const char* s : {"the Great Stair", "the Lantern Stairs", "Crumb Lane", "Kiosk Walk"}) {
+        CAPTURE(s);
+        REQUIRE(find(s) != kMapNoName);
+        CHECK(mapNameTier(n, find(s)) == MapTier::Place);
+    }
+    CHECK(mapNameTier(n, find("Lanternfall")) == MapTier::District);
+    CHECK(mapNameTier(n, find("the Stillmere")) == MapTier::Water);
+    std::size_t unbuilt = 0;
+    for (const MapNames::Spot& s : n.places) {
+        if (!s.unbuilt) continue;
+        ++unbuilt;
+        CHECK_FALSE(s.green);
+        const std::string& nm = n.names[s.name];
+        CHECK((nm == "the Stillmere" || nm == "Stillmere Park" || nm == "Keeper's Isle"));
+    }
+    CHECK(unbuilt == 3);
 }

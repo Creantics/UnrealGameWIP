@@ -1,6 +1,6 @@
 # Solhaven place names (display data; 2026-11-17 ruling: public). One row per map id: districts D1-D9, then the build tables' ids.
-# kind is the geometry's own kind (street, lane, stair, terrace, square, canal, bridge, quay...). No notes or reasons in this file. x,y: label anchor in plan m (blank: none yet).
-id,kind,name,sign_form,district,x,y
+# kind is the geometry's own kind (street, lane, stair, terrace, square, canal, bridge, quay...). No notes or reasons in this file. x,y: label anchor in plan m (blank: none yet). built: "no" marks a row the world does not hold yet (blank: built).
+id,kind,name,sign_form,district,x,y,built
 D1,district,Kilnback,Karmi,D1,204.0,734.0
 D2,district,Lanternfall,Tavren,D2,747.8,479.8
 D3,district,Tallyhill,Taldai,D3,540.0,190.0
@@ -1479,9 +1479,9 @@ QR-CN-02-E,quay,Lime Quay,,D2,900.8,739.6
 QR-CN-02-W,quay,Timber Quay,,D2,892.2,736.6
 QR-CN-03-E,quay,Eel Quay,,D6,812.6,813.8
 QR-CN-03-W,quay,Mill Quay,,D2,810.3,786.2
-PARK,park,Stillmere Park,,D1,433.0,836.0
-LAKE,lake,the Stillmere,,D6,456.0,792.0
-ISLAND,island,Keeper's Isle,,D6,502.0,799.2
+PARK,park,Stillmere Park,,D1,433.0,836.0,no
+LAKE,lake,the Stillmere,,D6,456.0,792.0,no
+ISLAND,island,Keeper's Isle,,D6,502.0,799.2,no
 RIVER,river,the Quell,Silser,D6,750.0,799.0
 STATION-SQ,square,Viaduct Square,,D3,592.0,300.0
 CANAL-GREEN,green,Three Waters Green,,D2,838.0,702.0
