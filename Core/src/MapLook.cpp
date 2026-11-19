@@ -967,4 +967,116 @@ MapWaterSeat mapWaterLabelAt(const MiniMapModel& m, const MapNames& n, const Map
     return MapWaterSeat::Seated;
 }
 
+bool mapLabelOnCoast(const MapLook& look, const MapOverlayView& v, MapZoom z, const MapLabel& l, float grow) {
+    if (!(v.mPerPx > 0.f)) return false;
+    constexpr float kPi = 3.14159265358979f;
+    const float r = l.angleDeg * kPi / 180.f;
+    const float cr = std::cos(r), sr = std::sin(r);
+    const float hx = 0.5f * l.w + grow, hy = 0.5f * l.h + grow;
+    // A line (screen px) in the label's own frame, clipped to its grown box (Liang-Barsky): whether any of it is left.
+    const auto meetsBox = [&](Vec2 a, Vec2 b) {
+        const float ax = a.x - l.at.x, ay = a.y - l.at.y, bx = b.x - l.at.x, by = b.y - l.at.y;
+        const float x0 = ax * cr + ay * sr, y0 = -ax * sr + ay * cr;
+        const float dx = (bx * cr + by * sr) - x0, dy = (-bx * sr + by * cr) - y0;
+        float t0 = 0.f, t1 = 1.f;
+        const float p[4] = {-dx, dx, -dy, dy};
+        const float q[4] = {x0 + hx, hx - x0, y0 + hy, hy - y0};
+        for (int i = 0; i < 4; ++i) {
+            if (p[i] == 0.f) {
+                if (q[i] < 0.f) return false;
+                continue;
+            }
+            const float t = q[i] / p[i];
+            if (p[i] < 0.f) t0 = std::max(t0, t);
+            else t1 = std::min(t1, t);
+            if (t0 > t1) return false;
+        }
+        return true;
+    };
+    const auto meets = [&](const MapStroke& s) {
+        return mapStrokeShown(s, z) && meetsBox(mapOverlayToScreen(v, s.a), mapOverlayToScreen(v, s.b));
+    };
+    for (const MapStroke& s : look.edgeCoast)
+        if (meets(s)) return true;
+    // The world box the grown label reaches (world and screen share their axes).
+    Vec2 k[4];
+    mapLabelCorners(l, grow, k);
+    Vec2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
+    for (const Vec2& c : k) {
+        const Vec2 w = mapOverlayFromScreen(v, c);
+        lo = Vec2{std::min(lo.x, w.x), std::min(lo.y, w.y)};
+        hi = Vec2{std::max(hi.x, w.x), std::max(hi.y, w.y)};
+    }
+    bool hit = false;
+    mapEachStroke(look, MapStrokeKind::Coast, lo, hi, [&](const MapStroke& s) { hit = hit || meets(s); });
+    return hit;
+}
+
+MapPlaceSeat mapPlaceLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v, MapZoom z,
+                             const MapRoadInk& ink, MapLabel& l, float grow, int picked, std::uint16_t pickedName) {
+    MapLabel home = l;
+    if (!mapLabelKeepInside(home, v.screenW, v.screenH, grow)) return MapPlaceSeat::TooBig;
+    const auto wetAt = [&](Vec2 s) {
+        const Vec2 c = mapOverlayFromScreen(v, s);
+        return mapIsWater(m, c) || mapIsSea(m, look, c);
+    };
+    // The place's own land: the place itself when dry, else the nearest dry point ring by ring (square rings 1 px apart,
+    // the nearest of the first ring that has one), out to the box's height. None: no spot is on its land.
+    Vec2 land = l.at;
+    bool hasLand = !wetAt(land);
+    const int reach = static_cast<int>(std::ceil(std::max(l.h, 1.f)));
+    for (int r = 1; !hasLand && r <= reach; ++r) {
+        float best = std::numeric_limits<float>::max();
+        for (int dy = -r; dy <= r; ++dy)
+            for (int dx = -r; dx <= r; dx += (dy == -r || dy == r) ? 1 : 2 * r) {
+                const Vec2 s{l.at.x + static_cast<float>(dx), l.at.y + static_cast<float>(dy)};
+                const float d = static_cast<float>(dx * dx + dy * dy);
+                if (d < best && !wetAt(s)) {
+                    best = d;
+                    land = s;
+                    hasLand = true;
+                }
+            }
+    }
+    const auto crossesWater = [&](Vec2 b) {
+        const float dx = b.x - land.x, dy = b.y - land.y;
+        const int steps = static_cast<int>(std::ceil(std::sqrt(dx * dx + dy * dy) * 0.5f));
+        for (int i = 1; i <= steps; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(steps);
+            if (wetAt({land.x + dx * t, land.y + dy * t})) return true;
+        }
+        return false;
+    };
+    bool sawCoast = false, sawWater = false;
+    const auto clear = [&](const MapLabel& t) {
+        if (mapLabelOnAnyRoad(m, n, v, z, ink, t, grow, picked, pickedName) >= 0) return false;
+        if (!hasLand || wetAt(t.at) || crossesWater(t.at)) {
+            sawWater = true;
+            return false;
+        }
+        if (mapLabelOnCoast(look, v, z, t, grow)) {
+            sawCoast = true;
+            return false;
+        }
+        return true;
+    };
+    if (clear(home)) {
+        l = home;
+        return MapPlaceSeat::Seated;
+    }
+    Vec2 moves[kMapLabelMoves];
+    mapLabelMoves(home, moves);
+    for (const Vec2& mv : moves) {
+        MapLabel t = home;
+        t.at.x += mv.x;
+        t.at.y += mv.y;
+        if (!mapLabelKeepInside(t, v.screenW, v.screenH, grow)) continue;
+        if (clear(t)) {
+            l = t;
+            return MapPlaceSeat::Seated;
+        }
+    }
+    return sawCoast ? MapPlaceSeat::OnCoast : sawWater ? MapPlaceSeat::OnWater : MapPlaceSeat::OnRoad;
+}
+
 } // namespace ftcore

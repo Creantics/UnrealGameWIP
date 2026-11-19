@@ -245,6 +245,10 @@ FTCORE_API int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const
 FTCORE_API bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z,
                                  const MapRoadInk& ink, MapLabel& l, float grow = 0.f, int picked = -1,
                                  std::uint16_t pickedName = kMapNoName);
+// The moves mapLabelOffRoads tries, in its order, as offsets (px) from the label's place: half widths -2..2 across and
+// whole heights -2..2 up and down, nearest first, up before down, left before right. Zero allocation.
+inline constexpr int kMapLabelMoves = 24;
+FTCORE_API void mapLabelMoves(const MapLabel& l, Vec2 out[kMapLabelMoves]);
 // Whether a world point is water in the model: a cell of its water grid, or inside one of its water rectangles.
 FTCORE_API bool mapIsWater(const MiniMapModel& m, Vec2 world);
 

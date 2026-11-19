@@ -922,16 +922,14 @@ int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const MapOverlay
     return -1;
 }
 
-bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
-                      MapLabel& l, float grow, int picked, std::uint16_t pickedName) {
-    if (mapLabelOnAnyRoad(m, n, v, z, ink, l, grow, picked, pickedName) < 0) return true;
-    // The moves: half widths -2..2 across, heights -2..2 up and down, by distance; ties keep this order (up first, left
-    // first). 24 of them, sorted in place: no allocation.
+void mapLabelMoves(const MapLabel& l, Vec2 out[kMapLabelMoves]) {
+    // Half widths -2..2 across, heights -2..2 up and down, by distance; ties keep this order (up first, left first).
+    // Sorted in place: no allocation.
     struct Move {
         float dx = 0.f, dy = 0.f, d = 0.f;
         int order = 0;
     };
-    std::array<Move, 24> moves{};
+    std::array<Move, kMapLabelMoves> moves{};
     int k = 0;
     for (int uy = -2; uy <= 2; ++uy)
         for (int ux = -2; ux <= 2; ++ux) {
@@ -944,10 +942,18 @@ bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const MapOverlay
             ++k;
         }
     std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) { return a.d != b.d ? a.d < b.d : a.order < b.order; });
-    for (const Move& mv : moves) {
+    for (int i = 0; i < kMapLabelMoves; ++i) out[i] = Vec2{moves[static_cast<std::size_t>(i)].dx, moves[static_cast<std::size_t>(i)].dy};
+}
+
+bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                      MapLabel& l, float grow, int picked, std::uint16_t pickedName) {
+    if (mapLabelOnAnyRoad(m, n, v, z, ink, l, grow, picked, pickedName) < 0) return true;
+    Vec2 moves[kMapLabelMoves];
+    mapLabelMoves(l, moves);
+    for (const Vec2& mv : moves) {
         MapLabel t = l;
-        t.at.x += mv.dx;
-        t.at.y += mv.dy;
+        t.at.x += mv.x;
+        t.at.y += mv.y;
         if (!mapLabelKeepInside(t, v.screenW, v.screenH, grow)) return false;
         if (mapLabelOnAnyRoad(m, n, v, z, ink, t, grow, picked, pickedName) >= 0) continue;
         l = t;

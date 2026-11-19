@@ -957,3 +957,160 @@ TEST_CASE("map look edges: a screen of no size, or not a number, still gives a f
         CHECK(a.land == b.land);
     }
 }
+
+TEST_CASE("map look: a place's name is kept off the coast and the sea: moved the least way to land, else left out") {
+    // Land west of x 200, the sea east of it; one metre per px, the view centred on the coast.
+    const MiniMapModel m = waterModel(400.f, 300.f, [](float x, float) { return x >= 200.f; });
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    const MapNames n;
+    const MapRoadInk ink;
+    const float halo = kMapLabelHaloPx;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f;
+    const auto at = [&](Vec2 p) {
+        MapLabel l;
+        l.at = mapOverlayToScreen(v, p);
+        l.w = 60.f;
+        l.h = 16.f;
+        return l;
+    };
+    // The moves are mapLabelOffRoads' own: nearest first, up before down, left before right.
+    Vec2 mv[kMapLabelMoves];
+    mapLabelMoves(at({0.f, 0.f}), mv);
+    CHECK((mv[0].x == 0.f && mv[0].y == -16.f));
+    CHECK((mv[1].x == 0.f && mv[1].y == 16.f));
+    CHECK((mv[2].x == -30.f && mv[2].y == 0.f));
+    CHECK((mv[3].x == 30.f && mv[3].y == 0.f));
+    CHECK((mv[4].x == 0.f && mv[4].y == -32.f));
+    CHECK((mv[kMapLabelMoves - 1].x == 60.f && mv[kMapLabelMoves - 1].y == 32.f));
+    // Inland, clear of everything: it stays where it is.
+    MapLabel l = at({100.f, 150.f});
+    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::Seated);
+    CHECK(mapOverlayFromScreen(v, l.at).x == doctest::Approx(100.f));
+    // On land, but its box across the coast (a square by the shore): it moves left half a width, to x 150, clear of it.
+    l = at({180.f, 150.f});
+    CHECK(mapLabelOnCoast(look, v, MapZoom::Near, l, halo));
+    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::Seated);
+    CHECK(mapOverlayFromScreen(v, l.at).x == doctest::Approx(150.f));
+    CHECK(mapOverlayFromScreen(v, l.at).y == doctest::Approx(150.f));
+    CHECK_FALSE(mapLabelOnCoast(look, v, MapZoom::Near, l, halo));
+    // Its point at sea near the coast (a pier's end): half a width west still crosses the coast, a whole width does not.
+    l = at({215.f, 150.f});
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const MapPlaceSeat pier = mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    REQUIRE(pier == MapPlaceSeat::Seated);
+    CHECK(mapOverlayFromScreen(v, l.at).x == doctest::Approx(155.f));
+    // Out at sea, no dry point within the box's height: left out as on water, the label unchanged.
+    l = at({260.f, 150.f});
+    const MapLabel sea = l;
+    CHECK(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnWater);
+    CHECK(l.at.x == sea.at.x);
+    CHECK(l.at.y == sea.at.y);
+    // The coast past the model's edge counts too: north of the model, the line at x 200.
+    CHECK(mapLabelOnCoast(look, v, MapZoom::Near, at({190.f, -40.f}), halo));
+    CHECK_FALSE(mapLabelOnCoast(look, v, MapZoom::Near, at({150.f, -40.f}), halo));
+    // Roads 8 m apart over the land: every spot meets one, so the name is left out as on a road.
+    MiniMapModel ladder = m;
+    for (float y = 100.f; y <= 200.f; y += 8.f) {
+        MapRoad r;
+        r.cls = MapRoadClass::Street;
+        r.width = 6.f;
+        r.first = static_cast<std::uint32_t>(ladder.points.size());
+        r.count = 2;
+        ladder.points.push_back({0.f, y});
+        ladder.points.push_back({190.f, y});
+        ladder.roads.push_back(r);
+    }
+    l = at({100.f, 150.f});
+    const MapLabel onRoads = l;
+    CHECK(mapPlaceLabelAt(ladder, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnRoad);
+    CHECK(l.at.x == onRoads.at.x);
+    CHECK(l.at.y == onRoads.at.y);
+    // A screen too small for the box: left out as too big, unchanged.
+    MapOverlayView tiny = v;
+    tiny.screenW = 40.f;
+    tiny.screenH = 40.f;
+    MapLabel big;
+    big.at = {20.f, 20.f};
+    big.w = 60.f;
+    big.h = 16.f;
+    CHECK(mapPlaceLabelAt(m, n, look, tiny, MapZoom::Near, ink, big, halo) == MapPlaceSeat::TooBig);
+    CHECK(big.at.x == 20.f);
+    // A square by the shore with streets just inland of it: every spot on its own land clear of the streets meets the
+    // coast, so it is left out as on the coast (not as on water, though the spots east of it are at sea).
+    MiniMapModel inland = m;
+    for (float y = 100.f; y <= 200.f; y += 8.f) {
+        MapRoad r;
+        r.cls = MapRoadClass::Street;
+        r.width = 6.f;
+        r.first = static_cast<std::uint32_t>(inland.points.size());
+        r.count = 2;
+        inland.points.push_back({0.f, y});
+        inland.points.push_back({150.f, y});
+        inland.roads.push_back(r);
+    }
+    l = at({190.f, 150.f});
+    CHECK(mapPlaceLabelAt(inland, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnCoast);
+}
+
+TEST_CASE("map look: a place's name on a canal's edge stays on its own bank, never hops to the far one") {
+    // Land with a canal 10 m wide (x 193..203, a water rectangle, as the tables give canals) and the sea east of x 340.
+    MiniMapModel m = waterModel(400.f, 300.f, [](float x, float) { return x >= 340.f; });
+    MapRect canal;
+    canal.cx = 198.f;
+    canal.cy = 150.f;
+    canal.hx = 5.f;
+    canal.hy = 200.f;
+    m.waterRects.push_back(canal);
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    const MapNames n;
+    const MapRoadInk ink;
+    const float halo = kMapLabelHaloPx;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f;
+    const auto at = [&](Vec2 p) {
+        MapLabel l;
+        l.at = mapOverlayToScreen(v, p);
+        l.w = 60.f;
+        l.h = 16.f;
+        return l;
+    };
+    const auto worldX = [&](const MapLabel& l) { return mapOverlayFromScreen(v, l.at).x; };
+    // A quay on the east edge (its point half a metre into the water): half a width west is nearer in the moves'
+    // order but across the canal; it goes half a width east, onto its own bank.
+    MapLabel l = at({202.5f, 150.f});
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const MapPlaceSeat east = mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    REQUIRE(east == MapPlaceSeat::Seated);
+    CHECK(worldX(l) == doctest::Approx(232.5f));
+    // The quay on the west edge goes west, onto its bank.
+    l = at({193.5f, 150.f});
+    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::Seated);
+    CHECK(worldX(l) == doctest::Approx(163.5f));
+    // Streets over the whole east bank: the only spots clear of them are on the far bank, so the east quay's name is
+    // left out as on water, unchanged, rather than hop the canal.
+    MiniMapModel streets = m;
+    for (float y = 100.f; y <= 200.f; y += 8.f) {
+        MapRoad r;
+        r.cls = MapRoadClass::Street;
+        r.width = 6.f;
+        r.first = static_cast<std::uint32_t>(streets.points.size());
+        r.count = 2;
+        streets.points.push_back({206.f, y});
+        streets.points.push_back({335.f, y});
+        streets.roads.push_back(r);
+    }
+    l = at({202.5f, 150.f});
+    const MapLabel quay = l;
+    CHECK(mapPlaceLabelAt(streets, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnWater);
+    CHECK(l.at.x == quay.at.x);
+    CHECK(l.at.y == quay.at.y);
+}

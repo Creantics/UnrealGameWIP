@@ -137,6 +137,23 @@ FTCORE_API MapWaterSeat mapWaterLabelAt(const MiniMapModel& m, const MapNames& n
                                         MapZoom z, const MapRoadInk& ink, Vec2 at, float w, float h, float grow, MapLabel& out,
                                         int picked = -1, std::uint16_t pickedName = kMapNoName, float reachM = kMapWaterReachM);
 
+// Whether a label's box grown by `grow` px meets the sea's coast as drawn at zoom z: the coast strokes shown at z
+// (MapStrokeKind::Coast) and the coast past the model's edges (edgeCoast). Canal edges are not coast. Zero allocation.
+FTCORE_API bool mapLabelOnCoast(const MapLook& look, const MapOverlayView& v, MapZoom z, const MapLabel& l, float grow = 0.f);
+// Where a point name (a place) goes at view v: its box grown by `grow` held whole on the screen (mapLabelKeepInside),
+// then the first spot, that place and then the moves of mapLabelOffRoads in their order (mapLabelMoves), that meets no
+// road (mapLabelOnAnyRoad, the cursor's lit roads included), whose centre is on the place's own land and whose box
+// meets no coast (mapLabelOnCoast). Its own land: the place itself, or for a point on water (a quay's edge, a pier) the
+// nearest dry point, found ring by ring out to the box's height; a spot counts when its centre is dry (neither
+// mapIsWater nor mapIsSea) and the line to it from there crosses no water (sampled every 2 px), so a name never hops
+// a canal to the far bank. Seated: l is at that spot. Otherwise l is unchanged and the name is left out: TooBig when
+// the box will not fit on the screen; else OnCoast when a spot on its own land and clear of the roads met the coast;
+// else OnWater when every spot clear of the roads was on water or across it; else OnRoad. Zero allocation.
+enum class MapPlaceSeat : std::uint8_t { Seated, OnRoad, OnCoast, OnWater, TooBig };
+FTCORE_API MapPlaceSeat mapPlaceLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v,
+                                        MapZoom z, const MapRoadInk& ink, MapLabel& l, float grow = 0.f, int picked = -1,
+                                        std::uint16_t pickedName = kMapNoName);
+
 // Calls f(const MapStroke&) for every stroke of `kind` that may meet the world box lo-hi (and some just beyond it:
 // the caller still culls). Zero allocation.
 template <class F>
