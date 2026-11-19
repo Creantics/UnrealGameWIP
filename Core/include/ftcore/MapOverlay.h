@@ -96,6 +96,9 @@ enum class MapTier : std::uint8_t { District, Water, Main, Street, Place, Lane, 
 inline constexpr int kMapTiers = 7;
 FTCORE_API bool mapTierShown(MapTier t, MapZoom z);
 FTCORE_API MapTier mapTierLowest(MapZoom z);
+// Whether a name of tier t must draw at zoom z: its tier is shown there and is above the zoom's lowest, or is the only
+// tier the zoom shows (far: districts). A must-draw name left out is a failed check, whatever the reason.
+FTCORE_API bool mapTierMustDraw(MapTier t, MapZoom z);
 FTCORE_API const char* mapTierName(MapTier t); // "district", "water", "main", "street", "place", "lane", "stair"
 struct MapNames {
     std::vector<std::string> names;      // each distinct name once
@@ -271,6 +274,16 @@ inline float mapRoadFade(float s, float len, std::uint8_t ends, float fadeM) {
 FTCORE_API int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z,
                                  const MapRoadInk& ink, const MapLabel& l, float grow = 0.f, int picked = -1,
                                  std::uint16_t pickedName = kMapNoName, bool litOnly = false);
+// The roads mapLabelOnAnyRoad (not litOnly) could find for a w x h label grown by `grow` whose centre is anywhere in the
+// screen box lo..hi: their indices, rising, in out. A road outside is one every such label's own cull skips, so testing
+// these alone gives the same answer. The count, or -1 when more than cap. Zero allocation.
+FTCORE_API int mapRoadsNearLabels(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z,
+                                  const MapRoadInk& ink, Vec2 lo, Vec2 hi, float w, float h, float grow, int picked,
+                                  std::uint16_t pickedName, std::uint32_t* out, int cap);
+// mapLabelOnAnyRoad (not litOnly) over `count` roads from mapRoadsNearLabels; count < 0 tests every road.
+FTCORE_API int mapLabelOnRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z,
+                               const MapRoadInk& ink, const MapLabel& l, float grow, int picked,
+                               std::uint16_t pickedName, const std::uint32_t* roads, int count);
 // A level name at a point, kept off every road: the label as it is when it meets none (mapLabelOnAnyRoad), else the
 // nearest of its moves (in half widths, up to one width either way, and whole heights, up to two up or down; nearest
 // first, up before down, left before right) that is whole on the screen (mapLabelKeepInside, which may move it in) and

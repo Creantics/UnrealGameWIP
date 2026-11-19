@@ -623,6 +623,13 @@ MapTier mapTierLowest(MapZoom z) {
     return z == MapZoom::Far ? MapTier::District : z == MapZoom::Mid ? MapTier::Street : MapTier::Lane;
 }
 
+bool mapTierMustDraw(MapTier t, MapZoom z) {
+    if (!mapTierShown(t, z)) return false;
+    int shown = 0;
+    for (int i = 0; i < kMapTiers; ++i) shown += mapTierShown(static_cast<MapTier>(i), z) ? 1 : 0;
+    return shown == 1 || static_cast<int>(t) < static_cast<int>(mapTierLowest(z));
+}
+
 const char* mapTierName(MapTier t) {
     static const char* const kNames[kMapTiers] = {"district", "water", "main", "street", "place", "lane", "stair"};
     const int i = static_cast<int>(t);
@@ -987,40 +994,84 @@ void mapRoadOffEnds(const MiniMapModel& m, std::vector<std::uint8_t>& out, float
     }
 }
 
-int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
-                      const MapLabel& l, float grow, int picked, std::uint16_t pickedName, bool litOnly) {
+namespace {
+// Road r as the label tests take it: false when it is not tested (too short, not whole, neither lit nor drawn at z);
+// else the width of its ink in px and its bounds in metres (x0, y0, x1, y1).
+bool labelRoad(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+               std::size_t r, int picked, std::uint16_t pickedName, bool litOnly, float& wd, float box[4]) {
+    const MapRoad& road = m.roads[r];
+    if (road.count < 2 || !roadOk(m, r)) return false;
+    const bool lit = mapRoadLit(n, r, picked, pickedName);
+    const bool shown = !litOnly && mapRoadShown(road.cls, z);
+    if (!lit && !shown) return false;
+    wd = shown ? mapRoadDrawnPx(road, v, ink) : 0.f;
+    if (lit) wd = std::max(wd, mapRoadLitPx(road, v, ink));
+    if (n.roadBox.size() >= m.roads.size() * 4) {
+        for (std::size_t k = 0; k < 4; ++k) box[k] = n.roadBox[r * 4 + k];
+        return true;
+    }
+    box[0] = box[1] = 1e30f;
+    box[2] = box[3] = -1e30f;
+    for (std::uint32_t k = 0; k < road.count; ++k) {
+        const Vec2 p = m.points[road.first + k];
+        box[0] = std::min(box[0], p.x);
+        box[1] = std::min(box[1], p.y);
+        box[2] = std::max(box[2], p.x);
+        box[3] = std::max(box[3], p.y);
+    }
+    return true;
+}
+
+// mapLabelOnAnyRoad over `count` roads by index (rising), or over every road when `roads` is null.
+int labelOnRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                 const MapLabel& l, float grow, int picked, std::uint16_t pickedName, bool litOnly,
+                 const std::uint32_t* roads, std::size_t count) {
     if (!(v.mPerPx > 0.f)) return -1;
     const Vec2 cw = mapOverlayFromScreen(v, l.at);
     const float reachPx = std::hypot(l.w * 0.5f + grow, l.h * 0.5f + grow);
-    const bool boxes = n.roadBox.size() >= m.roads.size() * 4;
-    for (std::size_t r = 0; r < m.roads.size(); ++r) {
-        const MapRoad& road = m.roads[r];
-        if (road.count < 2 || !roadOk(m, r)) continue;
-        const bool lit = mapRoadLit(n, r, picked, pickedName);
-        const bool shown = !litOnly && mapRoadShown(road.cls, z);
-        if (!lit && !shown) continue;
-        float wd = shown ? mapRoadDrawnPx(road, v, ink) : 0.f;
-        if (lit) wd = std::max(wd, mapRoadLitPx(road, v, ink));
-        float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
-        if (boxes) {
-            bx0 = n.roadBox[r * 4];
-            by0 = n.roadBox[r * 4 + 1];
-            bx1 = n.roadBox[r * 4 + 2];
-            by1 = n.roadBox[r * 4 + 3];
-        } else {
-            for (std::uint32_t k = 0; k < road.count; ++k) {
-                const Vec2 p = m.points[road.first + k];
-                bx0 = std::min(bx0, p.x);
-                by0 = std::min(by0, p.y);
-                bx1 = std::max(bx1, p.x);
-                by1 = std::max(by1, p.y);
-            }
-        }
+    const std::size_t total = roads ? count : m.roads.size();
+    for (std::size_t i = 0; i < total; ++i) {
+        const std::size_t r = roads ? roads[i] : i;
+        float wd = 0.f;
+        float box[4]{};
+        if (!labelRoad(m, n, v, z, ink, r, picked, pickedName, litOnly, wd, box)) continue;
         const float reachM = (reachPx + wd * 0.5f + 1.f) * v.mPerPx;
-        if (cw.x < bx0 - reachM || cw.x > bx1 + reachM || cw.y < by0 - reachM || cw.y > by1 + reachM) continue;
+        if (cw.x < box[0] - reachM || cw.x > box[2] + reachM || cw.y < box[1] - reachM || cw.y > box[3] + reachM) continue;
         if (mapLabelOnRoad(m, static_cast<int>(r), v, wd, l, grow)) return static_cast<int>(r);
     }
     return -1;
+}
+} // namespace
+
+int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                      const MapLabel& l, float grow, int picked, std::uint16_t pickedName, bool litOnly) {
+    return labelOnRoads(m, n, v, z, ink, l, grow, picked, pickedName, litOnly, nullptr, 0);
+}
+
+int mapRoadsNearLabels(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                       Vec2 lo, Vec2 hi, float w, float h, float grow, int picked, std::uint16_t pickedName,
+                       std::uint32_t* out, int cap) {
+    if (!(v.mPerPx > 0.f)) return 0;
+    const Vec2 a = mapOverlayFromScreen(v, lo), b = mapOverlayFromScreen(v, hi);
+    const float reachPx = std::hypot(w * 0.5f + grow, h * 0.5f + grow);
+    int k = 0;
+    for (std::size_t r = 0; r < m.roads.size(); ++r) {
+        float wd = 0.f;
+        float box[4]{};
+        if (!labelRoad(m, n, v, z, ink, r, picked, pickedName, false, wd, box)) continue;
+        const float reachM = (reachPx + wd * 0.5f + 1.f) * v.mPerPx;
+        if (b.x < box[0] - reachM || a.x > box[2] + reachM || b.y < box[1] - reachM || a.y > box[3] + reachM) continue;
+        if (k >= cap) return -1;
+        out[k++] = static_cast<std::uint32_t>(r);
+    }
+    return k;
+}
+
+int mapLabelOnRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                    const MapLabel& l, float grow, int picked, std::uint16_t pickedName, const std::uint32_t* roads,
+                    int count) {
+    if (count < 0) return mapLabelOnAnyRoad(m, n, v, z, ink, l, grow, picked, pickedName);
+    return labelOnRoads(m, n, v, z, ink, l, grow, picked, pickedName, false, roads, static_cast<std::size_t>(count));
 }
 
 void mapLabelMoves(const MapLabel& l, Vec2 out[kMapLabelMoves]) {

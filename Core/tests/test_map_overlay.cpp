@@ -1527,6 +1527,15 @@ TEST_CASE("map overlay tiers: districts at every zoom, water, main and streets f
     CHECK(mapTierLowest(MapZoom::Mid) == MapTier::Street);
     CHECK(mapTierLowest(MapZoom::Near) == MapTier::Lane);
     for (MapZoom z : zs) CHECK(mapTierShown(mapTierLowest(z), z)); // the lowest tier is one the zoom draws
+    // Must draw: shown and above the lowest, or the zoom's only tier (far: districts).
+    const bool mustFar[kMapTiers] = {true, false, false, false, false, false, false};
+    const bool mustMid[kMapTiers] = {true, true, true, false, false, false, false};
+    const bool mustNear[kMapTiers] = {true, true, true, true, true, false, false};
+    for (int t = 0; t < kMapTiers; ++t) {
+        CHECK(mapTierMustDraw(static_cast<MapTier>(t), MapZoom::Far) == mustFar[t]);
+        CHECK(mapTierMustDraw(static_cast<MapTier>(t), MapZoom::Mid) == mustMid[t]);
+        CHECK(mapTierMustDraw(static_cast<MapTier>(t), MapZoom::Near) == mustNear[t]);
+    }
     CHECK(std::string(mapTierName(MapTier::District)) == "district");
     CHECK(std::string(mapTierName(MapTier::Stair)) == "stair");
     CHECK(mapRankTier(MapLabelRank::Cursor) == MapTier::District);

@@ -1026,6 +1026,9 @@ TEST_CASE("map look: a place's name is kept off the coast and the sea: moved the
     const MapNames n;
     const MapRoadInk ink;
     const float halo = kMapLabelHaloPx;
+    MapSeatRules first; // the place and its moves, level: the rule these cases were written for
+    first.rings = 1;
+    first.standing = false;
     MapOverlayView v;
     v.centre = {200.f, 150.f};
     v.mPerPx = 1.f;
@@ -1047,12 +1050,12 @@ TEST_CASE("map look: a place's name is kept off the coast and the sea: moved the
     CHECK((mv[kMapLabelMoves - 1].x == 60.f && mv[kMapLabelMoves - 1].y == 32.f));
     // Inland, clear of everything: it stays where it is.
     MapLabel l = at({100.f, 150.f});
-    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::Seated);
+    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::Seated);
     CHECK(mapOverlayFromScreen(v, l.at).x == doctest::Approx(100.f));
     // On land, but its box across the coast (a square by the shore): it moves left half a width, to x 150, clear of it.
     l = at({180.f, 150.f});
     CHECK(mapLabelOnCoast(look, v, MapZoom::Near, l, halo));
-    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::Seated);
+    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::Seated);
     CHECK(mapOverlayFromScreen(v, l.at).x == doctest::Approx(150.f));
     CHECK(mapOverlayFromScreen(v, l.at).y == doctest::Approx(150.f));
     CHECK_FALSE(mapLabelOnCoast(look, v, MapZoom::Near, l, halo));
@@ -1060,14 +1063,14 @@ TEST_CASE("map look: a place's name is kept off the coast and the sea: moved the
     l = at({215.f, 150.f});
     const bool hooked = ftcore_test::allocHookInstalled();
     const std::uint64_t before = ftcore_test::allocStats().count;
-    const MapPlaceSeat pier = mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo);
+    const MapPlaceSeat pier = mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first);
     if (hooked) CHECK(ftcore_test::allocStats().count == before);
     REQUIRE(pier == MapPlaceSeat::Seated);
     CHECK(mapOverlayFromScreen(v, l.at).x == doctest::Approx(155.f));
     // Out at sea, no dry point within the box's height: left out as on water, the label unchanged.
     l = at({260.f, 150.f});
     const MapLabel sea = l;
-    CHECK(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnWater);
+    CHECK(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::OnWater);
     CHECK(l.at.x == sea.at.x);
     CHECK(l.at.y == sea.at.y);
     // The coast past the model's edge counts too: north of the model, the line at x 200.
@@ -1087,7 +1090,7 @@ TEST_CASE("map look: a place's name is kept off the coast and the sea: moved the
     }
     l = at({100.f, 150.f});
     const MapLabel onRoads = l;
-    CHECK(mapPlaceLabelAt(ladder, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnRoad);
+    CHECK(mapPlaceLabelAt(ladder, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::OnRoad);
     CHECK(l.at.x == onRoads.at.x);
     CHECK(l.at.y == onRoads.at.y);
     // A screen too small for the box: left out as too big, unchanged.
@@ -1098,7 +1101,7 @@ TEST_CASE("map look: a place's name is kept off the coast and the sea: moved the
     big.at = {20.f, 20.f};
     big.w = 60.f;
     big.h = 16.f;
-    CHECK(mapPlaceLabelAt(m, n, look, tiny, MapZoom::Near, ink, big, halo) == MapPlaceSeat::TooBig);
+    CHECK(mapPlaceLabelAt(m, n, look, tiny, MapZoom::Near, ink, big, halo, -1, kMapNoName, first) == MapPlaceSeat::TooBig);
     CHECK(big.at.x == 20.f);
     // A square by the shore with streets just inland of it: every spot on its own land clear of the streets meets the
     // coast, so it is left out as on the coast (not as on water, though the spots east of it are at sea).
@@ -1114,7 +1117,7 @@ TEST_CASE("map look: a place's name is kept off the coast and the sea: moved the
         inland.roads.push_back(r);
     }
     l = at({190.f, 150.f});
-    CHECK(mapPlaceLabelAt(inland, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnCoast);
+    CHECK(mapPlaceLabelAt(inland, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::OnCoast);
 }
 
 TEST_CASE("map look: a place's name on a canal's edge stays on its own bank, never hops to the far one") {
@@ -1131,6 +1134,9 @@ TEST_CASE("map look: a place's name on a canal's edge stays on its own bank, nev
     const MapNames n;
     const MapRoadInk ink;
     const float halo = kMapLabelHaloPx;
+    MapSeatRules first; // the place and its moves, level: the rule these cases were written for
+    first.rings = 1;
+    first.standing = false;
     MapOverlayView v;
     v.centre = {200.f, 150.f};
     v.mPerPx = 1.f;
@@ -1147,13 +1153,13 @@ TEST_CASE("map look: a place's name on a canal's edge stays on its own bank, nev
     MapLabel l = at({202.5f, 150.f});
     const bool hooked = ftcore_test::allocHookInstalled();
     const std::uint64_t before = ftcore_test::allocStats().count;
-    const MapPlaceSeat east = mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo);
+    const MapPlaceSeat east = mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first);
     if (hooked) CHECK(ftcore_test::allocStats().count == before);
     REQUIRE(east == MapPlaceSeat::Seated);
     CHECK(worldX(l) == doctest::Approx(232.5f));
     // The quay on the west edge goes west, onto its bank.
     l = at({193.5f, 150.f});
-    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::Seated);
+    REQUIRE(mapPlaceLabelAt(m, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::Seated);
     CHECK(worldX(l) == doctest::Approx(163.5f));
     // Streets over the whole east bank: the only spots clear of them are on the far bank, so the east quay's name is
     // left out as on water, unchanged, rather than hop the canal.
@@ -1170,7 +1176,259 @@ TEST_CASE("map look: a place's name on a canal's edge stays on its own bank, nev
     }
     l = at({202.5f, 150.f});
     const MapLabel quay = l;
-    CHECK(mapPlaceLabelAt(streets, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnWater);
+    CHECK(mapPlaceLabelAt(streets, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::OnWater);
     CHECK(l.at.x == quay.at.x);
     CHECK(l.at.y == quay.at.y);
+}
+
+TEST_CASE("map look: a point name looks two rings out, then stands; fallbacks take either bank; marks, caption, names") {
+    // Land west of x 340, the sea east of it; one metre per px, the view centred in the model.
+    const MiniMapModel land = waterModel(400.f, 300.f, [](float x, float) { return x >= 340.f; });
+    MapLook look;
+    mapBuildLook(land, nullptr, look);
+    const MapNames n;
+    const MapRoadInk ink;
+    const float halo = kMapLabelHaloPx;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f;
+    const auto at = [&](Vec2 p) {
+        MapLabel l;
+        l.at = mapOverlayToScreen(v, p);
+        l.w = 60.f;
+        l.h = 16.f;
+        return l;
+    };
+    const auto world = [&](const MapLabel& l) { return mapOverlayFromScreen(v, l.at); };
+    const auto streets = [](MiniMapModel m, Vec2 a, Vec2 b, Vec2 step, int count) {
+        for (int i = 0; i < count; ++i) {
+            MapRoad r;
+            r.cls = MapRoadClass::Street;
+            r.width = 6.f;
+            r.first = static_cast<std::uint32_t>(m.points.size());
+            r.count = 2;
+            const float k = static_cast<float>(i);
+            m.points.push_back({a.x + step.x * k, a.y + step.y * k});
+            m.points.push_back({b.x + step.x * k, b.y + step.y * k});
+            m.roads.push_back(r);
+        }
+        return m;
+    };
+    MapSeatRules first;
+    first.rings = 1;
+    first.standing = false;
+    MapSeatRules level;
+    level.standing = false;
+    // Streets across the land every 8 m from y 110 to 190: the first ring (up to two heights, 32 m) meets one at every
+    // spot; the second (each move pushed out two heights more) finds y 86, above them, level.
+    const MiniMapModel ladder = streets(land, {0.f, 110.f}, {330.f, 110.f}, {0.f, 8.f}, 11);
+    MapLabel l = at({100.f, 150.f});
+    const MapLabel home = l;
+    CHECK(mapPlaceLabelAt(ladder, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, first) == MapPlaceSeat::OnRoad);
+    CHECK(l.at.x == home.at.x);
+    REQUIRE(mapPlaceLabelAt(ladder, n, look, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::Seated);
+    CHECK(l.angleDeg == 0.f);
+    CHECK(world(l).x == doctest::Approx(100.f));
+    CHECK(world(l).y == doctest::Approx(86.f));
+    // Streets running north-south every 32 m: no level spot of either ring is clear (the box is 60 wide), so the name
+    // stands, its moves turned with it: across it is sideways, a height (16 m) to the left first, at x 84.
+    const MiniMapModel combs = streets(land, {4.f, 0.f}, {4.f, 300.f}, {32.f, 0.f}, 11);
+    l = home;
+    CHECK(mapPlaceLabelAt(combs, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, level) == MapPlaceSeat::OnRoad);
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const MapPlaceSeat stood = mapPlaceLabelAt(combs, n, look, v, MapZoom::Near, ink, l, halo);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    REQUIRE(stood == MapPlaceSeat::Seated);
+    CHECK(l.angleDeg == -90.f);
+    CHECK(world(l).x == doctest::Approx(84.f));
+    CHECK(world(l).y == doctest::Approx(150.f));
+    CHECK(mapLabelOnAnyRoad(combs, n, v, MapZoom::Near, ink, l, halo) < 0);
+    // A point in the middle of a canal 40 m wide (a bridge's middle, a short water's own point): no dry point within the
+    // box's height, so as a place it is left out on water; as a fallback any dry centre counts, half a width west.
+    MiniMapModel wide = land;
+    MapRect canal;
+    canal.cx = 200.f;
+    canal.cy = 150.f;
+    canal.hx = 20.f;
+    canal.hy = 200.f;
+    wide.waterRects.push_back(canal);
+    MapLook wideLook;
+    mapBuildLook(wide, nullptr, wideLook);
+    l = at({200.f, 150.f});
+    CHECK(mapPlaceLabelAt(wide, n, wideLook, v, MapZoom::Near, ink, l, halo) == MapPlaceSeat::OnWater);
+    MapSeatRules fallback;
+    fallback.anyLand = true;
+    REQUIRE(mapPlaceLabelAt(wide, n, wideLook, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, fallback) == MapPlaceSeat::Seated);
+    CHECK(world(l).x == doctest::Approx(170.f));
+    CHECK(world(l).y == doctest::Approx(150.f));
+    // The furthest test passed names the reason. A district rule no spot meets: off its district.
+    MapSeatRules own;
+    own.district = 0; // no district table: no spot lies in it
+    l = home;
+    CHECK(mapPlaceLabelAt(land, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, own) == MapPlaceSeat::OffDistrict);
+    // A mark over every spot: on the marks.
+    const MapDisc wholeScreen{{v.screenW * 0.5f, v.screenH * 0.5f}, 4000.f};
+    MapSeatRules marks;
+    marks.discs = &wholeScreen;
+    marks.discCount = 1;
+    CHECK(mapPlaceLabelAt(land, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, marks) == MapPlaceSeat::OnMarks);
+    // A kept box over the whole screen: the caption.
+    MapLabel wall;
+    wall.at = {v.screenW * 0.5f, v.screenH * 0.5f};
+    wall.w = v.screenW;
+    wall.h = v.screenH;
+    MapSeatRules caption;
+    caption.blockers = &wall;
+    caption.blockerCount = 1;
+    CHECK(mapPlaceLabelAt(land, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, caption) == MapPlaceSeat::Caption);
+    // An earlier name over every spot: crowded. One at the place itself: the first move whose box, halo and gap
+    // included, clears it, two heights up (y 118; one height up still meets it).
+    MapSeatRules crowd;
+    crowd.labels = &wall;
+    crowd.labelCount = 1;
+    crowd.gap = 6.f;
+    CHECK(mapPlaceLabelAt(land, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, crowd) == MapPlaceSeat::Crowded);
+    const MapLabel earlier = at({100.f, 150.f});
+    MapSeatRules apart;
+    apart.labels = &earlier;
+    apart.labelCount = 1;
+    apart.gap = 6.f;
+    l = home;
+    REQUIRE(mapPlaceLabelAt(land, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, apart) == MapPlaceSeat::Seated);
+    const auto grown = [&](MapLabel g) {
+        g.w += 2.f * halo;
+        g.h += 2.f * halo;
+        return g;
+    };
+    CHECK_FALSE(mapLabelsOverlap(grown(l), grown(earlier), 6.f));
+    CHECK(world(l).y == doctest::Approx(118.f));
+    // More rings: streets every 8 m from y 54 to 246. Three rings reach six heights (96 m) up or down, all on them; the
+    // fourth pushes the first move (a height up) out six heights more, to y 38, clear of the street at 54.
+    const MiniMapModel tall = streets(land, {0.f, 54.f}, {330.f, 54.f}, {0.f, 8.f}, 25);
+    MapSeatRules three = level;
+    three.rings = 3;
+    MapSeatRules four = level;
+    four.rings = 4;
+    l = home;
+    CHECK(mapPlaceLabelAt(tall, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, three) == MapPlaceSeat::OnRoad);
+    REQUIRE(mapPlaceLabelAt(tall, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, four) == MapPlaceSeat::Seated);
+    CHECK(world(l).x == doctest::Approx(100.f));
+    CHECK(world(l).y == doctest::Approx(38.f));
+    MapSeatRules many = level;
+    many.rings = 99; // held to kMapSeatRingsMax
+    l = home;
+    CHECK(mapPlaceLabelAt(tall, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, many) == MapPlaceSeat::Seated);
+    CHECK(world(l).y == doctest::Approx(38.f));
+}
+
+TEST_CASE("map look: a place's name with no seat on its own land for water or coast takes any dry land, and says so") {
+    // Land west of x 340, a canal 40 m wide down x 180..220; one metre per px, the view centred in the model.
+    MiniMapModel wide = waterModel(400.f, 300.f, [](float x, float) { return x >= 340.f; });
+    MapRect canal;
+    canal.cx = 200.f;
+    canal.cy = 150.f;
+    canal.hx = 20.f;
+    canal.hy = 200.f;
+    wide.waterRects.push_back(canal);
+    MapLook look;
+    mapBuildLook(wide, nullptr, look);
+    const MapNames n;
+    const MapRoadInk ink;
+    const float halo = kMapLabelHaloPx;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f;
+    const auto at = [&](Vec2 p) {
+        MapLabel l;
+        l.at = mapOverlayToScreen(v, p);
+        l.w = 60.f;
+        l.h = 16.f;
+        return l;
+    };
+    const MapSeatRules rules;
+    // Its point mid-canal: on its own land it is on the water; any dry land seats it half a width west.
+    MapLabel l = at({200.f, 150.f});
+    MapPlaceSeat first = MapPlaceSeat::Seated;
+    REQUIRE(mapPlaceLabelOrAnyLand(wide, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, rules, first) ==
+            MapPlaceSeat::Seated);
+    CHECK(first == MapPlaceSeat::OnWater);
+    CHECK(mapOverlayFromScreen(v, l.at).x == doctest::Approx(170.f));
+    CHECK(mapOverlayFromScreen(v, l.at).y == doctest::Approx(150.f));
+    // On dry land: its own spot, no fallback.
+    l = at({100.f, 150.f});
+    const MapLabel home = l;
+    REQUIRE(mapPlaceLabelOrAnyLand(wide, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, rules, first) ==
+            MapPlaceSeat::Seated);
+    CHECK(first == MapPlaceSeat::Seated);
+    CHECK(l.at.x == home.at.x);
+    CHECK(l.at.y == home.at.y);
+    // Crowded on dry land is not the land's fault: no fallback, the reason as it was. Mid-canal the map's tests come
+    // first, so it is on the water on its own land, and the fallback, tried, is crowded.
+    MapLabel wall;
+    wall.at = {v.screenW * 0.5f, v.screenH * 0.5f};
+    wall.w = v.screenW;
+    wall.h = v.screenH;
+    MapSeatRules crowd;
+    crowd.labels = &wall;
+    crowd.labelCount = 1;
+    CHECK(mapPlaceLabelOrAnyLand(wide, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, crowd, first) ==
+          MapPlaceSeat::Crowded);
+    CHECK(first == MapPlaceSeat::Crowded);
+    l = at({200.f, 150.f});
+    CHECK(mapPlaceLabelOrAnyLand(wide, n, look, v, MapZoom::Near, ink, l, halo, -1, kMapNoName, crowd, first) ==
+          MapPlaceSeat::Crowded);
+    CHECK(first == MapPlaceSeat::OnWater);
+}
+
+TEST_CASE("map look: the roads near a box of label centres give the same answer as every road; past the cap, all") {
+    MiniMapModel m = waterModel(400.f, 300.f, [](float, float) { return false; });
+    for (int i = 0; i < 30; ++i) {
+        MapRoad r;
+        r.cls = MapRoadClass::Street;
+        r.width = 6.f;
+        r.first = static_cast<std::uint32_t>(m.points.size());
+        r.count = 2;
+        const float k = static_cast<float>(i);
+        // Short streets in a staggered grid, some well away from the box.
+        m.points.push_back({10.f + 12.f * k, 20.f + 9.f * static_cast<float>(i % 7)});
+        m.points.push_back({30.f + 12.f * k, 60.f + 25.f * static_cast<float>(i % 5)});
+        m.roads.push_back(r);
+    }
+    const MapNames n;
+    const MapRoadInk ink;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f;
+    const Vec2 lo = mapOverlayToScreen(v, {60.f, 40.f}), hi = mapOverlayToScreen(v, {160.f, 120.f});
+    std::uint32_t near[64];
+    const int count = mapRoadsNearLabels(m, n, v, MapZoom::Near, ink, lo, hi, 60.f, 16.f, kMapLabelHaloPx, -1, kMapNoName,
+                                         near, 64);
+    REQUIRE(count > 0);
+    CHECK(count < 30);
+    for (int k = 1; k < count; ++k) CHECK(near[k - 1] < near[k]);
+    int hits = 0;
+    for (float y = lo.y; y <= hi.y; y += 4.f)
+        for (float x = lo.x; x <= hi.x; x += 4.f) {
+            MapLabel l;
+            l.at = {x, y};
+            l.w = 60.f;
+            l.h = 16.f;
+            const int all = mapLabelOnAnyRoad(m, n, v, MapZoom::Near, ink, l, kMapLabelHaloPx);
+            CHECK(mapLabelOnRoads(m, n, v, MapZoom::Near, ink, l, kMapLabelHaloPx, -1, kMapNoName, near, count) == all);
+            l.angleDeg = -90.f;
+            CHECK(mapLabelOnRoads(m, n, v, MapZoom::Near, ink, l, kMapLabelHaloPx, -1, kMapNoName, near, count) ==
+                  mapLabelOnAnyRoad(m, n, v, MapZoom::Near, ink, l, kMapLabelHaloPx));
+            hits += all >= 0;
+        }
+    CHECK(hits > 0);
+    // Past the cap: -1, and a count of -1 tests every road.
+    CHECK(mapRoadsNearLabels(m, n, v, MapZoom::Near, ink, lo, hi, 60.f, 16.f, kMapLabelHaloPx, -1, kMapNoName, near, 1) ==
+          -1);
+    MapLabel l;
+    l.at = mapOverlayToScreen(v, {100.f, 80.f});
+    l.w = 60.f;
+    l.h = 16.f;
+    CHECK(mapLabelOnRoads(m, n, v, MapZoom::Near, ink, l, kMapLabelHaloPx, -1, kMapNoName, nullptr, -1) ==
+          mapLabelOnAnyRoad(m, n, v, MapZoom::Near, ink, l, kMapLabelHaloPx));
 }

@@ -1092,7 +1092,8 @@ bool mapLabelOnCoast(const MapLook& look, const MapOverlayView& v, MapZoom z, co
 }
 
 MapPlaceSeat mapPlaceLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v, MapZoom z,
-                             const MapRoadInk& ink, MapLabel& l, float grow, int picked, std::uint16_t pickedName) {
+                             const MapRoadInk& ink, MapLabel& l, float grow, int picked, std::uint16_t pickedName,
+                             const MapSeatRules& rules) {
     MapLabel home = l;
     if (!mapLabelKeepInside(home, v.screenW, v.screenH, grow)) return MapPlaceSeat::TooBig;
     const auto wetAt = [&](Vec2 s) {
@@ -1126,36 +1127,115 @@ MapPlaceSeat mapPlaceLabelAt(const MiniMapModel& m, const MapNames& n, const Map
         }
         return false;
     };
-    bool sawCoast = false, sawWater = false;
-    const auto clear = [&](const MapLabel& t) {
-        if (mapLabelOnAnyRoad(m, n, v, z, ink, t, grow, picked, pickedName) >= 0) return false;
-        if (!hasLand || wetAt(t.at) || crossesWater(t.at)) {
-            sawWater = true;
-            return false;
-        }
-        if (mapLabelOnCoast(look, v, z, t, grow)) {
-            sawCoast = true;
-            return false;
-        }
-        return true;
+    const float halo = std::max(grow, 0.f), gap = std::max(rules.gap, 0.f);
+    const auto grown = [halo](const MapLabel& t) {
+        MapLabel g = t;
+        g.w += 2.f * halo;
+        g.h += 2.f * halo;
+        return g;
     };
-    if (clear(home)) {
-        l = home;
-        return MapPlaceSeat::Seated;
-    }
+    // The screen tests, cheap: 0 met a mark, 1 a blocker, 2 an earlier name, 3 none.
+    const auto screenStage = [&](const MapLabel& t) {
+        for (std::size_t k = 0; rules.discs && k < rules.discCount; ++k)
+            if (mapLabelMeetsDisc(t, grow, rules.discs[k])) return 0;
+        const MapLabel tg = grown(t);
+        for (std::size_t k = 0; rules.blockers && k < rules.blockerCount; ++k)
+            if (mapLabelsOverlap(tg, rules.blockers[k], gap)) return 1;
+        for (std::size_t k = 0; rules.labels && k < rules.labelCount; ++k)
+            if (mapLabelsOverlap(tg, grown(rules.labels[k]), gap)) return 2;
+        return 3;
+    };
+    // The roads near any spot (filled below, once the spots are known); -1: more than kNearRoadsMax, test every road.
+    constexpr int kNearRoadsMax = 512;
+    std::uint32_t nearRoads[kNearRoadsMax];
+    int nearCount = -1;
+    // The map's tests: 0 met a road, 1 off its land (on water or across it), 2 met the coast, 3 off its district, 4 none.
+    const auto mapStage = [&](const MapLabel& t) {
+        if (mapLabelOnRoads(m, n, v, z, ink, t, grow, picked, pickedName, nearRoads, nearCount) >= 0) return 0;
+        if (rules.anyLand ? wetAt(t.at) : (!hasLand || wetAt(t.at) || crossesWater(t.at))) return 1;
+        if (mapLabelOnCoast(look, v, z, t, grow)) return 2;
+        if (rules.district != kMapNoName && mapCursorDistrict(m, n, mapOverlayFromScreen(v, t.at)) != rules.district) return 3;
+        return 4;
+    };
+    // Every spot in order. Level first: the place, its moves, then each further ring of them, pushed out two heights more
+    // on each axis a move goes along; then all of them again standing, each move turned with the label (along its text
+    // is up the screen, across it is sideways). fn returns true to stop.
     Vec2 moves[kMapLabelMoves];
     mapLabelMoves(home, moves);
-    for (const Vec2& mv : moves) {
-        MapLabel t = home;
-        t.at.x += mv.x;
-        t.at.y += mv.y;
-        if (!mapLabelKeepInside(t, v.screenW, v.screenH, grow)) continue;
-        if (clear(t)) {
-            l = t;
-            return MapPlaceSeat::Seated;
+    const int rings = std::clamp(rules.rings, 1, kMapSeatRingsMax);
+    const auto eachSpot = [&](const auto& fn) {
+        for (int pose = 0; pose < (rules.standing ? 2 : 1); ++pose) {
+            MapLabel base = home;
+            if (pose == 1) {
+                base.angleDeg = -90.f;
+                if (!mapLabelKeepInside(base, v.screenW, v.screenH, grow)) return;
+            }
+            if (fn(base)) return;
+            for (int ring = 1; ring <= rings; ++ring) {
+                const float out = static_cast<float>(ring - 1) * 2.f * home.h;
+                for (const Vec2& mv : moves) {
+                    const float mx = mv.x + (mv.x > 0.f ? out : mv.x < 0.f ? -out : 0.f);
+                    const float my = mv.y + (mv.y > 0.f ? out : mv.y < 0.f ? -out : 0.f);
+                    MapLabel t = base;
+                    t.at.x += pose == 1 ? my : mx;
+                    t.at.y += pose == 1 ? mx : my;
+                    if (!mapLabelKeepInside(t, v.screenW, v.screenH, grow)) continue;
+                    if (fn(t)) return;
+                }
+            }
         }
-    }
-    return sawCoast ? MapPlaceSeat::OnCoast : sawWater ? MapPlaceSeat::OnWater : MapPlaceSeat::OnRoad;
+    };
+    // Cull the roads once: those near the box round every spot's centre.
+    Vec2 lo{std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    Vec2 hi{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+    eachSpot([&](const MapLabel& t) {
+        lo.x = std::min(lo.x, t.at.x);
+        lo.y = std::min(lo.y, t.at.y);
+        hi.x = std::max(hi.x, t.at.x);
+        hi.y = std::max(hi.y, t.at.y);
+        return false;
+    });
+    nearCount = mapRoadsNearLabels(m, n, v, z, ink, lo, hi, home.w, home.h, grow, picked, pickedName, nearRoads,
+                                   kNearRoadsMax);
+    // The furthest test a spot passed, in the documented order: 0 none (on a road), 1 the road (on water), 2 the land
+    // (on the coast), 3 the coast (off its district), 4 the district (on a mark), 5 the marks (on a blocker), 6 the
+    // blockers (on an earlier name). The first spot clear of both kinds of test seats; a spot that fails the screen's
+    // is tested on the map only for the reason, and only when nothing seated.
+    int furthest = 0;
+    bool seated = false;
+    eachSpot([&](const MapLabel& t) {
+        if (screenStage(t) < 3) return false;
+        const int s = mapStage(t);
+        if (s == 4) {
+            l = t;
+            seated = true;
+            return true;
+        }
+        furthest = std::max(furthest, s);
+        return false;
+    });
+    if (seated) return MapPlaceSeat::Seated;
+    eachSpot([&](const MapLabel& t) {
+        const int c = screenStage(t);
+        if (c == 3 || 4 + c <= furthest) return false;
+        const int s = mapStage(t);
+        furthest = std::max(furthest, s < 4 ? s : 4 + c);
+        return furthest == 6;
+    });
+    static constexpr MapPlaceSeat kWhy[] = {MapPlaceSeat::OnRoad,      MapPlaceSeat::OnWater, MapPlaceSeat::OnCoast,
+                                            MapPlaceSeat::OffDistrict, MapPlaceSeat::OnMarks, MapPlaceSeat::Caption,
+                                            MapPlaceSeat::Crowded};
+    return kWhy[furthest];
+}
+
+MapPlaceSeat mapPlaceLabelOrAnyLand(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v,
+                                    MapZoom z, const MapRoadInk& ink, MapLabel& l, float grow, int picked,
+                                    std::uint16_t pickedName, const MapSeatRules& rules, MapPlaceSeat& first) {
+    first = mapPlaceLabelAt(m, n, look, v, z, ink, l, grow, picked, pickedName, rules);
+    if (first != MapPlaceSeat::OnWater && first != MapPlaceSeat::OnCoast) return first;
+    MapSeatRules any = rules;
+    any.anyLand = true;
+    return mapPlaceLabelAt(m, n, look, v, z, ink, l, grow, picked, pickedName, any);
 }
 
 } // namespace ftcore

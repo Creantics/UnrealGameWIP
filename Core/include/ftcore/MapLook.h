@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // The map overlay's look (MapOverlay.h), derived once at load from the baked minimap model and the names table, with
 // no change to the model or its blob: the sea (the water that reaches the sea-side edge) and its coast, three wave
@@ -159,19 +159,53 @@ FTCORE_API MapBankSeat mapBankLabelAt(const MiniMapModel& m, const MapNames& n, 
 // Whether a label's box grown by `grow` px meets the sea's coast as drawn at zoom z: the coast strokes shown at z
 // (MapStrokeKind::Coast) and the coast past the model's edges (edgeCoast). Canal edges are not coast. Zero allocation.
 FTCORE_API bool mapLabelOnCoast(const MapLook& look, const MapOverlayView& v, MapZoom z, const MapLabel& l, float grow = 0.f);
-// Where a point name (a place) goes at view v: its box grown by `grow` held whole on the screen (mapLabelKeepInside),
-// then the first spot, that place and then the moves of mapLabelOffRoads in their order (mapLabelMoves), that meets no
-// road (mapLabelOnAnyRoad, the cursor's lit roads included), whose centre is on the place's own land and whose box
-// meets no coast (mapLabelOnCoast). Its own land: the place itself, or for a point on water (a quay's edge, a pier) the
-// nearest dry point, found ring by ring out to the box's height; a spot counts when its centre is dry (neither
-// mapIsWater nor mapIsSea) and the straight line to it from there crosses no water (sampled every 2 px). A spot on
-// the far bank of a canal is reached only round its end or through a gap in it (a crossing). Seated: l is at that spot. Otherwise l is unchanged and the name is left out: TooBig when
-// the box will not fit on the screen; else OnCoast when a spot on its own land and clear of the roads met the coast;
-// else OnWater when every spot clear of the roads was on water or across it; else OnRoad. Zero allocation.
-enum class MapPlaceSeat : std::uint8_t { Seated, OnRoad, OnCoast, OnWater, TooBig };
+inline constexpr int kMapSeatRingsMax = 4; // the most rings of moves a point seat looks out (mapPlaceLabelAt)
+// What a point label's seat (mapPlaceLabelAt) must clear besides the roads, the water and the coast, and how far it
+// looks. The defaults are a place's: its own land, two rings of moves, standing last.
+struct MapSeatRules {
+    // A fallback point (the middle of a road or a water too short for its name, a district's box): any spot whose
+    // centre is dry counts, on either bank (no own land, no crossing test).
+    bool anyLand = false;
+    // 1: the moves of mapLabelMoves; each further ring the same moves pushed out two heights more on each axis they
+    // move along (a ring grows by the box's height, not its width). 1..kMapSeatRingsMax.
+    int rings = 2;
+    bool standing = true;  // last: the same spots standing (-90 deg, reading bottom to top), the moves turned with it
+    std::uint16_t district = kMapNoName; // into n.districts: the centre must lie in it (mapCursorDistrict)
+    const MapDisc* discs = nullptr;      // marks the box (grown by grow) may not meet: the cursor's ring, the arrow
+    std::size_t discCount = 0;
+    const MapLabel* blockers = nullptr;  // kept screen boxes (the caption's), as mapPlaceLabels tests them
+    std::size_t blockerCount = 0;
+    const MapLabel* labels = nullptr;    // names placed before it, kept apart as mapPlaceLabels keeps them
+    std::size_t labelCount = 0;
+    float gap = 0.f;                     // mapPlaceLabels' gap between two grown boxes
+};
+// Where a point name goes at view v: its box grown by `grow` held whole on the screen (mapLabelKeepInside), then the
+// first spot that is clear: that place, then its moves (mapLabelMoves, in their order), then each further ring of them
+// (rules.rings), all level; then the same spots standing (rules.standing). Clear, tested in this order: the box
+// meets no road (mapLabelOnAnyRoad, the cursor's lit roads included); its centre is on the place's own land (or, with
+// rules.anyLand, dry); the box meets no coast (mapLabelOnCoast); its centre lies in rules.district; it meets none of
+// rules.discs, none of rules.blockers and none of rules.labels. Its own land: the place itself, or for a point on water
+// (a quay's edge, a pier) the nearest dry point, found ring by ring out to the box's height; a spot counts when its
+// centre is dry (neither mapIsWater nor mapIsSea) and the straight line to it from there crosses no water (sampled every
+// 2 px). A spot on the far bank of a canal is reached only round its end or through a gap in it (a crossing). Seated:
+// l is at that spot (angleDeg -90 when standing). Otherwise l is unchanged and the name is left out, by the furthest
+// test any spot passed: TooBig when the box will not fit on the screen; else Crowded (met only earlier names), Caption
+// (met a blocker), OnMarks (met a disc), OffDistrict (outside its district), OnCoast (met the coast), OnWater (every
+// spot clear of the roads was on water or across it), else OnRoad. The screen tests (marks, blockers, names) run
+// first; the map's run only for a spot that passes them, and once more for the reason when nothing is clear: the
+// result is the same as testing in the order above. Zero allocation.
+enum class MapPlaceSeat : std::uint8_t { Seated, OnRoad, OnCoast, OnWater, TooBig, OffDistrict, OnMarks, Caption, Crowded };
 FTCORE_API MapPlaceSeat mapPlaceLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v,
                                         MapZoom z, const MapRoadInk& ink, MapLabel& l, float grow = 0.f, int picked = -1,
-                                        std::uint16_t pickedName = kMapNoName);
+                                        std::uint16_t pickedName = kMapNoName, const MapSeatRules& rules = {});
+// A place's name, own land first: mapPlaceLabelAt with rules. When no spot on its own land, level or standing, is
+// clear of the water or the coast (OnWater, OnCoast), any dry land, as a fallback point is (rules.anyLand): a quay
+// or a pier whose own strip is narrower than its name gets the nearest clear spot on either bank. first: the own-land
+// result (Seated when it seated there). Returns the seat; when both fail, the any-land reason. Zero allocation.
+FTCORE_API MapPlaceSeat mapPlaceLabelOrAnyLand(const MiniMapModel& m, const MapNames& n, const MapLook& look,
+                                               const MapOverlayView& v, MapZoom z, const MapRoadInk& ink, MapLabel& l,
+                                               float grow, int picked, std::uint16_t pickedName, const MapSeatRules& rules,
+                                               MapPlaceSeat& first);
 
 // Calls f(const MapStroke&) for every stroke of `kind` that may meet the world box lo-hi (and some just beyond it:
 // the caller still culls). Zero allocation.
