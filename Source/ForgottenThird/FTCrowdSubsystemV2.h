@@ -194,6 +194,7 @@ private:
 	int32 FootLogged = 0;
 	bool bTestDeathRaised = false;
 	ftcore::crowdv2::CrowdCounts AtTestFight;
+	uint32 FightInRange = 0; // live members within the fight start's radius when the test fight started
 	ftcore::crowdv2::CrowdCounts AtArena;
 	int32 ArenaFed = 0;   // fight events passed on from the arena
 	int32 ArenaSeen = 0;  // arena events of any kind

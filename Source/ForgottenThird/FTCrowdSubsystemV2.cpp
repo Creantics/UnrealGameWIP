@@ -474,6 +474,31 @@ void UFTCrowdSubsystemV2::ScriptFight(const FVector& PlayerAt)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight starts at engine (%.0f, %.0f) cm, %.1f m from the player, at t=%.1f s; %u live, %u walking."),
 			TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, PlayerAt) / 100.0, RunTime,
 			Sim.liveCount(), Sim.countIn(ftcore::crowdv2::CrowdState::Walk));
+		// Perception range at the start: who can feel the fight at all (within the close radius, within the fight
+		// start's own radius) and the nearest member. Nobody in range means the reaction checks cannot pass here: a
+		// fault of where the test fight stands, not of the crowd.
+		{
+			const ftcore::Vec2 F = CrowdV2Local::ToSim(TestFightPoint);
+			const float EventR = Tuning.events[static_cast<size_t>(ftcore::crowdv2::CrowdEventKind::FightStart)].radius;
+			uint32 InClose = 0, InEvent = 0;
+			float Nearest = 1e9f;
+			for (uint32 i = 0; i < Sim.capacity(); ++i)
+			{
+				const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(i);
+				if (!V.live)
+				{
+					continue;
+				}
+				const float D = FMath::Sqrt((V.pos.x - F.x) * (V.pos.x - F.x) + (V.pos.y - F.y) * (V.pos.y - F.y));
+				InClose += D <= Tuning.reactRadius ? 1u : 0u;
+				InEvent += D <= EventR ? 1u : 0u;
+				Nearest = FMath::Min(Nearest, D);
+			}
+			FightInRange = InEvent;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight perception range: %u live members within the close radius %.0f m, %u within the fight start's radius %.0f m, nearest %.1f m%s."),
+				InClose, Tuning.reactRadius, InEvent, EventR, Nearest >= 1e8f ? -1.f : Nearest,
+				InEvent == 0 ? TEXT(": NOBODY IN RANGE (the test fight's spot, not a crowd fault)") : TEXT(""));
+		}
 		// The first second: everyone within the reaction radius now, checked one second later.
 		FirstSecond.begin(Sim, CrowdV2Local::ToSim(TestFightPoint), Tuning.reactRadius);
 		TestFightStartedAt = RunTime;
@@ -943,7 +968,8 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			bOk = bOk && bReacted && bFirstSecondDone && bFirstSecondOk;
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: since the test fight: perceived %llu, fled %llu, cowered %llu, resumed %llu, spread %llu: %s."),
 				Perceived, Fled, C.cowered - AtTestFight.cowered, Resumed, Spread,
-				bReacted ? TEXT("ok") : TEXT("FAILED (nobody perceived, fled, resumed or spread panic)"));
+				bReacted ? TEXT("ok") : FightInRange == 0 ? TEXT("FAILED (nobody was within the fight start's radius when it started: the test fight's spot, not a crowd fault)")
+					: TEXT("FAILED (nobody perceived, fled, resumed or spread panic)"));
 		}
 		if (ArenaSeen > 0)
 		{
