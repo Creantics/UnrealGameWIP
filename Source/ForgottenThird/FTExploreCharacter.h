@@ -603,6 +603,11 @@ private:
 	// A start in the water is due (a lead switch while swimming, StartInWater): the next new set of followers starts in
 	// the water (StepWaterParty); one shot.
 	bool bWaterStartNext = false;
+	// The first frame after a start in the water (StartInWater) sets the lead's feet on its swim's target again, before
+	// anything reads them: the put-in's frame is long, the next one steps the water's time, and the surface hold only eases
+	// (a velocity). One shot; -SwimStartNoSnap leaves it to the hold. The water's time at the put-in, for the log.
+	bool bWaterStartSnap = false;
+	float WaterStartSnapTime = 0.f;
 	// The free swim. False: at the surface (the surface hold moves the body).
 	bool TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds);
 	void LoadSwimTuning();
@@ -720,6 +725,11 @@ private:
 	FVector SwimProofSwitchFrom = FVector::ZeroVector;
 	FVector SwimProofSwitchWay = FVector::ZeroVector;
 	float SwimProofSwitchControl = -1.f;
+	// The switch's press on the wall clock (FPlatformTime, just before SwitchLeadTo) and, from it, when the new lead answered
+	// the stick (no flag) and when its move input was first open (either way): control is judged on these, not game time.
+	double SwimProofSwitchPress = 0.0;
+	float SwimProofSwitchControlWall = -1.f;
+	float SwimProofSwitchOpenWall = -1.f;
 	int32 SwimProofSwitchShot0 = -1;
 	int32 SwimProofSwitchUnder[2] = {0, 0};
 	float SwimProofSwitchUnderWorst[2] = {0.f, 0.f};
@@ -843,6 +853,13 @@ private:
 	// The look's wet grooms and bindings, loaded with the look (FTLook::PreloadWetGrooms) so the swap loads nothing.
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UObject>> WetGroomHold;
+	// Every party look's assets, loading in the background from BeginPlay and held while the handle lives
+	// (FTLook::HoldLooks), so a lead switch loads nothing; -NoPartyHold leaves them to load at the switch.
+	TSharedPtr<FStreamableHandle> PartyHold;
+	// Every party member's clips from the followers' first setup on (UFTLocomotionAnimInstance::AppendClips), so a switch's
+	// respawn finds them loaded and their measures kept; -NoPartyHold holds none.
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UObject>> PartyClipHold;
 	// Wet prints (ftcore::WetPrints): on foot on dry ground the lead leaves a print at each plant of its foot phase,
 	// as wet as it is, fading as it dries. A fixed pool of decals, one per Core slot, made once the first time the lead
 	// is wet (in the water, so the hitch is out of sight of any print); a laid

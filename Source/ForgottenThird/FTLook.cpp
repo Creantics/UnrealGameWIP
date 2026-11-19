@@ -3,12 +3,15 @@
 #include "Animation/AnimSequence.h"
 #include "Animation/MorphTarget.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/AssetManager.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StreamableManager.h"
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
 
@@ -953,4 +956,90 @@ int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPt
 		Total += Slots;
 	}
 	return Total;
+}
+
+TSharedPtr<FStreamableHandle> FTLook::HoldLooks(const TArray<FFTLeadLook>& Looks, const TCHAR* Who)
+{
+	TArray<FSoftObjectPath> Paths;
+	int32 Absent = 0;
+	auto Add = [&Paths, &Absent](const FSoftObjectPath& Path)
+	{
+		if (Path.IsNull())
+		{
+			return;
+		}
+		// As the engine names the asset (an ini path gains its asset suffix), and only what exists: a missing package
+		// would only warn from the loader.
+		const FSoftObjectPath Named(FTLookLayers::Canonical(Path));
+		if (!FPackageName::DoesPackageExist(Named.GetLongPackageName()))
+		{
+			++Absent;
+			return;
+		}
+		Paths.AddUnique(Named);
+	};
+	for (const FFTLeadLook& Look : Looks)
+	{
+		Add(Look.BodyMeshPath);
+		Add(Look.FullBodyMeshPath);
+		if (Look.BodyMeshPath.IsNull() && !Look.Name.IsEmpty())
+		{
+			const FString Lower = Look.Name.ToLower();
+			Add(FSoftObjectPath(FString::Printf(TEXT("/Game/Characters/%s/%s/SkeletalMeshes/%s.%s"), *Look.Name, *Lower, *Lower, *Lower)));
+		}
+		Add(Look.IdleClipPath);
+		Add(Look.WalkClipPath);
+		for (const FSoftObjectPath& Piece : Look.PiecePaths)
+		{
+			Add(Piece);
+		}
+		for (const FFTGarmentFronts& Front : Look.Fronts)
+		{
+			Add(Front.Closed);
+			Add(Front.Open);
+		}
+		for (const FFTUnderLayer& Layer : Look.UnderLayers)
+		{
+			Add(Layer.Under);
+			Add(Layer.Cut);
+		}
+		for (const FFTGroomLook& Groom : Look.Grooms)
+		{
+			Add(Groom.Groom);
+			Add(Groom.Binding);
+			Add(Groom.WetGroom);
+			Add(Groom.WetBinding);
+		}
+		for (const FFTMaterialSwap& Swap : Look.MaterialSwaps)
+		{
+			Add(Swap.From);
+			Add(Swap.To);
+		}
+		Add(Look.GauntletBracerR);
+		Add(Look.GauntletBracerL);
+	}
+	UAssetManager* Manager = UAssetManager::GetIfInitialized();
+	if (Paths.IsEmpty() || !Manager)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: nothing held (%d paths, %d absent, asset manager %s)."), Who, Paths.Num(), Absent,
+			Manager ? TEXT("up") : TEXT("not up"));
+		return nullptr;
+	}
+	const FString Label = Who;
+	const double Start = FPlatformTime::Seconds();
+	FStreamableAsyncLoadParams Params;
+	Params.TargetsToStream = Paths;
+	Params.OnComplete = FStreamableDelegateWithHandle::CreateLambda([Label, Start](TSharedPtr<FStreamableHandle> Handle)
+	{
+		int32 Loaded = 0;
+		int32 Requested = 0;
+		if (Handle.IsValid())
+		{
+			Handle->GetLoadedCount(Loaded, Requested);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: %d of %d assets loaded and held, %.2f s after the request."), *Label, Loaded, Requested,
+			FPlatformTime::Seconds() - Start);
+	});
+	UE_LOG(LogForgottenThird, Display, TEXT("%s: loading %d assets of %d looks in the background (%d absent)."), Who, Paths.Num(), Looks.Num(), Absent);
+	return Manager->GetStreamableManager().RequestAsyncLoad(MoveTemp(Params), FString(TEXT("FTLook party hold")));
 }

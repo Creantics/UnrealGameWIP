@@ -59,6 +59,7 @@
 #include "FTMeshFacing.h"
 #include "FTNewUi.h"
 #include "FTPartyFollower.h"
+#include "Engine/StreamableManager.h"
 #include "FTSceneLook.h"
 #include "Components/DecalComponent.h"
 #include "Misc/PackageName.h"
@@ -272,6 +273,11 @@ void AFTExploreCharacter::BeginPlay()
 			LeadIndex = Playable >= 0 ? Playable : LeadIndex;
 		}
 		WearLook(PartyLooks[LeadIndex]);
+	}
+	// The whole party's assets, loading in the background from now on, so a lead switch finds them in memory.
+	if (!PartyLooks.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("NoPartyHold")))
+	{
+		PartyHold = FTLook::HoldLooks(PartyLooks, TEXT("Party hold"));
 	}
 	FindPartyRows(); // the party screen's rows, again whenever the lead changes (SwitchLeadTo)
 	// Locomotion test switches: -LocoRun holds the run speed, -LocoJump=<s> jumps every s seconds,
@@ -3135,6 +3141,25 @@ void AFTExploreCharacter::Tick(float DeltaSeconds)
 	{
 		LookDevPivot->AddWorldRotation(FRotator(0.0, LookDevSpin * DeltaSeconds, 0.0));
 	}
+	if (bWaterStartSnap)
+	{
+		// The first frame after a start in the water: the lead's feet on its swim's target as it is now. The put-in's frame
+		// is long (the party respawns in it), so this frame steps the water's time and the wave under the lead moves; the
+		// surface hold would only ease after it, while the partners, placed in their own tick, are on the new target.
+		bWaterStartSnap = false;
+		const UFTWaterSubsystem* StartWater = GetWorld() ? GetWorld()->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+		UCharacterMovementComponent* StartMove = GetCharacterMovement();
+		double StartFeet = 0.0;
+		if (StartWater && StartMove && bSwimming && !bSwimUnder && !bWaterClimbing && SurfaceSwimFeet(*StartWater, GetActorLocation(), WaterPose.sink, StartFeet))
+		{
+			const double StartHalf = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+			const FVector StartAt = GetActorLocation();
+			SetActorLocation(FVector(StartAt.X, StartAt.Y, StartFeet + StartHalf), false, nullptr, ETeleportType::TeleportPhysics);
+			StartMove->Velocity.Z = 0.0;
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: the first frame after a start in the water: the lead's feet set on the swim's target %.1f cm (they were %.1f; the water's time %.2f s on)."),
+				StartFeet, StartAt.Z - StartHalf, StartWater->WaterTime() - WaterStartSnapTime);
+		}
+	}
 #if !UE_BUILD_SHIPPING
 	TickSwimProof(DeltaSeconds);
 #endif
@@ -4013,6 +4038,9 @@ bool AFTExploreCharacter::StartInWater(const FVector& At, double Yaw)
 	SetActorLocationAndRotation(FVector(At.X, At.Y, Feet + Half), FRotator(0.0, Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
 	BeginSurfaceSwim(*Move);
 	bWaterStartNext = true;
+	static const bool bNoStartSnap = FParse::Param(FCommandLine::Get(), TEXT("SwimStartNoSnap"));
+	bWaterStartSnap = !bNoStartSnap;
+	WaterStartSnapTime = System->WaterTime();
 	UE_LOG(LogForgottenThird, Display, TEXT("Water: a start in the water at (%.0f, %.0f) cm, feet %.1f cm over a %.1f m column: the lead at the surface, the partners at their surface slots."),
 		At.X, At.Y, Feet, Column);
 	if (AFTExploreDirector* D = GetDirector())
@@ -4024,6 +4052,31 @@ bool AFTExploreCharacter::StartInWater(const FVector& At, double Yaw)
 
 void AFTExploreCharacter::OnFollowersSpawned()
 {
+	// The party's clips, held from the first setup on: a switch's respawn then finds them loaded and their measures kept.
+	static const bool bNoHold = FParse::Param(FCommandLine::Get(), TEXT("NoPartyHold"));
+	if (!bNoHold)
+	{
+		const int32 HeldBefore = PartyClipHold.Num();
+		if (const UFTLocomotionAnimInstance* LeadAnim = GetMesh() ? Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()) : nullptr)
+		{
+			LeadAnim->AppendClips(PartyClipHold);
+		}
+		if (const AFTExploreDirector* HoldDirector = GetDirector())
+		{
+			for (const TObjectPtr<AFTPartyFollower>& Member : HoldDirector->GetFollowers())
+			{
+				const USkeletalMeshComponent* MemberBody = Member ? Member->GetBody() : nullptr;
+				if (const UFTLocomotionAnimInstance* MemberAnim = MemberBody ? Cast<UFTLocomotionAnimInstance>(MemberBody->GetAnimInstance()) : nullptr)
+				{
+					MemberAnim->AppendClips(PartyClipHold);
+				}
+			}
+		}
+		if (PartyClipHold.Num() > HeldBefore)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Party hold: %d clips held (%d new)."), PartyClipHold.Num(), PartyClipHold.Num() - HeldBefore);
+		}
+	}
 	// A start in the water (a lead switch while swimming, StartInWater): the new partners' plan starts in the water before
 	// the director's first placement, so that placement puts them at their surface slots (the rejoin), not on land.
 	if (bWaterStartNext)
@@ -5227,6 +5280,7 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 			SwimProofSwitchOld[I] = WaterFollowers[I];
 		}
 		const double Before = FPlatformTime::Seconds();
+		SwimProofSwitchPress = Before;
 		SwitchLeadTo(PartnerIndex);
 		const double CallMs = (FPlatformTime::Seconds() - Before) * 1000.0;
 		if (LeadIndex == Was)
@@ -5285,6 +5339,12 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 			SwimProofSwitchLeadFirst = LeadOff;
 		}
 		SwimProofSwitchLeadWorst = FMath::Max(SwimProofSwitchLeadWorst, LeadOff);
+	}
+	if (!bStart && SwimProofSwitchOpenWall < 0.f && Controller && !PartyScreen.open && !Controller->IsMoveInputIgnored())
+	{
+		// The first frame the new lead's move input is open, on the wall clock from the press.
+		SwimProofSwitchOpenWall = static_cast<float>(Clock - SwimProofSwitchPress);
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: the move input open %.2f s after the press (wall clock; +%.2f s game time)."), SwimProofSwitchOpenWall, Since);
 	}
 	const bool bLogNow = bFirstFrame || (SwimProofSwitchLog -= DeltaSeconds) <= 0.f;
 	if (bLogNow)
@@ -5358,7 +5418,9 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 		if (SwimProofSwitchControl < 0.f && bInputOpen && Along >= 20.0)
 		{
 			SwimProofSwitchControl = Since;
-			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: the new lead answers the stick at +%.2f s (%.0f cm on, swimming %d)."), Since, Along, bLeadSwims ? 1 : 0);
+			SwimProofSwitchControlWall = static_cast<float>(Clock - SwimProofSwitchPress);
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: the new lead answers the stick %.2f s after the press (wall clock; +%.2f s game time; %.0f cm on, swimming %d)."),
+				SwimProofSwitchControlWall, Since, Along, bLeadSwims ? 1 : 0);
 		}
 		constexpr int32 KPlaced = static_cast<int32>(ftcore::WaterFollowPhase::Placed);
 		for (int32 I = 0; I < Partners; ++I)
@@ -5440,7 +5502,8 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 		// than 20 s on the water plan's own clock (its watchdog places it at 20 s: a placement is allowed and logged), and
 		// both at their surface slots at the end. The longest stretch off the slot is logged, not judged.
 		constexpr float KStuckLine = 20.25f; // the watchdog's 20 s and the step that places it
-		const bool bControlOk = SwimProofSwitchControl >= 0.f && SwimProofSwitchControl <= 1.f;
+		// Control on the wall clock from the press (ruled 11-19): game time steps are clamped on a long frame.
+		const bool bControlOk = SwimProofSwitchControlWall >= 0.f && SwimProofSwitchControlWall <= 1.f;
 		bool bPartnersOk = true;
 		for (int32 I = 0; I < Partners; ++I)
 		{
@@ -5453,9 +5516,9 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 				bOk ? TEXT("OK") : TEXT("FAIL"));
 		}
 		const bool bPass = bControlOk && bPartnersOk;
-		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch (no flag): the new lead answers the stick at +%.2f s %s; partners %s; lead dry frames %d, feet worst %.1f cm off; stills %03d-%03d every 0.5 s; judged %.1f s (%s): %s."),
-			SwimProofSwitchControl, bControlOk ? TEXT("OK") : TEXT("FAIL"), bPartnersOk ? TEXT("OK") : TEXT("FAIL"), SwimProofSwitchLeadDry, SwimProofSwitchLeadWorst,
-			SwimProofSwitchShot0, SwimProofShotCount - 1, Since, bBothAtSlots ? TEXT("both at their slots") : bStretchOver ? TEXT("a stretch off a slot over 25 s") : TEXT("the 45 s cap"),
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch (no flag): the new lead answers the stick %.2f s after the press on the wall clock (+%.2f s game time) %s; move input open at %.2f s; worst frame %.1f ms in the first 0.5 s; partners %s; lead dry frames %d, feet worst %.1f cm off; stills %03d-%03d every 0.5 s; judged %.1f s (%s): %s."),
+			SwimProofSwitchControlWall, SwimProofSwitchControl, bControlOk ? TEXT("OK") : TEXT("FAIL"), SwimProofSwitchOpenWall, SwimProofSwitchWorstFrame * 1000.f,
+			bPartnersOk ? TEXT("OK") : TEXT("FAIL"), SwimProofSwitchLeadDry, SwimProofSwitchLeadWorst, SwimProofSwitchShot0, SwimProofShotCount - 1, Since, bBothAtSlots ? TEXT("both at their slots") : bStretchOver ? TEXT("a stretch off a slot over 25 s") : TEXT("the 45 s cap"),
 			bPass ? TEXT("PASS") : TEXT("FAIL"));
 		Finish(bPass ? 0 : 2);
 		return;
@@ -5492,7 +5555,10 @@ void AFTExploreCharacter::TickSwimProofSwitch(const UFTWaterSubsystem& System, f
 	}
 	else
 	{
-		bPass = bHitchOk && bCameraOk && bLeadOk && bPartnersOk && bOldThere;
+		const bool bOpenOk = SwimProofSwitchOpenWall >= 0.f && SwimProofSwitchOpenWall <= 1.f;
+		bPass = bHitchOk && bOpenOk && bCameraOk && bLeadOk && bPartnersOk && bOldThere;
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof switch: the move input open %.2f s after the press on the wall clock %s."), SwimProofSwitchOpenWall,
+			bOpenOk ? TEXT("OK") : TEXT("FAIL"));
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("SwimProof switch: worst frame %.1f ms in the first 0.5 s (mean %.1f, baseline %.1f) %s; camera settled at +%.2f s (worst step %.1f cm, baseline %.1f) %s; lead first off %.1f cm, worst %.1f (baseline %.1f), dry frames %d %s; old lead %s %s; -SwimSwitchKeep %s: %s."),
 			SwimProofSwitchWorstFrame * 1000.f, MeanMs, SwimProofSwitchBaseFrame * 1000.f, bHitchOk ? TEXT("OK") : TEXT("FAIL"), CamSettled, SwimProofSwitchCamWorst, SwimProofSwitchBaseCam,
