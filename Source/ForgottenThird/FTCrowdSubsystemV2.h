@@ -89,6 +89,7 @@ private:
 	void FootStill(APlayerController* PC);
 	void LogGroundAt();
 	void LogStoppedGroup(uint32 Size) const;
+	void NoteMinPair(float Pair);
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
 	// S-332: the cameras the crowd must not pop in front of (the player's view and the stills' cameras), every frame.
@@ -137,6 +138,14 @@ private:
 	bool bRefillOk = true;
 	float RunMinPair = 1e9f;        // m, every frame
 	float RunMinWall = 1e9f;        // m, every frame
+	// The two members behind RunMinPair (log only; found when the least drops): slots, states, positions (m), speeds
+	// (m/s), wall clearances (m), and when.
+	uint32 MinPairSlot[2] = {UINT32_MAX, UINT32_MAX};
+	uint8 MinPairState[2] = {0, 0};
+	ftcore::Vec2 MinPairPos[2] = {};
+	float MinPairSpeed[2] = {0.f, 0.f};
+	float MinPairWall[2] = {0.f, 0.f};
+	double MinPairTime = -1.0;
 	// S-332 run checks: member-frames in the run pose below walking speed, the largest knot standing within 3 m.
 	uint64 SlowRunFrames = 0;
 	uint32 WorstGroup = 0;

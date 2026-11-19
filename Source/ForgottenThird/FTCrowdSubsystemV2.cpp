@@ -890,7 +890,12 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 	Sim.tick(DeltaTime, CrowdV2Local::ToSim(PlayerAt), CrowdV2Local::ToSim(PlayerVel));
 	if (QuitAfter > 0.0)
 	{
-		RunMinPair = FMath::Min(RunMinPair, Sim.minPairDistance(2.f));
+		const float Pair = Sim.minPairDistance(2.f);
+		if (Pair < RunMinPair && Pair < 2.f)
+		{
+			NoteMinPair(Pair);
+		}
+		RunMinPair = FMath::Min(RunMinPair, Pair);
 		SlowRunFrames += Sim.runPoseSlow();
 		// Every 8th frame once the streets have filled (the first members stand still on their first step).
 		if (RunTime >= 2.0 && ++GroupTick % 8 == 0)
@@ -970,6 +975,20 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		const bool bWalls = static_cast<double>(RunMinWall) >= CrowdV2Local::kGapWall;
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.6f m unrounded (%s, passes at %.1f m or more), every frame, every state."),
 			RunMinPair, bPairs ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapPair, RunMinWall, bWalls ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall);
+		if (MinPairTime >= 0.0)
+		{
+			const ftcore::Vec2 Fight = CrowdV2Local::ToSim(TestFightPoint);
+			FString Who;
+			for (int32 k = 0; k < 2; ++k)
+			{
+				const std::string_view N = ftcore::crowdv2::crowdStateName(static_cast<ftcore::crowdv2::CrowdState>(MinPairState[k]));
+				Who += FString::Printf(TEXT(" [%u %s at (%.2f, %.2f) m, %.2f m/s, wall %.4f m%s]"), MinPairSlot[k], *FString(static_cast<int32>(N.size()), N.data()),
+					MinPairPos[k].x, MinPairPos[k].y, MinPairSpeed[k], MinPairWall[k],
+					bTestFightStarted ? *FString::Printf(TEXT(", %.1f m from the fight"), FMath::Sqrt(FMath::Square(MinPairPos[k].x - Fight.x) + FMath::Square(MinPairPos[k].y - Fight.y))) : TEXT(""));
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: the least distance between two members came at t=%.2f s%s:%s."), MinPairTime,
+				TestFightAt >= 0.0 ? *FString::Printf(TEXT(" (%.2f s from the fight's start)"), MinPairTime - TestFightAt) : TEXT(""), *Who);
+		}
 		// S-332: no run pose below walking speed, no knot of more than three standing within 3 m, nobody popping in or out
 		// in a camera's view within 40 m.
 		const bool bNoSlowRun = SlowRunFrames == 0;
@@ -1514,6 +1533,57 @@ void UFTCrowdSubsystemV2::LogStoppedGroup(uint32 Size) const
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: knot of %u standing at t=%.1f s:%s."), Size, RunTime, *Who);
 		return;
 	}
+}
+
+void UFTCrowdSubsystemV2::NoteMinPair(float Pair)
+{
+	// Which two: of the live members off their doors, the pair whose distance is nearest the sim's least (the sim skips
+	// members at doors, so the plain closest pair could be another). A brute pass, only when the least drops.
+	float BestErr = 0.01f;
+	uint32 A = UINT32_MAX, B = UINT32_MAX;
+	for (uint32 i = 0; i < Sim.capacity(); ++i)
+	{
+		const ftcore::crowdv2::CrowdAgentView& U = Sim.agent(i);
+		if (!U.live || U.indoors)
+		{
+			continue;
+		}
+		for (uint32 j = i + 1; j < Sim.capacity(); ++j)
+		{
+			const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(j);
+			if (!V.live || V.indoors)
+			{
+				continue;
+			}
+			const float D2 = FMath::Square(U.pos.x - V.pos.x) + FMath::Square(U.pos.y - V.pos.y);
+			if (D2 > FMath::Square(Pair + BestErr))
+			{
+				continue;
+			}
+			const float Err = FMath::Abs(FMath::Sqrt(D2) - Pair);
+			if (Err < BestErr)
+			{
+				BestErr = Err;
+				A = i;
+				B = j;
+			}
+		}
+	}
+	if (A == UINT32_MAX)
+	{
+		return;
+	}
+	const uint32 Slots[2] = {A, B};
+	for (int32 k = 0; k < 2; ++k)
+	{
+		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(Slots[k]);
+		MinPairSlot[k] = Slots[k];
+		MinPairState[k] = static_cast<uint8>(V.state);
+		MinPairPos[k] = V.pos;
+		MinPairSpeed[k] = V.speed;
+		MinPairWall[k] = Sim.wallClearance(Slots[k]);
+	}
+	MinPairTime = RunTime;
 }
 
 void UFTCrowdSubsystemV2::LogGroundAt()
