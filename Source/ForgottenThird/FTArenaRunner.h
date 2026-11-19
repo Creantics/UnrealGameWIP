@@ -1744,7 +1744,18 @@ private:
 	FVector SpecialPlayShift = FVector::ZeroVector; // cm: the play camera's move to the end feet while the lead stands at the start
 	bool bSpecialPlaced = false;
 	int32 SpecialShotsMoved = 0;   // shots moved by a fix at the start (SpecialCineFixShots)
-	int32 SpecialShotsBlocked = 0; // shots no fix cleared and no cover hid (played as written)
+	int32 SpecialShotsPlayed = 0;  // shots in the play camera: no fix cleared them and no cover hid them (no cut-in)
+	// The burst's cap (round 7): the hit effect's emitters, their reach at the +30 ms still (Core's vfxEmitterReach at
+	// kSpecialBurstAge) read once per effect from its Data/Vfx file; those reaching past Core's specialCineBurstRoom turned
+	// off for the special (a bit per emitter), the least kept.
+	static constexpr int32 kSpecialBurstMax = 8;
+	FName SpecialBurstRead;
+	FName SpecialBurstNames[kSpecialBurstMax];
+	float SpecialBurstReach[kSpecialBurstMax] = {};
+	int32 SpecialBurstCount = 0;
+	uint32 SpecialBurstOff = 0;
+	void SpecialBurstCap(float Room, float HeadGap);
+	void SpecialBurstApply(class UFTVfxComponent* Vfx) const;
 	int32 SpecialShotsSkipped = 0; // shots no fix cleared, skipped under the shot next to them (a cover)
 	// The skip: pressed this frame (read by PollSpecialSkip, sent on the next frozen step); a skip refused (not yet
 	// seen once) is logged once a move.

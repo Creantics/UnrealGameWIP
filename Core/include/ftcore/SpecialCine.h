@@ -284,6 +284,7 @@ enum class SpecialCineCover : std::uint8_t {
     None,     // the shot plays
     Next,     // skipped: the next shot starts at this one's in
     Previous, // skipped: the shot before holds to this one's out
+    Play,     // no cut-in: no fix and no cover frames it, so the play camera holds over its window (playWeight 1)
 };
 struct SpecialCineShotFix {
     static constexpr float kMinPullGap = 0.5f; // metres left between the pulled camera and its look-at
@@ -293,8 +294,12 @@ struct SpecialCineShotFix {
     bool aim = false;  // look at the subject (a "none" shot is not aimed)
     float orbit = 0.f; // degrees about the subject (NaN: none)
     SpecialCineCover cover = SpecialCineCover::None;
+    // Degrees the look-at is pitched about the eye, after the aim and orbit, before the pull (+ up; NaN: none). The fix
+    // search sets it to centre the lead's head, hips and fist at the hit (a tilt, never a pull out).
+    float tilt = 0.f;
     bool moved() const {
-        return mirror || aim || raise > 0.f || pull > 0.f || orbit > 0.f || orbit < 0.f || cover != SpecialCineCover::None;
+        return mirror || aim || raise > 0.f || pull > 0.f || orbit > 0.f || orbit < 0.f || tilt > 0.f || tilt < 0.f ||
+               cover != SpecialCineCover::None;
     }
 };
 
@@ -318,13 +323,18 @@ enum class SpecialCineProblem : std::uint8_t {
     World,      // the world blocks the camera or its line to the subject
     OffFrame,   // the subject is behind the camera or outside the safe frame
     TooSmall,   // the subject is in frame but under the minimum height
-    // The lead's head or striking hand outside the frame (kInFrame) in the shot shown at the hit or at one of its stills
-    // (specialCineHitProblem; the fix search tests it with the hit given).
+    // The lead's head or hips outside the safe frame (kSafe), or its striking hand outside the frame (kInFrame), in the
+    // shot shown at the hit or at one of its stills (specialCineHitProblem; the fix search tests it with the hit given).
     LeadCropped,
-    // The contact line passes through the lead's own body (kTorso round its hips-to-head line) at the hit or one of its
-    // stills: its back hides its blow (r2b_big's shot 6, round 4: an over-the-shoulder from behind and above). The line
-    // stops kTorso short of the contact (specialCineSightGap): only a body between the camera and the contact hides it.
+    // The sight to the contact passes through the lead's own body volumes (specialCineLeadBlocks: torso, head and legs,
+    // the striking arm left out) at the hit or one of its stills: its back hides its blow.
     ContactBehindLead,
+    // The same for the sight to the striking fist: the fist in frame but behind the lead's own body (maw_pup, round 6).
+    FistHidden,
+    // The shot shown at the hit or one of its stills stands farther from the point its orbit turns about (its subject)
+    // than that shot as written by more than kNoZoomShare: a fix may frame the lead by orbit or tilt, never by pulling
+    // the camera out (a raise that takes it farther).
+    CameraOut,
     // Tested last, so either one means every check above passed:
     ContactHidden, // a body (the target's own included) hides the contact from the camera (target and "both" shots)
     LeadHidden,    // under kMinLeadShare of the lead's sample points can be seen (lead and "both" shots)
@@ -333,7 +343,8 @@ enum class SpecialCineProblem : std::uint8_t {
     AlikeShot,
 };
 // "none", "inside a body", "a body in the line", "the world", "off frame", "too small", "the lead cropped",
-// "the contact hidden", "the lead hidden", "like another shot".
+// "the contact behind the lead", "the fist hidden", "the camera pulled out", "the contact hidden", "the lead hidden",
+// "like another shot".
 FTCORE_API std::string_view specialCineProblemName(SpecialCineProblem problem);
 
 // The framing rules: the subject (its upright line, feet to head) must have some part inside the safe frame, 10% in
@@ -366,20 +377,36 @@ struct SpecialCineFraming {
     static constexpr float kShoulderHeight = 0.82f;
     static constexpr float kShoulderHalf = 0.22f; // metres
     static constexpr float kMinLeadShare = 0.75f;
-    // The shot shown at the hit and at its stills (one that frames someone) frames the lead's head and striking hand:
-    // both kInFrame inside the frame (5% in from each edge). Other frames may crop the lead (a feet close-up, an
+    // The shot shown at the hit and at its stills (one that frames someone) frames the lead: its head and hips inside
+    // the safe frame (kSafe), its striking hand kInFrame inside the frame (5% in from each edge), the sights to the
+    // contact and to the fist clear of its body volumes (specialCineLeadBlocks), the camera no farther from its subject
+    // than the shot as written by more than kNoZoomShare. Other frames may crop the lead (a feet close-up, an
     // over-the-shoulder release). The head: kHeadHeight of the lead's height on its upright line. The hand: the
     // measured fist (SpecialCineLeadPose::fist), else kHandReach metres out from the lead's chest toward the contact (or
     // the contact when nearer). The head and chest: the hit's measured pose (SpecialCineHit::pose) when the host gave
-    // one, else Core's model (upright at its walk's end, kHips, kChest and kHeadHeight of its height). The contact line
-    // must also clear the lead's own body: kTorso metres round its hips-to-head line (ContactBehindLead), the line
-    // stopped kTorso short of the contact (a lead pressed into its blow holds its chest that near the contact;
-    // specialCineSightGap).
+    // one, else Core's model (upright at its walk's end, kHips, kChest and kHeadHeight of its height). A sight to the
+    // contact through those volumes is ContactBehindLead, to the fist FistHidden (the striking arm is not a volume).
     static constexpr float kInFrame = 0.9f;
     static constexpr float kHeadHeight = 0.93f;
     static constexpr float kHips = 0.5f;
     static constexpr float kHandReach = 0.6f; // metres
-    static constexpr float kTorso = 0.22f;    // metres (kShoulderHalf: the back seen from behind)
+    static constexpr float kTorso = 0.22f;    // metres (kShoulderHalf: the back seen from behind; the host's probe)
+    // The lead's body volumes (specialCineLeadBlocks), round so no facing is guessed, sized to over-block: the waist
+    // (hips to chest), the chest and shoulders (chest to midway to the head, reaching the striking shoulder), the head,
+    // the legs (hips to the ground). A sight stops kFistRadius short of its end; a volume its end sits in is shrunk to
+    // put the end on its surface (a fist or contact held against the body is seen from its own side).
+    static constexpr float kWaistRadius = 0.17f;
+    static constexpr float kChestRadius = 0.21f;
+    static constexpr float kHeadRadius = 0.12f;
+    static constexpr float kLegRadius = 0.18f;
+    static constexpr float kFistRadius = 0.05f;
+    // A share of the distance from the shot's subject as written: a small crane up re-angles; more is a pull out.
+    static constexpr float kNoZoomShare = 0.1f;
+    // The hit's burst (specialCineBurstRoom): on screen clear of the head by kBurstMargin and at most kBurstMaxFrame,
+    // both of the half frame's height, over the hit and its stills up to kBurstLook seconds after it.
+    static constexpr float kBurstMargin = 0.05f;
+    static constexpr float kBurstMaxFrame = 0.4f;
+    static constexpr float kBurstLook = 0.06f;
     // The reframe tried last (specialCineFixShot): orbits of kOrbitStep degrees out to kOrbitMax each way, plain and
     // raised kOrbitRaise metres, each also aimed; then the reverse angle (kOrbitReverse) the same. A two-shot from close behind
     // a target with the lead far beyond cannot swing far enough to see the contact before a figure leaves the frame
@@ -486,16 +513,24 @@ FTCORE_API SpecialCineCoverCheck specialCineFindCover(const SpecialCineMove& mov
                                                       std::uint32_t count, SpecialCineWorldTest world = nullptr,
                                                       void* user = nullptr, const SpecialCineHit* hit = nullptr);
 // The cut list as played under `fixes` (null, or one per shot): the shots shown in order, each from its in to its
-// out, a cover's run grown over the shot it covers; `skipped` counts the shots it covers. Written into `out` (up to
+// out, a cover's run grown over the shot it covers; `skipped` counts the shots it covers. Shots side by side in the
+// play camera (SpecialCineCover::Play) run as one cut, its `shot` the first of them. Written into `out` (up to
 // `capacity`); returns how many cuts there are (more than `capacity`: the rest not written). No allocation.
 struct SpecialCineCut {
     std::uint32_t shot = 0;
     float in = 0.f;
     float out = 0.f;
     std::uint32_t skipped = 0;
+    bool play = false; // the play camera over this cut (SpecialCineCover::Play): no cut-in
 };
 FTCORE_API std::uint32_t specialCineCutList(const SpecialCineMove& move, const SpecialCineShotFix* fixes, SpecialCineCut* out,
                                             std::uint32_t capacity);
+// Round 7's fallback, after the fixes and the covers: each shot in `uncovered` (a bit per shot: failing, no fix cleared
+// it and no cover hides it) plays in the play camera (SpecialCineCover::Play, its fix cleared): no cut-in. So does a
+// shot whose cover rested on one of those (its cover would show its own failing camera again), and the last shot when
+// the one before it plays there (no cut back in only to blend out). Returns the shots set (a bit per shot). No
+// allocation.
+FTCORE_API std::uint32_t specialCinePlayFallback(const SpecialCineMove& move, std::uint32_t uncovered, SpecialCineShotFix* fixes);
 
 // The horizontal fov of a lens in mm on a 36 mm sensor, degrees (10 mm and below as 10 mm).
 FTCORE_API float specialCineFov(float lensMm);
@@ -561,6 +596,17 @@ FTCORE_API SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move,
 // within kTorso of the contact: the distance from the eye. The host's drawn probe measures the same. No allocation.
 FTCORE_API float specialCineSightGap(const CutsceneVec3& eye, const CutsceneVec3& contact, const CutsceneVec3& hips,
                                      const CutsceneVec3& head);
+// Whether the sight from `eye` to `to` (stopped kFistRadius short) passes through the lead's body volumes in `pose`
+// (see SpecialCineFraming: waist, chest, head and legs down to `groundZ`; the striking arm is not one). No allocation.
+FTCORE_API bool specialCineLeadBlocks(const CutsceneVec3& eye, const CutsceneVec3& to, const SpecialCineLeadPose& pose,
+                                      float groundZ);
+// The room the hit's burst has (world metres, its radius at the contact) in the shot shown at the hit and at its stills
+// up to kBurstLook after it: on screen clear of the lead's head (kHeadRadius round it) by kBurstMargin and at most
+// kBurstMaxFrame, both of the half frame's height; the least of those moments; 0 when none. A frame in the play camera
+// (SpecialCineCover::Play) is not one. `headGap`: when given, the head's on-screen distance from the contact then (of
+// the half frame's height). The host turns off the burst's emitters that reach past it. No allocation.
+FTCORE_API float specialCineBurstRoom(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
+                                      const SpecialCineShotFix* fixes = nullptr, float* headGap = nullptr);
 
 // A partner's blow point, by the lead's contact rule (the special's contact): on the target's surface (feet `target`,
 // radius `radius`, `targetHeight` tall) toward `toward` (on the ground plane; at the target's axis: its centre),
@@ -631,6 +677,7 @@ private:
     float time_ = 0.f;
     bool framed_ = false; // a frame() was taken since begin
     std::uint32_t lastShot_ = 0;
+    bool lastPlay_ = false; // the last frame was in the play camera (a Play cover)
     bool finished_ = false;
     bool releaseTaken_ = false;
     SpecialCineShotFix fixes_[SpecialCineMove::kMaxShots]{};

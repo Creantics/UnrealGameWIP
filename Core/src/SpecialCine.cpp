@@ -140,6 +140,22 @@ CutsceneVec3 aimPoint(const SpecialCineMove& move, const SpecialCineShot& s, con
     return at;
 }
 
+// The point a shot's orbit turns about at `tc` (its subject's: the lead's feet, the contact, half way between them; the
+// look-at for a shot of no subject).
+CutsceneVec3 orbitPivot(const SpecialCineMove& move, const SpecialCineShot& s, const SpecialCineStage& stage, float tc,
+                        const CutsceneVec3& lookAt) {
+    const float length = move.length();
+    const CutsceneVec3 feet = leadFeet(move, stage, length > 0.f ? std::clamp(tc / length, 0.f, 1.f) : 0.f);
+    const CutsceneVec3 contact = contactPoint(stage, feet, stage.targetRadius);
+    switch (s.subject) {
+    case SpecialCineSubject::Lead: return feet;
+    case SpecialCineSubject::Target: return contact;
+    case SpecialCineSubject::Both: return lerp3(feet, contact, 0.5f);
+    case SpecialCineSubject::None: break;
+    }
+    return lookAt;
+}
+
 } // namespace
 
 std::string_view specialCineSubjectName(SpecialCineSubject subject) {
@@ -162,6 +178,8 @@ std::string_view specialCineProblemName(SpecialCineProblem problem) {
     case SpecialCineProblem::TooSmall: return "too small";
     case SpecialCineProblem::LeadCropped: return "the lead cropped";
     case SpecialCineProblem::ContactBehindLead: return "the contact behind the lead";
+    case SpecialCineProblem::FistHidden: return "the fist hidden";
+    case SpecialCineProblem::CameraOut: return "the camera pulled out";
     case SpecialCineProblem::ContactHidden: return "the contact hidden";
     case SpecialCineProblem::LeadHidden: return "the lead hidden";
     case SpecialCineProblem::AlikeShot: return "like another shot";
@@ -364,15 +382,7 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     if (std::isfinite(fix.raise) && fix.raise > 0.f) f.pose.position.z += fix.raise;
     if (std::isfinite(fix.orbit) && fix.orbit != 0.f) {
         // Camera and look-at turned together about the upright line through the subject.
-        const CutsceneVec3 feet = leadFeet(move, stage, length > 0.f ? std::clamp(tc / length, 0.f, 1.f) : 0.f);
-        const CutsceneVec3 contact = contactPoint(stage, feet, stage.targetRadius);
-        CutsceneVec3 pivot = f.pose.lookAt;
-        switch (s.subject) {
-        case SpecialCineSubject::Lead: pivot = feet; break;
-        case SpecialCineSubject::Target: pivot = contact; break;
-        case SpecialCineSubject::Both: pivot = lerp3(feet, contact, 0.5f); break;
-        case SpecialCineSubject::None: break;
-        }
+        const CutsceneVec3 pivot = orbitPivot(move, s, stage, tc, f.pose.lookAt);
         const float a = fix.orbit * kPi / 180.f, ca = std::cos(a), sa = std::sin(a);
         const auto turn = [&pivot, ca, sa](CutsceneVec3& q) {
             const float x = q.x - pivot.x, y = q.y - pivot.y;
@@ -384,6 +394,16 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     }
     const bool aimed = fix.aim && s.subject != SpecialCineSubject::None;
     if (aimed) f.pose.lookAt = aimPoint(move, s, stage, tc, f.pose.lookAt);
+    if (std::isfinite(fix.tilt) && fix.tilt != 0.f) {
+        // The look-at pitched about the eye, its distance kept (held short of straight up or down).
+        const CutsceneVec3 d = sub3(f.pose.lookAt, f.pose.position);
+        const float flat = std::sqrt(d.x * d.x + d.y * d.y), n = length3(d);
+        if (flat > 1e-4f) {
+            const float pitch = std::clamp(std::atan2(d.z, flat) + fix.tilt * kPi / 180.f, -1.45f, 1.45f);
+            const float c = std::cos(pitch) * n / flat;
+            f.pose.lookAt = {f.pose.position.x + d.x * c, f.pose.position.y + d.y * c, f.pose.position.z + std::sin(pitch) * n};
+        }
+    }
     float pulled = 0.f;
     if (std::isfinite(fix.pull) && fix.pull > 0.f) {
         const CutsceneVec3 axis = sub3(f.pose.lookAt, f.pose.position);
@@ -419,6 +439,7 @@ SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, float t, const 
     if (bin > 0.f && tc < bin) f.playWeight = 1.f - ease01(SpecialCineEase::Smooth, tc / bin);
     if (bout > 0.f && tc > length - bout)
         f.playWeight = ease01(move.shot(move.size() - 1).ease, (tc - (length - bout)) / bout);
+    if (fixes != nullptr && fixes[timed].cover == SpecialCineCover::Play) f.playWeight = 1.f; // no cut-in: the play camera
     return f;
 }
 
@@ -529,10 +550,16 @@ CutsceneVec3 cineLeadHand(const CutsceneVec3& chest, const CutsceneVec3& contact
     return n > SpecialCineFraming::kHandReach ? add3(chest, scale3(d, SpecialCineFraming::kHandReach / n)) : contact;
 }
 
-// The lead's head and striking hand (its measured fist, else the model's) both inside the frame (kInFrame).
+// The lead's striking fist: the measured one, else the model's hand.
+CutsceneVec3 cineLeadFist(const SpecialCineLeadPose& pose, const CutsceneVec3& contact) {
+    return pose.fist ? pose.hand : cineLeadHand(pose.chest, contact);
+}
+
+// The lead's head and hips inside the safe frame (kSafe), its striking hand (its measured fist, else the model's)
+// inside the frame (kInFrame).
 bool cineLeadFramed(const View& v, const SpecialCineLeadPose& pose, const CutsceneVec3& contact) {
-    return cineInFrameWithin(v, pose.head, SpecialCineFraming::kInFrame) &&
-           cineInFrameWithin(v, pose.fist ? pose.hand : cineLeadHand(pose.chest, contact), SpecialCineFraming::kInFrame);
+    return cineInFrameWithin(v, pose.head, SpecialCineFraming::kSafe) && cineInFrameWithin(v, pose.hips, SpecialCineFraming::kSafe) &&
+           cineInFrameWithin(v, cineLeadFist(pose, contact), SpecialCineFraming::kInFrame);
 }
 
 // The least distance between segments p0..p1 and q0..q1 (closest points, clamped to both).
@@ -675,14 +702,49 @@ SpecialCineLeadPose cineLeadPose(const SpecialCineMove& move, const SpecialCineS
 SpecialCineProblem cineHitAt(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit, float t,
                              std::uint32_t k, const SpecialCineShotFix* fixes, const SpecialCineBody* bodies,
                              std::uint32_t count) {
-    const View v = viewOf(specialCineFrameAt(move, t, stage, fixes), stage);
+    const SpecialCineFrame f = specialCineFrameAt(move, t, stage, fixes);
+    const View v = viewOf(f, stage);
     const SpecialCineLeadPose pose = cineLeadPose(move, stage, hit, k);
+    const float ground = leadFeet(move, stage, 1.f).z;
     if (pointFraming(v, hit.at) != SpecialCineProblem::None) return SpecialCineProblem::OffFrame;
     if (segmentHitsAny(v.eye, hit.at, bodies, count)) return SpecialCineProblem::ContactHidden;
-    if (specialCineSightGap(v.eye, hit.at, pose.hips, pose.head) < SpecialCineFraming::kTorso)
-        return SpecialCineProblem::ContactBehindLead;
+    if (specialCineLeadBlocks(v.eye, hit.at, pose, ground)) return SpecialCineProblem::ContactBehindLead;
+    if (specialCineLeadBlocks(v.eye, cineLeadFist(pose, hit.at), pose, ground)) return SpecialCineProblem::FistHidden;
     if (!cineLeadFramed(v, pose, hit.at)) return SpecialCineProblem::LeadCropped;
+    if (fixes != nullptr && fixes[f.shot].moved()) {
+        // The shot shown as written then (mirrored when its fix is: a mirror is an orbit's kind): its own fix taken off
+        // (its cover stays None: it is the one shown). Measured from the point its orbit turns about, which an orbit
+        // keeps the camera's distance from: only a move off it (a raise) takes the camera out.
+        SpecialCineShotFix plain[SpecialCineMove::kMaxShots]{};
+        std::copy(fixes, fixes + move.size(), plain);
+        plain[f.shot] = SpecialCineShotFix{};
+        plain[f.shot].mirror = fixes[f.shot].mirror;
+        const SpecialCineFrame w = specialCineFrameAt(move, t, stage, plain);
+        const CutsceneVec3 pivot = orbitPivot(move, move.shot(f.shot), stage, std::clamp(t, 0.f, move.length()), w.pose.lookAt);
+        if (length3(sub3(pivot, v.eye)) > length3(sub3(pivot, w.pose.position)) * (1.f + SpecialCineFraming::kNoZoomShare))
+            return SpecialCineProblem::CameraOut;
+    }
     return SpecialCineProblem::None;
+}
+
+// The tilt (degrees) that centres the lead's head, hips and fist up and down in the frame shown at the hit under
+// `fixes`: half way between the highest and lowest of their pitches from the eye, less the look-at's. 0 without a hit.
+float cineCentringTilt(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
+                       const SpecialCineShotFix* fixes) {
+    const SpecialCineFrame f = specialCineFrameAt(move, hit.time, stage, fixes);
+    const SpecialCineLeadPose pose = cineLeadPose(move, stage, hit, 0);
+    const auto pitch = [&f](const CutsceneVec3& p) {
+        const CutsceneVec3 d = sub3(p, f.pose.position);
+        return std::atan2(d.z, std::sqrt(d.x * d.x + d.y * d.y));
+    };
+    const CutsceneVec3 points[3] = {pose.head, pose.hips, cineLeadFist(pose, hit.at)};
+    float lo = pitch(points[0]), hi = lo;
+    for (const CutsceneVec3& q : points) {
+        lo = std::min(lo, pitch(q));
+        hi = std::max(hi, pitch(q));
+    }
+    const float tilt = (0.5f * (lo + hi) - pitch(f.pose.lookAt)) * 180.f / kPi;
+    return std::isfinite(tilt) ? std::clamp(tilt, -30.f, 30.f) : 0.f;
 }
 
 } // namespace
@@ -720,10 +782,65 @@ float specialCineSightGap(const CutsceneVec3& eye, const CutsceneVec3& contact, 
     return cineSegmentGap(eye, end, hips, head);
 }
 
+bool specialCineLeadBlocks(const CutsceneVec3& eye, const CutsceneVec3& to, const SpecialCineLeadPose& pose, float groundZ) {
+    const CutsceneVec3 d = sub3(to, eye);
+    const float n = length3(d);
+    if (!(n > SpecialCineFraming::kFistRadius)) return false;
+    const CutsceneVec3 end = add3(eye, scale3(d, (n - SpecialCineFraming::kFistRadius) / n));
+    const CutsceneVec3 neck = lerp3(pose.chest, pose.head, 0.5f);
+    const CutsceneVec3 feet{pose.hips.x, pose.hips.y, std::isfinite(groundZ) ? std::min(groundZ, pose.hips.z) : pose.hips.z};
+    struct Volume {
+        CutsceneVec3 a, b;
+        float r;
+    };
+    const Volume volumes[4] = {{pose.hips, pose.chest, SpecialCineFraming::kWaistRadius},
+                               {pose.chest, neck, SpecialCineFraming::kChestRadius},
+                               {pose.head, pose.head, SpecialCineFraming::kHeadRadius},
+                               {pose.hips, feet, SpecialCineFraming::kLegRadius}};
+    for (const Volume& u : volumes) {
+        // A volume the end sits in is shrunk to put the end on its surface (seen from its own side, hidden from behind).
+        const float r = std::min(u.r, cineSegmentGap(to, to, u.a, u.b) - SpecialCineFraming::kFistRadius);
+        if (r > 0.03f && cineSegmentGap(eye, end, u.a, u.b) < r) return true;
+    }
+    return false;
+}
+
+float specialCineBurstRoom(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
+                           const SpecialCineShotFix* fixes, float* headGap) {
+    if (headGap != nullptr) *headGap = std::numeric_limits<float>::quiet_NaN();
+    if (move.empty() || !std::isfinite(hit.time)) return 0.f;
+    float times[1 + SpecialCineHit::kStills];
+    times[0] = hit.time;
+    const std::uint32_t m = 1 + specialCineHitStills(move, hit, times + 1, SpecialCineHit::kStills);
+    float room = std::numeric_limits<float>::infinity();
+    for (std::uint32_t k = 0; k < m; ++k) {
+        const float t = times[k];
+        if (!std::isfinite(t) || t > hit.time + SpecialCineFraming::kBurstLook + 1e-4f) continue;
+        const SpecialCineFrame f = specialCineFrameAt(move, t, stage, fixes);
+        if (f.playWeight >= 1.f) continue;
+        const View v = viewOf(f, stage);
+        const SpecialCineLeadPose pose = cineLeadPose(move, stage, hit, k);
+        // On screen in units of the half frame's height.
+        const CutsceneVec3 c = sub3(hit.at, v.eye), h = sub3(pose.head, v.eye);
+        const float zc = dot3(c, v.fwd), zh = dot3(h, v.fwd);
+        if (zc < 0.05f) continue;
+        float screen = SpecialCineFraming::kBurstMaxFrame;
+        if (zh > 0.05f) {
+            const float dx = dot3(h, v.right) / zh - dot3(c, v.right) / zc, dy = dot3(h, v.up) / zh - dot3(c, v.up) / zc;
+            const float gap = std::sqrt(dx * dx + dy * dy) / v.tanY;
+            if (headGap != nullptr && (!std::isfinite(*headGap) || gap < *headGap)) *headGap = gap;
+            screen = std::min(screen, gap - SpecialCineFraming::kHeadRadius / (zh * v.tanY) - SpecialCineFraming::kBurstMargin);
+        }
+        room = std::min(room, std::max(screen, 0.f) * zc * v.tanY);
+    }
+    return std::isfinite(room) ? room : 0.f;
+}
+
 SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
                                          const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count) {
     if (move.empty()) return SpecialCineProblem::None;
     if (bodies == nullptr) count = 0;
+    if (specialCineFrameAt(move, hit.time, stage, fixes).playWeight >= 1.f) return SpecialCineProblem::None; // no cut-in
     return cineHitAt(move, stage, hit, hit.time, 0, fixes, bodies, count);
 }
 
@@ -859,6 +976,7 @@ SpecialCineProblem windowProblem(const SpecialCineMove& move, std::uint32_t shot
                                  const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
                                  SpecialCineWorldTest world, void* user, const SpecialCineHit* hit, float& at) {
     const SpecialCineShot& s = move.shot(shot);
+    if (fixes != nullptr && fixes[shot].cover == SpecialCineCover::Play) return SpecialCineProblem::None; // no cut-in
     constexpr std::uint32_t n = SpecialCineFraming::kSamples;
     for (std::uint32_t k = 0; k < n; ++k) {
         // Spread over the shot, 2% in from each end (the frame at a cut belongs to the next shot).
@@ -1003,7 +1121,7 @@ SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32
     c.first = c.last = shotProblem(move, shot, stage, {}, bodies, count, world, user, hit, at);
     c.firstAt = at;
     if (c.first == SpecialCineProblem::None) return c;
-    const auto attempt = [&](const SpecialCineShotFix& fix) {
+    const auto one = [&](const SpecialCineShotFix& fix) {
         ++c.tries;
         float when = 0.f;
         c.last = shotProblem(move, shot, stage, fix, bodies, count, world, user, hit, when);
@@ -1016,6 +1134,18 @@ SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32
         c.fix = fix;
         return true;
     };
+    // Each fix as it is, then (the hit in this shot's window) tilted to centre the lead at the hit.
+    const bool hitHere = hit != nullptr && std::isfinite(hit->time) && hit->time >= move.shot(shot).in && hit->time < move.shot(shot).out;
+    const auto attempt = [&](const SpecialCineShotFix& fix) {
+        if (fix.moved() && one(fix)) return true;
+        if (!hitHere) return false;
+        SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+        fixes[shot] = fix;
+        SpecialCineShotFix tilted = fix;
+        tilted.tilt = cineCentringTilt(move, stage, *hit, fixes);
+        return std::fabs(tilted.tilt) >= 1.f && one(tilted);
+    };
+    if (attempt(SpecialCineShotFix{})) return c;
     if (tryFixes(move.shot(shot).subject != SpecialCineSubject::None, attempt)) return c;
     c.ok = false;
     return c;
@@ -1028,7 +1158,8 @@ std::uint32_t specialCineShownShot(const SpecialCineMove& move, std::uint32_t sh
         return shot + 1 < move.size() && fixes[shot + 1].cover == SpecialCineCover::None ? shot + 1 : shot;
     case SpecialCineCover::Previous:
         return shot > 0 && fixes[shot - 1].cover == SpecialCineCover::None ? shot - 1 : shot;
-    case SpecialCineCover::None: break;
+    case SpecialCineCover::None:
+    case SpecialCineCover::Play: break;
     }
     return shot;
 }
@@ -1076,11 +1207,21 @@ SpecialCineCoverCheck findCover(const SpecialCineMove& move, std::uint32_t shot,
             } else {
                 float at = 0.f;
                 if (windowProblem(move, shown, stage, before, bodies, count, world, user, hit, at) != SpecialCineProblem::None) continue;
-                const auto attempt = [&](const SpecialCineShotFix& fix) {
+                const auto one = [&](const SpecialCineShotFix& fix) {
                     ++c.tries;
                     if (alikeAnother(move, shown, stage, fix)) return false;
                     trial[shown] = fix;
                     return plays(shown, true);
+                };
+                // Each fix as it is, then tilted to centre the lead at the hit when the hit is shown by it.
+                const auto attempt = [&](const SpecialCineShotFix& fix) {
+                    if (one(fix)) return true;
+                    if (hit == nullptr || !std::isfinite(hit->time)) return false;
+                    trial[shown] = fix;
+                    if (specialCineFrameAt(move, hit->time, stage, trial).shot != shown) return false;
+                    SpecialCineShotFix tilted = fix;
+                    tilted.tilt = cineCentringTilt(move, stage, *hit, trial);
+                    return std::fabs(tilted.tilt) >= 1.f && one(tilted);
                 };
                 found = c.moved = tryFixes(true, attempt);
             }
@@ -1116,17 +1257,39 @@ std::uint32_t specialCineCutList(const SpecialCineMove& move, const SpecialCineS
     for (std::uint32_t i = 0; i < move.size(); ++i) {
         const SpecialCineShot& s = move.shot(i);
         const std::uint32_t shown = specialCineShownShot(move, i, fixes);
-        if (n > 0 && run.shot == shown) {
+        const bool play = fixes != nullptr && fixes[i].cover == SpecialCineCover::Play;
+        if (n > 0 && (play ? run.play : !run.play && run.shot == shown)) { // shots in the play camera run together
             run.out = s.out;
         } else {
             if (n > 0 && out != nullptr && n <= capacity) out[n - 1] = run;
-            run = SpecialCineCut{shown, s.in, s.out, 0};
+            run = SpecialCineCut{shown, s.in, s.out, 0, play};
             ++n;
         }
         if (shown != i) ++run.skipped;
     }
     if (n > 0 && out != nullptr && n <= capacity) out[n - 1] = run;
     return n;
+}
+
+std::uint32_t specialCinePlayFallback(const SpecialCineMove& move, std::uint32_t uncovered, SpecialCineShotFix* fixes) {
+    if (fixes == nullptr || move.empty()) return 0;
+    const std::uint32_t n = std::min<std::uint32_t>(move.size(), 32u);
+    // Where each shot's cover rests before any shot changes (a cover rests only on a shot of cover None).
+    std::uint32_t restsOn[SpecialCineMove::kMaxShots]{};
+    for (std::uint32_t i = 0; i < n; ++i) restsOn[i] = specialCineShownShot(move, i, fixes);
+    std::uint32_t set = 0;
+    const auto play = [&](std::uint32_t i) {
+        fixes[i] = SpecialCineShotFix{};
+        fixes[i].cover = SpecialCineCover::Play;
+        set |= 1u << i;
+    };
+    for (std::uint32_t i = 0; i < n; ++i)
+        if ((uncovered >> i & 1u) != 0u && fixes[i].cover == SpecialCineCover::None) play(i);
+    for (std::uint32_t i = 0; i < n; ++i)
+        if (restsOn[i] != i && (set >> restsOn[i] & 1u) != 0u) play(i);
+    const std::uint32_t last = n - 1;
+    if (n >= 2 && fixes[last - 1].cover == SpecialCineCover::Play && fixes[last].cover == SpecialCineCover::None) play(last);
+    return set;
 }
 
 // ---- the player ----
@@ -1136,6 +1299,7 @@ void SpecialCinePlayer::begin(const SpecialCineMove* move) {
     time_ = 0.f;
     framed_ = false;
     lastShot_ = 0;
+    lastPlay_ = false;
     finished_ = false;
     releaseTaken_ = false;
     std::fill(std::begin(fixes_), std::end(fixes_), SpecialCineShotFix{});
@@ -1161,12 +1325,16 @@ void SpecialCinePlayer::stop() {
 SpecialCineFrame SpecialCinePlayer::frame(const SpecialCineStage& stage) {
     if (move_ == nullptr) return {};
     SpecialCineFrame f = specialCineFrameAt(*move_, time_, stage, fixes_);
-    f.cut = framed_ ? f.shot != lastShot_ : move_->blendIn() <= 0.f;
+    // A cover rests only on a shot of no cover, so the shot shown is in the play camera only as its own Play: a cut
+    // lands on the way into or out of it, not between two shots it covers.
+    const bool play = fixes_[f.shot].cover == SpecialCineCover::Play;
+    f.cut = framed_ ? play != lastPlay_ || (!play && f.shot != lastShot_) : move_->blendIn() <= 0.f;
     if (!releaseTaken_ && time_ >= move_->release()) {
         f.release = true;
         releaseTaken_ = true;
     }
     lastShot_ = f.shot;
+    lastPlay_ = play;
     framed_ = true;
     return f;
 }

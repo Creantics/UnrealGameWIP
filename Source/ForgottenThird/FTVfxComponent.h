@@ -70,6 +70,10 @@ public:
 	// lifetimes are built for one flight runs over another (a cast's bolt over its startup). Clamped to 0.05..20.
 	void SetTimeDilation(float InDilation);
 
+	// Turns one emitter (by its Data/Vfx name) on or off: kept for the effect's next plays and set on its instance now
+	// (a replay keeps an emitter's state, so one turned off must be turned on again). Nothing before Prepare or Play.
+	void SetEmitterOn(FName InEmitter, bool bOn);
+
 	UNiagaraComponent* GetNiagara() const { return Niagara; }
 
 	// "/Game/VFX/NS_<Effect>.NS_<Effect>".

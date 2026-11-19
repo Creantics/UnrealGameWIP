@@ -1300,4 +1300,46 @@ VfxUserParameters sanitizeVfxUserParameters(VfxUserParameters p) {
     return p;
 }
 
+float vfxEmitterReach(const VfxEmitter& e, float age) {
+    if (!(age >= 0.f) || !std::isfinite(age)) return 0.f;
+    const auto top = [](const VfxCurve& curve, float x) { return std::max(curve.evaluate(x, 0.f), curve.evaluate(x, 0.999f)); };
+    const auto low = [](const VfxCurve& curve, float x) { return std::min(curve.evaluate(x, 0.f), curve.evaluate(x, 0.999f)); };
+    bool born = e.rate > 0.f;
+    for (const VfxBurst& b : e.bursts) born = born || b.time <= age;
+    if (!born) return 0.f;
+    const float lifeLo = std::max(std::min(low(e.lifetime, 0.f), low(e.lifetime, 1.f)), 1e-3f);
+    const float lifeHi = std::max(std::max(top(e.lifetime, 0.f), top(e.lifetime, 1.f)), lifeLo);
+    if (e.rate <= 0.f && age >= lifeHi) return 0.f;
+    float shape = 0.f;
+    switch (e.shape) {
+    case VfxShape::Point: break;
+    case VfxShape::Box:
+        shape = std::sqrt(e.boxHalfExtents.x * e.boxHalfExtents.x + e.boxHalfExtents.y * e.boxHalfExtents.y +
+                          e.boxHalfExtents.z * e.boxHalfExtents.z);
+        break;
+    case VfxShape::Sphere:
+    case VfxShape::Cone:
+    case VfxShape::Ring: shape = std::fabs(e.radius); break;
+    }
+    const auto len = [](const VfxVec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); };
+    const float speed = std::max({std::fabs(top(e.speed, 0.f)), std::fabs(top(e.speed, 1.f)), std::fabs(low(e.speed, 0.f)),
+                                  std::fabs(low(e.speed, 1.f))}) +
+                        std::max(len(e.velocityMin), len(e.velocityMax));
+    const float drag = std::max(e.drag, 0.f);
+    const float travel = (drag > 1e-4f ? speed * (1.f - std::exp(-drag * age)) / drag : speed * age) + 0.5f * len(e.gravity) * age * age;
+    // The largest quad edge then: the biggest start size by the size curve over the ages its lives allow.
+    const float start = std::max(top(e.startSize, 0.f), top(e.startSize, 1.f));
+    float grow = 0.f;
+    for (int k = 0; k <= 4; ++k) {
+        const float life = lifeLo + (lifeHi - lifeLo) * static_cast<float>(k) / 4.f;
+        grow = std::max(grow, top(e.sizeOverLife, std::min(age / life, 1.f)));
+    }
+    const float size = std::max(start * grow, 0.f);
+    float edge = size;
+    if (e.stretch > 0.f) edge = std::max(size, std::min(size + e.stretch * speed * std::exp(-drag * age), std::max(e.stretchMax, 1.f) * size));
+    if (e.renderMode == VfxRenderMode::Stretched) edge *= std::max(e.lengthScale, 1.f);
+    const float reach = shape + travel + 0.5f * edge;
+    return std::isfinite(reach) ? reach : 0.f;
+}
+
 } // namespace ftcore

@@ -661,3 +661,25 @@ TEST_CASE("vfx: user parameters are clamped") {
     CHECK(sanitizeVfxUserParameters(p).speedScale == 10.f);
     CHECK(sanitizeVfxUserParameters(VfxUserParameters{}).speedScale == 1.f);
 }
+
+TEST_CASE("vfx: an emitter's reach: shape, travel and half its quad, none before its burst or after its lives") {
+    VfxEffect e;
+    REQUIRE(loadEffect("crit_burst", e));
+    float reach[8] = {};
+    const char* names[] = {"flash", "ring", "sparks", "shards", "embers"};
+    for (int k = 0; k < 5; ++k) {
+        const int i = findVfxEmitter(e, names[k]);
+        REQUIRE(i >= 0);
+        reach[k] = vfxEmitterReach(e.emitters[static_cast<std::size_t>(i)], 0.05f);
+        MESSAGE(std::string_view(names[k]), " at 0.05 s: ", reach[k], " m");
+        CHECK(reach[k] > 0.f);
+        CHECK(vfxEmitterReach(e.emitters[static_cast<std::size_t>(i)], -1.f) == 0.f);
+        CHECK(vfxEmitterReach(e.emitters[static_cast<std::size_t>(i)], 100.f) == 0.f);
+    }
+    // The flash is the widest at the hit, the shards and embers the least (by hand: 1.57, 0.88, 0.74, 0.42, 0.43 m).
+    CHECK(reach[0] == doctest::Approx(1.57f).epsilon(0.1));
+    CHECK(reach[3] == doctest::Approx(0.42f).epsilon(0.15));
+    CHECK(reach[0] > reach[1]);
+    CHECK(reach[1] > reach[3]);
+    CHECK(reach[2] > reach[3]);
+}

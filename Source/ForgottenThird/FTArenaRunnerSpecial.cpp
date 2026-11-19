@@ -54,7 +54,9 @@
 #include "NiagaraSystemInstanceController.h"
 #include "RHI.h"
 #include "RenderCore.h"
+#include "ftcore/Vfx.h"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <vector>
@@ -74,6 +76,8 @@ FVector Cm(const ftcore::CutsceneVec3& M) { return FVector(M.x, M.y, M.z) * 100.
 // yet; this tracked burst stands in for it until it is.
 const FName kSpecialHitStandIn(TEXT("crit_burst"));
 constexpr float kSpecialHitScale = 1.f;
+// The burst's age its reach is read at for the cap: past the +30 ms still, so the cap holds there.
+constexpr float kSpecialBurstAge = 0.05f;
 constexpr float kSpecialHitProbeLag = 0.1f; // s on the shots' clock: the probe after the hit's
 
 // The hit's time: the move's impact row (the first FX_ row on the impact cue), else Core's impact itself.
@@ -1015,7 +1019,7 @@ uint32 UFTArenaRunner::SpecialCineBodies(int32 Target, ftcore::SpecialCineBody* 
 
 void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target, const ftcore::SpecialCineHit* Hit)
 {
-	SpecialShotsMoved = SpecialShotsBlocked = SpecialShotsSkipped = 0;
+	SpecialShotsMoved = SpecialShotsPlayed = SpecialShotsSkipped = 0;
 	ftcore::SpecialCineStage Stage = SpecialStageAt;
 	Stage.bone = {Stage.origin.x, Stage.origin.y, Stage.origin.z + 1.2f}; // the hand's not known ahead: the chest
 	ftcore::SpecialCineBody List[MaxEnemies + 1];
@@ -1039,11 +1043,12 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 	FSpecialWorld World{GetWorld(), &Params};
 	const ftcore::SpecialCineWorldTest Test = World.World ? &SpecialWorldBlocked : nullptr;
 	// Two passes: every shot's fix first, then a cover (the shot next to it played over its window, moved for it when it
-	// must be) for a shot no fix frames, tested against the fixes of the shots around it. A shot neither frames is played
-	// as written and logged.
+	// must be) for a shot no fix frames, tested against the fixes of the shots around it. A shot neither frames plays in
+	// the play camera (round 7's fallback: no cut-in), with any shot covered by it and a last shot after it.
 	ftcore::SpecialCineShotCheck Blocked[ftcore::SpecialCineMove::kMaxShots];
 	uint32 BlockedShot[ftcore::SpecialCineMove::kMaxShots];
 	uint32 BlockedCount = 0;
+	uint32 Uncovered = 0;
 	for (uint32 Shot = 0; Shot < Move.size(); ++Shot)
 	{
 		const ftcore::SpecialCineShotCheck Check = ftcore::specialCineFixShot(Move, Shot, Stage, List, Count, Test, &World, Hit);
@@ -1095,9 +1100,30 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 				Cover == ftcore::SpecialCineCover::Next ? TEXT("starting early") : TEXT("held on"));
 			continue;
 		}
-		++SpecialShotsBlocked;
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s; %u like another shot) and no shot next to it covers it: played as written."),
+		Uncovered |= 1u << Shot;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s; %u like another shot) and no shot next to it covers it: no camera passes, it plays in the play camera (no cut-in)."),
 			Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, *Last, Check.alike);
+	}
+	// Round 7's fallback: those shots in the play camera, with a shot whose cover rested on one and a last shot after one.
+	if (Uncovered != 0)
+	{
+		ftcore::SpecialCineShotFix Fallback[ftcore::SpecialCineMove::kMaxShots];
+		std::copy(SpecialPlayer.fixes(), SpecialPlayer.fixes() + Move.size(), Fallback);
+		const uint32 Played = ftcore::specialCinePlayFallback(Move, Uncovered, Fallback);
+		for (uint32 P = 0; P < Move.size(); ++P)
+		{
+			if ((Played >> P & 1u) == 0u)
+			{
+				continue;
+			}
+			SpecialPlayer.setFix(P, Fallback[P]);
+			++SpecialShotsPlayed;
+			if ((Uncovered >> P & 1u) == 0u)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s: it plays in the play camera with it (no cut-in)."), P + 1,
+					Move.shot(P).in, Move.shot(P).out, P + 1 == Move.size() ? TEXT("the last shot, after one in the play camera") : TEXT("its cover rested on a shot in the play camera"));
+			}
+		}
 	}
 	// The cut list as it will play: each shown shot with its span, and the shots it plays over.
 	ftcore::SpecialCineCut Cuts[ftcore::SpecialCineMove::kMaxShots];
@@ -1106,8 +1132,9 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 	FString CutText;
 	for (uint32 C = 0; C < CutCount; ++C)
 	{
-		CutText += FString::Printf(TEXT("%s%u %.2f-%.2f"), C ? TEXT(", ") : TEXT(""), Cuts[C].shot + 1, Cuts[C].in, Cuts[C].out);
-		if (Cuts[C].skipped)
+		CutText += FString::Printf(TEXT("%s%u %.2f-%.2f%s"), C ? TEXT(", ") : TEXT(""), Cuts[C].shot + 1, Cuts[C].in, Cuts[C].out,
+			Cuts[C].play ? TEXT(" play camera") : TEXT(""));
+		if (Cuts[C].skipped && !Cuts[C].play)
 		{
 			// The shots it plays over, by number.
 			CutText += TEXT(" (skips");
@@ -1121,8 +1148,8 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 			CutText += TEXT(")");
 		}
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special cut list: %u cuts for %u shots, %d skipped: %s."), CutCount, Move.size(),
-		SpecialShotsSkipped, *CutText);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special cut list: %u cuts for %u shots, %d skipped, %d in the play camera: %s."), CutCount, Move.size(),
+		SpecialShotsSkipped, SpecialShotsPlayed, *CutText);
 }
 
 bool UFTArenaRunner::BeginSpecial()
@@ -1248,6 +1275,13 @@ bool UFTArenaRunner::BeginSpecial()
 		}
 		SpecialHitUnseen = HitSeen != ftcore::SpecialCineProblem::None || bStillFails ? 1 : 0;
 	}
+	// The burst's cap (round 7): its on-screen size kept short of the lead's head at the hit's cut-in frames, by turning
+	// off the emitters that reach past Core's room; none in the play camera (no cut-in, no room to keep).
+	{
+		float HeadGap = 0.f;
+		const float Room = ftcore::specialCineBurstRoom(*Move, SpecialStageAt, SpecialHit, SpecialPlayer.fixes(), &HeadGap);
+		SpecialBurstCap(Room, HeadGap);
+	}
 	// The hit's effect made now, ahead of the hit: its pipeline states compile over the shots before it (the engine
 	// draws nothing of an effect whose states are still compiling). -ArenaSpecialHitLate makes it at the hit instead.
 	if (bSpecialHitFx && !bSpecialHitLate)
@@ -1315,11 +1349,11 @@ bool UFTArenaRunner::BeginSpecial()
 	}
 	const float Off = FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y));
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): the %s set (%.2f m, near within %.2f m), %u shots (%d moved, %d skipped, %d still failing; search %.2f ms), %.2f s (Core %.2f s); ")
+		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): the %s set (%.2f m, near within %.2f m), %u shots (%d moved, %d skipped, %d in the play camera, %d still failing; search %.2f ms), %.2f s (Core %.2f s); ")
 		TEXT("froze %d actors, %d effects, %d sounds, %d bodies, %d cloths in %.2f ms. ")
 		TEXT("Clamp%s: travel %.2f m (%.0f%%), back %.2f m (limited by %s); Core: from (%.2f, %.2f) to (%.2f, %.2f) m (travel share %.2f), %.2f m from the clamped end."),
 		Fight.time(), *Id, Target, Dist, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight, Set, Range, Far->nearWithin(), Move->size(), SpecialShotsMoved,
-		SpecialShotsSkipped, SpecialShotsBlocked + SpecialHitUnseen, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
+		SpecialShotsSkipped, SpecialShotsPlayed, SpecialHitUnseen, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
 		SpecialFreeze.BodyCount(), SpecialFreeze.ClothCount(), SpecialBeginMs, bSameTarget ? TEXT("") : TEXT(" (again, for Core's target)"),
 		V.travel, SpecialTravel * 100.f, SpecialBack, SpecialLimit, V.origin.x, V.origin.y, V.end.x, V.end.y, SpecialStageAt.travel, Off);
 	if (Off > 0.05f)
@@ -1619,6 +1653,77 @@ void UFTArenaRunner::PlaySpecialHit()
 	}
 }
 
+void UFTArenaRunner::SpecialBurstCap(float Room, float HeadGap)
+{
+	const FName Effect = SpecialHitEffect.IsNone() ? kSpecialHitStandIn : SpecialHitEffect;
+	if (SpecialBurstRead != Effect)
+	{
+		// Read once per effect: its emitters' names (the Niagara emitters' own) and reach.
+		SpecialBurstRead = Effect;
+		SpecialBurstCount = 0;
+		const FString File = FPaths::ProjectDir() / TEXT("Data/Vfx") / (Effect.ToString() + TEXT(".json"));
+		FString Text;
+		ftcore::VfxEffect Read;
+		std::string Error;
+		if (FFileHelper::LoadFileToString(Text, *File))
+		{
+			const FTCHARToUTF8 Utf8(*Text);
+			if (ftcore::importVfxEffect(std::string_view(Utf8.Get(), Utf8.Length()), Read, &Error))
+			{
+				for (const ftcore::VfxEmitter& E : Read.emitters)
+				{
+					if (SpecialBurstCount >= kSpecialBurstMax)
+					{
+						break;
+					}
+					SpecialBurstNames[SpecialBurstCount] = FName(UTF8_TO_TCHAR(E.name.c_str()));
+					SpecialBurstReach[SpecialBurstCount++] = ftcore::vfxEmitterReach(E, kSpecialBurstAge);
+				}
+			}
+		}
+		if (SpecialBurstCount == 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special burst cap: %s not read (%s): the burst plays whole."), *File,
+				Error.empty() ? TEXT("no file or no emitters") : UTF8_TO_TCHAR(Error.c_str()));
+		}
+	}
+	SpecialBurstOff = 0;
+	if (SpecialBurstCount == 0 || Room <= 0.f)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special burst cap: %s."),
+			Room <= 0.f ? TEXT("the hit plays in the play camera, no cut-in to keep it in: the burst plays whole") : TEXT("no emitters read"));
+		return;
+	}
+	int32 Least = 0;
+	for (int32 I = 1; I < SpecialBurstCount; ++I)
+	{
+		Least = SpecialBurstReach[I] < SpecialBurstReach[Least] ? I : Least;
+	}
+	FString Off, Kept;
+	for (int32 I = 0; I < SpecialBurstCount; ++I)
+	{
+		const bool bOff = I != Least && SpecialBurstReach[I] > Room;
+		SpecialBurstOff |= bOff ? 1u << I : 0u;
+		FString& To = bOff ? Off : Kept;
+		To += FString::Printf(TEXT("%s%s %.2f m"), To.IsEmpty() ? TEXT("") : TEXT(", "), *SpecialBurstNames[I].ToString(), SpecialBurstReach[I]);
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special burst cap: room %.2f m at the contact (the head %.2f half frames from it), reach at +%.0f ms: off %s; kept %s%s."),
+		Room, HeadGap, kSpecialBurstAge * 1000.f, Off.IsEmpty() ? TEXT("none") : *Off, *Kept,
+		SpecialBurstReach[Least] > Room ? TEXT(" (the least kept past the room: the hit must show)") : TEXT(""));
+}
+
+void UFTArenaRunner::SpecialBurstApply(UFTVfxComponent* Vfx) const
+{
+	if (!Vfx)
+	{
+		return;
+	}
+	for (int32 I = 0; I < SpecialBurstCount; ++I)
+	{
+		Vfx->SetEmitterOn(SpecialBurstNames[I], (SpecialBurstOff >> I & 1u) == 0u);
+	}
+}
+
 UFTVfxComponent* UFTArenaRunner::SpecialHitFxOn(AFTArenaFighter* Lead, const TCHAR* Why)
 {
 	UFTVfxComponent* Vfx = SpecialHitFx.Get();
@@ -1629,6 +1734,7 @@ UFTVfxComponent* UFTArenaRunner::SpecialHitFxOn(AFTArenaFighter* Lead, const TCH
 	}
 	if (Vfx || !Lead)
 	{
+		SpecialBurstApply(Vfx);
 		return Vfx;
 	}
 	const double From = FPlatformTime::Seconds();
@@ -1657,6 +1763,7 @@ UFTVfxComponent* UFTArenaRunner::SpecialHitFxOn(AFTArenaFighter* Lead, const TCH
 		Waited = FString::Printf(TEXT(", waited for its compile: ready %s"), System->IsReadyToRun() ? TEXT("yes") : TEXT("NO"));
 	}
 #endif
+	SpecialBurstApply(Vfx);
 	const UNiagaraComponent* Nc = Vfx->GetNiagara();
 	const double MadeMs = (FPlatformTime::Seconds() - From) * 1000.0;
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special hit effect %s made at %s in %.2f ms (%s the 33.3 ms frame line at 30 fps): system %s, ready to run %s%s; instance %s, its pipeline states precaching %s."),

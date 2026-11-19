@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemInstanceController.h"
 #include "TimerManager.h"
 
 #include "ftcore/Vfx.h"
@@ -108,6 +109,19 @@ bool UFTVfxComponent::Play()
 		World->GetTimerManager().SetTimer(ReplayTimer, this, &UFTVfxComponent::Replay, ReplayInterval, true);
 	}
 	return true;
+}
+
+void UFTVfxComponent::SetEmitterOn(FName InEmitter, bool bOn)
+{
+	if (!Niagara)
+	{
+		return;
+	}
+	Niagara->SetEmitterEnable(InEmitter, bOn); // the override: applied when the effect next starts
+	if (const FNiagaraSystemInstanceControllerPtr& Controller = Niagara->GetSystemInstanceController(); Controller.IsValid())
+	{
+		Controller->SetEmitterEnable(InEmitter, bOn);
+	}
 }
 
 void UFTVfxComponent::Stop()

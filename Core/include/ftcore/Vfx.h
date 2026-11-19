@@ -375,6 +375,13 @@ FTCORE_API bool importVfxEffect(std::string_view json, VfxEffect& out, std::stri
 // Index of the emitter called `name`, or -1.
 FTCORE_API int findVfxEmitter(const VfxEffect& effect, std::string_view name);
 
+// How far from the effect's origin (world metres, the component unscaled) a particle of `e` may be drawn `age` seconds
+// after a play: its shape's reach, its fastest start speed carried under drag and gravity, and half its largest quad
+// edge then (a stretched sprite at its stretch). 0 before its first burst, or (no rate) after its longest life.
+// Conservative for the base motion (the modules: velocity over life, forces, noise, are not counted): for a host
+// that must keep an effect inside a screen budget. No allocation.
+FTCORE_API float vfxEmitterReach(const VfxEmitter& e, float age);
+
 // ---- Unreal ---------------------------------------------------------------------------------------------
 
 inline constexpr float kVfxUnrealUnitsPerMetre = 100.f;
