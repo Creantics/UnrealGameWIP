@@ -77,8 +77,9 @@ private:
 	// HaloPx > 0: a soft dark halo that far round the glyphs, under the text's own dark rim.
 	void DrawText(UCanvas& Canvas, FStringView Text, EFace Face, float Px, const FVector2D& TopLeft, const FLinearColor& Color,
 		float HaloPx = 0.f) const;
-	// TS: the text's scale (S times the player's text size); S: the map's own lengths.
-	void BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS);
+	// TS: the text's scale (S times the player's text size); S: the map's own lengths. Discs: the marks drawn over the names
+	// (the cursor's ring, the player's arrow), which the cursor's own name is kept clear of.
+	void BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS, const ftcore::MapDisc* Discs, int32 NumDiscs);
 	void DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float TS);
 
 	const ftcore::MiniMapModel& Model;
@@ -126,6 +127,11 @@ private:
 	uint16 LabelPickedName = ftcore::kMapNoName;
 	float LabelTS = -1.f; // the text scale the labels were placed at
 	float LabelS = 1.f;   // and the map's own scale (the roads' ink)
+	// The marks the cursor's name was kept clear of at the last placing, and whether it had to move (or was left out): then
+	// a mark that moves places the labels again, so the name comes back as near its stretch's middle as it can.
+	ftcore::MapDisc LabelDiscs[2];
+	int32 LabelDiscCount = 0;
+	bool bCursorNameMoved = false, bCursorNameDropped = false;
 
 	ftcore::MapZoom Zoom = ftcore::MapZoom::Near;
 	ftcore::MapOverlayView View;

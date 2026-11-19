@@ -689,7 +689,7 @@ float mapUprightDeg(float deg) {
 }
 
 bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name, const MapOverlayView& v, float w, float h,
-                   MapLabel& out, float margin, float pad) {
+                   MapLabel& out, float margin, float pad, float* runPx) {
     if (name == kMapNoName) return false;
     const float x0 = margin, y0 = margin, x1 = v.screenW - margin, y1 = v.screenH - margin;
     const float bendCos = std::cos(kMapAlongBendDeg * kPi / 180.f);
@@ -795,6 +795,7 @@ bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name,
     out.h = h;
     out.name = name;
     out.fits = best >= w + 2.f * pad;
+    if (runPx) *runPx = best;
     return true;
 }
 
@@ -944,6 +945,91 @@ bool mapIsWater(const MiniMapModel& m, Vec2 p) {
     const float fx = (p.x - m.minX) / m.waterCell, fy = (p.y - m.minY) / m.waterCell;
     if (!(fx >= 0.f && fy >= 0.f && fx < static_cast<float>(m.waterW) && fy < static_cast<float>(m.waterH))) return false;
     return m.water[static_cast<std::size_t>(fy) * m.waterW + static_cast<std::size_t>(fx)] != 0;
+}
+
+bool mapLabelMeetsDisc(const MapLabel& l, float grow, const MapDisc& d) {
+    const float r = l.angleDeg * kPi / 180.f;
+    const float c = std::cos(r), s = std::sin(r);
+    const float dx = d.at.x - l.at.x, dy = d.at.y - l.at.y;
+    const float qu = std::max(std::abs(dx * c + dy * s) - (l.w * 0.5f + grow), 0.f);
+    const float qv = std::max(std::abs(-dx * s + dy * c) - (l.h * 0.5f + grow), 0.f);
+    return qu * qu + qv * qv < d.r * d.r;
+}
+
+namespace {
+// The least slide of l (px) along its own line (axis 0) or straight across it (axis 1) that clears every disc, keeps
+// the grown box whole on the screen and lies within reach: the ends of each disc's blocked slides, just outside, tried
+// nearest first, ties to `prefer`'s side. False when none does.
+bool clearSlide(const MapLabel& l, const MapDisc* discs, std::size_t count, float grow, int axis, float reach, float prefer,
+                float screenW, float screenH, Vec2& move) {
+    constexpr float kEps = 0.5f;
+    const float r = l.angleDeg * kPi / 180.f;
+    const float c = std::cos(r), s = std::sin(r);
+    const Vec2 dir = axis == 0 ? Vec2{c, s} : Vec2{-s, c};
+    const float halfA = axis == 0 ? l.w * 0.5f + grow : l.h * 0.5f + grow;
+    const float halfS = axis == 0 ? l.h * 0.5f + grow : l.w * 0.5f + grow;
+    // Disc k blocks the open interval of slides (lo, hi); empty (lo == hi) when it lies wholly beside the box's path.
+    auto blocked = [&](std::size_t k, float& lo, float& hi) {
+        const float dx = discs[k].at.x - l.at.x, dy = discs[k].at.y - l.at.y;
+        const float cu = dx * c + dy * s, cv = -dx * s + dy * c;
+        const float onAxis = axis == 0 ? cu : cv, beside = std::abs(axis == 0 ? cv : cu) - halfS;
+        const float rr = discs[k].r;
+        lo = hi = 0.f;
+        if (beside >= rr) return;
+        const float ext = beside <= 0.f ? rr : std::sqrt(rr * rr - beside * beside);
+        lo = onAxis - halfA - ext;
+        hi = onAxis + halfA + ext;
+    };
+    auto clear = [&](float t) {
+        if (std::abs(t) > reach) return false;
+        for (std::size_t k = 0; k < count; ++k) {
+            float lo = 0.f, hi = 0.f;
+            blocked(k, lo, hi);
+            if (t > lo && t < hi) return false;
+        }
+        MapLabel moved = l;
+        moved.at.x += dir.x * t;
+        moved.at.y += dir.y * t;
+        Vec2 q[4];
+        corners(moved, grow, q);
+        for (const Vec2& p : q)
+            if (p.x < kMapLabelInsetPx || p.y < kMapLabelInsetPx || p.x > screenW - kMapLabelInsetPx || p.y > screenH - kMapLabelInsetPx)
+                return false;
+        return true;
+    };
+    bool found = false;
+    float best = 0.f;
+    auto consider = [&](float t) {
+        if (found && (std::abs(t) > std::abs(best) || (std::abs(t) == std::abs(best) && t * prefer <= best * prefer))) return;
+        if (!clear(t)) return;
+        best = t;
+        found = true;
+    };
+    for (std::size_t k = 0; k < count; ++k) {
+        float lo = 0.f, hi = 0.f;
+        blocked(k, lo, hi);
+        if (lo == hi) continue;
+        consider(lo - kEps);
+        consider(hi + kEps);
+    }
+    if (found) move = Vec2{dir.x * best, dir.y * best};
+    return found;
+}
+} // namespace
+
+bool mapLabelClearOfDiscs(MapLabel& l, const MapDisc* discs, std::size_t count, float grow, float along, float across, float screenW,
+                          float screenH) {
+    bool meets = false;
+    for (std::size_t k = 0; discs && k < count && !meets; ++k) meets = mapLabelMeetsDisc(l, grow, discs[k]);
+    if (!meets) return true;
+    Vec2 move{};
+    // Along the line, right first in reading; else across it, up first (the box's own -y).
+    if (!clearSlide(l, discs, count, grow, 0, along, 1.f, screenW, screenH, move) &&
+        !clearSlide(l, discs, count, grow, 1, across, -1.f, screenW, screenH, move))
+        return false;
+    l.at.x += move.x;
+    l.at.y += move.y;
+    return true;
 }
 
 void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap, const MapLabel* blockers,

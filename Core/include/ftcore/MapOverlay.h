@@ -172,11 +172,11 @@ FTCORE_API float mapUprightDeg(float deg);
 // a run are each set on their own part. A stretch is a run of one road's pieces that
 // meet end to end, each heading within kMapAlongBendDeg of the run's first piece; its length is its chord (start to
 // end), so a lane drawn in short pieces is named along its whole straight run. fits says the stretch is at least
-// w + 2 * pad. False when no stretch of them is on screen.
+// w + 2 * pad. False when no stretch of them is on screen. runPx, when given, takes the stretch's length (px).
 inline constexpr float kMapAlongBendDeg = 12.f; // the most a piece may turn from the run's first heading
 inline constexpr float kMapAlongJoinPx = 0.5f;  // pieces closer than this end to end meet
 FTCORE_API bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uint16_t name, const MapOverlayView& v,
-                              float w, float h, MapLabel& out, float margin = 24.f, float pad = 8.f);
+                              float w, float h, MapLabel& out, float margin = 24.f, float pad = 8.f, float* runPx = nullptr);
 // Whether two labels' turned boxes, each grown by gap / 2 all round, overlap.
 FTCORE_API bool mapLabelsOverlap(const MapLabel& a, const MapLabel& b, float gap = 6.f);
 // A label's turned box grown by `grow` px all round, as its four corners (clockwise on screen from the top left of
@@ -229,6 +229,21 @@ FTCORE_API bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const
                                  std::uint16_t pickedName = kMapNoName);
 // Whether a world point is water in the model: a cell of its water grid, or inside one of its water rectangles.
 FTCORE_API bool mapIsWater(const MiniMapModel& m, Vec2 world);
+
+// A round mark on screen (px): the cursor's ring with its ticks, the player's arrow.
+struct MapDisc {
+    Vec2 at{};
+    float r = 0.f;
+};
+// Whether a label's turned box grown by `grow` px meets disc d (exactly: d's centre nearer the box than d.r).
+FTCORE_API bool mapLabelMeetsDisc(const MapLabel& l, float grow, const MapDisc& d);
+// The cursor's name kept clear of the marks drawn over it: the label as it is when its box grown by `grow` meets none of
+// `discs`; else slid along its own line the least way, up to `along` px either way; else moved straight off its line,
+// the least way to either side, up to `across` px. Every move keeps the grown box whole on the screen (kMapLabelInsetPx);
+// ties go to the reading direction (right along the line, then up across it). False, the label unchanged, when no move
+// clears every disc. Zero allocation.
+FTCORE_API bool mapLabelClearOfDiscs(MapLabel& l, const MapDisc* discs, std::size_t count, float grow, float along, float across,
+                                     float screenW, float screenH);
 
 // The placer: candidates in, the shown labels out by priority (then by input order), each kept only if it overlaps
 // nothing kept before it and no blocker (screen boxes already taken: the caption's, mapCaptionBox). `halo` px grows

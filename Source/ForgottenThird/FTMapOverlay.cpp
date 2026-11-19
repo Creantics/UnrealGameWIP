@@ -81,6 +81,10 @@ constexpr float kOvEdgePx = 70.f;         // the view pans when the cursor is th
 constexpr float kOvSignPx = 7.f;          // a sign form's glyph height (px at 1080p)
 constexpr int32 kOvSignStrokesMax = 192;  // per district name
 constexpr float kOvShear = 0.2f;          // water names lean this much (x per y)
+// The marks the cursor's name is kept clear of (px at 1080p, radius): the cursor's ring with its ticks (out to 16, a
+// pixel spare), the player's arrow (its tip).
+constexpr float kOvCursorMarkPx = 17.f;
+constexpr float kOvArrowMarkPx = 12.f;
 
 ftcore::Vec2 OvMetres(const FVector& Cm) { return {static_cast<float>(Cm.X / 100.0), static_cast<float>(Cm.Y / 100.0)}; }
 FVector2D OvV2(const ftcore::Vec2 V) { return FVector2D(V.x, V.y); }
@@ -433,6 +437,24 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY NAMES %s point_names=%d names_on_road=%d dropped=%d [%s]"),
 				kOvShotNames[Z], PointNames, OnRoad, DropTotal, *DropList);
+			// F4: the cursor's name, its halo included, under none of the marks drawn over it (on_marks=0), and whether it moved
+			// for them or was left out.
+			int32 CursorNames = 0, OnMarks = 0;
+			for (size_t I = 0; I < Placed.count; ++I)
+			{
+				const ftcore::MapLabel& L = Placed.labels[I];
+				if (L.priority != static_cast<uint8>(ftcore::MapLabelRank::Cursor))
+				{
+					continue;
+				}
+				++CursorNames;
+				for (int32 K = 0; K < LabelDiscCount; ++K)
+				{
+					OnMarks += ftcore::mapLabelMeetsDisc(L, ftcore::kMapLabelHaloPx * LabelTS, LabelDiscs[K]) ? 1 : 0;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY CURSOR %s name=%d on_marks=%d moved=%d dropped=%d marks=%d"),
+				kOvShotNames[Z], CursorNames, OnMarks, bCursorNameMoved ? 1 : 0, bCursorNameDropped ? 1 : 0, LabelDiscCount);
 			if (!bFramedReached)
 			{
 				UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY FRAME %s unreached: no allowed shift brings the land to 0.75; the best share %.3f"),
@@ -698,10 +720,16 @@ void FFTMapOverlay::DrawText(UCanvas& Canvas, FStringView Text, EFace Face, floa
 	Canvas.DrawItem(Item);
 }
 
-void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS)
+void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS, const ftcore::MapDisc* Discs, int32 NumDiscs)
 {
 	using namespace FTMapOverlayDetail;
 	Placed.count = 0;
+	LabelDiscCount = FMath::Clamp(NumDiscs, 0, static_cast<int32>(UE_ARRAY_COUNT(LabelDiscs)));
+	for (int32 K = 0; K < LabelDiscCount; ++K)
+	{
+		LabelDiscs[K] = Discs[K];
+	}
+	bCursorNameMoved = bCursorNameDropped = false;
 	if (Names.names.empty())
 	{
 		return;
@@ -744,9 +772,10 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 			H += 2.f * kOvBoxPadY * TS + (Sign > 0.f ? (kOvSignPx + kOvSignGap) * TS : 0.f);
 		}
 		ftcore::MapLabel L;
+		float Run = 0.f; // the stretch's length on screen (px)
 		if (P.along)
 		{
-			if (!ftcore::mapLabelAlong(Model, Names, P.name, View, W, H, L, 24.f * S, 8.f * S))
+			if (!ftcore::mapLabelAlong(Model, Names, P.name, View, W, H, L, 24.f * S, 8.f * S, &Run))
 			{
 				continue;
 			}
@@ -782,6 +811,19 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 		if (!ftcore::mapLabelKeepInside(L, View.screenW, View.screenH, Halo))
 		{
 			continue;
+		}
+		if (P.rank == ftcore::MapLabelRank::Cursor)
+		{
+			// The cursor's name never lies under the cursor's ring or the player's arrow, its halo included: it slides along
+			// its line (up to half its stretch, at least its own width), else steps off the line beside it.
+			const ftcore::Vec2 Home = L.at;
+			if (!ftcore::mapLabelClearOfDiscs(L, LabelDiscs, static_cast<size_t>(LabelDiscCount), Halo, FMath::Max(Run * 0.5f, W),
+					2.f * H + 32.f * S, View.screenW, View.screenH))
+			{
+				bCursorNameDropped = true;
+				continue;
+			}
+			bCursorNameMoved = L.at.x != Home.x || L.at.y != Home.y;
 		}
 		if (!P.along && P.rank == ftcore::MapLabelRank::Place)
 		{
@@ -1019,12 +1061,41 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	}
 	Canvas.DrawItem(*Geo); // never empty: the letterbox
 
-	// The labels, placed again only when the view, the zoom or the cursor's road changes.
+	// The marks drawn over the names: the cursor's ring with its ticks, and the player's arrow (the van's mark when aboard).
+	const APawn* Pawn = Hud.GetOwningPawn();
+	const AFTPartyVan* TheVan = Van.Get();
+	const bool bInVan = TheVan && TheVan->IsAboard(Cast<AFTExploreCharacter>(Pawn));
+	const AActor* Who = bInVan ? static_cast<const AActor*>(TheVan) : Pawn;
+	ftcore::MapDisc Discs[2];
+	int32 NumDiscs = 0;
+	Discs[NumDiscs++] = {{static_cast<float>(Cursor.X), static_cast<float>(Cursor.Y)}, kOvCursorMarkPx * S};
+	if (Who)
+	{
+		Discs[NumDiscs++] = {ftcore::mapOverlayToScreen(View, OvMetres(Who->GetActorLocation())), kOvArrowMarkPx * S};
+	}
+	// Whether the cursor's name must be placed again for the marks: it lies under one (the cursor moved along its road), or
+	// it was moved or left out for them and they have moved since.
+	bool bMarksMoved = NumDiscs != LabelDiscCount;
+	for (int32 K = 0; K < NumDiscs && !bMarksMoved; ++K)
+	{
+		bMarksMoved = FMath::Abs(Discs[K].at.x - LabelDiscs[K].at.x) >= 2.f || FMath::Abs(Discs[K].at.y - LabelDiscs[K].at.y) >= 2.f;
+	}
+	bool bNameUnderMark = false;
+	for (size_t I = 0; I < Placed.count && !bNameUnderMark; ++I)
+	{
+		const ftcore::MapLabel& L = Placed.labels[I];
+		for (int32 K = 0; L.priority == static_cast<uint8>(ftcore::MapLabelRank::Cursor) && K < NumDiscs && !bNameUnderMark; ++K)
+		{
+			bNameUnderMark = ftcore::mapLabelMeetsDisc(L, ftcore::kMapLabelHaloPx * LabelTS, Discs[K]);
+		}
+	}
+	// The labels, placed again only when the view, the zoom, the cursor's road or (for the cursor's name) the marks change.
 	if (LabelPicked != Picked || LabelPickedName != PickedHere || LabelZoom != Zoom || LabelView.centre.x != View.centre.x ||
 		LabelView.centre.y != View.centre.y || LabelView.mPerPx != View.mPerPx || LabelView.screenW != View.screenW ||
-		LabelView.screenH != View.screenH || LabelTS != TS || LabelS != S)
+		LabelView.screenH != View.screenH || LabelTS != TS || LabelS != S || bNameUnderMark ||
+		(bMarksMoved && (bCursorNameMoved || bCursorNameDropped)))
 	{
-		BuildLabels(Picked, PickedHere, S, TS);
+		BuildLabels(Picked, PickedHere, S, TS, Discs, NumDiscs);
 		LabelS = S;
 		LabelPicked = Picked;
 		LabelPickedName = PickedHere;
@@ -1036,7 +1107,6 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	// dark plate inside its kept box (mapCaptionBox, which no label enters), so no road line runs through it. Read each
 	// frame from where the player stands (ftcore::mapHereAt: the name of the road's part there, the district from that
 	// name's row).
-	const APawn* Pawn = Hud.GetOwningPawn();
 	uint16 HereDistrict = ftcore::kMapNoName, HereStreet = ftcore::kMapNoName;
 	if (Pawn)
 	{
@@ -1142,24 +1212,22 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 			Disc(At, 4.f * S, kOvGold);
 		}
 	}
-	const AFTPartyVan* TheVan = Van.Get();
-	const bool bInVan = TheVan && TheVan->IsAboard(Cast<AFTExploreCharacter>(Pawn));
 	if (TheVan && !bInVan)
 	{
 		const FVector2D At = Screen(TheVan->GetActorLocation());
 		AddScreenRect(*Marks, At.X - 6.f * S, At.Y - 6.f * S, At.X + 6.f * S, At.Y + 6.f * S, kOvHalo);
 		AddScreenRect(*Marks, At.X - 4.f * S, At.Y - 4.f * S, At.X + 4.f * S, At.Y + 4.f * S, kOvLabelDim);
 	}
-	if (const AActor* Who = bInVan ? static_cast<const AActor*>(TheVan) : Pawn)
+	if (Who)
 	{
 		const FVector2D At = Screen(Who->GetActorLocation()), D = Dir(Who->GetActorRotation().Yaw), N(-D.Y, D.X);
-		const float Sz = 12.f * S;
+		const float Sz = kOvArrowMarkPx * S; // its tip; the back corners are nearer
 		AddTri(*Marks, At + D * Sz, At - D * Sz * 0.6f + N * Sz * 0.65f, At - D * Sz * 0.25f, kOvHalo);
 		AddTri(*Marks, At + D * Sz, At - D * Sz * 0.25f, At - D * Sz * 0.6f - N * Sz * 0.65f, kOvHalo);
 		AddTri(*Marks, At + D * Sz * 0.8f, At - D * Sz * 0.45f + N * Sz * 0.5f, At - D * Sz * 0.15f, kOvLit);
 		AddTri(*Marks, At + D * Sz * 0.8f, At - D * Sz * 0.15f, At - D * Sz * 0.45f - N * Sz * 0.5f, kOvLit);
 	}
-	// The cursor: a thin ring with four ticks.
+	// The cursor: a thin ring with four ticks out to kOvCursorMarkPx.
 	{
 		const float R = 9.f * S, T = 1.4f * S;
 		const FLinearColor Ink(kOvCursorLabel.R, kOvCursorLabel.G, kOvCursorLabel.B, 0.9f);
@@ -1173,7 +1241,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 		}
 		for (const FVector2D U : {FVector2D(1, 0), FVector2D(-1, 0), FVector2D(0, 1), FVector2D(0, -1)})
 		{
-			AddSegment(*Marks, Cursor + U * (R + 2.f * S), Cursor + U * (R + 7.f * S), T, Ink, false);
+			AddSegment(*Marks, Cursor + U * (R + 2.f * S), Cursor + U * (kOvCursorMarkPx - 1.f) * S, T, Ink, false);
 		}
 	}
 	// The north needle, top right: a slim diamond, its north half gold.

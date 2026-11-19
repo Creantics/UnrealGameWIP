@@ -903,6 +903,65 @@ TEST_CASE("map overlay: water is a cell of the water grid or a point inside a wa
     CHECK_FALSE(mapIsWater(m, {116.f, 116.f})); // past its end (22.6 m along)
 }
 
+TEST_CASE("map overlay: a label meets a disc when the disc's centre is nearer its box than the radius, turned boxes too") {
+    const MapLabel level{{100.f, 100.f}, 0.f, 60.f, 20.f, 0, 0, true}; // x 70..130, y 90..110
+    CHECK(mapLabelMeetsDisc(level, 0.f, MapDisc{{100.f, 100.f}, 1.f}));
+    CHECK_FALSE(mapLabelMeetsDisc(level, 0.f, MapDisc{{140.f, 100.f}, 10.f})); // 10 px off the right side: touching
+    CHECK(mapLabelMeetsDisc(level, 0.f, MapDisc{{140.f, 100.f}, 10.5f}));
+    CHECK(mapLabelMeetsDisc(level, 1.f, MapDisc{{140.f, 100.f}, 10.f})); // the grow counts
+    CHECK(mapLabelMeetsDisc(level, 0.f, MapDisc{{133.f, 113.f}, 5.f}));        // 4.24 px off the corner
+    CHECK_FALSE(mapLabelMeetsDisc(level, 0.f, MapDisc{{133.f, 113.f}, 4.f})); // a box test would say yes
+    const MapLabel turned{{100.f, 100.f}, -90.f, 60.f, 20.f, 0, 0, true}; // x 90..110, y 70..130
+    CHECK(mapLabelMeetsDisc(turned, 0.f, MapDisc{{100.f, 135.f}, 6.f}));
+    CHECK_FALSE(mapLabelMeetsDisc(turned, 0.f, MapDisc{{115.f, 100.f}, 4.f}));
+}
+
+TEST_CASE("map overlay: the cursor's name slides along its line off the cursor's ring and the player's arrow, else across") {
+    const float g = kMapLabelHaloPx;
+    // Clear already: unchanged.
+    MapLabel l{{500.f, 500.f}, 0.f, 100.f, 20.f, 0, 0, true};
+    const MapDisc far[1] = {{{900.f, 500.f}, 16.f}};
+    CHECK(mapLabelClearOfDiscs(l, far, 1, g, 200.f, 60.f, 1920.f, 1080.f));
+    CHECK(l.at.x == doctest::Approx(500.f));
+    // The ring on the name, a little below its line: along, right first on a tie (53 half width + 16 ring + 0.5).
+    const MapDisc ring[1] = {{{500.f, 505.f}, 16.f}};
+    CHECK(mapLabelClearOfDiscs(l, ring, 1, g, 200.f, 60.f, 1920.f, 1080.f));
+    CHECK(l.at.x == doctest::Approx(569.5f));
+    CHECK(l.at.y == doctest::Approx(500.f));
+    CHECK_FALSE(mapLabelMeetsDisc(l, g, ring[0]));
+    // Too little room along: across, the least way (up 24.5 against down 34.5: the ring is 5 px below the line).
+    l = MapLabel{{500.f, 500.f}, 0.f, 100.f, 20.f, 0, 0, true};
+    CHECK(mapLabelClearOfDiscs(l, ring, 1, g, 60.f, 60.f, 1920.f, 1080.f));
+    CHECK(l.at.x == doctest::Approx(500.f));
+    CHECK(l.at.y == doctest::Approx(475.5f));
+    // The ring and the arrow beside it: right is blocked by the arrow, so left.
+    l = MapLabel{{500.f, 500.f}, 0.f, 100.f, 20.f, 0, 0, true};
+    const MapDisc both[2] = {{{500.f, 500.f}, 16.f}, {{560.f, 500.f}, 12.f}};
+    CHECK(mapLabelClearOfDiscs(l, both, 2, g, 200.f, 60.f, 1920.f, 1080.f));
+    CHECK(l.at.x == doctest::Approx(430.5f));
+    for (const MapDisc& d : both) CHECK_FALSE(mapLabelMeetsDisc(l, g, d));
+    // Near the left edge the nearer slide (left 59.5) leaves the screen, so right (79.5).
+    l = MapLabel{{60.f, 500.f}, 0.f, 100.f, 20.f, 0, 0, true};
+    const MapDisc edge[1] = {{{70.f, 500.f}, 16.f}};
+    CHECK(mapLabelClearOfDiscs(l, edge, 1, g, 200.f, 60.f, 1920.f, 1080.f));
+    CHECK(l.at.x == doctest::Approx(139.5f));
+    // A turned name slides along its own line: up the screen for -90 degrees.
+    l = MapLabel{{500.f, 500.f}, -90.f, 100.f, 20.f, 0, 0, true};
+    const MapDisc mid[1] = {{{500.f, 500.f}, 16.f}};
+    CHECK(mapLabelClearOfDiscs(l, mid, 1, g, 200.f, 60.f, 1920.f, 1080.f));
+    CHECK(l.at.x == doctest::Approx(500.f).epsilon(0.001));
+    CHECK(l.at.y == doctest::Approx(430.5f));
+    // No room either way on a small screen: false, unchanged. No allocation.
+    l = MapLabel{{60.f, 30.f}, 0.f, 100.f, 20.f, 0, 0, true};
+    const MapDisc small[1] = {{{60.f, 30.f}, 16.f}};
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    CHECK_FALSE(mapLabelClearOfDiscs(l, small, 1, g, 200.f, 200.f, 120.f, 60.f));
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(l.at.x == doctest::Approx(60.f));
+    CHECK(l.at.y == doctest::Approx(30.f));
+}
+
 TEST_CASE("map overlay: a label is kept inside the screen by the least move, its halo and turn counted; too big, left out") {
     const float in = kMapLabelInsetPx, g = kMapLabelHaloPx;
     auto box = [&](const MapLabel& l, float& x0, float& y0, float& x1, float& y1) {
