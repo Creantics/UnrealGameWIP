@@ -6,7 +6,9 @@
 #include "ContentStreaming.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "FTExploreCharacter.h"
 #include "FTText.h"
 #include "ForgottenThird.h"
@@ -31,7 +33,6 @@ constexpr int32 kFirstSettle = 240;
 constexpr int32 kSettle = 96;
 // Where the character stands in the stub room (floor top at z = 0, the wall at x = 850).
 const FVector kSpot(300.0, 0.0, 0.0);
-constexpr float kFov = 30.f;
 
 // A look by name among the explore character's PartyLooks, then its CastLooks (read from its config defaults).
 const FFTLeadLook* FindLook(const FString& Name)
@@ -108,11 +109,19 @@ bool AFTPoseShotsGameMode::Setup()
 	OutDir = FPaths::ConvertRelativePathToFull(OutDir);
 	IFileManager::Get().MakeDirectory(*OutDir, true);
 	FParse::Value(Cmd, TEXT("PoseSize="), Size);
+	FParse::Value(Cmd, TEXT("PoseFov="), Fov);
+	FString StaticPath;
+	const bool bStatic = FParse::Value(Cmd, TEXT("PoseStatic="), StaticPath);
 
 	FString Text;
 	std::string Error;
 	std::vector<double> ParsedTimes;
-	if (!FParse::Value(Cmd, TEXT("PoseTimes="), Text, false) || !AI::ParseTimes(TCHAR_TO_UTF8(*Text), ParsedTimes, &Error))
+	if (bStatic)
+	{
+		// A static mesh has no clip: one still per view.
+		Times.Add(0.0);
+	}
+	else if (!FParse::Value(Cmd, TEXT("PoseTimes="), Text, false) || !AI::ParseTimes(TCHAR_TO_UTF8(*Text), ParsedTimes, &Error))
 	{
 		Fail(FString::Printf(TEXT("-PoseTimes=%s: %s"), *Text, *FT::ToFString(Error.empty() ? std::string("missing") : Error)));
 		return false;
@@ -149,13 +158,6 @@ bool AFTPoseShotsGameMode::Setup()
 		}
 	}
 
-	FString ClipPath;
-	if (!FParse::Value(Cmd, TEXT("PoseClip="), ClipPath) || !(Clip = LoadObject<UAnimSequence>(nullptr, *ClipPath)))
-	{
-		Fail(FString::Printf(TEXT("-PoseClip=%s doesn't load."), *ClipPath));
-		return false;
-	}
-
 	double Yaw = 90.0;
 	FParse::Value(Cmd, TEXT("PoseYaw="), Yaw);
 	FActorSpawnParameters Spawn;
@@ -165,6 +167,18 @@ bool AFTPoseShotsGameMode::Setup()
 	Subject->SetRootComponent(Root);
 	Root->RegisterComponent();
 	Subject->SetActorTransform(FTransform(FRotator(0.0, Yaw, 0.0), FTPoseShots::kSpot));
+	if (bStatic)
+	{
+		return SetupStatic(StaticPath);
+	}
+
+	FString ClipPath;
+	if (!FParse::Value(Cmd, TEXT("PoseClip="), ClipPath) || !(Clip = LoadObject<UAnimSequence>(nullptr, *ClipPath)))
+	{
+		Fail(FString::Printf(TEXT("-PoseClip=%s doesn't load."), *ClipPath));
+		return false;
+	}
+	StillBase = Clip->GetName();
 	Body = NewObject<USkeletalMeshComponent>(Subject, TEXT("Body"));
 	Body->SetupAttachment(Root);
 	Body->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
@@ -257,13 +271,7 @@ bool AFTPoseShotsGameMode::Setup()
 		PropDesc = PropMesh->GetPathName() + TEXT(",") + PropClip->GetPathName() + (Parts.Num() >= 3 ? TEXT(",") + Parts[2] : FString());
 	}
 
-	Camera = GetWorld()->SpawnActor<ACameraActor>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
-	Camera->GetCameraComponent()->SetFieldOfView(FTPoseShots::kFov);
-	Camera->GetCameraComponent()->bConstrainAspectRatio = false;
-	if (APlayerController* Player = GetWorld()->GetFirstPlayerController())
-	{
-		Player->SetViewTarget(Camera);
-	}
+	SpawnCamera();
 	Describe = FString::Printf(TEXT("mesh=%s look=%s clip=%s prop=%s pieces=%d grooms=%d"),
 		*GetPathNameSafe(Body->GetSkeletalMeshAsset()), Look ? *Look->Name : TEXT("none"), *Clip->GetPathName(), *PropDesc, Pieces.Num(),
 		Grooms.Num());
@@ -271,8 +279,75 @@ bool AFTPoseShotsGameMode::Setup()
 	return true;
 }
 
+bool AFTPoseShotsGameMode::SetupStatic(const FString& MeshPath)
+{
+	const TCHAR* Cmd = FCommandLine::Get();
+	UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *MeshPath);
+	if (!Mesh)
+	{
+		Fail(FString::Printf(TEXT("-PoseStatic=%s doesn't load."), *MeshPath));
+		return false;
+	}
+	FParse::Value(Cmd, TEXT("PoseDist="), FixedDist);
+	FString Text;
+	if (FParse::Value(Cmd, TEXT("PoseAt="), Text, false))
+	{
+		TArray<FString> Parts;
+		Text.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() != 3 || !Parts[0].IsNumeric() || !Parts[1].IsNumeric() || !Parts[2].IsNumeric())
+		{
+			Fail(FString::Printf(TEXT("-PoseAt=%s: needs x,y,z in cm."), *Text));
+			return false;
+		}
+		AimAt = FVector(FCString::Atod(*Parts[0]), FCString::Atod(*Parts[1]), FCString::Atod(*Parts[2]));
+		bAimAt = true;
+	}
+	int32 Lod = -1;
+	FParse::Value(Cmd, TEXT("PoseLod="), Lod);
+	if (Lod >= Mesh->GetNumLODs())
+	{
+		Fail(FString::Printf(TEXT("-PoseLod=%d: %s has %d LODs."), Lod, *Mesh->GetPathName(), Mesh->GetNumLODs()));
+		return false;
+	}
+	Still = NewObject<UStaticMeshComponent>(Subject, TEXT("Still"));
+	Still->SetupAttachment(Subject->GetRootComponent());
+	Still->SetStaticMesh(Mesh);
+	if (Lod >= 0)
+	{
+		// ForcedLodModel counts from 1 (0 = the engine picks).
+		Still->SetForcedLodModel(Lod + 1);
+	}
+	Still->RegisterComponent();
+	StillBase = Mesh->GetName();
+	SpawnCamera();
+	Describe = FString::Printf(TEXT("static=%s lods=%d lod=%s nanite=%d bounds=%s cm dist=%s at=%s fov=%.0f"), *Mesh->GetPathName(),
+		Mesh->GetNumLODs(), Lod >= 0 ? *FString::FromInt(Lod) : TEXT("auto"), Mesh->IsNaniteEnabled() ? 1 : 0,
+		*Still->Bounds.GetBox().GetSize().ToString(), FixedDist > 0.0 ? *FString::Printf(TEXT("%.0f"), FixedDist) : TEXT("framed"),
+		bAimAt ? *AimAt.ToString() : TEXT("centre"), Fov);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: %s."), *Describe);
+	return true;
+}
+
+void AFTPoseShotsGameMode::SpawnCamera()
+{
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	Camera = GetWorld()->SpawnActor<ACameraActor>(FVector::ZeroVector, FRotator::ZeroRotator, Spawn);
+	Camera->GetCameraComponent()->SetFieldOfView(Fov);
+	Camera->GetCameraComponent()->bConstrainAspectRatio = false;
+	if (APlayerController* Player = GetWorld()->GetFirstPlayerController())
+	{
+		Player->SetViewTarget(Camera);
+	}
+}
+
 void AFTPoseShotsGameMode::Pose(double Seconds)
 {
+	if (!Body)
+	{
+		// A static mesh holds no pose.
+		return;
+	}
 	Body->SetPosition(static_cast<float>(Seconds), false);
 	Body->TickAnimation(0.f, false);
 	Body->RefreshBoneTransforms();
@@ -319,26 +394,34 @@ void AFTPoseShotsGameMode::Pose(double Seconds)
 
 void AFTPoseShotsGameMode::Aim(int32 View)
 {
-	// Frame the bones (body and prop) as they stand now.
+	// Frame the bones (body and prop) as they stand now, or a static mesh's bounds.
 	FBox Box(ForceInit);
-	for (USkeletalMeshComponent* C : {Body.Get(), Prop.Get()})
+	if (Still)
 	{
-		if (!C)
-		{
-			continue;
-		}
-		for (int32 B = 0; B < C->GetNumBones(); ++B)
-		{
-			Box += C->GetBoneLocation(C->GetBoneName(B));
-		}
+		Box = Still->Bounds.GetBox();
 	}
-	Box = Box.ExpandBy(FVector(18.0, 18.0, 14.0));
-	Box.Min.Z = FMath::Min(Box.Min.Z, FTPoseShots::kSpot.Z - 4.0);
-	const FVector Center = Box.GetCenter();
+	else
+	{
+		for (USkeletalMeshComponent* C : {Body.Get(), Prop.Get()})
+		{
+			if (!C)
+			{
+				continue;
+			}
+			for (int32 B = 0; B < C->GetNumBones(); ++B)
+			{
+				Box += C->GetBoneLocation(C->GetBoneName(B));
+			}
+		}
+		Box = Box.ExpandBy(FVector(18.0, 18.0, 14.0));
+		Box.Min.Z = FMath::Min(Box.Min.Z, FTPoseShots::kSpot.Z - 4.0);
+	}
+	const FVector Center = bAimAt ? Subject->GetActorTransform().TransformPosition(AimAt) : Box.GetCenter();
 	const double Radius = Box.GetExtent().Size();
-	const double Dist = Radius / FMath::Tan(FMath::DegreesToRadians(FTPoseShots::kFov * 0.5)) * 0.92;
-	// Facing: the body's +Y. A positive view yaw goes toward the character's left.
-	const FVector Facing = Body->GetComponentTransform().TransformVectorNoScale(FVector(0.0, 1.0, 0.0)).GetSafeNormal2D();
+	const double Dist = FixedDist > 0.0 ? FixedDist : Radius / FMath::Tan(FMath::DegreesToRadians(Fov * 0.5)) * 0.92;
+	// Facing: the body's (or static mesh's) +Y. A positive view yaw goes toward the character's left.
+	const USceneComponent* Front = Still ? static_cast<USceneComponent*>(Still.Get()) : static_cast<USceneComponent*>(Body.Get());
+	const FVector Facing = Front->GetComponentTransform().TransformVectorNoScale(FVector(0.0, 1.0, 0.0)).GetSafeNormal2D();
 	const FVector Dir = Facing.RotateAngleAxis(-Views[View].Yaw, FVector::UpVector);
 	const double Pitch = FMath::DegreesToRadians(Views[View].Pitch);
 	const FVector Eye = Center + (Dir * FMath::Cos(Pitch) + FVector::UpVector * FMath::Sin(Pitch)) * Dist;
@@ -396,14 +479,14 @@ void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
 		return;
 	}
 	const double T = Times[TimeIndex];
-	const FString File = OutDir / FT::ToFString(ftcore::animimport::StillName(TCHAR_TO_UTF8(*Clip->GetName()), T,
+	const FString File = OutDir / FT::ToFString(ftcore::animimport::StillName(TCHAR_TO_UTF8(*StillBase), T,
 		TCHAR_TO_UTF8(*Views[ViewIndex].Name)));
 	IFileManager::Get().Delete(*File, false, true, true);
 	if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
 	{
 		Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot %s filename=\"%s\""), *Size, *File), *GLog);
 	}
-	const double Rate = Clip->GetSamplingFrameRate().AsDecimal();
+	const double Rate = Clip ? Clip->GetSamplingFrameRate().AsDecimal() : 30.0;
 	// frame: the clip's own key, from 0 (a source scene starting at frame 1 adds 1).
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: still %s t=%.3f frame=%d view=%s yaw=%.0f pitch=%.0f %s"), *File, T,
 		ftcore::animimport::FrameAt(T, Rate), *Views[ViewIndex].Name, Views[ViewIndex].Yaw, Views[ViewIndex].Pitch, *Describe);

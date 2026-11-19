@@ -16,6 +16,11 @@
 // the distance between a body bone and a prop bone (a hand and its grip). Each still is <out>/<clip>_t<s>_<view>.png
 // and logs one line "FTPoseShots: still <file> ..." with the assets, the time and the frame. Exits 0 when every still
 // is saved, 1 when an asset doesn't load or an argument doesn't parse.
+//
+// A static mesh instead of a character (no clip, one still per view, <out>/<mesh>_t0.000_<view>.png):
+//       -PoseStatic=<static mesh> [-PoseAt=x,y,z] [-PoseDist=<cm>] [-PoseFov=<deg>] [-PoseLod=<n>] [-PoseYaw=90] [-PoseViews=...]
+// framed on the mesh bounds, or aimed at -PoseAt (cm in the mesh's own frame) from -PoseDist away. -PoseLod forces LOD n
+// (0 = LOD0); without it the engine picks by screen size. Facing is the mesh's +Y turned by -PoseYaw, as for a character.
 #include "CoreMinimal.h"
 #include "FTGameMode.h"
 #include "FTLook.h"
@@ -23,6 +28,7 @@
 class ACameraActor;
 class UAnimSequence;
 class USkeletalMeshComponent;
+class UStaticMeshComponent;
 UCLASS()
 class FORGOTTENTHIRD_API AFTPoseShotsGameMode : public AFTGameMode
 {
@@ -34,6 +40,8 @@ public:
 
 private:
 	bool Setup();
+	bool SetupStatic(const FString& MeshPath);
+	void SpawnCamera();
 	void Pose(double Seconds);
 	void Aim(int32 View);
 	void Fail(const FString& Why);
@@ -56,8 +64,17 @@ private:
 	TObjectPtr<UAnimSequence> PropClip;
 	UPROPERTY()
 	TObjectPtr<ACameraActor> Camera;
+	UPROPERTY()
+	TObjectPtr<UStaticMeshComponent> Still;
 
 	FString OutDir;
+	// The still's base name: the clip's, or the static mesh's.
+	FString StillBase;
+	float Fov = 30.f;
+	// -PoseDist (cm, 0 = frame the bounds) and -PoseAt (cm in the mesh's frame).
+	double FixedDist = 0.0;
+	FVector AimAt = FVector::ZeroVector;
+	bool bAimAt = false;
 	FString Size = TEXT("1200x1200");
 	FString Describe;
 	TArray<double> Times;
