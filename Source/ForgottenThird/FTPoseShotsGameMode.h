@@ -1,7 +1,9 @@
 #pragma once
 // Off-screen pose stills of any clip on any character: the character (a lead look from config, or a bare skeletal mesh)
 // stands in the stub room (/Game/Maps/Stub, a lit floor and wall), holds its clip at each time asked, and is shot from
-// each view, framed on its bones (and its prop's). Nothing else is in the room: no story, HUD or pawn.
+// each view, framed on its bones (and its prop's; unskinned helpers far off the body don't count) to the narrower of the
+// window's two angles, so a square still from a wide window still holds the whole body. Nothing else is in the room: no
+// story, HUD or pawn.
 //
 //   UnrealEditor-Cmd ForgottenThird.uproject "/Game/Maps/Stub?game=/Script/ForgottenThird.FTPoseShotsGameMode"
 //       -game -RenderOffScreen -unattended -nosplash -nosound
@@ -15,7 +17,8 @@
 // character's facing (+Y of its mesh, turned by -PoseYaw about Z; 90 faces the room's sun). -PoseNear logs, per time,
 // the distance between a body bone and a prop bone (a hand and its grip). Each still is <out>/<clip>_t<s>_<view>.png
 // and logs one line "FTPoseShots: still <file> ..." with the assets, the time and the frame. Exits 0 when every still
-// is saved, 1 when an asset doesn't load or an argument doesn't parse.
+// is saved, 1 when an asset doesn't load or an argument doesn't parse. Development builds only: in Shipping the class is
+// declared but its code is compiled out, so ?game= gives the plain AFTGameMode it derives from, which reads no -Pose flags.
 //
 // A static mesh instead of a character (no clip, one still per view, <out>/<mesh>_t0.000_<view>.png):
 //       -PoseStatic=<static mesh> [-PoseAt=x,y,z] [-PoseDist=<cm>] [-PoseFov=<deg>] [-PoseLod=<n>] [-PoseYaw=90] [-PoseViews=...]
@@ -91,5 +94,6 @@ private:
 	int32 Wait = 0;
 	FString Pending;
 	int32 PendingTicks = 0;
+	double AimedHalf = 0.0;  // the half angle (radians) the camera was last aimed to; the window may size after Setup's aim
 	bool bActive = false;
 };

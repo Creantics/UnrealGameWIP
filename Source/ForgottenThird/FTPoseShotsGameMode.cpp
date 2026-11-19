@@ -18,12 +18,39 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "ShaderCompiler.h"
+#include "UnrealClient.h"
 #include "UObject/UnrealType.h"
 #include "ftcore/AnimImport.h"
 
 #include <string>
 #include <vector>
+
+#if UE_BUILD_SHIPPING
+// A tool for development builds: in Shipping the class stays declared (UHT reflects it in every configuration) but none
+// of its code is compiled. Picked by ?game=, it is the plain game mode it derives from: no -Pose flag is read, nothing is
+// spawned or shot.
+AFTPoseShotsGameMode::AFTPoseShotsGameMode() = default;
+
+void AFTPoseShotsGameMode::StartPlay()
+{
+	Super::StartPlay();
+}
+
+void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+}
+#else
+AFTPoseShotsGameMode::AFTPoseShotsGameMode()
+{
+	HUDClass = nullptr;
+	DefaultPawnClass = nullptr;
+	bHostsStory = false;
+	PrimaryActorTick.bCanEverTick = true;
+}
 
 namespace FTPoseShots
 {
@@ -33,6 +60,82 @@ constexpr int32 kFirstSettle = 240;
 constexpr int32 kSettle = 96;
 // Where the character stands in the stub room (floor top at z = 0, the wall at x = 850).
 const FVector kSpot(300.0, 0.0, 0.0);
+// An unskinned bone farther than this from the skinned bones' box is left out of the frame (FrameBox).
+constexpr double kNearSkin = 40.0;
+// The framed angle has to move by more than this before Tick aims again: a window dragged to a new size would otherwise
+// aim, and wait to settle, on every tick.
+constexpr double kReaimDeg = 0.5;
+
+// The box that frames a mesh as it stands now: its skinned bones (LOD 0's sections) and any other bone within kNearSkin
+// of them. An unskinned helper left at its rest pose (an IK target, an attach point a metre off the body) would pull the
+// frame off the body; a head-top end bone stays in. Every bone when the mesh has no render data.
+FBox FrameBox(const USkeletalMeshComponent& C)
+{
+	const int32 Num = C.GetNumBones();
+	TBitArray<> Skinned(false, Num);
+	const USkeletalMesh* Mesh = C.GetSkeletalMeshAsset();
+	const FSkeletalMeshRenderData* Render = Mesh ? Mesh->GetResourceForRendering() : nullptr;
+	if (Render && Render->LODRenderData.Num() > 0)
+	{
+		for (const FSkelMeshRenderSection& Section : Render->LODRenderData[0].RenderSections)
+		{
+			for (const FBoneIndexType B : Section.BoneMap)
+			{
+				if (B < Num)
+				{
+					Skinned[B] = true;
+				}
+			}
+		}
+	}
+	FBox All(ForceInit);
+	FBox Skin(ForceInit);
+	for (int32 B = 0; B < Num; ++B)
+	{
+		const FVector P = C.GetBoneLocation(C.GetBoneName(B));
+		All += P;
+		if (Skinned[B])
+		{
+			Skin += P;
+		}
+	}
+	if (!Skin.IsValid)
+	{
+		return All;
+	}
+	const FBox Near = Skin.ExpandBy(kNearSkin);
+	FBox Box = Skin;
+	for (int32 B = 0; B < Num; ++B)
+	{
+		const FVector P = C.GetBoneLocation(C.GetBoneName(B));
+		if (!Skinned[B] && Near.IsInsideOrOn(P))
+		{
+			Box += P;
+		}
+	}
+	return Box;
+}
+
+// The game viewport's size in pixels; 0x0 before the window has one (as at StartPlay).
+FIntPoint WindowSize(const UWorld* World)
+{
+	const UGameViewportClient* Client = World ? World->GetGameViewport() : nullptr;
+	return Client && Client->Viewport ? Client->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
+}
+
+// Half of the narrower field of view in radians. The camera's FovDeg (-PoseFov, 30 by default) spans the viewport's width,
+// and a still keeps the narrower angle: a 1200x1200 still from a 1280x720 window showed about 17 degrees, not 30, and cut
+// the head and feet off.
+double HalfAngle(const UWorld* World, double FovDeg)
+{
+	double Half = FMath::DegreesToRadians(FovDeg * 0.5);
+	const FIntPoint V = WindowSize(World);
+	if (V.X > 0 && V.Y > 0 && V.Y < V.X)
+	{
+		Half = FMath::Atan(FMath::Tan(Half) * V.Y / V.X);
+	}
+	return Half;
+}
 
 // A look by name among the explore character's PartyLooks, then its CastLooks (read from its config defaults).
 const FFTLeadLook* FindLook(const FString& Name)
@@ -64,14 +167,6 @@ void Freeze(USkeletalMeshComponent& Component, UAnimSequence* Anim)
 	Component.SetPlayRate(0.f);
 }
 } // namespace FTPoseShots
-
-AFTPoseShotsGameMode::AFTPoseShotsGameMode()
-{
-	HUDClass = nullptr;
-	DefaultPawnClass = nullptr;
-	bHostsStory = false;
-	PrimaryActorTick.bCanEverTick = true;
-}
 
 void AFTPoseShotsGameMode::Fail(const FString& Why)
 {
@@ -276,6 +371,9 @@ bool AFTPoseShotsGameMode::Setup()
 		*GetPathNameSafe(Body->GetSkeletalMeshAsset()), Look ? *Look->Name : TEXT("none"), *Clip->GetPathName(), *PropDesc, Pieces.Num(),
 		Grooms.Num());
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: %s, clip %.3f s."), *Describe, Clip->GetPlayLength());
+	const FIntPoint Window = FTPoseShots::WindowSize(GetWorld());
+	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: window %dx%d, framed to %.1f degrees (camera %.0f across), stills %s."), Window.X,
+		Window.Y, FMath::RadiansToDegrees(FTPoseShots::HalfAngle(GetWorld(), Fov)) * 2.0, Fov, *Size);
 	return true;
 }
 
@@ -371,12 +469,33 @@ void AFTPoseShotsGameMode::Pose(double Seconds)
 	{
 		Box += Body->GetBoneLocation(Body->GetBoneName(B));
 	}
+	// The bones at the two ends of the box's longest axis: what stretches it.
+	const FVector BoxSize = Box.GetSize();
+	const int32 Axis = BoxSize.X >= BoxSize.Y && BoxSize.X >= BoxSize.Z ? 0 : (BoxSize.Y >= BoxSize.Z ? 1 : 2);
+	FName Low, High;
+	double LowAt = TNumericLimits<double>::Max(), HighAt = TNumericLimits<double>::Lowest();
+	for (int32 B = 0; B < Body->GetNumBones(); ++B)
+	{
+		const double At = Body->GetBoneLocation(Body->GetBoneName(B))[Axis];
+		if (At < LowAt)
+		{
+			LowAt = At;
+			Low = Body->GetBoneName(B);
+		}
+		if (At > HighAt)
+		{
+			HighAt = At;
+			High = Body->GetBoneName(B);
+		}
+	}
 	const auto Height = [this](const TCHAR* Bone)
 	{
 		return Body->GetBoneIndex(Bone) == INDEX_NONE ? -1.0 : Body->GetBoneLocation(Bone).Z - FTPoseShots::kSpot.Z;
 	};
-	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: t=%.3f pelvis z %.1f cm, head z %.1f cm, bone box %s cm."), Seconds,
-		Height(TEXT("pelvis")), Height(TEXT("head")), *Box.GetSize().ToString());
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTPoseShots: t=%.3f pelvis z %.1f cm, head z %.1f cm, bone box %s cm (%c from %s to %s), framed box %s cm."), Seconds,
+		Height(TEXT("pelvis")), Height(TEXT("head")), *BoxSize.ToString(), TEXT("XYZ")[Axis], *Low.ToString(), *High.ToString(),
+		*FTPoseShots::FrameBox(*Body).GetSize().ToString());
 	for (const TPair<FName, FName>& Pair : Near)
 	{
 		if (!Prop || Body->GetBoneIndex(Pair.Key) == INDEX_NONE || Prop->GetBoneIndex(Pair.Value) == INDEX_NONE)
@@ -394,7 +513,8 @@ void AFTPoseShotsGameMode::Pose(double Seconds)
 
 void AFTPoseShotsGameMode::Aim(int32 View)
 {
-	// Frame the bones (body and prop) as they stand now, or a static mesh's bounds.
+	// Frame the bones (body and prop) as they stand now, without far unskinned helpers (FTPoseShots::FrameBox), or a static
+	// mesh's bounds.
 	FBox Box(ForceInit);
 	if (Still)
 	{
@@ -404,13 +524,9 @@ void AFTPoseShotsGameMode::Aim(int32 View)
 	{
 		for (USkeletalMeshComponent* C : {Body.Get(), Prop.Get()})
 		{
-			if (!C)
+			if (C)
 			{
-				continue;
-			}
-			for (int32 B = 0; B < C->GetNumBones(); ++B)
-			{
-				Box += C->GetBoneLocation(C->GetBoneName(B));
+				Box += FTPoseShots::FrameBox(*C);
 			}
 		}
 		Box = Box.ExpandBy(FVector(18.0, 18.0, 14.0));
@@ -418,7 +534,8 @@ void AFTPoseShotsGameMode::Aim(int32 View)
 	}
 	const FVector Center = bAimAt ? Subject->GetActorTransform().TransformPosition(AimAt) : Box.GetCenter();
 	const double Radius = Box.GetExtent().Size();
-	const double Dist = FixedDist > 0.0 ? FixedDist : Radius / FMath::Tan(FMath::DegreesToRadians(Fov * 0.5)) * 0.92;
+	AimedHalf = FTPoseShots::HalfAngle(GetWorld(), Fov);
+	const double Dist = FixedDist > 0.0 ? FixedDist : Radius / FMath::Tan(AimedHalf) * 0.92;
 	// Facing: the body's (or static mesh's) +Y. A positive view yaw goes toward the character's left.
 	const USceneComponent* Front = Still ? static_cast<USceneComponent*>(Still.Get()) : static_cast<USceneComponent*>(Body.Get());
 	const FVector Facing = Front->GetComponentTransform().TransformVectorNoScale(FVector(0.0, 1.0, 0.0)).GetSafeNormal2D();
@@ -478,6 +595,19 @@ void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
 		}
 		return;
 	}
+	// Setup aims before the window has its size (it reads 0x0 there, so the angle falls back to the full 30 degrees and
+	// the first still came out framed too tight): aim again, and settle, whenever the framed angle has moved by more than
+	// kReaimDeg since.
+	if (const double Half = FTPoseShots::HalfAngle(GetWorld(), Fov);
+		FMath::Abs(FMath::RadiansToDegrees(Half - AimedHalf) * 2.0) > FTPoseShots::kReaimDeg)
+	{
+		const FIntPoint Window = FTPoseShots::WindowSize(GetWorld());
+		UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: window now %dx%d; aimed again, framed to %.1f degrees (was %.1f)."),
+			Window.X, Window.Y, FMath::RadiansToDegrees(Half) * 2.0, FMath::RadiansToDegrees(AimedHalf) * 2.0);
+		Aim(ViewIndex);
+		Wait = FTPoseShots::kSettle;
+		return;
+	}
 	const double T = Times[TimeIndex];
 	const FString File = OutDir / FT::ToFString(ftcore::animimport::StillName(TCHAR_TO_UTF8(*StillBase), T,
 		TCHAR_TO_UTF8(*Views[ViewIndex].Name)));
@@ -493,3 +623,4 @@ void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
 	Pending = File;
 	PendingTicks = 0;
 }
+#endif // UE_BUILD_SHIPPING
