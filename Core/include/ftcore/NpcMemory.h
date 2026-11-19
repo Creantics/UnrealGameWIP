@@ -546,7 +546,7 @@ struct NpcSaveHold {
 
     // A save's block loaded before the tables (npcSaveBlockAction Hold): held, replacing any held one.
     void hold(std::string_view saved) {
-        block.assign(saved.data(), saved.size());
+        block.assign(saved);
         holding = true;
         freshGame = false;
     }

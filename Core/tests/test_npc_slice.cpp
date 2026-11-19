@@ -237,9 +237,16 @@ TEST_CASE("npc save hold: New Game drops a held block, and a save before the tab
         CHECK(h.unreadySource() == NpcUnreadyBlock::None);
         // The autosave right after New Game, the slot still holding the old game's block: no NPC block at all.
         CHECK(npcSaveBlockToWrite(false, std::string_view{}, h.unreadyBlock(oldGame)).empty());
-        // The tables load: nothing to apply, so the world keeps its fresh baselines.
-        CHECK_FALSE(h.take(taken));
+        // The tables load (UFTNpcSubsystem::Load): whatever the hold hands over is applied. Nothing is, so the world
+        // keeps its fresh baselines.
         Town b;
+        const bool took = h.take(taken);
+        CHECK_FALSE(took);
+        if (took) {
+            NpcMemorySave read;
+            REQUIRE(decodeNpcMemorySave(taken, read));
+            CHECK(npcApplySave(*b.w, b.t, b.lines, read).unknownIds.empty());
+        }
         CHECK(npcRecall(*b.w, b.t, shop, b.t.deedIndex("delivery_made"), -1) == nullptr);
     }
     SUBCASE("New Game with nothing held: a save before the tables doesn't carry the slot's block forward") {
@@ -258,6 +265,20 @@ TEST_CASE("npc save hold: New Game drops a held block, and a save before the tab
         h.hold(oldGame);  // loaded before the tables
         CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
         CHECK(h.unreadyBlock(std::string_view{}) == oldGame);
+        // The tables take it: a save before the next load keeps the slot's block again, not none.
+        REQUIRE(h.take(taken));
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);
+        CHECK(h.unreadyBlock(oldGame) == oldGame);
+    }
+    SUBCASE("a held empty block (a save from before NPC memory) is handed over empty: the tables reset everyone") {
+        NpcSaveHold h;
+        h.hold(std::string_view{});
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
+        CHECK(h.unreadyBlock(oldGame).empty());  // a save meanwhile writes no block, not the slot's
+        taken = later;
+        REQUIRE(h.take(taken));
+        CHECK(taken.empty());
+        CHECK(npcSaveBlockAction(true, taken.empty()) == NpcSaveBlockAction::Reset);
     }
 }
 

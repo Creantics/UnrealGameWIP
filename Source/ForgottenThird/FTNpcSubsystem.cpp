@@ -61,12 +61,12 @@ void UFTNpcSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	World = MakeUnique<ftcore::NpcMemoryWorld>();
 	FString Error;
 	bool bHeld = false;
+	float HeldFor = 0.f;
 #if !UE_BUILD_SHIPPING
 	// Test runs: the tables stay unloaded, as with a missing data file, so a save run can show that an autosave made
 	// meanwhile keeps the slot's NPC block. -NpcTablesHeld=<seconds> loads them that late (game time), so a save
 	// loaded before them shows its block held, then applied.
 	const TCHAR* HeldCmd = FCommandLine::Get();
-	float HeldFor = 0.f;
 	bHeld = FParse::Value(HeldCmd, TEXT("NpcTablesHeld="), HeldFor) || FParse::Param(HeldCmd, TEXT("NpcTablesHeld"));
 	UGameInstance* HeldGI = GetGameInstance();
 	if (bHeld && HeldFor > 0.f && HeldGI)
@@ -84,7 +84,8 @@ void UFTNpcSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 #endif
 	if (bHeld)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory off: -NpcTablesHeld (the tables stay unloaded)."));
+		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory off: -NpcTablesHeld (the tables %s)."),
+			HeldFor > 0.f ? TEXT("load late, see above") : TEXT("stay unloaded"));
 	}
 	else if (!Load(Error))
 	{

@@ -182,6 +182,12 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 				{
 					return;
 				}
+				if (bTitle)
+				{
+					// The pick didn't leave the title (no save to continue, say): the run proves nothing.
+					UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN then %s skipped: still on the title."), *SaveRunThen);
+					return;
+				}
 				UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN then %s."), *SaveRunThen);
 				if (SaveRunThen == TEXT("new"))
 				{
