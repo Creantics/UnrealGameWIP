@@ -83,6 +83,7 @@ struct MapNames {
     struct Spot {
         std::uint16_t name = kMapNoName;
         Vec2 at{};
+        bool green = false; // its row's kind is open public ground (mapGreenKind): the block it stands in is a park
     };
     std::vector<Spot> places; // the rows placed at a point (x, y), in table order
     std::vector<std::uint16_t> roadName; // per model road: index into names, or kMapNoName
@@ -95,7 +96,26 @@ struct MapNames {
     std::vector<District> districts;
     std::vector<std::uint16_t> roadDistrict; // per model road: index into districts, or kMapNoName
     std::size_t unmatched = 0;
+    // Per model road: its row's own point (x, y), when the row gave one: the road's anchor on a shared run (below).
+    std::vector<Vec2> roadAnchor;
+    std::vector<std::uint8_t> roadHasAnchor;
+    // Per model road: the bounds of its centre line (x0, y0, x1, y1, engine m), measured once at load.
+    std::vector<float> roadBox;
+    // A stretch of one road that a zone row names (mapLoadNames: a shared straight run, split between the anchors).
+    struct Segment {
+        std::uint32_t road = 0;
+        float s0 = 0.f, s1 = 0.f;            // m along the road's centre line from its first point, s0 < s1
+        std::uint16_t name = kMapNoName;
+        std::uint16_t district = kMapNoName; // into districts: the zone row's own district column
+        float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f; // its bounds (engine m)
+    };
+    std::vector<Segment> segments;           // by road, then s0; never overlapping
+    std::vector<std::uint32_t> roadSegments; // per model road, plus one: its first segment (the next road's is its end)
+    std::uint16_t seaName = kMapNoName;      // the first sea, bay or harbour row's name: named once, over the open sea
 };
+// Kinds of open public ground: a block (MapLook) holding a point of one of these is a park. park, green, garden,
+// grove, lawn, orchard, cemetery, square, plaza.
+FTCORE_API bool mapGreenKind(std::string_view kind);
 // The table's x, y are plan metres (the build tables' frame) when planSide > 0, turned to engine metres with
 // massingEnginePoint; else they are read as engine metres. A district row's own x, y, when given, is its anchor.
 FTCORE_API bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNames& out, std::string* error = nullptr,
@@ -104,6 +124,35 @@ FTCORE_API bool mapLoadNames(const MiniMapModel& m, std::string_view csv, MapNam
 FTCORE_API std::uint16_t mapRoadName(const MapNames& n, int road);
 // The district of the road at index `road`: index into n.districts, or kMapNoName.
 FTCORE_API std::uint16_t mapRoadDistrict(const MapNames& n, int road);
+
+// Naming per named segment. A zone row (id Z + digits) of a road kind (mapRoadClass knows it) whose point lies within
+// kMapZoneReachM of a named road's straight run (the run rule of mapLabelAlong, on the road's own centre line: pieces
+// that each head within kMapAlongBendDeg of the run's first) shares that run with the road. The run is split between
+// its anchors, ordered along it: the road's own anchor (its row's x, y, when that lies within kMapZoneReachM of the
+// run) and each zone's point; each split falls at the midpoint between two neighbouring anchors, and each part takes its
+// anchor's name. A road with no anchor on the run keeps the half of the run away from its zones (the run's midpoint
+// splits it; several zones share their half by the same midpoint rule). The zone then names its part (a Segment) and is
+// no longer a point place; the road keeps its name elsewhere.
+inline constexpr float kMapZoneReachM = 8.f;
+// m along the road's centre line from its first point to the point of it nearest `world` (distance: how far that is).
+FTCORE_API float mapRoadAlong(const MiniMapModel& m, int road, Vec2 world, float* distance = nullptr);
+// The one rule for "the name at this point on this road", used by the labels along roads, the cursor's road name and
+// the caption: a segment's name (and its zone's district) where one covers the point, else the road's name and district.
+struct MapPlaceName {
+    std::uint16_t name = kMapNoName;     // into names
+    std::uint16_t district = kMapNoName; // into districts
+};
+FTCORE_API MapPlaceName mapNameAt(const MiniMapModel& m, const MapNames& n, int road, Vec2 world);
+// Where the player is, for the caption: the road whose centre line is nearest `world` within `reach` m (ties to the
+// higher class), and the name and district there (mapNameAt). With no road in reach: no road and no street, and the
+// district whose anchor is nearest. Zero allocation.
+inline constexpr float kMapHereReachM = 12.f;
+struct MapHere {
+    int road = -1;
+    std::uint16_t name = kMapNoName;
+    std::uint16_t district = kMapNoName;
+};
+FTCORE_API MapHere mapHereAt(const MiniMapModel& m, const MapNames& n, Vec2 world, float reach = kMapHereReachM);
 
 // A label: a box of w x h px centred at `at`, turned by `angleDeg` (screen degrees, clockwise, y down), always in
 // [-90, 90) so it reads left to right or, standing, bottom to top.
@@ -118,7 +167,9 @@ struct MapLabel {
 // An angle (screen degrees) turned by half turns into [-90, 90).
 FTCORE_API float mapUprightDeg(float deg);
 // The label along the roads named `name` at view v: on the longest stretch of their centre lines inside the screen
-// (less `margin` px all round), centred on it, turned along it, upright. A stretch is a run of one road's pieces that
+// (less `margin` px all round), centred on it, turned along it, upright. Only the parts of a road that carry the name
+// count (mapNameAt: a zone's segment carries the zone's name, the rest of the road its own), so two names that share
+// a run are each set on their own part. A stretch is a run of one road's pieces that
 // meet end to end, each heading within kMapAlongBendDeg of the run's first piece; its length is its chord (start to
 // end), so a lane drawn in short pieces is named along its whole straight run. fits says the stretch is at least
 // w + 2 * pad. False when no stretch of them is on screen.
@@ -128,15 +179,42 @@ FTCORE_API bool mapLabelAlong(const MiniMapModel& m, const MapNames& n, std::uin
                               float w, float h, MapLabel& out, float margin = 24.f, float pad = 8.f);
 // Whether two labels' turned boxes, each grown by gap / 2 all round, overlap.
 FTCORE_API bool mapLabelsOverlap(const MapLabel& a, const MapLabel& b, float gap = 6.f);
+// A label's turned box grown by `grow` px all round, as its four corners (clockwise on screen from the top left of
+// the unturned box). The host fills the halo from it, or tests a point against it.
+FTCORE_API void mapLabelCorners(const MapLabel& l, float grow, Vec2 out[4]);
+// The halo: every label's text has a band this wide (px at 1080p) in the ground's colour behind it, so no line runs
+// through a name; the placer counts it as part of the label.
+inline constexpr float kMapLabelHaloPx = 3.f;
+// Whether a label's box grown by `grow` px meets road `road`'s line as drawn at view v: each piece a box `widthPx` wide,
+// capped half that width past its points. False for a road out of range or with fewer than two points. The host keeps
+// every name but the cursor's off the cursor's lit road, which is drawn wider than the halo.
+FTCORE_API bool mapLabelOnRoad(const MiniMapModel& m, int road, const MapOverlayView& v, float widthPx, const MapLabel& l,
+                               float grow = 0.f);
+// Moves a label the least it takes for its box grown by `grow` px to lie inside the screen with kMapLabelInsetPx to
+// spare, turned boxes too. False, the label unchanged, when the grown box will not fit on the screen.
+inline constexpr float kMapLabelInsetPx = 0.5f;
+FTCORE_API bool mapLabelKeepInside(MapLabel& l, float screenW, float screenH, float grow = 0.f);
 
 // The placer: candidates in, the shown labels out by priority (then by input order), each kept only if it overlaps
-// nothing kept before it. Fixed capacity: candidates past it are dropped.
+// nothing kept before it and no blocker (screen boxes already taken: the caption's, mapCaptionBox). `halo` px grows
+// every label's box all round before the test (the halo is part of the label). Fixed capacity: candidates past it are
+// dropped.
 inline constexpr std::size_t kMaxMapLabels = 64;
 struct MapLabelSet {
     std::array<MapLabel, kMaxMapLabels> labels{};
     std::size_t count = 0;
 };
-FTCORE_API void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap = 6.f);
+FTCORE_API void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap = 6.f,
+                               const MapLabel* blockers = nullptr, std::size_t blockerCount = 0, float halo = 0.f);
+// The bottom-left caption (the player's district and street over a thin rule): where it stands and the screen box it
+// reserves, which the placer treats as taken. The text's top left is (kMapCaptionX, screenH - kMapCaptionUp) times the
+// scale; the box runs kMapCaptionPad round it, kMapCaptionW wide and kMapCaptionH tall (px at 1080p, times scale).
+inline constexpr float kMapCaptionX = 64.f;
+inline constexpr float kMapCaptionUp = 96.f;
+inline constexpr float kMapCaptionW = 520.f;
+inline constexpr float kMapCaptionH = 40.f;
+inline constexpr float kMapCaptionPad = 12.f;
+FTCORE_API MapLabel mapCaptionBox(float screenW, float screenH, float scale = 1.f);
 
 // Which names are tried at a view, best first. Ranks are MapLabel::priority (lower wins): the cursor's road, then the
 // districts (boxed, at every zoom), water, main roads, streets, places, lanes. Roads' names are set along them: main
@@ -152,8 +230,13 @@ struct MapLabelPick {
     Vec2 at{};
 };
 // The picks into out (at most cap), cursor first, then by rank, then by table order. `picked` is the cursor's road
-// (-1 none). `seen` is the caller's scratch, one byte per name (cleared here). Returns the count. Zero allocation.
+// (-1 none); `pickedName` the name at the cursor on it (mapNameAt), kMapNoName for the road's own. A zone's segment is
+// picked with its road's class, when its bounds meet the screen. `seaAt` (world m, from mapSeaLabelAt), when given and
+// the table names the sea (MapNames::seaName), sets the sea's name there once, level, at every zoom. `seen` is the
+// caller's scratch, one byte per name (cleared here). Returns the count. Zero allocation: the roads' bounds are the
+// ones measured at load (MapNames::roadBox).
 FTCORE_API std::size_t mapLabelPicks(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, int picked,
-                                     MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin = 0.f);
+                                     MapLabelPick* out, std::size_t cap, std::uint8_t* seen, float margin = 0.f,
+                                     std::uint16_t pickedName = kMapNoName, const Vec2* seaAt = nullptr);
 
 } // namespace ftcore
