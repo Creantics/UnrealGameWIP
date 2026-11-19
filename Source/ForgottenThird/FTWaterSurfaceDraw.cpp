@@ -390,7 +390,8 @@ void UFTWaterSurfaceDraw::AddFarSea(UStaticMesh& Tile, const ftcore::WaterBody& 
 	const float NoSpan[ftcore::kWaterSpanFloats] = {};
 	SetPartParams(*Mid, Body, false, NoSpan);
 	Mids.Add(Mid);
-	MidGroup.Add(MidGroup.Last());
+	const uint8 Group = MidGroup.Last(); // a copy: Add may not take a reference into the array it grows
+	MidGroup.Add(Group);
 	auto Add = [&](double S1, double S2, double D1, double D2)
 	{
 		if (S2 - S1 < 1.0 || D2 - D1 < 1.0)
