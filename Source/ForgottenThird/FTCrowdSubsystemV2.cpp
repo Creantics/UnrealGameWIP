@@ -15,6 +15,8 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "PhysicsEngine/BodyInstance.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EngineUtils.h"
@@ -208,7 +210,9 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	LoadArt();
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
 	FootSeen.Init(false, static_cast<int32>(Sim.capacity()));
+	FootSeenRender.Init(false, static_cast<int32>(Sim.capacity()));
 	FootFramesBy.Init(0, static_cast<int32>(Sim.capacity()));
+	FParse::Value(Cmd, TEXT("CrowdFootStill="), FootStillPath);
 
 	double TestAt = 20.0;
 	if (FParse::Param(Cmd, TEXT("CrowdTestFight")) || FParse::Value(Cmd, TEXT("CrowdTestFight="), TestAt))
@@ -889,6 +893,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 	}
 	Draw();
 	Shoot(World->GetFirstPlayerController(), PlayerAt);
+	FootStill(World->GetFirstPlayerController());
 
 	if (RunTime >= NextLog)
 	{
@@ -914,6 +919,8 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: members stuck (no progress for 2 s walking or backing off, 1 s running) %llu (%s); drawn members inside a massing box or on a roof %llu member-frames, %d members (%s); least distance from a drawn member to a massing box %.6f m unrounded (%s, passes at %.1f m or more; %d boxes)."),
 			C.stuck, bUnstuck ? TEXT("ok") : TEXT("FAILED"), FootFrames, FootMembers, bOutside ? TEXT("ok") : TEXT("FAILED"),
 			MinMassClear >= 1e8 ? -1.0 : MinMassClear / 100.0, bClearOfMass ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall, MassBoxes.Num());
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: by render bounds (the box the check used before; reference, not gated): %llu member-frames, %d members inside one, least distance %.6f m; of those members, re-tested against the mesh's own collision shape: %d overlapped by a 25 cm body, %d within the 0.8 m gate, of %d re-tested."),
+			FootFramesRender, FootMembersRender, MinMassClearRender >= 1e8 ? -1.0 : MinMassClearRender / 100.0, RetestInBody, RetestInGate, RetestLogged);
 		if (MinMassBox != INDEX_NONE)
 		{
 			const FMassBox& M = MassBoxes[MinMassBox];
@@ -1148,22 +1155,37 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, 50.0),
 		Feet - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery);
 	const int32 Slot = static_cast<int32>((PoolAgent[Actor] - 1) & 0xffffu);
-	int32 InBox = INDEX_NONE;
-	double InDepth = 0.0; // the deepest box it is in (cm, below 0)
+	int32 InBox = INDEX_NONE, InRender = INDEX_NONE;
+	double InDepth = 0.0, InRenderDepth = 0.0; // the deepest box it is in (cm, below 0)
 	const FIntPoint Cell(FMath::FloorToInt32(Feet.X / CrowdV2Local::kMassCell), FMath::FloorToInt32(Feet.Y / CrowdV2Local::kMassCell));
+	auto BoxOut = [&Feet](const FVector2D& C, const FVector2D& Ax, const FVector2D& Half) {
+		ftcore::crowdv2::CrowdMassBox B;
+		B.cx = C.X;
+		B.cy = C.Y;
+		B.hx = Half.X;
+		B.hy = Half.Y;
+		return ftcore::crowdv2::crowdBoxClearance(B, Ax.X, Ax.Y, Feet.X, Feet.Y);
+	};
 	if (const TArray<int32>* Near = MassGrid.Find(Cell))
 	{
 		for (const int32 b : *Near)
 		{
 			const FMassBox& M = MassBoxes[b];
+			if (Feet.Z > M.RZMin - 50.0 && Feet.Z < M.RZMax - 30.0)
+			{
+				const double R = BoxOut(M.RC, M.Ax, M.RHalf);
+				MinMassClearRender = FMath::Min(MinMassClearRender, R);
+				if (R < 0.0 && (InRender == INDEX_NONE || R < InRenderDepth))
+				{
+					InRender = b;
+					InRenderDepth = R;
+				}
+			}
 			if (Feet.Z <= M.ZMin - 50.0 || Feet.Z >= M.ZMax - 30.0)
 			{
 				continue;
 			}
-			const FVector2D D(Feet.X - M.C.X, Feet.Y - M.C.Y);
-			const double Lx = FMath::Abs(D.X * M.Ax.X + D.Y * M.Ax.Y) - M.Half.X;
-			const double Ly = FMath::Abs(-D.X * M.Ax.Y + D.Y * M.Ax.X) - M.Half.Y;
-			const double Out = Lx > 0.0 || Ly > 0.0 ? FMath::Sqrt(FMath::Square(FMath::Max(Lx, 0.0)) + FMath::Square(FMath::Max(Ly, 0.0))) : FMath::Max(Lx, Ly);
+			const double Out = BoxOut(M.C, M.Ax, M.Half);
 			if (Out < MinMassClear)
 			{
 				MinMassClear = Out;
@@ -1176,6 +1198,10 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 				InDepth = Out;
 			}
 		}
+	}
+	if (InRender != INDEX_NONE)
+	{
+		RetestFootprint(Slot, Feet, InRender, -InRenderDepth);
 	}
 	if (InBox == INDEX_NONE && !bRoof)
 	{
@@ -1228,33 +1254,148 @@ FString UFTCrowdSubsystemV2::MassBoxName(int32 Box) const
 		Mesh ? *Mesh->GetPathName() : TEXT("none"), M.Instance != INDEX_NONE ? *FString::Printf(TEXT(", instance %d"), M.Instance) : TEXT(""));
 }
 
+void UFTCrowdSubsystemV2::RetestFootprint(int32 Slot, const FVector& Feet, int32 Box, double DepthCm)
+{
+	// Inside a box's render bounds (the box the check used before): re-tested once per member against the mesh's own
+	// collision shape (its body, or its instance's): a 25 cm body round the member, and the 0.8 m gate round it.
+	++FootFramesRender;
+	if (FootSeenRender[Slot])
+	{
+		return;
+	}
+	FootSeenRender[Slot] = true;
+	++FootMembersRender;
+	const FMassBox& M = MassBoxes[Box];
+	const UStaticMeshComponent* C = M.Comp.Get();
+	const FBodyInstance* Body = nullptr;
+	if (const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C))
+	{
+		const TArray<FBodyInstance*>& Bodies = I->GetInstanceBodies();
+		Body = Bodies.IsValidIndex(M.Instance) ? Bodies[M.Instance] : nullptr;
+	}
+	else if (C)
+	{
+		Body = C->GetBodyInstance();
+	}
+	const FVector Mid = Feet + FVector(0.0, 0.0, 90.0);
+	const bool bBody = Body && Body->OverlapTest(Mid, FQuat::Identity, FCollisionShape::MakeCapsule(25.f, 90.f));
+	const bool bGate = Body && Body->OverlapTest(Mid, FQuat::Identity, FCollisionShape::MakeCapsule(static_cast<float>(CrowdV2Local::kGapWall * 100.0), 90.f));
+	++RetestLogged;
+	RetestInBody += bBody ? 1 : 0;
+	RetestInGate += bGate ? 1 : 0;
+	if (RetestLogged <= 16)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: re-test: member %d at engine (%.0f, %.0f, %.0f) cm, t=%.1f s, %.2f m inside the render bounds of box %d, %s (render centre (%.0f, %.0f) half (%.0f, %.0f); checked box %s centre (%.0f, %.0f) half (%.0f, %.0f) z %.0f to %.0f cm): against its collision shape %s: a 25 cm body overlaps it: %s; within the 0.8 m gate of it: %s."),
+			Slot, Feet.X, Feet.Y, Feet.Z, RunTime, DepthCm / 100.0, Box, *MassBoxName(Box), M.RC.X, M.RC.Y, M.RHalf.X, M.RHalf.Y,
+			M.bColl ? TEXT("(simple collision's bounds)") : TEXT("(render bounds: no simple collision)"), M.C.X, M.C.Y, M.Half.X, M.Half.Y, M.ZMin, M.ZMax,
+			Body ? TEXT("(its body)") : TEXT("(NO BODY: not tested)"), bBody ? TEXT("YES") : TEXT("no"), bGate ? TEXT("YES") : TEXT("no"));
+	}
+	// One still of the first, from 6 m out on the member's side of the box, 2.5 m up (before the fight's stills).
+	if (!FootStillPath.IsEmpty() && !bFootStillDone && FootStillTicks < 0 && ShotTicks < 0 && (TestFightAt < 0.0 || RunTime < TestFightAt - 4.0))
+	{
+		FVector2D Out(Feet.X - M.RC.X, Feet.Y - M.RC.Y);
+		if (!Out.Normalize())
+		{
+			Out = FVector2D(1.0, 0.0);
+		}
+		const FVector Eye = Feet + FVector(Out.X * 600.0, Out.Y * 600.0, 250.0);
+		const FVector Aim = Feet + FVector(0.0, 0.0, 100.0);
+		FActorSpawnParameters Spawn;
+		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		FootStillCam = GetWorld()->SpawnActor<ACameraActor>(Eye, (Aim - Eye).Rotation(), Spawn);
+		if (FootStillCam)
+		{
+			FootStillCam->GetCameraComponent()->SetFieldOfView(70.f);
+			FootStillCam->GetCameraComponent()->SetConstraintAspectRatio(false);
+			FootStillTicks = 0;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: re-test still of member %d from %s, aimed at %s."), Slot, *Eye.ToString(), *Aim.ToString());
+		}
+	}
+}
+
+void UFTCrowdSubsystemV2::FootStill(APlayerController* PC)
+{
+	if (!PC || FootStillTicks < 0 || !FootStillCam)
+	{
+		return;
+	}
+	if (PC->GetViewTarget() != FootStillCam)
+	{
+		PC->SetViewTarget(FootStillCam);
+	}
+	++FootStillTicks;
+	if (FootStillTicks == 3)
+	{
+		if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
+		{
+			Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *FootStillPath), *GLog);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: re-test still %s at t=%.1f s."), *FootStillPath, RunTime);
+		}
+	}
+	else if (FootStillTicks >= 6)
+	{
+		PC->SetViewTarget(PC->GetPawn());
+		FootStillTicks = -1;
+		bFootStillDone = true;
+	}
+}
+
 void UFTCrowdSubsystemV2::BuildMassing()
 {
-	// The buildings' massing boxes: every static mesh (and instance) tall and wide enough to be one, by its bounds.
+	// The buildings' massing boxes: every static mesh (and instance) tall and wide enough to be one by its render bounds;
+	// the box checked is ftcore's crowdMassingBox (its simple collision's bounds when it has any, else its render bounds).
 	UWorld* World = GetWorld();
-	auto Add = [this](const FBox& Local, const FTransform& X, const UStaticMeshComponent* Comp, int32 Instance)
+	int32 Colls = 0;
+	auto Add = [this, &Colls](const FBox& Local, const FBox* Coll, const FTransform& X, const UStaticMeshComponent* Comp, int32 Instance)
 	{
 		const FVector Scale = X.GetScale3D().GetAbs();
-		const FVector Half = Local.GetExtent() * Scale;
-		if (Half.Z * 2.0 < CrowdV2Local::kMassMinHeight || FMath::Min(Half.X, Half.Y) * 2.0 < CrowdV2Local::kMassMinSide || FMath::Max(Half.X, Half.Y) * 2.0 > CrowdV2Local::kMassMaxSide)
+		auto ToWorld = [&X, &Scale](const FBox& B) {
+			const FVector C = X.TransformPosition(B.GetCenter());
+			const FVector H = B.GetExtent() * Scale;
+			ftcore::crowdv2::CrowdMassBox Out;
+			Out.cx = C.X;
+			Out.cy = C.Y;
+			Out.cz = C.Z;
+			Out.hx = H.X;
+			Out.hy = H.Y;
+			Out.hz = H.Z;
+			return Out;
+		};
+		const ftcore::crowdv2::CrowdMassBox Render = ToWorld(Local);
+		const ftcore::crowdv2::CrowdMassBox Collision = Coll ? ToWorld(*Coll) : ftcore::crowdv2::CrowdMassBox{};
+		ftcore::crowdv2::CrowdMassSize Size;
+		Size.minHeight = CrowdV2Local::kMassMinHeight;
+		Size.minSide = CrowdV2Local::kMassMinSide;
+		Size.maxSide = CrowdV2Local::kMassMaxSide;
+		ftcore::crowdv2::CrowdMassBox Box;
+		if (!ftcore::crowdv2::crowdMassingBox(Render, Coll ? &Collision : nullptr, Size, Box))
 		{
 			return;
 		}
-		const FVector C = X.TransformPosition(Local.GetCenter());
 		FVector2D Ax(X.GetUnitAxis(EAxis::X).X, X.GetUnitAxis(EAxis::X).Y);
 		if (!Ax.Normalize())
 		{
 			Ax = FVector2D(1.0, 0.0);
 		}
 		FMassBox M;
-		M.C = FVector2D(C.X, C.Y);
+		M.C = FVector2D(Box.cx, Box.cy);
 		M.Ax = Ax;
-		M.Half = FVector2D(Half.X, Half.Y);
-		M.ZMin = C.Z - Half.Z;
-		M.ZMax = C.Z + Half.Z;
+		M.Half = FVector2D(Box.hx, Box.hy);
+		M.ZMin = Box.cz - Box.hz;
+		M.ZMax = Box.cz + Box.hz;
+		M.RC = FVector2D(Render.cx, Render.cy);
+		M.RHalf = FVector2D(Render.hx, Render.hy);
+		M.RZMin = Render.cz - Render.hz;
+		M.RZMax = Render.cz + Render.hz;
+		M.bColl = Coll != nullptr;
+		Colls += M.bColl ? 1 : 0;
 		M.Comp = Comp;
 		M.Instance = Instance;
 		const int32 b = MassBoxes.Add(M);
+		// Grid cells by the larger of the two boxes (both are looked up).
+		const FVector C(Render.cx, Render.cy, Render.cz);
+		const FVector2D Half(FMath::Max(Render.hx, Box.hx + FMath::Abs(Box.cx - Render.cx) + FMath::Abs(Box.cy - Render.cy)),
+			FMath::Max(Render.hy, Box.hy + FMath::Abs(Box.cx - Render.cx) + FMath::Abs(Box.cy - Render.cy)));
 		const double R = FMath::Abs(Ax.X) * Half.X + FMath::Abs(Ax.Y) * Half.Y + 100.0;
 		const double Ry = FMath::Abs(Ax.Y) * Half.X + FMath::Abs(Ax.X) * Half.Y + 100.0;
 		for (int32 cx = FMath::FloorToInt32((C.X - R) / CrowdV2Local::kMassCell); cx <= FMath::FloorToInt32((C.X + R) / CrowdV2Local::kMassCell); ++cx)
@@ -1281,6 +1422,14 @@ void UFTCrowdSubsystemV2::BuildMassing()
 				continue;
 			}
 			const FBox Local = Mesh->GetBoundingBox();
+			// Simple collision, when the mesh has any and queries use it (not complex as simple).
+			FBox CollLocal(ForceInit);
+			const UBodySetup* Body = Mesh->GetBodySetup();
+			if (Body && Body->AggGeom.GetElementCount() > 0 && Body->GetCollisionTraceFlag() != CTF_UseComplexAsSimple)
+			{
+				CollLocal = Body->AggGeom.CalcAABB(FTransform::Identity);
+			}
+			const FBox* Coll = CollLocal.IsValid ? &CollLocal : nullptr;
 			if (const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C))
 			{
 				for (int32 n = 0; n < I->GetInstanceCount(); ++n)
@@ -1288,18 +1437,18 @@ void UFTCrowdSubsystemV2::BuildMassing()
 					FTransform X;
 					if (I->GetInstanceTransform(n, X, true))
 					{
-						Add(Local, X, C, n);
+						Add(Local, Coll, X, C, n);
 					}
 				}
 			}
 			else
 			{
-				Add(Local, C->GetComponentTransform(), C, INDEX_NONE);
+				Add(Local, Coll, C->GetComponentTransform(), C, INDEX_NONE);
 			}
 		}
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide), %d grid cells."), MassBoxes.Num(),
-		CrowdV2Local::kMassMinHeight / 100.0, CrowdV2Local::kMassMinSide / 100.0, MassGrid.Num());
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide by render bounds; %d checked by their simple collision's bounds, the rest by render bounds), %d grid cells."), MassBoxes.Num(),
+		CrowdV2Local::kMassMinHeight / 100.0, CrowdV2Local::kMassMinSide / 100.0, Colls, MassGrid.Num());
 }
 
 // A knot over the gate: who stands in it (state, speed, metres from the fight), so a failed run says why.

@@ -85,6 +85,8 @@ private:
 	FViewCount CountInView(int32 Cam, TArray<uint32>* Ids) const;
 	bool Clear(const FVector& Eye, const FVector& To) const;
 	void BuildMassing();
+	void RetestFootprint(int32 Slot, const FVector& Feet, int32 Box, double DepthCm);
+	void FootStill(APlayerController* PC);
 	void LogGroundAt();
 	void LogStoppedGroup(uint32 Size) const;
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
@@ -142,8 +144,11 @@ private:
 	bool bPartyMoved = false;
 	struct FMassBox
 	{
-		FVector2D C, Ax, Half; // centre, unit x axis, half sizes (cm)
+		FVector2D C, Ax, Half; // the box checked (ftcore crowdMassingBox): centre, unit x axis, half sizes (cm)
 		double ZMin = 0.0, ZMax = 0.0;
+		FVector2D RC, RHalf;    // its render bounds (the box the check used before: logged for reference)
+		double RZMin = 0.0, RZMax = 0.0;
+		bool bColl = false;     // the box checked is the mesh's simple collision's bounds
 		TWeakObjectPtr<const UStaticMeshComponent> Comp; // what it is, for the footprint log only
 		int32 Instance = INDEX_NONE;
 	};
@@ -192,6 +197,20 @@ private:
 	TBitArray<> FootSeen;    // per sim slot
 	TArray<int32> FootFramesBy; // per sim slot (log only)
 	int32 FootLogged = 0;
+	// The same by render bounds, the box the check used before (reference only), with each member's first frame
+	// re-tested against the mesh's own collision shape; -CrowdFootStill=<png>: one still of the first.
+	uint64 FootFramesRender = 0;
+	int32 FootMembersRender = 0;
+	TBitArray<> FootSeenRender;
+	double MinMassClearRender = 1e9;
+	int32 RetestLogged = 0;
+	int32 RetestInBody = 0;   // members whose body (25 cm) overlapped the collision shape
+	int32 RetestInGate = 0;   // members within the 0.8 m gate of it
+	FString FootStillPath;
+	UPROPERTY()
+	TObjectPtr<ACameraActor> FootStillCam;
+	int32 FootStillTicks = -1;
+	bool bFootStillDone = false;
 	bool bTestDeathRaised = false;
 	ftcore::crowdv2::CrowdCounts AtTestFight;
 	uint32 FightInRange = 0; // live members within the fight start's radius when the test fight started
