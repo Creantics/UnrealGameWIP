@@ -504,6 +504,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_crowd_doors.cpp
         tests/test_crowd_views.cpp
         tests/test_crowd_massing.cpp
+        tests/test_snow_ice.cpp
         tests/test_npc_memory.cpp
         tests/test_npc_slice.cpp
         tests/test_npc_columns.cpp
