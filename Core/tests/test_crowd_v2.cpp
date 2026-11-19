@@ -1122,6 +1122,68 @@ TEST_CASE("crowd knot: backers, cowerers and runners far enough from a fight bre
         }
 }
 
+TEST_CASE("crowd knot check: the one-step close-reaction stop is not a standing knot; members who stood before still count") {
+    // A fight starts a few metres ahead of a column of walkers. On the step it is perceived each of them stops short for
+    // that step (the close-reaction stop: the reaction lands within reactCloseMax, under one step) and on the next it
+    // runs. The knot check sampled that one step and read the column as members standing in a knot.
+    CrowdGraph g;
+    REQUIRE(g.build({line({0.f, 0.f}, {80.f, 0.f})}, loose()));
+    CrowdTuning t = quiet();
+    t.reactRadius = 22.f;
+    REQUIRE(t.reactCloseMax < t.step); // the one-step stop below rests on this
+    constexpr std::uint32_t kCol = 6;
+    const Vec2 fight{45.f, 0.f};
+    auto column = [&](CrowdSim& sim, std::vector<std::uint32_t>& ids) {
+        REQUIRE(sim.init(g, t, 7));
+        sim.setPopulationFrozen(true);
+        const std::uint32_t end = nodeAt(g, {0.f, 0.f});
+        for (std::uint32_t k = 0; k < kCol; ++k) { // 0.8 m apart: all within 3 m of the middle one
+            ids.push_back(sim.spawnAt(end, 0, 0.5f, 30.f + 0.8f * static_cast<float>(k)));
+            REQUIRE(ids.back() != UINT32_MAX);
+        }
+    };
+    SUBCASE("walking on the step before: the stop is left out, for that one step only") {
+        CrowdSim sim;
+        std::vector<std::uint32_t> ids;
+        column(sim, ids);
+        run(sim, 0.5f);
+        for (const std::uint32_t i : ids) {
+            REQUIRE(sim.agent(i).state == CrowdState::Walk);
+            REQUIRE(sim.agent(i).speed > 0.05f);
+        }
+        REQUIRE(sim.largestStoppedGroup(3.f) == 0u);
+        sim.pushEvent({CrowdEventKind::FightStart, fight});
+        sim.tick(t.step, {0.f, 0.f}, {0.f, 0.f});
+        for (const std::uint32_t i : ids) { // the whole column in the close-reaction stop
+            CAPTURE(i);
+            CHECK(sim.agent(i).state == CrowdState::Walk);
+            CHECK(sim.agent(i).speed <= 0.05f);
+            CHECK(sim.agent(i).reacting);
+        }
+        CHECK(sim.largestStoppedGroup(3.f) == 0u);
+        sim.tick(t.step, {0.f, 0.f}, {0.f, 0.f});
+        for (const std::uint32_t i : ids) { // reacted on the next step: the stop lasted one step
+            CAPTURE(i);
+            CHECK(sim.agent(i).state != CrowdState::Walk);
+            CHECK_FALSE(sim.agent(i).reacting);
+        }
+    }
+    SUBCASE("control: walkers who had not moved yet when the fight came still count as standing") {
+        CrowdSim sim;
+        std::vector<std::uint32_t> ids;
+        column(sim, ids);
+        sim.pushEvent({CrowdEventKind::FightStart, fight}); // perceived on their first step, before any walking
+        sim.tick(t.step, {0.f, 0.f}, {0.f, 0.f});
+        for (const std::uint32_t i : ids) {
+            CAPTURE(i);
+            CHECK(sim.agent(i).state == CrowdState::Walk);
+            CHECK(sim.agent(i).speed <= 0.05f);
+            CHECK_FALSE(sim.agent(i).reacting);
+        }
+        CHECK(sim.largestStoppedGroup(3.f) == kCol);
+    }
+}
+
 TEST_CASE("crowd on a real street table (opt-in)") {
     const std::string path = envText("FT_CROWD_STREETS");
     if (path.empty()) return;
@@ -1314,17 +1376,17 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
                         if (!fightAt.empty() && grp > 3u && grp > groupWorst) {
                             for (std::uint32_t m = 0; m < sim.capacity(); ++m) {
                                 const CrowdAgentView& a = sim.agent(m);
-                                if (!a.live || a.indoors || a.speed > 0.05f) continue;
+                                if (!a.live || a.indoors || a.reacting || a.speed > 0.05f) continue;
                                 std::uint32_t near = 0;
                                 for (std::uint32_t o = 0; o < sim.capacity(); ++o) {
                                     const CrowdAgentView& b = sim.agent(o);
-                                    near += o != m && b.live && !b.indoors && b.speed <= 0.05f && dist(a.pos, b.pos) < 3.f;
+                                    near += o != m && b.live && !b.indoors && !b.reacting && b.speed <= 0.05f && dist(a.pos, b.pos) < 3.f;
                                 }
                                 if (near + 1 < grp) continue;
                                 std::printf("crowd knot seed %u step %d: %u standing round %u:", seed, stepAll, grp, m);
                                 for (std::uint32_t o = 0; o < sim.capacity(); ++o) {
                                     const CrowdAgentView& b = sim.agent(o);
-                                    if (!b.live || b.indoors || b.speed > 0.05f || dist(a.pos, b.pos) >= 3.f) continue;
+                                    if (!b.live || b.indoors || b.reacting || b.speed > 0.05f || dist(a.pos, b.pos) >= 3.f) continue;
                                     const std::string_view nm = crowdStateName(b.state);
                                     std::printf(" [%u %.*s%s fear %.2f, %.1f m from the fight]", o, static_cast<int>(nm.size()), nm.data(),
                                                 b.cornered ? " cornered" : "", static_cast<double>(b.fear), static_cast<double>(dist(b.pos, fight)));

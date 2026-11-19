@@ -1636,7 +1636,8 @@ void UFTCrowdSubsystemV2::BuildMassing()
 // A knot over the gate: who stands in it (state, speed, metres from the fight), so a failed run says why.
 void UFTCrowdSubsystemV2::LogStoppedGroup(uint32 Size) const
 {
-	auto Stopped = [](const ftcore::crowdv2::CrowdAgentView& V) { return V.live && !V.indoors && V.speed <= 0.05f; };
+	// Core's rule (largestStoppedGroup): the one-step close-reaction stop is not standing.
+	auto Stopped = [](const ftcore::crowdv2::CrowdAgentView& V) { return V.live && !V.indoors && !V.reacting && V.speed <= 0.05f; };
 	const ftcore::Vec2 Fight = CrowdV2Local::ToSim(TestFightPoint);
 	for (uint32 i = 0; i < Sim.capacity(); ++i)
 	{

@@ -287,6 +287,7 @@ struct CrowdAgentView {
     bool drawn = false;
     bool cornered = false;  // cowering at the far end of a dead end with no way out past the threat, facing away
     bool indoors = false;   // inside a building (state Indoors, past its door): not drawn, pos is the door
+    bool reacting = false;  // a walker stopped this one step for a fight close by, walking the step before (it reacts next)
     CrowdState state = CrowdState::Free;
     CrowdAnim anim = CrowdAnim::Idle;
     Vec2 pos, prevPos;      // this step's and the last step's (lerp by stepAlpha())
@@ -458,7 +459,8 @@ public:
     FTCORE_API bool inView(Vec2 p, float extraDeg = 0.f, float extraRange = 0.f) const;
     // S-366: in a view that did not just cut.
     FTCORE_API bool inSteadyView(Vec2 p, float extraDeg = 0.f, float extraRange = 0.f) const;
-    // S-332: the most stopped members within r of one member (itself included); members behind doors left out.
+    // S-332: the most stopped members within r of one member (itself included); members behind doors left out, and
+    // walkers in the one-step close-reaction stop (view.reacting: walking the step before, running the step after).
     FTCORE_API std::uint32_t largestStoppedGroup(float r) const;
     // S-332: live members drawn in a run pose while moving slower than walking speed (gate 0).
     FTCORE_API std::uint32_t runPoseSlow() const;
@@ -506,6 +508,7 @@ private:
         float stuckTime = 0.f;
         bool stuckTurned = false;    // blocked a second: already turned back or stopped
         bool hold = false;           // backing off or running with nowhere farther to go: stands until the next plan
+        bool reactStop = false;      // this step's stop is the close-reaction one alone (see CrowdAgentView::reacting)
         bool brace = false;          // cornered (no plan): runs to the far end of its dead end, then cowers there
         int braceSlot = -1;          // >= 0: its own spot at that end (rows back from the end, across the width)
         std::int32_t door = -1;      // Indoors: the door it uses

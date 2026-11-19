@@ -1031,9 +1031,12 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         break;
     default: break;
     }
-    if (a.hold) speed = 0.f;
     // A fight close by and about to react: it stops short where it is rather than walk on towards it.
     const bool startled = a.pend && a.pendClose && a.state == CrowdState::Walk;
+    // That stop alone, for one step: not held, and walking the step before (a.speed is still that step's). A member who
+    // stood already, or a stop that lasts past one step, is not this.
+    a.reactStop = startled && !a.hold && speed > 0.f && a.speed > 0.05f;
+    if (a.hold) speed = 0.f;
     if (startled) speed = 0.f;
     // Moving away from the threat: keep the far end ahead while backing off or running before a plan.
     const bool away = a.state == CrowdState::BackAway || (a.state == CrowdState::Flee && a.pathLen == 0 && a.stopAlong < 0.f) ||
@@ -1353,7 +1356,7 @@ bool CrowdSim::inView(Vec2 p, float extraDeg, float extraRange) const {
 }
 
 static bool stoppedMember(const CrowdAgentView& v) {
-    return v.live && !v.indoors && v.speed <= 0.05f;
+    return v.live && !v.indoors && !v.reacting && v.speed <= 0.05f;
 }
 
 std::uint32_t CrowdSim::largestStoppedGroup(float r) const {
@@ -1468,6 +1471,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.state = a.state;
     v.cornered = a.state == CrowdState::Cower && a.brace && a.hold;
     v.indoors = a.state == CrowdState::Indoors && a.doorPhase == 2;
+    v.reacting = a.reactStop && a.state == CrowdState::Walk && a.speed <= 0.05f;
     v.pos = a.pos;
     v.prevPos = a.prev;
     v.odo = a.odo;
