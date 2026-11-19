@@ -63,9 +63,11 @@ constexpr double kTestFightLength = 10.0;
 constexpr float kFirstSecondPath = 1.5f;   // m
 constexpr float kFirstSecondRadial = 0.3f; // m
 constexpr double kTestStrikeEvery = 0.5;
-// S-271 gates: two members at least this far apart and this far inside the frontage (m), every frame.
+// S-271 gates: two members at least this far apart and this far inside the frontage (m), every frame. The spec: "nobody
+// nearer the frontage than wallInset" (0.8 m), so the wall gate passes at 0.8 m or more, unrounded, with no tolerance,
+// in both its checks (the least wall clearance and the least distance to a massing box), compared in double metres.
 constexpr float kGapPair = 0.6f;
-constexpr float kGapWall = 0.8f;
+constexpr double kGapWall = 0.8;
 // The stills' cameras: this far back from the fight point and this high (cm); a member is this tall (cm) and the nearest
 // in sight must stand at least this many px high in a 1600x900 still.
 constexpr double kCamBack[] = {1350.0, 1200.0, 1500.0};
@@ -883,8 +885,8 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			C.maxFleeEntries, C.maxPlans, bSteady ? TEXT("steady") : TEXT("FLIP-FLOP"));
 		const bool bUnstuck = C.stuck == 0;
 		const bool bOutside = FootFrames == 0;
-		const bool bClearOfMass = MinMassClear >= CrowdV2Local::kGapWall * 100.0;
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: members stuck (no progress for 2 s walking or backing off, 1 s running) %llu (%s); drawn members inside a massing box or on a roof %llu member-frames, %d members (%s); least distance from a drawn member to a massing box %.2f m (%s, gate %.1f m; %d boxes)."),
+		const bool bClearOfMass = MinMassClear / 100.0 >= CrowdV2Local::kGapWall;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: members stuck (no progress for 2 s walking or backing off, 1 s running) %llu (%s); drawn members inside a massing box or on a roof %llu member-frames, %d members (%s); least distance from a drawn member to a massing box %.6f m unrounded (%s, passes at %.1f m or more; %d boxes)."),
 			C.stuck, bUnstuck ? TEXT("ok") : TEXT("FAILED"), FootFrames, FootMembers, bOutside ? TEXT("ok") : TEXT("FAILED"),
 			MinMassClear >= 1e8 ? -1.0 : MinMassClear / 100.0, bClearOfMass ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall, MassBoxes.Num());
 		if (MinMassBox != INDEX_NONE)
@@ -906,8 +908,8 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: footprint member-frames by member: %s."), *PerMember);
 		}
 		const bool bPairs = RunMinPair >= CrowdV2Local::kGapPair;
-		const bool bWalls = RunMinWall >= CrowdV2Local::kGapWall - 0.01f;
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.2f m (%s, gate %.1f m), every frame, every state."),
+		const bool bWalls = static_cast<double>(RunMinWall) >= CrowdV2Local::kGapWall;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.6f m unrounded (%s, passes at %.1f m or more), every frame, every state."),
 			RunMinPair, bPairs ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapPair, RunMinWall, bWalls ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall);
 		// S-332: no run pose below walking speed, no knot of more than three standing within 3 m, nobody popping in or out
 		// in a camera's view within 40 m.
