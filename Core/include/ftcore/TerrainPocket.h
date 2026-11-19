@@ -200,8 +200,8 @@ struct FloatSpec {
     // "brace": spanned between the posts they sit in).
     bool deckPosts = false;
     double postSpacing = 6.0;   // m, the most between neighbouring posts' centres
-    double postSize = 1.0;      // m, a post's side
-    double braceSize = 0.3;     // m, a brace's side
+    double postSize = 0.25;     // m, a post's side (a timber post, 2026-11-19 ruling: about 20-30 cm)
+    double braceSize = 0.12;    // m, a brace's side
 };
 
 // The furthest the box may reach past its outermost held point under spanRule: its kind's own eave (kindEaves, up to its

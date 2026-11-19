@@ -23,6 +23,8 @@
 #include "ftcore/Roads.h"
 #include "ftcore/TerrainPocket.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -235,9 +237,26 @@ int main(int argc, char** argv) {
            " lowered, " + std::to_string(st.underBoxes) + " under-boxes, " + std::to_string(st.snapped) + " snapped, " +
            std::to_string(st.dropped) + " dropped, " + std::to_string(st.piersRaised) + " piers raised, " + std::to_string(st.endPosts) +
            " bridges end-posted, " + std::to_string(st.left) + " left; " + std::to_string(plan.added.size()) + " boxes added\n";
-    if (deckPosts)
+    if (deckPosts) {
         out += "deck posts: " + std::to_string(st.posted) + " decks, " + std::to_string(st.posts) + " posts, " + std::to_string(st.braces) +
                " braces\n";
+        // Level posts are stood on end as cubes, sloped ones (a ramp's) built in that frame: both carry the grain up.
+        std::size_t level = 0, sloped = 0;
+        const MassingBox* tallest = nullptr;
+        double rise = 0.0;
+        for (const MassingBox& b : plan.added) {
+            if (b.id.rfind("PL-D-", 0) != 0) continue;
+            ++(b.sloped ? sloped : level);
+            if (!tallest || b.z1 - b.z0 > tallest->z1 - tallest->z0) tallest = &b;
+            if (b.sloped) rise = std::max(rise, std::fabs(b.slopeTo - b.slopeFrom));
+        }
+        out += "deck posts: " + std::to_string(level) + " level, " + std::to_string(sloped) + " sloped (top rise up to " + num(rise, 2) +
+               " m)";
+        if (tallest)
+            out += "; tallest " + tallest->id + " " + num(tallest->sx, 2) + " x " + num(tallest->sy, 2) + " x " +
+                   num(tallest->z1 - tallest->z0, 2) + " m at " + num(tallest->cx, 1) + "," + num(tallest->cy, 1);
+        out += "\n";
+    }
     std::vector<MassingBox> all;
     std::vector<bool> inc;
     applyFoundations(boxes, visible, plan, all, inc);

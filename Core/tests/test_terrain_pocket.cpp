@@ -701,8 +701,8 @@ TEST_CASE("deck posts: off, a deck with no pier to raise is left as before; on, 
     CHECK(std::string(floatFixName(FloatFix::Posts)) == "posts");
     CHECK(st.left == 0);
     CHECK(st.posted == 1);
-    // Six bents 5.66 m apart along it, two rows 1.5 m off its middle (its 3.5 m eave less half a metre in from each side);
-    // the west bent stands on the pier, so it is left out.
+    // Six bents 5.81 m apart along it (0.25 m posts, their faces flush with its ends), two rows 1.875 m off its middle (each
+    // post's outer face its 3.5 m eave less half a metre in from each side); the west bent stands on the pier, so it is left out.
     CHECK(st.posts == 10);
     CHECK(countPrefix(plan, "PL-D-") == 10);
     std::vector<double> xs;
@@ -711,23 +711,25 @@ TEST_CASE("deck posts: off, a deck with no pier to raise is left as before; on, 
         CHECK(plan.wears[a] == 0); // the deck's surface
         if (b.id.rfind("PL-D-", 0) != 0) continue;
         CHECK_FALSE(b.sloped);
-        CHECK(b.sx == doctest::Approx(1.0));
+        CHECK(b.sx == doctest::Approx(0.25));
+        CHECK(b.sy == doctest::Approx(0.25));
         CHECK(b.z0 == doctest::Approx(9.7)); // down to sink under the ground
         CHECK(b.z1 == doctest::Approx(18.0)); // up to the deck's underside
-        CHECK(std::fabs(std::fabs(b.cy - 25.0) - 1.5) < 1e-6);
+        CHECK(std::fabs(std::fabs(b.cy - 25.0) - 1.875) < 1e-6);
         xs.push_back(b.cx);
     }
     std::sort(xs.begin(), xs.end());
     xs.erase(std::unique(xs.begin(), xs.end(), [](double a, double c) { return std::fabs(a - c) < 1e-6; }), xs.end());
     REQUIRE(xs.size() == 5);
     for (std::size_t k = 1; k < xs.size(); ++k) CHECK(xs[k] - xs[k - 1] <= 6.0);
-    CHECK(xs.back() == doctest::Approx(38.79)); // flush with the east end
-    // Braces: 4 bays along each row (one panel each, 7.1 m clear over 5.66 m), 5 bents across (two panels over 3 m).
+    CHECK(xs.back() == doctest::Approx(39.165)); // flush with the east end
+    // Braces: 4 bays along each row (one panel each, 7.1 m clear over 5.81 m), 5 bents across (two panels over 3.75 m).
     CHECK(st.braces == 18);
     for (const MassingBox& b : plan.added) {
         if (b.id.rfind("PL-K-", 0) != 0) continue;
         CHECK(b.kind == "brace");
-        CHECK(b.z1 - b.z0 == doctest::Approx(0.3));
+        CHECK(b.z1 - b.z0 == doctest::Approx(0.12));
+        CHECK(b.sy == doctest::Approx(0.12));
         const double deg = std::atan(std::fabs(b.riseU)) * 180.0 / 3.14159265358979;
         CHECK(deg > 30.0);
         CHECK(deg < 60.0);
@@ -753,13 +755,13 @@ TEST_CASE("deck posts: a ramp's posts slope with its underside and its braces st
     on.deckPosts = true;
     const FloatOutcomes o = fixAndCheck(f, boxes, on, plan, st, all);
     CHECK(st.posted == 1);
-    // Three rows (1 m in from each side: its 1.5 m eave less half a metre), 3.5 m apart.
+    // Three rows (each outer post's face 1 m in from each side: its 1.5 m eave less half a metre), 3.875 m apart.
     std::vector<double> ys;
     const double grade = (47.88 - 13.0) / 29.29;
     for (const MassingBox& b : plan.added) {
         if (b.id.rfind("PL-D-", 0) != 0) continue;
         REQUIRE(b.sloped);
-        CHECK(b.slopeTo - b.slopeFrom == doctest::Approx(grade).epsilon(0.01));
+        CHECK(b.slopeTo - b.slopeFrom == doctest::Approx(grade * b.sx).epsilon(0.01));
         CHECK(0.5 * (b.slopeFrom + b.slopeTo) == doctest::Approx(12.5 + grade * (b.cx - 10.0)).epsilon(0.001));
         CHECK(b.z0 == doctest::Approx(3.7));
         ys.push_back(b.cy);
@@ -767,8 +769,8 @@ TEST_CASE("deck posts: a ramp's posts slope with its underside and its braces st
     std::sort(ys.begin(), ys.end());
     ys.erase(std::unique(ys.begin(), ys.end(), [](double a, double c) { return std::fabs(a - c) < 1e-6; }), ys.end());
     REQUIRE(ys.size() == 3);
-    CHECK(ys.front() == doctest::Approx(21.5));
-    CHECK(ys.back() == doctest::Approx(28.5));
+    CHECK(ys.front() == doctest::Approx(21.125));
+    CHECK(ys.back() == doctest::Approx(28.875));
     CHECK(st.braces > 0);
     for (const MassingBox& b : plan.added) {
         if (b.id.rfind("PL-K-", 0) != 0) continue;
