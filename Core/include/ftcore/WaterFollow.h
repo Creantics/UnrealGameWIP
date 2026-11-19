@@ -68,6 +68,9 @@ struct WaterFollowTuning {
     float climbBehindLead = -1.f;  // s into the lead's ladder climb the first may start up behind it (< 0: once it is out)
     bool exitPickNear = false;     // the lead's way out (its ladder, or the flight it walked out by); else the nearest
                                    // within exitWithin; else none (a mantle by the lead), never one in other water
+    bool exitReadyFirst = false;   // a member at its place in the queue climbs ahead of one before it still swimming to
+                                   // its own (11-19: the second waited 1.75 s there); the ladder's foot then spaced too:
+                                   // each reaches it climbGap after the last (with climbPath, at footSwimSpeed)
 };
 
 // -PartyExitFast: the party out of the water within 4 s of the lead (11-18 item 2). A flight of steps is as before.
@@ -76,6 +79,7 @@ inline void waterFollowFastExit(WaterFollowTuning& t) {
     t.climbPath = true;
     t.climbBehindLead = 1.f;
     t.exitPickNear = true;
+    t.exitReadyFirst = true;
 }
 
 // What a follower is doing in the water.
@@ -322,6 +326,7 @@ public:
         leadDiveAt_ = -1.f;
         lastEntryAt_ = -1.f;
         lastClimbAt_ = -1.f;
+        lastFootAt_ = -1.f;
         leadExitAt_ = -1.f;
         leadUnder_ = false;
         hasLastLead_ = false;
@@ -490,11 +495,15 @@ public:
                     s.backFor = 0.f;
                 }
                 if (o.phase == WaterFollowPhase::ToExit && m.atExit) go(o, WaterFollowPhase::ExitWait);
-                if (o.phase == WaterFollowPhase::ExitWait && !m.held && climbTurn(i, lead)) {
-                    go(o, WaterFollowPhase::Climbing);
-                    o.startClimb = true;
-                    s.climbAt = clock_;
-                    lastClimbAt_ = clock_;
+                if (o.phase == WaterFollowPhase::ExitWait && !m.held) {
+                    const float swim = footSwim(o, m, exits, exitCount);
+                    if (climbTurn(i, lead, swim)) {
+                        go(o, WaterFollowPhase::Climbing);
+                        o.startClimb = true;
+                        s.climbAt = clock_;
+                        lastClimbAt_ = clock_;
+                        lastFootAt_ = clock_ + swim;
+                    }
                 }
                 break;
             case WaterFollowPhase::Climbing:
@@ -600,7 +609,9 @@ private:
         if (!lead.out && !behind) return false;
         for (int j = 0; j < i; ++j) {
             const WaterFollowPhase p = slots_[j].order.phase;
-            if (!slots_[j].held && (p == WaterFollowPhase::ToExit || p == WaterFollowPhase::ExitWait)) return false;
+            // exitReadyFirst: one still swimming to its place does not hold up one already at its own.
+            const bool waits = p == WaterFollowPhase::ExitWait || (p == WaterFollowPhase::ToExit && !tuning_.exitReadyFirst);
+            if (!slots_[j].held && waits) return false;
         }
         return true;
     }
@@ -639,9 +650,22 @@ private:
 
     // Its climb may start: the lead is out, every member before it has started its climb (or is not waiting to, or is
     // held by a scene and so out of the queue), and climbGap has run since the last one started.
-    bool climbTurn(int i, const WaterFollowLead& lead) const {
+    // With exitReadyFirst the order can change, so one nearer the ladder could reach its foot first: it also waits until
+    // its swim there (`swim` s) lands it climbGap after the last climber's.
+    bool climbTurn(int i, const WaterFollowLead& lead, float swim) const {
         if (!queueClear(i, lead)) return false;
-        return lastClimbAt_ < 0.f || clock_ - lastClimbAt_ >= tuning_.climbGap;
+        if (lastClimbAt_ >= 0.f && clock_ - lastClimbAt_ < tuning_.climbGap) return false;
+        return !tuning_.exitReadyFirst || lastFootAt_ < 0.f || clock_ + swim >= lastFootAt_ + tuning_.climbGap;
+    }
+
+    // Its swim from where it is to its exit's foot on the climb path (0 for a flight, a mantle, or without climbPath).
+    float footSwim(const WaterFollowOrder& o, const WaterFollowMember& m, const WaterExit* exits,
+                   std::size_t exitCount) const {
+        if (!tuning_.climbPath || tuning_.footSwimSpeed <= 0.f || o.exitIndex < 0 || std::size_t(o.exitIndex) >= exitCount)
+            return 0.f;
+        const WaterExit& e = exits[o.exitIndex];
+        if (e.kind == WaterExitKind::Steps) return 0.f;
+        return water_follow_detail::dist(Vec2{m.position.x, m.position.y}, e.foot) / tuning_.footSwimSpeed;
     }
 
     void beginExit(WaterFollowOrder& o, const WaterFollowLead& lead, const WaterFollowMember& m, const WaterExit* exits,
@@ -812,6 +836,7 @@ private:
     float leadDiveAt_ = -1.f;
     float lastEntryAt_ = -1.f;
     float lastClimbAt_ = -1.f;
+    float lastFootAt_ = -1.f; // when the last climber reaches its exit's foot (exitReadyFirst's spacing)
     float leadExitAt_ = -1.f; // when the lead's ladder climb began (-1: not climbing)
     bool leadUnder_ = false;
     SwimVec lastLead_{};

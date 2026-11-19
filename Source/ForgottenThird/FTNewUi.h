@@ -56,4 +56,9 @@ bool EnsureMenuScreens();
 // such as the map overlay (FTMapOverlay): Face is an ftcore::UiFont. Size them with FSlateFontInfo(Font, points).
 // Null when the face's file is missing (the caller keeps an engine font).
 UFont* UiCanvasFont(uint8 Face);
+
+// The text size row (ftcore::Settings::textScale, 1..2) for the fight HUD's prompt stack (with the special's row) and the
+// map overlay's names and where-am-I line, behind -UiHudTextScale: without it 1, every size as it was. Outside Shipping
+// -UiTextScale=<100..200> holds it, as it holds the menus'.
+float HudTextScale();
 }

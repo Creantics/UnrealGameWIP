@@ -34,6 +34,7 @@ namespace ftcore
 {
 struct WaterWetness;
 }
+struct FStreamableHandle;
 
 // A groom and the binding that fits it to a skeletal mesh. The groom goes on whichever of the body and the
 // pieces has the binding's target mesh (a MetaHuman build binds brows and lashes to the face).
@@ -293,6 +294,15 @@ FORGOTTENTHIRD_API int32 AddGrooms(AActor& Owner, USkeletalMeshComponent& Body, 
 // Loads every entry's WetGroom and WetBinding into OutHold (kept referenced there), so the swap does not load in play.
 // Returns how many entries have a wet groom.
 FORGOTTENTHIRD_API int32 PreloadWetGrooms(const TArray<FFTGroomLook>& Grooms, TArray<TObjectPtr<UObject>>& OutHold, const TCHAR* Who);
+
+// Starts loading, off the game thread, every asset the looks can wear (bodies, pieces, both fronts, under layers and cuts,
+// grooms and bindings dry and wet, material swaps, the idle and walk clips, the bracers), so a lead switch finds them in
+// memory. The handle keeps them referenced while it lives; null when nothing exists to load. Logs the count when loaded.
+FORGOTTENTHIRD_API TSharedPtr<FStreamableHandle> HoldLooks(const TArray<FFTLeadLook>& Looks, const TCHAR* Who);
+
+// One "Level start:" line: seconds since the process started, and the process's physical and virtual memory now and at
+// its peak (MB). For the party hold's cost (the 11-19 ruling, item 3): called once at each stage, never per frame.
+FORGOTTENTHIRD_API void LogLevelStart(const TCHAR* Stage);
 
 // Wears each entry's wet groom (bWet) or its dry one on the component showing the other: the component is unregistered,
 // given the groom and its binding, and registered again where it was. Entries without a WetGroom are left alone.
