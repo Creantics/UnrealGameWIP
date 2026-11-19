@@ -828,8 +828,9 @@ void UFTCrowdSubsystemV2::LogCounts(const TCHAR* Label) const
 		C.spawned, C.despawned, C.perceived, C.noticed, C.backedAway, C.fled, C.cowered, C.resumed, C.spread, C.plans, C.planFails,
 		C.eventsDropped, C.occlusionQueries);
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("Crowd: %s churn: despawned %llu (born past the despawn distance %llu, walked out %llu); spawn tries missed: no street near the ring point %llu, no free slot %llu, spot outside the ring %llu, crowded %llu, in view %llu."),
-		Label, C.despawned, C.despawnNewborn, C.despawnWalkedOut, C.missNoStreet, C.missSlot, C.missSpotRing, C.missCrowded, C.missSpotView);
+		TEXT("Crowd: %s churn: despawned %llu (born past the despawn distance %llu, walked out %llu); spawn tries missed: no street near the ring point %llu, no free slot %llu, spot outside the ring %llu, crowded %llu, too many near (spawnNearMax %u) %llu, in view %llu."),
+		Label, C.despawned, C.despawnNewborn, C.despawnWalkedOut, C.missNoStreet, C.missSlot, C.missSpotRing, C.missCrowded, Tuning.spawnNearMax, C.missDense,
+		C.missSpotView);
 }
 
 void UFTCrowdSubsystemV2::Tick(float DeltaTime)
