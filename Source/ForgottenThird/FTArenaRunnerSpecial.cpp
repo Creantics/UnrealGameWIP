@@ -1688,10 +1688,13 @@ void UFTArenaRunner::SpecialBurstCap(float Room, float HeadGap)
 		}
 	}
 	SpecialBurstOff = 0;
-	if (SpecialBurstCount == 0 || Room <= 0.f)
+	// No room and no head gap: no moment of the hit is a cut-in (the play camera). No room with a head gap: the head is
+	// on the contact on screen, the worst case, capped hardest (all but the least off).
+	const bool bNoCutIn = Room <= 0.f && !FMath::IsFinite(HeadGap);
+	if (SpecialBurstCount == 0 || bNoCutIn)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: special burst cap: %s."),
-			Room <= 0.f ? TEXT("the hit plays in the play camera, no cut-in to keep it in: the burst plays whole") : TEXT("no emitters read"));
+			bNoCutIn ? TEXT("the hit plays in the play camera, no cut-in to keep it in: the burst plays whole") : TEXT("no emitters read"));
 		return;
 	}
 	int32 Least = 0;
