@@ -93,7 +93,12 @@ public:
 	// for the camera's sweep, only while it swims at the surface; false (nothing done) otherwise. ReleaseProofHold lets
 	// it follow again.
 	bool HoldForProof(const FVector2D& At);
-	void ReleaseProofHold() { bProofHeld = false; }
+	// -SwimProof=boom (dev, the 11-18 rerun): put now with its body's middle (the middle of its bones' box) at Centre (cm)
+	// and kept there, over the water, until ReleaseProofHold; the boom run calls it each tick to keep it on the boom line
+	// at the camera's height. Only from the surface swim; false (nothing done) otherwise. The water plan counts it held
+	// (as a scene holds a member) meanwhile, so no order moves it and its watchdog waits.
+	bool HoldForProofAt(const FVector& Centre);
+	void ReleaseProofHold() { bProofHeld = false; bProofAir = false; }
 	ftcore::WaterFollowPhase GetWaterPhase() const { return WaterPhase; }
 	// A start in the water (a lead switch while swimming, AFTExploreCharacter::StartInWater): counted as placed where it
 	// is, so the water plan's first step takes it and the placement puts it at its surface slot, never on land.
@@ -228,6 +233,7 @@ private:
 	bool bProofWant = false;
 	int32 ProofFrames = 0;
 	bool bProofHeld = false; // HoldForProof: treading where it was put
+	bool bProofAir = false; // HoldForProofAt: kept where the boom run puts it (its own swim step skipped)
 	// Placed in the water (the rejoin at its surface slot, or treading while the lead swims): a held scene leaves it there.
 	bool bPlacedInWater = false;
 	FVector WaterVelocity = FVector::ZeroVector; // cm/s

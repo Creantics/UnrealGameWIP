@@ -215,6 +215,9 @@ public:
 	// Sets the base clips (a null one clears its slot), then each gait's start and stops, the turns, the air pose,
 	// the crouch and, with bTraversal, the climbs and vaults, from the clips found beside them (below).
 	void SetBaseClips(UAnimSequence* const (&Base)[NumBaseClips], bool bTraversal);
+	// Adds every clip set on this instance (base, found, traversal, action and water) to Out once each, for an owner that
+	// keeps them loaded across a respawn (a lead switch), so their measures stay cached (SetBaseClips).
+	void AppendClips(TArray<TObjectPtr<UObject>>& Out) const;
 	// The base clip retargeted onto Body in Folder, as FTBuildRig names one (<source>_to_<mesh>): the mocap
 	// sample's (M_Neutral_Run_Loop_F_to_x), else the template's (MF_Unarmed_Jog_Fwd_to_x). Null when there is none
 	// made for Body's skeleton.
