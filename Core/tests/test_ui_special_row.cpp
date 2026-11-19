@@ -36,6 +36,29 @@ ArenaSpecialTable shippedSpecialTable() {
     return t;
 }
 
+// A fixed table for the cases about a lead with no move: Devin has one, Duy none, whatever the shipped data gives.
+ArenaSpecialTable fixtureSpecialTable() {
+    static constexpr const char* kJson = R"({
+      "version": 1,
+      "gauge": { "full": 1000, "perDamageDealt": 1, "perParry": 25, "perBlock": 8, "perDamageTaken": 1.5,
+                 "switchLoss": 0.25, "switchLossAppliesTo": "both", "readyLineGap": 60 },
+      "moves": [
+        { "id": "fixture_devin", "lead": "devin",
+          "duration": 8.5, "strikeAt": 7.1, "waveSpeed": 40, "maxTravel": 0.5, "range": 30,
+          "laneLength": 14, "laneWidth": 4,
+          "damage": 220, "otherShare": 0.5, "bossPhaseShare": 0.2,
+          "knockBack": 2.0, "knockTime": 0.35, "endTravel": 0.73, "endSide": -0.11, "skippable": true,
+          "cues": [ { "at": 0.0, "cue": "freeze" }, { "at": 7.1, "cue": "strike" }, { "at": 8.5, "cue": "cut_back" } ] }
+      ]
+    })";
+    ArenaSpecialTable t;
+    std::string err;
+    REQUIRE_MESSAGE(importArenaSpecials(kJson, t, &err), err);
+    REQUIRE(t.forLead("devin") != nullptr);
+    REQUIRE(t.forLead("duy") == nullptr);
+    return t;
+}
+
 void beginFight(ArenaFight& fight, const char* enemy) {
     const ArenaTable& table = arenaTable();
     REQUIRE_FALSE(table.enemyIds.empty());
@@ -109,8 +132,7 @@ TEST_CASE("special row gating: specialsOn is off until a table is set, steady th
 }
 
 TEST_CASE("special row gating: a lead with no move and no partner (Duy alone) holds the row but never draws it") {
-    const ArenaSpecialTable table = shippedSpecialTable();
-    REQUIRE_MESSAGE(table.forLead("duy") == nullptr, "the shipped table gave Duy a move: pick another lead for this case");
+    const ArenaSpecialTable table = fixtureSpecialTable(); // not the shipped data: Duy may get a move there
     ArenaFight fight;
     beginFight(fight, "hulk");
     // The host's store with Duy's gauge full: a full gauge with no move must still never light the row.
