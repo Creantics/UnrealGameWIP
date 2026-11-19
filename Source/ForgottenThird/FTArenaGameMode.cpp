@@ -34,6 +34,7 @@
 #include "FTFightSession.h"
 #include "FTGameInstance.h"
 #include "FTGameMode.h"
+#include "FTNpcSubsystem.h"
 #include "FTStepHost.h"
 #include "FTStoryStateSubsystem.h"
 
@@ -70,6 +71,12 @@ void PrepareStoryProbe(const UObject* Context)
 		return;
 	}
 	Story->NewGame();
+	if (UFTNpcSubsystem* Npcs = GI->GetSubsystem<UFTNpcSubsystem>())
+	{
+		// As StartStory: a new game drops any held NPC save block, so the probe's story writes or applies nothing of
+		// an earlier game.
+		Npcs->NewGame();
+	}
 	const auto& Code = Reg->sceneCodes[0];
 	const FString Scene(static_cast<int32>(strnlen(Code.data(), Code.size())), Code.data());
 	const bool bOpen = Story->BeginScene(Scene);
