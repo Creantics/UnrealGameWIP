@@ -360,4 +360,24 @@ private:
     bool frozen_ = false;
 };
 
+// Which crowd start a game world takes (the host's old-crowd subsystem). Flags beat the map default:
+//   v2         -CrowdV2: the rework runs instead; this crowd stays off.
+//   streets    -CrowdStreets=<file>: this crowd on that file; a bad file quits the run (a test asked for it).
+//   noDefault  -NoCrowdDefault: the map default stays off.
+//   mapDefault a streets file named for this map in the local config: this crowd on it; a bad file leaves the crowd off
+//              (logged) and the game runs on.
+enum class CrowdStart : std::uint8_t { Off, Streets, MapDefault };
+struct CrowdStartFlags {
+    bool v2 = false;
+    bool streets = false;
+    bool noDefault = false;
+    bool mapDefault = false;
+};
+inline CrowdStart crowdStart(const CrowdStartFlags& f) {
+    if (f.v2) return CrowdStart::Off;
+    if (f.streets) return CrowdStart::Streets;
+    if (f.noDefault || !f.mapDefault) return CrowdStart::Off;
+    return CrowdStart::MapDefault;
+}
+
 } // namespace ftcore

@@ -50,3 +50,33 @@ TEST_CASE("crowd off by default: the rework's tuning is crowd_v2.json, which the
     CHECK_FALSE(ftcore::importCrowdTuning(text, old, &oldErr));
     CHECK(!oldErr.empty());
 }
+
+TEST_CASE("crowd start: flags beat the map default; -CrowdV2 keeps the old crowd off; -NoCrowdDefault turns the default off") {
+    using ftcore::CrowdStart;
+    using ftcore::CrowdStartFlags;
+    // Every combination of the four inputs.
+    for (int bits = 0; bits < 16; ++bits) {
+        CrowdStartFlags f;
+        f.v2 = (bits & 1) != 0;
+        f.streets = (bits & 2) != 0;
+        f.noDefault = (bits & 4) != 0;
+        f.mapDefault = (bits & 8) != 0;
+        CrowdStart want = CrowdStart::Off;
+        if (!f.v2 && f.streets) want = CrowdStart::Streets;
+        if (!f.v2 && !f.streets && f.mapDefault && !f.noDefault) want = CrowdStart::MapDefault;
+        INFO("v2 " << f.v2 << " streets " << f.streets << " noDefault " << f.noDefault << " mapDefault " << f.mapDefault);
+        CHECK(ftcore::crowdStart(f) == want);
+    }
+    // The cases by name. A map with no local streets file has no crowd, as before.
+    CHECK(ftcore::crowdStart(CrowdStartFlags{}) == CrowdStart::Off);
+    CrowdStartFlags strip;
+    strip.mapDefault = true;
+    CHECK(ftcore::crowdStart(strip) == CrowdStart::MapDefault);
+    strip.noDefault = true;
+    CHECK(ftcore::crowdStart(strip) == CrowdStart::Off);
+    strip.noDefault = false;
+    strip.streets = true; // a test run's own file wins, with its hard failure
+    CHECK(ftcore::crowdStart(strip) == CrowdStart::Streets);
+    strip.v2 = true;
+    CHECK(ftcore::crowdStart(strip) == CrowdStart::Off);
+}

@@ -13,7 +13,11 @@
 //
 // The streets table is the massing one (id, kind, width_m, pts, pavement_m; plan frame, a square -CrowdSide metres across)
 // and the sim's frame is the engine's in metres, the same as the arena's (FTArenaRunner::ToWorld is P * 100). Without
-// -CrowdStreets nothing is created. The skin defaults to the test human and its walk and idle clips; a skin that doesn't
+// -CrowdStreets the map default applies (ftcore::crowdStart): a streets file for this map in the local config,
+//   Config/UserGame.ini (never committed):  [FTCrowd.MapStreets]  <map name>=<streets csv, absolute or project-relative>
+// runs the crowd on it with the defaults above, logged ("Crowd: map default on ..."); -NoCrowdDefault turns it off, and a
+// missing or bad file leaves the crowd off (a warning) where -CrowdStreets would quit the run. -CrowdV2 runs the rework
+// (UFTCrowdSubsystemV2) instead. With neither a flag nor a map default nothing is created. The skin defaults to the test human and its walk and idle clips; a skin that doesn't
 // load leaves the sim running undrawn (the log still counts). -CrowdTestFight scripts a fight 15 m from the player at
 // <seconds> (default 20): a fight start, then a strike every half second for 10 s and a death at the end; with or
 // without it, the counts are logged every 10 s ("Crowd: t=...") and -CrowdQuitAfter ends the game with the final line
@@ -111,4 +115,5 @@ private:
 	int32 ArenaFed = 0;   // fight events passed on from the arena
 	int32 ArenaSeen = 0;  // arena events of any kind
 	bool bRunning = false;
+	bool bMapDefault = false; // started from the map default: a failure leaves the crowd off, the game runs on
 };

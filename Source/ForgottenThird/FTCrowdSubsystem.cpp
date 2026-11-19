@@ -11,6 +11,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -55,6 +56,31 @@ ftcore::Vec2 ToSim(const FVector& P)
 {
 	return ftcore::Vec2{static_cast<float>(P.X / 100.0), static_cast<float>(P.Y / 100.0)};
 }
+
+// The map default's streets file (local config, never committed): [FTCrowd.MapStreets] <map name>=<file>; empty when
+// this map has none. A relative path is from the project folder.
+FString MapDefaultStreets(const UWorld* World)
+{
+	FString Path;
+	if (!World || !GConfig || !GConfig->GetString(TEXT("FTCrowd.MapStreets"), *World->GetName(), Path, GGameIni))
+	{
+		return FString();
+	}
+	Path.TrimStartAndEndInline();
+	return Path.IsEmpty() || !FPaths::IsRelative(Path) ? Path : FPaths::ProjectDir() / Path;
+}
+
+ftcore::CrowdStartFlags StartFlags(const UWorld* World)
+{
+	const TCHAR* Cmd = FCommandLine::Get();
+	FString Streets;
+	ftcore::CrowdStartFlags Flags;
+	Flags.v2 = FParse::Param(Cmd, TEXT("CrowdV2"));
+	Flags.streets = FParse::Value(Cmd, TEXT("CrowdStreets="), Streets) && !Streets.IsEmpty();
+	Flags.noDefault = FParse::Param(Cmd, TEXT("NoCrowdDefault"));
+	Flags.mapDefault = !MapDefaultStreets(World).IsEmpty();
+	return Flags;
+}
 } // namespace
 
 UFTCrowdSubsystem* UFTCrowdSubsystem::Get(const UWorld* World)
@@ -65,14 +91,20 @@ UFTCrowdSubsystem* UFTCrowdSubsystem::Get(const UWorld* World)
 bool UFTCrowdSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
-	FString Streets;
-	// -CrowdV2 runs the crowd rework (UFTCrowdSubsystemV2) instead of this one.
-	return World && World->WorldType == EWorldType::Game && !FParse::Param(FCommandLine::Get(), TEXT("CrowdV2")) &&
-		FParse::Value(FCommandLine::Get(), TEXT("CrowdStreets="), Streets) && !Streets.IsEmpty() && Super::ShouldCreateSubsystem(Outer);
+	// -CrowdV2 runs the crowd rework (UFTCrowdSubsystemV2) instead of this one; -CrowdStreets or the map default start it.
+	return World && World->WorldType == EWorldType::Game && ftcore::crowdStart(StartFlags(World)) != ftcore::CrowdStart::Off &&
+		Super::ShouldCreateSubsystem(Outer);
 }
 
 bool UFTCrowdSubsystem::Fail(const TCHAR* Why, const FString& What)
 {
+	if (bMapDefault)
+	{
+		// Nobody asked for this crowd on the command line: it stays off and the game runs on.
+		UE_LOG(LogForgottenThird, Warning, TEXT("Crowd: map default off: %s %s"), Why, *What);
+		bRunning = false;
+		return false;
+	}
 	UE_LOG(LogForgottenThird, Error, TEXT("Crowd: %s %s"), Why, *What);
 	FTRequestExit(1, TEXT("Crowd"));
 	bRunning = false;
@@ -85,6 +117,13 @@ void UFTCrowdSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	const TCHAR* Cmd = FCommandLine::Get();
 	FString StreetsPath, TuningPath;
 	FParse::Value(Cmd, TEXT("CrowdStreets="), StreetsPath);
+	bMapDefault = ftcore::crowdStart(StartFlags(&InWorld)) == ftcore::CrowdStart::MapDefault;
+	if (bMapDefault)
+	{
+		StreetsPath = MapDefaultStreets(&InWorld);
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: map default on for %s: streets %s (no -CrowdStreets; -NoCrowdDefault turns it off)."),
+			*InWorld.GetName(), *StreetsPath);
+	}
 	if (!FParse::Value(Cmd, TEXT("CrowdTuning="), TuningPath))
 	{
 		TuningPath = FPaths::ProjectDir() / TEXT("Data/Crowd/crowd.json");
