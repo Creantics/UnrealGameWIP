@@ -962,11 +962,16 @@ int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPt
 
 void FTLook::LogLevelStart(const TCHAR* Stage)
 {
+	// A measure for the proofs (the 11-19 ruling, item 3): compiled out of a shipped game, so it costs nothing there.
+#if UE_BUILD_SHIPPING
+	(void)Stage;
+#else
 	const FPlatformMemoryStats Mem = FPlatformMemory::GetStats();
 	constexpr double MB = 1024.0 * 1024.0;
 	UE_LOG(LogForgottenThird, Display, TEXT("Level start: %s at %.2f s since the process started; physical %.0f MB (peak %.0f), virtual %.0f MB (peak %.0f)."),
 		Stage, FPlatformTime::Seconds() - GStartTime, static_cast<double>(Mem.UsedPhysical) / MB, static_cast<double>(Mem.PeakUsedPhysical) / MB,
 		static_cast<double>(Mem.UsedVirtual) / MB, static_cast<double>(Mem.PeakUsedVirtual) / MB);
+#endif
 }
 
 TSharedPtr<FStreamableHandle> FTLook::HoldLooks(const TArray<FFTLeadLook>& Looks, const TCHAR* Who)
