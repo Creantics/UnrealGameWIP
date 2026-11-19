@@ -621,19 +621,54 @@ SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStag
     return hit;
 }
 
+std::uint32_t specialCineHitStills(const SpecialCineMove& move, const SpecialCineHit& hit, float* out, std::uint32_t capacity) {
+    if (out == nullptr || move.empty()) return 0;
+    const float length = move.length();
+    std::uint32_t n = 0;
+    for (std::uint32_t k = 0; k < SpecialCineHit::kStills && n < capacity; ++k) {
+        const float at = hit.time + SpecialCineHit::kStillLags[k];
+        if (std::isfinite(at) && at < length) out[n++] = at;
+    }
+    return n;
+}
+
+SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
+                                         const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count) {
+    if (move.empty()) return SpecialCineProblem::None;
+    if (bodies == nullptr) count = 0;
+    const View v = viewOf(specialCineFrameAt(move, hit.time, stage, fixes), stage);
+    if (pointFraming(v, hit.at) != SpecialCineProblem::None) return SpecialCineProblem::OffFrame;
+    if (segmentHitsAny(v.eye, hit.at, bodies, count)) return SpecialCineProblem::ContactHidden;
+    return SpecialCineProblem::None;
+}
+
+CutsceneVec3 specialCinePartnerBlow(const CutsceneVec3& target, float radius, float targetHeight, const CutsceneVec3& toward) {
+    CutsceneVec3 d = sub3(toward, target);
+    d.z = 0.f;
+    const float n = length3(d);
+    CutsceneVec3 p = target;
+    const float out = (std::isfinite(radius) ? std::max(radius, 0.f) : 0.f) + SpecialCineFraming::kContactOut;
+    if (n > 1e-4f) p = add3(p, scale3(d, std::min(out, n) / n));
+    p.z = std::min(toward.z, target.z + kChest * heightOr(targetHeight));
+    return p;
+}
+
 SpecialCinePartnerStrike specialCinePartnerStrike(const SpecialCineMove& move, const SpecialCineStage& stage,
                                                   const SpecialCineHit& hit, const CutsceneVec3& partnerChest, float radius) {
     SpecialCinePartnerStrike strike;
     const float own = std::isfinite(stage.targetRadius) ? std::max(stage.targetRadius, 0.f) : 0.f;
     const float out = std::isfinite(radius) ? std::max(own, radius) : own;
-    CutsceneVec3 d = sub3(partnerChest, stage.target);
-    d.z = 0.f;
-    const float n = length3(d);
-    strike.at = stage.target;
-    if (n > 1e-4f) strike.at = add3(strike.at, scale3(d, std::min(out, n) / n));
-    strike.at.z = partnerChest.z;
+    strike.at = specialCinePartnerBlow(stage.target, out, stage.targetHeight, partnerChest);
     const float length = move.length();
     CutsceneVec3 lead = leadFeet(move, stage, length > 0.f ? std::clamp(hit.time / length, 0.f, 1.f) : 0.f);
+    // The partner's bearing round the target's axis from the lead's side (the ground plane).
+    {
+        const float lx = lead.x - stage.target.x, ly = lead.y - stage.target.y;
+        const float px = partnerChest.x - stage.target.x, py = partnerChest.y - stage.target.y;
+        const float ln = std::sqrt(lx * lx + ly * ly), pn = std::sqrt(px * px + py * py);
+        if (ln > 1e-4f && pn > 1e-4f)
+            strike.bearing = std::acos(std::clamp((lx * px + ly * py) / (ln * pn), -1.f, 1.f)) * 180.f / kPi;
+    }
     lead.z += kChest * heightOr(stage.leadHeight);
     const CutsceneVec3 line = sub3(hit.at, lead);
     const float span = length3(line);

@@ -819,6 +819,7 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	SteerCamera(DeltaSeconds);
 	ApplyAimCamera();
 	TickSpecial(bHold ? 0.f : DeltaSeconds);
+	HoldSpecialHitFx(bHold); // the hit's effect stands with the shots' clock while a still holds
 	TickSpecialCost(DeltaSeconds, bHold);
 	TickImpact(bCoreHold || bSpecialOn ? 0.f : DeltaSeconds);
 
@@ -9125,15 +9126,22 @@ void UFTArenaRunner::PartnerImpact(const ftcore::ArenaEvent& E)
 	{
 		return;
 	}
-	// The blow point: on the struck body's surface toward the partner, at the partner's chest height.
+	// The blow point by the lead's contact rule (ftcore::specialCinePartnerBlow): the struck body's surface plus
+	// kContactOut toward the partner, at the partner's chest height but no higher than the struck body's chest.
 	const size_t T = static_cast<size_t>(E.target);
 	const ftcore::Vec2& Foe = Bodies.enemies[T];
 	ftcore::Vec2 Dir{Bodies.ally.x - Foe.x, Bodies.ally.y - Foe.y};
 	const float Length = ArenaLength(Dir);
 	Dir = Length > 1e-4f ? ftcore::Vec2{Dir.x / Length, Dir.y / Length} : Fight.output().enemies[T].facing;
 	const float Out = Fight.def().enemies[T].bodyRadius;
-	FVector At = ToWorld(ftcore::Vec2{Foe.x + Dir.x * Out, Foe.y + Dir.y * Out});
-	At.Z = AllyFigure->GetChest().Z;
+	const AFTArenaFighter* FoeFigure = GetEnemyFigure(static_cast<int32>(T));
+	const float FoeZ = static_cast<float>((FoeFigure ? FoeFigure->GetActorLocation().Z : ZoneZ) / 100.0);
+	const float FoeHeight = FoeFigure ? FMath::Max(0.5f, FoeFigure->GetHeight() / 100.f) : 1.8f;
+	const float Reach = Out + 1.f; // past the surface: the blow lands kContactOut out of it
+	const ftcore::CutsceneVec3 Blow = ftcore::specialCinePartnerBlow(ftcore::CutsceneVec3{Foe.x, Foe.y, FoeZ}, Out, FoeHeight,
+		ftcore::CutsceneVec3{Foe.x + Dir.x * Reach, Foe.y + Dir.y * Reach, static_cast<float>(AllyFigure->GetChest().Z / 100.0)});
+	FVector At = ToWorld(ftcore::Vec2{Blow.x, Blow.y});
+	At.Z = Blow.z * 100.0;
 	// The lead's own impact effect (both leads play the one fighter kit here), on the partner's figure, at 70%.
 	UFTVfxComponent* Vfx = PartnerImpactFx.Get();
 	if (Vfx && Vfx->GetOwner() != AllyFigure)

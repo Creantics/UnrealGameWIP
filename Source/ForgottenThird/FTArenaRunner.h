@@ -696,6 +696,9 @@ private:
 	bool BeginSpecial();
 	// Each shot tested once at the begin by Core (specialCineFixShot) and moved by the fix it finds.
 	void SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target);
+	// The figures as the framing tests them (cylinders: the living enemies, `Target` marked, and the partner), into
+	// `Out` (MaxEnemies + 1 of them); returns how many.
+	uint32 SpecialCineBodies(int32 Target, ftcore::SpecialCineBody* Out);
 	// The skip press while the move plays (the special's own press again, or Interact): Core cuts to its end when it is
 	// skippable (seen once), else logged once.
 	void PollSpecialSkip();
@@ -711,6 +714,14 @@ private:
 	// The hit's effect at the contact the framing tests, once, when the shots' clock reaches Core's impact (any range);
 	// on a component of the performer's figure, which the freeze does not hold.
 	void PlaySpecialHit();
+	// The hit's effect component on the performer's figure, made (and its system loaded, readiness logged) when missing.
+	class UFTVfxComponent* SpecialHitFxOn(class AFTArenaFighter* Lead, const TCHAR* Why);
+	// The hit's effect held (its Niagara paused) while a capture holds the shots' clock, run on once it lets go.
+	void HoldSpecialHitFx(bool bHold);
+	// What the hit's effect is doing (tests only): the clocks, its state, particles, bounds, when it was last drawn,
+	// where it falls in the frame and what stands between the camera and it. True when it draws: particles alive, its
+	// scene proxy made, and drawn on screen since its Play (shipping: true).
+	bool ProbeSpecialHit(const TCHAR* When);
 	void EndSpecial(const TCHAR* Why);
 	// The clear room for the move; with a target (the press's), the start moved back further so the striking fist
 	// (SampleSpecialReach) sits on the target's surface at the contact, not inside it (arenaSpecialContact).
@@ -1695,6 +1706,18 @@ private:
 	bool bSpecialHitPlayed = false;
 	bool bSpecialHitFx = true;
 	TWeakObjectPtr<class UFTVfxComponent> SpecialHitFx;
+	// A capture's hold stops the shots' clock but not the world's: the hit's effect, on the unfrozen performer, would
+	// play out under one still before the next. Held (paused) while a still holds, unless -ArenaSpecialHitHoldRuns.
+	bool bSpecialHitFxHeld = false;
+	bool bSpecialHitHoldRuns = false;
+	bool bSpecialHitLate = false;       // -ArenaSpecialHitLate: made at the hit, not at the special's start (as round 3)
+	FName SpecialHitEffect;             // the hit's stand-in: -ArenaSpecialHitFx=<name> (tests only), else crit_burst
+	double SpecialHitPlayedWall = -1.0; // FPlatformTime::Seconds at the effect's Play
+	double SpecialHitPlayedWorld = -1.0; // the world's time at its Play (against its last time drawn on screen)
+	float SpecialHitHeldFor = 0.f;      // wall seconds the effect was held since its Play
+	double SpecialHitHeldFrom = -1.0;
+	bool bSpecialHitProbed = false;     // the probe at the hit + 0.1 s (the shots' clock) logged
+	int32 SpecialHitUnseen = 0;         // 1: the hit's contact out of frame or hidden in the shot shown (still failing)
 	// The fist at the hit from the clip (SampleSpecialReach), the contact solve on it, and the drawn check's due flag.
 	ftcore::Vec2 SpecialReach{};
 	float SpecialReachAt = 0.f;
@@ -1739,8 +1762,11 @@ private:
 	float SpecialTestAt = -1.f; // -ArenaSpecialTest=<fight s>: the gauges filled and the special pressed then (once a fight)
 	float SpecialTestUntil = -1.f; // the test press is repeated each step until the special starts, given up then
 	bool bSpecialShots = false; // -ArenaSpecialShots
-	float SpecialStillAt[16] = {};
+	float SpecialStillAt[24] = {};
 	int32 SpecialStillCount = 0, SpecialStillNext = 0;
+	// The hit's stills (specialCineHitStills: its first frames to its fade), named _hit+<ms>.
+	float SpecialHitStillAt[ftcore::SpecialCineHit::kStills] = {};
+	uint32 SpecialHitStills = 0;
 	// The no-pop check: the drawn eye's step per frame, worst over the shots, the blend out and the first frames after;
 	// the enemies' drift while frozen; frames and cuts.
 	FVector SpecialEyeWas = FVector::ZeroVector;

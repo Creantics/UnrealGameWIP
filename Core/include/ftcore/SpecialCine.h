@@ -468,6 +468,9 @@ FTCORE_API SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, floa
 // still that shows it (kStillLag later, inside the move). No allocation.
 struct SpecialCineHit {
     static constexpr float kStillLag = 0.03f; // s: the hit's still, after the effect has spawned
+    // s after the hit: the hit's stills (the effect's first frames to its fade); the first is kStillLag.
+    static constexpr std::uint32_t kStills = 4;
+    static constexpr float kStillLags[kStills] = {kStillLag, 0.08f, 0.15f, 0.25f};
     CutsceneVec3 at;
     float time = 0.f;
     float stillAt = 0.f;
@@ -475,16 +478,36 @@ struct SpecialCineHit {
 };
 FTCORE_API SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime,
                                          float radius = 0.f, const SpecialCineShotFix* fixes = nullptr);
+// The hit's stills on the move's clock: `hit.time` plus each of kStillLags that falls inside the move, ascending (the
+// first is `hit.stillAt` when it does). Written into `out` (up to `capacity`); returns how many. No allocation.
+FTCORE_API std::uint32_t specialCineHitStills(const SpecialCineMove& move, const SpecialCineHit& hit, float* out,
+                                              std::uint32_t capacity);
+// Whether the hit's contact reads in the shot shown at `hit.time` (under `fixes`: null, or one per shot): "none" when it
+// does; "off frame" when it is behind the camera or outside the safe frame; "the contact hidden" when a body of `bodies`
+// (the target's own included) stands between the camera and it. A count for the host's log only: the fix search does
+// not use it. No allocation.
+FTCORE_API SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move, const SpecialCineStage& stage,
+                                                    const SpecialCineHit& hit, const SpecialCineShotFix* fixes = nullptr,
+                                                    const SpecialCineBody* bodies = nullptr, std::uint32_t count = 0);
 
-// The partner's strike point at the hit, as the host's PartnerImpact puts a partner blow: on the target's surface
-// (radius `radius`, or the stage's when wider) toward the partner, at `partnerChest`'s height; `offLine` its distance (m)
-// from the contact line (the lead's chest at the hit through the hit's contact, as a line), `along` where it falls on
-// it (0 the lead's chest, 1 the contact). No allocation.
+// A partner's blow point, by the lead's contact rule (the special's contact): on the target's surface (feet `target`,
+// radius `radius`, `targetHeight` tall) toward `toward` (on the ground plane; at the target's axis: its centre),
+// kContactOut out, at `toward`'s height but no higher than the target's chest. The host's PartnerImpact puts every
+// partner blow here (`toward` the partner's chest). No allocation.
+FTCORE_API CutsceneVec3 specialCinePartnerBlow(const CutsceneVec3& target, float radius, float targetHeight,
+                                               const CutsceneVec3& toward);
+
+// The partner's strike point at the hit, as the host's PartnerImpact puts a partner blow (specialCinePartnerBlow toward
+// `partnerChest`, radius `radius` or the stage's when wider); `offLine` its distance (m) from the contact line (the
+// lead's chest at the hit through the hit's contact, as a line), `along` where it falls on it (0 the lead's chest, 1 the
+// contact), `bearing` the partner's angle round the target's axis from the lead's side (degrees, 0..180: the blow lands
+// about (radius + kContactOut) x sin(bearing) off the line). No allocation.
 struct SpecialCinePartnerStrike {
     static constexpr float kOnLine = 0.15f; // m: a strike point this near the contact line is on it
     CutsceneVec3 at;
     float offLine = 0.f;
     float along = 0.f;
+    float bearing = 0.f;
     bool onLine() const { return offLine <= kOnLine; }
 };
 FTCORE_API SpecialCinePartnerStrike specialCinePartnerStrike(const SpecialCineMove& move, const SpecialCineStage& stage,

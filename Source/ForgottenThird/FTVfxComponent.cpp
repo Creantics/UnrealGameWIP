@@ -54,7 +54,7 @@ void UFTVfxComponent::EndPlay(const EEndPlayReason::Type Reason)
 	Super::EndPlay(Reason);
 }
 
-bool UFTVfxComponent::Play()
+bool UFTVfxComponent::MakeNiagara()
 {
 	if (!System && !Effect.IsNone())
 	{
@@ -76,6 +76,28 @@ bool UFTVfxComponent::Play()
 	else if (Niagara->GetAsset() != System)
 	{
 		Niagara->SetAsset(System);
+	}
+	return true;
+}
+
+bool UFTVfxComponent::Prepare()
+{
+	if (!MakeNiagara())
+	{
+		return false;
+	}
+	if (System->IsReadyToRun() && GetWorld())
+	{
+		Niagara->InitializeSystem(); // its instance made: the pipeline states precache from here (OnInitialize)
+	}
+	return true;
+}
+
+bool UFTVfxComponent::Play()
+{
+	if (!MakeNiagara())
+	{
+		return false;
 	}
 	PushParameters();
 	Niagara->Activate(true);

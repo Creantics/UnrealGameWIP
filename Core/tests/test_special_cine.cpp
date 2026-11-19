@@ -1459,6 +1459,12 @@ TEST_CASE("special cine: the partner's strike point against the contact line at 
     st.targetHeight = 1.97f;
     const SpecialCineHit hit = specialCineHit(*far, st, 7.1f + 6.59f / 40.f, 0.45f);
     const float chest = 0.6f * 1.8f;
+    // The partner's angle round the target's axis from the contact (which faces the lead's feet at the hit).
+    const auto bearingOf = [](const SpecialCineHit& h, const SpecialCineStage& sg, const CutsceneVec3& p) {
+        const float cx = h.at.x - sg.target.x, cy = h.at.y - sg.target.y, px = p.x - sg.target.x, py = p.y - sg.target.y;
+        return std::acos(std::clamp((cx * px + cy * py) / (std::sqrt(cx * cx + cy * cy) * std::sqrt(px * px + py * py)), -1.f,
+                                    1.f)) * 180.f / 3.14159265f;
+    };
     const auto before = ftcore_test::allocStats().count;
     // A partner on the lead's side of the target, at any range: its blow lands on the surface toward it, near the
     // contact; within the cone whose surface point stays 0.15 m off the line, on it.
@@ -1467,20 +1473,24 @@ TEST_CASE("special cine: the partner's strike point against the contact line at 
             const float a = (180.f + deg) * 3.14159265f / 180.f;
             const CutsceneVec3 partner{6.59f + range * std::cos(a), range * std::sin(a), chest};
             const SpecialCinePartnerStrike s = specialCinePartnerStrike(*far, st, hit, partner, 0.45f);
-            CHECK(near(std::sqrt((s.at.x - 6.59f) * (s.at.x - 6.59f) + s.at.y * s.at.y), 0.45f, 1e-3f));
+            // The lead's contact rule: kContactOut off the surface, at the partner's chest (under the brute's).
+            CHECK(near(std::sqrt((s.at.x - 6.59f) * (s.at.x - 6.59f) + s.at.y * s.at.y), 0.55f, 1e-3f));
             CHECK(near(s.at.z, chest));
+            CHECK(near(s.bearing, bearingOf(hit, st, partner), 0.5f));
+            CHECK(near(s.bearing, std::fabs(deg), 1.5f));
             // The contact line runs from the lead (about 6 m back) to the contact, near the target's axis: the strike
-            // point's distance from it is the surface chord, about radius x sin(angle).
-            const float expect = 0.45f * std::sin(std::fabs(deg) * 3.14159265f / 180.f);
+            // point's distance from it is the chord, about (radius + kContactOut) x sin(bearing).
+            const float expect = 0.55f * std::sin(std::fabs(deg) * 3.14159265f / 180.f);
             CHECK(std::fabs(s.offLine - expect) < 0.06f);
             if (std::fabs(deg) <= 10.f) CHECK(s.onLine());
             if (std::fabs(deg) >= 30.f) CHECK_FALSE(s.onLine());
             CHECK(s.along > 0.9f);
         }
     }
-    // Beside the target, square to the lead's way: the blow is the radius off the line.
+    // Beside the target, square to the lead's way: the blow is the radius and the fist's depth off the line.
     const SpecialCinePartnerStrike side = specialCinePartnerStrike(*far, st, hit, CutsceneVec3{6.59f, 2.f, chest}, 0.45f);
-    CHECK(near(side.offLine, 0.45f, 0.06f));
+    CHECK(near(side.offLine, 0.55f, 0.06f));
+    CHECK(near(side.bearing, 90.f, 1.f));
     CHECK_FALSE(side.onLine());
     // Standing in the target (no direction): its centre, about on the line.
     const SpecialCinePartnerStrike inside = specialCinePartnerStrike(*far, st, hit, CutsceneVec3{6.59f, 0.f, chest}, 0.45f);
@@ -1683,5 +1693,208 @@ TEST_CASE("special cine: a skipped shot as played: the cut lands on its in, the 
         } else {
             CHECK(cutsInWindow == 0); // the shot before holds through; shot 7 cuts in on its own in
         }
+    }
+}
+
+TEST_CASE("special cine: the partner's blow by the lead's contact rule at any radius and height; off the line by its bearing") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const float pi = 3.14159265f;
+    const float radii[6] = {0.2f, 0.35f, 0.6f, 0.9f, 1.2f, 1.5f};
+    float widestOnLine[6] = {};
+    int cases = 0;
+    const auto before = ftcore_test::allocStats().count;
+    for (int r = 0; r < 6; ++r) {
+        const float radius = radii[r];
+        const float out = radius + SpecialCineFraming::kContactOut;
+        for (const float height : {0.5f, 0.9f, 1.4f, 1.97f, 3.f}) {
+            CAPTURE(radius);
+            CAPTURE(height);
+            SpecialCineStage st = stageAt(0.f, 0.f, 6.f + radius, 0.f);
+            st.targetRadius = radius;
+            st.targetHeight = height;
+            const SpecialCineHit hit = specialCineHit(*far, st, 7.1f + 6.f / 40.f, radius);
+            const float side = std::atan2(hit.at.y - st.target.y, hit.at.x - st.target.x); // the contact's side
+            // The lead's chest capped at the target's: the contact's height, and the blow's (the partner as tall).
+            const float z = std::min(0.6f * 1.8f, 0.6f * height);
+            CHECK(near(hit.at.z, z, 1e-3f));
+            for (float b = 0.f; b <= 90.f + 1e-3f; b += 5.f) {
+                for (const float range : {1.f, 3.f}) {
+                    const float a = side + b * pi / 180.f;
+                    const CutsceneVec3 partner{st.target.x + (radius + range) * std::cos(a), (radius + range) * std::sin(a),
+                                               0.6f * 1.8f};
+                    const SpecialCinePartnerStrike s = specialCinePartnerStrike(*far, st, hit, partner, radius);
+                    ++cases;
+                    // On the surface toward the partner, the fist's depth out, at the contact's height.
+                    const float dx = s.at.x - st.target.x, dy = s.at.y - st.target.y;
+                    CHECK(near(std::sqrt(dx * dx + dy * dy), out, 1e-3f));
+                    CHECK(near(s.at.z, z, 1e-3f));
+                    CHECK(near(s.bearing, b, 0.5f));
+                    // Off the line by the chord square to it; on a short target the line slopes down past the contact,
+                    // so a blow round the far side sits a little above it.
+                    const float lateral = out * std::sin(b * pi / 180.f);
+                    CHECK(s.offLine >= lateral - 0.06f);
+                    CHECK(s.offLine <= lateral + 0.06f + 0.12f * out * (1.f - std::cos(b * pi / 180.f)));
+                    if (s.onLine()) widestOnLine[r] = std::max(widestOnLine[r], b);
+                    // Straight on the lead's side, at any radius, height and range: the blow is the contact.
+                    if (b == 0.f) {
+                        CHECK(s.onLine());
+                        CHECK(s.offLine < 0.06f);
+                    }
+                }
+            }
+        }
+    }
+    if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+    CHECK(cases > 1000);
+    MESSAGE("widest bearing on the line (0.15 m), deg: ", widestOnLine[0], " at 0.2 m, ", widestOnLine[1], " at 0.35 m, ",
+            widestOnLine[2], " at 0.6 m, ", widestOnLine[3], " at 0.9 m, ", widestOnLine[4], " at 1.2 m, ", widestOnLine[5],
+            " at 1.5 m");
+    // asin(0.15 / (R + 0.1)): about 30 degrees at 0.2 m, under 7 at 1.2 m.
+    CHECK(widestOnLine[0] >= 25.f);
+    CHECK(widestOnLine[4] <= 10.f);
+    CHECK(widestOnLine[5] <= 5.f);
+
+    // r2b_big (round 3): a 1.2 m target, the partner 65 degrees round from the lead's side. No blow on its surface is on
+    // the line: (1.2 + 0.1) x sin 65 = 1.18 m. The partner's place, not the blow's rule, keeps it off.
+    {
+        SpecialCineStage st = stageAt(0.f, 0.f, 2.97f, 0.f);
+        st.targetRadius = 1.2f;
+        st.targetHeight = 3.f;
+        st.leadHeight = 1.4f;
+        const SpecialCineHit hit = specialCineHit(*far, st, 7.156f, 1.2f);
+        const float a = std::atan2(hit.at.y, hit.at.x - 2.97f) + 65.f * pi / 180.f;
+        const SpecialCinePartnerStrike s =
+            specialCinePartnerStrike(*far, st, hit, CutsceneVec3{2.97f + 4.f * std::cos(a), 4.f * std::sin(a), 0.84f}, 1.2f);
+        CHECK(near(s.bearing, 65.f, 0.5f));
+        CHECK(near(s.offLine, 1.3f * std::sin(65.f * pi / 180.f), 0.12f));
+        CHECK_FALSE(s.onLine());
+    }
+    // maw_pup (round 3): 0.9 m tall, its chest (0.54 m) caps the contact; the partner (chest 0.84 m) behind the lead on
+    // its line. The old blow at the partner's chest stood 0.30 m off; by the contact rule it is the contact.
+    {
+        SpecialCineStage st = stageAt(0.f, 0.f, 13.f, 0.f);
+        st.targetRadius = 0.35f;
+        st.targetHeight = 0.9f;
+        st.leadHeight = 1.4f;
+        const SpecialCineHit hit = specialCineHit(*far, st, 7.4f, 0.35f);
+        CHECK(near(hit.at.z, 0.54f, 1e-3f));
+        const SpecialCinePartnerStrike s = specialCinePartnerStrike(*far, st, hit, CutsceneVec3{8.f, 0.04f, 0.84f}, 0.35f);
+        CHECK(near(s.at.z, 0.54f, 1e-3f));
+        CHECK(s.offLine < 0.05f);
+        CHECK(s.onLine());
+    }
+    // At the target's axis: its centre, at the capped height; a partner taller than the target's chest is capped, a
+    // shorter one keeps its own height.
+    const CutsceneVec3 axis = specialCinePartnerBlow({3.f, 1.f, 0.f}, 0.5f, 0.9f, {3.f, 1.f, 1.2f});
+    CHECK(near(axis.x, 3.f));
+    CHECK(near(axis.y, 1.f));
+    CHECK(near(axis.z, 0.54f));
+    const CutsceneVec3 low = specialCinePartnerBlow({3.f, 1.f, 0.f}, 0.5f, 3.f, {0.f, 1.f, 1.f});
+    CHECK(near(low.x, 2.4f));
+    CHECK(near(low.y, 1.f));
+    CHECK(near(low.z, 1.f));
+    // Standing on a raised target: its feet's height counts.
+    const CutsceneVec3 raised = specialCinePartnerBlow({3.f, 1.f, 0.5f}, 0.5f, 0.9f, {0.f, 1.f, 1.6f});
+    CHECK(near(raised.z, 0.5f + 0.54f));
+}
+
+TEST_CASE("special cine: the hit's stills: its first frames to its fade, inside the move") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    SpecialCineStage st = stageAt(0.f, 0.f, 6.59f, 0.f);
+    st.targetRadius = 0.45f;
+    const SpecialCineHit hit = specialCineHit(*far, st, 7.1f + 6.59f / 40.f, 0.45f);
+    float at[8] = {};
+    REQUIRE(specialCineHitStills(*far, hit, at, 8) == SpecialCineHit::kStills);
+    CHECK(at[0] == hit.stillAt);
+    for (std::uint32_t k = 0; k < SpecialCineHit::kStills; ++k) {
+        CHECK(near(at[k], hit.time + SpecialCineHit::kStillLags[k]));
+        CHECK(at[k] < far->length());
+        if (k > 0) CHECK(at[k] > at[k - 1]);
+    }
+    CHECK(near(at[3] - hit.time, 0.25f));
+    CHECK(specialCineHitStills(*far, hit, at, 2) == 2);
+    CHECK(specialCineHitStills(*far, hit, nullptr, 8) == 0);
+    // Near the move's end: only those inside it.
+    const SpecialCineHit late = specialCineHit(*far, st, far->length() - 0.1f, 0.45f);
+    CHECK(specialCineHitStills(*far, late, at, 8) == 2);
+}
+
+TEST_CASE("special cine: the hit's contact in the shown shot: it reads at 6.6 m; out of frame on the smallest kind far out") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable arena;
+    REQUIRE_MESSAGE(importArenaTable(text, arena, &error), error);
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_special.json", text));
+    ArenaSpecialTable specials;
+    REQUIRE_MESSAGE(importArenaSpecials(text, specials, &error), error);
+    const ArenaSpecialRules* rules = specials.forLead("devin");
+    REQUIRE(rules != nullptr);
+    const ArenaFighter& lead = arena.fighter("devin");
+    const ArenaEnemyKind* pup = nullptr;
+    for (std::size_t k = 0; k < arena.enemies.size(); ++k)
+        if (arena.enemyIds[k] == "maw_pup") pup = &arena.enemies[k];
+    REQUIRE(pup != nullptr);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    const CutsceneVec3 end = far->endFeet();
+    const float walk = std::sqrt(end.x * end.x + end.y * end.y);
+    // The host's two passes (every shot's fix, then the cover for a shot none frames), then the hit as played.
+    const auto played = [&](const SpecialCineStage& st, float d, float radius, SpecialCineShotFix* fixes, SpecialCineHit& hit) {
+        const SpecialCineBody body = bodyOf(st);
+        bool failing[SpecialCineMove::kMaxShots] = {};
+        for (std::uint32_t i = 0; i < far->size(); ++i) {
+            if (far->shot(i).subject == SpecialCineSubject::None) continue;
+            const SpecialCineShotCheck c = specialCineFixShot(*far, i, st, &body, 1);
+            fixes[i] = c.fix;
+            failing[i] = !c.ok;
+        }
+        for (std::uint32_t i = 0; i < far->size(); ++i)
+            if (failing[i]) fixes[i].cover = specialCineCoverShot(*far, i, st, fixes, &body, 1);
+        hit = specialCineHit(*far, st, arenaSpecialImpactAt(*rules, d), radius, fixes);
+        return specialCineHitProblem(*far, st, hit, fixes, &body, 1);
+    };
+    // r2b_far: a brute 6.59 m off, the hit in shot 6: the contact reads.
+    {
+        SpecialCineStage st = stageAt(0.f, 0.f, 6.59f, 0.f);
+        st.targetRadius = 0.45f;
+        st.targetHeight = 1.97f;
+        st.travel = travelAt(6.59f, lead.bodyRadius + 0.45f, walk);
+        st.bone = {0.3f, 0.25f, 1.1f};
+        SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+        SpecialCineHit hit;
+        CHECK(played(st, 6.59f, 0.45f, fixes, hit) == SpecialCineProblem::None);
+        CHECK(hit.shot == 5);
+    }
+    // maw_pup at 12.49 and 13.69 m (round 3's 13.0 and 14.2 spawns at the press): the hit falls in shot 7, which frames
+    // the lead; its contact is out of frame. Counted as still failing, not fixed.
+    for (const float d : {12.49f, 13.69f}) {
+        CAPTURE(d);
+        SpecialCineStage st = stageAt(0.f, 0.f, d, 0.f);
+        st.targetRadius = pup->bodyRadius;
+        st.targetHeight = arenaEnemyHeight(*pup);
+        st.travel = travelAt(d, lead.bodyRadius + pup->bodyRadius, walk);
+        st.bone = {0.3f, 0.25f, 1.1f};
+        SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+        SpecialCineHit hit;
+        const auto before = ftcore_test::allocStats().count;
+        const SpecialCineProblem p = played(st, d, pup->bodyRadius, fixes, hit);
+        if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
+        MESSAGE("maw_pup at ", d, " m: the hit at ", hit.time, " s in shot ", hit.shot + 1, ", problem ", static_cast<int>(p));
+        CHECK(hit.shot == 6);
+        CHECK(p == SpecialCineProblem::OffFrame);
     }
 }

@@ -51,6 +51,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	bool Play();
 
+	// Loads the system and makes the Niagara component with its system instance (once the system is ready to run), not
+	// started: the effect's pipeline states begin compiling here, so a first Play later draws from its first frame (the
+	// engine draws nothing of an effect whose pipeline states are still compiling). False when the system can't be found.
+	bool Prepare();
+
 	UFUNCTION(BlueprintCallable, Category = "VFX")
 	void Stop();
 
@@ -82,6 +87,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UNiagaraComponent> Niagara;
+
+	// Loads the system and makes the Niagara component (not started). False when the system can't be found.
+	bool MakeNiagara();
 
 	FTimerHandle ReplayTimer;
 };

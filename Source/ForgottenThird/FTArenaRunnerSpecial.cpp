@@ -27,6 +27,7 @@
 #include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/HitResult.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
 #include "FTArenaFighter.h"
@@ -46,6 +47,11 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "NiagaraComponent.h"
+#include "NiagaraEmitterInstance.h"
+#include "NiagaraSystem.h"
+#include "NiagaraSystemInstance.h"
+#include "NiagaraSystemInstanceController.h"
 #include "RHI.h"
 #include "RenderCore.h"
 
@@ -68,6 +74,7 @@ FVector Cm(const ftcore::CutsceneVec3& M) { return FVector(M.x, M.y, M.z) * 100.
 // yet; this tracked burst stands in for it until it is.
 const FName kSpecialHitStandIn(TEXT("crit_burst"));
 constexpr float kSpecialHitScale = 1.f;
+constexpr float kSpecialHitProbeLag = 0.1f; // s on the shots' clock: the probe after the hit's
 
 // The hit's time: the move's impact row (the first FX_ row on the impact cue), else Core's impact itself.
 float SpecialHitTime(const ftcore::ArenaSpecialRules& Rules, float Impact, const TCHAR** Row = nullptr)
@@ -209,6 +216,10 @@ void UFTArenaRunner::ReadSpecialTable()
 	SpecialSkipAt = -1.f;
 	FParse::Value(Cmd, TEXT("ArenaSpecialSkipAt="), SpecialSkipAt);
 	bSpecialHitFx = !FParse::Param(Cmd, TEXT("ArenaSpecialNoHitFx"));
+	FString HitFxName;
+	SpecialHitEffect = FParse::Value(Cmd, TEXT("ArenaSpecialHitFx="), HitFxName) && !HitFxName.IsEmpty() ? FName(*HitFxName) : NAME_None;
+	bSpecialHitHoldRuns = FParse::Param(Cmd, TEXT("ArenaSpecialHitHoldRuns"));
+	bSpecialHitLate = FParse::Param(Cmd, TEXT("ArenaSpecialHitLate"));
 #endif
 	if (bSpecialTableRead)
 	{
@@ -882,12 +893,8 @@ void UFTArenaRunner::PollSpecialSkip()
 // that passes (mirrored, raised, aimed, pulled, then orbited about the subject; Core's order); none passes: it plays as
 // written and is logged as still failing. The bodies are Core's upright cylinders: the living enemies
 // (the target marked) and the partner; the lead is the subject, not a body.
-void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target)
+uint32 UFTArenaRunner::SpecialCineBodies(int32 Target, ftcore::SpecialCineBody* List)
 {
-	SpecialShotsMoved = SpecialShotsBlocked = SpecialShotsSkipped = 0;
-	ftcore::SpecialCineStage Stage = SpecialStageAt;
-	Stage.bone = {Stage.origin.x, Stage.origin.y, Stage.origin.z + 1.2f}; // the hand's not known ahead: the chest
-	ftcore::SpecialCineBody List[MaxEnemies + 1];
 	uint32 Count = 0;
 	const int32 Enemies = FMath::Min(static_cast<int32>(Fight.def().enemyCount), static_cast<int32>(MaxEnemies));
 	for (int32 I = 0; I < Enemies; ++I)
@@ -911,6 +918,16 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		B.radius = Fight.def().fighter.bodyRadius;
 		B.height = FMath::Max(0.5f, Ally->GetHeight() / 100.f);
 	}
+	return Count;
+}
+
+void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target)
+{
+	SpecialShotsMoved = SpecialShotsBlocked = SpecialShotsSkipped = 0;
+	ftcore::SpecialCineStage Stage = SpecialStageAt;
+	Stage.bone = {Stage.origin.x, Stage.origin.y, Stage.origin.z + 1.2f}; // the hand's not known ahead: the chest
+	ftcore::SpecialCineBody List[MaxEnemies + 1];
+	const uint32 Count = SpecialCineBodies(Target, List);
 	// The static world only: the figures are tested as the cylinders above.
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FTSpecialShots), false);
 	for (const AActor* Figure : {static_cast<const AActor*>(PlayerFigure.Get()), static_cast<const AActor*>(AllyFigure.Get())})
@@ -1060,6 +1077,10 @@ bool UFTArenaRunner::BeginSpecial()
 	const float HitAt = Rules ? SpecialHitTime(*Rules, V.impactTime, &HitRow) : V.impactTime;
 	bSpecialHitPlayed = false;
 	bSpecialContactDue = false;
+	bSpecialHitProbed = false;
+	SpecialHitPlayedWall = SpecialHitPlayedWorld = SpecialHitHeldFrom = -1.0;
+	SpecialHitHeldFor = 0.f;
+	SpecialHitUnseen = 0;
 	// Nothing paused on the performer, nothing shaking the camera.
 	LeadWeapons.HitPause(false);
 	Jolt = ftcore::ArenaJolt();
@@ -1083,6 +1104,21 @@ bool UFTArenaRunner::BeginSpecial()
 	const double FixMs = (FPlatformTime::Seconds() - FixFrom) * 1000.0;
 	// After the fixes: a skipped shot's window shows the shot over it, and the hit's shot is the one shown.
 	SpecialHit = ftcore::specialCineHit(*Move, SpecialStageAt, HitAt, SpecialStageAt.targetRadius, SpecialPlayer.fixes());
+	// Whether the contact reads in the shot shown at the hit: a count for the log (the fix search does not use it); a
+	// hit out of frame or hidden is a shot still failing.
+	ftcore::SpecialCineProblem HitSeen = ftcore::SpecialCineProblem::None;
+	{
+		ftcore::SpecialCineBody Seen[MaxEnemies + 1];
+		const uint32 SeenCount = SpecialCineBodies(Target, Seen);
+		HitSeen = ftcore::specialCineHitProblem(*Move, SpecialStageAt, SpecialHit, SpecialPlayer.fixes(), Seen, SeenCount);
+		SpecialHitUnseen = HitSeen != ftcore::SpecialCineProblem::None ? 1 : 0;
+	}
+	// The hit's effect made now, ahead of the hit: its pipeline states compile over the shots before it (the engine
+	// draws nothing of an effect whose states are still compiling). -ArenaSpecialHitLate makes it at the hit instead.
+	if (bSpecialHitFx && !bSpecialHitLate)
+	{
+		SpecialHitFxOn(PlayerFigure.Get(), TEXT("the special's start"));
+	}
 	PlaySpecialClip(true);
 	bSpecialOn = true;
 	bSpecialPlaced = false;
@@ -1102,16 +1138,20 @@ bool UFTArenaRunner::BeginSpecial()
 	}
 	// The stills: each shot's middle and just past the release.
 	SpecialStillCount = SpecialStillNext = 0;
+	SpecialHitStills = 0;
 	if (bSpecialShots)
 	{
-		for (uint32 I = 0; I < Move->size() && SpecialStillCount < static_cast<int32>(UE_ARRAY_COUNT(SpecialStillAt)) - 1; ++I)
+		// The hit's stills (its first frames to its fade) kept room for first, with the release's.
+		SpecialHitStills = ftcore::specialCineHitStills(*Move, SpecialHit, SpecialHitStillAt, ftcore::SpecialCineHit::kStills);
+		const int32 Room = static_cast<int32>(UE_ARRAY_COUNT(SpecialStillAt)) - 1 - static_cast<int32>(SpecialHitStills);
+		for (uint32 I = 0; I < Move->size() && SpecialStillCount < Room; ++I)
 		{
 			SpecialStillAt[SpecialStillCount++] = 0.5f * (Move->shot(I).in + Move->shot(I).out);
 		}
 		SpecialStillAt[SpecialStillCount++] = Move->release() + 0.05f;
-		if (SpecialStillCount < static_cast<int32>(UE_ARRAY_COUNT(SpecialStillAt)))
+		for (uint32 K = 0; K < SpecialHitStills; ++K)
 		{
-			SpecialStillAt[SpecialStillCount++] = SpecialHit.stillAt; // the hit's effect, just after it spawned
+			SpecialStillAt[SpecialStillCount++] = SpecialHitStillAt[K];
 		}
 		Algo::Sort(MakeArrayView(SpecialStillAt, SpecialStillCount));
 	}
@@ -1119,13 +1159,18 @@ bool UFTArenaRunner::BeginSpecial()
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the hit at %.3f s (%s; Core's impact %.3f s), shot %u, its still at %.3f s; contact (%.2f, %.2f, %.2f) m%s."),
 		*Id, SpecialHit.time, HitRow, V.impactTime, SpecialHit.shot + 1, SpecialHit.stillAt, SpecialHit.at.x, SpecialHit.at.y, SpecialHit.at.z,
 		bSpecialHitFx ? TEXT("") : TEXT(" (-ArenaSpecialNoHitFx: no effect)"));
+	if (HitSeen != ftcore::SpecialCineProblem::None)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special %s: the hit's contact does not read in shot %u, the one shown at %.3f s (%s): counted as a shot still failing."),
+			*Id, SpecialHit.shot + 1, SpecialHit.time, UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(HitSeen)).c_str()));
+	}
 	const float Off = FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y));
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("Arena: %.2f: special %s begins on enemy %d (%.2f m off, radius %.2f, height %.2f m): the %s set (%.2f m, near within %.2f m), %u shots (%d moved, %d skipped, %d still failing; search %.2f ms), %.2f s (Core %.2f s); ")
 		TEXT("froze %d actors, %d effects, %d sounds, %d bodies, %d cloths in %.2f ms. ")
 		TEXT("Clamp%s: travel %.2f m (%.0f%%), back %.2f m (limited by %s); Core: from (%.2f, %.2f) to (%.2f, %.2f) m (travel share %.2f), %.2f m from the clamped end."),
 		Fight.time(), *Id, Target, Dist, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight, Set, Range, Far->nearWithin(), Move->size(), SpecialShotsMoved,
-		SpecialShotsSkipped, SpecialShotsBlocked, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
+		SpecialShotsSkipped, SpecialShotsBlocked + SpecialHitUnseen, FixMs, Move->length(), V.duration, SpecialFreeze.ActorCount(), SpecialFreeze.EffectCount(), SpecialFreeze.SoundCount(),
 		SpecialFreeze.BodyCount(), SpecialFreeze.ClothCount(), SpecialBeginMs, bSameTarget ? TEXT("") : TEXT(" (again, for Core's target)"),
 		V.travel, SpecialTravel * 100.f, SpecialBack, SpecialLimit, V.origin.x, V.origin.y, V.end.x, V.end.y, SpecialStageAt.travel, Off);
 	if (Off > 0.05f)
@@ -1219,6 +1264,21 @@ void UFTArenaRunner::TickSpecial(float DeltaSeconds)
 	if (!bSpecialHitPlayed && SpecialPlayer.time() >= SpecialHit.time)
 	{
 		PlaySpecialHit();
+	}
+	else if (bSpecialHitPlayed && !bSpecialHitProbed && SpecialPlayer.time() >= SpecialHit.time + kSpecialHitProbeLag)
+	{
+		bSpecialHitProbed = true;
+		// The verdict on its particle count (a lightweight emitter's is worked from its age), its scene proxy and its
+		// last time drawn on screen: "played" means drawing.
+		const bool bDrawing = ProbeSpecialHit(TEXT("the hit + 0.1 s"));
+		if (bDrawing)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special hit effect at the hit + 0.1 s: drawing (particles alive, drawn on screen since its play)."));
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena check: special hit effect at the hit + 0.1 s: NOT DRAWING (see the probe above: no particles, no scene proxy or not drawn since its play)."));
+		}
 	}
 	const ftcore::SpecialCineFrame F = SpecialPlayer.frame(SpecialStage());
 	const ftcore::SpecialCineMove& Move = *SpecialPlayer.move();
@@ -1334,30 +1394,12 @@ void UFTArenaRunner::PlaySpecialHit()
 			!bSpecialHitFx ? TEXT("-ArenaSpecialNoHitFx") : TEXT("no lead figure"));
 		return;
 	}
-	UFTVfxComponent* Vfx = SpecialHitFx.Get();
-	if (Vfx && Vfx->GetOwner() != Lead)
-	{
-		Vfx->DestroyComponent(); // the figures swapped: made again on the performer's
-		Vfx = nullptr;
-	}
-	if (!Vfx)
-	{
-		// On the performer's figure, placed in the world: the freeze holds every other actor (and what it spawns).
-		Vfx = NewObject<UFTVfxComponent>(Lead);
-		Vfx->Effect = kSpecialHitStandIn;
-		Vfx->bPlayOnBeginPlay = false;
-		Vfx->SetupAttachment(Lead->GetRootComponent());
-		Vfx->SetUsingAbsoluteLocation(true);
-		Vfx->SetUsingAbsoluteRotation(true);
-		Vfx->SetUsingAbsoluteScale(true);
-		Vfx->RegisterComponent();
-		Vfx->SetWorldScale3D(FVector(kSpecialHitScale));
-		Vfx->SetParameters(kSpecialHitScale, kSpecialHitScale);
-		SpecialHitFx = Vfx;
-	}
+	UFTVfxComponent* Vfx = SpecialHitFxOn(Lead, bSpecialHitLate ? TEXT("the hit (-ArenaSpecialHitLate)") : TEXT("the hit"));
 	const FVector At = Cm(SpecialHit.at);
 	Vfx->SetWorldLocationAndRotation(At, FFTLeadWeapons::ImpactFacing(Lead->GetActorLocation(), At));
 	const bool bPlayed = Vfx->Play();
+	SpecialHitPlayedWall = FPlatformTime::Seconds();
+	SpecialHitPlayedWorld = GetWorld() ? GetWorld()->GetTimeSeconds() : -1.0;
 	// Measured on the drawn figures: the effect's distance from the contact, and from the target's surface (its centre
 	// less its radius, on the ground plane).
 	const FVector Drawn = Vfx->GetComponentLocation();
@@ -1370,6 +1412,7 @@ void UFTArenaRunner::PlaySpecialHit()
 		TEXT("Arena check: special hit at %.3f s (shot %u): played %s, %s at (%.0f, %.0f, %.0f) cm, %.1f cm from the contact, %.1f cm off the target's surface."),
 		SpecialPlayer.time(), SpecialPlayer.move() ? SpecialPlayer.move()->shotAt(SpecialPlayer.time()) + 1 : 0u, bPlayed ? TEXT("true") : TEXT("false (no effect asset)"),
 		*Vfx->Effect.ToString(), Drawn.X, Drawn.Y, Drawn.Z, FVector::Dist(Drawn, At), Surface);
+	ProbeSpecialHit(TEXT("the hit"));
 	// The partner at the hit (held where the press found it): its strike point (as PartnerImpact puts one) against the
 	// contact line, and its body's distance from the drawn camera's sight line to the contact.
 	const AFTArenaFighter* Ally = AllyFigure.Get();
@@ -1386,9 +1429,210 @@ void UFTArenaRunner::PlaySpecialHit()
 			Sight = static_cast<float>(FMath::PointDistToSegment(FVector(Axis.X, Axis.Y, At.Z), Eye, At)) / 100.f;
 		}
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("Arena check: special hit: the partner's strike point (%.2f, %.2f, %.2f) m is %.2f m off the contact line (at %.2f along it; on it within %.2f: %s); the partner's axis %.2f m from the camera's sight line to the contact."),
-			S.at.x, S.at.y, S.at.z, S.offLine, S.along, ftcore::SpecialCinePartnerStrike::kOnLine, S.onLine() ? TEXT("yes") : TEXT("no"), Sight);
+			TEXT("Arena check: special hit: the partner's strike point (%.2f, %.2f, %.2f) m is %.2f m off the contact line (at %.2f along it; on it within %.2f: %s), the partner %.1f deg round the target's axis from the lead's side; the partner's axis %.2f m from the camera's sight line to the contact."),
+			S.at.x, S.at.y, S.at.z, S.offLine, S.along, ftcore::SpecialCinePartnerStrike::kOnLine, S.onLine() ? TEXT("yes") : TEXT("no"), S.bearing, Sight);
+		if (!S.onLine())
+		{
+			// The park check: the partner stood where its blow would pass (the bearing that puts it kOnLine off the line),
+			// at its own range from the target's axis, either side: would its body hide the contact in the shot shown?
+			const ftcore::SpecialCineStage& St = SpecialStageAt;
+			const float Out = St.targetRadius + ftcore::SpecialCineFraming::kContactOut;
+			const float Pass = FMath::Asin(FMath::Min(1.f, ftcore::SpecialCinePartnerStrike::kOnLine / Out));
+			const FVector Feet = Ally->GetActorLocation() / 100.0;
+			const float Own = Fight.def().fighter.bodyRadius;
+			const float Range = FMath::Max(FMath::Sqrt(FMath::Square(static_cast<float>(Feet.X) - St.target.x) + FMath::Square(static_cast<float>(Feet.Y) - St.target.y)),
+				St.targetRadius + Own + 0.05f);
+			const float Side = FMath::Atan2(SpecialHit.at.y - St.target.y, SpecialHit.at.x - St.target.x);
+			ftcore::SpecialCineBody Two[2];
+			Two[0].feet = St.target;
+			Two[0].radius = St.targetRadius;
+			Two[0].height = St.targetHeight;
+			Two[0].target = true;
+			Two[1].radius = Own;
+			Two[1].height = FMath::Max(0.5f, Ally->GetHeight() / 100.f);
+			const ftcore::SpecialCineProblem Alone = ftcore::specialCineHitProblem(*SpecialPlayer.move(), St, SpecialHit, SpecialPlayer.fixes(), Two, 1);
+			FString Sides[2];
+			for (int32 K = 0; K < 2; ++K)
+			{
+				const float B = Side + (K == 0 ? Pass : -Pass);
+				Two[1].feet = ftcore::CutsceneVec3{St.target.x + Range * FMath::Cos(B), St.target.y + Range * FMath::Sin(B), static_cast<float>(Feet.Z)};
+				const ftcore::SpecialCineProblem With = ftcore::specialCineHitProblem(*SpecialPlayer.move(), St, SpecialHit, SpecialPlayer.fixes(), Two, 2);
+				Sides[K] = FString::Printf(TEXT("(%.2f, %.2f) m: %s"), Two[1].feet.x, Two[1].feet.y,
+					With == ftcore::SpecialCineProblem::ContactHidden && Alone != ftcore::SpecialCineProblem::ContactHidden ? TEXT("HIDES the contact")
+					: With == ftcore::SpecialCineProblem::None ? TEXT("the contact reads")
+					: UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(With)).c_str()));
+			}
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("Arena check: special hit: park check: the partner where its blow passes (%.1f deg from the lead's side, %.2f m from the target's axis; the target alone: %s): one side %s; the other %s."),
+				FMath::RadiansToDegrees(Pass), Range, Alone == ftcore::SpecialCineProblem::None ? TEXT("the contact reads")
+				: UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Alone)).c_str()), *Sides[0], *Sides[1]);
+		}
 	}
+}
+
+UFTVfxComponent* UFTArenaRunner::SpecialHitFxOn(AFTArenaFighter* Lead, const TCHAR* Why)
+{
+	UFTVfxComponent* Vfx = SpecialHitFx.Get();
+	if (Vfx && Vfx->GetOwner() != Lead)
+	{
+		Vfx->DestroyComponent(); // the figures swapped: made again on the performer's
+		Vfx = nullptr;
+	}
+	if (Vfx || !Lead)
+	{
+		return Vfx;
+	}
+	const double From = FPlatformTime::Seconds();
+	// On the performer's figure, placed in the world: the freeze holds every other actor (and what it spawns).
+	Vfx = NewObject<UFTVfxComponent>(Lead);
+	Vfx->Effect = SpecialHitEffect.IsNone() ? kSpecialHitStandIn : SpecialHitEffect;
+	Vfx->bPlayOnBeginPlay = false;
+	Vfx->SetupAttachment(Lead->GetRootComponent());
+	Vfx->SetUsingAbsoluteLocation(true);
+	Vfx->SetUsingAbsoluteRotation(true);
+	Vfx->SetUsingAbsoluteScale(true);
+	Vfx->RegisterComponent();
+	Vfx->SetWorldScale3D(FVector(kSpecialHitScale));
+	Vfx->SetParameters(kSpecialHitScale, kSpecialHitScale);
+	SpecialHitFx = Vfx;
+	// Its system loaded and its instance made, not started (its pipeline states precache from here).
+	const bool bLoaded = Vfx->Prepare();
+	UNiagaraSystem* System = Vfx->System.Get();
+	const bool bReadyFirst = System && System->IsReadyToRun();
+	FString Waited;
+#if WITH_EDITORONLY_DATA
+	if (System && !bReadyFirst)
+	{
+		System->WaitForCompilationComplete(true, false);
+		Vfx->Prepare();
+		Waited = FString::Printf(TEXT(", waited for its compile: ready %s"), System->IsReadyToRun() ? TEXT("yes") : TEXT("NO"));
+	}
+#endif
+	const UNiagaraComponent* Nc = Vfx->GetNiagara();
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special hit effect %s made at %s in %.2f ms: system %s, ready to run %s%s; instance %s, its pipeline states precaching %s."),
+		*Vfx->Effect.ToString(), Why, (FPlatformTime::Seconds() - From) * 1000.0, bLoaded ? *GetNameSafe(System) : TEXT("NOT FOUND"),
+		bReadyFirst ? TEXT("yes") : TEXT("no"), *Waited, Nc && Nc->GetSystemInstanceController().IsValid() ? TEXT("made") : TEXT("NOT made"),
+		Nc && Nc->IsPSOPrecaching() ? TEXT("yes") : TEXT("no"));
+	return Vfx;
+}
+
+void UFTArenaRunner::HoldSpecialHitFx(bool bHold)
+{
+	// The wall time held since the play (the probe's third clock).
+	const double WallNow = FPlatformTime::Seconds();
+	if (bSpecialOn && SpecialHitPlayedWall >= 0.0)
+	{
+		if (bHold && SpecialHitHeldFrom < 0.0)
+		{
+			SpecialHitHeldFrom = WallNow;
+		}
+		else if (!bHold && SpecialHitHeldFrom >= 0.0)
+		{
+			SpecialHitHeldFor += static_cast<float>(WallNow - SpecialHitHeldFrom);
+			SpecialHitHeldFrom = -1.0;
+		}
+	}
+	UFTVfxComponent* Vfx = SpecialHitFx.Get();
+	UNiagaraComponent* Nc = Vfx ? Vfx->GetNiagara() : nullptr;
+	const bool bWant = bHold && bSpecialOn && bSpecialHitPlayed && !bSpecialHitHoldRuns && Nc;
+	if (bWant == bSpecialHitFxHeld)
+	{
+		return;
+	}
+	bSpecialHitFxHeld = bWant;
+	if (!Nc)
+	{
+		return;
+	}
+	Nc->SetPaused(bWant);
+	if (!bWant)
+	{
+		ProbeSpecialHit(TEXT("the hold's end"));
+	}
+}
+
+bool UFTArenaRunner::ProbeSpecialHit(const TCHAR* When)
+{
+#if UE_BUILD_SHIPPING
+	(void)When;
+	return true;
+#else
+	const UFTVfxComponent* Vfx = SpecialHitFx.Get();
+	UNiagaraComponent* Nc = Vfx ? Vfx->GetNiagara() : nullptr;
+	const double WallNow = FPlatformTime::Seconds();
+	const float Wall = SpecialHitPlayedWall >= 0.0 ? static_cast<float>(WallNow - SpecialHitPlayedWall) : -1.f;
+	const float Held = SpecialHitHeldFor + (SpecialHitHeldFrom >= 0.0 ? static_cast<float>(WallNow - SpecialHitHeldFrom) : 0.f);
+	const float Clock = SpecialPlayer.time();
+	const ftcore::SpecialCineMove* Move = SpecialPlayer.move();
+	const uint32 Shown = Move ? ftcore::specialCineShownShot(*Move, Move->shotAt(Clock), SpecialPlayer.fixes()) + 1 : 0u;
+	if (!Nc)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special hit probe (%s): clock %.3f s (shot %u shown), %.3f s since the play: no effect component."),
+			When, Clock, Shown, Wall);
+		return false;
+	}
+	// The effect: its instance's age and particles (synced with its tick first), its state and render state.
+	float Age = -1.f;
+	int32 Particles = 0, Emitters = 0, Running = 0, Waiting = 0;
+	FNiagaraSystemInstanceControllerPtr Controller = Nc->GetSystemInstanceController();
+	if (FNiagaraSystemInstance* Instance = Controller.IsValid() ? Controller->GetSystemInstance_Unsafe() : nullptr)
+	{
+		Instance->WaitForConcurrentTickAndFinalize();
+		Age = Instance->GetAge();
+		for (const FNiagaraEmitterInstanceRef& Emitter : Instance->GetEmitters())
+		{
+			++Emitters;
+			Particles += Emitter->GetNumParticles();
+			Running += Emitter->IsComplete() ? 0 : 1;
+			Waiting += Emitter->IsWaitingForPSOCaching() ? 1 : 0;
+		}
+	}
+	const AActor* Owner = Nc->GetOwner();
+	const UWorld* World = GetWorld();
+	const float Drawn = Nc->GetLastRenderTimeOnScreen();
+	const FString DrawnText = World && Drawn > 0.f ? FString::Printf(TEXT("%.3f s ago"), World->GetTimeSeconds() - Drawn) : FString(TEXT("never"));
+	const FVector At = Cm(SpecialHit.at);
+	// The contact in the drawn frame, and what stands between the drawn eye and it.
+	FString Screen = TEXT("no camera");
+	FString Sight = TEXT("not traced");
+	float EyeM = -1.f;
+	if (APlayerController* PC = GetPC(); PC && PC->PlayerCameraManager)
+	{
+		const FVector Eye = PC->PlayerCameraManager->GetCameraLocation();
+		EyeM = static_cast<float>(FVector::Dist(Eye, At) / 100.0);
+		int32 Width = 0, Height = 0;
+		PC->GetViewportSize(Width, Height);
+		FVector2D Pixel;
+		if (PC->ProjectWorldLocationToScreen(At, Pixel, false) && Width > 0 && Height > 0)
+		{
+			const double U = Pixel.X / Width, V = Pixel.Y / Height;
+			Screen = FString::Printf(TEXT("at (%.2f, %.2f) of the frame%s"), U, V, U >= 0.0 && U <= 1.0 && V >= 0.0 && V <= 1.0 ? TEXT("") : TEXT(" (OUT)"));
+		}
+		else
+		{
+			Screen = TEXT("behind the camera");
+		}
+		if (World)
+		{
+			FHitResult Hit;
+			const FCollisionQueryParams Params(SCENE_QUERY_STAT(FTSpecialHitProbe), true);
+			Sight = World->LineTraceSingleByChannel(Hit, Eye, At, ECC_Visibility, Params)
+				? FString::Printf(TEXT("blocked by %s (%s) %.2f m short of it"), *GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()),
+					FVector::Dist(Hit.ImpactPoint, At) / 100.0)
+				: FString(TEXT("clear"));
+		}
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena check: special hit probe (%s): clock %.3f s (shot %u shown), age %.3f s, wall %.3f s since the play (%.3f s of it held); %s: %s, active %s, paused %s, ")
+		TEXT("%d particles in %d emitters (%d running, %d waiting on pipeline states), precaching %s, scene proxy %s, last drawn on screen %s; visible %s, ")
+		TEXT("owner %s hidden %s (dilation %.3f); bounds radius %.0f cm, %.0f cm from the contact; the contact %s, %.2f m from the eye; the sight to it %s."),
+		When, Clock, Shown, Age, Wall, Held, *Vfx->Effect.ToString(), *UEnum::GetValueAsString(Nc->GetExecutionState()), Nc->IsActive() ? TEXT("yes") : TEXT("no"),
+		Nc->IsPaused() ? TEXT("yes") : TEXT("no"), Particles, Emitters, Running, Waiting, Nc->IsPSOPrecaching() ? TEXT("yes") : TEXT("no"),
+		Nc->SceneProxy ? TEXT("made") : TEXT("NONE"), *DrawnText, Nc->IsVisible() && !Nc->bHiddenInGame ? TEXT("yes") : TEXT("NO"), *GetNameSafe(Owner),
+		Owner && Owner->IsHidden() ? TEXT("YES") : TEXT("no"), Owner ? Owner->CustomTimeDilation : -1.f, Nc->Bounds.SphereRadius,
+		FVector::Dist(Nc->Bounds.Origin, At), *Screen, EyeM, *Sight);
+	return Particles > 0 && Nc->SceneProxy && Drawn > 0.f && SpecialHitPlayedWorld >= 0.0 && Drawn >= SpecialHitPlayedWorld;
+#endif
 }
 
 void UFTArenaRunner::EndSpecial(const TCHAR* Why)
@@ -1398,6 +1642,7 @@ void UFTArenaRunner::EndSpecial(const TCHAR* Why)
 		return;
 	}
 	const double Began = FPlatformTime::Seconds();
+	HoldSpecialHitFx(false); // a still's hold cut short: the effect runs on
 	const int32 Changed = SpecialFreeze.CountChanged();
 	const int32 Held[5] = {SpecialFreeze.SoundCount(), SpecialFreeze.BodyCount(), SpecialFreeze.ClothCount(), SpecialFreeze.SpawnCount(), SpecialFreeze.ActorCount()};
 	SpecialFreeze.End();
@@ -1550,10 +1795,21 @@ bool UFTArenaRunner::TakeSpecialStill(FString& OutName)
 	const ftcore::SpecialCineMove& Move = *SpecialPlayer.move();
 	const uint32 Timed = Move.shotAt(SpecialPlayer.time());
 	const uint32 Shot = ftcore::specialCineShownShot(Move, Timed, SpecialPlayer.fixes()); // the shot shown (a cover's)
-	const bool bHit = SpecialStillAt[SpecialStillNext] == SpecialHit.stillAt;
+	// One of the hit's stills: named by its lag after the hit (on the shots' clock), the effect probed as it is taken.
+	const float StillAt = SpecialStillAt[SpecialStillNext];
+	int32 LagMs = -1;
+	for (uint32 K = 0; K < SpecialHitStills && LagMs < 0; ++K)
+	{
+		LagMs = StillAt == SpecialHitStillAt[K] ? FMath::RoundToInt((StillAt - SpecialHit.time) * 1000.f) : -1;
+	}
 	const FString Over = Shot != Timed ? FString::Printf(TEXT("_over%u"), Timed + 1) : FString();
-	OutName = FString::Printf(TEXT("sp_%05.2f_shot%u%s%s"), SpecialPlayer.time(), Shot + 1, *Over, bHit ? TEXT("_hit") : TEXT(""));
+	const FString Hit = LagMs >= 0 ? FString::Printf(TEXT("_hit+%dms"), LagMs) : FString();
+	OutName = FString::Printf(TEXT("sp_%05.2f_shot%u%s%s"), SpecialPlayer.time(), Shot + 1, *Over, *Hit);
 	++SpecialStillNext;
+	if (LagMs >= 0)
+	{
+		ProbeSpecialHit(*OutName);
+	}
 	return true;
 #endif
 }
