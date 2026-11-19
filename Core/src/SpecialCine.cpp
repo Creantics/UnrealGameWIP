@@ -160,6 +160,8 @@ std::string_view specialCineProblemName(SpecialCineProblem problem) {
     case SpecialCineProblem::World: return "the world";
     case SpecialCineProblem::OffFrame: return "off frame";
     case SpecialCineProblem::TooSmall: return "too small";
+    case SpecialCineProblem::LeadCropped: return "the lead cropped";
+    case SpecialCineProblem::ContactBehindLead: return "the contact behind the lead";
     case SpecialCineProblem::ContactHidden: return "the contact hidden";
     case SpecialCineProblem::LeadHidden: return "the lead hidden";
     case SpecialCineProblem::AlikeShot: return "like another shot";
@@ -511,6 +513,57 @@ SpecialCineProblem pointFraming(const View& v, const CutsceneVec3& p) {
                                                                                                  : SpecialCineProblem::OffFrame;
 }
 
+// A point in front of the lens and within `h` of the half frame each way.
+bool cineInFrameWithin(const View& v, const CutsceneVec3& p, float h) {
+    const CutsceneVec3 a = sub3(p, v.eye);
+    const float z = dot3(a, v.fwd);
+    if (z < 0.05f) return false;
+    const float x = dot3(a, v.right) / (z * v.tanX), y = dot3(a, v.up) / (z * v.tanY);
+    return std::fabs(x) <= h && std::fabs(y) <= h;
+}
+
+// The lead's striking hand: kHandReach out from its chest toward `contact` (the contact itself when nearer).
+CutsceneVec3 cineLeadHand(const CutsceneVec3& chest, const CutsceneVec3& contact) {
+    const CutsceneVec3 d = sub3(contact, chest);
+    const float n = length3(d);
+    return n > SpecialCineFraming::kHandReach ? add3(chest, scale3(d, SpecialCineFraming::kHandReach / n)) : contact;
+}
+
+// The lead's head and striking hand both inside the frame (kInFrame).
+bool cineLeadFramed(const View& v, const SpecialCineLeadPose& pose, const CutsceneVec3& contact) {
+    return cineInFrameWithin(v, pose.head, SpecialCineFraming::kInFrame) &&
+           cineInFrameWithin(v, cineLeadHand(pose.chest, contact), SpecialCineFraming::kInFrame);
+}
+
+// The least distance between segments p0..p1 and q0..q1 (closest points, clamped to both).
+float cineSegmentGap(const CutsceneVec3& p0, const CutsceneVec3& p1, const CutsceneVec3& q0, const CutsceneVec3& q1) {
+    const CutsceneVec3 d1 = sub3(p1, p0), d2 = sub3(q1, q0), r = sub3(p0, q0);
+    const float a = d1.x * d1.x + d1.y * d1.y + d1.z * d1.z, e = d2.x * d2.x + d2.y * d2.y + d2.z * d2.z;
+    const float f = d2.x * r.x + d2.y * r.y + d2.z * r.z;
+    float s = 0.f, t = 0.f;
+    if (a <= 1e-10f && e <= 1e-10f) return length3(r);
+    if (a <= 1e-10f) {
+        t = std::clamp(f / e, 0.f, 1.f);
+    } else {
+        const float c = d1.x * r.x + d1.y * r.y + d1.z * r.z;
+        if (e <= 1e-10f) {
+            s = std::clamp(-c / a, 0.f, 1.f);
+        } else {
+            const float b = d1.x * d2.x + d1.y * d2.y + d1.z * d2.z, denom = a * e - b * b;
+            s = denom > 1e-10f ? std::clamp((b * f - c * e) / denom, 0.f, 1.f) : 0.f;
+            t = (b * s + f) / e;
+            if (t < 0.f) {
+                t = 0.f;
+                s = std::clamp(-c / a, 0.f, 1.f);
+            } else if (t > 1.f) {
+                t = 1.f;
+                s = std::clamp((b - c) / a, 0.f, 1.f);
+            }
+        }
+    }
+    return length3(sub3(add3(p0, scale3(d1, s)), add3(q0, scale3(d2, t))));
+}
+
 bool insideCylinder(const CutsceneVec3& p, const SpecialCineBody& b, float margin) {
     const float dx = p.x - b.feet.x, dy = p.y - b.feet.y;
     const float r = std::max(b.radius, 0.f) + margin;
@@ -605,6 +658,33 @@ float contactRadius(const SpecialCineStage& stage, const SpecialCineBody* bodies
     return r;
 }
 
+// The lead's pose at moment `k` of the hit (0: the hit, k: its still k): the measured one, else upright at its walk's
+// end (the blow lands there).
+SpecialCineLeadPose cineLeadPose(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
+                                 std::uint32_t k) {
+    if (hit.posed && k <= SpecialCineHit::kStills) return hit.pose[k];
+    const CutsceneVec3 feet = leadFeet(move, stage, 1.f);
+    const float h = heightOr(stage.leadHeight);
+    return {{feet.x, feet.y, feet.z + SpecialCineFraming::kHips * h},
+            {feet.x, feet.y, feet.z + kChest * h},
+            {feet.x, feet.y, feet.z + SpecialCineFraming::kHeadHeight * h}};
+}
+
+// The hit in the frame at `t`, moment `k` of it (0: the hit; k: its still k): the contact inside the safe frame, past
+// every body and clear of the lead's own, then the lead's head and striking hand in frame.
+SpecialCineProblem cineHitAt(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit, float t,
+                             std::uint32_t k, const SpecialCineShotFix* fixes, const SpecialCineBody* bodies,
+                             std::uint32_t count) {
+    const View v = viewOf(specialCineFrameAt(move, t, stage, fixes), stage);
+    const SpecialCineLeadPose pose = cineLeadPose(move, stage, hit, k);
+    if (pointFraming(v, hit.at) != SpecialCineProblem::None) return SpecialCineProblem::OffFrame;
+    if (segmentHitsAny(v.eye, hit.at, bodies, count)) return SpecialCineProblem::ContactHidden;
+    if (cineSegmentGap(v.eye, hit.at, pose.hips, pose.head) < SpecialCineFraming::kTorso)
+        return SpecialCineProblem::ContactBehindLead;
+    if (!cineLeadFramed(v, pose, hit.at)) return SpecialCineProblem::LeadCropped;
+    return SpecialCineProblem::None;
+}
+
 } // namespace
 
 SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime, float radius,
@@ -636,10 +716,7 @@ SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move, const Spec
                                          const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count) {
     if (move.empty()) return SpecialCineProblem::None;
     if (bodies == nullptr) count = 0;
-    const View v = viewOf(specialCineFrameAt(move, hit.time, stage, fixes), stage);
-    if (pointFraming(v, hit.at) != SpecialCineProblem::None) return SpecialCineProblem::OffFrame;
-    if (segmentHitsAny(v.eye, hit.at, bodies, count)) return SpecialCineProblem::ContactHidden;
-    return SpecialCineProblem::None;
+    return cineHitAt(move, stage, hit, hit.time, 0, fixes, bodies, count);
 }
 
 CutsceneVec3 specialCinePartnerBlow(const CutsceneVec3& target, float radius, float targetHeight, const CutsceneVec3& toward) {
@@ -680,6 +757,36 @@ SpecialCinePartnerStrike specialCinePartnerStrike(const SpecialCineMove& move, c
     strike.along = (rel.x * line.x + rel.y * line.y + rel.z * line.z) / (span * span);
     strike.offLine = length3(sub3(rel, scale3(line, strike.along)));
     return strike;
+}
+
+SpecialCinePartnerMark specialCinePartnerMark(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
+                                              float leadRadius, float partnerRadius, float reach, float standoff, float radius) {
+    const auto metres = [](float m) { return std::isfinite(m) ? std::max(m, 0.f) : 0.f; };
+    SpecialCinePartnerMark mark;
+    const float length = move.length();
+    const float tc = length > 0.f && std::isfinite(hit.time) ? std::clamp(hit.time, 0.f, length) : 0.f;
+    const CutsceneVec3 lead = leadFeet(move, stage, length > 0.f ? tc / length : 0.f);
+    const float r = std::max(metres(stage.targetRadius), metres(radius));
+    // Out from the target's axis through the lead's feet (at the axis: back along the stage's forward).
+    float dx = lead.x - stage.target.x, dy = lead.y - stage.target.y;
+    const float fromAxis = std::sqrt(dx * dx + dy * dy);
+    if (fromAxis > 1e-4f) {
+        dx /= fromAxis;
+        dy /= fromAxis;
+    } else {
+        float fx = 1.f, fy = 0.f;
+        stageAxes(stage, fx, fy);
+        dx = -fx;
+        dy = -fy;
+    }
+    float held = metres(leadRadius);
+    if (move.reach().at(tc)) held = std::max(held, metres(move.reach().radius));
+    const float d = std::max(fromAxis + held + metres(partnerRadius) + SpecialCinePartnerMark::kGap, r + metres(standoff));
+    mark.feet = {stage.target.x + dx * d, stage.target.y + dy * d, lead.z};
+    mark.fromSurface = d - r;
+    mark.behindLead = d - fromAxis;
+    mark.found = std::isfinite(reach) && mark.fromSurface <= reach;
+    return mark;
 }
 
 SpecialCineProblem specialCineFrameProblem(const SpecialCineMove& move, float t, const SpecialCineStage& stage,
@@ -742,7 +849,7 @@ namespace {
 // The first problem over shot `shot`'s window at its samples under `fixes` (one per shot), and when.
 SpecialCineProblem windowProblem(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                  const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
-                                 SpecialCineWorldTest world, void* user, float& at) {
+                                 SpecialCineWorldTest world, void* user, const SpecialCineHit* hit, float& at) {
     const SpecialCineShot& s = move.shot(shot);
     constexpr std::uint32_t n = SpecialCineFraming::kSamples;
     for (std::uint32_t k = 0; k < n; ++k) {
@@ -755,15 +862,33 @@ SpecialCineProblem windowProblem(const SpecialCineMove& move, std::uint32_t shot
             return p;
         }
     }
+    // The hit and its stills that land in this window, where the shot shown then frames someone: the frame then, and
+    // the contact, the lead's head and its striking hand in it.
+    if (hit == nullptr) return SpecialCineProblem::None;
+    float times[1 + SpecialCineHit::kStills];
+    times[0] = hit->time;
+    const std::uint32_t m = 1 + specialCineHitStills(move, *hit, times + 1, SpecialCineHit::kStills);
+    for (std::uint32_t k = 0; k < m; ++k) {
+        const float t = times[k];
+        if (!std::isfinite(t) || t < s.in || t >= s.out) continue;
+        if (move.shot(specialCineFrameAt(move, t, stage, fixes).shot).subject == SpecialCineSubject::None) continue;
+        SpecialCineProblem p = specialCineFrameProblem(move, t, stage, fixes, bodies, count, world, user);
+        if (p == SpecialCineProblem::None) p = cineHitAt(move, stage, *hit, t, k, fixes, bodies, count);
+        if (p != SpecialCineProblem::None) {
+            at = t;
+            return p;
+        }
+    }
     return SpecialCineProblem::None;
 }
 
 // The first problem of shot `shot` under `fix` (every other shot as written) over its samples, and when.
 SpecialCineProblem shotProblem(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage, const SpecialCineShotFix& fix,
-                               const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user, float& at) {
+                               const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user,
+                               const SpecialCineHit* hit, float& at) {
     SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
     fixes[shot] = fix;
-    return windowProblem(move, shot, stage, fixes, bodies, count, world, user, at);
+    return windowProblem(move, shot, stage, fixes, bodies, count, world, user, hit, at);
 }
 
 // Whether shot `shot` under `fix` stands where another shot of the move stands as written (one that frames someone:
@@ -812,18 +937,19 @@ bool specialCineViewsAlike(const SpecialCineShotView& a, const SpecialCineShotVi
 }
 
 SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
-                                        const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user) {
+                                        const SpecialCineBody* bodies, std::uint32_t count, SpecialCineWorldTest world, void* user,
+                                        const SpecialCineHit* hit) {
     SpecialCineShotCheck c;
     if (shot >= move.size()) return c;
     float at = 0.f;
     c.tries = 1;
-    c.first = c.last = shotProblem(move, shot, stage, {}, bodies, count, world, user, at);
+    c.first = c.last = shotProblem(move, shot, stage, {}, bodies, count, world, user, hit, at);
     c.firstAt = at;
     if (c.first == SpecialCineProblem::None) return c;
     const auto attempt = [&](const SpecialCineShotFix& fix) {
         ++c.tries;
         float when = 0.f;
-        c.last = shotProblem(move, shot, stage, fix, bodies, count, world, user, when);
+        c.last = shotProblem(move, shot, stage, fix, bodies, count, world, user, hit, when);
         if (c.last != SpecialCineProblem::None) return false;
         if (alikeAnother(move, shot, stage, fix)) {
             c.last = SpecialCineProblem::AlikeShot;
@@ -894,7 +1020,7 @@ std::uint32_t specialCineShownShot(const SpecialCineMove& move, std::uint32_t sh
 
 SpecialCineCover specialCineCoverShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                       const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
-                                      SpecialCineWorldTest world, void* user) {
+                                      SpecialCineWorldTest world, void* user, const SpecialCineHit* hit) {
     if (shot >= move.size()) return SpecialCineCover::None;
     SpecialCineShotFix trial[SpecialCineMove::kMaxShots]{};
     if (fixes != nullptr) std::copy(fixes, fixes + move.size(), trial);
@@ -904,7 +1030,7 @@ SpecialCineCover specialCineCoverShot(const SpecialCineMove& move, std::uint32_t
         const std::uint32_t shown = specialCineShownShot(move, shot, trial);
         if (shown == shot || move.shot(shown).subject == SpecialCineSubject::None) continue;
         float at = 0.f;
-        if (windowProblem(move, shot, stage, trial, bodies, count, world, user, at) == SpecialCineProblem::None) return cover;
+        if (windowProblem(move, shot, stage, trial, bodies, count, world, user, hit, at) == SpecialCineProblem::None) return cover;
     }
     return SpecialCineCover::None;
 }

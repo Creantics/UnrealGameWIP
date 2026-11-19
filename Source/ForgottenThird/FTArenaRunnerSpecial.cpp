@@ -112,6 +112,16 @@ FVector SpecialPadOf(const FVector* Wrist, const FVector& Knuckle, const FVector
 	}
 	return Pad;
 }
+// The lead's pose bones (mannequin and MetaHuman names): the pelvis, the upper spine (the first found), the head. The
+// head bone sits at the skull's base: the head's middle is kSpecialHeadUp cm on from it, away from the bone below.
+const FName kSpecialPoseHips(TEXT("pelvis"));
+const FName kSpecialPoseChest[3] = {FName(TEXT("spine_05")), FName(TEXT("spine_04")), FName(TEXT("spine_03"))};
+const FName kSpecialPoseHead(TEXT("head"));
+constexpr double kSpecialHeadUp = 10.0;
+FVector SpecialHeadMiddle(const FVector& Head, const FVector& Below)
+{
+	return Head + (Head - Below).GetSafeNormal() * kSpecialHeadUp;
+}
 // A bone's place in the clip's component space at Time (up its parent chain); false for no such bone.
 bool SpecialClipBone(const UAnimSequence& Clip, const FName Name, double Time, FVector& Out)
 {
@@ -617,6 +627,81 @@ void UFTArenaRunner::SampleSpecialReach(const ftcore::ArenaSpecialRules& Rules, 
 	}
 }
 
+bool UFTArenaRunner::PoseSpecialHit(ftcore::SpecialCineHit& Hit) const
+{
+	Hit.posed = false;
+	const AFTArenaFighter* Lead = PlayerFigure.Get();
+	const USkeletalMeshComponent* Skin = Lead ? Lead->GetLeadSkin() : nullptr;
+	if (!SpecialClip || !Skin)
+	{
+		return false;
+	}
+	// As SampleSpecialReach: the clip on the shots' clock with the lead's actor at the start feet; its component space
+	// through the mesh's place on the actor (m: x ahead, y right, z up from the feet), then the stage's lead frame.
+	const FTransform ToActor = Skin->GetComponentTransform().GetRelativeTransform(Lead->GetActorTransform());
+	const double Length = SpecialClip->GetPlayLength();
+	const auto OnStage = [&](const FVector& Cs) {
+		const FVector L = ToActor.TransformPosition(Cs) / 100.0;
+		return ftcore::specialCinePoint(SpecialStageAt, ftcore::SpecialCineAnchor::Lead,
+			ftcore::CutsceneVec3{static_cast<float>(L.X), static_cast<float>(L.Y), static_cast<float>(L.Z)});
+	};
+	for (uint32 K = 0; K <= ftcore::SpecialCineHit::kStills; ++K)
+	{
+		const double T = FMath::Clamp(static_cast<double>(Hit.time) + (K ? ftcore::SpecialCineHit::kStillLags[K - 1] : 0.f), 0.0, Length);
+		FVector Hips, Chest, Head;
+		bool bChest = false;
+		for (const FName& Bone : kSpecialPoseChest)
+		{
+			if (SpecialClipBone(*SpecialClip, Bone, T, Chest))
+			{
+				bChest = true;
+				break;
+			}
+		}
+		if (!bChest || !SpecialClipBone(*SpecialClip, kSpecialPoseHips, T, Hips) || !SpecialClipBone(*SpecialClip, kSpecialPoseHead, T, Head))
+		{
+			return false;
+		}
+		Hit.pose[K] = {OnStage(Hips), OnStage(Chest), OnStage(SpecialHeadMiddle(Head, Chest))};
+	}
+	Hit.posed = true;
+	return true;
+}
+
+void UFTArenaRunner::MarkSpecialPartner(const ftcore::SpecialCineMove& Move, const ftcore::SpecialCineHit& Hit)
+{
+	const AFTArenaFighter* Ally = AllyFigure.Get();
+	if (!Ally || !PartnerBody() || Fight.allyHp() <= 0)
+	{
+		return; // no partner standing
+	}
+	// Its blow's range: a ranged kit's own reach and standoff, else the brain's reach (a close-in partner, no standoff).
+	const ftcore::ArenaFighter& Kit = Fight.def().partnerKit;
+	const bool bRanged = Kit.partnerReach > 0.f;
+	const float Reach = bRanged ? Kit.partnerReach : AllyTuning.reachMeters;
+	const float Standoff = bRanged ? Kit.partnerStandoff : 0.f;
+	const float Own = Fight.allyRadius();
+	const ftcore::SpecialCinePartnerMark M = ftcore::specialCinePartnerMark(Move, SpecialStageAt, Hit, Fight.def().fighter.bodyRadius, Own,
+		Reach, Standoff, SpecialStageAt.targetRadius);
+	const ftcore::Vec2 Was = Bodies.ally;
+	const ftcore::Vec2 To{M.feet.x, M.feet.y};
+	const ftcore::Vec2 Inside = Fit.ring.clamp(To, Own);
+	const float Out = static_cast<float>(FVector2D(Inside.x - To.x, Inside.y - To.y).Size());
+	const float Step = static_cast<float>(FVector2D(To.x - Was.x, To.y - Was.y).Size());
+	// Put there under the cut in (the frozen steps hold it; the fix search sees it there), not walked: the world is frozen.
+	const TCHAR* Why = !M.found ? TEXT("NOT moved: its blow could not land from there (beyond its reach)")
+		: Move.blendIn() > 0.f ? TEXT("NOT moved: the move blends in from the play camera (no cut hides the step)")
+		: Out > 0.05f ? TEXT("NOT moved: the mark is outside the ring")
+		: TEXT("moved there under the cut in");
+	if (M.found && Move.blendIn() <= 0.f && Out <= 0.05f)
+	{
+		Bodies.ally = PrevBodies.ally = To;
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena check: special partner mark (%.2f, %.2f) m: %.2f m from the target's surface (its reach %.2f, standoff %.2f m%s), %.2f m behind the lead on the target's line through it; %s (it stood at (%.2f, %.2f) m, %.2f m from it)."),
+		M.feet.x, M.feet.y, M.fromSurface, Reach, Standoff, bRanged ? TEXT("") : TEXT(", the brain's"), M.behindLead, Why, Was.x, Was.y, Step);
+}
+
 void UFTArenaRunner::LogSpecialContact()
 {
 	bSpecialContactDue = false;
@@ -921,7 +1006,7 @@ uint32 UFTArenaRunner::SpecialCineBodies(int32 Target, ftcore::SpecialCineBody* 
 	return Count;
 }
 
-void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target)
+void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target, const ftcore::SpecialCineHit* Hit)
 {
 	SpecialShotsMoved = SpecialShotsBlocked = SpecialShotsSkipped = 0;
 	ftcore::SpecialCineStage Stage = SpecialStageAt;
@@ -953,7 +1038,7 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 	uint32 BlockedCount = 0;
 	for (uint32 Shot = 0; Shot < Move.size(); ++Shot)
 	{
-		const ftcore::SpecialCineShotCheck Check = ftcore::specialCineFixShot(Move, Shot, Stage, List, Count, Test, &World);
+		const ftcore::SpecialCineShotCheck Check = ftcore::specialCineFixShot(Move, Shot, Stage, List, Count, Test, &World, Hit);
 		if (Check.first == ftcore::SpecialCineProblem::None)
 		{
 			continue;
@@ -981,7 +1066,7 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		const ftcore::SpecialCineShot& S = Move.shot(Shot);
 		const FString First = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.first)).c_str());
 		const FString Last = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.last)).c_str());
-		const ftcore::SpecialCineCover Cover = ftcore::specialCineCoverShot(Move, Shot, Stage, SpecialPlayer.fixes(), List, Count, Test, &World);
+		const ftcore::SpecialCineCover Cover = ftcore::specialCineCoverShot(Move, Shot, Stage, SpecialPlayer.fixes(), List, Count, Test, &World, Hit);
 		ftcore::SpecialCineShotFix Skip;
 		Skip.cover = Cover;
 		if (Cover != ftcore::SpecialCineCover::None && SpecialPlayer.setFix(Shot, Skip))
@@ -1099,19 +1184,48 @@ bool UFTArenaRunner::BeginSpecial()
 		SpecialCamera = Cast<UFTSpecialCineModifier>(Camera->AddNewCameraModifier(UFTSpecialCineModifier::StaticClass()));
 	}
 	SpecialPlayer.begin(Move);
+	// The hit ahead of the fixes (its time and contact do not depend on them) with the lead's pose at it and its stills
+	// read from the clip: a fix must frame it (the contact clear of the lead's back, its head and fist in frame). The
+	// partner goes on its mark first, so the search sees it where it will stand.
+	ftcore::SpecialCineHit Ahead = ftcore::specialCineHit(*Move, SpecialStageAt, HitAt, SpecialStageAt.targetRadius);
+	PoseSpecialHit(Ahead);
+	MarkSpecialPartner(*Move, Ahead);
 	const double FixFrom = FPlatformTime::Seconds();
-	SpecialCineFixShots(*Move, Target); // after the begin (it clears the fixes)
+	SpecialCineFixShots(*Move, Target, &Ahead); // after the begin (it clears the fixes)
 	const double FixMs = (FPlatformTime::Seconds() - FixFrom) * 1000.0;
 	// After the fixes: a skipped shot's window shows the shot over it, and the hit's shot is the one shown.
 	SpecialHit = ftcore::specialCineHit(*Move, SpecialStageAt, HitAt, SpecialStageAt.targetRadius, SpecialPlayer.fixes());
-	// Whether the contact reads in the shot shown at the hit: a count for the log (the fix search does not use it); a
-	// hit out of frame or hidden is a shot still failing.
+	SpecialHit.posed = Ahead.posed;
+	for (uint32 K = 0; K <= ftcore::SpecialCineHit::kStills; ++K)
+	{
+		SpecialHit.pose[K] = Ahead.pose[K];
+	}
+	// Whether the hit reads in the shot shown at it and at each of its stills (Core's check on the pose read: the contact
+	// in frame, past every body and clear of the lead's back, its head and fist in frame): a hit or still that does not
+	// is a shot still failing.
 	ftcore::SpecialCineProblem HitSeen = ftcore::SpecialCineProblem::None;
+	FString StillsSeen;
 	{
 		ftcore::SpecialCineBody Seen[MaxEnemies + 1];
 		const uint32 SeenCount = SpecialCineBodies(Target, Seen);
 		HitSeen = ftcore::specialCineHitProblem(*Move, SpecialStageAt, SpecialHit, SpecialPlayer.fixes(), Seen, SeenCount);
-		SpecialHitUnseen = HitSeen != ftcore::SpecialCineProblem::None ? 1 : 0;
+		float StillAt[ftcore::SpecialCineHit::kStills];
+		const uint32 Stills = ftcore::specialCineHitStills(*Move, SpecialHit, StillAt, ftcore::SpecialCineHit::kStills);
+		bool bStillFails = false;
+		for (uint32 K = 0; K < Stills; ++K)
+		{
+			const ftcore::SpecialCineFrame F = ftcore::specialCineFrameAt(*Move, StillAt[K], SpecialStageAt, SpecialPlayer.fixes());
+			const bool bNothing = Move->shot(F.shot).subject == ftcore::SpecialCineSubject::None;
+			ftcore::SpecialCineHit Still = SpecialHit;
+			Still.time = StillAt[K];
+			Still.pose[0] = SpecialHit.pose[K + 1];
+			const ftcore::SpecialCineProblem P = bNothing ? ftcore::SpecialCineProblem::None
+				: ftcore::specialCineHitProblem(*Move, SpecialStageAt, Still, SpecialPlayer.fixes(), Seen, SeenCount);
+			bStillFails = bStillFails || P != ftcore::SpecialCineProblem::None;
+			StillsSeen += FString::Printf(TEXT("%s+%.0f ms (shot %u) %s"), K ? TEXT(", ") : TEXT(""), (StillAt[K] - SpecialHit.time) * 1000.f, F.shot + 1,
+				bNothing ? TEXT("a shot of no subject") : UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(P)).c_str()));
+		}
+		SpecialHitUnseen = HitSeen != ftcore::SpecialCineProblem::None || bStillFails ? 1 : 0;
 	}
 	// The hit's effect made now, ahead of the hit: its pipeline states compile over the shots before it (the engine
 	// draws nothing of an effect whose states are still compiling). -ArenaSpecialHitLate makes it at the hit instead.
@@ -1159,10 +1273,23 @@ bool UFTArenaRunner::BeginSpecial()
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: special %s: the hit at %.3f s (%s; Core's impact %.3f s), shot %u, its still at %.3f s; contact (%.2f, %.2f, %.2f) m%s."),
 		*Id, SpecialHit.time, HitRow, V.impactTime, SpecialHit.shot + 1, SpecialHit.stillAt, SpecialHit.at.x, SpecialHit.at.y, SpecialHit.at.z,
 		bSpecialHitFx ? TEXT("") : TEXT(" (-ArenaSpecialNoHitFx: no effect)"));
-	if (HitSeen != ftcore::SpecialCineProblem::None)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special %s: the hit's contact does not read in shot %u, the one shown at %.3f s (%s): counted as a shot still failing."),
-			*Id, SpecialHit.shot + 1, SpecialHit.time, UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(HitSeen)).c_str()));
+		FString Poses;
+		for (uint32 K = 0; K <= ftcore::SpecialCineHit::kStills; ++K)
+		{
+			const ftcore::SpecialCineLeadPose& Q = SpecialHit.pose[K];
+			Poses += FString::Printf(TEXT("%s%s: hips (%.2f, %.2f, %.2f), chest (%.2f, %.2f, %.2f), head (%.2f, %.2f, %.2f)"), K ? TEXT("; ") : TEXT(""),
+				K ? *FString::Printf(TEXT("+%.0f ms"), ftcore::SpecialCineHit::kStillLags[K - 1] * 1000.f) : TEXT("the hit"), Q.hips.x, Q.hips.y, Q.hips.z,
+				Q.chest.x, Q.chest.y, Q.chest.z, Q.head.x, Q.head.y, Q.head.z);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special %s: the lead's pose %s (m): %s. Core at the hit (shot %u): %s; at its stills: %s."), *Id,
+			SpecialHit.posed ? TEXT("read from the clip") : TEXT("NOT read (no clip, mesh or bone): Core's upright model, these zeros unused"), *Poses,
+			SpecialHit.shot + 1, UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(HitSeen)).c_str()), StillsSeen.IsEmpty() ? TEXT("none in the move") : *StillsSeen);
+	}
+	if (SpecialHitUnseen)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: special %s: the hit does not read in shot %u, the one shown at %.3f s, or at one of its stills (%s; stills: %s): counted as a shot still failing."),
+			*Id, SpecialHit.shot + 1, SpecialHit.time, UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(HitSeen)).c_str()), StillsSeen.IsEmpty() ? TEXT("none in the move") : *StillsSeen);
 	}
 	const float Off = FMath::Sqrt((V.end.x - SpecialEnd.x) * (V.end.x - SpecialEnd.x) + (V.end.y - SpecialEnd.y) * (V.end.y - SpecialEnd.y));
 	UE_LOG(LogForgottenThird, Display,
@@ -1413,7 +1540,7 @@ void UFTArenaRunner::PlaySpecialHit()
 		SpecialPlayer.time(), SpecialPlayer.move() ? SpecialPlayer.move()->shotAt(SpecialPlayer.time()) + 1 : 0u, bPlayed ? TEXT("true") : TEXT("false (no effect asset)"),
 		*Vfx->Effect.ToString(), Drawn.X, Drawn.Y, Drawn.Z, FVector::Dist(Drawn, At), Surface);
 	ProbeSpecialHit(TEXT("the hit"));
-	// The partner at the hit (held where the press found it): its strike point (as PartnerImpact puts one) against the
+	// The partner at the hit (on its mark when MarkSpecialPartner put it there, else held where the press found it): its strike point (as PartnerImpact puts one) against the
 	// contact line, and its body's distance from the drawn camera's sight line to the contact.
 	const AFTArenaFighter* Ally = AllyFigure.Get();
 	if (Ally && bPartner && Fight.allyHp() > 0 && SpecialPlayer.move())
@@ -1509,8 +1636,9 @@ UFTVfxComponent* UFTArenaRunner::SpecialHitFxOn(AFTArenaFighter* Lead, const TCH
 	}
 #endif
 	const UNiagaraComponent* Nc = Vfx->GetNiagara();
-	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special hit effect %s made at %s in %.2f ms: system %s, ready to run %s%s; instance %s, its pipeline states precaching %s."),
-		*Vfx->Effect.ToString(), Why, (FPlatformTime::Seconds() - From) * 1000.0, bLoaded ? *GetNameSafe(System) : TEXT("NOT FOUND"),
+	const double MadeMs = (FPlatformTime::Seconds() - From) * 1000.0;
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special hit effect %s made at %s in %.2f ms (%s the 33.3 ms frame line at 30 fps): system %s, ready to run %s%s; instance %s, its pipeline states precaching %s."),
+		*Vfx->Effect.ToString(), Why, MadeMs, MadeMs > 1000.0 / 30.0 ? TEXT("OVER") : TEXT("inside"), bLoaded ? *GetNameSafe(System) : TEXT("NOT FOUND"),
 		bReadyFirst ? TEXT("yes") : TEXT("no"), *Waited, Nc && Nc->GetSystemInstanceController().IsValid() ? TEXT("made") : TEXT("NOT made"),
 		Nc && Nc->IsPSOPrecaching() ? TEXT("yes") : TEXT("no"));
 	return Vfx;
@@ -1611,6 +1739,38 @@ bool UFTArenaRunner::ProbeSpecialHit(const TCHAR* When)
 		else
 		{
 			Screen = TEXT("behind the camera");
+		}
+		// The drawn lead: its head's middle and striking fist in the frame (OUT past the framing's 0.9), and the sight to
+		// the contact against its pelvis-to-head line (Core's ContactBehindLead under kTorso).
+		if (const AFTArenaFighter* Lead = PlayerFigure.Get(); Lead && Lead->GetLeadSkin())
+		{
+			const USkeletalMeshComponent& Skin = *Lead->GetLeadSkin();
+			const auto Where = [&](const FVector& P) {
+				FVector2D Px;
+				if (!PC->ProjectWorldLocationToScreen(P, Px, false) || Width <= 0 || Height <= 0)
+				{
+					return FString(TEXT("behind the camera"));
+				}
+				const double U = Px.X / Width, V = Px.Y / Height;
+				return FString::Printf(TEXT("(%.2f, %.2f)%s"), U, V, U >= 0.05 && U <= 0.95 && V >= 0.05 && V <= 0.95 ? TEXT("") : TEXT(" (OUT)"));
+			};
+			const FVector Pelvis = Skin.GetSocketLocation(kSpecialPoseHips);
+			FVector Chest = Pelvis;
+			for (const FName& Bone : kSpecialPoseChest)
+			{
+				if (Skin.DoesSocketExist(Bone))
+				{
+					Chest = Skin.GetSocketLocation(Bone);
+					break;
+				}
+			}
+			const FVector Head = SpecialHeadMiddle(Skin.GetSocketLocation(kSpecialPoseHead), Chest);
+			FVector Pad;
+			const FString Fist = SpecialDrawnPad(Skin, SpecialReachSide, Pad) ? Where(Pad) : FString(TEXT("no knuckle bone"));
+			FVector OnSight, OnBack;
+			FMath::SegmentDistToSegmentSafe(Eye, At, Pelvis, Head, OnSight, OnBack);
+			Screen += FString::Printf(TEXT("; the drawn lead's head at %s, its fist at %s; the sight to the contact %.2f m from its pelvis-to-head line (clear at %.2f)"),
+				*Where(Head), *Fist, FVector::Dist(OnSight, OnBack) / 100.0, ftcore::SpecialCineFraming::kTorso);
 		}
 		if (World)
 		{

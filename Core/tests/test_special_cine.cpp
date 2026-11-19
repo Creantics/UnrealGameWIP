@@ -546,8 +546,13 @@ bool rightWall(const CutsceneVec3& from, const CutsceneVec3& to, void*) { return
 
 namespace {
 
+// Whether `p` stands inside `h` of the half-frame each way, in front of the lens, by the test's own sums.
+bool inFrameBox(const SpecialCineFrame& f, const CutsceneVec3& p, float h);
+
 // Whether `p` stands inside the frame's safe box (SpecialCineFraming::kSafe of the half-frame), by its own sums.
-bool inSafeFrame(const SpecialCineFrame& f, const CutsceneVec3& p) {
+bool inSafeFrame(const SpecialCineFrame& f, const CutsceneVec3& p) { return inFrameBox(f, p, SpecialCineFraming::kSafe); }
+
+bool inFrameBox(const SpecialCineFrame& f, const CutsceneVec3& p, float h) {
     CutsceneVec3 fwd = sub3(f.pose.lookAt, f.pose.position);
     const float n = length3(fwd);
     fwd = {fwd.x / n, fwd.y / n, fwd.z / n};
@@ -561,7 +566,43 @@ bool inSafeFrame(const SpecialCineFrame& f, const CutsceneVec3& p) {
     const float tanX = std::tan(0.5f * f.fovDegrees * kDeg), tanY = tanX / SpecialCineFraming::kAspect;
     const float x = (d.x * right.x + d.y * right.y + d.z * right.z) / (z * tanX);
     const float y = (d.x * up.x + d.y * up.y + d.z * up.z) / (z * tanY);
-    return std::fabs(x) <= SpecialCineFraming::kSafe && std::fabs(y) <= SpecialCineFraming::kSafe;
+    return std::fabs(x) <= h && std::fabs(y) <= h;
+}
+
+// The lead's head and striking hand (kHandReach from its chest toward `contact`) inside kInFrame, by the test's sums.
+bool leadInFrame(const SpecialCineFrame& f, const CutsceneVec3& feet, float height, const CutsceneVec3& contact) {
+    const CutsceneVec3 head{feet.x, feet.y, feet.z + SpecialCineFraming::kHeadHeight * height};
+    const CutsceneVec3 chest{feet.x, feet.y, feet.z + 0.6f * height};
+    const CutsceneVec3 d = sub3(contact, chest);
+    const float n = length3(d);
+    const float k = n > SpecialCineFraming::kHandReach ? SpecialCineFraming::kHandReach / n : 1.f;
+    const CutsceneVec3 hand{chest.x + d.x * k, chest.y + d.y * k, chest.z + d.z * k};
+    return inFrameBox(f, head, SpecialCineFraming::kInFrame) && inFrameBox(f, hand, SpecialCineFraming::kInFrame);
+}
+
+// The same for a posed lead (its head, and its hand kHandReach from its chest toward `contact`).
+bool poseInFrame(const SpecialCineFrame& f, const SpecialCineLeadPose& p, const CutsceneVec3& contact) {
+    const CutsceneVec3 d = sub3(contact, p.chest);
+    const float n = length3(d);
+    const float k = n > SpecialCineFraming::kHandReach ? SpecialCineFraming::kHandReach / n : 1.f;
+    const CutsceneVec3 hand{p.chest.x + d.x * k, p.chest.y + d.y * k, p.chest.z + d.z * k};
+    return inFrameBox(f, p.head, SpecialCineFraming::kInFrame) && inFrameBox(f, hand, SpecialCineFraming::kInFrame);
+}
+
+// The least distance from the camera's line to `contact` to the lead's hips-to-head line, by sampling both (an upper
+// bound on the exact one, within half a step).
+float torsoGap(const SpecialCineFrame& f, const CutsceneVec3& contact, const SpecialCineLeadPose& p) {
+    float best = 1e9f;
+    const CutsceneVec3 eye = f.pose.position, a = sub3(contact, eye), b = sub3(p.head, p.hips);
+    for (int i = 0; i <= 200; ++i) {
+        const float u = static_cast<float>(i) / 200.f;
+        const CutsceneVec3 q{eye.x + a.x * u, eye.y + a.y * u, eye.z + a.z * u};
+        for (int j = 0; j <= 40; ++j) {
+            const float w = static_cast<float>(j) / 40.f;
+            best = std::min(best, length3(sub3(q, {p.hips.x + b.x * w, p.hips.y + b.y * w, p.hips.z + b.z * w})));
+        }
+    }
+    return best;
 }
 
 // The lead's travel on a stage `d` metres off with no room behind it: the host's clamp shortens the walk to stop at
@@ -908,6 +949,41 @@ TEST_CASE("special cine: the committed shots carry the staff's reach from the co
         CHECK(m->reach().radius == doctest::Approx(1.1f));
         CHECK(m->reach().from == doctest::Approx(0.55f));
         CHECK(m->reach().to == doctest::Approx(7.8f));
+    }
+}
+
+TEST_CASE("special cine: the shot shown at the hit passes only with the lead's head and striking hand in frame") {
+    // The lead at the origin (1.8 m), a target 4 m off; the hit at 0.5 s of a one-shot move.
+    SpecialCineStage st = stageAt(0.f, 0.f, 4.f, 0.f);
+    st.targetRadius = 0.45f;
+    // Wide and side on: both whole in frame.
+    const SpecialCineMove wide = oneShot({2.f, -6.f, 1.2f}, {2.f, 0.f, 0.9f}, SpecialCineSubject::Both);
+    const SpecialCineHit wideHit = specialCineHit(wide, st, 0.5f, 0.45f);
+    CHECK(specialCineFrameProblem(wide, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::None);
+    CHECK(specialCineHitProblem(wide, st, wideHit) == SpecialCineProblem::None);
+    // Low behind the lead's shoulder, level at the target's knees: the lead's legs fill the frame's side and its head
+    // and hand stand above the top edge (the round 4 r2b_big still). The frame passes; the hit in it does not.
+    const SpecialCineMove low = oneShot({-1.f, -0.3f, 0.5f}, {4.f, 0.f, 0.3f}, SpecialCineSubject::Both);
+    const SpecialCineHit hit = specialCineHit(low, st, 0.5f, 0.45f);
+    CHECK(specialCineFrameProblem(low, 0.5f, st, nullptr, nullptr, 0) == SpecialCineProblem::None);
+    CHECK(specialCineHitProblem(low, st, hit) == SpecialCineProblem::LeadCropped);
+    CHECK(std::string(specialCineProblemName(SpecialCineProblem::LeadCropped)) == "the lead cropped");
+    // Without the hit the fix search keeps the shot as written; with it, it moves the shot until the lead reads, by the
+    // test's own sums, at the hit and at every still.
+    CHECK(specialCineFixShot(low, 0, st, nullptr, 0).first == SpecialCineProblem::None);
+    const SpecialCineShotCheck c = specialCineFixShot(low, 0, st, nullptr, 0, nullptr, nullptr, &hit);
+    CHECK(c.first == SpecialCineProblem::LeadCropped);
+    CHECK(near(c.firstAt, hit.time));
+    REQUIRE(c.ok);
+    CHECK(specialCineHitProblem(low, st, hit, &c.fix) == SpecialCineProblem::None);
+    float stills[SpecialCineHit::kStills] = {};
+    const std::uint32_t n = specialCineHitStills(low, hit, stills, SpecialCineHit::kStills);
+    CHECK(n >= 3);
+    CHECK(leadInFrame(specialCineFrameAt(low, hit.time, st, &c.fix), {0.f, 0.f, 0.f}, st.leadHeight, hit.at));
+    for (std::uint32_t k = 0; k < n; ++k) {
+        CAPTURE(stills[k]);
+        CHECK(leadInFrame(specialCineFrameAt(low, stills[k], st, &c.fix), {0.f, 0.f, 0.f}, st.leadHeight, hit.at));
+        CHECK(inSafeFrame(specialCineFrameAt(low, stills[k], st, &c.fix), hit.at));
     }
 }
 
@@ -1852,20 +1928,65 @@ TEST_CASE("special cine: the hit's contact in the shown shot: it reads at 6.6 m;
     REQUIRE(far != nullptr);
     const CutsceneVec3 end = far->endFeet();
     const float walk = std::sqrt(end.x * end.x + end.y * end.y);
-    // The host's two passes (every shot's fix, then the cover for a shot none frames), then the hit as played.
-    const auto played = [&](const SpecialCineStage& st, float d, float radius, SpecialCineShotFix* fixes, SpecialCineHit& hit) {
+    // The host's two passes (every shot's fix, then the cover for a shot none frames), then the hit as played. With
+    // `withHit` the hit (its time and contact, known before any fix) is given to the fix search and the cover, which
+    // then test the shot shown at the hit and at its stills; without it, round 4's search.
+    const auto played = [&](const SpecialCineMove& mv, const SpecialCineStage& st, float d, float radius, bool withHit,
+                            SpecialCineShotFix* fixes, SpecialCineHit& hit, const SpecialCineHit* posed = nullptr) {
         const SpecialCineBody body = bodyOf(st);
+        SpecialCineHit first = specialCineHit(mv, st, arenaSpecialImpactAt(*rules, d), radius);
+        if (posed != nullptr) {
+            first.posed = posed->posed;
+            for (std::uint32_t k = 0; k <= SpecialCineHit::kStills; ++k) first.pose[k] = posed->pose[k];
+        }
+        const SpecialCineHit* given = withHit ? &first : nullptr;
         bool failing[SpecialCineMove::kMaxShots] = {};
-        for (std::uint32_t i = 0; i < far->size(); ++i) {
-            if (far->shot(i).subject == SpecialCineSubject::None) continue;
-            const SpecialCineShotCheck c = specialCineFixShot(*far, i, st, &body, 1);
+        for (std::uint32_t i = 0; i < mv.size(); ++i) {
+            if (mv.shot(i).subject == SpecialCineSubject::None) continue;
+            const SpecialCineShotCheck c = specialCineFixShot(mv, i, st, &body, 1, nullptr, nullptr, given);
             fixes[i] = c.fix;
             failing[i] = !c.ok;
         }
-        for (std::uint32_t i = 0; i < far->size(); ++i)
-            if (failing[i]) fixes[i].cover = specialCineCoverShot(*far, i, st, fixes, &body, 1);
-        hit = specialCineHit(*far, st, arenaSpecialImpactAt(*rules, d), radius, fixes);
-        return specialCineHitProblem(*far, st, hit, fixes, &body, 1);
+        for (std::uint32_t i = 0; i < mv.size(); ++i)
+            if (failing[i]) fixes[i].cover = specialCineCoverShot(mv, i, st, fixes, &body, 1, nullptr, nullptr, given);
+        hit = specialCineHit(mv, st, arenaSpecialImpactAt(*rules, d), radius, fixes);
+        hit.posed = first.posed;
+        for (std::uint32_t k = 0; k <= SpecialCineHit::kStills; ++k) hit.pose[k] = first.pose[k];
+        CHECK(near(hit.time, first.time));
+        return specialCineHitProblem(mv, st, hit, fixes, &body, 1);
+    };
+    // The lead's pose at moment k of the hit, by the test's own sums: the measured one, else upright at its walk's end.
+    const auto poseAt = [&](const SpecialCineMove& mv, const SpecialCineStage& st, const SpecialCineHit& hit, std::uint32_t k) {
+        if (hit.posed) return hit.pose[k];
+        const CutsceneVec3 e = mv.endFeet();
+        const float a = std::clamp(st.travel, 0.f, 1.f), h = st.leadHeight;
+        const CutsceneVec3 feet = specialCinePoint(st, SpecialCineAnchor::Lead, {e.x * a, e.y * a, e.z * a});
+        return SpecialCineLeadPose{{feet.x, feet.y, feet.z + 0.5f * h}, {feet.x, feet.y, feet.z + 0.6f * h},
+                                   {feet.x, feet.y, feet.z + SpecialCineFraming::kHeadHeight * h}};
+    };
+    // At the hit and every still (shot "none" frames excepted): Core's verdict none, and by the test's own sums the
+    // lead's head and hand in frame and the contact line clear of its body.
+    const auto hitReads = [&](const SpecialCineMove& mv, const SpecialCineStage& st, const SpecialCineShotFix* fixes,
+                              const SpecialCineHit& hit) {
+        float at[1 + SpecialCineHit::kStills] = {hit.time};
+        const std::uint32_t n = 1 + specialCineHitStills(mv, hit, at + 1, SpecialCineHit::kStills);
+        const SpecialCineBody body = bodyOf(st);
+        bool ok = true;
+        for (std::uint32_t k = 0; k < n; ++k) {
+            const SpecialCineFrame f = specialCineFrameAt(mv, at[k], st, fixes);
+            if (mv.shot(f.shot).subject == SpecialCineSubject::None) continue;
+            SpecialCineHit still = hit;
+            still.time = at[k];
+            still.pose[0] = hit.pose[k];
+            const SpecialCineProblem p = specialCineHitProblem(mv, st, still, fixes, &body, 1);
+            const SpecialCineLeadPose q = poseAt(mv, st, hit, k);
+            const bool reads = poseInFrame(f, q, hit.at), clear = torsoGap(f, hit.at, q) >= SpecialCineFraming::kTorso;
+            if (p != SpecialCineProblem::None || !reads || !clear)
+                MESSAGE("  at ", at[k], " s (shot ", f.shot + 1, "): ", specialCineProblemName(p), "; by the test's sums the lead reads ",
+                        reads, ", the contact line clear of it ", clear);
+            ok = ok && p == SpecialCineProblem::None && reads && clear;
+        }
+        return ok;
     };
     // r2b_far: a brute 6.59 m off, the hit in shot 6: the contact reads.
     {
@@ -1876,11 +1997,68 @@ TEST_CASE("special cine: the hit's contact in the shown shot: it reads at 6.6 m;
         st.bone = {0.3f, 0.25f, 1.1f};
         SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
         SpecialCineHit hit;
-        CHECK(played(st, 6.59f, 0.45f, fixes, hit) == SpecialCineProblem::None);
+        CHECK(played(*far, st, 6.59f, 0.45f, true, fixes, hit) == SpecialCineProblem::None);
         CHECK(hit.shot == 5);
+        CHECK(hitReads(*far, st, fixes, hit));
+        // Round 4's shot 6 here passed the ruling: the hit given, its fix is the same.
+        SpecialCineShotFix old[SpecialCineMove::kMaxShots]{};
+        SpecialCineHit oldHit;
+        played(*far, st, 6.59f, 0.45f, false, old, oldHit);
+        CHECK(fixes[5].mirror == old[5].mirror);
+        CHECK(fixes[5].aim == old[5].aim);
+        CHECK(near(fixes[5].raise, old[5].raise));
+        CHECK(near(fixes[5].pull, old[5].pull));
+        CHECK(near(fixes[5].orbit, old[5].orbit));
+        CHECK(fixes[5].cover == old[5].cover);
+    }
+    // r2b_big (round 4's log): a hulk (1.2 m, 3.5 m tall) 2.41 m off at the press, so the near set; the lead (1.4 m)
+    // walks its whole 0.73 m. Round 4 showed shot 6 (release over the shoulder) with the lead a cropped back at the
+    // bottom edge. Given the hit, the search frames the lead's head and striking hand at the hit and at every still.
+    {
+        const ArenaEnemyKind* hulk = nullptr;
+        for (std::size_t k = 0; k < arena.enemies.size(); ++k)
+            if (arena.enemyIds[k] == "hulk") hulk = &arena.enemies[k];
+        REQUIRE(hulk != nullptr);
+        SpecialCineStage st = stageAt(0.f, 0.f, 2.41f, -0.09f);
+        st.targetRadius = hulk->bodyRadius;
+        st.targetHeight = arenaEnemyHeight(*hulk);
+        st.leadHeight = 1.4f;
+        st.travel = 1.f;
+        st.bone = {0.3f, 0.25f, 1.1f};
+        const SpecialCineMove* mv = t.find("devin_special_01", specialCineDistance(st));
+        REQUIRE(mv == &t.nearMove(0));
+        SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+        SpecialCineHit hit;
+        const SpecialCineProblem p = played(*mv, st, 2.41f, hulk->bodyRadius, true, fixes, hit);
+        CHECK(p == SpecialCineProblem::None);
+        CHECK(hitReads(*mv, st, fixes, hit));
+        // The lead lunges into the blow: its pose fitted to round 4's still r2b_big_sp_07.30 on Core's camera there (the
+        // head at pixel 860,560, the shoulders' top at 800,655 and the back at 790,800 of 1600x900; the body right of its
+        // left fist), held through the stills; the pose the next block logs replaces it. Round 4's game fix for shot 6
+        // (aimed, orbited -30 degrees) looks at the contact over the lead's back: behind the lead.
+        SpecialCineHit lunge = specialCineHit(*mv, st, 7.145f, hulk->bodyRadius);
+        lunge.posed = true;
+        for (SpecialCineLeadPose& q : lunge.pose) q = {{0.52f, 0.08f, 0.64f}, {0.74f, 0.03f, 0.86f}, {0.91f, 0.04f, 1.10f}};
+        SpecialCineShotFix game[SpecialCineMove::kMaxShots]{};
+        game[5] = SpecialCineShotFix{false, 0.f, 0.f, true, -30.f};
+        const SpecialCineBody body = bodyOf(st);
+        const SpecialCineFrame gf = specialCineFrameAt(*mv, lunge.time, st, game);
+        MESSAGE("r2b_big, round 4's game fix on the lunge: ", specialCineProblemName(specialCineHitProblem(*mv, st, lunge, game, &body, 1)),
+                "; the contact line ", torsoGap(gf, lunge.at, lunge.pose[0]), " m from the lead's hips-to-head line");
+        CHECK(specialCineHitProblem(*mv, st, lunge, game, &body, 1) == SpecialCineProblem::ContactBehindLead);
+        CHECK(torsoGap(gf, lunge.at, lunge.pose[0]) < SpecialCineFraming::kTorso);
+        // Given the posed hit, the search frames the blow clear of the lead's back, its head and hand in frame.
+        SpecialCineShotFix posedFixes[SpecialCineMove::kMaxShots]{};
+        SpecialCineHit posedHit;
+        const SpecialCineProblem q = played(*mv, st, 2.41f, hulk->bodyRadius, true, posedFixes, posedHit, &lunge);
+        MESSAGE("r2b_big on the lunge: shot 6 ", posedFixes[5].mirror ? std::string("mirrored, ") : std::string(), posedFixes[5].aim ? std::string("aimed, ") : std::string(),
+                "orbited ", posedFixes[5].orbit, ", raised ", posedFixes[5].raise, ", pulled ", posedFixes[5].pull, ", cover ",
+                static_cast<int>(posedFixes[5].cover), "; problem ", specialCineProblemName(q));
+        CHECK(q == SpecialCineProblem::None);
+        CHECK(hitReads(*mv, st, posedFixes, posedHit));
     }
     // maw_pup at 12.49 and 13.69 m (round 3's 13.0 and 14.2 spawns at the press): the hit falls in shot 7, which frames
-    // the lead; its contact is out of frame. Counted as still failing, not fixed.
+    // the lead; round 4 left its contact out of frame. The fix search, given the hit, moves the shot or covers it.
     for (const float d : {12.49f, 13.69f}) {
         CAPTURE(d);
         SpecialCineStage st = stageAt(0.f, 0.f, d, 0.f);
@@ -1891,10 +2069,64 @@ TEST_CASE("special cine: the hit's contact in the shown shot: it reads at 6.6 m;
         SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
         SpecialCineHit hit;
         const auto before = ftcore_test::allocStats().count;
-        const SpecialCineProblem p = played(st, d, pup->bodyRadius, fixes, hit);
+        const SpecialCineProblem p = played(*far, st, d, pup->bodyRadius, true, fixes, hit);
         if (ftcore_test::allocHookInstalled()) CHECK(ftcore_test::allocStats().count == before);
-        MESSAGE("maw_pup at ", d, " m: the hit at ", hit.time, " s in shot ", hit.shot + 1, ", problem ", static_cast<int>(p));
-        CHECK(hit.shot == 6);
-        CHECK(p == SpecialCineProblem::OffFrame);
+        MESSAGE("maw_pup at ", d, " m: the hit at ", hit.time, " s in shot ", hit.shot + 1, " (shot 7's cover ",
+                static_cast<int>(fixes[6].cover), "), problem ", specialCineProblemName(p));
+        CHECK(p == SpecialCineProblem::None);
+        CHECK(hitReads(*far, st, fixes, hit));
     }
+}
+
+TEST_CASE("special cine: the partner's mark puts its blow on the lead's line, behind the lead, inside its reach") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    const SpecialCineMove* far = t.find("devin_special_01");
+    REQUIRE(far != nullptr);
+    // r2b_big: the hulk (1.2 m) 2.97 m off; the Third (light range 3.6, reach 8.5, standoff 5) chest 0.84 m.
+    SpecialCineStage st = stageAt(0.f, 0.f, 2.97f, 0.f);
+    st.targetRadius = 1.2f;
+    st.targetHeight = 3.f;
+    st.leadHeight = 1.4f;
+    const SpecialCineHit hit = specialCineHit(*far, st, 7.156f, 1.2f);
+    const SpecialCinePartnerMark m = specialCinePartnerMark(*far, st, hit, 0.35f, 0.35f, 8.5f, 5.f);
+    REQUIRE(m.found);
+    MESSAGE("r2b_big mark: ", m.fromSurface, " m from the surface, ", m.behindLead, " m behind the lead");
+    CHECK(near(m.fromSurface, 5.f, 1e-3f)); // the standoff, farther than the lead's reach behind it
+    CHECK(m.behindLead >= 1.1f + 0.35f + SpecialCinePartnerMark::kGap - 1e-3f);
+    const SpecialCinePartnerStrike s = specialCinePartnerStrike(*far, st, hit, CutsceneVec3{m.feet.x, m.feet.y, m.feet.z + 0.84f}, 1.2f);
+    CHECK(s.bearing < 1.f);
+    CHECK(s.onLine());
+    // Too short a reach: not found, and the numbers say why.
+    const SpecialCinePartnerMark shortReach = specialCinePartnerMark(*far, st, hit, 0.35f, 0.35f, 3.6f, 5.f);
+    CHECK_FALSE(shortReach.found);
+    CHECK(shortReach.fromSurface > 3.6f);
+    // No standoff: just clear of the lead's staff and body.
+    const SpecialCinePartnerMark close = specialCinePartnerMark(*far, st, hit, 0.35f, 0.35f, 8.5f);
+    CHECK(near(close.behindLead, 1.1f + 0.35f + SpecialCinePartnerMark::kGap, 1e-3f));
+    // Every radius and distance: the blow from the mark is on the line, the mark clear of the lead, within reach when found.
+    int cases = 0;
+    for (const float r : {0.2f, 0.35f, 0.6f, 0.9f, 1.2f, 1.5f})
+        for (const float d : {2.f, 3.f, 6.6f, 13.f})
+            for (const float side : {0.f, 1.5f}) {
+                CAPTURE(r);
+                CAPTURE(d);
+                CAPTURE(side);
+                SpecialCineStage sw = stageAt(0.f, 0.f, d, side);
+                sw.targetRadius = r;
+                sw.targetHeight = 1.8f;
+                sw.leadHeight = 1.4f; // the lead's chest and the partner's at one height (0.84 m), as on r2b
+                const SpecialCineHit h = specialCineHit(*far, sw, 7.2f, r);
+                const SpecialCinePartnerMark k = specialCinePartnerMark(*far, sw, h, 0.35f, 0.35f, 8.5f, 5.f);
+                CHECK(k.fromSurface >= 5.f - 1e-3f);
+                CHECK(k.behindLead >= 0.35f + 0.35f + SpecialCinePartnerMark::kGap - 1e-3f);
+                CHECK(k.found == (k.fromSurface <= 8.5f));
+                const SpecialCinePartnerStrike ks =
+                    specialCinePartnerStrike(*far, sw, h, CutsceneVec3{k.feet.x, k.feet.y, k.feet.z + 0.84f}, r);
+                CHECK(ks.onLine());
+                ++cases;
+            }
+    CHECK(cases == 48);
 }

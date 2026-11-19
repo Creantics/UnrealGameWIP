@@ -318,6 +318,12 @@ enum class SpecialCineProblem : std::uint8_t {
     World,      // the world blocks the camera or its line to the subject
     OffFrame,   // the subject is behind the camera or outside the safe frame
     TooSmall,   // the subject is in frame but under the minimum height
+    // The lead's head or striking hand outside the frame (kInFrame) in the shot shown at the hit or at one of its stills
+    // (specialCineHitProblem; the fix search tests it with the hit given).
+    LeadCropped,
+    // The contact line passes through the lead's own body (kTorso round its hips-to-head line) at the hit or one of its
+    // stills: its back hides its blow (r2b_big's shot 6, round 4: an over-the-shoulder from behind and above).
+    ContactBehindLead,
     // Tested last, so either one means every check above passed:
     ContactHidden, // a body (the target's own included) hides the contact from the camera (target and "both" shots)
     LeadHidden,    // under kMinLeadShare of the lead's sample points can be seen (lead and "both" shots)
@@ -325,8 +331,8 @@ enum class SpecialCineProblem : std::uint8_t {
     // move stands (specialCineViewsAlike).
     AlikeShot,
 };
-// "none", "inside a body", "a body in the line", "the world", "off frame", "too small", "the contact hidden",
-// "the lead hidden", "like another shot".
+// "none", "inside a body", "a body in the line", "the world", "off frame", "too small", "the lead cropped",
+// "the contact hidden", "the lead hidden", "like another shot".
 FTCORE_API std::string_view specialCineProblemName(SpecialCineProblem problem);
 
 // The framing rules: the subject (its upright line, feet to head) must have some part inside the safe frame, 10% in
@@ -359,6 +365,18 @@ struct SpecialCineFraming {
     static constexpr float kShoulderHeight = 0.82f;
     static constexpr float kShoulderHalf = 0.22f; // metres
     static constexpr float kMinLeadShare = 0.75f;
+    // The shot shown at the hit and at its stills (one that frames someone) frames the lead's head and striking hand:
+    // both kInFrame inside the frame (5% in from each edge). Other frames may crop the lead (a feet close-up, an
+    // over-the-shoulder release). The head: kHeadHeight of the lead's height on its upright
+    // line. The hand: kHandReach metres out from the lead's chest toward the contact (or the contact when nearer). The
+    // head and chest: the hit's measured pose (SpecialCineHit::pose) when the host gave one, else Core's model (upright
+    // at its walk's end, kHips, kChest and kHeadHeight of its height). The contact line must also clear the lead's own
+    // body: kTorso metres round its hips-to-head line (ContactBehindLead).
+    static constexpr float kInFrame = 0.9f;
+    static constexpr float kHeadHeight = 0.93f;
+    static constexpr float kHips = 0.5f;
+    static constexpr float kHandReach = 0.6f; // metres
+    static constexpr float kTorso = 0.22f;    // metres (kShoulderHalf: the back seen from behind)
     // The reframe tried last (specialCineFixShot): orbits of kOrbitStep degrees out to kOrbitMax each way, plain and
     // raised kOrbitRaise metres, each also aimed; then the reverse angle (kOrbitReverse) the same. A two-shot from close behind
     // a target with the lead far beyond cannot swing far enough to see the contact before a figure leaves the frame
@@ -413,7 +431,10 @@ FTCORE_API SpecialCineShotView specialCineShotView(const SpecialCineMove& move, 
                                                    const SpecialCineShotFix* fixes = nullptr);
 FTCORE_API bool specialCineViewsAlike(const SpecialCineShotView& a, const SpecialCineShotView& b);
 
-// Tests shot `shot` of `move` at kSamples times and, when it fails, tries in order: mirrored; raised 0.4, 0.8, 1.2 m;
+// Tests shot `shot` of `move` at kSamples times (and, with `hit` given, the frames at the hit and at its stills,
+// specialCineHitStills, that fall inside the shot's window and show a shot that frames someone: every check above,
+// then the contact in the safe frame and past every body, then the lead's head and striking hand in frame) and, when
+// it fails, tries in order: mirrored; raised 0.4, 0.8, 1.2 m;
 // mirrored and raised; aimed; aimed and mirrored; aimed and raised; then pulled 0.5 to 6 m in 0.5 m steps (each plain,
 // then aimed); then orbited 15, 30, 45, 60 degrees (each to the right, then the left; each plain, then aimed), and
 // all of that again raised kOrbitRaise; then the reverse angle (180 degrees) the same way: plain, aimed, raised,
@@ -424,20 +445,24 @@ FTCORE_API bool specialCineViewsAlike(const SpecialCineShotView& a, const Specia
 // like another shot of the move as written that frames someone (specialCineViewsAlike) is refused (AlikeShot, counted
 // in `alike`). The first that passes is returned; none: ok false and the fix left empty (the host then tries the
 // cover, specialCineCoverShot, once every shot's fix is known). At most 185 tries. No allocation.
+struct SpecialCineHit;
 FTCORE_API SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                                    const SpecialCineBody* bodies, std::uint32_t count,
-                                                   SpecialCineWorldTest world = nullptr, void* user = nullptr);
+                                                   SpecialCineWorldTest world = nullptr, void* user = nullptr,
+                                                   const SpecialCineHit* hit = nullptr);
 
 // The shot shown at shot `shot`'s place: its cover's (a neighbour that is not itself skipped) when `fixes` (null, or one
 // per shot) skips it, else `shot`. No allocation.
 FTCORE_API std::uint32_t specialCineShownShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineShotFix* fixes);
 // For a shot no fix frames, with every other shot's fix known (`fixes`: one per shot, the shot's own ignored): the
-// neighbour that, framed over this shot's window (kSamples times, the next one first), passes every check, else None
+// neighbour that, framed over this shot's window (kSamples times, the next one first; and at `hit` and its stills,
+// given, as specialCineFixShot tests them), passes every check, else None
 // (the host plays it as written and counts it as still failing). A shot with subject "none" or one already skipped
 // never covers. No allocation.
 FTCORE_API SpecialCineCover specialCineCoverShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                                  const SpecialCineShotFix* fixes, const SpecialCineBody* bodies,
-                                                 std::uint32_t count, SpecialCineWorldTest world = nullptr, void* user = nullptr);
+                                                 std::uint32_t count, SpecialCineWorldTest world = nullptr, void* user = nullptr,
+                                                 const SpecialCineHit* hit = nullptr);
 // The cut list as played under `fixes` (null, or one per shot): the shots shown in order, each from its in to its
 // out, a cover's run grown over the shot it covers; `skipped` counts the shots it covers. Written into `out` (up to
 // `capacity`); returns how many cuts there are (more than `capacity`: the rest not written). No allocation.
@@ -466,6 +491,14 @@ FTCORE_API SpecialCineFrame specialCineFrameAt(const SpecialCineMove& move, floa
 // chest; `radius` the target body's when wider than the stage's); `shot` the shot shown at `time` (under `fixes`: null,
 // or one per shot; a skipped shot's cover), and `stillAt` the
 // still that shows it (kStillLag later, inside the move). No allocation.
+// The lead's body at one moment of the hit (world metres): the host's clip sampled there (its pelvis, upper spine and
+// head bones, through the lead's place on the stage).
+struct SpecialCineLeadPose {
+    CutsceneVec3 hips;
+    CutsceneVec3 chest;
+    CutsceneVec3 head;
+};
+
 struct SpecialCineHit {
     static constexpr float kStillLag = 0.03f; // s: the hit's still, after the effect has spawned
     // s after the hit: the hit's stills (the effect's first frames to its fade); the first is kStillLag.
@@ -475,6 +508,10 @@ struct SpecialCineHit {
     float time = 0.f;
     float stillAt = 0.f;
     std::uint32_t shot = 0;
+    // The lead's pose at the hit (0) and at each still (k: `time` + kStillLags[k - 1]) when the host measured it
+    // (`posed`; specialCineHit leaves it unset); else Core's model: upright at its walk's end, where the blow lands.
+    SpecialCineLeadPose pose[1 + kStills]{};
+    bool posed = false;
 };
 FTCORE_API SpecialCineHit specialCineHit(const SpecialCineMove& move, const SpecialCineStage& stage, float impactTime,
                                          float radius = 0.f, const SpecialCineShotFix* fixes = nullptr);
@@ -482,10 +519,11 @@ FTCORE_API SpecialCineHit specialCineHit(const SpecialCineMove& move, const Spec
 // first is `hit.stillAt` when it does). Written into `out` (up to `capacity`); returns how many. No allocation.
 FTCORE_API std::uint32_t specialCineHitStills(const SpecialCineMove& move, const SpecialCineHit& hit, float* out,
                                               std::uint32_t capacity);
-// Whether the hit's contact reads in the shot shown at `hit.time` (under `fixes`: null, or one per shot): "none" when it
-// does; "off frame" when it is behind the camera or outside the safe frame; "the contact hidden" when a body of `bodies`
-// (the target's own included) stands between the camera and it. A count for the host's log only: the fix search does
-// not use it. No allocation.
+// Whether the hit reads in the shot shown at `hit.time` (under `fixes`: null, or one per shot): "none" when it does;
+// "off frame" when the contact is behind the camera or outside the safe frame; "the contact hidden" when a body of
+// `bodies` (the target's own included) stands between the camera and it; "the lead cropped" when the lead's head or
+// striking hand is outside the frame (kInFrame). The fix search tests the same at the hit (specialCineFixShot's `hit`);
+// the host counts a hit that still fails with the shots still failing. No allocation.
 FTCORE_API SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move, const SpecialCineStage& stage,
                                                     const SpecialCineHit& hit, const SpecialCineShotFix* fixes = nullptr,
                                                     const SpecialCineBody* bodies = nullptr, std::uint32_t count = 0);
@@ -513,6 +551,26 @@ struct SpecialCinePartnerStrike {
 FTCORE_API SpecialCinePartnerStrike specialCinePartnerStrike(const SpecialCineMove& move, const SpecialCineStage& stage,
                                                              const SpecialCineHit& hit, const CutsceneVec3& partnerChest,
                                                              float radius = 0.f);
+
+// Where the partner stands so that its blow (specialCinePartnerBlow) lands on the hit's contact line: on the ground ray
+// from the target's axis out through the lead's feet at the hit (bearing 0), behind the lead, its body (`partnerRadius`)
+// kGap clear of the lead's (`leadRadius`, or what the lead holds at the hit, move.reach(), when wider), and no nearer the
+// target's surface than `standoff` (a caster's distance; 0: none). `found` false (the place still written) when that
+// place is farther than `reach` (metres from the partner's axis to the target's surface, as a blow's range is measured)
+// from the target: its blow could not land from there. `radius`: the target body's when wider than the stage's. On a
+// big target only a place about on the lead's own line passes: (radius + kContactOut) x sin(bearing) <= kOnLine
+// (6.6 degrees on a 1.2 m hulk), and beside the lead it would stand inside the lead's body or what it holds.
+// No allocation.
+struct SpecialCinePartnerMark {
+    static constexpr float kGap = 0.1f; // metres
+    CutsceneVec3 feet;        // on the ground at the lead's feet' height
+    float fromSurface = 0.f;  // metres from the target's surface to the partner's axis
+    float behindLead = 0.f;   // metres from the lead's axis to the partner's
+    bool found = false;
+};
+FTCORE_API SpecialCinePartnerMark specialCinePartnerMark(const SpecialCineMove& move, const SpecialCineStage& stage,
+                                                         const SpecialCineHit& hit, float leadRadius, float partnerRadius,
+                                                         float reach, float standoff = 0.f, float radius = 0.f);
 
 class SpecialCinePlayer {
 public:

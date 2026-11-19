@@ -694,8 +694,9 @@ private:
 	bool StepFrozen();
 	void PlaceSpecialPerformer(const ftcore::Vec2& At);
 	bool BeginSpecial();
-	// Each shot tested once at the begin by Core (specialCineFixShot) and moved by the fix it finds.
-	void SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target);
+	// Each shot tested once at the begin by Core (specialCineFixShot) and moved by the fix it finds; with `Hit` (its
+	// contact and the lead's pose at it and its stills) a fix must also frame the hit.
+	void SpecialCineFixShots(const ftcore::SpecialCineMove& Move, int32 Target, const ftcore::SpecialCineHit* Hit);
 	// The figures as the framing tests them (cylinders: the living enemies, `Target` marked, and the partner), into
 	// `Out` (MaxEnemies + 1 of them); returns how many.
 	uint32 SpecialCineBodies(int32 Target, ftcore::SpecialCineBody* Out);
@@ -729,6 +730,13 @@ private:
 		int32 ContactTarget = -1);
 	// The striking fist's pad at the hit, read from the move's clip in the lead's actor frame (m: x ahead, y right).
 	void SampleSpecialReach(const ftcore::ArenaSpecialRules& Rules, float Distance);
+	// The lead's pose at the hit and at each of its stills (pelvis, upper spine, head's middle) read from the move's clip
+	// through the stage's lead frame (as SampleSpecialReach reads the fist); false, `posed` left unset (Core's upright
+	// model), without the clip, the lead's mesh or one of the bones.
+	bool PoseSpecialHit(ftcore::SpecialCineHit& Hit) const;
+	// The partner put on its mark for the hit at the special's start (specialCinePartnerMark: behind the lead on the
+	// target's line through it, within its reach), under the hard cut in; logged, with why when it is not moved.
+	void MarkSpecialPartner(const ftcore::SpecialCineMove& Move, const ftcore::SpecialCineHit& Hit);
 	// The drawn fist against the target's surface at the contact frame (logged one frame on, once the pose is drawn).
 	void LogSpecialContact();
 	ftcore::SpecialCineStage SpecialStage() const;
