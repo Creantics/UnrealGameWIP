@@ -65,8 +65,14 @@ add_library(ftcore STATIC
     src/FieldGoals.cpp
     src/WorldLayout.cpp
     src/Crowd.cpp
+    src/NpcMemory.cpp
+    src/NpcMemorySave.cpp
+    src/NpcPlaces.cpp
     src/CrowdGraph.cpp
     src/CrowdTuning.cpp
+    src/CrowdV2.cpp
+    src/CrowdV2Graph.cpp
+    src/CrowdV2Tuning.cpp
     src/Terrain.cpp
     src/MassingPlan.cpp
     src/MassingProps.cpp
@@ -353,6 +359,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_main.cpp
         tests/AllocCounter.cpp
         tests/AllocHook.cpp
+        tests/test_alloc_counter.cpp
         tests/test_asset_manifest.cpp
         tests/test_audio.cpp
         tests/test_audio_pick.cpp
@@ -443,6 +450,11 @@ if(FTCORE_BUILD_TESTS)
         tests/test_water_bodies.cpp
         tests/test_wet_prints.cpp
         tests/test_water_exits.cpp
+        tests/test_water_loco.cpp
+        tests/test_water_follow.cpp
+        tests/test_held_up_jump.cpp
+        tests/test_water_surface_feet.cpp
+        tests/test_water_spot_check.cpp
         tests/test_water_dive.cpp
         tests/test_road_decals.cpp
         tests/test_stand_ins.cpp
@@ -485,6 +497,14 @@ if(FTCORE_BUILD_TESTS)
         tests/test_party_trail.cpp
         tests/test_party_shore.cpp
         tests/test_crowd.cpp
+        tests/test_crowd_v2.cpp
+        tests/test_crowd_off_default.cpp
+        tests/test_crowd_doors.cpp
+        tests/test_crowd_views.cpp
+        tests/test_npc_memory.cpp
+        tests/test_npc_slice.cpp
+        tests/test_npc_columns.cpp
+        tests/test_npc_profiles.cpp
         tests/test_guard.cpp
         tests/test_path_follow.cpp
         tests/test_ui_text.cpp

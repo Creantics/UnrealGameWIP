@@ -7,9 +7,11 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "TimerManager.h"
 
 #include "ForgottenThird.h"
 #include "FTGameInstance.h"
+#include "FTNpcSubsystem.h"
 #include "FTPauseSubsystem.h"
 #include "FTPawn.h"
 #include "FTPlayerController.h"
@@ -137,6 +139,42 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 		PC->OnChoose.AddUniqueDynamic(this, &AFTGameMode::HandleMenuChoose);
 		PC->BeginMenuInput();
 	}
+
+#if !UE_BUILD_SHIPPING
+	// Test runs: -SaveRunTest=new|continue picks New Game or Continue by itself 3 s after the title first shows, and the
+	// game quits 5 s later, logging what NPC memory holds, so a save/load run needs no input (the autosave and the load
+	// log their NPC block).
+	static bool bSaveRunArmed = false;
+	FString SaveRunPick;
+	if (!bSaveRunArmed && FParse::Value(FCommandLine::Get(), TEXT("SaveRunTest="), SaveRunPick))
+	{
+		bSaveRunArmed = true;
+		if (SaveRunPick != TEXT("new") && SaveRunPick != TEXT("continue"))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN -SaveRunTest=%s: want new or continue."), *SaveRunPick);
+			return;
+		}
+		const int32 Option = SaveRunPick == TEXT("continue") ? 1 : 0; // the title's items: New Game, Continue, ...
+		FTimerHandle PickTimer;
+		GetWorldTimerManager().SetTimer(PickTimer, FTimerDelegate::CreateWeakLambda(this, [this, Option]()
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN pick %s."), Option == 1 ? TEXT("Continue") : TEXT("New Game"));
+			HandleMenuChoose(Option);
+		}), 3.f, false);
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			FTimerHandle QuitTimer;
+			GI->GetTimerManager().SetTimer(QuitTimer, FTimerDelegate::CreateWeakLambda(GI, [GI]()
+			{
+				const UFTNpcSubsystem* Npcs = GI->GetSubsystem<UFTNpcSubsystem>();
+				const bool bReady = Npcs && Npcs->IsReady();
+				UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN quit: NPC memory %s, captures %d chars."), bReady ? TEXT("ready") : TEXT("off"),
+					bReady ? Npcs->CaptureSaveJson().Len() : 0);
+				FTRequestExit(0, TEXT("SaveRunTest"));
+			}), 8.f, false);
+		}
+	}
+#endif
 }
 
 bool AFTGameMode::SettingsBlocked() const
