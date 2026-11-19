@@ -1184,6 +1184,59 @@ TEST_CASE("crowd knot check: the one-step close-reaction stop is not a standing 
     }
 }
 
+TEST_CASE("crowd jam check: walkers on a narrow dead-end band shuffle in a jam; a wide loop at the same density does not") {
+    // The walking-jam check counts walkers held under kCrowdJamSpeed x their pace for kCrowdJamSeconds or more within
+    // kCrowdJamRadius of one of them. Both streets 10 m wide, 0.6 walkers a metre. A 1.51 m pavement leaves a 0.5 m band
+    // (pavement - wallInset - slack - 0.2), under the 0.6 m pair gap: walkers meeting head-on cannot pass and halve
+    // their pace together; at the line's dead ends they pile up. A 3 m pavement leaves 2 m: they pass.
+    auto worstJam = [](std::vector<CrowdStreet> streets, std::uint32_t target, std::uint32_t& live, float& longest) {
+        CrowdGraph g;
+        REQUIRE(g.build(streets, loose()));
+        CrowdTuning t; // as shipped: jitter, idling and the close-walker rule on
+        t.maxAgents = target;
+        t.targetAgents = target;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 11));
+        std::uint32_t worst = 0, slowNotWalking = 0;
+        longest = 0.f;
+        for (int k = 0; k < 60 * 15; ++k) {
+            sim.tick(t.step, {0.f, 0.f}, {0.f, 0.f});
+            if (k < 2 * 15) continue;
+            worst = std::max(worst, sim.largestJam(kCrowdJamRadius, kCrowdJamSeconds));
+            for (std::uint32_t i = 0; i < sim.capacity(); ++i) {
+                const CrowdAgentView& a = sim.agent(i);
+                if (!a.live) continue;
+                longest = std::max(longest, a.slowFor);
+                slowNotWalking += a.state != CrowdState::Walk && a.slowFor > 0.f ? 1u : 0u;
+            }
+        }
+        CHECK(slowNotWalking == 0u); // only walkers count as slow
+        live = sim.liveCount();
+        return worst;
+    };
+    auto street = [](std::vector<Vec2> pts, float pavement) {
+        CrowdStreet s;
+        s.kind = "street";
+        s.width = 10.f;
+        s.pavement = pavement;
+        s.points = std::move(pts);
+        return s;
+    };
+    const std::vector<Vec2> loop{{-50.f, -50.f}, {50.f, -50.f}, {50.f, 50.f}, {-50.f, 50.f}, {-50.f, -50.f}};
+    const std::vector<Vec2> deadEnds{{-50.f, 60.f}, {50.f, 60.f}};
+    std::uint32_t liveLoop = 0, liveLine = 0;
+    float slowLoop = 0.f, slowLine = 0.f;
+    const std::uint32_t jamLoop = worstJam({street(loop, 3.f)}, 240, liveLoop, slowLoop);
+    const std::uint32_t jamLine = worstJam({street(deadEnds, 1.51f)}, 60, liveLine, slowLine);
+    MESSAGE("wide loop: live " << liveLoop << ", worst jam " << jamLoop << ", longest slow " << slowLoop << " s");
+    MESSAGE("narrow dead-end line: live " << liveLine << ", worst jam " << jamLine << ", longest slow " << slowLine << " s");
+    CHECK(liveLoop > 200u);
+    CHECK(liveLine > 50u);
+    CHECK(jamLoop <= kCrowdJamGate);
+    CHECK(jamLine > kCrowdJamGate);
+    CHECK(slowLine > kCrowdJamSeconds);
+}
+
 TEST_CASE("crowd spawn cap: with one dead-end street in the spawn ring the target packs onto it; spawnNearMax spreads it") {
     // One 100 m street, a dead end at each end, 60 m off the player: the only street in the spawn ring. With the cap off
     // (the default) the streets' whole target lands on it and walks into its two ends. With it on, a spot that already

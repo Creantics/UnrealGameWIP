@@ -300,6 +300,7 @@ struct CrowdAgentView {
     float speed = 0.f;      // m/s
     float fear = 0.f;
     float boldness = 0.5f;
+    float slowFor = 0.f;    // s this walker has walked under kCrowdJamSpeed x its own pace without a break (0: not slow)
 };
 
 // S-332: a camera the crowd must not pop in front of: from eye, yaw (deg), halfFov (deg; 180 or more: all round),
@@ -335,6 +336,15 @@ struct CrowdCounts {
     std::uint64_t despawnNewborn = 0, despawnWalkedOut = 0;
 };
 inline constexpr float kCrowdNewborn = 1.f;
+// The walking-jam check: a walker (state Walk, not in the one-step close-reaction stop) is slow while its pace is
+// under this share of its own. The close-walker rule halves pace exactly, so any share between 0.5 and 1 reads alike.
+inline constexpr float kCrowdJamSpeed = 0.7f;
+// The run check: largestJam(kCrowdJamRadius, kCrowdJamSeconds) over kCrowdJamGate fails. 5 s is over twice an ordinary
+// slow-down (passing or queueing behind someone: 99 in 100 end within about 2 s); 5 m holds a jam on one pavement and
+// keeps apart walkers slowed on different streets; a wide-band loop at 0.6 walkers a metre stays at 2 or less.
+inline constexpr float kCrowdJamRadius = 5.f;
+inline constexpr float kCrowdJamSeconds = 5.f;
+inline constexpr std::uint32_t kCrowdJamGate = 4;
 // S-271: members are placed this far past wallInset (m), so float noise never leaves one under it: the walking band
 // ends there, and a member found under wallInset is moved back to it. The gate itself stays wallInset, unrounded.
 inline constexpr float kCrowdWallSlack = 0.01f;
@@ -467,6 +477,9 @@ public:
     // S-332: the most stopped members within r of one member (itself included); members behind doors left out, and
     // walkers in the one-step close-reaction stop (view.reacting: walking the step before, running the step after).
     FTCORE_API std::uint32_t largestStoppedGroup(float r) const;
+    // The walking-jam check: the most walkers slow for minSlow s or more (view.slowFor) within r of one of them (itself
+    // included). Walkers stuck in a slow shuffle, where largestStoppedGroup sees nobody stopped. No allocation.
+    FTCORE_API std::uint32_t largestJam(float r, float minSlow) const;
     // S-332: live members drawn in a run pose while moving slower than walking speed (gate 0).
     FTCORE_API std::uint32_t runPoseSlow() const;
     void setDensity(float d) { density_ = d > 1.f ? 1.f : d < 0.f ? 0.f : d; }
@@ -523,6 +536,7 @@ private:
         float doorLeft = 0.f;        // s left inside
         Vec2 doorTo;                 // phase 3: the pavement spot it walks out to
         std::int32_t doorSeen = -1;  // the last door it walked past (one chance per door)
+        float slowFor = 0.f;         // see CrowdAgentView::slowFor
     };
     struct DoorSlot {
         Vec2 at, inside;

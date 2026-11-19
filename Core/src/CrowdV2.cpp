@@ -1385,6 +1385,19 @@ std::uint32_t CrowdSim::largestStoppedGroup(float r) const {
     return best;
 }
 
+std::uint32_t CrowdSim::largestJam(float r, float minSlow) const {
+    std::uint32_t best = 0;
+    for (std::uint32_t i = 0; i < agents_.size(); ++i) {
+        if (!views_[i].live || views_[i].slowFor < minSlow) continue;
+        std::uint32_t n = 1;
+        forEachNear(agents_[i].pos, r, [&](std::uint32_t j) {
+            if (j != i && views_[j].live && views_[j].slowFor >= minSlow && dist2(agents_[i].pos, agents_[j].pos) < r * r) ++n;
+        });
+        best = std::max(best, n);
+    }
+    return best;
+}
+
 std::uint32_t CrowdSim::runPoseSlow() const {
     std::uint32_t n = 0;
     for (std::uint32_t i = 0; i < agents_.size(); ++i) {
@@ -1492,6 +1505,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.speed = a.speed;
     v.fear = a.fear;
     v.boldness = a.boldness;
+    v.slowFor = a.slowFor;
     // S-332: the pose follows the distance actually covered this step: no run pose below walking speed, ever.
     const float moved = dist(a.pos, a.prev) / std::max(tuning_.step, 1e-4f);
     const bool runs = a.speed > 0.05f && moved >= 0.9f * tuning_.walkSpeed;
@@ -1544,7 +1558,12 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     pickDrawn(player);
     for (std::uint32_t i = 0; i < agents_.size(); ++i)
         if (agents_[i].state != CrowdState::Free) {
-            agents_[i].odo += dist(agents_[i].pos, agents_[i].prev);
+            Agent& a = agents_[i];
+            a.odo += dist(a.pos, a.prev);
+            // The walking-jam check's timer (the reaction stop left out as view.reacting leaves it out).
+            const bool reacting = a.reactStop && a.speed <= 0.05f;
+            const bool slow = a.state == CrowdState::Walk && !reacting && a.speed < kCrowdJamSpeed * a.baseSpeed;
+            a.slowFor = slow ? a.slowFor + tuning_.step : 0.f;
             writeView(i);
         }
     // S-332: drawn or undrawn (spawned, despawned) inside a view's range reads as a pop.

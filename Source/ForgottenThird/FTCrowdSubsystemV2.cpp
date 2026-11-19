@@ -913,6 +913,17 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 				LogStoppedGroup(Group);
 			}
 			WorstGroup = FMath::Max(WorstGroup, Group);
+			const uint32 Jam = Sim.largestJam(ftcore::crowdv2::kCrowdJamRadius, ftcore::crowdv2::kCrowdJamSeconds);
+			if (Jam > WorstJam)
+			{
+				if (Jam > ftcore::crowdv2::kCrowdJamGate)
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("Crowd: walking jam of %u at t=%.2f s (walkers slow for %.0f s or more within %.0f m of one; gate %u)."),
+						Jam, RunTime, ftcore::crowdv2::kCrowdJamSeconds, ftcore::crowdv2::kCrowdJamRadius, ftcore::crowdv2::kCrowdJamGate);
+				}
+				WorstJam = Jam;
+				WorstJamAt = RunTime;
+			}
 		}
 		for (uint32 i = 0; i < Sim.capacity(); ++i)
 		{
@@ -1004,6 +1015,11 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: run pose below walking speed %llu member-frames (%s, gate 0); largest group standing within 3 m %u (%s, gate %u); spawned, despawned, drawn or undrawn in a camera's view within %.0f m %llu (%s, gate 0)."),
 			SlowRunFrames, bNoSlowRun ? TEXT("ok") : TEXT("FAILED"), WorstGroup, bNoKnot ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGroupGate, CrowdV2Local::kViewRange,
 			static_cast<unsigned long long>(C.popsInView), bNoPops ? TEXT("ok") : TEXT("FAILED"));
+		// The walking-jam check: walkers held under kCrowdJamSpeed x their own pace (the close-reaction stop left out).
+		const bool bNoJam = WorstJam <= ftcore::crowdv2::kCrowdJamGate;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: largest walking jam (walkers under %.0f%% of their pace for %.0f s or more, within %.0f m of one) %u at t=%.2f s (%s, gate %u)."),
+			100.f * ftcore::crowdv2::kCrowdJamSpeed, ftcore::crowdv2::kCrowdJamSeconds, ftcore::crowdv2::kCrowdJamRadius, WorstJam, WorstJamAt,
+			bNoJam ? TEXT("ok") : TEXT("FAILED"), ftcore::crowdv2::kCrowdJamGate);
 		const bool bStills = Shots.Num() == 0 || ShotIndex >= Shots.Num();
 		if (Shots.Num() > 0)
 		{
@@ -1011,7 +1027,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 				bStills ? TEXT("ok") : TEXT("FAILED"), bCamsOk ? TEXT("ok") : TEXT("FAILED"), bRefillOk ? TEXT("ok") : TEXT("FAILED"));
 		}
 		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bStills && bCamsOk && bRefillOk &&
-			bNoSlowRun && bNoKnot && bNoPops;
+			bNoSlowRun && bNoKnot && bNoJam && bNoPops;
 		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
 		if (!bStimulus)
 		{

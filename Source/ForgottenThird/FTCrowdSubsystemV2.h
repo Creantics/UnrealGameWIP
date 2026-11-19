@@ -155,6 +155,8 @@ private:
 	uint64 SlowRunFrames = 0;
 	uint32 WorstGroup = 0;
 	uint32 GroupTick = 0;
+	uint32 WorstJam = 0;         // the walking-jam check's largest group (sampled with the knot check)
+	double WorstJamAt = -1.0;    // s: when it was found
 	uint32 ReactingLines = 0; // knot checks that left out the one-step close-reaction stop, logged (capped)
 	bool bPartyMoved = false;
 	struct FMassBox
