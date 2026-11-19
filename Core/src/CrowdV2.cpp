@@ -1795,4 +1795,23 @@ CrowdReactionResult CrowdReactionProbe::evaluate(const CrowdSim& sim, float minP
     return r;
 }
 
+bool crowdMassingBox(const CrowdMassBox& render, const CrowdMassBox* collision, const CrowdMassSize& size,
+                     CrowdMassBox& out) {
+    const double shortSide = 2.0 * std::min(render.hx, render.hy);
+    const double longSide = 2.0 * std::max(render.hx, render.hy);
+    if (2.0 * render.hz < size.minHeight || shortSide < size.minSide || longSide > size.maxSide) return false;
+    const bool useCollision = collision && collision->hx > 0.0 && collision->hy > 0.0 && collision->hz > 0.0 &&
+                              std::isfinite(collision->cx) && std::isfinite(collision->cy) && std::isfinite(collision->cz);
+    out = useCollision ? *collision : render;
+    return true;
+}
+
+double crowdBoxClearance(const CrowdMassBox& box, double axX, double axY, double px, double py) {
+    const double dx = px - box.cx, dy = py - box.cy;
+    const double lx = std::fabs(dx * axX + dy * axY) - box.hx;
+    const double ly = std::fabs(-dx * axY + dy * axX) - box.hy;
+    if (lx > 0.0 || ly > 0.0) return std::hypot(std::max(lx, 0.0), std::max(ly, 0.0));
+    return std::max(lx, ly);
+}
+
 } // namespace ftcore::crowdv2

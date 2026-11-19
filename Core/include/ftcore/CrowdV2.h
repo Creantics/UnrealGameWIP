@@ -363,6 +363,26 @@ private:
     std::uint32_t n_ = 0;
 };
 
+// The footprint check's massing boxes (host run check: no drawn member inside a building). A box in the host's frame (cm):
+// centre and half sizes along the mesh's own axes (scaled), z up.
+struct CrowdMassBox {
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    double hx = 0.0, hy = 0.0, hz = 0.0;
+};
+// What counts as a building by its render bounds: at least minHeight tall, minSide on its short side, at most maxSide on
+// its long side (cm).
+struct CrowdMassSize {
+    double minHeight = 250.0, minSide = 200.0, maxSide = 30000.0;
+};
+// A mesh's box for the check: false when its render bounds are not a building's size (the size reads the render bounds,
+// so a tree's canopy still makes it one); else `out` is its simple collision's bounds when it has simple collision (a
+// tree's trunk, a shop's walls), else its render bounds. The render bounds alone put members under a canopy "inside".
+FTCORE_API bool crowdMassingBox(const CrowdMassBox& render, const CrowdMassBox* collision, const CrowdMassSize& size,
+                                CrowdMassBox& out);
+// Signed plan distance (cm) from (px, py) to the box's footprint, its x axis (axX, axY) a unit vector: positive outside
+// (the distance to the nearest side or corner), negative inside (minus the distance to the nearest side).
+FTCORE_API double crowdBoxClearance(const CrowdMassBox& box, double axX, double axY, double px, double py);
+
 // Host occlusion: true when something solid stands between `from` and `to` (engine frame, metres).
 using CrowdOcclusionFn = bool (*)(void* context, Vec2 from, Vec2 to);
 
