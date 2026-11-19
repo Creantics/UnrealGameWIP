@@ -81,7 +81,7 @@ struct FRoadPainter
 	UMaterialInterface* CanalBed = nullptr;
 	UStaticMesh* Plane = nullptr;
 	TMap<FString, UMaterialInterface*> CanalWorn;
-	int32 WaterPlanes = 0, BedPieces = 0;
+	int32 WaterPlanes = 0, BedPieces = 0, LadderPieces = 0, GalvLadderPieces = 0;
 
 	const ftcore::RoadWater* WaterOf(const std::string& Canal) const
 	{
@@ -218,6 +218,16 @@ struct FRoadPainter
 		Options.Label = RoadsUtf8(Box.id);
 		const EFTCellKind Kind = !Solid.collide ? EFTCellKind::NoCollide : (bGround ? EFTCellKind::Walk : EFTCellKind::Solid);
 		UMaterialInterface* Worn = Box.kind == "median_lawn" && Host.Lawn ? Host.Lawn : Tint(Which);
+		if (Box.kind == "canal_ladder")
+		{
+			// A ladder wears the quay rail's galvanised steel: the flat steel tint (untextured, albedo about 0.44) read white.
+			++LadderPieces;
+			if (Host.Galv)
+			{
+				Worn = Host.Galv;
+				++GalvLadderPieces;
+			}
+		}
 		UStaticMesh* Mesh = bCyl ? Cylinder : Host.Cube;
 		const ftcore::RoadWater* const Water = bCanal ? WaterOf(Box.row) : nullptr;
 		if (Water && Box.kind == "canal_water" && CanalWater && Plane)
@@ -827,6 +837,16 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canals: %d water planes on %s, %d wall and floor pieces on %s."), Paint.WaterPlanes,
 			Paint.CanalWater ? *Paint.CanalWater->GetName() : TEXT("the flat tint"), Paint.BedPieces, Paint.CanalBed ? *Paint.CanalBed->GetName() : TEXT("the flat tint"));
+	}
+	if (Paint.LadderPieces > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: ladders: %d pieces, %d on %s."), Paint.LadderPieces, Paint.GalvLadderPieces,
+			Host.Galv ? *Host.Galv->GetName() : TEXT("nothing (the flat steel tint)"));
+		if (Paint.GalvLadderPieces < Paint.LadderPieces)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: ladders: %d pieces keep the flat steel tint (no galvanised steel: build with "
+				"-Surfaces)."), Paint.LadderPieces - Paint.GalvLadderPieces);
+		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids and vehicles laid as instances of their cells; %d marking boxes "
 		"left out (laid as flat paint)."), Paint.Laid, Paint.PaintSkipped);
