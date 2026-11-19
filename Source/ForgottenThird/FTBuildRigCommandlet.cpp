@@ -27,6 +27,7 @@
 #include "RigEditor/IKRigController.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "ftcore/AnimImport.h"
 #include "ftcore/TwistBake.h"
 
 namespace
@@ -54,6 +55,121 @@ FTransform ComponentTransform(const IAnimationDataModel& Model, const FReference
 		Result = Result * Local;
 	}
 	return Result;
+}
+
+// A Mixamo skeleton's bone-name prefix ("mixamorig_"), or empty for any other skeleton.
+FString MixamoPrefixOf(const FReferenceSkeleton& Skeleton)
+{
+	std::vector<std::string> Names;
+	Names.reserve(Skeleton.GetNum());
+	for (int32 Bone = 0; Bone < Skeleton.GetNum(); ++Bone)
+	{
+		Names.emplace_back(TCHAR_TO_UTF8(*Skeleton.GetBoneName(Bone).ToString()));
+	}
+	std::string Prefix;
+	return ftcore::animimport::MixamoPrefix(Names, Prefix) ? FString(UTF8_TO_TCHAR(Prefix.c_str())) : FString();
+}
+
+// The bone standing for a UE mannequin bone (pelvis, head, upperarm_l...): that name, else on a Mixamo skeleton (Prefix
+// not empty) its Mixamo counterpart. INDEX_NONE when neither is there.
+int32 FindBone(const FReferenceSkeleton& Skeleton, const FString& Prefix, const TCHAR* Name)
+{
+	const int32 Bone = Skeleton.FindBoneIndex(Name);
+	if (Bone != INDEX_NONE || Prefix.IsEmpty())
+	{
+		return Bone;
+	}
+	const char* Mixamo = ftcore::animimport::MixamoBoneFor(TCHAR_TO_UTF8(Name));
+	return Mixamo ? Skeleton.FindBoneIndex(*(Prefix + UTF8_TO_TCHAR(Mixamo))) : INDEX_NONE;
+}
+
+// The ref pose in component space, one transform per bone.
+TArray<FTransform> RefComponentPose(const FReferenceSkeleton& Skeleton)
+{
+	TArray<FTransform> Pose;
+	Pose.SetNum(Skeleton.GetNum());
+	for (int32 Bone = 0; Bone < Skeleton.GetNum(); ++Bone)
+	{
+		const int32 Parent = Skeleton.GetParentIndex(Bone);
+		Pose[Bone] = Parent == INDEX_NONE ? Skeleton.GetRefBonePose()[Bone] : Skeleton.GetRefBonePose()[Bone] * Pose[Parent];
+	}
+	return Pose;
+}
+
+// The way a body faces in its ref pose: degrees from +Y (toward +X positive) of its feet's foot-to-ball lines, summed.
+double FacingYaw(const FReferenceSkeleton& Skeleton, const FString& Prefix)
+{
+	const TArray<FTransform> Ref = RefComponentPose(Skeleton);
+	FVector Sum = FVector::ZeroVector;
+	static const TCHAR* const Feet[][2] = {{TEXT("foot_l"), TEXT("ball_l")}, {TEXT("foot_r"), TEXT("ball_r")}};
+	for (const auto& Foot : Feet)
+	{
+		const int32 A = FindBone(Skeleton, Prefix, Foot[0]), B = FindBone(Skeleton, Prefix, Foot[1]);
+		if (A != INDEX_NONE && B != INDEX_NONE)
+		{
+			Sum += (Ref[B].GetTranslation() - Ref[A].GetTranslation()).GetSafeNormal2D();
+		}
+	}
+	return Sum.IsNearlyZero() ? 0.0 : FMath::RadiansToDegrees(FMath::Atan2(Sum.X, Sum.Y));
+}
+
+// Every bone's component-space transform at every key (bone-major: [Bone * Keys + Key]), each track read once.
+TArray<FTransform> AllComponentPoses(const IAnimationDataModel& Model, const FReferenceSkeleton& Skeleton, int32 Keys)
+{
+	TArray<FTransform> Out;
+	Out.SetNum(Skeleton.GetNum() * Keys);
+	TArray<FTransform> Track;
+	for (int32 Bone = 0; Bone < Skeleton.GetNum(); ++Bone)
+	{
+		Track.Reset();
+		Model.GetBoneTrackTransforms(Skeleton.GetBoneName(Bone), Track);
+		const int32 Parent = Skeleton.GetParentIndex(Bone);
+		for (int32 Key = 0; Key < Keys; ++Key)
+		{
+			const FTransform Local = Track.IsValidIndex(Key) ? Track[Key] : Skeleton.GetRefBonePose()[Bone];
+			Out[Bone * Keys + Key] = Parent == INDEX_NONE ? Local : Local * Out[Parent * Keys + Key];
+		}
+	}
+	return Out;
+}
+
+// Logs a mesh's proportions in its ref pose (cm, left and right averaged), for comparing two rigs: upper arm, forearm,
+// thigh, shin, foot (ankle to ball), clavicle (to the shoulder), pelvis to neck, neck to head, pelvis and head heights,
+// shoulder and hip widths, and the way it faces.
+void LogProportions(const USkeletalMesh& Mesh)
+{
+	const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
+	const FString Prefix = MixamoPrefixOf(Skeleton);
+	const TArray<FTransform> Ref = RefComponentPose(Skeleton);
+	auto Pos = [&](const TCHAR* Name, FVector& Out)
+	{
+		const int32 Bone = FindBone(Skeleton, Prefix, Name);
+		if (Bone != INDEX_NONE)
+		{
+			Out = Ref[Bone].GetTranslation();
+		}
+		return Bone != INDEX_NONE;
+	};
+	auto Span = [&](const TCHAR* A, const TCHAR* B)
+	{
+		FVector P, Q;
+		return Pos(A, P) && Pos(B, Q) ? FVector::Dist(P, Q) : -1.0;
+	};
+	auto Both = [&](const TCHAR* A, const TCHAR* B)
+	{
+		const double L = Span(*(FString(A) + TEXT("_l")), *(FString(B) + TEXT("_l")));
+		const double R = Span(*(FString(A) + TEXT("_r")), *(FString(B) + TEXT("_r")));
+		return L < 0.0 || R < 0.0 ? -1.0 : 0.5 * (L + R);
+	};
+	FVector Pelvis = FVector::ZeroVector, Head = FVector::ZeroVector;
+	Pos(TEXT("pelvis"), Pelvis);
+	Pos(TEXT("head"), Head);
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTBuildRig: proportions %s%s: upper arm %.2f, forearm %.2f, thigh %.2f, shin %.2f, foot %.2f, clavicle %.2f, pelvis-neck %.2f, neck-head %.2f, pelvis height %.2f, head height %.2f, shoulders %.2f, hips %.2f cm; faces %.1f deg from +Y"),
+		*Mesh.GetName(), Prefix.IsEmpty() ? TEXT("") : *(TEXT(" (Mixamo, prefix ") + Prefix + TEXT(")")), Both(TEXT("upperarm"), TEXT("lowerarm")),
+		Both(TEXT("lowerarm"), TEXT("hand")), Both(TEXT("thigh"), TEXT("calf")), Both(TEXT("calf"), TEXT("foot")), Both(TEXT("foot"), TEXT("ball")),
+		Both(TEXT("clavicle"), TEXT("upperarm")), Span(TEXT("pelvis"), TEXT("neck_01")), Span(TEXT("neck_01"), TEXT("head")), Pelvis.Z, Head.Z,
+		Span(TEXT("upperarm_l"), TEXT("upperarm_r")), Span(TEXT("thigh_l"), TEXT("thigh_r")), FacingYaw(Skeleton, Prefix));
 }
 
 // Logs the clip's gait as the game measures it at load (UFTLocomotionAnimInstance::MeasureClip):
@@ -169,10 +285,11 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 		return Pose;
 	}
 	const FReferenceSkeleton& Skeleton = Skel->GetReferenceSkeleton();
+	const FString Prefix = MixamoPrefixOf(Skeleton);
 	const int32 Key = FMath::RoundToInt(Share * (Model->GetNumberOfKeys() - 1));
 	auto At = [&](const TCHAR* Name, FVector& Out)
 	{
-		const int32 Bone = Skeleton.FindBoneIndex(Name);
+		const int32 Bone = FindBone(Skeleton, Prefix, Name);
 		if (Bone != INDEX_NONE)
 		{
 			Out = ComponentTransform(*Model, Skeleton, Bone, Key).GetTranslation();
@@ -211,7 +328,7 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 		Pose.Side = FMath::RadiansToDegrees(FMath::Atan2(Up.X, Up.Z));
 		Pose.bValid = true;
 		FVector Neck;
-		const int32 HeadBone = Skeleton.FindBoneIndex(TEXT("head"));
+		const int32 HeadBone = FindBone(Skeleton, Prefix, TEXT("head"));
 		if (At(TEXT("neck_01"), Neck))
 		{
 			const FVector N = Root.InverseTransformVectorNoScale(Head - Neck).GetSafeNormal();
@@ -229,9 +346,62 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 	return Pose;
 }
 
+// The limbs whose directions -ComparePose compares, by UE mannequin bone names (a Mixamo skeleton's stand in for them).
+struct FLimb
+{
+	const TCHAR* Name;
+	const TCHAR* From;
+	const TCHAR* To;
+};
+
+const FLimb kLimbs[] = {
+	{TEXT("clavicle_l"), TEXT("clavicle_l"), TEXT("upperarm_l")},
+	{TEXT("clavicle_r"), TEXT("clavicle_r"), TEXT("upperarm_r")},
+	{TEXT("upperarm_l"), TEXT("upperarm_l"), TEXT("lowerarm_l")},
+	{TEXT("upperarm_r"), TEXT("upperarm_r"), TEXT("lowerarm_r")},
+	{TEXT("forearm_l"), TEXT("lowerarm_l"), TEXT("hand_l")},
+	{TEXT("forearm_r"), TEXT("lowerarm_r"), TEXT("hand_r")},
+	{TEXT("thigh_l"), TEXT("thigh_l"), TEXT("calf_l")},
+	{TEXT("thigh_r"), TEXT("thigh_r"), TEXT("calf_r")},
+	{TEXT("shin_l"), TEXT("calf_l"), TEXT("foot_l")},
+	{TEXT("shin_r"), TEXT("calf_r"), TEXT("foot_r")},
+	{TEXT("foot_l"), TEXT("foot_l"), TEXT("ball_l")},
+	{TEXT("foot_r"), TEXT("foot_r"), TEXT("ball_r")},
+	{TEXT("spine"), TEXT("pelvis"), TEXT("neck_01")},
+	{TEXT("neck"), TEXT("neck_01"), TEXT("head")},
+};
+
+// Each limb's direction at a share of the clip: a unit vector in the root's frame, turned so the body's ref pose faces
+// +Y (FacingYaw); zero where the skeleton lacks a bone.
+void LimbDirections(const UAnimSequence& Clip, double Share, TArray<FVector>& Out)
+{
+	Out.Init(FVector::ZeroVector, UE_ARRAY_COUNT(kLimbs));
+	const IAnimationDataModel* Model = Clip.GetDataModel();
+	const USkeleton* Skel = Clip.GetSkeleton();
+	if (!Model || !Skel || Model->GetNumberOfKeys() < 1)
+	{
+		return;
+	}
+	const FReferenceSkeleton& Skeleton = Skel->GetReferenceSkeleton();
+	const FString Prefix = MixamoPrefixOf(Skeleton);
+	const FQuat Facing(FVector::UpVector, FMath::DegreesToRadians(FacingYaw(Skeleton, Prefix)));
+	const int32 Key = FMath::RoundToInt(Share * (Model->GetNumberOfKeys() - 1));
+	const FTransform Root = ComponentTransform(*Model, Skeleton, 0, Key);
+	for (int32 L = 0; L < UE_ARRAY_COUNT(kLimbs); ++L)
+	{
+		const int32 A = FindBone(Skeleton, Prefix, kLimbs[L].From), B = FindBone(Skeleton, Prefix, kLimbs[L].To);
+		if (A != INDEX_NONE && B != INDEX_NONE)
+		{
+			const FVector D = ComponentTransform(*Model, Skeleton, B, Key).GetTranslation() - ComponentTransform(*Model, Skeleton, A, Key).GetTranslation();
+			Out[L] = Facing.RotateVector(Root.InverseTransformVectorNoScale(D)).GetSafeNormal();
+		}
+	}
+}
+
 // -ComparePose=<source clip>,<retargeted clip>[,<retargeted clip>...]: logs both clips' joint angles
 // at ten points through each (-PoseSteps=<n> for more), so a retarget that straightens the arms or legs
-// shows as numbers.
+// shows as numbers; then each retargeted clip's limb directions against the source's, the worst per point
+// and over the clip.
 int32 ComparePoses(const FString& List, int32 Steps)
 {
 	TArray<FString> Paths;
@@ -260,7 +430,163 @@ int32 ComparePoses(const FString& List, int32 Steps)
 				P.Hand[0].X, P.Hand[0].Y, P.Hand[0].Z, P.Hand[1].X, P.Hand[1].Y, P.Hand[1].Z, P.bValid ? TEXT("") : TEXT(" (missing bones)"));
 		}
 	}
+	// Limb directions: each later clip against the first (the source), in the root's frame with each body turned to face
+	// +Y. Directions, not positions, so the bodies' sizes don't count; what is left is the retarget's doing, including its
+	// IK reaching for goals that were placed for the other body's proportions.
+	for (int32 C = 1; C < Clips.Num(); ++C)
+	{
+		double Worst = 0.0, WorstShare = 0.0;
+		const TCHAR* WorstLimb = TEXT("none");
+		TArray<double> LimbMax;
+		LimbMax.Init(0.0, UE_ARRAY_COUNT(kLimbs));
+		TArray<FVector> From, To;
+		for (int32 I = 0; I <= Steps; ++I)
+		{
+			const double Share = static_cast<double>(I) / Steps;
+			LimbDirections(*Clips[0], Share, From);
+			LimbDirections(*Clips[C], Share, To);
+			double StepWorst = 0.0;
+			const TCHAR* StepLimb = TEXT("none");
+			int32 Compared = 0;
+			for (int32 L = 0; L < UE_ARRAY_COUNT(kLimbs); ++L)
+			{
+				if (From[L].IsZero() || To[L].IsZero())
+				{
+					continue;
+				}
+				++Compared;
+				const double Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(From[L] | To[L], -1.0, 1.0)));
+				LimbMax[L] = FMath::Max(LimbMax[L], Angle);
+				if (Angle > StepWorst)
+				{
+					StepWorst = Angle;
+					StepLimb = kLimbs[L].Name;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: limbs %.3f %-48s worst %-10s %5.1f deg (%d limbs compared)"), Share,
+				*Clips[C]->GetName(), StepLimb, StepWorst, Compared);
+			if (StepWorst > Worst)
+			{
+				Worst = StepWorst;
+				WorstLimb = StepLimb;
+				WorstShare = Share;
+			}
+		}
+		FString PerLimb;
+		for (int32 L = 0; L < UE_ARRAY_COUNT(kLimbs); ++L)
+		{
+			PerLimb += FString::Printf(TEXT(" %s %.1f"), kLimbs[L].Name, LimbMax[L]);
+		}
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("FTBuildRig: limb directions %s against %s: worst %.1f deg (%s at %.3f) over %d points; faces %.1f and %.1f deg from +Y; max per limb:%s"),
+			*Clips[C]->GetName(), *Clips[0]->GetName(), Worst, WorstLimb, WorstShare, Steps + 1,
+			FacingYaw(Clips[0]->GetSkeleton()->GetReferenceSkeleton(), MixamoPrefixOf(Clips[0]->GetSkeleton()->GetReferenceSkeleton())),
+			FacingYaw(Clips[C]->GetSkeleton()->GetReferenceSkeleton(), MixamoPrefixOf(Clips[C]->GetSkeleton()->GetReferenceSkeleton())), *PerLimb);
+	}
 	return 0;
+}
+
+// -GapCheck=<clip>[,<clip>...]: the clip checks of the animation gap list (ANIMATION_GAPS_1115 section 6), one line per
+// clip, all in component space:
+//  - loop seam (item 3): each bone's first against last key, the largest position (cm) and rotation (degrees) gap and
+//    the bone; and the velocity there, the first step against the last (cm and degrees per frame);
+//  - turn (item 4): the root bone's yaw and the hip line's (thigh_l to thigh_r) yaw, last key against first;
+//  - travel: the root's and the pelvis's, first to last;
+//  - feet (item 5): the feet's and balls' lowest point against their own ref-pose height (below 0 = lower than standing
+//    on the floor), the bone and when, and the lowest height above the root.
+int32 GapCheck(const FString& List)
+{
+	TArray<FString> Paths;
+	List.ParseIntoArray(Paths, TEXT(","));
+	int32 Failed = 0;
+	for (const FString& Path : Paths)
+	{
+		const UAnimSequence* Clip = LoadObject<UAnimSequence>(nullptr, *Path);
+		const IAnimationDataModel* Model = Clip ? Clip->GetDataModel() : nullptr;
+		const USkeleton* Skel = Clip ? Clip->GetSkeleton() : nullptr;
+		const int32 Keys = Model ? Model->GetNumberOfKeys() : 0;
+		if (!Model || !Skel || Keys < 3)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: couldn't load %s with 3 keys or more and a skeleton."), *Path);
+			++Failed;
+			continue;
+		}
+		const FReferenceSkeleton& Skeleton = Skel->GetReferenceSkeleton();
+		const FString Prefix = MixamoPrefixOf(Skeleton);
+		const TArray<FTransform> Pose = AllComponentPoses(*Model, Skeleton, Keys);
+		const TArray<FTransform> Ref = RefComponentPose(Skeleton);
+		auto At = [&](int32 Bone, int32 Key) -> const FTransform& { return Pose[Bone * Keys + Key]; };
+		auto Degrees = [](const FQuat& A, const FQuat& B) { return FMath::RadiansToDegrees(A.AngularDistance(B)); };
+
+		double SeamPos = 0.0, SeamRot = 0.0, VelPos = 0.0, VelRot = 0.0;
+		int32 SeamPosBone = 0, SeamRotBone = 0, VelPosBone = 0, VelRotBone = 0;
+		const int32 Last = Keys - 1;
+		for (int32 Bone = 0; Bone < Skeleton.GetNum(); ++Bone)
+		{
+			const double P = FVector::Dist(At(Bone, 0).GetTranslation(), At(Bone, Last).GetTranslation());
+			const double R = Degrees(At(Bone, 0).GetRotation(), At(Bone, Last).GetRotation());
+			const FVector V0 = At(Bone, 1).GetTranslation() - At(Bone, 0).GetTranslation();
+			const FVector V1 = At(Bone, Last).GetTranslation() - At(Bone, Last - 1).GetTranslation();
+			const FQuat W0 = At(Bone, 1).GetRotation() * At(Bone, 0).GetRotation().Inverse();
+			const FQuat W1 = At(Bone, Last).GetRotation() * At(Bone, Last - 1).GetRotation().Inverse();
+			const double VP = FVector::Dist(V0, V1), VR = Degrees(W0, W1);
+			auto Keep = [Bone](double Value, double& Max, int32& MaxBone)
+			{
+				if (Value > Max)
+				{
+					Max = Value;
+					MaxBone = Bone;
+				}
+			};
+			Keep(P, SeamPos, SeamPosBone);
+			Keep(R, SeamRot, SeamRotBone);
+			Keep(VP, VelPos, VelPosBone);
+			Keep(VR, VelRot, VelRotBone);
+		}
+
+		const double RootYaw = FMath::RadiansToDegrees((At(0, Last).GetRotation() * At(0, 0).GetRotation().Inverse()).GetTwistAngle(FVector::UpVector));
+		double HipYaw = 0.0;
+		const int32 ThighL = FindBone(Skeleton, Prefix, TEXT("thigh_l")), ThighR = FindBone(Skeleton, Prefix, TEXT("thigh_r"));
+		if (ThighL != INDEX_NONE && ThighR != INDEX_NONE)
+		{
+			const FVector A = At(ThighR, 0).GetTranslation() - At(ThighL, 0).GetTranslation();
+			const FVector B = At(ThighR, Last).GetTranslation() - At(ThighL, Last).GetTranslation();
+			HipYaw = FMath::RadiansToDegrees(FMath::Atan2(A.X * B.Y - A.Y * B.X, A.X * B.X + A.Y * B.Y));
+		}
+		const FVector RootTravel = At(0, Last).GetTranslation() - At(0, 0).GetTranslation();
+		const int32 Pelvis = FindBone(Skeleton, Prefix, TEXT("pelvis"));
+		const double PelvisTravel = Pelvis != INDEX_NONE ? (At(Pelvis, Last).GetTranslation() - At(Pelvis, 0).GetTranslation()).Size2D() : -1.0;
+
+		double Below = TNumericLimits<double>::Max(), Lowest = TNumericLimits<double>::Max();
+		int32 BelowBone = INDEX_NONE, BelowKey = 0;
+		for (const TCHAR* Name : {TEXT("foot_l"), TEXT("foot_r"), TEXT("ball_l"), TEXT("ball_r")})
+		{
+			const int32 Bone = FindBone(Skeleton, Prefix, Name);
+			if (Bone == INDEX_NONE)
+			{
+				continue;
+			}
+			for (int32 Key = 0; Key < Keys; ++Key)
+			{
+				const FVector P = At(0, Key).InverseTransformPositionNoScale(At(Bone, Key).GetTranslation());
+				Lowest = FMath::Min(Lowest, P.Z);
+				if (P.Z - Ref[Bone].GetTranslation().Z < Below)
+				{
+					Below = P.Z - Ref[Bone].GetTranslation().Z;
+					BelowBone = Bone;
+					BelowKey = Key;
+				}
+			}
+		}
+		const double Length = Model->GetPlayLength();
+		auto Name = [&](int32 Bone) { return Bone != INDEX_NONE ? Skeleton.GetBoneName(Bone).ToString() : FString(TEXT("none")); };
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("FTBuildRig: gap %s: %d keys, %.2f s; seam first/last %.3f cm (%s), %.2f deg (%s); seam velocity %.3f cm/frame (%s), %.2f deg/frame (%s); yaw drift root %.2f deg, hip line %.2f deg; travel root %.1f cm (%.1f, %.1f), pelvis %.1f cm; feet lowest %.2f cm against their ref height (%s at %.2f s), lowest %.2f cm above the root"),
+			*Clip->GetName(), Keys, Length, SeamPos, *Name(SeamPosBone), SeamRot, *Name(SeamRotBone), VelPos, *Name(VelPosBone), VelRot,
+			*Name(VelRotBone), RootYaw, HipYaw, RootTravel.Size2D(), RootTravel.X, RootTravel.Y, PelvisTravel,
+			BelowBone != INDEX_NONE ? Below : 0.0, *Name(BelowBone), Length * BelowKey / Last, BelowBone != INDEX_NONE ? Lowest : 0.0);
+	}
+	return Failed == 0 ? 0 : 1;
 }
 
 // -DumpClips=<clip>[,<clip>...] -DumpDir=<folder>: writes each clip's frames as <folder>/<clip>.csv: the time,
@@ -876,7 +1202,12 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 					*C.StartBone.BoneName.ToString(), *C.EndBone.BoneName.ToString());
 			}
 		}
-		if (Source == NAME_None)
+		if (Source == NAME_None && ftcore::animimport::OptionalTargetChain(TCHAR_TO_UTF8(*Chain.ChainName.ToString())))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig:   %-14s %s -> %s  <-  no source chain: left at its retarget pose"),
+				*Chain.ChainName.ToString(), *Chain.StartBone.BoneName.ToString(), *Chain.EndBone.BoneName.ToString());
+		}
+		else if (Source == NAME_None)
 		{
 			FString SourceNames;
 			for (const FBoneChain& C : SourceRig.GetRetargetChains())
@@ -1096,6 +1427,11 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 		FParse::Value(*Params, TEXT("DumpDir="), DumpDir);
 		return DumpClips(DumpList, DumpDir);
 	}
+	FString GapList;
+	if (FParse::Value(*Params, TEXT("GapCheck="), GapList, false))
+	{
+		return GapCheck(GapList);
+	}
 	FString MeshPath =TEXT("/Game/Characters/ProofHead/proof_head/SkeletalMeshes/proof_head.proof_head");
 	FString Dest = TEXT("/Game/Characters/ProofHead/Rig");
 	FParse::Value(*Params, TEXT("Mesh="), MeshPath);
@@ -1109,6 +1445,7 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	}
 	const FReferenceSkeleton& Skeleton = Mesh->GetRefSkeleton();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: mesh %s, %d bones."), *Mesh->GetPathName(), Skeleton.GetNum());
+	LogProportions(*Mesh);
 
 	CheckClips(*Mesh);
 	if (FParse::Param(*Params, TEXT("TwistProbe")))
@@ -1125,16 +1462,41 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
-	FAutoCharacterizeResults Auto;
-	Rig->AutoGenerateRetargetDefinition(Auto);
-	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: auto-characterize: template %s (%s), %d bones matched, score %.2f, %d missing."),
-		*Auto.BestTemplateName.ToString(), Auto.bUsedTemplate ? TEXT("used") : TEXT("not used"), Auto.BestNumMatchingBones,
-		Auto.BestPercentageOfTemplateScore, Auto.MissingBones.Num());
-	Rig->ApplyAutoGeneratedRetargetDefinition();
-
-	if (Skeleton.FindBoneIndex(TEXT("pelvis")) != INDEX_NONE)
+	// A Mixamo skeleton (renamed mixamorig_ bones, which the auto-characterizer's templates don't know) takes its chains
+	// from Core's table, named as the mannequin template names them so an exact map pairs them with a mannequin or
+	// MetaHuman target; its retarget root is the hips. Any other skeleton is auto-characterized.
+	const FString MixamoPrefix = MixamoPrefixOf(Skeleton);
+	bool bMixamoOk = true;
+	if (!MixamoPrefix.IsEmpty())
 	{
-		Rig->SetRetargetRoot(TEXT("pelvis"));
+		Rig->SetRetargetRoot(*(MixamoPrefix + TEXT("Hips")));
+		for (const ftcore::animimport::ChainSpec& Chain : ftcore::animimport::MixamoChains())
+		{
+			const FString Start = MixamoPrefix + UTF8_TO_TCHAR(Chain.start), End = MixamoPrefix + UTF8_TO_TCHAR(Chain.end);
+			if (Skeleton.FindBoneIndex(*Start) == INDEX_NONE || Skeleton.FindBoneIndex(*End) == INDEX_NONE)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildRig: Mixamo skeleton without %s or %s (chain %s)."), *Start, *End,
+					UTF8_TO_TCHAR(Chain.name));
+				bMixamoOk = false;
+				continue;
+			}
+			Rig->AddRetargetChain(FName(UTF8_TO_TCHAR(Chain.name)), FName(*Start), FName(*End), NAME_None);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: Mixamo skeleton (prefix %s): %d chains from the table, no auto-characterize."),
+			*MixamoPrefix, Rig->GetRetargetChains().Num());
+	}
+	else
+	{
+		FAutoCharacterizeResults Auto;
+		Rig->AutoGenerateRetargetDefinition(Auto);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: auto-characterize: template %s (%s), %d bones matched, score %.2f, %d missing."),
+			*Auto.BestTemplateName.ToString(), Auto.bUsedTemplate ? TEXT("used") : TEXT("not used"), Auto.BestNumMatchingBones,
+			Auto.BestPercentageOfTemplateScore, Auto.MissingBones.Num());
+		Rig->ApplyAutoGeneratedRetargetDefinition();
+		if (Skeleton.FindBoneIndex(TEXT("pelvis")) != INDEX_NONE)
+		{
+			Rig->SetRetargetRoot(TEXT("pelvis"));
+		}
 	}
 	if (Skeleton.FindBoneIndex(TEXT("root")) != INDEX_NONE)
 	{
@@ -1145,6 +1507,10 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	TSet<FName> Covered = CoveredBones(*Rig, *RigAsset, bAllValid);
 	for (const FRequiredChain& Chain : kChains)
 	{
+		if (!MixamoPrefix.IsEmpty())
+		{
+			break;
+		}
 		if (Covered.Contains(Chain.KeyBone))
 		{
 			continue;
@@ -1160,7 +1526,7 @@ int32 UFTBuildRigCommandlet::Main(const FString& Params)
 	Rig->SortRetargetChains();
 	Covered = CoveredBones(*Rig, *RigAsset, bAllValid);
 
-	bool bOk = bAllValid;
+	bool bOk = bAllValid && bMixamoOk;
 	const FName Root = Rig->GetRetargetRoot();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildRig: retarget root %s, root motion bone %s, %d chains:"), *Root.ToString(),
 		*Rig->GetRootMotionBone().ToString(), Rig->GetRetargetChains().Num());

@@ -259,4 +259,125 @@ bool TrackShareOk(int tracks, int fileBones, double share)
     return static_cast<double>(tracks) + 1e-9 >= share * static_cast<double>(fileBones);
 }
 
+namespace {
+
+char Lower(char ch)
+{
+    return ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch;
+}
+
+bool StartsWithNoCase(std::string_view s, std::string_view head)
+{
+    if (s.size() < head.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < head.size(); ++i) {
+        if (Lower(s[i]) != Lower(head[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Contains(const std::vector<std::string>& names, const std::string& name)
+{
+    for (const std::string& n : names) {
+        if (n == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+constexpr ChainSpec kMixamoChains[] = {
+    {"Spine", "Spine", "Spine2"},
+    {"Neck", "Neck", "Neck"},
+    {"Head", "Head", "Head"},
+    {"LeftClavicle", "LeftShoulder", "LeftShoulder"},
+    {"RightClavicle", "RightShoulder", "RightShoulder"},
+    {"LeftArm", "LeftArm", "LeftHand"},
+    {"RightArm", "RightArm", "RightHand"},
+    {"LeftLeg", "LeftUpLeg", "LeftFoot"},
+    {"RightLeg", "RightUpLeg", "RightFoot"},
+    {"LeftFoot", "LeftToeBase", "LeftToeBase"},
+    {"RightFoot", "RightToeBase", "RightToeBase"},
+    {"LeftThumb", "LeftHandThumb1", "LeftHandThumb3"},
+    {"LeftIndex", "LeftHandIndex1", "LeftHandIndex3"},
+    {"LeftMiddle", "LeftHandMiddle1", "LeftHandMiddle3"},
+    {"LeftRing", "LeftHandRing1", "LeftHandRing3"},
+    {"LeftPinky", "LeftHandPinky1", "LeftHandPinky3"},
+    {"RightThumb", "RightHandThumb1", "RightHandThumb3"},
+    {"RightIndex", "RightHandIndex1", "RightHandIndex3"},
+    {"RightMiddle", "RightHandMiddle1", "RightHandMiddle3"},
+    {"RightRing", "RightHandRing1", "RightHandRing3"},
+    {"RightPinky", "RightHandPinky1", "RightHandPinky3"},
+};
+
+struct BoneAlias {
+    const char* ue;
+    const char* mixamo;
+};
+
+constexpr BoneAlias kMixamoBones[] = {
+    {"pelvis", "Hips"},
+    {"spine_01", "Spine"},
+    {"neck_01", "Neck"},
+    {"head", "Head"},
+    {"clavicle_l", "LeftShoulder"},
+    {"clavicle_r", "RightShoulder"},
+    {"upperarm_l", "LeftArm"},
+    {"upperarm_r", "RightArm"},
+    {"lowerarm_l", "LeftForeArm"},
+    {"lowerarm_r", "RightForeArm"},
+    {"hand_l", "LeftHand"},
+    {"hand_r", "RightHand"},
+    {"thigh_l", "LeftUpLeg"},
+    {"thigh_r", "RightUpLeg"},
+    {"calf_l", "LeftLeg"},
+    {"calf_r", "RightLeg"},
+    {"foot_l", "LeftFoot"},
+    {"foot_r", "RightFoot"},
+    {"ball_l", "LeftToeBase"},
+    {"ball_r", "RightToeBase"},
+};
+
+} // namespace
+
+bool MixamoPrefix(const std::vector<std::string>& bones, std::string& prefix)
+{
+    constexpr std::string_view hips = "Hips";
+    for (const std::string& b : bones) {
+        if (b.size() <= hips.size() || std::string_view(b).substr(b.size() - hips.size()) != hips) {
+            continue;
+        }
+        const std::string p = b.substr(0, b.size() - hips.size());
+        if (StartsWithNoCase(p, "mixamorig") && Contains(bones, p + "Spine") && Contains(bones, p + "LeftUpLeg")) {
+            prefix = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::span<const ChainSpec> MixamoChains()
+{
+    return kMixamoChains;
+}
+
+const char* MixamoBoneFor(std::string_view ueBone)
+{
+    for (const BoneAlias& a : kMixamoBones) {
+        if (ueBone == a.ue) {
+            return a.mixamo;
+        }
+    }
+    return nullptr;
+}
+
+bool OptionalTargetChain(std::string_view chain)
+{
+    constexpr std::string_view tail = "Metacarpal";
+    return chain.size() > tail.size() && chain.substr(chain.size() - tail.size()) == tail;
+}
+
 } // namespace ftcore::animimport

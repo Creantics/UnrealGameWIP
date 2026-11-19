@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,5 +64,32 @@ FTCORE_API std::vector<std::string> MissingNames(const std::vector<std::string>&
 
 // Whether an import kept enough of the file's bones as tracks: tracks >= share * fileBones (true when fileBones is 0).
 FTCORE_API bool TrackShareOk(int tracks, int fileBones, double share);
+
+// Mixamo skeletons. Bones are "mixamorig:Hips" in a Mixamo file and "mixamorig_Hips" after the rename our pipeline
+// makes before export (Unreal drops everything up to a ':' in an FBX name).
+
+// The prefix before "Hips" when Hips, Spine and LeftUpLeg all exist with one prefix that starts with "mixamorig" (any
+// case), e.g. "mixamorig_"; false (prefix untouched) for any other skeleton.
+FTCORE_API bool MixamoPrefix(const std::vector<std::string>& bones, std::string& prefix);
+
+// A retarget chain by bone names without the skeleton's prefix.
+struct ChainSpec {
+    const char* name;
+    const char* start;
+    const char* end;
+};
+
+// The 21 retarget chains of a Mixamo skeleton, named as the UE5 Mannequin template names its chains (Spine, Neck, Head,
+// Left/RightClavicle, Arm, Leg, Foot, and the five fingers each side), so an exact-name map pairs them with a mannequin
+// or MetaHuman target. Leg runs UpLeg to Foot; Foot is the toe base (the mannequin's ball); fingers run 1 to 3.
+FTCORE_API std::span<const ChainSpec> MixamoChains();
+
+// The Mixamo bone (no prefix) standing for a UE mannequin bone that the measuring tools read: pelvis, spine_01,
+// neck_01, head, and clavicle, upperarm, lowerarm, hand, thigh, calf, foot, ball with _l or _r. Null for any other name.
+FTCORE_API const char* MixamoBoneFor(std::string_view ueBone);
+
+// Target chains a source may lack without failing the retarget: the hands' metacarpal chains (a Mixamo skeleton has no
+// metacarpal bones). They stay at the target's retarget pose.
+FTCORE_API bool OptionalTargetChain(std::string_view chain);
 
 } // namespace ftcore::animimport
