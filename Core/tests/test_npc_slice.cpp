@@ -166,6 +166,122 @@ TEST_CASE("npc save text: a save before the NPC tables load writes the slot's bl
     CHECK(npcSaveBlockToWrite(true, slotBlock, std::string_view{}) == slotBlock);
 }
 
+TEST_CASE("npc save text: a save loaded before the NPC tables is held, kept by a save meanwhile, applied when they load") {
+    Town a;
+    const std::uint16_t shop = a.npc("npc_shop_01");
+    const int delivery = a.t.deedIndex("delivery_made");
+    a.at(1, 9.0);
+    npcOnDelivery(*a.w, a.t, a.g, a.where(0), shop);
+    a.at(1, 12.0);
+    const std::string block = a.saveText();
+    REQUIRE(npcRecall(*a.w, a.t, shop, delivery, -1) != nullptr);
+
+    // The save loads while the tables aren't loaded: its block is held, not dropped (an empty one too).
+    CHECK(npcSaveBlockAction(false, block.empty()) == NpcSaveBlockAction::Hold);
+    CHECK(npcSaveBlockAction(false, true) == NpcSaveBlockAction::Hold);
+    const std::string held = block;
+    // A save made meanwhile writes the held block.
+    CHECK(npcSaveBlockToWrite(false, std::string_view{}, held) == block);
+
+    // The tables load into a world that remembers nothing; the held block is applied and the world writes it again.
+    Town b;
+    CHECK(npcRecall(*b.w, b.t, shop, delivery, -1) == nullptr);
+    REQUIRE(npcSaveBlockAction(true, held.empty()) == NpcSaveBlockAction::Apply);
+    NpcMemorySave read;
+    REQUIRE(decodeNpcMemorySave(held, read));
+    CHECK(npcApplySave(*b.w, b.t, b.lines, read).unknownIds.empty());
+    CHECK(b.saveText() == block);
+    CHECK(npcRecall(*b.w, b.t, shop, delivery, -1) != nullptr);
+
+    // A held empty block (a save from before NPC memory) resets everyone when the tables load; a loaded table set
+    // applies a block at once.
+    CHECK(npcSaveBlockAction(true, true) == NpcSaveBlockAction::Reset);
+    CHECK(npcSaveBlockAction(true, false) == NpcSaveBlockAction::Apply);
+}
+
+TEST_CASE("npc save hold: New Game drops a held block, and a save before the tables writes neither it nor the slot's") {
+    Town a;
+    const std::uint16_t shop = a.npc("npc_shop_01");
+    a.at(1, 9.0);
+    npcOnDelivery(*a.w, a.t, a.g, a.where(0), shop);
+    a.at(1, 12.0);
+    const std::string oldGame = a.saveText();  // the old game's NPC block, in the slot and in the loaded save
+    const std::string later = encodeNpcMemorySave(NpcMemorySave{});
+    REQUIRE(oldGame != later);
+    std::string taken;
+
+    SUBCASE("a save while held writes the held block, whatever the slot holds; the tables then take it") {
+        NpcSaveHold h;
+        REQUIRE(npcSaveBlockAction(false, oldGame.empty()) == NpcSaveBlockAction::Hold);
+        h.hold(oldGame);
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
+        CHECK(npcSaveBlockToWrite(false, std::string_view{}, h.unreadyBlock(later)) == oldGame);
+        CHECK(npcSaveBlockToWrite(true, later, h.unreadyBlock(later)) == later);  // tables in: the live memory
+        REQUIRE(h.take(taken));
+        CHECK(taken == oldGame);
+        CHECK_FALSE(h.holding);
+        CHECK_FALSE(h.take(taken));  // once
+    }
+    SUBCASE("a later loaded save replaces the held block") {
+        NpcSaveHold h;
+        h.hold(oldGame);
+        h.hold(later);
+        CHECK(h.unreadyBlock(std::string_view{}) == later);
+        REQUIRE(h.take(taken));
+        CHECK(taken == later);
+    }
+    SUBCASE("New Game inside the hold: nothing applied when the tables load, nothing old written meanwhile") {
+        NpcSaveHold h;
+        h.hold(oldGame);
+        h.newGame();
+        CHECK(h.unreadySource() == NpcUnreadyBlock::None);
+        // The autosave right after New Game, the slot still holding the old game's block: no NPC block at all.
+        CHECK(npcSaveBlockToWrite(false, std::string_view{}, h.unreadyBlock(oldGame)).empty());
+        // The tables load (UFTNpcSubsystem::Load): whatever the hold hands over is applied. Nothing is, so the world
+        // keeps its fresh baselines.
+        Town b;
+        const bool took = h.take(taken);
+        CHECK_FALSE(took);
+        if (took) {
+            NpcMemorySave read;
+            REQUIRE(decodeNpcMemorySave(taken, read));
+            CHECK(npcApplySave(*b.w, b.t, b.lines, read).unknownIds.empty());
+        }
+        CHECK(npcRecall(*b.w, b.t, shop, b.t.deedIndex("delivery_made"), -1) == nullptr);
+    }
+    SUBCASE("New Game with nothing held: a save before the tables doesn't carry the slot's block forward") {
+        NpcSaveHold h;
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);  // no game marked yet: the slot's block is kept
+        CHECK(h.unreadyBlock(oldGame) == oldGame);
+        h.newGame();
+        CHECK(h.unreadyBlock(oldGame).empty());
+    }
+    SUBCASE("a save loaded after New Game is that slot's game again") {
+        NpcSaveHold h;
+        h.newGame();
+        h.loaded();  // loaded with the tables in (applied, or reset for an empty or damaged block)
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);
+        h.newGame();
+        h.hold(oldGame);  // loaded before the tables
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
+        CHECK(h.unreadyBlock(std::string_view{}) == oldGame);
+        // The tables take it: a save before the next load keeps the slot's block again, not none.
+        REQUIRE(h.take(taken));
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);
+        CHECK(h.unreadyBlock(oldGame) == oldGame);
+    }
+    SUBCASE("a held empty block (a save from before NPC memory) is handed over empty: the tables reset everyone") {
+        NpcSaveHold h;
+        h.hold(std::string_view{});
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
+        CHECK(h.unreadyBlock(oldGame).empty());  // a save meanwhile writes no block, not the slot's
+        taken = later;
+        REQUIRE(h.take(taken));
+        CHECK(taken.empty());
+        CHECK(npcSaveBlockAction(true, taken.empty()) == NpcSaveBlockAction::Reset);
+    }
+}
+
 TEST_CASE("npc save text: an empty save and awkward ids survive the round trip") {
     SUBCASE("the default save") {
         const NpcMemorySave empty;

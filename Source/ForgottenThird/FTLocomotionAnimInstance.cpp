@@ -15,6 +15,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "UObject/ObjectKey.h"
 
 #include "ForgottenThird.h"
 #include "FTText.h"
@@ -182,7 +183,7 @@ FTransform ClipBoneCS(const UAnimSequence& Clip, const FReferenceSkeleton& Ref, 
 // The clip's root and ball (or foot) bones in its component space, sampled evenly from 0 to its
 // length into Frames, and with Pelvis its pelvis bone at the same times (left at 0 without one). False
 // (and no frames) when the clip has no skeleton, length or feet.
-bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TArray<ftcore::LocoPoint>* Pelvis = nullptr)
+bool SampleFeetNow(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TArray<ftcore::LocoPoint>* Pelvis)
 {
 	const float Length = Clip.GetPlayLength();
 	const USkeleton* Skeleton = Clip.GetSkeleton();
@@ -217,14 +218,85 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TA
 	for (int32 K = 0; K < N; ++K)
 	{
 		const double Time = double(Length) * K / (N - 1);
-		Frames[K].root = Point(ComponentSpace(0, Time).GetTranslation());
+		const FTransform Root = ComponentSpace(0, Time);
+		Frames[K].root = Point(Root.GetTranslation());
 		Frames[K].left = Point(ComponentSpace(Left, Time).GetTranslation());
 		Frames[K].right = Point(ComponentSpace(Right, Time).GetTranslation());
-		Frames[K].yaw = float(ComponentSpace(0, Time).Rotator().Yaw);
+		Frames[K].yaw = float(Root.Rotator().Yaw);
 		if (PelvisBone != INDEX_NONE)
 		{
 			(*Pelvis)[K] = Point(ComponentSpace(PelvisBone, Time).GetTranslation());
 		}
+	}
+	return true;
+}
+
+// A clip's samples kept by clip and kind (with or without the pelvis): sampling walks each bone's parent chain at 60 Hz,
+// and a lead switch sets up three members whose clips were all sampled before. The clip's key is its FObjectKey, so a
+// clip unloaded and loaded again is a new key, never a stale one.
+struct FLocoMeasureKey
+{
+	FObjectKey Clip;
+	bool bPelvis = false;
+	bool operator==(const FLocoMeasureKey& Other) const { return Clip == Other.Clip && bPelvis == Other.bPelvis; }
+	friend uint32 GetTypeHash(const FLocoMeasureKey& Key) { return GetTypeHash(Key.Clip) * 2u + (Key.bPelvis ? 1u : 0u); }
+};
+
+struct FLocoSampled
+{
+	TArray<ftcore::GaitFrame> Frames;
+	TArray<ftcore::LocoPoint> Pelvis;
+};
+
+TMap<FLocoMeasureKey, FLocoSampled>& LocoSampled()
+{
+	static TMap<FLocoMeasureKey, FLocoSampled> Kept;
+	return Kept;
+}
+
+// This setup's counts (SetBaseClips logs them): clips sampled now and samples reused.
+int32 LocoMeasureFresh = 0;
+int32 LocoMeasureKept = 0;
+
+// Whether every clip is sampled afresh: with -LocoNoMeasureCache, and in the editor or a commandlet, where a clip can be
+// reimported or rebuilt in place under the same object (the key) and must be measured again.
+bool LocoMeasureCacheOff()
+{
+	static const bool bOff = FParse::Param(FCommandLine::Get(), TEXT("LocoNoMeasureCache")) || IsRunningCommandlet() || GIsEditor;
+	return bOff;
+}
+
+// SampleFeetNow's result for the clip, sampled once and then kept (sampled every time when LocoMeasureCacheOff).
+bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TArray<ftcore::LocoPoint>* Pelvis = nullptr)
+{
+	if (LocoMeasureCacheOff())
+	{
+		++LocoMeasureFresh;
+		return SampleFeetNow(Clip, Frames, Pelvis);
+	}
+	const FLocoMeasureKey Key{FObjectKey(&Clip), Pelvis != nullptr};
+	if (const FLocoSampled* Kept = LocoSampled().Find(Key))
+	{
+		++LocoMeasureKept;
+		Frames = Kept->Frames;
+		if (Pelvis)
+		{
+			*Pelvis = Kept->Pelvis;
+		}
+		return true;
+	}
+	++LocoMeasureFresh;
+	// Only a good sample is kept. A failed one (no skeleton yet, or no length: a clip not fully loaded) is sampled again
+	// at the next setup, so a clip measured too early does not lose its gait measure for the session.
+	if (!SampleFeetNow(Clip, Frames, Pelvis))
+	{
+		return false;
+	}
+	FLocoSampled& Fresh = LocoSampled().Add(Key);
+	Fresh.Frames = Frames;
+	if (Pelvis)
+	{
+		Fresh.Pelvis = *Pelvis;
 	}
 	return true;
 }
@@ -524,6 +596,8 @@ void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* C
 
 void UFTLocomotionAnimInstance::SetBaseClips(UAnimSequence* const (&Base)[NumBaseClips], bool bTraversal)
 {
+	LocoMeasureFresh = 0;
+	LocoMeasureKept = 0;
 	for (int32 I = 0; I < NumBaseClips; ++I)
 	{
 		SetClip(static_cast<ftcore::LocoClip>(I), Base[I]);
@@ -538,6 +612,11 @@ void UFTLocomotionAnimInstance::SetBaseClips(UAnimSequence* const (&Base)[NumBas
 	{
 		SetTraversalFromRun();
 	}
+	{
+		const AActor* MeasuredFor = GetOwningActor();
+		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %s's clip measures this setup: %d sampled, %d kept%s."), MeasuredFor ? *MeasuredFor->GetName() : TEXT("?"),
+			LocoMeasureFresh, LocoMeasureKept, LocoMeasureCacheOff() ? TEXT(" (no cache: -LocoNoMeasureCache, the editor or a commandlet)") : TEXT(""));
+	}
 	// -LocoJumpDump: the lead's jump clips, once, then quit.
 	static const bool bJumpDump = FParse::Param(FCommandLine::Get(), TEXT("LocoJumpDump"));
 	const UAnimSequence* Run = Clips[static_cast<int32>(ftcore::LocoClip::Run)].Get();
@@ -545,6 +624,33 @@ void UFTLocomotionAnimInstance::SetBaseClips(UAnimSequence* const (&Base)[NumBas
 	{
 		DumpJumpClips(*Run);
 		FPlatformMisc::RequestExit(false, TEXT("LocoJumpDump"));
+	}
+}
+
+void UFTLocomotionAnimInstance::AppendClips(TArray<TObjectPtr<UObject>>& Out) const
+{
+	auto Hold = [&Out](const TObjectPtr<UAnimSequence>& Clip)
+	{
+		if (Clip)
+		{
+			Out.AddUnique(Clip.Get());
+		}
+	};
+	for (const TObjectPtr<UAnimSequence>& Clip : Clips)
+	{
+		Hold(Clip);
+	}
+	for (const TObjectPtr<UAnimSequence>& Clip : TraversalClips)
+	{
+		Hold(Clip);
+	}
+	for (const TObjectPtr<UAnimSequence>& Clip : ActionClips)
+	{
+		Hold(Clip);
+	}
+	for (const TObjectPtr<UAnimSequence>& Clip : WaterClips)
+	{
+		Hold(Clip);
 	}
 }
 

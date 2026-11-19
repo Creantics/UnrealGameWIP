@@ -1943,9 +1943,11 @@ public:
 			Clean(SafeRatio.Bottom);
 		}
 		const float H = Geometry.GetLocalSize().Y * HudScale; // the fonts' height: the viewport's, times the HUD scale
-		if (H != BuiltHeight)
+		const float StackScale = FT::HudTextScale(); // the prompt stack's text size (1 without -UiHudTextScale)
+		if (H != BuiltHeight || StackScale != StackT)
 		{
 			BuiltHeight = H;
+			StackT = StackScale;
 			BuildFonts(H);
 			bRebuild = true; // kept until a live frame rebuilds the strings that need the fight
 		}
@@ -2111,14 +2113,14 @@ public:
 		{
 			HealShown = L.heals;
 			HealText = FString::FromInt(L.heals); // the count alone: the verb stands in its own column
-			HealW = TextWidth(HealText, FigFont);
+			HealW = TextWidth(HealText, StackFigFont);
 		}
 		const int32 GiftHeals = View.now.third.giftHeals;
 		if (bRebuildNow || GiftHeals != GiftHealShown)
 		{
 			GiftHealShown = GiftHeals;
 			GiftHealText = GiftHeals >= 0 ? FString::FromInt(GiftHeals) : FString();
-			GiftHealW = TextWidth(GiftHealText, FigFont);
+			GiftHealW = TextWidth(GiftHealText, StackFigFont);
 		}
 		// The hp figure, "412 / 600", built when either number changes; its slot is as wide as "600 / 600", so its right
 		// edge stays put as the hp falls.
@@ -2188,21 +2190,10 @@ public:
 		}
 		else if (!Fight.over())
 		{
-			// The rules' feed (ArenaFight::special): the controlled lead's full gauge, and while a press would be
-			// refused, why. Nothing ready while a special runs (the gauge empties at the press).
-			const ftcore::ArenaSpecialView& Rules = Fight.special();
-			In.ready = Rules.readyPlayer && !Rules.running;
-			// The Third's: readyPartner is set only for a party member's full gauge (never a partner lead's); the CALL
-			// row is always live, so refusalPartner is not read.
-			In.thirdReady = Rules.readyPartner && !Rules.running;
-			switch (Rules.refusalPlayer)
-			{
-			case ftcore::ArenaSpecialRefusal::Ok:
-			case ftcore::ArenaSpecialRefusal::NotReady: In.why = ftcore::UiSpecialWhy::None; break;
-			case ftcore::ArenaSpecialRefusal::NoTarget: In.why = ftcore::UiSpecialWhy::NoTarget; break;
-			case ftcore::ArenaSpecialRefusal::NoSight: In.why = ftcore::UiSpecialWhy::OutOfSight; break;
-			default: In.why = ftcore::UiSpecialWhy::NotNow; break;
-			}
+			// The rules' feed (ArenaFight::special, Core uiSpecialInputFrom): the controlled lead's full gauge and, while a
+			// press would be refused, why; the Third's (readyPartner, a party member's only; the CALL row is always live).
+			// Nothing while a special runs, and never for a lead with no move (a full gauge with nothing to press).
+			In = ftcore::uiSpecialInputFrom(Fight.special());
 		}
 		if (!Fight.over() && Shot == EUiStateShot::SpecialCall)
 		{
@@ -2210,7 +2201,7 @@ public:
 			In.thirdReady = true;
 		}
 		const ftcore::Settings* Prefs = Runner.GetSettings();
-		Special = ftcore::uiSpecialStep(SpecialState, Shown().bSpecialPrompt && bSpecialsOn, In, DeltaTime,
+		Special = ftcore::uiSpecialStep(SpecialState, ftcore::uiSpecialRowReserved(Shown().bSpecialPrompt, bSpecialsOn), In, DeltaTime,
 			Prefs && Prefs->reduceMotion, Prefs && Prefs->reduceFlashes);
 		// The tail after the word: the lead's name, the Third's (CALL) or the reason. While the row stands it follows what
 		// is shown (copied on a change only); a leave keeps the last one, so a lead switch never shows the new name fading.
@@ -2516,7 +2507,9 @@ private:
 		ReadAsc = Asc(ReadFont);
 		PrefixFont = FontPx(UiTextRole::Popup, H, Hud::PrefixPx);
 		PrefixAsc = Asc(PrefixFont);
-		PromptFont = FontPx(UiTextRole::Verb, H, Hud::RowPx);
+		// The prompt stack's words (and the special's row) at the text size (StackT): PromptFont is the stack's alone; its
+		// keys, reasons and counts take the Stack fonts, which are the HUD's own at 100%.
+		PromptFont = FontPx(UiTextRole::Verb, H, Hud::RowPx * StackT);
 		PromptAsc = Asc(PromptFont);
 		KeyFont = FontPx(UiTextRole::Label, H, Hud::KeyPx);
 		KeyAsc = Asc(KeyFont);
@@ -2525,6 +2518,13 @@ private:
 		FigFont = FontPx(UiTextRole::Value, H, Hud::FigPx);
 		FigFont.LetterSpacing = 0;
 		FigAsc = Asc(FigFont);
+		StackKeyFont = FontPx(UiTextRole::Label, H, Hud::KeyPx * StackT);
+		StackKeyAsc = Asc(StackKeyFont);
+		StackNoteFont = Spaced(FontPx(UiTextRole::Label, H, Hud::NotePx * StackT));
+		StackNoteAsc = Asc(StackNoteFont);
+		StackFigFont = FontPx(UiTextRole::Value, H, Hud::FigPx * StackT);
+		StackFigFont.LetterSpacing = 0;
+		StackFigAsc = Asc(StackFigFont);
 		WeakWord = kWeakUi.Get().ToUpper();
 		// NO KEY for the key box, and the reason words a refused prompt carries, at label size.
 		NoKeyWord = kNoKeyUi.Get().ToUpper();
@@ -2541,7 +2541,7 @@ private:
 		for (int32 I = 0; I < static_cast<int32>(ftcore::kPressReasonCount); ++I)
 		{
 			WhyWord[I] = kWhyUi[I] ? kWhyUi[I]->Get().ToUpper() : FString();
-			WhyW[I] = TextWidth(WhyWord[I], NoteFont);
+			WhyW[I] = TextWidth(WhyWord[I], StackNoteFont);
 		}
 		ResultFont = FontFor(UiTextRole::Subtitle, H);
 		ResultLineH = FM->GetMaxCharacterHeight(ResultFont) * 1.15f; // the subtitle's line
@@ -2717,12 +2717,13 @@ private:
 			const ftcore::UiPromptMask Bit = ftcore::uiPromptBit(static_cast<ftcore::UiPrompt>(I));
 			if (KeyOf(kPromptKeys[I], PromptKey[I], PromptKeyW[I])) PromptNoKey |= Bit;
 			if (!PromptKey[I].IsEmpty()) PromptKeyed |= Bit;
+			PromptKeyStackW[I] = TextWidth(PromptKey[I], StackKeyFont); // the same key in the stack, at its text size
 		}
 		// The special's key: its own action (Z; on a pad the shoulders chord, LB+RB), NO KEY when the import left it unbound.
 		{
 			const ftcore::InputPromptKey K = ftcore::inputPromptKey(*Bound, ftcore::InputAction::Special, Device, Left);
 			SpecialKey = K.noKey ? NoKeyWord : FT::ToFString(K.keys);
-			SpecialKeyW = TextWidth(SpecialKey, KeyFont);
+			SpecialKeyW = TextWidth(SpecialKey, StackKeyFont); // the special's row is the stack's
 		}
 		// The jump press reaches the fight only under the jump switch (UFTArenaRunner::JumpBound; never in Shipping):
 		// without it nothing reaches JUMP, so its row is not drawn, whatever the Basic controls setting.
@@ -3445,13 +3446,15 @@ private:
 	static float KeyCapW(float KeyW, float S) { return FMath::Max(Hud::KeyCapH * S, KeyW + Hud::KeyCapPad * S); }
 
 	// A key cap: a 1 px rounded outline round its letters, centred on (CX, MidY). Every key on the HUD is this one cap.
-	// Ring: the cap's outline where it differs from its letters (the prompts': the world's accent).
+	// Ring: the cap's outline where it differs from its letters (the prompts': the world's accent). bStack: a prompt stack
+	// cap, its height and letters at the stack's text size (StackT; its outline's weight stays the HUD's).
 	void KeyCap(const FPainter& P, float CX, float MidY, float W, const FString& Key, float KeyW, const FLinearColor& C,
-		const FLinearColor* CapRing = nullptr) const
+		const FLinearColor* CapRing = nullptr, bool bStack = false) const
 	{
-		KeyCapStroke(Line, CX, MidY, W, Hud::KeyCapH * P.S, 0.5f * P.S, Hud::KeyCapCorner * P.S);
+		const float KS = bStack ? P.S * StackT : P.S;
+		KeyCapStroke(Line, CX, MidY, W, Hud::KeyCapH * KS, 0.5f * P.S, Hud::KeyCapCorner * KS);
 		Mesh.Stroke(Line, CapRing ? *CapRing : C, true);
-		P.Text(CX - KeyW * 0.5f, CapTop(MidY, KeyAsc), Key, KeyFont, C);
+		P.Text(CX - KeyW * 0.5f, CapTop(MidY, bStack ? StackKeyAsc : KeyAsc), Key, bStack ? StackKeyFont : KeyFont, C);
 	}
 
 	// A first-use label beside its element, at the labels' ink while Core keeps it live.
@@ -4090,10 +4093,11 @@ private:
 	void PaintPrompts(const FPainter& P, const FVector2f& Size) const
 	{
 		// The special's row reserved (the switch, and the fight has specials): the basic controls stand one row up.
-		const bool bSpecialRow = ::Shown().bSpecialPrompt && bSpecialsOn;
+		const bool bSpecialRow = ftcore::uiSpecialRowReserved(::Shown().bSpecialPrompt, bSpecialsOn);
 		const ftcore::UiPromptMask Shown = Budget.out.promptsShown;
-		const float S = P.S;
-		const ftcore::UiMargins E = EdgesAt(Size, S);
+		// The stack's lengths go with its text (StackT: 1 without the text size switch); its margin is the HUD's.
+		const float S = P.S * StackT;
+		const ftcore::UiMargins E = EdgesAt(Size, P.S);
 		const float RX = Size.X - E.right;
 		const float Gap = 10.f * S;
 		// The reason word a prompt carries (its PressReason's index), or -1: a press that would be taken has none.
@@ -4124,7 +4128,7 @@ private:
 			{
 				continue;
 			}
-			KeyColW = FMath::Max(KeyColW, KeyCapW(PromptKeyW[I], S));
+			KeyColW = FMath::Max(KeyColW, KeyCapW(PromptKeyStackW[I], S));
 			VerbColW = FMath::Max(VerbColW, PromptWordW[I]);
 			const FString* Count = CountOf(I);
 			if (Count && !Count->IsEmpty())
@@ -4145,28 +4149,28 @@ private:
 			const FLinearColor CapRing = Tok(UiToken::Accent, C.A);
 			const float Row = static_cast<float>(ftcore::uiPromptRowAt(static_cast<ftcore::UiPrompt>(I), bSpecialRow));
 			const float MidY = Size.Y - E.bottom - (0.5f * Hud::KeyCapH + Row * Hud::PromptStep) * S;
-			const float CapW = KeyCapW(PromptKeyW[I], S);
+			const float CapW = KeyCapW(PromptKeyStackW[I], S);
 			const FString* Count = CountOf(I);
 			const bool bCount = Count && !Count->IsEmpty();
 			float CapRight = BX + KeyColW;
 			if (bGiftPair && I == GH)
 			{
 				const int32 GuardWhy = WhyOf(GG);
-				const float GroupRight = BX + KeyColW - KeyCapW(PromptKeyW[GG], S) - (GuardWhy >= 0 ? Gap + WhyW[GuardWhy] : 0.f) - Hud::GiftGap * S;
+				const float GroupRight = BX + KeyColW - KeyCapW(PromptKeyStackW[GG], S) - (GuardWhy >= 0 ? Gap + WhyW[GuardWhy] : 0.f) - Hud::GiftGap * S;
 				CapRight = GroupRight - (PromptWordW[I] + Gap + (bCount ? Gap + CountW(I) : 0.f));
 			}
-			KeyCap(P, CapRight - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyW[I], C, &CapRing);
+			KeyCap(P, CapRight - CapW * 0.5f, MidY, CapW, PromptKey[I], PromptKeyStackW[I], C, &CapRing, true);
 			const float VX = CapRight + Gap;
 			P.Text(VX, CapTop(MidY, PromptAsc), PromptWord[I], PromptFont, C);
 			if (bCount)
 			{
 				const float CX = (bGiftPair && I == GH) ? VX + PromptWordW[I] + Gap : RX - CountW(I);
-				P.Text(CX, CapTop(MidY, FigAsc), *Count, FigFont, C);
+				P.Text(CX, CapTop(MidY, StackFigAsc), *Count, StackFigFont, C);
 			}
 			const int32 WhyAt = WhyOf(I);
 			if (WhyAt >= 0)
 			{
-				P.Text(CapRight - CapW - Gap - WhyW[WhyAt], CapTop(MidY, NoteAsc), WhyWord[WhyAt], NoteFont, C);
+				P.Text(CapRight - CapW - Gap - WhyW[WhyAt], CapTop(MidY, StackNoteAsc), WhyWord[WhyAt], StackNoteFont, C);
 			}
 		}
 	}
@@ -4184,8 +4188,8 @@ private:
 		{
 			return;
 		}
-		const float S = P.S;
-		const ftcore::UiMargins E = EdgesAt(Size, S);
+		const float S = P.S * StackT; // the stack's lengths, at its text size (as PaintPrompts)
+		const ftcore::UiMargins E = EdgesAt(Size, P.S);
 		const float RX = Size.X - E.right;
 		const float Gap = 10.f * S;
 		const float A = Special.alpha;
@@ -4198,19 +4202,19 @@ private:
 		P.Text(WordX, CapTop(MidY, PromptAsc), Special.call ? CallWord : SpecialWord, PromptFont, Ink);
 		const float CapW = KeyCapW(SpecialKeyW, S);
 		const float CX = WordX - Gap - CapW * 0.5f;
-		KeyCap(P, CX, MidY, CapW, SpecialKey, SpecialKeyW, Ink, &Ink);
+		KeyCap(P, CX, MidY, CapW, SpecialKey, SpecialKeyW, Ink, &Ink, true);
 		if (!Special.live)
 		{
 			return;
 		}
 		const float Out = ftcore::kUiSpecialRingGap * S;
 		const float H = Hud::KeyCapH * S;
-		KeyCapStroke(Line, CX, MidY, CapW + 2.f * Out, H + 2.f * Out, 0.5f * S, (Hud::KeyCapCorner + ftcore::kUiSpecialRingGap) * S);
+		KeyCapStroke(Line, CX, MidY, CapW + 2.f * Out, H + 2.f * Out, 0.5f * P.S, (Hud::KeyCapCorner + ftcore::kUiSpecialRingGap) * S);
 		Mesh.Stroke(Line, Ink, true);
 		if (Special.pulse >= 0.f)
 		{
 			const float Grow = Out + ftcore::kUiSpecialPulseGrow * S * Special.pulse;
-			KeyCapStroke(Line, CX, MidY, CapW + 2.f * Grow, H + 2.f * Grow, 0.5f * S, Hud::KeyCapCorner * S + Grow);
+			KeyCapStroke(Line, CX, MidY, CapW + 2.f * Grow, H + 2.f * Grow, 0.5f * P.S, Hud::KeyCapCorner * S + Grow);
 			Mesh.Stroke(Line, Tok(UiToken::Ink, A * 0.85f * (1.f - Special.pulse)), true);
 		}
 	}
@@ -4898,6 +4902,12 @@ private:
 	FString PromptWord[ftcore::kUiPromptCount], PromptKey[ftcore::kUiPromptCount], HealText;
 	float PromptWordW[ftcore::kUiPromptCount] = {}, PromptKeyW[ftcore::kUiPromptCount] = {}, HealW = 0.f;
 	int32 HealShown = -1;
+	// The stack's text size (FT::HudTextScale, 1 without its switch) and its keys', reasons' and counts' fonts at it; the
+	// keys' widths in the stack (PromptKeyW is the Qte's, at the HUD's own size).
+	float StackT = 1.f;
+	FSlateFontInfo StackKeyFont, StackNoteFont, StackFigFont;
+	float StackKeyAsc = 0.f, StackNoteAsc = 0.f, StackFigAsc = 0.f;
+	float PromptKeyStackW[ftcore::kUiPromptCount] = {};
 	FString GiftHealText; // the Gift Heals' count, built when it changes (empty while none is reported)
 	float GiftHealW = 0.f;
 	int32 GiftHealShown = -2;
@@ -8446,5 +8456,35 @@ UFont* UiCanvasFont(uint8 Face)
 		Made[Face] = F;
 	}
 	return Made[Face];
+}
+
+float HudTextScale()
+{
+	// The flag is read once; the setting each call (the menus' read, a subsystem lookup), so a change in the settings
+	// screen reaches the HUD and the map at their next font build.
+	static const bool bOn = FParse::Param(FCommandLine::Get(), TEXT("UiHudTextScale"));
+	if (!bOn)
+	{
+		return 1.f;
+	}
+#if !UE_BUILD_SHIPPING
+	static const float Forced = []()
+	{
+		int32 Pct = 0;
+		return FParse::Value(FCommandLine::Get(), TEXT("UiTextScale="), Pct)
+			? FMath::Clamp(Pct, ftcore::Settings::kMinTextScale, ftcore::Settings::kMaxTextScale) / 100.f
+			: 0.f;
+	}();
+	if (Forced > 0.f)
+	{
+		return Forced;
+	}
+#endif
+	UGameViewportClient* VC = GEngine ? GEngine->GameViewport : nullptr;
+	UWorld* World = VC ? VC->GetWorld() : nullptr;
+	UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+	const UFTSettingsSubsystem* Set = GI ? GI->GetSubsystem<UFTSettingsSubsystem>() : nullptr;
+	const float T = Set ? Set->Get().uiTextScale() : 1.f;
+	return FMath::IsFinite(T) ? FMath::Clamp(T, 1.f, 2.f) : 1.f;
 }
 }
