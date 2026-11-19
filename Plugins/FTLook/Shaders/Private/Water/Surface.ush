@@ -103,3 +103,53 @@ float3 FTWaterNormal(float2 Rest, float Time, float4 W[8], float Q, float Sway, 
 	// d/dx0 = (1 - XX, -XY, SX), d/dy0 = (-XY, 1 - YY, SY).
 	return float3(-XY * SY - SX * (1.0f - YY), -SX * XY - (1.0f - XX) * SY, (1.0f - XX) * (1.0f - YY) - XY * XY);
 }
+
+// How much of a sea tile's waves its vertex keeps: 1 inside, falling to 0 over the last FTWaterSeaBandCm of the tiles'
+// span, out to sea and both ways along the shore, so the tiles meet the far planes beside and beyond them (the tide and
+// the waves' normals, no vertex waves) with no step. Span: {how far out the tiles reach, along the shore from, to (cm),
+// on}, from the shore line's centre (EdgeA.xy), out along (EdgeA.z, EdgeA.w) and along (-EdgeA.w, EdgeA.z)
+// (ftcore::waterSeaSpanCm). 1 off a half-plane (EdgeB.y not 1) or with Span.w 0.
+static const float FTWaterSeaBandCm = 15000.0f;
+
+float FTWaterSeaFade(float2 Rest, float4 EdgeA, float2 EdgeB, float4 Span)
+{
+	if (Span.w < 0.5f || EdgeB.y < 0.5f || EdgeB.y > 1.5f)
+	{
+		return 1.0f;
+	}
+	const float RX = Rest.x - EdgeA.x;
+	const float RY = Rest.y - EdgeA.y;
+	const float Out = RX * EdgeA.z + RY * EdgeA.w;
+	const float Along = RY * EdgeA.z - RX * EdgeA.w;
+	return (1.0f - smoothstep(Span.x - FTWaterSeaBandCm, Span.x, Out)) * smoothstep(Span.y, Span.y + FTWaterSeaBandCm, Along) *
+		(1.0f - smoothstep(Span.z - FTWaterSeaBandCm, Span.z, Along));
+}
+
+// How far a skirt vertex (SkirtCm its drop below the tile, 0 on the tile's top) is lifted: its whole drop while the eye
+// is under the water line (RestZ + SkirtCm + TideCm, the rim's height), so a swimmer looking up sees no walls; else 0.
+float FTWaterSkirtLift(float SkirtCm, float RestZ, float EyeZ, float TideCm)
+{
+	return (SkirtCm > 0.0f && EyeZ < RestZ + SkirtCm + TideCm) ? SkirtCm : 0.0f;
+}
+
+// A tile vertex's whole move (cm), what the water masters' offset node returns: the waves (faded out between FarStartCm
+// and FarEndCm from the eye, where the grid is too coarse to carry them, and at a sea's span edge; none with WaveVerts 0,
+// the far planes), the tide, and the skirt's fold. Grid: {the baked cell (cm), the skirt's drop (cm)}.
+float3 FTWaterTileOffset(float3 Rest, float2 Grid, float3 Eye, float Time, float4 W[8], float Q, float FadeCm, float LapShare,
+	float4 EdgeA, float2 EdgeB, float4 Span, float WaveVerts, float FarStartCm, float FarEndCm, float TideCm)
+{
+	const float2 R = float2(Rest.x, Rest.y);
+	const float Near = WaveVerts * (1.0f - smoothstep(FarStartCm, FarEndCm, length(float2(Eye.x - Rest.x, Eye.y - Rest.y)))) *
+		FTWaterSeaFade(R, EdgeA, EdgeB, Span);
+	float OX = 0.0f;
+	float OY = 0.0f;
+	float OZ = TideCm + FTWaterSkirtLift(Grid.y, Rest.z, Eye.z, TideCm);
+	if (Near > 0.0f)
+	{
+		const float3 O = FTWaterOffset(R, Time, W, Q, max(Grid.x, 1.0f), FTWaterSway(FTWaterEdgeCm(R, EdgeA, EdgeB), FadeCm), LapShare);
+		OX = O.x * Near;
+		OY = O.y * Near;
+		OZ += O.z * Near;
+	}
+	return float3(OX, OY, OZ);
+}

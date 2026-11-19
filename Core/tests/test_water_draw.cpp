@@ -115,6 +115,59 @@ sh::float3 shaderOffset(const WaterSurfaceModel& m, const WaterBody& b, float x0
     return sh::FTWaterOffset(sh::float2(x0, y0), t, w.w, p.q, gridCm, sway, p.lapShare);
 }
 
+sh::float4 f4(float x, float y, float z, float w) {
+    sh::float4 v;
+    v.x = x;
+    v.y = y;
+    v.z = z;
+    v.w = w;
+    return v;
+}
+
+// What the masters' offset node did before the sea span (FTWaterSurfaceBuild's kOffsetCode up to 4bb6f18f), kept as the
+// reference for the tiles' inside: the waves faded with the eye's distance and over a sea's last 150 m out (ReachCm),
+// the tide, the skirt's fold.
+sh::float3 oldTileOffset(sh::float3 rest, sh::float2 grid, sh::float3 eye, float t, sh::float4 w[8], float q, float fadeCm,
+                         float lapShare, sh::float4 edgeA, sh::float2 edgeB, float waveVerts, float farStartCm, float farEndCm,
+                         float tideCm, float reachCm) {
+    const sh::float2 r(rest.x, rest.y);
+    const float edgeCm = sh::FTWaterEdgeCm(r, edgeA, edgeB);
+    float keep = waveVerts * (1.f - sh::smoothstep(farStartCm, farEndCm, sh::length(sh::float2(eye.x - r.x, eye.y - r.y))));
+    if (reachCm > 0.f && edgeB.y > 0.5f && edgeB.y < 1.5f) keep *= 1.f - sh::smoothstep(reachCm - 15000.f, reachCm, edgeCm);
+    sh::float3 o(0.f, 0.f, 0.f);
+    if (keep > 0.f) {
+        const sh::float3 waves = sh::FTWaterOffset(r, t, w, q, sh::max(grid.x, 1.f), sh::FTWaterSway(edgeCm, fadeCm), lapShare);
+        o = sh::float3(waves.x * keep, waves.y * keep, waves.z * keep);
+    }
+    o.z += tideCm;
+    if (grid.y > 0.f && eye.z < rest.z + grid.y + tideCm) o.z += grid.y;
+    return o;
+}
+
+// A body's edge line and sea span as the material reads them.
+struct TileInputs {
+    sh::float4 edgeA;
+    sh::float2 edgeB{0.f, 2.f};
+    sh::float4 span;
+};
+
+TileInputs tileInputs(const WaterBody& b, const WaterTileSpec& spec, const WaterTileBounds& bounds) {
+    TileInputs in;
+    float line[kWaterEdgeFloats];
+    waterEdgeLine(b, line);
+    in.edgeA = f4(line[0], line[1], line[2], line[3]);
+    in.edgeB = sh::float2(line[4], line[5]);
+    float span[kWaterSpanFloats];
+    waterSeaSpanCm(b, spec, bounds, span);
+    in.span = f4(span[0], span[1], span[2], span[3]);
+    return in;
+}
+
+// The rest point (cm) out and along a sea's shore (m) from its centre.
+sh::float2 shorePoint(const WaterBody& b, float outM, float alongM) {
+    return sh::float2((b.centre.x + outM * b.cosYaw - alongM * b.sinYaw) * 100.f, (b.centre.y + outM * b.sinYaw + alongM * b.cosYaw) * 100.f);
+}
+
 } // namespace
 
 TEST_CASE("Water/Surface.ush moves a vertex as waterWaveOffset does") {
@@ -428,4 +481,180 @@ TEST_CASE("water draw: rain rings follow the rain only while on and above the su
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(moves == int(kWaterRainRingSteps));
     CHECK(last == 1.f);
+}
+
+TEST_CASE("Water/Surface.ush's tile offset: inside a sea's span and on a canal, the offset node as it was") {
+    const WaterSurfaceModel m = stormModel();
+    const WaterTileSpec spec;
+    const WaterTileBounds bounds{{-900.f, -700.f}, {1100.f, 900.f}};
+    WaterBody sea = seaPlane();
+    sea.cosYaw = std::cos(1.3f);
+    sea.sinYaw = std::sin(1.3f);
+    const WaterBody bodies[2] = {sea, canalBox(0.f)};
+    const float band = sh::FTWaterSeaBandCm * 0.01f;
+    float worst = 0.f;
+    int checked = 0;
+    for (const WaterBody& b : bodies) {
+        const WaterDrawParams p = waterDrawParams(m, waterDrawGroup(b, m.spec.waves));
+        Packed w = pack(p);
+        const TileInputs in = tileInputs(b, spec, bounds);
+        const float tideCm = 37.f;
+        for (int k = 0; k < 60; ++k) {
+            sh::float2 r(0.f, 0.f);
+            if (b.shape == WaterShape::HalfPlane) {
+                // Out from under the beach to a band short of the reach; along, a band in from either end.
+                const float outM = -spec.landOverlapM + static_cast<float>(k % 10) / 9.f * (spec.seaReachM - band + spec.landOverlapM);
+                const float alongM = in.span.y * 0.01f + band + static_cast<float>(k / 10) / 5.f * ((in.span.z - in.span.y) * 0.01f - 2.f * band);
+                r = shorePoint(b, outM, alongM);
+            } else {
+                r = sh::float2(b.centre.x * 100.f + static_cast<float>(k % 10 - 5) * 500.f, b.centre.y * 100.f + static_cast<float>(k / 10 - 3) * 60.f);
+            }
+            const float skirt = (k % 3 == 0) ? 200.f : 0.f;
+            const sh::float3 rest(r.x, r.y, b.level * 100.f - skirt);
+            // The eye: over the point, 120 m off, 400 m off (in the distance fade) and under the water line.
+            const float offM = (k % 4 == 0) ? 0.f : (k % 4 == 1 ? 120.f : 400.f);
+            const float eyeZ = (k % 4 == 3) ? b.level * 100.f - 150.f : b.level * 100.f + 600.f;
+            const sh::float3 eye(r.x + offM * 100.f, r.y, eyeZ);
+            const sh::float2 grid(25.f, skirt);
+            const float t = 4.f + 53.1f * static_cast<float>(k);
+            const sh::float3 now = sh::FTWaterTileOffset(rest, grid, eye, t, w.w, p.q, p.fadeCm, p.lapShare, in.edgeA, in.edgeB, in.span,
+                                                         1.f, 30000.f, 50000.f, tideCm);
+            const sh::float3 was = oldTileOffset(rest, grid, eye, t, w.w, p.q, p.fadeCm, p.lapShare, in.edgeA, in.edgeB, 1.f, 30000.f, 50000.f,
+                                                 tideCm, in.span.x);
+            worst = std::max(worst, std::fabs(now.x - was.x) + std::fabs(now.y - was.y) + std::fabs(now.z - was.z));
+            ++checked;
+        }
+    }
+    CHECK(checked == 120);
+    CHECK(worst < 0.001f);
+}
+
+TEST_CASE("Water/Surface.ush's tile offset: at a sea's span edge a vertex moves by the tide alone, as the far planes do") {
+    const WaterSurfaceModel m = stormModel();
+    const WaterTileSpec spec;
+    const WaterTileBounds bounds{{-900.f, -700.f}, {1100.f, 900.f}};
+    WaterBody sea = seaPlane();
+    sea.cosYaw = std::cos(-0.7f);
+    sea.sinYaw = std::sin(-0.7f);
+    const WaterDrawParams p = waterDrawParams(m, WaterDrawGroup::Sea);
+    Packed w = pack(p);
+    const TileInputs in = tileInputs(sea, spec, bounds);
+    REQUIRE(in.span.w == 1.f);
+    REQUIRE(in.span.z - in.span.y > 4.f * sh::FTWaterSeaBandCm);
+    const float band = sh::FTWaterSeaBandCm * 0.01f;
+    const float lo = in.span.y * 0.01f, hi = in.span.z * 0.01f, reach = in.span.x * 0.01f;
+    const float tideCm = -41.f;
+    // On the three outer edges (seaward, both ends along the shore) and at the corners: the tide, nothing else.
+    const float edges[7][2] = {{reach, 0.5f * (lo + hi)}, {reach - 300.f, lo}, {reach - 300.f, hi}, {0.f, lo}, {0.f, hi}, {reach, lo}, {reach, hi}};
+    for (int e = 0; e < 7; ++e) {
+        const sh::float2 r = shorePoint(sea, edges[e][0], edges[e][1]);
+        CHECK(sh::FTWaterSeaFade(r, in.edgeA, in.edgeB, in.span) == doctest::Approx(0.f).scale(1.0).epsilon(1e-4));
+        for (int k = 0; k < 5; ++k) {
+            // The eye right over the vertex, so the distance fade keeps the waves whole.
+            const sh::float3 eye(r.x, r.y, 500.f);
+            const sh::float3 o = sh::FTWaterTileOffset(sh::float3(r.x, r.y, 0.f), sh::float2(25.f, 0.f), eye, 7.f + 31.f * static_cast<float>(k), w.w, p.q,
+                                                       p.fadeCm, p.lapShare, in.edgeA, in.edgeB, in.span, 1.f, 30000.f, 50000.f, tideCm);
+            CHECK(std::fabs(o.x) < 0.01f);
+            CHECK(std::fabs(o.y) < 0.01f);
+            CHECK(o.z == doctest::Approx(tideCm).epsilon(1e-4));
+        }
+    }
+    // A band in from every edge the waves are whole; the fade runs 0 to 1 across the band without turning back.
+    CHECK(sh::FTWaterSeaFade(shorePoint(sea, reach - band, lo + band), in.edgeA, in.edgeB, in.span) == doctest::Approx(1.f));
+    CHECK(sh::FTWaterSeaFade(shorePoint(sea, 0.f, hi - band), in.edgeA, in.edgeB, in.span) == doctest::Approx(1.f));
+    float last = -1.f;
+    for (int k = 0; k <= 30; ++k) {
+        const float f = sh::FTWaterSeaFade(shorePoint(sea, 10.f, lo + band * static_cast<float>(k) / 30.f), in.edgeA, in.edgeB, in.span);
+        CHECK(f >= last - 1e-5f);
+        CHECK(f >= 0.f);
+        CHECK(f <= 1.f);
+        last = f;
+    }
+    CHECK(last == doctest::Approx(1.f));
+    // Past the span (beyond the tiles, where the far planes are) nothing comes back.
+    CHECK(sh::FTWaterSeaFade(shorePoint(sea, reach + 50.f, 0.5f * (lo + hi)), in.edgeA, in.edgeB, in.span) == 0.f);
+    CHECK(sh::FTWaterSeaFade(shorePoint(sea, 10.f, lo - 50.f), in.edgeA, in.edgeB, in.span) == 0.f);
+    CHECK(sh::FTWaterSeaFade(shorePoint(sea, 10.f, hi + 50.f), in.edgeA, in.edgeB, in.span) == 0.f);
+    // The far planes (WaveVerts 0): the tide anywhere, the span's middle too.
+    const sh::float2 mid = shorePoint(sea, 0.5f * reach, 0.5f * (lo + hi));
+    const sh::float3 farPlane = sh::FTWaterTileOffset(sh::float3(mid.x, mid.y, 0.f), sh::float2(25.f, 0.f), sh::float3(mid.x, mid.y, 500.f), 9.f, w.w, p.q,
+                                                 p.fadeCm, p.lapShare, in.edgeA, in.edgeB, in.span, 0.f, 30000.f, 50000.f, tideCm);
+    CHECK(farPlane.x == 0.f);
+    CHECK(farPlane.y == 0.f);
+    CHECK(farPlane.z == tideCm);
+    // A span that is off (w 0), and a box's edge line, fade nothing.
+    TileInputs off = in;
+    off.span.w = 0.f;
+    CHECK(sh::FTWaterSeaFade(shorePoint(sea, reach, lo), off.edgeA, off.edgeB, off.span) == 1.f);
+    const TileInputs box = tileInputs(canalBox(0.f), spec, bounds);
+    CHECK(box.span.w == 0.f);
+    CHECK(sh::FTWaterSeaFade(sh::float2(0.f, 0.f), box.edgeA, box.edgeB, in.span) == 1.f);
+}
+
+TEST_CASE("Water/Surface.ush's skirt folds up whole while the eye is under the water line, and only then") {
+    const float levelCm = 250.f, skirt = 200.f, tide = 30.f;
+    const float restZ = levelCm - skirt; // the skirt's lower rim at rest
+    CHECK(sh::FTWaterSkirtLift(skirt, restZ, levelCm + tide - 1.f, tide) == skirt);
+    CHECK(sh::FTWaterSkirtLift(skirt, restZ, levelCm - 500.f, tide) == skirt);
+    CHECK(sh::FTWaterSkirtLift(skirt, restZ, levelCm + tide, tide) == 0.f);
+    CHECK(sh::FTWaterSkirtLift(skirt, restZ, levelCm + tide + 1.f, tide) == 0.f);
+    // The tile's top (no drop) never moves for it.
+    CHECK(sh::FTWaterSkirtLift(0.f, levelCm, levelCm - 500.f, tide) == 0.f);
+    // Through the whole offset: a far plane's skirt vertex rises by its drop under water, not above.
+    const TileInputs in = tileInputs(canalBox(0.f), WaterTileSpec{}, WaterTileBounds{});
+    sh::float4 w[8];
+    const sh::float3 rest(4000.f, -1200.f, restZ);
+    const sh::float3 under = sh::FTWaterTileOffset(rest, sh::float2(100.f, skirt), sh::float3(4000.f, -1200.f, levelCm - 100.f), 3.f, w, 0.f, 150.f,
+                                                   0.35f, in.edgeA, in.edgeB, in.span, 0.f, 30000.f, 50000.f, tide);
+    const sh::float3 above = sh::FTWaterTileOffset(rest, sh::float2(100.f, skirt), sh::float3(4000.f, -1200.f, levelCm + 100.f), 3.f, w, 0.f,
+                                                   150.f, 0.35f, in.edgeA, in.edgeB, in.span, 0.f, 30000.f, 50000.f, tide);
+    CHECK(under.z == tide + skirt);
+    CHECK(above.z == tide);
+}
+
+TEST_CASE("A sea's span is where its laid tiles end; a box or polygon has none; nothing is allocated") {
+    WaterBodies water;
+    WaterBody sea = seaPlane();
+    sea.cosYaw = std::cos(0.4f);
+    sea.sinYaw = std::sin(0.4f);
+    water.add(sea);
+    water.add(canalBox(0.f));
+    WaterTileSpec spec;
+    spec.seaReachM = 300.f;
+    const WaterTileBounds bounds{{-500.f, -260.f}, {700.f, 410.f}};
+    static WaterTile tiles[4096];
+    const std::size_t n = waterTileLayout(water, WaterWaveSpec{}, spec, bounds, tiles, 4096);
+    REQUIRE(n < 4096);
+    float outMax = -1e9f, alongMin = 1e9f, alongMax = -1e9f;
+    int seaTiles = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const WaterTile& t = tiles[i];
+        if (t.body != 0) continue;
+        ++seaTiles;
+        for (int c = 0; c < 4; ++c) {
+            const float sx = (c & 1) ? 0.5f : -0.5f, sy = (c & 2) ? 0.5f : -0.5f;
+            const float px = t.centre.x + t.cosYaw * t.size.x * sx - t.sinYaw * t.size.y * sy - sea.centre.x;
+            const float py = t.centre.y + t.sinYaw * t.size.x * sx + t.cosYaw * t.size.y * sy - sea.centre.y;
+            outMax = std::max(outMax, px * sea.cosYaw + py * sea.sinYaw);
+            const float along = -px * sea.sinYaw + py * sea.cosYaw;
+            alongMin = std::min(alongMin, along);
+            alongMax = std::max(alongMax, along);
+        }
+    }
+    REQUIRE(seaTiles > 0);
+    float span[kWaterSpanFloats];
+    const auto before = ftcore_test::allocStats().count;
+    waterSeaSpanCm(sea, spec, bounds, span);
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(std::fabs(span[0] - outMax * 100.f) < 1.f);
+    CHECK(std::fabs(span[1] - alongMin * 100.f) < 1.f);
+    CHECK(std::fabs(span[2] - alongMax * 100.f) < 1.f);
+    CHECK(span[3] == 1.f);
+    waterSeaSpanCm(canalBox(0.f), spec, bounds, span);
+    for (int k = 0; k < kWaterSpanFloats; ++k) CHECK(span[k] == 0.f);
+    WaterBody poly = canalBox(0.f);
+    poly.shape = WaterShape::Polygon;
+    span[3] = 5.f;
+    waterSeaSpanCm(poly, spec, bounds, span);
+    for (int k = 0; k < kWaterSpanFloats; ++k) CHECK(span[k] == 0.f);
 }

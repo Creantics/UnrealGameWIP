@@ -8,7 +8,8 @@
 //   - One instanced component and one instance per body (16 at most): its edge line is the body's own.
 //   - A sea's plane is replaced past the tiles' reach (and beside them along the shore) by the tile mesh stretched, wearing
 //     the sea's instance with the vertex waves off: the tide and the waves' normals only. The tiles' waves fade out over
-//     the last 150 m of their reach (ReachCm), so the two meet with no step.
+//     the last 150 m of their span, out to sea and both ways along the shore (Span, ftcore::waterSeaSpanCm), so the two
+//     meet with no step.
 //   - The tiles are capped at ftcore::kWaterMaxTiles, a whole body at a time: one that doesn't fit keeps its flat plane.
 //   - Every part is built once the bodies to draw are settled, from assets already loaded, so a flat plane is hidden only
 //     where its whole replacement stands.
@@ -53,8 +54,8 @@ public:
 private:
 	void AddFarSea(UStaticMesh& Tile, const ftcore::WaterBody& Body, const FBox& PlaneBounds, UMaterialInstanceDynamic* Mid, const TArray<ftcore::WaterTile>& Laid,
 		int32 BodyIndex);
-	// ReachCm: a sea's tiles' reach out from its shore, its waves fading out over the last 150 m (0: no fade).
-	void SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts, float ReachCm);
+	// Span: a sea's tiles' span (ftcore::waterSeaSpanCm), its waves fading out over the last 150 m of it; all 0: no fade.
+	void SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts, const float (&Span)[ftcore::kWaterSpanFloats]);
 
 	UPROPERTY()
 	TObjectPtr<AActor> Host;

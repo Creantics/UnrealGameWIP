@@ -28,33 +28,17 @@ namespace
 {
 const TCHAR* const kInclude = TEXT("/Plugin/FTLook/Private/Water/Surface.ush");
 
-// The vertex offset: the waves at the vertex's rest place (faded out far from the eye, where the grid is too coarse to
-// carry them and nobody swims, and over a sea's last 150 m of tiles, where the far plane takes over with no step), the
-// tide everywhere. WaveVerts 0 (the far plane): the tide alone. A skirt vertex (its drop in Grid.y) folds up to its rim
-// while the eye is under the water line, so the skirts don't hang overhead as a grid.
+// The vertex offset (Surface.ush FTWaterTileOffset): the waves at the vertex's rest place, faded out far from the eye
+// (where the grid is too coarse to carry them and nobody swims) and over the last 150 m of a sea's tiles, out to sea and
+// both ways along the shore (Span, ftcore::waterSeaSpanCm), where the far planes take over with no step; the tide
+// everywhere. WaveVerts 0 (the far planes): the tide alone. A skirt vertex (its drop in Grid.y) folds up to its rim while
+// the eye is under the water line, so the skirts don't hang overhead as a grid.
 const TCHAR* const kOffsetCode = TEXT(R"HLSL(if (SurfaceOn <= 0.0f)
 {
 	return float3(0.0f, 0.0f, 0.0f);
 }
-const float2 R = Rest.xy;
-const float EdgeCm = FTWaterEdgeCm(R, EdgeA, EdgeB.xy);
-float Near = WaveVerts * (1.0f - smoothstep(FarStartCm, FarEndCm, length(Eye.xy - R)));
-if (ReachCm > 0.0f && EdgeB.y > 0.5f && EdgeB.y < 1.5f)
-{
-	Near *= 1.0f - smoothstep(ReachCm - 15000.0f, ReachCm, EdgeCm);
-}
-float3 O = float3(0.0f, 0.0f, 0.0f);
-if (Near > 0.0f)
-{
-	float4 W[8] = {W0, W1, W2, W3, W4, W5, W6, W7};
-	O = FTWaterOffset(R, Time, W, Q, max(Grid.x, 1.0f), FTWaterSway(EdgeCm, FadeCm), LapShare) * Near;
-}
-O.z += TideCm;
-if (Grid.y > 0.0f && Eye.z < Rest.z + Grid.y + TideCm)
-{
-	O.z += Grid.y;
-}
-return O;)HLSL");
+float4 W[8] = {W0, W1, W2, W3, W4, W5, W6, W7};
+return FTWaterTileOffset(Rest, Grid, Eye, Time, W, Q, FadeCm, LapShare, EdgeA, EdgeB.xy, Span, WaveVerts, FarStartCm, FarEndCm, TideCm);)HLSL");
 
 // The pixel's normal: the waves' slope added to the material's own ripples (both world space, z up).
 const TCHAR* const kNormalCode = TEXT(R"HLSL(if (SurfaceOn <= 0.0f)
@@ -276,7 +260,7 @@ void WireMaterial(UMaterial* Material)
 	AddInput(Offset, TEXT("FarStartCm"), AddScalar(Material, TEXT("FarStartCm"), 30000.f, Y += 60));
 	AddInput(Offset, TEXT("FarEndCm"), AddScalar(Material, TEXT("FarEndCm"), 50000.f, Y += 60));
 	AddInput(Offset, TEXT("TideCm"), AddScalar(Material, TEXT("TideCm"), 0.f, Y += 60));
-	AddInput(Offset, TEXT("ReachCm"), AddScalar(Material, TEXT("ReachCm"), 0.f, Y += 60));
+	AddInput(Offset, TEXT("Span"), AddVector(Material, TEXT("Span"), FLinearColor(0.f, 0.f, 0.f, 0.f), Y += 60));
 
 	UMaterialExpressionCustom* Normal = AddCustom(Material, TEXT("FTWaterNormal"), kNormalCode, 2600);
 	AddShared(Normal, In);

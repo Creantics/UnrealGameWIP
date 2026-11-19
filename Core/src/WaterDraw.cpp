@@ -129,6 +129,18 @@ float waterEdgeLineCm(const float line[kWaterEdgeFloats], float x, float y) {
 
 namespace {
 
+// A half-plane's run along its shore, (-sin, cos) from its centre: the bounds' corners projected on the shore's line.
+void shoreRun(const WaterBody& b, const WaterTileBounds& bounds, float& lo, float& hi) {
+    lo = 0.f;
+    hi = 0.f;
+    const Vec2 corners[4] = {bounds.min, {bounds.max.x, bounds.min.y}, bounds.max, {bounds.min.x, bounds.max.y}};
+    for (int k = 0; k < 4; ++k) {
+        const float a = -(corners[k].x - b.centre.x) * b.sinYaw + (corners[k].y - b.centre.y) * b.cosYaw;
+        lo = k == 0 ? a : std::min(lo, a);
+        hi = k == 0 ? a : std::max(hi, a);
+    }
+}
+
 // One body's tiles into out from at (up to cap); returns how many the body needs.
 std::size_t layBody(const WaterBodies& water, std::size_t i, const WaterWaveSpec& waves, const WaterTileSpec& spec,
                     const WaterTileBounds& bounds, WaterTile* out, std::size_t cap, std::size_t at) {
@@ -142,14 +154,8 @@ std::size_t layBody(const WaterBodies& water, std::size_t i, const WaterWaveSpec
     case WaterShape::Box:
         return layGrid(proto, b.centre, b.cosYaw, b.sinYaw, -b.half.x, b.half.x, -b.half.y, b.half.y, tileM, out, cap, at);
     case WaterShape::HalfPlane: {
-        // Along the shore: the bounds' corners projected on the shore's line, (-sin, cos).
         float lo = 0.f, hi = 0.f;
-        const Vec2 corners[4] = {bounds.min, {bounds.max.x, bounds.min.y}, bounds.max, {bounds.min.x, bounds.max.y}};
-        for (int k = 0; k < 4; ++k) {
-            const float a = -(corners[k].x - b.centre.x) * b.sinYaw + (corners[k].y - b.centre.y) * b.cosYaw;
-            lo = k == 0 ? a : std::min(lo, a);
-            hi = k == 0 ? a : std::max(hi, a);
-        }
+        shoreRun(b, bounds, lo, hi);
         return layGrid(proto, b.centre, b.cosYaw, b.sinYaw, -std::max(spec.landOverlapM, 0.f), std::max(spec.seaReachM, 0.f), lo, hi,
                        tileM, out, cap, at);
     }
@@ -191,6 +197,17 @@ std::size_t waterTileLayoutWhole(const WaterBodies& water, const WaterWaveSpec& 
     }
     if (dropped) *dropped = left;
     return laid;
+}
+
+void waterSeaSpanCm(const WaterBody& body, const WaterTileSpec& spec, const WaterTileBounds& bounds, float out[kWaterSpanFloats]) {
+    for (int k = 0; k < kWaterSpanFloats; ++k) out[k] = 0.f;
+    if (body.shape != WaterShape::HalfPlane) return;
+    float lo = 0.f, hi = 0.f;
+    shoreRun(body, bounds, lo, hi);
+    out[0] = std::max(spec.seaReachM, 0.f) * 100.f;
+    out[1] = lo * 100.f;
+    out[2] = hi * 100.f;
+    out[3] = 1.f;
 }
 
 bool waterSkyOnly(const WaterReflectTier& tier) {

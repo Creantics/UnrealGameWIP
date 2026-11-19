@@ -89,6 +89,14 @@ FTCORE_API std::size_t waterTileLayoutWhole(const WaterBodies& water, const Wate
                                             const WaterTileBounds& bounds, WaterTile* out, std::size_t cap,
                                             std::uint32_t* dropped, std::uint32_t* perBody = nullptr);
 
+// A sea's tile span, for the material's fade at the tiles' outer edges (Surface.ush FTWaterSeaFade): {how far out the
+// tiles reach, along the shore from, to (cm), 1}, measured as the body's edge line is (waterEdgeLine): from its centre,
+// out along (cosYaw, sinYaw) and along the shore (-sinYaw, cosYaw). The tiles waterTileLayout lays for the same spec and
+// bounds end there. All 0 (no fade) for a body that isn't a half-plane.
+inline constexpr int kWaterSpanFloats = 4;
+FTCORE_API void waterSeaSpanCm(const WaterBody& body, const WaterTileSpec& spec, const WaterTileBounds& bounds,
+                               float out[kWaterSpanFloats]);
+
 // The canal's sky on a tier that reflects nothing but the sky. With no screen-space and no Lumen reflections (Low:
 // r.SSR.Quality 0, r.Lumen.Reflections.Allow 0) the engine's single-layer-water composite adds the sky light's cubemap
 // with nothing to hide it, so a canal between walls mirrors the open night sky and reads cream. The canal master

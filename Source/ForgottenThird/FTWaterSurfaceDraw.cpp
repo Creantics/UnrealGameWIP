@@ -42,7 +42,7 @@ struct FWaterParamNames
 	FName SurfaceOn = TEXT("SurfaceOn");
 	FName WaveVerts = TEXT("WaveVerts");
 	FName TideCm = TEXT("TideCm");
-	FName ReachCm = TEXT("ReachCm");
+	FName Span = TEXT("Span");
 	FWaterParamNames()
 	{
 		for (int32 I = 0; I < ftcore::kSeaWaveCount; ++I)
@@ -99,6 +99,11 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 		UE_LOG(LogForgottenThird, Warning, TEXT("Water: no moving surface (%s); FTBuildWaterSurface builds the tile, FTBuildLookMaterials -Water wires the masters."),
 			!Tile ? TEXT("the tile mesh is missing") : TEXT("the water master has no surface inputs"));
 		return false;
+	}
+	FLinearColor SpanDefault;
+	if (!SeaMaster->GetVectorParameterValue(FHashedMaterialParameterInfo(WaterParamNames().Span), SpanDefault))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Water: the sea master has no Span (built before the sea's span; FTBuildLookMaterials -Water rebuilds it): the tiles' waves end with a step along the shore."));
 	}
 	const UMaterial* SeaBase = SeaMaster->GetBaseMaterial();
 	const UMaterial* CanalBase = CanalMaster ? CanalMaster->GetBaseMaterial() : nullptr;
@@ -278,7 +283,15 @@ bool UFTWaterSurfaceDraw::Build(UWorld& World, const ftcore::WaterBodies& Water,
 		UMaterialInterface* Worn = Source->GetMaterial(0);
 		UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Worn, this);
 		const bool bSea = Body.shape == ftcore::WaterShape::HalfPlane;
-		SetPartParams(*Mid, Body, true, bSea ? Spec.seaReachM * 100.f : 0.f);
+		// A sea's tiles' span (all 0 for a canal): their waves fade over its last 150 m, out to sea and along the shore.
+		float Span[ftcore::kWaterSpanFloats];
+		ftcore::waterSeaSpanCm(Body, Spec, Bounds, Span);
+		SetPartParams(*Mid, Body, true, Span);
+		if (bSea)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Water: the moving surface's sea (body %d): span %.0f %.0f %.0f %.0f (tiles out to %.0f cm, along the shore %.0f to %.0f cm)."), I, Span[0], Span[1],
+				Span[2], Span[3], Span[0], Span[1], Span[2]);
+		}
 		Mids.Add(Mid);
 		MidGroup.Add(static_cast<uint8>(ftcore::waterDrawGroup(Body, Waves)));
 
@@ -374,7 +387,8 @@ void UFTWaterSurfaceDraw::AddFarSea(UStaticMesh& Tile, const ftcore::WaterBody& 
 	const double SLo = FMath::Min(S0 - Half, SMin), SHi = FMath::Max(S0 + Half, SMax);
 	const double Far = FMath::Max(Half * 2.0, DMax + 1000.0);
 	UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(TileMid->Parent, this);
-	SetPartParams(*Mid, Body, false, 0.f);
+	const float NoSpan[ftcore::kWaterSpanFloats] = {};
+	SetPartParams(*Mid, Body, false, NoSpan);
 	Mids.Add(Mid);
 	MidGroup.Add(MidGroup.Last());
 	auto Add = [&](double S1, double S2, double D1, double D2)
@@ -406,7 +420,7 @@ void UFTWaterSurfaceDraw::AddFarSea(UStaticMesh& Tile, const ftcore::WaterBody& 
 	Add(SMax, SHi, DMin, DMax);
 }
 
-void UFTWaterSurfaceDraw::SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts, float ReachCm)
+void UFTWaterSurfaceDraw::SetPartParams(UMaterialInstanceDynamic& Mid, const ftcore::WaterBody& Body, bool bWaveVerts, const float (&Span)[ftcore::kWaterSpanFloats])
 {
 	const FWaterParamNames& N = WaterParamNames();
 	float Line[ftcore::kWaterEdgeFloats];
@@ -415,7 +429,7 @@ void UFTWaterSurfaceDraw::SetPartParams(UMaterialInstanceDynamic& Mid, const ftc
 	Mid.SetVectorParameterValue(N.EdgeB, FLinearColor(Line[4], Line[5], 0.f, 0.f));
 	Mid.SetScalarParameterValue(N.SurfaceOn, 1.f);
 	Mid.SetScalarParameterValue(N.WaveVerts, bWaveVerts ? 1.f : 0.f);
-	Mid.SetScalarParameterValue(N.ReachCm, ReachCm);
+	Mid.SetVectorParameterValue(N.Span, FLinearColor(Span[0], Span[1], Span[2], Span[3]));
 }
 
 void UFTWaterSurfaceDraw::SetShown(bool bOn)
