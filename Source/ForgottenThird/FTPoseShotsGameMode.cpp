@@ -340,6 +340,10 @@ bool AFTPoseShotsGameMode::Setup()
 		*GetPathNameSafe(Body->GetSkeletalMeshAsset()), Look ? *Look->Name : TEXT("none"), *Clip->GetPathName(), *PropDesc, Pieces.Num(),
 		Grooms.Num());
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: %s, clip %.3f s."), *Describe, Clip->GetPlayLength());
+	const UGameViewportClient* Client = GetWorld()->GetGameViewport();
+	const FIntPoint Window = Client && Client->Viewport ? Client->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: window %dx%d, framed to %.1f degrees (camera %.0f across), stills %s."), Window.X,
+		Window.Y, FMath::RadiansToDegrees(FTPoseShots::HalfAngle(GetWorld())) * 2.0, FTPoseShots::kFov, *Size);
 	return true;
 }
 
