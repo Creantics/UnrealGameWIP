@@ -147,6 +147,17 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 {
 	using namespace FTMiniMapDetail;
 	const double Start = FPlatformTime::Seconds();
+	// A second Init rebuilds all that is sized for the model or holds its textures: the overlay (its water, roads and
+	// names are the old model's) and the triangle items (the old textures). Until it succeeds the map is not ready.
+	delete MapC;
+	MapC = nullptr;
+	delete DiscItem;
+	DiscItem = nullptr;
+	delete RimItem;
+	RimItem = nullptr;
+	delete MarkItem;
+	MarkItem = nullptr;
+	MapTexture = nullptr;
 	PlanSide = Director.PlanSide;
 	bool bOk = false;
 	const TCHAR* From = TEXT("blob");
@@ -204,7 +215,7 @@ bool UFTMiniMap::Init(const AFTExploreDirector& Director)
 	DiscItem->TriangleList.Reserve(kDiscSegments);
 	RimItem->TriangleList.Reserve(kDiscSegments);
 	MarkItem->TriangleList.Reserve(512 + static_cast<int32>(Model.doors.size()) * 2);
-	if (!MapC && FFTMapOverlay::Wanted())
+	if (FFTMapOverlay::Wanted())
 	{
 		MapC = new FFTMapOverlay(Model, *WhiteTexture, PlanSide);
 	}

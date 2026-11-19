@@ -24,6 +24,7 @@
 #pragma once
 
 #include "ftcore/Api.h"
+#include "ftcore/ArenaSpecial.h"
 #include "ftcore/UiBudget.h"
 
 #include <cstddef>
@@ -42,6 +43,25 @@ struct UiSpecialInput {
     bool thirdReady = false;               // the Third's special is ready (the player calls it)
 };
 
+// The rules' feed (ArenaFight::special(), read while the fight runs): the controlled lead's full gauge, and while a
+// press would be refused, why; the Third's full gauge (readyPartner: a party member's only). Nothing is ready while a
+// special runs (the gauge empties at the press), and a full gauge whose lead has no move (refusal NoMove: no row for
+// that lead in the table) never shows: there is nothing to press. A moveless lead's gauge still fills (the rules');
+// the row only ever offers a move that exists.
+inline UiSpecialInput uiSpecialInputFrom(const ArenaSpecialView& rules) {
+    UiSpecialInput in;
+    in.ready = rules.readyPlayer && !rules.running && rules.refusalPlayer != ArenaSpecialRefusal::NoMove;
+    in.thirdReady = rules.readyPartner && !rules.running && rules.refusalPartner != ArenaSpecialRefusal::NoMove;
+    switch (rules.refusalPlayer) {
+    case ArenaSpecialRefusal::Ok:
+    case ArenaSpecialRefusal::NotReady: in.why = UiSpecialWhy::None; break;
+    case ArenaSpecialRefusal::NoTarget: in.why = UiSpecialWhy::NoTarget; break;
+    case ArenaSpecialRefusal::NoSight: in.why = UiSpecialWhy::OutOfSight; break;
+    default: in.why = UiSpecialWhy::NotNow; break;
+    }
+    return in;
+}
+
 inline constexpr float kUiSpecialFadeIn = 0.15f;  // s, the arrival fade
 inline constexpr float kUiSpecialFadeOut = 0.2f;  // s, the leaving fade (nothing ready any more)
 inline constexpr float kUiSpecialPulse = 0.5f;    // s, the one pulse of the outer outline
@@ -51,6 +71,9 @@ inline constexpr float kUiSpecialRingGap = 5.f;   // px at 1080p, the second out
 // The prompt stack's row for a prompt with the special row reserved or not. Reserved: rows 0-2 as today (HEAL, GIFT,
 // PARTNER), the special at kUiSpecialRow, the basic controls one row up. Not reserved: uiPromptRow.
 inline constexpr std::uint8_t kUiSpecialRow = 3;
+// Whether the row is reserved: the world's switch (UiWorldRules::specialPrompt) and a fight with specials
+// (ArenaFight::specialsOn: a table set since the fight began, steady through it). Without both the stack is as it was.
+constexpr bool uiSpecialRowReserved(bool worldSwitch, bool fightHasSpecials) { return worldSwitch && fightHasSpecials; }
 constexpr std::uint8_t uiPromptRowAt(UiPrompt p, bool reserve) {
     const std::uint8_t r = uiPromptRow(p);
     return reserve && r >= kUiSpecialRow ? static_cast<std::uint8_t>(r + 1) : r;

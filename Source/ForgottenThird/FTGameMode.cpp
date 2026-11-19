@@ -6,6 +6,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Misc/CommandLine.h"
+#include "Misc/Crc.h"
 #include "Misc/Parse.h"
 #include "TimerManager.h"
 
@@ -143,7 +144,9 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 #if !UE_BUILD_SHIPPING
 	// Test runs: -SaveRunTest=new|continue picks New Game or Continue by itself 3 s after the title first shows, and the
 	// game quits 5 s later, logging what NPC memory holds, so a save/load run needs no input (the autosave and the load
-	// log their NPC block).
+	// log their NPC block). -SaveRunThen=new|autosave|slice acts 1 s after the pick: a New Game over the running game
+	// (StartStory, as the title's New Game does), an autosave, or the NPC slice's scripted day and then an autosave
+	// (-NpcSlice places its three NPCs), so a run can put a New Game or a save inside a held NPC block's window.
 	static bool bSaveRunArmed = false;
 	FString SaveRunPick;
 	if (!bSaveRunArmed && FParse::Value(FCommandLine::Get(), TEXT("SaveRunTest="), SaveRunPick))
@@ -154,12 +157,58 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 			UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN -SaveRunTest=%s: want new or continue."), *SaveRunPick);
 			return;
 		}
+		FString SaveRunThen;
+		FParse::Value(FCommandLine::Get(), TEXT("SaveRunThen="), SaveRunThen);
+		if (!SaveRunThen.IsEmpty() && SaveRunThen != TEXT("new") && SaveRunThen != TEXT("autosave") && SaveRunThen != TEXT("slice"))
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN -SaveRunThen=%s: want new, autosave or slice."), *SaveRunThen);
+			return;
+		}
 		const int32 Option = SaveRunPick == TEXT("continue") ? 1 : 0; // the title's items: New Game, Continue, ...
 		FTimerHandle PickTimer;
-		GetWorldTimerManager().SetTimer(PickTimer, FTimerDelegate::CreateWeakLambda(this, [this, Option]()
+		GetWorldTimerManager().SetTimer(PickTimer, FTimerDelegate::CreateWeakLambda(this, [this, Option, SaveRunThen]()
 		{
 			UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN pick %s."), Option == 1 ? TEXT("Continue") : TEXT("New Game"));
 			HandleMenuChoose(Option);
+			if (SaveRunThen.IsEmpty())
+			{
+				return;
+			}
+			FTimerHandle ThenTimer;
+			GetWorldTimerManager().SetTimer(ThenTimer, FTimerDelegate::CreateWeakLambda(this, [this, SaveRunThen]()
+			{
+				UFTStorySubsystem* RunStory = GetStory(); // not Story: EnterTitle's parameter (shadowing is an error)
+				if (!RunStory)
+				{
+					return;
+				}
+				if (bTitle)
+				{
+					// The pick didn't leave the title (no save to continue, say): the run proves nothing.
+					UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN then %s skipped: still on the title."), *SaveRunThen);
+					return;
+				}
+				UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN then %s."), *SaveRunThen);
+				if (SaveRunThen == TEXT("new"))
+				{
+					if (!RunStory->StartStory(StartScene))
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN then new: could not start at '%s'."), *StartScene);
+					}
+					return;
+				}
+				if (SaveRunThen == TEXT("slice"))
+				{
+					UFTNpcWorldSubsystem* Slice = GetWorld() ? GetWorld()->GetSubsystem<UFTNpcWorldSubsystem>() : nullptr;
+					if (!Slice)
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN then slice: no NPC slice here (-NpcSlice)."));
+						return;
+					}
+					Slice->RunSliceTest();
+				}
+				RunStory->Autosave();
+			}), 1.f, false);
 		}), 3.f, false);
 		if (UGameInstance* GI = GetGameInstance())
 		{
@@ -168,8 +217,9 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 			{
 				const UFTNpcSubsystem* Npcs = GI->GetSubsystem<UFTNpcSubsystem>();
 				const bool bReady = Npcs && Npcs->IsReady();
-				UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN quit: NPC memory %s, captures %d chars."), bReady ? TEXT("ready") : TEXT("off"),
-					bReady ? Npcs->CaptureSaveJson().Len() : 0);
+				const FString Captured = bReady ? Npcs->CaptureSaveJson() : FString();
+				UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN quit: NPC memory %s, captures %d chars (crc %08x)."), bReady ? TEXT("ready") : TEXT("off"),
+					Captured.Len(), FCrc::StrCrc32(*Captured));
 				FTRequestExit(0, TEXT("SaveRunTest"));
 			}), 8.f, false);
 		}
