@@ -262,6 +262,15 @@ void LogTurn(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 		Speed(Frames - 1 - Tenth));
 }
 
+// The root bone's turn away from its ref pose. Some rigs (the user's Tripo ones) carry a rest rotation on the root, so
+// measuring in the root's own frame would turn every vector by it; unrotating by this turn keeps a turning clip's lean
+// forward and leaves the ref pose's axes as the component's. On a root that rests unrotated (the UE mannequins) the two
+// are the same.
+FQuat RootTurn(const FQuat& RootNow, const FReferenceSkeleton& Skeleton)
+{
+	return RootNow * Skeleton.GetRefBonePose()[0].GetRotation().Inverse();
+}
+
 // Joint angles of a clip at a share of its length, from component-space bone positions (not local
 // rotations, which depend on each rig's bone roll): elbow and knee bend (0 = straight), upper arm
 // raised from hanging down (90 = level), and the pelvis-to-head line's lean forward (+X) and sideways.
@@ -270,7 +279,7 @@ void LogTurn(const UAnimSequence& Clip, const FReferenceSkeleton& Skeleton)
 struct FPoseAngles
 {
 	double Elbow[2] = {}, Arm[2] = {}, Knee[2] = {}, Lean = 0.0, Side = 0.0, Neck = 0.0, ChinDown = 0.0;
-	// Each hand from its shoulder in the root's frame (cm): forward, out to its own side, and up.
+	// Each hand from its shoulder in the root's frame (RootTurn, cm): forward, out to its own side, and up.
 	FVector Hand[2];
 	bool bValid = false;
 };
@@ -303,7 +312,7 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 	const TCHAR* Sides[2] = {TEXT("_l"), TEXT("_r")};
 	FVector Pelvis, Head;
 	bool bOk = At(TEXT("pelvis"), Pelvis) && At(TEXT("head"), Head);
-	const FTransform Root = ComponentTransform(*Model, Skeleton, 0, Key);
+	const FQuat Root = RootTurn(ComponentTransform(*Model, Skeleton, 0, Key).GetRotation(), Skeleton);
 	for (int32 S = 0; S < 2 && bOk; ++S)
 	{
 		FVector Upper, Lower, Hand, Thigh, Calf, Foot;
@@ -316,14 +325,14 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 			Pose.Knee[S] = Bend(Thigh, Calf, Foot);
 			Pose.Arm[S] = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(((Lower - Upper).GetSafeNormal() | FVector::DownVector), -1.0, 1.0)));
 			// UE mannequins face +Y with their left side at +X.
-			const FVector H = Root.InverseTransformVectorNoScale(Hand - Upper);
+			const FVector H = Root.UnrotateVector(Hand - Upper);
 			Pose.Hand[S] = FVector(H.Y, S == 0 ? H.X : -H.X, H.Z);
 		}
 	}
 	if (bOk)
 	{
-		// Measured in the root's frame at that key, so a turning clip's lean stays forward.
-		const FVector Up = Root.InverseTransformVectorNoScale(Head - Pelvis).GetSafeNormal();
+		// Measured in the root's frame at that key (RootTurn), so a turning clip's lean stays forward.
+		const FVector Up = Root.UnrotateVector(Head - Pelvis).GetSafeNormal();
 		Pose.Lean = FMath::RadiansToDegrees(FMath::Atan2(Up.Y, Up.Z)); // UE mannequins face +Y
 		Pose.Side = FMath::RadiansToDegrees(FMath::Atan2(Up.X, Up.Z));
 		Pose.bValid = true;
@@ -331,7 +340,7 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 		const int32 HeadBone = FindBone(Skeleton, Prefix, TEXT("head"));
 		if (At(TEXT("neck_01"), Neck))
 		{
-			const FVector N = Root.InverseTransformVectorNoScale(Head - Neck).GetSafeNormal();
+			const FVector N = Root.UnrotateVector(Head - Neck).GetSafeNormal();
 			Pose.Neck = FMath::RadiansToDegrees(FMath::Atan2(N.Y, N.Z));
 		}
 		FQuat RefHead = FQuat::Identity;
@@ -340,7 +349,7 @@ FPoseAngles MeasurePose(const UAnimSequence& Clip, double Share)
 			RefHead = Skeleton.GetRefBonePose()[Bone].GetRotation() * RefHead;
 		}
 		const FQuat Turned = ComponentTransform(*Model, Skeleton, HeadBone, Key).GetRotation() * RefHead.Inverse();
-		const FVector Face = Root.InverseTransformVectorNoScale(Turned.RotateVector(FVector::YAxisVector));
+		const FVector Face = Root.UnrotateVector(Turned.RotateVector(FVector::YAxisVector));
 		Pose.ChinDown = FMath::RadiansToDegrees(FMath::Atan2(-Face.Z, Face.Y));
 	}
 	return Pose;
@@ -386,14 +395,14 @@ void LimbDirections(const UAnimSequence& Clip, double Share, TArray<FVector>& Ou
 	const FString Prefix = MixamoPrefixOf(Skeleton);
 	const FQuat Facing(FVector::UpVector, FMath::DegreesToRadians(FacingYaw(Skeleton, Prefix)));
 	const int32 Key = FMath::RoundToInt(Share * (Model->GetNumberOfKeys() - 1));
-	const FTransform Root = ComponentTransform(*Model, Skeleton, 0, Key);
+	const FQuat Root = RootTurn(ComponentTransform(*Model, Skeleton, 0, Key).GetRotation(), Skeleton);
 	for (int32 L = 0; L < UE_ARRAY_COUNT(kLimbs); ++L)
 	{
 		const int32 A = FindBone(Skeleton, Prefix, kLimbs[L].From), B = FindBone(Skeleton, Prefix, kLimbs[L].To);
 		if (A != INDEX_NONE && B != INDEX_NONE)
 		{
 			const FVector D = ComponentTransform(*Model, Skeleton, B, Key).GetTranslation() - ComponentTransform(*Model, Skeleton, A, Key).GetTranslation();
-			Out[L] = Facing.RotateVector(Root.InverseTransformVectorNoScale(D)).GetSafeNormal();
+			Out[L] = Facing.RotateVector(Root.UnrotateVector(D)).GetSafeNormal();
 		}
 	}
 }
@@ -566,13 +575,15 @@ int32 GapCheck(const FString& List)
 			{
 				continue;
 			}
+			const double RefAbove = Ref[Bone].GetTranslation().Z - Ref[0].GetTranslation().Z;
 			for (int32 Key = 0; Key < Keys; ++Key)
 			{
-				const FVector P = At(0, Key).InverseTransformPositionNoScale(At(Bone, Key).GetTranslation());
+				// From the root, unturned by the root's turn from its ref pose (RootTurn), against the ref pose's height above the root.
+				const FVector P = RootTurn(At(0, Key).GetRotation(), Skeleton).UnrotateVector(At(Bone, Key).GetTranslation() - At(0, Key).GetTranslation());
 				Lowest = FMath::Min(Lowest, P.Z);
-				if (P.Z - Ref[Bone].GetTranslation().Z < Below)
+				if (P.Z - RefAbove < Below)
 				{
-					Below = P.Z - Ref[Bone].GetTranslation().Z;
+					Below = P.Z - RefAbove;
 					BelowBone = Bone;
 					BelowKey = Key;
 				}
@@ -1334,9 +1345,27 @@ bool RetargetClips(UIKRigDefinition& SourceRig, UIKRigDefinition& TargetRig, USk
 		return UIKRetargetBatchOperation::RunBatchRetarget(Inputs);
 	};
 
-	// The probe: the run loop if there is one (its elbows bend the most and swing through the whole range), else the first clip.
+	// The probe: the run loop if there is one (its elbows bend the most and swing through the whole range), else the clip
+	// whose elbows bend the most at any of eleven points. An idle bends them only 13-25 degrees, where both modes agree to
+	// a tenth (TestHuman's arms went FK on one and under-bent by 24-41 degrees on a hit reaction).
 	UAnimSequence* const* Probe = Sources.FindByPredicate([](const UAnimSequence* Clip) { return Clip->GetName().Contains(TEXT("Run_Loop_F")); });
-	Probe = Probe ? Probe : &Sources[0];
+	if (!Probe)
+	{
+		double Most = -1.0;
+		for (UAnimSequence* const& Clip : Sources)
+		{
+			for (int32 I = 0; I <= 10; ++I)
+			{
+				const FPoseAngles Pose = MeasurePose(*Clip, I / 10.0);
+				if (Pose.bValid && FMath::Max(Pose.Elbow[0], Pose.Elbow[1]) > Most)
+				{
+					Most = FMath::Max(Pose.Elbow[0], Pose.Elbow[1]);
+					Probe = &Clip;
+				}
+			}
+		}
+		Probe = Probe ? Probe : &Sources[0];
+	}
 	auto ElbowError = [&](EFKChainRotationMode Mode)
 	{
 		SetArms(Mode);
