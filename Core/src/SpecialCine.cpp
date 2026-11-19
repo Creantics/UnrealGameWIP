@@ -912,6 +912,55 @@ bool alikeAnother(const SpecialCineMove& move, std::uint32_t shot, const Special
     return false;
 }
 
+// Every fix specialCineFixShot tries, in its order (see the header), until `attempt` takes one (returns true): true
+// when one was taken. `aimable`: the shot frames someone (a "none" shot is never aimed).
+template <class Attempt>
+bool tryFixes(bool aimable, Attempt& attempt) {
+    constexpr float kRaises[] = {0.4f, 0.8f, 1.2f};
+    if (attempt({true, 0.f, 0.f, false})) return true;
+    for (const float r : kRaises)
+        if (attempt({false, r, 0.f, false})) return true;
+    for (const float r : kRaises)
+        if (attempt({true, r, 0.f, false})) return true;
+    if (aimable) {
+        if (attempt({false, 0.f, 0.f, true}) || attempt({true, 0.f, 0.f, true})) return true;
+        for (const float r : kRaises)
+            if (attempt({false, r, 0.f, true})) return true;
+    }
+    for (int k = 1; k <= 12; ++k) {
+        const float pull = 0.5f * static_cast<float>(k);
+        if (attempt({false, 0.f, pull, false})) return true;
+        if (aimable && attempt({false, 0.f, pull, true})) return true;
+    }
+    // The reframe: swung about the subject each way (each plain, then aimed), then raised and swung again; last, the
+    // reverse angle the same way. A turned look-at that rode past the subject looks away; the aim brings it back.
+    const auto orbited = [&](float raise, float orbit) {
+        return attempt({false, raise, 0.f, false, orbit}) || (aimable && attempt({false, raise, 0.f, true, orbit}));
+    };
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        for (int k = 1; static_cast<float>(k) * SpecialCineFraming::kOrbitStep <= SpecialCineFraming::kOrbitMax + 0.01f; ++k)
+            for (const float sign : {1.f, -1.f})
+                if (orbited(raise, sign * SpecialCineFraming::kOrbitStep * static_cast<float>(k))) return true;
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        if (orbited(raise, SpecialCineFraming::kOrbitReverse)) return true;
+    // The reverse swung off the line, as written and mirrored, for a reverse that stands where another shot stands.
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        for (const float swing : SpecialCineFraming::kReverseSwings)
+            for (const float sign : {1.f, -1.f})
+                for (const bool mirror : {false, true}) {
+                    const float orbit = SpecialCineFraming::kOrbitReverse + sign * swing;
+                    if (attempt({mirror, raise, 0.f, false, orbit}) || (aimable && attempt({mirror, raise, 0.f, true, orbit}))) return true;
+                }
+    // The reverse pulled in (inside the cap), mirrored first, for the smallest kinds far out.
+    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
+        for (const float pull : SpecialCineFraming::kReversePulls)
+            for (const bool mirror : {true, false}) {
+                const float orbit = SpecialCineFraming::kOrbitReverse;
+                if (attempt({mirror, raise, pull, false, orbit}) || (aimable && attempt({mirror, raise, pull, true, orbit}))) return true;
+            }
+    return false;
+}
+
 } // namespace
 
 SpecialCineShotView specialCineShotView(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
@@ -967,49 +1016,7 @@ SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, std::uint32
         c.fix = fix;
         return true;
     };
-    constexpr float kRaises[] = {0.4f, 0.8f, 1.2f};
-    if (attempt({true, 0.f, 0.f, false})) return c;
-    for (const float r : kRaises)
-        if (attempt({false, r, 0.f, false})) return c;
-    for (const float r : kRaises)
-        if (attempt({true, r, 0.f, false})) return c;
-    const bool aimable = move.shot(shot).subject != SpecialCineSubject::None;
-    if (aimable) {
-        if (attempt({false, 0.f, 0.f, true}) || attempt({true, 0.f, 0.f, true})) return c;
-        for (const float r : kRaises)
-            if (attempt({false, r, 0.f, true})) return c;
-    }
-    for (int k = 1; k <= 12; ++k) {
-        const float pull = 0.5f * static_cast<float>(k);
-        if (attempt({false, 0.f, pull, false})) return c;
-        if (aimable && attempt({false, 0.f, pull, true})) return c;
-    }
-    // The reframe: swung about the subject each way (each plain, then aimed), then raised and swung again; last, the
-    // reverse angle the same way. A turned look-at that rode past the subject looks away; the aim brings it back.
-    const auto orbited = [&](float raise, float orbit) {
-        return attempt({false, raise, 0.f, false, orbit}) || (aimable && attempt({false, raise, 0.f, true, orbit}));
-    };
-    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
-        for (int k = 1; static_cast<float>(k) * SpecialCineFraming::kOrbitStep <= SpecialCineFraming::kOrbitMax + 0.01f; ++k)
-            for (const float sign : {1.f, -1.f})
-                if (orbited(raise, sign * SpecialCineFraming::kOrbitStep * static_cast<float>(k))) return c;
-    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
-        if (orbited(raise, SpecialCineFraming::kOrbitReverse)) return c;
-    // The reverse swung off the line, as written and mirrored, for a reverse that stands where another shot stands.
-    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
-        for (const float swing : SpecialCineFraming::kReverseSwings)
-            for (const float sign : {1.f, -1.f})
-                for (const bool mirror : {false, true}) {
-                    const float orbit = SpecialCineFraming::kOrbitReverse + sign * swing;
-                    if (attempt({mirror, raise, 0.f, false, orbit}) || (aimable && attempt({mirror, raise, 0.f, true, orbit}))) return c;
-                }
-    // The reverse pulled in (inside the cap), mirrored first, for the smallest kinds far out.
-    for (const float raise : {0.f, SpecialCineFraming::kOrbitRaise})
-        for (const float pull : SpecialCineFraming::kReversePulls)
-            for (const bool mirror : {true, false}) {
-                const float orbit = SpecialCineFraming::kOrbitReverse;
-                if (attempt({mirror, raise, pull, false, orbit}) || (aimable && attempt({mirror, raise, pull, true, orbit}))) return c;
-            }
+    if (tryFixes(move.shot(shot).subject != SpecialCineSubject::None, attempt)) return c;
     c.ok = false;
     return c;
 }
@@ -1026,21 +1033,80 @@ std::uint32_t specialCineShownShot(const SpecialCineMove& move, std::uint32_t sh
     return shot;
 }
 
+namespace {
+
+// specialCineCoverShot's search (see the header); with `refix`, specialCineFindCover's (the neighbour may be moved).
+SpecialCineCoverCheck findCover(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
+                                SpecialCineWorldTest world, void* user, const SpecialCineHit* hit, bool refix) {
+    SpecialCineCoverCheck c;
+    c.shown = shot;
+    if (shot >= move.size()) return c;
+    // The cut as it stands with this shot played; `trial` with it skipped.
+    SpecialCineShotFix before[SpecialCineMove::kMaxShots]{};
+    if (fixes != nullptr) std::copy(fixes, fixes + move.size(), before);
+    before[shot] = SpecialCineShotFix{};
+    SpecialCineShotFix trial[SpecialCineMove::kMaxShots]{};
+    // Whether every window `trial` changes reads none, this shot's first: each shot whose shown shot it changes (this one,
+    // and a neighbour whose own cover it would undo) and, with `all`, each shot `shown` shows (its own window among them).
+    const auto plays = [&](std::uint32_t shown, bool all) {
+        for (std::uint32_t k = 0; k < move.size(); ++k) {
+            const std::uint32_t j = k == 0 ? shot : (k <= shot ? k - 1 : k);
+            const std::uint32_t now = specialCineShownShot(move, j, trial);
+            if (now == specialCineShownShot(move, j, before) && !(all && now == shown)) continue;
+            float at = 0.f;
+            if (windowProblem(move, j, stage, trial, bodies, count, world, user, hit, at) != SpecialCineProblem::None) return false;
+        }
+        return true;
+    };
+    // First a neighbour as it stands that also plays its own window (one that fails it is skipped itself and covers
+    // nothing); then, with `refix`, a neighbour that plays its own window moved by a fix searched for both windows; last,
+    // a neighbour as it stands over this window alone.
+    for (int tier = 0; tier < 3; ++tier) {
+        if (tier == 1 && !refix) continue;
+        for (const SpecialCineCover cover : {SpecialCineCover::Next, SpecialCineCover::Previous}) {
+            std::copy(before, before + SpecialCineMove::kMaxShots, trial);
+            trial[shot].cover = cover;
+            const std::uint32_t shown = specialCineShownShot(move, shot, trial);
+            if (shown == shot || move.shot(shown).subject == SpecialCineSubject::None) continue;
+            bool found = false;
+            if (tier != 1) {
+                ++c.tries;
+                found = plays(shown, tier == 0);
+            } else {
+                float at = 0.f;
+                if (windowProblem(move, shown, stage, before, bodies, count, world, user, hit, at) != SpecialCineProblem::None) continue;
+                const auto attempt = [&](const SpecialCineShotFix& fix) {
+                    ++c.tries;
+                    if (alikeAnother(move, shown, stage, fix)) return false;
+                    trial[shown] = fix;
+                    return plays(shown, true);
+                };
+                found = c.moved = tryFixes(true, attempt);
+            }
+            if (found) {
+                c.cover = cover;
+                c.shown = shown;
+                c.fix = trial[shown];
+                return c;
+            }
+        }
+    }
+    return c;
+}
+
+} // namespace
+
 SpecialCineCover specialCineCoverShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                       const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
                                       SpecialCineWorldTest world, void* user, const SpecialCineHit* hit) {
-    if (shot >= move.size()) return SpecialCineCover::None;
-    SpecialCineShotFix trial[SpecialCineMove::kMaxShots]{};
-    if (fixes != nullptr) std::copy(fixes, fixes + move.size(), trial);
-    for (const SpecialCineCover cover : {SpecialCineCover::Next, SpecialCineCover::Previous}) {
-        trial[shot] = SpecialCineShotFix{};
-        trial[shot].cover = cover;
-        const std::uint32_t shown = specialCineShownShot(move, shot, trial);
-        if (shown == shot || move.shot(shown).subject == SpecialCineSubject::None) continue;
-        float at = 0.f;
-        if (windowProblem(move, shot, stage, trial, bodies, count, world, user, hit, at) == SpecialCineProblem::None) return cover;
-    }
-    return SpecialCineCover::None;
+    return findCover(move, shot, stage, fixes, bodies, count, world, user, hit, false).cover;
+}
+
+SpecialCineCoverCheck specialCineFindCover(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                           const SpecialCineShotFix* fixes, const SpecialCineBody* bodies, std::uint32_t count,
+                                           SpecialCineWorldTest world, void* user, const SpecialCineHit* hit) {
+    return findCover(move, shot, stage, fixes, bodies, count, world, user, hit, true);
 }
 
 std::uint32_t specialCineCutList(const SpecialCineMove& move, const SpecialCineShotFix* fixes, SpecialCineCut* out,

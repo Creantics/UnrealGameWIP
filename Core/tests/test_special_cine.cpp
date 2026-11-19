@@ -2145,6 +2145,111 @@ TEST_CASE("special cine: the partner's mark puts its blow on the lead's line, be
     CHECK(cases == 48);
 }
 
+namespace {
+
+// The view's axes (Unreal's way: right on the ground; up, forward across right, square to both) and its half-frame
+// tangents.
+struct ViewAxes {
+    CutsceneVec3 fwd, right, up;
+    float tanX = 1.f, tanY = 1.f;
+};
+ViewAxes viewAxes(const SpecialCineFrame& f) {
+    ViewAxes a;
+    const CutsceneVec3 d = sub3(f.pose.lookAt, f.pose.position);
+    const float n = length3(d);
+    a.fwd = {d.x / n, d.y / n, d.z / n};
+    const float rn = std::sqrt(a.fwd.x * a.fwd.x + a.fwd.y * a.fwd.y);
+    a.right = {-a.fwd.y / rn, a.fwd.x / rn, 0.f};
+    a.up = {a.fwd.y * a.right.z - a.fwd.z * a.right.y, a.fwd.z * a.right.x - a.fwd.x * a.right.z, a.fwd.x * a.right.y - a.fwd.y * a.right.x};
+    a.tanX = std::tan(0.5f * f.fovDegrees * kDeg);
+    a.tanY = a.tanX / SpecialCineFraming::kAspect;
+    return a;
+}
+
+// Where `p` falls in the frame as the host's probe gives it: (0, 0) the top left, (1, 1) the bottom right.
+std::array<float, 2> frameUV(const SpecialCineFrame& f, const CutsceneVec3& p) {
+    const ViewAxes a = viewAxes(f);
+    const CutsceneVec3 d = sub3(p, f.pose.position);
+    const float z = d.x * a.fwd.x + d.y * a.fwd.y + d.z * a.fwd.z;
+    const float x = (d.x * a.right.x + d.y * a.right.y + d.z * a.right.z) / (z * a.tanX);
+    const float y = (d.x * a.up.x + d.y * a.up.y + d.z * a.up.z) / (z * a.tanY);
+    return {0.5f + 0.5f * x, 0.5f - 0.5f * y};
+}
+
+// The point on the sight through frame point (u, v) nearest the upright line over ground (x, y); `miss` its distance
+// from that line: a drawn point put back on the stage from its place in the frame and its ground position.
+CutsceneVec3 sightOver(const SpecialCineFrame& f, float u, float v, float x, float y, float& miss) {
+    const ViewAxes a = viewAxes(f);
+    const float sx = (2.f * u - 1.f) * a.tanX, sy = (1.f - 2.f * v) * a.tanY;
+    const CutsceneVec3 d{a.fwd.x + a.right.x * sx + a.up.x * sy, a.fwd.y + a.right.y * sx + a.up.y * sy,
+                         a.fwd.z + a.right.z * sx + a.up.z * sy};
+    const CutsceneVec3& o = f.pose.position;
+    const float t = ((x - o.x) * d.x + (y - o.y) * d.y) / (d.x * d.x + d.y * d.y);
+    const CutsceneVec3 p{o.x + d.x * t, o.y + d.y * t, o.z + d.z * t};
+    miss = std::sqrt((p.x - x) * (p.x - x) + (p.y - y) * (p.y - y));
+    return p;
+}
+
+// The host's two passes on `stg` with the target and `partner`: every shot's fix, then the cover for one still failing
+// (its neighbour moved when the search says so); true when every shot's window of the cut as played reads none, no
+// skipped shot shows itself, and the hit and each still read none with, by the test's own sums, the lead's head and
+// hand (its measured fist when set) in frame and the contact line clear. `posedHit` gives the poses.
+bool playedOnStage(const SpecialCineMove& mv, const SpecialCineStage& stg, const SpecialCineHit& posedHit, const SpecialCineBody& partner,
+                   float impact, float radius, SpecialCineShotFix* fixes, const char* name) {
+    SpecialCineBody bs[2] = {bodyOf(stg), partner};
+    SpecialCineHit h = specialCineHit(mv, stg, impact, radius);
+    h.posed = true;
+    for (std::uint32_t k = 0; k <= SpecialCineHit::kStills; ++k) h.pose[k] = posedHit.pose[k];
+    bool failing[SpecialCineMove::kMaxShots] = {};
+    for (std::uint32_t i = 0; i < mv.size(); ++i) {
+        if (mv.shot(i).subject == SpecialCineSubject::None) continue;
+        const SpecialCineShotCheck c = specialCineFixShot(mv, i, stg, bs, 2, nullptr, nullptr, &h);
+        fixes[i] = c.fix;
+        failing[i] = !c.ok;
+    }
+    for (std::uint32_t i = 0; i < mv.size(); ++i)
+        if (failing[i]) {
+            const SpecialCineCoverCheck c = specialCineFindCover(mv, i, stg, fixes, bs, 2, nullptr, nullptr, &h);
+            if (c.moved) fixes[c.shown] = c.fix;
+            fixes[i].cover = c.cover;
+        }
+    // The cut as played: every shot's window reads none at its samples, and a skipped shot shows its cover.
+    bool ok = true;
+    for (std::uint32_t i = 0; i < mv.size(); ++i) {
+        if (fixes[i].cover != SpecialCineCover::None && specialCineShownShot(mv, i, fixes) == i) {
+            MESSAGE(std::string_view(name), " shot ", i + 1, ": skipped, yet shows itself");
+            ok = false;
+        }
+        const SpecialCineShot& s = mv.shot(i);
+        constexpr std::uint32_t n = SpecialCineFraming::kSamples;
+        for (std::uint32_t k = 0; k < n; ++k) {
+            const float t = s.in + (s.out - s.in) * (0.02f + 0.96f * static_cast<float>(k) / static_cast<float>(n - 1));
+            const SpecialCineProblem p = specialCineFrameProblem(mv, t, stg, fixes, bs, 2);
+            if (p == SpecialCineProblem::None) continue;
+            MESSAGE(std::string_view(name), " shot ", i + 1, " at ", t, ": ", specialCineProblemName(p));
+            ok = false;
+            break;
+        }
+    }
+    float when[1 + SpecialCineHit::kStills] = {h.time};
+    const std::uint32_t m = 1 + specialCineHitStills(mv, h, when + 1, SpecialCineHit::kStills);
+    for (std::uint32_t k = 0; k < m; ++k) {
+        SpecialCineHit still = h;
+        still.time = when[k];
+        still.pose[0] = h.pose[k];
+        const SpecialCineFrame f = specialCineFrameAt(mv, when[k], stg, fixes);
+        if (mv.shot(f.shot).subject == SpecialCineSubject::None) continue;
+        const SpecialCineProblem p = specialCineHitProblem(mv, stg, still, fixes, bs, 2);
+        const bool reads = poseInFrame(f, h.pose[k], h.at), clear = torsoGap(f, h.at, h.pose[k]) >= SpecialCineFraming::kTorso;
+        if (p != SpecialCineProblem::None || !reads || !clear)
+            MESSAGE(std::string_view(name), " at ", when[k], " (shot ", f.shot + 1, "): ", specialCineProblemName(p), ", reads ", reads, ", clear ", clear);
+        ok = ok && p == SpecialCineProblem::None && reads && clear;
+    }
+    return ok;
+}
+
+} // namespace
+
 // Round 5's r2b_big log (4be6a0ba): the hulk (1.2 m, 3.5 m tall) 2.41 m off, the partner on its mark (-3.22, -0.29) m,
 // the lead's pose read from the clip at the hit and its stills (the log's metres less the stage's origin (0.56, -0.01)).
 // The game played shots 6 and 7 as written: +80 ms the contact behind the lead, +150 ms off frame, +250 ms (shot 7)
@@ -2191,6 +2296,27 @@ TEST_CASE("special cine: round 5's r2b_big as logged: the hit's shots frame the 
         const float* q = logged[k];
         hit.pose[k] = {{q[0] - 0.56f, q[1] + 0.01f, q[2]}, {q[3] - 0.56f, q[4] + 0.01f, q[5]}, {q[6] - 0.56f, q[7] + 0.01f, q[8]}};
     }
+    // The striking fist as drawn: the probe put it at (0.50, 0.52) of shot 6's frame (as written) at the hit, over the
+    // reach the log gives, (1.20, -0.08) m from the press feet; it holds there, the probes at +30, +80 and +150 ms
+    // (shot 6) and +250 ms (shot 7) drawing it within 0.03 of where it falls. Every search below is given it.
+    {
+        const SpecialCineShotFix asWritten[SpecialCineMove::kMaxShots]{};
+        float miss = 0.f;
+        const CutsceneVec3 fist = sightOver(specialCineFrameAt(*mv, 7.150f, st, asWritten), 0.50f, 0.52f, 1.20f, -0.08f, miss);
+        MESSAGE("the fist (", fist.x + 0.56f, ", ", fist.y - 0.01f, ", ", fist.z, "), ", miss, " m off its reach");
+        CHECK(miss < 0.08f); // the log's reach is a pad's, to a few cm; the four probes below place it within 0.03
+        const float probes[4][3] = {{7.184f, 0.51f, 0.59f}, {7.227f, 0.51f, 0.69f}, {7.300f, 0.51f, 0.87f}, {7.396f, 0.22f, 0.37f}};
+        for (const auto& q : probes) {
+            const std::array<float, 2> uv = frameUV(specialCineFrameAt(*mv, q[0], st, asWritten), fist);
+            CAPTURE(q[0]);
+            CHECK(near(uv[0], q[1], 0.03f));
+            CHECK(near(uv[1], q[2], 0.03f));
+        }
+        for (SpecialCineLeadPose& p : hit.pose) {
+            p.hand = fist;
+            p.fist = true;
+        }
+    }
     float at[1 + SpecialCineHit::kStills] = {hit.time};
     const std::uint32_t n = 1 + specialCineHitStills(*mv, hit, at + 1, SpecialCineHit::kStills);
     // As written (round 5 played these unmoved): shot 6 loses the contact off frame by +150 ms; shot 7, its eye on the
@@ -2224,37 +2350,7 @@ TEST_CASE("special cine: round 5's r2b_big as logged: the hit's shots frame the 
     // The host's two passes with both bodies: every shot's fix, then the cover for one still failing; then the hit and
     // each still read none, and by the test's own sums the lead's head and hand are in frame, the contact line clear.
     const auto playedHere = [&](const SpecialCineStage& stg, const SpecialCineHit& posedHit, SpecialCineShotFix* fixes,
-                                const char* name) {
-        SpecialCineBody bs[2] = {bodyOf(stg), bodies[1]};
-        SpecialCineHit h = specialCineHit(*mv, stg, 7.145f, 1.2f);
-        h.posed = true;
-        for (std::uint32_t k = 0; k <= SpecialCineHit::kStills; ++k) h.pose[k] = posedHit.pose[k];
-        bool failing[SpecialCineMove::kMaxShots] = {};
-        for (std::uint32_t i = 0; i < mv->size(); ++i) {
-            if (mv->shot(i).subject == SpecialCineSubject::None) continue;
-            const SpecialCineShotCheck c = specialCineFixShot(*mv, i, stg, bs, 2, nullptr, nullptr, &h);
-            fixes[i] = c.fix;
-            failing[i] = !c.ok;
-        }
-        for (std::uint32_t i = 0; i < mv->size(); ++i)
-            if (failing[i]) fixes[i].cover = specialCineCoverShot(*mv, i, stg, fixes, bs, 2, nullptr, nullptr, &h);
-        float when[1 + SpecialCineHit::kStills] = {h.time};
-        const std::uint32_t m = 1 + specialCineHitStills(*mv, h, when + 1, SpecialCineHit::kStills);
-        bool ok = true;
-        for (std::uint32_t k = 0; k < m; ++k) {
-            SpecialCineHit still = h;
-            still.time = when[k];
-            still.pose[0] = h.pose[k];
-            const SpecialCineFrame f = specialCineFrameAt(*mv, when[k], stg, fixes);
-            if (mv->shot(f.shot).subject == SpecialCineSubject::None) continue;
-            const SpecialCineProblem p = specialCineHitProblem(*mv, stg, still, fixes, bs, 2);
-            const bool reads = poseInFrame(f, h.pose[k], h.at), clear = torsoGap(f, h.at, h.pose[k]) >= SpecialCineFraming::kTorso;
-            if (p != SpecialCineProblem::None || !reads || !clear)
-                MESSAGE(name, " at ", when[k], " (shot ", f.shot + 1, "): ", specialCineProblemName(p), ", reads ", reads, ", clear ", clear);
-            ok = ok && p == SpecialCineProblem::None && reads && clear;
-        }
-        return ok;
-    };
+                                const char* name) { return playedOnStage(*mv, stg, posedHit, bodies[1], 7.145f, 1.2f, fixes, name); };
     {
         SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
         CHECK(playedHere(st, hit, fixes, "as logged"));
@@ -2277,8 +2373,8 @@ TEST_CASE("special cine: round 5's r2b_big as logged: the hit's shots frame the 
         CHECK(sampledGap(f.pose.position, hit.at, hit.pose[2].hips, hit.pose[2].head) < SpecialCineFraming::kTorso);
         CHECK(torsoGap(f, hit.at, hit.pose[2]) >= SpecialCineFraming::kTorso);
     }
-    // The striking fist measured (the host reads it from the clip): one the framing found leaves out, at arm's reach from
-    // the chest (kHandReach), reads LeadCropped there; the search given it frames it.
+    // A fist the framing found leaves out, at arm's reach from the chest (kHandReach), reads LeadCropped there; the search
+    // given it frames it.
     {
         SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
         REQUIRE(playedHere(st, hit, fixes, "as logged"));
@@ -2302,13 +2398,13 @@ TEST_CASE("special cine: round 5's r2b_big as logged: the hit's shots frame the 
         }
         SpecialCineBody bs[2] = {bodyOf(st), bodies[1]};
         CHECK(specialCineHitProblem(*mv, st, fisted, fixes, bs, 2) == SpecialCineProblem::LeadCropped);
-        CHECK(specialCineHitProblem(*mv, st, hit, fixes, bs, 2) == SpecialCineProblem::None); // the model's hand: in frame
+        CHECK(specialCineHitProblem(*mv, st, hit, fixes, bs, 2) == SpecialCineProblem::None); // the drawn fist: in frame
         SpecialCineShotFix refixed[SpecialCineMove::kMaxShots]{};
         CHECK(playedHere(st, fisted, refixed, "with the fist"));
         MESSAGE("with the fist, shot ", f.shot + 1, ": mirror ", refixed[f.shot].mirror, ", raise ", refixed[f.shot].raise, ", aim ",
                 refixed[f.shot].aim, ", orbit ", refixed[f.shot].orbit, ", cover ", static_cast<int>(refixed[f.shot].cover));
     }
-    // The verdict holds off the logged stage: the hulk 5 cm either side, the pose a few cm off each way.
+    // The verdict holds off the logged stage: the hulk 5 cm either side, the pose and fist a few cm off each way.
     std::uint32_t variants = 0, held = 0;
     for (const float dy : {-0.05f, -0.025f, 0.f, 0.025f, 0.05f}) {
         for (const CutsceneVec3 off : {CutsceneVec3{0.f, 0.f, 0.f}, CutsceneVec3{0.03f, 0.f, 0.f}, CutsceneVec3{-0.03f, 0.f, 0.f},
@@ -2320,6 +2416,7 @@ TEST_CASE("special cine: round 5's r2b_big as logged: the hit's shots frame the 
                 q.hips = add3(q.hips, off);
                 q.chest = add3(q.chest, off);
                 q.head = add3(q.head, off);
+                q.hand = add3(q.hand, off);
             }
             SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
             CAPTURE(dy);
@@ -2352,4 +2449,152 @@ TEST_CASE("special cine: the sight gap leaves out the contact's own kTorso, so o
     CHECK(near(slant, stoppedSightGap(side, contact, hips, head), 3e-3f));
     // An eye inside kTorso of the contact: its own distance from the line.
     CHECK(near(specialCineSightGap({0.3f, 0.f, 0.9f}, contact, hips, head), 0.3f, 1e-4f));
+}
+
+// Round 5's maw_pup logs (4be6a0ba): the pup (0.35 m, 0.90 m tall) 12.49 and 13.69 m off, the far set; the partner
+// where it stood (its mark beyond its reach); the lead's pose read from the clip (the log's metres less the stage's
+// origin). The game skipped shot 7 under shot 8 (130 moved shot 6, 142 skipped it too) and showed the hit in shot 8,
+// where Core read none on its model hand while the probe drew the left fist at (0.34, 1.01) of the frame, under it.
+TEST_CASE("special cine: round 5's maw_pup runs as logged: the drawn fist under shot 8's frame reads LeadCropped; the search frames it") {
+    SpecialCineTable t;
+    std::string error;
+    std::vector<std::string> warnings;
+    REQUIRE_MESSAGE(loadCommitted(t, warnings, error), error);
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    ArenaTable arena;
+    REQUIRE_MESSAGE(importArenaTable(text, arena, &error), error);
+    const ArenaFighter& lead = arena.fighter("devin");
+    struct Run {
+        const char* name;
+        float ox, distance, impact, contactX, partnerX, partnerY;
+        bool sixSkipped;
+        float contactU, contactV, eye;
+        float pose[1 + SpecialCineHit::kStills][9]; // hips, chest, head (world metres)
+    };
+    const Run runs[2] = {
+        {"maw_pup_130", -6.19f, 12.49f, 7.397f, 5.85f, -2.98f, -1.06f, false, 0.45f, 0.59f, 13.35f,
+         {{-5.41f, -0.14f, 0.40f, -5.20f, -0.22f, 0.71f, -4.96f, -0.32f, 0.96f},
+          {-5.41f, -0.14f, 0.40f, -5.20f, -0.22f, 0.71f, -4.96f, -0.32f, 0.96f},
+          {-5.41f, -0.14f, 0.40f, -5.20f, -0.22f, 0.71f, -4.97f, -0.32f, 0.96f},
+          {-5.41f, -0.14f, 0.40f, -5.20f, -0.22f, 0.71f, -4.97f, -0.32f, 0.97f},
+          {-5.41f, -0.14f, 0.40f, -5.20f, -0.22f, 0.71f, -4.99f, -0.30f, 1.00f}}},
+        {"maw_pup_142", -6.79f, 13.69f, 7.427f, 6.45f, -3.55f, -1.11f, true, 0.46f, 0.58f, 14.55f,
+         {{-6.01f, -0.14f, 0.40f, -5.80f, -0.22f, 0.71f, -5.56f, -0.32f, 0.96f},
+          {-6.01f, -0.14f, 0.40f, -5.80f, -0.22f, 0.71f, -5.56f, -0.32f, 0.96f},
+          {-6.01f, -0.14f, 0.40f, -5.80f, -0.22f, 0.71f, -5.57f, -0.32f, 0.96f},
+          {-6.01f, -0.14f, 0.40f, -5.80f, -0.22f, 0.71f, -5.58f, -0.31f, 0.98f},
+          {-6.01f, -0.14f, 0.40f, -5.80f, -0.22f, 0.71f, -5.60f, -0.30f, 1.00f}}}};
+    for (const Run& r : runs) {
+        const std::string_view name{r.name};
+        CAPTURE(name);
+        SpecialCineStage st = stageAt(0.f, 0.f, r.distance, 0.f);
+        st.forward = {1.f, 0.f, 0.f};
+        st.targetRadius = 0.35f;
+        st.targetHeight = 0.9f;
+        st.leadHeight = 1.4f;
+        st.travel = 1.f;
+        st.bone = {0.f, 0.f, 1.2f};
+        const SpecialCineMove* mv = t.find("devin_special_01", specialCineDistance(st));
+        REQUIRE(mv == t.find("devin_special_01")); // the far set
+        SpecialCineBody partner;
+        partner.feet = {r.partnerX - r.ox, r.partnerY, 0.f};
+        partner.radius = lead.bodyRadius;
+        partner.height = 1.68f;
+        const SpecialCineBody bodies[2] = {bodyOf(st), partner};
+        // The game's fixes: shot 6 moved (130) or skipped (142), shot 7 skipped with shot 8 over it.
+        SpecialCineShotFix game[SpecialCineMove::kMaxShots]{};
+        if (r.sixSkipped) {
+            game[5].cover = SpecialCineCover::Next;
+        } else {
+            game[5].mirror = true;
+            game[5].orbit = 180.f;
+            game[5].pull = 1.f;
+        }
+        game[6].cover = SpecialCineCover::Next;
+        SpecialCineHit hit = specialCineHit(*mv, st, r.impact, 0.35f, game);
+        CHECK(near(hit.at.x + r.ox, r.contactX, 0.03f));
+        CHECK(near(hit.at.y, 0.f, 0.03f));
+        CHECK(near(hit.at.z, 0.54f, 0.03f));
+        CHECK(hit.shot == 7);
+        hit.posed = true;
+        for (std::uint32_t k = 0; k <= SpecialCineHit::kStills; ++k) {
+            const float* q = r.pose[k];
+            hit.pose[k] = {{q[0] - r.ox, q[1], q[2]}, {q[3] - r.ox, q[4], q[5]}, {q[6] - r.ox, q[7], q[8]}};
+        }
+        // The rebuild draws what the probe drew in shot 8 at the hit: the contact where it was and as far from the eye,
+        // the head at (0.25, 0.70) (the drawn head within 0.05 of the clip's).
+        const SpecialCineFrame f = specialCineFrameAt(*mv, hit.time, st, game);
+        const std::array<float, 2> c = frameUV(f, hit.at), h = frameUV(f, hit.pose[0].head);
+        const float eye = length3(sub3(hit.at, f.pose.position));
+        MESSAGE(name, " shot ", f.shot + 1, ": the contact at (", c[0], ", ", c[1], "), ", eye, " m off; the head at (", h[0], ", ", h[1], ")");
+        CHECK(f.shot == 7);
+        CHECK(near(c[0], r.contactU, 0.02f));
+        CHECK(near(c[1], r.contactV, 0.02f));
+        CHECK(near(eye, r.eye, 0.1f));
+        CHECK(near(h[0], 0.25f, 0.02f));
+        CHECK(near(h[1], 0.70f, 0.05f));
+        // The fist put back on the stage: on the sight through (0.34, 1.01) over the reach the log gives, (1.20, -0.09) m
+        // from the press feet.
+        float miss = 0.f;
+        const CutsceneVec3 fist = sightOver(f, 0.34f, 1.01f, 1.20f, -0.09f, miss);
+        MESSAGE(name, " the fist (", fist.x + r.ox, ", ", fist.y, ", ", fist.z, "), ", miss, " m off its reach, ",
+                length3(sub3(fist, hit.pose[0].chest)), " m from the chest");
+        CHECK(miss < 0.05f);
+        CHECK(fist.z > 0.3f);
+        CHECK(fist.z < hit.pose[0].chest.z);
+        // Round 5's verdict on the model hand: none. The drawn fist out of the frame: LeadCropped.
+        CHECK(specialCineHitProblem(*mv, st, hit, game, bodies, 2) == SpecialCineProblem::None);
+        SpecialCineHit fisted = hit;
+        for (SpecialCineLeadPose& p : fisted.pose) {
+            p.hand = fist;
+            p.fist = true;
+        }
+        CHECK(specialCineHitProblem(*mv, st, fisted, game, bodies, 2) == SpecialCineProblem::LeadCropped);
+        // The search given the fist: shot 7 moved or skipped, never left failing; the hit and its stills read with the fist
+        // in frame. The same with the fist a few cm off each way.
+        SpecialCineShotFix fixes[SpecialCineMove::kMaxShots]{};
+        CHECK(playedOnStage(*mv, st, fisted, partner, r.impact, 0.35f, fixes, r.name));
+        CHECK((fixes[6].moved() || fixes[6].cover != SpecialCineCover::None));
+        for (std::uint32_t i : {5u, 6u, 7u})
+            MESSAGE(name, " shot ", i + 1, ": mirror ", fixes[i].mirror, ", raise ", fixes[i].raise, ", pull ", fixes[i].pull, ", aim ",
+                    fixes[i].aim, ", orbit ", fixes[i].orbit, ", cover ", static_cast<int>(fixes[i].cover));
+        MESSAGE(name, " the hit shown in shot ", specialCineHit(*mv, st, r.impact, 0.35f, fixes).shot + 1);
+        // 130: shot 6 moved and held over shot 7. 142: shot 6 held from shot 5 (shot 7, itself skipped, covers nothing)
+        // and shot 7 skipped under shot 8 moved for it (as written shot 8 crops the fist; every fix of shot 7 that frames
+        // the hit stands where shot 8 stands).
+        if (r.sixSkipped) {
+            CHECK(fixes[5].cover == SpecialCineCover::Previous);
+            CHECK(fixes[6].cover == SpecialCineCover::Next);
+            CHECK(fixes[7].moved());
+        } else {
+            CHECK(fixes[5].moved());
+            CHECK(fixes[6].cover == SpecialCineCover::Previous);
+        }
+        // The head and the fist at the hit and its stills, the nearest either comes to the frame's edge band (0.05).
+        {
+            float when[1 + SpecialCineHit::kStills] = {r.impact};
+            const std::uint32_t m = 1 + specialCineHitStills(*mv, specialCineHit(*mv, st, r.impact, 0.35f, fixes), when + 1, SpecialCineHit::kStills);
+            float margin = 1.f;
+            for (std::uint32_t k = 0; k < m; ++k) {
+                const SpecialCineFrame fk = specialCineFrameAt(*mv, when[k], st, fixes);
+                const std::array<float, 2> uf = frameUV(fk, fist), uh = frameUV(fk, fisted.pose[k].head);
+                for (const float u : {uf[0], uf[1], uh[0], uh[1]}) margin = std::min(margin, std::min(u - 0.05f, 0.95f - u));
+                MESSAGE(name, " at ", when[k], " (shot ", fk.shot + 1, "): the fist at (", uf[0], ", ", uf[1], "), the head at (", uh[0], ", ",
+                        uh[1], ")");
+            }
+            MESSAGE(name, " the nearest to the edge band: ", margin);
+            CHECK(margin > 0.03f);
+        }
+        for (const CutsceneVec3 off : {CutsceneVec3{0.05f, 0.f, 0.f}, CutsceneVec3{-0.05f, 0.f, 0.f}, CutsceneVec3{0.f, 0.05f, 0.f},
+                                       CutsceneVec3{0.f, -0.05f, 0.f}, CutsceneVec3{0.f, 0.f, 0.05f}, CutsceneVec3{0.f, 0.f, -0.05f}}) {
+            SpecialCineHit moved = fisted;
+            for (SpecialCineLeadPose& p : moved.pose) p.hand = add3(fist, off);
+            SpecialCineShotFix refixed[SpecialCineMove::kMaxShots]{};
+            CAPTURE(off.x);
+            CAPTURE(off.y);
+            CAPTURE(off.z);
+            CHECK(playedOnStage(*mv, st, moved, partner, r.impact, 0.35f, refixed, r.name));
+        }
+    }
 }

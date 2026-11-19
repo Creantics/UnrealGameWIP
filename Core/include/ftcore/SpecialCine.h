@@ -458,14 +458,33 @@ FTCORE_API SpecialCineShotCheck specialCineFixShot(const SpecialCineMove& move, 
 // per shot) skips it, else `shot`. No allocation.
 FTCORE_API std::uint32_t specialCineShownShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineShotFix* fixes);
 // For a shot no fix frames, with every other shot's fix known (`fixes`: one per shot, the shot's own ignored): the
-// neighbour that, framed over this shot's window (kSamples times, the next one first; and at `hit` and its stills,
-// given, as specialCineFixShot tests them), passes every check, else None
-// (the host plays it as written and counts it as still failing). A shot with subject "none" or one already skipped
-// never covers. No allocation.
+// neighbour shown over this shot's window, else None (the host plays it as written and counts it as still failing).
+// A window passes when every frame of it (kSamples times; and at `hit` and its stills, given, as specialCineFixShot
+// tests them) passes every check. Tried in order, each the next one first: a neighbour as it stands that passes over
+// this window and its own (a neighbour that fails its own is skipped itself, and covers nothing); then a neighbour as
+// it stands over this window alone. Neither may undo another shot's cover: a shot covered by this one, its window
+// played as written again, must pass too. A shot with subject "none" or one already skipped never covers. No
+// allocation.
 FTCORE_API SpecialCineCover specialCineCoverShot(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
                                                  const SpecialCineShotFix* fixes, const SpecialCineBody* bodies,
                                                  std::uint32_t count, SpecialCineWorldTest world = nullptr, void* user = nullptr,
                                                  const SpecialCineHit* hit = nullptr);
+// specialCineCoverShot that may also move the neighbour. Between its two tries, a neighbour that passes its own window
+// as it stands is moved by the fixes specialCineFixShot tries (in its order, never one like another shot as written)
+// until one passes over this window, its own and every other it already shows. `shown` names the shown shot and `fix`
+// is what it plays with (`moved`: a new fix, which the host sets before the skip). At most 2 + 2 * 185 tries. No
+// allocation.
+struct SpecialCineCoverCheck {
+    SpecialCineCover cover = SpecialCineCover::None;
+    std::uint32_t shown = 0; // the shot shown over the window (the shot itself when no cover)
+    SpecialCineShotFix fix;  // the shown shot's fix
+    bool moved = false;      // `fix` was searched here: the shown shot's fix must be set to it
+    std::uint32_t tries = 0;
+};
+FTCORE_API SpecialCineCoverCheck specialCineFindCover(const SpecialCineMove& move, std::uint32_t shot, const SpecialCineStage& stage,
+                                                      const SpecialCineShotFix* fixes, const SpecialCineBody* bodies,
+                                                      std::uint32_t count, SpecialCineWorldTest world = nullptr,
+                                                      void* user = nullptr, const SpecialCineHit* hit = nullptr);
 // The cut list as played under `fixes` (null, or one per shot): the shots shown in order, each from its in to its
 // out, a cover's run grown over the shot it covers; `skipped` counts the shots it covers. Written into `out` (up to
 // `capacity`); returns how many cuts there are (more than `capacity`: the rest not written). No allocation.

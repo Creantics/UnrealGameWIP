@@ -1038,8 +1038,9 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 	}
 	FSpecialWorld World{GetWorld(), &Params};
 	const ftcore::SpecialCineWorldTest Test = World.World ? &SpecialWorldBlocked : nullptr;
-	// Two passes: every shot's fix first, then a cover (the shot next to it played over its window) for a shot no fix
-	// frames, tested against the fixes of the shots around it. A shot neither frames is played as written and logged.
+	// Two passes: every shot's fix first, then a cover (the shot next to it played over its window, moved for it when it
+	// must be) for a shot no fix frames, tested against the fixes of the shots around it. A shot neither frames is played
+	// as written and logged.
 	ftcore::SpecialCineShotCheck Blocked[ftcore::SpecialCineMove::kMaxShots];
 	uint32 BlockedShot[ftcore::SpecialCineMove::kMaxShots];
 	uint32 BlockedCount = 0;
@@ -1073,12 +1074,21 @@ void UFTArenaRunner::SpecialCineFixShots(const ftcore::SpecialCineMove& Move, in
 		const ftcore::SpecialCineShot& S = Move.shot(Shot);
 		const FString First = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.first)).c_str());
 		const FString Last = UTF8_TO_TCHAR(std::string(ftcore::specialCineProblemName(Check.last)).c_str());
-		const ftcore::SpecialCineCover Cover = ftcore::specialCineCoverShot(Move, Shot, Stage, SpecialPlayer.fixes(), List, Count, Test, &World, Hit);
+		// The neighbour may be moved to cover it (its new fix set first, so the skip shows it).
+		const ftcore::SpecialCineCoverCheck Found = ftcore::specialCineFindCover(Move, Shot, Stage, SpecialPlayer.fixes(), List, Count, Test, &World, Hit);
+		const ftcore::SpecialCineCover Cover = Found.cover;
 		ftcore::SpecialCineShotFix Skip;
 		Skip.cover = Cover;
-		if (Cover != ftcore::SpecialCineCover::None && SpecialPlayer.setFix(Shot, Skip))
+		if (Cover != ftcore::SpecialCineCover::None && (!Found.moved || SpecialPlayer.setFix(Found.shown, Found.fix)) && SpecialPlayer.setFix(Shot, Skip))
 		{
 			++SpecialShotsSkipped;
+			if (Found.moved)
+			{
+				const ftcore::SpecialCineShotFix& Fix = Found.fix;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u moved to cover shot %u (try %u): %s%sorbited %.0f deg, raised %.1f m, pulled %.1f m."),
+					Found.shown + 1, Shot + 1, Found.tries, Fix.mirror ? TEXT("mirrored, ") : TEXT(""), Fix.aim ? TEXT("aimed, ") : TEXT(""),
+					FMath::IsFinite(Fix.orbit) ? Fix.orbit : 0.f, Fix.raise > 0.f ? Fix.raise : 0.f, Fix.pull > 0.f ? Fix.pull : 0.f);
+			}
 			const uint32 Shown = ftcore::specialCineShownShot(Move, Shot, SpecialPlayer.fixes());
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: special shot %u (%.2f-%.2f s): %s at %.2f s; no fix of %u clears it (last: %s; %u like another shot): skipped, shot %u plays over its window (%s)."),
 				Shot + 1, S.in, S.out, *First, Check.firstAt, Check.tries, *Last, Check.alike, Shown + 1,
