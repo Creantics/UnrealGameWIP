@@ -469,6 +469,11 @@ public:
 
 	ftcore::LocoTuning& Tuning() { return Loco.tuning(); }
 	const ftcore::Locomotion& GetLocomotion() const { return Loco; }
+#if !UE_BUILD_SHIPPING
+	// This frame's locomotion layers as a JSON array (review only, -ExplorePortraitPoseDump): each layer's slot, clip
+	// asset, time (s), frame at the clip's rate and weight, then the trunk's lean, twist and pitch and the foot phase.
+	FString PoseLayersJson() const;
+#endif
 
 	// The clip's gait (length, ground speed, strides per loop, left plant), measured from its root and
 	// ball (or foot) bones. Zero ground speed when the clip has no stride.

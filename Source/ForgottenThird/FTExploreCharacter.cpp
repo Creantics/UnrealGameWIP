@@ -6,6 +6,7 @@
 #include "ftcore/WaterSurfaceFeet.h"
 
 #include "Animation/AnimSequence.h"
+#include "AnimationRuntime.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
@@ -460,6 +461,9 @@ void AFTExploreCharacter::BeginPlay()
 		// -ExplorePortraitYaws=180,90,0 (default: the one yaw above) as <prefix>_<yaw>.png, then the game quits.
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShot="), ShotPrefix) && !ShotPrefix.IsEmpty())
 		{
+#if !UE_BUILD_SHIPPING
+			bPoseDump = FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitPoseDump"));
+#endif
 			FString YawList;
 			if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitYaws="), YawList, false))
 			{
@@ -657,9 +661,106 @@ void AFTExploreCharacter::StepPortraitShots()
 	const FFindFloorResult& Floor = GetCharacterMovement()->CurrentFloor;
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait shot %s (floor dist %.3f cm, walkable %d, speed %.0f)."),
 		*File, Floor.FloorDist, Floor.IsWalkableFloor() ? 1 : 0, GetVelocity().Size2D());
+#if !UE_BUILD_SHIPPING
+	if (bPoseDump)
+	{
+		DumpPortraitPose(File, Yaw);
+	}
+#endif
 	bShotAimed = false;
 	++ShotIndex;
 }
+
+#if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::DumpPortraitPose(const FString& ShotFile, float Yaw) const
+{
+	// Written on the shot's frame, so the pose is the one the shot draws. Review only: a path inside the project is
+	// refused, so a dump (it has the lead's body in it) can't land in the repository.
+	const FString PoseFile = FPaths::ChangeExtension(ShotFile, TEXT("pose.json"));
+	FString Full = FPaths::ConvertRelativePathToFull(PoseFile);
+	FString Project = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	FPaths::NormalizeDirectoryName(Project);
+	if (FPaths::IsUnderDirectory(Full, Project))
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: pose dump %s is inside the project; not written."), *Full);
+		return;
+	}
+	auto Xf = [](const FTransform& T)
+	{
+		const FVector P = T.GetLocation();
+		const FQuat Q = T.GetRotation();
+		const FVector S = T.GetScale3D();
+		return FString::Printf(TEXT("[%.4f, %.4f, %.4f, %.7f, %.7f, %.7f, %.7f, %.5f, %.5f, %.5f]"), P.X, P.Y, P.Z, Q.X, Q.Y, Q.Z, Q.W, S.X, S.Y, S.Z);
+	};
+	USkeletalMeshComponent* Body = GetMesh();
+	FString Json = FString::Printf(TEXT("{\n\"shot\": \"%s\",\n\"yaw\": %.1f,\n\"frame_counter\": %llu,\n\"world_seconds\": %.4f,\n\"transform_layout\": \"tx ty tz (cm) qx qy qz qw sx sy sz, component space unless named world\",\n"),
+		*ShotFile.Replace(TEXT("\\"), TEXT("/")), Yaw, static_cast<uint64>(GFrameCounter), GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0);
+	// The view the shot is drawn from (the camera manager's, after the boom).
+	const APlayerController* Player = Cast<APlayerController>(GetController());
+	if (Player && Player->PlayerCameraManager)
+	{
+		const FMinimalViewInfo& View = Player->PlayerCameraManager->GetCameraCacheView();
+		Json += FString::Printf(TEXT("\"view\": {\"world\": %s, \"fov\": %.4f, \"aspect\": %.5f, \"shot_size\": [1400, 1100]},\n"),
+			*Xf(FTransform(View.Rotation, View.Location)), View.FOV, View.AspectRatio);
+	}
+	// What poses the body: a held clip (-ExplorePortraitBodyClip) or the locomotion's layers.
+	const int32 Held = ShotIndex;
+	if (BodyClip && BodyTimes.IsValidIndex(Held))
+	{
+		const double Rate = BodyClip->GetSamplingFrameRate().AsDecimal();
+		const float Time = FMath::Clamp(BodyTimes[Held], 0.f, BodyClip->GetPlayLength());
+		Json += FString::Printf(TEXT("\"pose_source\": {\"mode\": \"held\", \"asset\": \"%s\", \"time\": %.4f, \"frame\": %.2f, \"fps\": %.2f},\n"),
+			*BodyClip->GetName(), Time, Time * Rate, Rate);
+	}
+	else if (const UFTLocomotionAnimInstance* Loco = Body ? Cast<UFTLocomotionAnimInstance>(Body->GetAnimInstance()) : nullptr)
+	{
+		Json += FString::Printf(TEXT("\"pose_source\": {\"mode\": \"locomotion\", \"loco\": %s},\n"), *Loco->PoseLayersJson());
+	}
+	else
+	{
+		Json += TEXT("\"pose_source\": {\"mode\": \"unknown\"},\n");
+	}
+	// Every skinned component on the lead, each bone as that component draws it: a leader-posed piece reads its leader's
+	// bone of the same name (GetBoneTransform follows the leader map), so a piece's correctives can be set against the
+	// body's. "in_leader" 0 marks a bone the leader lacks; "ref" is the bone's reference pose in component space.
+	TInlineComponentArray<USkinnedMeshComponent*> Skinned(this);
+	Json += TEXT("\"components\": [\n");
+	int32 Written = 0;
+	for (const USkinnedMeshComponent* Comp : Skinned)
+	{
+		const USkinnedAsset* Asset = Comp ? Comp->GetSkinnedAsset() : nullptr;
+		if (!Asset)
+		{
+			continue;
+		}
+		const FReferenceSkeleton& Ref = Asset->GetRefSkeleton();
+		const USkinnedMeshComponent* Leader = Comp->LeaderPoseComponent.Get();
+		const FTransform ToWorld = Comp->GetComponentTransform();
+		Json += FString::Printf(TEXT("%s{\"name\": \"%s\", \"asset\": \"%s\", \"visible\": %d, \"leader\": \"%s\", \"world\": %s, \"bones\": [\n"),
+			Written ? TEXT(",\n") : TEXT(""), *Comp->GetName(), *Asset->GetName(), Comp->IsVisible() && !Comp->bHiddenInGame ? 1 : 0,
+			Leader ? *Leader->GetName() : TEXT(""), *Xf(ToWorld));
+		for (int32 B = 0; B < Ref.GetNum(); ++B)
+		{
+			const FName BoneName = Ref.GetBoneName(B);
+			const int32 InLeader = !Leader ? 1 : Leader->GetBoneIndex(BoneName) != INDEX_NONE ? 1 : 0;
+			const FTransform Drawn = Comp->GetBoneTransform(B).GetRelativeTransform(ToWorld);
+			Json += FString::Printf(TEXT("%s{\"n\": \"%s\", \"p\": %d, \"in_leader\": %d, \"cs\": %s, \"ref\": %s}"), B ? TEXT(",\n") : TEXT(""),
+				*BoneName.ToString(), Ref.GetParentIndex(B), InLeader, *Xf(Drawn), *Xf(FAnimationRuntime::GetComponentSpaceTransformRefPose(Ref, B)));
+		}
+		Json += TEXT("]}");
+		++Written;
+	}
+	Json += TEXT("\n]\n}\n");
+	if (FFileHelper::SaveStringToFile(Json, *Full))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: pose dump %s (%d skinned components)."), *Full, Written);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: pose dump %s not written."), *Full);
+	}
+}
+#endif
 
 void AFTExploreCharacter::HoldFaceAt(float Time)
 {
