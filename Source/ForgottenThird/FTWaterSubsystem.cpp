@@ -339,7 +339,10 @@ void UFTWaterSubsystem::UpdateSurface(bool bForce)
 			bForce = true;
 		}
 		// A body whose flat plane stays (or every body, with no tiles) is read flat too, so the swim matches the picture.
-		Water.setSurfaceFlat(~Draw->DrawnBodies());
+		// A bit per body only: none past the bodies' count.
+		const std::size_t BodyCount = Water.count();
+		const uint32 BodyBits = BodyCount >= 32 ? 0xFFFFFFFFu : (1u << BodyCount) - 1u;
+		Water.setSurfaceFlat(~Draw->DrawnBodies() & BodyBits);
 	}
 	if (bForce)
 	{

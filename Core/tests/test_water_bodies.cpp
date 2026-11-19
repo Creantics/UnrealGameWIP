@@ -375,6 +375,39 @@ TEST_CASE("water bodies: a sea on waves reads the waves' height; flat without th
     CHECK(water.camera({40.f, 20.f}, z - 0.5f, 3.f).depth == doctest::Approx(0.5f).epsilon(0.01));
 }
 
+TEST_CASE("water bodies: with the surface off (no model), a body on waves is flat at its level for the state and overWater") {
+    // ft.Water.Surface 0 sets no surface model. A body with waves still answers surfaceHeight from setWaves' sea (nothing
+    // on main sets one), but the mode, the wet line and overWater read its level.
+    SceneLook look;
+    look.windMps = 7.f;
+    look.seaSwellM = 0.8f;
+    const SeaWaves sea = seaWaves(look);
+    WaterBodies water;
+    WaterBody body = waterSea(0.f, 0.f, -33.f);
+    body.waves = true;
+    REQUIRE(water.add(body));
+    water.setWaves(&sea);
+    REQUIRE(water.surfaceFlat() == 0u);
+    // A time when a crest stands well over the level at the point.
+    const Vec2 p{40.f, 20.f};
+    float t = 0.f, z = 0.f;
+    for (int k = 0; k < 400 && z < 0.2f; ++k) {
+        t = 0.37f * static_cast<float>(k);
+        REQUIRE(water.surfaceHeight(p, t, z));
+    }
+    REQUIRE(z >= 0.2f + body.level);
+    CHECK(water.restSurfaceOf(0) == body.level);
+    WaterCapsule c;
+    c.p = p;
+    c.feetZ = body.level - 0.3f;
+    const WaterState s = waterState(water, c, t);
+    CHECK(s.body == 0);
+    CHECK(s.immersion == doctest::Approx(0.3f));
+    CHECK(s.surface == doctest::Approx(z)); // the waves move only the bob and the eye
+    CHECK(water.overWater(p, body.level - 0.05f));
+    CHECK_FALSE(water.overWater(p, body.level + 0.05f)); // under the crest, over the level: not over water
+}
+
 TEST_CASE("water bodies: the plan frame to the engine's turns y, the flow and the sea's way over") {
     const float side = 1000.f;
     const WaterBody canal = waterBodyToEngine(waterBodyFromCanal(northCanal()), side);

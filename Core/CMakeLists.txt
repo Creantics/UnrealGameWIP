@@ -543,7 +543,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_water_waves.cpp
         tests/test_water_cue.cpp
         tests/test_water_draw.cpp
-    tests/test_water_strand.cpp
+        tests/test_water_strand.cpp
         tests/test_style.cpp
         tests/test_stub_screen.cpp
         tests/test_title.cpp
