@@ -23,7 +23,11 @@
 // land=<share, two places, truncated> caption='<DISTRICT> (middle dot) <STREET>' labels=<n>; then MAPOVERLAY TEXT <zoom> ts=<text
 // scale> clipped=<labels whose halo leaves the screen> caption_right=<px> caption_bottom=<px> caption_text_right=<px>
 // caption_plate_right=<px> caption_fit=<text scale> caption_in_plate=<1: the text ends a pad inside the plate>
-// text_draws=<text items drawn in the last frame> glyph_passes=<the glyph passes they made> screen=<w>x<h>.
+// text_draws=<text items drawn in the last frame> glyph_passes=<the glyph passes they made> screen=<w>x<h>. Then NAMES,
+// DRAWN (name:WxH px), UNPICKED (why out_of_tier / road_rule / cap / other), TIERS <zoom> lowest=<tier> out_of_tier=<n>
+// above_lowest_undrawn=<n> [name:tier:why] lowest_undrawn=<n> unbuilt=<n> [names] cap_cut=<n> cap_cut_above_lowest=<n>
+// drawn_out_of_tier=<n> bank_seats=<n> district_moves=<n> (the tier table: ftcore::mapTierShown), and CURSOR (why none / unnamed / drawn /
+// district / a drop reason).
 #pragma once
 
 #include "CoreMinimal.h"
@@ -90,9 +94,10 @@ private:
 		float HaloPx = 0.f) const;
 	// TS: the text's scale (S times the player's text size); S: the map's own lengths. Discs: the marks drawn over the names
 	// (the cursor's ring, the player's arrow), which the cursor's own name is kept clear of.
-	// Kept: the where-am-I line's kept box (ftcore::mapCaptionLayout), which no label enters.
+	// Kept: the where-am-I line's kept box (ftcore::mapCaptionLayout), which no label enters. CursorAt: the cursor's world
+	// point (where no road's name stands at it, the cursor's name is the district there, set level at it).
 	void BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS, const ftcore::MapDisc* Discs, int32 NumDiscs,
-		const ftcore::MapLabel& Kept);
+		const ftcore::MapLabel& Kept, const ftcore::Vec2& CursorAt);
 	void DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float TS);
 
 	const ftcore::MiniMapModel& Model;
@@ -125,20 +130,31 @@ private:
 	int32 LastPicks = 0, LastCandidates = 0; // for the capture log
 	// Every picked name in the frame that was left out at the last placing, with why (for the capture log; the first
 	// kMaxDrops by name, every one by reason). A pick in the frame is an along pick, or a point pick whose anchor is on screen;
-	// the sea's name, when the table has one, is in the frame whenever sea is on screen.
-	enum class EDrop : uint8 { Dry, NoSeat, OnRoad, OnCoast, OnWater, NoStretch, TooLong, TooBig, OnMarks, OnLit, Crowded, Caption, Full };
-	static constexpr int32 kDropKinds = 13;
+	// the sea's name, when the table has one, is in the frame whenever sea is on screen. TooLong: longer than its stretch
+	// in the frame (the frame cut the road); TooLongWhole: longer than the whole road, or a water name than its water.
+	// Unbuilt: a point the world does not hold yet (the names table's built column).
+	enum class EDrop : uint8 { Dry, NoSeat, OnRoad, OnCoast, OnWater, NoStretch, TooLong, TooBig, OnMarks, OnLit, Crowded, Caption, Full,
+		Unbuilt, TooLongWhole };
+	static constexpr int32 kDropKinds = 15;
 	struct FDrop
 	{
 		uint16 Name = 0;
 		EDrop Why = EDrop::Dry;
+		ftcore::MapTier Tier = ftcore::MapTier::District; // the tier its pick held (ftcore::mapRankTier)
 	};
 	static constexpr int32 kMaxDrops = 128;
 	FDrop Drops[kMaxDrops];
 	int32 DropCount = 0, DropTotal = 0;
 	int32 DropKinds[kDropKinds] = {};
+	// The tier table's counters at the last placing (every drop, not only the first kMaxDrops): drops above the zoom's
+	// lowest tier (unbuilt apart), at the lowest, unbuilt; label cap cuts, and those above the lowest (must be 0).
+	int32 DropsAboveLowest = 0, DropsLowest = 0, DropsUnbuilt = 0, CapCuts = 0, CapCutsAboveLowest = 0;
+	int32 BankSeats = 0;     // water names seated beside their water (ftcore::mapBankLabelAt)
+	int32 DistrictMoves = 0; // districts' names moved clear of the lit road, earlier names or the caption (mapLabelMoveClear)
 	int32 InFramePicks = 0;                       // picks in the frame at the last placing
 	uint16 CursorPickName = ftcore::kMapNoName;   // the cursor's pick at the last placing (none: no road, or no name)
+	bool bCursorDistrict = false;                 // and whether it is the district at the cursor (no road's name there)
+	FVector2D LabelCursor = FVector2D(-1.0, -1.0); // the cursor (px) the labels were placed at, while that pick follows it
 	ftcore::MapLabel Candidates[ftcore::kMaxMapLabels];
 	ftcore::MapLabelSet Placed;
 	// The labels are placed again only when what they depend on moves.
