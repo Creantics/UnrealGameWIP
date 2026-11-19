@@ -206,6 +206,7 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	LoadArt();
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
 	FootSeen.Init(false, static_cast<int32>(Sim.capacity()));
+	FootFramesBy.Init(0, static_cast<int32>(Sim.capacity()));
 
 	double TestAt = 20.0;
 	if (FParse::Param(Cmd, TEXT("CrowdTestFight")) || FParse::Value(Cmd, TEXT("CrowdTestFight="), TestAt))
@@ -883,6 +884,24 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: members stuck (no progress for 2 s walking or backing off, 1 s running) %llu (%s); drawn members inside a massing box or on a roof %llu member-frames, %d members (%s); least distance from a drawn member to a massing box %.2f m (%s, gate %.1f m; %d boxes)."),
 			C.stuck, bUnstuck ? TEXT("ok") : TEXT("FAILED"), FootFrames, FootMembers, bOutside ? TEXT("ok") : TEXT("FAILED"),
 			MinMassClear >= 1e8 ? -1.0 : MinMassClear / 100.0, bClearOfMass ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall, MassBoxes.Num());
+		if (MinMassBox != INDEX_NONE)
+		{
+			const FMassBox& M = MassBoxes[MinMassBox];
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: the least distance to a massing box came from member %d and box %d, %s: centre (%.0f, %.0f) half (%.0f, %.0f), z %.0f to %.0f cm."),
+				MinMassMember, MinMassBox, *MassBoxName(MinMassBox), M.C.X, M.C.Y, M.Half.X, M.Half.Y, M.ZMin, M.ZMax);
+		}
+		if (FootMembers > 0)
+		{
+			FString PerMember;
+			for (int32 Member = 0; Member < FootFramesBy.Num(); ++Member)
+			{
+				if (FootFramesBy[Member] > 0)
+				{
+					PerMember += FString::Printf(TEXT("%s%d: %d"), PerMember.IsEmpty() ? TEXT("") : TEXT(", "), Member, FootFramesBy[Member]);
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: footprint member-frames by member: %s."), *PerMember);
+		}
 		const bool bPairs = RunMinPair >= CrowdV2Local::kGapPair;
 		const bool bWalls = RunMinWall >= CrowdV2Local::kGapWall - 0.01f;
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.2f m (%s, gate %.1f m), every frame, every state."),
@@ -1097,7 +1116,9 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 	FHitResult Below;
 	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, 50.0),
 		Feet - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery);
+	const int32 Slot = static_cast<int32>((PoolAgent[Actor] - 1) & 0xffffu);
 	int32 InBox = INDEX_NONE;
+	double InDepth = 0.0; // the deepest box it is in (cm, below 0)
 	const FIntPoint Cell(FMath::FloorToInt32(Feet.X / CrowdV2Local::kMassCell), FMath::FloorToInt32(Feet.Y / CrowdV2Local::kMassCell));
 	if (const TArray<int32>* Near = MassGrid.Find(Cell))
 	{
@@ -1112,10 +1133,16 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 			const double Lx = FMath::Abs(D.X * M.Ax.X + D.Y * M.Ax.Y) - M.Half.X;
 			const double Ly = FMath::Abs(-D.X * M.Ax.Y + D.Y * M.Ax.X) - M.Half.Y;
 			const double Out = Lx > 0.0 || Ly > 0.0 ? FMath::Sqrt(FMath::Square(FMath::Max(Lx, 0.0)) + FMath::Square(FMath::Max(Ly, 0.0))) : FMath::Max(Lx, Ly);
-			MinMassClear = FMath::Min(MinMassClear, Out);
-			if (Out < 0.0 && InBox == INDEX_NONE)
+			if (Out < MinMassClear)
+			{
+				MinMassClear = Out;
+				MinMassBox = b;
+				MinMassMember = Slot;
+			}
+			if (Out < 0.0 && (InBox == INDEX_NONE || Out < InDepth))
 			{
 				InBox = b;
+				InDepth = Out;
 			}
 		}
 	}
@@ -1124,28 +1151,57 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 		return;
 	}
 	++FootFrames;
-	const int32 Slot = static_cast<int32>((PoolAgent[Actor] - 1) & 0xffffu);
+	++FootFramesBy[Slot];
 	if (!FootSeen[Slot])
 	{
 		FootSeen[Slot] = true;
 		++FootMembers;
+		// One line per member, on its first bad frame: what it stands in or on (the frames per member come at the end).
+		if (FootLogged < 32)
+		{
+			++FootLogged;
+			const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(Slot));
+			FString What;
+			if (InBox != INDEX_NONE)
+			{
+				const FMassBox& M = MassBoxes[InBox];
+				What = FString::Printf(TEXT(" inside massing box %d, %s: centre (%.0f, %.0f) half (%.0f, %.0f), z %.0f to %.0f cm, %.2f m in"), InBox,
+					*MassBoxName(InBox), M.C.X, M.C.Y, M.Half.X, M.Half.Y, M.ZMin, M.ZMax, -InDepth / 100.0);
+			}
+			if (bRoof)
+			{
+				const AActor* Hit = Below.GetActor();
+				What += FString::Printf(TEXT("%s on a roof: ground %.2f m further down, %s (%s)"), What.IsEmpty() ? TEXT("") : TEXT(";"),
+					(Feet.Z - Below.ImpactPoint.Z) / 100.0, Hit ? *Hit->GetActorNameOrLabel() : TEXT("no actor"),
+					Below.GetComponent() ? *Below.GetComponent()->GetName() : TEXT("no component"));
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d (%s) at engine (%.0f, %.0f, %.0f) cm, t=%.1f s:%s."), Slot,
+				*FString(static_cast<int32>(ftcore::crowdv2::crowdStateName(V.state).size()), ftcore::crowdv2::crowdStateName(V.state).data()),
+				Feet.X, Feet.Y, Feet.Z, RunTime, *What);
+		}
 	}
-	if (FootLogged < 8)
+}
+
+FString UFTCrowdSubsystemV2::MassBoxName(int32 Box) const
+{
+	// The actor, component and mesh behind a massing box (and the instance, for an instanced mesh): log only.
+	const FMassBox& M = MassBoxes[Box];
+	const UStaticMeshComponent* C = M.Comp.Get();
+	if (!C)
 	{
-		++FootLogged;
-		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(Slot));
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d (%s) %s at engine (%.0f, %.0f, %.0f) cm, t=%.1f s%s."), Slot, *FString(static_cast<int32>(ftcore::crowdv2::crowdStateName(V.state).size()), ftcore::crowdv2::crowdStateName(V.state).data()),
-			InBox != INDEX_NONE ? TEXT("inside a massing box") : TEXT("on a roof"), Feet.X, Feet.Y, Feet.Z, RunTime,
-			InBox != INDEX_NONE ? *FString::Printf(TEXT(", box centre (%.0f, %.0f) half (%.0f, %.0f)"), MassBoxes[InBox].C.X, MassBoxes[InBox].C.Y,
-				MassBoxes[InBox].Half.X, MassBoxes[InBox].Half.Y) : TEXT(""));
+		return TEXT("its mesh is gone");
 	}
+	const AActor* OwnerActor = C->GetOwner();
+	const UStaticMesh* Mesh = C->GetStaticMesh();
+	return FString::Printf(TEXT("actor %s, component %s, mesh %s%s"), OwnerActor ? *OwnerActor->GetActorNameOrLabel() : TEXT("none"), *C->GetName(),
+		Mesh ? *Mesh->GetPathName() : TEXT("none"), M.Instance != INDEX_NONE ? *FString::Printf(TEXT(", instance %d"), M.Instance) : TEXT(""));
 }
 
 void UFTCrowdSubsystemV2::BuildMassing()
 {
 	// The buildings' massing boxes: every static mesh (and instance) tall and wide enough to be one, by its bounds.
 	UWorld* World = GetWorld();
-	auto Add = [this](const FBox& Local, const FTransform& X)
+	auto Add = [this](const FBox& Local, const FTransform& X, const UStaticMeshComponent* Comp, int32 Instance)
 	{
 		const FVector Scale = X.GetScale3D().GetAbs();
 		const FVector Half = Local.GetExtent() * Scale;
@@ -1165,6 +1221,8 @@ void UFTCrowdSubsystemV2::BuildMassing()
 		M.Half = FVector2D(Half.X, Half.Y);
 		M.ZMin = C.Z - Half.Z;
 		M.ZMax = C.Z + Half.Z;
+		M.Comp = Comp;
+		M.Instance = Instance;
 		const int32 b = MassBoxes.Add(M);
 		const double R = FMath::Abs(Ax.X) * Half.X + FMath::Abs(Ax.Y) * Half.Y + 100.0;
 		const double Ry = FMath::Abs(Ax.Y) * Half.X + FMath::Abs(Ax.X) * Half.Y + 100.0;
@@ -1199,13 +1257,13 @@ void UFTCrowdSubsystemV2::BuildMassing()
 					FTransform X;
 					if (I->GetInstanceTransform(n, X, true))
 					{
-						Add(Local, X);
+						Add(Local, X, C, n);
 					}
 				}
 			}
 			else
 			{
-				Add(Local, C->GetComponentTransform());
+				Add(Local, C->GetComponentTransform(), C, INDEX_NONE);
 			}
 		}
 	}
