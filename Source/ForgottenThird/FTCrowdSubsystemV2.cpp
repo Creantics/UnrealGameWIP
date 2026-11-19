@@ -1147,7 +1147,7 @@ void UFTCrowdSubsystemV2::Draw()
 		PoolGround[FreeCursor] = PlayerZ;
 		// Grounded now, shown only once it is (never a frame at the player's height, inside a hill or in mid-air).
 		double Z = PlayerZ;
-		if (FirstGround(V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ, Z))
+		if (FirstGround(static_cast<int32>(i), V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ, Z))
 		{
 			PoolGround[FreeCursor] = Z;
 			PoolGrounded[FreeCursor] = true;
@@ -1168,7 +1168,7 @@ void UFTCrowdSubsystemV2::Draw()
 		if (!PoolGrounded[k])
 		{
 			double Z = PoolGround[k];
-			if (FirstGround(X, Y, PoolGround[k], Z))
+			if (FirstGround(static_cast<int32>((PoolAgent[k] - 1) & 0xffffu), X, Y, PoolGround[k], Z))
 			{
 				PoolGround[k] = Z;
 				PoolGrounded[k] = true;
@@ -1186,7 +1186,7 @@ void UFTCrowdSubsystemV2::Draw()
 			if (Hit.bStartPenetrating || Z - PoolGround[k] > CrowdV2Local::kGroundStep)
 			{
 				Z = PoolGround[k];
-				FirstGround(X, Y, PoolGround[k], Z);
+				FirstGround(static_cast<int32>((PoolAgent[k] - 1) & 0xffffu), X, Y, PoolGround[k], Z);
 			}
 			PoolGround[k] = Z;
 		}
@@ -1210,7 +1210,7 @@ void UFTCrowdSubsystemV2::Draw()
 	}
 }
 
-bool UFTCrowdSubsystemV2::FirstGround(double X, double Y, double CentreZ, double& OutZ)
+bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double CentreZ, double& OutZ)
 {
 	// Every surface top under (X, Y) on one long line down, highest first (the same line again with each top's component
 	// ignored), then a short line up from just above each top: a body's height, with the plain query, so a slab over it
@@ -1219,6 +1219,7 @@ bool UFTCrowdSubsystemV2::FirstGround(double X, double Y, double CentreZ, double
 	// list's inline 8 and are cleared before the lines up, so no heap.
 	UWorld* World = GetWorld();
 	ftcore::crowdv2::CrowdGroundHit Hits[ftcore::crowdv2::kCrowdGroundHitsMax];
+	const UPrimitiveComponent* By[ftcore::crowdv2::kCrowdGroundHitsMax] = {};
 	size_t N = 0;
 	const FVector From(X, Y, CentreZ + CrowdV2Local::kGroundFirstSpan);
 	const FVector To(X, Y, CentreZ - CrowdV2Local::kGroundFirstSpan);
@@ -1229,8 +1230,9 @@ bool UFTCrowdSubsystemV2::FirstGround(double X, double Y, double CentreZ, double
 		{
 			break;
 		}
-		Hits[N++].z = H.ImpactPoint.Z;
 		const UPrimitiveComponent* C = H.GetComponent();
+		By[N] = C;
+		Hits[N++].z = H.ImpactPoint.Z;
 		if (!C || N == ftcore::crowdv2::kCrowdGroundHitsMax)
 		{
 			break;
@@ -1248,7 +1250,19 @@ bool UFTCrowdSubsystemV2::FirstGround(double X, double Y, double CentreZ, double
 		const FVector Start(X, Y, Hits[i].z + CrowdV2Local::kGroundClearStart);
 		Hits[i].clearUp = !World->LineTraceSingleByChannel(Up, Start, FVector(X, Y, Hits[i].z + CrowdV2Local::kGroundBody), ECC_Visibility, TraceQuery);
 	}
-	OutZ = Hits[ftcore::crowdv2::crowdPickGround(Hits, N, CrowdV2Local::kGroundBody)].z;
+	const size_t Pick = ftcore::crowdv2::crowdPickGround(Hits, N, CrowdV2Local::kGroundBody);
+	OutZ = Hits[Pick].z;
+	// Log only, capped: a ground that is not the first top (what was skipped). A skipped top that is a deck, quay or
+	// bridge a street runs on is where this pick is wrong.
+	if (Pick != 0 && ++GroundPicksUnder <= 24)
+	{
+		const AActor* Owner = By[0] ? By[0]->GetOwner() : nullptr;
+		const AActor* PickOwner = By[Pick] ? By[Pick]->GetOwner() : nullptr;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d ground under a top (%d so far): skipped the top of %s (%s) at z %.1f cm, %.2f m over the pick; picked z %.1f cm on %s (%s), %d of %d tops."),
+			Slot, GroundPicksUnder, Owner ? *Owner->GetActorNameOrLabel() : TEXT("no actor"), By[0] ? *By[0]->GetName() : TEXT("no component"), Hits[0].z,
+			(Hits[0].z - OutZ) / 100.0, OutZ, PickOwner ? *PickOwner->GetActorNameOrLabel() : TEXT("no actor"), By[Pick] ? *By[Pick]->GetName() : TEXT("no component"),
+			static_cast<int32>(Pick) + 1, static_cast<int32>(N));
+	}
 	return true;
 }
 

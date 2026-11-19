@@ -76,7 +76,7 @@ private:
 	void ScriptFight(const FVector& PlayerAt);
 	void PickTestFight(const FVector& PlayerAt);
 	void CheckFootprint(int32 Actor, const FVector& Feet);
-	bool FirstGround(double X, double Y, double CentreZ, double& OutZ);
+	bool FirstGround(int32 Slot, double X, double Y, double CentreZ, double& OutZ);
 	struct FViewCount
 	{
 		int32 N = 0;          // drawn members in frame and in sight (a line from the eye to the chest)
@@ -187,6 +187,7 @@ private:
 	double EyeZ = 160.0;     // cm: the height the occlusion line runs at, from the player's feet
 	double PlayerZ = 0.0;    // cm
 	int32 GroundCursor = 0;
+	int32 GroundPicksUnder = 0; // first grounds not on the first top (log only)
 	int32 OcclusionTraces = 0;
 	double RunTime = 0.0;
 	double LastArenaEvent = -1e9;
