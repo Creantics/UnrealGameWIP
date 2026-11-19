@@ -197,10 +197,15 @@ struct FloatSpec {
     // and set in from its sides by its eave less half a metre, each postSize square, its top along the deck's underside
     // (a ramp's posts slope with it), wearing the deck's surface (PL-D-<n>); and between neighbouring posts, along each
     // row and across each bent, diagonal braces braceSize square in zig-zag panels of about 45 degrees (PL-K-<n>, kind
-    // "brace": spanned between the posts they sit in).
+    // "brace": spanned between the posts they sit in). A post standing more than postMaxHeight (the deck's underside over
+    // the lowest ground under it) is a pile instead (the 2026-11-19 ruling): pileSize square, kind "pile" (it wears
+    // massingLookSurface's board-formed concrete, not the deck's timber), moved in only as far as keeps its faces inside
+    // the deck's ends and the posts' rows, and never braced: braces stand only between two timber posts.
     bool deckPosts = false;
     double postSpacing = 6.0;   // m, the most between neighbouring posts' centres
-    double postSize = 0.25;     // m, a post's side (a timber post, 2026-11-19 ruling: about 20-30 cm)
+    double postSize = 0.25;     // m, a timber post's side (the 2026-11-19 ruling: about 20-30 cm)
+    double postMaxHeight = 5.0; // m, the tallest timber post; a taller support is a pile
+    double pileSize = 1.0;      // m, a pile's side
     double braceSize = 0.12;    // m, a brace's side
 };
 
@@ -269,7 +274,8 @@ inline constexpr std::size_t kFoundationTerrace = static_cast<std::size_t>(-1);
 
 struct FoundationPlan {
     std::vector<MassingBox> added;     // new boxes, to lay after the boxes (kind "plinth")
-    std::vector<std::size_t> wears;    // per added box: the box whose surface it wears, or kFoundationTerrace
+    std::vector<std::size_t> wears;    // per added box: the box whose surface it wears, or kFoundationTerrace (a pile:
+                                       // the deck it holds up; it wears its own kind's surface)
     std::vector<FloatEdit> edits;      // at most one per box
     std::vector<FloatFixRow> rows;     // per float the plan pass found, largest first
     int passes = 0;                    // plan passes (a deck left by name stops holding; the plan reruns)
@@ -282,7 +288,8 @@ struct FoundationStats {
     std::size_t endPosts = 0;     // bridges given end posts
     std::size_t left = 0;         // floats left by name
     std::size_t posted = 0;       // deckPosts: decks given posts
-    std::size_t posts = 0, braces = 0; // deckPosts: the boxes added
+    std::size_t posts = 0, braces = 0; // deckPosts: the boxes added (posts counts the piles too)
+    std::size_t piles = 0;             // deckPosts: the posts that are piles (over postMaxHeight)
 };
 
 // The fixes for the floats the check (spanRule on, chainCheck off) finds; planFoundations runs before planPlinths, its

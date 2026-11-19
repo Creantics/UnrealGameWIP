@@ -695,6 +695,7 @@ TEST_CASE("deck posts: off, a deck with no pier to raise is left as before; on, 
 
     FloatSpec on;
     on.deckPosts = true;
+    on.postMaxHeight = 10.0; // timber all through: its posts stand 8 m (the piles have their own case)
     o = fixAndCheck(f, boxes, on, plan, st, all);
     REQUIRE(plan.rows.size() == 1);
     CHECK(plan.rows[0].fix == FloatFix::Posts);
@@ -704,6 +705,7 @@ TEST_CASE("deck posts: off, a deck with no pier to raise is left as before; on, 
     // Six bents 5.81 m apart along it (0.25 m posts, their faces flush with its ends), two rows 1.875 m off its middle (each
     // post's outer face its 3.5 m eave less half a metre in from each side); the west bent stands on the pier, so it is left out.
     CHECK(st.posts == 10);
+    CHECK(st.piles == 0);
     CHECK(countPrefix(plan, "PL-D-") == 10);
     std::vector<double> xs;
     for (std::size_t a = 0; a < plan.added.size(); ++a) {
@@ -753,8 +755,10 @@ TEST_CASE("deck posts: a ramp's posts slope with its underside and its braces st
     std::vector<MassingBox> all;
     FloatSpec on;
     on.deckPosts = true;
+    on.postMaxHeight = 50.0; // timber all through: its posts stand up to 44 m (the piles have their own case)
     const FloatOutcomes o = fixAndCheck(f, boxes, on, plan, st, all);
     CHECK(st.posted == 1);
+    CHECK(st.piles == 0);
     // Three rows (each outer post's face 1 m in from each side: its 1.5 m eave less half a metre), 3.875 m apart.
     std::vector<double> ys;
     const double grade = (47.88 - 13.0) / 29.29;
@@ -777,6 +781,62 @@ TEST_CASE("deck posts: a ramp's posts slope with its underside and its braces st
         const double deg = std::atan(std::fabs(b.riseU)) * 180.0 / 3.14159265358979;
         CHECK(deg > 9.0);
         CHECK(deg < 57.0);
+    }
+    CHECK(o.failing == 0);
+    CHECK(o.newFloats == 0);
+}
+
+TEST_CASE("deck posts: a post over postMaxHeight is a pile, pier-sized and board-formed concrete, inside the deck, never braced") {
+    // The ground at 15 m to x 24 and 5 m from x 25: the deck of the first case (its underside 18 m), its west end on a pier.
+    const Field f([](double x, double) { return x < 24.5 ? 15.0 : 5.0; });
+    const std::vector<MassingBox> boxes{piece("D", "deck", 10, 20, 39.29, 30, 18.0, 18.5), piece("P", "pier", 10, 23, 13, 27, 9.7, 18.0)};
+    FoundationPlan plan;
+    FoundationStats st;
+    std::vector<MassingBox> all;
+    FloatSpec on;
+    on.deckPosts = true;
+    REQUIRE(on.postMaxHeight == doctest::Approx(5.0));
+    const FloatOutcomes o = fixAndCheck(f, boxes, on, plan, st, all);
+    CHECK(st.posted == 1);
+    // The six bents of the first case, the west one on the pier: two (x 15.93, 21.74) stand 3 m, timber; three (x 27.55,
+    // 33.36 and the east end) stand 13 m, piles, the end one moved in to keep its face flush with the deck's end (x 38.79).
+    CHECK(st.posts == 10);
+    CHECK(st.piles == 6);
+    std::size_t timber = 0, piles = 0;
+    for (std::size_t a = 0; a < plan.added.size(); ++a) {
+        const MassingBox& b = plan.added[a];
+        if (b.id.rfind("PL-D-", 0) != 0) continue;
+        CHECK(plan.wears[a] == 0); // the deck it holds up
+        CHECK(b.z1 == doctest::Approx(18.0));
+        if (b.kind == "pile") {
+            ++piles;
+            CHECK(massingLookSurface(b) == MassingLookSurface::BoardConcrete);
+            CHECK(b.sx == doctest::Approx(1.0));
+            CHECK(b.sy == doctest::Approx(1.0));
+            CHECK(b.z0 == doctest::Approx(4.7)); // sink under the low ground
+            CHECK(b.cx > 25.0);
+            CHECK(b.cx + 0.5 * b.sx <= 39.29 + 1e-6); // inside the deck's end
+            CHECK(std::fabs(std::fabs(b.cy - 25.0) - 1.5) < 1e-6); // its outer face on the timber rows' (1 m in from 4 m)
+        } else {
+            ++timber;
+            CHECK(b.kind == "plinth");
+            CHECK(b.sx == doctest::Approx(0.25));
+            CHECK(b.z0 == doctest::Approx(14.7));
+            CHECK(b.cx < 24.0);
+            CHECK(std::fabs(std::fabs(b.cy - 25.0) - 1.875) < 1e-6);
+        }
+    }
+    CHECK(timber == 4);
+    CHECK(piles == 6);
+    double eastPile = 0.0;
+    for (const MassingBox& b : plan.added)
+        if (b.kind == "pile") eastPile = std::max(eastPile, b.cx);
+    CHECK(eastPile == doctest::Approx(38.79));
+    // Braces only in the timber bay: one panel along each row between the two timber bents, one across each of them.
+    CHECK(st.braces == 4);
+    for (const MassingBox& b : plan.added) {
+        if (b.id.rfind("PL-K-", 0) != 0) continue;
+        CHECK(b.cx < 24.0);
     }
     CHECK(o.failing == 0);
     CHECK(o.newFloats == 0);

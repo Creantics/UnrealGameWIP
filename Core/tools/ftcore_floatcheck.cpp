@@ -8,7 +8,8 @@
 //                     [--plinths 1 --anchor X,Y [--exempt-rect X0,Y0,X1,Y1[;...]]] [--fix 0] [--deck-posts 1] [--out CSV]
 //                     [--report R]
 // --fix 0: no fix pass (the plinths and the check after on the boxes as they stand).
-// --deck-posts 1: FloatSpec::deckPosts (the Strip's -DeckPosts): a deck still floating after the fixes gets posts and braces.
+// --deck-posts 1: FloatSpec::deckPosts (the Strip's -DeckPosts): a deck still floating after the fixes gets posts (piles
+// over FloatSpec::postMaxHeight) and braces; each post is listed, tallest first.
 //
 // --kit K: the kit table (first column the box id); those boxes keep their shape (an under-box, never lowered).
 // --eave E: the span rule's maxEave (default 1.5 m; decks keep their own 3.5 m, FloatSpec::kindEaves). Prints the three lists (fixed, spanned, failing) by id and their
@@ -238,24 +239,22 @@ int main(int argc, char** argv) {
            std::to_string(st.dropped) + " dropped, " + std::to_string(st.piersRaised) + " piers raised, " + std::to_string(st.endPosts) +
            " bridges end-posted, " + std::to_string(st.left) + " left; " + std::to_string(plan.added.size()) + " boxes added\n";
     if (deckPosts) {
-        out += "deck posts: " + std::to_string(st.posted) + " decks, " + std::to_string(st.posts) + " posts, " + std::to_string(st.braces) +
-               " braces\n";
-        // Level posts are stood on end as cubes, sloped ones (a ramp's) built in that frame: both carry the grain up.
-        std::size_t level = 0, sloped = 0;
-        const MassingBox* tallest = nullptr;
-        double rise = 0.0;
-        for (const MassingBox& b : plan.added) {
-            if (b.id.rfind("PL-D-", 0) != 0) continue;
-            ++(b.sloped ? sloped : level);
-            if (!tallest || b.z1 - b.z0 > tallest->z1 - tallest->z0) tallest = &b;
-            if (b.sloped) rise = std::max(rise, std::fabs(b.slopeTo - b.slopeFrom));
+        out += "deck posts: " + std::to_string(st.posted) + " decks, " + std::to_string(st.posts) + " posts (" +
+               std::to_string(st.posts - st.piles) + " timber, " + std::to_string(st.piles) + " piles over " + num(spec.postMaxHeight, 2) +
+               " m), " + std::to_string(st.braces) + " braces\n";
+        // Each post, tallest first: timber or pile, its side, how far it stands over the lowest ground under it (its
+        // length less the sink), level or sloped (a ramp's: the top's high end), the deck it holds up and where.
+        std::vector<std::size_t> posts;
+        const auto stands = [&](const MassingBox& b) { return (b.sloped ? std::max(b.slopeFrom, b.slopeTo) : b.z1) - b.z0 - spec.sink; };
+        for (std::size_t a = 0; a < plan.added.size(); ++a)
+            if (plan.added[a].id.rfind("PL-D-", 0) == 0) posts.push_back(a);
+        std::stable_sort(posts.begin(), posts.end(), [&](std::size_t l, std::size_t r) { return stands(plan.added[l]) > stands(plan.added[r]); });
+        for (const std::size_t a : posts) {
+            const MassingBox& b = plan.added[a];
+            out += "  post " + b.id + " " + (b.kind == "pile" ? "pile" : "timber") + " " + num(b.sx, 2) + " m, stands " + num(stands(b), 2) +
+                   " m" + (b.sloped ? " (sloped)" : "") + ", deck " + (plan.wears[a] < boxes.size() ? boxes[plan.wears[a]].id : std::string("?")) +
+                   " at " + num(b.cx, 1) + "," + num(b.cy, 1) + "\n";
         }
-        out += "deck posts: " + std::to_string(level) + " level, " + std::to_string(sloped) + " sloped (top rise up to " + num(rise, 2) +
-               " m)";
-        if (tallest)
-            out += "; tallest " + tallest->id + " " + num(tallest->sx, 2) + " x " + num(tallest->sy, 2) + " x " +
-                   num(tallest->z1 - tallest->z0, 2) + " m at " + num(tallest->cx, 1) + "," + num(tallest->cy, 1);
-        out += "\n";
     }
     std::vector<MassingBox> all;
     std::vector<bool> inc;

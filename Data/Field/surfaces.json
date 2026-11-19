@@ -16,6 +16,7 @@
     { "id": "solhaven_ceramic_tile",   "tileCm":  80, "res": "1k", "license": "project" },
     { "id": "solhaven_galv_steel",     "tileCm": 160, "res": "1k", "license": "project" },
     { "id": "solhaven_oak_plank",      "tileCm": 120, "res": "1k", "license": "project" },
+    { "id": "solhaven_oak_post",       "tileCm": 120, "res": "1k", "license": "project" },
     { "id": "solhaven_oiled_paper",    "tileCm": 100, "res": "1k", "license": "project" },
     { "id": "solhaven_painted_steel",  "tileCm": 150, "res": "1k", "license": "project" },
     { "id": "solhaven_pale_sand",      "tileCm": 150, "res": "1k", "license": "project" },

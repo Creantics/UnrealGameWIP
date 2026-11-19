@@ -1276,19 +1276,21 @@ struct DeckPost {
     double groundHi = 0.0; // the highest ground under it
     double topLo = 0.0;    // its top's lowest
     bool laid = false;
+    bool pile = false;     // over FloatSpec::postMaxHeight: a pile, never braced
 };
 
 // FloatSpec::deckPosts: posts under deck `i` of `boxes` on a grid, down to sink under the lowest ground under each (the
-// seabed too), and zig-zag braces between neighbouring posts. A post is left out where a sound box already holds the
-// deck's underside at its middle, or where the underside stands within 0.3 m of the ground; a brace bay where the posts
-// stand less than a metre clear between 0.5 m over the ground and 0.4 m under the deck.
+// seabed too), and zig-zag braces between neighbouring timber posts; a post standing over postMaxHeight is a pile. A post
+// is left out where a sound box already holds the deck's underside at its middle, or where the underside stands within
+// 0.3 m of the ground; a brace bay where the posts stand less than a metre clear between 0.5 m over the ground and 0.4 m
+// under the deck.
 void addDeckPosts(const MassingGround& ground, const BoxBuckets& buckets, const std::vector<MassingBox>& boxes,
                   const std::vector<bool>& sound, std::size_t i, const FloatSpec& ps, FoundationPlan& plan, std::size_t& counter,
                   FoundationStats& stats) {
     const BoxFrame& f = buckets.frames[i];
     const MassingBox& b = boxes[i];
     const double side = std::max(ps.postSize, 0.05);
-    const double half = 0.5 * side;
+    const double pileSide = std::max(ps.pileSize, side);
     const double spacing = std::max(ps.postSpacing, side);
     const double inset = std::max(0.0, floatEave(ps, b) - 0.5);
     // Centres along u flush with the ends, across w set in by the inset; at most `spacing` apart.
@@ -1310,24 +1312,41 @@ void addDeckPosts(const MassingGround& ground, const BoxBuckets& buckets, const 
         plan.wears.push_back(i);
         return plan.added.back();
     };
+    // A post `s` square at (u, w): the lowest ground under it (returned), the highest (p.groundHi), its top's ends along u
+    // (from, to) and its top's lowest (p.topLo).
+    const auto measure = [&](DeckPost& p, double u, double w, double s, double& from, double& to) {
+        const double half = 0.5 * s;
+        planAt(u, w, p.x, p.y);
+        double low = groundAt(ground, p.x, p.y);
+        p.groundHi = low;
+        for (int k = 0; k < 4; ++k) {
+            double x = 0.0, y = 0.0;
+            planAt(u + (k & 1 ? half : -half), w + (k & 2 ? half : -half), x, y);
+            const double z = groundAt(ground, x, y);
+            low = std::min(low, z);
+            p.groundHi = std::max(p.groundHi, z);
+        }
+        from = std::max(deckBase(b, u - half, w - half), deckBase(b, u - half, w + half));
+        to = std::max(deckBase(b, u + half, w - half), deckBase(b, u + half, w + half));
+        p.topLo = std::min(from, to);
+        return low;
+    };
+    // How far a pile's centre may stand from the deck's middle: its faces inside the deck's ends and the rows' outer faces.
+    const double pileU = std::max(0.0, 0.5 * (b.sx - pileSide));
+    const double pileW = std::max(0.0, 0.5 * (b.sy - 2.0 * inset - pileSide));
     std::vector<DeckPost> grid(us.size() * ws.size());
     for (std::size_t iu = 0; iu < us.size(); ++iu) {
         for (std::size_t iw = 0; iw < ws.size(); ++iw) {
             DeckPost& p = grid[iu * ws.size() + iw];
-            const double u = us[iu], w = ws[iw];
-            planAt(u, w, p.x, p.y);
-            double low = groundAt(ground, p.x, p.y);
-            p.groundHi = low;
-            for (int k = 0; k < 4; ++k) {
-                double x = 0.0, y = 0.0;
-                planAt(u + (k & 1 ? half : -half), w + (k & 2 ? half : -half), x, y);
-                const double z = groundAt(ground, x, y);
-                low = std::min(low, z);
-                p.groundHi = std::max(p.groundHi, z);
+            double u = us[iu], w = ws[iw], s = side, from = 0.0, to = 0.0;
+            double low = measure(p, u, w, s, from, to);
+            if (std::max(from, to) - low > ps.postMaxHeight) {
+                p.pile = true;
+                s = pileSide;
+                u = std::clamp(u, -pileU, pileU);
+                w = std::clamp(w, -pileW, pileW);
+                low = measure(p, u, w, s, from, to);
             }
-            const double from = std::max(deckBase(b, u - half, w - half), deckBase(b, u - half, w + half));
-            const double to = std::max(deckBase(b, u + half, w - half), deckBase(b, u + half, w + half));
-            p.topLo = std::min(from, to);
             if (p.topLo - p.groundHi < 0.3) continue;
             // A pier (or any sound box) already under the deck here.
             const double mid = deckBase(b, u, w);
@@ -1339,7 +1358,11 @@ void addDeckPosts(const MassingGround& ground, const BoxBuckets& buckets, const 
                 }
             }
             if (held) continue;
-            MassingBox& post = add("PL-D-", p.x, p.y, side, side, b.rot, low - ps.sink, std::max(from, to));
+            MassingBox& post = add("PL-D-", p.x, p.y, s, s, b.rot, low - ps.sink, std::max(from, to));
+            if (p.pile) {
+                post.kind = "pile";
+                ++stats.piles;
+            }
             if (std::fabs(to - from) > 0.1) {
                 // A ramp's post: its top slopes with the underside, its bottom flat.
                 post.sloped = true;
@@ -1351,10 +1374,10 @@ void addDeckPosts(const MassingGround& ground, const BoxBuckets& buckets, const 
             ++stats.posts;
         }
     }
-    // Braces between neighbouring posts: along each row (the deck's u) and across each bent (its w).
+    // Braces between neighbouring timber posts: along each row (the deck's u) and across each bent (its w).
     const double bs = std::max(ps.braceSize, 0.05);
     const auto brace = [&](const DeckPost& a, const DeckPost& c, double rot) {
-        if (!a.laid || !c.laid) return;
+        if (!a.laid || !c.laid || a.pile || c.pile) return;
         const double len = std::hypot(c.x - a.x, c.y - a.y);
         if (len <= side + 1e-9) return;
         double groundHi = std::max(a.groundHi, c.groundHi);
