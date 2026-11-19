@@ -213,6 +213,7 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	FootSeenRender.Init(false, static_cast<int32>(Sim.capacity()));
 	FootFramesBy.Init(0, static_cast<int32>(Sim.capacity()));
 	FParse::Value(Cmd, TEXT("CrowdFootStill="), FootStillPath);
+	FParse::Value(Cmd, TEXT("CrowdRoofStill="), RoofStillPath);
 
 	double TestAt = 20.0;
 	if (FParse::Param(Cmd, TEXT("CrowdTestFight")) || FParse::Value(Cmd, TEXT("CrowdTestFight="), TestAt))
@@ -1281,6 +1282,16 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d (%s) at engine (%.0f, %.0f, %.0f) cm, t=%.1f s:%s."), Slot,
 				*FString(static_cast<int32>(ftcore::crowdv2::crowdStateName(V.state).size()), ftcore::crowdv2::crowdStateName(V.state).data()),
 				Feet.X, Feet.Y, Feet.Z, RunTime, *What);
+			if (bRoof)
+			{
+				LogSurfacesUnder(Slot, Feet, Below);
+				if (!RoofStillPath.IsEmpty() && !bRoofStillDone)
+				{
+					// From its side: across its heading.
+					const double Yaw = FMath::DegreesToRadians(static_cast<double>(V.yaw) + 90.0);
+					AimFootStill(Slot, Feet, FVector2D(FMath::Cos(Yaw), FMath::Sin(Yaw)), RoofStillPath, true);
+				}
+			}
 		}
 	}
 }
@@ -1337,24 +1348,76 @@ void UFTCrowdSubsystemV2::RetestFootprint(int32 Slot, const FVector& Feet, int32
 			Body ? TEXT("(its body)") : TEXT("(NO BODY: not tested)"), bBody ? TEXT("YES") : TEXT("no"), bGate ? TEXT("YES") : TEXT("no"));
 	}
 	// One still of the first, from 6 m out on the member's side of the box, 2.5 m up (before the fight's stills).
-	if (!FootStillPath.IsEmpty() && !bFootStillDone && FootStillTicks < 0 && ShotTicks < 0 && (TestFightAt < 0.0 || RunTime < TestFightAt - 4.0))
+	if (!FootStillPath.IsEmpty() && !bFootStillDone)
 	{
-		FVector2D Out(Feet.X - M.RC.X, Feet.Y - M.RC.Y);
-		if (!Out.Normalize())
+		AimFootStill(Slot, Feet, FVector2D(Feet.X - M.RC.X, Feet.Y - M.RC.Y), FootStillPath, false);
+	}
+}
+
+void UFTCrowdSubsystemV2::AimFootStill(int32 Slot, const FVector& Feet, FVector2D Out, const FString& Path, bool bRoof)
+{
+	// A still from 6 m out along Out, 2.5 m up, aimed at the member's chest; one at a time, before the fight's stills.
+	if (FootStillTicks >= 0 || ShotTicks >= 0 || (TestFightAt >= 0.0 && RunTime >= TestFightAt - 4.0))
+	{
+		return;
+	}
+	if (!Out.Normalize())
+	{
+		Out = FVector2D(1.0, 0.0);
+	}
+	const FVector Eye = Feet + FVector(Out.X * 600.0, Out.Y * 600.0, 250.0);
+	const FVector Aim = Feet + FVector(0.0, 0.0, 100.0);
+	FActorSpawnParameters Spawn;
+	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	FootStillCam = GetWorld()->SpawnActor<ACameraActor>(Eye, (Aim - Eye).Rotation(), Spawn);
+	if (FootStillCam)
+	{
+		FootStillCam->GetCameraComponent()->SetFieldOfView(70.f);
+		FootStillCam->GetCameraComponent()->SetConstraintAspectRatio(false);
+		FootStillTicks = 0;
+		FootStillShot = Path;
+		bStillIsRoof = bRoof;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %s still of member %d from %s, aimed at %s."), bRoof ? TEXT("roof") : TEXT("re-test"), Slot, *Eye.ToString(),
+			*Aim.ToString());
+	}
+}
+
+void UFTCrowdSubsystemV2::LogSurfacesUnder(int32 Slot, const FVector& Feet, const FHitResult& Roof) const
+{
+	// Log only, a member's first frame on a roof. The roof line starts half a metre under the feet, so a slab thicker
+	// than that is hit where the line starts (0.50 m down, started inside it). Then every surface under the member, top
+	// down, from where its first grounding line starts: it stands on the first.
+	const AActor* RoofBy = Roof.GetActor();
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d roof line: hit at z %.1f cm, %.2f m under the feet, started inside it %s (penetration %.1f cm), normal z %.2f, %s (%s)."),
+		Slot, Roof.ImpactPoint.Z, (Feet.Z - Roof.ImpactPoint.Z) / 100.0, Roof.bStartPenetrating ? TEXT("YES") : TEXT("no"), Roof.PenetrationDepth,
+		Roof.ImpactNormal.Z, RoofBy ? *RoofBy->GetActorNameOrLabel() : TEXT("no actor"), Roof.GetComponent() ? *Roof.GetComponent()->GetName() : TEXT("no component"));
+	UWorld* World = GetWorld();
+	FCollisionQueryParams Q(TraceQuery);
+	const FVector From(Feet.X, Feet.Y, Feet.Z + CrowdV2Local::kGroundFirstSpan);
+	const FVector To(Feet.X, Feet.Y, Feet.Z - 5000.0);
+	for (int32 n = 0; n < 10; ++n)
+	{
+		FHitResult H;
+		if (!World->LineTraceSingleByChannel(H, From, To, ECC_Visibility, Q))
 		{
-			Out = FVector2D(1.0, 0.0);
+			break;
 		}
-		const FVector Eye = Feet + FVector(Out.X * 600.0, Out.Y * 600.0, 250.0);
-		const FVector Aim = Feet + FVector(0.0, 0.0, 100.0);
-		FActorSpawnParameters Spawn;
-		Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		FootStillCam = GetWorld()->SpawnActor<ACameraActor>(Eye, (Aim - Eye).Rotation(), Spawn);
-		if (FootStillCam)
+		const AActor* By = H.GetActor();
+		const UPrimitiveComponent* C = H.GetComponent();
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: member %d surface %d under it: z %.1f cm (%+.2f m from the feet), normal z %.2f, %s (%s, %s)%s."), Slot, n,
+			H.ImpactPoint.Z, (H.ImpactPoint.Z - Feet.Z) / 100.0, H.ImpactNormal.Z, By ? *By->GetActorNameOrLabel() : TEXT("no actor"),
+			C ? *C->GetName() : TEXT("no component"), By ? *By->GetClass()->GetName() : TEXT("?"), H.bStartPenetrating ? TEXT(", started inside it") : TEXT(""));
+		if (C)
 		{
-			FootStillCam->GetCameraComponent()->SetFieldOfView(70.f);
-			FootStillCam->GetCameraComponent()->SetConstraintAspectRatio(false);
-			FootStillTicks = 0;
-			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: re-test still of member %d from %s, aimed at %s."), Slot, *Eye.ToString(), *Aim.ToString());
+			Q.AddIgnoredComponent(C);
+		}
+		else if (By)
+		{
+			Q.AddIgnoredActor(By);
+		}
+		else
+		{
+			break;
 		}
 	}
 }
@@ -1374,15 +1437,15 @@ void UFTCrowdSubsystemV2::FootStill(APlayerController* PC)
 	{
 		if (UGameViewportClient* Viewport = GEngine ? GEngine->GameViewport.Get() : nullptr)
 		{
-			Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *FootStillPath), *GLog);
-			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: re-test still %s at t=%.1f s."), *FootStillPath, RunTime);
+			Viewport->Exec(GetWorld(), *FString::Printf(TEXT("HighResShot 1600x900 filename=\"%s\""), *FootStillShot), *GLog);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %s still %s at t=%.1f s."), bStillIsRoof ? TEXT("roof") : TEXT("re-test"), *FootStillShot, RunTime);
 		}
 	}
 	else if (FootStillTicks >= 6)
 	{
 		PC->SetViewTarget(PC->GetPawn());
 		FootStillTicks = -1;
-		bFootStillDone = true;
+		(bStillIsRoof ? bRoofStillDone : bFootStillDone) = true;
 	}
 }
 

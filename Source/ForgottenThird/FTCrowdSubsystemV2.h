@@ -39,6 +39,7 @@
 #include "FTCrowdSubsystemV2.generated.h"
 
 class ACameraActor;
+struct FHitResult;
 class ASkeletalMeshActor;
 class UStaticMeshComponent;
 class UAnimSequence;
@@ -87,6 +88,8 @@ private:
 	void BuildMassing();
 	void RetestFootprint(int32 Slot, const FVector& Feet, int32 Box, double DepthCm);
 	void FootStill(APlayerController* PC);
+	void AimFootStill(int32 Slot, const FVector& Feet, FVector2D Out, const FString& Path, bool bRoof);
+	void LogSurfacesUnder(int32 Slot, const FVector& Feet, const FHitResult& Roof) const;
 	void LogGroundAt();
 	void LogStoppedGroup(uint32 Size) const;
 	void NoteMinPair(float Pair);
@@ -216,10 +219,14 @@ private:
 	int32 RetestInBody = 0;   // members whose body (25 cm) overlapped the collision shape
 	int32 RetestInGate = 0;   // members within the 0.8 m gate of it
 	FString FootStillPath;
+	FString RoofStillPath;   // -CrowdRoofStill=<png>: one still of the first member on a roof (log only)
+	FString FootStillShot;   // the file the pending still goes to
 	UPROPERTY()
 	TObjectPtr<ACameraActor> FootStillCam;
 	int32 FootStillTicks = -1;
 	bool bFootStillDone = false;
+	bool bRoofStillDone = false;
+	bool bStillIsRoof = false;
 	bool bTestDeathRaised = false;
 	ftcore::crowdv2::CrowdCounts AtTestFight;
 	uint32 FightInRange = 0; // live members within the fight start's radius when the test fight started
