@@ -258,6 +258,31 @@ TEST_CASE("day look: a lever switched off (a negative value) keeps the row's own
     CHECK(f.sunKelvin == doctest::Approx(fogOff.sunKelvin));
 }
 
+TEST_CASE("day look: the fog start is the fog's own at amount 0 and when off, the day's at 1") {
+    DayLookSpec spec;
+    CHECK(spec.fogStartM < 0.f); // off by default
+    CHECK(dayLookFogStart(spec, 0.f, 1.f) == 0.f);
+    CHECK(dayLookFogStart(spec, 7.5f, 1.f) == 7.5f);
+    spec.fogStartM = 30.f;
+    CHECK(dayLookFogStart(spec, 0.f, 0.f) == 0.f);
+    CHECK(dayLookFogStart(spec, 7.5f, 0.f) == 7.5f);
+    CHECK(dayLookFogStart(spec, 0.f, std::numeric_limits<float>::quiet_NaN()) == 0.f);
+    CHECK(dayLookFogStart(spec, 0.f, 1.f) == doctest::Approx(30.f));
+    CHECK(dayLookFogStart(spec, 0.f, 2.f) == doctest::Approx(30.f));
+    CHECK(dayLookFogStart(spec, 0.f, 0.5f) == doctest::Approx(15.f));
+    CHECK(dayLookFogStart(spec, 10.f, 0.5f) == doctest::Approx(20.f));
+    CHECK(dayLookFogStart(spec, -4.f, 0.05f) == 0.f); // never negative
+    float prev = 0.f;
+    for (int i = 0; i <= 60; ++i) { // dawn at 1-min steps: never falls, ends at the day's
+        const float s = dayLookFogStart(spec, 0.f, static_cast<float>(i) / 60.f);
+        CHECK(s >= prev);
+        prev = s;
+    }
+    CHECK(prev == doctest::Approx(30.f));
+    spec.fogStartM = std::numeric_limits<float>::quiet_NaN();
+    CHECK(dayLookFogStart(spec, 2.f, 1.f) == 2.f);
+}
+
 TEST_CASE("day look: allocation-free") {
     const DayLookSpec spec;
     const SceneLook row = dryRow();
@@ -268,6 +293,7 @@ TEST_CASE("day look: allocation-free") {
         sink += dayLookScene(row, spec, a).fogDensity;
         sink += dayLookSignStrength(spec, 40.f, 6.f, 30.f, a);
         sink += dayLookContactShadow(spec, 0.f, a);
+        sink += dayLookFogStart(spec, 0.f, a);
         sink += dayLookShade(DayShadeLook{}, spec).skyScale;
     }
     const ftcore_test::AllocStats after = ftcore_test::allocStats();

@@ -87,4 +87,10 @@ float dayLookContactShadow(const DayLookSpec& spec, float own, float amount) {
     return mix(own, std::min(spec.contactShadowLength, 1.f), a);
 }
 
+float dayLookFogStart(const DayLookSpec& spec, float own, float amount) {
+    const float a = amountOf(amount);
+    if (a <= 0.f || !(spec.fogStartM >= 0.f)) return own;
+    return std::max(0.f, mix(own, spec.fogStartM, a));
+}
+
 } // namespace ftcore

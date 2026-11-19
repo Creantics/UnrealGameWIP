@@ -66,6 +66,7 @@ ftcore::DayLookSpec ReadDayLook()
 	FParse::Value(Cmd, TEXT("DayLookContact="), Spec.contactShadowLength);
 	FParse::Value(Cmd, TEXT("DayLookSigns="), Spec.signWhiteRatio);
 	FParse::Value(Cmd, TEXT("DayLookShadowTint="), Spec.shadowTintChroma);
+	FParse::Value(Cmd, TEXT("DayLookFogStart="), Spec.fogStartM);
 	FString Off;
 	if (FParse::Value(Cmd, TEXT("DayLookOff="), Off, false))
 	{
@@ -367,7 +368,7 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 	{
 		if (UExponentialHeightFogComponent* Fog = It->GetComponent())
 		{
-			Fogs.Add({Fog, Fog->FogInscatteringLuminance});
+			Fogs.Add({Fog, Fog->FogInscatteringLuminance, Fog->StartDistance, Fog->VolumetricFogStartDistance});
 		}
 	}
 	for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
@@ -539,6 +540,20 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 				{
 					DayLooks->SetDayLook(DayAmount);
 					AppliedDayLook = DayAmount;
+					// The fog's start distance (-DayLookFogStart): only with the lever on, so a run without it never
+					// writes the fogs here; the fog's own back at amount 0. The volumetric fog ignores the height fog's
+					// start distance, so both are written (cm).
+					if (FTDayLook::Spec().fogStartM >= 0.f)
+					{
+						for (const FFog& F : Fogs)
+						{
+							if (UExponentialHeightFogComponent* Fog = F.Fog.Get())
+							{
+								Fog->SetStartDistance(100.f * ftcore::dayLookFogStart(FTDayLook::Spec(), F.StartDistance / 100.f, DayAmount));
+								Fog->SetVolumetricFogStartDistance(100.f * ftcore::dayLookFogStart(FTDayLook::Spec(), F.VolumetricStart / 100.f, DayAmount));
+							}
+						}
+					}
 					for (const FLit& S : Suns)
 					{
 						if (ULightComponent* Light = S.Light.Get())
@@ -578,12 +593,15 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 			{
 				const ftcore::SceneLook& Day = DayLooks ? DayLooks->GetLook() : ftcore::SceneLook{};
 				const ULightComponent* SunLight = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
-				UE_LOG(LogForgottenThird, Display, TEXT("DayLook: amount %.2f at sun %.1f degrees (step %d, shade sky %.2f, contrast %.2f, highlight %.2f, boost %.2f, fog cap %.2f); fog %.4f, sun %.0f K, shadow tint %.0f/%.3f, highlight tint %.0f/%.3f, wind %.1f m/s, cover %.2f; contact %.3f, cloud shadows %d (map's %d); signs %.2f%s."),
+				const UExponentialHeightFogComponent* Fog0 = Fogs.Num() > 0 ? Fogs[0].Fog.Get() : nullptr;
+				UE_LOG(LogForgottenThird, Display, TEXT("DayLook: amount %.2f at sun %.1f degrees (step %d, shade sky %.2f, contrast %.2f, highlight %.2f, boost %.2f, fog cap %.2f); fog %.4f, sun %.0f K, shadow tint %.0f/%.3f, highlight tint %.0f/%.3f, wind %.1f m/s, cover %.2f; contact %.3f, cloud shadows %d (map's %d); signs %.2f; fog start %.1f m (lever %.1f), volumetric start %.1f m of %.0f m%s."),
 					DayAmount, SunElevation, FTDayLook::Spec().shadeStep, FTDayShade::Look().skyScale, FTDayShade::Look().shadowContrast,
 					FTDayShade::Look().highlightContrast, FTDayShade::Look().diffuseBoost, FTDayShade::Look().fogMaxOpacity, Day.fogDensity,
 					Day.sunKelvin, Day.shadowTintHue, Day.shadowTintChroma, Day.highlightTintHue, Day.highlightTintChroma, Day.windMps,
 					Day.cloudCover, SunLight ? SunLight->ContactShadowLength : -1.f, AppliedCloudShadows, MapCloudShadows,
-					Signs ? Signs->GetSignStrength() : -1.f, (Wave && Wave->HasWave()) ? TEXT(" (a wave runs: not written)") : TEXT(""));
+					Signs ? Signs->GetSignStrength() : -1.f, Fog0 ? Fog0->StartDistance / 100.f : -1.f, FTDayLook::Spec().fogStartM,
+					Fog0 ? Fog0->VolumetricFogStartDistance / 100.f : -1.f, Fog0 ? Fog0->VolumetricFogDistance / 100.f : -1.f,
+					(Wave && Wave->HasWave()) ? TEXT(" (a wave runs: not written)") : TEXT(""));
 			}
 		}
 	}

@@ -198,6 +198,8 @@ private:
 	{
 		TWeakObjectPtr<UExponentialHeightFogComponent> Fog;
 		FLinearColor Color = FLinearColor::White;
+		float StartDistance = 0.f; // the map's own (cm), put back when the day look's fog start reaches amount 0
+		float VolumetricStart = 0.f;
 	};
 	struct FLamp
 	{

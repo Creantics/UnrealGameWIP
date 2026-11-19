@@ -28,6 +28,7 @@
 //                       pi), blended by the lights share (so a sign is at the night's strength whenever the shop lights
 //                       are, never on a day exposure).
 //   dayLookContactShadow the sun's contact shadow length (screen share), blended from the light's own by the amount.
+//   dayLookFogStart      the fog's start distance (metres), blended from the fog's own by the amount; off by default.
 //
 // A lever is switched off by a negative value in the spec (sunKelvin: 0 or less; shadeStep: any but 1..3), so a lever that
 // fails its proof drops alone: that field keeps the row's own (the sign, the night's strength; the contact shadow, the
@@ -54,6 +55,9 @@ struct DayLookSpec {
     float windMps = 4.f;
     // Off by default (2026-11-18 ruling: cover 0.5 took the sun off the whole frame); -DayLookCover=<x> sets one.
     float cloudCover = -1.f;
+    // Off by default (2026-11-19 ruling: a denser day fog lifts the near blacks, so the far haze has to start past the
+    // near facades); -DayLookFogStart=<m> sets one. Metres from the camera, for the height fog and the volumetric fog.
+    float fogStartM = -1.f;
     float signWhiteRatio = 1.75f;
     float signSkyShare = 0.25f;
 };
@@ -78,5 +82,9 @@ FTCORE_API float dayLookSignStrength(const DayLookSpec& spec, float nightStrengt
 
 // The sun's contact shadow length: own at amount 0 (exactly), the day's at 1.
 FTCORE_API float dayLookContactShadow(const DayLookSpec& spec, float own, float amount);
+
+// The fog's start distance in metres: own at amount 0 (exactly) and whenever the lever is off (fogStartM negative or NaN),
+// the day's at 1. Never negative.
+FTCORE_API float dayLookFogStart(const DayLookSpec& spec, float own, float amount);
 
 } // namespace ftcore
