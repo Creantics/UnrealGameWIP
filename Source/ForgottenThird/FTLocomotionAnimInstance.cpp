@@ -259,11 +259,18 @@ TMap<FLocoMeasureKey, FLocoSampled>& LocoSampled()
 int32 LocoMeasureFresh = 0;
 int32 LocoMeasureKept = 0;
 
-// SampleFeetNow's result for the clip, sampled once and then kept (-LocoNoMeasureCache samples every time).
+// Whether every clip is sampled afresh: with -LocoNoMeasureCache, and in the editor or a commandlet, where a clip can be
+// reimported or rebuilt in place under the same object (the key) and must be measured again.
+bool LocoMeasureCacheOff()
+{
+	static const bool bOff = FParse::Param(FCommandLine::Get(), TEXT("LocoNoMeasureCache")) || IsRunningCommandlet() || GIsEditor;
+	return bOff;
+}
+
+// SampleFeetNow's result for the clip, sampled once and then kept (sampled every time when LocoMeasureCacheOff).
 bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TArray<ftcore::LocoPoint>* Pelvis = nullptr)
 {
-	static const bool bNoCache = FParse::Param(FCommandLine::Get(), TEXT("LocoNoMeasureCache"));
-	if (bNoCache)
+	if (LocoMeasureCacheOff())
 	{
 		++LocoMeasureFresh;
 		return SampleFeetNow(Clip, Frames, Pelvis);
@@ -605,10 +612,9 @@ void UFTLocomotionAnimInstance::SetBaseClips(UAnimSequence* const (&Base)[NumBas
 		SetTraversalFromRun();
 	}
 	{
-		static const bool bNoCache = FParse::Param(FCommandLine::Get(), TEXT("LocoNoMeasureCache"));
 		const AActor* MeasuredFor = GetOwningActor();
 		UE_LOG(LogForgottenThird, Display, TEXT("Locomotion: %s's clip measures this setup: %d sampled, %d kept%s."), MeasuredFor ? *MeasuredFor->GetName() : TEXT("?"),
-			LocoMeasureFresh, LocoMeasureKept, bNoCache ? TEXT(" (-LocoNoMeasureCache)") : TEXT(""));
+			LocoMeasureFresh, LocoMeasureKept, LocoMeasureCacheOff() ? TEXT(" (no cache: -LocoNoMeasureCache, the editor or a commandlet)") : TEXT(""));
 	}
 	// -LocoJumpDump: the lead's jump clips, once, then quit.
 	static const bool bJumpDump = FParse::Param(FCommandLine::Get(), TEXT("LocoJumpDump"));
