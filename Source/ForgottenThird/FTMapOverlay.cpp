@@ -62,6 +62,9 @@ const FLinearColor kOvBoxFill(0.004f, 0.006f, 0.012f, 0.88f);
 const FLinearColor kOvCaptionPlate(0.004f, 0.006f, 0.012f, 1.f); // the where-am-I line's plate: opaque, so no line shows through
 const FLinearColor kOvHalo(0.001f, 0.0015f, 0.003f, 0.9f);
 const FLinearColor kOvHaloSoft(0.001f, 0.0015f, 0.003f, 0.35f); // a label's halo: copies overlap, dark at the glyph, soft at 3 px
+// Each halo copy's alpha by how many copies a name gets. The old 18 copies at 0.35 laid about five over a point 1.5 px out
+// from a glyph (about 0.88 dark there); eight copies lay about 2.7 there and twelve about 3.2, so these keep that darkness.
+constexpr float kOvHaloSoftA8 = 0.55f, kOvHaloSoftA12 = 0.48f;
 // The look's strokes (ftcore/MapLook.h), all gold: the coast at half a main road's line, the wave lines fading out to
 // sea, the canals' edges, the parks' hatch at a tenth, the yards' dotted edges.
 constexpr float kOvFinePx = 0.6f;
@@ -783,10 +786,11 @@ void FFTMapOverlay::DrawText(UCanvas& Canvas, FStringView Text, EFace Face, floa
 		static constexpr float H = 0.70710678f;
 		static const FVector2D kDir[8] = {{1.0, 0.0}, {0.0, 1.0}, {-1.0, 0.0}, {0.0, -1.0}, {H, H}, {-H, H}, {-H, -H}, {H, -H}};
 		const int32 Copies = HaloPx > 3.5f ? 12 : 8;
+		FLinearColor HaloTone = FTMapOverlayDetail::kOvHaloSoft;
+		HaloTone.A = Copies == 8 ? FTMapOverlayDetail::kOvHaloSoftA8 : FTMapOverlayDetail::kOvHaloSoftA12;
 		for (int32 K = 0; K < Copies; ++K)
 		{
-			FCanvasTextStringViewItem Copy(TopLeft + kDir[K & 7] * (K < 8 ? HaloPx : HaloPx * 0.55f), Text, Info,
-				FTMapOverlayDetail::kOvHaloSoft);
+			FCanvasTextStringViewItem Copy(TopLeft + kDir[K & 7] * (K < 8 ? HaloPx : HaloPx * 0.55f), Text, Info, HaloTone);
 			Copy.BlendMode = SE_BLEND_Translucent;
 			Canvas.DrawItem(Copy);
 		}
