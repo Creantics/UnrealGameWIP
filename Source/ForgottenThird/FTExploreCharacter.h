@@ -93,12 +93,16 @@
 #include "ftcore/AttackMove.h"
 #include "ftcore/FieldUnstick.h"
 #include "ftcore/FieldStrike.h"
+#include "ftcore/FrameStats.h"
 #include "ftcore/DodgeRoll.h"
+#include "ftcore/HeldUpJump.h"
 #include "ftcore/LedgeHang.h"
 #include "ftcore/StillCam.h"
 #include "ftcore/Swim.h"
 #include "ftcore/UiPartyScreen.h"
 #include "ftcore/WaterBodies.h"
+#include "ftcore/WaterFollow.h"
+#include "ftcore/WaterLoco.h"
 #include "ftcore/WetPrints.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
@@ -106,6 +110,7 @@
 #include "FTExploreCharacter.generated.h"
 
 class AFTExploreDirector;
+class AFTPartyFollower;
 class UAnimSequence;
 class AFTPartyVan;
 class APlayerController;
@@ -414,6 +419,8 @@ private:
 	TArray<float> BodyTimes;
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
+	// When the last search for a director found none (real seconds): a world without one is searched once a second, not per call (ScenePlaying asks every tick).
+	double DirectorMissAt = -1.0e9;
 	TWeakObjectPtr<AFTPartyVan> Van;
 	bool bPartyHiddenBeforeVan = false;
 	FFTFootSlideProbe SlideProbe;
@@ -585,11 +592,128 @@ private:
 	bool bSwimSaid = false;
 	float SwimSavedFly = 0.f;
 	float SwimSavedBrake = 0.f;
+	// The surface swim begun (the movement's fly mode and speeds saved); nothing if it already swims.
+	void BeginSurfaceSwim(UCharacterMovementComponent& Move);
+	// Where the surface swim holds feet at At (cm): the swim's draft over the surface there, with Sink, and never under
+	// the bed (ftcore::waterSurfaceFeetZ; the bed traced down from just under the surface). False with no water there.
+	bool SurfaceSwimFeet(const UFTWaterSubsystem& System, const FVector& At, float Sink, double& OutFeet, float* OutColumn = nullptr,
+		const AActor* AlsoIgnore = nullptr) const;
+	// -SwimSwitchKeep (11-18 item 3; off until its proof passes): a lead switch while swimming keeps the party in the water.
+	bool bSwimSwitchKeep = false;
+	// A start in the water is due (a lead switch while swimming, StartInWater): the next new set of followers starts in
+	// the water (StepWaterParty); one shot.
+	bool bWaterStartNext = false;
 	// The free swim. False: at the surface (the surface hold moves the body).
 	bool TickSwimDeep(const UFTWaterSubsystem& System, float DeltaSeconds);
 	void LoadSwimTuning();
 	void BeginSwimRescue(const UFTWaterSubsystem& System);
 	void TickSwimRescue(float DeltaSeconds);
+	// -SwimProof=land|watchdog [-SwimProofShots=<dir>] (dev, not shipped): the swim follow's capture run. It finds water
+	// near the start, walks the lead from its dry edge in and out to a far point (16 m or more for watchdog), and holds
+	// follower slot 0 stuck (its walk to an entry for land, its swim for watchdog) so it rejoins the lead; a still every
+	// 0.5 s, a camera sweep after the rejoin; exit 0 only on the kind's own pass line, at 80-110 s.
+	void TickSwimProof(float DeltaSeconds);
+	int32 SwimProofStage = -1; // -1 off; 0 settle, 1 at the dry edge, 2 walking in, 3 out to the far point, 4 holding
+	float SwimProofTime = 0.f;
+	float SwimProofShotAt = 0.f;
+	int32 SwimProofShotCount = 0;
+	FString SwimProofShots;
+	FString SwimProofKind;
+	FVector SwimProofDry = FVector::ZeroVector;
+	FVector SwimProofWet = FVector::ZeroVector;
+	FVector SwimProofFar = FVector::ZeroVector;
+	int32 SwimProofSlotPhase = -1;     // slot 0's last phase (its changes are logged with the watchdog's and the entry's counts)
+	float SwimProofSlotStuck = 0.f;
+	int32 SwimProofSlotFails = 0;
+	float SwimProofRejoinAt = -1.f;    // SwimProofTime when slot 0 was rejoined
+	float SwimProofSweep = -1.f;       // degrees the camera has turned round the lead (-1: not yet)
+	int32 SwimProofGaveUp = 0;         // slot 0's ToEntry -> Ashore changes (a given-up entry walk)
+	int32 SwimProofPath = 0;           // 0 not placed yet, 1 placed by this kind's own path, -1 placed some other way
+	bool bSwimProofPass = false;       // placed by its own path, then Placed -> Surface (the rejoin swims on)
+	bool bSwimProofLeadPlaced = false; // the harness put the lead in the water after 3 held-up jumps that didn't clear
+	float SwimProofPlaceDue = -1.f;    // SwimProofTime the placement became due (it waits for the body to be down)
+	float SwimProofPlacedAt = -1.f;    // SwimProofTime of the last placement (checked: swimming within 3 s)
+	int32 SwimProofPlaceCount = 0;
+	bool bSwimProofLeadSwims = false;  // the placed lead was seen swimming
+	bool bSwimProofSpotFallback = false; // no water spot passed the check; the watchdog took one blocked on the way in
+	// -SwimProof=boom (item 5 forced): 3 s after the lead holds at the far point the sweep starts, and slot 0 is put on the
+	// sweep circle 90 deg ahead of the camera, slot 1 at 270 deg; both tread there
+	// for the sweep. The run ends after the sweep; exit 0 when a partner was held and the sweep measured.
+	float SwimProofHoldAt = -1.f;      // SwimProofTime the lead reached the far point
+	int32 SwimProofBoomHeld = 0;       // partners held for the sweep
+	int32 SwimProofBoomPulled = 0;     // sweep ticks the spring arm's probe pulled the camera in (a capsule or the world in the way)
+	FString SwimProofBoomWhere;
+	// Item 5 (the boom through a partner): during the sweep, the camera's distance to the nearest partner's capsule; under
+	// 50 cm with that partner's mesh drawn is the clip. Counted per tick and per still (the still numbers kept, first 32).
+	int32 SwimProofClipTicks = 0;
+	int32 SwimProofSweepTicks = 0;
+	float SwimProofSweepNearest = -1.f;
+	int32 SwimProofClipShots[32] = {};
+	int32 SwimProofClipShotCount = 0;
+	// -SwimProof=exit (item 2 of 11-18): 3 s after the lead holds at the far point (its partners treading, 25 s at the most)
+	// it swims to the nearest ladder in its water and climbs it. Each partner is timed from the lead out (its climb over,
+	// standing on the quay) to its own Climbing -> Ashore (the strict line) and to its feet at the exit's top (dry feet);
+	// the most it moves between two frames from the lead's climb on is kept with that frame's time and its phase.
+	void TickSwimProofExit(const UFTWaterSubsystem& System, float DeltaSeconds);
+	int32 SwimProofExitStage = 0;      // 0 not begun, 1 to the ladder, 2 the lead climbing, 3 the lead out
+	int32 SwimProofExitLadder = -1;
+	float SwimProofExitAt = -1.f;      // SwimProofTime the route to the ladder began
+	float SwimProofLeadClimbAt = -1.f;
+	float SwimProofLeadOutAt = -1.f;
+	float SwimProofExitClimbAt[2] = {-1.f, -1.f};
+	float SwimProofExitAshoreAt[2] = {-1.f, -1.f};
+	float SwimProofExitDryAt[2] = {-1.f, -1.f};
+	int32 SwimProofExitIndex[2] = {-2, -2};
+	float SwimProofExitWorst[2] = {0.f, 0.f}; // cm
+	float SwimProofExitWorstDt[2] = {0.f, 0.f};
+	int32 SwimProofExitWorstPhase[2] = {-1, -1};
+	int32 SwimProofExitPhase[2] = {-1, -1};
+	FVector SwimProofExitLast[2] = {FVector::ZeroVector, FVector::ZeroVector};
+	bool bSwimProofExitHasLast[2] = {false, false};
+	// -SwimProof=switch [-SwimSwitchKeep] (11-18 item 3): 3 s after the lead holds at the far point (its partners treading,
+	// 25 s at the most), 1 s of baseline, then the lead switch the party menu makes. Judged for 3 s: the worst real frame
+	// in the first 0.5 s, when the camera's step about the lead settles, the new lead's feet against its surface swim's
+	// target, and each new partner's (seen when, first and worst off its target, frames in a land phase or 30 cm under).
+	// -SwimProof=start (item 5): the lead put in the sea at the far point (StartInWater) after the party gathers; frame 1
+	// and then 3 s are judged the same way.
+	void TickSwimProofSwitch(const UFTWaterSubsystem& System, float DeltaSeconds);
+	int32 SwimProofSwitchStage = 0; // 0 waiting for the hold, 1 the baseline, 2 judged
+	float SwimProofSwitchAt = -1.f;
+	double SwimProofSwitchClock = 0.0;
+	FVector SwimProofSwitchCamOff = FVector::ZeroVector;
+	bool bSwimProofSwitchCamHas = false;
+	float SwimProofSwitchBaseFrame = 0.f;
+	float SwimProofSwitchBaseCam = 0.f;
+	float SwimProofSwitchBaseLead = 0.f;
+	FString SwimProofSwitchOldLook;
+	TWeakObjectPtr<AFTPartyFollower> SwimProofSwitchOld[2];
+	bool bSwimProofSwitchJudged = false;
+	float SwimProofSwitchWorstFrame = 0.f;
+	float SwimProofSwitchSumFrame = 0.f;
+	int32 SwimProofSwitchFrames = 0;
+	float SwimProofSwitchCamLast = -1.f;
+	float SwimProofSwitchCamWorst = 0.f;
+	int32 SwimProofSwitchLeadDry = 0;
+	float SwimProofSwitchLeadFirst = -1.f;
+	float SwimProofSwitchLeadWorst = 0.f;
+	float SwimProofSwitchLog = 0.f;
+	float SwimProofSwitchSeen[2] = {-1.f, -1.f};
+	FString SwimProofSwitchName[2];
+	float SwimProofSwitchFirst[2] = {-1.f, -1.f};
+	float SwimProofSwitchWorst[2] = {0.f, 0.f};
+	int32 SwimProofSwitchLand[2] = {0, 0};
+	int32 SwimProofSwitchFell[2] = {0, 0};
+	bool bSwimProofStartFrame1 = false;
+	// -SwimProof=cost (item 4 of 11-18, a measurement only): one fixed camera, the party idle on land, then the same party
+	// treading in the sea; each window's frame, game-thread, render-thread and GPU ms.
+	void TickSwimProofCost(float DeltaSeconds);
+	bool SwimProofCostParty(bool bWantWater, FString& OutWhy) const;
+	static constexpr int32 kSwimProofCostCap = 16384; // frames per window (10 s uncapped at Low fits)
+	int32 SwimProofCostStage = 0; // 0 settle on land, 1 land window, 2 settle in the sea, 3 water window
+	float SwimProofCostTime = 0.f;
+	bool bSwimProofCostShot = false;
+	TWeakObjectPtr<AActor> SwimProofCostCam;
+	TUniquePtr<ftcore::FrameStats> SwimProofCostStats[2];
 	// The body pitched along the swim (the mesh about the capsule's centre), eased; 0 puts it upright again.
 	void PoseSwim(float TargetPitch, float DeltaSeconds);
 	ftcore::Swim SwimBody;
@@ -605,6 +729,38 @@ private:
 	FVector SwimMeshLoc = FVector::ZeroVector;
 	FRotator SwimMeshRot = FRotator::ZeroRotator;
 	bool bSwimMeshSaved = false;
+	// ftcore::WaterLoco (Data/Swim/water_loco.json): the water's own locomotion over Swim, its tread, surface stroke,
+	// entries, dive and breach clips and the exits. Stepped once a tick on every TickWater path the body is in play on
+	// (StepWaterLoco); at the surface its planar velocity, facing and sink move the body (the surface hold), and its
+	// clip layers play over the locomotion (UFTLocomotionAnimInstance::SetWater). With no swim clip loaded for the
+	// lead's body, its layers carry no weight and the stand-in plays as before.
+	void StepWaterLoco(float DeltaSeconds);
+	void LoadWaterLoco(UFTLocomotionAnimInstance* Anim);
+	ftcore::WaterLoco WaterLocoBody;
+	ftcore::WaterLocoPose WaterPose;
+	FVector2D WaterMoveWanted = FVector2D::ZeroVector; // the surface move asked this tick (world planar), AddMovementInput
+	uint64 SwimSteppedFrame = 0;   // the frame TickSwimDeep stepped Swim (its dived and surfaced are that frame's)
+	uint64 WaterLocoFrame = 0;     // the frame WaterLoco was stepped
+	bool bWaterLocoTried = false;
+	int32 WaterClipsFor = -2;      // the LeadIndex the swim clips were looked up for, and the anim instance given them
+	TWeakObjectPtr<UAnimInstance> WaterClipsAnim;
+	bool bWaterUnderClips = false; // the prone under-water clips are loaded: the body is not pitched for them
+	bool bWaterTopFalling = false; // at the top of TickWater: airborne, and its velocity (the entry reads them)
+	FVector WaterTopVelocity = FVector::ZeroVector;
+	bool bWaterClimbLadder = false; // the climb out is a ladder's (TryLadderClimb), else the mantle (TryWaterClimb)
+	int32 WaterLeadExit = -1;       // the ladder's exit index the last climb out used (-1: the mantle, none)
+	// The partners in the water (ftcore::WaterFollowParty): one plan for the party, stepped after WaterLoco, its orders
+	// read by each follower's own Place (AFTPartyFollower::TickWater). The followers are the ones set up with this lead,
+	// looked for again every half second while all are ashore; a slot keeps its member while it is in the water.
+	// -LocoNoFollowerSwim: none of it; the followers hold at the bank as before.
+	void StepWaterParty(float DeltaSeconds);
+	ftcore::WaterFollowParty WaterParty;
+	TWeakObjectPtr<AFTPartyFollower> WaterFollowers[ftcore::kWaterFollowMax];
+	int32 NumWaterFollowers = 0;
+	bool bWaterPartyParked = false;              // the lead was taken out of play since the plan last stepped
+	bool bWaterPartyLeadSwam = false;
+	bool bNoFollowerSwim = false;
+	bool bNoFollowerSwimRead = false;
 	bool bSwimRescue = false;
 	float SwimRescueTime = 0.f;
 	FVector SwimRescueFrom = FVector::ZeroVector;
@@ -675,28 +831,83 @@ private:
 	float WetPrintLogAt = 0.f; // the out-of-water time of the next log line
 	bool bWetPrintLoggedDry = true;
 	// A scripted walk for captures and checks (BeginLeadGo, or -LeadGo=<x,y> in the plan frame of -WorldEyeSide after
-	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it presses jump (with -LeadGoJump); the run
-	// quits -LeadGoQuit=<s> after it began. -LeadGoPace=<0.1..1> walks it slower (the stick's push).
+	// -LeadGoAfter=<s>): the lead walks at the point; held up for a second it holds jump for 0.25 s with its push kept on
+	// (with -LeadGoJump; ftcore::HeldUpJump counts and judges the tries); the run quits -LeadGoQuit=<s> after it began.
+	// -LeadGoPace=<0.1..1> walks it slower (the stick's push).
 	float LeadGoPace = 1.f;
 	bool bLeadGo = false;
 	bool bLeadGoJump = false;
 	FVector LeadGoTo = FVector::ZeroVector;
 	float LeadGoAfter = -1.f;
 	float LeadGoQuit = 0.f;
-	float LeadGoStuck = 0.f;
 	float LeadGoRan = 0.f;
+	ftcore::HeldUpJump LeadGoTry;
 	TArray<FVector> LeadGoNext; // the scripted walk's further points, taken in turn as each is reached
+	// The held-up jump's events this frame (the release and the verdict, logged).
+	void LeadGoTryEvents(float Distance);
+	// What held the walk up, measured at a press (dev, not shipped): the top of what stands in the way ahead, over the
+	// feet (cm; < 0 when nothing was found within reach), and whether the lead's own jump rises over it.
+	void LogLeadGoHold();
+	// How each held-up jump went (11-18 ruling, item 4; dev): from its press until the body swims, the next press or 3 s,
+	// whether a traversal began (a vault from the ground or a catch in the air, its clip), the ledge phases and movement
+	// modes seen, the feet's rise over the press every 0.1 s and its peak, and where the body first stood again 40 cm or
+	// more up (what it stood on); logged in one line at the end.
+	void TraceLeadGoJump(float DeltaSeconds, bool bPressed);
+	void LogLeadGoTrace(const TCHAR* Why);
+	bool bLeadGoTrace = false;
+	float LeadGoTraceTime = 0.f;
+	double LeadGoTraceFeet0 = 0.0;
+	uint32 LeadGoTraceTraversals0 = 0;
+	int32 LeadGoTraceTry = 0;
+	float LeadGoTraceTravAt = -1.f;      // s after the press a traversal began (-1: none)
+	bool bLeadGoTraceCatch = false;      // that traversal was a catch in the air (else a vault from the ground)
+	int32 LeadGoTraceClip = -1;
+	uint8 LeadGoTraceLedge = 0;          // bit per ftcore::LedgePhase seen
+	uint32 LeadGoTraceModes = 0;         // bit per EMovementMode seen
+	double LeadGoTracePeak = 0.0;        // cm: the feet's highest rise over the press
+	float LeadGoTracePeakAt = 0.f;
+	int16 LeadGoTraceRise[30] = {};      // cm over the press, each 0.1 s
+	int32 LeadGoTraceSamples = 0;
+	float LeadGoTraceStoodAt = -1.f;     // s after the press the body first stood 40 cm or more up (-1: never)
+	double LeadGoTraceStoodRise = 0.0;
+	FString LeadGoTraceStoodOn;          // what it stood on then (actor/component, and the floor's normal z)
+	float LeadGoTraceVerdictAt = -1.f;   // s after the press the try was judged
 
 public:
 	// The lead walks at a point (cm) from now on.
 	void BeginLeadGo(const FVector& To, bool bJumpWhenHeld);
-	void EndLeadGo() { bLeadGo = false; }
+	void EndLeadGo()
+	{
+		if (LeadGoTry.holding())
+		{
+			HandleJumpRelease();
+		}
+		LeadGoTry.reset();
+		bLeadGo = false;
+	}
 	// One more point (cm) for the scripted walk, taken once the points before it are reached.
 	void AddLeadGo(const FVector& To) { LeadGoNext.Add(To); }
 	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
 	bool IsSwimming() const { return bSwimming; }
 	// Under water (diving, under, surfacing) or being carried out by a rescue: the followers hold at the bank.
 	bool IsUnderWater() const { return bSwimUnder || bSwimRescue; }
+	// A start in the water (11-18 item 5: a scene or hold that begins in the sea): the lead put at At (cm; x and y) at its
+	// surface swim's height, facing Yaw, swimming from this frame, and the partners respawned at their surface slots
+	// (WaterFollowParty::startInWater). False (nothing done) with no water there deep enough to swim, the van, a
+	// traversal, a climb out, a rescue or a dive.
+	bool StartInWater(const FVector& At, double Yaw);
+	// From the director (AFTExploreDirector::SpawnFollowers) before it first places a new set of followers.
+	void OnFollowersSpawned();
+	// The water follow's order for the follower in Slot (AFTPartyFollower::SetWaterSlot); null with none (no water on the
+	// map, -LocoNoFollowerSwim, or no such slot).
+	const ftcore::WaterFollowOrder* GetWaterOrder(int32 Slot) const;
+	// The water follow's tuning: the climb out's times and speeds, and -PartyExitFast's switches.
+	const ftcore::WaterFollowTuning& GetWaterFollowTuning() const { return WaterParty.tuning(); }
+	// The water's locomotion tuning (Data/Swim/water_loco.json, else the built-in), read once for every body.
+	static const ftcore::WaterLocoTuning& SharedWaterLocoTuning();
+	// Gives Anim the swim clips of the body called Name (/Game/Characters/<Name>/Swim/A_<clip>), Devin's where Name has
+	// none; a clip that does not fit BodyAsset is left out. The count found (0: the stand-in plays).
+	static int32 LoadWaterClips(UFTLocomotionAnimInstance& Anim, const USkeletalMesh* BodyAsset, const FString& Name, const TCHAR* LogName);
 	float GetBreathShare() const { return SwimBody.last().breathShare; }
 	bool IsBreathWarning() const { return SwimBody.last().warning; }
 	// For the HUD's breath ring: the swim's last step (breath, breathShare, warning, state, and the canDive and guard

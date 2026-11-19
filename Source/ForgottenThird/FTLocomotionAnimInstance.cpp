@@ -420,6 +420,46 @@ bool UFTLocomotionAnimInstance::SetActionClip(int32 Slot, UAnimSequence* Clip)
 	return true;
 }
 
+void UFTLocomotionAnimInstance::SetWaterClip(ftcore::WaterClip Which, UAnimSequence* Clip)
+{
+	const int32 I = static_cast<int32>(Which);
+	if (I > 0 && I < ftcore::kWaterClipCount)
+	{
+		WaterClips[I] = Clip;
+	}
+}
+
+int32 UFTLocomotionAnimInstance::NumWaterClips() const
+{
+	int32 Num = 0;
+	for (int32 I = 1; I < ftcore::kWaterClipCount; ++I)
+	{
+		Num += WaterClips[I] != nullptr ? 1 : 0;
+	}
+	return Num;
+}
+
+void UFTLocomotionAnimInstance::SetWater(float Weight, const ftcore::WaterClipLayer* Layers, int32 Count, float Lean)
+{
+	NumWaterLayers = 0;
+	WaterWeight = FMath::Clamp(Weight, 0.f, 1.f);
+	WaterLean = FMath::Clamp(Lean, -45.f, 45.f);
+	for (int32 I = 0; Layers && I < Count && NumWaterLayers < MaxWaterLayers; ++I)
+	{
+		const int32 Slot = static_cast<int32>(Layers[I].clip);
+		if (Slot > 0 && Slot < ftcore::kWaterClipCount && WaterClips[Slot] && Layers[I].weight > 0.f)
+		{
+			// The phase into this clip's own length (the imported clip, not Core's authored seconds).
+			const float Phase = FMath::Clamp(Layers[I].phase, 0.f, 1.f);
+			WaterLayers[NumWaterLayers++] = {Slot, Phase * WaterClips[Slot]->GetPlayLength(), Layers[I].weight};
+		}
+	}
+	if (NumWaterLayers == 0)
+	{
+		WaterWeight = 0.f; // no clip for any layer: the stand-in plays
+	}
+}
+
 void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* Clip)
 {
 	if (Which == ftcore::LocoClip::Count)
@@ -1474,6 +1514,51 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 			Layers[NumLayers++] = {From, Instance->PrevTime, TravWeight * (1.f - Share), Instance->bPrevLoop};
 		}
 	}
+	// The water's clips (SetWater) over the locomotion and any traversal by the water weight, each by its share of the
+	// pushed layers' weight; when full, the lightest layers make room. At full weight they are the whole pose.
+	float WaterWeight = 0.f;
+	if (Instance->NumWaterLayers > 0 && Instance->WaterWeight > 0.f)
+	{
+		WaterWeight = Instance->WaterWeight;
+		float WaterSum = 0.f;
+		for (int32 I = 0; I < Instance->NumWaterLayers; ++I)
+		{
+			WaterSum += Instance->WaterLayers[I].Weight;
+		}
+		const int32 Room = MaxLayers - Instance->NumWaterLayers;
+		float Sum = 0.f;
+		for (int32 I = 0; I < NumLayers; ++I)
+		{
+			Sum += Layers[I].Weight;
+		}
+		while (NumLayers > Room)
+		{
+			int32 Lightest = 0;
+			for (int32 K = 1; K < NumLayers; ++K)
+			{
+				Lightest = Layers[K].Weight < Layers[Lightest].Weight ? K : Lightest;
+			}
+			Sum -= Layers[Lightest].Weight;
+			Layers[Lightest] = Layers[--NumLayers];
+		}
+		if (Sum <= 0.f)
+		{
+			NumLayers = 0;
+			WaterWeight = 1.f;
+		}
+		for (int32 I = 0; I < NumLayers; ++I)
+		{
+			Layers[I].Weight = Layers[I].Weight / Sum * (1.f - WaterWeight);
+		}
+		for (int32 I = 0; I < Instance->NumWaterLayers && NumLayers < MaxLayers; ++I)
+		{
+			const UFTLocomotionAnimInstance::FAction& W = Instance->WaterLayers[I];
+			if (const UAnimSequence* Seq = Instance->WaterClips[W.Slot].Get())
+			{
+				Layers[NumLayers++] = {Seq, W.Time, WaterSum > 0.f ? W.Weight / WaterSum * WaterWeight : 0.f, false};
+			}
+		}
+	}
 	// The host's action clips (a fight's strikes) over all of it by their summed weight; when full, the lightest
 	// layers make room. With nothing under them they take the whole body.
 	float ActWeight = 0.f;
@@ -1552,7 +1637,7 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 	// A turn driving the capsule: this frame's stretch of its root motion, its yaw scaled to the turn
 	// asked for, for the movement component to apply.
 	// (None while a traversal plays: its owner carries the body until it lets go.)
-	if ((Instance->TravClip < 0 || Instance->bTravOut) && Loco.turning() && Loco.turnRootDriven() && Loco.turnTo() > Loco.turnFrom())
+	if ((Instance->TravClip < 0 || Instance->bTravOut) && WaterWeight <= 0.f && Loco.turning() && Loco.turnRootDriven() && Loco.turnTo() > Loco.turnFrom())
 	{
 		if (const UAnimSequence* Seq = Instance->Clips[static_cast<int32>(Loco.turnClip())])
 		{
@@ -1600,21 +1685,26 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		ElbowHold = 0.f;
 	}
 	// A traversal clip or an action has its own trunk, head, arms and legs: the bends and the air pose give way to it.
-	if (TravWeight > 0.f || ActWeight > 0.f)
+	if (TravWeight > 0.f || ActWeight > 0.f || WaterWeight > 0.f)
 	{
-		const float Keep = (1.f - TravWeight) * (1.f - ActWeight);
+		const float Keep = (1.f - TravWeight) * (1.f - ActWeight) * (1.f - WaterWeight);
 		SpineBend = FQuat::Slerp(FQuat::Identity, SpineBend, Keep);
 		HeadBend = FQuat::Slerp(FQuat::Identity, HeadBend, Keep);
 		ElbowHold *= Keep;
 		LimbWeight[0] *= Keep;
 		// Under an upper-body strike the legs keep their locomotion, the air pose with it.
-		LimbWeight[1] *= (1.f - TravWeight) * (1.f - ActWeight * (1.f - UpperShare));
+		LimbWeight[1] *= (1.f - TravWeight) * (1.f - WaterWeight) * (1.f - ActWeight * (1.f - UpperShare));
+	}
+	// The water's lean (WaterLoco: the turn rate by the speed) banks the trunk about the forward axis by its weight.
+	if (WaterWeight > 0.f && Instance->WaterLean != 0.f)
+	{
+		SpineBend = FQuat(F, FMath::DegreesToRadians(-Instance->WaterLean * WaterWeight)) * SpineBend;
 	}
 	// The ready stance, by its share (giving way to a traversal or an action as the bends do): its trunk lean and
 	// chest turn into the spine's bend, the elbows left to it.
 	static const bool bNoReady = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoReady"));
 	Ready = bNoReady ? nullptr : Instance->PushedReadyStance;
-	ReadyShare = Ready ? ftcore::readyStanceShare(Instance->ReadyAlpha, Instance->ReadySpeed, *Ready) * (1.f - TravWeight) * (1.f - ActWeight) : 0.f;
+	ReadyShare = Ready ? ftcore::readyStanceShare(Instance->ReadyAlpha, Instance->ReadySpeed, *Ready) * (1.f - TravWeight) * (1.f - ActWeight) * (1.f - WaterWeight) : 0.f;
 	if (ReadyShare > 0.f)
 	{
 		SpineBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(Ready->turn * ReadyShare))
@@ -1627,14 +1717,14 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		SpineBend = FQuat(Right, FMath::DegreesToRadians(Instance->PushedTrunkPitch * TravWeight)) * SpineBend;
 	}
 	// The legs turned toward the way the body moves (the root, in Evaluate), the chest turned back over the spine.
-	LegYaw = TravWeight > 0.f ? 0.f : FMath::Clamp(Instance->PushedLegYaw, -100.f, 100.f);
+	LegYaw = TravWeight > 0.f || WaterWeight > 0.f ? 0.f : FMath::Clamp(Instance->PushedLegYaw, -100.f, 100.f);
 	if (LegYaw != 0.f)
 	{
 		SpineBend = FQuat(FVector::UpVector, FMath::DegreesToRadians(-LegYaw)) * SpineBend;
 	}
 	// The feet held: -ArenaNoFootLock leaves them to the clips, for measuring what the hold takes off.
 	static const bool bNoFootLock = FParse::Param(FCommandLine::Get(), TEXT("ArenaNoFootLock"));
-	bFootLock = Instance->bPushedFootLock && TravWeight <= 0.f && !bNoFootLock;
+	bFootLock = Instance->bPushedFootLock && TravWeight <= 0.f && WaterWeight <= 0.f && !bNoFootLock;
 	HoldDt = DeltaSeconds;
 	LegForward = Instance->ForwardCS;
 	if (const USkeletalMeshComponent* Skel = Instance->GetSkelMeshComponent())

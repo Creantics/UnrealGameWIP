@@ -1,9 +1,12 @@
 #include "FTStorySaveGame.h"
 
 #include "FTStoryStateSubsystem.h"
+#include "FTNpcSubsystem.h"
 #include "FTStorySubsystem.h"
+#include "ForgottenThird.h"
 #include "FTText.h"
 
+#include "ftcore/NpcMemory.h"
 #include "ftcore/Seen.h"
 #include "ftcore/StorySave.h"
 
@@ -73,6 +76,14 @@ bool UFTStorySaveGame::CaptureFrom(const UFTStorySubsystem* Story)
 		}
 	}
 	SaveJson = FT::ToFString(ftcore::encodeStorySave(Save));
+	const UGameInstance* GI = Story->GetGameInstance();
+	const UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
+	// While the NPC tables aren't loaded, the block this object already holds stays (ftcore::npcSaveBlockToWrite);
+	// a fresh object holds the slot's when its caller copied it in (UFTStorySubsystem::Autosave), else none.
+	const bool bNpcReady = Npcs && Npcs->IsReady();
+	const std::string NpcCaptured = bNpcReady ? FT::ToUtf8(Npcs->CaptureSaveJson()) : std::string();
+	const std::string Kept = bNpcReady ? std::string() : FT::ToUtf8(NpcSaveJson);
+	NpcSaveJson = FT::ToFString(ftcore::npcSaveBlockToWrite(bNpcReady, NpcCaptured, Kept));
 	if (Block.Num() > 0)
 	{
 		StoryBlock = MoveTemp(Block);
@@ -129,6 +140,27 @@ bool UFTStorySaveGame::ApplyTo(UFTStorySubsystem* Story, FString& OutError, TArr
 	{
 		State->DecodeBlock(StoryBlock); // a save from before the block: a new game's state
 		State->SyncAfterLoad(); // the runner stays where it was restored; the state follows it (StoryBridge::sync)
+	}
+	const UGameInstance* GI = Story->GetGameInstance();
+	UFTNpcSubsystem* Npcs = GI ? GI->GetSubsystem<UFTNpcSubsystem>() : nullptr;
+	FString NpcError;
+	if (Npcs && !Npcs->IsReady())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory not loaded from the save: the NPC tables aren't loaded"));
+	}
+	else if (Npcs && NpcSaveJson.IsEmpty())
+	{
+		Npcs->ResetMemory(); // a save from before NPC memory: nobody remembers this session's deeds
+	}
+	else if (Npcs && !Npcs->ApplySaveJson(NpcSaveJson, NpcError))
+	{
+		// The story loads anyway; a damaged NPC block leaves everyone remembering nothing rather than this session.
+		Npcs->ResetMemory();
+		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory not loaded from the save: %s"), *NpcError);
+	}
+	else if (Npcs)
+	{
+		UE_LOG(LogForgottenThird, Log, TEXT("NPC memory loaded from the save: %d chars."), NpcSaveJson.Len());
 	}
 	return true;
 }
