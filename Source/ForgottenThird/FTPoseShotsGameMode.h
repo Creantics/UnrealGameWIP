@@ -76,5 +76,6 @@ private:
 	int32 Wait = 0;
 	FString Pending;
 	int32 PendingTicks = 0;
+	double AimedHalf = 0.0;  // the half angle (radians) the camera was last aimed to; the window may size after Setup's aim
 	bool bActive = false;
 };

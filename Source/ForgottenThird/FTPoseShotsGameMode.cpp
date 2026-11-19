@@ -88,19 +88,22 @@ FBox FrameBox(const USkeletalMeshComponent& C)
 	return Box;
 }
 
+// The game viewport's size in pixels; 0x0 before the window has one (as at StartPlay).
+FIntPoint WindowSize(const UWorld* World)
+{
+	const UGameViewportClient* Client = World ? World->GetGameViewport() : nullptr;
+	return Client && Client->Viewport ? Client->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
+}
+
 // Half of the narrower field of view in radians. kFov spans the viewport's width, and a still keeps the narrower angle:
 // a 1200x1200 still from a 1280x720 window showed about 17 degrees, not 30, and cut the head and feet off.
 double HalfAngle(const UWorld* World)
 {
 	double Half = FMath::DegreesToRadians(kFov * 0.5);
-	const UGameViewportClient* Client = World ? World->GetGameViewport() : nullptr;
-	if (Client && Client->Viewport)
+	const FIntPoint V = WindowSize(World);
+	if (V.X > 0 && V.Y > 0 && V.Y < V.X)
 	{
-		const FIntPoint V = Client->Viewport->GetSizeXY();
-		if (V.X > 0 && V.Y > 0 && V.Y < V.X)
-		{
-			Half = FMath::Atan(FMath::Tan(Half) * V.Y / V.X);
-		}
+		Half = FMath::Atan(FMath::Tan(Half) * V.Y / V.X);
 	}
 	return Half;
 }
@@ -340,8 +343,7 @@ bool AFTPoseShotsGameMode::Setup()
 		*GetPathNameSafe(Body->GetSkeletalMeshAsset()), Look ? *Look->Name : TEXT("none"), *Clip->GetPathName(), *PropDesc, Pieces.Num(),
 		Grooms.Num());
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: %s, clip %.3f s."), *Describe, Clip->GetPlayLength());
-	const UGameViewportClient* Client = GetWorld()->GetGameViewport();
-	const FIntPoint Window = Client && Client->Viewport ? Client->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
+	const FIntPoint Window = FTPoseShots::WindowSize(GetWorld());
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: window %dx%d, framed to %.1f degrees (camera %.0f across), stills %s."), Window.X,
 		Window.Y, FMath::RadiansToDegrees(FTPoseShots::HalfAngle(GetWorld())) * 2.0, FTPoseShots::kFov, *Size);
 	return true;
@@ -429,7 +431,8 @@ void AFTPoseShotsGameMode::Aim(int32 View)
 	Box.Min.Z = FMath::Min(Box.Min.Z, FTPoseShots::kSpot.Z - 4.0);
 	const FVector Center = Box.GetCenter();
 	const double Radius = Box.GetExtent().Size();
-	const double Dist = Radius / FMath::Tan(FTPoseShots::HalfAngle(GetWorld())) * 0.92;
+	AimedHalf = FTPoseShots::HalfAngle(GetWorld());
+	const double Dist = Radius / FMath::Tan(AimedHalf) * 0.92;
 	// Facing: the body's +Y. A positive view yaw goes toward the character's left.
 	const FVector Facing = Body->GetComponentTransform().TransformVectorNoScale(FVector(0.0, 1.0, 0.0)).GetSafeNormal2D();
 	const FVector Dir = Facing.RotateAngleAxis(-Views[View].Yaw, FVector::UpVector);
@@ -486,6 +489,17 @@ void AFTPoseShotsGameMode::Tick(float DeltaSeconds)
 		{
 			IStreamingManager::Get().StreamAllResources(10.f);
 		}
+		return;
+	}
+	// Setup aims before the window has its size (it reads 0x0 there, so the angle falls back to the full 30 degrees and
+	// the first still came out framed too tight): aim again, and settle, whenever the window's angle has changed since.
+	if (const double Half = FTPoseShots::HalfAngle(GetWorld()); !FMath::IsNearlyEqual(Half, AimedHalf, 1e-6))
+	{
+		const FIntPoint Window = FTPoseShots::WindowSize(GetWorld());
+		UE_LOG(LogForgottenThird, Display, TEXT("FTPoseShots: window now %dx%d; aimed again, framed to %.1f degrees (was %.1f)."),
+			Window.X, Window.Y, FMath::RadiansToDegrees(Half) * 2.0, FMath::RadiansToDegrees(AimedHalf) * 2.0);
+		Aim(ViewIndex);
+		Wait = FTPoseShots::kSettle;
 		return;
 	}
 	const double T = Times[TimeIndex];
