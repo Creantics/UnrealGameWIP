@@ -412,7 +412,8 @@ bool UFTStorySubsystem::Autosave()
 	}
 	UE_LOG(LogFTStory, Log, TEXT("Save: slot written at scene %s; NPC block %d chars (%s)."), *GetSceneId(), Slot->NpcSaveJson.Len(),
 		bNpcReady									 ? TEXT("captured")
-		: NpcSource == ftcore::NpcUnreadyBlock::Held ? TEXT("held from the loaded save: the NPC tables aren't loaded")
+		: NpcSource == ftcore::NpcUnreadyBlock::Held ? (Slot->NpcSaveJson.IsEmpty() ? TEXT("held from the loaded save, which has none: the NPC tables aren't loaded")
+														: TEXT("held from the loaded save: the NPC tables aren't loaded"))
 		: NpcSource == ftcore::NpcUnreadyBlock::None ? TEXT("none: a new game, the NPC tables aren't loaded")
 													 : TEXT("kept from the slot: the NPC tables aren't loaded"));
 	return true;

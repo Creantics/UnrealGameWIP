@@ -177,8 +177,8 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 			FTimerHandle ThenTimer;
 			GetWorldTimerManager().SetTimer(ThenTimer, FTimerDelegate::CreateWeakLambda(this, [this, SaveRunThen]()
 			{
-				UFTStorySubsystem* Story = GetStory();
-				if (!Story)
+				UFTStorySubsystem* RunStory = GetStory(); // not Story: EnterTitle's parameter (shadowing is an error)
+				if (!RunStory)
 				{
 					return;
 				}
@@ -191,7 +191,7 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 				UE_LOG(LogForgottenThird, Log, TEXT("SAVERUN then %s."), *SaveRunThen);
 				if (SaveRunThen == TEXT("new"))
 				{
-					if (!Story->StartStory(StartScene))
+					if (!RunStory->StartStory(StartScene))
 					{
 						UE_LOG(LogForgottenThird, Warning, TEXT("SAVERUN then new: could not start at '%s'."), *StartScene);
 					}
@@ -207,7 +207,7 @@ void AFTGameMode::EnterTitle(UFTStorySubsystem& Story)
 					}
 					Slice->RunSliceTest();
 				}
-				Story->Autosave();
+				RunStory->Autosave();
 			}), 1.f, false);
 		}), 3.f, false);
 		if (UGameInstance* GI = GetGameInstance())
