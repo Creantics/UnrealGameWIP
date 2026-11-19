@@ -145,8 +145,8 @@ FTCORE_API bool mapLabelOnCoast(const MapLook& look, const MapOverlayView& v, Ma
 // road (mapLabelOnAnyRoad, the cursor's lit roads included), whose centre is on the place's own land and whose box
 // meets no coast (mapLabelOnCoast). Its own land: the place itself, or for a point on water (a quay's edge, a pier) the
 // nearest dry point, found ring by ring out to the box's height; a spot counts when its centre is dry (neither
-// mapIsWater nor mapIsSea) and the line to it from there crosses no water (sampled every 2 px), so a name never hops
-// a canal to the far bank. Seated: l is at that spot. Otherwise l is unchanged and the name is left out: TooBig when
+// mapIsWater nor mapIsSea) and the straight line to it from there crosses no water (sampled every 2 px). A spot on
+// the far bank of a canal is reached only round its end or through a gap in it (a crossing). Seated: l is at that spot. Otherwise l is unchanged and the name is left out: TooBig when
 // the box will not fit on the screen; else OnCoast when a spot on its own land and clear of the roads met the coast;
 // else OnWater when every spot clear of the roads was on water or across it; else OnRoad. Zero allocation.
 enum class MapPlaceSeat : std::uint8_t { Seated, OnRoad, OnCoast, OnWater, TooBig };
