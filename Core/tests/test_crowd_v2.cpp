@@ -843,6 +843,50 @@ TEST_CASE("crowd population: pool limit, spawn ring, despawn, drawn set") {
     CHECK(sim.liveCount() <= 40);
 }
 
+// The Strip's start at 904.5,518: two spawnable nodes in the ring, streets 110 m long on average and
+// up to 240 m. Spawning by the nearest node starved there (156 live of 300) and threw members past despawnDist.
+TEST_CASE("crowd population: long streets fill along their length, and nobody is born past the despawn distance") {
+    CrowdTuning t;
+    t.maxAgents = 40;
+    t.targetAgents = 40;
+    const Vec2 player{0.f, 0.f};
+    SUBCASE("a street whose two ends both lie past the ring fills between them") {
+        CrowdGraph g;
+        REQUIRE(g.build({line({-400.f, 0.f}, {400.f, 0.f})}, loose()));
+        REQUIRE(g.nodeCount() == 2); // the nearest node to any ring point is 250 m off
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 5));
+        run(sim, 5.f, player);
+        CHECK(sim.liveCount() == 40);
+        CHECK(sim.counts().despawned == 0);
+        for (std::uint32_t i = 0; i < sim.capacity(); ++i)
+            if (sim.agent(i).live) CHECK(dist(sim.agent(i).pos, player) <= t.spawnMax + 10.f); // 5 s of walking
+    }
+    SUBCASE("a street from inside the ring out past the despawn distance: no member is born out there") {
+        CrowdGraph g;
+        REQUIRE(g.build({line({100.f, 0.f}, {700.f, 0.f})}, loose()));
+        REQUIRE(g.nodeCount() == 2);
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 5));
+        run(sim, 5.f, player);
+        CHECK(sim.liveCount() > 0);
+        CHECK(sim.counts().despawned == 0); // all 600 m of it used to be drawn on; most of it lies past 180 m
+        for (std::uint32_t i = 0; i < sim.capacity(); ++i)
+            if (sim.agent(i).live) CHECK(dist(sim.agent(i).pos, player) <= t.spawnMax + 10.f);
+    }
+    SUBCASE("the street spot query finds a long street's middle and says where along it") {
+        CrowdGraph g;
+        REQUIRE(g.build({line({-400.f, 0.f}, {400.f, 0.f})}, loose()));
+        CrowdStreetPoint sp;
+        REQUIRE(g.nearestStreet({30.f, 10.f}, 15.f, sp));
+        CHECK(sp.dist == doctest::Approx(10.f));
+        const Vec2 a = g.node(sp.n), b = g.node(g.edge(sp.n, sp.k).to);
+        CHECK(a.x + (b.x - a.x) * sp.along / g.edge(sp.n, sp.k).length == doctest::Approx(30.f).epsilon(1e-4));
+        CHECK_FALSE(g.nearestStreet({30.f, 20.f}, 15.f, sp));
+        CHECK(g.nearest({30.f, 10.f}, 15.f) == UINT32_MAX);
+    }
+}
+
 TEST_CASE("crowd determinism: same seed and events, same crowd, whatever the frame slicing") {
     CrowdGraph g;
     REQUIRE(g.build(gridStreets(15, 25.f), loose()));

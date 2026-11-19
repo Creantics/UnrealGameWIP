@@ -89,6 +89,12 @@ struct CrowdEdge {
     std::int8_t side = 0; // 0: the lane on both sides; +-1: on that side of this direction's left normal only
 };
 
+// A spot on a street's centre line: node n's k-th edge, `along` m from n, `dist` m from the point asked about.
+struct CrowdStreetPoint {
+    std::uint32_t n = UINT32_MAX, k = 0;
+    float along = 0.f, dist = 0.f;
+};
+
 class CrowdGraph {
 public:
     // Builds from streets in the engine frame. False (with a reason) when no walkable edge results. Allocates.
@@ -107,6 +113,9 @@ public:
     std::uint32_t componentCount() const { return components_; }
     // The nearest node within `within` m, or UINT32_MAX. No allocation.
     FTCORE_API std::uint32_t nearest(Vec2 p, float within) const;
+    // The nearest spot on any street's centre line within `within` m, or false. Long streets with their nodes far
+    // apart are found anywhere along them. No allocation.
+    FTCORE_API bool nearestStreet(Vec2 p, float within, CrowdStreetPoint& out) const;
     Vec2 boundsMin() const { return min_; }
     Vec2 boundsMax() const { return max_; }
 
@@ -123,6 +132,12 @@ private:
     std::uint32_t gw_ = 0, gh_ = 0;
     std::vector<std::uint32_t> cellFirst_;
     std::vector<std::uint32_t> cellNodes_;
+    // street grid for nearestStreet(): each street once (as node n's k-th edge), in every cell its bounds touch
+    struct StreetRef {
+        std::uint32_t n = 0, k = 0;
+    };
+    std::vector<std::uint32_t> streetFirst_;
+    std::vector<StreetRef> streets_;
 };
 
 // ---- Events ----
@@ -307,7 +322,13 @@ struct CrowdCounts {
     std::uint64_t popsInView = 0;  // S-332: a member drawn or undrawn (spawned, despawned) inside a view's range
     std::uint64_t popsAppear = 0, popsLive = 0; // S-366: of them, drawn (vs undrawn); spawned or despawned (vs draw pick)
     std::uint64_t watched = 0, walkedOn = 0; // S-332: runners at the safe distance that stopped to look back / walked on
+    // The count's churn by cause. Spawn tries that came to nothing: no spawnable street within 15 m of the ring
+    // point, no free slot, the spot outside the ring, the spot crowded, the spot in a view. Despawns (all past
+    // despawnDist, out of every view): within kCrowdNewborn s of the spawn (born out there) or later (walked out).
+    std::uint64_t missNoStreet = 0, missSlot = 0, missSpotRing = 0, missCrowded = 0, missSpotView = 0;
+    std::uint64_t despawnNewborn = 0, despawnWalkedOut = 0;
 };
+inline constexpr float kCrowdNewborn = 1.f;
 
 // A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
 // a later time (the host evaluates it 1 s in). Fixed size, no allocation.
@@ -420,6 +441,7 @@ private:
         float odo = 0.f;
         float yaw = 0.f, speed = 0.f, baseSpeed = 1.3f;
         float boldness = 0.5f, fear = 0.f, stateTime = 0.f, idleLeft = 0.f;
+        double bornAt = 0.0; // s: the sim time of its spawn
         float heading = 0.f; // deg: where a calm walk tends
         Vec2 threat;
         double threatAt = -1e9;

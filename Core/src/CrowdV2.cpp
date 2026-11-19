@@ -368,6 +368,7 @@ std::uint32_t CrowdSim::spawnAt(std::uint32_t n, std::uint32_t k, float boldness
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
     a.pos = {f.x + dir.x * a.along - dir.y * a.lat, f.y + dir.y * a.along + dir.x * a.lat};
     a.prev = a.pos;
+    a.bornAt = time_;
     a.spreadLeft = rand01() * tuning_.spreadInterval;
     a.safeExtra = rand01() * kSafeSpread;
     if (rand01() < tuning_.idleChance) a.idleAlong = a.along + (a.len - a.along) * (0.2f + 0.6f * rand01());
@@ -387,6 +388,7 @@ void CrowdSim::free(std::uint32_t i) {
     freeList_[freeCount_++] = i;
     --live_;
     ++counts_.despawned;
+    ++(time_ - a.bornAt < kCrowdNewborn ? counts_.despawnNewborn : counts_.despawnWalkedOut);
     views_[i].live = false;
     views_[i].drawn = false;
     views_[i].state = CrowdState::Free;
@@ -436,18 +438,40 @@ void CrowdSim::spawnSome(Vec2 player) {
         const float ang = rand01() * 2.f * kPi;
         const float r = std::sqrt(rMin * rMin + rand01() * (rMax * rMax - rMin * rMin));
         const Vec2 p{player.x + std::cos(ang) * r, player.y + std::sin(ang) * r};
-        const std::uint32_t n = graph_->nearest(p, 15.f);
-        if (n == UINT32_MAX || !graph_->spawnable(n)) continue;
-        const float d = dist(graph_->node(n), player);
-        if (d < rMin || d > rMax) continue;
-        if (viewCount_ > 0 && inView(graph_->node(n), 10.f, 5.f)) continue; // S-332: never appears in sight
-        const std::uint32_t deg = graph_->degree(n);
-        const auto k = std::min(deg - 1, static_cast<std::uint32_t>(rand01() * static_cast<float>(deg)));
-        const CrowdEdge& e = graph_->edge(n, k);
-        // Somewhere along the street, not on the node: spawns that share a node would stand inside each other.
-        const std::uint32_t i = spawnAt(n, k, rand01(), rand01() * e.length);
-        if (i == UINT32_MAX) continue;
-        if (crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f) || (viewCount_ > 0 && inView(agents_[i].pos, 10.f, 5.f))) {
+        // The street spot nearest the ring point, not the nearest node: a street whose nodes lie far apart (out past
+        // the ring) still fills along its length, and spawns never share a spot. Either way along it.
+        CrowdStreetPoint sp;
+        if (!graph_->nearestStreet(p, 15.f, sp) || !graph_->spawnable(sp.n)) {
+            ++counts_.missNoStreet;
+            continue;
+        }
+        std::uint32_t n = sp.n, k = sp.k;
+        float along = sp.along;
+        if (rand01() < 0.5f) {
+            const CrowdEdge& e = graph_->edge(n, k);
+            const std::uint32_t back = e.to;
+            for (std::uint32_t j = 0; j < graph_->degree(back); ++j)
+                if (graph_->edge(back, j).to == n) {
+                    along = e.length - along;
+                    n = back;
+                    k = j;
+                    break;
+                }
+        }
+        const std::uint32_t i = spawnAt(n, k, rand01(), along);
+        if (i == UINT32_MAX) {
+            ++counts_.missSlot;
+            continue;
+        }
+        // The spot itself must lie in the ring (S-332: and out of sight): a member born past despawnDist was freed
+        // again on the next step (the Strip's churn: 437 of 593 freed, 156 live of 300).
+        const float at = dist(agents_[i].pos, player);
+        std::uint64_t* miss = at < rMin || at > rMax ? &counts_.missSpotRing
+                              : crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f) ? &counts_.missCrowded
+                              : viewCount_ > 0 && inView(agents_[i].pos, 10.f, 5.f) ? &counts_.missSpotView
+                                                                                    : nullptr;
+        if (miss) {
+            ++*miss;
             unspawn(i);
             continue;
         }

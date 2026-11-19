@@ -222,6 +222,8 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     spawnable_.clear();
     spawnableCount_ = 0;
     components_ = 0;
+    streetFirst_.clear();
+    streets_.clear();
 
     std::vector<BuildEdge> edges;
     NodeMaker nodes(pos_, tuning.snap);
@@ -438,6 +440,30 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
     std::vector<std::uint32_t> fill(cellFirst_.begin(), cellFirst_.end() - 1);
     for (std::uint32_t v = 0; v < n; ++v)
         if (degree(v) > 0) cellNodes_[fill[cellOf(pos_[v])]++] = v;
+
+    // Street grid: each street once (from its lower node, or from its only end when it runs one way), in every cell
+    // of its bounds. Two passes: count, then place.
+    streetFirst_.assign(cellFirst_.size(), 0);
+    const auto forStreetCells = [&](bool place) {
+        for (std::uint32_t v = 0; v < n; ++v)
+            for (std::uint32_t k = 0; k < degree(v); ++k) {
+                const std::uint32_t w = edges_[first_[v] + k].to;
+                if (w < v && find(w, v)) continue;
+                const std::size_t c0 = cellOf({std::min(pos_[v].x, pos_[w].x), std::min(pos_[v].y, pos_[w].y)});
+                const std::size_t c1 = cellOf({std::max(pos_[v].x, pos_[w].x), std::max(pos_[v].y, pos_[w].y)});
+                for (std::size_t y = c0 / gw_; y <= c1 / gw_; ++y)
+                    for (std::size_t x = c0 % gw_; x <= c1 % gw_; ++x) {
+                        const std::size_t c = y * gw_ + x;
+                        if (place) streets_[fill[c]++] = {v, k};
+                        else ++streetFirst_[c + 1];
+                    }
+            }
+    };
+    forStreetCells(false);
+    for (std::size_t i = 1; i < streetFirst_.size(); ++i) streetFirst_[i] += streetFirst_[i - 1];
+    streets_.assign(streetFirst_.back(), StreetRef{});
+    fill.assign(streetFirst_.begin(), streetFirst_.end() - 1);
+    forStreetCells(true);
     return true;
 }
 
@@ -463,6 +489,27 @@ std::uint32_t CrowdGraph::nearest(Vec2 p, float within) const {
             }
         }
     return best;
+}
+
+bool CrowdGraph::nearestStreet(Vec2 p, float within, CrowdStreetPoint& out) const {
+    if (pos_.empty() || streetFirst_.empty()) return false;
+    const auto r = static_cast<std::int64_t>(std::ceil(within / cell_));
+    const auto cx = static_cast<std::int64_t>(std::floor((p.x - min_.x) / cell_));
+    const auto cy = static_cast<std::int64_t>(std::floor((p.y - min_.y) / cell_));
+    bool found = false;
+    float bestD = within;
+    for (std::int64_t y = std::max<std::int64_t>(0, cy - r); y <= std::min<std::int64_t>(gh_ - 1, cy + r); ++y)
+        for (std::int64_t x = std::max<std::int64_t>(0, cx - r); x <= std::min<std::int64_t>(gw_ - 1, cx + r); ++x) {
+            const std::size_t c = static_cast<std::size_t>(y) * gw_ + static_cast<std::size_t>(x);
+            for (std::uint32_t i = streetFirst_[c]; i < streetFirst_[c + 1]; ++i) {
+                const StreetRef s = streets_[i];
+                const CrowdEdge& e = edges_[first_[s.n] + s.k];
+                const float t = project(pos_[s.n], pos_[e.to], p);
+                const float d = dist(lerp(pos_[s.n], pos_[e.to], t), p);
+                if (d <= bestD) bestD = d, found = true, out = {s.n, s.k, t * e.length, d};
+            }
+        }
+    return found;
 }
 
 } // namespace ftcore::crowdv2
