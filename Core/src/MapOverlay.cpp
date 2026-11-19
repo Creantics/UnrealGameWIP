@@ -1083,6 +1083,50 @@ MapLabel mapCaptionBox(float screenW, float screenH, float scale) {
     return b;
 }
 
+MapCaption mapCaptionLayout(float screenW, float screenH, float scale, float districtW, float streetW, float lineH, float ruleT) {
+    const auto size = [](float v) { return std::isfinite(v) && v > 0.f ? v : 0.f; };
+    const float s = std::isfinite(scale) && scale > 0.f ? scale : 1.f;
+    districtW = size(districtW);
+    streetW = size(streetW);
+    lineH = size(lineH);
+    ruleT = size(ruleT);
+    MapCaption c;
+    c.kept = mapCaptionBox(screenW, screenH, s);
+    c.text = Vec2{kMapCaptionX * s, screenH - kMapCaptionUp * s};
+    const float gap = kMapCaptionGap * s;
+    const float lineW = districtW + (districtW > 0.f && streetW > 0.f ? gap : 0.f) + streetW;
+    if (!(lineW > 0.f)) {
+        c.plate = MapLabel{};
+        c.plate.at = c.text;
+        return c;
+    }
+    c.shown = true;
+    // The room for the line: the screen less the plate's left margin on both sides, the tail and the pad.
+    const float pad = kMapCaptionPad * s, margin = (kMapCaptionX - kMapCaptionPad) * s;
+    const float room = screenW - margin - pad - kMapCaptionTail * s - c.text.x;
+    if (std::isfinite(room) && lineW > room) c.fit = room > lineW * 1e-3f ? room / lineW : 1e-3f;
+    c.districtW = districtW * c.fit;
+    c.streetW = streetW * c.fit;
+    c.lineH = lineH * c.fit;
+    const float g = districtW > 0.f && streetW > 0.f ? gap * c.fit : 0.f;
+    c.streetX = c.text.x + c.districtW + g;
+    c.dot = Vec2{c.text.x + c.districtW + g * 0.5f, c.text.y + c.lineH * 0.55f};
+    c.ruleY = c.text.y + c.lineH + kMapCaptionRuleGap * s;
+    c.ruleRight = c.streetX + c.streetW + kMapCaptionTail * s;
+    c.ruleBottom = c.ruleY + ruleT;
+    const float x0 = c.text.x - pad, y0 = c.text.y - pad, x1 = c.ruleRight + pad, y1 = c.ruleBottom + pad;
+    c.plate.w = x1 - x0;
+    c.plate.h = y1 - y0;
+    c.plate.at = Vec2{0.5f * (x0 + x1), 0.5f * (y0 + y1)};
+    // The kept box takes in the plate too.
+    const float kx0 = std::min(c.kept.at.x - 0.5f * c.kept.w, x0), ky0 = std::min(c.kept.at.y - 0.5f * c.kept.h, y0);
+    const float kx1 = std::max(c.kept.at.x + 0.5f * c.kept.w, x1), ky1 = std::max(c.kept.at.y + 0.5f * c.kept.h, y1);
+    c.kept.w = kx1 - kx0;
+    c.kept.h = ky1 - ky0;
+    c.kept.at = Vec2{0.5f * (kx0 + kx1), 0.5f * (ky0 + ky1)};
+    return c;
+}
+
 bool mapRoadLabelled(MapRoadClass c, MapZoom z) {
     switch (c) {
     case MapRoadClass::Main:

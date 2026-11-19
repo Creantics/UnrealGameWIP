@@ -746,6 +746,101 @@ TEST_CASE("map overlay: the caption's box is reserved; the halo counts as part o
     }
 }
 
+namespace {
+
+// The plate's edges (x0, y0, x1, y1) as a box.
+struct Edges {
+    float x0, y0, x1, y1;
+};
+Edges edgesOf(const MapLabel& b) {
+    return {b.at.x - 0.5f * b.w, b.at.y - 0.5f * b.h, b.at.x + 0.5f * b.w, b.at.y + 0.5f * b.h};
+}
+
+// The caption's text, rule and diamond lie inside its plate with the pad round them, the plate inside its kept box, and
+// the plate on the screen.
+void checkCaptionInside(const MapCaption& c, float screenW, float scale) {
+    const Edges p = edgesOf(c.plate), k = edgesOf(c.kept);
+    const float pad = kMapCaptionPad * scale - 1e-3f;
+    CHECK(c.text.x - p.x0 >= pad);
+    CHECK(c.text.y - p.y0 >= pad);
+    CHECK(p.x1 - (c.streetX + c.streetW) >= pad);
+    CHECK(p.x1 - (c.text.x + c.districtW) >= pad);
+    CHECK(p.x1 - c.ruleRight >= pad);
+    CHECK(p.y1 - c.ruleBottom >= pad);
+    CHECK(p.y1 - (c.text.y + c.lineH) >= pad);
+    CHECK(c.dot.x > c.text.x);
+    CHECK(c.dot.x < p.x1);
+    CHECK(k.x0 <= p.x0);
+    CHECK(k.y0 <= p.y0);
+    CHECK(k.x1 >= p.x1);
+    CHECK(k.y1 >= p.y1);
+    CHECK(p.x0 >= 0.f);
+    CHECK(p.x1 <= screenW);
+}
+
+} // namespace
+
+TEST_CASE("map overlay: the caption's plate follows its measured text; a line wider than the kept box grows the plate, "
+          "one wider than the screen is scaled to fit") {
+    // A short line: the plate hugs the text (district, gap, street, tail, pad); the kept box is the reserved one.
+    const MapCaption a = mapCaptionLayout(1920.f, 1080.f, 1.f, 120.f, 160.f, 24.f, 1.f);
+    REQUIRE(a.shown);
+    CHECK(a.fit == 1.f);
+    CHECK(a.plate.w == doctest::Approx(120.f + kMapCaptionGap + 160.f + kMapCaptionTail + 2.f * kMapCaptionPad));
+    CHECK(a.plate.h == doctest::Approx(24.f + kMapCaptionRuleGap + 1.f + 2.f * kMapCaptionPad));
+    CHECK(a.streetX == doctest::Approx(kMapCaptionX + 120.f + kMapCaptionGap));
+    CHECK(a.dot.x == doctest::Approx(kMapCaptionX + 120.f + 0.5f * kMapCaptionGap));
+    const MapLabel box = mapCaptionBox(1920.f, 1080.f);
+    CHECK(a.kept.w == doctest::Approx(box.w));
+    CHECK(a.kept.h == doctest::Approx(box.h));
+    CHECK(a.kept.at.x == doctest::Approx(box.at.x));
+    checkCaptionInside(a, 1920.f, 1.f);
+    // Wider than the kept box (900 px of text against 520): the plate runs on with it, never cut to the box, and the
+    // kept box grows to take it, so no label lands on the long name.
+    const MapCaption wide = mapCaptionLayout(1920.f, 1080.f, 1.f, 340.f, 538.f, 24.f, 1.f);
+    REQUIRE(wide.shown);
+    CHECK(wide.fit == 1.f);
+    CHECK(wide.plate.w == doctest::Approx(340.f + kMapCaptionGap + 538.f + kMapCaptionTail + 2.f * kMapCaptionPad));
+    CHECK(wide.plate.w > box.w);
+    CHECK(wide.kept.w == doctest::Approx(wide.plate.w));
+    checkCaptionInside(wide, 1920.f, 1.f);
+    const MapLabel over{{900.f, 1000.f}, 0.f, 80.f, 16.f, 7, 0, true}; // past the reserved box, on the long name
+    MapLabelSet out;
+    mapPlaceLabels(&over, 1, out, 6.f, &box, 1);
+    CHECK(out.count == 1);
+    mapPlaceLabels(&over, 1, out, 6.f, &wide.kept, 1);
+    CHECK(out.count == 0);
+    // Wider than the screen allows (3000 px at 1080p): scaled down to end at the right margin, the plate on the screen.
+    const MapCaption huge = mapCaptionLayout(1920.f, 1080.f, 1.f, 1000.f, 2000.f, 24.f, 1.f);
+    REQUIRE(huge.shown);
+    CHECK(huge.fit < 1.f);
+    CHECK(huge.fit > 0.5f);
+    const Edges hp = edgesOf(huge.plate);
+    CHECK(hp.x1 == doctest::Approx(1920.f - (kMapCaptionX - kMapCaptionPad)));
+    CHECK(huge.lineH == doctest::Approx(24.f * huge.fit));
+    checkCaptionInside(huge, 1920.f, 1.f);
+    // At 4K with the text scale 2: the same layout, doubled.
+    const MapCaption a4 = mapCaptionLayout(3840.f, 2160.f, 2.f, 240.f, 320.f, 48.f, 2.f);
+    CHECK(a4.plate.w == doctest::Approx(a.plate.w * 2.f));
+    CHECK(a4.plate.at.y == doctest::Approx(a.plate.at.y * 2.f));
+    checkCaptionInside(a4, 3840.f, 2.f);
+    // The district alone: no gap, the street at the district's end.
+    const MapCaption d = mapCaptionLayout(1920.f, 1080.f, 1.f, 150.f, 0.f, 24.f);
+    REQUIRE(d.shown);
+    CHECK(d.plate.w == doctest::Approx(150.f + kMapCaptionTail + 2.f * kMapCaptionPad));
+    checkCaptionInside(d, 1920.f, 1.f);
+    // No text, or text that is not a number: nothing shown, the reserved box kept.
+    const float nan = std::nanf("");
+    for (const MapCaption& none : {mapCaptionLayout(1920.f, 1080.f, 1.f, 0.f, 0.f, 24.f), mapCaptionLayout(1920.f, 1080.f, 1.f, nan, -5.f, 24.f)}) {
+        CHECK_FALSE(none.shown);
+        CHECK(none.plate.w == 0.f);
+        CHECK(none.kept.w == doctest::Approx(box.w));
+    }
+    // A street that is not a number beside a real district: the district alone.
+    const MapCaption half = mapCaptionLayout(1920.f, 1080.f, 1.f, 150.f, nan, 24.f);
+    CHECK(half.plate.w == doctest::Approx(d.plate.w));
+}
+
 TEST_CASE("map overlay: a label meets a road's drawn line, its capped ends and its halo; never a box beside a diagonal") {
     const MiniMapModel m = model();
     MapOverlayView v;

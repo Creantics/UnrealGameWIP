@@ -5,11 +5,14 @@
 // serif names along the roads, the districts' names in small caps in gold-ruled boxes with their sign forms drawn small
 // above, water named in italics, the objective as a hollow diamond, the party as gold marks, a small N needle and the
 // where-am-I line bottom left over a gold rule. It opens on the player at the near zoom. Every zoom is framed by Core
-// (ftcore/MapLook.h, mapOverlayFrame): the land at least three quarters of the frame, the player kept in its middle; the
-// far zoom fits the land. Past the area the ground runs on, and the sea on its side and past its edge rows. The look
-// built at load (mapBuildLook): the coast in gold, wave lines off it, the canals' edges, parks hatched faintly, yards
-// edged in dots, the sea named once over open sea. Which names show at each zoom is Core's (mapLabelPicks); each has a
-// 3 px halo and none covers the where-am-I line (mapCaptionBox). Under -UiHudTextScale the names, their boxes and halos,
+// (ftcore/MapLook.h, mapOverlayFrame): the model's own land at least three quarters of the frame where a shift can reach
+// it (the ground past the model counts as none), the player kept in its middle; the far zoom fits the land. Past the area
+// the ground runs on, and the sea on its side and past its edge rows, with the coast drawn wherever that sea meets ground
+// (edgeCoast); roads that run off the model fade out at its edge. The look built at load (mapBuildLook): the coast in
+// gold, wave lines off it, the canals' edges, parks hatched faintly, yards edged in dots, the sea named once over open
+// sea. Which names show at each zoom is Core's (mapLabelPicks); each unboxed one has a 3 px halo and none covers the
+// where-am-I line's kept box (mapCaptionLayout: the plate follows the measured text). Under -UiHudTextScale the names,
+// their boxes and halos,
 // the N and the where-am-I line (and its kept box) grow with the text size setting (FT::HudTextScale). Names come from the
 // world lane's names table (-MapNames=<csv>, else Data/Map/solhaven_names.csv; none: no names drawn). Fonts are the new
 // UI's (FT::UiCanvasFont). Without the switch UFTMiniMap draws its old whole-map overlay.
@@ -18,7 +21,9 @@
 // overlay opens at that time and a shot is taken at each zoom (_far, _mid, _near), each framed on the player (or the
 // cursor's point), then the game quits. Per shot: MAPOVERLAY SHOT <far|mid|near> centre=<x>:<y> mpp=<m per px>
 // land=<share, two places, truncated> caption='<DISTRICT> (middle dot) <STREET>' labels=<n>; then MAPOVERLAY TEXT <zoom> ts=<text
-// scale> clipped=<labels whose halo leaves the screen> caption_right=<px> caption_bottom=<px> screen=<w>x<h>.
+// scale> clipped=<labels whose halo leaves the screen> caption_right=<px> caption_bottom=<px> caption_text_right=<px>
+// caption_plate_right=<px> caption_fit=<text scale> caption_in_plate=<1: the text ends a pad inside the plate>
+// text_draws=<text items drawn in the last frame> screen=<w>x<h>.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -85,7 +90,9 @@ private:
 		float HaloPx = 0.f) const;
 	// TS: the text's scale (S times the player's text size); S: the map's own lengths. Discs: the marks drawn over the names
 	// (the cursor's ring, the player's arrow), which the cursor's own name is kept clear of.
-	void BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS, const ftcore::MapDisc* Discs, int32 NumDiscs);
+	// Kept: the where-am-I line's kept box (ftcore::mapCaptionLayout), which no label enters.
+	void BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS, const ftcore::MapDisc* Discs, int32 NumDiscs,
+		const ftcore::MapLabel& Kept);
 	void DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float TS);
 
 	const ftcore::MiniMapModel& Model;
@@ -153,6 +160,10 @@ private:
 	uint16 CaptionDistrict = ftcore::kMapNoName;
 	uint16 CaptionStreet = ftcore::kMapNoName;
 	float CaptionRight = 0.f, CaptionBottom = 0.f; // its rule's right and bottom ends, px (0: no line drawn yet)
+	float CaptionFit = 1.f, CaptionTextRight = 0.f, CaptionPlateRight = 0.f; // its text's scale, the text's and plate's right ends
+	ftcore::MapLabel LabelKept;         // the caption's kept box the labels were placed against
+	mutable int32 TextDraws = 0;        // text items drawn this frame (each halo copy one)
+	int32 LastTextDraws = 0;            // and in the last whole frame
 	TWeakObjectPtr<AFTPartyVan> Van;
 	TWeakObjectPtr<AFTPartyFollower> Followers[2];
 

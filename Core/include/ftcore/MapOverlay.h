@@ -283,6 +283,29 @@ inline constexpr float kMapCaptionW = 520.f;
 inline constexpr float kMapCaptionH = 40.f;
 inline constexpr float kMapCaptionPad = 12.f;
 FTCORE_API MapLabel mapCaptionBox(float screenW, float screenH, float scale = 1.f);
+// The caption laid out from its measured text: districtW and streetW (px, 0: none) and lineH, measured at the line's own
+// size (its scale included). The text's top left stands at (kMapCaptionX, screenH - kMapCaptionUp) times scale: the
+// district, a kMapCaptionGap gap with the diamond in its middle, the street; kMapCaptionRuleGap under the text, a rule
+// ruleT px thick that runs kMapCaptionTail past it. A line that would run nearer the screen's right edge than the left
+// margin (kMapCaptionX less kMapCaptionPad) is scaled down by `fit` until it ends there. plate: the text and rule with
+// kMapCaptionPad round them, so no name runs off it however long; kept: the plate grown to mapCaptionBox at least, the
+// box no label enters. No text: shown is false, the plate has no size and kept is mapCaptionBox. Inputs not finite or
+// below 0 count as 0 (a scale as 1).
+inline constexpr float kMapCaptionGap = 22.f;
+inline constexpr float kMapCaptionTail = 28.f;
+inline constexpr float kMapCaptionRuleGap = 5.f;
+struct MapCaption {
+    bool shown = false;
+    float fit = 1.f;                                   // the text's scale (0 < fit <= 1)
+    Vec2 text{};                                       // the line's top left
+    float districtW = 0.f, streetW = 0.f, lineH = 0.f; // fitted
+    float streetX = 0.f;                               // the street's left
+    Vec2 dot{};                                        // the diamond's middle (drawn only with both names)
+    float ruleY = 0.f, ruleRight = 0.f, ruleBottom = 0.f;
+    MapLabel plate, kept;
+};
+FTCORE_API MapCaption mapCaptionLayout(float screenW, float screenH, float scale, float districtW, float streetW, float lineH,
+                                       float ruleT = 1.f);
 
 // Which names are tried at a view, best first. Ranks are MapLabel::priority (lower wins): the cursor's road, then the
 // districts (boxed, at every zoom), water, main roads, streets, places, lanes. Roads' names are set along them: main
