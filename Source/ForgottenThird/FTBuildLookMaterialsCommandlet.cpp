@@ -247,28 +247,33 @@ float ReactDark = 0.0;
 // three world grids of cells 40, 55 and 70 cm across, offset from each other so no grid reads; in a share of the cells
 // (as large as RainRings) a drop lands once in each period (about 0.9 s) at its own time and place and sends out one
 // ring, two crests and a trough 3 to 5 cm wide, that widens to nearly half its cell and fades as it goes. A ring is
-// steep (a slope of up to about a fifth) so a lit surface catches it; it is drawn whole to 3.5 m and fades out by 13 m,
-// where seen that flat a ring is finer than a pixel.
+// steep (a slope of up to about a fifth) so a lit surface catches it. Each grid is drawn while a pixel spans no more
+// than its crest's width and gone at one and a half times it (the pixel's span from ddx/ddy of P, so a low eye sees
+// rings farther out than a high one, and no ring shimmers); none past 35 m. ddx/ddy read 0 in ray-traced and compute
+// passes (Common.ush), where only the 35 m bound holds.
 const TCHAR* const kWaterRainCode = TEXT(R"HLSL(if (RainRings > 0.001)
 {
-	float RainNear = saturate(1.0 - (EyeDepth - 350.0) / 950.0);
-	if (RainNear > 0.0)
+	float RainFoot = max(length(ddx(P)), length(ddy(P)));
+	float RainNear = saturate(1.0 - (EyeDepth - 2500.0) / 1000.0);
+	if (RainNear > 0.0 && RainFoot < 7.9)
 	{
 		float2 RainGrad = 0.0;
 		for (int RainK = 0; RainK < 3; ++RainK)
 		{
-			float2 RainQ = P / (40.0 + 15.0 * RainK) + float2(0.31, 0.67) * RainK;
+			float RainCell = 40.0 + 15.0 * RainK;
+			float RainSharp = saturate(3.0 - 2.0 * RainFoot / (0.075 * RainCell));
+			float2 RainQ = P / RainCell + float2(0.31, 0.67) * RainK;
 			float2 RainId = floor(RainQ);
 			float3 RainP3 = frac(float3(RainId.xyx + 19.0 * RainK) * float3(0.1031, 0.1030, 0.0973));
 			RainP3 += dot(RainP3, RainP3.yxz + 33.33);
 			float3 RainH = frac((RainP3.xxy + RainP3.yzz) * RainP3.zyx);
-			if (RainH.z < RainRings)
+			if (RainH.z < RainRings && RainSharp > 0.0)
 			{
 				float RainAge = frac(Time * 1.1 + RainH.x * 7.0);
 				float2 RainRel = (RainQ - RainId - 0.5) - (RainH.xy - 0.5) * 0.2;
 				float RainR = max(length(RainRel), 1e-3);
 				float RainX = (RainR - 0.45 * RainAge) / 0.075;
-				float RainFade = (1.0 - RainAge) * (1.0 - RainAge);
+				float RainFade = (1.0 - RainAge) * (1.0 - RainAge) * RainSharp;
 				RainGrad += (RainRel / RainR) * (sin(RainX * 2.0) * exp(-0.5 * RainX * RainX) * RainFade);
 			}
 		}
