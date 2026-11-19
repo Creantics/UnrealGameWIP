@@ -93,6 +93,7 @@ private:
 	void LogSurfacesUnder(int32 Slot, const FVector& Feet, const FHitResult& Roof) const;
 	void LogGroundAt();
 	void LogStoppedGroup(uint32 Size) const;
+	void NoteReactingLeftOut(uint32 Group);
 	void NoteMinPair(float Pair);
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
@@ -154,6 +155,7 @@ private:
 	uint64 SlowRunFrames = 0;
 	uint32 WorstGroup = 0;
 	uint32 GroupTick = 0;
+	uint32 ReactingLines = 0; // knot checks that left out the one-step close-reaction stop, logged (capped)
 	bool bPartyMoved = false;
 	struct FMassBox
 	{

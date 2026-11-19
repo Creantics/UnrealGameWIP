@@ -907,6 +907,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		if (RunTime >= 2.0 && ++GroupTick % 8 == 0)
 		{
 			const uint32 Group = Sim.largestStoppedGroup(3.f);
+			NoteReactingLeftOut(Group);
 			if (Group > CrowdV2Local::kGroupGate && Group > WorstGroup)
 			{
 				LogStoppedGroup(Group);
@@ -1670,6 +1671,46 @@ void UFTCrowdSubsystemV2::LogStoppedGroup(uint32 Size) const
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: knot of %u standing at t=%.1f s:%s."), Size, RunTime, *Who);
 		return;
 	}
+}
+
+// A knot check that left members out for the one-step close-reaction stop: how many, and the figure the old rule (those
+// counted as standing) gives beside the check's, so a quiet run shows it sampled that step (capped at 8 lines).
+void UFTCrowdSubsystemV2::NoteReactingLeftOut(uint32 Group)
+{
+	if (ReactingLines >= 8)
+	{
+		return;
+	}
+	auto OldStopped = [](const ftcore::crowdv2::CrowdAgentView& V) { return V.live && !V.indoors && V.speed <= 0.05f; };
+	uint32 Reacting = 0;
+	for (uint32 i = 0; i < Sim.capacity(); ++i)
+	{
+		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(i);
+		Reacting += V.live && !V.indoors && V.reacting ? 1u : 0u;
+	}
+	if (Reacting == 0)
+	{
+		return;
+	}
+	uint32 Old = 0;
+	for (uint32 i = 0; i < Sim.capacity(); ++i)
+	{
+		const ftcore::crowdv2::CrowdAgentView& A = Sim.agent(i);
+		if (!OldStopped(A))
+		{
+			continue;
+		}
+		uint32 N = 1;
+		for (uint32 j = 0; j < Sim.capacity(); ++j)
+		{
+			const ftcore::crowdv2::CrowdAgentView& B = Sim.agent(j);
+			N += j != i && OldStopped(B) && FMath::Square(A.pos.x - B.pos.x) + FMath::Square(A.pos.y - B.pos.y) < 9.f ? 1u : 0u;
+		}
+		Old = FMath::Max(Old, N);
+	}
+	++ReactingLines;
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: knot check at t=%.1f s left out %u members in the one-step close-reaction stop: largest standing within 3 m %u (the old rule, counting them: %u)."),
+		RunTime, Reacting, Group, Old);
 }
 
 void UFTCrowdSubsystemV2::NoteMinPair(float Pair)
