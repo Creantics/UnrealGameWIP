@@ -387,6 +387,19 @@ FTCORE_API bool crowdMassingBox(const CrowdMassBox& render, const CrowdMassBox* 
 // (the distance to the nearest side or corner), negative inside (minus the distance to the nearest side).
 FTCORE_API double crowdBoxClearance(const CrowdMassBox& box, double axX, double axY, double px, double py);
 
+// A member's first ground (host: one line down from high up meets several surface tops). Under a corridor or balcony
+// slab over the street the first top is the slab's, so the ground is not simply the first. Each top (cm), highest
+// first: `z`, and `clearUp` true when the host's short line up from just above it (a body's height) met nothing, a line
+// that starts inside a solid counting as met.
+struct CrowdGroundHit {
+    double z = 0.0;
+    bool clearUp = false;
+};
+inline constexpr std::size_t kCrowdGroundHitsMax = 8;
+// The index of the ground: the lowest top that is clear up and has at least `body` (cm) to the next top above it;
+// when none is, the highest (0). 0 when n is 0.
+FTCORE_API std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body);
+
 // Host occlusion: true when something solid stands between `from` and `to` (engine frame, metres).
 using CrowdOcclusionFn = bool (*)(void* context, Vec2 from, Vec2 to);
 

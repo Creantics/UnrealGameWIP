@@ -1817,4 +1817,13 @@ double crowdBoxClearance(const CrowdMassBox& box, double axX, double axY, double
     return std::max(lx, ly);
 }
 
+std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body) {
+    for (std::size_t i = n; i-- > 0;) {
+        if (!hits[i].clearUp) continue;
+        if (i > 0 && hits[i - 1].z - hits[i].z < body) continue;
+        return i;
+    }
+    return 0;
+}
+
 } // namespace ftcore::crowdv2

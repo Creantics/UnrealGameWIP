@@ -76,6 +76,7 @@ private:
 	void ScriptFight(const FVector& PlayerAt);
 	void PickTestFight(const FVector& PlayerAt);
 	void CheckFootprint(int32 Actor, const FVector& Feet);
+	bool FirstGround(double X, double Y, double CentreZ, double& OutZ);
 	struct FViewCount
 	{
 		int32 N = 0;          // drawn members in frame and in sight (a line from the eye to the chest)

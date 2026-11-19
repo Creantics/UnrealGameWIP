@@ -90,3 +90,41 @@ TEST_CASE("crowd massing: clearance to a turned box, outside by a side, past a c
     CHECK(crowdBoxClearance(sq, r, r, 150.0 * r, 150.0 * r) == doctest::Approx(50.0));
     CHECK(crowdBoxClearance(sq, r, r, 200.0, 0.0) == doctest::Approx(200.0 - 100.0 * std::sqrt(2.0)));
 }
+
+TEST_CASE("crowd ground: under a slab over the street the ground is the street, not the slab's top") {
+    // The Strip at 904.5,518 (V2, 41621672): two members first grounded on the tops of a bay corridor slab and a balcony
+    // slab. The host's surfaces under each, top down (cm): the slab's top, the street's slab, the landscape 0.18 m under
+    // that (its line up starts inside the street's slab, so it is not clear).
+    const double body = 180.0;
+    const CrowdGroundHit corridor[] = {{1350.6, true}, {541.6, true}, {523.7, false}};
+    CHECK(crowdPickGround(corridor, 3, body) == 1);
+    const CrowdGroundHit balcony[] = {{2078.6, true}, {668.6, true}, {650.5, false}};
+    CHECK(crowdPickGround(balcony, 3, body) == 1);
+    // The first top is what the host took before: the slab.
+    CHECK(crowdPickGround(corridor, 3, body) != 0);
+}
+
+TEST_CASE("crowd ground: a solid block keeps its top; one surface is itself; none is 0") {
+    const double body = 180.0;
+    // A building's box down to the street: the line up from the street's top starts inside the box.
+    const CrowdGroundHit block[] = {{1350.6, true}, {541.6, false}, {523.7, false}};
+    CHECK(crowdPickGround(block, 3, body) == 0);
+    const CrowdGroundHit one[] = {{541.6, true}};
+    CHECK(crowdPickGround(one, 1, body) == 0);
+    const CrowdGroundHit blocked[] = {{541.6, false}};
+    CHECK(crowdPickGround(blocked, 1, body) == 0);
+    CHECK(crowdPickGround(nullptr, 0, body) == 0);
+}
+
+TEST_CASE("crowd ground: a top less than a body under the next top is not ground, even when its line up reads clear") {
+    // A one-sided plane 1 m over the street: a line up from under it passes through, so only the gap tells.
+    const double body = 180.0;
+    const CrowdGroundHit plane[] = {{641.6, true}, {541.6, true}, {523.7, false}};
+    CHECK(crowdPickGround(plane, 3, body) == 0);
+    // At exactly a body's height it is ground.
+    const CrowdGroundHit room[] = {{721.6, true}, {541.6, true}, {523.7, false}};
+    CHECK(crowdPickGround(room, 3, body) == 1);
+    // Two clear storeys under a roof: the lowest clear one.
+    const CrowdGroundHit storeys[] = {{1500.0, true}, {1000.0, true}, {500.0, true}, {480.0, false}};
+    CHECK(crowdPickGround(storeys, 4, body) == 2);
+}

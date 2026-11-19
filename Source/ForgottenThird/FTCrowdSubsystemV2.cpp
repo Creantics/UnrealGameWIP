@@ -51,6 +51,11 @@ constexpr int32 kGroundTracesPerFrame = 8;
 constexpr double kGroundUp = 300.0;
 constexpr double kGroundDown = 600.0;
 constexpr double kGroundFirstSpan = 20000.0;
+// The first ground's headroom (Core's crowdPickGround): a body's height clear over a top, its line up starting this far
+// above it (cm). A grounded member whose next ground is more than a step up looks again as at first (a slab over it).
+constexpr double kGroundBody = 180.0;
+constexpr double kGroundClearStart = 5.0;
+constexpr double kGroundStep = 60.0;
 // Occlusion lines per frame at most (the sim also has its own budget per step).
 constexpr int32 kOcclusionTracesPerFrame = 32;
 // A quiet spell this long (s) between arena events makes the next attack a fight start again.
@@ -1141,11 +1146,10 @@ void UFTCrowdSubsystemV2::Draw()
 		PoolGrounded[FreeCursor] = false;
 		PoolGround[FreeCursor] = PlayerZ;
 		// Grounded now, shown only once it is (never a frame at the player's height, inside a hill or in mid-air).
-		const FVector At(V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ);
-		FHitResult Hit;
-		if (World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, CrowdV2Local::kGroundFirstSpan), At - FVector(0.0, 0.0, CrowdV2Local::kGroundFirstSpan), ECC_Visibility, TraceQuery))
+		double Z = PlayerZ;
+		if (FirstGround(V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ, Z))
 		{
-			PoolGround[FreeCursor] = Hit.ImpactPoint.Z;
+			PoolGround[FreeCursor] = Z;
 			PoolGrounded[FreeCursor] = true;
 		}
 		Pool[FreeCursor]->SetActorHiddenInGame(!PoolGrounded[FreeCursor]);
@@ -1160,18 +1164,31 @@ void UFTCrowdSubsystemV2::Draw()
 			continue;
 		}
 		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent((PoolAgent[k] - 1) & 0xffffu);
-		const double Up = PoolGrounded[k] ? CrowdV2Local::kGroundUp : CrowdV2Local::kGroundFirstSpan;
-		const double Down = PoolGrounded[k] ? CrowdV2Local::kGroundDown : CrowdV2Local::kGroundFirstSpan;
-		const FVector At(V.pos.x * 100.0, V.pos.y * 100.0, PoolGround[k]);
-		FHitResult Hit;
-		if (World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, Up), At - FVector(0.0, 0.0, Down), ECC_Visibility, TraceQuery))
+		const double X = V.pos.x * 100.0, Y = V.pos.y * 100.0;
+		if (!PoolGrounded[k])
 		{
-			PoolGround[k] = Hit.ImpactPoint.Z;
-			if (!PoolGrounded[k])
+			double Z = PoolGround[k];
+			if (FirstGround(X, Y, PoolGround[k], Z))
 			{
+				PoolGround[k] = Z;
 				PoolGrounded[k] = true;
 				Pool[k]->SetActorHiddenInGame(false);
 			}
+			continue;
+		}
+		const FVector At(X, Y, PoolGround[k]);
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, CrowdV2Local::kGroundUp), At - FVector(0.0, 0.0, CrowdV2Local::kGroundDown), ECC_Visibility, TraceQuery))
+		{
+			// More than a step up (or a line that starts inside a slab, hit where it starts): a slab over the member,
+			// whose top this line met from above; look again as at first, not up onto it.
+			double Z = Hit.ImpactPoint.Z;
+			if (Hit.bStartPenetrating || Z - PoolGround[k] > CrowdV2Local::kGroundStep)
+			{
+				Z = PoolGround[k];
+				FirstGround(X, Y, PoolGround[k], Z);
+			}
+			PoolGround[k] = Z;
 		}
 	}
 	const float Alpha = FMath::Clamp(Sim.stepAlpha(), 0.f, 1.f);
@@ -1191,6 +1208,48 @@ void UFTCrowdSubsystemV2::Draw()
 			CheckFootprint(k, FVector(X, Y, PoolGround[k]));
 		}
 	}
+}
+
+bool UFTCrowdSubsystemV2::FirstGround(double X, double Y, double CentreZ, double& OutZ)
+{
+	// Every surface top under (X, Y) on one long line down, highest first (the same line again with each top's component
+	// ignored), then a short line up from just above each top: a body's height, with the plain query, so a slab over it
+	// or a start inside a solid reads as not clear. Core picks the ground (crowdPickGround): the street under a corridor
+	// or balcony slab, not the slab's top. TraceQuery ignores actors only; the components added here stay within the
+	// list's inline 8 and are cleared before the lines up, so no heap.
+	UWorld* World = GetWorld();
+	ftcore::crowdv2::CrowdGroundHit Hits[ftcore::crowdv2::kCrowdGroundHitsMax];
+	size_t N = 0;
+	const FVector From(X, Y, CentreZ + CrowdV2Local::kGroundFirstSpan);
+	const FVector To(X, Y, CentreZ - CrowdV2Local::kGroundFirstSpan);
+	while (N < ftcore::crowdv2::kCrowdGroundHitsMax)
+	{
+		FHitResult H;
+		if (!World->LineTraceSingleByChannel(H, From, To, ECC_Visibility, TraceQuery))
+		{
+			break;
+		}
+		Hits[N++].z = H.ImpactPoint.Z;
+		const UPrimitiveComponent* C = H.GetComponent();
+		if (!C || N == ftcore::crowdv2::kCrowdGroundHitsMax)
+		{
+			break;
+		}
+		TraceQuery.AddIgnoredComponent(C);
+	}
+	TraceQuery.ClearIgnoredComponents();
+	if (N == 0)
+	{
+		return false;
+	}
+	for (size_t i = 0; i < N; ++i)
+	{
+		FHitResult Up;
+		const FVector Start(X, Y, Hits[i].z + CrowdV2Local::kGroundClearStart);
+		Hits[i].clearUp = !World->LineTraceSingleByChannel(Up, Start, FVector(X, Y, Hits[i].z + CrowdV2Local::kGroundBody), ECC_Visibility, TraceQuery);
+	}
+	OutZ = Hits[ftcore::crowdv2::crowdPickGround(Hits, N, CrowdV2Local::kGroundBody)].z;
+	return true;
 }
 
 void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
