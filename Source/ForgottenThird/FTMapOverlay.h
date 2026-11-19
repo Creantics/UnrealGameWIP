@@ -107,6 +107,16 @@ private:
 	static constexpr size_t kMaxPicks = 256;
 	ftcore::MapLabelPick Picks[kMaxPicks];
 	int32 LastPicks = 0, LastCandidates = 0; // for the capture log
+	// The names the road and water rules left out at the last placing, with why (for the capture log; the first kMaxDrops).
+	enum class EDrop : uint8 { Dry, NoSeat, OnRoad };
+	struct FDrop
+	{
+		uint16 Name = 0;
+		EDrop Why = EDrop::Dry;
+	};
+	static constexpr int32 kMaxDrops = 32;
+	FDrop Drops[kMaxDrops];
+	int32 DropCount = 0, DropTotal = 0;
 	ftcore::MapLabel Candidates[ftcore::kMaxMapLabels];
 	ftcore::MapLabelSet Placed;
 	// The labels are placed again only when what they depend on moves.
@@ -115,6 +125,7 @@ private:
 	int32 LabelPicked = -2;
 	uint16 LabelPickedName = ftcore::kMapNoName;
 	float LabelTS = -1.f; // the text scale the labels were placed at
+	float LabelS = 1.f;   // and the map's own scale (the roads' ink)
 
 	ftcore::MapZoom Zoom = ftcore::MapZoom::Near;
 	ftcore::MapOverlayView View;

@@ -843,6 +843,109 @@ bool mapLabelKeepInside(MapLabel& l, float screenW, float screenH, float grow) {
     return true;
 }
 
+bool mapRoadCased(const MapRoad& road, const MapOverlayView& v, const MapRoadInk& ink) {
+    return v.mPerPx > 0.f && road.width / v.mPerPx >= ink.casePx * ink.scale;
+}
+
+float mapRoadDrawnPx(const MapRoad& road, const MapOverlayView& v, const MapRoadInk& ink) {
+    if (mapRoadCased(road, v, ink)) return road.width / v.mPerPx;
+    const int c = std::clamp(static_cast<int>(road.cls), 0, kMapRoadClasses - 1);
+    return std::max(ink.linePx[c] * ink.scale, ink.minPx);
+}
+
+float mapRoadLitPx(const MapRoad& road, const MapOverlayView& v, const MapRoadInk& ink) {
+    const float own = v.mPerPx > 0.f ? road.width / v.mPerPx : 0.f;
+    return std::max(own * ink.litShare, ink.litMinPx * ink.scale);
+}
+
+bool mapRoadLit(const MapNames& n, std::size_t r, int picked, std::uint16_t pickedName) {
+    if (picked < 0) return false;
+    if (r == static_cast<std::size_t>(picked)) return true;
+    return pickedName != kMapNoName && r < n.roadName.size() && n.roadName[r] == pickedName;
+}
+
+int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                      const MapLabel& l, float grow, int picked, std::uint16_t pickedName, bool litOnly) {
+    if (!(v.mPerPx > 0.f)) return -1;
+    const Vec2 cw = mapOverlayFromScreen(v, l.at);
+    const float reachPx = std::hypot(l.w * 0.5f + grow, l.h * 0.5f + grow);
+    const bool boxes = n.roadBox.size() >= m.roads.size() * 4;
+    for (std::size_t r = 0; r < m.roads.size(); ++r) {
+        const MapRoad& road = m.roads[r];
+        if (road.count < 2 || !roadOk(m, r)) continue;
+        const bool lit = mapRoadLit(n, r, picked, pickedName);
+        const bool shown = !litOnly && mapRoadShown(road.cls, z);
+        if (!lit && !shown) continue;
+        float wd = shown ? mapRoadDrawnPx(road, v, ink) : 0.f;
+        if (lit) wd = std::max(wd, mapRoadLitPx(road, v, ink));
+        float bx0 = 1e30f, by0 = 1e30f, bx1 = -1e30f, by1 = -1e30f;
+        if (boxes) {
+            bx0 = n.roadBox[r * 4];
+            by0 = n.roadBox[r * 4 + 1];
+            bx1 = n.roadBox[r * 4 + 2];
+            by1 = n.roadBox[r * 4 + 3];
+        } else {
+            for (std::uint32_t k = 0; k < road.count; ++k) {
+                const Vec2 p = m.points[road.first + k];
+                bx0 = std::min(bx0, p.x);
+                by0 = std::min(by0, p.y);
+                bx1 = std::max(bx1, p.x);
+                by1 = std::max(by1, p.y);
+            }
+        }
+        const float reachM = (reachPx + wd * 0.5f + 1.f) * v.mPerPx;
+        if (cw.x < bx0 - reachM || cw.x > bx1 + reachM || cw.y < by0 - reachM || cw.y > by1 + reachM) continue;
+        if (mapLabelOnRoad(m, static_cast<int>(r), v, wd, l, grow)) return static_cast<int>(r);
+    }
+    return -1;
+}
+
+bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z, const MapRoadInk& ink,
+                      MapLabel& l, float grow, int picked, std::uint16_t pickedName) {
+    if (mapLabelOnAnyRoad(m, n, v, z, ink, l, grow, picked, pickedName) < 0) return true;
+    // The moves: half widths -2..2 across, heights -2..2 up and down, by distance; ties keep this order (up first, left
+    // first). 24 of them, sorted in place: no allocation.
+    struct Move {
+        float dx = 0.f, dy = 0.f, d = 0.f;
+        int order = 0;
+    };
+    std::array<Move, 24> moves{};
+    int k = 0;
+    for (int uy = -2; uy <= 2; ++uy)
+        for (int ux = -2; ux <= 2; ++ux) {
+            if (ux == 0 && uy == 0) continue;
+            Move& mv = moves[static_cast<std::size_t>(k)];
+            mv.dx = static_cast<float>(ux) * 0.5f * l.w;
+            mv.dy = static_cast<float>(uy) * l.h;
+            mv.d = std::hypot(mv.dx, mv.dy);
+            mv.order = (std::abs(uy) * 2 + (uy > 0 ? 1 : 0)) * 16 + std::abs(ux) * 2 + (ux > 0 ? 1 : 0);
+            ++k;
+        }
+    std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) { return a.d != b.d ? a.d < b.d : a.order < b.order; });
+    for (const Move& mv : moves) {
+        MapLabel t = l;
+        t.at.x += mv.dx;
+        t.at.y += mv.dy;
+        if (!mapLabelKeepInside(t, v.screenW, v.screenH, grow)) return false;
+        if (mapLabelOnAnyRoad(m, n, v, z, ink, t, grow, picked, pickedName) >= 0) continue;
+        l = t;
+        return true;
+    }
+    return false;
+}
+
+bool mapIsWater(const MiniMapModel& m, Vec2 p) {
+    for (const MapRect& r : m.waterRects) {
+        const float c = std::cos(r.rot), s = std::sin(r.rot);
+        const float dx = p.x - r.cx, dy = p.y - r.cy;
+        if (std::abs(dx * c + dy * s) <= r.hx && std::abs(-dx * s + dy * c) <= r.hy) return true;
+    }
+    if (m.waterCell <= 0.f || m.waterW == 0 || m.water.size() < static_cast<std::size_t>(m.waterW) * m.waterH) return false;
+    const float fx = (p.x - m.minX) / m.waterCell, fy = (p.y - m.minY) / m.waterCell;
+    if (!(fx >= 0.f && fy >= 0.f && fx < static_cast<float>(m.waterW) && fy < static_cast<float>(m.waterH))) return false;
+    return m.water[static_cast<std::size_t>(fy) * m.waterW + static_cast<std::size_t>(fx)] != 0;
+}
+
 void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap, const MapLabel* blockers,
                     std::size_t blockerCount, float halo) {
     out.count = 0;

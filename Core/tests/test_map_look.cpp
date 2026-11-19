@@ -638,3 +638,127 @@ TEST_CASE("map look edges: no roads and no water grid; an empty model; a one-poi
     CHECK(finiteStrokes(withDot));
     CHECK(withDot.parks == 1);
 }
+
+namespace {
+
+// A 600 x 400 m model with no water grid: a canal 9 m wide running north-south (x 195.5..204.5, y 50..250) with a 14 m
+// main road along each bank (their edges on the banks), and a basin 148 x 28 m (x 226..374, y 286..314) with a road
+// 67 m north of it.
+MiniMapModel waterSeatModel() {
+    MiniMapModel m;
+    m.maxX = 600.f;
+    m.maxY = 400.f;
+    m.waterRects.push_back(MapRect{200.f, 150.f, 4.5f, 100.f, 0.f});
+    m.waterRects.push_back(MapRect{300.f, 300.f, 74.f, 14.f, 0.f});
+    auto road = [&](Vec2 a, Vec2 b) {
+        MapRoad r;
+        r.cls = MapRoadClass::Main;
+        r.width = 14.f;
+        r.first = static_cast<std::uint32_t>(m.points.size());
+        r.count = 2;
+        m.points.push_back(a);
+        m.points.push_back(b);
+        m.roads.push_back(r);
+    };
+    road({188.5f, 40.f}, {188.5f, 260.f});
+    road({211.5f, 40.f}, {211.5f, 260.f});
+    road({220.f, 233.f}, {400.f, 233.f});
+    return m;
+}
+
+// A seated label's box is all water at its corners and centre, and its grown box meets no road.
+void checkSeat(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v, MapZoom z, const MapLabel& l, float grow) {
+    Vec2 k[4];
+    mapLabelCorners(l, -0.01f, k);
+    for (const Vec2& q : k) {
+        const Vec2 w = mapOverlayFromScreen(v, q);
+        CHECK((mapIsWater(m, w) || mapIsSea(m, look, w)));
+    }
+    CHECK(mapIsWater(m, mapOverlayFromScreen(v, l.at)));
+    CHECK(mapLabelOnAnyRoad(m, n, v, z, MapRoadInk{}, l, grow) == -1);
+}
+
+} // namespace
+
+TEST_CASE("map look: a water name sits on its own water, nearest its point; on a canal too narrow for it, it is left out") {
+    const MiniMapModel m = waterSeatModel();
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    const MapNames n;
+    const MapRoadInk ink;
+    const float halo = kMapLabelHaloPx;
+    const MapOverlayView nearV = mapOverlayView({300.f, 200.f}, MapZoom::Near, 1920.f, 1080.f); // 0.6 m per px
+    REQUIRE(nearV.mPerPx == doctest::Approx(0.6f));
+    // The basin's middle: seated right there, level.
+    MapLabel l;
+    REQUIRE(mapWaterLabelAt(m, n, look, nearV, MapZoom::Near, ink, {300.f, 300.f}, 70.f, 19.f, halo, l) == MapWaterSeat::Seated);
+    CHECK(l.at.x == doctest::Approx(mapOverlayToScreen(nearV, {300.f, 300.f}).x));
+    CHECK(l.at.y == doctest::Approx(mapOverlayToScreen(nearV, {300.f, 300.f}).y));
+    CHECK(l.angleDeg == 0.f);
+    checkSeat(m, n, look, nearV, MapZoom::Near, l, halo);
+    // Near the basin's west end the box would hang over the bank: it moves east the least (its centre 19.5 m in from
+    // x 226, on a 3 m lattice from x 230), and stays on the basin's line.
+    REQUIRE(mapWaterLabelAt(m, n, look, nearV, MapZoom::Near, ink, {230.f, 300.f}, 65.f, 19.f, halo, l) == MapWaterSeat::Seated);
+    const Vec2 seat = mapOverlayFromScreen(nearV, l.at);
+    CHECK(seat.x >= 245.5f);
+    CHECK(seat.x <= 248.6f);
+    CHECK(seat.y == doctest::Approx(300.f).epsilon(0.001));
+    checkSeat(m, n, look, nearV, MapZoom::Near, l, halo);
+    // The canal is 15 px wide at Near: a 19 px name fits it neither level nor along it, so it is left out.
+    CHECK(mapWaterLabelAt(m, n, look, nearV, MapZoom::Near, ink, {200.f, 150.f}, 60.f, 19.f, halo, l) == MapWaterSeat::NoSeat);
+    // Close up (0.2 m per px: 45 px wide) it is seated along the canal, standing, its halo clear of both banks' roads.
+    MapOverlayView closeV = nearV;
+    closeV.centre = {200.f, 150.f};
+    closeV.mPerPx = 0.2f;
+    REQUIRE(mapWaterLabelAt(m, n, look, closeV, MapZoom::Near, ink, {200.f, 150.f}, 60.f, 19.f, halo, l) == MapWaterSeat::Seated);
+    CHECK(l.angleDeg == -90.f);
+    CHECK(l.at.x == doctest::Approx(960.f));
+    checkSeat(m, n, look, closeV, MapZoom::Near, l, halo);
+    // A name whose point is on land is never set: Dry.
+    CHECK(mapWaterLabelAt(m, n, look, nearV, MapZoom::Near, ink, {100.f, 100.f}, 60.f, 19.f, halo, l) == MapWaterSeat::Dry);
+    // A lit road through the basin keeps the name off it: the cursor's road drawn over water still counts.
+    MiniMapModel lit = m;
+    MapRoad bridge;
+    bridge.cls = MapRoadClass::Lane; // not drawn at Mid but for the cursor
+    bridge.width = 6.f;
+    bridge.first = static_cast<std::uint32_t>(lit.points.size());
+    bridge.count = 2;
+    lit.points.push_back({300.f, 280.f});
+    lit.points.push_back({300.f, 320.f});
+    lit.roads.push_back(bridge);
+    const int b = static_cast<int>(lit.roads.size()) - 1;
+    MapOverlayView midV = nearV;
+    midV.mPerPx = 0.6f;
+    REQUIRE(mapWaterLabelAt(lit, n, look, midV, MapZoom::Mid, ink, {300.f, 300.f}, 70.f, 19.f, halo, l) == MapWaterSeat::Seated);
+    CHECK(l.at.x == doctest::Approx(960.f)); // unlit at Mid: not drawn, not in the way
+    REQUIRE(mapWaterLabelAt(lit, n, look, midV, MapZoom::Mid, ink, {300.f, 300.f}, 70.f, 19.f, halo, l, b) == MapWaterSeat::Seated);
+    CHECK(std::abs(l.at.x - 960.f) >= 35.f + halo); // lit: the name moves off it, its halo clear of the lit line
+    CHECK(mapLabelOnAnyRoad(lit, n, midV, MapZoom::Mid, ink, l, halo, b) == -1);
+}
+
+TEST_CASE("map look: a water name on the grid's water stays within reach of its point; zero allocation") {
+    // A lake of radius 40 m at (200, 200) in a 400 x 400 m grid.
+    const MiniMapModel m = waterModel(400.f, 400.f, [](float x, float y) { return std::hypot(x - 200.f, y - 200.f) <= 40.f; });
+    MapLook look;
+    mapBuildLook(m, nullptr, look);
+    const MapNames n;
+    const MapRoadInk ink;
+    const MapOverlayView v = mapOverlayView({200.f, 200.f}, MapZoom::Mid, 1920.f, 1080.f);
+    MapOverlayView one = v;
+    one.mPerPx = 1.f;
+    MapLabel l;
+    REQUIRE(mapWaterLabelAt(m, n, look, one, MapZoom::Mid, ink, {200.f, 200.f}, 60.f, 19.f, kMapLabelHaloPx, l) == MapWaterSeat::Seated);
+    CHECK(l.at.x == doctest::Approx(960.f));
+    // From the lake's west shore the name moves in to fit (25 m or more: its west end on a wet cell), within the 40 m
+    // reach; with 10 m, no seat.
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const MapWaterSeat shore = mapWaterLabelAt(m, n, look, one, MapZoom::Mid, ink, {165.f, 200.f}, 60.f, 19.f, kMapLabelHaloPx, l);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    REQUIRE(shore == MapWaterSeat::Seated);
+    const Vec2 seat = mapOverlayFromScreen(one, l.at);
+    CHECK(seat.x - 165.f >= 25.f);
+    CHECK(std::hypot(seat.x - 165.f, seat.y - 200.f) <= kMapWaterReachM);
+    checkSeat(m, n, look, one, MapZoom::Mid, l, kMapLabelHaloPx);
+    CHECK(mapWaterLabelAt(m, n, look, one, MapZoom::Mid, ink, {165.f, 200.f}, 60.f, 19.f, kMapLabelHaloPx, l, -1, kMapNoName, 10.f) == MapWaterSeat::NoSeat);
+}

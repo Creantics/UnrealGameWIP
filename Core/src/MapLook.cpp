@@ -826,4 +826,101 @@ bool mapSeaLabelAt(const MiniMapModel& m, const MapLook& look, const MapOverlayV
     return best >= 0.f;
 }
 
+MapWaterSeat mapWaterLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v, MapZoom z,
+                             const MapRoadInk& ink, Vec2 at, float w, float h, float grow, MapLabel& out, int picked,
+                             std::uint16_t pickedName, float reachM) {
+    constexpr float kPi = 3.14159265358979f;
+    auto wet = [&](Vec2 p) { return mapIsWater(m, p) || mapIsSea(m, look, p); };
+    if (!wet(at)) return MapWaterSeat::Dry;
+    if (!(w > 0.f && h > 0.f && v.mPerPx > 0.f && v.screenW > 0.f && v.screenH > 0.f)) return MapWaterSeat::NoSeat;
+    // The body: the rectangle that holds `at`, else a disc of reachM round it.
+    const MapRect* body = nullptr;
+    for (const MapRect& r : m.waterRects) {
+        const float c = std::cos(r.rot), s = std::sin(r.rot);
+        const float dx = at.x - r.cx, dy = at.y - r.cy;
+        if (std::abs(dx * c + dy * s) <= r.hx && std::abs(-dx * s + dy * c) <= r.hy) {
+            body = &r;
+            break;
+        }
+    }
+    auto inBody = [&](Vec2 p) {
+        if (!body) return std::hypot(p.x - at.x, p.y - at.y) <= reachM;
+        const float c = std::cos(body->rot), s = std::sin(body->rot);
+        const float dx = p.x - body->cx, dy = p.y - body->cy;
+        return std::abs(dx * c + dy * s) <= body->hx && std::abs(-dx * s + dy * c) <= body->hy;
+    };
+    // How far the body reaches from `at` (m), and the angles to try (screen degrees; world and screen share their axes).
+    float extent = reachM;
+    float angles[2] = {0.f, 0.f};
+    int angleCount = 1;
+    if (body) {
+        const float c = std::abs(std::cos(body->rot)), s = std::abs(std::sin(body->rot));
+        const float ex = body->hx * c + body->hy * s, ey = body->hx * s + body->hy * c;
+        extent = std::max(std::abs(at.x - body->cx) + ex, std::abs(at.y - body->cy) + ey);
+        const float longDeg = (body->hx >= body->hy ? body->rot : body->rot + 0.5f * kPi) * 180.f / kPi;
+        const float along = mapUprightDeg(longDeg);
+        if (std::abs(along) > 1.f) angles[angleCount++] = along;
+    }
+    const float step = std::max(3.f * v.mPerPx, extent / 48.f);
+    const int rings = static_cast<int>(std::ceil(extent / step));
+    float bestD = 1e30f;
+    bool found = false;
+    MapLabel best;
+    auto tryAt = [&](Vec2 p) {
+        const float d = std::hypot(p.x - at.x, p.y - at.y);
+        if (d >= bestD || !inBody(p)) return;
+        const Vec2 s = mapOverlayToScreen(v, p);
+        for (int a = 0; a < angleCount; ++a) {
+            MapLabel l;
+            l.at = s;
+            l.angleDeg = angles[a];
+            l.w = w;
+            l.h = h;
+            // The box grown by `grow` whole on the screen.
+            Vec2 k[4];
+            mapLabelCorners(l, grow, k);
+            bool inside = true;
+            for (const Vec2& q : k) inside = inside && q.x >= kMapLabelInsetPx && q.y >= kMapLabelInsetPx && q.x <= v.screenW - kMapLabelInsetPx && q.y <= v.screenH - kMapLabelInsetPx;
+            if (!inside) continue;
+            // The box itself all water: probes no more than 4 px apart along each side, corners included.
+            const float r = angles[a] * kPi / 180.f;
+            const float cr = std::cos(r), sr = std::sin(r);
+            const int nx = std::max(2, static_cast<int>(std::ceil(w / 4.f)) + 1), ny = std::max(2, static_cast<int>(std::ceil(h / 4.f)) + 1);
+            bool all = true;
+            for (int j = 0; j < ny && all; ++j)
+                for (int i = 0; i < nx && all; ++i) {
+                    const float u = (static_cast<float>(i) / static_cast<float>(nx - 1) - 0.5f) * w;
+                    const float t = (static_cast<float>(j) / static_cast<float>(ny - 1) - 0.5f) * h;
+                    all = wet(mapOverlayFromScreen(v, Vec2{s.x + u * cr - t * sr, s.y + u * sr + t * cr}));
+                }
+            if (!all) continue;
+            if (mapLabelOnAnyRoad(m, n, v, z, ink, l, grow, picked, pickedName) >= 0) continue;
+            bestD = d;
+            best = l;
+            found = true;
+            return; // level first: a turned seat at the same point is no nearer
+        }
+    };
+    // Square rings out from `at`; a ring whose nearest point is past the best seat found cannot hold a nearer one.
+    for (int ring = 0; ring <= rings; ++ring) {
+        if (static_cast<float>(ring) * step >= bestD) break;
+        auto cellAt = [&](int ix, int iy) { tryAt(Vec2{at.x + static_cast<float>(ix) * step, at.y + static_cast<float>(iy) * step}); };
+        if (ring == 0) {
+            cellAt(0, 0);
+            continue;
+        }
+        for (int ix = -ring; ix <= ring; ++ix) {
+            cellAt(ix, -ring);
+            cellAt(ix, ring);
+        }
+        for (int iy = -ring + 1; iy <= ring - 1; ++iy) {
+            cellAt(-ring, iy);
+            cellAt(ring, iy);
+        }
+    }
+    if (!found) return MapWaterSeat::NoSeat;
+    out = best;
+    return MapWaterSeat::Seated;
+}
+
 } // namespace ftcore

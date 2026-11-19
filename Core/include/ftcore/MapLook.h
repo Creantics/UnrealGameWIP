@@ -112,6 +112,19 @@ FTCORE_API Vec2 mapOverlayHold(const MiniMapModel& m, const MapOverlayView& v, V
 // wholly on the sea and on screen (the open sea off the model too). False when none does.
 FTCORE_API bool mapSeaLabelAt(const MiniMapModel& m, const MapLook& look, const MapOverlayView& v, float w, float h, Vec2& at);
 
+// Where a water name goes at view v: a label of w x h px (the text, its lean included) seated on its own water, the
+// body that holds `at` (world m): inside the water rectangle that holds it, else within reachM of it. Seats lie on a
+// lattice (3 px apart, coarser for a big body), tried nearest `at` first, level and, in a rectangle whose long side is
+// not level, turned along that side too. A seat is taken when the box itself is all water (mapIsWater or mapIsSea at
+// probes no more than 4 px apart, corners included), and the box grown by `grow` px is whole on the screen and meets no
+// road (mapLabelOnAnyRoad, with the cursor's lit roads). Dry: `at` is not on water; NoSeat: no seat passed. Either way the
+// name is left out, never set over land or a road. Zero allocation.
+enum class MapWaterSeat : std::uint8_t { Seated, Dry, NoSeat };
+inline constexpr float kMapWaterReachM = 40.f;
+FTCORE_API MapWaterSeat mapWaterLabelAt(const MiniMapModel& m, const MapNames& n, const MapLook& look, const MapOverlayView& v,
+                                        MapZoom z, const MapRoadInk& ink, Vec2 at, float w, float h, float grow, MapLabel& out,
+                                        int picked = -1, std::uint16_t pickedName = kMapNoName, float reachM = kMapWaterReachM);
+
 // Calls f(const MapStroke&) for every stroke of `kind` that may meet the world box lo-hi (and some just beyond it:
 // the caller still culls). Zero allocation.
 template <class F>

@@ -85,14 +85,22 @@ constexpr float kOvShear = 0.2f;          // water names lean this much (x per y
 ftcore::Vec2 OvMetres(const FVector& Cm) { return {static_cast<float>(Cm.X / 100.0), static_cast<float>(Cm.Y / 100.0)}; }
 FVector2D OvV2(const ftcore::Vec2 V) { return FVector2D(V.x, V.y); }
 
-// The cursor's road, lit along its whole length: the picked road and every road carrying its name.
-bool OvRoadLit(const ftcore::MapNames& Names, size_t R, int32 Picked, uint16 PickedName)
+// The roads' ink at S (ftcore::MapRoadInk): the widths the road passes draw are the ones the labels are kept off. The lit
+// line (the cursor's road, ftcore::mapRoadLit) is half the road's own width on screen, never under 2 px at 1080p.
+ftcore::MapRoadInk OvInk(float S)
 {
-	return Picked >= 0 &&
-		(static_cast<int32>(R) == Picked || (PickedName != ftcore::kMapNoName && R < Names.roadName.size() && Names.roadName[R] == PickedName));
+	ftcore::MapRoadInk Ink;
+	Ink.casePx = kOvCasePx;
+	for (int32 C = 0; C < ftcore::kMapRoadClasses; ++C)
+	{
+		Ink.linePx[C] = kOvRoadLinePx[C];
+	}
+	Ink.minPx = 0.8f;
+	Ink.litShare = 0.5f;
+	Ink.litMinPx = 2.f;
+	Ink.scale = S;
+	return Ink;
 }
-// The lit line's width (px): half the road's own on screen, never under 2 px at 1080p.
-float OvLitWidth(float RoadPx, float S) { return FMath::Max(RoadPx * 0.5f, 2.f * S); }
 
 FCanvasUVTri OvTri(const FVector2D& A, const FVector2D& B, const FVector2D& C, const FLinearColor& Color)
 {
@@ -400,6 +408,31 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY TEXT %s ts=%.2f clipped=%d caption_right=%.0f caption_bottom=%.0f screen=%.0fx%.0f"),
 				kOvShotNames[Z], LabelTS, Clipped, CaptionRight, CaptionBottom, View.screenW, View.screenH);
+			// Place and water names (the sea's too) whose text box meets any road drawn at the zoom, the cursor's at its lit
+			// width (0: none), and the names the road and water rules left out, with why.
+			int32 OnRoad = 0, PointNames = 0;
+			const ftcore::MapRoadInk Ink = OvInk(LabelS);
+			const uint16 LitName = ftcore::mapRoadName(Names, LabelPicked);
+			for (size_t I = 0; I < Placed.count; ++I)
+			{
+				const ftcore::MapLabel& L = Placed.labels[I];
+				const auto Rank = static_cast<ftcore::MapLabelRank>(L.priority);
+				if (Rank != ftcore::MapLabelRank::Place && Rank != ftcore::MapLabelRank::Water)
+				{
+					continue;
+				}
+				++PointNames;
+				OnRoad += ftcore::mapLabelOnAnyRoad(Model, Names, View, Zoom, Ink, L, 0.f, LabelPicked, LitName) >= 0 ? 1 : 0;
+			}
+			FString DropList;
+			static const TCHAR* const kWhy[] = {TEXT("dry"), TEXT("no_seat"), TEXT("on_road")};
+			for (int32 I = 0; I < DropCount; ++I)
+			{
+				DropList += FString::Printf(TEXT("%s%s:%s"), I ? TEXT(", ") : TEXT(""),
+					NameText.IsValidIndex(Drops[I].Name) ? *NameText[Drops[I].Name] : TEXT("?"), kWhy[static_cast<int32>(Drops[I].Why)]);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY NAMES %s point_names=%d names_on_road=%d dropped=%d [%s]"),
+				kOvShotNames[Z], PointNames, OnRoad, DropTotal, *DropList);
 			if (!bFramedReached)
 			{
 				UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY FRAME %s unreached: no allowed shift brings the land to 0.75; the best share %.3f"),
@@ -687,6 +720,15 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 		bSeaName ? &SeaAt : nullptr);
 	const uint16 PickedName = ftcore::mapRoadName(Names, Picked);
 	const float Halo = ftcore::kMapLabelHaloPx * TS;
+	const ftcore::MapRoadInk Ink = OvInk(S);
+	DropCount = DropTotal = 0;
+	auto Drop = [this](uint16 Name, EDrop Why) {
+		if (DropCount < kMaxDrops)
+		{
+			Drops[DropCount++] = {Name, Why};
+		}
+		++DropTotal;
+	};
 	size_t Count = 0;
 	for (size_t I = 0; I < NPicks && Count < ftcore::kMaxMapLabels; ++I)
 	{
@@ -723,26 +765,39 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 				continue;
 			}
 		}
+		// A water name (but the sea's, already over open sea) sits on its own water, its lean included, clear of every road
+		// drawn at the zoom: never over land or a road. One with no seat is left out.
+		const bool bSeatWater = bWater && !P.along && P.name != Names.seaName;
+		if (bSeatWater)
+		{
+			const ftcore::MapWaterSeat Seat = ftcore::mapWaterLabelAt(Model, Names, Look, View, Zoom, Ink, P.at, W + kOvShear * H, H, Halo, L,
+				Picked, PickedName);
+			if (Seat != ftcore::MapWaterSeat::Seated)
+			{
+				Drop(P.name, Seat == ftcore::MapWaterSeat::Dry ? EDrop::Dry : EDrop::NoSeat);
+				continue;
+			}
+		}
 		// Every name stays whole on the screen, its halo too: one at an edge moves in; one too big for the screen is left out.
 		if (!ftcore::mapLabelKeepInside(L, View.screenW, View.screenH, Halo))
 		{
 			continue;
 		}
-		// No name but the cursor's lies on the cursor's lit road, which is drawn wider than a halo hides.
-		if (P.rank != ftcore::MapLabelRank::Cursor && Picked >= 0)
+		if (!P.along && P.rank == ftcore::MapLabelRank::Place)
 		{
-			bool bOnLit = false;
-			for (size_t R = 0; R < Model.roads.size() && !bOnLit; ++R)
+			// A place's name meets no road drawn at the zoom (the cursor's road at its lit width): one on a road moves the least
+			// way off it; one with no clear spot near is left out.
+			if (!ftcore::mapLabelOffRoads(Model, Names, View, Zoom, Ink, L, Halo, Picked, PickedName))
 			{
-				if (OvRoadLit(Names, R, Picked, PickedName))
-				{
-					bOnLit = ftcore::mapLabelOnRoad(Model, static_cast<int>(R), View, OvLitWidth(Model.roads[R].width / View.mPerPx, S), L, Halo);
-				}
-			}
-			if (bOnLit)
-			{
+				Drop(P.name, EDrop::OnRoad);
 				continue;
 			}
+		}
+		else if (!bSeatWater && P.rank != ftcore::MapLabelRank::Cursor && Picked >= 0 &&
+			ftcore::mapLabelOnAnyRoad(Model, Names, View, Zoom, Ink, L, Halo, Picked, PickedName, true) >= 0)
+		{
+			// No other name lies on the cursor's lit road, which is drawn wider than a halo hides.
+			continue;
 		}
 		L.name = P.name;
 		L.priority = static_cast<std::uint8_t>(P.rank);
@@ -902,7 +957,8 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	}
 	// Roads: a soft glow under the roads that carry names from mid (main roads and streets), then every road in gold (cased when wide enough: the gold
 	// full width first, the dark inside after, so the junctions join), then the cursor's road lit along its whole length.
-	auto IsLit = [&](size_t R) { return OvRoadLit(Names, R, Picked, PickedName); };
+	auto IsLit = [&](size_t R) { return ftcore::mapRoadLit(Names, R, Picked, PickedName); };
+	const ftcore::MapRoadInk Ink = OvInk(S);
 	enum EPass { Glow, Gold, Fill, LitPass };
 	for (int32 Pass = Glow; Pass <= LitPass; ++Pass)
 	{
@@ -926,7 +982,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					continue;
 				}
 				const float Px = Road.width / View.mPerPx;
-				const bool bCased = Px >= kOvCasePx * S;
+				const bool bCased = ftcore::mapRoadCased(Road, View, Ink);
 				float Width = 0.f;
 				FLinearColor Color = kOvGold;
 				bool bCaps = true;
@@ -938,7 +994,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					bCaps = false;
 					break;
 				case Gold:
-					Width = bCased ? Px : FMath::Max(kOvRoadLinePx[Cls] * S, 0.8f);
+					Width = ftcore::mapRoadDrawnPx(Road, View, Ink);
 					Color.A = kOvRoadAlpha[Cls];
 					break;
 				case Fill:
@@ -950,7 +1006,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 					Color = kOvRoadFill;
 					break;
 				default:
-					Width = OvLitWidth(Px, S);
+					Width = ftcore::mapRoadLitPx(Road, View, Ink);
 					Color = kOvLit;
 					break;
 				}
@@ -966,9 +1022,10 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	// The labels, placed again only when the view, the zoom or the cursor's road changes.
 	if (LabelPicked != Picked || LabelPickedName != PickedHere || LabelZoom != Zoom || LabelView.centre.x != View.centre.x ||
 		LabelView.centre.y != View.centre.y || LabelView.mPerPx != View.mPerPx || LabelView.screenW != View.screenW ||
-		LabelView.screenH != View.screenH || LabelTS != TS)
+		LabelView.screenH != View.screenH || LabelTS != TS || LabelS != S)
 	{
 		BuildLabels(Picked, PickedHere, S, TS);
+		LabelS = S;
 		LabelPicked = Picked;
 		LabelPickedName = PickedHere;
 		LabelZoom = Zoom;

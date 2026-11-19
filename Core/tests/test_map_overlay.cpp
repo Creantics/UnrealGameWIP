@@ -781,6 +781,128 @@ TEST_CASE("map overlay: a label meets a road's drawn line, its capped ends and i
     CHECK_FALSE(mapLabelOnRoad(one, static_cast<int>(one.roads.size()) - 1, v, wd, MapLabel{{960.f, 540.f}, 0.f, 100.f, 16.f, 1, 3, true}, 10.f));
 }
 
+TEST_CASE("map overlay: a road's ink: cased at its own width from casePx, else its class's line, never under minPx; the lit line") {
+    MapRoadInk ink;
+    MapOverlayView v;
+    v.mPerPx = 1.f;
+    MapRoad r;
+    r.cls = MapRoadClass::Street;
+    r.width = 8.f;
+    CHECK(mapRoadCased(r, v, ink));
+    CHECK(mapRoadDrawnPx(r, v, ink) == doctest::Approx(8.f));
+    CHECK(mapRoadLitPx(r, v, ink) == doctest::Approx(4.f));
+    v.mPerPx = 2.f; // 4 px on screen: one line
+    CHECK_FALSE(mapRoadCased(r, v, ink));
+    CHECK(mapRoadDrawnPx(r, v, ink) == doctest::Approx(1.3f));
+    CHECK(mapRoadLitPx(r, v, ink) == doctest::Approx(2.f));
+    ink.scale = 0.5f; // a small screen: the line's floor holds (2 px on screen, under the 2.5 px casing)
+    v.mPerPx = 4.f;
+    r.cls = MapRoadClass::Stair;
+    CHECK(mapRoadDrawnPx(r, v, ink) == doctest::Approx(0.8f));
+    ink.scale = 2.f;
+    CHECK(mapRoadCased(r, MapOverlayView{{}, 0.4f, 1920.f, 1080.f}, ink)); // 20 px against 10
+    CHECK_FALSE(mapRoadCased(r, MapOverlayView{{}, 1.f, 1920.f, 1080.f}, ink)); // 8 px against 10
+    CHECK(mapRoadDrawnPx(r, MapOverlayView{{}, 1.f, 1920.f, 1080.f}, ink) == doctest::Approx(1.8f));
+}
+
+TEST_CASE("map overlay: a name meets any road drawn at the zoom at its ink width, and the lit road at every zoom") {
+    const MiniMapModel m = model();
+    MapNames n;
+    REQUIRE(mapLoadNames(m, kNames, n));
+    const MapRoadInk ink;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f; // LN-A runs down x 960; RD-A along y 540 (8 px, cased)
+    // On the lane, 100 px below RD-A, 83 px off ST-A1: met at Near only, where lanes are drawn.
+    const MapLabel onLane{{960.f, 640.f}, 0.f, 40.f, 14.f, 1, 3, true};
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Mid, ink, onLane, kMapLabelHaloPx) == -1);
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Near, ink, onLane, kMapLabelHaloPx) == 3);
+    // The lane lit for the cursor is drawn at every zoom: met at Mid too; litOnly tests nothing else.
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Mid, ink, onLane, kMapLabelHaloPx, 3) == 3);
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Far, ink, onLane, kMapLabelHaloPx, 3, kMapNoName, true) == 3);
+    // A name on RD-A: met at every zoom; litOnly with RD-A unlit meets nothing.
+    const MapLabel onMain{{1100.f, 540.f}, 0.f, 60.f, 16.f, 1, 3, true};
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Far, ink, onMain, 0.f) == 0);
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Far, ink, onMain, 0.f, 3, kMapNoName, true) == -1);
+    // The halo counts: 3 px clear of RD-A's ink (its edge at 536; the label's foot at 533) is met with the halo only.
+    const MapLabel above{{1100.f, 525.f}, 0.f, 60.f, 16.f, 1, 3, true};
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Far, ink, above, 0.f) == -1);
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Far, ink, above, kMapLabelHaloPx + 0.5f) == 0);
+    // The lit pair: a name of the picked road lights every road carrying it (ST-A1 and ST-A2 share Ashlit Street).
+    CHECK(mapRoadLit(n, 2, 1, mapRoadName(n, 1)));
+    CHECK_FALSE(mapRoadLit(n, 2, 1, kMapNoName));
+    CHECK_FALSE(mapRoadLit(n, 1, -1, mapRoadName(n, 1)));
+}
+
+TEST_CASE("map overlay: a point name on a road moves the least to clear every road, up first; none clear, it is left out") {
+    const MiniMapModel m = model();
+    MapNames n;
+    REQUIRE(mapLoadNames(m, kNames, n));
+    const MapRoadInk ink;
+    MapOverlayView v;
+    v.centre = {200.f, 150.f};
+    v.mPerPx = 1.f;
+    // On RD-A at x 1100 (clear of ST-A2): one height up clears it, 2 px grown (the foot at 534, the ink from 536).
+    MapLabel l{{1100.f, 540.f}, 0.f, 60.f, 16.f, 1, 3, true};
+    REQUIRE(mapLabelOffRoads(m, n, v, MapZoom::Mid, ink, l, kMapLabelHaloPx - 1.f));
+    CHECK(l.at.x == doctest::Approx(1100.f));
+    CHECK(l.at.y == doctest::Approx(524.f));
+    CHECK(mapLabelOnAnyRoad(m, n, v, MapZoom::Mid, ink, l, kMapLabelHaloPx - 1.f) == -1);
+    // Already clear: unchanged.
+    MapLabel clear{{1300.f, 300.f}, 0.f, 60.f, 16.f, 1, 3, true};
+    REQUIRE(mapLabelOffRoads(m, n, v, MapZoom::Mid, ink, clear, kMapLabelHaloPx));
+    CHECK(clear.at.y == doctest::Approx(300.f));
+    // Roads every 12 m across the label's reach: no move clears them; the label stays as it was and the answer is no.
+    MiniMapModel ladder;
+    ladder.maxX = 400.f;
+    ladder.maxY = 300.f;
+    for (int i = 0; i < 26; ++i) {
+        MapRoad r;
+        r.cls = MapRoadClass::Main;
+        r.width = 8.f;
+        r.first = static_cast<std::uint32_t>(ladder.points.size());
+        r.count = 2;
+        ladder.points.push_back({-800.f, static_cast<float>(i) * 12.f});
+        ladder.points.push_back({1200.f, static_cast<float>(i) * 12.f});
+        ladder.roads.push_back(r);
+    }
+    MapNames none;
+    MapLabel stuck{{960.f, 546.f}, 0.f, 60.f, 16.f, 1, 3, true};
+    const MapLabel was = stuck;
+    const bool hooked = ftcore_test::allocHookInstalled();
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    const bool cleared = mapLabelOffRoads(ladder, none, v, MapZoom::Mid, ink, stuck, kMapLabelHaloPx);
+    const int hit = mapLabelOnAnyRoad(ladder, none, v, MapZoom::Mid, ink, stuck, kMapLabelHaloPx);
+    if (hooked) CHECK(ftcore_test::allocStats().count == before);
+    CHECK_FALSE(cleared);
+    CHECK(hit >= 0);
+    CHECK(stuck.at.x == was.at.x);
+    CHECK(stuck.at.y == was.at.y);
+    // A label too big for the screen is left out too.
+    MapOverlayView tiny = v;
+    tiny.screenW = 40.f;
+    MapLabel big{{20.f, 540.f}, 0.f, 60.f, 16.f, 1, 3, true};
+    CHECK_FALSE(mapLabelOffRoads(ladder, none, tiny, MapZoom::Mid, ink, big, kMapLabelHaloPx));
+}
+
+TEST_CASE("map overlay: water is a cell of the water grid or a point inside a water rectangle, turned ones too") {
+    MiniMapModel m;
+    m.maxX = 40.f;
+    m.maxY = 40.f;
+    m.waterCell = 4.f;
+    m.waterW = 10;
+    m.waterH = 10;
+    m.water.assign(100, 0);
+    m.water[2 * 10 + 3] = 1; // the cell x 12..16, y 8..12
+    CHECK(mapIsWater(m, {14.f, 10.f}));
+    CHECK_FALSE(mapIsWater(m, {18.f, 10.f}));
+    CHECK_FALSE(mapIsWater(m, {-2.f, 10.f})); // off the grid
+    m.waterRects.push_back(MapRect{100.f, 100.f, 20.f, 2.f, 3.14159265f / 4.f}); // a canal turned 45 degrees
+    CHECK(mapIsWater(m, {110.f, 110.f}));
+    CHECK_FALSE(mapIsWater(m, {110.f, 100.f})); // 7 m off its centre line
+    CHECK_FALSE(mapIsWater(m, {116.f, 116.f})); // past its end (22.6 m along)
+}
+
 TEST_CASE("map overlay: a label is kept inside the screen by the least move, its halo and turn counted; too big, left out") {
     const float in = kMapLabelInsetPx, g = kMapLabelHaloPx;
     auto box = [&](const MapLabel& l, float& x0, float& y0, float& x1, float& y1) {

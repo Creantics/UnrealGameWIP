@@ -195,6 +195,41 @@ FTCORE_API bool mapLabelOnRoad(const MiniMapModel& m, int road, const MapOverlay
 inline constexpr float kMapLabelInsetPx = 0.5f;
 FTCORE_API bool mapLabelKeepInside(MapLabel& l, float screenW, float screenH, float grow = 0.f);
 
+// How the host draws a road, in px on screen: cased (two gold edges with the dark between) at the road's own width on
+// screen when that is at least casePx * scale, else one line linePx[class] * scale wide, never under minPx. The cursor's
+// lit line (mapRoadLit) is litShare of the road's own width, never under litMinPx * scale, drawn over it at every zoom.
+// One rule for the drawing and for the label tests, so both agree where a road's ink lies.
+struct MapRoadInk {
+    float casePx = 5.f;
+    float linePx[kMapRoadClasses] = {1.7f, 1.3f, 1.f, 0.9f};
+    float minPx = 0.8f;
+    float litShare = 0.5f;
+    float litMinPx = 2.f;
+    float scale = 1.f; // the map's own scale (screen height / 1080)
+};
+FTCORE_API bool mapRoadCased(const MapRoad& road, const MapOverlayView& v, const MapRoadInk& ink);
+FTCORE_API float mapRoadDrawnPx(const MapRoad& road, const MapOverlayView& v, const MapRoadInk& ink);
+FTCORE_API float mapRoadLitPx(const MapRoad& road, const MapOverlayView& v, const MapRoadInk& ink);
+// Whether road r is lit for the cursor: the picked road, and every road carrying `pickedName` (the picked road's own
+// name; kMapNoName lights the picked road alone). Nothing is lit when picked < 0.
+FTCORE_API bool mapRoadLit(const MapNames& n, std::size_t r, int picked, std::uint16_t pickedName);
+// The first road whose ink at view v meets the label's box grown by `grow` px, or -1 for none: every road drawn at zoom
+// z (mapRoadShown) at mapRoadDrawnPx, and the lit roads at the wider of that and mapRoadLitPx, at every zoom (lit roads
+// are drawn at every zoom). litOnly tests the lit roads alone (a name set along its own road lies on it by design).
+// Roads are culled by their bounds (MapNames::roadBox, else measured here). Zero allocation.
+FTCORE_API int mapLabelOnAnyRoad(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z,
+                                 const MapRoadInk& ink, const MapLabel& l, float grow = 0.f, int picked = -1,
+                                 std::uint16_t pickedName = kMapNoName, bool litOnly = false);
+// A level name at a point, kept off every road: the label as it is when it meets none (mapLabelOnAnyRoad), else the
+// nearest of its moves (in half widths, up to one width either way, and whole heights, up to two up or down; nearest
+// first, up before down, left before right) that is whole on the screen (mapLabelKeepInside, which may move it in) and
+// meets no road. False, the label unchanged, when no move does: the name is left out. Zero allocation.
+FTCORE_API bool mapLabelOffRoads(const MiniMapModel& m, const MapNames& n, const MapOverlayView& v, MapZoom z,
+                                 const MapRoadInk& ink, MapLabel& l, float grow = 0.f, int picked = -1,
+                                 std::uint16_t pickedName = kMapNoName);
+// Whether a world point is water in the model: a cell of its water grid, or inside one of its water rectangles.
+FTCORE_API bool mapIsWater(const MiniMapModel& m, Vec2 world);
+
 // The placer: candidates in, the shown labels out by priority (then by input order), each kept only if it overlaps
 // nothing kept before it and no blocker (screen boxes already taken: the caption's, mapCaptionBox). `halo` px grows
 // every label's box all round before the test (the halo is part of the label). Fixed capacity: candidates past it are
