@@ -40,6 +40,7 @@
 
 class ACameraActor;
 class ASkeletalMeshActor;
+class UStaticMeshComponent;
 class UAnimSequence;
 class USkeletalMesh;
 
@@ -143,10 +144,15 @@ private:
 	{
 		FVector2D C, Ax, Half; // centre, unit x axis, half sizes (cm)
 		double ZMin = 0.0, ZMax = 0.0;
+		TWeakObjectPtr<const UStaticMeshComponent> Comp; // what it is, for the footprint log only
+		int32 Instance = INDEX_NONE;
 	};
 	TArray<FMassBox> MassBoxes;
 	TMap<FIntPoint, TArray<int32>> MassGrid; // 10 m cells: boxes reaching within a metre of the cell
 	double MinMassClear = 1e9;              // cm, least distance from a drawn member's feet to a massing box
+	int32 MinMassBox = INDEX_NONE;          // the box and member that gave it (log only)
+	int32 MinMassMember = INDEX_NONE;
+	FString MassBoxName(int32 Box) const;
 	bool bGroundLogged = false;
 
 	// Per pool actor: the agent id it stands for (0 = free), the clip it plays and at what rate, its ground height (cm).
@@ -184,6 +190,7 @@ private:
 	uint64 FootFrames = 0;   // member-frames
 	int32 FootMembers = 0;   // distinct members
 	TBitArray<> FootSeen;    // per sim slot
+	TArray<int32> FootFramesBy; // per sim slot (log only)
 	int32 FootLogged = 0;
 	bool bTestDeathRaised = false;
 	ftcore::crowdv2::CrowdCounts AtTestFight;
