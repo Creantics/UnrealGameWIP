@@ -134,6 +134,8 @@ bool SaveAsset(UObject* Asset)
 }
 
 // An 8-bit PNG as a new texture at Path, its pixels as they are (no gamma change: the linear maps keep their values).
+// The one place a vehicle normal's green turns: every export writes the glTF convention (+Y up, as Blender bakes) and the
+// texture flips it to the engine's; no export flips it.
 UTexture2D* ImportMap(const FString& File, const FString& Path, const FMapSpec& Map)
 {
 	TArray<uint8> Bytes;
@@ -160,12 +162,13 @@ UTexture2D* ImportMap(const FString& File, const FString& Path, const FMapSpec& 
 	Texture->SRGB = Map.bSRGB;
 	Texture->CompressionSettings = Map.Compression;
 	Texture->LODGroup = Map.Group;
+	Texture->bFlipGreenChannel = Map.Compression == TC_Normalmap;
 	// The master samples in a Custom node (Texture2DSample), which can't read a virtual texture.
 	Texture->VirtualTextureStreaming = false;
 	Texture->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Texture);
-	UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: %s: %d x %d, %s."), *FPaths::GetCleanFilename(File), Image.SizeX,
-		Image.SizeY, Map.bSRGB ? TEXT("sRGB") : TEXT("linear"));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: %s: %d x %d, %s, flip green %d."), *FPaths::GetCleanFilename(File),
+		Image.SizeX, Image.SizeY, Map.bSRGB ? TEXT("sRGB") : TEXT("linear"), Texture->bFlipGreenChannel ? 1 : 0);
 	return Texture;
 }
 

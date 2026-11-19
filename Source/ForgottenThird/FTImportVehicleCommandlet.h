@@ -6,9 +6,10 @@
 //       [-Dest=/Game/Vehicles/<Name>] [-LodScreen=1,0.35,0.12] -AllowCommandletRendering -unattended -nopause -nosplash
 //
 // <dir> holds SM_<Name>.fbx (LODs under one LOD group, box collision UBX_SM_<Name>_00, front +X, origin at the ground
-// centre, centimetres) and T_<Name>_BaseColor/Wear (sRGB), T_<Name>_Normal (DirectX, no flip), T_<Name>_ORM (AO,
-// roughness, metal) and T_<Name>_Mask (wear, paint, lamp, glass), all linear but the first two. A Wheel (or Tyre) slot
-// takes its own five T_<Name>Wheel_* maps. It writes, under <Dest>:
+// centre, centimetres) and T_<Name>_BaseColor/Wear (sRGB), T_<Name>_Normal (glTF green, +Y up, as Blender bakes: the
+// texture flips it, the one place it turns), T_<Name>_ORM (AO, roughness, metal) and T_<Name>_Mask (wear, paint, lamp,
+// glass), all linear but the first two. A Wheel (or Tyre) slot takes its own five T_<Name>Wheel_* maps. It writes, under
+// <Dest>:
 //   Textures/T_<Name>_*   the five maps (vehicle texture groups; normal map and mask compression for the linear ones)
 //   Materials/M_<Name>    the master (default lit), M_<Name>_ClearCoat (the paint) and M_<Name>_Glass (translucent,
 //                         lit per pixel): one graph, the car material contract's maths (PaintColor tints the mask's paint,
