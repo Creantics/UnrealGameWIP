@@ -61,14 +61,31 @@ void UFTNpcSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	World = MakeUnique<ftcore::NpcMemoryWorld>();
 	FString Error;
 	bool bHeld = false;
+	float HeldFor = 0.f;
 #if !UE_BUILD_SHIPPING
 	// Test runs: the tables stay unloaded, as with a missing data file, so a save run can show that an autosave made
-	// meanwhile keeps the slot's NPC block.
-	bHeld = FParse::Param(FCommandLine::Get(), TEXT("NpcTablesHeld"));
+	// meanwhile keeps the slot's NPC block. -NpcTablesHeld=<seconds> loads them that late (game time), so a save
+	// loaded before them shows its block held, then applied.
+	const TCHAR* HeldCmd = FCommandLine::Get();
+	bHeld = FParse::Value(HeldCmd, TEXT("NpcTablesHeld="), HeldFor) || FParse::Param(HeldCmd, TEXT("NpcTablesHeld"));
+	UGameInstance* HeldGI = GetGameInstance();
+	if (bHeld && HeldFor > 0.f && HeldGI)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("NPC tables load %.1f s late (-NpcTablesHeld=)."), HeldFor);
+		HeldGI->GetTimerManager().SetTimer(LateLoadTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
+		{
+			FString LateError;
+			if (!Load(LateError))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory off after the late load: %s"), *LateError);
+			}
+		}), HeldFor, false);
+	}
 #endif
 	if (bHeld)
 	{
-		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory off: -NpcTablesHeld (the tables stay unloaded)."));
+		UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory off: -NpcTablesHeld (the tables %s)."),
+			HeldFor > 0.f ? TEXT("load late, see above") : TEXT("stay unloaded"));
 	}
 	else if (!Load(Error))
 	{
@@ -93,7 +110,12 @@ void UFTNpcSubsystem::Deinitialize()
 		OverlayHandle.Reset();
 	}
 #endif
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(LateLoadTimer);
+	}
 	bReady = false;
+	SaveHold = ftcore::NpcSaveHold();
 	Facts = nullptr;
 	Placed.Reset();
 	Super::Deinitialize();
@@ -153,7 +175,43 @@ bool UFTNpcSubsystem::Load(FString& OutError)
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("NPC memory: %d NPCs, %d deed types, %d lines."), static_cast<int32>(Tables.npcs.size()),
 		static_cast<int32>(Tables.deeds.size()), static_cast<int32>(Lines.lines.size()));
+	std::string HeldUtf8;
+	if (SaveHold.take(HeldUtf8))
+	{
+		// A save loaded before the tables, and no New Game since: its block now.
+		const FString Held = FT::ToFString(HeldUtf8);
+		FString HeldError;
+		if (ftcore::npcSaveBlockAction(true, Held.IsEmpty()) == ftcore::NpcSaveBlockAction::Reset)
+		{
+			// A save from before NPC memory: the reset above stands.
+			UE_LOG(LogForgottenThird, Log, TEXT("NPC memory: the save held until the tables loaded has no NPC block; nobody remembers anything."));
+		}
+		else if (!ApplySaveJson(Held, HeldError))
+		{
+			ResetMemory();
+			UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory: the held save block didn't load: %s"), *HeldError);
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("NPC memory: applied the save block held until the tables loaded: %d chars."), Held.Len());
+		}
+	}
 	return true;
+}
+
+void UFTNpcSubsystem::HoldSaveJson(const FString& Json)
+{
+	SaveHold.hold(FT::ToUtf8(Json));
+}
+
+void UFTNpcSubsystem::NewGame()
+{
+	const bool bDropped = SaveHold.holding;
+	SaveHold.newGame();
+	ResetMemory(); // nothing to reset before the tables load: Load starts everyone at the baselines
+	UE_LOG(LogForgottenThird, Log, TEXT("NPC memory: new game, %s%s."),
+		bReady ? TEXT("everyone back to the baselines") : TEXT("the tables aren't loaded yet"),
+		bDropped ? TEXT("; the held save block is dropped") : TEXT(""));
 }
 
 bool UFTNpcSubsystem::LoadLines(FString& OutError)
