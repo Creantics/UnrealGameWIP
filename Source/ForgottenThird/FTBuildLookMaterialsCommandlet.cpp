@@ -243,19 +243,21 @@ float ReactDark = 0.0;
 
 // The rain on a water surface, put into a surface's code where it says //RAIN (P the world place in cm, Time, EyeDepth
 // and Grad as the surface has them). RainRings is the water collection's (ftcore::waterRainRings: the rain's intensity
-// while r.FT.Water.RainRings is 1, else 0, and at 0 nothing here runs). Drops land on three world grids of cells 24, 31
-// and 38 cm across, offset from each other so no grid reads; in a share of the cells (as large as RainRings) a drop
-// lands once in each period (about 0.9 s) at its own time and place and sends out one ring, two crests and a trough,
-// that widens to a third of its cell and fades as it goes. Too fine to draw far off: they fade out between 5 and 16 m.
+// while r.FT.Water.RainRings is 1 and the view is above the water, else 0, and at 0 nothing here runs). Drops land on
+// three world grids of cells 40, 55 and 70 cm across, offset from each other so no grid reads; in a share of the cells
+// (as large as RainRings) a drop lands once in each period (about 0.9 s) at its own time and place and sends out one
+// ring, two crests and a trough 3 to 5 cm wide, that widens to nearly half its cell and fades as it goes. A ring is
+// steep (a slope of up to about a fifth) so a lit surface catches it; it is drawn whole to 3.5 m and fades out by 13 m,
+// where seen that flat a ring is finer than a pixel.
 const TCHAR* const kWaterRainCode = TEXT(R"HLSL(if (RainRings > 0.001)
 {
-	float RainNear = saturate(1.0 - (EyeDepth - 500.0) / 1100.0);
+	float RainNear = saturate(1.0 - (EyeDepth - 350.0) / 950.0);
 	if (RainNear > 0.0)
 	{
 		float2 RainGrad = 0.0;
 		for (int RainK = 0; RainK < 3; ++RainK)
 		{
-			float2 RainQ = P / (24.0 + 7.0 * RainK) + float2(0.31, 0.67) * RainK;
+			float2 RainQ = P / (40.0 + 15.0 * RainK) + float2(0.31, 0.67) * RainK;
 			float2 RainId = floor(RainQ);
 			float3 RainP3 = frac(float3(RainId.xyx + 19.0 * RainK) * float3(0.1031, 0.1030, 0.0973));
 			RainP3 += dot(RainP3, RainP3.yxz + 33.33);
@@ -265,12 +267,12 @@ const TCHAR* const kWaterRainCode = TEXT(R"HLSL(if (RainRings > 0.001)
 				float RainAge = frac(Time * 1.1 + RainH.x * 7.0);
 				float2 RainRel = (RainQ - RainId - 0.5) - (RainH.xy - 0.5) * 0.2;
 				float RainR = max(length(RainRel), 1e-3);
-				float RainX = (RainR - 0.34 * RainAge) / 0.05;
+				float RainX = (RainR - 0.45 * RainAge) / 0.075;
 				float RainFade = (1.0 - RainAge) * (1.0 - RainAge);
 				RainGrad += (RainRel / RainR) * (sin(RainX * 2.0) * exp(-0.5 * RainX * RainX) * RainFade);
 			}
 		}
-		Grad += RainGrad * (0.12 * RainNear);
+		Grad += RainGrad * (0.35 * RainNear);
 	}
 }
 )HLSL");

@@ -389,34 +389,38 @@ TEST_CASE("water draw: the canal's sky scale is clamped; not finite is no change
     CHECK(sink > 0.f);
 }
 
-TEST_CASE("water draw: rain rings follow the rain only while on, in steps, and allocate nothing") {
+TEST_CASE("water draw: rain rings follow the rain only while on and above the surface, in steps, and allocate nothing") {
     using namespace ftcore;
     const float inf = std::numeric_limits<float>::infinity();
     const float nan = std::numeric_limits<float>::quiet_NaN();
     // Off: none, whatever the rain.
-    CHECK(waterRainRings(false, 0.f) == 0.f);
-    CHECK(waterRainRings(false, 0.7f) == 0.f);
-    CHECK(waterRainRings(false, 1.f) == 0.f);
+    CHECK(waterRainRings(false, false, 0.f) == 0.f);
+    CHECK(waterRainRings(false, false, 0.7f) == 0.f);
+    CHECK(waterRainRings(false, false, 1.f) == 0.f);
+    // The view under a surface: none, on or off.
+    CHECK(waterRainRings(true, true, 1.f) == 0.f);
+    CHECK(waterRainRings(true, true, 0.5f) == 0.f);
+    CHECK(waterRainRings(false, true, 1.f) == 0.f);
     // On: the rain's intensity, clamped.
-    CHECK(waterRainRings(true, 0.f) == 0.f);
-    CHECK(waterRainRings(true, 0.5f) == 0.5f);
-    CHECK(waterRainRings(true, 1.f) == 1.f);
-    CHECK(waterRainRings(true, 3.f) == 1.f);
-    CHECK(waterRainRings(true, -1.f) == 0.f);
+    CHECK(waterRainRings(true, false, 0.f) == 0.f);
+    CHECK(waterRainRings(true, false, 0.5f) == 0.5f);
+    CHECK(waterRainRings(true, false, 1.f) == 1.f);
+    CHECK(waterRainRings(true, false, 3.f) == 1.f);
+    CHECK(waterRainRings(true, false, -1.f) == 0.f);
     // Not finite: none.
-    CHECK(waterRainRings(true, nan) == 0.f);
-    CHECK(waterRainRings(true, inf) == 0.f);
-    CHECK(waterRainRings(true, -inf) == 0.f);
+    CHECK(waterRainRings(true, false, nan) == 0.f);
+    CHECK(waterRainRings(true, false, inf) == 0.f);
+    CHECK(waterRainRings(true, false, -inf) == 0.f);
     // Steps of 1/kWaterRainRingSteps: a ramp moves it only a step at a time, and a drizzle under half a step is none.
-    CHECK(waterRainRings(true, 0.51f) == 0.5f);
-    CHECK(waterRainRings(true, 0.5f + 0.4f / kWaterRainRingSteps) == 0.5f);
-    CHECK(waterRainRings(true, 0.4f / kWaterRainRingSteps) == 0.f);
-    CHECK(waterRainRings(true, 1.f / kWaterRainRingSteps) == doctest::Approx(1.f / kWaterRainRingSteps));
+    CHECK(waterRainRings(true, false, 0.51f) == 0.5f);
+    CHECK(waterRainRings(true, false, 0.5f + 0.4f / kWaterRainRingSteps) == 0.5f);
+    CHECK(waterRainRings(true, false, 0.4f / kWaterRainRingSteps) == 0.f);
+    CHECK(waterRainRings(true, false, 1.f / kWaterRainRingSteps) == doctest::Approx(1.f / kWaterRainRingSteps));
     int moves = 0;
     float last = 0.f;
     const auto before = ftcore_test::allocStats().count;
     for (int k = 0; k <= 1000; ++k) {
-        const float r = waterRainRings(true, float(k) / 1000.f);
+        const float r = waterRainRings(true, false, float(k) / 1000.f);
         CHECK(r >= last);
         if (r != last) ++moves;
         last = r;

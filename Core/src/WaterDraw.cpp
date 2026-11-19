@@ -207,8 +207,8 @@ float waterCanalSky(const WaterReflectTier& tier, float lowScale) {
     return std::clamp(lowScale, 0.f, 1.f);
 }
 
-float waterRainRings(bool on, float intensity) {
-    if (!on || !std::isfinite(intensity)) return 0.f;
+float waterRainRings(bool on, bool viewUnder, float intensity) {
+    if (!on || viewUnder || !std::isfinite(intensity)) return 0.f;
     return std::round(std::clamp(intensity, 0.f, 1.f) * kWaterRainRingSteps) / kWaterRainRingSteps;
 }
 

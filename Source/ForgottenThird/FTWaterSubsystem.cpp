@@ -485,11 +485,12 @@ void UFTWaterSubsystem::PushSurface(float DeltaTime)
 			ftcore::waterSkyOnly(Tier) ? TEXT("a tier that reflects only the sky") : TEXT("reflections traced"),
 			bSet ? TEXT("") : TEXT("; the water collection has no CanalSky (FTBuildLookMaterials -Water builds it)"));
 	}
-	// Rain on the water (ftcore::waterRainRings): the rain's intensity in steps while r.FT.Water.RainRings is 1, else 0;
-	// written when a step moves, logged when it starts or stops.
+	// Rain on the water (ftcore::waterRainRings): the rain's intensity in steps while r.FT.Water.RainRings is 1 and the
+	// view is above the water, else 0 (so the masters' rain block costs nothing under water); written when a step moves,
+	// logged when it starts or stops.
 	static const FName RainRingsName(TEXT("RainRings"));
 	const UFTRainSubsystem* RainSys = World->GetSubsystem<UFTRainSubsystem>();
-	const float RainRings = ftcore::waterRainRings(CVarWaterRainRings.GetValueOnGameThread() != 0, RainSys ? RainSys->GetIntensity() : 0.f);
+	const float RainRings = ftcore::waterRainRings(CVarWaterRainRings.GetValueOnGameThread() != 0, bUnder, RainSys ? RainSys->GetIntensity() : 0.f);
 	if (RainRings != RainRingsWritten)
 	{
 		const bool bLog = RainRingsWritten < 0.f || (RainRings > 0.f) != (RainRingsWritten > 0.f);

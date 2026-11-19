@@ -30,8 +30,8 @@
 // tier, 1 on every other (1 in the cvar turns it off). Written only when it moves; logged then.
 //
 // Rain on the water: with r.FT.Water.RainRings 1 the collection's RainRings is the rain's intensity (ftcore::waterRainRings,
-// in steps), by which the sea and canal masters lay rain rings on their surfaces; 0 (the default) leaves them untouched.
-// The underwater view's own ripples (the window) take no rain.
+// in steps) while the view is above the water, by which the sea and canal masters lay rain rings on their surfaces; 0
+// (the default, and under the water) leaves them untouched. The underwater view's own ripples (the window) take no rain.
 //
 // The surface model (ftcore::WaterSurfaceModel: Data/Water/water.json's waves and tide, the look's wind and swell, the
 // rain's storm, the world clock's hours) is set on the bodies when ft.Water.Surface is 1, so the wade, the swim and the

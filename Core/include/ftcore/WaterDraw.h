@@ -100,15 +100,18 @@ struct WaterReflectTier {
     int ssrQuality = 0;            // r.SSR.Quality
     bool lumenReflections = false; // r.Lumen.Reflections.Allow on, with Lumen the reflection method
 };
-// The canal's sky scale on a sky-only tier (r.FT.Water.CanalSkyLow's default).
-inline constexpr float kWaterCanalSkyLow = 0.04f;
+// The canal's sky scale on a sky-only tier (r.FT.Water.CanalSkyLow's default): the smallest drawn scale at which the Low
+// canal still's whole frame is within a fifth of the play tier's (the Strip at night: 0.25 gives 31.8 against play's
+// 36.7; 0.08 gives 15.5, the canal black; 1 gives 63.4, the canal cream).
+inline constexpr float kWaterCanalSkyLow = 0.25f;
 FTCORE_API bool waterSkyOnly(const WaterReflectTier& tier);
 FTCORE_API float waterCanalSky(const WaterReflectTier& tier, float lowScale);
 
 // Rain on the water: the water collection's RainRings, by which the sea and canal masters lay rain rings on the surface
 // (none at 0, their block skipped). The rain's intensity, clamped to 0..1 and kept to steps of 1/kWaterRainRingSteps (so
-// the host writes it only when a step moves), while on (r.FT.Water.RainRings); 0 while off. Not finite reads 0.
+// the host writes it only when a step moves), while on (r.FT.Water.RainRings); 0 while off and while the view is under a
+// surface (seen from below the rings do not read, and the block then costs nothing). Not finite reads 0.
 inline constexpr float kWaterRainRingSteps = 32.f;
-FTCORE_API float waterRainRings(bool on, float intensity);
+FTCORE_API float waterRainRings(bool on, bool viewUnder, float intensity);
 
 } // namespace ftcore
