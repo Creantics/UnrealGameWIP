@@ -725,7 +725,7 @@ int CrowdSim::freeBraceSlot(std::uint32_t i) const {
     // S-366: only the spots that fit in the dead end (rows braceRow apart back from its end); the rest are left
     // without one (-2) and, past the safe distance, give up the dead end (decide).
     const CrowdEdge* e = graph_->find(a.from, a.to);
-    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset);
+    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset - kCrowdWallSlack);
     const float sp = std::max({tuning_.minGap, tuning_.avoidRadius, tuning_.braceSpace});
     const int cols = 1 + static_cast<int>(2.f * w / sp);
     const int rows = 1 + static_cast<int>(std::max(0.f, a.len - kBraceEnd) / std::max(sp, tuning_.braceRow));
@@ -737,7 +737,7 @@ int CrowdSim::freeBraceSlot(std::uint32_t i) const {
 
 void CrowdSim::braceSlotAt(const Agent& a, float& along, float& lat) const {
     const CrowdEdge* e = graph_->find(a.from, a.to);
-    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset);
+    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset - kCrowdWallSlack);
     // S-332: staggered spots braceSpace across and braceRow along, so the cornered never stand in a row at one wall.
     const float sp = std::max({tuning_.minGap, tuning_.avoidRadius, tuning_.braceSpace});
     const int cols = 1 + static_cast<int>(2.f * w / sp);
@@ -1555,7 +1555,7 @@ std::uint32_t CrowdSim::closePairs(float d) const {
 }
 
 // How far p stands inside the streets round a's edge (its own and those at both its nodes): the distance to the
-// nearest outer edge. fixTo (optional): the nearest point wallInset inside the best of them.
+// nearest outer edge. fixTo (optional): the nearest point wallInset (and kCrowdWallSlack) inside the best of them.
 float CrowdSim::clearance(const Agent& a, Vec2 p, Vec2* fixTo) const {
     float best = -1e30f;
     for (const std::uint32_t n : {a.from, a.to})
@@ -1571,31 +1571,33 @@ float CrowdSim::clearance(const Agent& a, Vec2 p, Vec2* fixTo) const {
             if (cl <= best) continue;
             best = cl;
             if (fixTo) {
-                const float keep = std::max(0.f, e.half - tuning_.graph.wallInset);
+                const float keep = std::max(0.f, e.half - tuning_.graph.wallInset - kCrowdWallSlack);
                 *fixTo = off > keep && off > 1e-6f ? Vec2{c.x + (p.x - c.x) * keep / off, c.y + (p.y - c.y) * keep / off} : p;
             }
         }
     return best;
 }
 
-// Moves a member to p, kept wallInset inside the streets: its along and sideways set from p in its edge's frame.
+// Moves a member to p, kept wallInset inside the streets: its along and sideways set from p in its edge's frame. S-271
+// unrounded: a point under wallInset by any amount is moved (to kCrowdWallSlack past it); the old 1 mm allowance let
+// members stand at 0.799 m.
 void CrowdSim::place(Agent& a, Vec2 p) {
     Vec2 q = p;
-    if (clearance(a, p, &q) >= tuning_.graph.wallInset - 1e-3f) q = p;
+    if (clearance(a, p, &q) >= tuning_.graph.wallInset) q = p;
     const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
     a.along = std::clamp((q.x - f.x) * dir.x + (q.y - f.y) * dir.y, std::min(a.along, 0.f), a.len);
     a.lat = std::clamp((q.x - f.x) * -dir.y + (q.y - f.y) * dir.x, -kCornerReach, kCornerReach);
     const Vec2 base = basePoint(a);
     a.pos = {base.x - dir.y * a.lat, base.y + dir.x * a.lat};
-    if (clearance(a, a.pos, nullptr) >= tuning_.graph.wallInset - 1e-3f) return;
+    if (clearance(a, a.pos, nullptr) >= tuning_.graph.wallInset) return;
     // Its own street's frame can't reach that point (it stands on a node): in across its own street until clear.
     float lo = 0.f, hi = 1.f;
     const float lat0 = a.lat;
     for (int k = 0; k < 10; ++k) {
         const float mid = 0.5f * (lo + hi);
         const Vec2 at{base.x - dir.y * lat0 * mid, base.y + dir.x * lat0 * mid};
-        if (clearance(a, at, nullptr) >= tuning_.graph.wallInset - 1e-3f) lo = mid;
+        if (clearance(a, at, nullptr) >= tuning_.graph.wallInset + kCrowdWallSlack) lo = mid;
         else hi = mid;
     }
     a.lat = lat0 * lo;
@@ -1634,7 +1636,7 @@ void CrowdSim::nudge(Agent& a, Vec2 by) {
 void CrowdSim::separate() {
     const float g = tuning_.minGap;
     for (Agent& a : agents_)
-        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < tuning_.graph.wallInset - 1e-3f)
+        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < tuning_.graph.wallInset)
             place(a, a.pos);
     for (int it = 0; it < 64 && g > 0.f; ++it) {
         bool any = false;

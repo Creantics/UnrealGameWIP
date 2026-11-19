@@ -235,7 +235,7 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
         // The walking band stays wallInset off the street's outer edge (the frontage), whatever the pavement: on a
         // narrow pavement it reaches over the kerb rather than up to the wall; on a street too narrow for both, the
         // centre line.
-        const float outer = proto.half - tuning.wallInset;
+        const float outer = proto.half - tuning.wallInset - kCrowdWallSlack;
         if (outer <= 0.f) {
             proto.lane = 0.f;
             proto.laneHalf = 0.f;
@@ -246,7 +246,7 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
             proto.side = s.pavementSide;
         } else {
             proto.lane = 0.f;
-            proto.laneHalf = std::max(0.f, proto.half - std::max(tuning.edgeMargin, tuning.wallInset));
+            proto.laneHalf = std::max(0.f, proto.half - std::max(tuning.edgeMargin, tuning.wallInset + kCrowdWallSlack));
         }
         std::uint32_t prev = UINT32_MAX;
         for (const Vec2& p : s.points) {

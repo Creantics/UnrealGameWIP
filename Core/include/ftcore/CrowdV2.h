@@ -329,6 +329,9 @@ struct CrowdCounts {
     std::uint64_t despawnNewborn = 0, despawnWalkedOut = 0;
 };
 inline constexpr float kCrowdNewborn = 1.f;
+// S-271: members are placed this far past wallInset (m), so float noise never leaves one under it: the walking band
+// ends there, and a member found under wallInset is moved back to it. The gate itself stays wallInset, unrounded.
+inline constexpr float kCrowdWallSlack = 0.01f;
 
 // A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
 // a later time (the host evaluates it 1 s in). Fixed size, no allocation.

@@ -209,7 +209,7 @@ TEST_CASE("crowd graph: shared points, a T-junction and a crossing all join; unw
     const CrowdEdge* e = g.find(nodeAt(g, {0.f, 0.f}), tFoot);
     REQUIRE(e);
     CHECK(e->lane == 0.f);
-    CHECK(e->laneHalf == doctest::Approx(3.f - std::max(t.edgeMargin, t.wallInset)));
+    CHECK(e->laneHalf == doctest::Approx(3.f - std::max(t.edgeMargin, t.wallInset + kCrowdWallSlack)));
 }
 
 TEST_CASE("crowd graph: two streets ending on the same spot of a third share one junction node") {
@@ -1238,7 +1238,6 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
     // S-271 gates: two members at least kPairGate apart and every member kWallGate inside the frontage, in every
     // state, every step; at +30 s the walkers within kArea of the fight at least half the members there at its start.
     constexpr float kPairGate = 0.6f, kWallGate = 0.8f, kArea = 20.f;
-    constexpr float kWallTol = 0.01f; // float noise on a member held exactly at the inset
     std::uint32_t pairFail = 0, wallFail = 0, backFail = 0, stuck = 0, worstPairSeed = 0, worstWallSeed = 0;
     float worstPair = 1e30f, worstWall = 1e30f;
     Vec2 worstPairAt{}, worstWallAt{};
@@ -1358,10 +1357,10 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
             popAppear += sim.counts().popsAppear;
             popLive += sim.counts().popsLive;
             popRuns += sim.counts().popsInView > 0;
-            wallFail += runWall < kWallGate - kWallTol;
+            wallFail += runWall < kWallGate;
             if (runPair < worstPair) { worstPair = runPair; worstPairAt = fight; worstPairSeed = seed; }
             if (runWall < worstWall) { worstWall = runWall; worstWallAt = fight; worstWallSeed = seed; }
-            if (!back || runPair < kPairGate || runWall < kWallGate - kWallTol)
+            if (!back || runPair < kPairGate || runWall < kWallGate)
                 std::printf("crowd sweep: GAPS at node %u (%.1f,%.1f) seed %u: pair %.2f m, wall %.2f m, walkers within %.0f m %u at +30 s of %u at the start\n",
                             n, static_cast<double>(fight.x), static_cast<double>(fight.y), seed, static_cast<double>(runPair),
                             static_cast<double>(runWall), static_cast<double>(kArea), backNear, calmNear);
@@ -1403,4 +1402,35 @@ TEST_CASE("crowd first second: sweep over a real street table (opt-in)") {
     CHECK(wallFail == 0u);
     CHECK(backFail * 100u <= runs * 5u);
     CHECK(stuck == 0u);
+}
+
+// S-271 as the spec words it: "nobody nearer the frontage than wallInset, after every step". Unrounded, no tolerance: the
+// placement keeps members kCrowdWallSlack past wallInset, so float noise never leaves one at 0.799 m (the old 1 mm
+// allowance did, on the Strip and here), and a fight's push and the brace slots stay inside the same line.
+TEST_CASE("crowd S-271: nobody nearer the frontage than wallInset, unrounded, after any step") {
+    const CrowdGraphTuning gt = loose();
+    CrowdGraph g;
+    REQUIRE(g.build(gridStreets(9, 25.f), gt));
+    CrowdTuning t;
+    t.maxAgents = t.targetAgents = 200;
+    float least = 1e30f;
+    std::uint64_t under = 0;
+    for (const std::uint32_t seed : {1u, 2u, 3u}) {
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, seed));
+        for (int i = 0; i < 15 * 40; ++i) {
+            if (i == 150) sim.pushEvent({CrowdEventKind::FightStart, {0.f, 0.f}});
+            if (i > 150 && i < 300 && i % 8 == 0) sim.pushEvent({CrowdEventKind::Strike, {0.f, 0.f}});
+            sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+            for (std::uint32_t m = 0; m < sim.capacity(); ++m) {
+                if (!sim.agent(m).live) continue;
+                const float w = sim.wallClearance(m);
+                least = std::min(least, w);
+                under += w < gt.wallInset;
+            }
+        }
+    }
+    INFO("least wall clearance " << least << " m, member-steps under wallInset " << under);
+    CHECK(least >= gt.wallInset);
+    CHECK(under == 0u);
 }
