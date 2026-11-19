@@ -246,7 +246,6 @@ struct FLocoSampled
 {
 	TArray<ftcore::GaitFrame> Frames;
 	TArray<ftcore::LocoPoint> Pelvis;
-	bool bOk = false;
 };
 
 TMap<FLocoMeasureKey, FLocoSampled>& LocoSampled()
@@ -276,26 +275,28 @@ bool SampleFeet(const UAnimSequence& Clip, TArray<ftcore::GaitFrame>& Frames, TA
 		return SampleFeetNow(Clip, Frames, Pelvis);
 	}
 	const FLocoMeasureKey Key{FObjectKey(&Clip), Pelvis != nullptr};
-	const FLocoSampled* Sampled = LocoSampled().Find(Key);
-	if (Sampled)
+	if (const FLocoSampled* Kept = LocoSampled().Find(Key))
 	{
 		++LocoMeasureKept;
+		Frames = Kept->Frames;
+		if (Pelvis)
+		{
+			*Pelvis = Kept->Pelvis;
+		}
+		return true;
 	}
-	else
-	{
-		FLocoSampled& Fresh = LocoSampled().Add(Key);
-		Fresh.bOk = SampleFeetNow(Clip, Fresh.Frames, Pelvis ? &Fresh.Pelvis : nullptr);
-		Sampled = &Fresh;
-		++LocoMeasureFresh;
-	}
-	if (!Sampled->bOk)
+	++LocoMeasureFresh;
+	// Only a good sample is kept. A failed one (no skeleton yet, or no length: a clip not fully loaded) is sampled again
+	// at the next setup, so a clip measured too early does not lose its gait measure for the session.
+	if (!SampleFeetNow(Clip, Frames, Pelvis))
 	{
 		return false;
 	}
-	Frames = Sampled->Frames;
+	FLocoSampled& Fresh = LocoSampled().Add(Key);
+	Fresh.Frames = Frames;
 	if (Pelvis)
 	{
-		*Pelvis = Sampled->Pelvis;
+		Fresh.Pelvis = *Pelvis;
 	}
 	return true;
 }
