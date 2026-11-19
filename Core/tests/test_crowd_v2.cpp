@@ -1451,3 +1451,43 @@ TEST_CASE("crowd S-271: nobody nearer the frontage than wallInset, unrounded, af
     CHECK(least >= gt.wallInset);
     CHECK(under == 0u);
 }
+
+// S-271 with room for the host's measure: the Strip's check measures the frontage from the building's box and read
+// 0.799961 m for a member Core had left at 0.8000031 (placement accepted any point at wallInset or past it), a 0.042 mm
+// float gap. Placement now keeps everyone kCrowdWallAccept (0.25 mm) past wallInset; the gate itself stays wallInset.
+// The scene: the knot's dead end, where pushes press members to its walls (it left one at 0.800035 m before).
+TEST_CASE("crowd S-271: placement keeps kCrowdWallAccept past wallInset, after any step") {
+    const CrowdGraphTuning gt = loose();
+    const float len = 20.f;
+    CrowdGraph g;
+    REQUIRE(g.build({line({0.f, 0.f}, {len, 0.f}), line({len, -100.f}, {len, 0.f}), line({len, 0.f}, {len, 100.f})}, gt));
+    CrowdTuning t = quiet();
+    t.reactRadius = 22.f;
+    t.safeDist = 22.f;
+    const float margin = gt.wallInset + kCrowdWallAccept;
+    float least = 1e30f;
+    std::uint64_t under = 0;
+    for (const std::uint32_t cnt : {16u, 32u}) {
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 1));
+        sim.setPopulationFrozen(true);
+        const std::uint32_t end = nodeAt(g, {0.f, 0.f});
+        for (std::uint32_t k = 0; k < cnt; ++k)
+            REQUIRE(sim.spawnAt(end, 0, static_cast<float>(k % 4) * 0.3f, len * (0.3f + 0.6f * static_cast<float>(k) / static_cast<float>(cnt))) != UINT32_MAX);
+        const Vec2 fight{len + 1.f, 0.f};
+        for (int i = 0; i < 15 * 10; ++i) {
+            if (i == 3) sim.pushEvent({CrowdEventKind::FightStart, fight});
+            if (i > 3 && i % 8 == 0) sim.pushEvent({CrowdEventKind::Strike, fight});
+            sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+            for (std::uint32_t m = 0; m < sim.capacity(); ++m) {
+                if (!sim.agent(m).live) continue;
+                const float w = sim.wallClearance(m);
+                least = std::min(least, w);
+                under += w < margin;
+            }
+        }
+    }
+    INFO("least wall clearance " << least << " m, member-steps under wallInset + kCrowdWallAccept " << under);
+    CHECK(least >= margin);
+    CHECK(under == 0u);
+}

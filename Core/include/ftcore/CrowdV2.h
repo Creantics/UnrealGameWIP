@@ -332,6 +332,10 @@ inline constexpr float kCrowdNewborn = 1.f;
 // S-271: members are placed this far past wallInset (m), so float noise never leaves one under it: the walking band
 // ends there, and a member found under wallInset is moved back to it. The gate itself stays wallInset, unrounded.
 inline constexpr float kCrowdWallSlack = 0.01f;
+// S-271: a point is taken as it is only this far past wallInset or more (m), else it is moved. The host measures the
+// frontage from the building's box and read 0.799961 m for a member Core had at 0.8000031, a 0.042 mm gap from float
+// rounding (one float step is 0.03 mm at the Strip's coordinates, under 512 m); this is six times that gap.
+inline constexpr float kCrowdWallAccept = 0.00025f;
 
 // A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
 // a later time (the host evaluates it 1 s in). Fixed size, no allocation.

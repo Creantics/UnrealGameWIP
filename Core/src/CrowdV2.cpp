@@ -1580,17 +1580,19 @@ float CrowdSim::clearance(const Agent& a, Vec2 p, Vec2* fixTo) const {
 
 // Moves a member to p, kept wallInset inside the streets: its along and sideways set from p in its edge's frame. S-271
 // unrounded: a point under wallInset by any amount is moved (to kCrowdWallSlack past it); the old 1 mm allowance let
-// members stand at 0.799 m.
+// members stand at 0.799 m. A point is taken as it is only kCrowdWallAccept past wallInset or more: one taken at
+// wallInset itself (0.8000031 m) read 0.799961 m on the host, whose frontage is the building's box.
 void CrowdSim::place(Agent& a, Vec2 p) {
+    const float accept = tuning_.graph.wallInset + kCrowdWallAccept;
     Vec2 q = p;
-    if (clearance(a, p, &q) >= tuning_.graph.wallInset) q = p;
+    if (clearance(a, p, &q) >= accept) q = p;
     const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
     a.along = std::clamp((q.x - f.x) * dir.x + (q.y - f.y) * dir.y, std::min(a.along, 0.f), a.len);
     a.lat = std::clamp((q.x - f.x) * -dir.y + (q.y - f.y) * dir.x, -kCornerReach, kCornerReach);
     const Vec2 base = basePoint(a);
     a.pos = {base.x - dir.y * a.lat, base.y + dir.x * a.lat};
-    if (clearance(a, a.pos, nullptr) >= tuning_.graph.wallInset) return;
+    if (clearance(a, a.pos, nullptr) >= accept) return;
     // Its own street's frame can't reach that point (it stands on a node): in across its own street until clear.
     float lo = 0.f, hi = 1.f;
     const float lat0 = a.lat;
@@ -1635,8 +1637,9 @@ void CrowdSim::nudge(Agent& a, Vec2 by) {
 // S-271: no two members closer than minGap, and nobody nearer the frontage than wallInset, after every step.
 void CrowdSim::separate() {
     const float g = tuning_.minGap;
+    const float accept = tuning_.graph.wallInset + kCrowdWallAccept; // as place() takes a point
     for (Agent& a : agents_)
-        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < tuning_.graph.wallInset)
+        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < accept)
             place(a, a.pos);
     for (int it = 0; it < 64 && g > 0.f; ++it) {
         bool any = false;
