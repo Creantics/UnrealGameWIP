@@ -425,9 +425,9 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 				Clipped += bOut ? 1 : 0;
 			}
 			UE_LOG(LogForgottenThird, Display,
-				TEXT("MAPOVERLAY TEXT %s ts=%.2f clipped=%d caption_right=%.0f caption_bottom=%.0f caption_text_right=%.0f caption_plate_right=%.0f caption_fit=%.2f caption_in_plate=%d text_draws=%d screen=%.0fx%.0f"),
+				TEXT("MAPOVERLAY TEXT %s ts=%.2f clipped=%d caption_right=%.0f caption_bottom=%.0f caption_text_right=%.0f caption_plate_right=%.0f caption_fit=%.2f caption_in_plate=%d text_draws=%d glyph_passes=%d screen=%.0fx%.0f"),
 				kOvShotNames[Z], LabelTS, Clipped, CaptionRight, CaptionBottom, CaptionTextRight, CaptionPlateRight, CaptionFit,
-				CaptionTextRight + ftcore::kMapCaptionPad * LabelTS <= CaptionPlateRight + 0.5f ? 1 : 0, LastTextDraws, View.screenW, View.screenH);
+				CaptionTextRight + ftcore::kMapCaptionPad * LabelTS <= CaptionPlateRight + 0.5f ? 1 : 0, LastTextDraws, LastGlyphPasses, View.screenW, View.screenH);
 			// Place and water names (the sea's too) whose text box meets any road drawn at the zoom, the cursor's at its lit
 			// width (0: none), and the names the road and water rules left out, with why.
 			int32 OnRoad = 0, PointNames = 0;
@@ -776,28 +776,22 @@ void FFTMapOverlay::DrawText(UCanvas& Canvas, FStringView Text, EFace Face, floa
 	const FSlateFontInfo Info(Fonts[Face], FMath::Max(1.f, Px * 0.75f));
 	if (HaloPx > 0.f)
 	{
-		// The halo: the text in a faint dark, offset all round. Each copy is drawn outlined, so the engine adds its four
-		// diagonal neighbours 1 px off within the same item: four items along the axes (every other ring turned 45 degrees)
-		// give twenty overlapping copies, dark at the glyphs and soft at the edge, out to HaloPx. A ring per 3 px of halo
-		// (a larger text size). The directions are a fixed table; drawn in the text's own frame, so a turned or leaning name
-		// has it too.
+		// The halo: plain copies of the text in a faint dark, offset all round from a fixed table of eight directions: eight
+		// at HaloPx, and from 150 percent text (HaloPx over 3.5) four more halfway in along the axes, so the wider ring stays
+		// dark at the glyphs. The copies overlap, dark at the glyph and soft at the edge. Eight or twelve copies a name
+		// (eighteen before); drawn in the text's own frame, so a turned or leaning name has it too.
 		static constexpr float H = 0.70710678f;
 		static const FVector2D kDir[8] = {{1.0, 0.0}, {0.0, 1.0}, {-1.0, 0.0}, {0.0, -1.0}, {H, H}, {-H, H}, {-H, -H}, {H, -H}};
-		const int32 Rings = FMath::Clamp(FMath::RoundToInt(HaloPx / 3.f), 1, 3);
-		for (int32 Ring = 1; Ring <= Rings; ++Ring)
+		const int32 Copies = HaloPx > 3.5f ? 12 : 8;
+		for (int32 K = 0; K < Copies; ++K)
 		{
-			const float Reach = FMath::Max(HaloPx * static_cast<float>(Ring) / static_cast<float>(Rings) - 1.f, 1.f);
-			const int32 First = (Ring & 1) ? 0 : 4;
-			for (int32 K = 0; K < 4; ++K)
-			{
-				FCanvasTextStringViewItem Copy(TopLeft + kDir[First + K] * Reach, Text, Info, FTMapOverlayDetail::kOvHaloSoft);
-				Copy.bOutlined = true;
-				Copy.OutlineColor = FTMapOverlayDetail::kOvHaloSoft;
-				Copy.BlendMode = SE_BLEND_Translucent;
-				Canvas.DrawItem(Copy);
-				++TextDraws;
-			}
+			FCanvasTextStringViewItem Copy(TopLeft + kDir[K & 7] * (K < 8 ? HaloPx : HaloPx * 0.55f), Text, Info,
+				FTMapOverlayDetail::kOvHaloSoft);
+			Copy.BlendMode = SE_BLEND_Translucent;
+			Canvas.DrawItem(Copy);
 		}
+		TextDraws += Copies;
+		GlyphPasses += Copies;
 	}
 	FCanvasTextStringViewItem Item(TopLeft, Text, Info, Color);
 	Item.bOutlined = true; // a dark rim keeps the name clear of the gold lines
@@ -805,6 +799,7 @@ void FFTMapOverlay::DrawText(UCanvas& Canvas, FStringView Text, EFace Face, floa
 	Item.BlendMode = SE_BLEND_Translucent;
 	Canvas.DrawItem(Item);
 	++TextDraws;
+	GlyphPasses += 5; // outlined: the engine draws its four 1 px neighbours too
 }
 
 void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float TS, const ftcore::MapDisc* Discs, int32 NumDiscs,
@@ -992,6 +987,7 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 	}
 	LastFrame = GFrameCounter;
 	TextDraws = 0;
+	GlyphPasses = 0;
 	if (PC)
 	{
 		ReadInput(*PC, S, FMath::Min(static_cast<float>(FApp::GetDeltaTime()), 0.1f));
@@ -1395,4 +1391,5 @@ void FFTMapOverlay::Draw(AHUD& Hud, UCanvas& Canvas, float S)
 		DrawText(Canvas, NameText[HereStreet], SerifSc, HerePx * Cap.fit, FVector2D(Cap.streetX, Cap.text.y), kOvStreetHere);
 	}
 	LastTextDraws = TextDraws;
+	LastGlyphPasses = GlyphPasses;
 }

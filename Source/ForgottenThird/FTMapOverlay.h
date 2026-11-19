@@ -23,7 +23,7 @@
 // land=<share, two places, truncated> caption='<DISTRICT> (middle dot) <STREET>' labels=<n>; then MAPOVERLAY TEXT <zoom> ts=<text
 // scale> clipped=<labels whose halo leaves the screen> caption_right=<px> caption_bottom=<px> caption_text_right=<px>
 // caption_plate_right=<px> caption_fit=<text scale> caption_in_plate=<1: the text ends a pad inside the plate>
-// text_draws=<text items drawn in the last frame> screen=<w>x<h>.
+// text_draws=<text items drawn in the last frame> glyph_passes=<the glyph passes they made> screen=<w>x<h>.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -163,7 +163,8 @@ private:
 	float CaptionFit = 1.f, CaptionTextRight = 0.f, CaptionPlateRight = 0.f; // its text's scale, the text's and plate's right ends
 	ftcore::MapLabel LabelKept;         // the caption's kept box the labels were placed against
 	mutable int32 TextDraws = 0;        // text items drawn this frame (each halo copy one)
-	int32 LastTextDraws = 0;            // and in the last whole frame
+	mutable int32 GlyphPasses = 0;      // and the glyph passes they make (an outlined item is five)
+	int32 LastTextDraws = 0, LastGlyphPasses = 0; // the same in the last whole frame
 	TWeakObjectPtr<AFTPartyVan> Van;
 	TWeakObjectPtr<AFTPartyFollower> Followers[2];
 
