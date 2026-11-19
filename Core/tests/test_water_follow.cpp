@@ -998,6 +998,8 @@ namespace {
 struct ReplayRun {
     float ashore[2] = {-1.f, -1.f};
     float footAt[2] = {-1.f, -1.f}; // when each reached the ladder's foot (its climb path's swim over)
+    float swim[2] = {0.f, 0.f};     // each one's swim to the foot on its climb path, from where its climb started
+    float worstWait[2] = {0.f, 0.f}; // the watchdog's longest count while each waited at its place (ExitWait)
     float worstStep = 0.f;
 };
 
@@ -1037,6 +1039,7 @@ ReplayRun stripExitReplay(const WaterFollowTuning& tuning) {
         for (int i = 0; i < 2; ++i) {
             const WaterFollowOrder& o = party.order(i);
             const SwimVec was = m[i].position;
+            if (o.phase == WaterFollowPhase::ExitWait) r.worstWait[i] = std::max(r.worstWait[i], party.stuckFor(i));
             if (o.phase == WaterFollowPhase::ToExit) {
                 const float dx = o.target.x - was.x, dy = o.target.y - was.y, d = std::sqrt(dx * dx + dy * dy);
                 const float go = std::min(d, speed[i] * kDt60);
@@ -1053,6 +1056,7 @@ ReplayRun stripExitReplay(const WaterFollowTuning& tuning) {
                 if (climbT[i] < 0.f) {
                     climbT[i] = 0.f;
                     path[i] = waterClimbPath(tuning, &exit, was, {});
+                    r.swim[i] = path[i].swim;
                 }
                 climbT[i] += kDt60;
                 m[i].position = path[i].at(climbT[i]);
@@ -1078,6 +1082,11 @@ TEST_CASE("water follow (fast exit): the 11-19 Strip exit replayed; one at its p
     MESSAGE("index order: partners ashore " << a.ashore[0] << " s and " << a.ashore[1] << " s after the lead out");
     CHECK(a.ashore[1] > 4.f);
     CHECK(a.ashore[1] < 4.6f);
+    // In index order: slot 0 at the foot and ashore first, slot 1 after it.
+    CHECK(a.footAt[0] >= 0.f);
+    CHECK(a.footAt[0] < a.footAt[1]);
+    CHECK(a.ashore[0] >= 0.f);
+    CHECK(a.ashore[0] < a.ashore[1]);
     // Ready first: slot 1 climbs from its place at once; slot 0 reaches the foot climbGap after it. Both by 3.7 s.
     const WaterFollowTuning t = fastExit();
     REQUIRE(t.exitReadyFirst);
@@ -1092,6 +1101,16 @@ TEST_CASE("water follow (fast exit): the 11-19 Strip exit replayed; one at its p
     CHECK(b.footAt[1] < b.footAt[0]);
     CHECK(b.footAt[0] - b.footAt[1] >= t.climbGap - 0.02f);
     CHECK(b.worstStep <= 0.2f);
+    // The watchdog at the foot (07:20 ruling): it counts a wait at its place only with the queue clear, where the one
+    // wait left is the spacing (climbGap, and the last climber's swim to the foot). Here it stays within that bound and
+    // ends in a climb, far under the watchdog.
+    MESSAGE("watchdog at the places: slot 0 " << b.worstWait[0] << " s, slot 1 " << b.worstWait[1] << " s; foot swims "
+                                             << b.swim[0] << " s and " << b.swim[1] << " s");
+    for (int i = 0; i < 2; ++i) {
+        CHECK(b.worstWait[i] <= b.swim[1 - i] + t.climbGap + 2.f / 60.f);
+        CHECK(b.worstWait[i] < t.watchdog);
+    }
+    CHECK(b.worstWait[0] + b.worstWait[1] > 0.f); // the spacing wait was met (else the bound above proves nothing)
 }
 
 TEST_CASE("water follow (fast exit): ready first keeps the index order when both wait at their places") {
