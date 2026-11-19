@@ -663,6 +663,13 @@ bool UFTArenaRunner::PoseSpecialHit(ftcore::SpecialCineHit& Hit) const
 			return false;
 		}
 		Hit.pose[K] = {OnStage(Hips), OnStage(Chest), OnStage(SpecialHeadMiddle(Head, Chest))};
+		// The striking fist (SampleSpecialReach's side): the framing holds it in frame; without a knuckle bone, Core's model.
+		FVector Pad;
+		if (bSpecialReach && SpecialClipPad(*SpecialClip, SpecialReachSide, T, Pad))
+		{
+			Hit.pose[K].hand = OnStage(Pad);
+			Hit.pose[K].fist = true;
+		}
 	}
 	Hit.posed = true;
 	return true;
@@ -1157,6 +1164,10 @@ bool UFTArenaRunner::BeginSpecial()
 		Move = Far;
 	}
 	const TCHAR* Set = Move == Far ? TEXT("far") : TEXT("near");
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special %s stage: origin (%.2f, %.2f, %.2f), forward (%.3f, %.3f), target (%.2f, %.2f, %.2f) radius %.2f height %.2f, lead height %.2f, travel %.3f, %.2f m: the %s set; the partner at (%.2f, %.2f) m before its mark."),
+		*Id, SpecialStageAt.origin.x, SpecialStageAt.origin.y, SpecialStageAt.origin.z, SpecialStageAt.forward.x, SpecialStageAt.forward.y,
+		SpecialStageAt.target.x, SpecialStageAt.target.y, SpecialStageAt.target.z, SpecialStageAt.targetRadius, SpecialStageAt.targetHeight,
+		SpecialStageAt.leadHeight, SpecialStageAt.travel, Range, Set, Bodies.ally.x, Bodies.ally.y);
 	// The hit: the impact row's time (the impact itself when the move has none), at the contact the framing tests.
 	const TCHAR* HitRow = TEXT("the impact");
 	const float HitAt = Rules ? SpecialHitTime(*Rules, V.impactTime, &HitRow) : V.impactTime;
@@ -1278,9 +1289,10 @@ bool UFTArenaRunner::BeginSpecial()
 		for (uint32 K = 0; K <= ftcore::SpecialCineHit::kStills; ++K)
 		{
 			const ftcore::SpecialCineLeadPose& Q = SpecialHit.pose[K];
-			Poses += FString::Printf(TEXT("%s%s: hips (%.2f, %.2f, %.2f), chest (%.2f, %.2f, %.2f), head (%.2f, %.2f, %.2f)"), K ? TEXT("; ") : TEXT(""),
+			Poses += FString::Printf(TEXT("%s%s: hips (%.2f, %.2f, %.2f), chest (%.2f, %.2f, %.2f), head (%.2f, %.2f, %.2f), %s"), K ? TEXT("; ") : TEXT(""),
 				K ? *FString::Printf(TEXT("+%.0f ms"), ftcore::SpecialCineHit::kStillLags[K - 1] * 1000.f) : TEXT("the hit"), Q.hips.x, Q.hips.y, Q.hips.z,
-				Q.chest.x, Q.chest.y, Q.chest.z, Q.head.x, Q.head.y, Q.head.z);
+				Q.chest.x, Q.chest.y, Q.chest.z, Q.head.x, Q.head.y, Q.head.z,
+				Q.fist ? *FString::Printf(TEXT("fist (%.2f, %.2f, %.2f)"), Q.hand.x, Q.hand.y, Q.hand.z) : TEXT("no fist (Core's model hand)"));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena check: special %s: the lead's pose %s (m): %s. Core at the hit (shot %u): %s; at its stills: %s."), *Id,
 			SpecialHit.posed ? TEXT("read from the clip") : TEXT("NOT read (no clip, mesh or bone): Core's upright model, these zeros unused"), *Poses,
@@ -1767,10 +1779,13 @@ bool UFTArenaRunner::ProbeSpecialHit(const TCHAR* When)
 			const FVector Head = SpecialHeadMiddle(Skin.GetSocketLocation(kSpecialPoseHead), Chest);
 			FVector Pad;
 			const FString Fist = SpecialDrawnPad(Skin, SpecialReachSide, Pad) ? Where(Pad) : FString(TEXT("no knuckle bone"));
-			FVector OnSight, OnBack;
-			FMath::SegmentDistToSegmentSafe(Eye, At, Pelvis, Head, OnSight, OnBack);
-			Screen += FString::Printf(TEXT("; the drawn lead's head at %s, its fist at %s; the sight to the contact %.2f m from its pelvis-to-head line (clear at %.2f)"),
-				*Where(Head), *Fist, FVector::Dist(OnSight, OnBack) / 100.0, ftcore::SpecialCineFraming::kTorso);
+			const auto Metres = [](const FVector& P) {
+				return ftcore::CutsceneVec3{static_cast<float>(P.X / 100.0), static_cast<float>(P.Y / 100.0), static_cast<float>(P.Z / 100.0)};
+			};
+			const float SightGap = ftcore::specialCineSightGap(Metres(Eye), Metres(At), Metres(Pelvis), Metres(Head));
+			const float ContactGap = static_cast<float>(FMath::PointDistToSegment(At, Pelvis, Head) / 100.0);
+			Screen += FString::Printf(TEXT("; the drawn lead's head at %s, its fist at %s; the sight to the contact (its last %.2f m left out) %.2f m from its pelvis-to-head line (clear at %.2f; the contact itself %.2f m from it)"),
+				*Where(Head), *Fist, ftcore::SpecialCineFraming::kTorso, SightGap, ftcore::SpecialCineFraming::kTorso, ContactGap);
 		}
 		if (World)
 		{

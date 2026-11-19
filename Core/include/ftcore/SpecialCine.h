@@ -322,7 +322,8 @@ enum class SpecialCineProblem : std::uint8_t {
     // (specialCineHitProblem; the fix search tests it with the hit given).
     LeadCropped,
     // The contact line passes through the lead's own body (kTorso round its hips-to-head line) at the hit or one of its
-    // stills: its back hides its blow (r2b_big's shot 6, round 4: an over-the-shoulder from behind and above).
+    // stills: its back hides its blow (r2b_big's shot 6, round 4: an over-the-shoulder from behind and above). The line
+    // stops kTorso short of the contact (specialCineSightGap): only a body between the camera and the contact hides it.
     ContactBehindLead,
     // Tested last, so either one means every check above passed:
     ContactHidden, // a body (the target's own included) hides the contact from the camera (target and "both" shots)
@@ -367,11 +368,13 @@ struct SpecialCineFraming {
     static constexpr float kMinLeadShare = 0.75f;
     // The shot shown at the hit and at its stills (one that frames someone) frames the lead's head and striking hand:
     // both kInFrame inside the frame (5% in from each edge). Other frames may crop the lead (a feet close-up, an
-    // over-the-shoulder release). The head: kHeadHeight of the lead's height on its upright
-    // line. The hand: kHandReach metres out from the lead's chest toward the contact (or the contact when nearer). The
-    // head and chest: the hit's measured pose (SpecialCineHit::pose) when the host gave one, else Core's model (upright
-    // at its walk's end, kHips, kChest and kHeadHeight of its height). The contact line must also clear the lead's own
-    // body: kTorso metres round its hips-to-head line (ContactBehindLead).
+    // over-the-shoulder release). The head: kHeadHeight of the lead's height on its upright line. The hand: the
+    // measured fist (SpecialCineLeadPose::fist), else kHandReach metres out from the lead's chest toward the contact (or
+    // the contact when nearer). The head and chest: the hit's measured pose (SpecialCineHit::pose) when the host gave
+    // one, else Core's model (upright at its walk's end, kHips, kChest and kHeadHeight of its height). The contact line
+    // must also clear the lead's own body: kTorso metres round its hips-to-head line (ContactBehindLead), the line
+    // stopped kTorso short of the contact (a lead pressed into its blow holds its chest that near the contact;
+    // specialCineSightGap).
     static constexpr float kInFrame = 0.9f;
     static constexpr float kHeadHeight = 0.93f;
     static constexpr float kHips = 0.5f;
@@ -497,6 +500,11 @@ struct SpecialCineLeadPose {
     CutsceneVec3 hips;
     CutsceneVec3 chest;
     CutsceneVec3 head;
+    // The striking fist (the clip's knuckle pad on the striking side) when the host read it (`fist`); else the framing's
+    // model: kHandReach out from the chest toward the contact. A fist dropped or drawn back after the blow sits well
+    // off that model (maw_pup, round 5: drawn just under the frame while the model's hand was in it).
+    CutsceneVec3 hand{};
+    bool fist = false;
 };
 
 struct SpecialCineHit {
@@ -527,6 +535,13 @@ FTCORE_API std::uint32_t specialCineHitStills(const SpecialCineMove& move, const
 FTCORE_API SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move, const SpecialCineStage& stage,
                                                     const SpecialCineHit& hit, const SpecialCineShotFix* fixes = nullptr,
                                                     const SpecialCineBody* bodies = nullptr, std::uint32_t count = 0);
+// The contact line's clearance of the lead's own body (ContactBehindLead under kTorso): the least distance, metres,
+// from the sight from `eye` to `contact`, stopped kTorso short of the contact, to the segment `hips`..`head`. A lead
+// pressed into its blow holds its chest within kTorso of the contact (r2b_big, round 5: 0.20 m at +80 ms), so the full
+// sight would fail from every camera; stopped short, only a body between the camera and the contact counts. An eye
+// within kTorso of the contact: the distance from the eye. The host's drawn probe measures the same. No allocation.
+FTCORE_API float specialCineSightGap(const CutsceneVec3& eye, const CutsceneVec3& contact, const CutsceneVec3& hips,
+                                     const CutsceneVec3& head);
 
 // A partner's blow point, by the lead's contact rule (the special's contact): on the target's surface (feet `target`,
 // radius `radius`, `targetHeight` tall) toward `toward` (on the ground plane; at the target's axis: its centre),

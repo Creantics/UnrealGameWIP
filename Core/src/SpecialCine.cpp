@@ -529,10 +529,10 @@ CutsceneVec3 cineLeadHand(const CutsceneVec3& chest, const CutsceneVec3& contact
     return n > SpecialCineFraming::kHandReach ? add3(chest, scale3(d, SpecialCineFraming::kHandReach / n)) : contact;
 }
 
-// The lead's head and striking hand both inside the frame (kInFrame).
+// The lead's head and striking hand (its measured fist, else the model's) both inside the frame (kInFrame).
 bool cineLeadFramed(const View& v, const SpecialCineLeadPose& pose, const CutsceneVec3& contact) {
     return cineInFrameWithin(v, pose.head, SpecialCineFraming::kInFrame) &&
-           cineInFrameWithin(v, cineLeadHand(pose.chest, contact), SpecialCineFraming::kInFrame);
+           cineInFrameWithin(v, pose.fist ? pose.hand : cineLeadHand(pose.chest, contact), SpecialCineFraming::kInFrame);
 }
 
 // The least distance between segments p0..p1 and q0..q1 (closest points, clamped to both).
@@ -679,7 +679,7 @@ SpecialCineProblem cineHitAt(const SpecialCineMove& move, const SpecialCineStage
     const SpecialCineLeadPose pose = cineLeadPose(move, stage, hit, k);
     if (pointFraming(v, hit.at) != SpecialCineProblem::None) return SpecialCineProblem::OffFrame;
     if (segmentHitsAny(v.eye, hit.at, bodies, count)) return SpecialCineProblem::ContactHidden;
-    if (cineSegmentGap(v.eye, hit.at, pose.hips, pose.head) < SpecialCineFraming::kTorso)
+    if (specialCineSightGap(v.eye, hit.at, pose.hips, pose.head) < SpecialCineFraming::kTorso)
         return SpecialCineProblem::ContactBehindLead;
     if (!cineLeadFramed(v, pose, hit.at)) return SpecialCineProblem::LeadCropped;
     return SpecialCineProblem::None;
@@ -710,6 +710,14 @@ std::uint32_t specialCineHitStills(const SpecialCineMove& move, const SpecialCin
         if (std::isfinite(at) && at < length) out[n++] = at;
     }
     return n;
+}
+
+float specialCineSightGap(const CutsceneVec3& eye, const CutsceneVec3& contact, const CutsceneVec3& hips, const CutsceneVec3& head) {
+    const CutsceneVec3 d = sub3(contact, eye);
+    const float n = length3(d);
+    const float stop = SpecialCineFraming::kTorso;
+    const CutsceneVec3 end = std::isfinite(n) && n > stop ? add3(eye, scale3(d, (n - stop) / n)) : eye;
+    return cineSegmentGap(eye, end, hips, head);
 }
 
 SpecialCineProblem specialCineHitProblem(const SpecialCineMove& move, const SpecialCineStage& stage, const SpecialCineHit& hit,
