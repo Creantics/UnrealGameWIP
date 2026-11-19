@@ -132,15 +132,18 @@ private:
 	// kMaxDrops by name, every one by reason). A pick in the frame is an along pick, or a point pick whose anchor is on screen;
 	// the sea's name, when the table has one, is in the frame whenever sea is on screen. TooLong: longer than its stretch
 	// in the frame (the frame cut the road); TooLongWhole: longer than the whole road, or a water name than its water.
-	// Unbuilt: a point the world does not hold yet (the names table's built column).
+	// Unbuilt: a point the world does not hold yet (the names table's built column). OffDistrict: no seat inside its
+	// district. OffFrame: a road's name whose road only grazes the frame (no stretch of it inside). None: no reason, only
+	// as a first reason (a drop's own seat was not tried or not needed).
 	enum class EDrop : uint8 { Dry, NoSeat, OnRoad, OnCoast, OnWater, NoStretch, TooLong, TooBig, OnMarks, OnLit, Crowded, Caption, Full,
-		Unbuilt, TooLongWhole };
-	static constexpr int32 kDropKinds = 15;
+		Unbuilt, TooLongWhole, OffDistrict, OffFrame, None };
+	static constexpr int32 kDropKinds = 17; // every reason but None
 	struct FDrop
 	{
 		uint16 Name = 0;
 		EDrop Why = EDrop::Dry;
 		ftcore::MapTier Tier = ftcore::MapTier::District; // the tier its pick held (ftcore::mapRankTier)
+		EDrop First = EDrop::None; // why it had no seat of its own, when it then fell back to a point and failed there too
 	};
 	static constexpr int32 kMaxDrops = 128;
 	FDrop Drops[kMaxDrops];
@@ -150,12 +153,33 @@ private:
 	// lowest tier (unbuilt apart), at the lowest, unbuilt; label cap cuts, and those above the lowest (must be 0).
 	int32 DropsAboveLowest = 0, DropsLowest = 0, DropsUnbuilt = 0, CapCuts = 0, CapCutsAboveLowest = 0;
 	int32 BankSeats = 0;     // water names seated beside their water (ftcore::mapBankLabelAt)
-	int32 DistrictMoves = 0; // districts' names moved clear of the lit road, earlier names or the caption (mapLabelMoveClear)
+	int32 DistrictMoves = 0; // districts' names seated off their point (the place seat's rings)
+	// The must-draw names (ftcore::mapTierMustDraw) left out at the last placing, unbuilt and off-frame apart: all, then
+	// crowded by an earlier name, under the caption, and any other reason (a defect).
+	int32 MustUndrawn = 0, MustCrowded = 0, MustCaption = 0, MustOther = 0;
+	// How each candidate was seated: along its road, on its water (or its bank), the sea's, at a point after falling back,
+	// a place's, a district's, the cursor's (its road's or district's).
+	enum class ESeat : uint8 { Along, Water, Sea, Point, Place, District, Cursor };
+	// A point seat's note for the capture log: the name, and the gap from its point to its box's nearest edge (box heights).
+	struct FSeatNote
+	{
+		uint16 Name = 0;
+		float GapH = 0.f;
+	};
+	static constexpr int32 kMaxSeatNotes = 16;
+	// The point seats at the last placing: names seated at a point after falling back, standing seats, places seated on any
+	// dry land (mapPlaceLabelOrAnyLand), districts seated outside their own, seats more than 3 heights from their point
+	// (the first kMaxSeatNotes of each listed), the furthest gap, and the build's time.
+	int32 PointSeats = 0, StandingSeats = 0, PlaceAnyLand = 0, DistrictOutside = 0, FarSeats = 0;
+	float MaxGapH = 0.f;
+	double LastBuildMs = 0.0;
+	FSeatNote FarNotes[kMaxSeatNotes], AnyLandNotes[kMaxSeatNotes], OutsideNotes[kMaxSeatNotes];
 	int32 InFramePicks = 0;                       // picks in the frame at the last placing
 	uint16 CursorPickName = ftcore::kMapNoName;   // the cursor's pick at the last placing (none: no road, or no name)
 	bool bCursorDistrict = false;                 // and whether it is the district at the cursor (no road's name there)
 	FVector2D LabelCursor = FVector2D(-1.0, -1.0); // the cursor (px) the labels were placed at, while that pick follows it
 	ftcore::MapLabel Candidates[ftcore::kMaxMapLabels];
+	ESeat CandKind[ftcore::kMaxMapLabels] = {};
 	ftcore::MapLabelSet Placed;
 	// The labels are placed again only when what they depend on moves.
 	ftcore::MapOverlayView LabelView;

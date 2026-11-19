@@ -431,16 +431,26 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 				TEXT("MAPOVERLAY TEXT %s ts=%.2f clipped=%d caption_right=%.0f caption_bottom=%.0f caption_text_right=%.0f caption_plate_right=%.0f caption_fit=%.2f caption_in_plate=%d text_draws=%d glyph_passes=%d screen=%.0fx%.0f"),
 				kOvShotNames[Z], LabelTS, Clipped, CaptionRight, CaptionBottom, CaptionTextRight, CaptionPlateRight, CaptionFit,
 				CaptionTextRight + ftcore::kMapCaptionPad * LabelTS <= CaptionPlateRight + 0.5f ? 1 : 0, LastTextDraws, LastGlyphPasses, View.screenW, View.screenH);
-			// Place and water names (the sea's too) whose text box meets any road drawn at the zoom, the cursor's at its lit
-			// width (0: none), and the names the road and water rules left out, with why.
+			// Every name drawn at a point, not along its road (places, districts, the cursor's district, water names, the sea's
+			// and the names that fell back to a point), whose text box meets any road drawn at the zoom, the cursor's at its lit
+			// width (0: none), and the names the rules left out, with why (after a slash, why it had no seat of its own).
+			auto SeatOf = [this](uint16 Name) {
+				for (int32 K = 0; K < LastCandidates; ++K)
+				{
+					if (Candidates[K].name == Name)
+					{
+						return CandKind[K];
+					}
+				}
+				return ESeat::Along;
+			};
 			int32 OnRoad = 0, PointNames = 0;
 			const ftcore::MapRoadInk Ink = OvInk(LabelS);
 			const uint16 LitName = ftcore::mapRoadName(Names, LabelPicked);
 			for (size_t I = 0; I < Placed.count; ++I)
 			{
 				const ftcore::MapLabel& L = Placed.labels[I];
-				const auto Rank = static_cast<ftcore::MapLabelRank>(L.priority);
-				if (Rank != ftcore::MapLabelRank::Place && Rank != ftcore::MapLabelRank::Water)
+				if (SeatOf(L.name) == ESeat::Along)
 				{
 					continue;
 				}
@@ -450,12 +460,16 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			FString DropList;
 			static const TCHAR* const kWhy[] = {TEXT("dry"), TEXT("no_seat"), TEXT("on_road"), TEXT("on_coast"), TEXT("on_water"), TEXT("no_stretch"),
 				TEXT("too_long_cut"), TEXT("too_big"), TEXT("on_marks"), TEXT("on_lit"), TEXT("crowded"), TEXT("caption"), TEXT("full"),
-				TEXT("unbuilt"), TEXT("too_long_whole")};
+				TEXT("unbuilt"), TEXT("too_long_whole"), TEXT("off_district"), TEXT("off_frame")};
 			static_assert(UE_ARRAY_COUNT(kWhy) == kDropKinds, "a word for every drop reason");
+			auto WhyText = [](const FDrop& D) {
+				return D.First == EDrop::None ? FString(kWhy[static_cast<int32>(D.Why)])
+											  : FString::Printf(TEXT("%s/%s"), kWhy[static_cast<int32>(D.Why)], kWhy[static_cast<int32>(D.First)]);
+			};
 			for (int32 I = 0; I < DropCount; ++I)
 			{
 				DropList += FString::Printf(TEXT("%s%s:%s"), I ? TEXT(", ") : TEXT(""),
-					NameText.IsValidIndex(Drops[I].Name) ? *NameText[Drops[I].Name] : TEXT("?"), kWhy[static_cast<int32>(Drops[I].Why)]);
+					NameText.IsValidIndex(Drops[I].Name) ? *NameText[Drops[I].Name] : TEXT("?"), *WhyText(Drops[I]));
 			}
 			// Every name whose anchor is in the frame is drawn or logged with a reason. Unpicked: a district or point name
 			// (place or water) whose anchor is on screen that the picks left out, with why (out_of_tier: the zoom does not
@@ -465,7 +479,7 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			TArray<uint8> Done;
 			Done.SetNumZeroed(static_cast<int32>(Names.names.size()));
 			FString UnpickedList;
-			int32 Unpicked = 0, UnpickedLogged = 0, OutOfTier = 0, CapUnpickedAboveLowest = 0;
+			int32 Unpicked = 0, UnpickedLogged = 0, OutOfTier = 0, CapUnpickedAboveLowest = 0, MustCapUnpicked = 0;
 			const ftcore::MapTier Lowest = ftcore::mapTierLowest(Zoom);
 			auto Consider = [&](uint16 Name, const ftcore::Vec2& At) {
 				if (Name >= Names.names.size() || Done[Name] || (Name < Seen.size() && Seen[Name]))
@@ -490,6 +504,7 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 				UnpickedLogged += FCString::Strcmp(Why, TEXT("other")) != 0 ? 1 : 0;
 				OutOfTier += bOutOfTier ? 1 : 0;
 				CapUnpickedAboveLowest += bCap && static_cast<uint8>(Tier) < static_cast<uint8>(Lowest) ? 1 : 0;
+				MustCapUnpicked += bCap && ftcore::mapTierMustDraw(Tier, Zoom) ? 1 : 0;
 			};
 			for (const ftcore::MapNames::District& D : Names.districts)
 			{
@@ -502,7 +517,8 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			{
 				Consider(Sp.name, Sp.at);
 			}
-			// Placed place names on the coast (their box, no halo) or with their centre on water: 0 when the coast rule holds.
+			// Placed names seated on land at a point (all but those along their roads, on their water and the sea's) on the coast
+			// (their box, no halo) or with their centre on water: 0 when the coast rule holds.
 			int32 OnCoast = 0;
 			FString DrawnList;
 			for (size_t I = 0; I < Placed.count; ++I)
@@ -510,7 +526,8 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 				const ftcore::MapLabel& L = Placed.labels[I];
 				DrawnList += FString::Printf(TEXT("%s%s:%.0fx%.0f"), I ? TEXT(", ") : TEXT(""), NameText.IsValidIndex(L.name) ? *NameText[L.name] : TEXT("?"),
 					L.w, L.h);
-				if (L.priority != static_cast<uint8>(ftcore::MapLabelRank::Place))
+				const ESeat Seat = SeatOf(L.name);
+				if (Seat == ESeat::Along || Seat == ESeat::Water || Seat == ESeat::Sea)
 				{
 					continue;
 				}
@@ -560,7 +577,7 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 				else if (static_cast<uint8>(D.Tier) < static_cast<uint8>(Lowest))
 				{
 					AboveList += FString::Printf(TEXT("%s%s:%s:%s"), AboveListed++ ? TEXT(", ") : TEXT(""), Name,
-						UTF8_TO_TCHAR(ftcore::mapTierName(D.Tier)), kWhy[static_cast<int32>(D.Why)]);
+						UTF8_TO_TCHAR(ftcore::mapTierName(D.Tier)), *WhyText(D));
 				}
 			}
 			UE_LOG(LogForgottenThird, Display,
@@ -568,6 +585,40 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 				kOvShotNames[Z], UTF8_TO_TCHAR(ftcore::mapTierName(Lowest)), OutOfTier, DropsAboveLowest + CapUnpickedAboveLowest, *AboveList,
 				DropsLowest, DropsUnbuilt, *UnbuiltList, CapCuts, CapCutsAboveLowest + CapUnpickedAboveLowest, DrawnOutOfTier, BankSeats,
 				DistrictMoves);
+			// The must-draw names (ftcore::mapTierMustDraw) left out, unbuilt and off-frame apart: crowded by an earlier name,
+			// under the caption, any other reason (a defect: must be 0), picks the cap cut among the others; each with tier and
+			// why. Then the point seats: names that fell back to a point, standing seats, places on any dry land, districts
+			// outside their own, seats more than 3 heights from their point (with the gap), the furthest gap, the build's time.
+			FString MustList;
+			int32 MustListed = 0;
+			for (int32 I = 0; I < DropCount; ++I)
+			{
+				const FDrop& D = Drops[I];
+				if (D.Why == EDrop::Unbuilt || D.Why == EDrop::OffFrame || !ftcore::mapTierMustDraw(D.Tier, Zoom))
+				{
+					continue;
+				}
+				MustList += FString::Printf(TEXT("%s%s:%s:%s"), MustListed++ ? TEXT(", ") : TEXT(""),
+					NameText.IsValidIndex(D.Name) ? *NameText[D.Name] : TEXT("?"), UTF8_TO_TCHAR(ftcore::mapTierName(D.Tier)), *WhyText(D));
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY MUST %s must_undrawn=%d crowded=%d caption=%d other=%d cap_unpicked=%d [%s]"),
+				kOvShotNames[Z], MustUndrawn + MustCapUnpicked, MustCrowded, MustCaption, MustOther + MustCapUnpicked, MustCapUnpicked, *MustList);
+			auto NoteList = [this](const FSeatNote* Notes, int32 Total, bool bGap) {
+				FString Out;
+				for (int32 K = 0; K < FMath::Min(Total, kMaxSeatNotes); ++K)
+				{
+					Out += FString::Printf(TEXT("%s%s"), K ? TEXT(", ") : TEXT(""), NameText.IsValidIndex(Notes[K].Name) ? *NameText[Notes[K].Name] : TEXT("?"));
+					if (bGap)
+					{
+						Out += FString::Printf(TEXT(":%.1fh"), Notes[K].GapH);
+					}
+				}
+				return Out;
+			};
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("MAPOVERLAY SEATS %s fallback_seats=%d standing=%d place_anyland=%d [%s] district_outside=%d [%s] far_seats=%d [%s] max_gap_h=%.1f build_ms=%.2f"),
+				kOvShotNames[Z], PointSeats, StandingSeats, PlaceAnyLand, *NoteList(AnyLandNotes, PlaceAnyLand, false), DistrictOutside,
+				*NoteList(OutsideNotes, DistrictOutside, false), FarSeats, *NoteList(FarNotes, FarSeats, true), MaxGapH, LastBuildMs);
 			// F4: the cursor's name, its halo included, under none of the marks drawn over it (on_marks=0), and whether it moved
 			// for them or was left out.
 			int32 CursorNames = 0, OnMarks = 0;
@@ -945,6 +996,7 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 	const ftcore::MapLabel& Kept, const ftcore::Vec2& CursorAt)
 {
 	using namespace FTMapOverlayDetail;
+	const double BuildStart = FPlatformTime::Seconds();
 	Placed.count = 0;
 	LabelDiscCount = FMath::Clamp(NumDiscs, 0, static_cast<int32>(UE_ARRAY_COUNT(LabelDiscs)));
 	for (int32 K = 0; K < LabelDiscCount; ++K)
@@ -976,6 +1028,9 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 	const ftcore::MapTier Lowest = ftcore::mapTierLowest(Zoom);
 	DropCount = DropTotal = InFramePicks = 0;
 	DropsAboveLowest = DropsLowest = DropsUnbuilt = CapCuts = CapCutsAboveLowest = BankSeats = DistrictMoves = 0;
+	MustUndrawn = MustCrowded = MustCaption = MustOther = 0;
+	PointSeats = StandingSeats = PlaceAnyLand = DistrictOutside = FarSeats = 0;
+	MaxGapH = 0.f;
 	for (int32& K : DropKinds)
 	{
 		K = 0;
@@ -983,13 +1038,20 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 	CursorPickName = NPicks > 0 && Picks[0].rank == ftcore::MapLabelRank::Cursor ? Picks[0].name : ftcore::kMapNoName;
 	bCursorDistrict = CursorPickName != ftcore::kMapNoName && !Picks[0].along;
 	// Tiers run best first, so a tier above the lowest has the smaller number.
-	auto Drop = [this, Lowest](uint16 Name, EDrop Why, ftcore::MapTier Tier) {
+	auto Drop = [this, Lowest](uint16 Name, EDrop Why, ftcore::MapTier Tier, EDrop First = EDrop::None) {
 		if (DropCount < kMaxDrops)
 		{
-			Drops[DropCount++] = {Name, Why, Tier};
+			Drops[DropCount++] = {Name, Why, Tier, First};
 		}
 		++DropTotal;
 		++DropKinds[static_cast<int32>(Why)];
+		if (Why != EDrop::Unbuilt && Why != EDrop::OffFrame && ftcore::mapTierMustDraw(Tier, Zoom))
+		{
+			++MustUndrawn;
+			MustCrowded += Why == EDrop::Crowded ? 1 : 0;
+			MustCaption += Why == EDrop::Caption ? 1 : 0;
+			MustOther += Why != EDrop::Crowded && Why != EDrop::Caption ? 1 : 0;
+		}
 		const bool bAbove = static_cast<uint8>(Tier) < static_cast<uint8>(Lowest);
 		if (Why == EDrop::Unbuilt)
 		{
@@ -1031,6 +1093,50 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 	ftcore::MapLabel WaterSeats[16];
 	size_t NumWaterSeats = 0;
 	size_t Count = 0;
+	// The place seat's rules (ftcore::mapPlaceLabelAt) for a name of this tier: clear of the caption's kept box and the names
+	// before it; a name the zoom must draw (ftcore::mapTierMustDraw) looks out every ring, one it need not the first only.
+	auto SeatRules = [&](bool bAnyLand, ftcore::MapTier Tier) {
+		ftcore::MapSeatRules R;
+		R.anyLand = bAnyLand;
+		R.rings = ftcore::mapTierMustDraw(Tier, Zoom) ? ftcore::kMapSeatRingsMax : 1;
+		R.labels = Candidates;
+		R.labelCount = Count;
+		R.blockers = &Kept;
+		R.blockerCount = 1;
+		R.gap = Gap;
+		return R;
+	};
+	auto SeatDrop = [](ftcore::MapPlaceSeat Seat) {
+		switch (Seat)
+		{
+		case ftcore::MapPlaceSeat::OnRoad: return EDrop::OnRoad;
+		case ftcore::MapPlaceSeat::OnCoast: return EDrop::OnCoast;
+		case ftcore::MapPlaceSeat::OnWater: return EDrop::OnWater;
+		case ftcore::MapPlaceSeat::TooBig: return EDrop::TooBig;
+		case ftcore::MapPlaceSeat::OffDistrict: return EDrop::OffDistrict;
+		case ftcore::MapPlaceSeat::OnMarks: return EDrop::OnMarks;
+		case ftcore::MapPlaceSeat::Caption: return EDrop::Caption;
+		case ftcore::MapPlaceSeat::Crowded: return EDrop::Crowded;
+		default: return EDrop::NoSeat;
+		}
+	};
+	// A point seat: how far its box's nearest edge lies from the point it names, in the box's heights (for the log).
+	auto NoteSeat = [this](uint16 Name, const ftcore::Vec2& Anchor, const ftcore::MapLabel& At) {
+		const bool bStood = At.angleDeg != 0.f;
+		const float EX = 0.5f * (bStood ? At.h : At.w), EY = 0.5f * (bStood ? At.w : At.h);
+		const float GX = FMath::Max(FMath::Abs(At.at.x - Anchor.x) - EX, 0.f), GY = FMath::Max(FMath::Abs(At.at.y - Anchor.y) - EY, 0.f);
+		const float GapH = FMath::Sqrt(GX * GX + GY * GY) / FMath::Max(At.h, 1.f);
+		MaxGapH = FMath::Max(MaxGapH, GapH);
+		StandingSeats += bStood ? 1 : 0;
+		if (GapH > 3.f)
+		{
+			if (FarSeats < kMaxSeatNotes)
+			{
+				FarNotes[FarSeats] = {Name, GapH};
+			}
+			++FarSeats;
+		}
+	};
 	for (size_t I = 0; I < NPicks; ++I)
 	{
 		const ftcore::MapLabelPick& P = Picks[I];
@@ -1066,22 +1172,38 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 			W = FMath::Max(W + 2.f * kOvBoxPadX * TS, Sign);
 			H += 2.f * kOvBoxPadY * TS + (Sign > 0.f ? (kOvSignPx + kOvSignGap) * TS : 0.f);
 		}
+		const float FW = bWater ? W + kOvShear * H : W; // a point's box: a water name's lean included
 		ftcore::MapLabel L;
 		float Run = 0.f; // the stretch's length on screen (px)
+		// A name with no seat of its own falls back to a point label at its feature's middle (FallAt), through the place
+		// seat on any dry land (ftcore::mapPlaceLabelAt, anyLand); FallWhy is why it had none, kept for the log.
+		bool bFall = false;
+		EDrop FallWhy = EDrop::NoSeat;
+		ftcore::Vec2 FallAt{};
+		ESeat Kind = ESeat::Along;
 		if (P.along)
 		{
 			if (!ftcore::mapLabelAlong(Model, Names, P.name, View, W, H, L, 24.f * S, 8.f * S, &Run))
 			{
-				Drop(P.name, EDrop::NoStretch, Tier);
-				continue;
+				// No stretch inside the frame's margin: its middle in the frame with no margin, for the point. None at all:
+				// the road only grazes the frame, logged off_frame (no tier counts it).
+				if (!ftcore::mapLabelAlong(Model, Names, P.name, View, W, H, L, 0.f, 8.f * S, &Run))
+				{
+					Drop(P.name, EDrop::OffFrame, Tier);
+					continue;
+				}
+				bFall = true;
+				FallWhy = EDrop::NoStretch;
+				FallAt = L.at;
 			}
-			if (!L.fits && P.rank != ftcore::MapLabelRank::Cursor)
+			else if (!L.fits && P.rank != ftcore::MapLabelRank::Cursor)
 			{
-				// A name longer than its stretch on screen is left out, never squeezed: logged whole when the whole road's
-				// run is too short for it too, else cut (the frame cut the stretch).
+				// A name longer than its stretch on screen is never squeezed: whole when the whole road's run is too short
+				// for it too, else cut (the frame cut the stretch).
 				const bool bWhole = ftcore::mapLabelRunWholePx(Model, Names, P.name, View) < W + 2.f * 8.f * S;
-				Drop(P.name, bWhole ? EDrop::TooLongWhole : EDrop::TooLong, Tier);
-				continue;
+				bFall = true;
+				FallWhy = bWhole ? EDrop::TooLongWhole : EDrop::TooLong;
+				FallAt = L.at;
 			}
 		}
 		else
@@ -1089,16 +1211,18 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 			L.at = ftcore::mapOverlayToScreen(View, P.at); // on screen: tested above
 			L.w = W;
 			L.h = H;
+			Kind = P.rank == ftcore::MapLabelRank::Cursor ? ESeat::Cursor : P.rank == ftcore::MapLabelRank::District ? ESeat::District
+				: P.rank == ftcore::MapLabelRank::Place ? ESeat::Place : ESeat::Sea;
 		}
 		// A water name (but the sea's, already over open sea) sits on its own water, its lean included, clear of every road
-		// drawn at the zoom: never over land or a road. One with no seat there, or whose seat meets an earlier water name,
-		// goes beside its water along the bank (mapBankLabelAt), clear of roads, water and the earlier water names; one with
-		// neither is left out (a point on dry land stays dry).
+		// drawn at the zoom. One with no seat there, or whose seat meets an earlier water name, goes beside its water along
+		// the bank (mapBankLabelAt), clear of roads, water and the earlier water names; one with neither falls back.
 		const bool bSeatWater = bWater && !P.along && P.name != Names.seaName;
 		if (bSeatWater)
 		{
-			const ftcore::MapWaterSeat Seat = ftcore::mapWaterLabelAt(Model, Names, Look, View, Zoom, Ink, P.at, W + kOvShear * H, H, Halo, L,
-				Picked, PickedName);
+			Kind = ESeat::Water;
+			const ftcore::MapWaterSeat Seat = ftcore::mapWaterLabelAt(Model, Names, Look, View, Zoom, Ink, P.at, FW, H, Halo, L, Picked,
+				PickedName);
 			bool bMet = false;
 			for (size_t K = 0; K < NumWaterSeats && Seat == ftcore::MapWaterSeat::Seated && !bMet; ++K)
 			{
@@ -1107,25 +1231,58 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 			if (Seat == ftcore::MapWaterSeat::NoSeat || bMet)
 			{
 				ftcore::MapLabel Bank;
-				const ftcore::MapBankSeat BankSeat = ftcore::mapBankLabelAt(Model, Names, Look, View, Zoom, Ink, P.at, W + kOvShear * H, H, Halo,
-					WaterSeats, NumWaterSeats, Gap, Bank, Picked, PickedName);
+				const ftcore::MapBankSeat BankSeat = ftcore::mapBankLabelAt(Model, Names, Look, View, Zoom, Ink, P.at, FW, H, Halo, WaterSeats,
+					NumWaterSeats, Gap, Bank, Picked, PickedName);
 				if (BankSeat == ftcore::MapBankSeat::Seated)
 				{
 					L = Bank;
 					++BankSeats;
 				}
-				else if (!bMet)
+				else
 				{
-					Drop(P.name, BankSeat == ftcore::MapBankSeat::TooLong ? EDrop::TooLongWhole : EDrop::NoSeat, Tier);
-					continue;
+					bFall = true;
+					FallWhy = BankSeat == ftcore::MapBankSeat::TooLong ? EDrop::TooLongWhole : EDrop::NoSeat;
+					FallAt = ftcore::mapOverlayToScreen(View, P.at);
 				}
-				// Met, with no bank seat: the water seat stands and the placer decides between the two.
 			}
 			else if (Seat != ftcore::MapWaterSeat::Seated)
 			{
-				Drop(P.name, EDrop::Dry, Tier);
+				bFall = true;
+				FallWhy = EDrop::Dry;
+				FallAt = ftcore::mapOverlayToScreen(View, P.at);
+			}
+		}
+		// No other name lies on the cursor's lit road, which is drawn wider than a halo hides: a road's name there falls back;
+		// the sea's is left out.
+		if (!bFall && (Kind == ESeat::Along || Kind == ESeat::Sea) && P.rank != ftcore::MapLabelRank::Cursor && Picked >= 0 &&
+			ftcore::mapLabelOnAnyRoad(Model, Names, View, Zoom, Ink, L, Halo, Picked, PickedName, true) >= 0)
+		{
+			if (Kind == ESeat::Sea)
+			{
+				Drop(P.name, EDrop::OnLit, Tier);
 				continue;
 			}
+			bFall = true;
+			FallWhy = EDrop::OnLit;
+			FallAt = L.at;
+		}
+		if (bFall)
+		{
+			ftcore::MapLabel T;
+			T.at = FallAt;
+			T.w = FW;
+			T.h = H;
+			const ftcore::MapPlaceSeat Seat = ftcore::mapPlaceLabelAt(Model, Names, Look, View, Zoom, Ink, T, Halo, Picked, PickedName,
+				SeatRules(true, Tier));
+			if (Seat != ftcore::MapPlaceSeat::Seated)
+			{
+				Drop(P.name, SeatDrop(Seat), Tier, FallWhy);
+				continue;
+			}
+			NoteSeat(P.name, FallAt, T);
+			L = T;
+			Kind = ESeat::Point;
+			++PointSeats;
 		}
 		// Every name stays whole on the screen, its halo too: one at an edge moves in; one too big for the screen is left out.
 		if (!ftcore::mapLabelKeepInside(L, View.screenW, View.screenH, Halo))
@@ -1133,65 +1290,114 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 			Drop(P.name, EDrop::TooBig, Tier);
 			continue;
 		}
-		if (bSeatWater && NumWaterSeats < UE_ARRAY_COUNT(WaterSeats))
+		if (Kind == ESeat::Water && NumWaterSeats < UE_ARRAY_COUNT(WaterSeats))
 		{
 			WaterSeats[NumWaterSeats++] = L;
 		}
 		if (P.rank == ftcore::MapLabelRank::Cursor)
 		{
-			// The cursor's name never lies under the cursor's ring or the player's arrow, its halo included: it slides along
-			// its line (up to half its stretch, at least its own width), else steps off the line beside it.
 			const ftcore::Vec2 Home = L.at;
-			if (!ftcore::mapLabelClearOfDiscs(L, LabelDiscs, static_cast<size_t>(LabelDiscCount), Halo, FMath::Max(Run * 0.5f, W),
-					2.f * H + 32.f * S, View.screenW, View.screenH))
+			if (P.along)
 			{
-				bCursorNameDropped = true;
-				Drop(P.name, EDrop::OnMarks, Tier);
-				continue;
+				// The cursor's road name never lies under the cursor's ring or the player's arrow, its halo included: it slides
+				// along its line (up to half its stretch, at least its own width), else steps off the line beside it.
+				if (!ftcore::mapLabelClearOfDiscs(L, LabelDiscs, static_cast<size_t>(LabelDiscCount), Halo, FMath::Max(Run * 0.5f, W),
+						2.f * H + 32.f * S, View.screenW, View.screenH))
+				{
+					bCursorNameDropped = true;
+					Drop(P.name, EDrop::OnMarks, Tier);
+					continue;
+				}
+			}
+			else
+			{
+				// The district at the cursor: the place seat on any dry land, level, clear of the marks and the caption.
+				ftcore::MapSeatRules R;
+				R.anyLand = true;
+				R.standing = false;
+				R.discs = LabelDiscs;
+				R.discCount = static_cast<size_t>(LabelDiscCount);
+				R.blockers = &Kept;
+				R.blockerCount = 1;
+				R.gap = Gap;
+				const ftcore::MapPlaceSeat Seat = ftcore::mapPlaceLabelAt(Model, Names, Look, View, Zoom, Ink, L, Halo, Picked, PickedName, R);
+				if (Seat != ftcore::MapPlaceSeat::Seated)
+				{
+					bCursorNameDropped = true;
+					Drop(P.name, SeatDrop(Seat), Tier);
+					continue;
+				}
 			}
 			bCursorNameMoved = L.at.x != Home.x || L.at.y != Home.y;
 		}
-		if (!P.along && P.rank == ftcore::MapLabelRank::Place)
+		else if (Kind == ESeat::Place)
 		{
-			// A place's name meets no road drawn at the zoom (the cursor's road at its lit width), its centre is on land and its
-			// box meets no coast: one that does moves the least way to a spot that is clear; one with none near is left out.
-			const ftcore::MapPlaceSeat Seat = ftcore::mapPlaceLabelAt(Model, Names, Look, View, Zoom, Ink, L, Halo, Picked, PickedName);
+			// A place's name meets no road drawn at the zoom (the cursor's at its lit width), sits on its own land clear of the
+			// coast, the caption and the names before it: at its point, else its moves ring by ring, level then standing.
+			// With no such spot for the water or the coast, any dry land (mapPlaceLabelOrAnyLand), counted and logged.
+			const ftcore::Vec2 Anchor = L.at;
+			ftcore::MapPlaceSeat First = ftcore::MapPlaceSeat::Seated;
+			const ftcore::MapPlaceSeat Seat = ftcore::mapPlaceLabelOrAnyLand(Model, Names, Look, View, Zoom, Ink, L, Halo, Picked, PickedName,
+				SeatRules(false, Tier), First);
+			const bool bAnyLand = First == ftcore::MapPlaceSeat::OnWater || First == ftcore::MapPlaceSeat::OnCoast;
 			if (Seat != ftcore::MapPlaceSeat::Seated)
 			{
-				Drop(P.name, Seat == ftcore::MapPlaceSeat::OnRoad ? EDrop::OnRoad
-						: Seat == ftcore::MapPlaceSeat::OnCoast ? EDrop::OnCoast
-						: Seat == ftcore::MapPlaceSeat::OnWater ? EDrop::OnWater
-															   : EDrop::TooBig,
-					Tier);
+				Drop(P.name, SeatDrop(Seat), Tier, bAnyLand ? SeatDrop(First) : EDrop::None);
 				continue;
 			}
-		}
-		else if (P.rank == ftcore::MapLabelRank::District)
-		{
-			// A district's name moves the least way (ftcore::mapLabelMoveClear) clear of the cursor's lit road, the names
-			// before it (the cursor's and earlier districts') and the caption's kept box, as the placer would test them. One
-			// with no clear spot near stays as it is: on the lit road it is left out; else the placer decides (caption or
-			// crowded).
-			const ftcore::Vec2 Home = L.at;
-			if (ftcore::mapLabelMoveClear(Model, Names, View, Zoom, Ink, L, Halo, Gap, Candidates, Count, &Kept, 1, Picked, PickedName))
+			if (bAnyLand)
 			{
-				DistrictMoves += L.at.x != Home.x || L.at.y != Home.y ? 1 : 0;
+				if (PlaceAnyLand < kMaxSeatNotes)
+				{
+					AnyLandNotes[PlaceAnyLand] = {P.name, 0.f};
+				}
+				++PlaceAnyLand;
 			}
-			else if (Picked >= 0 && ftcore::mapLabelOnAnyRoad(Model, Names, View, Zoom, Ink, L, Halo, Picked, PickedName, true) >= 0)
+			NoteSeat(P.name, Anchor, L);
+		}
+		else if (Kind == ESeat::District)
+		{
+			// A district's name: the place seat on any dry land, level, its box clear of roads and the coast, the caption and
+			// the names before it; inside its own district first, else anywhere (counted and logged).
+			uint16 Own = ftcore::kMapNoName;
+			for (size_t K = 0; K < Names.districts.size(); ++K)
 			{
-				Drop(P.name, EDrop::OnLit, Tier);
+				if (Names.districts[K].name == P.name)
+				{
+					Own = static_cast<uint16>(K);
+				}
+			}
+			const ftcore::Vec2 Anchor = L.at;
+			ftcore::MapSeatRules R = SeatRules(true, Tier);
+			R.standing = false;
+			R.district = Own;
+			ftcore::MapPlaceSeat Seat = ftcore::mapPlaceLabelAt(Model, Names, Look, View, Zoom, Ink, L, Halo, Picked, PickedName, R);
+			EDrop First = EDrop::None;
+			if (Seat != ftcore::MapPlaceSeat::Seated && Own != ftcore::kMapNoName)
+			{
+				First = SeatDrop(Seat);
+				R.district = ftcore::kMapNoName;
+				Seat = ftcore::mapPlaceLabelAt(Model, Names, Look, View, Zoom, Ink, L, Halo, Picked, PickedName, R);
+				if (Seat == ftcore::MapPlaceSeat::Seated)
+				{
+					if (DistrictOutside < kMaxSeatNotes)
+					{
+						OutsideNotes[DistrictOutside] = {P.name, 0.f};
+					}
+					++DistrictOutside;
+				}
+			}
+			if (Seat != ftcore::MapPlaceSeat::Seated)
+			{
+				Drop(P.name, SeatDrop(Seat), Tier, First);
 				continue;
 			}
-		}
-		else if (!bSeatWater && P.rank != ftcore::MapLabelRank::Cursor && Picked >= 0 &&
-			ftcore::mapLabelOnAnyRoad(Model, Names, View, Zoom, Ink, L, Halo, Picked, PickedName, true) >= 0)
-		{
-			// No other name lies on the cursor's lit road, which is drawn wider than a halo hides.
-			Drop(P.name, EDrop::OnLit, Tier);
-			continue;
+			DistrictMoves += L.at.x != Anchor.x || L.at.y != Anchor.y ? 1 : 0;
+			NoteSeat(P.name, Anchor, L);
 		}
 		L.name = P.name;
 		L.priority = static_cast<std::uint8_t>(P.rank);
+		CandKind[Count] = Kind;
 		Candidates[Count++] = L;
 	}
 	// No two labels overlap, each one's halo included, and none covers the where-am-I line's kept box.
@@ -1218,6 +1424,7 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 	}
 	LastPicks = static_cast<int32>(NPicks);
 	LastCandidates = static_cast<int32>(Count);
+	LastBuildMs = (FPlatformTime::Seconds() - BuildStart) * 1000.0;
 }
 
 void FFTMapOverlay::DrawLabel(UCanvas& Canvas, const ftcore::MapLabel& L, float TS)
