@@ -595,6 +595,13 @@ private:
                 s.watch += dt;
             }
         } else if (o.phase == WaterFollowPhase::ExitWait) {
+            // Counts only with the queue clear. The one wait left then is climbTurn's spacing (climbGap since the last
+            // climb, and with exitReadyFirst the last climber's swim to the foot). It is bounded: while this one waits
+            // no member after it may start a climb, and each member climbs once, so the wait ends within the sum of
+            // climbGap + foot swim over the members that climb before it (with exitReadyFirst a later slot may be one).
+            // Nothing here caps a foot swim: the count reaches the watchdog only when that sum passes it, e.g. 39 m of
+            // foot swim at footSwimSpeed with one member before it, about 12 m each with three; the worst case then is
+            // the ordinary placing with the lead. The 11-19 replay test meets one such wait (0.17 s).
             s.watch = queueClear(i, lead) ? s.watch + dt : 0.f;
         } else {
             s.watch += dt;
