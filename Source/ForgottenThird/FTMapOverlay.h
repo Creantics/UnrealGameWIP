@@ -123,16 +123,22 @@ private:
 	static constexpr size_t kMaxPicks = 256;
 	ftcore::MapLabelPick Picks[kMaxPicks];
 	int32 LastPicks = 0, LastCandidates = 0; // for the capture log
-	// The names the road and water rules left out at the last placing, with why (for the capture log; the first kMaxDrops).
-	enum class EDrop : uint8 { Dry, NoSeat, OnRoad };
+	// Every picked name in the frame that was left out at the last placing, with why (for the capture log; the first
+	// kMaxDrops by name, every one by reason). A pick in the frame is an along pick, or a point pick whose anchor is on screen;
+	// the sea's name, when the table has one, is in the frame whenever sea is on screen.
+	enum class EDrop : uint8 { Dry, NoSeat, OnRoad, OnCoast, OnWater, NoStretch, TooLong, TooBig, OnMarks, OnLit, Crowded, Caption, Full };
+	static constexpr int32 kDropKinds = 13;
 	struct FDrop
 	{
 		uint16 Name = 0;
 		EDrop Why = EDrop::Dry;
 	};
-	static constexpr int32 kMaxDrops = 32;
+	static constexpr int32 kMaxDrops = 128;
 	FDrop Drops[kMaxDrops];
 	int32 DropCount = 0, DropTotal = 0;
+	int32 DropKinds[kDropKinds] = {};
+	int32 InFramePicks = 0;                       // picks in the frame at the last placing
+	uint16 CursorPickName = ftcore::kMapNoName;   // the cursor's pick at the last placing (none: no road, or no name)
 	ftcore::MapLabel Candidates[ftcore::kMaxMapLabels];
 	ftcore::MapLabelSet Placed;
 	// The labels are placed again only when what they depend on moves.
