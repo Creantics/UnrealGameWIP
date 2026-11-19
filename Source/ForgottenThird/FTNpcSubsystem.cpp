@@ -114,8 +114,7 @@ void UFTNpcSubsystem::Deinitialize()
 		GI->GetTimerManager().ClearTimer(LateLoadTimer);
 	}
 	bReady = false;
-	bHoldingSave = false;
-	HeldSaveJson.Reset();
+	SaveHold = ftcore::NpcSaveHold();
 	Facts = nullptr;
 	Placed.Reset();
 	Super::Deinitialize();
@@ -175,14 +174,18 @@ bool UFTNpcSubsystem::Load(FString& OutError)
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("NPC memory: %d NPCs, %d deed types, %d lines."), static_cast<int32>(Tables.npcs.size()),
 		static_cast<int32>(Tables.deeds.size()), static_cast<int32>(Lines.lines.size()));
-	if (bHoldingSave)
+	std::string HeldUtf8;
+	if (SaveHold.take(HeldUtf8))
 	{
-		// A save loaded before the tables: its block now (an empty one leaves the reset above).
-		const FString Held = MoveTemp(HeldSaveJson);
-		HeldSaveJson.Reset();
-		bHoldingSave = false;
+		// A save loaded before the tables, and no New Game since: its block now.
+		const FString Held = FT::ToFString(HeldUtf8);
 		FString HeldError;
-		if (ftcore::npcSaveBlockAction(true, Held.IsEmpty()) == ftcore::NpcSaveBlockAction::Apply && !ApplySaveJson(Held, HeldError))
+		if (ftcore::npcSaveBlockAction(true, Held.IsEmpty()) == ftcore::NpcSaveBlockAction::Reset)
+		{
+			// A save from before NPC memory: the reset above stands.
+			UE_LOG(LogForgottenThird, Log, TEXT("NPC memory: the save held until the tables loaded has no NPC block; nobody remembers anything."));
+		}
+		else if (!ApplySaveJson(Held, HeldError))
 		{
 			ResetMemory();
 			UE_LOG(LogForgottenThird, Warning, TEXT("NPC memory: the held save block didn't load: %s"), *HeldError);
@@ -197,8 +200,17 @@ bool UFTNpcSubsystem::Load(FString& OutError)
 
 void UFTNpcSubsystem::HoldSaveJson(const FString& Json)
 {
-	HeldSaveJson = Json;
-	bHoldingSave = true;
+	SaveHold.hold(FT::ToUtf8(Json));
+}
+
+void UFTNpcSubsystem::NewGame()
+{
+	const bool bDropped = SaveHold.holding;
+	SaveHold.newGame();
+	ResetMemory(); // nothing to reset before the tables load: Load starts everyone at the baselines
+	UE_LOG(LogForgottenThird, Log, TEXT("NPC memory: new game, %s%s."),
+		bReady ? TEXT("everyone back to the baselines") : TEXT("the tables aren't loaded yet"),
+		bDropped ? TEXT("; the held save block is dropped") : TEXT(""));
 }
 
 bool UFTNpcSubsystem::LoadLines(FString& OutError)

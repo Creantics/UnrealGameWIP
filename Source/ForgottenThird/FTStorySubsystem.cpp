@@ -172,6 +172,11 @@ bool UFTStorySubsystem::StartStory(const FString& SceneId)
 	{
 		StoryState->NewGame(); // the story state starts over with the story
 	}
+	if (UFTNpcSubsystem* Npcs = GetGameInstance()->GetSubsystem<UFTNpcSubsystem>())
+	{
+		// Before the runner starts: its first scene autosaves, and must write no NPC block of the last game.
+		Npcs->NewGame();
+	}
 	const bool bOk = Runner->start(FT::ToUtf8(SceneId));
 	if (const UFTSettingsSubsystem* SettingsSub = GetGameInstance()->GetSubsystem<UFTSettingsSubsystem>())
 	{
@@ -378,20 +383,23 @@ bool UFTStorySubsystem::Autosave()
 	{
 		return false;
 	}
-	// While the NPC tables aren't loaded, CaptureFrom keeps the object's NPC block, and a fresh object has none: copy
-	// the slot's in first, so this autosave doesn't write an empty block over the remembered NPCs.
+	// While the NPC tables aren't loaded, CaptureFrom keeps the object's NPC block, and a fresh object has none: put in
+	// what this game's save carries (ftcore::NpcSaveHold): a loaded save's block held for the tables, nothing after New
+	// Game, else the slot's own (read only then), so this autosave doesn't write an empty block over remembered NPCs.
 	const UFTNpcSubsystem* Npcs = GetGameInstance()->GetSubsystem<UFTNpcSubsystem>();
 	const bool bNpcReady = Npcs && Npcs->IsReady();
-	if (!bNpcReady && Npcs && Npcs->IsHoldingSave())
+	const ftcore::NpcUnreadyBlock NpcSource = Npcs ? Npcs->GetSaveHold().unreadySource() : ftcore::NpcUnreadyBlock::Slot;
+	if (!bNpcReady)
 	{
-		Slot->NpcSaveJson = Npcs->GetHeldSaveJson(); // a loaded save's block, waiting for the tables
-	}
-	else if (!bNpcReady && UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
-	{
-		if (const UFTStorySaveGame* Old = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0)))
+		std::string SlotBlock;
+		if (NpcSource == ftcore::NpcUnreadyBlock::Slot && UGameplayStatics::DoesSaveGameExist(GetSlotName(), 0))
 		{
-			Slot->NpcSaveJson = Old->NpcSaveJson;
+			if (const UFTStorySaveGame* Old = Cast<UFTStorySaveGame>(UGameplayStatics::LoadGameFromSlot(GetSlotName(), 0)))
+			{
+				SlotBlock = FT::ToUtf8(Old->NpcSaveJson);
+			}
 		}
+		Slot->NpcSaveJson = FT::ToFString(Npcs ? Npcs->GetSaveHold().unreadyBlock(SlotBlock) : std::string_view(SlotBlock));
 	}
 	if (!Slot->CaptureFrom(this))
 	{
@@ -403,9 +411,10 @@ bool UFTStorySubsystem::Autosave()
 		return false;
 	}
 	UE_LOG(LogFTStory, Log, TEXT("Save: slot written at scene %s; NPC block %d chars (%s)."), *GetSceneId(), Slot->NpcSaveJson.Len(),
-		bNpcReady ? TEXT("captured")
-				  : Npcs && Npcs->IsHoldingSave() ? TEXT("held from the loaded save: the NPC tables aren't loaded")
-												  : TEXT("kept from the slot: the NPC tables aren't loaded"));
+		bNpcReady									 ? TEXT("captured")
+		: NpcSource == ftcore::NpcUnreadyBlock::Held ? TEXT("held from the loaded save: the NPC tables aren't loaded")
+		: NpcSource == ftcore::NpcUnreadyBlock::None ? TEXT("none: a new game, the NPC tables aren't loaded")
+													 : TEXT("kept from the slot: the NPC tables aren't loaded"));
 	return true;
 }
 

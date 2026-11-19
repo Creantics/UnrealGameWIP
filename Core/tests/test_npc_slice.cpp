@@ -199,6 +199,68 @@ TEST_CASE("npc save text: a save loaded before the NPC tables is held, kept by a
     CHECK(npcSaveBlockAction(true, false) == NpcSaveBlockAction::Apply);
 }
 
+TEST_CASE("npc save hold: New Game drops a held block, and a save before the tables writes neither it nor the slot's") {
+    Town a;
+    const std::uint16_t shop = a.npc("npc_shop_01");
+    a.at(1, 9.0);
+    npcOnDelivery(*a.w, a.t, a.g, a.where(0), shop);
+    a.at(1, 12.0);
+    const std::string oldGame = a.saveText();  // the old game's NPC block, in the slot and in the loaded save
+    const std::string later = encodeNpcMemorySave(NpcMemorySave{});
+    REQUIRE(oldGame != later);
+    std::string taken;
+
+    SUBCASE("a save while held writes the held block, whatever the slot holds; the tables then take it") {
+        NpcSaveHold h;
+        REQUIRE(npcSaveBlockAction(false, oldGame.empty()) == NpcSaveBlockAction::Hold);
+        h.hold(oldGame);
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
+        CHECK(npcSaveBlockToWrite(false, std::string_view{}, h.unreadyBlock(later)) == oldGame);
+        CHECK(npcSaveBlockToWrite(true, later, h.unreadyBlock(later)) == later);  // tables in: the live memory
+        REQUIRE(h.take(taken));
+        CHECK(taken == oldGame);
+        CHECK_FALSE(h.holding);
+        CHECK_FALSE(h.take(taken));  // once
+    }
+    SUBCASE("a later loaded save replaces the held block") {
+        NpcSaveHold h;
+        h.hold(oldGame);
+        h.hold(later);
+        CHECK(h.unreadyBlock(std::string_view{}) == later);
+        REQUIRE(h.take(taken));
+        CHECK(taken == later);
+    }
+    SUBCASE("New Game inside the hold: nothing applied when the tables load, nothing old written meanwhile") {
+        NpcSaveHold h;
+        h.hold(oldGame);
+        h.newGame();
+        CHECK(h.unreadySource() == NpcUnreadyBlock::None);
+        // The autosave right after New Game, the slot still holding the old game's block: no NPC block at all.
+        CHECK(npcSaveBlockToWrite(false, std::string_view{}, h.unreadyBlock(oldGame)).empty());
+        // The tables load: nothing to apply, so the world keeps its fresh baselines.
+        CHECK_FALSE(h.take(taken));
+        Town b;
+        CHECK(npcRecall(*b.w, b.t, shop, b.t.deedIndex("delivery_made"), -1) == nullptr);
+    }
+    SUBCASE("New Game with nothing held: a save before the tables doesn't carry the slot's block forward") {
+        NpcSaveHold h;
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);  // no game marked yet: the slot's block is kept
+        CHECK(h.unreadyBlock(oldGame) == oldGame);
+        h.newGame();
+        CHECK(h.unreadyBlock(oldGame).empty());
+    }
+    SUBCASE("a save loaded after New Game is that slot's game again") {
+        NpcSaveHold h;
+        h.newGame();
+        h.loaded();  // loaded with the tables in (applied, or reset for an empty or damaged block)
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);
+        h.newGame();
+        h.hold(oldGame);  // loaded before the tables
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
+        CHECK(h.unreadyBlock(std::string_view{}) == oldGame);
+    }
+}
+
 TEST_CASE("npc save text: an empty save and awkward ids survive the round trip") {
     SUBCASE("the default save") {
         const NpcMemorySave empty;

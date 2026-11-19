@@ -135,13 +135,19 @@ public:
 	FString CaptureSaveJson() const;
 	// False (the world untouched) on bad text; unknown ids are dropped and logged.
 	bool ApplySaveJson(const FString& Json, FString& OutError);
-	// Back to the tables' baselines, nothing remembered (loading a save from before NPC memory, a new game).
+	// Back to the tables' baselines, nothing remembered (loading a save from before NPC memory). Does nothing before the
+	// tables load: Load starts everyone at the baselines.
 	void ResetMemory();
-	// A save's NPC block that loaded before the tables (ftcore::npcSaveBlockAction Hold): Load applies it once they are
-	// in, and a save made meanwhile writes it. A later block replaces it.
+	// New Game (UFTStorySubsystem::StartStory): nobody remembers the last game, before or after the tables load. A save
+	// block held for the last game is dropped, so the tables apply nothing when they load and a save made before then
+	// writes no NPC block of the old game (ftcore::NpcSaveHold::newGame).
+	void NewGame();
+	// The NPC block between story saves and the tables (ftcore::NpcSaveHold). HoldSaveJson: a save's block that loaded
+	// before the tables (npcSaveBlockAction Hold); Load applies it once they are in, a save made meanwhile writes it,
+	// and a later block replaces it. NoteSaveLoaded: a save's block was applied (or reset for) with the tables in.
 	void HoldSaveJson(const FString& Json);
-	bool IsHoldingSave() const { return bHoldingSave; }
-	const FString& GetHeldSaveJson() const { return HeldSaveJson; }
+	void NoteSaveLoaded() { SaveHold.loaded(); }
+	const ftcore::NpcSaveHold& GetSaveHold() const { return SaveHold; }
 
 	// ---- for the slice run ----
 	// Stops following the world clock (the scripted day sets the memory clock itself).
@@ -176,8 +182,7 @@ private:
 	bool bReady = false;
 	bool bHoldClock = false;
 	uint32 LastMinute = MAX_uint32;
-	FString HeldSaveJson;
-	bool bHoldingSave = false;
+	ftcore::NpcSaveHold SaveHold; // the game's, not the level's: it stays across level changes
 	FTimerHandle LateLoadTimer; // -NpcTablesHeld=<seconds> (test runs)
 
 	// The last pick per NPC, for the overlay.
@@ -196,7 +201,10 @@ public:
 	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
 
+	// The scripted day (NPCSLICE lines): -NpcSliceTest runs it once at the start; a save run runs it after its New Game
+	// (-NpcSlice -SaveRunThen=slice).
+	void RunSliceTest();
+
 private:
 	void PlacePlaceholders(UWorld& InWorld);
-	void RunSliceTest();
 };

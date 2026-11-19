@@ -521,12 +521,70 @@ constexpr std::string_view npcSaveBlockToWrite(bool tablesReady, std::string_vie
 }
 
 // What a host does with a loaded save's NPC block. Tables loaded: apply it, or reset everyone when it is empty (a save
-// from before NPC memory). Not loaded yet: hold it and ask again with tablesReady true once they load, so a save
-// loaded early still brings its NPCs back; while one is held, a save passes the held block as npcSaveBlockToWrite's
-// `kept`, and a later save's block replaces it.
+// from before NPC memory). Not loaded yet: hold it (NpcSaveHold) and ask again with tablesReady true once they load, so
+// a save loaded early still brings its NPCs back.
 enum class NpcSaveBlockAction : std::uint8_t { Apply = 0, Reset = 1, Hold = 2 };
 constexpr NpcSaveBlockAction npcSaveBlockAction(bool tablesReady, bool blockEmpty) {
     return !tablesReady ? NpcSaveBlockAction::Hold : blockEmpty ? NpcSaveBlockAction::Reset : NpcSaveBlockAction::Apply;
 }
+
+// Which block a save made before the NPC tables load writes (NpcSaveHold::unreadySource).
+enum class NpcUnreadyBlock : std::uint8_t {
+    Slot = 0,  // the slot's own block, carried forward (a game from that slot, or no game marked yet)
+    Held = 1,  // the loaded save's block, waiting for the tables
+    None = 2,  // nothing: a new game, and the old game's NPCs are not this one's
+};
+
+// The host's NPC block between story saves and the NPC tables, one per game instance (it outlives level changes: the
+// save belongs to the game). A save loaded before the tables is held, a later one replaces it, and the tables take it
+// when they load. New Game drops it and marks the game fresh, so neither the held block nor the slot's is written or
+// applied for the new game; a loaded save makes the game the slot's again. Event-driven, never per frame.
+struct NpcSaveHold {
+    std::string block;       // the held block, while `holding`
+    bool holding = false;
+    bool freshGame = false;  // New Game since the last loaded save
+
+    // A save's block loaded before the tables (npcSaveBlockAction Hold): held, replacing any held one.
+    void hold(std::string_view saved) {
+        block.assign(saved.data(), saved.size());
+        holding = true;
+        freshGame = false;
+    }
+    // A save's block applied, or reset for, with the tables loaded: the game is that slot's.
+    void loaded() { freshGame = false; }
+    // New Game: the held block is dropped and nothing of the old game is written back.
+    void newGame() {
+        block.clear();
+        holding = false;
+        freshGame = true;
+    }
+    // The tables loaded: true with the held block in `out` (the host acts on npcSaveBlockAction(true, out.empty())),
+    // false when none is held. Nothing is held after.
+    bool take(std::string& out) {
+        if (!holding) {
+            return false;
+        }
+        out.swap(block);
+        block.clear();
+        holding = false;
+        return true;
+    }
+    NpcUnreadyBlock unreadySource() const {
+        return holding ? NpcUnreadyBlock::Held : freshGame ? NpcUnreadyBlock::None : NpcUnreadyBlock::Slot;
+    }
+    // The block a save made before the tables load writes: the held one, nothing after New Game, else the slot's (the
+    // host reads the slot only when unreadySource() is Slot). Pass it as npcSaveBlockToWrite's `kept`.
+    std::string_view unreadyBlock(std::string_view slotBlock) const {
+        switch (unreadySource()) {
+            case NpcUnreadyBlock::Held:
+                return block;
+            case NpcUnreadyBlock::None:
+                return {};
+            case NpcUnreadyBlock::Slot:
+                break;
+        }
+        return slotBlock;
+    }
+};
 
 }  // namespace ftcore
