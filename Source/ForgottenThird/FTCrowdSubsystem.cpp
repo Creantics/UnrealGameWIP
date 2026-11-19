@@ -386,9 +386,37 @@ void UFTCrowdSubsystem::ScriptFight()
 		// The node nearest a point 15 m east of the player (else the player's own nearest), so the fight is on a street.
 		const ftcore::Vec2 P = ToSim(FVector(TestFightPoint.X, TestFightPoint.Y, 0.0));
 		uint32 N = Graph.nearest(ftcore::Vec2{P.x + static_cast<float>(kTestFightDistance), P.y}, 40.f);
+		const float StrikeR = Tuning.events[static_cast<size_t>(ftcore::CrowdEventKind::Strike)].radius;
 		if (N == UINT32_MAX)
 		{
-			N = Graph.nearest(P, 200.f);
+			// No street within 40 m of that point (the Strip's map start): the node within 200 m of the player with the
+			// most live members inside the strike radius (ties: the nearer), so somebody can hear the fight. The
+			// player's nearest node stood 55 m from anyone there, and nothing reacted: the test's spot, not the crowd.
+			int32 BestN = -1;
+			float BestD = 0.f;
+			for (uint32 n = 0; n < Graph.nodeCount(); ++n)
+			{
+				const ftcore::Vec2 Q = Graph.node(n);
+				const float D = FMath::Sqrt((Q.x - P.x) * (Q.x - P.x) + (Q.y - P.y) * (Q.y - P.y));
+				if (D > 200.f)
+				{
+					continue;
+				}
+				int32 Near = 0;
+				for (uint32 i = 0; i < Sim.capacity(); ++i)
+				{
+					const ftcore::CrowdAgentView& V = Sim.agent(i);
+					Near += V.live && (V.pos.x - Q.x) * (V.pos.x - Q.x) + (V.pos.y - Q.y) * (V.pos.y - Q.y) <= StrikeR * StrikeR ? 1 : 0;
+				}
+				if (Near > BestN || (Near == BestN && D < BestD))
+				{
+					N = n;
+					BestN = Near;
+					BestD = D;
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight fallback: no street node within 40 m of the point %.0f m east of the player; node %d, %.1f m from the player, %d live members within the strike radius %.0f m."),
+				kTestFightDistance, N == UINT32_MAX ? -1 : static_cast<int32>(N), BestD, FMath::Max(BestN, 0), StrikeR);
 		}
 		const ftcore::Vec2 F = N == UINT32_MAX ? ftcore::Vec2{P.x + static_cast<float>(kTestFightDistance), P.y} : Graph.node(N);
 		TestFightPoint = FVector(F.x * 100.0, F.y * 100.0, PlayerZ);
@@ -396,6 +424,28 @@ void UFTCrowdSubsystem::ScriptFight()
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight starts at engine (%.0f, %.0f) cm, %.1f m from the player, at t=%.1f s; %u live, %u walking."),
 			TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, FVector(P.x * 100.0, P.y * 100.0, 0.0)) / 100.0, RunTime,
 			Sim.liveCount(), Sim.countIn(ftcore::CrowdState::Walk));
+		// Perception range at the start, as the reworked crowd logs it: nobody within the fight start's radius means the
+		// reaction verdict cannot pass here (the test fight's spot, not a crowd fault).
+		{
+			const float EventR = Tuning.events[static_cast<size_t>(ftcore::CrowdEventKind::FightStart)].radius;
+			uint32 InStrike = 0, InEvent = 0;
+			float Nearest = 1e9f;
+			for (uint32 i = 0; i < Sim.capacity(); ++i)
+			{
+				const ftcore::CrowdAgentView& V = Sim.agent(i);
+				if (!V.live)
+				{
+					continue;
+				}
+				const float D = FMath::Sqrt((V.pos.x - F.x) * (V.pos.x - F.x) + (V.pos.y - F.y) * (V.pos.y - F.y));
+				InStrike += D <= StrikeR ? 1u : 0u;
+				InEvent += D <= EventR ? 1u : 0u;
+				Nearest = FMath::Min(Nearest, D);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight perception range: %u live members within the strike radius %.0f m, %u within the fight start's radius %.0f m, nearest %.1f m%s."),
+				InStrike, StrikeR, InEvent, EventR, Nearest >= 1e8f ? -1.f : Nearest,
+				InEvent == 0 ? TEXT(": NOBODY IN RANGE (the test fight's spot, not a crowd fault)") : TEXT(""));
+		}
 		RaiseEvent(ftcore::CrowdEventKind::FightStart, TestFightPoint);
 		bTestFightStarted = true;
 		TestStrikes = 0;

@@ -430,6 +430,7 @@ void UFTCrowdSubsystemV2::PickTestFight(const FVector& PlayerAt)
 	uint32 Best = UINT32_MAX;
 	int32 BestN = -1;
 	float BestD = 0.f;
+	float CountR = 12.f; // m: the members counted round a node (the fallback counts the strike radius)
 	for (uint32 n = 0; n < Graph.nodeCount(); ++n)
 	{
 		const ftcore::Vec2 Q = Graph.node(n);
@@ -453,12 +454,38 @@ void UFTCrowdSubsystemV2::PickTestFight(const FVector& PlayerAt)
 	}
 	if (Best == UINT32_MAX)
 	{
-		Best = Graph.nearest(P, 200.f);
+		// No street node within 40 m of that point: the node within 200 m of the player with the most live members
+		// inside the strike radius (ties: the nearer), so somebody can hear the fight (was the player's nearest node).
+		const float StrikeR = Tuning.events[static_cast<size_t>(ftcore::crowdv2::CrowdEventKind::Strike)].radius;
+		CountR = StrikeR;
+		for (uint32 n = 0; n < Graph.nodeCount(); ++n)
+		{
+			const ftcore::Vec2 Q = Graph.node(n);
+			const float D = FMath::Sqrt((Q.x - P.x) * (Q.x - P.x) + (Q.y - P.y) * (Q.y - P.y));
+			if (D > 200.f)
+			{
+				continue;
+			}
+			int32 Near = 0;
+			for (uint32 i = 0; i < Sim.capacity(); ++i)
+			{
+				const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(i);
+				Near += V.live && (V.pos.x - Q.x) * (V.pos.x - Q.x) + (V.pos.y - Q.y) * (V.pos.y - Q.y) <= StrikeR * StrikeR ? 1 : 0;
+			}
+			if (Near > BestN || (Near == BestN && D < BestD))
+			{
+				Best = n;
+				BestN = Near;
+				BestD = D;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight fallback: no street node within 40 m of the point %.0f m east of the player; node %d, %.1f m from the player, %d live members within the strike radius %.0f m."),
+			CrowdV2Local::kTestFightDistance, Best == UINT32_MAX ? -1 : static_cast<int32>(Best), BestD, FMath::Max(BestN, 0), StrikeR);
 	}
 	const ftcore::Vec2 F = Best == UINT32_MAX ? C : Graph.node(Best);
 	TestFightPoint = FVector(F.x * 100.0, F.y * 100.0, PlayerZ);
-	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight point engine (%.0f, %.0f) cm, %.1f m from the player, %d live members within 12 m at t=%.1f s."),
-		TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, PlayerAt) / 100.0, FMath::Max(BestN, 0), RunTime);
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: test fight point engine (%.0f, %.0f) cm, %.1f m from the player, %d live members within %.0f m at t=%.1f s."),
+		TestFightPoint.X, TestFightPoint.Y, FVector::Dist2D(TestFightPoint, PlayerAt) / 100.0, FMath::Max(BestN, 0), CountR, RunTime);
 }
 
 void UFTCrowdSubsystemV2::ScriptFight(const FVector& PlayerAt)
