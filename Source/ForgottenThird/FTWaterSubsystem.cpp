@@ -48,8 +48,9 @@ TAutoConsoleVariable<int32> CVarWaterSurface(TEXT("ft.Water.Surface"), 0,
 TAutoConsoleVariable<float> CVarWaterCanalSkyLow(TEXT("r.FT.Water.CanalSkyLow"), ftcore::kWaterCanalSkyLow,
 	TEXT("The canal's sky reflection, 0..1, on a tier with no screen-space and no Lumen reflections (Low; ftcore::waterCanalSky): the engine adds the open sky there with nothing to hide it, so a walled canal reads cream. 1 turns this off."),
 	ECVF_Default);
-TAutoConsoleVariable<int32> CVarWaterRainRings(TEXT("r.FT.Water.RainRings"), 0,
-	TEXT("1 lays rain rings on the sea's and the canals' surfaces, as many as the rain is hard (the water collection's RainRings; ftcore::waterRainRings). 0 (the default): the water's surfaces take no rain."),
+// On by default: at Low the rings cost under 0.3 ms after drift in two of three interleaved pairs (water block 1).
+TAutoConsoleVariable<int32> CVarWaterRainRings(TEXT("r.FT.Water.RainRings"), 1,
+	TEXT("1 (the default) lays rain rings on the sea's and the canals' surfaces, as many as the rain is hard (the water collection's RainRings; ftcore::waterRainRings). 0: the water's surfaces take no rain."),
 	ECVF_Default);
 
 // The tier's reflections as the single-layer water sees them, from the engine's own switches (looked up once).
