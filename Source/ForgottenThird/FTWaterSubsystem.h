@@ -167,7 +167,7 @@ public:
 	const ftcore::WaterSurfaceModel& SurfaceModel() const { return Surface; }
 
 	// A swimmer's event this step; bFromLead for the lead, whose entry and exit LeadWater already splashed.
-	void Cue(const ftcore::WaterCue& Event, bool bFromLead);
+	void Cue(const ftcore::WaterCueEvent& Event, bool bFromLead);
 	// A body in the water this tick (metres, the engine's frame).
 	void Touch(const ftcore::WaterToucher& Toucher);
 	static constexpr int32 kMaxTouchers = 8;

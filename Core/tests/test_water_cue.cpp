@@ -8,8 +8,8 @@ using namespace ftcore;
 
 namespace {
 
-WaterCue cue(WaterCueKind kind, float strength) {
-    WaterCue c;
+WaterCueEvent cue(WaterCueKind kind, float strength) {
+    WaterCueEvent c;
     c.kind = kind;
     c.strength = strength;
     c.at[0] = 3.f;

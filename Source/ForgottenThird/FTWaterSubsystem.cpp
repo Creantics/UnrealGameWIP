@@ -369,7 +369,7 @@ void UFTWaterSubsystem::Splash(const FVector& WhereCm, float Strength)
 	}
 }
 
-void UFTWaterSubsystem::Cue(const ftcore::WaterCue& Event, bool bFromLead)
+void UFTWaterSubsystem::Cue(const ftcore::WaterCueEvent& Event, bool bFromLead)
 {
 	const float Want = ftcore::waterCueStir(Rings, Event, bFromLead);
 	if (Want > 0.f)

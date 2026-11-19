@@ -6,7 +6,7 @@
 
 namespace ftcore {
 
-float waterCueStir(WaterRipples& rings, const WaterCue& cue, bool bStirred) {
+float waterCueStir(WaterRipples& rings, const WaterCueEvent& cue, bool bStirred) {
     const float s = std::clamp(cue.strength, 0.f, 1.f);
     const Vec2 p{cue.at[0], cue.at[1]};
     switch (cue.kind) {
