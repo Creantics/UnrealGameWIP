@@ -1,6 +1,7 @@
 #include "FTArenaRunner.h"
 
 #include "FTCrowdSubsystem.h"
+#include "FTCrowdSubsystemV2.h"
 
 #include "Animation/AnimSequence.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -3870,6 +3871,10 @@ void UFTArenaRunner::HandleEvents(const ftcore::ArenaEvents& Events)
 	if (UFTCrowdSubsystem* Crowd = UFTCrowdSubsystem::Get(GetWorld()))
 	{
 		Crowd->FeedArena(Events);
+	}
+	else if (UFTCrowdSubsystemV2* CrowdV2 = UFTCrowdSubsystemV2::Get(GetWorld()))
+	{
+		CrowdV2->FeedArena(Events); // -CrowdV2
 	}
 	for (const ftcore::ArenaEvent& E : Events)
 	{
