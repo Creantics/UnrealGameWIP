@@ -322,7 +322,11 @@ bool UFTLookSubsystem::SetWorldLook(const FString& World)
 		Id = World.ToLower();
 	}
 	WorldId = Id;
-	Wanted = Look;
+	Row = Look;
+	// The held wind and cover latch now when the clock's day amount is known, else on its first one (SetDayLook).
+	bDayLatched = bDayKnown;
+	bDayHeld = bDayKnown && DayAmount > 0.f;
+	Wanted = (FTDayLook::Enabled() && !Id.IsEmpty()) ? ftcore::dayLookScene(Row, FTDayLook::Spec(), DayAmount, bDayHeld) : Row;
 	PushGrade();
 	bParametersPending = true;
 	// The scene's actors may not be there yet; Tick keeps trying.
@@ -330,6 +334,47 @@ bool UFTLookSubsystem::SetWorldLook(const FString& World)
 	Waited = 0.f;
 	Tick(0.f);
 	return true;
+}
+
+void UFTLookSubsystem::SetDayLook(float Amount)
+{
+	DayAmount = Amount;
+	bDayKnown = true;
+	if (!FTDayLook::Enabled() || WorldId.IsEmpty())
+	{
+		return;
+	}
+	if (!bDayLatched)
+	{
+		bDayLatched = true;
+		bDayHeld = DayAmount > 0.f;
+	}
+	const ftcore::SceneLook Next = ftcore::dayLookScene(Row, FTDayLook::Spec(), DayAmount, bDayHeld);
+	if (Next == Wanted)
+	{
+		return;
+	}
+	Wanted = Next;
+	PushGrade();
+	if (bWaiting)
+	{
+		// A switch is still settling: Tick writes the new blend with it.
+		bParametersPending = true;
+		return;
+	}
+	ParametersWritten = FTScene::ApplyLookParameters(GetWorld(), Wanted);
+	const int32 Written = FTScene::ApplyLook(GetWorld(), Wanted, Applied);
+	if (Written >= 0)
+	{
+		Applied = Wanted;
+	}
+	if (Written < 0 || ParametersWritten < 0)
+	{
+		// The scene lost its look volume or collection: Tick keeps trying, as after a switch.
+		bParametersPending = ParametersWritten < 0;
+		bWaiting = true;
+		Waited = 0.f;
+	}
 }
 
 void UFTLookSubsystem::Tick(float DeltaTime)

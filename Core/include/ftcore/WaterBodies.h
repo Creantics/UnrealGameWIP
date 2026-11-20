@@ -54,6 +54,11 @@ inline constexpr float kWaterSwimSpeed = 1.5f;   // m/s on the surface
 inline constexpr float kWaterSwimDraft = 1.28f;  // m: a swimmer's feet hang this far under the surface
 inline constexpr float kWaterBobHeight = 0.04f;  // m: the swimmer rides up and down by this
 inline constexpr float kWaterBobPeriod = 2.6f;   // s
+// A canal shelf's lip (RoadCanal::lip): the bed drops sheer at the shelf's outer edge to at least kWaterLipDepth, the
+// draft, the bob and kWaterLipClear more, so no bed past the shelf lies between kWaterSwimExit and it (a swimmer there
+// would rest its feet on the bed). The face over a swimmer's feet is kWaterLipDepth - draft shallower: a step up.
+inline constexpr float kWaterLipClear = 0.16f;   // m of water kept under a swimmer's lowest feet past a lip
+inline constexpr float kWaterLipDepth = kWaterSwimDraft + kWaterBobHeight + kWaterLipClear; // m: 1.48
 inline constexpr float kWaterBankSlack = 0.3f;   // a flow's share left at a channel's walls (1 mid-channel)
 inline constexpr float kWaterBuoyLine = 60.f;    // m out from a sea's edge
 inline constexpr float kWaterBuoyPull = 0.6f;    // m/s of current back for each metre past the line...
@@ -75,11 +80,13 @@ enum class WaterMode : std::uint8_t { Dry, Wade, DeepWade, Swim };
 
 // The water over a channel's bed `fromWall` m in from a long wall: `depth` on the shelf (the first `shelf` m), then
 // deeper in a straight line over the next `batter` m down to `deep`, which the middle holds. A flat bed (batter 0 or
-// deep no more than depth): `depth` everywhere.
-constexpr float waterSectionDepth(float fromWall, float depth, float shelf, float batter, float deep) {
+// deep no more than depth): `depth` everywhere. A `lip` (m, 0: none) drops the bed sheer at the shelf's outer edge to
+// depth + lip (no deeper than `deep`), and the slope runs on from there.
+constexpr float waterSectionDepth(float fromWall, float depth, float shelf, float batter, float deep, float lip = 0.f) {
     if (!(batter > 0.f) || !(deep > depth) || fromWall <= shelf) return depth;
     if (fromWall >= shelf + batter) return deep;
-    return depth + (deep - depth) * ((fromWall - shelf) / batter);
+    const float top = lip > 0.f ? (depth + lip < deep ? depth + lip : deep) : depth;
+    return top + (deep - top) * ((fromWall - shelf) / batter);
 }
 
 FTCORE_API const char* waterKindName(WaterKind kind);
@@ -92,10 +99,12 @@ struct WaterBody {
     float level = 0.f;   // m: the surface at rest
     float bed = 0.f;     // m: the floor at its deepest (a canal's mid-channel, a sea's far out)
     // A box's section across its shorter side (waterSectionDepth): the bed along each long wall is shelfBed for the
-    // first `shelf` m and falls to `bed` over the next `batter` m. batter 0: flat at `bed`.
+    // first `shelf` m and falls to `bed` over the next `batter` m. batter 0: flat at `bed`. `lip`: the sheer drop at
+    // the shelf's outer edge before the slope (0: none).
     float shelfBed = 0.f;
     float shelf = 0.f;
     float batter = 0.f;
+    float lip = 0.f;
     Vec2 flow{};         // m/s mid-channel
     Vec2 centre{};       // a box's centre; a half-plane's point on its edge
     Vec2 half{};         // a box's half sizes
@@ -148,6 +157,10 @@ FTCORE_API WaterExit waterExitToEngine(const WaterExit& planExit, float side);
 FTCORE_API WaterBody waterBodyFromCanal(const RoadWater& canal);
 // A sea over x >= edgeX (the plan frame's east), flat at `level`.
 FTCORE_API WaterBody waterSea(float edgeX, float level, float bed, float buoyLine = kWaterBuoyLine);
+// The same sea with its swimming water starting at swimEdgeX instead (the quay's face, say, where the sea's edge runs
+// on under the quay): over x >= max(edgeX, swimEdgeX), its buoy line still `buoyLine` out from edgeX (at least 0 out
+// from the new edge), so the swim's land side is the open quay, not the ground under the buildings behind it.
+FTCORE_API WaterBody waterSeaSwimEdge(float edgeX, float swimEdgeX, float level, float bed, float buoyLine = kWaterBuoyLine);
 // The body in the engine's frame for a square `side` metres across (massingEnginePoint: x - side/2, side/2 - y).
 FTCORE_API WaterBody waterBodyToEngine(const WaterBody& planBody, float side);
 

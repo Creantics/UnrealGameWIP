@@ -75,6 +75,9 @@ struct FFTWaterBodyRow
 	float Shelf = 0.f;
 	UPROPERTY()
 	float Batter = 0.f;
+	// The sheer drop at the shelf's outer edge (a map built with -CanalLip; 0 on older maps: no lip).
+	UPROPERTY()
+	float Lip = 0.f;
 	UPROPERTY()
 	TArray<FVector2D> Points;
 	// Free swim under water (ftcore::WaterBody::swimDeep): dived in inside the dive area (DiveMin..DiveMax, the engine's

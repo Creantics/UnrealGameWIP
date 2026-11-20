@@ -38,12 +38,27 @@
 //   -DayShadeFadeHigh=<deg> -DayShadeFadeLow=<deg>  the sun's elevations the fade runs between (full above, gone below)
 // and r.FT.DayShade 0/1 at run time. A day world-eye still with no running clock gets the full day's (or
 // -WorldEyeSunHour's) shade from the look subsystem once the look is written (FTDayShade::StillAmount).
+//
+// The day's own look (FTDayLook, ftcore::DayLook; -DayLook, off by default, read once from FTLookSwitches, so in
+// Shipping only from the demo boot row): by full day the world stops wearing the night's settings. Keyed to the sun's
+// elevation by the shadow floor's eased amount (ftcore::dayShadeAmount, computed whether or not the floor is on), never
+// to an hour on the command line; at amount 0 every lever hands back the row's own:
+//   the shadow floor's bracket step (-DayLookStep=1..3, 2 by default; the -DayShade* switches still go over it) and the
+//     fog's cap; the look row blended toward the day (UFTLookSubsystem::SetDayLook): fog density, split tone, sun
+//     colour temperature; the wind and the cloud cover held at every hour (ftcore/DayLook.h says why);
+//   the sun's contact shadows (its own length by night); its cloud shadows (on until the night is full, then the map's
+//     own); the far signs keyed to the shop lights' share (UFTFarSignsSubsystem::SetDayLight).
+// Nothing is written while a world wave runs (it writes the look itself); all of it is written again after.
+//   -DayLookStep=<1..3>  -DayLookFog=<density>  -DayLookKelvin=<K>  -DayLookWind=<m/s>  -DayLookCover=<0..1>
+//   -DayLookContact=<screen share>  -DayLookSigns=<times a sunlit white>  -DayLookShadowTint=<chroma>
+//   -DayLookOff=<shade,fog,cap,tone,sun,wind,clouds,contact,signs>  drops those levers (each keeps its own value)
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
 #include "FTNightLook.h"
 
+#include "ftcore/DayLook.h"
 #include "ftcore/DayShade.h"
 #include "ftcore/SceneLook.h"
 #include "ftcore/WorldClock.h"
@@ -56,6 +71,7 @@ class UMaterialParameterCollectionInstance;
 class UWorld;
 class ULightComponent;
 class USkyLightComponent;
+class FFTExposureProbe;
 
 namespace FTClock
 {
@@ -90,6 +106,16 @@ FORGOTTENTHIRD_API void WriteFog(UExponentialHeightFogComponent& Fog, const ftco
 // day amount at the start hour or -WorldEyeSunHour. Negative when this run is no such still or the hour is not full day.
 FORGOTTENTHIRD_API float StillAmount();
 } // namespace FTDayShade
+
+namespace FTDayLook
+{
+// -DayLook given (read once).
+FORGOTTENTHIRD_API bool Enabled();
+// ftcore::DayLookSpec's defaults with the -DayLook* switches over them (read once).
+FORGOTTENTHIRD_API const ftcore::DayLookSpec& Spec();
+// Whether the sun's cloud shadows stand by day under Look: it has a cloud cover and the clouds lever is on.
+FORGOTTENTHIRD_API bool CloudShadows(const ftcore::SceneLook& Look);
+} // namespace FTDayLook
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTWorldClockSubsystem : public UTickableWorldSubsystem
@@ -151,6 +177,7 @@ private:
 		TWeakObjectPtr<ULightComponent> Light;
 		float Intensity = 0.f;
 		FLinearColor Color = FLinearColor::White;
+		float ContactShadow = 0.f; // the light's own contact shadow length (the day look's goes over it by day)
 	};
 	struct FSky
 	{
@@ -171,6 +198,8 @@ private:
 	{
 		TWeakObjectPtr<UExponentialHeightFogComponent> Fog;
 		FLinearColor Color = FLinearColor::White;
+		float StartDistance = 0.f; // the map's own (cm), put back when the day look's fog start reaches amount 0
+		float VolumetricStart = 0.f;
 	};
 	struct FLamp
 	{
@@ -208,6 +237,17 @@ private:
 	FTNight::FDuskScene DuskScene;
 	// The day's shadow floor last written to the post-process volume (-1: write on the next step).
 	float AppliedDayShade = -1.f;
+	// The day look's amount last given to the look subsystem and the sun (-1: on the next step); the sun's cloud shadows
+	// last set by it (-1: none yet) and the map's own, put back when they go.
+	float AppliedDayLook = -1.f;
+	int32 AppliedCloudShadows = -1;
+	int32 MapCloudShadows = -1;
+	// One DayLight line (sun, sky, exposure, white balance, clouds) 12 s in, flag on or off, for before/after reads.
+	bool bDayLightLogged = false;
+	// The settled exposure for those lines: the game view's eye adaptation, read back on the game thread, and a second
+	// line 20 s in (the stills' window) so a still's exposure is in its log, not only the limits.
+	bool bDayExposureLogged = false;
+	TSharedPtr<FFTExposureProbe, ESPMode::ThreadSafe> ExposureProbe;
 	// The lights' share last written to the proof bay's fixtures (FTNight::WriteBayLights; -1: write on the next step).
 	float AppliedBayLights = -1.f;
 	// A level streamed in (the hero corner sub-level) brings fixtures the last write missed: written again on the next tick.

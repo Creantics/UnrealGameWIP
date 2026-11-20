@@ -62,17 +62,30 @@ const FMapSpec kMaps[] = {
 };
 constexpr int32 kMapCount = UE_ARRAY_COUNT(kMaps);
 
-// The slots by the FBX material's name's last part, in Slot order (the master's Slot parameter: 4 glass, 5 lens).
-const TCHAR* const kSlots[] = {TEXT("Paint"), TEXT("Trim"), TEXT("Rubber"), TEXT("Metal"), TEXT("Glass"), TEXT("Lens")};
+// The slots by the FBX material's name's last part, in Slot order (the master's Slot parameter: 4 glass, 5 lens, 7 sign,
+// lit like a lens). Alias: another export's name for the same slot (the step-B exports call the paint Body). The kei car's
+// export has exactly the first six; Interior, Sign and Wheel come with other vehicles. Wheel takes its own five maps
+// (T_<Name>Wheel_<map>.png) on its instance.
+struct FSlotSpec
+{
+	const TCHAR* Name;
+	const TCHAR* Alias;
+};
+const FSlotSpec kSlots[] = {{TEXT("Paint"), TEXT("Body")}, {TEXT("Trim"), nullptr}, {TEXT("Rubber"), nullptr}, {TEXT("Metal"), nullptr},
+	{TEXT("Glass"), nullptr}, {TEXT("Lens"), nullptr}, {TEXT("Interior"), nullptr}, {TEXT("Sign"), nullptr}, {TEXT("Wheel"), TEXT("Tyre")}};
 constexpr int32 kSlotCount = UE_ARRAY_COUNT(kSlots);
+constexpr int32 kKeiSlotCount = 6;
 constexpr int32 kPaintSlot = 0;
 constexpr int32 kGlassSlot = 4;
+constexpr int32 kWheelSlot = 8;
+static_assert(kSlotCount <= 32, "slots are tracked in a 32-bit mask");
 
-// The export's LOD triangle counts, and the screen sizes the parked cars switch at (the explore camera's 70 degrees:
-// LOD1 from about 15 m, LOD2 from about 43 m; the cells cull cars at 200 m).
+// The kei export's LOD triangle counts, and the screen sizes the parked cars switch at (the explore camera's 70 degrees:
+// LOD1 from about 15 m, LOD2 from about 43 m; the cells cull cars at 200 m). Another vehicle may pass -LodScreen=.
 constexpr int32 kLodTriangles[] = {27786, 8120, 1632};
 constexpr float kLodScreenSize[] = {1.f, 0.35f, 0.12f};
 constexpr int32 kLodCount = UE_ARRAY_COUNT(kLodTriangles);
+const TCHAR* const kKeiName = TEXT("KeiCar");
 
 // The contract's collision box (cm), used when the file's UBX_ box doesn't come through as the one simple shape.
 const FVector kBoxMin(-171.13, -74.0, 15.2);
@@ -88,7 +101,7 @@ float3 orm = Texture2DSample(OrmTex, OrmTexSampler, UV).rgb;
 float4 m = Texture2DSample(MaskTex, MaskTexSampler, UV);
 float d = saturate(m.r * Dirt);
 bool IsGlass = abs(Slot - 4.0) < 0.5;
-bool IsLens = abs(Slot - 5.0) < 0.5;
+bool IsLens = abs(Slot - 5.0) < 0.5 || abs(Slot - 7.0) < 0.5;
 RoughOut = IsGlass ? GlassRoughness : lerp(orm.g, 0.9, saturate(d * 0.8));
 MetalOut = IsGlass ? 0.0 : orm.b;
 AOOut = orm.r;
@@ -121,6 +134,8 @@ bool SaveAsset(UObject* Asset)
 }
 
 // An 8-bit PNG as a new texture at Path, its pixels as they are (no gamma change: the linear maps keep their values).
+// The one place a vehicle normal's green turns: every export writes the glTF convention (+Y up, as Blender bakes) and the
+// texture flips it to the engine's; no export flips it.
 UTexture2D* ImportMap(const FString& File, const FString& Path, const FMapSpec& Map)
 {
 	TArray<uint8> Bytes;
@@ -147,12 +162,13 @@ UTexture2D* ImportMap(const FString& File, const FString& Path, const FMapSpec& 
 	Texture->SRGB = Map.bSRGB;
 	Texture->CompressionSettings = Map.Compression;
 	Texture->LODGroup = Map.Group;
+	Texture->bFlipGreenChannel = Map.Compression == TC_Normalmap;
 	// The master samples in a Custom node (Texture2DSample), which can't read a virtual texture.
 	Texture->VirtualTextureStreaming = false;
 	Texture->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Texture);
-	UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: %s: %d x %d, %s."), *FPaths::GetCleanFilename(File), Image.SizeX,
-		Image.SizeY, Map.bSRGB ? TEXT("sRGB") : TEXT("linear"));
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: %s: %d x %d, %s, flip green %d."), *FPaths::GetCleanFilename(File),
+		Image.SizeX, Image.SizeY, Map.bSRGB ? TEXT("sRGB") : TEXT("linear"), Texture->bFlipGreenChannel ? 1 : 0);
 	return Texture;
 }
 
@@ -332,25 +348,45 @@ UMaterial* BuildMaster(const FString& Path, EMaterialShadingModel Shading, EBlen
 	return Material;
 }
 
-UMaterialInstanceConstant* BuildInstance(const FString& Path, UMaterial* Master, int32 Slot)
+// Maps: textures that override the master's (the wheel's own set), or null.
+UMaterialInstanceConstant* BuildInstance(const FString& Path, UMaterial* Master, int32 Slot, UTexture2D* const* Maps)
 {
 	UPackage* Package = CreatePackage(*Path);
 	UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FPackageName::GetShortName(Path),
 		RF_Public | RF_Standalone | RF_Transactional);
 	Mic->SetParentEditorOnly(Master);
 	Mic->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Slot")), static_cast<float>(Slot));
+	for (int32 M = 0; Maps && M < kMapCount; ++M)
+	{
+		Mic->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(kMaps[M].Param), Maps[M]);
+	}
 	Mic->PostEditChange();
 	FAssetRegistryModule::AssetCreated(Mic);
 	return Mic;
 }
 
-// The slot (kSlots index) whose name is in the material slot's name (Interchange may add a suffix), or INDEX_NONE.
+// The one place a slot's parent is chosen: the paint on the clear coat, the glass on the car's own translucent glass
+// master (its opacity is the car contract's, so the kit glass and the look's panes don't fit it), the rest opaque.
+UMaterial* ParentOf(int32 Slot, UMaterial* Master, UMaterial* Coat, UMaterial* Glass)
+{
+	return Slot == kPaintSlot ? Coat : (Slot == kGlassSlot ? Glass : Master);
+}
+
+// The slot (kSlots index) whose name is in the material slot's name (Interchange may add a suffix), else whose alias is,
+// or INDEX_NONE. Names first, so an alias inside a longer name ("Body_Trim") never takes another slot's name.
 int32 SlotOf(FName SlotName)
 {
 	const FString Name = SlotName.ToString();
 	for (int32 I = 0; I < kSlotCount; ++I)
 	{
-		if (Name.Contains(kSlots[I], ESearchCase::IgnoreCase))
+		if (Name.Contains(kSlots[I].Name, ESearchCase::IgnoreCase))
+		{
+			return I;
+		}
+	}
+	for (int32 I = 0; I < kSlotCount; ++I)
+	{
+		if (kSlots[I].Alias && Name.Contains(kSlots[I].Alias, ESearchCase::IgnoreCase))
 		{
 			return I;
 		}
@@ -360,7 +396,13 @@ int32 SlotOf(FName SlotName)
 
 int32 Run(const FString& Params)
 {
-	FString Source, Dest = FTBuildKeiCars::Folder;
+	// -Name: the export's and the assets' name part (SM_<Name>.fbx, T_<Name>_<map>.png, MI_<Name>_<slot>); KeiCar by default,
+	// which keeps the kei car's paths as they were.
+	FString Source, Name = kKeiName;
+	FParse::Value(*Params, TEXT("Name="), Name);
+	const bool bKei = Name == kKeiName;
+	FString Dest = bKei ? FString(FTBuildKeiCars::Folder) : FString(TEXT("/Game/Vehicles/")) + Name;
+	const FString MeshName = FString(TEXT("SM_")) + Name;
 	if (!FParse::Value(*Params, TEXT("Source="), Source, false) || Source.IsEmpty())
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: pass -Source=<the export folder>."));
@@ -372,11 +414,29 @@ int32 Run(const FString& Params)
 	{
 		Source = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / Source);
 	}
-	const FString MeshFile = Source / TEXT("SM_KeiCar.fbx");
+	// -LodScreen=1,0.35,0.12: the screen size each LOD switches at (the kei car's by default).
+	TArray<float> ScreenSizes(kLodScreenSize, kLodCount);
+	FString LodText;
+	if (FParse::Value(*Params, TEXT("LodScreen="), LodText, false))
+	{
+		TArray<FString> Parts;
+		LodText.ParseIntoArray(Parts, TEXT(","));
+		ScreenSizes.Reset();
+		for (const FString& Part : Parts)
+		{
+			if (!Part.IsNumeric())
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: -LodScreen=%s isn't a list of numbers."), *LodText);
+				return 1;
+			}
+			ScreenSizes.Add(FCString::Atof(*Part));
+		}
+	}
+	const FString MeshFile = Source / MeshName + TEXT(".fbx");
 	TArray<FString> Files = {MeshFile};
 	for (const FMapSpec& Map : kMaps)
 	{
-		Files.Add(Source / FString::Printf(TEXT("T_KeiCar_%s.png"), Map.Name));
+		Files.Add(Source / FString::Printf(TEXT("T_%s_%s.png"), *Name, Map.Name));
 	}
 	for (const FString& File : Files)
 	{
@@ -386,22 +446,53 @@ int32 Run(const FString& Params)
 			return 1;
 		}
 	}
-
-	// Replace every texture, master and instance file: a refreshed export keeps its names.
-	TArray<FString> TexturePaths, InstancePaths;
+	// The wheel's own maps: all five or none.
+	TArray<FString> WheelFiles;
 	for (const FMapSpec& Map : kMaps)
 	{
-		TexturePaths.Add(Dest / TEXT("Textures") / FString::Printf(TEXT("T_KeiCar_%s"), Map.Name));
+		const FString File = Source / FString::Printf(TEXT("T_%sWheel_%s.png"), *Name, Map.Name);
+		if (FPaths::FileExists(File))
+		{
+			WheelFiles.Add(File);
+		}
 	}
-	for (const TCHAR* Slot : kSlots)
+	if (WheelFiles.Num() != 0 && WheelFiles.Num() != kMapCount)
 	{
-		InstancePaths.Add(Dest / TEXT("Materials") / FString::Printf(TEXT("MI_KeiCar_%s"), Slot));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: %d of the %d T_%sWheel_* maps; nothing imported."), WheelFiles.Num(),
+			kMapCount, *Name);
+		return 1;
 	}
-	const FString MasterPath = Dest / TEXT("Materials/M_KeiCar");
-	const FString CoatPath = Dest / TEXT("Materials/M_KeiCar_ClearCoat");
-	const FString GlassPath = Dest / TEXT("Materials/M_KeiCar_Glass");
+	const bool bWheelMaps = WheelFiles.Num() == kMapCount;
+	// The instances built: the kei car's six; another vehicle every slot (Wheel only with its maps). Unused ones are logged.
+	const int32 SlotCount = bKei ? kKeiSlotCount : kSlotCount;
+	const auto Builds = [&](int32 Slot) { return Slot < SlotCount && (Slot != kWheelSlot || bWheelMaps); };
+
+	// Replace every texture, master and instance file: a refreshed export keeps its names.
+	TArray<FString> TexturePaths, WheelPaths, InstancePaths;
+	for (const FMapSpec& Map : kMaps)
+	{
+		TexturePaths.Add(Dest / TEXT("Textures") / FString::Printf(TEXT("T_%s_%s"), *Name, Map.Name));
+		if (bWheelMaps)
+		{
+			WheelPaths.Add(Dest / TEXT("Textures") / FString::Printf(TEXT("T_%sWheel_%s"), *Name, Map.Name));
+		}
+	}
+	for (int32 I = 0; I < kSlotCount; ++I)
+	{
+		InstancePaths.Add(Builds(I) ? Dest / TEXT("Materials") / FString::Printf(TEXT("MI_%s_%s"), *Name, kSlots[I].Name) : FString());
+	}
+	const FString MasterPath = Dest / TEXT("Materials") / FString(TEXT("M_")) + Name;
+	const FString CoatPath = MasterPath + TEXT("_ClearCoat");
+	const FString GlassPath = MasterPath + TEXT("_Glass");
 	TArray<FString> Packages = TexturePaths;
-	Packages.Append(InstancePaths);
+	Packages.Append(WheelPaths);
+	for (const FString& Path : InstancePaths)
+	{
+		if (!Path.IsEmpty())
+		{
+			Packages.Add(Path);
+		}
+	}
 	Packages.Append({MasterPath, CoatPath, GlassPath});
 	for (const FString& Package : Packages)
 	{
@@ -415,10 +506,15 @@ int32 Run(const FString& Params)
 	}
 
 	UTexture2D* Maps[kMapCount] = {};
+	UTexture2D* WheelMaps[kMapCount] = {};
 	for (int32 I = 0; I < kMapCount; ++I)
 	{
 		Maps[I] = ImportMap(Files[1 + I], TexturePaths[I], kMaps[I]);
-		if (!Maps[I])
+		if (Maps[I] && bWheelMaps)
+		{
+			WheelMaps[I] = ImportMap(WheelFiles[I], WheelPaths[I], kMaps[I]);
+		}
+		if (!Maps[I] || (bWheelMaps && !WheelMaps[I]))
 		{
 			return 1;
 		}
@@ -448,18 +544,24 @@ int32 Run(const FString& Params)
 	UMaterialInstanceConstant* Instances[kSlotCount] = {};
 	for (int32 I = 0; I < kSlotCount; ++I)
 	{
-		UMaterial* Parent = I == kPaintSlot ? Coat : (I == kGlassSlot ? Glass : Master);
-		Instances[I] = BuildInstance(InstancePaths[I], Parent, I);
+		if (Builds(I))
+		{
+			Instances[I] = BuildInstance(InstancePaths[I], ParentOf(I, Master, Coat, Glass), I, I == kWheelSlot ? WheelMaps : nullptr);
+		}
 	}
 	bool bSaved = true;
 	for (UTexture2D* Texture : Maps)
 	{
 		bSaved = SaveAsset(Texture) && bSaved;
 	}
+	for (UTexture2D* Texture : WheelMaps)
+	{
+		bSaved = (!Texture || SaveAsset(Texture)) && bSaved;
+	}
 	bSaved = SaveAsset(Master) && SaveAsset(Coat) && SaveAsset(Glass) && bSaved;
 	for (UMaterialInstanceConstant* Instance : Instances)
 	{
-		bSaved = SaveAsset(Instance) && bSaved;
+		bSaved = (!Instance || SaveAsset(Instance)) && bSaved;
 	}
 	if (!bSaved)
 	{
@@ -496,7 +598,7 @@ int32 Run(const FString& Params)
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = MeshFile;
 	Task->DestinationPath = Dest;
-	Task->DestinationName = FTBuildKeiCars::MeshName;
+	Task->DestinationName = MeshName;
 	Task->Options = Ui;
 	Task->bAutomated = true;
 	Task->bReplaceExisting = true;
@@ -515,7 +617,7 @@ int32 Run(const FString& Params)
 			continue;
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: imported %s"), *Found->GetPathName());
-		if (Found->GetName() == FTBuildKeiCars::MeshName)
+		if (Found->GetName() == MeshName)
 		{
 			Mesh = Found;
 		}
@@ -527,50 +629,67 @@ int32 Run(const FString& Params)
 	}
 	if (!Mesh)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: no %s came out of %s."), FTBuildKeiCars::MeshName, *MeshFile);
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: no %s came out of %s."), *MeshName, *MeshFile);
 		return 1;
 	}
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
 	bool bOk = true;
-	if (Mesh->GetNumSourceModels() != kLodCount)
+	const int32 LodCount = ScreenSizes.Num();
+	if (Mesh->GetNumSourceModels() != LodCount)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: %s has %d LODs, not %d (is the LOD group exported?)."), *Mesh->GetName(),
-			Mesh->GetNumSourceModels(), kLodCount);
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: %s has %d LODs, not %d (is the LOD group exported? -LodScreen= sets the count)."),
+			*Mesh->GetName(), Mesh->GetNumSourceModels(), LodCount);
 		return 1;
 	}
-	// The slots by name, never by index.
-	int32 Matched = 0;
+	// The slots by name, never by index. The kei car needs its six; another vehicle needs its paint and glass, and every
+	// slot it has must be one of ours.
 	uint32 Seen = 0;
 	for (FStaticMaterial& Slot : Mesh->GetStaticMaterials())
 	{
 		const int32 I = SlotOf(Slot.ImportedMaterialSlotName);
-		if (I == INDEX_NONE || (Seen & (1u << I)) != 0)
+		if (I == INDEX_NONE || !Instances[I] || (Seen & (1u << I)) != 0)
 		{
-			UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: slot %s isn't one of the six car slots (or comes twice)."),
-				*Slot.ImportedMaterialSlotName.ToString());
+			UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: slot %s isn't one of %s's car slots (or comes twice%s)."),
+				*Slot.ImportedMaterialSlotName.ToString(), *Name, I == kWheelSlot ? TEXT(", or has no T_<Name>Wheel_* maps") : TEXT(""));
 			bOk = false;
 			continue;
 		}
 		Seen |= 1u << I;
 		Slot.MaterialInterface = Instances[I];
-		++Matched;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: slot %s -> %s (Slot %d, parent %s)."),
+			*Slot.ImportedMaterialSlotName.ToString(), *Instances[I]->GetName(), I, *GetNameSafe(Instances[I]->Parent.Get()));
 	}
-	if (Matched != kSlotCount)
+	const uint32 Needed = bKei ? (1u << kKeiSlotCount) - 1 : (1u << kPaintSlot) | (1u << kGlassSlot);
+	if ((Seen & Needed) != Needed)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: %d of the %d car slots found."), Matched, kSlotCount);
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: %s's needed slots aren't all there (found mask 0x%x, needed 0x%x)."), *Name,
+			Seen, Needed);
 		bOk = false;
+	}
+	for (int32 I = 0; I < kSlotCount; ++I)
+	{
+		if (Instances[I] && (Seen & (1u << I)) == 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: %s is unused (the mesh has no %s slot)."), *Instances[I]->GetName(),
+				kSlots[I].Name);
+		}
 	}
 	Mesh->GetNaniteSettings().bEnabled = false;
 	Mesh->SetAutoComputeLODScreenSize(false);
-	for (int32 L = 0; L < kLodCount; ++L)
+	for (int32 L = 0; L < LodCount; ++L)
 	{
-		Mesh->GetSourceModel(L).ScreenSize = FPerPlatformFloat(kLodScreenSize[L]);
+		Mesh->GetSourceModel(L).ScreenSize = FPerPlatformFloat(ScreenSizes[L]);
 	}
 	Mesh->PostEditChange();
 	FAssetCompilingManager::Get().FinishAllCompilation();
 
-	// One box: the file's UBX_ box when it came through alone, else the contract's.
+	// The origin is the ground centre and the nose +X (the stand-in's pose): the bounds must sit on z 0 around the origin.
+	const FBox Bounds = Mesh->GetBoundingBox();
+	const FVector Size = Bounds.GetSize();
+
+	// One box: the file's UBX_ box when it came through alone, else the kei contract's, or (another vehicle) the bounds
+	// from the kei contract's 15 cm ground clearance up.
 	if (!Mesh->GetBodySetup())
 	{
 		Mesh->CreateBodySetup();
@@ -579,11 +698,13 @@ int32 Run(const FString& Params)
 	const bool bFileBox = Body->AggGeom.GetElementCount() == 1 && Body->AggGeom.BoxElems.Num() == 1;
 	if (!bFileBox)
 	{
+		const FVector BoxMin = bKei ? kBoxMin : FVector(Bounds.Min.X, Bounds.Min.Y, Bounds.Min.Z + kBoxMin.Z);
+		const FVector BoxMax = bKei ? kBoxMax : Bounds.Max;
 		Body->Modify();
 		Body->AggGeom.EmptyElements();
-		const FVector Size = kBoxMax - kBoxMin;
-		FKBoxElem Box(static_cast<float>(Size.X), static_cast<float>(Size.Y), static_cast<float>(Size.Z));
-		Box.Center = (kBoxMin + kBoxMax) * 0.5;
+		const FVector BoxSize = BoxMax - BoxMin;
+		FKBoxElem Box(static_cast<float>(BoxSize.X), static_cast<float>(BoxSize.Y), static_cast<float>(BoxSize.Z));
+		Box.Center = (BoxMin + BoxMax) * 0.5;
 		Body->AggGeom.BoxElems.Add(Box);
 		Body->InvalidatePhysicsData();
 		Body->CreatePhysicsMeshes();
@@ -591,36 +712,42 @@ int32 Run(const FString& Params)
 	}
 	const FKBoxElem& Box = Body->AggGeom.BoxElems[0];
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: collision: one box %.0f x %.0f x %.0f cm at (%.0f, %.0f, %.0f) (%s)."),
-		Box.X, Box.Y, Box.Z, Box.Center.X, Box.Center.Y, Box.Center.Z, bFileBox ? TEXT("the file's") : TEXT("the contract's"));
+		Box.X, Box.Y, Box.Z, Box.Center.X, Box.Center.Y, Box.Center.Z,
+		bFileBox ? TEXT("the file's") : (bKei ? TEXT("the contract's") : TEXT("the bounds'")));
 
-	for (int32 L = 0; L < kLodCount; ++L)
+	for (int32 L = 0; L < LodCount; ++L)
 	{
 		const int32 Triangles = Mesh->GetNumTriangles(L);
+		if (!bKei)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: LOD%d: %d triangles, screen size %.2f."), L, Triangles, ScreenSizes[L]);
+			continue;
+		}
 		const bool bNear = FMath::Abs(Triangles - kLodTriangles[L]) <= kLodTriangles[L] / 20;
 		UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: LOD%d: %d triangles (export %d), screen size %.2f."), L, Triangles,
-			kLodTriangles[L], kLodScreenSize[L]);
+			kLodTriangles[L], ScreenSizes[L]);
 		if (!bNear)
 		{
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTImportVehicle: LOD%d's triangle count is more than 5%% off the export's."), L);
 		}
 	}
-	// The origin is the ground centre and the nose +X (the stand-in's pose): the bounds must sit on z 0 around the origin.
-	const FBox Bounds = Mesh->GetBoundingBox();
-	const FVector Size = Bounds.GetSize();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportVehicle: bounds x %.1f..%.1f, y %.1f..%.1f, z %.1f..%.1f cm."), Bounds.Min.X,
 		Bounds.Max.X, Bounds.Min.Y, Bounds.Max.Y, Bounds.Min.Z, Bounds.Max.Z);
-	if (Size.X < 300.0 || Size.X > 400.0 || Size.Y < 120.0 || Size.Y > 180.0 || FMath::Abs(Bounds.Min.Z) > 3.0 ||
-		FMath::Abs(Bounds.GetCenter().X) > 10.0 || FMath::Abs(Bounds.GetCenter().Y) > 10.0)
+	// The kei car is about 3.4 x 1.5 m; another vehicle a car's size (a van or a taxi up to 6 x 2.2 m).
+	const bool bSize = bKei ? (Size.X >= 300.0 && Size.X <= 400.0 && Size.Y >= 120.0 && Size.Y <= 180.0)
+							: (Size.X >= 250.0 && Size.X <= 600.0 && Size.Y >= 120.0 && Size.Y <= 220.0);
+	if (!bSize || FMath::Abs(Bounds.Min.Z) > 3.0 || FMath::Abs(Bounds.GetCenter().X) > 10.0 || FMath::Abs(Bounds.GetCenter().Y) > 10.0)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: the car isn't about 3.4 x 1.5 m with its origin at its ground centre (units or axes?)."));
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportVehicle: %s isn't a car's size with its origin at its ground centre (units or axes?)."),
+			*Name);
 		bOk = false;
 	}
 	if (!SaveAsset(Mesh))
 	{
 		return 1;
 	}
-	const FString Expected = FTBuildKeiCars::FindMeshPath();
-	if (Dest == FTBuildKeiCars::Folder && Expected != Mesh->GetPathName())
+	const FString Expected = bKei ? FTBuildKeiCars::FindMeshPath() : FString();
+	if (bKei && Dest == FTBuildKeiCars::Folder && Expected != Mesh->GetPathName())
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTImportVehicle: the mesh is %s but FTBuildMassingWorld -KeiCars looks for %s."),
 			*Mesh->GetPathName(), Expected.IsEmpty() ? TEXT("nothing") : *Expected);

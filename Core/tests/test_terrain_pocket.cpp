@@ -648,3 +648,213 @@ TEST_CASE("fix pass by kind: a marking snaps, a mast drops onto its slab, a brid
     CHECK(after.spanned[0].box == 3);
     CHECK(std::string(floatFixName(FloatFix::EndPosts)) == "end-posts");
 }
+
+namespace {
+
+std::size_t countPrefix(const FoundationPlan& plan, const char* prefix) {
+    return static_cast<std::size_t>(std::count_if(plan.added.begin(), plan.added.end(),
+                                                  [prefix](const MassingBox& b) { return b.id.rfind(prefix, 0) == 0; }));
+}
+
+// The fix pass and the check after it, as ftcore_floatcheck runs them (no plinths).
+FloatOutcomes fixAndCheck(const Field& f, const std::vector<MassingBox>& boxes, const FloatSpec& spec, FoundationPlan& plan,
+                          FoundationStats& st, std::vector<MassingBox>& all) {
+    const std::vector<bool> inc(boxes.size(), true);
+    FloatReport before;
+    REQUIRE(findFloats(f.ground, boxes, inc, FloatSpec{}, before));
+    REQUIRE(planFoundations(f.ground, boxes, inc, nullptr, spec, plan, st));
+    std::vector<bool> inc2;
+    applyFoundations(boxes, inc, plan, all, inc2);
+    FloatSpec as = spec;
+    as.spanRule = true;
+    as.chainCheck = true;
+    FloatReport after;
+    REQUIRE(findFloats(f.ground, all, inc2, as, after));
+    FloatOutcomes o;
+    classifyFloats(before, plan, after, o);
+    return o;
+}
+
+} // namespace
+
+TEST_CASE("deck posts: off, a deck with no pier to raise is left as before; on, it gets posts at most 6 m apart, braces, and passes") {
+    const Field f([](double, double) { return 10.0; });
+    // A 29.29 x 10 m deck 8 m up on one pier at its west end: its east end hangs 26 m past the pier.
+    const std::vector<MassingBox> boxes{piece("D", "deck", 10, 20, 39.29, 30, 18.0, 18.5), piece("P", "pier", 10, 23, 13, 27, 9.7, 18.0)};
+    FoundationPlan plan;
+    FoundationStats st;
+    std::vector<MassingBox> all;
+    FloatOutcomes o = fixAndCheck(f, boxes, FloatSpec{}, plan, st, all);
+    REQUIRE(plan.rows.size() == 1);
+    CHECK(plan.rows[0].fix == FloatFix::Left);
+    CHECK(st.left == 1);
+    CHECK(st.posted == 0);
+    CHECK(countPrefix(plan, "PL-D-") == 0);
+    CHECK(countPrefix(plan, "PL-K-") == 0);
+    CHECK(o.failing == 1);
+
+    FloatSpec on;
+    on.deckPosts = true;
+    on.postMaxHeight = 10.0; // timber all through: its posts stand 8 m (the piles have their own case)
+    o = fixAndCheck(f, boxes, on, plan, st, all);
+    REQUIRE(plan.rows.size() == 1);
+    CHECK(plan.rows[0].fix == FloatFix::Posts);
+    CHECK(std::string(floatFixName(FloatFix::Posts)) == "posts");
+    CHECK(st.left == 0);
+    CHECK(st.posted == 1);
+    // Six bents 5.81 m apart along it (0.25 m posts, their faces flush with its ends), two rows 1.875 m off its middle (each
+    // post's outer face its 3.5 m eave less half a metre in from each side); the west bent stands on the pier, so it is left out.
+    CHECK(st.posts == 10);
+    CHECK(st.piles == 0);
+    CHECK(countPrefix(plan, "PL-D-") == 10);
+    std::vector<double> xs;
+    for (std::size_t a = 0; a < plan.added.size(); ++a) {
+        const MassingBox& b = plan.added[a];
+        CHECK(plan.wears[a] == 0); // the deck's surface
+        if (b.id.rfind("PL-D-", 0) != 0) continue;
+        CHECK_FALSE(b.sloped);
+        CHECK(b.sx == doctest::Approx(0.25));
+        CHECK(b.sy == doctest::Approx(0.25));
+        CHECK(b.z0 == doctest::Approx(9.7)); // down to sink under the ground
+        CHECK(b.z1 == doctest::Approx(18.0)); // up to the deck's underside
+        CHECK(std::fabs(std::fabs(b.cy - 25.0) - 1.875) < 1e-6);
+        xs.push_back(b.cx);
+    }
+    std::sort(xs.begin(), xs.end());
+    xs.erase(std::unique(xs.begin(), xs.end(), [](double a, double c) { return std::fabs(a - c) < 1e-6; }), xs.end());
+    REQUIRE(xs.size() == 5);
+    for (std::size_t k = 1; k < xs.size(); ++k) CHECK(xs[k] - xs[k - 1] <= 6.0);
+    CHECK(xs.back() == doctest::Approx(39.165)); // flush with the east end
+    // Braces: 4 bays along each row (one panel each, 7.1 m clear over 5.81 m), 5 bents across (two panels over 3.75 m).
+    CHECK(st.braces == 18);
+    for (const MassingBox& b : plan.added) {
+        if (b.id.rfind("PL-K-", 0) != 0) continue;
+        CHECK(b.kind == "brace");
+        CHECK(b.z1 - b.z0 == doctest::Approx(0.12));
+        CHECK(b.sy == doctest::Approx(0.12));
+        const double deg = std::atan(std::fabs(b.riseU)) * 180.0 / 3.14159265358979;
+        CHECK(deg > 30.0);
+        CHECK(deg < 60.0);
+    }
+    CHECK(o.failing == 0);
+    CHECK(o.spanned == 1);
+    CHECK(o.newFloats == 0);
+}
+
+TEST_CASE("deck posts: a ramp's posts slope with its underside and its braces stay near 45 degrees") {
+    const Field f([](double, double) { return 4.0; });
+    // A ramp 13 -> 47.88 m over 29.29 m, 0.5 m thick, on a pier at its foot (as a deck 35 m deep: the 1.5 m eave).
+    MassingBox ramp = piece("R", "deck", 10, 20, 39.29, 30, 12.5, 47.88);
+    ramp.sloped = true;
+    ramp.slopeFrom = 13.0;
+    ramp.slopeTo = 47.88;
+    ramp.slopeThick = 0.5;
+    const std::vector<MassingBox> boxes{ramp, piece("P", "pier", 9, 23, 12, 27, 3.7, 12.5)};
+    FoundationPlan plan;
+    FoundationStats st;
+    std::vector<MassingBox> all;
+    FloatSpec on;
+    on.deckPosts = true;
+    on.postMaxHeight = 50.0; // timber all through: its posts stand up to 44 m (the piles have their own case)
+    const FloatOutcomes o = fixAndCheck(f, boxes, on, plan, st, all);
+    CHECK(st.posted == 1);
+    CHECK(st.piles == 0);
+    // Three rows (each outer post's face 1 m in from each side: its 1.5 m eave less half a metre), 3.875 m apart.
+    std::vector<double> ys;
+    const double grade = (47.88 - 13.0) / 29.29;
+    for (const MassingBox& b : plan.added) {
+        if (b.id.rfind("PL-D-", 0) != 0) continue;
+        REQUIRE(b.sloped);
+        CHECK(b.slopeTo - b.slopeFrom == doctest::Approx(grade * b.sx).epsilon(0.01));
+        CHECK(0.5 * (b.slopeFrom + b.slopeTo) == doctest::Approx(12.5 + grade * (b.cx - 10.0)).epsilon(0.001));
+        CHECK(b.z0 == doctest::Approx(3.7));
+        ys.push_back(b.cy);
+    }
+    std::sort(ys.begin(), ys.end());
+    ys.erase(std::unique(ys.begin(), ys.end(), [](double a, double c) { return std::fabs(a - c) < 1e-6; }), ys.end());
+    REQUIRE(ys.size() == 3);
+    CHECK(ys.front() == doctest::Approx(21.125));
+    CHECK(ys.back() == doctest::Approx(28.875));
+    CHECK(st.braces > 0);
+    for (const MassingBox& b : plan.added) {
+        if (b.id.rfind("PL-K-", 0) != 0) continue;
+        const double deg = std::atan(std::fabs(b.riseU)) * 180.0 / 3.14159265358979;
+        CHECK(deg > 9.0);
+        CHECK(deg < 57.0);
+    }
+    CHECK(o.failing == 0);
+    CHECK(o.newFloats == 0);
+}
+
+TEST_CASE("deck posts: a post over postMaxHeight is a pile, pier-sized and board-formed concrete, inside the deck, never braced") {
+    // The ground at 15 m to x 24 and 5 m from x 25: the deck of the first case (its underside 18 m), its west end on a pier.
+    const Field f([](double x, double) { return x < 24.5 ? 15.0 : 5.0; });
+    const std::vector<MassingBox> boxes{piece("D", "deck", 10, 20, 39.29, 30, 18.0, 18.5), piece("P", "pier", 10, 23, 13, 27, 9.7, 18.0)};
+    FoundationPlan plan;
+    FoundationStats st;
+    std::vector<MassingBox> all;
+    FloatSpec on;
+    on.deckPosts = true;
+    REQUIRE(on.postMaxHeight == doctest::Approx(5.0));
+    const FloatOutcomes o = fixAndCheck(f, boxes, on, plan, st, all);
+    CHECK(st.posted == 1);
+    // The six bents of the first case, the west one on the pier: two (x 15.93, 21.74) stand 3 m, timber; three (x 27.55,
+    // 33.36 and the east end) stand 13 m, piles, the end one moved in to keep its face flush with the deck's end (x 38.79).
+    CHECK(st.posts == 10);
+    CHECK(st.piles == 6);
+    std::size_t timber = 0, piles = 0;
+    for (std::size_t a = 0; a < plan.added.size(); ++a) {
+        const MassingBox& b = plan.added[a];
+        if (b.id.rfind("PL-D-", 0) != 0) continue;
+        CHECK(plan.wears[a] == 0); // the deck it holds up
+        CHECK(b.z1 == doctest::Approx(18.0));
+        if (b.kind == "pile") {
+            ++piles;
+            CHECK(massingLookSurface(b) == MassingLookSurface::BoardConcrete);
+            CHECK(b.sx == doctest::Approx(1.0));
+            CHECK(b.sy == doctest::Approx(1.0));
+            CHECK(b.z0 == doctest::Approx(4.7)); // sink under the low ground
+            CHECK(b.cx > 25.0);
+            CHECK(b.cx + 0.5 * b.sx <= 39.29 + 1e-6); // inside the deck's end
+            CHECK(std::fabs(std::fabs(b.cy - 25.0) - 1.5) < 1e-6); // its outer face on the timber rows' (1 m in from 4 m)
+        } else {
+            ++timber;
+            CHECK(b.kind == "plinth");
+            CHECK(b.sx == doctest::Approx(0.25));
+            CHECK(b.z0 == doctest::Approx(14.7));
+            CHECK(b.cx < 24.0);
+            CHECK(std::fabs(std::fabs(b.cy - 25.0) - 1.875) < 1e-6);
+        }
+    }
+    CHECK(timber == 4);
+    CHECK(piles == 6);
+    double eastPile = 0.0;
+    for (const MassingBox& b : plan.added)
+        if (b.kind == "pile") eastPile = std::max(eastPile, b.cx);
+    CHECK(eastPile == doctest::Approx(38.79));
+    // Braces only in the timber bay: one panel along each row between the two timber bents, one across each of them.
+    CHECK(st.braces == 4);
+    for (const MassingBox& b : plan.added) {
+        if (b.id.rfind("PL-K-", 0) != 0) continue;
+        CHECK(b.cx < 24.0);
+    }
+    CHECK(o.failing == 0);
+    CHECK(o.newFloats == 0);
+}
+
+TEST_CASE("deck posts: a brace is spanned between the two posts it sits in, and floats with one end free") {
+    const Field f([](double, double) { return 10.0; });
+    MassingBox k = piece("K", "brace", 10.5, 20.35, 16.5, 20.65, 13.35, 13.65);
+    k.riseU = 5.0 / 6.0; // 11 m at the west post up to 16 m at the east one
+    std::vector<MassingBox> boxes{piece("A", "plinth", 10, 20, 11, 21, 9.7, 18.0), piece("B", "plinth", 16, 20, 17, 21, 9.7, 18.0), k};
+    FloatReport r = floats(f, boxes, spanSpec());
+    CHECK(r.floating.empty());
+    REQUIRE(r.spanned.size() == 1);
+    CHECK(r.spanned[0].box == 2);
+    CHECK(r.spanned[0].supporters == 2);
+    CHECK(floats(f, boxes, FloatSpec{}).floating.size() == 1); // held everywhere without the span rule
+    boxes.erase(boxes.begin() + 1);
+    r = floats(f, boxes, spanSpec());
+    REQUIRE(r.floating.size() == 1);
+    CHECK(r.floating[0].box == 1);
+}
