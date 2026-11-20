@@ -85,7 +85,8 @@ void SetUpKind(UStaticMeshComponent& Comp, EFTCellKind Kind, bool bCastShadow)
 	{
 		// A world-dynamic object: the pawn capsule (Pawn profile) still blocks on it, but the world-static object queries
 		// (the traversal probe's mantle, vault and ledge traces, knockback's wall sweep, the wave's floor trace) never find
-		// it, so the lead gets no climb or top on an invisible box. Visibility and camera traces pass it (the crowd's).
+		// it, so the lead gets no climb or top on an invisible box. Visibility and camera traces pass it (the crowd's). The
+		// wave's standing overlap does take world-dynamic objects, so it still turns down a spot on a blocker as cluttered.
 		Comp.SetCollisionObjectType(ECC_WorldDynamic);
 		Comp.SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 		Comp.SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
