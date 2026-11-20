@@ -28,7 +28,15 @@
 //                           Chaos cloth settings (kg/m2, 0..1 stiffness, cm); any left out keep the asset's own
 //                           (an asset with no Chaos config gets one made); each one given is logged as read back;
 //                           -SelfCollide with -NoSelfCollide is an error. All flags are checked before the mesh changes
-//   -Verify                 write nothing; report the mesh's clothing
+//   -AnimDriveMap -AnimDriveLow=<0..1> -AnimDriveHigh=<0..1> [-DriveFrom=0.2] [-DriveTo=1]
+//                           anim drive (the spring back to the skinned place), graded by mask level (max distance / Max,
+//                           so by the max ramp's rows): High down to level DriveFrom, easing to Low at DriveTo (the
+//                           stiffness is log-scaled: 0.4 pulls about 1.5 % back per solver step, 0.6 about 6 %, 1 is
+//                           rigid). The map needs both ends; -AnimDriveLow= alone (no map) is one drive everywhere, and
+//                           -AnimDriveHigh= or -DriveFrom=/-DriveTo= without the map is an error
+//   -AnimDriveDamping=<0..1> the anim drive's damping, the same for every vertex
+//   -Verify                 write nothing; report the mesh's clothing: every weight map (count, min, max), the anim drive
+//                           per max-distance level, and the Chaos config's anim drive range
 //
 // Or, to make a physics asset for cloth to collide with from one made for a ragdoll:
 //
