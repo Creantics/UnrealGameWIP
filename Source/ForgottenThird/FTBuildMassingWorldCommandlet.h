@@ -7,7 +7,7 @@
 //       [-Walls=<csv>] [-Goals=<csv>] -Entry=<x,y,z> [-Look=<x,y>] [-Sea=<x>] [-Side=1000] [-Map=<name>]
 //       [-World=<id>] [-Kit=<csv>] [-NoNav] [-Strict] [-Dump=<csv>] [-Load]
 //       [-Tour=<csv>] [-Coverage=<csv>] [-ReadBack=<json>] [-Surfaces -Streets=<csv>]
-//       [-Props=<csv> [-PropStreets=<csv>] [-PropLine=<m>]] [-Frontage=<csv>] [-Kerbs] [-Quay [-QuayLamp=<id>]]
+//       [-Props=<csv> [-PropStreets=<csv>] [-PropLine=<m>]] [-Frontage=<csv> (-RoadDoors=<csv> | -FrontageNoDoors)] [-Kerbs] [-Quay [-QuayLamp=<id>]]
 //       -NullRHI -unattended -nopause -nosplash
 //
 // -Height names a height field's json (samples_x, samples_y, spacing_m, origin_of_sample_0_0_m and the raw
@@ -93,7 +93,8 @@
 // a world-dynamic object, so it stops the lead; it leaves the navmesh alone (nothing on the strip paths by it; -Goals and
 // -Coverage paths may cross one), visibility and camera traces (the crowd's) and the world-static object queries (the traversal
 // probe's climbs, knockback) pass it, and the traversal probe turns down a climb behind one. Ground pieces keep off the doors
-// (-RoadDoors) and the narrow ways' mouths (ftcore::massingFrontMouths); a collider over either fails the run. It is laid whenever -Frontage runs. A missing mesh fails the run before anything is built. The log gives
+// (-RoadDoors, which -Frontage needs unless -FrontageNoDoors says the build has none) and the narrow ways' mouths
+// (ftcore::massingFrontMouths); a collider over either fails the run. It is laid whenever -Frontage runs. A missing mesh fails the run before anything is built. The log gives
 // each rule's size, a count line per rule (placed, faces, tries and why the others failed) and a totals line.
 // The dressing goes in that order, kerbs, quay, frontage, then the props, each keeping out of the room the ones before
 // took.

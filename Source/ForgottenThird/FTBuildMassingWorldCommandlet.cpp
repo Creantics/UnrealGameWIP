@@ -2045,6 +2045,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	size_t HeroFirst = 0;
 	// Round 5 roads (FTBuildRoads.h): -Roads=<csv>, -Vehicles, -RoadDoors=<csv>, -LaneLamps=x0,y0,x1,y1, -RoadSeed=<n>.
 	const FTBuildRoads::FOptions RoadOptions = bHeroOnly ? FTBuildRoads::FOptions() : FTBuildRoads::ParseOptions(*Params);
+	// -Frontage keeps its ground pieces off the -RoadDoors doors; without that table it would keep no door clear, so it
+	// needs one, or -FrontageNoDoors to say the build has no doors on purpose.
+	if (!FrontFile.IsEmpty() && RoadOptions.DoorsFile.IsEmpty() && !FParse::Param(*Params, TEXT("FrontageNoDoors")))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Frontage needs -RoadDoors=<csv> (its pieces keep clear of the doors), or -FrontageNoDoors."));
+		return 1;
+	}
 	std::vector<ftcore::RoadSpec> RoadSpecs;
 	std::vector<ftcore::RoadBuild> RoadBuilds;
 	// -Windows: the building boxes wear the window master's instances (FTBuildSurfaces -Windows), each box's seed, street
