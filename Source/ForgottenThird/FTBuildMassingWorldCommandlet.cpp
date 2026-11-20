@@ -4072,7 +4072,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				Taken.push_back(ftcore::massingFrontFoot(Piece, Rule));
 			}
 			// The mesh is dressing; a ground piece's part out of the face collides as a hidden box (ftcore::massingFrontCollider),
-			// so the lead and the walkers stop at its front; a Blocker, so the crowd's ground trace (visibility) never lands on it.
+			// so the lead stops at its front; a Blocker, so the crowd's visibility traces pass it (walkers keep out by their bands, not by it).
 			ftcore::MassingBox Collider;
 			if (ftcore::massingFrontCollider(Piece, Rule, Collider))
 			{

@@ -233,7 +233,7 @@ FTCORE_API MassingFoot massingFrontFoot(const MassingProp& prop, const MassingFr
 
 // The collider a ground-layer frontage piece stands in (the mesh itself is dressing and collides with nothing): a flat box
 // of source Invented, kind "frontage", over massingFrontFoot (`out` deep from the face, `width` along it, turned to the
-// face) from the piece's z to z + height, so the lead and the walkers stop at the piece's front, not at the wall behind.
+// face) from the piece's z to z + height, so the lead stops at the piece's front, not at the wall behind (the crowd's traces pass it: walkers keep out by their bands).
 // False (out untouched) for an overhead piece (dz kMassingPropBody or more) or one with no out, width or height.
 FTCORE_API bool massingFrontCollider(const MassingProp& prop, const MassingFrontRule& rule, MassingBox& out);
 
