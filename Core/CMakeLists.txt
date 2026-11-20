@@ -97,6 +97,7 @@ add_library(ftcore STATIC
     src/RainCover.cpp
     src/GlassSurface.cpp
     src/PropGloss.cpp
+    src/DayLook.cpp
     src/DayShade.cpp
     src/Backdrop.cpp
     src/StandIns.cpp
@@ -443,6 +444,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_glass_surface.cpp
         tests/test_prop_gloss.cpp
         tests/test_backdrop_seat.cpp
+        tests/test_day_look.cpp
         tests/test_day_shade.cpp
         tests/test_shop_front.cpp
         tests/test_world_clock.cpp
@@ -503,6 +505,8 @@ if(FTCORE_BUILD_TESTS)
         tests/test_crowd_off_default.cpp
         tests/test_crowd_doors.cpp
         tests/test_crowd_views.cpp
+        tests/test_crowd_massing.cpp
+        tests/test_snow_ice.cpp
         tests/test_npc_memory.cpp
         tests/test_npc_slice.cpp
         tests/test_npc_columns.cpp

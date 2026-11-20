@@ -375,6 +375,39 @@ TEST_CASE("water bodies: a sea on waves reads the waves' height; flat without th
     CHECK(water.camera({40.f, 20.f}, z - 0.5f, 3.f).depth == doctest::Approx(0.5f).epsilon(0.01));
 }
 
+TEST_CASE("water bodies: a sea's swim edge moved out to the quay face keeps its buoy line and bed") {
+    const WaterBody plain = waterSea(0.f, 0.f, -33.f);
+    const WaterBody quay = waterSeaSwimEdge(0.f, 15.f, 0.f, -33.f);
+    CHECK(quay.kind == WaterKind::Sea);
+    CHECK(quay.shape == WaterShape::HalfPlane);
+    // The ground under the quay is no longer water; the open water off its face still is.
+    CHECK(plain.covers({10.f, 50.f}));
+    CHECK_FALSE(quay.covers({10.f, 50.f}));
+    CHECK_FALSE(quay.covers({14.9f, 50.f}));
+    CHECK(quay.covers({15.f, 50.f}));
+    CHECK(quay.covers({15.35f, -400.f}));
+    CHECK(quay.bedAt({30.f, 0.f}) == plain.bedAt({30.f, 0.f}));
+    CHECK(quay.level == plain.level);
+    // The current back begins at the same place: the dive's edge distance is the same past the new edge.
+    CHECK(quay.buoyLine == doctest::Approx(plain.buoyLine - 15.f));
+    WaterBody plainDeep = plain, quayDeep = quay;
+    plainDeep.swimDeep = quayDeep.swimDeep = true;
+    WaterBodies a, b;
+    REQUIRE(a.add(plainDeep));
+    REQUIRE(b.add(quayDeep));
+    for (const float x : {15.f, 30.f, 59.f, 60.f, 75.f}) {
+        const WaterDive da = a.dive({x, 7.f}), db = b.dive({x, 7.f});
+        CHECK(db.edgeDistance < 1.0e8f);
+        CHECK(db.edgeDistance == doctest::Approx(da.edgeDistance));
+        CHECK(db.edgeInward.x == da.edgeInward.x);
+    }
+    // A swim edge inland of the sea's (or not a number) leaves the sea as it is; one past the buoy line ends the line.
+    CHECK(waterSeaSwimEdge(0.f, -5.f, 0.f, -33.f).out({0.f, 0.f}) == doctest::Approx(0.f));
+    CHECK(waterSeaSwimEdge(0.f, std::nanf(""), 0.f, -33.f).covers({0.f, 0.f}));
+    CHECK(waterSeaSwimEdge(0.f, 70.f, 0.f, -33.f).buoyLine == 0.f);
+    CHECK(waterSeaSwimEdge(0.f, 15.f, 0.f, -33.f, 0.f).buoyLine == 0.f);
+}
+
 TEST_CASE("water bodies: the plan frame to the engine's turns y, the flow and the sea's way over") {
     const float side = 1000.f;
     const WaterBody canal = waterBodyToEngine(waterBodyFromCanal(northCanal()), side);

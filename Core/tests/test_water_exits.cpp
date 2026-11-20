@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace ftcore;
@@ -425,4 +426,297 @@ TEST_CASE("sea slip: a ramp from the quay's top to under the sea, its fill under
     for (const RoadSolid& s : b2.solids) CHECK(s.box.kind.rfind("sea_slip", 0) == 0);
     bare.fall = 0.0;
     CHECK(roadSeaSlipBuild(bare, b2) == 0);
+}
+
+TEST_CASE("canal lip: no bed past the shelf between the swim's exit and the lip's depth; a swimmer still gets out") {
+    // The lip's depth: the draft, the bob and the clearance; the face over a swimmer's lowest feet is a step up
+    // (CharacterMovement's 45 cm MaxStepHeight, which the flying swim steps up too).
+    CHECK(kWaterLipDepth == doctest::Approx(1.48f));
+    CHECK(kWaterLipDepth > kWaterSwimDepth);
+    CHECK(waterSectionDepth(0.6f, 1.f, 0.6f, 1.5f, 2.f, 0.48f) == doctest::Approx(1.f));
+    CHECK(waterSectionDepth(0.61f, 1.f, 0.6f, 1.5f, 2.f, 0.48f) == doctest::Approx(1.4835f).epsilon(0.001));
+    CHECK(waterSectionDepth(2.1f, 1.f, 0.6f, 1.5f, 2.f, 0.48f) == doctest::Approx(2.f));
+    CHECK(waterSectionDepth(1.f, 1.f, 0.6f, 1.5f, 1.2f, 0.48f) == doctest::Approx(1.2f)); // no deeper than the middle
+    CHECK(waterSectionDepth(1.f, 1.f, 0.6f, 0.f, 2.f, 0.48f) == doctest::Approx(1.f));    // a flat bed has none
+    for (const RoadCanal& base : {canalOf("CN-N", 892.0, 664.0, 901.0, 814.0, 700.0), canalOf("CN-P", 744.0, 786.0, 892.0, 814.0, 830.0)}) {
+        CAPTURE(base.id);
+        CHECK(roadCanalSection(base).lip == doctest::Approx(0.0)); // off by default: today's section
+        RoadCanal canal = base;
+        canal.lip = true;
+        const RoadCanalSection section = roadCanalSection(canal);
+        CHECK(section.lip == doctest::Approx(kWaterLipDepth - 1.0));
+        CHECK(section.deep == doctest::Approx(2.0));
+        RoadBuild build;
+        RoadBuild before;
+        Banks banks;
+        REQUIRE(roadCanalBuild(canal, banks.ground(), build) > 0);
+        REQUIRE(roadCanalBuild(base, banks.ground(), before) > 0);
+        CHECK(build.solids.size() == before.solids.size()); // same pieces, same ids
+        REQUIRE(build.waters.size() == 1);
+        const RoadWater& w = build.waters[0];
+        CHECK(w.lip == doctest::Approx(section.lip));
+        WaterBodies water;
+        REQUIRE(water.add(waterBodyFromCanal(w)));
+        CHECK(water.body(0).lip == doctest::Approx(static_cast<float>(section.lip)));
+        for (std::size_t i = 0; i < build.exits.size(); ++i) REQUIRE(water.addExit(waterExitFromRoad(build.exits[i])));
+        const bool alongY = w.sy >= w.sx;
+        const double across = alongY ? w.sx : w.sy;
+        int band = 0, checked = 0;
+        for (double d = 0.005; d < across; d += 0.01) {
+            const double x = alongY ? w.cx - 0.5 * w.sx + d : w.cx + 3.0;
+            const double y = alongY ? w.cy + 3.0 : w.cy - 0.5 * w.sy + d;
+            const Vec2 p{static_cast<float>(x), static_cast<float>(y)};
+            const float column = water.depth(p);
+            // The builder and the body share the section.
+            CHECK(column == doctest::Approx(w.z - builtFloor(build, x, y)).epsilon(0.01));
+            band += column > kWaterSwimExit && column < kWaterLipDepth - 1e-3f ? 1 : 0;
+            ++checked;
+        }
+        CHECK(checked > 600);
+        CHECK(band == 0);
+        // Without the lip the slope crosses the band (the 1.16 m column a partner rested in).
+        WaterBodies old;
+        REQUIRE(old.add(waterBodyFromCanal(before.waters[0])));
+        const double at = 0.6 + (1.16 - 1.0) * 1.5;
+        const Vec2 q{static_cast<float>(alongY ? w.cx - 0.5 * w.sx + at : w.cx + 3.0), static_cast<float>(alongY ? w.cy + 3.0 : w.cy - 0.5 * w.sy + at)};
+        CHECK(old.depth(q) == doctest::Approx(1.16f).epsilon(0.01));
+        CHECK(water.depth(q) >= kWaterLipDepth - 1e-3f);
+        // The face over a swimmer's lowest feet at the lip is a step up of 45 cm or less.
+        const float face = kWaterSwimDraft + kWaterBobHeight - static_cast<float>(section.depth);
+        CHECK(face > 0.f);
+        CHECK(face <= 0.45f);
+        // A swimmer held at the lip (a 34 cm capsule against the shelf's face) in front of a ladder is in its reach.
+        int ladders = 0;
+        for (std::size_t i = 0; i < water.exitCount(); ++i) {
+            const WaterExit& e = water.exit(i);
+            // The long walls' ladders (an end wall's, on water over 12 m wide, has no shelf before it).
+            if (e.kind != WaterExitKind::Ladder || std::fabs(alongY ? e.out.x : e.out.y) < 0.5f) continue;
+            ++ladders;
+            const Vec2 face0{e.foot.x + e.out.x * 0.35f, e.foot.y + e.out.y * 0.35f}; // the wall's face behind the foot
+            const float off = static_cast<float>(section.shelf) + 0.34f;
+            const Vec2 held{face0.x - e.out.x * off, face0.y - e.out.y * off};
+            CAPTURE(i);
+            CHECK(water.depth(held) >= kWaterLipDepth - 1e-3f);
+            CHECK(std::hypot(held.x - e.foot.x, held.y - e.foot.y) <= kWaterLadderReach);
+            CHECK(water.nearestExit(held, kWaterLadderReach) >= 0);
+            // On the shelf in front of it a body wades.
+            WaterCapsule c;
+            c.p = {face0.x - e.out.x * 0.4f, face0.y - e.out.y * 0.4f};
+            c.feetZ = static_cast<float>(w.z - section.depth);
+            c.swimming = true;
+            CHECK(waterState(water, c, 0.f).mode == WaterMode::DeepWade);
+        }
+        CHECK(ladders > 0);
+    }
+    // A shelf that is no wade (its water over the swim's exit) gets no lip; nor does a flat bed.
+    RoadCanal deepShelf = canalOf("CN-D", 892.0, 424.0, 901.0, 636.0, 560.0);
+    deepShelf.floorZ = 1.3;
+    deepShelf.lip = true;
+    CHECK(roadCanalSection(deepShelf).lip == doctest::Approx(0.0));
+    RoadCanal narrow = canalOf("CN-S", 0.0, 0.0, 6.0, 60.0, 0.0);
+    narrow.lip = true;
+    CHECK(roadCanalSection(narrow).lip == doctest::Approx(0.0));
+    // A middle shallower than the lip's depth: the lip drops to it and the slope lies flat there.
+    RoadCanal shallow = canalOf("CN-H", 892.0, 424.0, 901.0, 636.0, 560.0);
+    shallow.deep = 1.4;
+    shallow.lip = true;
+    CHECK(roadCanalSection(shallow).lip == doctest::Approx(0.4));
+}
+
+namespace {
+
+// Flat ground at 4 m from (0, 0), a sample every 50 m: banks for made-up canals.
+struct FlatBanks {
+    std::vector<std::uint16_t> grid = std::vector<std::uint16_t>(9u * 9u, static_cast<std::uint16_t>(32768 + 4 * 128));
+    MassingGround ground() const {
+        MassingGround g;
+        g.grid = grid.data();
+        g.samplesX = 9;
+        g.samplesY = 9;
+        g.spacing = 50.0;
+        return g;
+    }
+};
+
+// Which long wall a way out is on (+1 / -1 along the across axis), 0 for an end wall's.
+int wallOf(const RoadWaterExit& e, bool alongY) {
+    const double o = alongY ? e.outX : e.outY;
+    return o > 0.5 ? 1 : (o < -0.5 ? -1 : 0);
+}
+double gapMiddle(const RoadWaterExit& e, bool alongY) { return alongY ? 0.5 * (e.gapY0 + e.gapY1) : 0.5 * (e.gapX0 + e.gapX1); }
+// The stretch of its wall a way out takes along the bank: its rail gap to its foot.
+std::pair<double, double> stretchOf(const RoadWaterExit& e, bool alongY) {
+    const double g0 = alongY ? e.gapY0 : e.gapX0, g1 = alongY ? e.gapY1 : e.gapX1, f = alongY ? e.footY : e.footX;
+    return {std::min({g0, g1, f}), std::max({g0, g1, f})};
+}
+
+} // namespace
+
+TEST_CASE("canal openings: a flight's rail gap within 15 m along every bank, 1.2 m wide, clear of the rest; off as before") {
+    const FlatBanks banks;
+    const RoadCanal canals[] = {canalOf("CN-A", 100.0, 60.0, 109.0, 330.0, 200.0),  // narrow, along y
+                                canalOf("CN-B", 40.0, 120.0, 300.0, 136.0, 150.0)}; // 14 m of water, along x, end ladders
+    for (const RoadCanal& base : canals) {
+        CAPTURE(base.id);
+        RoadCanal open = base;
+        open.openings = true;
+        RoadBuild off, on;
+        REQUIRE(roadCanalBuild(base, banks.ground(), off) > 0);
+        REQUIRE(roadCanalBuild(open, banks.ground(), on) > 0);
+        const bool alongY = on.waters[0].alongY;
+        CHECK(alongY == (base.y1 - base.y0 > base.x1 - base.x0));
+        // Today's ways out stand as they were, the new flights after them.
+        REQUIRE(on.exits.size() > off.exits.size());
+        for (std::size_t i = 0; i < off.exits.size(); ++i) {
+            const RoadWaterExit &a = off.exits[i], &b = on.exits[i];
+            CHECK(a.id == b.id);
+            CHECK(a.kind == b.kind);
+            CHECK(a.footX == b.footX);
+            CHECK(a.footY == b.footY);
+            CHECK(a.topX == b.topX);
+            CHECK(a.topY == b.topY);
+            CHECK(a.topZ == b.topZ);
+            CHECK(a.gapX0 == b.gapX0);
+            CHECK(a.gapY0 == b.gapY0);
+            CHECK(a.gapX1 == b.gapX1);
+            CHECK(a.gapY1 == b.gapY1);
+        }
+        // Off, a flight is two ways out apart on a wall: farther than the reach.
+        CHECK(roadCanalOpeningWorst(base, off) > kCanalOpeningReach);
+        const double worst = roadCanalOpeningWorst(open, on);
+        CHECK(worst <= kCanalOpeningReach);
+        // Every half metre along each bank, end to end: a flight's gap on that wall within the reach, along it.
+        const double ua = alongY ? base.y0 : base.x0, ub = alongY ? base.y1 : base.x1;
+        double sampled = 0.0;
+        for (const int side : {-1, 1})
+            for (double u = ua; u <= ub + 1e-9; u += 0.5) {
+                double nearest = HUGE_VAL;
+                for (const RoadWaterExit& e : on.exits)
+                    if (e.kind == RoadExitKind::Steps && wallOf(e, alongY) == side) nearest = std::min(nearest, std::fabs(gapMiddle(e, alongY) - u));
+                CAPTURE(side);
+                CAPTURE(u);
+                CHECK(nearest <= kCanalOpeningReach);
+                sampled = std::max(sampled, nearest);
+            }
+        CHECK(worst >= sampled);
+        CHECK(worst <= sampled + 0.5);
+        // The added ways out: flights only, inside the end walls, each 0.5 m clear of every other way out on its wall
+        // and of the footbridge's landing.
+        const double sa = ua + base.wall, sb = ub - base.wall;
+        for (std::size_t i = off.exits.size(); i < on.exits.size(); ++i) {
+            const RoadWaterExit& e = on.exits[i];
+            CAPTURE(e.id);
+            CHECK(e.kind == RoadExitKind::Steps);
+            const int side = wallOf(e, alongY);
+            CHECK(side != 0);
+            const std::pair<double, double> s = stretchOf(e, alongY);
+            CHECK(s.first >= sa);
+            CHECK(s.second <= sb);
+            CHECK((s.second <= base.bridgeAt - 0.5 * kQuayBridgeWide - 0.5 + 1e-9 || s.first >= base.bridgeAt + 0.5 * kQuayBridgeWide + 0.5 - 1e-9));
+            for (std::size_t j = 0; j < on.exits.size(); ++j) {
+                if (j == i || wallOf(on.exits[j], alongY) != side) continue;
+                const std::pair<double, double> r = stretchOf(on.exits[j], alongY);
+                CHECK((s.second <= r.first - 0.5 + 1e-9 || s.first >= r.second + 0.5 - 1e-9));
+            }
+        }
+        // Every flight's treads kCanalOpeningWide across with openings, 0.9 m without.
+        std::size_t treadsOn = 0, treadsOff = 0;
+        for (const RoadSolid& s : on.solids)
+            if (s.box.kind == "canal_steps") {
+                ++treadsOn;
+                CHECK((alongY ? s.box.sx : s.box.sy) == doctest::Approx(kCanalOpeningWide));
+            }
+        for (const RoadSolid& s : off.solids)
+            if (s.box.kind == "canal_steps") {
+                ++treadsOff;
+                CHECK((alongY ? s.box.sx : s.box.sy) == doctest::Approx(0.9));
+            }
+        CHECK(treadsOn > treadsOff);
+    }
+    // No ways out at all: infinity.
+    CHECK(roadCanalOpeningWorst(canals[0], RoadBuild{}) == HUGE_VAL);
+}
+
+TEST_CASE("canal openings: bank under a long deck passed over, the flights go on past it") {
+    const FlatBanks banks;
+    RoadCanal canal = canalOf("CN-A", 100.0, 60.0, 109.0, 330.0, 200.0);
+    canal.openings = true;
+    // A road's deck 30 m long over the whole channel, from wall top to wall top.
+    const double d0 = 140.0, d1 = 170.0;
+    RoadSolid deck;
+    deck.box.id = "DECK";
+    deck.box.kind = "asphalt";
+    deck.box.cx = 104.5;
+    deck.box.cy = 0.5 * (d0 + d1);
+    deck.box.sx = 9.0;
+    deck.box.sy = d1 - d0;
+    deck.box.z0 = 4.0;
+    deck.box.z1 = 4.4;
+    deck.collide = true;
+    RoadBuild b;
+    b.solids.push_back(deck);
+    REQUIRE(roadCanalBuild(canal, banks.ground(), b) > 0);
+    // No flight's run (rail gap to foot) under the deck.
+    for (const RoadWaterExit& e : b.exits) {
+        if (e.kind != RoadExitKind::Steps || wallOf(e, true) == 0) continue;
+        CAPTURE(e.id);
+        const std::pair<double, double> s = stretchOf(e, true);
+        CHECK((s.second <= d0 || s.first >= d1));
+    }
+    // Every bank point off the deck, past it too: a flight's gap on that wall within the reach.
+    double sampled = 0.0;
+    for (const int side : {-1, 1})
+        for (double u = canal.y0; u <= canal.y1 + 1e-9; u += 0.5) {
+            if (u >= d0 - 1e-9 && u <= d1 + 1e-9) continue;
+            double nearest = HUGE_VAL;
+            for (const RoadWaterExit& e : b.exits)
+                if (e.kind == RoadExitKind::Steps && wallOf(e, true) == side) nearest = std::min(nearest, std::fabs(gapMiddle(e, true) - u));
+            CAPTURE(side);
+            CAPTURE(u);
+            CHECK(nearest <= kCanalOpeningReach);
+            sampled = std::max(sampled, nearest);
+        }
+    const double worst = roadCanalOpeningWorst(canal, b);
+    CHECK(worst <= kCanalOpeningReach);
+    CHECK(worst >= sampled);
+    // The deck's own bank is no edge: without it in the build, the same ways out leave that stretch out of reach.
+    RoadBuild bare;
+    bare.exits = b.exits;
+    CHECK(roadCanalOpeningWorst(canal, bare) > kCanalOpeningReach);
+}
+
+TEST_CASE("canal openings: no added flight under a deck, not even one over only its middle") {
+    const FlatBanks banks;
+    RoadCanal canal = canalOf("CN-A", 100.0, 60.0, 109.0, 330.0, 200.0);
+    canal.openings = true;
+    RoadBuild open;
+    REQUIRE(roadCanalBuild(canal, banks.ground(), open) > 0);
+    // The last added flight: its run from 0.55 m before its gap's middle to its foot, along y.
+    const RoadWaterExit added = open.exits.back();
+    REQUIRE(added.kind == RoadExitKind::Steps);
+    const int side = wallOf(added, true);
+    const double top = gapMiddle(added, true) - 0.55, foot = added.footY;
+    REQUIRE(foot - top > 3.0);
+    // A deck 1 m long over the water at the run's middle: clear of both its ends.
+    const double mid = 0.5 * (top + foot);
+    RoadSolid deck;
+    deck.box.id = "DECK";
+    deck.box.kind = "asphalt";
+    deck.box.cx = 104.5;
+    deck.box.cy = mid;
+    deck.box.sx = 7.0;
+    deck.box.sy = 1.0;
+    deck.box.z0 = 4.0;
+    deck.box.z1 = 4.4;
+    deck.collide = true;
+    RoadBuild roofed;
+    roofed.solids.push_back(deck);
+    REQUIRE(roadCanalBuild(canal, banks.ground(), roofed) > 0);
+    bool under = false;
+    for (const RoadWaterExit& e : roofed.exits) {
+        if (e.kind != RoadExitKind::Steps || wallOf(e, true) != side) continue;
+        const double a = gapMiddle(e, true) - 0.55, b = e.footY;
+        under = under || (b > mid - 0.5 && a < mid + 0.5);
+    }
+    CHECK_FALSE(under);
 }

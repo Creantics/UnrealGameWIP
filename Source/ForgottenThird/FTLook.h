@@ -301,7 +301,8 @@ FORGOTTENTHIRD_API int32 PreloadWetGrooms(const TArray<FFTGroomLook>& Grooms, TA
 FORGOTTENTHIRD_API TSharedPtr<FStreamableHandle> HoldLooks(const TArray<FFTLeadLook>& Looks, const TCHAR* Who);
 
 // One "Level start:" line: seconds since the process started, and the process's physical and virtual memory now and at
-// its peak (MB). For the party hold's cost (the 11-19 ruling, item 3): called once at each stage, never per frame.
+// its peak (MB). For the party hold's cost (the 11-19 ruling, item 3): called once at each stage, never per frame; its
+// body is compiled out of Shipping.
 FORGOTTENTHIRD_API void LogLevelStart(const TCHAR* Stage);
 
 // Wears each entry's wet groom (bWet) or its dry one on the component showing the other: the component is unregistered,

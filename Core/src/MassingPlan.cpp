@@ -645,7 +645,8 @@ MassingLookSurface massingLookSurface(const MassingBox& box) {
     if (kind == "gutter" || kind == "marking") return MassingLookSurface::PoleConcrete;
     if (kind == "drain") return MassingLookSurface::GalvSteel;
     if (kind == "patch") return MassingLookSurface::BoardConcrete;
-    if (kind == "terrace" || kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay")
+    // ... and a deck's piles (FloatSpec::deckPosts: its supports over postMaxHeight).
+    if (kind == "terrace" || kind == "cliff" || kind == "seawall" || kind == "breakwater" || kind == "quay" || kind == "pile")
         return MassingLookSurface::BoardConcrete;
     if (kind == "deck" || kind == "pier" || kind == "bridge") return MassingLookSurface::OakPlank;
     if (kind == "crane" || kind == "boat" || kind == "mast" || kind == "post" || kind == "barrier" || kind == "gate" ||

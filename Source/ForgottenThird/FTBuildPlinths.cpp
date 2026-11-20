@@ -144,6 +144,8 @@ bool FTPlinths::FixFloats(const ftcore::MassingGround& Ground, std::vector<ftcor
 		return false;
 	}
 	Out.Spec.maxEave = Eave;
+	// -DeckPosts (the 2026-11-18 ruling, off by default): a deck still floating after the fixes gets posts and braces.
+	Out.Spec.deckPosts = FParse::Param(FCommandLine::Get(), TEXT("DeckPosts"));
 	// The boxes as laid: tops nudged apart and up off the ground.
 	std::vector<ftcore::MassingBox> Built = Boxes;
 	for (size_t I = 0; I < Built.size(); ++I)
@@ -171,11 +173,21 @@ bool FTPlinths::FixFloats(const ftcore::MassingGround& Ground, std::vector<ftcor
 		static_cast<int32>(S.floating), static_cast<int32>(S.skirts), static_cast<int32>(S.podiums), static_cast<int32>(S.lowered),
 		static_cast<int32>(S.underBoxes), static_cast<int32>(S.snapped), static_cast<int32>(S.dropped), static_cast<int32>(S.piersRaised),
 		static_cast<int32>(S.endPosts), static_cast<int32>(S.left), static_cast<int32>(Out.Plan.edits.size()), static_cast<int32>(Out.Plan.added.size()));
+	if (Out.Spec.deckPosts)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: float fix: -DeckPosts: %d decks given %d posts and %d braces."),
+			static_cast<int32>(S.posted), static_cast<int32>(S.posts), static_cast<int32>(S.braces));
+	}
 	for (const ftcore::FloatFixRow& Row : Out.Plan.rows)
 	{
 		if (Row.fix == ftcore::FloatFix::Left)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: float fix: %s (%s) left at %.2f m (no pier under it to raise)."),
+				UTF8_TO_TCHAR(Boxes[Row.box].id.c_str()), UTF8_TO_TCHAR(Boxes[Row.box].kind.c_str()), Row.gap);
+		}
+		else if (Row.fix == ftcore::FloatFix::Posts)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: float fix: %s (%s) floating %.2f m gets posts and braces."),
 				UTF8_TO_TCHAR(Boxes[Row.box].id.c_str()), UTF8_TO_TCHAR(Boxes[Row.box].kind.c_str()), Row.gap);
 		}
 	}
