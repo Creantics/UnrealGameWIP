@@ -317,11 +317,16 @@ FTCORE_API std::size_t massingFrontCovers(const std::vector<MassingProp>& pieces
 // / 4 apart along its polyline, the free stretch about the polyline's point across it (out to half its width plus
 // kMassingFrontStrip each side) left by `walls` (boxes' feet), then by `walls` and `colliders` together; only stations
 // where the colliders take some of it, and whose point no wall covers, count. `narrowest` is the least such stretch (m)
-// and (x, y) where; `stations` how many counted. False when none did. No allocation.
+// and (x, y) where; `stations` how many counted. False when none did. Every station whose point no wall covers is
+// measured: `measured` of them, the least stretch with the colliders over all of them `least` (at (lx, ly)), and the
+// least with the walls alone `leastWalls`. No allocation.
 struct MassingFrontClear {
     std::size_t stations = 0;
     double narrowest = 0.0, wallsOnly = 0.0; // m: the narrowest stretch, and the walls' stretch at that station
     double x = 0.0, y = 0.0;
+    std::size_t measured = 0;
+    double least = 0.0, leastWalls = 0.0; // m
+    double lx = 0.0, ly = 0.0;
 };
 FTCORE_API bool massingFrontClearWidth(const MassingStreet& street, const std::vector<MassingFoot>& walls,
                                        const std::vector<MassingFoot>& colliders, MassingFrontClear& out);

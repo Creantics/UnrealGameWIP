@@ -870,6 +870,9 @@ TEST_CASE("massing frontage: the clear way between walls and colliders") {
     walls[1].y = -3.5;
     MassingFrontClear clear;
     CHECK_FALSE(massingFrontClearWidth(way, walls, {}, clear)); // no collider takes any of it
+    CHECK(clear.measured == 41); // yet every station is measured
+    CHECK(near(clear.least, 4.0));
+    CHECK(near(clear.leastWalls, 4.0));
 
     // A collider 2 m long reaching 1 m out of the north wall (y 1..2): 3 m left where it stands.
     std::vector<MassingFoot> colliders(1);
@@ -883,6 +886,8 @@ TEST_CASE("massing frontage: the clear way between walls and colliders") {
     CHECK(near(clear.wallsOnly, 4.0));
     CHECK(near(clear.x, 4.0));
     CHECK(near(clear.y, 0.0));
+    CHECK(clear.measured == 41);
+    CHECK(near(clear.least, 3.0));
 
     // Two facing rows 1.2 m out leave 1.6 m; one over the line closes the way.
     colliders.push_back(colliders[0]);
@@ -977,6 +982,40 @@ TEST_CASE("massing frontage: the real tables (opt-in): no collider over a door o
     CHECK(openDoors + openMouths > 0); // the check isn't empty on these tables
     CHECK(massingFrontCovers(kept.props, rules, doors) == 0);
     CHECK(massingFrontCovers(kept.props, rules, mouths) == 0);
+    // The doors table's other rows (interior_*) are the rooms behind the doors: their bounds, against the colliders.
+    {
+        std::vector<MassingFoot> rooms;
+        std::istringstream in(readFile(envText("FT_FRONT_DOORS")));
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            std::vector<std::string> cols;
+            std::stringstream row(line);
+            std::string cell;
+            while (std::getline(row, cell, ',')) cols.push_back(cell);
+            if (cols.size() < 4 || cols[1].rfind("interior", 0) != 0) continue;
+            double x0 = kInfinity, y0 = kInfinity, x1 = -kInfinity, y1 = -kInfinity;
+            std::stringstream pts(cols[3]);
+            std::string pt;
+            while (std::getline(pts, pt, ';')) {
+                const double x = std::atof(pt.c_str());
+                const double y = std::atof(pt.c_str() + pt.find(':') + 1);
+                x0 = std::min(x0, x);
+                y0 = std::min(y0, y);
+                x1 = std::max(x1, x);
+                y1 = std::max(y1, y);
+            }
+            MassingFoot f;
+            f.x = 0.5 * (x0 + x1);
+            f.y = 0.5 * (y0 + y1);
+            f.hx = 0.5 * (x1 - x0);
+            f.hy = 0.5 * (y1 - y0);
+            rooms.push_back(f);
+        }
+        const std::size_t inRooms = massingFrontCovers(kept.props, rules, rooms);
+        MESSAGE(rooms.size() << " rooms behind the doors; colliders over one " << inRooms);
+        CHECK(inRooms == 0);
+    }
     for (std::size_t r = 0; r < rules.size(); ++r)
         MESSAGE(rules[r].id << ": placed " << loose.counts[r].placed << " -> " << kept.counts[r].placed << ", kept clear "
                             << kept.counts[r].keptClear);
@@ -1035,27 +1074,43 @@ TEST_CASE("massing frontage: the real tables (opt-in): no collider over a door o
     };
     std::vector<MassingFoot> nearWalls, nearColliders;
     for (const MassingStreet& w : ways) {
+        const bool arcade = w.kind == "market_arcade";
         nearWay(colliders, w, nearColliders);
-        if (nearColliders.empty()) continue;
+        if (nearColliders.empty() && !arcade) continue;
         nearWay(walls, w, nearWalls);
         MassingFrontClear clear;
-        const bool arcade = w.kind == "market_arcade";
-        if (!massingFrontClearWidth(w, nearWalls, nearColliders, clear)) {
-            if (arcade)
-                MESSAGE(w.id << " market_arcade " << w.width << " m: " << nearColliders.size()
-                             << " colliders near it, none narrows the way");
-            continue;
-        }
-        if (arcade || clear.narrowest < twoAbreast)
+        const bool narrowed = massingFrontClearWidth(w, nearWalls, nearColliders, clear);
+        if (arcade) {
+            ++arcades;
+            std::size_t stalls = 0; // BK-D2-F pieces within the way's reach
+            for (const MassingProp& p : kept.props) {
+                if (rules[p.rule].id != "BK-D2-F") continue;
+                for (std::size_t k = 0; k + 1 < w.points.size(); ++k) {
+                    double px = 0.0, py = 0.0;
+                    const double dx = w.points[k + 1].x - w.points[k].x, dy = w.points[k + 1].y - w.points[k].y;
+                    const double len2 = dx * dx + dy * dy;
+                    const double u = len2 > 0.0 ? std::clamp(((p.x - w.points[k].x) * dx + (p.y - w.points[k].y) * dy) / len2, 0.0, 1.0) : 0.0;
+                    px = w.points[k].x + u * dx;
+                    py = w.points[k].y + u * dy;
+                    if (std::hypot(p.x - px, p.y - py) <= 0.5 * w.width + kMassingFrontStrip) {
+                        ++stalls;
+                        break;
+                    }
+                }
+            }
+            MESSAGE(w.id << " market_arcade " << w.width << " m: " << clear.measured << " stations measured, least clear "
+                         << clear.least << " m (walls alone " << clear.leastWalls << " m); " << clear.stations
+                         << " narrowed by a collider; " << nearColliders.size() << " colliders and " << stalls
+                         << " BK-D2-F pieces near it");
+            CHECK(clear.measured > 0);
+            CHECK(clear.least >= twoAbreast);
+        } else if (narrowed && clear.narrowest < twoAbreast) {
             MESSAGE(w.id << " " << w.kind << " " << w.width << " m: narrowest " << clear.narrowest << " m (walls alone "
                          << clear.wallsOnly << ") at (" << clear.x << ", " << clear.y << "), " << clear.stations
                          << " stations");
-        if (arcade) {
-            ++arcades;
-            CHECK(clear.narrowest >= twoAbreast);
         }
     }
-    MESSAGE(arcades << " market_arcade ways a collider narrows");
+    MESSAGE(arcades << " market_arcade ways measured");
 
     // Every crossing of a narrow way's segment over another way's line between its points lies in a mouth.
     std::size_t midCrossings = 0, unmouthed = 0;

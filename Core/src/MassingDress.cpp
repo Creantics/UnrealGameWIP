@@ -1010,6 +1010,13 @@ bool massingFrontClearWidth(const MassingStreet& street, const std::vector<Massi
             if (!freeAcross(x, y, nx, ny, reach, walls, nullptr, lo0, hi0)) continue;
             const bool open = freeAcross(x, y, nx, ny, reach, walls, &colliders, lo1, hi1);
             const double w0 = hi0 - lo0, w1 = open ? hi1 - lo1 : 0.0;
+            if (out.measured == 0 || w1 < out.least) {
+                out.least = w1;
+                out.lx = x;
+                out.ly = y;
+            }
+            if (out.measured == 0 || w0 < out.leastWalls) out.leastWalls = w0;
+            ++out.measured;
             if (!(w1 < w0 - 1e-6)) continue;
             if (out.stations == 0 || w1 < out.narrowest) {
                 out.narrowest = w1;
