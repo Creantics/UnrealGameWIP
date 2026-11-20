@@ -574,7 +574,71 @@ TEST_CASE("massing frontage: a ground piece's collider is its foot from its z up
     MassingFrontRule thin = r;
     thin.out = 0.0;
     CHECK_FALSE(massingFrontCollider(p, thin, keep));
+    MassingFrontRule narrow = r;
+    narrow.width = 0.0;
+    CHECK_FALSE(massingFrontCollider(p, narrow, keep));
     CHECK(keep.id == "K");
+}
+
+TEST_CASE("massing frontage: a collider laid into a used box keeps nothing of the old one") {
+    MassingProp p;
+    p.z = 1.0;
+    p.face = 90.0;
+    MassingFrontRule r = front("BK", 2.0, {});
+    r.depth = 1.0;
+    r.out = 1.0;
+    r.height = 2.5;
+    MassingBox b;
+    b.id = "OLD";
+    b.row = "R7";
+    b.kind = "wall";
+    b.source = MassingSource::Plan;
+    b.cover = true;
+    b.sloped = true;
+    b.slopeFrom = 3.0;
+    b.slopeTo = 4.0;
+    b.slopeThick = 0.2;
+    b.riseU = 0.1;
+    b.riseW = 0.2;
+    REQUIRE(massingFrontCollider(p, r, b));
+    CHECK(b.id.empty()); // the caller names it
+    CHECK(b.row.empty());
+    CHECK(b.kind == "frontage");
+    CHECK(b.source == MassingSource::Invented);
+    CHECK_FALSE(b.cover);
+    CHECK_FALSE(b.sloped);
+    CHECK(near(b.slopeFrom, 0.0));
+    CHECK(near(b.slopeTo, 0.0));
+    CHECK(b.slopeThick < 0.0);
+    CHECK(near(b.riseU, 0.0));
+    CHECK(near(b.riseW, 0.0));
+    CHECK(near(b.z0, 1.0));
+    CHECK(near(b.z1, 3.5));
+}
+
+TEST_CASE("massing frontage: a collider turns with a face that isn't square to the axes") {
+    MassingProp p;
+    p.x = 2.0;
+    p.y = -3.0;
+    p.face = 30.0;
+    MassingFrontRule r = front("BK", 3.0, {});
+    r.depth = 2.0;
+    r.out = 2.0;
+    r.height = 1.5;
+    MassingBox b;
+    REQUIRE(massingFrontCollider(p, r, b));
+    // Its centre is half its out along the face's normal (cos 30, sin 30), its long side along the face.
+    CHECK(near(b.cx, 2.0 + std::cos(30.0 * 3.14159265358979323846 / 180.0)));
+    CHECK(near(b.cy, -3.0 + 0.5));
+    CHECK(near(b.sx, 2.0));
+    CHECK(near(b.sy, 3.0));
+    CHECK(near(b.rot, 30.0));
+    // Face west (180): the box stands out to -x.
+    p.face = 180.0;
+    REQUIRE(massingFrontCollider(p, r, b));
+    CHECK(near(b.cx, 1.0));
+    CHECK(near(b.cy, -3.0));
+    CHECK(near(b.rot, 180.0));
 }
 
 TEST_CASE("massing frontage: each face takes the rules its street kind holds") {

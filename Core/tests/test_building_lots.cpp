@@ -440,3 +440,98 @@ TEST_CASE("street clutter: a pedestrian way's band drops the bicycles parked in 
     lane.points = {{692.5, 626.8, 0.0}, {876.5, 626.8, 0.0}};
     CHECK(dropClutterInWays(kit, {lane}, 1.5, out) == 0);
 }
+
+namespace {
+// One 1 x 1 m piece centred on its origin, for the clutter band's exact cases.
+KitTable unitKit() {
+    KitTable kit;
+    KitPiece box;
+    box.id = "BOX";
+    box.group = "clutter";
+    box.sx = box.sy = box.sz = 1.0;
+    box.minX = box.minY = -0.5;
+    kit.pieces.push_back(box);
+    return kit;
+}
+
+KitPlacement clutterAt(double x, double y, double yaw = 0.0, int piece = 0,
+                       PlacementRole role = PlacementRole::Clutter) {
+    KitPlacement p;
+    p.piece = piece;
+    p.role = role;
+    p.x = x;
+    p.y = y;
+    p.yaw = yaw;
+    return p;
+}
+
+MassingStreet wayThrough(std::vector<MassingVec> points) {
+    MassingStreet st;
+    st.id = "W";
+    st.kind = "core_lane";
+    st.width = 3.0;
+    st.foot = true;
+    st.points = std::move(points);
+    return st;
+}
+} // namespace
+
+TEST_CASE("street clutter: only clutter with a piece in the kit is weighed; other roles in the band stay") {
+    const KitTable kit = unitKit();
+    const MassingStreet way = wayThrough({{0.0, 0.0, 0.0}, {10.0, 0.0, 0.0}});
+    std::vector<KitPlacement> v = {
+        clutterAt(5.0, 0.0, 0.0, 0, PlacementRole::Piece),
+        clutterAt(5.0, 0.0, 0.0, 0, PlacementRole::Body),
+        clutterAt(5.0, 0.0, 0.0, 0, PlacementRole::Plinth),
+        clutterAt(5.0, 0.0, 0.0, 0, PlacementRole::Deck),
+        clutterAt(5.0, 0.0, 0.0, -1), // no piece
+        clutterAt(5.0, 0.0, 0.0, 1),  // past the table's end
+        clutterAt(5.0, 0.0),          // the one that goes
+    };
+    CHECK(dropClutterInWays(kit, {way}, 1.0, v) == 1);
+    REQUIRE(v.size() == 6);
+    CHECK(v[0].role == PlacementRole::Piece);
+    CHECK(v[3].role == PlacementRole::Deck);
+    CHECK(v[4].piece == -1);
+    CHECK(v[5].piece == 1);
+}
+
+TEST_CASE("street clutter: every segment of a way has its band, and none past its ends") {
+    const KitTable kit = unitKit();
+    // An L: east 10 m, then north 10 m; a zero-length segment at the corner is skipped.
+    const MassingStreet way = wayThrough({{0.0, 0.0, 0.0}, {10.0, 0.0, 0.0}, {10.0, 0.0, 0.0}, {10.0, 10.0, 0.0}});
+    std::vector<KitPlacement> v = {
+        clutterAt(5.0, 0.9),   // first leg's band (its foot to y 0.4)
+        clutterAt(10.9, 5.0),  // second leg's band only
+        clutterAt(5.0, 5.0),   // between the legs, 5 m from each
+        clutterAt(10.0, 11.0), // past the second leg's end (its foot from y 10.5)
+        clutterAt(-1.0, 0.0),  // past the first leg's start (its foot to x -0.5)
+        clutterAt(5.0, 1.5),   // touches the first leg's band only: stays
+    };
+    CHECK(dropClutterInWays(kit, {way}, 1.0, v) == 2);
+    REQUIRE(v.size() == 4);
+    CHECK(v[0].x == 5.0);
+    CHECK(v[0].y == 5.0);
+    CHECK(v[1].y == 11.0);
+    CHECK(v[2].x == -1.0);
+    CHECK(v[3].y == 1.5);
+}
+
+TEST_CASE("street clutter: a turned segment's band is turned with it, not its plan box") {
+    const KitTable kit = unitKit();
+    const MassingStreet way = wayThrough({{0.0, 0.0, 0.0}, {10.0, 10.0, 0.0}});
+    const double nx = -std::sqrt(0.5), ny = std::sqrt(0.5); // the segment's left normal
+    auto off = [&](double d, double yaw) { return clutterAt(5.0 + d * nx, 5.0 + d * ny, yaw); };
+    // A square foot square to the axes reaches 0.71 m along the normal; turned 45 degrees, 0.5 m. Band 1 m.
+    std::vector<KitPlacement> v = {
+        off(0.0, 0.0),  // on the line
+        off(1.6, 0.0),  // 1.6 - 0.71 = 0.89 m from the line: in
+        off(1.6, 45.0), // 1.6 - 0.5 = 1.1 m: out
+        off(2.0, 0.0),  // 1.29 m: out, though inside the band's plan box
+        off(-1.6, 0.0), // the other side: in
+    };
+    CHECK(dropClutterInWays(kit, {way}, 1.0, v) == 3);
+    REQUIRE(v.size() == 2);
+    CHECK(v[0].yaw == 45.0);
+    CHECK(v[1].x == doctest::Approx(5.0 + 2.0 * nx));
+}
