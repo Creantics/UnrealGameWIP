@@ -1,4 +1,5 @@
 #include "ftcore/MassingDress.h"
+#include "ftcore/Roads.h"
 
 #include "CsvRead.h"
 
@@ -432,6 +433,7 @@ void massingKerbs(const std::vector<MassingStreet>& streets, const MassingGround
         const MassingStreet& s = streets[j];
         const std::size_t n = s.points.size();
         if (!(s.pavement > 0.0) || n < 2) continue;
+        if (roadFootClass(s) != RoadFootClass::Vehicle) continue; // no carriageway to kerb on a foot-only row
         bool hasLength = false;
         for (std::size_t k = 0; k + 1 < n; ++k)
             if (std::hypot(s.points[k + 1].x - s.points[k].x, s.points[k + 1].y - s.points[k].y) > kTiny) hasLength = true;

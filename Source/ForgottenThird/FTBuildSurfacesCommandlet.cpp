@@ -1892,9 +1892,18 @@ int32 UFTBuildSurfacesCommandlet::Main(const FString& Params)
 	for (int32 C = 0; C < Chosen.Num(); ++C)
 	{
 		const ftcore::SurfaceSpec& Spec = Table.surfaces[Chosen[C]];
-		Instances.Add(FTSurfaceBuild::BuildInstance(FTScene::SurfaceInstancePackage(FT::ToFString(Spec.id)), Master,
-			MakeArrayView(Textures.GetData() + C * FTSurfaceBuild::kMapCount, FTSurfaceBuild::kMapCount), Spec.tileCm,
-			Spec.roughness));
+		UMaterialInstanceConstant* Mic = FTSurfaceBuild::BuildInstance(FTScene::SurfaceInstancePackage(FT::ToFString(Spec.id)),
+			Master, MakeArrayView(Textures.GetData() + C * FTSurfaceBuild::kMapCount, FTSurfaceBuild::kMapCount), Spec.tileCm,
+			Spec.roughness);
+		// The joints as -Master sets them (ftcore::surfaceJointFor): the instance is made anew, so without this a surface
+		// rebuilt on its own (-Only) loses its joint depth, AO levels and units until the next -Master run.
+		const ftcore::SurfaceJointSurface Joint = ftcore::surfaceJointFor(Spec.id);
+		if (Mic && Joint.depthCm > 0.f)
+		{
+			FTSurfaceBuild::SetJoint(Mic, Joint);
+			Mic->PostEditChange();
+		}
+		Instances.Add(Mic);
 	}
 
 	FAssetCompilingManager::Get().FinishAllCompilation();

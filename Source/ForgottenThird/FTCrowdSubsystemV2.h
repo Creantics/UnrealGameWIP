@@ -226,6 +226,13 @@ private:
 	int32 RetestInGate = 0;   // members within the 0.8 m gate of it
 	FString FootStillPath;
 	FString RoofStillPath;   // -CrowdRoofStill=<png>: one still of the first member on a roof (log only)
+	// -CrowdZoneZ=x0,y0,x1,y1 (engine cm, with -CrowdQuitAfter): the feet z of every drawn member inside that plan box
+	// (log only), for a height defect the roof check cannot name, e.g. a surface over a street.
+	FBox2D ZoneZBox = FBox2D(ForceInit);
+	TBitArray<> ZoneSeen;
+	int32 ZoneMembers = 0;
+	uint64 ZoneFrames = 0;
+	double ZoneZMin = 1e9, ZoneZMax = -1e9;
 	FString FootStillShot;   // the file the pending still goes to
 	UPROPERTY()
 	TObjectPtr<ACameraActor> FootStillCam;

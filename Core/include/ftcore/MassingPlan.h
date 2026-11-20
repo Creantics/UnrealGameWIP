@@ -319,6 +319,7 @@ struct MassingStreet {
     std::vector<MassingVec> points; // z is left 0; at least one
     std::string kind{};             // empty when the table gives none
     double pavement = 0.0;          // m, >= 0 and 2 pavement < width; 0: the carriageway is the whole width
+    bool foot = false;              // a pedestrian way whatever its kind and width (roadFootClass); the table's foot cell
 };
 // The width of a street's carriageway, kerb to kerb: its width less its two pavements.
 inline double massingCarriageway(const MassingStreet& s) { return s.width - 2.0 * s.pavement; }
@@ -328,6 +329,7 @@ inline double massingCarriageway(const MassingStreet& s) { return s.width - 2.0 
 //   pts         "x:y[:z];x:y[:z];..." in the plan frame, metres (z is read and dropped)
 //   kind        optional: empty, or a-z, A-Z, 0-9, '_' or '-'
 //   pavement_m  optional: empty (0), or each pavement's width in metres, >= 0 and under half width_m
+//   foot        optional: empty, or "pedestrian" (foot true)
 // Any other column is skipped, never kept. `out` is cleared first. False, with a reason naming the line, on any error.
 // Allocates: build time only.
 FTCORE_API bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out, std::string* error = nullptr);

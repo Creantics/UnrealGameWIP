@@ -519,6 +519,53 @@ static bool AddFootways(const FOptions& Options, const ftcore::MassingGround& Gr
 	return true;
 }
 
+// The -Streets (else -PropStreets) table, for the lane mouths' classes; none named, no rows (every mouth keeps its sign).
+bool ReadFootStreets(const FOptions& Options, std::vector<ftcore::MassingStreet>& Streets)
+{
+	Streets.clear();
+	if (Options.StreetsFile.IsEmpty())
+	{
+		return true;
+	}
+	std::string Text, Error;
+	if (!RoadsReadText(Options.StreetsFile, Text))
+	{
+		return false;
+	}
+	if (!ftcore::importMassingStreets(Text, Streets, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *Options.StreetsFile, *RoadsUtf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// A lane mouth whose lane is a pedestrian way in that table (an alley or a market arcade) gets no stop sign; its flare
+// and dropped kerb stay (ftcore::roadMouthsFoot).
+template <typename TRow>
+void MarkFootMouths(const FOptions& Options, const std::vector<ftcore::MassingStreet>& Streets, std::vector<TRow>& Rows)
+{
+	if (Streets.empty())
+	{
+		return;
+	}
+	int32 Marked = 0;
+	FString Ids;
+	for (TRow& Row : Rows)
+	{
+		Marked += static_cast<int32>(ftcore::roadMouthsFoot(Row.mouths, Streets));
+		for (const ftcore::RoadMouth& Mouth : Row.mouths)
+		{
+			if (Mouth.foot)
+			{
+				Ids += TEXT(" ") + RoadsUtf8(Mouth.lane);
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s: %d lane mouths are pedestrian ways, no stop sign:%s"),
+		*Options.StreetsFile, Marked, *Ids);
+}
+
 bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::vector<ftcore::MassingBox>& Boxes,
 	std::vector<ftcore::RoadSpec>& Roads, std::vector<ftcore::RoadBuild>& Builds)
 {
@@ -547,6 +594,12 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %s: a road network table with no rows; no roads."), *Options.RoadsFile);
 			return true;
 		}
+		std::vector<ftcore::MassingStreet> FootStreets;
+		if (!ReadFootStreets(Options, FootStreets))
+		{
+			return false;
+		}
+		MarkFootMouths(Options, FootStreets, Net);
 		Builds.resize(Net.size());
 		ftcore::RoadNetReport Report;
 		ftcore::roadNetBuild(Net, Ground, Builds[0], &Report);
@@ -662,6 +715,14 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *Options.RoadsFile, *RoadsUtf8(Error));
 		return false;
+	}
+	{
+		std::vector<ftcore::MassingStreet> FootStreets;
+		if (!ReadFootStreets(Options, FootStreets))
+		{
+			return false;
+		}
+		MarkFootMouths(Options, FootStreets, Roads);
 	}
 	Builds.resize(Roads.size());
 	for (size_t R = 0; R < Roads.size(); ++R)

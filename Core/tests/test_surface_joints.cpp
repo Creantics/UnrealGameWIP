@@ -334,7 +334,7 @@ TEST_CASE("joints: per-surface depths by id substring") {
     CHECK(brick.aoHi == doctest::Approx(0.92f));
     // Units per tile, and the running bond on brick only.
     CHECK(brick.unitsU == doctest::Approx(4.f));
-    CHECK(brick.unitsV == doctest::Approx(13.f));
+    CHECK(brick.unitsV == doctest::Approx(12.f));  // the photo's 12 courses, so each course takes one tone
     CHECK(brick.bond);
     const SurfaceJointSurface block = surfaceJointFor("solhaven_breeze_block");
     CHECK(block.unitsU == doctest::Approx(3.f));

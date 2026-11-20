@@ -219,6 +219,22 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	FootFramesBy.Init(0, static_cast<int32>(Sim.capacity()));
 	FParse::Value(Cmd, TEXT("CrowdFootStill="), FootStillPath);
 	FParse::Value(Cmd, TEXT("CrowdRoofStill="), RoofStillPath);
+	FString ZoneText;
+	if (FParse::Value(Cmd, TEXT("CrowdZoneZ="), ZoneText, false))
+	{
+		TArray<FString> Parts;
+		ZoneText.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() == 4)
+		{
+			ZoneZBox = FBox2D(FVector2D(FMath::Min(FCString::Atod(*Parts[0]), FCString::Atod(*Parts[2])), FMath::Min(FCString::Atod(*Parts[1]), FCString::Atod(*Parts[3]))),
+				FVector2D(FMath::Max(FCString::Atod(*Parts[0]), FCString::Atod(*Parts[2])), FMath::Max(FCString::Atod(*Parts[1]), FCString::Atod(*Parts[3]))));
+			ZoneSeen.Init(false, static_cast<int32>(Sim.capacity()));
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Crowd: -CrowdZoneZ=%s isn't x0,y0,x1,y1 (engine cm); no zone log."), *ZoneText);
+		}
+	}
 
 	double TestAt = 20.0;
 	if (FParse::Param(Cmd, TEXT("CrowdTestFight")) || FParse::Value(Cmd, TEXT("CrowdTestFight="), TestAt))
@@ -993,6 +1009,11 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: footprint member-frames by member: %s."), *PerMember);
 		}
+		if (ZoneZBox.bIsValid)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: zone z: %d members, %llu member-frames inside x %.0f..%.0f, y %.0f..%.0f cm; feet z %.1f to %.1f cm."), ZoneMembers,
+				ZoneFrames, ZoneZBox.Min.X, ZoneZBox.Max.X, ZoneZBox.Min.Y, ZoneZBox.Max.Y, ZoneMembers ? ZoneZMin : 0.0, ZoneMembers ? ZoneZMax : 0.0);
+		}
 		const bool bPairs = RunMinPair >= CrowdV2Local::kGapPair;
 		const bool bWalls = static_cast<double>(RunMinWall) >= CrowdV2Local::kGapWall;
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.6f m unrounded (%s, passes at %.1f m or more), every frame, every state."),
@@ -1299,6 +1320,21 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, 50.0),
 		Feet - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery);
 	const int32 Slot = static_cast<int32>((PoolAgent[Actor] - 1) & 0xffffu);
+	if (ZoneZBox.bIsValid && ZoneZBox.IsInside(FVector2D(Feet.X, Feet.Y)))
+	{
+		++ZoneFrames;
+		ZoneZMin = FMath::Min(ZoneZMin, Feet.Z);
+		ZoneZMax = FMath::Max(ZoneZMax, Feet.Z);
+		if (!ZoneSeen[Slot])
+		{
+			ZoneSeen[Slot] = true;
+			if (++ZoneMembers <= 40)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: zone z: member %d first in at engine (%.0f, %.0f) cm, feet z %.1f cm, t=%.1f s."), Slot, Feet.X, Feet.Y,
+					Feet.Z, RunTime);
+			}
+		}
+	}
 	int32 InBox = INDEX_NONE, InRender = INDEX_NONE;
 	double InDepth = 0.0, InRenderDepth = 0.0; // the deepest box it is in (cm, below 0)
 	const FIntPoint Cell(FMath::FloorToInt32(Feet.X / CrowdV2Local::kMassCell), FMath::FloorToInt32(Feet.Y / CrowdV2Local::kMassCell));
@@ -1792,7 +1828,8 @@ void UFTCrowdSubsystemV2::LogGroundAt()
 	// Every surface under one point, top down: the terrain against the street there. Members stand on the first one.
 	double X = CrowdV2Local::kGroundAtX, Y = CrowdV2Local::kGroundAtY;
 	FString At;
-	if (FParse::Value(FCommandLine::Get(), TEXT("CrowdGroundAt="), At))
+	// bShouldStopOnSeparator false: the default stops at the comma and drops Y (as -WorldStartAt reads its list).
+	if (FParse::Value(FCommandLine::Get(), TEXT("CrowdGroundAt="), At, false))
 	{
 		FString L, R;
 		if (At.Split(TEXT(","), &L, &R))

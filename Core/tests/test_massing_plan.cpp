@@ -1121,6 +1121,29 @@ TEST_CASE("massing streets: pavement_m sets the carriageway, kerb to kerb") {
     CHECK(error.find("twice") != std::string::npos);
 }
 
+TEST_CASE("massing streets: the foot column marks a pedestrian way, blank or missing leaves it open") {
+    std::vector<MassingStreet> streets;
+    std::string error;
+    REQUIRE(importMassingStreets("id,kind,width_m,pts,foot\n"
+                                 "ST-1,core_lane,6,0:0;10:0,pedestrian\n"
+                                 "ST-2,core_lane,6,0:0;10:0,\n"
+                                 "ST-3,core_lane,6,0:0;10:0, pedestrian \n",
+                                 streets, &error));
+    REQUIRE(streets.size() == 3);
+    CHECK(streets[0].foot);
+    CHECK_FALSE(streets[1].foot);
+    CHECK(streets[2].foot); // trimmed
+    CHECK(streets[0].kind == "core_lane"); // the kind is kept
+    REQUIRE(importMassingStreets("id,width_m,pts\nST-1,6,0:0\n", streets, &error));
+    CHECK_FALSE(streets[0].foot); // no column: no street is marked
+
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,foot\nST-1,6,0:0,yes\n", streets, &error));
+    CHECK(error.find("foot") != std::string::npos);
+    CHECK(error.find("line 2") != std::string::npos);
+    CHECK_FALSE(importMassingStreets("id,width_m,pts,foot,foot\nST-1,6,0:0,,\n", streets, &error));
+    CHECK(error.find("twice") != std::string::npos);
+}
+
 TEST_CASE("massing streets: sections drop the shared surfaces and pave the kerbed band") {
     std::vector<MassingStreet> streets;
     REQUIRE(importMassingStreets("id,kind,width_m,pts,pavement_m\n"

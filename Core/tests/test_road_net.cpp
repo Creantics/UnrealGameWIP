@@ -62,8 +62,10 @@ TEST_CASE("road net: the table reads, and refuses bad rows") {
     const std::vector<RoadNetStreet> s = net(kTee);
     REQUIRE(s.size() == 2);
     CHECK(s[0].pts.size() == 2);
-    CHECK(s[0].park);
-    CHECK_FALSE(s[1].park);
+    CHECK(s[0].parkLeft);
+    CHECK(s[0].parkRight);
+    CHECK_FALSE(s[1].parkLeft);
+    CHECK_FALSE(s[1].parkRight);
     CHECK_FALSE(s[0].deck);
     CHECK(roadNetTable(kTee));
     CHECK_FALSE(roadNetTable("id,kind,width_m,pts,pavement_m,lane_m,ground_z\n"));
@@ -217,6 +219,46 @@ TEST_CASE("road net: nothing solid stands in the carriageway; furniture keeps of
     }
     // The fill carries the arms' crown: no step where an arm meets it.
     CHECK(rep.maxStep == 0.0);
+}
+
+TEST_CASE("road net: parking L or R lays bays along that side of the street only, whichever way its edges run") {
+    // RD-N runs north with bays on its right (east), RD-S runs south with bays on its left (east); a T joins them
+    // at their middles, so each is two edges. RD-B has bays both sides.
+    const std::vector<RoadNetStreet> s = net(
+        "id,kind,width_m,pts,pavement_m,parking\n"
+        "RD-N,road,16,0:0;0:300,3.5,R\n"
+        "RD-S,road,16,200:300;200:0,3.5,L\n"
+        "ST-T,street,14,0:150;200:150,2.8,0\n"
+        "RD-B,road,16,400:0;400:300,3.5,LR\n");
+    REQUIRE(s.size() == 4);
+    CHECK_FALSE(s[0].parkLeft);
+    CHECK(s[0].parkRight);
+    CHECK(s[1].parkLeft);
+    CHECK_FALSE(s[1].parkRight);
+    CHECK(s[3].parkLeft);
+    CHECK(s[3].parkRight);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    int north = 0, south = 0, west = 0, east = 0;
+    for (const RoadBay& bay : b.bays) {
+        INFO(bay.street << " " << bay.foot.x << ", " << bay.foot.y);
+        CHECK(bay.street != "ST-T");
+        if (bay.street == "RD-N") {
+            ++north;
+            CHECK(bay.foot.x > 0.0);
+        }
+        if (bay.street == "RD-S") {
+            ++south;
+            CHECK(bay.foot.x > 200.0);
+        }
+        if (bay.street == "RD-B") (bay.foot.x < 400.0 ? west : east) += 1;
+    }
+    CHECK(north > 4);
+    CHECK(south > 4);
+    CHECK(west > 4);
+    CHECK(east > 4);
+    std::vector<RoadNetStreet> out;
+    CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,parking\nA,road,14,0:0;0:50,3.5,Q\n", out));
 }
 
 TEST_CASE("road net: pieces follow the ground and report what is too steep; decks stand on piers") {
@@ -433,6 +475,47 @@ TEST_CASE("road net: poles and signs on the network, laid as instances, off the 
         }
     std::vector<RoadNetStreet> out;
     CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,poles\nA,road,14,0:0;0:50,3.5,Q\n", out));
+}
+
+TEST_CASE("road net: a pedestrian way's mouth gets no stop sign; its flare, kerbs and broken centre line stay") {
+    std::vector<RoadNetStreet> s = net(
+        "id,kind,width_m,pts,pavement_m,mouths,poles\n"
+        "RD-P,road,16,0:0;0:300,3.5,LN-1@220@6@R,L\n"
+        "ST-E,street,14,0:100;80:100,2.8,,\n");
+    const auto tally = [](const RoadBuild& b, int& stops, int& kerbs, int& dashes) {
+        stops = kerbs = dashes = 0;
+        for (const RoadSolid& sd : b.solids) {
+            if (sd.tag == "FTRoadSign_stop") ++stops;
+            if (sd.box.kind == "kerb" || sd.box.kind == "crossover" || sd.box.kind == "ramp") ++kerbs;
+            if (sd.tint == RoadTint::LineWhite && std::fabs(sd.box.cx) < 0.2 && sd.box.sx < 4.0) {
+                ++dashes;
+                CHECK(std::fabs(sd.box.cy - 220.0) > 3.0);
+            }
+        }
+    };
+    RoadBuild before, after;
+    roadNetBuild(s, MassingGround{}, before);
+    int stops0 = 0, kerbs0 = 0, dashes0 = 0;
+    tally(before, stops0, kerbs0, dashes0);
+    REQUIRE(stops0 == 1);
+
+    MassingStreet alley;
+    alley.id = "LN-1";
+    alley.kind = "alley";
+    alley.width = 6.0;
+    MassingStreet other = alley;
+    other.id = "LN-2";
+    CHECK(roadMouthsFoot(s[0].mouths, {other}) == 0); // a lane not in the table keeps its sign
+    CHECK_FALSE(s[0].mouths[0].foot);
+    CHECK(roadMouthsFoot(s[0].mouths, {other, alley}) == 1);
+    CHECK(s[0].mouths[0].foot);
+    roadNetBuild(s, MassingGround{}, after);
+    int stops1 = 0, kerbs1 = 0, dashes1 = 0;
+    tally(after, stops1, kerbs1, dashes1);
+    CHECK(stops1 == 0);
+    CHECK(kerbs1 == kerbs0);
+    CHECK(dashes1 == dashes0);
+    CHECK(after.counts.mouths == before.counts.mouths);
 }
 
 TEST_CASE("road net: a tilted cube's top is centred over its box, so a crown's two halves meet") {
@@ -948,6 +1031,12 @@ TEST_CASE("footways: classes and sections per width") {
     CHECK(roadFootClass(footStreet("a", "terrace", 3.0, {})) == RoadFootClass::Pedestrian);
     CHECK(roadFootClass(footStreet("a", "terrace", 6.0, {})) == RoadFootClass::Vehicle);
     CHECK(roadFootClass(footStreet("a", "lane", 4.0, {})) == RoadFootClass::Vehicle);
+    MassingStreet marked = footStreet("a", "core_lane", 6.0, {}); // the table's foot cell: a pedestrian way at any width
+    marked.foot = true;
+    CHECK(roadFootClass(marked) == RoadFootClass::Pedestrian);
+    CHECK(marked.kind == "core_lane");
+    marked.kind = "stair";
+    CHECK(roadFootClass(marked) == RoadFootClass::None); // a stair stays a stair
 
     RoadFootSection s = roadFootSection(footStreet("a", "lane", 6.0, {}));
     CHECK(s.footLeft == doctest::Approx(1.5));
@@ -1005,6 +1094,9 @@ TEST_CASE("footways: a kerbed street's lanes follow its carriageway, one way up 
     g = RoadGraph{};
     roadGraphFootLanes(footStreet("S", "stair", 6.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
     roadGraphFootLanes(footStreet("A", "alley", 3.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    MassingStreet marked = footStreet("M", "core_lane", 6.0, {{0, 0, 0}, {40, 0, 0}});
+    marked.foot = true; // no carriageway on a marked pedestrian way: no vehicle lane
+    roadGraphFootLanes(marked, 30.0, g);
     CHECK(g.lanes.empty());
 }
 

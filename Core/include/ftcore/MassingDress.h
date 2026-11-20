@@ -54,8 +54,8 @@ struct MassingKerbCounts {
     double shortPieces = 0.0;  // left out as pieces under kMassingKerbShortest
 };
 
-// Kerbs along both edges of the carriageway (massingCarriageway) of each street with pavements (pavement > 0) and
-// length, each segment of its polyline on its own, as boxes of kind "kerb" (source Invented, cover False, row the
+// Kerbs along both edges of the carriageway (massingCarriageway) of each street with pavements (pavement > 0), length
+// and a carriageway for vehicles (roadFootClass Vehicle: no kerbs on a stair, alley or market arcade), each segment of its polyline on its own, as boxes of kind "kerb" (source Invented, cover False, row the
 // street's id), which massingLookSurface dresses as pole concrete. A kerb's line runs kMassingKerbWidth / 2 outside the
 // carriageway's edge; it is read at points at most kMassingKerbStep apart, each standing for its even share of the
 // segment. A point's floor is read as a kerb prop's is (massingPlaceProps: the street's floor at the centreline, from

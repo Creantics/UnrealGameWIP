@@ -68,6 +68,7 @@ struct RoadMouth {
     double width = 0.0; // m: the lane's width
     bool left = true;  // on the road's left, looking from its first point to its second
     double stub = 0.0; // m: > 0, a signalised crossroads, its stub arm this long on the other side
+    bool foot = false; // the lane is a pedestrian way (roadMouthsFoot): its mouth gets no stop sign
 };
 
 struct RoadBusStop {
@@ -323,7 +324,7 @@ FTCORE_API RoadParkCounts roadParkVehicles(const RoadBuild& build, const std::ve
                                            std::vector<RoadVehicle>& out);
 
 // Two-wheelers (scooters and bicycles) parked along the lanes (streets no wider than `laneUpTo` with two points, inside
-// [x0, x1] by [y0, y1]): every `spacing` m along each side, by hash one spot in three, parallel to the lane
+// [x0, x1] by [y0, y1], none marked foot in the table): every `spacing` m along each side, by hash one spot in three, parallel to the lane
 // `edgeIn` m in from its edge, and in groups of two to three along the road's back of pavement on the side with mouths.
 // A spot near a door, a foot in `taken`, a vehicle placed before it or a road's carriageway or keep-out is skipped.
 struct RoadTwoWheelOptions {
@@ -418,7 +419,8 @@ struct RoadNetStreet {
     bool oneWay = false;
     bool deck = false;           // a bridge deck, level at deckZ, on piers, with rails along both backs
     double deckZ = 0.0;          // m: a deck's ground (its gutter stands kRoadSurfaceLift over it)
-    bool park = false;           // bays along both sides where they fit (never on a deck)
+    bool parkLeft = false, parkRight = false; // bays along that side where they fit (left: of its points' way; never
+                                              // on a deck)
     std::vector<RoadMouth> mouths; // lanes meeting its sides (at: m along its points; no stubs)
     double mouthBack = 0.0;      // m: a mouth's dropped kerb runs this far behind the pavement
     double mouthZ = 0.0;         // m: the lane's surface at the mouth's back; 0: the pavement's
@@ -451,7 +453,8 @@ FTCORE_API bool roadNetTable(std::string_view csv);
 //   speed_kmh     optional (40)
 //   one_way       optional: 1/true, along its points
 //   deck_z        optional: a bridge deck at that ground height
-//   parking       optional: 1/true for bays along both sides; empty or 0 none
+//   parking       optional: 1/true for bays along both sides, L or R along that side only (left of the way its
+//                 points run), LR both; empty or 0 none
 //   mouths        optional: "lane@at@width@L|R;..." as importRoads, with no stub
 //   mouth_back_m, mouth_z  optional, as importRoads
 //   poles         optional: L, R or LR, utility poles with wires along that side (left of the way its points run)
@@ -678,9 +681,13 @@ inline constexpr double kFootBollardGap = 1.3;    // m: the widest gap between a
 // What a streets-table row is to the footways: a vehicle street (kerbed footways), a pedestrian way (an alley or a
 // market arcade: paved, bollards at its mouths) or neither (stairs; no row).
 enum class RoadFootClass : std::uint8_t { None, Vehicle, Pedestrian };
-// Vehicle: width over kFootAlleyUpTo and kind not stair, link_stair, alley or market_arcade. Pedestrian: kind alley or
+// Vehicle: width over kFootAlleyUpTo, kind not stair, link_stair, alley or market_arcade, and not marked foot. Pedestrian:
+// a non-stair row marked foot in the table (MassingStreet::foot, whatever its kind and width), kind alley or
 // market_arcade, or any other non-stair row kFootAlleyUpTo wide or less. None: stair and link_stair.
 FTCORE_API RoadFootClass roadFootClass(const MassingStreet& street);
+// Marks each mouth whose lane is a row of `streets` of class Pedestrian as foot (and clears it on any other mouth); a
+// lane not in `streets` keeps its stop sign. Returns how many mouths it marked. Allocates: build time only.
+FTCORE_API std::size_t roadMouthsFoot(std::vector<RoadMouth>& mouths, const std::vector<MassingStreet>& streets);
 
 // A vehicle street's section across its polyline (t: to its left, looking along its points).
 struct RoadFootSection {

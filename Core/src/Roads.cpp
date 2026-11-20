@@ -1084,7 +1084,7 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
     };
     // Stop signs at the plain lane mouths, on the lane traffic's left (the +s side for a left mouth).
     for (const RoadMouth& m : road.mouths) {
-        if (m.stub > 0.0) continue;
+        if (m.stub > 0.0 || m.foot) continue;
         const double sl = m.left ? 1.0 : -1.0;
         const std::vector<SideSpan>& spans = m.left ? spansL : spansR;
         const double s = m.at + sl * (m.width * 0.5 + kRoadMouthFlare + 0.6);
@@ -1368,7 +1368,7 @@ std::size_t roadTwoWheelers(const std::vector<MassingStreet>& lanes, const RoadT
                                px, py);
     };
     for (const MassingStreet& st : lanes) {
-        if (st.width > opts.laneUpTo + 1e-9 || st.points.size() != 2) continue;
+        if (st.foot || st.width > opts.laneUpTo + 1e-9 || st.points.size() != 2) continue;
         const MassingVec a = st.points[0], b = st.points[1];
         const double l = std::hypot(b.x - a.x, b.y - a.y);
         if (l < 8.0) continue;
@@ -2386,7 +2386,17 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
             r.deck = true;
         }
         r.oneWay = flag("one_way");
-        r.park = flag("parking");
+        {
+            const std::string_view ps = col("parking");
+            if (flag("parking") || ps == "LR" || ps == "RL") {
+                r.parkLeft = r.parkRight = true;
+            } else if (ps == "L" || ps == "R") {
+                r.parkLeft = ps == "L";
+                r.parkRight = ps == "R";
+            } else if (ps != "" && ps != "0" && ps != "false" && ps != "False") {
+                return fail(error, rec.line, r.id + ": parking is 1, L, R or LR");
+            }
+        }
         {
             const std::string_view ps = col("poles");
             if (ps != "" && ps != "L" && ps != "R" && ps != "LR" && ps != "RL")
@@ -2977,7 +2987,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
         // The street's mouths on this edge: where along it its ends lie, and which way it runs.
         bool fwd = true;
         std::vector<std::pair<double, bool>> mouthSigns; // a stop sign's s and side (true: +t) at each lane mouth
-        if (!st.mouths.empty() || st.poleLeft != st.poleRight) {
+        if (!st.mouths.empty() || st.poleLeft != st.poleRight || st.parkLeft != st.parkRight) {
             auto along = [&](RoadPoint q) {
                 double best = 1e18, at = 0.0, run = 0.0;
                 for (std::size_t i = 1; i < st.pts.size(); ++i) {
@@ -3002,16 +3012,19 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 ((m.left == fwd) ? fixL : fixR).push_back({std::max(0.0, s0), std::min(L, s1), Span::Mouth});
                 // On the lane traffic's left as it comes out: past the mouth's +s end on the +t side, else its -s end.
                 const double ss = (m.left == fwd) ? s1 + 0.6 : s0 - 0.6;
-                if (ss > 3.0 && ss < L - 3.0) mouthSigns.push_back({ss, m.left == fwd});
+                if (!m.foot && ss > 3.0 && ss < L - 3.0) mouthSigns.push_back({ss, m.left == fwd});
             }
         }
         for (std::vector<SideSpan>* side : {&fixL, &fixR}) {
             if (zA) side->push_back({zA0, zA1, Span::Ramp});
             if (zB) side->push_back({zB0, zB1, Span::Ramp});
         }
-        const bool park = st.park && !st.deck && st.pavement >= kRoadBayDeep + 1.0;
-        const std::vector<SideSpan> spansL = fillSpans(fixL, L, park, {});
-        const std::vector<SideSpan> spansR = fillSpans(fixR, L, park, {});
+        // Bays where the pavement takes them: the street's left is this edge's +t side when the edge runs its way.
+        const bool parkFits = !st.deck && st.pavement >= kRoadBayDeep + 1.0;
+        const bool parkL = parkFits && (fwd ? st.parkLeft : st.parkRight);
+        const bool parkR = parkFits && (fwd ? st.parkRight : st.parkLeft);
+        const std::vector<SideSpan> spansL = fillSpans(fixL, L, parkL, {});
+        const std::vector<SideSpan> spansR = fillSpans(fixR, L, parkR, {});
 
         // The profile: level over each junction's fill, then the ground's samples simplified (a deck: straight).
         // A sample is the highest of the ground under the crown and under each pavement (less the kerb), lifted by
@@ -4223,9 +4236,24 @@ std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points) {
 RoadFootClass roadFootClass(const MassingStreet& street) {
     const std::string& k = street.kind;
     if (k == "stair" || k == "link_stair") return RoadFootClass::None;
+    if (street.foot) return RoadFootClass::Pedestrian;
     if (k == "alley" || k == "market_arcade") return RoadFootClass::Pedestrian;
     if (street.width <= kFootAlleyUpTo + 1e-9) return RoadFootClass::Pedestrian;
     return RoadFootClass::Vehicle;
+}
+
+std::size_t roadMouthsFoot(std::vector<RoadMouth>& mouths, const std::vector<MassingStreet>& streets) {
+    std::size_t marked = 0;
+    for (RoadMouth& m : mouths) {
+        m.foot = false;
+        for (const MassingStreet& s : streets)
+            if (s.id == m.lane) {
+                m.foot = roadFootClass(s) == RoadFootClass::Pedestrian;
+                break;
+            }
+        if (m.foot) ++marked;
+    }
+    return marked;
 }
 
 RoadFootSection roadFootSection(const MassingStreet& street) {
