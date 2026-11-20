@@ -12,7 +12,11 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -21,6 +25,28 @@ using namespace ftcore;
 namespace {
 
 bool near(double a, double b, double eps = 1e-6) { return std::fabs(a - b) <= eps; }
+
+constexpr double kInfinity = 1e300;
+
+std::string envText(const char* name) {
+    std::string value;
+#ifdef _MSC_VER
+    char* raw = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&raw, &length, name) == 0 && raw != nullptr) value = raw;
+    std::free(raw);
+#else
+    if (const char* raw = std::getenv(name)) value = raw;
+#endif
+    return value;
+}
+
+std::string readFile(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
 
 MassingBox flatBox(const std::string& id, double cx, double cy, double sx, double sy, double z0, double z1,
                    const std::string& kind = "slab") {
@@ -749,6 +775,327 @@ TEST_CASE("massing frontage: in the road, steep, wet, crowded") {
     CHECK(crowded.counts[0].placed >= 1);
     for (const MassingProp& p : crowded.props)
         CHECK_FALSE(massingFeetOverlap(massingFrontFoot(p, shop[0]), taken[0], kMassingPropGap));
+}
+
+TEST_CASE("massing frontage: a door's foot or a way's mouth is kept clear of the ground pieces and their colliders") {
+    const std::vector<MassingFrontRule> shop = {front("SHOP", 6.0, {"street"})};
+    const std::vector<MassingBox> boxes = {host()};
+    const std::vector<bool> include(1, true), hosts(1, true);
+    // A door 1.6 m wide in the north face's middle, its foot 1 m out and 0.5 m in, grown 0.3 m.
+    std::vector<MassingFoot> keep(1);
+    keep[0].x = 0.0;
+    keep[0].y = 5.25;
+    keep[0].hx = 1.1;
+    keep[0].hy = 0.75 + kMassingFrontDoorClear;
+    keep[0].rot = 90.0;
+
+    Front open;
+    massingFrontage(shop, northStreet(), {}, boxes, include, hosts, -1.0, nullptr, open.props, open.counts, open.totals);
+    REQUIRE(open.counts[0].placed > 0);
+    CHECK(open.counts[0].keptClear == 0);
+    std::vector<std::size_t> hits;
+    CHECK(massingFrontCovers(open.props, shop, keep, &hits) > 0); // the check sees a piece in the door
+    CHECK(hits.size() == massingFrontCovers(open.props, shop, keep));
+
+    Front kept;
+    massingFrontage(shop, northStreet(), {}, boxes, include, hosts, -1.0, nullptr, kept.props, kept.counts, kept.totals,
+                    nullptr, nullptr, &keep);
+    CHECK(kept.counts[0].keptClear > 0);
+    CHECK(kept.counts[0].placed > 0);
+    CHECK(massingFrontCovers(kept.props, shop, keep) == 0);
+    for (const MassingProp& p : kept.props) {
+        MassingBox c;
+        REQUIRE(massingFrontCollider(p, shop[0], c));
+        CHECK_FALSE(massingFeetOverlap(massingBoxFoot(c), keep[0], 0.0));
+    }
+
+    // An overhead rule's pieces have no collider and are not kept off a door.
+    MassingFrontRule sign = front("SIGN", 4.0, {"street"});
+    sign.dz = 3.0;
+    Front over;
+    massingFrontage({sign}, northStreet(), {}, boxes, include, hosts, -1.0, nullptr, over.props, over.counts, over.totals,
+                    nullptr, nullptr, &keep);
+    CHECK(over.counts[0].keptClear == 0);
+    CHECK(massingFrontCovers(over.props, {sign}, keep) == 0);
+}
+
+TEST_CASE("massing frontage: a narrow way's mouth is a foot along it from where it meets a wider way") {
+    // A 10 m street along y = 0; a 4 m lane from (0, 0) north to (0, 20), then east to (10, 20).
+    std::vector<MassingStreet> ways = {street("S-1", "street", 10.0, 2.0, {{-30, 0, 0}, {30, 0, 0}}),
+                                       street("L-1", "lane", 4.0, 0.0, {{0, 0, 0}, {0, 20, 0}, {10, 20, 0}})};
+    std::vector<MassingFoot> mouths;
+    massingFrontMouths(ways, mouths);
+    REQUIRE(mouths.size() == 1);
+    CHECK(near(mouths[0].x, 0.0));
+    CHECK(near(mouths[0].y, 0.5 * (5.0 + kMassingFrontMouthDepth)));
+    CHECK(near(mouths[0].hx, 0.5 * (5.0 + kMassingFrontMouthDepth)));
+    CHECK(near(mouths[0].hy, 2.0));
+    CHECK(near(mouths[0].rot, 90.0));
+
+    // A short lane's mouth stops at its far point; a lane through a street's middle has a mouth each way.
+    ways[1].points = {{-3, 0, 0}, {-3, 6, 0}};
+    ways.push_back(street("L-2", "lane", 3.0, 0.0, {{8, -10, 0}, {8, 0, 0}, {8, 10, 0}}));
+    massingFrontMouths(ways, mouths);
+    REQUIRE(mouths.size() == 3);
+    CHECK(near(mouths[0].hx, 3.0)); // 6 m long: the whole lane
+    CHECK(near(mouths[1].y, -3.5));
+    CHECK(near(mouths[2].y, 3.5));
+    CHECK(near(mouths[2].hy, 1.5));
+
+    // A lane whose one segment crosses the street between its points: a mouth each way from the crossing.
+    massingFrontMouths({ways[0], street("L-4", "lane", 4.0, 0.0, {{20, -10, 0}, {20, 10, 0}})}, mouths);
+    REQUIRE(mouths.size() == 2);
+    CHECK(near(mouths[0].x, 20.0));
+    CHECK(near(mouths[0].y, -0.5 * (5.0 + kMassingFrontMouthDepth)));
+    CHECK(near(mouths[1].y, 0.5 * (5.0 + kMassingFrontMouthDepth)));
+    CHECK(near(mouths[1].hx, 0.5 * (5.0 + kMassingFrontMouthDepth)));
+    CHECK(near(mouths[1].hy, 2.0));
+    CHECK(near(std::fmod(mouths[1].rot + 360.0, 180.0), 90.0));
+
+    // Ways wider than kMassingFrontMouthNarrow have none, nor does a lane meeting nothing.
+    massingFrontMouths({street("S-2", "street", 10.0, 2.0, {{0, -10, 0}, {0, 10, 0}}), ways[0]}, mouths);
+    CHECK(mouths.empty());
+    massingFrontMouths({street("L-3", "lane", 4.0, 0.0, {{100, 0, 0}, {120, 0, 0}})}, mouths);
+    CHECK(mouths.empty());
+}
+
+TEST_CASE("massing frontage: the clear way between walls and colliders") {
+    // A 4 m lane along y = 0 from x 0 to 10 between walls at y 2..5 and -5..-2.
+    const MassingStreet way = street("L-1", "lane", 4.0, 0.0, {{0, 0, 0}, {10, 0, 0}});
+    std::vector<MassingFoot> walls(2);
+    walls[0].x = walls[1].x = 5.0;
+    walls[0].hx = walls[1].hx = 5.0;
+    walls[0].hy = walls[1].hy = 1.5;
+    walls[0].y = 3.5;
+    walls[1].y = -3.5;
+    MassingFrontClear clear;
+    CHECK_FALSE(massingFrontClearWidth(way, walls, {}, clear)); // no collider takes any of it
+
+    // A collider 2 m long reaching 1 m out of the north wall (y 1..2): 3 m left where it stands.
+    std::vector<MassingFoot> colliders(1);
+    colliders[0].x = 5.0;
+    colliders[0].y = 1.5;
+    colliders[0].hx = 1.0;
+    colliders[0].hy = 0.5;
+    REQUIRE(massingFrontClearWidth(way, walls, colliders, clear));
+    CHECK(clear.stations == 9);
+    CHECK(near(clear.narrowest, 3.0));
+    CHECK(near(clear.wallsOnly, 4.0));
+    CHECK(near(clear.x, 4.0));
+    CHECK(near(clear.y, 0.0));
+
+    // Two facing rows 1.2 m out leave 1.6 m; one over the line closes the way.
+    colliders.push_back(colliders[0]);
+    colliders[0].y = 1.4;
+    colliders[0].hy = 0.6;
+    colliders[1].y = -1.4;
+    colliders[1].hy = 0.6;
+    REQUIRE(massingFrontClearWidth(way, walls, colliders, clear));
+    CHECK(near(clear.narrowest, 1.6));
+    colliders[1].y = 0.0;
+    REQUIRE(massingFrontClearWidth(way, walls, colliders, clear));
+    CHECK(near(clear.narrowest, 0.0));
+}
+
+TEST_CASE("massing frontage: the real tables (opt-in): no collider over a door or a mouth; the arcade's clear way") {
+    // FT_FRONT_BOXES, FT_FRONT_STREETS (the prop streets), FT_FRONT_RULES (the frontage table), FT_FRONT_DOORS,
+    // FT_FRONT_KIT; FT_FRONT_GROUND "path,nx,ny,ox,oy" (raw 16-bit, 1 m) optional. Skipped unless FT_FRONT_BOXES is set.
+    const std::string boxesPath = envText("FT_FRONT_BOXES");
+    if (boxesPath.empty()) return;
+    std::string err;
+    std::vector<MassingBox> boxes;
+    std::vector<MassingStreet> ways;
+    std::vector<MassingFrontRule> rules;
+    std::vector<MassingFoot> doors;
+    REQUIRE_MESSAGE(importMassingBoxes(readFile(boxesPath), boxes, &err), err);
+    REQUIRE_MESSAGE(importMassingStreets(readFile(envText("FT_FRONT_STREETS")), ways, &err), err);
+    REQUIRE_MESSAGE(importMassingFront(readFile(envText("FT_FRONT_RULES")), rules, &err), err);
+    REQUIRE_MESSAGE(importRoadDoors(readFile(envText("FT_FRONT_DOORS")), kMassingFrontDoorClear, doors, &err), err);
+    std::set<std::string> kitted; // the boxes a kit mesh stands in for: no frontage
+    {
+        const std::string kit = readFile(envText("FT_FRONT_KIT"));
+        std::size_t at = 0;
+        bool header = false;
+        while (at < kit.size()) {
+            const std::size_t end = std::min(kit.find('\n', at), kit.size());
+            const std::string line = kit.substr(at, end - at);
+            at = end + 1;
+            if (line.empty() || line[0] == '#') continue;
+            if (!header) {
+                header = true;
+                continue;
+            }
+            kitted.insert(line.substr(0, line.find(',')));
+        }
+    }
+    Ground g;
+    const std::string groundSpec = envText("FT_FRONT_GROUND");
+    if (!groundSpec.empty()) {
+        char path[512] = {};
+        double ox = 0.0, oy = 0.0;
+        unsigned long nx = 0, ny = 0;
+#ifdef _MSC_VER
+        REQUIRE(sscanf_s(groundSpec.c_str(), "%511[^,],%lu,%lu,%lf,%lf", path, 512u, &nx, &ny, &ox, &oy) == 5);
+#else
+        REQUIRE(std::sscanf(groundSpec.c_str(), "%511[^,],%lu,%lu,%lf,%lf", path, &nx, &ny, &ox, &oy) == 5);
+#endif
+        const std::string raw = readFile(path);
+        REQUIRE(raw.size() == 2u * nx * ny);
+        g.nx = nx;
+        g.ny = ny;
+        g.ox = ox;
+        g.oy = oy;
+        g.samples.resize(nx * ny);
+        for (std::size_t i = 0; i < g.samples.size(); ++i)
+            g.samples[i] = static_cast<std::uint16_t>(static_cast<unsigned char>(raw[2 * i]) |
+                                                      (static_cast<unsigned char>(raw[2 * i + 1]) << 8));
+    }
+    const MassingGround ground = groundSpec.empty() ? MassingGround{} : g.view();
+    std::vector<bool> visible(boxes.size()), hosts(boxes.size());
+    std::vector<MassingFoot> walls;
+    for (std::size_t i = 0; i < boxes.size(); ++i) {
+        visible[i] = massingVisible(massingRole(boxes[i]));
+        const bool building = visible[i] && massingLookIsBuilding(massingLookSurface(boxes[i]));
+        hosts[i] = building && !boxes[i].sloped && kitted.count(boxes[i].id) == 0;
+        if (building) walls.push_back(massingBoxFoot(boxes[i]));
+    }
+    std::vector<MassingFoot> mouths;
+    massingFrontMouths(ways, mouths);
+    std::vector<MassingFoot> keep = doors;
+    keep.insert(keep.end(), mouths.begin(), mouths.end());
+    const double dry = groundSpec.empty() ? -1e9 : 0.5;
+
+    Front loose, kept;
+    massingFrontage(rules, ways, ground, boxes, visible, hosts, dry, nullptr, loose.props, loose.counts, loose.totals);
+    massingFrontage(rules, ways, ground, boxes, visible, hosts, dry, nullptr, kept.props, kept.counts, kept.totals, nullptr,
+                    nullptr, &keep);
+    const std::size_t openDoors = massingFrontCovers(loose.props, rules, doors);
+    const std::size_t openMouths = massingFrontCovers(loose.props, rules, mouths);
+    MESSAGE("doors " << doors.size() << ", mouths " << mouths.size() << "; ground " << std::string(groundSpec.empty() ? "off" : "on")
+                     << "; keep-clear off: " << loose.props.size() << " pieces, colliders over a door " << openDoors
+                     << ", over a mouth " << openMouths << "; on: " << kept.props.size() << " pieces");
+    CHECK(openDoors + openMouths > 0); // the check isn't empty on these tables
+    CHECK(massingFrontCovers(kept.props, rules, doors) == 0);
+    CHECK(massingFrontCovers(kept.props, rules, mouths) == 0);
+    for (std::size_t r = 0; r < rules.size(); ++r)
+        MESSAGE(rules[r].id << ": placed " << loose.counts[r].placed << " -> " << kept.counts[r].placed << ", kept clear "
+                            << kept.counts[r].keptClear);
+
+    std::vector<MassingFoot> colliders;
+    std::size_t lowHosts = 0;
+    double lowest = kInfinity;
+    double lowX = 0.0, lowY = 0.0;
+    for (const MassingProp& p : kept.props) {
+        MassingBox c;
+        if (!massingFrontCollider(p, rules[p.rule], c)) continue;
+        colliders.push_back(massingBoxFoot(c));
+        // The host 0.3 m behind the face, and its top over the piece's floor: a mantle reaches 3.6 m.
+        const double a = p.face * 3.14159265358979323846 / 180.0;
+        const double bx = p.x - std::cos(a) * 0.3, by = p.y - std::sin(a) * 0.3;
+        for (std::size_t i = 0; i < boxes.size(); ++i) {
+            if (!hosts[i]) continue;
+            MassingFoot probe;
+            probe.x = bx;
+            probe.y = by;
+            if (!massingFeetOverlap(massingBoxFoot(boxes[i]), probe, 0.01)) continue;
+            const double over = boxes[i].z1 - p.z;
+            if (over <= 3.6) {
+                ++lowHosts;
+                MESSAGE("low host " << boxes[i].id << ": top " << over << " m over the floor, " << rules[p.rule].id
+                                    << " at (" << p.x << ", " << p.y << ")");
+            }
+            if (over < lowest) {
+                lowest = over;
+                lowX = p.x;
+                lowY = p.y;
+            }
+            break;
+        }
+    }
+    MESSAGE(colliders.size() << " colliders; " << lowHosts << " in front of a host whose top is 3.6 m or less over the "
+                             << "floor; the lowest " << lowest << " m at (" << lowX << ", " << lowY << ")");
+    const double twoAbreast = 4.0 * 0.34; // two pawn capsules (radius 34 cm) side by side
+    std::size_t arcades = 0;
+    // Each way reads only the feet near it.
+    const auto reachOf = [](const MassingFoot& f) { return std::hypot(f.hx, f.hy); };
+    const auto nearWay = [&](const std::vector<MassingFoot>& feet, const MassingStreet& w, std::vector<MassingFoot>& out) {
+        out.clear();
+        double x0 = kInfinity, y0 = kInfinity, x1 = -kInfinity, y1 = -kInfinity;
+        for (const MassingVec& v : w.points) {
+            x0 = std::min(x0, v.x);
+            y0 = std::min(y0, v.y);
+            x1 = std::max(x1, v.x);
+            y1 = std::max(y1, v.y);
+        }
+        const double r = 0.5 * w.width + kMassingFrontStrip;
+        for (const MassingFoot& f : feet) {
+            const double e = reachOf(f) + r;
+            if (f.x + e >= x0 && f.x - e <= x1 && f.y + e >= y0 && f.y - e <= y1) out.push_back(f);
+        }
+    };
+    std::vector<MassingFoot> nearWalls, nearColliders;
+    for (const MassingStreet& w : ways) {
+        nearWay(colliders, w, nearColliders);
+        if (nearColliders.empty()) continue;
+        nearWay(walls, w, nearWalls);
+        MassingFrontClear clear;
+        const bool arcade = w.kind == "market_arcade";
+        if (!massingFrontClearWidth(w, nearWalls, nearColliders, clear)) {
+            if (arcade)
+                MESSAGE(w.id << " market_arcade " << w.width << " m: " << nearColliders.size()
+                             << " colliders near it, none narrows the way");
+            continue;
+        }
+        if (arcade || clear.narrowest < twoAbreast)
+            MESSAGE(w.id << " " << w.kind << " " << w.width << " m: narrowest " << clear.narrowest << " m (walls alone "
+                         << clear.wallsOnly << ") at (" << clear.x << ", " << clear.y << "), " << clear.stations
+                         << " stations");
+        if (arcade) {
+            ++arcades;
+            CHECK(clear.narrowest >= twoAbreast);
+        }
+    }
+    MESSAGE(arcades << " market_arcade ways a collider narrows");
+
+    // Every crossing of a narrow way's segment over another way's line between its points lies in a mouth.
+    std::size_t midCrossings = 0, unmouthed = 0;
+    for (std::size_t j = 0; j < ways.size(); ++j) {
+        const MassingStreet& s = ways[j];
+        if (!(s.width > 0.0) || s.width > kMassingFrontMouthNarrow) continue;
+        for (std::size_t q = 0; q < ways.size(); ++q) {
+            if (q == j) continue;
+            const std::vector<MassingVec>& a = s.points;
+            const std::vector<MassingVec>& b = ways[q].points;
+            const double half = 0.5 * ways[q].width;
+            for (std::size_t k = 0; k + 1 < a.size(); ++k)
+                for (std::size_t m = 0; m + 1 < b.size(); ++m) {
+                    const double rx = a[k + 1].x - a[k].x, ry = a[k + 1].y - a[k].y;
+                    const double sx = b[m + 1].x - b[m].x, sy = b[m + 1].y - b[m].y;
+                    const double d = rx * sy - ry * sx;
+                    if (std::fabs(d) < 1e-12) continue;
+                    const double qx = b[m].x - a[k].x, qy = b[m].y - a[k].y;
+                    const double t = (qx * sy - qy * sx) / d, u = (qx * ry - qy * rx) / d;
+                    if (t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0) continue;
+                    const double x = a[k].x + rx * t, y = a[k].y + ry * t;
+                    bool atPoint = false;
+                    for (const MassingVec& v : a)
+                        if (std::hypot(v.x - x, v.y - y) <= half) atPoint = true;
+                    if (atPoint) continue;
+                    ++midCrossings;
+                    MassingFoot at;
+                    at.x = x;
+                    at.y = y;
+                    bool mouthed = false;
+                    for (const MassingFoot& f : mouths)
+                        if (massingFeetOverlap(f, at, 0.01)) mouthed = true;
+                    if (mouthed) continue;
+                    ++unmouthed;
+                    MESSAGE("no mouth where " << s.id << " crosses " << ways[q].id << " at (" << x << ", " << y << ")");
+                }
+        }
+    }
+    MESSAGE(midCrossings << " narrow-way crossings between polyline points, " << unmouthed << " with no mouth");
+    CHECK(unmouthed == 0);
 }
 
 TEST_CASE("massing frontage: overhead pieces are a layer of their own") {

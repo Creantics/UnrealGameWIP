@@ -288,6 +288,11 @@ public:
         a = {a.x0 - kMassingPropGap, a.y0 - kMassingPropGap, a.x1 + kMassingPropGap, a.y1 + kMassingPropGap};
         return grid_.any(a, [&](std::uint32_t k) { return massingFeetOverlap(foot, feet_[k], kMassingPropGap); });
     }
+    // Whether a foot with area meets one held (no gap).
+    bool meets(const MassingFoot& foot) {
+        if (!(foot.hx > 0.0) || !(foot.hy > 0.0)) return false;
+        return grid_.any(footAabb(foot), [&](std::uint32_t k) { return massingFeetOverlap(foot, feet_[k], 0.0); });
+    }
 
 private:
     std::vector<MassingFoot> feet_;
@@ -827,12 +832,203 @@ bool massingFrontCollider(const MassingProp& prop, const MassingFrontRule& rule,
     return true;
 }
 
+void massingFrontMouths(const std::vector<MassingStreet>& streets, std::vector<MassingFoot>& out) {
+    out.clear();
+    Aabb extent;
+    std::vector<Seg> segs;
+    std::vector<Aabb> bounds;
+    for (std::size_t j = 0; j < streets.size(); ++j) {
+        const std::vector<MassingVec>& p = streets[j].points;
+        const double half = 0.5 * std::max(streets[j].width, 0.0);
+        for (std::size_t k = 0; k + 1 < p.size(); ++k) {
+            Seg seg;
+            seg.street = j;
+            seg.index = k;
+            seg.a = p[k];
+            seg.b = p[k + 1];
+            const Aabb b{std::min(seg.a.x, seg.b.x) - half, std::min(seg.a.y, seg.b.y) - half,
+                         std::max(seg.a.x, seg.b.x) + half, std::max(seg.a.y, seg.b.y) + half};
+            segs.push_back(seg);
+            bounds.push_back(b);
+            grow(extent, b);
+        }
+    }
+    if (segs.empty()) return;
+    Grid grid;
+    grid.reset(extent, kCell);
+    for (std::size_t q = 0; q < segs.size(); ++q) grid.insert(static_cast<std::uint32_t>(q), bounds[q]);
+    for (std::size_t j = 0; j < streets.size(); ++j) {
+        const MassingStreet& s = streets[j];
+        if (!(s.width > 0.0) || s.width > kMassingFrontMouthNarrow) continue;
+        const std::vector<MassingVec>& p = s.points;
+        for (std::size_t k = 0; k < p.size(); ++k) {
+            // The widest other way whose line passes within its half width of the point.
+            double half = -1.0;
+            grid.any(pointAabb(p[k].x, p[k].y, 0.0), [&](std::uint32_t q) {
+                const Seg& g = segs[q];
+                if (g.street == j) return false;
+                double px = 0.0, py = 0.0;
+                const double h = 0.5 * std::max(streets[g.street].width, 0.0);
+                if (segmentNearest(p[k].x, p[k].y, g.a, g.b, px, py) <= h) half = std::max(half, h);
+                return false;
+            });
+            if (half < 0.0) continue;
+            for (int side = 0; side < 2; ++side) {
+                if (side == 0 ? k == 0 : k + 1 >= p.size()) continue;
+                const MassingVec& o = side == 0 ? p[k - 1] : p[k + 1];
+                const double dx = o.x - p[k].x, dy = o.y - p[k].y;
+                const double len = std::hypot(dx, dy);
+                if (!(len > kTiny)) continue;
+                const double reach = std::min(len, half + kMassingFrontMouthDepth);
+                MassingFoot f;
+                f.x = p[k].x + dx / len * 0.5 * reach;
+                f.y = p[k].y + dy / len * 0.5 * reach;
+                f.hx = 0.5 * reach;
+                f.hy = 0.5 * s.width;
+                f.rot = degrees(dy, dx);
+                out.push_back(f);
+            }
+        }
+        // Where a segment crosses another way's line between its points: a mouth each way along the segment.
+        for (std::size_t k = 0; k + 1 < p.size(); ++k) {
+            const double rx = p[k + 1].x - p[k].x, ry = p[k + 1].y - p[k].y;
+            const double len = std::hypot(rx, ry);
+            if (!(len > kTiny)) continue;
+            const Aabb box{std::min(p[k].x, p[k + 1].x), std::min(p[k].y, p[k + 1].y), std::max(p[k].x, p[k + 1].x),
+                           std::max(p[k].y, p[k + 1].y)};
+            grid.any(box, [&](std::uint32_t q) {
+                const Seg& g = segs[q];
+                if (g.street == j) return false;
+                const double sx = g.b.x - g.a.x, sy = g.b.y - g.a.y;
+                const double d = rx * sy - ry * sx;
+                if (std::fabs(d) < kTiny) return false;
+                const double qx = g.a.x - p[k].x, qy = g.a.y - p[k].y;
+                const double t = (qx * sy - qy * sx) / d, u = (qx * ry - qy * rx) / d;
+                if (t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0) return false;
+                const double half = 0.5 * std::max(streets[g.street].width, 0.0);
+                const double cx = p[k].x + rx * t, cy = p[k].y + ry * t;
+                for (const MassingVec& v : p)
+                    if (std::hypot(v.x - cx, v.y - cy) <= half) return false; // a point's mouth stands there
+                for (int side = 0; side < 2; ++side) {
+                    const double room = side == 0 ? t * len : (1.0 - t) * len;
+                    const double sign = side == 0 ? -1.0 : 1.0;
+                    const double reach = std::min(room, half + kMassingFrontMouthDepth);
+                    if (!(reach > kTiny)) continue;
+                    MassingFoot f;
+                    f.x = cx + sign * rx / len * 0.5 * reach;
+                    f.y = cy + sign * ry / len * 0.5 * reach;
+                    f.hx = 0.5 * reach;
+                    f.hy = 0.5 * s.width;
+                    f.rot = degrees(ry, rx);
+                    out.push_back(f);
+                }
+                return false;
+            });
+        }
+    }
+}
+
+std::size_t massingFrontCovers(const std::vector<MassingProp>& pieces, const std::vector<MassingFrontRule>& rules,
+                               const std::vector<MassingFoot>& keep, std::vector<std::size_t>* hits) {
+    if (hits) hits->clear();
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < pieces.size(); ++i) {
+        if (pieces[i].rule >= rules.size()) continue;
+        MassingBox box;
+        if (!massingFrontCollider(pieces[i], rules[pieces[i].rule], box)) continue;
+        const MassingFoot foot = massingBoxFoot(box);
+        for (const MassingFoot& k : keep) {
+            if (!(k.hx > 0.0) || !(k.hy > 0.0) || !massingFeetOverlap(foot, k, 0.0)) continue;
+            ++n;
+            if (hits) hits->push_back(i);
+            break;
+        }
+    }
+    return n;
+}
+
+namespace {
+
+// Where the line (ox, oy) + t (dx, dy) runs inside a foot: [t0, t1]; false when it misses the foot.
+bool lineInFoot(double ox, double oy, double dx, double dy, const MassingFoot& f, double& t0, double& t1) {
+    const double a = f.rot * kPi / 180.0, c = std::cos(a), s = std::sin(a);
+    const double o[2] = {(ox - f.x) * c + (oy - f.y) * s, -(ox - f.x) * s + (oy - f.y) * c};
+    const double d[2] = {dx * c + dy * s, -dx * s + dy * c};
+    const double h[2] = {f.hx, f.hy};
+    t0 = -kInf;
+    t1 = kInf;
+    for (int i = 0; i < 2; ++i) {
+        if (std::fabs(d[i]) < kTiny) {
+            if (std::fabs(o[i]) > h[i]) return false;
+            continue;
+        }
+        double u0 = (-h[i] - o[i]) / d[i], u1 = (h[i] - o[i]) / d[i];
+        if (u0 > u1) std::swap(u0, u1);
+        t0 = std::max(t0, u0);
+        t1 = std::min(t1, u1);
+    }
+    return t0 < t1;
+}
+
+// The free stretch [lo, hi] about t = 0 of the line (x, y) + t (nx, ny), |t| <= reach, between the feet of `a` and
+// `b`; false when a foot covers t = 0.
+bool freeAcross(double x, double y, double nx, double ny, double reach, const std::vector<MassingFoot>& a,
+                const std::vector<MassingFoot>* b, double& lo, double& hi) {
+    lo = -reach;
+    hi = reach;
+    for (int list = 0; list < 2; ++list) {
+        const std::vector<MassingFoot>* feet = list == 0 ? &a : b;
+        if (!feet) continue;
+        for (const MassingFoot& f : *feet) {
+            if (!(f.hx > 0.0) || !(f.hy > 0.0)) continue;
+            double t0 = 0.0, t1 = 0.0;
+            if (!lineInFoot(x, y, nx, ny, f, t0, t1) || t1 < -reach || t0 > reach) continue;
+            if (t0 <= 0.0 && t1 >= 0.0) return false;
+            if (t1 < 0.0) lo = std::max(lo, t1);
+            else hi = std::min(hi, t0);
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool massingFrontClearWidth(const MassingStreet& street, const std::vector<MassingFoot>& walls,
+                            const std::vector<MassingFoot>& colliders, MassingFrontClear& out) {
+    out = MassingFrontClear{};
+    const std::vector<MassingVec>& p = street.points;
+    const double reach = 0.5 * std::max(street.width, 0.0) + kMassingFrontStrip;
+    const double step = 0.25 * kMassingFrontStep;
+    for (std::size_t k = 0; k + 1 < p.size(); ++k) {
+        const double dx = p[k + 1].x - p[k].x, dy = p[k + 1].y - p[k].y;
+        const double len = std::hypot(dx, dy);
+        if (!(len > kTiny)) continue;
+        const double nx = -dy / len, ny = dx / len;
+        for (double s = 0.0; s <= len + 1e-9; s += step) {
+            const double x = p[k].x + dx / len * s, y = p[k].y + dy / len * s;
+            double lo0 = 0.0, hi0 = 0.0, lo1 = 0.0, hi1 = 0.0;
+            if (!freeAcross(x, y, nx, ny, reach, walls, nullptr, lo0, hi0)) continue;
+            const bool open = freeAcross(x, y, nx, ny, reach, walls, &colliders, lo1, hi1);
+            const double w0 = hi0 - lo0, w1 = open ? hi1 - lo1 : 0.0;
+            if (!(w1 < w0 - 1e-6)) continue;
+            if (out.stations == 0 || w1 < out.narrowest) {
+                out.narrowest = w1;
+                out.wallsOnly = w0;
+                out.x = x;
+                out.y = y;
+            }
+            ++out.stations;
+        }
+    }
+    return out.stations > 0;
+}
+
 void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vector<MassingStreet>& streets,
                      const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                      const std::vector<bool>& hosts, double dryAbove, const std::vector<MassingFoot>* taken,
                      std::vector<MassingProp>& out, std::vector<MassingFrontCounts>& counts,
                      MassingFrontTotals& totals, std::vector<MassingBox>* outPads,
-                     std::vector<std::uint8_t>* outFronting) {
+                     std::vector<std::uint8_t>* outFronting, const std::vector<MassingFoot>* keepClear) {
     out.clear();
     counts.assign(rules.size(), MassingFrontCounts{});
     totals = MassingFrontTotals{};
@@ -843,8 +1039,15 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
     Aabb extent = scene.extent;
     if (taken)
         for (const MassingFoot& f : *taken) grow(extent, footAabb(f));
+    if (keepClear)
+        for (const MassingFoot& f : *keepClear) grow(extent, footAabb(f));
     for (std::size_t h = 0; h < boxes.size() && h < hosts.size(); ++h)
         if (hosts[h]) grow(extent, footAabb(massingBoxFoot(boxes[h])));
+    // The doors and way mouths the ground layer keeps its colliders off.
+    Feet keep;
+    keep.reset(extent);
+    if (keepClear)
+        for (const MassingFoot& f : *keepClear) keep.add(f);
 
     // The two layers' rules, narrowest first.
     std::vector<std::size_t> layers[2];
@@ -883,7 +1086,7 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
         return rule.kinds.empty() || std::find(rule.kinds.begin(), rule.kinds.end(), kind) != rule.kinds.end();
     };
 
-    enum class Fail { Pass, NoFit, NoWall, Shallow, Blocked, InRoad, Steep, Wet, Crowded };
+    enum class Fail { Pass, NoFit, NoWall, Shallow, Blocked, InRoad, Steep, Wet, KeptClear, Crowded };
     Feet feet[2];
     std::vector<std::size_t> faceOf; // per piece placed: host * 4 + face
     std::vector<std::uint8_t> fronting;
@@ -978,6 +1181,7 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
                         prop.z = lo;
                         prop.face = faceDeg;
                         prop.wall = true;
+                        if (l == 0 && keep.meets(massingFrontFoot(prop, rule))) return Fail::KeptClear;
                         if (feet[l].crowds(massingFrontFoot(prop, rule))) return Fail::Crowded;
                         return Fail::Pass;
                     };
@@ -1033,6 +1237,7 @@ void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vect
                             case Fail::InRoad: ++c.inRoad; break;
                             case Fail::Steep: ++c.steep; break;
                             case Fail::Wet: ++c.wet; break;
+                            case Fail::KeptClear: ++c.keptClear; break;
                             case Fail::Crowded: ++c.crowded; break;
                             case Fail::NoFit: break;
                             }
