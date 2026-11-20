@@ -3,6 +3,7 @@
 #include "ForgottenThird.h"
 
 #if WITH_EDITOR
+#include "ChaosCloth/ChaosClothConfig.h"
 #include "ClothingAsset.h"
 #include "ClothingAssetFactory.h"
 #include "Engine/SkeletalMesh.h"
@@ -280,6 +281,126 @@ void ClothPaint(UClothingAssetCommon& Asset, float Max, float Pin)
 		Top - Bottom, Pin, Max);
 }
 
+// Max distance from the sim mesh's vertex colour: Max x red (0 pinned, 255 free), painted where the mesh was made, so a
+// cape can be pinned at the collar and along its shoulders rather than only by height. False when the colours are missing.
+bool ClothPaintFromColour(UClothingAssetCommon& Asset, float Max)
+{
+	FClothLODDataCommon& Lod = Asset.LodData[0];
+	const FClothPhysicalMeshData& Phys = Lod.PhysicalMeshData;
+	if (Phys.VertexColors.Num() != Phys.Vertices.Num())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -MaskFromColour: the sim mesh has %d colours for %d vertices."),
+			Phys.VertexColors.Num(), Phys.Vertices.Num());
+		return false;
+	}
+	FPointWeightMap* Map = Lod.PointWeightMaps.FindByPredicate(
+		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
+	if (!Map)
+	{
+		Map = &Lod.PointWeightMaps.AddDefaulted_GetRef();
+		Map->CurrentTarget = static_cast<uint8>(EWeightMapTargetCommon::MaxDistance);
+	}
+	Map->Name = TEXT("MaxDistance");
+	Map->bEnabled = true;
+	Map->Values.SetNum(Phys.Vertices.Num());
+	int32 Pinned = 0;
+	for (int32 i = 0; i < Phys.Vertices.Num(); ++i)
+	{
+		Map->Values[i] = Max * Phys.VertexColors[i].R / 255.f;
+		Pinned += Phys.VertexColors[i].R == 0;
+	}
+	Asset.ApplyParameterMasks(false, true);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: max distance from vertex colour: %d of %d vertices pinned, %.1f cm at red 255."),
+		Pinned, Phys.Vertices.Num(), Max);
+	return true;
+}
+
+// The LOD 0 section drawn with the material slot named Slot (its slot or imported name), or INDEX_NONE.
+int32 ClothSectionBySlot(const USkeletalMesh& Mesh, const FString& Slot)
+{
+	const FSkeletalMeshModel* Model = Mesh.GetImportedModel();
+	if (!Model || Model->LODModels.Num() == 0)
+	{
+		return INDEX_NONE;
+	}
+	const TArray<FSkeletalMaterial>& Materials = Mesh.GetMaterials();
+	const TArray<FSkelMeshSection>& Sections = Model->LODModels[0].Sections;
+	for (int32 i = 0; i < Sections.Num(); ++i)
+	{
+		const int32 M = Sections[i].MaterialIndex;
+		if (Materials.IsValidIndex(M) && (Materials[M].MaterialSlotName.ToString() == Slot || Materials[M].ImportedMaterialSlotName.ToString() == Slot))
+		{
+			return i;
+		}
+	}
+	return INDEX_NONE;
+}
+
+// The Chaos settings given on the command line (any left out keep the asset's defaults): mass by Density (kg/m2),
+// Damping and LocalDamping, Edge/Bend/Tether stiffness (0..1), Drag and Lift, collision Thickness (cm) and Friction,
+// GravityScale, and -SelfCollide.
+void ClothConfigure(UClothingAssetCommon& Asset, const FString& Params)
+{
+	UChaosClothConfig* Config = Asset.GetClothConfig<UChaosClothConfig>();
+	if (!Config)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: %s has no Chaos cloth config; its settings stay as they are."), *Asset.GetName());
+		return;
+	}
+	float V = 0.f;
+	if (FParse::Value(*Params, TEXT("Density="), V))
+	{
+		Config->MassMode = EClothMassMode::Density;
+		Config->Density = V;
+	}
+	if (FParse::Value(*Params, TEXT("Damping="), V))
+	{
+		Config->DampingCoefficient = V;
+	}
+	if (FParse::Value(*Params, TEXT("LocalDamping="), V))
+	{
+		Config->LocalDampingCoefficient = V;
+	}
+	if (FParse::Value(*Params, TEXT("Edge="), V))
+	{
+		Config->EdgeStiffnessWeighted = FChaosClothWeightedValue{V, V};
+	}
+	if (FParse::Value(*Params, TEXT("Bend="), V))
+	{
+		Config->BendingStiffnessWeighted = FChaosClothWeightedValue{V, V};
+	}
+	if (FParse::Value(*Params, TEXT("Tether="), V))
+	{
+		Config->TetherStiffness = FChaosClothWeightedValue{V, V};
+	}
+	if (FParse::Value(*Params, TEXT("Drag="), V))
+	{
+		Config->Drag = FChaosClothWeightedValue{V, V};
+	}
+	if (FParse::Value(*Params, TEXT("Lift="), V))
+	{
+		Config->Lift = FChaosClothWeightedValue{V, V};
+	}
+	if (FParse::Value(*Params, TEXT("Thickness="), V))
+	{
+		Config->CollisionThickness = V;
+	}
+	if (FParse::Value(*Params, TEXT("Friction="), V))
+	{
+		Config->FrictionCoefficient = V;
+	}
+	if (FParse::Value(*Params, TEXT("GravityScale="), V))
+	{
+		Config->GravityScale = V;
+	}
+	Config->bUseSelfCollisions = FParse::Param(*Params, TEXT("SelfCollide"));
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTBuildCloth: Chaos config: density %.3f kg/m2, damping %.3f (local %.3f), edge %.2f, bend %.2f, tether %.2f, drag %.3f, lift %.3f, thickness %.2f cm, friction %.2f, gravity x%.2f, self collision %s."),
+		Config->Density, Config->DampingCoefficient, Config->LocalDampingCoefficient, Config->EdgeStiffnessWeighted.Low,
+		Config->BendingStiffnessWeighted.Low, Config->TetherStiffness.Low, Config->Drag.Low, Config->Lift.Low, Config->CollisionThickness,
+		Config->FrictionCoefficient, Config->GravityScale, Config->bUseSelfCollisions ? TEXT("on") : TEXT("off"));
+}
+
 bool SavePackageOf(UObject& Asset)
 {
 	UPackage* Package = Asset.GetOutermost();
@@ -403,23 +524,60 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 		ClothCheckCollision(*Mesh, *Physics);
 	}
 	ClothStrip(*Mesh);
+	// -SimSlot=<material slot>: the cloth is made from that section (a coarse sim proxy), which is then taken out of the
+	// mesh, and drives the -RenderSlot section (the fine mesh, skinned to the proxy); without them section 0 is both.
+	FString SimSlot, RenderSlot;
+	FParse::Value(*Params, TEXT("SimSlot="), SimSlot);
+	FParse::Value(*Params, TEXT("RenderSlot="), RenderSlot);
+	int32 SimSection = 0;
+	if (!SimSlot.IsEmpty() && (SimSection = ClothSectionBySlot(*Mesh, SimSlot)) == INDEX_NONE)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: %s has no section drawn with slot %s."), *Mesh->GetName(), *SimSlot);
+		return 1;
+	}
+	if (!RenderSlot.IsEmpty() && ClothSectionBySlot(*Mesh, RenderSlot) == INDEX_NONE)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: %s has no section drawn with slot %s."), *Mesh->GetName(), *RenderSlot);
+		return 1;
+	}
 	FSkeletalMeshClothBuildParams Build;
 	Build.AssetName = Mesh->GetName() + TEXT("_Cloth");
 	Build.LodIndex = 0;
-	Build.SourceSection = 0;
-	Build.bRemoveFromMesh = false;
+	Build.SourceSection = SimSection;
+	Build.bRemoveFromMesh = !SimSlot.IsEmpty() && !RenderSlot.IsEmpty() && SimSlot != RenderSlot;
 	Build.PhysicsAsset = Physics;
 	UClothingAssetFactory* Factory = NewObject<UClothingAssetFactory>();
 	UClothingAssetCommon* Asset = Cast<UClothingAssetCommon>(Factory->CreateFromSkeletalMesh(Mesh, Build));
 	if (!Asset || Asset->LodData.Num() == 0)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: couldn't make cloth from %s LOD 0 section 0."), *Mesh->GetName());
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: couldn't make cloth from %s LOD 0 section %d."), *Mesh->GetName(), SimSection);
 		return 1;
 	}
-	ClothPaint(*Asset, Max, Pin);
+	if (FParse::Param(*Params, TEXT("MaskFromColour")))
+	{
+		if (!ClothPaintFromColour(*Asset, Max))
+		{
+			return 1;
+		}
+	}
+	else
+	{
+		ClothPaint(*Asset, Max, Pin);
+	}
+	ClothConfigure(*Asset, Params);
 	Mesh->AddClothingAsset(Asset);
+	// Found again: taking the proxy out moves the sections after it down by one.
+	const int32 RenderSection = RenderSlot.IsEmpty() ? SimSection : ClothSectionBySlot(*Mesh, RenderSlot);
+	if (RenderSection == INDEX_NONE)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: lost the %s section after taking out the proxy."), *RenderSlot);
+		return 1;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: cloth from section %d (%s), drawn on section %d (%s)%s."), SimSection,
+		SimSlot.IsEmpty() ? TEXT("first") : *SimSlot, RenderSection, RenderSlot.IsEmpty() ? TEXT("same") : *RenderSlot,
+		Build.bRemoveFromMesh ? TEXT(", proxy taken out of the mesh") : TEXT(""));
 	FString Error;
-	if (!FSkeletalMeshClothingSystemUtilities::AssignClothingToSection(Mesh, Asset, 0, 0, 0, &Error))
+	if (!FSkeletalMeshClothingSystemUtilities::AssignClothingToSection(Mesh, Asset, 0, RenderSection, 0, &Error))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: couldn't bind the cloth to %s: %s"), *Mesh->GetName(), *Error);
 		return 1;

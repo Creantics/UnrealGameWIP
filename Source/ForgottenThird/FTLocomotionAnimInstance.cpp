@@ -532,6 +532,32 @@ void UFTLocomotionAnimInstance::SetWater(float Weight, const ftcore::WaterClipLa
 	}
 }
 
+#if !UE_BUILD_SHIPPING
+FString UFTLocomotionAnimInstance::PoseLayersJson() const
+{
+	auto Entry = [this](ftcore::LocoClip C, float Time, float Weight)
+	{
+		const int32 N = static_cast<int32>(C);
+		const UAnimSequence* Seq = N >= 0 && N < static_cast<int32>(UE_ARRAY_COUNT(Clips)) ? Clips[N].Get() : nullptr;
+		const double Rate = Seq ? Seq->GetSamplingFrameRate().AsDecimal() : 0.0;
+		return FString::Printf(TEXT("{\"slot\": \"%s\", \"asset\": \"%s\", \"time\": %.4f, \"frame\": %.2f, \"fps\": %.2f, \"weight\": %.4f}"),
+			ClipName(C), Seq ? *Seq->GetName() : TEXT(""), Time, Time * Rate, Rate, Weight);
+	};
+	FString Out = TEXT("{\"layers\": [");
+	for (std::size_t I = 0; I < Loco.layerCount(); ++I)
+	{
+		const ftcore::LocoLayer& L = Loco.layer(I);
+		Out += (I ? TEXT(", ") : TEXT("")) + Entry(L.clip, L.time, L.weight);
+	}
+	const ftcore::LocoLimbs& Limbs = Loco.limbs();
+	Out += FString::Printf(TEXT("], \"limbs\": {\"arms\": %.4f, \"legs\": %.4f, \"clip\": %s}"), Limbs.arms, Limbs.legs,
+		*Entry(Limbs.clip, Limbs.time, 1.f));
+	Out += FString::Printf(TEXT(", \"state\": %d, \"lean\": %.3f, \"twist\": %.3f, \"pitch\": %.3f, \"phase\": %.4f, \"water_weight\": %.4f}"),
+		static_cast<int32>(Loco.state()), Loco.lean(), Loco.twist(), Loco.pitch(), Loco.phase(), WaterWeight);
+	return Out;
+}
+#endif
+
 void UFTLocomotionAnimInstance::SetClip(ftcore::LocoClip Which, UAnimSequence* Clip)
 {
 	if (Which == ftcore::LocoClip::Count)

@@ -121,3 +121,38 @@ TEST_CASE("lead wet: the per-frame mapping allocates nothing") {
         CHECK(ftcore_test::allocStats().count - before == 0);
     }
 }
+
+TEST_CASE("lead wet: the party switch reads <slot>,<wetness> and is off for anything else") {
+    const lw::PartyWetForce one = lw::parsePartyWet("1,0.9");
+    CHECK(one.on);
+    CHECK(one.slot == 1);
+    CHECK(one.wetness == doctest::Approx(0.9f));
+    const lw::PartyWetForce all = lw::parsePartyWet(" -1 , 1 ");
+    CHECK(all.on);
+    CHECK(all.slot == -1);
+    CHECK(all.wetness == doctest::Approx(1.f));
+    CHECK(lw::parsePartyWet("0,2").wetness == doctest::Approx(1.f)); // clamped
+    CHECK(lw::parsePartyWet("2,.5").wetness == doctest::Approx(0.5f));
+    for (const char* bad : {"", "x", "1", "1,", "1;0.5", "-2,0.5", "1,0.5z", ",0.5"}) {
+        CHECK_FALSE(lw::parsePartyWet(bad).on);
+    }
+    CHECK_FALSE(lw::parsePartyWet(nullptr).on);
+    static_assert(lw::parsePartyWet("0,1").on);
+}
+
+TEST_CASE("lead wet: a follower takes the lead's weather unless the switch names it") {
+    const lw::PartyWetForce off{};
+    CHECK(lw::partyWeather(0.f, 0, off) == 0.f);   // dry by default
+    CHECK(lw::partyWeather(0.4f, 2, off) == doctest::Approx(0.4f));
+    const lw::PartyWetForce one = lw::parsePartyWet("1,0.9");
+    CHECK(lw::partyWeather(0.f, 1, one) == doctest::Approx(0.9f));
+    CHECK(lw::partyWeather(0.f, 0, one) == 0.f);   // the one beside it stays dry
+    const lw::PartyWetForce all = lw::parsePartyWet("-1,0.7");
+    for (int slot = 0; slot < 3; ++slot) {
+        CHECK(lw::partyWeather(0.f, slot, all) == doctest::Approx(0.7f));
+    }
+    // A follower's own water soak starts dry: the cloth then is the weather's alone.
+    const ftcore::WaterWetness soak = lw::cloth(ftcore::WaterWetness{}, lw::partyWeather(0.f, 1, one));
+    CHECK(soak.wetness == doctest::Approx(0.9f));
+    CHECK(lw::cloth(ftcore::WaterWetness{}, lw::partyWeather(0.f, 0, one)).wetness == 0.f);
+}

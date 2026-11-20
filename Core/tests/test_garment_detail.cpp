@@ -11,7 +11,7 @@ using namespace ftcore;
 
 namespace {
 
-const GarmentTile kTiles[] = {GarmentTile::Leather, GarmentTile::Twill, GarmentTile::Knit};
+const GarmentTile kTiles[] = {GarmentTile::Leather, GarmentTile::Twill, GarmentTile::Knit, GarmentTile::Plain};
 
 GarmentTileSettings small(GarmentTile tile) {
     GarmentTileSettings s = garmentTileDefaults(tile);
@@ -131,6 +131,26 @@ TEST_CASE("twill runs on the diagonal") {
     CHECK(along < 0.5 * across);
 }
 
+TEST_CASE("plain weave is a checker of crossings") {
+    // Warp and weft swap at every yarn: a shift of one yarn on the diagonal lands on the same crossing, one yarn
+    // to the side lands on the crossed-over one (the slubs differ either way, so it compares sums).
+    GarmentTileSettings s = small(GarmentTile::Plain);
+    s.repeats = 8;
+    std::vector<float> h;
+    REQUIRE(makeGarmentHeight(GarmentTile::Plain, s, h));
+    const uint32_t n = s.size;
+    const uint32_t yarn = n / s.repeats;
+    double diagonal = 0.0, side = 0.0;
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            const float v = h[y * n + x];
+            diagonal += std::fabs(v - h[((y + yarn) % n) * n + (x + yarn) % n]);
+            side += std::fabs(v - h[y * n + (x + yarn) % n]);
+        }
+    }
+    CHECK(diagonal < 0.5 * side);
+}
+
 TEST_CASE("knit loops repeat once per column") {
     const GarmentTileSettings s = small(GarmentTile::Knit);
     std::vector<float> h;
@@ -163,6 +183,9 @@ TEST_CASE("garment tile settings out of range are refused") {
     s = small(GarmentTile::Twill);
     s.repeats = 10;  // not a multiple of the three-yarn repeat
     CHECK_FALSE(makeGarmentHeight(GarmentTile::Twill, s, h));
+    s = small(GarmentTile::Plain);
+    s.repeats = 9;  // not a multiple of the two-yarn repeat
+    CHECK_FALSE(makeGarmentHeight(GarmentTile::Plain, s, h));
 }
 
 TEST_CASE("garment tiles go through the skin texture packers") {

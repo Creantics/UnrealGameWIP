@@ -580,7 +580,7 @@ struct FDefaults
 	UTexture* DetailM = nullptr;
 };
 
-UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
+UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex, bool bMasked = false)
 {
 	UPackage* Package = CreatePackage(*Path);
 	UMaterial* Material = NewObject<UMaterial>(Package, *FPackageName::GetShortName(Path), RF_Public | RF_Standalone | RF_Transactional);
@@ -590,6 +590,13 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 	Material->SetShadingModel(bCloth ? MSM_Cloth : MSM_DefaultLit);
 	// Tripo garments are shells whose inside shows at the cuffs, collar and hem.
 	Material->TwoSided = true;
+	// The masked cloth master cuts away where the base colour's alpha is under the clip value: fibre cards, frayed
+	// hems and moth holes, whose maps carry the cut in alpha.
+	if (bMasked)
+	{
+		Material->BlendMode = BLEND_Masked;
+		Material->OpacityMaskClipValue = 0.5f;
+	}
 
 	FGraph G;
 	G.Material = Material;
@@ -689,6 +696,10 @@ UMaterial* BuildMaster(const FString& Path, bool bCloth, const FDefaults& Tex)
 	Inputs->Metallic.Connect(0, Metal);
 	Inputs->Specular.Connect(0, Specular);
 	Inputs->AmbientOcclusion.Connect(0, Occlusion);
+	if (bMasked)
+	{
+		Inputs->OpacityMask.Connect(4, Base);
+	}
 	if (bCloth)
 	{
 		// The cloth model's Fuzz Color is the subsurface colour pin and its Cloth amount CustomData0 (the ClearCoat field).
@@ -793,6 +804,8 @@ const TCHAR* TileName(ftcore::GarmentTile Tile)
 		return TEXT("Twill");
 	case ftcore::GarmentTile::Knit:
 		return TEXT("Knit");
+	case ftcore::GarmentTile::Plain:
+		return TEXT("Plain");
 	}
 	return TEXT("Unknown");
 }
@@ -928,13 +941,13 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 		return 1;
 	}
 	const FString Folder = kFolder;
-	const ftcore::GarmentTile Tiles[] = {ftcore::GarmentTile::Leather, ftcore::GarmentTile::Twill, ftcore::GarmentTile::Knit};
+	const ftcore::GarmentTile Tiles[] = {ftcore::GarmentTile::Leather, ftcore::GarmentTile::Twill, ftcore::GarmentTile::Knit, ftcore::GarmentTile::Plain};
 	const TArray<FSubstance> All = Substances();
 
 	// Start the shared assets from nothing, before anything loads the old ones. The old files are set aside, not
 	// deleted, and come back unless every new asset compiles and saves (a failed build keeps the shared materials).
 	FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().WaitForCompletion();
-	TArray<FString> Packages = {Folder + TEXT("M_FTGarment"), Folder + TEXT("M_FTGarmentCloth"), Folder + TEXT("T_FTGarmentFlatNormal"),
+	TArray<FString> Packages = {Folder + TEXT("M_FTGarment"), Folder + TEXT("M_FTGarmentCloth"), Folder + TEXT("M_FTGarmentClothMasked"), Folder + TEXT("T_FTGarmentFlatNormal"),
 		Folder + TEXT("T_FTGarmentORM"), Folder + TEXT("T_FTGarmentWear"), Folder + TEXT("T_FTGarmentWhite")};
 	for (ftcore::GarmentTile Tile : Tiles)
 	{
@@ -1001,8 +1014,10 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 
 	UMaterial* Lit = BuildMaster(Folder + TEXT("M_FTGarment"), false, Defaults);
 	UMaterial* Cloth = BuildMaster(Folder + TEXT("M_FTGarmentCloth"), true, Defaults);
+	UMaterial* ClothMasked = BuildMaster(Folder + TEXT("M_FTGarmentClothMasked"), true, Defaults, true);
 	ToSave.Add(Lit);
 	ToSave.Add(Cloth);
+	ToSave.Add(ClothMasked);
 	for (const FSubstance& S : All)
 	{
 		const TPair<UTexture*, UTexture*>& Tile = TileTextures[S.Tile];
@@ -1010,12 +1025,14 @@ int32 UFTBuildGarmentCommandlet::Main(const FString& Params)
 	}
 
 	FAssetCompilingManager::Get().FinishAllCompilation();
-	if (FT::CompileErrors(TEXT("FTBuildGarment"), Lit) + FT::CompileErrors(TEXT("FTBuildGarment"), Cloth) > 0)
+	if (FT::CompileErrors(TEXT("FTBuildGarment"), Lit) + FT::CompileErrors(TEXT("FTBuildGarment"), Cloth) +
+			FT::CompileErrors(TEXT("FTBuildGarment"), ClothMasked) >
+		0)
 	{
 		return 1;
 	}
 	const bool bFoldStats = FParse::Param(*Params, TEXT("FoldStats"));
-	if (!FoldSelfTest(Lit, bFoldStats) || !FoldSelfTest(Cloth, bFoldStats))
+	if (!FoldSelfTest(Lit, bFoldStats) || !FoldSelfTest(Cloth, bFoldStats) || !FoldSelfTest(ClothMasked, bFoldStats))
 	{
 		return 1; // nothing saved: the old assets stay
 	}

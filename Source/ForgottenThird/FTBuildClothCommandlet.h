@@ -16,6 +16,13 @@
 //   -Physics=<object path>  the physics asset the cloth collides with (default: none)
 //   -Max=<cm>               max distance at the hem (default 25)
 //   -Pin=<cm>               pinned band at the top (default 3)
+//   -MaskFromColour         max distance = -Max x the sim mesh's vertex colour red (0 pinned, 255 free) instead of by
+//                           height, so a cape can be pinned along its collar and shoulders
+//   -SimSlot=<slot> -RenderSlot=<slot>
+//                           make the cloth from the section drawn with material slot SimSlot (a coarse sim proxy), take
+//                           that section out of the mesh, and drive the RenderSlot section (the fine mesh) with it
+//   -Density= -Damping= -LocalDamping= -Edge= -Bend= -Tether= -Drag= -Lift= -Thickness= -Friction= -GravityScale=
+//   -SelfCollide            Chaos cloth settings (kg/m2, 0..1 stiffness, cm); any left out keep the defaults
 //   -Verify                 write nothing; report the mesh's clothing
 //
 // Or, to make a physics asset for cloth to collide with from one made for a ragdoll:
