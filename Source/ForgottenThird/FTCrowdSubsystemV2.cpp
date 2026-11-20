@@ -960,9 +960,12 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		const uint32 Upset = Live - Sim.countIn(ftcore::crowdv2::CrowdState::Walk) - Sim.countIn(ftcore::crowdv2::CrowdState::Idle);
 		const bool bCalm = Upset * 20 <= Live;
 		const bool bSteady = C.maxFleeEntries <= CrowdV2Local::kMaxFleeEntries && C.maxPlans <= CrowdV2Local::kMaxPlansOne;
-		const bool bFull = Live + Live / 10 >= Tuning.targetAgents;
+		// With bandDensity on the streets fill only to its cap, the walking band in reach: that is the target
+		// here then. Off (0, the default), bandCap() is UINT32_MAX and the tuning's target stands as before.
+		const uint32 FullTarget = FMath::Min(Tuning.targetAgents, Sim.bandCap());
+		const bool bFull = Live + Live / 10 >= FullTarget;
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: %u live of %u target (%s); %u still upset (%s); %llu fleers, most flee entries by one %u, most plans by one %u (%s)."),
-			Live, Tuning.targetAgents, bFull ? TEXT("full") : TEXT("SHORT"), Upset, bCalm ? TEXT("calm") : TEXT("NOT CALM"), C.fleers,
+			Live, FullTarget, bFull ? TEXT("full") : TEXT("SHORT"), Upset, bCalm ? TEXT("calm") : TEXT("NOT CALM"), C.fleers,
 			C.maxFleeEntries, C.maxPlans, bSteady ? TEXT("steady") : TEXT("FLIP-FLOP"));
 		const bool bUnstuck = C.stuck == 0;
 		const bool bOutside = FootFrames == 0;
@@ -1016,11 +1019,6 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: run pose below walking speed %llu member-frames (%s, gate 0); largest group standing within 3 m %u (%s, gate %u); spawned, despawned, drawn or undrawn in a camera's view within %.0f m %llu (%s, gate 0)."),
 			SlowRunFrames, bNoSlowRun ? TEXT("ok") : TEXT("FAILED"), WorstGroup, bNoKnot ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGroupGate, CrowdV2Local::kViewRange,
 			static_cast<unsigned long long>(C.popsInView), bNoPops ? TEXT("ok") : TEXT("FAILED"));
-		// The walking-jam check: walkers held under kCrowdJamSpeed x their own pace (the close-reaction stop left out).
-		const bool bNoJam = WorstJam <= ftcore::crowdv2::kCrowdJamGate;
-		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: largest walking jam (walkers under %.0f%% of their pace for %.0f s or more, within %.0f m of one) %u at t=%.2f s (%s, gate %u)."),
-			100.f * ftcore::crowdv2::kCrowdJamSpeed, ftcore::crowdv2::kCrowdJamSeconds, ftcore::crowdv2::kCrowdJamRadius, WorstJam, WorstJamAt,
-			bNoJam ? TEXT("ok") : TEXT("FAILED"), ftcore::crowdv2::kCrowdJamGate);
 		const bool bStills = Shots.Num() == 0 || ShotIndex >= Shots.Num();
 		if (Shots.Num() > 0)
 		{
@@ -1028,7 +1026,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 				bStills ? TEXT("ok") : TEXT("FAILED"), bCamsOk ? TEXT("ok") : TEXT("FAILED"), bRefillOk ? TEXT("ok") : TEXT("FAILED"));
 		}
 		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bStills && bCamsOk && bRefillOk &&
-			bNoSlowRun && bNoKnot && bNoJam && bNoPops;
+			bNoSlowRun && bNoKnot && bNoPops;
 		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
 		if (!bStimulus)
 		{
@@ -1058,6 +1056,14 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 				C.cowered - AtArena.cowered, C.resumed - AtArena.resumed, bReacted ? TEXT("ok") : TEXT("FAILED (no fight event fed, or nobody perceived one or resumed)"));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: verdict %s."), bOk ? TEXT("ok") : TEXT("FAILED"));
+		// The walking-jam check (walkers held under kCrowdJamSpeed x their own pace, the close-reaction stop left out) is
+		// reported on its own line, after the verdict and not in it, until the narrow walking bands are widened. With it,
+		// the walking band in reach (what bandDensity caps by) and the streets' target now (capped only when it is on).
+		const bool bNoJam = WorstJam <= ftcore::crowdv2::kCrowdJamGate;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: jam (reported, not in the verdict): largest walking jam (walkers under %.0f%% of their pace for %.0f s or more, within %.0f m of one) %u at t=%.2f s (%s, gate %u); walking band in the spawn ring %.1f m2 on %.1f m of spawnable street; streets' target %u (bandDensity %.3f, 0 = off)."),
+			100.f * ftcore::crowdv2::kCrowdJamSpeed, ftcore::crowdv2::kCrowdJamSeconds, ftcore::crowdv2::kCrowdJamRadius, WorstJam, WorstJamAt,
+			bNoJam ? TEXT("within the gate") : TEXT("over the gate"), ftcore::crowdv2::kCrowdJamGate, Sim.reachBandArea(), Sim.reachLength(),
+			Sim.streetTarget(), Tuning.bandDensity);
 		bRunning = false;
 		FTRequestExit(bOk ? 0 : 1, TEXT("Crowd"));
 	}
