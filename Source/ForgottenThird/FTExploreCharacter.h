@@ -942,6 +942,8 @@ public:
 	void AddLeadGo(const FVector& To) { LeadGoNext.Add(To); }
 	const ftcore::WaterState& GetWaterState() const { return WaterNow; }
 	bool IsSwimming() const { return bSwimming; }
+	// The leads' weather value (ft.LeadWet, else the rain), for the followers' wet switch (AFTExploreDirector::TickFollowers).
+	float GetLeadWeather() const { return LeadWeather(); }
 	// Under water (diving, under, surfacing) or being carried out by a rescue: the followers hold at the bank.
 	bool IsUnderWater() const { return bSwimUnder || bSwimRescue; }
 	// A start in the water (11-18 item 5: a scene or hold that begins in the sea): the lead put at At (cm; x and y) at its

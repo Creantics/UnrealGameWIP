@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cmath>
 
 namespace lw = ftcore::leadwet;
@@ -155,4 +156,70 @@ TEST_CASE("lead wet: a follower takes the lead's weather unless the switch names
     const ftcore::WaterWetness soak = lw::cloth(ftcore::WaterWetness{}, lw::partyWeather(0.f, 1, one));
     CHECK(soak.wetness == doctest::Approx(0.9f));
     CHECK(lw::cloth(ftcore::WaterWetness{}, lw::partyWeather(0.f, 0, one)).wetness == 0.f);
+}
+
+TEST_CASE("lead wet: a switch that is off forces nothing, whatever slot and wetness it holds") {
+    // Off by default (slot 0, wetness 0): follower 0 takes the lead's weather, not the 0 the switch holds.
+    CHECK(lw::partyWeather(0.6f, 0, lw::PartyWetForce{}) == doctest::Approx(0.6f));
+    // Off with a slot and wetness filled in (as a rejected parse might leave them): still the lead's.
+    const lw::PartyWetForce stale{false, 1, 0.9f};
+    CHECK(lw::partyWeather(0.2f, 1, stale) == doctest::Approx(0.2f));
+    const lw::PartyWetForce staleAll{false, -1, 1.f};
+    for (int slot = 0; slot < 3; ++slot) {
+        CHECK(lw::partyWeather(0.3f, slot, staleAll) == doctest::Approx(0.3f));
+    }
+    // Text the parser turns down leaves every follower on the lead's weather.
+    CHECK(lw::partyWeather(0.5f, 0, lw::parsePartyWet("x")) == doctest::Approx(0.5f));
+    static_assert(lw::partyWeather(0.5f, 1, lw::PartyWetForce{false, 1, 0.f}) == 0.5f);
+}
+
+TEST_CASE("lead wet: every follower steps its own soak and shows it under its party weather, allocating nothing") {
+    // As AFTExploreDirector::TickFollowers and AFTPartyFollower::StepWet run it: two followers (slot 1 the Third), each
+    // with its own WaterWetness stepped as the lead's is, then shown through cloth and surface of its party weather.
+    constexpr float kHeight = 1.8f; // m, the follower's body (FTPartyFollower.cpp kWaterBodyHeight)
+    constexpr float kDt = 1.f / 60.f;
+    const float silt = ftcore::waterSilt(ftcore::WaterKind::Canal);
+    const lw::PartyWetForce off{};
+    const lw::PartyWetForce all = lw::parsePartyWet("-1,0.8");
+    const lw::PartyWetForce third = lw::parsePartyWet("1,0.2");
+    std::array<ftcore::WaterWetness, 2> wet{};
+    std::array<ftcore::WaterWetness, 2> swum{}, dried{};
+    std::array<float, 2> swumSkin{}, allCloth{};
+    float thirdOwnWins = 0.f;
+    const auto before = ftcore_test::allocStats().count;
+    // The Third swims for 2 s (1.2 m under) while follower 0 stays on the bank.
+    for (int frame = 0; frame < 120; ++frame) {
+        for (std::size_t i = 0; i < wet.size(); ++i) {
+            wet[i].step(i == 1 ? 1.2f : 0.f, kHeight, kDt, 1.f, silt);
+            const float w = lw::partyWeather(0.f, static_cast<int>(i), off);
+            swum[i] = lw::cloth(wet[i], w);
+            swumSkin[i] = lw::surface(w, wet[i]);
+        }
+    }
+    // Out of the water for 45 s, both still shown each frame.
+    for (int frame = 0; frame < 45 * 60; ++frame) {
+        for (std::size_t i = 0; i < wet.size(); ++i) {
+            wet[i].step(0.f, kHeight, kDt, 1.f, silt);
+            dried[i] = lw::cloth(wet[i], lw::partyWeather(0.f, static_cast<int>(i), off));
+            allCloth[i] = lw::cloth(wet[i], lw::partyWeather(0.f, static_cast<int>(i), all)).wetness;
+        }
+        thirdOwnWins = lw::cloth(wet[1], lw::partyWeather(0.f, 1, third)).wetness;
+    }
+    const auto allocs = ftcore_test::allocStats().count - before;
+    CHECK(swum[1].wetness == doctest::Approx(1.f));
+    CHECK(swum[1].line == doctest::Approx(1.2f));
+    CHECK(swum[1].silt == doctest::Approx(silt));
+    CHECK(swumSkin[1] == doctest::Approx(1.f));
+    CHECK(swum[0].wetness == 0.f); // the one on the bank stays dry
+    CHECK(swumSkin[0] == 0.f);
+    CHECK(dried[1].wetness == doctest::Approx(0.5f).epsilon(0.01)); // its own clock: half dry after 45 s
+    CHECK(dried[0].wetness == 0.f);
+    // The switch for every follower reaches both, the Third included; the Third's own wetter soak still wins over a
+    // weaker force.
+    CHECK(allCloth[0] == doctest::Approx(0.8f));
+    CHECK(allCloth[1] == doctest::Approx(0.8f));
+    CHECK(thirdOwnWins == doctest::Approx(0.5f).epsilon(0.01));
+    if (ftcore_test::allocHookInstalled()) {
+        CHECK(allocs == 0);
+    }
 }

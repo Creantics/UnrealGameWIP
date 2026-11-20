@@ -17,12 +17,17 @@
 //   -Max=<cm>               max distance at the hem (default 25)
 //   -Pin=<cm>               pinned band at the top (default 3)
 //   -MaskFromColour         max distance = -Max x the sim mesh's vertex colour red (0 pinned, 255 free) instead of by
-//                           height, so a cape can be pinned along its collar and shoulders
+//                           height, so a cape can be pinned along its collar and shoulders; fails when no vertex
+//                           has red 0 (nothing would pin the cloth)
 //   -SimSlot=<slot> -RenderSlot=<slot>
 //                           make the cloth from the section drawn with material slot SimSlot (a coarse sim proxy), take
-//                           that section out of the mesh, and drive the RenderSlot section (the fine mesh) with it
+//                           that section out of the mesh, and drive the RenderSlot section (the fine mesh) with it;
+//                           -SimSlot alone draws on its own section, -RenderSlot alone is an error
 //   -Density= -Damping= -LocalDamping= -Edge= -Bend= -Tether= -Drag= -Lift= -Thickness= -Friction= -GravityScale=
-//   -SelfCollide            Chaos cloth settings (kg/m2, 0..1 stiffness, cm); any left out keep the defaults
+//   -SelfCollide | -NoSelfCollide
+//                           Chaos cloth settings (kg/m2, 0..1 stiffness, cm); any left out keep the asset's own
+//                           (an asset with no Chaos config gets one made); each one given is logged as read back;
+//                           -SelfCollide with -NoSelfCollide is an error. All flags are checked before the mesh changes
 //   -Verify                 write nothing; report the mesh's clothing
 //
 // Or, to make a physics asset for cloth to collide with from one made for a ragdoll:

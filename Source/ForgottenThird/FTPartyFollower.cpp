@@ -13,6 +13,7 @@
 #include "FTMeshFacing.h"
 #include "ForgottenThird.h"
 
+#include "ftcore/LeadWet.h"
 #include "ftcore/PartyShore.h"
 #include "ftcore/WaterSurfaceFeet.h"
 #include "FTSwimUnits.h"
@@ -109,6 +110,7 @@ bool AFTPartyFollower::Setup(const FFTLeadLook& Look, const AActor* Lead)
 	WornFronts = Loaded.Fronts;
 	const int32 Cloth = FTLook::AddPieces(*this, *Body, Loaded.Pieces, Pieces, *LogName);
 	FTLook::AddGrooms(*this, *Body, Pieces, Look.Grooms, GroomComponents, *LogName);
+	GroomLooks = Look.Grooms;
 	FTLook::SwapMaterials(*Body, Pieces, Look.MaterialSwaps, *LogName);
 	UE_LOG(LogForgottenThird, Display, TEXT("%s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."), *LogName,
 		*Loaded.Body->GetName(), Body->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, GroomComponents.Num(), *Loaded.ClipFolder);
@@ -950,6 +952,23 @@ void AFTPartyFollower::SenseWater(const UFTWaterSubsystem& System, const FVector
 	Capsule.groundZ = WaterBedZ;
 	Capsule.hasGround = true;
 	WaterNow = ftcore::waterState(System.Bodies(), Capsule, System.WaterTime());
+}
+
+void AFTPartyFollower::StepWet(float Weather, float DeltaSeconds)
+{
+	// In the water only while its order has it there (on land WaterNow may still hold the last swim's state).
+	const bool bIn = WaterPhase != ftcore::WaterFollowPhase::Ashore && WaterNow.mode != ftcore::WaterMode::Dry && WaterNow.immersion > 0.f;
+	const UWorld* World = GetWorld();
+	if (const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr; System && System->HasBodies())
+	{
+		const ftcore::WaterBodies& Bodies = System->Bodies();
+		const ftcore::WaterKind Kind = WaterNow.body >= 0 && static_cast<std::size_t>(WaterNow.body) < Bodies.count()
+			? Bodies.body(static_cast<std::size_t>(WaterNow.body)).kind
+			: ftcore::WaterKind::Pool;
+		Wet.step(bIn ? WaterNow.immersion : 0.f, kWaterBodyHeight, DeltaSeconds, 1.f, ftcore::waterSilt(Kind));
+	}
+	FTLook::ShowWet(*this, WetState, ftcore::leadwet::cloth(Wet, Weather), ftcore::leadwet::surface(Weather, Wet),
+		static_cast<float>(GetActorLocation().Z), GroomComponents, GroomLooks, DeltaSeconds, *LogName);
 }
 
 void AFTPartyFollower::StepFollowerWaterLoco(ftcore::WaterLocoInput& In, float DeltaSeconds, UFTLocomotionAnimInstance* Anim)
