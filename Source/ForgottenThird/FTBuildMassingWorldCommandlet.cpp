@@ -214,6 +214,23 @@ bool LoadFront(const FString& File, std::vector<ftcore::MassingFrontRule>& Rules
 	return true;
 }
 
+// -RoadDoors for the frontage: each door's foot grown by ftcore::kMassingFrontDoorClear (ftcore::importRoadDoors).
+bool LoadFrontDoors(const FString& File, std::vector<ftcore::MassingFoot>& Doors)
+{
+	TArray<uint8> Bytes;
+	std::string Error;
+	if (!LoadBytes(File, Bytes))
+	{
+		return false;
+	}
+	if (!ftcore::importRoadDoors(View(Bytes), ftcore::kMassingFrontDoorClear, Doors, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
 // A streets table (ftcore::importMassingStreets), left in the plan frame: the props', the frontage's or the kerbs'.
 bool LoadStreets(const FString& File, std::vector<ftcore::MassingStreet>& Streets)
 {
@@ -3863,7 +3880,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	int32 HeroLampsKept = 0;  // street lamps left out of the hero corner
 	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
 	// to an actor: like the kit the mesh collides with nothing and leaves the navmesh alone, drawn to the props' distance (a
-	// ground-layer frontage piece gets an invisible Blocker box of its own, below, which does cut the navmesh); a lamp
+	// ground-layer frontage piece gets an invisible Blocker box of its own, below, which leaves it alone too); a lamp
 	// takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
@@ -4041,8 +4058,81 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		std::vector<ftcore::MassingFrontCounts> FrontCounts;
 		ftcore::MassingFrontTotals FrontTotals;
 		std::vector<ftcore::MassingBox> Pads;
+		// The ground pieces and their colliders keep off the doors (-RoadDoors) and the narrow ways' mouths, so every door and
+		// lane stays open (ftcore::massingFrontMouths: ways ftcore::kMassingFrontMouthNarrow wide or less).
+		std::vector<ftcore::MassingFoot> FrontDoors, FrontMouths;
+		if (!RoadOptions.DoorsFile.IsEmpty() && !LoadFrontDoors(RoadOptions.DoorsFile, FrontDoors))
+		{
+			World->DestroyWorld(false);
+			return 1;
+		}
+		ftcore::massingFrontMouths(PropStreets, FrontMouths);
+		std::vector<ftcore::MassingFoot> FrontKeep = FrontDoors;
+		FrontKeep.insert(FrontKeep.end(), FrontMouths.begin(), FrontMouths.end());
 		ftcore::massingFrontage(FrontRules, PropStreets, Ground, Built, Visible, Hosts, kPropDryAbove, &Taken, Pieces, FrontCounts, FrontTotals,
-			&Pads, &FrontFaces);
+			&Pads, &FrontFaces, &FrontKeep);
+		// The check apart from the walk: no collider over a door or a mouth, else the build fails.
+		const size_t OverDoors = ftcore::massingFrontCovers(Pieces, FrontRules, FrontDoors);
+		const size_t OverMouths = ftcore::massingFrontCovers(Pieces, FrontRules, FrontMouths);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: kept clear of %d door feet and %d lane mouths; colliders over a door %d, over a mouth %d."),
+			static_cast<int32>(FrontDoors.size()), static_cast<int32>(FrontMouths.size()), static_cast<int32>(OverDoors), static_cast<int32>(OverMouths));
+		if (OverDoors + OverMouths > 0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: frontage: %d colliders stand over a door or a lane mouth."),
+				static_cast<int32>(OverDoors + OverMouths));
+			World->DestroyWorld(false);
+			return 1;
+		}
+		// The arcades' clear way between the walls and the colliders: two pawn capsules (radius 34 cm) abreast, else the
+		// build fails.
+		{
+			constexpr double TwoAbreast = 4.0 * 0.34;
+			std::vector<ftcore::MassingFoot> Walls, Colliders;
+			for (size_t I = 0; I < Boxes.size(); ++I)
+			{
+				if (Visible[I] && ftcore::massingLookIsBuilding(ftcore::massingLookSurface(Boxes[I])))
+				{
+					Walls.push_back(ftcore::massingBoxFoot(Boxes[I]));
+				}
+			}
+			for (const ftcore::MassingProp& Piece : Pieces)
+			{
+				ftcore::MassingBox Box;
+				if (ftcore::massingFrontCollider(Piece, FrontRules[Piece.rule], Box))
+				{
+					Colliders.push_back(ftcore::massingBoxFoot(Box));
+				}
+			}
+			int32 Narrow = 0;
+			for (const ftcore::MassingStreet& Way : PropStreets)
+			{
+				if (Way.kind != "market_arcade")
+				{
+					continue;
+				}
+				ftcore::MassingFrontClear Clear;
+				if (!ftcore::massingFrontClearWidth(Way, Walls, Colliders, Clear))
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: arcade %s (%.1f m): no collider narrows it."),
+						*Utf8(Way.id), Way.width);
+					continue;
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: arcade %s (%.1f m): clear %.2f m at its narrowest "
+					"(walls alone %.2f m), %d stations narrowed."), *Utf8(Way.id), Way.width, Clear.narrowest, Clear.wallsOnly,
+					static_cast<int32>(Clear.stations));
+				if (Clear.narrowest < TwoAbreast)
+				{
+					++Narrow;
+				}
+			}
+			if (Narrow > 0)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: frontage: %d arcades narrower than two pawns abreast (%.2f m)."),
+					Narrow, TwoAbreast);
+				World->DestroyWorld(false);
+				return 1;
+			}
+		}
 		const size_t LanePads = ftcore::massingDropLanePads(Pads, PropStreets, LanePaveUpTo, kLookLanePadReach);
 		if (LanePads > 0)
 		{
@@ -4074,7 +4164,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 			// The mesh is dressing; a ground piece's part out of the face collides as an invisible box (ftcore::massingFrontCollider),
 			// so the lead stops at its front: a Blocker, so the crowd's visibility traces pass it (walkers keep out by their bands,
-			// not by it), the traversal probe finds no climb on it, and the navmesh is cut around it.
+			// not by it) and the traversal probe takes no climb on it (FTTraversalProbe). It leaves the navmesh alone: nothing on
+			// the strip paths by the navmesh (the tour pilot runs only under -WorldAutoPlay), so nothing keeps a pilot off one.
 			ftcore::MassingBox Collider;
 			if (ftcore::massingFrontCollider(Piece, Rule, Collider))
 			{
@@ -4088,10 +4179,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			const ftcore::MassingFrontCounts& Count = FrontCounts[R];
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage %s: %d placed on %d faces of %d tries (no wall %d, shallow %d, "
-				"blocked %d, in a road %d, steep %d, wet %d, crowded %d, over the cap %d)."),
+				"blocked %d, in a road %d, steep %d, wet %d, kept clear %d, crowded %d, over the cap %d)."),
 				*Utf8(FrontRules[R].id), static_cast<int32>(Count.placed), static_cast<int32>(Count.faces), static_cast<int32>(Count.tried),
 				static_cast<int32>(Count.noWall), static_cast<int32>(Count.shallow), static_cast<int32>(Count.blocked), static_cast<int32>(Count.inRoad),
-				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.crowded), static_cast<int32>(Count.capped));
+				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.keptClear), static_cast<int32>(Count.crowded),
+				static_cast<int32>(Count.capped));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d pieces by %d rules on %d buildings' %d faces; %d faces dressed at "
 			"the ground, %d of the %d that front a street; the meshes collide with nothing, %d ground pieces stand in invisible blockers (world-dynamic: visibility, camera and traversal traces pass)."),

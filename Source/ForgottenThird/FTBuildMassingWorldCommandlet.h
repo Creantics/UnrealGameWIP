@@ -90,9 +90,10 @@
 // (turned by turn), its out the table's at most that depth (the depth when the table sets it wholly out). A piece is
 // labelled <rule id>-<n>; its mesh collides with nothing, and a ground-layer piece (dz under kMassingPropBody) stands
 // in an invisible Blocker box <rule id>-<n>-C over its part out of the face, its height tall (ftcore::massingFrontCollider):
-// a world-dynamic object, so it stops the lead and cuts the navmesh (the tour pilot and the -Goals and -Coverage checks keep to
-// where the lead can go), while visibility and camera traces (the crowd's) and the world-static object queries (the traversal
-// probe's climbs, knockback) pass it. It is laid whenever -Frontage runs. A missing mesh fails the run before anything is built. The log gives
+// a world-dynamic object, so it stops the lead; it leaves the navmesh alone (nothing on the strip paths by it; -Goals and
+// -Coverage paths may cross one), visibility and camera traces (the crowd's) and the world-static object queries (the traversal
+// probe's climbs, knockback) pass it, and the traversal probe turns down a climb behind one. Ground pieces keep off the doors
+// (-RoadDoors) and the narrow ways' mouths (ftcore::massingFrontMouths); a collider over either fails the run. It is laid whenever -Frontage runs. A missing mesh fails the run before anything is built. The log gives
 // each rule's size, a count line per rule (placed, faces, tries and why the others failed) and a totals line.
 // The dressing goes in that order, kerbs, quay, frontage, then the props, each keeping out of the room the ones before
 // took.
