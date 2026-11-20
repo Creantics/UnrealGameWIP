@@ -118,6 +118,24 @@ float knitAt(const GarmentTileSettings& s, float u, float v) {
     return leg * bulge * (0.92f + 0.08f * fibre);
 }
 
+// 1/1 plain weave: on a repeats x repeats yarn grid the warp is up where yarn column + yarn row is even, so the
+// crossings make a checker. Each yarn is round across its width and sinks where it dives under the crossing yarn;
+// slubs (thick and thin stretches) run along each yarn, and a fine fuzz sits over all of it.
+float plainAt(const GarmentTileSettings& s, float u, float v) {
+    const uint32_t n = s.repeats;
+    const float x = u * static_cast<float>(n), y = v * static_cast<float>(n);
+    const uint32_t i = static_cast<uint32_t>(x) % n, j = static_cast<uint32_t>(y) % n;
+    const float fx = x - std::floor(x), fy = y - std::floor(y);
+    const bool warpUp = (i + j) % 2 == 0;
+    const float across = warpUp ? std::sin(kPi * fx) : std::sin(kPi * fy);
+    const float along = warpUp ? std::sin(kPi * fy) : std::sin(kPi * fx);
+    const float yarn = std::sqrt(std::max(across, 0.f)) * (0.65f + 0.35f * along);
+    // A slub follows its own yarn: the warp's varies down its column, the weft's along its row.
+    const float slub = warpUp ? hash01(s.seed, 9, i, (j / 3) % std::max(n / 3, 1u)) : hash01(s.seed, 10, j, (i / 3) % std::max(n / 3, 1u));
+    const float fuzz = tileNoise(s.seed, 5, n * 4, u, v);
+    return yarn * (0.85f + 0.15f * slub) * (0.93f + 0.07f * fuzz);
+}
+
 } // namespace
 
 GarmentTileSettings garmentTileDefaults(GarmentTile tile) {
@@ -138,6 +156,11 @@ GarmentTileSettings garmentTileDefaults(GarmentTile tile) {
         s.normalStrength = 3.f;
         s.seed = 13;
         break;
+    case GarmentTile::Plain:
+        s.repeats = 40;
+        s.normalStrength = 3.f;
+        s.seed = 14;
+        break;
     }
     return s;
 }
@@ -149,6 +172,9 @@ bool makeGarmentHeight(GarmentTile tile, const GarmentTileSettings& s, std::vect
     }
     if (tile == GarmentTile::Twill && s.repeats % 3 != 0) {
         return false;  // the 2/1 repeat is three yarns: anything else leaves a seam at the tile edge
+    }
+    if (tile == GarmentTile::Plain && s.repeats % 2 != 0) {
+        return false;  // the 1/1 repeat is two yarns
     }
     const uint32_t n = s.size;
     const float inv = 1.f / static_cast<float>(n);
@@ -168,6 +194,9 @@ bool makeGarmentHeight(GarmentTile tile, const GarmentTileSettings& s, std::vect
                 break;
             case GarmentTile::Knit:
                 h = knitAt(s, u, v);
+                break;
+            case GarmentTile::Plain:
+                h = plainAt(s, u, v);
                 break;
             }
             height[static_cast<size_t>(y) * n + x] = h;

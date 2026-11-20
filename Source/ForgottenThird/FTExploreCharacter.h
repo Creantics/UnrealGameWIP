@@ -417,6 +417,12 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> BodyClip;
 	TArray<float> BodyTimes;
+#if !UE_BUILD_SHIPPING
+	// -ExplorePortraitPoseDump: next to each portrait shot, <shot>.pose.json holds the clip and time, the view, and every
+	// skinned component's bones in component space as drawn that frame (review only; never inside the project).
+	void DumpPortraitPose(const FString& ShotFile, float Yaw) const;
+	bool bPoseDump = false;
+#endif
 
 	TWeakObjectPtr<AFTExploreDirector> Director;
 	// When the last search for a director found none (real seconds): a world without one is searched once a second, not per call (ScenePlaying asks every tick).

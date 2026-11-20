@@ -20,6 +20,7 @@
 #include "ForgottenThird.h"
 #include "FTText.h"
 #include "ftcore/GarmentFront.h"
+#include "ftcore/LeadWet.h"
 #include "ftcore/LookBody.h"
 
 namespace
@@ -711,8 +712,18 @@ int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 		Piece->SetSkeletalMesh(PieceMesh);
 		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Piece->bCollideWithEnvironment = true; // cloth pieces (FTBuildCloth) also push off the level, not just the body
+		const bool bHasCloth = PieceMesh->GetMeshClothingAssets().Num() > 0;
+		// -CapeStatic (off by default): a cloth piece named *Cape* is worn as its skinned mesh, with no cloth actors at all.
+		static const bool bCapeStatic = FParse::Param(FCommandLine::Get(), TEXT("CapeStatic"));
+		const bool bStatic = bHasCloth && bCapeStatic && Name.Contains(TEXT("Cape"));
+		if (bStatic)
+		{
+			Piece->bAllowClothActors = false;
+			Piece->bDisableClothSimulation = true;
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: piece %s worn skinned, cloth off (-CapeStatic)."), Who, *Name);
+		}
 		Piece->RegisterComponent();
-		Cloth += PieceMesh->GetMeshClothingAssets().Num() > 0;
+		Cloth += bHasCloth && !bStatic;
 		Piece->SetLeaderPoseComponent(&Body);
 		OutPieces.Add(Piece);
 	}
@@ -958,6 +969,184 @@ int32 FTLook::SwapMaterials(USkeletalMeshComponent& Body, const TArray<TObjectPt
 		Total += Slots;
 	}
 	return Total;
+}
+
+int32 FTLook::ShowWet(AActor& Owner, FFTWetState& State, const ftcore::WaterWetness& Cloth, float Surface, float FeetZ,
+	const TArray<TObjectPtr<USceneComponent>>& Grooms, const TArray<FFTGroomLook>& GroomLooks, float DeltaSeconds, const TCHAR* Who)
+{
+	static const FName WetnessName(TEXT("Wetness"));
+	static const FName LineName(TEXT("WetLineZ"));
+	static const FName SiltName(TEXT("WetSilt"));
+	static const FName SkinWetName(TEXT("SkinWet"));
+	static const FName MhRoughName(TEXT("Roughness Global Multiply Post-Bake"));
+	static const FName MhSpecName(TEXT("Specular Global Multiply Post-Bake"));
+	static const FName RoughName(TEXT("Roughness"));
+	static const FName HairRoughName(TEXT("HairRoughness"));
+	static const FName MelaninName(TEXT("hairMelanin"));
+	int32 Written = 0;
+
+	// The cloth: Wetness, the line and the silt on every skeletal mesh slot.
+	const bool bClothActive = Cloth.wetness > 0.f || State.Shown > 0.f || Cloth.silt > 0.f || State.SiltShown > 0.f;
+	if (bClothActive)
+	{
+		if (!State.bMade || State.Serial != WornMeshSerial())
+		{
+			State.bMade = true;
+			State.Serial = WornMeshSerial();
+			State.Materials.Reset();
+			State.SkinDry.Reset();
+			State.Shown = -1.f;
+			State.LineShown = -1.0e9f;
+			State.SiltShown = -1.f;
+			State.SkinShown = -1.f;
+			TInlineComponentArray<USkeletalMeshComponent*> Meshes(&Owner);
+			for (USkeletalMeshComponent* Part : Meshes)
+			{
+				const int32 Count = Part ? Part->GetNumMaterials() : 0;
+				for (int32 Index = 0; Index < Count; ++Index)
+				{
+					if (!Part->GetMaterial(Index))
+					{
+						continue;
+					}
+					if (UMaterialInstanceDynamic* Dynamic = Part->CreateAndSetMaterialInstanceDynamic(Index))
+					{
+						Dynamic->SetScalarParameterValue(TEXT("WetLineSoft"), 8.f);
+						FVector2f Dry(-1.f, -1.f);
+						float Value = 0.f;
+						if (Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(MhRoughName), Value))
+						{
+							Dry.X = Value;
+						}
+						if (Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(MhSpecName), Value))
+						{
+							Dry.Y = Value;
+						}
+						State.Materials.Add(Dynamic);
+						State.SkinDry.Add(Dry);
+					}
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: wetness goes to %d dynamic materials on %d skeletal meshes."), Who,
+				State.Materials.Num(), Meshes.Num());
+		}
+		const float LineZ = FeetZ + Cloth.line * 100.f;
+		const bool bWet = FMath::Abs(Cloth.wetness - State.Shown) > 0.004f || (Cloth.wetness <= 0.f && State.Shown != 0.f);
+		const bool bLine = FMath::Abs(LineZ - State.LineShown) > 1.f;
+		const bool bSilt = Cloth.silt != State.SiltShown;
+		if (bWet || bLine || bSilt)
+		{
+			for (UMaterialInstanceDynamic* Dynamic : State.Materials)
+			{
+				if (!Dynamic)
+				{
+					continue;
+				}
+				if (bWet)
+				{
+					Dynamic->SetScalarParameterValue(WetnessName, Cloth.wetness);
+				}
+				if (bLine)
+				{
+					Dynamic->SetScalarParameterValue(LineName, LineZ);
+				}
+				if (bSilt)
+				{
+					Dynamic->SetScalarParameterValue(SiltName, Cloth.silt);
+				}
+				++Written;
+			}
+			State.Shown = bWet ? Cloth.wetness : State.Shown;
+			State.LineShown = bLine ? LineZ : State.LineShown;
+			State.SiltShown = Cloth.silt;
+		}
+	}
+
+	// The surface: wet grooms swap, the eased skin amount goes to the skin and the hair without a wet groom.
+	const bool bGroom = ftcore::leadwet::groomWet(Surface, State.bGroomWet);
+	if (bGroom != State.bGroomWet)
+	{
+		State.bGroomWet = bGroom;
+		const int32 Swapped = SetGroomsWet(Grooms, GroomLooks, bGroom, Who);
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: wet switch %s grooms on (%d swapped) at %.2f."), Who, bGroom ? TEXT("wet") : TEXT("dry"),
+			Swapped, Surface);
+	}
+	const float Target = ftcore::leadwet::skin(Surface);
+	State.SkinEased = ftcore::leadwet::ease(State.SkinEased, Target, DeltaSeconds);
+	const float Skin = State.SkinEased;
+	const bool bChanged = FMath::Abs(Skin - State.SkinShown) > 0.004f || (Skin == Target && Skin != State.SkinShown);
+	if (!State.bMade || !bChanged)
+	{
+		return Written;
+	}
+	for (int32 Index = 0; Index < State.Materials.Num(); ++Index)
+	{
+		UMaterialInstanceDynamic* Dynamic = State.Materials[Index];
+		if (!Dynamic)
+		{
+			continue;
+		}
+		Dynamic->SetScalarParameterValue(SkinWetName, Skin);
+		const FVector2f Dry = State.SkinDry.IsValidIndex(Index) ? State.SkinDry[Index] : FVector2f(-1.f, -1.f);
+		if (Dry.X >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MhRoughName, ftcore::leadwet::mhRoughness(Dry.X, Skin));
+		}
+		if (Dry.Y >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MhSpecName, ftcore::leadwet::mhSpecular(Dry.Y, Skin));
+		}
+		++Written;
+	}
+	if (!State.bHairMade)
+	{
+		State.bHairMade = true;
+		State.HairMaterials.Reset();
+		State.HairDry.Reset();
+		MakeHairWetMaterials(Grooms, GroomLooks, State.HairMaterials);
+		for (UMaterialInstanceDynamic* Dynamic : State.HairMaterials)
+		{
+			FVector3f Dry(-1.f, -1.f, -1.f);
+			float Value = 0.f;
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(RoughName), Value))
+			{
+				Dry.X = Value;
+			}
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(HairRoughName), Value))
+			{
+				Dry.Y = Value;
+			}
+			if (Dynamic && Dynamic->GetScalarParameterValue(FHashedMaterialParameterInfo(MelaninName), Value))
+			{
+				Dry.Z = Value;
+			}
+			State.HairDry.Add(Dry);
+		}
+	}
+	for (int32 Index = 0; Index < State.HairMaterials.Num(); ++Index)
+	{
+		UMaterialInstanceDynamic* Dynamic = State.HairMaterials[Index];
+		const FVector3f& Dry = State.HairDry[Index];
+		if (!Dynamic)
+		{
+			continue;
+		}
+		if (Dry.X >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(RoughName, ftcore::leadwet::hairRoughness(Dry.X, Skin));
+		}
+		if (Dry.Y >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(HairRoughName, ftcore::leadwet::hairRoughness(Dry.Y, Skin));
+		}
+		if (Dry.Z >= 0.f)
+		{
+			Dynamic->SetScalarParameterValue(MelaninName, ftcore::leadwet::hairMelanin(Dry.Z, Skin));
+		}
+		++Written;
+	}
+	State.SkinShown = Skin;
+	return Written;
 }
 
 void FTLook::LogLevelStart(const TCHAR* Stage)
