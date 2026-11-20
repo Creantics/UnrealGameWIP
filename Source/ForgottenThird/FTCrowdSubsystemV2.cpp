@@ -1792,7 +1792,8 @@ void UFTCrowdSubsystemV2::LogGroundAt()
 	// Every surface under one point, top down: the terrain against the street there. Members stand on the first one.
 	double X = CrowdV2Local::kGroundAtX, Y = CrowdV2Local::kGroundAtY;
 	FString At;
-	if (FParse::Value(FCommandLine::Get(), TEXT("CrowdGroundAt="), At))
+	// bShouldStopOnSeparator false: the default stops at the comma and drops Y (as -WorldStartAt reads its list).
+	if (FParse::Value(FCommandLine::Get(), TEXT("CrowdGroundAt="), At, false))
 	{
 		FString L, R;
 		if (At.Split(TEXT(","), &L, &R))
