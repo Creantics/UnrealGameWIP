@@ -3590,6 +3590,7 @@ void AFTExploreCharacter::LogLeadGoHold()
 	const float Rise = ftcore::jumpRise(Move->JumpZVelocity, Gravity, GetJumpMaxHoldTime());
 	// And whether the traversal probe sees anything to vault (TryTraverse's own look).
 	const TCHAR* Probe = TEXT("no anim");
+	const TCHAR* AirProbe = TEXT("no anim");
 	ftcore::TraversalObstacle Obstacle;
 	FVector In;
 	float ProbeHeight = 0.f;
@@ -3608,13 +3609,26 @@ void AFTExploreCharacter::LogLeadGoHold()
 		{
 			Probe = TEXT("turned down at a frontage blocker");
 		}
+		// The catch from a jump's height (the air probe), for a top out of the ground's reach.
+		AirProbe = TEXT("nothing found");
+		bool bAirBlocker = false;
+		ftcore::TraversalObstacle AirObstacle;
+		FVector AirIn;
+		if (ProbeObstacle(Anim->GetTraversal(), true, AirObstacle, AirIn, &bAirBlocker))
+		{
+			AirProbe = TEXT("found");
+		}
+		else if (bAirBlocker)
+		{
+			AirProbe = TEXT("turned down at a frontage blocker");
+		}
 	}
 	const FVector At = GetActorLocation();
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump %d. In the way: lowest run tops at %.0f cm over the feet, %.0f cm ahead; highest hit tops at %.0f cm (rows 10..200 cm: %s); jump rise %.0f cm (JumpZ %.0f, gravity %.0f, hold %.2f s): %s the lowest run, %s the highest; traversal probe %s (%.0f cm top, %.0f cm ahead)."),
+		TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump %d. In the way: lowest run tops at %.0f cm over the feet, %.0f cm ahead; highest hit tops at %.0f cm (rows 10..200 cm: %s); jump rise %.0f cm (JumpZ %.0f, gravity %.0f, hold %.2f s): %s the lowest run, %s the highest; traversal probe %s (%.0f cm top, %.0f cm ahead); air catch %s."),
 		At.X, At.Y, At.Z, LeadGoTry.tries(), Top, TopAhead, HighTop, Rows, Rise, Move->JumpZVelocity, Gravity, GetJumpMaxHoldTime(),
 		Top < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(Top)) ? TEXT("CLEARS") : TEXT("does NOT clear"),
-		HighTop < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(HighTop)) ? TEXT("CLEARS") : TEXT("does NOT clear"), Probe, ProbeHeight, ProbeAhead);
+		HighTop < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(HighTop)) ? TEXT("CLEARS") : TEXT("does NOT clear"), Probe, ProbeHeight, ProbeAhead, AirProbe);
 #endif
 }
 

@@ -4083,52 +4083,48 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			World->DestroyWorld(false);
 			return 1;
 		}
-		// The arcades' clear way between the walls and the colliders: two pawn capsules (radius 34 cm) abreast, else the
-		// build fails.
+		// The arcades' clear way between the walls and the colliders, measured at every station no wall covers: two pawn
+		// capsules (radius 34 cm) abreast, else the build fails.
 		{
 			constexpr double TwoAbreast = 4.0 * 0.34;
-			std::vector<ftcore::MassingFoot> Walls, Colliders;
+			std::vector<ftcore::MassingFoot> ArcadeWalls, ArcadeColliders;
 			for (size_t I = 0; I < Boxes.size(); ++I)
 			{
 				if (Visible[I] && ftcore::massingLookIsBuilding(ftcore::massingLookSurface(Boxes[I])))
 				{
-					Walls.push_back(ftcore::massingBoxFoot(Boxes[I]));
+					ArcadeWalls.push_back(ftcore::massingBoxFoot(Boxes[I]));
 				}
 			}
 			for (const ftcore::MassingProp& Piece : Pieces)
 			{
-				ftcore::MassingBox Box;
-				if (ftcore::massingFrontCollider(Piece, FrontRules[Piece.rule], Box))
+				ftcore::MassingBox PieceCollider;
+				if (ftcore::massingFrontCollider(Piece, FrontRules[Piece.rule], PieceCollider))
 				{
-					Colliders.push_back(ftcore::massingBoxFoot(Box));
+					ArcadeColliders.push_back(ftcore::massingBoxFoot(PieceCollider));
 				}
 			}
-			int32 Narrow = 0;
-			for (const ftcore::MassingStreet& Way : PropStreets)
+			int32 NarrowArcades = 0;
+			for (const ftcore::MassingStreet& ArcadeWay : PropStreets)
 			{
-				if (Way.kind != "market_arcade")
+				if (ArcadeWay.kind != "market_arcade")
 				{
 					continue;
 				}
-				ftcore::MassingFrontClear Clear;
-				if (!ftcore::massingFrontClearWidth(Way, Walls, Colliders, Clear))
+				ftcore::MassingFrontClear ArcadeClear;
+				ftcore::massingFrontClearWidth(ArcadeWay, ArcadeWalls, ArcadeColliders, ArcadeClear);
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: arcade %s (%.1f m): %d stations measured, least clear "
+					"%.2f m at (%.1f, %.1f) (walls alone %.2f m); %d narrowed by a collider."), *Utf8(ArcadeWay.id), ArcadeWay.width,
+					static_cast<int32>(ArcadeClear.measured), ArcadeClear.least, ArcadeClear.lx, ArcadeClear.ly, ArcadeClear.leastWalls,
+					static_cast<int32>(ArcadeClear.stations));
+				if (ArcadeClear.measured == 0 || ArcadeClear.least < TwoAbreast)
 				{
-					UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: arcade %s (%.1f m): no collider narrows it."),
-						*Utf8(Way.id), Way.width);
-					continue;
-				}
-				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: arcade %s (%.1f m): clear %.2f m at its narrowest "
-					"(walls alone %.2f m), %d stations narrowed."), *Utf8(Way.id), Way.width, Clear.narrowest, Clear.wallsOnly,
-					static_cast<int32>(Clear.stations));
-				if (Clear.narrowest < TwoAbreast)
-				{
-					++Narrow;
+					++NarrowArcades;
 				}
 			}
-			if (Narrow > 0)
+			if (NarrowArcades > 0)
 			{
-				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: frontage: %d arcades narrower than two pawns abreast (%.2f m)."),
-					Narrow, TwoAbreast);
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: frontage: %d arcades unmeasured or narrower than two pawns abreast (%.2f m)."),
+					NarrowArcades, TwoAbreast);
 				World->DestroyWorld(false);
 				return 1;
 			}
