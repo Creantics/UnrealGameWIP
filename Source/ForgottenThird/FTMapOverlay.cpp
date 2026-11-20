@@ -606,7 +606,7 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("MAPOVERLAY MUST %s must_undrawn=%d crowded=%d caption=%d other=%d cap_unpicked=%d [%s]"),
 				kOvShotNames[Z], MustUndrawn + MustCapUnpicked, MustCrowded, MustCaption, MustOther + MustCapUnpicked, MustCapUnpicked, *MustList);
-			auto NoteList = [this](const FSeatNote* Notes, int32 Total, bool bGap) {
+			auto NoteList = [this](const FSeatNote* Notes, int32 Total, bool bGap, bool bAt) {
 				FString Out;
 				for (int32 K = 0; K < FMath::Min(Total, kMaxSeatNotes); ++K)
 				{
@@ -615,6 +615,10 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 					{
 						Out += FString::Printf(TEXT(":%.1fh"), Notes[K].GapH);
 					}
+					if (bAt)
+					{
+						Out += FString::Printf(TEXT("@%.0f,%.0f"), Notes[K].X, Notes[K].Y);
+					}
 				}
 				return Out;
 			};
@@ -622,9 +626,9 @@ void FFTMapOverlay::TickShots(APlayerController& PC, double Now, bool& bOverlay)
 			// at a point after the placer left them out along their road.
 			UE_LOG(LogForgottenThird, Display,
 				TEXT("MAPOVERLAY SEATS %s fallback_seats=%d standing=%d place_anyland=%d [%s] district_outside=%d [%s] far_seats=%d [%s] max_gap_h=%.1f build_ms=%.2f second_seats=%d [%s] along_as_point=%d [%s]"),
-				kOvShotNames[Z], PointSeats, StandingSeats, PlaceAnyLand, *NoteList(AnyLandNotes, PlaceAnyLand, false), DistrictOutside,
-				*NoteList(OutsideNotes, DistrictOutside, false), FarSeats, *NoteList(FarNotes, FarSeats, true), MaxGapH, LastBuildMs, SecondSeats,
-				*NoteList(SecondNotes, SecondSeats, true), AlongAsPoint, *NoteList(AlongPointNotes, AlongAsPoint, true));
+				kOvShotNames[Z], PointSeats, StandingSeats, PlaceAnyLand, *NoteList(AnyLandNotes, PlaceAnyLand, false, false), DistrictOutside,
+				*NoteList(OutsideNotes, DistrictOutside, false, false), FarSeats, *NoteList(FarNotes, FarSeats, true, false), MaxGapH, LastBuildMs,
+				SecondSeats, *NoteList(SecondNotes, SecondSeats, true, true), AlongAsPoint, *NoteList(AlongPointNotes, AlongAsPoint, true, true));
 			// F4: the cursor's name, its halo included, under none of the marks drawn over it (on_marks=0), and whether it moved
 			// for them or was left out.
 			int32 CursorNames = 0, OnMarks = 0;
@@ -1619,13 +1623,13 @@ void FFTMapOverlay::BuildLabels(int32 Picked, uint16 PickedHere, float S, float 
 		{
 			if (AlongAsPoint < kMaxSeatNotes)
 			{
-				AlongPointNotes[AlongAsPoint] = {Rt.Name, GapH};
+				AlongPointNotes[AlongAsPoint] = {Rt.Name, GapH, T.at.x, T.at.y};
 			}
 			++AlongAsPoint;
 		}
 		if (SecondSeats < kMaxSeatNotes)
 		{
-			SecondNotes[SecondSeats] = {Rt.Name, GapH};
+			SecondNotes[SecondSeats] = {Rt.Name, GapH, T.at.x, T.at.y};
 		}
 		++SecondSeats;
 	}

@@ -162,11 +162,13 @@ private:
 	// How each candidate was seated: along its road, on its water (or its bank), the sea's, at a point after falling back,
 	// a place's, a district's, the cursor's (its road's or district's).
 	enum class ESeat : uint8 { Along, Water, Sea, Point, Place, District, Cursor };
-	// A point seat's note for the capture log: the name, and the gap from its point to its box's nearest edge (box heights).
+	// A point seat's note for the capture log: the name, the gap from its point to its box's nearest edge (box heights), and
+	// (second seats only) the box's centre on the screen, px, so a close still can be cut round it.
 	struct FSeatNote
 	{
 		uint16 Name = 0;
 		float GapH = 0.f;
+		float X = 0.f, Y = 0.f;
 	};
 	static constexpr int32 kMaxSeatNotes = 16;
 	// The point seats at the last placing: names seated at a point after falling back, standing seats, places seated on any
