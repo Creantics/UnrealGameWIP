@@ -10,6 +10,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/HitResult.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -40,6 +41,7 @@
 #include "FTStepHost.h"
 #include "FTStorySubsystem.h"
 #include "FTStyleController.h"
+#include "ftcore/LeadWet.h"
 #include "FTText.h"
 
 #include "ftcore/BattleDemo.h"
@@ -129,6 +131,31 @@ constexpr int32 kOverTargetBase = 400;
 constexpr double kFollowerCameraShare = 0.8;
 // Each follower turns to face where the lead turned on the spot this long (s) after the one before it.
 constexpr float kFollowerFaceDelay = 0.3f;
+
+#if !UE_BUILD_SHIPPING
+// ft.PartyWet (dev, never in a shipped build): "<follower>,<wetness>" forces one follower's weather value (its place among
+// the followers from 0, or -1 every follower) for a wet-beside-dry still; empty or unreadable text is off
+// (ftcore::leadwet::parsePartyWet). Read once when it changes, never per frame.
+ftcore::leadwet::PartyWetForce GPartyWetForce;
+void OnPartyWetChanged(IConsoleVariable* Var)
+{
+	const FString Text = Var ? Var->GetString() : FString();
+	const FTCHARToUTF8 Utf8(*Text);
+	GPartyWetForce = ftcore::leadwet::parsePartyWet(reinterpret_cast<const char*>(Utf8.Get()));
+	UE_LOG(LogForgottenThird, Display, TEXT("ft.PartyWet \"%s\": %s."), *Text,
+		GPartyWetForce.on ? *FString::Printf(TEXT("follower %d forced to %.2f"), GPartyWetForce.slot, GPartyWetForce.wetness) : TEXT("off"));
+}
+TAutoConsoleVariable<FString> CVarPartyWet(TEXT("ft.PartyWet"), TEXT(""),
+	TEXT("Dev: \"<follower>,<wetness>\" forces a follower's wet switch (-1: every follower); empty is off."),
+	FConsoleVariableDelegate::CreateStatic(&OnPartyWetChanged));
+const ftcore::leadwet::PartyWetForce& ForcedPartyWet() { return GPartyWetForce; }
+#else
+const ftcore::leadwet::PartyWetForce& ForcedPartyWet()
+{
+	static constexpr ftcore::leadwet::PartyWetForce Off{};
+	return Off;
+}
+#endif
 
 const TCHAR* const kObjectiveNames[ftcore::demo::kObjCount] = {
 	TEXT("Talk to Duy"),
@@ -685,6 +712,16 @@ void AFTExploreDirector::TickFollowers(AFTExploreCharacter& Player, float DeltaS
 	{
 		PlaceFollowers(Player, DeltaSeconds);
 	}
+	// The wet switch on every follower (the Third among them), held or not: its own water soak under the lead's weather
+	// value, or the one ft.PartyWet forces on it.
+	const float LeadWeather = Player.GetLeadWeather();
+	for (int32 I = 0; I < Followers.Num(); ++I)
+	{
+		if (AFTPartyFollower* Follower = Followers[I])
+		{
+			Follower->StepWet(ftcore::leadwet::partyWeather(LeadWeather, I, ForcedPartyWet()), DeltaSeconds);
+		}
+	}
 }
 
 void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
@@ -746,6 +783,11 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		}
 		Followers.Add(Follower);
 	}
+#if !UE_BUILD_SHIPPING
+	// ft.PartyWet as it stands now: a value given before the switch was registered (an ini, the command line) fires no
+	// change callback.
+	OnPartyWetChanged(CVarPartyWet.AsVariable());
+#endif
 	// A start in the water: the lead's water plan takes the new set before its first placement (at the surface slots).
 	Player.OnFollowersSpawned();
 	PlaceFollowers(Player, 0.f);

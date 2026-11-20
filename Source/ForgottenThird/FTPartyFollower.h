@@ -23,6 +23,7 @@
 #include "FTLocomotionAnimInstance.h"
 #include "FTLook.h"
 #include "FTTraversalProbe.h"
+#include "ftcore/WaterBodies.h"
 #include "ftcore/WaterFollow.h"
 #include "ftcore/WaterLoco.h"
 
@@ -105,6 +106,11 @@ public:
 	void BeginInWater();
 	// The member's name in the water follow's lines (and the proofs').
 	const FString& GetWaterName() const { return WaterName; }
+	// The wet switch, once a tick after Place (AFTExploreDirector::TickFollowers): its own water soak, stepped from the
+	// water it is in as UFTWaterSubsystem::LeadWater steps the lead's, shown under Weather (its party weather value,
+	// ftcore::leadwet::partyWeather) by FTLook::ShowWet. Dry and never wet costs a few compares.
+	void StepWet(float Weather, float DeltaSeconds);
+	const ftcore::WaterWetness& GetWetness() const { return Wet; }
 
 private:
 	// Takes the lead's vaults, climbs and catches begun since the last call, and forgets those the body at Feet is past or
@@ -214,6 +220,10 @@ private:
 	ftcore::WaterLoco WaterLocoBody;
 	ftcore::WaterLocoPose WaterPose;
 	ftcore::WaterState WaterNow;
+	ftcore::WaterWetness Wet;                   // its own water soak (StepWet)
+	UPROPERTY(Transient)
+	FFTWetState WetState;                       // what ShowWet last wrote on it
+	TArray<FFTGroomLook> GroomLooks;            // the look's grooms, beside GroomComponents (their wet grooms)
 	bool bWaterLocoReady = false;
 	TWeakObjectPtr<UAnimInstance> WaterClipsAnim;
 	float WaterBedZ = -10.f;                    // m: the bed under it, last looked at
