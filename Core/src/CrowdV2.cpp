@@ -56,6 +56,23 @@ float segDist(Vec2 a, Vec2 b, Vec2 p) {
     return dist({a.x + ux * t, a.y + uy * t}, p);
 }
 
+// How much of the segment ab lies inside the circle of radius r round c (m). In double: the quadratic's terms are
+// large next to its roots this far from the origin.
+double lengthInCircle(Vec2 a, Vec2 b, Vec2 c, float r) {
+    const double dx = static_cast<double>(b.x) - a.x, dy = static_cast<double>(b.y) - a.y;
+    const double ox = static_cast<double>(a.x) - c.x, oy = static_cast<double>(a.y) - c.y;
+    const double qa = dx * dx + dy * dy;
+    if (qa <= 1e-12) return 0.0;
+    const double qb = 2.0 * (dx * ox + dy * oy);
+    const double qc = ox * ox + oy * oy - static_cast<double>(r) * r;
+    const double disc = qb * qb - 4.0 * qa * qc;
+    if (disc <= 0.0) return 0.0;
+    const double root = std::sqrt(disc);
+    const double t0 = std::max(0.0, (-qb - root) / (2.0 * qa));
+    const double t1 = std::min(1.0, (-qb + root) / (2.0 * qa));
+    return t1 > t0 ? (t1 - t0) * std::sqrt(qa) : 0.0;
+}
+
 // The kinds that make a member close by run whatever it sees or how bold it is.
 bool fightClass(CrowdEventKind k) {
     return k == CrowdEventKind::FightStart || k == CrowdEventKind::Strike || k == CrowdEventKind::Gunshot ||
@@ -132,6 +149,9 @@ bool CrowdSim::init(const CrowdGraph& graph, const CrowdTuning& tuning, std::uin
     doorList_.clear();
     indoors_ = 0;
     density_ = 1.f;
+    reachLength_ = reachArea_ = 0.f;
+    reachAt_ = Vec2{};
+    reachMeasured_ = false;
     time_ = 0.0;
     acc_ = 0.f;
     steps_ = 0;
@@ -873,8 +893,41 @@ void CrowdSim::decide(std::uint32_t i) {
 
 // ---- Doors (S-275) and the streets' share (S-283) ----
 
+std::uint32_t CrowdSim::bandCap() const {
+    // No more walkers than the walking band in reach holds at bandDensity (rounded as the target is).
+    if (tuning_.bandDensity <= 0.f) return UINT32_MAX;
+    return static_cast<std::uint32_t>(tuning_.bandDensity * reachArea_ + 0.5f);
+}
+
 std::uint32_t CrowdSim::streetTarget() const {
-    return static_cast<std::uint32_t>(static_cast<float>(tuning_.targetAgents) * density_ + 0.5f);
+    const auto want = static_cast<std::uint32_t>(static_cast<float>(tuning_.targetAgents) * density_ + 0.5f);
+    return std::min(want, bandCap());
+}
+
+void CrowdSim::measureReach(Vec2 player) {
+    if (reachMeasured_ && dist2(player, reachAt_) < kCrowdReachMove * kCrowdReachMove) return;
+    reachMeasured_ = true;
+    reachAt_ = player;
+    // The ring spawnSome uses once the streets hold half their share (not the fill ring).
+    const float rIn = tuning_.spawnMin, rOut = std::max(rIn + 1.f, tuning_.spawnMax);
+    double len = 0.0, area = 0.0;
+    for (std::uint32_t n = 0; n < graph_->nodeCount(); ++n) {
+        if (!graph_->spawnable(n)) continue; // an edge's two ends share a component, so both or neither are
+        const Vec2 from = graph_->node(n);
+        for (std::uint32_t k = 0; k < graph_->degree(n); ++k) {
+            const CrowdEdge& e = graph_->edge(n, k);
+            if (e.to <= n) continue; // each street once (its other direction mirrors it)
+            const Vec2 to = graph_->node(e.to);
+            const double inRing = lengthInCircle(from, to, player, rOut) - lengthInCircle(from, to, player, rIn);
+            if (inRing <= 0.0) continue;
+            // A pavement on both sides is two bands; one side's pavement, or none (the middle band), is one.
+            const double bands = e.lane > 0.f && e.side == 0 ? 2.0 : 1.0;
+            len += inRing;
+            area += inRing * bands * 2.0 * static_cast<double>(e.laneHalf);
+        }
+    }
+    reachLength_ = static_cast<float>(len);
+    reachArea_ = static_cast<float>(area);
 }
 
 std::uint32_t CrowdSim::setDoors(const std::vector<CrowdDoor>& doors) {
@@ -1532,6 +1585,7 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     for (Agent& a : agents_)
         if (a.state != CrowdState::Free) a.prev = a.pos;
     for (std::uint32_t i = 0; i < agents_.size(); ++i) wasDrawn_[i] = views_[i].live && views_[i].drawn ? 1 : 0;
+    measureReach(player); // before the spawns and the doors read streetTarget(), frozen or not
     if (!frozen_) {
         despawnFar(player);
         spawnSome(player);

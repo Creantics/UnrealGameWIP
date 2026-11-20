@@ -1296,6 +1296,134 @@ TEST_CASE("crowd spawn cap: with one dead-end street in the spawn ring the targe
     CHECK(CrowdTuning{}.spawnNearMax == 0u); // off unless the tuning file turns it on
 }
 
+namespace {
+// A 10 m street. A pavement p leaves a walking band of p - 1.01 m (wallInset 0.8, slack 0.01, 0.2 off the kerb) on
+// each pavement side: 1.51, 2.01, 2.51 and 3.01 give 0.5, 1.0, 1.5 and 2.0 m.
+CrowdStreet paved(std::vector<Vec2> pts, float pavement, std::int8_t side = 0) {
+    CrowdStreet s;
+    s.kind = "street";
+    s.width = 10.f;
+    s.pavement = pavement;
+    s.pavementSide = side;
+    s.points = std::move(pts);
+    return s;
+}
+} // namespace
+
+TEST_CASE("crowd reach: the walking band on spawnable street inside the spawn ring") {
+    // reachLength / reachBandArea: each street's length between spawnMin (40 m) and spawnMax (150 m) of the player,
+    // times its band width (2 x laneHalf), twice with a pavement on both sides.
+    auto reach = [](const std::vector<CrowdStreet>& streets, const CrowdGraphTuning& gt, float& len) {
+        CrowdGraph g;
+        REQUIRE(g.build(streets, gt));
+        CrowdTuning t;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 3));
+        sim.setPopulationFrozen(true);
+        sim.tick(t.step, {0.f, 0.f}, {0.f, 0.f});
+        len = sim.reachLength();
+        return sim.reachBandArea();
+    };
+    float len = 0.f;
+    // A street out from the player to 200 m: 110 m of it in the ring, at each band width.
+    const float bands[4] = {0.5f, 1.f, 1.5f, 2.f};
+    for (const float w : bands) {
+        const float area = reach({paved({{0.f, 0.f}, {200.f, 0.f}}, w + 1.01f)}, loose(), len);
+        CHECK(len == doctest::Approx(110.f).epsilon(1e-4));
+        CHECK(area == doctest::Approx(110.f * 2.f * w).epsilon(1e-4));
+    }
+    // Right through the player: the hole inside spawnMin is left out (2 x 110 m).
+    CHECK(reach({paved({{-200.f, 0.f}, {200.f, 0.f}}, 2.01f)}, loose(), len) == doctest::Approx(440.f).epsilon(1e-4));
+    CHECK(len == doctest::Approx(220.f).epsilon(1e-4));
+    // A chord 10 m off the player: 2 x (sqrt(150^2 - 10^2) - sqrt(40^2 - 10^2)).
+    const float chord = 2.f * (std::sqrt(150.f * 150.f - 100.f) - std::sqrt(40.f * 40.f - 100.f));
+    CHECK(reach({paved({{-200.f, 10.f}, {200.f, 10.f}}, 2.01f)}, loose(), len) == doctest::Approx(chord * 2.f).epsilon(1e-4));
+    // One pavement side: one band.
+    CHECK(reach({paved({{0.f, 0.f}, {200.f, 0.f}}, 2.01f, 1)}, loose(), len) == doctest::Approx(110.f).epsilon(1e-4));
+    // No pavement (a 6 m street): one middle band, 2 x (3 - 0.81) wide.
+    CHECK(reach({line({0.f, 0.f}, {200.f, 0.f})}, loose(), len) == doctest::Approx(110.f * 4.38f).epsilon(1e-4));
+    // An island under minComponent is never spawned on, so it adds nothing: a 12-node street (110 m in the ring) and a
+    // 2-node one 100 m off (all 60 m of it in the ring).
+    std::vector<Vec2> twelve;
+    for (int i = 0; i < 12; ++i) twelve.push_back({20.f * static_cast<float>(i), 0.f});
+    const std::vector<CrowdStreet> withIsland{paved(twelve, 2.01f), paved({{-100.f, 30.f}, {-100.f, -30.f}}, 2.01f)};
+    CHECK(reach(withIsland, CrowdGraphTuning{}, len) == doctest::Approx(220.f).epsilon(1e-4));
+    CHECK(len == doctest::Approx(110.f).epsilon(1e-4));
+    CHECK(reach(withIsland, loose(), len) == doctest::Approx(220.f + 120.f).epsilon(1e-4)); // spawnable once loose
+
+    // Measured again only once the player has moved kCrowdReachMove (5 m): a street from the player to 100 m.
+    CrowdGraph g;
+    REQUIRE(g.build({paved({{0.f, 0.f}, {100.f, 0.f}}, 2.01f)}, loose()));
+    CrowdTuning t;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 3));
+    sim.setPopulationFrozen(true);
+    sim.tick(t.step, {0.f, 0.f}, {0.f, 0.f});
+    CHECK(sim.reachLength() == doctest::Approx(60.f).epsilon(1e-4)); // 40..100
+    sim.tick(t.step, {-4.f, 0.f}, {0.f, 0.f});
+    CHECK(sim.reachLength() == doctest::Approx(60.f).epsilon(1e-4)); // 4 m: kept
+    sim.tick(t.step, {-6.f, 0.f}, {0.f, 0.f});
+    CHECK(sim.reachLength() == doctest::Approx(66.f).epsilon(1e-4)); // 6 m: 34..100
+}
+
+TEST_CASE("crowd band density cap: the streets' target is capped by the walking band in reach") {
+    // One 100 m street, a dead end at each end, 60 m off the player: all of it in the spawn ring, the only street there.
+    // At bandDensity 0.15 walkers a square metre the target (300) is capped at 0.15 x 100 m x 2 bands x the band width:
+    // 15, 30, 45 and 60 walkers at 0.5, 1.0, 1.5 and 2.0 m.
+    struct Seen {
+        float area = 0.f;
+        std::uint32_t target = 0, cap = 0, live = 0, out = 0, jam = 0;
+        std::uint64_t digest = 0;
+    };
+    auto runWith = [](float pavement, float bandDensity, float seconds) {
+        CrowdGraph g;
+        REQUIRE(g.build({paved({{-50.f, 60.f}, {50.f, 60.f}}, pavement)}, loose()));
+        CrowdTuning t; // as shipped: jitter, idling and the close-walker rule on
+        t.bandDensity = bandDensity;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 11));
+        Seen s;
+        const int steps = static_cast<int>(std::lround(seconds * 15.f));
+        for (int k = 0; k < steps; ++k) {
+            sim.tick(t.step, {0.f, 0.f}, {0.f, 0.f});
+            if (k >= 2 * 15) s.jam = std::max(s.jam, sim.largestJam(kCrowdJamRadius, kCrowdJamSeconds));
+        }
+        s.area = sim.reachBandArea();
+        s.target = sim.streetTarget();
+        s.cap = sim.bandCap();
+        s.live = sim.liveCount();
+        s.out = sim.liveCount() - sim.indoorCount();
+        s.digest = sim.digest();
+        return s;
+    };
+    const float widths[4] = {0.5f, 1.f, 1.5f, 2.f};
+    const std::uint32_t caps[4] = {15, 30, 45, 60};
+    for (int i = 0; i < 4; ++i) {
+        const Seen s = runWith(widths[i] + 1.01f, 0.15f, 60.f);
+        MESSAGE("band " << widths[i] << " m: area " << s.area << " m2, target " << s.target << ", live " << s.live
+                        << ", worst jam " << s.jam);
+        CHECK(s.area == doctest::Approx(100.f * 2.f * widths[i]).epsilon(1e-4));
+        CHECK(s.target == caps[i]);
+        CHECK(s.cap == caps[i]);
+        CHECK(s.out == caps[i]); // filled to the cap, and no further
+        CHECK(s.jam <= kCrowdJamGate); // the cap keeps the walking jam within the gate at every band width
+    }
+    // Off (0, the default) and a density too high to bind (10 x 100 m2 = 1000 over the 300 target) run alike.
+    const Seen off = runWith(1.51f, 0.f, 20.f), loose10 = runWith(1.51f, 10.f, 20.f);
+    CHECK(off.target == 300u);
+    CHECK(off.cap == UINT32_MAX); // off: no cap
+    CHECK(loose10.cap == 1000u);
+    CHECK(off.digest == loose10.digest);
+    CHECK(off.live == loose10.live);
+
+    CrowdTuning u;
+    std::string err;
+    REQUIRE_MESSAGE(importCrowdTuning(R"({"population": {"bandDensity": 0.15}})", u, &err), err);
+    CHECK(u.bandDensity == doctest::Approx(0.15f));
+    CHECK_FALSE(importCrowdTuning(R"({"population": {"bandDensity": -1}})", u, &err));
+    CHECK(CrowdTuning{}.bandDensity == 0.f); // off unless the tuning file turns it on
+}
+
 TEST_CASE("crowd on a real street table (opt-in)") {
     const std::string path = envText("FT_CROWD_STREETS");
     if (path.empty()) return;

@@ -66,7 +66,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
 
     JsonValue s = rd.section(root, "population");
     rd.only(s, "population", {"maxAgents", "targetAgents", "maxDrawn", "spawnMin", "spawnMax", "despawnDist", "fillMin", "spawnPerStep", "spawnNearMax",
-                                     "spawnNearRadius"});
+                                     "spawnNearRadius", "bandDensity"});
     rd.count(s, "population", "maxAgents", t.maxAgents, 1, 4096);
     rd.count(s, "population", "targetAgents", t.targetAgents, 0, 4096);
     rd.count(s, "population", "maxDrawn", t.maxDrawn, 0, 4096);
@@ -77,6 +77,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
     rd.count(s, "population", "spawnPerStep", t.spawnPerStep, 0, 256);
     rd.count(s, "population", "spawnNearMax", t.spawnNearMax, 0, 4096);
     rd.number(s, "population", "spawnNearRadius", t.spawnNearRadius, 1.0, 100.0);
+    rd.number(s, "population", "bandDensity", t.bandDensity, 0.0, 10.0);
     if (rd.ok && t.targetAgents > t.maxAgents) rd.fail("population", "targetAgents", "above maxAgents");
     if (rd.ok && !(t.spawnMin < t.spawnMax && t.spawnMax < t.despawnDist)) rd.fail("population", "spawnMax", "needs spawnMin < spawnMax < despawnDist");
 
