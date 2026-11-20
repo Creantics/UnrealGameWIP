@@ -8,7 +8,7 @@
 //                    [--canal <x0,y0,x1,y1> [--bridge <at>] --quay-out <csv>] (a canal's railing, mast and footbridge
 //                    points, roadQuayPoints, written as roadQuayCsv; --bridge: the footbridge's centre along the banks;
 //                    without --canal, --quay-out takes the table's first canal row; every canal row's channel solids,
-//                    roadCanalBuild, are built and counted)
+//                    roadCanalBuild, are built and counted) [--exits-out <csv>] [--canal-openings 1]
 //   ftcore_roadgraph --check 1 (--net <csv> [--r16 ...] | --roads <csv>) [--boxes <csv>] [--graph <csv>] [--list-all 1]
 //                    [--streets <csv> [--footway-skip <k1;k2>]]
 //   ftcore_roadgraph --yards 1 --boxes <csv> --area <x0,y0,x1,y1> --out <csv> [--net <csv>] [--streets <csv>]
@@ -439,6 +439,8 @@ int runYards(const YardArgs& a) {
 
 // --exits-out <csv>: the canals' ways out (roadExitCsv), for the rail's gaps.
 std::string gExitsOut;
+// --canal-openings 1: every canal row built with RoadCanal::openings (the build's -CanalOpenings).
+bool gCanalOpenings = false;
 
 int runNet(const std::string& netPath, const std::string& r16Path, double samples, const double origin[2], double spacing,
            const std::string& boxesPath, const std::string& outPath, bool listAll, const double* dump,
@@ -457,9 +459,13 @@ int runNet(const std::string& netPath, const std::string& r16Path, double sample
     // The table's canal rows: their channel solids; the first gives the quay points unless --canal does.
     if (!canal && !quayOut.empty() && !canals.empty()) canal = &canals.front();
     if (!canal && !quayOut.empty()) return die("--quay-out needs --canal or a canal row in the table");
-    for (const RoadCanal& c : canals)
+    for (RoadCanal& c : canals) {
+        c.openings = gCanalOpenings;
         std::printf("canal %s: %zu solids (floor %.2f, water %.2f)\n", c.id.c_str(), roadCanalBuild(c, ground, b),
                     c.floorZ, c.waterZ);
+        std::printf("canal %s: a flight's rail gap at most %.2f m along a bank%s\n", c.id.c_str(), roadCanalOpeningWorst(c, b),
+                    c.openings ? " (openings)" : "");
+    }
     if (!gExitsOut.empty()) {
         const std::string csv = roadExitCsv(b.exits);
         std::FILE* f = std::fopen(gExitsOut.c_str(), "wb");
@@ -605,6 +611,7 @@ int main(int argc, char** argv) {
         else if (k == "--bridge") canal.bridgeAt = std::atof(v.c_str());
         else if (k == "--quay-out") quayOut = v;
         else if (k == "--exits-out") gExitsOut = v;
+        else if (k == "--canal-openings") gCanalOpenings = std::atoi(v.c_str()) != 0;
         else if (k == "--area") haveArea = std::sscanf(v.c_str(), "%lf,%lf,%lf,%lf", &area[0], &area[1], &area[2], &area[3]) == 4;
         else return die("unknown option " + k);
     }

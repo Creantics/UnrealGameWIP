@@ -4,6 +4,7 @@
 #include "FTSeason.h"
 
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/DirectionalLightComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/DirectionalLight.h"
@@ -12,8 +13,10 @@
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FTFarSignsSubsystem.h"
 #include "FTNightLightData.h"
 #include "FTLookSubsystem.h"
+#include "FTWorldWaveSubsystem.h"
 #include "FTNightLook.h"
 #include "FTSceneLook.h"
 #include "FTText.h"
@@ -27,10 +30,13 @@
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "SceneView.h"
+#include "SceneViewExtension.h"
 
 #include "ftcore/LookTable.h"
 #include "ftcore/WindowInterior.h"
 
+#include <atomic>
 #include <string>
 
 namespace
@@ -48,9 +54,52 @@ TAutoConsoleVariable<int32> CVarDayShade(TEXT("r.FT.DayShade"), 1,
 	TEXT("The day's shadow floor (FTWorldClockSubsystem.h): 1 lifts the shade by day, 0 leaves the world look's own values."),
 	ECVF_Default);
 
+ftcore::DayLookSpec ReadDayLook()
+{
+	ftcore::DayLookSpec Spec;
+	const TCHAR* Cmd = FTLookSwitches();
+	FParse::Value(Cmd, TEXT("DayLookStep="), Spec.shadeStep);
+	FParse::Value(Cmd, TEXT("DayLookFog="), Spec.fogDensity);
+	FParse::Value(Cmd, TEXT("DayLookKelvin="), Spec.sunKelvin);
+	FParse::Value(Cmd, TEXT("DayLookWind="), Spec.windMps);
+	FParse::Value(Cmd, TEXT("DayLookCover="), Spec.cloudCover);
+	FParse::Value(Cmd, TEXT("DayLookContact="), Spec.contactShadowLength);
+	FParse::Value(Cmd, TEXT("DayLookSigns="), Spec.signWhiteRatio);
+	FParse::Value(Cmd, TEXT("DayLookShadowTint="), Spec.shadowTintChroma);
+	FParse::Value(Cmd, TEXT("DayLookFogStart="), Spec.fogStartM);
+	FString Off;
+	if (FParse::Value(Cmd, TEXT("DayLookOff="), Off, false))
+	{
+		TArray<FString> Levers;
+		Off.ParseIntoArray(Levers, TEXT(","));
+		for (const FString& Lever : Levers)
+		{
+			if (Lever.Equals(TEXT("shade"), ESearchCase::IgnoreCase)) { Spec.shadeStep = 0; }
+			else if (Lever.Equals(TEXT("fog"), ESearchCase::IgnoreCase)) { Spec.fogDensity = -1.f; }
+			else if (Lever.Equals(TEXT("cap"), ESearchCase::IgnoreCase)) { Spec.fogMaxOpacity = -1.f; }
+			else if (Lever.Equals(TEXT("tone"), ESearchCase::IgnoreCase)) { Spec.shadowTintChroma = -1.f; Spec.highlightTintChroma = -1.f; }
+			else if (Lever.Equals(TEXT("sun"), ESearchCase::IgnoreCase)) { Spec.sunKelvin = 0.f; }
+			else if (Lever.Equals(TEXT("wind"), ESearchCase::IgnoreCase)) { Spec.windMps = -1.f; }
+			else if (Lever.Equals(TEXT("clouds"), ESearchCase::IgnoreCase)) { Spec.cloudCover = -1.f; }
+			else if (Lever.Equals(TEXT("contact"), ESearchCase::IgnoreCase)) { Spec.contactShadowLength = -1.f; }
+			else if (Lever.Equals(TEXT("signs"), ESearchCase::IgnoreCase)) { Spec.signWhiteRatio = -1.f; }
+			else
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("DayLook: -DayLookOff= has no lever %s (shade, fog, cap, tone, sun, wind, clouds, contact, signs)."), *Lever);
+			}
+		}
+	}
+	return Spec;
+}
+
 ftcore::DayShadeLook ReadDayShade()
 {
 	ftcore::DayShadeLook Look;
+	if (FTDayLook::Enabled())
+	{
+		// The day look's bracket step and fog cap; the -DayShade* switches below still go over them.
+		Look = ftcore::dayLookShade(Look, FTDayLook::Spec());
+	}
 	const TCHAR* Cmd = FTLookSwitches();
 	FParse::Value(Cmd, TEXT("DayShadeSky="), Look.skyScale);
 	FParse::Value(Cmd, TEXT("DayShadeContrast="), Look.shadowContrast);
@@ -81,6 +130,46 @@ bool FTDayShade::Enabled()
 {
 	static const bool bOff = FParse::Param(FTLookSwitches(), TEXT("NoDayShade"));
 	return !bOff && CVarDayShade.GetValueOnGameThread() != 0;
+}
+
+// The game view's eye adaptation as the renderer last read it back (FSceneView::GetLastEyeAdaptationExposure: the scale
+// applied to scene light, bias included; 0 until the first read-back), taken on the game thread as the family starts to
+// render. Not in SetupView: the game viewport marks its family as the main one (bIsMainViewFamily) only after its views
+// are set up, so a SetupView check on that flag never passes (block 4's probe logged 0 in every run).
+class FFTExposureProbe final : public FSceneViewExtensionBase
+{
+public:
+	explicit FFTExposureProbe(const FAutoRegister& Reg) : FSceneViewExtensionBase(Reg) {}
+	virtual void BeginRenderViewFamily(FSceneViewFamily& Family) override
+	{
+		if (!Family.bIsMainViewFamily || Family.Views.Num() == 0 || !Family.Views[0]) { return; }
+		const FSceneView& View = *Family.Views[0];
+		const float E = View.GetLastEyeAdaptationExposure();
+		if (E > 0.f)
+		{
+			Exposure.store(E, std::memory_order_relaxed);
+			Luminance.store(View.GetLastAverageSceneLuminance(), std::memory_order_relaxed);
+		}
+	}
+	std::atomic<float> Exposure{0.f};
+	std::atomic<float> Luminance{0.f};
+};
+
+bool FTDayLook::Enabled()
+{
+	static const bool bOn = FParse::Param(FTLookSwitches(), TEXT("DayLook"));
+	return bOn;
+}
+
+const ftcore::DayLookSpec& FTDayLook::Spec()
+{
+	static const ftcore::DayLookSpec Spec = ReadDayLook();
+	return Spec;
+}
+
+bool FTDayLook::CloudShadows(const ftcore::SceneLook& Look)
+{
+	return Spec().cloudCover >= 0.f && Look.cloudCover > 0.f && Look.hasClouds();
 }
 
 ftcore::DayShadeBase FTDayShade::BaseFor(const ftcore::SceneLook& WorldLook)
@@ -265,7 +354,7 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 		if (ULightComponent* Light = It->GetLightComponent())
 		{
 			Light->SetMobility(EComponentMobility::Movable);
-			Suns.Add({Light, Light->Intensity, Light->GetLightColor()});
+			Suns.Add({Light, Light->Intensity, Light->GetLightColor(), Light->ContactShadowLength});
 		}
 	}
 	for (TActorIterator<ASkyLight> It(&World); It; ++It)
@@ -279,7 +368,7 @@ void UFTWorldClockSubsystem::Gather(UWorld& World)
 	{
 		if (UExponentialHeightFogComponent* Fog = It->GetComponent())
 		{
-			Fogs.Add({Fog, Fog->FogInscatteringLuminance});
+			Fogs.Add({Fog, Fog->FogInscatteringLuminance, Fog->StartDistance, Fog->VolumetricFogStartDistance});
 		}
 	}
 	for (TActorIterator<APostProcessVolume> It(&World); It; ++It)
@@ -431,6 +520,90 @@ void UFTWorldClockSubsystem::Apply(bool bForce)
 				AppliedDayShade = ShadeAmount;
 			}
 		}
+		// The day's own look (FTDayLook): the row toward the day in the look subsystem and the sun's contact shadows,
+		// written when its amount has moved a step or reached an end; the sun's cloud shadows when the night fills or
+		// empties; the far signs on the lights' share. Nothing while a world wave writes the look; all of it after.
+		if (bShade && FTDayLook::Enabled())
+		{
+			const float DayAmount = ftcore::dayShadeAmount(FTDayShade::Fade(), Sky.NightAmount, SunElevation);
+			UFTLookSubsystem* DayLooks = World->GetSubsystem<UFTLookSubsystem>();
+			const UFTWorldWaveSubsystem* Wave = World->GetSubsystem<UFTWorldWaveSubsystem>();
+			if (Wave && Wave->HasWave())
+			{
+				AppliedDayLook = -1.f;
+				AppliedCloudShadows = -1;
+			}
+			else if (DayLooks)
+			{
+				if (bForce || AppliedDayLook < 0.f || FMath::Abs(DayAmount - AppliedDayLook) >= kDayShadeStep ||
+					(DayAmount != AppliedDayLook && (DayAmount == 0.f || DayAmount == 1.f)))
+				{
+					DayLooks->SetDayLook(DayAmount);
+					AppliedDayLook = DayAmount;
+					// The fog's start distance (-DayLookFogStart): only with the lever on, so a run without it never
+					// writes the fogs here; the fog's own back at amount 0. The volumetric fog ignores the height fog's
+					// start distance, so both are written (cm).
+					if (FTDayLook::Spec().fogStartM >= 0.f)
+					{
+						for (const FFog& F : Fogs)
+						{
+							if (UExponentialHeightFogComponent* Fog = F.Fog.Get())
+							{
+								Fog->SetStartDistance(100.f * ftcore::dayLookFogStart(FTDayLook::Spec(), F.StartDistance / 100.f, DayAmount));
+								Fog->SetVolumetricFogStartDistance(100.f * ftcore::dayLookFogStart(FTDayLook::Spec(), F.VolumetricStart / 100.f, DayAmount));
+							}
+						}
+					}
+					for (const FLit& S : Suns)
+					{
+						if (ULightComponent* Light = S.Light.Get())
+						{
+							const float Contact = ftcore::dayLookContactShadow(FTDayLook::Spec(), S.ContactShadow, DayAmount);
+							if (Light->ContactShadowLength != Contact)
+							{
+								Light->ContactShadowLength = Contact;
+								Light->MarkRenderStateDirty();
+							}
+						}
+					}
+				}
+				const int32 Clouds = ftcore::dayLookCloudsOn(Sky.NightAmount) && FTDayLook::CloudShadows(DayLooks->GetLook()) ? 1 : 0;
+				if (Clouds != AppliedCloudShadows)
+				{
+					if (Clouds != 0)
+					{
+						const int32 Had = FTScene::SetSunCloudShadows(World, true);
+						MapCloudShadows = MapCloudShadows < 0 ? Had : MapCloudShadows;
+					}
+					else if (MapCloudShadows >= 0)
+					{
+						// Only ever put back what the day look changed: a night it never touched keeps the map's own.
+						FTScene::SetSunCloudShadows(World, MapCloudShadows != 0);
+					}
+					AppliedCloudShadows = Clouds;
+				}
+			}
+			UFTFarSignsSubsystem* Signs = World->GetSubsystem<UFTFarSignsSubsystem>();
+			if (Signs)
+			{
+				const ULightComponent* SunLight = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
+				Signs->SetDayLight(SunLight ? SunLight->Intensity : 0.f, SunElevation, Sky.Lights);
+			}
+			if (bForce)
+			{
+				const ftcore::SceneLook& Day = DayLooks ? DayLooks->GetLook() : ftcore::SceneLook{};
+				const ULightComponent* SunLight = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
+				const UExponentialHeightFogComponent* Fog0 = Fogs.Num() > 0 ? Fogs[0].Fog.Get() : nullptr;
+				UE_LOG(LogForgottenThird, Display, TEXT("DayLook: amount %.2f at sun %.1f degrees (step %d, shade sky %.2f, contrast %.2f, highlight %.2f, boost %.2f, fog cap %.2f); fog %.4f, sun %.0f K, shadow tint %.0f/%.3f, highlight tint %.0f/%.3f, wind %.1f m/s, cover %.2f; contact %.3f, cloud shadows %d (map's %d); signs %.2f; fog start %.1f m (lever %.1f), volumetric start %.1f m of %.0f m%s."),
+					DayAmount, SunElevation, FTDayLook::Spec().shadeStep, FTDayShade::Look().skyScale, FTDayShade::Look().shadowContrast,
+					FTDayShade::Look().highlightContrast, FTDayShade::Look().diffuseBoost, FTDayShade::Look().fogMaxOpacity, Day.fogDensity,
+					Day.sunKelvin, Day.shadowTintHue, Day.shadowTintChroma, Day.highlightTintHue, Day.highlightTintChroma, Day.windMps,
+					Day.cloudCover, SunLight ? SunLight->ContactShadowLength : -1.f, AppliedCloudShadows, MapCloudShadows,
+					Signs ? Signs->GetSignStrength() : -1.f, Fog0 ? Fog0->StartDistance / 100.f : -1.f, FTDayLook::Spec().fogStartM,
+					Fog0 ? Fog0->VolumetricFogStartDistance / 100.f : -1.f, Fog0 ? Fog0->VolumetricFogDistance / 100.f : -1.f,
+					(Wave && Wave->HasWave()) ? TEXT(" (a wave runs: not written)") : TEXT(""));
+			}
+		}
 	}
 	// The white balance toward the night's by NightAmount (the volume's own by day); written when it has moved a step,
 	// never by full day, so the world look's own white balance stands. The day's is read again as dusk starts, after
@@ -543,10 +716,47 @@ void UFTWorldClockSubsystem::Tick(float DeltaTime)
 			// even under a paused -TimeOfDay, with the day's shadow floor over the look's values.
 			AppliedHours = -1.0;
 			AppliedDayShade = -1.f;
+			AppliedDayLook = -1.f;
 		}
 	}
 	ftcore::worldClockTick(Clock, DeltaTime);
 	Apply(false);
+	const UWorld* LightWorld = GetWorld();
+	if (!bDayExposureLogged && !ExposureProbe.IsValid() && LightWorld && LightWorld->IsGameWorld())
+	{
+		ExposureProbe = FSceneViewExtensions::NewExtension<FFTExposureProbe>();
+	}
+	if (bDayLightLogged && !bDayExposureLogged && LightWorld && LightWorld->GetTimeSeconds() >= 20.0)
+	{
+		bDayExposureLogged = true;
+		const float E = ExposureProbe.IsValid() ? ExposureProbe->Exposure.load(std::memory_order_relaxed) : 0.f;
+		const float Lum = ExposureProbe.IsValid() ? ExposureProbe->Luminance.load(std::memory_order_relaxed) : 0.f;
+		UE_LOG(LogForgottenThird, Display, TEXT("DayExposure at %.1f s: %.2f h, settled exposure scale %.6g (log2 %.2f stops), average scene luminance %.6g (log2 %.2f)."),
+			LightWorld->GetTimeSeconds(), Clock.hours, E, E > 0.f ? FMath::Log2(E) : 0.f, Lum, Lum > 0.f ? FMath::Log2(Lum) : 0.f);
+		ExposureProbe.Reset();
+	}
+	if (!bDayLightLogged && !bWetPending && LightWorld && LightWorld->GetTimeSeconds() >= 12.0)
+	{
+		bDayLightLogged = true;
+		const float ProbeE = ExposureProbe.IsValid() ? ExposureProbe->Exposure.load(std::memory_order_relaxed) : 0.f;
+		const ULightComponent* Sun = Suns.Num() > 0 ? Suns[0].Light.Get() : nullptr;
+		const UDirectionalLightComponent* SunDir = Cast<UDirectionalLightComponent>(Sun);
+		const USkyLightComponent* SkyLight = Skies.Num() > 0 ? Skies[0].Light.Get() : nullptr;
+		const APostProcessVolume* Volume = Exposures.Num() > 0 ? Exposures[0].Volume.Get() : nullptr;
+		const UFTLookSubsystem* LightLook = LightWorld->GetSubsystem<UFTLookSubsystem>();
+		const FPostProcessSettings* Post = Volume ? &Volume->Settings : nullptr;
+		UE_LOG(LogForgottenThird, Display, TEXT("DayLight at %.1f s: %.2f h, sun %.1f degrees; sun %.3f lux, temperature %s %.0f K; sky light %.3f (%d sky lights); exposure method %d, bias %.2f, min %.2f, max %.2f EV100 (%d volumes); white balance %s %.0f K; clouds cover %.2f, sun cloud shadows %d strength %.2f/%.2f; day look %s, held wind and cover %d; exposure scale now %.6g (log2 %.2f)."),
+			LightWorld->GetTimeSeconds(), Clock.hours, ftcore::sunElevationDeg(Spec, Clock.hours),
+			Sun ? Sun->Intensity : -1.f, (Sun && Sun->bUseTemperature) ? TEXT("on") : TEXT("off"), Sun ? Sun->Temperature : 0.f,
+			SkyLight ? SkyLight->Intensity : -1.f, Skies.Num(),
+			Post ? static_cast<int32>(Post->AutoExposureMethod.GetValue()) : -1, Post ? Post->AutoExposureBias : 0.f,
+			Post ? Post->AutoExposureMinBrightness : 0.f, Post ? Post->AutoExposureMaxBrightness : 0.f, Exposures.Num(),
+			(Post && Post->bOverride_WhiteTemp) ? TEXT("set") : TEXT("default"), Post ? Post->WhiteTemp : 6500.f,
+			LightLook ? LightLook->GetLook().cloudCover : -1.f, SunDir ? static_cast<int32>(SunDir->bCastCloudShadows) : -1,
+			SunDir ? SunDir->CloudShadowStrength : -1.f, SunDir ? SunDir->CloudShadowOnSurfaceStrength : -1.f,
+			FTDayLook::Enabled() ? TEXT("on") : TEXT("off"), (LightLook && LightLook->IsDayHeld()) ? 1 : 0,
+			ProbeE, ProbeE > 0.f ? FMath::Log2(ProbeE) : 0.f);
+	}
 }
 
 TStatId UFTWorldClockSubsystem::GetStatId() const

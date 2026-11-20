@@ -5,11 +5,13 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FTWorldClockSubsystem.h"
 #include "ForgottenThird.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/Parse.h"
+#include "ftcore/DayLook.h"
 #include "ftcore/FarSigns.h"
 
 namespace
@@ -113,6 +115,38 @@ void UFTFarSignsSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+void UFTFarSignsSubsystem::SetDayLight(float SunLux, float SunElevationDeg, float Lights)
+{
+	if (!FTDayLook::Enabled())
+	{
+		return;
+	}
+	DayStrength = ftcore::dayLookSignStrength(FTDayLook::Spec(), NightStrength, SunLux, SunElevationDeg, Lights);
+	const bool bNight = DayStrength == NightStrength;
+	if (WrittenStrength < 0.f || (bNight && WrittenStrength != DayStrength) ||
+		FMath::Abs(DayStrength - WrittenStrength) > 0.005f * FMath::Max(WrittenStrength, 0.01f))
+	{
+		WriteStrength(DayStrength);
+	}
+}
+
+void UFTFarSignsSubsystem::WriteStrength(float Strength)
+{
+	if (LitMaterials.Num() == 0)
+	{
+		// Not placed yet: Place writes the day's strength when it makes the cards.
+		return;
+	}
+	for (UMaterialInstanceDynamic* Lit : LitMaterials)
+	{
+		if (Lit)
+		{
+			Lit->SetScalarParameterValue(TEXT("SignStrength"), Strength);
+		}
+	}
+	WrittenStrength = Strength;
+}
+
 int32 UFTFarSignsSubsystem::Place(UWorld& World)
 {
 	const TCHAR* Switches = FTLookSwitches();
@@ -135,8 +169,9 @@ int32 UFTFarSignsSubsystem::Place(UWorld& World)
 	Spec.farM = 140.f;
 	FParse::Value(Switches, TEXT("FarSignsNear="), Spec.nearM);
 	FParse::Value(Switches, TEXT("FarSignsFar="), Spec.farM);
-	float Strength = 25.f;
-	FParse::Value(Switches, TEXT("FarSignsLum="), Strength);
+	FParse::Value(Switches, TEXT("FarSignsLum="), NightStrength);
+	// The day's strength once the clock has given it (-DayLook), the night's otherwise.
+	const float Strength = GetSignStrength();
 
 	// The plan boxes of the tall static meshes: a plain component's bounds, an instanced one's per instance. Meshes
 	// shorter than the spec's least height are passed over before their instances are walked.
@@ -223,12 +258,15 @@ int32 UFTFarSignsSubsystem::Place(UWorld& World)
 		return 0;
 	}
 	UMaterialInstanceDynamic* Lit[ftcore::kFarSignColours] = {};
+	LitMaterials.Reset();
 	for (int32 C = 0; C < ftcore::kFarSignColours; ++C)
 	{
 		Lit[C] = UMaterialInstanceDynamic::Create(SignMaterial, this);
 		Lit[C]->SetVectorParameterValue(TEXT("SignColor"), kSignColours[C]);
 		Lit[C]->SetScalarParameterValue(TEXT("SignStrength"), Strength);
+		LitMaterials.Add(Lit[C]);
 	}
+	WrittenStrength = Strength;
 	UMaterialInstanceDynamic* Dark = UMaterialInstanceDynamic::Create(SignMaterial, this);
 	Dark->SetVectorParameterValue(TEXT("SignColor"), FLinearColor(0.02f, 0.02f, 0.025f));
 	Dark->SetScalarParameterValue(TEXT("SignStrength"), 0.f);

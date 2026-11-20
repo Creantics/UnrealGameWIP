@@ -1111,9 +1111,7 @@ FloatVerdict checkFloat(const MassingGround& ground, const std::size_t i, const 
     for (const std::uint32_t k : s.held) footCorners(buckets.frames[k], s.pts);
     s.pts.insert(s.pts.end(), s.grounded.begin(), s.grounded.end());
     convexHull(s.pts, s.hull);
-    double eave = spec.maxEave;
-    for (const KindEave& k : spec.kindEaves)
-        if (k.kind == b.kind && b.z1 - b.z0 <= k.maxDepth + 1e-9) eave = k.eave;
+    const double eave = floatEave(spec, b);
     const HangPt* fail = nullptr;
     for (const HangPt& h : s.hang) {
         double nearest = std::numeric_limits<double>::max();
@@ -1208,8 +1206,16 @@ const char* floatFixName(FloatFix fix) {
     case FloatFix::RaisePiers: return "raise-piers";
     case FloatFix::EndPosts: return "end-posts";
     case FloatFix::Left: return "left";
+    case FloatFix::Posts: return "posts";
     }
     return "?";
+}
+
+double floatEave(const FloatSpec& spec, const MassingBox& box) {
+    double eave = spec.maxEave;
+    for (const KindEave& k : spec.kindEaves)
+        if (k.kind == box.kind && box.z1 - box.z0 <= k.maxDepth + 1e-9) eave = k.eave;
+    return eave;
 }
 
 namespace {
@@ -1256,6 +1262,149 @@ void shortPiers(const BoxBuckets& buckets, const std::vector<MassingBox>& boxes,
 
 bool isDeck(const MassingBox& b) { return b.kind == "deck"; }
 
+// A deck's underside at (u, w) in its own axes (solidAt's bottom, read without the footprint test).
+double deckBase(const MassingBox& b, double u, double w) {
+    if (b.sloped) {
+        const double zt = b.slopeFrom + (b.slopeTo - b.slopeFrom) * (b.sx > 0.0 ? u / b.sx + 0.5 : 0.5);
+        return b.slopeThick > 0.0 ? zt - b.slopeThick : b.z0;
+    }
+    return b.z0 + b.riseU * u + b.riseW * w;
+}
+
+struct DeckPost {
+    double x = 0.0, y = 0.0;
+    double groundHi = 0.0; // the highest ground under it
+    double topLo = 0.0;    // its top's lowest
+    bool laid = false;
+    bool pile = false;     // over FloatSpec::postMaxHeight: a pile, never braced
+};
+
+// FloatSpec::deckPosts: posts under deck `i` of `boxes` on a grid, down to sink under the lowest ground under each (the
+// seabed too), and zig-zag braces between neighbouring timber posts; a post standing over postMaxHeight is a pile. A post
+// is left out where a sound box already holds the deck's underside at its middle, or where the underside stands within
+// 0.3 m of the ground; a brace bay where the posts stand less than a metre clear between 0.5 m over the ground and 0.4 m
+// under the deck.
+void addDeckPosts(const MassingGround& ground, const BoxBuckets& buckets, const std::vector<MassingBox>& boxes,
+                  const std::vector<bool>& sound, std::size_t i, const FloatSpec& ps, FoundationPlan& plan, std::size_t& counter,
+                  FoundationStats& stats) {
+    const BoxFrame& f = buckets.frames[i];
+    const MassingBox& b = boxes[i];
+    const double side = std::max(ps.postSize, 0.05);
+    const double pileSide = std::max(ps.pileSize, side);
+    const double spacing = std::max(ps.postSpacing, side);
+    const double inset = std::max(0.0, floatEave(ps, b) - 0.5);
+    // Centres along u flush with the ends, across w set in by the inset; at most `spacing` apart.
+    const auto line = [&](double length, double in, std::vector<double>& at) {
+        at.clear();
+        const double avail = std::max(0.0, length - 2.0 * in - side);
+        const int n = avail > 1e-9 ? static_cast<int>(std::ceil(avail / spacing - 1e-9)) + 1 : 1;
+        for (int k = 0; k < n; ++k) at.push_back(n == 1 ? 0.0 : -0.5 * avail + avail * k / (n - 1));
+    };
+    std::vector<double> us, ws;
+    line(b.sx, 0.0, us);
+    line(b.sy, inset, ws);
+    const auto planAt = [&](double u, double w, double& x, double& y) {
+        x = b.cx + u * f.c - w * f.s;
+        y = b.cy + u * f.s + w * f.c;
+    };
+    const auto add = [&](const char* prefix, double cx, double cy, double sx, double sy, double rot, double z0, double z1) -> MassingBox& {
+        plan.added.push_back(plinthBox(std::string(prefix) + std::to_string(++counter), cx, cy, sx, sy, rot, z0, z1));
+        plan.wears.push_back(i);
+        return plan.added.back();
+    };
+    // A post `s` square at (u, w): the lowest ground under it (returned), the highest (p.groundHi), its top's ends along u
+    // (from, to) and its top's lowest (p.topLo).
+    const auto measure = [&](DeckPost& p, double u, double w, double s, double& from, double& to) {
+        const double half = 0.5 * s;
+        planAt(u, w, p.x, p.y);
+        double low = groundAt(ground, p.x, p.y);
+        p.groundHi = low;
+        for (int k = 0; k < 4; ++k) {
+            double x = 0.0, y = 0.0;
+            planAt(u + (k & 1 ? half : -half), w + (k & 2 ? half : -half), x, y);
+            const double z = groundAt(ground, x, y);
+            low = std::min(low, z);
+            p.groundHi = std::max(p.groundHi, z);
+        }
+        from = std::max(deckBase(b, u - half, w - half), deckBase(b, u - half, w + half));
+        to = std::max(deckBase(b, u + half, w - half), deckBase(b, u + half, w + half));
+        p.topLo = std::min(from, to);
+        return low;
+    };
+    // How far a pile's centre may stand from the deck's middle: its faces inside the deck's ends and the rows' outer faces.
+    const double pileU = std::max(0.0, 0.5 * (b.sx - pileSide));
+    const double pileW = std::max(0.0, 0.5 * (b.sy - 2.0 * inset - pileSide));
+    std::vector<DeckPost> grid(us.size() * ws.size());
+    for (std::size_t iu = 0; iu < us.size(); ++iu) {
+        for (std::size_t iw = 0; iw < ws.size(); ++iw) {
+            DeckPost& p = grid[iu * ws.size() + iw];
+            double u = us[iu], w = ws[iw], s = side, from = 0.0, to = 0.0;
+            double low = measure(p, u, w, s, from, to);
+            if (std::max(from, to) - low > ps.postMaxHeight) {
+                p.pile = true;
+                s = pileSide;
+                u = std::clamp(u, -pileU, pileU);
+                w = std::clamp(w, -pileW, pileW);
+                low = measure(p, u, w, s, from, to);
+            }
+            if (p.topLo - p.groundHi < 0.3) continue;
+            // A pier (or any sound box) already under the deck here.
+            const double mid = deckBase(b, u, w);
+            bool held = false;
+            if (const std::vector<std::uint32_t>* list = buckets.at(p.x, p.y)) {
+                for (const std::uint32_t k : *list) {
+                    double kb = 0.0, kt = 0.0;
+                    if (k != i && sound[k] && solidAt(buckets.frames[k], p.x, p.y, kb, kt) && kt >= mid - ps.support && kb < mid) held = true;
+                }
+            }
+            if (held) continue;
+            MassingBox& post = add("PL-D-", p.x, p.y, s, s, b.rot, low - ps.sink, std::max(from, to));
+            if (p.pile) {
+                post.kind = "pile";
+                ++stats.piles;
+            }
+            if (std::fabs(to - from) > 0.1) {
+                // A ramp's post: its top slopes with the underside, its bottom flat.
+                post.sloped = true;
+                post.slopeFrom = from;
+                post.slopeTo = to;
+                post.slopeThick = -1.0;
+            }
+            p.laid = true;
+            ++stats.posts;
+        }
+    }
+    // Braces between neighbouring timber posts: along each row (the deck's u) and across each bent (its w).
+    const double bs = std::max(ps.braceSize, 0.05);
+    const auto brace = [&](const DeckPost& a, const DeckPost& c, double rot) {
+        if (!a.laid || !c.laid || a.pile || c.pile) return;
+        const double len = std::hypot(c.x - a.x, c.y - a.y);
+        if (len <= side + 1e-9) return;
+        double groundHi = std::max(a.groundHi, c.groundHi);
+        for (int k = 1; k < 8; ++k) {
+            const double t = k / 8.0;
+            groundHi = std::max(groundHi, groundAt(ground, a.x + (c.x - a.x) * t, a.y + (c.y - a.y) * t));
+        }
+        const double zLo = groundHi + 0.5, zHi = std::min(a.topLo, c.topLo) - 0.4;
+        const double h = zHi - zLo;
+        if (h < 1.0) return;
+        const int panels = std::clamp(static_cast<int>(std::lround(h / len)), 1, 16);
+        const double step = h / panels;
+        for (int k = 0; k < panels; ++k) {
+            const double za = zLo + (k % 2 == 0 ? k : k + 1) * step, zc = zLo + (k % 2 == 0 ? k + 1 : k) * step;
+            const double z0 = 0.5 * (za + zc) - 0.5 * bs;
+            MassingBox& br = add("PL-K-", 0.5 * (a.x + c.x), 0.5 * (a.y + c.y), len, bs, rot, z0, z0 + bs);
+            br.kind = "brace";
+            br.riseU = (zc - za) / len;
+            ++stats.braces;
+        }
+    };
+    for (std::size_t iw = 0; iw < ws.size(); ++iw)
+        for (std::size_t iu = 0; iu + 1 < us.size(); ++iu) brace(grid[iu * ws.size() + iw], grid[(iu + 1) * ws.size() + iw], b.rot);
+    for (std::size_t iu = 0; iu < us.size(); ++iu)
+        for (std::size_t iw = 0; iw + 1 < ws.size(); ++iw) brace(grid[iu * ws.size() + iw], grid[iu * ws.size() + iw + 1], b.rot + 90.0);
+}
+
 } // namespace
 
 bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
@@ -1275,7 +1424,7 @@ bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>&
     std::vector<std::pair<std::size_t, double>> piers;
     // A deck with no short pier to raise (and too high to lower) is left; it then holds nothing, and the plan reruns.
     const auto leftDeck = [&](const FloatBox& fb) {
-        if (!isDeck(boxes[fb.box])) return false;
+        if (ps.deckPosts || !isDeck(boxes[fb.box])) return false; // with deckPosts it gets posts instead
         shortPiers(buckets, boxes, sound, fb.box, ps, piers);
         return piers.empty() && fb.gap > ps.failAny;
     };
@@ -1353,8 +1502,9 @@ bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>&
                     raised[p.first] = true;
                 }
             } else if (fb.gap > ps.failAny) {
-                fix = FloatFix::Left;
-                ++stats.left;
+                // With deckPosts: posts below, once the check after the other fixes shows it still floating.
+                fix = ps.deckPosts ? FloatFix::None : FloatFix::Left;
+                stats.left += ps.deckPosts ? 0 : 1;
             }
         } else if (b.kind == "bridge") {
             fix = FloatFix::EndPosts;
@@ -1392,6 +1542,30 @@ bool planFoundations(const MassingGround& ground, const std::vector<MassingBox>&
             }
         }
         plan.rows.push_back(FloatFixRow{i, fix, fb.gap});
+    }
+    if (!ps.deckPosts) return true;
+    // Deck posts: the check after the fixes above (spanRule and chainCheck on, as classifyFloats' after); each deck still
+    // floating there gets posts and braces (its short piers stay raised).
+    std::vector<MassingBox> all;
+    std::vector<bool> inc;
+    applyFoundations(boxes, include, plan, all, inc);
+    FloatSpec as = ps;
+    as.chainCheck = true;
+    FloatReport after;
+    if (!findFloats(ground, all, inc, as, after, error)) return false;
+    std::vector<bool> held(all.size(), true);
+    for (const FloatBox& fb : after.floating) held[fb.box] = false;
+    PocketRect ra;
+    floatBounds(all, inc, ra);
+    BoxBuckets ab;
+    ab.build(all, inc, ra);
+    for (const FloatBox& fb : after.floating) {
+        if (fb.box >= boxes.size() || !isDeck(all[fb.box])) continue;
+        addDeckPosts(ground, ab, all, held, fb.box, ps, plan, counter, stats);
+        ++stats.posted;
+        auto row = std::find_if(plan.rows.begin(), plan.rows.end(), [&fb](const FloatFixRow& e) { return e.box == fb.box; });
+        if (row != plan.rows.end()) row->fix = FloatFix::Posts;
+        else plan.rows.push_back(FloatFixRow{fb.box, FloatFix::Posts, fb.gap});
     }
     return true;
 }

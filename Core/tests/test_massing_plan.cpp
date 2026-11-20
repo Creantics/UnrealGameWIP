@@ -979,6 +979,8 @@ TEST_CASE("massing look: each kind of built box wears its class") {
     CHECK(cls(lookBox("V1-ISH-1", "V1-ISH", MassingSource::Invented, "seawall", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("V1-BRK-1", "V1-BRK", MassingSource::Invented, "breakwater", true)) == MassingLookSurface::BoardConcrete);
     CHECK(cls(lookBox("BLD-050_1", "BLD-050", MassingSource::Plan, "quay", true)) == MassingLookSurface::BoardConcrete);
+    // A deck's piles (FloatSpec::deckPosts): the fix pass's boxes, Invented with no cover.
+    CHECK(cls(lookBox("PL-D-1", "PLINTH", MassingSource::Invented, "pile", false)) == MassingLookSurface::BoardConcrete);
     // Decks, piers and bridges.
     for (const char* kind : {"deck", "pier", "bridge"})
         CHECK(cls(lookBox("BLD-060_1", "BLD-060", MassingSource::Plan, kind, true)) == MassingLookSurface::OakPlank);

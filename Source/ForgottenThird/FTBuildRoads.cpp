@@ -81,7 +81,7 @@ struct FRoadPainter
 	UMaterialInterface* CanalBed = nullptr;
 	UStaticMesh* Plane = nullptr;
 	TMap<FString, UMaterialInterface*> CanalWorn;
-	int32 WaterPlanes = 0, BedPieces = 0;
+	int32 WaterPlanes = 0, BedPieces = 0, LadderPieces = 0, GalvLadderPieces = 0;
 
 	const ftcore::RoadWater* WaterOf(const std::string& Canal) const
 	{
@@ -218,6 +218,16 @@ struct FRoadPainter
 		Options.Label = RoadsUtf8(Box.id);
 		const EFTCellKind Kind = !Solid.collide ? EFTCellKind::NoCollide : (bGround ? EFTCellKind::Walk : EFTCellKind::Solid);
 		UMaterialInterface* Worn = Box.kind == "median_lawn" && Host.Lawn ? Host.Lawn : Tint(Which);
+		if (Box.kind == "canal_ladder")
+		{
+			// A ladder wears the quay rail's galvanised steel: the flat steel tint (untextured, albedo about 0.44) read white.
+			++LadderPieces;
+			if (Host.Galv)
+			{
+				Worn = Host.Galv;
+				++GalvLadderPieces;
+			}
+		}
 		UStaticMesh* Mesh = bCyl ? Cylinder : Host.Cube;
 		const ftcore::RoadWater* const Water = bCanal ? WaterOf(Box.row) : nullptr;
 		if (Water && Box.kind == "canal_water" && CanalWater && Plane)
@@ -540,14 +550,24 @@ bool Prepare(const FOptions& Options, const ftcore::MassingGround& Ground, std::
 		Builds.resize(Net.size());
 		ftcore::RoadNetReport Report;
 		ftcore::roadNetBuild(Net, Ground, Builds[0], &Report);
-		for (const ftcore::RoadCanal& Canal : Canals)
+		// -CanalLip (off by default): each shelf that is a wade drops sheer at its edge to ftcore::kWaterLipDepth, so no bed
+		// past it holds a swimmer's feet (RoadCanal::lip).
+		const bool bCanalLip = FParse::Param(FCommandLine::Get(), TEXT("CanalLip"));
+		// -CanalOpenings (off by default): every flight of steps ftcore::kCanalOpeningWide wide, and more flights along each
+		// long wall until a flight's rail gap is within ftcore::kCanalOpeningReach of every point of each bank (RoadCanal::openings).
+		const bool bCanalOpenings = FParse::Param(FCommandLine::Get(), TEXT("CanalOpenings"));
+		for (ftcore::RoadCanal& Canal : Canals)
 		{
+			Canal.lip = bCanalLip;
+			Canal.openings = bCanalOpenings;
 			// The channel's walls, copings, floor and water (canal rows; the quay's rails and masts are -QuayPoints').
 			const size_t Added = ftcore::roadCanalBuild(Canal, Ground, Builds[0]);
 			const ftcore::RoadCanalSection Section = ftcore::roadCanalSection(Canal);
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canal %s: %d solids, floor %.2f m, water %.2f m; %.2f m of water on a %.1f m shelf at "
-				"the walls, %.2f m mid-channel past a %.1f m slope."), *RoadsUtf8(Canal.id), static_cast<int32>(Added), Canal.floorZ, Canal.waterZ, Section.depth,
-				Section.shelf, Section.deep, Section.batter);
+				"the walls, a %.2f m lip, %.2f m mid-channel past a %.1f m slope."), *RoadsUtf8(Canal.id), static_cast<int32>(Added), Canal.floorZ, Canal.waterZ,
+				Section.depth, Section.shelf, Section.lip, Section.deep, Section.batter);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canal %s: a flight's rail gap at most %.2f m along a bank%s."), *RoadsUtf8(Canal.id),
+				ftcore::roadCanalOpeningWorst(Canal, Builds[0]), bCanalOpenings ? TEXT(" (-CanalOpenings)") : TEXT(""));
 		}
 		int32 Ladders = 0;
 		for (const ftcore::RoadWaterExit& Exit : Builds[0].exits)
@@ -817,6 +837,16 @@ bool Lay(FFTRoadsHost& Host, const FOptions& Options, const std::vector<ftcore::
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: canals: %d water planes on %s, %d wall and floor pieces on %s."), Paint.WaterPlanes,
 			Paint.CanalWater ? *Paint.CanalWater->GetName() : TEXT("the flat tint"), Paint.BedPieces, Paint.CanalBed ? *Paint.CanalBed->GetName() : TEXT("the flat tint"));
+	}
+	if (Paint.LadderPieces > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: ladders: %d pieces, %d on %s."), Paint.LadderPieces, Paint.GalvLadderPieces,
+			Host.Galv ? *Host.Galv->GetName() : TEXT("nothing (the flat steel tint)"));
+		if (Paint.GalvLadderPieces < Paint.LadderPieces)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: ladders: %d pieces keep the flat steel tint (no galvanised steel: build with "
+				"-Surfaces)."), Paint.LadderPieces - Paint.GalvLadderPieces);
+		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: roads: %d solids and vehicles laid as instances of their cells; %d marking boxes "
 		"left out (laid as flat paint)."), Paint.Laid, Paint.PaintSkipped);

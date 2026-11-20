@@ -1,6 +1,7 @@
 #include "ftcore/Roads.h"
 #include "ftcore/RoadGraph.h"
 #include "ftcore/SurfaceWeather.h"
+#include "ftcore/WaterBodies.h"
 
 #include "CsvRead.h"
 
@@ -3469,6 +3470,8 @@ RoadCanalSection roadCanalSection(const RoadCanal& canal) {
         s.shelf = canal.shelf;
         s.batter = canal.batter;
         s.deep = canal.deep;
+        if (canal.lip && s.depth <= static_cast<double>(kWaterSwimExit) + 1e-9)
+            s.lip = std::max(0.0, std::min(static_cast<double>(kWaterLipDepth), s.deep) - s.depth);
     }
     return s;
 }
@@ -3497,6 +3500,29 @@ RoadSolid& pushSolid(RoadBuild& build, const std::string& id, const std::string&
     ++build.counts.solids;
     if (collide) ++build.counts.collide;
     return build.solids.back();
+}
+
+// Whether something other than a canal's own pieces (a road's deck) stands over the water at a plan point, among the
+// first `count` of `solids`: the bank beside it is no canal edge to stand on.
+bool overCanalWater(const std::vector<RoadSolid>& solids, std::size_t count, double x, double y, double waterZ) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const RoadSolid& s = solids[i];
+        if (s.collide && s.shape == RoadShape::Cube && s.box.kind.rfind("canal_", 0) != 0 && slabHas(s, x, y) &&
+            topAt(s.box, x, y) > waterZ)
+            return true;
+    }
+    return false;
+}
+
+// The point half a metre out over the water from a long wall's face, `u` along the canal (high: the wall at the
+// rectangle's higher across edge).
+RoadPoint canalBankProbe(const RoadCanal& canal, bool high, double u) {
+    const double x0 = std::min(canal.x0, canal.x1), x1 = std::max(canal.x0, canal.x1);
+    const double y0 = std::min(canal.y0, canal.y1), y1 = std::max(canal.y0, canal.y1);
+    const bool alongY = (y1 - y0) >= (x1 - x0);
+    const double lo = alongY ? x0 : y0, hi = alongY ? x1 : y1;
+    const double w = high ? hi - canal.wall - 0.5 : lo + canal.wall + 0.5;
+    return alongY ? RoadPoint{w, u} : RoadPoint{u, w};
 }
 } // namespace
 
@@ -3558,8 +3584,10 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     const double cx = 0.5 * (x0 + x1), cy = 0.5 * (y0 + y1), sx = x1 - x0 - 2.0 * t, sy = y1 - y0 - 2.0 * t;
     put("FLOOR", "canal_floor", cx, cy, sx, sy, base, deepZ, RoadTint::PoleConcrete, true);
     if (cut) {
-        // A shelf along each long wall and the slope from it down to the floor.
-        const double drop = (section.deep - section.depth) / section.batter;
+        // A shelf along each long wall and the slope from it down to the floor; with a lip the slope starts that much
+        // under the shelf's top, the shelf's own outer face the sheer drop.
+        const double topZ = canal.floorZ - section.lip;
+        const double drop = (section.deep - section.depth - section.lip) / section.batter;
         for (int side = 0; side < 2; ++side) {
             const bool high = side == 1;
             const double wall = high ? hi - t : lo + t, in = high ? -1.0 : 1.0;
@@ -3569,7 +3597,7 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
                 put("SHELF", "canal_floor", alongY ? sc : cu, alongY ? cu : sc, alongY ? section.shelf : lu,
                     alongY ? lu : section.shelf, base, canal.floorZ, RoadTint::PoleConcrete, true);
             RoadSolid& slope = put("BATTER", "canal_floor", alongY ? bc : cu, alongY ? cu : bc, alongY ? section.batter : lu,
-                                   alongY ? lu : section.batter, 0.5 * (canal.floorZ + deepZ) - 0.3, 0.5 * (canal.floorZ + deepZ),
+                                   alongY ? lu : section.batter, 0.5 * (topZ + deepZ) - 0.3, 0.5 * (topZ + deepZ),
                                    RoadTint::PoleConcrete, true);
             // Falling toward the middle: the box's u is the plan's x, its w the plan's y.
             (alongY ? slope.box.riseU : slope.box.riseW) = -in * drop;
@@ -3587,6 +3615,7 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     w.shelf = section.shelf;
     w.batter = section.batter;
     w.deep = section.deep;
+    w.lip = section.lip;
     w.alongY = alongY;
     const RoadPoint dir = roadCanalFlowDir(canal);
     w.flowX = dir.x;
@@ -3599,9 +3628,14 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
     // The ways out. A piece is set by its place along the wall (da) and out of the water (dout, 0 on the wall's face)
     // from the exit's point on the face.
     std::size_t exits = 0;
-    auto exitAt = [&](RoadPoint face, RoadPoint along, RoadPoint out, double top, RoadExitKind kind) {
+    const std::size_t exitsBefore = build.exits.size();
+    const double flightWide = canal.openings ? kCanalOpeningWide : 0.9;
+    // A flight's run: risers of 0.18 m at most, treads of 0.28 m, from a bank `top` high down to the shelf.
+    auto flightCount = [&](double top) { return std::max(2, static_cast<int>(std::ceil((top - canal.floorZ) / 0.18 - 1e-9))); };
+    // commit false: only whether a flight of steps would stand here as asked (no ladder in its place); nothing is built.
+    auto exitAt = [&](RoadPoint face, RoadPoint along, RoadPoint out, double top, RoadExitKind kind, bool commit) -> bool {
         // A bank no higher than the water needs no way out.
-        if (!(top > canal.waterZ + 0.3)) return;
+        if (!(top > canal.waterZ + 0.3)) return false;
         auto at = [&](double da, double dout) {
             return RoadPoint{face.x + along.x * da + out.x * dout, face.y + along.y * da + out.y * dout};
         };
@@ -3619,17 +3653,26 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
         RoadPoint foot, stand, g0, g1;
         // A flight's run: risers of 0.18 m at most, treads of 0.28 m, centred on the exit's place.
         const double fall = top - canal.floorZ;
-        const int count = std::max(2, static_cast<int>(std::ceil(fall / 0.18 - 1e-9)));
+        const int count = flightCount(top);
         const double rise = fall / count, tread = 0.28, length = tread * count, s0 = -0.5 * length;
         // Where something is built over a flight (a road's deck), a ladder stands in its place.
-        if (kind == RoadExitKind::Steps && (roofed(at(0.5 * length + 0.4, -0.3)) || roofed(at(s0, -0.45)))) kind = RoadExitKind::Ladder;
+        if (kind == RoadExitKind::Steps && (roofed(at(0.5 * length + 0.4, -0.3)) || roofed(at(s0, -0.5 * flightWide)))) {
+            if (!commit) return false;
+            kind = RoadExitKind::Ladder;
+        }
+        if (!commit) {
+            // An added flight: nothing over any of its run, not only its two ends.
+            for (double da = s0; da < 0.5 * length + 0.4 + 1e-9; da += 0.5)
+                if (roofed(at(da, -0.5 * flightWide))) return false;
+            return kind == RoadExitKind::Steps;
+        }
         e.kind = kind;
         if (kind == RoadExitKind::Ladder) {
             foot = at(0.0, -0.35);
             stand = at(0.0, 1.2);
             g0 = at(-0.6, 0.0);
             g1 = at(0.6, 0.0);
-            if (roofed(foot)) return;
+            if (roofed(foot)) return false;
             for (const double da : {-0.225, 0.225}) {
                 piece("LADDER", "canal_ladder", da, -0.12, 0.05, 0.05, canal.floorZ, top + 1.0, RoadTint::Steel, false);
                 piece("LADDER", "canal_ladder", da, 0.19, 0.05, 0.67, top + 0.95, top + 1.0, RoadTint::Steel, false);
@@ -3646,8 +3689,8 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
             g1 = at(s0 + 1.3, 0.0);
             // The last step would be the shelf's own top.
             for (int i = 0; i + 1 < count; ++i)
-                piece("STEP", "canal_steps", s0 + tread * (i + 0.5), -0.45, tread, 0.9, base, top - rise * (i + 1),
-                      RoadTint::PoleConcrete, true);
+                piece("STEP", "canal_steps", s0 + tread * (i + 0.5), -0.5 * flightWide, tread, flightWide, base,
+                      top - rise * (i + 1), RoadTint::PoleConcrete, true);
         }
         std::snprintf(buf, sizeof buf, "%s-EXIT-%02zu", canal.id.c_str(), ++exits);
         e.id = buf;
@@ -3660,6 +3703,7 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
         e.gapX1 = g1.x;
         e.gapY1 = g1.y;
         build.exits.push_back(std::move(e));
+        return true;
     };
     const double width = hi - lo - 2.0 * t;
     const double every = canal.exitEvery > 0.0 ? (width > 12.0 ? std::min(canal.exitEvery, 30.0) : canal.exitEvery) : 0.0;
@@ -3678,7 +3722,7 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
                     u = canal.bridgeAt + (u >= canal.bridgeAt ? 3.5 : -3.5);
                 const RoadExitKind kind =
                     ((i + static_cast<std::size_t>(side)) % 2u == 0u) ? RoadExitKind::Ladder : RoadExitKind::Steps;
-                exitAt(alongY ? RoadPoint{wall, u} : RoadPoint{u, wall}, along, out, behind(high, u), kind);
+                exitAt(alongY ? RoadPoint{wall, u} : RoadPoint{u, wall}, along, out, behind(high, u), kind, true);
             }
         }
         if (width > 12.0) {
@@ -3689,11 +3733,135 @@ std::size_t roadCanalBuild(const RoadCanal& canal, const MassingGround& ground, 
                 const double edge = end == 0 ? ua + 0.5 * t : ub - 0.5 * t;
                 exitAt(alongY ? RoadPoint{mid, u} : RoadPoint{u, mid}, alongY ? RoadPoint{1.0, 0.0} : RoadPoint{0.0, 1.0},
                        alongY ? RoadPoint{0.0, o} : RoadPoint{o, 0.0}, std::max(behind(false, edge), behind(true, edge)),
-                       RoadExitKind::Ladder);
+                       RoadExitKind::Ladder, true);
+            }
+        }
+        // The openings: more flights along each long wall until every point of its bank is within kCanalOpeningReach,
+        // along it, of a flight's rail gap. The first point out of reach takes the flight whose gap lies farthest on
+        // and still reaches it, tried back 0.25 m at a time: the flight inside the end walls, 0.5 m clear of the
+        // wall's other ways out (gap to foot) and of the footbridge's landing, no deck over it. Bank under a deck is
+        // passed over (no edge to stand on there); a point no flight can reach is left, and the walk goes on past it
+        // (roadCanalOpeningWorst reports it).
+        if (canal.openings) {
+            const double reach = kCanalOpeningReach;
+            std::vector<double> gaps;
+            std::vector<std::pair<double, double>> taken;
+            for (int side = 0; side < 2; ++side) {
+                const bool high = side == 1;
+                const double wall = high ? hi - t : lo + t, o = high ? 1.0 : -1.0;
+                const RoadPoint out = alongY ? RoadPoint{o, 0.0} : RoadPoint{0.0, o};
+                gaps.clear();
+                taken.clear();
+                for (std::size_t k = exitsBefore; k < build.exits.size(); ++k) {
+                    const RoadWaterExit& e = build.exits[k];
+                    if ((alongY ? e.outX : e.outY) * o < 0.5) continue; // the other wall's, or an end wall's
+                    const double g0 = alongY ? e.gapY0 : e.gapX0, g1 = alongY ? e.gapY1 : e.gapX1;
+                    const double f = alongY ? e.footY : e.footX;
+                    taken.emplace_back(std::min({g0, g1, f}), std::max({g0, g1, f}));
+                    if (e.kind == RoadExitKind::Steps) gaps.push_back(0.5 * (g0 + g1));
+                }
+                if (canal.bridgeAt > 0.0)
+                    taken.emplace_back(canal.bridgeAt - 0.5 * kQuayBridgeWide, canal.bridgeAt + 0.5 * kQuayBridgeWide);
+                // Where the gaps' reach runs out going on from `start` (the gaps sorted: one pass carries it on).
+                auto reachedTo = [&](double start) {
+                    double e = start;
+                    for (const double g : gaps)
+                        if (g - reach <= e + 1e-9) e = std::max(e, g + reach);
+                    return e;
+                };
+                auto underDeck = [&](double u) {
+                    const RoadPoint probe = canalBankProbe(canal, high, u);
+                    return overCanalWater(build.solids, before, probe.x, probe.y, canal.waterZ);
+                };
+                double from = ua;
+                for (int added = 0; added < 64;) {
+                    std::sort(gaps.begin(), gaps.end());
+                    double p = reachedTo(from);
+                    if (p > ub - 1e-9) break;
+                    if (underDeck(p)) {
+                        // On to the deck's far side: `under` the last point under it (to a few micrometres), `past` the
+                        // first out. A flight within reach of `under` is within reach of the bank from the deck's edge on.
+                        double under = p, past = std::min(p + 0.25, ub);
+                        while (underDeck(past) && past < ub) {
+                            under = past;
+                            past = std::min(past + 0.25, ub);
+                        }
+                        if (underDeck(past)) break; // under the deck to the end wall
+                        for (int k = 0; k < 16; ++k) {
+                            const double m = 0.5 * (under + past);
+                            if (underDeck(m))
+                                under = m;
+                            else
+                                past = m;
+                        }
+                        const double on = reachedTo(under);
+                        if (on > under + 1e-9) {
+                            from = on;
+                            continue;
+                        }
+                        p = under;
+                    }
+                    bool placed = false;
+                    for (double g = p + reach; g >= p - reach && !placed; g -= 0.25) {
+                        // The flight's rail gap runs from 0.2 m before its top step to 1.3 m after: its middle is
+                        // 0.55 m on from the top end, half the flight's length back from its middle.
+                        double c = g + 0.5 * 0.28 * flightCount(behind(high, g)) - 0.55;
+                        const double length = 0.28 * flightCount(behind(high, c));
+                        c = g + 0.5 * length - 0.55;
+                        const double a = c - 0.5 * length - 0.2, b = c + 0.5 * length + 0.4;
+                        if (a < sa || b > sb) continue;
+                        bool clear = true;
+                        for (const std::pair<double, double>& s : taken) clear = clear && (b < s.first - 0.5 || a > s.second + 0.5);
+                        if (!clear) continue;
+                        const RoadPoint face = alongY ? RoadPoint{wall, c} : RoadPoint{c, wall};
+                        if (!exitAt(face, along, out, behind(high, c), RoadExitKind::Steps, false)) continue;
+                        exitAt(face, along, out, behind(high, c), RoadExitKind::Steps, true);
+                        const RoadWaterExit& e = build.exits.back();
+                        const double g0 = alongY ? e.gapY0 : e.gapX0, g1 = alongY ? e.gapY1 : e.gapX1;
+                        taken.emplace_back(std::min(g0, g1), b);
+                        gaps.push_back(0.5 * (g0 + g1));
+                        placed = true;
+                    }
+                    if (placed)
+                        ++added;
+                    else
+                        from = p + 1.0;
+                }
             }
         }
     }
     return build.solids.size() - before;
+}
+
+double roadCanalOpeningWorst(const RoadCanal& canal, const RoadBuild& build) {
+    const double x0 = std::min(canal.x0, canal.x1), x1 = std::max(canal.x0, canal.x1);
+    const double y0 = std::min(canal.y0, canal.y1), y1 = std::max(canal.y0, canal.y1);
+    const bool alongY = (y1 - y0) >= (x1 - x0);
+    const double ua = alongY ? y0 : x0, ub = alongY ? y1 : x1;
+    double worst = 0.0;
+    std::vector<double> gaps;
+    for (int side = 0; side < 2; ++side) {
+        const double o = side == 1 ? 1.0 : -1.0;
+        gaps.clear();
+        for (const RoadWaterExit& e : build.exits) {
+            if (e.canal != canal.id || e.kind != RoadExitKind::Steps || (alongY ? e.outX : e.outY) * o < 0.5) continue;
+            gaps.push_back(alongY ? 0.5 * (e.gapY0 + e.gapY1) : 0.5 * (e.gapX0 + e.gapX1));
+        }
+        std::sort(gaps.begin(), gaps.end());
+        const int steps = static_cast<int>(std::ceil((ub - ua) / 0.25 - 1e-9));
+        for (int i = 0; i <= steps; ++i) {
+            const double u = std::min(ua + 0.25 * i, ub);
+            const RoadPoint probe = canalBankProbe(canal, side == 1, u);
+            if (overCanalWater(build.solids, build.solids.size(), probe.x, probe.y, canal.waterZ)) continue;
+            if (gaps.empty()) return HUGE_VAL;
+            const auto it = std::lower_bound(gaps.begin(), gaps.end(), u);
+            double d = HUGE_VAL;
+            if (it != gaps.end()) d = *it - u;
+            if (it != gaps.begin()) d = std::min(d, u - *(it - 1));
+            worst = std::max(worst, d);
+        }
+    }
+    return worst;
 }
 
 std::string roadExitCsv(const std::vector<RoadWaterExit>& exits) {

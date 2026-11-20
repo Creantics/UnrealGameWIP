@@ -3907,6 +3907,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	RoadHost.Package = Package;
 	RoadHost.Base = Base;
 	RoadHost.Lawn = bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::Lawn)] : nullptr;
+	RoadHost.Galv = bSurfaces ? LookSet.Box[static_cast<int32>(ftcore::MassingLookSurface::GalvSteel)] : nullptr;
 	RoadHost.Cube = Cube;
 	RoadHost.Side = Side;
 	RoadHost.Taken = &Taken;
@@ -4352,6 +4353,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// podiums' terrace stone under them; walked on, and fed to the plinths and the check after.
 	std::vector<ftcore::MassingBox> FixBuilt = Built;
 	std::vector<bool> FixVisible = Visible;
+	// -DeckPosts' timber posts wear the deck's oak with its grain stood up: solhaven_oak_post, the oak plank set transposed
+	// (tools/make_transposed_surface.py), so the grain runs along V, up every side; the post stays upright, so the
+	// master's foot grime and edge wear stay at its foot and arrises. Without that set (or without -Surfaces) they wear
+	// the deck's own surface. A pile (kind "pile", over ftcore::FloatSpec::postMaxHeight) wears its own kind's look,
+	// board-formed concrete; a brace the deck's, its grain along its length.
+	UMaterialInterface* PostOak = nullptr;
+	if (bSurfaces)
+	{
+		const FString PostOakPackage = FTScene::SurfaceInstancePackage(TEXT("solhaven_oak_post"));
+		PostOak = LoadObject<UMaterialInterface>(nullptr, *(PostOakPackage + TEXT(".") + FPackageName::GetShortName(PostOakPackage)), nullptr,
+			LOAD_NoWarn | LOAD_Quiet);
+	}
+	int32 TimberPosts = 0, OakPosts = 0, Piles = 0;
 	for (size_t A = 0; A < FloatFix.Plan.added.size(); ++A)
 	{
 		ftcore::MassingBox Added = FloatFix.Plan.added[A];
@@ -4363,11 +4377,44 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		}
 		else
 		{
-			LayCubeWearing(Added, bSurfaces ? WearLook(LookSet, Boxes[Wears]) : Finish[static_cast<int32>(ftcore::massingFinish(Boxes[Wears]))],
-				EFTCellKind::Walk, EFTCellCull::None);
+			// -DeckPosts: a deck's posts (PL-D, timber or piles) and braces (kind "brace") stand under it, never walked on.
+			const bool bPile = Added.kind == "pile";
+			const bool bTimberPost = !bPile && Added.id.rfind("PL-D-", 0) == 0;
+			const bool bDeckSupport = bPile || bTimberPost || Added.kind == "brace";
+			const ftcore::MassingBox& Looks = bPile ? Added : Boxes[Wears];
+			UMaterialInterface* const Wear = (bTimberPost && PostOak)
+				? PostOak
+				: (bSurfaces ? WearLook(LookSet, Looks) : Finish[static_cast<int32>(ftcore::massingFinish(Looks))]);
+			TimberPosts += bTimberPost ? 1 : 0;
+			OakPosts += (bTimberPost && PostOak) ? 1 : 0;
+			Piles += bPile ? 1 : 0;
+			if (Added.sloped)
+			{
+				// A ramp's post, its top along the ramp's underside: its own mesh in the map (the mesh cache was warmed
+				// before the fix pass).
+				ftcore::MassingMesh Shape;
+				const FVector Pivot = SlopedShape(Added, Side, Shape);
+				const FString AddedId = Utf8(Added.id);
+				UStaticMesh* const Mesh = SlopedMesh(Package, FString::Printf(TEXT("SM_Massing_%s"), *AddedId), RF_Public, Shape, Pivot, Wear);
+				Block(World, Spawn, Mesh, nullptr, AddedId, Pivot, FVector::OneVector, 0.0);
+			}
+			else
+			{
+				LayCubeWearing(Added, Wear, bDeckSupport ? EFTCellKind::Solid : EFTCellKind::Walk, EFTCellCull::None);
+			}
 		}
 		FixBuilt.push_back(Added);
 		FixVisible.push_back(true);
+	}
+	if (TimberPosts + Piles > 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: deck posts: %d timber, %d on %s; %d piles on the look's board-formed concrete."),
+			TimberPosts, OakPosts, PostOak ? *PostOak->GetName() : TEXT("nothing (the deck's surface)"), Piles);
+		if (bSurfaces && OakPosts < TimberPosts)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: deck posts: %d timber posts wear the deck's oak plank, its grain across them "
+				"(no solhaven_oak_post: FTBuildSurfaces -Only=solhaven_oak_post)."), TimberPosts - OakPosts);
+		}
 	}
 	if (!bHeroOnly && !FTPlinths::Plan(Ground, FixBuilt, FixVisible, Entry[0], Entry[1], Plinths))
 	{
@@ -4429,6 +4476,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		// and the sea, taken to the engine's frame.
 		Director->WaterBodies.Reset();
 		Director->WaterExits.Reset();
+		int32 ExitsDropped = 0;
 		for (const ftcore::RoadBuild& RoadBuilt : RoadBuilds)
 		{
 			for (const ftcore::RoadWater& Canal : RoadBuilt.waters)
@@ -4441,11 +4489,30 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				{
 					Director->WaterExits.Add(FFTWaterExitRow::From(ftcore::waterExitToEngine(ftcore::waterExitFromRoad(Exit), static_cast<float>(Side))));
 				}
+				else
+				{
+					++ExitsDropped;
+				}
 			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %d of %d ways out kept for the swim (canals)."), Director->WaterExits.Num(),
+			static_cast<int32>(ftcore::kWaterMaxExits));
+		if (ExitsDropped > 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld: %d ways out of the canals past ftcore::kWaterMaxExits (%d) dropped."), ExitsDropped,
+				static_cast<int32>(ftcore::kWaterMaxExits));
 		}
 		if (bSea)
 		{
-			ftcore::WaterBody Sea = ftcore::waterSea(static_cast<float>(SeaWest), 0.f, static_cast<float>(-kSeaBedDeepest));
+			// -SeaSwimEdge=<x> (plan m; off by default): the sea's swimming water starts at x (the quay's face) instead
+			// of -Sea='s edge, which runs on under the quay and its buildings; its buoy line stays where it was.
+			double SwimEdge = SeaWest;
+			if (FParse::Value(*Params, TEXT("SeaSwimEdge="), SwimEdge) && SwimEdge > SeaWest)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: water: the sea is swum from x %.1f, %.1f m out from its edge (-SeaSwimEdge)."),
+					SwimEdge, SwimEdge - SeaWest);
+			}
+			ftcore::WaterBody Sea = ftcore::waterSeaSwimEdge(static_cast<float>(SeaWest), static_cast<float>(SwimEdge), 0.f, static_cast<float>(-kSeaBedDeepest));
 			// The free swim's dive area, in the plan frame (waterBodyToEngine turns it over with the rest).
 			FString DiveText;
 			const bool bDiveGiven = FParse::Value(*Params, TEXT("SeaDive="), DiveText);
