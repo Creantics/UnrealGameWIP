@@ -54,3 +54,5 @@ UnrealEditor-Cmd ForgottenThird.uproject "/Game/Maps/Stub?game=/Script/Forgotten
   grip socket far from the hand does not by itself mean the hand misses the shaft. Look at the stills.
 - **Framing.** It is currently tight: a raised hand or the feet can leave the frame.
 - **GPU.** This renders, so it needs the shared GPU slot.
+- **Shipping.** Development builds only. In Shipping the class is declared but its code is compiled out, so
+  `?game=` gives the plain `AFTGameMode` it derives from, which reads no `-Pose` flags and shoots nothing.

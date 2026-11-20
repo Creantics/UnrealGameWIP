@@ -5,7 +5,9 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+#include <ostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace ftcore::animimport;
@@ -127,4 +129,60 @@ TEST_CASE("missing bones and the track share")
     CHECK(TrackShareOk(307, 341, 0.9));
     CHECK_FALSE(TrackShareOk(300, 341, 0.9));
     CHECK(TrackShareOk(0, 0, 0.9));
+}
+
+TEST_CASE("a Mixamo skeleton's prefix, chains and stand-in bones")
+{
+    std::string prefix = "unchanged";
+    CHECK(MixamoPrefix({"root", "mixamorig_Hips", "mixamorig_Spine", "mixamorig_LeftUpLeg"}, prefix));
+    CHECK(prefix == "mixamorig_");
+    CHECK(MixamoPrefix({"mixamorig:LeftUpLeg", "mixamorig:Spine", "mixamorig:Hips"}, prefix));
+    CHECK(prefix == "mixamorig:");
+    CHECK(MixamoPrefix({"MixamoRig1:Hips", "MixamoRig1:Spine", "MixamoRig1:LeftUpLeg"}, prefix));
+    CHECK(prefix == "MixamoRig1:");
+
+    prefix = "unchanged";
+    CHECK_FALSE(MixamoPrefix({"Hips", "Spine", "LeftUpLeg"}, prefix)); // no prefix: another rig's names
+    CHECK_FALSE(MixamoPrefix({"mixamorig_Hips", "mixamorig_Spine"}, prefix)); // no leg
+    CHECK_FALSE(MixamoPrefix({"mixamorig_Hips", "other_Spine", "mixamorig_LeftUpLeg"}, prefix));
+    CHECK_FALSE(MixamoPrefix({"root", "pelvis", "spine_01", "thigh_l"}, prefix));
+    CHECK_FALSE(MixamoPrefix({}, prefix));
+    CHECK(prefix == "unchanged");
+
+    const auto chains = MixamoChains();
+    REQUIRE(chains.size() == 21);
+    int checked = 0;
+    for (std::size_t i = 0; i < chains.size(); ++i) {
+        for (std::size_t j = i + 1; j < chains.size(); ++j) {
+            CHECK(std::string_view(chains[i].name) != std::string_view(chains[j].name));
+        }
+        const std::string_view name = chains[i].name;
+        if (name == "LeftLeg") {
+            CHECK(std::string_view(chains[i].start) == "LeftUpLeg"); // the thigh: Mixamo's LeftLeg is the shin
+            CHECK(std::string_view(chains[i].end) == "LeftFoot");
+            ++checked;
+        } else if (name == "RightFoot") {
+            CHECK(std::string_view(chains[i].start) == "RightToeBase");
+            ++checked;
+        } else if (name == "LeftArm") {
+            CHECK(std::string_view(chains[i].end) == "LeftHand");
+            ++checked;
+        } else if (name == "Neck" || name == "Spine" || name == "LeftThumb") {
+            ++checked;
+        }
+        CHECK_FALSE(OptionalTargetChain(name));
+    }
+    CHECK(checked == 6);
+
+    CHECK(std::string_view(MixamoBoneFor("pelvis")) == "Hips");
+    CHECK(std::string_view(MixamoBoneFor("calf_r")) == "RightLeg");
+    CHECK(std::string_view(MixamoBoneFor("lowerarm_l")) == "LeftForeArm");
+    CHECK(std::string_view(MixamoBoneFor("ball_l")) == "LeftToeBase");
+    CHECK(MixamoBoneFor("root") == nullptr);
+    CHECK(MixamoBoneFor("index_01_l") == nullptr);
+
+    CHECK(OptionalTargetChain("LeftIndexMetacarpal"));
+    CHECK(OptionalTargetChain("RightPinkyMetacarpal"));
+    CHECK_FALSE(OptionalTargetChain("Metacarpal"));
+    CHECK_FALSE(OptionalTargetChain("LeftIndex"));
 }
