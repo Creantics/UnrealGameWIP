@@ -26,6 +26,8 @@
 //   -Density= -Damping= -LocalDamping= -Edge= -Bend= -Tether= -Drag= -Lift= -Thickness= -Friction= -GravityScale=
 //   -SelfCollide | -NoSelfCollide
 //                           Chaos cloth settings (kg/m2, 0..1 stiffness, cm); any left out keep the asset's own
+//                           (an asset with no Chaos config gets one made); each one given is logged as read back;
+//                           -SelfCollide with -NoSelfCollide is an error. All flags are checked before the mesh changes
 //   -Verify                 write nothing; report the mesh's clothing
 //
 // Or, to make a physics asset for cloth to collide with from one made for a ragdoll:
