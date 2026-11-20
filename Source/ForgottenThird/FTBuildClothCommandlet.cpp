@@ -282,7 +282,8 @@ void ClothPaint(UClothingAssetCommon& Asset, float Max, float Pin)
 }
 
 // Max distance from the sim mesh's vertex colour: Max x red (0 pinned, 255 free), painted where the mesh was made, so a
-// cape can be pinned at the collar and along its shoulders rather than only by height. False when the colours are missing.
+// cape can be pinned at the collar and along its shoulders rather than only by height. False when the colours are missing
+// or no vertex is pinned (an unpainted, all-white mesh would leave nothing holding the cloth).
 bool ClothPaintFromColour(UClothingAssetCommon& Asset, float Max)
 {
 	FClothLODDataCommon& Lod = Asset.LodData[0];
@@ -308,6 +309,12 @@ bool ClothPaintFromColour(UClothingAssetCommon& Asset, float Max)
 	{
 		Map->Values[i] = Max * Phys.VertexColors[i].R / 255.f;
 		Pinned += Phys.VertexColors[i].R == 0;
+	}
+	if (Pinned == 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -MaskFromColour: none of the %d sim vertices has red 0, so nothing pins the cloth."),
+			Phys.Vertices.Num());
+		return false;
 	}
 	Asset.ApplyParameterMasks(false, true);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: max distance from vertex colour: %d of %d vertices pinned, %.1f cm at red 255."),
@@ -338,7 +345,9 @@ int32 ClothSectionBySlot(const USkeletalMesh& Mesh, const FString& Slot)
 
 // The Chaos settings given on the command line (any left out keep the asset's defaults): mass by Density (kg/m2),
 // Damping and LocalDamping, Edge/Bend/Tether stiffness (0..1), Drag and Lift, collision Thickness (cm) and Friction,
-// GravityScale, and -SelfCollide.
+// GravityScale, and -SelfCollide or -NoSelfCollide (neither keeps the asset's own setting). FParse::Value only matches a
+// key whose previous character is not a letter or digit (FCString::Strifind, Core/Public/Misc/CString.h:747 and 751 in
+// UE 5.8), so Damping= never reads LocalDamping=.
 void ClothConfigure(UClothingAssetCommon& Asset, const FString& Params)
 {
 	UChaosClothConfig* Config = Asset.GetClothConfig<UChaosClothConfig>();
@@ -393,7 +402,14 @@ void ClothConfigure(UClothingAssetCommon& Asset, const FString& Params)
 	{
 		Config->GravityScale = V;
 	}
-	Config->bUseSelfCollisions = FParse::Param(*Params, TEXT("SelfCollide"));
+	if (FParse::Param(*Params, TEXT("SelfCollide")))
+	{
+		Config->bUseSelfCollisions = true;
+	}
+	else if (FParse::Param(*Params, TEXT("NoSelfCollide")))
+	{
+		Config->bUseSelfCollisions = false;
+	}
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("FTBuildCloth: Chaos config: density %.3f kg/m2, damping %.3f (local %.3f), edge %.2f, bend %.2f, tether %.2f, drag %.3f, lift %.3f, thickness %.2f cm, friction %.2f, gravity x%.2f, self collision %s."),
 		Config->Density, Config->DampingCoefficient, Config->LocalDampingCoefficient, Config->EdgeStiffnessWeighted.Low,
@@ -526,9 +542,15 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	ClothStrip(*Mesh);
 	// -SimSlot=<material slot>: the cloth is made from that section (a coarse sim proxy), which is then taken out of the
 	// mesh, and drives the -RenderSlot section (the fine mesh, skinned to the proxy); without them section 0 is both.
+	// -SimSlot alone draws on its own section; -RenderSlot alone is an error.
 	FString SimSlot, RenderSlot;
 	FParse::Value(*Params, TEXT("SimSlot="), SimSlot);
 	FParse::Value(*Params, TEXT("RenderSlot="), RenderSlot);
+	if (!RenderSlot.IsEmpty() && SimSlot.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -RenderSlot=%s needs -SimSlot= (the section the cloth is made from)."), *RenderSlot);
+		return 1;
+	}
 	int32 SimSection = 0;
 	if (!SimSlot.IsEmpty() && (SimSection = ClothSectionBySlot(*Mesh, SimSlot)) == INDEX_NONE)
 	{

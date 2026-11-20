@@ -156,3 +156,18 @@ TEST_CASE("lead wet: a follower takes the lead's weather unless the switch names
     CHECK(soak.wetness == doctest::Approx(0.9f));
     CHECK(lw::cloth(ftcore::WaterWetness{}, lw::partyWeather(0.f, 0, one)).wetness == 0.f);
 }
+
+TEST_CASE("lead wet: a switch that is off forces nothing, whatever slot and wetness it holds") {
+    // Off by default (slot 0, wetness 0): follower 0 takes the lead's weather, not the 0 the switch holds.
+    CHECK(lw::partyWeather(0.6f, 0, lw::PartyWetForce{}) == doctest::Approx(0.6f));
+    // Off with a slot and wetness filled in (as a rejected parse might leave them): still the lead's.
+    const lw::PartyWetForce stale{false, 1, 0.9f};
+    CHECK(lw::partyWeather(0.2f, 1, stale) == doctest::Approx(0.2f));
+    const lw::PartyWetForce staleAll{false, -1, 1.f};
+    for (int slot = 0; slot < 3; ++slot) {
+        CHECK(lw::partyWeather(0.3f, slot, staleAll) == doctest::Approx(0.3f));
+    }
+    // Text the parser turns down leaves every follower on the lead's weather.
+    CHECK(lw::partyWeather(0.5f, 0, lw::parsePartyWet("x")) == doctest::Approx(0.5f));
+    static_assert(lw::partyWeather(0.5f, 1, lw::PartyWetForce{false, 1, 0.f}) == 0.5f);
+}

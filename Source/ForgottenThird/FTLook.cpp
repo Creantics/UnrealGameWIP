@@ -714,7 +714,11 @@ int32 FTLook::AddPieces(AActor& Owner, USkeletalMeshComponent& Body, const TArra
 		Piece->bCollideWithEnvironment = true; // cloth pieces (FTBuildCloth) also push off the level, not just the body
 		const bool bHasCloth = PieceMesh->GetMeshClothingAssets().Num() > 0;
 		// -CapeStatic (off by default): a cloth piece named *Cape* is worn as its skinned mesh, with no cloth actors at all.
+#if !UE_BUILD_SHIPPING
 		static const bool bCapeStatic = FParse::Param(FCommandLine::Get(), TEXT("CapeStatic"));
+#else
+		constexpr bool bCapeStatic = false; // a dev switch: never in a shipped build
+#endif
 		const bool bStatic = bHasCloth && bCapeStatic && Name.Contains(TEXT("Cape"));
 		if (bStatic)
 		{
