@@ -4072,12 +4072,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				Taken.push_back(ftcore::massingFrontFoot(Piece, Rule));
 			}
 			// The mesh is dressing; a ground piece's part out of the face collides as a hidden box (ftcore::massingFrontCollider),
-			// so the lead and the walkers stop at its front.
+			// so the lead and the walkers stop at its front; a Blocker, so the crowd's ground trace (visibility) never lands on it.
 			ftcore::MassingBox Collider;
 			if (ftcore::massingFrontCollider(Piece, Rule, Collider))
 			{
 				Collider.id = Rule.id + "-" + std::to_string(N) + "-C";
-				Lay(Collider, EFTCellKind::Hidden, EFTCellCull::None);
+				Lay(Collider, EFTCellKind::Blocker, EFTCellCull::None);
 				++FrontColliders;
 			}
 		}
@@ -4092,7 +4092,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.crowded), static_cast<int32>(Count.capped));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d pieces by %d rules on %d buildings' %d faces; %d faces dressed at "
-			"the ground, %d of the %d that front a street; the meshes collide with nothing, %d ground pieces stand in hidden colliders."),
+			"the ground, %d of the %d that front a street; the meshes collide with nothing, %d ground pieces stand in hidden colliders (blockers: visibility traces pass)."),
 			static_cast<int32>(Pieces.size()), static_cast<int32>(FrontRules.size()), static_cast<int32>(FrontTotals.hosts),
 			static_cast<int32>(FrontTotals.faces), static_cast<int32>(FrontTotals.dressed), static_cast<int32>(FrontTotals.streetDressed),
 			static_cast<int32>(FrontTotals.streetFaces), FrontColliders);
@@ -4745,10 +4745,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const FFTCellInstancer::FStats& CellStats = Cells.Stats();
 		const auto PerKind = [&CellStats](EFTCellKind Kind) { return CellStats.PerKind[static_cast<int32>(Kind)]; };
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: %d cells, %d components, %d instances (solid %d, walk %d, dressing %d); "
-			"actors %d"), CellStats.Cells, CellStats.Components, CellStats.Instances, PerKind(EFTCellKind::Solid) + PerKind(EFTCellKind::Hidden),
+			"actors %d"), CellStats.Cells, CellStats.Components, CellStats.Instances, PerKind(EFTCellKind::Solid) + PerKind(EFTCellKind::Hidden) + PerKind(EFTCellKind::Blocker),
 			PerKind(EFTCellKind::Walk), PerKind(EFTCellKind::NoCollide), Actors);
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: of the solid, %d hidden colliders under kit meshes; %d pieces fell back to "
-			"actors (their materials don't draw instanced); %d sloped boxes stay actors."), PerKind(EFTCellKind::Hidden), CellStats.FallbackActors,
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: of the solid, %d hidden colliders under kit meshes, %d frontage blockers; %d pieces fell back to "
+			"actors (their materials don't draw instanced); %d sloped boxes stay actors."), PerKind(EFTCellKind::Hidden), PerKind(EFTCellKind::Blocker), CellStats.FallbackActors,
 			Sloped);
 	}
 	if (!FTMaterialCheck::Run(World)) // -MaterialCheck: no null or default material on anything drawn, or no map

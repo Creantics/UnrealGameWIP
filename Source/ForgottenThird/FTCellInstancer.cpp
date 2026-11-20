@@ -61,6 +61,8 @@ const TCHAR* KindName(EFTCellKind Kind)
 		return TEXT("Dress");
 	case EFTCellKind::Hidden:
 		return TEXT("Hidden");
+	case EFTCellKind::Blocker:
+		return TEXT("Blocker");
 	default:
 		return TEXT("Piece");
 	}
@@ -79,11 +81,16 @@ void SetUpKind(UStaticMeshComponent& Comp, EFTCellKind Kind, bool bCastShadow)
 	{
 		Comp.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	}
-	if (Kind == EFTCellKind::Hidden)
+	if (Kind == EFTCellKind::Blocker)
+	{
+		Comp.SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
+		Comp.SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	}
+	if (Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)
 	{
 		Comp.SetHiddenInGame(true);
 	}
-	if (!bCastShadow || Kind == EFTCellKind::Hidden)
+	if (!bCastShadow || Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)
 	{
 		Comp.SetCastShadow(false);
 	}
@@ -282,7 +289,7 @@ bool FFTCellInstancer::IsLight(const FKey& Key)
 
 bool FFTCellInstancer::InLumenScene(const UStaticMesh& Mesh, const FTransform& Transform, const FKey& Key)
 {
-	if (IsLight(Key) || Key.Kind == EFTCellKind::Hidden)
+	if (IsLight(Key) || Key.Kind == EFTCellKind::Hidden || Key.Kind == EFTCellKind::Blocker)
 	{
 		return false;
 	}
@@ -332,14 +339,14 @@ FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInter
 	// Solid and Walk collide alike (SetUpKind): one group for both.
 	Key.Kind = Kind == EFTCellKind::Walk ? EFTCellKind::Solid : Kind;
 	Key.Cull = Options.Cull;
-	Key.bCastShadow = Options.bCastShadow && Kind != EFTCellKind::Hidden;
+	Key.bCastShadow = Options.bCastShadow && Kind != EFTCellKind::Hidden && Kind != EFTCellKind::Blocker;
 	Key.bRayTraced = Options.bRayTraced;
 	if (Key.bCastShadow && Kind == EFTCellKind::Walk && GroundFlush(*Mesh, Transform))
 	{
 		Key.bCastShadow = false;
 		++Totals.FlushNoShadow;
 	}
-	Key.bEmissive = Options.bEmissive && Kind != EFTCellKind::Hidden;
+	Key.bEmissive = Options.bEmissive && Kind != EFTCellKind::Hidden && Kind != EFTCellKind::Blocker;
 	Key.bLumen = Key.bEmissive || InLumenScene(*Mesh, Transform, Key);
 	int32* Found = GroupOf.Find(Key);
 	const int32 G = Found ? *Found : Groups.Num();
