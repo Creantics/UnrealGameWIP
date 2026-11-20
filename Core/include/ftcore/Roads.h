@@ -419,7 +419,8 @@ struct RoadNetStreet {
     bool oneWay = false;
     bool deck = false;           // a bridge deck, level at deckZ, on piers, with rails along both backs
     double deckZ = 0.0;          // m: a deck's ground (its gutter stands kRoadSurfaceLift over it)
-    bool park = false;           // bays along both sides where they fit (never on a deck)
+    bool parkLeft = false, parkRight = false; // bays along that side where they fit (left: of its points' way; never
+                                              // on a deck)
     std::vector<RoadMouth> mouths; // lanes meeting its sides (at: m along its points; no stubs)
     double mouthBack = 0.0;      // m: a mouth's dropped kerb runs this far behind the pavement
     double mouthZ = 0.0;         // m: the lane's surface at the mouth's back; 0: the pavement's
@@ -452,7 +453,8 @@ FTCORE_API bool roadNetTable(std::string_view csv);
 //   speed_kmh     optional (40)
 //   one_way       optional: 1/true, along its points
 //   deck_z        optional: a bridge deck at that ground height
-//   parking       optional: 1/true for bays along both sides; empty or 0 none
+//   parking       optional: 1/true for bays along both sides, L or R along that side only (left of the way its
+//                 points run), LR both; empty or 0 none
 //   mouths        optional: "lane@at@width@L|R;..." as importRoads, with no stub
 //   mouth_back_m, mouth_z  optional, as importRoads
 //   poles         optional: L, R or LR, utility poles with wires along that side (left of the way its points run)

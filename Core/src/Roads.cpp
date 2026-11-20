@@ -2386,7 +2386,17 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
             r.deck = true;
         }
         r.oneWay = flag("one_way");
-        r.park = flag("parking");
+        {
+            const std::string_view ps = col("parking");
+            if (flag("parking") || ps == "LR" || ps == "RL") {
+                r.parkLeft = r.parkRight = true;
+            } else if (ps == "L" || ps == "R") {
+                r.parkLeft = ps == "L";
+                r.parkRight = ps == "R";
+            } else if (ps != "" && ps != "0" && ps != "false" && ps != "False") {
+                return fail(error, rec.line, r.id + ": parking is 1, L, R or LR");
+            }
+        }
         {
             const std::string_view ps = col("poles");
             if (ps != "" && ps != "L" && ps != "R" && ps != "LR" && ps != "RL")
@@ -2977,7 +2987,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
         // The street's mouths on this edge: where along it its ends lie, and which way it runs.
         bool fwd = true;
         std::vector<std::pair<double, bool>> mouthSigns; // a stop sign's s and side (true: +t) at each lane mouth
-        if (!st.mouths.empty() || st.poleLeft != st.poleRight) {
+        if (!st.mouths.empty() || st.poleLeft != st.poleRight || st.parkLeft != st.parkRight) {
             auto along = [&](RoadPoint q) {
                 double best = 1e18, at = 0.0, run = 0.0;
                 for (std::size_t i = 1; i < st.pts.size(); ++i) {
@@ -3009,9 +3019,12 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
             if (zA) side->push_back({zA0, zA1, Span::Ramp});
             if (zB) side->push_back({zB0, zB1, Span::Ramp});
         }
-        const bool park = st.park && !st.deck && st.pavement >= kRoadBayDeep + 1.0;
-        const std::vector<SideSpan> spansL = fillSpans(fixL, L, park, {});
-        const std::vector<SideSpan> spansR = fillSpans(fixR, L, park, {});
+        // Bays where the pavement takes them: the street's left is this edge's +t side when the edge runs its way.
+        const bool parkFits = !st.deck && st.pavement >= kRoadBayDeep + 1.0;
+        const bool parkL = parkFits && (fwd ? st.parkLeft : st.parkRight);
+        const bool parkR = parkFits && (fwd ? st.parkRight : st.parkLeft);
+        const std::vector<SideSpan> spansL = fillSpans(fixL, L, parkL, {});
+        const std::vector<SideSpan> spansR = fillSpans(fixR, L, parkR, {});
 
         // The profile: level over each junction's fill, then the ground's samples simplified (a deck: straight).
         // A sample is the highest of the ground under the crown and under each pavement (less the kerb), lifted by

@@ -62,8 +62,10 @@ TEST_CASE("road net: the table reads, and refuses bad rows") {
     const std::vector<RoadNetStreet> s = net(kTee);
     REQUIRE(s.size() == 2);
     CHECK(s[0].pts.size() == 2);
-    CHECK(s[0].park);
-    CHECK_FALSE(s[1].park);
+    CHECK(s[0].parkLeft);
+    CHECK(s[0].parkRight);
+    CHECK_FALSE(s[1].parkLeft);
+    CHECK_FALSE(s[1].parkRight);
     CHECK_FALSE(s[0].deck);
     CHECK(roadNetTable(kTee));
     CHECK_FALSE(roadNetTable("id,kind,width_m,pts,pavement_m,lane_m,ground_z\n"));
@@ -217,6 +219,46 @@ TEST_CASE("road net: nothing solid stands in the carriageway; furniture keeps of
     }
     // The fill carries the arms' crown: no step where an arm meets it.
     CHECK(rep.maxStep == 0.0);
+}
+
+TEST_CASE("road net: parking L or R lays bays along that side of the street only, whichever way its edges run") {
+    // RD-N runs north with bays on its right (east), RD-S runs south with bays on its left (east); a T joins them
+    // at their middles, so each is two edges. RD-B has bays both sides.
+    const std::vector<RoadNetStreet> s = net(
+        "id,kind,width_m,pts,pavement_m,parking\n"
+        "RD-N,road,16,0:0;0:300,3.5,R\n"
+        "RD-S,road,16,200:300;200:0,3.5,L\n"
+        "ST-T,street,14,0:150;200:150,2.8,0\n"
+        "RD-B,road,16,400:0;400:300,3.5,LR\n");
+    REQUIRE(s.size() == 4);
+    CHECK_FALSE(s[0].parkLeft);
+    CHECK(s[0].parkRight);
+    CHECK(s[1].parkLeft);
+    CHECK_FALSE(s[1].parkRight);
+    CHECK(s[3].parkLeft);
+    CHECK(s[3].parkRight);
+    RoadBuild b;
+    roadNetBuild(s, MassingGround{}, b);
+    int north = 0, south = 0, west = 0, east = 0;
+    for (const RoadBay& bay : b.bays) {
+        INFO(bay.street << " " << bay.foot.x << ", " << bay.foot.y);
+        CHECK(bay.street != "ST-T");
+        if (bay.street == "RD-N") {
+            ++north;
+            CHECK(bay.foot.x > 0.0);
+        }
+        if (bay.street == "RD-S") {
+            ++south;
+            CHECK(bay.foot.x > 200.0);
+        }
+        if (bay.street == "RD-B") (bay.foot.x < 400.0 ? west : east) += 1;
+    }
+    CHECK(north > 4);
+    CHECK(south > 4);
+    CHECK(west > 4);
+    CHECK(east > 4);
+    std::vector<RoadNetStreet> out;
+    CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,parking\nA,road,14,0:0;0:50,3.5,Q\n", out));
 }
 
 TEST_CASE("road net: pieces follow the ground and report what is too steep; decks stand on piers") {
