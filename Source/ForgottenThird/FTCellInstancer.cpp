@@ -83,9 +83,15 @@ void SetUpKind(UStaticMeshComponent& Comp, EFTCellKind Kind, bool bCastShadow)
 	}
 	if (Kind == EFTCellKind::Blocker)
 	{
+		// A world-dynamic object: the pawn capsule (Pawn profile) still blocks on it, but the world-static object queries
+		// (the traversal probe's mantle, vault and ledge traces, knockback's wall sweep, the wave's floor trace) never find
+		// it, so the lead gets no climb or top on an invisible box. Visibility and camera traces pass it (the crowd's).
+		Comp.SetCollisionObjectType(ECC_WorldDynamic);
 		Comp.SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 		Comp.SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
-		// Stated, not inherited: a Blocker is solid ground the lead can't enter, so the navmesh is cut around it like a wall's.
+		// Stated, not inherited: the lead can't enter it, so the navmesh is cut around it, and what paths on the navmesh
+		// (the tour pilot, FTExploreDirector::PilotWaypoint; the tour's island stops; FTBuildMassingWorld's -Goals reach and
+		// -Coverage islands) keeps to where the lead can go.
 		Comp.SetCanEverAffectNavigation(true);
 	}
 	if (Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)

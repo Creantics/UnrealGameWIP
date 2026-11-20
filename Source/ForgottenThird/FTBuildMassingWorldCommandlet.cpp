@@ -3863,7 +3863,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	int32 HeroLampsKept = 0;  // street lamps left out of the hero corner
 	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
 	// to an actor: like the kit the mesh collides with nothing and leaves the navmesh alone, drawn to the props' distance (a
-	// ground-layer frontage piece gets a hidden collider of its own, below: a Blocker, which does cut the navmesh); a lamp
+	// ground-layer frontage piece gets an invisible Blocker box of its own, below, which does cut the navmesh); a lamp
 	// takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
@@ -4072,8 +4072,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			{
 				Taken.push_back(ftcore::massingFrontFoot(Piece, Rule));
 			}
-			// The mesh is dressing; a ground piece's part out of the face collides as a hidden box (ftcore::massingFrontCollider),
-			// so the lead stops at its front; a Blocker, so the crowd's visibility traces pass it (walkers keep out by their bands, not by it).
+			// The mesh is dressing; a ground piece's part out of the face collides as an invisible box (ftcore::massingFrontCollider),
+			// so the lead stops at its front: a Blocker, so the crowd's visibility traces pass it (walkers keep out by their bands,
+			// not by it), the traversal probe finds no climb on it, and the navmesh is cut around it.
 			ftcore::MassingBox Collider;
 			if (ftcore::massingFrontCollider(Piece, Rule, Collider))
 			{
@@ -4093,7 +4094,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.crowded), static_cast<int32>(Count.capped));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d pieces by %d rules on %d buildings' %d faces; %d faces dressed at "
-			"the ground, %d of the %d that front a street; the meshes collide with nothing, %d ground pieces stand in hidden colliders (blockers: visibility traces pass)."),
+			"the ground, %d of the %d that front a street; the meshes collide with nothing, %d ground pieces stand in invisible blockers (world-dynamic: visibility, camera and traversal traces pass)."),
 			static_cast<int32>(Pieces.size()), static_cast<int32>(FrontRules.size()), static_cast<int32>(FrontTotals.hosts),
 			static_cast<int32>(FrontTotals.faces), static_cast<int32>(FrontTotals.dressed), static_cast<int32>(FrontTotals.streetDressed),
 			static_cast<int32>(FrontTotals.streetFaces), FrontColliders);
