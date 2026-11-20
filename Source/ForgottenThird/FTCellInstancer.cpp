@@ -85,6 +85,8 @@ void SetUpKind(UStaticMeshComponent& Comp, EFTCellKind Kind, bool bCastShadow)
 	{
 		Comp.SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 		Comp.SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+		// Stated, not inherited: a Blocker is solid ground the lead can't enter, so the navmesh is cut around it like a wall's.
+		Comp.SetCanEverAffectNavigation(true);
 	}
 	if (Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)
 	{

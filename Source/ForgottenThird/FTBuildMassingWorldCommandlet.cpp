@@ -3862,8 +3862,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	std::vector<uint8_t> FrontFaces;
 	int32 HeroLampsKept = 0;  // street lamps left out of the hero corner
 	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
-	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance (a
-	// ground-layer frontage piece gets a hidden collider of its own, below); a lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
+	// to an actor: like the kit the mesh collides with nothing and leaves the navmesh alone, drawn to the props' distance (a
+	// ground-layer frontage piece gets a hidden collider of its own, below: a Blocker, which does cut the navmesh); a lamp
+	// takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
 	{
