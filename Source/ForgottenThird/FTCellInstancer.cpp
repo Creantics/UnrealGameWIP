@@ -90,10 +90,12 @@ void SetUpKind(UStaticMeshComponent& Comp, EFTCellKind Kind, bool bCastShadow)
 		Comp.SetCollisionObjectType(ECC_WorldDynamic);
 		Comp.SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 		Comp.SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
-		// Stated, not inherited: the lead can't enter it, so the navmesh is cut around it, and what paths on the navmesh
-		// (the tour pilot, FTExploreDirector::PilotWaypoint; the tour's island stops; FTBuildMassingWorld's -Goals reach and
-		// -Coverage islands) keeps to where the lead can go.
-		Comp.SetCanEverAffectNavigation(true);
+		// Tagged so the traversal probe turns down a climb whose wall stands behind one (FTTraversalProbe).
+		Comp.ComponentTags.AddUnique(FTCells::BlockerTag());
+		// It leaves the navmesh alone. Nothing on the strip paths by the navmesh: the lead walks by input, the crowd by its
+		// bands, and the tour pilot (FTExploreDirector::PilotWaypoint) and its island stops run only under -WorldAutoPlay.
+		// So nothing keeps a pilot off a blocker; FTBuildMassingWorld's -Goals and -Coverage paths may cross one.
+		Comp.SetCanEverAffectNavigation(false);
 	}
 	if (Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)
 	{

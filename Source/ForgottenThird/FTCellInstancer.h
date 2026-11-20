@@ -36,7 +36,7 @@ enum class EFTCellKind : uint8
 	Walk,      // blocks everything and shapes the navmesh, walked on (pavements, kerbs, carriageways, quays' decks)
 	NoCollide, // dressing: no collision, no navigation (kit meshes, props, frontage meshes, markings, roof clutter)
 	Hidden,    // a solid hidden in game, casting no shadow: the collider a kit mesh stands in for
-	Blocker,   // hidden like Hidden, a world-dynamic object that blocks the lead (pawn sweeps) and cuts the navmesh; visibility and
+	Blocker,   // hidden like Hidden, a world-dynamic object tagged BlockerTag() that blocks the lead (pawn sweeps), off the navmesh; visibility and
 	           // camera traces and the world-static object queries (traversal, knockback) pass through it
 	           // (the crowd's traces are all visibility traces: no walker stands on one, and none is stopped by one): a ground frontage piece's collider
 	Count
@@ -58,6 +58,12 @@ enum class EFTCellCull : uint8
 
 namespace FTCells
 {
+// The component tag on every Blocker group: the traversal probe turns down a climb with one in the way.
+inline FName BlockerTag()
+{
+	static const FName Tag(TEXT("FTBlocker"));
+	return Tag;
+}
 inline constexpr double CellSize = 50000.0;   // cm: a 500 m cell (the default; -CellM= sets the instancer's own)
 inline constexpr int32 PropCull = 15000;      // cm
 inline constexpr int32 DressingCull = 8000;   // cm

@@ -2225,14 +2225,14 @@ void AFTExploreCharacter::HandleRoll()
 	bRollAskedAir = bAir && RollAsked > 0.f;
 }
 
-bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const
+bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In, bool* OutBlocker) const
 {
 	const UWorld* World = GetWorld();
 	const UCapsuleComponent* Capsule = GetCapsuleComponent();
 	const float Half = Capsule->GetScaledCapsuleHalfHeight();
 	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTTraversal), false, this);
 	return World && FTTraversalProbe::Probe(*World, Query, FeetLocation(), GetActorForwardVector().GetSafeNormal2D(),
-		Capsule->GetScaledCapsuleRadius(), Half, Set.tuning(), bAir, Out, In);
+		Capsule->GetScaledCapsuleRadius(), Half, Set.tuning(), bAir, Out, In, OutBlocker);
 }
 
 bool AFTExploreCharacter::TryTraverse(bool bLog)
@@ -3597,11 +3597,16 @@ void AFTExploreCharacter::LogLeadGoHold()
 	if (const UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()))
 	{
 		Probe = TEXT("nothing found");
-		if (ProbeObstacle(Anim->GetTraversal(), false, Obstacle, In))
+		bool bBlocker = false;
+		if (ProbeObstacle(Anim->GetTraversal(), false, Obstacle, In, &bBlocker))
 		{
 			Probe = TEXT("found");
 			ProbeHeight = Obstacle.height;
 			ProbeAhead = Obstacle.distance;
+		}
+		else if (bBlocker)
+		{
+			Probe = TEXT("turned down at a frontage blocker");
 		}
 	}
 	const FVector At = GetActorLocation();
