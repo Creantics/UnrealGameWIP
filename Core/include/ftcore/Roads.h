@@ -324,7 +324,7 @@ FTCORE_API RoadParkCounts roadParkVehicles(const RoadBuild& build, const std::ve
                                            std::vector<RoadVehicle>& out);
 
 // Two-wheelers (scooters and bicycles) parked along the lanes (streets no wider than `laneUpTo` with two points, inside
-// [x0, x1] by [y0, y1]): every `spacing` m along each side, by hash one spot in three, parallel to the lane
+// [x0, x1] by [y0, y1], none marked foot in the table): every `spacing` m along each side, by hash one spot in three, parallel to the lane
 // `edgeIn` m in from its edge, and in groups of two to three along the road's back of pavement on the side with mouths.
 // A spot near a door, a foot in `taken`, a vehicle placed before it or a road's carriageway or keep-out is skipped.
 struct RoadTwoWheelOptions {
@@ -679,7 +679,8 @@ inline constexpr double kFootBollardGap = 1.3;    // m: the widest gap between a
 // What a streets-table row is to the footways: a vehicle street (kerbed footways), a pedestrian way (an alley or a
 // market arcade: paved, bollards at its mouths) or neither (stairs; no row).
 enum class RoadFootClass : std::uint8_t { None, Vehicle, Pedestrian };
-// Vehicle: width over kFootAlleyUpTo and kind not stair, link_stair, alley or market_arcade. Pedestrian: kind alley or
+// Vehicle: width over kFootAlleyUpTo, kind not stair, link_stair, alley or market_arcade, and not marked foot. Pedestrian:
+// a non-stair row marked foot in the table (MassingStreet::foot, whatever its kind and width), kind alley or
 // market_arcade, or any other non-stair row kFootAlleyUpTo wide or less. None: stair and link_stair.
 FTCORE_API RoadFootClass roadFootClass(const MassingStreet& street);
 // Marks each mouth whose lane is a row of `streets` of class Pedestrian as foot (and clears it on any other mouth); a

@@ -989,6 +989,12 @@ TEST_CASE("footways: classes and sections per width") {
     CHECK(roadFootClass(footStreet("a", "terrace", 3.0, {})) == RoadFootClass::Pedestrian);
     CHECK(roadFootClass(footStreet("a", "terrace", 6.0, {})) == RoadFootClass::Vehicle);
     CHECK(roadFootClass(footStreet("a", "lane", 4.0, {})) == RoadFootClass::Vehicle);
+    MassingStreet marked = footStreet("a", "core_lane", 6.0, {}); // the table's foot cell: a pedestrian way at any width
+    marked.foot = true;
+    CHECK(roadFootClass(marked) == RoadFootClass::Pedestrian);
+    CHECK(marked.kind == "core_lane");
+    marked.kind = "stair";
+    CHECK(roadFootClass(marked) == RoadFootClass::None); // a stair stays a stair
 
     RoadFootSection s = roadFootSection(footStreet("a", "lane", 6.0, {}));
     CHECK(s.footLeft == doctest::Approx(1.5));
@@ -1046,6 +1052,9 @@ TEST_CASE("footways: a kerbed street's lanes follow its carriageway, one way up 
     g = RoadGraph{};
     roadGraphFootLanes(footStreet("S", "stair", 6.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
     roadGraphFootLanes(footStreet("A", "alley", 3.0, {{0, 0, 0}, {40, 0, 0}}), 30.0, g);
+    MassingStreet marked = footStreet("M", "core_lane", 6.0, {{0, 0, 0}, {40, 0, 0}});
+    marked.foot = true; // no carriageway on a marked pedestrian way: no vehicle lane
+    roadGraphFootLanes(marked, 30.0, g);
     CHECK(g.lanes.empty());
 }
 

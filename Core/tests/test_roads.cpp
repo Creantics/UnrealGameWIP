@@ -332,6 +332,14 @@ TEST_CASE("roads: two-wheelers stay off the carriageway, doors and each other") 
         CHECK((bikes[i].kind == RoadVehicleKind::Scooter || bikes[i].kind == RoadVehicleKind::Bicycle));
         for (std::size_t j = i + 1; j < bikes.size(); ++j) CHECK(!massingFeetOverlap(f, roadVehicleFoot(bikes[j]), 0.1));
     }
+    // The same lane marked a pedestrian way in the table: no bikes parked along it; the road's own stay.
+    std::size_t onLane = 0;
+    for (const RoadVehicle& v : bikes) onLane += v.where == lanes[0].id ? 1 : 0;
+    CHECK(onLane > 0);
+    lanes[0].foot = true;
+    std::vector<RoadVehicle> marked;
+    roadTwoWheelers(lanes, o, &b, &r, ground, {}, nullptr, marked);
+    for (const RoadVehicle& v : marked) CHECK(v.where != lanes[0].id);
 }
 
 TEST_CASE("roads: cleared boxes are the decks and piers over the band") {

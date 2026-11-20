@@ -1368,7 +1368,7 @@ std::size_t roadTwoWheelers(const std::vector<MassingStreet>& lanes, const RoadT
                                px, py);
     };
     for (const MassingStreet& st : lanes) {
-        if (st.width > opts.laneUpTo + 1e-9 || st.points.size() != 2) continue;
+        if (st.foot || st.width > opts.laneUpTo + 1e-9 || st.points.size() != 2) continue;
         const MassingVec a = st.points[0], b = st.points[1];
         const double l = std::hypot(b.x - a.x, b.y - a.y);
         if (l < 8.0) continue;
@@ -4223,6 +4223,7 @@ std::string roadQuayCsv(const std::vector<RoadQuayPoint>& points) {
 RoadFootClass roadFootClass(const MassingStreet& street) {
     const std::string& k = street.kind;
     if (k == "stair" || k == "link_stair") return RoadFootClass::None;
+    if (street.foot) return RoadFootClass::Pedestrian;
     if (k == "alley" || k == "market_arcade") return RoadFootClass::Pedestrian;
     if (street.width <= kFootAlleyUpTo + 1e-9) return RoadFootClass::Pedestrian;
     return RoadFootClass::Vehicle;

@@ -220,7 +220,10 @@ TEST_CASE("massing kerbs: both edges of a carriageway, in even pieces, as pole c
     REQUIRE(roadFootClass(arcade) == RoadFootClass::Pedestrian);
     REQUIRE(roadFootClass(narrow) == RoadFootClass::Pedestrian);
     REQUIRE(roadFootClass(steps) == RoadFootClass::None);
-    const Kerbs none = kerbs({bare, dot, arcade, narrow, steps});
+    MassingStreet marked = lane("S-7", 30); // a kerbed lane marked a pedestrian way in the table
+    marked.foot = true;
+    REQUIRE(roadFootClass(marked) == RoadFootClass::Pedestrian);
+    const Kerbs none = kerbs({bare, dot, arcade, narrow, steps, marked});
     CHECK(none.boxes.empty());
     CHECK(none.counts.streets == 0);
 }

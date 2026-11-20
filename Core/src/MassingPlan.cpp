@@ -717,9 +717,9 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
     std::vector<Record> records;
     if (!splitCsv(csv, records, error)) return false;
 
-    enum Col { Id, Width, Pts, Kind, Pavement, Count };
-    constexpr const char* kNames[Count] = {"id", "width_m", "pts", "kind", "pavement_m"};
-    constexpr std::size_t kRequired = 3; // kind and pavement_m are optional
+    enum Col { Id, Width, Pts, Kind, Pavement, Foot, Count };
+    constexpr const char* kNames[Count] = {"id", "width_m", "pts", "kind", "pavement_m", "foot"};
+    constexpr std::size_t kRequired = 3; // kind, pavement_m and foot are optional
     std::size_t col[Count] = {};
     std::size_t width = 0;
     bool haveHeader = false;
@@ -771,6 +771,12 @@ bool importMassingStreets(std::string_view csv, std::vector<MassingStreet>& out,
         if (col[Pavement] < r.fields.size() && !trim(r.fields[col[Pavement]]).empty()) {
             if (!parseNumber(r.fields[col[Pavement]], s.pavement) || s.pavement < 0.0 || !(massingCarriageway(s) > 0.0))
                 return fail(error, r.line, s.id + ": pavement_m must be a number >= 0 under half width_m");
+        }
+        if (col[Foot] < r.fields.size()) {
+            const std::string_view foot = trim(r.fields[col[Foot]]);
+            if (!foot.empty() && foot != "pedestrian")
+                return fail(error, r.line, s.id + ": foot must be empty or pedestrian");
+            s.foot = !foot.empty();
         }
         out.push_back(std::move(s));
     }

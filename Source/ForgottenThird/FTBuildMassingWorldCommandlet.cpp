@@ -231,6 +231,42 @@ bool LoadStreets(const FString& File, std::vector<ftcore::MassingStreet>& Street
 	return true;
 }
 
+// -Streets and -PropStreets must agree on which streets are pedestrian ways (the foot column): the kerbs and the road
+// mouths read the one, the props and frontage the other. A street in both tables marked in only one fails the build.
+bool StreetTablesAgreeOnFoot(const FString& StreetsFile, const FString& PropStreetsFile)
+{
+	if (StreetsFile.IsEmpty() || PropStreetsFile.IsEmpty() || StreetsFile == PropStreetsFile)
+	{
+		return true;
+	}
+	std::vector<ftcore::MassingStreet> Streets, PropStreets;
+	if (!LoadStreets(StreetsFile, Streets) || !LoadStreets(PropStreetsFile, PropStreets))
+	{
+		return false;
+	}
+	int32 Marked = 0, Disagree = 0;
+	for (const ftcore::MassingStreet& S : Streets)
+	{
+		Marked += S.foot ? 1 : 0;
+		for (const ftcore::MassingStreet& P : PropStreets)
+		{
+			if (P.id == S.id && P.foot != S.foot)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s is %s in %s but %s in %s: the foot columns must agree."),
+					*Utf8(S.id), S.foot ? TEXT("a pedestrian way") : TEXT("open"), *FPaths::GetCleanFilename(StreetsFile),
+					P.foot ? TEXT("a pedestrian way") : TEXT("open"), *FPaths::GetCleanFilename(PropStreetsFile));
+				++Disagree;
+			}
+		}
+	}
+	if (Disagree == 0)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: %s and %s agree on the foot column, %d streets marked pedestrian ways."),
+			*FPaths::GetCleanFilename(StreetsFile), *FPaths::GetCleanFilename(PropStreetsFile), Marked);
+	}
+	return Disagree == 0;
+}
+
 // The height field: its grid (south-west sample first, rows running north) and where it lies.
 struct FHeightField
 {
@@ -1825,6 +1861,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	if (PropStreetsFile.IsEmpty())
 	{
 		PropStreetsFile = StreetsFile;
+	}
+	if (!StreetTablesAgreeOnFoot(StreetsFile, PropStreetsFile))
+	{
+		return 1;
 	}
 	// -Frontage: pieces against the buildings' faces, by the kinds of the -PropStreets streets they front. -Kerbs: kerbs
 	// along the pavements of -Streets (or -PropStreets). -Quay: the quays' rail, posts and bollards, with -QuayLamp's prop
