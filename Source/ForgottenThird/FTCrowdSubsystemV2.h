@@ -39,6 +39,7 @@
 #include "FTCrowdSubsystemV2.generated.h"
 
 class ACameraActor;
+struct FHitResult;
 class ASkeletalMeshActor;
 class UStaticMeshComponent;
 class UAnimSequence;
@@ -75,6 +76,7 @@ private:
 	void ScriptFight(const FVector& PlayerAt);
 	void PickTestFight(const FVector& PlayerAt);
 	void CheckFootprint(int32 Actor, const FVector& Feet);
+	bool FirstGround(int32 Slot, double X, double Y, double CentreZ, double& OutZ);
 	struct FViewCount
 	{
 		int32 N = 0;          // drawn members in frame and in sight (a line from the eye to the chest)
@@ -85,8 +87,14 @@ private:
 	FViewCount CountInView(int32 Cam, TArray<uint32>* Ids) const;
 	bool Clear(const FVector& Eye, const FVector& To) const;
 	void BuildMassing();
+	void RetestFootprint(int32 Slot, const FVector& Feet, int32 Box, double DepthCm);
+	void FootStill(APlayerController* PC);
+	void AimFootStill(int32 Slot, const FVector& Feet, FVector2D Out, const FString& Path, bool bRoof);
+	void LogSurfacesUnder(int32 Slot, const FVector& Feet, const FHitResult& Roof) const;
 	void LogGroundAt();
 	void LogStoppedGroup(uint32 Size) const;
+	void NoteReactingLeftOut(uint32 Group);
+	void NoteMinPair(float Pair);
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
 	// S-332: the cameras the crowd must not pop in front of (the player's view and the stills' cameras), every frame.
@@ -135,15 +143,29 @@ private:
 	bool bRefillOk = true;
 	float RunMinPair = 1e9f;        // m, every frame
 	float RunMinWall = 1e9f;        // m, every frame
+	// The two members behind RunMinPair (log only; found when the least drops): slots, states, positions (m), speeds
+	// (m/s), wall clearances (m), and when.
+	uint32 MinPairSlot[2] = {UINT32_MAX, UINT32_MAX};
+	uint8 MinPairState[2] = {0, 0};
+	ftcore::Vec2 MinPairPos[2] = {};
+	float MinPairSpeed[2] = {0.f, 0.f};
+	float MinPairWall[2] = {0.f, 0.f};
+	double MinPairTime = -1.0;
 	// S-332 run checks: member-frames in the run pose below walking speed, the largest knot standing within 3 m.
 	uint64 SlowRunFrames = 0;
 	uint32 WorstGroup = 0;
 	uint32 GroupTick = 0;
+	uint32 WorstJam = 0;         // the walking-jam check's largest group (sampled with the knot check)
+	double WorstJamAt = -1.0;    // s: when it was found
+	uint32 ReactingLines = 0; // knot checks that left out the one-step close-reaction stop, logged (capped)
 	bool bPartyMoved = false;
 	struct FMassBox
 	{
-		FVector2D C, Ax, Half; // centre, unit x axis, half sizes (cm)
+		FVector2D C, Ax, Half; // the box checked (ftcore crowdMassingBox): centre, unit x axis, half sizes (cm)
 		double ZMin = 0.0, ZMax = 0.0;
+		FVector2D RC, RHalf;    // its render bounds (the box the check used before: logged for reference)
+		double RZMin = 0.0, RZMax = 0.0;
+		bool bColl = false;     // the box checked is the mesh's simple collision's bounds
 		TWeakObjectPtr<const UStaticMeshComponent> Comp; // what it is, for the footprint log only
 		int32 Instance = INDEX_NONE;
 	};
@@ -169,6 +191,7 @@ private:
 	double EyeZ = 160.0;     // cm: the height the occlusion line runs at, from the player's feet
 	double PlayerZ = 0.0;    // cm
 	int32 GroundCursor = 0;
+	int32 GroundPicksUnder = 0; // first grounds not on the first top (log only)
 	int32 OcclusionTraces = 0;
 	double RunTime = 0.0;
 	double LastArenaEvent = -1e9;
@@ -192,8 +215,27 @@ private:
 	TBitArray<> FootSeen;    // per sim slot
 	TArray<int32> FootFramesBy; // per sim slot (log only)
 	int32 FootLogged = 0;
+	// The same by render bounds, the box the check used before (reference only), with each member's first frame
+	// re-tested against the mesh's own collision shape; -CrowdFootStill=<png>: one still of the first.
+	uint64 FootFramesRender = 0;
+	int32 FootMembersRender = 0;
+	TBitArray<> FootSeenRender;
+	double MinMassClearRender = 1e9;
+	int32 RetestLogged = 0;
+	int32 RetestInBody = 0;   // members whose body (25 cm) overlapped the collision shape
+	int32 RetestInGate = 0;   // members within the 0.8 m gate of it
+	FString FootStillPath;
+	FString RoofStillPath;   // -CrowdRoofStill=<png>: one still of the first member on a roof (log only)
+	FString FootStillShot;   // the file the pending still goes to
+	UPROPERTY()
+	TObjectPtr<ACameraActor> FootStillCam;
+	int32 FootStillTicks = -1;
+	bool bFootStillDone = false;
+	bool bRoofStillDone = false;
+	bool bStillIsRoof = false;
 	bool bTestDeathRaised = false;
 	ftcore::crowdv2::CrowdCounts AtTestFight;
+	uint32 FightInRange = 0; // live members within the fight start's radius when the test fight started
 	ftcore::crowdv2::CrowdCounts AtArena;
 	int32 ArenaFed = 0;   // fight events passed on from the arena
 	int32 ArenaSeen = 0;  // arena events of any kind

@@ -56,6 +56,23 @@ float segDist(Vec2 a, Vec2 b, Vec2 p) {
     return dist({a.x + ux * t, a.y + uy * t}, p);
 }
 
+// How much of the segment ab lies inside the circle of radius r round c (m). In double: the quadratic's terms are
+// large next to its roots this far from the origin.
+double lengthInCircle(Vec2 a, Vec2 b, Vec2 c, float r) {
+    const double dx = static_cast<double>(b.x) - a.x, dy = static_cast<double>(b.y) - a.y;
+    const double ox = static_cast<double>(a.x) - c.x, oy = static_cast<double>(a.y) - c.y;
+    const double qa = dx * dx + dy * dy;
+    if (qa <= 1e-12) return 0.0;
+    const double qb = 2.0 * (dx * ox + dy * oy);
+    const double qc = ox * ox + oy * oy - static_cast<double>(r) * r;
+    const double disc = qb * qb - 4.0 * qa * qc;
+    if (disc <= 0.0) return 0.0;
+    const double root = std::sqrt(disc);
+    const double t0 = std::max(0.0, (-qb - root) / (2.0 * qa));
+    const double t1 = std::min(1.0, (-qb + root) / (2.0 * qa));
+    return t1 > t0 ? (t1 - t0) * std::sqrt(qa) : 0.0;
+}
+
 // The kinds that make a member close by run whatever it sees or how bold it is.
 bool fightClass(CrowdEventKind k) {
     return k == CrowdEventKind::FightStart || k == CrowdEventKind::Strike || k == CrowdEventKind::Gunshot ||
@@ -132,6 +149,9 @@ bool CrowdSim::init(const CrowdGraph& graph, const CrowdTuning& tuning, std::uin
     doorList_.clear();
     indoors_ = 0;
     density_ = 1.f;
+    reachLength_ = reachArea_ = 0.f;
+    reachAt_ = Vec2{};
+    reachMeasured_ = false;
     time_ = 0.0;
     acc_ = 0.f;
     steps_ = 0;
@@ -368,6 +388,7 @@ std::uint32_t CrowdSim::spawnAt(std::uint32_t n, std::uint32_t k, float boldness
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
     a.pos = {f.x + dir.x * a.along - dir.y * a.lat, f.y + dir.y * a.along + dir.x * a.lat};
     a.prev = a.pos;
+    a.bornAt = time_;
     a.spreadLeft = rand01() * tuning_.spreadInterval;
     a.safeExtra = rand01() * kSafeSpread;
     if (rand01() < tuning_.idleChance) a.idleAlong = a.along + (a.len - a.along) * (0.2f + 0.6f * rand01());
@@ -387,6 +408,7 @@ void CrowdSim::free(std::uint32_t i) {
     freeList_[freeCount_++] = i;
     --live_;
     ++counts_.despawned;
+    ++(time_ - a.bornAt < kCrowdNewborn ? counts_.despawnNewborn : counts_.despawnWalkedOut);
     views_[i].live = false;
     views_[i].drawn = false;
     views_[i].state = CrowdState::Free;
@@ -436,18 +458,53 @@ void CrowdSim::spawnSome(Vec2 player) {
         const float ang = rand01() * 2.f * kPi;
         const float r = std::sqrt(rMin * rMin + rand01() * (rMax * rMax - rMin * rMin));
         const Vec2 p{player.x + std::cos(ang) * r, player.y + std::sin(ang) * r};
-        const std::uint32_t n = graph_->nearest(p, 15.f);
-        if (n == UINT32_MAX || !graph_->spawnable(n)) continue;
-        const float d = dist(graph_->node(n), player);
-        if (d < rMin || d > rMax) continue;
-        if (viewCount_ > 0 && inView(graph_->node(n), 10.f, 5.f)) continue; // S-332: never appears in sight
-        const std::uint32_t deg = graph_->degree(n);
-        const auto k = std::min(deg - 1, static_cast<std::uint32_t>(rand01() * static_cast<float>(deg)));
-        const CrowdEdge& e = graph_->edge(n, k);
-        // Somewhere along the street, not on the node: spawns that share a node would stand inside each other.
-        const std::uint32_t i = spawnAt(n, k, rand01(), rand01() * e.length);
-        if (i == UINT32_MAX) continue;
-        if (crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f) || (viewCount_ > 0 && inView(agents_[i].pos, 10.f, 5.f))) {
+        // The street spot nearest the ring point, not the nearest node: a street whose nodes lie far apart (out past
+        // the ring) still fills along its length, and spawns never share a spot. Either way along it.
+        CrowdStreetPoint sp;
+        if (!graph_->nearestStreet(p, 15.f, sp) || !graph_->spawnable(sp.n)) {
+            ++counts_.missNoStreet;
+            continue;
+        }
+        std::uint32_t n = sp.n, k = sp.k;
+        float along = sp.along;
+        if (rand01() < 0.5f) {
+            const CrowdEdge& e = graph_->edge(n, k);
+            const std::uint32_t back = e.to;
+            for (std::uint32_t j = 0; j < graph_->degree(back); ++j)
+                if (graph_->edge(back, j).to == n) {
+                    along = e.length - along;
+                    n = back;
+                    k = j;
+                    break;
+                }
+        }
+        const std::uint32_t i = spawnAt(n, k, rand01(), along);
+        if (i == UINT32_MAX) {
+            ++counts_.missSlot;
+            continue;
+        }
+        // The spot itself must lie in the ring (S-332: and out of sight): a member born past despawnDist was freed
+        // again on the next step (the Strip's churn: 437 of 593 freed, 156 live of 300).
+        const float at = dist(agents_[i].pos, player);
+        // Too many round the spot already (spawnNearMax; off at 0): this step's earlier spawns count too.
+        auto dense = [&]() {
+            if (tuning_.spawnNearMax == 0) return false;
+            const Vec2 q = agents_[i].pos;
+            const float nr = tuning_.spawnNearRadius;
+            std::uint32_t around = 0;
+            forEachNear(q, nr, [&](std::uint32_t j) {
+                if (j != i && agents_[j].state != CrowdState::Free) ++around;
+            });
+            for (std::uint32_t b = 0; b < bornCount_; ++b) around += dist2(born_[b], q) <= nr * nr ? 1u : 0u;
+            return around >= tuning_.spawnNearMax;
+        };
+        std::uint64_t* miss = at < rMin || at > rMax ? &counts_.missSpotRing
+                              : crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f) ? &counts_.missCrowded
+                              : dense()                                                ? &counts_.missDense
+                              : viewCount_ > 0 && inView(agents_[i].pos, 10.f, 5.f) ? &counts_.missSpotView
+                                                                                    : nullptr;
+        if (miss) {
+            ++*miss;
             unspawn(i);
             continue;
         }
@@ -701,7 +758,7 @@ int CrowdSim::freeBraceSlot(std::uint32_t i) const {
     // S-366: only the spots that fit in the dead end (rows braceRow apart back from its end); the rest are left
     // without one (-2) and, past the safe distance, give up the dead end (decide).
     const CrowdEdge* e = graph_->find(a.from, a.to);
-    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset);
+    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset - kCrowdWallSlack);
     const float sp = std::max({tuning_.minGap, tuning_.avoidRadius, tuning_.braceSpace});
     const int cols = 1 + static_cast<int>(2.f * w / sp);
     const int rows = 1 + static_cast<int>(std::max(0.f, a.len - kBraceEnd) / std::max(sp, tuning_.braceRow));
@@ -713,7 +770,7 @@ int CrowdSim::freeBraceSlot(std::uint32_t i) const {
 
 void CrowdSim::braceSlotAt(const Agent& a, float& along, float& lat) const {
     const CrowdEdge* e = graph_->find(a.from, a.to);
-    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset);
+    const float w = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset - kCrowdWallSlack);
     // S-332: staggered spots braceSpace across and braceRow along, so the cornered never stand in a row at one wall.
     const float sp = std::max({tuning_.minGap, tuning_.avoidRadius, tuning_.braceSpace});
     const int cols = 1 + static_cast<int>(2.f * w / sp);
@@ -836,8 +893,41 @@ void CrowdSim::decide(std::uint32_t i) {
 
 // ---- Doors (S-275) and the streets' share (S-283) ----
 
+std::uint32_t CrowdSim::bandCap() const {
+    // No more walkers than the walking band in reach holds at bandDensity (rounded as the target is).
+    if (tuning_.bandDensity <= 0.f) return UINT32_MAX;
+    return static_cast<std::uint32_t>(tuning_.bandDensity * reachArea_ + 0.5f);
+}
+
 std::uint32_t CrowdSim::streetTarget() const {
-    return static_cast<std::uint32_t>(static_cast<float>(tuning_.targetAgents) * density_ + 0.5f);
+    const auto want = static_cast<std::uint32_t>(static_cast<float>(tuning_.targetAgents) * density_ + 0.5f);
+    return std::min(want, bandCap());
+}
+
+void CrowdSim::measureReach(Vec2 player) {
+    if (reachMeasured_ && dist2(player, reachAt_) < kCrowdReachMove * kCrowdReachMove) return;
+    reachMeasured_ = true;
+    reachAt_ = player;
+    // The ring spawnSome uses once the streets hold half their share (not the fill ring).
+    const float rIn = tuning_.spawnMin, rOut = std::max(rIn + 1.f, tuning_.spawnMax);
+    double len = 0.0, area = 0.0;
+    for (std::uint32_t n = 0; n < graph_->nodeCount(); ++n) {
+        if (!graph_->spawnable(n)) continue; // an edge's two ends share a component, so both or neither are
+        const Vec2 from = graph_->node(n);
+        for (std::uint32_t k = 0; k < graph_->degree(n); ++k) {
+            const CrowdEdge& e = graph_->edge(n, k);
+            if (e.to <= n) continue; // each street once (its other direction mirrors it)
+            const Vec2 to = graph_->node(e.to);
+            const double inRing = lengthInCircle(from, to, player, rOut) - lengthInCircle(from, to, player, rIn);
+            if (inRing <= 0.0) continue;
+            // A pavement on both sides is two bands; one side's pavement, or none (the middle band), is one.
+            const double bands = e.lane > 0.f && e.side == 0 ? 2.0 : 1.0;
+            len += inRing;
+            area += inRing * bands * 2.0 * static_cast<double>(e.laneHalf);
+        }
+    }
+    reachLength_ = static_cast<float>(len);
+    reachArea_ = static_cast<float>(area);
 }
 
 std::uint32_t CrowdSim::setDoors(const std::vector<CrowdDoor>& doors) {
@@ -1007,9 +1097,12 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         break;
     default: break;
     }
-    if (a.hold) speed = 0.f;
     // A fight close by and about to react: it stops short where it is rather than walk on towards it.
     const bool startled = a.pend && a.pendClose && a.state == CrowdState::Walk;
+    // That stop alone, for one step: not held, and walking the step before (a.speed is still that step's). A member who
+    // stood already, or a stop that lasts past one step, is not this.
+    a.reactStop = startled && !a.hold && speed > 0.f && a.speed > 0.05f;
+    if (a.hold) speed = 0.f;
     if (startled) speed = 0.f;
     // Moving away from the threat: keep the far end ahead while backing off or running before a plan.
     const bool away = a.state == CrowdState::BackAway || (a.state == CrowdState::Flee && a.pathLen == 0 && a.stopAlong < 0.f) ||
@@ -1329,7 +1422,7 @@ bool CrowdSim::inView(Vec2 p, float extraDeg, float extraRange) const {
 }
 
 static bool stoppedMember(const CrowdAgentView& v) {
-    return v.live && !v.indoors && v.speed <= 0.05f;
+    return v.live && !v.indoors && !v.reacting && v.speed <= 0.05f;
 }
 
 std::uint32_t CrowdSim::largestStoppedGroup(float r) const {
@@ -1339,6 +1432,19 @@ std::uint32_t CrowdSim::largestStoppedGroup(float r) const {
         std::uint32_t n = 1;
         forEachNear(agents_[i].pos, r, [&](std::uint32_t j) {
             if (j != i && stoppedMember(views_[j]) && dist2(agents_[i].pos, agents_[j].pos) < r * r) ++n;
+        });
+        best = std::max(best, n);
+    }
+    return best;
+}
+
+std::uint32_t CrowdSim::largestJam(float r, float minSlow) const {
+    std::uint32_t best = 0;
+    for (std::uint32_t i = 0; i < agents_.size(); ++i) {
+        if (!views_[i].live || views_[i].slowFor < minSlow) continue;
+        std::uint32_t n = 1;
+        forEachNear(agents_[i].pos, r, [&](std::uint32_t j) {
+            if (j != i && views_[j].live && views_[j].slowFor >= minSlow && dist2(agents_[i].pos, agents_[j].pos) < r * r) ++n;
         });
         best = std::max(best, n);
     }
@@ -1444,6 +1550,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.state = a.state;
     v.cornered = a.state == CrowdState::Cower && a.brace && a.hold;
     v.indoors = a.state == CrowdState::Indoors && a.doorPhase == 2;
+    v.reacting = a.reactStop && a.state == CrowdState::Walk && a.speed <= 0.05f;
     v.pos = a.pos;
     v.prevPos = a.prev;
     v.odo = a.odo;
@@ -1451,6 +1558,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.speed = a.speed;
     v.fear = a.fear;
     v.boldness = a.boldness;
+    v.slowFor = a.slowFor;
     // S-332: the pose follows the distance actually covered this step: no run pose below walking speed, ever.
     const float moved = dist(a.pos, a.prev) / std::max(tuning_.step, 1e-4f);
     const bool runs = a.speed > 0.05f && moved >= 0.9f * tuning_.walkSpeed;
@@ -1477,6 +1585,7 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     for (Agent& a : agents_)
         if (a.state != CrowdState::Free) a.prev = a.pos;
     for (std::uint32_t i = 0; i < agents_.size(); ++i) wasDrawn_[i] = views_[i].live && views_[i].drawn ? 1 : 0;
+    measureReach(player); // before the spawns and the doors read streetTarget(), frozen or not
     if (!frozen_) {
         despawnFar(player);
         spawnSome(player);
@@ -1503,7 +1612,12 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     pickDrawn(player);
     for (std::uint32_t i = 0; i < agents_.size(); ++i)
         if (agents_[i].state != CrowdState::Free) {
-            agents_[i].odo += dist(agents_[i].pos, agents_[i].prev);
+            Agent& a = agents_[i];
+            a.odo += dist(a.pos, a.prev);
+            // The walking-jam check's timer (the reaction stop left out as view.reacting leaves it out).
+            const bool reacting = a.reactStop && a.speed <= 0.05f;
+            const bool slow = a.state == CrowdState::Walk && !reacting && a.speed < kCrowdJamSpeed * a.baseSpeed;
+            a.slowFor = slow ? a.slowFor + tuning_.step : 0.f;
             writeView(i);
         }
     // S-332: drawn or undrawn (spawned, despawned) inside a view's range reads as a pop.
@@ -1531,7 +1645,7 @@ std::uint32_t CrowdSim::closePairs(float d) const {
 }
 
 // How far p stands inside the streets round a's edge (its own and those at both its nodes): the distance to the
-// nearest outer edge. fixTo (optional): the nearest point wallInset inside the best of them.
+// nearest outer edge. fixTo (optional): the nearest point wallInset (and kCrowdWallSlack) inside the best of them.
 float CrowdSim::clearance(const Agent& a, Vec2 p, Vec2* fixTo) const {
     float best = -1e30f;
     for (const std::uint32_t n : {a.from, a.to})
@@ -1547,31 +1661,35 @@ float CrowdSim::clearance(const Agent& a, Vec2 p, Vec2* fixTo) const {
             if (cl <= best) continue;
             best = cl;
             if (fixTo) {
-                const float keep = std::max(0.f, e.half - tuning_.graph.wallInset);
+                const float keep = std::max(0.f, e.half - tuning_.graph.wallInset - kCrowdWallSlack);
                 *fixTo = off > keep && off > 1e-6f ? Vec2{c.x + (p.x - c.x) * keep / off, c.y + (p.y - c.y) * keep / off} : p;
             }
         }
     return best;
 }
 
-// Moves a member to p, kept wallInset inside the streets: its along and sideways set from p in its edge's frame.
+// Moves a member to p, kept wallInset inside the streets: its along and sideways set from p in its edge's frame. S-271
+// unrounded: a point under wallInset by any amount is moved (to kCrowdWallSlack past it); the old 1 mm allowance let
+// members stand at 0.799 m. A point is taken as it is only kCrowdWallAccept past wallInset or more: one taken at
+// wallInset itself (0.8000031 m) read 0.799961 m on the host, whose frontage is the building's box.
 void CrowdSim::place(Agent& a, Vec2 p) {
+    const float accept = tuning_.graph.wallInset + kCrowdWallAccept;
     Vec2 q = p;
-    if (clearance(a, p, &q) >= tuning_.graph.wallInset - 1e-3f) q = p;
+    if (clearance(a, p, &q) >= accept) q = p;
     const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
     a.along = std::clamp((q.x - f.x) * dir.x + (q.y - f.y) * dir.y, std::min(a.along, 0.f), a.len);
     a.lat = std::clamp((q.x - f.x) * -dir.y + (q.y - f.y) * dir.x, -kCornerReach, kCornerReach);
     const Vec2 base = basePoint(a);
     a.pos = {base.x - dir.y * a.lat, base.y + dir.x * a.lat};
-    if (clearance(a, a.pos, nullptr) >= tuning_.graph.wallInset - 1e-3f) return;
+    if (clearance(a, a.pos, nullptr) >= accept) return;
     // Its own street's frame can't reach that point (it stands on a node): in across its own street until clear.
     float lo = 0.f, hi = 1.f;
     const float lat0 = a.lat;
     for (int k = 0; k < 10; ++k) {
         const float mid = 0.5f * (lo + hi);
         const Vec2 at{base.x - dir.y * lat0 * mid, base.y + dir.x * lat0 * mid};
-        if (clearance(a, at, nullptr) >= tuning_.graph.wallInset - 1e-3f) lo = mid;
+        if (clearance(a, at, nullptr) >= tuning_.graph.wallInset + kCrowdWallSlack) lo = mid;
         else hi = mid;
     }
     a.lat = lat0 * lo;
@@ -1609,8 +1727,9 @@ void CrowdSim::nudge(Agent& a, Vec2 by) {
 // S-271: no two members closer than minGap, and nobody nearer the frontage than wallInset, after every step.
 void CrowdSim::separate() {
     const float g = tuning_.minGap;
+    const float accept = tuning_.graph.wallInset + kCrowdWallAccept; // as place() takes a point
     for (Agent& a : agents_)
-        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < tuning_.graph.wallInset - 1e-3f)
+        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < accept)
             place(a, a.pos);
     for (int it = 0; it < 64 && g > 0.f; ++it) {
         bool any = false;
@@ -1767,6 +1886,34 @@ CrowdReactionResult CrowdReactionProbe::evaluate(const CrowdSim& sim, float minP
     }
     if (r.inside == 0) r.worstGain = r.worstPath = 0.f;
     return r;
+}
+
+bool crowdMassingBox(const CrowdMassBox& render, const CrowdMassBox* collision, const CrowdMassSize& size,
+                     CrowdMassBox& out) {
+    const double shortSide = 2.0 * std::min(render.hx, render.hy);
+    const double longSide = 2.0 * std::max(render.hx, render.hy);
+    if (2.0 * render.hz < size.minHeight || shortSide < size.minSide || longSide > size.maxSide) return false;
+    const bool useCollision = collision && collision->hx > 0.0 && collision->hy > 0.0 && collision->hz > 0.0 &&
+                              std::isfinite(collision->cx) && std::isfinite(collision->cy) && std::isfinite(collision->cz);
+    out = useCollision ? *collision : render;
+    return true;
+}
+
+double crowdBoxClearance(const CrowdMassBox& box, double axX, double axY, double px, double py) {
+    const double dx = px - box.cx, dy = py - box.cy;
+    const double lx = std::fabs(dx * axX + dy * axY) - box.hx;
+    const double ly = std::fabs(-dx * axY + dy * axX) - box.hy;
+    if (lx > 0.0 || ly > 0.0) return std::hypot(std::max(lx, 0.0), std::max(ly, 0.0));
+    return std::max(lx, ly);
+}
+
+std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body) {
+    for (std::size_t i = n; i-- > 0;) {
+        if (!hits[i].clearUp) continue;
+        if (i > 0 && hits[i - 1].z - hits[i].z < body) continue;
+        return i;
+    }
+    return 0;
 }
 
 } // namespace ftcore::crowdv2

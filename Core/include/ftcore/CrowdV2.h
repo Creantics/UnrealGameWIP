@@ -89,6 +89,12 @@ struct CrowdEdge {
     std::int8_t side = 0; // 0: the lane on both sides; +-1: on that side of this direction's left normal only
 };
 
+// A spot on a street's centre line: node n's k-th edge, `along` m from n, `dist` m from the point asked about.
+struct CrowdStreetPoint {
+    std::uint32_t n = UINT32_MAX, k = 0;
+    float along = 0.f, dist = 0.f;
+};
+
 class CrowdGraph {
 public:
     // Builds from streets in the engine frame. False (with a reason) when no walkable edge results. Allocates.
@@ -107,6 +113,9 @@ public:
     std::uint32_t componentCount() const { return components_; }
     // The nearest node within `within` m, or UINT32_MAX. No allocation.
     FTCORE_API std::uint32_t nearest(Vec2 p, float within) const;
+    // The nearest spot on any street's centre line within `within` m, or false. Long streets with their nodes far
+    // apart are found anywhere along them. No allocation.
+    FTCORE_API bool nearestStreet(Vec2 p, float within, CrowdStreetPoint& out) const;
     Vec2 boundsMin() const { return min_; }
     Vec2 boundsMax() const { return max_; }
 
@@ -123,6 +132,12 @@ private:
     std::uint32_t gw_ = 0, gh_ = 0;
     std::vector<std::uint32_t> cellFirst_;
     std::vector<std::uint32_t> cellNodes_;
+    // street grid for nearestStreet(): each street once (as node n's k-th edge), in every cell its bounds touch
+    struct StreetRef {
+        std::uint32_t n = 0, k = 0;
+    };
+    std::vector<std::uint32_t> streetFirst_;
+    std::vector<StreetRef> streets_;
 };
 
 // ---- Events ----
@@ -165,6 +180,14 @@ struct CrowdTuning {
     float despawnDist = 180.f;
     float fillMin = 8.f;             // m: while under half the target (the first ticks), members appear this close
     std::uint32_t spawnPerStep = 8;
+    // A spawn spot with this many members already within spawnNearRadius is passed over (0 = off, the default): where
+    // little street lies in the spawn ring (one or two dead-end streets), the target would otherwise pack onto them.
+    std::uint32_t spawnNearMax = 0;
+    float spawnNearRadius = 10.f;    // m
+    // Walkers per square metre of walking band (0 = off, the default): caps the streets' target at this times the band
+    // area on spawnable street inside the spawn ring (spawnMin..spawnMax round the player; see reachBandArea), so a ring
+    // holding little narrow street gets few walkers instead of the whole target packed onto it.
+    float bandDensity = 0.f;
     // movement
     float walkSpeed = 1.3f;          // m/s
     float walkSpeedJitter = 0.25f;   // +- m/s per member
@@ -272,6 +295,7 @@ struct CrowdAgentView {
     bool drawn = false;
     bool cornered = false;  // cowering at the far end of a dead end with no way out past the threat, facing away
     bool indoors = false;   // inside a building (state Indoors, past its door): not drawn, pos is the door
+    bool reacting = false;  // a walker stopped this one step for a fight close by, walking the step before (it reacts next)
     CrowdState state = CrowdState::Free;
     CrowdAnim anim = CrowdAnim::Idle;
     Vec2 pos, prevPos;      // this step's and the last step's (lerp by stepAlpha())
@@ -280,6 +304,7 @@ struct CrowdAgentView {
     float speed = 0.f;      // m/s
     float fear = 0.f;
     float boldness = 0.5f;
+    float slowFor = 0.f;    // s this walker has walked under kCrowdJamSpeed x its own pace without a break (0: not slow)
 };
 
 // S-332: a camera the crowd must not pop in front of: from eye, yaw (deg), halfFov (deg; 180 or more: all round),
@@ -307,7 +332,32 @@ struct CrowdCounts {
     std::uint64_t popsInView = 0;  // S-332: a member drawn or undrawn (spawned, despawned) inside a view's range
     std::uint64_t popsAppear = 0, popsLive = 0; // S-366: of them, drawn (vs undrawn); spawned or despawned (vs draw pick)
     std::uint64_t watched = 0, walkedOn = 0; // S-332: runners at the safe distance that stopped to look back / walked on
+    // The count's churn by cause. Spawn tries that came to nothing: no spawnable street within 15 m of the ring
+    // point, no free slot, the spot outside the ring, the spot crowded, the spot in a view. Despawns (all past
+    // despawnDist, out of every view): within kCrowdNewborn s of the spawn (born out there) or later (walked out).
+    std::uint64_t missNoStreet = 0, missSlot = 0, missSpotRing = 0, missCrowded = 0, missSpotView = 0;
+    std::uint64_t missDense = 0; // spawn spots passed over for spawnNearMax
+    std::uint64_t despawnNewborn = 0, despawnWalkedOut = 0;
 };
+inline constexpr float kCrowdNewborn = 1.f;
+// The walking-jam check: a walker (state Walk, not in the one-step close-reaction stop) is slow while its pace is
+// under this share of its own. The close-walker rule halves pace exactly, so any share between 0.5 and 1 reads alike.
+inline constexpr float kCrowdJamSpeed = 0.7f;
+// The run check: largestJam(kCrowdJamRadius, kCrowdJamSeconds) over kCrowdJamGate fails. 5 s is over twice an ordinary
+// slow-down (passing or queueing behind someone: 99 in 100 end within about 2 s); 5 m holds a jam on one pavement and
+// keeps apart walkers slowed on different streets; a wide-band loop at 0.6 walkers a metre stays at 2 or less.
+inline constexpr float kCrowdJamRadius = 5.f;
+inline constexpr float kCrowdJamSeconds = 5.f;
+inline constexpr std::uint32_t kCrowdJamGate = 4;
+// CrowdSim::reachBandArea is measured again once the player has moved this far (m) from where it was last measured.
+inline constexpr float kCrowdReachMove = 5.f;
+// S-271: members are placed this far past wallInset (m), so float noise never leaves one under it: the walking band
+// ends there, and a member found under wallInset is moved back to it. The gate itself stays wallInset, unrounded.
+inline constexpr float kCrowdWallSlack = 0.01f;
+// S-271: a point is taken as it is only this far past wallInset or more (m), else it is moved. The host measures the
+// frontage from the building's box and read 0.799961 m for a member Core had at 0.8000031, a 0.042 mm gap from float
+// rounding (one float step is 0.03 mm at the Strip's coordinates, under 512 m); this is six times that gap.
+inline constexpr float kCrowdWallAccept = 0.00025f;
 
 // A run check: which members stood within `radius` of a point when a fight started there, and how they moved by
 // a later time (the host evaluates it 1 s in). Fixed size, no allocation.
@@ -338,6 +388,39 @@ private:
     std::array<Vec2, kCrowdProbeMax> p0_{};
     std::uint32_t n_ = 0;
 };
+
+// The footprint check's massing boxes (host run check: no drawn member inside a building). A box in the host's frame (cm):
+// centre and half sizes along the mesh's own axes (scaled), z up.
+struct CrowdMassBox {
+    double cx = 0.0, cy = 0.0, cz = 0.0;
+    double hx = 0.0, hy = 0.0, hz = 0.0;
+};
+// What counts as a building by its render bounds: at least minHeight tall, minSide on its short side, at most maxSide on
+// its long side (cm).
+struct CrowdMassSize {
+    double minHeight = 250.0, minSide = 200.0, maxSide = 30000.0;
+};
+// A mesh's box for the check: false when its render bounds are not a building's size (the size reads the render bounds,
+// so a tree's canopy still makes it one); else `out` is its simple collision's bounds when it has simple collision (a
+// tree's trunk, a shop's walls), else its render bounds. The render bounds alone put members under a canopy "inside".
+FTCORE_API bool crowdMassingBox(const CrowdMassBox& render, const CrowdMassBox* collision, const CrowdMassSize& size,
+                                CrowdMassBox& out);
+// Signed plan distance (cm) from (px, py) to the box's footprint, its x axis (axX, axY) a unit vector: positive outside
+// (the distance to the nearest side or corner), negative inside (minus the distance to the nearest side).
+FTCORE_API double crowdBoxClearance(const CrowdMassBox& box, double axX, double axY, double px, double py);
+
+// A member's first ground (host: one line down from high up meets several surface tops). Under a corridor or balcony
+// slab over the street the first top is the slab's, so the ground is not simply the first. Each top (cm), highest
+// first: `z`, and `clearUp` true when the host's short line up from just above it (a body's height) met nothing, a line
+// that starts inside a solid counting as met.
+struct CrowdGroundHit {
+    double z = 0.0;
+    bool clearUp = false;
+};
+inline constexpr std::size_t kCrowdGroundHitsMax = 8;
+// The index of the ground: the lowest top that is clear up and has at least `body` (cm) to the next top above it;
+// when none is, the highest (0). 0 when n is 0.
+FTCORE_API std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body);
 
 // Host occlusion: true when something solid stands between `from` and `to` (engine frame, metres).
 using CrowdOcclusionFn = bool (*)(void* context, Vec2 from, Vec2 to);
@@ -387,8 +470,9 @@ public:
     FTCORE_API std::uint32_t setDoors(const std::vector<CrowdDoor>& doors);
     std::uint32_t doorCount() const { return static_cast<std::uint32_t>(doors_.size()); }
     // S-283: the share of the daytime crowd out on the streets (0..1; the host reads it from the day's CrowdDensity
-    // curve). The streets fill to targetAgents x density: above it walkers passing a door go in and those inside stay;
-    // below it those inside come out sooner and new members arrive at the edges as before.
+    // curve). The streets fill to targetAgents x density (no more than bandDensity x reachBandArea() when bandDensity is
+    // on): above it walkers passing a door go in and those inside stay; below it those inside come out sooner and new
+    // members arrive at the edges as before.
     // S-332: up to kMaxViews cameras (capture and player); n 0 clears them (then the drawn pick is by distance only).
     static constexpr std::uint32_t kMaxViews = 6;
     // S-366: a view that jumps (a new camera, a cut: its eye over 3 m or its yaw over 15 degrees from the last call) shows
@@ -397,12 +481,27 @@ public:
     FTCORE_API bool inView(Vec2 p, float extraDeg = 0.f, float extraRange = 0.f) const;
     // S-366: in a view that did not just cut.
     FTCORE_API bool inSteadyView(Vec2 p, float extraDeg = 0.f, float extraRange = 0.f) const;
-    // S-332: the most stopped members within r of one member (itself included); members behind doors left out.
+    // S-332: the most stopped members within r of one member (itself included); members behind doors left out, and
+    // walkers in the one-step close-reaction stop (view.reacting: walking the step before, running the step after).
     FTCORE_API std::uint32_t largestStoppedGroup(float r) const;
+    // The walking-jam check: the most walkers slow for minSlow s or more (view.slowFor) within r of one of them (itself
+    // included). Walkers stuck in a slow shuffle, where largestStoppedGroup sees nobody stopped. No allocation.
+    FTCORE_API std::uint32_t largestJam(float r, float minSlow) const;
     // S-332: live members drawn in a run pose while moving slower than walking speed (gate 0).
     FTCORE_API std::uint32_t runPoseSlow() const;
     void setDensity(float d) { density_ = d > 1.f ? 1.f : d < 0.f ? 0.f : d; }
     float density() const { return density_; }
+    // The streets' target this step: targetAgents x density (rounded), no more than bandCap().
+    FTCORE_API std::uint32_t streetTarget() const;
+    // The band cap on the streets' target: bandDensity x reachBandArea(), rounded; UINT32_MAX when bandDensity is off
+    // (0, the default). The host's run check counts against it too, so the rule lives here only.
+    FTCORE_API std::uint32_t bandCap() const;
+    // Spawnable street inside the spawn ring (spawnMin..spawnMax round the player), as measured at the start of the
+    // last step (again only once the player has moved kCrowdReachMove m): its centre-line length (m) and its walking
+    // band area (m2: each band's length in the ring times its width, 2 x laneHalf; a street with pavement on both sides
+    // has two bands). Measured whether bandDensity is on or not. No allocation.
+    float reachLength() const { return reachLength_; }
+    float reachBandArea() const { return reachArea_; }
     // Members inside a building. They count in liveCount() (they hold a pool slot) but not towards the streets' target,
     // and are left out of the neighbour grid, the gap checks and the drawn pick.
     std::uint32_t indoorCount() const { return indoors_; }
@@ -420,6 +519,7 @@ private:
         float odo = 0.f;
         float yaw = 0.f, speed = 0.f, baseSpeed = 1.3f;
         float boldness = 0.5f, fear = 0.f, stateTime = 0.f, idleLeft = 0.f;
+        double bornAt = 0.0; // s: the sim time of its spawn
         float heading = 0.f; // deg: where a calm walk tends
         Vec2 threat;
         double threatAt = -1e9;
@@ -444,6 +544,7 @@ private:
         float stuckTime = 0.f;
         bool stuckTurned = false;    // blocked a second: already turned back or stopped
         bool hold = false;           // backing off or running with nowhere farther to go: stands until the next plan
+        bool reactStop = false;      // this step's stop is the close-reaction one alone (see CrowdAgentView::reacting)
         bool brace = false;          // cornered (no plan): runs to the far end of its dead end, then cowers there
         int braceSlot = -1;          // >= 0: its own spot at that end (rows back from the end, across the width)
         std::int32_t door = -1;      // Indoors: the door it uses
@@ -453,6 +554,7 @@ private:
         float doorLeft = 0.f;        // s left inside
         Vec2 doorTo;                 // phase 3: the pavement spot it walks out to
         std::int32_t doorSeen = -1;  // the last door it walked past (one chance per door)
+        float slowFor = 0.f;         // see CrowdAgentView::slowFor
     };
     struct DoorSlot {
         Vec2 at, inside;
@@ -490,7 +592,7 @@ private:
     bool tryDoor(std::uint32_t i, bool fleeing);
     void goIn(Agent& a, std::uint32_t door, bool fled);
     void doorStep(Agent& a);
-    std::uint32_t streetTarget() const;
+    void measureReach(Vec2 player);
     void arrive(Agent& a);
     bool roomToWatch(const Agent& a) const;
     // S-366: other members standing (not moving, not behind a door) within r of a.
@@ -545,6 +647,10 @@ private:
     std::vector<std::uint32_t> doorFirst_, doorList_; // doors by street node (each door under both its edge's nodes)
     float density_ = 1.f;
     std::uint32_t indoors_ = 0;
+    // measureReach: the last measure and where the player stood for it
+    float reachLength_ = 0.f, reachArea_ = 0.f;
+    Vec2 reachAt_{};
+    bool reachMeasured_ = false;
     CrowdOcclusionFn occlude_ = nullptr;
     void* occludeCtx_ = nullptr;
     CrowdCounts counts_;

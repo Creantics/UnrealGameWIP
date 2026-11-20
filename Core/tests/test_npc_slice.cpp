@@ -78,6 +78,20 @@ struct Town {
     std::string saveText() const { return encodeNpcMemorySave(npcCaptureSave(*w, t, lines)); }
 };
 
+// The host's late load (UFTNpcSubsystem::Load): the tables load into a fresh town, then whatever the hold hands over is
+// acted on: an empty block resets everyone (the fresh town stands), a damaged one is refused (the host resets and
+// warns), any other is applied.
+enum class LateLoad { NothingHeld, Reset, Applied, Damaged };
+LateLoad lateLoad(NpcSaveHold& h, Town& town, std::string* err = nullptr) {
+    std::string taken;
+    if (!h.take(taken)) return LateLoad::NothingHeld;
+    if (npcSaveBlockAction(true, taken.empty()) == NpcSaveBlockAction::Reset) return LateLoad::Reset;
+    NpcMemorySave read;
+    if (!decodeNpcMemorySave(taken, read, err)) return LateLoad::Damaged;
+    npcApplySave(*town.w, town.t, town.lines, read);
+    return LateLoad::Applied;
+}
+
 }  // namespace
 
 TEST_CASE("npc save text: a world written, read back and applied writes the same text again") {
@@ -231,23 +245,75 @@ TEST_CASE("npc save hold: New Game drops a held block, and a save before the tab
         CHECK(taken == later);
     }
     SUBCASE("New Game inside the hold: nothing applied when the tables load, nothing old written meanwhile") {
+        const int delivery = a.t.deedIndex("delivery_made");
+        // Control: the same hold without New Game hands the old game over, and the late load brings its memory back,
+        // so the recall check below can tell the two apart.
+        NpcSaveHold kept;
+        kept.hold(oldGame);
+        Town c;
+        REQUIRE(lateLoad(kept, c) == LateLoad::Applied);
+        CHECK(npcRecall(*c.w, c.t, shop, delivery, -1) != nullptr);
+
         NpcSaveHold h;
         h.hold(oldGame);
         h.newGame();
         CHECK(h.unreadySource() == NpcUnreadyBlock::None);
         // The autosave right after New Game, the slot still holding the old game's block: no NPC block at all.
         CHECK(npcSaveBlockToWrite(false, std::string_view{}, h.unreadyBlock(oldGame)).empty());
-        // The tables load (UFTNpcSubsystem::Load): whatever the hold hands over is applied. Nothing is, so the world
-        // keeps its fresh baselines.
+        // The tables load: the hold hands nothing over, so the town keeps its fresh baselines.
         Town b;
-        const bool took = h.take(taken);
-        CHECK_FALSE(took);
-        if (took) {
-            NpcMemorySave read;
-            REQUIRE(decodeNpcMemorySave(taken, read));
-            CHECK(npcApplySave(*b.w, b.t, b.lines, read).unknownIds.empty());
-        }
+        CHECK(lateLoad(h, b) == LateLoad::NothingHeld);
+        CHECK(npcRecall(*b.w, b.t, shop, delivery, -1) == nullptr);
+        CHECK(b.saveText() != c.saveText());
+    }
+    SUBCASE("hold, New Game, then another save loaded before the tables: that one is held and applied") {
+        NpcSaveHold h;
+        h.hold(later);
+        h.newGame();
+        h.hold(oldGame);  // the player loads the old game again before the tables are in
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Held);
+        CHECK(npcSaveBlockToWrite(false, std::string_view{}, h.unreadyBlock(later)) == oldGame);
+        Town b;
+        REQUIRE(lateLoad(h, b) == LateLoad::Applied);
+        CHECK(npcRecall(*b.w, b.t, shop, b.t.deedIndex("delivery_made"), -1) != nullptr);
+        CHECK(b.saveText() == oldGame);
+        // Taken: the game is that slot's again, not a fresh one.
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);
+        CHECK(lateLoad(h, b) == LateLoad::NothingHeld);
+    }
+    SUBCASE("New Game after the tables loaded, then a save loaded: applied at once, and saves write the live memory") {
+        NpcSaveHold h;
+        Town b;
+        CHECK(lateLoad(h, b) == LateLoad::NothingHeld);  // the tables load with nothing held
+        h.newGame();
+        const std::string fresh = b.saveText();
+        // Tables in: a save writes the live (fresh) memory, never the old slot's block.
+        CHECK(npcSaveBlockToWrite(true, fresh, h.unreadyBlock(oldGame)) == fresh);
+        CHECK(fresh != oldGame);
+        // The old game is loaded with the tables in: applied at once (not held), and the game is that slot's.
+        REQUIRE(npcSaveBlockAction(true, oldGame.empty()) == NpcSaveBlockAction::Apply);
+        NpcMemorySave read;
+        REQUIRE(decodeNpcMemorySave(oldGame, read));
+        CHECK(npcApplySave(*b.w, b.t, b.lines, read).unknownIds.empty());
+        h.loaded();
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);
+        CHECK_FALSE(h.holding);
+        CHECK(npcSaveBlockToWrite(true, b.saveText(), h.unreadyBlock(oldGame)) == oldGame);
+        CHECK(npcRecall(*b.w, b.t, shop, b.t.deedIndex("delivery_made"), -1) != nullptr);
+    }
+    SUBCASE("a damaged held block is refused on the late load: nothing applied, nothing held after") {
+        NpcSaveHold h;
+        const std::string damaged = oldGame.substr(0, oldGame.size() / 2);  // a save cut short mid-block
+        h.hold(damaged);
+        CHECK(h.unreadyBlock(oldGame) == damaged);  // a save meanwhile keeps it as it is (the late load judges it)
+        Town b;
+        std::string err;
+        CHECK(lateLoad(h, b, &err) == LateLoad::Damaged);
+        CHECK(!err.empty());
         CHECK(npcRecall(*b.w, b.t, shop, b.t.deedIndex("delivery_made"), -1) == nullptr);
+        CHECK_FALSE(h.holding);
+        CHECK(h.unreadySource() == NpcUnreadyBlock::Slot);
+        CHECK(lateLoad(h, b) == LateLoad::NothingHeld);
     }
     SUBCASE("New Game with nothing held: a save before the tables doesn't carry the slot's block forward") {
         NpcSaveHold h;
