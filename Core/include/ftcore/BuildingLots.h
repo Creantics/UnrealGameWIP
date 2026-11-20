@@ -151,6 +151,14 @@ struct KitPlacement {
 FTCORE_API bool facadePlacements(const KitTable& kit, const FrontageRun& run, const BuildingLot& lot, int lotIndex,
                                  std::vector<KitPlacement>& out, std::string* error = nullptr);
 
+// Drops the street clutter (role Clutter: bicycles, vending, planters, AC units) whose foot enters a pedestrian way's
+// walking band: each segment of a street marked foot, `halfBand` m either side of its centre line (the crowd's band, so
+// the walkers don't pass through dressing that collides with nothing). The foot is the kit piece's bounds in the kit
+// frame, scaled and turned with the placement (plan = R(yaw) (sx kx, sy ky)); one that only touches the band stays.
+// Other placements, and the order of those kept, are unchanged. Returns how many it dropped; halfBand <= 0 drops none.
+FTCORE_API std::size_t dropClutterInWays(const KitTable& kit, const std::vector<MassingStreet>& streets, double halfBand,
+                                         std::vector<KitPlacement>& placements);
+
 // Restrained wall colours, trims, timbers, roof tiles; saturated accents only for signs and awnings. Display (sRGB)
 // colours, 0..1: the material decodes them to linear and uses them as the surface's colour (its map gives the pattern).
 struct KitRgb {

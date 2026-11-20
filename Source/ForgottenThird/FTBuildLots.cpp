@@ -32,6 +32,7 @@
 #include "UObject/SavePackage.h"
 
 #include "ftcore/GlassSurface.h"
+#include "ftcore/MassingPlan.h"
 #include "ftcore/WindowFacade.h"
 
 #include <string>
@@ -580,6 +581,35 @@ bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBu
 			"wall %u, setback %.2f, signature %08x [%s]."), static_cast<int32>(I), *Utf8(Out.Plan.runs[static_cast<size_t>(Lot.run)].id), Lot.s0, Lot.s1,
 			Lot.width(), UTF8_TO_TCHAR(ftcore::lotTypeName(Lot.type)), Lot.floors, Lot.floorZ, Lot.top(), Lot.wallColour, Lot.setback,
 			ftcore::lotSignature(Lot), *Parents);
+	}
+	// -LotClutterBand: no street clutter in a pedestrian way's walking band.
+	double ClutterBand = 0.0;
+	if (FParse::Value(Params, TEXT("LotClutterBand="), ClutterBand) && ClutterBand > 0.0)
+	{
+		// "Streets=" also sits inside "-PropStreets=", so the dash is part of the match.
+		FString StreetsFile;
+		if (!FParse::Value(Params, TEXT("-Streets="), StreetsFile))
+		{
+			FParse::Value(Params, TEXT("PropStreets="), StreetsFile);
+		}
+		std::vector<ftcore::MassingStreet> Streets;
+		if (StreetsFile.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand needs -Streets= or -PropStreets=; every clutter piece stays."));
+		}
+		else if (!ReadText(StreetsFile, Text) || !ftcore::importMassingStreets(Text, Streets, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: %s: %s"), *StreetsFile, *Utf8(Error));
+			return false;
+		}
+		int32 Ways = 0;
+		for (const ftcore::MassingStreet& Street : Streets)
+		{
+			Ways += Street.foot ? 1 : 0;
+		}
+		const size_t Dropped = ftcore::dropClutterInWays(Out.Kit, Streets, ClutterBand, Out.Placements);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand %.2f m: %d street clutter pieces left out of %d pedestrian "
+			"ways' bands (%s)."), ClutterBand, static_cast<int32>(Dropped), Ways, *StreetsFile);
 	}
 	Out.Replaced.assign(Boxes.size(), false);
 	int32 Hidden = 0;

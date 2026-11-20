@@ -1,6 +1,7 @@
 #include "ftcore/BuildingLots.h"
 
 #include "ftcore/BlockGen.h"
+#include "ftcore/MassingProps.h"
 
 #include <algorithm>
 #include <cmath>
@@ -593,6 +594,54 @@ KitCensus kitCensus(const KitTable& kit, const FrontagePlan& plan, const std::ve
         }
     }
     return c;
+}
+
+std::size_t dropClutterInWays(const KitTable& kit, const std::vector<MassingStreet>& streets, double halfBand,
+                              std::vector<KitPlacement>& placements) {
+    if (!(halfBand > 0.0)) return 0;
+    auto inWay = [&](const MassingFoot& f) {
+        for (const MassingStreet& st : streets) {
+            if (!st.foot) continue;
+            for (std::size_t i = 0; i + 1 < st.points.size(); ++i) {
+                const MassingVec a = st.points[i], b = st.points[i + 1];
+                const double len = std::hypot(b.x - a.x, b.y - a.y);
+                if (!(len > 0.0)) continue;
+                MassingFoot band;
+                band.x = 0.5 * (a.x + b.x);
+                band.y = 0.5 * (a.y + b.y);
+                band.hx = 0.5 * len;
+                band.hy = halfBand;
+                band.rot = std::atan2(b.y - a.y, b.x - a.x) * 180.0 / kPi;
+                if (massingFeetOverlap(f, band, 0.0)) return true;
+            }
+        }
+        return false;
+    };
+    std::size_t kept = 0, dropped = 0;
+    for (std::size_t i = 0; i < placements.size(); ++i) {
+        const KitPlacement& p = placements[i];
+        bool drop = false;
+        if (p.role == PlacementRole::Clutter && p.piece >= 0 && static_cast<std::size_t>(p.piece) < kit.pieces.size()) {
+            const KitPiece& k = kit.pieces[static_cast<std::size_t>(p.piece)];
+            const double kx = p.sx * (k.minX + 0.5 * k.sx), ky = p.sy * (k.minY + 0.5 * k.sy);
+            const double t = p.yaw * kPi / 180.0, c = std::cos(t), s = std::sin(t);
+            MassingFoot f;
+            f.x = p.x + c * kx - s * ky;
+            f.y = p.y + s * kx + c * ky;
+            f.hx = 0.5 * std::fabs(p.sx) * k.sx;
+            f.hy = 0.5 * std::fabs(p.sy) * k.sy;
+            f.rot = p.yaw;
+            drop = inWay(f);
+        }
+        if (drop) {
+            ++dropped;
+            continue;
+        }
+        if (kept != i) placements[kept] = std::move(placements[i]);
+        ++kept;
+    }
+    placements.resize(kept);
+    return dropped;
 }
 
 } // namespace ftcore

@@ -388,3 +388,55 @@ TEST_CASE("building kit: palettes and census") {
     CHECK(c.pieces + c.boxes == static_cast<int>(out.size()));
     CHECK(c.triangles > 100000);
 }
+
+TEST_CASE("street clutter: a pedestrian way's band drops the bicycles parked in it and keeps the planters by the wall") {
+    const KitTable kit = kitTable();
+    FrontagePlan plan;
+    planFrontage({westRun(747.0, 864.0)}, row(13), plan);
+    std::vector<KitPlacement> all;
+    for (std::size_t i = 0; i < plan.lots.size(); ++i)
+        REQUIRE(facadePlacements(kit, plan.runs[0], plan.lots[i], static_cast<int>(i), all));
+    const int bicycle = kit.find("BICYCLE"), planters = kit.find("PLANTERS"), vending = kit.find("VENDING");
+    REQUIRE(bicycle >= 0);
+    auto count = [](const std::vector<KitPlacement>& v, int piece) {
+        int n = 0;
+        for (const KitPlacement& p : v) n += p.piece == piece ? 1 : 0;
+        return n;
+    };
+    const int bikes = count(all, bicycle), plant = count(all, planters), vend = count(all, vending);
+    REQUIRE(bikes > 0);
+    REQUIRE(plant > 0);
+    // The lane in front: CL-051's line, 6 m wide, its south face the run at y 622.5.
+    MassingStreet lane;
+    lane.id = "CL-051";
+    lane.kind = "core_lane";
+    lane.width = 6.0;
+    lane.points = {{692.5, 625.5, 0.0}, {876.5, 625.5, 0.0}};
+    // Not a pedestrian way, or no band: nothing moves.
+    std::vector<KitPlacement> out = all;
+    CHECK(dropClutterInWays(kit, {lane}, 1.5, out) == 0);
+    CHECK(out.size() == all.size());
+    lane.foot = true;
+    CHECK(dropClutterInWays(kit, {lane}, 0.0, out) == 0);
+    CHECK(out.size() == all.size());
+    // A pedestrian way with the crowd's 1.5 m half band: the bicycles 2.2 m out (their far side about 2.6 m from the wall,
+    // 0.4 m from the centre line) go; the planters (to 1.04 m out) and the vending machine stay, and so does the rest.
+    CHECK(dropClutterInWays(kit, {lane}, 1.5, out) == static_cast<std::size_t>(bikes));
+    CHECK(count(out, bicycle) == 0);
+    CHECK(count(out, planters) == plant);
+    CHECK(count(out, vending) == vend);
+    CHECK(out.size() == all.size() - static_cast<std::size_t>(bikes));
+    // The kept placements keep their order.
+    std::size_t j = 0;
+    for (const KitPlacement& p : all)
+        if (p.piece != bicycle) {
+            REQUIRE(j < out.size());
+            CHECK(out[j].piece == p.piece);
+            CHECK(out[j].x == p.x);
+            ++j;
+        }
+    // A band that ends 0.2 m short of the bicycles' far side (their foot reaches about y 625.1) keeps them.
+    out = all;
+    lane.points = {{692.5, 626.8, 0.0}, {876.5, 626.8, 0.0}};
+    CHECK(dropClutterInWays(kit, {lane}, 1.5, out) == 0);
+}

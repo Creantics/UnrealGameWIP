@@ -5,6 +5,10 @@
 // (pieces imported by FTImportProp -Kit under FTLots::PieceFolder, one per kit id), each piece an instance with
 // per-instance custom data (FTLots::Data*) that the kit master (built into the map package) reads for its palette
 // tints, dirt, seeded lit windows and night signs. Without -Lots the build is unchanged.
+// -LotClutterBand=<m>: the street clutter (bicycles, planters, vending, AC units; NoCollide but the vending machine) whose
+// foot enters a pedestrian way's band, that many metres either side of its centre line, is left out
+// (ftcore::dropClutterInWays), the ways read from -Streets= (else -PropStreets=, as the lane mouths read them). Without
+// it, or with no streets table, every piece stays.
 
 #include "CoreMinimal.h"
 
@@ -115,8 +119,9 @@ inline double HeroPropYaw(double FaceX, double FaceY, double Extra)
 	return FMath::RadiansToDegrees(FMath::Atan2(-FaceY, FaceX)) - 90.0 + Extra;
 }
 
-// Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces. True with bOn false without
-// -Lots; false (logged) on a table that doesn't read or a piece the grammar needs that the kit table lacks.
+// Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces (less the clutter -LotClutterBand
+// drops). True with bOn false without -Lots; false (logged) on a table that doesn't read or a piece the grammar needs
+// that the kit table lacks.
 bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBuild& Out);
 
 // The hero corner's bays as kit lots (ftcore::heroCornerLots): its run and lots appended to Out's plan, their pieces laid
