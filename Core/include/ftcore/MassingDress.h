@@ -231,6 +231,12 @@ struct MassingFrontTotals {
 // along its facing, `width` along the face. No allocation.
 FTCORE_API MassingFoot massingFrontFoot(const MassingProp& prop, const MassingFrontRule& rule);
 
+// The collider a ground-layer frontage piece stands in (the mesh itself is dressing and collides with nothing): a flat box
+// of source Invented, kind "frontage", over massingFrontFoot (`out` deep from the face, `width` along it, turned to the
+// face) from the piece's z to z + height, so the lead and the walkers stop at the piece's front, not at the wall behind.
+// False (out untouched) for an overhead piece (dz kMassingPropBody or more) or one with no out, width or height.
+FTCORE_API bool massingFrontCollider(const MassingProp& prop, const MassingFrontRule& rule, MassingBox& out);
+
 // Sets the rules' pieces against the four side faces of each box `hosts` marks (flat ones only), as Wall props: x, y
 // the point of the face at the piece's middle, face its outward facing, street the host's index, z the floor plus dz.
 // Rules whose dz is under kMassingPropBody make the ground layer, the rest the overhead layer; each layer walks each face

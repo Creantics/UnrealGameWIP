@@ -34,8 +34,8 @@ enum class EFTCellKind : uint8
 {
 	Solid,     // blocks everything and shapes the navmesh (buildings, frames, cars, road furniture that stops the lead)
 	Walk,      // blocks everything and shapes the navmesh, walked on (pavements, kerbs, carriageways, quays' decks)
-	NoCollide, // dressing: no collision, no navigation (kit meshes, props, frontage, markings, roof clutter)
-	Hidden,    // a solid hidden in game, casting no shadow: the collider a kit mesh stands in for
+	NoCollide, // dressing: no collision, no navigation (kit meshes, props, frontage meshes, markings, roof clutter)
+	Hidden,    // a solid hidden in game, casting no shadow: the collider a kit mesh or a ground frontage piece stands in for
 	Count
 };
 

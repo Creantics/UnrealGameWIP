@@ -811,6 +811,22 @@ MassingFoot massingFrontFoot(const MassingProp& prop, const MassingFrontRule& ru
     return foot;
 }
 
+bool massingFrontCollider(const MassingProp& prop, const MassingFrontRule& rule, MassingBox& out) {
+    if (rule.dz >= kMassingPropBody || !(rule.out > 0.0) || !(rule.width > 0.0) || !(rule.height > 0.0)) return false;
+    const MassingFoot foot = massingFrontFoot(prop, rule);
+    out = MassingBox{};
+    out.kind = "frontage";
+    out.source = MassingSource::Invented;
+    out.cx = foot.x;
+    out.cy = foot.y;
+    out.sx = 2.0 * foot.hx;
+    out.sy = 2.0 * foot.hy;
+    out.rot = foot.rot;
+    out.z0 = prop.z;
+    out.z1 = prop.z + rule.height;
+    return true;
+}
+
 void massingFrontage(const std::vector<MassingFrontRule>& rules, const std::vector<MassingStreet>& streets,
                      const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
                      const std::vector<bool>& hosts, double dryAbove, const std::vector<MassingFoot>* taken,

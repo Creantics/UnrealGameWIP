@@ -88,7 +88,8 @@
 // ("open" for none). The table is ftcore::importMassingFront's (id, asset, width_m, depth_m, height_m and the optional
 // out_m, gap_m, turn, dz, weight, run, cap and kinds); each rule's width, depth and height are its mesh's as it stands
 // (turned by turn), its out the table's at most that depth (the depth when the table sets it wholly out). A piece is
-// labelled <rule id>-<n> and collides with nothing. A missing mesh fails the run before anything is built. The log gives
+// labelled <rule id>-<n>; its mesh collides with nothing, and a ground-layer piece (dz under kMassingPropBody) stands
+// in a hidden box collider <rule id>-<n>-C over its part out of the face, its height tall (ftcore::massingFrontCollider). A missing mesh fails the run before anything is built. The log gives
 // each rule's size, a count line per rule (placed, faces, tries and why the others failed) and a totals line.
 // The dressing goes in that order, kerbs, quay, frontage, then the props, each keeping out of the room the ones before
 // took.

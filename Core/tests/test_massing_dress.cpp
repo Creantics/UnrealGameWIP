@@ -533,6 +533,50 @@ TEST_CASE("massing frontage: a piece's foot is the part out of its face") {
     CHECK(near(f.rot, 90.0));
 }
 
+TEST_CASE("massing frontage: a ground piece's collider is its foot from its z up its height") {
+    MassingProp p;
+    p.x = 10.0;
+    p.y = 5.0;
+    p.z = 4.2;
+    p.face = 90.0;
+    MassingFrontRule r = front("BK", 4.0, {});
+    r.depth = 1.2;
+    r.out = 1.2;
+    r.height = 3.0;
+    MassingBox b;
+    REQUIRE(massingFrontCollider(p, r, b));
+    const MassingFoot f = massingFrontFoot(p, r);
+    CHECK(near(b.cx, f.x));
+    CHECK(near(b.cy, 5.6));
+    CHECK(near(b.sx, 1.2)); // out of the face
+    CHECK(near(b.sy, 4.0)); // along it
+    CHECK(near(b.rot, 90.0));
+    CHECK(near(b.z0, 4.2));
+    CHECK(near(b.z1, 7.2));
+    CHECK(b.kind == "frontage");
+    CHECK(b.source == MassingSource::Invented);
+    CHECK_FALSE(b.sloped);
+    // A deep piece sunk in the wall: only the part out of the face collides.
+    r.depth = 12.0;
+    r.out = 1.0;
+    REQUIRE(massingFrontCollider(p, r, b));
+    CHECK(near(b.sx, 1.0));
+    CHECK(near(b.cy, 5.5));
+    // Overhead pieces and empty ones take none, and leave the box as it was.
+    MassingBox keep;
+    keep.id = "K";
+    MassingFrontRule sign = r;
+    sign.dz = kMassingPropBody;
+    CHECK_FALSE(massingFrontCollider(p, sign, keep));
+    MassingFrontRule flat = r;
+    flat.height = 0.0;
+    CHECK_FALSE(massingFrontCollider(p, flat, keep));
+    MassingFrontRule thin = r;
+    thin.out = 0.0;
+    CHECK_FALSE(massingFrontCollider(p, thin, keep));
+    CHECK(keep.id == "K");
+}
+
 TEST_CASE("massing frontage: each face takes the rules its street kind holds") {
     const std::vector<MassingFrontRule> rules = {front("SHOP", 6.0, {"street"}), front("VEND", 2.0, {"open"})};
     const Front f = frontage(rules, northStreet(), {host()});

@@ -3862,8 +3862,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	std::vector<uint8_t> FrontFaces;
 	int32 HeroLampsKept = 0;  // street lamps left out of the hero corner
 	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
-	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance; a
-	// lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
+	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance (a
+	// ground-layer frontage piece gets a hidden collider of its own, below); a lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
 	{
@@ -4056,6 +4056,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		TArray<int32> PerFront;
 		PerFront.SetNumZeroed(static_cast<int32>(FrontRules.size()));
 		FTKitGlass::FOverrides KitGlass(Package, Params); // -KitGlassFrontage: kit modules on M_KitGlass
+		int32 FrontColliders = 0;
 		for (const ftcore::MassingProp& Piece : Pieces)
 		{
 			const ftcore::MassingFrontRule& Rule = FrontRules[Piece.rule];
@@ -4070,6 +4071,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			{
 				Taken.push_back(ftcore::massingFrontFoot(Piece, Rule));
 			}
+			// The mesh is dressing; a ground piece's part out of the face collides as a hidden box (ftcore::massingFrontCollider),
+			// so the lead and the walkers stop at its front.
+			ftcore::MassingBox Collider;
+			if (ftcore::massingFrontCollider(Piece, Rule, Collider))
+			{
+				Collider.id = Rule.id + "-" + std::to_string(N) + "-C";
+				Lay(Collider, EFTCellKind::Hidden, EFTCellCull::None);
+				++FrontColliders;
+			}
 		}
 		KitGlass.Log();
 		for (size_t R = 0; R < FrontRules.size(); ++R)
@@ -4082,10 +4092,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.crowded), static_cast<int32>(Count.capped));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d pieces by %d rules on %d buildings' %d faces; %d faces dressed at "
-			"the ground, %d of the %d that front a street; none collides."),
+			"the ground, %d of the %d that front a street; the meshes collide with nothing, %d ground pieces stand in hidden colliders."),
 			static_cast<int32>(Pieces.size()), static_cast<int32>(FrontRules.size()), static_cast<int32>(FrontTotals.hosts),
 			static_cast<int32>(FrontTotals.faces), static_cast<int32>(FrontTotals.dressed), static_cast<int32>(FrontTotals.streetDressed),
-			static_cast<int32>(FrontTotals.streetFaces));
+			static_cast<int32>(FrontTotals.streetFaces), FrontColliders);
 	}
 
 	// The street furniture: each rule's mesh along its streets, on the floor the lead walks, out of the dressing's room.
