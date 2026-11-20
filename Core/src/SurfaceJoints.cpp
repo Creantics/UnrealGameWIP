@@ -235,7 +235,8 @@ SurfaceJointSurface surfaceJointFor(std::string_view surfaceId) noexcept {
         bool bond;
     };
     static constexpr Entry kEntries[] = {
-        {"soot_brick", 1.2f, 4.f, 13.f, true},      {"breeze_block", 0.8f, 3.f, 5.f, false},
+        // soot_brick: 12 courses per tile (the bed joints of the 1k map lie every 85.3 texels), 4 bricks to a course.
+        {"soot_brick", 1.2f, 4.f, 12.f, true},      {"breeze_block", 0.8f, 3.f, 5.f, false},
         {"ceramic_tile", 0.3f, 8.f, 8.f, false},    {"paving_slab", 0.65f, 4.f, 4.f, false},
         {"tactile_paving", 0.5f, 4.f, 4.f, false},  {"board_concrete", 0.2f, 0.f, 0.f, false},
         {"granite_sett", 1.3f, 0.f, 0.f, false},  // v5: staggered courses of mixed sizes, so no unit grid to tone
