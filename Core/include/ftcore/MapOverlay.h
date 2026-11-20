@@ -333,6 +333,11 @@ struct MapLabelSet {
 };
 FTCORE_API void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& out, float gap = 6.f,
                                const MapLabel* blockers = nullptr, std::size_t blockerCount = 0, float halo = 0.f);
+// One more label after the placer: kept (appended to `set`) only if mapPlaceLabels would keep it as the last candidate,
+// its box clear of every label in the set and every blocker by the same test (gap and halo), and the set not full. The
+// set's labels are left as they are. False, the set unchanged, when it is not kept. Zero allocation.
+FTCORE_API bool mapPlaceLabelAdd(MapLabelSet& set, const MapLabel& l, float gap = 6.f, const MapLabel* blockers = nullptr,
+                                 std::size_t blockerCount = 0, float halo = 0.f);
 // The bottom-left caption (the player's district and street over a thin rule): where it stands and the screen box it
 // reserves, which the placer treats as taken. The text's top left is (kMapCaptionX, screenH - kMapCaptionUp) times the
 // scale; the box runs kMapCaptionPad round it, kMapCaptionW wide and kMapCaptionH tall (px at 1080p, times scale).

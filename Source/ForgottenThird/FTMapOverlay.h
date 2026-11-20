@@ -145,7 +145,9 @@ private:
 		ftcore::MapTier Tier = ftcore::MapTier::District; // the tier its pick held (ftcore::mapRankTier)
 		EDrop First = EDrop::None; // why it had no seat of its own, when it then fell back to a point and failed there too
 	};
-	static constexpr int32 kMaxDrops = 128;
+	// Each pick drops at most once, the sea's name once more: the list is never cut (the second seat's names drop last, so
+	// a cut list would lose exactly the must-draw names; turn 14 reached 126).
+	static constexpr int32 kMaxDrops = static_cast<int32>(kMaxPicks) + 1;
 	FDrop Drops[kMaxDrops];
 	int32 DropCount = 0, DropTotal = 0;
 	int32 DropKinds[kDropKinds] = {};
@@ -174,12 +176,21 @@ private:
 	float MaxGapH = 0.f;
 	double LastBuildMs = 0.0;
 	FSeatNote FarNotes[kMaxSeatNotes], AnyLandNotes[kMaxSeatNotes], OutsideNotes[kMaxSeatNotes];
+	// The second seat (turn 15): must-draw names crowded at their seat or left out by the placer, seated again after it
+	// against only the labels drawn. Names it seated (with the gap, box heights), and of them the road names the placer
+	// left out along their road that it seated at a point (counted apart, for ruling); at most kMaxSecondSeats wait.
+	static constexpr int32 kMaxSecondSeats = 64;
+	int32 SecondSeats = 0, AlongAsPoint = 0;
+	FSeatNote SecondNotes[kMaxSeatNotes], AlongPointNotes[kMaxSeatNotes];
 	int32 InFramePicks = 0;                       // picks in the frame at the last placing
 	uint16 CursorPickName = ftcore::kMapNoName;   // the cursor's pick at the last placing (none: no road, or no name)
 	bool bCursorDistrict = false;                 // and whether it is the district at the cursor (no road's name there)
 	FVector2D LabelCursor = FVector2D(-1.0, -1.0); // the cursor (px) the labels were placed at, while that pick follows it
-	ftcore::MapLabel Candidates[ftcore::kMaxMapLabels];
-	ESeat CandKind[ftcore::kMaxMapLabels] = {};
+	// The placer's candidates, then the names a second seat seated that never were one (their kinds for the log's checks);
+	// LastSeatKinds counts both.
+	ftcore::MapLabel Candidates[ftcore::kMaxMapLabels + kMaxSecondSeats];
+	ESeat CandKind[ftcore::kMaxMapLabels + kMaxSecondSeats] = {};
+	int32 LastSeatKinds = 0;
 	ftcore::MapLabelSet Placed;
 	// The labels are placed again only when what they depend on moves.
 	ftcore::MapOverlayView LabelView;

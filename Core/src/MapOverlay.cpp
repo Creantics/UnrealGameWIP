@@ -1256,6 +1256,18 @@ void mapPlaceLabels(const MapLabel* candidates, std::size_t count, MapLabelSet& 
     }
 }
 
+bool mapPlaceLabelAdd(MapLabelSet& set, const MapLabel& l, float gap, const MapLabel* blockers, std::size_t blockerCount,
+                      float halo) {
+    if (set.count >= kMaxMapLabels || !(l.w > 0.f && l.h > 0.f)) return false;
+    const float grow = gap * 0.5f + std::max(halo, 0.f); // as mapPlaceLabels
+    for (std::size_t k = 0; blockers && k < blockerCount; ++k)
+        if (overlapGrown(l, grow, blockers[k], gap * 0.5f)) return false;
+    for (std::size_t k = 0; k < set.count; ++k)
+        if (overlapGrown(l, grow, set.labels[k], grow)) return false;
+    set.labels[set.count++] = l;
+    return true;
+}
+
 MapLabel mapCaptionBox(float screenW, float screenH, float scale) {
     const float s = scale > 0.f ? scale : 1.f;
     MapLabel b;

@@ -748,6 +748,71 @@ TEST_CASE("map overlay: the caption's box is reserved; the halo counts as part o
     }
 }
 
+TEST_CASE("mapPlaceLabelAdd keeps one more label only where the placer would keep it last") {
+    const MapLabel cap = mapCaptionBox(1920.f, 1080.f, 1.f);
+    const float halo = kMapLabelHaloPx;
+    const MapLabel a{{500.f, 500.f}, 0.f, 100.f, 20.f, 1, 2, true};
+    const MapLabel b{{900.f, 300.f}, 30.f, 140.f, 20.f, 2, 3, true};
+    const MapLabel both[] = {a, b};
+    MapLabelSet set;
+    mapPlaceLabels(both, 2, set, 6.f, &cap, 1, halo);
+    REQUIRE(set.count == 2);
+    // Clear of both and of the caption: appended after them, they untouched.
+    const MapLabel clearAt{{1400.f, 600.f}, 0.f, 120.f, 20.f, 3, 4, true};
+    CHECK(mapPlaceLabelAdd(set, clearAt, 6.f, &cap, 1, halo));
+    REQUIRE(set.count == 3);
+    CHECK(set.labels[0].name == 1);
+    CHECK(set.labels[1].name == 2);
+    CHECK(set.labels[2].name == 3);
+    CHECK(set.labels[2].at.x == clearAt.at.x);
+    // 8 px below a: clear with the 6 px gap alone, refused once each carries its halo (the placer's test).
+    const MapLabel below{{500.f, 528.f}, 0.f, 100.f, 20.f, 4, 4, true};
+    MapLabelSet noHalo = set;
+    CHECK(mapPlaceLabelAdd(noHalo, below, 6.f, &cap, 1, 0.f));
+    CHECK_FALSE(mapPlaceLabelAdd(set, below, 6.f, &cap, 1, halo));
+    CHECK(set.count == 3);
+    // Over the caption's box, or with no box: refused, the set unchanged.
+    const MapLabel over{{200.f, 1000.f}, 0.f, 120.f, 16.f, 5, 4, true};
+    CHECK_FALSE(mapPlaceLabelAdd(set, over, 6.f, &cap, 1, halo));
+    MapLabel noBox = clearAt;
+    noBox.at = {1400.f, 200.f};
+    noBox.w = 0.f;
+    CHECK_FALSE(mapPlaceLabelAdd(set, noBox, 6.f, &cap, 1, halo));
+    CHECK(set.count == 3);
+    CHECK(set.labels[2].name == 3);
+    // A full set takes nothing more.
+    MapLabelSet fullSet;
+    fullSet.count = kMaxMapLabels;
+    CHECK_FALSE(mapPlaceLabelAdd(fullSet, clearAt, 6.f, nullptr, 0, halo));
+    CHECK(fullSet.count == kMaxMapLabels);
+    // The same answer as the placer given the set's labels first and the new one last, over a sweep of the screen.
+    MapLabel trial[kMaxMapLabels + 1];
+    int nKept = 0, nRefused = 0;
+    for (int y = 0; y < 27; ++y) {
+        for (int x = 0; x < 22; ++x) {
+            const MapLabel t{{60.f + 83.f * static_cast<float>(x), 40.f + 37.f * static_cast<float>(y)}, (x + y) % 3 == 0 ? 20.f : 0.f,
+                             120.f, 20.f, 9, 1, true};
+            for (std::size_t i = 0; i < set.count; ++i) {
+                trial[i] = set.labels[i];
+                trial[i].priority = 0;
+            }
+            trial[set.count] = t;
+            MapLabelSet byPlacer;
+            mapPlaceLabels(trial, set.count + 1, byPlacer, 6.f, &cap, 1, halo);
+            MapLabelSet byAdd = set;
+            const bool ok = mapPlaceLabelAdd(byAdd, t, 6.f, &cap, 1, halo);
+            CAPTURE(x);
+            CAPTURE(y);
+            CHECK(ok == (byPlacer.count == set.count + 1));
+            CHECK(byAdd.count == (ok ? set.count + 1 : set.count));
+            nKept += ok ? 1 : 0;
+            nRefused += ok ? 0 : 1;
+        }
+    }
+    CHECK(nKept > 0);
+    CHECK(nRefused > 0);
+}
+
 namespace {
 
 // The plate's edges (x0, y0, x1, y1) as a box.
