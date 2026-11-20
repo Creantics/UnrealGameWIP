@@ -8,7 +8,7 @@
 // -LotClutterBand=<m>: the street clutter (bicycles, planters, vending, AC units; NoCollide but the vending machine) whose
 // foot enters a pedestrian way's band, that many metres either side of its centre line, is left out
 // (ftcore::dropClutterInWays), the ways read from -Streets= (else -PropStreets=, as the lane mouths read them). Without
-// it, or with no streets table, every piece stays.
+// it every piece stays; given, a value that isn't a number over 0, or no streets table, fails the run.
 
 #include "CoreMinimal.h"
 

@@ -582,10 +582,22 @@ bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBu
 			Lot.width(), UTF8_TO_TCHAR(ftcore::lotTypeName(Lot.type)), Lot.floors, Lot.floorZ, Lot.top(), Lot.wallColour, Lot.setback,
 			ftcore::lotSignature(Lot), *Parents);
 	}
-	// -LotClutterBand: no street clutter in a pedestrian way's walking band.
-	double ClutterBand = 0.0;
-	if (FParse::Value(Params, TEXT("LotClutterBand="), ClutterBand) && ClutterBand > 0.0)
+	// -LotClutterBand: no street clutter in a pedestrian way's walking band. Given, it must be a number over 0: anything else
+	// fails the run rather than quietly leaving every piece in.
+	FString ClutterBandText;
+	if (FParse::Value(Params, TEXT("LotClutterBand="), ClutterBandText))
 	{
+		double ClutterBand = 0.0;
+		const bool bNumber = !ClutterBandText.IsEmpty() && ClutterBandText.IsNumeric();
+		if (bNumber)
+		{
+			LexFromString(ClutterBand, *ClutterBandText);
+		}
+		if (!bNumber || !FMath::IsFinite(ClutterBand) || ClutterBand <= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand=%s isn't a width over 0 m."), *ClutterBandText);
+			return false;
+		}
 		// "Streets=" also sits inside "-PropStreets=", so the dash is part of the match.
 		FString StreetsFile;
 		if (!FParse::Value(Params, TEXT("-Streets="), StreetsFile))
@@ -595,9 +607,10 @@ bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBu
 		std::vector<ftcore::MassingStreet> Streets;
 		if (StreetsFile.IsEmpty())
 		{
-			UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand needs -Streets= or -PropStreets=; every clutter piece stays."));
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand needs -Streets= or -PropStreets=."));
+			return false;
 		}
-		else if (!ReadText(StreetsFile, Text) || !ftcore::importMassingStreets(Text, Streets, &Error))
+		if (!ReadText(StreetsFile, Text) || !ftcore::importMassingStreets(Text, Streets, &Error))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: %s: %s"), *StreetsFile, *Utf8(Error));
 			return false;
