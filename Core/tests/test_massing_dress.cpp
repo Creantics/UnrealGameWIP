@@ -3,6 +3,7 @@
 // kept outside the repo. Ids and numbers only.
 
 #include "ftcore/MassingDress.h"
+#include "ftcore/Roads.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
@@ -204,11 +205,22 @@ TEST_CASE("massing kerbs: both edges of a carriageway, in even pieces, as pole c
     CHECK(near(k.boxes[3].cy, -3.1));
     CHECK(near(k.boxes[5].cx, 25.0));
 
-    // No pavements, or no length: no kerbs.
+    // No pavements, no length, or no carriageway for vehicles (a market arcade, a row no wider than an alley, a
+    // stair; roadFootClass not Vehicle): no kerbs.
     MassingStreet bare = lane("S-2", 30);
     bare.pavement = 0.0;
     MassingStreet dot = lane("S-3", 0);
-    const Kerbs none = kerbs({bare, dot});
+    MassingStreet arcade = lane("S-4", 30);
+    arcade.kind = "market_arcade";
+    MassingStreet narrow = lane("S-5", 30);
+    narrow.width = kFootAlleyUpTo;
+    narrow.pavement = 0.5;
+    MassingStreet steps = lane("S-6", 30);
+    steps.kind = "link_stair";
+    REQUIRE(roadFootClass(arcade) == RoadFootClass::Pedestrian);
+    REQUIRE(roadFootClass(narrow) == RoadFootClass::Pedestrian);
+    REQUIRE(roadFootClass(steps) == RoadFootClass::None);
+    const Kerbs none = kerbs({bare, dot, arcade, narrow, steps});
     CHECK(none.boxes.empty());
     CHECK(none.counts.streets == 0);
 }

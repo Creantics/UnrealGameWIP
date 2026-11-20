@@ -435,6 +435,47 @@ TEST_CASE("road net: poles and signs on the network, laid as instances, off the 
     CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,poles\nA,road,14,0:0;0:50,3.5,Q\n", out));
 }
 
+TEST_CASE("road net: a pedestrian way's mouth gets no stop sign; its flare, kerbs and broken centre line stay") {
+    std::vector<RoadNetStreet> s = net(
+        "id,kind,width_m,pts,pavement_m,mouths,poles\n"
+        "RD-P,road,16,0:0;0:300,3.5,LN-1@220@6@R,L\n"
+        "ST-E,street,14,0:100;80:100,2.8,,\n");
+    const auto tally = [](const RoadBuild& b, int& stops, int& kerbs, int& dashes) {
+        stops = kerbs = dashes = 0;
+        for (const RoadSolid& sd : b.solids) {
+            if (sd.tag == "FTRoadSign_stop") ++stops;
+            if (sd.box.kind == "kerb" || sd.box.kind == "crossover" || sd.box.kind == "ramp") ++kerbs;
+            if (sd.tint == RoadTint::LineWhite && std::fabs(sd.box.cx) < 0.2 && sd.box.sx < 4.0) {
+                ++dashes;
+                CHECK(std::fabs(sd.box.cy - 220.0) > 3.0);
+            }
+        }
+    };
+    RoadBuild before, after;
+    roadNetBuild(s, MassingGround{}, before);
+    int stops0 = 0, kerbs0 = 0, dashes0 = 0;
+    tally(before, stops0, kerbs0, dashes0);
+    REQUIRE(stops0 == 1);
+
+    MassingStreet alley;
+    alley.id = "LN-1";
+    alley.kind = "alley";
+    alley.width = 6.0;
+    MassingStreet other = alley;
+    other.id = "LN-2";
+    CHECK(roadMouthsFoot(s[0].mouths, {other}) == 0); // a lane not in the table keeps its sign
+    CHECK_FALSE(s[0].mouths[0].foot);
+    CHECK(roadMouthsFoot(s[0].mouths, {other, alley}) == 1);
+    CHECK(s[0].mouths[0].foot);
+    roadNetBuild(s, MassingGround{}, after);
+    int stops1 = 0, kerbs1 = 0, dashes1 = 0;
+    tally(after, stops1, kerbs1, dashes1);
+    CHECK(stops1 == 0);
+    CHECK(kerbs1 == kerbs0);
+    CHECK(dashes1 == dashes0);
+    CHECK(after.counts.mouths == before.counts.mouths);
+}
+
 TEST_CASE("road net: a tilted cube's top is centred over its box, so a crown's two halves meet") {
     MassingBox x;
     x.cx = 10.0;

@@ -68,6 +68,7 @@ struct RoadMouth {
     double width = 0.0; // m: the lane's width
     bool left = true;  // on the road's left, looking from its first point to its second
     double stub = 0.0; // m: > 0, a signalised crossroads, its stub arm this long on the other side
+    bool foot = false; // the lane is a pedestrian way (roadMouthsFoot): its mouth gets no stop sign
 };
 
 struct RoadBusStop {
@@ -681,6 +682,9 @@ enum class RoadFootClass : std::uint8_t { None, Vehicle, Pedestrian };
 // Vehicle: width over kFootAlleyUpTo and kind not stair, link_stair, alley or market_arcade. Pedestrian: kind alley or
 // market_arcade, or any other non-stair row kFootAlleyUpTo wide or less. None: stair and link_stair.
 FTCORE_API RoadFootClass roadFootClass(const MassingStreet& street);
+// Marks each mouth whose lane is a row of `streets` of class Pedestrian as foot (and clears it on any other mouth); a
+// lane not in `streets` keeps its stop sign. Returns how many mouths it marked. Allocates: build time only.
+FTCORE_API std::size_t roadMouthsFoot(std::vector<RoadMouth>& mouths, const std::vector<MassingStreet>& streets);
 
 // A vehicle street's section across its polyline (t: to its left, looking along its points).
 struct RoadFootSection {

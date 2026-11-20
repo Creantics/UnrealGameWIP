@@ -1084,7 +1084,7 @@ void roadBuild(const RoadSpec& road, RoadBuild& out) {
     };
     // Stop signs at the plain lane mouths, on the lane traffic's left (the +s side for a left mouth).
     for (const RoadMouth& m : road.mouths) {
-        if (m.stub > 0.0) continue;
+        if (m.stub > 0.0 || m.foot) continue;
         const double sl = m.left ? 1.0 : -1.0;
         const std::vector<SideSpan>& spans = m.left ? spansL : spansR;
         const double s = m.at + sl * (m.width * 0.5 + kRoadMouthFlare + 0.6);
@@ -3002,7 +3002,7 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
                 ((m.left == fwd) ? fixL : fixR).push_back({std::max(0.0, s0), std::min(L, s1), Span::Mouth});
                 // On the lane traffic's left as it comes out: past the mouth's +s end on the +t side, else its -s end.
                 const double ss = (m.left == fwd) ? s1 + 0.6 : s0 - 0.6;
-                if (ss > 3.0 && ss < L - 3.0) mouthSigns.push_back({ss, m.left == fwd});
+                if (!m.foot && ss > 3.0 && ss < L - 3.0) mouthSigns.push_back({ss, m.left == fwd});
             }
         }
         for (std::vector<SideSpan>* side : {&fixL, &fixR}) {
@@ -4226,6 +4226,20 @@ RoadFootClass roadFootClass(const MassingStreet& street) {
     if (k == "alley" || k == "market_arcade") return RoadFootClass::Pedestrian;
     if (street.width <= kFootAlleyUpTo + 1e-9) return RoadFootClass::Pedestrian;
     return RoadFootClass::Vehicle;
+}
+
+std::size_t roadMouthsFoot(std::vector<RoadMouth>& mouths, const std::vector<MassingStreet>& streets) {
+    std::size_t marked = 0;
+    for (RoadMouth& m : mouths) {
+        m.foot = false;
+        for (const MassingStreet& s : streets)
+            if (s.id == m.lane) {
+                m.foot = roadFootClass(s) == RoadFootClass::Pedestrian;
+                break;
+            }
+        if (m.foot) ++marked;
+    }
+    return marked;
 }
 
 RoadFootSection roadFootSection(const MassingStreet& street) {

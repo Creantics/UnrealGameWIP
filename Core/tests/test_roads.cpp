@@ -111,6 +111,45 @@ TEST_CASE("roads: the build keeps the carriageway clear and the kerbs mountable"
     }
 }
 
+TEST_CASE("roads: a pedestrian way's mouth gets no stop sign, its flare and dropped kerb kept") {
+    const auto tally = [](const RoadBuild& b, std::size_t& stops, std::size_t& kerbs) {
+        stops = kerbs = 0;
+        for (const RoadSolid& s : b.solids) {
+            if (s.tag == "FTRoadSign_stop") ++stops;
+            if (s.box.kind == "kerb" || s.box.kind == "crossover" || s.box.kind == "ramp") ++kerbs;
+        }
+    };
+    RoadSpec r = theRoad();
+    RoadBuild before;
+    roadBuild(r, before);
+    std::size_t stops0 = 0, kerbs0 = 0;
+    tally(before, stops0, kerbs0);
+    REQUIRE(stops0 >= 1);
+
+    // CL-047 a market arcade, CL-049 a vehicle lane, CL-046 not in the table: only CL-047's mouth is marked.
+    MassingStreet arcade, lane9;
+    arcade.id = "CL-047";
+    arcade.kind = "market_arcade";
+    arcade.width = 6.0;
+    arcade.pavement = 1.5;
+    lane9.id = "CL-049";
+    lane9.kind = "core_lane";
+    lane9.width = 6.0;
+    lane9.pavement = 1.5;
+    r.mouths[0].foot = true; // cleared again: CL-046 is not in the table
+    CHECK(roadMouthsFoot(r.mouths, {arcade, lane9}) == 1);
+    CHECK_FALSE(r.mouths[0].foot);
+    CHECK(r.mouths[1].foot);
+    CHECK_FALSE(r.mouths[3].foot);
+    RoadBuild after;
+    roadBuild(r, after);
+    std::size_t stops1 = 0, kerbs1 = 0;
+    tally(after, stops1, kerbs1);
+    CHECK(stops1 + 1 == stops0);
+    CHECK(kerbs1 == kerbs0);
+    CHECK(after.counts.mouths == before.counts.mouths);
+}
+
 TEST_CASE("roads: bays sit off the carriageway, clear of the junction, zebras, bus stop and ends") {
     const RoadSpec r = theRoad();
     RoadBuild b;
