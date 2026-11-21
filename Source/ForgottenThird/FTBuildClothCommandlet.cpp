@@ -407,6 +407,18 @@ bool ClothPaintFromColour(UClothingAssetCommon& Asset, float Max)
 			Phys.VertexColors.Num(), Phys.Vertices.Num());
 		return false;
 	}
+	// Count the pinned vertices before the map is touched, so a failing mesh leaves its max-distance map as it was.
+	int32 Pinned = 0;
+	for (const FColor& Colour : Phys.VertexColors)
+	{
+		Pinned += Colour.R == 0;
+	}
+	if (Pinned == 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -MaskFromColour: none of the %d sim vertices has red 0, so nothing pins the cloth."),
+			Phys.Vertices.Num());
+		return false;
+	}
 	FPointWeightMap* Map = Lod.PointWeightMaps.FindByPredicate(
 		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
 	if (!Map)
@@ -417,17 +429,9 @@ bool ClothPaintFromColour(UClothingAssetCommon& Asset, float Max)
 	Map->Name = TEXT("MaxDistance");
 	Map->bEnabled = true;
 	Map->Values.SetNum(Phys.Vertices.Num());
-	int32 Pinned = 0;
 	for (int32 i = 0; i < Phys.Vertices.Num(); ++i)
 	{
 		Map->Values[i] = Max * Phys.VertexColors[i].R / 255.f;
-		Pinned += Phys.VertexColors[i].R == 0;
-	}
-	if (Pinned == 0)
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -MaskFromColour: none of the %d sim vertices has red 0, so nothing pins the cloth."),
-			Phys.Vertices.Num());
-		return false;
 	}
 	Asset.ApplyParameterMasks(false, true);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: max distance from vertex colour: %d of %d vertices pinned, %.1f cm at red 255."),
