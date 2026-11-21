@@ -2,6 +2,7 @@
 // the under-water band and the camera keep-out, surfacing with the lead, the rescue placement, the exit choice and
 // order, the aborts, and the slot clamp to the water.
 #include "ftcore/WaterFollow.h"
+#include "ftcore/WaterSurfaceFeet.h"
 
 #include "AllocCounter.h"
 
@@ -1376,4 +1377,215 @@ TEST_CASE("water follow (start in the water): a lead seen out of the water and r
     r.step();
     CHECK(r.o(0).phase == WaterFollowPhase::Surface);
     CHECK(r.o(1).phase == WaterFollowPhase::Surface);
+}
+
+// 11-20 swim proof, runs 5 and 6: followers in the lead's water only, and kept in it.
+namespace {
+
+// The sea (body 0, x >= 0) and a canal beside it on land (body 1, x -12..-8): other water, no swim to the sea.
+WaterBodies seaAndCanal() {
+    WaterBodies w = sea();
+    WaterBody c;
+    c.kind = WaterKind::Canal;
+    c.shape = WaterShape::Box;
+    c.level = 0.f;
+    c.bed = -3.f;
+    c.centre = {-10.f, 0.f};
+    c.half = {2.f, 30.f};
+    w.add(c);
+    return w;
+}
+
+// The surface swimmer's state at p in the sea, as the host samples it: the feet by the surface rule over the bed there,
+// a block (x 3..4, y -1..1) standing out of the water read as Dry (inside a solid), a shelf at `shelfBed` for x 6..7.
+struct SeaSampler {
+    const WaterBodies* water = nullptr;
+    Vec2 at{};
+    float shelfBed = -0.5f;
+    mutable int calls = 0;
+    WaterState operator()(Vec2 step) const {
+        ++calls;
+        const Vec2 p{at.x + step.x, at.y + step.y};
+        if (p.x >= 3.f && p.x <= 4.f && p.y >= -1.f && p.y <= 1.f) return WaterState{};
+        const float bed = p.x >= 6.f && p.x <= 7.f ? shelfBed : -10.f;
+        WaterCapsule c;
+        c.p = p;
+        c.feetZ = waterSurfaceFeetZ(waterSwimFeetZ(0.f, 0.f), 0.f, bed);
+        c.groundZ = bed;
+        c.hasGround = true;
+        c.swimming = true;
+        return waterState(*water, c, 0.f);
+    }
+};
+
+} // namespace
+
+TEST_CASE("water follow (11-20): steps into other water than the lead's are not an entry; a body with none gives the jump") {
+    const WaterBodies water = seaAndCanal();
+    REQUIRE(water.bodyAt({5.f, 0.f}) == 0);
+    REQUIRE(water.bodyAt({-11.f, 2.f}) == 1);
+    const Vec2 from{-15.f, 1.f}, lead{5.f, 0.f}, edge{0.f, 1.f}, out{1.f, 0.f};
+    const WaterExit canalSteps[] = {steps({-13.f, 2.f}, {-11.f, 2.f})};
+    // 1. A flight whose foot is in the canal is rejected (run 5); with no bodies given it is still taken (as before).
+    const WaterFollowEntry a = waterFollowEntry(canalSteps, 1, from, lead, edge, out, 8.f, &water);
+    CHECK(a.kind == WaterFollowEntryKind::Jump);
+    CHECK(a.exitIndex == -1);
+    CHECK_FALSE(a.otherWater); // the jump from the sea's edge lands in the lead's body
+    CHECK(waterFollowEntry(canalSteps, 1, from, lead, edge, out, 8.f).kind == WaterFollowEntryKind::Steps);
+    // 2. A flight into the lead's own body is still chosen, over a nearer one into the canal.
+    const WaterExit both[] = {steps({-13.f, 1.f}, {-11.f, 1.f}), steps({-1.f, 4.f}, {1.f, 4.f})};
+    const WaterFollowEntry b = waterFollowEntry(both, 2, from, lead, edge, out, 8.f, &water);
+    CHECK(b.kind == WaterFollowEntryKind::Steps);
+    CHECK(b.exitIndex == 1);
+    CHECK(b.into.x == doctest::Approx(1.f));
+    // 3. The lead's body has no exits at all (the Strip's sea, 0 of 31): a jump, never no entry.
+    CHECK(waterFollowEntry(canalSteps, 1, from, lead, edge, out, 8.f, &water).kind != WaterFollowEntryKind::None);
+    CHECK(waterFollowEntry(nullptr, 0, from, lead, edge, out, 8.f, &water).kind == WaterFollowEntryKind::Jump);
+    // ... and a jump whose landing is in the canal is marked: other water.
+    const WaterFollowEntry c = waterFollowEntry(canalSteps, 1, from, lead, {-12.5f, 1.f}, out, 8.f, &water);
+    CHECK(c.kind == WaterFollowEntryKind::Jump);
+    CHECK(c.otherWater);
+    // The party: such a jump is no way to the lead, so the follower is rejoined with it in the sea, then swims.
+    Scene s;
+    s.water = seaAndCanal();
+    s.exits = {steps({-13.f, 1.f}, {-11.f, 1.f})};
+    s.members[0].position = {-15.f, 1.f, 0.5f};
+    s.members[0].edge = {-12.5f, 1.f};
+    const float t = s.until(0, WaterFollowPhase::Placed, 2.f);
+    CHECK(t >= 0.f);
+    CHECK(s.o(0).place);
+    CHECK(s.o(0).rejoin);
+    CHECK(s.water.bodyAt({s.o(0).target.x, s.o(0).target.y}) == 0);
+    CHECK(s.o(1).phase == WaterFollowPhase::ToEntry); // the other one's edge is the sea's: it jumps in as before
+    CHECK(s.o(1).entry.kind == WaterFollowEntryKind::Jump);
+    s.members[0].position = s.o(0).target;
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+}
+
+TEST_CASE("water follow (11-20): the surface step stays in the water: taken, slid along the edge, or held") {
+    const WaterBodies water = sea();
+    SeaSampler at{&water, {1.f, 0.f}};
+    // Open water: taken as it is.
+    WaterSurfaceStep r = waterSurfaceStep({0.05f, 0.f}, 1.f, at);
+    CHECK(r.kind == WaterStepKind::Take);
+    CHECK(r.step.x == doctest::Approx(0.05f));
+    // Treading (no step): taken, nothing sampled.
+    at.calls = 0;
+    r = waterSurfaceStep({0.f, 0.f}, 1.f, at);
+    CHECK(r.kind == WaterStepKind::Take);
+    CHECK(at.calls == 0);
+    // Over a shelf under the surface (0.5 m of water; the feet just over the bed): a wade, still in the water.
+    at.at = {5.98f, 3.f};
+    const WaterState shelf = at({0.05f, 0.f});
+    CHECK(shelf.mode != WaterMode::Swim);
+    CHECK(waterIn(shelf));
+    CHECK(waterSurfaceStep({0.05f, 0.f}, 1.f, at).kind == WaterStepKind::Take);
+    // A shelf at the surface (no water over it: the feet over the surface): out.
+    at.shelfBed = 0.f;
+    CHECK_FALSE(waterIn(at({0.05f, 0.f})));
+    // Onto the land (x < 0): slid along the edge, the side given first, at the cosine's share (half at 60 degrees).
+    at.at = {0.02f, 2.f};
+    r = waterSurfaceStep({-0.05f, 0.f}, -1.f, at);
+    CHECK(r.kind == WaterStepKind::Slide);
+    CHECK(waterIn(at(r.step)));
+    CHECK(r.side == -1.f);
+    CHECK(std::hypot(r.step.x, r.step.y) == doctest::Approx(0.025f));
+    // Into the block standing out of the sea: slid, never into it.
+    at.at = {2.98f, 0.f};
+    r = waterSurfaceStep({0.05f, 0.f}, 1.f, at);
+    CHECK(r.kind == WaterStepKind::Slide);
+    CHECK(at.at.x + r.step.x < 3.f);
+    CHECK(r.side == 1.f);
+    // Nowhere in the water: held where it is.
+    const auto dry = [](Vec2) { return WaterState{}; };
+    r = waterSurfaceStep({0.05f, 0.f}, 1.f, dry);
+    CHECK(r.kind == WaterStepKind::Hold);
+    CHECK(r.step.x == 0.f);
+    CHECK(r.step.y == 0.f);
+}
+
+TEST_CASE("water follow (11-20): a swim round the block to a spot behind it never leaves the water, and allocates nothing") {
+    const WaterBodies water = sea();
+    SeaSampler at{&water, {1.5f, 0.2f}};
+    const Vec2 to{5.5f, -0.2f};
+    REQUIRE(ftcore_test::allocHookInstalled());
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    float side = 1.f;
+    int held = 0;
+    int out = 0;
+    bool reached = false;
+    for (int i = 0; i < 30 * 20 && !reached; ++i) {
+        const float dx = to.x - at.at.x, dy = to.y - at.at.y, far = std::hypot(dx, dy);
+        const float len = std::min(1.5f * kDt, far);
+        const WaterSurfaceStep r = waterSurfaceStep({dx / far * len, dy / far * len}, side, at);
+        side = r.side;
+        held += r.kind == WaterStepKind::Hold ? 1 : 0;
+        at.at = {at.at.x + r.step.x, at.at.y + r.step.y};
+        out += waterIn(at({0.f, 0.f})) ? 0 : 1;
+        reached = far < 0.05f;
+    }
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(out == 0);
+    CHECK(reached);
+    CHECK(held == 0);
+}
+
+TEST_CASE("water follow (11-20): a follower blocked at the edge is rejoined by the watchdog, though the lead comes nearer") {
+    Scene s;
+    s.bothIn();
+    // Held at the edge 4 m from the lead, which swims slowly toward it (run 5: the shrinking gap kept the count at 0).
+    s.members[0].blocked = true;
+    s.lead.velocity = {-0.1f, 0.f};
+    float t = 0.f;
+    while (t < 25.f && s.o(0).phase != WaterFollowPhase::Placed) {
+        s.lead.position.x -= 0.1f * kDt;
+        s.step();
+        t += kDt;
+    }
+    CHECK(t == doctest::Approx(20.f).epsilon(0.02));
+    CHECK(s.o(0).place);
+    CHECK(s.o(0).rejoin);
+    CHECK(s.o(1).phase == WaterFollowPhase::Surface); // not blocked: not placed
+    s.members[0].position = s.o(0).target;
+    s.members[0].blocked = false;
+    s.step();
+    CHECK(s.o(0).phase == WaterFollowPhase::Surface);
+    // A full step resets the count: blocked 15 s, one free step, blocked 15 s more is no rejoin.
+    Scene r;
+    r.bothIn();
+    r.members[0].blocked = true;
+    r.step(450);
+    CHECK(r.party.stuckFor(0) == doctest::Approx(15.f).epsilon(0.02));
+    r.members[0].blocked = false;
+    r.step();
+    CHECK(r.party.stuckFor(0) == 0.f);
+    r.members[0].blocked = true;
+    r.step(450);
+    CHECK(r.o(0).phase == WaterFollowPhase::Surface);
+}
+
+TEST_CASE("water follow (11-20): a follower sliding along the edge is counted only while it does not get on") {
+    // Slid in place (turned, never 0.5 m from where the count began): rejoined at the watchdog's time, the lead near.
+    Scene s;
+    s.bothIn();
+    s.members[0].turned = true;
+    float t = 0.f;
+    while (t < 25.f && s.o(0).phase != WaterFollowPhase::Placed) {
+        s.step();
+        t += kDt;
+    }
+    CHECK(t == doctest::Approx(20.f).epsilon(0.02));
+    CHECK(s.o(0).rejoin);
+    // Sliding along a quay wall and getting on with the lead (the gap kept): a swim, no rejoin.
+    Scene g;
+    g.bothIn();
+    g.members[0].turned = true;
+    for (int i = 0; i < 30 * 25; ++i) {
+        g.members[0].position.y += 0.03f;
+        g.lead.position.y += 0.03f;
+        g.step();
+    }
+    CHECK(g.o(0).phase == WaterFollowPhase::Surface);
+    CHECK(g.party.stuckFor(0) < 1.f);
 }

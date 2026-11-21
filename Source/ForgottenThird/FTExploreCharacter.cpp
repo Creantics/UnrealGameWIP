@@ -4806,7 +4806,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 				}
 				// The watchdog's run needs the lead well past stuckFar (12 m) from a partner treading by the entry.
 				if ((SwimProofKind == TEXT("watchdog") || SwimProofKind == TEXT("boom") || SwimProofKind == TEXT("exit") || SwimProofKind == TEXT("switch")
-					|| SwimProofKind == TEXT("start") || SwimProofKind == TEXT("cost")) && FVector::Dist2D(P, Far) < 1600.0)
+					|| SwimProofKind == TEXT("start") || SwimProofKind == TEXT("cost") || SwimProofKind == TEXT("replay")) && FVector::Dist2D(P, Far) < 1600.0)
 				{
 					continue;
 				}
@@ -4966,6 +4966,14 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		ftcore::HeldUpJumpRules OnlyWater;
 		OnlyWater.minProgress = 1.0e6f;
 		LeadGoTry.setRules(OnlyWater);
+		if (SwimProofKind == TEXT("replay"))
+		{
+			BeginSwimProofReplay();
+			if (SwimProofStage < 0)
+			{
+				return;
+			}
+		}
 		BeginLeadGo(FVector(SwimProofWet.X, SwimProofWet.Y, 0.0), true); // jumps a quay's railing
 		LeadGoNext.Add(FVector(SwimProofFar.X, SwimProofFar.Y, 0.0));
 		SwimProofStage = 2;
@@ -5098,6 +5106,15 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			{
 				return;
 			}
+		}
+		const bool bReplayRun = SwimProofKind == TEXT("replay");
+		if (bReplayRun)
+		{
+			if (System)
+			{
+				TickSwimProofReplay(*System, DeltaSeconds);
+			}
+			return; // its own camera and stills; no sweep
 		}
 		const bool bSwitchRun = SwimProofKind == TEXT("switch");
 		if (bSwitchRun && System)
@@ -5818,6 +5835,298 @@ void AFTExploreCharacter::TickSwimProofCost(float DeltaSeconds)
 			Cvar(TEXT("sg.ReflectionQuality")), Cvar(TEXT("sg.PostProcessQuality")), Cvar(TEXT("sg.EffectsQuality")), Cvar(TEXT("sg.ShadingQuality")));
 		Finish(bNoGpu ? 2 : 0);
 	}
+#endif
+}
+
+void AFTExploreCharacter::BeginSwimProofReplay()
+{
+#if !UE_BUILD_SHIPPING
+	// The partners' starts as logged (feet, cm) when each began its way in: run 5 (entry by the canal's steps), run 6 (the
+	// jump that landed over the solid by the quay).
+	static const FVector Starts[2][2] = {
+		{FVector(35947.0, -1700.0, 420.0), FVector(35947.0, -1900.0, 420.0)},
+		{FVector(42078.0, -1700.0, 501.0), FVector(42078.0, -1900.0, 400.0)},
+	};
+	FParse::Value(FCommandLine::Get(), TEXT("SwimProofReplay="), SwimProofReplayRun);
+	if (SwimProofReplayRun != 4 && SwimProofReplayRun != 5 && SwimProofReplayRun != 6)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("SwimProof replay: -SwimProofReplay=4, 5 or 6 is needed (got %d); no proof from this run."), SwimProofReplayRun);
+		FTRequestExit(2, TEXT("SwimProof"));
+		SwimProofStage = -2;
+		return;
+	}
+	const int32 Run = SwimProofReplayRun == 5 ? 0 : 1;
+	UWorld* World = GetWorld();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(SwimProofReplay), false, this);
+	for (int32 I = 0; I < 2 && I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
+	{
+		if (AFTPartyFollower* Partner = WaterFollowers[I].Get())
+		{
+			Params.AddIgnoredActor(Partner);
+		}
+	}
+	// Run 4 (the rejoin regression): no stands; each follows the trail from where it is, slot 0's walk in held (the
+	// follower's proof hold) until the watchdog rejoins it.
+	for (int32 I = 0; SwimProofReplayRun != 4 && I < 2 && I < NumWaterFollowers && I < ftcore::kWaterFollowMax; ++I)
+	{
+		AFTPartyFollower* Partner = WaterFollowers[I].Get();
+		if (!Partner)
+		{
+			continue;
+		}
+		FVector At = Starts[Run][I];
+		FHitResult Ground;
+		if (World && World->LineTraceSingleByChannel(Ground, At + FVector(0.0, 0.0, 200.0), At - FVector(0.0, 0.0, 600.0), ECC_Visibility, Params) && !Ground.bStartPenetrating)
+		{
+			At.Z = Ground.ImpactPoint.Z;
+		}
+		Partner->PinForProof(At);
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d (%s) stood at its logged start (%.0f, %.0f, %.0f) cm (logged z %.0f) until the lead has swum 2 s."),
+			SwimProofReplayRun, I, *Partner->GetWaterName(), At.X, At.Y, At.Z, Starts[Run][I].Z);
+	}
+	// The camera: kept on the far side of the lead from its partners (TickSwimProofReplay moves it).
+	APlayerController* Pc = Cast<APlayerController>(Controller);
+	FActorSpawnParameters CamParams;
+	CamParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ACameraActor* Cam = World ? World->SpawnActor<ACameraActor>(GetActorLocation() + FVector(0.0, 0.0, 400.0), FRotator::ZeroRotator, CamParams) : nullptr;
+	if (Cam && Pc)
+	{
+		Pc->SetViewTarget(Cam);
+		SwimProofReplayCam = Cam;
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof replay: no camera of its own (spawn %d, controller %d); the stills use the lead's."), Cam ? 1 : 0, Pc ? 1 : 0);
+	}
+#endif
+}
+
+void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, float DeltaSeconds)
+{
+#if UE_BUILD_SHIPPING
+	(void)System;
+	(void)DeltaSeconds;
+#else
+	const ftcore::WaterBodies& Bodies = System.Bodies();
+	const int32 Partners = FMath::Min(FMath::Min(NumWaterFollowers, ftcore::kWaterFollowMax), 2);
+	const ftcore::WaterFollowTuning& Tun = GetWaterFollowTuning();
+	if (bSwimming && SwimProofLeadSwamAt < 0.f)
+	{
+		SwimProofLeadSwamAt = SwimProofTime;
+	}
+	// Let go 2 s after the lead first swims (the party's entry was picked from where each stood).
+	if (SwimProofLeadSwamAt >= 0.f && SwimProofTime >= SwimProofLeadSwamAt + 2.f)
+	{
+		for (int32 I = 0; I < Partners; ++I)
+		{
+			AFTPartyFollower* Partner = WaterFollowers[I].Get();
+			if (Partner && Partner->IsProofPinned())
+			{
+				Partner->UnpinProof();
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d let go at %.1f s, still ashore (phase %d): no entry from its start, it follows the trail."),
+					SwimProofReplayRun, I, SwimProofTime, static_cast<int32>(Partner->GetWaterPhase()));
+			}
+		}
+	}
+	// The camera on the far side of the lead from its partners, 12 m back and 4 m up, looking between them.
+	FVector Mean = FVector::ZeroVector;
+	int32 Seen = 0;
+	for (int32 I = 0; I < Partners; ++I)
+	{
+		if (const AFTPartyFollower* Partner = WaterFollowers[I].Get())
+		{
+			Mean += Partner->GetActorLocation();
+			++Seen;
+		}
+	}
+	const FVector Lead = GetActorLocation();
+	if (AActor* Cam = SwimProofReplayCam.Get(); Cam && Seen > 0)
+	{
+		Mean /= Seen;
+		FVector2D Away(Lead.X - Mean.X, Lead.Y - Mean.Y);
+		Away = Away.SizeSquared() > 100.0 ? Away.GetSafeNormal() : -FVector2D(GetActorForwardVector()).GetSafeNormal();
+		const FVector Eye(Lead.X + Away.X * 1200.0, Lead.Y + Away.Y * 1200.0, Lead.Z + 400.0);
+		const FVector Look = (Lead + Mean) * 0.5;
+		Cam->SetActorLocationAndRotation(Eye, (Look - Eye).Rotation());
+	}
+	// The still asked for last frame: its partner's hidden flag again (the director may tick after this).
+	if (SwimProofReplayShotWho >= 0)
+	{
+		const AFTPartyFollower* Partner = WaterFollowers[SwimProofReplayShotWho].Get();
+		if (Partner && Partner->IsHidden())
+		{
+			++SwimProofReplay[SwimProofReplayShotWho].HiddenShots;
+		}
+		SwimProofReplayShotWho = -1;
+	}
+	auto Shoot = [this](int32 I, const TCHAR* Why)
+	{
+		const AFTPartyFollower* Partner = WaterFollowers[I].Get();
+		const FString Path = FPaths::Combine(SwimProofShots, FString::Printf(TEXT("swimproof_replay%d_%03d.png"), SwimProofReplayRun, SwimProofReplayShot));
+		FScreenshotRequest::RequestScreenshot(Path, false, false);
+		FSwimReplaySlot& R = SwimProofReplay[I];
+		++R.Shots;
+		const bool bHidden = Partner && Partner->IsHidden();
+		R.HiddenShots += bHidden ? 1 : 0;
+		SwimProofReplayShotWho = I;
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: still %03d (%s) for slot %d at %.1f s: hidden %d, %s."), SwimProofReplayRun, SwimProofReplayShot, Why, I,
+			SwimProofTime, bHidden ? 1 : 0, *Path);
+		++SwimProofReplayShot;
+	};
+	const bool bLeadAtFar = SwimProofStage >= 4;
+	for (int32 I = 0; I < Partners; ++I)
+	{
+		const AFTPartyFollower* Partner = WaterFollowers[I].Get();
+		const ftcore::WaterFollowOrder* Order = GetWaterOrder(I);
+		if (!Partner || !Order)
+		{
+			continue;
+		}
+		FSwimReplaySlot& R = SwimProofReplay[I];
+		const FVector At = Partner->GetActorLocation();
+		const ftcore::WaterFollowPhase Phase = Partner->GetWaterPhase();
+		const ftcore::WaterState& Now = Partner->GetWaterNow();
+		const bool bIn = ftcore::waterIn(Now);
+		const bool bInWater = Phase != ftcore::WaterFollowPhase::Ashore && Phase != ftcore::WaterFollowPhase::ToEntry;
+		const float Wet = Partner->GetWetness().wetness;
+		if (static_cast<int32>(Order->phase) != R.Phase)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d phase %d -> %d at %.2f s (entry %d, exit %d, rejoin %d), feet (%.0f, %.0f, %.0f) cm."), SwimProofReplayRun, I,
+				R.Phase, static_cast<int32>(Order->phase), SwimProofTime, static_cast<int32>(Order->entry.kind), Order->entry.exitIndex, Order->rejoin ? 1 : 0, At.X, At.Y, At.Z);
+			if (Order->phase == ftcore::WaterFollowPhase::Placed && Order->rejoin && R.RejoinAt < 0.f)
+			{
+				R.RejoinAt = SwimProofTime;
+				R.RejoinAfterBlocked = R.BlockedFrom >= 0.f ? SwimProofTime - R.BlockedFrom : -1.f;
+			}
+			R.Phase = static_cast<int32>(Order->phase);
+		}
+		if (Phase == ftcore::WaterFollowPhase::Surface)
+		{
+			++R.SurfaceTicks;
+			R.DryTicks += bIn ? 0 : 1;
+			float Surface = 0.f;
+			if (Bodies.surfaceHeight(FTSwimUnits::ToPlan(At), System.WaterTime(), Surface))
+			{
+				R.FeetOver = FMath::Max(R.FeetOver, static_cast<float>(At.Z - FTSwimUnits::ToCm(Surface)));
+			}
+		}
+		if (Wet >= 0.999f)
+		{
+			R.bSoaked = true;
+		}
+		if (R.bSoaked)
+		{
+			R.WetMin = FMath::Min(R.WetMin, Wet);
+		}
+		if (Partner->IsGroomWet())
+		{
+			R.bGroomWet = true;
+		}
+		else if (R.bGroomWet && bInWater)
+		{
+			++R.GroomDryTicks;
+		}
+		// Blocked at the surface: the run of turned or held steps, the longest kept.
+		if (Partner->IsWaterBlocked() && bInWater)
+		{
+			++R.BlockedTicks;
+			if (R.BlockedFrom < 0.f)
+			{
+				R.BlockedFrom = SwimProofTime;
+			}
+			R.BlockedLongest = FMath::Max(R.BlockedLongest, SwimProofTime - R.BlockedFrom);
+		}
+		else
+		{
+			R.BlockedFrom = -1.f;
+		}
+		// Its tread spot: at the surface within 1.5 m of its order's target for 2 s, the lead at the far point.
+		const double Off = FVector2D::Distance(FVector2D(At.X, At.Y), FVector2D(FTSwimUnits::ToCm(Order->target.x), FTSwimUnits::ToCm(Order->target.y)));
+		if (bLeadAtFar && Phase == ftcore::WaterFollowPhase::Surface && Off <= 150.0)
+		{
+			if (R.NearFrom < 0.f)
+			{
+				R.NearFrom = SwimProofTime;
+			}
+			if (R.ReachedAt < 0.f && SwimProofTime >= R.NearFrom + 2.f)
+			{
+				R.ReachedAt = SwimProofTime;
+				UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d at its tread spot at %.1f s (%.0f cm off its target)."), SwimProofReplayRun, I, SwimProofTime, Off);
+				if (SwimProofReplayShotWho < 0)
+				{
+					Shoot(I, TEXT("at its tread spot"));
+				}
+			}
+		}
+		else
+		{
+			R.NearFrom = -1.f;
+		}
+		// Once a second: its line.
+		if ((R.LogAt -= DeltaSeconds) <= 0.f)
+		{
+			R.LogAt = 1.f;
+			float Surface = 0.f;
+			const bool bSurface = Bodies.surfaceHeight(FTSwimUnits::ToPlan(At), System.WaterTime(), Surface);
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d at %.1f s: phase %d, in %d (mode %d, body %d, immersion %.2f m), wet %.2f, grooms wet %d, feet %s, blocked %d, hidden %d, %.0f cm off its target, %.1f m from the lead."),
+				SwimProofReplayRun, I, SwimProofTime, static_cast<int32>(Phase), bIn ? 1 : 0, static_cast<int32>(Now.mode), Now.body, Now.immersion, Wet, Partner->IsGroomWet() ? 1 : 0,
+				bSurface ? *FString::Printf(TEXT("%+.1f cm off the surface"), At.Z - FTSwimUnits::ToCm(Surface)) : TEXT("(no water)"), Partner->IsWaterBlocked() ? 1 : 0,
+				Partner->IsHidden() ? 1 : 0, Off, FVector::Dist2D(At, Lead) / 100.0);
+		}
+	}
+	// The end: both at their tread spots (a still of each, then one more 2 s on), or 120 s after the lead reached the far point.
+	bool bAll = Partners > 0;
+	float Last = 0.f;
+	for (int32 I = 0; I < Partners; ++I)
+	{
+		bAll = bAll && SwimProofReplay[I].ReachedAt >= 0.f;
+		Last = FMath::Max(Last, SwimProofReplay[I].ReachedAt);
+	}
+	const bool bTimeUp = SwimProofHoldAt >= 0.f && SwimProofTime >= SwimProofHoldAt + 120.f;
+	if (!bAll && !bTimeUp && SwimProofTime < 300.f)
+	{
+		return;
+	}
+	// One end still per partner, a frame apart (each one's hidden flag read on its frame and the next).
+	if (SwimProofReplayShotWho >= 0 || (bAll && SwimProofTime < Last + 2.f))
+	{
+		return;
+	}
+	if (SwimProofReplayEndShots < Partners)
+	{
+		Shoot(SwimProofReplayEndShots++, TEXT("the end"));
+		return;
+	}
+	bool bPass = Partners > 0;
+	const float Watch = Tun.watchdog + 2.f;
+	for (int32 I = 0; I < Partners; ++I)
+	{
+		const FSwimReplaySlot& R = SwimProofReplay[I];
+		const bool bDry = R.DryTicks == 0 && R.SurfaceTicks > 0;
+		const bool bWet = R.bSoaked && R.WetMin >= 0.995f;
+		const bool bFeet = R.SurfaceTicks > 0 && R.FeetOver <= 0.5f;
+		const bool bGroom = R.bGroomWet && R.GroomDryTicks == 0;
+		const bool bShots = R.Shots > 0 && R.HiddenShots == 0;
+		// Run 4 rejoins slot 0 from its held walk in (no block at the surface first): the rejoin itself is the point.
+		const bool bRejoinOk = R.RejoinAt >= 0.f && (SwimProofReplayRun == 4 || (R.RejoinAfterBlocked >= 0.f && R.RejoinAfterBlocked <= Watch));
+		const bool bPinned = R.BlockedLongest > Watch;
+		const bool bReach = (R.ReachedAt >= 0.f || bRejoinOk) && !bPinned;
+		const bool bOk = bDry && bWet && bFeet && bGroom && bShots && bReach;
+		bPass = bPass && bOk;
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("SwimProof replay %d PASS LINE slot %d: %s; Surface ticks %d, of them out of the water %d (%s); wetness from the first 1.00 at least %.3f (%s); feet at most %+.1f cm off the surface (%s); grooms %s (%s); stills %d, hidden in %d (%s); tread spot %s, rejoin %s, blocked %d ticks, longest %.1f s (%s)."),
+			SwimProofReplayRun, I, bOk ? TEXT("PASS") : TEXT("FAIL"), R.SurfaceTicks, R.DryTicks, bDry ? TEXT("ok") : TEXT("FAIL"), R.bSoaked ? R.WetMin : 0.f,
+			bWet ? TEXT("ok") : R.bSoaked ? TEXT("FAIL") : TEXT("FAIL: never 1.00"), R.FeetOver, bFeet ? TEXT("ok") : TEXT("FAIL"),
+			R.bGroomWet ? *FString::Printf(TEXT("dry %d ticks after the first wet"), R.GroomDryTicks) : TEXT("never wet"), bGroom ? TEXT("ok") : TEXT("FAIL"), R.Shots, R.HiddenShots,
+			bShots ? TEXT("ok") : TEXT("FAIL"), R.ReachedAt >= 0.f ? *FString::Printf(TEXT("reached at %.1f s"), R.ReachedAt) : TEXT("NOT reached"),
+			R.RejoinAt >= 0.f ? *FString::Printf(TEXT("at %.1f s, %.1f s after its block began"), R.RejoinAt, R.RejoinAfterBlocked) : TEXT("none"), R.BlockedTicks, R.BlockedLongest,
+			bReach ? TEXT("ok") : bPinned ? TEXT("FAIL: pinned past the watchdog") : TEXT("FAIL"));
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: done at %.1f s (lead swam at %.1f s, at the far point at %.1f s%s): %s."), SwimProofReplayRun, SwimProofTime,
+		SwimProofLeadSwamAt, SwimProofHoldAt, bSwimProofLeadPlaced ? TEXT(", lead placed by harness") : TEXT(""), bPass ? TEXT("PASS") : TEXT("FAIL"));
+	FTLook::LogLevelStart(TEXT("proof's end"));
+	FTRequestExit(bPass ? 0 : 2, TEXT("SwimProof"));
+	SwimProofStage = -2;
 #endif
 }
 

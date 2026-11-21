@@ -103,6 +103,7 @@ struct WaterFollowEntry {
     Vec2 point{};      // where it starts: the head of the steps (on the bank), or the edge point it jumps from
     Vec2 into{};       // where the entry move ends in the water: the steps' foot, or a metre out from the edge
     int exitIndex = -1; // Steps: the exit used
+    bool otherWater = false; // Jump, given the bodies: its landing is not in the lead's body (another body, or none)
 };
 
 namespace water_follow_detail {
@@ -130,14 +131,18 @@ inline float hash01(int order, std::uint32_t seed) {
 
 // The entry: the Steps exit whose head is nearest the follower's path to the lead, within `within` m of it, walked in;
 // else a jump from `edge` (the bank point nearest where it stands, PartyShore's), landing `edgeOut` (unit, toward the
-// water) a metre out.
+// water) a metre out. Never None: a body with no steps (the Strip's sea, 11-20) gives the jump.
+// With `water` (and the lead in a body), only steps whose foot is in the lead's body count: a flight into other water
+// (a canal by the sea, 11-20 run 5) has no swim to the lead. A jump landing out of the lead's body is marked otherWater.
 inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t count, Vec2 from, Vec2 lead, Vec2 edge,
-                                         Vec2 edgeOut, float within = 8.f) {
+                                         Vec2 edgeOut, float within = 8.f, const WaterBodies* water = nullptr) {
     namespace d = water_follow_detail;
     WaterFollowEntry e;
+    const int leadBody = water ? water->bodyAt(lead) : -1;
     float best = within;
     for (std::size_t i = 0; i < count; ++i) {
         if (exits[i].kind != WaterExitKind::Steps) continue;
+        if (leadBody >= 0 && water->bodyAt(exits[i].foot) != leadBody) continue;
         const float dd = d::segDist(exits[i].top, from, lead);
         if (dd <= best) {
             best = dd;
@@ -151,8 +156,53 @@ inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t cou
         e.kind = WaterFollowEntryKind::Jump;
         e.point = edge;
         e.into = Vec2{edge.x + edgeOut.x, edge.y + edgeOut.y};
+        e.otherWater = leadBody >= 0 && water->bodyAt(e.into) != leadBody;
     }
     return e;
+}
+
+// The surface swimmer's step at the water's edge (11-20: followers swam on over banks and an in-sea block, and dried
+// there). `want` is the step its swim would take (m, planar); `sample(Vec2 step)` is the host's WaterState where that step
+// would put it (its feet by the surface rule over the bed looked at there; a place inside a solid read as Dry). The
+// step is taken when it stays in the water (waterIn); else it slides: turned 30, 60, 90, then 120 degrees off to `side`
+// (kept by the host from the last slide, so it follows one way round an edge), then the same to the other side, at the
+// cosine's share of its length (half at least); else it holds where it is (the plan's watchdog then rejoins it with the
+// lead: WaterFollowMember::blocked). A zero step (treading) is taken without a sample. Allocation-free: `sample` is any
+// callable, called at most nine times.
+enum class WaterStepKind : std::uint8_t { Take, Slide, Hold };
+struct WaterSurfaceStep {
+    WaterStepKind kind = WaterStepKind::Take;
+    Vec2 step{};      // m: the step to make (zero when held)
+    float side = 1.f; // the side slid to (+1 counter-clockwise in the frame's x-y), else the side given
+};
+template <class Sample>
+WaterSurfaceStep waterSurfaceStep(Vec2 want, float side, const Sample& sample) {
+    WaterSurfaceStep r;
+    r.side = side < 0.f ? -1.f : 1.f;
+    const float l2 = want.x * want.x + want.y * want.y;
+    if (!(l2 > 1e-12f) || waterIn(sample(want))) {
+        r.step = l2 > 1e-12f ? want : Vec2{};
+        return r;
+    }
+    // cos and sin of 30, 60, 90 and 120 degrees; the share of the step's length.
+    constexpr float kCos[4] = {0.8660254f, 0.5f, 0.f, -0.5f};
+    constexpr float kSin[4] = {0.5f, 0.8660254f, 1.f, 0.8660254f};
+    for (int k = 0; k < 2; ++k) {
+        const float sd = k == 0 ? r.side : -r.side;
+        for (int a = 0; a < 4; ++a) {
+            const float share = kCos[a] > 0.5f ? kCos[a] : 0.5f;
+            const float c = kCos[a], s = kSin[a] * sd;
+            const Vec2 turned{(want.x * c - want.y * s) * share, (want.x * s + want.y * c) * share};
+            if (waterIn(sample(turned))) {
+                r.kind = WaterStepKind::Slide;
+                r.step = turned;
+                r.side = sd;
+                return r;
+            }
+        }
+    }
+    r.kind = WaterStepKind::Hold;
+    return r;
 }
 
 // The exit: the lead's own (leadExit, -1 when it left by none) when its foot is within `within` m of the follower;
@@ -289,6 +339,10 @@ struct WaterFollowMember {
     Vec2 edge{};                // ashore: the bank point nearest it (PartyShore) and the way into the water there
     Vec2 edgeOut{1.f, 0.f};
     bool hasEdge = true;        // ashore: the host found water toward the lead (else no jump entry: it stays ashore)
+    bool blocked = false;       // at the surface: its last move was held at the water's edge (waterSurfaceStep's Hold).
+                                // The watchdog counts it whatever the gap, and rejoins it with the lead
+    bool turned = false;        // ... or slid along it (Slide): counted the same while it has not got 0.5 m from where
+                                // the count began (a slide that gets on is a swim, counted as one)
 };
 
 // What a follower is to do.
@@ -431,12 +485,19 @@ public:
                 if (was != WaterFollowPhase::ToEntry && !m.held && !lead.exiting && leadSwim_ >= tuning_.trigger) {
                     const Vec2 here{m.position.x, m.position.y};
                     o.entry = waterFollowEntry(exits, exitCount, here, Vec2{lead.position.x, lead.position.y}, m.edge,
-                                               m.edgeOut, tuning_.stepsWithin);
-                    // A jump needs the water's edge; with none found toward the lead it stays ashore.
-                    if (o.entry.kind == WaterFollowEntryKind::Steps || m.hasEdge)
-                        go(o, WaterFollowPhase::ToEntry);
-                    else
+                                               m.edgeOut, tuning_.stepsWithin, water);
+                    // A jump needs the water's edge; with none found toward the lead it stays ashore. A jump into other
+                    // water than the lead's (no steps into its body near the path, 11-20) is no way to it: the follower
+                    // is placed with the lead in the water instead (a rejoin, as after a second walk given up).
+                    if (o.entry.kind == WaterFollowEntryKind::Jump && m.hasEdge && o.entry.otherWater) {
+                        go(o, WaterFollowPhase::Placed);
                         o.entry = WaterFollowEntry{};
+                        o.place = true;
+                    } else if (o.entry.kind == WaterFollowEntryKind::Steps || m.hasEdge) {
+                        go(o, WaterFollowPhase::ToEntry);
+                    } else {
+                        o.entry = WaterFollowEntry{};
+                    }
                 }
                 break;
             case WaterFollowPhase::ToEntry:
@@ -558,6 +619,8 @@ private:
         WaterFollowPhase watchPhase = WaterFollowPhase::Ashore;
         float watch = 0.f;        // s stuck in watchPhase
         float bestGap = 0.f;      // m: ToExit's nearest to its exit's foot so far
+        bool edge = false;        // the last step counted it at the water's edge (blocked, or turned without getting on)
+        Vec2 edgeFrom{};          // m: where that count began
     };
 
     static bool swimPhase(WaterFollowPhase p) {
@@ -575,14 +638,25 @@ private:
         const bool swim = swimPhase(o.phase);
         const float gap = swim ? dist3(m.position, lead.position)
                                : hasExit ? d::dist(exits[o.exitIndex].foot, Vec2{m.position.x, m.position.y}) : 0.f;
+        const Vec2 at{m.position.x, m.position.y};
+        const bool wasEdge = s.edge;
+        s.edge = false;
         if (o.phase != s.watchPhase) {
             s.watchPhase = o.phase;
             s.watch = 0.f;
             s.bestGap = gap;
             return;
         }
+        const bool gotOn = m.turned && !m.blocked && wasEdge && d::dist(at, s.edgeFrom) > 0.5f;
         if (o.phase == WaterFollowPhase::ToEntry) {
             s.watch = m.held ? 0.f : s.watch + dt; // the entry's time limit (a traversal on the way counts too)
+        } else if (swim && !m.held && (m.blocked || m.turned) && !gotOn) {
+            // Held at the water's edge, or sliding along it without getting 0.5 m on (waterSurfaceStep): it counts however
+            // near the lead is or comes (11-20 run 5: a lead swimming back to it kept the gap shrinking, and the count
+            // never ran). A full step, or a slide that gets on, is counted as any swim below.
+            if (!wasEdge) s.edgeFrom = at;
+            s.edge = true;
+            s.watch += dt;
         } else if (!inWater(o.phase) || m.held || (swim && gap <= tuning_.stuckFar)) {
             s.watch = 0.f;
             s.bestGap = gap;

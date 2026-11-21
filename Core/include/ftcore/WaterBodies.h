@@ -184,6 +184,11 @@ struct WaterState {
     Vec2 flow{};             // m/s: the push on it there (the flow, and a sea's current back)
 };
 
+// In the water: in a body (not Dry) with the feet under its surface. The one test for a partner's wetness and for its
+// surface move (WaterFollow.h, waterSurfaceStep), so the two cannot disagree. waterState's swim depth (kWaterSwimDepth)
+// only sets the mode; a wade is in the water too (an exit's foot is often at wading depth).
+inline bool waterIn(const WaterState& s) { return s.mode != WaterMode::Dry && s.immersion > 0.f; }
+
 struct WaterCamera {
     bool under = false;
     int body = -1;

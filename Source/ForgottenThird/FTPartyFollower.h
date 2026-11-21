@@ -111,6 +111,18 @@ public:
 	// ftcore::leadwet::partyWeather) by FTLook::ShowWet. Dry and never wet costs a few compares.
 	void StepWet(float Weather, float DeltaSeconds);
 	const ftcore::WaterWetness& GetWetness() const { return Wet; }
+	// The water it was last sensed in, and whether its wet grooms are on (FTLook::ShowWet).
+	const ftcore::WaterState& GetWaterNow() const { return WaterNow; }
+	bool IsGroomWet() const { return WetState.bGroomWet; }
+	// Its surface step (ftcore::waterSurfaceStep) was held, or slid along the edge, this frame or the last.
+	bool IsWaterHeld() const { return WaterBlockedFrame != 0 && WaterBlockedFrame + 1 >= GFrameCounter; }
+	bool IsWaterTurned() const { return WaterTurnedFrame != 0 && WaterTurnedFrame + 1 >= GFrameCounter; }
+	bool IsWaterBlocked() const { return IsWaterHeld() || IsWaterTurned(); }
+	// -SwimProof=replay (dev): stood at At on the land, its trail walk held, until its order takes it into the water or
+	// the run lets it go; from there it eases back onto its slot.
+	void PinForProof(const FVector& At) { ProofPin = At; bProofPin = true; }
+	void UnpinProof() { bProofPin = false; }
+	bool IsProofPinned() const { return bProofPin; }
 
 private:
 	// Takes the lead's vaults, climbs and catches begun since the last call, and forgets those the body at Feet is past or
@@ -212,6 +224,13 @@ private:
 	void WaterWalk(const FVector2D& To, float WalkSpeed, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	void SenseWater(const UFTWaterSubsystem& System, const FVector& At, bool bSwimming);
 	bool FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt);
+	// The water's state for a swimmer at the surface at P (cm): its feet by the one surface rule over the bed there, the
+	// bed traced from 60 cm over the surface (a deck lower than that blocks) down 30 m. No surface there, or the trace
+	// starting inside a solid (a pier, a quay's block), is Dry. Allocation-free (the member query params).
+	ftcore::WaterState SampleSwimAt(const UFTWaterSubsystem& System, const FVector2D& P, float Sink) const;
+	// From P (cm) toward To in 50 cm steps, no further than MaxCm (nor past To): the first point the swimmer is in the water
+	// (ftcore::waterIn), into Out. False (Out untouched) when there is none that near.
+	bool IntoWaterToward(const UFTWaterSubsystem& System, const FVector2D& P, const FVector2D& To, double MaxCm, FVector2D& Out) const;
 	void StepFollowerWaterLoco(ftcore::WaterLocoInput& In, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	FString WaterName;
 	int32 WaterSlot = -1;
@@ -253,6 +272,13 @@ private:
 	double WaterRideZ = 0.0;
 	uint64 WaterRideFrame = 0;
 	bool bWaterOnRide = false;
+	// The surface step's slide (ftcore::waterSurfaceStep): the side it turns to at an edge, kept while it goes round, and
+	// the last frame its step was turned or held (the party's watchdog counts that, ftcore::WaterFollowMember::blocked).
+	float WaterSlideSide = 1.f;
+	uint64 WaterBlockedFrame = 0; // held (WaterStepKind::Hold)
+	uint64 WaterTurnedFrame = 0;  // slid along the edge (WaterStepKind::Slide)
+	FVector ProofPin = FVector::ZeroVector; // PinForProof (dev)
+	bool bProofPin = false;
 	// -SwimFeetEaseAll: the surface step eases the whole way to its target, the ride not carried (the fallback; the step
 	// before 11-18, which trailed the waves and the bob by 3.3 cm on the open sea).
 	bool bSwimFeetEaseAll = false;

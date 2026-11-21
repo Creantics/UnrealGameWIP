@@ -139,8 +139,25 @@ void AFTPartyFollower::Place(const FVector2D& Ground, float LeadFeetZ, float Del
 	// In the water its order moves it (TickWater); back on the land, the trail again.
 	if (TickWater(Ground, DeltaSeconds, Anim))
 	{
+		bProofPin = false; // its order has it now (-SwimProof=replay)
 		return;
 	}
+#if !UE_BUILD_SHIPPING
+	if (bProofPin)
+	{
+		// -SwimProof=replay: stood where the run put it; let go, it eases back onto its slot from there.
+		SetActorLocation(ProofPin, false, nullptr, ETeleportType::TeleportPhysics);
+		Stray = FVector2D(ProofPin.X, ProofPin.Y) - Ground;
+		StrayWay = Stray.GetSafeNormal();
+		StrayRate = FVector2D::ZeroVector;
+		Speed = 0.f;
+		if (Anim)
+		{
+			Anim->SetGroundSpeed(0.f);
+		}
+		return;
+	}
+#endif
 
 	// Meeting a face the lead vaulted or climbed, it goes over or onto it too, as the lead does, and in the air at a
 	// ledge the lead caught it catches it: begun from where it is, carried along its clip from this frame.
@@ -849,12 +866,16 @@ void AFTPartyFollower::FillWaterMember(ftcore::WaterFollowMember& Member) const
 	Member.edge = WaterEdge;
 	Member.edgeOut = WaterEdgeOut;
 	Member.hasEdge = bWaterHasEdge;
+	// Its surface step turned or held this frame or the last (the party may step before or after it does).
+	Member.blocked = IsWaterHeld();
+	Member.turned = IsWaterTurned();
 }
 
 bool AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt)
 {
-	// The bank's edge on the way from where it stands to the lead: the last point short of the water, marched in 25 cm
-	// steps up to 20 m; the way in there is toward the lead.
+	// The bank's edge on the way from where it stands to the lead: the last point short of the lead's own water (other
+	// water on the way, a canal, is passed over), marched in 25 cm steps up to 20 m; the way in there is toward the lead.
+	const int LeadBody = Bodies.bodyAt(FTSwimUnits::ToPlan(LeadAt));
 	const FVector2D From(At.X, At.Y);
 	FVector2D Way = FVector2D(LeadAt.X, LeadAt.Y) - From;
 	const double Far = Way.Size();
@@ -864,7 +885,8 @@ bool AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FV
 	for (double Along = 0.0; Along <= FMath::Min(Far, 2000.0); Along += 25.0)
 	{
 		const FVector2D P = From + Way * Along;
-		if (Bodies.bodyAt(ftcore::Vec2{FTSwimUnits::ToMetres(P.X), FTSwimUnits::ToMetres(P.Y)}) >= 0)
+		const int Here = Bodies.bodyAt(ftcore::Vec2{FTSwimUnits::ToMetres(P.X), FTSwimUnits::ToMetres(P.Y)});
+		if (LeadBody >= 0 ? Here == LeadBody : Here >= 0)
 		{
 			const FVector2D Edge = From + Way * FMath::Max(0.0, Along - 30.0);
 			WaterEdge = {FTSwimUnits::ToMetres(Edge.X), FTSwimUnits::ToMetres(Edge.Y)};
@@ -872,6 +894,55 @@ bool AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FV
 		}
 	}
 	return false; // no water toward the lead: it stays ashore (no jump onto land)
+}
+
+ftcore::WaterState AFTPartyFollower::SampleSwimAt(const UFTWaterSubsystem& System, const FVector2D& P, float Sink) const
+{
+	using namespace FTSwimUnits;
+	const ftcore::Vec2 Plan{ToMetres(P.X), ToMetres(P.Y)};
+	float Surface = 0.f;
+	const UWorld* World = GetWorld();
+	if (!World || !System.Bodies().surfaceHeight(Plan, System.WaterTime(), Surface))
+	{
+		return ftcore::WaterState{};
+	}
+	FHitResult Bed;
+	const double Top = ToCm(Surface) + 60.0;
+	const bool bBed = World->LineTraceSingleByChannel(Bed, FVector(P.X, P.Y, Top), FVector(P.X, P.Y, Top - 3060.0), ECC_Visibility, TraceParams);
+	if (bBed && Bed.bStartPenetrating)
+	{
+		return ftcore::WaterState{}; // inside a solid
+	}
+	const float BedZ = bBed ? ToMetres(Bed.ImpactPoint.Z) : Surface - 30.f;
+	ftcore::WaterCapsule Capsule;
+	Capsule.p = Plan;
+	Capsule.feetZ = ftcore::waterSurfaceFeetZ(ftcore::waterSwimFeetZ(Surface, System.WaterTime()), Sink, BedZ);
+	Capsule.height = kWaterBodyHeight;
+	Capsule.swimming = true;
+	Capsule.groundZ = BedZ;
+	Capsule.hasGround = true;
+	return ftcore::waterState(System.Bodies(), Capsule, System.WaterTime());
+}
+
+bool AFTPartyFollower::IntoWaterToward(const UFTWaterSubsystem& System, const FVector2D& P, const FVector2D& To, double MaxCm, FVector2D& Out) const
+{
+	const FVector2D Way = To - P;
+	const double Far = FMath::Min(Way.Size(), MaxCm);
+	if (Far <= 0.0)
+	{
+		return false;
+	}
+	const FVector2D Dir = Way.GetSafeNormal();
+	for (double Along = 0.0; Along <= Far; Along += 50.0)
+	{
+		const FVector2D Q = P + Dir * Along;
+		if (ftcore::waterIn(SampleSwimAt(System, Q, 0.f)))
+		{
+			Out = Q;
+			return true;
+		}
+	}
+	return false;
 }
 
 bool AFTPartyFollower::HoldForProof(const FVector2D& At)
@@ -957,7 +1028,8 @@ void AFTPartyFollower::SenseWater(const UFTWaterSubsystem& System, const FVector
 void AFTPartyFollower::StepWet(float Weather, float DeltaSeconds)
 {
 	// In the water only while its order has it there (on land WaterNow may still hold the last swim's state).
-	const bool bIn = WaterPhase != ftcore::WaterFollowPhase::Ashore && WaterNow.mode != ftcore::WaterMode::Dry && WaterNow.immersion > 0.f;
+	// The one in-water test (ftcore::waterIn), the same the surface step keeps it to.
+	const bool bIn = WaterPhase != ftcore::WaterFollowPhase::Ashore && ftcore::waterIn(WaterNow);
 	const UWorld* World = GetWorld();
 	if (const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr; System && System->HasBodies())
 	{
@@ -1079,8 +1151,11 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		bProofWant = false;
 		ProofWantOff = 0.0;
 	}
+	// -SwimProof=replay -SwimProofReplay=4: the run-4 rejoin again, slot 0's walk to the water held as the land kind's is.
+	static const bool bProofReplay4 = []() { int32 R = 0; return FParse::Value(FCommandLine::Get(), TEXT("SwimProofReplay="), R) && R == 4; }();
 	const bool bProofStuck = WaterSlot == 0 && !bProofFreed
-		&& ((ProofKind == TEXT("land") && Phase == WaterFollowPhase::ToEntry) || (ProofKind == TEXT("watchdog") && Phase == WaterFollowPhase::Surface));
+		&& (((ProofKind == TEXT("land") || (ProofKind == TEXT("replay") && bProofReplay4)) && Phase == WaterFollowPhase::ToEntry)
+			|| (ProofKind == TEXT("watchdog") && Phase == WaterFollowPhase::Surface));
 	if (ProofLogLeft > 0.f && Phase != WaterFollowPhase::Placed)
 	{
 		// Each frame after the rejoin: the feet's lowest and highest (the surface swim adds how far they stand off its
@@ -1212,6 +1287,22 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 				{
 					Into += Way * 50.0;
 				}
+				// Never onto a solid standing out of the water (a pier, a block): on toward the lead, up to 5 m, until in
+				// the water. None that near: the landing stays (the surface step and the watchdog take it from there).
+				if (Lead && !ftcore::waterIn(SampleSwimAt(*System, Into, 0.f)))
+				{
+					const FVector2D From = Into;
+					if (IntoWaterToward(*System, From, FVector2D(Lead->GetActorLocation().X, Lead->GetActorLocation().Y), 500.0, Into))
+					{
+						UE_LOG(LogForgottenThird, Display, TEXT("%s: the jump's landing (%.0f, %.0f) cm is out of the water; moved on %.0f cm to (%.0f, %.0f) cm."), *LogName,
+							From.X, From.Y, FVector2D::Distance(From, Into), Into.X, Into.Y);
+					}
+					else
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("%s: the jump's landing (%.0f, %.0f) cm is out of the water and none is within 5 m toward the lead; kept."), *LogName,
+							From.X, From.Y);
+					}
+				}
 			}
 			WaterMoveTo = FVector(Into.X, Into.Y, SwimFeetZ(Into, At.Z));
 			WaterMoveLength = bJump ? kWaterJumpSeconds : FMath::Max(0.5f, static_cast<float>(FVector::Dist(WaterMoveFrom, WaterMoveTo) / kWaterStepsSpeed));
@@ -1271,7 +1362,23 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		In.move = {static_cast<float>(Way.X) * Share, static_cast<float>(Way.Y) * Share};
 		In.sprint = bSprint;
 		StepFollowerWaterLoco(In, DeltaSeconds, Anim);
-		const FVector2D Step(ToCm(WaterPose.velocity.x) * DeltaSeconds, ToCm(WaterPose.velocity.y) * DeltaSeconds);
+		// The step kept in the water (ftcore::waterSurfaceStep, the one in-water test): taken, slid along the edge (a bank,
+		// a block standing out of it), or held, the watchdog told so it rejoins one pinned there.
+		const float Sink = WaterPose.sink;
+		const FVector2D From(At.X, At.Y);
+		const ftcore::WaterSurfaceStep Kept = ftcore::waterSurfaceStep(
+			ftcore::Vec2{WaterPose.velocity.x * DeltaSeconds, WaterPose.velocity.y * DeltaSeconds}, WaterSlideSide,
+			[this, System, &From, Sink](ftcore::Vec2 D) { return SampleSwimAt(*System, From + FVector2D(ToCm(D.x), ToCm(D.y)), Sink); });
+		WaterSlideSide = Kept.side;
+		if (Kept.kind == ftcore::WaterStepKind::Hold)
+		{
+			WaterBlockedFrame = GFrameCounter;
+		}
+		else if (Kept.kind == ftcore::WaterStepKind::Slide)
+		{
+			WaterTurnedFrame = GFrameCounter;
+		}
+		const FVector2D Step(ToCm(Kept.step.x), ToCm(Kept.step.y));
 		// The one surface rule (ftcore/WaterSurfaceFeet.h): the draft and bob plus the splash's sink, never nearer the
 		// bed than kWaterBedFloat. The rejoin's placement uses the same rule, so it starts where this holds it. The feet
 		// ride with the surface's own move since the last frame (the waves and the bob) and ease only the gap off it
@@ -1457,7 +1564,15 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			// ease after the placement: the bed under the slot is looked at first (SenseWater's trace, from the draft's
 			// height), and over a column shallower than the draft the feet start just over the bed, not at the draft
 			// (placed at the draft alone, they rose 19 cm over 1.1 s, 11-18).
-			const FVector2D To(ToCm(Order->target.x), ToCm(Order->target.y));
+			// The slot itself in the water, else the first point in it on the way to the lead (a slot on a bank or a block
+			// would pin it there, and the watchdog place it there again).
+			const FVector2D Slot(ToCm(Order->target.x), ToCm(Order->target.y));
+			const FVector2D LeadXY(Lead->GetActorLocation().X, Lead->GetActorLocation().Y);
+			FVector2D To = Slot;
+			if (!IntoWaterToward(*System, Slot, LeadXY, FVector2D::Distance(Slot, LeadXY), To))
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: rejoin slot (%.0f, %.0f) cm has no water between it and the lead; placed at the slot."), *LogName, Slot.X, Slot.Y);
+			}
 			bool bDraftFound = false;
 			const double Draft = SwimFeetZ(To, Lead->GetActorLocation().Z - Lead->GetCapsuleComponent()->GetScaledCapsuleHalfHeight(), &bDraftFound);
 			SenseWater(*System, FVector(To.X, To.Y, Draft), true);

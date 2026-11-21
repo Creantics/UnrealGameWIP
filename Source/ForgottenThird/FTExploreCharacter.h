@@ -691,6 +691,43 @@ private:
 	int32 SwimProofExitPhase[2] = {-1, -1};
 	FVector SwimProofExitLast[2] = {FVector::ZeroVector, FVector::ZeroVector};
 	bool bSwimProofExitHasLast[2] = {false, false};
+	// -SwimProof=replay -SwimProofReplay=4|5|6 (the 11-20 re-proof; 4 is the rejoin regression, no stands): the exit run's walk in, but each partner stood at its
+	// logged start from that run (run 5: the steps path; run 6: the jump over the solid) until the lead has swum 2 s, then
+	// the normal follow: no rejoin forced, no fallback, no hold at the end. A camera kept on the far side of the lead from
+	// its partners (none is nearer it than the lead, so the lens hide keeps them drawn). Per partner: Surface ticks out of
+	// the water (ftcore::waterIn), its wetness from the first 1.00 on, its feet over the surface, its grooms dry after the
+	// first wet, its stills with it hidden, and whether it reached its tread spot (2 s within 1.5 m of its order's target
+	// with the lead at the far point) or was rejoined within the watchdog's time of being blocked.
+	struct FSwimReplaySlot
+	{
+		int32 Phase = -1;
+		int32 SurfaceTicks = 0;
+		int32 DryTicks = 0;          // Surface ticks with it out of the water
+		bool bSoaked = false;
+		float WetMin = 2.f;          // from the first 1.00 on
+		float FeetOver = -1.0e9f;    // cm over the surface on Surface ticks (the most)
+		bool bGroomWet = false;
+		int32 GroomDryTicks = 0;     // in the water after its grooms were first wet, with them dry
+		float NearFrom = -1.f;
+		float ReachedAt = -1.f;
+		float RejoinAt = -1.f;
+		float BlockedFrom = -1.f;    // the current run of turned or held steps
+		float BlockedLongest = 0.f;
+		float RejoinAfterBlocked = -1.f;
+		int32 BlockedTicks = 0;
+		int32 Shots = 0;
+		int32 HiddenShots = 0;
+		float LogAt = 0.f;
+	};
+	void BeginSwimProofReplay();
+	void TickSwimProofReplay(const UFTWaterSubsystem& System, float DeltaSeconds);
+	int32 SwimProofReplayRun = 0;
+	float SwimProofLeadSwamAt = -1.f;
+	FSwimReplaySlot SwimProofReplay[2];
+	TWeakObjectPtr<AActor> SwimProofReplayCam;
+	int32 SwimProofReplayShot = 0;
+	int32 SwimProofReplayShotWho = -1; // the slot a still was asked for last frame (its hidden flag read again this frame)
+	int32 SwimProofReplayEndShots = 0;
 	// -SwimProof=switch [-SwimSwitchKeep] (11-18 item 3): 3 s after the lead holds at the far point (its partners treading,
 	// 25 s at the most), 1 s of baseline, then the lead switch the party menu makes. Judged for 3 s: the worst real frame
 	// in the first 0.5 s, when the camera's step about the lead settles, the new lead's feet against its surface swim's
