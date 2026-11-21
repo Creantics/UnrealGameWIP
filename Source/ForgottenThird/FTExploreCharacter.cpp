@@ -1224,6 +1224,7 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
 	WetHairDry.Reset();
 	bWetHairMade = false;
 	SkinWetEased = 0.f;
+	bSkinWetSnap = true;
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
 	// The grooms come on dry; the wet switch swaps them on its next tick if the weather is wet.
@@ -3098,6 +3099,7 @@ void AFTExploreCharacter::SwitchLeadTo(int32 Index)
 		bSwimMeshSaved = false;
 		SwimPitch = 0.f;
 	}
+	const int32 OldLead = LeadIndex;
 	LeadIndex = Index;
 	FindPartyRows(); // the old lead takes the partner's row
 	const FFTLeadLook& Look = PartyLooks[LeadIndex];
@@ -3114,7 +3116,7 @@ void AFTExploreCharacter::SwitchLeadTo(int32 Index)
 	}
 	if (AFTExploreDirector* D = GetDirector())
 	{
-		D->OnLeadChanged(Look.Name);
+		D->OnLeadChanged(Look.Name, OldLead, LeadIndex);
 	}
 }
 
@@ -6521,7 +6523,8 @@ void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
 	// The wet-skin amount, eased; it goes to the materials ShowWetness gathered (any skin is wet only when the cloth is,
 	// so they are there) and to the hair without a wet groom.
 	const float Target = ftcore::leadwet::skin(Weather);
-	SkinWetEased = ftcore::leadwet::ease(SkinWetEased, Target, DeltaSeconds);
+	SkinWetEased = bSkinWetSnap ? Target : ftcore::leadwet::ease(SkinWetEased, Target, DeltaSeconds);
+	bSkinWetSnap = false;
 	const float Skin = SkinWetEased;
 	// Written when it has moved enough, and once more when it reaches its target (so the last small step lands).
 	const bool bChanged = FMath::Abs(Skin - SkinWetShown) > 0.004f || (Skin == Target && Skin != SkinWetShown);

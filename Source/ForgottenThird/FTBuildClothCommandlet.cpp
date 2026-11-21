@@ -1,6 +1,7 @@
 #include "FTBuildClothCommandlet.h"
 
 #include "ForgottenThird.h"
+#include "ftcore/ClothDrive.h"
 
 #if WITH_EDITOR
 #include "ChaosCloth/ChaosClothConfig.h"
@@ -23,6 +24,123 @@
 #if WITH_EDITOR
 namespace
 {
+const TCHAR* ClothMapName(uint32 Target)
+{
+	switch (static_cast<EWeightMapTargetCommon>(Target))
+	{
+	case EWeightMapTargetCommon::MaxDistance: return TEXT("MaxDistance");
+	case EWeightMapTargetCommon::BackstopDistance: return TEXT("BackstopDistance");
+	case EWeightMapTargetCommon::BackstopRadius: return TEXT("BackstopRadius");
+	case EWeightMapTargetCommon::AnimDriveStiffness: return TEXT("AnimDriveStiffness");
+	case EWeightMapTargetCommon::AnimDriveDamping_DEPRECATED: return TEXT("AnimDriveDamping");
+	case EWeightMapTargetCommon::TetherEndsMask: return TEXT("TetherEndsMask");
+	default: return TEXT("other");
+	}
+}
+
+// The anim drive weight per max-distance level (one level per row on a row-ramp mask; rows 0-2 share the pinned level),
+// with each level's count, min, max and mean. Over 32 levels (a height-graded mask), ten equal bins of the max distance.
+void ClothReportDrive(const FClothPhysicalMeshData& Phys)
+{
+	const FPointWeightMap* Drive = Phys.FindWeightMap(EWeightMapTargetCommon::AnimDriveStiffness);
+	const FPointWeightMap* Max = Phys.FindWeightMap(EWeightMapTargetCommon::MaxDistance);
+	if (!Drive || Drive->Num() == 0) // the engine keeps an empty one on a cloth that never had it painted
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: no anim drive map."));
+		return;
+	}
+	if (!Max || Max->Num() != Drive->Num())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: the anim drive map (%d values) has no max-distance map of its size to group by."),
+			Drive->Num());
+		return;
+	}
+	struct FLevel
+	{
+		int32 Count = 0;
+		float Lo = UE_BIG_NUMBER;
+		float Hi = -UE_BIG_NUMBER;
+		double Sum = 0.0;
+	};
+	float Top = 0.f;
+	for (int32 i = 0; i < Max->Num(); ++i)
+	{
+		Top = FMath::Max(Top, (*Max)[i]);
+	}
+	for (const bool bBinned : {false, true})
+	{
+		TMap<int32, FLevel> Levels; // key: the max distance in 0.01 cm, or the bin
+		for (int32 i = 0; i < Drive->Num(); ++i)
+		{
+			const int32 Key = bBinned ? FMath::Min(9, FMath::FloorToInt32(10.f * (*Max)[i] / FMath::Max(Top, 0.01f))) : FMath::RoundToInt32((*Max)[i] * 100.f);
+			FLevel& L = Levels.FindOrAdd(Key);
+			++L.Count;
+			L.Lo = FMath::Min(L.Lo, (*Drive)[i]);
+			L.Hi = FMath::Max(L.Hi, (*Drive)[i]);
+			L.Sum += (*Drive)[i];
+		}
+		if (!bBinned && Levels.Num() > 32)
+		{
+			continue;
+		}
+		Levels.KeySort(TLess<int32>());
+		for (const TPair<int32, FLevel>& Pair : Levels)
+		{
+			const FLevel& L = Pair.Value;
+			if (bBinned)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: anim drive, max distance %.1f-%.1f cm: %d vertices, weight %.3f..%.3f (mean %.3f)."),
+					Top * Pair.Key / 10.f, Top * (Pair.Key + 1) / 10.f, L.Count, L.Lo, L.Hi, L.Sum / L.Count);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: anim drive, max distance %.2f cm (level %.3f): %d vertices, weight %.3f..%.3f (mean %.3f)."),
+					Pair.Key / 100.f, Top > 0.f ? Pair.Key / 100.f / Top : 0.f, L.Count, L.Lo, L.Hi, L.Sum / L.Count);
+			}
+		}
+		break;
+	}
+}
+
+// Every weight map the sim reads (count, min, max), the anim drive per level, and the Chaos config's anim drive range,
+// read from the asset as it is (after a fresh load with -Verify).
+void ClothReportMaps(const UClothingAssetCommon& Asset)
+{
+	const FClothPhysicalMeshData& Phys = Asset.LodData[0].PhysicalMeshData;
+	for (const TPair<uint32, FPointWeightMap>& Pair : Phys.WeightMaps)
+	{
+		const FPointWeightMap& Map = Pair.Value;
+		if (Map.Num() == 0)
+		{
+			// The engine keeps an empty map for each target it knows (Backstop, an unpainted anim drive): not read.
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: map %s (target %u): empty, not used."), ClothMapName(Pair.Key), Pair.Key);
+			continue;
+		}
+		float Lo = UE_BIG_NUMBER, Hi = -UE_BIG_NUMBER;
+		for (int32 i = 0; i < Map.Num(); ++i)
+		{
+			Lo = FMath::Min(Lo, Map[i]);
+			Hi = FMath::Max(Hi, Map[i]);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: map %s (target %u): %d values, min %g, max %g%s."), ClothMapName(Pair.Key), Pair.Key,
+			Map.Num(), Map.Num() ? Lo : 0.f, Map.Num() ? Hi : 0.f, Map.Num() == Phys.Vertices.Num() ? TEXT("") : TEXT(", NOT one per sim vertex"));
+	}
+	ClothReportDrive(Phys);
+	if (const UChaosClothConfig* Config = Asset.GetClothConfig<UChaosClothConfig>())
+	{
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("FTBuildCloth: Chaos config: anim drive stiffness %g..%g, anim drive damping %g..%g, density %.3f, damping %.3f, edge %.2f, bend %.2f, tether %.2f, drag %.3f, lift %.3f, thickness %.2f cm, friction %.2f, gravity x%.2f, self collision %s."),
+			Config->AnimDriveStiffness.Low, Config->AnimDriveStiffness.High, Config->AnimDriveDamping.Low, Config->AnimDriveDamping.High,
+			Config->Density, Config->DampingCoefficient, Config->EdgeStiffnessWeighted.Low, Config->BendingStiffnessWeighted.Low,
+			Config->TetherStiffness.Low, Config->Drag.Low, Config->Lift.Low, Config->CollisionThickness, Config->FrictionCoefficient,
+			Config->GravityScale, Config->bUseSelfCollisions ? TEXT("on") : TEXT("off"));
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: %s has no Chaos cloth config."), *Asset.GetName());
+	}
+}
+
 void ClothReport(USkeletalMesh& Mesh)
 {
 	for (UClothingAssetBase* Base : Mesh.GetMeshClothingAssets())
@@ -44,6 +162,7 @@ void ClothReport(USkeletalMesh& Mesh)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: %s: cloth %s, %d sim vertices (%d free, max distance %.1f cm), physics %s."),
 			*Mesh.GetName(), *Asset->GetName(), Phys.Vertices.Num(), Free, Top,
 			Asset->PhysicsAsset ? *Asset->PhysicsAsset->GetName() : TEXT("none"));
+		ClothReportMaps(*Asset);
 	}
 	if (Mesh.GetMeshClothingAssets().Num() == 0)
 	{
@@ -294,6 +413,18 @@ bool ClothPaintFromColour(UClothingAssetCommon& Asset, float Max)
 			Phys.VertexColors.Num(), Phys.Vertices.Num());
 		return false;
 	}
+	// Count the pinned vertices before the map is touched, so a failing mesh leaves its max-distance map as it was.
+	int32 Pinned = 0;
+	for (const FColor& Colour : Phys.VertexColors)
+	{
+		Pinned += Colour.R == 0;
+	}
+	if (Pinned == 0)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -MaskFromColour: none of the %d sim vertices has red 0, so nothing pins the cloth."),
+			Phys.Vertices.Num());
+		return false;
+	}
 	FPointWeightMap* Map = Lod.PointWeightMaps.FindByPredicate(
 		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
 	if (!Map)
@@ -304,21 +435,55 @@ bool ClothPaintFromColour(UClothingAssetCommon& Asset, float Max)
 	Map->Name = TEXT("MaxDistance");
 	Map->bEnabled = true;
 	Map->Values.SetNum(Phys.Vertices.Num());
-	int32 Pinned = 0;
 	for (int32 i = 0; i < Phys.Vertices.Num(); ++i)
 	{
 		Map->Values[i] = Max * Phys.VertexColors[i].R / 255.f;
-		Pinned += Phys.VertexColors[i].R == 0;
-	}
-	if (Pinned == 0)
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -MaskFromColour: none of the %d sim vertices has red 0, so nothing pins the cloth."),
-			Phys.Vertices.Num());
-		return false;
 	}
 	Asset.ApplyParameterMasks(false, true);
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: max distance from vertex colour: %d of %d vertices pinned, %.1f cm at red 255."),
 		Pinned, Phys.Vertices.Num(), Max);
+	return true;
+}
+
+// The anim drive map (-AnimDriveMap): each sim vertex's weight from its mask level, its max distance / Max (red / 255 with
+// -MaskFromColour, the height grade without), through ftcore::clothdrive::weight, so the drive follows the max-distance
+// ramp's rows. The config's -AnimDriveLow= / -AnimDriveHigh= turn the weight into stiffness. False when the cloth has no
+// max-distance map of its size to grade by.
+bool ClothPaintDrive(UClothingAssetCommon& Asset, const ftcore::clothdrive::Args& Drive)
+{
+	FClothLODDataCommon& Lod = Asset.LodData[0];
+	const int32 Count = Lod.PhysicalMeshData.Vertices.Num();
+	FPointWeightMap* Map = Lod.PointWeightMaps.FindByPredicate(
+		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::AnimDriveStiffness); });
+	if (!Map)
+	{
+		Map = &Lod.PointWeightMaps.AddDefaulted_GetRef();
+		Map->CurrentTarget = static_cast<uint8>(EWeightMapTargetCommon::AnimDriveStiffness);
+	}
+	// Found after the add, which may move the array.
+	const FPointWeightMap* MaxMap = Lod.PointWeightMaps.FindByPredicate(
+		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
+	if (!MaxMap || MaxMap->Values.Num() != Count)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -AnimDriveMap: no max-distance map with one value per sim vertex (%d) to grade by."), Count);
+		return false;
+	}
+	Map->Name = TEXT("AnimDriveStiffness");
+	Map->bEnabled = true;
+	Map->Values.SetNum(Count);
+	int32 Full = 0, Off = 0;
+	for (int32 i = 0; i < Count; ++i)
+	{
+		const float W = ftcore::clothdrive::weight(MaxMap->Values[i] / Drive.max, Drive.from, Drive.to);
+		Map->Values[i] = W;
+		Full += W >= 1.f;
+		Off += W <= 0.f;
+	}
+	Asset.ApplyParameterMasks(false, true);
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTBuildCloth: anim drive map by mask level (max distance / %.1f cm): weight 1 to level %.2f, easing to 0 at %.2f; %d full, %d at 0, of %d. Stiffness %.2f..%.2f, so %.1f%%..%.1f%% back per solver step."),
+		Drive.max, Drive.from, Drive.to, Full, Off, Count, Drive.low, Drive.high, 100.f * ftcore::clothdrive::pullPerStep(Drive.low),
+		100.f * ftcore::clothdrive::pullPerStep(Drive.high));
 	return true;
 }
 
@@ -352,8 +517,9 @@ int32 ClothSectionBySlot(const USkeletalMesh& Mesh, const FString& Slot)
 // own route (UClothingAssetCommon::PostUpdateAllAssets, public: every config the cloth factories need, the Chaos config
 // and its shared sim config, with the shared ones propagated and the cached data invalidated), so no flag is dropped;
 // false when the asset still holds none. Each flag given is logged as read back, after the set, from the config the
-// asset holds.
-bool ClothConfigure(UClothingAssetCommon& Asset, const FString& Params)
+// asset holds. The anim drive range comes checked (ftcore::clothdrive::validate, in Main): -AnimDriveLow= and -AnimDriveHigh=
+// set the stiffness's Low and High, -AnimDriveDamping= both ends of the damping (it has no map, so Chaos reads Low).
+bool ClothConfigure(UClothingAssetCommon& Asset, const FString& Params, const ftcore::clothdrive::Args& Drive)
 {
 	if (!Asset.GetClothConfig<UChaosClothConfig>())
 	{
@@ -431,6 +597,21 @@ bool ClothConfigure(UClothingAssetCommon& Asset, const FString& Params)
 		Config->GravityScale = V;
 		Back(TEXT("GravityScale="), V, Config->GravityScale);
 	}
+	if (Drive.hasLow)
+	{
+		Config->AnimDriveStiffness.Low = Drive.low;
+		Back(TEXT("AnimDriveLow="), Drive.low, Config->AnimDriveStiffness.Low);
+	}
+	if (Drive.hasHigh)
+	{
+		Config->AnimDriveStiffness.High = Drive.high;
+		Back(TEXT("AnimDriveHigh="), Drive.high, Config->AnimDriveStiffness.High);
+	}
+	if (Drive.hasDamping)
+	{
+		Config->AnimDriveDamping = FChaosClothWeightedValue{Drive.damping, Drive.damping};
+		Back(TEXT("AnimDriveDamping="), Drive.damping, Config->AnimDriveDamping.Low);
+	}
 	const bool bSelfOn = FParse::Param(*Params, TEXT("SelfCollide"));
 	if (bSelfOn || FParse::Param(*Params, TEXT("NoSelfCollide")))
 	{
@@ -440,10 +621,11 @@ bool ClothConfigure(UClothingAssetCommon& Asset, const FString& Params)
 			Config->bUseSelfCollisions ? TEXT("on") : TEXT("off"));
 	}
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("FTBuildCloth: Chaos config (%d flags given): density %.3f kg/m2, damping %.3f (local %.3f), edge %.2f, bend %.2f, tether %.2f, drag %.3f, lift %.3f, thickness %.2f cm, friction %.2f, gravity x%.2f, self collision %s."),
+		TEXT("FTBuildCloth: Chaos config (%d flags given): density %.3f kg/m2, damping %.3f (local %.3f), edge %.2f, bend %.2f, tether %.2f, drag %.3f, lift %.3f, thickness %.2f cm, friction %.2f, gravity x%.2f, self collision %s, anim drive %g..%g (damping %g..%g)."),
 		Given, Config->Density, Config->DampingCoefficient, Config->LocalDampingCoefficient, Config->EdgeStiffnessWeighted.Low,
 		Config->BendingStiffnessWeighted.Low, Config->TetherStiffness.Low, Config->Drag.Low, Config->Lift.Low, Config->CollisionThickness,
-		Config->FrictionCoefficient, Config->GravityScale, Config->bUseSelfCollisions ? TEXT("on") : TEXT("off"));
+		Config->FrictionCoefficient, Config->GravityScale, Config->bUseSelfCollisions ? TEXT("on") : TEXT("off"),
+		Config->AnimDriveStiffness.Low, Config->AnimDriveStiffness.High, Config->AnimDriveDamping.Low, Config->AnimDriveDamping.High);
 	return true;
 }
 
@@ -572,6 +754,21 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -SelfCollide and -NoSelfCollide both given; pass one or neither."));
 		return 1;
 	}
+	// The anim drive: -AnimDriveMap with -AnimDriveLow= and -AnimDriveHigh= (and optionally -DriveFrom= / -DriveTo=), or
+	// -AnimDriveLow= alone for one drive everywhere; -AnimDriveDamping= either way. ftcore::clothdrive::validate says why not.
+	ftcore::clothdrive::Args Drive;
+	Drive.map = FParse::Param(*Params, TEXT("AnimDriveMap"));
+	Drive.hasLow = FParse::Value(*Params, TEXT("AnimDriveLow="), Drive.low);
+	Drive.hasHigh = FParse::Value(*Params, TEXT("AnimDriveHigh="), Drive.high);
+	Drive.hasFrom = FParse::Value(*Params, TEXT("DriveFrom="), Drive.from);
+	Drive.hasTo = FParse::Value(*Params, TEXT("DriveTo="), Drive.to);
+	Drive.hasDamping = FParse::Value(*Params, TEXT("AnimDriveDamping="), Drive.damping);
+	Drive.max = Max;
+	if (const ftcore::clothdrive::Check Bad = ftcore::clothdrive::validate(Drive); Bad != ftcore::clothdrive::Check::Ok)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: %s."), UTF8_TO_TCHAR(ftcore::clothdrive::describe(Bad)));
+		return 1;
+	}
 	// -SimSlot=<material slot>: the cloth is made from that section (a coarse sim proxy), which is then taken out of the
 	// mesh, and drives the -RenderSlot section (the fine mesh, skinned to the proxy); without them section 0 is both.
 	// -SimSlot alone draws on its own section; -RenderSlot alone is an error. ClothStrip unbinds old clothing but keeps
@@ -624,7 +821,11 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	{
 		ClothPaint(*Asset, Max, Pin);
 	}
-	if (!ClothConfigure(*Asset, Params))
+	if (Drive.map && !ClothPaintDrive(*Asset, Drive))
+	{
+		return 1;
+	}
+	if (!ClothConfigure(*Asset, Params, Drive))
 	{
 		return 1;
 	}

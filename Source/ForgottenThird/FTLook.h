@@ -212,6 +212,7 @@ struct FFTWetState
 	float LineShown = -1.0e9f;
 	float SiltShown = -1.f;
 	float SkinEased = 0.f;
+	bool bSkinSnap = false; // the next show puts the skin at its target, not eased (a member's soak given back)
 	float SkinShown = -1.f;
 };
 

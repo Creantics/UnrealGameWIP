@@ -892,6 +892,7 @@ private:
 	bool bGroomWet = false;
 	float SkinWetShown = 0.f;
 	float SkinWetEased = 0.f;
+	bool bSkinWetSnap = false; // a new look: the next show puts the skin at its target (the member's own soak), not eased
 	TArray<FVector2f> WetSkinDry;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetHairMaterials;

@@ -143,6 +143,8 @@ public:
 	void LeadWater(AActor& Lead, const ftcore::WaterState& State, const FVector& At, const FVector& Velocity, float Height, float DeltaSeconds);
 	// How wet the lead is (the wetness, the line's height over its feet in metres, the silt).
 	const ftcore::WaterWetness& LeadWetness() const { return Wet; }
+	// A lead switch: the new lead's own soak (AFTExploreDirector::OnLeadChanged, ftcore::leadwet::PartyWet).
+	void SetLeadWetness(const ftcore::WaterWetness& Soak) { Wet = Soak; }
 	const ftcore::WaterRipples& Ripples() const { return Rings; }
 
 	// The view's eye went under a surface (true) or came back out (false).

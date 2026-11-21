@@ -55,6 +55,7 @@
 
 #include "ftcore/Explore.h"
 #include "ftcore/Guard.h"
+#include "ftcore/LeadWet.h"
 #include "ftcore/Overworld.h"
 #include "ftcore/PartyTrail.h"
 #include "ftcore/WorldChecks.h"
@@ -162,8 +163,9 @@ public:
 	void Interact();
 
 	// From the pawn (AFTExploreCharacter): it switched to another lead, so the followers are spawned
-	// again in a line behind it; or it hid or showed them (hidden ones keep walking the trail).
-	void OnLeadChanged(const FString& Lead);
+	// again in a line behind it; or it hid or showed them (hidden ones keep walking the trail). Each member keeps its own
+	// soak: the old lead's is stored, the new lead takes its own back (ftcore::leadwet::PartyWet).
+	void OnLeadChanged(const FString& Lead, int32 OldLead, int32 NewLead);
 	// The followers spawned again now, about the lead where it is (AFTExploreCharacter::StartInWater); nothing if they
 	// are not spawned yet (the first tick spawns them). A held party stays held.
 	void RespawnFollowers(AFTExploreCharacter& Player);
@@ -332,6 +334,8 @@ private:
 	void ClearFollowers();
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AFTPartyFollower>> Followers;
+	TArray<int32> FollowerMembers;     // each follower's place in the party (ftcore::leadwet::followerMember), beside Followers
+	ftcore::leadwet::PartyWet PartyWetness; // every member's soak, stored when the followers are cleared
 	ftcore::PartyTrail Trail;
 	TArray<ftcore::PartySlot> Slots; // each follower's place: behind, to one side, a beat late
 	uint32 LeadTurns = 0;       // the lead's turns begun, last seen

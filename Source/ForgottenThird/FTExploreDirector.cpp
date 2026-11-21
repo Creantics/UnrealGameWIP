@@ -736,6 +736,8 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 	Trail.reset(ToGround(Player.GetActorLocation()), {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)},
 		static_cast<float>(Count) * ftcore::PartyTrail::kFollowerSpacing);
 	Followers.Reserve(static_cast<int32>(Count));
+	FollowerMembers.Reset();
+	FollowerMembers.Reserve(static_cast<int32>(Count));
 	TurnCursors.Init(0u, static_cast<int32>(Count));
 	JumpCursors.Init(0u, static_cast<int32>(Count));
 	// Each a step further back than the one before, on alternate sides of the lead's path.
@@ -757,6 +759,7 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 			continue;
 		}
 		// The members after the lead, in order.
+		const int32 Member = ftcore::leadwet::followerMember(Party.IsEmpty() ? 0 : Lead, static_cast<int>(I), static_cast<int>(Members));
 		FFTLeadLook Default;
 		const FFTLeadLook* Look = &Default;
 		if (Party.IsEmpty())
@@ -765,7 +768,7 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		}
 		else
 		{
-			Look = &Party[(Lead + 1 + static_cast<int32>(I)) % Party.Num()];
+			Look = Party.IsValidIndex(Member) ? &Party[Member] : &Default;
 		}
 		if (Follower->Setup(*Look, &Player))
 		{
@@ -781,7 +784,9 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		{
 			Follower->SetSea(bHasSeaLevel ? SeaLevel : -1.0e7f);
 		}
+		Follower->SetWetness(PartyWetness.of(Member)); // its own soak, from before the switch or respawn
 		Followers.Add(Follower);
+		FollowerMembers.Add(Member);
 	}
 #if !UE_BUILD_SHIPPING
 	// ft.PartyWet as it stands now: a value given before the switch was registered (an ini, the command line) fires no
@@ -804,14 +809,17 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 
 void AFTExploreDirector::ClearFollowers()
 {
-	for (AFTPartyFollower* Follower : Followers)
+	for (int32 I = 0; I < Followers.Num(); ++I)
 	{
-		if (Follower)
+		if (AFTPartyFollower* Follower = Followers[I])
 		{
+			// Its soak stays with the member: the next spawn (behind this lead or a new one) gives it back.
+			PartyWetness.store(FollowerMembers.IsValidIndex(I) ? FollowerMembers[I] : -1, Follower->GetWetness());
 			Follower->Destroy();
 		}
 	}
 	Followers.Reset();
+	FollowerMembers.Reset();
 	bFollowersSpawned = false;
 }
 
@@ -825,10 +833,24 @@ void AFTExploreDirector::RespawnFollowers(AFTExploreCharacter& Player)
 	TickFollowers(Player, 0.f); // spawns them, and holds them if the party is held
 }
 
-void AFTExploreDirector::OnLeadChanged(const FString& Lead)
+void AFTExploreDirector::OnLeadChanged(const FString& Lead, int32 OldLead, int32 NewLead)
 {
+	// The soak is the member's: the old lead's is stored before the followers' (ClearFollowers), then the new lead takes
+	// its own back from when it last walked behind.
+	UWorld* World = GetWorld();
+	UFTWaterSubsystem* Water = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const ftcore::WaterWetness Left = Water ? Water->LeadWetness() : ftcore::WaterWetness{};
+	PartyWetness.store(OldLead, Left);
 	// The tick that places them spawns them again behind the new lead.
 	ClearFollowers();
+	const ftcore::WaterWetness Took = PartyWetness.of(NewLead);
+	if (Water)
+	{
+		Water->SetLeadWetness(Took);
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Wet switch: lead %d left at wetness %.2f (line %.2f m, silt %.2f) for the followers; lead %d took its own, %.2f (line %.2f m, silt %.2f)."),
+		OldLead, Left.wetness, Left.line, Left.silt, NewLead, Took.wetness, Took.line, Took.silt);
 	SetNotice(FString::Printf(TEXT("Lead: %s"), *Lead));
 	UE_LOG(LogForgottenThird, Display, TEXT("ExploreDemo: lead is %s."), *Lead);
 }
