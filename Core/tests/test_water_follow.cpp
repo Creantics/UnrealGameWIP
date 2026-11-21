@@ -1438,6 +1438,10 @@ TEST_CASE("water follow (11-20): steps into other water than the lead's are not 
     CHECK(b.kind == WaterFollowEntryKind::Steps);
     CHECK(b.exitIndex == 1);
     CHECK(b.into.x == doctest::Approx(1.f));
+    // ... and one whose foot is in no body at all (a polygon a little short of the sea's edge) is not rejected.
+    const WaterExit shortFoot[] = {steps({-2.f, 4.f}, {-0.2f, 4.f})};
+    REQUIRE(water.bodyAt({-0.2f, 4.f}) == -1);
+    CHECK(waterFollowEntry(shortFoot, 1, from, lead, edge, out, 8.f, &water).kind == WaterFollowEntryKind::Steps);
     // 3. The lead's body has no exits at all (the Strip's sea, 0 of 31): a jump, never no entry.
     CHECK(waterFollowEntry(canalSteps, 1, from, lead, edge, out, 8.f, &water).kind != WaterFollowEntryKind::None);
     CHECK(waterFollowEntry(nullptr, 0, from, lead, edge, out, 8.f, &water).kind == WaterFollowEntryKind::Jump);

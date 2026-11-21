@@ -5989,10 +5989,16 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 		const bool bIn = ftcore::waterIn(Now);
 		const bool bInWater = Phase != ftcore::WaterFollowPhase::Ashore && Phase != ftcore::WaterFollowPhase::ToEntry;
 		const float Wet = Partner->GetWetness().wetness;
+		R.Held = Partner->GetWaterHeldSteps();
+		R.Slid = Partner->GetWaterSlidSteps();
 		if (static_cast<int32>(Order->phase) != R.Phase)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d phase %d -> %d at %.2f s (entry %d, exit %d, rejoin %d), feet (%.0f, %.0f, %.0f) cm."), SwimProofReplayRun, I,
 				R.Phase, static_cast<int32>(Order->phase), SwimProofTime, static_cast<int32>(Order->entry.kind), Order->entry.exitIndex, Order->rejoin ? 1 : 0, At.X, At.Y, At.Z);
+			if (R.Entry < 0 && (Order->phase == ftcore::WaterFollowPhase::Entering || Order->phase == ftcore::WaterFollowPhase::Surface))
+			{
+				R.Entry = static_cast<int32>(Order->entry.kind);
+			}
 			if (Order->phase == ftcore::WaterFollowPhase::Placed && Order->rejoin && R.RejoinAt < 0.f)
 			{
 				R.RejoinAt = SwimProofTime;
@@ -6097,8 +6103,10 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 		Shoot(SwimProofReplayEndShots++, TEXT("the end"));
 		return;
 	}
-	bool bPass = Partners > 0;
+	// Both partners, or no proof.
+	bool bPass = Partners == 2;
 	const float Watch = Tun.watchdog + 2.f;
+	int32 EdgeSteps = 0; // held + slid surface steps over both partners, from inside the step's own branches
 	for (int32 I = 0; I < Partners; ++I)
 	{
 		const FSwimReplaySlot& R = SwimProofReplay[I];
@@ -6107,21 +6115,32 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 		const bool bFeet = R.SurfaceTicks > 0 && R.FeetOver <= 0.5f;
 		const bool bGroom = R.bGroomWet && R.GroomDryTicks == 0;
 		const bool bShots = R.Shots > 0 && R.HiddenShots == 0;
-		// Run 4 rejoins slot 0 from its held walk in (no block at the surface first): the rejoin itself is the point.
-		const bool bRejoinOk = R.RejoinAt >= 0.f && (SwimProofReplayRun == 4 || (R.RejoinAfterBlocked >= 0.f && R.RejoinAfterBlocked <= Watch));
+		// Every partner reaches its tread spot (after any rejoin). Runs 5 and 6 are the normal entry: no rejoin at all.
+		// Run 4 is the rejoin regression: slot 0 rejoined (from its held walk in), then on to its spot.
 		const bool bPinned = R.BlockedLongest > Watch;
-		const bool bReach = (R.ReachedAt >= 0.f || bRejoinOk) && !bPinned;
+		// Runs 5 and 6 take the jump (the sea has no exits, so a steps entry or none means the body-aware pick failed);
+		// run 4's slot 0 reaches its spot after its rejoin, not before.
+		const bool bPath = SwimProofReplayRun == 4
+			? (I != 0 || (R.RejoinAt >= 0.f && R.ReachedAt > R.RejoinAt))
+			: (R.RejoinAt < 0.f && R.Entry == static_cast<int32>(ftcore::WaterFollowEntryKind::Jump));
+		const bool bReach = R.ReachedAt >= 0.f && !bPinned && bPath;
+		EdgeSteps += R.Held + R.Slid;
 		const bool bOk = bDry && bWet && bFeet && bGroom && bShots && bReach;
 		bPass = bPass && bOk;
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("SwimProof replay %d PASS LINE slot %d: %s; Surface ticks %d, of them out of the water %d (%s); wetness from the first 1.00 at least %.3f (%s); feet at most %+.1f cm off the surface (%s); grooms %s (%s); stills %d, hidden in %d (%s); tread spot %s, rejoin %s, blocked %d ticks, longest %.1f s (%s)."),
+			TEXT("SwimProof replay %d PASS LINE slot %d: %s; Surface ticks %d, of them out of the water %d (%s); wetness from the first 1.00 at least %.3f (%s); feet at most %+.1f cm off the surface (%s); grooms %s (%s); stills %d, hidden in %d (%s); tread spot %s, entry %d, rejoin %s, blocked %d ticks, longest %.1f s, edge steps held %d slid %d (%s)."),
 			SwimProofReplayRun, I, bOk ? TEXT("PASS") : TEXT("FAIL"), R.SurfaceTicks, R.DryTicks, bDry ? TEXT("ok") : TEXT("FAIL"), R.bSoaked ? R.WetMin : 0.f,
 			bWet ? TEXT("ok") : R.bSoaked ? TEXT("FAIL") : TEXT("FAIL: never 1.00"), R.FeetOver, bFeet ? TEXT("ok") : TEXT("FAIL"),
 			R.bGroomWet ? *FString::Printf(TEXT("dry %d ticks after the first wet"), R.GroomDryTicks) : TEXT("never wet"), bGroom ? TEXT("ok") : TEXT("FAIL"), R.Shots, R.HiddenShots,
-			bShots ? TEXT("ok") : TEXT("FAIL"), R.ReachedAt >= 0.f ? *FString::Printf(TEXT("reached at %.1f s"), R.ReachedAt) : TEXT("NOT reached"),
-			R.RejoinAt >= 0.f ? *FString::Printf(TEXT("at %.1f s, %.1f s after its block began"), R.RejoinAt, R.RejoinAfterBlocked) : TEXT("none"), R.BlockedTicks, R.BlockedLongest,
-			bReach ? TEXT("ok") : bPinned ? TEXT("FAIL: pinned past the watchdog") : TEXT("FAIL"));
+			bShots ? TEXT("ok") : TEXT("FAIL"), R.ReachedAt >= 0.f ? *FString::Printf(TEXT("reached at %.1f s"), R.ReachedAt) : TEXT("NOT reached"), R.Entry,
+			R.RejoinAt >= 0.f ? *FString::Printf(TEXT("at %.1f s, %.1f s after its block began"), R.RejoinAt, R.RejoinAfterBlocked) : TEXT("none"), R.BlockedTicks, R.BlockedLongest, R.Held, R.Slid,
+			bReach ? TEXT("ok") : bPinned ? TEXT("FAIL: pinned past the watchdog") : R.ReachedAt < 0.f ? TEXT("FAIL: not reached")
+				: SwimProofReplayRun == 4 ? TEXT("FAIL: no rejoin before its spot") : R.RejoinAt >= 0.f ? TEXT("FAIL: rejoined, not the normal entry") : TEXT("FAIL: not the jump entry"));
 	}
+	// The edge path must have run in the run: a spot reached without any held or slid step proves nothing of it.
+	bPass = bPass && EdgeSteps > 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: edge steps (held + slid, both partners) %d (%s)."), SwimProofReplayRun, EdgeSteps,
+		EdgeSteps > 0 ? TEXT("ok") : TEXT("FAIL: the edge path never ran"));
 	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: done at %.1f s (lead swam at %.1f s, at the far point at %.1f s%s): %s."), SwimProofReplayRun, SwimProofTime,
 		SwimProofLeadSwamAt, SwimProofHoldAt, bSwimProofLeadPlaced ? TEXT(", lead placed by harness") : TEXT(""), bPass ? TEXT("PASS") : TEXT("FAIL"));
 	FTLook::LogLevelStart(TEXT("proof's end"));

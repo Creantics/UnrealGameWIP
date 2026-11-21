@@ -142,7 +142,11 @@ inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t cou
     float best = within;
     for (std::size_t i = 0; i < count; ++i) {
         if (exits[i].kind != WaterExitKind::Steps) continue;
-        if (leadBody >= 0 && water->bodyAt(exits[i].foot) != leadBody) continue;
+        // A foot in another body is no way to the lead; a foot in none (a polygon a few cm short) is still a flight.
+        if (leadBody >= 0) {
+            const int footBody = water->bodyAt(exits[i].foot);
+            if (footBody >= 0 && footBody != leadBody) continue;
+        }
         const float dd = d::segDist(exits[i].top, from, lead);
         if (dd <= best) {
             best = dd;

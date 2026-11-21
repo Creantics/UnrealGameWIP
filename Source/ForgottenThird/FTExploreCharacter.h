@@ -715,6 +715,9 @@ private:
 		float BlockedLongest = 0.f;
 		float RejoinAfterBlocked = -1.f;
 		int32 BlockedTicks = 0;
+		int32 Entry = -1;            // the entry kind (ftcore::WaterFollowEntryKind) when it first left the land
+		int32 Held = 0;              // its surface steps held, and slid, counted in the follower's own Hold/Slide branches
+		int32 Slid = 0;
 		int32 Shots = 0;
 		int32 HiddenShots = 0;
 		float LogAt = 0.f;

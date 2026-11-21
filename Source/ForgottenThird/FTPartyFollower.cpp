@@ -1373,10 +1373,18 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		if (Kept.kind == ftcore::WaterStepKind::Hold)
 		{
 			WaterBlockedFrame = GFrameCounter;
+			if (WaterHeldSteps++ == 0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: first surface step held at the edge at (%.0f, %.0f) cm."), *LogName, From.X, From.Y);
+			}
 		}
 		else if (Kept.kind == ftcore::WaterStepKind::Slide)
 		{
 			WaterTurnedFrame = GFrameCounter;
+			if (WaterSlidSteps++ == 0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("%s: first surface step slid along the edge at (%.0f, %.0f) cm."), *LogName, From.X, From.Y);
+			}
 		}
 		const FVector2D Step(ToCm(Kept.step.x), ToCm(Kept.step.y));
 		// The one surface rule (ftcore/WaterSurfaceFeet.h): the draft and bob plus the splash's sink, never nearer the
@@ -1569,9 +1577,14 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			const FVector2D Slot(ToCm(Order->target.x), ToCm(Order->target.y));
 			const FVector2D LeadXY(Lead->GetActorLocation().X, Lead->GetActorLocation().Y);
 			FVector2D To = Slot;
-			if (!IntoWaterToward(*System, Slot, LeadXY, FVector2D::Distance(Slot, LeadXY), To))
+			if (IntoWaterToward(*System, Slot, LeadXY, FMath::Min(FVector2D::Distance(Slot, LeadXY), 2000.0), To))
 			{
-				UE_LOG(LogForgottenThird, Warning, TEXT("%s: rejoin slot (%.0f, %.0f) cm has no water between it and the lead; placed at the slot."), *LogName, Slot.X, Slot.Y);
+				bWaterRejoinWarned = false;
+			}
+			else if (!bWaterRejoinWarned)
+			{
+				bWaterRejoinWarned = true;
+				UE_LOG(LogForgottenThird, Warning, TEXT("%s: rejoin slot (%.0f, %.0f) cm has no water within 20 m toward the lead; placed at the slot."), *LogName, Slot.X, Slot.Y);
 			}
 			bool bDraftFound = false;
 			const double Draft = SwimFeetZ(To, Lead->GetActorLocation().Z - Lead->GetCapsuleComponent()->GetScaledCapsuleHalfHeight(), &bDraftFound);

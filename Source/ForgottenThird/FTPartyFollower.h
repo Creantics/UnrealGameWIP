@@ -118,6 +118,10 @@ public:
 	bool IsWaterHeld() const { return WaterBlockedFrame != 0 && WaterBlockedFrame + 1 >= GFrameCounter; }
 	bool IsWaterTurned() const { return WaterTurnedFrame != 0 && WaterTurnedFrame + 1 >= GFrameCounter; }
 	bool IsWaterBlocked() const { return IsWaterHeld() || IsWaterTurned(); }
+	// How many surface steps were held, and slid, counted inside the step's own Hold and Slide branches (the -SwimProof
+	// pass lines need the edge path to have run, not only the spot reached).
+	int32 GetWaterHeldSteps() const { return WaterHeldSteps; }
+	int32 GetWaterSlidSteps() const { return WaterSlidSteps; }
 	// -SwimProof=replay (dev): stood at At on the land, its trail walk held, until its order takes it into the water or
 	// the run lets it go; from there it eases back onto its slot.
 	void PinForProof(const FVector& At) { ProofPin = At; bProofPin = true; }
@@ -277,6 +281,9 @@ private:
 	float WaterSlideSide = 1.f;
 	uint64 WaterBlockedFrame = 0; // held (WaterStepKind::Hold)
 	uint64 WaterTurnedFrame = 0;  // slid along the edge (WaterStepKind::Slide)
+	int32 WaterHeldSteps = 0;     // the steps held, and slid, since spawn
+	int32 WaterSlidSteps = 0;
+	bool bWaterRejoinWarned = false; // the rejoin slot's no-water warning, once until a slot is found again
 	FVector ProofPin = FVector::ZeroVector; // PinForProof (dev)
 	bool bProofPin = false;
 	// -SwimFeetEaseAll: the surface step eases the whole way to its target, the ride not carried (the fallback; the step
