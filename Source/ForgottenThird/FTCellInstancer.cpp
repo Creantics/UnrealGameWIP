@@ -96,6 +96,10 @@ void SetUpKind(UStaticMeshComponent& Comp, EFTCellKind Kind, bool bCastShadow)
 		// (the tour pilot, FTExploreDirector::PilotWaypoint; the tour's island stops; FTBuildMassingWorld's -Goals reach and
 		// -Coverage islands) keeps to where the lead can go.
 		Comp.SetCanEverAffectNavigation(true);
+		// Solid, not a shell: Recast rasterizes a closed box as its faces, so the ground inside a box tall enough for the
+		// agent and wide enough to outlast the agent-radius erosion kept a strip of walkable navmesh (proof 78b: 521 of
+		// 2127, every logged hit on the box's short-axis centre line). Filled columns, one instance at a time, close it.
+		Comp.bRasterizeAsFilledConvexVolume = true;
 	}
 	if (Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)
 	{

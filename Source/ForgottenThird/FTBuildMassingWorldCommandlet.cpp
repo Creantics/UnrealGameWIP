@@ -1396,6 +1396,11 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 {
 	int32 Inside = 0;
 	FString First;
+	// Where the hits stand, so one strip build explains itself: the projected height in the box (low: within 0.6 m of
+	// its foot; high: within 0.8 m of its top; mid between) and the box's short side (under 1.5 m, 1.5 to 2.5 m, more).
+	int32 ByHeight[3] = {0, 0, 0};
+	int32 ByWidth[3] = {0, 0, 0};
+	int32 AllByWidth[3] = {0, 0, 0};
 	for (const ftcore::MassingBox& Box : Blockers)
 	{
 		const double Lo = Box.z0 - 0.3, Hi = Box.z1 - 0.25;
@@ -1406,7 +1411,10 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		const double Turn = Box.rot * UE_DOUBLE_PI / 180.0;
 		const double C = FMath::Cos(Turn), S = FMath::Sin(Turn);
 		bool bHit = false;
-		double HitX = 0.0, HitY = 0.0;
+		double HitX = 0.0, HitY = 0.0, HitZ = 0.0;
+		const double Short = FMath::Min(Box.sx, Box.sy);
+		const int32 WidthBin = Short < 1.5 ? 0 : (Short < 2.5 ? 1 : 2);
+		++AllByWidth[WidthBin];
 		for (int32 I = -1; I <= 1 && !bHit; ++I)
 		{
 			for (int32 J = -1; J <= 1 && !bHit; ++J)
@@ -1420,14 +1428,25 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 					bHit = true;
 					HitX = X;
 					HitY = Y;
+					HitZ = On.Location.Z / 100.0;
 				}
 			}
 		}
-		if (bHit && ++Inside <= 8)
+		if (!bHit)
 		{
-			First += FString::Printf(TEXT("%s%s at (%.1f, %.1f)"), First.IsEmpty() ? TEXT("") : TEXT(", "), *Utf8(Box.id), HitX, HitY);
+			continue;
+		}
+		++ByHeight[HitZ < Box.z0 + 0.6 ? 0 : (HitZ > Box.z1 - 0.8 ? 2 : 1)];
+		++ByWidth[WidthBin];
+		if (++Inside <= 8)
+		{
+			First += FString::Printf(TEXT("%s%s at (%.1f, %.1f) z %.2f in %.2f-%.2f"), First.IsEmpty() ? TEXT("") : TEXT(", "), *Utf8(Box.id), HitX,
+				HitY, HitZ, Box.z0, Box.z1);
 		}
 	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: blockers: hits by height in the box %d low, %d mid, %d high; by short side %d of %d "
+		"under 1.5 m, %d of %d 1.5-2.5 m, %d of %d wider."), ByHeight[0], ByHeight[1], ByHeight[2], ByWidth[0], AllByWidth[0], ByWidth[1],
+		AllByWidth[1], ByWidth[2], AllByWidth[2]);
 	const ARecastNavMesh* Recast = Cast<ARecastNavMesh>(&NavData);
 	const double Radius = Recast ? Recast->AgentRadius : 0.0;
 	double Cell = 0.0;
