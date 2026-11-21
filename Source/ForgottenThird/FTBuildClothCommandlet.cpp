@@ -44,7 +44,7 @@ void ClothReportDrive(const FClothPhysicalMeshData& Phys)
 {
 	const FPointWeightMap* Drive = Phys.FindWeightMap(EWeightMapTargetCommon::AnimDriveStiffness);
 	const FPointWeightMap* Max = Phys.FindWeightMap(EWeightMapTargetCommon::MaxDistance);
-	if (!Drive)
+	if (!Drive || Drive->Num() == 0) // the engine keeps an empty one on a cloth that never had it painted
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: no anim drive map."));
 		return;
@@ -110,6 +110,12 @@ void ClothReportMaps(const UClothingAssetCommon& Asset)
 	for (const TPair<uint32, FPointWeightMap>& Pair : Phys.WeightMaps)
 	{
 		const FPointWeightMap& Map = Pair.Value;
+		if (Map.Num() == 0)
+		{
+			// The engine keeps an empty map for each target it knows (Backstop, an unpainted anim drive): not read.
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: map %s (target %u): empty, not used."), ClothMapName(Pair.Key), Pair.Key);
+			continue;
+		}
 		float Lo = UE_BIG_NUMBER, Hi = -UE_BIG_NUMBER;
 		for (int32 i = 0; i < Map.Num(); ++i)
 		{
