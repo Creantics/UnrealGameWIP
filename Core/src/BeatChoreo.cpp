@@ -108,6 +108,13 @@ ChoreoPlan planChoreoClip(const BeatClip& clip, double impactTime, double desire
     return p;
 }
 
+bool pickRunGait(double speed, double walkSpeed, double runSpeed, bool wasRun) {
+    const double gap = runSpeed - walkSpeed;
+    if (!(gap > 0.0) || !(speed == speed)) return false;
+    const double mid = walkSpeed + 0.5 * gap;
+    return wasRun ? speed > mid - 0.1 * gap : speed > mid + 0.1 * gap;
+}
+
 double choreoStanceRate(const BeatClip& stance, double beatSeconds) {
     if (!(beatSeconds > 0.0) || !(stance.length > 0.0)) return 1.0;
     // The whole number of beats whose rate is inside the clamp and nearest to 1.
