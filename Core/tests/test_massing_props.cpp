@@ -494,6 +494,32 @@ TEST_CASE("massing props: feet come no nearer than the gap, turned or not") {
     CHECK(massingFeetOverlap(a, MassingFoot{0.5, 0.5, 0, 0, 0}, 0.0));
 }
 
+TEST_CASE("massing props: feet grown by a margin keep their centre and turn, and are appended") {
+    std::vector<MassingFoot> out = {MassingFoot{9, 9, 1, 1, 0}};
+    const std::vector<MassingFoot> feet = {MassingFoot{0, 0, 1, 0.5, 30}, MassingFoot{4, 2, 0, 0, 0}, MassingFoot{1, 1, -1, 2, 0}};
+    massingFeetGrown(feet, 0.73, out);
+    REQUIRE(out.size() == 4);
+    CHECK(near(out[0].x, 9)); // what was there stays
+    CHECK(near(out[1].x, 0));
+    CHECK(near(out[1].y, 0));
+    CHECK(near(out[1].hx, 1.73));
+    CHECK(near(out[1].hy, 1.23));
+    CHECK(near(out[1].rot, 30));
+    CHECK(near(out[2].hx, 0.73)); // a point becomes a square
+    CHECK(near(out[2].hy, 0.73));
+    CHECK(near(out[3].hx, 0.73)); // a negative half size counts as 0
+    // A box 0.5 m past a door's foot: clear of the foot, inside the grown one.
+    const MassingFoot box{2.5, 0, 0.5, 0.5, 0};
+    CHECK_FALSE(massingFeetOverlap(MassingFoot{0, 0, 1.5, 1, 0}, box, 0.0));
+    std::vector<MassingFoot> grown;
+    massingFeetGrown({MassingFoot{0, 0, 1.5, 1, 0}}, 0.73, grown);
+    CHECK(massingFeetOverlap(grown[0], box, 0.0));
+    // A negative margin grows nothing.
+    grown.clear();
+    massingFeetGrown({MassingFoot{0, 0, 1.5, 1, 0}}, -1.0, grown);
+    CHECK(near(grown[0].hx, 1.5));
+}
+
 TEST_CASE("massing props: a prop's foot lies where its mesh is placed") {
     MassingPropRule r = rule(MassingPropSide::Left, 10.0);
     r.footX = 2.0;

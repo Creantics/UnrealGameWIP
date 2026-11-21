@@ -36,7 +36,7 @@ enum class EFTCellKind : uint8
 	Walk,      // blocks everything and shapes the navmesh, walked on (pavements, kerbs, carriageways, quays' decks)
 	NoCollide, // dressing: no collision, no navigation (kit meshes, props, frontage meshes, markings, roof clutter)
 	Hidden,    // a solid hidden in game, casting no shadow: the collider a kit mesh stands in for
-	Blocker,   // hidden like Hidden, a world-dynamic object tagged BlockerTag() that blocks the lead (pawn sweeps), off the navmesh; visibility and
+	Blocker,   // hidden like Hidden, a world-dynamic object tagged BlockerTag() that blocks the lead (pawn sweeps) and cuts the navmesh; visibility and
 	           // camera traces and the world-static object queries (traversal, knockback) pass through it
 	           // (the crowd's traces are all visibility traces: no walker stands on one, and none is stopped by one): a ground frontage piece's collider
 	Count

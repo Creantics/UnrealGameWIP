@@ -90,11 +90,13 @@
 // (turned by turn), its out the table's at most that depth (the depth when the table sets it wholly out). A piece is
 // labelled <rule id>-<n>; its mesh collides with nothing, and a ground-layer piece (dz under kMassingPropBody) stands
 // in an invisible Blocker box <rule id>-<n>-C over its part out of the face, its height tall (ftcore::massingFrontCollider):
-// a world-dynamic object, so it stops the lead; it leaves the navmesh alone (nothing on the strip paths by it; -Goals and
-// -Coverage paths may cross one), visibility and camera traces (the crowd's) and the world-static object queries (the traversal
-// probe's climbs, knockback) pass it, and the traversal probe turns down a climb behind one. Ground pieces keep off the doors
-// (-RoadDoors, which -Frontage needs unless -FrontageNoDoors says the build has none) and the narrow ways' mouths
-// (ftcore::massingFrontMouths); a collider over either fails the run. It is laid whenever -Frontage runs. A missing mesh fails the run before anything is built. The log gives
+// a world-dynamic object, so it stops the lead, and it cuts the navmesh (what paths on it, the tour pilot, -Goals and
+// -Coverage, keeps off it; after the navmesh is built, walkable navmesh inside a blocker fails the run, -Strict or not);
+// visibility and camera traces (the crowd's) and the world-static object queries (the traversal probe's climbs, knockback)
+// pass it, and the traversal probe turns down a climb behind one. Ground pieces keep 0.73 m (the agent's radius and a navmesh
+// cell) off the doors (-RoadDoors, which -Frontage needs unless -FrontageNoDoors says the build has none), the narrow ways'
+// mouths (ftcore::massingFrontMouths), the goals and the district spawns; a collider that near any fails the run. It is laid
+// whenever -Frontage runs. A missing mesh fails the run before anything is built. The log gives
 // each rule's size, a count line per rule (placed, faces, tries and why the others failed) and a totals line.
 // The dressing goes in that order, kerbs, quay, frontage, then the props, each keeping out of the room the ones before
 // took.
