@@ -1392,15 +1392,69 @@ FString ReachLine(const TCHAR* What, const FReachTally& Tally, int32 Of)
 // its top (the top, out of the lead's step, may carry a poly of its own, so it is left out), and a hit counts only when
 // the poly met lies within 10 cm of the point across. Logs the count, the first few hit, and the navmesh's agent radius
 // and cells against kNavKeepMargin; returns 1 on a hit, or when the margin is under the radius and the coarsest cell.
+// The navmesh's walkable area across, m2: every poly of every tile, fanned from its first corner. A control on the
+// blocker check: a fill that spilled past its box would take street with it, and the inside count would not see it.
+double NavAreaM2(const ARecastNavMesh& NavMesh, int32& OutPolys)
+{
+	double Area = 0.0;
+	OutPolys = 0;
+	TArray<FNavTileRef> TileRefs;
+	NavMesh.GetAllNavMeshTiles(TileRefs);
+	TArray<FNavPoly> Polys;
+	TArray<FVector> Verts;
+	for (const FNavTileRef& Ref : TileRefs)
+	{
+		Polys.Reset();
+		if (!NavMesh.GetPolysInTile(Ref, Polys))
+		{
+			continue;
+		}
+		for (const FNavPoly& Poly : Polys)
+		{
+			Verts.Reset();
+			if (!NavMesh.GetPolyVerts(Poly.Ref, Verts) || Verts.Num() < 3)
+			{
+				continue;
+			}
+			++OutPolys;
+			double Twice = 0.0;
+			for (int32 V = 1; V + 1 < Verts.Num(); ++V)
+			{
+				const FVector A = Verts[V] - Verts[0], B = Verts[V + 1] - Verts[0];
+				Twice += FMath::Abs(A.X * B.Y - A.Y * B.X);
+			}
+			Area += 0.5 * Twice / 10000.0;
+		}
+	}
+	return Area;
+}
+
 int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, double Side, const std::vector<ftcore::MassingBox>& Blockers)
 {
 	int32 Inside = 0;
 	FString First;
-	// Where the hits stand, so one strip build explains itself: the projected height in the box (low: within 0.6 m of
-	// its foot; high: within 0.8 m of its top; mid between) and the box's short side (under 1.5 m, 1.5 to 2.5 m, more).
+	// Where the hits stand, so one run explains itself: the projected height in the box (low: within 0.6 m of its foot;
+	// high: within 0.8 m of its top; mid between) and the box's short side (under 1.5 m, 1.5 to 2.5 m, more).
 	int32 ByHeight[3] = {0, 0, 0};
 	int32 ByWidth[3] = {0, 0, 0};
 	int32 AllByWidth[3] = {0, 0, 0};
+	// The control: the street beside each blocker keeps its navmesh. Two points, one off each long face at mid-length,
+	// kNavKeepMargin + 0.6 m out from the face (past the keep-clear and the agent's radius); a blocker holds when either
+	// has navmesh within 10 cm across (one face often stands at the building's wall).
+	int32 Beside = 0;
+	FString NoStreet;
+	int32 NoStreetN = 0;
+	auto OnNav = [&Nav, &NavData, Side](double X, double Y, double Lo, double Hi, double& OutZ)
+	{
+		const FVector At = Cm(ftcore::massingEnginePoint(Side, X, Y, 0.5 * (Lo + Hi)));
+		FNavLocation On;
+		if (Nav.ProjectPointToNavigation(At, On, FVector(5.0, 5.0, 50.0 * (Hi - Lo)), &NavData) && FVector::Dist2D(On.Location, At) <= 10.0)
+		{
+			OutZ = On.Location.Z / 100.0;
+			return true;
+		}
+		return false;
+	};
 	for (const ftcore::MassingBox& Box : Blockers)
 	{
 		const double Lo = Box.z0 - 0.3, Hi = Box.z1 - 0.25;
@@ -1421,16 +1475,31 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 			{
 				const double U = 0.3 * I * Box.sx, V = 0.3 * J * Box.sy; // 0.6 of the half sizes
 				const double X = Box.cx + U * C - V * S, Y = Box.cy + U * S + V * C;
-				const FVector At = Cm(ftcore::massingEnginePoint(Side, X, Y, 0.5 * (Lo + Hi)));
-				FNavLocation On;
-				if (Nav.ProjectPointToNavigation(At, On, FVector(5.0, 5.0, 50.0 * (Hi - Lo)), &NavData) && FVector::Dist2D(On.Location, At) <= 10.0)
+				if (OnNav(X, Y, Lo, Hi, HitZ))
 				{
 					bHit = true;
 					HitX = X;
 					HitY = Y;
-					HitZ = On.Location.Z / 100.0;
 				}
 			}
+		}
+		// The control's two points, off the two faces across the short side.
+		const bool bShortIsY = Box.sy <= Box.sx;
+		const double Out = 0.5 * Short + kNavKeepMargin + 0.6;
+		bool bStreet = false;
+		for (int32 K = -1; K <= 1 && !bStreet; K += 2)
+		{
+			const double U = bShortIsY ? 0.0 : K * Out, V = bShortIsY ? K * Out : 0.0;
+			double Z = 0.0;
+			bStreet = OnNav(Box.cx + U * C - V * S, Box.cy + U * S + V * C, Lo, Hi, Z);
+		}
+		if (bStreet)
+		{
+			++Beside;
+		}
+		else if (++NoStreetN <= 8)
+		{
+			NoStreet += FString::Printf(TEXT("%s%s"), NoStreet.IsEmpty() ? TEXT("") : TEXT(", "), *Utf8(Box.id));
 		}
 		if (!bHit)
 		{
@@ -1448,6 +1517,11 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		"under 1.5 m, %d of %d 1.5-2.5 m, %d of %d wider."), ByHeight[0], ByHeight[1], ByHeight[2], ByWidth[0], AllByWidth[0], ByWidth[1],
 		AllByWidth[1], ByWidth[2], AllByWidth[2]);
 	const ARecastNavMesh* Recast = Cast<ARecastNavMesh>(&NavData);
+	int32 PolyCount = 0;
+	const double Area = Recast ? NavAreaM2(*Recast, PolyCount) : 0.0;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: blockers: control: street navmesh beside %d of %d blockers (%.2f m off a face)%s%s; "
+		"the navmesh's walkable area %.0f m2 in %d polys."), Beside, static_cast<int32>(Blockers.size()), kNavKeepMargin + 0.6,
+		NoStreet.IsEmpty() ? TEXT("") : TEXT("; none beside "), *NoStreet, Area, PolyCount);
 	const double Radius = Recast ? Recast->AgentRadius : 0.0;
 	double Cell = 0.0;
 	if (Recast)
@@ -1468,6 +1542,52 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		return 1;
 	}
 	return 0;
+}
+
+// -Load -BlockerNav: the saved map's frontage blockers (the BlockerTag instanced components) as plan boxes, for
+// CheckBlockerNav on a navmesh rebuilt in memory; with bFill, each component is first set to rasterize as filled columns.
+std::vector<ftcore::MassingBox> SavedBlockers(UWorld& World, double Side, bool bFill, int32& OutComponents)
+{
+	std::vector<ftcore::MassingBox> Boxes;
+	OutComponents = 0;
+	for (TActorIterator<AActor> It(&World); It; ++It)
+	{
+		TInlineComponentArray<UInstancedStaticMeshComponent*> Comps(*It);
+		for (UInstancedStaticMeshComponent* Comp : Comps)
+		{
+			if (!Comp || !Comp->ComponentHasTag(FTCells::BlockerTag()) || !Comp->GetStaticMesh())
+			{
+				continue;
+			}
+			++OutComponents;
+			if (bFill)
+			{
+				Comp->bRasterizeAsFilledConvexVolume = true;
+			}
+			const FBox Local = Comp->GetStaticMesh()->GetBoundingBox();
+			for (int32 I = 0; I < Comp->GetInstanceCount(); ++I)
+			{
+				FTransform T;
+				if (!Comp->GetInstanceTransform(I, T, true))
+				{
+					continue;
+				}
+				const FVector Mid = T.TransformPosition(Local.GetCenter()) / 100.0;
+				const FVector Size = Local.GetSize() * T.GetScale3D().GetAbs() / 100.0;
+				ftcore::MassingBox Box;
+				Box.id = TCHAR_TO_UTF8(*FString::Printf(TEXT("%s#%d"), *Comp->GetName(), I));
+				Box.cx = Mid.X + Side * 0.5;
+				Box.cy = Side * 0.5 - Mid.Y;
+				Box.sx = Size.X;
+				Box.sy = Size.Y;
+				Box.rot = -T.Rotator().Yaw;
+				Box.z0 = Mid.Z - 0.5 * Size.Z;
+				Box.z1 = Mid.Z + 0.5 * Size.Z;
+				Boxes.push_back(Box);
+			}
+		}
+	}
+	return Boxes;
 }
 
 // Whether a full path runs from the entry (From, on NavData) to a plan point (m), logged either way with the query's own
@@ -2751,6 +2871,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Load: couldn't load %s."), *MapPath);
 			return 1;
 		}
+		// -BlockerNav: the blockers as saved, read before the navigation system gathers them; -BlockerFill first sets them to
+		// rasterize as filled columns (what the Blocker kind now sets), so one saved map gives both navmeshes side by side.
+		const bool bBlockerNav = FParse::Param(*Params, TEXT("BlockerNav"));
+		const bool bBlockerFill = FParse::Param(*Params, TEXT("BlockerFill"));
+		int32 BlockerComps = 0;
+		const std::vector<ftcore::MassingBox> SavedBoxes =
+			bBlockerNav ? SavedBlockers(*World, Side, bBlockerFill, BlockerComps) : std::vector<ftcore::MassingBox>();
 		FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
 		UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 		ARecastNavMesh* NavMesh = Nav ? Cast<ARecastNavMesh>(Nav->GetDefaultNavDataInstance(FNavigationSystem::DontCreate)) : nullptr;
@@ -2767,6 +2894,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const int32 Tiles = NavMesh->GetNavMeshTilesCount();
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: loaded %s, not to be saved; its navmesh (%s) has %d tiles."), *MapPath,
 			bRegistered ? TEXT("the navigation system's own") : TEXT("found among the actors"), Tiles);
+		if (bBlockerNav)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load -BlockerNav: %d blockers in %d components, %s; the navmesh is rebuilt "
+				"in memory, not saved."), static_cast<int32>(SavedBoxes.size()), BlockerComps,
+				bBlockerFill ? TEXT("set to rasterize as filled columns") : TEXT("as saved"));
+			Nav->RemoveNavigationBuildLock(ENavigationBuildLock::AsyncLoadLock, UNavigationSystemV1::ELockRemovalRebuildAction::NoRebuild);
+			const double BuildStart = FPlatformTime::Seconds();
+			Nav->Build();
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load -BlockerNav: navmesh rebuilt in %.0f s, %d tiles."),
+				FPlatformTime::Seconds() - BuildStart, NavMesh->GetNavMeshTilesCount());
+			return CheckBlockerNav(*Nav, *NavMesh, Side, SavedBoxes);
+		}
 		if (Tiles == 0)
 		{
 			Nav->RemoveNavigationBuildLock(ENavigationBuildLock::AsyncLoadLock, UNavigationSystemV1::ELockRemovalRebuildAction::NoRebuild);
