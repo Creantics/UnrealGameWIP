@@ -14,7 +14,9 @@
 // and the stills taken at 1 m: _a1 and _a2 (the original skin, twice, for the noise floor), _b (the copy, no contact),
 // _c (contact), _d (contact, the presser arm hidden) and _d0 (no contact, arm hidden). An orthographic depth capture
 // along the contact normal reads the dent's centre depth (no contact against contact, arm hidden), checked against a
-// 1 cm move of the capture. The tick's heap allocations are counted over 300 latched frames.
+// 1 cm move of the capture. The tick's heap allocations are counted over 300 unlatched solve frames
+// (-ExploreFleshAllocs). The body's world position offset evaluation is turned on at registration, and the velocity,
+// ray-tracing and shadow switches are logged, so the dent's shadow and motion vectors can be judged from the log.
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
@@ -185,6 +187,7 @@ private:
 	float ProofCorrection = 0.f;
 	int32 ProofSettleCount = 0;
 	bool bProofAllocs = false;
+	bool bProofUnsettled = false; // the placement timed out: the run exits 1
 	int32 ProofAllocFrames = 0;
 	int32 ProofAllocWriteFrames = 0;
 	uint64 ProofAllocSolve = 0; // allocations inside the solve (Step before Write)

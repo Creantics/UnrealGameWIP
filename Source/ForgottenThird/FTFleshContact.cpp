@@ -5,6 +5,7 @@
 #include "FTLook.h"
 
 #include "AnimationRuntime.h"
+#include "HAL/IConsoleManager.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
@@ -414,6 +415,23 @@ bool UFTFleshContact::Register()
 	}
 	SerialSeen = FTLook::WornMeshSerial();
 	bRegistered = Slots.Num() > 0;
+	if (bRegistered)
+	{
+		// The dent is a world position offset: the skinned mesh must evaluate it (ray-traced geometry and velocity follow
+		// the offset only when it does).
+		Body->SetEvaluateWorldPositionOffset(true);
+		const auto CVarInt = [](const TCHAR* Name) -> int32
+		{
+			const IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(Name);
+			return V ? V->GetInt() : -1;
+		};
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("FTFleshContact: WPO evaluation %d; r.Velocity.EnableVertexDeformation %d, r.VelocityOutputPass %d, "
+				 "r.RayTracing.Geometry.SkeletalMeshes %d, r.RayTracing.Shadows %d, r.Shadow.Virtual.Enable %d (-1: no such switch)."),
+			Body->EvaluateWorldPositionOffset() ? 1 : 0, CVarInt(TEXT("r.Velocity.EnableVertexDeformation")),
+			CVarInt(TEXT("r.VelocityOutputPass")), CVarInt(TEXT("r.RayTracing.Geometry.SkeletalMeshes")),
+			CVarInt(TEXT("r.RayTracing.Shadows")), CVarInt(TEXT("r.Shadow.Virtual.Enable")));
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTFleshContact: %s: %d slot(s) on the copies from %s, %d pair(s)%s."),
 		*MeshName, Slots.Num(), *Folder, PairCount, bChanged ? TEXT(", worn mesh serial moved on") : TEXT(""));
 	return bRegistered;
@@ -935,6 +953,7 @@ void UFTFleshContact::TickProof()
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("FTFleshContact proof: %s after %d frames: overlap %.3f cm (want %.2f), correction %.3f cm."),
 				ProofSettleCount >= kSettleFrames ? TEXT("settled") : TEXT("NOT SETTLED"), ProofFrames, ProofPen, ProofOverlap, ProofCorrection);
+			bProofUnsettled = ProofSettleCount < kSettleFrames; // the stills are still taken, but the run exits 1
 			ProofStage = bProofAllocs ? 2 : 3;
 			ProofFrames = 0;
 		}
@@ -1035,7 +1054,7 @@ void UFTFleshContact::TickProof()
 				Calib.Reset();
 			}
 			ProofDepth(Calib);
-			ProofFinish(ProofDepthContact.Num() > 0 && ProofDepthNone.Num() > 0 ? 0 : 1);
+			ProofFinish(ProofDepthContact.Num() > 0 && ProofDepthNone.Num() > 0 && !bProofUnsettled ? 0 : 1);
 			return;
 		}
 		const FProofStill& S = kStills[Still];
