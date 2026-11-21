@@ -5253,6 +5253,8 @@ struct ClassicPinRow {
     std::uint64_t hash; // the 3 seeds' whole-run hashes folded in order
 };
 // Taken from main (04ffce8f: the party member's light range 3.6, no close-only reach) by this same code.
+// Re-pinned for maw_pup preferredRange 2.5 -> 1.8 (it holds inside the nip's 1.9 m reach, so the nip is picked): only
+// the four maw_pup rows moved. All still end in victory; duy with the camera loses 5 partner damage on seeds 1 and 2.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5278,8 +5280,8 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "stone_bearer", true, 80, 581, 10800794574737038193ull},
     {"devin", "white_glove", false, 66, 465, 12554922323999540588ull},
     {"devin", "white_glove", true, 71, 503, 8649862504494032913ull},
-    {"devin", "maw_pup", false, 6, 42, 7629072203778842793ull},
-    {"devin", "maw_pup", true, 6, 42, 12945017244662502135ull},
+    {"devin", "maw_pup", false, 6, 42, 9220560631306374404ull},
+    {"devin", "maw_pup", true, 6, 42, 18026556029025783987ull},
     {"devin", "spitter", false, 6, 42, 16994954208136295472ull},
     {"devin", "spitter", true, 6, 42, 596144150160075129ull},
     {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
@@ -5306,8 +5308,8 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "stone_bearer", true, 102, 747, 8699959715483297912ull},
     {"duy", "white_glove", false, 84, 609, 6572322498555516023ull},
     {"duy", "white_glove", true, 89, 641, 8591835143023752347ull},
-    {"duy", "maw_pup", false, 6, 42, 18005428526199812985ull},
-    {"duy", "maw_pup", true, 6, 42, 3177779032497351680ull},
+    {"duy", "maw_pup", false, 6, 42, 7017930305380328517ull},
+    {"duy", "maw_pup", true, 6, 32, 3525410989786059507ull},
     {"duy", "spitter", false, 6, 42, 373096491565446441ull},
     {"duy", "spitter", true, 6, 42, 13513007789646449681ull},
 };
