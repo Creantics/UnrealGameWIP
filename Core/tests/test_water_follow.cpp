@@ -1493,6 +1493,70 @@ TEST_CASE("water follow (11-20): steps into other water than the lead's are not 
     CHECK(s.o(0).phase == WaterFollowPhase::Surface);
 }
 
+TEST_CASE("water follow (11-21): a jump cut off from the lead by a solid is not taken; another bank point is, else placed") {
+    const WaterBodies water = seaAndCanal();
+    const Vec2 from{-3.f, 1.f}, lead{5.f, 0.f};
+    // Replay 6: the bank point toward the lead lands in a pocket behind a block (the host found the swim cut off).
+    const WaterEntryEdge pocket{{0.f, 1.f}, {1.f, 0.f}, true};
+    const WaterEntryEdge clear{{0.f, 12.f}, {1.f, 0.f}, false};
+    const WaterEntryEdge canal{{-12.5f, 1.f}, {1.f, 0.f}, false};
+    // 1. Cut off, a clear point further along the bank: the jump is from there.
+    const WaterEntryEdge two[] = {pocket, clear};
+    WaterFollowEntry e = waterFollowEntry(nullptr, 0, from, lead, two, 2, 8.f, &water);
+    CHECK(e.kind == WaterFollowEntryKind::Jump);
+    CHECK_FALSE(e.cutOff);
+    CHECK_FALSE(e.otherWater);
+    CHECK(e.point.y == doctest::Approx(12.f));
+    CHECK(e.into.x == doctest::Approx(1.f));
+    // 2. A clear point that lands in other water is passed over too (the run-5 body check holds for the others).
+    const WaterEntryEdge three[] = {pocket, canal, clear};
+    e = waterFollowEntry(nullptr, 0, from, lead, three, 3, 8.f, &water);
+    CHECK(e.point.y == doctest::Approx(12.f));
+    CHECK_FALSE(e.otherWater);
+    // 3. Every point cut off (or in other water): the first, marked cut off.
+    const WaterEntryEdge none[] = {pocket, canal};
+    e = waterFollowEntry(nullptr, 0, from, lead, none, 2, 8.f, &water);
+    CHECK(e.kind == WaterFollowEntryKind::Jump);
+    CHECK(e.cutOff);
+    CHECK(e.point.x == doctest::Approx(0.f));
+    CHECK(e.point.y == doctest::Approx(1.f));
+    // 4. Steps into the lead's body still come before any jump; no edges and no steps is None.
+    const WaterExit flight[] = {steps({-1.f, 4.f}, {1.f, 4.f})};
+    CHECK(waterFollowEntry(flight, 1, from, lead, none, 2, 8.f, &water).kind == WaterFollowEntryKind::Steps);
+    CHECK(waterFollowEntry(nullptr, 0, from, lead, none, 0, 8.f, &water).kind == WaterFollowEntryKind::None);
+
+    // The party: slot 0's only bank point is cut off, so it is placed with the lead at plan time (noEntry, a rejoin into
+    // the lead's water), never sent to jump into the pocket; slot 1 is offered a clear point along the bank and jumps there.
+    Scene s;
+    s.water = seaAndCanal();
+    s.members[0].position = {-3.f, 1.f, 0.5f};
+    s.members[0].edge = {0.f, 1.f};
+    s.members[0].edgeCutOff = true;
+    s.members[1].position = {-3.f, -1.f, 0.5f};
+    s.members[1].edge = {0.f, -1.f};
+    s.members[1].edgeCutOff = true;
+    s.members[1].altEdges[0] = clear;
+    s.members[1].altEdgeCount = 1;
+    bool noEntry = false, everEntry0 = false;
+    for (int k = 0; k < 80 && s.o(0).phase != WaterFollowPhase::Placed; ++k) {
+        s.step();
+        noEntry = noEntry || s.o(0).noEntry;
+        everEntry0 = everEntry0 || s.o(0).phase == WaterFollowPhase::ToEntry;
+    }
+    CHECK(s.o(0).phase == WaterFollowPhase::Placed);
+    CHECK(noEntry);
+    CHECK(s.o(0).place);
+    CHECK(s.o(0).rejoin);
+    CHECK(s.water.bodyAt({s.o(0).target.x, s.o(0).target.y}) == 0);
+    CHECK_FALSE(everEntry0);
+    s.step();
+    CHECK(s.o(1).phase == WaterFollowPhase::ToEntry);
+    CHECK(s.o(1).entry.kind == WaterFollowEntryKind::Jump);
+    CHECK(s.o(1).entry.point.y == doctest::Approx(12.f));
+    CHECK_FALSE(s.o(1).noEntry);
+    CHECK_FALSE(s.o(0).noEntry); // reported on the step it was decided only
+}
+
 TEST_CASE("water follow (11-20): the surface step stays in the water: taken, slid along the edge, or held") {
     const WaterBodies water = sea();
     SeaSampler at{&water, {1.f, 0.f}};

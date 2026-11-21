@@ -20,6 +20,7 @@
 namespace ftcore {
 
 inline constexpr int kWaterFollowMax = 4;
+inline constexpr int kWaterEntryAlts = 4; // other bank points a member may jump from (WaterFollowMember::altEdges)
 
 struct WaterFollowTuning {
     float trigger = 0.8f;          // s the lead swims before the followers start in
@@ -104,6 +105,16 @@ struct WaterFollowEntry {
     Vec2 into{};       // where the entry move ends in the water: the steps' foot, or a metre out from the edge
     int exitIndex = -1; // Steps: the exit used
     bool otherWater = false; // Jump, given the bodies: its landing is not in the lead's body (another body, or none)
+    bool cutOff = false;     // Jump: every bank point offered was cut off from the lead (WaterEntryEdge::cutOff)
+};
+
+// A bank point a follower may jump in from, and the way into the water there. `cutOff`: the host found the jump or the
+// swim from its landing to the lead blocked by a solid (11-21 replay 6: a block in the sea standing between the quay and
+// the lead left a pocket no slide gets out of); such a point is never jumped from.
+struct WaterEntryEdge {
+    Vec2 point{};
+    Vec2 out{1.f, 0.f};
+    bool cutOff = false;
 };
 
 namespace water_follow_detail {
@@ -130,12 +141,15 @@ inline float hash01(int order, std::uint32_t seed) {
 } // namespace water_follow_detail
 
 // The entry: the Steps exit whose head is nearest the follower's path to the lead, within `within` m of it, walked in;
-// else a jump from `edge` (the bank point nearest where it stands, PartyShore's), landing `edgeOut` (unit, toward the
-// water) a metre out. Never None: a body with no steps (the Strip's sea, 11-20) gives the jump.
+// else a jump from the first of `edges` (the bank point toward the lead first, PartyShore's, then the host's others along
+// the bank) that is not cut off from the lead and lands in the lead's body, landing a metre out along its `out` (unit).
+// With none such, the jump from edges[0], marked otherWater and cutOff as found: the plan then places the follower with
+// the lead (it never jumps into a pocket or other water). None only with no edges at all.
 // With `water` (and the lead in a body), only steps whose foot is in the lead's body count: a flight into other water
 // (a canal by the sea, 11-20 run 5) has no swim to the lead. A jump landing out of the lead's body is marked otherWater.
-inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t count, Vec2 from, Vec2 lead, Vec2 edge,
-                                         Vec2 edgeOut, float within = 8.f, const WaterBodies* water = nullptr) {
+inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t count, Vec2 from, Vec2 lead,
+                                         const WaterEntryEdge* edges, std::size_t edgeCount, float within = 8.f,
+                                         const WaterBodies* water = nullptr) {
     namespace d = water_follow_detail;
     WaterFollowEntry e;
     const int leadBody = water ? water->bodyAt(lead) : -1;
@@ -156,13 +170,28 @@ inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t cou
             e.exitIndex = int(i);
         }
     }
-    if (e.kind == WaterFollowEntryKind::None) {
+    if (e.kind != WaterFollowEntryKind::None || edgeCount == 0) return e;
+    auto jumpFrom = [&](const WaterEntryEdge& g) {
         e.kind = WaterFollowEntryKind::Jump;
-        e.point = edge;
-        e.into = Vec2{edge.x + edgeOut.x, edge.y + edgeOut.y};
+        e.point = g.point;
+        e.into = Vec2{g.point.x + g.out.x, g.point.y + g.out.y};
         e.otherWater = leadBody >= 0 && water->bodyAt(e.into) != leadBody;
+        e.cutOff = g.cutOff;
+    };
+    for (std::size_t i = 0; i < edgeCount; ++i) {
+        if (edges[i].cutOff) continue;
+        jumpFrom(edges[i]);
+        if (!e.otherWater) return e;
     }
+    jumpFrom(edges[0]);
     return e;
+}
+
+// The same with one bank point, never cut off (the tests' and the old hosts' form).
+inline WaterFollowEntry waterFollowEntry(const WaterExit* exits, std::size_t count, Vec2 from, Vec2 lead, Vec2 edge,
+                                         Vec2 edgeOut, float within = 8.f, const WaterBodies* water = nullptr) {
+    const WaterEntryEdge one{edge, edgeOut, false};
+    return waterFollowEntry(exits, count, from, lead, &one, 1, within, water);
 }
 
 // The surface swimmer's step at the water's edge (11-20: followers swam on over banks and an in-sea block, and dried
@@ -343,6 +372,9 @@ struct WaterFollowMember {
     Vec2 edge{};                // ashore: the bank point nearest it (PartyShore) and the way into the water there
     Vec2 edgeOut{1.f, 0.f};
     bool hasEdge = true;        // ashore: the host found water toward the lead (else no jump entry: it stays ashore)
+    bool edgeCutOff = false;    // ashore: the jump from edge, or the swim from its landing to the lead, meets a solid
+    WaterEntryEdge altEdges[kWaterEntryAlts]{}; // ashore: other bank points along the bank, nearest first (the host's)
+    int altEdgeCount = 0;
     bool blocked = false;       // at the surface: its last move was held at the water's edge (waterSurfaceStep's Hold).
                                 // The watchdog counts it whatever the gap, and rejoins it with the lead
     bool turned = false;        // ... or slid along it (Slide): counted the same while it has not got 0.5 m from where
@@ -365,6 +397,8 @@ struct WaterFollowOrder {
     int exitIndex = -1;         // ToExit, ExitWait, Climbing: its exit
     bool startClimb = false;    // this step: start the climb
     bool place = false;         // this step: place it with the lead (the lead's rescue)
+    bool noEntry = false;       // this step: placed at plan time because no entry reaches the lead (every jump lands in
+                                // other water or is cut off from it by a solid); the host logs it
     bool rejoin = false;        // Placed with the lead swimming: put it at target (its surface slot, in the water),
                                 // swimming; the next step it is at the surface and follows from there
     // For the follower's WaterLoco: Swim's state, as if it had one, and the step's events.
@@ -457,6 +491,7 @@ public:
             o.startEntry = false;
             o.startClimb = false;
             o.place = false;
+            o.noEntry = false;
             const bool rejoined = o.rejoin; // last step asked the host to put it at o.target, in the water
             const Vec2 rejoinTo{o.target.x, o.target.y};
             o.rejoin = false;
@@ -490,15 +525,22 @@ public:
                 // Mid-traversal it picks its entry (ToEntry waits); a walk just given up picks again next step.
                 if (was != WaterFollowPhase::ToEntry && !m.held && !lead.exiting && leadSwim_ >= tuning_.trigger) {
                     const Vec2 here{m.position.x, m.position.y};
-                    o.entry = waterFollowEntry(exits, exitCount, here, Vec2{lead.position.x, lead.position.y}, m.edge,
-                                               m.edgeOut, tuning_.stepsWithin, water);
+                    WaterEntryEdge edges[1 + kWaterEntryAlts];
+                    edges[0] = WaterEntryEdge{m.edge, m.edgeOut, m.edgeCutOff};
+                    const int alts = m.altEdgeCount < 0 ? 0 : (m.altEdgeCount > kWaterEntryAlts ? kWaterEntryAlts : m.altEdgeCount);
+                    for (int k = 0; k < alts; ++k) edges[1 + k] = m.altEdges[k];
+                    o.entry = waterFollowEntry(exits, exitCount, here, Vec2{lead.position.x, lead.position.y}, edges,
+                                               std::size_t(1 + alts), tuning_.stepsWithin, water);
                     // A jump needs the water's edge; with none found toward the lead it stays ashore. A jump into other
-                    // water than the lead's (no steps into its body near the path, 11-20) is no way to it: the follower
-                    // is placed with the lead in the water instead (a rejoin, as after a second walk given up).
-                    if (o.entry.kind == WaterFollowEntryKind::Jump && m.hasEdge && o.entry.otherWater) {
+                    // water than the lead's (no steps into its body near the path, 11-20), or one cut off from the lead
+                    // by a solid from every bank point offered (11-21), is no way to it: the follower is placed with the
+                    // lead in the water now (a rejoin, as after a second walk given up), never left to slide along the
+                    // solid until the watchdog.
+                    if (o.entry.kind == WaterFollowEntryKind::Jump && m.hasEdge && (o.entry.otherWater || o.entry.cutOff)) {
                         go(o, WaterFollowPhase::Placed);
                         o.entry = WaterFollowEntry{};
                         o.place = true;
+                        o.noEntry = true;
                     } else if (o.entry.kind == WaterFollowEntryKind::Steps || m.hasEdge) {
                         go(o, WaterFollowPhase::ToEntry);
                     } else {

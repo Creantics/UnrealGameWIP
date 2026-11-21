@@ -233,7 +233,14 @@ private:
 	bool TickWater(const FVector2D& Ground, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	void WaterWalk(const FVector2D& To, float WalkSpeed, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	void SenseWater(const UFTWaterSubsystem& System, const FVector& At, bool bSwimming);
-	bool FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt);
+	bool FindWaterEdge(const UFTWaterSubsystem& System, const FVector& At, const FVector& LeadAt);
+	// The bank's edge on the way from From (cm) to the lead, in the lead's own water (other water passed over): Edge and
+	// the way in there (m). False with no water that way within 20 m.
+	bool MarchWaterEdge(const ftcore::WaterBodies& Bodies, const FVector2D& From, const FVector& LeadAt, ftcore::Vec2& Edge, ftcore::Vec2& Out) const;
+	// A jump from Edge (m, along Out) cut off from the lead: the jump's line from the bank to its landing, or the swim's
+	// from the landing to the lead at the surface, meets a solid (a Visibility trace), or the swim's crosses land or other
+	// water. 11-21 replay 6: a block in the sea between the quay and the lead.
+	bool WaterJumpCutOff(const UFTWaterSubsystem& System, ftcore::Vec2 Edge, ftcore::Vec2 Out, double BankZ, const FVector& LeadAt) const;
 	// The water's state for a swimmer at the surface at P (cm): its feet by the one surface rule over the bed there, the
 	// bed traced from 60 cm over the surface (a deck lower than that blocks) down 30 m. No surface there, or the trace
 	// starting inside a solid (a pier, a quay's block), is Dry. Allocation-free (the member query params).
@@ -259,6 +266,10 @@ private:
 	ftcore::Vec2 WaterEdge{};                   // m: the bank's edge toward the lead, and the way in there
 	ftcore::Vec2 WaterEdgeOut{1.f, 0.f};
 	bool bWaterHasEdge = false;                 // water was found toward the lead (else no jump in)
+	bool bWaterEdgeCutOff = false;              // that edge's jump is cut off from the lead by a solid
+	ftcore::WaterEntryEdge WaterAltEdges[ftcore::kWaterEntryAlts]; // then: clear edges further along the bank, nearest first
+	int32 WaterAltEdgeCount = 0;
+	int32 WaterEdgeLogged = -2;                 // the cut-off state last logged (-1 clear, else the alternatives found)
 	float WaterEdgeAge = 1.f;                   // s since the edge was last looked for
 	// -SwimProof (AFTExploreCharacter::TickSwimProof; dev): slot 0 is held stuck until it is rejoined, then its feet
 	// height is logged four times a second for 2 s, then its spread over those 2 s (cm): the lowest and highest feet, and
