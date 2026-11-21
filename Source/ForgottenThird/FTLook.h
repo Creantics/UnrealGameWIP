@@ -269,6 +269,10 @@ FORGOTTENTHIRD_API int32 SetFront(const FFTLeadLook& Look, const FFTWornFronts& 
 // instances of its pieces' slots gathers them again when it differs from the one it saw.
 FORGOTTENTHIRD_API uint32 WornMeshSerial();
 
+// Moves WornMeshSerial on from outside a swap: an owner that put another material on a worn slot (the flesh contact's
+// copy, FTFleshContact.h) calls it so the wet switch gathers that slot's dynamic instance again.
+FORGOTTENTHIRD_API void BumpWornMeshSerial();
+
 // Each under piece among `Pieces` gets the copy the over pieces now worn call for (its cut while its over piece is
 // worn, else the whole piece), as SetFront switches a piece. Worn pieces are the visible ones with a mesh; the command
 // line's left-off rule holds (ftcore::look::UnderChoiceLeftOff). Returns how many pieces changed.

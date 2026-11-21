@@ -396,6 +396,11 @@ uint32 FTLook::WornMeshSerial()
 	return FTLookLayers::Serial();
 }
 
+void FTLook::BumpWornMeshSerial()
+{
+	++FTLookLayers::Serial();
+}
+
 FFTWornFronts FTLook::PrepareFronts(const FFTLeadLook& Look, const TCHAR* Who)
 {
 	FFTWornFronts Fronts;

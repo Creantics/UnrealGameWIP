@@ -50,6 +50,7 @@
 #include "UObject/ConstructorHelpers.h"
 
 #include "FTExploreDirector.h"
+#include "FTFleshContact.h"
 #include "FTExploreHUD.h"
 #include "FTCutsceneDirector.h"
 #include "FTFieldDummy.h"
@@ -200,6 +201,28 @@ void AFTExploreCharacter::BeginPlay()
 		UE_LOG(LogForgottenThird, Display, TEXT("Water: -SwimSwitchKeep: a lead switch while swimming keeps the party in the water (refused while climbing out or rescued)."));
 	}
 #if !UE_BUILD_SHIPPING // capture and check switches: not in a shipped game
+	{
+		// -ExploreFlesh=<shot prefix> [-ExploreFleshOverlap=<cm>] [-ExploreFleshAllocs] [-FleshFolder=<content path>]: the
+		// flesh contact stills, the right palm on the left forearm (FTFleshContact.h). Needs the copies (FTBuildFlesh).
+		FString FleshPrefix;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreFlesh="), FleshPrefix) && !FleshPrefix.IsEmpty())
+		{
+			float Overlap = 0.6f;
+			FParse::Value(FCommandLine::Get(), TEXT("ExploreFleshOverlap="), Overlap);
+			FString FleshFolder;
+			FParse::Value(FCommandLine::Get(), TEXT("FleshFolder="), FleshFolder);
+			UFTFleshContact* Flesh = NewObject<UFTFleshContact>(this, TEXT("FleshContactProof"));
+			Flesh->RegisterComponent();
+			FFTFleshPair Pair;
+			Pair.Name = TEXT("RightPalmOnLeftForearm");
+			Pair.PresserBone = TEXT("hand_r");
+			Pair.PresserTip = TEXT("middle_01_r");
+			Pair.ReceiverBone = TEXT("lowerarm_l");
+			Pair.ReceiverTip = TEXT("hand_l");
+			Flesh->Setup(GetMesh(), TArrayView<const FFTFleshPair>(&Pair, 1), FleshFolder);
+			Flesh->StartProof(FleshPrefix, Overlap);
+		}
+	}
 	{
 		// -LeadGo=<x,y> (plan frame of -WorldEyeSide, default 1000 m) [-LeadGoAfter=<s>] [-LeadGoJump] [-LeadGoQuit=<s>].
 		FString Go;

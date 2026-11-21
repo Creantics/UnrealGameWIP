@@ -1809,6 +1809,18 @@ void FFTLocomotionAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float Delt
 		AimWeight = 0.f;
 	}
 	SupportWeight = AimWeight > 0.f && AimSide == 1 ? FMath::Clamp(Instance->PushedSupport, 0.f, 1.f) : 0.f;
+	PlaceWeight = FMath::Clamp(Instance->PushedPlaceWeight, 0.f, 1.f);
+	PlaceSide = Instance->PushedPlaceSide == 0 ? 0 : 1;
+	if (const USkeletalMeshComponent* Skel = Instance->GetSkelMeshComponent(); Skel && PlaceWeight > 0.f)
+	{
+		const FTransform& C = Skel->GetComponentTransform();
+		PlaceWrist = C.InverseTransformPosition(Instance->PushedPlaceWrist);
+		PlaceRotation = (C.GetRotation().Inverse() * Instance->PushedPlaceRotation).GetNormalized();
+	}
+	else
+	{
+		PlaceWeight = 0.f;
+	}
 	// -LocoNoBend leaves the clips' own trunk, head and elbows, for measuring what the bend adds.
 	static const bool bNoBend = FParse::Param(FCommandLine::Get(), TEXT("LocoNoBend"));
 	if (bNoBend)
@@ -2296,6 +2308,7 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 	const bool bNeck = NeckValid > 0 && !HeadBend.Equals(FQuat::Identity, 1e-5);
 	const bool bElbows = ElbowHold > 0.002f && ElbowBend > 0.f;
 	const bool bAim = AimWeight > 0.001f;
+	const bool bPlace = PlaceWeight > 0.001f;
 	// Held through a hit pause too (the anim's time stopped, HoldDt 0): the steps wait, the feet stay put.
 	bool bLegs = Feet.legsNeeded(bFootLock); // a sunk pelvis too: dropping it at once would pop the body up
 	for (int32 I = 0; bLegs && I < 2; ++I)
@@ -2304,7 +2317,7 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 			&& Limb[NumArmBones + I * 3 + 1].IsValidToEvaluate(Container) && Limb[NumArmBones + I * 3 + 2].IsValidToEvaluate(Container);
 	}
 	const bool bReady = Ready && ReadyShare > 0.001f;
-	if (!bSpine && !bNeck && !bElbows && !bAim && !bLegs && !bReady)
+	if (!bSpine && !bNeck && !bElbows && !bAim && !bPlace && !bLegs && !bReady)
 	{
 		return true;
 	}
@@ -2432,6 +2445,37 @@ bool FFTLocomotionAnimProxy::Evaluate(FPoseContext& Output)
 					SolveSupportHand(CS, Container, Limb, Output.Pose, SupportWeight, Blended[2].GetTranslation(), Dir);
 				}
 			}
+		}
+	}
+	// The hand place (proof only): the wrist onto PlaceWrist by two-bone IK in the elbow's own plane, the hand to
+	// PlaceRotation; after the arm aim, so a placed hand can rest on an aimed arm.
+	if (bPlace)
+	{
+		const FBoneReference& Upper = Limb[PlaceSide * 4 + 1];
+		const FBoneReference& Lower = Limb[PlaceSide * 4 + 2];
+		const FBoneReference& Hand = Limb[PlaceSide * 4 + 3];
+		if (Upper.IsValidToEvaluate(Container) && Lower.IsValidToEvaluate(Container) && Hand.IsValidToEvaluate(Container))
+		{
+			const FCompactPoseBoneIndex UI = Upper.GetCompactPoseIndex(Container);
+			const FCompactPoseBoneIndex LI = Lower.GetCompactPoseIndex(Container);
+			const FCompactPoseBoneIndex HI = Hand.GetCompactPoseIndex(Container);
+			const FTransform U0 = CS.GetComponentSpaceTransform(UI);
+			const FTransform L0 = CS.GetComponentSpaceTransform(LI);
+			const FTransform H0 = CS.GetComponentSpaceTransform(HI);
+			const FVector Mid = U0.GetTranslation() + (H0.GetTranslation() - U0.GetTranslation()) * 0.5;
+			FVector Out = L0.GetTranslation() - Mid;
+			Out = Out.SizeSquared() > 1.0 ? Out.GetSafeNormal() : FVector(0.0, 0.0, -1.0);
+			FTransform U = U0;
+			FTransform L = L0;
+			FTransform H = H0;
+			AnimationCore::SolveTwoBoneIK(U, L, H, L0.GetTranslation() + Out * 30.0, PlaceWrist, false, 1.0, 1.0);
+			H.SetRotation(PlaceRotation);
+			FTransform Blended[3];
+			Blended[0].Blend(U0, U, PlaceWeight);
+			Blended[1].Blend(L0, L, PlaceWeight);
+			Blended[2].Blend(H0, H, PlaceWeight);
+			const FBoneTransform Set[3] = {{UI, Blended[0]}, {LI, Blended[1]}, {HI, Blended[2]}};
+			CS.SafeSetCSBoneTransforms(MakeArrayView(Set, 3));
 		}
 	}
 	FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(MoveTemp(CS), Output.Pose);

@@ -182,6 +182,11 @@ private:
 	FVector AimTarget = FVector::ZeroVector;
 	FVector AimAxis = FVector::ForwardVector;
 	float AimReach = 0.f;
+	// The hand place (SetHandPlace), its wrist and hand rotation in component space.
+	float PlaceWeight = 0.f;
+	int32 PlaceSide = 1;
+	FVector PlaceWrist = FVector::ZeroVector;
+	FQuat PlaceRotation = FQuat::Identity;
 	// The other hand's support of the aimed one (SetSupportHand): by SupportWeight its wrist beside and under the
 	// aimed wrist, its fingers wrapped, for a two-handed hold.
 	float SupportWeight = 0.f;
@@ -347,6 +352,15 @@ public:
 		PushedAimWeight = Weight;
 		PushedAimAxis = Axis;
 		PushedAimReach = Reach;
+	}
+	// Proof only (flesh contact stills): by Weight (0..1, 0 off) the arm on Side (0 left, 1 right) is put by two-bone IK
+	// so its wrist is at Wrist (world, cm) and its hand bone turned to Rotation (world), after the arm aim.
+	void SetHandPlace(int32 Side, const FVector& Wrist, const FQuat& Rotation, float Weight)
+	{
+		PushedPlaceSide = Side;
+		PushedPlaceWrist = Wrist;
+		PushedPlaceRotation = Rotation;
+		PushedPlaceWeight = Weight;
 	}
 	// The hands closed into fists by Left and Right (0..1; 1 a full fist, 0.5 half closed, below 0 the clip's own
 	// fingers): each finger bone at its ref pose turned toward the palm (the thumb's side) by its share of the fist
@@ -568,6 +582,10 @@ private:
 	float PushedAimWeight = 0.f;
 	FVector PushedAimAxis = FVector::ForwardVector;
 	float PushedAimReach = 0.f;
+	int32 PushedPlaceSide = 1;
+	FVector PushedPlaceWrist = FVector::ZeroVector;
+	FQuat PushedPlaceRotation = FQuat::Identity;
+	float PushedPlaceWeight = 0.f;
 	float PushedCurl[2] = {-1.f, -1.f};
 	bool bPushedGrip[2] = {false, false};
 	float PushedSupport = 0.f;
