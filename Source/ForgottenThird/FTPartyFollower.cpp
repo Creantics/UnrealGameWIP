@@ -937,12 +937,12 @@ bool AFTPartyFollower::IntoWaterToward(const UFTWaterSubsystem& System, const FV
 	}
 	const FVector2D Dir = Way.GetSafeNormal();
 	// Only the water To is in (the lead's body), when it is in one: a canal passed on the way is not a way to the lead.
-	const int Body = System.HasBodies() ? System.Bodies().bodyAt(FTSwimUnits::ToPlan(FVector(To.X, To.Y, 0.0))) : -1;
+	const int ToBody = System.HasBodies() ? System.Bodies().bodyAt(FTSwimUnits::ToPlan(FVector(To.X, To.Y, 0.0))) : -1;
 	for (double Along = 0.0; Along <= Far; Along += 50.0)
 	{
 		const FVector2D Q = P + Dir * Along;
 		const ftcore::WaterState S = SampleSwimAt(System, Q, 0.f);
-		if (ftcore::waterIn(S) && (Body < 0 || S.body == Body))
+		if (ftcore::waterIn(S) && (ToBody < 0 || S.body == ToBody))
 		{
 			Out = Q;
 			return true;

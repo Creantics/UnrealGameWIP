@@ -5966,11 +5966,11 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 		FScreenshotRequest::RequestScreenshot(Path, false, false);
 		FSwimReplaySlot& R = SwimProofReplay[I];
 		++R.Shots;
-		const bool bHidden = Partner && Partner->IsHidden();
-		R.HiddenShots += bHidden ? 1 : 0;
+		const bool bPartnerHidden = Partner && Partner->IsHidden();
+		R.HiddenShots += bPartnerHidden ? 1 : 0;
 		SwimProofReplayShotWho = I;
 		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: still %03d (%s) for slot %d at %.1f s: hidden %d, %s."), SwimProofReplayRun, SwimProofReplayShot, Why, I,
-			SwimProofTime, bHidden ? 1 : 0, *Path);
+			SwimProofTime, bPartnerHidden ? 1 : 0, *Path);
 		++SwimProofReplayShot;
 	};
 	const bool bLeadAtFar = SwimProofStage >= 4;
