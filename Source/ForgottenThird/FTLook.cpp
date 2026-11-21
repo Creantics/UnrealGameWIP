@@ -1076,7 +1076,8 @@ int32 FTLook::ShowWet(AActor& Owner, FFTWetState& State, const ftcore::WaterWetn
 			Swapped, Surface);
 	}
 	const float Target = ftcore::leadwet::skin(Surface);
-	State.SkinEased = ftcore::leadwet::ease(State.SkinEased, Target, DeltaSeconds);
+	State.SkinEased = State.bSkinSnap ? Target : ftcore::leadwet::ease(State.SkinEased, Target, DeltaSeconds);
+	State.bSkinSnap = false;
 	const float Skin = State.SkinEased;
 	const bool bChanged = FMath::Abs(Skin - State.SkinShown) > 0.004f || (Skin == Target && Skin != State.SkinShown);
 	if (!State.bMade || !bChanged)

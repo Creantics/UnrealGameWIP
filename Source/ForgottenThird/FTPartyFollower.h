@@ -111,6 +111,12 @@ public:
 	// ftcore::leadwet::partyWeather) by FTLook::ShowWet. Dry and never wet costs a few compares.
 	void StepWet(float Weather, float DeltaSeconds);
 	const ftcore::WaterWetness& GetWetness() const { return Wet; }
+	// Its own soak back after a respawn or a lead switch (ftcore::leadwet::PartyWet); the next show lands the skin at once.
+	void SetWetness(const ftcore::WaterWetness& Soak)
+	{
+		Wet = Soak;
+		WetState.bSkinSnap = true;
+	}
 
 private:
 	// Takes the lead's vaults, climbs and catches begun since the last call, and forgets those the body at Feet is past or

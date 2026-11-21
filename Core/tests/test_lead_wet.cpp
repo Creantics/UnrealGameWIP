@@ -223,3 +223,57 @@ TEST_CASE("lead wet: every follower steps its own soak and shows it under its pa
         CHECK(allocs == 0);
     }
 }
+
+TEST_CASE("lead wet: the soak stays with the member across a lead switch") {
+    // A party of three (lead 0, followers 1 and 2), as SpawnFollowers walks it.
+    CHECK(lw::followerMember(0, 0, 3) == 1);
+    CHECK(lw::followerMember(0, 1, 3) == 2);
+    CHECK(lw::followerMember(1, 0, 3) == 2);
+    CHECK(lw::followerMember(1, 1, 3) == 0);
+    CHECK(lw::followerMember(2, 1, 3) == 1);
+    CHECK(lw::followerMember(0, 2, 3) == -1); // only count - 1 followers
+    CHECK(lw::followerMember(3, 0, 3) == -1);
+    CHECK(lw::followerMember(-1, 0, 3) == -1);
+    CHECK(lw::followerMember(0, -1, 3) == -1);
+    CHECK(lw::followerMember(0, 0, 0) == -1);
+    static_assert(lw::followerMember(2, 0, 3) == 0);
+
+    // The lead (member 0) has swum; follower 0 (member 1) is dry, follower 1 (member 2) waded to the knee.
+    ftcore::WaterWetness lead{1.f, 1.2f, 0.4f};
+    const ftcore::WaterWetness knee{0.6f, 0.45f, 0.1f};
+    std::array<ftcore::WaterWetness, 2> followers{ftcore::WaterWetness{}, knee};
+    lw::PartyWet party;
+    const auto before = ftcore_test::allocStats().count;
+    // Switch to member 1: as OnLeadChanged and ClearFollowers store them, the old lead's and each follower's.
+    party.store(0, lead);
+    for (int i = 0; i < 2; ++i) {
+        party.store(lw::followerMember(0, i, 3), followers[static_cast<std::size_t>(i)]);
+    }
+    lead = party.of(1); // the new lead takes its own
+    for (int i = 0; i < 2; ++i) {
+        followers[static_cast<std::size_t>(i)] = party.of(lw::followerMember(1, i, 3)); // SpawnFollowers
+    }
+    const auto allocs = ftcore_test::allocStats().count - before;
+    CHECK(lead.wetness == 0.f); // member 1 was dry
+    CHECK(followers[0].wetness == doctest::Approx(0.6f)); // member 2 walks first now, still knee-wet
+    CHECK(followers[0].line == doctest::Approx(0.45f));
+    CHECK(followers[1].wetness == doctest::Approx(1.f)); // the old lead, still soaked, with its line and stain
+    CHECK(followers[1].line == doctest::Approx(1.2f));
+    CHECK(followers[1].silt == doctest::Approx(0.4f));
+    // And back: the round trip gives each its own again.
+    party.store(1, lead);
+    for (int i = 0; i < 2; ++i) {
+        party.store(lw::followerMember(1, i, 3), followers[static_cast<std::size_t>(i)]);
+    }
+    CHECK(party.of(0).wetness == doctest::Approx(1.f));
+    CHECK(party.of(1).wetness == 0.f);
+    CHECK(party.of(2).silt == doctest::Approx(0.1f));
+    // Out of range: store is a no-op, of is dry.
+    party.store(-1, lead);
+    party.store(lw::kPartyWetMembers, ftcore::WaterWetness{1.f, 2.f, 1.f});
+    CHECK(party.of(lw::kPartyWetMembers).wetness == 0.f);
+    CHECK(party.of(-1).silt == 0.f);
+    if (ftcore_test::allocHookInstalled()) {
+        CHECK(allocs == 0);
+    }
+}
