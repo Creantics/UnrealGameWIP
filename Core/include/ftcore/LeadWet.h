@@ -169,4 +169,29 @@ constexpr float partyWeather(float leadW, int slot, const PartyWetForce& force) 
     return force.on && (force.slot == -1 || force.slot == slot) ? unit(force.wetness) : unit(leadW);
 }
 
+// The soak belongs to the member, not to the body the player drives. The lead's lives in the water subsystem and each
+// follower's on its actor; when the followers are cleared (a lead switch, a respawn) each one's is stored here by its
+// place in the party, the old lead's too, and the new lead and the new followers take theirs back. A member with no
+// live actor (a failed spawn, one over the follower cap) keeps the soak it was stored with until it has one again.
+inline constexpr int kPartyWetMembers = 8;
+
+// The party member follower i walks as behind `lead`, in a party of `count` (the members after the lead, in order);
+// -1 when any argument is out of range.
+constexpr int followerMember(int lead, int i, int count) {
+    return count > 0 && lead >= 0 && lead < count && i >= 0 && i < count - 1 ? (lead + 1 + i) % count : -1;
+}
+
+struct PartyWet {
+    WaterWetness member[kPartyWetMembers]{};
+    static constexpr bool has(int m) { return m >= 0 && m < kPartyWetMembers; }
+    // Out of range is a no-op.
+    constexpr void store(int m, const WaterWetness& w) {
+        if (has(m)) {
+            member[m] = w;
+        }
+    }
+    // Out of range is dry.
+    constexpr WaterWetness of(int m) const { return has(m) ? member[m] : WaterWetness{}; }
+};
+
 } // namespace ftcore::leadwet
