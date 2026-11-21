@@ -13,7 +13,7 @@
   {
    "id": "walk",
    "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Trot",
-   "length_s": 0.333,
+   "length_s": 0.4,
    "impact_s": 0,
    "speed_mps": 2.6,
    "loop": true
@@ -24,6 +24,14 @@
    "length_s": 0.4,
    "impact_s": 0,
    "speed_mps": 5.5,
+   "loop": true
+  },
+  {
+   "id": "slow",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Walk",
+   "length_s": 0.867,
+   "impact_s": 0,
+   "speed_mps": 0.85,
    "loop": true
   },
   {

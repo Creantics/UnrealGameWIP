@@ -115,6 +115,19 @@ bool pickRunGait(double speed, double walkSpeed, double runSpeed, bool wasRun) {
     return wasRun ? speed > mid - 0.1 * gap : speed > mid + 0.1 * gap;
 }
 
+MoverGait pickMoverGait(double speed, double slowSpeed, double walkSpeed, double runSpeed, double minRate, double maxRate, MoverGait was) {
+    if (pickRunGait(speed, walkSpeed, runSpeed, was == MoverGait::Run)) return MoverGait::Run;
+    if (!(slowSpeed > 0.0) || !(walkSpeed > slowSpeed) || !(speed == speed) || !(maxRate > 0.0) || !(minRate >= 0.0)) return MoverGait::Walk;
+    double up = slowSpeed * maxRate;  // the slow gait's fastest clean speed
+    double down = walkSpeed * minRate; // the walk's slowest
+    if (!(up > down)) {
+        const double mid = 0.5 * (up + down), band = 0.05 * (walkSpeed - slowSpeed);
+        up = mid + band;
+        down = mid - band;
+    }
+    return (was == MoverGait::Slow ? speed <= up : speed < down) ? MoverGait::Slow : MoverGait::Walk;
+}
+
 double choreoStanceRate(const BeatClip& stance, double beatSeconds) {
     if (!(beatSeconds > 0.0) || !(stance.length > 0.0)) return 1.0;
     // The whole number of beats whose rate is inside the clamp and nearest to 1.

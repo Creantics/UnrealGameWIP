@@ -270,6 +270,15 @@ FTCORE_API double choreoStanceRate(const BeatClip& stance, double beatSeconds);
 // midpoint less a tenth. wasRun is the last pick. Speeds in m/s; with no gap (runSpeed <= walkSpeed) it never runs.
 FTCORE_API bool pickRunGait(double speed, double walkSpeed, double runSpeed, bool wasRun);
 
+// A mover's gait with an optional slow gait under the walk: slow (authored at slowSpeed), walk (walkSpeed) and run (runSpeed).
+// Walk against run is pickRunGait. Under the run, slow against walk keeps each clip inside its play-rate clamp
+// [minRate, maxRate] where it can: where the two clean bands overlap it stays slow up to slowSpeed x maxRate and walks
+// down to walkSpeed x minRate (the widest band with neither clip past its clamp); where they don't, it switches at their
+// midpoint with a band of a twentieth of the speed gap. With no slow gait (slowSpeed <= 0, or not under walkSpeed) it is
+// exactly pickRunGait: Walk or Run. was is the last pick.
+enum class MoverGait : std::uint8_t { Slow, Walk, Run };
+FTCORE_API MoverGait pickMoverGait(double speed, double slowSpeed, double walkSpeed, double runSpeed, double minRate, double maxRate, MoverGait was);
+
 // ---- the sample ----
 
 struct ChoreoPose {

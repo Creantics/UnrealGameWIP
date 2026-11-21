@@ -1229,3 +1229,55 @@ TEST_CASE("pickRunGait: walk to run above the midpoint, back below it, with a ba
     CHECK_FALSE(ftcore::pickRunGait(9.0, 3.0, 2.0, true));
     CHECK_FALSE(ftcore::pickRunGait(std::nan(""), 2.6, 5.5, true));
 }
+
+TEST_CASE("pickMoverGait: with no slow gait it is pickRunGait, at every speed and last pick") {
+    using G = ftcore::MoverGait;
+    for (const double slow : {0.0, -1.0, 2.6, 3.0, std::nan("")})
+        for (int i = 0; i <= 800; ++i) {
+            const double v = 0.01 * i;
+            for (const G was : {G::Slow, G::Walk, G::Run}) {
+                const bool run = ftcore::pickRunGait(v, 2.6, 5.5, was == G::Run);
+                CHECK(ftcore::pickMoverGait(v, slow, 2.6, 5.5, 0.5, 1.6, was) == (run ? G::Run : G::Walk));
+            }
+        }
+}
+
+TEST_CASE("maw_pup clips: the slow gait sits under the trot, and their clean bands meet at the host's rate clamp") {
+    std::string err;
+    std::vector<std::string> warnings;
+    ftcore::BeatClips clips;
+    REQUIRE_MESSAGE(ftcore::importBeatClips(readData("Anim/maw_pup_clips.json"), clips, &err, &warnings), err);
+    const int slow = clips.find("slow"), walk = clips.find("walk"), run = clips.find("run");
+    REQUIRE(slow >= 0);
+    REQUIRE(walk >= 0);
+    REQUIRE(run >= 0);
+    const double vs = clips[static_cast<std::size_t>(slow)].speed, vw = clips[static_cast<std::size_t>(walk)].speed;
+    CHECK(clips[static_cast<std::size_t>(slow)].loop);
+    CHECK(vs > 0.0);
+    CHECK(vs < vw);
+    // FTArenaRunner plays a gait at 0.5x to 1.6x its authored speed: the slow gait's top reaches the trot's bottom, so
+    // neither skates across the switch.
+    CHECK(vs * 1.6 >= vw * 0.5);
+    using G = ftcore::MoverGait;
+    CHECK(ftcore::pickMoverGait(0.6, vs, vw, clips[static_cast<std::size_t>(run)].speed, 0.5, 1.6, G::Walk) == G::Slow);
+    CHECK(ftcore::pickMoverGait(2.6, vs, vw, clips[static_cast<std::size_t>(run)].speed, 0.5, 1.6, G::Slow) == G::Walk);
+}
+
+TEST_CASE("pickMoverGait: a slow gait under the walk, each clip kept inside its rate clamp") {
+    using G = ftcore::MoverGait;
+    // slow 0.85 (clean to 1.36), walk 2.6 (clean from 1.3), run 5.5: slow up to 1.36, walk down to 1.3
+    CHECK(ftcore::pickMoverGait(0.4, 0.85, 2.6, 5.5, 0.5, 1.6, G::Walk) == G::Slow);
+    CHECK(ftcore::pickMoverGait(1.29, 0.85, 2.6, 5.5, 0.5, 1.6, G::Walk) == G::Slow);
+    CHECK(ftcore::pickMoverGait(1.33, 0.85, 2.6, 5.5, 0.5, 1.6, G::Walk) == G::Walk); // inside the band: stays walking
+    CHECK(ftcore::pickMoverGait(1.33, 0.85, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Slow); // inside the band: stays slow
+    CHECK(ftcore::pickMoverGait(1.36, 0.85, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Slow);
+    CHECK(ftcore::pickMoverGait(1.37, 0.85, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Walk);
+    CHECK(ftcore::pickMoverGait(4.4, 0.85, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Run);
+    CHECK(ftcore::pickMoverGait(1.0, 0.85, 2.6, 5.5, 0.5, 1.6, G::Run) == G::Slow);
+    // bands that don't meet (slow 0.5 clean to 0.8, walk 2.6 clean from 1.3): the midpoint 1.05, band 0.105
+    CHECK(ftcore::pickMoverGait(1.1, 0.5, 2.6, 5.5, 0.5, 1.6, G::Walk) == G::Walk);
+    CHECK(ftcore::pickMoverGait(0.9, 0.5, 2.6, 5.5, 0.5, 1.6, G::Walk) == G::Slow);
+    CHECK(ftcore::pickMoverGait(1.1, 0.5, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Slow);
+    CHECK(ftcore::pickMoverGait(1.2, 0.5, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Walk);
+    CHECK(ftcore::pickMoverGait(std::nan(""), 0.85, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Walk);
+}

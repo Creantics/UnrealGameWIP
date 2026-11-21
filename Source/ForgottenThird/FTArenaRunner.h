@@ -98,6 +98,9 @@ struct FFTArenaSkin
 	// Optional, with walk: a faster gait (its speed_mps over the walk's), played in its place once the body is fast enough
 	// (ftcore::pickRunGait), at the body's speed over its own.
 	int32 Run = -1;
+	// Optional, with walk: a slower gait (its speed_mps under the walk's), played in its place below the walk's band
+	// (ftcore::pickMoverGait), at the body's speed over its own.
+	int32 Slow = -1;
 	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
@@ -859,6 +862,7 @@ private:
 	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
 	bool bWalking[ftcore::kMaxArenaEnemies] = {};
 	bool bRunning[ftcore::kMaxArenaEnemies] = {}; // walking on the run clip
+	bool bSlowGait[ftcore::kMaxArenaEnemies] = {}; // walking on the slow clip
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
 	// A step back's ground speed (m/s), from its SteppedBack event: the walk clip plays backward at it.
 	float StepBackSpeed[ftcore::kMaxArenaEnemies] = {};
