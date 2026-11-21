@@ -133,6 +133,15 @@ public:
 	void PinForProof(const FVector& At) { ProofPin = At; bProofPin = true; }
 	void UnpinProof() { bProofPin = false; }
 	bool IsProofPinned() const { return bProofPin; }
+	// How many times it went in from a bank point along the bank because the one toward the lead was cut off by a solid,
+	// and how many times the plan placed it because no entry reached the lead (order.noEntry), for the pass lines.
+	int32 GetWaterAltEntries() const { return WaterAltEntries; }
+	int32 GetWaterNoEntries() const { return WaterNoEntries; }
+	// The entry it would pick from At with the lead at LeadAt: the bank point toward the lead, whether its jump is cut off
+	// from the lead, and (then) up to kWaterEntryAlts clear points along the bank. False with no water toward the lead.
+	// Allocation-free; FindWaterEdge's, and -SwimProof=replay's spot 6b.
+	bool ProbeWaterEntry(const UFTWaterSubsystem& System, const FVector& At, const FVector& LeadAt, ftcore::Vec2& Edge, ftcore::Vec2& Out, bool& bCut,
+		ftcore::WaterEntryEdge* Alts, int32& AltCount) const;
 
 private:
 	// Takes the lead's vaults, climbs and catches begun since the last call, and forgets those the body at Feet is past or
@@ -237,10 +246,13 @@ private:
 	// The bank's edge on the way from From (cm) to the lead, in the lead's own water (other water passed over): Edge and
 	// the way in there (m). False with no water that way within 20 m.
 	bool MarchWaterEdge(const ftcore::WaterBodies& Bodies, const FVector2D& From, const FVector& LeadAt, ftcore::Vec2& Edge, ftcore::Vec2& Out) const;
-	// A jump from Edge (m, along Out) cut off from the lead: the jump's line from the bank to its landing, or the swim's
-	// from the landing to the lead at the surface, meets a solid (a Visibility trace), or the swim's crosses land or other
-	// water. 11-21 replay 6: a block in the sea between the quay and the lead.
+	// A jump from Edge (m, along Out) cut off from the lead (11-21 replay 6: a block in the sea between the quay and the
+	// lead): the landing out of the lead's body, a solid over the landing (a Visibility trace down its column from a metre
+	// over the bank, BankZ, to the surface), or the swim from the landing to the lead meeting a solid at the surface or
+	// crossing land or other water. The bank itself is not traced (a quay's lip or railing is the jump's, not a block).
 	bool WaterJumpCutOff(const UFTWaterSubsystem& System, ftcore::Vec2 Edge, ftcore::Vec2 Out, double BankZ, const FVector& LeadAt) const;
+	// The ground's height under P (cm), traced from NearZ + 2 m down 6 m; NearZ when there is none.
+	double GroundZAt(const FVector2D& P, double NearZ) const;
 	// The water's state for a swimmer at the surface at P (cm): its feet by the one surface rule over the bed there, the
 	// bed traced from 60 cm over the surface (a deck lower than that blocks) down 30 m. No surface there, or the trace
 	// starting inside a solid (a pier, a quay's block), is Dry. Allocation-free (the member query params).
@@ -270,6 +282,8 @@ private:
 	ftcore::WaterEntryEdge WaterAltEdges[ftcore::kWaterEntryAlts]; // then: clear edges further along the bank, nearest first
 	int32 WaterAltEdgeCount = 0;
 	int32 WaterEdgeLogged = -2;                 // the cut-off state last logged (-1 clear, else the alternatives found)
+	int32 WaterAltEntries = 0;
+	int32 WaterNoEntries = 0;
 	float WaterEdgeAge = 1.f;                   // s since the edge was last looked for
 	// -SwimProof (AFTExploreCharacter::TickSwimProof; dev): slot 0 is held stuck until it is rejoined, then its feet
 	// height is logged four times a second for 2 s, then its spread over those 2 s (cm): the lowest and highest feet, and

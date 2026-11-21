@@ -721,6 +721,13 @@ private:
 		int32 Shots = 0;
 		int32 HiddenShots = 0;
 		float LogAt = 0.f;
+		int32 PlacedSpells = 0;      // Placed spells (a rejoin, the watchdog's, or the plan's when no entry reaches the lead)
+		bool bPlacedBeforeEntry = false; // its first Placed came before any entry move
+		int32 EndBody = -2;          // its water body, and in the water, on its last tick
+		bool bEndIn = false;
+		FVector LastAt = FVector::ZeroVector;
+		float PopAt = -1.f;          // a placement at plan time to log in the camera's view (from, to) next tick
+		FVector PopFrom = FVector::ZeroVector;
 	};
 	void BeginSwimProofReplay();
 	void TickSwimProofReplay(const UFTWaterSubsystem& System, float DeltaSeconds);
@@ -731,6 +738,8 @@ private:
 	int32 SwimProofReplayShot = 0;
 	int32 SwimProofReplayShotWho = -1; // the slot a still was asked for last frame (its hidden flag read again this frame)
 	int32 SwimProofReplayEndShots = 0;
+	// -SwimProofReplay=7, spot 6b (11-21 ruling 2): the partners' stands the sweep picked (cm).
+	FVector SwimProof6bStand[2] = {FVector::ZeroVector, FVector::ZeroVector};
 	// -SwimProof=switch [-SwimSwitchKeep] (11-18 item 3): 3 s after the lead holds at the far point (its partners treading,
 	// 25 s at the most), 1 s of baseline, then the lead switch the party menu makes. Judged for 3 s: the worst real frame
 	// in the first 0.5 s, when the camera's step about the lead settles, the new lead's feet against its surface swim's

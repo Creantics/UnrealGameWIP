@@ -919,11 +919,16 @@ bool AFTPartyFollower::WaterJumpCutOff(const UFTWaterSubsystem& System, ftcore::
 	{
 		return false; // the landing is short of the water: the jump's own move carries it on (Entering), as before
 	}
+	const int LeadBody = Bodies.bodyAt(ToPlan(LeadAt));
+	if (LeadBody >= 0 && Bodies.bodyAt(Landing) != LeadBody)
+	{
+		return true; // other water (a canal on the way): no swim to the lead
+	}
 	const double SwimZ = ToCm(Surface) + 30.0;
 	const FVector2D L(ToCm(Landing.x), ToCm(Landing.y));
 	FHitResult Hit;
-	// The jump: from a metre over the bank to the landing at the surface.
-	if (World->LineTraceSingleByChannel(Hit, FVector(ToCm(Edge.x), ToCm(Edge.y), BankZ + 100.0), FVector(L.X, L.Y, SwimZ), ECC_Visibility, TraceParams))
+	// The landing's column: a solid standing over the water there (a block, a pier's deck).
+	if (World->LineTraceSingleByChannel(Hit, FVector(L.X, L.Y, FMath::Max(BankZ, SwimZ) + 100.0), FVector(L.X, L.Y, SwimZ), ECC_Visibility, TraceParams))
 	{
 		return true;
 	}
@@ -932,7 +937,6 @@ bool AFTPartyFollower::WaterJumpCutOff(const UFTWaterSubsystem& System, ftcore::
 	{
 		return true;
 	}
-	const int LeadBody = Bodies.bodyAt(ToPlan(LeadAt));
 	const FVector2D To(LeadAt.X, LeadAt.Y);
 	const double Far = FVector2D::Distance(L, To);
 	for (double Along = 50.0; LeadBody >= 0 && Along < Far; Along += 50.0)
@@ -946,51 +950,86 @@ bool AFTPartyFollower::WaterJumpCutOff(const UFTWaterSubsystem& System, ftcore::
 	return false;
 }
 
-bool AFTPartyFollower::FindWaterEdge(const UFTWaterSubsystem& System, const FVector& At, const FVector& LeadAt)
+double AFTPartyFollower::GroundZAt(const FVector2D& P, double NearZ) const
 {
-	// The bank's edge on the way from where it stands to the lead, and whether its jump is cut off from the lead; when it
-	// is, up to kWaterEntryAlts clear edges from points along the bank 3 to 12 m to either side (nearest first), so the
-	// plan can take one of those, or place it with the lead when there is none (never a jump into a pocket).
+	FHitResult Hit;
+	const UWorld* World = GetWorld();
+	if (World && World->LineTraceSingleByChannel(Hit, FVector(P.X, P.Y, NearZ + 200.0), FVector(P.X, P.Y, NearZ - 400.0), ECC_Visibility, TraceParams) && !Hit.bStartPenetrating)
+	{
+		return Hit.ImpactPoint.Z;
+	}
+	return NearZ;
+}
+
+bool AFTPartyFollower::ProbeWaterEntry(const UFTWaterSubsystem& System, const FVector& At, const FVector& LeadAt, ftcore::Vec2& Edge, ftcore::Vec2& Out, bool& bCut,
+	ftcore::WaterEntryEdge* Alts, int32& AltCount) const
+{
+	using namespace FTSwimUnits;
 	const ftcore::WaterBodies& Bodies = System.Bodies();
 	const FVector2D From(At.X, At.Y);
-	WaterAltEdgeCount = 0;
-	bWaterEdgeCutOff = false;
-	if (!MarchWaterEdge(Bodies, From, LeadAt, WaterEdge, WaterEdgeOut))
+	AltCount = 0;
+	bCut = false;
+	if (!MarchWaterEdge(Bodies, From, LeadAt, Edge, Out))
 	{
 		return false; // no water toward the lead: it stays ashore (no jump onto land)
 	}
-	bWaterEdgeCutOff = WaterJumpCutOff(System, WaterEdge, WaterEdgeOut, At.Z, LeadAt);
-	if (bWaterEdgeCutOff)
+	const FVector2D E(ToCm(Edge.x), ToCm(Edge.y));
+	bCut = WaterJumpCutOff(System, Edge, Out, GroundZAt(E, At.Z), LeadAt);
+	if (!bCut || !Alts)
 	{
-		const FVector2D Side(-WaterEdgeOut.y, WaterEdgeOut.x);
-		for (int32 Step = 1; Step <= 4 && WaterAltEdgeCount < ftcore::kWaterEntryAlts; ++Step)
+		return true;
+	}
+	// Points along the bank 3 to 12 m to either side, nearest first: on the land, reached by a walk with nothing in the
+	// way (its body's height over the ground there), and their own edge's jump clear.
+	const UWorld* World = GetWorld();
+	const FVector2D Side(-Out.y, Out.x);
+	for (int32 Step = 1; Step <= 4 && AltCount < ftcore::kWaterEntryAlts; ++Step)
+	{
+		for (int32 Sign = 1; Sign >= -1 && AltCount < ftcore::kWaterEntryAlts; Sign -= 2)
 		{
-			for (int32 Sign = 1; Sign >= -1 && WaterAltEdgeCount < ftcore::kWaterEntryAlts; Sign -= 2)
+			const FVector2D O = From + Side * (300.0 * Step * Sign);
+			if (Bodies.bodyAt(ftcore::Vec2{ToMetres(O.X), ToMetres(O.Y)}) >= 0)
 			{
-				const FVector2D O = From + Side * (300.0 * Step * Sign);
-				if (Bodies.bodyAt(ftcore::Vec2{FTSwimUnits::ToMetres(O.X), FTSwimUnits::ToMetres(O.Y)}) >= 0)
-				{
-					continue; // that point is in the water, not on the bank
-				}
-				ftcore::WaterEntryEdge Alt;
-				if (MarchWaterEdge(Bodies, O, LeadAt, Alt.point, Alt.out) && !WaterJumpCutOff(System, Alt.point, Alt.out, At.Z, LeadAt))
-				{
-					WaterAltEdges[WaterAltEdgeCount++] = Alt;
-				}
+				continue; // that point is in the water, not on the bank
+			}
+			ftcore::WaterEntryEdge Alt;
+			if (!MarchWaterEdge(Bodies, O, LeadAt, Alt.point, Alt.out))
+			{
+				continue;
+			}
+			const FVector2D P(ToCm(Alt.point.x), ToCm(Alt.point.y));
+			const double PZ = GroundZAt(P, At.Z);
+			FHitResult Hit;
+			if (World && World->LineTraceSingleByChannel(Hit, FVector(At.X, At.Y, At.Z + 90.0), FVector(P.X, P.Y, PZ + 90.0), ECC_Visibility, TraceParams))
+			{
+				continue; // a wall or a building between it and that point
+			}
+			if (!WaterJumpCutOff(System, Alt.point, Alt.out, PZ, LeadAt))
+			{
+				Alts[AltCount++] = Alt;
 			}
 		}
 	}
-	const int32 State = bWaterEdgeCutOff ? WaterAltEdgeCount : -1;
+	return true;
+}
+
+bool AFTPartyFollower::FindWaterEdge(const UFTWaterSubsystem& System, const FVector& At, const FVector& LeadAt)
+{
+	// The bank's edge on the way from where it stands to the lead, and whether its jump is cut off from the lead; when it
+	// is, the clear points along the bank (ProbeWaterEntry), so the plan takes one of those, or places it with the lead
+	// when there is none (never a jump into a pocket).
+	const bool bFound = ProbeWaterEntry(System, At, LeadAt, WaterEdge, WaterEdgeOut, bWaterEdgeCutOff, WaterAltEdges, WaterAltEdgeCount);
+	const int32 State = bFound && bWaterEdgeCutOff ? WaterAltEdgeCount : -1;
 	if (State != WaterEdgeLogged)
 	{
 		WaterEdgeLogged = State;
-		if (bWaterEdgeCutOff)
+		if (State >= 0)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("%s: the jump from the bank at (%.0f, %.0f) cm is cut off from the lead by a solid; %d clear bank points along the bank."), *LogName,
+			UE_LOG(LogForgottenThird, Display, TEXT("%s: the jump from the bank at (%.0f, %.0f) cm is cut off from the lead (a solid, or other water); %d clear points along the bank."), *LogName,
 				FTSwimUnits::ToCm(WaterEdge.x), FTSwimUnits::ToCm(WaterEdge.y), WaterAltEdgeCount);
 		}
 	}
-	return true;
+	return bFound;
 }
 
 ftcore::WaterState AFTPartyFollower::SampleSwimAt(const UFTWaterSubsystem& System, const FVector2D& P, float Sink) const
@@ -1351,7 +1390,15 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 	}
 	else if (bNew && Order->noEntry)
 	{
+		++WaterNoEntries;
 		UE_LOG(LogForgottenThird, Display, TEXT("%s: no entry reaches the lead (every jump is cut off by a solid or lands in other water); placed with it at plan time."), *LogName);
+	}
+	if (bNew && Phase == WaterFollowPhase::ToEntry && bWaterEdgeCutOff && Order->entry.kind == ftcore::WaterFollowEntryKind::Jump
+		&& !Order->entry.cutOff && !Order->entry.otherWater)
+	{
+		++WaterAltEntries;
+		UE_LOG(LogForgottenThird, Display, TEXT("%s: goes in from the bank point at (%.0f, %.0f) cm along the bank (the one toward the lead is cut off)."), *LogName,
+			ToCm(Order->entry.point.x), ToCm(Order->entry.point.y));
 	}
 	switch (Phase)
 	{

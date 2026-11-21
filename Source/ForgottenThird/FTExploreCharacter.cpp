@@ -4707,6 +4707,7 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		bool bFallback = false;
 		FVector FallDry = FVector::ZeroVector, FallWet = FVector::ZeroVector, FallFar = FVector::ZeroVector;
 		FString FallWhat;
+		bool bWayInOnly = false; // the last spot checked was blocked only on the way in
 		auto HitName = [](const FHitResult& H)
 		{
 			return FString::Printf(TEXT("%s/%s"), H.GetActor() ? *H.GetActor()->GetName() : TEXT("-"), H.GetComponent() ? *H.GetComponent()->GetName() : TEXT("-"));
@@ -4769,8 +4770,9 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			Why = V.reason == ftcore::WaterSpotReason::Roofed ? UpWhat
 				: V.reason == ftcore::WaterSpotReason::DryToInBlocked || (V.accepted && V.dryToInBlocked) ? InWhat
 				: V.reason == ftcore::WaterSpotReason::InToFarBlocked ? OutWhat : FString();
-			if (!V.accepted && V.reason == ftcore::WaterSpotReason::DryToInBlocked
-				&& ftcore::judgeWaterSpot(Hits, static_cast<size_t>(Count), bGround, KeepWayIn).accepted && !bFallback)
+			bWayInOnly = !V.accepted && V.reason == ftcore::WaterSpotReason::DryToInBlocked
+				&& ftcore::judgeWaterSpot(Hits, static_cast<size_t>(Count), bGround, KeepWayIn).accepted;
+			if (bWayInOnly && !bFallback)
 			{
 				bFallback = true;
 				FallDry = Dry;
@@ -4781,9 +4783,26 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 			return V;
 		};
 		bool bFound = false;
-		for (int32 Ring = 1; Ring <= 100 && !bFound; ++Ring)
+		// -SwimProofReplay=7, spot 6b (11-21 ruling 2): the side-point path in game. The rule, set before the run: the sweep
+		// spot (its lead's swim clear in the water; a block on the lead's own way in is the harness placement's) with a
+		// partner stand 3 to 12 m to its side, nearest replay 6's partners, where the bank point toward the lead is cut off
+		// and a point 3 to 12 m along the bank is clear with the swim line in the lead's water (the follower's own probe,
+		// ProbeWaterEntry, the lead at the "in" point); both partners' stands (the second 1.5 m back from the water) qualify.
+		int32 ReplayRun = 0;
+		const bool b6b = SwimProofKind == TEXT("replay") && FParse::Value(FCommandLine::Get(), TEXT("SwimProofReplay="), ReplayRun) && ReplayRun == 7;
+		const AFTPartyFollower* Probe = WaterFollowers[0].Get();
+		const FVector2D Replay6Stands(42078.0, -1800.0);
+		double Best6b = 1.0e18;
+		int32 Alts6b[2] = {0, 0};
+		ftcore::Vec2 Cut6b{}, Alt6b{};
+		if (b6b)
 		{
-			for (int32 Bear = 0; Bear < 24 && !bFound; ++Bear)
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("SwimProof replay 7 is spot 6b. Rule: the sweep spot nearest replay 6's partners (42078, -1800) cm where the bank point toward the lead is cut off and a point 3-12 m to one side is clear, the swim line staying in the lead's water; both partner stands must qualify."));
+		}
+		for (int32 Ring = 1; Ring <= (b6b ? 30 : 100) && (!bFound || b6b); ++Ring)
+		{
+			for (int32 Bear = 0; Bear < 24 && (!bFound || b6b); ++Bear)
 			{
 				const double A = Bear * (2.0 * UE_DOUBLE_PI / 24.0);
 				const FVector Dir(FMath::Cos(A), FMath::Sin(A), 0.0);
@@ -4817,6 +4836,63 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 				FString Why;
 				const ftcore::WaterSpotVerdict V = CheckSpot(Dry, P, Far, Why);
 				Tally.add(V);
+				if (b6b)
+				{
+					if (!Probe || (!V.accepted && !bWayInOnly))
+					{
+						continue;
+					}
+					const FVector2D Side(-Dir.Y, Dir.X);
+					for (int32 K = 0; K < 8; ++K)
+					{
+						const double S = 300.0 * (1 + K / 2) * (K % 2 == 0 ? 1.0 : -1.0);
+						FVector Stand[2];
+						int32 Alts[2] = {0, 0};
+						ftcore::Vec2 CutAt{}, AltAt{};
+						bool bOk = true;
+						for (int32 J = 0; J < 2 && bOk; ++J)
+						{
+							Stand[J] = FVector(Dry.X + Side.X * S - Dir.X * 150.0 * J, Dry.Y + Side.Y * S - Dir.Y * 150.0 * J, Dry.Z);
+							FHitResult Ground;
+							bOk = Bodies.bodyAt(FTSwimUnits::ToPlan(Stand[J])) < 0
+								&& World->LineTraceSingleByChannel(Ground, Stand[J] + FVector(0.0, 0.0, 400.0), Stand[J] - FVector(0.0, 0.0, 3000.0), ECC_Visibility, Params)
+								&& !Ground.bStartPenetrating;
+							if (!bOk)
+							{
+								break;
+							}
+							Stand[J].Z = Ground.ImpactPoint.Z;
+							ftcore::Vec2 Edge{}, Out{};
+							bool bCut = false;
+							ftcore::WaterEntryEdge AltEdges[ftcore::kWaterEntryAlts];
+							int32 AltCount = 0;
+							bOk = Probe->ProbeWaterEntry(*System, Stand[J] + FVector(0.0, 0.0, HalfCm), P, Edge, Out, bCut, AltEdges, AltCount) && bCut && AltCount > 0;
+							Alts[J] = AltCount;
+							if (bOk && J == 0)
+							{
+								CutAt = Edge;
+								AltAt = AltEdges[0].point;
+							}
+						}
+						const double Dist = FVector2D::Distance(FVector2D(Stand[0].X, Stand[0].Y), Replay6Stands);
+						if (bOk && Dist < Best6b)
+						{
+							Best6b = Dist;
+							SwimProofDry = Dry;
+							SwimProofWet = P;
+							SwimProofFar = Far;
+							SwimProof6bStand[0] = Stand[0];
+							SwimProof6bStand[1] = Stand[1];
+							Alts6b[0] = Alts[0];
+							Alts6b[1] = Alts[1];
+							Cut6b = CutAt;
+							Alt6b = AltAt;
+							bSwimProofSpotFallback = !V.accepted;
+							bFound = true;
+						}
+					}
+					continue;
+				}
 				if (!V.accepted)
 				{
 					if (Logged++ < 16)
@@ -4841,6 +4917,22 @@ void AFTExploreCharacter::TickSwimProof(float DeltaSeconds)
 		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof %s: water spots checked %d: ok %d, no ground %d, roofed %d, blocked on the way in %d, blocked in the water %d."),
 			*SwimProofKind, Tally.total(), Tally.of(ftcore::WaterSpotReason::Ok), Tally.of(ftcore::WaterSpotReason::NoGround), Tally.of(ftcore::WaterSpotReason::Roofed),
 			Tally.of(ftcore::WaterSpotReason::DryToInBlocked), Tally.of(ftcore::WaterSpotReason::InToFarBlocked));
+		if (b6b)
+		{
+			if (!bFound)
+			{
+				UE_LOG(LogForgottenThird, Warning, TEXT("SwimProof replay 7 (6b): NO SPOT: the sweep has no spot that meets the rule; the side-point path is not seen in game (doctest only)."));
+				FTRequestExit(4, TEXT("SwimProof"));
+				SwimProofStage = -2;
+				return;
+			}
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("SwimProof replay 7 (6b): spot: partner stands (%.0f, %.0f, %.0f) and (%.0f, %.0f, %.0f) cm, %.0f cm from replay 6's partners; lead dry (%.0f, %.0f), in (%.0f, %.0f), far (%.0f, %.0f) cm%s; slot 0's bank point toward the lead (%.0f, %.0f) cm is cut off, first clear point along the bank (%.0f, %.0f) cm; clear points %d and %d."),
+				SwimProof6bStand[0].X, SwimProof6bStand[0].Y, SwimProof6bStand[0].Z, SwimProof6bStand[1].X, SwimProof6bStand[1].Y, SwimProof6bStand[1].Z, Best6b,
+				SwimProofDry.X, SwimProofDry.Y, SwimProofWet.X, SwimProofWet.Y, SwimProofFar.X, SwimProofFar.Y,
+				bSwimProofSpotFallback ? TEXT(" (the lead's way in blocked: the harness places it)") : TEXT(""),
+				FTSwimUnits::ToCm(Cut6b.x), FTSwimUnits::ToCm(Cut6b.y), FTSwimUnits::ToCm(Alt6b.x), FTSwimUnits::ToCm(Alt6b.y), Alts6b[0], Alts6b[1]);
+		}
 		if (!bFound && bFallback)
 		{
 			SwimProofDry = FallDry;
@@ -5850,9 +5942,9 @@ void AFTExploreCharacter::BeginSwimProofReplay()
 		{FVector(42078.0, -1700.0, 501.0), FVector(42078.0, -1900.0, 400.0)},
 	};
 	FParse::Value(FCommandLine::Get(), TEXT("SwimProofReplay="), SwimProofReplayRun);
-	if (SwimProofReplayRun != 4 && SwimProofReplayRun != 5 && SwimProofReplayRun != 6)
+	if (SwimProofReplayRun != 4 && SwimProofReplayRun != 5 && SwimProofReplayRun != 6 && SwimProofReplayRun != 7)
 	{
-		UE_LOG(LogForgottenThird, Error, TEXT("SwimProof replay: -SwimProofReplay=4, 5 or 6 is needed (got %d); no proof from this run."), SwimProofReplayRun);
+		UE_LOG(LogForgottenThird, Error, TEXT("SwimProof replay: -SwimProofReplay=4, 5, 6 or 7 (spot 6b) is needed (got %d); no proof from this run."), SwimProofReplayRun);
 		FTRequestExit(2, TEXT("SwimProof"));
 		SwimProofStage = -2;
 		return;
@@ -5876,7 +5968,7 @@ void AFTExploreCharacter::BeginSwimProofReplay()
 		{
 			continue;
 		}
-		FVector At = Starts[Run][I];
+		FVector At = SwimProofReplayRun == 7 ? SwimProof6bStand[I] : Starts[Run][I];
 		FHitResult Ground;
 		if (World && World->LineTraceSingleByChannel(Ground, At + FVector(0.0, 0.0, 200.0), At - FVector(0.0, 0.0, 600.0), ECC_Visibility, Params) && !Ground.bStartPenetrating)
 		{
@@ -5884,7 +5976,7 @@ void AFTExploreCharacter::BeginSwimProofReplay()
 		}
 		Partner->PinForProof(At);
 		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d (%s) stood at its logged start (%.0f, %.0f, %.0f) cm (logged z %.0f) until the lead has swum 2 s."),
-			SwimProofReplayRun, I, *Partner->GetWaterName(), At.X, At.Y, At.Z, Starts[Run][I].Z);
+			SwimProofReplayRun, I, *Partner->GetWaterName(), At.X, At.Y, At.Z, SwimProofReplayRun == 7 ? SwimProof6bStand[I].Z : Starts[Run][I].Z);
 	}
 	// The camera: kept on the far side of the lead from its partners (TickSwimProofReplay moves it).
 	APlayerController* Pc = Cast<APlayerController>(Controller);
@@ -6001,6 +6093,16 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 			{
 				R.Entry = static_cast<int32>(Order->entry.kind);
 			}
+			if (Order->phase == ftcore::WaterFollowPhase::Placed)
+			{
+				++R.PlacedSpells;
+				R.bPlacedBeforeEntry = R.bPlacedBeforeEntry || (R.PlacedSpells == 1 && R.Entry < 0);
+				if (Order->noEntry)
+				{
+					R.PopAt = SwimProofTime;
+					R.PopFrom = R.LastAt;
+				}
+			}
 			if (Order->phase == ftcore::WaterFollowPhase::Placed && Order->rejoin && R.RejoinAt < 0.f)
 			{
 				R.RejoinAt = SwimProofTime;
@@ -6070,6 +6172,22 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 		{
 			R.NearFrom = -1.f;
 		}
+		// A placement at plan time: whether its old and new places are in the camera's view (a visible pop is owed).
+		if (R.PopAt >= 0.f && SwimProofTime > R.PopAt + 0.1f)
+		{
+			R.PopAt = -1.f;
+			const AActor* Cam = SwimProofReplayCam.Get();
+			auto InView = [Cam](const FVector& P)
+			{
+				return Cam && FVector::DotProduct(Cam->GetActorForwardVector(), (P - Cam->GetActorLocation()).GetSafeNormal()) >= 0.766; // within 40 degrees
+			};
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: slot %d placed at plan time from (%.0f, %.0f, %.0f) to (%.0f, %.0f, %.0f) cm: in the camera's view before %d, after %d, hidden %d (%s)."),
+				SwimProofReplayRun, I, R.PopFrom.X, R.PopFrom.Y, R.PopFrom.Z, At.X, At.Y, At.Z, InView(R.PopFrom) ? 1 : 0, InView(At) ? 1 : 0, Partner->IsHidden() ? 1 : 0,
+				(InView(R.PopFrom) || InView(At)) && !Partner->IsHidden() ? TEXT("a visible pop: owed") : TEXT("not seen"));
+		}
+		R.LastAt = At;
+		R.EndBody = Now.body;
+		R.bEndIn = bIn;
 		// Once a second: its line.
 		if ((R.LogAt -= DeltaSeconds) <= 0.f)
 		{
@@ -6109,9 +6227,16 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 	bool bPass = Partners == 2;
 	const float Watch = Tun.watchdog + 2.f;
 	int32 EdgeSteps = 0; // held + slid surface steps over both partners, from inside the step's own branches
+	int32 CutSlots = 0;  // run 6's slots judged as the cut-off case
+	int32 AltEntries = 0; // run 7's entries from a bank point along the bank
+	const int LeadBody = Bodies.bodyAt(FTSwimUnits::ToPlan(GetActorLocation()));
 	for (int32 I = 0; I < Partners; ++I)
 	{
 		const FSwimReplaySlot& R = SwimProofReplay[I];
+		const AFTPartyFollower* Partner = WaterFollowers[I].Get();
+		const int32 NoEntries = Partner ? Partner->GetWaterNoEntries() : 0;
+		const int32 Alts = Partner ? Partner->GetWaterAltEntries() : 0;
+		AltEntries += Alts;
 		const bool bDry = R.DryTicks == 0 && R.SurfaceTicks > 0;
 		const bool bWet = R.bSoaked && R.WetMin >= 0.995f;
 		const bool bFeet = R.SurfaceTicks > 0 && R.FeetOver <= 0.5f;
@@ -6122,27 +6247,48 @@ void AFTExploreCharacter::TickSwimProofReplay(const UFTWaterSubsystem& System, f
 		const bool bPinned = R.BlockedLongest > Watch;
 		// Runs 5 and 6 take the jump (the sea has no exits, so a steps entry or none means the body-aware pick failed);
 		// run 4's slot 0 reaches its spot after its rejoin, not before.
+		// The strict line: the jump, no rejoin, no placement at plan time. Run 6 may instead be the cut-off case (11-21
+		// ruling 2): placed once, at plan time, before any entry, for "no entry reaches the lead", with no held, slid or
+		// blocked step and no other placement (the watchdog's), and it ends in the lead's water.
+		const bool bStrict = R.RejoinAt < 0.f && R.Entry == static_cast<int32>(ftcore::WaterFollowEntryKind::Jump) && NoEntries == 0;
+		const bool bCutCase = SwimProofReplayRun == 6 && !bStrict && NoEntries == 1 && R.PlacedSpells == 1 && R.bPlacedBeforeEntry
+			&& R.Held + R.Slid == 0 && R.BlockedTicks == 0 && R.EndBody == LeadBody && LeadBody >= 0 && R.bEndIn;
+		CutSlots += bCutCase ? 1 : 0;
 		const bool bPath = SwimProofReplayRun == 4
-			? (I != 0 || (R.RejoinAt >= 0.f && R.ReachedAt > R.RejoinAt))
-			: (R.RejoinAt < 0.f && R.Entry == static_cast<int32>(ftcore::WaterFollowEntryKind::Jump));
+			? (I != 0 || (R.RejoinAt >= 0.f && R.ReachedAt > R.RejoinAt && NoEntries == 0))
+			: (bStrict || bCutCase);
 		const bool bReach = R.ReachedAt >= 0.f && !bPinned && bPath;
+		if (bCutCase)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay 6: slot %d shows no normal entry: no entry reaches the lead, placed with it at plan time (judged as the cut-off case)."), I);
+		}
 		EdgeSteps += R.Held + R.Slid;
 		const bool bOk = bDry && bWet && bFeet && bGroom && bShots && bReach;
 		bPass = bPass && bOk;
 		UE_LOG(LogForgottenThird, Display,
-			TEXT("SwimProof replay %d PASS LINE slot %d: %s; Surface ticks %d, of them out of the water %d (%s); wetness from the first 1.00 at least %.3f (%s); feet at most %+.1f cm off the surface (%s); grooms %s (%s); stills %d, hidden in %d (%s); tread spot %s, entry %d, rejoin %s, blocked %d ticks, longest %.1f s, edge steps held %d slid %d (%s)."),
-			SwimProofReplayRun, I, bOk ? TEXT("PASS") : TEXT("FAIL"), R.SurfaceTicks, R.DryTicks, bDry ? TEXT("ok") : TEXT("FAIL"), R.bSoaked ? R.WetMin : 0.f,
+			TEXT("SwimProof replay %d PASS LINE slot %d: %s (%s; placed %d, at plan time %d, from a point along the bank %d); Surface ticks %d, of them out of the water %d (%s); wetness from the first 1.00 at least %.3f (%s); feet at most %+.1f cm off the surface (%s); grooms %s (%s); stills %d, hidden in %d (%s); tread spot %s, entry %d, rejoin %s, blocked %d ticks, longest %.1f s, edge steps held %d slid %d (%s)."),
+			SwimProofReplayRun, I, bOk ? TEXT("PASS") : TEXT("FAIL"), bStrict ? TEXT("normal entry") : bCutCase ? TEXT("cut-off case") : TEXT("neither"), R.PlacedSpells, NoEntries, Alts,
+			R.SurfaceTicks, R.DryTicks, bDry ? TEXT("ok") : TEXT("FAIL"), R.bSoaked ? R.WetMin : 0.f,
 			bWet ? TEXT("ok") : R.bSoaked ? TEXT("FAIL") : TEXT("FAIL: never 1.00"), R.FeetOver, bFeet ? TEXT("ok") : TEXT("FAIL"),
 			R.bGroomWet ? *FString::Printf(TEXT("dry %d ticks after the first wet"), R.GroomDryTicks) : TEXT("never wet"), bGroom ? TEXT("ok") : TEXT("FAIL"), R.Shots, R.HiddenShots,
 			bShots ? TEXT("ok") : TEXT("FAIL"), R.ReachedAt >= 0.f ? *FString::Printf(TEXT("reached at %.1f s"), R.ReachedAt) : TEXT("NOT reached"), R.Entry,
 			R.RejoinAt >= 0.f ? *FString::Printf(TEXT("at %.1f s, %.1f s after its block began"), R.RejoinAt, R.RejoinAfterBlocked) : TEXT("none"), R.BlockedTicks, R.BlockedLongest, R.Held, R.Slid,
 			bReach ? TEXT("ok") : bPinned ? TEXT("FAIL: pinned past the watchdog") : R.ReachedAt < 0.f ? TEXT("FAIL: not reached")
-				: SwimProofReplayRun == 4 ? TEXT("FAIL: no rejoin before its spot") : R.RejoinAt >= 0.f ? TEXT("FAIL: rejoined, not the normal entry") : TEXT("FAIL: not the jump entry"));
+				: SwimProofReplayRun == 4 ? (NoEntries > 0 ? TEXT("FAIL: placed at plan time, not the watchdog's rejoin") : TEXT("FAIL: no rejoin before its spot"))
+				: NoEntries > 0 ? TEXT("FAIL: placed at plan time, not the normal entry") : R.RejoinAt >= 0.f ? TEXT("FAIL: rejoined, not the normal entry") : TEXT("FAIL: not the jump entry"));
 	}
-	// The edge path must have run in the run: a spot reached without any held or slid step proves nothing of it.
-	bPass = bPass && EdgeSteps > 0;
+	// The edge path must have run in runs 4 and 5, and in run 6 when it is the normal entry: a spot reached without any
+	// held or slid step proves nothing of it. Run 6's cut-off case has none by its rule; spot 6b proves the side point.
+	const bool bEdgeDue = SwimProofReplayRun == 4 || SwimProofReplayRun == 5 || (SwimProofReplayRun == 6 && CutSlots == 0);
+	bPass = bPass && (!bEdgeDue || EdgeSteps > 0);
 	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: edge steps (held + slid, both partners) %d (%s)."), SwimProofReplayRun, EdgeSteps,
-		EdgeSteps > 0 ? TEXT("ok") : TEXT("FAIL: the edge path never ran"));
+		!bEdgeDue ? TEXT("not required on this run") : EdgeSteps > 0 ? TEXT("ok") : TEXT("FAIL: the edge path never ran"));
+	if (SwimProofReplayRun == 7)
+	{
+		bPass = bPass && AltEntries > 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay 7 (6b): entries from a point along the bank %d (%s)."), AltEntries,
+			AltEntries > 0 ? TEXT("ok") : TEXT("FAIL: the side-point path never ran"));
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("SwimProof replay %d: done at %.1f s (lead swam at %.1f s, at the far point at %.1f s%s): %s."), SwimProofReplayRun, SwimProofTime,
 		SwimProofLeadSwamAt, SwimProofHoldAt, bSwimProofLeadPlaced ? TEXT(", lead placed by harness") : TEXT(""), bPass ? TEXT("PASS") : TEXT("FAIL"));
 	FTLook::LogLevelStart(TEXT("proof's end"));
