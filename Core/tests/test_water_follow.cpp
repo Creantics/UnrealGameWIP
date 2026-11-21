@@ -626,6 +626,32 @@ TEST_CASE("water follow: a lead teleported mid-swim, or back from a park on dry 
     m.members[0].position = m.o(0).target;
     m.step();
     CHECK(m.o(0).phase == WaterFollowPhase::Surface);
+    // The slot on a block: the host put it at the first water toward the lead, 5 m off the slot (past rejoinNear).
+    // Reported as placedAt, it is accepted there and swims, never frozen in Placed.
+    Scene pb;
+    pb.bothIn();
+    pb.lead.position = {60.f, 0.f, -1.f};
+    pb.step();
+    REQUIRE(pb.o(0).rejoin);
+    const Vec2 off{pb.o(0).target.x + 5.f, pb.o(0).target.y};
+    pb.members[0].position.x = off.x;
+    pb.members[0].position.y = off.y;
+    pb.step();
+    CHECK(pb.o(0).phase == WaterFollowPhase::Placed); // unreported: still asked again
+    pb.members[0].hasPlacedAt = true;
+    pb.members[0].placedAt = off;
+    pb.step();
+    CHECK(pb.o(0).phase == WaterFollowPhase::Surface);
+    // A report far from where it stands is not taken.
+    Scene pf;
+    pf.bothIn();
+    pf.lead.position = {60.f, 0.f, -1.f};
+    pf.step();
+    REQUIRE(pf.o(0).rejoin);
+    pf.members[0].hasPlacedAt = true;
+    pf.members[0].placedAt = {pf.o(0).target.x + 5.f, pf.o(0).target.y};
+    pf.step(3);
+    CHECK(pf.o(0).phase == WaterFollowPhase::Placed);
     // Rejoined, then the lead is out of the water: Placed one more step without a rejoin (the host lands it), then ashore.
     Scene rj;
     rj.bothIn();

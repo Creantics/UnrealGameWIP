@@ -869,6 +869,9 @@ void AFTPartyFollower::FillWaterMember(ftcore::WaterFollowMember& Member) const
 	// Its surface step turned or held this frame or the last (the party may step before or after it does).
 	Member.blocked = IsWaterHeld();
 	Member.turned = IsWaterTurned();
+	// Where the rejoin put it (the slot, or the first water toward the lead), so the plan takes it from there.
+	Member.hasPlacedAt = bWaterRejoinPlaced && WaterPhase == ftcore::WaterFollowPhase::Placed;
+	Member.placedAt = ftcore::Vec2{ToMetres(WaterRejoinPlacedAt.X), ToMetres(WaterRejoinPlacedAt.Y)};
 }
 
 bool AFTPartyFollower::FindWaterEdge(const ftcore::WaterBodies& Bodies, const FVector& At, const FVector& LeadAt)
@@ -933,10 +936,13 @@ bool AFTPartyFollower::IntoWaterToward(const UFTWaterSubsystem& System, const FV
 		return false;
 	}
 	const FVector2D Dir = Way.GetSafeNormal();
+	// Only the water To is in (the lead's body), when it is in one: a canal passed on the way is not a way to the lead.
+	const int Body = System.HasBodies() ? System.Bodies().bodyAt(FTSwimUnits::ToPlan(FVector(To.X, To.Y, 0.0))) : -1;
 	for (double Along = 0.0; Along <= Far; Along += 50.0)
 	{
 		const FVector2D Q = P + Dir * Along;
-		if (ftcore::waterIn(SampleSwimAt(System, Q, 0.f)))
+		const ftcore::WaterState S = SampleSwimAt(System, Q, 0.f);
+		if (ftcore::waterIn(S) && (Body < 0 || S.body == Body))
 		{
 			Out = Q;
 			return true;
@@ -1245,6 +1251,10 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 		return bHas ? ToCm(ftcore::waterSwimFeetZ(Surface, Time)) : Fallback;
 	};
 
+	if (Phase != WaterFollowPhase::Placed)
+	{
+		bWaterRejoinPlaced = false; // a placement is reported only for the Placed spell it was made in
+	}
 	switch (Phase)
 	{
 	case WaterFollowPhase::ToEntry:
@@ -1592,6 +1602,8 @@ bool AFTPartyFollower::TickWater(const FVector2D& Ground, float DeltaSeconds, UF
 			const float BedAt = WaterBedZ;
 			const FVector P(To.X, To.Y, ToCm(ftcore::waterSurfaceFeetZ(ToMetres(Draft), 0.f, BedAt)));
 			SetActorLocationAndRotation(P, FRotator(0.0, Lead->GetActorRotation().Yaw, 0.0), false, nullptr, ETeleportType::TeleportPhysics);
+			WaterRejoinPlacedAt = To;
+			bWaterRejoinPlaced = true;
 			WaterVelocity = FVector::ZeroVector;
 			WaterRideZ = Draft;
 			WaterRideFrame = GFrameCounter;

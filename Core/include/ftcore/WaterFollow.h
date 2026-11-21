@@ -347,6 +347,8 @@ struct WaterFollowMember {
                                 // The watchdog counts it whatever the gap, and rejoins it with the lead
     bool turned = false;        // ... or slid along it (Slide): counted the same while it has not got 0.5 m from where
                                 // the count began (a slide that gets on is a swim, counted as one)
+    bool hasPlacedAt = false;   // Placed: the host put it on the rejoin step at placedAt, not at the slot (the slot was
+    Vec2 placedAt{};            // on a bank or a block, so it went to the first water toward the lead); accepted there
 };
 
 // What a follower is to do.
@@ -583,8 +585,9 @@ public:
                 // the water, so the rejoined member goes to the surface and from there follows it out.
                 if (was == WaterFollowPhase::Placed && !rescued) {
                     if (lead.swimming || leadUnder || (starting_ && lead.exiting)) {
-                        const float dx = m.position.x - rejoinTo.x;
-                        const float dy = m.position.y - rejoinTo.y;
+                        const Vec2 at = m.hasPlacedAt ? m.placedAt : rejoinTo;
+                        const float dx = m.position.x - at.x;
+                        const float dy = m.position.y - at.y;
                         if (rejoined && dx * dx + dy * dy <= tuning_.rejoinNear * tuning_.rejoinNear) {
                             go(o, WaterFollowPhase::Surface);
                             s.entryFails = 0;

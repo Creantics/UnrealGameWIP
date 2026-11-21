@@ -233,7 +233,7 @@ private:
 	// starting inside a solid (a pier, a quay's block), is Dry. Allocation-free (the member query params).
 	ftcore::WaterState SampleSwimAt(const UFTWaterSubsystem& System, const FVector2D& P, float Sink) const;
 	// From P (cm) toward To in 50 cm steps, no further than MaxCm (nor past To): the first point the swimmer is in the water
-	// (ftcore::waterIn), into Out. False (Out untouched) when there is none that near.
+	// (ftcore::waterIn) and in To's own body when To is in one, into Out. False (Out untouched) when there is none that near.
 	bool IntoWaterToward(const UFTWaterSubsystem& System, const FVector2D& P, const FVector2D& To, double MaxCm, FVector2D& Out) const;
 	void StepFollowerWaterLoco(ftcore::WaterLocoInput& In, float DeltaSeconds, UFTLocomotionAnimInstance* Anim);
 	FString WaterName;
@@ -284,6 +284,8 @@ private:
 	int32 WaterHeldSteps = 0;     // the steps held, and slid, since spawn
 	int32 WaterSlidSteps = 0;
 	bool bWaterRejoinWarned = false; // the rejoin slot's no-water warning, once until a slot is found again
+	FVector2D WaterRejoinPlacedAt = FVector2D::ZeroVector; // cm: where the last rejoin put it (FillWaterMember's placedAt)
+	bool bWaterRejoinPlaced = false;
 	FVector ProofPin = FVector::ZeroVector; // PinForProof (dev)
 	bool bProofPin = false;
 	// -SwimFeetEaseAll: the surface step eases the whole way to its target, the ride not carried (the fallback; the step
