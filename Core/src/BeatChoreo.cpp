@@ -128,6 +128,12 @@ MoverGait pickMoverGait(double speed, double slowSpeed, double walkSpeed, double
     return (was == MoverGait::Slow ? speed <= up : speed < down) ? MoverGait::Slow : MoverGait::Walk;
 }
 
+double moverGaitRate(MoverGait gait, double speed, double authored, double minRate, double maxRate, double slowMinRate) {
+    const double lo = gait == MoverGait::Slow ? slowMinRate : minRate;
+    const double r = speed / authored;
+    return r < lo ? lo : (r < maxRate ? r : maxRate);
+}
+
 double choreoStanceRate(const BeatClip& stance, double beatSeconds) {
     if (!(beatSeconds > 0.0) || !(stance.length > 0.0)) return 1.0;
     // The whole number of beats whose rate is inside the clamp and nearest to 1.

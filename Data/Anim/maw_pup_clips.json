@@ -29,7 +29,7 @@
   {
    "id": "slow",
    "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Walk",
-   "length_s": 0.867,
+   "length_s": 0.8,
    "impact_s": 0,
    "speed_mps": 0.85,
    "loop": true

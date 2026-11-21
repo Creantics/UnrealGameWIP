@@ -279,6 +279,11 @@ FTCORE_API bool pickRunGait(double speed, double walkSpeed, double runSpeed, boo
 enum class MoverGait : std::uint8_t { Slow, Walk, Run };
 FTCORE_API MoverGait pickMoverGait(double speed, double slowSpeed, double walkSpeed, double runSpeed, double minRate, double maxRate, MoverGait was);
 
+// A mover gait's play rate: speed over the clip's authored speed, held to [minRate, maxRate] (a NaN gives maxRate, as a plain
+// clamp does). The slow gait's floor is slowMinRate instead of minRate: it creeps at its true speed down to the stop, so its
+// planted paws don't slide under a body slower than the clip's floor. For Walk and Run it is exactly the plain clamp.
+FTCORE_API double moverGaitRate(MoverGait gait, double speed, double authored, double minRate, double maxRate, double slowMinRate);
+
 // ---- the sample ----
 
 struct ChoreoPose {

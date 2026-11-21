@@ -170,6 +170,8 @@ constexpr float kArenaWalkStart = 0.35f;
 constexpr float kArenaWalkStop = 0.1f;
 constexpr float kArenaWalkSmooth = 0.15f;
 constexpr float kArenaMinWalkRate = 0.5f;
+// The slow gait's own floor (moverGaitRate): it plays at its true speed down to the walk stop, so its paws don't slide.
+constexpr float kArenaMinSlowRate = 0.1f;
 // The camera half-angle's log line: only a change over this many degrees, at most once in this many seconds.
 constexpr float kCameraHalfLogStep = 1.f;
 constexpr double kCameraHalfLogEvery = 1.0;
@@ -1296,7 +1298,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			const int32 Gait = bRunning[I] ? Skin.Run : (bSlowGait[I] ? Skin.Slow : Skin.Walk);
 			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Gait)].speed);
-			const float Rate = FMath::Clamp(WalkSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate);
+			const float Rate = static_cast<float>(ftcore::moverGaitRate(bSlowGait[I] ? ftcore::MoverGait::Slow : ftcore::MoverGait::Walk, WalkSpeed[I], Authored, kArenaMinWalkRate, kArenaMaxWalkRate, kArenaMinSlowRate));
 			if (bWas && FromGait != Gait)
 			{
 				// The gait changes: carry the stride's phase across, as a share of each cycle, so the feet don't jump.

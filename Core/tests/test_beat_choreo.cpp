@@ -1281,3 +1281,21 @@ TEST_CASE("pickMoverGait: a slow gait under the walk, each clip kept inside its 
     CHECK(ftcore::pickMoverGait(1.2, 0.5, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Walk);
     CHECK(ftcore::pickMoverGait(std::nan(""), 0.85, 2.6, 5.5, 0.5, 1.6, G::Slow) == G::Walk);
 }
+
+TEST_CASE("moverGaitRate: walk and run are the plain clamp; the slow gait creeps down to its own floor") {
+    using G = ftcore::MoverGait;
+    for (int i = 0; i <= 900; ++i) {
+        const float v = 0.01f * static_cast<float>(i);
+        for (const float authored : {0.85f, 2.6f, 5.5f}) {
+            const float plain = std::clamp(v / authored, 0.5f, 1.6f);
+            for (const G g : {G::Walk, G::Run})
+                CHECK(static_cast<float>(ftcore::moverGaitRate(g, v, authored, 0.5f, 1.6f, 0.1f)) == plain);
+        }
+    }
+    // slow 0.85: under 0.425 m/s (0.5x) it plays at the true speed, down to 0.1x
+    CHECK(ftcore::moverGaitRate(G::Slow, 0.3, 0.85, 0.5, 1.6, 0.1) == doctest::Approx(0.3 / 0.85));
+    CHECK(ftcore::moverGaitRate(G::Slow, 0.05, 0.85, 0.5, 1.6, 0.1) == doctest::Approx(0.1));
+    CHECK(ftcore::moverGaitRate(G::Slow, 2.0, 0.85, 0.5, 1.6, 0.1) == doctest::Approx(1.6));
+    CHECK(ftcore::moverGaitRate(G::Walk, 0.3, 0.85, 0.5, 1.6, 0.1) == doctest::Approx(0.5));
+    CHECK(ftcore::moverGaitRate(G::Slow, std::nan(""), 0.85, 0.5, 1.6, 0.1) == doctest::Approx(1.6));
+}
