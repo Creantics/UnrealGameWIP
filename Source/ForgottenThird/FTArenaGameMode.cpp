@@ -583,6 +583,30 @@ void AFTArenaGameMode::BuildDef(bool bTable)
 		Def.attackers = static_cast<uint8>(FMath::Clamp(Attackers, 1, static_cast<int32>(Def.enemyCount)));
 		Spec.attackers = Def.attackers; // the fit would otherwise put the zone's own back
 	}
+#if !UE_BUILD_SHIPPING
+	// A capture switch: -ArenaOnlyMove=<slot>:<move> leaves the lineup slot's enemy only that move of its kind, so a
+	// move the weighted pick seldom chooses can be shown in full. Never in a shipping build.
+	FString OnlyMove;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaOnlyMove="), OnlyMove, false))
+	{
+		FString SlotText, MoveText;
+		if (OnlyMove.Split(TEXT(":"), &SlotText, &MoveText))
+		{
+			const int32 Slot = FCString::Atoi(*SlotText);
+			const int32 Move = FCString::Atoi(*MoveText);
+			if (Slot >= 0 && Slot < static_cast<int32>(Def.enemyCount))
+			{
+				ftcore::ArenaEnemyKind& Kind = Def.enemies[static_cast<size_t>(Slot)];
+				if (Move >= 0 && Move < static_cast<int32>(Kind.moveCount))
+				{
+					Kind.moves[0] = Kind.moves[static_cast<size_t>(Move)];
+					Kind.moveCount = 1;
+					UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaOnlyMove: enemy %d keeps only its move %d."), Slot, Move);
+				}
+			}
+		}
+	}
+#endif
 
 	// The zone, fitted to these enemies in its world's real layout: its walls, obstacles, ring and spawn. A world
 	// that can't give the zone room falls back to the plain zone, with a warning.
