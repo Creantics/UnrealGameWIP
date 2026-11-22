@@ -1691,6 +1691,11 @@ public:
     // Tests only: enemy `i` dead at once, with no event, kill count or hook (nothing in the game kills during a freeze;
     // the special's dead-target fallback is tested with it).
     FTCORE_API void killEnemyForTest(std::size_t i);
+    // Tests only: on, the player's hp stops at 1, so no blow downs it (no Downed, Defeat or takeover) and a test of
+    // something else never hangs on the lead living. Everything else is as ever: the blow lands with what it could
+    // take (its event's amount), and the autopilot's one read of hp (its heal) sees the real value. Kept across begin
+    // and restart.
+    FTCORE_API void setNoDefeatForTest(bool on);
     // Tests only: the bytes of the fight's state ahead of the special's own block (the freeze test compares them).
     FTCORE_API std::size_t frozenBytesForTest() const;
 
@@ -1914,6 +1919,7 @@ private:
     Vec2 allyPos_;
     ArenaTableSeats tableSeats_;            // setTableSeats (begin and restart clear it)
     bool lone_ = false;                     // setLone (kept across begin and restart)
+    bool noDefeat_ = false;                 // setNoDefeatForTest (kept across begin and restart)
     float takenScale_ = 1.f;                // this tick's ArenaInput::takenScale, read as it says
     LoneTuning loneTuning_{};
     float loneBlowCap_ = 0.f;               // setLone's blowCap (0: none)

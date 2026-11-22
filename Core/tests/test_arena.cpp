@@ -9052,6 +9052,10 @@ TEST_CASE("arena host mirror: the Maw-Pup is a 1.08 m stadium and still takes th
     // lead stands head on (0.19 m further off), not hit reach. Measured before and after the length, on sand_ring:
     // Devin's lights land 4, 4, 2 times (seeds 1-3) and the nip lands on seeds 1 and 2; Duy's lights land 3 times
     // each seed and the pup dies before it nips (as before the length). Every fight a victory.
+    // The nip's reach is counted in connects: every nip that reached the lead, hit, blocked or parried. Since the
+    // autopilot guard gate (guard cuts a recovery where the tick lets it) the lead parries the nips it used to take:
+    // Devin goes from hit, hit, parried (seeds 1-3) to parried on all three, lights landing 2 each seed; Duy parries
+    // one nip each seed, before and after. Three connects a lead either way.
     const ArenaTable t = loadShipped();
     bool found = false;
     for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
@@ -9062,19 +9066,22 @@ TEST_CASE("arena host mirror: the Maw-Pup is a 1.08 m stadium and still takes th
         }
     REQUIRE(found);
     for (const char* kit : {"devin", "duy"}) {
-        int nips = 0;
+        int nips = 0, parried = 0;
         for (std::uint32_t seed = 1; seed <= 3; ++seed) {
             CAPTURE(std::string(kit));
             CAPTURE(seed);
             const HostRun alone = hostRun({"maw_pup"}, kit, seed);
             CHECK(alone.phase == ArenaPhase::Victory);
             CHECK(alone.hitsOn[0] >= 2);
-            nips += alone.stats.hitsTaken;
+            nips += alone.stats.hitsTaken + alone.stats.blocks + alone.stats.parries;
+            parried += alone.stats.parries;
             const HostRun pair = hostRun({"dummy", "maw_pup"}, kit, seed);
             CHECK(pair.hitsOn[1] >= 2);
             CHECK(arenaFeatureChecks(pair.stats).cancelsCheck == ArenaCheck::Pass);
         }
-        if (std::string_view(kit) == "devin") CHECK(nips >= 2);
+        CAPTURE(std::string(kit));
+        CHECK(nips >= 2);
+        CHECK(parried > 0); // the guard meets the nip, so the connects are not all hits
     }
 }
 

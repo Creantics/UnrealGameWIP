@@ -3971,6 +3971,8 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                 CHECK(s.partnerNoKitSeconds == 0.f);
                 // Pinned (seed 1): each boss's time to the win and the third's partner damage, so a retune of its
                 // bolt, reach or standoff cannot pass silently. Re-pin with the report's lines when one is meant.
+                // Re-pinned for the autopilot guard gate: the lead parries blows it used to take, so five fights end
+                // sooner (duy kite_boss did not move) and the third lands fewer bolts in them.
                 struct Pin {
                     const char* lead;
                     const char* boss;
@@ -3978,9 +3980,9 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                     int partnerDamage;
                 };
                 static constexpr Pin kThirdPins[] = {
-                    {"devin", "kite_boss", 26.1331f, 136}, {"devin", "stone_bearer", 39.6162f, 196},
-                    {"devin", "white_glove", 36.3663f, 168}, {"duy", "kite_boss", 33.5163f, 150},
-                    {"duy", "stone_bearer", 46.3828f, 261}, {"duy", "white_glove", 42.5662f, 202},
+                    {"devin", "kite_boss", 24.7831f, 126}, {"devin", "stone_bearer", 36.233f, 187},
+                    {"devin", "white_glove", 31.6997f, 152}, {"duy", "kite_boss", 33.5163f, 150},
+                    {"duy", "stone_bearer", 40.1496f, 222}, {"duy", "white_glove", 33.4163f, 160},
                 };
                 for (const Pin& pin : kThirdPins) {
                     if (std::string(p.lead) != pin.lead || id != pin.boss) continue;
@@ -5345,6 +5347,12 @@ struct ClassicPinRow {
 // enemy2; the settle moves it out. The four stone_bearer rows: the boss parks at the ring limit with no contact, and the
 // old step clamped it to the ring a second time after a settle that moved nothing, a float clamp that is not idempotent
 // (0.5 to 1 um); the new one clamps once.
+// Re-pinned for the autopilot guard gate (guard cuts a recovery at its cancelGuard share, as the tick allows): the lead
+// parries blows it used to take in late recovery, so fights run shorter and the party member lands fewer hits. 20 rows
+// moved, all still victories: 12 in hits and damage (devin kite_boss, stone_bearer, white_glove, maw_pup and spitter
+// with the camera; duy stone_bearer and white_glove), 8 in the hash only (both leads duelist and kite_boss, devin
+// spitter without the camera), where an earlier guard changed the run but not the party member's blows. The other 36
+// rows never had a blow land in a guard-cuttable recovery.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5358,22 +5366,22 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "skirmisher", true, 6, 42, 1249458168175911326ull},
     {"devin", "breaker", false, 22, 163, 18329296392151869695ull},
     {"devin", "breaker", true, 17, 128, 2481547781211154738ull},
-    {"devin", "duelist", false, 16, 121, 17596743998803615256ull},
-    {"devin", "duelist", true, 15, 114, 3889848073699997715ull},
+    {"devin", "duelist", false, 16, 121, 3085447395325385403ull},
+    {"devin", "duelist", true, 15, 114, 1833937876181139929ull},
     {"devin", "hulk", false, 23, 170, 8466614135980583722ull},
     {"devin", "hulk", true, 24, 177, 17463738276282656931ull},
     {"devin", "titan", false, 27, 198, 17037376046017037454ull},
     {"devin", "titan", true, 24, 177, 9005697788452095697ull},
-    {"devin", "kite_boss", false, 57, 408, 3336118097607066850ull},
-    {"devin", "kite_boss", true, 58, 418, 558542764103034853ull},
-    {"devin", "stone_bearer", false, 80, 575, 6204551899356899748ull},
-    {"devin", "stone_bearer", true, 79, 574, 7946797560756255449ull},
-    {"devin", "white_glove", false, 66, 465, 12554922323999540588ull},
-    {"devin", "white_glove", true, 71, 503, 8649862504494032913ull},
-    {"devin", "maw_pup", false, 6, 42, 14271193196024403956ull},
-    {"devin", "maw_pup", true, 6, 42, 10824710505452702103ull},
-    {"devin", "spitter", false, 6, 42, 16994954208136295472ull},
-    {"devin", "spitter", true, 6, 42, 596144150160075129ull},
+    {"devin", "kite_boss", false, 55, 391, 15149345771995931089ull},
+    {"devin", "kite_boss", true, 58, 418, 5331741546162271797ull},
+    {"devin", "stone_bearer", false, 73, 534, 13144604784390647433ull},
+    {"devin", "stone_bearer", true, 66, 489, 11331705351014989236ull},
+    {"devin", "white_glove", false, 58, 413, 13953194659030329670ull},
+    {"devin", "white_glove", true, 55, 400, 5000600046039610435ull},
+    {"devin", "maw_pup", false, 4, 28, 4588098154154008939ull},
+    {"devin", "maw_pup", true, 4, 28, 532221035747124859ull},
+    {"devin", "spitter", false, 6, 42, 6079499873305667569ull},
+    {"devin", "spitter", true, 3, 21, 4150562399047041604ull},
     {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
     {"duy", "shipped default fight", true, 16, 121, 165081782403125027ull},
     {"duy", "three kinds, attackers 1", false, 31, 221, 3123289504221292375ull},
@@ -5386,18 +5394,18 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "skirmisher", true, 6, 27, 7451009726274229835ull},
     {"duy", "breaker", false, 24, 180, 3918144725000809230ull},
     {"duy", "breaker", true, 25, 184, 9399829982760244120ull},
-    {"duy", "duelist", false, 16, 124, 17618373211950944107ull},
-    {"duy", "duelist", true, 16, 121, 3000389506109734572ull},
+    {"duy", "duelist", false, 16, 124, 2271821620492557969ull},
+    {"duy", "duelist", true, 16, 121, 15821544362985660840ull},
     {"duy", "hulk", false, 30, 219, 8604643699523506543ull},
     {"duy", "hulk", true, 29, 206, 10408765349377459501ull},
     {"duy", "titan", false, 31, 229, 8858760711467032362ull},
     {"duy", "titan", true, 29, 204, 4745636326408502596ull},
-    {"duy", "kite_boss", false, 62, 443, 11966225794031579978ull},
-    {"duy", "kite_boss", true, 68, 488, 2057013200150119109ull},
-    {"duy", "stone_bearer", false, 103, 760, 16822401646142181277ull},
-    {"duy", "stone_bearer", true, 110, 803, 13444865907467236446ull},
-    {"duy", "white_glove", false, 84, 609, 12875648444523452656ull},
-    {"duy", "white_glove", true, 89, 641, 6347336712998663789ull},
+    {"duy", "kite_boss", false, 62, 443, 12318375040375774986ull},
+    {"duy", "kite_boss", true, 68, 488, 3206243752085442907ull},
+    {"duy", "stone_bearer", false, 88, 658, 12103771074940472673ull},
+    {"duy", "stone_bearer", true, 82, 613, 7313118388245454201ull},
+    {"duy", "white_glove", false, 66, 483, 1839276756863646281ull},
+    {"duy", "white_glove", true, 66, 472, 10316052538403549276ull},
     {"duy", "maw_pup", false, 6, 42, 12129895063172397078ull},
     {"duy", "maw_pup", true, 6, 32, 760009930559185308ull},
     {"duy", "spitter", false, 6, 42, 373096491565446441ull},
