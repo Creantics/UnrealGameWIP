@@ -95,6 +95,8 @@ private:
 	void LogStoppedGroup(uint32 Size) const;
 	void NoteReactingLeftOut(uint32 Group);
 	void NoteMinPair(float Pair);
+	// -Interiors=hero: follows each member through the room doors and logs its visits (per frame, no allocation).
+	void NoteRooms();
 	void Shoot(APlayerController* PC, const FVector& PlayerAt);
 	void LogCounts(const TCHAR* Label) const;
 	// S-332: the cameras the crowd must not pop in front of (the player's view and the stills' cameras), every frame.
@@ -143,6 +145,16 @@ private:
 	bool bRefillOk = true;
 	float RunMinPair = 1e9f;        // m, every frame
 	float RunMinWall = 1e9f;        // m, every frame
+	// -Interiors=hero room visits (sized at setup). By member slot: its door phase last frame (0: not at a door), the
+	// door slot, its id, and when it took the door, reached its spot and left it. By door slot: the room's id, visits
+	// begun, spots reached, visits ended, and the longest visit (s).
+	TArray<uint8> RoomPhase;
+	TArray<int32> RoomDoorOf;
+	TArray<uint32> RoomMemberId;
+	TArray<float> RoomInAt, RoomSpotAt, RoomSpotFor;
+	TArray<FString> RoomDoorIds;
+	TArray<uint32> RoomIn, RoomSpot, RoomOut;
+	TArray<float> RoomLongest;
 	// The two members behind RunMinPair (log only; found when the least drops): slots, states, positions (m), speeds
 	// (m/s), wall clearances (m), and when.
 	uint32 MinPairSlot[2] = {UINT32_MAX, UINT32_MAX};

@@ -240,6 +240,21 @@ TEST_CASE("crowd tuning: the shipped file loads; unknown or inconsistent members
     CHECK(err.find("walkSpeeed") != std::string::npos);
     CHECK_FALSE(importCrowdTuning(R"({"react": {"noticeFear": 0.5, "backFear": 0.3}})", u, &err));
     CHECK_FALSE(importCrowdTuning(R"({"events": {"explosion": {"radius": 3}}})", u, &err));
+    // doors: the visit tunables (a proof run raises the enter chance); dwellMin past dwellMax is refused
+    {
+        CrowdTuning d;
+        REQUIRE_MESSAGE(importCrowdTuning(R"({"doors": {"attach": 9, "enterChance": 1, "enterOver": 0.5, "dwellMin": 5, "dwellMax": 12}})", d, &err), err);
+        CHECK(d.doorAttach == doctest::Approx(9.f));
+        CHECK(d.doorEnterChance == doctest::Approx(1.f));
+        CHECK(d.doorEnterOver == doctest::Approx(0.5f));
+        CHECK(d.doorDwellMin == doctest::Approx(5.f));
+        CHECK(d.doorDwellMax == doctest::Approx(12.f));
+        CrowdTuning e;
+        CHECK_FALSE(importCrowdTuning(R"({"doors": {"dwellMin": 30, "dwellMax": 10}})", e, &err));
+        CHECK_FALSE(importCrowdTuning(R"({"doors": {"enterChance": 1.5}})", e, &err));
+        CHECK_FALSE(importCrowdTuning(R"({"doors": {"enter": 1}})", e, &err));
+        CHECK(e.doorEnterChance == doctest::Approx(CrowdTuning{}.doorEnterChance));
+    }
     CHECK(u.walkSpeed == CrowdTuning{}.walkSpeed); // left as it was
 }
 

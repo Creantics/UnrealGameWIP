@@ -62,7 +62,7 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
         return false;
     }
     CrowdTuning t = out;
-    rd.only(root, "", {"version", "population", "move", "perceive", "events", "react", "flee", "spread", "step", "graph"});
+    rd.only(root, "", {"version", "population", "move", "perceive", "events", "react", "flee", "spread", "step", "graph", "doors"});
 
     JsonValue s = rd.section(root, "population");
     rd.only(s, "population", {"maxAgents", "targetAgents", "maxDrawn", "spawnMin", "spawnMax", "despawnDist", "fillMin", "spawnPerStep", "spawnNearMax",
@@ -172,6 +172,15 @@ bool importCrowdTuning(std::string_view json, CrowdTuning& out, std::string* err
     rd.count(s, "flee", "searchLimit", t.searchLimit, 1, 10000000);
     rd.count(s, "flee", "plansPerStep", t.plansPerStep, 0, 4096);
     rd.number(s, "flee", "cowerRetry", t.cowerRetry, 0.0, 60.0);
+
+    s = rd.section(root, "doors");
+    rd.only(s, "doors", {"attach", "enterChance", "enterOver", "dwellMin", "dwellMax"});
+    rd.number(s, "doors", "attach", t.doorAttach, 0.0, 100.0);
+    rd.number(s, "doors", "enterChance", t.doorEnterChance, 0.0, 1.0);
+    rd.number(s, "doors", "enterOver", t.doorEnterOver, 0.0, 1.0);
+    rd.number(s, "doors", "dwellMin", t.doorDwellMin, 0.0, 3600.0);
+    rd.number(s, "doors", "dwellMax", t.doorDwellMax, 0.0, 3600.0);
+    if (rd.ok && !(t.doorDwellMin <= t.doorDwellMax)) rd.fail("doors", "dwellMax", "needs dwellMin <= dwellMax");
 
     s = rd.section(root, "spread");
     rd.only(s, "spread", {"radius", "gain", "interval"});

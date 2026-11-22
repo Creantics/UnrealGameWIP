@@ -310,6 +310,11 @@ struct CrowdAgentView {
     float fear = 0.f;
     float boldness = 0.5f;
     float slowFor = 0.f;    // s this walker has walked under kCrowdJamSpeed x its own pace without a break (0: not slow)
+    // Indoors (state Indoors): the door it uses, by attached slot (setDoors' order, the doors left out skipped; doorAt),
+    // and its phase. A plain door: 1 to the door, 2 hidden, 3 out onto its pavement. A walk-in room: 1, 4 to the
+    // doorway, 5 on in to its spot, 6 standing at it, 7 back to the doorway, 8 out to the door, 3. Otherwise -1 and 0.
+    std::int32_t door = -1;
+    std::uint8_t doorPhase = 0;
 };
 
 // S-332: a camera the crowd must not pop in front of: from eye, yaw (deg), halfFov (deg; 180 or more: all round),
@@ -474,6 +479,8 @@ public:
     // left out) and returns how many it attached. Call after init; init forgets them. Allocates (load time).
     FTCORE_API std::uint32_t setDoors(const std::vector<CrowdDoor>& doors);
     std::uint32_t doorCount() const { return static_cast<std::uint32_t>(doors_.size()); }
+    // An attached door's point on the street, by slot (CrowdAgentView::door; the origin past the end).
+    Vec2 doorAt(std::uint32_t slot) const { return slot < doors_.size() ? doors_[slot].at : Vec2{}; }
     // S-283: the share of the daytime crowd out on the streets (0..1; the host reads it from the day's CrowdDensity
     // curve). The streets fill to targetAgents x density (no more than bandDensity x reachBandArea() when bandDensity is
     // on): above it walkers passing a door go in and those inside stay; below it those inside come out sooner and new

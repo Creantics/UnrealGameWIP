@@ -1636,6 +1636,8 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.state = a.state;
     v.cornered = a.state == CrowdState::Cower && a.brace && a.hold;
     v.indoors = a.state == CrowdState::Indoors && a.doorPhase == 2;
+    v.door = a.state == CrowdState::Indoors ? a.door : -1;
+    v.doorPhase = a.state == CrowdState::Indoors ? a.doorPhase : 0;
     v.reacting = a.reactStop && a.state == CrowdState::Walk && a.speed <= 0.05f;
     v.pos = a.pos;
     v.prevPos = a.prev;

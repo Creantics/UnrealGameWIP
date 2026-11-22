@@ -254,11 +254,27 @@ TEST_CASE("crowd doors: at a walk-in room a walker goes in through the doorway t
     REQUIRE(a != UINT32_MAX);
     bool hidden = false, passedDoorway = false;
     float atSpotFor = 0.f, firstIn = -1.f, lastIn = -1.f;
+    // The view's phases: a room visit runs 1, 4, 5, 6, 7, 8, 3 (by rank, never back); seen, as bits.
+    const int rank[9] = {0, 1, -1, 7, 2, 3, 4, 5, 6};
+    int lastRank = 0;
+    std::uint8_t phaseSeen = 0;
+    CHECK(sim.doorCount() == 1);
+    CHECK(dist(sim.doorAt(0), room.at) < 1e-6f);
     for (int s = 0; s < 15 * 50; ++s) {
         tick(sim);
         const CrowdAgentView& v = sim.agent(a);
         const float now = static_cast<float>(s + 1) / 15.f;
-        if (v.state != CrowdState::Indoors) continue;
+        if (v.state != CrowdState::Indoors) {
+            CHECK(v.door == -1);
+            CHECK(v.doorPhase == 0);
+            continue;
+        }
+        CHECK(v.door == 0);
+        REQUIRE(v.doorPhase <= 8);
+        CHECK(rank[v.doorPhase] >= lastRank); // never back to an earlier phase in one visit
+        lastRank = rank[v.doorPhase];
+        if (v.doorPhase >= 1 && v.doorPhase <= 8) phaseSeen |= static_cast<std::uint8_t>(1u << (v.doorPhase - 1));
+        if (v.doorPhase == 6) CHECK((dist(v.pos, room.dwell[0]) < 1e-3f || dist(v.pos, room.dwell[1]) < 1e-3f));
         if (firstIn < 0.f) firstIn = now;
         lastIn = now;
         hidden = hidden || v.indoors;
@@ -272,6 +288,9 @@ TEST_CASE("crowd doors: at a walk-in room a walker goes in through the doorway t
     }
     REQUIRE(firstIn > 0.f);
     CHECK_FALSE(hidden);        // never hidden at the door: walks in and stands in sight
+    CHECK((phaseSeen & (1u << 5)) != 0); // the view showed it standing at its spot (phase 6)
+    CHECK((phaseSeen & (1u << 1)) == 0); // and never the plain door's hidden phase
+    CHECK(sim.doorAt(7).x == 0.f);       // a slot past the end reads as the origin
     CHECK(passedDoorway);
     CHECK(atSpotFor >= 3.f - 0.1f); // the 6 s dwell, run at twice the pace while the streets hold under their share
     CHECK(lastIn - firstIn < 6.f + 14.f);

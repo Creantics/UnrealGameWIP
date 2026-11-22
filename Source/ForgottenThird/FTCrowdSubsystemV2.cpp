@@ -240,6 +240,32 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: room door %s at (%.2f, %.2f) m, through (%.2f, %.2f), %d spots."), UTF8_TO_TCHAR(D.id.c_str()),
 				D.at.x, D.at.y, D.through.x, D.through.y, static_cast<int32>(D.dwell.size()));
 		}
+		// The room visit log: each attached slot's id (setDoors keeps the doors' order, leaving out the unattached).
+		RoomDoorIds.Reset();
+		for (uint32 Slot = 0; Slot < Sim.doorCount(); ++Slot)
+		{
+			const ftcore::Vec2 At = Sim.doorAt(Slot);
+			FString Id = FString::Printf(TEXT("door %u"), Slot);
+			for (const ftcore::crowdv2::CrowdDoor& D : HeroDoors)
+			{
+				if (FMath::Abs(D.at.x - At.x) < 0.01f && FMath::Abs(D.at.y - At.y) < 0.01f)
+				{
+					Id = UTF8_TO_TCHAR(D.id.c_str());
+				}
+			}
+			RoomDoorIds.Add(Id);
+		}
+		const int32 Slots = RoomDoorIds.Num(), Members = static_cast<int32>(Sim.capacity());
+		RoomIn.Init(0, Slots);
+		RoomSpot.Init(0, Slots);
+		RoomOut.Init(0, Slots);
+		RoomLongest.Init(0.f, Slots);
+		RoomPhase.Init(0, Members);
+		RoomDoorOf.Init(-1, Members);
+		RoomMemberId.Init(0, Members);
+		RoomInAt.Init(0.f, Members);
+		RoomSpotAt.Init(-1.f, Members);
+		RoomSpotFor.Init(0.f, Members);
 	}
 	Sim.setOcclusion(&UFTCrowdSubsystemV2::Occluded, this);
 	TraceQuery = FCollisionQueryParams(SCENE_QUERY_STAT(FTCrowdTrace), false);
@@ -947,6 +973,10 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 
 	OcclusionTraces = 0;
 	Sim.tick(DeltaTime, CrowdV2Local::ToSim(PlayerAt), CrowdV2Local::ToSim(PlayerVel));
+	if (RoomDoorIds.Num() > 0)
+	{
+		NoteRooms();
+	}
 	if (QuitAfter > 0.0)
 	{
 		const float Pair = Sim.minPairDistance(2.f);
@@ -1019,6 +1049,21 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: %u live of %u target (%s); %u still upset (%s); %llu fleers, most flee entries by one %u, most plans by one %u (%s)."),
 			Live, FullTarget, bFull ? TEXT("full") : TEXT("SHORT"), Upset, bCalm ? TEXT("calm") : TEXT("NOT CALM"), C.fleers,
 			C.maxFleeEntries, C.maxPlans, bSteady ? TEXT("steady") : TEXT("FLIP-FLOP"));
+		if (RoomDoorIds.Num() > 0)
+		{
+			FString Rooms;
+			uint32 InsideNow = 0;
+			for (int32 I = 0; I < RoomPhase.Num(); ++I)
+			{
+				InsideNow += RoomPhase[I] != 0 ? 1u : 0u;
+			}
+			for (int32 D = 0; D < RoomDoorIds.Num(); ++D)
+			{
+				Rooms += FString::Printf(TEXT("%s%s in %u, at a spot %u, out %u, longest visit %.1f s"), D ? TEXT("; ") : TEXT(""), *RoomDoorIds[D],
+					RoomIn[D], RoomSpot[D], RoomOut[D], RoomLongest[D]);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: room doors: %s; at a door or in a room now %u."), *Rooms, InsideNow);
+		}
 		const bool bUnstuck = C.stuck == 0;
 		const bool bOutside = FootFrames == 0;
 		const bool bClearOfMass = MinMassClear / 100.0 >= CrowdV2Local::kGapWall;
@@ -1806,6 +1851,73 @@ void UFTCrowdSubsystemV2::NoteReactingLeftOut(uint32 Group)
 	++ReactingLines;
 	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: knot check at t=%.1f s left out %u members in the one-step close-reaction stop: largest standing within 3 m %u (the old rule, counting them: %u)."),
 		RunTime, Reacting, Group, Old);
+}
+
+void UFTCrowdSubsystemV2::NoteRooms()
+{
+	// The first visits at each room are logged in full; all are counted.
+	constexpr uint32 LoggedVisits = 4;
+	const int32 Members = FMath::Min(RoomPhase.Num(), static_cast<int32>(Sim.capacity()));
+	for (int32 I = 0; I < Members; ++I)
+	{
+		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(I));
+		const bool bAtRoom = V.live && V.door >= 0 && V.door < RoomDoorIds.Num();
+		const uint8 Phase = bAtRoom ? V.doorPhase : 0;
+		const uint8 Was = RoomPhase[I];
+		if (Was == 0 && Phase != 0)
+		{
+			RoomDoorOf[I] = V.door;
+			RoomMemberId[I] = V.id;
+			RoomInAt[I] = static_cast<float>(RunTime);
+			RoomSpotAt[I] = -1.f;
+			RoomSpotFor[I] = 0.f;
+			++RoomIn[V.door];
+		}
+		const int32 D = RoomDoorOf[I];
+		if (D < 0)
+		{
+			RoomPhase[I] = Phase;
+			continue;
+		}
+		if (Phase == 6 && Was != 6)
+		{
+			RoomSpotAt[I] = static_cast<float>(RunTime);
+			if (++RoomSpot[D] <= LoggedVisits)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: room %s: member %u stands at its spot (%.2f, %.2f) m at t=%.1f s, %.1f s after taking the door."),
+					*RoomDoorIds[D], RoomMemberId[I], V.pos.x, V.pos.y, RunTime, RunTime - RoomInAt[I]);
+			}
+		}
+		if (Was == 6 && Phase != 6 && RoomSpotAt[I] >= 0.f)
+		{
+			RoomSpotFor[I] = static_cast<float>(RunTime) - RoomSpotAt[I];
+		}
+		// The visit ends when the member leaves the door (or the slot is gone or reused: logged as such).
+		if (Was != 0 && (Phase == 0 || V.id != RoomMemberId[I]))
+		{
+			const float Visit = static_cast<float>(RunTime) - RoomInAt[I];
+			RoomLongest[D] = FMath::Max(RoomLongest[D], Visit);
+			const bool bOut = V.live && V.id == RoomMemberId[I];
+			if (++RoomOut[D] <= LoggedVisits)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: room %s: member %u %s at t=%.1f s after %.1f s (%.1f s at its spot), at (%.2f, %.2f) m."),
+					*RoomDoorIds[D], RoomMemberId[I], bOut ? TEXT("came back out") : TEXT("LEFT THE POOL inside"), RunTime, Visit, RoomSpotFor[I],
+					V.pos.x, V.pos.y);
+			}
+			RoomDoorOf[I] = -1;
+			if (Phase != 0)
+			{
+				// A reused slot already at a door: its visit starts now.
+				RoomDoorOf[I] = V.door;
+				RoomMemberId[I] = V.id;
+				RoomInAt[I] = static_cast<float>(RunTime);
+				RoomSpotAt[I] = -1.f;
+				RoomSpotFor[I] = 0.f;
+				++RoomIn[V.door];
+			}
+		}
+		RoomPhase[I] = Phase;
+	}
 }
 
 void UFTCrowdSubsystemV2::NoteMinPair(float Pair)
