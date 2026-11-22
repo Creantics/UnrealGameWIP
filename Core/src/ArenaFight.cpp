@@ -1910,6 +1910,9 @@ struct ArenaFightImpl {
     // already moved it flinchPush: the shove adds the rest, so the total is the larger of the two.
     void shove(std::size_t i, const ArenaAttack& a, bool flinched) {
         if (!(a.push > 0.f) || !(a.pushTime > 0.f) || !alive(i) || def.enemies[i].boss) return;
+        // A body that can't walk (a practice target, a planted kind) is not shoved: nothing brings it back, and each
+        // string would carry it on, the lead after it, to the wall.
+        if (!(def.enemies[i].walkSpeed > 0.f) && !(def.enemies[i].runSpeed > 0.f)) return;
         Enemy& foe = foes[i];
         if (breakGuarded(foe) || foe.brain == ArenaBrain::StepBack) return; // a step back is its own way out
         if (foe.brain == ArenaBrain::Attack) {

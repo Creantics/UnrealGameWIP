@@ -8750,11 +8750,13 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
 TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the host's own fight") {
     // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1. Re-pinned for
     // the paired counter's 3 s cooldown (rule b): a pair inside it is refused, so the fight runs 14.4 s, not 17.4 s.
+    // Re-pinned (11-22) for Devin's string end (push 1.2 m, hitStop 0.10): 16.2 s, one more blow taken. Core only:
+    // not yet checked against a headless run.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 14.4 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 116/150, 22 hits, 1 taken, 0 blocks, 3 parries, 1 ripostes, 1 evades, 0 guard breaks, "
-          "3 staggers, 0 heals, 0 releases, 0 overloads, 4/6 reads right, dealt 520, took 34, 0 restarts.");
+          "Arena: VICTORY at standalone beat 0 step 0 after 16.2 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 82/150, 22 hits, 2 taken, 0 blocks, 3 parries, 1 ripostes, 2 evades, 0 guard breaks, "
+          "3 staggers, 0 heals, 0 releases, 0 overloads, 5/6 reads right, dealt 520, took 68, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
     CHECK(r.hitsOn[1] == 17);
     // What the cooldown changed: a pair inside it is refused (spent, nothing dealt), and the fight ends on a riposte
@@ -8763,18 +8765,20 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
     CHECK(r.stats.releases == 0);
     CHECK(r.stats.ripostes == 1);
     // The best run is the skirmisher's 2 of 2 (weight 3): Devin's 2nd blow fills its count and breaks its poise with
-    // it. The hulk's count (weight, 7) fills on his 4th blow, before its poise breaks: it breaks out once.
+    // it. The hulk's count (weight, 7) fills on his 4th blow, before its poise breaks: it breaks out, and again once
+    // the string end's push has put it off and its count fills a second time (11-22).
     CHECK(r.stats.breakRunBest == 2);
     CHECK(r.stats.breakRunNeed == 2);
-    CHECK(r.stats.breakDue == 1);
-    CHECK(r.stats.breakOuts == 1);
+    CHECK(r.stats.breakDue == 2);
+    CHECK(r.stats.breakOuts == 2);
     CHECK(r.stats.stepBacks == 0);
 }
 
 TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's break-out (weight fills it first)") {
     // Every seed runs past 14 s. The skirmisher still staggers on the blow that fills its count, but Devin's heavy
     // lights fill the hulk's count of 7 in 4 blows while its poise holds, so it breaks out every seed: once, or twice
-    // where the paired counter's 3 s cooldown (rule b) refuses a pair and the count fills again (seeds 3, 6 and 8).
+    // where the count fills again. Re-pinned (11-22) for Devin's string end (push 1.2 m, hitStop 0.10): twice on 8 of
+    // 12 seeds, once on 3, 5, 6 and 11; seeds 3, 6 and 8 still have the paired counter's refused pair (rule b).
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
         CAPTURE(seed);
@@ -8782,8 +8786,8 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's bre
         CHECK(r.stats.time > 14.f);
         CHECK(r.stats.flinches > 0);
         CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
-        CHECK(r.stats.breakOuts == (seed == 3 || seed == 6 || seed == 8 ? 2 : 1));
-        if (seed == 3 || seed == 6 || seed == 8) CHECK(r.stats.pairsCooled >= 1); // the refused pair behind the second
+        CHECK(r.stats.breakOuts == (seed == 3 || seed == 5 || seed == 6 || seed == 11 ? 1 : 2));
+        if (seed == 3 || seed == 6 || seed == 8) CHECK(r.stats.pairsCooled >= 1); // the paired counter's refused pair
         CHECK(r.stats.breakDue == r.stats.breakOuts + r.stats.stepBacks);
         CHECK(arenaFeatureChecks(r.stats).breakOutDue);
         CHECK(arenaFeatureChecks(r.stats).breakOutCheck == ArenaCheck::Pass);
@@ -8792,8 +8796,10 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's bre
 
 TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out with the token taken steps back") {
     // The headless -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoShoot line: his shots and light string leave
-    // an enemy upright at its breakAt, but the other holds the one token, so it steps back (barred) on most seeds;
-    // never a FAIL. Unaimed, the autopilot's parries cut his runs short (n/a).
+    // an enemy upright at its breakAt, but the other holds the one token, so it steps back (barred), once on every
+    // seed; never a FAIL. Since his string end's push (1.0 m, 11-22) puts an enemy off, its count fills a second time
+    // with the token free, and it breaks out then, on every seed (none of the step-backs is lost: 12 of 12 still step
+    // back, none blocked by a wall). Unaimed, the autopilot's parries cut his runs short (n/a).
     int breaks = 0, steps = 0;
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true);
@@ -8817,7 +8823,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out w
         CHECK(plain.stats.flinchChances == 0);
         CHECK(arenaFeatureChecks(plain.stats).flinchCheck == ArenaCheck::NotShown);
     }
-    CHECK(breaks == 1); // of 12 seeds (seed 10)
+    CHECK(breaks == 12); // of 12 seeds: the second count, after the push
     CHECK(steps == 12);
 }
 
@@ -9301,9 +9307,9 @@ TEST_CASE("arena host mirror: a shared count's held blows get their bonus throug
     CHECK(devin.hostHits >= 1);
     const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
     CHECK(duy.phase == ArenaPhase::Victory);
-    CHECK(duy.joins == 1);
-    CHECK(duy.bonuses == 1);
-    CHECK(duy.bonusDamage == 26);
+    CHECK(duy.joins == 2); // re-pinned (11-22) for his string end: 2 joins, not 1
+    CHECK(duy.bonuses == 2);
+    CHECK(duy.bonusDamage == 34);
     for (std::uint32_t seed = 1; seed <= 6; ++seed) {
         const HostRun shared = hostRun({"duelist", "skirmisher"}, "devin", seed, false, true);
         const HostRun alone = hostRun({"duelist", "skirmisher"}, "devin", seed, false, false);
@@ -9852,7 +9858,7 @@ TEST_CASE("arena string end: the full string's last light counts and lands; its 
     CHECK(arenaFeatureChecks(rig.fight.stats()).stringEndCheck == ArenaCheck::NotShown);
 }
 
-TEST_CASE("arena string end: a flinch counts toward the push; a boss and an armoured startup are never pushed") {
+TEST_CASE("arena string end: a flinch counts toward the push; a boss, a body that can't walk and an armoured startup are never pushed") {
     {   // the string end flinches it 0.6 m: the push adds 0.6 to make 1.2, never 1.8
         ArenaEnemyKind k = dummyKind();
         k.flinchTime = 0.3f;
@@ -9880,6 +9886,19 @@ TEST_CASE("arena string end: a flinch counts toward the push; a boss and an armo
         CHECK(r.stats.stringEndHits == 1);
         CHECK(r.stats.pushes == 0);
         CHECK(r.metres == 0.f);
+    }
+    {   // a body that can't walk; one that only runs is pushed
+        ArenaEnemyKind k = dummyKind();
+        k.walkSpeed = 0.f;
+        k.runSpeed = 0.f;
+        const PushRun r = pushRun(stringFighter(1.2f), k);
+        CHECK(r.stats.stringEndHits == 1);
+        CHECK(r.stats.pushes == 0);
+        CHECK(r.metres == 0.f);
+        k.runSpeed = 2.f;
+        const PushRun runs = pushRun(stringFighter(1.2f), k);
+        CHECK(runs.stats.pushes == 1);
+        CHECK(runs.metres > 1.f);
     }
     // An enemy in its move's armoured startup is not pushed; unarmoured, it is. Light 0 carries the push here.
     for (const float armor : {1.f, 0.f}) {

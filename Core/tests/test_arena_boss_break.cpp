@@ -793,7 +793,8 @@ TEST_CASE("arena boss break: the shortest break to break by phase, the fastest s
     const ArenaTable t = shippedTable();
     const float thresholds[] = {10.f, 8.f, 6.5f};
     // Pinned (ruled 2026-11-14; ARENA_DEMO.md, Boss break pace): a tuning change that moves these shows up here.
-    const float pinned[2][3] = {{6.233f, 5.250f, 4.850f}, {3.567f, 3.067f, 3.067f}};
+    // Re-pinned (11-22) for the leads' string end, its hitStop 0.10: each a little slower.
+    const float pinned[2][3] = {{6.300f, 5.250f, 4.950f}, {3.667f, 3.117f, 3.117f}};
     for (const float scale : {1.f, 3.f})
     for (int phase = 0; phase < 3; ++phase) {
         float best = 1.0e9f;
