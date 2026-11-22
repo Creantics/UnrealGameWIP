@@ -1384,11 +1384,17 @@ struct ArenaFightImpl {
         }
         bool began = false;
         const bool inAttack = earlyCut(); // starting anything now cuts the attack before its plain cancel point
-        if (inAttack && !pl.cancelChance && (pl.buffered != Press::None || in.guard)) {
+        // A chance: before the plain cancel point, a press or the guard waits while its own cut window on this attack
+        // is open (canStart lets it through). Counted before the press's refusal, so one refused there is a chance
+        // with no cancel. An attack with no own window for the cut (the default kit's, a heavy press) opens none, and
+        // a press that left the buffer before its window opened waited in none.
+        const bool pressCut = pl.buffered != Press::None && canStart(pl, fi, cutOf(pl.buffered));
+        const bool guardCut = in.guard && canStart(pl, fi, Cut::Guard);
+        if (inAttack && !pl.cancelChance && (pressCut || guardCut)) {
             pl.cancelChance = true;
             ++stats.cancelChances;
         }
-        if (pl.buffered != Press::None && canStart(pl, fi, cutOf(pl.buffered)) && startAction(pl.buffered, in)) {
+        if (pressCut && startAction(pl.buffered, in)) {
             pl.buffered = Press::None;
             began = true;
             if (inAttack) ++stats.cancels;
