@@ -440,6 +440,42 @@ void AFTExploreCharacter::BeginPlay()
 				UE_LOG(LogForgottenThird, Warning, TEXT("SOAK_SWAP: '%s' is not <wetness>,<word>@<off s>[+<on s>]."), *SoakSwap);
 			}
 		}
+		// The lead-switch wet swap: -ExploreSwitchReview=<soak>@<switch s> gives the lead that soak through the water's own
+		// store (UFTWaterSubsystem::SetLeadWetness, the line at the body's height, no silt; it dries by the water's law),
+		// shows the party (a portrait hides it) and at <switch s> switches the lead as the key does (HandleSwitchLead). The
+		// soak is each member's (AFTExploreDirector::OnLeadChanged): the old lead walks behind still wet, the new one takes
+		// its own. A refused switch is an Error and exit 2. Portrait shots carry their index, and each logs every soak.
+		FString SwitchReview;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreSwitchReview="), SwitchReview, false))
+		{
+			FString Soak, At;
+			if (SwitchReview.Split(TEXT("@"), &Soak, &At) && Soak.IsNumeric() && At.IsNumeric() && FCString::Atof(*At) > 0.f)
+			{
+				ftcore::WaterWetness Soaked;
+				Soaked.wetness = FMath::Clamp(FCString::Atof(*Soak), 0.f, 1.f);
+				Soaked.line = Soaked.wetness > 0.f ? 0.02f * GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 0.f;
+				UFTWaterSubsystem* Water = GetWorld() ? GetWorld()->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+				if (Water)
+				{
+					Water->SetLeadWetness(Soaked);
+					SwitchReviewAt = FCString::Atof(*At);
+					bPartyHidden = false;
+					GetWorldTimerManager().SetTimer(SwitchReviewTimer, this, &AFTExploreCharacter::SwitchForReview, SwitchReviewAt, false);
+					UE_LOG(LogForgottenThird, Display, TEXT("SWITCH_REVIEW the lead starts soaked to %.2f (line %.2f m); the party shows; the switch at %.1f s."),
+						Soaked.wetness, Soaked.line, SwitchReviewAt);
+				}
+				else
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: no water subsystem holds the lead's soak; no proof from this run."));
+					FTRequestExit(2, TEXT("ExploreSwitchReview"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: '%s' is not <soak>@<switch s> (two numbers, the time above 0)."), *SwitchReview);
+				FTRequestExit(2, TEXT("ExploreSwitchReview"));
+			}
+		}
 		FString Range;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
 		{
@@ -647,10 +683,15 @@ void AFTExploreCharacter::StepPortraitShots()
 		bShotAimed = true;
 		return;
 	}
-	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
+	// A moving light (or a face clip, or a lead switch) makes shots at the same yaw differ, so they carry their index.
+#if !UE_BUILD_SHIPPING
+	const bool bIndexed = LookDevSpin != 0.f || SwitchReviewAt >= 0.f;
+#else
+	const bool bIndexed = LookDevSpin != 0.f;
+#endif
 	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
-		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: bIndexed                ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
@@ -665,6 +706,10 @@ void AFTExploreCharacter::StepPortraitShots()
 	if (bPoseDump)
 	{
 		DumpPortraitPose(File, Yaw);
+	}
+	if (SwitchReviewAt >= 0.f)
+	{
+		LogSwitchReview(*FPaths::GetCleanFilename(File));
 	}
 #endif
 	bShotAimed = false;
@@ -905,6 +950,44 @@ void AFTExploreCharacter::StepSoakSwap()
 	ShowWetness(ftcore::WaterWetness{SoakSwapWet, 3.f, 0.f});
 	UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP %s at %.1f s: %d under piece(s) swapped."), bOn ? TEXT("on") : TEXT("off"), Now, Changed);
 	LogSoakSwap(bOn ? TEXT("after on") : TEXT("after off"));
+}
+
+void AFTExploreCharacter::LogSwitchReview(const TCHAR* Stage)
+{
+	// Every member's soak as the water and the followers hold it, so a still can be read against its numbers.
+	const UWorld* World = GetWorld();
+	const UFTWaterSubsystem* Water = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const ftcore::WaterWetness Lead = Water ? Water->LeadWetness() : ftcore::WaterWetness{};
+	FString Line = FString::Printf(TEXT("SWITCH_REVIEW %s: lead %d %s soak %.2f (line %.2f m), weather %.2f"), Stage, LeadIndex,
+		PartyLooks.IsValidIndex(LeadIndex) ? *PartyLooks[LeadIndex].Name : TEXT("?"), Lead.wetness, Lead.line, LeadWeather());
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		const TArray<TObjectPtr<AFTPartyFollower>>& Party = D->GetFollowers();
+		for (int32 I = 0; I < Party.Num(); ++I)
+		{
+			const AFTPartyFollower* Follower = Party[I].Get();
+			Line += Follower ? FString::Printf(TEXT("; follower %d %s soak %.2f (line %.2f m)%s"), I, *Follower->GetName(), Follower->GetWetness().wetness,
+								   Follower->GetWetness().line, Follower->IsHidden() ? TEXT(" hidden") : TEXT(""))
+							 : FString::Printf(TEXT("; follower %d none"), I);
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("%s."), *Line);
+}
+
+void AFTExploreCharacter::SwitchForReview()
+{
+	// The key's path; a switch it refuses is said, never shot as if it had happened.
+	const int32 Was = LeadIndex;
+	LogSwitchReview(TEXT("before the switch"));
+	HandleSwitchLead();
+	if (LeadIndex == Was)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: the switch was refused (van %d, party screen %d, traversing %d, %d looks); no proof from this run."),
+			Van.IsValid() ? 1 : 0, PartyScreen.open ? 1 : 0, bTraversing ? 1 : 0, PartyLooks.Num());
+		FTRequestExit(2, TEXT("ExploreSwitchReview"));
+		return;
+	}
+	LogSwitchReview(TEXT("after the switch"));
 }
 
 void AFTExploreCharacter::SoakForReview()

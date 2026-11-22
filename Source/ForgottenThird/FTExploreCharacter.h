@@ -343,6 +343,11 @@ private:
 	int32 SoakSwapStage = 0;
 	bool bSoakSwapBefore = false;
 	FTimerHandle SoakSwapTimer;
+	// -ExploreSwitchReview=<soak>@<switch s>: review only (see the .cpp).
+	void SwitchForReview();
+	void LogSwitchReview(const TCHAR* Stage);
+	float SwitchReviewAt = -1.f;
+	FTimerHandle SwitchReviewTimer;
 	// -StillCam=x,y,z,yaw,pitch,fov: review only (see the .cpp).
 	void HoldStillCam();
 	ftcore::StillCam StillCamView;
