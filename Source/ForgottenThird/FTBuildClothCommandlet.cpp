@@ -25,6 +25,21 @@
 #if WITH_EDITOR
 namespace
 {
+// Every flag this commandlet reads as a number. Main checks them all strictly before anything is loaded
+// (ftcore::flagnum::firstBad), and NumberFlag reads only these, so a numeric flag can't be added without the check.
+constexpr std::string_view NumberFlags[] = {"Max=", "Pin=", "Fit=", "Pad=", "Density=", "Damping=", "LocalDamping=",
+	"Edge=", "Bend=", "Tether=", "Drag=", "Lift=", "Thickness=", "Friction=", "GravityScale=", "AnimDriveLow=",
+	"AnimDriveHigh=", "DriveFrom=", "DriveTo=", "AnimDriveDamping="};
+
+// FParse::Value for a numeric flag; Key must be in NumberFlags (a programming fault otherwise, caught on first use).
+bool NumberFlag(const FString& Params, const TCHAR* Key, float& Out)
+{
+	const FTCHARToUTF8 Utf8(Key);
+	checkf(ftcore::flagnum::listed(std::string_view(reinterpret_cast<const char*>(Utf8.Get()), static_cast<size_t>(Utf8.Length())),
+		NumberFlags, UE_ARRAY_COUNT(NumberFlags)), TEXT("FTBuildCloth: -%s is read as a number but is not in NumberFlags."), Key);
+	return FParse::Value(*Params, Key, Out);
+}
+
 const TCHAR* ClothMapName(uint32 Target)
 {
 	switch (static_cast<EWeightMapTargetCommon>(Target))
@@ -543,58 +558,58 @@ bool ClothConfigure(UClothingAssetCommon& Asset, const FString& Params, const ft
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: -%s%g read back %g."), Flag, Asked, ReadBack);
 	};
 	float V = 0.f;
-	if (FParse::Value(*Params, TEXT("Density="), V))
+	if (NumberFlag(Params, TEXT("Density="), V))
 	{
 		Config->MassMode = EClothMassMode::Density;
 		Config->Density = V;
 		Back(TEXT("Density="), V, Config->MassMode == EClothMassMode::Density ? Config->Density : -1.f);
 	}
-	if (FParse::Value(*Params, TEXT("Damping="), V))
+	if (NumberFlag(Params, TEXT("Damping="), V))
 	{
 		Config->DampingCoefficient = V;
 		Back(TEXT("Damping="), V, Config->DampingCoefficient);
 	}
-	if (FParse::Value(*Params, TEXT("LocalDamping="), V))
+	if (NumberFlag(Params, TEXT("LocalDamping="), V))
 	{
 		Config->LocalDampingCoefficient = V;
 		Back(TEXT("LocalDamping="), V, Config->LocalDampingCoefficient);
 	}
-	if (FParse::Value(*Params, TEXT("Edge="), V))
+	if (NumberFlag(Params, TEXT("Edge="), V))
 	{
 		Config->EdgeStiffnessWeighted = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Edge="), V, Config->EdgeStiffnessWeighted.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Bend="), V))
+	if (NumberFlag(Params, TEXT("Bend="), V))
 	{
 		Config->BendingStiffnessWeighted = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Bend="), V, Config->BendingStiffnessWeighted.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Tether="), V))
+	if (NumberFlag(Params, TEXT("Tether="), V))
 	{
 		Config->TetherStiffness = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Tether="), V, Config->TetherStiffness.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Drag="), V))
+	if (NumberFlag(Params, TEXT("Drag="), V))
 	{
 		Config->Drag = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Drag="), V, Config->Drag.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Lift="), V))
+	if (NumberFlag(Params, TEXT("Lift="), V))
 	{
 		Config->Lift = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Lift="), V, Config->Lift.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Thickness="), V))
+	if (NumberFlag(Params, TEXT("Thickness="), V))
 	{
 		Config->CollisionThickness = V;
 		Back(TEXT("Thickness="), V, Config->CollisionThickness);
 	}
-	if (FParse::Value(*Params, TEXT("Friction="), V))
+	if (NumberFlag(Params, TEXT("Friction="), V))
 	{
 		Config->FrictionCoefficient = V;
 		Back(TEXT("Friction="), V, Config->FrictionCoefficient);
 	}
-	if (FParse::Value(*Params, TEXT("GravityScale="), V))
+	if (NumberFlag(Params, TEXT("GravityScale="), V))
 	{
 		Config->GravityScale = V;
 		Back(TEXT("GravityScale="), V, Config->GravityScale);
@@ -701,9 +716,6 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	// Every numeric flag must be a whole number as written: FParse::Value(float) reads "abc" or an empty value as 0 and
 	// says it was given, so a typo would build silently with a 0 (ftcore::flagnum). Checked before anything is loaded.
 	{
-		static constexpr std::string_view NumberFlags[] = {"Max=", "Pin=", "Fit=", "Pad=", "Density=", "Damping=",
-			"LocalDamping=", "Edge=", "Bend=", "Tether=", "Drag=", "Lift=", "Thickness=", "Friction=", "GravityScale=",
-			"AnimDriveLow=", "AnimDriveHigh=", "DriveFrom=", "DriveTo=", "AnimDriveDamping="};
 		const FTCHARToUTF8 Line(*Params);
 		const std::string_view Text(reinterpret_cast<const char*>(Line.Get()), static_cast<size_t>(Line.Length()));
 		if (const int Bad = ftcore::flagnum::firstBad(Text, NumberFlags, UE_ARRAY_COUNT(NumberFlags)); Bad >= 0)
@@ -719,15 +731,15 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	float Max = 25.f, Pin = 3.f;
 	FParse::Value(*Params, TEXT("Mesh="), MeshPath);
 	FParse::Value(*Params, TEXT("Physics="), PhysicsPath);
-	FParse::Value(*Params, TEXT("Max="), Max);
-	FParse::Value(*Params, TEXT("Pin="), Pin);
+	NumberFlag(Params, TEXT("Max="), Max);
+	NumberFlag(Params, TEXT("Pin="), Pin);
 	FString FitPath, BodyPath;
 	if (FParse::Value(*Params, TEXT("FitPhysics="), FitPath))
 	{
 		float Fit = 0.7f, Pad = 1.f;
 		FParse::Value(*Params, TEXT("Body="), BodyPath);
-		FParse::Value(*Params, TEXT("Fit="), Fit);
-		FParse::Value(*Params, TEXT("Pad="), Pad);
+		NumberFlag(Params, TEXT("Fit="), Fit);
+		NumberFlag(Params, TEXT("Pad="), Pad);
 		FString DropList;
 		TArray<FString> Drop;
 		FParse::Value(*Params, TEXT("Drop="), DropList, false);  // the list itself has commas
@@ -777,11 +789,11 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	// -AnimDriveLow= alone for one drive everywhere; -AnimDriveDamping= either way. ftcore::clothdrive::validate says why not.
 	ftcore::clothdrive::Args Drive;
 	Drive.map = FParse::Param(*Params, TEXT("AnimDriveMap"));
-	Drive.hasLow = FParse::Value(*Params, TEXT("AnimDriveLow="), Drive.low);
-	Drive.hasHigh = FParse::Value(*Params, TEXT("AnimDriveHigh="), Drive.high);
-	Drive.hasFrom = FParse::Value(*Params, TEXT("DriveFrom="), Drive.from);
-	Drive.hasTo = FParse::Value(*Params, TEXT("DriveTo="), Drive.to);
-	Drive.hasDamping = FParse::Value(*Params, TEXT("AnimDriveDamping="), Drive.damping);
+	Drive.hasLow = NumberFlag(Params, TEXT("AnimDriveLow="), Drive.low);
+	Drive.hasHigh = NumberFlag(Params, TEXT("AnimDriveHigh="), Drive.high);
+	Drive.hasFrom = NumberFlag(Params, TEXT("DriveFrom="), Drive.from);
+	Drive.hasTo = NumberFlag(Params, TEXT("DriveTo="), Drive.to);
+	Drive.hasDamping = NumberFlag(Params, TEXT("AnimDriveDamping="), Drive.damping);
 	Drive.max = Max;
 	if (const ftcore::clothdrive::Check Bad = ftcore::clothdrive::validate(Drive); Bad != ftcore::clothdrive::Check::Ok)
 	{
