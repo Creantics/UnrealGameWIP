@@ -51,10 +51,37 @@ TEST_CASE("flag number: quotes and spaces are read as FParse::Value reads them")
     CHECK(fn::read("-Max=\"2 1\"", "Max=").read == fn::Read::Bad);
     // Spaces after the '=' are skipped, as FParse does.
     CHECK(fn::read("-Max= 21", "Max=").value == doctest::Approx(21.f));
-    // A key inside a quoted stretch is not the flag: FParse skips quoted text when it looks for the key.
-    CHECK(fn::read("\"-Max=21\"", "Max=").read == fn::Read::Absent);
+    // A space then a quote is the unquoted path in FParse too (Atof of "\"21\"" is 0).
+    CHECK(fn::read("-Max= \"21\"", "Max=").read == fn::Read::Bad);
+    // A key inside a quoted stretch is not the flag: FParse skips quoted text when it looks for the key. Written as a
+    // flag there ('-' before it, whole-token quotes or after a stray quote) it is Hidden, so a caller can refuse it.
+    CHECK(fn::read("\"-Max=21\"", "Max=").read == fn::Read::Hidden);
+    CHECK(fn::read("-Mesh=\"/Game/X -Max=21", "Max=").read == fn::Read::Hidden);
+    CHECK(fn::read("-Mesh=\"/Game/X -Max=abc", "Max=").read == fn::Read::Hidden);
+    CHECK(fn::read("-Mesh=\"/Game/Max=abc\"", "Max=").read == fn::Read::Absent); // part of a path, not a flag
     CHECK(fn::read("-Mesh=\"/Game/Max=abc\" -Max=4", "Max=").value == doctest::Approx(4.f));
     CHECK(fn::findKey("-Mesh=\"/Game/Max=abc\"", "Max=") == std::string_view::npos);
+    CHECK(fn::findKey("-Mesh=\"/Game/X -Max=1", "Max=", true) == 16);
+    // After a closed quote the next flag reads, with a space or straight after it.
+    CHECK(fn::read("-Mesh=\"a\" -Max=3", "Max=").value == doctest::Approx(3.f));
+    CHECK(fn::read("-Mesh=\"a\"-Max=3", "Max=").value == doctest::Approx(3.f));
+    static_assert(fn::quotesClosed("-Mesh=\"a b\" -Max=3"));
+    static_assert(fn::quotesClosed("-Max=3"));
+    static_assert(!fn::quotesClosed("-Mesh=\"/Game/X -Max=21"));
+}
+
+TEST_CASE("flag number: CR and LF end a value; written keeps the run as typed for the error message") {
+    CHECK(fn::read("-Max=21\r\n", "Max=").value == doctest::Approx(21.f));
+    CHECK(fn::read("-Max=21\n-Pin=3", "Max=").value == doctest::Approx(21.f));
+    CHECK(fn::read("-Max=1,5 -Pin=3", "Max=").text == "1");
+    CHECK(fn::read("-Max=1,5 -Pin=3", "Max=").written == "1,5");
+    CHECK(fn::read("-Max=2)", "Max=").written == "2)");
+    CHECK(fn::read("-Max=\"21\"x -Pin=3", "Max=").written == "\"21\"x");
+    CHECK(fn::read("-Max=\"21\" -Pin=3", "Max=").written == "\"21\"");
+    CHECK(fn::read("-Max=\"21", "Max=").written == "\"21");
+    CHECK(fn::read("-Max=abc", "Max=").written == "abc");
+    CHECK(fn::read("-Max=", "Max=").written.empty());
+    CHECK(fn::read("-Pin=3", "Max=").written.empty());
 }
 
 TEST_CASE("flag number: the key needs a clean left edge, as FParse::Value finds it") {
@@ -78,6 +105,7 @@ TEST_CASE("flag number: firstBad names the first flag that is given but not a nu
     CHECK(fn::firstBad("-Max=21 -AnimDriveLow= -AnimDriveHigh=0.6", keys.data(), keys.size()) == 2);
     CHECK(fn::firstBad("-Max=21 -AnimDriveHigh=abc", keys.data(), keys.size()) == 3);
     CHECK(fn::firstBad("-Mesh=/Game/X", keys.data(), keys.size()) == -1); // none given
+    CHECK(fn::firstBad("-Mesh=\"/Game/X -Pin=3", keys.data(), keys.size()) == 1); // hidden by a stray quote
     CHECK(fn::firstBad("-Max=x", nullptr, 4) == -1);
     static constexpr std::array<std::string_view, 2> known{"Max=", "AnimDriveLow="};
     static_assert(fn::listed("Max=", known.data(), known.size()));

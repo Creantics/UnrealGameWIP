@@ -27,6 +27,8 @@ namespace
 {
 // Every flag this commandlet reads as a number. Main checks them all strictly before anything is loaded
 // (ftcore::flagnum::firstBad), and NumberFlag reads only these, so a numeric flag can't be added without the check.
+// Rule for this file: a number is read only through NumberFlag, never with FParse::Value(..., float&) directly (that
+// would skip the strict check: FParse reads "abc" as 0 and says it was given).
 constexpr std::string_view NumberFlags[] = {"Max=", "Pin=", "Fit=", "Pad=", "Density=", "Damping=", "LocalDamping=",
 	"Edge=", "Bend=", "Tether=", "Drag=", "Lift=", "Thickness=", "Friction=", "GravityScale=", "AnimDriveLow=",
 	"AnimDriveHigh=", "DriveFrom=", "DriveTo=", "AnimDriveDamping="};
@@ -528,7 +530,7 @@ int32 ClothSectionBySlot(const USkeletalMesh& Mesh, const FString& Slot)
 // The Chaos settings given on the command line (any left out keep the asset's own): mass by Density (kg/m2), Damping
 // and LocalDamping, Edge/Bend/Tether stiffness (0..1), Drag and Lift, collision Thickness (cm) and Friction,
 // GravityScale, and -SelfCollide or -NoSelfCollide (neither keeps the asset's own setting; both is an error, caught
-// before the mesh is touched). FParse::Value only matches a key whose previous character is not a letter or digit
+// before the mesh is touched). Each is read through NumberFlag. FParse::Value only matches a key whose previous character is not a letter or digit
 // (FCString::Strifind, Core/Public/Misc/CString.h:747 and 751 in UE 5.8), so Damping= never reads LocalDamping=.
 // An asset with no Chaos config gets its configs made by the engine's
 // own route (UClothingAssetCommon::PostUpdateAllAssets, public: every config the cloth factories need, the Chaos config
@@ -718,12 +720,32 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	{
 		const FTCHARToUTF8 Line(*Params);
 		const std::string_view Text(reinterpret_cast<const char*>(Line.Get()), static_cast<size_t>(Line.Length()));
+		// FParse treats the rest of a line after a stray quote as quoted and finds no flag there, so every flag after it
+		// would silently keep its default.
+		if (!ftcore::flagnum::quotesClosed(Text))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: the command line has a quote that is never closed; every flag after it would be ignored."));
+			return 1;
+		}
 		if (const int Bad = ftcore::flagnum::firstBad(Text, NumberFlags, UE_ARRAY_COUNT(NumberFlags)); Bad >= 0)
 		{
 			const std::string_view Key = NumberFlags[Bad];
-			const std::string_view Given = ftcore::flagnum::read(Text, Key).text;
-			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s needs a number; \"%s\" is not one."),
-				*FString(static_cast<int32>(Key.size()), Key.data()), *FString(static_cast<int32>(Given.size()), Given.data()));
+			const ftcore::flagnum::Value Given = ftcore::flagnum::read(Text, Key);
+			const FString KeyText(static_cast<int32>(Key.size()), Key.data());
+			if (Given.read == ftcore::flagnum::Read::Hidden)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s sits inside quotes, so it would be ignored; take the quotes off the flag."),
+					*KeyText);
+			}
+			else if (Given.written.empty())
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s needs a number and was given none."), *KeyText);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s needs one whole number; '%s' is not one."), *KeyText,
+					*FString(static_cast<int32>(Given.written.size()), Given.written.data()));
+			}
 			return 1;
 		}
 	}

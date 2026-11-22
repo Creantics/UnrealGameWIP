@@ -7,8 +7,10 @@
 // inside "LocalDamping=") and never inside a quoted stretch; a value in quotes (-Max="21") runs to the closing quote,
 // any other starts after any spaces and runs to a space, a comma or a ')'. Stricter than FParse in what passes: the
 // value must be one whole finite number, a quoted one must close and be followed by a space or the end, and an unquoted
-// one must end at a space or the end (FParse would read "-Max=1,5" as 1). Plain C++20, header only, no allocation, no
-// exceptions.
+// one must end at a space or the end (FParse would read "-Max=1,5" as 1). A flag FParse would not see because it sits
+// in quotes ("-Max=21" whole, or after a stray quote) is Hidden, not Absent, so a caller can refuse it rather than build
+// with the default. One difference is left: FParse copies at most 255 characters of a value, this reads the whole run
+// (a numeric value that long is refused either way). Plain C++20, header only, no allocation, no exceptions.
 
 #include <charconv>
 #include <cmath>
@@ -22,12 +24,14 @@ enum class Read {
     Absent, // the key is not on the line
     Number, // given, and a whole finite number
     Bad,    // given, but empty or not a number
+    Hidden, // written as a flag ("-Max=") but inside a quoted stretch, so FParse would not read it
 };
 
 struct Value {
     Read read = Read::Absent;
     float value = 0.f;
-    std::string_view text{}; // the value as written, without its quotes (empty when absent)
+    std::string_view text{};    // the value FParse would take, without its quotes (empty when absent)
+    std::string_view written{}; // the value as written, quotes and all, to the next space (for an error message)
 };
 
 namespace detail {
@@ -49,14 +53,17 @@ constexpr bool sameAt(std::string_view line, std::size_t at, std::string_view ke
 }
 } // namespace detail
 
-// Where the key's first match with a clean left edge, outside any quoted stretch, starts, or npos.
-constexpr std::size_t findKey(std::string_view line, std::string_view key) {
+// Where the key's first match with a clean left edge, outside any quoted stretch, starts, or npos. With inQuotes, the
+// first match that is inside one and written as a flag (a '-' right before it) instead.
+constexpr std::size_t findKey(std::string_view line, std::string_view key, bool inQuotes = false) {
     if (key.empty()) {
         return std::string_view::npos;
     }
     bool quoted = false;
     for (std::size_t at = 0; at + key.size() <= line.size(); ++at) {
-        if (!quoted && (at == 0 || !detail::alnum(line[at - 1])) && detail::sameAt(line, at, key)) {
+        const bool edge = inQuotes ? (quoted && at > 0 && line[at - 1] == '-')
+                                   : (!quoted && (at == 0 || !detail::alnum(line[at - 1])));
+        if (edge && detail::sameAt(line, at, key)) {
             return at;
         }
         if (line[at] == '"') {
@@ -66,11 +73,22 @@ constexpr std::size_t findKey(std::string_view line, std::string_view key) {
     return std::string_view::npos;
 }
 
+// Whether every quote on the line is closed (FParse treats the rest of a line after a stray quote as quoted).
+constexpr bool quotesClosed(std::string_view line) {
+    bool quoted = false;
+    for (const char c : line) {
+        quoted = c == '"' ? !quoted : quoted;
+    }
+    return !quoted;
+}
+
 // The flag's value. `key` includes its '=' ("Max=").
 inline Value read(std::string_view line, std::string_view key) {
     const std::size_t at = findKey(line, key);
     if (at == std::string_view::npos) {
-        return {};
+        Value hidden;
+        hidden.read = findKey(line, key, true) == std::string_view::npos ? Read::Absent : Read::Hidden;
+        return hidden;
     }
     std::size_t from = at + key.size();
     std::size_t to = from;
@@ -92,6 +110,15 @@ inline Value read(std::string_view line, std::string_view key) {
     }
     Value out;
     out.text = line.substr(from, to - from);
+    {
+        const std::size_t eq = at + key.size(); // first character after the '='
+        const std::size_t start = eq < line.size() && line[eq] == '"' ? eq : from;
+        std::size_t last = to < line.size() && line[to] == '"' ? to + 1 : to;
+        while (last < line.size() && !detail::space(line[last])) {
+            ++last;
+        }
+        out.written = line.substr(start, last - start);
+    }
     out.read = Read::Bad;
     if (out.text.empty() || !ends) {
         return out;
@@ -111,10 +138,11 @@ inline Value read(std::string_view line, std::string_view key) {
     return out;
 }
 
-// The index in keys[0..count) of the first flag given with a value that is not a number, or -1.
+// The index in keys[0..count) of the first flag given with a value that is not a number, or hidden in quotes, or -1.
 inline int firstBad(std::string_view line, const std::string_view* keys, std::size_t count) {
     for (std::size_t i = 0; keys != nullptr && i < count; ++i) {
-        if (read(line, keys[i]).read == Read::Bad) {
+        const Read r = read(line, keys[i]).read;
+        if (r == Read::Bad || r == Read::Hidden) {
             return static_cast<int>(i);
         }
     }
