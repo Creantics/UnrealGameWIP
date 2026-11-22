@@ -9208,8 +9208,8 @@ void UFTArenaRunner::WalkPartner(const ftcore::ArenaOutput& Out)
 	{
 		return;
 	}
-	// To the fight's goal at its own kit's moveSpeed, then placed by Core (arenaPlaceAlly): off the living enemies'
-	// bodies, inside the ring.
+	// To the fight's goal at its own kit's moveSpeed, then placed by Core (SettleAlly): off the living enemies'
+	// bodies, inside the zone's walls and out of its obstacles.
 	const ftcore::Vec2 To{Out.ally.goal.x - Bodies.ally.x, Out.ally.goal.y - Bodies.ally.y};
 	const float Far = ArenaLength(To);
 	const float Most = Fight.def().partnerKit.moveSpeed * StepSeconds;
@@ -9222,7 +9222,19 @@ void UFTArenaRunner::WalkPartner(const ftcore::ArenaOutput& Out)
 	{
 		Bodies.ally = Out.ally.goal;
 	}
-	ftcore::arenaPlaceAlly(Fight, Bodies);
+	SettleAlly(ftcore::kArenaPartnerPlacePasses);
+}
+
+void UFTArenaRunner::SettleAlly(int32 MaxPasses)
+{
+	const ftcore::ArenaSettleRun Run = ftcore::arenaPlaceAlly(Fight, Bodies, Fit.zone, MaxPasses);
+	if (!Run.settled && MaxPasses > 1)
+	{
+		// Wedged (on a wall or between two enemies): the walls kept it, an overlap past 0.1 mm perhaps left.
+		++AllyPlaceCaps;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: ally placement hit its pass cap (%u so far)."), Fight.time(),
+			   AllyPlaceCaps);
+	}
 }
 
 void UFTArenaRunner::FeedLeadHealths()

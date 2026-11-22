@@ -253,6 +253,11 @@ FTCORE_API bool fitArenaZone(const ArenaZoneSpec& spec, const WorldLayout* layou
 FTCORE_API bool checkArenaZone(const ArenaZoneFit& fit, const ArenaDef& def, const WorldLayout* layout,
                                std::string* error = nullptr);
 
+// arenaPlaceAlly (ArenaFight.h) held by the zone: the ally inside its walls and out of its obstacles, the hold last.
+// No allocation.
+FTCORE_API ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies, const ArenaZone& zone,
+                                         int maxPasses = kArenaSettlePasses);
+
 // arenaStep, then the zone: bodies held inside the walls and out of the obstacles. No allocation.
 FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const ArenaZone& zone,
                           int settleCap = kArenaSettlePasses);

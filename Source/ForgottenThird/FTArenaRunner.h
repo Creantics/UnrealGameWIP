@@ -759,6 +759,11 @@ private:
 	void PartnerImpact(const ftcore::ArenaEvent& E);
 	void ImpactSoundHook(uint8 Source, const FVector& At, float Scale);
 	void WalkPartner(const ftcore::ArenaOutput& Out);
+	// The ally's body placed by Core after its walk (ftcore::arenaPlaceAlly in the zone, at most MaxPasses): off the
+	// living enemies, inside the walls and out of the obstacles. A placement that stops at its pass cap is counted and
+	// logged (one pass, the partner's, always stops there and is not counted).
+	void SettleAlly(int32 MaxPasses);
+	uint32 AllyPlaceCaps = 0;
 	void FeedLeadHealths();
 	void TrackPartner(const ftcore::ArenaOutput& Out);
 	void LogPartnerWindow();

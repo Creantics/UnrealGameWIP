@@ -277,6 +277,39 @@ TEST_CASE("arena zone step: allocates nothing over a whole fight in a zone with 
     CHECK(ticks > 300);
 }
 
+TEST_CASE("arena zone ally placement: out of an obstacle and inside the walls, settled, no allocation") {
+    const ArenaTable arena = loadArena();
+    const WorldTable worlds = loadWorlds();
+    const ArenaZoneTable zones = loadZones(arena, worlds);
+    Fitted f;
+    fitShipped(arena, worlds, *zones.find("unw_court_a"), f);
+    const ArenaZone& zone = f.fit.zone;
+    REQUIRE(zone.obstacleCount > 0);
+    ArenaFight fight;
+    ArenaBodies bodies;
+    fight.begin(f.def, f.fit.ring, f.fit.playerStart, f.fit.playerFacing, 3u);
+    fight.setAlly(100, 0.4f);
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    int placed = 0;
+    for (std::size_t o = 0; o < zone.obstacleCount; ++o) {
+        CAPTURE(o);
+        const Vec2 in{zone.obstacles[o].at.x + 0.05f, zone.obstacles[o].at.y + 0.03f};
+        if (!zone.contains(in, 0.4f)) continue;
+        REQUIRE(zone.obstacleDistance(in) < 0.f);
+        bodies.ally = in;
+        const ArenaSettleRun run = arenaPlaceAlly(fight, bodies, zone);
+        CHECK(run.settled);
+        CHECK(zone.obstacleDistance(bodies.ally) >= 0.4f - 1e-3f);
+        CHECK(zone.contains(bodies.ally, 0.4f - 1e-3f));
+        ++placed;
+    }
+    if (counting) CHECK(ftcore_test::allocStats().count - before == 0);
+    CHECK(placed > 0);
+}
+
 // ---- the file ----
 
 TEST_CASE("arena zones: Data/Battle/arenas.json loads against arena.json and worlds.json without warnings") {

@@ -5292,10 +5292,14 @@ void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec
     arenaClosest(ArenaSpine{centreA, axisA, spanA}, ArenaSpine{centreB, axisB, spanB}, pa, pb);
 }
 
-ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies) {
+namespace {
+// One pass of the ally's placement: off each living enemy, in enemy order. Whether any overlap was deeper than `floor`
+// (a shallower one is still closed, so the pass ends exact, but it does not keep the loop going).
+bool arenaAllyPass(const ArenaFight& fight, ArenaBodies& bodies, float floor) {
     const ArenaDef& def = fight.def();
     const ArenaOutput& out = fight.output();
     const float radius = fight.allyRadius();
+    bool deep = false;
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
         if (!fight.enemyAlive(i)) continue;
         // A circle stands it off its centre; a stadium (arenaBodySpan) off the nearest point of its spine, along the
@@ -5312,11 +5316,28 @@ ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies) {
         const Vec2 off = arenaSub(bodies.ally, from);
         const float apart = arenaLength(off);
         if (apart >= least) continue;
+        deep = deep || apart < least - floor;
         const Vec2 dir = apart > 1e-4f ? Vec2{off.x / apart, off.y / apart} : Vec2{1.f, 0.f};
         bodies.ally = Vec2{from.x + dir.x * least, from.y + dir.y * least};
     }
-    bodies.ally = fight.ring().clamp(bodies.ally, radius);
-    return ArenaSettleRun{1, true};
+    return deep;
+}
+} // namespace
+
+ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies, ArenaHoldFn hold, const void* wall,
+                              int maxPasses) {
+    const int cap = std::max(maxPasses, 1);
+    const float radius = fight.allyRadius();
+    for (int pass = 1; pass <= cap; ++pass) {
+        const bool deep = arenaAllyPass(fight, bodies, kArenaSettleFloor);
+        const bool held = hold(wall, bodies.ally, radius); // the wall last: it wins a wedge
+        if (!deep && !held) return ArenaSettleRun{pass, true};
+    }
+    return ArenaSettleRun{cap, false};
+}
+
+ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies, int maxPasses) {
+    return arenaPlaceAlly(fight, bodies, arenaRingHold, &fight.ring(), maxPasses);
 }
 
 // ---- ArenaTable ----

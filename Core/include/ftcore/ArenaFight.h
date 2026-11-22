@@ -2028,11 +2028,23 @@ FTCORE_API void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 c
 // The ally's body after the host has walked it (the step never moves it: ArenaFight::setAlly). The ally yields: the
 // lead and the enemies are the step's, already settled, so it takes the whole of each overlap. It stands off each
 // living enemy's circle or stadium (arenaBodySpan: allyRadius + bodyRadius from the nearest point of its spine, along
-// the enemy's facing), one pass in enemy order, and is then held inside the fight's ring. The lead's body is not one
-// of them: a partner walking to a goal behind the lead would stall on it (the brain must route round it first).
-// The host's partner walk and the tests' mirror of it both call this. It never touches settleCaps (one count a step
-// is arenaStep's). Deterministic; no allocation.
-FTCORE_API ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies);
+// the enemy's facing), a pass in enemy order, and is then held by the walls (`hold` on `wall`, as arenaHoldBodies);
+// pass and hold again until a pass finds no overlap deeper than kArenaSettleFloor and the hold moves nothing, at most
+// maxPasses times (under 1 is 1). The hold runs last, so the ally always ends inside the walls: wedged between a wall
+// and an enemy, or between two enemies, it stops at the cap unsettled (`settled` false; the host counts these). The
+// lead's body is not one of them: a partner walking to a goal behind the lead would stall on it (the brain must route
+// round it first). The host's ally walks and the tests' mirror of them call this (the zone's walls and obstacles:
+// arenaPlaceAlly with an ArenaZone, ArenaZone.h; the ring: the two-argument one). It never touches settleCaps (one
+// count a step is arenaStep's). Deterministic; no allocation.
+FTCORE_API ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies, ArenaHoldFn hold,
+                                         const void* wall, int maxPasses = kArenaSettlePasses);
+// The same, held by the fight's ring.
+FTCORE_API ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies,
+                                         int maxPasses = kArenaSettlePasses);
+// The partner's placement passes (the host's WalkPartner and the tests' mirror of it): one pass, then the wall. The
+// full loop resolves a squeeze between two enemies and moves the partner's path enough to fail rule 17's circling bars
+// and the hug capture's rule 1 (11-22, measured); it goes to kArenaSettlePasses once the brain routes (task B).
+constexpr int kArenaPartnerPlacePasses = 1;
 
 // ---- data ----
 

@@ -283,7 +283,7 @@ struct PRig {
         if (far > most) bodies.ally = Vec2{bodies.ally.x + d.x * most / far, bodies.ally.y + d.y * most / far};
         else bodies.ally = out->ally.goal;
         walked = bodies.ally;
-        arenaPlaceAlly(fight, bodies); // the host's placement (WalkPartner)
+        arenaPlaceAlly(fight, bodies, kArenaPartnerPlacePasses); // the host's placement (WalkPartner)
         pushed = length(sub(bodies.ally, walked));
     }
     void run(float seconds) {

@@ -339,6 +339,10 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         ++bodies.settleCaps;
 }
 
+ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies, const ArenaZone& zone, int maxPasses) {
+    return arenaPlaceAlly(fight, bodies, zoneHold, &zone, maxPasses);
+}
+
 // ---- the size ----
 
 ArenaZoneSizing arenaZoneSizing(const ArenaDef& def) {

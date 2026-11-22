@@ -3640,6 +3640,99 @@ TEST_CASE("arena ally placement: off a living enemy's circle and a long kind's s
     CHECK(rig.bodies.ally.x == -5.f + 0.2f);
 }
 
+TEST_CASE("arena ally placement: push and hold again to 0.1 mm; a wedge on the wall or between two enemies stops at the cap") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
+    Rig rig(ruleFighter(), {dummyKind(), dummyKind()}, 1, ring);
+    rig.fight.setAlly(100, 0.4f);
+    rig.bodies.player = Vec2{0.f, -4.f};
+    const float er = rig.def.enemies[0].bodyRadius;
+    const float least = 0.4f + er;
+    // Clear: one pass. One overlap: closed in the first pass, the second finds nothing.
+    rig.put(0, 0.f, 0.f);
+    rig.put(1, 0.f, 3.f);
+    rig.bodies.ally = Vec2{-2.f, 0.f};
+    ArenaSettleRun run = arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK(run.settled);
+    CHECK(run.passes == 1);
+    rig.bodies.ally = Vec2{-0.3f, 0.1f};
+    run = arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK(run.settled);
+    CHECK(run.passes == 2);
+    CHECK(distanceOf(rig.bodies.ally, rig.bodies.enemies[0]) == doctest::Approx(least));
+    // Wedged on the wall: a gap of 0.3 m between the enemy and the ring, narrower than the ally. The wall wins.
+    rig.put(0, 5.f - er - 0.3f, 0.f);
+    for (const int cap : {1, 3, kArenaSettlePasses}) {
+        CAPTURE(cap);
+        rig.bodies.ally = Vec2{5.f - 0.35f, 0.f};
+        run = arenaPlaceAlly(rig.fight, rig.bodies, cap);
+        CHECK_FALSE(run.settled);
+        CHECK(run.passes == cap);
+        CHECK(distanceOf(rig.bodies.ally, ring.centre) <= 5.f - 0.4f + 1e-5f);
+    }
+    rig.bodies.ally = Vec2{5.f - 0.35f, 0.f};
+    CHECK(arenaPlaceAlly(rig.fight, rig.bodies, 0).passes == 1); // a cap under 1 is 1
+    // Squeezed on the line between two enemies 0.5 m apart (surface to surface): never settles, never leaves the line.
+    rig.put(0, -er - 0.25f, 0.f);
+    rig.put(1, er + 0.25f, 0.f);
+    rig.bodies.ally = Vec2{0.05f, 0.f};
+    run = arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK_FALSE(run.settled);
+    CHECK(run.passes == kArenaSettlePasses);
+    CHECK(rig.bodies.ally.y == 0.f);
+    // Off the line it slips out of the gap and settles off both.
+    rig.bodies.ally = Vec2{0.05f, 0.3f};
+    run = arenaPlaceAlly(rig.fight, rig.bodies);
+    MESSAGE("off the line: " << run.passes << " passes");
+    CHECK(run.settled);
+    CHECK(distanceOf(rig.bodies.ally, rig.bodies.enemies[0]) >= least - kArenaSettleFloor);
+    CHECK(distanceOf(rig.bodies.ally, rig.bodies.enemies[1]) >= least - kArenaSettleFloor);
+}
+
+TEST_CASE("arena ally placement sweep: always inside the ring, off every living body when settled, no allocation") {
+    ArenaEnemyKind pup = dummyKind();
+    pup.bodyRadius = 0.3f;
+    pup.bodyLength = 1.4f;
+    const ArenaRing ring{Vec2{0.f, 0.f}, 4.f};
+    Rig rig(ruleFighter(), {dummyKind(), dummyKind(), pup}, 1, ring);
+    rig.fight.setAlly(100, 0.4f);
+    rig.bodies.player = Vec2{0.f, -3.5f};
+    rig.put(0, 2.6f, 0.4f);
+    rig.put(1, 1.2f, 1.1f);
+    rig.put(2, -1.5f, 1.f);
+    const Vec2 facing = rig.fight.output().enemies[2].facing;
+    const float fl = std::hypot(facing.x, facing.y);
+    const Vec2 ax{facing.x / fl, facing.y / fl};
+    const float span = arenaBodySpan(pup);
+    int settled = 0, capped = 0, worstPasses = 0;
+    float worst = 1.f, outside = 0.f;
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    for (int ix = -40; ix <= 40; ++ix) {
+        for (int iy = -40; iy <= 40; ++iy) {
+            rig.bodies.ally = Vec2{0.1f * static_cast<float>(ix) + 0.013f, 0.1f * static_cast<float>(iy) + 0.007f};
+            const ArenaSettleRun run = arenaPlaceAlly(rig.fight, rig.bodies);
+            outside = std::max(outside, distanceOf(rig.bodies.ally, ring.centre) - (ring.radius - 0.4f));
+            worstPasses = std::max(worstPasses, run.passes);
+            if (!run.settled) {
+                ++capped;
+                continue;
+            }
+            ++settled;
+            for (std::size_t i = 0; i < 2; ++i)
+                worst = std::min(worst, distanceOf(rig.bodies.ally, rig.bodies.enemies[i]) - (0.4f + rig.def.enemies[i].bodyRadius));
+            Vec2 pa, pb;
+            arenaClosestPoints(rig.bodies.ally, Vec2{1.f, 0.f}, 0.f, rig.bodies.enemies[2], ax, span, pa, pb);
+            worst = std::min(worst, distanceOf(pa, pb) - (0.4f + pup.bodyRadius));
+        }
+    }
+    if (counting) CHECK(ftcore_test::allocStats().count - before == 0);
+    MESSAGE("sweep: " << settled << " settled, " << capped << " capped, at most " << worstPasses << " passes, worst "
+                      << worst * 1000.f << " mm, past the ring " << outside * 1000.f << " mm");
+    CHECK(outside <= 1e-5f);
+    CHECK(worst >= -kArenaSettleFloor - 1e-6f);
+    CHECK(settled > 0);
+}
+
 TEST_CASE("arena settle: at its cap the settle stops unsettled, the wall's hold last: every body inside the ring") {
     const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
     for (const int cap : {1, 3, 20}) {
