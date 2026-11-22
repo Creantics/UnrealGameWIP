@@ -5352,7 +5352,9 @@ struct ClassicPinRow {
 // moved, all still victories: 12 in hits and damage (devin kite_boss, stone_bearer, white_glove, maw_pup and spitter
 // with the camera; duy stone_bearer and white_glove), 8 in the hash only (both leads duelist and kite_boss, devin
 // spitter without the camera), where an earlier guard changed the run but not the party member's blows. The other 36
-// rows never had a blow land in a guard-cuttable recovery.
+// rows never had a blow land in a guard-cuttable recovery. The balance shift it brings on the Dealer alone in the
+// stone ring (test_arena_kind_crit, seed 1; a later balance item, not a fault of the gate): Devin's hits taken
+// 5 -> 1 (damage 68 -> 14) and the fight 41.3 -> 31.4 s; Duy's 5 -> 2 (68 -> 28), 44.9 -> 40.6 s.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},

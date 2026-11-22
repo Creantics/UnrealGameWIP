@@ -551,10 +551,13 @@ DealerRun playDealer(const char* lead, std::uint32_t seed) {
 // demo's seed (1) and two more. A stagger state is a poise break (Staggered) or a parry (Open); a boss break is its
 // own armoured move, not one. Since the autopilot guard gate the lead parries what it used to take, so parries stand
 // in for poise breaks (seed 1: devin staggers 5 -> 1, parries 2 -> 5, hits taken 5 -> 1, 41.3 -> 31.4 s; duy
-// staggers 3 -> 1, parries 4 -> 7, hits taken 5 -> 2). Crits are counted over the three seeds.
+// staggers 3 -> 1, parries 4 -> 7, hits taken 5 -> 2). Poise breaks keep their own floor so a dead poise-break path
+// cannot pass on parries: summed over the three seeds, at least 2 a lead (seed 2 has none for either lead, so not 1
+// a seed). Crits are counted over the three seeds. The seam's window is opened by the deal move alone
+// (ArenaKindCrit::onAttackStarted), not by a stagger state, Staggered or Open.
 TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopilot") {
     for (const std::string lead : {"devin", "duy"}) { // the Third has no attack of his own
-        int crits = 0;
+        int crits = 0, poiseBreaks = 0;
         for (std::uint32_t seed = 1; seed <= 3; ++seed) {
             CAPTURE(lead);
             CAPTURE(seed);
@@ -566,9 +569,11 @@ TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopi
             CHECK_MESSAGE(run.staggers + run.opens >= 2,
                           "Error: white_glove entered a stagger state " << run.staggers + run.opens << " times against " << lead);
             crits += run.crits;
+            poiseBreaks += run.staggers;
         }
         CAPTURE(lead);
         CHECK(crits > 0);
+        CHECK_MESSAGE(poiseBreaks >= 2, "Error: white_glove's poise broke " << poiseBreaks << " times over seeds 1-3 against " << lead);
     }
 }
 
