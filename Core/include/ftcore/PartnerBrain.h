@@ -643,6 +643,8 @@ struct PartnerBrainSave {
     std::int8_t skirmishDir = 1;   // the next side-step's way round
     std::int8_t skirmishKind = 0;  // 0 its own goal; 1, 2 its rules' MoveTo, StepBack held (the budget out)
     int skirmishOf = -1;           // the target the goal was taken for
+    double pickPlaceFor = 0.0;     // placeFor when its last own goal was taken (a re-pick on a new target that finds
+                                   // nothing gives it back: the stand before that goal and the one after are one)
     std::int8_t choice = 0;        // what it last walked to: 1 its own goal, -1 its rules' walk, 0 neither yet
     double choiceAt = -1e9;        // when that choice last changed (now's clock; kPartnerChoiceHoldSeconds)
     Vec2 walkDir{};                // the way it last walked (unit), framed and circling
@@ -650,6 +652,7 @@ struct PartnerBrainSave {
     // The report (rule 17, never hashed).
     double skirmishSeconds = 0.0;  // seconds walking its goals
     std::uint32_t skirmishMoves = 0; // goals chosen
+    std::uint32_t retargetPicks = 0; // own goals dropped by a change of target, re-picked at once (found or not)
     std::uint32_t guardsBegun = 0;   // guards begun (framed)
 
     // FNV-1a over every field that steers play (StateHash.h): two brains with the same hash do the same from here.
@@ -697,6 +700,7 @@ public:
     std::uint32_t offFrameStarts() const { return s_.offFrameStarts; } // rule 14's off-frame starts
     double skirmishSeconds() const { return s_.skirmishSeconds; }      // rule 17: seconds walking its goals
     std::uint32_t skirmishMoves() const { return s_.skirmishMoves; }  // rule 17: goals chosen
+    std::uint32_t retargetPicks() const { return s_.retargetPicks; }  // rule 17: goals dropped by a new target, re-picked
     std::uint32_t guardsBegun() const { return s_.guardsBegun; }      // guards begun, framed
     bool framed() const { return s_.framed; }
 

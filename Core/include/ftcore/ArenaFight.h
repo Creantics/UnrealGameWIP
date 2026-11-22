@@ -673,6 +673,10 @@ struct ArenaEnemyKind {
     float bodyRadius = 0.45f;
     float height = 0.f;       // m, standing; 0: derived from bodyRadius (arenaEnemyHeight). Only the host's figure
                               // and the arena stage's scale read it: the fight's rules never do
+    float bodyLength = 0.f;   // m, nose to tail: the body's footprint along its facing. Up to 2 * bodyRadius (0, the
+                              // default): a circle of bodyRadius. Longer: a stadium, that circle swept along its facing
+                              // (arenaBodySpan). Only the push apart and the walls read it: a blow's reach is still
+                              // centre to centre against range + bodyRadius
     std::array<ArenaEnemyMove, kMaxArenaMoves> moves{};
     std::uint8_t moveCount = 1;
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.
@@ -706,6 +710,13 @@ inline float arenaEnemyHeight(const ArenaEnemyKind& kind) {
     const float scale = kind.bodyRadius / 0.4f;
     return 1.75f * (scale < 0.8f ? 0.8f : (scale > 1.6f ? 1.6f : scale));
 }
+
+// Half the straight middle of an enemy kind's body: 0 for a circle, bodyLength / 2 - bodyRadius for a stadium.
+inline float arenaBodySpan(const ArenaEnemyKind& kind) {
+    return kind.bodyLength > 2.f * kind.bodyRadius ? 0.5f * kind.bodyLength - kind.bodyRadius : 0.f;
+}
+// The radius a wall holds an enemy's centre off by: its circle's, or a stadium's end (any way it faces).
+inline float arenaBodyReach(const ArenaEnemyKind& kind) { return kind.bodyRadius + arenaBodySpan(kind); }
 
 // kArenaNoKind in every slot (the default of ArenaDef::enemyKind).
 constexpr std::array<std::uint8_t, kMaxArenaEnemies> arenaNoKinds() {
@@ -896,6 +907,9 @@ struct ArenaBodies {
     Vec2 player;
     std::array<Vec2, kMaxArenaEnemies> enemies{};
     Vec2 ally; // the ally body (ArenaFight::setAlly), moved by the host as it moves the player
+    // Report only (never read by a step): the steps whose settle hit kArenaSettlePasses (arenaSettleBodies' cap), the
+    // walls' rule kept and a pair perhaps left past 0.1 mm. The host shows it; a capture with it non-zero says so.
+    std::uint32_t settleCaps = 0;
 };
 
 // The player's action (append only: the Unreal side maps it to animations).
@@ -1935,10 +1949,64 @@ private:
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
-// overlapping bodies pushed apart (circles of their body radii; dead enemies don't block), then
-// everything kept inside the ring. Tests, the balance check and headless runs use it in place of an
-// engine. Deterministic; no allocation.
+// overlapping bodies pushed apart (the player's circle, each enemy's circle or stadium, arenaBodySpan; dead
+// enemies don't block), then everything kept inside the ring, then the settle (arenaSettleBodies). Tests, the balance
+// check and headless runs use it in place of an engine. Deterministic; no allocation.
 FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt);
+
+// The push apart both arenaStep variants share: one pass of the player against each living enemy (unless
+// `withPlayer` is false: the frame a special's performer is placed) and each living pair of enemies, every
+// overlap split half each. Deterministic; no allocation.
+FTCORE_API void arenaPushApart(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer);
+
+// Which bodies a wall moved this step (ArenaBodies' order: the player, then the enemies): the settle's input.
+struct ArenaHeld {
+    bool player = false;
+    std::array<bool, kMaxArenaEnemies> enemies{};
+    bool any() const {
+        for (const bool e : enemies)
+            if (e) return true;
+        return player;
+    }
+};
+
+// After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more
+// pass gives the whole of each overlap deeper than `floor` to the body the wall does not hold (both held, or
+// neither: half each). Contacts no deeper than `floor` are left as they are. True when it moved a body: the caller
+// then holds the bodies inside its walls again, and may settle again (arenaSettleBodies). Deterministic; no allocation.
+constexpr float kArenaSettleFloor = 1.0e-4f; // the settle leaves contacts no deeper than 0.1 mm
+constexpr int kArenaSettlePasses = 32;         // arenaSettleBodies' hard cap: five dummies pressed on the ring settle in 21
+FTCORE_API bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held,
+                            float floor = kArenaSettleFloor);
+
+// A wall the settle holds bodies inside (the ring, a zone): puts `p`, a body reaching `reach` from its centre, inside
+// it; true when that moved it. `wall` is the caller's (an ArenaRing, an ArenaZone).
+using ArenaHoldFn = bool (*)(const void* wall, Vec2& p, float reach);
+
+// Every body held inside the wall: the player at its radius, each enemy (the dead too) at its reach (arenaBodyReach).
+// A body it moved is marked in `held`; marks already set stay. True when it moved one.
+FTCORE_API bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& held, ArenaHoldFn hold,
+                                const void* wall);
+
+// The settle both arenaStep variants end on, after their first hold: up to kArenaSettlePasses times, one settle pass
+// (arenaSettle at kArenaSettleFloor) and then the bodies held again (arenaHoldBodies), until a settle pass moves
+// nothing. `settled` then says the last thing done left both rules met: every living pair within 0.1 mm and every
+// body inside the wall. At the cap it is false: the wall's rule holds (the hold ran last) and a pair may keep a
+// residue, which the tests measure (the host mirror's sweep and the ring-edge crowd). Deterministic; no allocation.
+struct ArenaSettleRun {
+    int passes = 0;       // settle passes run (the last one moved nothing when settled)
+    bool settled = false;
+};
+// `maxPasses` (at least 1) is the cap; the steps use kArenaSettlePasses, a test a lower one to reach it. A step whose
+// settle ends at the cap counts in ArenaBodies::settleCaps.
+FTCORE_API ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer,
+                                            ArenaHeld& held, ArenaHoldFn hold, const void* wall,
+                                            int maxPasses = kArenaSettlePasses);
+
+// The closest points `pa` on spine a and `pb` on spine b: each spine its centre +- span along its unit axis (span 0: a
+// point). The push reads it for any pair with a stadium (arenaBodySpan). Deterministic; no allocation.
+FTCORE_API void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec2 axisB, float spanB,
+                                   Vec2& pa, Vec2& pb);
 
 // ---- data ----
 
