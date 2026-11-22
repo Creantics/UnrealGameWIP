@@ -852,3 +852,45 @@ TEST_CASE("arena zone step: a zone in a world brakes a body at its wall to 60% a
     }
     CHECK(moved[1] < moved[0]);
 }
+
+// The corpse rule on the zone's brake and hold path (orchestrator review 11-22): the lead runs at a soft wall through a
+// corpse lying in its way. Tick for tick it moves exactly as with the corpse far off, and the corpse never moves.
+TEST_CASE("arena zone step: a corpse in the lead's way at a soft wall neither brakes nor blocks it") {
+    ArenaZone z = squareZone(20.f);
+    z.softWall = true;
+    const ArenaTable arena = loadArena();
+    ArenaDef def = fightOf(arena, {"duelist", "duelist"}); // the second lives, far off: the fight goes on
+    def.ringRadius = 40.f;
+    def.spawnDistance = 6.f;
+    ArenaFight fights[2];
+    ArenaBodies bodies[2];
+    for (int k = 0; k < 2; ++k) {
+        fights[k].begin(def, ArenaRing{Vec2{0.f, 0.f}, 40.f}, Vec2{-3.f, 0.f}, Vec2{1.f, 0.f}, 1u);
+        fights[k].killEnemyForTest(0);
+        bodies[k].player = Vec2{17.5f, 0.f};
+        bodies[k].enemies[1] = Vec2{-19.f, -19.f};
+    }
+    bodies[0].enemies[0] = Vec2{18.6f, 0.f};  // in the braking band, in the lead's way and soon inside it
+    bodies[1].enemies[0] = Vec2{-10.f, 10.f}; // far off
+    const Vec2 corpse = bodies[0].enemies[0];
+    ArenaInput in;
+    in.move = Vec2{1.f, 0.f};
+    bool overlapped = false;
+    for (int i = 0; i < 60; ++i) {
+        for (int k = 0; k < 2; ++k) {
+            fights[k].tick(kDt, in, bodies[k]);
+            arenaStep(fights[k], bodies[k], kDt, z);
+        }
+        CAPTURE(i);
+        CHECK(bodies[0].player.x == bodies[1].player.x);
+        CHECK(bodies[0].player.y == bodies[1].player.y);
+        CHECK_FALSE(fights[0].over());
+        CHECK(bodies[0].enemies[0].x == corpse.x);
+        CHECK(bodies[0].enemies[0].y == corpse.y);
+        const float d = std::hypot(bodies[0].player.x - corpse.x, bodies[0].player.y - corpse.y);
+        overlapped = overlapped || d < def.fighter.bodyRadius + def.enemies[0].bodyRadius;
+    }
+    CHECK(overlapped); // the lead did pass through where the corpse lies
+    CHECK(bodies[0].player.x == doctest::Approx(20.f - def.fighter.bodyRadius).epsilon(0.01));
+}
+

@@ -1947,7 +1947,7 @@ private:
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
 // overlapping bodies pushed apart (the player's circle, each enemy's circle or stadium, arenaBodySpan; dead
-// enemies don't block), then everything kept inside the ring, then the settle (arenaSettle). Tests, the balance
+// enemies don't block), then everything kept inside the ring, then the settle (arenaSettleBodies). Tests, the balance
 // check and headless runs use it in place of an engine. Deterministic; no allocation.
 FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt);
 
@@ -1968,17 +1968,39 @@ struct ArenaHeld {
 };
 
 // After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more
-// pass gives the whole of each overlap deeper than 0.1 mm to the body the wall does not hold (both held, or
+// pass gives the whole of each overlap deeper than `floor` to the body the wall does not hold (both held, or
 // neither: half each). Contacts no deeper than `floor` are left as they are. True when it moved a body: the caller
-// then holds the bodies inside its walls again, and may settle again. Both arenaStep variants settle at
-// kArenaSettleFloor once when a wall held a body, then up to 4 more times while a pass still moves one: the first at
-// kArenaCrowdFloor, the rest at kArenaSettleFloor (a crowd the push passes left pressed together comes apart; a fight
-// with no contact deeper than 0.7 mm is stepped exactly as before). Deterministic; no allocation.
-constexpr float kArenaSettleFloor = 1.0e-4f; // a held body's settle: overlaps past 0.1 mm
-constexpr float kArenaCrowdFloor = 7.0e-4f;  // the crowd settle starts past 0.7 mm (the overlap test bars 1 mm)
-constexpr int kArenaCrowdPasses = 4;
+// then holds the bodies inside its walls again, and may settle again (arenaSettleBodies). Deterministic; no allocation.
+constexpr float kArenaSettleFloor = 1.0e-4f; // the settle leaves contacts no deeper than 0.1 mm
+constexpr int kArenaSettlePasses = 32;         // arenaSettleBodies' hard cap: five dummies pressed on the ring settle in 21
 FTCORE_API bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held,
                             float floor = kArenaSettleFloor);
+
+// A wall the settle holds bodies inside (the ring, a zone): puts `p`, a body reaching `reach` from its centre, inside
+// it; true when that moved it. `wall` is the caller's (an ArenaRing, an ArenaZone).
+using ArenaHoldFn = bool (*)(const void* wall, Vec2& p, float reach);
+
+// Every body held inside the wall: the player at its radius, each enemy (the dead too) at its reach (arenaBodyReach).
+// A body it moved is marked in `held`; marks already set stay. True when it moved one.
+FTCORE_API bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& held, ArenaHoldFn hold,
+                                const void* wall);
+
+// The settle both arenaStep variants end on, after their first hold: up to kArenaSettlePasses times, one settle pass
+// (arenaSettle at kArenaSettleFloor) and then the bodies held again (arenaHoldBodies), until a settle pass moves
+// nothing. `settled` then says the last thing done left both rules met: every living pair within 0.1 mm and every
+// body inside the wall. At the cap it is false: the wall's rule holds (the hold ran last) and a pair may keep a
+// residue, which the tests measure (the host mirror's sweep and the ring-edge crowd). Deterministic; no allocation.
+struct ArenaSettleRun {
+    int passes = 0;       // settle passes run (the last one moved nothing when settled)
+    bool settled = false;
+};
+FTCORE_API ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer,
+                                            ArenaHeld& held, ArenaHoldFn hold, const void* wall);
+
+// The closest points `pa` on spine a and `pb` on spine b: each spine its centre +- span along its unit axis (span 0: a
+// point). The push reads it for any pair with a stadium (arenaBodySpan). Deterministic; no allocation.
+FTCORE_API void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec2 axisB, float spanB,
+                                   Vec2& pa, Vec2& pb);
 
 // ---- data ----
 

@@ -2482,11 +2482,14 @@ TEST_CASE("arena partner: 20 s of the shipped group fight, camera not given agai
                 // Hard pin: the default kit for both leads, main's group fight (1b59533b) to the tick. Main's report
                 // values, written by hand: never regenerate them from this build. Every row is main's, under main's
                 // tuning (mainEquivalentTuning) and the shipped one alike: no enemy here is tall and circling is off,
-                // so the framing holds (the bottom margin and the side hold) are off (framingHolds).
+                // so the framing holds (the bottom margin and the side hold) are off (framingHolds). One value is not
+                // main's: Spread without the camera walks 9.63666 m (main 9.63654). The body settle at 0.1 mm (B fixes,
+                // ARENA_BODY_OVERLAP_1122) moves the lead out of enemy2 at 12.65 s, where the 0.7 mm floor left 0.44 mm
+                // of contact; strings, blows, guards and goal jumps are main's.
                 struct Pin { int strings, blows, cut, voided, guards, goalJumps; double walked; };
                 static constexpr Pin kMain[2][2] = { // [order][camera]
                     {{7, 9, 3, 0, 0, 7, 9.41492}, {7, 11, 1, 0, 0, 52, 26.1652}},
-                    {{6, 8, 0, 0, 0, 7, 9.63654}, {6, 8, 0, 0, 0, 42, 23.9698}},
+                    {{6, 8, 0, 0, 0, 7, 9.63666}, {6, 8, 0, 0, 0, 42, 23.9698}}, // Spread, no camera: walked 9.63654 (main) -> 9.63666, B fixes
                 };
                 const Pin& pin = kMain[order == 0 ? 0 : 1][camera ? 1 : 0];
                 CHECK(std::fabs(T - 20.0165) < 0.5 * kDt);
@@ -3146,8 +3149,11 @@ TEST_CASE("arena partner: rule 17 off, main's tuning: the shipped group fight's 
     const Row rows[] = {
         {0, false, 13510023720450430857ull, 13607754419378690935ull},
         {0, true, 5572646704335333306ull, 6381732959959279559ull},
-        {1, false, 9209459091041298615ull, 9225178481593612560ull},
-        {1, true, 7321489833706842541ull, 8499464587038327255ull},
+        // Spread: not main's since the body settle at 0.1 mm (B fixes, ARENA_BODY_OVERLAP_1122). At 12.65 s (tick 758)
+        // the old 0.7 mm crowd floor left the lead 0.44 mm inside enemy2 in mid-ring; the settle moves it out, and the
+        // fight runs on from there. StayClose never has that contact and stays main's.
+        {1, false, 10900943681516170142ull, 9768875902593547048ull},
+        {1, true, 15003403891851633393ull, 4219921275257632970ull},
     };
     for (const Row& w : rows) {
         CAPTURE(int(w.order));
@@ -3172,8 +3178,8 @@ TEST_CASE("arena partner: rule 17 off, the shipped tuning: the shipped group fig
     const Row rows[] = {
         {0, false, 13510023720450430857ull, 13607754419378690935ull}, // main's
         {0, true, 5572646704335333306ull, 6381732959959279559ull},    // main's
-        {1, false, 9209459091041298615ull, 9225178481593612560ull},   // main's
-        {1, true, 7321489833706842541ull, 8499464587038327255ull},    // main's
+        {1, false, 10900943681516170142ull, 9768875902593547048ull},   // B fixes: the 0.1 mm settle (see above)
+        {1, true, 15003403891851633393ull, 4219921275257632970ull},    // B fixes: the 0.1 mm settle (see above)
     };
     for (const Row& w : rows) {
         CAPTURE(int(w.order));
@@ -5329,6 +5335,11 @@ struct ClassicPinRow {
 // step left that overlap; stone_bearer with the camera: devin 80 -> 79 hits (581 -> 574), duy 102 -> 110 (747 -> 803).
 // Re-pinned for maw_pup bodyLength 1.08 (B2: the 1.08 m mesh, nose to tail, a stadium): only the four maw_pup rows moved,
 // hashes only (the same hits and damage); all still victories.
+// Re-pinned for the B fixes (the settle at 0.1 mm every pass, the ring hold last): hashes only, the same hits and damage.
+// duy "three kinds, attackers 1" without the camera: at 10.72 s (seed 1) the 0.7 mm floor left the lead 0.29 mm inside
+// enemy2; the settle moves it out. The four stone_bearer rows: the boss parks at the ring limit with no contact, and the
+// old step clamped it to the ring a second time after a settle that moved nothing, a float clamp that is not idempotent
+// (0.5 to 1 um); the new one clamps once.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5350,8 +5361,8 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "titan", true, 24, 177, 9005697788452095697ull},
     {"devin", "kite_boss", false, 57, 408, 3336118097607066850ull},
     {"devin", "kite_boss", true, 58, 418, 558542764103034853ull},
-    {"devin", "stone_bearer", false, 80, 575, 1091293472601690442ull},
-    {"devin", "stone_bearer", true, 79, 574, 3165737697639935758ull},
+    {"devin", "stone_bearer", false, 80, 575, 6204551899356899748ull},
+    {"devin", "stone_bearer", true, 79, 574, 7946797560756255449ull},
     {"devin", "white_glove", false, 66, 465, 12554922323999540588ull},
     {"devin", "white_glove", true, 71, 503, 8649862504494032913ull},
     {"devin", "maw_pup", false, 6, 42, 14271193196024403956ull},
@@ -5360,7 +5371,7 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "spitter", true, 6, 42, 596144150160075129ull},
     {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
     {"duy", "shipped default fight", true, 16, 121, 165081782403125027ull},
-    {"duy", "three kinds, attackers 1", false, 31, 221, 3058889908460975563ull},
+    {"duy", "three kinds, attackers 1", false, 31, 221, 3123289504221292375ull},
     {"duy", "three kinds, attackers 1", true, 35, 251, 15975811842975394185ull},
     {"duy", "a brute and a spitter, attackers 2", false, 17, 119, 13769110188836988905ull},
     {"duy", "a brute and a spitter, attackers 2", true, 19, 136, 4970841333878948935ull},
@@ -5378,8 +5389,8 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "titan", true, 29, 204, 4745636326408502596ull},
     {"duy", "kite_boss", false, 62, 443, 11966225794031579978ull},
     {"duy", "kite_boss", true, 68, 488, 2057013200150119109ull},
-    {"duy", "stone_bearer", false, 103, 760, 2131707131706494630ull},
-    {"duy", "stone_bearer", true, 110, 803, 3944700548275582168ull},
+    {"duy", "stone_bearer", false, 103, 760, 16822401646142181277ull},
+    {"duy", "stone_bearer", true, 110, 803, 13444865907467236446ull},
     {"duy", "white_glove", false, 84, 609, 12875648444523452656ull},
     {"duy", "white_glove", true, 89, 641, 6347336712998663789ull},
     {"duy", "maw_pup", false, 6, 42, 12129895063172397078ull},

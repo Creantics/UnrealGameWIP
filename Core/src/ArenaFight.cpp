@@ -5055,6 +5055,15 @@ Vec2 arenaParkSpot(const ArenaRing& ring, Vec2 playerStart, std::size_t i) {
     return arenaMadd(ring.centre, arenaRotate(base, angle), radius);
 }
 
+namespace {
+bool arenaRingHold(const void* wall, Vec2& p, float reach) {
+    const Vec2 q = static_cast<const ArenaRing*>(wall)->clamp(p, reach);
+    const bool moved = q.x != p.x || q.y != p.y;
+    p = q;
+    return moved;
+}
+} // namespace
+
 void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     const ArenaSpecialView& sv = fight.special();
     if (fight.frozen()) { // a special runs: the host poses the performer (from its start), nobody else moves
@@ -5065,8 +5074,6 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     if (sv.endedThisTick) (sv.performer == kArenaPlayer ? bodies.player : bodies.ally) = sv.end;
     const std::size_t n = fight.enemyCount();
     const ArenaOutput& out = fight.output();
-    const ArenaDef& def = fight.def();
-    const float playerRadius = def.fighter.bodyRadius;
     if (dt > 0.f) {
         bodies.player = arenaMadd(bodies.player, out.player.velocity, dt);
         for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = arenaMadd(bodies.enemies[i], out.enemies[i].velocity, dt);
@@ -5075,31 +5082,34 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     // frame the performer is placed.
     for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaPushApart(fight, bodies, !placed);
     // Everything stays inside the ring; a body the ring moved can't take its share of a push, so the settle gives it
-    // to the other one, and the ring holds them again. A crowd the passes left pressed together (deeper than 0.7 mm)
-    // settles on, to the 0.1 mm floor, up to kArenaCrowdPasses times while a pass still moves a body.
+    // to the other one, and the ring holds them again, until no contact is deeper than 0.1 mm (arenaSettleBodies).
     const ArenaRing& ring = fight.ring();
     ArenaHeld held;
-    const auto hold = [&ring](Vec2& p, float r) {
-        const Vec2 q = ring.clamp(p, r);
-        const bool moved = q.x != p.x || q.y != p.y;
-        p = q;
-        return moved;
-    };
-    held.player = hold(bodies.player, playerRadius);
-    for (std::size_t i = 0; i < n; ++i) held.enemies[i] = hold(bodies.enemies[i], arenaBodyReach(def.enemies[i]));
-    const auto holdAll = [&] {
-        held.player = hold(bodies.player, playerRadius) || held.player;
-        for (std::size_t i = 0; i < n; ++i)
-            held.enemies[i] = hold(bodies.enemies[i], arenaBodyReach(def.enemies[i])) || held.enemies[i];
-    };
-    if (held.any()) { // the held settle, then the hold, as the step always ran them
-        arenaSettle(fight, bodies, !placed, held);
-        holdAll();
+    arenaHoldBodies(fight, bodies, held, arenaRingHold, &ring);
+    arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring);
+}
+
+bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& held, ArenaHoldFn hold, const void* wall) {
+    const ArenaDef& def = fight.def();
+    bool moved = false;
+    if (hold(wall, bodies.player, def.fighter.bodyRadius)) moved = held.player = true;
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i)
+        if (hold(wall, bodies.enemies[i], arenaBodyReach(def.enemies[i]))) moved = held.enemies[i] = true;
+    return moved;
+}
+
+ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, ArenaHeld& held,
+                                 ArenaHoldFn hold, const void* wall) {
+    ArenaSettleRun run;
+    while (run.passes < kArenaSettlePasses) {
+        ++run.passes;
+        if (!arenaSettle(fight, bodies, withPlayer, held)) {
+            run.settled = true;
+            break;
+        }
+        arenaHoldBodies(fight, bodies, held, hold, wall);
     }
-    for (int pass = 0; pass < kArenaCrowdPasses; ++pass) {
-        if (!arenaSettle(fight, bodies, !placed, held, pass == 0 ? kArenaCrowdFloor : kArenaSettleFloor)) break;
-        holdAll();
-    }
+    return run;
 }
 
 namespace {
@@ -5113,34 +5123,56 @@ struct ArenaSpine {
 
 // The closest points of two spines (segments; either may be a point).
 void arenaClosest(const ArenaSpine& a, const ArenaSpine& b, Vec2& pa, Vec2& pb) {
-    const Vec2 a0 = arenaMadd(a.centre, a.axis, -a.span);
-    const Vec2 b0 = arenaMadd(b.centre, b.axis, -b.span);
-    const Vec2 da = Vec2{a.axis.x * 2.f * a.span, a.axis.y * 2.f * a.span};
-    const Vec2 db = Vec2{b.axis.x * 2.f * b.span, b.axis.y * 2.f * b.span};
+    // A spine shorter than kArenaEps either side is its centre (testing the squared length against kArenaEps once
+    // took spines up to 5 mm long for a point at one end).
+    const float spanA = a.span > kArenaEps ? a.span : 0.f, spanB = b.span > kArenaEps ? b.span : 0.f;
+    const Vec2 a0 = arenaMadd(a.centre, a.axis, -spanA);
+    const Vec2 b0 = arenaMadd(b.centre, b.axis, -spanB);
+    const Vec2 da = Vec2{a.axis.x * 2.f * spanA, a.axis.y * 2.f * spanA};
+    const Vec2 db = Vec2{b.axis.x * 2.f * spanB, b.axis.y * 2.f * spanB};
     const Vec2 r = arenaSub(a0, b0);
     const float aa = arenaDot(da, da), ee = arenaDot(db, db), ff = arenaDot(db, r);
     float s = 0.f, t = 0.f;
-    if (aa <= kArenaEps && ee <= kArenaEps) {
+    if (spanA <= 0.f && spanB <= 0.f) {
         // both points
-    } else if (aa <= kArenaEps) {
+    } else if (spanA <= 0.f) {
         t = std::clamp(ff / ee, 0.f, 1.f);
     } else {
         const float c = arenaDot(da, r);
-        if (ee <= kArenaEps) {
+        if (spanB <= 0.f) {
             s = std::clamp(-c / aa, 0.f, 1.f);
         } else {
             const float bb = arenaDot(da, db);
-            // Parallel only when the sine of the angle is under 0.001 (a relative test: two pups' 0.38 m spines a few
-            // degrees apart are not parallel); parallel spines take any s, the clamps below find the closest pair.
+            // Parallel when the sine of the angle is under 0.001 (a relative test: two pups' 0.38 m spines a few
+            // degrees apart are not parallel).
             const float denom = aa * ee - bb * bb;
-            s = denom > 1.0e-6f * aa * ee ? std::clamp((bb * ff - c * ee) / denom, 0.f, 1.f) : 0.f;
-            t = (bb * s + ff) / ee;
-            if (t < 0.f) {
-                t = 0.f;
-                s = std::clamp(-c / aa, 0.f, 1.f);
-            } else if (t > 1.f) {
-                t = 1.f;
-                s = std::clamp((bb - c) / aa, 0.f, 1.f);
+            if (denom > 1.0e-6f * aa * ee) {
+                s = std::clamp((bb * ff - c * ee) / denom, 0.f, 1.f);
+                t = (bb * s + ff) / ee;
+                if (t < 0.f) { // t clamped, s found again from it
+                    t = 0.f;
+                    s = std::clamp(-c / aa, 0.f, 1.f);
+                } else if (t > 1.f) {
+                    t = 1.f;
+                    s = std::clamp((bb - c) / aa, 0.f, 1.f);
+                }
+            } else {
+                // (Near) parallel: the closest pair has an end of one spine in it, so the best of the four ends
+                // against the other spine (s = 0 alone was up to 0.5 mm off on 1.2 m spines 0.03 degrees apart).
+                float best = -1.f;
+                const auto keep = [&](float sc, float tc) {
+                    const Vec2 d = arenaSub(arenaMadd(a0, da, sc), arenaMadd(b0, db, tc));
+                    const float dd = arenaDot(d, d);
+                    if (best < 0.f || dd < best) {
+                        best = dd;
+                        s = sc;
+                        t = tc;
+                    }
+                };
+                keep(0.f, std::clamp(ff / ee, 0.f, 1.f));        // a's first end against b
+                keep(1.f, std::clamp((bb + ff) / ee, 0.f, 1.f)); // a's last end
+                keep(std::clamp(-c / aa, 0.f, 1.f), 0.f);        // b's first end against a
+                keep(std::clamp((bb - c) / aa, 0.f, 1.f), 1.f);  // b's last end
             }
         }
     }
@@ -5211,6 +5243,11 @@ void arenaPushApart(const ArenaFight& fight, ArenaBodies& bodies, bool withPlaye
 
 bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held, float floor) {
     return arenaPushWalk(fight, bodies, withPlayer, &held, floor);
+}
+
+void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec2 axisB, float spanB, Vec2& pa,
+                        Vec2& pb) {
+    arenaClosest(ArenaSpine{centreA, axisA, spanA}, ArenaSpine{centreB, axisB, spanB}, pa, pb);
 }
 
 // ---- ArenaTable ----
@@ -5593,7 +5630,12 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaNum(j, "accel", k.accel, 0, 1000, false, path, errors);
     arenaNum(j, "bodyRadius", k.bodyRadius, 0, 5, true, path, errors);
     arenaNum(j, "height", k.height, 0, 30, true, path, errors);
-    arenaNum(j, "bodyLength", k.bodyLength, 0, 20, false, path, errors); // 0 (absent): a circle
+    // 0 (absent): a circle. A length shorter than the circle (under 2 x bodyRadius) would silently be a circle too, so it
+    // is refused: a kind is a circle (0) or a stadium at least as long as it is wide.
+    if (arenaNum(j, "bodyLength", k.bodyLength, 0, 20, false, path, errors) && k.bodyLength > 0.f &&
+        k.bodyLength < 2.f * k.bodyRadius)
+        errors.push_back(path + ".bodyLength: expected 0 (a circle) or at least 2 x bodyRadius (" +
+                         arenaFormat(2.0 * k.bodyRadius) + ")");
     arenaNum(j, "bpm", k.bpm, 0, 300, true, path, errors);
     arenaNum(j, "flinchTime", k.flinchTime, 0, 10, false, path, errors);
     arenaNum(j, "flinchPoise", k.flinchPoise, 0, 100000, false, path, errors);
