@@ -3598,6 +3598,48 @@ TEST_CASE("arena settle: the bounded settle reports settled when its last pass m
 
 // Orchestrator review 2 (11-22): the cap's own path. The five-dummy crowd needs 21 passes; capped at 1, 3 and 20 it is
 // cut short: not settled, exactly the cap run, and the wall's rule kept (the hold ran last), only a pair's residue left.
+TEST_CASE("arena ally placement: off a living enemy's circle and a long kind's stadium; the ally yields, the dead block nothing") {
+    ArenaEnemyKind pup = dummyKind();
+    pup.bodyRadius = 0.3f;
+    pup.bodyLength = 1.4f; // a stadium: spine 0.4 either side of the centre
+    REQUIRE(arenaBodySpan(pup) > 0.f);
+    Rig rig(ruleFighter(), {dummyKind(), pup}, 1);
+    rig.fight.setAlly(100, 0.4f);
+    rig.bodies.player = Vec2{0.f, -6.f};
+    rig.put(0, 5.f, 0.f);
+    rig.put(1, -5.f, 0.f);
+    const Vec2 facing = rig.fight.output().enemies[1].facing;
+    const Vec2 ax = Vec2{facing.x / std::hypot(facing.x, facing.y), facing.y / std::hypot(facing.x, facing.y)};
+    const float span = arenaBodySpan(pup);
+    // A circle: out to the two radii from its centre; the enemy stays.
+    rig.bodies.ally = Vec2{5.f - 0.5f, 0.f};
+    arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK(rig.bodies.enemies[0].x == 5.f);
+    CHECK(distanceOf(rig.bodies.ally, rig.bodies.enemies[0]) == doctest::Approx(0.4f + rig.def.enemies[0].bodyRadius));
+    // The stadium's snout: beside the spine's end, out to the two radii from the end, not from the centre.
+    const Vec2 snout{-5.f + ax.x * span, ax.y * span};
+    const Vec2 side{-ax.y, ax.x};
+    rig.bodies.ally = Vec2{snout.x + side.x * 0.3f, snout.y + side.y * 0.3f};
+    arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK(distanceOf(rig.bodies.ally, snout) == doctest::Approx(0.4f + 0.3f));
+    CHECK(rig.bodies.enemies[1].x == -5.f);
+    // Clear of every body: not moved.
+    rig.bodies.ally = Vec2{2.f, 2.f};
+    arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK(rig.bodies.ally.x == 2.f);
+    CHECK(rig.bodies.ally.y == 2.f);
+    // The lead's body is not pushed against (the brain's to route round).
+    rig.bodies.ally = Vec2{0.f, -6.f + 0.3f};
+    arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK(rig.bodies.ally.y == -6.f + 0.3f);
+    // A dead enemy blocks nothing.
+    rig.fight.killEnemyForTest(1);
+    REQUIRE(!rig.fight.enemyAlive(1));
+    rig.bodies.ally = Vec2{-5.f + 0.2f, 0.f};
+    arenaPlaceAlly(rig.fight, rig.bodies);
+    CHECK(rig.bodies.ally.x == -5.f + 0.2f);
+}
+
 TEST_CASE("arena settle: at its cap the settle stops unsettled, the wall's hold last: every body inside the ring") {
     const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
     for (const int cap : {1, 3, 20}) {

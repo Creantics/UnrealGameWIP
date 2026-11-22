@@ -5294,15 +5294,26 @@ void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec
 
 ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies) {
     const ArenaDef& def = fight.def();
+    const ArenaOutput& out = fight.output();
     const float radius = fight.allyRadius();
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
         if (!fight.enemyAlive(i)) continue;
+        // A circle stands it off its centre; a stadium (arenaBodySpan) off the nearest point of its spine, along the
+        // enemy's facing as the step's push. On the spine itself: off the centre (the step's rule for crossed spines).
+        Vec2 from = bodies.enemies[i];
+        const float span = arenaBodySpan(def.enemies[i]);
+        if (span > 0.f) {
+            Vec2 pa = bodies.ally;
+            arenaClosest(ArenaSpine{bodies.ally, Vec2{1.f, 0.f}, 0.f},
+                         ArenaSpine{bodies.enemies[i], arenaUnit(out.enemies[i].facing, Vec2{1.f, 0.f}), span}, pa, from);
+            if (arenaDistance(bodies.ally, from) <= kArenaEps) from = bodies.enemies[i];
+        }
         const float least = radius + def.enemies[i].bodyRadius;
-        const Vec2 off = arenaSub(bodies.ally, bodies.enemies[i]);
+        const Vec2 off = arenaSub(bodies.ally, from);
         const float apart = arenaLength(off);
         if (apart >= least) continue;
         const Vec2 dir = apart > 1e-4f ? Vec2{off.x / apart, off.y / apart} : Vec2{1.f, 0.f};
-        bodies.ally = Vec2{bodies.enemies[i].x + dir.x * least, bodies.enemies[i].y + dir.y * least};
+        bodies.ally = Vec2{from.x + dir.x * least, from.y + dir.y * least};
     }
     bodies.ally = fight.ring().clamp(bodies.ally, radius);
     return ArenaSettleRun{1, true};
