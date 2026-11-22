@@ -2921,7 +2921,8 @@ TEST_CASE("arena partner: rule 17, seed 6: a goal dropped by a target switch wit
                 CHECK(b1.skirmishOf == b1.target);
                 CHECK(b1.placeFor == 0.0);
                 CHECK(b1.pickPlaceFor >= b0.pickPlaceFor + b0.placeFor - 1e-9);
-            } else if (b1.placeAt.x == b0.placeAt.x && b1.placeAt.y == b0.placeAt.y) { // nothing found: the clock back
+            } else if (b0.pickPlaceFor > 0.0 && b1.placeAt.x == b0.placeAt.x && b1.placeAt.y == b0.placeAt.y) {
+                // nothing found: the clock the dropped pick took is given back
                 ++clockBack;
                 CHECK(b1.placeFor >= b0.pickPlaceFor + b0.placeFor - 1e-9);
                 CHECK(b1.pickPlaceFor == 0.0);
@@ -2936,8 +2937,12 @@ TEST_CASE("arena partner: rule 17, seed 6: a goal dropped by a target switch wit
     }
     MESSAGE("seed 6 Spread: " << r.brain.retargetPicks() << " goals dropped by a new target (" << quick << " within 0.2 s of their pick), "
             << repickedAtOnce << " re-picked that tick, " << clockBack << " gave the clock back");
-    CHECK(quick >= 1); // the case the fix is for happens on this seed
-    CHECK(repickedAtOnce + clockBack >= 1);
+    CHECK(quick >= 1);     // the case the fix is for happens on this seed
+    CHECK(clockBack >= 1); // and at least once nothing is found, so the refund itself runs
+    // The stretch the refund joins stays short: 1.70 s in one place on this seed before the fix, 1.15 s after.
+    const IdleLead whole = idleLead(t, 1, true, 6, true);
+    CAPTURE(whole.longestInPlace);
+    CHECK(whole.longestInPlace < 1.5);
 }
 
 // Each bar's worst seed, one test per bar and order: the bar itself where it holds today, else a hard pin at today's

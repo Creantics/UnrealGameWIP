@@ -3664,7 +3664,14 @@ void UFTArenaRunner::StepFight()
 	}
 	if (!bSpecialPut)
 	{
+		const uint32 CapsBefore = Bodies.settleCaps;
 		ftcore::arenaStep(Fight, Bodies, StepSeconds, Fit.zone);
+		if (Bodies.settleCaps != CapsBefore)
+		{
+			// The settle stopped at its pass cap (walls kept, a pair perhaps left past 0.1 mm): a capture counts these.
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: body settle hit its pass cap (%u so far)."), Fight.time(),
+				   Bodies.settleCaps);
+		}
 	}
 	if (bPartner)
 	{

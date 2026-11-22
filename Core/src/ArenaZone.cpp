@@ -334,7 +334,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         arenaPushApart(fight, bodies, true);
         arenaHoldBodies(fight, bodies, held, zoneHold, &zone);
     }
-    arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone);
+    if (!arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone).settled) ++bodies.settleCaps;
 }
 
 // ---- the size ----

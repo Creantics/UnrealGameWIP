@@ -907,6 +907,9 @@ struct ArenaBodies {
     Vec2 player;
     std::array<Vec2, kMaxArenaEnemies> enemies{};
     Vec2 ally; // the ally body (ArenaFight::setAlly), moved by the host as it moves the player
+    // Report only (never read by a step): the steps whose settle hit kArenaSettlePasses (arenaSettleBodies' cap), the
+    // walls' rule kept and a pair perhaps left past 0.1 mm. The host shows it; a capture with it non-zero says so.
+    std::uint32_t settleCaps = 0;
 };
 
 // The player's action (append only: the Unreal side maps it to animations).
@@ -1994,8 +1997,11 @@ struct ArenaSettleRun {
     int passes = 0;       // settle passes run (the last one moved nothing when settled)
     bool settled = false;
 };
+// `maxPasses` (at least 1) is the cap; the steps use kArenaSettlePasses, a test a lower one to reach it. A step whose
+// settle ends at the cap counts in ArenaBodies::settleCaps.
 FTCORE_API ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer,
-                                            ArenaHeld& held, ArenaHoldFn hold, const void* wall);
+                                            ArenaHeld& held, ArenaHoldFn hold, const void* wall,
+                                            int maxPasses = kArenaSettlePasses);
 
 // The closest points `pa` on spine a and `pb` on spine b: each spine its centre +- span along its unit axis (span 0: a
 // point). The push reads it for any pair with a stadium (arenaBodySpan). Deterministic; no allocation.

@@ -5086,7 +5086,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     const ArenaRing& ring = fight.ring();
     ArenaHeld held;
     arenaHoldBodies(fight, bodies, held, arenaRingHold, &ring);
-    arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring);
+    if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring).settled) ++bodies.settleCaps;
 }
 
 bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& held, ArenaHoldFn hold, const void* wall) {
@@ -5099,9 +5099,10 @@ bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& he
 }
 
 ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, ArenaHeld& held,
-                                 ArenaHoldFn hold, const void* wall) {
+                                 ArenaHoldFn hold, const void* wall, int maxPasses) {
     ArenaSettleRun run;
-    while (run.passes < kArenaSettlePasses) {
+    const int cap = std::max(1, maxPasses);
+    while (run.passes < cap) {
         ++run.passes;
         if (!arenaSettle(fight, bodies, withPlayer, held)) {
             run.settled = true;

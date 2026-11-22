@@ -3550,11 +3550,16 @@ TEST_CASE("arena step: a crowd pressed against the ring's edge comes apart insid
     }
 }
 
-// The same crowd, settled by hand from the step's own start: the settle reports settled, inside its cap.
-TEST_CASE("arena settle: the bounded settle reports settled when its last pass moved nothing") {
-    const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
-    for (const int count : {3, 5}) {
-    CAPTURE(count);
+namespace {
+const auto kRingHoldFn = [](const void* wall, Vec2& p, float reach) {
+    const Vec2 q = static_cast<const ArenaRing*>(wall)->clamp(p, reach);
+    const bool moved = q.x != p.x || q.y != p.y;
+    p = q;
+    return moved;
+};
+// The ring-edge crowd of `count` dummies 0.15 rad apart a little past the ring's limit, the lead 0.55 m from the middle
+// one's centre, after the step's own push passes and first hold (`held` marks the bodies the ring moved).
+Rig edgeCrowd(int count, const ArenaRing& ring, ArenaHeld& held) {
     Rig rig = count == 3 ? Rig(ruleFighter(), {dummyKind(), dummyKind(), dummyKind()}, 1, ring)
                          : Rig(ruleFighter(), {dummyKind(), dummyKind(), dummyKind(), dummyKind(), dummyKind()}, 1, ring);
     for (int i = 0; i < count; ++i) {
@@ -3563,27 +3568,69 @@ TEST_CASE("arena settle: the bounded settle reports settled when its last pass m
     }
     rig.bodies.player = Vec2{4.7f - 0.55f, 0.f};
     for (int pass = 0; pass < 3; ++pass) arenaPushApart(rig.fight, rig.bodies, true);
-    const auto hold = [](const void* wall, Vec2& p, float reach) {
-        const Vec2 q = static_cast<const ArenaRing*>(wall)->clamp(p, reach);
-        const bool moved = q.x != p.x || q.y != p.y;
-        p = q;
-        return moved;
-    };
-    ArenaHeld held;
-    CHECK(arenaHoldBodies(rig.fight, rig.bodies, held, hold, &ring));
+    CHECK(arenaHoldBodies(rig.fight, rig.bodies, held, kRingHoldFn, &ring));
     CHECK(held.any());
-    const ArenaSettleRun run = arenaSettleBodies(rig.fight, rig.bodies, true, held, hold, &ring);
-    MESSAGE("ring-edge crowd of " << count << " settle: " << run.passes << " passes, settled " << run.settled);
-    CHECK(run.settled);
-    CHECK(run.passes <= kArenaSettlePasses);
-    CHECK(contactOf(rig.fight, rig.bodies).worst >= -kArenaSettleFloor - 1e-5f);
-    // Settled bodies settle no further.
-    const ArenaBodies was = rig.bodies;
-    const ArenaSettleRun again = arenaSettleBodies(rig.fight, rig.bodies, true, held, hold, &ring);
-    CHECK(again.settled);
-    CHECK(again.passes == 1);
-    CHECK(rig.bodies.player.x == was.player.x);
-    CHECK(rig.bodies.enemies[1].y == was.enemies[1].y);
+    return rig;
+}
+} // namespace
+
+// The same crowd, settled by hand from the step's own start: the settle reports settled, inside its cap.
+TEST_CASE("arena settle: the bounded settle reports settled when its last pass moved nothing") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
+    for (const int count : {3, 5}) {
+        CAPTURE(count);
+        ArenaHeld held;
+        Rig rig = edgeCrowd(count, ring, held);
+        const ArenaSettleRun run = arenaSettleBodies(rig.fight, rig.bodies, true, held, kRingHoldFn, &ring);
+        MESSAGE("ring-edge crowd of " << count << " settle: " << run.passes << " passes, settled " << run.settled);
+        CHECK(run.settled);
+        CHECK(run.passes <= kArenaSettlePasses);
+        CHECK(contactOf(rig.fight, rig.bodies).worst >= -kArenaSettleFloor - 1e-5f);
+        // Settled bodies settle no further.
+        const ArenaBodies was = rig.bodies;
+        const ArenaSettleRun again = arenaSettleBodies(rig.fight, rig.bodies, true, held, kRingHoldFn, &ring);
+        CHECK(again.settled);
+        CHECK(again.passes == 1);
+        CHECK(rig.bodies.player.x == was.player.x);
+        CHECK(rig.bodies.enemies[1].y == was.enemies[1].y);
+    }
+}
+
+// Orchestrator review 2 (11-22): the cap's own path. The five-dummy crowd needs 21 passes; capped at 1, 3 and 20 it is
+// cut short: not settled, exactly the cap run, and the wall's rule kept (the hold ran last), only a pair's residue left.
+TEST_CASE("arena settle: at its cap the settle stops unsettled, the wall's hold last: every body inside the ring") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
+    for (const int cap : {1, 3, 20}) {
+        CAPTURE(cap);
+        ArenaHeld held;
+        Rig rig = edgeCrowd(5, ring, held);
+        const ArenaSettleRun run = arenaSettleBodies(rig.fight, rig.bodies, true, held, kRingHoldFn, &ring, cap);
+        const Contact c = contactOf(rig.fight, rig.bodies);
+        MESSAGE("capped at " << cap << ": " << run.passes << " passes, worst contact " << c.worst * 1000.f
+                             << " mm, past the ring " << c.outside * 1000.f << " mm");
+        CHECK_FALSE(run.settled);
+        CHECK(run.passes == cap);
+        CHECK(c.outside <= 1e-5f);
+        if (cap <= 3) CHECK(c.worst < -kArenaSettleFloor); // a residue the cap left: the case the host's counter reports
+    }
+    // A cap under 1 is 1.
+    ArenaHeld held;
+    Rig rig = edgeCrowd(5, ring, held);
+    CHECK(arenaSettleBodies(rig.fight, rig.bodies, true, held, kRingHoldFn, &ring, 0).passes == 1);
+}
+
+// The host's counter (ArenaBodies::settleCaps) stays 0 while every step settles inside the cap. No crowd found needs the
+// cap: a six-dummy sweep (spacing 0.06-0.15 rad, lead 0.2-0.55 m) settled in 7 to 31 passes, so the count is a capture's
+// alarm, not a path a fight takes.
+TEST_CASE("arena step: settleCaps stays 0 while every step's settle ends settled") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
+    for (const int count : {3, 5}) {
+        CAPTURE(count);
+        ArenaHeld held;
+        Rig rig = edgeCrowd(count, ring, held);
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        arenaStep(rig.fight, rig.bodies, 0.f);
+        CHECK(rig.bodies.settleCaps == 0u); // settled inside 32
     }
 }
 
