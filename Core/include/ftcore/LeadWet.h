@@ -9,12 +9,12 @@
 //     kSkinWetRough by that amount times its wet mask (forehead, nose, cheekbones). No drips: nothing here makes any.
 // Skin and hair take the lead's surface wetness: the weather's or the lead's own water state's (WaterWetness::wetness,
 // from wading and swimming), whichever is wetter, the same rule as the weather's leadSurfaceWetness (ftcore/Weather.h,
-// used through surfaceFromRain below once it is there; nothing calls it yet: the rain hook-up comes after the world
-// lane's promotion). w comes from ft.LeadWet: 0 (the default) is no rain, a value in 0..1
-// forces it, below 0 follows the rain. The night look's damp floor never wets a lead. Plain C++20, header only, no allocation.
+// through weatherFromRain below). w comes from ft.LeadWet: below 0 (the default, -1) follows the rain, a value in 0..1
+// forces it (0 holds the leads dry whatever the weather). The night look's damp floor never wets a lead. Plain C++20, header only, no allocation.
 
 #include "ftcore/WaterBodies.h"
 #if __has_include("ftcore/Weather.h")
+#include "ftcore/RainCover.h"
 #include "ftcore/Weather.h"
 #define FTCORE_LEADWET_HAS_RAIN 1
 #endif
@@ -45,6 +45,50 @@ constexpr float surface(float w, const WaterWetness& water) {
 // with surface(float, ...) in overload resolution.
 inline float surfaceFromRain(const RainState& rain, const WaterWetness& water, float exposure = 1.f) {
     return unit(leadSurfaceWetness(rain, water.wetness, exposure));
+}
+// The weather value w with the rain as its source: `forced` when it is 0 or more (ft.LeadWet), else the rain's
+// open-ground wetness (it ramps up while rain falls and dries after, ftcore::rainStep) times the lead's exposure
+// (1 in the open, 0 under cover). No rain, or a rain off, is 0.
+inline float weatherFromRain(float forced, const RainState& rain, float exposure = 1.f) {
+    return weather(forced, leadSurfaceWetness(rain, 0.f, exposure));
+}
+
+// The lead's own rain soak (ft.LeadWet below 0 reads it). A lead under a roof is not wetted, and does not dry at once:
+// - exposure: from an upward trace at the top of the lead's head, against the cover capture's occluder set (opaque,
+//   visible, non-skeletal meshes), every kCoverTraceS: 1 with nothing over it, else rainCoverOpen(occluder, head, biasM),
+//   the same rule and bias the ground's cover uses, so a lead and the ground under it agree;
+// - the soak moves toward the open-ground wetness times the exposure: up at the rain's wetRisePerS, down at its dryPerS.
+//   Exposure 0 only stops the wetting; drying keeps its own rate;
+// - on the first step (rainSoakSettled) it starts where that rule settles, so a lead loaded into a settled rain is wet.
+inline constexpr float kCoverTraceS = 0.25f;
+inline float coverExposure(bool hit, float occluderZ, float headZ, const RainCoverSpec& spec) {
+    return hit ? unit(rainCoverOpen(occluderZ, headZ, spec.biasM)) : 1.f;
+}
+inline float rainSoakSettled(const RainState& rain, float exposure) {
+    return unit(unit(rain.wetness) * unit(exposure));
+}
+inline float rainSoakStep(const RainSpec& spec, float soak, const RainState& rain, float exposure, float dtS) {
+    const float s = unit(soak);
+    if (!(dtS > 0.f) || dtS > 1e6f) {
+        return s;
+    }
+    const float dt = dtS < kRainMaxStepS ? dtS : kRainMaxStepS;
+    const float want = rainSoakSettled(rain, exposure);
+    if (want > s) {
+        const float up = spec.wetRisePerS > 0.f ? s + dt * spec.wetRisePerS : want;
+        return up < want ? up : want;
+    }
+    const float down = spec.dryPerS > 0.f ? s - dt * spec.dryPerS : s;
+    return down > want ? down : want;
+}
+// The cover trace's clock: true (and restarted) when kCoverTraceS has run out. NaN or negative steps count as 0.
+inline bool coverTraceDue(float& clock, float dtS) {
+    clock -= dtS > 0.f ? dtS : 0.f;
+    if (clock > 0.f) {
+        return false;
+    }
+    clock = kCoverTraceS;
+    return true;
 }
 #endif
 

@@ -10,7 +10,7 @@
 namespace lw = ftcore::leadwet;
 
 TEST_CASE("lead wet: dry by default; ft.LeadWet forces, below 0 follows the world") {
-    CHECK(lw::weather(0.f, 0.9f) == 0.f); // the default 0 is dry, whatever the world
+    CHECK(lw::weather(0.f, 0.9f) == 0.f); // 0 holds the leads dry, whatever the world
     CHECK(lw::weather(0.7f, 0.f) == doctest::Approx(0.7f));
     CHECK(lw::weather(3.f, 0.f) == 1.f);
     CHECK(lw::weather(-1.f, 0.4f) == doctest::Approx(0.4f));
@@ -450,3 +450,81 @@ TEST_CASE("lead wet: the first look eases the skin in from dry; a later look lan
     // NaN target: dry, snapped or eased.
     CHECK(lw::shownSkin(0.4f, std::nanf(""), dt, true) == 0.f);
 }
+
+#ifdef FTCORE_LEADWET_HAS_RAIN
+TEST_CASE("lead wet: the rain drives the weather value unless ft.LeadWet forces it") {
+    ftcore::RainSpec spec;
+    const ftcore::RainState none{};
+    CHECK(lw::weatherFromRain(-1.f, none) == 0.f); // no rain: dry
+    const ftcore::RainState full = ftcore::rainSettled(spec, 1.f);
+    CHECK(lw::weatherFromRain(-1.f, full) == doctest::Approx(full.wetness));
+    CHECK(full.wetness >= lw::kGroomWetOn); // a settled full rain wears the wet groom
+    CHECK(lw::groomWet(lw::weatherFromRain(-1.f, full), false));
+    CHECK(lw::weatherFromRain(0.f, full) == 0.f);                          // forced dry wins over the rain
+    CHECK(lw::weatherFromRain(0.3f, full) == doctest::Approx(0.3f));       // forced value wins
+    CHECK(lw::weatherFromRain(-1.f, full, 0.f) == 0.f);                    // under cover
+    CHECK(lw::weatherFromRain(-1.f, full, 0.5f) == doctest::Approx(full.wetness * 0.5f));
+    CHECK(lw::weatherFromRain(std::nanf(""), full) == doctest::Approx(full.wetness)); // NaN follows the rain
+    ftcore::RainState bad = full;
+    bad.wetness = std::nanf("");
+    CHECK(lw::weatherFromRain(-1.f, bad) == 0.f);
+    // It ramps with the rain: starting dry under a full rain, the lead wets over time, then dries after it stops.
+    ftcore::RainState s{};
+    s.target = 1.f;
+    for (int i = 0; i < 60; ++i) s = ftcore::rainStep(spec, s, 0.5f);   // 30 s
+    const float wet30 = lw::weatherFromRain(-1.f, s);
+    CHECK(wet30 > 0.f);
+    CHECK(wet30 < full.wetness);
+    for (int i = 0; i < 1200; ++i) s = ftcore::rainStep(spec, s, 0.5f); // 10 min
+    CHECK(lw::weatherFromRain(-1.f, s) == doctest::Approx(full.wetness));
+    s.target = 0.f;
+    for (int i = 0; i < 120; ++i) s = ftcore::rainStep(spec, s, 0.5f);  // 1 min dry
+    CHECK(lw::weatherFromRain(-1.f, s) < full.wetness);
+}
+
+TEST_CASE("lead wet: cover from the head trace uses the ground cover's rule and bias") {
+    const ftcore::RainCoverSpec cover;
+    CHECK(lw::coverExposure(false, 0.f, 1.8f, cover) == 1.f);                  // open sky
+    CHECK(lw::coverExposure(true, 4.f, 1.8f, cover) == 0.f);                   // a roof 2.2 m over the head
+    CHECK(lw::coverExposure(true, 1.8f + cover.biasM * 0.5f, 1.8f, cover) == 1.f); // under the bias: reads as its own
+    // The ground point under the same roof agrees.
+    CHECK(lw::coverExposure(true, 4.f, 0.f, cover) == ftcore::rainCoverOpen(4.f, 0.f, cover.biasM));
+}
+
+TEST_CASE("lead wet: under cover in rain a lead is not wetted and dries only at the rain's own rate") {
+    const ftcore::RainSpec spec;
+    const ftcore::RainState rain = ftcore::rainSettled(spec, 1.f);
+    CHECK(lw::rainSoakSettled(rain, 1.f) == doctest::Approx(rain.wetness)); // loaded into a settled rain: wet
+    CHECK(lw::rainSoakSettled(rain, 0.f) == 0.f);                            // ... under a roof: dry
+    // Walks under an awning soaked 0.8: one step later it holds its soak but for the slow drying, never a snap.
+    const float prior = 0.8f;
+    const float a = lw::rainSoakStep(spec, prior, rain, 0.f, 0.25f);
+    CHECK(a <= prior);
+    CHECK(a == doctest::Approx(prior - 0.25f * spec.dryPerS));
+    // A dry lead under cover in the rain stays dry.
+    float s = 0.f;
+    for (int i = 0; i < 400; ++i) s = lw::rainSoakStep(spec, s, rain, 0.f, 0.25f);
+    CHECK(s == 0.f);
+    // Out in the open it wets at the rain's rise rate, then holds the soak.
+    s = lw::rainSoakStep(spec, 0.f, rain, 1.f, 0.25f);
+    CHECK(s == doctest::Approx(0.25f * spec.wetRisePerS));
+    for (int i = 0; i < 2000; ++i) s = lw::rainSoakStep(spec, s, rain, 1.f, 0.25f);
+    CHECK(s == doctest::Approx(rain.wetness));
+    // Bad steps change nothing; a long hitch is clamped.
+    CHECK(lw::rainSoakStep(spec, 0.4f, rain, 1.f, std::nanf("")) == doctest::Approx(0.4f));
+    CHECK(lw::rainSoakStep(spec, 0.4f, rain, 1.f, -1.f) == doctest::Approx(0.4f));
+    CHECK(lw::rainSoakStep(spec, 0.f, rain, 1.f, 60.f) == doctest::Approx(ftcore::kRainMaxStepS * spec.wetRisePerS));
+    // The weather value reads the soak.
+    CHECK(lw::weather(-1.f, a) == doctest::Approx(a));
+    CHECK(lw::weather(0.f, a) == 0.f);
+}
+
+TEST_CASE("lead wet: the cover trace runs every quarter second, not every frame") {
+    float clock = 0.f;
+    CHECK(lw::coverTraceDue(clock, 0.016f)); // first frame
+    int n = 0;
+    for (int i = 0; i < 60; ++i) n += lw::coverTraceDue(clock, 1.f / 60.f) ? 1 : 0;
+    CHECK(n == 4);
+    CHECK_FALSE(lw::coverTraceDue(clock, std::nanf("")));
+}
+#endif

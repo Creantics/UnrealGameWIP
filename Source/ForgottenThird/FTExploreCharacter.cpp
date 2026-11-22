@@ -1,5 +1,7 @@
 #include "FTExploreCharacter.h"
 #include "FTPartyVan.h"
+#include "FTRainCoverSubsystem.h"
+#include "FTRainSubsystem.h"
 #include "FTSwimUnits.h"
 #include "FTWaterSubsystem.h"
 #include "ftcore/MassingPlan.h"
@@ -75,8 +77,8 @@
 
 namespace
 {
-TAutoConsoleVariable<float> CVarLeadWet(TEXT("ft.LeadWet"), 0.f,
-	TEXT("The leads' wet switch: 0 dry (the default), 0..1 that wet (cloth soak, wet grooms, wet skin), below 0 follows the world look's wetness."));
+TAutoConsoleVariable<float> CVarLeadWet(TEXT("ft.LeadWet"), -1.f,
+	TEXT("The leads' wet switch: below 0 (the default) follows the rain (UFTRainSubsystem), 0..1 forces that wetness (cloth soak, wet grooms, wet skin; 0 holds them dry)."));
 
 // -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
 // The camera comes back round behind a moving lead once the look input has rested this long (s), closing
@@ -6257,6 +6259,7 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 {
 	UWorld* World = GetWorld();
 	UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	StepLeadRain(DeltaSeconds);
 	const float Weather = LeadWeather();
 	if (!System || !System->HasBodies())
 	{
@@ -6297,15 +6300,93 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 
 float AFTExploreCharacter::LeadWeather() const
 {
-	const float Forced = CVarLeadWet.GetValueOnGameThread();
-	if (Forced >= 0.f)
+	// Below 0 follows the lead's own rain soak (StepLeadRain); 0..1 forces it. The look's wetness is the ground's damp
+	// floor, never a lead's.
+	return ftcore::leadwet::weather(CVarLeadWet.GetValueOnGameThread(), LeadRainSoak);
+}
+
+float AFTExploreCharacter::TraceLeadCover(const ftcore::RainCoverSpec& Spec) const
+{
+	// Up from the top of the head as far as the cover map looks down from. Only what the map draws counts: opaque, visible,
+	// non-skeletal meshes, landscape left out (its show flags). A skipped hit is ignored and the trace runs again, at most
+	// four times. FCollisionQueryParams keeps its ignore list inline: no heap allocation here.
+	const UWorld* World = GetWorld();
+	if (!World)
 	{
-		return ftcore::leadwet::weather(Forced, 0.f);
+		return 1.f;
 	}
-	// Below 0 follows the rain: the weather's RainState (ftcore/Weather.h) is hooked up here once its owner, the world
-	// clock, steps one; until then there is no rain, and only the lead's own water wets it (surface). The look's wetness
-	// is the ground's damp floor, never a lead's.
-	return ftcore::leadwet::weather(Forced, 0.f);
+	const FVector At = GetActorLocation();
+	const float Head = At.Z + GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const FVector From(At.X, At.Y, Head);
+	const FVector To(At.X, At.Y, Head + Spec.aboveM * 100.f);
+	FCollisionObjectQueryParams Objects;
+	Objects.AddObjectTypesToQuery(ECC_WorldStatic);
+	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(FTLeadRainCover), true, this);
+	for (int32 Try = 0; Try < 4; ++Try)
+	{
+		FHitResult Hit;
+		if (!World->LineTraceSingleByObjectType(Hit, From, To, Objects, Params))
+		{
+			return 1.f;
+		}
+		const UPrimitiveComponent* Prim = Hit.GetComponent();
+		bool bDrawn = Prim && Prim->IsVisible() && !Prim->bHiddenInGame && Prim->IsA<UStaticMeshComponent>();
+		if (bDrawn)
+		{
+			bool bOpaque = false;
+			for (int32 M = 0; M < Prim->GetNumMaterials() && !bOpaque; ++M)
+			{
+				const UMaterialInterface* Mat = Prim->GetMaterial(M);
+				bOpaque = Mat && !IsTranslucentBlendMode(Mat->GetBlendMode());
+			}
+			bDrawn = bOpaque;
+		}
+		if (bDrawn)
+		{
+			return ftcore::leadwet::coverExposure(true, static_cast<float>(Hit.ImpactPoint.Z * 0.01), static_cast<float>(Head * 0.01), Spec);
+		}
+		if (!Prim)
+		{
+			return 1.f;
+		}
+		Params.AddIgnoredComponent(Prim);
+	}
+	return 1.f;
+}
+
+void AFTExploreCharacter::StepLeadRain(float DeltaSeconds)
+{
+	const UWorld* World = GetWorld();
+	const UFTRainSubsystem* Rain = World ? World->GetSubsystem<UFTRainSubsystem>() : nullptr;
+	const UFTRainCoverSubsystem* Cover = World ? World->GetSubsystem<UFTRainCoverSubsystem>() : nullptr;
+	const ftcore::RainState State = Rain ? Rain->GetLeadRain() : ftcore::RainState{};
+	const float Was = LeadCoverExposure;
+	if (ftcore::leadwet::coverTraceDue(LeadCoverClock, DeltaSeconds))
+	{
+		// With the map off the ground under the lead is all open, so the lead is too.
+		LeadCoverExposure = (Cover && Cover->IsActive() && State.wetness > 0.f) ? TraceLeadCover(Cover->GetSpec()) : 1.f;
+	}
+	const ftcore::RainSpec Spec = Rain ? Rain->GetSpec() : ftcore::RainSpec{};
+	if (!bLeadRainSet)
+	{
+		bLeadRainSet = true;
+		LeadRainSoak = ftcore::leadwet::rainSoakSettled(State, LeadCoverExposure);
+	}
+	else
+	{
+		LeadRainSoak = ftcore::leadwet::rainSoakStep(Spec, LeadRainSoak, State, LeadCoverExposure, DeltaSeconds);
+	}
+#if !UE_BUILD_SHIPPING
+	LeadRainLogClock -= DeltaSeconds > 0.f ? DeltaSeconds : 0.f;
+	if (State.wetness > 0.f && (Was != LeadCoverExposure || LeadRainLogClock <= 0.f))
+	{
+		LeadRainLogClock = 5.f;
+		const FVector At = GetActorLocation();
+		UE_LOG(LogForgottenThird, Display, TEXT("LEAD_RAIN exposure %.2f soak %.3f rain %.3f cover map %s at (%.0f, %.0f, %.0f) cm."),
+			LeadCoverExposure, LeadRainSoak, State.wetness, (Cover && Cover->IsActive()) ? TEXT("on") : TEXT("off"), At.X, At.Y, At.Z);
+	}
+#endif
 }
 
 void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)

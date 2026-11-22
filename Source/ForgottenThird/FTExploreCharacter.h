@@ -97,6 +97,7 @@
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/HeldUpJump.h"
 #include "ftcore/LedgeHang.h"
+#include "ftcore/RainCover.h"
 #include "ftcore/StillCam.h"
 #include "ftcore/Swim.h"
 #include "ftcore/UiPartyScreen.h"
@@ -847,14 +848,24 @@ private:
 	float WetShown = 0.f;
 	float WetLineShown = 0.f;
 	float WetSiltShown = 0.f;
-	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; 0, the default, is no rain; below 0 follows the
-	// rain) soaks the cloth as the water does (through ShowWetness); the lead's surface wetness (that or its own water,
+	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; below 0, the default, follows the rain; 0..1
+	// forces it) soaks the cloth as the water does (through ShowWetness); the lead's surface wetness (that or its own water,
 	// whichever is wetter) wears the look's wet grooms and writes SkinWet (0..1) to the same dynamic materials, where the
 	// skin master smooths its up- and forward-facing open skin. The leads' MetaHuman skin takes it through its post-bake
 	// roughness and specular multipliers (their dry values kept in WetSkinDry, one per WetMaterials entry, -1 where the
 	// material has none); hair without a wet groom (a beard, brows) darkens and smooths through its own instances. The
 	// shown amount eases over 2 s. No drips.
 	float LeadWeather() const;
+	// The lead's own rain soak (ftcore::leadwet::rainSoakStep): rain wets it only where its head is open to the sky, by an
+	// upward trace every kCoverTraceS against the rain cover map's occluder set (UFTRainCoverSubsystem; with the map off
+	// the ground and the lead are both open). Under cover it holds its soak and dries at the rain's own rate.
+	void StepLeadRain(float DeltaSeconds);
+	float TraceLeadCover(const ftcore::RainCoverSpec& Spec) const;
+	float LeadRainSoak = 0.f;
+	float LeadCoverExposure = 1.f;
+	float LeadCoverClock = 0.f;
+	float LeadRainLogClock = 0.f;
+	bool bLeadRainSet = false;
 	void ShowLeadWet(float Weather, float DeltaSeconds);
 	void ShowHairWet(float Wet);
 	bool bGroomWet = false;
