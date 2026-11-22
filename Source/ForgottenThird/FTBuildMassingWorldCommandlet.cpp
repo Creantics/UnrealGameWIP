@@ -1386,12 +1386,6 @@ FString ReachLine(const TCHAR* What, const FReachTally& Tally, int32 Of)
 		What, Tally.Reached, Of, Tally.Full, Tally.AtEntry, Tally.Partial, Tally.NoPath, Tally.OffMesh, Tally.LimitHit);
 }
 
-// The frontage blockers against the built navmesh: how many have walkable navmesh inside them (0 when they cut it, as
-// they should). Each blocker's footprint, turned by its rot, is sampled on an inset 3 by 3 grid (0 and 0.6 of its half
-// sizes each way); a point is projected with a reach of 5 cm across, from 0.3 m under the blocker's foot to 0.25 m under
-// its top (the top, out of the lead's step, may carry a poly of its own, so it is left out), and a hit counts only when
-// the poly met lies within 10 cm of the point across. Logs the count, the first few hit, and the navmesh's agent radius
-// and cells against kNavKeepMargin; returns 1 on a hit, or when the margin is under the radius and the coarsest cell.
 // The navmesh's walkable area across, m2: every poly of every tile, fanned from its first corner. A control on the
 // blocker check: a fill that spilled past its box would take street with it, and the inside count would not see it.
 double NavAreaM2(const ARecastNavMesh& NavMesh, int32& OutPolys)
@@ -1429,6 +1423,15 @@ double NavAreaM2(const ARecastNavMesh& NavMesh, int32& OutPolys)
 	return Area;
 }
 
+// The frontage blockers against the built navmesh: how many have walkable navmesh inside them (0 when they cut it, as
+// they should). Each blocker's footprint, turned by its rot, is sampled on an inset 3 by 3 grid (0 and 0.6 of its half
+// sizes each way); a point is projected with a reach of 5 cm across, from 0.3 m under the blocker's foot to 0.25 m under
+// its top (the top, out of the lead's step, may carry a poly of its own, so it is left out), and a hit counts only when
+// the poly met lies within 10 cm of the point across. A control runs beside it: the street off each blocker's long faces
+// must keep its navmesh, and the total walkable area (NavAreaM2) is logged, so a fill that spills past its box shows.
+// A blocker with no street point within reach (against water or a wall) is not counted as held; the first 8 are named.
+// Logs the counts, the first few hit, and the navmesh's agent radius and cells against kNavKeepMargin; returns 1 on a
+// hit, or when the margin is under the radius and the coarsest cell.
 int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, double Side, const std::vector<ftcore::MassingBox>& Blockers)
 {
 	int32 Inside = 0;
