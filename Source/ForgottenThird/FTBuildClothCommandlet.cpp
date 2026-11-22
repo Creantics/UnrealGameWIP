@@ -453,6 +453,13 @@ bool ClothPaintDrive(UClothingAssetCommon& Asset, const ftcore::clothdrive::Args
 {
 	FClothLODDataCommon& Lod = Asset.LodData[0];
 	const int32 Count = Lod.PhysicalMeshData.Vertices.Num();
+	const auto IsMax = [](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); };
+	// Checked before anything is added, so the error return leaves the asset as it was.
+	if (const FPointWeightMap* Check = Lod.PointWeightMaps.FindByPredicate(IsMax); !Check || Check->Values.Num() != Count)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -AnimDriveMap: no max-distance map with one value per sim vertex (%d) to grade by."), Count);
+		return false;
+	}
 	FPointWeightMap* Map = Lod.PointWeightMaps.FindByPredicate(
 		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::AnimDriveStiffness); });
 	if (!Map)
@@ -460,14 +467,8 @@ bool ClothPaintDrive(UClothingAssetCommon& Asset, const ftcore::clothdrive::Args
 		Map = &Lod.PointWeightMaps.AddDefaulted_GetRef();
 		Map->CurrentTarget = static_cast<uint8>(EWeightMapTargetCommon::AnimDriveStiffness);
 	}
-	// Found after the add, which may move the array.
-	const FPointWeightMap* MaxMap = Lod.PointWeightMaps.FindByPredicate(
-		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
-	if (!MaxMap || MaxMap->Values.Num() != Count)
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -AnimDriveMap: no max-distance map with one value per sim vertex (%d) to grade by."), Count);
-		return false;
-	}
+	// Found again after the add, which may move the array.
+	const FPointWeightMap* MaxMap = Lod.PointWeightMaps.FindByPredicate(IsMax);
 	Map->Name = TEXT("AnimDriveStiffness");
 	Map->bEnabled = true;
 	Map->Values.SetNum(Count);
