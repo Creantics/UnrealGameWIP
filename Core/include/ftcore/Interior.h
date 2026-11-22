@@ -160,4 +160,23 @@ FTCORE_API std::string heroCornerDoorRows(const HeroCornerSpec& hero);
 FTCORE_API int heroCornerCrowd(const HeroCornerSpec& hero, double side, std::vector<crowdv2::CrowdStreet>& streets,
                                std::vector<crowdv2::CrowdDoor>& doors);
 
+// A room's dressing from its plan's slots, with the hero corner's props (/Game/Props/HeroCorner). A slot is dressed only
+// with pieces that are its own object and fit whole inside its foot (heroItemFootprint's sizes), tiled along its front
+// 0.05 m apart and centred, backs flush with the slot's back: shelf units on a shelf run, counters on a counter run,
+// crates on a display. Each counter carries bottles, the last one the stock pot and its steam too; goods hang 0.7 m out
+// from each dressed shelf run, and a room with any dressing hangs a paper lantern over its middle. A slot no piece is (a till, a stool, a table, the pass,
+// post boxes, a stair, an inner door: pieces to make) stays bare and counts in `bare`. No allocation.
+struct InteriorDressItem {
+    HeroPiece piece = HeroPiece::Crate;
+    MassingVec at;                     // plan frame: a standing piece's origin on the floor (heroItemFootprint's), a
+                                       // counter's goods on its top, a hanging piece's hook under the ceiling
+    double faceX = 0.0, faceY = -1.0;  // plan, unit: the way its front looks
+    int slot = -1;                     // the plan slot it stands in or on (-1: the room's own layer)
+    MassingBox block;                  // a standing piece's collider (its footprint, the floor to its top); sx 0 for
+                                       // a piece on a counter or hanging
+};
+inline constexpr int kInteriorDressMax = 40;
+inline constexpr double kInteriorPieceGap = 0.05;  // m between pieces tiled along a slot
+FTCORE_API int interiorDressing(const InteriorPlan& plan, InteriorDressItem* out, int max, int* bare = nullptr);
+
 } // namespace ftcore

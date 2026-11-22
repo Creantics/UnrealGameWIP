@@ -602,3 +602,96 @@ TEST_CASE("heroCornerCrowd: the lane as a street and a walk-in door per room, an
     CHECK(sim.counts().wentIn >= 1);
     CHECK(sim.counts().cameOut >= 1);
 }
+
+TEST_CASE("interiorDressing: the hero rooms dressed from their slots with whole pieces that fit") {
+    const HeroCornerSpec hero;
+    HeroRoom rooms[kHeroBays];
+    REQUIRE(heroCornerRooms(hero, rooms) == 3);
+    // A plan point inside a slot's foot (its turn, the edges counting by a hair).
+    const auto inFoot = [](const MassingFoot& f, double x, double y) {
+        const double r = f.rot * 3.14159265358979323846 / 180.0, dx = x - f.x, dy = y - f.y;
+        const double u = dx * std::cos(r) + dy * std::sin(r), w = -dx * std::sin(r) + dy * std::cos(r);
+        return std::fabs(u) <= f.hx + 1e-6 && std::fabs(w) <= f.hy + 1e-6;
+    };
+    int counts[3][static_cast<int>(HeroPiece::Count)] = {};
+    int bares[3] = {};
+    for (int k = 0; k < 3; ++k) {
+        CAPTURE(k);
+        InteriorPlan plan;
+        REQUIRE(interiorRoomPlan(rooms[k].spec, plan));
+        InteriorDressItem items[kInteriorDressMax];
+        const int n = interiorDressing(plan, items, kInteriorDressMax, &bares[k]);
+        REQUIRE(n < kInteriorDressMax);
+        for (int i = 0; i < n; ++i) {
+            const InteriorDressItem& it = items[i];
+            CAPTURE(i);
+            ++counts[k][static_cast<int>(it.piece)];
+            CHECK(std::hypot(it.faceX, it.faceY) == doctest::Approx(1.0));
+            if (it.slot < 0) {
+                CHECK(it.piece == HeroPiece::Lantern);
+                CHECK(it.block.sx == 0.0);
+                continue;
+            }
+            const InteriorSlot& s = plan.slots[static_cast<std::size_t>(it.slot)];
+            // Its front looks the slot's way.
+            CHECK(std::atan2(it.faceY, it.faceX) * 180.0 / 3.14159265358979323846 == doctest::Approx(s.face).epsilon(1e-6));
+            const bool standing = it.piece == HeroPiece::Shelf || it.piece == HeroPiece::Counter || it.piece == HeroPiece::Crate;
+            CHECK((it.block.sx > 0.0) == standing);
+            if (!standing) continue;
+            // Its collider whole inside the slot's foot, from the floor to its top, and clear of every other one.
+            const double r = it.block.rot * 3.14159265358979323846 / 180.0, c = std::cos(r), sn = std::sin(r);
+            for (int q = 0; q < 4; ++q) {
+                const double lx = ((q & 1) ? 0.5 : -0.5) * it.block.sx, ly = ((q & 2) ? 0.5 : -0.5) * it.block.sy;
+                CHECK(inFoot(s.foot, it.block.cx + lx * c - ly * sn, it.block.cy + lx * sn + ly * c));
+            }
+            CHECK(it.block.z0 == doctest::Approx(s.z0));
+            CHECK(it.block.z1 > it.block.z0);
+            CHECK(it.block.z1 <= s.z1 + 1e-9);
+            MassingFoot bf;
+            bf.x = it.block.cx;
+            bf.y = it.block.cy;
+            bf.hx = 0.5 * it.block.sx;
+            bf.hy = 0.5 * it.block.sy;
+            bf.rot = it.block.rot;
+            for (int j = i + 1; j < n; ++j) {
+                if (items[j].block.sx <= 0.0) continue;
+                MassingFoot of;
+                of.x = items[j].block.cx;
+                of.y = items[j].block.cy;
+                of.hx = 0.5 * items[j].block.sx;
+                of.hy = 0.5 * items[j].block.sy;
+                of.rot = items[j].block.rot;
+                CHECK(!massingFeetOverlap(bf, of, 0.0));
+            }
+            // No dwell spot (where a walker stands) inside it.
+            for (const MassingVec& d : plan.dwell) {
+                MassingFoot df;
+                df.x = d.x;
+                df.y = d.y;
+                CHECK(!massingFeetOverlap(df, bf, 0.0));
+            }
+        }
+    }
+    // The shop: shelf units on its three shelf runs, two crates on its display, goods over each run, a lantern; its till bare.
+    CHECK(counts[0][static_cast<int>(HeroPiece::Shelf)] >= 8);
+    CHECK(counts[0][static_cast<int>(HeroPiece::Crate)] == 2);
+    CHECK(counts[0][static_cast<int>(HeroPiece::HangGoods)] == 3);
+    CHECK(counts[0][static_cast<int>(HeroPiece::Lantern)] == 1);
+    CHECK(counts[0][static_cast<int>(HeroPiece::Counter)] == 0);
+    CHECK(bares[0] == 1);
+    // The eatery: two counters, bottles on each, the pot and its steam on the last; the pass, stools and tables bare.
+    CHECK(counts[1][static_cast<int>(HeroPiece::Counter)] == 2);
+    CHECK(counts[1][static_cast<int>(HeroPiece::Bottles)] == 2);
+    CHECK(counts[1][static_cast<int>(HeroPiece::StockPot)] == 1);
+    CHECK(counts[1][static_cast<int>(HeroPiece::Steam)] == 1);
+    CHECK(counts[1][static_cast<int>(HeroPiece::Lantern)] == 1);
+    CHECK(bares[1] >= 3);
+    // The lobby: nothing of the corner's props is its (post boxes, a stair, an inner door), so nothing, not even a lantern.
+    for (int p = 0; p < static_cast<int>(HeroPiece::Count); ++p) CHECK(counts[2][p] == 0);
+    CHECK(bares[2] == 3);
+    // A short list stops where it is full.
+    InteriorPlan shop;
+    REQUIRE(interiorRoomPlan(rooms[0].spec, shop));
+    InteriorDressItem few[3];
+    CHECK(interiorDressing(shop, few, 3) == 3);
+}

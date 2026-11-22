@@ -1476,8 +1476,7 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 				? BayMaterial(TEXT("MI_GlassProofBay_Back"), Pr->bKoshi ? FLinearColor(0.42f, 0.37f, 0.29f) : FLinearColor(0.38f, 0.37f, 0.34f), BackGlow)
 				: WallPaint;
 			// -Interiors=hero: the room's shell (the lot's wall) and walk boxes (the plinth's stone), its linings by face, and
-			// three ceiling panels down its middle, in the shallow bay's stead. The room's dressing (its plan's slots) is the
-			// next step's: none is laid yet.
+			// three ceiling panels down its middle, and its dressing from its plan's slots, in the shallow bay's stead.
 			if (RoomAt != INDEX_NONE)
 			{
 				const ftcore::InteriorPlan& Room = Build.RoomPlans[static_cast<size_t>(RoomAt)];
@@ -1517,11 +1516,59 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					Panel.z1 = FinCeil;
 					PlanBox(P.lot, Panel, PanelPaint, Data, RoomTag);
 				}
+				// Its dressing (ftcore::interiorDressing, plan frame): the standing pieces and counter goods NoCollide (the
+				// massing build lays each standing piece's hidden collider), the lantern and steam to the massing build
+				// (Build.HeroSpawns: the lantern's paper takes its night glow there). Each mesh's bounds are logged beside
+				// the size Core fits it by.
+				ftcore::InteriorDressItem DressItems[ftcore::kInteriorDressMax];
+				int32 DressBare = 0, DressLaid = 0, DressMissing = 0;
+				const int32 DressCount = ftcore::interiorDressing(Room, DressItems, ftcore::kInteriorDressMax, &DressBare);
+				TSet<FString> DressLogged;
+				for (int32 D = 0; D < DressCount; ++D)
+				{
+					const ftcore::InteriorDressItem& Item = DressItems[D];
+					const double Yaw = HeroPropYaw(Item.faceX, Item.faceY, Build.HeroPropTurn);
+					const ftcore::MassingVec E = ftcore::massingEnginePoint(Side, Item.at.x, Item.at.y, Item.at.z);
+					const FVector At = FVector(E.x, E.y, E.z) * 100.0;
+					if (Item.piece == ftcore::HeroPiece::Steam || Item.piece == ftcore::HeroPiece::Lantern)
+					{
+						Build.HeroSpawns.Add({Item.piece, At, Yaw});
+						++DressLaid;
+						continue;
+					}
+					const FString Name = FString(TEXT("SM_HC_")) + UTF8_TO_TCHAR(ftcore::heroPieceName(Item.piece));
+					UStaticMesh* const Mesh = HeroPropMesh(Name);
+					if (!Mesh)
+					{
+						UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildMassingWorld -Interiors=hero: room lot %d: %s isn't imported; left out."), P.lot, *Name);
+						++DressMissing;
+						continue;
+					}
+					if (!DressLogged.Contains(Name))
+					{
+						DressLogged.Add(Name);
+						const FVector Ext = Mesh->GetBoundingBox().GetSize() / 100.0;
+						const ftcore::MassingBox& Db = Item.block;
+						UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: room lot %d: %s bounds %.2f x %.2f x %.2f m; Core fits it as %.2f x %.2f x %.2f."),
+							P.lot, *Name, Ext.X, Ext.Y, Ext.Z, Db.sx, Db.sy, Db.z1 - Db.z0);
+					}
+					TArray<UMaterialInterface*> PropMats;
+					for (const FStaticMaterial& Slot : Mesh->GetStaticMaterials())
+					{
+						PropMats.Add(Slot.MaterialInterface);
+					}
+					FFTCellOptions PropOpts;
+					PropOpts.Label = FString::Printf(TEXT("LOT-%d-ROOM-%s-%d"), P.lot, *Name, D);
+					PropOpts.bCastShadow = true;
+					PropOpts.Tag = RoomTag;
+					Cells.Add(Mesh, PropMats, FTransform(FRotator(0.0, Yaw, 0.0), At), Data, EFTCellKind::NoCollide, PropOpts);
+					++DressLaid;
+				}
 				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: room lot %d (%s): its front NoCollide with %d panes left out of its "
 					"doorway (%.2f..%.2f along it) and %d kept; %d shell, %d walk and %d lining boxes and 3 panels laid; the room %.2f x %.2f m, ceiling %.2f; "
-					"%d dressing slots not laid yet."), P.lot, UTF8_TO_TCHAR(Doorway ? Doorway->front : "?"), PanesOpen, Doorway ? Doorway->x0 : 0.0,
-					Doorway ? Doorway->x1 : 0.0, PaneCount, Shells, Walks, Linings, 2.0 * Room.room.hx, 2.0 * Room.room.hy, FinCeil,
-					static_cast<int32>(Room.slots.size()));
+					"%d dressing slots: %d pieces laid, %d meshes missing, %d slots bare (pieces to make)."), P.lot, UTF8_TO_TCHAR(Doorway ? Doorway->front : "?"),
+					PanesOpen, Doorway ? Doorway->x0 : 0.0, Doorway ? Doorway->x1 : 0.0, PaneCount, Shells, Walks, Linings, 2.0 * Room.room.hx, 2.0 * Room.room.hy,
+					FinCeil, static_cast<int32>(Room.slots.size()), DressLaid, DressMissing, DressBare);
 				continue;
 			}
 			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX1, BayY1, BayZ0 + 0.04, FloorPaint, Data, EFTCellKind::NoCollide, BayTag);
