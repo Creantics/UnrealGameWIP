@@ -8766,6 +8766,37 @@ TEST_CASE("arena host mirror: the Maw-Pup lineups read cancels n/a on the defaul
         }
 }
 
+TEST_CASE("arena host mirror: the Maw-Pup is a 1.08 m stadium and still takes the leads' lights and lands its nip") {
+    // B2 (ARENA_BODY_OVERLAP_1122): its mesh is 1.084 m nose to tail on a 0.70 m circle. The length moves where the
+    // lead stands head on (0.19 m further off), not hit reach. Measured before and after the length, on sand_ring:
+    // Devin's lights land 4, 4, 2 times (seeds 1-3) and the nip lands on seeds 1 and 2; Duy's lights land 3 times
+    // each seed and the pup dies before it nips (as before the length). Every fight a victory.
+    const ArenaTable t = loadShipped();
+    bool found = false;
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+        if (t.enemyIds[e] == "maw_pup") {
+            found = true;
+            CHECK(t.enemies[e].bodyLength == doctest::Approx(1.08f));
+            CHECK(arenaBodySpan(t.enemies[e]) == doctest::Approx(0.19f));
+        }
+    REQUIRE(found);
+    for (const char* kit : {"devin", "duy"}) {
+        int nips = 0;
+        for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+            CAPTURE(std::string(kit));
+            CAPTURE(seed);
+            const HostRun alone = hostRun({"maw_pup"}, kit, seed);
+            CHECK(alone.phase == ArenaPhase::Victory);
+            CHECK(alone.hitsOn[0] >= 2);
+            nips += alone.stats.hitsTaken;
+            const HostRun pair = hostRun({"dummy", "maw_pup"}, kit, seed);
+            CHECK(pair.hitsOn[1] >= 2);
+            CHECK(arenaFeatureChecks(pair.stats).cancelsCheck == ArenaCheck::Pass);
+        }
+        if (std::string_view(kit) == "devin") CHECK(nips >= 2);
+    }
+}
+
 // ---- the autopilot's shots (opt in) ----
 
 namespace {

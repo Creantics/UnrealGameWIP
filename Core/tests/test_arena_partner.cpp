@@ -5258,6 +5258,8 @@ struct ClassicPinRow {
 // Re-pinned for the wall-aware push (B1, ARENA_BODY_OVERLAP_1122): a boss the ring holds no longer keeps up to 3.6 cm
 // of the lead inside it. Only the ten kite_boss, stone_bearer and duy white_glove rows moved, the fights where the old
 // step left that overlap; stone_bearer with the camera: devin 80 -> 79 hits (581 -> 574), duy 102 -> 110 (747 -> 803).
+// Re-pinned for maw_pup bodyLength 1.08 (B2: the 1.08 m mesh, nose to tail, a stadium): only the four maw_pup rows moved,
+// hashes only (the same hits and damage); all still victories.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5283,8 +5285,8 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "stone_bearer", true, 79, 574, 3165737697639935758ull},
     {"devin", "white_glove", false, 66, 465, 12554922323999540588ull},
     {"devin", "white_glove", true, 71, 503, 8649862504494032913ull},
-    {"devin", "maw_pup", false, 6, 42, 9220560631306374404ull},
-    {"devin", "maw_pup", true, 6, 42, 18026556029025783987ull},
+    {"devin", "maw_pup", false, 6, 42, 14271193196024403956ull},
+    {"devin", "maw_pup", true, 6, 42, 10824710505452702103ull},
     {"devin", "spitter", false, 6, 42, 16994954208136295472ull},
     {"devin", "spitter", true, 6, 42, 596144150160075129ull},
     {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
@@ -5311,8 +5313,8 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "stone_bearer", true, 110, 803, 3944700548275582168ull},
     {"duy", "white_glove", false, 84, 609, 12875648444523452656ull},
     {"duy", "white_glove", true, 89, 641, 6347336712998663789ull},
-    {"duy", "maw_pup", false, 6, 42, 7017930305380328517ull},
-    {"duy", "maw_pup", true, 6, 32, 3525410989786059507ull},
+    {"duy", "maw_pup", false, 6, 42, 12129895063172397078ull},
+    {"duy", "maw_pup", true, 6, 32, 760009930559185308ull},
     {"duy", "spitter", false, 6, 42, 373096491565446441ull},
     {"duy", "spitter", true, 6, 42, 13513007789646449681ull},
 };
