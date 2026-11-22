@@ -602,7 +602,7 @@ private:
     bool tryDoor(std::uint32_t i, bool fleeing);
     void goIn(Agent& a, std::uint32_t door, bool fled, std::uint32_t spot);
     std::uint32_t freeSpot(const DoorSlot& s);
-    bool doorwayClear(std::int32_t door, const Agent* self, bool goingOut) const;
+    bool doorwayClear(std::int32_t door, const Agent* self) const;
     void leaveDoor(Agent& a, DoorSlot& s);
     void doorStep(Agent& a);
     void measureReach(Vec2 player);

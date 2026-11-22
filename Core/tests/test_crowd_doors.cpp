@@ -352,3 +352,70 @@ TEST_CASE("crowd doors: a walk-in doorway takes one way at a time; two visitors 
     CHECK(together > 0); // the sweep holds cases with both in the room at once
     CHECK(passedBy > 0); // and cases where the second walked past a busy doorway
 }
+
+TEST_CASE("crowd doors: in a deep walk-in room only one visitor moves at a time and none walks through one standing") {
+    // Round 4 faults A and B: mixed walk speeds and runners from a fight (one could catch a slower one up on a long
+    // way in), and spots in line behind each other (the way to the far one runs through the near one).
+    int together = 0, fled = 0, farSpot = 0;
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+        for (int off = 62; off <= 74; off += 4) {
+            const bool fight = seed % 2 == 0;
+            CrowdGraph g;
+            REQUIRE(g.build({line({-100.f, 0.f}, {100.f, 0.f})}, loose()));
+            CrowdTuning t = quiet();
+            t.walkSpeedJitter = 0.45f;
+            t.doorEnterChance = 1.f;
+            t.doorDwellMin = 4.f;
+            t.doorDwellMax = 9.f;
+            if (fight) {
+                t.reactRadius = 40.f;
+                t.doorFleeAhead = 100.f;
+            }
+            CrowdSim sim;
+            REQUIRE(sim.init(g, t, seed));
+            sim.setPopulationFrozen(true);
+            CrowdDoor room{"room", {0.f, 5.f}, {0.f, 16.f}};
+            room.through = {0.f, 6.5f};
+            room.dwell = {{0.f, 10.f}, {0.f, 14.f}, {-2.f, 12.f}, {2.f, 12.f}}; // 0 and 1 in line from the doorway
+            REQUIRE(sim.setDoors({room}) == 1);
+            const std::uint32_t w = g.nearest({-100.f, 0.f}, 1.f), e = g.nearest({100.f, 0.f}, 1.f);
+            const std::uint32_t ids[3] = {sim.spawnAt(w, edgeTo(g, w, e), 0.5f, 80.f),
+                                          sim.spawnAt(w, edgeTo(g, w, e), 0.5f, static_cast<float>(off)),
+                                          sim.spawnAt(w, edgeTo(g, w, e), 0.5f, static_cast<float>(off) - 7.f)};
+            for (std::uint32_t id : ids) REQUIRE(id != UINT32_MAX);
+            float closest = 1e9f;
+            int movingMax = 0;
+            bool both = false;
+            for (int s = 0; s < 15 * 240; ++s) {
+                if (fight && s == 15 * 2) sim.pushEvent({CrowdEventKind::FightStart, {-60.f, 0.f}});
+                tick(sim);
+                int inRoom = 0, moving = 0;
+                for (int i = 0; i < 3; ++i) {
+                    const CrowdAgentView& vi = sim.agent(ids[i]);
+                    if (vi.state != CrowdState::Indoors || vi.pos.y <= room.at.y + 0.05f) continue;
+                    ++inRoom;
+                    if (vi.speed > 0.f) ++moving;
+                    farSpot += dist(vi.pos, room.dwell[1]) < 1e-3f ? 1 : 0;
+                    for (int j = i + 1; j < 3; ++j) {
+                        const CrowdAgentView& vj = sim.agent(ids[j]);
+                        if (vj.state != CrowdState::Indoors || vj.pos.y <= room.at.y + 0.05f) continue;
+                        closest = std::min(closest, dist(vi.pos, vj.pos));
+                    }
+                }
+                movingMax = std::max(movingMax, moving);
+                both = both || inRoom >= 2;
+            }
+            CAPTURE(seed);
+            CAPTURE(off);
+            CHECK(movingMax <= 1);             // one on the move inside at a time: nobody catches another up
+            CHECK(closest >= t.minGap - 1e-3f); // never through, or up against, one standing at its spot
+            CHECK(sim.indoorCount() == 0);      // nobody left waiting inside: it never locks
+            CHECK(sim.counts().wentIn + sim.counts().fledIn == sim.counts().cameOut);
+            together += both ? 1 : 0;
+            fled += static_cast<int>(sim.counts().fledIn);
+        }
+    }
+    CHECK(together > 0); // the sweep holds visitors in the room together
+    CHECK(fled > 0);     // and runners taking the room from a fight
+    CHECK(farSpot > 0);  // the far spot is used (only while the near one is free)
+}

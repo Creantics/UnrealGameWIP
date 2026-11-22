@@ -1021,33 +1021,44 @@ bool CrowdSim::tryDoor(std::uint32_t i, bool fleeing) {
         }
         // A walk-in room with every spot taken, or with someone on the way in or out through its doorway, is passed by.
         const std::uint32_t spot = s.spotN > 0 ? freeSpot(s) : UINT32_MAX;
-        if (s.spotN > 0 && (spot == UINT32_MAX || !doorwayClear(static_cast<std::int32_t>(d), &a, false))) continue;
+        if (s.spotN > 0 && (spot == UINT32_MAX || !doorwayClear(static_cast<std::int32_t>(d), &a))) continue;
         goIn(a, d, fleeing, spot);
         return true;
     }
     return false;
 }
 
-// A walk-in room's doorway takes one way at a time, so two visitors in sight never walk through each other. A new
-// visitor comes in only while every other member at that door stands at its spot or is walking on in to one (phases 5
-// and 6); one leaves its spot only while every other stands at its own (6). Nobody waits on a member who is itself
-// waiting, so it never locks: phases 1, 3, 4, 5, 7 and 8 all move on without a wait.
-bool CrowdSim::doorwayClear(std::int32_t door, const Agent* self, bool goingOut) const {
+// A walk-in room moves one visitor at a time, so two in sight never walk through or overtake each other. A new visitor
+// comes in, and one leaves its spot, only while every other member at that door stands at its own spot (phase 6). Only
+// a phase-6 member and a not-yet-member ever wait, and neither is waited on while it waits, so it never locks: phases
+// 1, 3, 4, 5, 7 and 8 all move on without a wait.
+bool CrowdSim::doorwayClear(std::int32_t door, const Agent* self) const {
     for (const Agent& o : agents_) {
         if (&o == self || o.state != CrowdState::Indoors || o.door != door) continue;
-        if (o.doorPhase == 6 || (!goingOut && o.doorPhase == 5)) continue;
-        return false;
+        if (o.doorPhase != 6) return false;
     }
     return true;
 }
 
-// A walk-in room's free spot, from a random one on (UINT32_MAX when all are taken).
+// A walk-in room's free spot, from a random one on (UINT32_MAX when none fits). A spot fits when nobody stands in the
+// way of the walk to it (doorway, then straight on to the spot) and it stands in nobody's own way back out, each kept
+// minGap clear, so a visitor never walks through one standing at another spot.
 std::uint32_t CrowdSim::freeSpot(const DoorSlot& s) {
     if (s.spotN == 0) return UINT32_MAX;
+    const float clear = tuning_.minGap;
     const std::uint32_t k0 = std::min(static_cast<std::uint32_t>(rand01() * static_cast<float>(s.spotN)), s.spotN - 1);
     for (std::uint32_t t = 0; t < s.spotN; ++t) {
         const std::uint32_t k = s.spot0 + (k0 + t) % s.spotN;
-        if (!spotTaken_[k]) return k;
+        if (spotTaken_[k]) continue;
+        const Vec2 p = spots_[k];
+        bool fits = true;
+        for (std::uint32_t j = s.spot0; fits && j < s.spot0 + s.spotN; ++j) {
+            if (j == k || !spotTaken_[j]) continue;
+            const Vec2 q = spots_[j];
+            fits = segDist(s.at, s.through, q) >= clear && segDist(s.through, p, q) >= clear && // q not in p's way
+                   segDist(s.at, s.through, p) >= clear && segDist(s.through, q, p) >= clear;   // p not in q's way out
+        }
+        if (fits) return k;
     }
     return UINT32_MAX;
 }
@@ -1102,7 +1113,7 @@ void CrowdSim::doorStep(Agent& a) {
             a.doorFled = false;
         }
         if (a.doorPhase == 6) {
-            if (!doorwayClear(a.door, &a, true)) return; // someone in the doorway or on the move inside: waits its turn
+            if (!doorwayClear(a.door, &a)) return; // someone in the doorway or on the move inside: waits its turn
             // Off its spot (free for the next) and back to the doorway.
             if (a.doorSpot < spotTaken_.size()) spotTaken_[a.doorSpot] = 0;
             a.doorSpot = UINT32_MAX;
