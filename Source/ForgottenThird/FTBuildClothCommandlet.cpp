@@ -2,6 +2,7 @@
 
 #include "ForgottenThird.h"
 #include "ftcore/ClothDrive.h"
+#include "ftcore/FlagNumber.h"
 
 #if WITH_EDITOR
 #include "ChaosCloth/ChaosClothConfig.h"
@@ -697,6 +698,23 @@ UFTBuildClothCommandlet::UFTBuildClothCommandlet()
 int32 UFTBuildClothCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	// Every numeric flag must be a whole number as written: FParse::Value(float) reads "abc" or an empty value as 0 and
+	// says it was given, so a typo would build silently with a 0 (ftcore::flagnum). Checked before anything is loaded.
+	{
+		static constexpr std::string_view NumberFlags[] = {"Max=", "Pin=", "Fit=", "Pad=", "Density=", "Damping=",
+			"LocalDamping=", "Edge=", "Bend=", "Tether=", "Drag=", "Lift=", "Thickness=", "Friction=", "GravityScale=",
+			"AnimDriveLow=", "AnimDriveHigh=", "DriveFrom=", "DriveTo=", "AnimDriveDamping="};
+		const FTCHARToUTF8 Line(*Params);
+		const std::string_view Text(reinterpret_cast<const char*>(Line.Get()), static_cast<size_t>(Line.Length()));
+		if (const int Bad = ftcore::flagnum::firstBad(Text, NumberFlags, UE_ARRAY_COUNT(NumberFlags)); Bad >= 0)
+		{
+			const std::string_view Key = NumberFlags[Bad];
+			const std::string_view Given = ftcore::flagnum::read(Text, Key).text;
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s needs a number; \"%s\" is not one."),
+				*FString(static_cast<int32>(Key.size()), Key.data()), *FString(static_cast<int32>(Given.size()), Given.data()));
+			return 1;
+		}
+	}
 	FString MeshPath, PhysicsPath;
 	float Max = 25.f, Pin = 3.f;
 	FParse::Value(*Params, TEXT("Mesh="), MeshPath);

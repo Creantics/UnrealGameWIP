@@ -526,6 +526,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_look_review.cpp
         tests/test_lead_wet.cpp
         tests/test_cloth_drive.cpp
+        tests/test_flag_number.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp
