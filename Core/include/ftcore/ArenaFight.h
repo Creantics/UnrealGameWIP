@@ -673,6 +673,10 @@ struct ArenaEnemyKind {
     float bodyRadius = 0.45f;
     float height = 0.f;       // m, standing; 0: derived from bodyRadius (arenaEnemyHeight). Only the host's figure
                               // and the arena stage's scale read it: the fight's rules never do
+    float bodyLength = 0.f;   // m, nose to tail: the body's footprint along its facing. Up to 2 * bodyRadius (0, the
+                              // default): a circle of bodyRadius. Longer: a stadium, that circle swept along its facing
+                              // (arenaBodySpan). Only the push apart and the walls read it: a blow's reach is still
+                              // centre to centre against range + bodyRadius
     std::array<ArenaEnemyMove, kMaxArenaMoves> moves{};
     std::uint8_t moveCount = 1;
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.
@@ -706,6 +710,13 @@ inline float arenaEnemyHeight(const ArenaEnemyKind& kind) {
     const float scale = kind.bodyRadius / 0.4f;
     return 1.75f * (scale < 0.8f ? 0.8f : (scale > 1.6f ? 1.6f : scale));
 }
+
+// Half the straight middle of an enemy kind's body: 0 for a circle, bodyLength / 2 - bodyRadius for a stadium.
+inline float arenaBodySpan(const ArenaEnemyKind& kind) {
+    return kind.bodyLength > 2.f * kind.bodyRadius ? 0.5f * kind.bodyLength - kind.bodyRadius : 0.f;
+}
+// The radius a wall holds an enemy's centre off by: its circle's, or a stadium's end (any way it faces).
+inline float arenaBodyReach(const ArenaEnemyKind& kind) { return kind.bodyRadius + arenaBodySpan(kind); }
 
 // kArenaNoKind in every slot (the default of ArenaDef::enemyKind).
 constexpr std::array<std::uint8_t, kMaxArenaEnemies> arenaNoKinds() {
@@ -1935,10 +1946,32 @@ private:
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
-// overlapping bodies pushed apart (circles of their body radii; dead enemies don't block), then
-// everything kept inside the ring. Tests, the balance check and headless runs use it in place of an
-// engine. Deterministic; no allocation.
+// overlapping bodies pushed apart (the player's circle, each enemy's circle or stadium, arenaBodySpan; dead
+// enemies don't block), then everything kept inside the ring, then the settle (arenaSettle). Tests, the balance
+// check and headless runs use it in place of an engine. Deterministic; no allocation.
 FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt);
+
+// The push apart both arenaStep variants share: one pass of the player against each living enemy (unless
+// `withPlayer` is false: the frame a special's performer is placed) and each living pair of enemies, every
+// overlap split half each. Deterministic; no allocation.
+FTCORE_API void arenaPushApart(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer);
+
+// Which bodies a wall moved this step (ArenaBodies' order: the player, then the enemies): the settle's input.
+struct ArenaHeld {
+    bool player = false;
+    std::array<bool, kMaxArenaEnemies> enemies{};
+    bool any() const {
+        for (const bool e : enemies)
+            if (e) return true;
+        return player;
+    }
+};
+
+// After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more
+// pass gives the whole of each overlap deeper than 0.1 mm to the body the wall does not hold (both held, or
+// neither: half each). Shallower contacts are left as they are. The caller holds the bodies inside its walls
+// again after it. Nothing held: no change. Deterministic; no allocation.
+FTCORE_API void arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held);
 
 // ---- data ----
 

@@ -3283,6 +3283,141 @@ TEST_CASE("arena ring: no body leaves it, and a roll along the edge slides") {
     }
 }
 
+TEST_CASE("arena step: a body the ring holds takes no share of a push, the other takes it all") {
+    // A dummy at the ring's edge and the player walked 25 cm into it: the push sends the dummy out past the edge, the
+    // ring puts it straight back, and before the settle the player was left 12.5 cm inside it.
+    const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
+    Rig rig(ruleFighter(), {dummyKind()}, 1, ring);
+    const float least = rig.def.fighter.bodyRadius + rig.def.enemies[0].bodyRadius;
+    rig.bodies.enemies[0] = Vec2{5.f - 0.45f, 0.f};
+    rig.bodies.player = Vec2{5.f - 0.45f - (least - 0.25f), 0.f};
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(distanceOf(rig.bodies.enemies[0], ring.centre) <= 5.f - 0.45f + 1e-4f);
+    CHECK(distanceOf(rig.bodies.player, rig.bodies.enemies[0]) >= least - 1e-4f);
+    CHECK(rig.bodies.enemies[0].x == doctest::Approx(5.f - 0.45f));
+    // Away from the edge the split is half each, as it always was.
+    rig.bodies.enemies[0] = Vec2{1.f, 0.f};
+    rig.bodies.player = Vec2{1.f - (least - 0.2f), 0.f};
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(rig.bodies.enemies[0].x == doctest::Approx(1.1f));
+    CHECK(rig.bodies.player.x == doctest::Approx(1.f - (least - 0.2f) - 0.1f));
+}
+
+TEST_CASE("arena step: a body longer than its circle is a stadium along its facing") {
+    ArenaEnemyKind longKind = dummyKind();
+    longKind.bodyRadius = 0.35f;
+    longKind.bodyLength = 1.1f; // the circle swept 0.2 m either way along its facing
+    CHECK(arenaBodySpan(longKind) == doctest::Approx(0.2f));
+    CHECK(arenaBodyReach(longKind) == doctest::Approx(0.55f));
+    ArenaEnemyKind round = longKind;
+    round.bodyLength = 0.7f; // no longer than the circle: a circle
+    CHECK(arenaBodySpan(round) == 0.f);
+    CHECK(arenaBodyReach(round) == 0.35f);
+
+    const ArenaRing ring{Vec2{0.f, 0.f}, 30.f};
+    Rig rig(ruleFighter(), {longKind, longKind}, 1, ring);
+    const Vec2 raw = rig.out().enemies[0].facing; // the step reads the output's facing; no tick has turned it
+    const float len = std::hypot(raw.x, raw.y);
+    REQUIRE(len > 0.5f);
+    const Vec2 f{raw.x / len, raw.y / len};
+    const Vec2 side{-f.y, f.x};
+    const Vec2 c{2.f, 0.f};
+    const float pr = rig.def.fighter.bodyRadius;
+    const auto at = [](Vec2 o, Vec2 dir, float m) { return Vec2{o.x + dir.x * m, o.y + dir.y * m}; };
+    const Vec2 raw1 = rig.out().enemies[1].facing;
+    const float len1 = std::hypot(raw1.x, raw1.y);
+    REQUIRE(len1 > 0.5f);
+    const Vec2 f1{raw1.x / len1, raw1.y / len1};
+    // Spine to spine: the least of the four end-to-segment distances (exact while the spines don't cross).
+    const auto toSpine = [](Vec2 p, Vec2 o, Vec2 dir, float half) {
+        const float t = std::clamp((p.x - o.x) * dir.x + (p.y - o.y) * dir.y, -half, half);
+        return std::hypot(p.x - (o.x + dir.x * t), p.y - (o.y + dir.y * t));
+    };
+    const auto spineGap = [&](Vec2 a, Vec2 fa, Vec2 b, Vec2 fb) {
+        const float h = 0.2f;
+        return std::min(std::min(toSpine(Vec2{a.x + fa.x * h, a.y + fa.y * h}, b, fb, h),
+                                 toSpine(Vec2{a.x - fa.x * h, a.y - fa.y * h}, b, fb, h)),
+                        std::min(toSpine(Vec2{b.x + fb.x * h, b.y + fb.y * h}, a, fa, h),
+                                 toSpine(Vec2{b.x - fb.x * h, b.y - fb.y * h}, a, fa, h)));
+    };
+    const Vec2 away{-20.f, 0.f};
+    // Head on: the player stops at the nose, the span plus both radii from the centre.
+    rig.bodies.enemies[0] = c;
+    rig.bodies.enemies[1] = away;
+    rig.bodies.player = at(c, f, 0.5f);
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(distanceOf(rig.bodies.player, rig.bodies.enemies[0]) == doctest::Approx(0.2f + 0.35f + pr).epsilon(1e-4));
+    // On the flank: the two radii, as a circle would.
+    rig.bodies.enemies[0] = c;
+    rig.bodies.player = at(c, side, 0.6f);
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(distanceOf(rig.bodies.player, rig.bodies.enemies[0]) == doctest::Approx(0.35f + pr).epsilon(1e-4));
+    // Past the nose's corner: the push runs from the spine's end, not the centre.
+    rig.bodies.enemies[0] = c;
+    rig.bodies.player = at(at(c, f, 0.4f), side, 0.3f);
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    const Vec2 nose = at(rig.bodies.enemies[0], f, 0.2f);
+    CHECK(distanceOf(rig.bodies.player, nose) == doctest::Approx(0.35f + pr).epsilon(1e-4));
+    // Two long kinds, each along its own facing, beside and in front of each other: pushed to touch, spine to
+    // spine the two radii apart.
+    rig.bodies.player = away;
+    rig.bodies.enemies[0] = c;
+    rig.bodies.enemies[1] = at(c, side, 0.4f);
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(spineGap(rig.bodies.enemies[0], f, rig.bodies.enemies[1], f1) == doctest::Approx(0.7f).epsilon(1e-3));
+    rig.bodies.enemies[0] = c;
+    rig.bodies.enemies[1] = at(c, f, 0.9f);
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(spineGap(rig.bodies.enemies[0], f, rig.bodies.enemies[1], f1) == doctest::Approx(0.7f).epsilon(1e-3));
+    // The ring holds a stadium by its end, however it faces.
+    rig.bodies.enemies[0] = Vec2{30.f, 0.f};
+    rig.bodies.enemies[1] = Vec2{0.f, 30.f};
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(distanceOf(rig.bodies.enemies[0], ring.centre) <= 30.f - 0.55f + 1e-4f);
+    CHECK(distanceOf(rig.bodies.enemies[1], ring.centre) <= 30.f - 0.55f + 1e-4f);
+
+    // A length no longer than the circle steps exactly as the circle.
+    Rig a(ruleFighter(), {dummyKind(), dummyKind()}, 1, ring);
+    ArenaEnemyKind shortKind = dummyKind();
+    shortKind.bodyLength = 0.9f; // 2 * 0.45
+    Rig b(ruleFighter(), {shortKind, shortKind}, 1, ring);
+    for (Rig* r : {&a, &b}) {
+        r->bodies.player = Vec2{0.f, 0.f};
+        r->bodies.enemies[0] = Vec2{0.3f, 0.05f};
+        r->bodies.enemies[1] = Vec2{0.5f, -0.1f};
+        arenaStep(r->fight, r->bodies, 0.f);
+    }
+    CHECK(a.bodies.player.x == b.bodies.player.x);
+    CHECK(a.bodies.player.y == b.bodies.player.y);
+    for (std::size_t i = 0; i < 2; ++i) {
+        CHECK(a.bodies.enemies[i].x == b.bodies.enemies[i].x);
+        CHECK(a.bodies.enemies[i].y == b.bodies.enemies[i].y);
+    }
+}
+
+TEST_CASE("arena data: bodyLength reads into the kind, 0 when absent") {
+    ArenaTable table = loadShipped();
+    for (const ArenaEnemyKind& k : table.enemies) CHECK(k.bodyLength >= 0.f);
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena.json", text));
+    const std::string key = "\"id\": \"dummy\",";
+    const std::size_t at = text.find(key);
+    REQUIRE(at != std::string::npos);
+    text.insert(at + key.size(), " \"bodyLength\": 1.5,");
+    ArenaTable edited;
+    std::string err;
+    REQUIRE_MESSAGE(importArenaTable(text, edited, &err), err);
+    bool found = false;
+    for (std::size_t e = 0; e < edited.enemyIds.size(); ++e)
+        if (edited.enemyIds[e] == "dummy") {
+            found = true;
+            CHECK(edited.enemies[e].bodyLength == doctest::Approx(1.5f));
+        }
+    CHECK(found);
+    text.replace(text.find("\"bodyLength\": 1.5,"), 18, "\"bodyLength\": -1,");
+    CHECK_FALSE(importArenaTable(text, edited, &err));
+}
+
 TEST_CASE("arena step: bodies move at their velocities, overlaps are pushed apart, the ring holds") {
     const ArenaRing ring{Vec2{0.f, 0.f}, 10.f};
     ArenaDef def = defaultArenaDef();
@@ -10105,4 +10240,103 @@ TEST_CASE("arena pressReason: Pair at every tick of a solo fight, a Lone Carry a
         CHECK(t.pairOk > 0); // PARTNER read Ok and the press paired
         CHECK(t.seen[static_cast<std::size_t>(PressReason::Closed)] > 0);
     }
+}
+
+namespace {
+// The distance from p to the segment c +- f * half (half 0: to the point c).
+float spineDistance(Vec2 p, Vec2 c, Vec2 f, float half) {
+    const float t = std::clamp((p.x - c.x) * f.x + (p.y - c.y) * f.y, -half, half);
+    return std::hypot(p.x - (c.x + f.x * t), p.y - (c.y + f.y * t));
+}
+Vec2 unitFacing(Vec2 v) {
+    const float len = std::hypot(v.x, v.y);
+    return len > 1e-6f ? Vec2{v.x / len, v.y / len} : Vec2{1.f, 0.f};
+}
+struct OverlapRun {
+    float worst = 9.f; // the deepest overlap seen, shape to shape (negative: overlap)
+    int ticks = 0;
+};
+// The host mirror's body loop in sand_ring on the autopilot: after every zone step, how far apart the living bodies
+// stand, measured shape to shape (a long kind's stadium along its facing, as the step reads it).
+OverlapRun overlapRun(const std::vector<std::string>& lineup, const char* kit, std::uint32_t seed, int maxTicks) {
+    const ArenaTable table = loadShipped();
+    std::string text, err;
+    REQUIRE(ftcore_test::readProjectData("Field/worlds.json", text));
+    WorldTable worlds;
+    REQUIRE_MESSAGE(importWorldTable(text, worlds, &err), err);
+    REQUIRE(ftcore_test::readProjectData("Battle/arenas.json", text));
+    ArenaZoneTable zones;
+    REQUIRE_MESSAGE(importArenaZoneTable(text, table, worlds, zones, &err), err);
+    ArenaDef def = table.fallback;
+    def.fighter = table.fighter(kit);
+    def.enemyCount = 0;
+    for (const std::string& id : lineup)
+        for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
+            if (table.enemyIds[e] == id) {
+                def.enemyKind[def.enemyCount] = static_cast<std::uint8_t>(e);
+                def.enemies[def.enemyCount++] = table.enemies[e];
+            }
+    REQUIRE(def.enemyCount == lineup.size());
+    def.attackers = lineup.size() > 2 ? 3 : 1;
+    const ArenaZoneSpec* zone = zones.find("sand_ring");
+    REQUIRE(zone != nullptr);
+    ArenaZoneFit fit;
+    REQUIRE_MESSAGE(fitArenaZone(*zone, nullptr, def, fit, &err), err);
+    fit.apply(def);
+    REQUIRE(ftcore_test::readProjectData("Battle/attack_move.json", text));
+    AttackMoveRules moves;
+    REQUIRE_MESSAGE(importAttackMoveRules(text, moves, &err), err);
+    ArenaFight fight;
+    fight.begin(def, fit.ring, fit.playerStart, fit.playerFacing, seed);
+    ArenaBodies bodies;
+    bodies.player = fight.playerStart();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) bodies.enemies[i] = fight.enemyStart(i);
+    OverlapRun run;
+    const float rp = def.fighter.bodyRadius;
+    for (int i = 0; i < maxTicks && !fight.over(); ++i) {
+        ArenaInput in = fight.autopilot();
+        attackMoveInput(moves, fight, in);
+        in.lock = false;
+        const ArenaOutput& out = fight.tick(kDt, in, bodies);
+        arenaStep(fight, bodies, kDt, fit.zone);
+        ++run.ticks;
+        for (std::size_t a = 0; a < fight.enemyCount(); ++a) {
+            if (!fight.enemyAlive(a)) continue;
+            const ArenaEnemyKind& ka = def.enemies[a];
+            const Vec2 fa = unitFacing(out.enemies[a].facing);
+            run.worst = std::min(run.worst, spineDistance(bodies.player, bodies.enemies[a], fa, arenaBodySpan(ka)) -
+                                                rp - ka.bodyRadius);
+            for (std::size_t b = a + 1; b < fight.enemyCount(); ++b) {
+                if (!fight.enemyAlive(b)) continue;
+                const ArenaEnemyKind& kb = def.enemies[b];
+                REQUIRE(arenaBodySpan(ka) * arenaBodySpan(kb) == 0.f); // the measure below is exact for one stadium
+                const Vec2 fb = unitFacing(out.enemies[b].facing);
+                const float d = arenaBodySpan(ka) > 0.f
+                                    ? spineDistance(bodies.enemies[b], bodies.enemies[a], fa, arenaBodySpan(ka))
+                                    : spineDistance(bodies.enemies[a], bodies.enemies[b], fb, arenaBodySpan(kb));
+                run.worst = std::min(run.worst, d - ka.bodyRadius - kb.bodyRadius);
+            }
+        }
+    }
+    return run;
+}
+} // namespace
+
+// Bodies never pass through each other in the host's loop: no living pair ends a zone step more than 1 mm inside
+// the other's shape. dummy+maw_pup was the case that broke it: the dummy at the ring edge kept 3.5 cm of overlap
+// (the clamp took back its half of the push).
+TEST_CASE("arena host mirror: no living bodies overlap after a zone step, on Devin and Duy") {
+    const std::vector<std::vector<std::string>> lineups = {
+        {"dummy", "maw_pup"}, {"maw_pup"}, {"brute", "skirmisher", "breaker"}};
+    for (const char* kit : {"devin", "duy"})
+        for (const std::vector<std::string>& l : lineups)
+            for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+                const OverlapRun run = overlapRun(l, kit, seed, 6000);
+                CAPTURE(kit);
+                CAPTURE(seed);
+                CAPTURE(l.front());
+                CAPTURE(l.size());
+                CHECK(run.ticks > 60);
+                CHECK(run.worst >= -1e-3f);
+            }
 }

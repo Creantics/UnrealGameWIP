@@ -5071,31 +5071,123 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
         bodies.player = arenaMadd(bodies.player, out.player.velocity, dt);
         for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = arenaMadd(bodies.enemies[i], out.enemies[i].velocity, dt);
     }
-    // Overlapping bodies are pushed apart, half each; dead enemies don't block.
-    const auto separate = [](Vec2& a, float ra, Vec2& b, float rb) {
-        const Vec2 d = arenaSub(b, a);
-        const float distance = arenaLength(d);
-        const float least = ra + rb;
-        if (distance >= least) return;
-        const Vec2 dir = distance > kArenaEps ? Vec2{d.x / distance, d.y / distance} : Vec2{1.f, 0.f};
-        const float push = 0.5f * (least - distance);
-        a = arenaMadd(a, dir, -push);
-        b = arenaMadd(b, dir, push);
+    // Overlapping bodies are pushed apart, half each; dead enemies don't block. No push apart with the player on the
+    // frame the performer is placed.
+    for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaPushApart(fight, bodies, !placed);
+    // Everything stays inside the ring; a body the ring moved can't take its share of a push, so the settle gives it
+    // to the other one, and the ring holds them again.
+    const ArenaRing& ring = fight.ring();
+    ArenaHeld held;
+    const auto hold = [&ring](Vec2& p, float r) {
+        const Vec2 q = ring.clamp(p, r);
+        const bool moved = q.x != p.x || q.y != p.y;
+        p = q;
+        return moved;
     };
-    for (int pass = 0; pass < kArenaPushPasses; ++pass) {
-        for (std::size_t i = 0; i < n && !placed; ++i) // no push apart on the frame the performer is placed
-            if (fight.enemyAlive(i)) separate(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
-        for (std::size_t i = 0; i < n; ++i) {
-            if (!fight.enemyAlive(i)) continue;
-            for (std::size_t j = i + 1; j < n; ++j)
-                if (fight.enemyAlive(j))
-                    separate(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
+    held.player = hold(bodies.player, playerRadius);
+    for (std::size_t i = 0; i < n; ++i) held.enemies[i] = hold(bodies.enemies[i], arenaBodyReach(def.enemies[i]));
+    if (!held.any()) return;
+    arenaSettle(fight, bodies, !placed, held);
+    hold(bodies.player, playerRadius);
+    for (std::size_t i = 0; i < n; ++i) hold(bodies.enemies[i], arenaBodyReach(def.enemies[i]));
+}
+
+namespace {
+constexpr float kArenaSettleFloor = 1.0e-4f; // arenaSettle: an overlap this shallow or less is left as it is
+
+// A body's spine: its centre +- span along its facing (span 0: a point, the circle's centre).
+struct ArenaSpine {
+    Vec2 centre;
+    Vec2 axis; // unit
+    float span = 0.f;
+};
+
+// The closest points of two spines (segments; either may be a point).
+void arenaClosest(const ArenaSpine& a, const ArenaSpine& b, Vec2& pa, Vec2& pb) {
+    const Vec2 a0 = arenaMadd(a.centre, a.axis, -a.span);
+    const Vec2 b0 = arenaMadd(b.centre, b.axis, -b.span);
+    const Vec2 da = Vec2{a.axis.x * 2.f * a.span, a.axis.y * 2.f * a.span};
+    const Vec2 db = Vec2{b.axis.x * 2.f * b.span, b.axis.y * 2.f * b.span};
+    const Vec2 r = arenaSub(a0, b0);
+    const float aa = arenaDot(da, da), ee = arenaDot(db, db), ff = arenaDot(db, r);
+    float s = 0.f, t = 0.f;
+    if (aa <= kArenaEps && ee <= kArenaEps) {
+        // both points
+    } else if (aa <= kArenaEps) {
+        t = std::clamp(ff / ee, 0.f, 1.f);
+    } else {
+        const float c = arenaDot(da, r);
+        if (ee <= kArenaEps) {
+            s = std::clamp(-c / aa, 0.f, 1.f);
+        } else {
+            const float bb = arenaDot(da, db);
+            const float denom = aa * ee - bb * bb;
+            s = denom > kArenaEps ? std::clamp((bb * ff - c * ee) / denom, 0.f, 1.f) : 0.f;
+            t = (bb * s + ff) / ee;
+            if (t < 0.f) {
+                t = 0.f;
+                s = std::clamp(-c / aa, 0.f, 1.f);
+            } else if (t > 1.f) {
+                t = 1.f;
+                s = std::clamp((bb - c) / aa, 0.f, 1.f);
+            }
         }
     }
-    // Everything stays inside the ring.
-    const ArenaRing& ring = fight.ring();
-    bodies.player = ring.clamp(bodies.player, playerRadius);
-    for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = ring.clamp(bodies.enemies[i], def.enemies[i].bodyRadius);
+    pa = arenaMadd(a0, da, s);
+    pb = arenaMadd(b0, db, t);
+}
+
+// Pushes two bodies apart when they overlap by more than `floor`: a takes `shareA` of the overlap, b the rest.
+// Two circles at half each step exactly as the push always did.
+void arenaPushPair(Vec2& a, float ra, const ArenaSpine& sa, Vec2& b, float rb, const ArenaSpine& sb, float shareA,
+                   float floor) {
+    Vec2 pa = a, pb = b;
+    if (sa.span > 0.f || sb.span > 0.f) arenaClosest(sa, sb, pa, pb);
+    const Vec2 d = arenaSub(pb, pa);
+    const float distance = arenaLength(d);
+    const float least = ra + rb;
+    if (distance >= least - floor) return;
+    const Vec2 dir = distance > kArenaEps ? Vec2{d.x / distance, d.y / distance} : Vec2{1.f, 0.f};
+    const float overlap = least - distance;
+    a = arenaMadd(a, dir, -(shareA * overlap));
+    b = arenaMadd(b, dir, (1.f - shareA) * overlap);
+}
+
+// The push passes' shared walk: the player against each living enemy (withPlayer), then each living pair.
+void arenaPushWalk(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld* held, float floor) {
+    const std::size_t n = fight.enemyCount();
+    const ArenaDef& def = fight.def();
+    const ArenaOutput& out = fight.output();
+    const float playerRadius = def.fighter.bodyRadius;
+    const auto share = [held](bool heldA, bool heldB) {
+        if (held == nullptr || heldA == heldB) return 0.5f;
+        return heldA ? 0.f : 1.f;
+    };
+    const auto spine = [&](std::size_t i) {
+        return ArenaSpine{bodies.enemies[i], arenaUnit(out.enemies[i].facing, Vec2{1.f, 0.f}), arenaBodySpan(def.enemies[i])};
+    };
+    for (std::size_t i = 0; i < n && withPlayer; ++i)
+        if (fight.enemyAlive(i))
+            arenaPushPair(bodies.player, playerRadius, ArenaSpine{bodies.player, Vec2{1.f, 0.f}, 0.f}, bodies.enemies[i],
+                          def.enemies[i].bodyRadius, spine(i),
+                          share(held && held->player, held && held->enemies[i]), floor);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!fight.enemyAlive(i)) continue;
+        for (std::size_t j = i + 1; j < n; ++j)
+            if (fight.enemyAlive(j))
+                arenaPushPair(bodies.enemies[i], def.enemies[i].bodyRadius, spine(i), bodies.enemies[j],
+                              def.enemies[j].bodyRadius, spine(j), share(held && held->enemies[i], held && held->enemies[j]),
+                              floor);
+    }
+}
+} // namespace
+
+void arenaPushApart(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer) {
+    arenaPushWalk(fight, bodies, withPlayer, nullptr, 0.f);
+}
+
+void arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held) {
+    if (held.any()) arenaPushWalk(fight, bodies, withPlayer, &held, kArenaSettleFloor);
 }
 
 // ---- ArenaTable ----
@@ -5456,7 +5548,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                      ArenaStrings* warnings) {
     arenaUnknownKeys(j, path,
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
-                      "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "moves",
+                      "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "bodyLength",
+                      "moves",
                       "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
                       "breakDecay", "breakMove", "carry", "seatable", "boss", "breakValueAt", "breakPhaseEnds"},
                      false, warnings);
@@ -5477,6 +5570,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaNum(j, "accel", k.accel, 0, 1000, false, path, errors);
     arenaNum(j, "bodyRadius", k.bodyRadius, 0, 5, true, path, errors);
     arenaNum(j, "height", k.height, 0, 30, true, path, errors);
+    arenaNum(j, "bodyLength", k.bodyLength, 0, 20, false, path, errors); // 0 (absent): a circle
     arenaNum(j, "bpm", k.bpm, 0, 300, true, path, errors);
     arenaNum(j, "flinchTime", k.flinchTime, 0, 10, false, path, errors);
     arenaNum(j, "flinchPoise", k.flinchPoise, 0, 100000, false, path, errors);

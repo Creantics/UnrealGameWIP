@@ -317,39 +317,32 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
             now = plus(was, scaled(minus(now, was), share));
         };
         brake(bodies.player, before.player, playerRadius);
-        for (std::size_t i = 0; i < n; ++i) brake(bodies.enemies[i], before.enemies[i], def.enemies[i].bodyRadius);
+        for (std::size_t i = 0; i < n; ++i) brake(bodies.enemies[i], before.enemies[i], arenaBodyReach(def.enemies[i]));
     }
-    const auto separate = [](Vec2& a, float ra, Vec2& b, float rb) {
-        const Vec2 d = minus(b, a);
-        const float distance = lengthOf(d);
-        const float least = ra + rb;
-        if (distance >= least) return;
-        const Vec2 dir = distance > 1e-4f ? scaled(d, 1.f / distance) : Vec2{1.f, 0.f};
-        const float push = 0.5f * (least - distance);
-        a = minus(a, scaled(dir, push));
-        b = plus(b, scaled(dir, push));
-    };
+    ArenaHeld held;
     for (int pass = 0; pass < 2; ++pass) {
         bool moved = false;
         const auto hold = [&](Vec2& p, float r) {
             const Vec2 q = zone.constrain(p, r);
-            moved = moved || q.x != p.x || q.y != p.y;
+            const bool m = q.x != p.x || q.y != p.y;
+            moved = moved || m;
             p = q;
+            return m;
         };
-        hold(bodies.player, playerRadius);
-        for (std::size_t i = 0; i < n; ++i) hold(bodies.enemies[i], def.enemies[i].bodyRadius);
+        held.player = hold(bodies.player, playerRadius) || held.player;
+        for (std::size_t i = 0; i < n; ++i)
+            held.enemies[i] = hold(bodies.enemies[i], arenaBodyReach(def.enemies[i])) || held.enemies[i];
         // Nothing the walls or the obstacles had to move: the step is arenaStep's.
         if (!moved || pass == 1) break;
         // A wall can press two bodies together: push them apart once more, then hold them again.
-        for (std::size_t i = 0; i < n; ++i)
-            if (fight.enemyAlive(i)) separate(bodies.player, playerRadius, bodies.enemies[i], def.enemies[i].bodyRadius);
-        for (std::size_t i = 0; i < n; ++i) {
-            if (!fight.enemyAlive(i)) continue;
-            for (std::size_t j = i + 1; j < n; ++j)
-                if (fight.enemyAlive(j))
-                    separate(bodies.enemies[i], def.enemies[i].bodyRadius, bodies.enemies[j], def.enemies[j].bodyRadius);
-        }
+        arenaPushApart(fight, bodies, true);
     }
+    // A body the walls hold can't take its share of a push: the settle gives it to the other one, then the walls hold
+    // them again.
+    if (!held.any()) return;
+    arenaSettle(fight, bodies, true, held);
+    bodies.player = zone.constrain(bodies.player, playerRadius);
+    for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = zone.constrain(bodies.enemies[i], arenaBodyReach(def.enemies[i]));
 }
 
 // ---- the size ----

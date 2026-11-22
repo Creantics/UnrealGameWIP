@@ -5255,6 +5255,9 @@ struct ClassicPinRow {
 // Taken from main (04ffce8f: the party member's light range 3.6, no close-only reach) by this same code.
 // Re-pinned for maw_pup preferredRange 2.5 -> 1.8 (it holds inside the nip's 1.9 m reach, so the nip is picked): only
 // the four maw_pup rows moved. All still end in victory; duy with the camera loses 5 partner damage on seeds 1 and 2.
+// Re-pinned for the wall-aware push (B1, ARENA_BODY_OVERLAP_1122): a boss the ring holds no longer keeps up to 3.6 cm
+// of the lead inside it. Only the ten kite_boss, stone_bearer and duy white_glove rows moved, the fights where the old
+// step left that overlap; stone_bearer with the camera: devin 80 -> 79 hits (581 -> 574), duy 102 -> 110 (747 -> 803).
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5274,10 +5277,10 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "hulk", true, 24, 177, 17463738276282656931ull},
     {"devin", "titan", false, 27, 198, 17037376046017037454ull},
     {"devin", "titan", true, 24, 177, 9005697788452095697ull},
-    {"devin", "kite_boss", false, 57, 408, 11219984855826233746ull},
-    {"devin", "kite_boss", true, 58, 418, 2789500301622640658ull},
-    {"devin", "stone_bearer", false, 80, 575, 15615442648485410031ull},
-    {"devin", "stone_bearer", true, 80, 581, 10800794574737038193ull},
+    {"devin", "kite_boss", false, 57, 408, 3336118097607066850ull},
+    {"devin", "kite_boss", true, 58, 418, 558542764103034853ull},
+    {"devin", "stone_bearer", false, 80, 575, 1091293472601690442ull},
+    {"devin", "stone_bearer", true, 79, 574, 3165737697639935758ull},
     {"devin", "white_glove", false, 66, 465, 12554922323999540588ull},
     {"devin", "white_glove", true, 71, 503, 8649862504494032913ull},
     {"devin", "maw_pup", false, 6, 42, 9220560631306374404ull},
@@ -5302,12 +5305,12 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "hulk", true, 29, 206, 10408765349377459501ull},
     {"duy", "titan", false, 31, 229, 8858760711467032362ull},
     {"duy", "titan", true, 29, 204, 4745636326408502596ull},
-    {"duy", "kite_boss", false, 62, 443, 14444996425331591300ull},
-    {"duy", "kite_boss", true, 68, 488, 7340459745914879359ull},
-    {"duy", "stone_bearer", false, 103, 760, 16450274339744880094ull},
-    {"duy", "stone_bearer", true, 102, 747, 8699959715483297912ull},
-    {"duy", "white_glove", false, 84, 609, 6572322498555516023ull},
-    {"duy", "white_glove", true, 89, 641, 8591835143023752347ull},
+    {"duy", "kite_boss", false, 62, 443, 11966225794031579978ull},
+    {"duy", "kite_boss", true, 68, 488, 2057013200150119109ull},
+    {"duy", "stone_bearer", false, 103, 760, 2131707131706494630ull},
+    {"duy", "stone_bearer", true, 110, 803, 3944700548275582168ull},
+    {"duy", "white_glove", false, 84, 609, 12875648444523452656ull},
+    {"duy", "white_glove", true, 89, 641, 6347336712998663789ull},
     {"duy", "maw_pup", false, 6, 42, 7017930305380328517ull},
     {"duy", "maw_pup", true, 6, 32, 3525410989786059507ull},
     {"duy", "spitter", false, 6, 42, 373096491565446441ull},
