@@ -440,16 +440,19 @@ void AFTExploreCharacter::BeginPlay()
 				UE_LOG(LogForgottenThird, Warning, TEXT("SOAK_SWAP: '%s' is not <wetness>,<word>@<off s>[+<on s>]."), *SoakSwap);
 			}
 		}
-		// The lead-switch wet swap: -ExploreSwitchReview=<soak>@<switch s> gives the lead that soak through the water's own
-		// store (UFTWaterSubsystem::SetLeadWetness, the line at the body's height, no silt; it dries by the water's law),
-		// shows the party (a portrait hides it) and at <switch s> switches the lead as the key does (HandleSwitchLead). The
+		// The lead-switch wet swap: -ExploreSwitchReview=<soak 0..1>@<switch s, game time> gives the lead that soak at the
+		// start through the water's own store (UFTWaterSubsystem::SetLeadWetness, the line at the body's height, no silt;
+		// it dries from there by the water's law, so each still logs what is left), shows the party (a portrait hides it;
+		// frame wide enough for it) and at <switch s> switches the lead as the key does (HandleSwitchLead). The map needs
+		// water bodies (the lead's look reads the store only then): without them the switch is an Error and exit 2. The
 		// soak is each member's (AFTExploreDirector::OnLeadChanged): the old lead walks behind still wet, the new one takes
 		// its own. A refused switch is an Error and exit 2. Portrait shots carry their index, and each logs every soak.
 		FString SwitchReview;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreSwitchReview="), SwitchReview, false))
 		{
 			FString Soak, At;
-			if (SwitchReview.Split(TEXT("@"), &Soak, &At) && Soak.IsNumeric() && At.IsNumeric() && FCString::Atof(*At) > 0.f)
+			if (SwitchReview.Split(TEXT("@"), &Soak, &At) && !Soak.IsEmpty() && !At.IsEmpty() && Soak.IsNumeric() && At.IsNumeric()
+				&& FCString::Atof(*Soak) >= 0.f && FCString::Atof(*Soak) <= 1.f && FCString::Atof(*At) > 0.f)
 			{
 				ftcore::WaterWetness Soaked;
 				Soaked.wetness = FMath::Clamp(FCString::Atof(*Soak), 0.f, 1.f);
@@ -472,7 +475,7 @@ void AFTExploreCharacter::BeginPlay()
 			}
 			else
 			{
-				UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: '%s' is not <soak>@<switch s> (two numbers, the time above 0)."), *SwitchReview);
+				UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: '%s' is not <soak>@<switch s> (two numbers: the soak 0 to 1, the time above 0)."), *SwitchReview);
 				FTRequestExit(2, TEXT("ExploreSwitchReview"));
 			}
 		}
@@ -963,10 +966,13 @@ void AFTExploreCharacter::LogSwitchReview(const TCHAR* Stage)
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		const TArray<TObjectPtr<AFTPartyFollower>>& Party = D->GetFollowers();
+		const TArray<int32>& Members = D->GetFollowerMembers();
 		for (int32 I = 0; I < Party.Num(); ++I)
 		{
 			const AFTPartyFollower* Follower = Party[I].Get();
-			Line += Follower ? FString::Printf(TEXT("; follower %d %s soak %.2f (line %.2f m)%s"), I, *Follower->GetName(), Follower->GetWetness().wetness,
+			const int32 Member = Members.IsValidIndex(I) ? Members[I] : -1;
+			const FString Who = PartyLooks.IsValidIndex(Member) ? PartyLooks[Member].Name : FString(TEXT("?"));
+			Line += Follower ? FString::Printf(TEXT("; follower %d member %d %s soak %.2f (line %.2f m)%s"), I, Member, *Who, Follower->GetWetness().wetness,
 								   Follower->GetWetness().line, Follower->IsHidden() ? TEXT(" hidden") : TEXT(""))
 							 : FString::Printf(TEXT("; follower %d none"), I);
 		}
@@ -976,7 +982,16 @@ void AFTExploreCharacter::LogSwitchReview(const TCHAR* Stage)
 
 void AFTExploreCharacter::SwitchForReview()
 {
-	// The key's path; a switch it refuses is said, never shot as if it had happened.
+	// The key's path; a switch it refuses is said, never shot as if it had happened. Without water bodies the lead's look
+	// ignores the water's store (StirWater draws it dry) while the followers show theirs, so that run proves nothing.
+	const UWorld* World = GetWorld();
+	const UFTWaterSubsystem* Water = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (!Water || !Water->HasBodies())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: this map has no water bodies, so the lead's soak is not drawn; no proof from this run."));
+		FTRequestExit(2, TEXT("ExploreSwitchReview"));
+		return;
+	}
 	const int32 Was = LeadIndex;
 	LogSwitchReview(TEXT("before the switch"));
 	HandleSwitchLead();
@@ -987,7 +1002,9 @@ void AFTExploreCharacter::SwitchForReview()
 		FTRequestExit(2, TEXT("ExploreSwitchReview"));
 		return;
 	}
-	LogSwitchReview(TEXT("after the switch"));
+	// The followers are cleared here and spawn again on the next tick: this line has the new lead's soak only; the
+	// stills after it log the party.
+	LogSwitchReview(TEXT("after the switch, the party not yet back"));
 }
 
 void AFTExploreCharacter::SoakForReview()

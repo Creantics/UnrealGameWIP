@@ -178,6 +178,8 @@ public:
 	void SetPartyHeld(bool bHold);
 	bool IsPartyHeld() const { return bPartyHeld; }
 	const TArray<TObjectPtr<AFTPartyFollower>>& GetFollowers() const { return Followers; }
+	// Each follower's place in the party (its PartyLooks index), beside GetFollowers.
+	const TArray<int32>& GetFollowerMembers() const { return FollowerMembers; }
 	// This map's in-place cutscene host (null before BeginPlay, or when it could not spawn).
 	const AFTCutsceneDirector* GetCutsceneDirector() const;
 	// The big world's layout (null off a big world: on the Explore map and the overworld), and a district's spawn:
