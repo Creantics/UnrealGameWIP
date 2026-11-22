@@ -1814,6 +1814,7 @@ TEST_CASE("partner brain: every field of its save moves the hash: a change to an
         [](PartnerBrainSave& s) { s.skirmishDir = static_cast<std::int8_t>(-s.skirmishDir); },
         [](PartnerBrainSave& s) { s.skirmishKind = 1; },
         [](PartnerBrainSave& s) { s.skirmishOf += 2; },
+        [](PartnerBrainSave& s) { s.pickPlaceFor += 0.5; },
         [](PartnerBrainSave& s) { s.choice = 1; },
         [](PartnerBrainSave& s) { s.choiceAt += 0.5; },
         [](PartnerBrainSave& s) { s.walkDir.x += 1.f; },

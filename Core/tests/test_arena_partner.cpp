@@ -2530,7 +2530,7 @@ namespace {
 struct IdleLead {
     double T = 0, leadAttack = 0, partnerBlow = 0, longestStill = 0, longestInPlace = 0, onScreen = 0, jumpsPer10 = 0;
     double facingOff = 0, circlingTime = 0, shortestCircling = 0, shortestHold = 0;
-    int skirmishMoves = 0, circlingReversals = 0, rulesReversals = 0;
+    int skirmishMoves = 0, retargetPicks = 0, circlingReversals = 0, rulesReversals = 0;
     // The host's push-outs, measured apart from its own walk (a push is a run of ticks the push-out moved it): how
     // many, split by who moved into whom; the most one moved it in all and the fastest tick; the reversals its body
     // made only with a push in the tick (its own walk that tick no reversal), counted as forced.
@@ -2709,7 +2709,7 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
         if (!quiet) MESSAGE(head << ", lead never attacking: " << T << " s; partner blows " << partnerBlow
                 << " s, longest stand-still " << longestStill << " s (within 0.5 m: " << longestInPlace << " s), on screen " << onScreen / T << ", goal jumps per 10 s "
                 << 10.0 * goalJumps / T << "; circling " << r.brain.skirmishSeconds() << " s over "
-                << r.brain.skirmishMoves() << " goals, guards " << r.brain.guardsBegun()
+                << r.brain.skirmishMoves() << " goals (" << r.brain.retargetPicks() << " re-picked on a new target), guards " << r.brain.guardsBegun()
                 << ", dodges 0 (none in the kit); noBudget " << r.brain.idleSeconds(PartnerIdle::NoBudget) << " s");
         if (!quiet) MESSAGE("    goal jumps: " << flips << " walk begun or ended, " << repicks << " re-picked; reversals " << reversals
                 << ": circling " << circlingReversals << " in " << circlingTime << " s held (" << 10.0 * circlingReversals / circlingTime
@@ -2729,6 +2729,7 @@ IdleLead idleLead(const ArenaTable& t, std::uint8_t order, bool circling, std::u
         o.circlingTime = circlingTime;
         o.shortestCircling = shortestCircling;
         o.skirmishMoves = r.brain.skirmishMoves();
+        o.retargetPicks = r.brain.retargetPicks();
         o.circlingReversals = circlingReversals;
         o.rulesReversals = reversals - circlingReversals - forcedReversals - blowReversals;
         o.shortestHold = shortestHold;
@@ -2760,7 +2761,7 @@ TEST_CASE("arena partner: rule 17, a lead that never attacks for 20 s: the partn
 constexpr int kSixSeeds = 6;
 struct SixSeeds {
     std::array<double, kSixSeeds> rules{}, circling{}, inPlace{}, onScreen{}, pushes{}, circlingHold{}, bodyTurnHold{};
-    std::array<int, kSixSeeds> bodyTurns{}, goalsInBody{};
+    std::array<int, kSixSeeds> bodyTurns{}, goalsInBody{}, retargetPicks{};
     std::array<bool, kSixSeeds> circled{}; // the seed circled at all (its circling rate is a number)
     double hold = 1e9, pushMost = 0, pushFastest = 0, pushMostEnemy = 0, pushMostWalk = 0;
     int enemyInto = 0, walkInto = 0, pushReversals = 0;
@@ -2804,6 +2805,7 @@ const SixSeeds& sixSeeds(std::uint8_t order, bool circling) {
             s.bodyTurnHold[i] = r.shortestBodyTurn;
             s.bodyTurns[i] = r.bodyTurns;
             s.goalsInBody[i] = r.goalsInBody;
+            s.retargetPicks[i] = r.retargetPicks;
             s.pushes[i] = 10.0 * r.pushes / r.T;
             s.pushMost = std::max(s.pushMost, r.pushMost);
             s.pushFastest = std::max(s.pushFastest, r.pushFastest);
@@ -2839,8 +2841,10 @@ TEST_CASE("arena partner: rules 10-13 and 17 over six fight seeds, a lead that n
                     << s.pushFastest << " m/s; reversals only with a push (forced) " << s.pushReversals);
             std::ostringstream shape;
             for (std::size_t i = 0; i < static_cast<std::size_t>(kSixSeeds); ++i)
-                shape << " | " << i + 1 << ": " << s.bodyTurns[i] << ", " << s.bodyTurnHold[i] << " s, " << s.goalsInBody[i];
-            MESSAGE("    its circling walk per seed (reversals a body let through, shortest hold before one, goals in a body)"
+                shape << " | " << i + 1 << ": " << s.bodyTurns[i] << ", " << s.bodyTurnHold[i] << " s, " << s.goalsInBody[i] << ", "
+                      << s.retargetPicks[i];
+            MESSAGE("    its circling walk per seed (reversals a body let through, shortest hold before one, goals in a body, "
+                    "goals dropped by a new target and re-picked)"
                     << shape.str());
         }
 }
@@ -2866,6 +2870,71 @@ TEST_CASE("arena partner: rule 17 circling, the six-seed means meet the bars: at
         CHECK(SixSeeds::mean(s.inPlace) <= 1.5);
         CHECK(SixSeeds::mean(s.onScreen) >= 0.8);
     }
+}
+
+// Rule 17's re-pick on a new target, replayed on the seed-6 case it was found in (Spread, circling, a lead that never
+// attacks): a goal picked against one target, the target switched within 0.2 s, the goal dropped. That pick zeroed the
+// place clock; before the fix the partner then stood a second full kPlaceStill (1.70 s in one place at 15.9 s). Now on
+// that very tick it re-picks against the new target, and if nothing is found the clock is given back, so the stand
+// before the dropped goal and the one after are one stretch.
+TEST_CASE("arena partner: rule 17, seed 6: a goal dropped by a target switch within 0.2 s re-picks at once or gives the clock back") {
+    const ArenaTable t = shippedTable();
+    PRig r(t.fighter("default"));
+    r.def = t.fallback;
+    r.def.enemyCount = 0;
+    for (const char* id : {"skirmisher", "hulk", "duelist"})
+        for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+            if (t.enemyIds[e] == id) {
+                r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+            }
+    REQUIRE(r.def.enemyCount == 3);
+    r.def.attackers = 2;
+    r.tuning = shippedTuning();
+    r.tuning.circling = true;
+    r.in.partnerOrder = 1; // Spread
+    r.goShipped(true, 6);
+    r.autopilot = false;
+    Vec2 facing = r.fight.playerStartFacing();
+    double pickAt = -1e9;
+    int quick = 0, repickedAtOnce = 0, clockBack = 0;
+    while (!r.fight.over() && r.fight.time() < 20.f) {
+        r.in = r.fight.autopilot();
+        r.in.partnerOrder = 1;
+        r.in.light = r.in.heavy = r.in.pair = false;
+        r.in.partnerCamera = behindLead(r.bodies.player, facing);
+        const PartnerBrainSave b0 = r.brain.save();
+        const double now = r.fight.time();
+        r.tick();
+        const PartnerBrainSave& b1 = r.brain.save();
+        const bool picked = b1.skirmishMoves != b0.skirmishMoves;
+        if (b1.retargetPicks != b0.retargetPicks) {
+            CAPTURE(now);
+            CHECK(b0.skirmishOn);
+            CHECK(b0.skirmishKind == 0);
+            if (now - pickAt <= 0.2 + 1e-6) ++quick;
+            if (picked) { // re-picked on the new target this tick, the stretch it is in kept
+                ++repickedAtOnce;
+                CHECK(b1.skirmishOf == b1.target);
+                CHECK(b1.placeFor == 0.0);
+                CHECK(b1.pickPlaceFor >= b0.pickPlaceFor + b0.placeFor - 1e-9);
+            } else if (b1.placeAt.x == b0.placeAt.x && b1.placeAt.y == b0.placeAt.y) { // nothing found: the clock back
+                ++clockBack;
+                CHECK(b1.placeFor >= b0.pickPlaceFor + b0.placeFor - 1e-9);
+                CHECK(b1.pickPlaceFor == 0.0);
+            }
+        }
+        if (picked) pickAt = now;
+        const Vec2 f = r.out->player.facing;
+        const float k = std::min(1.f, 3.f * kDt);
+        const Vec2 m{facing.x + (f.x - facing.x) * k, facing.y + (f.y - facing.y) * k};
+        const float ml = length(m);
+        if (ml > 1e-4f) facing = Vec2{m.x / ml, m.y / ml};
+    }
+    MESSAGE("seed 6 Spread: " << r.brain.retargetPicks() << " goals dropped by a new target (" << quick << " within 0.2 s of their pick), "
+            << repickedAtOnce << " re-picked that tick, " << clockBack << " gave the clock back");
+    CHECK(quick >= 1); // the case the fix is for happens on this seed
+    CHECK(repickedAtOnce + clockBack >= 1);
 }
 
 // Each bar's worst seed, one test per bar and order: the bar itself where it holds today, else a hard pin at today's
