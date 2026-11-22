@@ -3677,6 +3677,11 @@ void UFTArenaRunner::StepFight()
 	{
 		WalkPartner(Out);
 	}
+	else if (bAllyOn && Fight.allyAlive() && !Fight.frozen() && !bSpecialPut)
+	{
+		// The plain ally walked before the step (MoveAlly): enemies the step moved in shove it here, walking or not.
+		SettleAlly(ftcore::kArenaSettlePasses);
+	}
 	if (HallMode != 0)
 	{
 		AfterHallucinationStep(Out);
