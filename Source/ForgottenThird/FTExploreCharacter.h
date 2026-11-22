@@ -295,7 +295,7 @@ private:
 	// Traversal: finds what is ahead (FTTraversalProbe::Probe from the feet along the facing; false: nothing to go over or
 	// onto; bAir: a deep top to catch, In the way into its face), starts a traversal (false: none fits; bLog says why),
 	// carries the body along one under way, and builds -LocoVaultWall's (or -LocoCatch's) course.
-	bool ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const;
+	bool ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In, bool* OutBlocker = nullptr) const;
 	bool TryTraverse(bool bLog);
 	// Starts a catch (false: not in the air, mid-traversal, crouched, not asked for, or none fits or is in reach yet; bLog
 	// says the last two, once a flight each).

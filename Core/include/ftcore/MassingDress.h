@@ -202,6 +202,9 @@ inline constexpr double kMassingFrontPadTop = 0.03;  // m a pad's top stands ove
 inline constexpr double kMassingFrontPadSink = 0.3;  // m a pad reaches under the floor under it
 inline constexpr double kMassingFrontPadGrid = 0.45; // its floor is read this share of its size either side of its middle
 inline constexpr double kMassingFrontPadFit = 0.05;  // m: a floor further off the pad's plane leaves the pad out
+inline constexpr double kMassingFrontMouthNarrow = 6.0; // m: a way this wide or narrower has mouths (massingFrontMouths)
+inline constexpr double kMassingFrontMouthDepth = 2.0;  // m a mouth reaches into its way past the other street's edge
+inline constexpr double kMassingFrontDoorClear = 0.3;   // m the frontage keeps round a door's foot (importRoadDoors' clear)
 
 // What one frontage rule placed, and why the places it was tried at took nothing from it.
 struct MassingFrontCounts {
@@ -215,6 +218,7 @@ struct MassingFrontCounts {
     std::size_t steep = 0;
     std::size_t wet = 0;
     std::size_t crowded = 0;
+    std::size_t keptClear = 0; // ground layer: its front's foot meets one of keepClear (a door or a lane mouth)
     std::size_t capped = 0;   // placed, but dropped by the cap
     std::size_t stacked = 0;  // copies set over its placed pieces by its stack (not in placed)
 };
@@ -230,6 +234,12 @@ struct MassingFrontTotals {
 // The room the part of a placed frontage piece outside its face takes on the plan: `out` deep from the face (x, y)
 // along its facing, `width` along the face. No allocation.
 FTCORE_API MassingFoot massingFrontFoot(const MassingProp& prop, const MassingFrontRule& rule);
+
+// The collider a ground-layer frontage piece stands in (the mesh itself is dressing and collides with nothing): a flat box
+// of source Invented, kind "frontage", over massingFrontFoot (`out` deep from the face, `width` along it, turned to the
+// face) from the piece's z to z + height, so the lead stops at the piece's front, not at the wall behind (the crowd's traces pass it: walkers keep out by their bands).
+// False (out untouched) for an overhead piece (dz kMassingPropBody or more) or one with no out, width or height.
+FTCORE_API bool massingFrontCollider(const MassingProp& prop, const MassingFrontRule& rule, MassingBox& out);
 
 // Sets the rules' pieces against the four side faces of each box `hosts` marks (flat ones only), as Wall props: x, y
 // the point of the face at the piece's middle, face its outward facing, street the host's index, z the floor plus dz.
@@ -253,6 +263,8 @@ FTCORE_API MassingFoot massingFrontFoot(const MassingProp& prop, const MassingFr
 // - steep (ground layer only): the floors 0.5 m out of the face at the piece's ends and middle spreading more than
 //   kMassingFrontSpread;
 // - wet: the floor at or under dryAbove;
+// - kept clear (ground layer only, when `keepClear` is given): massingFrontFoot meets a foot of keepClear (a door's
+//   foot, massingFrontMouths' mouths), so no piece and no collider stands in a doorway or a lane's mouth;
 // - crowded: massingFrontFoot within kMassingPropGap of a foot placed before it on its layer, or on the ground layer of
 //   one in `taken` (when given).
 // The floor is read 0.5 m out of the face at the piece's middle, from tops no higher than kMassingPropMaxStep over the
@@ -282,7 +294,42 @@ FTCORE_API void massingFrontage(const std::vector<MassingFrontRule>& rules, cons
                                 const std::vector<MassingFoot>* taken, std::vector<MassingProp>& out,
                                 std::vector<MassingFrontCounts>& counts, MassingFrontTotals& totals,
                                 std::vector<MassingBox>* outPads = nullptr,
-                                std::vector<std::uint8_t>* outFronting = nullptr);
+                                std::vector<std::uint8_t>* outFronting = nullptr,
+                                const std::vector<MassingFoot>* keepClear = nullptr);
+
+// The mouths of the narrow ways, for massingFrontage's keepClear: for each street no wider than
+// kMassingFrontMouthNarrow, at each point of its polyline that lies within half the width of another street's polyline
+// (the widest such), a foot along each of its segments from that point: as long as that half width plus
+// kMassingFrontMouthDepth (the segment's length at most), the narrow way's width across; and where one of its segments
+// crosses another street's polyline between its points, the same pair of feet from the crossing, along the segment, by
+// that street's half width. `out` is cleared first.
+// Allocates: build time only.
+FTCORE_API void massingFrontMouths(const std::vector<MassingStreet>& streets, std::vector<MassingFoot>& out);
+
+// How many of the ground-layer pieces' colliders (massingFrontCollider's footprints) meet a foot of `keep`, by a plain
+// test of every pair, apart from massingFrontage's own walk: the check that nothing stands in a door or a mouth. When
+// `hits` is given it takes the index of each piece that does (once). No allocation without `hits`.
+FTCORE_API std::size_t massingFrontCovers(const std::vector<MassingProp>& pieces,
+                                          const std::vector<MassingFrontRule>& rules,
+                                          const std::vector<MassingFoot>& keep, std::vector<std::size_t>* hits = nullptr);
+
+// The narrowest clear way along a street between its walls and the frontage colliders: at each station kMassingFrontStep
+// / 4 apart along its polyline, the free stretch about the polyline's point across it (out to half its width plus
+// kMassingFrontStrip each side) left by `walls` (boxes' feet), then by `walls` and `colliders` together; only stations
+// where the colliders take some of it, and whose point no wall covers, count. `narrowest` is the least such stretch (m)
+// and (x, y) where; `stations` how many counted. False when none did. Every station whose point no wall covers is
+// measured: `measured` of them, the least stretch with the colliders over all of them `least` (at (lx, ly)), and the
+// least with the walls alone `leastWalls`. No allocation.
+struct MassingFrontClear {
+    std::size_t stations = 0;
+    double narrowest = 0.0, wallsOnly = 0.0; // m: the narrowest stretch, and the walls' stretch at that station
+    double x = 0.0, y = 0.0;
+    std::size_t measured = 0;
+    double least = 0.0, leastWalls = 0.0; // m
+    double lx = 0.0, ly = 0.0;
+};
+FTCORE_API bool massingFrontClearWidth(const MassingStreet& street, const std::vector<MassingFoot>& walls,
+                                       const std::vector<MassingFoot>& colliders, MassingFrontClear& out);
 
 // ---- Roof dressing ----
 

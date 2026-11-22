@@ -283,6 +283,16 @@ bool massingFeetOverlap(const MassingFoot& a, const MassingFoot& b, double gap) 
     return true;
 }
 
+void massingFeetGrown(const std::vector<MassingFoot>& feet, double margin, std::vector<MassingFoot>& out) {
+    const double m = std::max(margin, 0.0);
+    out.reserve(out.size() + feet.size());
+    for (MassingFoot f : feet) {
+        f.hx = std::max(f.hx, 0.0) + m;
+        f.hy = std::max(f.hy, 0.0) + m;
+        out.push_back(f);
+    }
+}
+
 MassingFoot massingPropFoot(const MassingProp& prop, const MassingPropRule& rule) {
     MassingFoot foot;
     const double sizeX = std::max(rule.footX, 0.0), sizeY = std::max(rule.footY, 0.0);

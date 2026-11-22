@@ -29,7 +29,8 @@ namespace FTTraversalProbe
 // deep top), ignoring what Query ignores. On the ground: a top to go over (thin, with a floor beyond no lower than
 // Tuning's deepest drop) or onto (deep, with room); with bAir, a deep top to catch, from below the feet to past the
 // hands. False when there is none. In is the way in: on the ground Fwd (the clips go the way the body faces), in the air
-// square into the face (the body turns to it as it catches).
+// square into the face (the body turns to it as it catches). OutBlocker, when given, is set when a frontage blocker
+// (FTCells::BlockerTag) nearer than the wall turned the climb down.
 FORGOTTENTHIRD_API bool Probe(const UWorld& World, const FCollisionQueryParams& Query, const FVector& Feet, const FVector& Fwd, float Radius,
-	float HalfHeight, const ftcore::TraversalTuning& Tuning, bool bAir, ftcore::TraversalObstacle& Out, FVector& In);
+	float HalfHeight, const ftcore::TraversalTuning& Tuning, bool bAir, ftcore::TraversalObstacle& Out, FVector& In, bool* OutBlocker = nullptr);
 }

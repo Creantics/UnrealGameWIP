@@ -118,6 +118,10 @@ constexpr double kSeaDiveSouthY = 620.0;
 constexpr double kSeaDiveNorthY = 720.0;
 // How far (cm) the entry and a goal may lie from the navmesh and still count as on it.
 const FVector kNavProjectExtent(300.0, 300.0, 600.0);
+// The frontage's keep-clear in navmesh terms (m): the agent's radius (35 cm) and one cell of the coarsest resolution (38
+// cm, Config/DefaultEngine.ini), so the navmesh, cut back by the radius around a blocker, still meets every door, lane
+// mouth, goal and district spawn. CheckBlockerNav holds it against the built navmesh's own radius and cells.
+constexpr double kNavKeepMargin = 0.73;
 // The material slot of a sloped box's mesh.
 const FName kMassingSlot(TEXT("Massing"));
 // The sun's angle: the world clock's at its start hour, so a built map, a day still and a fresh played day share it.
@@ -207,6 +211,23 @@ bool LoadFront(const FString& File, std::vector<ftcore::MassingFrontRule>& Rules
 		return false;
 	}
 	if (!ftcore::importMassingFront(View(Bytes), Rules, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
+		return false;
+	}
+	return true;
+}
+
+// -RoadDoors for the frontage: each door's foot grown by ftcore::kMassingFrontDoorClear (ftcore::importRoadDoors).
+bool LoadFrontDoors(const FString& File, std::vector<ftcore::MassingFoot>& Doors)
+{
+	TArray<uint8> Bytes;
+	std::string Error;
+	if (!LoadBytes(File, Bytes))
+	{
+		return false;
+	}
+	if (!ftcore::importRoadDoors(View(Bytes), ftcore::kMassingFrontDoorClear, Doors, &Error))
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: %s"), *File, *Utf8(Error));
 		return false;
@@ -1365,6 +1386,213 @@ FString ReachLine(const TCHAR* What, const FReachTally& Tally, int32 Of)
 		What, Tally.Reached, Of, Tally.Full, Tally.AtEntry, Tally.Partial, Tally.NoPath, Tally.OffMesh, Tally.LimitHit);
 }
 
+// The navmesh's walkable area across, m2: every poly of every tile, fanned from its first corner. A control on the
+// blocker check: a fill that spilled past its box would take street with it, and the inside count would not see it.
+double NavAreaM2(const ARecastNavMesh& NavMesh, int32& OutPolys)
+{
+	double Area = 0.0;
+	OutPolys = 0;
+	TArray<FNavTileRef> TileRefs;
+	NavMesh.GetAllNavMeshTiles(TileRefs);
+	TArray<FNavPoly> Polys;
+	TArray<FVector> Verts;
+	for (const FNavTileRef& Ref : TileRefs)
+	{
+		Polys.Reset();
+		if (!NavMesh.GetPolysInTile(Ref, Polys))
+		{
+			continue;
+		}
+		for (const FNavPoly& Poly : Polys)
+		{
+			Verts.Reset();
+			if (!NavMesh.GetPolyVerts(Poly.Ref, Verts) || Verts.Num() < 3)
+			{
+				continue;
+			}
+			++OutPolys;
+			double Twice = 0.0;
+			for (int32 V = 1; V + 1 < Verts.Num(); ++V)
+			{
+				const FVector A = Verts[V] - Verts[0], B = Verts[V + 1] - Verts[0];
+				Twice += FMath::Abs(A.X * B.Y - A.Y * B.X);
+			}
+			Area += 0.5 * Twice / 10000.0;
+		}
+	}
+	return Area;
+}
+
+// The frontage blockers against the built navmesh: how many have walkable navmesh inside them (0 when they cut it, as
+// they should). Each blocker's footprint, turned by its rot, is sampled on an inset 3 by 3 grid (0 and 0.6 of its half
+// sizes each way); a point is projected with a reach of 5 cm across, from 0.3 m under the blocker's foot to 0.25 m under
+// its top (the top, out of the lead's step, may carry a poly of its own, so it is left out), and a hit counts only when
+// the poly met lies within 10 cm of the point across. A control runs beside it: the street off each blocker's long faces
+// must keep its navmesh, and the total walkable area (NavAreaM2) is logged, so a fill that spills past its box shows.
+// A blocker with no street point within reach (against water or a wall) is not counted as held; the first 8 are named.
+// Logs the counts, the first few hit, and the navmesh's agent radius and cells against kNavKeepMargin; returns 1 on a
+// hit, or when the margin is under the radius and the coarsest cell.
+int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, double Side, const std::vector<ftcore::MassingBox>& Blockers)
+{
+	int32 Inside = 0;
+	FString First;
+	// Where the hits stand, so one run explains itself: the projected height in the box (low: within 0.6 m of its foot;
+	// high: within 0.8 m of its top; mid between) and the box's short side (under 1.5 m, 1.5 to 2.5 m, more).
+	int32 ByHeight[3] = {0, 0, 0};
+	int32 ByWidth[3] = {0, 0, 0};
+	int32 AllByWidth[3] = {0, 0, 0};
+	// The control: the street beside each blocker keeps its navmesh. Two points, one off each long face at mid-length,
+	// kNavKeepMargin + 0.6 m out from the face (past the keep-clear and the agent's radius); a blocker holds when either
+	// has navmesh within 10 cm across (one face often stands at the building's wall).
+	int32 Beside = 0;
+	FString NoStreet;
+	int32 NoStreetN = 0;
+	auto OnNav = [&Nav, &NavData, Side](double X, double Y, double Lo, double Hi, double& OutZ)
+	{
+		const FVector At = Cm(ftcore::massingEnginePoint(Side, X, Y, 0.5 * (Lo + Hi)));
+		FNavLocation On;
+		if (Nav.ProjectPointToNavigation(At, On, FVector(5.0, 5.0, 50.0 * (Hi - Lo)), &NavData) && FVector::Dist2D(On.Location, At) <= 10.0)
+		{
+			OutZ = On.Location.Z / 100.0;
+			return true;
+		}
+		return false;
+	};
+	for (const ftcore::MassingBox& Box : Blockers)
+	{
+		const double Lo = Box.z0 - 0.3, Hi = Box.z1 - 0.25;
+		if (!(Hi > Lo))
+		{
+			continue;
+		}
+		const double Turn = Box.rot * UE_DOUBLE_PI / 180.0;
+		const double C = FMath::Cos(Turn), S = FMath::Sin(Turn);
+		bool bHit = false;
+		double HitX = 0.0, HitY = 0.0, HitZ = 0.0;
+		const double Short = FMath::Min(Box.sx, Box.sy);
+		const int32 WidthBin = Short < 1.5 ? 0 : (Short < 2.5 ? 1 : 2);
+		++AllByWidth[WidthBin];
+		for (int32 I = -1; I <= 1 && !bHit; ++I)
+		{
+			for (int32 J = -1; J <= 1 && !bHit; ++J)
+			{
+				const double U = 0.3 * I * Box.sx, V = 0.3 * J * Box.sy; // 0.6 of the half sizes
+				const double X = Box.cx + U * C - V * S, Y = Box.cy + U * S + V * C;
+				if (OnNav(X, Y, Lo, Hi, HitZ))
+				{
+					bHit = true;
+					HitX = X;
+					HitY = Y;
+				}
+			}
+		}
+		// The control's two points, off the two faces across the short side.
+		const bool bShortIsY = Box.sy <= Box.sx;
+		const double Out = 0.5 * Short + kNavKeepMargin + 0.6;
+		bool bStreet = false;
+		for (int32 K = -1; K <= 1 && !bStreet; K += 2)
+		{
+			const double U = bShortIsY ? 0.0 : K * Out, V = bShortIsY ? K * Out : 0.0;
+			double Z = 0.0;
+			bStreet = OnNav(Box.cx + U * C - V * S, Box.cy + U * S + V * C, Lo, Hi, Z);
+		}
+		if (bStreet)
+		{
+			++Beside;
+		}
+		else if (++NoStreetN <= 8)
+		{
+			NoStreet += FString::Printf(TEXT("%s%s"), NoStreet.IsEmpty() ? TEXT("") : TEXT(", "), *Utf8(Box.id));
+		}
+		if (!bHit)
+		{
+			continue;
+		}
+		++ByHeight[HitZ < Box.z0 + 0.6 ? 0 : (HitZ > Box.z1 - 0.8 ? 2 : 1)];
+		++ByWidth[WidthBin];
+		if (++Inside <= 8)
+		{
+			First += FString::Printf(TEXT("%s%s at (%.1f, %.1f) z %.2f in %.2f-%.2f"), First.IsEmpty() ? TEXT("") : TEXT(", "), *Utf8(Box.id), HitX,
+				HitY, HitZ, Box.z0, Box.z1);
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: blockers: hits by height in the box %d low, %d mid, %d high; by short side %d of %d "
+		"under 1.5 m, %d of %d 1.5-2.5 m, %d of %d wider."), ByHeight[0], ByHeight[1], ByHeight[2], ByWidth[0], AllByWidth[0], ByWidth[1],
+		AllByWidth[1], ByWidth[2], AllByWidth[2]);
+	const ARecastNavMesh* Recast = Cast<ARecastNavMesh>(&NavData);
+	int32 PolyCount = 0;
+	const double Area = Recast ? NavAreaM2(*Recast, PolyCount) : 0.0;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: blockers: control: street navmesh beside %d of %d blockers (%.2f m off a face)%s%s; "
+		"the navmesh's walkable area %.0f m2 in %d polys."), Beside, static_cast<int32>(Blockers.size()), kNavKeepMargin + 0.6,
+		NoStreet.IsEmpty() ? TEXT("") : TEXT("; none beside "), *NoStreet, Area, PolyCount);
+	const double Radius = Recast ? Recast->AgentRadius : 0.0;
+	double Cell = 0.0;
+	if (Recast)
+	{
+		for (uint8 R = 0; R < static_cast<uint8>(ENavigationDataResolution::MAX); ++R)
+		{
+			Cell = FMath::Max(Cell, static_cast<double>(Recast->GetCellSize(static_cast<ENavigationDataResolution>(R))));
+		}
+	}
+	const bool bMarginHeld = Recast && kNavKeepMargin * 100.0 >= Radius + Cell - 0.5;
+	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: blockers: walkable navmesh inside a blocker %d of %d%s%s; the keep-clear margin %.0f cm, "
+		"the navmesh's agent radius %.0f cm and coarsest cell %.0f cm (%s)."), Inside, static_cast<int32>(Blockers.size()),
+		First.IsEmpty() ? TEXT("") : TEXT(": "), *First, kNavKeepMargin * 100.0, Radius, Cell, bMarginHeld ? TEXT("held") : TEXT("short"));
+	if (Inside > 0 || !bMarginHeld)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: blockers: %s."),
+			Inside > 0 ? TEXT("walkable navmesh stands inside a frontage blocker") : TEXT("the keep-clear margin is under the navmesh's radius and cell"));
+		return 1;
+	}
+	return 0;
+}
+
+// -Load -BlockerNav: the saved map's frontage blockers (the BlockerTag instanced components) as plan boxes, for
+// CheckBlockerNav on a navmesh rebuilt in memory; with bFill, each component is first set to rasterize as filled columns.
+std::vector<ftcore::MassingBox> SavedBlockers(UWorld& World, double Side, bool bFill, int32& OutComponents)
+{
+	std::vector<ftcore::MassingBox> Boxes;
+	OutComponents = 0;
+	for (TActorIterator<AActor> It(&World); It; ++It)
+	{
+		TInlineComponentArray<UInstancedStaticMeshComponent*> Comps(*It);
+		for (UInstancedStaticMeshComponent* Comp : Comps)
+		{
+			if (!Comp || !Comp->ComponentHasTag(FTCells::BlockerTag()) || !Comp->GetStaticMesh())
+			{
+				continue;
+			}
+			++OutComponents;
+			if (bFill)
+			{
+				Comp->bRasterizeAsFilledConvexVolume = true;
+			}
+			const FBox Local = Comp->GetStaticMesh()->GetBoundingBox();
+			for (int32 I = 0; I < Comp->GetInstanceCount(); ++I)
+			{
+				FTransform T;
+				if (!Comp->GetInstanceTransform(I, T, true))
+				{
+					continue;
+				}
+				const FVector Mid = T.TransformPosition(Local.GetCenter()) / 100.0;
+				const FVector Size = Local.GetSize() * T.GetScale3D().GetAbs() / 100.0;
+				ftcore::MassingBox Box;
+				Box.id = TCHAR_TO_UTF8(*FString::Printf(TEXT("%s#%d"), *Comp->GetName(), I));
+				Box.cx = Mid.X + Side * 0.5;
+				Box.cy = Side * 0.5 - Mid.Y;
+				Box.sx = Size.X;
+				Box.sy = Size.Y;
+				Box.rot = -T.Rotator().Yaw;
+				Box.z0 = Mid.Z - 0.5 * Size.Z;
+				Box.z1 = Mid.Z + 0.5 * Size.Z;
+				Boxes.push_back(Box);
+			}
+		}
+	}
+	return Boxes;
+}
+
 // Whether a full path runs from the entry (From, on NavData) to a plan point (m), logged either way with the query's own
 // answer: a full path, a partial one or none, and whether its search ran out of nodes. Filter carries the budget.
 bool WalkFromEntry(UNavigationSystemV1& Nav, const ANavigationData& NavData, const FSharedConstNavQueryFilter& Filter, const FNavLocation& From,
@@ -2028,6 +2256,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	size_t HeroFirst = 0;
 	// Round 5 roads (FTBuildRoads.h): -Roads=<csv>, -Vehicles, -RoadDoors=<csv>, -LaneLamps=x0,y0,x1,y1, -RoadSeed=<n>.
 	const FTBuildRoads::FOptions RoadOptions = bHeroOnly ? FTBuildRoads::FOptions() : FTBuildRoads::ParseOptions(*Params);
+	// -Frontage keeps its ground pieces off the -RoadDoors doors; without that table it would keep no door clear, so it
+	// needs one, or -FrontageNoDoors to say the build has no doors on purpose.
+	if (!FrontFile.IsEmpty() && RoadOptions.DoorsFile.IsEmpty() && !FParse::Param(*Params, TEXT("FrontageNoDoors")))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Frontage needs -RoadDoors=<csv> (its pieces keep clear of the doors), or -FrontageNoDoors."));
+		return 1;
+	}
 	std::vector<ftcore::RoadSpec> RoadSpecs;
 	std::vector<ftcore::RoadBuild> RoadBuilds;
 	// -Windows: the building boxes wear the window master's instances (FTBuildSurfaces -Windows), each box's seed, street
@@ -2639,6 +2874,13 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Load: couldn't load %s."), *MapPath);
 			return 1;
 		}
+		// -BlockerNav: the blockers as saved, read before the navigation system gathers them; -BlockerFill first sets them to
+		// rasterize as filled columns (what the Blocker kind now sets), so one saved map gives both navmeshes side by side.
+		const bool bBlockerNav = FParse::Param(*Params, TEXT("BlockerNav"));
+		const bool bBlockerFill = FParse::Param(*Params, TEXT("BlockerFill"));
+		int32 BlockerComps = 0;
+		const std::vector<ftcore::MassingBox> SavedBoxes =
+			bBlockerNav ? SavedBlockers(*World, Side, bBlockerFill, BlockerComps) : std::vector<ftcore::MassingBox>();
 		FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
 		UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 		ARecastNavMesh* NavMesh = Nav ? Cast<ARecastNavMesh>(Nav->GetDefaultNavDataInstance(FNavigationSystem::DontCreate)) : nullptr;
@@ -2655,6 +2897,18 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const int32 Tiles = NavMesh->GetNavMeshTilesCount();
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load: loaded %s, not to be saved; its navmesh (%s) has %d tiles."), *MapPath,
 			bRegistered ? TEXT("the navigation system's own") : TEXT("found among the actors"), Tiles);
+		if (bBlockerNav)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load -BlockerNav: %d blockers in %d components, %s; the navmesh is rebuilt "
+				"in memory, not saved."), static_cast<int32>(SavedBoxes.size()), BlockerComps,
+				bBlockerFill ? TEXT("set to rasterize as filled columns") : TEXT("as saved"));
+			Nav->RemoveNavigationBuildLock(ENavigationBuildLock::AsyncLoadLock, UNavigationSystemV1::ELockRemovalRebuildAction::NoRebuild);
+			const double BuildStart = FPlatformTime::Seconds();
+			Nav->Build();
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: -Load -BlockerNav: navmesh rebuilt in %.0f s, %d tiles."),
+				FPlatformTime::Seconds() - BuildStart, NavMesh->GetNavMeshTilesCount());
+			return CheckBlockerNav(*Nav, *NavMesh, Side, SavedBoxes);
+		}
 		if (Tiles == 0)
 		{
 			Nav->RemoveNavigationBuildLock(ENavigationBuildLock::AsyncLoadLock, UNavigationSystemV1::ELockRemovalRebuildAction::NoRebuild);
@@ -3862,8 +4116,9 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	std::vector<uint8_t> FrontFaces;
 	int32 HeroLampsKept = 0;  // street lamps left out of the hero corner
 	// A placed piece's mesh (a street prop, a quay's lamp or a frontage piece), labelled <rule id>-<n> if it falls back
-	// to an actor: like the kit it collides with nothing and leaves the navmesh alone, drawn to the props' distance; a
-	// lamp takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
+	// to an actor: like the kit the mesh collides with nothing and leaves the navmesh alone, drawn to the props' distance (a
+	// ground-layer frontage piece gets an invisible Blocker box of its own, below, which leaves it alone too); a lamp
+	// takes its -NightLamps light point. False, with the reason logged, on inverted bounds.
 	const auto PlaceMesh = [&](UStaticMesh* Mesh, const ftcore::MassingProp& Placed, double Turn, double Inset, const FString& Label,
 		double Scale = 1.0, TArrayView<UMaterialInterface* const> Materials = {})
 	{
@@ -4027,7 +4282,8 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 
 	// The frontage: pieces against the faces of the buildings left as boxes (no kit mesh stands in for them, and none is
-	// sloped), by the kinds of the streets they front.
+	// sloped), by the kinds of the streets they front. FrontBlockers keeps the ground pieces' colliders for the navmesh check.
+	std::vector<ftcore::MassingBox> FrontBlockers;
 	if (!FrontRules.empty())
 	{
 		std::vector<bool> Hosts(Boxes.size(), false);
@@ -4040,8 +4296,104 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		std::vector<ftcore::MassingFrontCounts> FrontCounts;
 		ftcore::MassingFrontTotals FrontTotals;
 		std::vector<ftcore::MassingBox> Pads;
+		// The ground pieces and their colliders keep off the doors (-RoadDoors) and the narrow ways' mouths, so every door and
+		// lane stays open (ftcore::massingFrontMouths: ways ftcore::kMassingFrontMouthNarrow wide or less).
+		std::vector<ftcore::MassingFoot> FrontDoors, FrontMouths;
+		if (!RoadOptions.DoorsFile.IsEmpty() && !LoadFrontDoors(RoadOptions.DoorsFile, FrontDoors))
+		{
+			World->DestroyWorld(false);
+			return 1;
+		}
+		ftcore::massingFrontMouths(PropStreets, FrontMouths);
+		// In navmesh terms: the blockers cut the navmesh and it stands back from them by the agent's radius, so each door,
+		// mouth, goal (but a held one) and district spawn (the tour's waypoints) is kept clear by kNavKeepMargin past it.
+		std::vector<ftcore::MassingFoot> FrontPoints;
+		for (const FGoal& Goal : Goals)
+		{
+			if (Goal.HeldAt != INDEX_NONE)
+			{
+				continue;
+			}
+			FrontPoints.push_back(ftcore::MassingFoot{Goal.X, Goal.Y, 0.0, 0.0, 0.0});
+			if (Goal.bSpawn)
+			{
+				FrontPoints.push_back(ftcore::MassingFoot{Goal.SpawnX, Goal.SpawnY, 0.0, 0.0, 0.0});
+			}
+		}
+		for (const FDistrictPlace& Place : Places)
+		{
+			FrontPoints.push_back(ftcore::MassingFoot{Place.SpawnX, Place.SpawnY, 0.0, 0.0, 0.0});
+		}
+		std::vector<ftcore::MassingFoot> KeepDoors, KeepMouths, KeepPoints;
+		ftcore::massingFeetGrown(FrontDoors, kNavKeepMargin, KeepDoors);
+		ftcore::massingFeetGrown(FrontMouths, kNavKeepMargin, KeepMouths);
+		ftcore::massingFeetGrown(FrontPoints, kNavKeepMargin, KeepPoints);
+		std::vector<ftcore::MassingFoot> FrontKeep = KeepDoors;
+		FrontKeep.insert(FrontKeep.end(), KeepMouths.begin(), KeepMouths.end());
+		FrontKeep.insert(FrontKeep.end(), KeepPoints.begin(), KeepPoints.end());
 		ftcore::massingFrontage(FrontRules, PropStreets, Ground, Built, Visible, Hosts, kPropDryAbove, &Taken, Pieces, FrontCounts, FrontTotals,
-			&Pads, &FrontFaces);
+			&Pads, &FrontFaces, &FrontKeep);
+		// The check apart from the walk: no collider within the margin of a door, a mouth, a goal or a spawn, else the build fails.
+		const size_t OverDoors = ftcore::massingFrontCovers(Pieces, FrontRules, KeepDoors);
+		const size_t OverMouths = ftcore::massingFrontCovers(Pieces, FrontRules, KeepMouths);
+		const size_t OverPoints = ftcore::massingFrontCovers(Pieces, FrontRules, KeepPoints);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: kept clear, by %.2f m (the agent's radius and a cell), of %d door feet, %d lane "
+			"mouths and %d goals and spawns; colliders within it of a door %d, of a mouth %d, of a goal or spawn %d."), kNavKeepMargin,
+			static_cast<int32>(FrontDoors.size()), static_cast<int32>(FrontMouths.size()), static_cast<int32>(FrontPoints.size()),
+			static_cast<int32>(OverDoors), static_cast<int32>(OverMouths), static_cast<int32>(OverPoints));
+		if (OverDoors + OverMouths + OverPoints > 0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: frontage: %d colliders stand within %.2f m of a door, a lane mouth, a goal or a spawn."),
+				static_cast<int32>(OverDoors + OverMouths + OverPoints), kNavKeepMargin);
+			World->DestroyWorld(false);
+			return 1;
+		}
+		// The arcades' clear way between the walls and the colliders, measured at every station no wall covers: two pawn
+		// capsules (radius 34 cm) abreast, else the build fails.
+		{
+			constexpr double TwoAbreast = 4.0 * 0.34;
+			std::vector<ftcore::MassingFoot> ArcadeWalls, ArcadeColliders;
+			for (size_t I = 0; I < Boxes.size(); ++I)
+			{
+				if (Visible[I] && ftcore::massingLookIsBuilding(ftcore::massingLookSurface(Boxes[I])))
+				{
+					ArcadeWalls.push_back(ftcore::massingBoxFoot(Boxes[I]));
+				}
+			}
+			for (const ftcore::MassingProp& Piece : Pieces)
+			{
+				ftcore::MassingBox PieceCollider;
+				if (ftcore::massingFrontCollider(Piece, FrontRules[Piece.rule], PieceCollider))
+				{
+					ArcadeColliders.push_back(ftcore::massingBoxFoot(PieceCollider));
+				}
+			}
+			int32 NarrowArcades = 0;
+			for (const ftcore::MassingStreet& ArcadeWay : PropStreets)
+			{
+				if (ArcadeWay.kind != "market_arcade")
+				{
+					continue;
+				}
+				ftcore::MassingFrontClear ArcadeClear;
+				ftcore::massingFrontClearWidth(ArcadeWay, ArcadeWalls, ArcadeColliders, ArcadeClear);
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: arcade %s (%.1f m): %d stations measured, least clear "
+					"%.2f m at (%.1f, %.1f) (walls alone %.2f m); %d narrowed by a collider."), *Utf8(ArcadeWay.id), ArcadeWay.width,
+					static_cast<int32>(ArcadeClear.measured), ArcadeClear.least, ArcadeClear.lx, ArcadeClear.ly, ArcadeClear.leastWalls,
+					static_cast<int32>(ArcadeClear.stations));
+				if (ArcadeClear.measured == 0 || ArcadeClear.least < TwoAbreast)
+				{
+					++NarrowArcades;
+				}
+			}
+			if (NarrowArcades > 0)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: frontage: %d arcades unmeasured or narrower than two pawns abreast (%.2f m)."),
+					NarrowArcades, TwoAbreast);
+				World->DestroyWorld(false);
+				return 1;
+			}
+		}
 		const size_t LanePads = ftcore::massingDropLanePads(Pads, PropStreets, LanePaveUpTo, kLookLanePadReach);
 		if (LanePads > 0)
 		{
@@ -4056,6 +4408,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		TArray<int32> PerFront;
 		PerFront.SetNumZeroed(static_cast<int32>(FrontRules.size()));
 		FTKitGlass::FOverrides KitGlass(Package, Params); // -KitGlassFrontage: kit modules on M_KitGlass
+		int32 FrontColliders = 0;
 		for (const ftcore::MassingProp& Piece : Pieces)
 		{
 			const ftcore::MassingFrontRule& Rule = FrontRules[Piece.rule];
@@ -4070,22 +4423,35 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			{
 				Taken.push_back(ftcore::massingFrontFoot(Piece, Rule));
 			}
+			// The mesh is dressing; a ground piece's part out of the face collides as an invisible box (ftcore::massingFrontCollider),
+			// so the lead stops at its front: a Blocker, so the crowd's visibility traces pass it (walkers keep out by their bands,
+			// not by it) and the traversal probe takes no climb on it (FTTraversalProbe). It cuts the navmesh, so what paths on
+			// it (the tour pilot, -Goals, -Coverage) keeps to where the lead can go; CheckBlockerNav checks none is left inside.
+			ftcore::MassingBox Collider;
+			if (ftcore::massingFrontCollider(Piece, Rule, Collider))
+			{
+				Collider.id = Rule.id + "-" + std::to_string(N) + "-C";
+				Lay(Collider, EFTCellKind::Blocker, EFTCellCull::None);
+				FrontBlockers.push_back(Collider);
+				++FrontColliders;
+			}
 		}
 		KitGlass.Log();
 		for (size_t R = 0; R < FrontRules.size(); ++R)
 		{
 			const ftcore::MassingFrontCounts& Count = FrontCounts[R];
 			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage %s: %d placed on %d faces of %d tries (no wall %d, shallow %d, "
-				"blocked %d, in a road %d, steep %d, wet %d, crowded %d, over the cap %d)."),
+				"blocked %d, in a road %d, steep %d, wet %d, kept clear %d, crowded %d, over the cap %d)."),
 				*Utf8(FrontRules[R].id), static_cast<int32>(Count.placed), static_cast<int32>(Count.faces), static_cast<int32>(Count.tried),
 				static_cast<int32>(Count.noWall), static_cast<int32>(Count.shallow), static_cast<int32>(Count.blocked), static_cast<int32>(Count.inRoad),
-				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.crowded), static_cast<int32>(Count.capped));
+				static_cast<int32>(Count.steep), static_cast<int32>(Count.wet), static_cast<int32>(Count.keptClear), static_cast<int32>(Count.crowded),
+				static_cast<int32>(Count.capped));
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: frontage: %d pieces by %d rules on %d buildings' %d faces; %d faces dressed at "
-			"the ground, %d of the %d that front a street; none collides."),
+			"the ground, %d of the %d that front a street; the meshes collide with nothing, %d ground pieces stand in invisible blockers (world-dynamic, cutting the navmesh: visibility, camera and traversal traces pass)."),
 			static_cast<int32>(Pieces.size()), static_cast<int32>(FrontRules.size()), static_cast<int32>(FrontTotals.hosts),
 			static_cast<int32>(FrontTotals.faces), static_cast<int32>(FrontTotals.dressed), static_cast<int32>(FrontTotals.streetDressed),
-			static_cast<int32>(FrontTotals.streetFaces));
+			static_cast<int32>(FrontTotals.streetFaces), FrontColliders);
 	}
 
 	// The street furniture: each rule's mesh along its streets, on the floor the lead walks, out of the dressing's room.
@@ -4651,6 +5017,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	int32 Reached = 0;
 	int32 SpawnsReached = 0;
 	int32 CoverageFails = 0;
+	int32 BlockerNavFails = 0; // CheckBlockerNav's: fails the run with or without -Strict
 	if (bNav && (Goals.Num() > 0 || Places.Num() > 0))
 	{
 		const double Low = ftcore::massingHeightFromValue(Lowest) - 10.0;
@@ -4675,6 +5042,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Nav->Build();
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: navmesh built in %.0f s."), FPlatformTime::Seconds() - BuildStart);
 		const ANavigationData* NavData = Nav->GetDefaultNavDataInstance(FNavigationSystem::DontCreate);
+		// The frontage blockers cut the navmesh: none has walkable navmesh inside it.
+		if (NavData && !FrontRules.empty())
+		{
+			BlockerNavFails = CheckBlockerNav(*Nav, *NavData, Side, FrontBlockers);
+		}
 		FNavLocation From;
 		if (!NavData || !Nav->ProjectPointToNavigation(EntryAt, From, kNavProjectExtent, NavData))
 		{
@@ -4735,10 +5107,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const FFTCellInstancer::FStats& CellStats = Cells.Stats();
 		const auto PerKind = [&CellStats](EFTCellKind Kind) { return CellStats.PerKind[static_cast<int32>(Kind)]; };
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: %d cells, %d components, %d instances (solid %d, walk %d, dressing %d); "
-			"actors %d"), CellStats.Cells, CellStats.Components, CellStats.Instances, PerKind(EFTCellKind::Solid) + PerKind(EFTCellKind::Hidden),
+			"actors %d"), CellStats.Cells, CellStats.Components, CellStats.Instances, PerKind(EFTCellKind::Solid) + PerKind(EFTCellKind::Hidden) + PerKind(EFTCellKind::Blocker),
 			PerKind(EFTCellKind::Walk), PerKind(EFTCellKind::NoCollide), Actors);
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: of the solid, %d hidden colliders under kit meshes; %d pieces fell back to "
-			"actors (their materials don't draw instanced); %d sloped boxes stay actors."), PerKind(EFTCellKind::Hidden), CellStats.FallbackActors,
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: Instancer: of the solid, %d hidden colliders under kit meshes, %d frontage blockers; %d pieces fell back to "
+			"actors (their materials don't draw instanced); %d sloped boxes stay actors."), PerKind(EFTCellKind::Hidden), PerKind(EFTCellKind::Blocker), CellStats.FallbackActors,
 			Sloped);
 	}
 	if (!FTMaterialCheck::Run(World)) // -MaterialCheck: no null or default material on anything drawn, or no map
@@ -4804,7 +5176,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: dumped %d actors to %s."), DumpRows, *DumpFile);
 	}
 	const bool bShort = bNav && (Reached < Counted || SpawnsReached < Places.Num() || FootingHeld < Places.Num() || CoverageFails > 0);
-	return bStrict && (bShort || !bReadBackHeld || bMiniMapFailed) ? 1 : 0;
+	return BlockerNavFails > 0 || (bStrict && (bShort || !bReadBackHeld || bMiniMapFailed)) ? 1 : 0;
 #else
 	UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld needs an editor build."));
 	return 1;
