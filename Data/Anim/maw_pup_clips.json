@@ -1,0 +1,86 @@
+{
+ "version": 1,
+ "mesh": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01",
+ "blend_s": 0.2,
+ "clips": [
+  {
+   "id": "idle",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_CombatIdle",
+   "length_s": 2.0,
+   "impact_s": 0,
+   "loop": true
+  },
+  {
+   "id": "walk",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Trot",
+   "length_s": 0.333,
+   "impact_s": 0,
+   "speed_mps": 2.6,
+   "loop": true
+  },
+  {
+   "id": "run",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Gallop",
+   "length_s": 0.4,
+   "impact_s": 0,
+   "speed_mps": 5.5,
+   "loop": true
+  },
+  {
+   "id": "nip",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Nip",
+   "length_s": 1.033,
+   "impact_s": 0.4,
+   "loop": false
+  },
+  {
+   "id": "pounce",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Pounce",
+   "length_s": 1.8,
+   "impact_s": 0.8,
+   "loop": false
+  },
+  {
+   "id": "hit_light",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_HitReact",
+   "length_s": 0.4,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "stagger",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Stagger",
+   "length_s": 0.7,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "face_down",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Down",
+   "length_s": 0.9,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "defeat",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Death",
+   "length_s": 1.5,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "turn_l",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Turn_L90",
+   "length_s": 0.6,
+   "impact_s": 0,
+   "loop": false
+  },
+  {
+   "id": "turn_r",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Turn_R90",
+   "length_s": 0.6,
+   "impact_s": 0,
+   "loop": false
+  }
+ ]
+}

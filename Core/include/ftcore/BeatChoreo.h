@@ -265,6 +265,11 @@ FTCORE_API ChoreoPlan planChoreoClip(const BeatClip& clip, double impactTime, do
 // A stance clip's rate so one cycle is a whole number of beats, within the clamp where one exists.
 FTCORE_API double choreoStanceRate(const BeatClip& stance, double beatSeconds);
 
+// A two-gait mover's pick between its walk (authored at walkSpeed) and its run (runSpeed, faster), with hysteresis so a
+// speed near the switch doesn't flicker: it runs above the midpoint plus a tenth of the gap and walks again below the
+// midpoint less a tenth. wasRun is the last pick. Speeds in m/s; with no gap (runSpeed <= walkSpeed) it never runs.
+FTCORE_API bool pickRunGait(double speed, double walkSpeed, double runSpeed, bool wasRun);
+
 // ---- the sample ----
 
 struct ChoreoPose {

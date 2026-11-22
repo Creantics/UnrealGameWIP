@@ -1203,6 +1203,8 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	// The walk needs its authored speed to be played at the body's.
 	Skin.Walk = Find("walk");
 	Skin.Walk = Skin.Walk >= 0 && (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed > 0.0 ? Skin.Walk : -1;
+	Skin.Run = Skin.Walk >= 0 ? Find("run") : -1;
+	Skin.Run = Skin.Run >= 0 && (*Skin.Clips)[static_cast<size_t>(Skin.Run)].speed > (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed ? Skin.Run : -1;
 	for (size_t M = 0; M < ftcore::kMaxArenaMoves; ++M)
 	{
 		Skin.MoveClip[M] = M < Kind.moveCount ? Find(Kind.moves[M].clip()) : -1;
@@ -1273,10 +1275,23 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		const bool bWas = bWalking[I];
 		const bool bBetween = Out.brain == ftcore::ArenaBrain::Approach || Out.brain == ftcore::ArenaBrain::Strafe;
 		bWalking[I] = bBetween && WalkSpeed[I] > (bWas ? kArenaWalkStop : kArenaWalkStart);
+		const bool bRan = bRunning[I];
+		bRunning[I] = bWalking[I] && Skin.Run >= 0 &&
+			ftcore::pickRunGait(WalkSpeed[I], (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed,
+				(*Skin.Clips)[static_cast<size_t>(Skin.Run)].speed, bWas && bRan);
 		if (bWalking[I])
 		{
-			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
+			const int32 Gait = bRunning[I] ? Skin.Run : Skin.Walk;
+			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Gait)].speed);
 			const float Rate = FMath::Clamp(WalkSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate);
+			if (bWas && bRan != bRunning[I])
+			{
+				// The gait changes: carry the stride's phase across, as a share of each cycle, so the feet don't jump.
+				const double FromLen = static_cast<double>(Skin.Sequences[bRan ? Skin.Run : Skin.Walk]->GetPlayLength());
+				const double ToLen = static_cast<double>(Skin.Sequences[Gait]->GetPlayLength());
+				WalkPhase[I] = FromLen > 0.0 ? FMath::Fmod(WalkPhase[I], FromLen) / FromLen * ToLen : 0.0;
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d %s at %.2f m/s."), Now, I, bRunning[I] ? TEXT("runs") : TEXT("walks again"), WalkSpeed[I]);
+			}
 			WalkPhase[I] = bWas ? WalkPhase[I] + static_cast<double>(ClipDelta * Rate) : 0.0;
 			if (!bWas)
 			{
@@ -1535,7 +1550,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		else if (bWalking[I])
 		{
-			Clip = Skin.Walk;
+			Clip = bRunning[I] && Skin.Run >= 0 ? Skin.Run : Skin.Walk;
 			Time = WalkPhase[I];
 			bPhased = true;
 		}
@@ -1665,6 +1680,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 		HitSince[I] = -1e9;
 		WalkSpeed[I] = 0.f;
 		bWalking[I] = false;
+		bRunning[I] = false;
 		WalkPhase[I] = 0.0;
 		bKneeling[I] = false;
 		KneelSince[I] = 0.0;

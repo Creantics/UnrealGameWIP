@@ -1215,3 +1215,17 @@ TEST_CASE("beat choreo: a counter pressed too early makes the lead stumble, and 
     CHECK(stumbled);
     CHECK(answered);
 }
+
+TEST_CASE("pickRunGait: walk to run above the midpoint, back below it, with a band") {
+    // walk 2.6, run 5.5: midpoint 4.05, band 0.29
+    CHECK_FALSE(ftcore::pickRunGait(2.6, 2.6, 5.5, false));
+    CHECK_FALSE(ftcore::pickRunGait(4.2, 2.6, 5.5, false)); // inside the band: stays walking
+    CHECK(ftcore::pickRunGait(4.4, 2.6, 5.5, false));
+    CHECK(ftcore::pickRunGait(3.9, 2.6, 5.5, true)); // inside the band: stays running
+    CHECK_FALSE(ftcore::pickRunGait(3.7, 2.6, 5.5, true));
+    CHECK(ftcore::pickRunGait(5.5, 2.6, 5.5, true));
+    // no gap, or a run slower than the walk: never runs
+    CHECK_FALSE(ftcore::pickRunGait(9.0, 3.0, 3.0, false));
+    CHECK_FALSE(ftcore::pickRunGait(9.0, 3.0, 2.0, true));
+    CHECK_FALSE(ftcore::pickRunGait(std::nan(""), 2.6, 5.5, true));
+}
