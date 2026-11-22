@@ -5558,6 +5558,24 @@ TEST_CASE("arena soft target and string end: kits with none of the new fields pl
 // Before and after Task D's data, row by row (report; review 11-22): every classic row a victory on every seed with the
 // shipped kits, the lead's hits, damage dealt and taken beside the stripped kit's, and which part of the data moved the
 // whole-run hash: the string end's hitStop 0.10 alone, then its push, then the soft-target limits (turn and homing).
+// The damage-taken bar (review 11-22, round 2): over seeds 1-3 the lead takes no more with the shipped kits than with
+// the stripped ones, give or take one blow: the row's heaviest single enemy blow, a number the feature does not set
+// (one swing landing that before was parried or missed is the least a re-timed fight can change). A row over it is a
+// named exception below, each with its traced cause and its rise today as its cap, so it cannot grow unseen; an
+// exception no longer over the bar fails too, so it is removed rather than left to hide a later rise.
+struct TakenException {
+    const char* lead;
+    const char* fight;
+    bool camera;
+    int cap; // its rise over seeds 1-3 today (shipped less stripped)
+    const char* cause;
+};
+const TakenException kTakenExceptions[] = {
+    // Seed 1 (27 -> 54): the end's hitStop alone (the push changes nothing here). Delayed by the 0.10 s stops, the boss
+    // picks move 2 at 12.917 s where it landed, against 11.80 s where the same move whiffed; parries 6 -> 4. Over 32
+    // seeds the row rises 1309 -> 1350 (3%), with the stop's length: 1432 at 0.15 s.
+    {"devin", "white_glove", false, 27, "end hitStop: the boss's move 2 re-timed onto the lead, seed 1"},
+};
 TEST_CASE("arena soft target and string end: every classic row stays a victory (before and after, report)") {
     const ArenaTable shipped = shippedTable();
     ArenaTable tables[4] = {shipped, shipped, shipped, shipped}; // before, + hitStop, + push, shipped
@@ -5593,6 +5611,23 @@ TEST_CASE("arena soft target and string end: every classic row stays a victory (
                                << (cause.empty() ? std::string(" none") : cause));
                 CHECK(v[3] == 3);
                 CHECK(hash[3] == hash[2]); // locked starts throughout: the soft-target limits move no classic row
+                int blow = 0;
+                for (std::size_t e = 0; e < def.enemyCount; ++e)
+                    for (std::size_t m = 0; m < def.enemies[e].moveCount; ++m)
+                        blow = std::max(blow, def.enemies[e].moves[m].attack.damage);
+                const TakenException* named = nullptr;
+                for (const TakenException& x : kTakenExceptions)
+                    if (std::string(x.lead) == lead && name == x.fight && x.camera == (cam == 1)) named = &x;
+                const int rise = taken[3] - taken[0];
+                MESSAGE("TAKEN " << std::string(lead) << " | " << name << " | " << std::string(cam ? "camera" : "none")
+                                 << " | " << taken[0] << " -> " << taken[3] << " (" << rise << ") | bar " << blow
+                                 << (named ? std::string(" | exception: ") + named->cause : std::string()));
+                if (named) {
+                    CHECK(rise > blow);       // still over the bar: else remove the exception
+                    CHECK(rise <= named->cap); // and no higher than traced
+                } else {
+                    CHECK(rise <= blow);
+                }
             }
 }
 

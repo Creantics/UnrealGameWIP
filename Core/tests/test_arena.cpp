@@ -10349,6 +10349,261 @@ TEST_CASE("arena string end: an enemy it holds goes on at its own speed, losing 
     }
 }
 
+// Task D round 2 (11-22): N holds cost an approaching enemy N holds of its walk, within a tick each, and nothing more:
+// no ramp from rest, no reset of its approach. A slow walker (the kite boss's 0.6 m/s, accel 2) pinned 8 m out walks
+// toward a lead mashing string ends on a dummy for 12 s, against the same run at push 0 (no hold). The kite boss's
+// 3 s late arrival is not this cost (see the note ARENA_SOFT_TARGET_1122.md, "kite boss").
+TEST_CASE("arena string end: N holds cost a walking enemy N holds of its walk, within a tick each") {
+    ArenaEnemyKind walker = dummyKind();
+    walker.walkSpeed = 0.6f;
+    walker.runSpeed = 0.6f;
+    walker.accel = 2.f;
+    walker.preferredRange = 1.f;
+    walker.runRange = 100.f;
+    ArenaEnemyKind target = dummyKind();
+    target.hp = 1000000;
+    target.poise = 1e6f;
+    float walked[2] = {0.f, 0.f};
+    int holds = 0, ends = 0, slowAfter = 0;
+    for (int k = 0; k < 2; ++k) {
+        Rig rig(stringFighter(k == 0 ? 1.2f : 0.f), {target, walker});
+        rig.put(0, 1.5f, 0.f);
+        rig.put(1, -8.f, 0.f);
+        bool wasHeld = false;
+        int sinceHold = -1;
+        for (int i = 0; i < 720; ++i) {
+            rig.in.light = true;
+            const ArenaOutput& out = rig.tick();
+            const Vec2 v = out.enemies[1].velocity;
+            const float speed = std::sqrt(v.x * v.x + v.y * v.y);
+            walked[k] += speed * kDt;
+            if (k != 0) continue;
+            const bool held = out.enemies[1].stopLeft > 0.f;
+            if (held && !wasHeld) ++holds;
+            if (!held && wasHeld) sinceHold = 0;
+            else if (sinceHold >= 0 && ++sinceHold == 1 && i > 120 && speed < 0.6f * 0.99f) ++slowAfter; // the first whole tick after
+            wasHeld = held;
+        }
+        if (k == 0) ends = rig.fight.stats().stringEndHits;
+    }
+    const float lag = walked[1] - walked[0];
+    MESSAGE(holds << " holds over " << ends << " string ends: lag " << lag << " m, holds x 0.1 s x 0.6 m/s "
+                  << holds * 0.06f << " m");
+    REQUIRE(holds >= 5);
+    CHECK(holds == ends);
+    CHECK(slowAfter == 0); // it goes on at its speed after every hold
+    CHECK(lag >= holds * 0.6f * (0.1f - kDt) - 1e-3f);
+    CHECK(lag <= holds * 0.6f * (0.1f + kDt) + 1e-3f);
+}
+
+// The hold freezes an enemy's state, it does not change it: one in its attack's startup stays in Attack through the
+// hold and goes on from where it was, its Active part and its end each the hold later than at push 0; its state time
+// never goes back.
+TEST_CASE("arena string end: a held enemy in its attack's startup stays in Attack, its attack the hold later") {
+    ArenaAttack slow;
+    slow.startup = 2.f;
+    slow.active = 0.15f;
+    slow.recovery = 0.5f;
+    slow.range = 4.f; // in reach from where it stands (a move is picked only in reach)
+    slow.damage = 0;
+    slow.poiseDamage = 0.f;
+    ArenaEnemyKind k = hitterKind(slow, 5.f);
+    k.preferredRange = 5.f;
+    float activeAt[2] = {-1.f, -1.f}, endAt[2] = {-1.f, -1.f}, holdLen = -1.f;
+    bool inStartupAtEnd = false, leftAttackInHold = false, stateBack = false;
+    for (int r = 0; r < 2; ++r) {
+        Rig rig(stringFighter(r == 0 ? 1.2f : 0.f), {dummyKind(), k});
+        rig.put(0, 1.5f, 0.f);
+        rig.put(1, 4.f, 0.f); // in front (a regular enemy begins only in sight), past the lights' reach
+        bool attacking = false;
+        float lastState = 0.f;
+        for (int i = 0; i < 360 && endAt[r] < 0.f; ++i) {
+            const int endHits = rig.fight.stats().stringEndHits;
+            rig.in.light = rig.fight.time() > 0.3f && rig.fight.stats().stringEnds == 0;
+            const ArenaOutput& out = rig.tick();
+            const ArenaEnemyOut& e = out.enemies[1];
+            if (r == 0 && rig.fight.stats().stringEndHits > endHits) {
+                inStartupAtEnd = e.brain == ArenaBrain::Attack && e.part == ArenaPart::Startup;
+                holdLen = e.stopLeft + kDt;
+            }
+            if (e.brain == ArenaBrain::Attack) {
+                if (attacking && e.stateTime < lastState) stateBack = true;
+                attacking = true;
+                lastState = e.stateTime;
+                if (activeAt[r] < 0.f && e.part == ArenaPart::Active) activeAt[r] = rig.fight.time();
+            } else if (attacking) {
+                if (r == 0 && e.stopLeft > 0.f) leftAttackInHold = true;
+                endAt[r] = rig.fight.time();
+            }
+        }
+    }
+    MESSAGE("active " << activeAt[1] << " -> " << activeAt[0] << ", end " << endAt[1] << " -> " << endAt[0] << ", hold "
+                      << holdLen);
+    REQUIRE(inStartupAtEnd);
+    REQUIRE(endAt[0] > 0.f);
+    REQUIRE(endAt[1] > 0.f);
+    CHECK_FALSE(leftAttackInHold);
+    CHECK_FALSE(stateBack);
+    CHECK(std::fabs(activeAt[0] - activeAt[1] - holdLen) <= kDt + 1e-4f);
+    CHECK(std::fabs(endAt[0] - endAt[1] - holdLen) <= kDt + 1e-4f);
+}
+
+// The same for an enemy the string staggered: held, it stays Staggered for the hold and the stagger's own length is
+// left as it was (it ends the hold later in fight time, as everything frozen does), never cut short or lengthened.
+TEST_CASE("arena string end: a held Staggered enemy stays Staggered, its stagger's own length unchanged") {
+    ArenaEnemyKind k = dummyKind();
+    k.poise = 5.f;
+    k.staggerTime = 3.f;
+    float staggerEnd[2] = {-1.f, -1.f}, length[2] = {-1.f, -1.f}, holdLen = -1.f;
+    bool heldWhileStaggered = false, brainChangedInHold = false;
+    for (int r = 0; r < 2; ++r) {
+        ArenaFighter f = stringFighter(r == 0 ? 1.2f : 0.f);
+        f.light[0].poiseDamage = 10.f; // the first light staggers enemy 1
+        Rig rig(f, {dummyKind(), k});
+        rig.put(0, 0.f, -9.f); // out of the arc until the stagger
+        rig.put(1, 1.5f, 0.f);
+        bool staggered = false;
+        for (int i = 0; i < 600 && staggerEnd[r] < 0.f; ++i) {
+            const int endHits = rig.fight.stats().stringEndHits;
+            rig.in.light = rig.fight.stats().stringEnds == 0;
+            const ArenaOutput& out = rig.tick();
+            const ArenaEnemyOut& e = out.enemies[1];
+            if (!staggered && e.brain == ArenaBrain::Staggered) {
+                staggered = true;
+                length[r] = e.stateLength;
+                rig.put(1, -2.5f, 0.f); // behind the lead now; the rest of the string lands on enemy 0
+                rig.put(0, 1.5f, 0.f);
+            }
+            if (r == 0 && rig.fight.stats().stringEndHits > endHits) {
+                heldWhileStaggered = e.brain == ArenaBrain::Staggered && e.stopLeft > 0.f;
+                holdLen = e.stopLeft + kDt;
+            }
+            if (staggered && e.brain == ArenaBrain::Staggered && std::fabs(e.stateLength - length[r]) > 1e-5f)
+                length[r] = -2.f; // its length changed mid-stagger
+            if (staggered && e.brain != ArenaBrain::Staggered) {
+                if (r == 0 && e.stopLeft > 0.f) brainChangedInHold = true;
+                staggerEnd[r] = rig.fight.time();
+            }
+        }
+    }
+    MESSAGE("stagger end " << staggerEnd[1] << " -> " << staggerEnd[0] << ", hold " << holdLen);
+    REQUIRE(heldWhileStaggered);
+    REQUIRE(staggerEnd[0] > 0.f);
+    REQUIRE(staggerEnd[1] > 0.f);
+    CHECK_FALSE(brainChangedInHold);
+    CHECK(length[0] == doctest::Approx(3.f));
+    CHECK(length[1] == doctest::Approx(3.f));
+    CHECK(std::fabs(staggerEnd[0] - staggerEnd[1] - holdLen) <= kDt + 1e-4f);
+}
+
+// An enemy held while it waits for a token keeps its wait (asked) through the hold. Three hitters behind the lead:
+// the nearest takes the token at once and swings slowly; the farthest has waited since the start, the middle one since
+// 0.8 s. A string end holds all three during the slow swing. When the token comes free the one waiting longest takes
+// it, held or not; a wait reset by the hold would hand it to the nearer of the two (their waits equal from the hold).
+// All stand in front of the lead: a regular enemy begins its string only in sight (kArenaUnseenWait).
+TEST_CASE("arena string end: an enemy held while asking keeps its wait, so the longest waiting still takes the token") {
+    ArenaAttack slow;
+    slow.startup = 2.5f;
+    slow.active = 0.15f;
+    slow.recovery = 0.3f;
+    slow.range = 4.5f; // all three in reach (a move is picked only in reach)
+    slow.damage = 0;
+    slow.poiseDamage = 0.f;
+    ArenaEnemyKind holder = hitterKind(slow, 5.f);
+    holder.preferredRange = 5.f;
+    ArenaEnemyKind early = holder, late = holder;
+    late.attackDelay = 0.8f;
+    int winner[2] = {-1, -1};
+    bool heldWhileAsking = false;
+    for (int r = 0; r < 2; ++r) {
+        Rig rig(stringFighter(r == 0 ? 1.2f : 0.f), {dummyKind(), holder, early, late});
+        rig.put(0, 1.5f, 0.f);
+        // In front (a regular enemy begins only in sight), past the lights' reach.
+        rig.put(1, 3.f, 1.f);   // nearest: the first token
+        rig.put(2, 4.2f, 1.f);  // waits from the start
+        rig.put(3, 3.6f, -1.f); // waits from 0.8 s, nearer than 2
+        bool holderDone = false;
+        for (int i = 0; i < 480 && winner[r] < 0; ++i) {
+            const int endHits = rig.fight.stats().stringEndHits;
+            rig.in.light = rig.fight.time() > 1.f && rig.fight.stats().stringEnds == 0;
+            const ArenaOutput& out = rig.tick();
+            if (r == 0 && rig.fight.stats().stringEndHits > endHits)
+                heldWhileAsking = out.enemies[1].token && out.enemies[1].brain == ArenaBrain::Attack &&
+                                  !out.enemies[2].token && !out.enemies[3].token && out.enemies[2].stopLeft > 0.f &&
+                                  out.enemies[3].stopLeft > 0.f;
+            if (i == 0) REQUIRE(out.enemies[1].token);
+            if (!out.enemies[1].token) holderDone = true;
+            if (holderDone)
+                for (int e = 2; e <= 3; ++e)
+                    if (out.enemies[e].token) winner[r] = e;
+        }
+    }
+    REQUIRE(heldWhileAsking);
+    CHECK(winner[1] == 2); // no hold: the longest waiting
+    CHECK(winner[0] == 2); // held: the same
+}
+
+// Repeated string ends on a dummy (12 s of mashing): every end holds the others once, each hold its hitStop and no
+// longer, never stacked, and the strings come no slower over the run (no growing freeze).
+TEST_CASE("arena string end: repeated string ends hold the others once each, no longer, no growing freeze") {
+    ArenaEnemyKind target = dummyKind();
+    target.hp = 1000000;
+    target.poise = 1e6f;
+    std::vector<float> endsAt[3];
+    int holds = 0, heldTicks = 0, minHeld = 1000, maxHeld = 0;
+    float worstHold = 0.f, worstLead = 0.f;
+    // r 1: push 0, no hold (the twin; the lead's own stop is the same); r 2: push 0 and the end's hitStop 0 (no stop)
+    for (int r = 0; r < 3; ++r) {
+        ArenaFighter f = stringFighter(r == 0 ? 1.2f : 0.f);
+        if (r == 2) f.light[2].hitStop = 0.f;
+        Rig rig(f, {target, dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.put(1, -3.f, 0.f);
+        endsAt[r].reserve(64);
+        bool wasHeld = false;
+        for (int i = 0; i < 720; ++i) {
+            const int endHits = rig.fight.stats().stringEndHits;
+            rig.in.light = true;
+            const ArenaOutput& out = rig.tick();
+            if (rig.fight.stats().stringEndHits > endHits) endsAt[r].push_back(rig.fight.time());
+            if (r != 0) continue;
+            const float stop = out.enemies[1].stopLeft;
+            worstHold = std::max(worstHold, stop);
+            worstLead = std::max(worstLead, out.player.stopLeft);
+            const bool held = stop > 0.f;
+            if (held && !wasHeld) {
+                ++holds;
+                heldTicks = 0;
+            }
+            if (held) ++heldTicks;
+            if (!held && wasHeld) {
+                minHeld = std::min(minHeld, heldTicks);
+                maxHeld = std::max(maxHeld, heldTicks);
+            }
+            wasHeld = held;
+        }
+    }
+    REQUIRE(endsAt[0].size() >= 6);
+    MESSAGE(holds << " holds, " << endsAt[0].size() << " ends; held ticks " << minHeld << ".." << maxHeld);
+    CHECK(holds == static_cast<int>(endsAt[0].size()));
+    CHECK(worstHold <= 0.1f + 1e-4f);
+    CHECK(worstLead <= 0.1f + 1e-4f);
+    CHECK(minHeld >= 5);
+    CHECK(maxHeld <= 6);
+    // The strings come exactly as at push 0, end for end: the hold costs the lead nothing, and nothing builds up.
+    REQUIRE(endsAt[1].size() == endsAt[0].size());
+    for (std::size_t j = 0; j < endsAt[0].size(); ++j) CHECK(std::fabs(endsAt[0][j] - endsAt[1][j]) <= 1e-4f);
+    // Against no stop at all: end j comes at most j stops (0.10 s, a tick each way) later, so nothing builds up.
+    REQUIRE(endsAt[2].size() >= endsAt[0].size());
+    std::string gaps;
+    for (std::size_t j = 0; j < endsAt[0].size(); ++j) {
+        const float late = endsAt[0][j] - endsAt[2][j];
+        gaps += " " + std::to_string(late);
+        CHECK(late <= static_cast<float>(j) * (0.1f + kDt) + 1e-4f);
+    }
+    MESSAGE("each end later than with no stop:" << gaps);
+}
+
 TEST_CASE("arena checks: the string end is n/a with none started, FAIL with none landed") {
     ArenaStats s;
     CHECK(arenaFeatureChecks(s).stringEndCheck == ArenaCheck::NotShown);

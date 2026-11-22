@@ -264,6 +264,12 @@ float arenaBreakAtOf(const ArenaEnemyKind& k, int hp) {
 // Enemy kind k's body radius as drawn (a skinned look's scale), the one a blow's reach and the riposte's take.
 float arenaDrawnRadius(const ArenaEnemyKind& k) { return arenaBodyCylinder(k, Vec2{}, 0.f).radius; }
 
+// The point of a body at `centre` that a body at `from` is pushed off (the lead's shove, the ally's placement): a
+// circle's centre; a stadium's (span > 0 either side along `facing`, the facing the bodies stand at: the published
+// one) nearest point of its spine, as the step's push apart. On the spine itself: the centre (the step's rule for
+// crossed spines). Defined with the spines below.
+Vec2 arenaPushOffPoint(Vec2 from, Vec2 centre, Vec2 facing, float span);
+
 } // namespace
 
 // The fight's rules. ArenaFight's state is private; this is its friend, so the rules read and write it directly.
@@ -1931,13 +1937,9 @@ struct ArenaFightImpl {
         // Away from the lead: off a circle's centre, off the nearest point of a stadium's spine (arenaBodySpan, along
         // the enemy's facing, as the step's push apart), so a blow on a long body's flank pushes it sideways; on the
         // spine itself, off the centre.
-        Vec2 at = foe.pos;
-        const float span = arenaBodySpan(def.enemies[i]);
-        if (span > 0.f) {
-            Vec2 lead = pl.pos;
-            arenaClosestPoints(pl.pos, Vec2{1.f, 0.f}, 0.f, foe.pos, arenaUnit(foe.facing, Vec2{1.f, 0.f}), span, lead, at);
-            if (arenaDistance(at, pl.pos) <= kArenaEps) at = foe.pos;
-        }
+        // The facing the bodies stand at (the published one, as the ally's placement reads), not one this tick turned.
+        const Vec2 at =
+            arenaPushOffPoint(pl.pos, foe.pos, fight.output().enemies[i].facing, arenaBodySpan(def.enemies[i]));
         foe.shoveVel = arenaScaled(arenaUnit(arenaSub(at, pl.pos), pl.facing), metres / a.pushTime);
         foe.shoveLeft = a.pushTime; // a special's shove still running gives way to this one
         ++stats.pushes;
@@ -5348,20 +5350,22 @@ void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec
 }
 
 namespace {
+Vec2 arenaPushOffPoint(Vec2 from, Vec2 centre, Vec2 facing, float span) {
+    if (!(span > 0.f)) return centre;
+    Vec2 pa = from, at = centre;
+    arenaClosest(ArenaSpine{from, Vec2{1.f, 0.f}, 0.f}, ArenaSpine{centre, arenaUnit(facing, Vec2{1.f, 0.f}), span}, pa,
+                 at);
+    return arenaDistance(from, at) <= kArenaEps ? centre : at;
+}
+} // namespace
+
+namespace {
 // The point of living enemy i the ally stands off: a circle's centre; a stadium's (arenaBodySpan) nearest point of its
 // spine, along the enemy's facing as the step's push. On the spine itself: the centre (the step's rule for crossed
 // spines).
 Vec2 arenaAllyFrom(const ArenaFight& fight, const ArenaBodies& bodies, std::size_t i) {
-    Vec2 from = bodies.enemies[i];
-    const float span = arenaBodySpan(fight.def().enemies[i]);
-    if (span > 0.f) {
-        Vec2 pa = bodies.ally;
-        arenaClosest(ArenaSpine{bodies.ally, Vec2{1.f, 0.f}, 0.f},
-                     ArenaSpine{bodies.enemies[i], arenaUnit(fight.output().enemies[i].facing, Vec2{1.f, 0.f}), span}, pa,
-                     from);
-        if (arenaDistance(bodies.ally, from) <= kArenaEps) from = bodies.enemies[i];
-    }
-    return from;
+    return arenaPushOffPoint(bodies.ally, bodies.enemies[i], fight.output().enemies[i].facing,
+                             arenaBodySpan(fight.def().enemies[i]));
 }
 
 // One pass of the ally's placement: off each living enemy, in enemy order. Whether any overlap was deeper than `floor`
