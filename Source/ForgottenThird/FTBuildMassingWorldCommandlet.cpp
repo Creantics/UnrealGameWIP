@@ -3353,12 +3353,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 					LotNames.push_back(Hero.bays[B].id);
 				}
 			}
-			ftcore::MassingFoot Corner;
-			Corner.x = 0.5 * (HeroTune.padX0 + HeroTune.padX1);
-			Corner.y = 0.5 * (HeroTune.padY0 + HeroTune.padY1);
-			Corner.hx = 0.5 * (HeroTune.padX1 - HeroTune.padX0);
-			Corner.hy = 0.5 * (HeroTune.padY1 - HeroTune.padY0);
-			LotFeet.push_back(Corner);
+			ftcore::MassingFoot HeroFoot;
+			HeroFoot.x = 0.5 * (HeroTune.padX0 + HeroTune.padX1);
+			HeroFoot.y = 0.5 * (HeroTune.padY0 + HeroTune.padY1);
+			HeroFoot.hx = 0.5 * (HeroTune.padX1 - HeroTune.padX0);
+			HeroFoot.hy = 0.5 * (HeroTune.padY1 - HeroTune.padY0);
+			LotFeet.push_back(HeroFoot);
 			LotNames.push_back("HC-FOOT (the hero corner)");
 		}
 		size_t Count = 0, HeroCount = 0;
