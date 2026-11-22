@@ -5075,7 +5075,8 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     // frame the performer is placed.
     for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaPushApart(fight, bodies, !placed);
     // Everything stays inside the ring; a body the ring moved can't take its share of a push, so the settle gives it
-    // to the other one, and the ring holds them again.
+    // to the other one, and the ring holds them again. A crowd the passes left pressed together (deeper than 1 mm)
+    // settles on, up to kArenaCrowdPasses times, while a pass still moves a body.
     const ArenaRing& ring = fight.ring();
     ArenaHeld held;
     const auto hold = [&ring](Vec2& p, float r) {
@@ -5086,14 +5087,22 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     };
     held.player = hold(bodies.player, playerRadius);
     for (std::size_t i = 0; i < n; ++i) held.enemies[i] = hold(bodies.enemies[i], arenaBodyReach(def.enemies[i]));
-    if (!held.any()) return;
-    arenaSettle(fight, bodies, !placed, held);
-    hold(bodies.player, playerRadius);
-    for (std::size_t i = 0; i < n; ++i) hold(bodies.enemies[i], arenaBodyReach(def.enemies[i]));
+    const auto holdAll = [&] {
+        held.player = hold(bodies.player, playerRadius) || held.player;
+        for (std::size_t i = 0; i < n; ++i)
+            held.enemies[i] = hold(bodies.enemies[i], arenaBodyReach(def.enemies[i])) || held.enemies[i];
+    };
+    if (held.any()) { // the held settle, then the hold, as the step always ran them
+        arenaSettle(fight, bodies, !placed, held);
+        holdAll();
+    }
+    for (int pass = 0; pass < kArenaCrowdPasses; ++pass) {
+        if (!arenaSettle(fight, bodies, !placed, held, kArenaCrowdFloor)) break;
+        holdAll();
+    }
 }
 
 namespace {
-constexpr float kArenaSettleFloor = 1.0e-4f; // arenaSettle: an overlap this shallow or less is left as it is
 
 // A body's spine: its centre +- span along its facing (span 0: a point, the circle's centre).
 struct ArenaSpine {
@@ -5121,8 +5130,10 @@ void arenaClosest(const ArenaSpine& a, const ArenaSpine& b, Vec2& pa, Vec2& pb) 
             s = std::clamp(-c / aa, 0.f, 1.f);
         } else {
             const float bb = arenaDot(da, db);
+            // Parallel only when the sine of the angle is under 0.001 (a relative test: two pups' 0.38 m spines a few
+            // degrees apart are not parallel); parallel spines take any s, the clamps below find the closest pair.
             const float denom = aa * ee - bb * bb;
-            s = denom > kArenaEps ? std::clamp((bb * ff - c * ee) / denom, 0.f, 1.f) : 0.f;
+            s = denom > 1.0e-6f * aa * ee ? std::clamp((bb * ff - c * ee) / denom, 0.f, 1.f) : 0.f;
             t = (bb * s + ff) / ee;
             if (t < 0.f) {
                 t = 0.f;
@@ -5138,23 +5149,33 @@ void arenaClosest(const ArenaSpine& a, const ArenaSpine& b, Vec2& pa, Vec2& pb) 
 }
 
 // Pushes two bodies apart when they overlap by more than `floor`: a takes `shareA` of the overlap, b the rest.
-// Two circles at half each step exactly as the push always did.
-void arenaPushPair(Vec2& a, float ra, const ArenaSpine& sa, Vec2& b, float rb, const ArenaSpine& sb, float shareA,
+// Two circles at half each step exactly as the push always did. True when it pushed.
+bool arenaPushPair(Vec2& a, float ra, const ArenaSpine& sa, Vec2& b, float rb, const ArenaSpine& sb, float shareA,
                    float floor) {
     Vec2 pa = a, pb = b;
     if (sa.span > 0.f || sb.span > 0.f) arenaClosest(sa, sb, pa, pb);
     const Vec2 d = arenaSub(pb, pa);
     const float distance = arenaLength(d);
     const float least = ra + rb;
-    if (distance >= least - floor) return;
-    const Vec2 dir = distance > kArenaEps ? Vec2{d.x / distance, d.y / distance} : Vec2{1.f, 0.f};
+    if (distance >= least - floor) return false;
+    // Crossed spines meet at one point: push along the centres instead (for two circles that is the same line).
+    Vec2 dir{1.f, 0.f};
+    if (distance > kArenaEps) {
+        dir = Vec2{d.x / distance, d.y / distance};
+    } else {
+        const Vec2 c = arenaSub(b, a);
+        const float apart = arenaLength(c);
+        if (apart > kArenaEps) dir = Vec2{c.x / apart, c.y / apart};
+    }
     const float overlap = least - distance;
     a = arenaMadd(a, dir, -(shareA * overlap));
     b = arenaMadd(b, dir, (1.f - shareA) * overlap);
+    return true;
 }
 
-// The push passes' shared walk: the player against each living enemy (withPlayer), then each living pair.
-void arenaPushWalk(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld* held, float floor) {
+// The push passes' shared walk: the player against each living enemy (withPlayer), then each living pair. True
+// when it pushed a pair.
+bool arenaPushWalk(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld* held, float floor) {
     const std::size_t n = fight.enemyCount();
     const ArenaDef& def = fight.def();
     const ArenaOutput& out = fight.output();
@@ -5166,19 +5187,21 @@ void arenaPushWalk(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer
     const auto spine = [&](std::size_t i) {
         return ArenaSpine{bodies.enemies[i], arenaUnit(out.enemies[i].facing, Vec2{1.f, 0.f}), arenaBodySpan(def.enemies[i])};
     };
+    bool pushed = false;
     for (std::size_t i = 0; i < n && withPlayer; ++i)
         if (fight.enemyAlive(i))
-            arenaPushPair(bodies.player, playerRadius, ArenaSpine{bodies.player, Vec2{1.f, 0.f}, 0.f}, bodies.enemies[i],
+            pushed |= arenaPushPair(bodies.player, playerRadius, ArenaSpine{bodies.player, Vec2{1.f, 0.f}, 0.f}, bodies.enemies[i],
                           def.enemies[i].bodyRadius, spine(i),
                           share(held && held->player, held && held->enemies[i]), floor);
     for (std::size_t i = 0; i < n; ++i) {
         if (!fight.enemyAlive(i)) continue;
         for (std::size_t j = i + 1; j < n; ++j)
             if (fight.enemyAlive(j))
-                arenaPushPair(bodies.enemies[i], def.enemies[i].bodyRadius, spine(i), bodies.enemies[j],
+                pushed |= arenaPushPair(bodies.enemies[i], def.enemies[i].bodyRadius, spine(i), bodies.enemies[j],
                               def.enemies[j].bodyRadius, spine(j), share(held && held->enemies[i], held && held->enemies[j]),
                               floor);
     }
+    return pushed;
 }
 } // namespace
 
@@ -5186,8 +5209,8 @@ void arenaPushApart(const ArenaFight& fight, ArenaBodies& bodies, bool withPlaye
     arenaPushWalk(fight, bodies, withPlayer, nullptr, 0.f);
 }
 
-void arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held) {
-    if (held.any()) arenaPushWalk(fight, bodies, withPlayer, &held, kArenaSettleFloor);
+bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held, float floor) {
+    return arenaPushWalk(fight, bodies, withPlayer, &held, floor);
 }
 
 // ---- ArenaTable ----

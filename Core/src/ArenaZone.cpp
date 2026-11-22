@@ -338,11 +338,27 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         arenaPushApart(fight, bodies, true);
     }
     // A body the walls hold can't take its share of a push: the settle gives it to the other one, then the walls hold
-    // them again.
-    if (!held.any()) return;
-    arenaSettle(fight, bodies, true, held);
-    bodies.player = zone.constrain(bodies.player, playerRadius);
-    for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = zone.constrain(bodies.enemies[i], arenaBodyReach(def.enemies[i]));
+    // them again. A crowd still pressed together (deeper than 1 mm) settles on, up to kArenaCrowdPasses times,
+    // while a pass moves a body.
+    const auto holdAll = [&] {
+        const auto hold = [&](Vec2& p, float r) {
+            const Vec2 q = zone.constrain(p, r);
+            const bool m = q.x != p.x || q.y != p.y;
+            p = q;
+            return m;
+        };
+        held.player = hold(bodies.player, playerRadius) || held.player;
+        for (std::size_t i = 0; i < n; ++i)
+            held.enemies[i] = hold(bodies.enemies[i], arenaBodyReach(def.enemies[i])) || held.enemies[i];
+    };
+    if (held.any()) { // the held settle, then the hold, as the step always ran them
+        arenaSettle(fight, bodies, true, held);
+        holdAll();
+    }
+    for (int pass = 0; pass < kArenaCrowdPasses; ++pass) {
+        if (!arenaSettle(fight, bodies, true, held, kArenaCrowdFloor)) break;
+        holdAll();
+    }
 }
 
 // ---- the size ----

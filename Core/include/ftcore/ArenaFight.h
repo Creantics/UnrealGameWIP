@@ -1969,9 +1969,16 @@ struct ArenaHeld {
 
 // After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more
 // pass gives the whole of each overlap deeper than 0.1 mm to the body the wall does not hold (both held, or
-// neither: half each). Shallower contacts are left as they are. The caller holds the bodies inside its walls
-// again after it. Nothing held: no change. Deterministic; no allocation.
-FTCORE_API void arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held);
+// neither: half each). Contacts no deeper than `floor` are left as they are. True when it moved a body: the caller
+// then holds the bodies inside its walls again, and may settle again. Both arenaStep variants settle at
+// kArenaSettleFloor once when a wall held a body, then up to 4 more times at kArenaCrowdFloor while a pass still moves
+// one (a crowd the push passes left pressed together comes apart; a fight with no contact deeper than 1 mm is
+// stepped exactly as before). Deterministic; no allocation.
+constexpr float kArenaSettleFloor = 1.0e-4f; // a held body's settle: overlaps past 0.1 mm
+constexpr float kArenaCrowdFloor = 1.0e-3f;  // the crowd settle: overlaps past 1 mm
+constexpr int kArenaCrowdPasses = 4;
+FTCORE_API bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held,
+                            float floor = kArenaSettleFloor);
 
 // ---- data ----
 
