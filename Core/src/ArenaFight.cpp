@@ -5292,6 +5292,22 @@ void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec
     arenaClosest(ArenaSpine{centreA, axisA, spanA}, ArenaSpine{centreB, axisB, spanB}, pa, pb);
 }
 
+ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies) {
+    const ArenaDef& def = fight.def();
+    const float radius = fight.allyRadius();
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+        if (!fight.enemyAlive(i)) continue;
+        const float least = radius + def.enemies[i].bodyRadius;
+        const Vec2 off = arenaSub(bodies.ally, bodies.enemies[i]);
+        const float apart = arenaLength(off);
+        if (apart >= least) continue;
+        const Vec2 dir = apart > 1e-4f ? Vec2{off.x / apart, off.y / apart} : Vec2{1.f, 0.f};
+        bodies.ally = Vec2{bodies.enemies[i].x + dir.x * least, bodies.enemies[i].y + dir.y * least};
+    }
+    bodies.ally = fight.ring().clamp(bodies.ally, radius);
+    return ArenaSettleRun{1, true};
+}
+
 // ---- ArenaTable ----
 
 const ArenaFighter& ArenaTable::fighter(std::string_view leadId) const {

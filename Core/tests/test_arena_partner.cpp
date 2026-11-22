@@ -283,16 +283,7 @@ struct PRig {
         if (far > most) bodies.ally = Vec2{bodies.ally.x + d.x * most / far, bodies.ally.y + d.y * most / far};
         else bodies.ally = out->ally.goal;
         walked = bodies.ally;
-        for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
-            if (!fight.enemyAlive(i)) continue;
-            const float least = 0.4f + def.enemies[i].bodyRadius;
-            const Vec2 e = sub(bodies.ally, bodies.enemies[i]);
-            const float apart = length(e);
-            if (apart >= least) continue;
-            const Vec2 dir = apart > 1e-4f ? Vec2{e.x / apart, e.y / apart} : Vec2{1.f, 0.f};
-            bodies.ally = Vec2{bodies.enemies[i].x + dir.x * least, bodies.enemies[i].y + dir.y * least};
-        }
-        bodies.ally = fight.ring().clamp(bodies.ally, 0.4f);
+        arenaPlaceAlly(fight, bodies); // the host's placement (WalkPartner)
         pushed = length(sub(bodies.ally, walked));
     }
     void run(float seconds) {

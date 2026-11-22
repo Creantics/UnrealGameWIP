@@ -9208,7 +9208,8 @@ void UFTArenaRunner::WalkPartner(const ftcore::ArenaOutput& Out)
 	{
 		return;
 	}
-	// To the fight's goal at its own kit's moveSpeed, off the living enemies' bodies, inside the ring.
+	// To the fight's goal at its own kit's moveSpeed, then placed by Core (arenaPlaceAlly): off the living enemies'
+	// bodies, inside the ring.
 	const ftcore::Vec2 To{Out.ally.goal.x - Bodies.ally.x, Out.ally.goal.y - Bodies.ally.y};
 	const float Far = ArenaLength(To);
 	const float Most = Fight.def().partnerKit.moveSpeed * StepSeconds;
@@ -9221,24 +9222,7 @@ void UFTArenaRunner::WalkPartner(const ftcore::ArenaOutput& Out)
 	{
 		Bodies.ally = Out.ally.goal;
 	}
-	const float Radius = Fight.allyRadius();
-	for (size_t I = 0; I < Fight.enemyCount(); ++I)
-	{
-		if (Fight.enemyHp(I) <= 0)
-		{
-			continue;
-		}
-		const float Least = Radius + Fight.def().enemies[I].bodyRadius;
-		const ftcore::Vec2 Off{Bodies.ally.x - Bodies.enemies[I].x, Bodies.ally.y - Bodies.enemies[I].y};
-		const float Apart = ArenaLength(Off);
-		if (Apart >= Least)
-		{
-			continue;
-		}
-		const ftcore::Vec2 Dir = Apart > 1e-4f ? ftcore::Vec2{Off.x / Apart, Off.y / Apart} : ftcore::Vec2{1.f, 0.f};
-		Bodies.ally = ftcore::Vec2{Bodies.enemies[I].x + Dir.x * Least, Bodies.enemies[I].y + Dir.y * Least};
-	}
-	Bodies.ally = Fit.ring.clamp(Bodies.ally, Radius);
+	ftcore::arenaPlaceAlly(Fight, Bodies);
 }
 
 void UFTArenaRunner::FeedLeadHealths()

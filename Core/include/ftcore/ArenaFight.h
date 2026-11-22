@@ -2025,6 +2025,13 @@ FTCORE_API ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies
 FTCORE_API void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec2 axisB, float spanB,
                                    Vec2& pa, Vec2& pb);
 
+// The ally's body after the host has walked it (the step never moves it: ArenaFight::setAlly). The ally yields: the
+// lead and the enemies are the step's, already settled, so it takes the whole of each overlap. It stands off each
+// living enemy's circle (allyRadius + bodyRadius, one pass in enemy order) and is then held inside the fight's ring.
+// The host's partner walk and the tests' mirror of it both call this. It never touches settleCaps (one count a step
+// is arenaStep's). Deterministic; no allocation.
+FTCORE_API ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies);
+
 // ---- data ----
 
 struct ArenaFightEntry {
