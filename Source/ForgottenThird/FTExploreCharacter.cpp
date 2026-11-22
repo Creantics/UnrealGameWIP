@@ -966,11 +966,11 @@ void AFTExploreCharacter::LogSwitchReview(const TCHAR* Stage)
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		const TArray<TObjectPtr<AFTPartyFollower>>& Party = D->GetFollowers();
-		const TArray<int32>& Members = D->GetFollowerMembers();
+		const ftcore::leadwet::FollowerRoster& Roster = D->GetFollowerRoster();
 		for (int32 I = 0; I < Party.Num(); ++I)
 		{
 			const AFTPartyFollower* Follower = Party[I].Get();
-			const int32 Member = Members.IsValidIndex(I) ? Members[I] : -1;
+			const int32 Member = Roster.memberOf(I);
 			const FString Who = PartyLooks.IsValidIndex(Member) ? PartyLooks[Member].Name : FString(TEXT("?"));
 			Line += Follower ? FString::Printf(TEXT("; follower %d member %d %s soak %.2f (line %.2f m)%s"), I, Member, *Who, Follower->GetWetness().wetness,
 								   Follower->GetWetness().line, Follower->IsHidden() ? TEXT(" hidden") : TEXT(""))
@@ -6297,7 +6297,7 @@ void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
 	// The wet-skin amount, eased; it goes to the materials ShowWetness gathered (any skin is wet only when the cloth is,
 	// so they are there) and to the hair without a wet groom.
 	const float Target = ftcore::leadwet::skin(Weather);
-	SkinWetEased = bSkinWetSnap ? Target : ftcore::leadwet::ease(SkinWetEased, Target, DeltaSeconds);
+	SkinWetEased = ftcore::leadwet::shownSkin(SkinWetEased, Target, DeltaSeconds, bSkinWetSnap);
 	bSkinWetSnap = false;
 	const float Skin = SkinWetEased;
 	// Written when it has moved enough, and once more when it reaches its target (so the last small step lands).

@@ -720,8 +720,7 @@ void AFTExploreDirector::TickFollowers(AFTExploreCharacter& Player, float DeltaS
 		if (AFTPartyFollower* Follower = Followers[I])
 		{
 			// ft.PartyWet names a follower by its place in the walk, which a failed spawn leaves out of step with I.
-			const int32 Place = FollowerPlaces.IsValidIndex(I) ? FollowerPlaces[I] : I;
-			Follower->StepWet(ftcore::leadwet::partyWeather(LeadWeather, Place, ForcedPartyWet()), DeltaSeconds);
+			Follower->StepWet(Roster.weatherOf(I, LeadWeather, ForcedPartyWet()), DeltaSeconds);
 		}
 	}
 }
@@ -731,25 +730,23 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 	bFollowersSpawned = true;
 	UWorld* World = GetWorld();
 	const TArray<FFTLeadLook>& Party = Player.PartyLooks;
-	int32 Lead = FMath::Max(0, Player.GetLeadIndex());
-	if (!Party.IsEmpty() && Lead >= Party.Num())
+	// Never out of range today (the lead is always a PartyLooks index); one that is comes into the party, said.
+	const ftcore::leadwet::PartyLead InParty = ftcore::leadwet::leadInParty(Player.GetLeadIndex(), Party.Num());
+	if (InParty.wrapped)
 	{
-		// Never so today (the lead is always a PartyLooks index); the walk starts from the lead's place modulo the party,
-		// as it did before the soak was kept per member, so no follower gets an empty look.
-		UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: lead index %d is past the party of %d; followers walk behind %d."),
-			Lead, Party.Num(), Lead % Party.Num());
-		Lead %= Party.Num();
+		UE_LOG(LogForgottenThird, Warning, TEXT("ExploreDemo: lead index %d is outside the party of %d; followers walk behind %d."),
+			Player.GetLeadIndex(), Party.Num(), InParty.lead);
 	}
+	const int32 Lead = InParty.lead;
 	const size_t Members = Party.IsEmpty() ? ftcore::demo::kPartyNames.size() : static_cast<size_t>(Party.Num());
 	const size_t Count = FMath::Min(Members - 1u, ftcore::PartyTrail::kMaxFollowers);
 	const FVector2D Facing = Player.GetFacing2D();
 	Trail.reset(ToGround(Player.GetActorLocation()), {static_cast<float>(Facing.X), static_cast<float>(Facing.Y)},
 		static_cast<float>(Count) * ftcore::PartyTrail::kFollowerSpacing);
 	Followers.Reserve(static_cast<int32>(Count));
-	FollowerMembers.Reset();
-	FollowerMembers.Reserve(static_cast<int32>(Count));
-	FollowerPlaces.Reset();
-	FollowerPlaces.Reserve(static_cast<int32>(Count));
+	Roster.clear();
+	static_assert(ftcore::PartyTrail::kMaxFollowers <= static_cast<size_t>(ftcore::leadwet::kPartyWetMembers),
+		"the roster holds every follower");
 	const double Now = World ? World->GetTimeSeconds() : 0.0;
 	TurnCursors.Init(0u, static_cast<int32>(Count));
 	JumpCursors.Init(0u, static_cast<int32>(Count));
@@ -771,8 +768,8 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 		{
 			continue;
 		}
-		// The members after the lead, in order.
-		const int32 Member = ftcore::leadwet::followerMember(Party.IsEmpty() ? 0 : Lead, static_cast<int>(I), static_cast<int>(Members));
+		// The members after the lead, in order; the roster keeps its walk place beside it.
+		const int32 Member = Roster.add(static_cast<int>(I), Lead, static_cast<int>(Members));
 		FFTLeadLook Default;
 		const FFTLeadLook* Look = &Default;
 		if (Party.IsEmpty())
@@ -804,8 +801,6 @@ void AFTExploreDirector::SpawnFollowers(AFTExploreCharacter& Player)
 			Follower->SetWetness(PartyWetness.of(Member, Now));
 		}
 		Followers.Add(Follower);
-		FollowerMembers.Add(Member);
-		FollowerPlaces.Add(static_cast<int32>(I));
 	}
 #if !UE_BUILD_SHIPPING
 	// ft.PartyWet as it stands now: a value given before the switch was registered (an ini, the command line) fires no
@@ -835,13 +830,12 @@ void AFTExploreDirector::ClearFollowers()
 		if (AFTPartyFollower* Follower = Followers[I])
 		{
 			// Its soak stays with the member: the next spawn (behind this lead or a new one) gives it back.
-			StoreSoak(FollowerMembers.IsValidIndex(I) ? FollowerMembers[I] : -1, Follower->GetWetness(), Now);
+			StoreSoak(Roster.memberOf(I), Follower->GetWetness(), Now);
 			Follower->Destroy();
 		}
 	}
 	Followers.Reset();
-	FollowerMembers.Reset();
-	FollowerPlaces.Reset();
+	Roster.clear();
 	bFollowersSpawned = false;
 }
 

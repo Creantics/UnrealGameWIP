@@ -187,6 +187,54 @@ constexpr int followerMember(int lead, int i, int count) {
 // soak back); the first look, at the start, eases in from dry like any other change.
 constexpr bool skinSnapOnLook(bool lookWornBefore) { return lookWornBefore; }
 
+// The wet skin shown this frame: at the target at once on the first show after a look that snaps (skinSnapOnLook), else
+// eased toward it (ease). The caller clears its snap after this frame.
+constexpr float shownSkin(float shown, float target, float dt, bool snap) { return snap ? unit(target) : ease(shown, target, dt); }
+
+// The lead's index brought into a party of `count`: below 0 it reads as 0, past the party it wraps by modulo (the walk
+// starts from the lead's place modulo the party, so no follower gets an empty look); `wrapped` says either happened, for
+// the caller's warning. A party of none: 0, not wrapped (the caller walks its default names behind member 0).
+struct PartyLead {
+    int lead = 0;
+    bool wrapped = false;
+};
+constexpr PartyLead leadInParty(int lead, int count) {
+    if (count <= 0) {
+        return PartyLead{};
+    }
+    if (lead < 0) {
+        return PartyLead{0, true};
+    }
+    return lead < count ? PartyLead{lead, false} : PartyLead{lead % count, true};
+}
+
+// The followers as spawned, in spawn order: each one's place in the walk behind the lead (the slot ft.PartyWet names) and
+// the party member it walks as (followerMember). A failed spawn leaves its place out, so a follower's index here and its
+// place can differ; its place and its member never part. Fixed size, no allocation.
+struct FollowerRoster {
+    int count = 0;
+    int place[kPartyWetMembers]{};
+    int member[kPartyWetMembers]{};
+    constexpr void clear() { count = 0; }
+    // Adds the follower that spawned at walk place `p` behind `lead` in a party of `members` and returns its member (-1 out
+    // of range, as followerMember). False from full(): nothing is added (no party walks more than kPartyWetMembers).
+    constexpr bool full() const { return count >= kPartyWetMembers; }
+    constexpr int add(int p, int lead, int members) {
+        if (full()) {
+            return -1;
+        }
+        place[count] = p;
+        member[count] = followerMember(lead, p, members);
+        return member[count++];
+    }
+    constexpr int placeOf(int k) const { return k >= 0 && k < count ? place[k] : -1; }
+    constexpr int memberOf(int k) const { return k >= 0 && k < count ? member[k] : -1; }
+    // Follower k's weather value: partyWeather by its walk place, not by k.
+    constexpr float weatherOf(int k, float leadW, const PartyWetForce& force) const {
+        return k >= 0 && k < count ? partyWeather(leadW, place[k], force) : unit(leadW);
+    }
+};
+
 struct PartyWet {
     WaterWetness member[kPartyWetMembers]{};
     double at[kPartyWetMembers]{};   // game time (s) when it was stored
