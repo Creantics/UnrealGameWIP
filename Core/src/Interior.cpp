@@ -1,6 +1,7 @@
 // Enterable rooms (ftcore/Interior.h).
 
 #include "ftcore/Interior.h"
+#include "ftcore/Roads.h"
 
 #include "CsvRead.h"
 
@@ -445,9 +446,28 @@ int heroCornerCrowd(const HeroCornerSpec& hero, double side, std::vector<crowdv2
     lane.width = static_cast<float>(hero.laneX1 - hero.laneX0);
     const double mid = 0.5 * (hero.laneX0 + hero.laneX1);
     // A point about every 3 m: a lane standing on its own is still a component big enough to spawn on (minComponent).
-    const int steps = std::max(1, static_cast<int>(std::ceil((hero.laneY1 - hero.laneY0) / 3.0)));
-    for (int k = 0; k <= steps; ++k) lane.points.push_back(eng(mid, hero.laneY0 + (hero.laneY1 - hero.laneY0) * k / steps));
+    // Both start on the coast road's closed south end, so they join it (and the alley its north end), each in one leg
+    // over the apron: a loose end joins the nearest street within its half width and a little, its own street's next
+    // segment too, so the leg is kept longer than that.
+    const double roadS = std::min(hero.padY0, hero.laneY0) - kRoadEndClose, roadN = std::max(hero.padY1, hero.laneY1) + kRoadEndClose;
+    const double bayY1 = hero.bayY0 + kHeroBays * hero.bayWidth, bayX1 = hero.laneX1 + hero.bayDepth;
+    auto run = [&](crowdv2::CrowdStreet& st, double x, double y0, double y1) {
+        const int steps = std::max(1, static_cast<int>(std::ceil((y1 - y0) / 3.0)));
+        for (int k = 0; k <= steps; ++k) st.points.push_back(eng(x, y0 + (y1 - y0) * k / steps));
+    };
+    lane.points.push_back(eng(mid, roadS));
+    run(lane, mid, hero.laneY0, hero.laneY1);
     streets.push_back(std::move(lane));
+    crowdv2::CrowdStreet alley;
+    alley.kind = "alley";
+    alley.width = static_cast<float>(hero.padX1 - bayX1);
+    if (alley.width > 1.0f) {
+        const double ax = 0.5 * (bayX1 + hero.padX1);
+        alley.points.push_back(eng(ax, roadS));
+        run(alley, ax, hero.bayY0, bayY1);
+        alley.points.push_back(eng(ax, roadN));
+        streets.push_back(std::move(alley));
+    }
     HeroRoom rooms[kHeroBays];
     const int n = heroCornerRooms(hero, rooms);
     int added = 0;

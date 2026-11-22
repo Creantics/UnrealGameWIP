@@ -2,6 +2,7 @@
 // Made-up tables only: the real one is kept outside the repo (opt-in through FT_ROAD_ROOMS). Ids and numbers only.
 
 #include "ftcore/Interior.h"
+#include "ftcore/Roads.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
@@ -559,11 +560,19 @@ TEST_CASE("heroCornerCrowd: the lane as a street and a walk-in door per room, an
     std::vector<crowdv2::CrowdDoor> doors;
     const double side = 1000.0;
     REQUIRE(heroCornerCrowd(hero, side, streets, doors) == 3);
-    REQUIRE(streets.size() == 1);
+    REQUIRE(streets.size() == 2);
     CHECK(streets[0].kind == "lane");
     CHECK(streets[0].width == doctest::Approx(hero.laneX1 - hero.laneX0));
     CHECK(streets[0].pavement == 0.f);
     CHECK(streets[0].points.size() >= 13);
+    // From the coast road's closed south end to the lane's far end; the alley behind the bays end to end.
+    CHECK(streets[0].points.front().y == doctest::Approx(side / 2 - (hero.padY0 - kRoadEndClose)));
+    CHECK(streets[0].points.back().y == doctest::Approx(side / 2 - hero.laneY1));
+    CHECK(streets[1].kind == "alley");
+    CHECK(streets[1].width == doctest::Approx(hero.padX1 - hero.laneX1 - hero.bayDepth));
+    CHECK(streets[1].points.front().x == doctest::Approx(0.5 * (hero.laneX1 + hero.bayDepth + hero.padX1) - side / 2));
+    CHECK(streets[1].points.front().y == doctest::Approx(side / 2 - (hero.padY0 - kRoadEndClose)));
+    CHECK(streets[1].points.back().y == doctest::Approx(side / 2 - (hero.padY1 + kRoadEndClose)));
     const double mid = 0.5 * (hero.laneX0 + hero.laneX1);
     for (const crowdv2::CrowdDoor& d : doors) {
         CHECK(d.dwell.size() >= 2);
@@ -694,4 +703,27 @@ TEST_CASE("interiorDressing: the hero rooms dressed from their slots with whole 
     REQUIRE(interiorRoomPlan(rooms[0].spec, shop));
     InteriorDressItem few[3];
     CHECK(interiorDressing(shop, few, 3) == 3);
+}
+
+TEST_CASE("heroCornerCrowd: the lane and the alley join the coast road's two ends into one walk") {
+    const HeroCornerSpec hero;
+    const double side = 1000.0;
+    // The coast road's crowd rows either side of the corner (the split strip table's).
+    const std::string csv =
+        "id,kind,width_m,pts,pavement_m,pavement_side\n"
+        "RD-C-S,coast_road,18.0,955:10;910:10;910:503,3.6,\n"
+        "RD-C-N,coast_road,18.0,910:567;910:990;955:990,3.6,\n";
+    std::vector<crowdv2::CrowdStreet> streets;
+    REQUIRE(crowdv2::importCrowdStreets(csv, side, streets));
+    std::vector<crowdv2::CrowdDoor> doors;
+    REQUIRE(heroCornerCrowd(hero, side, streets, doors) == 3);
+    REQUIRE(streets.size() == 4);
+    crowdv2::CrowdGraph g;
+    REQUIRE(g.build(streets, crowdv2::CrowdGraphTuning{}));
+    CHECK(g.componentCount() == 1);
+    // Without the corner's streets the two ends stand apart.
+    std::vector<crowdv2::CrowdStreet> ends(streets.begin(), streets.begin() + 2);
+    crowdv2::CrowdGraph g2;
+    REQUIRE(g2.build(ends, crowdv2::CrowdGraphTuning{}));
+    CHECK(g2.componentCount() == 2);
 }

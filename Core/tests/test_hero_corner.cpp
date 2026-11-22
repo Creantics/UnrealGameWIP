@@ -1132,3 +1132,48 @@ TEST_CASE("hero item box: a kit piece facing the lane runs south from its origin
     p.piece = HeroPiece::Figure;
     CHECK_FALSE(heroItemBox(p, x0, x1, y0, y1, z0, z1));
 }
+
+TEST_CASE("hero corner: the corner stands on its own ground, level with the lane's paving, none under the bays") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.groundCount == 6);
+    const double g = spec.ground, top = g + spec.paveTop;
+    const double bayY1 = spec.bayY0 + kHeroBays * spec.bayWidth, bayX1 = spec.laneX1 + spec.bayDepth;
+    auto lo = [](const MassingBox& b, int a) { return a == 0 ? b.cx - 0.5 * b.sx : b.cy - 0.5 * b.sy; };
+    auto hi = [](const MassingBox& b, int a) { return a == 0 ? b.cx + 0.5 * b.sx : b.cy + 0.5 * b.sy; };
+    double area = 0.0;
+    for (int i = 0; i < l.groundCount; ++i) {
+        const MassingBox& b = l.ground[i];
+        CAPTURE(b.id);
+        CHECK(b.id == "HC-GROUND-" + std::to_string(i + 1));
+        CHECK(b.kind == "paving");
+        CHECK(b.z0 == doctest::Approx(g - spec.padDeep));
+        // Inside the pad.
+        CHECK(lo(b, 0) >= spec.padX0 - 1e-9);
+        CHECK(hi(b, 0) <= spec.padX1 + 1e-9);
+        CHECK(lo(b, 1) >= spec.padY0 - 1e-9);
+        CHECK(hi(b, 1) <= spec.padY1 + 1e-9);
+        // None under a bay.
+        const bool underBay = lo(b, 0) < bayX1 - 1e-9 && hi(b, 0) > spec.laneX1 + 1e-9 && lo(b, 1) < bayY1 - 1e-9 &&
+                              hi(b, 1) > spec.bayY0 + 1e-9;
+        CHECK_FALSE(underBay);
+        // Under the lane's paving its top is the ground; elsewhere the paving's top.
+        const bool underPave = lo(b, 1) >= spec.laneY0 - 1e-9 && hi(b, 1) <= spec.laneY1 + 1e-9 && hi(b, 0) <= spec.laneX1 + 1e-9;
+        CHECK(b.z1 == doctest::Approx(underPave ? g : top));
+        // No two overlap.
+        for (int j = 0; j < i; ++j) {
+            const MassingBox& c = l.ground[j];
+            const bool ov = lo(b, 0) < hi(c, 0) - 1e-9 && lo(c, 0) < hi(b, 0) - 1e-9 && lo(b, 1) < hi(c, 1) - 1e-9 &&
+                            lo(c, 1) < hi(b, 1) - 1e-9;
+            CHECK_FALSE(ov);
+        }
+        area += b.sx * b.sy;
+    }
+    // Together they fill the pad but for the bays.
+    const double pad = (spec.padX1 - spec.padX0) * (spec.padY1 - spec.padY0);
+    CHECK(area == doctest::Approx(pad - (bayX1 - spec.laneX1) * (bayY1 - spec.bayY0)));
+    // The pad's ends meet the coast road's closed ends, which take its first and last metre past the corner's foot.
+    CHECK(spec.padY0 == doctest::Approx(spec.nearClearY0 + kRoadEndClose));
+    CHECK(spec.padX1 > bayX1);
+}

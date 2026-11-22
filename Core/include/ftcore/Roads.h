@@ -56,6 +56,14 @@ inline constexpr double kRoadBayDeep = 2.0;         // m: a bay's depth into the
 inline constexpr double kRoadBayKeepJunction = 5.0; // m: no bay this near a junction, a zebra or a stop line
 inline constexpr double kRoadBayKeepBus = 10.0;     // m: no bay this near a bus stop's pole either way
 inline constexpr double kRoadBayKeepEnd = 10.0;     // m: no bay this near a road's end
+// A network street's closed end (RoadNetStreet::endsClosed): the road stops at a kerb across its carriageway and a
+// pavement strip wall to wall, kRoadEndClose deep past its last point, a row of bollards across the carriageway's width
+// kRoadEndBollardBack past it, no gap between two of more than kRoadEndBollardGap.
+inline constexpr double kRoadEndClose = 1.0;        // m
+inline constexpr double kRoadEndBollardBack = 0.6;  // m
+inline constexpr double kRoadEndBollardGap = 1.3;   // m
+inline constexpr double kRoadEndBollardDia = 0.15;  // m
+inline constexpr double kRoadEndBollardHigh = 0.9;  // m over the strip
 inline constexpr double kRoadLampSpacing = 25.0;    // m: road lamps each side, staggered
 inline constexpr double kRoadLampBack = 1.0;        // m: a road lamp's spot behind the kerb face
 inline constexpr double kRoadPoleSpacing = 30.0;    // m: utility poles
@@ -378,6 +386,19 @@ inline constexpr double kRoadFaceMax = 0.03;
 // builder hides the clashing rows (kind "underpass") the same call returns none. Indices in table order.
 FTCORE_API std::vector<std::size_t> roadBoxClashes(const RoadBuild& build, const std::vector<MassingBox>& boxes);
 
+// A road piece over a lot (roadLotOverlaps): the piece's id and the lot's index in the feet given.
+struct RoadLotHit {
+    std::string piece;
+    std::size_t lot = 0;
+};
+// Where a road stands on a lot (2026-11-22): its laid pieces whose plan footprints overlap a lot's foot shrunk by `inset`
+// all round (so a pavement that meets a frontage is none): every solid (carriageway, kerbs, pavements, paint, poles,
+// wires, signs, a closed end's bollards), bay, zebra and lamp, and the footways. The count; each hit appended to `hits`
+// when given, in piece order. Allocates only into hits.
+inline constexpr double kRoadLotInset = 0.1; // m
+FTCORE_API std::size_t roadLotOverlaps(const RoadBuild& build, const std::vector<MassingFoot>& lots, double inset,
+                                       std::vector<RoadLotHit>* hits = nullptr);
+
 // A fault where a kerb or pavement meets the carriageway: the piece's id, a plan point and what it is.
 struct RoadFace {
     std::string piece;
@@ -429,6 +450,7 @@ struct RoadNetStreet {
                                      // within kRoadGraphSnap of the junction's centre names it)
     int lanes = 2;               // 2 (one each way, or one way) or 4 (two each way)
     double median = 0.0;         // m: a four-lane street's planted median island between its halves (0 none)
+    bool endsClosed = false;     // each end of it that meets no other street (not on a deck) closed: see kRoadEndClose
 };
 // A four-lane street's lanes and median (RoadNetStreet): each half (carriageway - median) / 2 holds two lanes of at
 // least kRoadNetLaneMin; a median, when there is one, is at least kRoadNetMedianMin wide.
@@ -461,6 +483,7 @@ FTCORE_API bool roadNetTable(std::string_view csv);
 //   scramble      optional: "x:y;..." the junctions on it that run as scrambles (roadNetBuild)
 //   lanes         optional: 2 or 4 (empty: 2); a four-lane street is two way, each lane at least kRoadNetLaneMin
 //   median_m      optional: >= 0 (empty: 0); four lanes only, kRoadNetMedianMin at least when not 0
+//   ends          optional: "kerb" closes its free ends (endsClosed); empty none
 // `out` is cleared first. False, with the reason naming the line, on any error.
 struct RoadCanal;
 FTCORE_API bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::string* error = nullptr,
@@ -478,6 +501,7 @@ struct RoadNetReport {
     std::size_t pruned = 0;  // kerb and pavement pieces left out: a lane across them or a carriageway under them
     std::size_t aprons = 0;  // near-square junction corners whose pavement carries on into the block's corner
     std::size_t scrambles = 0; // signalised junctions run as scrambles
+    std::size_t closes = 0;    // free ends closed (endsClosed)
     double maxGrade = 0.0;   // along any piece
     std::string maxGradeAt;  // the steepest piece: "<edge> (x, y)"
     double maxStep = 0.0;    // m: the largest step where an arm's crowned carriageway meets a junction's fill (crowned too: 0)
@@ -512,6 +536,10 @@ struct RoadNetReport {
 // cover the inbound half from the island's kerb.
 // Last, the kerb and pavement pieces roadKerbFaces would find across its own lanes or in its own carriageway (two
 // junctions close together) are left out (report: pruned).
+// Then each free end of a street with endsClosed (one arm at its node, not a deck; report: closes), laid past its last
+// point at the end's pavement level: a kerb kRoadKerbWide deep across the carriageway and its two side kerbs, a pavement
+// strip wall to wall behind it to kRoadEndClose (the pavements' ends carried on to the kerb's back), and bollards across
+// the carriageway kRoadEndBollardBack past the end (ids <street>-END<n>-...). Its foot joins band; the bollards furniture.
 FTCORE_API void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround& ground, RoadBuild& out,
                              RoadNetReport* report = nullptr);
 

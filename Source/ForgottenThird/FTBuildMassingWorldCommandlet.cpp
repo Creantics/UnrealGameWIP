@@ -3322,6 +3322,67 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	{
 		Replaced[I] = Replaced[I] || LotBuild.Replaced[I];
 	}
+	// No road on a lot (2026-11-22, ftcore::roadLotOverlaps): every road piece laid (solids, bays, zebras, lamps,
+	// footways) against every lot's footprint, the hero corner's bays and its whole footprint too; the count logged with
+	// the first pieces, and the corner's own count apart.
+	if (!RoadBuilds.empty())
+	{
+		std::vector<ftcore::MassingFoot> LotFeet;
+		std::vector<std::string> LotNames;
+		for (size_t K = 0; K < LotBuild.Plan.lots.size(); ++K)
+		{
+			const ftcore::BuildingLot& Lot = LotBuild.Plan.lots[K];
+			if (Lot.run < 0 || static_cast<size_t>(Lot.run) >= LotBuild.Plan.runs.size())
+			{
+				continue;
+			}
+			const ftcore::FrontageRun& Run = LotBuild.Plan.runs[static_cast<size_t>(Lot.run)];
+			LotFeet.push_back(ftcore::lotFoot(Run, Lot));
+			char Name[96];
+			std::snprintf(Name, sizeof Name, "lot %d (%s %.1f..%.1f)", static_cast<int>(K), Run.id.c_str(), Lot.s0, Lot.s1);
+			LotNames.push_back(Name);
+		}
+		const size_t HeroFeet0 = LotFeet.size();
+		if (bHeroCorner)
+		{
+			if (!bHeroContent)
+			{
+				for (int32 B = 0; B < ftcore::kHeroBays; ++B)
+				{
+					LotFeet.push_back(ftcore::massingBoxFoot(Hero.bays[B]));
+					LotNames.push_back(Hero.bays[B].id);
+				}
+			}
+			ftcore::MassingFoot Corner;
+			Corner.x = 0.5 * (HeroTune.padX0 + HeroTune.padX1);
+			Corner.y = 0.5 * (HeroTune.padY0 + HeroTune.padY1);
+			Corner.hx = 0.5 * (HeroTune.padX1 - HeroTune.padX0);
+			Corner.hy = 0.5 * (HeroTune.padY1 - HeroTune.padY0);
+			LotFeet.push_back(Corner);
+			LotNames.push_back("HC-FOOT (the hero corner)");
+		}
+		size_t Count = 0, HeroCount = 0;
+		FString First;
+		int32 Listed = 0;
+		std::vector<ftcore::RoadLotHit> Hits;
+		for (const ftcore::RoadBuild& Built : RoadBuilds)
+		{
+			Hits.clear();
+			Count += ftcore::roadLotOverlaps(Built, LotFeet, ftcore::kRoadLotInset, &Hits);
+			for (const ftcore::RoadLotHit& H : Hits)
+			{
+				const bool bHero = H.lot >= HeroFeet0;
+				HeroCount += bHero ? 1 : 0;
+				if (Listed < 24 || bHero)
+				{
+					First += FString::Printf(TEXT(" %s on %s;"), *Utf8(H.piece), *Utf8(LotNames[H.lot]));
+					++Listed;
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: road lot overlaps: %d road pieces over %d lot footprints, %d in the hero corner's.%s"),
+			static_cast<int32>(Count), static_cast<int32>(LotFeet.size()), static_cast<int32>(HeroCount), *First);
+	}
 	// Playtest item 3's fix pass (-FloatFix, FTBuildPlinths.h): the floats' bases and piers fixed in Boxes before anything
 	// is laid; its added boxes are laid with the plinths below. A kit mesh's box keeps its shape (a box under it instead).
 	FTPlinths::FFloatFix FloatFix;
@@ -3752,6 +3813,24 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		// strip's run too, under its sub-level), never built.
 		Taken.push_back(ftcore::massingBoxFoot(Hero.pave));
 		Taken.push_back(ftcore::massingBoxFoot(Hero.nearClear));
+	}
+	// The corner's own ground (the coast road stops short of it, HeroCornerLayout::ground): laid with the ground, so the
+	// strip's run has it and its navmesh walks it; the corner's own run (no ground) none.
+	if (bHeroCorner && !bHeroOnly)
+	{
+		const FString SettsPackage = FTScene::SurfaceInstancePackage(TEXT("solhaven_granite_sett"));
+		UMaterialInterface* const GroundSetts = LoadObject<UMaterialInterface>(nullptr,
+			*(SettsPackage + TEXT(".") + FPackageName::GetShortName(SettsPackage)), nullptr, LOAD_NoWarn | LOAD_Quiet);
+		for (int32 G = 0; G < Hero.groundCount; ++G)
+		{
+			const ftcore::MassingBox& Pad = Hero.ground[G];
+			Taken.push_back(ftcore::massingBoxFoot(Pad));
+			LayCubeWearing(Pad, GroundSetts ? GroundSetts : (bSurfaces ? WearLook(LookSet, Pad) : Finish[static_cast<int32>(ftcore::massingFinish(Pad))]),
+				EFTCellKind::Walk, EFTCellCull::None);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -HeroCorner: %d ground pieces, x %.2f..%.2f, y %.2f..%.2f, top %.2f%s."),
+			Hero.groundCount, HeroTune.padX0, HeroTune.padX1, HeroTune.padY0, HeroTune.padY1, HeroTune.ground + HeroTune.paveTop,
+			GroundSetts ? TEXT("") : TEXT(" (setts not built: the look set's finish)"));
 	}
 	if (bHeroContent)
 	{

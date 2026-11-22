@@ -50,6 +50,8 @@ inline constexpr int kHeroCablePoints = 25;
 inline constexpr int kHeroShopFace = 2;
 // The south end wall's cladding: its boards, its battens, a fascia and a kick board.
 inline constexpr int kHeroCladMax = 24;
+// The corner's ground pieces (HeroCornerLayout::ground).
+inline constexpr int kHeroGroundMax = 6;
 
 struct HeroCornerSpec {
     double ground = 4.18;  // the lane's ground, z
@@ -137,6 +139,12 @@ struct HeroCornerSpec {
     // The lane's foot carried south past the paving to here, so nothing (a parked car, a scooter, a prop) stands between
     // the camera and the corner.
     double nearClearY0 = 503.0;
+    // The corner's own ground (2026-11-22): the coast road stops short of it either side (its ends closed, kRoadEndClose
+    // deep, at padY0 and padY1), so the corner stands on setts padDeep deep over x padX0..padX1 (the canal's coping to
+    // under the yards' front walls), y padY0..padY1, their top level with the lane's paving: the south and north aprons,
+    // the alley behind the bays, and the lane's run under its paving (there at the ground, the paving over it). None
+    // under the bays, whose plinths stand on the ground.
+    double padX0 = 901.0, padX1 = 920.25, padY0 = 504.0, padY1 = 566.0, padDeep = 0.5;
     // The camera.
     double eye[3] = {904.5, 511.0, 5.78};
     double at[3] = {904.5, 551.0, 3.68};
@@ -190,6 +198,10 @@ inline constexpr int kHeroLampSlots = kHeroStrings + 2 * kHeroPairsMax;
 
 struct HeroCornerLayout {
     MassingBox pave;                 // the lane's paving slab (kind "paving")
+    // The corner's ground (kind "paving", ids HC-GROUND-<n>): the south apron, the lane's run under its paving and its
+    // two short ends between the paving and the bays' ends, the alley, the north apron; empty ones left out.
+    MassingBox ground[kHeroGroundMax];
+    int groundCount = 0;
     MassingBox nearClear;            // the lane's width from nearClearY0 to the paving's south end (kind "clear"): kept
                                      // free of cars, scooters and props, never built
     MassingBox eaves[kHeroBays / 2 + 1];  // the eave's slabs over the lane (kind "eave", ids HC-EAVE-<n> south to north):

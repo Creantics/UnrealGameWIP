@@ -154,7 +154,9 @@ FTCORE_API int heroCornerRooms(const HeroCornerSpec& hero, HeroRoom out[kHeroBay
 FTCORE_API std::string heroCornerDoorRows(const HeroCornerSpec& hero);
 
 // The hero corner's crowd, engine frame of a square `side` metres across (massingEnginePoint): the lane as one street
-// (kind "lane", its whole width, no pavement, a point about every 3 m) up its middle from laneY0 to laneY1, and a walk-in door per room whose
+// (kind "lane", its whole width, no pavement, a point about every 3 m) up its middle from the coast road's closed south
+// end (padY0 less kRoadEndClose) over the south apron to laneY1, the alley behind the bays as another (kind "alley",
+// bays' backs to padX1) from that end to the road's north one (padY1 plus kRoadEndClose), and a walk-in door per room whose
 // plan holds (at the door's outside point, through its inside point, the room's middle inside, the plan's dwell spots).
 // Appends to both. The number of doors added. Allocates.
 FTCORE_API int heroCornerCrowd(const HeroCornerSpec& hero, double side, std::vector<crowdv2::CrowdStreet>& streets,

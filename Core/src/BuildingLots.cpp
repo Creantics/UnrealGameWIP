@@ -278,6 +278,15 @@ double FrontageRun::length() const { return std::hypot(bx - ax, by - ay); }
 
 double FrontageRun::yaw() const { return std::atan2(by - ay, bx - ax) * 180.0 / kPi; }
 
+MassingFoot lotFoot(const FrontageRun& run, const BuildingLot& lot) {
+    MassingFoot f;
+    run.toPlan(0.5 * (lot.s0 + lot.s1), 0.5 * lot.depth, f.x, f.y);
+    f.hx = 0.5 * std::fabs(lot.s1 - lot.s0);
+    f.hy = 0.5 * std::fabs(lot.depth);
+    f.rot = run.yaw();
+    return f;
+}
+
 void FrontageRun::toPlan(double s, double y, double& px, double& py) const {
     const double len = length();
     const double dx = len > 0.0 ? (bx - ax) / len : 1.0;
