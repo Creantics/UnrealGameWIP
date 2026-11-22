@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ftcore {
@@ -431,6 +432,38 @@ int heroCornerRooms(const HeroCornerSpec& hero, HeroRoom out[kHeroBays]) {
         s.seed = static_cast<std::uint32_t>(i);
     }
     return n;
+}
+
+int heroCornerCrowd(const HeroCornerSpec& hero, double side, std::vector<crowdv2::CrowdStreet>& streets,
+                    std::vector<crowdv2::CrowdDoor>& doors) {
+    auto eng = [side](double x, double y) {
+        const MassingVec e = massingEnginePoint(side, x, y, 0.0);
+        return Vec2{static_cast<float>(e.x), static_cast<float>(e.y)};
+    };
+    crowdv2::CrowdStreet lane;
+    lane.kind = "lane";
+    lane.width = static_cast<float>(hero.laneX1 - hero.laneX0);
+    const double mid = 0.5 * (hero.laneX0 + hero.laneX1);
+    // A point about every 3 m: a lane standing on its own is still a component big enough to spawn on (minComponent).
+    const int steps = std::max(1, static_cast<int>(std::ceil((hero.laneY1 - hero.laneY0) / 3.0)));
+    for (int k = 0; k <= steps; ++k) lane.points.push_back(eng(mid, hero.laneY0 + (hero.laneY1 - hero.laneY0) * k / steps));
+    streets.push_back(std::move(lane));
+    HeroRoom rooms[kHeroBays];
+    const int n = heroCornerRooms(hero, rooms);
+    int added = 0;
+    for (int k = 0; k < n; ++k) {
+        InteriorPlan plan;
+        if (!interiorRoomPlan(rooms[k].spec, plan)) continue;
+        crowdv2::CrowdDoor d;
+        d.id = rooms[k].spec.host.id;
+        d.at = eng(plan.doorOutside.x, plan.doorOutside.y);
+        d.through = eng(plan.doorInside.x, plan.doorInside.y);
+        d.inside = eng(plan.room.x, plan.room.y);
+        for (const MassingVec& p : plan.dwell) d.dwell.push_back(eng(p.x, p.y));
+        doors.push_back(std::move(d));
+        ++added;
+    }
+    return added;
 }
 
 std::string heroCornerDoorRows(const HeroCornerSpec& hero) {

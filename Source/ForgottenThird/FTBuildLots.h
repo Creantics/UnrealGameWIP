@@ -14,6 +14,7 @@
 
 #include "ftcore/BuildingLots.h"
 #include "ftcore/HeroCorner.h"
+#include "ftcore/Interior.h"
 #include "ftcore/MassingPlan.h"
 
 #include <string>
@@ -58,6 +59,16 @@ struct FBuild
 	// shutters weathered; and the one whose lattice room is the eatery's (a counter, not shelves).
 	TArray<int32> TimberLots;
 	int32 CounterLot = -1;
+	// The hero bays' lots, south to north (AddHeroLots; -1 before it runs).
+	int32 HeroBayLots[ftcore::kHeroBays] = {-1, -1, -1, -1, -1};
+	// -Interiors=hero (the commandlet sets these after AddHeroLots): the enterable rooms by lot, their plans (plan frame) and
+	// open fronts' doorways. A room lot's proof front is placed NoCollide with no panes in its doorway, its body below the
+	// room's top left out, the room's shell laid in its stead (visible, NoCollide: the bay's hidden room colliders are the
+	// collision) and lined by face; the shallow bay and its dressing are not laid.
+	TArray<int32> RoomLots;
+	std::vector<ftcore::InteriorPlan> RoomPlans;
+	std::vector<const ftcore::KitDoorway*> RoomDoorways;
+	int32 RoomOf(int32 Lot) const { return RoomLots.Find(Lot); }
 	// The hero corner's lit rooms' own glow (AddHeroLots): -HeroPanelGlow=<x> the ceiling panels' LampPanel,
 	// -HeroWallGlow=<x> the back wall's (0: lit by the shop slot alone), -HeroGlowCap=<x> their ShopGlowCap (0: the master's).
 	// Defaults are tune 3's (2026-11-16): 3, 0.8, 3.

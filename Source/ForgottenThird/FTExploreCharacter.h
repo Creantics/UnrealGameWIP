@@ -349,6 +349,9 @@ private:
 	FTimerHandle StillCamTimer;
 	bool bStillCamHeld = false;
 #endif
+	// -StillCamLead (with -StillCam): the lead and what it wears stay in sight, a still of a move rather than of a place
+	// (the party is still hidden); each shot carries its index, so a yaw list of repeats is a sequence. Review only.
+	bool bStillCamLead = false;
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 	void HoldBodyAt(float Time);

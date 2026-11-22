@@ -555,8 +555,9 @@ void AFTExploreCharacter::BeginPlay()
 		StillCamView = ftcore::parseStillCam(FT::ToUtf8(StillCamText));
 		if (StillCamView.on)
 		{
+			bStillCamLead = FParse::Param(FCommandLine::Get(), TEXT("StillCamLead"));
 			bPartyHidden = true;
-			SetActorHiddenInGame(true);
+			SetActorHiddenInGame(!bStillCamLead);
 			GetWorldTimerManager().SetTimer(StillCamTimer, this, &AFTExploreCharacter::HoldStillCam, 0.25f, true, 0.1f);
 		}
 		else
@@ -584,12 +585,12 @@ void AFTExploreCharacter::HoldStillCam()
 	Camera->SetUsingAbsoluteRotation(true);
 	Camera->SetWorldLocationAndRotation(At, ViewRot);
 	Camera->SetFieldOfView(static_cast<float>(StillCamView.fovDeg));
-	SetActorHiddenInGame(true);
+	SetActorHiddenInGame(!bStillCamLead);
 	TArray<AActor*> Held;
 	GetAttachedActors(Held, true, true);
 	for (AActor* Attached : Held)
 	{
-		Attached->SetActorHiddenInGame(true);
+		Attached->SetActorHiddenInGame(!bStillCamLead);
 	}
 	// Every hold: a partner spawned after the first is hidden too (quietly; SetPartyHidden logs, so once below).
 	for (AFTPartyFollower* Follower : D->GetFollowers())
@@ -603,8 +604,9 @@ void AFTExploreCharacter::HoldStillCam()
 	{
 		bStillCamHeld = true;
 		D->SetPartyHidden(true);
-		UE_LOG(LogForgottenThird, Display, TEXT("StillCam: view held at (%.0f, %.0f, %.0f) cm, yaw %.1f, pitch %.1f, fov %.1f; lead, %d attached and party hidden."),
-			At.X, At.Y, At.Z, StillCamView.yawDeg, StillCamView.pitchDeg, StillCamView.fovDeg, Held.Num());
+		UE_LOG(LogForgottenThird, Display, TEXT("StillCam: view held at (%.0f, %.0f, %.0f) cm, yaw %.1f, pitch %.1f, fov %.1f; %s, %d attached; party hidden."),
+			At.X, At.Y, At.Z, StillCamView.yawDeg, StillCamView.pitchDeg, StillCamView.fovDeg,
+			bStillCamLead ? TEXT("lead in sight (-StillCamLead)") : TEXT("lead hidden"), Held.Num());
 	}
 }
 #endif
@@ -650,7 +652,7 @@ void AFTExploreCharacter::StepPortraitShots()
 	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
 	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
-		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: LookDevSpin != 0.f || bStillCamLead ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.

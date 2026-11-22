@@ -22,6 +22,7 @@
 // may stand at any turn. Plain C++20, no exceptions. Allocates (build time only). The same input gives the same plan.
 
 #include "ftcore/Api.h"
+#include "ftcore/CrowdV2.h"
 #include "ftcore/HeroCorner.h"
 #include "ftcore/MassingPlan.h"
 #include "ftcore/MassingProps.h"
@@ -151,5 +152,12 @@ FTCORE_API int heroCornerRooms(const HeroCornerSpec& hero, HeroRoom out[kHeroBay
 // The rooms as doors-table rows (DOOR-<host> and ROOM-<host>, the strip table's form, importRoadRooms reads them back):
 // the frontage and roads keep-clear, the minimap door and the crowd door read the hero doors from these.
 FTCORE_API std::string heroCornerDoorRows(const HeroCornerSpec& hero);
+
+// The hero corner's crowd, engine frame of a square `side` metres across (massingEnginePoint): the lane as one street
+// (kind "lane", its whole width, no pavement, a point about every 3 m) up its middle from laneY0 to laneY1, and a walk-in door per room whose
+// plan holds (at the door's outside point, through its inside point, the room's middle inside, the plan's dwell spots).
+// Appends to both. The number of doors added. Allocates.
+FTCORE_API int heroCornerCrowd(const HeroCornerSpec& hero, double side, std::vector<crowdv2::CrowdStreet>& streets,
+                               std::vector<crowdv2::CrowdDoor>& doors);
 
 } // namespace ftcore

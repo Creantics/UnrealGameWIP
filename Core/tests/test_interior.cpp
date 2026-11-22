@@ -521,3 +521,53 @@ TEST_CASE("importRoadRooms: the real doors table (opt-in)") {
     }
     MESSAGE("rooms: " << rooms.size() << ", doors under the gap floor: " << narrow);
 }
+
+TEST_CASE("heroCornerCrowd: the lane as a street and a walk-in door per room, and the crowd walks one in and out") {
+    const HeroCornerSpec hero;
+    std::vector<crowdv2::CrowdStreet> streets;
+    std::vector<crowdv2::CrowdDoor> doors;
+    const double side = 1000.0;
+    REQUIRE(heroCornerCrowd(hero, side, streets, doors) == 3);
+    REQUIRE(streets.size() == 1);
+    CHECK(streets[0].kind == "lane");
+    CHECK(streets[0].width == doctest::Approx(hero.laneX1 - hero.laneX0));
+    CHECK(streets[0].pavement == 0.f);
+    CHECK(streets[0].points.size() >= 13);
+    const double mid = 0.5 * (hero.laneX0 + hero.laneX1);
+    for (const crowdv2::CrowdDoor& d : doors) {
+        CHECK(d.dwell.size() >= 2);
+        // Engine x is plan x less half the side: the door outside on the lane's east side, the room east of it.
+        CHECK(d.at.x > mid - side / 2);
+        CHECK(d.through.x > d.at.x);
+        CHECK(d.inside.x > d.through.x);
+        for (const Vec2& p : d.dwell) CHECK(p.x > d.through.x);
+    }
+    crowdv2::CrowdGraphTuning gt; // the shipped island floor: the lane spawns on its own
+    crowdv2::CrowdGraph g;
+    REQUIRE(g.build(streets, gt));
+    CHECK(g.spawnableCount() > 0);
+    crowdv2::CrowdTuning t;
+    t.doorEnterChance = 1.f;
+    t.doorDwellMin = t.doorDwellMax = 5.f;
+    t.idleChance = 0.f;
+    t.reactRadius = 0.f;
+    crowdv2::CrowdSim sim;
+    REQUIRE(sim.init(g, t, 4));
+    sim.setPopulationFrozen(true);
+    CHECK(sim.setDoors(doors) == 3);
+    const std::uint32_t s0 = g.nearest(streets[0].points[0], 1.f), s1 = g.nearest(streets[0].points[1], 1.f);
+    std::uint32_t k = 0;
+    while (k < g.degree(s0) && g.edge(s0, k).to != s1) ++k;
+    REQUIRE(k < g.degree(s0));
+    const std::uint32_t a = sim.spawnAt(s0, k, 0.5f, 0.f);
+    REQUIRE(a != UINT32_MAX);
+    bool inRoom = false;
+    for (int s = 0; s < 15 * 60; ++s) {
+        sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+        const crowdv2::CrowdAgentView& v = sim.agent(a);
+        if (v.state == crowdv2::CrowdState::Indoors && !v.indoors && v.pos.x > doors[0].through.x - 0.01f) inRoom = true;
+    }
+    CHECK(inRoom);
+    CHECK(sim.counts().wentIn >= 1);
+    CHECK(sim.counts().cameOut >= 1);
+}

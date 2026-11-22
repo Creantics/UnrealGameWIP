@@ -24,6 +24,7 @@
 #include "Engine/World.h"
 #include "WorldCollision.h"
 #include "FTMeshFacing.h"
+#include "ftcore/Interior.h"
 #include "ForgottenThird.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
@@ -161,7 +162,18 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 		return;
 	}
 	std::vector<ftcore::crowdv2::CrowdStreet> Streets;
-	if (!ftcore::crowdv2::importCrowdStreets(TCHAR_TO_UTF8(*Text), Side, Streets, &Error) || !Graph.build(Streets, Tuning.graph, &Error))
+	const bool bStreetsRead = ftcore::crowdv2::importCrowdStreets(TCHAR_TO_UTF8(*Text), Side, Streets, &Error);
+	// -Interiors=hero (the map built with the hero corner's rooms): the hero lane is a street and each room a walk-in door,
+	// members going in through the doorway to a spot in the room, in sight, and back out (ftcore::heroCornerCrowd, the
+	// default hero spec, in the -CrowdSide frame).
+	std::vector<ftcore::crowdv2::CrowdDoor> HeroDoors;
+	FString Interiors;
+	if (bStreetsRead && FParse::Value(Cmd, TEXT("Interiors="), Interiors) && Interiors == TEXT("hero"))
+	{
+		const int HeroDoorCount = ftcore::heroCornerCrowd(ftcore::HeroCornerSpec{}, Side, Streets, HeroDoors);
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: -Interiors=hero: the hero lane added as a street, %d walk-in room doors."), HeroDoorCount);
+	}
+	if (!bStreetsRead || !Graph.build(Streets, Tuning.graph, &Error))
 	{
 		Fail(TEXT("bad streets:"), FString(UTF8_TO_TCHAR(Error.c_str())));
 		return;
@@ -193,6 +205,20 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 				Q.y += By.y;
 			}
 		}
+		// The hero room doors move with the streets they open onto.
+		for (ftcore::crowdv2::CrowdDoor& D : HeroDoors)
+		{
+			for (ftcore::Vec2* Q : {&D.at, &D.inside, &D.through})
+			{
+				Q->x += By.x;
+				Q->y += By.y;
+			}
+			for (ftcore::Vec2& Q : D.dwell)
+			{
+				Q.x += By.x;
+				Q.y += By.y;
+			}
+		}
 		if (!Graph.build(Streets, Tuning.graph, &Error))
 		{
 			Fail(TEXT("bad streets after the shift:"), FString(UTF8_TO_TCHAR(Error.c_str())));
@@ -204,6 +230,16 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		Fail(TEXT("no spawnable street in"), StreetsPath);
 		return;
+	}
+	if (!HeroDoors.empty())
+	{
+		const std::size_t Attached = Sim.setDoors(HeroDoors);
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d of %d hero room doors on a street."), static_cast<int32>(Attached), static_cast<int32>(HeroDoors.size()));
+		for (const ftcore::crowdv2::CrowdDoor& D : HeroDoors)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: room door %s at (%.2f, %.2f) m, through (%.2f, %.2f), %d spots."), UTF8_TO_TCHAR(D.id.c_str()),
+				D.at.x, D.at.y, D.through.x, D.through.y, static_cast<int32>(D.dwell.size()));
+		}
 	}
 	Sim.setOcclusion(&UFTCrowdSubsystemV2::Occluded, this);
 	TraceQuery = FCollisionQueryParams(SCENE_QUERY_STAT(FTCrowdTrace), false);

@@ -235,3 +235,120 @@ TEST_CASE("crowd density: the streets empty into doors towards evening and refil
     CHECK(sim.counts().cameOut > out0);
     CHECK(sim.liveCount() - sim.indoorCount() >= 190);
 }
+
+TEST_CASE("crowd doors: at a walk-in room a walker goes in through the doorway to a spot, stays in sight, and comes back out") {
+    CrowdGraph g;
+    REQUIRE(g.build({line({-100.f, 0.f}, {100.f, 0.f})}, loose()));
+    CrowdTuning t = quiet();
+    t.doorEnterChance = 1.f;
+    t.doorDwellMin = t.doorDwellMax = 6.f;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 3));
+    sim.setPopulationFrozen(true);
+    CrowdDoor room{"room", {0.f, 5.f}, {0.f, 10.f}};
+    room.through = {0.f, 6.5f};
+    room.dwell = {{-1.f, 9.f}, {1.f, 9.f}};
+    REQUIRE(sim.setDoors({room}) == 1);
+    const std::uint32_t w = g.nearest({-100.f, 0.f}, 1.f), e = g.nearest({100.f, 0.f}, 1.f);
+    const std::uint32_t a = sim.spawnAt(w, edgeTo(g, w, e), 0.5f, 80.f);
+    REQUIRE(a != UINT32_MAX);
+    bool hidden = false, passedDoorway = false;
+    float atSpotFor = 0.f, firstIn = -1.f, lastIn = -1.f;
+    for (int s = 0; s < 15 * 50; ++s) {
+        tick(sim);
+        const CrowdAgentView& v = sim.agent(a);
+        const float now = static_cast<float>(s + 1) / 15.f;
+        if (v.state != CrowdState::Indoors) continue;
+        if (firstIn < 0.f) firstIn = now;
+        lastIn = now;
+        hidden = hidden || v.indoors;
+        passedDoorway = passedDoorway || dist(v.pos, room.through) < 0.05f;
+        const bool atSpot = dist(v.pos, room.dwell[0]) < 1e-3f || dist(v.pos, room.dwell[1]) < 1e-3f;
+        if (atSpot) {
+            atSpotFor += 1.f / 15.f;
+            CHECK(v.anim == CrowdAnim::Idle);
+            CHECK(sim.indoorCount() == 1);
+        }
+    }
+    REQUIRE(firstIn > 0.f);
+    CHECK_FALSE(hidden);        // never hidden at the door: walks in and stands in sight
+    CHECK(passedDoorway);
+    CHECK(atSpotFor >= 3.f - 0.1f); // the 6 s dwell, run at twice the pace while the streets hold under their share
+    CHECK(lastIn - firstIn < 6.f + 14.f);
+    CHECK(sim.agent(a).state == CrowdState::Walk);
+    CHECK(sim.indoorCount() == 0);
+    CHECK(sim.counts().wentIn == 1);
+    CHECK(sim.counts().cameOut == 1);
+    CHECK(sim.wallClearance(a) >= t.graph.wallInset - 0.05f);
+}
+
+TEST_CASE("crowd doors: a walk-in room's spots are never shared; a full room is passed by; a plain door still hides") {
+    CrowdGraph g;
+    REQUIRE(g.build({line({-100.f, 0.f}, {100.f, 0.f})}, loose()));
+    CrowdTuning t = quiet();
+    t.doorEnterChance = 1.f;
+    t.doorDwellMin = t.doorDwellMax = 200.f; // still in when b comes by
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 9));
+    sim.setPopulationFrozen(true);
+    CrowdDoor room{"room", {0.f, 5.f}, {0.f, 10.f}};
+    room.through = {0.f, 6.5f};
+    room.dwell = {{0.f, 9.f}}; // one spot
+    CrowdDoor plain{"plain", {20.f, 5.f}, {20.f, 9.f}};
+    REQUIRE(sim.setDoors({room, plain}) == 2);
+    const std::uint32_t w = g.nearest({-100.f, 0.f}, 1.f), e = g.nearest({100.f, 0.f}, 1.f);
+    const std::uint32_t a = sim.spawnAt(w, edgeTo(g, w, e), 0.5f, 90.f);
+    const std::uint32_t b = sim.spawnAt(w, edgeTo(g, w, e), 0.5f, 80.f); // 10 m behind
+    REQUIRE(a != UINT32_MAX);
+    REQUIRE(b != UINT32_MAX);
+    for (int s = 0; s < 15 * 45; ++s) tick(sim);
+    // a took the room's one spot; b passed it by and went in at the plain door, hidden there.
+    CHECK(dist(sim.agent(a).pos, room.dwell[0]) < 1e-3f);
+    CHECK_FALSE(sim.agent(a).indoors);
+    CHECK(sim.agent(b).state == CrowdState::Indoors);
+    CHECK(sim.agent(b).indoors);
+    CHECK(dist(sim.agent(b).pos, plain.at) < 1e-3f);
+    CHECK(sim.counts().wentIn == 2);
+}
+
+TEST_CASE("crowd doors: a walk-in doorway takes one way at a time; two visitors never walk through each other or lock") {
+    int together = 0, passedBy = 0;
+    for (int off = 50; off <= 78; off += 2) {
+        CrowdGraph g;
+        REQUIRE(g.build({line({-100.f, 0.f}, {100.f, 0.f})}, loose()));
+        CrowdTuning t = quiet();
+        t.doorEnterChance = 1.f;
+        t.doorDwellMin = t.doorDwellMax = 6.f;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, 5));
+        sim.setPopulationFrozen(true);
+        CrowdDoor room{"room", {0.f, 5.f}, {0.f, 10.f}};
+        room.through = {0.f, 6.5f};
+        room.dwell = {{-1.f, 9.f}, {1.f, 9.f}};
+        REQUIRE(sim.setDoors({room}) == 1);
+        const std::uint32_t w = g.nearest({-100.f, 0.f}, 1.f), e = g.nearest({100.f, 0.f}, 1.f);
+        const std::uint32_t a = sim.spawnAt(w, edgeTo(g, w, e), 0.5f, 80.f);
+        const std::uint32_t b = sim.spawnAt(w, edgeTo(g, w, e), 0.5f, static_cast<float>(off));
+        REQUIRE(a != UINT32_MAX);
+        REQUIRE(b != UINT32_MAX);
+        float closest = 1e9f;
+        bool both = false;
+        for (int s = 0; s < 15 * 70; ++s) {
+            tick(sim);
+            const CrowdAgentView &va = sim.agent(a), &vb = sim.agent(b);
+            if (va.state != CrowdState::Indoors || vb.state != CrowdState::Indoors) continue;
+            both = true;
+            closest = std::min(closest, dist(va.pos, vb.pos));
+        }
+        CAPTURE(off);
+        CHECK(closest >= 0.6f);
+        CHECK(sim.agent(a).state == CrowdState::Walk); // nobody left waiting inside
+        CHECK(sim.agent(b).state == CrowdState::Walk);
+        CHECK(sim.indoorCount() == 0);
+        CHECK(sim.counts().wentIn == sim.counts().cameOut);
+        together += both ? 1 : 0;
+        passedBy += sim.counts().wentIn == 1 ? 1 : 0;
+    }
+    CHECK(together > 0); // the sweep holds cases with both in the room at once
+    CHECK(passedBy > 0); // and cases where the second walked past a busy doorway
+}
