@@ -1224,7 +1224,9 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
 	WetHairDry.Reset();
 	bWetHairMade = false;
 	SkinWetEased = 0.f;
-	bSkinWetSnap = true;
+	// A switch lands the skin at the member's own soak; the first look, at the start, eases in from dry.
+	bSkinWetSnap = ftcore::leadwet::skinSnapOnLook(bLookWorn);
+	bLookWorn = true;
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
 	// The grooms come on dry; the wet switch swaps them on its next tick if the weather is wet.

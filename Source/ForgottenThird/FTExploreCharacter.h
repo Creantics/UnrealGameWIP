@@ -853,6 +853,7 @@ private:
 	float SkinWetShown = 0.f;
 	float SkinWetEased = 0.f;
 	bool bSkinWetSnap = false; // a new look: the next show puts the skin at its target (the member's own soak), not eased
+	bool bLookWorn = false;    // a look has been worn (WearLook): only a later one snaps the skin (ftcore::leadwet::skinSnapOnLook)
 	TArray<FVector2f> WetSkinDry;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetHairMaterials;

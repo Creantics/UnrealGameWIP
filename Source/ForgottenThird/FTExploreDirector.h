@@ -332,9 +332,12 @@ private:
 	void SpawnFollowers(AFTExploreCharacter& Player);
 	void PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds);
 	void ClearFollowers();
+	// Stores a member's soak (PartyWetness) at game time Now; warns when the member is past those kept.
+	void StoreSoak(int32 Member, const ftcore::WaterWetness& Soak, double Now);
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AFTPartyFollower>> Followers;
 	TArray<int32> FollowerMembers;     // each follower's place in the party (ftcore::leadwet::followerMember), beside Followers
+	TArray<int32> FollowerPlaces;      // each follower's place in the walk behind the lead (ft.PartyWet's slot), beside Followers
 	ftcore::leadwet::PartyWet PartyWetness; // every member's soak, stored when the followers are cleared
 	ftcore::PartyTrail Trail;
 	TArray<ftcore::PartySlot> Slots; // each follower's place: behind, to one side, a beat late

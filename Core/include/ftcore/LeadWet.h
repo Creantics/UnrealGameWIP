@@ -171,27 +171,51 @@ constexpr float partyWeather(float leadW, int slot, const PartyWetForce& force) 
 
 // The soak belongs to the member, not to the body the player drives. The lead's lives in the water subsystem and each
 // follower's on its actor; when the followers are cleared (a lead switch, a respawn) each one's is stored here by its
-// place in the party, the old lead's too, and the new lead and the new followers take theirs back. A member with no
-// live actor (a failed spawn, one over the follower cap) keeps the soak it was stored with until it has one again.
+// place in the party, the old lead's too, with the game time, and the new lead and the new followers take theirs back.
+// A member with no live actor (a failed spawn, one over the follower cap) dries while it is away, in the open, by the
+// water's own law (WaterWetness::step out of the water, dry scale 1, as a follower's StepWet), so it never comes back
+// as wet as it left however long it was gone. At no time away it gets back exactly what was stored.
 inline constexpr int kPartyWetMembers = 8;
 
 // The party member follower i walks as behind `lead`, in a party of `count` (the members after the lead, in order);
-// -1 when any argument is out of range.
+// -1 when any argument is out of range (the caller brings the lead into range first).
 constexpr int followerMember(int lead, int i, int count) {
     return count > 0 && lead >= 0 && lead < count && i >= 0 && i < count - 1 ? (lead + 1 + i) % count : -1;
 }
 
+// Whether a look put on lands the wet skin at its target at once: only a later look (a switch hands the member its own
+// soak back); the first look, at the start, eases in from dry like any other change.
+constexpr bool skinSnapOnLook(bool lookWornBefore) { return lookWornBefore; }
+
 struct PartyWet {
     WaterWetness member[kPartyWetMembers]{};
+    double at[kPartyWetMembers]{};   // game time (s) when it was stored
+    bool held[kPartyWetMembers]{};   // stored at least once
     static constexpr bool has(int m) { return m >= 0 && m < kPartyWetMembers; }
-    // Out of range is a no-op.
-    constexpr void store(int m, const WaterWetness& w) {
-        if (has(m)) {
-            member[m] = w;
+    // False, and nothing stored, out of range (the caller says so: that member would come back dry).
+    constexpr bool store(int m, const WaterWetness& w, double now) {
+        if (!has(m)) {
+            return false;
         }
+        member[m] = w;
+        at[m] = now;
+        held[m] = true;
+        return true;
     }
-    // Out of range is dry.
-    constexpr WaterWetness of(int m) const { return has(m) ? member[m] : WaterWetness{}; }
+    // Whether the member has a soak to give back (a new member, or one out of range, has none: it starts dry, eased).
+    constexpr bool stored(int m) const { return has(m) && held[m]; }
+    // The stored soak, dried for the time since it was stored; dry when there is none. NaN or earlier `now` holds it.
+    WaterWetness of(int m, double now) const {
+        if (!stored(m)) {
+            return WaterWetness{};
+        }
+        WaterWetness w = member[m];
+        const double away = now - at[m];
+        if (away > 0.0) {
+            w.step(0.f, 0.f, static_cast<float>(away));
+        }
+        return w;
+    }
 };
 
 } // namespace ftcore::leadwet
