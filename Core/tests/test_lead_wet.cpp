@@ -522,9 +522,28 @@ TEST_CASE("lead wet: under cover in rain a lead is not wetted and dries only at 
 TEST_CASE("lead wet: the cover trace runs every quarter second, not every frame") {
     float clock = 0.f;
     CHECK(lw::coverTraceDue(clock, 0.016f)); // first frame
-    int n = 0;
-    for (int i = 0; i < 60; ++i) n += lw::coverTraceDue(clock, 1.f / 60.f) ? 1 : 0;
-    CHECK(n == 4);
+    // 5 s at 60 fps: every 15th frame, 20 traces (16-frame periods from float rounding would give 18).
+    int n = 0, gap = 0, maxGap = 0;
+    for (int i = 0; i < 300; ++i) {
+        ++gap;
+        if (lw::coverTraceDue(clock, 1.f / 60.f)) { maxGap = gap > maxGap ? gap : maxGap; gap = 0; n += 1; }
+    }
+    CHECK(n == 20);
+    CHECK(maxGap == 15);
+    // 5 s at 30 fps and at an uneven 1/47 s: still about 4 a second.
+    float c30 = 0.f, c47 = 0.f; int n30 = 0, n47 = 0;
+    for (int i = 0; i < 150; ++i) n30 += lw::coverTraceDue(c30, 1.f / 30.f) ? 1 : 0;
+    for (int i = 0; i < 235; ++i) n47 += lw::coverTraceDue(c47, 1.f / 47.f) ? 1 : 0;
+    CHECK(n30 >= 19); CHECK(n30 <= 21);
+    CHECK(n47 >= 19); CHECK(n47 <= 21);
+    // A 2 s hitch traces once, then the next frame does not.
+    CHECK(lw::coverTraceDue(clock, 2.f));
+    CHECK_FALSE(lw::coverTraceDue(clock, 1.f / 60.f));
+    // No time passed: no trace, clock unchanged.
+    const float before = clock;
     CHECK_FALSE(lw::coverTraceDue(clock, std::nanf("")));
+    CHECK_FALSE(lw::coverTraceDue(clock, 0.f));
+    CHECK_FALSE(lw::coverTraceDue(clock, -1.f));
+    CHECK(clock == before);
 }
 #endif

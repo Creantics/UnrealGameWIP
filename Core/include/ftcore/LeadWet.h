@@ -81,13 +81,22 @@ inline float rainSoakStep(const RainSpec& spec, float soak, const RainState& rai
     const float down = spec.dryPerS > 0.f ? s - dt * spec.dryPerS : s;
     return down > want ? down : want;
 }
-// The cover trace's clock: true (and restarted) when kCoverTraceS has run out. NaN or negative steps count as 0.
+// The cover trace's clock: true when kCoverTraceS has run out. The overshoot carries into the next period and a
+// small slack absorbs float rounding, so 60 fps frames trace every 15 frames, not 16. After a hitch longer than a
+// period the clock restarts: one trace, never a burst. NaN, zero or negative steps pass no time and never trace.
+inline constexpr float kCoverTraceSlackS = 1e-4f;
 inline bool coverTraceDue(float& clock, float dtS) {
-    clock -= dtS > 0.f ? dtS : 0.f;
-    if (clock > 0.f) {
+    if (!(dtS > 0.f)) {
         return false;
     }
-    clock = kCoverTraceS;
+    clock -= dtS;
+    if (clock > kCoverTraceSlackS) {
+        return false;
+    }
+    clock += kCoverTraceS;
+    if (clock < kCoverTraceSlackS) {
+        clock = kCoverTraceS;
+    }
     return true;
 }
 #endif
