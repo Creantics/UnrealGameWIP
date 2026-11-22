@@ -126,6 +126,13 @@ Check 'open COMPILE line refuses' ($x.Code -eq 3 -and ($x.Out -match 'not openin
 Add-Content -Encoding utf8 $note "FREE $now - other COMPILE slot: GATE OK"
 $x = Shared $d10 @('-Runs', '1')
 Check 'freed COMPILE line opens' ($x.Code -eq 0 -and (Test-Path (Join-Path $d10 'day_1920x1080_r1\day_1920x1080_r1_summary.txt'))) ($x.Out -join ' / ')
+# 11. -Lead puts -ArenaLead=<kit> on the arena scenes only; without it no scene carries it.
+$o = Bench @('-Scenes', 'arena_group,arena_kite,day', '-Sizes', '1920x1080', '-Runs', '1', '-Lead', 'devin')
+$ar = @($o | Where-Object { $_ -like 'args *' })
+Check 'lead on arena scenes only' ($ar.Count -eq 3 -and $ar[0] -like 'args arena_group_* -ArenaLead=devin' -and
+    $ar[1] -like 'args arena_kite_* -ArenaLead=devin' -and -not ($ar[2] -match 'ArenaLead')) ($ar -join ' / ')
+$o = Bench @('-Scenes', 'arena_group', '-Runs', '1')
+Check 'no lead by default' (-not ($o -match 'ArenaLead')) ($o -join ' / ')
 $env:FT_PYTHON = ''; $env:FT_BUSY_WRITER = ''; $env:FT_BUSY_NOTE = ''; $env:FT_BENCH_OWNER = ''
 Remove-Item -Recurse -Force $fake -ErrorAction SilentlyContinue
 if ($fails) { "$fails FAILED"; exit 1 } else { 'all passed'; exit 0 }

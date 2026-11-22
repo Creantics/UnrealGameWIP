@@ -594,8 +594,9 @@ void AFTExploreCharacter::BeginPlay()
 		StillCamView = ftcore::parseStillCam(FT::ToUtf8(StillCamText));
 		if (StillCamView.on)
 		{
+			bStillCamLead = FParse::Param(FCommandLine::Get(), TEXT("StillCamLead"));
 			bPartyHidden = true;
-			SetActorHiddenInGame(true);
+			SetActorHiddenInGame(!bStillCamLead);
 			GetWorldTimerManager().SetTimer(StillCamTimer, this, &AFTExploreCharacter::HoldStillCam, 0.25f, true, 0.1f);
 		}
 		else
@@ -623,12 +624,12 @@ void AFTExploreCharacter::HoldStillCam()
 	Camera->SetUsingAbsoluteRotation(true);
 	Camera->SetWorldLocationAndRotation(At, ViewRot);
 	Camera->SetFieldOfView(static_cast<float>(StillCamView.fovDeg));
-	SetActorHiddenInGame(true);
+	SetActorHiddenInGame(!bStillCamLead);
 	TArray<AActor*> Held;
 	GetAttachedActors(Held, true, true);
 	for (AActor* Attached : Held)
 	{
-		Attached->SetActorHiddenInGame(true);
+		Attached->SetActorHiddenInGame(!bStillCamLead);
 	}
 	// Every hold: a partner spawned after the first is hidden too (quietly; SetPartyHidden logs, so once below).
 	for (AFTPartyFollower* Follower : D->GetFollowers())
@@ -642,8 +643,9 @@ void AFTExploreCharacter::HoldStillCam()
 	{
 		bStillCamHeld = true;
 		D->SetPartyHidden(true);
-		UE_LOG(LogForgottenThird, Display, TEXT("StillCam: view held at (%.0f, %.0f, %.0f) cm, yaw %.1f, pitch %.1f, fov %.1f; lead, %d attached and party hidden."),
-			At.X, At.Y, At.Z, StillCamView.yawDeg, StillCamView.pitchDeg, StillCamView.fovDeg, Held.Num());
+		UE_LOG(LogForgottenThird, Display, TEXT("StillCam: view held at (%.0f, %.0f, %.0f) cm, yaw %.1f, pitch %.1f, fov %.1f; %s, %d attached; party hidden."),
+			At.X, At.Y, At.Z, StillCamView.yawDeg, StillCamView.pitchDeg, StillCamView.fovDeg,
+			bStillCamLead ? TEXT("lead in sight (-StillCamLead)") : TEXT("lead hidden"), Held.Num());
 	}
 }
 #endif
@@ -686,11 +688,11 @@ void AFTExploreCharacter::StepPortraitShots()
 		bShotAimed = true;
 		return;
 	}
-	// A moving light (or a face clip, or a lead switch) makes shots at the same yaw differ, so they carry their index.
+	// A moving light (or a face clip, a lead switch, or a -StillCamLead sequence) makes shots at the same yaw differ, so they carry their index.
 #if !UE_BUILD_SHIPPING
-	const bool bIndexed = LookDevSpin != 0.f || SwitchReviewAt >= 0.f;
+	const bool bIndexed = LookDevSpin != 0.f || bStillCamLead || SwitchReviewAt >= 0.f;
 #else
-	const bool bIndexed = LookDevSpin != 0.f;
+	const bool bIndexed = LookDevSpin != 0.f || bStillCamLead;
 #endif
 	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
@@ -2332,14 +2334,14 @@ void AFTExploreCharacter::HandleRoll()
 	bRollAskedAir = bAir && RollAsked > 0.f;
 }
 
-bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const
+bool AFTExploreCharacter::ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In, bool* OutBlocker) const
 {
 	const UWorld* World = GetWorld();
 	const UCapsuleComponent* Capsule = GetCapsuleComponent();
 	const float Half = Capsule->GetScaledCapsuleHalfHeight();
 	const FCollisionQueryParams Query(SCENE_QUERY_STAT(FTTraversal), false, this);
 	return World && FTTraversalProbe::Probe(*World, Query, FeetLocation(), GetActorForwardVector().GetSafeNormal2D(),
-		Capsule->GetScaledCapsuleRadius(), Half, Set.tuning(), bAir, Out, In);
+		Capsule->GetScaledCapsuleRadius(), Half, Set.tuning(), bAir, Out, In, OutBlocker);
 }
 
 bool AFTExploreCharacter::TryTraverse(bool bLog)
@@ -3698,6 +3700,7 @@ void AFTExploreCharacter::LogLeadGoHold()
 	const float Rise = ftcore::jumpRise(Move->JumpZVelocity, Gravity, GetJumpMaxHoldTime());
 	// And whether the traversal probe sees anything to vault (TryTraverse's own look).
 	const TCHAR* Probe = TEXT("no anim");
+	const TCHAR* AirProbe = TEXT("no anim");
 	ftcore::TraversalObstacle Obstacle;
 	FVector In;
 	float ProbeHeight = 0.f;
@@ -3705,19 +3708,37 @@ void AFTExploreCharacter::LogLeadGoHold()
 	if (const UFTLocomotionAnimInstance* Anim = Cast<UFTLocomotionAnimInstance>(GetMesh()->GetAnimInstance()))
 	{
 		Probe = TEXT("nothing found");
-		if (ProbeObstacle(Anim->GetTraversal(), false, Obstacle, In))
+		bool bBlocker = false;
+		if (ProbeObstacle(Anim->GetTraversal(), false, Obstacle, In, &bBlocker))
 		{
 			Probe = TEXT("found");
 			ProbeHeight = Obstacle.height;
 			ProbeAhead = Obstacle.distance;
 		}
+		else if (bBlocker)
+		{
+			Probe = TEXT("turned down at a frontage blocker");
+		}
+		// The catch from a jump's height (the air probe), for a top out of the ground's reach.
+		AirProbe = TEXT("nothing found");
+		bool bAirBlocker = false;
+		ftcore::TraversalObstacle AirObstacle;
+		FVector AirIn;
+		if (ProbeObstacle(Anim->GetTraversal(), true, AirObstacle, AirIn, &bAirBlocker))
+		{
+			AirProbe = TEXT("found");
+		}
+		else if (bAirBlocker)
+		{
+			AirProbe = TEXT("turned down at a frontage blocker");
+		}
 	}
 	const FVector At = GetActorLocation();
 	UE_LOG(LogForgottenThird, Display,
-		TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump %d. In the way: lowest run tops at %.0f cm over the feet, %.0f cm ahead; highest hit tops at %.0f cm (rows 10..200 cm: %s); jump rise %.0f cm (JumpZ %.0f, gravity %.0f, hold %.2f s): %s the lowest run, %s the highest; traversal probe %s (%.0f cm top, %.0f cm ahead)."),
+		TEXT("LeadGo: held up at (%.0f, %.0f, %.0f) cm; jump %d. In the way: lowest run tops at %.0f cm over the feet, %.0f cm ahead; highest hit tops at %.0f cm (rows 10..200 cm: %s); jump rise %.0f cm (JumpZ %.0f, gravity %.0f, hold %.2f s): %s the lowest run, %s the highest; traversal probe %s (%.0f cm top, %.0f cm ahead); air catch %s."),
 		At.X, At.Y, At.Z, LeadGoTry.tries(), Top, TopAhead, HighTop, Rows, Rise, Move->JumpZVelocity, Gravity, GetJumpMaxHoldTime(),
 		Top < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(Top)) ? TEXT("CLEARS") : TEXT("does NOT clear"),
-		HighTop < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(HighTop)) ? TEXT("CLEARS") : TEXT("does NOT clear"), Probe, ProbeHeight, ProbeAhead);
+		HighTop < 0.0 ? TEXT("nothing found for") : ftcore::jumpClears(Rise, static_cast<float>(HighTop)) ? TEXT("CLEARS") : TEXT("does NOT clear"), Probe, ProbeHeight, ProbeAhead, AirProbe);
 #endif
 }
 

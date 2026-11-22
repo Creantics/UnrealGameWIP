@@ -4,7 +4,10 @@
 # process this script started is ever stopped (on its time limit).
 #   powershell -File tools\bench\bench.ps1 -Out <dir> [-Scenes day,night] [-Sizes 1920x1080,2560x1440]
 #       [-Runs 3] [-Extra '-dpcvars=r.GPUCsvStatsEnabled=1'] [-Label gpusplit] [-Minutes 6] [-Project <uproject>]
-#       [-Shared] [-BlockMinutes 28]
+#       [-Shared] [-BlockMinutes 28] [-Lead devin]
+# -Lead passes -ArenaLead=<kit> to the arena scenes, so their fights run on a lead's kit (its own cancel windows) and
+# the arena checks in game.log mean something; without it a checkout with no playable PartyLooks fights on kit default.
+# Off by default so runs stay comparable with the baselines taken without it.
 # Machine-local settings come from the environment, so the repo holds no local path or process list:
 #   FT_UE_CMD       UnrealEditor-Cmd.exe (required)
 #   FT_PYTHON       python.exe for FT_BUSY_WRITER (default: python on PATH)
@@ -38,6 +41,7 @@ param(
     [string]$Label = '',
     [switch]$Shared,
     [int]$BlockMinutes = 28,
+    [string]$Lead = '',
     [int]$MaxBlocks = 0,
     [string]$BlockOn = '.',
     [double]$MaxBgCpu = 3,
@@ -209,6 +213,8 @@ $table = @{
     wave        = @{ Map = $strip; Args = @('-TimeOfDay=12', '-BenchPath=wave_eye.txt', '-BenchSide=1000', '-BenchWarmup=4', '-WorldWaveAt=36600,-12450,470,8') }
     cold        = @{ Map = $strip; Args = @('-TimeOfDay=12', '-BenchWarmup=0', '-BenchSeconds=20') }
 }
+# A lead's kit on the arena scenes (-Lead).
+if ($Lead) { foreach ($k in 'arena_group', 'arena_kite') { $table[$k].Args += @("-ArenaLead=$Lead") } }
 # The runs in order (scene, then size, then run).
 $plan = @(foreach ($scene in $Scenes) {
         if (-not $table.ContainsKey($scene)) { "unknown scene $scene" | Write-Host; continue }
@@ -223,6 +229,7 @@ if ($DryRun) {
     $st = Get-MachineState
     "machine $(Format-State $st) dirty $($st.Dirty)"
     $plan | ForEach-Object { "plan $($_.Tag)" }
+    $plan | ForEach-Object { "args $($_.Tag) $($table[$_.Scene].Args -join ' ')" }
     exit 0
 }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null

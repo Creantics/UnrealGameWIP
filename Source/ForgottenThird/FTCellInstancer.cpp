@@ -61,6 +61,8 @@ const TCHAR* KindName(EFTCellKind Kind)
 		return TEXT("Dress");
 	case EFTCellKind::Hidden:
 		return TEXT("Hidden");
+	case EFTCellKind::Blocker:
+		return TEXT("Blocker");
 	default:
 		return TEXT("Piece");
 	}
@@ -79,11 +81,31 @@ void SetUpKind(UStaticMeshComponent& Comp, EFTCellKind Kind, bool bCastShadow)
 	{
 		Comp.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	}
-	if (Kind == EFTCellKind::Hidden)
+	if (Kind == EFTCellKind::Blocker)
+	{
+		// A world-dynamic object: the pawn capsule (Pawn profile) still blocks on it, but the world-static object queries
+		// (the traversal probe's mantle, vault and ledge traces, knockback's wall sweep, the wave's floor trace) never find
+		// it, so the lead gets no climb or top on an invisible box. Visibility and camera traces pass it (the crowd's). The
+		// wave's standing overlap does take world-dynamic objects, so it still turns down a spot on a blocker as cluttered.
+		Comp.SetCollisionObjectType(ECC_WorldDynamic);
+		Comp.SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
+		Comp.SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+		// Tagged so the traversal probe turns down a climb whose wall stands behind one (FTTraversalProbe).
+		Comp.ComponentTags.AddUnique(FTCells::BlockerTag());
+		// Stated, not inherited: the lead can't enter it, so the navmesh is cut around it, and what paths on the navmesh
+		// (the tour pilot, FTExploreDirector::PilotWaypoint; the tour's island stops; FTBuildMassingWorld's -Goals reach and
+		// -Coverage islands) keeps to where the lead can go.
+		Comp.SetCanEverAffectNavigation(true);
+		// Solid, not a shell: Recast rasterizes a closed box as its faces, so the ground inside a box tall enough for the
+		// agent and wide enough to outlast the agent-radius erosion kept a strip of walkable navmesh (proof 78b: 521 of
+		// 2127, every logged hit on the box's short-axis centre line). Filled columns, one instance at a time, close it.
+		Comp.bRasterizeAsFilledConvexVolume = true;
+	}
+	if (Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)
 	{
 		Comp.SetHiddenInGame(true);
 	}
-	if (!bCastShadow || Kind == EFTCellKind::Hidden)
+	if (!bCastShadow || Kind == EFTCellKind::Hidden || Kind == EFTCellKind::Blocker)
 	{
 		Comp.SetCastShadow(false);
 	}
@@ -282,7 +304,7 @@ bool FFTCellInstancer::IsLight(const FKey& Key)
 
 bool FFTCellInstancer::InLumenScene(const UStaticMesh& Mesh, const FTransform& Transform, const FKey& Key)
 {
-	if (IsLight(Key) || Key.Kind == EFTCellKind::Hidden)
+	if (IsLight(Key) || Key.Kind == EFTCellKind::Hidden || Key.Kind == EFTCellKind::Blocker)
 	{
 		return false;
 	}
@@ -332,14 +354,14 @@ FFTCellHandle FFTCellInstancer::Add(UStaticMesh* Mesh, TArrayView<UMaterialInter
 	// Solid and Walk collide alike (SetUpKind): one group for both.
 	Key.Kind = Kind == EFTCellKind::Walk ? EFTCellKind::Solid : Kind;
 	Key.Cull = Options.Cull;
-	Key.bCastShadow = Options.bCastShadow && Kind != EFTCellKind::Hidden;
+	Key.bCastShadow = Options.bCastShadow && Kind != EFTCellKind::Hidden && Kind != EFTCellKind::Blocker;
 	Key.bRayTraced = Options.bRayTraced;
 	if (Key.bCastShadow && Kind == EFTCellKind::Walk && GroundFlush(*Mesh, Transform))
 	{
 		Key.bCastShadow = false;
 		++Totals.FlushNoShadow;
 	}
-	Key.bEmissive = Options.bEmissive && Kind != EFTCellKind::Hidden;
+	Key.bEmissive = Options.bEmissive && Kind != EFTCellKind::Hidden && Kind != EFTCellKind::Blocker;
 	Key.bLumen = Key.bEmissive || InLumenScene(*Mesh, Transform, Key);
 	int32* Found = GroupOf.Find(Key);
 	const int32 G = Found ? *Found : Groups.Num();

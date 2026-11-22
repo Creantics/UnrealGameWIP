@@ -61,6 +61,11 @@ struct CrowdDoor {
     std::string id;  // the table's id without its DOOR- prefix
     Vec2 at;         // engine frame, metres: the door's middle
     Vec2 inside;     // the room's middle (the door itself when the table has no room row for it)
+    // A walk-in room (an enterable interior): its spots, engine frame, metres. A member goes in through the doorway
+    // (`through`, just inside it) to a free spot, stays there in sight, and comes back out the same way. Empty: the
+    // door hides the member at `at` while it is inside. A room with every spot taken is passed by.
+    Vec2 through;
+    std::vector<Vec2> dwell;
 };
 
 // Reads a door table (id, kind, width_m, pts, pavement_m; DOOR-<id> rows of kind door with the door's two ends as
@@ -549,7 +554,11 @@ private:
         int braceSlot = -1;          // >= 0: its own spot at that end (rows back from the end, across the width)
         std::int32_t door = -1;      // Indoors: the door it uses
         bool walkedOn = false;       // S-332: ran to the safe distance and walked on
-        std::uint8_t doorPhase = 0;  // Indoors: 1 walking in to the door, 2 inside, 3 coming out to its pavement
+        // Indoors: 1 walking in to the door, 2 inside (hidden, a plain door), 3 coming out to its pavement; a walk-in
+        // room's: 4 in through the doorway, 5 on to its spot, 6 at its spot (in sight), 7 back to the doorway, 8 out to
+        // the door (then 3).
+        std::uint8_t doorPhase = 0;
+        std::uint32_t doorSpot = UINT32_MAX; // a walk-in room's spot it holds (spots_ index)
         bool doorFled = false;       // went in running from a threat
         float doorLeft = 0.f;        // s left inside
         Vec2 doorTo;                 // phase 3: the pavement spot it walks out to
@@ -557,7 +566,8 @@ private:
         float slowFor = 0.f;         // see CrowdAgentView::slowFor
     };
     struct DoorSlot {
-        Vec2 at, inside;
+        Vec2 at, inside, through;
+        std::uint32_t spot0 = 0, spotN = 0; // a walk-in room's spots in spots_ (spotN 0: a plain door)
         std::uint32_t u = 0, v = 0;  // the street edge it opens onto
         float along = 0.f;           // m from u
         std::uint32_t fleeIn = 0;    // runners inside now
@@ -590,7 +600,10 @@ private:
     bool unCorner(Agent& a);
     float doorAlong(const DoorSlot& d, const Agent& a) const;
     bool tryDoor(std::uint32_t i, bool fleeing);
-    void goIn(Agent& a, std::uint32_t door, bool fled);
+    void goIn(Agent& a, std::uint32_t door, bool fled, std::uint32_t spot);
+    std::uint32_t freeSpot(const DoorSlot& s);
+    bool doorwayClear(std::int32_t door, const Agent* self) const;
+    void leaveDoor(Agent& a, DoorSlot& s);
     void doorStep(Agent& a);
     void measureReach(Vec2 player);
     void arrive(Agent& a);
@@ -645,6 +658,8 @@ private:
     Vec2 focus_{};
     std::vector<DoorSlot> doors_;
     std::vector<std::uint32_t> doorFirst_, doorList_; // doors by street node (each door under both its edge's nodes)
+    std::vector<Vec2> spots_;                 // the walk-in rooms' spots, by door (DoorSlot spot0, spotN)
+    std::vector<std::uint8_t> spotTaken_;
     float density_ = 1.f;
     std::uint32_t indoors_ = 0;
     // measureReach: the last measure and where the player stood for it

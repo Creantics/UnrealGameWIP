@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 
 namespace ftcore::crowdv2 {
 
@@ -122,7 +123,12 @@ bool importCrowdDoors(std::string_view csv, double side, std::vector<CrowdDoor>&
             return detail::fail(error, r.line, std::string(id) + ": pts must be x:y:z points separated by ; (a door: its two ends)");
         const MassingVec m = side > 0.0 ? massingEnginePoint(side, sx / n, sy / n, 0.0) : MassingVec{sx / n, sy / n, 0.0};
         const Vec2 p{static_cast<float>(m.x), static_cast<float>(m.y)};
-        if (isDoor) out.push_back(CrowdDoor{std::string(id.substr(5)), p, p});
+        if (isDoor) {
+            CrowdDoor d;
+            d.id = std::string(id.substr(5));
+            d.at = d.inside = d.through = p;
+            out.push_back(std::move(d));
+        }
         else rooms.push_back(Room{std::string(id.substr(5)), p});
     }
     for (CrowdDoor& d : out)

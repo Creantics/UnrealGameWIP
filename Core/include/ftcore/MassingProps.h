@@ -103,6 +103,10 @@ inline constexpr double kMassingPropGap = 0.1;
 // area (the separating-axis test; touching doesn't count). A foot with no area (hx or hy 0) is still a line or a point.
 // No allocation.
 FTCORE_API bool massingFeetOverlap(const MassingFoot& a, const MassingFoot& b, double gap);
+// Each of `feet` grown by `margin` (m, under 0 counts as 0) on every side, its centre and turn kept, appended to `out`:
+// a keep-clear foot in navmesh terms (the agent's radius and a cell past it). A foot with no area grows too.
+// Allocates: `out` grows (build time).
+FTCORE_API void massingFeetGrown(const std::vector<MassingFoot>& feet, double margin, std::vector<MassingFoot>& out);
 // A placed prop's foot: the rule's footX by footY turned as massingPropPlacement turns the mesh (rot = face - turn: the
 // prop's facing less the rule's engine-yaw turn) and centred where it centres the mesh's bounds: on the prop's point, or
 // for a Wall prop set out along its facing by half its depth there plus the rule's inset. No allocation.

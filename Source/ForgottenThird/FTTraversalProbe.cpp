@@ -1,5 +1,8 @@
 #include "FTTraversalProbe.h"
 
+#include "Components/PrimitiveComponent.h"
+#include "FTCellInstancer.h"
+
 #include "CollisionQueryParams.h"
 #include "CollisionShape.h"
 #include "Engine/HitResult.h"
@@ -25,7 +28,7 @@ constexpr float kCatchBelow = 120.f;
 }
 
 bool FTTraversalProbe::Probe(const UWorld& World, const FCollisionQueryParams& Query, const FVector& Feet, const FVector& Fwd, float Radius,
-	float HalfHeight, const ftcore::TraversalTuning& Tuning, bool bAir, ftcore::TraversalObstacle& Out, FVector& In)
+	float HalfHeight, const ftcore::TraversalTuning& Tuning, bool bAir, ftcore::TraversalObstacle& Out, FVector& In, bool* OutBlocker)
 {
 	const FCollisionObjectQueryParams Static(ECC_WorldStatic);
 	auto Trace = [&World, &Query, &Static](const FVector& From, const FVector& To, FHitResult& Hit)
@@ -53,6 +56,23 @@ bool FTTraversalProbe::Probe(const UWorld& World, const FCollisionQueryParams& Q
 	if (!bWall)
 	{
 		return false;
+	}
+	// A blocker (a frontage piece's invisible collider, world-dynamic, so the traces above pass it) nearer than the wall
+	// stands in the way: no climb onto the wall behind it.
+	const FCollisionObjectQueryParams Dynamic(ECC_WorldDynamic);
+	for (const float Height : Heights)
+	{
+		const FVector From = Feet + FVector(0.0, 0.0, Height);
+		FHitResult Hit;
+		if (World.LineTraceSingleByObjectType(Hit, From, From + Fwd * Wall.Distance, Dynamic, Query) && Hit.GetComponent()
+			&& Hit.GetComponent()->ComponentHasTag(FTCells::BlockerTag()))
+		{
+			if (OutBlocker)
+			{
+				*OutBlocker = true;
+			}
+			return false;
+		}
 	}
 	// The way in: on the ground the way the body faces (its clips go that way); in the air square into the face, which
 	// the body turns to as it catches.

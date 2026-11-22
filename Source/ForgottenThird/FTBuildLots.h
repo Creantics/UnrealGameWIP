@@ -5,11 +5,16 @@
 // (pieces imported by FTImportProp -Kit under FTLots::PieceFolder, one per kit id), each piece an instance with
 // per-instance custom data (FTLots::Data*) that the kit master (built into the map package) reads for its palette
 // tints, dirt, seeded lit windows and night signs. Without -Lots the build is unchanged.
+// -LotClutterBand=<m>: the street clutter (bicycles, planters, vending, AC units; NoCollide but the vending machine) whose
+// foot enters a pedestrian way's band, that many metres either side of its centre line, is left out
+// (ftcore::dropClutterInWays), the ways read from -Streets= (else -PropStreets=, as the lane mouths read them). Without
+// it every piece stays; given, a value that isn't a number over 0, or no streets table, fails the run.
 
 #include "CoreMinimal.h"
 
 #include "ftcore/BuildingLots.h"
 #include "ftcore/HeroCorner.h"
+#include "ftcore/Interior.h"
 #include "ftcore/MassingPlan.h"
 
 #include <string>
@@ -54,6 +59,16 @@ struct FBuild
 	// shutters weathered; and the one whose lattice room is the eatery's (a counter, not shelves).
 	TArray<int32> TimberLots;
 	int32 CounterLot = -1;
+	// The hero bays' lots, south to north (AddHeroLots; -1 before it runs).
+	int32 HeroBayLots[ftcore::kHeroBays] = {-1, -1, -1, -1, -1};
+	// -Interiors=hero (the commandlet sets these after AddHeroLots): the enterable rooms by lot, their plans (plan frame) and
+	// open fronts' doorways. A room lot's proof front is placed NoCollide with no panes in its doorway, its body below the
+	// room's top left out, the room's shell laid in its stead (visible, NoCollide: the bay's hidden room colliders are the
+	// collision) and lined by face; the shallow bay and its dressing are not laid.
+	TArray<int32> RoomLots;
+	std::vector<ftcore::InteriorPlan> RoomPlans;
+	std::vector<const ftcore::KitDoorway*> RoomDoorways;
+	int32 RoomOf(int32 Lot) const { return RoomLots.Find(Lot); }
 	// The hero corner's lit rooms' own glow (AddHeroLots): -HeroPanelGlow=<x> the ceiling panels' LampPanel,
 	// -HeroWallGlow=<x> the back wall's (0: lit by the shop slot alone), -HeroGlowCap=<x> their ShopGlowCap (0: the master's).
 	// Defaults are tune 3's (2026-11-16): 3, 0.8, 3.
@@ -115,8 +130,9 @@ inline double HeroPropYaw(double FaceX, double FaceY, double Extra)
 	return FMath::RadiansToDegrees(FMath::Atan2(-FaceY, FaceX)) - 90.0 + Extra;
 }
 
-// Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces. True with bOn false without
-// -Lots; false (logged) on a table that doesn't read or a piece the grammar needs that the kit table lacks.
+// Reads -Lots= and -KitTable=, plans the lots on Boxes and lays out every lot's pieces (less the clutter -LotClutterBand
+// drops). True with bOn false without -Lots; false (logged) on a table that doesn't read or a piece the grammar needs
+// that the kit table lacks.
 bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBuild& Out);
 
 // The hero corner's bays as kit lots (ftcore::heroCornerLots): its run and lots appended to Out's plan, their pieces laid

@@ -28,7 +28,9 @@ Data/Story/
 Data/Voice/
 Content/Voice/
 # The windows' room and curtain atlases are private art, and the window master and instances reference them.
-Content/Rendering/Windows/
+# The collection (MPC_Windows) holds parameter names only; M_WorldSurface on main reads it, so it is tracked.
+Content/Rendering/Windows/*
+!Content/Rendering/Windows/MPC_Windows.uasset
 
 # Python bytecode (Blender scripts)
 __pycache__/

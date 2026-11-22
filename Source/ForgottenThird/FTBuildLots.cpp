@@ -32,6 +32,7 @@
 #include "UObject/SavePackage.h"
 
 #include "ftcore/GlassSurface.h"
+#include "ftcore/MassingPlan.h"
 #include "ftcore/WindowFacade.h"
 
 #include <string>
@@ -581,6 +582,48 @@ bool Plan(const TCHAR* Params, const std::vector<ftcore::MassingBox>& Boxes, FBu
 			Lot.width(), UTF8_TO_TCHAR(ftcore::lotTypeName(Lot.type)), Lot.floors, Lot.floorZ, Lot.top(), Lot.wallColour, Lot.setback,
 			ftcore::lotSignature(Lot), *Parents);
 	}
+	// -LotClutterBand: no street clutter in a pedestrian way's walking band. Given, it must be a number over 0: anything else
+	// fails the run rather than quietly leaving every piece in.
+	FString ClutterBandText;
+	if (FParse::Value(Params, TEXT("LotClutterBand="), ClutterBandText))
+	{
+		double ClutterBand = 0.0;
+		const bool bNumber = !ClutterBandText.IsEmpty() && ClutterBandText.IsNumeric();
+		if (bNumber)
+		{
+			LexFromString(ClutterBand, *ClutterBandText);
+		}
+		if (!bNumber || !FMath::IsFinite(ClutterBand) || ClutterBand <= 0.0)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand=%s isn't a width over 0 m."), *ClutterBandText);
+			return false;
+		}
+		// "Streets=" also sits inside "-PropStreets=", so the dash is part of the match.
+		FString StreetsFile;
+		if (!FParse::Value(Params, TEXT("-Streets="), StreetsFile))
+		{
+			FParse::Value(Params, TEXT("PropStreets="), StreetsFile);
+		}
+		std::vector<ftcore::MassingStreet> Streets;
+		if (StreetsFile.IsEmpty())
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand needs -Streets= or -PropStreets=."));
+			return false;
+		}
+		if (!ReadText(StreetsFile, Text) || !ftcore::importMassingStreets(Text, Streets, &Error))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Lots: %s: %s"), *StreetsFile, *Utf8(Error));
+			return false;
+		}
+		int32 Ways = 0;
+		for (const ftcore::MassingStreet& Street : Streets)
+		{
+			Ways += Street.foot ? 1 : 0;
+		}
+		const size_t Dropped = ftcore::dropClutterInWays(Out.Kit, Streets, ClutterBand, Out.Placements);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Lots: -LotClutterBand %.2f m: %d street clutter pieces left out of %d pedestrian "
+			"ways' bands (%s)."), ClutterBand, static_cast<int32>(Dropped), Ways, *StreetsFile);
+	}
 	Out.Replaced.assign(Boxes.size(), false);
 	int32 Hidden = 0;
 	for (size_t I = 0; I < Boxes.size(); ++I)
@@ -697,6 +740,7 @@ bool AddHeroLots(const TCHAR* Params, const ftcore::HeroLots& Hero, const std::s
 		Out.Plan.replaced.push_back(BayIds[B]);
 		Out.Plan.lots.push_back(std::move(Lot));
 		const ftcore::BuildingLot& Added = Out.Plan.lots.back();
+		Out.HeroBayLots[B] = LotIndex;
 		if (Hero.lit[B])
 		{
 			Out.GlassProofLots.AddUnique(LotIndex);
@@ -1211,6 +1255,24 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			TArrayView<const float>(BoxData, DataCount), Kind, BoxOpts);
 		++ProofBoxes;
 	};
+	// -Interiors=hero: a room's box (plan frame) as a cube instance, NoCollide (the bay's hidden room colliders are its
+	// collision), casting its shadow.
+	const auto PlanBox = [&](int32 Lot, const ftcore::MassingBox& B, UMaterialInterface* Material, const float* BoxData, const TCHAR* Tag)
+	{
+		const double H = B.z1 - B.z0;
+		if (B.sx < 0.002 || B.sy < 0.002 || H < 0.002)
+		{
+			return;
+		}
+		const ftcore::MassingVec E = ftcore::massingEnginePoint(Side, B.cx, B.cy, B.z0 + 0.5 * H);
+		UMaterialInterface* const Mats[1] = {Material};
+		FFTCellOptions BoxOpts;
+		BoxOpts.Label = FString::Printf(TEXT("LOT-%d"), Lot);
+		BoxOpts.Tag = Tag;
+		Cells.Add(Cube, Mats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(B.rot), 0.0), FVector(E.x, E.y, E.z) * 100.0, FVector(B.sx, B.sy, H)),
+			TArrayView<const float>(BoxData, DataCount), EFTCellKind::NoCollide, BoxOpts);
+		++ProofBoxes;
+	};
 
 	int32 Pieces = 0, Boxes = 0;
 	float Data[DataCount];
@@ -1235,10 +1297,32 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 		FFTCellOptions Opts;
 		Opts.Label = FString::Printf(TEXT("LOT-%d"), P.lot);
 		const FProof* const Pr = bProofPane ? ProofOf(P.lot) : nullptr;
+		const int32 RoomAt = Pr ? Build.RoomOf(P.lot) : INDEX_NONE;
 		if (P.piece < 0)
 		{
 			const bool bPlinth = P.role == ftcore::PlacementRole::Plinth;
 			UMaterialInterface* const Mats[1] = {bPlinth ? Plinth : bTimberLot ? Bodies[static_cast<int32>(ftcore::WallSurface::Stucco)] : Bodies[static_cast<int32>(Lot.wall)]};
+			// -Interiors=hero: a room lot's body only above the room's top (its shell, laid with the front, is the rest).
+			if (RoomAt != INDEX_NONE)
+			{
+				double RoomTop = 0.0;
+				for (const ftcore::InteriorBox& Part : Build.RoomPlans[static_cast<size_t>(RoomAt)].boxes)
+				{
+					RoomTop = FMath::Max(RoomTop, Part.box.z1);
+				}
+				const double Z0 = bPlinth ? P.z : FMath::Max(P.z, RoomTop), Z1 = P.z + P.sz;
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: room lot %d's %s %.2f x %.2f at (%.2f, %.2f) turn %.1f, z %.2f..%.2f; "
+					"the room's top %.2f, so %s."), P.lot, bPlinth ? TEXT("plinth") : TEXT("body"), P.sx, P.sy, P.x, P.y, P.yaw, P.z, Z1, RoomTop,
+					bPlinth ? TEXT("kept whole") : Z1 > Z0 + 0.002 ? TEXT("kept over it") : TEXT("left out"));
+				if (Z1 > Z0 + 0.002)
+				{
+					const ftcore::MassingVec E = ftcore::massingEnginePoint(Side, P.x, P.y, 0.5 * (Z0 + Z1));
+					Cells.Add(Cube, Mats, FTransform(FRotator(0.0, -P.yaw, 0.0), FVector(E.x, E.y, E.z) * 100.0, FVector(P.sx, P.sy, Z1 - Z0)), Data,
+						EFTCellKind::Solid, Opts);
+				}
+				++Boxes;
+				continue;
+			}
 			// A proof front's body is cut back behind its glass: what is left of the box round the bay.
 			if (Pr && !bPlinth)
 			{
@@ -1287,8 +1371,11 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 					Open[S] = ProofHole;
 				}
 			}
-			Cells.Add(Use.Mesh, Open, PieceTransform(P, Use.Fit, Side), Data, EFTCellKind::Solid, Opts);
+			// A room's front is NoCollide: the walker passes its doorway, and the room colliders stand round it.
+			Cells.Add(Use.Mesh, Open, PieceTransform(P, Use.Fit, Side), Data, RoomAt != INDEX_NONE ? EFTCellKind::NoCollide : EFTCellKind::Solid, Opts);
 			++Pieces;
+			const ftcore::KitDoorway* const Doorway = RoomAt != INDEX_NONE ? Build.RoomDoorways[static_cast<size_t>(RoomAt)] : nullptr;
+			int32 PanesOpen = 0;
 			double PieceX = 0.0, PieceY = 0.0;
 			Proof.ToLot(P.x, P.y, PieceX, PieceY);
 			const bool bHeroRoom = Build.TimberLots.Contains(ProofLot);
@@ -1314,6 +1401,12 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			// A true pane (lot terms, X along the front, Z up) 8 mm thick about Y.
 			const auto TruePane = [&](int32 C, int32 R, double X0, double X1, double Z0, double Z1, double Y, const FLinearColor& Handle)
 			{
+				// A room's doorway stands open (its leaves slid back): no pane in it.
+				if (Doorway && X0 < PieceX + Doorway->x1 - 0.05 && X1 > PieceX + Doorway->x0 + 0.05 && Z0 < P.z + Doorway->sill + Doorway->high)
+				{
+					++PanesOpen;
+					return;
+				}
 				UMaterialInstanceConstant* Mic = NewObject<UMaterialInstanceConstant>(Package, *FString::Printf(TEXT("MI_GlassProofPane_L%d_%d_%d"), ProofLot, C, R), RF_Public);
 				Mic->SetParentEditorOnly(ProofPane);
 				Mic->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(TEXT("PaneSize")), FLinearColor(static_cast<float>(X1 - X0), static_cast<float>(Z1 - Z0), 0.f, 0.f));
@@ -1382,6 +1475,55 @@ bool Place(FBuild& Build, FFTCellInstancer& Cells, UPackage* Package, UStaticMes
 			UMaterialInterface* const BackPaint = bHeroRoom && BackGlow > 0.f
 				? BayMaterial(TEXT("MI_GlassProofBay_Back"), Pr->bKoshi ? FLinearColor(0.42f, 0.37f, 0.29f) : FLinearColor(0.38f, 0.37f, 0.34f), BackGlow)
 				: WallPaint;
+			// -Interiors=hero: the room's shell (the lot's wall) and walk boxes (the plinth's stone), its linings by face, and
+			// three ceiling panels down its middle, in the shallow bay's stead. The room's dressing (its plan's slots) is the
+			// next step's: none is laid yet.
+			if (RoomAt != INDEX_NONE)
+			{
+				const ftcore::InteriorPlan& Room = Build.RoomPlans[static_cast<size_t>(RoomAt)];
+				UMaterialInterface* const ShellPaint = bTimberLot ? Bodies[static_cast<int32>(ftcore::WallSurface::Stucco)] : Bodies[static_cast<int32>(Lot.wall)];
+				const TCHAR* const RoomTag = TEXT("HeroRoom");
+				int32 Shells = 0, Walks = 0, Linings = 0;
+				double FinCeil = Room.ceilingTop;
+				for (const ftcore::InteriorBox& Part : Room.boxes)
+				{
+					UMaterialInterface* Paint = WallPaint;
+					switch (Part.part)
+					{
+					case ftcore::InteriorPart::Shell: Paint = ShellPaint; ++Shells; break;
+					case ftcore::InteriorPart::Walk: Paint = Plinth; ++Walks; break;
+					default:
+						++Linings;
+						Paint = Part.face == ftcore::InteriorFace::Floor ? FloorPaint : Part.face == ftcore::InteriorFace::Ceiling ? CeilPaint
+							: Part.face == ftcore::InteriorFace::Skirting ? BoardPaint : WallPaint;
+						if (Part.face == ftcore::InteriorFace::Ceiling)
+						{
+							FinCeil = FMath::Min(FinCeil, Part.box.z0);
+						}
+						break;
+					}
+					PlanBox(P.lot, Part.box, Paint, Data, RoomTag);
+				}
+				for (int32 L = 0; L < 3; ++L)
+				{
+					const double U = Room.room.hx * (L - 1) * 0.6;
+					ftcore::MassingBox Panel;
+					Panel.cx = Room.room.x + Room.ux * U;
+					Panel.cy = Room.room.y + Room.uy * U;
+					Panel.sx = 1.2;
+					Panel.sy = 0.3;
+					Panel.rot = Room.room.rot;
+					Panel.z0 = FinCeil - 0.03;
+					Panel.z1 = FinCeil;
+					PlanBox(P.lot, Panel, PanelPaint, Data, RoomTag);
+				}
+				UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: room lot %d (%s): its front NoCollide with %d panes left out of its "
+					"doorway (%.2f..%.2f along it) and %d kept; %d shell, %d walk and %d lining boxes and 3 panels laid; the room %.2f x %.2f m, ceiling %.2f; "
+					"%d dressing slots not laid yet."), P.lot, UTF8_TO_TCHAR(Doorway ? Doorway->front : "?"), PanesOpen, Doorway ? Doorway->x0 : 0.0,
+					Doorway ? Doorway->x1 : 0.0, PaneCount, Shells, Walks, Linings, 2.0 * Room.room.hx, 2.0 * Room.room.hy, FinCeil,
+					static_cast<int32>(Room.slots.size()));
+				continue;
+			}
 			LotBox(*Pr, BayX0, BayY0, BayZ0, BayX1, BayY1, BayZ0 + 0.04, FloorPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(*Pr, BayX0, BayY0, BayZ1 - 0.04, BayX1, BayY1, BayZ1, CeilPaint, Data, EFTCellKind::NoCollide, BayTag);
 			LotBox(*Pr, BayX0, BayY1 - 0.04, BayZ0, BayX1, BayY1, BayZ1, BackPaint, Data, EFTCellKind::NoCollide, BayTag);

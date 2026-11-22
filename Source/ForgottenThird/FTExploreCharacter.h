@@ -295,7 +295,7 @@ private:
 	// Traversal: finds what is ahead (FTTraversalProbe::Probe from the feet along the facing; false: nothing to go over or
 	// onto; bAir: a deep top to catch, In the way into its face), starts a traversal (false: none fits; bLog says why),
 	// carries the body along one under way, and builds -LocoVaultWall's (or -LocoCatch's) course.
-	bool ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In) const;
+	bool ProbeObstacle(const ftcore::TraversalSet& Set, bool bAir, ftcore::TraversalObstacle& Out, FVector& In, bool* OutBlocker = nullptr) const;
 	bool TryTraverse(bool bLog);
 	// Starts a catch (false: not in the air, mid-traversal, crouched, not asked for, or none fits or is in reach yet; bLog
 	// says the last two, once a flight each).
@@ -354,6 +354,9 @@ private:
 	FTimerHandle StillCamTimer;
 	bool bStillCamHeld = false;
 #endif
+	// -StillCamLead (with -StillCam): the lead and what it wears stay in sight, a still of a move rather than of a place
+	// (the party is still hidden); each shot carries its index, so a yaw list of repeats is a sequence. Review only.
+	bool bStillCamLead = false;
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 	void HoldBodyAt(float Time);

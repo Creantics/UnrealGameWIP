@@ -805,7 +805,7 @@ std::uint64_t PartnerBrainSave::hash() const {
             h.add(std::uint8_t{17});
             h.add(skirmish).add(skirmishDraws).add(skirmishOn).add(skirmishGoal.x).add(skirmishGoal.y).add(stillFor);
             h.add(placeAt.x).add(placeAt.y).add(placeFor);
-            h.add(skirmishFor).add(skirmishEvery).add(skirmishDir).add(skirmishKind).add(skirmishOf);
+            h.add(skirmishFor).add(skirmishEvery).add(skirmishDir).add(skirmishKind).add(skirmishOf).add(pickPlaceFor);
             h.add(choice).add(choiceAt).add(walkDir.x).add(walkDir.y).add(walkAt);
             if (t.choiceHoldSeconds != d.choiceHoldSeconds || t.turnHoldSeconds != d.turnHoldSeconds)
                 h.add(t.choiceHoldSeconds).add(t.turnHoldSeconds);
@@ -1346,6 +1346,7 @@ void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
         dist(in.pos, s_.placeAt) > kPlace) {
         s_.placeAt = in.pos;
         s_.placeFor = 0.0;
+        s_.pickPlaceFor = 0.0;
     } else {
         s_.placeFor += dt;
     }
@@ -1388,13 +1389,23 @@ void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
         if (kind == 0) s_.skirmishSeconds += dt;
     };
     bool lost = false;
+    // Its own goal dropped only because its target changed (taken for one, now another): it re-picks against the new
+    // one at once, this tick. That goal's pick restarted its place clock; if the re-pick finds nothing, the clock is
+    // given back, so the stand before the dropped goal and the one after count as one stretch (not two full waits).
+    // The station back stays barred for it, as for any lost goal: allowing it measured worse (more long stands).
+    bool retarget = false;
     if (s_.skirmishOn) { // its goal is kept until reached, while legal, out of the target's keep-out and in frame
         const Vec2 q = s_.skirmishGoal;
-        if (dist(in.pos, q) > kReached && g.legal(q) && !(e && makeKeep(g, *e).in(q, t.wedgeClearMeters)) &&
-            (fr.sees(q) || (s_.skirmishKind == 0 && !fr.sees(in.pos))) && s_.skirmishOf == s_.target &&
-            (s_.skirmishKind != 1 || budgetOut) && !rooted)
+        // What keeps it whatever its target (the target's keep-out is read against the target it has now, so a new
+        // target's keep-out over the goal is part of the change of target).
+        const bool keeps = dist(in.pos, q) > kReached && g.legal(q) &&
+                           (fr.sees(q) || (s_.skirmishKind == 0 && !fr.sees(in.pos))) &&
+                           (s_.skirmishKind != 1 || budgetOut) && !rooted;
+        if (keeps && !(e && makeKeep(g, *e).in(q, t.wedgeClearMeters)) && s_.skirmishOf == s_.target)
             return walk(q, s_.skirmishKind);
         lost = s_.skirmishKind == 0 && dist(in.pos, q) > kReached; // its own goal gone (not reached): a new one now
+        retarget = lost && keeps && s_.skirmishOf != s_.target; // dropped by the change of target alone
+        if (retarget) ++s_.retargetPicks;
         s_.skirmishOn = false;
     }
     bool step = false; // its rules' short step, the budget out: a goal of its own replaces it
@@ -1509,6 +1520,10 @@ void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
     }
     if (!found) { // nowhere to go: its rules' step stands, else it stands (the stand-still report shows it)
         if (!step) s_.stillFor += dt;
+        if (retarget) { // the dropped goal's pick gives its clock back
+            s_.placeFor += s_.pickPlaceFor;
+            s_.pickPlaceFor = 0.0;
+        }
         return;
     }
     s_.skirmishOn = true;
@@ -1516,6 +1531,7 @@ void PartnerBrain::skirmishWalk(double dt, const PartnerInput& in) {
     s_.skirmishKind = 0;
     s_.skirmishOf = s_.target;
     s_.skirmishFor = 0.0;
+    s_.pickPlaceFor = (retarget ? s_.pickPlaceFor : 0.0) + s_.placeFor; // a re-pick keeps the stretch it is in
     s_.placeFor = 0.0; // a fresh kPlaceStill to leave the place
     s_.skirmishEvery = kSkirmishMin + (kSkirmishMax - kSkirmishMin) * static_cast<double>(draw(s_.skirmish, s_.skirmishDraws));
     s_.skirmishDir = static_cast<std::int8_t>(-s_.skirmishDir);

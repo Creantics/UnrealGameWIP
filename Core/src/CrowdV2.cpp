@@ -147,6 +147,8 @@ bool CrowdSim::init(const CrowdGraph& graph, const CrowdTuning& tuning, std::uin
     doors_.clear();
     doorFirst_.clear();
     doorList_.clear();
+    spots_.clear();
+    spotTaken_.clear();
     indoors_ = 0;
     density_ = 1.f;
     reachLength_ = reachArea_ = 0.f;
@@ -403,6 +405,8 @@ void CrowdSim::free(std::uint32_t i) {
     if (a.state == CrowdState::Indoors) {
         --indoors_;
         if (a.doorFled && a.door >= 0) --doors_[static_cast<std::size_t>(a.door)].fleeIn;
+        if (a.doorSpot < spotTaken_.size()) spotTaken_[a.doorSpot] = 0;
+        a.doorSpot = UINT32_MAX;
     }
     a.state = CrowdState::Free;
     freeList_[freeCount_++] = i;
@@ -934,6 +938,8 @@ std::uint32_t CrowdSim::setDoors(const std::vector<CrowdDoor>& doors) {
     doors_.clear();
     doorFirst_.clear();
     doorList_.clear();
+    spots_.clear();
+    spotTaken_.clear();
     if (!graph_) return 0;
     const std::uint32_t nn = graph_->nodeCount();
     for (const CrowdDoor& d : doors) {
@@ -960,8 +966,13 @@ std::uint32_t CrowdSim::setDoors(const std::vector<CrowdDoor>& doors) {
         if (!found) continue;
         s.at = d.at;
         s.inside = d.inside;
+        s.through = d.dwell.empty() ? d.at : d.through;
+        s.spot0 = static_cast<std::uint32_t>(spots_.size());
+        s.spotN = static_cast<std::uint32_t>(d.dwell.size());
+        spots_.insert(spots_.end(), d.dwell.begin(), d.dwell.end());
         doors_.push_back(s);
     }
+    spotTaken_.assign(spots_.size(), 0);
     if (doors_.empty()) return 0;
     doorFirst_.assign(static_cast<std::size_t>(nn) + 1, 0);
     for (const DoorSlot& s : doors_) {
@@ -1008,16 +1019,56 @@ bool CrowdSim::tryDoor(std::uint32_t i, bool fleeing) {
             // The straight way in never closes on the threat: it starts heading away (the distance then only grows).
             if ((s.at.x - a.pos.x) * (a.pos.x - a.threat.x) + (s.at.y - a.pos.y) * (a.pos.y - a.threat.y) < 0.f) continue;
         }
-        goIn(a, d, fleeing);
+        // A walk-in room with every spot taken, or with someone on the way in or out through its doorway, is passed by.
+        const std::uint32_t spot = s.spotN > 0 ? freeSpot(s) : UINT32_MAX;
+        if (s.spotN > 0 && (spot == UINT32_MAX || !doorwayClear(static_cast<std::int32_t>(d), &a))) continue;
+        goIn(a, d, fleeing, spot);
         return true;
     }
     return false;
 }
 
-void CrowdSim::goIn(Agent& a, std::uint32_t door, bool fled) {
+// A walk-in room moves one visitor at a time, so two in sight never walk through or overtake each other. A new visitor
+// comes in, and one leaves its spot, only while every other member at that door stands at its own spot (phase 6). Only
+// a phase-6 member and a not-yet-member ever wait, and neither is waited on while it waits, so it never locks: phases
+// 1, 3, 4, 5, 7 and 8 all move on without a wait.
+bool CrowdSim::doorwayClear(std::int32_t door, const Agent* self) const {
+    for (const Agent& o : agents_) {
+        if (&o == self || o.state != CrowdState::Indoors || o.door != door) continue;
+        if (o.doorPhase != 6) return false;
+    }
+    return true;
+}
+
+// A walk-in room's free spot, from a random one on (UINT32_MAX when none fits). A spot fits when nobody stands in the
+// way of the walk to it (doorway, then straight on to the spot) and it stands in nobody's own way back out, each kept
+// minGap clear, so a visitor never walks through one standing at another spot.
+std::uint32_t CrowdSim::freeSpot(const DoorSlot& s) {
+    if (s.spotN == 0) return UINT32_MAX;
+    const float clear = tuning_.minGap;
+    const std::uint32_t k0 = std::min(static_cast<std::uint32_t>(rand01() * static_cast<float>(s.spotN)), s.spotN - 1);
+    for (std::uint32_t t = 0; t < s.spotN; ++t) {
+        const std::uint32_t k = s.spot0 + (k0 + t) % s.spotN;
+        if (spotTaken_[k]) continue;
+        const Vec2 p = spots_[k];
+        bool fits = true;
+        for (std::uint32_t j = s.spot0; fits && j < s.spot0 + s.spotN; ++j) {
+            if (j == k || !spotTaken_[j]) continue;
+            const Vec2 q = spots_[j];
+            fits = segDist(s.at, s.through, q) >= clear && segDist(s.through, p, q) >= clear && // q not in p's way
+                   segDist(s.at, s.through, p) >= clear && segDist(s.through, q, p) >= clear;   // p not in q's way out
+        }
+        if (fits) return k;
+    }
+    return UINT32_MAX;
+}
+
+void CrowdSim::goIn(Agent& a, std::uint32_t door, bool fled, std::uint32_t spot) {
     setState(a, CrowdState::Indoors);
     a.door = static_cast<std::int32_t>(door);
     a.doorPhase = 1;
+    a.doorSpot = spot;
+    if (spot < spotTaken_.size()) spotTaken_[spot] = 1;
     a.doorFled = fled;
     a.doorSeen = static_cast<std::int32_t>(door);
     a.pathLen = a.pathPos = 0;
@@ -1030,11 +1081,26 @@ void CrowdSim::goIn(Agent& a, std::uint32_t door, bool fled) {
     }
 }
 
-// Indoors: walk (or run) in to the door, stay inside, walk out to a pavement spot by the door and walk on.
+// Indoors: walk (or run) in to the door, stay inside, walk out to a pavement spot by the door and walk on. At a walk-in
+// room the member goes on in through the doorway to its spot and stays there in sight, then walks back out to the door.
+static bool doorGoingIn(std::uint8_t phase) { return phase == 1 || phase == 4 || phase == 5; }
+
+// Out onto its street at the door, heading either way, on its own pavement band (phase 3).
+void CrowdSim::leaveDoor(Agent& a, DoorSlot& s) {
+    const bool fwd = rand01() < 0.5f;
+    a.pos = s.at;
+    enter(a, fwd ? s.u : s.v, fwd ? s.v : s.u);
+    const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
+    const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
+    a.along = std::clamp(a.along, 0.f, a.len);
+    a.doorTo = {f.x + dir.x * a.along - dir.y * a.latTarget, f.y + dir.y * a.along + dir.x * a.latTarget};
+    a.doorPhase = 3;
+}
+
 void CrowdSim::doorStep(Agent& a) {
     DoorSlot& s = doors_[static_cast<std::size_t>(a.door)];
     a.stateTime += tuning_.step;
-    if (a.doorPhase == 2) {
+    if (a.doorPhase == 2 || a.doorPhase == 6) {
         a.speed = 0.f;
         // In from a fight: until it has calmed and gone quiet.
         if (a.doorFled && (a.fear >= tuning_.calmFear || time_ - a.threatAt <= tuning_.quietAfter)) return;
@@ -1046,19 +1112,25 @@ void CrowdSim::doorStep(Agent& a) {
             --s.fleeIn;
             a.doorFled = false;
         }
-        // Out onto its street at the door, heading either way, on its own pavement band.
-        const bool fwd = rand01() < 0.5f;
-        a.pos = s.at;
-        enter(a, fwd ? s.u : s.v, fwd ? s.v : s.u);
-        const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
-        const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
-        a.along = std::clamp(a.along, 0.f, a.len);
-        a.doorTo = {f.x + dir.x * a.along - dir.y * a.latTarget, f.y + dir.y * a.along + dir.x * a.latTarget};
-        a.doorPhase = 3;
+        if (a.doorPhase == 6) {
+            if (!doorwayClear(a.door, &a)) return; // someone in the doorway or on the move inside: waits its turn
+            // Off its spot (free for the next) and back to the doorway.
+            if (a.doorSpot < spotTaken_.size()) spotTaken_[a.doorSpot] = 0;
+            a.doorSpot = UINT32_MAX;
+            a.doorPhase = 7;
+            return;
+        }
+        leaveDoor(a, s);
         return;
     }
-    const Vec2 goal = a.doorPhase == 1 ? s.at : a.doorTo;
-    const float v = a.doorPhase == 1 && a.doorFled ? tuning_.runSpeed * (a.baseSpeed / std::max(tuning_.walkSpeed, 0.1f)) : a.baseSpeed;
+    Vec2 goal = a.doorTo;
+    switch (a.doorPhase) {
+    case 1: case 8: goal = s.at; break;
+    case 4: case 7: goal = s.through; break;
+    case 5: goal = a.doorSpot < spots_.size() ? spots_[a.doorSpot] : s.through; break;
+    default: break;
+    }
+    const float v = doorGoingIn(a.doorPhase) && a.doorFled ? tuning_.runSpeed * (a.baseSpeed / std::max(tuning_.walkSpeed, 0.1f)) : a.baseSpeed;
     const float d = dist(a.pos, goal), stepLen = v * tuning_.step;
     a.speed = v;
     if (d > 1e-4f) a.yaw = yawTo(a.pos, goal);
@@ -1067,11 +1139,25 @@ void CrowdSim::doorStep(Agent& a) {
         return;
     }
     a.pos = goal;
-    if (a.doorPhase == 1) {
+    switch (a.doorPhase) {
+    case 1:
+        if (a.doorSpot < spots_.size()) {
+            a.doorPhase = 4;
+            return;
+        }
         a.doorPhase = 2;
         a.speed = 0.f;
         a.doorLeft = tuning_.doorDwellMin + rand01() * std::max(0.f, tuning_.doorDwellMax - tuning_.doorDwellMin);
         return;
+    case 4: a.doorPhase = 5; return;
+    case 5:
+        a.doorPhase = 6;
+        a.speed = 0.f;
+        a.doorLeft = tuning_.doorDwellMin + rand01() * std::max(0.f, tuning_.doorDwellMax - tuning_.doorDwellMin);
+        return;
+    case 7: a.doorPhase = 8; return;
+    case 8: leaveDoor(a, s); return;
+    default: break;
     }
     // Out: walking on along its street from the pavement spot.
     a.door = -1;
@@ -1571,7 +1657,7 @@ void CrowdSim::writeView(std::uint32_t i) {
     case CrowdState::Flee: v.anim = runs ? CrowdAnim::Run : slow; break;
     case CrowdState::Cower: v.anim = runs ? CrowdAnim::Run : a.speed > 0.05f ? slow : CrowdAnim::Cower; break;
     case CrowdState::Indoors:
-        v.anim = a.speed > 0.05f ? (a.doorFled && a.doorPhase == 1 && runs ? CrowdAnim::Run : CrowdAnim::Walk) : CrowdAnim::Idle;
+        v.anim = a.speed > 0.05f ? (a.doorFled && doorGoingIn(a.doorPhase) && runs ? CrowdAnim::Run : CrowdAnim::Walk) : CrowdAnim::Idle;
         break;
     default: v.anim = CrowdAnim::Idle; break;
     }
