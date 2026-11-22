@@ -11,6 +11,7 @@
 #include "ftcore/WorldLayout.h" // the zone table names its worlds
 
 #include "AllocCounter.h"
+#include "ArenaTaskDKit.h"
 #include "TestAssets.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
@@ -8795,8 +8796,13 @@ struct SharedRig {
     }
 };
 
+// `turnStrike`: a player who runs off and turns back to strike, so the soft-target limits bind in a whole fight (the
+// autopilot faces its target in reach, where a turn of 120 degrees and homing of 2 m bind nothing): every 1.5 s,
+// half a second running straight away from the nearest living enemy (no attack pressed), then one light pressed with
+// the stick back toward it; the autopilot's input the rest of the time. Unlocked, as every host-mirror fight.
 HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std::uint32_t seed, bool shoots = false,
-                bool sharedCount = false) {
+                bool sharedCount = false, ftcore_test::TaskDPart taskD = ftcore_test::TaskDPart::All,
+                bool turnStrike = false) {
     const ArenaTable table = loadShipped();
     std::string text;
     std::string err;
@@ -8807,7 +8813,7 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
     ArenaZoneTable zones;
     REQUIRE_MESSAGE(importArenaZoneTable(text, table, worlds, zones, &err), err);
     ArenaDef def = table.fallback;
-    def.fighter = table.fighter(kit);
+    def.fighter = ftcore_test::taskDKit(table.fighter(kit), taskD);
     def.enemyCount = 0;
     for (const char* id : lineup)
         for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
@@ -8843,6 +8849,24 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
         ArenaInput in = fight.autopilot();
         attackMoveInput(moves, fight, in); // as the host does for the autopilot and the player alike
         in.lock = false;
+        if (turnStrike && i % 90 <= 30) {
+            std::size_t nearest = kMaxArenaEnemies;
+            float best = 1e9f;
+            for (std::size_t e = 0; e < fight.enemyCount(); ++e) {
+                const float d = std::hypot(bodies.enemies[e].x - bodies.player.x, bodies.enemies[e].y - bodies.player.y);
+                if (fight.enemyAlive(e) && d < best) {
+                    best = d;
+                    nearest = e;
+                }
+            }
+            if (nearest < kMaxArenaEnemies && best > 1e-3f) {
+                const Vec2 to{(bodies.enemies[nearest].x - bodies.player.x) / best, (bodies.enemies[nearest].y - bodies.player.y) / best};
+                const bool strike = i % 90 == 30;
+                in.move = strike ? to : Vec2{-to.x, -to.y};
+                in.light = strike;
+                in.heavy = false;
+            }
+        }
         in.pair = partnerDue;
         partnerDue = false;
         if (sharedCount) rig.session.press(SharedAction::Count, rig.lead); // refused while a count is live or cooling
@@ -8885,13 +8909,16 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
 TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the host's own fight") {
     // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1. Re-pinned for
     // the paired counter's 3 s cooldown (rule b): a pair inside it is refused, so the fight runs 14.4 s, not 17.4 s.
-    // Re-pinned (11-22) for Devin's string end (push 1.2 m, hitStop 0.10): 16.2 s, one more blow taken. Core only:
-    // not yet checked against a headless run.
+    // Re-pinned (11-22) for Devin's string end (push 1.2 m, hitStop 0.10). Its first cut took one more blow (16.2 s,
+    // took 68): the push shoved the Staggered hulk out of his reach and his 0.10 s stop froze him while the
+    // skirmisher kept acting. With the review's rulings (no push on a Staggered, Open or Down enemy; the lead's stop
+    // holds the other enemies too) it is the fight before Task D blow for blow (22 hits, 1 taken, took 34), 0.3 s
+    // longer for the string end's stops. Core only: not yet checked against a headless run.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 16.2 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 82/150, 22 hits, 2 taken, 0 blocks, 3 parries, 1 ripostes, 2 evades, 0 guard breaks, "
-          "3 staggers, 0 heals, 0 releases, 0 overloads, 5/6 reads right, dealt 520, took 68, 0 restarts.");
+          "Arena: VICTORY at standalone beat 0 step 0 after 14.7 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 116/150, 22 hits, 1 taken, 0 blocks, 3 parries, 1 ripostes, 1 evades, 0 guard breaks, "
+          "3 staggers, 0 heals, 0 releases, 0 overloads, 4/6 reads right, dealt 520, took 34, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
     CHECK(r.hitsOn[1] == 17);
     // What the cooldown changed: a pair inside it is refused (spent, nothing dealt), and the fight ends on a riposte
@@ -8900,20 +8927,21 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
     CHECK(r.stats.releases == 0);
     CHECK(r.stats.ripostes == 1);
     // The best run is the skirmisher's 2 of 2 (weight 3): Devin's 2nd blow fills its count and breaks its poise with
-    // it. The hulk's count (weight, 7) fills on his 4th blow, before its poise breaks: it breaks out, and again once
-    // the string end's push has put it off and its count fills a second time (11-22).
+    // it. The hulk's count (weight, 7) fills on his 4th blow, before its poise breaks: it breaks out, once, as before
+    // Task D.
     CHECK(r.stats.breakRunBest == 2);
     CHECK(r.stats.breakRunNeed == 2);
-    CHECK(r.stats.breakDue == 2);
-    CHECK(r.stats.breakOuts == 2);
+    CHECK(r.stats.breakDue == 1);
+    CHECK(r.stats.breakOuts == 1);
     CHECK(r.stats.stepBacks == 0);
 }
 
 TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's break-out (weight fills it first)") {
     // Every seed runs past 14 s. The skirmisher still staggers on the blow that fills its count, but Devin's heavy
     // lights fill the hulk's count of 7 in 4 blows while its poise holds, so it breaks out every seed: once, or twice
-    // where the count fills again. Re-pinned (11-22) for Devin's string end (push 1.2 m, hitStop 0.10): twice on 8 of
-    // 12 seeds, once on 3, 5, 6 and 11; seeds 3, 6 and 8 still have the paired counter's refused pair (rule b).
+    // where the count fills again (seeds 3, 6 and 8, which also have the paired counter's refused pair, rule b). Devin's
+    // string end leaves this set as it was before Task D (11-22: its first cut, whose push moved Staggered enemies,
+    // broke out twice on 8 of 12).
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed);
         CAPTURE(seed);
@@ -8921,7 +8949,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's bre
         CHECK(r.stats.time > 14.f);
         CHECK(r.stats.flinches > 0);
         CHECK(arenaFeatureChecks(r.stats).flinchCheck == ArenaCheck::Pass);
-        CHECK(r.stats.breakOuts == (seed == 3 || seed == 5 || seed == 6 || seed == 11 ? 1 : 2));
+        CHECK(r.stats.breakOuts == (seed == 3 || seed == 6 || seed == 8 ? 2 : 1));
         if (seed == 3 || seed == 6 || seed == 8) CHECK(r.stats.pairsCooled >= 1); // the paired counter's refused pair
         CHECK(r.stats.breakDue == r.stats.breakOuts + r.stats.stepBacks);
         CHECK(arenaFeatureChecks(r.stats).breakOutDue);
@@ -8932,12 +8960,21 @@ TEST_CASE("arena host mirror: skirmisher and hulk with Devin show the hulk's bre
 TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out with the token taken steps back") {
     // The headless -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoShoot line: his shots and light string leave
     // an enemy upright at its breakAt, but the other holds the one token, so it steps back (barred), once on every
-    // seed; never a FAIL. Since his string end's push (1.0 m, 11-22) puts an enemy off, its count fills a second time
-    // with the token free, and it breaks out then, on every seed (none of the step-backs is lost: 12 of 12 still step
-    // back, none blocked by a wall). Unaimed, the autopilot's parries cut his runs short (n/a).
+    // seed; never a FAIL. Before Task D one seed (10) also broke out, its count filling a second time with the token
+    // free; the string end's hitStop moves that to seed 7 and its push to none (0 of 12: Barred, never FAIL). Every
+    // seed still steps back and wins; the per-seed hits, damage and blows taken before and after are reported below.
+    // Unaimed, the autopilot's parries cut his runs short (n/a).
     int breaks = 0, steps = 0;
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true);
+        const HostRun before = hostRun({"skirmisher", "hulk"}, "duy", seed, true, false, ftcore_test::TaskDPart::None);
+        MESSAGE("DUY seed " << seed << ": " << std::string(before.phase == ArenaPhase::Victory ? "win" : "loss") << " -> "
+                            << std::string(r.phase == ArenaPhase::Victory ? "win" : "loss") << ", hits " << before.stats.hits
+                            << " -> " << r.stats.hits << ", dealt " << before.stats.damageDealt << " -> "
+                            << r.stats.damageDealt << ", took " << before.stats.damageTaken << " -> "
+                            << r.stats.damageTaken << ", breakOuts " << before.stats.breakOuts << " -> "
+                            << r.stats.breakOuts << ", stepBacks " << before.stats.stepBacks << " -> "
+                            << r.stats.stepBacks << ", time " << before.stats.time << " -> " << r.stats.time);
         CAPTURE(seed);
         CHECK(r.phase == ArenaPhase::Victory);
         CHECK(r.stats.breakDue >= 1);
@@ -8958,8 +8995,97 @@ TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out w
         CHECK(plain.stats.flinchChances == 0);
         CHECK(arenaFeatureChecks(plain.stats).flinchCheck == ArenaCheck::NotShown);
     }
-    CHECK(breaks == 12); // of 12 seeds: the second count, after the push
+    CHECK(breaks == 0); // before Task D: 1 (seed 10)
     CHECK(steps == 12);
+}
+
+// Task D part by part on the host mirror's moved pins (review 11-22). With none of its data each is its value before
+// Task D (a5eeeb02): the code is the old code. The report gives each part's value: the string end's hitStop 0.10, then
+// its push, then the soft-target limits (the autopilot locks, so the limits move none of these).
+TEST_CASE("arena host mirror: Task D's data part by part on the moved pins; with none of it, the pins before it") {
+    using ftcore_test::TaskDPart;
+    const char* const names[] = {"none", "+hitStop", "+push", "all (+soft)"};
+    std::string line[4];
+    for (int k = 0; k < 4; ++k) {
+        const TaskDPart part = static_cast<TaskDPart>(k);
+        CAPTURE(k);
+        const HostRun one = hostRun({"skirmisher", "hulk"}, "devin", 1, false, false, part);
+        line[k] = one.line;
+        std::string outs;
+        for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+            const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", seed, false, false, part);
+            CHECK(r.phase == ArenaPhase::Victory);
+            outs += std::to_string(r.stats.breakOuts);
+            if (part == TaskDPart::None) CHECK(r.stats.breakOuts == (seed == 3 || seed == 6 || seed == 8 ? 2 : 1));
+        }
+        int breaks = 0, steps = 0;
+        std::string duyOuts;
+        for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+            const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true, false, part);
+            CHECK(r.phase == ArenaPhase::Victory);
+            breaks += r.stats.breakOuts > 0 ? 1 : 0;
+            steps += r.stats.stepBacks > 0 ? 1 : 0;
+            duyOuts += std::to_string(r.stats.breakOuts);
+        }
+        const HostRun dv = hostRun({"duelist", "skirmisher"}, "devin", 1, false, true, part);
+        const HostRun du = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true, part);
+        MESSAGE("TASKD " << std::string(names[k]) << ": devin seed 1 " << one.stats.time << " s, hits "
+                         << one.stats.hits << ", dealt " << one.stats.damageDealt << ", took " << one.stats.damageTaken
+                         << ", breakOuts " << one.stats.breakOuts << "; devin seeds 1-12 breakOuts " << outs
+                         << "; duy shooting breaks " << breaks << "/12 (" << duyOuts << "), step-backs " << steps
+                         << "/12; shared devin " << dv.joins << "/" << dv.bonuses << "/" << dv.bonusDamage << ", duy "
+                         << du.joins << "/" << du.bonuses << "/" << du.bonusDamage);
+        CHECK(steps == 12);
+        CHECK(dv.phase == ArenaPhase::Victory);
+        CHECK(du.phase == ArenaPhase::Victory);
+        if (part != TaskDPart::None) continue;
+        CHECK(one.line ==
+              "Arena: VICTORY at standalone beat 0 step 0 after 14.4 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+              "autoplay seed 1, hp 116/150, 22 hits, 1 taken, 0 blocks, 3 parries, 1 ripostes, 1 evades, 0 guard breaks, "
+              "3 staggers, 0 heals, 0 releases, 0 overloads, 4/6 reads right, dealt 520, took 34, 0 restarts.");
+        CHECK(one.stats.breakOuts == 1);
+        CHECK(breaks == 1); // seed 10
+        CHECK(dv.joins == 2);
+        CHECK(dv.bonuses == 2);
+        CHECK(dv.bonusDamage == 42);
+        CHECK(du.joins == 1);
+        CHECK(du.bonuses == 1);
+        CHECK(du.bonusDamage == 26);
+    }
+    CHECK(line[3] == line[2]); // the soft-target limits: locked starts, the same fight
+}
+
+// Task D's turn and homing limits in a whole fight (the orchestrator's D3, 11-22). The autopilot faces its target in
+// reach, so its unlocked fights never ask a light to turn past 120 degrees or home past 2 m: at Push and at All they
+// are the same fight in all 36 of the host-mirror runs (devin and duy, three lineups, seeds 1-6). The turn-and-strike
+// player (hostRun's turnStrike) runs off and turns back to strike, so its lights start with the target behind it or
+// out past the homing: there the limits change the fight. One whole fight pinned per lead, with the soft counts,
+// and the same fight without the limits (Push: the string end only) shown to differ.
+TEST_CASE("arena host mirror: unlocked turn-and-strike fights, the soft-target turn and homing limits in a whole fight") {
+    using ftcore_test::TaskDPart;
+    const HostRun devin = hostRun({"brute", "skirmisher", "breaker"}, "devin", 1, false, false, TaskDPart::All, true);
+    const HostRun devinFree = hostRun({"brute", "skirmisher", "breaker"}, "devin", 1, false, false, TaskDPart::Push, true);
+    CHECK(devin.line ==
+          "Arena: VICTORY at standalone beat 0 step 0 after 26.2 s, zone sand_ring, kit devin, enemies "
+          "brute+skirmisher+breaker, autoplay seed 1, hp 126/150, 17 hits, 1 taken, 0 blocks, 4 parries, 1 ripostes, "
+          "2 evades, 0 guard breaks, 2 staggers, 0 heals, 0 releases, 0 overloads, 11/12 reads right, dealt 530, took "
+          "24, 0 restarts.");
+    CHECK(devin.stats.softTargets == 20);
+    CHECK(devin.stats.softChances == 24);
+    CHECK(devinFree.stats.softTargets == 25);
+    CHECK(devinFree.stats.softChances == 31);
+    CHECK(devinFree.line != devin.line);
+    const HostRun duy = hostRun({"skirmisher", "hulk"}, "duy", 1, true, false, TaskDPart::All, true);
+    const HostRun duyFree = hostRun({"skirmisher", "hulk"}, "duy", 1, true, false, TaskDPart::Push, true);
+    CHECK(duy.line ==
+          "Arena: VICTORY at standalone beat 0 step 0 after 29.8 s, zone sand_ring, kit duy, enemies skirmisher+hulk, "
+          "autoplay seed 1, hp 111/135, 31 hits, 1 taken, 0 blocks, 4 parries, 1 ripostes, 2 evades, 0 guard breaks, "
+          "4 staggers, 0 heals, 1 releases, 0 overloads, 9/9 reads right, dealt 520, took 24, 0 restarts.");
+    CHECK(duy.stats.softTargets == 17);
+    CHECK(duy.stats.softChances == 21);
+    CHECK(duyFree.stats.softTargets == 22);
+    CHECK(duyFree.stats.softChances == 26);
+    CHECK(duyFree.line != duy.line);
 }
 
 TEST_CASE("arena host mirror: duelist and skirmisher show every feature, the break-out always on Duy") {
@@ -9442,9 +9568,9 @@ TEST_CASE("arena host mirror: a shared count's held blows get their bonus throug
     CHECK(devin.hostHits >= 1);
     const HostRun duy = hostRun({"duelist", "skirmisher"}, "duy", 1, true, true);
     CHECK(duy.phase == ArenaPhase::Victory);
-    CHECK(duy.joins == 2); // re-pinned (11-22) for his string end: 2 joins, not 1
-    CHECK(duy.bonuses == 2);
-    CHECK(duy.bonusDamage == 34);
+    CHECK(duy.joins == 1); // as before Task D (its first cut's push, on Staggered enemies too, made it 2)
+    CHECK(duy.bonuses == 1);
+    CHECK(duy.bonusDamage == 26);
     for (std::uint32_t seed = 1; seed <= 6; ++seed) {
         const HostRun shared = hostRun({"duelist", "skirmisher"}, "devin", seed, false, true);
         const HostRun alone = hostRun({"duelist", "skirmisher"}, "devin", seed, false, false);
@@ -9870,6 +9996,7 @@ struct PushRun {
     float hitAt = -1.f;      // fight time the string end landed
     float pushFrom = -1.f;   // fight time the extra motion began
     bool pausedPush = false; // the extra motion showed on a tick the enemy was still paused
+    ArenaBrain brainAtHit = ArenaBrain::Dead; // enemy 0's brain on the tick the string end landed
     ArenaStats stats;
 };
 
@@ -9889,7 +10016,10 @@ PushRun pushRun(const ArenaFighter& with, const ArenaEnemyKind& kind) {
         b.in.light = press;
         const ArenaOutput& oa = a.tick();
         const ArenaOutput& ob = b.tick();
-        if (r.hitAt < 0.f && a.fight.stats().stringEndHits > 0) r.hitAt = a.fight.time();
+        if (r.hitAt < 0.f && a.fight.stats().stringEndHits > 0) {
+            r.hitAt = a.fight.time();
+            r.brainAtHit = oa.enemies[0].brain;
+        }
         const float extra = (oa.enemies[0].velocity.x - ob.enemies[0].velocity.x) * kDt;
         if (std::fabs(extra) > 1e-6f) {
             if (r.pushFrom < 0.f) r.pushFrom = a.fight.time();
@@ -10049,6 +10179,173 @@ TEST_CASE("arena string end: a flinch counts toward the push; a boss, a body tha
         for (int i = 0; i < 30 && rig.fight.stats().hits == 0; ++i) rig.tick();
         CHECK(rig.fight.stats().hits == 1);
         CHECK(rig.fight.stats().pushes == (armor > 0.f ? 0 : 1));
+    }
+}
+
+// 11-22 (Devin seed 1, 34 -> 68 taken): with a finite accel the push was carried into the next tick's ramp and added
+// again, so a skirmisher that left its stagger mid-push flew 0.8 -> 10 m. The ramp now starts from the enemy's own
+// motion. accel 0 (instant, every test kind before) hid it.
+TEST_CASE("arena string end: a walking enemy with the shipped accel is pushed push metres, not more") {
+    for (const float accel : {0.f, 6.f, 14.f}) {
+        CAPTURE(accel);
+        ArenaEnemyKind k = dummyKind();
+        k.accel = accel;
+        const PushRun r = pushRun(stringFighter(1.2f), k);
+        CHECK((r.brainAtHit == ArenaBrain::Approach || r.brainAtHit == ArenaBrain::Strafe));
+        CHECK(r.stats.pushes == 1);
+        CHECK(r.metres == doctest::Approx(1.2f).epsilon(0.02));
+    }
+}
+
+// A long kind (a stadium) struck off its axis is pushed away from the nearest point of its spine, as the step pushes
+// two bodies apart, not from its centre: a blow on its flank pushes it sideways (11-22, the orchestrator's C4).
+TEST_CASE("arena string end: a stadium is pushed off the nearest point of its spine, not its centre") {
+    ArenaEnemyKind k = dummyKind();
+    k.bodyLength = 2.f; // a 0.55 m spine either side of the centre
+    k.turnRate = 0.f;   // it keeps its facing, so the spine stays where the test put it
+    REQUIRE(arenaBodySpan(k) > 0.5f);
+    ArenaFighter with = stringFighter(1.2f), without = stringFighter(0.f);
+    Rig a(with, {k});
+    Rig b(without, {k});
+    a.put(0, 1.3f, 0.5f);
+    b.put(0, 1.3f, 0.5f);
+    Vec2 extra{}, spinePoint{}, facing{};
+    bool hit = false;
+    float hitAt = -1.f;
+    for (int i = 0; i < 300; ++i) {
+        const bool press = a.fight.stats().stringEnds == 0 && a.fight.stats().lights < 8;
+        a.in.light = press;
+        b.in.light = press;
+        const ArenaOutput& oa = a.tick();
+        const ArenaOutput& ob = b.tick();
+        if (!hit && a.fight.stats().stringEndHits > 0) {
+            hit = true;
+            hitAt = a.fight.time();
+            facing = oa.enemies[0].facing;
+            Vec2 lead = a.bodies.player;
+            arenaClosestPoints(a.bodies.player, Vec2{1.f, 0.f}, 0.f, a.bodies.enemies[0], facing, arenaBodySpan(k), lead,
+                               spinePoint);
+        }
+        extra.x += (oa.enemies[0].velocity.x - ob.enemies[0].velocity.x) * kDt;
+        extra.y += (oa.enemies[0].velocity.y - ob.enemies[0].velocity.y) * kDt;
+        if (hit && a.fight.time() > hitAt + 1.f) break;
+    }
+    REQUIRE(hit);
+    REQUIRE(a.fight.stats().pushes == 1);
+    const Vec2 p = a.bodies.player, c = a.bodies.enemies[0];
+    const auto angle = [](Vec2 v) { return std::atan2(v.y, v.x) * 57.29578f; };
+    const float pushed = angle(extra);
+    const float offSpine = angle(Vec2{spinePoint.x - p.x, spinePoint.y - p.y});
+    const float offCentre = angle(Vec2{c.x - p.x, c.y - p.y});
+    MESSAGE("facing " << facing.x << "," << facing.y << ": pushed at " << pushed << " deg, off the spine " << offSpine
+                      << ", off the centre " << offCentre);
+    REQUIRE(std::fabs(offSpine - offCentre) > 5.f); // the test's two answers differ
+    CHECK(pushed == doctest::Approx(offSpine).epsilon(0.01));
+    CHECK(std::sqrt(extra.x * extra.x + extra.y * extra.y) == doctest::Approx(1.2f).epsilon(0.02));
+}
+
+// The ruling (11-22): a finisher must not make the lead worse off. An enemy the string staggered stays in reach: the
+// string end's own stagger, or one from an earlier light, is never pushed.
+TEST_CASE("arena string end: a Staggered enemy is never pushed, whether the end or an earlier light staggered it") {
+    for (const int light : {2, 0}) {
+        CAPTURE(light);
+        ArenaEnemyKind k = dummyKind();
+        k.poise = 5.f;
+        k.staggerTime = 2.f; // still staggered when the end lands
+        ArenaFighter f = stringFighter(1.2f);
+        f.light[light].poiseDamage = 10.f;
+        const PushRun r = pushRun(f, k);
+        CHECK(r.stats.staggers >= 1);
+        CHECK(r.stats.stringEndHits == 1);
+        CHECK(r.brainAtHit == ArenaBrain::Staggered);
+        CHECK(r.stats.pushes == 0);
+        CHECK(r.metres == 0.f);
+    }
+}
+
+// The ruling's freeze: the string end's hit pause holds every living enemy as long as the lead's own; another light's
+// pauses only the struck one, as before the feature. A kit's last light with no push (the feature off: the default
+// kit) pauses only the struck one too, so fights without the feature are untouched.
+TEST_CASE("arena string end: its hit pause holds the other enemies as long as the lead; a plain light's does not") {
+    for (const float push : {1.2f, 0.f}) {
+        CAPTURE(push);
+        Rig rig(stringFighter(push), {dummyKind(), dummyKind()});
+        rig.put(0, 1.5f, 0.f);
+        rig.put(1, -3.f, 0.f);
+        float endOther = -1.f, endLead = -1.f, plainOther = -1.f;
+        for (int i = 0; i < 300 && endOther < 0.f; ++i) {
+            const int hits = rig.fight.stats().hits;
+            const int ends = rig.fight.stats().stringEndHits;
+            rig.in.light = rig.fight.stats().stringEnds == 0;
+            const ArenaOutput& out = rig.tick();
+            if (rig.fight.stats().stringEndHits > ends) {
+                endOther = out.enemies[1].stopLeft;
+                endLead = out.player.stopLeft;
+            } else if (rig.fight.stats().hits > hits && plainOther < 0.f) {
+                plainOther = out.enemies[1].stopLeft;
+            }
+        }
+        REQUIRE(endOther >= 0.f);
+        CHECK(plainOther == 0.f);
+        CHECK(endLead > 0.f);
+        if (push > 0.f)
+            CHECK(endOther >= endLead - kDt - 1e-4f); // the enemies' pause runs from the tick's start (not moved yet)
+        else
+            CHECK(endOther == 0.f);
+    }
+}
+
+// The hold's resume (11-22): a walking enemy held by a string end on another stands still for the hold and then goes on
+// at the speed it had, losing the hold's distance and no more. Before this it ramped up from 0 after each hold, and a
+// slow boss (0.6 m/s, accel 2) never reached a lead chaining string ends on a dummy: 2 attacks in 130 s against 24-31.
+// The hold ends on a tick boundary (0.10 s) and inside a tick (0.09 s).
+TEST_CASE("arena string end: an enemy it holds goes on at its own speed, losing the hold's distance and no more") {
+    for (const float stop : {0.1f, 0.09f}) {
+        CAPTURE(stop);
+        ArenaEnemyKind walker = dummyKind();
+        walker.walkSpeed = 0.6f;
+        walker.runSpeed = 0.6f;
+        walker.accel = 2.f;
+        walker.preferredRange = 1.f;
+        walker.runRange = 100.f;
+        float walked[2] = {0.f, 0.f}, before = -1.f, after = -1.f, hold = -1.f;
+        for (int k = 0; k < 2; ++k) {
+            ArenaFighter f = stringFighter(k == 0 ? 1.2f : 0.f); // push 0: no hold, the twin
+            f.light[2].hitStop = stop;
+            Rig rig(f, {dummyKind(), walker});
+            rig.put(0, 1.5f, 0.f);
+            rig.put(1, -8.f, 0.f); // pinned: it walks toward the lead the whole run
+            float speed = 0.f;
+            int phase = 0; // 0 before the end, 1 held, 2 the hold over (the next tick is the first whole one)
+            for (int i = 0; i < 240; ++i) {
+                const int ends = rig.fight.stats().stringEndHits;
+                rig.in.light = ends == 0;
+                const float last = speed;
+                const ArenaOutput& out = rig.tick();
+                const Vec2 v = out.enemies[1].velocity;
+                speed = std::sqrt(v.x * v.x + v.y * v.y);
+                walked[k] += speed * kDt;
+                if (k != 0) continue;
+                if (phase == 0 && rig.fight.stats().stringEndHits > ends) {
+                    before = last;
+                    hold = out.enemies[1].stopLeft + kDt; // from the tick's start
+                    phase = 1;
+                } else if (phase == 1 && out.enemies[1].stopLeft == 0.f) {
+                    phase = 2;
+                } else if (phase == 2) {
+                    after = speed;
+                    phase = 3;
+                }
+            }
+        }
+        REQUIRE(after >= 0.f);
+        CHECK(before == doctest::Approx(0.6f).epsilon(0.01));
+        CHECK(hold == doctest::Approx(stop).epsilon(0.01));
+        CHECK(after == doctest::Approx(before).epsilon(0.01));
+        const float lag = walked[1] - walked[0];
+        MESSAGE("held lag " << lag << " m, speed x hold " << before * hold << " m");
+        CHECK(lag >= before * hold - before * kDt - 1e-4f);
+        CHECK(lag <= before * hold + before * kDt + 1e-4f);
     }
 }
 

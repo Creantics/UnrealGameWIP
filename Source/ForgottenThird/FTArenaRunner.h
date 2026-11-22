@@ -764,6 +764,10 @@ private:
 	// logged (not one pass, the partner's: it ends unsettled whenever it moved the ally).
 	void SettleAlly(int32 MaxPasses);
 	uint32 AllyPlaceCaps = 0;
+	// The partner's one-pass placements (ftcore::kArenaPartnerPlacePasses) and those that ended in a living enemy's body
+	// past kArenaSettleFloor (ftcore::arenaAllyOverlap): reset with the bodies at each fight's start, in the check lines.
+	uint32 PartnerPlacements = 0;
+	uint32 PartnerOverlaps = 0;
 	void FeedLeadHealths();
 	void TrackPartner(const ftcore::ArenaOutput& Out);
 	void LogPartnerWindow();

@@ -601,10 +601,13 @@ TEST_CASE("arena special: the partner's gauge fills from its own play: hidden fo
         CAPTURE(std::string_view(partner));
         const ArenaSpecialTable& specials = std::string_view(partner) == "duy" ? withMove : shipped;
         PartnerRig r;
-        // A boss aims some strings at the partner (blows on it); the dummy keeps the fight going after it falls.
+        // A boss aims some strings at the partner (blows on it); the dummy keeps the fight going after it falls. Seed 4:
+        // Devin falls to this pair before the Third's gauge fills on 3 seeds of 8, before the string end and after it,
+        // the string end moving which (seeds 2, 3 and 7 before it, 1, 3 and 5 after; 11-22); seed 4 fills for both
+        // partners with any part of it.
         ArenaDef def = fightOf({"dummy", "kite_boss"}, 2);
         def.partnerKit = arena().fighter(partner);
-        r.beginWith(def, 5);
+        r.beginWith(def, 4);
         REQUIRE(r.fight.setSpecials(&specials, "devin", partner, LeadSpecialGauges{}));
         float expect = 0.f;
         int readies = 0, allyHits = 0, allyTaken = 0;
@@ -2186,3 +2189,4 @@ TEST_CASE("arena special: a skipped move ends in the same state as one played ou
     }
     same();
 }
+

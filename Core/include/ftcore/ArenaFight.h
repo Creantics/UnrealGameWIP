@@ -1159,7 +1159,7 @@ struct ArenaStats {
     float lightStamina = 0.f; // stamina those lights cost
     int softTargets = 0;      // attacks started on a soft target
     int softChances = 0;      // attacks started with nothing locked, no aim and a kit with a softRange (one could)
-    int stringEnds = 0;       // string ends started: the last light of a kit with two or more (only the chain gets there)
+    int stringEnds = 0;       // string ends whose active part was reached: the last light of a kit with two or more
     int stringEndHits = 0;    // ... their blows that landed (per target; also in hits)
     int pushes = 0;           // enemies the player's blows shoved (ArenaAttack::push)
     int shots = 0;            // a guns kit's shots started
@@ -1846,8 +1846,11 @@ private:
         float handedAt = -1.0e9f;           // fight time it was last handed a token by a holder out of sight
         float handedAwayAt = -1.0e9f;       // fight time it last handed its token over
         std::uint8_t aim = 0;               // the string's aim (ArenaEnemyOut::aim), set at its first move
-        Vec2 shoveVel{};                    // a special's knock-back: this velocity added ...
+        Vec2 shoveVel{};                    // a push (a special's knock-back, a string end's): this velocity added ...
         float shoveLeft = 0.f;              // ... for these seconds of its own time
+        Vec2 drive{};                       // the velocity it moved at before this tick's push, cut and paused as it ...
+        bool shoved = false;                // ... this tick's velocity holds a push: Approach and Strafe ramp from drive
+        bool held = false;                  // paused by a string end on another enemy, not struck: resumes at drive
     };
 
     // The partner's ally body (setPartner).
@@ -2041,6 +2044,10 @@ FTCORE_API ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& b
 // The same, held by the fight's ring.
 FTCORE_API ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies,
                                          int maxPasses = kArenaSettlePasses);
+// How deep the ally's body is in the deepest living enemy's, measured as arenaPlaceAlly stands it off (0 when clear of
+// them all). Report only: the host counts the partner's placements that end past kArenaSettleFloor (one pass reports
+// unsettled whenever it moved the ally, so `settled` alone can't say). No allocation.
+FTCORE_API float arenaAllyOverlap(const ArenaFight& fight, const ArenaBodies& bodies);
 // The partner's placement passes (the host's WalkPartner and the tests' mirror of it): one pass, then the wall. The
 // full loop resolves a squeeze between two enemies and moves the partner's path enough to fail rule 17's circling bars
 // and the hug capture's rule 1 (11-22, measured); it goes to kArenaSettlePasses once the brain routes (task B).

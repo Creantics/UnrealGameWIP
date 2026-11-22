@@ -664,6 +664,7 @@ struct ArenaFightImpl {
             foe.velocity = foe.brain == ArenaBrain::Dead
                                ? Vec2{}
                                : arenaCutVelocity(fight.ring_, foe.pos, foe.velocity, dt, def.enemies[i].bodyRadius);
+            if (foe.shoved) foe.drive = arenaCutVelocity(fight.ring_, foe.pos, foe.drive, dt, def.enemies[i].bodyRadius);
         }
         // Punish windows: a run of Staggered, Open and Down counts once, from the tick it starts in.
         for (std::size_t i = 0; i < n; ++i) {
@@ -1051,7 +1052,6 @@ struct ArenaFightImpl {
         pl.chainLive = true;
         faceAtStart(in, fi.light[index]);
         ++stats.lights;
-        if (stringEnd(index)) ++stats.stringEnds;
         stats.lightStamina += std::max(0.f, fi.light[index].stamina);
         beginAttack(ArenaAction::Light, index, fi.light[index]);
     }
@@ -1636,6 +1636,9 @@ struct ArenaFightImpl {
             if (have) pl.facing = arenaTurn(pl.facing, want, std::max(tracked, attackTurn * dt));
         }
         pl.invulnerable = pl.action == ArenaAction::Riposte || pl.action == ArenaAction::Release;
+        // A string end counts once its active part is reached, on the one tick its clock crosses the startup: one cut
+        // off before (a hit, a dodge, the fight's end) is no chance to land, so the check never reads it as a miss.
+        if (pl.action == ArenaAction::Light && stringEnd(pl.move) && a0 <= a.startup && a1 > a.startup) ++stats.stringEnds;
         // Only the active part connects; a tick whose interval overlaps it tests, so a long frame can't skip it.
         if (a1 > a.startup && a0 < a.startup + a.active) playerStrike(a);
         // The lunge: `lunge` metres forward, spread over startup and active. A riposte's goes at its enemy, not along
@@ -1915,6 +1918,9 @@ struct ArenaFightImpl {
         if (!(def.enemies[i].walkSpeed > 0.f) && !(def.enemies[i].runSpeed > 0.f)) return;
         Enemy& foe = foes[i];
         if (breakGuarded(foe) || foe.brain == ArenaBrain::StepBack) return; // a step back is its own way out
+        // An opening is the lead's: a Staggered, Open or Down enemy (this blow's own stagger too) stays in reach of the
+        // next blow. A finisher never leaves the lead worse off than no push.
+        if (foe.brain == ArenaBrain::Staggered || foe.brain == ArenaBrain::Open || foe.brain == ArenaBrain::Down) return;
         if (foe.brain == ArenaBrain::Attack) {
             const ArenaAttack& own = fight.enemyAttackNow(i);
             const ArenaPart part = arenaPartOf(own, foe.stateTime);
@@ -1922,7 +1928,17 @@ struct ArenaFightImpl {
         }
         const float metres = flinched ? a.push - def.enemies[i].flinchPush : a.push;
         if (!(metres > 0.f)) return;
-        foe.shoveVel = arenaScaled(arenaUnit(arenaSub(foe.pos, pl.pos), pl.facing), metres / a.pushTime);
+        // Away from the lead: off a circle's centre, off the nearest point of a stadium's spine (arenaBodySpan, along
+        // the enemy's facing, as the step's push apart), so a blow on a long body's flank pushes it sideways; on the
+        // spine itself, off the centre.
+        Vec2 at = foe.pos;
+        const float span = arenaBodySpan(def.enemies[i]);
+        if (span > 0.f) {
+            Vec2 lead = pl.pos;
+            arenaClosestPoints(pl.pos, Vec2{1.f, 0.f}, 0.f, foe.pos, arenaUnit(foe.facing, Vec2{1.f, 0.f}), span, lead, at);
+            if (arenaDistance(at, pl.pos) <= kArenaEps) at = foe.pos;
+        }
+        foe.shoveVel = arenaScaled(arenaUnit(arenaSub(at, pl.pos), pl.facing), metres / a.pushTime);
         foe.shoveLeft = a.pushTime; // a special's shove still running gives way to this one
         ++stats.pushes;
     }
@@ -1955,8 +1971,23 @@ struct ArenaFightImpl {
         }
         emit(ArenaEventType::Hit, b.striker, id(i), b.move, amount, foe.pos);
         if (player) { // the pause: the player has moved this tick, the enemies not yet
-            pause(pl.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
+            const float self = a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f);
+            pause(pl.stopUntil, t1, self);
             pause(foe.stopUntil, t0, a.hitStop);
+            foe.held = false; // struck: its own pause, as before (a hit during a hold wins)
+            // A string end's freeze (a kit's last light with a push: the feature on) holds every other living enemy
+            // as long as the lead's own: the finisher never leaves the lead frozen while another acts. Other lights,
+            // and a kit with no push, keep their pause on the struck enemy only, as before the feature.
+            // A held enemy (not already in a pause of its own) stands still and then goes on at the motion it had: its
+            // state time, its velocity and its place in the token queue wait out the hold (stepEnemies, assignTokens),
+            // so a chain of string ends on one enemy never keeps another from closing (11-22: a walking boss ramping
+            // up from 0 after each hold never reached a lead who kept lunging on a dummy).
+            if (pl.action == ArenaAction::Light && stringEnd(pl.move) && a.push > 0.f)
+                for (std::size_t j = 0; j < n; ++j)
+                    if (j != i && alive(j)) {
+                        if (!(foes[j].stopUntil > t0)) foes[j].held = true;
+                        pause(foes[j].stopUntil, t0, self);
+                    }
         }
         if (foe.hp <= 0) {
             killEnemy(i, true, -1.f, b.striker);
@@ -2432,9 +2463,11 @@ struct ArenaFightImpl {
                 ++held;
                 continue;
             }
-            asking[i] = !def.enemies[i].passive && foe.brain == ArenaBrain::Strafe
-                        && t0 - foe.stringEnd >= def.enemies[i].attackDelay && ownTime(foe.stopUntil) > 0.f;
-            foe.asked = asking[i] ? foe.asked + dt : 0.f;
+            const bool could = !def.enemies[i].passive && foe.brain == ArenaBrain::Strafe
+                               && t0 - foe.stringEnd >= def.enemies[i].attackDelay;
+            asking[i] = could && ownTime(foe.stopUntil) > 0.f;
+            // A held enemy keeps its wait through the hold (it does not ask while it stands still).
+            foe.asked = asking[i] ? foe.asked + dt : (could && foe.held ? foe.asked : 0.f);
         }
         // The asker waiting longest, then the nearest (in sight only, when `sighted`); -1 for none.
         const auto bestAsker = [&](bool sighted) {
@@ -2628,6 +2661,7 @@ struct ArenaFightImpl {
             interrupt(i, ArenaBrain::Open);
             pause(pl.stopUntil, t1, fi.parryStop);
             pause(foe.stopUntil, t1, fi.parryStop);
+            foe.held = false;
             storeLoad(source, move, damage);
             pl.pairParry = t0;
             pl.pairFoe = source;
@@ -2664,7 +2698,10 @@ struct ArenaFightImpl {
         damagePlayer(source, hpTaken(damage), foe.move);
         pause(pl.stopUntil, t1, a.hitStop); // both have moved this tick
         // Its own blow's table share may have killed it: then nothing more touches it this tick.
-        if (alive(i)) pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
+        if (alive(i)) {
+            pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
+            foe.held = false;
+        }
         if (pl.hp <= 0) return;
         if (airborne()) {
             // A blow that lands in the air ends the jump: knocked out of it, whatever the poise (or the height).
@@ -3718,15 +3755,17 @@ struct ArenaFightImpl {
                 foe.stateTime = 0.f;
             }
         }
-        // Approach and Strafe ramp (the kind's accel, both ways); a lunge and a reaction are written directly.
+        // Approach and Strafe ramp (the kind's accel, both ways); a lunge and a reaction are written directly. The ramp
+        // starts from the enemy's own motion: a push added last tick is not carried on (it would add up each tick).
+        const Vec2 rampFrom = foe.shoved ? foe.drive : foe.velocity;
         Vec2 vel{};
         switch (foe.brain) {
         case ArenaBrain::Attack: vel = enemyAttack(i, dir); break;
         case ArenaBrain::Approach:
-            vel = arenaRamp(foe.velocity, approach(i, dir, distance, pick), def.enemies[i].accel, dt);
+            vel = arenaRamp(rampFrom, approach(i, dir, distance, pick), def.enemies[i].accel, dt);
             break;
         case ArenaBrain::Strafe:
-            vel = arenaRamp(foe.velocity, circling ? reposition(i, dir) : strafe(i, dir), def.enemies[i].accel, dt);
+            vel = arenaRamp(rampFrom, circling ? reposition(i, dir) : strafe(i, dir), def.enemies[i].accel, dt);
             break;
         case ArenaBrain::Staggered:
         case ArenaBrain::Open:
@@ -3750,8 +3789,11 @@ struct ArenaFightImpl {
         }
         case ArenaBrain::Dead: break;
         }
-        if (foe.shoveLeft > 0.f && foe.brain != ArenaBrain::Dead) { // a special's knock-back over its own time
+        foe.shoved = false;
+        if (foe.shoveLeft > 0.f && foe.brain != ArenaBrain::Dead) { // a push over its own time
             const float moving = std::min(foe.shoveLeft, dt);
+            foe.drive = vel;
+            foe.shoved = true;
             vel = arenaMadd(vel, foe.shoveVel, moving / dt);
             foe.shoveLeft -= moving;
         }
@@ -3769,14 +3811,27 @@ struct ArenaFightImpl {
             const float own = ownTime(foe.stopUntil);
             if (own >= dt || foe.brain == ArenaBrain::Dead) {
                 enemyAct(i);
+                foe.held = false;
             } else if (own > 0.f) {
                 const float whole = dt;
                 dt = own;
                 enemyAct(i);
                 dt = whole;
+                if (foe.held) { // the hold ends inside the tick: the next ramps from the motion unscaled
+                    if (!foe.shoved) foe.drive = foe.velocity;
+                    foe.shoved = true;
+                    foe.held = false;
+                } else {
+                    foe.drive = arenaScaled(foe.drive, own / whole);
+                }
                 foe.velocity = arenaScaled(foe.velocity, own / whole);
+            } else if (foe.held) { // stands still for the hold, the motion it had kept to resume at
+                if (!foe.shoved) foe.drive = foe.velocity;
+                foe.shoved = true;
+                foe.velocity = Vec2{};
             } else {
                 foe.velocity = Vec2{};
+                foe.shoved = false;
             }
         }
     }
@@ -5293,25 +5348,31 @@ void arenaClosestPoints(Vec2 centreA, Vec2 axisA, float spanA, Vec2 centreB, Vec
 }
 
 namespace {
+// The point of living enemy i the ally stands off: a circle's centre; a stadium's (arenaBodySpan) nearest point of its
+// spine, along the enemy's facing as the step's push. On the spine itself: the centre (the step's rule for crossed
+// spines).
+Vec2 arenaAllyFrom(const ArenaFight& fight, const ArenaBodies& bodies, std::size_t i) {
+    Vec2 from = bodies.enemies[i];
+    const float span = arenaBodySpan(fight.def().enemies[i]);
+    if (span > 0.f) {
+        Vec2 pa = bodies.ally;
+        arenaClosest(ArenaSpine{bodies.ally, Vec2{1.f, 0.f}, 0.f},
+                     ArenaSpine{bodies.enemies[i], arenaUnit(fight.output().enemies[i].facing, Vec2{1.f, 0.f}), span}, pa,
+                     from);
+        if (arenaDistance(bodies.ally, from) <= kArenaEps) from = bodies.enemies[i];
+    }
+    return from;
+}
+
 // One pass of the ally's placement: off each living enemy, in enemy order. Whether any overlap was deeper than `floor`
 // (a shallower one is still closed, so the pass ends exact, but it does not keep the loop going).
 bool arenaAllyPass(const ArenaFight& fight, ArenaBodies& bodies, float floor) {
     const ArenaDef& def = fight.def();
-    const ArenaOutput& out = fight.output();
     const float radius = fight.allyRadius();
     bool deep = false;
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
         if (!fight.enemyAlive(i)) continue;
-        // A circle stands it off its centre; a stadium (arenaBodySpan) off the nearest point of its spine, along the
-        // enemy's facing as the step's push. On the spine itself: off the centre (the step's rule for crossed spines).
-        Vec2 from = bodies.enemies[i];
-        const float span = arenaBodySpan(def.enemies[i]);
-        if (span > 0.f) {
-            Vec2 pa = bodies.ally;
-            arenaClosest(ArenaSpine{bodies.ally, Vec2{1.f, 0.f}, 0.f},
-                         ArenaSpine{bodies.enemies[i], arenaUnit(out.enemies[i].facing, Vec2{1.f, 0.f}), span}, pa, from);
-            if (arenaDistance(bodies.ally, from) <= kArenaEps) from = bodies.enemies[i];
-        }
+        const Vec2 from = arenaAllyFrom(fight, bodies, i);
         const float least = radius + def.enemies[i].bodyRadius;
         const Vec2 off = arenaSub(bodies.ally, from);
         const float apart = arenaLength(off);
@@ -5338,6 +5399,16 @@ ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies, Aren
 
 ArenaSettleRun arenaPlaceAlly(const ArenaFight& fight, ArenaBodies& bodies, int maxPasses) {
     return arenaPlaceAlly(fight, bodies, arenaRingHold, &fight.ring(), maxPasses);
+}
+
+float arenaAllyOverlap(const ArenaFight& fight, const ArenaBodies& bodies) {
+    float deepest = 0.f;
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+        if (!fight.enemyAlive(i)) continue;
+        const float least = fight.allyRadius() + fight.def().enemies[i].bodyRadius;
+        deepest = std::max(deepest, least - arenaDistance(bodies.ally, arenaAllyFrom(fight, bodies, i)));
+    }
+    return deepest;
 }
 
 // ---- ArenaTable ----

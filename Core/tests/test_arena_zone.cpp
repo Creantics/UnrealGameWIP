@@ -310,6 +310,60 @@ TEST_CASE("arena zone ally placement: out of an obstacle and inside the walls, s
     CHECK(placed > 0);
 }
 
+// The host's partner walk ends on the zone overload at kArenaPartnerPlacePasses (one pass, then the hold), which the
+// mirror's ring tests don't reach. An enemy stands just off a rock that stands just off a wall (too close for the ally
+// to pass between them); the ally starts deep in the enemy. Its one pass pushes it into the rock, the hold pushes it
+// back out: it ends inside the walls and out of the rock (the hold is last), still in the enemy, unsettled (the host
+// counts it). The full loop from the same start slides it round the enemy and settles clear of all three.
+TEST_CASE("arena zone ally placement at one pass: an enemy by a rock by a wall, held clear of the rock, left unsettled") {
+    const ArenaTable arena = loadArena();
+    ArenaDef d = fightOf(arena, {"skirmisher"});
+    d.ringRadius = 12.f;
+    d.spawnDistance = 6.f;
+    ArenaZone zone = squareZone(10.f);
+    const float rockR = 0.6f;
+    const Vec2 rock{10.f - rockR - 0.3f, 0.f}; // 0.3 m from the wall: no way past it for a 0.4 m ally
+    zone.obstacles[0] = ZoneObstacle{false, rock, rockR, Vec2{}, 0.f, false};
+    zone.obstacleCount = 1;
+    ArenaFight fight;
+    fight.begin(d, ArenaRing{Vec2{0.f, 0.f}, 12.f}, Vec2{-4.f, 0.f}, Vec2{1.f, 0.f}, 1u);
+    fight.setAlly(100, 0.4f);
+    const float allyR = fight.allyRadius();
+    const float foeR = d.enemies[0].bodyRadius;
+    REQUIRE(arenaBodySpan(d.enemies[0]) == 0.f);
+    ArenaBodies start;
+    start.player = fight.playerStart();
+    start.enemies[0] = Vec2{rock.x - rockR - foeR - 0.05f, 0.f};
+    start.ally = Vec2{start.enemies[0].x + 0.1f, 0.02f}; // near the line through the rock: the hold pushes it straight back
+    const auto inFoe = [&](const ArenaBodies& b) {
+        return foeR + allyR - std::sqrt((b.ally.x - b.enemies[0].x) * (b.ally.x - b.enemies[0].x) +
+                                        (b.ally.y - b.enemies[0].y) * (b.ally.y - b.enemies[0].y));
+    };
+    const bool counting = ftcore_test::allocHookInstalled();
+    const auto before = ftcore_test::allocStats().count;
+    ArenaBodies one = start, full = start;
+    const ArenaSettleRun a = arenaPlaceAlly(fight, one, zone, kArenaPartnerPlacePasses);
+    const ArenaSettleRun b = arenaPlaceAlly(fight, full, zone);
+    if (counting) CHECK(ftcore_test::allocStats().count - before == 0);
+    MESSAGE("one pass: overlap " << inFoe(one) << " m, rock clearance " << zone.obstacleDistance(one.ally)
+                                 << " | full loop: " << b.passes << " passes, overlap " << inFoe(full));
+    CHECK(a.passes == 1);
+    CHECK_FALSE(a.settled);
+    CHECK(zone.contains(one.ally, allyR - 1e-3f));
+    CHECK(zone.obstacleDistance(one.ally) >= allyR - 1e-3f);
+    CHECK(inFoe(one) > kArenaSettleFloor); // the squeeze one pass leaves, and the counter reports
+    CHECK(arenaAllyOverlap(fight, one) == doctest::Approx(inFoe(one)).epsilon(1e-4)); // what the host counts
+    CHECK(b.settled);
+    CHECK(b.passes > 1);
+    CHECK(zone.contains(full.ally, allyR - 1e-3f));
+    CHECK(zone.obstacleDistance(full.ally) >= allyR - 1e-3f);
+    CHECK(inFoe(full) <= kArenaSettleFloor);
+    CHECK(arenaAllyOverlap(fight, full) <= kArenaSettleFloor);
+    // The enemy and the lead are the step's: placement never moves them.
+    CHECK(one.enemies[0].x == start.enemies[0].x);
+    CHECK(full.player.x == start.player.x);
+}
+
 // ---- the file ----
 
 TEST_CASE("arena zones: Data/Battle/arenas.json loads against arena.json and worlds.json without warnings") {

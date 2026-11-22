@@ -1632,6 +1632,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 void UFTArenaRunner::PutBodiesAtStart()
 {
 	Bodies = ftcore::ArenaBodies();
+	AllyPlaceCaps = PartnerOverlaps = PartnerPlacements = 0; // a fight's own, as the body settle's (settleCaps)
 	Bodies.player = Fight.playerStart();
 	// Each fight starts on the right shoulder (reset again below with the rest of the lens), before the partner's close
 	// start reads it: a restart after a left-shoulder fight would place the partner on the wrong flank otherwise.
@@ -6611,6 +6612,16 @@ void UFTArenaRunner::LogFeatureChecks() const
 	// -ArenaNoLock, and an aimed shot takes the aim), or the kit has no softRange.
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: soft target %s (%d of %d chances)."),
 		Fight.def().fighter.softRange > 0.f ? *Text(C.softTargetCheck) : TEXT("n/a"), S.softTargets, S.softChances);
+	// String end (ftcore::arenaFeatureChecks): counted once its active part is reached, so one cut off by a hit, a
+	// dodge or the fight's end is no miss; n/a when none was reached (a kit of fewer than two lights, or no chain got
+	// there), FAIL when one was reached and none landed. The pushes are every blow's, the string end's among them.
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena check: string end %s (%d reached, %d landed, %d pushes)."),
+		*Text(C.stringEndCheck), S.stringEnds, S.stringEndHits, S.pushes);
+	// The bodies (report only, no bar): steps whose settle hit its cap, the plain ally's placements that hit theirs, and
+	// the partner's one-pass placements that ended in an enemy's body past 0.1 mm (of all its placements).
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("Arena check: placement (%u body settle caps, %u ally caps, partner in an enemy after %u of %u placements)."),
+		Bodies.settleCaps, AllyPlaceCaps, PartnerOverlaps, PartnerPlacements);
 	// Shots count only for a guns kit that fired (a player's aim, or the autopilot under -ArenaAutoShoot).
 	const bool bGuns = Fight.def().fighter.weapon == ftcore::ArenaWeapon::Guns;
 #if !UE_BUILD_SHIPPING
@@ -9239,6 +9250,16 @@ void UFTArenaRunner::SettleAlly(int32 MaxPasses)
 		++AllyPlaceCaps;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: ally placement hit its pass cap (%u so far)."), Fight.time(),
 			   AllyPlaceCaps);
+	}
+	else if (MaxPasses == 1)
+	{
+		// The partner's one pass reports unsettled whenever it moved it: what counts is an enemy's body it still
+		// stands in past 0.1 mm after the pass and the walls (a squeeze the full loop would have resolved).
+		++PartnerPlacements;
+		if (ftcore::arenaAllyOverlap(Fight, Bodies) > ftcore::kArenaSettleFloor)
+		{
+			++PartnerOverlaps;
+		}
 	}
 }
 

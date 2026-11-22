@@ -10,6 +10,7 @@
 #include "ftcore/FightSession.h"
 #include "ftcore/PartnerBrain.h"
 #include "ftcore/StateHash.h"
+#include "ArenaTaskDKit.h"
 #include "TestAssets.h"
 #include <ostream>
 #include <doctest/doctest.h>
@@ -186,6 +187,15 @@ struct Logged {
     std::uint8_t aim = 0;  // enemy 0's aim that tick
 };
 
+// Every mirror walk's placement (PRig::walkAlly at kArenaPartnerPlacePasses, as the host's WalkPartner): how many, and
+// how many ended in a living enemy's body past kArenaSettleFloor after the one pass and the hold (arenaAllyOverlap, the
+// host's PartnerOverlaps). A report's tally: a test zeroes it, runs, reads it.
+struct PlaceTally {
+    long placements = 0, inEnemy = 0;
+    double deepest = 0.0;
+};
+PlaceTally gPlace;
+
 // A host: the bodies stay where they are put unless `step` (arenaStep moves the player and the enemies) or `walk`
 // (the ally walks toward ArenaOutput::ally.goal at its own kit's moveSpeed, off the living enemies, inside the
 // ring). On TookOver it swaps the player's and the ally's bodies, as the game's host does.
@@ -284,6 +294,10 @@ struct PRig {
         else bodies.ally = out->ally.goal;
         walked = bodies.ally;
         arenaPlaceAlly(fight, bodies, kArenaPartnerPlacePasses); // the host's placement (WalkPartner)
+        ++gPlace.placements;
+        const float deep = arenaAllyOverlap(fight, bodies);
+        if (deep > kArenaSettleFloor) ++gPlace.inEnemy;
+        gPlace.deepest = std::max(gPlace.deepest, double(deep));
         pushed = length(sub(bodies.ally, walked));
     }
     void run(float seconds) {
@@ -5215,6 +5229,9 @@ namespace {
 struct ClassicPin {
     int hits = 0;
     int damage = 0;
+    int leadHits = 0; // the lead's own (ArenaStats::hits, damageDealt, damageTaken)
+    int dealt = 0;
+    int taken = 0;
     std::uint64_t hash = 1469598103934665603ull;
     ArenaPhase phase = ArenaPhase::Fighting;
 };
@@ -5313,6 +5330,9 @@ ClassicPin classicPinRun(const ArenaTable& t, const ArenaDef& base, const char* 
         pinFold(o.hash, &bh, sizeof bh);
     }
     o.damage = fight.stats().partnerDamage;
+    o.leadHits = fight.stats().hits;
+    o.dealt = fight.stats().damageDealt;
+    o.taken = fight.stats().damageTaken;
     o.phase = fight.phase();
     return o;
 }
@@ -5339,23 +5359,26 @@ struct ClassicPinRow {
 // (0.5 to 1 um); the new one clamps once.
 // Re-pinned (11-22) for Task D's lead data, not a change in main's rules: the string end (Devin's last light push
 // 1.2 m, Duy's 1.0 m, both hitStop 0.10) moves 44 of the 56 rows; all still victories. The soft-target limits moved none.
+// Re-pinned again (11-22 review) for the string end's two rulings: no push on a Staggered, Open or Down enemy, and the
+// lead's longer stop holds the other enemies too. Each row's cause (hitStop alone, or hitStop then push) and its
+// before/after hits, damage dealt and taken: the "every classic row stays a victory" report below.
 const ClassicPinRow kClassicPins[] = {
-    {"devin", "shipped default fight", false, 13, 94, 5002052044996101448ull},
-    {"devin", "shipped default fight", true, 13, 94, 10520016707083194939ull},
-    {"devin", "three kinds, attackers 1", false, 25, 170, 16556426744844938877ull},
-    {"devin", "three kinds, attackers 1", true, 24, 171, 137009499677303363ull},
+    {"devin", "shipped default fight", false, 13, 94, 5999061572425075983ull},
+    {"devin", "shipped default fight", true, 13, 94, 583095615669918408ull},
+    {"devin", "three kinds, attackers 1", false, 25, 170, 2665495310826072374ull},
+    {"devin", "three kinds, attackers 1", true, 23, 164, 15040801916201006737ull},
     {"devin", "a brute and a spitter, attackers 2", false, 16, 108, 5241323735042292893ull},
     {"devin", "a brute and a spitter, attackers 2", true, 16, 115, 14748652239614714217ull},
-    {"devin", "brute", false, 13, 94, 5002052044996101448ull},
-    {"devin", "brute", true, 13, 94, 10520016707083194939ull},
+    {"devin", "brute", false, 13, 94, 5999061572425075983ull},
+    {"devin", "brute", true, 13, 94, 583095615669918408ull},
     {"devin", "skirmisher", false, 9, 66, 5952098331214068505ull},
     {"devin", "skirmisher", true, 6, 42, 1249458168175911326ull},
-    {"devin", "breaker", false, 20, 149, 9646520675986134830ull},
-    {"devin", "breaker", true, 17, 125, 5102601220012591764ull},
-    {"devin", "duelist", false, 16, 121, 8922417536294903492ull},
-    {"devin", "duelist", true, 15, 114, 370761597864654414ull},
-    {"devin", "hulk", false, 22, 166, 18174682141223311601ull},
-    {"devin", "hulk", true, 27, 198, 835680145094299049ull},
+    {"devin", "breaker", false, 22, 163, 2402372893913752295ull},
+    {"devin", "breaker", true, 17, 128, 7703680993744437070ull},
+    {"devin", "duelist", false, 16, 121, 15051684852357630423ull},
+    {"devin", "duelist", true, 15, 114, 6211885763762674868ull},
+    {"devin", "hulk", false, 22, 166, 15319383001952065177ull},
+    {"devin", "hulk", true, 26, 187, 11258640159766434896ull},
     {"devin", "titan", false, 27, 198, 15207157633286193992ull},
     {"devin", "titan", true, 25, 184, 13208026254009387355ull},
     {"devin", "kite_boss", false, 62, 438, 8673492936009452625ull},
@@ -5368,24 +5391,24 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "maw_pup", true, 6, 42, 10824710505452702103ull},
     {"devin", "spitter", false, 6, 42, 16994954208136295472ull},
     {"devin", "spitter", true, 6, 42, 596144150160075129ull},
-    {"duy", "shipped default fight", false, 16, 121, 15686067193448670159ull},
-    {"duy", "shipped default fight", true, 16, 121, 14901702036785531970ull},
-    {"duy", "three kinds, attackers 1", false, 33, 237, 3044487535643704490ull},
-    {"duy", "three kinds, attackers 1", true, 36, 253, 9225497597614332918ull},
-    {"duy", "a brute and a spitter, attackers 2", false, 21, 145, 11135475759775023180ull},
-    {"duy", "a brute and a spitter, attackers 2", true, 22, 153, 363558206415969606ull},
-    {"duy", "brute", false, 16, 121, 15686067193448670159ull},
-    {"duy", "brute", true, 16, 121, 14901702036785531970ull},
+    {"duy", "shipped default fight", false, 16, 121, 16129571751424819287ull},
+    {"duy", "shipped default fight", true, 16, 121, 15803600145694816199ull},
+    {"duy", "three kinds, attackers 1", false, 32, 225, 6486821309586141276ull},
+    {"duy", "three kinds, attackers 1", true, 37, 256, 18350731485922003309ull},
+    {"duy", "a brute and a spitter, attackers 2", false, 17, 119, 3096051190507745992ull},
+    {"duy", "a brute and a spitter, attackers 2", true, 20, 146, 7233461716215559814ull},
+    {"duy", "brute", false, 16, 121, 16129571751424819287ull},
+    {"duy", "brute", true, 16, 121, 15803600145694816199ull},
     {"duy", "skirmisher", false, 6, 42, 12056965067669638780ull},
     {"duy", "skirmisher", true, 6, 27, 7451009726274229835ull},
-    {"duy", "breaker", false, 23, 173, 13652149199064299632ull},
-    {"duy", "breaker", true, 26, 182, 8695362284755432256ull},
-    {"duy", "duelist", false, 15, 114, 11143321340344950940ull},
-    {"duy", "duelist", true, 16, 121, 5323765885039193162ull},
-    {"duy", "hulk", false, 29, 212, 3174687515284556675ull},
+    {"duy", "breaker", false, 21, 159, 846505572606926278ull},
+    {"duy", "breaker", true, 26, 191, 14043180726348809670ull},
+    {"duy", "duelist", false, 16, 124, 13553160616168302813ull},
+    {"duy", "duelist", true, 16, 121, 7892321000661240167ull},
+    {"duy", "hulk", false, 29, 212, 7934347700092671634ull},
     {"duy", "hulk", true, 27, 198, 13687848607503498194ull},
-    {"duy", "titan", false, 30, 222, 5458236834571324163ull},
-    {"duy", "titan", true, 29, 204, 10184804135756597489ull},
+    {"duy", "titan", false, 31, 229, 2766181796281439188ull},
+    {"duy", "titan", true, 29, 204, 14890932542749384050ull},
     {"duy", "kite_boss", false, 64, 457, 237225492138586247ull},
     {"duy", "kite_boss", true, 67, 472, 1202375297437231589ull},
     {"duy", "stone_bearer", false, 101, 743, 11214750350828670490ull},
@@ -5394,15 +5417,73 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "white_glove", true, 92, 665, 7136199856857427644ull},
     {"duy", "maw_pup", false, 6, 42, 12129895063172397078ull},
     {"duy", "maw_pup", true, 6, 32, 760009930559185308ull},
-    {"duy", "spitter", false, 6, 42, 12946509061520371765ull},
-    {"duy", "spitter", true, 6, 42, 559568275407008491ull},
+    {"duy", "spitter", false, 6, 42, 8866679087616209984ull},
+    {"duy", "spitter", true, 6, 42, 18343557503619373346ull},
 };
-} // namespace
 
-TEST_CASE("arena partner: classic partner fights resolve exactly as main's: hits, damage and whole-run hashes pinned") {
-    // Review (11-16): rule 19's kit range (the party member's 5-8 m casts) applies under the close camera only; with
-    // no camera or a classic one every blow lands from the light's own range, so these whole runs match main's.
-    const ArenaTable t = shippedTable();
+// The same rows before Task D (a5eeeb02, the parent of the soft-target and string-end commits), by hand from that
+// tree: never regenerate them. A Devin or Duy kit with none of Task D's data (preFeatureKit) must still play these.
+const ClassicPinRow kPreFeaturePins[] = {
+    {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
+    {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
+    {"devin", "three kinds, attackers 1", false, 25, 170, 16537530505005903450ull},
+    {"devin", "three kinds, attackers 1", true, 23, 164, 7641466744412459784ull},
+    {"devin", "a brute and a spitter, attackers 2", false, 16, 108, 5241323735042292893ull},
+    {"devin", "a brute and a spitter, attackers 2", true, 16, 115, 14748652239614714217ull},
+    {"devin", "brute", false, 13, 94, 31290753253845615ull},
+    {"devin", "brute", true, 13, 94, 16239672271515793875ull},
+    {"devin", "skirmisher", false, 9, 66, 5952098331214068505ull},
+    {"devin", "skirmisher", true, 6, 42, 1249458168175911326ull},
+    {"devin", "breaker", false, 22, 163, 18329296392151869695ull},
+    {"devin", "breaker", true, 17, 128, 2481547781211154738ull},
+    {"devin", "duelist", false, 16, 121, 17596743998803615256ull},
+    {"devin", "duelist", true, 15, 114, 3889848073699997715ull},
+    {"devin", "hulk", false, 23, 170, 8466614135980583722ull},
+    {"devin", "hulk", true, 24, 177, 17463738276282656931ull},
+    {"devin", "titan", false, 27, 198, 17037376046017037454ull},
+    {"devin", "titan", true, 24, 177, 9005697788452095697ull},
+    {"devin", "kite_boss", false, 57, 408, 3336118097607066850ull},
+    {"devin", "kite_boss", true, 58, 418, 558542764103034853ull},
+    {"devin", "stone_bearer", false, 80, 575, 6204551899356899748ull},
+    {"devin", "stone_bearer", true, 79, 574, 7946797560756255449ull},
+    {"devin", "white_glove", false, 66, 465, 12554922323999540588ull},
+    {"devin", "white_glove", true, 71, 503, 8649862504494032913ull},
+    {"devin", "maw_pup", false, 6, 42, 14271193196024403956ull},
+    {"devin", "maw_pup", true, 6, 42, 10824710505452702103ull},
+    {"devin", "spitter", false, 6, 42, 16994954208136295472ull},
+    {"devin", "spitter", true, 6, 42, 596144150160075129ull},
+    {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
+    {"duy", "shipped default fight", true, 16, 121, 165081782403125027ull},
+    {"duy", "three kinds, attackers 1", false, 31, 221, 3123289504221292375ull},
+    {"duy", "three kinds, attackers 1", true, 35, 251, 15975811842975394185ull},
+    {"duy", "a brute and a spitter, attackers 2", false, 17, 119, 13769110188836988905ull},
+    {"duy", "a brute and a spitter, attackers 2", true, 19, 136, 4970841333878948935ull},
+    {"duy", "brute", false, 16, 118, 17274731110568096544ull},
+    {"duy", "brute", true, 16, 121, 165081782403125027ull},
+    {"duy", "skirmisher", false, 6, 42, 12056965067669638780ull},
+    {"duy", "skirmisher", true, 6, 27, 7451009726274229835ull},
+    {"duy", "breaker", false, 24, 180, 3918144725000809230ull},
+    {"duy", "breaker", true, 25, 184, 9399829982760244120ull},
+    {"duy", "duelist", false, 16, 124, 17618373211950944107ull},
+    {"duy", "duelist", true, 16, 121, 3000389506109734572ull},
+    {"duy", "hulk", false, 30, 219, 8604643699523506543ull},
+    {"duy", "hulk", true, 29, 206, 10408765349377459501ull},
+    {"duy", "titan", false, 31, 229, 8858760711467032362ull},
+    {"duy", "titan", true, 29, 204, 4745636326408502596ull},
+    {"duy", "kite_boss", false, 62, 443, 11966225794031579978ull},
+    {"duy", "kite_boss", true, 68, 488, 2057013200150119109ull},
+    {"duy", "stone_bearer", false, 103, 760, 16822401646142181277ull},
+    {"duy", "stone_bearer", true, 110, 803, 13444865907467236446ull},
+    {"duy", "white_glove", false, 84, 609, 12875648444523452656ull},
+    {"duy", "white_glove", true, 89, 641, 6347336712998663789ull},
+    {"duy", "maw_pup", false, 6, 42, 12129895063172397078ull},
+    {"duy", "maw_pup", true, 6, 32, 760009930559185308ull},
+    {"duy", "spitter", false, 6, 42, 373096491565446441ull},
+    {"duy", "spitter", true, 6, 42, 13513007789646449681ull},
+};
+
+// The classic fights: the default fight, two groups, then each non-passive kind alone.
+std::vector<std::pair<std::string, ArenaDef>> classicFights(const ArenaTable& t) {
     std::vector<std::pair<std::string, ArenaDef>> fights;
     fights.emplace_back("shipped default fight", t.fallback);
     fights.emplace_back("three kinds, attackers 1", pinFight(t, {"brute", "skirmisher", "breaker"}, 1));
@@ -5416,11 +5497,16 @@ TEST_CASE("arena partner: classic partner fights resolve exactly as main's: hits
         def.attackers = 1;
         fights.emplace_back(t.enemyIds[e], def);
     }
+    return fights;
+}
+
+// Every lead's classic rows (seeds 1-3 folded) against `pins`; the rows it checked.
+int checkClassicRows(const ArenaTable& t, const ClassicPinRow* pins, std::size_t pinCount) {
+    const auto fights = classicFights(t);
     REQUIRE(fights.size() >= 8);
-    int rows = 0, leads = 0;
+    int rows = 0;
     for (std::size_t f = 1; f < t.fighterIds.size(); ++f) {
         if (!t.fighters[f].attacks || t.fighterIds[f] == "third") continue;
-        ++leads;
         const char* lead = t.fighterIds[f].c_str();
         for (const auto& [name, def] : fights)
             for (int cam = 0; cam < 2; ++cam) {
@@ -5433,8 +5519,9 @@ TEST_CASE("arena partner: classic partner fights resolve exactly as main's: hits
                     pinFold(hash, &p.hash, sizeof p.hash);
                 }
                 const ClassicPinRow* row = nullptr;
-                for (const ClassicPinRow& r : kClassicPins)
-                    if (std::string(r.lead) == lead && name == r.fight && r.camera == (cam == 1)) row = &r;
+                for (std::size_t r = 0; r < pinCount; ++r)
+                    if (std::string(pins[r].lead) == lead && name == pins[r].fight && pins[r].camera == (cam == 1))
+                        row = &pins[r];
                 MESSAGE("PIN    {\"" << std::string(lead) << "\", \"" << name << "\", " << std::string(cam ? "true" : "false") << ", " << hits << ", "
                                      << damage << ", " << hash << "ull},");
                 REQUIRE_MESSAGE(row != nullptr, "Error: no pin for " << lead << " " << name << " camera " << cam);
@@ -5445,8 +5532,68 @@ TEST_CASE("arena partner: classic partner fights resolve exactly as main's: hits
                 CHECK(hash == row->hash);
             }
     }
-    CHECK(leads >= 2);
+    return rows;
+}
+} // namespace
+
+TEST_CASE("arena partner: classic partner fights resolve exactly as main's: hits, damage and whole-run hashes pinned") {
+    // Review (11-16): rule 19's kit range (the party member's 5-8 m casts) applies under the close camera only; with
+    // no camera or a classic one every blow lands from the light's own range, so these whole runs match main's.
+    const ArenaTable t = shippedTable();
+    const int rows = checkClassicRows(t, kClassicPins, sizeof kClassicPins / sizeof kClassicPins[0]);
     CHECK(rows == static_cast<int>(sizeof kClassicPins / sizeof kClassicPins[0]));
+}
+
+// Off by default (orchestrator review 11-22): Task D's code with none of its data is the code before it. Devin's and
+// Duy's kits stripped of the new fields (preFeatureKit) play every classic row to the whole-run hash of a5eeeb02.
+TEST_CASE("arena soft target and string end: kits with none of the new fields play the classic fights as before them") {
+    ArenaTable t = shippedTable();
+    for (std::size_t f = 0; f < t.fighterIds.size(); ++f) t.fighters[f] = ftcore_test::preFeatureKit(t.fighters[f]);
+    CHECK(t.fighter("devin").light[t.fighter("devin").lightCount - 1].hitStop == doctest::Approx(0.05f));
+    CHECK(t.fighter("duy").light[t.fighter("duy").lightCount - 1].hitStop == doctest::Approx(0.06f));
+    const int rows = checkClassicRows(t, kPreFeaturePins, sizeof kPreFeaturePins / sizeof kPreFeaturePins[0]);
+    CHECK(rows == static_cast<int>(sizeof kPreFeaturePins / sizeof kPreFeaturePins[0]));
+}
+
+// Before and after Task D's data, row by row (report; review 11-22): every classic row a victory on every seed with the
+// shipped kits, the lead's hits, damage dealt and taken beside the stripped kit's, and which part of the data moved the
+// whole-run hash: the string end's hitStop 0.10 alone, then its push, then the soft-target limits (turn and homing).
+TEST_CASE("arena soft target and string end: every classic row stays a victory (before and after, report)") {
+    const ArenaTable shipped = shippedTable();
+    ArenaTable tables[4] = {shipped, shipped, shipped, shipped}; // before, + hitStop, + push, shipped
+    for (int k = 0; k < 3; ++k)
+        for (std::size_t f = 0; f < shipped.fighterIds.size(); ++f)
+            tables[k].fighters[f] = ftcore_test::taskDKit(shipped.fighters[f], static_cast<ftcore_test::TaskDPart>(k));
+    const auto fights = classicFights(shipped);
+    for (const char* lead : {"devin", "duy"})
+        for (const auto& [name, def] : fights)
+            for (int cam = 0; cam < 2; ++cam) {
+                int v[4] = {}, hits[4] = {}, dealt[4] = {}, taken[4] = {}, ph[4] = {};
+                std::uint64_t hash[4];
+                for (int k = 0; k < 4; ++k) {
+                    hash[k] = 1469598103934665603ull;
+                    for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+                        const ClassicPin p = classicPinRun(tables[k], def, lead, seed, cam == 1);
+                        v[k] += p.phase == ArenaPhase::Victory;
+                        hits[k] += p.leadHits;
+                        dealt[k] += p.dealt;
+                        taken[k] += p.taken;
+                        ph[k] += p.hits;
+                        pinFold(hash[k], &p.hash, sizeof p.hash);
+                    }
+                }
+                std::string cause;
+                if (hash[1] != hash[0]) cause += " hitStop";
+                if (hash[2] != hash[1]) cause += " push";
+                if (hash[3] != hash[2]) cause += " soft";
+                MESSAGE("ROW " << std::string(lead) << " | " << name << " | " << std::string(cam ? "camera" : "none")
+                               << " | wins " << v[0] << "->" << v[3] << " | hits " << hits[0] << "->" << hits[3]
+                               << " | dealt " << dealt[0] << "->" << dealt[3] << " | taken " << taken[0] << "->"
+                               << taken[3] << " | partner hits " << ph[0] << "->" << ph[3] << " | moved by"
+                               << (cause.empty() ? std::string(" none") : cause));
+                CHECK(v[3] == 3);
+                CHECK(hash[3] == hash[2]); // locked starts throughout: the soft-target limits move no classic row
+            }
 }
 
 namespace {
@@ -6016,4 +6163,53 @@ TEST_CASE("arena partner: pushed back mid-string, the drawn heading stays within
         CHECK(shoved >= 10);
         CHECK(worst <= 5.f);
     }
+}
+
+// The orchestrator's C3 (11-22): how often the partner ends a step in an enemy's body after its one pass and the hold
+// (kArenaPartnerPlacePasses, the host's WalkPartner and PartnerOverlaps), on the melee capture's runs, rule 17's six
+// circling seeds and the shipped group fight. Reported for the note (ARENA_HOST_OVERLAP_1122.md); task B's routing
+// brings the full loop back.
+TEST_CASE("arena partner: the partner's one-pass placement, how often a step ends in an enemy (report)") {
+    const ArenaTable t = shippedTable();
+    const auto report = [](const char* what) {
+        MESSAGE("PLACEMENT " << std::string(what) << ": in an enemy after " << gPlace.inEnemy << " of " << gPlace.placements
+                             << " placements (" << 100.0 * double(gPlace.inEnemy) / double(std::max(gPlace.placements, 1L))
+                             << "%), deepest " << gPlace.deepest << " m");
+        CHECK(gPlace.placements > 0);
+        gPlace = PlaceTally{};
+    };
+    gPlace = PlaceTally{};
+    struct Pair {
+        const char* lead;
+        const char* partner;
+    };
+    for (const Pair p : {Pair{"devin", "duy"}, Pair{"duy", "devin"}})
+        for (const bool hug : {false, true}) {
+            FoughtLens lens{2.6f, 0.55f, 1.f, true, 0.475f, hug};
+            lens.seconds = std::string(p.lead) == "devin" ? 11.f : 16.3f;
+            foughtLensRun(lens, 1, 1, p.lead, {"brute", "skirmisher", "breaker"}, p.partner);
+        }
+    report("melee capture (devin and duy each way, hug off and on, seed 1)");
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}})
+        for (std::uint32_t seed = 1; seed <= kSixSeeds; ++seed) idleLead(t, order, true, seed, true);
+    report("rule 17 circling (both orders, seeds 1-6)");
+    for (const std::uint8_t order : {std::uint8_t{0}, std::uint8_t{1}}) {
+        PRig r(t.fighter("default"));
+        r.def = t.fallback;
+        r.def.enemyCount = 0;
+        for (const char* id : {"skirmisher", "hulk", "duelist"})
+            for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+                if (t.enemyIds[e] == id) {
+                    r.def.enemyKind[r.def.enemyCount] = static_cast<std::uint8_t>(e);
+                    r.def.enemies[r.def.enemyCount++] = t.enemies[e];
+                }
+        REQUIRE(r.def.enemyCount == 3);
+        r.def.attackers = 2;
+        r.tuning = shippedTuning();
+        r.in.partnerOrder = order;
+        r.goShipped(true, 1);
+        r.pairOnParry = true;
+        while (!r.fight.over() && r.fight.time() < 20.f) r.tick();
+    }
+    report("shipped group fight (skirmisher, hulk, duelist, 20 s, both orders)");
 }
