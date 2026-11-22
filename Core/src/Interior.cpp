@@ -409,7 +409,7 @@ int heroCornerRooms(const HeroCornerSpec& hero, HeroRoom out[kHeroBays]) {
     heroCornerLayout(hero, layout);
     int n = 0;
     for (int i = 0; i < kHeroBays; ++i) {
-        if (!hero.bayLit[i]) continue;
+        if (!hero.bayLit[i] || !hero.bayRoom[i]) continue;
         const MassingBox& box = layout.bays[i];
         const KitDoorway& dw = hero.bayKoshi[i] ? kKoshiDoorway : kGlazedDoorway;
         // The front faces the lane (west); its piece runs from the bay's north edge (its left end seen from the lane).

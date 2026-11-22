@@ -139,7 +139,7 @@ struct KitDoorway {
 inline constexpr KitDoorway kKoshiDoorway{"SHOP_KOSHI_54_OPEN", 3.06, 5.25, 0.05, 2.25, 0.4};
 inline constexpr KitDoorway kGlazedDoorway{"SHOP_GLAZED_81_OPEN", 3.18, 4.92, 0.10, 2.15, 0.3};
 
-// The hero corner's enterable rooms: one per lit bay (HeroCornerSpec bayLit), its host the layout's bay box. The eatery
+// The hero corner's enterable rooms: one per bay both lit and a room bay (HeroCornerSpec bayLit, bayRoom), its host the layout's bay box. The eatery
 // bay is an eatery, a lattice front's bay a shop, a glazed front's bay a flats' lobby. Each spec is kitFront, its gap
 // the open front's clear opening, its floor the front's sill over the ground. Allocates (the ids).
 struct HeroRoom {

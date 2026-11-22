@@ -64,6 +64,9 @@ struct HeroCornerSpec {
     int eateryBay = 2;  // 0-based: bay 3
     // The timber lattice (koshi) fronts, each under its own pent roof: the eatery's and bay 1's.
     bool bayKoshi[kHeroBays] = {true, false, true, false, false};
+    // -Interiors=hero: the bays that are enterable rooms (the slice's three: shop, eatery, lobby), apart from the lit set.
+    // A lit bay outside it keeps its shallow lit bay; a room needs its bay lit too.
+    bool bayRoom[kHeroBays] = {true, false, true, true, false};
     // The eave.
     double eaveOut = 1.2, eaveUp = 3.65, eaveThick = 0.12;
     // The first bay's south end wall (bare stucco seen from the lane's south end) clad in dark timber, board and

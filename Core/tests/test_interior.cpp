@@ -421,6 +421,37 @@ TEST_CASE("heroCornerRooms: the three lit bays, each through its open kit front"
     CHECK(rooms[0].spec.gapHeight == doctest::Approx(2.25));
 }
 
+TEST_CASE("heroCornerRooms: the room set is its own, apart from the lit bays") {
+    // The demo corner lights bays 1-4 (-HeroLitBays=1,2,3,4): bay 2 stays a shallow lit bay, the rooms are still 1, 3, 4,
+    // the same three the game's crowd builds from the default spec (FTCrowdSubsystemV2, HeroCornerSpec{}).
+    HeroCornerSpec lit4;
+    for (int i = 0; i < 4; ++i) lit4.bayLit[i] = true;
+    HeroRoom a[kHeroBays], b[kHeroBays];
+    const int na = heroCornerRooms(lit4, a);
+    const int nb = heroCornerRooms(HeroCornerSpec{}, b);
+    REQUIRE(na == 3);
+    REQUIRE(nb == 3);
+    for (int k = 0; k < 3; ++k) {
+        CAPTURE(k);
+        CHECK(a[k].bay == b[k].bay);
+        CHECK(a[k].spec.kind == b[k].spec.kind);
+        CHECK(a[k].spec.host.id == b[k].spec.host.id);
+        CHECK(a[k].spec.doorIn.x == doctest::Approx(b[k].spec.doorIn.x));
+        CHECK(a[k].spec.doorIn.y == doctest::Approx(b[k].spec.doorIn.y));
+    }
+    std::vector<crowdv2::CrowdStreet> streets;
+    std::vector<crowdv2::CrowdDoor> doors;
+    CHECK(heroCornerCrowd(HeroCornerSpec{}, 1000.0, streets, doors) == 3);
+    // A room bay left dark is no room; with no room bays there are none.
+    HeroCornerSpec dark1;
+    dark1.bayLit[0] = false;
+    CHECK(heroCornerRooms(dark1, a) == 2);
+    CHECK(a[0].bay == 2);
+    HeroCornerSpec none = lit4;
+    for (int i = 0; i < kHeroBays; ++i) none.bayRoom[i] = false;
+    CHECK(heroCornerRooms(none, a) == 0);
+}
+
 TEST_CASE("heroCornerDoorRows: the hero doors as table rows, read back") {
     const HeroCornerSpec hero;
     HeroRoom rooms[kHeroBays];
