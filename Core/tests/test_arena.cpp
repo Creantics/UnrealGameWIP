@@ -8494,6 +8494,143 @@ TEST_CASE("arena feature checks: verdicts read n/a without a chance, FAIL or bar
     CHECK(arenaFeatureChecks(s).breakOutCheck == ArenaCheck::Pass);
 }
 
+namespace {
+// A lead pressing light every tick at a dummy for `seconds`: the cancel counters it leaves.
+ArenaStats lightMash(const ArenaFighter& kit, float seconds) {
+    Rig r(kit, {dummyKind()});
+    for (int i = 0; i < static_cast<int>(std::lround(seconds / kDt)); ++i) {
+        r.in.light = true;
+        r.tick();
+    }
+    return r.fight.stats();
+}
+} // namespace
+
+TEST_CASE("arena feature checks: a cancel chance is a press or guard waiting while its own cut window is open") {
+    // 11-22: every host run on the default kit (no -ArenaLead; the Maw-Pup's step 6 runs, the 11-15 perf baseline)
+    // printed "cancels FAIL (0 of N chances)". Its attacks name no own cut window, so nothing can cut them before the
+    // plain cancel point and no cancel can show; the chances had been counted for any press waiting there.
+    const ArenaTable t = loadShipped();
+    ArenaFighter kit = t.fighter("default");
+    for (std::size_t l = 0; l < kit.lightCount; ++l) {
+        REQUIRE(kit.light[l].cancelLight < 0.f); // the shipped default kit: no own windows
+        REQUIRE(kit.light[l].stamina <= 0.f);
+    }
+    ArenaStats s = lightMash(kit, 4.f);
+    CHECK(s.lights > 3); // the chain ran, each light after the plain cancel point
+    CHECK(s.cancels == 0);
+    CHECK(s.cancelChances == 0);
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::NotShown);
+
+    // The same kit with an own light window: the presses cut through it.
+    for (std::size_t l = 0; l < kit.lightCount; ++l) kit.light[l].cancelLight = 0.3f;
+    s = lightMash(kit, 4.f);
+    CHECK(s.cancels > 0);
+    CHECK(s.cancelChances >= s.cancels);
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::Pass);
+
+    // The window open and the press refused there (no stamina left for the next light): a chance with no cancel,
+    // so FAIL can still show.
+    for (std::size_t l = 0; l < kit.lightCount; ++l) kit.light[l].stamina = 10.f;
+    kit.stamina = 10.f;
+    kit.staminaRegen = 0.f;
+    s = lightMash(kit, 2.f);
+    CHECK(s.lights == 1);
+    CHECK(s.cancels == 0);
+    CHECK(s.cancelChances == 1);
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::Fail);
+}
+
+namespace {
+// One light pressed at a dummy, then from the following tick the guard held or a dodge pressed once, for `seconds`:
+// the cancel counters it leaves, and whether a dodge ever started.
+struct LightThen {
+    ArenaStats stats;
+    bool dodged = false;
+};
+LightThen lightThen(const ArenaFighter& kit, bool guard, bool dodge, float seconds) {
+    Rig r(kit, {dummyKind()});
+    r.in.light = true;
+    REQUIRE(r.tick().player.action == ArenaAction::Light);
+    r.in.guard = guard;
+    r.in.dodge = dodge;
+    LightThen o;
+    for (int i = 0; i < static_cast<int>(std::lround(seconds / kDt)); ++i)
+        if (r.tick().player.action == ArenaAction::Dodge) o.dodged = true;
+    o.stats = r.fight.stats();
+    return o;
+}
+} // namespace
+
+TEST_CASE("arena feature checks: a guard or dodge cut counts a chance only through its own window") {
+    const ArenaTable t = loadShipped();
+    ArenaFighter kit = t.fighter("default");
+    REQUIRE(kit.light[0].cancelGuard < 0.f);
+    REQUIRE(kit.light[0].cancelRoll < 0.f);
+    REQUIRE(kit.dodgeStamina > 0.f);
+
+    // The guard held from the light's second tick, its own guard window open from the start: one cut, one chance.
+    ArenaFighter own = kit;
+    own.light[0].cancelGuard = 0.f;
+    ArenaStats s = lightThen(own, true, false, 1.f).stats;
+    CHECK(s.cancels == 1);
+    CHECK(s.cancelChances == 1);
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::Pass);
+
+    // The same guard on the shipped light (no own guard window): the guard waits for the plain cancel point, where
+    // it is no cut, so no chance either.
+    s = lightThen(kit, true, false, 1.f).stats;
+    CHECK(s.cancels == 0);
+    CHECK(s.cancelChances == 0);
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::NotShown);
+
+    // A dodge pressed inside the light's own roll window with no stamina: refused for stamina, so a chance with no
+    // cancel (a refused dodge or jump press is a chance by design: the window was open), and the check reads FAIL.
+    ArenaFighter roll = kit;
+    roll.light[0].cancelRoll = 0.f;
+    roll.stamina = 0.f;
+    roll.staminaRegen = 0.f;
+    REQUIRE(roll.light[0].stamina <= 0.f); // the light itself is free, so it starts on empty
+    const LightThen d = lightThen(roll, false, true, 1.f);
+    s = d.stats;
+    CHECK_FALSE(d.dodged);
+    CHECK(s.cancels == 0);
+    CHECK(s.cancelChances == 1);
+    CHECK(arenaFeatureChecks(s).cancelsCheck == ArenaCheck::Fail);
+}
+
+TEST_CASE("arena host mirror: the Maw-Pup lineups read cancels n/a on the default kit and never FAIL on a lead") {
+    // The host's default lineup (dummy, maw_pup) on sand_ring, seeds 1-3: the default kit has no cancel to show;
+    // both leads cut their lights through their own windows. maw_pup alone (the classic pin rows' fight): Devin's
+    // seed 3 pressed early in two lights and the press left the buffer before the light's window opened, so no
+    // press waited in a window (n/a, not FAIL).
+    // The default kit's zero chances: every one of its attacks names no own window, so each cut (Guard included)
+    // falls back to the plain cancel point, where no chance counts. The autopilot also raises the guard only where
+    // canStart(p, f) with no cut (Cut::Other, the plain point) lets it (ArenaFight.cpp, the autopilot's parry), so an
+    // own guard window on a lead is never reached by its guard either: a lead's chances here come from its presses
+    // (lights, dodges). Were the autopilot to ask with Cut::Guard, a lead's guard chances would show here too.
+    for (const char* kit : {"default", "devin", "duy"})
+        for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+            CAPTURE(std::string(kit));
+            CAPTURE(seed);
+            const bool lead = std::string_view(kit) != "default";
+            const HostRun pair = hostRun({"dummy", "maw_pup"}, kit, seed);
+            const ArenaCheck c = arenaFeatureChecks(pair.stats).cancelsCheck;
+            CHECK(pair.stats.cancels <= pair.stats.cancelChances);
+            if (lead) {
+                CHECK(pair.stats.cancels > 0);
+                CHECK(c == ArenaCheck::Pass);
+            } else {
+                CHECK(pair.stats.lights > 100);
+                CHECK(pair.stats.cancelChances == 0);
+                CHECK(c == ArenaCheck::NotShown);
+            }
+            const HostRun alone = hostRun({"maw_pup"}, kit, seed);
+            CHECK(alone.stats.cancels <= alone.stats.cancelChances);
+            CHECK(arenaFeatureChecks(alone.stats).cancelsCheck != ArenaCheck::Fail);
+        }
+}
+
 // ---- the autopilot's shots (opt in) ----
 
 namespace {
