@@ -1971,11 +1971,11 @@ struct ArenaHeld {
 // pass gives the whole of each overlap deeper than 0.1 mm to the body the wall does not hold (both held, or
 // neither: half each). Contacts no deeper than `floor` are left as they are. True when it moved a body: the caller
 // then holds the bodies inside its walls again, and may settle again. Both arenaStep variants settle at
-// kArenaSettleFloor once when a wall held a body, then up to 4 more times at kArenaCrowdFloor while a pass still moves
-// one (a crowd the push passes left pressed together comes apart; a fight with no contact deeper than 1 mm is
-// stepped exactly as before). Deterministic; no allocation.
+// kArenaSettleFloor once when a wall held a body, then up to 4 more times while a pass still moves one: the first at
+// kArenaCrowdFloor, the rest at kArenaSettleFloor (a crowd the push passes left pressed together comes apart; a fight
+// with no contact deeper than 0.7 mm is stepped exactly as before). Deterministic; no allocation.
 constexpr float kArenaSettleFloor = 1.0e-4f; // a held body's settle: overlaps past 0.1 mm
-constexpr float kArenaCrowdFloor = 1.0e-3f;  // the crowd settle: overlaps past 1 mm
+constexpr float kArenaCrowdFloor = 7.0e-4f;  // the crowd settle starts past 0.7 mm (the overlap test bars 1 mm)
 constexpr int kArenaCrowdPasses = 4;
 FTCORE_API bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held,
                             float floor = kArenaSettleFloor);

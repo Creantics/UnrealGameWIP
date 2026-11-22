@@ -338,8 +338,8 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         arenaPushApart(fight, bodies, true);
     }
     // A body the walls hold can't take its share of a push: the settle gives it to the other one, then the walls hold
-    // them again. A crowd still pressed together (deeper than 1 mm) settles on, up to kArenaCrowdPasses times,
-    // while a pass moves a body.
+    // them again. A crowd still pressed together (deeper than 0.7 mm) settles on, to the 0.1 mm floor, up to
+    // kArenaCrowdPasses times while a pass moves a body.
     const auto holdAll = [&] {
         const auto hold = [&](Vec2& p, float r) {
             const Vec2 q = zone.constrain(p, r);
@@ -356,7 +356,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         holdAll();
     }
     for (int pass = 0; pass < kArenaCrowdPasses; ++pass) {
-        if (!arenaSettle(fight, bodies, true, held, kArenaCrowdFloor)) break;
+        if (!arenaSettle(fight, bodies, true, held, pass == 0 ? kArenaCrowdFloor : kArenaSettleFloor)) break;
         holdAll();
     }
 }

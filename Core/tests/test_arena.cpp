@@ -10393,7 +10393,7 @@ OverlapRun overlapRun(const std::vector<std::string>& lineup, const char* kit, s
 TEST_CASE("arena host mirror: no living bodies overlap after a zone step, on Devin and Duy") {
     const std::vector<std::vector<std::string>> lineups = {
         {"dummy", "maw_pup"}, {"maw_pup"}, {"brute", "skirmisher", "breaker"}, {"maw_pup", "maw_pup"},
-        {"maw_pup", "maw_pup", "maw_pup", "maw_pup"}};
+        {"maw_pup", "maw_pup", "maw_pup", "maw_pup"}, {"stone_bearer"}, {"kite_boss"}, {"white_glove"}};
     for (const char* kit : {"devin", "duy"})
         for (const std::vector<std::string>& l : lineups)
             for (std::uint32_t seed = 1; seed <= 3; ++seed) {

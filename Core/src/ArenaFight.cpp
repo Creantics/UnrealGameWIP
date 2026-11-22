@@ -5075,8 +5075,8 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     // frame the performer is placed.
     for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaPushApart(fight, bodies, !placed);
     // Everything stays inside the ring; a body the ring moved can't take its share of a push, so the settle gives it
-    // to the other one, and the ring holds them again. A crowd the passes left pressed together (deeper than 1 mm)
-    // settles on, up to kArenaCrowdPasses times, while a pass still moves a body.
+    // to the other one, and the ring holds them again. A crowd the passes left pressed together (deeper than 0.7 mm)
+    // settles on, to the 0.1 mm floor, up to kArenaCrowdPasses times while a pass still moves a body.
     const ArenaRing& ring = fight.ring();
     ArenaHeld held;
     const auto hold = [&ring](Vec2& p, float r) {
@@ -5097,7 +5097,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
         holdAll();
     }
     for (int pass = 0; pass < kArenaCrowdPasses; ++pass) {
-        if (!arenaSettle(fight, bodies, !placed, held, kArenaCrowdFloor)) break;
+        if (!arenaSettle(fight, bodies, !placed, held, pass == 0 ? kArenaCrowdFloor : kArenaSettleFloor)) break;
         holdAll();
     }
 }
