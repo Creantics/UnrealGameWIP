@@ -325,6 +325,7 @@ private:
 	void FixExposure(float Bias);
 	void GreyGround();
 #if !UE_BUILD_SHIPPING
+	void AddPortraitCard(); // -ExplorePortraitCard
 	void Nightfall(); // -ExploreNight
 	void SoakForReview(); // -ExploreWet
 #endif

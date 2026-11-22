@@ -380,6 +380,12 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			AddPortraitLights();
 		}
+#if !UE_BUILD_SHIPPING
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitCard")))
+		{
+			AddPortraitCard();
+		}
+#endif
 		// Map-light diagnosis (the look-dev set has both built in): -ExploreGreyGround paints the map's green ground,
 		// path and leaves a neutral 0.18 grey; -ExploreFixedExposure turns auto-exposure off (EV100 0, shifted by
 		// -ExploreExposureBias=<stops>).
@@ -850,6 +856,54 @@ void AFTExploreCharacter::HoldBodyAt(float Time)
 	Body->Stop();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: body held on %s at %.2f s."), *BodyClip->GetName(), Time);
 }
+
+#if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::AddPortraitCard()
+{
+	// Dev only: -ExplorePortraitCard holds a neutral 18% grey card (M_WorldSurface at 0.18 albedo, 0.9 rough, no mottle or
+	// weather, as -WorldEyeCard) on the camera, 14 x 10 cm, facing it, at -ExplorePortraitCardAt=<forward,right,up> cm
+	// from the camera (default 45,-17,-10: the lower left of a head shot), so every yaw's still has a known neutral under
+	// the same lights as the lead. It casts nothing and has no collision. Review only.
+	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Rendering/M_WorldSurface.M_WorldSurface"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Cube || !Base || !Camera)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: portrait card not laid (mesh %d, material %d, camera %d)."), Cube != nullptr,
+			Base != nullptr, Camera != nullptr);
+		return;
+	}
+	FVector At(45.0, -17.0, -10.0);
+	FString AtText;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitCardAt="), AtText, false))
+	{
+		TArray<FString> Parts;
+		AtText.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() == 3)
+		{
+			At = FVector(FCString::Atod(*Parts[0]), FCString::Atod(*Parts[1]), FCString::Atod(*Parts[2]));
+		}
+	}
+	UStaticMeshComponent* Card = NewObject<UStaticMeshComponent>(this, TEXT("PortraitCard"));
+	Card->SetMobility(EComponentMobility::Movable);
+	Card->SetStaticMesh(Cube);
+	Card->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Card->SetCastShadow(false);
+	Card->SetupAttachment(Camera);
+	Card->RegisterComponent();
+	// The engine cube is 1 m, centred: 2 mm thick along the view, 14 cm wide, 10 cm tall.
+	Card->SetRelativeLocation(At);
+	Card->SetRelativeScale3D(FVector(0.002, 0.14, 0.10));
+	UMaterialInstanceDynamic* Grey = UMaterialInstanceDynamic::Create(Base, Card);
+	Grey->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.18f, 0.18f, 0.18f));
+	Grey->SetScalarParameterValue(TEXT("Roughness"), 0.9f);
+	Grey->SetScalarParameterValue(TEXT("Metallic"), 0.f);
+	Grey->SetScalarParameterValue(TEXT("Variation"), 0.f);
+	Grey->SetScalarParameterValue(TEXT("Weather"), 0.f);
+	Grey->SetScalarParameterValue(TEXT("Street"), 0.f);
+	Card->SetMaterial(0, Grey);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait card laid at %.0f, %.0f, %.0f cm from the camera (0.18 grey)."), At.X, At.Y, At.Z);
+}
+#endif
 
 void AFTExploreCharacter::AddPortraitLights()
 {
