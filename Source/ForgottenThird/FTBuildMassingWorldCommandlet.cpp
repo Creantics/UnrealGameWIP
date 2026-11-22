@@ -3340,9 +3340,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
-	int32 InteriorColliders = 0; // -Interiors=hero: the room shells' and floors' hidden colliders laid (strip's run)
-	int32 DressColliders = 0;    // -Interiors=hero: a hidden collider per standing piece of a room's dressing laid
-	bool bDressCollided[ftcore::kHeroBays] = {};
+	int32 RoomBaysSkipped = 0; // -Interiors=hero: room bays' boxes this loop reached and left to the corner's lot build
 	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its cell
 	// (FTCellInstancer.h), made at once before the navmesh; sloped boxes, the hidden walls and the sea stay actors.
 	FFTCellInstancer Cells(World, Spawn);
@@ -3422,48 +3420,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			++StandInBoxes;
 			continue;
 		}
-		// -Interiors=hero, both runs: a room bay's shell and walk floor as hidden colliders in its -COL box's stead.
+		// -Interiors=hero: a room bay's box lays nothing here, not even its -COL collider (it would fill the room): the corner's
+		// lot build lays the room's shell and walk floor solid and a hidden collider per standing piece of its dressing.
 		if (bInteriors && HeroBayOf(I) >= 0 && bHeroRoom[HeroBayOf(I)])
 		{
-			for (const ftcore::InteriorBox& Part : HeroRoomPlans[HeroBayOf(I)].boxes)
-			{
-				if (Part.part != ftcore::InteriorPart::Shell && Part.part != ftcore::InteriorPart::Walk)
-				{
-					continue;
-				}
-				const ftcore::MassingBox& Pb = Part.box;
-				const double Ph = Pb.z1 - Pb.z0;
-				FFTCellOptions PartOpts;
-				PartOpts.Label = Utf8(Box.id) + TEXT("-ROOM-") + Utf8(Pb.id);
-				UMaterialInterface* const PartMats[1] = {Material};
-				Cells.Add(Cube, PartMats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(Pb.rot), 0.0),
-					Cm(ftcore::massingEnginePoint(Side, Pb.cx, Pb.cy, Pb.z0 + Ph * 0.5)), FVector(Pb.sx, Pb.sy, Ph)), {}, EFTCellKind::Hidden, PartOpts);
-				++InteriorColliders;
-			}
-			// Its dressing's standing pieces (ftcore::interiorDressing, the props FTBuildLots lays NoCollide) each a hidden
-			// collider of its footprint, once per bay, only where the piece's mesh is imported (so no blocker stands bare).
-			const int DressBay = HeroBayOf(I);
-			if (!bDressCollided[DressBay])
-			{
-				bDressCollided[DressBay] = true;
-				ftcore::InteriorDressItem DressItems[ftcore::kInteriorDressMax];
-				const int DressCount = ftcore::interiorDressing(HeroRoomPlans[DressBay], DressItems, ftcore::kInteriorDressMax);
-				for (int D = 0; D < DressCount; ++D)
-				{
-					const ftcore::MassingBox& Db = DressItems[D].block;
-					if (Db.sx <= 0.0 || !FTLots::HeroPropMesh(FString(TEXT("SM_HC_")) + UTF8_TO_TCHAR(ftcore::heroPieceName(DressItems[D].piece))))
-					{
-						continue;
-					}
-					const double Dh = Db.z1 - Db.z0;
-					FFTCellOptions DressOpts;
-					DressOpts.Label = Utf8(Box.id) + FString::Printf(TEXT("-DRESS-%d"), D);
-					UMaterialInterface* const DressMats[1] = {Material};
-					Cells.Add(Cube, DressMats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(Db.rot), 0.0),
-						Cm(ftcore::massingEnginePoint(Side, Db.cx, Db.cy, Db.z0 + Dh * 0.5)), FVector(Db.sx, Db.sy, Dh)), {}, EFTCellKind::Hidden, DressOpts);
-					++DressColliders;
-				}
-			}
+			++RoomBaysSkipped;
 			continue;
 		}
 		const double Height = FMath::Max(Box.z1 + Nudges[I] - Box.z0, ftcore::kMassingMinHeight);
@@ -3490,8 +3451,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	if (bInteriors)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: %d room colliders (shell and walk floor) in the room bays' -COL boxes' stead; "
-			"%d dressing colliders (a standing piece each)."), InteriorColliders, DressColliders);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: %d room bays' boxes left to the corner's lot build (its shells, floors and dressing colliders)."), RoomBaysSkipped);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: cover plates: %d boxes are navmesh obstacles, %d null strips (each rising at most "
 		"%.2f m, %.2f m past the slab); they keep their collision."), NavObstacles, NullStrips, ftcore::kMassingNullRise, ftcore::kMassingNullMargin);
