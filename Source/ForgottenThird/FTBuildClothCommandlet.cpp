@@ -883,6 +883,21 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 			[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: -ProofNoMaxMap: %d max-distance map(s) taken out before the anim drive."), Gone);
 	}
+	// -ProofShortMaxMap (proof runs only): the max-distance map stays but loses its last value, so it no longer has one value
+	// per sim vertex; the anim drive takes the same error return with a real map present, and the CRC lines are not empty.
+	if (FParse::Param(*Params, TEXT("ProofShortMaxMap")))
+	{
+		int32 Cut = 0;
+		for (FPointWeightMap& M : Asset->LodData[0].PointWeightMaps)
+		{
+			if (M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance) && M.Values.Num() > 0)
+			{
+				M.Values.Pop(EAllowShrinking::No);
+				++Cut;
+			}
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: -ProofShortMaxMap: %d max-distance map(s) cut one value short before the anim drive."), Cut);
+	}
 #endif
 	// The weight maps as they stand (count and a CRC of each one's target and values), before the anim drive and again on
 	// its error return, so a run can show the error leaves the asset as it was.

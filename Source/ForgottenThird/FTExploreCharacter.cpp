@@ -6311,7 +6311,7 @@ void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
 		const double Now = World ? World->GetTimeSeconds() : 0.0;
 		if (SkinLogStage == 0 || Now >= SkinLogAt + 0.5)
 		{
-			UE_LOG(LogForgottenThird, Display, TEXT("SKIN_LOOK %s: look %d, snap %d, weather %.2f, target %.3f, shown %.3f at %.2f s."),
+			UE_LOG(LogForgottenThird, Display, TEXT("SKIN_LOOK %s: look %d, snap %d, surface %.2f, target %.3f, shown %.3f at %.2f s."),
 				SkinLogStage == 0 ? TEXT("first show") : TEXT("0.5 s on"), LooksWorn, bSkinWetSnap ? 1 : 0, Weather, Target, SkinWetEased, Now);
 			SkinLogAt = SkinLogStage == 0 ? Now : SkinLogAt;
 			++SkinLogStage;
