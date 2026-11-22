@@ -433,6 +433,16 @@ struct ArenaAttack {
     float jolt = 0.f;         // degrees the host's camera kicks when it lands (ArenaImpact.h); 0: none
     std::uint8_t maxTargets = 0; // 0: connects with every target in range and arc; N: with at most N distinct
                                  // targets over its whole active part, the nearest first (the player's matter)
+    // On a soft-target start only (the lock, the aim and a riposte are unchanged):
+    float softTurn = -1.f;    // degrees the start may turn the facing toward it (`tracking` turns the rest over
+                              // startup); < 0: no limit, the facing snaps onto it
+    float homing = -1.f;      // most metres it closes in on top of its lunge; < 0: the kit's homingReach
+    // The player's knock-back when it lands: the enemy is shoved straight away from the lead by `push` metres over
+    // `pushTime` s of its own time (so after its hit pause). Never a boss, nor an enemy in its attack's active part,
+    // an armoured startup, its break move's or a step back. A flinch from the same blow counts toward it (the larger of the two,
+    // never the sum). 0: none.
+    float push = 0.f;
+    float pushTime = 0.25f;
 
     float total() const { return startup + active + recovery; }
 };
@@ -907,7 +917,7 @@ struct ArenaBodies {
     Vec2 player;
     std::array<Vec2, kMaxArenaEnemies> enemies{};
     Vec2 ally; // the ally body (ArenaFight::setAlly), moved by the host as it moves the player
-    // Report only (never read by a step): the steps whose settle hit kArenaSettlePasses (arenaSettleBodies' cap), the
+    // Report only (never read by a step): the steps whose settle hit its cap (kArenaSettlePasses), at most one a step, the
     // walls' rule kept and a pair perhaps left past 0.1 mm. The host shows it; a capture with it non-zero says so.
     std::uint32_t settleCaps = 0;
 };
@@ -1149,6 +1159,9 @@ struct ArenaStats {
     float lightStamina = 0.f; // stamina those lights cost
     int softTargets = 0;      // attacks started on a soft target
     int softChances = 0;      // attacks started with nothing locked, no aim and a kit with a softRange (one could)
+    int stringEnds = 0;       // string ends started: the last light of a kit with two or more (only the chain gets there)
+    int stringEndHits = 0;    // ... their blows that landed (per target; also in hits)
+    int pushes = 0;           // enemies the player's blows shoved (ArenaAttack::push)
     int shots = 0;            // a guns kit's shots started
     int shotHits = 0;         // of them, the ones that connected (per target; also in hits)
     int reloads = 0;          // the cylinder refilled (ArenaFighter::rounds)
@@ -1227,6 +1240,7 @@ struct ArenaFeatureChecks {
     bool breakOutDue = false; // a blow reached an enemy's breakAt without staggering it (else break-out can't show)
     bool softTarget = false; // an attack started on a soft target
     bool shots = false;      // a guns kit fired a shot that connected
+    bool stringEnd = false;  // a string end landed
     // Verdicts with their own can-show rule (the host adds its own for shots):
     ArenaCheck lightsFreeCheck = ArenaCheck::NotShown; // n/a with no light started
     ArenaCheck cancelsCheck = ArenaCheck::NotShown;    // n/a with no cancelChances
@@ -1239,6 +1253,8 @@ struct ArenaFeatureChecks {
     ArenaCheck breakOutCheck = ArenaCheck::NotShown;
     // PASS when a jump landed; FAIL when jumps started and none landed; n/a with no jump.
     ArenaCheck jumpCheck = ArenaCheck::NotShown;
+    // PASS when a string end landed; FAIL when string ends started and none landed; n/a with none started.
+    ArenaCheck stringEndCheck = ArenaCheck::NotShown;
 };
 
 FTCORE_API ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats);
@@ -1951,8 +1967,10 @@ private:
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
 // overlapping bodies pushed apart (the player's circle, each enemy's circle or stadium, arenaBodySpan; dead
 // enemies don't block), then everything kept inside the ring, then the settle (arenaSettleBodies). Tests, the balance
-// check and headless runs use it in place of an engine. Deterministic; no allocation.
-FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt);
+// check and headless runs use it in place of an engine. Deterministic; no allocation. `settleCap` is the settle's pass
+// cap (kArenaSettlePasses); a test lowers it to reach ArenaBodies::settleCaps.
+constexpr int kArenaSettlePasses = 32; // arenaSettleBodies' hard cap: five dummies pressed on the ring settle in 21
+FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, int settleCap = kArenaSettlePasses);
 
 // The push apart both arenaStep variants share: one pass of the player against each living enemy (unless
 // `withPlayer` is false: the frame a special's performer is placed) and each living pair of enemies, every
@@ -1975,7 +1993,6 @@ struct ArenaHeld {
 // neither: half each). Contacts no deeper than `floor` are left as they are. True when it moved a body: the caller
 // then holds the bodies inside its walls again, and may settle again (arenaSettleBodies). Deterministic; no allocation.
 constexpr float kArenaSettleFloor = 1.0e-4f; // the settle leaves contacts no deeper than 0.1 mm
-constexpr int kArenaSettlePasses = 32;         // arenaSettleBodies' hard cap: five dummies pressed on the ring settle in 21
 FTCORE_API bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held,
                             float floor = kArenaSettleFloor);
 

@@ -854,9 +854,11 @@ struct ArenaFightImpl {
         case ArenaAimSource::Aim: pl.facing = aimWay; break; // where the camera aims, lock or not
         case ArenaAimSource::Lock: pl.facing = arenaUnit(arenaSub(foes[pl.lock].pos, pl.pos), pl.facing); break;
         case ArenaAimSource::Soft: {
-            const ArenaHoming h =
-                arenaHoming(pl.pos, fi.bodyRadius, pl.facing, bodies[pick], a.range, a.lunge, softAim);
-            pl.facing = h.facing;
+            ArenaSoftAim own = softAim;
+            if (a.homing >= 0.f) own.homing = a.homing; // the attack's own cap on the kit's
+            const ArenaHoming h = arenaHoming(pl.pos, fi.bodyRadius, pl.facing, bodies[pick], a.range, a.lunge, own);
+            // A softTurn caps the start's turn; tracking turns the rest over startup (advanceAttack).
+            pl.facing = a.softTurn >= 0.f ? arenaTurn(pl.facing, h.facing, a.softTurn * kArenaPi / 180.f) : h.facing;
             pl.soft = pick;
             pl.homeClose = h.close;
             ++stats.softTargets;
@@ -1049,6 +1051,7 @@ struct ArenaFightImpl {
         pl.chainLive = true;
         faceAtStart(in, fi.light[index]);
         ++stats.lights;
+        if (stringEnd(index)) ++stats.stringEnds;
         stats.lightStamina += std::max(0.f, fi.light[index].stamina);
         beginAttack(ArenaAction::Light, index, fi.light[index]);
     }
@@ -1888,7 +1891,40 @@ struct ArenaFightImpl {
         float poise = 0.f;
         float breakWeight = 0.f;
     };
+    // The last light of a kit with two or more: the chain only moves forward, so starting it means the string was full.
+    bool stringEnd(std::uint8_t index) const { return fi.lightCount >= 2 && index + 1u == fi.lightCount; }
+
+    // A blow's rules (landBlowRules), then a player's string-end count and its push (ArenaAttack::push).
     void landBlow(std::size_t i, const LeadBlow& b) {
+        const bool player = b.striker == kArenaPlayer;
+        const int hits = stats.hits;
+        const int flinches = stats.flinches;
+        landBlowRules(i, b);
+        if (!player || stats.hits == hits) return; // vetoed, or the ally's
+        if (pl.action == ArenaAction::Light && stringEnd(pl.move)) ++stats.stringEndHits;
+        shove(i, *b.attack, stats.flinches != flinches);
+    }
+
+    // The player's blow `a` landed on enemy i: its push, straight away from the lead over pushTime of the enemy's
+    // own time (a paused enemy's stands still, so it starts after the hit pause). A flinch from the same blow
+    // already moved it flinchPush: the shove adds the rest, so the total is the larger of the two.
+    void shove(std::size_t i, const ArenaAttack& a, bool flinched) {
+        if (!(a.push > 0.f) || !(a.pushTime > 0.f) || !alive(i) || def.enemies[i].boss) return;
+        Enemy& foe = foes[i];
+        if (breakGuarded(foe) || foe.brain == ArenaBrain::StepBack) return; // a step back is its own way out
+        if (foe.brain == ArenaBrain::Attack) {
+            const ArenaAttack& own = fight.enemyAttackNow(i);
+            const ArenaPart part = arenaPartOf(own, foe.stateTime);
+            if (part == ArenaPart::Active || (part == ArenaPart::Startup && own.armor > 0.f)) return;
+        }
+        const float metres = flinched ? a.push - def.enemies[i].flinchPush : a.push;
+        if (!(metres > 0.f)) return;
+        foe.shoveVel = arenaScaled(arenaUnit(arenaSub(foe.pos, pl.pos), pl.facing), metres / a.pushTime);
+        foe.shoveLeft = a.pushTime; // a special's shove still running gives way to this one
+        ++stats.pushes;
+    }
+
+    void landBlowRules(std::size_t i, const LeadBlow& b) {
         const ArenaAttack& a = *b.attack;
         const bool player = b.striker == kArenaPlayer;
         Enemy& foe = foes[i];
@@ -5000,6 +5036,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.breakOutDue = stats.breakDue > 0;
     c.softTarget = stats.softTargets > 0;
     c.shots = stats.shotHits > 0;
+    c.stringEnd = stats.stringEndHits > 0;
     const auto verdict = [](bool can, bool shown) {
         return !can ? ArenaCheck::NotShown : (shown ? ArenaCheck::Pass : ArenaCheck::Fail);
     };
@@ -5008,6 +5045,7 @@ ArenaFeatureChecks arenaFeatureChecks(const ArenaStats& stats) {
     c.cancelsCheck = verdict(stats.cancelChances > 0 || stats.cancels > 0, c.cancels);
     c.flinchCheck = verdict(stats.flinchChances > 0 || stats.flinches > 0, c.flinch);
     c.jumpCheck = verdict(stats.jumps > 0, stats.landings > 0);
+    c.stringEndCheck = verdict(stats.stringEnds > 0, c.stringEnd);
     if (stats.breakOuts > 0)
         c.breakOutCheck = ArenaCheck::Pass;
     else if (stats.breakDue > stats.breakBarred + stats.stepBacks + stats.stepBacksBlocked)
@@ -5064,7 +5102,7 @@ bool arenaRingHold(const void* wall, Vec2& p, float reach) {
 }
 } // namespace
 
-void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
+void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, int settleCap) {
     const ArenaSpecialView& sv = fight.special();
     if (fight.frozen()) { // a special runs: the host poses the performer (from its start), nobody else moves
         (sv.performer == kArenaPlayer ? bodies.player : bodies.ally) = sv.origin;
@@ -5086,7 +5124,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     const ArenaRing& ring = fight.ring();
     ArenaHeld held;
     arenaHoldBodies(fight, bodies, held, arenaRingHold, &ring);
-    if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring).settled) ++bodies.settleCaps;
+    if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring, settleCap).settled) ++bodies.settleCaps;
 }
 
 bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& held, ArenaHoldFn hold, const void* wall) {
@@ -5330,7 +5368,7 @@ constexpr std::string_view kArenaAttackKeys[] = {"startup", "active",      "reco
                                                  "damage",  "poiseDamage", "guardDamage", "lunge",  "tracking",
                                                  "armor",   "stamina",     "cancel",      "maxTargets", "width",
                                                  "cancelGuard", "cancelRoll", "cancelLight", "hitStop", "hitStopSelf",
-                                                 "jolt"};
+                                                 "jolt",    "softTurn",    "homing",      "push",   "pushTime"};
 
 std::string arenaFormat(double v) {
     char buffer[32];
@@ -5417,6 +5455,10 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaNum(j, "hitStop", a.hitStop, 0, kArenaMaxStop, false, path, errors);
     arenaNum(j, "hitStopSelf", a.hitStopSelf, 0, 1, false, path, errors);
     arenaNum(j, "jolt", a.jolt, 0, kArenaMaxJolt, false, path, errors);
+    arenaNum(j, "softTurn", a.softTurn, -1, 180, false, path, errors);   // < 0: no limit
+    arenaNum(j, "homing", a.homing, -1, 100, false, path, errors);       // < 0: the kit's homingReach
+    arenaNum(j, "push", a.push, 0, 20, false, path, errors);
+    arenaNum(j, "pushTime", a.pushTime, 0, 5, true, path, errors);       // > 0
     // A cancel window opens no sooner than the active part: an earlier one would let the attack be cut before it
     // could hit (a feint), which no attack offers.
     const float whole = a.startup + a.active + a.recovery;

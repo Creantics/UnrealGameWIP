@@ -3634,6 +3634,20 @@ TEST_CASE("arena step: settleCaps stays 0 while every step's settle ends settled
     }
 }
 
+// The counter's own line: the same crowd stepped with the settle's cap lowered to 1 pass ends unsettled, and each such
+// step counts once; the default cap on the next step settles it and counts nothing.
+TEST_CASE("arena step: a lowered settle cap that the crowd hits counts one settleCaps a step") {
+    const ArenaRing ring{Vec2{0.f, 0.f}, 5.f};
+    ArenaHeld held;
+    Rig rig = edgeCrowd(5, ring, held);
+    arenaStep(rig.fight, rig.bodies, 0.f, 1);
+    CHECK(rig.bodies.settleCaps == 1u);
+    arenaStep(rig.fight, rig.bodies, 0.f, 1);
+    CHECK(rig.bodies.settleCaps == 2u);
+    arenaStep(rig.fight, rig.bodies, 0.f);
+    CHECK(rig.bodies.settleCaps == 2u);
+}
+
 // The corpse rule on the wall's path: a living body the ring holds, the lead pressed into it, and a corpse just where
 // the settle sends the lead. The corpse is not pushed and does not stop the lead.
 TEST_CASE("arena step: a corpse blocks neither the push nor the ring's settle") {
@@ -6857,9 +6871,10 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
     }
 }
 
-// The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
-// 23728 bytes, ArenaFight 33128 with the special's block).
-static_assert(sizeof(ArenaDef) <= 24 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
+// The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (x64 now: ArenaDef about
+// 26350 bytes, ArenaFight about 35950 with the special's block). 11-22: ArenaAttack 84 -> 100 bytes for softTurn,
+// homing, push and pushTime (soft-target caps and the string end), about 2.6 KB over every attack in the def.
+static_assert(sizeof(ArenaDef) <= 27 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
 static_assert(sizeof(ArenaFight) <= 36 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
 TEST_CASE("arena hooks: a Release's spent Load is in the poise the hook sees and scales; no hold after a Defeat") {
@@ -9652,6 +9667,284 @@ TEST_CASE("arena checks: soft target is n/a when no attack could take one") {
     free.runFor(0.1f);
     CHECK(free.fight.stats().softChances >= 1);
     CHECK(free.fight.stats().softTargets >= 1);
+}
+
+namespace {
+
+// A kit whose soft target sees all round (softArcCos -1) with no homing: the start's turn is the only thing tested.
+ArenaFighter softFighter() {
+    ArenaFighter f = ruleFighter();
+    f.softRange = 4.f;
+    f.softArcCos = -1.f;
+    f.homingReach = 0.f;
+    f.light[0].tracking = 0.f;
+    return f;
+}
+
+// The degrees the light's start faces after one tick, the dummy 1.5 m away at 150 degrees from the facing.
+float softStartDegrees(float softTurn) {
+    ArenaFighter f = softFighter();
+    f.light[0].softTurn = softTurn;
+    Rig rig(f, {dummyKind()});
+    const float at = 150.f * 3.14159265f / 180.f;
+    rig.put(0, 1.5f * std::cos(at), 1.5f * std::sin(at));
+    rig.in.light = true;
+    const ArenaOutput& out = rig.tick();
+    CHECK(rig.fight.stats().softTargets == 1);
+    return std::atan2(out.player.facing.y, out.player.facing.x) * 180.f / 3.14159265f;
+}
+
+// The metres the light closes in on the dummy 3 m ahead (range 0.5, no lunge), the player pinned at the origin: its
+// velocity toward the dummy over the attack.
+float softHomed(float kitReach, float homing) {
+    ArenaFighter f = ruleFighter();
+    f.softRange = 4.f;
+    f.softArcCos = 0.5f;
+    f.homingReach = kitReach;
+    f.light[0].range = 0.5f;
+    f.light[0].homing = homing;
+    Rig rig(f, {dummyKind()});
+    rig.put(0, 3.f, 0.f);
+    rig.in.light = true;
+    float closed = 0.f;
+    for (int i = 0; i < 60; ++i) {
+        const ArenaOutput& out = rig.tick();
+        if (out.player.action != ArenaAction::Light) break;
+        closed += out.player.velocity.x * kDt;
+    }
+    return closed;
+}
+
+// A three-light string whose end (light 2) pushes.
+ArenaFighter stringFighter(float push) {
+    ArenaFighter f = ruleFighter();
+    f.light[2].push = push;
+    f.light[2].pushTime = 0.25f;
+    f.light[2].hitStop = 0.1f;
+    return f;
+}
+
+struct PushRun {
+    float metres = 0.f;      // how much further enemy 0 moved away (+x) than without the push
+    float hitAt = -1.f;      // fight time the string end landed
+    float pushFrom = -1.f;   // fight time the extra motion began
+    bool pausedPush = false; // the extra motion showed on a tick the enemy was still paused
+    ArenaStats stats;
+};
+
+// Lights pressed until the first string end starts, then 1 s more; `with` against the same kit at push 0, the bodies
+// pinned (so both see the same world tick for tick).
+PushRun pushRun(const ArenaFighter& with, const ArenaEnemyKind& kind) {
+    ArenaFighter without = with;
+    for (std::size_t k = 0; k < with.lightCount; ++k) without.light[k].push = 0.f;
+    Rig a(with, {kind});
+    Rig b(without, {kind});
+    a.put(0, 1.5f, 0.f);
+    b.put(0, 1.5f, 0.f);
+    PushRun r;
+    for (int i = 0; i < 300; ++i) {
+        const bool press = a.fight.stats().stringEnds == 0 && a.fight.stats().lights < 8;
+        a.in.light = press;
+        b.in.light = press;
+        const ArenaOutput& oa = a.tick();
+        const ArenaOutput& ob = b.tick();
+        if (r.hitAt < 0.f && a.fight.stats().stringEndHits > 0) r.hitAt = a.fight.time();
+        const float extra = (oa.enemies[0].velocity.x - ob.enemies[0].velocity.x) * kDt;
+        if (std::fabs(extra) > 1e-6f) {
+            if (r.pushFrom < 0.f) r.pushFrom = a.fight.time();
+            r.pausedPush = r.pausedPush || oa.enemies[0].stopLeft > 0.f;
+        }
+        r.metres += extra;
+        if (r.hitAt > 0.f && a.fight.time() > r.hitAt + 1.f) break;
+    }
+    r.stats = a.fight.stats();
+    return r;
+}
+
+} // namespace
+
+TEST_CASE("arena soft turn: a soft-target start turns at most softTurn; -1 snaps onto it as before") {
+    CHECK(softStartDegrees(-1.f) == doctest::Approx(150.f).epsilon(0.002));
+    CHECK(softStartDegrees(90.f) == doctest::Approx(90.f).epsilon(0.002));
+    CHECK(softStartDegrees(180.f) == doctest::Approx(150.f).epsilon(0.002)); // a cap past the angle: the snap
+    CHECK(std::fabs(softStartDegrees(0.f)) < 0.01f);                        // 0: tracking turns it all
+    {   // locked on, softTurn is not read: the lock turns it all the way
+        ArenaFighter f = softFighter();
+        f.light[0].softTurn = 10.f;
+        Rig rig(f, {dummyKind()});
+        rig.put(0, 0.f, 1.5f);
+        rig.in.lock = true;
+        rig.tick();
+        rig.in.light = true;
+        const ArenaOutput& out = rig.tick();
+        CHECK(rig.fight.stats().softTargets == 0);
+        CHECK(out.player.facing.y == doctest::Approx(1.f).epsilon(0.001));
+    }
+}
+
+TEST_CASE("arena soft homing: an attack's homing caps the kit's homingReach; -1 takes the kit's") {
+    CHECK(softHomed(2.f, -1.f) == doctest::Approx(2.f).epsilon(0.02));
+    CHECK(softHomed(2.f, 0.5f) == doctest::Approx(0.5f).epsilon(0.02));
+    CHECK(softHomed(2.f, 0.f) == doctest::Approx(0.f));
+    CHECK(softHomed(0.f, 1.f) == doctest::Approx(1.f).epsilon(0.02)); // the attack's own, on a kit with none
+}
+
+// Task D's data: the shipped Devin and Duy kits carry their turn and step limits (lights 120 deg, the string end 90, the
+// heavy 60), and the loader reads them: a light on Devin's own kit, unlocked, the stick behind it and the target 160 deg
+// round, starts turned 120 deg (the snap would face it); `tracking` turns the rest over the startup.
+TEST_CASE("arena soft turn: the shipped Devin and Duy kits carry their limits; Devin's light starts turned 120 of 160") {
+    const ArenaTable t = loadShipped();
+    struct Want {
+        const char* id;
+        float lightHoming, endHoming, heavyHoming;
+    };
+    for (const Want w : {Want{"devin", 2.0f, 2.5f, 1.0f}, Want{"duy", 1.5f, 1.8f, 0.8f}}) {
+        CAPTURE(std::string(w.id));
+        const ArenaFighter& f = t.fighter(w.id);
+        REQUIRE(f.lightCount >= 2);
+        for (std::size_t k = 0; k + 1 < f.lightCount; ++k) {
+            CHECK(f.light[k].softTurn == 120.f);
+            CHECK(f.light[k].homing == doctest::Approx(w.lightHoming));
+        }
+        CHECK(f.light[f.lightCount - 1].softTurn == 90.f);
+        CHECK(f.light[f.lightCount - 1].homing == doctest::Approx(w.endHoming));
+        CHECK(f.heavy.softTurn == 60.f);
+        CHECK(f.heavy.homing == doctest::Approx(w.heavyHoming));
+    }
+    const ArenaFighter& devin = t.fighter("devin");
+    Rig rig(devin, {dummyKind()});
+    const float at = 160.f * 3.14159265f / 180.f;
+    rig.put(0, 1.5f * std::cos(at), 1.5f * std::sin(at));
+    rig.in.move = Vec2{-1.f, 0.f};
+    rig.in.light = true;
+    const ArenaOutput& out = rig.tick();
+    CHECK(rig.fight.stats().softTargets == 1);
+    const float deg = std::atan2(out.player.facing.y, out.player.facing.x) * 180.f / 3.14159265f;
+    const float trackDeg = devin.light[0].tracking * kDt * 180.f / 3.14159265f; // at most one tick of tracking
+    MESSAGE("Devin's light, target 160 deg round: starts facing " << deg << " deg (tracking up to " << trackDeg << " a tick)");
+    CHECK(deg >= 120.f - 0.1f);
+    CHECK(deg <= 120.f + trackDeg + 0.1f);
+}
+
+TEST_CASE("arena string end: the full string's last light counts and lands; its push runs after the hit pause") {
+    const PushRun r = pushRun(stringFighter(1.2f), dummyKind());
+    CHECK(r.stats.lights == 3);
+    CHECK(r.stats.stringEnds == 1);
+    CHECK(r.stats.stringEndHits == 1);
+    CHECK(r.stats.pushes == 1);
+    CHECK(r.metres == doctest::Approx(1.2f).epsilon(0.02));
+    REQUIRE(r.hitAt > 0.f);
+    CHECK(r.pushFrom - r.hitAt >= 0.1f - kDt - 1e-4f); // after the 0.1 s pause
+    CHECK_FALSE(r.pausedPush);
+    CHECK(arenaFeatureChecks(r.stats).stringEndCheck == ArenaCheck::Pass);
+    // No push: nothing moves differently, the counts stand.
+    const PushRun none = pushRun(stringFighter(0.f), dummyKind());
+    CHECK(none.stats.stringEnds == 1);
+    CHECK(none.stats.pushes == 0);
+    CHECK(none.metres == 0.f);
+    // One light never counts.
+    Rig rig(ruleFighter(), {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    rig.runFor(1.f);
+    CHECK(rig.fight.stats().lights == 1);
+    CHECK(rig.fight.stats().stringEnds == 0);
+    CHECK(arenaFeatureChecks(rig.fight.stats()).stringEndCheck == ArenaCheck::NotShown);
+}
+
+TEST_CASE("arena string end: a flinch counts toward the push; a boss and an armoured startup are never pushed") {
+    {   // the string end flinches it 0.6 m: the push adds 0.6 to make 1.2, never 1.8
+        ArenaEnemyKind k = dummyKind();
+        k.flinchTime = 0.3f;
+        k.flinchPush = 0.6f;
+        k.flinchPoise = 5.f;
+        ArenaFighter f = stringFighter(1.2f);
+        f.light[2].poiseDamage = 5.f; // only the string end flinches
+        const PushRun r = pushRun(f, k);
+        CHECK(r.stats.flinches == 1);
+        CHECK(r.stats.pushes == 1);
+        CHECK(r.metres == doctest::Approx(0.6f).epsilon(0.03));
+        f.light[2].push = 0.4f; // less than the flinch's own: nothing more
+        const PushRun small = pushRun(f, k);
+        CHECK(small.stats.flinches == 1);
+        CHECK(small.stats.pushes == 0);
+        CHECK(small.metres == 0.f);
+    }
+    {   // a boss
+        ArenaEnemyKind k = dummyKind();
+        k.boss = true;
+        k.hp = 100000;
+        k.breakAt = 0;
+        k.breakValueAt = {1000.f, 1000.f, 1000.f, 1000.f}; // no break of either kind here
+        const PushRun r = pushRun(stringFighter(1.2f), k);
+        CHECK(r.stats.stringEndHits == 1);
+        CHECK(r.stats.pushes == 0);
+        CHECK(r.metres == 0.f);
+    }
+    // An enemy in its move's armoured startup is not pushed; unarmoured, it is. Light 0 carries the push here.
+    for (const float armor : {1.f, 0.f}) {
+        CAPTURE(armor);
+        ArenaAttack slow = swing(0.8f, 0.1f, 0.3f, 3.f, 5);
+        slow.armor = armor;
+        ArenaFighter f = ruleFighter();
+        f.light[0].push = 1.f;
+        Rig rig(f, {hitterKind(slow)});
+        rig.put(0, 1.5f, 0.f);
+        for (int i = 0; i < 30 && !rig.find(ArenaEventType::AttackStarted); ++i) rig.tick();
+        rig.in.light = true;
+        for (int i = 0; i < 30 && rig.fight.stats().hits == 0; ++i) rig.tick();
+        CHECK(rig.fight.stats().hits == 1);
+        CHECK(rig.fight.stats().pushes == (armor > 0.f ? 0 : 1));
+    }
+}
+
+TEST_CASE("arena checks: the string end is n/a with none started, FAIL with none landed") {
+    ArenaStats s;
+    CHECK(arenaFeatureChecks(s).stringEndCheck == ArenaCheck::NotShown);
+    s.stringEnds = 2;
+    CHECK(arenaFeatureChecks(s).stringEndCheck == ArenaCheck::Fail);
+    s.stringEndHits = 1;
+    CHECK(arenaFeatureChecks(s).stringEndCheck == ArenaCheck::Pass);
+    CHECK(arenaFeatureChecks(s).stringEnd);
+}
+
+TEST_CASE("arena string end: the new attack keys load, -1 and 0 by default, and out of range fails") {
+    ArenaTable t;
+    std::vector<std::string> warnings;
+    const std::string ok = tableJson(
+        R"([ { "id": "default", "light": [ { "softTurn": 90, "homing": 1.5, "push": 1.2, "pushTime": 0.3 } ] } ])",
+        kEnemiesOk);
+    REQUIRE(loadError(ok, &t, &warnings).empty());
+    CHECK(warnings.empty());
+    const ArenaAttack& a = t.fighter("default").light[0];
+    CHECK(a.softTurn == 90.f);
+    CHECK(a.homing == 1.5f);
+    CHECK(a.push == 1.2f);
+    CHECK(a.pushTime == 0.3f);
+    const ArenaAttack& heavy = t.fighter("default").heavy;
+    CHECK(heavy.softTurn == -1.f);
+    CHECK(heavy.homing == -1.f);
+    CHECK(heavy.push == 0.f);
+    CHECK(heavy.pushTime == 0.25f);
+    CHECK_FALSE(loadError(tableJson(R"([ { "id": "default", "light": [ { "pushTime": 0 } ] } ])", kEnemiesOk)).empty());
+    CHECK_FALSE(loadError(tableJson(R"([ { "id": "default", "light": [ { "softTurn": 200 } ] } ])", kEnemiesOk)).empty());
+    CHECK_FALSE(loadError(tableJson(R"([ { "id": "default", "light": [ { "push": -1 } ] } ])", kEnemiesOk)).empty());
+}
+
+TEST_CASE("arena string end: mashed strings with pushes allocate nothing per tick") {
+    Rig rig(stringFighter(1.2f), {dummyKind()});
+    rig.put(0, 1.5f, 0.f);
+    rig.log.reserve(4096);
+    rig.in.light = true;
+    rig.tick(); // the first tick may size its buffers
+    REQUIRE(ftcore_test::allocHookInstalled());
+    const std::uint64_t before = ftcore_test::allocStats().count;
+    for (int i = 0; i < 180; ++i) {
+        rig.in.light = true;
+        rig.tick();
+    }
+    CHECK(ftcore_test::allocStats().count == before);
+    CHECK(rig.fight.stats().pushes >= 1);
 }
 
 TEST_CASE("arena walk: the player's wanted pace is the stick's share of the walk, 0 let go, unknown outside a walk") {

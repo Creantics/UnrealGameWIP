@@ -309,12 +309,12 @@ bool zoneHold(const void* wall, Vec2& p, float reach) {
 }
 } // namespace
 
-void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const ArenaZone& zone) {
+void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const ArenaZone& zone, int settleCap) {
     const ArenaDef& def = fight.def();
     const std::size_t n = fight.enemyCount();
     const float playerRadius = def.fighter.bodyRadius;
     const ArenaBodies before = bodies;
-    arenaStep(fight, bodies, dt);
+    arenaStep(fight, bodies, dt, settleCap);
     if (zone.softWall) {
         // Nearing a wall, a body slows (to 60% at the wall), so it meets it without a stop.
         const auto brake = [&](Vec2& now, Vec2 was, float r) {
@@ -334,7 +334,9 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         arenaPushApart(fight, bodies, true);
         arenaHoldBodies(fight, bodies, held, zoneHold, &zone);
     }
-    if (!arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone).settled) ++bodies.settleCaps;
+    // One count a step: the ring's settle above may have counted already.
+    if (!arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone, settleCap).settled && bodies.settleCaps == before.settleCaps)
+        ++bodies.settleCaps;
 }
 
 // ---- the size ----

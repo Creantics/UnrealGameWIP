@@ -30,12 +30,12 @@
       "id": "devin", "weapon": "gauntlets",
       "hp": 150, "staminaRegen": 50, "poise": 30,
       "light": [
-        { "startup": 0.15, "damage": 14, "poiseDamage": 15, "range": 2.0, "stamina": 0, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.6 },
-        { "startup": 0.14, "damage": 14, "poiseDamage": 15, "range": 2.0, "stamina": 0, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.6 },
-        { "startup": 0.16, "active": 0.12, "recovery": 0.4, "damage": 16, "poiseDamage": 18, "range": 2.1, "stamina": 0, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.9 },
-        { "startup": 0.2, "active": 0.14, "recovery": 0.55, "range": 2.1, "arcCos": 0, "damage": 24, "poiseDamage": 32, "lunge": 0.7, "tracking": 8, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.9 }
+        { "startup": 0.15, "damage": 14, "poiseDamage": 15, "range": 2.0, "stamina": 0, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.6, "softTurn": 120, "homing": 2.0 },
+        { "startup": 0.14, "damage": 14, "poiseDamage": 15, "range": 2.0, "stamina": 0, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.6, "softTurn": 120, "homing": 2.0 },
+        { "startup": 0.16, "active": 0.12, "recovery": 0.4, "damage": 16, "poiseDamage": 18, "range": 2.1, "stamina": 0, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.9, "softTurn": 120, "homing": 2.0 },
+        { "startup": 0.2, "active": 0.14, "recovery": 0.55, "range": 2.1, "arcCos": 0, "damage": 24, "poiseDamage": 32, "lunge": 0.7, "tracking": 8, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.3, "cancelGuard": 0.3, "cancelLight": 0.55, "hitStop": 0.05, "jolt": 0.9, "softTurn": 90, "homing": 2.5 }
       ],
-      "heavy": { "startup": 0.5, "damage": 44, "poiseDamage": 60, "range": 2.2, "jolt": 1.6 },
+      "heavy": { "startup": 0.5, "damage": 44, "poiseDamage": 60, "range": 2.2, "jolt": 1.6, "softTurn": 60, "homing": 1.0 },
       "jumpLight": { "startup": 0.12, "active": 0.1, "recovery": 0.3, "range": 1.8, "arcCos": 0.3, "damage": 16, "poiseDamage": 20, "lunge": 0.3, "tracking": 6, "stamina": 0, "hitStop": 0.06, "jolt": 0.9 },
       "riposte": { "damage": 60, "range": 2.8, "jolt": 2.2 },
       "release": { "damage": 36, "jolt": 1.8 },
@@ -47,12 +47,12 @@
       "id": "duy", "weapon": "guns",
       "hp": 135, "moveSpeed": 4.9, "moveAccel": 30,
       "light": [
-        { "startup": 0.18, "active": 0.1, "recovery": 0.32, "range": 2.4, "arcCos": 0.3, "damage": 11, "poiseDamage": 10, "lunge": 0.45, "tracking": 7, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.4, "cancelGuard": 0.45, "cancelLight": 0.65, "hitStop": 0.06, "jolt": 0.6 },
-        { "startup": 0.16, "active": 0.1, "recovery": 0.32, "range": 2.4, "arcCos": 0.3, "damage": 11, "poiseDamage": 10, "lunge": 0.45, "tracking": 7, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.4, "cancelGuard": 0.45, "cancelLight": 0.65, "hitStop": 0.06, "jolt": 0.6 },
-        { "startup": 0.24, "active": 0.12, "recovery": 0.45, "range": 2.6, "arcCos": 0.1, "damage": 17, "poiseDamage": 20, "lunge": 0.6, "tracking": 7, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.4, "cancelGuard": 0.45, "cancelLight": 0.65, "hitStop": 0.06, "jolt": 0.9 }
+        { "startup": 0.18, "active": 0.1, "recovery": 0.32, "range": 2.4, "arcCos": 0.3, "damage": 11, "poiseDamage": 10, "lunge": 0.45, "tracking": 7, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.4, "cancelGuard": 0.45, "cancelLight": 0.65, "hitStop": 0.06, "jolt": 0.6, "softTurn": 120, "homing": 1.5 },
+        { "startup": 0.16, "active": 0.1, "recovery": 0.32, "range": 2.4, "arcCos": 0.3, "damage": 11, "poiseDamage": 10, "lunge": 0.45, "tracking": 7, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.4, "cancelGuard": 0.45, "cancelLight": 0.65, "hitStop": 0.06, "jolt": 0.6, "softTurn": 120, "homing": 1.5 },
+        { "startup": 0.24, "active": 0.12, "recovery": 0.45, "range": 2.6, "arcCos": 0.1, "damage": 17, "poiseDamage": 20, "lunge": 0.6, "tracking": 7, "stamina": 0, "cancel": 0.5, "cancelRoll": 0.4, "cancelGuard": 0.45, "cancelLight": 0.65, "hitStop": 0.06, "jolt": 0.9, "softTurn": 90, "homing": 1.8 }
       ],
       "shot": { "startup": 0.2, "active": 0.06, "recovery": 0.3, "range": 30, "width": 0.3, "damage": 10, "poiseDamage": 6, "lunge": 0, "tracking": 6, "stamina": 12, "cancel": 0.55, "maxTargets": 1, "hitStop": 0.04, "hitStopSelf": 0, "jolt": 0.35 },
-      "heavy": { "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 2.7, "arcCos": -0.2, "damage": 36, "poiseDamage": 45, "lunge": 0.8, "tracking": 6, "armor": 0.3, "stamina": 24, "cancel": 0.7, "jolt": 1.6 },
+      "heavy": { "startup": 0.4, "active": 0.12, "recovery": 0.6, "range": 2.7, "arcCos": -0.2, "damage": 36, "poiseDamage": 45, "lunge": 0.8, "tracking": 6, "armor": 0.3, "stamina": 24, "cancel": 0.7, "jolt": 1.6, "softTurn": 60, "homing": 0.8 },
       "jumpLight": { "startup": 0.14, "active": 0.12, "recovery": 0.3, "range": 2.4, "arcCos": 0.3, "damage": 13, "poiseDamage": 14, "lunge": 0.5, "tracking": 6, "stamina": 0, "hitStop": 0.06, "jolt": 0.7 },
       "riposte": { "damage": 44, "jolt": 2.2 },
       "guardArcCos": 0.35, "guardAbsorb": 0.85, "guardMoveScale": 0.8, "guardBreakTime": 0.9,

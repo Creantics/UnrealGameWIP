@@ -254,6 +254,7 @@ FTCORE_API bool checkArenaZone(const ArenaZoneFit& fit, const ArenaDef& def, con
                                std::string* error = nullptr);
 
 // arenaStep, then the zone: bodies held inside the walls and out of the obstacles. No allocation.
-FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const ArenaZone& zone);
+FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const ArenaZone& zone,
+                          int settleCap = kArenaSettlePasses);
 
 } // namespace ftcore

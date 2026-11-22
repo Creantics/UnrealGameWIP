@@ -855,6 +855,28 @@ TEST_CASE("arena zone step: a zone in a world brakes a body at its wall to 60% a
 
 // The corpse rule on the zone's brake and hold path (orchestrator review 11-22): the lead runs at a soft wall through a
 // corpse lying in its way. Tick for tick it moves exactly as with the corpse far off, and the corpse never moves.
+// The zone step runs the ring's settle, then its own: with the cap lowered to 1 pass both end unsettled on a packed
+// crowd, and the step still counts one cap hit, not two.
+TEST_CASE("arena zone step: a lowered settle cap counts one settleCaps a step, though both settles hit it") {
+    const ArenaTable arena = loadArena();
+    ArenaDef def = fightOf(arena, {"duelist", "duelist", "duelist", "duelist", "duelist"});
+    def.ringRadius = 5.f;
+    def.spawnDistance = 3.f;
+    const ArenaZone zone = circleZone(Vec2{0.f, 0.f}, 5.f);
+    ArenaFight fight;
+    fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 5.f}, Vec2{-3.f, 0.f}, Vec2{1.f, 0.f}, 1u);
+    ArenaBodies bodies;
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+        const float at = 0.15f * (static_cast<float>(i) - 2.f);
+        bodies.enemies[i] = Vec2{4.7f * std::cos(at), 4.7f * std::sin(at)};
+    }
+    bodies.player = Vec2{4.15f, 0.f};
+    arenaStep(fight, bodies, 0.f, zone, 1);
+    CHECK(bodies.settleCaps == 1u);
+    arenaStep(fight, bodies, 0.f, zone, 1);
+    CHECK(bodies.settleCaps == 2u);
+}
+
 TEST_CASE("arena zone step: a corpse in the lead's way at a soft wall neither brakes nor blocks it") {
     ArenaZone z = squareZone(20.f);
     z.softWall = true;
