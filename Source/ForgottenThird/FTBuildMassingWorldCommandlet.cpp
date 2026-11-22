@@ -1447,6 +1447,9 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 	int32 Beside = 0;
 	FString NoStreet;
 	int32 NoStreetN = 0;
+	// Footprints, m2 (the boxes' own sides, turned): every blocker's, and the hit ones'. A fill that stays in its boxes
+	// can take no more walkable area than the hit blockers' footprint.
+	double FootAll = 0.0, FootHit = 0.0;
 	auto OnNav = [&Nav, &NavData, Side](double X, double Y, double Lo, double Hi, double& OutZ)
 	{
 		const FVector At = Cm(ftcore::massingEnginePoint(Side, X, Y, 0.5 * (Lo + Hi)));
@@ -1472,6 +1475,7 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		const double Short = FMath::Min(Box.sx, Box.sy);
 		const int32 WidthBin = Short < 1.5 ? 0 : (Short < 2.5 ? 1 : 2);
 		++AllByWidth[WidthBin];
+		FootAll += Box.sx * Box.sy;
 		for (int32 I = -1; I <= 1 && !bHit; ++I)
 		{
 			for (int32 J = -1; J <= 1 && !bHit; ++J)
@@ -1510,6 +1514,7 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		}
 		++ByHeight[HitZ < Box.z0 + 0.6 ? 0 : (HitZ > Box.z1 - 0.8 ? 2 : 1)];
 		++ByWidth[WidthBin];
+		FootHit += Box.sx * Box.sy;
 		if (++Inside <= 8)
 		{
 			First += FString::Printf(TEXT("%s%s at (%.1f, %.1f) z %.2f in %.2f-%.2f"), First.IsEmpty() ? TEXT("") : TEXT(", "), *Utf8(Box.id), HitX,
@@ -1517,8 +1522,8 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: blockers: hits by height in the box %d low, %d mid, %d high; by short side %d of %d "
-		"under 1.5 m, %d of %d 1.5-2.5 m, %d of %d wider."), ByHeight[0], ByHeight[1], ByHeight[2], ByWidth[0], AllByWidth[0], ByWidth[1],
-		AllByWidth[1], ByWidth[2], AllByWidth[2]);
+		"under 1.5 m, %d of %d 1.5-2.5 m, %d of %d wider; footprint of the hit blockers %.0f m2 of all blockers' %.0f m2."), ByHeight[0],
+		ByHeight[1], ByHeight[2], ByWidth[0], AllByWidth[0], ByWidth[1], AllByWidth[1], ByWidth[2], AllByWidth[2], FootHit, FootAll);
 	const ARecastNavMesh* Recast = Cast<ARecastNavMesh>(&NavData);
 	int32 PolyCount = 0;
 	const double Area = Recast ? NavAreaM2(*Recast, PolyCount) : 0.0;
