@@ -1327,6 +1327,10 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
 	// A switch lands the skin at the member's own soak; the first look, at the start, eases in from dry.
 	bSkinWetSnap = ftcore::leadwet::skinSnapOnLook(bLookWorn);
 	bLookWorn = true;
+#if !UE_BUILD_SHIPPING
+	++LooksWorn;
+	SkinLogStage = 0;
+#endif
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
 	// The grooms come on dry; the wet switch swaps them on its next tick if the weather is wet.
@@ -6298,6 +6302,22 @@ void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
 	// so they are there) and to the hair without a wet groom.
 	const float Target = ftcore::leadwet::skin(Weather);
 	SkinWetEased = ftcore::leadwet::shownSkin(SkinWetEased, Target, DeltaSeconds, bSkinWetSnap);
+#if !UE_BUILD_SHIPPING
+	// Proof log (captures only): the shown skin on the first show after each look and about half a second later, so a
+	// start in the rain can be read for a snap (the first look eases, a later one lands at the member's soak).
+	if (SkinLogStage < 2)
+	{
+		const UWorld* World = GetWorld();
+		const double Now = World ? World->GetTimeSeconds() : 0.0;
+		if (SkinLogStage == 0 || Now >= SkinLogAt + 0.5)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("SKIN_LOOK %s: look %d, snap %d, weather %.2f, target %.3f, shown %.3f at %.2f s."),
+				SkinLogStage == 0 ? TEXT("first show") : TEXT("0.5 s on"), LooksWorn, bSkinWetSnap ? 1 : 0, Weather, Target, SkinWetEased, Now);
+			SkinLogAt = SkinLogStage == 0 ? Now : SkinLogAt;
+			++SkinLogStage;
+		}
+	}
+#endif
 	bSkinWetSnap = false;
 	const float Skin = SkinWetEased;
 	// Written when it has moved enough, and once more when it reaches its target (so the last small step lands).

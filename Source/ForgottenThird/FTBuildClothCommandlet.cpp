@@ -874,9 +874,37 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	{
 		ClothPaint(*Asset, Max, Pin);
 	}
-	if (Drive.map && !ClothPaintDrive(*Asset, Drive))
+#if !UE_BUILD_SHIPPING
+	// -ProofNoMaxMap (proof runs only): the max-distance map is taken out before the anim drive is painted, so the run
+	// takes ClothPaintDrive's error return; nothing is saved on that path, which a hash of the package before and after shows.
+	if (FParse::Param(*Params, TEXT("ProofNoMaxMap")))
 	{
-		return 1;
+		const int32 Gone = Asset->LodData[0].PointWeightMaps.RemoveAll(
+			[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: -ProofNoMaxMap: %d max-distance map(s) taken out before the anim drive."), Gone);
+	}
+#endif
+	// The weight maps as they stand (count and a CRC of each one's target and values), before the anim drive and again on
+	// its error return, so a run can show the error leaves the asset as it was.
+	const auto MapsLine = [Asset](const TCHAR* When)
+	{
+		const TArray<FPointWeightMap>& Maps = Asset->LodData[0].PointWeightMaps;
+		uint32 Crc = 0;
+		for (const FPointWeightMap& M : Maps)
+		{
+			Crc = FCrc::MemCrc32(&M.CurrentTarget, sizeof(M.CurrentTarget), Crc);
+			Crc = FCrc::MemCrc32(M.Values.GetData(), M.Values.Num() * static_cast<int32>(sizeof(float)), Crc);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: weight maps %s: %d, crc %08x."), When, Maps.Num(), Crc);
+	};
+	if (Drive.map)
+	{
+		MapsLine(TEXT("before the anim drive"));
+		if (!ClothPaintDrive(*Asset, Drive))
+		{
+			MapsLine(TEXT("after its error return"));
+			return 1;
+		}
 	}
 	if (!ClothConfigure(*Asset, Params, Drive))
 	{
