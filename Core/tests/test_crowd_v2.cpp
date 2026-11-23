@@ -1861,3 +1861,273 @@ TEST_CASE("crowd graph: a lane's join onto a wide road walks the lane's band, cl
     CHECK(seen > 1000u);
     CHECK(under == 0u);
 }
+
+TEST_CASE("crowd keep-outs: a front and cars close one pavement, trunks narrow the other; nobody inside a gap, both ways walk") {
+    // RD-01-like: a 14 m street with 2.5 m pavements. A building's front stands on the + pavement from x -60 to 60, parked
+    // cars on it past the front's ends, tree trunks on the - pavement's inner half.
+    CrowdGraph g;
+    CrowdStreet st = line({-150.f, 0.f}, {150.f, 0.f}, 14.f);
+    st.pavement = 2.5f;
+    st.points.clear();
+    for (int i = 0; i <= 30; ++i) st.points.push_back(Vec2{-150.f + 10.f * static_cast<float>(i), 0.f});
+    REQUIRE(g.build({st}, loose()));
+    auto keepBox = [](Vec2 c, float hx, float hy, float gap, CrowdKeepKind kind) {
+        CrowdKeepOut k;
+        k.c = c;
+        k.hx = hx;
+        k.hy = hy;
+        k.gap = gap;
+        k.kind = kind;
+        return k;
+    };
+    std::vector<CrowdKeepOut> keeps = {keepBox({0.f, 5.65f}, 60.f, 1.35f, 0.8f, CrowdKeepKind::Wall)};
+    for (const float x : {-80.f, -70.f, 70.f, 80.f}) keeps.push_back(keepBox({x, 5.f}, 1.72f, 0.74f, 0.3f, CrowdKeepKind::Car));
+    for (const float x : {-30.f, 0.f, 30.f}) keeps.push_back(keepBox({x, -4.5f}, 0.3f, 0.3f, 0.8f, CrowdKeepKind::Wall));
+    CrowdTuning t;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 43));
+    REQUIRE(sim.setKeepOuts(keeps) == keeps.size());
+    // The front shuts the + band on every 10 m edge its grown box meets: x -60..60 is 12 edges, and its gap (0.8 m, plus
+    // kCrowdWallSlack) reaches 0.81 m past each end into the edges -70..-60 and 60..70, 14 in all, each counted once. The
+    // trunks and the cars leave a stretch of their bands open.
+    CHECK(sim.closedSides() == 14u);
+    CHECK(sim.closedStreets() == 0u);
+    const std::uint32_t a = g.nearest({0.f, 0.f}, 1.f), b = g.nearest({10.f, 0.f}, 1.f), c = g.nearest({70.f, 0.f}, 1.f),
+                        d = g.nearest({80.f, 0.f}, 1.f);
+    REQUIRE(a != UINT32_MAX);
+    REQUIRE(b != UINT32_MAX);
+    REQUIRE(c != UINT32_MAX);
+    REQUIRE(d != UINT32_MAX);
+    CHECK_FALSE(sim.sideOpen(a, b, 1));
+    CHECK(sim.sideOpen(a, b, -1));
+    CHECK(sim.sideOpen(b, a, 1)); // the way back: its left is the - pavement
+    CHECK_FALSE(sim.sideOpen(b, a, -1));
+    CHECK(sim.sideOpen(c, d, 1)); // past the front: the cars leave the band's outer edge open
+    float least = 1e9f;
+    std::uint32_t east = 0, west = 0, seen = 0;
+    std::vector<float> lastX(sim.capacity(), 1e9f);
+    for (int i = 0; i < 15 * 90; ++i) {
+        sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+        for (std::uint32_t j = 0; j < sim.capacity(); ++j) {
+            const CrowdAgentView& v = sim.agent(j);
+            if (!v.live) {
+                lastX[j] = 1e9f;
+                continue;
+            }
+            ++seen;
+            // Where the host draws it: anywhere on the way from its last step's point to this one.
+            if (!v.indoors)
+                for (const CrowdKeepOut& k : keeps)
+                    least = std::min(least, crowdKeepSweep(k, v.prevPos, v.pos) - k.gap);
+            if (lastX[j] < 0.f && v.pos.x >= 0.f) ++east;
+            if (lastX[j] < 1e8f && lastX[j] >= 0.f && v.pos.x < 0.f) ++west;
+            lastX[j] = v.pos.x;
+        }
+    }
+    INFO("least distance less the gap " << least << " m over " << seen << " member-steps; crossings east " << east << ", west " << west
+                                         << "; keepStuck " << sim.counts().keepStuck << ", missKeep " << sim.counts().missKeep << ", held "
+                                         << sim.counts().keepHeld << ", pushes refused " << sim.counts().keepPushRefused << ", moved out "
+                                         << sim.counts().keepMoved);
+    CHECK(seen > 10000u);
+    CHECK(least >= 0.f);
+    CHECK(east >= 10u);
+    CHECK(west >= 10u);
+    CHECK(sim.counts().keepStuck == 0u);
+    CHECK(sim.counts().keepMoved == 0u); // every step kept out of the gaps: nobody had to be moved out from under one
+}
+
+TEST_CASE("crowd keep-outs: two ways through one single-file slot take turns; nobody waits long, nobody closer than minGap") {
+    // One pavement open (a front shuts the other the whole way), a trunk on it leaving a 0.6 m slot at x 3: everyone
+    // walking either way passes it single file. Each seed runs twice: with the trunk, and with it on the shut side
+    // (kept, but nobody's way), as the control the slot run is held to.
+    CrowdGraph g;
+    CrowdStreet st = line({-100.f, 0.f}, {100.f, 0.f}, 14.f);
+    st.pavement = 2.5f;
+    st.points.clear();
+    for (int i = 0; i <= 20; ++i) st.points.push_back(Vec2{-100.f + 10.f * static_cast<float>(i), 0.f});
+    REQUIRE(g.build({st}, loose()));
+    auto keepBox = [](Vec2 c, float hx, float hy, float gap) {
+        CrowdKeepOut k;
+        k.c = c;
+        k.hx = hx;
+        k.hy = hy;
+        k.gap = gap;
+        return k;
+    };
+    const CrowdKeepOut front = keepBox({0.f, 5.65f}, 110.f, 1.35f, 0.8f);
+    const std::vector<CrowdKeepOut> slot = {front, keepBox({3.f, -4.5f}, 0.3f, 0.3f, 0.8f)};
+    const std::vector<CrowdKeepOut> control = {front, keepBox({3.f, 6.5f}, 0.3f, 0.3f, 0.8f)};
+    const CrowdTuning t;
+    struct Run {
+        std::uint32_t narrows = 0, east = 0, west = 0, together = 0, jam = 0;
+        float least = 1e9f, leastPair = 1e9f, longestWait = 0.f;
+    };
+    auto run = [&](const std::vector<CrowdKeepOut>& keeps, std::uint32_t seed) {
+        Run r;
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, seed));
+        REQUIRE(sim.setKeepOuts(keeps) == keeps.size());
+        r.narrows = sim.narrowCount();
+        std::vector<float> lastX(sim.capacity(), 1e9f);
+        for (int i = 0; i < 15 * 120; ++i) {
+            sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+            bool inEast = false, inWest = false;
+            for (std::uint32_t j = 0; j < sim.capacity(); ++j) {
+                const CrowdAgentView& v = sim.agent(j);
+                if (!v.live) {
+                    lastX[j] = 1e9f;
+                    continue;
+                }
+                if (v.indoors) continue;
+                for (const CrowdKeepOut& k : keeps) r.least = std::min(r.least, crowdKeepSweep(k, v.prevPos, v.pos) - k.gap);
+                if (lastX[j] < 3.f && v.pos.x >= 3.f) ++r.east;
+                if (lastX[j] < 1e8f && lastX[j] >= 3.f && v.pos.x < 3.f) ++r.west;
+                lastX[j] = v.pos.x;
+                // The single-file stretch (open under minGap: within 0.6 m of the trunk's middle, on its pavement).
+                if (std::fabs(v.pos.x - 3.f) < 0.6f && v.pos.y < -4.f) (std::cos(v.yaw * 0.0174533f) > 0.f ? inEast : inWest) = true;
+                // About the slot: the least pair, and the most walkers slow 5 s or more within 5 m of one of them.
+                if (std::fabs(v.pos.x - 3.f) > 15.f) continue;
+                std::uint32_t slow = 0;
+                for (std::uint32_t k = 0; k < sim.capacity(); ++k) {
+                    const CrowdAgentView& u = sim.agent(k);
+                    if (!u.live || u.indoors || std::fabs(u.pos.x - 3.f) > 15.f) continue;
+                    const float d = std::hypot(u.pos.x - v.pos.x, u.pos.y - v.pos.y);
+                    if (k != j) r.leastPair = std::min(r.leastPair, d);
+                    slow += v.slowFor >= 5.f && u.slowFor >= 5.f && d < 5.f;
+                }
+                r.jam = std::max(r.jam, slow);
+            }
+            r.together += inEast && inWest;
+        }
+        r.longestWait = sim.counts().narrowWaitLongest;
+        return r;
+    };
+    for (const std::uint32_t seed : {5u, 6u, 7u, 11u, 23u}) {
+        const Run c = run(control, seed), s = run(slot, seed);
+        INFO("seed " << seed << ": slot narrows " << s.narrows << ", least distance less the gap " << s.least << " m, least pair "
+                     << s.leastPair << " m, steps with both ways in the slot " << s.together << ", crossings east " << s.east
+                     << " west " << s.west << " (control " << c.east << " " << c.west << "), largest jam " << s.jam << " (control "
+                     << c.jam << "), longest wait " << s.longestWait << " s");
+        CHECK(c.narrows == 0u);
+        CHECK(s.narrows == 1u); // the slot by the trunk
+        CHECK(s.least >= 0.f);
+        // 1 mm under minGap: the least pair on these seeds is 0.649 to 0.650 m (separate() settles a pair a few um
+        // short of minGap). At minGap exactly this fails; the bar is open, waiting on a ruling (report, Open).
+        CHECK(s.leastPair >= t.minGap - 1e-3f);
+        CHECK(s.together == 0u); // never both ways in the single-file stretch at once
+        // Both ways get through, and nobody waits long: good turn rules wait 11 s at most on these seeds, a narrow that
+        // shuts one way out for good, or a queue that never moves up, 30 s or more.
+        CHECK(s.east >= 10u);
+        CHECK(s.west >= 10u);
+        CHECK(s.longestWait <= 20.f);
+    }
+}
+
+TEST_CASE("crowd keep-outs: the way between two steps is measured, not just its ends") {
+    CrowdKeepOut k;
+    k.c = {0.f, 0.f};
+    k.hx = 1.f;
+    k.hy = 0.5f;
+    k.gap = 0.f;
+    // Both ends 0.5 m off the box, the way between straight through it: half its depth (0.5) under.
+    CHECK(crowdKeepSweep(k, {-1.5f, 0.f}, {1.5f, 0.f}) == doctest::Approx(-0.5f).epsilon(1e-4));
+    // Cutting the corner: both ends clear (0.2 m above, 0.4 m to the side), the chord clips the corner inside the box.
+    CHECK(crowdKeepDistance(k, {0.6f, 0.7f}) > 0.f);
+    CHECK(crowdKeepDistance(k, {1.4f, 0.1f}) > 0.f);
+    CHECK(crowdKeepSweep(k, {0.6f, 0.7f}, {1.4f, 0.1f}) < -0.02f);
+    // Alongside: the least is the side's distance.
+    CHECK(crowdKeepSweep(k, {-3.f, 0.8f}, {3.f, 0.8f}) == doctest::Approx(0.3f).epsilon(1e-4));
+    // A point: its own distance.
+    CHECK(crowdKeepSweep(k, {2.f, 0.f}, {2.f, 0.f}) == doctest::Approx(1.f));
+}
+TEST_CASE("crowd keep-outs: a box is judged at the street nearest the box, not the one nearest its centre") {
+    // A long box (x 1..61, y 10..12) whose east end stands 1 m off a cross street (x 62). Its centre (31, 11) is 11 m
+    // from the street along y 0 and 31 m from the cross street: judged from the centre it would be the wrong street.
+    CrowdGraph g;
+    REQUIRE(g.build({line({0.f, 0.f}, {100.f, 0.f}), line({62.f, -10.f}, {62.f, 40.f})}, loose()));
+    CrowdKeepOut k;
+    k.c = {31.f, 11.f};
+    k.hx = 30.f;
+    k.hy = 1.f;
+    Vec2 at{};
+    REQUIRE(crowdKeepStreetPoint(g, k, 15.f, at));
+    CHECK(at.x == doctest::Approx(62.f).epsilon(1e-4));
+    CHECK(at.y >= 9.9f);
+    CHECK(at.y <= 12.1f);
+    CrowdStreetPoint fromCentre;
+    REQUIRE(g.nearestStreet(k.c, 15.f, fromCentre));
+    CHECK(fromCentre.dist == doctest::Approx(11.f).epsilon(1e-4)); // what the centre found: the street along y 0
+    // A box turned 90 degrees (its axis along y) is the same box: same street.
+    CrowdKeepOut turned = k;
+    turned.ax = 0.f;
+    turned.ay = 1.f;
+    turned.hx = 1.f;
+    turned.hy = 30.f;
+    REQUIRE(crowdKeepStreetPoint(g, turned, 15.f, at));
+    CHECK(at.x == doctest::Approx(62.f).epsilon(1e-4));
+    // No street within reach of any of its corners or sides: none.
+    CrowdKeepOut far;
+    far.c = {31.f, 80.f};
+    far.hx = 2.f;
+    far.hy = 2.f;
+    CHECK_FALSE(crowdKeepStreetPoint(g, far, 15.f, at));
+}
+TEST_CASE("crowd keep-outs: the sim's early reject keeps a box near only a wide street's edge, and drops a far one") {
+    // A 30 m street (half 15) along y 0. A 2 m box at y 17 stands 1 m off its edge: near it (17 <= 15 + 1.41 + 0.8 + 1).
+    // An early reject that left out the widest half width (search 3.2 m from the centre) would find no street and drop
+    // it. A box at y 40 is near none either way.
+    CrowdGraph g;
+    REQUIRE(g.build({line({-100.f, 0.f}, {100.f, 0.f}, 30.f)}, loose()));
+    CrowdKeepOut nearWide;
+    nearWide.c = {0.f, 17.f};
+    nearWide.hx = nearWide.hy = 1.f;
+    nearWide.gap = 0.8f;
+    CrowdKeepOut farBox = nearWide;
+    farBox.c = {0.f, 40.f};
+    CrowdTuning t;
+    CrowdSim sim;
+    REQUIRE(sim.init(g, t, 7));
+    CHECK(sim.setKeepOuts({nearWide, farBox}) == 1u);
+    CHECK(sim.setKeepOuts({nearWide}) == 1u);
+    CHECK(sim.setKeepOuts({farBox}) == 0u);
+}
+TEST_CASE("crowd keep-outs: a street that ends by a long side between its corners is found, and only within reach") {
+    // A lane (x 16) ends 14 m below a 60 m facade (x 1..61, y 19..21), at its quarter point. Its corners and side
+    // middles are all over 20 m from the lane's end: sampled there only, the facade would have no street near.
+    CrowdGraph g;
+    REQUIRE(g.build({line({16.f, -20.f}, {16.f, 5.f})}, loose()));
+    CrowdKeepOut k;
+    k.c = {31.f, 20.f};
+    k.hx = 30.f;
+    k.hy = 1.f;
+    Vec2 at{};
+    REQUIRE(crowdKeepStreetPoint(g, k, 15.f, at));
+    CHECK(at.x == doctest::Approx(16.f).epsilon(1e-4));
+    CHECK(at.y == doctest::Approx(5.f).epsilon(1e-4));
+    CHECK(crowdKeepDistance(k, at) == doctest::Approx(14.f).epsilon(1e-4));
+    // 15.4 m off: within a sample's widened search, but the box is not within reach of it.
+    CrowdKeepOut out = k;
+    out.c = {31.f, 21.4f};
+    CHECK_FALSE(crowdKeepStreetPoint(g, out, 15.f, at));
+}
+
+TEST_CASE("crowd keep-outs: the verdict keeps a ground box and a trunk, never a raised box or a roof (p83 boxes)") {
+    // p83 (dd4d1092), RD-01 by the west building: street ground 413 cm. Cube_113 #28, a ground box, z 398..728 cm: a
+    // member walking there meets it, so it is a keep-out. Cube_113 #23, z 619..820 cm (by its size and height the
+    // lean-to's tilted fill slab, HeroFarBank.cpp:211-214): its bottom is over a member's head, so it is not. A roof
+    // tile's band starts at its eave, over the window too.
+    const double street = 413.0;
+    CHECK(crowdKeepVerdict(true, true, street, 398.0, 728.0) == CrowdKeepVerdict::Kept);
+    CHECK(crowdKeepVerdict(true, true, street, 619.0, 819.6) == CrowdKeepVerdict::OffWindow);
+    CHECK(crowdKeepVerdict(true, true, street, 820.0, 858.0) == CrowdKeepVerdict::OffWindow);
+    // A park tree's collision box is its trunk, from the grass up: kept.
+    CHECK(crowdKeepVerdict(true, true, 400.0, 395.0, 900.0) == CrowdKeepVerdict::Kept);
+    // A parked car on the street: kept (same rule).
+    CHECK(crowdKeepVerdict(true, true, street, 410.0, 560.0) == CrowdKeepVerdict::Kept);
+    // A box's window edges are crowdMassAtFeet's: the ground 50 cm under its bottom is out, just over it is in.
+    CHECK(crowdKeepVerdict(true, true, street, 463.0, 900.0) == CrowdKeepVerdict::OffWindow);
+    CHECK(crowdKeepVerdict(true, true, street, 462.9, 900.0) == CrowdKeepVerdict::Kept);
+    // No street near, or no ground found at its street point: never kept.
+    CHECK(crowdKeepVerdict(false, true, street, 398.0, 728.0) == CrowdKeepVerdict::NoStreet);
+    CHECK(crowdKeepVerdict(true, false, street, 398.0, 728.0) == CrowdKeepVerdict::NoGround);
+}

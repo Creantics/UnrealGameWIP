@@ -229,3 +229,11 @@ TEST_CASE("crowd ground: a member walking off a roof or a car's top is drawn on 
     CHECK(crowdDrawnPoint(v, 0.25f).x == doctest::Approx(1.5f));
     CHECK(crowdDrawnPoint(v, 0.25f).y == doctest::Approx(3.f));
 }
+
+TEST_CASE("crowd ground: a massing box counts at the feet from half a metre under it to 30 cm under its top") {
+    CHECK_FALSE(crowdMassAtFeet(500.0, 1500.0, 450.0));
+    CHECK(crowdMassAtFeet(500.0, 1500.0, 450.5));
+    CHECK(crowdMassAtFeet(500.0, 1500.0, 1469.5));
+    CHECK_FALSE(crowdMassAtFeet(500.0, 1500.0, 1470.0));
+    CHECK_FALSE(crowdMassAtFeet(500.0, 1500.0, 1500.0)); // on its top
+}

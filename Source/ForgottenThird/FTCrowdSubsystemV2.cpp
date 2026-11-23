@@ -94,6 +94,12 @@ constexpr double kMassMaxSide = 30000.0;
 constexpr double kMassCell = 1000.0;
 // Where the ground under the streets is logged (engine cm), unless -CrowdGroundAt=X,Y says elsewhere.
 constexpr double kGroundAtX = 0.0, kGroundAtY = 31050.0;
+// Keep-outs: a Wall box's gap is the wall gate's plus a centimetre, so a member at the keep-out's edge still passes it.
+// A box is looked for a street this far (m) past its half diagonal (Core drops boxes farther than a street's half
+// width + gap + 1 m from it).
+constexpr float kWallKeepGap = static_cast<float>(kGapWall) + 0.01f;
+constexpr float kKeepReach = 15.f;
+constexpr int32 kKeepOverNamed = 20; // boxes over their own street point not kept, named in the log (the first few)
 
 FString CrowdObjectPath(const FString& Path)
 {
@@ -308,9 +314,14 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 		TestFightAt = TestAt;
 	}
 	FParse::Value(Cmd, TEXT("CrowdQuitAfter="), QuitAfter);
-	if (QuitAfter > 0.0)
+	// The boxes are the keep-outs' source (and the footprint check's, which runs with -CrowdQuitAfter only).
 	{
-		BuildMassing(); // only the footprint check reads the boxes, and it runs with -CrowdQuitAfter only
+		// Load time, every map now (the keep-outs need the boxes): logged so its cost is seen.
+		const double T0 = FPlatformTime::Seconds();
+		BuildMassing();
+		const double T1 = FPlatformTime::Seconds();
+		SetKeepOuts();
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: load: massing boxes %.1f ms, keep-outs %.1f ms."), (T1 - T0) * 1000.0, (FPlatformTime::Seconds() - T1) * 1000.0);
 	}
 	FString MoveTo, MX, MY;
 	if (FParse::Value(Cmd, TEXT("CrowdPlayerAt="), MoveTo) && MoveTo.Split(TEXT(","), &MX, &MY))
@@ -1016,7 +1027,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		{
 			if (Sim.agent(i).live)
 			{
-				RunMinWall = FMath::Min(RunMinWall, Sim.wallClearance(i));
+				RunMinWall = FMath::Min(RunMinWall, FMath::Min(Sim.wallClearance(i), Sim.keepClearance(i, ftcore::crowdv2::CrowdKeepKind::Wall)));
 			}
 		}
 	}
@@ -1397,9 +1408,9 @@ bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double Cen
 	}
 	const size_t Pick = ftcore::crowdv2::crowdPickGround(Hits, N, CrowdV2Local::kGroundBody);
 	OutZ = Hits[Pick].z;
-	// Log only, capped: a ground that is not the first top (what was skipped). A skipped top that is a deck, quay or
-	// bridge a street runs on is where this pick is wrong.
-	if (Pick != 0 && ++GroundPicksUnder <= 24)
+	// Log only, capped, members only (not the keep-outs' load-time looks, Slot INDEX_NONE): a ground that is not the
+	// first top (what was skipped). A skipped top that is a deck, quay or bridge a street runs on is where this pick is wrong.
+	if (Slot != INDEX_NONE && Pick != 0 && ++GroundPicksUnder <= 24)
 	{
 		const AActor* Owner = By[0] ? By[0]->GetOwner() : nullptr;
 		const AActor* PickOwner = By[Pick] ? By[Pick]->GetOwner() : nullptr;
@@ -1451,7 +1462,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 		for (const int32 b : *Near)
 		{
 			const FMassBox& M = MassBoxes[b];
-			if (Feet.Z > M.RZMin - 50.0 && Feet.Z < M.RZMax - 30.0)
+			if (ftcore::crowdv2::crowdMassAtFeet(M.RZMin, M.RZMax, Feet.Z))
 			{
 				const double R = BoxOut(M.RC, M.Ax, M.RHalf);
 				MinMassClearRender = FMath::Min(MinMassClearRender, R);
@@ -1461,7 +1472,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 					InRenderDepth = R;
 				}
 			}
-			if (Feet.Z <= M.ZMin - 50.0 || Feet.Z >= M.ZMax - 30.0)
+			if (!ftcore::crowdv2::crowdMassAtFeet(M.ZMin, M.ZMax, Feet.Z))
 			{
 				continue;
 			}
@@ -1532,7 +1543,11 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 FString UFTCrowdSubsystemV2::MassBoxName(int32 Box) const
 {
 	// The actor, component and mesh behind a massing box (and the instance, for an instanced mesh): log only.
-	const FMassBox& M = MassBoxes[Box];
+	return BoxName(MassBoxes[Box]);
+}
+
+FString UFTCrowdSubsystemV2::BoxName(const FMassBox& M)
+{
 	const UStaticMeshComponent* C = M.Comp.Get();
 	if (!C)
 	{
@@ -1791,6 +1806,97 @@ void UFTCrowdSubsystemV2::BuildMassing()
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide by render bounds; %d checked by their simple collision's bounds, the rest by render bounds), %d grid cells."), MassBoxes.Num(),
 		CrowdV2Local::kMassMinHeight / 100.0, CrowdV2Local::kMassMinSide / 100.0, Colls, MassGrid.Num());
+}
+
+void UFTCrowdSubsystemV2::SetKeepOuts()
+{
+	// Each massing box whose height window holds the ground at the street point nearest it (where the footprint check
+	// would measure a member walking there) becomes a Wall keep-out (gap kWallKeepGap, the wall gate's: a front on the
+	// pavement, a tree's trunk). Load time: one first-ground look a box near a street.
+	// -CrowdKeepWhy=a,b: the verdict for each box whose actor, component or mesh name holds any of those.
+	TArray<FString> WhyNames;
+	FString Why;
+	if (FParse::Value(FCommandLine::Get(), TEXT("CrowdKeepWhy="), Why, false))
+	{
+		Why.ParseIntoArray(WhyNames, TEXT(","));
+	}
+	std::vector<ftcore::crowdv2::CrowdKeepOut> Keeps;
+	int32 Far = 0, NoGround = 0, OffWindow = 0, OverPoint = 0, Walls = 0, OverNamed = 0, OverDropped = 0;
+	auto Consider = [&](const FMassBox& M, ftcore::crowdv2::CrowdKeepKind Kind)
+	{
+		ftcore::crowdv2::CrowdKeepOut K;
+		K.c = ftcore::Vec2{static_cast<float>(M.C.X / 100.0), static_cast<float>(M.C.Y / 100.0)};
+		K.ax = static_cast<float>(M.Ax.X);
+		K.ay = static_cast<float>(M.Ax.Y);
+		K.hx = static_cast<float>(M.Half.X / 100.0);
+		K.hy = static_cast<float>(M.Half.Y / 100.0);
+		K.kind = Kind;
+		K.gap = CrowdV2Local::kWallKeepGap;
+		// Core decides (crowdKeepStreetPoint: the street point nearest the box, from points round its sides 1 m apart;
+		// crowdKeepVerdict: street, ground, then the feet's window). The host only traces the ground there.
+		double GroundZ = 0.0;
+		ftcore::Vec2 At{0.f, 0.f};
+		const bool bStreet = ftcore::crowdv2::crowdKeepStreetPoint(Graph, K, CrowdV2Local::kKeepReach, At);
+		bool bGround = false, bOver = false;
+		if (bStreet)
+		{
+			// Counted whatever the verdict: a box over its own street point has its own top (or a roof) as the ground
+			// there, so the window may drop it. -CrowdKeepWhy names them.
+			bOver = ftcore::crowdv2::crowdKeepDistance(K, At) < 0.f;
+			OverPoint += bOver ? 1 : 0;
+			bGround = FirstGround(INDEX_NONE, At.x * 100.0, At.y * 100.0, M.ZMax, GroundZ);
+		}
+		const ftcore::crowdv2::CrowdKeepVerdict V = ftcore::crowdv2::crowdKeepVerdict(bStreet, bGround, GroundZ, M.ZMin, M.ZMax);
+		OverDropped += bOver && V != ftcore::crowdv2::CrowdKeepVerdict::Kept ? 1 : 0;
+		if (bOver && V != ftcore::crowdv2::CrowdKeepVerdict::Kept && OverNamed < CrowdV2Local::kKeepOverNamed)
+		{
+			// A box standing on its own street's centre line that is not kept: named (the first few), so a run says
+			// which; its ground there may be its own top.
+			++OverNamed;
+			UE_LOG(LogForgottenThird, Warning, TEXT("Crowd: box over its own street point not kept: %s; centre (%.2f, %.2f) m, z %.0f to %.0f cm, ground z %.1f cm."),
+				*BoxName(M), K.c.x, K.c.y, M.ZMin, M.ZMax, GroundZ);
+		}
+		const TCHAR* Verdict = TEXT("kept");
+		switch (V)
+		{
+		case ftcore::crowdv2::CrowdKeepVerdict::NoStreet:
+			Verdict = TEXT("no street near");
+			++Far;
+			break;
+		case ftcore::crowdv2::CrowdKeepVerdict::NoGround:
+			Verdict = TEXT("no ground at its street point");
+			++NoGround;
+			break;
+		case ftcore::crowdv2::CrowdKeepVerdict::OffWindow:
+			Verdict = TEXT("not at the feet's height there");
+			++OffWindow;
+			break;
+		case ftcore::crowdv2::CrowdKeepVerdict::Kept:
+			Keeps.push_back(K);
+			++Walls;
+			break;
+		}
+		if (WhyNames.Num() > 0)
+		{
+			const FString Name = BoxName(M);
+			for (const FString& W : WhyNames)
+			{
+				if (!W.IsEmpty() && Name.Contains(W))
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-out why: %s (%s): %s; centre (%.2f, %.2f) m, half (%.2f, %.2f) m, z %.0f to %.0f cm; street point (%.2f, %.2f) m, ground z %.1f cm."),
+						*Name, Kind == ftcore::crowdv2::CrowdKeepKind::Car ? TEXT("car") : TEXT("wall"), Verdict, K.c.x, K.c.y, K.hx, K.hy, M.ZMin, M.ZMax, At.x, At.y, GroundZ);
+					break;
+				}
+			}
+		}
+	};
+	for (const FMassBox& M : MassBoxes)
+	{
+		Consider(M, ftcore::crowdv2::CrowdKeepKind::Wall);
+	}
+	const uint32 Kept = Sim.setKeepOuts(Keeps);
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-outs: %d massing boxes; %d walls at the feet's height by a street; %d boxes over their own street point (any verdict; %d of them not kept, a member there is still caught by the footprint line), %d with no street near, %d with no ground at it, %d not at the feet's height; %u kept by the sim; %u sides closed, %u streets shut, %u narrows, %u doors under a keep-out."),
+		MassBoxes.Num(), Walls, OverPoint, OverDropped, Far, NoGround, OffWindow, Kept, Sim.closedSides(), Sim.closedStreets(), Sim.narrowCount(), Sim.doorsUnderKeep());
 }
 
 // A knot over the gate: who stands in it (state, speed, metres from the fight), so a failed run says why.

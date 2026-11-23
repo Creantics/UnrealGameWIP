@@ -87,6 +87,9 @@ private:
 	FViewCount CountInView(int32 Cam, TArray<uint32>* Ids) const;
 	bool Clear(const FVector& Eye, const FVector& To) const;
 	void BuildMassing();
+	// Keep-outs (after BuildMassing): each massing box (a front, a tree's trunk, a wall) whose height window (Core's
+	// crowdMassAtFeet, the footprint check's) holds the ground at its nearest street point.
+	void SetKeepOuts();
 	void RetestFootprint(int32 Slot, const FVector& Feet, int32 Box, double DepthCm);
 	void FootStill(APlayerController* PC);
 	void AimFootStill(int32 Slot, const FVector& Feet, FVector2D Out, const FString& Path, bool bRoof);
@@ -144,7 +147,7 @@ private:
 	bool bCamsOk = true;            // both cameras framed the fight as asked, and the crowd came back into view
 	bool bRefillOk = true;
 	float RunMinPair = 1e9f;        // m, every frame
-	float RunMinWall = 1e9f;        // m, every frame
+	float RunMinWall = 1e9f;        // m, every frame: the street's frontage and the Wall keep-outs
 	// -Interiors=hero room visits (sized at setup). By member slot: its door phase last frame (0: not at a door), the
 	// door slot, its id, and when it took the door, reached its spot and left it. By door slot: the room's id, visits
 	// begun, spots reached, visits ended, and the longest visit (s).
@@ -183,6 +186,7 @@ private:
 	};
 	TArray<FMassBox> MassBoxes;
 	TMap<FIntPoint, TArray<int32>> MassGrid; // 10 m cells: boxes reaching within a metre of the cell
+	static FString BoxName(const FMassBox& M);
 	double MinMassClear = 1e9;              // cm, least distance from a drawn member's feet to a massing box
 	int32 MinMassBox = INDEX_NONE;          // the box and member that gave it (log only)
 	int32 MinMassMember = INDEX_NONE;
