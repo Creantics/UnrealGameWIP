@@ -11020,7 +11020,7 @@ TEST_CASE("arena lunge curve: two curved moves in one kind each run their own kn
     CHECK(moved == doctest::Approx(1.f).epsilon(1e-3));
 }
 
-TEST_CASE("arena lunge curve: the ruled pounce connects on a still target from 1.0 to 3.9 m and misses from 4.0") {
+TEST_CASE("arena lunge curve: the ruled pounce connects on a still target from 1.0 to 4.2 m and misses from 4.3") {
     // The shipped maw_pup on the ruled curve with only its pounce, picked at any distance at once; the default kit
     // stands still (no input) at the ring's centre. A row: the pup's start, centre to centre, 1.0 to 5.0 m in 0.1 m
     // steps; whether its first pounce lands. This is a landed pounce under test (every pin fight's pounce is parried).
@@ -11079,6 +11079,6 @@ TEST_CASE("arena lunge curve: the ruled pounce connects on a still target from 1
         }
     }
     CHECK(firstHit == doctest::Approx(1.0f));
-    CHECK(lastHit == doctest::Approx(3.9f));
-    CHECK(hits == 30);
+    CHECK(lastHit == doctest::Approx(4.2f));
+    CHECK(hits == 33);
 }
