@@ -436,6 +436,22 @@ inline constexpr std::size_t kCrowdGroundHitsMax = 8;
 // when none is, the highest (0). 0 when n is 0.
 FTCORE_API std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body);
 
+// A drawn member's ground, every frame (host): one line down at the point it is drawn at (crowdDrawnPoint), from a
+// little over the ground it has to well under it. What the line met: `hit`, the top's `z` (cm), and `startInside` when
+// it started inside a solid (met where it starts).
+struct CrowdGroundLine {
+    bool hit = false;
+    bool startInside = false;
+    double z = 0.0;
+};
+// True when that top is the ground (`z` set to it): no more than `stepUp` (cm) over `heldZ`, or any way down. False when
+// the long look (the host's crowdPickGround lines) must find it again: the line met nothing (a roof's or a car's edge
+// past, the street further down than the line reaches), more than a step up (a slab over it), or it started inside a
+// solid. Never the height it had: kept past a top's edge, that height left members drawn standing on nothing.
+FTCORE_API bool crowdGroundTake(const CrowdGroundLine& line, double heldZ, double stepUp, double& z);
+// Where the host draws a member this frame: its last two steps' positions lerped by stepAlpha (`alpha`, 0..1).
+FTCORE_API Vec2 crowdDrawnPoint(const CrowdAgentView& v, float alpha);
+
 // Host occlusion: true when something solid stands between `from` and `to` (engine frame, metres).
 using CrowdOcclusionFn = bool (*)(void* context, Vec2 from, Vec2 to);
 

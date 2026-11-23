@@ -128,3 +128,104 @@ TEST_CASE("crowd ground: a top less than a body under the next top is not ground
     const CrowdGroundHit storeys[] = {{1500.0, true}, {1000.0, true}, {500.0, true}, {480.0, false}};
     CHECK(crowdPickGround(storeys, 4, body) == 2);
 }
+
+namespace {
+using ftcore::Vec2;
+
+// A strip of ground with a raised top over part of it (cm, plan x in m): a roof or a car's top over the street.
+struct Ledge {
+    double x0, x1, top, ground;
+    // The host's one line down at x from from to to: the first surface it meets from above.
+    CrowdGroundLine line(double x, double from, double to) const {
+        CrowdGroundLine l;
+        if (x >= x0 && x <= x1 && top <= from && top >= to) l.hit = true, l.z = top;
+        else if (ground <= from && ground >= to) l.hit = true, l.z = ground;
+        return l;
+    }
+    // The tops under x, highest first, as the host's long look finds them (the top's line up clear: a lean-to's open
+    // underside, a car's), then its pick.
+    double firstGround(double x) const {
+        CrowdGroundHit h[2];
+        std::size_t n = 0;
+        if (x >= x0 && x <= x1) h[n++] = {top, true};
+        h[n++] = {ground, true};
+        return h[crowdPickGround(h, n, 180.0)].z;
+    }
+    bool under(double x, double feet) const { // a surface at the feet (within 1 cm)
+        return std::fabs(feet - ground) < 1.0 || (x >= x0 && x <= x1 && std::fabs(feet - top) < 1.0);
+    }
+};
+
+// A walker drawn at 60 frames a second off a ledge's end at 1.3 m/s (sim steps at 15 a second, drawn by stepAlpha),
+// from on its top. Frames drawn standing on nothing, by the host's ground rule then (oldRule) or crowdGroundTake.
+int framesOnNothing(const Ledge& g, bool oldRule, double& feetAtEnd, float start = 1.f) {
+    constexpr double kUp = 300.0, kDown = 600.0, kStep = 60.0;
+    const float step = 1.f / 15.f;
+    CrowdAgentView v;
+    v.pos = v.prevPos = {static_cast<float>(g.x1) - start, 0.f};
+    double held = g.top;
+    int on = 0;
+    for (int f = 0; f < 4 * 60; ++f) {
+        const float alpha = static_cast<float>(f % 4) / 4.f;
+        if (f % 4 == 0) v.prevPos = v.pos, v.pos.x += 1.3f * step;
+        if (oldRule) {
+            // The round robin: this member's line once in 6 frames (48 drawn, 8 a frame), at its sim position; a miss
+            // keeps the height it had; more than a step up looks again.
+            if (f % 6 == 0) {
+                const CrowdGroundLine l = g.line(v.pos.x, held + kUp, held - kDown);
+                if (l.hit) held = l.z - held > kStep ? g.firstGround(v.pos.x) : l.z;
+            }
+        } else {
+            const Vec2 at = crowdDrawnPoint(v, alpha);
+            double z = held;
+            if (!crowdGroundTake(g.line(at.x, held + kUp, held - kDown), held, kStep, z)) z = g.firstGround(at.x);
+            held = z;
+        }
+        const float drawnX = v.prevPos.x + (v.pos.x - v.prevPos.x) * alpha; // where the host draws it, by hand
+        on += !g.under(drawnX, held);
+    }
+    feetAtEnd = held;
+    return on;
+}
+} // namespace
+
+TEST_CASE("crowd ground: a member walking off a roof or a car's top is drawn on the ground under it at once, never held") {
+    // The Strip's dd4d1092 run: 30 members drawn at a top's height just past its edge, nothing under their feet. The
+    // host traced the ground 8 actors a frame (every 6th frame for one of 48), at the sim position, not the drawn one,
+    // and kept the height it had when the line met nothing (over kGroundDown, 6 m, down).
+    double feet = 0.0;
+    // A roof 8.06 m over the street (12.15 over 4.09): the line from it misses the street.
+    const Ledge roof{0.0, 5.0, 1215.0, 409.0};
+    CHECK(framesOnNothing(roof, true, feet) > 100); // held at the roof's height to the end
+    CHECK(feet == doctest::Approx(1215.0));
+    CHECK(framesOnNothing(roof, false, feet) == 0);
+    CHECK(feet == doctest::Approx(409.0));
+    // A ridge 4.71 m over the lane (8.83 over 4.12): the line meets the lane, so only where and how often it is traced.
+    const Ledge ridge{0.0, 5.0, 883.0, 412.0};
+    int oldOn = 0, newOn = 0;
+    for (int k = 0; k < 12; ++k) { // where it starts, so the round robin meets the edge at each phase
+        const float start = 1.f + 0.0073f * static_cast<float>(k);
+        oldOn += framesOnNothing(ridge, true, feet, start);
+        newOn += framesOnNothing(ridge, false, feet, start);
+        CHECK(feet == doctest::Approx(412.0));
+    }
+    INFO("ridge: frames on nothing, the old rule " << oldOn << ", now " << newOn);
+    CHECK(oldOn > 0);
+    CHECK(newOn == 0);
+    // A line that met nothing never keeps the height; within a step up, or any way down, is taken; more than a step up
+    // or a start inside a solid looks again.
+    double z = 0.0;
+    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{}, 1215.0, 60.0, z));
+    CHECK(crowdGroundTake(CrowdGroundLine{true, false, 409.0}, 1215.0, 60.0, z));
+    CHECK(z == 409.0);
+    CHECK(crowdGroundTake(CrowdGroundLine{true, false, 469.0}, 409.0, 60.0, z));
+    CHECK(z == 469.0);
+    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{true, false, 469.5}, 409.0, 60.0, z));
+    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{true, true, 409.0}, 409.0, 60.0, z));
+    // The drawn point is the lerp the host draws at.
+    CrowdAgentView v;
+    v.prevPos = {1.f, 2.f};
+    v.pos = {3.f, 6.f};
+    CHECK(crowdDrawnPoint(v, 0.25f).x == doctest::Approx(1.5f));
+    CHECK(crowdDrawnPoint(v, 0.25f).y == doctest::Approx(3.f));
+}

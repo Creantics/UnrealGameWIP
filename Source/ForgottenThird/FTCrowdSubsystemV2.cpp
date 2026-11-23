@@ -47,8 +47,7 @@ constexpr float kWalkClipSpeed = 1.3f;
 constexpr float kRunClipSpeed = 4.2f;
 // Without a run clip the walk plays this much faster, at most.
 constexpr float kRunOnWalkMax = 2.2f;
-// Ground lines per frame (round robin over the pool), and how far each looks up and down (cm).
-constexpr int32 kGroundTracesPerFrame = 8;
+// How far a drawn actor's ground line (one a frame each) looks up and down (cm).
 constexpr double kGroundUp = 300.0;
 constexpr double kGroundDown = 600.0;
 constexpr double kGroundFirstSpan = 20000.0;
@@ -278,6 +277,7 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
 	FootSeen.Init(false, static_cast<int32>(Sim.capacity()));
 	FootSeenRender.Init(false, static_cast<int32>(Sim.capacity()));
+	NoGroundSeen.Init(false, static_cast<int32>(Sim.capacity()));
 	FootFramesBy.Init(0, static_cast<int32>(Sim.capacity()));
 	FParse::Value(Cmd, TEXT("CrowdFootStill="), FootStillPath);
 	FParse::Value(Cmd, TEXT("CrowdRoofStill="), RoofStillPath);
@@ -1141,6 +1141,12 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: no stimulus this run (no -CrowdTestFight, no arena fight event): FAILED."));
 			bOk = false;
 		}
+		// The ground line: every drawn member is drawn on ground the footprint check sees. One hidden with no ground at
+		// its drawn point, or drawn by the sim with no actor, would pass the footprint line unmeasured.
+		const bool bGrounded = NoGroundFrames == 0 && NoActorFrames == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: drawn members hidden with no ground found %llu member-frames, %d members; drawn with no actor %llu member-frames (%s, passes at 0 and 0)."),
+			NoGroundFrames, NoGroundMembers, NoActorFrames, bGrounded ? TEXT("ok") : TEXT("FAILED"));
+		bOk = bOk && bGrounded;
 		if (bTestFightStarted)
 		{
 			const uint64 Perceived = C.perceived - AtTestFight.perceived;
@@ -1256,6 +1262,8 @@ void UFTCrowdSubsystemV2::Draw()
 			PoolAnim[k] = 0xff;
 		}
 	}
+	// Where each is drawn this frame: its last two steps lerped (Core crowdDrawnPoint). Its ground is looked for there.
+	const float Alpha = FMath::Clamp(Sim.stepAlpha(), 0.f, 1.f);
 	// Give each newly drawn agent a free actor.
 	int32 FreeCursor = 0;
 	for (uint32 i = 0; i < Cap; ++i)
@@ -1271,7 +1279,10 @@ void UFTCrowdSubsystemV2::Draw()
 		}
 		if (FreeCursor >= Pool.Num())
 		{
-			break;
+			// Drawn by the sim with no actor free (the pool is maxDrawn, so only a failed spawn leaves it short): never
+			// drawn, never footprint-checked. Counted, and it fails the ground line.
+			++NoActorFrames;
+			continue;
 		}
 		PoolAgent[FreeCursor] = V.id + 1;
 		SlotActor[static_cast<int32>(i)] = FreeCursor;
@@ -1279,60 +1290,62 @@ void UFTCrowdSubsystemV2::Draw()
 		PoolGround[FreeCursor] = PlayerZ;
 		// Grounded now, shown only once it is (never a frame at the player's height, inside a hill or in mid-air).
 		double Z = PlayerZ;
-		if (FirstGround(static_cast<int32>(i), V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ, Z))
+		const ftcore::Vec2 At = ftcore::crowdv2::crowdDrawnPoint(V, Alpha);
+		if (FirstGround(static_cast<int32>(i), At.x * 100.0, At.y * 100.0, PlayerZ, Z))
 		{
 			PoolGround[FreeCursor] = Z;
 			PoolGrounded[FreeCursor] = true;
 		}
 		Pool[FreeCursor]->SetActorHiddenInGame(!PoolGrounded[FreeCursor]);
 	}
-	// Ground: a few lines a frame, round robin; an actor that has never found the ground looks over a long span first.
-	for (int32 n = 0; n < CrowdV2Local::kGroundTracesPerFrame && n < Pool.Num(); ++n)
+	// Ground: every drawn actor, every frame, one line down at the point it is drawn at (not its sim position, a step
+	// ahead or behind). Core decides (crowdGroundTake): a top within a step up, or any way down, is the ground; a line
+	// that met nothing (past a roof's or a car's edge), more than a step up (a slab over it) or started inside a solid
+	// looks again over the long span (FirstGround). The old height is never kept: kept past a top's edge it drew members
+	// standing on nothing (the strip's dd4d1092 run, 30 of them). An actor with no ground found is hidden until it has.
+	for (int32 k = 0; k < Pool.Num(); ++k)
 	{
-		const int32 k = GroundCursor;
-		GroundCursor = (GroundCursor + 1) % Pool.Num();
 		if (PoolAgent[k] == 0)
 		{
 			continue;
 		}
-		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent((PoolAgent[k] - 1) & 0xffffu);
-		const double X = V.pos.x * 100.0, Y = V.pos.y * 100.0;
-		if (!PoolGrounded[k])
+		const int32 Slot = static_cast<int32>((PoolAgent[k] - 1) & 0xffffu);
+		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(Slot));
+		const ftcore::Vec2 Drawn = ftcore::crowdv2::crowdDrawnPoint(V, Alpha);
+		const double X = Drawn.x * 100.0, Y = Drawn.y * 100.0;
+		double Z = PoolGround[k];
+		bool Found = false;
+		if (PoolGrounded[k])
 		{
-			double Z = PoolGround[k];
-			if (FirstGround(static_cast<int32>((PoolAgent[k] - 1) & 0xffffu), X, Y, PoolGround[k], Z))
+			const FVector At(X, Y, PoolGround[k]);
+			FHitResult Hit;
+			ftcore::crowdv2::CrowdGroundLine Line;
+			Line.hit = World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, CrowdV2Local::kGroundUp), At - FVector(0.0, 0.0, CrowdV2Local::kGroundDown), ECC_Visibility, TraceQuery);
+			Line.startInside = Line.hit && Hit.bStartPenetrating;
+			Line.z = Hit.ImpactPoint.Z;
+			Found = ftcore::crowdv2::crowdGroundTake(Line, PoolGround[k], CrowdV2Local::kGroundStep, Z);
+		}
+		if (!Found)
+		{
+			Found = FirstGround(Slot, X, Y, PoolGround[k], Z);
+		}
+		if (Found != PoolGrounded[k])
+		{
+			PoolGrounded[k] = Found;
+			Pool[k]->SetActorHiddenInGame(!Found);
+		}
+		if (!Found)
+		{
+			// Hidden, so the footprint check never sees it: counted, and it fails the ground line.
+			++NoGroundFrames;
+			if (!NoGroundSeen[Slot])
 			{
-				PoolGround[k] = Z;
-				PoolGrounded[k] = true;
-				Pool[k]->SetActorHiddenInGame(false);
+				NoGroundSeen[Slot] = true;
+				++NoGroundMembers;
 			}
 			continue;
 		}
-		const FVector At(X, Y, PoolGround[k]);
-		FHitResult Hit;
-		if (World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, CrowdV2Local::kGroundUp), At - FVector(0.0, 0.0, CrowdV2Local::kGroundDown), ECC_Visibility, TraceQuery))
-		{
-			// More than a step up (or a line that starts inside a slab, hit where it starts): a slab over the member,
-			// whose top this line met from above; look again as at first, not up onto it.
-			double Z = Hit.ImpactPoint.Z;
-			if (Hit.bStartPenetrating || Z - PoolGround[k] > CrowdV2Local::kGroundStep)
-			{
-				Z = PoolGround[k];
-				FirstGround(static_cast<int32>((PoolAgent[k] - 1) & 0xffffu), X, Y, PoolGround[k], Z);
-			}
-			PoolGround[k] = Z;
-		}
-	}
-	const float Alpha = FMath::Clamp(Sim.stepAlpha(), 0.f, 1.f);
-	for (int32 k = 0; k < Pool.Num(); ++k)
-	{
-		if (PoolAgent[k] == 0 || !PoolGrounded[k])
-		{
-			continue;
-		}
-		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent((PoolAgent[k] - 1) & 0xffffu);
-		const double X = FMath::Lerp(V.prevPos.x, V.pos.x, Alpha) * 100.0;
-		const double Y = FMath::Lerp(V.prevPos.y, V.pos.y, Alpha) * 100.0;
+		PoolGround[k] = Z;
 		Pool[k]->SetActorLocationAndRotation(FVector(X, Y, PoolGround[k]), FRotator(0.0, V.yaw + MeshYaw, 0.0));
 		PlayFor(k, V.anim, V.speed);
 		if (QuitAfter > 0.0)

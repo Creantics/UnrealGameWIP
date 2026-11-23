@@ -2004,4 +2004,15 @@ std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double bo
     return 0;
 }
 
+bool crowdGroundTake(const CrowdGroundLine& line, double heldZ, double stepUp, double& z) {
+    if (!line.hit || line.startInside || line.z - heldZ > stepUp) return false;
+    z = line.z;
+    return true;
+}
+
+Vec2 crowdDrawnPoint(const CrowdAgentView& v, float alpha) {
+    const float t = std::clamp(alpha, 0.f, 1.f);
+    return {v.prevPos.x + (v.pos.x - v.prevPos.x) * t, v.prevPos.y + (v.pos.y - v.prevPos.y) * t};
+}
+
 } // namespace ftcore::crowdv2

@@ -202,7 +202,6 @@ private:
 	double MeshYaw = 0.0;
 	double EyeZ = 160.0;     // cm: the height the occlusion line runs at, from the player's feet
 	double PlayerZ = 0.0;    // cm
-	int32 GroundCursor = 0;
 	int32 GroundPicksUnder = 0; // first grounds not on the first top (log only)
 	int32 OcclusionTraces = 0;
 	double RunTime = 0.0;
@@ -228,6 +227,12 @@ private:
 	TArray<int32> FootFramesBy; // per sim slot (log only)
 	int32 FootLogged = 0;
 	int32 FootLogCap = 32;   // detail lines (one per member); -CrowdFootLogAll: every member
+	// Drawn members the footprint check cannot see: hidden with no ground found at the drawn point, or drawn by the sim
+	// with no actor free. Each fails the ground line (else a member standing on nothing would pass unmeasured).
+	uint64 NoGroundFrames = 0;   // member-frames hidden with no ground
+	int32 NoGroundMembers = 0;   // distinct members
+	TBitArray<> NoGroundSeen;    // per sim slot
+	uint64 NoActorFrames = 0;    // member-frames drawn with no actor
 	// The same by render bounds, the box the check used before (reference only), with each member's first frame
 	// re-tested against the mesh's own collision shape; -CrowdFootStill=<png>: one still of the first.
 	uint64 FootFramesRender = 0;
