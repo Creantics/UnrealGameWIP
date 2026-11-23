@@ -364,6 +364,10 @@ inline constexpr float kCrowdReachMove = 5.f;
 // S-271: members are placed this far past wallInset (m), so float noise never leaves one under it: the walking band
 // ends there, and a member found under wallInset is moved back to it. The gate itself stays wallInset, unrounded.
 inline constexpr float kCrowdWallSlack = 0.01f;
+// The host's roof check (the footprint check's "on a roof"): a grounded member's downward trace starts this far (m)
+// under its feet, so the ground it stands on is not hit; anything hit below is more ground further down. A solid's foot
+// must stand clear above that start under every height a member stands at, or it reads as a roof.
+inline constexpr double kCrowdRoofTraceDrop = 0.5;
 // S-271: a point is taken as it is only this far past wallInset or more (m), else it is moved. The host measures the
 // frontage from the building's box and read 0.799961 m for a member Core had at 0.8000031, a 0.042 mm gap from float
 // rounding (one float step is 0.03 mm at the Strip's coordinates, under 512 m); this is six times that gap.

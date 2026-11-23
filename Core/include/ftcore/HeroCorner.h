@@ -143,9 +143,12 @@ struct HeroCornerSpec {
     // deep, at padY0 and padY1), so the corner stands on setts padDeep deep over x padX0..padX1 (the canal's coping to
     // under the yards' front walls), y padY0..padY1, their top level with the lane's paving: the south and north aprons,
     // the alley behind the bays, and the lane's run under its paving (there at the ground, the paving over it). None
-    // under the bays, whose plinths stand on the ground. padDeep is under 0.5 so the pad's foot sits above the crowd's
-    // roof check, whose trace starts half a metre under a member's feet (a deeper pad reads as a roof under the lane).
-    double padX0 = 901.0, padX1 = 920.25, padY0 = 504.0, padY1 = 566.0, padDeep = 0.4;
+    // under the bays, whose plinths stand on the ground. The pad's foot stands at least kHeroPadTraceClear above the
+    // crowd's roof trace start (crowdv2::kCrowdRoofTraceDrop under a member's feet) at every height a member stands
+    // at: the lane's paving and the rooms' floors (the glazed front's sill 0.10 over the ground the highest). A deeper
+    // pad reads as a roof under them: 0.4 left the glazed rooms' floor 0 m (2026-11-22); 0.3 leaves 0.10 m there and
+    // 0.18 m on the lane.
+    double padX0 = 901.0, padX1 = 920.25, padY0 = 504.0, padY1 = 566.0, padDeep = 0.3;
     // The camera.
     double eye[3] = {904.5, 511.0, 5.78};
     double at[3] = {904.5, 551.0, 3.68};
@@ -326,6 +329,9 @@ FTCORE_API int heroCornerProbes(const HeroCornerSpec& spec, const HeroCornerLayo
 // (kQuayMastPlate long, rail high, along the rail: the mast's rot turned 90 degrees, id "<mast id>-RAIL"). Returns how
 // many it changed; other points are left as they are.
 FTCORE_API int heroCornerClearMasts(const HeroCornerSpec& spec, std::vector<StandInPoint>& points);
+
+// The least clearance (m) between the corner's ground pad's foot and the crowd's roof trace start under a member.
+inline constexpr double kHeroPadTraceClear = 0.05;
 
 // Whether a street lamp at plan (x, y) is kept out of the corner (inside the spec's lamp-clear box, edges included).
 FTCORE_API bool heroCornerKeepsLampOut(const HeroCornerSpec& spec, double x, double y);

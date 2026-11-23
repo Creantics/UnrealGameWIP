@@ -281,6 +281,10 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	FootFramesBy.Init(0, static_cast<int32>(Sim.capacity()));
 	FParse::Value(Cmd, TEXT("CrowdFootStill="), FootStillPath);
 	FParse::Value(Cmd, TEXT("CrowdRoofStill="), RoofStillPath);
+	if (FParse::Param(Cmd, TEXT("CrowdFootLogAll")))
+	{
+		FootLogCap = MAX_int32;
+	}
 	FString ZoneText;
 	if (FParse::Value(Cmd, TEXT("CrowdZoneZ="), ZoneText, false))
 	{
@@ -1089,6 +1093,8 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 				}
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: footprint member-frames by member: %s."), *PerMember);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: footprint detail lines for %d of %d members (%s)."), FootLogged, FootMembers,
+				FootLogCap == MAX_int32 ? TEXT("every member, -CrowdFootLogAll") : TEXT("cap 32; -CrowdFootLogAll traces every member"));
 		}
 		if (ZoneZBox.bIsValid)
 		{
@@ -1398,7 +1404,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 	// stands, over half a metre down. Also the least distance to a box, round the feet's height.
 	UWorld* World = GetWorld();
 	FHitResult Below;
-	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, 50.0),
+	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, ftcore::crowdv2::kCrowdRoofTraceDrop * 100.0),
 		Feet - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery);
 	const int32 Slot = static_cast<int32>((PoolAgent[Actor] - 1) & 0xffffu);
 	if (ZoneZBox.bIsValid && ZoneZBox.IsInside(FVector2D(Feet.X, Feet.Y)))
@@ -1475,7 +1481,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 		FootSeen[Slot] = true;
 		++FootMembers;
 		// One line per member, on its first bad frame: what it stands in or on (the frames per member come at the end).
-		if (FootLogged < 32)
+		if (FootLogged < FootLogCap)
 		{
 			++FootLogged;
 			const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(Slot));

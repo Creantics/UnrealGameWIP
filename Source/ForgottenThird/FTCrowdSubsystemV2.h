@@ -227,6 +227,7 @@ private:
 	TBitArray<> FootSeen;    // per sim slot
 	TArray<int32> FootFramesBy; // per sim slot (log only)
 	int32 FootLogged = 0;
+	int32 FootLogCap = 32;   // detail lines (one per member); -CrowdFootLogAll: every member
 	// The same by render bounds, the box the check used before (reference only), with each member's first frame
 	// re-tested against the mesh's own collision shape; -CrowdFootStill=<png>: one still of the first.
 	uint64 FootFramesRender = 0;
