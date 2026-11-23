@@ -288,7 +288,11 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
         cellsOf(e, 0.f, [&](std::int64_t x, std::int64_t y) { segCells[cellKey(x, y)].push_back(e); });
 
     std::vector<std::uint32_t> deg0(pos_.size(), 0);
-    for (const BuildEdge& e : edges) ++deg0[e.a], ++deg0[e.b];
+    std::vector<std::uint32_t> own(pos_.size(), UINT32_MAX); // a loose end's one street segment
+    for (std::uint32_t e = 0; e < baseEdges; ++e) {
+        ++deg0[edges[e].a], ++deg0[edges[e].b];
+        own[edges[e].a] = own[edges[e].b] = e;
+    }
 
     std::vector<Split> splits;
     std::vector<BuildEdge> joins;
@@ -324,9 +328,16 @@ bool CrowdGraph::build(const std::vector<CrowdStreet>& streets, const CrowdGraph
             splits.push_back({best, bestT, foot});
         }
         if (foot == n) continue;
-        BuildEdge j = be;
+        // The join walks out of the loose street's mouth: its band, not the street it stops on. (A copy of that one's
+        // band put walkers on a lane's 7 m stub into RD-01 at RD-01's pavement offset, 4.7 m off the lane's centre line
+        // and against the block beside its 4.6 m mouth, while their wall clearance, measured in the stub's own frame,
+        // read 2.3 m.) Its pavement side keeps the street's: the join runs on from n, so a street that starts there
+        // runs the other way.
+        const BuildEdge& o = edges[own[n]];
+        BuildEdge j = o;
         j.a = n;
         j.b = foot;
+        j.side = static_cast<std::int8_t>(o.b == n ? o.side : -o.side);
         j.dead = false;
         joins.push_back(j);
     }

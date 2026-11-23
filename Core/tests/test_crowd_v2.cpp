@@ -1808,3 +1808,56 @@ TEST_CASE("crowd S-271: placement keeps kCrowdWallAccept past wallInset, after a
     CHECK(least >= margin);
     CHECK(under == 0u);
 }
+
+// A narrow lane that stops on a wide paved road's frontage, as the strip's mouth lanes stop on RD-01: the join from its
+// end to the road's centre line walked the road's band (RD-01's pavement offset), so a walker on it stood beside the
+// lane's mouth, against the block there, while its wall clearance (in the join's own frame) read well clear. Measured
+// here in plan against the blocks themselves: two quadrants either side of the lane, x < -7, |y| > 2.3, and the road's
+// far frontage at x 7.
+TEST_CASE("crowd graph: a lane's join onto a wide road walks the lane's band, clear of the blocks beside its mouth") {
+    const CrowdGraphTuning gt = loose();
+    CrowdStreet road = paved({{0.f, -60.f}, {0.f, 60.f}}, 3.5f);
+    road.width = 14.f;
+    std::vector<CrowdStreet> s{road, line({-40.f, 0.f}, {-7.f, 0.f}, 4.6f, "core_lane")};
+    CrowdGraph g;
+    REQUIRE(g.build(s, gt));
+    const std::uint32_t mouth = nodeAt(g, {-7.f, 0.f}), foot = nodeAt(g, {0.f, 0.f});
+    REQUIRE(mouth != UINT32_MAX);
+    REQUIRE(foot != UINT32_MAX);
+    const CrowdEdge* j = g.find(mouth, foot);
+    REQUIRE(j);
+    CHECK(j->half == doctest::Approx(2.3f));
+    CHECK(j->lane == 0.f);
+    CHECK(j->laneHalf == doctest::Approx(2.3f - std::max(gt.edgeMargin, gt.wallInset + kCrowdWallSlack)));
+    CHECK(j->side == 0);
+
+    auto clearance = [](Vec2 p) {
+        auto quad = [&](float sy) { // the block x < -7, sy * y > 2.3
+            const float dx = std::max(0.f, p.x + 7.f), dy = std::max(0.f, 2.3f - sy * p.y);
+            return dx == 0.f && dy == 0.f ? -std::min(-7.f - p.x, sy * p.y - 2.3f) : std::hypot(dx, dy);
+        };
+        return std::min({quad(1.f), quad(-1.f), 7.f - p.x});
+    };
+    CrowdTuning t;
+    t.maxAgents = t.targetAgents = 60;
+    float least = 1e30f;
+    std::uint64_t under = 0, seen = 0;
+    for (const std::uint32_t seed : {1u, 2u, 3u}) {
+        CrowdSim sim;
+        REQUIRE(sim.init(g, t, seed));
+        for (int i = 0; i < 15 * 120; ++i) {
+            sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+            for (std::uint32_t m = 0; m < sim.capacity(); ++m) {
+                const CrowdAgentView& v = sim.agent(m);
+                if (!v.live || v.indoors || std::fabs(v.pos.y) > 55.f || v.pos.x < -38.f) continue; // the dead ends' own walls aren't modelled
+                const float c = clearance(v.pos);
+                if (std::fabs(v.pos.y) < 8.f && v.pos.x < -1.f) ++seen; // about the mouth
+                least = std::min(least, c);
+                under += c < gt.wallInset - 1e-3f;
+            }
+        }
+    }
+    INFO("least plan clearance to the blocks " << least << " m, member-steps under wallInset " << under << ", member-steps by the mouth " << seen);
+    CHECK(seen > 1000u);
+    CHECK(under == 0u);
+}
