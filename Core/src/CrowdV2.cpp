@@ -2755,17 +2755,30 @@ CrowdKeepVerdict crowdKeepVerdict(bool streetNear, bool groundFound, double grou
     return crowdMassAtFeet(zMin, zMax, groundZ) ? CrowdKeepVerdict::Kept : CrowdKeepVerdict::OffWindow;
 }
 
+bool crowdCarLineOk(float runMinCar, std::uint32_t carsDropped, std::uint32_t carsKept, bool carsExpected) {
+    return runMinCar >= 0.f && carsDropped == 0 && (!carsExpected || carsKept > 0);
+}
+
 std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body) {
+    std::size_t highest = n; // the highest top that is not a vehicle's (n: none; 0 when n is 0)
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!hits[i].vehicle) {
+            highest = i;
+            break;
+        }
+    }
     for (std::size_t i = n; i-- > 0;) {
-        if (!hits[i].clearUp) continue;
-        if (i > 0 && hits[i - 1].z - hits[i].z < body) continue;
+        if (hits[i].vehicle || !hits[i].clearUp) continue;
+        std::size_t above = i; // the next top above that is not a vehicle's (i when none is)
+        while (above > 0 && hits[above - 1].vehicle) --above;
+        if (above > 0 && hits[above - 1].z - hits[i].z < body) continue;
         return i;
     }
-    return 0;
+    return highest;
 }
 
 bool crowdGroundTake(const CrowdGroundLine& line, double heldZ, double stepUp, double& z) {
-    if (!line.hit || line.startInside || line.z - heldZ > stepUp) return false;
+    if (!line.hit || line.startInside || line.vehicle || line.z - heldZ > stepUp) return false;
     z = line.z;
     return true;
 }

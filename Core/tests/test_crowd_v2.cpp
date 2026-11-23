@@ -2091,6 +2091,15 @@ TEST_CASE("crowd keep-outs: the sim's early reject keeps a box near only a wide 
     CHECK(sim.setKeepOuts({nearWide}) == 1u);
     CHECK(sim.setKeepOuts({farBox}) == 0u);
 }
+TEST_CASE("crowd keep-outs: the car line fails on a dropped car box and, where cars are expected, on none") {
+    // Old line: runMinCar >= 0 only. Each check below that expects false passed under it.
+    CHECK(crowdCarLineOk(0.25f, 0, 40, true));
+    CHECK(crowdCarLineOk(0.f, 0, 40, true));
+    CHECK_FALSE(crowdCarLineOk(-0.01f, 0, 40, true));
+    CHECK_FALSE(crowdCarLineOk(0.25f, 1, 40, true)); // a car by a street dropped: measured by nothing
+    CHECK_FALSE(crowdCarLineOk(1e9f, 0, 0, true));   // no car box kept on a map with parked cars: nothing measured
+    CHECK(crowdCarLineOk(1e9f, 0, 0, false));        // a map with no cars (an arena): nothing to measure
+}
 TEST_CASE("crowd keep-outs: a street that ends by a long side between its corners is found, and only within reach") {
     // A lane (x 16) ends 14 m below a 60 m facade (x 1..61, y 19..21), at its quarter point. Its corners and side
     // middles are all over 20 m from the lane's end: sampled there only, the facade would have no street near.

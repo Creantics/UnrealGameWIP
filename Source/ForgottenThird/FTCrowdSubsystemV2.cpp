@@ -94,12 +94,25 @@ constexpr double kMassMaxSide = 30000.0;
 constexpr double kMassCell = 1000.0;
 // Where the ground under the streets is logged (engine cm), unless -CrowdGroundAt=X,Y says elsewhere.
 constexpr double kGroundAtX = 0.0, kGroundAtY = 31050.0;
-// Keep-outs: a Wall box's gap is the wall gate's plus a centimetre, so a member at the keep-out's edge still passes it.
-// A box is looked for a street this far (m) past its half diagonal (Core drops boxes farther than a street's half
-// width + gap + 1 m from it).
+// Keep-outs: members keep this far off a parked car's box (m; the car line passes at 0 or more), and a Wall box's gap
+// is the wall gate's plus a centimetre, so a member at the keep-out's edge still passes it. A box is looked for a street
+// this far (m) past its half diagonal (Core drops boxes farther than a street's half width + gap + 1 m from it).
+constexpr float kCarGap = 0.30f;
 constexpr float kWallKeepGap = static_cast<float>(kGapWall) + 0.01f;
 constexpr float kKeepReach = 15.f;
 constexpr int32 kKeepOverNamed = 20; // boxes over their own street point not kept, named in the log (the first few)
+
+bool HasVehicleTag(const TArray<FName>& Tags)
+{
+	for (const FName& T : Tags)
+	{
+		if (T.ToString().StartsWith(TEXT("FTVehicle_")))
+		{
+			return true;
+		}
+	}
+	return false;
+}
 
 FString CrowdObjectPath(const FString& Path)
 {
@@ -1028,6 +1041,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			if (Sim.agent(i).live)
 			{
 				RunMinWall = FMath::Min(RunMinWall, FMath::Min(Sim.wallClearance(i), Sim.keepClearance(i, ftcore::crowdv2::CrowdKeepKind::Wall)));
+				RunMinCar = FMath::Min(RunMinCar, Sim.keepClearance(i, ftcore::crowdv2::CrowdKeepKind::Car));
 			}
 		}
 	}
@@ -1116,6 +1130,14 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		const bool bWalls = static_cast<double>(RunMinWall) >= CrowdV2Local::kGapWall;
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.6f m unrounded (%s, passes at %.1f m or more), every frame, every state."),
 			RunMinPair, bPairs ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapPair, RunMinWall, bWalls ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall);
+		// The line reads only kept car boxes, so a car by a street that SetKeepOuts dropped fails it too (else a dropped
+		// car would pass unmeasured).
+		// Core's rule (crowdCarLineOk). -CrowdCarsExpected (a map with parked cars, the Solhaven strip) also fails a run
+		// with no car box kept: nothing was measured (the vehicle tags are missing, or no car stands by a street).
+		const bool bCarsExpected = FParse::Param(FCommandLine::Get(), TEXT("CrowdCarsExpected"));
+		const bool bCars = ftcore::crowdv2::crowdCarLineOk(RunMinCar, static_cast<uint32>(CarsDropped), static_cast<uint32>(CarsKept), bCarsExpected);
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance from a member to a parked car's box %.6f m unrounded (%s, passes at 0 or more, no car box by a street dropped%s; %d car boxes, %d kept, %d dropped, %u keep-outs), every frame."),
+			RunMinCar, !bCars ? TEXT("FAILED") : CarsKept == 0 ? TEXT("ok, NOT MEASURED: no car box kept; on a map with parked cars run with -CrowdCarsExpected") : TEXT("ok"), bCarsExpected ? TEXT(", at least one car box kept") : TEXT(""), CarBoxes.Num(), CarsKept, CarsDropped, Sim.keepOutCount());
 		if (MinPairTime >= 0.0)
 		{
 			const ftcore::Vec2 Fight = CrowdV2Local::ToSim(TestFightPoint);
@@ -1144,7 +1166,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: stills %d of %d (%s); cameras on the fight %s; the crowd back in view at +30 s %s."), ShotIndex, Shots.Num(),
 				bStills ? TEXT("ok") : TEXT("FAILED"), bCamsOk ? TEXT("ok") : TEXT("FAILED"), bRefillOk ? TEXT("ok") : TEXT("FAILED"));
 		}
-		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bStills && bCamsOk && bRefillOk &&
+		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bCars && bStills && bCamsOk && bRefillOk &&
 			bNoSlowRun && bNoKnot && bNoPops;
 		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
 		if (!bStimulus)
@@ -1334,6 +1356,7 @@ void UFTCrowdSubsystemV2::Draw()
 			Line.hit = World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, CrowdV2Local::kGroundUp), At - FVector(0.0, 0.0, CrowdV2Local::kGroundDown), ECC_Visibility, TraceQuery);
 			Line.startInside = Line.hit && Hit.bStartPenetrating;
 			Line.z = Hit.ImpactPoint.Z;
+			Line.vehicle = Line.hit && Hit.GetComponent() && VehicleComps.Contains(FObjectKey(Hit.GetComponent()));
 			Found = ftcore::crowdv2::crowdGroundTake(Line, PoolGround[k], CrowdV2Local::kGroundStep, Z);
 		}
 		if (!Found)
@@ -1369,10 +1392,10 @@ void UFTCrowdSubsystemV2::Draw()
 bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double CentreZ, double& OutZ)
 {
 	// Every surface top under (X, Y) on one long line down, highest first (the same line again with each top's component
-	// ignored), then a short line up from just above each top: a body's height, with the plain query, so a slab over it
-	// or a start inside a solid reads as not clear. Core picks the ground (crowdPickGround): the street under a corridor
-	// or balcony slab, not the slab's top. TraceQuery ignores actors only; the components added here stay within the
-	// list's inline 8 and are cleared before the lines up, so no heap.
+	// ignored), then a short line up from just above each top: a body's height, ignoring only the vehicles the line down
+	// met, so a slab over it or a start inside a solid reads as not clear (a car over the street does not). Core picks the
+	// ground (crowdPickGround): the street under a corridor or balcony slab, not the slab's top. TraceQuery ignores actors
+	// only; the components added here stay within the list's inline 8 and are cleared after each pass, so no heap.
 	UWorld* World = GetWorld();
 	ftcore::crowdv2::CrowdGroundHit Hits[ftcore::crowdv2::kCrowdGroundHitsMax];
 	const UPrimitiveComponent* By[ftcore::crowdv2::kCrowdGroundHitsMax] = {};
@@ -1388,6 +1411,7 @@ bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double Cen
 		}
 		const UPrimitiveComponent* C = H.GetComponent();
 		By[N] = C;
+		Hits[N].vehicle = C && VehicleComps.Contains(FObjectKey(C));
 		Hits[N++].z = H.ImpactPoint.Z;
 		if (!C || N == ftcore::crowdv2::kCrowdGroundHitsMax)
 		{
@@ -1400,13 +1424,28 @@ bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double Cen
 	{
 		return false;
 	}
+	// The lines up pass through the vehicles the line down met: a car's body over the street does not make the street
+	// "not clear" (the car is a keep-out and its top is never ground). Within the list's inline 8, cleared after.
+	for (size_t i = 0; i < N; ++i)
+	{
+		if (Hits[i].vehicle && By[i])
+		{
+			TraceQuery.AddIgnoredComponent(By[i]);
+		}
+	}
 	for (size_t i = 0; i < N; ++i)
 	{
 		FHitResult Up;
 		const FVector Start(X, Y, Hits[i].z + CrowdV2Local::kGroundClearStart);
 		Hits[i].clearUp = !World->LineTraceSingleByChannel(Up, Start, FVector(X, Y, Hits[i].z + CrowdV2Local::kGroundBody), ECC_Visibility, TraceQuery);
 	}
+	TraceQuery.ClearIgnoredComponents();
+	// A vehicle's top is never ground: every top a vehicle's (N) finds none.
 	const size_t Pick = ftcore::crowdv2::crowdPickGround(Hits, N, CrowdV2Local::kGroundBody);
+	if (Pick >= N)
+	{
+		return false;
+	}
 	OutZ = Hits[Pick].z;
 	// Log only, capped, members only (not the keep-outs' load-time looks, Slot INDEX_NONE): a ground that is not the
 	// first top (what was skipped). A skipped top that is a deck, quay or bridge a street runs on is where this pick is wrong.
@@ -1701,6 +1740,7 @@ void UFTCrowdSubsystemV2::BuildMassing()
 {
 	// The buildings' massing boxes: every static mesh (and instance) tall and wide enough to be one by its render bounds;
 	// the box checked is ftcore's crowdMassingBox (its simple collision's bounds when it has any, else its render bounds).
+	// Also the vehicles (VehicleComps) and their boxes (CarBoxes), whatever their size. SetKeepOuts reads both.
 	UWorld* World = GetWorld();
 	int32 Colls = 0;
 	auto Add = [this, &Colls](const FBox& Local, const FBox* Coll, const FTransform& X, const UStaticMeshComponent* Comp, int32 Instance)
@@ -1763,6 +1803,35 @@ void UFTCrowdSubsystemV2::BuildMassing()
 			}
 		}
 	};
+	// A parked car's box: its simple collision's bounds when it has any, else its render bounds (no size floor).
+	auto AddCar = [this](const FBox& Local, const FBox* Coll, const FTransform& X, const UStaticMeshComponent* Comp, int32 Instance)
+	{
+		const FVector Scale = X.GetScale3D().GetAbs();
+		const FBox& B = Coll ? *Coll : Local;
+		const FVector C = X.TransformPosition(B.GetCenter());
+		const FVector H = B.GetExtent() * Scale;
+		const FVector RC = X.TransformPosition(Local.GetCenter());
+		const FVector RH = Local.GetExtent() * Scale;
+		FVector2D Ax(X.GetUnitAxis(EAxis::X).X, X.GetUnitAxis(EAxis::X).Y);
+		if (!Ax.Normalize())
+		{
+			Ax = FVector2D(1.0, 0.0);
+		}
+		FMassBox M;
+		M.C = FVector2D(C.X, C.Y);
+		M.Ax = Ax;
+		M.Half = FVector2D(H.X, H.Y);
+		M.ZMin = C.Z - H.Z;
+		M.ZMax = C.Z + H.Z;
+		M.RC = FVector2D(RC.X, RC.Y);
+		M.RHalf = FVector2D(RH.X, RH.Y);
+		M.RZMin = RC.Z - RH.Z;
+		M.RZMax = RC.Z + RH.Z;
+		M.bColl = Coll != nullptr;
+		M.Comp = Comp;
+		M.Instance = Instance;
+		CarBoxes.Add(M);
+	};
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		const AActor* Actor = *It;
@@ -1770,6 +1839,7 @@ void UFTCrowdSubsystemV2::BuildMassing()
 		{
 			continue;
 		}
+		const bool bVehicleActor = CrowdV2Local::HasVehicleTag(Actor->Tags);
 		TInlineComponentArray<UStaticMeshComponent*> Comps(Actor);
 		for (const UStaticMeshComponent* C : Comps)
 		{
@@ -1777,6 +1847,11 @@ void UFTCrowdSubsystemV2::BuildMassing()
 			if (!Mesh || C->GetClass()->GetName().Contains(TEXT("Foliage")) || !C->IsCollisionEnabled())
 			{
 				continue;
+			}
+			const bool bVehicle = bVehicleActor || CrowdV2Local::HasVehicleTag(C->ComponentTags);
+			if (bVehicle)
+			{
+				VehicleComps.Add(FObjectKey(C));
 			}
 			const FBox Local = Mesh->GetBoundingBox();
 			// Simple collision, when the mesh has any and queries use it (not complex as simple).
@@ -1795,24 +1870,32 @@ void UFTCrowdSubsystemV2::BuildMassing()
 					if (I->GetInstanceTransform(n, X, true))
 					{
 						Add(Local, Coll, X, C, n);
+						if (bVehicle)
+						{
+							AddCar(Local, Coll, X, C, n);
+						}
 					}
 				}
 			}
 			else
 			{
 				Add(Local, Coll, C->GetComponentTransform(), C, INDEX_NONE);
+				if (bVehicle)
+				{
+					AddCar(Local, Coll, C->GetComponentTransform(), C, INDEX_NONE);
+				}
 			}
 		}
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide by render bounds; %d checked by their simple collision's bounds, the rest by render bounds), %d grid cells."), MassBoxes.Num(),
-		CrowdV2Local::kMassMinHeight / 100.0, CrowdV2Local::kMassMinSide / 100.0, Colls, MassGrid.Num());
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide by render bounds; %d checked by their simple collision's bounds, the rest by render bounds), %d grid cells; %d vehicle components, %d vehicle boxes."), MassBoxes.Num(),
+		CrowdV2Local::kMassMinHeight / 100.0, CrowdV2Local::kMassMinSide / 100.0, Colls, MassGrid.Num(), VehicleComps.Num(), CarBoxes.Num());
 }
 
 void UFTCrowdSubsystemV2::SetKeepOuts()
 {
-	// Each massing box whose height window holds the ground at the street point nearest it (where the footprint check
-	// would measure a member walking there) becomes a Wall keep-out (gap kWallKeepGap, the wall gate's: a front on the
-	// pavement, a tree's trunk). Load time: one first-ground look a box near a street.
+	// Each car box, and each massing box whose height window holds the ground at the street point nearest it (where the
+	// footprint check would measure a member walking there), becomes a keep-out: Car (gap kCarGap) or Wall (kWallKeepGap,
+	// the wall gate's: a front on the pavement, a tree's trunk). Load time: one first-ground look a box near a street.
 	// -CrowdKeepWhy=a,b: the verdict for each box whose actor, component or mesh name holds any of those.
 	TArray<FString> WhyNames;
 	FString Why;
@@ -1821,7 +1904,9 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 		Why.ParseIntoArray(WhyNames, TEXT(","));
 	}
 	std::vector<ftcore::crowdv2::CrowdKeepOut> Keeps;
-	int32 Far = 0, NoGround = 0, OffWindow = 0, OverPoint = 0, Walls = 0, OverNamed = 0, OverDropped = 0;
+	int32 Far = 0, NoGround = 0, OffWindow = 0, OverPoint = 0, Cars = 0, Walls = 0, OverNamed = 0, OverDropped = 0;
+	CarsDropped = 0;
+	CarsKept = 0;
 	auto Consider = [&](const FMassBox& M, ftcore::crowdv2::CrowdKeepKind Kind)
 	{
 		ftcore::crowdv2::CrowdKeepOut K;
@@ -1831,7 +1916,7 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 		K.hx = static_cast<float>(M.Half.X / 100.0);
 		K.hy = static_cast<float>(M.Half.Y / 100.0);
 		K.kind = Kind;
-		K.gap = CrowdV2Local::kWallKeepGap;
+		K.gap = Kind == ftcore::crowdv2::CrowdKeepKind::Car ? CrowdV2Local::kCarGap : CrowdV2Local::kWallKeepGap;
 		// Core decides (crowdKeepStreetPoint: the street point nearest the box, from points round its sides 1 m apart;
 		// crowdKeepVerdict: street, ground, then the feet's window). The host only traces the ground there.
 		double GroundZ = 0.0;
@@ -1856,6 +1941,7 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 			UE_LOG(LogForgottenThird, Warning, TEXT("Crowd: box over its own street point not kept: %s; centre (%.2f, %.2f) m, z %.0f to %.0f cm, ground z %.1f cm."),
 				*BoxName(M), K.c.x, K.c.y, M.ZMin, M.ZMax, GroundZ);
 		}
+		const bool bCar = Kind == ftcore::crowdv2::CrowdKeepKind::Car;
 		const TCHAR* Verdict = TEXT("kept");
 		switch (V)
 		{
@@ -1866,15 +1952,23 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 		case ftcore::crowdv2::CrowdKeepVerdict::NoGround:
 			Verdict = TEXT("no ground at its street point");
 			++NoGround;
+			CarsDropped += bCar ? 1 : 0;
 			break;
 		case ftcore::crowdv2::CrowdKeepVerdict::OffWindow:
 			Verdict = TEXT("not at the feet's height there");
 			++OffWindow;
+			CarsDropped += bCar ? 1 : 0;
 			break;
 		case ftcore::crowdv2::CrowdKeepVerdict::Kept:
 			Keeps.push_back(K);
-			++Walls;
+			(bCar ? Cars : Walls) += 1;
 			break;
+		}
+		if (bCar && bStreet && V != ftcore::crowdv2::CrowdKeepVerdict::Kept)
+		{
+			// A car by a street the crowd does not keep out of: the car line fails on it (CarsDropped).
+			UE_LOG(LogForgottenThird, Warning, TEXT("Crowd: car box by a street not kept: %s: %s; centre (%.2f, %.2f) m, z %.0f to %.0f cm, ground z %.1f cm."),
+				*BoxName(M), Verdict, K.c.x, K.c.y, M.ZMin, M.ZMax, GroundZ);
 		}
 		if (WhyNames.Num() > 0)
 		{
@@ -1884,19 +1978,24 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 				if (!W.IsEmpty() && Name.Contains(W))
 				{
 					UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-out why: %s (%s): %s; centre (%.2f, %.2f) m, half (%.2f, %.2f) m, z %.0f to %.0f cm; street point (%.2f, %.2f) m, ground z %.1f cm."),
-						*Name, Kind == ftcore::crowdv2::CrowdKeepKind::Car ? TEXT("car") : TEXT("wall"), Verdict, K.c.x, K.c.y, K.hx, K.hy, M.ZMin, M.ZMax, At.x, At.y, GroundZ);
+						*Name, bCar ? TEXT("car") : TEXT("wall"), Verdict, K.c.x, K.c.y, K.hx, K.hy, M.ZMin, M.ZMax, At.x, At.y, GroundZ);
 					break;
 				}
 			}
 		}
 	};
+	for (const FMassBox& M : CarBoxes)
+	{
+		Consider(M, ftcore::crowdv2::CrowdKeepKind::Car);
+	}
 	for (const FMassBox& M : MassBoxes)
 	{
 		Consider(M, ftcore::crowdv2::CrowdKeepKind::Wall);
 	}
 	const uint32 Kept = Sim.setKeepOuts(Keeps);
-	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-outs: %d massing boxes; %d walls at the feet's height by a street; %d boxes over their own street point (any verdict; %d of them not kept, a member there is still caught by the footprint line), %d with no street near, %d with no ground at it, %d not at the feet's height; %u kept by the sim; %u sides closed, %u streets shut, %u narrows, %u doors under a keep-out."),
-		MassBoxes.Num(), Walls, OverPoint, OverDropped, Far, NoGround, OffWindow, Kept, Sim.closedSides(), Sim.closedStreets(), Sim.narrowCount(), Sim.doorsUnderKeep());
+	CarsKept = Cars;
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-outs: %d car boxes, %d massing boxes; %d cars and %d walls at the feet's height by a street; %d boxes over their own street point (any verdict; %d of them not kept, a member there is still caught by the footprint line), %d with no street near, %d with no ground at it, %d not at the feet's height; %u kept by the sim; %u sides closed, %u streets shut, %u narrows, %u doors under a keep-out."),
+		CarBoxes.Num(), MassBoxes.Num(), Cars, Walls, OverPoint, OverDropped, Far, NoGround, OffWindow, Kept, Sim.closedSides(), Sim.closedStreets(), Sim.narrowCount(), Sim.doorsUnderKeep());
 }
 
 // A knot over the gate: who stands in it (state, speed, metres from the fight), so a failed run says why.

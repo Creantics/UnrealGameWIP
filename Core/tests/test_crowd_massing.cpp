@@ -96,9 +96,9 @@ TEST_CASE("crowd ground: under a slab over the street the ground is the street, 
     // slab. The host's surfaces under each, top down (cm): the slab's top, the street's slab, the landscape 0.18 m under
     // that (its line up starts inside the street's slab, so it is not clear).
     const double body = 180.0;
-    const CrowdGroundHit corridor[] = {{1350.6, true}, {541.6, true}, {523.7, false}};
+    const CrowdGroundHit corridor[] = {{1350.6, true, false}, {541.6, true, false}, {523.7, false, false}};
     CHECK(crowdPickGround(corridor, 3, body) == 1);
-    const CrowdGroundHit balcony[] = {{2078.6, true}, {668.6, true}, {650.5, false}};
+    const CrowdGroundHit balcony[] = {{2078.6, true, false}, {668.6, true, false}, {650.5, false, false}};
     CHECK(crowdPickGround(balcony, 3, body) == 1);
     // The first top is what the host took before: the slab.
     CHECK(crowdPickGround(corridor, 3, body) != 0);
@@ -107,11 +107,11 @@ TEST_CASE("crowd ground: under a slab over the street the ground is the street, 
 TEST_CASE("crowd ground: a solid block keeps its top; one surface is itself; none is 0") {
     const double body = 180.0;
     // A building's box down to the street: the line up from the street's top starts inside the box.
-    const CrowdGroundHit block[] = {{1350.6, true}, {541.6, false}, {523.7, false}};
+    const CrowdGroundHit block[] = {{1350.6, true, false}, {541.6, false, false}, {523.7, false, false}};
     CHECK(crowdPickGround(block, 3, body) == 0);
-    const CrowdGroundHit one[] = {{541.6, true}};
+    const CrowdGroundHit one[] = {{541.6, true, false}};
     CHECK(crowdPickGround(one, 1, body) == 0);
-    const CrowdGroundHit blocked[] = {{541.6, false}};
+    const CrowdGroundHit blocked[] = {{541.6, false, false}};
     CHECK(crowdPickGround(blocked, 1, body) == 0);
     CHECK(crowdPickGround(nullptr, 0, body) == 0);
 }
@@ -119,13 +119,13 @@ TEST_CASE("crowd ground: a solid block keeps its top; one surface is itself; non
 TEST_CASE("crowd ground: a top less than a body under the next top is not ground, even when its line up reads clear") {
     // A one-sided plane 1 m over the street: a line up from under it passes through, so only the gap tells.
     const double body = 180.0;
-    const CrowdGroundHit plane[] = {{641.6, true}, {541.6, true}, {523.7, false}};
+    const CrowdGroundHit plane[] = {{641.6, true, false}, {541.6, true, false}, {523.7, false, false}};
     CHECK(crowdPickGround(plane, 3, body) == 0);
     // At exactly a body's height it is ground.
-    const CrowdGroundHit room[] = {{721.6, true}, {541.6, true}, {523.7, false}};
+    const CrowdGroundHit room[] = {{721.6, true, false}, {541.6, true, false}, {523.7, false, false}};
     CHECK(crowdPickGround(room, 3, body) == 1);
     // Two clear storeys under a roof: the lowest clear one.
-    const CrowdGroundHit storeys[] = {{1500.0, true}, {1000.0, true}, {500.0, true}, {480.0, false}};
+    const CrowdGroundHit storeys[] = {{1500.0, true, false}, {1000.0, true, false}, {500.0, true, false}, {480.0, false, false}};
     CHECK(crowdPickGround(storeys, 4, body) == 2);
 }
 
@@ -147,8 +147,8 @@ struct Ledge {
     double firstGround(double x) const {
         CrowdGroundHit h[2];
         std::size_t n = 0;
-        if (x >= x0 && x <= x1) h[n++] = {top, true};
-        h[n++] = {ground, true};
+        if (x >= x0 && x <= x1) h[n++] = {top, true, false};
+        h[n++] = {ground, true, false};
         return h[crowdPickGround(h, n, 180.0)].z;
     }
     bool under(double x, double feet) const { // a surface at the feet (within 1 cm)
@@ -216,18 +216,45 @@ TEST_CASE("crowd ground: a member walking off a roof or a car's top is drawn on 
     // or a start inside a solid looks again.
     double z = 0.0;
     CHECK_FALSE(crowdGroundTake(CrowdGroundLine{}, 1215.0, 60.0, z));
-    CHECK(crowdGroundTake(CrowdGroundLine{true, false, 409.0}, 1215.0, 60.0, z));
+    CHECK(crowdGroundTake(CrowdGroundLine{true, false, 409.0, false}, 1215.0, 60.0, z));
     CHECK(z == 409.0);
-    CHECK(crowdGroundTake(CrowdGroundLine{true, false, 469.0}, 409.0, 60.0, z));
+    CHECK(crowdGroundTake(CrowdGroundLine{true, false, 469.0, false}, 409.0, 60.0, z));
     CHECK(z == 469.0);
-    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{true, false, 469.5}, 409.0, 60.0, z));
-    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{true, true, 409.0}, 409.0, 60.0, z));
+    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{true, false, 469.5, false}, 409.0, 60.0, z));
+    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{true, true, 409.0, false}, 409.0, 60.0, z));
     // The drawn point is the lerp the host draws at.
     CrowdAgentView v;
     v.prevPos = {1.f, 2.f};
     v.pos = {3.f, 6.f};
     CHECK(crowdDrawnPoint(v, 0.25f).x == doctest::Approx(1.5f));
     CHECK(crowdDrawnPoint(v, 0.25f).y == doctest::Approx(3.f));
+}
+
+TEST_CASE("crowd ground: a vehicle's top is never ground, nor the top over the street") {
+    // The p83 run (dd4d1092): 30 members first grounded on parked kei cars' roofs. Under a car's roof the street's line up
+    // meets the car's underside, so it is not clear, and the old pick fell back to the highest top: the roof.
+    const double body = 180.0;
+    const CrowdGroundHit car[] = {{690.0, true, true}, {541.6, false, false}, {523.7, false, false}};
+    CHECK(crowdPickGround(car, 3, body) == 1);
+    CrowdGroundHit asOld[3] = {car[0], car[1], car[2]};
+    asOld[0].vehicle = false;
+    CHECK(crowdPickGround(asOld, 3, body) == 0); // the same tops unmarked: the roof, as before
+    // A car's roof under a slab: not the top over the street either (the street is a body under the slab).
+    const CrowdGroundHit slab[] = {{1350.6, true, false}, {690.0, true, true}, {541.6, true, false}, {523.7, false, false}};
+    CHECK(crowdPickGround(slab, 4, body) == 2);
+    CrowdGroundHit slabOld[4] = {slab[0], slab[1], slab[2], slab[3]};
+    slabOld[1].vehicle = false;
+    CHECK(crowdPickGround(slabOld, 4, body) == 1);
+    // Every top a vehicle's: no ground (n); none at all: 0.
+    const CrowdGroundHit cars[] = {{690.0, true, true}, {640.0, false, true}};
+    CHECK(crowdPickGround(cars, 2, body) == 2);
+    CHECK(crowdPickGround(nullptr, 0, body) == 0);
+    // The drawn line: a bonnet within a step of the street is not taken; the long look finds the street.
+    double z = 541.6;
+    CHECK(crowdGroundTake(CrowdGroundLine{true, false, 590.0, false}, 541.6, 60.0, z));
+    z = 541.6;
+    CHECK_FALSE(crowdGroundTake(CrowdGroundLine{true, false, 590.0, true}, 541.6, 60.0, z));
+    CHECK(z == 541.6);
 }
 
 TEST_CASE("crowd ground: a massing box counts at the feet from half a metre under it to 30 cm under its top") {

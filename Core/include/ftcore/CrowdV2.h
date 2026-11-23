@@ -438,28 +438,32 @@ FTCORE_API double crowdBoxClearance(const CrowdMassBox& box, double axX, double 
 // A member's first ground (host: one line down from high up meets several surface tops). Under a corridor or balcony
 // slab over the street the first top is the slab's, so the ground is not simply the first. Each top (cm), highest
 // first: `z`, and `clearUp` true when the host's short line up from just above it (a body's height) met nothing, a line
-// that starts inside a solid counting as met.
+// that starts inside a solid counting as met. `vehicle`: the top is a vehicle's (a parked car's roof or bonnet).
 struct CrowdGroundHit {
     double z = 0.0;
     bool clearUp = false;
+    bool vehicle = false;
 };
 inline constexpr std::size_t kCrowdGroundHitsMax = 8;
 // The index of the ground: the lowest top that is clear up and has at least `body` (cm) to the next top above it;
-// when none is, the highest (0). 0 when n is 0.
+// when none is, the highest. 0 when n is 0. Vehicle tops are left out as if the line had not met them: never the
+// ground, never the top above another. n when every top is a vehicle's (no ground there: the host gives none).
 FTCORE_API std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body);
 
 // A drawn member's ground, every frame (host): one line down at the point it is drawn at (crowdDrawnPoint), from a
 // little over the ground it has to well under it. What the line met: `hit`, the top's `z` (cm), and `startInside` when
-// it started inside a solid (met where it starts).
+// it started inside a solid (met where it starts), and `vehicle` when the top is a vehicle's.
 struct CrowdGroundLine {
     bool hit = false;
     bool startInside = false;
     double z = 0.0;
+    bool vehicle = false;
 };
 // True when that top is the ground (`z` set to it): no more than `stepUp` (cm) over `heldZ`, or any way down. False when
 // the long look (the host's crowdPickGround lines) must find it again: the line met nothing (a roof's or a car's edge
-// past, the street further down than the line reaches), more than a step up (a slab over it), or it started inside a
-// solid. Never the height it had: kept past a top's edge, that height left members drawn standing on nothing.
+// past, the street further down than the line reaches), more than a step up (a slab over it), it started inside a
+// solid, or it met a vehicle (never ground: a car's bonnet is within a step of the street). Never the height it had:
+// kept past a top's edge, that height left members drawn standing on nothing.
 FTCORE_API bool crowdGroundTake(const CrowdGroundLine& line, double heldZ, double stepUp, double& z);
 // A massing box's height window (cm): a member's feet at `feetZ` are round the box's height, so its footprint counts
 // (in it, or how far from it), from kCrowdMassFeetUnder under its bottom to kCrowdMassFeetTop under its top (feet on or
@@ -499,6 +503,11 @@ FTCORE_API bool crowdKeepStreetPoint(const CrowdGraph& g, const CrowdKeepOut& k,
 // window starts over that ground (an upper storey, a roof) is OffWindow, never a keep-out. Same rule for Wall and Car.
 enum class CrowdKeepVerdict : std::uint8_t { Kept, NoStreet, NoGround, OffWindow };
 FTCORE_API CrowdKeepVerdict crowdKeepVerdict(bool streetNear, bool groundFound, double groundZ, double zMin, double zMax);
+// The car line: the least plan distance from a member to a kept car box (`runMinCar` m, every frame) is 0 or more, no
+// car box by a street was dropped (`carsDropped`: the least reads kept boxes only, so a dropped one would pass
+// unmeasured), and, on a map that has parked cars (`carsExpected`), at least one car box was kept (`carsKept`: none
+// means nothing was measured: the vehicle tags are missing, or no car stands by a street).
+FTCORE_API bool crowdCarLineOk(float runMinCar, std::uint32_t carsDropped, std::uint32_t carsKept, bool carsExpected);
 // A stretch across a street (m along its left normal), open or shut.
 struct CrowdKeepSpan {
     float lo = 0.f, hi = 0.f;

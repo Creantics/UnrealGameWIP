@@ -32,6 +32,7 @@
 #include "CollisionQueryParams.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Tickable.h"
+#include "UObject/ObjectKey.h"
 
 #include "ftcore/ArenaFight.h"
 #include "ftcore/CrowdV2.h"
@@ -87,8 +88,8 @@ private:
 	FViewCount CountInView(int32 Cam, TArray<uint32>* Ids) const;
 	bool Clear(const FVector& Eye, const FVector& To) const;
 	void BuildMassing();
-	// Keep-outs (after BuildMassing): each massing box (a front, a tree's trunk, a wall) whose height window (Core's
-	// crowdMassAtFeet, the footprint check's) holds the ground at its nearest street point.
+	// Keep-outs (after BuildMassing): each parked car's box, and each massing box (a front, a tree's trunk, a wall) whose
+	// height window (Core's crowdMassAtFeet, the footprint check's) holds the ground at its nearest street point.
 	void SetKeepOuts();
 	void RetestFootprint(int32 Slot, const FVector& Feet, int32 Box, double DepthCm);
 	void FootStill(APlayerController* PC);
@@ -148,6 +149,7 @@ private:
 	bool bRefillOk = true;
 	float RunMinPair = 1e9f;        // m, every frame
 	float RunMinWall = 1e9f;        // m, every frame: the street's frontage and the Wall keep-outs
+	float RunMinCar = 1e9f;         // m, every frame: the least plan distance to a parked car's box (passes at 0 or more)
 	// -Interiors=hero room visits (sized at setup). By member slot: its door phase last frame (0: not at a door), the
 	// door slot, its id, and when it took the door, reached its spot and left it. By door slot: the room's id, visits
 	// begun, spots reached, visits ended, and the longest visit (s).
@@ -186,6 +188,15 @@ private:
 	};
 	TArray<FMassBox> MassBoxes;
 	TMap<FIntPoint, TArray<int32>> MassGrid; // 10 m cells: boxes reaching within a metre of the cell
+	// Vehicles: components tagged FTVehicle_<kind> (an instanced group holds vehicles only: Cull::Car is in its key) or
+	// owned by an actor so tagged. Their tops are never ground (FirstGround, the drawn line); each instance's box (its
+	// simple collision's bounds, else its render bounds) is a Car keep-out. Weak keys: a freed component's address can
+	// come back as another component's, and FObjectKey tells them apart.
+	TSet<FObjectKey> VehicleComps;
+	TArray<FMassBox> CarBoxes;
+	int32 CarsKept = 0;    // car boxes SetKeepOuts kept (Core's verdict; the sim's own reject may still drop a far one):
+	                       // the car line measures only these, so with -CrowdCarsExpected none fails the run
+	int32 CarsDropped = 0; // car boxes by a street that SetKeepOuts did not keep: the car line fails on any
 	static FString BoxName(const FMassBox& M);
 	double MinMassClear = 1e9;              // cm, least distance from a drawn member's feet to a massing box
 	int32 MinMassBox = INDEX_NONE;          // the box and member that gave it (log only)
