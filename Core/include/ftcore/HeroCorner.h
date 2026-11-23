@@ -143,8 +143,9 @@ struct HeroCornerSpec {
     // deep, at padY0 and padY1), so the corner stands on setts padDeep deep over x padX0..padX1 (the canal's coping to
     // under the yards' front walls), y padY0..padY1, their top level with the lane's paving: the south and north aprons,
     // the alley behind the bays, and the lane's run under its paving (there at the ground, the paving over it). None
-    // under the bays, whose plinths stand on the ground.
-    double padX0 = 901.0, padX1 = 920.25, padY0 = 504.0, padY1 = 566.0, padDeep = 0.5;
+    // under the bays, whose plinths stand on the ground. padDeep is under 0.5 so the pad's foot sits above the crowd's
+    // roof check, whose trace starts half a metre under a member's feet (a deeper pad reads as a roof under the lane).
+    double padX0 = 901.0, padX1 = 920.25, padY0 = 504.0, padY1 = 566.0, padDeep = 0.4;
     // The camera.
     double eye[3] = {904.5, 511.0, 5.78};
     double at[3] = {904.5, 551.0, 3.68};

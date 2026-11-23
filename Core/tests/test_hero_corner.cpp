@@ -1149,6 +1149,9 @@ TEST_CASE("hero corner: the corner stands on its own ground, level with the lane
         CHECK(b.id == "HC-GROUND-" + std::to_string(i + 1));
         CHECK(b.kind == "paving");
         CHECK(b.z0 == doctest::Approx(g - spec.padDeep));
+        // Its foot above the crowd's roof trace start (half a metre under feet on the paving), so a member on the lane
+        // isn't read as standing on a roof.
+        CHECK(b.z0 > top - 0.5);
         // Inside the pad.
         CHECK(lo(b, 0) >= spec.padX0 - 1e-9);
         CHECK(hi(b, 0) <= spec.padX1 + 1e-9);
