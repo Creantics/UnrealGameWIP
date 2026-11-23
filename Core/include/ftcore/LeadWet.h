@@ -9,8 +9,8 @@
 //     kSkinWetRough by that amount times its wet mask (forehead, nose, cheekbones). No drips: nothing here makes any.
 // Skin and hair take the lead's surface wetness: the weather's or the lead's own water state's (WaterWetness::wetness,
 // from wading and swimming), whichever is wetter, the same rule as the weather's leadSurfaceWetness (ftcore/Weather.h).
-// w comes from ft.LeadWet: below 0 (the default, -1) follows the party's rain soak (LeadRain below), a value in 0..1
-// forces it (0 holds the leads dry whatever the weather). The night look's damp floor never wets a lead. Plain C++20, header only, no allocation.
+// w comes from ft.LeadWet: a value in 0..1 forces it (0, the default, holds the leads dry whatever the weather); below 0,
+// opt-in until the cover trace sees every shelter, follows the party's rain soak (LeadRain below). The night look's damp floor never wets a lead. Plain C++20, header only, no allocation.
 
 #include "ftcore/WaterBodies.h"
 #if __has_include("ftcore/Weather.h")
