@@ -3557,7 +3557,13 @@ struct ArenaFightImpl {
         }
         Vec2 vel{};
         const float span = a.startup + a.active;
-        if (span > kArenaEps && a.lunge != 0.f) {
+        if (a.lungeKnots >= 2 && a.lunge != 0.f) { // its curve (arenaLungeDistance), which may run into recovery
+            // on the move's own times: a retimed copy (an unseen windup, a boss break's) shifts it by what it gained
+            const ArenaLungeKnot* pool = def.enemies[i].lungeKnots.data();
+            const float shift = a.startup - def.enemies[i].moves[foe.move].attack.startup;
+            vel = arenaScaled(foe.facing,
+                              (arenaLungeDistance(a, pool, a1 - shift) - arenaLungeDistance(a, pool, a0 - shift)) / dt);
+        } else if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
             vel = arenaScaled(foe.facing, a.lunge / span * moving / dt);
         }
@@ -4879,6 +4885,45 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     return static_cast<std::size_t>(move) < n ? p[move] : FightClip::Stance;
 }
 
+namespace {
+// The raw distance of a lunge curve's knots k[0..n-1] by time t (t >= 0), unscaled.
+double arenaCurveDistance(const ArenaLungeKnot* k, std::size_t n, double t) {
+    double d = 0.0;
+    for (std::size_t s = 1; s < n; ++s) {
+        const double t0 = k[s - 1].t, t1 = k[s].t, v0 = k[s - 1].speed, v1 = k[s].speed;
+        if (t <= t0) break;
+        if (t >= t1) {
+            d += (t1 - t0) * (v0 + v1) * 0.5;
+            continue;
+        }
+        const double vt = v0 + (v1 - v0) * (t - t0) / (t1 - t0);
+        d += (t - t0) * (v0 + vt) * 0.5;
+        break;
+    }
+    return d;
+}
+} // namespace
+
+float arenaLungeDistance(const ArenaAttack& a, const ArenaLungeKnot* pool, float t) {
+    if (a.lungeKnots < 2 || !pool) {
+        const float span = a.startup + a.active;
+        if (!(span > kArenaEps)) return t > 0.f ? a.lunge : 0.f;
+        return a.lunge * std::clamp(t / span, 0.f, 1.f);
+    }
+    const ArenaLungeKnot* k = pool + a.lungeFirst;
+    const std::size_t n = a.lungeKnots;
+    const double whole = arenaCurveDistance(k, n, k[n - 1].t);
+    if (!(whole > 1e-9)) return 0.f;
+    if (!(t > 0.f)) return 0.f;
+    if (t >= k[n - 1].t) return a.lunge;
+    return static_cast<float>(static_cast<double>(a.lunge) * arenaCurveDistance(k, n, t) / whole);
+}
+
+float arenaLungeEnd(const ArenaAttack& a, const ArenaLungeKnot* pool) {
+    if (a.lungeKnots < 2 || !pool) return a.startup + a.active;
+    return pool[a.lungeFirst + a.lungeKnots - 1u].t;
+}
+
 float arenaBoltFlight(float startup) {
     const float s = std::isfinite(startup) ? std::max(startup, 0.f) : 0.f;
     return std::max(s, kArenaBoltFlightMin);
@@ -5326,7 +5371,10 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             tell one of arenaTellName's words, no two named alike in one enemy (default "strike": moves left
 //             at it read alike, so a lone enemy whose moves name no tell is dealt no Read cards);
 //             clip an id of 1..31 letters, digits, _ and -, optional, only in an enemy with a look: the clip the
-//             host plays for the move (the host's business; no two moves of one enemy share one)
+//             host plays for the move (the host's business; no two moves of one enemy share one);
+//             lungeSpeed, optional: its lunge curve, [[t, speed], ...] of 2..12 knots (an enemy's moves together at
+//             most kMaxArenaLungeKnots), t from 0 strictly rising to at most the move's whole length, speed 0..50 m/s,
+//             a lunge above 0 and a curve whose integral is above 0 (see arenaLungeDistance)
 //   fight     enemies 1..6 known enemy ids; ring (0, 1000]; spawn (0, 1000]; attackers 1..6;
 //             scene a non-empty id; beat 0..1000000; step 0..1000
 
@@ -5401,6 +5449,61 @@ bool arenaBool(JsonValue j, const char* key, bool& out, const std::string& path,
     }
     out = v.boolean();
     return true;
+}
+
+// An enemy move's "lungeSpeed" into its kind's knot pool (after the move's attack keys, which it is checked against).
+void arenaParseLungeCurve(JsonValue j, const std::string& path, ArenaEnemyKind& k, ArenaAttack& a, ArenaStrings& errors) {
+    if (j.isAbsent()) return;
+    const std::size_t room = kMaxArenaLungeKnots - k.lungeKnotCount;
+    if (!j.isArray() || j.size() < 2 || j.size() > room) {
+        errors.push_back(path + ": expected an array of 2.." + std::to_string(room) + " [t, speed] knots (" +
+                         std::to_string(kMaxArenaLungeKnots) + " a kind)");
+        return;
+    }
+    const std::size_t first = k.lungeKnotCount;
+    double integral = 0.0;
+    for (std::uint32_t n = 0; n < j.size(); ++n) {
+        const JsonValue p = j[n];
+        const std::string np = path + "[" + std::to_string(n) + "]";
+        const double t = p[0u].number(-1.0), v = p[1u].number(-1.0);
+        if (!p.isArray() || p.size() != 2 || !p[0u].isNumber() || !p[1u].isNumber() || !std::isfinite(t) ||
+            !std::isfinite(v)) {
+            errors.push_back(np + ": expected [t, speed]");
+            return;
+        }
+        if (v < 0.0 || v > 50.0) {
+            errors.push_back(np + ": expected a speed in [0, 50]");
+            return;
+        }
+        if (n == 0 && t != 0.0) {
+            errors.push_back(np + ": expected the first knot at t 0");
+            return;
+        }
+        if (n > 0) {
+            const ArenaLungeKnot& prev = k.lungeKnots[first + n - 1];
+            if (!(t > prev.t)) {
+                errors.push_back(np + ": expected t above the knot before");
+                return;
+            }
+            integral += (t - prev.t) * (prev.speed + v) * 0.5;
+        }
+        if (t > a.total() + kArenaEps) {
+            errors.push_back(np + ": expected t at most the move's length (" + arenaFormat(a.total()) + ")");
+            return;
+        }
+        k.lungeKnots[first + n] = ArenaLungeKnot{static_cast<float>(t), static_cast<float>(v)};
+    }
+    if (!(integral > 1e-6)) {
+        errors.push_back(path + ": expected a curve that moves (its integral is 0)");
+        return;
+    }
+    if (!(a.lunge > 0.f)) {
+        errors.push_back(path + ": expected a lunge above 0 to scale the curve to");
+        return;
+    }
+    k.lungeKnotCount = static_cast<std::uint8_t>(first + j.size());
+    a.lungeFirst = static_cast<std::uint8_t>(first);
+    a.lungeKnots = static_cast<std::uint8_t>(j.size());
 }
 
 void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, ArenaStrings& errors) {
@@ -5714,9 +5817,10 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         ArenaEnemyMove& mv = k.moves[m];
         arenaUnknownKeys(mj, mp,
                          {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell", "clip",
-                          "hitsAir"},
+                          "hitsAir", "lungeSpeed"},
                          true, warnings);
         arenaParseAttack(mj, mp, mv.attack, errors);
+        arenaParseLungeCurve(mj["lungeSpeed"], mp + ".lungeSpeed", k, mv.attack, errors);
         arenaNum(mj, "minRange", mv.minRange, 0, 100, false, mp, errors);
         arenaNum(mj, "maxRange", mv.maxRange, 0, 100, true, mp, errors);
         arenaNum(mj, "cooldown", mv.cooldown, 0, 60, false, mp, errors);

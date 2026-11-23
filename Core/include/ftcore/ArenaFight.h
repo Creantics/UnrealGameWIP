@@ -30,7 +30,8 @@
 // * Attacks. Every attack has three parts back to back: startup (for an enemy, its telegraph),
 //   active (the only part that can connect) and recovery. During startup the attacker may still turn
 //   toward its target at `tracking` rad/s and moves forward `lunge` metres spread over startup and
-//   active. A hit test runs on every tick whose interval [t, t + dt) overlaps the active part (so a
+//   active (an enemy move with a lunge curve moves them by its curve instead: arenaLungeDistance).
+//   A hit test runs on every tick whose interval [t, t + dt) overlaps the active part (so a
 //   long frame can't skip a short active part), on the bodies as reported for that tick: the target
 //   is hit when its centre is within range + its body radius of the attacker's centre and inside the
 //   arc (dot(attacker facing, direction to target) >= arcCos). An attack connects at most once per
@@ -407,6 +408,14 @@ inline constexpr std::size_t kMaxArenaLookPath = 95;
 // ArenaDef::enemyKind of a slot that is not a table kind (a def built in code).
 inline constexpr std::uint8_t kArenaNoKind = 0xFF;
 
+// A knot of an enemy move's lunge curve (arena.json move "lungeSpeed": [[t, speed], ...]): t in s from the move's
+// start, forward speed in m/s. An enemy kind keeps the knots of all its moves in one pool (ArenaEnemyKind::lungeKnots).
+struct ArenaLungeKnot {
+    float t = 0.f;
+    float speed = 0.f;
+};
+inline constexpr std::size_t kMaxArenaLungeKnots = 12; // per enemy kind, its moves' curves together
+
 // One attack, the player's or an enemy's.
 struct ArenaAttack {
     float startup = 0.35f;    // before the active part (an enemy's telegraph)
@@ -420,7 +429,7 @@ struct ArenaAttack {
     int damage = 10;
     float poiseDamage = 10.f;
     float guardDamage = 15.f; // stamina a guard that blocks it loses
-    float lunge = 0.f;        // metres the attacker moves forward over startup + active
+    float lunge = 0.f;        // metres the attacker moves forward over startup + active (or by its curve: lungeKnots)
     float tracking = 3.f;     // rad/s the attacker may still turn during startup
     float armor = 0.f;        // 0..1: share of incoming poise damage ignored during startup + active
     float stamina = 0.f;      // the player's cost; enemies have no stamina
@@ -433,6 +442,11 @@ struct ArenaAttack {
     float jolt = 0.f;         // degrees the host's camera kicks when it lands (ArenaImpact.h); 0: none
     std::uint8_t maxTargets = 0; // 0: connects with every target in range and arc; N: with at most N distinct
                                  // targets over its whole active part, the nearest first (the player's matter)
+    // An enemy move's lunge curve: knots lungeFirst .. lungeFirst + lungeKnots - 1 of its kind's pool
+    // (ArenaEnemyKind::lungeKnots); 0 knots (the default, and every player attack): `lunge` spread evenly over
+    // startup + active (arenaLungeDistance).
+    std::uint8_t lungeFirst = 0;
+    std::uint8_t lungeKnots = 0;
 
     float total() const { return startup + active + recovery; }
 };
@@ -701,7 +715,21 @@ struct ArenaEnemyKind {
     // A set table (TableRing.h). Only a set table reads them: the fight's own rules never do.
     std::uint8_t carry = 0;   // carry grade: a seated one's share of a blow halves for each grade past the table's seats
     bool seatable = true;     // whether it may be seated at a table at all
+    // The knots of its moves' lunge curves (ArenaAttack::lungeFirst, lungeKnots), in move order.
+    std::array<ArenaLungeKnot, kMaxArenaLungeKnots> lungeKnots{};
+    std::uint8_t lungeKnotCount = 0;
 };
+
+// The metres an attack has lunged forward `t` s after its start, 0 before it. With no curve (a.lungeKnots < 2):
+// `lunge` spread evenly over startup + active. With one: the speed of its knots (pool[a.lungeFirst ..]) linear between
+// them (each segment constant acceleration, its distance the exact trapezoid), 0 after the last knot, the whole curve
+// scaled by lunge / its own integral so it covers exactly `lunge` by the last knot. So the lunge window may run past
+// the active part into recovery (a landing's skid). The times are the move's as the file gives them: a retimed copy of
+// it (an unseen windup, a boss break's windup) reads the curve at t minus the startup it gained (ArenaFight does).
+// Pure, no allocation.
+FTCORE_API float arenaLungeDistance(const ArenaAttack& a, const ArenaLungeKnot* pool, float t);
+// When that lunge is done: the last knot, else startup + active.
+FTCORE_API float arenaLungeEnd(const ArenaAttack& a, const ArenaLungeKnot* pool);
 
 // An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius
 // 0.4 m, scaled with the radius between 0.8x and 1.6x of that (the look the host's figure always had).

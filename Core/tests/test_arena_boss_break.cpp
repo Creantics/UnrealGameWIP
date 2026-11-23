@@ -149,15 +149,19 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     // Re-measured for maw_pup bodyLength 1.08 (B2, a stadium nose to tail): again only its three solo seeds can move,
     // the one kind with a length (still victories; the wall-aware push of B1 left this trace as it was). Before it:
     // 3357317813166856334 (11817672119955763551 with pairCooldown 0).
-    CHECK(golden == 13458522366178030225ull);
+    // Re-measured for maw_pup's pounce lunge window (active 0.2 -> 0.4 s and its lungeSpeed curve: a creep, the flight
+    // and a skid into recovery): again only its solo seeds can move, the one kind with a curve (the partner pins'
+    // maw_pup rows keep their hits and damage). Before it: 13458522366178030225 (10031432815278946192 with
+    // pairCooldown 0).
+    CHECK(golden == 15000676592694959925ull);
 }
 
 TEST_CASE("arena boss break: the golden trace moved for the paired counter's cooldown alone, not for the free BLOCK") {
     int fights = 0;
     // No cooldown: the trace from before the rules.
-    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 10031432815278946192ull);
+    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 16822442871235083780ull);
     // The called BLOCK's guard damage put back: the trace as shipped.
-    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 13458522366178030225ull);
+    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 15000676592694959925ull);
 }
 
 // ---- the boss break value ----

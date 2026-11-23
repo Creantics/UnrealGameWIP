@@ -297,6 +297,16 @@ else()
     target_compile_options(ftcore_floatcheck PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_lunge: an enemy move's lunge distance frame by frame (arenaLungeDistance), for a clip's root motion.
+add_executable(ftcore_lunge tools/ftcore_lunge.cpp)
+target_link_libraries(ftcore_lunge PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_lunge PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_lunge PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_lunge PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 # ftcore_standincheck: the stand-ins' corridor rule on the point and street tables (an offline build guard).
 add_executable(ftcore_standincheck tools/ftcore_standincheck.cpp)
 target_link_libraries(ftcore_standincheck PRIVATE ftcore ftcore_warnings)
@@ -608,6 +618,10 @@ if(FTCORE_BUILD_TESTS)
         target_compile_options(ftcore_tests PRIVATE /EHsc)
     endif()
     add_test(NAME ftcore_tests COMMAND ftcore_tests)
+
+    # The Maw-Pup pounce's lunge table from the shipped data (the clip build's po_root reads the same).
+    add_test(NAME lunge_pounce COMMAND ftcore_lunge ${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/arena.json maw_pup pounce
+        --out ${CMAKE_CURRENT_BINARY_DIR}/lunge_maw_pup_pounce.csv)
 
     # The placer's example job, end to end; its outputs stay in the build folder.
     add_test(NAME place_example COMMAND ftcore_place
