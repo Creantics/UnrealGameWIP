@@ -1,4 +1,6 @@
 #include "FTExploreCharacter.h"
+#include "FTFaceComponent.h"
+#include "FTFaceCurveAnimInstance.h"
 #include "FTPartyVan.h"
 #include "FTRainCoverSubsystem.h"
 #include "FTRainSubsystem.h"
@@ -39,6 +41,9 @@
 #include "UnrealClient.h"
 #include "RHI.h"
 #include "RenderCore.h"
+#include "RenderingThread.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+#include "SkeletalRenderPublic.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
@@ -637,6 +642,23 @@ void AFTExploreCharacter::BeginPlay()
 					bPortraitJump = false;
 				}
 			}
+			FString HoldList;
+			if (!FaceClip && !BodyClip && FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitFaceHolds="), HoldList, false))
+			{
+				HoldList.ParseIntoArray(FaceHolds, TEXT(";"));
+				if (!FaceHolds.IsEmpty())
+				{
+					// One shot per hold; the yaw list repeats round them.
+					const TArray<float> Yaws = ShotYaws;
+					ShotYaws.Reset();
+					for (int32 Index = 0; Index < FaceHolds.Num(); ++Index)
+					{
+						ShotYaws.Add(Yaws[Index % Yaws.Num()]);
+					}
+					bPortraitWalk = false;
+					bPortraitJump = false;
+				}
+			}
 			// Settle time first (streaming, shaders, exposure), then a step every few seconds: aim, then shoot.
 			float Delay = 8.f;
 			FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitShotDelay="), Delay);
@@ -721,6 +743,15 @@ void AFTExploreCharacter::WatchFrom(USceneComponent* Root)
 
 void AFTExploreCharacter::StepPortraitShots()
 {
+#if !UE_BUILD_SHIPPING
+	if (!PendingVertsShot.IsEmpty())
+	{
+		// The last shot's face, still held: the render thread has skinned it on the CPU since.
+		FlushRenderingCommands();
+		DumpFaceVerts(PendingVertsShot);
+		PendingVertsShot.Reset();
+	}
+#endif
 	if (ShotIndex >= ShotYaws.Num())
 	{
 		GetWorldTimerManager().ClearTimer(ShotTimer);
@@ -747,6 +778,11 @@ void AFTExploreCharacter::StepPortraitShots()
 		{
 			HoldBodyAt(BodyTimes[ShotIndex]);
 		}
+		else if (FaceHolds.IsValidIndex(ShotIndex) && (HoldFace || StartFaceHolds()))
+		{
+			const bool bHeld = HoldFace->HoldPose(FaceHolds[ShotIndex]);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: face hold '%s' %s."), *FaceHolds[ShotIndex], bHeld ? TEXT("held") : TEXT("refused"));
+		}
 		bShotAimed = true;
 		return;
 	}
@@ -758,6 +794,7 @@ void AFTExploreCharacter::StepPortraitShots()
 #endif
 	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: !FaceHolds.IsEmpty()    ? FString::Printf(TEXT("%s_%d_h%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: bIndexed                ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
@@ -773,6 +810,10 @@ void AFTExploreCharacter::StepPortraitShots()
 	if (bPoseDump)
 	{
 		DumpPortraitPose(File, Yaw);
+		if (HoldFaceMesh)
+		{
+			PendingVertsShot = File;
+		}
 	}
 	if (SwitchReviewAt >= 0.f)
 	{
@@ -896,6 +937,108 @@ void AFTExploreCharacter::HoldFaceAt(float Time)
 	UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no FaceMesh piece to hold the face clip on."));
 }
 
+bool AFTExploreCharacter::StartFaceHolds()
+{
+	// As AFTCastMember::WearLook: the piece with a post-process rig leaves the leader pose (a follower runs neither its
+	// own anim instance nor its rig), copies the body's pose in UFTFaceCurveAnimInstance and takes the face's curves.
+	USkeletalMeshComponent* RigFace = nullptr;
+	for (USkeletalMeshComponent* Piece : Pieces)
+	{
+		if (Piece && Piece->GetPostProcessAnimBPClassToBeUsed())
+		{
+			RigFace = Piece;
+			break;
+		}
+	}
+	if (!RigFace)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: no piece with a face rig; face holds off."));
+		FaceHolds.Reset();
+		return false;
+	}
+	RigFace->SetLeaderPoseComponent(nullptr);
+	RigFace->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	RigFace->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+	RigFace->SetAnimInstanceClass(UFTFaceCurveAnimInstance::StaticClass());
+	UFTFaceComponent* Face = NewObject<UFTFaceComponent>(this, TEXT("PortraitHoldFace"));
+	Face->bBindOnBeginPlay = false;
+	Face->FaceMeshComponentName = RigFace->GetFName();
+	Face->RegisterComponent();
+	if (!Face->Rebind() || !Face->IsCurveMode())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: the face component on %s is not in curve mode; face holds off."), *RigFace->GetName());
+		Face->DestroyComponent();
+		FaceHolds.Reset();
+		return false;
+	}
+	HoldFace = Face;
+	HoldFaceMesh = RigFace;
+#if !UE_BUILD_SHIPPING
+	if (bPoseDump)
+	{
+		RigFace->SetCPUSkinningEnabled(true, true);
+	}
+#endif
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: face holds on %s (%d shapes bound, %s skinning)."), *RigFace->GetName(),
+		Face->GetBoundShapes(), RigFace->GetCPUSkinningEnabled() ? TEXT("CPU") : TEXT("GPU"));
+	return true;
+}
+
+#if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::DumpFaceVerts(const FString& ShotFile) const
+{
+	// Review only, never inside the project (as the pose dump). Component space, cm: x y z of each LOD 0 render vertex as
+	// skinned, then (when the asset's CPU copy is readable) its bind position, so the vertices can be matched to an asset
+	// read by position.
+	FString Full = FPaths::ConvertRelativePathToFull(FPaths::ChangeExtension(ShotFile, TEXT("verts.txt")));
+	FString Project = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	FPaths::NormalizeDirectoryName(Project);
+	if (FPaths::IsUnderDirectory(Full, Project) || !HoldFaceMesh)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: face verts %s not written (inside the project or no face)."), *Full);
+		return;
+	}
+	TArray<FFinalSkinVertex> Verts;
+	HoldFaceMesh->GetCPUSkinnedCachedFinalVertices(Verts);
+	const USkeletalMesh* Asset = HoldFaceMesh->GetSkeletalMeshAsset();
+	const FSkeletalMeshRenderData* Render = Asset ? Asset->GetResourceForRendering() : nullptr;
+	const FPositionVertexBuffer* Bind = Render && Render->LODRenderData.Num() > 0 ? &Render->LODRenderData[0].StaticVertexBuffers.PositionVertexBuffer : nullptr;
+	const bool bBind = Bind && Bind->GetVertexData() && static_cast<int32>(Bind->GetNumVertices()) == Verts.Num();
+	if (Verts.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: face verts %s not written (no CPU-skinned vertices on %s)."), *Full,
+			*HoldFaceMesh->GetName());
+		return;
+	}
+	FString Text;
+	Text.Reserve(Verts.Num() * (bBind ? 64 : 32) + 256);
+	Text += FString::Printf(TEXT("# shot %s\n# component %s asset %s lod 0 verts %d bind %d frame %llu\n# component space cm: x y z%s\n"),
+		*FPaths::GetCleanFilename(ShotFile), *HoldFaceMesh->GetName(), Asset ? *Asset->GetName() : TEXT(""), Verts.Num(), bBind ? 1 : 0,
+		static_cast<uint64>(GFrameCounter), bBind ? TEXT(" bx by bz") : TEXT(""));
+	for (int32 I = 0; I < Verts.Num(); ++I)
+	{
+		const FVector3f& P = Verts[I].Position;
+		if (bBind)
+		{
+			const FVector3f& B = Bind->VertexPosition(static_cast<uint32>(I));
+			Text += FString::Printf(TEXT("%.4f %.4f %.4f %.4f %.4f %.4f\n"), P.X, P.Y, P.Z, B.X, B.Y, B.Z);
+		}
+		else
+		{
+			Text += FString::Printf(TEXT("%.4f %.4f %.4f\n"), P.X, P.Y, P.Z);
+		}
+	}
+	if (FFileHelper::SaveStringToFile(Text, *Full))
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: face verts %s (%d, bind %d)."), *Full, Verts.Num(), bBind ? 1 : 0);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: face verts %s not written."), *Full);
+	}
+}
+#endif
+
 void AFTExploreCharacter::HoldBodyAt(float Time)
 {
 	// The body leaves its anim blueprint and holds the clip's frame; the leader-posed pieces (garments, shoes, face)
@@ -956,6 +1099,28 @@ void AFTExploreCharacter::AddPortraitCard()
 	Grey->SetScalarParameterValue(TEXT("Weather"), 0.f);
 	Grey->SetScalarParameterValue(TEXT("Street"), 0.f);
 	Card->SetMaterial(0, Grey);
+	// -ExplorePortraitCardEmissive=<strength>: the card glows white instead (M_FTPropFlat, its Emissive white times
+	// EmissiveStrength, over the same 0.18 grey), a known bright source for a lens's reflection to show.
+	float Glow = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitCardEmissive="), Glow) && Glow > 0.f)
+	{
+		UMaterialInterface* Flat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Props/Shared/Materials/M_FTPropFlat.M_FTPropFlat"), nullptr,
+			LOAD_NoWarn | LOAD_Quiet);
+		if (Flat)
+		{
+			UMaterialInstanceDynamic* Lit = UMaterialInstanceDynamic::Create(Flat, Card);
+			Lit->SetVectorParameterValue(TEXT("BaseColor"), FLinearColor(0.18f, 0.18f, 0.18f));
+			Lit->SetScalarParameterValue(TEXT("Roughness"), 0.9f);
+			Lit->SetScalarParameterValue(TEXT("Metallic"), 0.f);
+			Lit->SetVectorParameterValue(TEXT("Emissive"), FLinearColor::White);
+			Lit->SetScalarParameterValue(TEXT("EmissiveStrength"), Glow);
+			Card->SetMaterial(0, Lit);
+			UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait card laid at %.0f, %.0f, %.0f cm from the camera (white emissive %.2f)."),
+				At.X, At.Y, At.Z, Glow);
+			return;
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: M_FTPropFlat not loaded; the portrait card stays grey."));
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait card laid at %.0f, %.0f, %.0f cm from the camera (0.18 grey)."), At.X, At.Y, At.Z);
 }
 #endif

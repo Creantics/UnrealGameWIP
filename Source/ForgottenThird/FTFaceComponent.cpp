@@ -260,6 +260,24 @@ bool UFTFaceComponent::SetExpression(FName Expression, float Intensity, float Fa
 	return true;
 }
 
+bool UFTFaceComponent::HoldPose(const FString& Spec)
+{
+	if (!Player)
+	{
+		return false;
+	}
+	ftcore::FacePreset Hold;
+	std::string Error;
+	if (!ftcore::parseFaceHold(*Shapes, FT::ToUtf8(Spec), Hold, &Error))
+	{
+		UE_LOG(LogFTFace, Warning, TEXT("%s: %s"), *GetPathName(), *FT::ToFString(Error));
+		return false;
+	}
+	Player->setBlinking(false);
+	Player->setExpression(&Hold, 5.f, 0.f);
+	return true;
+}
+
 bool UFTFaceComponent::PlayTrack(const FString& TrackFile, float StartSeconds)
 {
 	if (!Player)

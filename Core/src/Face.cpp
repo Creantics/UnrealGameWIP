@@ -3,6 +3,7 @@
 #include "SeedMix.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 
@@ -48,6 +49,46 @@ int FaceShapeSet::find(std::string_view name) const {
     for (std::size_t i = 0; i < shapes.size(); ++i)
         if (shapes[i] == name) return static_cast<int>(i);
     return -1;
+}
+
+bool parseFaceHold(const FaceShapeSet& set, std::string_view spec, FacePreset& out, std::string* error) {
+    out.name = std::string(spec);
+    out.weights.fill(0.f);
+    out.tongueDeg = {};
+    if (spec.empty()) return setError(error, "face hold: empty");
+    if (spec == "neutral") return true;
+    if (spec.substr(0, 2) == "v:") {
+        const FacePreset* v = set.viseme(spec.substr(2));
+        if (!v) return setError(error, "face hold: unknown viseme '" + std::string(spec.substr(2)) + "'");
+        out.weights = v->weights;
+        return true;
+    }
+    if (spec.find('=') == std::string_view::npos) {
+        const FacePreset* e = set.expression(spec);
+        if (!e) return setError(error, "face hold: unknown expression '" + std::string(spec) + "'");
+        out.weights = e->weights;
+        return true;
+    }
+    std::size_t start = 0;
+    while (start <= spec.size()) {
+        const std::size_t end = std::min(spec.find('+', start), spec.size());
+        const std::string_view part = spec.substr(start, end - start);
+        const std::size_t eq = part.find('=');
+        if (eq == std::string_view::npos || eq == 0 || eq + 1 >= part.size())
+            return setError(error, "face hold: '" + std::string(part) + "' is not <shape>=<weight>");
+        const std::string_view shape = part.substr(0, eq);
+        const int i = set.find(shape);
+        if (i < 0) return setError(error, "face hold: unknown shape '" + std::string(shape) + "'");
+        float w = 0.f;
+        const char* first = part.data() + eq + 1;
+        const char* last = part.data() + part.size();
+        const std::from_chars_result r = std::from_chars(first, last, w);
+        if (r.ec != std::errc() || r.ptr != last || !(w >= 0.f && w <= 1.f))
+            return setError(error, "face hold: weight of '" + std::string(shape) + "' is not a number in 0..1");
+        out.weights[static_cast<std::size_t>(i)] = w;
+        start = end + 1;
+    }
+    return true;
 }
 
 const FacePreset* FaceShapeSet::viseme(std::string_view name) const {

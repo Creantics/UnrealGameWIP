@@ -87,6 +87,12 @@ struct FaceShapeSet {
 FTCORE_API void composeFace(const FaceShapeSet& set, const FaceWeights& expr, const FaceWeights& vis, float speech,
                             const FaceWeights& micro, FaceWeights& out);
 
+// A held pose for review shots (the portrait writer's -ExplorePortraitFaceHolds), played as the expression layer at
+// full intensity. `spec` is "neutral", an expression's name, "v:<viseme>" (that viseme's weights, as an expression,
+// so the mouth tone layer sees no viseme roundness), or shapes "<shape>=<w>[+<shape>=<w>...]" with each w in 0..1.
+// Fills `out` (name = spec, tongue zero). False (and `*error`) on an unknown name, a bad weight or an empty part.
+FTCORE_API bool parseFaceHold(const FaceShapeSet& set, std::string_view spec, FacePreset& out, std::string* error = nullptr);
+
 // A baked lip-sync track (.nface, written by tools/lipsync/bake_face_tracks.py). Channels are
 // shape names, plus "@speech" (0..1) and "@tongue_01".."@tongue_03" (degrees). Values are u8,
 // frame-major: data[frame * channels.size() + channel]. Shape and speech channels map 0..255 to

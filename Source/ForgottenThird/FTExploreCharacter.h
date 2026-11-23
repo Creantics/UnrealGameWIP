@@ -111,6 +111,7 @@
 
 #include "FTExploreCharacter.generated.h"
 
+class UFTFaceComponent;
 class AFTExploreDirector;
 class AFTPartyFollower;
 class UAnimSequence;
@@ -431,6 +432,20 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequence> BodyClip;
 	TArray<float> BodyTimes;
+	// -ExplorePortraitFaceHolds=<hold;hold;..> (review only; not with a face or body clip): each shot holds the MetaHuman
+	// face on one ftcore::parseFaceHold spec ("neutral", an expression of Data/Rig/face_presets.json, "v:<viseme>",
+	// "<shape>=<w>+..."), driven as in the game: a face component in curve mode, the face piece off the leader pose with
+	// UFTFaceCurveAnimInstance and its rig logic (as AFTCastMember). One shot per hold; the yaw list repeats round them.
+	TArray<FString> FaceHolds;
+	UPROPERTY(Transient)
+	TObjectPtr<UFTFaceComponent> HoldFace;
+	UPROPERTY(Transient)
+	TObjectPtr<USkeletalMeshComponent> HoldFaceMesh;
+	bool StartFaceHolds();
+	// With -ExplorePortraitPoseDump: the hold shots' face renders CPU-skinned, and on the step after each shot its LOD 0
+	// vertices (bones, rig logic and morph targets applied) are written next to the shot as <shot>.verts.txt.
+	FString PendingVertsShot;
+	void DumpFaceVerts(const FString& ShotFile) const;
 #if !UE_BUILD_SHIPPING
 	// -ExplorePortraitPoseDump: next to each portrait shot, <shot>.pose.json holds the clip and time, the view, and every
 	// skinned component's bones in component space as drawn that frame (review only; never inside the project).

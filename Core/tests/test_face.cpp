@@ -375,3 +375,49 @@ TEST_CASE("face player updates without allocating") {
     const auto after = ftcore_test::allocStats().count;
     CHECK(after == before);
 }
+
+TEST_CASE("face hold specs: neutral, expression, viseme and shape lists") {
+    const MiniFace f;
+    FacePreset p;
+    std::string error;
+    REQUIRE(parseFaceHold(f.set, "jawOpen=1", p, &error));
+    CHECK(at(p.weights, f.jaw) == doctest::Approx(1.f));
+    CHECK(at(p.weights, f.brow) == 0.f);
+    REQUIRE(parseFaceHold(f.set, "jawOpen=0.5+browInnerUp=0.25", p, &error));
+    CHECK(at(p.weights, f.jaw) == doctest::Approx(0.5f));
+    CHECK(at(p.weights, f.brow) == doctest::Approx(0.25f));
+    REQUIRE(parseFaceHold(f.set, "smile", p, &error));
+    CHECK(at(p.weights, f.smileL) == doctest::Approx(1.f));
+    CHECK(at(p.weights, f.brow) == doctest::Approx(0.4f));
+    REQUIRE(parseFaceHold(f.set, "v:AA", p, &error));
+    CHECK(at(p.weights, f.jaw) == doctest::Approx(0.8f));
+    CHECK(p.tongueDeg.x == 0.f);
+    REQUIRE(parseFaceHold(f.set, "neutral", p, &error));
+    for (float w : p.weights) CHECK(w == 0.f);
+
+    // Held as the expression layer at full intensity with no fade, the jaw opens at once.
+    FacePlayer player(f.set);
+    player.setBlinking(false);
+    REQUIRE(parseFaceHold(f.set, "jawOpen=1", p));
+    player.setExpression(&p, 5.f, 0.f);
+    player.update(1.f / 30.f);
+    CHECK(at(player.weights(), f.jaw) == doctest::Approx(1.f));
+}
+
+TEST_CASE("face hold specs: bad input is refused") {
+    const MiniFace f;
+    FacePreset p;
+    std::string error;
+    CHECK_FALSE(parseFaceHold(f.set, "", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "frown", p, &error));
+    CHECK(error.find("frown") != std::string::npos);
+    CHECK_FALSE(parseFaceHold(f.set, "v:OO", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "noSuch=1", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "jawOpen=1.5", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "jawOpen=-0.1", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "jawOpen=x", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "jawOpen=", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "=1", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "jawOpen=1+", p, &error));
+    CHECK_FALSE(parseFaceHold(f.set, "jawOpen=1++browInnerUp=1", p, &error));
+}

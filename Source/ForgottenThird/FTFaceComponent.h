@@ -81,6 +81,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Face")
 	bool SetExpression(FName Expression, float Intensity = 5.f, float FadeSeconds = 0.25f);
 
+	// Review only: holds Spec (ftcore::parseFaceHold: "neutral", an expression, "v:<viseme>" or "<shape>=<w>+...") as
+	// the expression layer at full intensity, no fade, blinks off. False (and logged) on a bad spec or before a bind.
+	bool HoldPose(const FString& Spec);
+
 	// Plays an .nface lip-sync track from StartSeconds (relative paths: the project folder).
 	UFUNCTION(BlueprintCallable, Category = "Face")
 	bool PlayTrack(const FString& TrackFile, float StartSeconds = 0.f);
