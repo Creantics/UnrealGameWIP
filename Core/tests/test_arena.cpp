@@ -10695,38 +10695,80 @@ TEST_CASE("arena host mirror: seeds 1-20, pups, pups and the lead, circles mixed
 
 // ---- lunge curve (arenaLungeDistance; the Maw-Pup's pounce, pounce_preview_1122 section 7) ----
 
-TEST_CASE("arena lunge curve: the shipped pounce creeps, flies and skids, and covers its lunge by the last knot") {
-    const ArenaTable table = loadShipped();
+namespace {
+// The pounce curve as ruled 11-22 (section 7's seven knots, the stop moved up to 1.265 s): a 0.15 m/s creep to 0.6 s,
+// still from 0.63 to 0.7 s (the coil), the 4 m/s flight from 0.8 s to the touchdown at 1.2 s, then a stop 0.065 s
+// long that travels 0.141 m (the ruling's bound: 0.15 m at most after touchdown). Raw integral 2.02225 m.
+const ArenaLungeKnot kRuledPounce[] = {{0.f, 0.15f}, {0.6f, 0.15f}, {0.63f, 0.f}, {0.7f, 0.f},
+                                       {0.8f, 4.f},  {1.2f, 4.f},   {1.265f, 0.f}};
+constexpr std::size_t kRuledPounceKnots = sizeof kRuledPounce / sizeof kRuledPounce[0];
+constexpr float kRuledPounceRaw = 2.02225f;
+
+// Gives move m of kind k a curve of n knots, after the knots the kind already holds.
+void giveCurve(ArenaEnemyKind& k, std::size_t m, const ArenaLungeKnot* knots, std::size_t n) {
+    REQUIRE(k.lungeKnotCount + n <= kMaxArenaLungeKnots);
+    k.moves[m].attack.lungeFirst = k.lungeKnotCount;
+    k.moves[m].attack.lungeKnots = static_cast<std::uint8_t>(n);
+    for (std::size_t j = 0; j < n; ++j) k.lungeKnots[k.lungeKnotCount + j] = knots[j];
+    k.lungeKnotCount = static_cast<std::uint8_t>(k.lungeKnotCount + n);
+}
+
+// A hitter with the pounce's times (0.8 + 0.4 + 0.8 s, lunge 2.2 m) on the ruled curve.
+ArenaEnemyKind ruledHitter(float range = 1.8f) {
+    ArenaAttack pounce = swing(0.8f, 0.4f, 0.8f, range, 0);
+    pounce.lunge = 2.2f;
+    ArenaEnemyKind k = hitterKind(pounce);
+    giveCurve(k, 0, kRuledPounce, kRuledPounceKnots);
+    return k;
+}
+
+// The shipped maw_pup with its pounce on the ruled curve and the 0.4 s active part. `pounce` gets the move's index.
+ArenaEnemyKind ruledPup(const ArenaTable& table, std::size_t& pounce) {
     const ArenaEnemyKind* pup = nullptr;
     for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
         if (table.enemyIds[e] == "maw_pup") pup = &table.enemies[e];
     REQUIRE(pup != nullptr);
-    const ArenaEnemyMove* pounce = nullptr;
-    for (std::size_t m = 0; m < pup->moveCount; ++m)
-        if (pup->moves[m].clip() == "pounce") pounce = &pup->moves[m];
-    REQUIRE(pounce != nullptr);
-    const ArenaAttack& a = pounce->attack;
-    const ArenaLungeKnot* pool = pup->lungeKnots.data();
-    REQUIRE(a.lungeKnots == 6);
-    CHECK(a.startup == doctest::Approx(0.8f));
-    CHECK(a.active == doctest::Approx(0.4f));
-    CHECK(a.recovery == doctest::Approx(0.8f));
-    CHECK(a.lunge == doctest::Approx(2.2f));
+    ArenaEnemyKind k = *pup;
+    pounce = kMaxArenaMoves;
+    for (std::size_t m = 0; m < k.moveCount; ++m)
+        if (k.moves[m].clip() == "pounce") pounce = m;
+    REQUIRE(pounce < k.moveCount);
+    ArenaAttack& a = k.moves[pounce].attack;
+    REQUIRE(a.lungeKnots == 0); // the shipped row has no curve yet: it lands with the re-keyed clip
+    a.active = 0.4f;
+    giveCurve(k, pounce, kRuledPounce, kRuledPounceKnots);
+    return k;
+}
+} // namespace
+
+TEST_CASE("arena lunge curve: the ruled pounce creeps, holds, flies and stops within 0.15 m of touchdown") {
+    const ArenaEnemyKind k = ruledHitter();
+    const ArenaAttack& a = k.moves[0].attack;
+    const ArenaLungeKnot* pool = k.lungeKnots.data();
+    REQUIRE(arenaLungeCurved(a));
     const float end = arenaLungeEnd(a, pool);
-    CHECK(end == doctest::Approx(1.35f)); // the skid runs 0.15 s into recovery
+    CHECK(end == doctest::Approx(1.265f)); // the stop runs 0.065 s into recovery
     CHECK(end > a.startup + a.active);
 
     CHECK(arenaLungeDistance(a, pool, 0.f) == 0.f);
     CHECK(arenaLungeDistance(a, pool, -0.1f) == 0.f);
     CHECK(std::fabs(arenaLungeDistance(a, pool, end) - a.lunge) <= 1e-3f);
-    for (float t : {1.35f, 1.5f, 2.f, 5.f}) CHECK(arenaLungeDistance(a, pool, t) == doctest::Approx(a.lunge));
-    // The scaled trapezoids (raw integral 2.1975 m): creep 0.09, launch 0.2975, land 1.8975, all of it by 1.35 s.
-    const float scale = 2.2f / 2.1975f;
+    for (float t : {1.265f, 1.3f, 1.5f, 2.f, 5.f}) CHECK(arenaLungeDistance(a, pool, t) == doctest::Approx(a.lunge));
+    // The scaled trapezoids: creep 0.09, coiled 0.09225, launch 0.29225, touchdown 1.89225, the whole by 1.265 s.
+    const float scale = 2.2f / kRuledPounceRaw;
     CHECK(arenaLungeDistance(a, pool, 0.6f) == doctest::Approx(0.09f * scale).epsilon(1e-4));
-    CHECK(arenaLungeDistance(a, pool, 0.8f) == doctest::Approx(0.2975f * scale).epsilon(1e-4));
-    CHECK(arenaLungeDistance(a, pool, 1.2f) == doctest::Approx(1.8975f * scale).epsilon(1e-4));
+    CHECK(arenaLungeDistance(a, pool, 0.63f) == doctest::Approx(0.09225f * scale).epsilon(1e-4));
+    CHECK(arenaLungeDistance(a, pool, 0.8f) == doctest::Approx(0.29225f * scale).epsilon(1e-4));
+    CHECK(arenaLungeDistance(a, pool, 1.2f) == doctest::Approx(1.89225f * scale).epsilon(1e-4));
+    // The coil: still from 0.63 to 0.7 s, the paws planted.
+    for (float t : {0.64f, 0.66f, 0.68f, 0.7f})
+        CHECK(std::fabs(arenaLungeDistance(a, pool, t) - arenaLungeDistance(a, pool, 0.63f)) <= 1e-6f);
+    // After touchdown (1.2 s, the paws down at f36): 0.13 m raw, 0.1414 m scaled, at most 0.15.
+    const float skid = a.lunge - arenaLungeDistance(a, pool, 1.2f);
+    CHECK(skid == doctest::Approx(0.13f * scale).epsilon(1e-3));
+    CHECK(skid <= 0.15f);
     // Monotonic, and the speed continuous at every knot: a one-sided difference on each side agrees to within the
-    // steepest acceleration (4 m/s over 0.1 s) times the step.
+    // steepest acceleration (4 m/s over 0.065 s) times the step.
     const float h = 1e-3f;
     float prev = 0.f;
     for (int s = 1; s <= 2000; ++s) {
@@ -10740,57 +10782,83 @@ TEST_CASE("arena lunge curve: the shipped pounce creeps, flies and skids, and co
                                   : (arenaLungeDistance(a, pool, t) - arenaLungeDistance(a, pool, t - h)) / h;
         const float right = (arenaLungeDistance(a, pool, t + h) - arenaLungeDistance(a, pool, t)) / h;
         CAPTURE(t);
-        CHECK(std::fabs(left - pool[a.lungeFirst + n].speed * scale) <= 40.f * h + 0.01f);
-        if (n + 1 < a.lungeKnots) CHECK(std::fabs(right - pool[a.lungeFirst + n].speed * scale) <= 40.f * h + 0.01f);
+        CHECK(std::fabs(left - pool[a.lungeFirst + n].speed * scale) <= 70.f * h + 0.01f);
+        if (n + 1 < a.lungeKnots) CHECK(std::fabs(right - pool[a.lungeFirst + n].speed * scale) <= 70.f * h + 0.01f);
         else CHECK(right == doctest::Approx(0.f));
     }
     // A move with no curve keeps the even spread over startup + active.
     ArenaAttack even = a;
     even.lungeKnots = 0;
+    CHECK_FALSE(arenaLungeCurved(even));
     CHECK(arenaLungeDistance(even, pool, 0.6f) == doctest::Approx(2.2f * 0.6f / 1.2f));
     CHECK(arenaLungeDistance(even, pool, 1.3f) == doctest::Approx(2.2f));
     CHECK(arenaLungeEnd(even, pool) == doctest::Approx(1.2f));
+    // A code-built curve whose knots run past the pool counts as none (only the loader bounds them): no read past it.
+    const std::pair<int, int> pastPool[] = {{250, 7}, {6, 7}, {11, 2}, {0, 13}};
+    for (const auto& [first, knots] : pastPool) {
+        ArenaAttack past = a;
+        past.lungeFirst = static_cast<std::uint8_t>(first);
+        past.lungeKnots = static_cast<std::uint8_t>(knots);
+        CAPTURE(first);
+        CHECK_FALSE(arenaLungeCurved(past));
+        CHECK(arenaLungeDistance(past, pool, 0.6f) == doctest::Approx(2.2f * 0.6f / 1.2f));
+        CHECK(arenaLungeEnd(past, pool) == doctest::Approx(1.2f));
+    }
+    ArenaAttack last = a; // the pool's last two knots are inside it
+    last.lungeFirst = 10;
+    last.lungeKnots = 2;
+    CHECK(arenaLungeCurved(last));
 }
 
-TEST_CASE("arena lunge curve: an enemy with one moves by it, tick by tick, on into its recovery") {
-    ArenaAttack pounce = swing(0.8f, 0.4f, 0.8f, 1.8f, 0);
-    pounce.lunge = 2.2f;
-    ArenaEnemyKind k = hitterKind(pounce);
-    const ArenaLungeKnot knots[] = {{0.f, 0.15f}, {0.6f, 0.15f}, {0.7f, 0.f}, {0.8f, 4.f}, {1.2f, 4.f}, {1.35f, 0.f}};
-    for (std::size_t n = 0; n < 6; ++n) k.lungeKnots[n] = knots[n];
-    k.lungeKnotCount = 6;
-    k.moves[0].attack.lungeFirst = 0;
-    k.moves[0].attack.lungeKnots = 6;
+TEST_CASE("arena lunge curve: an enemy with one moves by it, tick by tick, on into its recovery, at any frame rate") {
+    const ArenaEnemyKind k = ruledHitter();
     const ArenaAttack& a = k.moves[0].attack;
-    Rig rig(ruleFighter(), {k});
-    rig.put(0, 1.5f, 0.f);
-    float moved = 0.f;
-    bool recoveryMoved = false;
-    const int ticks = static_cast<int>(std::lround(a.total() / kDt));
-    for (int n = 0; n < ticks; ++n) {
-        const ArenaOutput& out = rig.tick();
-        REQUIRE(out.enemies[0].brain == ArenaBrain::Attack);
-        const float t0 = static_cast<float>(n) * kDt, t1 = t0 + kDt;
-        const float want = (arenaLungeDistance(a, k.lungeKnots.data(), t1) - arenaLungeDistance(a, k.lungeKnots.data(), t0)) / kDt;
-        const float speed = std::hypot(out.enemies[0].velocity.x, out.enemies[0].velocity.y);
-        CAPTURE(n);
-        CHECK(speed == doctest::Approx(want).epsilon(1e-3));
-        moved += speed * kDt;
-        if (t0 >= a.startup + a.active + 1e-4f && speed > 0.f) recoveryMoved = true;
+    {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        float moved = 0.f;
+        bool recoveryMoved = false;
+        const int ticks = static_cast<int>(std::lround(a.total() / kDt));
+        for (int n = 0; n < ticks; ++n) {
+            const ArenaOutput& out = rig.tick();
+            REQUIRE(out.enemies[0].brain == ArenaBrain::Attack);
+            const float t0 = static_cast<float>(n) * kDt, t1 = t0 + kDt;
+            const float want = (arenaLungeDistance(a, k.lungeKnots.data(), t1) - arenaLungeDistance(a, k.lungeKnots.data(), t0)) / kDt;
+            const float speed = std::hypot(out.enemies[0].velocity.x, out.enemies[0].velocity.y);
+            CAPTURE(n);
+            CHECK(speed == doctest::Approx(want).epsilon(1e-3));
+            moved += speed * kDt;
+            if (t0 >= a.startup + a.active + 1e-4f && speed > 0.f) recoveryMoved = true;
+        }
+        CHECK(moved == doctest::Approx(2.2f).epsilon(1e-3));
+        CHECK(recoveryMoved); // the stop after touchdown
     }
-    CHECK(moved == doctest::Approx(2.2f).epsilon(1e-3));
-    CHECK(recoveryMoved); // the landing's skid
+    // The velocity is a difference of distances, so its sum telescopes: the same 2.2 m at 120 Hz and at 10 Hz.
+    // Float time may end the attack a tick early or late, so it steps until the attack ends.
+    for (float dt : {1.f / 120.f, 0.1f}) {
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        float moved = 0.f;
+        const int ticks = static_cast<int>(std::lround(a.total() / dt));
+        int attackTicks = 0;
+        for (int n = 0; n < 2 * ticks + 4; ++n) {
+            const ArenaOutput& out = rig.tick(dt);
+            if (out.enemies[0].brain != ArenaBrain::Attack) {
+                if (attackTicks > 0) break;
+                continue;
+            }
+            ++attackTicks;
+            moved += std::hypot(out.enemies[0].velocity.x, out.enemies[0].velocity.y) * dt;
+        }
+        CAPTURE(dt);
+        CAPTURE(attackTicks);
+        CHECK(std::abs(attackTicks - ticks) <= 1);
+        CHECK(moved == doctest::Approx(2.2f).epsilon(1e-3));
+    }
 }
 
 TEST_CASE("arena lunge curve: an unseen copy holds still through its added windup, then runs the curve whole") {
-    ArenaAttack pounce = swing(0.8f, 0.4f, 0.8f, 1.8f, 0);
-    pounce.lunge = 2.2f;
-    ArenaEnemyKind k = hitterKind(pounce);
-    const ArenaLungeKnot knots[] = {{0.f, 0.15f}, {0.6f, 0.15f}, {0.7f, 0.f}, {0.8f, 4.f}, {1.2f, 4.f}, {1.35f, 0.f}};
-    for (std::size_t n = 0; n < 6; ++n) k.lungeKnots[n] = knots[n];
-    k.lungeKnotCount = 6;
-    k.moves[0].attack.lungeFirst = 0;
-    k.moves[0].attack.lungeKnots = 6;
+    const ArenaEnemyKind k = ruledHitter();
     const ArenaAttack& a = k.moves[0].attack;
     const ArenaLungeKnot* pool = k.lungeKnots.data();
     Rig rig(ruleFighter(), {k});
@@ -10815,28 +10883,202 @@ TEST_CASE("arena lunge curve: an unseen copy holds still through its added windu
     CHECK(moved == doctest::Approx(2.2f).epsilon(1e-3));
 }
 
-TEST_CASE("arena lunge curve: the loader takes a good one and refuses the rest") {
-    const auto enemy = [](const std::string& curve, const char* lunge = "2") {
-        return std::string(R"([ { "id": "dummy", "moves": [ { "startup": 0.8, "active": 0.4, "recovery": 0.8, "lunge": )") +
-               lunge + R"(, "lungeSpeed": )" + curve + R"( } ] } ])";
+TEST_CASE("arena lunge curve: a retimed copy reads the move's times, so a shorter windup or recovery still covers it") {
+    const ArenaEnemyKind k = ruledHitter();
+    const ArenaAttack& move = k.moves[0].attack;
+    const ArenaLungeKnot* pool = k.lungeKnots.data();
+    // The move itself, and a copy with an added windup: the move's times, shifted by what it gained.
+    for (float t : {0.f, 0.3f, 0.8f, 1.1f, 1.265f, 1.9f}) CHECK(arenaLungeMoveTime(move, move, t) == t);
+    ArenaAttack unseen = move;
+    unseen.startup += kArenaUnseenWindup;
+    CHECK(arenaLungeMoveTime(unseen, move, 0.f) == doctest::Approx(-kArenaUnseenWindup));
+    CHECK(arenaLungeMoveTime(unseen, move, 1.5f) == doctest::Approx(1.5f - kArenaUnseenWindup));
+    // A boss break's copy (a shorter windup and a longer recovery), stepped as the fight steps it.
+    ArenaAttack broke = move;
+    broke.startup = kArenaBossBreakWindup;
+    broke.recovery = kArenaBossBreakRecovery;
+    REQUIRE(broke.startup < move.startup);
+    REQUIRE(broke.recovery != move.recovery);
+    CHECK(arenaLungeMoveTime(broke, move, 0.f) == 0.f);
+    CHECK(arenaLungeMoveTime(broke, move, broke.startup) == doctest::Approx(move.startup));
+    CHECK(arenaLungeMoveTime(broke, move, broke.startup + broke.active) == doctest::Approx(move.startup + move.active));
+    CHECK(arenaLungeMoveTime(broke, move, broke.total()) == doctest::Approx(move.total()));
+    float moved = 0.f, prev = -1.f;
+    const int ticks = static_cast<int>(std::lround(broke.total() / kDt));
+    for (int n = 0; n < ticks; ++n) {
+        const float t0 = static_cast<float>(n) * kDt, t1 = t0 + kDt;
+        const float m0 = arenaLungeMoveTime(broke, move, t0), m1 = arenaLungeMoveTime(broke, move, t1);
+        CHECK(m1 > m0); // never backwards, never a jump past the curve
+        if (n > 0) CHECK(m0 == doctest::Approx(prev).epsilon(1e-5)); // and no gap from tick to tick
+        prev = m1;
+        moved += arenaLungeDistance(move, pool, m1) - arenaLungeDistance(move, pool, m0);
+    }
+    CHECK(moved == doctest::Approx(2.2f).epsilon(1e-4));
+    // A zero windup or recovery jumps to the move's end of it.
+    ArenaAttack snap = move;
+    snap.startup = 0.f;
+    snap.recovery = 0.f;
+    CHECK(arenaLungeMoveTime(snap, move, 0.f) == doctest::Approx(move.startup));
+    CHECK(arenaLungeMoveTime(snap, move, snap.active) == doctest::Approx(move.total()));
+}
+
+TEST_CASE("arena lunge curve: a parry, a stagger or a death mid-curve ends the travel there") {
+    const float h = kDt * 0.5f;
+    // The forward travel the enemy reports while ticking, and the tick its move was cut.
+    struct Cut {
+        float moved = 0.f;
+        float cutAt = -1.f;
+        float after = 0.f; // travel reported after the cut, to 1.6 s
     };
-    ArenaTable t;
-    CHECK(loadError(tableJson(kFightersOk, enemy("[[0, 0.15], [0.6, 0.15], [0.7, 0], [0.8, 4], [1.2, 4], [1.35, 0]]")), &t) == "");
-    REQUIRE(t.enemies.size() == 1);
-    CHECK(t.enemies[0].lungeKnotCount == 6);
-    CHECK(t.enemies[0].moves[0].attack.lungeKnots == 6);
-    CHECK(t.enemies[0].lungeKnots[3].speed == doctest::Approx(4.f));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0.1, 1], [1, 1]]"))), "first knot at t 0"));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0, 1], [0.5, 1], [0.5, 2]]"))), "above the knot before"));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0, 1], [2.5, 1]]"))), "at most the move's length"));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0, 1], [1, -1]]"))), "speed in [0, 50]"));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0, 0], [1, 0]]"))), "integral is 0"));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0, 1]]"))), "2..12"));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0, 1], [1]]"))), "expected [t, speed]"));
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy("[[0, 1], [1, 1]]", "0"))), "lunge above 0"));
-    // 13 knots in one kind is past the pool.
-    std::string many = "[[0, 1]";
-    for (int n = 1; n < 13; ++n) many += ", [" + std::to_string(n * 0.1) + ", 1]";
-    many += "]";
-    CHECK(contains(loadError(tableJson(kFightersOk, enemy(many))), "2..12"));
+    const auto runCut = [&](Rig& rig, int pressAt, auto press, ArenaBrain into) {
+        const ArenaEnemyKind& k = rig.def.enemies[0];
+        const ArenaAttack& a = k.moves[0].attack;
+        Cut c;
+        for (int n = 0; n < static_cast<int>(std::lround(1.6f / kDt)); ++n) {
+            if (n == pressAt) press(rig);
+            const ArenaOutput& out = rig.tick();
+            const float speed = std::hypot(out.enemies[0].velocity.x, out.enemies[0].velocity.y);
+            const float t0 = static_cast<float>(n) * kDt;
+            if (c.cutAt < 0.f && out.enemies[0].brain != ArenaBrain::Attack) {
+                c.cutAt = t0;
+                CHECK(out.enemies[0].brain == into);
+            }
+            if (c.cutAt < 0.f) {
+                const float want = (arenaLungeDistance(a, k.lungeKnots.data(), t0 + kDt) -
+                                    arenaLungeDistance(a, k.lungeKnots.data(), t0)) / kDt;
+                CHECK(speed == doctest::Approx(want).epsilon(1e-3));
+                c.moved += speed * kDt;
+            } else {
+                c.after += speed * kDt;
+            }
+        }
+        return c;
+    };
+    {   // parried at the first active tick (0.8 s), in the window of a guard pressed at 0.7 s
+        Rig rig(ruleFighter(), {ruledHitter()});
+        rig.put(0, 1.5f, 0.f);
+        const Cut c = runCut(rig, 42, [](Rig& r) { r.in.guard = true; }, ArenaBrain::Open);
+        CHECK(rig.count(ArenaEventType::Parried) == 1);
+        CHECK(c.cutAt == doctest::Approx(0.8f).epsilon(0.03));
+        CHECK(c.after == 0.f);
+        CHECK(c.moved < 0.4f); // the 2.2 m never flown
+    }
+    {   // staggered in flight by a light that breaks its poise (pressed at 0.85 s, landing at about 1.05 s); the pounce
+        // reaches 0.5 m from 2.2 m, so it never lands on the player (the bodies stay put: the rig moves none)
+        ArenaFighter f = ruleFighter();
+        f.light[0].poiseDamage = 100.f;
+        Rig rig(f, {ruledHitter(0.1f)});
+        rig.put(0, 2.2f, 0.f);
+        const Cut c = runCut(rig, 51, [](Rig& r) { r.in.light = true; }, ArenaBrain::Staggered);
+        CHECK(rig.count(ArenaEventType::Staggered) == 1);
+        CHECK(c.cutAt > 0.8f + h);
+        CHECK(c.cutAt < 1.2f - h); // in flight
+        CHECK(c.after == 0.f);
+        CHECK(c.moved < 2.f);
+    }
+    {   // killed in flight at 1.0 s by a host blow
+        Rig rig(ruleFighter(), {ruledHitter(0.1f)});
+        rig.put(0, 2.2f, 0.f);
+        const Cut c = runCut(rig, 60, [](Rig& r) { REQUIRE(r.fight.hostBlow(0, 1000, 0)); }, ArenaBrain::Dead);
+        CHECK_FALSE(rig.fight.enemyAlive(0));
+        CHECK(c.cutAt == doctest::Approx(1.f).epsilon(0.03));
+        CHECK(c.after == 0.f);
+        CHECK(c.moved < 1.6f);
+    }
+}
+
+TEST_CASE("arena lunge curve: two curved moves in one kind each run their own knots of the pool") {
+    ArenaAttack slow = swing(0.6f, 0.3f, 0.6f, 1.8f, 0);
+    slow.lunge = 1.f;
+    ArenaEnemyKind k = hitterKind(slow);
+    k.moveCount = 2;
+    k.moves[1] = k.moves[0];
+    k.moves[0].weight = 0.f; // never picked: the fight runs move 1, whose knots come after move 0's
+    const ArenaLungeKnot early[] = {{0.f, 3.f}, {0.3f, 0.f}};
+    const ArenaLungeKnot late[] = {{0.f, 0.f}, {0.6f, 0.f}, {0.75f, 4.f}, {0.9f, 0.f}};
+    giveCurve(k, 0, early, 2);
+    giveCurve(k, 1, late, 4);
+    REQUIRE(k.moves[1].attack.lungeFirst == 2);
+    REQUIRE(k.lungeKnotCount == 6);
+    const ArenaAttack& a = k.moves[1].attack;
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    float moved = 0.f;
+    for (int n = 0; n < static_cast<int>(std::lround(a.total() / kDt)); ++n) {
+        const ArenaOutput& out = rig.tick();
+        REQUIRE(out.enemies[0].brain == ArenaBrain::Attack);
+        REQUIRE(out.enemies[0].move == 1);
+        const float t0 = static_cast<float>(n) * kDt;
+        const float want = (arenaLungeDistance(a, k.lungeKnots.data(), t0 + kDt) -
+                            arenaLungeDistance(a, k.lungeKnots.data(), t0)) / kDt;
+        const float speed = std::hypot(out.enemies[0].velocity.x, out.enemies[0].velocity.y);
+        CAPTURE(n);
+        CHECK(speed == doctest::Approx(want).epsilon(1e-3));
+        if (t0 + kDt <= 0.6f) CHECK(speed <= 1e-6f); // move 1's still start, not move 0's dash
+        moved += speed * kDt;
+    }
+    CHECK(moved == doctest::Approx(1.f).epsilon(1e-3));
+}
+
+TEST_CASE("arena lunge curve: the ruled pounce connects on a still target from 1.0 to 3.9 m and misses from 4.0") {
+    // The shipped maw_pup on the ruled curve with only its pounce, picked at any distance at once; the default kit
+    // stands still (no input) at the ring's centre. A row: the pup's start, centre to centre, 1.0 to 5.0 m in 0.1 m
+    // steps; whether its first pounce lands. This is a landed pounce under test (every pin fight's pounce is parried).
+    const ArenaTable table = loadShipped();
+    std::size_t at = 0;
+    ArenaEnemyKind pup = ruledPup(table, at);
+    pup.moves[0] = pup.moves[at];
+    pup.moveCount = 1;
+    pup.moves[0].minRange = 0.f;
+    pup.moves[0].maxRange = 100.f;
+    pup.moves[0].chain = -1;
+    pup.attackDelay = 0.f;
+    pup.walkSpeed = 0.f; // it stands where it is put and pounces from there
+    pup.runSpeed = 0.f;
+    pup.strafeSpeed = 0.f;
+    pup.preferredRange = 100.f;
+    float firstHit = -1.f, lastHit = -1.f;
+    int hits = 0, misses = 0;
+    for (int d10 = 10; d10 <= 50; ++d10) {
+        const float d = static_cast<float>(d10) * 0.1f;
+        ArenaDef def;
+        def.fighter = table.fighter("default");
+        def.enemies[0] = pup;
+        def.enemyCount = 1;
+        def.attackers = 1;
+        ArenaFight fight;
+        ArenaBodies bodies;
+        fight.begin(def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
+        bodies.player = Vec2{0.f, 0.f};
+        bodies.enemies[0] = Vec2{d, 0.f};
+        bool started = false, hit = false;
+        float startGap = -1.f;
+        for (int n = 0; n < 240; ++n) {
+            const ArenaOutput& out = fight.tick(kDt, ArenaInput{}, bodies);
+            for (const ArenaEvent& e : out.events) {
+                if (e.type == ArenaEventType::AttackStarted && e.source == 0 && !started) {
+                    started = true;
+                    startGap = distanceOf(bodies.enemies[0], bodies.player);
+                }
+                if (e.type == ArenaEventType::Hit && e.source == 0 && e.target == kArenaPlayer) hit = true;
+            }
+            if (started && out.enemies[0].brain != ArenaBrain::Attack) break;
+            arenaStep(fight, bodies, kDt);
+        }
+        CAPTURE(d);
+        REQUIRE(started);
+        CHECK(startGap == doctest::Approx(d).epsilon(0.01)); // it pounced from where it stood
+        MESSAGE("CONNECT " << d << " " << (hit ? 1 : 0));
+        if (hit) {
+            ++hits;
+            if (firstHit < 0.f) firstHit = d;
+            CHECK(misses == 0); // one band, from the near end
+            lastHit = d;
+        } else {
+            ++misses;
+        }
+    }
+    CHECK(firstHit == doctest::Approx(1.0f));
+    CHECK(lastHit == doctest::Approx(3.9f));
+    CHECK(hits == 30);
 }

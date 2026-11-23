@@ -194,7 +194,7 @@
       "look": { "clips": "Data/Anim/maw_pup_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
         { "clip": "nip", "tell": "thrust", "armor": 0.6, "startup": 0.4, "active": 0.12, "recovery": 0.5, "range": 1.6, "arcCos": 0.4, "damage": 5, "poiseDamage": 5, "guardDamage": 6, "lunge": 0.8, "tracking": 5, "minRange": 0, "maxRange": 1.9, "weight": 1 },
-        { "clip": "pounce", "tell": "charge", "armor": 0.6, "startup": 0.8, "active": 0.4, "recovery": 0.8, "range": 1.8, "arcCos": 0.5, "damage": 9, "poiseDamage": 10, "guardDamage": 10, "lunge": 2.2, "lungeSpeed": [[0, 0.15], [0.6, 0.15], [0.7, 0], [0.8, 4.0], [1.2, 4.0], [1.35, 0]], "tracking": 3, "minRange": 0, "maxRange": 4.5, "cooldown": 3, "weight": 0.5 }
+        { "clip": "pounce", "tell": "charge", "armor": 0.6, "startup": 0.8, "active": 0.2, "recovery": 0.8, "range": 1.8, "arcCos": 0.5, "damage": 9, "poiseDamage": 10, "guardDamage": 10, "lunge": 2.2, "tracking": 3, "minRange": 0, "maxRange": 4.5, "cooldown": 3, "weight": 0.5 }
       ]
     },
     {

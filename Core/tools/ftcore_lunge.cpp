@@ -5,8 +5,11 @@
 //   ftcore_lunge ARENA_JSON ENEMY_ID MOVE_CLIP [--fps 30] [--out CSV]
 //
 // Prints (or writes) "frame,t,phase,speed,distance": every frame from 0 through the end of the move (startup + active
-// + recovery), phase one of startup, active, recovery; speed the forward m/s over the frame that ends there (0 at
-// frame 0). Then a line "# lunge L end E knots N" (N 0: no curve, the even spread). Exit 0, 2 on an error.
+// + recovery), phase one of startup, active, recovery; distance the metres lunged by that frame's time (po_root(f)
+// is this column); speed the mean forward m/s over the frame that ends there (0 at frame 0), a dump for reading only,
+// never a root to key from. Then a line "# lunge L end E knots N" (N 0: no curve, the even spread), which also goes
+// to stdout when --out writes the table (the ctest lunge_pounce matches it). The table must end on the whole lunge:
+// exit 3 when its last distance is off `lunge` by more than 1e-4 m. Exit 0, 2 on an error.
 
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
@@ -45,8 +48,9 @@ int main(int argc, char** argv) {
     if (argc < 4) return die("usage: ftcore_lunge ARENA_JSON ENEMY_ID MOVE_CLIP [--fps 30] [--out CSV]");
     int fps = 30;
     std::string outPath;
-    for (int i = 4; i + 1 < argc; i += 2) {
+    for (int i = 4; i < argc; i += 2) {
         const std::string_view key = argv[i];
+        if (i + 1 >= argc) return die("option " + std::string(key) + " needs a value");
         if (key == "--fps") fps = std::atoi(argv[i + 1]);
         else if (key == "--out") outPath = argv[i + 1];
         else return die("unknown option " + std::string(key));
@@ -87,11 +91,17 @@ int main(int argc, char** argv) {
     csv += line;
     if (outPath.empty()) {
         std::fputs(csv.c_str(), stdout);
-        return 0;
+    } else {
+        std::FILE* f = std::fopen(outPath.c_str(), "wb");
+        if (!f) return die("cannot write " + outPath);
+        std::fwrite(csv.data(), 1, csv.size(), f);
+        std::fclose(f);
+        std::fputs(line, stdout);
     }
-    std::FILE* f = std::fopen(outPath.c_str(), "wb");
-    if (!f) return die("cannot write " + outPath);
-    std::fwrite(csv.data(), 1, csv.size(), f);
-    std::fclose(f);
+    if (std::fabs(before - a.lunge) > 1e-4f) {
+        std::fprintf(stderr, "ftcore_lunge: error: the table ends at %.6f m, not its lunge %.6f\n",
+                     static_cast<double>(before), static_cast<double>(a.lunge));
+        return 3;
+    }
     return 0;
 }

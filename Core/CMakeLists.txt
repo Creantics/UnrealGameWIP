@@ -619,9 +619,13 @@ if(FTCORE_BUILD_TESTS)
     endif()
     add_test(NAME ftcore_tests COMMAND ftcore_tests)
 
-    # The Maw-Pup pounce's lunge table from the shipped data (the clip build's po_root reads the same).
+    # The Maw-Pup pounce's lunge table from the shipped data (the clip build's po_root reads the same). It passes only on
+    # the shipped totals: the whole lunge, where it ends and its knot count. A pass regex ignores the exit code, so the
+    # tool's error line (a table that misses its lunge exits 3 with one) fails it.
     add_test(NAME lunge_pounce COMMAND ftcore_lunge ${CMAKE_CURRENT_SOURCE_DIR}/../Data/Battle/arena.json maw_pup pounce
         --out ${CMAKE_CURRENT_BINARY_DIR}/lunge_maw_pup_pounce.csv)
+    set_tests_properties(lunge_pounce PROPERTIES PASS_REGULAR_EXPRESSION "# lunge 2[.]200000 end 1[.]000000 knots 0"
+        FAIL_REGULAR_EXPRESSION "ftcore_lunge: error")
 
     # The placer's example job, end to end; its outputs stay in the build folder.
     add_test(NAME place_example COMMAND ftcore_place

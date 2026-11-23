@@ -3557,12 +3557,13 @@ struct ArenaFightImpl {
         }
         Vec2 vel{};
         const float span = a.startup + a.active;
-        if (a.lungeKnots >= 2 && a.lunge != 0.f) { // its curve (arenaLungeDistance), which may run into recovery
-            // on the move's own times: a retimed copy (an unseen windup, a boss break's) shifts it by what it gained
+        if (arenaLungeCurved(a) && a.lunge != 0.f) { // its curve (arenaLungeDistance), which may run into recovery
+            // on the move's own times: a retimed copy (an unseen windup, a boss break's) reads them at arenaLungeMoveTime
             const ArenaLungeKnot* pool = def.enemies[i].lungeKnots.data();
-            const float shift = a.startup - def.enemies[i].moves[foe.move].attack.startup;
-            vel = arenaScaled(foe.facing,
-                              (arenaLungeDistance(a, pool, a1 - shift) - arenaLungeDistance(a, pool, a0 - shift)) / dt);
+            const ArenaAttack& own = def.enemies[i].moves[foe.move].attack;
+            vel = arenaScaled(foe.facing, (arenaLungeDistance(a, pool, arenaLungeMoveTime(a, own, a1)) -
+                                           arenaLungeDistance(a, pool, arenaLungeMoveTime(a, own, a0))) /
+                                              dt);
         } else if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
             vel = arenaScaled(foe.facing, a.lunge / span * moving / dt);
@@ -4905,7 +4906,7 @@ double arenaCurveDistance(const ArenaLungeKnot* k, std::size_t n, double t) {
 } // namespace
 
 float arenaLungeDistance(const ArenaAttack& a, const ArenaLungeKnot* pool, float t) {
-    if (a.lungeKnots < 2 || !pool) {
+    if (!arenaLungeCurved(a) || !pool) {
         const float span = a.startup + a.active;
         if (!(span > kArenaEps)) return t > 0.f ? a.lunge : 0.f;
         return a.lunge * std::clamp(t / span, 0.f, 1.f);
@@ -4920,8 +4921,19 @@ float arenaLungeDistance(const ArenaAttack& a, const ArenaLungeKnot* pool, float
 }
 
 float arenaLungeEnd(const ArenaAttack& a, const ArenaLungeKnot* pool) {
-    if (a.lungeKnots < 2 || !pool) return a.startup + a.active;
+    if (!arenaLungeCurved(a) || !pool) return a.startup + a.active;
     return pool[a.lungeFirst + a.lungeKnots - 1u].t;
+}
+
+float arenaLungeMoveTime(const ArenaAttack& copy, const ArenaAttack& move, float t) {
+    const float gained = copy.startup - move.startup;
+    if (t < copy.startup && gained < 0.f) // a shorter windup: the move's startup squeezed into it
+        return copy.startup > kArenaEps ? t * (move.startup / copy.startup) : move.startup;
+    const float activeEnd = copy.startup + copy.active;
+    // before an added windup the time is below 0 (still); the active part, and a recovery of the move's length, as is
+    if (t < activeEnd || copy.recovery == move.recovery) return t - gained;
+    const float into = t - activeEnd; // a recovery of another length: the move's own stretched or squeezed into it
+    return copy.recovery > kArenaEps ? move.startup + move.active + into * (move.recovery / copy.recovery) : move.total();
 }
 
 float arenaBoltFlight(float startup) {
@@ -5455,12 +5467,18 @@ bool arenaBool(JsonValue j, const char* key, bool& out, const std::string& path,
 void arenaParseLungeCurve(JsonValue j, const std::string& path, ArenaEnemyKind& k, ArenaAttack& a, ArenaStrings& errors) {
     if (j.isAbsent()) return;
     const std::size_t room = kMaxArenaLungeKnots - k.lungeKnotCount;
+    if (room < 2) {
+        errors.push_back(path + ": no room for another curve (a kind's moves hold " + std::to_string(kMaxArenaLungeKnots) +
+                         " knots together; " + std::to_string(k.lungeKnotCount) + " are taken)");
+        return;
+    }
     if (!j.isArray() || j.size() < 2 || j.size() > room) {
         errors.push_back(path + ": expected an array of 2.." + std::to_string(room) + " [t, speed] knots (" +
                          std::to_string(kMaxArenaLungeKnots) + " a kind)");
         return;
     }
-    const std::size_t first = k.lungeKnotCount;
+    // Checked whole before any of it goes into the pool, so a refused curve leaves no knots behind.
+    std::array<ArenaLungeKnot, kMaxArenaLungeKnots> knots{};
     double integral = 0.0;
     for (std::uint32_t n = 0; n < j.size(); ++n) {
         const JsonValue p = j[n];
@@ -5480,7 +5498,7 @@ void arenaParseLungeCurve(JsonValue j, const std::string& path, ArenaEnemyKind& 
             return;
         }
         if (n > 0) {
-            const ArenaLungeKnot& prev = k.lungeKnots[first + n - 1];
+            const ArenaLungeKnot& prev = knots[n - 1];
             if (!(t > prev.t)) {
                 errors.push_back(np + ": expected t above the knot before");
                 return;
@@ -5491,7 +5509,7 @@ void arenaParseLungeCurve(JsonValue j, const std::string& path, ArenaEnemyKind& 
             errors.push_back(np + ": expected t at most the move's length (" + arenaFormat(a.total()) + ")");
             return;
         }
-        k.lungeKnots[first + n] = ArenaLungeKnot{static_cast<float>(t), static_cast<float>(v)};
+        knots[n] = ArenaLungeKnot{static_cast<float>(t), static_cast<float>(v)};
     }
     if (!(integral > 1e-6)) {
         errors.push_back(path + ": expected a curve that moves (its integral is 0)");
@@ -5501,6 +5519,8 @@ void arenaParseLungeCurve(JsonValue j, const std::string& path, ArenaEnemyKind& 
         errors.push_back(path + ": expected a lunge above 0 to scale the curve to");
         return;
     }
+    const std::size_t first = k.lungeKnotCount;
+    for (std::uint32_t n = 0; n < j.size(); ++n) k.lungeKnots[first + n] = knots[n];
     k.lungeKnotCount = static_cast<std::uint8_t>(first + j.size());
     a.lungeFirst = static_cast<std::uint8_t>(first);
     a.lungeKnots = static_cast<std::uint8_t>(j.size());

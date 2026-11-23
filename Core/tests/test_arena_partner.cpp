@@ -5355,10 +5355,6 @@ struct ClassicPinRow {
 // rows never had a blow land in a guard-cuttable recovery. The balance shift it brings on the Dealer alone in the
 // stone ring (test_arena_kind_crit, seed 1; a later balance item, not a fault of the gate): Devin's hits taken
 // 5 -> 1 (damage 68 -> 14) and the fight 41.3 -> 31.4 s; Duy's 5 -> 2 (68 -> 28), 44.9 -> 40.6 s.
-// Re-pinned for maw_pup's pounce lunge window (active 0.2 -> 0.4 s and its lungeSpeed curve: a 0.15 m/s creep, the
-// 4 m/s flight, a skid 0.15 s into recovery): only the four maw_pup rows moved, hashes only (the same hits and damage),
-// all still victories. Over each row's three seeds the pup starts one pounce (at 1.75 m) and the lead parries it,
-// old and new alike; the pup simply covers its ground on the curve's times.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5384,8 +5380,8 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "stone_bearer", true, 66, 489, 11331705351014989236ull},
     {"devin", "white_glove", false, 58, 413, 13953194659030329670ull},
     {"devin", "white_glove", true, 55, 400, 5000600046039610435ull},
-    {"devin", "maw_pup", false, 4, 28, 17219426724497109451ull},
-    {"devin", "maw_pup", true, 4, 28, 14056094080327870828ull},
+    {"devin", "maw_pup", false, 4, 28, 4588098154154008939ull},
+    {"devin", "maw_pup", true, 4, 28, 532221035747124859ull},
     {"devin", "spitter", false, 6, 42, 6079499873305667569ull},
     {"devin", "spitter", true, 3, 21, 4150562399047041604ull},
     {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
@@ -5412,8 +5408,8 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "stone_bearer", true, 82, 613, 7313118388245454201ull},
     {"duy", "white_glove", false, 66, 483, 1839276756863646281ull},
     {"duy", "white_glove", true, 66, 472, 10316052538403549276ull},
-    {"duy", "maw_pup", false, 6, 42, 11843389660525646661ull},
-    {"duy", "maw_pup", true, 6, 32, 16800536366425751146ull},
+    {"duy", "maw_pup", false, 6, 42, 12129895063172397078ull},
+    {"duy", "maw_pup", true, 6, 32, 760009930559185308ull},
     {"duy", "spitter", false, 6, 42, 373096491565446441ull},
     {"duy", "spitter", true, 6, 42, 13513007789646449681ull},
 };
@@ -6035,5 +6031,64 @@ TEST_CASE("arena partner: pushed back mid-string, the drawn heading stays within
         MESSAGE("string: shoved " << shoved << " ticks, worst heading off facing " << worst << " deg");
         CHECK(shoved >= 10);
         CHECK(worst <= 5.f);
+    }
+}
+
+TEST_CASE("arena classic pins: the pounce as main shipped it before its lunge curve fights bit for bit as then") {
+    // The old variant: every lunge curve taken off and the maw_pup pounce put back as it was (active 0.2, minRange 0,
+    // maxRange 4.5). The curve's code must leave such a fight exactly as it was: the maw_pup rows' pins of f9d5c7c9.
+    ArenaTable t = shippedTable();
+    for (ArenaEnemyKind& k : t.enemies) {
+        k.lungeKnotCount = 0;
+        for (std::size_t m = 0; m < k.moveCount; ++m) {
+            k.moves[m].attack.lungeFirst = 0;
+            k.moves[m].attack.lungeKnots = 0;
+        }
+    }
+    std::size_t pupAt = t.enemyIds.size();
+    for (std::size_t e = 0; e < t.enemyIds.size(); ++e)
+        if (t.enemyIds[e] == "maw_pup") pupAt = e;
+    REQUIRE(pupAt < t.enemyIds.size());
+    ArenaEnemyKind& pup = t.enemies[pupAt];
+    bool pounce = false;
+    for (std::size_t m = 0; m < pup.moveCount; ++m)
+        if (pup.moves[m].clip() == "pounce") {
+            pounce = true;
+            pup.moves[m].attack.active = 0.2f;
+            pup.moves[m].minRange = 0.f;
+            pup.moves[m].maxRange = 4.5f;
+        }
+    REQUIRE(pounce);
+    ArenaDef def;
+    def.enemyCount = 1;
+    def.enemyKind[0] = static_cast<std::uint8_t>(pupAt);
+    def.enemies[0] = pup;
+    def.attackers = 1;
+    struct OldPin {
+        const char* lead;
+        bool camera;
+        int hits, damage;
+        std::uint64_t hash;
+    };
+    const OldPin pins[] = {
+        {"devin", false, 4, 28, 4588098154154008939ull},
+        {"devin", true, 4, 28, 532221035747124859ull},
+        {"duy", false, 6, 42, 12129895063172397078ull},
+        {"duy", true, 6, 32, 760009930559185308ull},
+    };
+    for (const OldPin& p : pins) {
+        int hits = 0, damage = 0;
+        std::uint64_t hash = 1469598103934665603ull;
+        for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+            const ClassicPin r = classicPinRun(t, def, p.lead, seed, p.camera);
+            hits += r.hits;
+            damage += r.damage;
+            pinFold(hash, &r.hash, sizeof r.hash);
+        }
+        CAPTURE(p.lead);
+        CAPTURE(p.camera);
+        CHECK(hits == p.hits);
+        CHECK(damage == p.damage);
+        CHECK(hash == p.hash);
     }
 }

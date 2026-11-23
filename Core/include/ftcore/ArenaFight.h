@@ -725,11 +725,22 @@ struct ArenaEnemyKind {
 // them (each segment constant acceleration, its distance the exact trapezoid), 0 after the last knot, the whole curve
 // scaled by lunge / its own integral so it covers exactly `lunge` by the last knot. So the lunge window may run past
 // the active part into recovery (a landing's skid). The times are the move's as the file gives them: a retimed copy of
-// it (an unseen windup, a boss break's windup) reads the curve at t minus the startup it gained (ArenaFight does).
-// Pure, no allocation.
+// it (an unseen windup, a boss break's windup and recovery) reads the curve at arenaLungeMoveTime (ArenaFight does),
+// so it still covers the whole lunge. A curve whose knots are not all inside the pool (only a code-built one can be:
+// the loader keeps them in) counts as none (arenaLungeCurved). Pure, no allocation.
 FTCORE_API float arenaLungeDistance(const ArenaAttack& a, const ArenaLungeKnot* pool, float t);
 // When that lunge is done: the last knot, else startup + active.
 FTCORE_API float arenaLungeEnd(const ArenaAttack& a, const ArenaLungeKnot* pool);
+// Whether an attack moves by a lunge curve: 2 or more knots, every one of them inside its kind's pool.
+inline bool arenaLungeCurved(const ArenaAttack& a) {
+    return a.lungeKnots >= 2 && static_cast<std::size_t>(a.lungeFirst) + a.lungeKnots <= kMaxArenaLungeKnots;
+}
+// The time on `move` (the move as the file gives it) that `t` s into `copy` (a retimed copy of it, its active part the
+// same) reads its lunge curve at. A copy with a longer windup (an unseen one) holds still through what it gained (the
+// time is below 0), then runs the move's times; one with a shorter windup (a boss break's) runs the move's startup
+// squeezed into its own; a recovery of another length (a boss break's) runs the move's recovery stretched or squeezed
+// into it. So every copy covers the whole curve, and its end comes no later than the copy's. The move itself: t.
+FTCORE_API float arenaLungeMoveTime(const ArenaAttack& copy, const ArenaAttack& move, float t);
 
 // An enemy kind's standing height in metres: its `height` when set, else 1.75 m at the default body radius
 // 0.4 m, scaled with the radius between 0.8x and 1.6x of that (the look the host's figure always had).

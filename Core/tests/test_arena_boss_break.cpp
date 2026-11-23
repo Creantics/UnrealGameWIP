@@ -149,19 +149,15 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     // Re-measured for maw_pup bodyLength 1.08 (B2, a stadium nose to tail): again only its three solo seeds can move,
     // the one kind with a length (still victories; the wall-aware push of B1 left this trace as it was). Before it:
     // 3357317813166856334 (11817672119955763551 with pairCooldown 0).
-    // Re-measured for maw_pup's pounce lunge window (active 0.2 -> 0.4 s and its lungeSpeed curve: a creep, the flight
-    // and a skid into recovery): again only its solo seeds can move, the one kind with a curve (the partner pins'
-    // maw_pup rows keep their hits and damage). Before it: 13458522366178030225 (10031432815278946192 with
-    // pairCooldown 0).
-    CHECK(golden == 15000676592694959925ull);
+    CHECK(golden == 13458522366178030225ull);
 }
 
 TEST_CASE("arena boss break: the golden trace moved for the paired counter's cooldown alone, not for the free BLOCK") {
     int fights = 0;
     // No cooldown: the trace from before the rules.
-    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 16822442871235083780ull);
+    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 10031432815278946192ull);
     // The called BLOCK's guard damage put back: the trace as shipped.
-    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 15000676592694959925ull);
+    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 13458522366178030225ull);
 }
 
 // ---- the boss break value ----
@@ -1191,4 +1187,49 @@ TEST_CASE("arena boss break: the shipped bosses write their thresholds out (10, 
     int count = 0;
     for (std::size_t at = text.find(written); at != std::string::npos; at = text.find(written, at + 1)) ++count;
     CHECK(count == 3);
+}
+
+TEST_CASE("arena boss break: a break move on a lunge curve covers its whole lunge in the break's shorter windup") {
+    // A synthetic curve on the stone bearer's break move: a 0.5 m/s creep through its own startup, up to 3 m/s by the
+    // end of its active part, 0 halfway through its recovery. The break's copy (windup kArenaBossBreakWindup, shorter
+    // than the move's startup; recovery kArenaBossBreakRecovery) reads it at arenaLungeMoveTime.
+    const ArenaTable t = shippedTable();
+    ArenaDef def = bossDef(t, "stone_bearer", true);
+    ArenaEnemyKind& k = def.enemies[0];
+    const std::size_t move = static_cast<std::size_t>(k.breakMove);
+    ArenaAttack& a = k.moves[move].attack;
+    REQUIRE(a.startup > kArenaBossBreakWindup);
+    REQUIRE(a.recovery != kArenaBossBreakRecovery);
+    REQUIRE(k.lungeKnotCount == 0);
+    const float s = a.startup, e = a.startup + a.active;
+    k.lungeKnots[0] = ArenaLungeKnot{0.f, 0.5f};
+    k.lungeKnots[1] = ArenaLungeKnot{s, 0.5f};
+    k.lungeKnots[2] = ArenaLungeKnot{e, 3.f};
+    k.lungeKnots[3] = ArenaLungeKnot{e + 0.5f * a.recovery, 0.f};
+    k.lungeKnotCount = 4;
+    a.lungeFirst = 0;
+    a.lungeKnots = 4;
+    a.lunge = 2.f;
+    Rig r(def);
+    r.step();
+    REQUIRE(hostBlowsToBreak(r) < 99);
+    REQUIRE(r.out->enemies[0].brain == ArenaBrain::Attack);
+    REQUIRE(r.out->enemies[0].move == static_cast<int>(move));
+    // The break tick ran the copy's first tick; from there on, every tick of the break move.
+    const ArenaAttack& own = k.moves[move].attack;
+    ArenaAttack broke = own;
+    broke.startup = kArenaBossBreakWindup;
+    broke.recovery = kArenaBossBreakRecovery;
+    const float first = std::hypot(r.out->enemies[0].velocity.x, r.out->enemies[0].velocity.y);
+    CAPTURE(first);
+    float moved = first * kDt;
+    int ticks = 1;
+    while (r.fight.time() < 20.f) {
+        r.step();
+        if (r.out->enemies[0].brain != ArenaBrain::Attack || r.out->enemies[0].move != static_cast<int>(move)) break;
+        moved += std::hypot(r.out->enemies[0].velocity.x, r.out->enemies[0].velocity.y) * kDt;
+        ++ticks;
+    }
+    CHECK(static_cast<float>(ticks) * kDt == doctest::Approx(broke.total()).epsilon(0.02));
+    CHECK(moved == doctest::Approx(2.f).epsilon(2e-3)); // the whole lunge, in the copy's 0.5 s windup
 }
