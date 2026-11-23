@@ -8909,7 +8909,8 @@ HostRun hostRun(std::initializer_list<const char*> lineup, const char* kit, std:
 TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the host's own fight") {
     // The host's log line from the headless -ArenaLineup=skirmisher,hulk -ArenaLead=Devin run, seed 1. Re-pinned for
     // the paired counter's 3 s cooldown (rule b): a pair inside it is refused, so the fight runs 14.4 s, not 17.4 s.
-    // Re-pinned (11-22) for Devin's string end (push 1.2 m, hitStop 0.10). Its first cut took one more blow (16.2 s,
+    // Re-pinned (11-22, superseded by round 3 below) for Devin's string end at its first dose (push 1.2 m, hitStop
+    // 0.10). Its first cut took one more blow (16.2 s,
     // took 68): the push shoved the Staggered hulk out of his reach and his 0.10 s stop froze him while the
     // skirmisher kept acting. With the review's rulings (no push on a Staggered, Open or Down enemy; the lead's stop
     // holds the other enemies too) it is the fight before Task D blow for blow (22 hits, 1 taken, took 34), 0.3 s
@@ -8967,6 +8968,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out w
     // back and wins; the per-seed hits, damage and blows taken before and after are reported below.
     // Unaimed, the autopilot's parries cut his runs short (n/a).
     int breaks = 0, steps = 0;
+    std::uint32_t brokeSeeds = 0; // bit s: seed s broke out
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         const HostRun r = hostRun({"skirmisher", "hulk"}, "duy", seed, true);
         const HostRun before = hostRun({"skirmisher", "hulk"}, "duy", seed, true, false, ftcore_test::TaskDPart::None);
@@ -8985,6 +8987,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out w
         CHECK(c.breakOutDue);
         CHECK(c.breakOutCheck == (r.stats.breakOuts > 0 ? ArenaCheck::Pass : ArenaCheck::Barred));
         breaks += r.stats.breakOuts > 0 ? 1 : 0;
+        if (r.stats.breakOuts > 0) brokeSeeds |= 1u << seed;
         steps += r.stats.stepBacks > 0 ? 1 : 0;
         // No flinch chance: his lights (10) are under the skirmisher's flinchPoise (12), its second breaks it out,
         // the third (20) meets 2 poise and staggers it, a shot (6) is too light; the hulk never flinches. n/a.
@@ -8998,6 +9001,7 @@ TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out w
         CHECK(arenaFeatureChecks(plain.stats).flinchCheck == ArenaCheck::NotShown);
     }
     CHECK(breaks == 2); // before Task D: 1 (seed 10); now seeds 3 and 8
+    CHECK(brokeSeeds == ((1u << 3) | (1u << 8)));
     CHECK(steps == 12);
 }
 
@@ -9081,8 +9085,11 @@ TEST_CASE("arena host mirror: the damage-taken bar, seed by seed, on every row o
             const int rise = r.stats.damageTaken - before.stats.damageTaken;
             CAPTURE(seed);
             CHECK(rise <= blow);
+            // A rise at the bar is one more blow taken, not a heavier one (the trace of the +34s: one more hulk blow)
+            if (rise == blow) CHECK(r.stats.hitsTaken == before.stats.hitsTaken + 1);
             worst = std::max(worst, rise);
-            rises += " " + std::to_string(rise);
+            rises += " " + std::to_string(rise) + "(" + std::to_string(before.stats.hitsTaken) + "->" +
+                     std::to_string(r.stats.hitsTaken) + ")";
         }
         MESSAGE("TAKEN host " << std::string(*lineup.begin()) << "+" << std::string(*(lineup.begin() + 1)) << " | "
                               << std::string(kit) << std::string(shoots ? " shooting" : "")
@@ -10034,12 +10041,18 @@ float softHomed(float kitReach, float homing) {
     return closed;
 }
 
+// The string end's stop: the unit-test dose the string tests run at (the hold, arrival and repeated-end tests included:
+// their run at the shipped dose comes where the lunge clamp's branch meets this one), and the shipped dose (both
+// leads' last light), pinned from arena.json in "the shipped Devin and Duy string ends carry their dose".
+constexpr float kUnitEndStop = 0.1f;
+constexpr float kShippedEndStop = 0.15f;
+
 // A three-light string whose end (light 2) pushes.
-ArenaFighter stringFighter(float push) {
+ArenaFighter stringFighter(float push, float hitStop = kUnitEndStop) {
     ArenaFighter f = ruleFighter();
     f.light[2].push = push;
     f.light[2].pushTime = 0.25f;
-    f.light[2].hitStop = 0.1f;
+    f.light[2].hitStop = hitStop;
     return f;
 }
 
@@ -10147,6 +10160,32 @@ TEST_CASE("arena soft turn: the shipped Devin and Duy kits carry their limits; D
     MESSAGE("Devin's light, target 160 deg round: starts facing " << deg << " deg (tracking up to " << trackDeg << " a tick)");
     CHECK(deg >= 120.f - 0.1f);
     CHECK(deg <= 120.f + trackDeg + 0.1f);
+}
+
+// The shipped string-end data (Task D, ruled 11-22 round 3), read from arena.json: a retune of the dose or the push
+// fails here by name, not only as unlabelled pin diffs. Both ends hitStop 0.15 (kShippedEndStop); Devin's end pushes
+// 1.2 m over 0.25 s; Duy's has no push (the paired 256-seed run, 4.34 SE); the lights before the end keep their own
+// stop (Devin 0.05, Duy 0.06).
+TEST_CASE("arena string end: the shipped Devin and Duy string ends carry their dose; Devin's pushes, Duy's does not") {
+    const ArenaTable t = loadShipped();
+    struct Want {
+        const char* id;
+        float firstStop, push, pushTime;
+    };
+    for (const Want w : {Want{"devin", 0.05f, 1.2f, 0.25f}, Want{"duy", 0.06f, 0.f, 0.f}}) {
+        CAPTURE(std::string(w.id));
+        const ArenaFighter& f = t.fighter(w.id);
+        REQUIRE(f.lightCount >= 2);
+        const ArenaAttack& end = f.light[f.lightCount - 1];
+        CHECK(end.hitStop == doctest::Approx(kShippedEndStop));
+        CHECK(end.push == doctest::Approx(w.push));
+        if (w.push > 0.f) CHECK(end.pushTime == doctest::Approx(w.pushTime));
+        for (std::size_t k = 0; k + 1 < f.lightCount; ++k) {
+            CAPTURE(k);
+            CHECK(f.light[k].hitStop == doctest::Approx(w.firstStop));
+            CHECK(f.light[k].push == 0.f);
+        }
+    }
 }
 
 TEST_CASE("arena string end: the full string's last light counts and lands; its push runs after the hit pause") {
@@ -10452,11 +10491,11 @@ TEST_CASE("arena string end: N holds cost a walking enemy N holds of its walk, w
 // The kite claim, bounded (review 11-22, round 3): an approacher that arrives. It walks from 8 m behind the lead by its
 // own velocity; the lead and the target it strings on stay put, so every end lands on the target and none shoves the
 // walker (arrival is 3.5 m off, out past the lights' 2 m reach: at 2 m one end landed on the walker and cost 2 s).
-// It arrives later than at push 0 by its holds and no more: N holds of 0.1 s, a tick each way.
+// It arrives later than at push 0 by its holds and no more: N holds of 0.1 s (the unit dose), a tick each way in all.
 // Nothing here wins time back, and no test shows the 0.39 s a hold was once claimed to cost on top (the lunges
 // re-closing on a shoved target), so the claim is the hold's cost alone. An end landing on the walker itself shoves it
 // instead: push / walk speed later (1.2 m at 0.6 m/s, 2 s) for each, a cost of the push, not of the hold.
-TEST_CASE("arena string end: an approacher held N times arrives N holds later than at push 0, within a tick each") {
+TEST_CASE("arena string end: an approacher held N times arrives N holds later than at push 0, within a tick in all") {
     ArenaEnemyKind walker = dummyKind();
     walker.walkSpeed = 0.6f;
     walker.runSpeed = 0.6f;
@@ -10494,8 +10533,8 @@ TEST_CASE("arena string end: an approacher held N times arrives N holds later th
     REQUIRE(arrive[1] > 0.f);
     REQUIRE(holds >= 5);
     CHECK(holds == ends);
-    CHECK(delay >= holds * (0.1f - kDt) - 1e-3f);
-    CHECK(delay <= holds * (0.1f + kDt) + 1e-3f);
+    CHECK(delay >= holds * 0.1f - kDt - 1e-3f);
+    CHECK(delay <= holds * 0.1f + kDt + 1e-3f);
 }
 
 // The hold freezes an enemy's state, it does not change it: one in its attack's startup stays in Attack through the
@@ -10698,8 +10737,8 @@ TEST_CASE("arena string end: repeated string ends hold the others once each, no 
     // The strings come exactly as at push 0, end for end: the hold costs the lead nothing, and nothing builds up.
     REQUIRE(endsAt[1].size() == endsAt[0].size());
     for (std::size_t j = 0; j < endsAt[0].size(); ++j) CHECK(std::fabs(endsAt[0][j] - endsAt[1][j]) <= 1e-4f);
-    // Against no stop at all: end j comes j stops (0.10 s, a tick each way) later, no more (nothing builds up) and no
-    // less (each stop is paid).
+    // Against no stop at all: end j comes j stops (0.10 s, the unit dose; a tick each way) later, no more (nothing
+    // builds up) and no less (each stop is paid).
     REQUIRE(endsAt[2].size() >= endsAt[0].size());
     std::string gaps;
     for (std::size_t j = 0; j < endsAt[0].size(); ++j) {

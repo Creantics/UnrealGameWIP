@@ -3978,7 +3978,8 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                 // bolt, reach or standoff cannot pass silently. Re-pin with the report's lines when one is meant.
                 // Re-pinned for the autopilot guard gate: the lead parries blows it used to take, so five fights end
                 // sooner (duy kite_boss did not move) and the third lands fewer bolts in them.
-                // Re-pinned (11-22) for the leads' string end (hitStop 0.10; a boss is never pushed).
+                // Re-pinned (11-22, superseded by round 3 below) for the string end's first dose (hitStop 0.10; a boss
+                // is never pushed).
                 // Re-pinned (11-22 review, round 3) for its dose: hitStop 0.15 on both leads' string ends.
                 struct Pin {
                     const char* lead;
@@ -5368,8 +5369,9 @@ struct ClassicPinRow {
 // rows never had a blow land in a guard-cuttable recovery. The balance shift it brings on the Dealer alone in the
 // stone ring (test_arena_kind_crit, seed 1; a later balance item, not a fault of the gate): Devin's hits taken
 // 5 -> 1 (damage 68 -> 14) and the fight 41.3 -> 31.4 s; Duy's 5 -> 2 (68 -> 28), 44.9 -> 40.6 s.
-// Re-pinned (11-22) for Task D's lead data, not a change in main's rules: the string end (Devin's last light push
-// 1.2 m, Duy's 1.0 m, both hitStop 0.10) moves 44 of the 56 rows; all still victories. The soft-target limits moved none.
+// Re-pinned (11-22, superseded by round 3 below) for Task D's first lead data, not a change in main's rules: the
+// string end (Devin's last light push 1.2 m, Duy's 1.0 m, both hitStop 0.10) moved 44 of the 56 rows; all still
+// victories. The soft-target limits moved none.
 // Re-pinned again (11-22 review) for the string end's two rulings: no push on a Staggered, Open or Down enemy, and the
 // lead's longer stop holds the other enemies too. Each row's cause (hitStop alone, or hitStop then push) and its
 // before/after hits, damage dealt and taken: the "every classic row stays a victory" report below.

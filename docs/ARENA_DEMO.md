@@ -487,10 +487,10 @@ shortest, with the fastest sequence a lead can throw (Core's `arena boss break: 
 
 | Blows | Phase 1 (10) | Phase 2 (8) | Phase 3 (6.5) |
 |---|---|---|---|
-| no joined or Lift multiplier | 6.30 s | 5.25 s | 4.95 s |
-| each at the 3.0 cap (the shared count played perfectly) | 3.67 s | 3.12 s | 3.12 s |
+| no joined or Lift multiplier | 6.30 s | 5.25 s | 5.05 s |
+| each at the 3.0 cap (the shared count played perfectly) | 3.77 s | 3.17 s | 3.17 s |
 
-(Re-pinned 11-22 for the leads' string end, its hitStop 0.10.) The capped 3.12 s (three capped blows in a row) is accepted with no lock, and is to be watched in play: if a boss under
+(Re-pinned 11-22 for the leads' string end, its hitStop 0.15.) The capped 3.17 s (three capped blows in a row) is accepted with no lock, and is to be watched in play: if a boss under
 full pressure seems to do little but throw its break move, flag it for a ruling.
 
 A phase whose threshold is at or below the value when it begins (the blow that drops the boss past a phase end left it
