@@ -43,8 +43,9 @@ public:
 
 	// 0..1 now (0 when off).
 	float GetIntensity() const { return bActive ? State.intensity : 0.f; }
-	// The rain's state for the leads' wet switch (ftcore::leadwet::weatherFromRain); all zero when off.
+	// The rain's state for the party's rain soak (ftcore::leadwet::leadRainStep); all zero when off.
 	ftcore::RainState GetLeadRain() const { return bActive ? State : ftcore::RainState{}; }
+	bool IsOn() const { return bActive; }
 	const ftcore::RainSpec& GetSpec() const { return Spec; }
 	// The streaks' and splashes' own clock (1: normal; a special's freeze slows them to a hang). Not the intensity.
 	void SetTimeScale(float Scale);
@@ -61,6 +62,8 @@ private:
 	ftcore::RainFallSpec Fall;
 	ftcore::RainState State;
 	float SwitchTarget = 0.f; // -Rain=
+	float StartAt = -1.f;     // -RainStartAt=<s> (dev only): dry until then, then the ramp to StartWant
+	float StartWant = 0.f;
 	bool bActive = false;
 	bool bSystemsOn = false; // activated by WriteParameters (spawned inactive)
 	bool bHasFloor = false;

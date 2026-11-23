@@ -111,6 +111,7 @@ public:
 	// ftcore::leadwet::partyWeather) by FTLook::ShowWet. Dry and never wet costs a few compares.
 	void StepWet(float Weather, float DeltaSeconds);
 	const ftcore::WaterWetness& GetWetness() const { return Wet; }
+	float GetWeather() const { return WeatherIn; } // the weather value its last StepWet took (the review lines print it)
 	// Its own soak back after a respawn or a lead switch (ftcore::leadwet::PartyWet); the next show lands the skin at once.
 	void SetWetness(const ftcore::WaterWetness& Soak)
 	{
@@ -227,6 +228,7 @@ private:
 	ftcore::WaterLocoPose WaterPose;
 	ftcore::WaterState WaterNow;
 	ftcore::WaterWetness Wet;                   // its own water soak (StepWet)
+	float WeatherIn = 0.f;                      // the weather value StepWet last took
 	UPROPERTY(Transient)
 	FFTWetState WetState;                       // what ShowWet last wrote on it
 	TArray<FFTGroomLook> GroomLooks;            // the look's grooms, beside GroomComponents (their wet grooms)

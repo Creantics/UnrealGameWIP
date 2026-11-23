@@ -27,6 +27,8 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SkinnedMeshComponent.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformMisc.h"
 #include "TimerManager.h"
@@ -223,6 +225,40 @@ void AFTExploreCharacter::BeginPlay()
 		}
 		FParse::Value(FCommandLine::Get(), TEXT("LeadGoPace="), LeadGoPace);
 		LeadGoPace = FMath::Clamp(LeadGoPace, 0.1f, 1.f);
+		// -LeadGoRoute=<x,y>@<s>[;<x,y>@<s>...] (plan frame of -WorldEyeSide): at each game time, rising, the lead walks at
+		// that point and stands there until the next leg. A bad leg is an Error and exit 2.
+		FString Route;
+		if (FParse::Value(FCommandLine::Get(), TEXT("LeadGoRoute="), Route, false))
+		{
+			double RouteSide = 1000.0;
+			FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), RouteSide);
+			TArray<FString> Legs;
+			Route.ParseIntoArray(Legs, TEXT(";"));
+			bool bOk = Legs.Num() > 0 && Legs.Num() <= UE_ARRAY_COUNT(LeadRouteTo);
+			for (int32 L = 0; bOk && L < Legs.Num(); ++L)
+			{
+				FString Point, When, PX, PY;
+				bOk = Legs[L].Split(TEXT("@"), &Point, &When) && Point.Split(TEXT(","), &PX, &PY) && PX.IsNumeric() && PY.IsNumeric() && When.IsNumeric();
+				if (bOk)
+				{
+					const ftcore::MassingVec To = ftcore::massingEnginePoint(RouteSide, FCString::Atod(*PX), FCString::Atod(*PY), 0.0);
+					LeadRouteTo[L] = FVector(To.x * 100.0, To.y * 100.0, 0.0);
+					LeadRouteAt[L] = FCString::Atof(*When);
+					bOk = LeadRouteAt[L] >= 0.f && (L == 0 || LeadRouteAt[L] > LeadRouteAt[L - 1]);
+				}
+			}
+			if (bOk)
+			{
+				LeadRouteCount = Legs.Num();
+				UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: route of %d leg(s), the first at %.1f s."), LeadRouteCount, LeadRouteAt[0]);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("LeadGo: '%s' is not <x,y>@<s>[;<x,y>@<s>...] with rising times (at most %d legs)."), *Route,
+					static_cast<int32>(UE_ARRAY_COUNT(LeadRouteTo)));
+				FTRequestExit(2, TEXT("LeadGoRoute"));
+			}
+		}
 	}
 #endif
 	AFTPartyVan::SpawnAt(GetWorld()); // -PartyVanAt only; one van however many leads begin
@@ -455,12 +491,26 @@ void AFTExploreCharacter::BeginPlay()
 		// water bodies (the lead's look reads the store only then): without them the switch is an Error and exit 2. The
 		// soak is each member's (AFTExploreDirector::OnLeadChanged): the old lead walks behind still wet, the new one takes
 		// its own. A refused switch is an Error and exit 2. Portrait shots carry their index, and each logs every soak.
+		// Up to four switch times, rising (<soak>@<s>,<s>,...): each one switches again. The rain soak is the party's (one
+		// value; the lines print it and each follower's weather input).
 		FString SwitchReview;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreSwitchReview="), SwitchReview, false))
 		{
 			FString Soak, At;
-			if (SwitchReview.Split(TEXT("@"), &Soak, &At) && !Soak.IsEmpty() && !At.IsEmpty() && Soak.IsNumeric() && At.IsNumeric()
-				&& FCString::Atof(*Soak) >= 0.f && FCString::Atof(*Soak) <= 1.f && FCString::Atof(*At) > 0.f)
+			bool bTimes = SwitchReview.Split(TEXT("@"), &Soak, &At) && !Soak.IsEmpty() && !At.IsEmpty() && Soak.IsNumeric();
+			if (bTimes)
+			{
+				TArray<FString> Times;
+				At.ParseIntoArray(Times, TEXT(","));
+				bTimes = Times.Num() > 0 && Times.Num() <= UE_ARRAY_COUNT(SwitchReviewTimes);
+				for (int32 T = 0; bTimes && T < Times.Num(); ++T)
+				{
+					SwitchReviewTimes[T] = FCString::Atof(*Times[T]);
+					bTimes = Times[T].IsNumeric() && SwitchReviewTimes[T] > 0.f && (T == 0 || SwitchReviewTimes[T] > SwitchReviewTimes[T - 1]);
+				}
+				SwitchReviewCount = bTimes ? Times.Num() : 0;
+			}
+			if (bTimes && FCString::Atof(*Soak) >= 0.f && FCString::Atof(*Soak) <= 1.f)
 			{
 				ftcore::WaterWetness Soaked;
 				Soaked.wetness = FMath::Clamp(FCString::Atof(*Soak), 0.f, 1.f);
@@ -469,11 +519,11 @@ void AFTExploreCharacter::BeginPlay()
 				if (Water)
 				{
 					Water->SetLeadWetness(Soaked);
-					SwitchReviewAt = FCString::Atof(*At);
+					SwitchReviewAt = SwitchReviewTimes[0];
 					bPartyHidden = false;
 					GetWorldTimerManager().SetTimer(SwitchReviewTimer, this, &AFTExploreCharacter::SwitchForReview, SwitchReviewAt, false);
-					UE_LOG(LogForgottenThird, Display, TEXT("SWITCH_REVIEW the lead starts soaked to %.2f (line %.2f m); the party shows; the switch at %.1f s."),
-						Soaked.wetness, Soaked.line, SwitchReviewAt);
+					UE_LOG(LogForgottenThird, Display, TEXT("SWITCH_REVIEW the lead starts soaked to %.2f (line %.2f m); the party shows; %d switch(es), the first at %.1f s."),
+						Soaked.wetness, Soaked.line, SwitchReviewCount, SwitchReviewAt);
 				}
 				else
 				{
@@ -483,7 +533,7 @@ void AFTExploreCharacter::BeginPlay()
 			}
 			else
 			{
-				UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: '%s' is not <soak>@<switch s> (two numbers: the soak 0 to 1, the time above 0)."), *SwitchReview);
+				UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: '%s' is not <soak>@<switch s>[,<switch s>...] (the soak 0 to 1, up to four rising times above 0)."), *SwitchReview);
 				FTRequestExit(2, TEXT("ExploreSwitchReview"));
 			}
 		}
@@ -861,7 +911,8 @@ void AFTExploreCharacter::HoldBodyAt(float Time)
 void AFTExploreCharacter::AddPortraitCard()
 {
 	// Dev only: -ExplorePortraitCard holds a neutral 18% grey card (M_WorldSurface at 0.18 albedo, 0.9 rough, no mottle or
-	// weather, as -WorldEyeCard) on the camera, 14 x 10 cm, facing it, at -ExplorePortraitCardAt=<forward,right,up> cm
+	// weather, as -WorldEyeCard in FTWorldEyeShotSubsystem.cpp; Weather 0 zeroes the weather node's wet term, Wet = Wetness
+	// x Amount, so the look's rain wetness doesn't darken it) on the camera, 14 x 10 cm, facing it, at -ExplorePortraitCardAt=<forward,right,up> cm
 	// from the camera (default 45,-17,-10: the lower left of a head shot), so every yaw's still has a known neutral under
 	// the same lights as the lead. It casts nothing and has no collision. Review only.
 	UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"), nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -1019,8 +1070,9 @@ void AFTExploreCharacter::LogSwitchReview(const TCHAR* Stage)
 	const UWorld* World = GetWorld();
 	const UFTWaterSubsystem* Water = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
 	const ftcore::WaterWetness Lead = Water ? Water->LeadWetness() : ftcore::WaterWetness{};
-	FString Line = FString::Printf(TEXT("SWITCH_REVIEW %s: lead %d %s soak %.2f (line %.2f m), weather %.2f"), Stage, LeadIndex,
-		PartyLooks.IsValidIndex(LeadIndex) ? *PartyLooks[LeadIndex].Name : TEXT("?"), Lead.wetness, Lead.line, LeadWeather());
+	FString Line = FString::Printf(TEXT("SWITCH_REVIEW %s at %.2f s: lead %d %s soak %.2f (line %.2f m), weather %.2f (the party's rain soak %.3f, exposure %.2f)"), Stage,
+		World ? World->GetTimeSeconds() : 0.0, LeadIndex, PartyLooks.IsValidIndex(LeadIndex) ? *PartyLooks[LeadIndex].Name : TEXT("?"), Lead.wetness, Lead.line,
+		LeadWeather(), LeadRain.soak, LeadRain.exposure);
 	if (AFTExploreDirector* D = GetDirector())
 	{
 		const TArray<TObjectPtr<AFTPartyFollower>>& Party = D->GetFollowers();
@@ -1030,8 +1082,8 @@ void AFTExploreCharacter::LogSwitchReview(const TCHAR* Stage)
 			const AFTPartyFollower* Follower = Party[I].Get();
 			const int32 Member = Roster.memberOf(I);
 			const FString Who = PartyLooks.IsValidIndex(Member) ? PartyLooks[Member].Name : FString(TEXT("?"));
-			Line += Follower ? FString::Printf(TEXT("; follower %d member %d %s soak %.2f (line %.2f m)%s"), I, Member, *Who, Follower->GetWetness().wetness,
-								   Follower->GetWetness().line, Follower->IsHidden() ? TEXT(" hidden") : TEXT(""))
+			Line += Follower ? FString::Printf(TEXT("; follower %d member %d %s soak %.2f (line %.2f m) weather %.2f%s"), I, Member, *Who, Follower->GetWetness().wetness,
+								   Follower->GetWetness().line, Follower->GetWeather(), Follower->IsHidden() ? TEXT(" hidden") : TEXT(""))
 							 : FString::Printf(TEXT("; follower %d none"), I);
 		}
 	}
@@ -1063,6 +1115,12 @@ void AFTExploreCharacter::SwitchForReview()
 	// The followers are cleared here and spawn again on the next tick: this line has the new lead's soak only; the
 	// stills after it log the party.
 	LogSwitchReview(TEXT("after the switch, the party not yet back"));
+	if (++SwitchReviewDone < SwitchReviewCount && World)
+	{
+		const float Next = SwitchReviewTimes[SwitchReviewDone];
+		GetWorldTimerManager().SetTimer(SwitchReviewTimer, this, &AFTExploreCharacter::SwitchForReview, FMath::Max(Next - static_cast<float>(World->GetTimeSeconds()), 0.01f), false);
+		UE_LOG(LogForgottenThird, Display, TEXT("SWITCH_REVIEW switch %d of %d done; the next at %.1f s."), SwitchReviewDone, SwitchReviewCount, Next);
+	}
 }
 
 void AFTExploreCharacter::SoakForReview()
@@ -3922,6 +3980,20 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 	{
 		BeginLeadGo(LeadGoTo, bLeadGoJump);
 	}
+	if (LeadRouteNext < LeadRouteCount && World && World->GetTimeSeconds() >= LeadRouteAt[LeadRouteNext])
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: route leg %d of %d at %.2f s."), LeadRouteNext + 1, LeadRouteCount, World->GetTimeSeconds());
+		BeginLeadGo(LeadRouteTo[LeadRouteNext++], false);
+	}
+	if (!bLeadCoverSetLogged && World && World->GetTimeSeconds() >= 5.0)
+	{
+		const UFTRainSubsystem* Rain = World->GetSubsystem<UFTRainSubsystem>();
+		bLeadCoverSetLogged = true;
+		if (Rain && Rain->IsOn())
+		{
+			LogLeadCoverSet();
+		}
+	}
 	if (bLeadGo)
 	{
 		LeadGoRan += DeltaSeconds;
@@ -3981,9 +4053,19 @@ void AFTExploreCharacter::TickWater(float DeltaSeconds)
 	// water waits. Nothing steps the swim, its breath, a climb out or a rescue (each picks up where it stopped), and
 	// nothing forces the flying mode on a parked body; a body that was swimming stops where it is (flying braking is 0
 	// under water, so a kept velocity would carry it through the whole scene).
+	// The rain soaks the party in a played scene too, and with no controller; a hidden body (a fight's figure stands in)
+	// waits. Shown here while parked; StirWater shows it in play.
+	if (!IsHidden())
+	{
+		StepLeadRain(DeltaSeconds);
+	}
 	if (!Controller || IsHidden() || ScenePlaying())
 	{
 		bWaterPartyParked = true; // the party's plan skips its step too; its next one is told (Core's resumed)
+		if (!IsHidden())
+		{
+			ShowLeadWetness(DeltaSeconds);
+		}
 		if (bSwimming || bWaterClimbing || bSwimRescue)
 		{
 			Move->Velocity = FVector::ZeroVector;
@@ -6313,19 +6395,10 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 {
 	UWorld* World = GetWorld();
 	UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
-	StepLeadRain(DeltaSeconds);
-	const float Weather = LeadWeather();
 	if (!System || !System->HasBodies())
 	{
-#if !UE_BUILD_SHIPPING
-		if (SoakSwapWet >= 0.f)
-		{
-			return; // -ExploreSoakSwap holds its own wetness
-		}
-#endif
 		// No water here: the weather alone (dry by default, so this is two early returns).
-		ShowWetness(ftcore::leadwet::cloth(ftcore::WaterWetness{}, Weather));
-		ShowLeadWet(ftcore::leadwet::surface(Weather, ftcore::WaterWetness{}), DeltaSeconds);
+		ShowLeadWetness(DeltaSeconds);
 		return;
 	}
 	// As the surfaces see it now: during the climb out the state is the one it began with, the feet rising out of it.
@@ -6341,33 +6414,67 @@ void AFTExploreCharacter::StirWater(float DeltaSeconds)
 		}
 	}
 	System->LeadWater(*this, State, At, GetVelocity(), 2.f * Half, DeltaSeconds);
+	ShowLeadWetness(DeltaSeconds);
+}
+
+void AFTExploreCharacter::ShowLeadWetness(float DeltaSeconds)
+{
 #if !UE_BUILD_SHIPPING
 	if (SoakSwapWet >= 0.f)
 	{
 		return; // -ExploreSoakSwap holds its own wetness
 	}
 #endif
-	const ftcore::WaterWetness& Water = System->LeadWetness();
+	// The water's store only where the map has water (else it may hold a stale soak); held as it is while parked.
+	const UWorld* World = GetWorld();
+	const UFTWaterSubsystem* System = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const ftcore::WaterWetness Water = System && System->HasBodies() ? System->LeadWetness() : ftcore::WaterWetness{};
+	const float Weather = LeadWeather();
 	ShowWetness(ftcore::leadwet::cloth(Water, Weather));
 	ShowLeadWet(ftcore::leadwet::surface(Weather, Water), DeltaSeconds);
 }
 
 float AFTExploreCharacter::LeadWeather() const
 {
-	// Below 0 follows the lead's own rain soak (StepLeadRain); 0..1 forces it. The look's wetness is the ground's damp
+	// Below 0 follows the party's rain soak (StepLeadRain); 0..1 forces it. The look's wetness is the ground's damp
 	// floor, never a lead's.
-	return ftcore::leadwet::weather(CVarLeadWet.GetValueOnGameThread(), LeadRainSoak);
+	return ftcore::leadwet::weather(CVarLeadWet.GetValueOnGameThread(), LeadRain.soak);
 }
 
-float AFTExploreCharacter::TraceLeadCover(const ftcore::RainCoverSpec& Spec) const
+namespace
 {
-	// Up from the top of the head as far as the cover map looks down from. Only what the map draws counts: opaque, visible,
-	// non-skeletal meshes, landscape left out (its show flags). A skipped hit is ignored and the trace runs again, at most
-	// four times. FCollisionQueryParams keeps its ignore list inline: no heap allocation here.
+// What the cover map draws (its show flags leave out skeletal meshes, particles, translucency, decals and landscape):
+// a visible static mesh with an opaque material. The lead's trace counts a hit only on these.
+bool CoverDrawn(const UPrimitiveComponent* Prim)
+{
+	if (!Prim || !Prim->IsVisible() || Prim->bHiddenInGame || !Prim->IsA<UStaticMeshComponent>())
+	{
+		return false;
+	}
+	for (int32 M = 0; M < Prim->GetNumMaterials(); ++M)
+	{
+		const UMaterialInterface* Mat = Prim->GetMaterial(M);
+		if (Mat && !IsTranslucentBlendMode(Mat->GetBlendMode()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+} // namespace
+
+ftcore::leadwet::CoverAnswer AFTExploreCharacter::TraceLeadCover(const ftcore::RainCoverSpec& Spec) const
+{
+	// Up from the top of the head as far as the cover map looks down from. Only what the map draws counts (CoverDrawn). A
+	// skipped hit is ignored and the trace runs again, at most four times; past that, or with no world or a hit with no
+	// component, the answer is Unknown and the last exposure holds (never open by default). FCollisionQueryParams keeps
+	// its ignore list inline: no heap allocation here.
+	using ftcore::leadwet::CoverAnswer;
+	using ftcore::leadwet::CoverTrace;
 	const UWorld* World = GetWorld();
 	if (!World)
 	{
-		return 1.f;
+		return CoverAnswer{};
 	}
 	const FVector At = GetActorLocation();
 	const float Head = At.Z + GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
@@ -6382,66 +6489,142 @@ float AFTExploreCharacter::TraceLeadCover(const ftcore::RainCoverSpec& Spec) con
 		FHitResult Hit;
 		if (!World->LineTraceSingleByObjectType(Hit, From, To, Objects, Params))
 		{
-			return 1.f;
+			return CoverAnswer{CoverTrace::Open, 0.f, static_cast<float>(Head * 0.01)};
 		}
 		const UPrimitiveComponent* Prim = Hit.GetComponent();
-		bool bDrawn = Prim && Prim->IsVisible() && !Prim->bHiddenInGame && Prim->IsA<UStaticMeshComponent>();
-		if (bDrawn)
+		if (CoverDrawn(Prim))
 		{
-			bool bOpaque = false;
-			for (int32 M = 0; M < Prim->GetNumMaterials() && !bOpaque; ++M)
-			{
-				const UMaterialInterface* Mat = Prim->GetMaterial(M);
-				bOpaque = Mat && !IsTranslucentBlendMode(Mat->GetBlendMode());
-			}
-			bDrawn = bOpaque;
-		}
-		if (bDrawn)
-		{
-			return ftcore::leadwet::coverExposure(true, static_cast<float>(Hit.ImpactPoint.Z * 0.01), static_cast<float>(Head * 0.01), Spec);
+			return CoverAnswer{CoverTrace::Hit, static_cast<float>(Hit.ImpactPoint.Z * 0.01), static_cast<float>(Head * 0.01)};
 		}
 		if (!Prim)
 		{
-			return 1.f;
+			return CoverAnswer{};
 		}
 		Params.AddIgnoredComponent(Prim);
 	}
-	return 1.f;
+	return CoverAnswer{};
 }
 
 void AFTExploreCharacter::StepLeadRain(float DeltaSeconds)
 {
+	// Source passes values; Core decides (ftcore::leadwet::leadRainStep: the cadence, the exposure from the answer, the
+	// first settle once a trace has answered, the soak step). The trace needs only the cover's spec, map on or off.
 	const UWorld* World = GetWorld();
 	const UFTRainSubsystem* Rain = World ? World->GetSubsystem<UFTRainSubsystem>() : nullptr;
 	const UFTRainCoverSubsystem* Cover = World ? World->GetSubsystem<UFTRainCoverSubsystem>() : nullptr;
 	const ftcore::RainState State = Rain ? Rain->GetLeadRain() : ftcore::RainState{};
-	const float Was = LeadCoverExposure;
-	if (ftcore::leadwet::coverTraceDue(LeadCoverClock, DeltaSeconds))
-	{
-		// With the map off the ground under the lead is all open, so the lead is too.
-		LeadCoverExposure = (Cover && Cover->IsActive() && State.wetness > 0.f) ? TraceLeadCover(Cover->GetSpec()) : 1.f;
-	}
 	const ftcore::RainSpec Spec = Rain ? Rain->GetSpec() : ftcore::RainSpec{};
-	if (!bLeadRainSet)
+	const ftcore::RainCoverSpec CoverSpec = Cover ? Cover->GetSpec() : ftcore::RainCoverSpec{};
+	const bool bChanged = ftcore::leadwet::leadRainStep(LeadRain, Spec, CoverSpec, State, DeltaSeconds, [&]
 	{
-		bLeadRainSet = true;
-		LeadRainSoak = ftcore::leadwet::rainSoakSettled(State, LeadCoverExposure);
-	}
-	else
-	{
-		LeadRainSoak = ftcore::leadwet::rainSoakStep(Spec, LeadRainSoak, State, LeadCoverExposure, DeltaSeconds);
-	}
 #if !UE_BUILD_SHIPPING
-	LeadRainLogClock -= DeltaSeconds > 0.f ? DeltaSeconds : 0.f;
-	if (State.wetness > 0.f && (Was != LeadCoverExposure || LeadRainLogClock <= 0.f))
+		LeadRainTracePrevAt = LeadRainTraceAt;
+		LeadRainTraceAt = GetActorLocation();
+		LeadRainTraceTime = World ? World->GetTimeSeconds() : 0.0;
+#endif
+		return TraceLeadCover(CoverSpec);
+	});
+#if !UE_BUILD_SHIPPING
+	// A line on each exposure flip (held to one a second at a roof edge, the count kept), else one every 5 s while wet.
+	if (ftcore::leadwet::leadRainLogDue(LeadRainLog, bChanged, State.wetness > 0.f || LeadRain.soak > 0.f, DeltaSeconds))
 	{
-		LeadRainLogClock = 5.f;
 		const FVector At = GetActorLocation();
-		UE_LOG(LogForgottenThird, Display, TEXT("LEAD_RAIN exposure %.2f soak %.3f rain %.3f cover map %s at (%.0f, %.0f, %.0f) cm."),
-			LeadCoverExposure, LeadRainSoak, State.wetness, (Cover && Cover->IsActive()) ? TEXT("on") : TEXT("off"), At.X, At.Y, At.Z);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("LEAD_RAIN t %.2f s exposure %.2f soak %.3f rain %.3f (intensity %.2f) flips %d cover map %s; at (%.0f, %.0f, %.0f) cm; last trace t %.2f s at (%.0f, %.0f), the one before at (%.0f, %.0f)."),
+			World ? World->GetTimeSeconds() : 0.0, LeadRain.exposure, LeadRain.soak, State.wetness, State.intensity, LeadRainLog.flips,
+			(Cover && Cover->IsActive()) ? TEXT("on") : TEXT("off"), At.X, At.Y, At.Z, LeadRainTraceTime, LeadRainTraceAt.X, LeadRainTraceAt.Y,
+			LeadRainTracePrevAt.X, LeadRainTracePrevAt.Y);
 	}
+#else
+	(void)bChanged;
 #endif
 }
+
+#if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::LogLeadCoverSet()
+{
+	// The cover map draws render geometry; the lead's trace hits collision. This lists what the map would draw that the
+	// trace cannot hit (it hits only WorldStatic/WorldDynamic objects with query collision, complex), and drawn meshes
+	// that are not static meshes (the trace skips them). Once, in a rainy run; what was loaded is said with it.
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	int32 Actors = 0, Drawn = 0, Hittable = 0, QueryOff = 0, ObjectType = 0, NoBody = 0, NoShapes = 0, SimpleOnly = 0, Other = 0;
+	FString First;
+	int32 Named = 0;
+	auto Note = [&](const UPrimitiveComponent* C, const TCHAR* Why)
+	{
+		if (Named < 8)
+		{
+			const FBox B = C->Bounds.GetBox();
+			First += FString::Printf(TEXT("%s%s.%s (%s, z %.1f..%.1f m)"), Named ? TEXT("; ") : TEXT(""), *GetNameSafe(C->GetOwner()), *C->GetName(), Why,
+				B.Min.Z * 0.01, B.Max.Z * 0.01);
+			++Named;
+		}
+	};
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		++Actors;
+		TInlineComponentArray<UMeshComponent*> Meshes(*It);
+		for (const UMeshComponent* Mesh : Meshes)
+		{
+			if (Mesh == nullptr || Mesh->IsA<USkinnedMeshComponent>() || !Mesh->IsVisible() || Mesh->bHiddenInGame)
+			{
+				continue;
+			}
+			if (!Mesh->IsA<UStaticMeshComponent>())
+			{
+				++Other;
+				Note(Mesh, TEXT("drawn, not a static mesh"));
+				continue;
+			}
+			if (!CoverDrawn(Mesh))
+			{
+				continue; // translucent: the map leaves it out too
+			}
+			++Drawn;
+			const ECollisionChannel Type = Mesh->GetCollisionObjectType();
+			const UBodySetup* Body = Mesh->GetBodySetup();
+			if (!Mesh->IsQueryCollisionEnabled())
+			{
+				++QueryOff;
+				Note(Mesh, TEXT("query collision off"));
+			}
+			else if (Type != ECC_WorldStatic && Type != ECC_WorldDynamic)
+			{
+				++ObjectType;
+				Note(Mesh, TEXT("object type not WorldStatic/WorldDynamic"));
+			}
+			else if (!Body)
+			{
+				++NoBody;
+				Note(Mesh, TEXT("no body setup"));
+			}
+			else if (Body->GetCollisionTraceFlag() == CTF_UseSimpleAsComplex ? Body->AggGeom.GetElementCount() == 0
+																				 : (Body->TriMeshGeometries.Num() == 0 && Body->AggGeom.GetElementCount() == 0))
+			{
+				++NoShapes;
+				Note(Mesh, TEXT("no collision shapes"));
+			}
+			else if (Body->GetCollisionTraceFlag() != CTF_UseSimpleAsComplex && Body->TriMeshGeometries.Num() == 0)
+			{
+				++SimpleOnly;
+				Note(Mesh, TEXT("simple shapes only, no triangle mesh"));
+			}
+			else
+			{
+				++Hittable;
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("LEAD_COVER_SET at %.1f s, %d actors loaded: %d drawn opaque static meshes, %d the lead's trace can hit, %d it cannot (query collision off %d, object type %d, no body %d, no shapes %d), %d with simple shapes only (a complex trace may miss them); %d other drawn meshes it skips. First: %s."),
+		World->GetTimeSeconds(), Actors, Drawn, Hittable, QueryOff + ObjectType + NoBody + NoShapes, QueryOff, ObjectType, NoBody, NoShapes, SimpleOnly, Other,
+		First.IsEmpty() ? TEXT("none") : *First);
+}
+#endif
 
 void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
 {

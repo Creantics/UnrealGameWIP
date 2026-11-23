@@ -452,36 +452,6 @@ TEST_CASE("lead wet: the first look eases the skin in from dry; a later look lan
 }
 
 #ifdef FTCORE_LEADWET_HAS_RAIN
-TEST_CASE("lead wet: the rain drives the weather value unless ft.LeadWet forces it") {
-    ftcore::RainSpec spec;
-    const ftcore::RainState none{};
-    CHECK(lw::weatherFromRain(-1.f, none) == 0.f); // no rain: dry
-    const ftcore::RainState full = ftcore::rainSettled(spec, 1.f);
-    CHECK(lw::weatherFromRain(-1.f, full) == doctest::Approx(full.wetness));
-    CHECK(full.wetness >= lw::kGroomWetOn); // a settled full rain wears the wet groom
-    CHECK(lw::groomWet(lw::weatherFromRain(-1.f, full), false));
-    CHECK(lw::weatherFromRain(0.f, full) == 0.f);                          // forced dry wins over the rain
-    CHECK(lw::weatherFromRain(0.3f, full) == doctest::Approx(0.3f));       // forced value wins
-    CHECK(lw::weatherFromRain(-1.f, full, 0.f) == 0.f);                    // under cover
-    CHECK(lw::weatherFromRain(-1.f, full, 0.5f) == doctest::Approx(full.wetness * 0.5f));
-    CHECK(lw::weatherFromRain(std::nanf(""), full) == doctest::Approx(full.wetness)); // NaN follows the rain
-    ftcore::RainState bad = full;
-    bad.wetness = std::nanf("");
-    CHECK(lw::weatherFromRain(-1.f, bad) == 0.f);
-    // It ramps with the rain: starting dry under a full rain, the lead wets over time, then dries after it stops.
-    ftcore::RainState s{};
-    s.target = 1.f;
-    for (int i = 0; i < 60; ++i) s = ftcore::rainStep(spec, s, 0.5f);   // 30 s
-    const float wet30 = lw::weatherFromRain(-1.f, s);
-    CHECK(wet30 > 0.f);
-    CHECK(wet30 < full.wetness);
-    for (int i = 0; i < 1200; ++i) s = ftcore::rainStep(spec, s, 0.5f); // 10 min
-    CHECK(lw::weatherFromRain(-1.f, s) == doctest::Approx(full.wetness));
-    s.target = 0.f;
-    for (int i = 0; i < 120; ++i) s = ftcore::rainStep(spec, s, 0.5f);  // 1 min dry
-    CHECK(lw::weatherFromRain(-1.f, s) < full.wetness);
-}
-
 TEST_CASE("lead wet: cover from the head trace uses the ground cover's rule and bias") {
     const ftcore::RainCoverSpec cover;
     CHECK(lw::coverExposure(false, 0.f, 1.8f, cover) == 1.f);                  // open sky
@@ -545,5 +515,140 @@ TEST_CASE("lead wet: the cover trace runs every quarter second, not every frame"
     CHECK_FALSE(lw::coverTraceDue(clock, 0.f));
     CHECK_FALSE(lw::coverTraceDue(clock, -1.f));
     CHECK(clock == before);
+}
+namespace {
+lw::CoverAnswer open() { return lw::CoverAnswer{lw::CoverTrace::Open, 0.f, 1.8f}; }
+lw::CoverAnswer roof() { return lw::CoverAnswer{lw::CoverTrace::Hit, 4.f, 1.8f}; }
+lw::CoverAnswer unknown() { return lw::CoverAnswer{}; }
+} // namespace
+
+TEST_CASE("lead rain: nothing settles before a trace answers; then it settles once") {
+    const ftcore::RainSpec spec;
+    const ftcore::RainCoverSpec cover;
+    const ftcore::RainState rain = ftcore::rainSettled(spec, 1.f);
+    lw::LeadRain s;
+    int traces = 0;
+    // A step with no time traces nothing and settles nothing.
+    CHECK_FALSE(lw::leadRainStep(s, spec, cover, rain, 0.f, [&] { ++traces; return open(); }));
+    CHECK_FALSE(lw::leadRainStep(s, spec, cover, rain, std::nanf(""), [&] { ++traces; return open(); }));
+    CHECK(traces == 0);
+    CHECK_FALSE(s.known);
+    CHECK_FALSE(s.set);
+    CHECK(s.soak == 0.f);
+    // A first trace with no answer: still waiting, the soak untouched, the exposure not read as open.
+    CHECK_FALSE(lw::leadRainStep(s, spec, cover, rain, 0.016f, [&] { ++traces; return unknown(); }));
+    CHECK(traces == 1);
+    CHECK_FALSE(s.known);
+    CHECK_FALSE(s.set);
+    CHECK(s.soak == 0.f);
+    // Loaded under a roof in a settled rain: the first answer settles it dry.
+    CHECK(lw::leadRainStep(s, spec, cover, rain, 0.25f, roof));
+    CHECK(s.known);
+    CHECK(s.set);
+    CHECK(s.exposure == 0.f);
+    CHECK(s.soak == 0.f);
+    // The same in the open: wet at once.
+    lw::LeadRain o;
+    CHECK(lw::leadRainStep(o, spec, cover, rain, 0.016f, open));
+    CHECK(o.exposure == 1.f);
+    CHECK(o.soak == doctest::Approx(rain.wetness));
+}
+
+TEST_CASE("lead rain: open to roof only stops the wetting; the soak dries at dryPerS; an unknown trace holds") {
+    const ftcore::RainSpec spec;
+    const ftcore::RainCoverSpec cover;
+    const ftcore::RainState rain = ftcore::rainSettled(spec, 1.f);
+    lw::LeadRain s;
+    // Out in the open from dry (the rain began while it was out): rises at wetRisePerS after the settle.
+    ftcore::RainState none{};
+    lw::leadRainStep(s, spec, cover, none, 0.25f, open); // settles dry: no rain yet
+    CHECK(s.set);
+    CHECK(s.soak == 0.f);
+    for (int i = 0; i < 120; ++i) lw::leadRainStep(s, spec, cover, rain, 0.25f, open); // 30 s
+    CHECK(s.soak == doctest::Approx(30.f * spec.wetRisePerS).epsilon(0.01));
+    const float wet = s.soak;
+    // Under the roof: the exposure flips on the next due trace, then the soak dries at the rain's own rate only.
+    int flips = 0;
+    for (int i = 0; i < 4; ++i) flips += lw::leadRainStep(s, spec, cover, rain, 0.25f, roof) ? 1 : 0;
+    CHECK(flips == 1);
+    CHECK(s.exposure == 0.f);
+    CHECK(s.soak == doctest::Approx(wet - 4.f * 0.25f * spec.dryPerS));
+    // A trace that cannot answer under the roof holds the roof's exposure: it never fails open.
+    for (int i = 0; i < 8; ++i) CHECK_FALSE(lw::leadRainStep(s, spec, cover, rain, 0.25f, unknown));
+    CHECK(s.exposure == 0.f);
+    CHECK(s.soak < wet);
+    // Back in the open: flips once and wets again.
+    const float dried = s.soak;
+    CHECK(lw::leadRainStep(s, spec, cover, rain, 0.25f, open));
+    CHECK(s.exposure == 1.f);
+    CHECK(s.soak > dried);
+    // An unknown in the open holds the open.
+    CHECK_FALSE(lw::leadRainStep(s, spec, cover, rain, 0.25f, unknown));
+    CHECK(s.exposure == 1.f);
+}
+
+TEST_CASE("lead rain: traces at the cover cadence, and a lead switch keeps the party's soak") {
+    const ftcore::RainSpec spec;
+    const ftcore::RainCoverSpec cover;
+    const ftcore::RainState rain = ftcore::rainSettled(spec, 1.f);
+    lw::LeadRain s;
+    int traces = 0;
+    for (int i = 0; i < 300; ++i) lw::leadRainStep(s, spec, cover, rain, 1.f / 60.f, [&] { ++traces; return open(); });
+    CHECK(traces == 21); // the first frame, then every kCoverTraceS for 5 s
+    // The state lives on the lead's body, not on a member: nothing in a switch touches it, so the soak carries on.
+    const lw::LeadRain before = s;
+    lw::leadRainStep(s, spec, cover, rain, 0.f, open);
+    CHECK(s.soak == before.soak);
+    CHECK(s.set == before.set);
+}
+
+TEST_CASE("lead rain: the log limiter spaces flip lines but never drops one") {
+    lw::LeadRainLog l;
+    // The first wet step logs; a dry world never does.
+    lw::LeadRainLog dry;
+    for (int i = 0; i < 1000; ++i) CHECK_FALSE(lw::leadRainLogDue(dry, i % 2 == 0, false, 0.25f));
+    CHECK(lw::leadRainLogDue(l, false, true, 0.016f));
+    CHECK(l.flips == 0);
+    // A flip at a roof edge every trace (4 a second): one line a second, each counting the flips it covers.
+    int lines = 0, flips = 0;
+    for (int i = 0; i < 40; ++i) {
+        if (lw::leadRainLogDue(l, true, true, 0.25f)) { ++lines; flips += l.flips; }
+    }
+    CHECK(lines == 10);
+    // The last flip waits for the gap, then logs: every flip reaches a line.
+    for (int i = 0; i < 4; ++i) {
+        if (lw::leadRainLogDue(l, false, true, 0.25f)) { ++lines; flips += l.flips; }
+    }
+    CHECK(flips == 40);
+    // A lone flip after a quiet second logs on its own step.
+    for (int i = 0; i < 4; ++i) lw::leadRainLogDue(l, false, true, 0.25f);
+    CHECK(lw::leadRainLogDue(l, true, true, 0.25f));
+    CHECK(l.flips == 1);
+    // Steady: a line every 5 s.
+    lines = 0;
+    for (int i = 0; i < 80; ++i) lines += lw::leadRainLogDue(l, false, true, 0.25f) ? 1 : 0;
+    CHECK(lines == 4);
+    // Bad steps pass no time.
+    lw::LeadRainLog n;
+    lw::leadRainLogDue(n, false, true, 0.25f);
+    CHECK_FALSE(lw::leadRainLogDue(n, false, true, std::nanf("")));
+    CHECK_FALSE(lw::leadRainLogDue(n, false, true, 1e9f));
+}
+
+TEST_CASE("lead rain: a step allocates nothing") {
+    const ftcore::RainSpec spec;
+    const ftcore::RainCoverSpec cover;
+    const ftcore::RainState rain = ftcore::rainSettled(spec, 1.f);
+    lw::LeadRain s;
+    lw::LeadRainLog l;
+    const auto before = ftcore_test::allocStats().count;
+    for (int i = 0; i < 600; ++i) {
+        const bool changed = lw::leadRainStep(s, spec, cover, rain, 1.f / 60.f, [&] { return (i / 60) % 2 ? roof() : open(); });
+        lw::leadRainLogDue(l, changed, true, 1.f / 60.f);
+    }
+    CHECK(s.set);
+    if (ftcore_test::allocHookInstalled()) {
+        CHECK(ftcore_test::allocStats().count - before == 0);
+    }
 }
 #endif

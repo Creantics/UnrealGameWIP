@@ -8,8 +8,8 @@
 //   - Skin: a wet-skin amount, smoothstep(kSkinFrom, kSkinTo, w); the skin master lowers its roughness toward
 //     kSkinWetRough by that amount times its wet mask (forehead, nose, cheekbones). No drips: nothing here makes any.
 // Skin and hair take the lead's surface wetness: the weather's or the lead's own water state's (WaterWetness::wetness,
-// from wading and swimming), whichever is wetter, the same rule as the weather's leadSurfaceWetness (ftcore/Weather.h,
-// through weatherFromRain below). w comes from ft.LeadWet: below 0 (the default, -1) follows the rain, a value in 0..1
+// from wading and swimming), whichever is wetter, the same rule as the weather's leadSurfaceWetness (ftcore/Weather.h).
+// w comes from ft.LeadWet: below 0 (the default, -1) follows the party's rain soak (LeadRain below), a value in 0..1
 // forces it (0 holds the leads dry whatever the weather). The night look's damp floor never wets a lead. Plain C++20, header only, no allocation.
 
 #include "ftcore/WaterBodies.h"
@@ -46,20 +46,15 @@ constexpr float surface(float w, const WaterWetness& water) {
 inline float surfaceFromRain(const RainState& rain, const WaterWetness& water, float exposure = 1.f) {
     return unit(leadSurfaceWetness(rain, water.wetness, exposure));
 }
-// The weather value w with the rain as its source: `forced` when it is 0 or more (ft.LeadWet), else the rain's
-// open-ground wetness (it ramps up while rain falls and dries after, ftcore::rainStep) times the lead's exposure
-// (1 in the open, 0 under cover). No rain, or a rain off, is 0.
-inline float weatherFromRain(float forced, const RainState& rain, float exposure = 1.f) {
-    return weather(forced, leadSurfaceWetness(rain, 0.f, exposure));
-}
-
 // The lead's own rain soak (ft.LeadWet below 0 reads it). A lead under a roof is not wetted, and does not dry at once:
-// - exposure: from an upward trace at the top of the lead's head, against the cover capture's occluder set (opaque,
-//   visible, non-skeletal meshes), every kCoverTraceS: 1 with nothing over it, else rainCoverOpen(occluder, head, biasM),
-//   the same rule and bias the ground's cover uses, so a lead and the ground under it agree;
+// - exposure: from an upward collision trace at the top of the lead's head, every kCoverTraceS, whether or not the
+//   ground's cover map (-RainCover) runs: 1 with nothing over it, else rainCoverOpen(occluder, head, biasM), the ground
+//   cover's own rule and bias. Only hits that the cover map would draw count (opaque, visible, non-skeletal meshes); a
+//   drawn mesh with no blocking collision is missed, which the game's dev check lists (LEAD_COVER_SET);
 // - the soak moves toward the open-ground wetness times the exposure: up at the rain's wetRisePerS, down at its dryPerS.
 //   Exposure 0 only stops the wetting; drying keeps its own rate;
-// - on the first step (rainSoakSettled) it starts where that rule settles, so a lead loaded into a settled rain is wet.
+// - on the first step after the first trace that answers (rainSoakSettled) it starts where that rule settles, so a lead
+//   loaded into a settled rain is wet in the open and dry under a roof.
 inline constexpr float kCoverTraceS = 0.25f;
 inline float coverExposure(bool hit, float occluderZ, float headZ, const RainCoverSpec& spec) {
     return hit ? unit(rainCoverOpen(occluderZ, headZ, spec.biasM)) : 1.f;
@@ -97,6 +92,86 @@ inline bool coverTraceDue(float& clock, float dtS) {
     if (clock < kCoverTraceSlackS) {
         clock = kCoverTraceS;
     }
+    return true;
+}
+
+// What one upward trace found: nothing over the head (Open), a drawn occluder at occluderZ (Hit), or no answer (Unknown:
+// the trace's ignore cap ran out on undrawn hits, a hit had no component, or there was no world). Unknown never reads
+// as open: the last exposure holds, and a lead with no answer yet waits.
+enum class CoverTrace : unsigned char { Open, Hit, Unknown };
+struct CoverAnswer {
+    CoverTrace kind = CoverTrace::Unknown;
+    float occluderZ = 0.f; // m, the hit (Hit only)
+    float headZ = 0.f;     // m, the top of the head
+};
+
+// The party's rain soak: one value on the lead's body, kept across a lead switch (the followers take it as their weather
+// value; their own cover is not traced). It owns the exposure, the trace clock and the first-step settle.
+struct LeadRain {
+    float soak = 0.f;
+    float exposure = 1.f;
+    float traceClock = 0.f;
+    bool known = false; // a trace has answered (Open or Hit)
+    bool set = false;   // the soak has settled once, on the first step after that answer
+};
+
+// Takes a trace's answer; true when the exposure changed (the first answer counts as a change).
+inline bool leadRainCover(LeadRain& s, const CoverAnswer& a, const RainCoverSpec& spec) {
+    if (a.kind == CoverTrace::Unknown) {
+        return false;
+    }
+    const float e = coverExposure(a.kind == CoverTrace::Hit, a.occluderZ, a.headZ, spec);
+    const bool changed = !s.known || e != s.exposure;
+    s.exposure = e;
+    s.known = true;
+    return changed;
+}
+
+// Moves the soak: nothing before the first answer, the settled value on the first step after it, then rainSoakStep.
+inline void leadRainSoak(LeadRain& s, const RainSpec& spec, const RainState& rain, float dtS) {
+    if (!s.known) {
+        return;
+    }
+    if (!s.set) {
+        s.set = true;
+        s.soak = rainSoakSettled(rain, s.exposure);
+        return;
+    }
+    s.soak = rainSoakStep(spec, s.soak, rain, s.exposure, dtS);
+}
+
+// One step: `trace` (returns a CoverAnswer) is called only when the clock says a trace is due. True when the exposure
+// changed. Steps with no time (0, negative, NaN) trace nothing and move nothing.
+template <class Trace>
+inline bool leadRainStep(LeadRain& s, const RainSpec& spec, const RainCoverSpec& cover, const RainState& rain, float dtS,
+                         Trace&& trace) {
+    const bool changed = coverTraceDue(s.traceClock, dtS) && leadRainCover(s, trace(), cover);
+    leadRainSoak(s, spec, rain, dtS);
+    return changed;
+}
+
+// The dev log's limiter (LEAD_RAIN lines): an exposure change logs at once, unless a line went out under kLeadRainLogGapS
+// ago; then it waits for the gap to end, never dropped, and the line counts the changes it covers (flips). Otherwise a
+// line every kLeadRainLogEveryS. Only while `wet` (rain on the ground or a soaked lead): a dry world logs nothing.
+inline constexpr float kLeadRainLogGapS = 1.f;
+inline constexpr float kLeadRainLogEveryS = 5.f;
+struct LeadRainLog {
+    float sinceS = kLeadRainLogEveryS; // the first wet step logs
+    int held = 0;                      // changes waiting for the next line
+    int flips = 0;                     // changes the line just due covers
+};
+inline bool leadRainLogDue(LeadRainLog& l, bool changed, bool wet, float dtS) {
+    l.sinceS += dtS > 0.f && dtS < 1e6f ? dtS : 0.f;
+    if (changed && wet) {
+        ++l.held;
+    }
+    const bool due = l.held > 0 ? l.sinceS >= kLeadRainLogGapS : (wet && l.sinceS >= kLeadRainLogEveryS);
+    if (!due) {
+        return false;
+    }
+    l.flips = l.held;
+    l.held = 0;
+    l.sinceS = 0.f;
     return true;
 }
 #endif

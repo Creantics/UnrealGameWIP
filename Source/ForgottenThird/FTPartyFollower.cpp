@@ -956,6 +956,7 @@ void AFTPartyFollower::SenseWater(const UFTWaterSubsystem& System, const FVector
 
 void AFTPartyFollower::StepWet(float Weather, float DeltaSeconds)
 {
+	WeatherIn = Weather;
 	// In the water only while its order has it there (on land WaterNow may still hold the last swim's state).
 	const bool bIn = WaterPhase != ftcore::WaterFollowPhase::Ashore && WaterNow.mode != ftcore::WaterMode::Dry && WaterNow.immersion > 0.f;
 	const UWorld* World = GetWorld();

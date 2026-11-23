@@ -37,7 +37,9 @@ public:
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	virtual bool IsTickable() const override { return bActive; }
-	// The cover map is drawn (-RainCover): a lead's head trace (AFTExploreCharacter) uses the same Spec, so they agree.
+	// The cover map is drawn (-RainCover). The lead's head trace (AFTExploreCharacter::TraceLeadCover) does not need it:
+	// it is a collision trace that takes only Spec (valid with the map off). With the map off the ground and the rain
+	// fall everywhere while the lead still reads its roof.
 	bool IsActive() const { return bActive; }
 	const ftcore::RainCoverSpec& GetSpec() const { return Spec; }
 

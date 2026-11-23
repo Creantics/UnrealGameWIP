@@ -97,6 +97,7 @@
 #include "ftcore/DodgeRoll.h"
 #include "ftcore/HeldUpJump.h"
 #include "ftcore/LedgeHang.h"
+#include "ftcore/LeadWet.h"
 #include "ftcore/RainCover.h"
 #include "ftcore/StillCam.h"
 #include "ftcore/Swim.h"
@@ -345,10 +346,13 @@ private:
 	int32 SoakSwapStage = 0;
 	bool bSoakSwapBefore = false;
 	FTimerHandle SoakSwapTimer;
-	// -ExploreSwitchReview=<soak>@<switch s>: review only (see the .cpp).
+	// -ExploreSwitchReview=<soak>@<switch s>[,<switch s>...]: review only (see the .cpp).
 	void SwitchForReview();
 	void LogSwitchReview(const TCHAR* Stage);
 	float SwitchReviewAt = -1.f;
+	float SwitchReviewTimes[4] = {}; // game times of the switches, rising
+	int32 SwitchReviewCount = 0;
+	int32 SwitchReviewDone = 0;
 	FTimerHandle SwitchReviewTimer;
 	// -StillCam=x,y,z,yaw,pitch,fov: review only (see the .cpp).
 	void HoldStillCam();
@@ -857,16 +861,23 @@ private:
 	// material has none); hair without a wet groom (a beard, brows) darkens and smooths through its own instances. The
 	// shown amount eases over 2 s. No drips.
 	float LeadWeather() const;
-	// The lead's own rain soak (ftcore::leadwet::rainSoakStep): rain wets it only where its head is open to the sky, by an
-	// upward trace every kCoverTraceS against the rain cover map's occluder set (UFTRainCoverSubsystem; with the map off
-	// the ground and the lead are both open). Under cover it holds its soak and dries at the rain's own rate.
+	// The party's rain soak (ftcore::leadwet::LeadRain, stepped by leadRainStep): rain wets it only where the lead's head
+	// is open to the sky, by an upward collision trace every kCoverTraceS (TraceLeadCover). The trace runs with or without
+	// -RainCover: it needs no capture, only the cover's spec. Under cover the soak holds and dries at the rain's own rate.
+	// It is stepped in a played scene too (TickWater), not while the body is hidden. One value for the party: a lead
+	// switch keeps it, and the followers take it as their weather.
 	void StepLeadRain(float DeltaSeconds);
-	float TraceLeadCover(const ftcore::RainCoverSpec& Spec) const;
-	float LeadRainSoak = 0.f;
-	float LeadCoverExposure = 1.f;
-	float LeadCoverClock = 0.f;
-	float LeadRainLogClock = 0.f;
-	bool bLeadRainSet = false;
+	void ShowLeadWetness(float DeltaSeconds); // the water's soak under LeadWeather on the cloth and the surfaces
+	ftcore::leadwet::CoverAnswer TraceLeadCover(const ftcore::RainCoverSpec& Spec) const;
+	ftcore::leadwet::LeadRain LeadRain;
+#if !UE_BUILD_SHIPPING
+	ftcore::leadwet::LeadRainLog LeadRainLog;
+	FVector LeadRainTraceAt = FVector::ZeroVector;     // where the last trace ran
+	FVector LeadRainTracePrevAt = FVector::ZeroVector; // and the one before it (a flip's edge lies between them)
+	double LeadRainTraceTime = 0.0;
+	bool bLeadCoverSetLogged = false;
+	void LogLeadCoverSet(); // LEAD_COVER_SET: drawn meshes the trace can't hit, once 5 s into a rainy run
+#endif
 	void ShowLeadWet(float Weather, float DeltaSeconds);
 	void ShowHairWet(float Wet);
 	bool bGroomWet = false;
@@ -923,6 +934,12 @@ private:
 	float LeadGoRan = 0.f;
 	ftcore::HeldUpJump LeadGoTry;
 	TArray<FVector> LeadGoNext; // the scripted walk's further points, taken in turn as each is reached
+	// -LeadGoRoute=<x,y>@<s>[;<x,y>@<s>...]: at each game time (rising) the lead walks at that point (plan frame, as
+	// -LeadGo) and stands there until the next; up to six legs.
+	FVector LeadRouteTo[6];
+	float LeadRouteAt[6] = {};
+	int32 LeadRouteCount = 0;
+	int32 LeadRouteNext = 0;
 	// The held-up jump's events this frame (the release and the verdict, logged).
 	void LeadGoTryEvents(float Distance);
 	// What held the walk up, measured at a press (dev, not shipped): the top of what stands in the way ahead, over the

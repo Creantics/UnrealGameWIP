@@ -66,6 +66,21 @@ void UFTRainSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	Want = FMath::Min(Want, 1.f);
 	SwitchTarget = Want;
 	State = ftcore::rainSettled(Spec, Want);
+#if !UE_BUILD_SHIPPING
+	// -RainStartAt=<s> (review only): the run starts dry, the rain begins at <s> game seconds and ramps up from 0 (the
+	// rise a settled start never shows).
+	if (FParse::Value(FTLookSwitches(), TEXT("RainStartAt="), StartAt) && StartAt >= 0.f)
+	{
+		StartWant = Want;
+		SwitchTarget = 0.f;
+		State = ftcore::rainSettled(Spec, 0.f);
+		UE_LOG(LogForgottenThird, Display, TEXT("Rain: -RainStartAt: dry until %.1f s, then ramping to %.2f."), StartAt, StartWant);
+	}
+	else
+	{
+		StartAt = -1.f;
+	}
+#endif
 
 	UNiagaraSystem* RainSystem = LoadRainSystem(TEXT("rain"));
 	UE_LOG(LogForgottenThird, Display, TEXT("Rain: on at %.2f, NS_rain %s"), Want, RainSystem ? TEXT("loaded") : TEXT("missing"));
@@ -136,6 +151,14 @@ void UFTRainSubsystem::Tick(float DeltaTime)
 		return;
 	}
 
+#if !UE_BUILD_SHIPPING
+	if (StartAt >= 0.f && World->GetTimeSeconds() >= StartAt)
+	{
+		SwitchTarget = StartWant;
+		UE_LOG(LogForgottenThird, Display, TEXT("Rain: -RainStartAt: the rain begins at %.2f s, ramping to %.2f."), World->GetTimeSeconds(), StartWant);
+		StartAt = -1.f;
+	}
+#endif
 	// The intensity: the switch, or r.FT.Rain when set, ramped.
 	const float Override = CVarFTRainTarget.GetValueOnGameThread();
 	State.target = Override >= 0.f ? FMath::Min(Override, 1.f) : SwitchTarget;
