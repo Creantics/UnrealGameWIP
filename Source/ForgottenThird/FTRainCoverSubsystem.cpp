@@ -12,6 +12,12 @@
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/Parse.h"
 #include "TextureResource.h"
+#if !UE_BUILD_SHIPPING
+#include "HAL/PlatformMemory.h"
+#include "HAL/PlatformTime.h"
+#include "RHIStats.h"
+#include "RenderingThread.h"
+#endif
 
 #include "ftcore/LookTable.h"
 
@@ -23,9 +29,26 @@ bool UFTRainCoverSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 	return World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE) && Super::ShouldCreateSubsystem(Outer);
 }
 
+bool UFTRainCoverSubsystem::IsTickable() const
+{
+#if !UE_BUILD_SHIPPING
+	return bActive || bCost;
+#else
+	return bActive;
+#endif
+}
+
 void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 {
 	Super::OnWorldBeginPlay(InWorld);
+#if !UE_BUILD_SHIPPING
+	{
+		const TCHAR* Switches = FTLookSwitches();
+		bEveryFrame = FParse::Param(Switches, TEXT("RainCoverEveryFrame"));
+		bReadback = FParse::Param(Switches, TEXT("RainCoverReadback"));
+		bCost = bEveryFrame || bReadback || FParse::Param(Switches, TEXT("RainCoverCost"));
+	}
+#endif
 	const FTCHARToUTF8 Map(*InWorld.GetMapName());
 	if (ftcore::lookWorldForMap(std::string_view(Map.Get(), static_cast<size_t>(Map.Length()))) != "solhaven")
 	{
@@ -80,6 +103,17 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 	bProbe = FParse::Param(FTLookSwitches(), TEXT("RainCoverProbe"));
 	bActive = true;
+#if !UE_BUILD_SHIPPING
+	if (bReadback)
+	{
+		Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("FTRainCoverReadback"));
+		CoverCpu.SetNumZeroed(Spec.resolution * Spec.resolution);
+	}
+	if (bCost)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover cost: every frame %d, readback %d."), bEveryFrame ? 1 : 0, bReadback ? 1 : 0);
+	}
+#endif
 	UE_LOG(LogForgottenThird, Display, TEXT("RainCover: on, %.0f m at %d, recapture every %.1f m."), Spec.sizeM, Spec.resolution,
 		Spec.recaptureM);
 }
@@ -90,6 +124,13 @@ void UFTRainCoverSubsystem::Deinitialize()
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("RainCover: %d captures."), Captures);
 	}
+#if !UE_BUILD_SHIPPING
+	if (bCost)
+	{
+		CostSummary();
+	}
+	Readback.Reset();
+#endif
 	bActive = false;
 	Super::Deinitialize();
 }
@@ -97,6 +138,20 @@ void UFTRainCoverSubsystem::Deinitialize()
 void UFTRainCoverSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+#if !UE_BUILD_SHIPPING
+	if (bCost)
+	{
+		++CostTicks;
+		if (CostTicks == 1 || CostTicks == 600)
+		{
+			CostMemory(CostTicks == 1 ? TEXT("tick 1") : TEXT("tick 600"));
+		}
+		if (bReadback)
+		{
+			CostReadbackPoll();
+		}
+	}
+#endif
 	UWorld* World = GetWorld();
 	if (!World || !Capture)
 	{
@@ -112,13 +167,32 @@ void UFTRainCoverSubsystem::Tick(float DeltaTime)
 	{
 		Probe(Eye); // the frame after the first capture: it has rendered
 	}
-	if (!ftcore::rainCoverRecapture(Spec, bHaveCapture, Frame.cx, Frame.cy, float(Eye.X) * 0.01f, float(Eye.Y) * 0.01f))
+	bool bRecapture = ftcore::rainCoverRecapture(Spec, bHaveCapture, Frame.cx, Frame.cy, float(Eye.X) * 0.01f, float(Eye.Y) * 0.01f);
+#if !UE_BUILD_SHIPPING
+	bRecapture = bRecapture || bEveryFrame;
+#endif
+	if (!bRecapture)
 	{
 		return;
 	}
 	Frame = ftcore::rainCoverFrameAt(Spec, float(Eye.X) * 0.01f, float(Eye.Y) * 0.01f, float(Eye.Z) * 0.01f);
 	Capture->SetActorLocation(FVector(Frame.cx, Frame.cy, Frame.topZ) * 100.0);
+#if !UE_BUILD_SHIPPING
+	const double CallStart = FPlatformTime::Seconds();
+#endif
 	Capture->GetCaptureComponent2D()->CaptureScene();
+#if !UE_BUILD_SHIPPING
+	if (bCost)
+	{
+		const double Call = FPlatformTime::Seconds() - CallStart;
+		CallSum += Call;
+		CallMax = FMath::Max(CallMax, Call);
+	}
+	if (bReadback)
+	{
+		CostReadbackIssue();
+	}
+#endif
 	bHaveCapture = true;
 	++Captures;
 	if (UMaterialParameterCollectionInstance* P = FTRainCover::Params(*World))
@@ -183,6 +257,88 @@ void UFTRainCoverSubsystem::Probe(const FVector& Eye)
 	UE_LOG(LogForgottenThird, Display, TEXT("RainCover probe: %.1f%% of the %.0f m square is covered over the eye."),
 		100.f * float(Over) / float(Pixels.Num()), Spec.sizeM);
 }
+
+#if !UE_BUILD_SHIPPING
+void UFTRainCoverSubsystem::CostMemory(const TCHAR* When) const
+{
+	FTextureMemoryStats Tex;
+	RHIGetTextureMemoryStats(Tex);
+	const FPlatformMemoryStats Mem = FPlatformMemory::GetStats();
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("RainCover cost memory at %s: cover map %s, RHI non-streaming textures %.1f MiB, streaming %.1f MiB, process physical %.1f MiB."),
+		When, bActive ? TEXT("on") : TEXT("off"), double(Tex.NonStreamingMemorySize) / 1048576.0, double(Tex.StreamingMemorySize) / 1048576.0,
+		double(Mem.UsedPhysical) / 1048576.0);
+}
+
+void UFTRainCoverSubsystem::CostReadbackIssue()
+{
+	if (bReadbackInFlight)
+	{
+		++ReadbacksSkipped; // one copy at a time: the next capture is read when this one lands
+		return;
+	}
+	FTextureRenderTargetResource* Resource = Target ? Target->GameThread_GetRenderTargetResource() : nullptr;
+	if (!Resource || !Readback)
+	{
+		return;
+	}
+	FRHIGPUTextureReadback* Copy = Readback.Get();
+	ENQUEUE_RENDER_COMMAND(FTRainCoverReadbackIssue)([Copy, Resource](FRHICommandListImmediate& RHICmdList)
+	{
+		Copy->EnqueueCopy(RHICmdList, Resource->GetRenderTargetTexture());
+	});
+	bReadbackInFlight = true;
+	ReadbackIssued = GFrameCounter;
+	++ReadbacksIssued;
+}
+
+void UFTRainCoverSubsystem::CostReadbackPoll()
+{
+	if (!bReadbackInFlight || !Readback || !Readback->IsReady())
+	{
+		return;
+	}
+	bReadbackInFlight = false;
+	const int32 Latency = int32(GFrameCounter - ReadbackIssued);
+	LatencySum += Latency;
+	LatencyMax = FMath::Max(LatencyMax, Latency);
+	++ReadbacksDone;
+	// Lock and copy on the render thread (render commands run in order, so this lands before the next copy is issued).
+	FRHIGPUTextureReadback* Copy = Readback.Get();
+	float* Out = CoverCpu.GetData();
+	const int32 Res = Spec.resolution;
+	double* Sum = &CopySum;
+	double* Max = &CopyMax;
+	ENQUEUE_RENDER_COMMAND(FTRainCoverReadbackLock)([Copy, Out, Res, Sum, Max](FRHICommandListImmediate&)
+	{
+		const double Start = FPlatformTime::Seconds();
+		int32 RowPitch = 0;
+		const float* In = static_cast<const float*>(Copy->Lock(RowPitch));
+		if (In)
+		{
+			for (int32 Y = 0; Y < Res; ++Y)
+			{
+				FMemory::Memcpy(Out + Y * Res, In + Y * RowPitch, Res * sizeof(float));
+			}
+			Copy->Unlock();
+		}
+		const double T = FPlatformTime::Seconds() - Start;
+		*Sum += T;
+		*Max = FMath::Max(*Max, T);
+	});
+}
+
+void UFTRainCoverSubsystem::CostSummary()
+{
+	FlushRenderingCommands();
+	const int32 Res = Spec.resolution;
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("RainCover cost: %d ticks, %d captures; CaptureScene call (game thread) mean %.3f ms max %.3f ms; readback %d issued %d done %d skipped, latency mean %.2f max %d frames, lock+copy (render thread) mean %.3f ms max %.3f ms; target %dx%d R32F = %.2f MiB, CPU copy %.2f MiB."),
+		CostTicks, Captures, Captures ? 1000.0 * CallSum / Captures : 0.0, 1000.0 * CallMax, ReadbacksIssued, ReadbacksDone, ReadbacksSkipped,
+		ReadbacksDone ? double(LatencySum) / ReadbacksDone : 0.0, LatencyMax, ReadbacksDone ? 1000.0 * CopySum / ReadbacksDone : 0.0,
+		1000.0 * CopyMax, Res, Res, double(Res) * Res * 4.0 / 1048576.0, double(CoverCpu.Num()) * 4.0 / 1048576.0);
+}
+#endif
 
 TStatId UFTRainCoverSubsystem::GetStatId() const
 {
