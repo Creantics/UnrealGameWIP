@@ -12,7 +12,7 @@ namespace ftcore_test {
 
 enum class TaskDPart : std::uint8_t {
     None,    // none of it: softTurn and homing -1 (the old path), push 0, the string end's hitStop the light before it's
-    HitStop, // + the string end's hitStop (0.10)
+    HitStop, // + the string end's hitStop (0.15)
     Push,    // + its push and pushTime
     All,     // the kit as given (+ the soft-target limits)
 };

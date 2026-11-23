@@ -3979,6 +3979,7 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                 // Re-pinned for the autopilot guard gate: the lead parries blows it used to take, so five fights end
                 // sooner (duy kite_boss did not move) and the third lands fewer bolts in them.
                 // Re-pinned (11-22) for the leads' string end (hitStop 0.10; a boss is never pushed).
+                // Re-pinned (11-22 review, round 3) for its dose: hitStop 0.15 on both leads' string ends.
                 struct Pin {
                     const char* lead;
                     const char* boss;
@@ -3986,9 +3987,9 @@ TEST_CASE("arena partner: per-lead kits against each shipped boss and the group 
                     int partnerDamage;
                 };
                 static constexpr Pin kThirdPins[] = {
-                    {"devin", "kite_boss", 24.7831f, 126}, {"devin", "stone_bearer", 36.233f, 187},
-                    {"devin", "white_glove", 31.6997f, 152}, {"duy", "kite_boss", 33.5163f, 150},
-                    {"duy", "stone_bearer", 40.1496f, 222}, {"duy", "white_glove", 33.4163f, 160},
+                    {"devin", "kite_boss", 25.7498f, 136}, {"devin", "stone_bearer", 40.6496f, 188},
+                    {"devin", "white_glove", 28.9997f, 139}, {"duy", "kite_boss", 34.283f, 150},
+                    {"duy", "stone_bearer", 41.9662f, 222}, {"duy", "white_glove", 34.5163f, 160},
                 };
                 for (const Pin& pin : kThirdPins) {
                     if (std::string(p.lead) != pin.lead || id != pin.boss) continue;
@@ -5372,63 +5373,65 @@ struct ClassicPinRow {
 // Re-pinned again (11-22 review) for the string end's two rulings: no push on a Staggered, Open or Down enemy, and the
 // lead's longer stop holds the other enemies too. Each row's cause (hitStop alone, or hitStop then push) and its
 // before/after hits, damage dealt and taken: the "every classic row stays a victory" report below.
+// Re-pinned (11-22 review, round 3) for the dose: both string ends' hitStop 0.15, Duy's push 0 (Devin's stays 1.2 m).
+// 48 of the 56 rows moved; the damage-taken bar below holds on every row and seed with no row excepted.
 const ClassicPinRow kClassicPins[] = {
-    {"devin", "shipped default fight", false, 13, 94, 5999061572425075983ull},
-    {"devin", "shipped default fight", true, 13, 94, 583095615669918408ull},
-    {"devin", "three kinds, attackers 1", false, 25, 170, 2665495310826072374ull},
-    {"devin", "three kinds, attackers 1", true, 23, 164, 15040801916201006737ull},
+    {"devin", "shipped default fight", false, 13, 94, 10592000303970908534ull},
+    {"devin", "shipped default fight", true, 13, 94, 15031915339619927627ull},
+    {"devin", "three kinds, attackers 1", false, 25, 170, 13825920161846523200ull},
+    {"devin", "three kinds, attackers 1", true, 23, 164, 15893952500659532346ull},
     {"devin", "a brute and a spitter, attackers 2", false, 16, 108, 5241323735042292893ull},
     {"devin", "a brute and a spitter, attackers 2", true, 16, 115, 14748652239614714217ull},
-    {"devin", "brute", false, 13, 94, 5999061572425075983ull},
-    {"devin", "brute", true, 13, 94, 583095615669918408ull},
+    {"devin", "brute", false, 13, 94, 10592000303970908534ull},
+    {"devin", "brute", true, 13, 94, 15031915339619927627ull},
     {"devin", "skirmisher", false, 9, 66, 5952098331214068505ull},
     {"devin", "skirmisher", true, 6, 42, 1249458168175911326ull},
-    {"devin", "breaker", false, 22, 163, 2402372893913752295ull},
-    {"devin", "breaker", true, 17, 128, 7703680993744437070ull},
-    {"devin", "duelist", false, 16, 121, 15051684852357630423ull},
-    {"devin", "duelist", true, 15, 114, 6211885763762674868ull},
-    {"devin", "hulk", false, 22, 166, 15319383001952065177ull},
-    {"devin", "hulk", true, 26, 187, 11258640159766434896ull},
-    {"devin", "titan", false, 27, 198, 15207157633286193992ull},
-    {"devin", "titan", true, 25, 184, 13208026254009387355ull},
-    {"devin", "kite_boss", false, 62, 438, 8673492936009452625ull},
-    {"devin", "kite_boss", true, 61, 436, 9967548556324848774ull},
-    {"devin", "stone_bearer", false, 80, 584, 4871559874917626930ull},
-    {"devin", "stone_bearer", true, 80, 584, 14322731906715386598ull},
-    {"devin", "white_glove", false, 70, 499, 11623258456009637513ull},
-    {"devin", "white_glove", true, 70, 497, 10719829099270658459ull},
-    {"devin", "maw_pup", false, 6, 42, 14271193196024403956ull},
-    {"devin", "maw_pup", true, 6, 42, 10824710505452702103ull},
-    {"devin", "spitter", false, 6, 42, 16994954208136295472ull},
-    {"devin", "spitter", true, 6, 42, 596144150160075129ull},
-    {"duy", "shipped default fight", false, 16, 121, 16129571751424819287ull},
-    {"duy", "shipped default fight", true, 16, 121, 15803600145694816199ull},
-    {"duy", "three kinds, attackers 1", false, 32, 225, 6486821309586141276ull},
-    {"duy", "three kinds, attackers 1", true, 37, 256, 18350731485922003309ull},
-    {"duy", "a brute and a spitter, attackers 2", false, 17, 119, 3096051190507745992ull},
-    {"duy", "a brute and a spitter, attackers 2", true, 20, 146, 7233461716215559814ull},
-    {"duy", "brute", false, 16, 121, 16129571751424819287ull},
-    {"duy", "brute", true, 16, 121, 15803600145694816199ull},
+    {"devin", "breaker", false, 23, 170, 6688381364162749615ull},
+    {"devin", "breaker", true, 17, 128, 6514347594746670051ull},
+    {"devin", "duelist", false, 16, 121, 14551552756073128614ull},
+    {"devin", "duelist", true, 15, 114, 3292133315692830810ull},
+    {"devin", "hulk", false, 22, 166, 16316362541601128686ull},
+    {"devin", "hulk", true, 27, 198, 7391550002156050109ull},
+    {"devin", "titan", false, 27, 198, 14484332089596709578ull},
+    {"devin", "titan", true, 26, 191, 12445392066020775595ull},
+    {"devin", "kite_boss", false, 59, 417, 7457879902266480132ull},
+    {"devin", "kite_boss", true, 56, 401, 12269268277060300548ull},
+    {"devin", "stone_bearer", false, 71, 524, 9505072705834966664ull},
+    {"devin", "stone_bearer", true, 76, 553, 8693795626734324299ull},
+    {"devin", "white_glove", false, 54, 396, 659376887246205016ull},
+    {"devin", "white_glove", true, 54, 396, 18231915533073622054ull},
+    {"devin", "maw_pup", false, 4, 28, 4588098154154008939ull},
+    {"devin", "maw_pup", true, 4, 28, 532221035747124859ull},
+    {"devin", "spitter", false, 6, 42, 6079499873305667569ull},
+    {"devin", "spitter", true, 3, 21, 4150562399047041604ull},
+    {"duy", "shipped default fight", false, 16, 121, 13902992181593999520ull},
+    {"duy", "shipped default fight", true, 16, 121, 1980386358922650708ull},
+    {"duy", "three kinds, attackers 1", false, 33, 232, 16213177967613044381ull},
+    {"duy", "three kinds, attackers 1", true, 36, 254, 18125311619699469ull},
+    {"duy", "a brute and a spitter, attackers 2", false, 17, 119, 16729567018654878421ull},
+    {"duy", "a brute and a spitter, attackers 2", true, 20, 143, 4473400017006852349ull},
+    {"duy", "brute", false, 16, 121, 13902992181593999520ull},
+    {"duy", "brute", true, 16, 121, 1980386358922650708ull},
     {"duy", "skirmisher", false, 6, 42, 12056965067669638780ull},
     {"duy", "skirmisher", true, 6, 27, 7451009726274229835ull},
-    {"duy", "breaker", false, 21, 159, 846505572606926278ull},
-    {"duy", "breaker", true, 26, 191, 14043180726348809670ull},
-    {"duy", "duelist", false, 16, 124, 13553160616168302813ull},
-    {"duy", "duelist", true, 16, 121, 7892321000661240167ull},
-    {"duy", "hulk", false, 29, 212, 7934347700092671634ull},
-    {"duy", "hulk", true, 27, 198, 13687848607503498194ull},
-    {"duy", "titan", false, 31, 229, 2766181796281439188ull},
-    {"duy", "titan", true, 29, 204, 14890932542749384050ull},
-    {"duy", "kite_boss", false, 64, 457, 237225492138586247ull},
-    {"duy", "kite_boss", true, 67, 472, 1202375297437231589ull},
-    {"duy", "stone_bearer", false, 101, 743, 11214750350828670490ull},
-    {"duy", "stone_bearer", true, 102, 756, 3883339685511627263ull},
-    {"duy", "white_glove", false, 83, 599, 4208545004557488825ull},
-    {"duy", "white_glove", true, 92, 665, 7136199856857427644ull},
+    {"duy", "breaker", false, 25, 187, 18276814955596903401ull},
+    {"duy", "breaker", true, 26, 191, 1643028709287939452ull},
+    {"duy", "duelist", false, 16, 124, 10763895539829458384ull},
+    {"duy", "duelist", true, 16, 121, 14253124447081717103ull},
+    {"duy", "hulk", false, 30, 219, 15665265283018188961ull},
+    {"duy", "hulk", true, 27, 198, 1087662495262223385ull},
+    {"duy", "titan", false, 33, 243, 12354207901049001221ull},
+    {"duy", "titan", true, 30, 215, 14958461430375440694ull},
+    {"duy", "kite_boss", false, 64, 454, 13579917491133118298ull},
+    {"duy", "kite_boss", true, 70, 505, 17244329075254966467ull},
+    {"duy", "stone_bearer", false, 90, 675, 10924724086343498990ull},
+    {"duy", "stone_bearer", true, 87, 651, 18412046233248943905ull},
+    {"duy", "white_glove", false, 66, 486, 326559207333772074ull},
+    {"duy", "white_glove", true, 69, 504, 2421785866529005435ull},
     {"duy", "maw_pup", false, 6, 42, 12129895063172397078ull},
     {"duy", "maw_pup", true, 6, 32, 760009930559185308ull},
-    {"duy", "spitter", false, 6, 42, 8866679087616209984ull},
-    {"duy", "spitter", true, 6, 42, 18343557503619373346ull},
+    {"duy", "spitter", false, 6, 42, 3371232521332790107ull},
+    {"duy", "spitter", true, 6, 42, 6157723355617736290ull},
 };
 
 // The same rows before Task D: main's kClassicPins at f9d5c7c9 (promotion 85, the autopilot guard gate), copied
@@ -5568,25 +5571,11 @@ TEST_CASE("arena soft target and string end: kits with none of the new fields pl
 
 // Before and after Task D's data, row by row (report; review 11-22): every classic row a victory on every seed with the
 // shipped kits, the lead's hits, damage dealt and taken beside the stripped kit's, and which part of the data moved the
-// whole-run hash: the string end's hitStop 0.10 alone, then its push, then the soft-target limits (turn and homing).
-// The damage-taken bar (review 11-22, round 2): over seeds 1-3 the lead takes no more with the shipped kits than with
-// the stripped ones, give or take one blow: the row's heaviest single enemy blow, a number the feature does not set
-// (one swing landing that before was parried or missed is the least a re-timed fight can change). A row over it is a
-// named exception below, each with its traced cause and its rise today as its cap, so it cannot grow unseen; an
-// exception no longer over the bar fails too, so it is removed rather than left to hide a later rise.
-struct TakenException {
-    const char* lead;
-    const char* fight;
-    bool camera;
-    int cap; // its rise over seeds 1-3 today (shipped less stripped)
-    const char* cause;
-};
-const TakenException kTakenExceptions[] = {
-    // Seed 1 (27 -> 54): the end's hitStop alone (the push changes nothing here). Delayed by the 0.10 s stops, the boss
-    // picks move 2 at 12.917 s where it landed, against 11.80 s where the same move whiffed; parries 6 -> 4. Over 32
-    // seeds the row rises 1309 -> 1350 (3%), with the stop's length: 1432 at 0.15 s.
-    {"devin", "white_glove", false, 27, "end hitStop: the boss's move 2 re-timed onto the lead, seed 1"},
-};
+// whole-run hash: the string end's hitStop 0.15 alone, then its push, then the soft-target limits (turn and homing).
+// The damage-taken bar (review 11-22, rounds 2 and 3): on each of seeds 1-3 the lead takes no more with the shipped kits
+// than with the stripped ones, give or take one blow: the row's heaviest single enemy blow, a number the feature does
+// not set (one swing landing that before was parried or missed is the least a re-timed fight can change). Per seed, as
+// the host rows' bar in test_arena.cpp; no row is excepted.
 TEST_CASE("arena soft target and string end: every classic row stays a victory (before and after, report)") {
     const ArenaTable shipped = shippedTable();
     ArenaTable tables[4] = {shipped, shipped, shipped, shipped}; // before, + hitStop, + push, shipped
@@ -5597,7 +5586,7 @@ TEST_CASE("arena soft target and string end: every classic row stays a victory (
     for (const char* lead : {"devin", "duy"})
         for (const auto& [name, def] : fights)
             for (int cam = 0; cam < 2; ++cam) {
-                int v[4] = {}, hits[4] = {}, dealt[4] = {}, taken[4] = {}, ph[4] = {};
+                int v[4] = {}, hits[4] = {}, dealt[4] = {}, taken[4] = {}, ph[4] = {}, seedTaken[4][3] = {};
                 std::uint64_t hash[4];
                 for (int k = 0; k < 4; ++k) {
                     hash[k] = 1469598103934665603ull;
@@ -5607,6 +5596,7 @@ TEST_CASE("arena soft target and string end: every classic row stays a victory (
                         hits[k] += p.leadHits;
                         dealt[k] += p.dealt;
                         taken[k] += p.taken;
+                        seedTaken[k][seed - 1] = p.taken;
                         ph[k] += p.hits;
                         pinFold(hash[k], &p.hash, sizeof p.hash);
                     }
@@ -5626,19 +5616,12 @@ TEST_CASE("arena soft target and string end: every classic row stays a victory (
                 for (std::size_t e = 0; e < def.enemyCount; ++e)
                     for (std::size_t m = 0; m < def.enemies[e].moveCount; ++m)
                         blow = std::max(blow, def.enemies[e].moves[m].attack.damage);
-                const TakenException* named = nullptr;
-                for (const TakenException& x : kTakenExceptions)
-                    if (std::string(x.lead) == lead && name == x.fight && x.camera == (cam == 1)) named = &x;
-                const int rise = taken[3] - taken[0];
+                int rise = seedTaken[3][0] - seedTaken[0][0];
+                for (int s = 1; s < 3; ++s) rise = std::max(rise, seedTaken[3][s] - seedTaken[0][s]);
                 MESSAGE("TAKEN " << std::string(lead) << " | " << name << " | " << std::string(cam ? "camera" : "none")
-                                 << " | " << taken[0] << " -> " << taken[3] << " (" << rise << ") | bar " << blow
-                                 << (named ? std::string(" | exception: ") + named->cause : std::string()));
-                if (named) {
-                    CHECK(rise > blow);       // still over the bar: else remove the exception
-                    CHECK(rise <= named->cap); // and no higher than traced
-                } else {
-                    CHECK(rise <= blow);
-                }
+                                 << " | " << taken[0] << " -> " << taken[3] << " | worst seed " << rise << " | bar "
+                                 << blow);
+                CHECK(rise <= blow);
             }
 }
 

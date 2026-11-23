@@ -8913,10 +8913,11 @@ TEST_CASE("arena host mirror: seed 1 of skirmisher and hulk with Devin is the ho
     // took 68): the push shoved the Staggered hulk out of his reach and his 0.10 s stop froze him while the
     // skirmisher kept acting. With the review's rulings (no push on a Staggered, Open or Down enemy; the lead's stop
     // holds the other enemies too) it is the fight before Task D blow for blow (22 hits, 1 taken, took 34), 0.3 s
-    // longer for the string end's stops. Core only: not yet checked against a headless run.
+    // longer for the string end's stops. Core only: not yet checked against a headless run. Re-pinned (round 3) for
+    // the dose, hitStop 0.15: the same fight blow for blow, 0.2 s longer.
     const HostRun r = hostRun({"skirmisher", "hulk"}, "devin", 1);
     CHECK(r.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 14.7 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
+          "Arena: VICTORY at standalone beat 0 step 0 after 14.9 s, zone sand_ring, kit devin, enemies skirmisher+hulk, "
           "autoplay seed 1, hp 116/150, 22 hits, 1 taken, 0 blocks, 3 parries, 1 ripostes, 1 evades, 0 guard breaks, "
           "3 staggers, 0 heals, 0 releases, 0 overloads, 4/6 reads right, dealt 520, took 34, 0 restarts.");
     CHECK(r.hitsOn[0] == 5);
@@ -8961,8 +8962,9 @@ TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out w
     // The headless -ArenaLineup=skirmisher,hulk -ArenaLead=Duy -ArenaAutoShoot line: his shots and light string leave
     // an enemy upright at its breakAt, but the other holds the one token, so it steps back (barred), once on every
     // seed; never a FAIL. Before Task D one seed (10) also broke out, its count filling a second time with the token
-    // free; the string end's hitStop moves that to seed 7 and its push to none (0 of 12: Barred, never FAIL). Every
-    // seed still steps back and wins; the per-seed hits, damage and blows taken before and after are reported below.
+    // free; the string end's hitStop moves that to seed 7 and its push to none (0 of 12: Barred, never FAIL). At the
+    // round-3 dose (hitStop 0.15, Duy's push 0) seeds 3 and 8 break out too (PASS; 2 of 12). Every seed still steps
+    // back and wins; the per-seed hits, damage and blows taken before and after are reported below.
     // Unaimed, the autopilot's parries cut his runs short (n/a).
     int breaks = 0, steps = 0;
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
@@ -8995,12 +8997,12 @@ TEST_CASE("arena host mirror: skirmisher and hulk on Duy shooting: a break-out w
         CHECK(plain.stats.flinchChances == 0);
         CHECK(arenaFeatureChecks(plain.stats).flinchCheck == ArenaCheck::NotShown);
     }
-    CHECK(breaks == 0); // before Task D: 1 (seed 10)
+    CHECK(breaks == 2); // before Task D: 1 (seed 10); now seeds 3 and 8
     CHECK(steps == 12);
 }
 
 // Task D part by part on the host mirror's moved pins (review 11-22). With none of its data each is its value before
-// Task D (a5eeeb02): the code is the old code. The report gives each part's value: the string end's hitStop 0.10, then
+// Task D (a5eeeb02): the code is the old code. The report gives each part's value: the string end's hitStop 0.15, then
 // its push, then the soft-target limits (the autopilot locks, so the limits move none of these).
 TEST_CASE("arena host mirror: Task D's data part by part on the moved pins; with none of it, the pins before it") {
     using ftcore_test::TaskDPart;
@@ -9055,36 +9057,80 @@ TEST_CASE("arena host mirror: Task D's data part by part on the moved pins; with
     CHECK(line[3] == line[2]); // the soft-target limits: locked starts, the same fight
 }
 
+// The damage-taken bar on the host mirror's rows (review 11-22, round 3), as on the classic rows (test_arena_partner.cpp):
+// on each seed the lead takes no more with the shipped kit than with the kit stripped of Task D's data, give or take the
+// lineup's heaviest single enemy blow (from the data). Every row of the fight check: skirmisher and hulk on Devin and on
+// Duy (shooting and not), seeds 1-12; duelist and skirmisher on the shared count, seed 1; and the two pinned
+// turn-and-strike fights, seed 1. No row is excepted.
+TEST_CASE("arena host mirror: the damage-taken bar, seed by seed, on every row of the fight check") {
+    const ArenaTable table = loadShipped();
+    auto rows = [&table](std::initializer_list<const char*> lineup, const char* kit, bool shoots, bool shared,
+                         std::uint32_t seeds, bool turnStrike = false) {
+        int blow = 0;
+        for (const char* id : lineup)
+            for (std::size_t e = 0; e < table.enemyIds.size(); ++e)
+                if (table.enemyIds[e] == id)
+                    for (std::size_t m = 0; m < table.enemies[e].moveCount; ++m)
+                        blow = std::max(blow, table.enemies[e].moves[m].attack.damage);
+        REQUIRE(blow > 0);
+        int worst = -1000000;
+        std::string rises;
+        for (std::uint32_t seed = 1; seed <= seeds; ++seed) {
+            const HostRun r = hostRun(lineup, kit, seed, shoots, shared, ftcore_test::TaskDPart::All, turnStrike);
+            const HostRun before = hostRun(lineup, kit, seed, shoots, shared, ftcore_test::TaskDPart::None, turnStrike);
+            const int rise = r.stats.damageTaken - before.stats.damageTaken;
+            CAPTURE(seed);
+            CHECK(rise <= blow);
+            worst = std::max(worst, rise);
+            rises += " " + std::to_string(rise);
+        }
+        MESSAGE("TAKEN host " << std::string(*lineup.begin()) << "+" << std::string(*(lineup.begin() + 1)) << " | "
+                              << std::string(kit) << std::string(shoots ? " shooting" : "")
+                              << std::string(shared ? " shared" : "") << std::string(turnStrike ? " turn-strike" : "")
+                              << " | seeds 1-" << seeds
+                              << " rise" << rises << " | worst " << worst << " | bar " << blow);
+    };
+    rows({"skirmisher", "hulk"}, "devin", false, false, 12);
+    rows({"skirmisher", "hulk"}, "duy", true, false, 12);
+    rows({"skirmisher", "hulk"}, "duy", false, false, 12);
+    rows({"duelist", "skirmisher"}, "devin", false, true, 1);
+    rows({"duelist", "skirmisher"}, "duy", true, true, 1);
+    rows({"brute", "skirmisher", "breaker"}, "devin", false, false, 1, true); // the turn-and-strike fights below
+    rows({"skirmisher", "hulk"}, "duy", true, false, 1, true);
+}
+
 // Task D's turn and homing limits in a whole fight (the orchestrator's D3, 11-22). The autopilot faces its target in
 // reach, so its unlocked fights never ask a light to turn past 120 degrees or home past 2 m: at Push and at All they
 // are the same fight in all 36 of the host-mirror runs (devin and duy, three lineups, seeds 1-6). The turn-and-strike
 // player (hostRun's turnStrike) runs off and turns back to strike, so its lights start with the target behind it or
 // out past the homing: there the limits change the fight. One whole fight pinned per lead, with the soft counts,
-// and the same fight without the limits (Push: the string end only) shown to differ.
+// and the same fight without the limits (Push: the string end only) shown to differ. Re-pinned (round 3) for the dose
+// (hitStop 0.15, Duy's push 0): Devin takes 42 (was 24), Duy 58 (was 24); the bar test below holds these two fights
+// too, against the same fights with none of Task D's data.
 TEST_CASE("arena host mirror: unlocked turn-and-strike fights, the soft-target turn and homing limits in a whole fight") {
     using ftcore_test::TaskDPart;
     const HostRun devin = hostRun({"brute", "skirmisher", "breaker"}, "devin", 1, false, false, TaskDPart::All, true);
     const HostRun devinFree = hostRun({"brute", "skirmisher", "breaker"}, "devin", 1, false, false, TaskDPart::Push, true);
     CHECK(devin.line ==
-          "Arena: VICTORY at standalone beat 0 step 0 after 26.2 s, zone sand_ring, kit devin, enemies "
-          "brute+skirmisher+breaker, autoplay seed 1, hp 126/150, 17 hits, 1 taken, 0 blocks, 4 parries, 1 ripostes, "
-          "2 evades, 0 guard breaks, 2 staggers, 0 heals, 0 releases, 0 overloads, 11/12 reads right, dealt 530, took "
-          "24, 0 restarts.");
-    CHECK(devin.stats.softTargets == 20);
-    CHECK(devin.stats.softChances == 24);
-    CHECK(devinFree.stats.softTargets == 25);
-    CHECK(devinFree.stats.softChances == 31);
+          "Arena: VICTORY at standalone beat 0 step 0 after 27.2 s, zone sand_ring, kit devin, enemies "
+          "brute+skirmisher+breaker, autoplay seed 1, hp 108/150, 18 hits, 2 taken, 0 blocks, 3 parries, 0 ripostes, "
+          "2 evades, 0 guard breaks, 3 staggers, 0 heals, 1 releases, 0 overloads, 12/13 reads right, dealt 530, took "
+          "42, 0 restarts.");
+    CHECK(devin.stats.softTargets == 22);
+    CHECK(devin.stats.softChances == 25);
+    CHECK(devinFree.stats.softTargets == 18);
+    CHECK(devinFree.stats.softChances == 22);
     CHECK(devinFree.line != devin.line);
     const HostRun duy = hostRun({"skirmisher", "hulk"}, "duy", 1, true, false, TaskDPart::All, true);
     const HostRun duyFree = hostRun({"skirmisher", "hulk"}, "duy", 1, true, false, TaskDPart::Push, true);
     CHECK(duy.line ==
           "Arena: VICTORY at standalone beat 0 step 0 after 29.8 s, zone sand_ring, kit duy, enemies skirmisher+hulk, "
-          "autoplay seed 1, hp 111/135, 31 hits, 1 taken, 0 blocks, 4 parries, 1 ripostes, 2 evades, 0 guard breaks, "
-          "4 staggers, 0 heals, 1 releases, 0 overloads, 9/9 reads right, dealt 520, took 24, 0 restarts.");
-    CHECK(duy.stats.softTargets == 17);
-    CHECK(duy.stats.softChances == 21);
-    CHECK(duyFree.stats.softTargets == 22);
-    CHECK(duyFree.stats.softChances == 26);
+          "autoplay seed 1, hp 77/135, 32 hits, 2 taken, 0 blocks, 3 parries, 1 ripostes, 3 evades, 0 guard breaks, "
+          "5 staggers, 0 heals, 0 releases, 0 overloads, 8/9 reads right, dealt 520, took 58, 0 restarts.");
+    CHECK(duy.stats.softTargets == 23);
+    CHECK(duy.stats.softChances == 25);
+    CHECK(duyFree.stats.softTargets == 16);
+    CHECK(duyFree.stats.softChances == 19);
     CHECK(duyFree.line != duy.line);
 }
 
@@ -10376,7 +10422,7 @@ TEST_CASE("arena string end: N holds cost a walking enemy N holds of its walk, w
         rig.put(0, 1.5f, 0.f);
         rig.put(1, -8.f, 0.f);
         bool wasHeld = false;
-        int sinceHold = -1;
+        int sinceHold = -1; // ticks since the last hold ended (0: held this tick; -1: none yet)
         for (int i = 0; i < 720; ++i) {
             rig.in.light = true;
             const ArenaOutput& out = rig.tick();
@@ -10386,9 +10432,10 @@ TEST_CASE("arena string end: N holds cost a walking enemy N holds of its walk, w
             if (k != 0) continue;
             const bool held = out.enemies[1].stopLeft > 0.f;
             if (held && !wasHeld) ++holds;
-            if (!held && wasHeld) sinceHold = 0;
-            else if (sinceHold >= 0 && ++sinceHold == 1 && i > 120 && speed < 0.6f * 0.99f) ++slowAfter; // the first whole tick after
             wasHeld = held;
+            if (held) sinceHold = 0;
+            else if (sinceHold >= 0) ++sinceHold;
+            if (sinceHold == 2 && i > 120 && speed < 0.6f * 0.99f) ++slowAfter; // the first whole tick after a hold
         }
         if (k == 0) ends = rig.fight.stats().stringEndHits;
     }
@@ -10400,6 +10447,55 @@ TEST_CASE("arena string end: N holds cost a walking enemy N holds of its walk, w
     CHECK(slowAfter == 0); // it goes on at its speed after every hold
     CHECK(lag >= holds * 0.6f * (0.1f - kDt) - 1e-3f);
     CHECK(lag <= holds * 0.6f * (0.1f + kDt) + 1e-3f);
+}
+
+// The kite claim, bounded (review 11-22, round 3): an approacher that arrives. It walks from 8 m behind the lead by its
+// own velocity; the lead and the target it strings on stay put, so every end lands on the target and none shoves the
+// walker (arrival is 3.5 m off, out past the lights' 2 m reach: at 2 m one end landed on the walker and cost 2 s).
+// It arrives later than at push 0 by its holds and no more: N holds of 0.1 s, a tick each way.
+// Nothing here wins time back, and no test shows the 0.39 s a hold was once claimed to cost on top (the lunges
+// re-closing on a shoved target), so the claim is the hold's cost alone. An end landing on the walker itself shoves it
+// instead: push / walk speed later (1.2 m at 0.6 m/s, 2 s) for each, a cost of the push, not of the hold.
+TEST_CASE("arena string end: an approacher held N times arrives N holds later than at push 0, within a tick each") {
+    ArenaEnemyKind walker = dummyKind();
+    walker.walkSpeed = 0.6f;
+    walker.runSpeed = 0.6f;
+    walker.accel = 2.f;
+    walker.preferredRange = 1.f;
+    walker.runRange = 100.f;
+    ArenaEnemyKind target = dummyKind();
+    target.hp = 1000000;
+    target.poise = 1e6f;
+    float arrive[2] = {-1.f, -1.f};
+    int holds = 0, ends = 0;
+    for (int k = 0; k < 2; ++k) {
+        Rig rig(stringFighter(k == 0 ? 1.2f : 0.f), {target, walker});
+        rig.put(0, 1.5f, 0.f);
+        rig.put(1, -8.f, 0.f);
+        bool wasHeld = false;
+        for (int i = 0; i < 30 * 60 && arrive[k] < 0.f; ++i) {
+            rig.in.light = true;
+            const ArenaOutput& out = rig.tick();
+            const Vec2 v = out.enemies[1].velocity;
+            rig.put(1, rig.bodies.enemies[1].x + v.x * kDt, rig.bodies.enemies[1].y + v.y * kDt); // the walker alone moves
+            if (k == 0) {
+                const bool held = out.enemies[1].stopLeft > 0.f;
+                if (held && !wasHeld) ++holds;
+                wasHeld = held;
+            }
+            if (distanceOf(rig.bodies.enemies[1], rig.bodies.player) <= 3.5f) arrive[k] = rig.fight.time();
+        }
+        if (k == 0) ends = rig.fight.stats().stringEndHits;
+    }
+    const float delay = arrive[0] - arrive[1];
+    MESSAGE("arrives at " << arrive[0] << " s against " << arrive[1] << " s at push 0: " << delay << " s later, " << holds
+                          << " holds over " << ends << " ends");
+    REQUIRE(arrive[0] > 0.f);
+    REQUIRE(arrive[1] > 0.f);
+    REQUIRE(holds >= 5);
+    CHECK(holds == ends);
+    CHECK(delay >= holds * (0.1f - kDt) - 1e-3f);
+    CHECK(delay <= holds * (0.1f + kDt) + 1e-3f);
 }
 
 // The hold freezes an enemy's state, it does not change it: one in its attack's startup stays in Attack through the
@@ -10561,6 +10657,7 @@ TEST_CASE("arena string end: repeated string ends hold the others once each, no 
     // r 1: push 0, no hold (the twin; the lead's own stop is the same); r 2: push 0 and the end's hitStop 0 (no stop)
     for (int r = 0; r < 3; ++r) {
         ArenaFighter f = stringFighter(r == 0 ? 1.2f : 0.f);
+        f.stamina = 100000.f; // no arm waits on stamina: refilling through the stops, the stopped arms would wait less
         if (r == 2) f.light[2].hitStop = 0.f;
         Rig rig(f, {target, dummyKind()});
         rig.put(0, 1.5f, 0.f);
@@ -10594,18 +10691,22 @@ TEST_CASE("arena string end: repeated string ends hold the others once each, no 
     CHECK(holds == static_cast<int>(endsAt[0].size()));
     CHECK(worstHold <= 0.1f + 1e-4f);
     CHECK(worstLead <= 0.1f + 1e-4f);
+    CHECK(worstHold >= 0.1f - kDt - 1e-4f); // and the stops are there: a missing hitStop fails here
+    CHECK(worstLead >= 0.1f - kDt - 1e-4f);
     CHECK(minHeld >= 5);
     CHECK(maxHeld <= 6);
     // The strings come exactly as at push 0, end for end: the hold costs the lead nothing, and nothing builds up.
     REQUIRE(endsAt[1].size() == endsAt[0].size());
     for (std::size_t j = 0; j < endsAt[0].size(); ++j) CHECK(std::fabs(endsAt[0][j] - endsAt[1][j]) <= 1e-4f);
-    // Against no stop at all: end j comes at most j stops (0.10 s, a tick each way) later, so nothing builds up.
+    // Against no stop at all: end j comes j stops (0.10 s, a tick each way) later, no more (nothing builds up) and no
+    // less (each stop is paid).
     REQUIRE(endsAt[2].size() >= endsAt[0].size());
     std::string gaps;
     for (std::size_t j = 0; j < endsAt[0].size(); ++j) {
         const float late = endsAt[0][j] - endsAt[2][j];
         gaps += " " + std::to_string(late);
         CHECK(late <= static_cast<float>(j) * (0.1f + kDt) + 1e-4f);
+        CHECK(late >= static_cast<float>(j) * (0.1f - kDt) - 1e-4f);
     }
     MESSAGE("each end later than with no stop:" << gaps);
 }

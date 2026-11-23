@@ -794,7 +794,9 @@ TEST_CASE("arena boss break: the shortest break to break by phase, the fastest s
     const float thresholds[] = {10.f, 8.f, 6.5f};
     // Pinned (ruled 2026-11-14; ARENA_DEMO.md, Boss break pace): a tuning change that moves these shows up here.
     // Re-pinned (11-22) for the leads' string end, its hitStop 0.10: each a little slower.
-    const float pinned[2][3] = {{6.300f, 5.250f, 4.950f}, {3.667f, 3.117f, 3.117f}};
+    // Re-pinned (11-22 review, round 3) for its dose, hitStop 0.15: the four set by Devin's lights 0.05 to 0.1 s
+    // slower; Duy's heavies (scale 1, phases 1 and 2) did not move.
+    const float pinned[2][3] = {{6.300f, 5.250f, 5.050f}, {3.767f, 3.167f, 3.167f}};
     for (const float scale : {1.f, 3.f})
     for (int phase = 0; phase < 3; ++phase) {
         float best = 1.0e9f;
