@@ -601,13 +601,15 @@ TEST_CASE("arena special: the partner's gauge fills from its own play: hidden fo
         CAPTURE(std::string_view(partner));
         const ArenaSpecialTable& specials = std::string_view(partner) == "duy" ? withMove : shipped;
         PartnerRig r;
-        // A boss aims some strings at the partner (blows on it); the dummy keeps the fight going after it falls. Seed 4:
-        // Devin falls to this pair before the Third's gauge fills on 3 seeds of 8, before the string end and after it,
-        // the string end moving which (seeds 2, 3 and 7 before it, 1, 3 and 5 after; 11-22); seed 4 fills for both
-        // partners with any part of it.
+        // A boss aims some strings at the partner (blows on it); the dummy keeps the fight going after it falls. The
+        // lead never falls (setNoDefeatForTest), so the gauge's checks never hang on its living: since the autopilot
+        // guard gate, against the third it parried a blow at 62.3 s that it used to take and the fight went another
+        // way, ending in a Defeat at 95.1 s with the gauge at 411.5 of 1000. A higher hp would not do: the autopilot
+        // heals by its share of hp, so its choices would change.
         ArenaDef def = fightOf({"dummy", "kite_boss"}, 2);
         def.partnerKit = arena().fighter(partner);
-        r.beginWith(def, 4);
+        r.fight.setNoDefeatForTest(true);
+        r.beginWith(def, 5);
         REQUIRE(r.fight.setSpecials(&specials, "devin", partner, LeadSpecialGauges{}));
         float expect = 0.f;
         int readies = 0, allyHits = 0, allyTaken = 0;

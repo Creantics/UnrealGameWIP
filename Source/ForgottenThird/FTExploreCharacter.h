@@ -343,12 +343,20 @@ private:
 	int32 SoakSwapStage = 0;
 	bool bSoakSwapBefore = false;
 	FTimerHandle SoakSwapTimer;
+	// -ExploreSwitchReview=<soak>@<switch s>: review only (see the .cpp).
+	void SwitchForReview();
+	void LogSwitchReview(const TCHAR* Stage);
+	float SwitchReviewAt = -1.f;
+	FTimerHandle SwitchReviewTimer;
 	// -StillCam=x,y,z,yaw,pitch,fov: review only (see the .cpp).
 	void HoldStillCam();
 	ftcore::StillCam StillCamView;
 	FTimerHandle StillCamTimer;
 	bool bStillCamHeld = false;
 #endif
+	// -StillCamLead (with -StillCam): the lead and what it wears stay in sight, a still of a move rather than of a place
+	// (the party is still hidden); each shot carries its index, so a yaw list of repeats is a sequence. Review only.
+	bool bStillCamLead = false;
 	void StepPortraitShots();
 	void HoldFaceAt(float Time);
 	void HoldBodyAt(float Time);
@@ -853,6 +861,12 @@ private:
 	float SkinWetShown = 0.f;
 	float SkinWetEased = 0.f;
 	bool bSkinWetSnap = false; // a new look: the next show puts the skin at its target (the member's own soak), not eased
+	bool bLookWorn = false;    // a look has been worn (WearLook): only a later one snaps the skin (ftcore::leadwet::skinSnapOnLook)
+#if !UE_BUILD_SHIPPING
+	int32 LooksWorn = 0;       // SKIN_LOOK proof log: looks worn so far, the log's stage since the last one and its first time
+	int32 SkinLogStage = 2;
+	double SkinLogAt = 0.0;
+#endif
 	TArray<FVector2f> WetSkinDry;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> WetHairMaterials;

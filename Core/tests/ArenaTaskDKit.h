@@ -2,7 +2,7 @@
 
 // A lead's kit with part of Task D's data (11-22: the soft-target limits and the string end), so a test can show which
 // part moved a fight. Task D's code with none of its data steps to the bit as before it (test_arena_partner.cpp's
-// classic rows against a5eeeb02).
+// classic rows against f9d5c7c9, main before Task D).
 
 #include "ftcore/ArenaFight.h"
 

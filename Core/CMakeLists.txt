@@ -116,6 +116,7 @@ add_library(ftcore STATIC
     src/WorldClock.cpp
     src/WorldChecks.cpp
     src/Roads.cpp
+    src/Interior.cpp
     src/WaterBodies.cpp
     src/WetPrints.cpp
     src/RoadGraph.cpp
@@ -450,6 +451,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_world_clock.cpp
         tests/test_world_checks.cpp
         tests/test_roads.cpp
+        tests/test_interior.cpp
         tests/test_water_bodies.cpp
         tests/test_wet_prints.cpp
         tests/test_water_exits.cpp
@@ -526,6 +528,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_look_review.cpp
         tests/test_lead_wet.cpp
         tests/test_cloth_drive.cpp
+        tests/test_flag_number.cpp
         tests/test_skip.cpp
         tests/test_story.cpp
         tests/test_story_chain.cpp

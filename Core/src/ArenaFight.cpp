@@ -3513,7 +3513,8 @@ struct ArenaFightImpl {
             tookHalf = true;
             const int lead = (damage + 1) / 2;
             allyPart = damage - lead;
-            const int taken = std::min(scaledTaken(lead), pl.hp); // the Load below reads the blow's own half
+            // the Load below reads the blow's own half
+            const int taken = std::min(scaledTaken(lead), std::max(0, pl.hp - hpFloor()));
             pl.hp -= taken;
             stats.damageTaken += taken;
             ++stats.takeHalves;
@@ -3559,7 +3560,7 @@ struct ArenaFightImpl {
         const TableEvenSplit split = tableEvenSplit(damage, bodies);
         if (split.each <= 0) return split.struck;
         if (player && struck != kArenaPlayer) {
-            const int lost = std::min(split.each, pl.hp);
+            const int lost = std::min(split.each, std::max(0, pl.hp - hpFloor()));
             pl.hp -= lost;
             stats.damageTaken += lost;
             emit(ArenaEventType::TableShare, source, kArenaPlayer, move, lost, pl.pos);
@@ -3594,9 +3595,12 @@ struct ArenaFightImpl {
         emit(ArenaEventType::Downed, source, kArenaPlayer, move, 0, pl.pos);
     }
 
+    // The least hp a blow leaves the player: 1 under setNoDefeatForTest, else 0.
+    int hpFloor() const { return fight.noDefeat_ ? 1 : 0; }
+
     void damagePlayer(std::uint8_t source, int damage, std::uint8_t move) {
         damage = tableShare(source, move, kArenaPlayer, damage);
-        const int amount = std::min(damage, pl.hp);
+        const int amount = std::min(damage, std::max(0, pl.hp - hpFloor()));
         pl.hp -= amount;
         stats.damageTaken += amount;
         emit(ArenaEventType::Hit, source, kArenaPlayer, move, amount, pl.pos);
@@ -4361,8 +4365,10 @@ struct ArenaFightImpl {
             const bool inArc = arenaDot(p.facing, toFoe) >= f.guardArcCos;
             const bool rearmed = p.guardHeld || self.time_ - p.lastGuardPress >= f.parryRearm;
             if (mv.parryable && f.parryWindow >= kArenaAutoParryWindow && inArc && rearmed) {
-                // Guard goes up when the active part is half a window away, and stays up till it is spent.
-                if (soonest <= f.parryWindow * 0.5f && canStart(p, f)) in.guard = true;
+                // Guard goes up when the active part is half a window away, and stays up till it is spent. It cuts
+                // an attack where the tick lets guard cut it (its cancelGuard share), not only once the plain cancel
+                // opens.
+                if (soonest <= f.parryWindow * 0.5f && canStart(p, f, Cut::Guard)) in.guard = true;
             } else if (p.action != ArenaAction::Dodge && (f.dodgeStamina <= 0.f || p.stamina > 0.f)) {
                 if (soonest <= 0.5f * (f.dodgeInvulnStart + f.dodgeInvulnEnd)) {
                     in.dodge = true;
@@ -4610,6 +4616,8 @@ void ArenaFight::killEnemyForTest(std::size_t i) {
     enemy_[i].hp = 0;
     enemy_[i].brain = ArenaBrain::Dead;
 }
+
+void ArenaFight::setNoDefeatForTest(bool on) { noDefeat_ = on; }
 
 std::size_t ArenaFight::frozenBytesForTest() const {
     return static_cast<std::size_t>(reinterpret_cast<const char*>(&special_) - reinterpret_cast<const char*>(this));

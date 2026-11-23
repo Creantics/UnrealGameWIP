@@ -79,6 +79,7 @@
 #include "FTWorldClockSubsystem.h"
 
 #include "ftcore/HeroCorner.h"
+#include "ftcore/Interior.h"
 #include "ftcore/Json.h"
 #include "ftcore/MassingDress.h"
 #include "ftcore/MassingLayout.h"
@@ -1447,6 +1448,9 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 	int32 Beside = 0;
 	FString NoStreet;
 	int32 NoStreetN = 0;
+	// Footprints, m2 (the boxes' own sides, turned): every blocker's, and the hit ones'. A fill that stays in its boxes
+	// can take no more walkable area than the hit blockers' footprint.
+	double FootAll = 0.0, FootHit = 0.0;
 	auto OnNav = [&Nav, &NavData, Side](double X, double Y, double Lo, double Hi, double& OutZ)
 	{
 		const FVector At = Cm(ftcore::massingEnginePoint(Side, X, Y, 0.5 * (Lo + Hi)));
@@ -1472,6 +1476,7 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		const double Short = FMath::Min(Box.sx, Box.sy);
 		const int32 WidthBin = Short < 1.5 ? 0 : (Short < 2.5 ? 1 : 2);
 		++AllByWidth[WidthBin];
+		FootAll += Box.sx * Box.sy;
 		for (int32 I = -1; I <= 1 && !bHit; ++I)
 		{
 			for (int32 J = -1; J <= 1 && !bHit; ++J)
@@ -1510,6 +1515,7 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		}
 		++ByHeight[HitZ < Box.z0 + 0.6 ? 0 : (HitZ > Box.z1 - 0.8 ? 2 : 1)];
 		++ByWidth[WidthBin];
+		FootHit += Box.sx * Box.sy;
 		if (++Inside <= 8)
 		{
 			First += FString::Printf(TEXT("%s%s at (%.1f, %.1f) z %.2f in %.2f-%.2f"), First.IsEmpty() ? TEXT("") : TEXT(", "), *Utf8(Box.id), HitX,
@@ -1517,8 +1523,8 @@ int32 CheckBlockerNav(UNavigationSystemV1& Nav, const ANavigationData& NavData, 
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: blockers: hits by height in the box %d low, %d mid, %d high; by short side %d of %d "
-		"under 1.5 m, %d of %d 1.5-2.5 m, %d of %d wider."), ByHeight[0], ByHeight[1], ByHeight[2], ByWidth[0], AllByWidth[0], ByWidth[1],
-		AllByWidth[1], ByWidth[2], AllByWidth[2]);
+		"under 1.5 m, %d of %d 1.5-2.5 m, %d of %d wider; footprint of the hit blockers %.0f m2 of all blockers' %.0f m2."), ByHeight[0],
+		ByHeight[1], ByHeight[2], ByWidth[0], AllByWidth[0], ByWidth[1], AllByWidth[1], ByWidth[2], AllByWidth[2], FootHit, FootAll);
 	const ARecastNavMesh* Recast = Cast<ARecastNavMesh>(&NavData);
 	int32 PolyCount = 0;
 	const double Area = Recast ? NavAreaM2(*Recast, PolyCount) : 0.0;
@@ -2224,6 +2230,23 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -HeroSubLevel (the strip) and -HeroCornerOnly (the corner) are two runs."));
 		return 1;
 	}
+	// -Interiors=hero (promotion 83 slice, INTERIORS_PLAN.md): the hero corner's lit bays become enterable rooms
+	// (ftcore::heroCornerRooms, interiorRoomPlan). The strip's run lays each room's shell and walk floor as hidden
+	// colliders in the bay's single -COL box's stead, so the navmesh runs in through the door; the corner's run lays
+	// the visible shell and linings and places the bay's front NoCollide. Both runs read the same Core plan.
+	FString InteriorsArg;
+	FParse::Value(*Params, TEXT("Interiors="), InteriorsArg);
+	const bool bInteriors = InteriorsArg.Equals(TEXT("hero"), ESearchCase::IgnoreCase);
+	if (!InteriorsArg.IsEmpty() && !bInteriors)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Interiors=%s: only -Interiors=hero is built yet (the slice)."), *InteriorsArg);
+		return 1;
+	}
+	if (bInteriors && !bHeroSubLevel && !bHeroOnly)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: -Interiors=hero needs -HeroSubLevel (the strip's run) or -HeroCornerOnly (the corner's)."));
+		return 1;
+	}
 	// A hero strip bakes the corner inline only on purpose: the 09:16 Strip lacked -HeroSubLevel and every walk after it
 	// showed a default corner, not the built sub-level. -InlineCorner says the inline corner is wanted.
 	if (bHeroCorner && !bHeroSubLevel && !bHeroOnly && !FParse::Param(*Params, TEXT("InlineCorner")))
@@ -2374,6 +2397,33 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		int Index = -1;
 		return bHeroCorner && I >= HeroFirst && I < Boxes.size() && ftcore::heroCornerBay(Boxes[I].id, &Index) ? Index : -1;
 	};
+	// -Interiors=hero: each lit bay's room plan, by bay (none where a bay has no room).
+	ftcore::InteriorPlan HeroRoomPlans[ftcore::kHeroBays];
+	bool bHeroRoom[ftcore::kHeroBays] = {};
+	const ftcore::KitDoorway* HeroRoomDoorways[ftcore::kHeroBays] = {};
+	if (bInteriors)
+	{
+		ftcore::HeroRoom Rooms[ftcore::kHeroBays];
+		const int RoomCount = ftcore::heroCornerRooms(HeroTune, Rooms);
+		for (int K = 0; K < RoomCount; ++K)
+		{
+			std::string Why;
+			const int B = Rooms[K].bay;
+			if (!ftcore::interiorRoomPlan(Rooms[K].spec, HeroRoomPlans[B], &Why))
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld -Interiors=hero: bay %d's room: %s"), B + 1, *Utf8(Why));
+				return 1;
+			}
+			bHeroRoom[B] = true;
+			HeroRoomDoorways[B] = Rooms[K].doorway;
+			const ftcore::InteriorPlan& Plan = HeroRoomPlans[B];
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: bay %d (%s) is a %s room: %d boxes, %d slots (%d dropped off the "
+				"walk line), gap %.2f m, floor %.2f, ceiling %.2f, door outside (%.2f, %.2f) inside (%.2f, %.2f), middle (%.2f, %.2f)."),
+				B + 1, *Utf8(Rooms[K].spec.host.id), *Utf8(ftcore::roomKindText(Rooms[K].spec.kind)), static_cast<int32>(Plan.boxes.size()),
+				static_cast<int32>(Plan.slots.size()), static_cast<int32>(Plan.dropped), Plan.gapU1 - Plan.gapU0, Rooms[K].spec.floorZ, Plan.ceilingTop,
+				Plan.doorOutside.x, Plan.doorOutside.y, Plan.doorInside.x, Plan.doorInside.y, Plan.room.x, Plan.room.y);
+		}
+	}
 	if (!FTBuildRoads::Prepare(RoadOptions, ftcore::MassingGround{Field.Grid.GetData(), static_cast<size_t>(Field.SamplesX),
 			static_cast<size_t>(Field.SamplesY), Field.Spacing, Field.OriginX, Field.OriginY}, Boxes, RoadSpecs, RoadBuilds))
 	{
@@ -3257,6 +3307,16 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		{
 			return 1;
 		}
+		// -Interiors=hero: the rooms go to their bays' lots (the corner's run lays their shells and linings).
+		for (int32 B = 0; B < ftcore::kHeroBays; ++B)
+		{
+			if (bHeroRoom[B] && LotBuild.HeroBayLots[B] >= 0)
+			{
+				LotBuild.RoomLots.Add(LotBuild.HeroBayLots[B]);
+				LotBuild.RoomPlans.push_back(HeroRoomPlans[B]);
+				LotBuild.RoomDoorways.push_back(HeroRoomDoorways[B]);
+			}
+		}
 	}
 	for (size_t I = 0; I < LotBuild.Replaced.size(); ++I)
 	{
@@ -3280,6 +3340,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	}
 	int32 Named = 0, Kit = 0, Sloped = 0, Nudged = 0, Skipped = 0, BoxesLeft = 0;
 	int32 NavObstacles = 0, NullStrips = 0;
+	int32 InteriorColliders = 0; // -Interiors=hero: the room shells' and floors' hidden colliders laid (strip's run)
 	// Every flat box, piece of dressing, placed mesh and road solid below is an instance of its cell
 	// (FTCellInstancer.h), made at once before the navmesh; sloped boxes, the hidden walls and the sea stay actors.
 	FFTCellInstancer Cells(World, Spawn);
@@ -3359,6 +3420,26 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			++StandInBoxes;
 			continue;
 		}
+		// -Interiors=hero, both runs: a room bay's shell and walk floor as hidden colliders in its -COL box's stead.
+		if (bInteriors && HeroBayOf(I) >= 0 && bHeroRoom[HeroBayOf(I)])
+		{
+			for (const ftcore::InteriorBox& Part : HeroRoomPlans[HeroBayOf(I)].boxes)
+			{
+				if (Part.part != ftcore::InteriorPart::Shell && Part.part != ftcore::InteriorPart::Walk)
+				{
+					continue;
+				}
+				const ftcore::MassingBox& Pb = Part.box;
+				const double Ph = Pb.z1 - Pb.z0;
+				FFTCellOptions PartOpts;
+				PartOpts.Label = Utf8(Box.id) + TEXT("-ROOM-") + Utf8(Pb.id);
+				UMaterialInterface* const PartMats[1] = {Material};
+				Cells.Add(Cube, PartMats, FTransform(FRotator(0.0, ftcore::massingEngineYaw(Pb.rot), 0.0),
+					Cm(ftcore::massingEnginePoint(Side, Pb.cx, Pb.cy, Pb.z0 + Ph * 0.5)), FVector(Pb.sx, Pb.sy, Ph)), {}, EFTCellKind::Hidden, PartOpts);
+				++InteriorColliders;
+			}
+			continue;
+		}
 		const double Height = FMath::Max(Box.z1 + Nudges[I] - Box.z0, ftcore::kMassingMinHeight);
 		Nudged += Nudges[I] != 0.0 || Raises[I] > 0.0 ? 1 : 0;
 		// A box a kit mesh stands in for is a hidden collider casting no shadow (EFTCellKind::Hidden).
@@ -3380,6 +3461,11 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				NullStrips += AddPlateNavNull(*Holder, Box, Side);
 			}
 		}
+	}
+	if (bInteriors)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld -Interiors=hero: %d room colliders (shell and walk floor) in the room bays' -COL boxes' stead."),
+			InteriorColliders);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: cover plates: %d boxes are navmesh obstacles, %d null strips (each rising at most "
 		"%.2f m, %.2f m past the slab); they keep their collision."), NavObstacles, NullStrips, ftcore::kMassingNullRise, ftcore::kMassingNullMargin);

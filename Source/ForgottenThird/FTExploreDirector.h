@@ -178,6 +178,8 @@ public:
 	void SetPartyHeld(bool bHold);
 	bool IsPartyHeld() const { return bPartyHeld; }
 	const TArray<TObjectPtr<AFTPartyFollower>>& GetFollowers() const { return Followers; }
+	// Each follower's place in the party (its PartyLooks index), beside GetFollowers.
+	const ftcore::leadwet::FollowerRoster& GetFollowerRoster() const { return Roster; }
 	// This map's in-place cutscene host (null before BeginPlay, or when it could not spawn).
 	const AFTCutsceneDirector* GetCutsceneDirector() const;
 	// The big world's layout (null off a big world: on the Explore map and the overworld), and a district's spawn:
@@ -332,9 +334,11 @@ private:
 	void SpawnFollowers(AFTExploreCharacter& Player);
 	void PlaceFollowers(AFTExploreCharacter& Player, float DeltaSeconds);
 	void ClearFollowers();
+	// Stores a member's soak (PartyWetness) at game time Now; warns when the member is past those kept.
+	void StoreSoak(int32 Member, const ftcore::WaterWetness& Soak, double Now);
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AFTPartyFollower>> Followers;
-	TArray<int32> FollowerMembers;     // each follower's place in the party (ftcore::leadwet::followerMember), beside Followers
+	ftcore::leadwet::FollowerRoster Roster; // each follower's walk place (ft.PartyWet's slot) and party member, beside Followers
 	ftcore::leadwet::PartyWet PartyWetness; // every member's soak, stored when the followers are cleared
 	ftcore::PartyTrail Trail;
 	TArray<ftcore::PartySlot> Slots; // each follower's place: behind, to one side, a beat late

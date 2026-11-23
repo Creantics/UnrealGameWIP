@@ -245,13 +245,13 @@ TEST_CASE("lead wet: the soak stays with the member across a lead switch") {
     lw::PartyWet party;
     const auto before = ftcore_test::allocStats().count;
     // Switch to member 1: as OnLeadChanged and ClearFollowers store them, the old lead's and each follower's.
-    party.store(0, lead);
+    party.store(0, lead, 0.0);
     for (int i = 0; i < 2; ++i) {
-        party.store(lw::followerMember(0, i, 3), followers[static_cast<std::size_t>(i)]);
+        party.store(lw::followerMember(0, i, 3), followers[static_cast<std::size_t>(i)], 0.0);
     }
-    lead = party.of(1); // the new lead takes its own
+    lead = party.of(1, 0.0); // the new lead takes its own
     for (int i = 0; i < 2; ++i) {
-        followers[static_cast<std::size_t>(i)] = party.of(lw::followerMember(1, i, 3)); // SpawnFollowers
+        followers[static_cast<std::size_t>(i)] = party.of(lw::followerMember(1, i, 3), 0.0); // SpawnFollowers
     }
     const auto allocs = ftcore_test::allocStats().count - before;
     CHECK(lead.wetness == 0.f); // member 1 was dry
@@ -261,19 +261,192 @@ TEST_CASE("lead wet: the soak stays with the member across a lead switch") {
     CHECK(followers[1].line == doctest::Approx(1.2f));
     CHECK(followers[1].silt == doctest::Approx(0.4f));
     // And back: the round trip gives each its own again.
-    party.store(1, lead);
+    party.store(1, lead, 0.0);
     for (int i = 0; i < 2; ++i) {
-        party.store(lw::followerMember(1, i, 3), followers[static_cast<std::size_t>(i)]);
+        party.store(lw::followerMember(1, i, 3), followers[static_cast<std::size_t>(i)], 0.0);
     }
-    CHECK(party.of(0).wetness == doctest::Approx(1.f));
-    CHECK(party.of(1).wetness == 0.f);
-    CHECK(party.of(2).silt == doctest::Approx(0.1f));
-    // Out of range: store is a no-op, of is dry.
-    party.store(-1, lead);
-    party.store(lw::kPartyWetMembers, ftcore::WaterWetness{1.f, 2.f, 1.f});
-    CHECK(party.of(lw::kPartyWetMembers).wetness == 0.f);
-    CHECK(party.of(-1).silt == 0.f);
+    CHECK(party.of(0, 0.0).wetness == doctest::Approx(1.f));
+    CHECK(party.of(1, 0.0).wetness == 0.f);
+    CHECK(party.of(2, 0.0).silt == doctest::Approx(0.1f));
+    // Out of range: store is a no-op and says so, of is dry.
+    CHECK_FALSE(party.store(-1, lead, 0.0));
+    CHECK_FALSE(party.store(lw::kPartyWetMembers, ftcore::WaterWetness{1.f, 2.f, 1.f}, 0.0));
+    CHECK(party.of(lw::kPartyWetMembers, 0.0).wetness == 0.f);
+    CHECK(party.of(-1, 0.0).silt == 0.f);
     if (ftcore_test::allocHookInstalled()) {
         CHECK(allocs == 0);
     }
+}
+
+TEST_CASE("lead wet: a member away dries by the water's own law; a switch at no time away is exact") {
+    lw::PartyWet party;
+    CHECK_FALSE(party.stored(0)); // never stored: nothing to give back, so no skin snap
+    CHECK(party.of(0, 100.0).wetness == 0.f);
+    const ftcore::WaterWetness soaked{1.f, 1.2f, 0.4f};
+    const ftcore::WaterWetness knee{0.6f, 0.45f, 0.f};
+    REQUIRE(party.store(2, soaked, 10.0));
+    REQUIRE(party.store(3, knee, 10.0));
+    CHECK(party.stored(2));
+    CHECK_FALSE(party.stored(1));
+    // No time away (a lead switch stores and takes back in the same frame): bit-identical.
+    const ftcore::WaterWetness same = party.of(2, 10.0);
+    CHECK(same.wetness == soaked.wetness);
+    CHECK(same.line == soaked.line);
+    CHECK(same.silt == soaked.silt);
+    CHECK(party.of(2, 5.0).wetness == soaked.wetness); // an earlier time holds it
+    // Half the dry time away: half as wet, line and stain kept.
+    const float half = ftcore::kWaterDryTime * 0.5f;
+    const ftcore::WaterWetness back = party.of(2, 10.0 + static_cast<double>(half));
+    CHECK(back.wetness == doctest::Approx(0.5f));
+    CHECK(back.line == doctest::Approx(1.2f));
+    CHECK(back.silt == doctest::Approx(0.4f));
+    // The same as a follower drying out of the water in steps (StepWet's law).
+    ftcore::WaterWetness stepped = soaked;
+    for (int i = 0; i < 45; ++i) {
+        stepped.step(0.f, 0.f, half / 45.f);
+    }
+    CHECK(back.wetness == doctest::Approx(stepped.wetness));
+    // Long gone: dry; with no stain the line goes too, a stain keeps it.
+    const ftcore::WaterWetness kneeLater = party.of(3, 10.0 + 10.0 * static_cast<double>(ftcore::kWaterDryTime));
+    CHECK(kneeLater.wetness == 0.f);
+    CHECK(kneeLater.line == 0.f);
+    CHECK(party.of(2, 1.0e6).line == doctest::Approx(1.2f));
+    // The first look eases in; a later one lands at once.
+    static_assert(!lw::skinSnapOnLook(false));
+    static_assert(lw::skinSnapOnLook(true));
+}
+
+TEST_CASE("lead wet: an out-of-range lead comes into the party with a warning; one in range is kept") {
+    static_assert(lw::leadInParty(1, 3).lead == 1 && !lw::leadInParty(1, 3).wrapped);
+    CHECK(lw::leadInParty(3, 3).lead == 0);
+    CHECK(lw::leadInParty(3, 3).wrapped);
+    CHECK(lw::leadInParty(7, 3).lead == 1);
+    CHECK(lw::leadInParty(7, 3).wrapped);
+    CHECK(lw::leadInParty(-1, 3).lead == 0);
+    CHECK(lw::leadInParty(-1, 3).wrapped);
+    CHECK(lw::leadInParty(5, 0).lead == 0); // no party: the default names walk behind member 0, nothing to warn of
+    CHECK_FALSE(lw::leadInParty(5, 0).wrapped);
+    // Every party size and every lead index, in range or not: the lead lands in the party, warned exactly when it was out,
+    // and the followers behind it are every other member once.
+    for (int count = 1; count <= lw::kPartyWetMembers; ++count) {
+        for (int lead = -2; lead < 3 * count; ++lead) {
+            const lw::PartyLead got = lw::leadInParty(lead, count);
+            CAPTURE(count);
+            CAPTURE(lead);
+            CHECK(got.lead >= 0);
+            CHECK(got.lead < count);
+            CHECK(got.wrapped == (lead < 0 || lead >= count));
+            if (lead >= 0 && lead < count) {
+                CHECK(got.lead == lead);
+            }
+            bool seen[lw::kPartyWetMembers]{};
+            seen[got.lead] = true;
+            for (int i = 0; i < count - 1; ++i) {
+                const int m = lw::followerMember(got.lead, i, count);
+                REQUIRE(m >= 0);
+                REQUIRE(m < count);
+                CHECK_FALSE(seen[m]);
+                seen[m] = true;
+            }
+        }
+    }
+}
+
+TEST_CASE("lead wet: each follower's walk place indexes its own member, whatever spawns fail, for every lead") {
+    // Every party size, every lead, and every pattern of failed spawns over the walk places (a failed spawn is left out of
+    // the roster, so a follower's index and its place part): place and member stay together, ft.PartyWet's slot p wets
+    // only the follower at place p, and the soak it stores goes to its own member.
+    std::size_t cases = 0;
+    const auto before = ftcore_test::allocStats().count;
+    for (int count = 2; count <= lw::kPartyWetMembers; ++count) {
+        const int places = count - 1;
+        for (int lead = 0; lead < count; ++lead) {
+            for (unsigned fails = 0; fails < (1u << places); ++fails) {
+                lw::FollowerRoster roster;
+                for (int p = 0; p < places; ++p) {
+                    if ((fails >> p) & 1u) {
+                        continue; // this spawn failed
+                    }
+                    REQUIRE(roster.add(p, lead, count) == lw::followerMember(lead, p, count));
+                }
+                for (int k = 0; k < roster.count; ++k) {
+                    const int p = roster.placeOf(k);
+                    REQUIRE(((fails >> p) & 1u) == 0u);
+                    REQUIRE(roster.memberOf(k) == (lead + 1 + p) % count);
+                    REQUIRE(roster.memberOf(k) != lead);
+                }
+                for (int slot = -1; slot < places; ++slot) {
+                    const lw::PartyWetForce force{true, slot, 0.9f};
+                    for (int k = 0; k < roster.count; ++k) {
+                        const bool named = slot == -1 || slot == roster.placeOf(k);
+                        REQUIRE(roster.weatherOf(k, 0.1f, force) == doctest::Approx(named ? 0.9f : 0.1f));
+                    }
+                }
+                lw::PartyWet party;
+                for (int k = 0; k < roster.count; ++k) {
+                    party.store(roster.memberOf(k), ftcore::WaterWetness{0.1f * static_cast<float>(roster.placeOf(k) + 1), 0.5f, 0.f}, 0.0);
+                }
+                for (int p = 0; p < places; ++p) {
+                    const int m = lw::followerMember(lead, p, count);
+                    if ((fails >> p) & 1u) {
+                        REQUIRE_FALSE(party.stored(m));
+                    } else {
+                        REQUIRE(party.of(m, 0.0).wetness == doctest::Approx(0.1f * static_cast<float>(p + 1)));
+                    }
+                }
+                ++cases;
+            }
+        }
+    }
+    const auto allocs = ftcore_test::allocStats().count - before;
+    CHECK(cases > 0);
+    if (ftcore_test::allocHookInstalled()) {
+        CHECK(allocs == 0);
+    }
+    // Out of range and a full roster.
+    lw::FollowerRoster roster;
+    CHECK(roster.placeOf(0) == -1);
+    CHECK(roster.memberOf(-1) == -1);
+    CHECK(roster.weatherOf(0, 0.3f, lw::PartyWetForce{true, -1, 1.f}) == doctest::Approx(0.3f));
+    for (int i = 0; i < lw::kPartyWetMembers; ++i) {
+        roster.add(0, 0, 2);
+    }
+    CHECK(roster.full());
+    CHECK(roster.add(0, 0, 2) == -1);
+    CHECK(roster.count == lw::kPartyWetMembers);
+}
+
+TEST_CASE("lead wet: the first look eases the skin in from dry; a later look lands it at the member's soak") {
+    // A start in full rain: the first look (none worn before) does not snap, so the face eases from dry over kSkinEaseS.
+    const float target = lw::skin(1.f);
+    REQUIRE(target == doctest::Approx(1.f));
+    constexpr float dt = 1.f / 60.f;
+    bool snap = lw::skinSnapOnLook(false);
+    CHECK_FALSE(snap);
+    float shown = 0.f; // WearLook resets it
+    shown = lw::shownSkin(shown, target, dt, snap);
+    snap = false;
+    CHECK(shown == doctest::Approx(dt / lw::kSkinEaseS)); // one frame's step, not the target
+    float largest = shown;
+    for (int f = 1; f < 60; ++f) { // the first second: never a jump bigger than a frame's step
+        const float next = lw::shownSkin(shown, target, dt, snap);
+        CHECK(next - shown <= dt / lw::kSkinEaseS + 1e-6f);
+        largest = next;
+        shown = next;
+    }
+    CHECK(largest == doctest::Approx(0.5f).epsilon(0.02));
+    for (int f = 0; f < 70; ++f) {
+        shown = lw::shownSkin(shown, target, dt, snap);
+    }
+    CHECK(shown == doctest::Approx(target)); // there by kSkinEaseS
+    // A later look (a lead switch): the member's own soak lands at once, then eases from there.
+    snap = lw::skinSnapOnLook(true);
+    CHECK(snap);
+    shown = 0.f;
+    shown = lw::shownSkin(shown, lw::skin(0.4f), dt, snap);
+    CHECK(shown == doctest::Approx(lw::skin(0.4f)));
+    snap = false;
+    CHECK(lw::shownSkin(shown, 0.f, dt, snap) == doctest::Approx(lw::skin(0.4f) - dt / lw::kSkinEaseS));
+    // NaN target: dry, snapped or eased.
+    CHECK(lw::shownSkin(0.4f, std::nanf(""), dt, true) == 0.f);
 }

@@ -440,6 +440,45 @@ void AFTExploreCharacter::BeginPlay()
 				UE_LOG(LogForgottenThird, Warning, TEXT("SOAK_SWAP: '%s' is not <wetness>,<word>@<off s>[+<on s>]."), *SoakSwap);
 			}
 		}
+		// The lead-switch wet swap: -ExploreSwitchReview=<soak 0..1>@<switch s, game time> gives the lead that soak at the
+		// start through the water's own store (UFTWaterSubsystem::SetLeadWetness, the line at the body's height, no silt;
+		// it dries from there by the water's law, so each still logs what is left), shows the party (a portrait hides it;
+		// frame wide enough for it) and at <switch s> switches the lead as the key does (HandleSwitchLead). The map needs
+		// water bodies (the lead's look reads the store only then): without them the switch is an Error and exit 2. The
+		// soak is each member's (AFTExploreDirector::OnLeadChanged): the old lead walks behind still wet, the new one takes
+		// its own. A refused switch is an Error and exit 2. Portrait shots carry their index, and each logs every soak.
+		FString SwitchReview;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreSwitchReview="), SwitchReview, false))
+		{
+			FString Soak, At;
+			if (SwitchReview.Split(TEXT("@"), &Soak, &At) && !Soak.IsEmpty() && !At.IsEmpty() && Soak.IsNumeric() && At.IsNumeric()
+				&& FCString::Atof(*Soak) >= 0.f && FCString::Atof(*Soak) <= 1.f && FCString::Atof(*At) > 0.f)
+			{
+				ftcore::WaterWetness Soaked;
+				Soaked.wetness = FMath::Clamp(FCString::Atof(*Soak), 0.f, 1.f);
+				Soaked.line = Soaked.wetness > 0.f ? 0.02f * GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 0.f;
+				UFTWaterSubsystem* Water = GetWorld() ? GetWorld()->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+				if (Water)
+				{
+					Water->SetLeadWetness(Soaked);
+					SwitchReviewAt = FCString::Atof(*At);
+					bPartyHidden = false;
+					GetWorldTimerManager().SetTimer(SwitchReviewTimer, this, &AFTExploreCharacter::SwitchForReview, SwitchReviewAt, false);
+					UE_LOG(LogForgottenThird, Display, TEXT("SWITCH_REVIEW the lead starts soaked to %.2f (line %.2f m); the party shows; the switch at %.1f s."),
+						Soaked.wetness, Soaked.line, SwitchReviewAt);
+				}
+				else
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: no water subsystem holds the lead's soak; no proof from this run."));
+					FTRequestExit(2, TEXT("ExploreSwitchReview"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: '%s' is not <soak>@<switch s> (two numbers: the soak 0 to 1, the time above 0)."), *SwitchReview);
+				FTRequestExit(2, TEXT("ExploreSwitchReview"));
+			}
+		}
 		FString Range;
 		if (FParse::Value(FCommandLine::Get(), TEXT("ExploreExposureRange="), Range, false))
 		{
@@ -555,8 +594,9 @@ void AFTExploreCharacter::BeginPlay()
 		StillCamView = ftcore::parseStillCam(FT::ToUtf8(StillCamText));
 		if (StillCamView.on)
 		{
+			bStillCamLead = FParse::Param(FCommandLine::Get(), TEXT("StillCamLead"));
 			bPartyHidden = true;
-			SetActorHiddenInGame(true);
+			SetActorHiddenInGame(!bStillCamLead);
 			GetWorldTimerManager().SetTimer(StillCamTimer, this, &AFTExploreCharacter::HoldStillCam, 0.25f, true, 0.1f);
 		}
 		else
@@ -584,12 +624,12 @@ void AFTExploreCharacter::HoldStillCam()
 	Camera->SetUsingAbsoluteRotation(true);
 	Camera->SetWorldLocationAndRotation(At, ViewRot);
 	Camera->SetFieldOfView(static_cast<float>(StillCamView.fovDeg));
-	SetActorHiddenInGame(true);
+	SetActorHiddenInGame(!bStillCamLead);
 	TArray<AActor*> Held;
 	GetAttachedActors(Held, true, true);
 	for (AActor* Attached : Held)
 	{
-		Attached->SetActorHiddenInGame(true);
+		Attached->SetActorHiddenInGame(!bStillCamLead);
 	}
 	// Every hold: a partner spawned after the first is hidden too (quietly; SetPartyHidden logs, so once below).
 	for (AFTPartyFollower* Follower : D->GetFollowers())
@@ -603,8 +643,9 @@ void AFTExploreCharacter::HoldStillCam()
 	{
 		bStillCamHeld = true;
 		D->SetPartyHidden(true);
-		UE_LOG(LogForgottenThird, Display, TEXT("StillCam: view held at (%.0f, %.0f, %.0f) cm, yaw %.1f, pitch %.1f, fov %.1f; lead, %d attached and party hidden."),
-			At.X, At.Y, At.Z, StillCamView.yawDeg, StillCamView.pitchDeg, StillCamView.fovDeg, Held.Num());
+		UE_LOG(LogForgottenThird, Display, TEXT("StillCam: view held at (%.0f, %.0f, %.0f) cm, yaw %.1f, pitch %.1f, fov %.1f; %s, %d attached; party hidden."),
+			At.X, At.Y, At.Z, StillCamView.yawDeg, StillCamView.pitchDeg, StillCamView.fovDeg,
+			bStillCamLead ? TEXT("lead in sight (-StillCamLead)") : TEXT("lead hidden"), Held.Num());
 	}
 }
 #endif
@@ -647,10 +688,15 @@ void AFTExploreCharacter::StepPortraitShots()
 		bShotAimed = true;
 		return;
 	}
-	// A moving light (or a face clip) makes shots at the same yaw differ, so they carry their index.
+	// A moving light (or a face clip, a lead switch, or a -StillCamLead sequence) makes shots at the same yaw differ, so they carry their index.
+#if !UE_BUILD_SHIPPING
+	const bool bIndexed = LookDevSpin != 0.f || bStillCamLead || SwitchReviewAt >= 0.f;
+#else
+	const bool bIndexed = LookDevSpin != 0.f || bStillCamLead;
+#endif
 	const FString File = FaceClip ? FString::Printf(TEXT("%s_%d_f%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 		: BodyClip                ? FString::Printf(TEXT("%s_%d_b%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
-		: LookDevSpin != 0.f      ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
+		: bIndexed                ? FString::Printf(TEXT("%s_%d_s%02d.png"), *ShotPrefix, FMath::RoundToInt(Yaw), ShotIndex)
 								  : FString::Printf(TEXT("%s_%d.png"), *ShotPrefix, FMath::RoundToInt(Yaw));
 	// A high-res shot renders its own view at a fixed size, so a window the desktop resizes can't upset the copy.
 	// The game viewport handles HighResShot; the engine's own Exec doesn't.
@@ -665,6 +711,10 @@ void AFTExploreCharacter::StepPortraitShots()
 	if (bPoseDump)
 	{
 		DumpPortraitPose(File, Yaw);
+	}
+	if (SwitchReviewAt >= 0.f)
+	{
+		LogSwitchReview(*FPaths::GetCleanFilename(File));
 	}
 #endif
 	bShotAimed = false;
@@ -905,6 +955,58 @@ void AFTExploreCharacter::StepSoakSwap()
 	ShowWetness(ftcore::WaterWetness{SoakSwapWet, 3.f, 0.f});
 	UE_LOG(LogForgottenThird, Display, TEXT("SOAK_SWAP %s at %.1f s: %d under piece(s) swapped."), bOn ? TEXT("on") : TEXT("off"), Now, Changed);
 	LogSoakSwap(bOn ? TEXT("after on") : TEXT("after off"));
+}
+
+void AFTExploreCharacter::LogSwitchReview(const TCHAR* Stage)
+{
+	// Every member's soak as the water and the followers hold it, so a still can be read against its numbers.
+	const UWorld* World = GetWorld();
+	const UFTWaterSubsystem* Water = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	const ftcore::WaterWetness Lead = Water ? Water->LeadWetness() : ftcore::WaterWetness{};
+	FString Line = FString::Printf(TEXT("SWITCH_REVIEW %s: lead %d %s soak %.2f (line %.2f m), weather %.2f"), Stage, LeadIndex,
+		PartyLooks.IsValidIndex(LeadIndex) ? *PartyLooks[LeadIndex].Name : TEXT("?"), Lead.wetness, Lead.line, LeadWeather());
+	if (AFTExploreDirector* D = GetDirector())
+	{
+		const TArray<TObjectPtr<AFTPartyFollower>>& Party = D->GetFollowers();
+		const ftcore::leadwet::FollowerRoster& Roster = D->GetFollowerRoster();
+		for (int32 I = 0; I < Party.Num(); ++I)
+		{
+			const AFTPartyFollower* Follower = Party[I].Get();
+			const int32 Member = Roster.memberOf(I);
+			const FString Who = PartyLooks.IsValidIndex(Member) ? PartyLooks[Member].Name : FString(TEXT("?"));
+			Line += Follower ? FString::Printf(TEXT("; follower %d member %d %s soak %.2f (line %.2f m)%s"), I, Member, *Who, Follower->GetWetness().wetness,
+								   Follower->GetWetness().line, Follower->IsHidden() ? TEXT(" hidden") : TEXT(""))
+							 : FString::Printf(TEXT("; follower %d none"), I);
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("%s."), *Line);
+}
+
+void AFTExploreCharacter::SwitchForReview()
+{
+	// The key's path; a switch it refuses is said, never shot as if it had happened. Without water bodies the lead's look
+	// ignores the water's store (StirWater draws it dry) while the followers show theirs, so that run proves nothing.
+	const UWorld* World = GetWorld();
+	const UFTWaterSubsystem* Water = World ? World->GetSubsystem<UFTWaterSubsystem>() : nullptr;
+	if (!Water || !Water->HasBodies())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: this map has no water bodies, so the lead's soak is not drawn; no proof from this run."));
+		FTRequestExit(2, TEXT("ExploreSwitchReview"));
+		return;
+	}
+	const int32 Was = LeadIndex;
+	LogSwitchReview(TEXT("before the switch"));
+	HandleSwitchLead();
+	if (LeadIndex == Was)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("SWITCH_REVIEW: the switch was refused (van %d, party screen %d, traversing %d, %d looks); no proof from this run."),
+			Van.IsValid() ? 1 : 0, PartyScreen.open ? 1 : 0, bTraversing ? 1 : 0, PartyLooks.Num());
+		FTRequestExit(2, TEXT("ExploreSwitchReview"));
+		return;
+	}
+	// The followers are cleared here and spawn again on the next tick: this line has the new lead's soak only; the
+	// stills after it log the party.
+	LogSwitchReview(TEXT("after the switch, the party not yet back"));
 }
 
 void AFTExploreCharacter::SoakForReview()
@@ -1224,7 +1326,13 @@ void AFTExploreCharacter::WearLook(const FFTLeadLook& InLook)
 	WetHairDry.Reset();
 	bWetHairMade = false;
 	SkinWetEased = 0.f;
-	bSkinWetSnap = true;
+	// A switch lands the skin at the member's own soak; the first look, at the start, eases in from dry.
+	bSkinWetSnap = ftcore::leadwet::skinSnapOnLook(bLookWorn);
+	bLookWorn = true;
+#if !UE_BUILD_SHIPPING
+	++LooksWorn;
+	SkinLogStage = 0;
+#endif
 	const int32 Cloth = FTLook::AddPieces(*this, *BodyComponent, Loaded.Pieces, Pieces, TEXT("FTExploreCharacter"));
 	FTLook::AddGrooms(*this, *BodyComponent, Pieces, Look.Grooms, GroomComponents, TEXT("FTExploreCharacter"));
 	// The grooms come on dry; the wet switch swaps them on its next tick if the weather is wet.
@@ -6214,7 +6322,23 @@ void AFTExploreCharacter::ShowLeadWet(float Weather, float DeltaSeconds)
 	// The wet-skin amount, eased; it goes to the materials ShowWetness gathered (any skin is wet only when the cloth is,
 	// so they are there) and to the hair without a wet groom.
 	const float Target = ftcore::leadwet::skin(Weather);
-	SkinWetEased = bSkinWetSnap ? Target : ftcore::leadwet::ease(SkinWetEased, Target, DeltaSeconds);
+	SkinWetEased = ftcore::leadwet::shownSkin(SkinWetEased, Target, DeltaSeconds, bSkinWetSnap);
+#if !UE_BUILD_SHIPPING
+	// Proof log (captures only): the shown skin on the first show after each look and about half a second later, so a
+	// start in the rain can be read for a snap (the first look eases, a later one lands at the member's soak).
+	if (SkinLogStage < 2)
+	{
+		const UWorld* World = GetWorld();
+		const double Now = World ? World->GetTimeSeconds() : 0.0;
+		if (SkinLogStage == 0 || Now >= SkinLogAt + 0.5)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("SKIN_LOOK %s: look %d, snap %d, surface %.2f, target %.3f, shown %.3f at %.2f s."),
+				SkinLogStage == 0 ? TEXT("first show") : TEXT("0.5 s on"), LooksWorn, bSkinWetSnap ? 1 : 0, Weather, Target, SkinWetEased, Now);
+			SkinLogAt = SkinLogStage == 0 ? Now : SkinLogAt;
+			++SkinLogStage;
+		}
+	}
+#endif
 	bSkinWetSnap = false;
 	const float Skin = SkinWetEased;
 	// Written when it has moved enough, and once more when it reaches its target (so the last small step lands).

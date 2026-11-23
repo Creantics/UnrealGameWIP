@@ -2,6 +2,7 @@
 
 #include "ForgottenThird.h"
 #include "ftcore/ClothDrive.h"
+#include "ftcore/FlagNumber.h"
 
 #if WITH_EDITOR
 #include "ChaosCloth/ChaosClothConfig.h"
@@ -24,6 +25,23 @@
 #if WITH_EDITOR
 namespace
 {
+// Every flag this commandlet reads as a number. Main checks them all strictly before anything is loaded
+// (ftcore::flagnum::firstBad), and NumberFlag reads only these, so a numeric flag can't be added without the check.
+// Rule for this file: a number is read only through NumberFlag, never with FParse::Value(..., float&) directly (that
+// would skip the strict check: FParse reads "abc" as 0 and says it was given).
+constexpr std::string_view NumberFlags[] = {"Max=", "Pin=", "Fit=", "Pad=", "Density=", "Damping=", "LocalDamping=",
+	"Edge=", "Bend=", "Tether=", "Drag=", "Lift=", "Thickness=", "Friction=", "GravityScale=", "AnimDriveLow=",
+	"AnimDriveHigh=", "DriveFrom=", "DriveTo=", "AnimDriveDamping="};
+
+// FParse::Value for a numeric flag; Key must be in NumberFlags (a programming fault otherwise, caught on first use).
+bool NumberFlag(const FString& Params, const TCHAR* Key, float& Out)
+{
+	const FTCHARToUTF8 Utf8(Key);
+	checkf(ftcore::flagnum::listed(std::string_view(reinterpret_cast<const char*>(Utf8.Get()), static_cast<size_t>(Utf8.Length())),
+		NumberFlags, UE_ARRAY_COUNT(NumberFlags)), TEXT("FTBuildCloth: -%s is read as a number but is not in NumberFlags."), Key);
+	return FParse::Value(*Params, Key, Out);
+}
+
 const TCHAR* ClothMapName(uint32 Target)
 {
 	switch (static_cast<EWeightMapTargetCommon>(Target))
@@ -453,6 +471,13 @@ bool ClothPaintDrive(UClothingAssetCommon& Asset, const ftcore::clothdrive::Args
 {
 	FClothLODDataCommon& Lod = Asset.LodData[0];
 	const int32 Count = Lod.PhysicalMeshData.Vertices.Num();
+	const auto IsMax = [](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); };
+	// Checked before anything is added, so the error return leaves the asset as it was.
+	if (const FPointWeightMap* Check = Lod.PointWeightMaps.FindByPredicate(IsMax); !Check || Check->Values.Num() != Count)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -AnimDriveMap: no max-distance map with one value per sim vertex (%d) to grade by."), Count);
+		return false;
+	}
 	FPointWeightMap* Map = Lod.PointWeightMaps.FindByPredicate(
 		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::AnimDriveStiffness); });
 	if (!Map)
@@ -460,14 +485,8 @@ bool ClothPaintDrive(UClothingAssetCommon& Asset, const ftcore::clothdrive::Args
 		Map = &Lod.PointWeightMaps.AddDefaulted_GetRef();
 		Map->CurrentTarget = static_cast<uint8>(EWeightMapTargetCommon::AnimDriveStiffness);
 	}
-	// Found after the add, which may move the array.
-	const FPointWeightMap* MaxMap = Lod.PointWeightMaps.FindByPredicate(
-		[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
-	if (!MaxMap || MaxMap->Values.Num() != Count)
-	{
-		UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -AnimDriveMap: no max-distance map with one value per sim vertex (%d) to grade by."), Count);
-		return false;
-	}
+	// Found again after the add, which may move the array.
+	const FPointWeightMap* MaxMap = Lod.PointWeightMaps.FindByPredicate(IsMax);
 	Map->Name = TEXT("AnimDriveStiffness");
 	Map->bEnabled = true;
 	Map->Values.SetNum(Count);
@@ -511,7 +530,7 @@ int32 ClothSectionBySlot(const USkeletalMesh& Mesh, const FString& Slot)
 // The Chaos settings given on the command line (any left out keep the asset's own): mass by Density (kg/m2), Damping
 // and LocalDamping, Edge/Bend/Tether stiffness (0..1), Drag and Lift, collision Thickness (cm) and Friction,
 // GravityScale, and -SelfCollide or -NoSelfCollide (neither keeps the asset's own setting; both is an error, caught
-// before the mesh is touched). FParse::Value only matches a key whose previous character is not a letter or digit
+// before the mesh is touched). Each is read through NumberFlag. FParse::Value only matches a key whose previous character is not a letter or digit
 // (FCString::Strifind, Core/Public/Misc/CString.h:747 and 751 in UE 5.8), so Damping= never reads LocalDamping=.
 // An asset with no Chaos config gets its configs made by the engine's
 // own route (UClothingAssetCommon::PostUpdateAllAssets, public: every config the cloth factories need, the Chaos config
@@ -541,58 +560,58 @@ bool ClothConfigure(UClothingAssetCommon& Asset, const FString& Params, const ft
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: -%s%g read back %g."), Flag, Asked, ReadBack);
 	};
 	float V = 0.f;
-	if (FParse::Value(*Params, TEXT("Density="), V))
+	if (NumberFlag(Params, TEXT("Density="), V))
 	{
 		Config->MassMode = EClothMassMode::Density;
 		Config->Density = V;
 		Back(TEXT("Density="), V, Config->MassMode == EClothMassMode::Density ? Config->Density : -1.f);
 	}
-	if (FParse::Value(*Params, TEXT("Damping="), V))
+	if (NumberFlag(Params, TEXT("Damping="), V))
 	{
 		Config->DampingCoefficient = V;
 		Back(TEXT("Damping="), V, Config->DampingCoefficient);
 	}
-	if (FParse::Value(*Params, TEXT("LocalDamping="), V))
+	if (NumberFlag(Params, TEXT("LocalDamping="), V))
 	{
 		Config->LocalDampingCoefficient = V;
 		Back(TEXT("LocalDamping="), V, Config->LocalDampingCoefficient);
 	}
-	if (FParse::Value(*Params, TEXT("Edge="), V))
+	if (NumberFlag(Params, TEXT("Edge="), V))
 	{
 		Config->EdgeStiffnessWeighted = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Edge="), V, Config->EdgeStiffnessWeighted.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Bend="), V))
+	if (NumberFlag(Params, TEXT("Bend="), V))
 	{
 		Config->BendingStiffnessWeighted = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Bend="), V, Config->BendingStiffnessWeighted.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Tether="), V))
+	if (NumberFlag(Params, TEXT("Tether="), V))
 	{
 		Config->TetherStiffness = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Tether="), V, Config->TetherStiffness.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Drag="), V))
+	if (NumberFlag(Params, TEXT("Drag="), V))
 	{
 		Config->Drag = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Drag="), V, Config->Drag.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Lift="), V))
+	if (NumberFlag(Params, TEXT("Lift="), V))
 	{
 		Config->Lift = FChaosClothWeightedValue{V, V};
 		Back(TEXT("Lift="), V, Config->Lift.Low);
 	}
-	if (FParse::Value(*Params, TEXT("Thickness="), V))
+	if (NumberFlag(Params, TEXT("Thickness="), V))
 	{
 		Config->CollisionThickness = V;
 		Back(TEXT("Thickness="), V, Config->CollisionThickness);
 	}
-	if (FParse::Value(*Params, TEXT("Friction="), V))
+	if (NumberFlag(Params, TEXT("Friction="), V))
 	{
 		Config->FrictionCoefficient = V;
 		Back(TEXT("Friction="), V, Config->FrictionCoefficient);
 	}
-	if (FParse::Value(*Params, TEXT("GravityScale="), V))
+	if (NumberFlag(Params, TEXT("GravityScale="), V))
 	{
 		Config->GravityScale = V;
 		Back(TEXT("GravityScale="), V, Config->GravityScale);
@@ -696,19 +715,53 @@ UFTBuildClothCommandlet::UFTBuildClothCommandlet()
 int32 UFTBuildClothCommandlet::Main(const FString& Params)
 {
 #if WITH_EDITOR
+	// Every numeric flag must be a whole number as written: FParse::Value(float) reads "abc" or an empty value as 0 and
+	// says it was given, so a typo would build silently with a 0 (ftcore::flagnum). Checked before anything is loaded.
+	{
+		const FTCHARToUTF8 Line(*Params);
+		const std::string_view Text(reinterpret_cast<const char*>(Line.Get()), static_cast<size_t>(Line.Length()));
+		// FParse treats the rest of a line after a stray quote as quoted and finds no flag there, so every flag after it
+		// would silently keep its default.
+		if (!ftcore::flagnum::quotesClosed(Text))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: the command line has a quote that is never closed; every flag after it would be ignored."));
+			return 1;
+		}
+		if (const int Bad = ftcore::flagnum::firstBad(Text, NumberFlags, UE_ARRAY_COUNT(NumberFlags)); Bad >= 0)
+		{
+			const std::string_view Key = NumberFlags[Bad];
+			const ftcore::flagnum::Value Given = ftcore::flagnum::read(Text, Key);
+			const FString KeyText(static_cast<int32>(Key.size()), Key.data());
+			if (Given.read == ftcore::flagnum::Read::Hidden)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s sits inside quotes, so it would be ignored; take the quotes off the flag."),
+					*KeyText);
+			}
+			else if (Given.written.empty())
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s needs a number and was given none."), *KeyText);
+			}
+			else
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildCloth: -%s needs one whole number; '%s' is not one."), *KeyText,
+					*FString(static_cast<int32>(Given.written.size()), Given.written.data()));
+			}
+			return 1;
+		}
+	}
 	FString MeshPath, PhysicsPath;
 	float Max = 25.f, Pin = 3.f;
 	FParse::Value(*Params, TEXT("Mesh="), MeshPath);
 	FParse::Value(*Params, TEXT("Physics="), PhysicsPath);
-	FParse::Value(*Params, TEXT("Max="), Max);
-	FParse::Value(*Params, TEXT("Pin="), Pin);
+	NumberFlag(Params, TEXT("Max="), Max);
+	NumberFlag(Params, TEXT("Pin="), Pin);
 	FString FitPath, BodyPath;
 	if (FParse::Value(*Params, TEXT("FitPhysics="), FitPath))
 	{
 		float Fit = 0.7f, Pad = 1.f;
 		FParse::Value(*Params, TEXT("Body="), BodyPath);
-		FParse::Value(*Params, TEXT("Fit="), Fit);
-		FParse::Value(*Params, TEXT("Pad="), Pad);
+		NumberFlag(Params, TEXT("Fit="), Fit);
+		NumberFlag(Params, TEXT("Pad="), Pad);
 		FString DropList;
 		TArray<FString> Drop;
 		FParse::Value(*Params, TEXT("Drop="), DropList, false);  // the list itself has commas
@@ -758,11 +811,11 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	// -AnimDriveLow= alone for one drive everywhere; -AnimDriveDamping= either way. ftcore::clothdrive::validate says why not.
 	ftcore::clothdrive::Args Drive;
 	Drive.map = FParse::Param(*Params, TEXT("AnimDriveMap"));
-	Drive.hasLow = FParse::Value(*Params, TEXT("AnimDriveLow="), Drive.low);
-	Drive.hasHigh = FParse::Value(*Params, TEXT("AnimDriveHigh="), Drive.high);
-	Drive.hasFrom = FParse::Value(*Params, TEXT("DriveFrom="), Drive.from);
-	Drive.hasTo = FParse::Value(*Params, TEXT("DriveTo="), Drive.to);
-	Drive.hasDamping = FParse::Value(*Params, TEXT("AnimDriveDamping="), Drive.damping);
+	Drive.hasLow = NumberFlag(Params, TEXT("AnimDriveLow="), Drive.low);
+	Drive.hasHigh = NumberFlag(Params, TEXT("AnimDriveHigh="), Drive.high);
+	Drive.hasFrom = NumberFlag(Params, TEXT("DriveFrom="), Drive.from);
+	Drive.hasTo = NumberFlag(Params, TEXT("DriveTo="), Drive.to);
+	Drive.hasDamping = NumberFlag(Params, TEXT("AnimDriveDamping="), Drive.damping);
 	Drive.max = Max;
 	if (const ftcore::clothdrive::Check Bad = ftcore::clothdrive::validate(Drive); Bad != ftcore::clothdrive::Check::Ok)
 	{
@@ -821,9 +874,52 @@ int32 UFTBuildClothCommandlet::Main(const FString& Params)
 	{
 		ClothPaint(*Asset, Max, Pin);
 	}
-	if (Drive.map && !ClothPaintDrive(*Asset, Drive))
+#if !UE_BUILD_SHIPPING
+	// -ProofNoMaxMap (proof runs only): the max-distance map is taken out before the anim drive is painted, so the run
+	// takes ClothPaintDrive's error return; nothing is saved on that path, which a hash of the package before and after shows.
+	if (FParse::Param(*Params, TEXT("ProofNoMaxMap")))
 	{
-		return 1;
+		const int32 Gone = Asset->LodData[0].PointWeightMaps.RemoveAll(
+			[](const FPointWeightMap& M) { return M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance); });
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: -ProofNoMaxMap: %d max-distance map(s) taken out before the anim drive."), Gone);
+	}
+	// -ProofShortMaxMap (proof runs only): the max-distance map stays but loses its last value, so it no longer has one value
+	// per sim vertex; the anim drive takes the same error return with a real map present, and the CRC lines are not empty.
+	if (FParse::Param(*Params, TEXT("ProofShortMaxMap")))
+	{
+		int32 Cut = 0;
+		for (FPointWeightMap& M : Asset->LodData[0].PointWeightMaps)
+		{
+			if (M.CurrentTarget == static_cast<uint8>(EWeightMapTargetCommon::MaxDistance) && M.Values.Num() > 0)
+			{
+				M.Values.Pop(EAllowShrinking::No);
+				++Cut;
+			}
+		}
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTBuildCloth: -ProofShortMaxMap: %d max-distance map(s) cut one value short before the anim drive."), Cut);
+	}
+#endif
+	// The weight maps as they stand (count and a CRC of each one's target and values), before the anim drive and again on
+	// its error return, so a run can show the error leaves the asset as it was.
+	const auto MapsLine = [Asset](const TCHAR* When)
+	{
+		const TArray<FPointWeightMap>& Maps = Asset->LodData[0].PointWeightMaps;
+		uint32 Crc = 0;
+		for (const FPointWeightMap& M : Maps)
+		{
+			Crc = FCrc::MemCrc32(&M.CurrentTarget, sizeof(M.CurrentTarget), Crc);
+			Crc = FCrc::MemCrc32(M.Values.GetData(), M.Values.Num() * static_cast<int32>(sizeof(float)), Crc);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildCloth: weight maps %s: %d, crc %08x."), When, Maps.Num(), Crc);
+	};
+	if (Drive.map)
+	{
+		MapsLine(TEXT("before the anim drive"));
+		if (!ClothPaintDrive(*Asset, Drive))
+		{
+			MapsLine(TEXT("after its error return"));
+			return 1;
+		}
 	}
 	if (!ClothConfigure(*Asset, Params, Drive))
 	{
