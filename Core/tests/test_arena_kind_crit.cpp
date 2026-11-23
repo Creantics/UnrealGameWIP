@@ -476,7 +476,9 @@ ArenaBlowRuling ruleDealerBlow(void* user, const ArenaBlow& blow) {
 struct DealerRun {
     ArenaPhase phase = ArenaPhase::NotStarted;
     float time = 0.0f;
-    int staggers = 0;
+    int staggers = 0; // poise breaks (Staggered on the Dealer)
+    int opens = 0;    // parries of its moves (Parried: it is Open)
+    int breaks = 0;   // boss breaks begun (its break-out move, not a stagger state)
     int crits = 0;
     int hp = 0;
 };
@@ -532,26 +534,46 @@ DealerRun playDealer(const char* lead, std::uint32_t seed) {
         for (const ArenaEvent& e : out.events) {
             if (e.type == ArenaEventType::AttackStarted && e.source == 0) host.crit.onAttackStarted(e.move, fight.time(), def.enemies[0]);
             if (e.type == ArenaEventType::Staggered && e.target == 0) ++run.staggers;
+            if (e.type == ArenaEventType::Parried && e.source == 0) ++run.opens;
         }
     }
     run.phase = fight.phase();
     run.time = fight.time();
     run.crits = host.crit.crits();
+    run.breaks = fight.stats().bossBreaks;
     run.hp = fight.hp();
     return run;
 }
 
 } // namespace
 
-// Its poise breaks a few times a fight, whoever fights it: the demo's seed (1), each lead's kit.
+// Its stagger window opens a few times a fight, whoever fights it, and its seam crit is reachable: each lead's kit, the
+// demo's seed (1) and two more. A stagger state is a poise break (Staggered) or a parry (Open); a boss break is its
+// own armoured move, not one. Since the autopilot guard gate the lead parries what it used to take, so parries stand
+// in for poise breaks (seed 1: devin staggers 5 -> 1, parries 2 -> 5, hits taken 5 -> 1, 41.3 -> 31.4 s; duy
+// staggers 3 -> 1, parries 4 -> 7, hits taken 5 -> 2). Poise breaks keep their own floor so a dead poise-break path
+// cannot pass on parries: summed over the three seeds, at least 2 a lead (seed 2 has none for either lead, so not 1
+// a seed). Crits are counted over the three seeds. The seam's window is opened by the deal move alone
+// (ArenaKindCrit::onAttackStarted), not by a stagger state, Staggered or Open.
 TEST_CASE("arena kind crit: the shipped Dealer staggers under each lead's autopilot") {
     for (const std::string lead : {"devin", "duy"}) { // the Third has no attack of his own
-        const DealerRun run = playDealer(lead.c_str(), 1);
-        MESSAGE(lead << ": " << std::string(run.phase == ArenaPhase::Victory ? "won" : "lost") << " in " << run.time << " s, hp " << run.hp
-                     << ", staggers " << run.staggers << ", crits " << run.crits);
-        CHECK_MESSAGE(run.phase == ArenaPhase::Victory, "Error: " << lead << "'s autopilot did not beat white_glove in 180 s");
-        CHECK_MESSAGE(run.staggers >= 2, "Error: white_glove staggered " << run.staggers << " times against " << lead);
-        CHECK(run.crits > 0);
+        int crits = 0, poiseBreaks = 0;
+        for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+            CAPTURE(lead);
+            CAPTURE(seed);
+            const DealerRun run = playDealer(lead.c_str(), seed);
+            MESSAGE(lead << " seed " << seed << ": " << std::string(run.phase == ArenaPhase::Victory ? "won" : "lost") << " in "
+                         << run.time << " s, hp " << run.hp << ", staggers " << run.staggers << ", parried " << run.opens
+                         << ", boss breaks " << run.breaks << ", crits " << run.crits);
+            CHECK_MESSAGE(run.phase == ArenaPhase::Victory, "Error: " << lead << "'s autopilot did not beat white_glove in 180 s");
+            CHECK_MESSAGE(run.staggers + run.opens >= 2,
+                          "Error: white_glove entered a stagger state " << run.staggers + run.opens << " times against " << lead);
+            crits += run.crits;
+            poiseBreaks += run.staggers;
+        }
+        CAPTURE(lead);
+        CHECK(crits > 0);
+        CHECK_MESSAGE(poiseBreaks >= 2, "Error: white_glove's poise broke " << poiseBreaks << " times over seeds 1-3 against " << lead);
     }
 }
 
