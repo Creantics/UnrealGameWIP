@@ -328,6 +328,7 @@ private:
 	void GreyGround();
 #if !UE_BUILD_SHIPPING
 	void AddPortraitCard(); // -ExplorePortraitCard
+	void AddPortraitMirror(); // -ExplorePortraitMirror
 	void Nightfall(); // -ExploreNight
 	void SoakForReview(); // -ExploreWet
 #endif

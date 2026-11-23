@@ -430,6 +430,10 @@ void AFTExploreCharacter::BeginPlay()
 		{
 			AddPortraitCard();
 		}
+		if (FParse::Param(FCommandLine::Get(), TEXT("ExplorePortraitMirror")))
+		{
+			AddPortraitMirror();
+		}
 #endif
 		// Map-light diagnosis (the look-dev set has both built in): -ExploreGreyGround paints the map's green ground,
 		// path and leaves a neutral 0.18 grey; -ExploreFixedExposure turns auto-exposure off (EV100 0, shifted by
@@ -1055,6 +1059,53 @@ void AFTExploreCharacter::HoldBodyAt(float Time)
 }
 
 #if !UE_BUILD_SHIPPING
+void AFTExploreCharacter::AddPortraitMirror()
+{
+	// Dev only: -ExplorePortraitMirror lays one flat engine plane (/Engine/BasicShapes/Plane, one-sided, flat normals) with
+	// a mirror material beside the face, a control for the lens: 6 cm wide, 4 cm tall, at -ExplorePortraitMirrorAt=
+	// <forward,right,up> cm from the camera (default 42,10,0: in frame at a 48 cm portrait arm, level with the eyes, just outside the hair), turned so
+	// its normal points at the camera. A mirror so turned sends the camera's ray back to the camera, so the review card just
+	// behind the camera (-ExplorePortraitCardAt=-2,0,0) fills its middle when traced reflections see the card.
+	// -ExplorePortraitMirrorMaterial=<object path> picks the material (default the review mirror,
+	// /Game/Characters/Duy/MH/Real4/Outfit/GLP/M_GLP_Mirror). It casts nothing and has no collision. Review only.
+	UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	FString MatPath = TEXT("/Game/Characters/Duy/MH/Real4/Outfit/GLP/M_GLP_Mirror.M_GLP_Mirror");
+	FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitMirrorMaterial="), MatPath);
+	UMaterialInterface* Mirror = LoadObject<UMaterialInterface>(nullptr, *MatPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Plane || !Mirror || !Camera)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("FTExploreCharacter: portrait mirror not laid (mesh %d, material %d %s, camera %d)."), Plane != nullptr,
+			Mirror != nullptr, *MatPath, Camera != nullptr);
+		return;
+	}
+	FVector At(42.0, 10.0, 0.0);
+	FString AtText;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ExplorePortraitMirrorAt="), AtText, false))
+	{
+		TArray<FString> Parts;
+		AtText.ParseIntoArray(Parts, TEXT(","));
+		if (Parts.Num() == 3)
+		{
+			At = FVector(FCString::Atod(*Parts[0]), FCString::Atod(*Parts[1]), FCString::Atod(*Parts[2]));
+		}
+	}
+	UStaticMeshComponent* M = NewObject<UStaticMeshComponent>(this, TEXT("PortraitMirror"));
+	M->SetMobility(EComponentMobility::Movable);
+	M->SetStaticMesh(Plane);
+	M->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	M->SetCastShadow(false);
+	M->SetupAttachment(Camera);
+	M->RegisterComponent();
+	// The engine plane is 1 m square in X and Y with its face along +Z. Turn +Z to the camera (the camera is the origin
+	// of this space), keeping the plane's X axis as near world up as it goes: X is the height, Y the width.
+	const FMatrix Turn = FRotationMatrix::MakeFromZX(-At.GetSafeNormal(), FVector::UpVector);
+	M->SetRelativeLocationAndRotation(At, Turn.Rotator());
+	M->SetRelativeScale3D(FVector(0.04, 0.06, 1.0));
+	M->SetMaterial(0, Mirror);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTExploreCharacter: portrait mirror laid at %.0f, %.0f, %.0f cm from the camera, facing it (%s)."), At.X,
+		At.Y, At.Z, *Mirror->GetPathName());
+}
+
 void AFTExploreCharacter::AddPortraitCard()
 {
 	// Dev only: -ExplorePortraitCard holds a neutral 18% grey card (M_WorldSurface at 0.18 albedo, 0.9 rough, no mottle or
