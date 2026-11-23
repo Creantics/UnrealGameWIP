@@ -51,8 +51,8 @@ void SetCoverShowFlags(FEngineShowFlags& F, bool bTrim)
 	}
 	// Grooms ride characters, like the skeletal meshes.
 	F.SetHair(false);
-	// Lighting, GI, reflections, AO and shadows.
-	F.SetLighting(false);
+	// Lighting, GI, reflections, AO and shadows. Lighting, VolumetricLightmap and IndirectLightingCache stay on: with any of them
+	// off the view is a rich view (IsRichView), static meshes leave the cached draw path, and the depth map changes (11-23 diff).
 	F.SetDeferredLighting(false);
 	F.SetGlobalIllumination(false);
 	F.SetLumenGlobalIllumination(false);
@@ -71,8 +71,6 @@ void SetCoverShowFlags(FEngineShowFlags& F, bool bTrim)
 	F.SetRayTracedDistanceFieldShadows(false);
 	F.SetLightFunctions(false);
 	F.SetTexturedLightProfiles(false);
-	F.SetVolumetricLightmap(false);
-	F.SetIndirectLightingCache(false);
 	F.SetLightShafts(false);
 	F.SetCloud(false);
 	F.SetDeferredAtmospherePass(false);
@@ -158,6 +156,18 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		C->bAlwaysPersistRenderingState ? 1 : 0, C->bRenderInMainRenderer ? 1 : 0, bDiff ? 1 : 0);
 #endif
 	SetCoverCapture(*C, Target, Spec, bTrim);
+#if !UE_BUILD_SHIPPING
+	// -RainCoverShowFlags="Name=0,Name=1": a dev lever over single show flags on top of the set above, to find what moves the map.
+	FString Flags;
+	if (FParse::Value(Switches, TEXT("RainCoverShowFlags="), Flags, false))
+	{
+		const bool bSet = C->ShowFlags.SetFromString(*Flags);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover levers: show flags \"%s\" %s; Lighting %d, VolumetricLightmap %d, IndirectLightingCache %d."),
+			*Flags, bSet ? TEXT("set") : TEXT("not set"), C->ShowFlags.Lighting ? 1 : 0, C->ShowFlags.VolumetricLightmap ? 1 : 0,
+			C->ShowFlags.IndirectLightingCache ? 1 : 0);
+	}
+#endif
 
 	bProbe = FParse::Param(FTLookSwitches(), TEXT("RainCoverProbe"));
 	bActive = true;
