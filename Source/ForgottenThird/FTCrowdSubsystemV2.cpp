@@ -47,8 +47,7 @@ constexpr float kWalkClipSpeed = 1.3f;
 constexpr float kRunClipSpeed = 4.2f;
 // Without a run clip the walk plays this much faster, at most.
 constexpr float kRunOnWalkMax = 2.2f;
-// Ground lines per frame (round robin over the pool), and how far each looks up and down (cm).
-constexpr int32 kGroundTracesPerFrame = 8;
+// How far a drawn actor's ground line (one a frame each) looks up and down (cm).
 constexpr double kGroundUp = 300.0;
 constexpr double kGroundDown = 600.0;
 constexpr double kGroundFirstSpan = 20000.0;
@@ -95,6 +94,25 @@ constexpr double kMassMaxSide = 30000.0;
 constexpr double kMassCell = 1000.0;
 // Where the ground under the streets is logged (engine cm), unless -CrowdGroundAt=X,Y says elsewhere.
 constexpr double kGroundAtX = 0.0, kGroundAtY = 31050.0;
+// Keep-outs: members keep this far off a parked car's box (m; the car line passes at 0 or more), and a Wall box's gap
+// is the wall gate's plus a centimetre, so a member at the keep-out's edge still passes it. A box is looked for a street
+// this far (m) past its half diagonal (Core drops boxes farther than a street's half width + gap + 1 m from it).
+constexpr float kCarGap = 0.30f;
+constexpr float kWallKeepGap = static_cast<float>(kGapWall) + 0.01f;
+constexpr float kKeepReach = 15.f;
+constexpr int32 kKeepOverNamed = 20; // boxes over their own street point not kept, named in the log (the first few)
+
+bool HasVehicleTag(const TArray<FName>& Tags)
+{
+	for (const FName& T : Tags)
+	{
+		if (T.ToString().StartsWith(TEXT("FTVehicle_")))
+		{
+			return true;
+		}
+	}
+	return false;
+}
 
 FString CrowdObjectPath(const FString& Path)
 {
@@ -240,6 +258,32 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: room door %s at (%.2f, %.2f) m, through (%.2f, %.2f), %d spots."), UTF8_TO_TCHAR(D.id.c_str()),
 				D.at.x, D.at.y, D.through.x, D.through.y, static_cast<int32>(D.dwell.size()));
 		}
+		// The room visit log: each attached slot's id (setDoors keeps the doors' order, leaving out the unattached).
+		RoomDoorIds.Reset();
+		for (uint32 Slot = 0; Slot < Sim.doorCount(); ++Slot)
+		{
+			const ftcore::Vec2 At = Sim.doorAt(Slot);
+			FString Id = FString::Printf(TEXT("door %u"), Slot);
+			for (const ftcore::crowdv2::CrowdDoor& D : HeroDoors)
+			{
+				if (FMath::Abs(D.at.x - At.x) < 0.01f && FMath::Abs(D.at.y - At.y) < 0.01f)
+				{
+					Id = UTF8_TO_TCHAR(D.id.c_str());
+				}
+			}
+			RoomDoorIds.Add(Id);
+		}
+		const int32 Slots = RoomDoorIds.Num(), Members = static_cast<int32>(Sim.capacity());
+		RoomIn.Init(0, Slots);
+		RoomSpot.Init(0, Slots);
+		RoomOut.Init(0, Slots);
+		RoomLongest.Init(0.f, Slots);
+		RoomPhase.Init(0, Members);
+		RoomDoorOf.Init(-1, Members);
+		RoomMemberId.Init(0, Members);
+		RoomInAt.Init(0.f, Members);
+		RoomSpotAt.Init(-1.f, Members);
+		RoomSpotFor.Init(0.f, Members);
 	}
 	Sim.setOcclusion(&UFTCrowdSubsystemV2::Occluded, this);
 	TraceQuery = FCollisionQueryParams(SCENE_QUERY_STAT(FTCrowdTrace), false);
@@ -252,9 +296,14 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	SlotActor.Init(INDEX_NONE, static_cast<int32>(Sim.capacity()));
 	FootSeen.Init(false, static_cast<int32>(Sim.capacity()));
 	FootSeenRender.Init(false, static_cast<int32>(Sim.capacity()));
+	NoGroundSeen.Init(false, static_cast<int32>(Sim.capacity()));
 	FootFramesBy.Init(0, static_cast<int32>(Sim.capacity()));
 	FParse::Value(Cmd, TEXT("CrowdFootStill="), FootStillPath);
 	FParse::Value(Cmd, TEXT("CrowdRoofStill="), RoofStillPath);
+	if (FParse::Param(Cmd, TEXT("CrowdFootLogAll")))
+	{
+		FootLogCap = MAX_int32;
+	}
 	FString ZoneText;
 	if (FParse::Value(Cmd, TEXT("CrowdZoneZ="), ZoneText, false))
 	{
@@ -278,9 +327,14 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 		TestFightAt = TestAt;
 	}
 	FParse::Value(Cmd, TEXT("CrowdQuitAfter="), QuitAfter);
-	if (QuitAfter > 0.0)
+	// The boxes are the keep-outs' source (and the footprint check's, which runs with -CrowdQuitAfter only).
 	{
-		BuildMassing(); // only the footprint check reads the boxes, and it runs with -CrowdQuitAfter only
+		// Load time, every map now (the keep-outs need the boxes): logged so its cost is seen.
+		const double T0 = FPlatformTime::Seconds();
+		BuildMassing();
+		const double T1 = FPlatformTime::Seconds();
+		SetKeepOuts();
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: load: massing boxes %.1f ms, keep-outs %.1f ms."), (T1 - T0) * 1000.0, (FPlatformTime::Seconds() - T1) * 1000.0);
 	}
 	FString MoveTo, MX, MY;
 	if (FParse::Value(Cmd, TEXT("CrowdPlayerAt="), MoveTo) && MoveTo.Split(TEXT(","), &MX, &MY))
@@ -947,6 +1001,10 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 
 	OcclusionTraces = 0;
 	Sim.tick(DeltaTime, CrowdV2Local::ToSim(PlayerAt), CrowdV2Local::ToSim(PlayerVel));
+	if (RoomDoorIds.Num() > 0)
+	{
+		NoteRooms();
+	}
 	if (QuitAfter > 0.0)
 	{
 		const float Pair = Sim.minPairDistance(2.f);
@@ -982,7 +1040,8 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		{
 			if (Sim.agent(i).live)
 			{
-				RunMinWall = FMath::Min(RunMinWall, Sim.wallClearance(i));
+				RunMinWall = FMath::Min(RunMinWall, FMath::Min(Sim.wallClearance(i), Sim.keepClearance(i, ftcore::crowdv2::CrowdKeepKind::Wall)));
+				RunMinCar = FMath::Min(RunMinCar, Sim.keepClearance(i, ftcore::crowdv2::CrowdKeepKind::Car));
 			}
 		}
 	}
@@ -1019,6 +1078,21 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: %u live of %u target (%s); %u still upset (%s); %llu fleers, most flee entries by one %u, most plans by one %u (%s)."),
 			Live, FullTarget, bFull ? TEXT("full") : TEXT("SHORT"), Upset, bCalm ? TEXT("calm") : TEXT("NOT CALM"), C.fleers,
 			C.maxFleeEntries, C.maxPlans, bSteady ? TEXT("steady") : TEXT("FLIP-FLOP"));
+		if (RoomDoorIds.Num() > 0)
+		{
+			FString Rooms;
+			uint32 InsideNow = 0;
+			for (int32 I = 0; I < RoomPhase.Num(); ++I)
+			{
+				InsideNow += RoomPhase[I] != 0 ? 1u : 0u;
+			}
+			for (int32 D = 0; D < RoomDoorIds.Num(); ++D)
+			{
+				Rooms += FString::Printf(TEXT("%s%s in %u, at a spot %u, out %u, longest visit %.1f s"), D ? TEXT("; ") : TEXT(""), *RoomDoorIds[D],
+					RoomIn[D], RoomSpot[D], RoomOut[D], RoomLongest[D]);
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: room doors: %s; at a door or in a room now %u."), *Rooms, InsideNow);
+		}
 		const bool bUnstuck = C.stuck == 0;
 		const bool bOutside = FootFrames == 0;
 		const bool bClearOfMass = MinMassClear / 100.0 >= CrowdV2Local::kGapWall;
@@ -1044,6 +1118,8 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 				}
 			}
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: footprint member-frames by member: %s."), *PerMember);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: footprint detail lines for %d of %d members (%s)."), FootLogged, FootMembers,
+				FootLogCap == MAX_int32 ? TEXT("every member, -CrowdFootLogAll") : TEXT("cap 32; -CrowdFootLogAll traces every member"));
 		}
 		if (ZoneZBox.bIsValid)
 		{
@@ -1054,6 +1130,14 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		const bool bWalls = static_cast<double>(RunMinWall) >= CrowdV2Local::kGapWall;
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance between two members %.2f m (%s, gate %.1f m), least wall clearance %.6f m unrounded (%s, passes at %.1f m or more), every frame, every state."),
 			RunMinPair, bPairs ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapPair, RunMinWall, bWalls ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall);
+		// The line reads only kept car boxes, so a car by a street that SetKeepOuts dropped fails it too (else a dropped
+		// car would pass unmeasured).
+		// Core's rule (crowdCarLineOk). -CrowdCarsExpected (a map with parked cars, the Solhaven strip) also fails a run
+		// with no car box kept: nothing was measured (the vehicle tags are missing, or no car stands by a street).
+		const bool bCarsExpected = FParse::Param(FCommandLine::Get(), TEXT("CrowdCarsExpected"));
+		const bool bCars = ftcore::crowdv2::crowdCarLineOk(RunMinCar, static_cast<uint32>(CarsDropped), static_cast<uint32>(CarsKept), bCarsExpected);
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: least distance from a member to a parked car's box %.6f m unrounded (%s, passes at 0 or more, no car box by a street dropped%s; %d car boxes, %d kept, %d dropped, %u keep-outs), every frame."),
+			RunMinCar, !bCars ? TEXT("FAILED") : CarsKept == 0 ? TEXT("ok, NOT MEASURED: no car box kept; on a map with parked cars run with -CrowdCarsExpected") : TEXT("ok"), bCarsExpected ? TEXT(", at least one car box kept") : TEXT(""), CarBoxes.Num(), CarsKept, CarsDropped, Sim.keepOutCount());
 		if (MinPairTime >= 0.0)
 		{
 			const ftcore::Vec2 Fight = CrowdV2Local::ToSim(TestFightPoint);
@@ -1082,7 +1166,7 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: stills %d of %d (%s); cameras on the fight %s; the crowd back in view at +30 s %s."), ShotIndex, Shots.Num(),
 				bStills ? TEXT("ok") : TEXT("FAILED"), bCamsOk ? TEXT("ok") : TEXT("FAILED"), bRefillOk ? TEXT("ok") : TEXT("FAILED"));
 		}
-		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bStills && bCamsOk && bRefillOk &&
+		bool bOk = bCalm && bSteady && bFull && bUnstuck && bOutside && bClearOfMass && bPairs && bWalls && bCars && bStills && bCamsOk && bRefillOk &&
 			bNoSlowRun && bNoKnot && bNoPops;
 		const bool bStimulus = bTestFightStarted || ArenaFed > 0;
 		if (!bStimulus)
@@ -1090,6 +1174,12 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: no stimulus this run (no -CrowdTestFight, no arena fight event): FAILED."));
 			bOk = false;
 		}
+		// The ground line: every drawn member is drawn on ground the footprint check sees. One hidden with no ground at
+		// its drawn point, or drawn by the sim with no actor, would pass the footprint line unmeasured.
+		const bool bGrounded = NoGroundFrames == 0 && NoActorFrames == 0;
+		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: drawn members hidden with no ground found %llu member-frames, %d members; drawn with no actor %llu member-frames (%s, passes at 0 and 0)."),
+			NoGroundFrames, NoGroundMembers, NoActorFrames, bGrounded ? TEXT("ok") : TEXT("FAILED"));
+		bOk = bOk && bGrounded;
 		if (bTestFightStarted)
 		{
 			const uint64 Perceived = C.perceived - AtTestFight.perceived;
@@ -1205,6 +1295,8 @@ void UFTCrowdSubsystemV2::Draw()
 			PoolAnim[k] = 0xff;
 		}
 	}
+	// Where each is drawn this frame: its last two steps lerped (Core crowdDrawnPoint). Its ground is looked for there.
+	const float Alpha = FMath::Clamp(Sim.stepAlpha(), 0.f, 1.f);
 	// Give each newly drawn agent a free actor.
 	int32 FreeCursor = 0;
 	for (uint32 i = 0; i < Cap; ++i)
@@ -1220,7 +1312,10 @@ void UFTCrowdSubsystemV2::Draw()
 		}
 		if (FreeCursor >= Pool.Num())
 		{
-			break;
+			// Drawn by the sim with no actor free (the pool is maxDrawn, so only a failed spawn leaves it short): never
+			// drawn, never footprint-checked. Counted, and it fails the ground line.
+			++NoActorFrames;
+			continue;
 		}
 		PoolAgent[FreeCursor] = V.id + 1;
 		SlotActor[static_cast<int32>(i)] = FreeCursor;
@@ -1228,60 +1323,63 @@ void UFTCrowdSubsystemV2::Draw()
 		PoolGround[FreeCursor] = PlayerZ;
 		// Grounded now, shown only once it is (never a frame at the player's height, inside a hill or in mid-air).
 		double Z = PlayerZ;
-		if (FirstGround(static_cast<int32>(i), V.pos.x * 100.0, V.pos.y * 100.0, PlayerZ, Z))
+		const ftcore::Vec2 At = ftcore::crowdv2::crowdDrawnPoint(V, Alpha);
+		if (FirstGround(static_cast<int32>(i), At.x * 100.0, At.y * 100.0, PlayerZ, Z))
 		{
 			PoolGround[FreeCursor] = Z;
 			PoolGrounded[FreeCursor] = true;
 		}
 		Pool[FreeCursor]->SetActorHiddenInGame(!PoolGrounded[FreeCursor]);
 	}
-	// Ground: a few lines a frame, round robin; an actor that has never found the ground looks over a long span first.
-	for (int32 n = 0; n < CrowdV2Local::kGroundTracesPerFrame && n < Pool.Num(); ++n)
+	// Ground: every drawn actor, every frame, one line down at the point it is drawn at (not its sim position, a step
+	// ahead or behind). Core decides (crowdGroundTake): a top within a step up, or any way down, is the ground; a line
+	// that met nothing (past a roof's or a car's edge), more than a step up (a slab over it) or started inside a solid
+	// looks again over the long span (FirstGround). The old height is never kept: kept past a top's edge it drew members
+	// standing on nothing (the strip's dd4d1092 run, 30 of them). An actor with no ground found is hidden until it has.
+	for (int32 k = 0; k < Pool.Num(); ++k)
 	{
-		const int32 k = GroundCursor;
-		GroundCursor = (GroundCursor + 1) % Pool.Num();
 		if (PoolAgent[k] == 0)
 		{
 			continue;
 		}
-		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent((PoolAgent[k] - 1) & 0xffffu);
-		const double X = V.pos.x * 100.0, Y = V.pos.y * 100.0;
-		if (!PoolGrounded[k])
+		const int32 Slot = static_cast<int32>((PoolAgent[k] - 1) & 0xffffu);
+		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(Slot));
+		const ftcore::Vec2 Drawn = ftcore::crowdv2::crowdDrawnPoint(V, Alpha);
+		const double X = Drawn.x * 100.0, Y = Drawn.y * 100.0;
+		double Z = PoolGround[k];
+		bool Found = false;
+		if (PoolGrounded[k])
 		{
-			double Z = PoolGround[k];
-			if (FirstGround(static_cast<int32>((PoolAgent[k] - 1) & 0xffffu), X, Y, PoolGround[k], Z))
+			const FVector At(X, Y, PoolGround[k]);
+			FHitResult Hit;
+			ftcore::crowdv2::CrowdGroundLine Line;
+			Line.hit = World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, CrowdV2Local::kGroundUp), At - FVector(0.0, 0.0, CrowdV2Local::kGroundDown), ECC_Visibility, TraceQuery);
+			Line.startInside = Line.hit && Hit.bStartPenetrating;
+			Line.z = Hit.ImpactPoint.Z;
+			Line.vehicle = Line.hit && Hit.GetComponent() && VehicleComps.Contains(FObjectKey(Hit.GetComponent()));
+			Found = ftcore::crowdv2::crowdGroundTake(Line, PoolGround[k], CrowdV2Local::kGroundStep, Z);
+		}
+		if (!Found)
+		{
+			Found = FirstGround(Slot, X, Y, PoolGround[k], Z);
+		}
+		if (Found != PoolGrounded[k])
+		{
+			PoolGrounded[k] = Found;
+			Pool[k]->SetActorHiddenInGame(!Found);
+		}
+		if (!Found)
+		{
+			// Hidden, so the footprint check never sees it: counted, and it fails the ground line.
+			++NoGroundFrames;
+			if (!NoGroundSeen[Slot])
 			{
-				PoolGround[k] = Z;
-				PoolGrounded[k] = true;
-				Pool[k]->SetActorHiddenInGame(false);
+				NoGroundSeen[Slot] = true;
+				++NoGroundMembers;
 			}
 			continue;
 		}
-		const FVector At(X, Y, PoolGround[k]);
-		FHitResult Hit;
-		if (World->LineTraceSingleByChannel(Hit, At + FVector(0.0, 0.0, CrowdV2Local::kGroundUp), At - FVector(0.0, 0.0, CrowdV2Local::kGroundDown), ECC_Visibility, TraceQuery))
-		{
-			// More than a step up (or a line that starts inside a slab, hit where it starts): a slab over the member,
-			// whose top this line met from above; look again as at first, not up onto it.
-			double Z = Hit.ImpactPoint.Z;
-			if (Hit.bStartPenetrating || Z - PoolGround[k] > CrowdV2Local::kGroundStep)
-			{
-				Z = PoolGround[k];
-				FirstGround(static_cast<int32>((PoolAgent[k] - 1) & 0xffffu), X, Y, PoolGround[k], Z);
-			}
-			PoolGround[k] = Z;
-		}
-	}
-	const float Alpha = FMath::Clamp(Sim.stepAlpha(), 0.f, 1.f);
-	for (int32 k = 0; k < Pool.Num(); ++k)
-	{
-		if (PoolAgent[k] == 0 || !PoolGrounded[k])
-		{
-			continue;
-		}
-		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent((PoolAgent[k] - 1) & 0xffffu);
-		const double X = FMath::Lerp(V.prevPos.x, V.pos.x, Alpha) * 100.0;
-		const double Y = FMath::Lerp(V.prevPos.y, V.pos.y, Alpha) * 100.0;
+		PoolGround[k] = Z;
 		Pool[k]->SetActorLocationAndRotation(FVector(X, Y, PoolGround[k]), FRotator(0.0, V.yaw + MeshYaw, 0.0));
 		PlayFor(k, V.anim, V.speed);
 		if (QuitAfter > 0.0)
@@ -1294,10 +1392,10 @@ void UFTCrowdSubsystemV2::Draw()
 bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double CentreZ, double& OutZ)
 {
 	// Every surface top under (X, Y) on one long line down, highest first (the same line again with each top's component
-	// ignored), then a short line up from just above each top: a body's height, with the plain query, so a slab over it
-	// or a start inside a solid reads as not clear. Core picks the ground (crowdPickGround): the street under a corridor
-	// or balcony slab, not the slab's top. TraceQuery ignores actors only; the components added here stay within the
-	// list's inline 8 and are cleared before the lines up, so no heap.
+	// ignored), then a short line up from just above each top: a body's height, ignoring only the vehicles the line down
+	// met, so a slab over it or a start inside a solid reads as not clear (a car over the street does not). Core picks the
+	// ground (crowdPickGround): the street under a corridor or balcony slab, not the slab's top. TraceQuery ignores actors
+	// only; the components added here stay within the list's inline 8 and are cleared after each pass, so no heap.
 	UWorld* World = GetWorld();
 	ftcore::crowdv2::CrowdGroundHit Hits[ftcore::crowdv2::kCrowdGroundHitsMax];
 	const UPrimitiveComponent* By[ftcore::crowdv2::kCrowdGroundHitsMax] = {};
@@ -1313,6 +1411,7 @@ bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double Cen
 		}
 		const UPrimitiveComponent* C = H.GetComponent();
 		By[N] = C;
+		Hits[N].vehicle = C && VehicleComps.Contains(FObjectKey(C));
 		Hits[N++].z = H.ImpactPoint.Z;
 		if (!C || N == ftcore::crowdv2::kCrowdGroundHitsMax)
 		{
@@ -1325,17 +1424,32 @@ bool UFTCrowdSubsystemV2::FirstGround(int32 Slot, double X, double Y, double Cen
 	{
 		return false;
 	}
+	// The lines up pass through the vehicles the line down met: a car's body over the street does not make the street
+	// "not clear" (the car is a keep-out and its top is never ground). Within the list's inline 8, cleared after.
+	for (size_t i = 0; i < N; ++i)
+	{
+		if (Hits[i].vehicle && By[i])
+		{
+			TraceQuery.AddIgnoredComponent(By[i]);
+		}
+	}
 	for (size_t i = 0; i < N; ++i)
 	{
 		FHitResult Up;
 		const FVector Start(X, Y, Hits[i].z + CrowdV2Local::kGroundClearStart);
 		Hits[i].clearUp = !World->LineTraceSingleByChannel(Up, Start, FVector(X, Y, Hits[i].z + CrowdV2Local::kGroundBody), ECC_Visibility, TraceQuery);
 	}
+	TraceQuery.ClearIgnoredComponents();
+	// A vehicle's top is never ground: every top a vehicle's (N) finds none.
 	const size_t Pick = ftcore::crowdv2::crowdPickGround(Hits, N, CrowdV2Local::kGroundBody);
+	if (Pick >= N)
+	{
+		return false;
+	}
 	OutZ = Hits[Pick].z;
-	// Log only, capped: a ground that is not the first top (what was skipped). A skipped top that is a deck, quay or
-	// bridge a street runs on is where this pick is wrong.
-	if (Pick != 0 && ++GroundPicksUnder <= 24)
+	// Log only, capped, members only (not the keep-outs' load-time looks, Slot INDEX_NONE): a ground that is not the
+	// first top (what was skipped). A skipped top that is a deck, quay or bridge a street runs on is where this pick is wrong.
+	if (Slot != INDEX_NONE && Pick != 0 && ++GroundPicksUnder <= 24)
 	{
 		const AActor* Owner = By[0] ? By[0]->GetOwner() : nullptr;
 		const AActor* PickOwner = By[Pick] ? By[Pick]->GetOwner() : nullptr;
@@ -1353,7 +1467,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 	// stands, over half a metre down. Also the least distance to a box, round the feet's height.
 	UWorld* World = GetWorld();
 	FHitResult Below;
-	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, 50.0),
+	const bool bRoof = PoolGrounded[Actor] && World->LineTraceSingleByChannel(Below, Feet - FVector(0.0, 0.0, ftcore::crowdv2::kCrowdRoofTraceDrop * 100.0),
 		Feet - FVector(0.0, 0.0, 5000.0), ECC_Visibility, TraceQuery);
 	const int32 Slot = static_cast<int32>((PoolAgent[Actor] - 1) & 0xffffu);
 	if (ZoneZBox.bIsValid && ZoneZBox.IsInside(FVector2D(Feet.X, Feet.Y)))
@@ -1387,7 +1501,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 		for (const int32 b : *Near)
 		{
 			const FMassBox& M = MassBoxes[b];
-			if (Feet.Z > M.RZMin - 50.0 && Feet.Z < M.RZMax - 30.0)
+			if (ftcore::crowdv2::crowdMassAtFeet(M.RZMin, M.RZMax, Feet.Z))
 			{
 				const double R = BoxOut(M.RC, M.Ax, M.RHalf);
 				MinMassClearRender = FMath::Min(MinMassClearRender, R);
@@ -1397,7 +1511,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 					InRenderDepth = R;
 				}
 			}
-			if (Feet.Z <= M.ZMin - 50.0 || Feet.Z >= M.ZMax - 30.0)
+			if (!ftcore::crowdv2::crowdMassAtFeet(M.ZMin, M.ZMax, Feet.Z))
 			{
 				continue;
 			}
@@ -1430,7 +1544,7 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 		FootSeen[Slot] = true;
 		++FootMembers;
 		// One line per member, on its first bad frame: what it stands in or on (the frames per member come at the end).
-		if (FootLogged < 32)
+		if (FootLogged < FootLogCap)
 		{
 			++FootLogged;
 			const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(Slot));
@@ -1468,7 +1582,11 @@ void UFTCrowdSubsystemV2::CheckFootprint(int32 Actor, const FVector& Feet)
 FString UFTCrowdSubsystemV2::MassBoxName(int32 Box) const
 {
 	// The actor, component and mesh behind a massing box (and the instance, for an instanced mesh): log only.
-	const FMassBox& M = MassBoxes[Box];
+	return BoxName(MassBoxes[Box]);
+}
+
+FString UFTCrowdSubsystemV2::BoxName(const FMassBox& M)
+{
 	const UStaticMeshComponent* C = M.Comp.Get();
 	if (!C)
 	{
@@ -1622,6 +1740,7 @@ void UFTCrowdSubsystemV2::BuildMassing()
 {
 	// The buildings' massing boxes: every static mesh (and instance) tall and wide enough to be one by its render bounds;
 	// the box checked is ftcore's crowdMassingBox (its simple collision's bounds when it has any, else its render bounds).
+	// Also the vehicles (VehicleComps) and their boxes (CarBoxes), whatever their size. SetKeepOuts reads both.
 	UWorld* World = GetWorld();
 	int32 Colls = 0;
 	auto Add = [this, &Colls](const FBox& Local, const FBox* Coll, const FTransform& X, const UStaticMeshComponent* Comp, int32 Instance)
@@ -1684,6 +1803,35 @@ void UFTCrowdSubsystemV2::BuildMassing()
 			}
 		}
 	};
+	// A parked car's box: its simple collision's bounds when it has any, else its render bounds (no size floor).
+	auto AddCar = [this](const FBox& Local, const FBox* Coll, const FTransform& X, const UStaticMeshComponent* Comp, int32 Instance)
+	{
+		const FVector Scale = X.GetScale3D().GetAbs();
+		const FBox& B = Coll ? *Coll : Local;
+		const FVector C = X.TransformPosition(B.GetCenter());
+		const FVector H = B.GetExtent() * Scale;
+		const FVector RC = X.TransformPosition(Local.GetCenter());
+		const FVector RH = Local.GetExtent() * Scale;
+		FVector2D Ax(X.GetUnitAxis(EAxis::X).X, X.GetUnitAxis(EAxis::X).Y);
+		if (!Ax.Normalize())
+		{
+			Ax = FVector2D(1.0, 0.0);
+		}
+		FMassBox M;
+		M.C = FVector2D(C.X, C.Y);
+		M.Ax = Ax;
+		M.Half = FVector2D(H.X, H.Y);
+		M.ZMin = C.Z - H.Z;
+		M.ZMax = C.Z + H.Z;
+		M.RC = FVector2D(RC.X, RC.Y);
+		M.RHalf = FVector2D(RH.X, RH.Y);
+		M.RZMin = RC.Z - RH.Z;
+		M.RZMax = RC.Z + RH.Z;
+		M.bColl = Coll != nullptr;
+		M.Comp = Comp;
+		M.Instance = Instance;
+		CarBoxes.Add(M);
+	};
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		const AActor* Actor = *It;
@@ -1691,6 +1839,7 @@ void UFTCrowdSubsystemV2::BuildMassing()
 		{
 			continue;
 		}
+		const bool bVehicleActor = CrowdV2Local::HasVehicleTag(Actor->Tags);
 		TInlineComponentArray<UStaticMeshComponent*> Comps(Actor);
 		for (const UStaticMeshComponent* C : Comps)
 		{
@@ -1698,6 +1847,11 @@ void UFTCrowdSubsystemV2::BuildMassing()
 			if (!Mesh || C->GetClass()->GetName().Contains(TEXT("Foliage")) || !C->IsCollisionEnabled())
 			{
 				continue;
+			}
+			const bool bVehicle = bVehicleActor || CrowdV2Local::HasVehicleTag(C->ComponentTags);
+			if (bVehicle)
+			{
+				VehicleComps.Add(FObjectKey(C));
 			}
 			const FBox Local = Mesh->GetBoundingBox();
 			// Simple collision, when the mesh has any and queries use it (not complex as simple).
@@ -1716,17 +1870,132 @@ void UFTCrowdSubsystemV2::BuildMassing()
 					if (I->GetInstanceTransform(n, X, true))
 					{
 						Add(Local, Coll, X, C, n);
+						if (bVehicle)
+						{
+							AddCar(Local, Coll, X, C, n);
+						}
 					}
 				}
 			}
 			else
 			{
 				Add(Local, Coll, C->GetComponentTransform(), C, INDEX_NONE);
+				if (bVehicle)
+				{
+					AddCar(Local, Coll, C->GetComponentTransform(), C, INDEX_NONE);
+				}
 			}
 		}
 	}
-	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide by render bounds; %d checked by their simple collision's bounds, the rest by render bounds), %d grid cells."), MassBoxes.Num(),
-		CrowdV2Local::kMassMinHeight / 100.0, CrowdV2Local::kMassMinSide / 100.0, Colls, MassGrid.Num());
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: %d massing boxes for the footprint check (at least %.1f m tall and %.1f m wide by render bounds; %d checked by their simple collision's bounds, the rest by render bounds), %d grid cells; %d vehicle components, %d vehicle boxes."), MassBoxes.Num(),
+		CrowdV2Local::kMassMinHeight / 100.0, CrowdV2Local::kMassMinSide / 100.0, Colls, MassGrid.Num(), VehicleComps.Num(), CarBoxes.Num());
+}
+
+void UFTCrowdSubsystemV2::SetKeepOuts()
+{
+	// Each car box, and each massing box whose height window holds the ground at the street point nearest it (where the
+	// footprint check would measure a member walking there), becomes a keep-out: Car (gap kCarGap) or Wall (kWallKeepGap,
+	// the wall gate's: a front on the pavement, a tree's trunk). Load time: one first-ground look a box near a street.
+	// -CrowdKeepWhy=a,b: the verdict for each box whose actor, component or mesh name holds any of those.
+	TArray<FString> WhyNames;
+	FString Why;
+	if (FParse::Value(FCommandLine::Get(), TEXT("CrowdKeepWhy="), Why, false))
+	{
+		Why.ParseIntoArray(WhyNames, TEXT(","));
+	}
+	std::vector<ftcore::crowdv2::CrowdKeepOut> Keeps;
+	int32 Far = 0, NoGround = 0, OffWindow = 0, OverPoint = 0, Cars = 0, Walls = 0, OverNamed = 0, OverDropped = 0;
+	CarsDropped = 0;
+	CarsKept = 0;
+	auto Consider = [&](const FMassBox& M, ftcore::crowdv2::CrowdKeepKind Kind)
+	{
+		ftcore::crowdv2::CrowdKeepOut K;
+		K.c = ftcore::Vec2{static_cast<float>(M.C.X / 100.0), static_cast<float>(M.C.Y / 100.0)};
+		K.ax = static_cast<float>(M.Ax.X);
+		K.ay = static_cast<float>(M.Ax.Y);
+		K.hx = static_cast<float>(M.Half.X / 100.0);
+		K.hy = static_cast<float>(M.Half.Y / 100.0);
+		K.kind = Kind;
+		K.gap = Kind == ftcore::crowdv2::CrowdKeepKind::Car ? CrowdV2Local::kCarGap : CrowdV2Local::kWallKeepGap;
+		// Core decides (crowdKeepStreetPoint: the street point nearest the box, from points round its sides 1 m apart;
+		// crowdKeepVerdict: street, ground, then the feet's window). The host only traces the ground there.
+		double GroundZ = 0.0;
+		ftcore::Vec2 At{0.f, 0.f};
+		const bool bStreet = ftcore::crowdv2::crowdKeepStreetPoint(Graph, K, CrowdV2Local::kKeepReach, At);
+		bool bGround = false, bOver = false;
+		if (bStreet)
+		{
+			// Counted whatever the verdict: a box over its own street point has its own top (or a roof) as the ground
+			// there, so the window may drop it. -CrowdKeepWhy names them.
+			bOver = ftcore::crowdv2::crowdKeepDistance(K, At) < 0.f;
+			OverPoint += bOver ? 1 : 0;
+			bGround = FirstGround(INDEX_NONE, At.x * 100.0, At.y * 100.0, M.ZMax, GroundZ);
+		}
+		const ftcore::crowdv2::CrowdKeepVerdict V = ftcore::crowdv2::crowdKeepVerdict(bStreet, bGround, GroundZ, M.ZMin, M.ZMax);
+		OverDropped += bOver && V != ftcore::crowdv2::CrowdKeepVerdict::Kept ? 1 : 0;
+		if (bOver && V != ftcore::crowdv2::CrowdKeepVerdict::Kept && OverNamed < CrowdV2Local::kKeepOverNamed)
+		{
+			// A box standing on its own street's centre line that is not kept: named (the first few), so a run says
+			// which; its ground there may be its own top.
+			++OverNamed;
+			UE_LOG(LogForgottenThird, Warning, TEXT("Crowd: box over its own street point not kept: %s; centre (%.2f, %.2f) m, z %.0f to %.0f cm, ground z %.1f cm."),
+				*BoxName(M), K.c.x, K.c.y, M.ZMin, M.ZMax, GroundZ);
+		}
+		const bool bCar = Kind == ftcore::crowdv2::CrowdKeepKind::Car;
+		const TCHAR* Verdict = TEXT("kept");
+		switch (V)
+		{
+		case ftcore::crowdv2::CrowdKeepVerdict::NoStreet:
+			Verdict = TEXT("no street near");
+			++Far;
+			break;
+		case ftcore::crowdv2::CrowdKeepVerdict::NoGround:
+			Verdict = TEXT("no ground at its street point");
+			++NoGround;
+			CarsDropped += bCar ? 1 : 0;
+			break;
+		case ftcore::crowdv2::CrowdKeepVerdict::OffWindow:
+			Verdict = TEXT("not at the feet's height there");
+			++OffWindow;
+			CarsDropped += bCar ? 1 : 0;
+			break;
+		case ftcore::crowdv2::CrowdKeepVerdict::Kept:
+			Keeps.push_back(K);
+			(bCar ? Cars : Walls) += 1;
+			break;
+		}
+		if (bCar && bStreet && V != ftcore::crowdv2::CrowdKeepVerdict::Kept)
+		{
+			// A car by a street the crowd does not keep out of: the car line fails on it (CarsDropped).
+			UE_LOG(LogForgottenThird, Warning, TEXT("Crowd: car box by a street not kept: %s: %s; centre (%.2f, %.2f) m, z %.0f to %.0f cm, ground z %.1f cm."),
+				*BoxName(M), Verdict, K.c.x, K.c.y, M.ZMin, M.ZMax, GroundZ);
+		}
+		if (WhyNames.Num() > 0)
+		{
+			const FString Name = BoxName(M);
+			for (const FString& W : WhyNames)
+			{
+				if (!W.IsEmpty() && Name.Contains(W))
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-out why: %s (%s): %s; centre (%.2f, %.2f) m, half (%.2f, %.2f) m, z %.0f to %.0f cm; street point (%.2f, %.2f) m, ground z %.1f cm."),
+						*Name, bCar ? TEXT("car") : TEXT("wall"), Verdict, K.c.x, K.c.y, K.hx, K.hy, M.ZMin, M.ZMax, At.x, At.y, GroundZ);
+					break;
+				}
+			}
+		}
+	};
+	for (const FMassBox& M : CarBoxes)
+	{
+		Consider(M, ftcore::crowdv2::CrowdKeepKind::Car);
+	}
+	for (const FMassBox& M : MassBoxes)
+	{
+		Consider(M, ftcore::crowdv2::CrowdKeepKind::Wall);
+	}
+	const uint32 Kept = Sim.setKeepOuts(Keeps);
+	CarsKept = Cars;
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-outs: %d car boxes, %d massing boxes; %d cars and %d walls at the feet's height by a street; %d boxes over their own street point (any verdict; %d of them not kept, a member there is still caught by the footprint line), %d with no street near, %d with no ground at it, %d not at the feet's height; %u kept by the sim; %u sides closed, %u streets shut, %u narrows, %u doors under a keep-out."),
+		CarBoxes.Num(), MassBoxes.Num(), Cars, Walls, OverPoint, OverDropped, Far, NoGround, OffWindow, Kept, Sim.closedSides(), Sim.closedStreets(), Sim.narrowCount(), Sim.doorsUnderKeep());
 }
 
 // A knot over the gate: who stands in it (state, speed, metres from the fight), so a failed run says why.
@@ -1806,6 +2075,73 @@ void UFTCrowdSubsystemV2::NoteReactingLeftOut(uint32 Group)
 	++ReactingLines;
 	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: knot check at t=%.1f s left out %u members in the one-step close-reaction stop: largest standing within 3 m %u (the old rule, counting them: %u)."),
 		RunTime, Reacting, Group, Old);
+}
+
+void UFTCrowdSubsystemV2::NoteRooms()
+{
+	// The first visits at each room are logged in full; all are counted.
+	constexpr uint32 LoggedVisits = 4;
+	const int32 Members = FMath::Min(RoomPhase.Num(), static_cast<int32>(Sim.capacity()));
+	for (int32 I = 0; I < Members; ++I)
+	{
+		const ftcore::crowdv2::CrowdAgentView& V = Sim.agent(static_cast<uint32>(I));
+		const bool bAtRoom = V.live && V.door >= 0 && V.door < RoomDoorIds.Num();
+		const uint8 Phase = bAtRoom ? V.doorPhase : 0;
+		const uint8 Was = RoomPhase[I];
+		if (Was == 0 && Phase != 0)
+		{
+			RoomDoorOf[I] = V.door;
+			RoomMemberId[I] = V.id;
+			RoomInAt[I] = static_cast<float>(RunTime);
+			RoomSpotAt[I] = -1.f;
+			RoomSpotFor[I] = 0.f;
+			++RoomIn[V.door];
+		}
+		const int32 D = RoomDoorOf[I];
+		if (D < 0)
+		{
+			RoomPhase[I] = Phase;
+			continue;
+		}
+		if (Phase == 6 && Was != 6)
+		{
+			RoomSpotAt[I] = static_cast<float>(RunTime);
+			if (++RoomSpot[D] <= LoggedVisits)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: room %s: member %u stands at its spot (%.2f, %.2f) m at t=%.1f s, %.1f s after taking the door."),
+					*RoomDoorIds[D], RoomMemberId[I], V.pos.x, V.pos.y, RunTime, RunTime - RoomInAt[I]);
+			}
+		}
+		if (Was == 6 && Phase != 6 && RoomSpotAt[I] >= 0.f)
+		{
+			RoomSpotFor[I] = static_cast<float>(RunTime) - RoomSpotAt[I];
+		}
+		// The visit ends when the member leaves the door (or the slot is gone or reused: logged as such).
+		if (Was != 0 && (Phase == 0 || V.id != RoomMemberId[I]))
+		{
+			const float Visit = static_cast<float>(RunTime) - RoomInAt[I];
+			RoomLongest[D] = FMath::Max(RoomLongest[D], Visit);
+			const bool bOut = V.live && V.id == RoomMemberId[I];
+			if (++RoomOut[D] <= LoggedVisits)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: room %s: member %u %s at t=%.1f s after %.1f s (%.1f s at its spot), at (%.2f, %.2f) m."),
+					*RoomDoorIds[D], RoomMemberId[I], bOut ? TEXT("came back out") : TEXT("LEFT THE POOL inside"), RunTime, Visit, RoomSpotFor[I],
+					V.pos.x, V.pos.y);
+			}
+			RoomDoorOf[I] = -1;
+			if (Phase != 0)
+			{
+				// A reused slot already at a door: its visit starts now.
+				RoomDoorOf[I] = V.door;
+				RoomMemberId[I] = V.id;
+				RoomInAt[I] = static_cast<float>(RunTime);
+				RoomSpotAt[I] = -1.f;
+				RoomSpotFor[I] = 0.f;
+				++RoomIn[V.door];
+			}
+		}
+		RoomPhase[I] = Phase;
+	}
 }
 
 void UFTCrowdSubsystemV2::NoteMinPair(float Pair)

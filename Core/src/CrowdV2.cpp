@@ -85,6 +85,53 @@ std::uint32_t floatBits(float f) {
     return u;
 }
 
+// Where the line o + n t meets the keep-out grown by its gap (and `extra`) on every side, a rectangle (its corners
+// square, so a point outside it is the gap off the box or more): t0..t1. False when it misses.
+bool keepSpan(const CrowdKeepOut& k, float extra, Vec2 o, Vec2 n, float& t0, float& t1) {
+    const float dx = o.x - k.c.x, dy = o.y - k.c.y;
+    const float oo[2] = {dx * k.ax + dy * k.ay, -dx * k.ay + dy * k.ax};
+    const float nn[2] = {n.x * k.ax + n.y * k.ay, -n.x * k.ay + n.y * k.ax};
+    const float h[2] = {k.hx + k.gap + extra, k.hy + k.gap + extra};
+    float lo = -1e30f, hi = 1e30f;
+    for (int s = 0; s < 2; ++s) {
+        if (std::fabs(nn[s]) < 1e-7f) {
+            if (std::fabs(oo[s]) >= h[s]) return false;
+            continue;
+        }
+        float a = (-h[s] - oo[s]) / nn[s], b = (h[s] - oo[s]) / nn[s];
+        if (a > b) std::swap(a, b);
+        lo = std::max(lo, a);
+        hi = std::min(hi, b);
+    }
+    if (lo >= hi) return false;
+    t0 = lo;
+    t1 = hi;
+    return true;
+}
+
+// The point of the open stretches nearest `want` (want itself when it is in one). n > 0.
+float nearestOpen(const CrowdKeepSpan* open, std::uint32_t n, float want) {
+    float best = open[0].lo, bestD = 1e30f;
+    for (std::uint32_t k = 0; k < n; ++k) {
+        const float c = std::clamp(want, open[k].lo, open[k].hi);
+        const float d = std::fabs(c - want);
+        if (d < bestD) bestD = d, best = c;
+    }
+    return best;
+}
+
+// Two sorted lists of stretches: where both are open (sorted), up to kCrowdKeepSpanMax.
+std::uint32_t bothOpen(const CrowdKeepSpan* a, std::uint32_t na, const CrowdKeepSpan* b, std::uint32_t nb, CrowdKeepSpan* out) {
+    std::uint32_t i = 0, j = 0, n = 0;
+    while (i < na && j < nb && n < kCrowdKeepSpanMax) {
+        const float lo = std::max(a[i].lo, b[j].lo), hi = std::min(a[i].hi, b[j].hi);
+        if (lo <= hi) out[n++] = {lo, hi};
+        if (a[i].hi < b[j].hi) ++i;
+        else ++j;
+    }
+    return n;
+}
+
 } // namespace
 
 std::string_view crowdEventName(CrowdEventKind kind) {
@@ -149,6 +196,15 @@ bool CrowdSim::init(const CrowdGraph& graph, const CrowdTuning& tuning, std::uin
     doorList_.clear();
     spots_.clear();
     spotTaken_.clear();
+    keeps_.clear();
+    keepFirst_.clear();
+    keepList_.clear();
+    edgeBase_.clear();
+    sideOpen_.clear();
+    narrows_.clear();
+    narrowAt_.clear();
+    narrowN_.clear();
+    closedSides_ = closedStreets_ = doorsUnderKeep_ = 0;
     indoors_ = 0;
     density_ = 1.f;
     reachLength_ = reachArea_ = 0.f;
@@ -264,6 +320,7 @@ void CrowdSim::enter(Agent& a, std::uint32_t from, std::uint32_t to) {
     a.from = from;
     a.to = to;
     a.along = 0.f;
+    a.waitSlot = UINT32_MAX;
     a.len = e ? e->length : 1.f;
     a.lane = e ? e->lane : 0.f;
     a.laneHalf = e ? e->laneHalf : 0.f;
@@ -276,6 +333,11 @@ void CrowdSim::enter(Agent& a, std::uint32_t from, std::uint32_t to) {
     a.along = std::clamp((a.pos.x - f.x) * dir.x + (a.pos.y - f.y) * dir.y, -kCornerReach, a.len);
     a.lat = std::clamp(lat, -kCornerReach, kCornerReach);
     a.sideLock = e ? e->side : 0;
+    if (!keeps_.empty() && a.sideLock == 0 && a.lane > 0.f) { // keep-outs close one side: the other is its one pavement
+        const std::uint8_t open = openSides(from, to);
+        if (open == 1) a.sideLock = 1;
+        else if (open == 2) a.sideLock = -1;
+    }
     a.side = a.sideLock != 0 ? static_cast<float>(a.sideLock) : (lat >= 0.f ? 1.f : -1.f);
     a.latTarget = a.side * a.lane + (rand01() * 2.f - 1.f) * a.laneHalf * 0.8f;
 }
@@ -338,10 +400,11 @@ void CrowdSim::reverse(Agent& a) {
 std::uint32_t CrowdSim::awayFromThreat(const Agent& a) const {
     const std::uint32_t d = graph_->degree(a.to);
     std::uint32_t best = a.from;
-    float bestD = -1.f;
+    float bestD = -1e30f; // every distance beats it (a closed street's too, when no other is open)
     for (std::uint32_t k = 0; k < d; ++k) {
         const std::uint32_t w = graph_->edge(a.to, k).to;
-        const float dw = dist2(graph_->node(w), a.threat);
+        float dw = dist2(graph_->node(w), a.threat);
+        if (!keeps_.empty() && openSides(a.to, w) == 0) dw -= 1e12f; // closed by keep-outs: only if nothing else
         if (dw > bestD) bestD = dw, best = w;
     }
     return best;
@@ -365,6 +428,7 @@ std::uint32_t CrowdSim::chooseNext(Agent& a) {
                   rand01() * (1.f - tuning_.headingKeep);
         if (e.to == a.from) s -= 1.5f; // turning back only at a dead end, in effect
         if (wary) s += dist(w, a.threat) > hereD ? 1.f : -1.f;
+        if (!keeps_.empty() && openSides(a.to, e.to) == 0) s -= 100.f; // closed by keep-outs: only if nothing else
         if (s > bestS) bestS = s, best = e.to;
     }
     return best;
@@ -389,6 +453,17 @@ std::uint32_t CrowdSim::spawnAt(std::uint32_t n, std::uint32_t k, float boldness
     a.yaw = yawTo(f, t);
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
     a.pos = {f.x + dir.x * a.along - dir.y * a.lat, f.y + dir.y * a.along + dir.x * a.lat};
+    if (!keeps_.empty() && keepMargin(a.pos, a.from, a.to) < kCrowdWallAccept) {
+        // Under a keep-out's gap: the nearest open point of its band there (spawnSome passes over it if none is).
+        const float bandLo = a.lane > 0.f ? a.lane - a.laneHalf : -a.laneHalf, bandHi = a.lane + a.laneHalf;
+        CrowdKeepSpan open[kCrowdKeepSpanMax];
+        const std::uint32_t no = a.side > 0.f ? keepOpen(a.from, a.to, a.along, bandLo, bandHi, kCrowdWallSlack, open)
+                                              : keepOpen(a.from, a.to, a.along, -bandHi, -bandLo, kCrowdWallSlack, open);
+        if (no > 0) {
+            a.lat = a.latTarget = nearestOpen(open, no, a.lat);
+            a.pos = {f.x + dir.x * a.along - dir.y * a.lat, f.y + dir.y * a.along + dir.x * a.lat};
+        }
+    }
     a.prev = a.pos;
     a.bornAt = time_;
     a.spreadLeft = rand01() * tuning_.spreadInterval;
@@ -502,7 +577,10 @@ void CrowdSim::spawnSome(Vec2 player) {
             for (std::uint32_t b = 0; b < bornCount_; ++b) around += dist2(born_[b], q) <= nr * nr ? 1u : 0u;
             return around >= tuning_.spawnNearMax;
         };
-        std::uint64_t* miss = at < rMin || at > rMax ? &counts_.missSpotRing
+        const bool underKeep = !keeps_.empty() && (openSides(agents_[i].from, agents_[i].to) == 0 ||
+                                                   keepMargin(agents_[i].pos, agents_[i].from, agents_[i].to) < kCrowdWallAccept);
+        std::uint64_t* miss = underKeep                    ? &counts_.missKeep
+                              : at < rMin || at > rMax ? &counts_.missSpotRing
                               : crowded(i, agents_[i].pos, tuning_.avoidRadius * 1.5f) ? &counts_.missCrowded
                               : dense()                                                ? &counts_.missDense
                               : viewCount_ > 0 && inView(agents_[i].pos, 10.f, 5.f) ? &counts_.missSpotView
@@ -699,7 +777,9 @@ bool CrowdSim::plan(Agent& a) {
             if (++settled >= tuning_.searchLimit) break;
             for (std::uint32_t k = 0; k < graph_->degree(v); ++k) {
                 const CrowdEdge& e = graph_->edge(v, k);
-                push(e.to, c + e.length * weight(e.to), v);
+                // A street the keep-outs close: a long way round first (only if it is the only way on).
+                const float shut = !keeps_.empty() && openSides(v, e.to) == 0 ? 1000.f : 0.f;
+                push(e.to, c + e.length * weight(e.to) + shut, v);
             }
         }
     }
@@ -1171,6 +1251,9 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
     Agent& a = agents_[i];
     float speed = 0.f;
     float latRate = tuning_.laneSpeed;
+    a.waitStop = -1.f;
+    if (a.waitNarrow == UINT32_MAX) a.waitSlot = UINT32_MAX; // a step without waiting: its next wait is a new one
+    a.waitNarrow = UINT32_MAX;
     switch (a.state) {
     case CrowdState::Walk: speed = a.baseSpeed; break;
     case CrowdState::BackAway: speed = tuning_.backSpeed; break;
@@ -1294,6 +1377,12 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
         a.latTarget = slotLat;
         latRate = std::max(latRate, std::max(speed, tuning_.laneSpeed));
     }
+    // A single-file narrow ahead: in on its turn, else it waits short of the mouth (looking no farther ahead than that).
+    float keepReach = kCrowdKeepAhead;
+    if (!narrows_.empty() && speed > 0.f && slotAlong < 0.f && a.state != CrowdState::Free) narrowTurn(a, speed, keepReach);
+    // With keep-outs: the member as it stands before this step along (see the hold below). No allocation.
+    const Agent before = keeps_.empty() ? Agent{} : a;
+    const float rate0 = latRate;
     a.along += speed * tuning_.step;
     // A run that reached its goal goes on a little way down the next street and stops there; a calm walk that
     // means to idle stops partway along: either way, not on the node where the others stop too.
@@ -1318,8 +1407,8 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             stopped = a.state != CrowdState::Walk;
         }
     } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong &&
-               (!roomToWatch(a) || a.idleAlong < kIdleClear || a.len - a.along < kIdleClear)) {
-        a.idleAlong = -1.f; // S-332: no room to stand here, or a junction (walkers cross it): it walks on
+               (!roomToWatch(a) || a.idleAlong < kIdleClear || a.len - a.along < kIdleClear || inNarrow(a))) {
+        a.idleAlong = -1.f; // S-332: no room to stand here, a junction (walkers cross it) or a narrow: it walks on
     } else if (a.state == CrowdState::Walk && a.idleAlong >= 0.f && a.along >= a.idleAlong) {
         // It stands where it is: one that came past the spot doing something else is never pulled back to it.
         setState(a, CrowdState::Idle);
@@ -1373,22 +1462,48 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
     }
 
     // Sideways inside the lane, then the world position.
-    float dl = a.latTarget - a.lat;
-    if (startled || ((a.state == CrowdState::Flee || a.brace) && a.stateTime < kFleeOpen && (speed > 0.f || slotAlong >= 0.f))) {
-        // About to react, or just started to run: never sideways towards the threat (back onto the band only once it
-        // is clear).
-        const Vec2 f0 = graph_->node(a.from), t0 = graph_->node(a.to);
-        const Vec2 th = startled ? a.pendFrom : a.threat;
-        const float tl = ((th.x - f0.x) * -(t0.y - f0.y) + (th.y - f0.y) * (t0.x - f0.x)) / a.len;
-        if ((tl - a.lat) * dl > 0.f) dl = 0.f;
+    auto stepSide = [&](Agent& m, float rate) {
+        if (!keeps_.empty()) keepBand(m, rate, speed, keepReach);
+        float dl = m.latTarget - m.lat;
+        if (startled || ((m.state == CrowdState::Flee || m.brace) && m.stateTime < kFleeOpen && (speed > 0.f || slotAlong >= 0.f))) {
+            // About to react, or just started to run: never sideways towards the threat (back onto the band only once
+            // it is clear).
+            const Vec2 f0 = graph_->node(m.from), t0 = graph_->node(m.to);
+            const Vec2 th = startled ? m.pendFrom : m.threat;
+            const float tl = ((th.x - f0.x) * -(t0.y - f0.y) + (th.y - f0.y) * (t0.x - f0.x)) / m.len;
+            if ((tl - m.lat) * dl > 0.f) dl = 0.f;
+        }
+        const float maxDl = rate * tuning_.step;
+        m.lat += std::clamp(dl, -maxDl, maxDl);
+        const Vec2 f0 = graph_->node(m.from), t0 = graph_->node(m.to);
+        const Vec2 d0{(t0.x - f0.x) / m.len, (t0.y - f0.y) / m.len};
+        const Vec2 b0 = basePoint(m);
+        m.pos = {b0.x - d0.y * m.lat, b0.y + d0.x * m.lat};
+    };
+    stepSide(a, latRate);
+    a.speed = a.state == CrowdState::Recover || a.state == CrowdState::Idle ? 0.f : speed;
+    if (!keeps_.empty()) {
+        // The step the host draws (where it stood, to here) never cuts a keep-out's gap, nor goes deeper under one
+        // than it stood: a walker whose step along would cut one stays where it is along its street (on the street it
+        // was on) and takes the sideways step only, out to the stretch that stays open (keepBand), or stands.
+        const std::uint32_t nd[4] = {before.from, before.to, a.from, a.to};
+        // Drawn from where it stood at the step's start (prev).
+        const float need = std::min(kCrowdWallAccept, keepSweep(before.prev, before.pos, nd, 2));
+        if (keepSweep(before.prev, a.pos, nd, 4) < need) {
+            ++counts_.keepHeld;
+            Agent h = before;
+            stepSide(h, std::max(rate0, std::max(speed, tuning_.laneSpeed)));
+            if (keepSweep(before.prev, h.pos, nd, 2) < need) {
+                h.lat = before.lat;
+                h.latTarget = before.latTarget;
+                h.pos = before.pos;
+            }
+            h.speed = a.speed > 0.f ? dist(before.pos, h.pos) / tuning_.step : 0.f;
+            a = h;
+        }
     }
-    const float maxDl = latRate * tuning_.step;
-    a.lat += std::clamp(dl, -maxDl, maxDl);
     const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
     const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
-    const Vec2 base = basePoint(a);
-    a.pos = {base.x - dir.y * a.lat, base.y + dir.x * a.lat};
-    a.speed = a.state == CrowdState::Recover || a.state == CrowdState::Idle ? 0.f : speed;
 
     // A moving member that hasn't got anywhere (a run check counts it): a runner in a whole second, anyone else
     // walking or backing off in two.
@@ -1404,6 +1519,13 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             // Someone stands in its way at the end of its run: it stops behind them and asks for a new plan.
             a.hold = true;
             a.needPlan = true;
+        } else if (a.state == CrowdState::Walk && !a.stuckTurned && inNarrow(a)) {
+            // Held up in a single-file narrow (its way's turn): it waits for the one ahead, never turns back in it (a
+            // run check still counts it stuck after two seconds).
+            if (a.stuckTime >= 2.f) {
+                ++counts_.stuck;
+                a.stuckTime = 0.f;
+            }
         } else if (a.state != CrowdState::Flee && a.stuckTime >= 1.f && !a.stuckTurned) {
             // Blocked (someone stood in its way at the pavement's edge): a walker turns back, a member backing off or
             // bracing stops where it is.
@@ -1636,6 +1758,8 @@ void CrowdSim::writeView(std::uint32_t i) {
     v.state = a.state;
     v.cornered = a.state == CrowdState::Cower && a.brace && a.hold;
     v.indoors = a.state == CrowdState::Indoors && a.doorPhase == 2;
+    v.door = a.state == CrowdState::Indoors ? a.door : -1;
+    v.doorPhase = a.state == CrowdState::Indoors ? a.doorPhase : 0;
     v.reacting = a.reactStop && a.state == CrowdState::Walk && a.speed <= 0.05f;
     v.pos = a.pos;
     v.prevPos = a.prev;
@@ -1678,6 +1802,7 @@ void CrowdSim::step(Vec2 player, Vec2 playerVel) {
     }
     rebuildGrid(player);
     perceive();
+    countNarrows();
     for (std::uint32_t i = 0; i < agents_.size(); ++i) {
         Agent& a = agents_[i];
         if (a.state == CrowdState::Free) continue;
@@ -1759,6 +1884,11 @@ float CrowdSim::clearance(const Agent& a, Vec2 p, Vec2* fixTo) const {
 // members stand at 0.799 m. A point is taken as it is only kCrowdWallAccept past wallInset or more: one taken at
 // wallInset itself (0.8000031 m) read 0.799961 m on the host, whose frontage is the building's box.
 void CrowdSim::place(Agent& a, Vec2 p) {
+    placeWalls(a, p);
+    if (!keeps_.empty()) keepClear(a);
+}
+
+void CrowdSim::placeWalls(Agent& a, Vec2 p) {
     const float accept = tuning_.graph.wallInset + kCrowdWallAccept;
     Vec2 q = p;
     if (clearance(a, p, &q) >= accept) q = p;
@@ -1815,7 +1945,8 @@ void CrowdSim::separate() {
     const float g = tuning_.minGap;
     const float accept = tuning_.graph.wallInset + kCrowdWallAccept; // as place() takes a point
     for (Agent& a : agents_)
-        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors && clearance(a, a.pos, nullptr) < accept)
+        if (a.state != CrowdState::Free && a.state != CrowdState::Indoors &&
+            (clearance(a, a.pos, nullptr) < accept || (!keeps_.empty() && keepMargin(a.pos, a.from, a.to) < kCrowdWallAccept)))
             place(a, a.pos);
     for (int it = 0; it < 64 && g > 0.f; ++it) {
         bool any = false;
@@ -1837,7 +1968,7 @@ void CrowdSim::separate() {
                     const Vec2 u = l < 1e-4f ? Vec2{0.f, 1.f} : Vec2{d.x / l * sg, d.y / l * sg};
                     const float push = g - l + 1e-3f;
                     const Vec2 pm = pushable(m, {u.x * push, u.y * push});
-                    place(m, {m.pos.x + pm.x, m.pos.y + pm.y});
+                    placeKept(m, {m.pos.x + pm.x, m.pos.y + pm.y});
                     return;
                 }
                 if (l < 1e-4f) { // on top of each other: apart across the street, by slot order
@@ -1853,8 +1984,8 @@ void CrowdSim::separate() {
                 const Vec2 wb{-d.x * push - (wa.x - pa.x), -d.y * push - (wa.y - pa.y)};
                 const Vec2 pb = pushable(b, wb);
                 const Vec2 ra = pushable(a, {pa.x - (wb.x - pb.x), pa.y - (wb.y - pb.y)});
-                place(a, {a.pos.x + ra.x, a.pos.y + ra.y});
-                place(b, {b.pos.x + pb.x, b.pos.y + pb.y});
+                placeKept(a, {a.pos.x + ra.x, a.pos.y + ra.y});
+                placeKept(b, {b.pos.x + pb.x, b.pos.y + pb.y});
                 const float l2 = dist(a.pos, b.pos);
                 if (l2 >= g - 1e-3f) return;
                 // Still too close (one stands at a dead end, the other may not step towards its threat): side by side
@@ -1867,8 +1998,8 @@ void CrowdSim::separate() {
                     Agent ta = a, tb = b;
                     const float k = side * static_cast<float>(sgn);
                     const Vec2 sa = pushable(ta, {n.x * k, n.y * k}), sb = pushable(tb, {-n.x * k, -n.y * k});
-                    place(ta, {ta.pos.x + sa.x, ta.pos.y + sa.y});
-                    place(tb, {tb.pos.x + sb.x, tb.pos.y + sb.y});
+                    placeKept(ta, {ta.pos.x + sa.x, ta.pos.y + sa.y});
+                    placeKept(tb, {tb.pos.x + sb.x, tb.pos.y + sb.y});
                     const float lt = dist(ta.pos, tb.pos);
                     if (lt > bestL) { bestL = lt; best[0] = ta; best[1] = tb; }
                 }
@@ -1888,15 +2019,15 @@ void CrowdSim::separate() {
                 const Agent a0 = a, b0 = b;
                 for (const Vec2& w : ways) {
                     Agent ta = a0, tb = b0;
-                    place(ta, {ta.pos.x + w.x * rest, ta.pos.y + w.y * rest});
-                    place(tb, {tb.pos.x - w.x * rest, tb.pos.y - w.y * rest});
+                    placeKept(ta, {ta.pos.x + w.x * rest, ta.pos.y + w.y * rest});
+                    placeKept(tb, {tb.pos.x - w.x * rest, tb.pos.y - w.y * rest});
                     float lt = dist(ta.pos, tb.pos);
                     if (lt < g - 1e-3f) {
                         // One stands at the end of its street: the other takes the rest.
                         const float more = g - lt + 1e-3f;
                         Agent ua = ta, ub = tb;
-                        place(ua, {ua.pos.x + w.x * more, ua.pos.y + w.y * more});
-                        place(ub, {ub.pos.x - w.x * more, ub.pos.y - w.y * more});
+                        placeKept(ua, {ua.pos.x + w.x * more, ua.pos.y + w.y * more});
+                        placeKept(ub, {ub.pos.x - w.x * more, ub.pos.y - w.y * more});
                         const float la = dist(ua.pos, tb.pos), lb = dist(ta.pos, ub.pos);
                         if (la >= lb && la > lt) { ta = ua; lt = la; }
                         else if (lb > lt) { tb = ub; lt = lb; }
@@ -1934,7 +2065,540 @@ float CrowdSim::wallClearance(std::uint32_t i) const {
     };
     for (const std::uint32_t n : {a.from, a.to})
         for (std::uint32_t k = 0; k < graph_->degree(n); ++k) segment(n, graph_->edge(n, k));
+    // A keep-out standing for a wall (a building's front, a trunk): its distance less its gap, plus wallInset, so a
+    // member its gap off it reads as wallInset off a wall.
+    for (const std::uint32_t n : {a.from, a.to})
+        for (std::uint32_t q = keeps_.empty() ? 0 : keepFirst_[n]; q < (keeps_.empty() ? 0 : keepFirst_[n + 1]); ++q) {
+            const CrowdKeepOut& k = keeps_[keepList_[q]];
+            if (k.kind == CrowdKeepKind::Wall)
+                best = std::min(best, crowdKeepDistance(k, a.pos) - k.gap + tuning_.graph.wallInset);
+        }
     return best;
+}
+
+std::uint32_t CrowdSim::setKeepOuts(const std::vector<CrowdKeepOut>& keeps) {
+    keeps_.clear();
+    keepFirst_.clear();
+    keepList_.clear();
+    edgeBase_.clear();
+    sideOpen_.clear();
+    narrows_.clear();
+    narrowAt_.clear();
+    narrowN_.clear();
+    for (Agent& a : agents_) {
+        a.narrow = UINT32_MAX;
+        a.waitStop = -1.f;
+    }
+    closedSides_ = closedStreets_ = doorsUnderKeep_ = 0;
+    if (!graph_) return 0;
+    const std::uint32_t nodes = graph_->nodeCount();
+    // Near a street: within its half width + the box's half diagonal + its gap + 1 m of its centre line.
+    auto nearEdge = [&](std::uint32_t n, const CrowdEdge& e, const CrowdKeepOut& k) {
+        return segDist(graph_->node(n), graph_->node(e.to), k.c) <= e.half + std::hypot(k.hx, k.hy) + k.gap + 1.f;
+    };
+    auto nearNode = [&](std::uint32_t n, const CrowdKeepOut& k) {
+        for (std::uint32_t q = 0; q < graph_->degree(n); ++q)
+            if (nearEdge(n, graph_->edge(n, q), k)) return true;
+        return false;
+    };
+    // Early reject (load time): every street is in the graph's street grid, so a box with no street within the widest
+    // half width + its half diagonal + its gap + 1 m of its centre is near none, and skips the scan over every node.
+    float widest = 0.f;
+    for (std::uint32_t n = 0; n < nodes; ++n)
+        for (std::uint32_t q = 0; q < graph_->degree(n); ++q) widest = std::max(widest, graph_->edge(n, q).half);
+    for (const CrowdKeepOut& k : keeps) {
+        const float al = std::hypot(k.ax, k.ay);
+        if (!(al > 1e-6f) || !(k.hx >= 0.f) || !(k.hy >= 0.f) || !(k.gap >= 0.f) || !std::isfinite(k.c.x) ||
+            !std::isfinite(k.c.y) || !std::isfinite(k.hx + k.hy + k.gap))
+            continue;
+        CrowdStreetPoint any;
+        if (!graph_->nearestStreet(k.c, widest + std::hypot(k.hx, k.hy) + k.gap + 1.f, any)) continue;
+        CrowdKeepOut u = k;
+        u.ax = k.ax / al;
+        u.ay = k.ay / al;
+        bool near = false;
+        for (std::uint32_t n = 0; n < nodes && !near; ++n) near = nearNode(n, u);
+        if (near) keeps_.push_back(u);
+    }
+    if (keeps_.empty()) return 0;
+    // Each node's boxes: those near a street at it (a box near a street is listed under both its nodes).
+    keepFirst_.assign(static_cast<std::size_t>(nodes) + 1, 0);
+    for (std::uint32_t n = 0; n < nodes; ++n)
+        for (const CrowdKeepOut& k : keeps_) keepFirst_[n + 1] += nearNode(n, k) ? 1u : 0u;
+    for (std::uint32_t n = 0; n < nodes; ++n) keepFirst_[n + 1] += keepFirst_[n];
+    keepList_.resize(keepFirst_[nodes]);
+    for (std::uint32_t n = 0; n < nodes; ++n) {
+        std::uint32_t w = keepFirst_[n];
+        for (std::uint32_t b = 0; b < keeps_.size(); ++b)
+            if (nearNode(n, keeps_[b])) keepList_[w++] = b;
+    }
+    // Each pavement side: closed when the boxes leave no stretch kCrowdKeepMinWidth wide across its band (within
+    // wallInset of the walls) at some point along the street.
+    edgeBase_.assign(static_cast<std::size_t>(nodes) + 1, 0);
+    for (std::uint32_t n = 0; n < nodes; ++n) edgeBase_[n + 1] = edgeBase_[n] + graph_->degree(n);
+    sideOpen_.assign(edgeBase_[nodes], 3);
+    CrowdKeepSpan open[kCrowdKeepSpanMax];
+    for (std::uint32_t n = 0; n < nodes; ++n)
+        for (std::uint32_t q = 0; q < graph_->degree(n); ++q) {
+            const CrowdEdge& e = graph_->edge(n, q);
+            if (e.to <= n) continue;
+            const float wall = std::max(0.f, e.half - tuning_.graph.wallInset - kCrowdWallSlack);
+            const float bLo = e.lane > 0.f ? e.lane - e.laneHalf : -e.laneHalf, bHi = std::min(e.lane + e.laneHalf, wall);
+            auto bandOpen = [&](float lo, float hi) {
+                if (lo > hi) return false;
+                for (float s = 0.f;; s = std::min(s + kCrowdKeepSample, e.length)) {
+                    const std::uint32_t no = keepOpen(n, e.to, s, lo, hi, kCrowdWallSlack, open);
+                    float roomy = 0.f;
+                    for (std::uint32_t k = 0; k < no; ++k) roomy = std::max(roomy, open[k].hi - open[k].lo);
+                    if (roomy < kCrowdKeepMinWidth) return false;
+                    if (s >= e.length) return true;
+                }
+            };
+            std::uint8_t bits = 0;
+            std::uint32_t sides = 0, shut = 0;
+            if (e.lane <= 0.f) { // one band down the middle: both sides alike
+                sides = 1;
+                bits = bandOpen(std::max(bLo, -wall), bHi) ? 3 : 0;
+                shut = bits ? 0 : 1;
+            } else {
+                for (const int s : {1, -1}) {
+                    if (e.side != 0 && e.side != s) continue;
+                    ++sides;
+                    if (s > 0 ? bandOpen(bLo, bHi) : bandOpen(-bHi, -bLo)) bits |= s > 0 ? 1 : 2;
+                    else ++shut;
+                }
+            }
+            closedSides_ += shut;
+            closedStreets_ += bits == 0 && sides > 0 ? 1u : 0u;
+            sideOpen_[edgeBase_[n] + q] = bits;
+            // The way back: its left is this way's right.
+            const auto back = static_cast<std::uint8_t>(((bits & 1u) << 1) | ((bits >> 1) & 1u));
+            for (std::uint32_t j = 0; j < graph_->degree(e.to); ++j)
+                if (graph_->edge(e.to, j).to == n) sideOpen_[edgeBase_[e.to] + j] = back;
+        }
+    findNarrows();
+    // Doors whose walk in (door, doorway, inside) passes under a box's gap.
+    for (const DoorSlot& d : doors_) {
+        const Vec2 pts[3] = {d.at, d.through, d.inside};
+        bool under = false;
+        for (std::size_t b = 0; b < keeps_.size() && !under; ++b)
+            for (int s = 0; s < 2 && !under; ++s)
+                for (int t = 0; t <= 20 && !under; ++t) {
+                    const float u = static_cast<float>(t) / 20.f;
+                    const Vec2 p{pts[s].x + (pts[s + 1].x - pts[s].x) * u, pts[s].y + (pts[s + 1].y - pts[s].y) * u};
+                    under = crowdKeepDistance(keeps_[b], p) < keeps_[b].gap;
+                }
+        doorsUnderKeep_ += under ? 1u : 0u;
+    }
+    return static_cast<std::uint32_t>(keeps_.size());
+}
+
+std::uint32_t CrowdSim::keepOpen(std::uint32_t from, std::uint32_t to, float along, float lo, float hi, float extra,
+                                 CrowdKeepSpan* open) const {
+    if (lo > hi) return 0;
+    const Vec2 f = graph_->node(from), t = graph_->node(to);
+    const float len = std::max(dist(f, t), 1e-3f);
+    const Vec2 dir{(t.x - f.x) / len, (t.y - f.y) / len};
+    const Vec2 o{f.x + dir.x * along, f.y + dir.y * along}, nrm{-dir.y, dir.x};
+    CrowdKeepSpan shut[kCrowdKeepSpanMax];
+    std::uint32_t ns = 0;
+    // `from`'s boxes only: any box whose grown rectangle meets this line inside the street (at along 0..len, or behind
+    // `from` on a street it came by) lies within half + half diagonal + gap of a street at `from`, so it is listed there
+    // (and once: `to`'s list holds the same boxes of this street again).
+    for (std::uint32_t q = keepFirst_[from]; q < keepFirst_[from + 1]; ++q) {
+        float t0 = 0.f, t1 = 0.f;
+        if (!keepSpan(keeps_[keepList_[q]], extra, o, nrm, t0, t1) || t1 <= lo || t0 >= hi) continue;
+        if (ns + 1 >= kCrowdKeepSpanMax) return 0; // more than it holds: read as shut
+        std::uint32_t j = ns++;
+        while (j > 0 && shut[j - 1].lo > t0) {
+            shut[j] = shut[j - 1];
+            --j;
+        }
+        shut[j] = {t0, t1};
+    }
+    std::uint32_t no = 0;
+    float at = lo;
+    for (std::uint32_t k = 0; k < ns && at < hi; ++k) {
+        if (shut[k].lo > at) open[no++] = {at, shut[k].lo};
+        at = std::max(at, shut[k].hi);
+    }
+    if (at < hi) open[no++] = {at, hi};
+    else if (ns == 0) open[no++] = {lo, hi}; // lo == hi, nothing over it
+    return no;
+}
+
+std::uint8_t CrowdSim::openSides(std::uint32_t from, std::uint32_t to) const {
+    if (keeps_.empty()) return 3;
+    for (std::uint32_t k = 0; k < graph_->degree(from); ++k)
+        if (graph_->edge(from, k).to == to) return sideOpen_[edgeBase_[from] + k];
+    return 3;
+}
+
+bool CrowdSim::sideOpen(std::uint32_t from, std::uint32_t to, int side) const {
+    return (openSides(from, to) & (side > 0 ? 1u : 2u)) != 0;
+}
+
+float CrowdSim::keepMargin(Vec2 p, std::uint32_t from, std::uint32_t to) const {
+    float best = 1e3f;
+    for (const std::uint32_t nd : {from, to})
+        for (std::uint32_t q = keepFirst_[nd]; q < keepFirst_[nd + 1]; ++q) {
+            const CrowdKeepOut& k = keeps_[keepList_[q]];
+            best = std::min(best, crowdKeepDistance(k, p) - k.gap);
+        }
+    return best;
+}
+
+float CrowdSim::keepSweep(Vec2 p, Vec2 q, const std::uint32_t* nodes, int n) const {
+    float best = 1.f; // clear by a metre or more reads as 1
+    const float l = dist(p, q);
+    for (int s = 0; s < n; ++s)
+        for (std::uint32_t r = keepFirst_[nodes[s]]; r < keepFirst_[nodes[s] + 1]; ++r) {
+            const CrowdKeepOut& k = keeps_[keepList_[r]];
+            const float d0 = crowdKeepDistance(k, p), d1 = crowdKeepDistance(k, q);
+            // The distance changes by no more than the way walked: never under (d0 + d1 - l) / 2 between.
+            if ((d0 + d1 - l) * 0.5f - k.gap >= best) continue;
+            best = std::min(best, crowdKeepSweep(k, p, q) - k.gap);
+        }
+    return best;
+}
+
+bool CrowdSim::placeKept(Agent& a, Vec2 p) {
+    if (keeps_.empty()) {
+        placeWalls(a, p);
+        return true;
+    }
+    if (keepMargin(a.pos, a.from, a.to) < 0.f) { // under a gap already (it should never be): moved out as before
+        place(a, p);
+        return true;
+    }
+    // The way the host draws is from where it stood at the step's start (a.prev) to where it ends: that whole way,
+    // not just this push, stays out of the gaps.
+    const Agent was = a;
+    placeWalls(a, p);
+    // A walker waiting its turn at a narrow is not pushed in: the push's part along its street is dropped.
+    if (was.waitStop >= 0.f && a.from == was.from && a.to == was.to && a.along > std::max(was.along, was.waitStop) + 1e-4f) {
+        const Vec2 f = graph_->node(was.from), t = graph_->node(was.to);
+        const Vec2 u{(t.x - f.x) / was.len, (t.y - f.y) / was.len};
+        const float c = (p.x - was.pos.x) * u.x + (p.y - was.pos.y) * u.y;
+        a = was;
+        if (c > 0.f) placeWalls(a, {p.x - u.x * c, p.y - u.y * c});
+        if (c <= 0.f || a.from != was.from || a.to != was.to || a.along > std::max(was.along, was.waitStop) + 1e-4f) {
+            a = was;
+            ++counts_.keepPushRefused;
+            return false;
+        }
+    }
+    const std::uint32_t nd[4] = {was.from, was.to, a.from, a.to};
+    const float m0 = keepSweep(was.prev, was.prev, nd, 4);
+    if (keepSweep(was.prev, a.pos, nd, 4) >= std::min(kCrowdWallAccept, m0)) return true;
+    a = was;
+    ++counts_.keepPushRefused;
+    return false;
+}
+
+float CrowdSim::keepClearance(std::uint32_t i, CrowdKeepKind kind) const {
+    if (i >= agents_.size() || keeps_.empty()) return 1e3f;
+    const Agent& a = agents_[i];
+    if (hiddenMember(a.state, a.doorPhase)) return 1e3f;
+    float best = 1e3f;
+    for (const std::uint32_t nd : {a.from, a.to})
+        for (std::uint32_t q = keepFirst_[nd]; q < keepFirst_[nd + 1]; ++q) {
+            const CrowdKeepOut& k = keeps_[keepList_[q]];
+            if (k.kind == kind) best = std::min(best, crowdKeepDistance(k, a.pos));
+        }
+    return best;
+}
+
+// place()'s last step with keep-outs: a member left under a box's gap moves across its street to the nearest point
+// clear of every box (and wallInset off the walls), where it stands along it.
+void CrowdSim::keepClear(Agent& a) {
+    if (keepMargin(a.pos, a.from, a.to) >= kCrowdWallAccept) return;
+    const CrowdEdge* e = graph_->find(a.from, a.to);
+    const float wall = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset - kCrowdWallSlack);
+    CrowdKeepSpan open[kCrowdKeepSpanMax];
+    const std::uint32_t n = keepOpen(a.from, a.to, a.along, -wall, wall, kCrowdWallSlack, open);
+    if (n == 0) {
+        ++counts_.keepStuck;
+        return;
+    }
+    const float lat = nearestOpen(open, n, a.lat);
+    const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
+    const Vec2 dir{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
+    const Vec2 base = basePoint(a);
+    const Vec2 q{base.x - dir.y * lat, base.y + dir.x * lat};
+    // Never across the box it stands under (the host draws the way between): out the near side only.
+    const std::uint32_t nd[2] = {a.from, a.to};
+    if (clearance(a, q, nullptr) < tuning_.graph.wallInset + kCrowdWallAccept ||
+        keepSweep(a.pos, q, nd, 2) < keepMargin(a.pos, a.from, a.to) - kCrowdWallAccept) {
+        ++counts_.keepStuck;
+        return;
+    }
+    ++counts_.keepMoved;
+    a.lat = lat;
+    a.latTarget = lat;
+    a.pos = q;
+}
+
+// move()'s band with keep-outs: the member's target across its street is kept in the stretch it stands in that stays
+// open from here to kCrowdKeepAhead m on (as far as the stretch stays open), so it steps round a box ahead in time.
+std::uint32_t CrowdSim::edgeSlot(std::uint32_t from, std::uint32_t to) const {
+    if (edgeBase_.empty() || from >= graph_->nodeCount()) return UINT32_MAX;
+    for (std::uint32_t k = 0; k < graph_->degree(from); ++k)
+        if (graph_->edge(from, k).to == to) return edgeBase_[from] + k;
+    return UINT32_MAX;
+}
+
+// The narrows: on each open band, the stretches along where the keep-outs leave its widest open stretch under minGap
+// though the band itself is wider (a band that is narrow all by itself is no keep-out's doing and left alone).
+void CrowdSim::findNarrows() {
+    const std::uint32_t nodes = graph_->nodeCount();
+    narrowAt_.assign(edgeBase_[nodes], 0);
+    narrowN_.assign(edgeBase_[nodes], 0);
+    const float g = tuning_.minGap;
+    if (!(g > 0.f)) return;
+    CrowdKeepSpan open[kCrowdKeepSpanMax];
+    for (std::uint32_t n = 0; n < nodes; ++n)
+        for (std::uint32_t q = 0; q < graph_->degree(n); ++q) {
+            const CrowdEdge& e = graph_->edge(n, q);
+            if (e.to <= n) continue;
+            const auto first = static_cast<std::uint32_t>(narrows_.size());
+            const float wall = std::max(0.f, e.half - tuning_.graph.wallInset - kCrowdWallSlack);
+            const float bLo = e.lane > 0.f ? e.lane - e.laneHalf : -e.laneHalf, bHi = std::min(e.lane + e.laneHalf, wall);
+            const std::uint8_t bits = sideOpen_[edgeBase_[n] + q];
+            CrowdKeepSpan bands[2];
+            std::uint32_t nb = 0;
+            if (e.lane <= 0.f) {
+                if (bits) bands[nb++] = {std::max(bLo, -wall), bHi};
+            } else {
+                for (const int s : {1, -1}) {
+                    if ((e.side != 0 && e.side != s) || !(bits & (s > 0 ? 1u : 2u))) continue;
+                    bands[nb++] = s > 0 ? CrowdKeepSpan{bLo, bHi} : CrowdKeepSpan{-bHi, -bLo};
+                }
+            }
+            for (std::uint32_t b = 0; b < nb; ++b) {
+                const float lo = bands[b].lo, hi = bands[b].hi;
+                if (hi - lo < g) continue;
+                Narrow cur;
+                bool in = false;
+                float tight = 1e30f;
+                auto close = [&]() {
+                    cur.s0 = std::max(0.f, cur.s0 - 0.5f * kCrowdKeepSample);
+                    cur.s1 = std::min(e.length, cur.s1 + 0.5f * kCrowdKeepSample);
+                    narrows_.push_back(cur);
+                    in = false;
+                };
+                for (float s = 0.f;; s = std::min(s + kCrowdKeepSample, e.length)) {
+                    const std::uint32_t no = keepOpen(n, e.to, s, lo, hi, kCrowdWallSlack, open);
+                    std::uint32_t w = 0;
+                    for (std::uint32_t k = 1; k < no; ++k)
+                        if (open[k].hi - open[k].lo > open[w].hi - open[w].lo) w = k;
+                    const float widest = no ? open[w].hi - open[w].lo : 0.f;
+                    if (widest < g) {
+                        if (!in) {
+                            cur = Narrow{};
+                            cur.n = n;
+                            cur.to = e.to;
+                            cur.s0 = s;
+                            cur.lo = lo;
+                            cur.hi = hi;
+                            tight = 1e30f;
+                            in = true;
+                        }
+                        cur.s1 = s;
+                        if (widest < tight) {
+                            tight = widest;
+                            cur.mid = no ? 0.5f * (open[w].lo + open[w].hi) : 0.5f * (lo + hi);
+                        }
+                    } else if (in) {
+                        close();
+                    }
+                    if (s >= e.length) break;
+                }
+                if (in) close();
+            }
+            const auto count = static_cast<std::uint32_t>(narrows_.size()) - first;
+            narrowAt_[edgeBase_[n] + q] = first;
+            narrowN_[edgeBase_[n] + q] = count;
+            const std::uint32_t back = edgeSlot(e.to, n);
+            if (back != UINT32_MAX) {
+                narrowAt_[back] = first;
+                narrowN_[back] = count;
+            }
+        }
+}
+
+// The step's start: who is in each narrow, each way (those let in until they are minGap/2 out the far side, and anyone
+// else on its band within minGap/2 of it), and how long each way has waited at its mouth.
+void CrowdSim::countNarrows() {
+    if (narrows_.empty()) return;
+    const float g = tuning_.minGap;
+    for (Narrow& w : narrows_)
+        for (int d = 0; d < 2; ++d) {
+            w.inside[d] = 0;
+            w.waitFor[d] = w.waited[d] ? w.waitFor[d] + tuning_.step : 0.f;
+            w.waited[d] = false;
+        }
+    for (Agent& a : agents_) {
+        const std::uint32_t slot =
+            a.state == CrowdState::Free || a.state == CrowdState::Indoors ? UINT32_MAX : edgeSlot(a.from, a.to);
+        if (slot == UINT32_MAX || narrowN_[slot] == 0) {
+            a.narrow = UINT32_MAX;
+            continue;
+        }
+        const std::uint8_t dir = a.from < a.to ? 0 : 1;
+        const float al = dir == 0 ? a.along : a.len - a.along, lt = dir == 0 ? a.lat : -a.lat;
+        bool kept = false;
+        for (std::uint32_t k = narrowAt_[slot]; k < narrowAt_[slot] + narrowN_[slot]; ++k) {
+            Narrow& w = narrows_[k];
+            if (a.narrow == k && a.narrowDir == dir && (dir == 0 ? al - w.s1 : w.s0 - al) <= kCrowdNarrowRelease * g) {
+                ++w.inside[dir];
+                kept = true;
+            } else if (al > w.s0 - 0.5f * g && al < w.s1 + 0.5f * g && lt >= w.lo - 0.5f * g && lt <= w.hi + 0.5f * g) {
+                ++w.inside[dir];
+            }
+        }
+        if (!kept) a.narrow = UINT32_MAX;
+    }
+}
+
+// A walker about to pass the stop short of a narrow's mouth (minGap before it): in when nobody coming the other way is
+// in it, unless the other way has waited longer (and, while this way is still going through, kCrowdNarrowHold s or
+// more). Else it stands at the stop, across at its band's end away from the slot, its look ahead cut to the stop.
+bool CrowdSim::narrowTurn(Agent& a, float& speed, float& reach) {
+    const float g = tuning_.minGap;
+    const std::uint32_t self = static_cast<std::uint32_t>(&a - agents_.data());
+    // The longest wait: from a member's first step waiting for a narrow until a step it does not (or its turn).
+    auto waiting = [&](std::uint32_t k) {
+        if (a.waitSlot != k) {
+            a.waitSlot = k;
+            a.waitSince = time_;
+        }
+        counts_.narrowWaitLongest = std::max(counts_.narrowWaitLongest, static_cast<float>(time_ - a.waitSince) + tuning_.step);
+    };
+    // No narrow of its own ahead: it still stops minGap behind a waiter ahead of it, going its way, whatever street that
+    // waiter stands on (a queue at a mouth near a street's start reaches back across the corner).
+    auto queue = [&]() {
+        const Vec2 f = graph_->node(a.from), t = graph_->node(a.to);
+        const Vec2 u{(t.x - f.x) / a.len, (t.y - f.y) / a.len};
+        const float step = speed * tuning_.step;
+        float ahead = 1e30f, off = 0.f;
+        std::uint32_t whom = UINT32_MAX;
+        forEachNear(a.pos, kCrowdQueueLook * g + step, [&](std::uint32_t j) {
+            const Agent& b = agents_[j];
+            if (j == self || b.waitNarrow == UINT32_MAX || b.state == CrowdState::Free || b.state == CrowdState::Indoors) return;
+            const Vec2 bf = graph_->node(b.from), bt = graph_->node(b.to);
+            if (((bt.x - bf.x) * u.x + (bt.y - bf.y) * u.y) < 0.5f * b.len) return; // not going its way
+            const Vec2 d{b.pos.x - a.pos.x, b.pos.y - a.pos.y};
+            const float fwd = d.x * u.x + d.y * u.y, lat = d.y * u.x - d.x * u.y;
+            // Anywhere across a pavement's band behind it (kCrowdQueueAcross), not only straight behind.
+            if (fwd <= 0.f || fwd > kCrowdQueueAhead * g + step || std::fabs(lat) >= kCrowdQueueAcross * g || fwd >= ahead) return;
+            ahead = fwd;
+            off = lat;
+            whom = b.waitNarrow;
+        });
+        if (whom == UINT32_MAX || (step <= ahead - g && ahead - g > 1e-3f)) return true;
+        const float room = std::max(0.f, ahead - g);
+        a.latTarget = a.lat + off; // in line behind it, so the way out of the narrow stays clear beside the queue
+        a.waitNarrow = whom;
+        ++counts_.narrowWaits;
+        waiting(whom);
+        speed = room / tuning_.step;
+        reach = room;
+        a.waitStop = a.along + room;
+        return false;
+    };
+    const std::uint32_t slot = edgeSlot(a.from, a.to);
+    if (slot == UINT32_MAX || narrowN_[slot] == 0) return queue();
+    const std::uint8_t dir = a.from < a.to ? 0 : 1;
+    const float side = dir == 0 ? a.side : -a.side;
+    std::uint32_t best = UINT32_MAX;
+    float stop = 1e30f;
+    for (std::uint32_t k = narrowAt_[slot]; k < narrowAt_[slot] + narrowN_[slot]; ++k) {
+        const Narrow& w = narrows_[k];
+        if (a.narrow == k || (w.lo >= 0.f && side < 0.f) || (w.hi <= 0.f && side > 0.f)) continue;
+        const float mouth = dir == 0 ? w.s0 : a.len - w.s1;
+        if (a.along >= mouth - 0.5f * g) continue; // in it already (counted), or past it
+        if (mouth - g < stop) {
+            stop = mouth - g;
+            best = k;
+        }
+    }
+    if (best == UINT32_MAX || stop - a.along > kCrowdNarrowQueue) return queue();
+    Narrow& w = narrows_[best];
+    const int o = 1 - dir;
+    const bool turn = w.inside[o] == 0 &&
+                      !(w.waitFor[o] > w.waitFor[dir] && (w.inside[dir] == 0 || w.waitFor[o] > kCrowdNarrowHold));
+    if (turn) {
+        if (a.along + speed * tuning_.step <= stop) return true;
+        a.narrow = best;
+        a.narrowDir = dir;
+        a.waitSlot = UINT32_MAX;
+        ++w.inside[dir];
+        ++counts_.narrowEntries;
+        return true;
+    }
+    // Its way is shut: it stops at the mouth, or minGap behind the nearest waiter ahead of it.
+    forEachNear(a.pos, stop - a.along + g, [&](std::uint32_t j) {
+        const Agent& b = agents_[j];
+        if (j != self && b.waitNarrow == best && b.from == a.from && b.to == a.to && b.along > a.along)
+            stop = std::min(stop, b.along - g);
+    });
+    if (a.along + speed * tuning_.step <= stop) return true;
+    a.waitNarrow = best;
+    w.waited[dir] = true;
+    ++counts_.narrowWaits;
+    waiting(best);
+    speed = std::max(0.f, (stop - a.along) / tuning_.step);
+    reach = std::max(0.f, stop - a.along);
+    a.waitStop = std::max(stop, a.along);
+    const float mid = dir == 0 ? w.mid : -w.mid, lo = dir == 0 ? w.lo : -w.hi, hi = dir == 0 ? w.hi : -w.lo;
+    a.latTarget = std::fabs(lo - mid) > std::fabs(hi - mid) ? lo : hi;
+    return false;
+}
+
+bool CrowdSim::inNarrow(const Agent& a) const {
+    const std::uint32_t slot = edgeSlot(a.from, a.to);
+    if (slot == UINT32_MAX || narrowN_.empty() || narrowN_[slot] == 0) return false;
+    const float g = tuning_.minGap;
+    const float al = a.from < a.to ? a.along : a.len - a.along;
+    for (std::uint32_t k = narrowAt_[slot]; k < narrowAt_[slot] + narrowN_[slot]; ++k)
+        if (al > narrows_[k].s0 - g && al < narrows_[k].s1 + g) return true;
+    return false;
+}
+
+void CrowdSim::keepBand(Agent& a, float& latRate, float speed, float reach) {
+    if (a.state == CrowdState::Free || a.state == CrowdState::Indoors) return;
+    const CrowdEdge* e = graph_->find(a.from, a.to);
+    const float wall = std::max(0.f, (e ? e->half : a.lane + a.laneHalf) - tuning_.graph.wallInset - kCrowdWallSlack);
+    const float bandLo = a.lane > 0.f ? a.lane - a.laneHalf : -a.laneHalf, bandHi = a.lane + a.laneHalf;
+    const float lo = std::max(std::min(a.side > 0.f ? bandLo : -bandHi, a.latTarget), -wall);
+    const float hi = std::min(std::max(a.side > 0.f ? bandHi : -bandLo, a.latTarget), wall);
+    CrowdKeepSpan here[kCrowdKeepSpanMax], ahead[kCrowdKeepSpanMax], both[kCrowdKeepSpanMax];
+    const std::uint32_t nh = keepOpen(a.from, a.to, a.along, lo, hi, kCrowdWallSlack, here);
+    if (nh == 0) return; // nothing open here: place() moves it (keepClear)
+    // Its own stretch: the one it stands in, or the nearest (never across a box where it stands).
+    std::uint32_t own = 0;
+    float ownD = 1e30f;
+    for (std::uint32_t k = 0; k < nh; ++k) {
+        const float d = std::fabs(std::clamp(a.lat, here[k].lo, here[k].hi) - a.lat);
+        if (d < ownD) ownD = d, own = k;
+    }
+    CrowdKeepSpan cur[kCrowdKeepSpanMax];
+    cur[0] = here[own];
+    std::uint32_t nc = 1;
+    for (int s = 1; s <= kCrowdKeepAheadSteps; ++s) {
+        const float at = a.along + kCrowdKeepAhead * static_cast<float>(s) / static_cast<float>(kCrowdKeepAheadSteps);
+        if (at > a.len || at > a.along + reach) break;
+        const std::uint32_t na = keepOpen(a.from, a.to, at, lo, hi, kCrowdWallSlack, ahead);
+        const std::uint32_t nb = bothOpen(cur, nc, ahead, na, both);
+        if (nb == 0) break; // its stretch shuts there: it keeps the stretch as far as it goes
+        std::copy(both, both + nb, cur);
+        nc = nb;
+    }
+    const float want = nearestOpen(cur, nc, a.latTarget);
+    // Brisk across while it stands outside the stretch it keeps to, not just on the step its target moved.
+    if (want != a.latTarget || nearestOpen(cur, nc, a.lat) != a.lat) latRate = std::max(latRate, std::max(speed, tuning_.laneSpeed));
+    a.latTarget = want;
 }
 
 void CrowdReactionProbe::begin(const CrowdSim& sim, Vec2 at, float radius) {
@@ -1993,13 +2657,139 @@ double crowdBoxClearance(const CrowdMassBox& box, double axX, double axY, double
     return std::max(lx, ly);
 }
 
+float crowdKeepDistance(const CrowdKeepOut& k, Vec2 p) {
+    const float dx = p.x - k.c.x, dy = p.y - k.c.y;
+    const float lx = std::fabs(dx * k.ax + dy * k.ay) - k.hx;
+    const float ly = std::fabs(-dx * k.ay + dy * k.ax) - k.hy;
+    if (lx > 0.f || ly > 0.f) return std::hypot(std::max(lx, 0.f), std::max(ly, 0.f));
+    return std::max(lx, ly);
+}
+
+float crowdKeepSweep(const CrowdKeepOut& k, Vec2 p, Vec2 q) {
+    // The signed distance to a box is convex along a line: golden-section search for its least on p..q.
+    const float l = dist(p, q);
+    float lo = 0.f, hi = 1.f, best = std::min(crowdKeepDistance(k, p), crowdKeepDistance(k, q));
+    if (!(l > 1e-6f)) return best;
+    auto at = [&](float u) { return crowdKeepDistance(k, {p.x + (q.x - p.x) * u, p.y + (q.y - p.y) * u}); };
+    constexpr float g = 0.61803399f;
+    float u1 = hi - g * (hi - lo), u2 = lo + g * (hi - lo);
+    float f1 = at(u1), f2 = at(u2);
+    for (int it = 0; it < 64 && (hi - lo) * l > 1e-5f; ++it) {
+        if (f1 <= f2) {
+            hi = u2;
+            u2 = u1;
+            f2 = f1;
+            u1 = hi - g * (hi - lo);
+            f1 = at(u1);
+        } else {
+            lo = u1;
+            u1 = u2;
+            f1 = f2;
+            u2 = lo + g * (hi - lo);
+            f2 = at(u2);
+        }
+    }
+    return std::min(best, std::min(f1, f2));
+}
+
+bool crowdKeepStreetPoint(const CrowdGraph& g, const CrowdKeepOut& k, float reach, Vec2& at) {
+    float ax = k.ax, ay = k.ay;
+    const float al = std::hypot(ax, ay);
+    if (al > 1e-6f) {
+        ax /= al;
+        ay /= al;
+    } else {
+        ax = 1.f;
+        ay = 0.f;
+    }
+    // Points round the box's sides, kKeepSampleStep m apart at most (kKeepSamplesPerSide on a side longer than that),
+    // corners included. Each asks for its nearest street within reach plus half its spacing, so a street that comes
+    // within reach of the box between two points is still found; the nearest answer wins (within half a spacing of the
+    // street point truly nearest the box) and is kept only when the box itself is within reach of it.
+    constexpr float kKeepSampleStep = 1.f;
+    constexpr int kKeepSamplesPerSide = 64;
+    // Early reject (load time, every massing box): a street within reach of the box is within reach plus its half
+    // diagonal of its centre, so one look there drops the far boxes before the side points.
+    CrowdStreetPoint nearCentre;
+    if (!g.nearestStreet(k.c, reach + std::hypot(k.hx, k.hy), nearCentre)) return false;
+    // Corners in turn round the box: u along (ax, ay) in half sizes, v across.
+    static constexpr float kU[4] = {-1.f, 1.f, 1.f, -1.f};
+    static constexpr float kV[4] = {-1.f, -1.f, 1.f, 1.f};
+    bool found = false;
+    CrowdStreetPoint best;
+    for (int side = 0; side < 4; ++side) {
+        const int next = (side + 1) % 4;
+        const float u0 = kU[side] * k.hx, v0 = kV[side] * k.hy;
+        const float u1 = kU[next] * k.hx, v1 = kV[next] * k.hy;
+        const Vec2 p0{k.c.x + u0 * ax - v0 * ay, k.c.y + u0 * ay + v0 * ax};
+        const Vec2 p1{k.c.x + u1 * ax - v1 * ay, k.c.y + u1 * ay + v1 * ax};
+        const float len = std::hypot(p1.x - p0.x, p1.y - p0.y);
+        const int n = std::clamp(static_cast<int>(std::ceil(len / kKeepSampleStep)), 1, kKeepSamplesPerSide);
+        const float within = reach + 0.5f * len / static_cast<float>(n);
+        for (int j = 0; j < n; ++j) {
+            const float f = static_cast<float>(j) / static_cast<float>(n);
+            const Vec2 p{p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f};
+            CrowdStreetPoint s;
+            if (g.nearestStreet(p, within, s) && (!found || s.dist < best.dist)) {
+                best = s;
+                found = true;
+            }
+        }
+    }
+    if (!found) return false;
+    const CrowdEdge& e = g.edge(best.n, best.k);
+    const Vec2 a = g.node(best.n), b = g.node(e.to);
+    const float t = best.along / std::max(e.length, 1e-3f);
+    const Vec2 point{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+    CrowdKeepOut unit = k; // crowdKeepDistance reads unit axes
+    unit.ax = ax;
+    unit.ay = ay;
+    if (crowdKeepDistance(unit, point) > reach) return false;
+    at = point;
+    return true;
+}
+
+CrowdKeepVerdict crowdKeepVerdict(bool streetNear, bool groundFound, double groundZ, double zMin, double zMax) {
+    if (!streetNear) return CrowdKeepVerdict::NoStreet;
+    if (!groundFound) return CrowdKeepVerdict::NoGround;
+    return crowdMassAtFeet(zMin, zMax, groundZ) ? CrowdKeepVerdict::Kept : CrowdKeepVerdict::OffWindow;
+}
+
+bool crowdCarLineOk(float runMinCar, std::uint32_t carsDropped, std::uint32_t carsKept, bool carsExpected) {
+    return runMinCar >= 0.f && carsDropped == 0 && (!carsExpected || carsKept > 0);
+}
+
 std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body) {
+    std::size_t highest = n; // the highest top that is not a vehicle's (n: none; 0 when n is 0)
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!hits[i].vehicle) {
+            highest = i;
+            break;
+        }
+    }
     for (std::size_t i = n; i-- > 0;) {
-        if (!hits[i].clearUp) continue;
-        if (i > 0 && hits[i - 1].z - hits[i].z < body) continue;
+        if (hits[i].vehicle || !hits[i].clearUp) continue;
+        std::size_t above = i; // the next top above that is not a vehicle's (i when none is)
+        while (above > 0 && hits[above - 1].vehicle) --above;
+        if (above > 0 && hits[above - 1].z - hits[i].z < body) continue;
         return i;
     }
-    return 0;
+    return highest;
+}
+
+bool crowdGroundTake(const CrowdGroundLine& line, double heldZ, double stepUp, double& z) {
+    if (!line.hit || line.startInside || line.vehicle || line.z - heldZ > stepUp) return false;
+    z = line.z;
+    return true;
+}
+
+bool crowdMassAtFeet(double zMin, double zMax, double feetZ) {
+    return feetZ > zMin - kCrowdMassFeetUnder && feetZ < zMax - kCrowdMassFeetTop;
+}
+
+Vec2 crowdDrawnPoint(const CrowdAgentView& v, float alpha) {
+    const float t = std::clamp(alpha, 0.f, 1.f);
+    return {v.prevPos.x + (v.pos.x - v.prevPos.x) * t, v.prevPos.y + (v.pos.y - v.prevPos.y) * t};
 }
 
 } // namespace ftcore::crowdv2

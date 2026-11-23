@@ -22,6 +22,7 @@
 
 #include "ftcore/Api.h"
 #include "ftcore/MassingPlan.h"
+#include "ftcore/MassingProps.h"
 
 #include <array>
 #include <cstdint>
@@ -116,6 +117,9 @@ struct FrontagePlan {
 // overlap), merges parcels whose spans touch (gap < 0.3 m), re-splits them into lots and repairs the street rules.
 // Lot floorZ is the highest parent z0 plus 0.5 (the massing boxes stand 0.5 m into the ground), footZ the lowest z0.
 FTCORE_API void planFrontage(const std::vector<FrontageRun>& runs, const std::vector<MassingBox>& boxes, FrontagePlan& out);
+
+// A lot's plan footprint: s0..s1 along its run, 0..depth in from the run line, turned with the run.
+FTCORE_API MassingFoot lotFoot(const FrontageRun& run, const BuildingLot& lot);
 
 // A lot's traits, the facade signature hashes all but its clutter seed and position.
 FTCORE_API std::uint32_t lotSignature(const BuildingLot& lot);

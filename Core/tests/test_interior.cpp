@@ -2,6 +2,7 @@
 // Made-up tables only: the real one is kept outside the repo (opt-in through FT_ROAD_ROOMS). Ids and numbers only.
 
 #include "ftcore/Interior.h"
+#include "ftcore/Roads.h"
 
 #include <ostream> // doctest prints std::string_view through operator<<
 #include <doctest/doctest.h>
@@ -421,6 +422,37 @@ TEST_CASE("heroCornerRooms: the three lit bays, each through its open kit front"
     CHECK(rooms[0].spec.gapHeight == doctest::Approx(2.25));
 }
 
+TEST_CASE("heroCornerRooms: the room set is its own, apart from the lit bays") {
+    // The demo corner lights bays 1-4 (-HeroLitBays=1,2,3,4): bay 2 stays a shallow lit bay, the rooms are still 1, 3, 4,
+    // the same three the game's crowd builds from the default spec (FTCrowdSubsystemV2, HeroCornerSpec{}).
+    HeroCornerSpec lit4;
+    for (int i = 0; i < 4; ++i) lit4.bayLit[i] = true;
+    HeroRoom a[kHeroBays], b[kHeroBays];
+    const int na = heroCornerRooms(lit4, a);
+    const int nb = heroCornerRooms(HeroCornerSpec{}, b);
+    REQUIRE(na == 3);
+    REQUIRE(nb == 3);
+    for (int k = 0; k < 3; ++k) {
+        CAPTURE(k);
+        CHECK(a[k].bay == b[k].bay);
+        CHECK(a[k].spec.kind == b[k].spec.kind);
+        CHECK(a[k].spec.host.id == b[k].spec.host.id);
+        CHECK(a[k].spec.doorIn.x == doctest::Approx(b[k].spec.doorIn.x));
+        CHECK(a[k].spec.doorIn.y == doctest::Approx(b[k].spec.doorIn.y));
+    }
+    std::vector<crowdv2::CrowdStreet> streets;
+    std::vector<crowdv2::CrowdDoor> doors;
+    CHECK(heroCornerCrowd(HeroCornerSpec{}, 1000.0, streets, doors) == 3);
+    // A room bay left dark is no room; with no room bays there are none.
+    HeroCornerSpec dark1;
+    dark1.bayLit[0] = false;
+    CHECK(heroCornerRooms(dark1, a) == 2);
+    CHECK(a[0].bay == 2);
+    HeroCornerSpec none = lit4;
+    for (int i = 0; i < kHeroBays; ++i) none.bayRoom[i] = false;
+    CHECK(heroCornerRooms(none, a) == 0);
+}
+
 TEST_CASE("heroCornerDoorRows: the hero doors as table rows, read back") {
     const HeroCornerSpec hero;
     HeroRoom rooms[kHeroBays];
@@ -528,11 +560,19 @@ TEST_CASE("heroCornerCrowd: the lane as a street and a walk-in door per room, an
     std::vector<crowdv2::CrowdDoor> doors;
     const double side = 1000.0;
     REQUIRE(heroCornerCrowd(hero, side, streets, doors) == 3);
-    REQUIRE(streets.size() == 1);
+    REQUIRE(streets.size() == 2);
     CHECK(streets[0].kind == "lane");
     CHECK(streets[0].width == doctest::Approx(hero.laneX1 - hero.laneX0));
     CHECK(streets[0].pavement == 0.f);
     CHECK(streets[0].points.size() >= 13);
+    // From the coast road's closed south end to the lane's far end; the alley behind the bays end to end.
+    CHECK(streets[0].points.front().y == doctest::Approx(side / 2 - (hero.padY0 - kRoadEndClose)));
+    CHECK(streets[0].points.back().y == doctest::Approx(side / 2 - hero.laneY1));
+    CHECK(streets[1].kind == "alley");
+    CHECK(streets[1].width == doctest::Approx(hero.padX1 - hero.laneX1 - hero.bayDepth));
+    CHECK(streets[1].points.front().x == doctest::Approx(0.5 * (hero.laneX1 + hero.bayDepth + hero.padX1) - side / 2));
+    CHECK(streets[1].points.front().y == doctest::Approx(side / 2 - (hero.padY0 - kRoadEndClose)));
+    CHECK(streets[1].points.back().y == doctest::Approx(side / 2 - (hero.padY1 + kRoadEndClose)));
     const double mid = 0.5 * (hero.laneX0 + hero.laneX1);
     for (const crowdv2::CrowdDoor& d : doors) {
         CHECK(d.dwell.size() >= 2);
@@ -570,4 +610,120 @@ TEST_CASE("heroCornerCrowd: the lane as a street and a walk-in door per room, an
     CHECK(inRoom);
     CHECK(sim.counts().wentIn >= 1);
     CHECK(sim.counts().cameOut >= 1);
+}
+
+TEST_CASE("interiorDressing: the hero rooms dressed from their slots with whole pieces that fit") {
+    const HeroCornerSpec hero;
+    HeroRoom rooms[kHeroBays];
+    REQUIRE(heroCornerRooms(hero, rooms) == 3);
+    // A plan point inside a slot's foot (its turn, the edges counting by a hair).
+    const auto inFoot = [](const MassingFoot& f, double x, double y) {
+        const double r = f.rot * 3.14159265358979323846 / 180.0, dx = x - f.x, dy = y - f.y;
+        const double u = dx * std::cos(r) + dy * std::sin(r), w = -dx * std::sin(r) + dy * std::cos(r);
+        return std::fabs(u) <= f.hx + 1e-6 && std::fabs(w) <= f.hy + 1e-6;
+    };
+    int counts[3][static_cast<int>(HeroPiece::Count)] = {};
+    int bares[3] = {};
+    for (int k = 0; k < 3; ++k) {
+        CAPTURE(k);
+        InteriorPlan plan;
+        REQUIRE(interiorRoomPlan(rooms[k].spec, plan));
+        InteriorDressItem items[kInteriorDressMax];
+        const int n = interiorDressing(plan, items, kInteriorDressMax, &bares[k]);
+        REQUIRE(n < kInteriorDressMax);
+        for (int i = 0; i < n; ++i) {
+            const InteriorDressItem& it = items[i];
+            CAPTURE(i);
+            ++counts[k][static_cast<int>(it.piece)];
+            CHECK(std::hypot(it.faceX, it.faceY) == doctest::Approx(1.0));
+            if (it.slot < 0) {
+                CHECK(it.piece == HeroPiece::Lantern);
+                CHECK(it.block.sx == 0.0);
+                continue;
+            }
+            const InteriorSlot& s = plan.slots[static_cast<std::size_t>(it.slot)];
+            // Its front looks the slot's way.
+            CHECK(std::atan2(it.faceY, it.faceX) * 180.0 / 3.14159265358979323846 == doctest::Approx(s.face).epsilon(1e-6));
+            const bool standing = it.piece == HeroPiece::Shelf || it.piece == HeroPiece::Counter || it.piece == HeroPiece::Crate;
+            CHECK((it.block.sx > 0.0) == standing);
+            if (!standing) continue;
+            // Its collider whole inside the slot's foot, from the floor to its top, and clear of every other one.
+            const double r = it.block.rot * 3.14159265358979323846 / 180.0, c = std::cos(r), sn = std::sin(r);
+            for (int q = 0; q < 4; ++q) {
+                const double lx = ((q & 1) ? 0.5 : -0.5) * it.block.sx, ly = ((q & 2) ? 0.5 : -0.5) * it.block.sy;
+                CHECK(inFoot(s.foot, it.block.cx + lx * c - ly * sn, it.block.cy + lx * sn + ly * c));
+            }
+            CHECK(it.block.z0 == doctest::Approx(s.z0));
+            CHECK(it.block.z1 > it.block.z0);
+            CHECK(it.block.z1 <= s.z1 + 1e-9);
+            MassingFoot bf;
+            bf.x = it.block.cx;
+            bf.y = it.block.cy;
+            bf.hx = 0.5 * it.block.sx;
+            bf.hy = 0.5 * it.block.sy;
+            bf.rot = it.block.rot;
+            for (int j = i + 1; j < n; ++j) {
+                if (items[j].block.sx <= 0.0) continue;
+                MassingFoot of;
+                of.x = items[j].block.cx;
+                of.y = items[j].block.cy;
+                of.hx = 0.5 * items[j].block.sx;
+                of.hy = 0.5 * items[j].block.sy;
+                of.rot = items[j].block.rot;
+                CHECK(!massingFeetOverlap(bf, of, 0.0));
+            }
+            // No dwell spot (where a walker stands) inside it.
+            for (const MassingVec& d : plan.dwell) {
+                MassingFoot df;
+                df.x = d.x;
+                df.y = d.y;
+                CHECK(!massingFeetOverlap(df, bf, 0.0));
+            }
+        }
+    }
+    // The shop: shelf units on its three shelf runs, two crates on its display, goods over each run, a lantern; its till bare.
+    CHECK(counts[0][static_cast<int>(HeroPiece::Shelf)] >= 8);
+    CHECK(counts[0][static_cast<int>(HeroPiece::Crate)] == 2);
+    CHECK(counts[0][static_cast<int>(HeroPiece::HangGoods)] == 3);
+    CHECK(counts[0][static_cast<int>(HeroPiece::Lantern)] == 1);
+    CHECK(counts[0][static_cast<int>(HeroPiece::Counter)] == 0);
+    CHECK(bares[0] == 1);
+    // The eatery: two counters, bottles on each, the pot and its steam on the last; the pass, stools and tables bare.
+    CHECK(counts[1][static_cast<int>(HeroPiece::Counter)] == 2);
+    CHECK(counts[1][static_cast<int>(HeroPiece::Bottles)] == 2);
+    CHECK(counts[1][static_cast<int>(HeroPiece::StockPot)] == 1);
+    CHECK(counts[1][static_cast<int>(HeroPiece::Steam)] == 1);
+    CHECK(counts[1][static_cast<int>(HeroPiece::Lantern)] == 1);
+    CHECK(bares[1] >= 3);
+    // The lobby: nothing of the corner's props is its (post boxes, a stair, an inner door), so nothing, not even a lantern.
+    for (int p = 0; p < static_cast<int>(HeroPiece::Count); ++p) CHECK(counts[2][p] == 0);
+    CHECK(bares[2] == 3);
+    // A short list stops where it is full.
+    InteriorPlan shop;
+    REQUIRE(interiorRoomPlan(rooms[0].spec, shop));
+    InteriorDressItem few[3];
+    CHECK(interiorDressing(shop, few, 3) == 3);
+}
+
+TEST_CASE("heroCornerCrowd: the lane and the alley join the coast road's two ends into one walk") {
+    const HeroCornerSpec hero;
+    const double side = 1000.0;
+    // The coast road's crowd rows either side of the corner (the split strip table's).
+    const std::string csv =
+        "id,kind,width_m,pts,pavement_m,pavement_side\n"
+        "RD-C-S,coast_road,18.0,955:10;910:10;910:503,3.6,\n"
+        "RD-C-N,coast_road,18.0,910:567;910:990;955:990,3.6,\n";
+    std::vector<crowdv2::CrowdStreet> streets;
+    REQUIRE(crowdv2::importCrowdStreets(csv, side, streets));
+    std::vector<crowdv2::CrowdDoor> doors;
+    REQUIRE(heroCornerCrowd(hero, side, streets, doors) == 3);
+    REQUIRE(streets.size() == 4);
+    crowdv2::CrowdGraph g;
+    REQUIRE(g.build(streets, crowdv2::CrowdGraphTuning{}));
+    CHECK(g.componentCount() == 1);
+    // Without the corner's streets the two ends stand apart.
+    std::vector<crowdv2::CrowdStreet> ends(streets.begin(), streets.begin() + 2);
+    crowdv2::CrowdGraph g2;
+    REQUIRE(g2.build(ends, crowdv2::CrowdGraphTuning{}));
+    CHECK(g2.componentCount() == 2);
 }

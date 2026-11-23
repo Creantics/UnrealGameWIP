@@ -1619,3 +1619,125 @@ TEST_CASE("road net: four lanes and no median: a double solid centre line, no is
     roadGraphFromNet(cs, cb, cg);
     CHECK(cg.lanes.size() == 6);
 }
+
+TEST_CASE("road net: a closed end stops at a kerb, a pavement strip and bollards past its last point") {
+    const char* const open =
+        "id,kind,width_m,pts,pavement_m,speed_kmh,one_way,deck_z,parking,ends\n"
+        "ST-H,street,14,0:0;200:0,2.8,40,0,,1,\n"
+        "ST-V,street,14,100:0;100:150,2.8,40,0,,0,\n";
+    const char* const closed =
+        "id,kind,width_m,pts,pavement_m,speed_kmh,one_way,deck_z,parking,ends\n"
+        "ST-H,street,14,0:0;200:0,2.8,40,0,,1,\n"
+        "ST-V,street,14,100:0;100:150,2.8,40,0,,0,kerb\n";
+    const std::vector<RoadNetStreet> so = net(open), sc = net(closed);
+    CHECK_FALSE(so[1].endsClosed);
+    CHECK(sc[1].endsClosed);
+    CHECK_FALSE(sc[0].endsClosed);
+    std::vector<RoadNetStreet> bad;
+    CHECK_FALSE(importRoadNet("id,kind,width_m,pts,pavement_m,ends\nA,street,14,0:0;50:0,2.8,wall\n", bad));
+
+    RoadBuild bo, bc;
+    RoadNetReport ro, rc;
+    roadNetBuild(so, MassingGround{}, bo, &ro);
+    roadNetBuild(sc, MassingGround{}, bc, &rc);
+    CHECK(ro.closes == 0);
+    CHECK(rc.closes == 1);  // ST-V's free end only: ST-H's two ends are not its
+    CHECK(rc.ends == ro.ends);
+    CHECK(rc.pruned == ro.pruned);
+    // Everything else as before, the close appended: a kerb, three pavement pieces and the bollards.
+    const double hc = (14.0 - 2.0 * 2.8) * 0.5;
+    const std::size_t bollards = static_cast<std::size_t>(std::ceil(2.0 * hc / kRoadEndBollardGap)) - 1;
+    REQUIRE(bc.solids.size() == bo.solids.size() + 4 + bollards);
+    for (std::size_t i = 0; i < bo.solids.size(); ++i) {
+        CHECK(bc.solids[i].box.id == bo.solids[i].box.id);
+        CHECK(bc.solids[i].box.cx == doctest::Approx(bo.solids[i].box.cx));
+        CHECK(bc.solids[i].box.cy == doctest::Approx(bo.solids[i].box.cy));
+        CHECK(bc.solids[i].box.z1 == doctest::Approx(bo.solids[i].box.z1));
+    }
+    CHECK(bc.band.size() == bo.band.size() + 1);
+    CHECK(bc.furniture.size() == bo.furniture.size() + bollards);
+    // The end's pavement level: an edge pavement piece of ST-V's.
+    double pave = -1.0;
+    for (const RoadSolid& s : bo.solids)
+        if (s.box.kind == "pavement" && s.box.id.rfind("ST-V-E", 0) == 0) pave = std::max(pave, s.box.z1);
+    REQUIRE(pave > 0.0);
+    std::size_t kerbs = 0, paves = 0, posts = 0;
+    std::vector<double> xs;
+    for (std::size_t i = bo.solids.size(); i < bc.solids.size(); ++i) {
+        const RoadSolid& s = bc.solids[i];
+        CHECK(s.box.id.rfind("ST-V-END1-", 0) == 0);
+        CHECK(s.collide);
+        // All past the last point (y 150), within the close, wall to wall, none in a carriageway.
+        const MassingFoot f = solidFoot(s);
+        CHECK_FALSE(roadInCarriageway(bc, shrunk(f, 0.01), 0.0));
+        CHECK(s.box.cy - 0.5 * std::fabs(s.box.sx * std::sin(s.box.rot * 3.14159265358979323846 / 180.0) +
+                                           s.box.sy * std::cos(s.box.rot * 3.14159265358979323846 / 180.0)) >=
+              doctest::Approx(150.0).epsilon(1e-6));
+        if (s.box.kind == "kerb") {
+            ++kerbs;
+            CHECK(s.box.z1 == doctest::Approx(pave));
+            CHECK(s.box.cy == doctest::Approx(150.0 + 0.5 * kRoadKerbWide));
+            CHECK(s.box.sy == doctest::Approx(2.0 * (hc + kRoadKerbWide)));
+        } else if (s.box.kind == "pavement") {
+            ++paves;
+            CHECK(s.box.z1 == doctest::Approx(pave));
+            CHECK(s.box.cy + 0.5 * s.box.sx == doctest::Approx(150.0 + kRoadEndClose));
+        } else if (s.box.kind == "bollard") {
+            ++posts;
+            CHECK(s.shape == RoadShape::Cylinder);
+            CHECK(s.box.cy == doctest::Approx(150.0 + kRoadEndBollardBack));
+            CHECK(s.box.z1 == doctest::Approx(pave + kRoadEndBollardHigh));
+            CHECK(std::fabs(s.box.cx - 100.0) < hc);
+            xs.push_back(s.box.cx);
+        }
+    }
+    CHECK(kerbs == 1);
+    CHECK(paves == 3);
+    CHECK(posts == bollards);
+    std::sort(xs.begin(), xs.end());
+    for (std::size_t i = 1; i < xs.size(); ++i) CHECK(xs[i] - xs[i - 1] - kRoadEndBollardDia <= kRoadEndBollardGap);
+    REQUIRE(!xs.empty());
+    CHECK(xs.front() - (100.0 - hc) - 0.5 * kRoadEndBollardDia <= kRoadEndBollardGap);
+    CHECK((100.0 + hc) - xs.back() - 0.5 * kRoadEndBollardDia <= kRoadEndBollardGap);
+    // The strip's foot joins the band, wall to wall.
+    const MassingFoot& bf = bc.band.back();
+    CHECK(bf.x == doctest::Approx(100.0));
+    CHECK(bf.y == doctest::Approx(150.0 + 0.5 * kRoadEndClose));
+}
+
+TEST_CASE("road lot overlaps: a road's pieces on a lot are counted, a lot meeting its edge or past its closed end is not") {
+    const char* const closed =
+        "id,kind,width_m,pts,pavement_m,speed_kmh,one_way,deck_z,parking,ends\n"
+        "ST-H,street,14,0:0;200:0,2.8,40,0,,1,\n"
+        "ST-V,street,14,100:0;100:150,2.8,40,0,,0,kerb\n";
+    RoadBuild b;
+    roadNetBuild(net(closed), MassingGround{}, b, nullptr);
+    auto foot = [](double x0, double x1, double y0, double y1) {
+        MassingFoot f;
+        f.x = 0.5 * (x0 + x1), f.y = 0.5 * (y0 + y1), f.hx = 0.5 * (x1 - x0), f.hy = 0.5 * (y1 - y0);
+        return f;
+    };
+    // Wall to wall ST-V is x 93..107; its close takes y 150..151.
+    const std::vector<MassingFoot> clear = {foot(107.0, 117.0, 60.0, 90.0), foot(83.0, 93.0, 60.0, 90.0), foot(93.0, 107.0, 151.0, 161.0)};
+    std::vector<RoadLotHit> hits;
+    CHECK(roadLotOverlaps(b, clear, kRoadLotInset, &hits) == 0);
+    CHECK(hits.empty());
+    // On the road: its carriageway, kerbs and pavements; over the close: its bollards and strip.
+    const std::vector<MassingFoot> on = {foot(97.0, 103.0, 70.0, 80.0), foot(93.0, 107.0, 150.3, 160.0)};
+    const std::size_t n = roadLotOverlaps(b, on, kRoadLotInset, &hits);
+    CHECK(n == hits.size());
+    std::size_t first = 0, second = 0, bollards = 0;
+    for (const RoadLotHit& h : hits) {
+        if (h.lot == 0) ++first;
+        if (h.lot == 1) {
+            ++second;
+            CHECK(h.piece.rfind("ST-V-END1-", 0) == 0);
+            if (h.piece.find("bollard") != std::string::npos) ++bollards;
+        }
+    }
+    CHECK(first > 0);
+    CHECK(second > 0);
+    CHECK(bollards > 0);
+    // No hits list: the same count.
+    CHECK(roadLotOverlaps(b, on, kRoadLotInset) == n);
+}

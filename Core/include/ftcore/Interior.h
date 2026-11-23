@@ -139,7 +139,7 @@ struct KitDoorway {
 inline constexpr KitDoorway kKoshiDoorway{"SHOP_KOSHI_54_OPEN", 3.06, 5.25, 0.05, 2.25, 0.4};
 inline constexpr KitDoorway kGlazedDoorway{"SHOP_GLAZED_81_OPEN", 3.18, 4.92, 0.10, 2.15, 0.3};
 
-// The hero corner's enterable rooms: one per lit bay (HeroCornerSpec bayLit), its host the layout's bay box. The eatery
+// The hero corner's enterable rooms: one per bay both lit and a room bay (HeroCornerSpec bayLit, bayRoom), its host the layout's bay box. The eatery
 // bay is an eatery, a lattice front's bay a shop, a glazed front's bay a flats' lobby. Each spec is kitFront, its gap
 // the open front's clear opening, its floor the front's sill over the ground. Allocates (the ids).
 struct HeroRoom {
@@ -154,10 +154,31 @@ FTCORE_API int heroCornerRooms(const HeroCornerSpec& hero, HeroRoom out[kHeroBay
 FTCORE_API std::string heroCornerDoorRows(const HeroCornerSpec& hero);
 
 // The hero corner's crowd, engine frame of a square `side` metres across (massingEnginePoint): the lane as one street
-// (kind "lane", its whole width, no pavement, a point about every 3 m) up its middle from laneY0 to laneY1, and a walk-in door per room whose
+// (kind "lane", its whole width, no pavement, a point about every 3 m) up its middle from the coast road's closed south
+// end (padY0 less kRoadEndClose) over the south apron to laneY1, the alley behind the bays as another (kind "alley",
+// bays' backs to padX1) from that end to the road's north one (padY1 plus kRoadEndClose), and a walk-in door per room whose
 // plan holds (at the door's outside point, through its inside point, the room's middle inside, the plan's dwell spots).
 // Appends to both. The number of doors added. Allocates.
 FTCORE_API int heroCornerCrowd(const HeroCornerSpec& hero, double side, std::vector<crowdv2::CrowdStreet>& streets,
                                std::vector<crowdv2::CrowdDoor>& doors);
+
+// A room's dressing from its plan's slots, with the hero corner's props (/Game/Props/HeroCorner). A slot is dressed only
+// with pieces that are its own object and fit whole inside its foot (heroItemFootprint's sizes), tiled along its front
+// 0.05 m apart and centred, backs flush with the slot's back: shelf units on a shelf run, counters on a counter run,
+// crates on a display. Each counter carries bottles, the last one the stock pot and its steam too; goods hang 0.7 m out
+// from each dressed shelf run, and a room with any dressing hangs a paper lantern over its middle. A slot no piece is (a till, a stool, a table, the pass,
+// post boxes, a stair, an inner door: pieces to make) stays bare and counts in `bare`. No allocation.
+struct InteriorDressItem {
+    HeroPiece piece = HeroPiece::Crate;
+    MassingVec at;                     // plan frame: a standing piece's origin on the floor (heroItemFootprint's), a
+                                       // counter's goods on its top, a hanging piece's hook under the ceiling
+    double faceX = 0.0, faceY = -1.0;  // plan, unit: the way its front looks
+    int slot = -1;                     // the plan slot it stands in or on (-1: the room's own layer)
+    MassingBox block;                  // a standing piece's collider (its footprint, the floor to its top); sx 0 for
+                                       // a piece on a counter or hanging
+};
+inline constexpr int kInteriorDressMax = 40;
+inline constexpr double kInteriorPieceGap = 0.05;  // m between pieces tiled along a slot
+FTCORE_API int interiorDressing(const InteriorPlan& plan, InteriorDressItem* out, int max, int* bare = nullptr);
 
 } // namespace ftcore

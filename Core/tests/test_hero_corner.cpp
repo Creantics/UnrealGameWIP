@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include "TestAssets.h"
+#include "ftcore/CrowdV2.h"
 #include "ftcore/HeroCorner.h"
+#include "ftcore/Interior.h"
 #include "ftcore/MassingDress.h"
 #include "ftcore/Roads.h"
 #include "ftcore/WindowFacade.h"
@@ -1131,4 +1133,86 @@ TEST_CASE("hero item box: a kit piece facing the lane runs south from its origin
     CHECK(x0 == doctest::Approx(907.64));
     p.piece = HeroPiece::Figure;
     CHECK_FALSE(heroItemBox(p, x0, x1, y0, y1, z0, z1));
+}
+
+// The crowd's roof check traces down from kCrowdRoofTraceDrop under a member's feet: a ground piece whose foot is at or
+// under that start reads as a roof under it. Its foot clears the start by kHeroPadTraceClear at each height a member
+// stands at in the corner: the lane's paving (4.20 m) and every hero room's floor (the glazed rooms' 4.28 m the highest).
+// d0d64b70's 0.4 m pad left the glazed rooms 0 m (members 59 and 64 read on a roof).
+TEST_CASE("hero corner: the ground pad's foot clears the crowd's roof trace on the lane and on every room's floor") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.groundCount > 0);
+    double foot = 1e9;
+    for (int i = 0; i < l.groundCount; ++i) foot = std::min(foot, l.ground[i].z0);
+    const double drop = crowdv2::kCrowdRoofTraceDrop;
+    const double lane = spec.ground + spec.paveTop;
+    CHECK(lane == doctest::Approx(4.20));
+    HeroRoom rooms[kHeroBays];
+    const int n = heroCornerRooms(spec, rooms);
+    REQUIRE(n > 0);
+    double highest = lane, lowest = lane;
+    bool glazed = false;
+    for (int r = 0; r < n; ++r) {
+        CAPTURE(r);
+        const double floor = rooms[r].spec.floorZ;
+        CHECK(foot - (floor - drop) >= kHeroPadTraceClear - 1e-9);
+        highest = std::max(highest, floor);
+        lowest = std::min(lowest, floor);
+        glazed = glazed || rooms[r].doorway == &kGlazedDoorway;
+    }
+    CHECK(foot - (lane - drop) >= kHeroPadTraceClear - 1e-9);
+    // Both named heights are in the corner, and the margins at them are pinned.
+    REQUIRE(glazed);
+    CHECK(highest == doctest::Approx(4.28));
+    CHECK(foot - (lane - drop) == doctest::Approx(0.18));
+    CHECK(foot - (highest - drop) == doctest::Approx(0.10));
+    // And the pad still reaches under the ground it stands on (its top is the paving's, its foot below the lane's ground).
+    CHECK(foot < std::min(lowest, spec.ground) - 0.1);
+}
+
+TEST_CASE("hero corner: the corner stands on its own ground, level with the lane's paving, none under the bays") {
+    const HeroCornerSpec spec;
+    HeroCornerLayout l;
+    heroCornerLayout(spec, l);
+    REQUIRE(l.groundCount == 6);
+    const double g = spec.ground, top = g + spec.paveTop;
+    const double bayY1 = spec.bayY0 + kHeroBays * spec.bayWidth, bayX1 = spec.laneX1 + spec.bayDepth;
+    auto lo = [](const MassingBox& b, int a) { return a == 0 ? b.cx - 0.5 * b.sx : b.cy - 0.5 * b.sy; };
+    auto hi = [](const MassingBox& b, int a) { return a == 0 ? b.cx + 0.5 * b.sx : b.cy + 0.5 * b.sy; };
+    double area = 0.0;
+    for (int i = 0; i < l.groundCount; ++i) {
+        const MassingBox& b = l.ground[i];
+        CAPTURE(b.id);
+        CHECK(b.id == "HC-GROUND-" + std::to_string(i + 1));
+        CHECK(b.kind == "paving");
+        CHECK(b.z0 == doctest::Approx(g - spec.padDeep));
+        // Inside the pad.
+        CHECK(lo(b, 0) >= spec.padX0 - 1e-9);
+        CHECK(hi(b, 0) <= spec.padX1 + 1e-9);
+        CHECK(lo(b, 1) >= spec.padY0 - 1e-9);
+        CHECK(hi(b, 1) <= spec.padY1 + 1e-9);
+        // None under a bay.
+        const bool underBay = lo(b, 0) < bayX1 - 1e-9 && hi(b, 0) > spec.laneX1 + 1e-9 && lo(b, 1) < bayY1 - 1e-9 &&
+                              hi(b, 1) > spec.bayY0 + 1e-9;
+        CHECK_FALSE(underBay);
+        // Under the lane's paving its top is the ground; elsewhere the paving's top.
+        const bool underPave = lo(b, 1) >= spec.laneY0 - 1e-9 && hi(b, 1) <= spec.laneY1 + 1e-9 && hi(b, 0) <= spec.laneX1 + 1e-9;
+        CHECK(b.z1 == doctest::Approx(underPave ? g : top));
+        // No two overlap.
+        for (int j = 0; j < i; ++j) {
+            const MassingBox& c = l.ground[j];
+            const bool ov = lo(b, 0) < hi(c, 0) - 1e-9 && lo(c, 0) < hi(b, 0) - 1e-9 && lo(b, 1) < hi(c, 1) - 1e-9 &&
+                            lo(c, 1) < hi(b, 1) - 1e-9;
+            CHECK_FALSE(ov);
+        }
+        area += b.sx * b.sy;
+    }
+    // Together they fill the pad but for the bays.
+    const double pad = (spec.padX1 - spec.padX0) * (spec.padY1 - spec.padY0);
+    CHECK(area == doctest::Approx(pad - (bayX1 - spec.laneX1) * (bayY1 - spec.bayY0)));
+    // The pad's ends meet the coast road's closed ends, which take its first and last metre past the corner's foot.
+    CHECK(spec.padY0 == doctest::Approx(spec.nearClearY0 + kRoadEndClose));
+    CHECK(spec.padX1 > bayX1);
 }

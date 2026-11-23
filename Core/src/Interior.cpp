@@ -1,6 +1,7 @@
 // Enterable rooms (ftcore/Interior.h).
 
 #include "ftcore/Interior.h"
+#include "ftcore/Roads.h"
 
 #include "CsvRead.h"
 
@@ -409,7 +410,7 @@ int heroCornerRooms(const HeroCornerSpec& hero, HeroRoom out[kHeroBays]) {
     heroCornerLayout(hero, layout);
     int n = 0;
     for (int i = 0; i < kHeroBays; ++i) {
-        if (!hero.bayLit[i]) continue;
+        if (!hero.bayLit[i] || !hero.bayRoom[i]) continue;
         const MassingBox& box = layout.bays[i];
         const KitDoorway& dw = hero.bayKoshi[i] ? kKoshiDoorway : kGlazedDoorway;
         // The front faces the lane (west); its piece runs from the bay's north edge (its left end seen from the lane).
@@ -445,9 +446,28 @@ int heroCornerCrowd(const HeroCornerSpec& hero, double side, std::vector<crowdv2
     lane.width = static_cast<float>(hero.laneX1 - hero.laneX0);
     const double mid = 0.5 * (hero.laneX0 + hero.laneX1);
     // A point about every 3 m: a lane standing on its own is still a component big enough to spawn on (minComponent).
-    const int steps = std::max(1, static_cast<int>(std::ceil((hero.laneY1 - hero.laneY0) / 3.0)));
-    for (int k = 0; k <= steps; ++k) lane.points.push_back(eng(mid, hero.laneY0 + (hero.laneY1 - hero.laneY0) * k / steps));
+    // Both start on the coast road's closed south end, so they join it (and the alley its north end), each in one leg
+    // over the apron: a loose end joins the nearest street within its half width and a little, its own street's next
+    // segment too, so the leg is kept longer than that.
+    const double roadS = std::min(hero.padY0, hero.laneY0) - kRoadEndClose, roadN = std::max(hero.padY1, hero.laneY1) + kRoadEndClose;
+    const double bayY1 = hero.bayY0 + kHeroBays * hero.bayWidth, bayX1 = hero.laneX1 + hero.bayDepth;
+    auto run = [&](crowdv2::CrowdStreet& st, double x, double y0, double y1) {
+        const int steps = std::max(1, static_cast<int>(std::ceil((y1 - y0) / 3.0)));
+        for (int k = 0; k <= steps; ++k) st.points.push_back(eng(x, y0 + (y1 - y0) * k / steps));
+    };
+    lane.points.push_back(eng(mid, roadS));
+    run(lane, mid, hero.laneY0, hero.laneY1);
     streets.push_back(std::move(lane));
+    crowdv2::CrowdStreet alley;
+    alley.kind = "alley";
+    alley.width = static_cast<float>(hero.padX1 - bayX1);
+    if (alley.width > 1.0f) {
+        const double ax = 0.5 * (bayX1 + hero.padX1);
+        alley.points.push_back(eng(ax, roadS));
+        run(alley, ax, hero.bayY0, bayY1);
+        alley.points.push_back(eng(ax, roadN));
+        streets.push_back(std::move(alley));
+    }
     HeroRoom rooms[kHeroBays];
     const int n = heroCornerRooms(hero, rooms);
     int added = 0;
@@ -497,6 +517,85 @@ std::string heroCornerDoorRows(const HeroCornerSpec& hero) {
         text += ",\n";
     }
     return text;
+}
+
+int interiorDressing(const InteriorPlan& plan, InteriorDressItem* out, int max, int* bare) {
+    int n = 0, bareSlots = 0;
+    if (bare) *bare = 0;
+    const auto push = [&](HeroPiece piece, double x, double y, double z, double fx, double fy, int slot) -> InteriorDressItem* {
+        if (n >= max) return nullptr;
+        InteriorDressItem& it = out[n++];
+        it = InteriorDressItem{};
+        it.piece = piece;
+        it.at = {x, y, z};
+        it.faceX = fx;
+        it.faceY = fy;
+        it.slot = slot;
+        return &it;
+    };
+    // A piece's size: across its front, its depth, its height, and whether its origin is its back face (else its middle).
+    struct Size { double w, d, h; bool back; };
+    const double counterTop = 0.95;
+    const double hook = plan.ceilingTop - kInteriorFinish - 0.04;
+    bool any = false;
+    for (std::size_t si = 0; si < plan.slots.size(); ++si) {
+        const InteriorSlot& s = plan.slots[si];
+        HeroPiece piece = HeroPiece::Crate;
+        Size sz{0.0, 0.0, 0.0, false};
+        switch (s.kind) {
+        case InteriorSlotKind::Shelf: piece = HeroPiece::Shelf; sz = {1.8, 0.4, 1.8, true}; break;
+        case InteriorSlotKind::Counter: piece = HeroPiece::Counter; sz = {2.4, 0.6, counterTop, true}; break;
+        case InteriorSlotKind::Display: piece = HeroPiece::Crate; sz = {0.5, 0.5, 0.5, false}; break;
+        default: break;
+        }
+        const double fr = s.face * kPi / 180.0;
+        const double fx = std::cos(fr), fy = std::sin(fr), ax = -fy, ay = fx;
+        const double rr = s.foot.rot * kPi / 180.0;
+        const double ex = std::cos(rr), ey = std::sin(rr);
+        const double alongHalf = std::fabs(ax * ex + ay * ey) * s.foot.hx + std::fabs(-ax * ey + ay * ex) * s.foot.hy;
+        const double deepHalf = std::fabs(fx * ex + fy * ey) * s.foot.hx + std::fabs(-fx * ey + fy * ex) * s.foot.hy;
+        int fit = 0;
+        if (sz.w > 0.0 && sz.d <= 2.0 * deepHalf + 1e-9)
+            fit = static_cast<int>(std::floor((2.0 * alongHalf + kInteriorPieceGap) / (sz.w + kInteriorPieceGap) + 1e-9));
+        if (fit < 1) {
+            ++bareSlots;
+            continue;
+        }
+        any = true;
+        const double total = fit * sz.w + (fit - 1) * kInteriorPieceGap;
+        // Each piece's back flush with the slot's back edge, the run centred along it.
+        const double bx = s.foot.x - fx * deepHalf, by = s.foot.y - fy * deepHalf;
+        for (int k = 0; k < fit; ++k) {
+            const double along = -0.5 * total + 0.5 * sz.w + k * (sz.w + kInteriorPieceGap);
+            const double px = bx + ax * along, py = by + ay * along;
+            const double ox = sz.back ? px : px + fx * 0.5 * sz.d, oy = sz.back ? py : py + fy * 0.5 * sz.d;
+            InteriorDressItem* it = push(piece, ox, oy, s.z0, fx, fy, static_cast<int>(si));
+            if (!it) break;
+            it->block.cx = px + fx * 0.5 * sz.d;
+            it->block.cy = py + fy * 0.5 * sz.d;
+            it->block.sx = sz.w;
+            it->block.sy = sz.d;
+            it->block.rot = degOf(std::atan2(ay, ax));
+            it->block.z0 = s.z0;
+            it->block.z1 = s.z0 + sz.h;
+            if (piece != HeroPiece::Counter) continue;
+            // The counter's goods half way into its top: bottles on its left slot; the stock pot and its steam on the
+            // last counter's right.
+            const double gx = px + fx * 0.3, gy = py + fy * 0.3, top = s.z0 + counterTop;
+            push(HeroPiece::Bottles, gx + ax * kHeroCounterSlotLeft, gy + ay * kHeroCounterSlotLeft, top, fx, fy, static_cast<int>(si));
+            if (k + 1 == fit) {
+                const double qx = gx + ax * kHeroCounterSlotRight, qy = gy + ay * kHeroCounterSlotRight;
+                push(HeroPiece::StockPot, qx, qy, top, fx, fy, static_cast<int>(si));
+                push(HeroPiece::Steam, qx, qy, top + 0.32, fx, fy, static_cast<int>(si));
+            }
+        }
+        // Goods hung over a shelf run, 0.7 m out from its face.
+        if (piece == HeroPiece::Shelf)
+            push(HeroPiece::HangGoods, s.foot.x + fx * (deepHalf + 0.7), s.foot.y + fy * (deepHalf + 0.7), hook, fx, fy, static_cast<int>(si));
+    }
+    if (any) push(HeroPiece::Lantern, plan.room.x, plan.room.y, plan.ceilingTop - kInteriorFinish - 0.02, plan.wx, plan.wy, -1);
+    if (bare) *bare = bareSlots;
+    return n;
 }
 
 } // namespace ftcore

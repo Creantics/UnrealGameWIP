@@ -2404,6 +2404,11 @@ bool importRoadNet(std::string_view csv, std::vector<RoadNetStreet>& out, std::s
             r.poleLeft = ps.find('L') != std::string_view::npos;
             r.poleRight = ps.find('R') != std::string_view::npos;
         }
+        {
+            const std::string_view es = col("ends");
+            if (es != "" && es != "kerb") return fail(error, rec.line, r.id + ": ends is kerb or empty");
+            r.endsClosed = es == "kerb";
+        }
         if (!num("mouth_back_m", r.mouthBack, false) || !num("mouth_z", r.mouthZ, false))
             return fail(error, rec.line, r.id + ": mouth_back_m or mouth_z is not a number");
         {
@@ -3444,6 +3449,47 @@ void roadNetBuild(const std::vector<RoadNetStreet>& streets, const MassingGround
             ++w;
         }
         out.solids.resize(w);
+    }
+    // The closed free ends, laid after the prune (it would take a kerb lying across its own carriageway's end).
+    for (const NetNode& nd : nodes) {
+        if (nd.arms.size() != 1) continue;
+        const NetArm& a = nd.arms.front();
+        const RoadNetStreet& st = streets[net.edges[a.edge].street];
+        if (!st.endsClosed || st.deck) continue;
+        ++rep.closes;
+        RoadSpec spec;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "%s-END%zu", st.id.c_str(), rep.closes);
+        spec.id = buf;
+        Ctx x(spec, out);
+        // s runs on out of the road from its last point, t across it.
+        const Frame f = frameOf(nd.p.x, nd.p.y, nd.p.x - a.d.x, nd.p.y - a.d.y);
+        const double pv = nd.z + kRoadSurfaceLift + kRoadKerbRise;
+        const double kc = a.hc + kRoadKerbWide, kw = kRoadKerbWide, deep = kRoadEndClose;
+        x.add(x.box(f, 0.0, kw, -kc, kc, pv, kRoadSlabDepth + 0.15, 0.0, 0.0, "kerb"), RoadTint::Kerb, true);
+        x.add(x.box(f, kw, deep, -kc, kc, pv, kRoadSlabDepth, 0.0, 0.0, "pavement"), RoadTint::Pavement, true);
+        if (a.w2 > kc + 1e-6) {
+            x.add(x.box(f, 0.0, deep, kc, a.w2, pv, kRoadSlabDepth, 0.0, 0.0, "pavement"), RoadTint::Pavement, true);
+            x.add(x.box(f, 0.0, deep, -a.w2, -kc, pv, kRoadSlabDepth, 0.0, 0.0, "pavement"), RoadTint::Pavement, true);
+        }
+        MassingFoot band;
+        const RoadPoint mid = f.at(deep * 0.5, 0.0);
+        band.x = mid.x;
+        band.y = mid.y;
+        band.hx = deep * 0.5;
+        band.hy = a.w2;
+        band.rot = f.rot;
+        out.band.push_back(band);
+        const double span = 2.0 * a.hc;
+        const std::size_t count =
+            std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(span / kRoadEndBollardGap - 1e-9)) - 1);
+        for (std::size_t c = 0; c < count; ++c) {
+            const double t = -a.hc + span * static_cast<double>(c + 1) / static_cast<double>(count + 1);
+            const RoadPoint q = f.at(kRoadEndBollardBack, t);
+            x.add(x.at(q, f.rot, kRoadEndBollardDia, kRoadEndBollardDia, pv - 0.1, pv + kRoadEndBollardHigh, "bollard"),
+                  RoadTint::Steel, true, RoadShape::Cylinder);
+            x.furnitureFoot(q, kRoadEndBollardDia * 0.5, kRoadEndBollardDia * 0.5, f.rot);
+        }
     }
     if (report) *report = std::move(rep);
 }
@@ -4944,6 +4990,53 @@ std::vector<std::string> roadFootRejects(const RoadFootReport& report, const Roa
         out.push_back(buf);
     }
     return out;
+}
+
+std::size_t roadLotOverlaps(const RoadBuild& build, const std::vector<MassingFoot>& lots, double inset,
+                            std::vector<RoadLotHit>* hits) {
+    std::size_t count = 0;
+    auto test = [&](const std::string& id, const MassingFoot& f) {
+        const double rf = std::hypot(f.hx, f.hy);
+        for (std::size_t k = 0; k < lots.size(); ++k) {
+            MassingFoot l = lots[k];
+            l.hx = std::max(0.0, l.hx - inset);
+            l.hy = std::max(0.0, l.hy - inset);
+            if (std::hypot(f.x - l.x, f.y - l.y) >= rf + std::hypot(l.hx, l.hy)) continue;
+            if (!massingFeetOverlap(f, l, 0.0)) continue;
+            ++count;
+            if (hits) hits->push_back({id, k});
+        }
+    };
+    for (const RoadSolid& s : build.solids) test(s.box.id, massingBoxFoot(s.box));
+    for (const MassingBox& b : build.footways) test(b.id, massingBoxFoot(b));
+    for (const RoadBay& b : build.bays) test(b.id, b.foot);
+    for (const RoadQuad& q : build.crossings) {
+        // The zebra's bounding rectangle along its first side.
+        const double ux = q.pts[1].x - q.pts[0].x, uy = q.pts[1].y - q.pts[0].y, ul = std::hypot(ux, uy);
+        if (ul <= 0.0) continue;
+        const double ex = ux / ul, ey = uy / ul;
+        double u0 = 1e30, u1 = -1e30, v0 = 1e30, v1 = -1e30;
+        for (const RoadPoint& p : q.pts) {
+            const double u = (p.x - q.pts[0].x) * ex + (p.y - q.pts[0].y) * ey, v = -(p.x - q.pts[0].x) * ey + (p.y - q.pts[0].y) * ex;
+            u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, v), v1 = std::max(v1, v);
+        }
+        MassingFoot f;
+        const double um = 0.5 * (u0 + u1), vm = 0.5 * (v0 + v1);
+        f.x = q.pts[0].x + um * ex - vm * ey;
+        f.y = q.pts[0].y + um * ey + vm * ex;
+        f.hx = 0.5 * (u1 - u0);
+        f.hy = 0.5 * (v1 - v0);
+        f.rot = std::atan2(ey, ex) * 180.0 / 3.14159265358979323846;
+        test(q.id, f);
+    }
+    for (std::size_t k = 0; k < build.lamps.size(); ++k) {
+        MassingFoot f;
+        f.x = build.lamps[k].x;
+        f.y = build.lamps[k].y;
+        f.hx = f.hy = 0.15;
+        test("lamp-" + std::to_string(k + 1), f);
+    }
+    return count;
 }
 
 } // namespace ftcore

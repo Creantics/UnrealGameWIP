@@ -56,6 +56,25 @@ void heroCornerLayout(const HeroCornerSpec& spec, HeroCornerLayout& out) {
                        g + spec.paveTop - spec.paveThick, g + spec.paveTop);
     out.nearClear = flatBox("HC-NEAR-CLEAR", "clear", spec.laneX0, spec.laneX1, std::min(spec.nearClearY0, spec.laneY0), spec.laneY0,
                             g - spec.paveThick, g + spec.paveTop);
+    // The ground: level with the paving's top, but under the paving itself (there at the ground).
+    out.groundCount = 0;
+    {
+        const double top = g + spec.paveTop, foot = g - spec.padDeep;
+        const double bayY1 = spec.bayY0 + kHeroBays * spec.bayWidth, bayX1 = spec.laneX1 + spec.bayDepth;
+        const double southY = std::min(spec.bayY0, spec.laneY0), northY = std::max(bayY1, spec.laneY1);
+        auto piece = [&](double x0, double x1, double y0, double y1, double z1) {
+            if (x1 - x0 < 0.01 || y1 - y0 < 0.01 || out.groundCount >= kHeroGroundMax) return;
+            char id[24];
+            std::snprintf(id, sizeof id, "HC-GROUND-%d", out.groundCount + 1);
+            out.ground[out.groundCount++] = flatBox(id, "paving", x0, x1, y0, y1, foot, z1);
+        };
+        piece(spec.padX0, spec.padX1, spec.padY0, southY, top);
+        piece(spec.padX0, spec.laneX1, southY, spec.laneY0, top);
+        piece(spec.padX0, spec.laneX1, spec.laneY0, spec.laneY1, g);
+        piece(spec.padX0, spec.laneX1, spec.laneY1, northY, top);
+        piece(bayX1, spec.padX1, southY, northY, top);
+        piece(spec.padX0, spec.padX1, northY, spec.padY1, top);
+    }
     // The eave runs the row but the lattice fronts' bays, whose timber fronts carry their own pent roofs under it.
     const int eatery = std::clamp(spec.eateryBay, 0, kHeroBays - 1);
     out.eaveCount = 0;

@@ -310,6 +310,11 @@ struct CrowdAgentView {
     float fear = 0.f;
     float boldness = 0.5f;
     float slowFor = 0.f;    // s this walker has walked under kCrowdJamSpeed x its own pace without a break (0: not slow)
+    // Indoors (state Indoors): the door it uses, by attached slot (setDoors' order, the doors left out skipped; doorAt),
+    // and its phase. A plain door: 1 to the door, 2 hidden, 3 out onto its pavement. A walk-in room: 1, 4 to the
+    // doorway, 5 on in to its spot, 6 standing at it, 7 back to the doorway, 8 out to the door, 3. Otherwise -1 and 0.
+    std::int32_t door = -1;
+    std::uint8_t doorPhase = 0;
 };
 
 // S-332: a camera the crowd must not pop in front of: from eye, yaw (deg), halfFov (deg; 180 or more: all round),
@@ -343,6 +348,18 @@ struct CrowdCounts {
     std::uint64_t missNoStreet = 0, missSlot = 0, missSpotRing = 0, missCrowded = 0, missSpotView = 0;
     std::uint64_t missDense = 0; // spawn spots passed over for spawnNearMax
     std::uint64_t despawnNewborn = 0, despawnWalkedOut = 0;
+    // Keep-outs: spawn spots passed over for standing under a keep-out's gap (or on a street the keep-outs close), and
+    // members left under a gap with no open point across their street to move to (the run check wants 0).
+    std::uint64_t missKeep = 0, keepStuck = 0;
+    // Steps a keep-out held back: a walker that would have cut a gap stepping along took the sideways step only (or
+    // stood), and pushes apart that would have put a member under a gap that were not taken. Members moved across their
+    // street out from under a gap (keepClear: the run check wants 0, every step is kept out of the gaps first).
+    std::uint64_t keepHeld = 0, keepPushRefused = 0, keepMoved = 0;
+    // Narrows (a stretch the keep-outs leave too tight for two to pass): member-steps a walker stood at a mouth waiting
+    // its turn, and entries; the longest any one walker has stood waiting at one mouth (s, from its first wait there to
+    // its last, on one street).
+    std::uint64_t narrowWaits = 0, narrowEntries = 0;
+    float narrowWaitLongest = 0.f;
 };
 inline constexpr float kCrowdNewborn = 1.f;
 // The walking-jam check: a walker (state Walk, not in the one-step close-reaction stop) is slow while its pace is
@@ -359,6 +376,10 @@ inline constexpr float kCrowdReachMove = 5.f;
 // S-271: members are placed this far past wallInset (m), so float noise never leaves one under it: the walking band
 // ends there, and a member found under wallInset is moved back to it. The gate itself stays wallInset, unrounded.
 inline constexpr float kCrowdWallSlack = 0.01f;
+// The host's roof check (the footprint check's "on a roof"): a grounded member's downward trace starts this far (m)
+// under its feet, so the ground it stands on is not hit; anything hit below is more ground further down. A solid's foot
+// must stand clear above that start under every height a member stands at, or it reads as a roof.
+inline constexpr double kCrowdRoofTraceDrop = 0.5;
 // S-271: a point is taken as it is only this far past wallInset or more (m), else it is moved. The host measures the
 // frontage from the building's box and read 0.799961 m for a member Core had at 0.8000031, a 0.042 mm gap from float
 // rounding (one float step is 0.03 mm at the Strip's coordinates, under 512 m); this is six times that gap.
@@ -417,18 +438,105 @@ FTCORE_API double crowdBoxClearance(const CrowdMassBox& box, double axX, double 
 // A member's first ground (host: one line down from high up meets several surface tops). Under a corridor or balcony
 // slab over the street the first top is the slab's, so the ground is not simply the first. Each top (cm), highest
 // first: `z`, and `clearUp` true when the host's short line up from just above it (a body's height) met nothing, a line
-// that starts inside a solid counting as met.
+// that starts inside a solid counting as met. `vehicle`: the top is a vehicle's (a parked car's roof or bonnet).
 struct CrowdGroundHit {
     double z = 0.0;
     bool clearUp = false;
+    bool vehicle = false;
 };
 inline constexpr std::size_t kCrowdGroundHitsMax = 8;
 // The index of the ground: the lowest top that is clear up and has at least `body` (cm) to the next top above it;
-// when none is, the highest (0). 0 when n is 0.
+// when none is, the highest. 0 when n is 0. Vehicle tops are left out as if the line had not met them: never the
+// ground, never the top above another. n when every top is a vehicle's (no ground there: the host gives none).
 FTCORE_API std::size_t crowdPickGround(const CrowdGroundHit* hits, std::size_t n, double body);
+
+// A drawn member's ground, every frame (host): one line down at the point it is drawn at (crowdDrawnPoint), from a
+// little over the ground it has to well under it. What the line met: `hit`, the top's `z` (cm), and `startInside` when
+// it started inside a solid (met where it starts), and `vehicle` when the top is a vehicle's.
+struct CrowdGroundLine {
+    bool hit = false;
+    bool startInside = false;
+    double z = 0.0;
+    bool vehicle = false;
+};
+// True when that top is the ground (`z` set to it): no more than `stepUp` (cm) over `heldZ`, or any way down. False when
+// the long look (the host's crowdPickGround lines) must find it again: the line met nothing (a roof's or a car's edge
+// past, the street further down than the line reaches), more than a step up (a slab over it), it started inside a
+// solid, or it met a vehicle (never ground: a car's bonnet is within a step of the street). Never the height it had:
+// kept past a top's edge, that height left members drawn standing on nothing.
+FTCORE_API bool crowdGroundTake(const CrowdGroundLine& line, double heldZ, double stepUp, double& z);
+// A massing box's height window (cm): a member's feet at `feetZ` are round the box's height, so its footprint counts
+// (in it, or how far from it), from kCrowdMassFeetUnder under its bottom to kCrowdMassFeetTop under its top (feet on or
+// above its top stand on it, not in it). The footprint check and the wall keep-outs read the same window.
+inline constexpr double kCrowdMassFeetUnder = 50.0;
+inline constexpr double kCrowdMassFeetTop = 30.0;
+FTCORE_API bool crowdMassAtFeet(double zMin, double zMax, double feetZ);
+// Where the host draws a member this frame: its last two steps' positions lerped by stepAlpha (`alpha`, 0..1).
+FTCORE_API Vec2 crowdDrawnPoint(const CrowdAgentView& v, float alpha);
 
 // Host occlusion: true when something solid stands between `from` and `to` (engine frame, metres).
 using CrowdOcclusionFn = bool (*)(void* context, Vec2 from, Vec2 to);
+
+// Keep-outs (host: parked cars, tree trunks, a building's front standing on a pavement): plan boxes in the sim frame (m)
+// that members keep `gap` off. Half sizes hx along (ax, ay) (a unit vector; normalised by setKeepOuts) and hy across.
+enum class CrowdKeepKind : std::uint8_t { Wall, Car };
+struct CrowdKeepOut {
+    Vec2 c;
+    float ax = 1.f, ay = 0.f;
+    float hx = 0.f, hy = 0.f;
+    float gap = 0.8f;
+    CrowdKeepKind kind = CrowdKeepKind::Wall;
+};
+// The plan distance from p to the box: 0 on its side, minus the depth to its nearest side inside it.
+FTCORE_API float crowdKeepDistance(const CrowdKeepOut& k, Vec2 p);
+// The least crowdKeepDistance over the segment p..q (to well under 1 mm): what the host draws between two steps.
+FTCORE_API float crowdKeepSweep(const CrowdKeepOut& k, Vec2 p, Vec2 q);
+// Where the host judges a box (the ground there decides it): the street centre-line point nearest the box itself, not
+// its centre. Points round the box's sides (1 m apart, at most 64 a side) ask for their nearest street; the nearest
+// answer wins (a long box whose end stands by a cross street is judged there; a street meeting a long side between
+// corners is found), within half a spacing of the true nearest. False when no street point is within `reach` m of the
+// box. No allocation.
+FTCORE_API bool crowdKeepStreetPoint(const CrowdGraph& g, const CrowdKeepOut& k, float reach, Vec2& at);
+// What the host makes of a box (SetKeepOuts): Kept (a keep-out) when a street is near it (`streetNear`), the host found
+// a ground at that street point (`groundFound`, `groundZ` cm) and that ground is in the box's height window
+// (crowdMassAtFeet over zMin..zMax cm): a front, a trunk or a parked car a member walking there would meet. A box whose
+// window starts over that ground (an upper storey, a roof) is OffWindow, never a keep-out. Same rule for Wall and Car.
+enum class CrowdKeepVerdict : std::uint8_t { Kept, NoStreet, NoGround, OffWindow };
+FTCORE_API CrowdKeepVerdict crowdKeepVerdict(bool streetNear, bool groundFound, double groundZ, double zMin, double zMax);
+// The car line: the least plan distance from a member to a kept car box (`runMinCar` m, every frame) is 0 or more, no
+// car box by a street was dropped (`carsDropped`: the least reads kept boxes only, so a dropped one would pass
+// unmeasured), and, on a map that has parked cars (`carsExpected`), at least one car box was kept (`carsKept`: none
+// means nothing was measured: the vehicle tags are missing, or no car stands by a street).
+FTCORE_API bool crowdCarLineOk(float runMinCar, std::uint32_t carsDropped, std::uint32_t carsKept, bool carsExpected);
+// A stretch across a street (m along its left normal), open or shut.
+struct CrowdKeepSpan {
+    float lo = 0.f, hi = 0.f;
+};
+// The most stretches one line across a street holds (more boxes on it than that read as shut: no allocation).
+inline constexpr std::uint32_t kCrowdKeepSpanMax = 24;
+// setKeepOuts samples each street this often along it (m); a side is open where its band keeps a stretch this wide
+// (m) clear at every sample.
+inline constexpr float kCrowdKeepSample = 0.25f;
+inline constexpr float kCrowdKeepMinWidth = 0.02f;
+// move() looks this far ahead (m, in kCrowdKeepAheadSteps even steps) for a keep-out narrowing the band.
+inline constexpr float kCrowdKeepAhead = 3.f;
+inline constexpr int kCrowdKeepAheadSteps = 4;
+// Narrows: where the keep-outs leave a band's widest open stretch under minGap (two can't pass), members take turns,
+// one way at a time. A way that keeps coming lets the other through once that has waited this long (s).
+inline constexpr float kCrowdNarrowHold = 3.f;
+// Waiters queue: one coming up within this far (m) of a mouth whose way is shut stops minGap behind the last waiter.
+inline constexpr float kCrowdNarrowQueue = 10.f;
+// In minGaps. A member holds its narrow's turn until this far past the far mouth (the way stays shut behind it while it
+// walks clear, so the first coming the other way doesn't meet it there).
+inline constexpr float kCrowdNarrowRelease = 1.5f;
+// In minGaps. A walker lines up behind a waiter going its way within kCrowdQueueAhead (plus its step) ahead of it and
+// less than kCrowdQueueAcross to either side: anywhere across a pavement's band, so the tail lines up instead of spreading
+// across the band and shutting the way out beside the queue. kCrowdQueueLook is the search radius over both.
+inline constexpr float kCrowdQueueAhead = 2.f;
+inline constexpr float kCrowdQueueAcross = 2.5f;
+inline constexpr float kCrowdQueueLook = 3.5f;
+static_assert(kCrowdQueueLook * kCrowdQueueLook >= kCrowdQueueAhead * kCrowdQueueAhead + kCrowdQueueAcross * kCrowdQueueAcross,
+              "the queue's search radius covers its whole box");
 
 inline constexpr std::size_t kCrowdMaxEvents = 64;
 inline constexpr std::size_t kCrowdPathMax = 24;
@@ -474,6 +582,31 @@ public:
     // left out) and returns how many it attached. Call after init; init forgets them. Allocates (load time).
     FTCORE_API std::uint32_t setDoors(const std::vector<CrowdDoor>& doors);
     std::uint32_t doorCount() const { return static_cast<std::uint32_t>(doors_.size()); }
+    // An attached door's point on the street, by slot (CrowdAgentView::door; the origin past the end).
+    Vec2 doorAt(std::uint32_t slot) const { return slot < doors_.size() ? doors_[slot].at : Vec2{}; }
+    // Keep-outs. Members keep each box's gap off it: a pavement side a box closes across its band (at any point along)
+    // is closed, so members walk and spawn on the other side, or (both closed) keep off that street unless it is the
+    // only way on; the band narrows round a box ahead; a member left under a gap is moved across its street, clear.
+    // Boxes farther than a street's half width + gap + 1 m from every street are dropped. Call after init and setDoors;
+    // init forgets them. Returns how many were kept. An empty set leaves the sim exactly as it is without. Allocates
+    // (load time).
+    FTCORE_API std::uint32_t setKeepOuts(const std::vector<CrowdKeepOut>& keeps);
+    std::uint32_t keepOutCount() const { return static_cast<std::uint32_t>(keeps_.size()); }
+    // Street sides the keep-outs closed (each side of each street once), streets with no side open, and attached doors
+    // whose walk in (door, doorway, inside) passes under a keep-out's gap.
+    std::uint32_t closedSides() const { return closedSides_; }
+    std::uint32_t closedStreets() const { return closedStreets_; }
+    std::uint32_t doorsUnderKeep() const { return doorsUnderKeep_; }
+    // Single-file narrows setKeepOuts found: a member walks into one only when nobody coming the other way is in it,
+    // else it waits a minGap short of its mouth, to the side away from the slot. A way that has waited
+    // kCrowdNarrowHold s gets the next turn. A narrow within minGap of a street's end is not gated (it is counted).
+    std::uint32_t narrowCount() const { return static_cast<std::uint32_t>(narrows_.size()); }
+    // The least plan distance from member i to a keep-out of `kind` near its streets (1e3: none, free, or behind its
+    // door). Members walking to or from a door count. No allocation.
+    FTCORE_API float keepClearance(std::uint32_t i, CrowdKeepKind kind) const;
+    // Whether a pavement side (+1, -1: along the edge from -> to's left normal) is open; a street with no pavement
+    // reads its one band as both. True for every side with no keep-outs.
+    FTCORE_API bool sideOpen(std::uint32_t from, std::uint32_t to, int side) const;
     // S-283: the share of the daytime crowd out on the streets (0..1; the host reads it from the day's CrowdDensity
     // curve). The streets fill to targetAgents x density (no more than bandDensity x reachBandArea() when bandDensity is
     // on): above it walkers passing a door go in and those inside stay; below it those inside come out sooner and new
@@ -564,6 +697,21 @@ private:
         Vec2 doorTo;                 // phase 3: the pavement spot it walks out to
         std::int32_t doorSeen = -1;  // the last door it walked past (one chance per door)
         float slowFor = 0.f;         // see CrowdAgentView::slowFor
+        std::uint32_t narrow = UINT32_MAX; // the narrow it was let into (narrows_), until it is out the far side
+        std::uint8_t narrowDir = 0;        // 0: walking it from its street's lower node, 1: from the higher
+        float waitStop = -1.f;             // >= 0: waiting its turn this step, no farther along than this
+        std::uint32_t waitNarrow = UINT32_MAX; // the narrow it waits for (at its mouth or in the queue behind)
+        std::uint32_t waitSlot = UINT32_MAX;   // the narrow it waits for and when that wait began (time_), for the longest wait
+        double waitSince = 0.0;
+    };
+    struct Narrow {
+        std::uint32_t n = 0, to = 0; // its street, n < to; along and across measured from n
+        float s0 = 0.f, s1 = 0.f;    // m along where the band is too tight
+        float lo = 0.f, hi = 0.f;    // the band across it narrows
+        float mid = 0.f;             // across: the middle of the slot at its tightest
+        std::uint32_t inside[2] = {0, 0};
+        float waitFor[2] = {0.f, 0.f}; // s a member has waited at each way's mouth, in a row
+        bool waited[2] = {false, false};
     };
     struct DoorSlot {
         Vec2 at, inside, through;
@@ -620,7 +768,27 @@ private:
     void nudge(Agent& a, Vec2 by);
     Vec2 pushable(const Agent& a, Vec2 by) const;
     void place(Agent& a, Vec2 p);
+    void placeWalls(Agent& a, Vec2 p);
     float clearance(const Agent& a, Vec2 p, Vec2* fixTo) const;
+    // Keep-outs: the open stretches of [lo, hi] across from -> to at `along` (each box grown by its gap + extra), sorted;
+    // their count (0: none, or more boxes there than kCrowdKeepSpanMax holds).
+    std::uint32_t keepOpen(std::uint32_t from, std::uint32_t to, float along, float lo, float hi, float extra,
+                           CrowdKeepSpan* open) const;
+    std::uint8_t openSides(std::uint32_t from, std::uint32_t to) const; // bit 0: + side open, bit 1: - side
+    float keepMargin(Vec2 p, std::uint32_t from, std::uint32_t to) const; // least box distance less its gap
+    // The least box distance less its gap over the segment p..q, the boxes listed at the up to four nodes given.
+    float keepSweep(Vec2 p, Vec2 q, const std::uint32_t* nodes, int n) const;
+    // place() for a push with keep-outs: false (and a left as it was) when the move would cut or end under a gap.
+    bool placeKept(Agent& a, Vec2 p);
+    void keepClear(Agent& a);
+    void keepBand(Agent& a, float& latRate, float speed, float reach = kCrowdKeepAhead);
+    // Narrows: the directed edge's slot (edgeBase_; UINT32_MAX none), finding them, counting who is in each (the step's
+    // start), and a walker's turn at a mouth (false: it waits; speed and latTarget set so it stands short of it).
+    std::uint32_t edgeSlot(std::uint32_t from, std::uint32_t to) const;
+    void findNarrows();
+    void countNarrows();
+    bool narrowTurn(Agent& a, float& speed, float& reach);
+    bool inNarrow(const Agent& a) const; // inside one, or within minGap of its ends
     float scale(const Agent& a) const;
     Vec2 basePoint(const Agent& a) const;
     float rand01();
@@ -660,6 +828,13 @@ private:
     std::vector<std::uint32_t> doorFirst_, doorList_; // doors by street node (each door under both its edge's nodes)
     std::vector<Vec2> spots_;                 // the walk-in rooms' spots, by door (DoorSlot spot0, spotN)
     std::vector<std::uint8_t> spotTaken_;
+    // keep-outs: the boxes, each node's (those near a street at it), each directed edge's open sides (by edgeBase_)
+    std::vector<CrowdKeepOut> keeps_;
+    std::vector<std::uint32_t> keepFirst_, keepList_, edgeBase_;
+    std::vector<std::uint8_t> sideOpen_;
+    std::vector<Narrow> narrows_;                    // grouped by street
+    std::vector<std::uint32_t> narrowAt_, narrowN_; // by directed edge slot: its street's first narrow and how many
+    std::uint32_t closedSides_ = 0, closedStreets_ = 0, doorsUnderKeep_ = 0;
     float density_ = 1.f;
     std::uint32_t indoors_ = 0;
     // measureReach: the last measure and where the player stood for it
