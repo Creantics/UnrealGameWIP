@@ -6570,50 +6570,50 @@ void AFTExploreCharacter::LogLeadCoverSet()
 	{
 		++Actors;
 		TInlineComponentArray<UMeshComponent*> Meshes(*It);
-		for (const UMeshComponent* Mesh : Meshes)
+		for (const UMeshComponent* Comp : Meshes)
 		{
-			if (Mesh == nullptr || Mesh->IsA<USkinnedMeshComponent>() || !Mesh->IsVisible() || Mesh->bHiddenInGame)
+			if (Comp == nullptr || Comp->IsA<USkinnedMeshComponent>() || !Comp->IsVisible() || Comp->bHiddenInGame)
 			{
 				continue;
 			}
-			if (!Mesh->IsA<UStaticMeshComponent>())
+			if (!Comp->IsA<UStaticMeshComponent>())
 			{
 				++Other;
-				Note(Mesh, TEXT("drawn, not a static mesh"));
+				Note(Comp, TEXT("drawn, not a static mesh"));
 				continue;
 			}
-			if (!CoverDrawn(Mesh))
+			if (!CoverDrawn(Comp))
 			{
 				continue; // translucent: the map leaves it out too
 			}
 			++Drawn;
-			const ECollisionChannel Type = Mesh->GetCollisionObjectType();
-			const UBodySetup* Body = Mesh->GetBodySetup();
-			if (!Mesh->IsQueryCollisionEnabled())
+			const ECollisionChannel Type = Comp->GetCollisionObjectType();
+			const UBodySetup* Body = const_cast<UMeshComponent*>(Comp)->GetBodySetup() /* not const in the engine; read only */;
+			if (!Comp->IsQueryCollisionEnabled())
 			{
 				++QueryOff;
-				Note(Mesh, TEXT("query collision off"));
+				Note(Comp, TEXT("query collision off"));
 			}
 			else if (Type != ECC_WorldStatic && Type != ECC_WorldDynamic)
 			{
 				++ObjectType;
-				Note(Mesh, TEXT("object type not WorldStatic/WorldDynamic"));
+				Note(Comp, TEXT("object type not WorldStatic/WorldDynamic"));
 			}
 			else if (!Body)
 			{
 				++NoBody;
-				Note(Mesh, TEXT("no body setup"));
+				Note(Comp, TEXT("no body setup"));
 			}
 			else if (Body->GetCollisionTraceFlag() == CTF_UseSimpleAsComplex ? Body->AggGeom.GetElementCount() == 0
 																				 : (Body->TriMeshGeometries.Num() == 0 && Body->AggGeom.GetElementCount() == 0))
 			{
 				++NoShapes;
-				Note(Mesh, TEXT("no collision shapes"));
+				Note(Comp, TEXT("no collision shapes"));
 			}
 			else if (Body->GetCollisionTraceFlag() != CTF_UseSimpleAsComplex && Body->TriMeshGeometries.Num() == 0)
 			{
 				++SimpleOnly;
-				Note(Mesh, TEXT("simple shapes only, no triangle mesh"));
+				Note(Comp, TEXT("simple shapes only, no triangle mesh"));
 			}
 			else
 			{
