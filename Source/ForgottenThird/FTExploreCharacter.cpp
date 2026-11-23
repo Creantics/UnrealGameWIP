@@ -251,6 +251,8 @@ void AFTExploreCharacter::BeginPlay()
 			{
 				LeadRouteCount = Legs.Num();
 				UE_LOG(LogForgottenThird, Display, TEXT("LeadGo: route of %d leg(s), the first at %.1f s."), LeadRouteCount, LeadRouteAt[0]);
+				// -LeadGoQuit=<s> ends the run that long after the last leg began (each leg restarts the walk's clock).
+				FParse::Value(FCommandLine::Get(), TEXT("LeadGoQuit="), LeadGoQuit);
 			}
 			else
 			{
