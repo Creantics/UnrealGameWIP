@@ -853,8 +853,8 @@ private:
 	float WetShown = 0.f;
 	float WetLineShown = 0.f;
 	float WetSiltShown = 0.f;
-	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; below 0, the default, follows the rain; 0..1
-	// forces it) soaks the cloth as the water does (through ShowWetness); the lead's surface wetness (that or its own water,
+	// The wet switch (ftcore/LeadWet.h): one weather value (ft.LeadWet; 0..1 forces it, 0 the default (dry); below 0,
+	// opt-in, follows the rain) soaks the cloth as the water does (through ShowWetness); the lead's surface wetness (that or its own water,
 	// whichever is wetter) wears the look's wet grooms and writes SkinWet (0..1) to the same dynamic materials, where the
 	// skin master smooths its up- and forward-facing open skin. The leads' MetaHuman skin takes it through its post-bake
 	// roughness and specular multipliers (their dry values kept in WetSkinDry, one per WetMaterials entry, -1 where the

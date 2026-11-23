@@ -79,8 +79,10 @@
 
 namespace
 {
-TAutoConsoleVariable<float> CVarLeadWet(TEXT("ft.LeadWet"), -1.f,
-	TEXT("The leads' wet switch: below 0 (the default) follows the rain (UFTRainSubsystem), 0..1 forces that wetness (cloth soak, wet grooms, wet skin; 0 holds them dry)."));
+// Default 0 (dry): the lead's rain cover trace cannot yet see every drawn shelter (1267 of 5244 drawn opaque meshes on the
+// strip have query collision off; rain cover is an open item), so following the rain is opt-in until it can.
+TAutoConsoleVariable<float> CVarLeadWet(TEXT("ft.LeadWet"), 0.f,
+	TEXT("The leads' wet switch: 0..1 forces that wetness (cloth soak, wet grooms, wet skin; 0, the default, holds them dry); below 0 follows the rain (UFTRainSubsystem), opt-in until the cover trace sees every shelter."));
 
 // -LocoPulse: how long (s) each rest lasts, long enough for a stop clip to settle.
 // The camera comes back round behind a moving lead once the look input has rested this long (s), closing
