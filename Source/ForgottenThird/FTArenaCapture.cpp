@@ -125,7 +125,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz,pup_x,pup_y,pup_wyaw,paw_fl_x,paw_fl_y,paw_fl_z,paw_fr_x,paw_fr_y,paw_fr_z,paw_hl_x,paw_hl_y,paw_hl_z,paw_hr_x,paw_hr_y,paw_hr_z\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz,pup_x,pup_y,pup_wyaw,paw_fl_x,paw_fl_y,paw_fl_z,paw_fr_x,paw_fr_y,paw_fr_z,paw_hl_x,paw_hl_y,paw_hl_z,paw_hr_x,paw_hr_y,paw_hr_z,legdist_l,legdist_r,leg_near\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -607,6 +607,10 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 	// Every frame: the enemy actor's world place (m) and world yaw (deg), and its four paws' world places (m; 0 without bones).
 	double PupX = 0.0, PupY = 0.0, PupWYaw = 0.0;
 	double Paw[12] = {};
+	// Every frame: the muzzle tip's distance (m) to the lead's left and right leg chains (thigh, calf, foot bones as two
+	// segments), and which is nearer (l or r; - when not measured), so a reaction on the wrong leg shows against the teeth.
+	double LegDist[2] = {-1.0, -1.0};
+	char LegNear = '-';
 	const USkeletalMeshComponent* PupSkin = EnemyFigure ? EnemyFigure->GetSkin() : nullptr;
 	if (PupSkin && !bMuzzleTried)
 	{
@@ -636,6 +640,25 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		MuzzleFwd = FVector::DotProduct(Tip - Root, Line) / 100.0;
 		MuzzleUp = (Tip.Z - Root.Z) / 100.0;
 		TipZ = (Tip.Z - Lead->GetActorLocation().Z) / 100.0;
+		if (const USkeletalMeshComponent* Legs = Lead->GetLeadSkin())
+		{
+			static const FName Chain[2][3] = {{TEXT("thigh_l"), TEXT("calf_l"), TEXT("foot_l")}, {TEXT("thigh_r"), TEXT("calf_r"), TEXT("foot_r")}};
+			for (int32 S = 0; S < 2; ++S)
+			{
+				if (Legs->GetBoneIndex(Chain[S][0]) == INDEX_NONE || Legs->GetBoneIndex(Chain[S][1]) == INDEX_NONE || Legs->GetBoneIndex(Chain[S][2]) == INDEX_NONE)
+				{
+					continue;
+				}
+				const FVector Hip = Legs->GetBoneLocation(Chain[S][0]);
+				const FVector Knee = Legs->GetBoneLocation(Chain[S][1]);
+				const FVector Ankle = Legs->GetBoneLocation(Chain[S][2]);
+				LegDist[S] = FMath::Min(FMath::PointDistToSegment(Tip, Hip, Knee), FMath::PointDistToSegment(Tip, Knee, Ankle)) / 100.0;
+			}
+			if (LegDist[0] >= 0.0 && LegDist[1] >= 0.0)
+			{
+				LegNear = LegDist[0] <= LegDist[1] ? 'l' : 'r';
+			}
+		}
 		if (JawBone != INDEX_NONE && JawBone < PupSkin->GetNumBones())
 		{
 			const int32 JawParent = PupSkin->GetSkeletalMeshAsset()->GetRefSkeleton().GetParentIndex(JawBone);
@@ -749,7 +772,7 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		}
 	}
 	char Row[1600];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", Frame,
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%c\n", Frame,
 		static_cast<double>(Fight.time()) + Runner.GetResultAge(), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
 		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp,
@@ -758,7 +781,7 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		CanineZ, LegFront[0], LegFront[1], LegFront[2], LegFront[3],
 		ToothCm[0] / 100.0, ToothCm[1] / 100.0, ToothCm[2] / 100.0, ToothCm[3] / 100.0, ToothCm[4] / 100.0, ToothCm[5] / 100.0,
 		KneeZ[0], KneeZ[1], MidThighZ[0], MidThighZ[1], PupActorDz, PupRootDz, PupMeshDz, PupX, PupY, PupWYaw,
-		Paw[0], Paw[1], Paw[2], Paw[3], Paw[4], Paw[5], Paw[6], Paw[7], Paw[8], Paw[9], Paw[10], Paw[11]);
+		Paw[0], Paw[1], Paw[2], Paw[3], Paw[4], Paw[5], Paw[6], Paw[7], Paw[8], Paw[9], Paw[10], Paw[11], LegDist[0], LegDist[1], LegNear);
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));
