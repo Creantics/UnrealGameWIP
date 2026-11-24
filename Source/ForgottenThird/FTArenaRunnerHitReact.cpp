@@ -38,9 +38,15 @@ void UFTArenaRunner::ReactLeadBodies(const ftcore::ArenaEvents& Events)
 			continue; // that body keeps the shapes' lean (its missing ragdoll was warned once at wear time)
 		}
 		const bool bPlayed = Figure->ReactToHit(R, FVector(R.dir.x, R.dir.y, 0.0));
-		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: hit reaction on the %s body: tier %d, part %d, %.0f N*s, %d blow(s), stop %d%s."),
-			Fight.time(), bPlayerBody ? TEXT("player's") : TEXT("ally's"), static_cast<int32>(R.tier), R.part, R.strength,
-			static_cast<int32>(R.blows), R.hitStopFrames, bPlayed ? TEXT("") : TEXT(" (not played: down or no bodies)"));
+		// The part by the setup's names (thigh_l etc.), and the push direction in world X/Y with the struck body's yaw, so a
+		// review can tell a wrong-side part or a reversed push from drive or idle motion.
+		const TCHAR* PartName = R.part == Setup->thighL ? TEXT("thigh_l") : R.part == Setup->thighR ? TEXT("thigh_r")
+			: R.part == Setup->shinL ? TEXT("shin_l") : R.part == Setup->shinR ? TEXT("shin_r") : R.part == Setup->pelvis ? TEXT("pelvis")
+			: R.part == Setup->spine ? TEXT("spine") : R.part == Setup->chest ? TEXT("chest") : R.part == Setup->head ? TEXT("head") : TEXT("other");
+		UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: hit reaction on the %s body: tier %d, part %d (%s), %.0f N*s, %d blow(s), stop %d, push world (%.3f, %.3f), body yaw %.1f%s."),
+			Fight.time(), bPlayerBody ? TEXT("player's") : TEXT("ally's"), static_cast<int32>(R.tier), R.part, PartName, R.strength,
+			static_cast<int32>(R.blows), R.hitStopFrames, R.dir.x, R.dir.y, Figure->GetActorRotation().Yaw,
+			bPlayed ? TEXT("") : TEXT(" (not played: down or no bodies)"));
 	}
 }
 
