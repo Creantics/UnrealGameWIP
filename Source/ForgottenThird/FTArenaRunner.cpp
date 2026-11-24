@@ -1724,6 +1724,21 @@ void UFTArenaRunner::PutBodiesAtStart()
 	{
 		Bodies.enemies[I] = Fight.enemyStart(I);
 	}
+#if !UE_BUILD_SHIPPING
+	// Captures: -ArenaSpawnSide=<m> starts every enemy that far to the lead's right (negative: left) of Core's spot, the lead
+	// facing as before, so an approach comes in off the lead's line instead of dead ahead.
+	float SpawnSide = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaSpawnSide="), SpawnSide) && SpawnSide != 0.f)
+	{
+		const ftcore::Vec2 F = Fight.playerStartFacing();
+		const ftcore::Vec2 Right{-F.y, F.x}; // UE is left-handed: Y is right of X
+		for (size_t I = 0; I < Fight.enemyCount(); ++I)
+		{
+			Bodies.enemies[I] = ftcore::Vec2{Bodies.enemies[I].x + Right.x * SpawnSide, Bodies.enemies[I].y + Right.y * SpawnSide};
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaSpawnSide: the enemies start %.2f m to the lead's right."), static_cast<double>(SpawnSide));
+	}
+#endif
 	PrevBodies = Bodies;
 	PlayerStepSpeed = 0.f;
 	PlayerStepAt = -1;
