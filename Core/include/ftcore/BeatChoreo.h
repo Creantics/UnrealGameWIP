@@ -362,6 +362,19 @@ struct GaitMixState {
 FTCORE_API GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaits, bool show, double v, double dt,
                                     double blend);
 
+// Where a figure was drawn on the last frame its speed was taken. Value-initialise it per figure (and on a restart).
+struct GaitDrawnState {
+    double x = 0.0, y = 0.0;
+    bool valid = false;
+};
+
+// The drawn figure's speed along its facing (fx, fy: a unit vector) this frame, m/s: its drawn travel since the last
+// frame over the frame's clip time dt, so the feet cover what the figure is seen to cover whatever the fixed steps per
+// frame. The fallback (the last fixed step's speed along the facing) stands on the first frame, in a hit pause (dt 0)
+// and on a jump (drawn travel over dt above maxSpeed: a teleport or a restart). The drawn place is kept every frame.
+FTCORE_API double gaitDrawnSpeed(GaitDrawnState& state, double x, double y, double fx, double fy, double dt,
+                                 double fallback, double maxSpeed);
+
 // ---- the sample ----
 
 struct ChoreoPose {

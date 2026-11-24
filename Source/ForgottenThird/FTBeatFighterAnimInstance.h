@@ -89,6 +89,8 @@ public:
 	// Coming after a clip it starts a crossfade over it (at the weight given, not a blend time); anything inside the
 	// mix changing (a gait, a share, a reverse) stays in the one slot. A null SeqA leaves the pose as it was.
 	void SetMix(const UAnimSequence* SeqA, float TimeA, const UAnimSequence* SeqB, float TimeB, float ShareB, float Weight);
+	// It holds a clip (one has been set since it was made): a first clip shows at full weight, not faded from nothing.
+	bool HasPose() const { return Slots[0].Seq != nullptr; }
 	void SetHoldRoot(bool bHold) { bHoldRoot = bHold; }
 	// With it on, the same clip begun again (its time jumps back) fades in over itself as a new clip does.
 	void SetFadeRestart(bool bFade) { bFadeRestart = bFade; }

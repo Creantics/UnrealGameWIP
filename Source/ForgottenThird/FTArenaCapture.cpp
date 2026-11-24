@@ -125,7 +125,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz,pup_x,pup_y,pup_wyaw,paw_fl_x,paw_fl_y,paw_fl_z,paw_fr_x,paw_fr_y,paw_fr_z,paw_hl_x,paw_hl_y,paw_hl_z,paw_hr_x,paw_hr_y,paw_hr_z\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz,pup_x,pup_y,pup_wyaw,paw_fl_x,paw_fl_y,paw_fl_z,paw_fr_x,paw_fr_y,paw_fr_z,paw_hl_x,paw_hl_y,paw_hl_z,paw_hr_x,paw_hr_y,paw_hr_z,mix,mix_w,clip2,clip2_at,rate2,w2,slot,mix_speed\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -552,6 +552,19 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		Hits += Event.type == ftcore::ArenaEventType::Hit && Event.source == 0 && Event.target == ftcore::kArenaPlayer ? 1 : 0;
 	}
 	// The clip's object name, narrowed into the row's own buffer (ASCII asset names).
+	// A gait mix's second layer (FEnemyClipNow): clip2 at clip2_at, rate2 (signed), w2 of the slot; mix_w the first's
+	// share, slot the slot's weight over the clip before it, mix_speed the signed m/s the feet are given.
+	char Clip2Name[96] = "-";
+	if (Clip.Second)
+	{
+		const FString Name = Clip.Second->GetName();
+		const int32 N = FMath::Min(Name.Len(), static_cast<int32>(sizeof(Clip2Name)) - 1);
+		for (int32 C = 0; C < N; ++C)
+		{
+			Clip2Name[C] = static_cast<char>(Name[C] < 128 ? Name[C] : '?');
+		}
+		Clip2Name[N] = '\0';
+	}
 	char ClipName[96] = "-";
 	if (Clip.Sequence)
 	{
@@ -748,8 +761,8 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 			HeadAt = LeadSkin->GetBoneIndex(HeadName) != INDEX_NONE ? LeadSkin->GetBoneLocation(HeadName) / 100.0 : HeadAt;
 		}
 	}
-	char Row[1600];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", Frame,
+	char Row[1900];
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.3f,%s,%.4f,%.3f,%.3f,%.3f,%.3f\n", Frame,
 		static_cast<double>(Fight.time()) + Runner.GetResultAge(), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
 		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp,
@@ -758,7 +771,9 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		CanineZ, LegFront[0], LegFront[1], LegFront[2], LegFront[3],
 		ToothCm[0] / 100.0, ToothCm[1] / 100.0, ToothCm[2] / 100.0, ToothCm[3] / 100.0, ToothCm[4] / 100.0, ToothCm[5] / 100.0,
 		KneeZ[0], KneeZ[1], MidThighZ[0], MidThighZ[1], PupActorDz, PupRootDz, PupMeshDz, PupX, PupY, PupWYaw,
-		Paw[0], Paw[1], Paw[2], Paw[3], Paw[4], Paw[5], Paw[6], Paw[7], Paw[8], Paw[9], Paw[10], Paw[11]);
+		Paw[0], Paw[1], Paw[2], Paw[3], Paw[4], Paw[5], Paw[6], Paw[7], Paw[8], Paw[9], Paw[10], Paw[11],
+		Clip.bMix ? 1 : 0, static_cast<double>(Clip.Weight), Clip2Name, static_cast<double>(Clip.SecondAt), static_cast<double>(Clip.SecondRate),
+		static_cast<double>(Clip.SecondWeight), static_cast<double>(Clip.Slot), static_cast<double>(Clip.Speed));
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));

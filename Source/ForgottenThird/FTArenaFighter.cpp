@@ -550,6 +550,12 @@ void AFTArenaFighter::PlayMix(const UAnimSequence* A, float TimeA, const UAnimSe
 	}
 }
 
+bool AFTArenaFighter::HasSkinPose() const
+{
+	const UFTBeatFighterAnimInstance* Anim = SkinKind == ESkin::Creature ? Cast<UFTBeatFighterAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	return Anim && Anim->HasPose();
+}
+
 void AFTArenaFighter::SetTellVisible(bool bVisible)
 {
 	if (bTellShown == bVisible)

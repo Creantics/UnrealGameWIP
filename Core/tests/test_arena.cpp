@@ -11551,7 +11551,8 @@ TEST_CASE("arena maw_pup: no foot slides at the start, steady, the stop or the b
                     lastLive[static_cast<std::size_t>(l.gait)] = true;
                     lastTime[static_cast<std::size_t>(l.gait)] = l.time;
                 }
-                if (f.show && f.slot < 1.0 && f.slot > slotWas + kDt / blend + 1e-9) ++floorTicks;
+                // Any rise past the blend's own (to full weight too) after the first frame is the floor's.
+                if (f.show && i > 0 && f.slot > slotWas + kDt / blend + 1e-9) ++floorTicks;
                 if (f.show && slotWas < 1.0 && i > 0) entryRun += 1.0;
                 if (f.show && f.slot >= 1.0 && slotWas < 1.0 && i > 0) {
                     entryTicks = std::min(entryTicks, entryRun);
@@ -11608,5 +11609,59 @@ TEST_CASE("arena maw_pup: no foot slides at the start, steady, the stop or the b
             CHECK(clockErr < 1e-9);
             CHECK(floorTicks == 0); // the speed floor never snaps the slot in (no gait under a shove or a lunge)
         }
+    }
+}
+
+TEST_CASE("gait drawn speed: the drawn travel over the frame's clip time, at any frame rate, through a pause, a "
+          "restart and a jump") {
+    using namespace ftcore;
+    // A body moving along +x at 0.84 m/s, drawn (lerped between fixed steps) on frames of several lengths.
+    constexpr double kV = 0.84, kMax = 2.0 * 5.42;
+    const auto drawnAt = [](double t) { return kV * t; }; // the lerp of a constant speed is the line itself
+    for (const double frame : {1.0 / 30.0, 1.0 / 45.0, 1.0 / 60.0, 1.0 / 144.0, 0.05}) {
+        CAPTURE(frame);
+        GaitDrawnState s;
+        double t = 0.0;
+        CHECK(gaitDrawnSpeed(s, drawnAt(t), 0.0, 1.0, 0.0, frame, 0.5, kMax) == 0.5); // the first frame: the fallback
+        double maxErr = 0.0;
+        for (int i = 0; i < 300; ++i) {
+            const double dt = i % 7 == 3 ? 0.0 : frame; // every 7th frame a hit pause: no clip time, no travel
+            t += dt;
+            const double v = gaitDrawnSpeed(s, drawnAt(t), 0.0, 1.0, 0.0, dt, kV - 0.3, kMax);
+            if (dt > 0.0) maxErr = std::max(maxErr, std::fabs(v - kV));
+            else CHECK(v == doctest::Approx(kV - 0.3)); // the pause: the fallback (the last step's speed)
+        }
+        CHECK(maxErr < 1e-9);
+    }
+    // Backward and sideways: signed along the facing, the sideways part not counted.
+    GaitDrawnState s;
+    (void)gaitDrawnSpeed(s, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, kMax);
+    CHECK(gaitDrawnSpeed(s, 1.5, 0.97, 0.0, 1.0, 0.1, 0.0, kMax) == doctest::Approx(-0.3));
+    // A jump (a restart puts the body back at its start): the fallback, and the next frame measures from there.
+    CHECK(gaitDrawnSpeed(s, 9.0, 9.0, 0.0, 1.0, 1.0 / 60.0, 0.2, kMax) == 0.2);
+    CHECK(gaitDrawnSpeed(s, 9.0, 9.0 + 0.84 / 60.0, 0.0, 1.0, 1.0 / 60.0, 0.2, kMax) == doctest::Approx(0.84));
+    // A reset state and a non-finite place: the fallback.
+    s = GaitDrawnState{};
+    CHECK(gaitDrawnSpeed(s, 9.1, 9.1, 0.0, 1.0, 1.0 / 60.0, 0.7, kMax) == 0.7);
+    CHECK(gaitDrawnSpeed(s, std::nan(""), 9.1, 0.0, 1.0, 1.0 / 60.0, 0.7, kMax) == 0.7);
+    CHECK_FALSE(s.valid);
+}
+
+TEST_CASE("gait mix: a speed set cut at its first speed that is not finite and rising plays only the sound gaits") {
+    using namespace ftcore;
+    GaitSet gs;
+    gs.count = 3;
+    gs.speed = {0.84, 0.0, std::nan("")};
+    gs.length = {0.8, 0.4, 0.4};
+    gs.idleLength = 2.0;
+    GaitMixState st;
+    for (int i = 0; i < 60; ++i) {
+        const GaitMixFrame f = gaitMixStep(st, gs, true, 3.0, 1.0 / 60.0, 0.2);
+        for (const GaitMixLayer& l : f.layer) {
+            CHECK(std::isfinite(l.rate));
+            CHECK(std::isfinite(l.time));
+            CHECK(l.gait < 1); // only the walk (or the idle)
+        }
+        CHECK(std::isfinite(f.foot));
     }
 }

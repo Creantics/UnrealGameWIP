@@ -1345,16 +1345,16 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		const ftcore::Vec2 From = PrevBodies.enemies[static_cast<size_t>(I)];
 		const ftcore::Vec2 To = Bodies.enemies[static_cast<size_t>(I)];
 		const ftcore::Vec2 Drawn = ArenaLerp(From, To, FMath::Clamp(Alpha, 0.f, 1.f));
-		double V = (static_cast<double>(To.x - From.x) * Out.facing.x + static_cast<double>(To.y - From.y) * Out.facing.y) / StepSeconds;
-		if (bMixDrawn[I] && ClipDelta > 0.f)
-		{
-			const double DX = static_cast<double>(Drawn.x - MixDrawn[I].x), DY = static_cast<double>(Drawn.y - MixDrawn[I].y);
-			V = (DX * Out.facing.x + DY * Out.facing.y) / static_cast<double>(ClipDelta);
-		}
-		MixDrawn[I] = Drawn;
-		bMixDrawn[I] = true;
+		const double StepV = (static_cast<double>(To.x - From.x) * Out.facing.x + static_cast<double>(To.y - From.y) * Out.facing.y) / StepSeconds;
+		// A drawn jump past twice the fastest gait (a restart, a teleport) is no travel the feet could show.
+		const double MaxV = 2.0 * Skin.MixGaits.speed[static_cast<size_t>(FMath::Max(0, Skin.MixGaits.count - 1))];
+		const double V = ftcore::gaitDrawnSpeed(MixDrawn[I], Drawn.x, Drawn.y, Out.facing.x, Out.facing.y, ClipDelta, StepV, MaxV);
 		const double MixBlend = Skin.Clips->blend > 0.0 ? Skin.Clips->blend : static_cast<double>(UFTBeatFighterAnimInstance::BlendSeconds);
 		const bool bShow = ftcore::arenaGaitShows(Out, Fight.enemyAttackLength(static_cast<size_t>(I)), MixBlend);
+		if (!GaitMix[I].begun && Figure->HasSkinPose())
+		{
+			GaitMix[I].begun = true; // a restart: the figure still shows the last fight's clip, so the slot fades in over it
+		}
 		MixNow[I] = ftcore::gaitMixStep(GaitMix[I], Skin.MixGaits, bShow, ftcore::arenaGaitSpeed(Out, V), ClipDelta, MixBlend);
 		const int32 Lead = MixNow[I].layer[0].gait;
 		WalkSpeed[I] = static_cast<float>(FMath::Abs(V));
@@ -1692,10 +1692,15 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		UpOwedUntil[I] = -1e9; // anything else (a move, a stagger, a death) takes it from the get-up for good
 	}
-	if (Skin.bGaitMix && MixNow[I].show && (bOwedUp || bStone || bBossLoop))
+	const int32 HitClip = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
+	const bool bClipHolds = bOwedUp || bStone || bBossLoop || (bTimed && Clip >= 0 && (Clip == Skin.FaceDownOut || Clip == HitClip));
+	if (Skin.bGaitMix && MixNow[I].show && bClipHolds)
 	{
-		// An owed get-up (or a stone or boss-loop clip) has the figure: the mix's slot starts its fade again after it.
+		// A hit reaction, a get-up (owed or ending a down) or a stone or boss-loop clip plays out whole: the mix waits, and
+		// its slot fades in over that clip's end once it is done.
 		GaitMix[I].showing = false;
+		bWalking[I] = false;
+		bRunning[I] = false;
 	}
 	else if (Skin.bGaitMix && MixNow[I].show)
 	{
@@ -1849,7 +1854,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 		WalkPhase[I] = 0.0;
 		GaitMix[I] = ftcore::GaitMixState{};
 		MixNow[I] = ftcore::GaitMixFrame{};
-		bMixDrawn[I] = false;
+		MixDrawn[I] = ftcore::GaitDrawnState{};
 		MixSpeed[I] = 0.f;
 		bKneeling[I] = false;
 		KneelSince[I] = 0.0;

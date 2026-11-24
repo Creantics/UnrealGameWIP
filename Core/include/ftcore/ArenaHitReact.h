@@ -88,4 +88,30 @@ FTCORE_API ArenaHitTier arenaHitTierOf(const ArenaEvents& events, std::size_t ev
 // Knockout the whole body's mass x maxLinearVelocity. None: 0.
 FTCORE_API float arenaHitCap(ArenaHitTier tier, int part, const ArenaHitSetup& setup);
 
+// ---- the leg the teeth are at (a bite on the legs) ----
+// Core picks a leg part by which side of the struck body's facing the attacker stands (hitPart). Dead ahead that sign
+// flips on a fraction of a degree, so the host, which has both bodies' bones, re-picks the side in world space.
+// A leg's chain (ArenaPoint3 from ArenaFight.h, in world units, any one unit): hip (thigh), knee (calf), ankle
+// (foot).
+using ArenaLegChain = std::array<ArenaPoint3, 3>;
+
+// Which leg the attacker's teeth are at: the snout ray (from `snout`, along `forward` on the ground) carried to the
+// legs' depth (the mean of both chains along `forward`), and the leg whose chain (hip-knee, knee-ankle segments) lies
+// nearer that point. 0 the left, 1 the right; -1 when the two distances are within `tie` (same unit) or `forward` has
+// no length, so the caller keeps its own pick. Pure, no allocation.
+FTCORE_API int arenaLegAtTeeth(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain& left, const ArenaLegChain& right,
+                               float tie);
+// The snout ray's point at the legs' depth (as arenaLegAtTeeth carries it) and its distance to each chain, for logs.
+struct ArenaLegReach {
+    ArenaPoint3 contact;
+    float left = 0.f, right = 0.f;
+    bool valid = false; // forward had a length
+};
+FTCORE_API ArenaLegReach arenaLegReach(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain& left,
+                                       const ArenaLegChain& right);
+
+// `part` moved to `side` (0 left, 1 right) when it is one of the setup's thigh or shin parts and that side has the same
+// part; anything else (another part, side -1, a missing part) comes back unchanged.
+FTCORE_API int arenaLegPartOnSide(int part, int side, const ArenaHitSetup& setup);
+
 } // namespace ftcore

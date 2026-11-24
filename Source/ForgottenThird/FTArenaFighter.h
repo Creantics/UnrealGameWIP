@@ -151,6 +151,8 @@ public:
 	// A skinned figure shows a gait mix (ftcore::gaitMixStep's frame): A at TimeA and B at TimeB, B taking ShareB of the
 	// slot, the slot at Weight over the clip before it (UFTBeatFighterAnimInstance::SetMix). Root held.
 	void PlayMix(const UAnimSequence* A, float TimeA, const UAnimSequence* B, float TimeB, float ShareB, float Weight);
+	// A skinned figure already shows a clip (so a gait mix after it fades in over it).
+	bool HasSkinPose() const;
 	bool IsSkinned() const { return SkinKind == ESkin::Creature; }
 	bool WearsLook() const { return SkinKind == ESkin::Lead; }
 	// The camera's rig in metres (ftcore::StageCamera, scaled with the arena): the boom's length, the pivot's

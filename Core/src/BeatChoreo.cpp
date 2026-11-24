@@ -237,10 +237,16 @@ GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show,
     if (!std::isfinite(v)) v = 0.0;
     if (!std::isfinite(dt) || !(dt > 0.0)) dt = 0.0;
     if (!std::isfinite(blend)) blend = 0.0;
-    // A set out of range plays as far as it is sound: at most kMaxGaits, and none when the slowest has no speed.
+    // A set out of range plays as far as it is sound: at most kMaxGaits, cut at the first speed that is not finite and
+    // rising (the slowest above 0).
     GaitSet gaits = gaitsIn;
-    gaits.count = std::clamp(gaits.count, 0, kMaxGaits);
-    if (gaits.count > 0 && !(gaits.speed[0] > 0.0)) gaits.count = 0;
+    const int asked = std::clamp(gaits.count, 0, kMaxGaits);
+    gaits.count = 0;
+    for (int g = 0; g < asked; ++g) {
+        const double sp = gaits.speed[static_cast<std::size_t>(g)];
+        if (!std::isfinite(sp) || !(sp > (g > 0 ? gaits.speed[static_cast<std::size_t>(g - 1)] : 0.0))) break;
+        gaits.count = g + 1;
+    }
     const bool first = !state.begun;
     state.begun = true;
     if (!show) {
@@ -291,6 +297,24 @@ GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show,
     f.speed = u;
     f.foot = state.slot * foot;
     return f;
+}
+
+double gaitDrawnSpeed(GaitDrawnState& state, double x, double y, double fx, double fy, double dt, double fallback,
+                      double maxSpeed) {
+    if (!std::isfinite(fallback)) fallback = 0.0;
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        state.valid = false;
+        return fallback;
+    }
+    const bool had = state.valid;
+    const double dx = x - state.x, dy = y - state.y;
+    state.x = x;
+    state.y = y;
+    state.valid = true;
+    if (!had || !std::isfinite(dt) || !(dt > 0.0)) return fallback;
+    if (std::isfinite(maxSpeed) && maxSpeed > 0.0 && std::hypot(dx, dy) > maxSpeed * dt) return fallback;
+    const double v = (dx * fx + dy * fy) / dt;
+    return std::isfinite(v) ? v : fallback;
 }
 
 double choreoStanceRate(const BeatClip& stance, double beatSeconds) {

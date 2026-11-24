@@ -913,8 +913,7 @@ private:
 	ftcore::GaitMixState GaitMix[ftcore::kMaxArenaEnemies] = {};
 	ftcore::GaitMixFrame MixNow[ftcore::kMaxArenaEnemies] = {};
 	// Where the body was drawn on the last frame a gait mix ran (its speed is the drawn travel over the frame's clip time).
-	ftcore::Vec2 MixDrawn[ftcore::kMaxArenaEnemies] = {};
-	bool bMixDrawn[ftcore::kMaxArenaEnemies] = {};
+	ftcore::GaitDrawnState MixDrawn[ftcore::kMaxArenaEnemies] = {};
 	float MixSpeed[ftcore::kMaxArenaEnemies] = {};
 	// A step back's ground speed (m/s), from its SteppedBack event: the walk clip plays backward at it.
 	float StepBackSpeed[ftcore::kMaxArenaEnemies] = {};

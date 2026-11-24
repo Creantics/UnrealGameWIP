@@ -121,6 +121,58 @@ bool arenaHitSetup(const RagdollMap& map, const RagdollProfile& profile, ArenaHi
     return true;
 }
 
+namespace {
+
+float dist3(ArenaPoint3 a, ArenaPoint3 b) {
+    const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// p's distance to the segment a-b.
+float toSegment(ArenaPoint3 p, ArenaPoint3 a, ArenaPoint3 b) {
+    const float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+    const float len2 = ux * ux + uy * uy + uz * uz;
+    float t = 0.f;
+    if (len2 > 0.f) t = std::clamp(((p.x - a.x) * ux + (p.y - a.y) * uy + (p.z - a.z) * uz) / len2, 0.f, 1.f);
+    return dist3(p, ArenaPoint3{a.x + ux * t, a.y + uy * t, a.z + uz * t});
+}
+
+float toChain(ArenaPoint3 p, const ArenaLegChain& c) {
+    return std::min(toSegment(p, c[0], c[1]), toSegment(p, c[1], c[2]));
+}
+
+} // namespace
+
+ArenaLegReach arenaLegReach(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain& left, const ArenaLegChain& right) {
+    ArenaLegReach r;
+    const float len = lengthOf(forward);
+    if (!(len > kZeroLength)) return r;
+    const Vec2 f{forward.x / len, forward.y / len};
+    float depth = 0.f;
+    for (const ArenaLegChain* c : {&left, &right})
+        for (const ArenaPoint3& p : *c) depth += (p.x - snout.x) * f.x + (p.y - snout.y) * f.y;
+    depth /= 6.f;
+    r.contact = ArenaPoint3{snout.x + f.x * depth, snout.y + f.y * depth, snout.z};
+    r.left = toChain(r.contact, left);
+    r.right = toChain(r.contact, right);
+    r.valid = true;
+    return r;
+}
+
+int arenaLegAtTeeth(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain& left, const ArenaLegChain& right, float tie) {
+    const ArenaLegReach r = arenaLegReach(snout, forward, left, right);
+    if (!r.valid || std::fabs(r.left - r.right) <= std::max(0.f, tie)) return -1;
+    return r.left < r.right ? 0 : 1;
+}
+
+int arenaLegPartOnSide(int part, int side, const ArenaHitSetup& s) {
+    if (side != 0 && side != 1) return part;
+    const bool thigh = part >= 0 && (part == s.thighL || part == s.thighR);
+    const bool shin = part >= 0 && (part == s.shinL || part == s.shinR);
+    const int to = thigh ? (side == 0 ? s.thighL : s.thighR) : shin ? (side == 0 ? s.shinL : s.shinR) : -1;
+    return to >= 0 ? to : part;
+}
+
 float arenaHitCap(ArenaHitTier tier, int part, const ArenaHitSetup& s) {
     switch (tier) {
     case ArenaHitTier::None:
