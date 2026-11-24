@@ -42,6 +42,10 @@ private:
 	// bone skinning only, no morphs or cloth), its heaviest bone and its mesh; false with no mesh to measure.
 	bool ClosestSkinVertex(const AActor& Lead, const FVector& At, FVector& OutPoint, FName& OutBone, FName& OutPart);
 	static void CopyName(const FName& Name, char* Out, int32 Size);
+	// The front of each of the lead's legs at height Z (world cm, a 4 cm band): over every visible skinned vertex (as
+	// ClosestSkinVertex) in the band, the one least far ahead of Origin along Fwd on each side of Fwd (left: +Left).
+	// Out: forward then side (cm, from Origin, side + = left), for the left then the right; false when a side has none.
+	bool LegFronts(const AActor& Lead, const FVector& Origin, const FVector& Fwd, double Z, double Out[4]);
 
 	bool bOn = false;
 	FString ShotPrefix;
