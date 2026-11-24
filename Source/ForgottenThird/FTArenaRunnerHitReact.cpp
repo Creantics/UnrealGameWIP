@@ -9,6 +9,7 @@
 
 #include "FTArenaRunner.h"
 
+#include "Components/SkeletalMeshComponent.h"
 #include "FTArenaFighter.h"
 #include "ForgottenThird.h"
 

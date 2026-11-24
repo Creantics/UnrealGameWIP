@@ -316,7 +316,7 @@ double gaitDrawnSpeed(GaitDrawnState& state, double x, double y, double fx, doub
     state.y = y;
     state.valid = true;
     if (!had || !std::isfinite(dt) || !(dt > 0.0)) return fallback;
-    if (std::isfinite(maxSpeed) && maxSpeed > 0.0 && std::hypot(dx, dy) > maxSpeed * dt) return fallback;
+    if (std::isfinite(maxSpeed) && maxSpeed > 0.0 && std::hypot(dx, dy) > maxSpeed * dt) return 0.0; // no travel
     const double v = (dx * fx + dy * fy) / dt;
     return std::isfinite(v) ? v : fallback;
 }

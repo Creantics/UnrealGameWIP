@@ -11637,8 +11637,8 @@ TEST_CASE("gait drawn speed: the drawn travel over the frame's clip time, at any
     GaitDrawnState s;
     (void)gaitDrawnSpeed(s, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, kMax);
     CHECK(gaitDrawnSpeed(s, 1.5, 0.97, 0.0, 1.0, 0.1, 0.0, kMax) == doctest::Approx(-0.3));
-    // A jump (a restart puts the body back at its start): the fallback, and the next frame measures from there.
-    CHECK(gaitDrawnSpeed(s, 9.0, 9.0, 0.0, 1.0, 1.0 / 60.0, 0.2, kMax) == 0.2);
+    // A jump (a restart puts the body back at its start): no travel, and the next frame measures from there.
+    CHECK(gaitDrawnSpeed(s, 9.0, 9.0, 0.0, 1.0, 1.0 / 60.0, 0.2, kMax) == 0.0);
     CHECK(gaitDrawnSpeed(s, 9.0, 9.0 + 0.84 / 60.0, 0.0, 1.0, 1.0 / 60.0, 0.2, kMax) == doctest::Approx(0.84));
     // A reset state and a non-finite place: the fallback.
     s = GaitDrawnState{};
@@ -11741,21 +11741,32 @@ TEST_CASE("gait drawn speed: a non-finite facing or clip time, no top speed, and
         CHECK(gaitDrawnSpeed(u, 5.0, 0.0, 1.0, 0.0, 0.1, 0.0, top) == doctest::Approx(50.0));
         CHECK(gaitDrawnSpeed(u, 5.0, 0.0, 1.0, 0.0, 0.0, 1e6, top) == 1e6);
     }
-    // A teleport within one fixed step: the step's huge speed comes back held to the top speed, either sign.
-    GaitDrawnState j;
-    (void)gaitDrawnSpeed(j, 0.0, 0.0, 1.0, 0.0, 1.0 / 60.0, 0.0, 10.84);
-    CHECK(gaitDrawnSpeed(j, 30.0, 0.0, 1.0, 0.0, 1.0 / 60.0, 1800.0, 10.84) == doctest::Approx(10.84));
-    CHECK(gaitDrawnSpeed(j, 0.0, 0.0, 1.0, 0.0, 1.0 / 60.0, -1800.0, 10.84) == doctest::Approx(-10.84));
-    CHECK(gaitDrawnSpeed(j, 0.0, 0.0, 1.0, 0.0, 0.0, std::nan(""), 10.84) == 0.0);
-    // That held speed into the mix: every rate and clock finite.
+    // A teleport within one fixed step: the drawn jump is no travel; the step's huge speed, where it stands (a pause,
+    // the first frame), comes back held to the top speed (the host's: the fastest gait's cover top), either sign.
     const BeatClips clips = loadPupClips();
-    GaitMixState mix;
-    for (int i = 0; i < 30; ++i) {
-        const GaitMixFrame f = gaitMixStep(mix, pupGaits(clips), true, 10.84, 1.0 / 60.0, clips.blend);
-        CHECK(std::isfinite(f.foot));
-        for (const GaitMixLayer& l : f.layer) {
-            CHECK(std::isfinite(l.rate));
-            CHECK(std::isfinite(l.time));
+    const GaitSet pg = pupGaits(clips);
+    const double topV = kGaitMixHigh * pg.speed[static_cast<std::size_t>(pg.count - 1)];
+    GaitDrawnState j;
+    (void)gaitDrawnSpeed(j, 0.0, 0.0, 1.0, 0.0, 1.0 / 60.0, 0.0, topV);
+    CHECK(gaitDrawnSpeed(j, 30.0, 0.0, 1.0, 0.0, 1.0 / 60.0, 1800.0, topV) == 0.0);
+    CHECK(gaitDrawnSpeed(j, 30.0, 0.0, 1.0, 0.0, 0.0, 1800.0, topV) == doctest::Approx(topV));
+    CHECK(gaitDrawnSpeed(j, 30.0, 0.0, 1.0, 0.0, 0.0, -1800.0, topV) == doctest::Approx(-topV));
+    CHECK(gaitDrawnSpeed(j, 30.0, 0.0, 1.0, 0.0, 0.0, std::nan(""), topV) == 0.0);
+    GaitDrawnState first;
+    CHECK(gaitDrawnSpeed(first, 0.0, 0.0, 1.0, 0.0, 1.0 / 60.0, 1800.0, topV) == doctest::Approx(topV));
+    // Anything it gives into the mix (the held top, either sign, and a jump's 0): every rate in the band, every clock
+    // finite.
+    for (const double v : {topV, -topV, 0.0}) {
+        CAPTURE(v);
+        GaitMixState mix;
+        for (int i = 0; i < 30; ++i) {
+            const GaitMixFrame f = gaitMixStep(mix, pupGaits(clips), true, v, 1.0 / 60.0, clips.blend);
+            CHECK(std::isfinite(f.foot));
+            for (const GaitMixLayer& l : f.layer) {
+                CHECK(std::isfinite(l.rate));
+                CHECK(std::isfinite(l.time));
+                if (l.gait >= 0 && l.weight > 0.0) CHECK(std::fabs(l.rate) <= kGaitMixHigh + 1e-9);
+            }
         }
     }
 }
