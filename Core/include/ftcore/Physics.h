@@ -137,6 +137,10 @@ struct RagdollProfile {
     float koHeavyAfter = 1.2f, koHeavyRate = 8.f, koHeavyBelow = 1.f;
     float hitImpulseScale = 1.f;
     float hitHold = 0.1f, hitBlendOut = 0.3f; // seconds
+    // Hit-stop frames the host shows per hit tier when the move sets no hitStop of its own (display only: the arena
+    // tick never reads them), counted at hitStopFps.
+    int hitStopLightFrames = 0, hitStopStaggerFrames = 4, hitStopKoFrames = 8;
+    float hitStopFps = 60.f;
     RagdollMotor motor;
     RagdollJointLimits defaultLimits;
     std::vector<std::pair<std::string, RagdollJointLimits>> limits; // per part name

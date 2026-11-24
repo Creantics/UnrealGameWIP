@@ -180,6 +180,39 @@ TEST_CASE("physics: ragdoll profile errors give reasons") {
     CHECK(profileError("{\"name\": \"x\"") != ""); // bad JSON reports the parser's position
 }
 
+TEST_CASE("physics: ragdoll profile hit-stop frames per tier") {
+    // Shipped data: Light 0, Stagger 4, Knockout 8 frames at 60 fps, the same in every profile.
+    for (const char* name : {"default", "gentle", "minor"}) {
+        const RagdollProfile p = loadProfile(name);
+        CHECK(p.hitStopFps == doctest::Approx(60.f));
+        CHECK(p.hitStopLightFrames == 0);
+        CHECK(p.hitStopStaggerFrames == 4);
+        CHECK(p.hitStopKoFrames == 8);
+    }
+    // Absent keys keep the struct defaults (which match the data).
+    RagdollProfile bare;
+    std::string error;
+    REQUIRE(importRagdollProfile("{}", bare, &error));
+    CHECK(bare.hitStopFps == doctest::Approx(60.f));
+    CHECK(bare.hitStopLightFrames == 0);
+    CHECK(bare.hitStopStaggerFrames == 4);
+    CHECK(bare.hitStopKoFrames == 8);
+    // Set values are read.
+    RagdollProfile set;
+    REQUIRE(importRagdollProfile("{\"hitStopFps\": 30, \"hitStopLightFrames\": 1, \"hitStopStaggerFrames\": 2, "
+                                "\"hitStopKoFrames\": 3}",
+                                set, &error));
+    CHECK(set.hitStopFps == doctest::Approx(30.f));
+    CHECK(set.hitStopLightFrames == 1);
+    CHECK(set.hitStopStaggerFrames == 2);
+    CHECK(set.hitStopKoFrames == 3);
+    // Out of range or wrong type fails with a reason.
+    CHECK(profileError("{\"hitStopKoFrames\": -1}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopLightFrames\": -1}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopFps\": 0}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopStaggerFrames\": 2.5}") == "hitStopStaggerFrames: expected integer");
+}
+
 TEST_CASE("physics: the humanoid map loads") {
     const RagdollMap m = loadMap();
     CHECK(m.name == "humanoid");

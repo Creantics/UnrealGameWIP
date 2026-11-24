@@ -212,6 +212,7 @@ add_library(ftcore STATIC
     src/ArenaKindCrit.cpp
     src/ArenaSoftTarget.cpp
     src/ArenaImpact.cpp
+    src/ArenaHitReact.cpp
     src/ArenaLockFrame.cpp
     src/ArenaCloseFrame.cpp
     src/ArenaLook.cpp
@@ -579,6 +580,7 @@ if(FTCORE_BUILD_TESTS)
         tests/test_arena_rollguard.cpp
         tests/test_arena_soft.cpp
         tests/test_arena_impact.cpp
+        tests/test_arena_hit_react.cpp
         tests/test_arena_lock_frame.cpp
         tests/test_arena_close.cpp
         tests/test_ready_stance.cpp
