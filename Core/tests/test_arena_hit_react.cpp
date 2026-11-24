@@ -55,9 +55,9 @@ const ArenaEnemyKind& kindOf(const ArenaTable& t, const char* id) {
 // The rigs here never move bodies, so the pup's nip must reach from where a test stands it: these tests pin the
 // reach the shipped nip had when they were written (the shipped kind's own reach follows its clip and may be shorter).
 void pinNipReach(ArenaEnemyKind& pup) {
-    pup.moves[0].range = 1.6f;
-    pup.moves[0].arcCos = 0.4f;
-    pup.moves[0].lunge = 0.8f;
+    pup.moves[0].attack.range = 1.6f;
+    pup.moves[0].attack.arcCos = 0.4f;
+    pup.moves[0].attack.lunge = 0.8f;
     pup.moves[0].maxRange = 1.9f;
 }
 
