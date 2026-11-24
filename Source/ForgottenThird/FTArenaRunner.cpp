@@ -3749,6 +3749,7 @@ void UFTArenaRunner::StepFight()
 	TrackPartner(Out);
 	// The events (this step's Released pooled), then a gift held while Lone: the order is Core's (LoneGiftHold::stepEnd).
 	LoneGift.stepEnd([this, &Out] { HandleEvents(Out.events); }, [this] { PressPendingLoneGift(); });
+	ReactLeadBodies(Out.events);
 	TickTable(Out);
 	TrackParts(Out);
 	// The lead's aim: the locked enemy, else the current attack's soft target, else the nearest one standing, on the near
@@ -7282,6 +7283,7 @@ void UFTArenaRunner::Restart()
 		bNamesSwapped = bFiguresSwapped;
 		SessionLead = StartLead;
 	}
+	RecoverLeadBodies(true); // the fight as it began: both leads standing
 	Fight.setLone(LoneAccepted(SessionLead), LoneTuning); // a restart is Lone again (and leaves the heal charges out)
 	if (bPartnerLoneStart)
 	{
@@ -9301,6 +9303,10 @@ void UFTArenaRunner::TrackPartner(const ftcore::ArenaOutput& Out)
 		{
 			++PartnerRises;
 			++PartnerWinRises;
+			if (AllyFigure)
+			{
+				AllyFigure->RecoverBody();
+			}
 			UE_LOG(LogForgottenThird, Display, TEXT("Arena: %.2f: the partner stands again at %d hp."), T, E.amount);
 		}
 	}

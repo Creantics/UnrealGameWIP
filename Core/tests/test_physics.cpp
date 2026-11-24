@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -462,4 +463,37 @@ TEST_CASE("physics: the feel maths does not allocate") {
     }
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(sink != 0.f);
+}
+
+TEST_CASE("physics: the motor as drive strengths toward the clip") {
+    const RagdollProfile gentle = loadProfile("gentle");
+    const RagdollDriveStrengths d = ragdollDriveStrengths(gentle.motor);
+    const float omega = 2.f * 3.14159265f * gentle.motor.frequency;
+    CHECK(gentle.motor.frequency == doctest::Approx(6.f));
+    CHECK(d.orientation == doctest::Approx(omega * omega));
+    CHECK(d.angularVelocity == doctest::Approx(2.f * gentle.motor.damping * omega));
+    CHECK(d.maxTorque == doctest::Approx(gentle.motor.maxTorque));
+    // A stiffer motor springs harder; critical damping (1) gives 2 omega.
+    RagdollMotor m;
+    m.frequency = 8.f;
+    m.damping = 1.f;
+    m.maxTorque = 400.f;
+    const RagdollDriveStrengths s = ragdollDriveStrengths(m);
+    CHECK(s.orientation > d.orientation);
+    CHECK(s.angularVelocity == doctest::Approx(2.f * 2.f * 3.14159265f * 8.f));
+    // No frequency, or one not finite: no drive. A negative damping or torque counts as 0.
+    for (const float f : {0.f, -1.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        m.frequency = f;
+        const RagdollDriveStrengths z = ragdollDriveStrengths(m);
+        CHECK(z.orientation == 0.f);
+        CHECK(z.angularVelocity == 0.f);
+        CHECK(z.maxTorque == 0.f);
+    }
+    m.frequency = 8.f;
+    m.damping = -1.f;
+    m.maxTorque = -5.f;
+    const RagdollDriveStrengths n = ragdollDriveStrengths(m);
+    CHECK(n.orientation > 0.f);
+    CHECK(n.angularVelocity == 0.f);
+    CHECK(n.maxTorque == 0.f);
 }

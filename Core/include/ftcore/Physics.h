@@ -226,6 +226,16 @@ FTCORE_API KoImpulseSplit splitKoImpulse(const RagdollProfile& profile, const fl
 // hitBlendOut.
 FTCORE_API float hitReactionWeight(const RagdollProfile& profile, float t);
 
+// The motor as an acceleration drive toward the animated pose (a mass-free spring, as Unreal's physical animation
+// drives): orientation = (2 pi frequency)^2 in 1/s^2, angularVelocity = 2 damping (2 pi frequency) in 1/s, maxTorque
+// carried over (N*m). A frequency at or below 0, or not finite, gives no drive (all 0).
+struct RagdollDriveStrengths {
+    float orientation = 0.f;
+    float angularVelocity = 0.f;
+    float maxTorque = 0.f;
+};
+FTCORE_API RagdollDriveStrengths ragdollDriveStrengths(const RagdollMotor& motor);
+
 // "Going heavy": the velocity multiplier for one step of dt at `rate` (exp(-rate dt)); 1 when rate <= 0.
 FTCORE_API float heavyDampingFactor(float rate, float dt);
 

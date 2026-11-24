@@ -487,6 +487,16 @@ float hitReactionWeight(const RagdollProfile& profile, float t) {
     return 1.f - x * x * (3.f - 2.f * x);
 }
 
+RagdollDriveStrengths ragdollDriveStrengths(const RagdollMotor& motor) {
+    RagdollDriveStrengths out;
+    if (!(motor.frequency > 0.f) || !std::isfinite(motor.frequency)) return out;
+    const float omega = 2.f * 3.14159265358979f * motor.frequency;
+    out.orientation = omega * omega;
+    out.angularVelocity = 2.f * std::max(motor.damping, 0.f) * omega;
+    out.maxTorque = std::max(motor.maxTorque, 0.f);
+    return out;
+}
+
 float heavyDampingFactor(float rate, float dt) { return rate > 0.f && dt > 0.f ? std::exp(-rate * dt) : 1.f; }
 
 bool SettleTracker::update(float maxLinear, float maxAngular, bool anyAwake, float settleSpeed,

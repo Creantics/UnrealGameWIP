@@ -40,6 +40,12 @@ class USpringArmComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
 class UFTRimComponent;
+class UFTPhysicsComponent;
+namespace ftcore
+{
+struct ArenaHitReaction;
+struct ArenaHitSetup;
+}
 
 // How the weapon arm moves through an attack.
 enum class EFTArenaSwing : uint8
@@ -204,6 +210,17 @@ public:
 	// x Emissive x EmissiveStrength); 0 puts each back. SetupSkinned makes them dynamic for a break-move boss only (bBreakPulse).
 	void SetBodyPulse(float Glow);
 
+	// The lead's hit reaction on its ragdoll (FTPhysicsComponent::React): false when the figure has none (no look worn,
+	// or no PHYS_<body>_Ragdoll asset) or the blow did nothing. WorldDir: the push on the ground plane.
+	bool ReactToHit(const ftcore::ArenaHitReaction& Reaction, const FVector& WorldDir);
+	// Back from a knockout: the ragdoll blends to the clip (FTPhysicsComponent::Recover), at once when bInstant (a
+	// restart). Nothing without a ragdoll.
+	void RecoverBody(bool bInstant = false);
+	// True while the worn look has a ragdoll set up (the lead's body then reacts in physics, not by the shapes' lean).
+	bool HasRagdoll() const;
+	// The ragdoll's hit setup for ftcore::arenaHitReactions, or null without a ragdoll.
+	const ftcore::ArenaHitSetup* GetHitSetup() const;
+
 private:
 	void SetTellVisible(bool bVisible);
 #if !UE_BUILD_SHIPPING
@@ -219,6 +236,11 @@ private:
 	void MakeCarried(USkeletalMesh* Mesh, TConstArrayView<FFTCarriedPiece> Split, bool bVisible);
 	// Puts Look on the player's skin: false (nothing changed) when its body doesn't load.
 	bool WearLook(const FFTLeadLook& Look);
+	// Sets up the ragdoll for the lead's body (/Game/Physics/PHYS_<mesh>_Ragdoll), at wear time. Without the asset the
+	// figure has none (one warning per mesh) and the body keeps the shapes' lean.
+	void SetupRagdoll(USkeletalMesh& BodyMesh);
+	// The skin now shows something other than a lead's look: the ragdoll set-up is dropped.
+	void DropRagdoll();
 
 	// What the Skin component shows: nothing (the shapes), the test human, a lead's look or a creature's mesh.
 	enum class ESkin : uint8
@@ -244,6 +266,13 @@ private:
 	TObjectPtr<UStaticMeshComponent> Visor;
 	UPROPERTY(VisibleAnywhere, Category = "Arena")
 	TObjectPtr<USkeletalMeshComponent> Skin;
+	// The lead's ragdoll (made at the first look with an asset; null before).
+	UPROPERTY(Transient)
+	TObjectPtr<UFTPhysicsComponent> Physics;
+	// The ragdoll played the blow now leaning the figure back: the shapes' lean and wobble stay off until it ends.
+	bool bPhysicsTookHit = false;
+	// The pose lay down last frame (the rise that ends a ragdoll's knockout).
+	bool bPoseWasDown = false;
 	// The lead's look: pieces worn on the body (clothes, a face) and the grooms bound to them.
 	UPROPERTY()
 	TArray<TObjectPtr<USkeletalMeshComponent>> Pieces;
