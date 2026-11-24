@@ -106,6 +106,10 @@ struct FFTArenaSkin
 	ftcore::GaitBand Gaits;
 	static_assert(ftcore::kMaxGaits == 3, "GaitClip's initialiser names every gait slot");
 	int32 GaitClip[ftcore::kMaxGaits] = {-1, -1, -1};
+	// The table's gait_mix (with an idle and a walk): the gaits are drawn by ftcore::gaitMixStep from the body's signed
+	// speed along its facing (MixGaits: their speeds and clip lengths), not by Gaits' pick.
+	bool bGaitMix = false;
+	ftcore::GaitSet MixGaits;
 	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
@@ -267,6 +271,9 @@ public:
 	const ftcore::ArenaEnemyMove* GetEnemyMove(int32 Index) const;
 	// For a capture's per-frame log (FFTArenaCapture): the clip enemy I plays this frame, where in it (s), at what rate, its
 	// smoothed ground speed (m/s), and whether it walks or runs.
+	// The clip enemy I shows now: the heavier layer of a gait mix (FFTArenaSkin::bGaitMix; Rate signed, under 0 backward),
+	// with the mix's second layer and the slot's weight. Ground: the body's speed this frame (m/s; a gait mix's is its
+	// drawn speed along its facing, unsigned; the others' smoothed over the steps).
 	struct FEnemyClipNow
 	{
 		const UAnimSequence* Sequence = nullptr;
@@ -275,6 +282,14 @@ public:
 		float Ground = 0.f;
 		bool bWalk = false;
 		bool bRun = false;
+		bool bMix = false;                          // a gait mix shows (the rest below hold)
+		float Weight = 1.f;                         // the heavier layer's share of the slot
+		const UAnimSequence* Second = nullptr;      // the other layer (null when one plays alone)
+		float SecondAt = 0.f;
+		float SecondRate = 0.f;
+		float SecondWeight = 0.f;
+		float Slot = 1.f;                           // the slot's weight over the clip it fades in over
+		float Speed = 0.f;                          // signed m/s the feet are given (along the facing)
 	};
 	FEnemyClipNow GetEnemyClipNow(int32 I) const;
 	// When enemy Index's current attack went active (far in the past when it hasn't this attack).
@@ -884,6 +899,13 @@ private:
 	float SkinAt[ftcore::kMaxArenaEnemies] = {};
 	float SkinRate[ftcore::kMaxArenaEnemies] = {};
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
+	// A gait-mixed skin (FFTArenaSkin::bGaitMix): its mix's state and this frame's layers.
+	ftcore::GaitMixState GaitMix[ftcore::kMaxArenaEnemies] = {};
+	ftcore::GaitMixFrame MixNow[ftcore::kMaxArenaEnemies] = {};
+	// Where the body was drawn on the last frame a gait mix ran (its speed is the drawn travel over the frame's clip time).
+	ftcore::Vec2 MixDrawn[ftcore::kMaxArenaEnemies] = {};
+	bool bMixDrawn[ftcore::kMaxArenaEnemies] = {};
+	float MixSpeed[ftcore::kMaxArenaEnemies] = {};
 	// A step back's ground speed (m/s), from its SteppedBack event: the walk clip plays backward at it.
 	float StepBackSpeed[ftcore::kMaxArenaEnemies] = {};
 	// Its way, from the event's move: 0 back, 1 a sidestep to the enemy's left, 2 to its right (no room behind it).

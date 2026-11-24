@@ -178,6 +178,121 @@ double gaitRate(const GaitBand& band, int gait, double speed) {
     return std::clamp(speed / band.speed[static_cast<std::size_t>(gait)], band.minRate, band.maxRate);
 }
 
+namespace {
+
+// The two layers (before the slot's weight) that carry `a` m/s (a >= 0) of foot travel, forward.
+void gaitMixLayers(const GaitSet& gs, double a, std::array<GaitMixLayer, 2>& out) {
+    out = {};
+    const auto s = [&gs](int g) { return gs.speed[static_cast<std::size_t>(g)]; };
+    const auto two = [&out](int g0, double w0, double r0, int g1, double r1) {
+        // Heavier first; a share of 0 is still named, so its clock is seeded.
+        const double w1 = 1.0 - w0;
+        if (w0 >= w1) {
+            out[0] = GaitMixLayer{g0, w0, r0, 0.0};
+            out[1] = GaitMixLayer{g1, w1, r1, 0.0};
+        } else {
+            out[0] = GaitMixLayer{g1, w1, r1, 0.0};
+            out[1] = GaitMixLayer{g0, w0, r0, 0.0};
+        }
+    };
+    if (gs.count <= 0 || !(a > 1e-6)) {
+        out[0] = GaitMixLayer{kGaitIdle, 1.0, 0.0, 0.0};
+        out[1] = GaitMixLayer{kGaitIdle, 0.0, 0.0, 0.0};
+        return;
+    }
+    const double low0 = kGaitMixLow * s(0);
+    if (a < low0) {
+        two(0, a / low0, kGaitMixLow, kGaitIdle, 0.0);
+        return;
+    }
+    int g = 0;
+    while (g + 1 < gs.count && a >= kGaitMixLow * s(g + 1)) ++g;
+    if (g > 0 && a <= kGaitMixHigh * s(g - 1)) {
+        // Inside both g - 1's cover and g's: both at their own rates, across the overlap.
+        const double from = kGaitMixLow * s(g);
+        const double to = kGaitMixHigh * s(g - 1);
+        const double t = to > from ? (a - from) / (to - from) : 1.0;
+        two(g - 1, 1.0 - t, a / s(g - 1), g, a / s(g));
+    } else if (a <= kGaitMixHigh * s(g) || g + 1 >= gs.count) {
+        two(g, 1.0, a / s(g), kGaitIdle, 0.0);
+    } else {
+        // The gap up to g + 1: each at its cover's edge, shared so the feet keep the speed.
+        const double from = kGaitMixHigh * s(g);
+        const double to = kGaitMixLow * s(g + 1);
+        const double t = (a - from) / (to - from);
+        two(g, 1.0 - t, kGaitMixHigh, g + 1, kGaitMixLow);
+    }
+}
+
+double gaitWrap(double t, double length) {
+    if (!(length > 0.0)) return 0.0;
+    const double w = std::fmod(t, length);
+    return w < 0.0 ? w + length : w;
+}
+
+} // namespace
+
+GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show, double v, double dt, double blend) {
+    GaitMixFrame f;
+    if (!std::isfinite(v)) v = 0.0;
+    if (!std::isfinite(dt) || !(dt > 0.0)) dt = 0.0;
+    if (!std::isfinite(blend)) blend = 0.0;
+    // A set out of range plays as far as it is sound: at most kMaxGaits, and none when the slowest has no speed.
+    GaitSet gaits = gaitsIn;
+    gaits.count = std::clamp(gaits.count, 0, kMaxGaits);
+    if (gaits.count > 0 && !(gaits.speed[0] > 0.0)) gaits.count = 0;
+    const bool first = !state.begun;
+    state.begun = true;
+    if (!show) {
+        state.showing = false;
+        state.live = {};
+        return f;
+    }
+    // The slot's weight: from 0 when it starts to show after another clip, rising over the blend, never under what the
+    // body's speed needs at the slowest gait.
+    if (!state.showing) state.slot = first ? 1.0 : 0.0;
+    state.showing = true;
+    state.slot = std::min(1.0, state.slot + (blend > 0.0 ? dt / blend : 1.0));
+    if (gaits.count > 0) state.slot = std::max(state.slot, std::min(1.0, std::fabs(v) / gaits.speed[0]));
+    const double u = state.slot > 0.0 ? v / state.slot : 0.0;
+    gaitMixLayers(gaits, std::fabs(u), f.layer);
+    const double sign = u < 0.0 ? -1.0 : 1.0;
+    // A gait coming in takes the other layer's share of its cycle; two coming in at once, the second the first's.
+    const auto seed = [&state, &gaits](int g, int h) {
+        const double hl = gaits.length[static_cast<std::size_t>(h)];
+        state.time[static_cast<std::size_t>(g)] =
+            hl > 0.0 ? state.time[static_cast<std::size_t>(h)] / hl * gaits.length[static_cast<std::size_t>(g)] : 0.0;
+    };
+    const int g0 = f.layer[0].gait, g1 = f.layer[1].gait;
+    const auto live = [&state](int g) { return g >= 0 && state.live[static_cast<std::size_t>(g)]; };
+    if (g0 >= 0 && g1 >= 0) {
+        if (!live(g0) && live(g1)) seed(g0, g1);
+        else if (!live(g1)) seed(g1, g0);
+    }
+    std::array<bool, kMaxGaits> played{};
+    double foot = 0.0;
+    for (GaitMixLayer& l : f.layer) {
+        if (l.gait == kGaitIdle) {
+            if (l.weight > 0.0) state.idleTime = gaitWrap(state.idleTime + dt, gaits.idleLength);
+            l.rate = l.weight > 0.0 ? 1.0 : 0.0;
+            l.time = state.idleTime;
+            continue;
+        }
+        const std::size_t g = static_cast<std::size_t>(l.gait);
+        l.rate *= sign;
+        state.time[g] = gaitWrap(state.time[g] + l.rate * dt, gaits.length[g]);
+        played[g] = true;
+        l.time = state.time[g];
+        foot += l.weight * gaits.speed[g] * l.rate;
+    }
+    state.live = played;
+    f.show = true;
+    f.slot = state.slot;
+    f.speed = u;
+    f.foot = state.slot * foot;
+    return f;
+}
+
 double choreoStanceRate(const BeatClip& stance, double beatSeconds) {
     if (!(beatSeconds > 0.0) || !(stance.length > 0.0)) return 1.0;
     // The whole number of beats whose rate is inside the clamp and nearest to 1.
@@ -1218,7 +1333,13 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
         return finish();
     }
     if (const JsonValue v = root["version"]; !(v.isInteger() && v.integer() == 1)) errors.push_back("version: expected 1");
-    ld.unknownKeys(root, "", {"version", "clips", "mesh", "blend_s"});
+    ld.unknownKeys(root, "", {"version", "clips", "mesh", "blend_s", "gait_mix"});
+    if (const JsonValue gv = root["gait_mix"]; !gv.isAbsent()) {
+        if (!gv.isBool())
+            errors.push_back("gait_mix: expected true or false");
+        else
+            out.gaitMix = gv.boolean();
+    }
     if (const JsonValue mv = root["mesh"]; !mv.isAbsent()) {
         const std::string_view mesh = mv.string();
         if (!mv.isString() || mesh.empty() || mesh.size() > kMaxClipAsset || mesh[0] != '/')

@@ -10917,12 +10917,31 @@ double pupClipSpeed(const BeatClips& clips, std::string_view id) {
     return clips[static_cast<std::size_t>(c)].speed;
 }
 
-// The host's walk start (FTArenaRunner.cpp's kArenaWalkStart, which Core can't include): the floor of the gait band.
-// Keep the two equal.
-constexpr double kPupWalkStart = 0.35;
+// The pup's gaits as its clip table gives them to gaitMixStep (maw_pup_clips.json has "gait_mix": true).
+GaitSet pupGaits(const BeatClips& clips) {
+    GaitSet gs;
+    gs.count = 3;
+    const char* const ids[3] = {"walk", "trot", "run"};
+    for (std::size_t g = 0; g < 3; ++g) {
+        const int c = clips.find(ids[g]);
+        REQUIRE(c >= 0);
+        gs.speed[g] = clips[static_cast<std::size_t>(c)].speed;
+        gs.length[g] = clips[static_cast<std::size_t>(c)].length;
+    }
+    const int idle = clips.find("idle");
+    REQUIRE(idle >= 0);
+    gs.idleLength = clips[static_cast<std::size_t>(idle)].length;
+    return gs;
+}
 
-// One chase from `start` m (the lead idle at the origin) until the first attack begins: the seconds each gait plays at a
-// rate within 10% of 1 (its own speed), the longest unbroken such run of the trot, and the move that began.
+// The body's speed along its facing over the last step (what the host gives gaitMixStep).
+double alongFacing(Vec2 from, Vec2 to, Vec2 facing) {
+    return ((to.x - from.x) * facing.x + (to.y - from.y) * facing.y) / kDt;
+}
+
+// One chase from `start` m (the lead idle at the origin) until the first attack begins, drawn by gaitMixStep: the
+// seconds each gait plays alone at a rate within 10% of 1 (its own speed), the longest unbroken such run of the trot,
+// and the move that began.
 struct PupChase {
     std::array<double, kMaxGaits> steady{};
     double trotHeld = 0.0;
@@ -10930,14 +10949,12 @@ struct PupChase {
 };
 
 PupChase runPupChase(const ArenaFighter& lead, const ArenaEnemyKind& pup, const BeatClips& clips, float start) {
-    const double speeds[3] = {pupClipSpeed(clips, "walk"), pupClipSpeed(clips, "trot"), pupClipSpeed(clips, "run")};
-    const GaitBand band = planGaitBand(speeds, 3, kPupWalkStart);
-    REQUIRE(band.count == 3);
-    REQUIRE(band.covers);
+    REQUIRE(clips.gaitMix);
+    const GaitSet gaits = pupGaits(clips);
     Rig rig(lead, {pup});
     rig.put(0, start, 0.f);
     PupChase c;
-    int gait = 0;
+    GaitMixState mix;
     double trotRun = 0.0;
     for (int i = 0; i < 2400; ++i) {
         const Vec2 was = rig.bodies.enemies[0];
@@ -10947,15 +10964,13 @@ PupChase runPupChase(const ArenaFighter& lead, const ArenaEnemyKind& pup, const 
             break;
         }
         arenaStep(rig.fight, rig.bodies, kDt);
-        const double speed = distanceOf(rig.bodies.enemies[0], was) / kDt;
-        if (speed < kPupWalkStart) {
-            trotRun = 0.0;
-            continue;
-        }
-        gait = pickGait(band, gait, speed);
-        const bool steady = std::fabs(gaitRate(band, gait, speed) - 1.0) <= 0.1;
-        if (steady) c.steady[static_cast<std::size_t>(gait)] += kDt;
-        trotRun = gait == 1 && steady ? trotRun + kDt : 0.0;
+        const ArenaEnemyOut& e = rig.out().enemies[0];
+        const GaitMixFrame f = gaitMixStep(mix, gaits, true, alongFacing(was, rig.bodies.enemies[0], e.facing), kDt,
+                                           clips.blend);
+        const GaitMixLayer& l = f.layer[0];
+        const bool steady = l.gait >= 0 && l.weight > 0.999 && std::fabs(l.rate - 1.0) <= 0.1;
+        if (steady) c.steady[static_cast<std::size_t>(l.gait)] += kDt;
+        trotRun = steady && l.gait == 1 ? trotRun + kDt : 0.0;
         c.trotHeld = std::max(c.trotHeld, trotRun);
     }
     return c;
@@ -11372,5 +11387,226 @@ TEST_CASE("arena maw_pup: a pup without the token circles at its preferred range
         }
         CHECK(strafeTicks > 300);
         CHECK(changes == 0);
+    }
+}
+
+// ---- the Maw-Pup's feet never slide (the 11-24 LEG SLIDING ruling) ----
+// Every frame the body's signed speed along its facing equals the drawn feet's (the locomotion slot's weight x its
+// layers' stride speed x rate), to max(0.10 m/s, 10%); travel against the facing plays the gaits in reverse; every
+// gait layer that shows plays at |rate| 0.85..1.15. The baseline before gaitMixStep (the host's smoothed, unsigned,
+// forward-only gait pick, modelled) slipped on 53/53 start, 86/297 steady, 24/27 stop and 442/442 back-off frames.
+
+TEST_CASE("gait mix: the feet carry every speed, both ways, inside the rate band, and the weights are continuous") {
+    const BeatClips clips = loadPupClips();
+    const GaitSet gs = pupGaits(clips);
+    std::array<double, kMaxGaits + 1> lastW{}; // the idle's and each gait's share
+    for (int i = -650; i <= 650; ++i) {
+        const double v = i * 0.01;
+        CAPTURE(v);
+        GaitMixState st;
+        st.begun = true;
+        st.showing = true;
+        st.slot = 1.0;
+        const GaitMixFrame f = gaitMixStep(st, gs, true, v, kDt, clips.blend);
+        REQUIRE(f.show);
+        CHECK(f.slot == 1.0);
+        CHECK(f.foot == doctest::Approx(v).epsilon(1e-9).scale(1.0));
+        CHECK(f.layer[0].weight >= f.layer[1].weight);
+        CHECK(f.layer[0].weight + f.layer[1].weight == doctest::Approx(1.0));
+        for (const GaitMixLayer& l : f.layer) {
+            if (l.gait < 0 || l.weight <= 0.0) continue;
+            CHECK(l.rate * v >= 0.0); // backward plays backward
+            if (std::fabs(v) <= kGaitMixHigh * gs.speed[2]) {
+                CHECK(std::fabs(l.rate) >= kGaitMixLow - 1e-9);
+                CHECK(std::fabs(l.rate) <= kGaitMixHigh + 1e-9);
+            }
+            CHECK(l.time >= 0.0);
+            CHECK(l.time < gs.length[static_cast<std::size_t>(l.gait)]);
+        }
+        // Each clip's share moves by a little with each 1 cm/s of speed: no pose jumps.
+        std::array<double, kMaxGaits + 1> w{};
+        for (const GaitMixLayer& l : f.layer) w[static_cast<std::size_t>(l.gait + 1)] += l.weight;
+        for (std::size_t k = 0; k < w.size() && i > -650; ++k) CHECK(std::fabs(w[k] - lastW[k]) <= 0.02);
+        lastW = w;
+    }
+    // Standing: the idle alone.
+    GaitMixState st;
+    const GaitMixFrame still = gaitMixStep(st, gs, true, 0.0, kDt, clips.blend);
+    CHECK(still.layer[0].gait == kGaitIdle);
+    CHECK(still.layer[0].weight == 1.0);
+    CHECK(still.foot == 0.0);
+}
+
+TEST_CASE("gait mix: the slot fades in over the blend, never under the body's speed over the walk's") {
+    const BeatClips clips = loadPupClips();
+    const GaitSet gs = pupGaits(clips);
+    GaitMixState st;
+    CHECK(gaitMixStep(st, gs, true, 0.0, kDt, 0.2).slot == 1.0); // the first frame shows whole, as a first clip does
+    CHECK_FALSE(gaitMixStep(st, gs, false, 0.0, kDt, 0.2).show);
+    GaitMixFrame f = gaitMixStep(st, gs, true, 0.0, kDt, 0.2);
+    CHECK(f.slot == doctest::Approx(kDt / 0.2));
+    f = gaitMixStep(st, gs, true, -0.84 * 0.5, kDt, 0.2); // a body already backing off at half the walk
+    CHECK(f.slot == doctest::Approx(0.5));
+    CHECK(f.speed == doctest::Approx(-0.84));
+    CHECK(f.layer[0].gait == 0);
+    CHECK(f.layer[0].rate == doctest::Approx(-1.0));
+    CHECK(f.foot == doctest::Approx(-0.42));
+    // A hit pause (dt 0) moves nothing.
+    const double at = f.layer[0].time;
+    f = gaitMixStep(st, gs, true, -0.84 * 0.5, 0.0, 0.2);
+    CHECK(f.slot == doctest::Approx(0.5));
+    CHECK(f.layer[0].time == at);
+}
+
+TEST_CASE("beat clips: gait_mix loads true or false, off when left out, refused otherwise") {
+    const char* head = R"({ "version": 1, )";
+    const char* list = R"("clips": [ { "id": "idle", "length_s": 2.0, "impact_s": 0, "loop": true } ] })";
+    BeatClips c;
+    std::string err;
+    CHECK(importBeatClips(std::string(head) + R"("gait_mix": true, )" + list, c, &err));
+    CHECK(c.gaitMix);
+    CHECK(importBeatClips(std::string(head) + list, c, &err));
+    CHECK_FALSE(c.gaitMix);
+    CHECK_FALSE(importBeatClips(std::string(head) + R"("gait_mix": 1, )" + list, c, &err));
+    CHECK(err.find("gait_mix") != std::string::npos);
+}
+
+namespace {
+
+struct SlipRow {
+    int n = 0, slip = 0;
+    double sumErr = 0.0, maxErr = 0.0, maxLat = 0.0, maxRate = 0.0, minRate = 9.0, minSlot = 1.0;
+    void add(double err, double v, double lat, const GaitMixFrame& f) {
+        ++n;
+        const double e = std::fabs(err);
+        if (e > std::max(0.10, 0.10 * std::fabs(v))) ++slip;
+        sumErr += e;
+        maxErr = std::max(maxErr, e);
+        maxLat = std::max(maxLat, std::fabs(lat));
+        minSlot = std::min(minSlot, f.show ? f.slot : 0.0);
+        for (const GaitMixLayer& l : f.layer) {
+            if (!f.show || l.gait < 0 || l.weight <= 0.0) continue;
+            maxRate = std::max(maxRate, std::fabs(l.rate));
+            minRate = std::min(minRate, std::fabs(l.rate));
+        }
+    }
+};
+
+const char* const kSlipPhase[] = {"start", "steady", "stop", "back-off", "attack travel", "reaction travel"};
+
+} // namespace
+
+TEST_CASE("arena maw_pup: no foot slides at the start, steady, the stop or the back-off, for every lead") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const BeatClips clips = loadPupClips();
+    REQUIRE(clips.gaitMix);
+    const GaitSet gs = pupGaits(clips);
+    const double blend = clips.blend;
+    const float facingTol = 0.05f;
+    for (const char* lead : {"devin", "duy", "third"}) {
+        for (int keep = 0; keep < 2; ++keep) {
+            // keep 0: the lead stands; keep 1: once the pup first reaches it, the lead is held at its contact distance.
+            CAPTURE(std::string(lead));
+            CAPTURE(keep);
+            const ArenaFighter& fi = t.fighter(lead);
+            const float contact = arenaBodyReach(pup) + std::max(0.f, fi.bodyRadius - pup.contactInset);
+            Rig rig(fi, {pup});
+            rig.put(0, 12.f, 0.f);
+            GaitMixState mix;
+            std::array<SlipRow, 6> rows{};
+            std::array<double, kMaxGaits> lastTime{};
+            std::array<bool, kMaxGaits> lastLive{};
+            double vPrev = 0.0, entryTicks = 1e9, entryRun = 0.0, clockErr = 0.0;
+            int floorTicks = 0;
+            bool met = false;
+            const int ticks = static_cast<int>(std::lround(30.f / kDt));
+            for (int i = 0; i < ticks && rig.fight.phase() == ArenaPhase::Fighting; ++i) {
+                const Vec2 from = rig.bodies.enemies[0];
+                rig.tick();
+                arenaStep(rig.fight, rig.bodies, kDt);
+                const ArenaEnemyOut& e = rig.out().enemies[0];
+                const Vec2 d{rig.bodies.enemies[0].x - from.x, rig.bodies.enemies[0].y - from.y};
+                const double v = alongFacing(from, rig.bodies.enemies[0], e.facing);
+                const double lat = (e.facing.x * d.y - e.facing.y * d.x) / kDt;
+                const bool show = arenaGaitShows(e, rig.fight.enemyAttackLength(0), blend);
+                const double slotWas = mix.showing ? mix.slot : 0.0;
+                const double dt = e.stopLeft > 0.f ? 0.0 : kDt;
+                const GaitMixFrame f = gaitMixStep(mix, gs, show, arenaGaitSpeed(e, v), dt, blend);
+                const double foot = f.show ? f.foot : 0.0;
+                // The clocks agree with the rates the frame states (a layer that was playing last frame).
+                for (const GaitMixLayer& l : f.layer) {
+                    if (!f.show || l.gait < 0 || l.weight <= 0.0) continue;
+                    const std::size_t g = static_cast<std::size_t>(l.gait);
+                    if (lastLive[g]) {
+                        const double len = gs.length[g];
+                        double step = l.time - lastTime[g];
+                        step -= len * std::round(step / len);
+                        clockErr = std::max(clockErr, std::fabs(step - l.rate * kDt));
+                    }
+                }
+                lastLive = {};
+                for (const GaitMixLayer& l : f.layer) {
+                    if (!f.show || l.gait < 0) continue;
+                    lastLive[static_cast<std::size_t>(l.gait)] = true;
+                    lastTime[static_cast<std::size_t>(l.gait)] = l.time;
+                }
+                if (f.show && f.slot < 1.0 && f.slot > slotWas + kDt / blend + 1e-9) ++floorTicks;
+                if (f.show && slotWas < 1.0 && i > 0) entryRun += 1.0;
+                if (f.show && f.slot >= 1.0 && slotWas < 1.0 && i > 0) {
+                    entryTicks = std::min(entryTicks, entryRun);
+                    entryRun = 0.0;
+                }
+                const bool loco = e.brain == ArenaBrain::Approach || e.brain == ArenaBrain::Strafe;
+                const double av = std::fabs(v);
+                const double a = av - std::fabs(vPrev);
+                vPrev = v;
+                int phase = -1;
+                if (loco) {
+                    if (av < 0.05 && std::fabs(foot) < 0.05) phase = -1;
+                    else if (v < -0.05) phase = 3;
+                    else if (a > 0.5 * kDt) phase = 0;
+                    else if (a < -0.5 * kDt) phase = 2;
+                    else phase = 1;
+                } else if (std::hypot(d.x, d.y) / kDt > 0.05) {
+                    phase = e.brain == ArenaBrain::Attack ? 4 : 5;
+                }
+                if (phase >= 0) rows[static_cast<std::size_t>(phase)].add(v - foot, v, lat, f);
+                const Vec2 pupAt = rig.bodies.enemies[0];
+                const Vec2 off{rig.bodies.player.x - pupAt.x, rig.bodies.player.y - pupAt.y};
+                const float len = std::hypot(off.x, off.y);
+                met = met || len <= contact + facingTol;
+                if (keep == 1 && met && len > contact) {
+                    const Vec2 at = rig.bodies.enemies[0];
+                    rig.bodies.player = Vec2{at.x + off.x / len * contact, at.y + off.y / len * contact};
+                }
+            }
+            for (std::size_t p = 0; p < rows.size(); ++p) {
+                const SlipRow& r = rows[p];
+                const double rateLow = r.minRate > 8.0 ? 0.0 : r.minRate;
+                MESSAGE(std::string(lead) << std::string(keep ? " keeping" : " standing") << " | "
+                                          << std::string(kSlipPhase[p]) << " | frames " << r.n << " | slip " << r.slip
+                                          << " | mean " << (r.n ? r.sumErr / r.n : 0.0) << " | max " << r.maxErr
+                                          << " | lateral max " << r.maxLat << " | |rate| " << rateLow << ".."
+                                          << r.maxRate << " | slot min " << r.minSlot);
+                if (p < 4) {
+                    CAPTURE(p);
+                    CHECK(r.n > 0); // every pinned phase happens
+                    CHECK(r.slip == 0);
+                    // Sideways travel is not drawn by the gaits: pinned small here (a lone pup holding the token
+                    // never circles); a crowd's circling strafe is reported, not fixed.
+                    CHECK(r.maxLat <= 0.05);
+                    if (r.maxRate > 0.0) {
+                        CHECK(r.minRate >= kGaitMixLow - 1e-9);
+                        CHECK(r.maxRate <= kGaitMixHigh + 1e-9);
+                    }
+                }
+            }
+            MESSAGE(std::string(lead) << std::string(keep ? " keeping" : " standing") << " | shortest slot fade-in "
+                                      << entryTicks << " frames | frames the speed floor lifted the slot "
+                                      << floorTicks);
+            CHECK(clockErr < 1e-9);
+            CHECK(floorTicks == 0); // the speed floor never snaps the slot in (no gait under a shove or a lunge)
+        }
     }
 }

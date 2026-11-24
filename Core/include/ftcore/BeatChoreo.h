@@ -147,6 +147,7 @@ struct BeatClips {
     std::size_t count = 0;
     std::array<char, kMaxClipAsset + 1> meshText{}; // the skeletal mesh the clips are for (optional top-level "mesh"), "" if none
     double blend = 0.0; // the crossfade between these clips, s (optional top-level "blend_s"); 0: the host's own
+    bool gaitMix = false; // optional top-level "gait_mix": its gaits are drawn by gaitMixStep, not pickGait
 
     std::string_view mesh() const { return std::string_view(meshText.data()); }
 
@@ -303,6 +304,63 @@ FTCORE_API GaitBand planGaitBand(const double* speeds, int count, double floorSp
 FTCORE_API int pickGait(const GaitBand& band, int was, double speed);
 // The rate gait g plays at for `speed`: speed over its authored one, held to [minRate, maxRate]; 1 for a bad gait.
 FTCORE_API double gaitRate(const GaitBand& band, int gait, double speed);
+
+// ---- the gait mix (a clip table's "gait_mix": true) ----
+// The drawn feet travel at the body's own speed along its facing on every frame, so none slides. Signed: a body going
+// backward plays its gaits in reverse. The locomotion is one crossfade slot of up to two layers:
+//   - standing: the idle alone;
+//   - below the slowest gait's cover (kGaitMixLow x its speed): the idle and that gait at kGaitMixLow, the gait's share
+//     the speed over the cover's low end;
+//   - inside gait g's cover [kGaitMixLow, kGaitMixHigh] x its speed: g alone, at the speed over its own;
+//   - in a gap between g and g + 1: g at kGaitMixHigh and g + 1 at kGaitMixLow, shared so the feet keep the speed;
+//   - where two covers overlap: both at their own rates, shared by where the speed is across the overlap;
+//   - over the top gait's cover: the top gait alone, faster.
+// The slot fades in over the clip before it: its weight W rises by dt / blend from when it starts to show, and is never
+// under |v| over the slowest gait's speed (a body already moving shows its gait at once rather than slide). The layers
+// play at v / W, so the slot's share of the feet's travel is the body's. Each layer keeps its own clock; a gait coming
+// in starts at the share of its cycle the other layer's gait is at. No allocation.
+inline constexpr double kGaitMixLow = 0.85;
+inline constexpr double kGaitMixHigh = 1.15;
+inline constexpr int kGaitIdle = -1; // a layer that is the idle (its feet stay put)
+
+// The gaits a mix plays, slowest first (speeds strictly rising, as planGaitBand counts them), and the idle's length.
+struct GaitSet {
+    int count = 0;
+    std::array<double, kMaxGaits> speed{};  // m/s, each gait's authored ground speed
+    std::array<double, kMaxGaits> length{}; // s, each gait's clip length
+    double idleLength = 0.0;                // s
+};
+
+struct GaitMixLayer {
+    int gait = kGaitIdle; // 0..count - 1, or kGaitIdle
+    double weight = 0.0;  // its share of the slot (the two sum to 1; the second is 0 when one plays alone)
+    double rate = 0.0;    // signed: under 0 it plays backward
+    double time = 0.0;    // the clip time to show, in [0, length)
+};
+
+struct GaitMixFrame {
+    bool show = false;                   // the slot shows (else the host plays its own clip)
+    double slot = 0.0;                   // W: the slot's weight in the crossfade over the clip before it
+    double speed = 0.0;                  // m/s, signed: what the layers play at (v / W)
+    double foot = 0.0;                   // m/s, signed: the drawn feet's travel, W x the layers' (equals v)
+    std::array<GaitMixLayer, 2> layer{}; // the heavier first
+};
+
+// What gaitMixStep carries from frame to frame. Value-initialise it per figure.
+struct GaitMixState {
+    std::array<double, kMaxGaits> time{}; // each gait's clock, s
+    std::array<bool, kMaxGaits> live{};   // played in the last frame
+    double idleTime = 0.0;
+    double slot = 0.0;
+    bool showing = false;
+    bool begun = false; // a frame has been drawn (the very first shows at full weight, as a first clip does)
+};
+
+// One frame. show: whether the locomotion shows (arenaGaitShows for an arena figure); v: the body's speed along its
+// facing, m/s; dt: the frame's clip time (0 in a hit pause); blend: the crossfade into the slot, s. A set with no gaits
+// shows the idle alone.
+FTCORE_API GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaits, bool show, double v, double dt,
+                                    double blend);
 
 // ---- the sample ----
 

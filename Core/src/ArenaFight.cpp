@@ -4663,6 +4663,10 @@ bool ArenaFight::enemyBreakGuard(std::size_t i) const {
 bool ArenaFight::enemyBreakMoveOn(std::size_t i) const {
     return i < enemyCount_ && def_.enemies[i].boss && ArenaFightImpl::inBreakMove(enemy_[i]);
 }
+float ArenaFight::enemyAttackLength(std::size_t i) const {
+    if (i >= enemyCount_ || enemy_[i].brain != ArenaBrain::Attack) return 0.f;
+    return enemyAttackNow(i).total();
+}
 const ArenaAttack& ArenaFight::enemyAttackOf(std::size_t i, std::uint8_t move) const {
     const EnemyState& foe = enemy_[i];
     if (foe.move != move) return def_.enemies[i].moves[move].attack;
