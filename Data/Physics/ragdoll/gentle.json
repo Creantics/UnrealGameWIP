@@ -22,6 +22,10 @@
   "hitImpulseScale": 0.6,
   "hitHold": 0.1,
   "hitBlendOut": 0.3,
+  "hitStopFps": 60,
+  "hitStopLightFrames": 0,
+  "hitStopStaggerFrames": 4,
+  "hitStopKoFrames": 8,
   "motor": { "frequency": 6, "damping": 1, "maxTorque": 300 },
   "defaultLimits": { "type": "swingTwist", "normalHalfCone": 0.25, "planeHalfCone": 0.25, "twistMin": -0.15, "twistMax": 0.15 },
   "limits": {

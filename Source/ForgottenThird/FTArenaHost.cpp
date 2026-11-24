@@ -445,7 +445,8 @@ void AFTArenaHost::Tick(float DeltaSeconds)
 			Capture.Tick(*GetWorld(), *PC, *Runner);
 		}
 	}
-	const double Hold = Runner->IsAutoPlay() ? kArenaHostAutoHold : kArenaHostHold;
+	const double Hold = FMath::Max(Runner->IsAutoPlay() ? kArenaHostAutoHold : kArenaHostHold,
+		Capture.RecTail(static_cast<double>(Runner->GetFight().time())));
 	if (Runner->IsFinished() && Runner->GetResultAge() >= Hold && !bFinished)
 	{
 		Finish();

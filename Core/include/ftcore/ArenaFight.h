@@ -325,10 +325,12 @@ inline constexpr std::size_t kMaxArenaEnemies = 6;
 inline constexpr std::size_t kMaxArenaMoves = 24;
 inline constexpr std::size_t kMaxLightChain = 4;
 inline constexpr std::size_t kMaxArenaEvents = 32; // per tick; more are dropped (ArenaFight::droppedEvents)
+inline constexpr std::size_t kMaxArenaLeadHits = 8; // per tick; more are dropped (ArenaEvents::hitsDropped)
 
 // Actor ids in events: enemies are 0..kMaxArenaEnemies-1.
 inline constexpr std::uint8_t kArenaPlayer = 0xFE;
 inline constexpr std::uint8_t kArenaNobody = 0xFF;
+inline constexpr std::uint8_t kArenaNoEvent = 0xFF; // ArenaLeadHit::event when its event was dropped
 // The ally body (ArenaFight::setAlly) as an event's or a blow's target.
 inline constexpr std::uint8_t kArenaAlly = 0xFD;
 // The player's move ids in events and ArenaPlayerOut::move: a light is its chain index.
@@ -626,6 +628,13 @@ enum class ArenaTell : std::uint8_t { Strike, Overhead, Backhand, Charge, Thrust
 inline constexpr std::size_t kArenaTellCount = 9;
 FTCORE_API const char* arenaTellName(ArenaTell t); // "strike", "overhead", ... Literals.
 
+// Where an enemy move lands on a lead's body, for the hit reaction only (ArenaHitReact.h; the fight's rules never read
+// it). Auto: by height and tell. Thigh and Shin take the attacker's side. arena.json "hitPart", as arenaHitPartName
+// spells it; append only.
+enum class ArenaHitPart : std::uint8_t { Auto, Head, Chest, Spine, Pelvis, Thigh, Shin };
+inline constexpr std::size_t kArenaHitPartCount = 7;
+FTCORE_API const char* arenaHitPartName(ArenaHitPart p); // "auto", "head", ... Literals.
+
 // One of an enemy's moves: an attack plus when the enemy picks it.
 struct ArenaEnemyMove {
     ArenaAttack attack;
@@ -640,6 +649,8 @@ struct ArenaEnemyMove {
     // leaves it out, false for a sweep or a slam (low, along the floor) and true for every other tell.
     bool hitsAir = true;
     ArenaTell tell = ArenaTell::Strike; // its Read card's word; arena.json names a different one per move
+    // Where it lands on a lead's body (arena.json "hitPart"; Auto when left out). Presentation only.
+    ArenaHitPart hitPart = ArenaHitPart::Auto;
     // The id of the animation clip the host plays for this move (a skinned enemy's look.clips table), "" for none.
     // Only the host reads it: the fight's rules never do.
     std::array<char, kMaxArenaClipId + 1> clipText{};
@@ -1106,6 +1117,38 @@ enum class ArenaEventType : std::uint8_t { // append only
                     // the prompt goes. Source the body that lead is now, amount its slot (appended)
 };
 
+// How hard a blow on a lead lands, for the body's reaction (ArenaHitReact.h). Stamped by Core as it rules the blow;
+// nothing in the fight reads it back.
+enum class ArenaHitTier : std::uint8_t {
+    None,     // no reaction: evaded, parried, blocked (a chip that leaves the lead up included), a table share that
+              // leaves the body up, or a host's blow
+    Light,    // a flinch: poise held, or already in hitstun or guard break
+    Stagger,  // poise broke, knocked out of the air, the guard broke; for the ally: a blow of its kit's poise or more
+    Knockout, // the blow downed it
+};
+
+// One blow on a lead this tick (the player or the ally), with what the reaction needs that no event carries.
+struct ArenaLeadHit {
+    ArenaHitTier tier = ArenaHitTier::None;
+    std::uint8_t event = kArenaNoEvent; // index in ArenaEvents::items it belongs to, or kArenaNoEvent when that was
+                                        // dropped: the blow's Hit (a landed or chip Knockout too: the Downed follows
+                                        // it), GuardBroken, TookHalf (its Knockout too) or AllyHit (its Knockout
+                                        // too); a table share's kill is on the Downed or AllyDowned it caused
+    std::uint8_t source = kArenaNobody; // the attacker, an enemy's id
+    std::uint8_t target = kArenaNobody; // kArenaPlayer or kArenaAlly
+    std::uint8_t move = 0;
+    ArenaTell tell = ArenaTell::Strike;      // the move's
+    ArenaHitPart part = ArenaHitPart::Auto;  // the move's hitPart
+    bool fromKnown = false;                  // from/fromFacing hold the attacker's place and facing
+    bool low = false;                        // a low move (ArenaEnemyMove::hitsAir false): it takes the legs
+    int damage = 0;                          // dealt to this body before the hp clamp
+    float poise = 0.f;                       // the blow's ruled poise damage
+    float weight = 0.f;                      // damage / max hp + poise / max poise, the kit in force (>= 0)
+    float hitStop = 0.f;                     // s: the move's own ArenaAttack::hitStop (0: not set), display only
+    Vec2 from, fromFacing;                   // the attacker's place and facing at the strike
+    Vec2 at, facing;                         // the struck body's place and facing
+};
+
 struct ArenaEvent {
     ArenaEventType type = ArenaEventType::Hit;
     std::uint8_t source = kArenaNobody;
@@ -1119,6 +1162,10 @@ struct ArenaEvent {
 struct ArenaEvents {
     std::array<ArenaEvent, kMaxArenaEvents> items{};
     std::size_t count = 0;
+    // The blows on the leads this tick, in order (ArenaLeadHit). Not events: no event list changes.
+    std::array<ArenaLeadHit, kMaxArenaLeadHits> hits{};
+    std::size_t hitCount = 0;
+    std::uint32_t hitsDropped = 0; // records past kMaxArenaLeadHits this tick
 
     const ArenaEvent* begin() const { return items.data(); }
     const ArenaEvent* end() const { return items.data() + count; }
@@ -1126,6 +1173,12 @@ struct ArenaEvents {
     bool empty() const { return count == 0; }
     const ArenaEvent& operator[](std::size_t i) const { return items[i]; }
 };
+
+// Adds a blow record to the tick's list. Full (kMaxArenaLeadHits): hitsDropped counts one lost record, and the new
+// record takes the place of the lowest-tier record below its own tier, on any body (among equals the same body's
+// first, then the earliest); with none lower the new record is the one dropped. So a Knockout is lost only when all
+// kMaxArenaLeadHits records are already Knockouts. Used by the fight; public so the rule has a doctest.
+FTCORE_API void arenaPushLeadHit(ArenaEvents& events, const ArenaLeadHit& hit);
 
 // The partner's ally body this tick (ArenaFight::setPartner). With no partner on, goal is the ally's place and the
 // rest stays at the defaults.

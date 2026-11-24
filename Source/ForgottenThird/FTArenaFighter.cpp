@@ -10,6 +10,8 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/PackageName.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
@@ -17,6 +19,7 @@
 #include "FTBeatFighterAnimInstance.h"
 #include "FTLocomotionAnimInstance.h"
 #include "FTMeshFacing.h"
+#include "FTPhysicsComponent.h"
 #include "FTRim.h"
 #include "ForgottenThird.h"
 
@@ -282,6 +285,7 @@ void AFTArenaFighter::Setup(bool bPlayer, float BodyRadius, const FLinearColor& 
 	Height = HeightMeters > 0.f ? FMath::Clamp(HeightMeters, 0.5f, 30.f) * 100.f : FMath::Clamp(Radius / 40.f, 0.8f, 1.6f) * 175.f;
 
 	SkinKind = ESkin::Shapes;
+	DropRagdoll(); // a look worn below sets it up again
 	bPlayerFigure = bPlayer;
 	Rim->bAllowed = bPlayer;
 	Rim->bRequirePlayerPawn = false; // the player's figure writes whoever possesses it
@@ -404,6 +408,7 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 	{
 		return false;
 	}
+	DropRagdoll(); // before the mesh changes: the old body's bodies and drive go with it
 	Skin->SetSkeletalMesh(Loaded.Body);
 	// Turn the body to face the figure's forward (+X).
 	Skin->SetRelativeRotation(FRotator(0.0, FTMeshFacing::FacingYaw(*Loaded.Body), 0.0));
@@ -421,10 +426,75 @@ bool AFTArenaFighter::WearLook(const FFTLeadLook& Look)
 		UE_LOG(LogForgottenThird, Warning, TEXT("FTArenaFighter: no locomotion anim instance; %s stays in the ref pose."), *Look.Name);
 	}
 	SkinKind = ESkin::Lead;
+	SetupRagdoll(*Loaded.Body);
 	TieMeshTicks();
 	UE_LOG(LogForgottenThird, Display, TEXT("FTArenaFighter: %s: body %s facing %.0f, %d pieces (%d with cloth), %d grooms, clips from %s."),
 		*Look.Name, *Loaded.Body->GetName(), Skin->GetRelativeRotation().Yaw, Pieces.Num(), Cloth, Grooms.Num(), *Loaded.ClipFolder);
 	return true;
+}
+
+void AFTArenaFighter::SetupRagdoll(USkeletalMesh& BodyMesh)
+{
+	const FString Package = UFTPhysicsComponent::RagdollPackage(BodyMesh.GetName());
+	UPhysicsAsset* Ragdoll = nullptr;
+	if (FPackageName::DoesPackageExist(Package))
+	{
+		Ragdoll = LoadObject<UPhysicsAsset>(nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)));
+	}
+	if (!Ragdoll)
+	{
+		// Once per body mesh: a look worn again, or by the partner, says nothing new.
+		static TSet<FName> Warned;
+		bool bAlready = false;
+		Warned.Add(BodyMesh.GetFName(), &bAlready);
+		if (!bAlready)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTArenaFighter: no ragdoll %s; %s keeps the shapes' lean for hits."),
+				*Package, *BodyMesh.GetName());
+		}
+		DropRagdoll();
+		return;
+	}
+	if (!Physics)
+	{
+		Physics = NewObject<UFTPhysicsComponent>(this, TEXT("FTPhysics"));
+		Physics->Profile = TEXT("gentle");
+		Physics->RegisterComponent();
+	}
+	Physics->SetupForLead(Skin, Ragdoll);
+}
+
+void AFTArenaFighter::DropRagdoll()
+{
+	if (Physics)
+	{
+		Physics->ClearLeadSetup();
+	}
+}
+
+bool AFTArenaFighter::HasRagdoll() const
+{
+	return Physics && Physics->HasLeadSetup();
+}
+
+const ftcore::ArenaHitSetup* AFTArenaFighter::GetHitSetup() const
+{
+	return HasRagdoll() ? &Physics->GetHitSetup() : nullptr;
+}
+
+bool AFTArenaFighter::ReactToHit(const ftcore::ArenaHitReaction& Reaction, const FVector& WorldDir)
+{
+	const bool bPlayed = HasRagdoll() && Physics->React(Reaction, WorldDir);
+	bPhysicsTookHit = bPhysicsTookHit || bPlayed;
+	return bPlayed;
+}
+
+void AFTArenaFighter::RecoverBody(bool bInstant)
+{
+	if (HasRagdoll())
+	{
+		Physics->Recover(bInstant);
+	}
 }
 
 bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float Scale, float YawOffset, float HeightMeters, bool bBreakPulse)
@@ -433,6 +503,7 @@ bool AFTArenaFighter::SetupSkinned(USkeletalMesh* Mesh, float HoverMeters, float
 	{
 		return false;
 	}
+	DropRagdoll();
 	SkinKind = ESkin::Creature;
 	SkinHover = FMath::Max(HoverMeters, 0.f) * 100.f;
 	Height = FMath::Max(HeightMeters, 0.5f) * Scale * 100.f + SkinHover;
@@ -978,9 +1049,28 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	FRotator Lean = FRotator::ZeroRotator;
 	FVector Lift = FVector::ZeroVector;
 	float Squash = 1.f;
+	// A lead whose ragdoll played the blow or the fall (FTPhysicsComponent): the shapes' lean back and wobble stay off
+	// while that blow leans it, and the lying tilt while the ragdoll is down or rising. A blow the ragdoll didn't play
+	// keeps the shapes' lean.
+	if (bPhysicsTookHit && Pose.LeanBack <= 0.f && !Pose.bLying)
+	{
+		bPhysicsTookHit = false;
+	}
+	// Up from the floor with the body still down (a rise the host didn't announce): it comes back.
+	if (bPoseWasDown && !Pose.bLying && Physics && Physics->IsKnockedOut())
+	{
+		RecoverBody();
+	}
+	bPoseWasDown = Pose.bLying;
+	const bool bRagdollDown = HasRagdoll() && (Physics->IsKnockedOut() || Physics->IsRecovering());
+	const bool bRagdoll = bPhysicsTookHit && HasRagdoll();
 	if (SkinKind == ESkin::Creature)
 	{
 		// The mesh stands as the clip poses it.
+	}
+	else if (Pose.bLying && bRagdollDown)
+	{
+		AirLift = LastFloorNeed = 0.f;
 	}
 	else if (Pose.bLying)
 	{
@@ -990,8 +1080,8 @@ void AFTArenaFighter::ApplyPose(const FFTArenaPose& Pose)
 	}
 	else
 	{
-		Lean.Pitch = Pose.LeanBack;
-		Lean.Roll = Pose.Wobble;
+		Lean.Pitch = bRagdoll ? 0.f : Pose.LeanBack;
+		Lean.Roll = bRagdoll ? 0.f : Pose.Wobble;
 		// The roll's lift, and as its clip fades out, what is left of it coming down.
 		Lift.Z = RollLift;
 		// The jump: the arc's height, and on a lead's clips (from the last evaluated pose, over the skin's base, so the

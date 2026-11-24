@@ -2230,3 +2230,27 @@ TEST_CASE("arena special: a skipped move ends in the same state as one played ou
     }
     same();
 }
+
+TEST_CASE("arena hit react: the special's press tick and its frozen ticks carry no blow records") {
+    // Pressed on the tick after a pup's nip left a record: the press freezes the fight before any strike is ruled,
+    // and no lead is struck while frozen, so every tick from the press to the cut back has an empty record list.
+    const ArenaSpecialTable specials = shippedSpecials();
+    Rig r;
+    r.begin(fightOf({"maw_pup"}));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f, true)));
+    bool recorded = false;
+    for (int k = 1; k <= 60 * 20 && !recorded; ++k) recorded = r.tick().events.hitCount > 0;
+    REQUIRE(recorded);
+    const ArenaOutput& pressed = r.press();
+    REQUIRE(r.fight.frozen());
+    CHECK(pressed.events.hitCount == 0);
+    CHECK(pressed.events.hitsDropped == 0);
+    int frozenTicks = 0;
+    while (r.fight.frozen() && frozenTicks < 100000) {
+        const ArenaOutput& o = r.tick();
+        CHECK(o.events.hitCount == 0);
+        CHECK(o.events.hitsDropped == 0);
+        ++frozenTicks;
+    }
+    CHECK(frozenTicks > 0);
+}
