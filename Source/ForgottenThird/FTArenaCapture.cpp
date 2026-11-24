@@ -103,7 +103,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -302,6 +302,11 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 	double MuzzleFwd = 0.0;
 	double MuzzleUp = 0.0;
 	char GapTo = '-';
+	// The gap split along the attack line (m): from the tip to the closest point, forward along the pup-to-lead line,
+	// sideways (positive to the line's left) and up; and the lead bone that point is on. A shortfall in forward is
+	// distance, in sideways or up is aim. tip_z: the tip's height over the lead's ground (actor) point.
+	double GapFwd = 0.0, GapSide = 0.0, GapUp = 0.0, TipZ = 0.0;
+	char GapBone[24] = "-";
 	const USkeletalMeshComponent* PupSkin = EnemyFigure ? EnemyFigure->GetSkin() : nullptr;
 	if (PupSkin && !bMuzzleTried)
 	{
@@ -314,6 +319,7 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		const FVector Line = (Lead->GetActorLocation() - Root).GetSafeNormal2D();
 		MuzzleFwd = FVector::DotProduct(Tip - Root, Line) / 100.0;
 		MuzzleUp = (Tip.Z - Root.Z) / 100.0;
+		TipZ = (Tip.Z - Lead->GetActorLocation().Z) / 100.0;
 		if (const USkeletalMeshComponent* LeadSkin = Lead->GetLeadSkin())
 		{
 			FClosestPointOnPhysicsAsset Closest;
@@ -321,6 +327,18 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 			{
 				MuzzleGap = Closest.Distance / 100.0;
 				GapTo = 'p';
+				const FVector D = Closest.ClosestWorldPosition - Tip;
+				const FVector Side(-Line.Y, Line.X, 0.0);
+				GapFwd = FVector::DotProduct(D, Line) / 100.0;
+				GapSide = FVector::DotProduct(D, Side) / 100.0;
+				GapUp = D.Z / 100.0;
+				const FString BoneText = Closest.BoneName.ToString();
+				int32 BN = 0;
+				for (; BN < BoneText.Len() && BN < 23; ++BN)
+				{
+					GapBone[BN] = static_cast<char>(BoneText[BN]);
+				}
+				GapBone[BN] = 0;
 			}
 			else
 			{
@@ -349,11 +367,11 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		}
 	}
 	char Row[512];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", Frame,
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f\n", Frame,
 		static_cast<double>(Fight.time()), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
 		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp,
-		LeadAt.X, LeadAt.Y, LeadAt.Z, PelvisAt.X, PelvisAt.Y, PelvisAt.Z, HeadAt.Z);
+		LeadAt.X, LeadAt.Y, LeadAt.Z, PelvisAt.X, PelvisAt.Y, PelvisAt.Z, HeadAt.Z, GapFwd, GapSide, GapUp, GapBone, TipZ);
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));
