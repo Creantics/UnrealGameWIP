@@ -11005,7 +11005,7 @@ TEST_CASE("arena aim shift: along the lead's right, square to the line, none sid
 TEST_CASE("arena side convention: a lead's right is its facing turned a quarter, x toward y, at every heading") {
     // The pinned sign for every lateral aim: the ground plane has y to the right of x (the host draws ground (x, y) as
     // Unreal's (X, Y), Y to the right of X looking down -Z), so a lead facing f has its right at {-f.y, f.x} and its
-    // left thigh on the -right side. A positive aimSide moves the drawn enemy toward the lead's right, which, with
+    // left on the -right side. A positive aimSide moves the drawn enemy toward the lead's right, which, with
     // the enemy facing the lead, is the enemy's own left.
     struct Heading { Vec2 facing, right; };
     const Heading headings[] = {{{1.f, 0.f}, {0.f, 1.f}}, {{0.f, 1.f}, {-1.f, 0.f}}, {{-1.f, 0.f}, {0.f, -1.f}},
@@ -11021,6 +11021,14 @@ TEST_CASE("arena side convention: a lead's right is its facing turned a quarter,
         // The enemy faces the lead (-f): its right is {-(-f).y, (-f).x} = {f.y, -f.x}, so the shift is along its left.
         const Vec2 enemyRight{h.facing.y, -h.facing.x};
         CHECK(s.x * enemyRight.x + s.y * enemyRight.y == doctest::Approx(-0.04f));
+        // The pup's Blender root frame (canine_tips.json): fwd + is its facing (-f), side + is its own left, so a
+        // measured offset (fwd, side) lands at fwd * -f + side * -enemyRight on the ground. Its left upper inner
+        // canine (fwd -0.036, side +0.061 m from the jaw point) is on the lead's right, its right one on the left.
+        const Vec2 pupLeft{-enemyRight.x, -enemyRight.y};
+        const Vec2 tipL{-0.036f * -h.facing.x + 0.061f * pupLeft.x, -0.036f * -h.facing.y + 0.061f * pupLeft.y};
+        const Vec2 tipR{-0.043f * -h.facing.x - 0.062f * pupLeft.x, -0.043f * -h.facing.y - 0.062f * pupLeft.y};
+        CHECK(tipL.x * h.right.x + tipL.y * h.right.y == doctest::Approx(0.061f));
+        CHECK(tipR.x * h.right.x + tipR.y * h.right.y == doctest::Approx(-0.062f));
     }
 }
 
