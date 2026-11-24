@@ -1019,3 +1019,40 @@ TEST_CASE("arena hit react: the leg by the teeth keeps the caller's pick on a ti
     m.thighR = -1;
     CHECK(arenaLegPartOnSide(s.thighL, 1, m) == s.thighL);
 }
+
+TEST_CASE("arena hit react: the snout a little off the midline picks the leg on its side, at any yaw within 2 deg and "
+          "any snout height") {
+    // The lead turned up to +-2 deg off dead ahead; the pup facing -x with its snout 5-30 mm either side of the lead's
+    // midline (not in line with a knee), at canine heights from 0.30 to 0.85 m.
+    for (const float yaw : {-2.f, -1.5f, -1.f, -0.5f, 0.f, 0.5f, 1.f, 1.5f, 2.f}) {
+        const ArenaLegChain left = legOf(yaw, -1.f), right = legOf(yaw, 1.f);
+        for (const float off : {-0.03f, -0.02f, -0.01f, -0.005f, 0.005f, 0.01f, 0.02f, 0.03f}) {
+            for (const float z : {0.30f, 0.45f, 0.60f, 0.85f}) {
+                CAPTURE(yaw);
+                CAPTURE(off);
+                CAPTURE(z);
+                const ArenaPoint3 snout{0.75f, off, z};
+                const ArenaLegReach r = arenaLegReach(snout, Vec2{-1.f, 0.f}, left, right);
+                REQUIRE(r.valid);
+                const int want = off < 0.f ? 0 : 1; // the left leg stands at -y here
+                CHECK((want == 0 ? r.left < r.right : r.right < r.left));
+                CHECK(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, 0.002f) == want);
+            }
+        }
+    }
+}
+
+TEST_CASE("arena hit react: a non-finite snout or leg bone keeps the caller's pick") {
+    const float nan = std::nanf("");
+    const ArenaLegChain left = legOf(0.f, -1.f), right = legOf(0.f, 1.f);
+    const ArenaPoint3 snout{0.75f, -0.05f, 0.45f};
+    REQUIRE(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, 0.002f) == 0);
+    CHECK(arenaLegAtTeeth(ArenaPoint3{nan, -0.05f, 0.45f}, Vec2{-1.f, 0.f}, left, right, 0.002f) == -1);
+    CHECK(arenaLegAtTeeth(ArenaPoint3{0.75f, nan, 0.45f}, Vec2{-1.f, 0.f}, left, right, 0.002f) == -1);
+    CHECK(arenaLegAtTeeth(snout, Vec2{nan, 0.f}, left, right, 0.002f) == -1);
+    ArenaLegChain bad = right;
+    bad[1].y = nan;
+    CHECK(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, bad, 0.002f) == -1);
+    CHECK_FALSE(arenaLegReach(snout, Vec2{-1.f, 0.f}, left, bad).valid);
+    CHECK(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, nan) == 0); // a non-finite tie is no tie
+}

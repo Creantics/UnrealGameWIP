@@ -225,7 +225,7 @@ void gaitMixLayers(const GaitSet& gs, double a, std::array<GaitMixLayer, 2>& out
 }
 
 double gaitWrap(double t, double length) {
-    if (!(length > 0.0)) return 0.0;
+    if (!std::isfinite(t) || !std::isfinite(length) || !(length > 0.0)) return 0.0;
     const double w = std::fmod(t, length);
     return w < 0.0 ? w + length : w;
 }
@@ -237,14 +237,16 @@ GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show,
     if (!std::isfinite(v)) v = 0.0;
     if (!std::isfinite(dt) || !(dt > 0.0)) dt = 0.0;
     if (!std::isfinite(blend)) blend = 0.0;
-    // A set out of range plays as far as it is sound: at most kMaxGaits, cut at the first speed that is not finite and
-    // rising (the slowest above 0).
+    // A set out of range plays as far as it is sound: at most kMaxGaits, cut at the first gait whose speed is not
+    // finite and rising (the slowest above 0) or whose length is not finite and above 0.
     GaitSet gaits = gaitsIn;
     const int asked = std::clamp(gaits.count, 0, kMaxGaits);
     gaits.count = 0;
     for (int g = 0; g < asked; ++g) {
         const double sp = gaits.speed[static_cast<std::size_t>(g)];
         if (!std::isfinite(sp) || !(sp > (g > 0 ? gaits.speed[static_cast<std::size_t>(g - 1)] : 0.0))) break;
+        const double len = gaits.length[static_cast<std::size_t>(g)];
+        if (!std::isfinite(len) || !(len > 0.0)) break;
         gaits.count = g + 1;
     }
     const bool first = !state.begun;
@@ -301,7 +303,9 @@ GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show,
 
 double gaitDrawnSpeed(GaitDrawnState& state, double x, double y, double fx, double fy, double dt, double fallback,
                       double maxSpeed) {
+    // The fallback is held to +-maxSpeed (when that is set): a fixed step's speed through a teleport is no gait's.
     if (!std::isfinite(fallback)) fallback = 0.0;
+    if (std::isfinite(maxSpeed) && maxSpeed > 0.0) fallback = std::clamp(fallback, -maxSpeed, maxSpeed);
     if (!std::isfinite(x) || !std::isfinite(y)) {
         state.valid = false;
         return fallback;

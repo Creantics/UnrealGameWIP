@@ -371,7 +371,8 @@ struct GaitDrawnState {
 // The drawn figure's speed along its facing (fx, fy: a unit vector) this frame, m/s: its drawn travel since the last
 // frame over the frame's clip time dt, so the feet cover what the figure is seen to cover whatever the fixed steps per
 // frame. The fallback (the last fixed step's speed along the facing) stands on the first frame, in a hit pause (dt 0)
-// and on a jump (drawn travel over dt above maxSpeed: a teleport or a restart). The drawn place is kept every frame.
+// and on a jump (drawn travel over dt above maxSpeed: a teleport or a restart), held to +-maxSpeed when maxSpeed is
+// finite and above 0. The drawn place is kept every frame.
 FTCORE_API double gaitDrawnSpeed(GaitDrawnState& state, double x, double y, double fx, double fy, double dt,
                                  double fallback, double maxSpeed);
 

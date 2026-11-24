@@ -97,15 +97,15 @@ using ArenaLegChain = std::array<ArenaPoint3, 3>;
 
 // Which leg the attacker's teeth are at: the snout ray (from `snout`, along `forward` on the ground) carried to the
 // legs' depth (the mean of both chains along `forward`), and the leg whose chain (hip-knee, knee-ankle segments) lies
-// nearer that point. 0 the left, 1 the right; -1 when the two distances are within `tie` (same unit) or `forward` has
-// no length, so the caller keeps its own pick. Pure, no allocation.
+// nearer that point. 0 the left, 1 the right; -1 when the two distances are within `tie` (same unit), `forward` has
+// no length or a place is not finite, so the caller keeps its own pick. Pure, no allocation.
 FTCORE_API int arenaLegAtTeeth(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain& left, const ArenaLegChain& right,
                                float tie);
 // The snout ray's point at the legs' depth (as arenaLegAtTeeth carries it) and its distance to each chain, for logs.
 struct ArenaLegReach {
     ArenaPoint3 contact;
     float left = 0.f, right = 0.f;
-    bool valid = false; // forward had a length
+    bool valid = false; // forward had a length and both distances are finite
 };
 FTCORE_API ArenaLegReach arenaLegReach(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain& left,
                                        const ArenaLegChain& right);

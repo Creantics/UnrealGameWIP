@@ -11665,3 +11665,135 @@ TEST_CASE("gait mix: a speed set cut at its first speed that is not finite and r
         CHECK(std::isfinite(f.foot));
     }
 }
+
+TEST_CASE("gait mix from the drawn speed: the feet cover the drawn travel at any frame rate, speeding up, steady, "
+          "stopping and backing off") {
+    using namespace ftcore;
+    const BeatClips clips = loadPupClips();
+    const GaitSet gs = pupGaits(clips);
+    const double blend = clips.blend, top = gs.speed[static_cast<std::size_t>(gs.count - 1)];
+    // The fixed steps' speeds along the facing (+x): up to 4 m/s at 1.67 m/s^2, held, down to 0, a rest, back at
+    // 0.8 m/s, and a stop.
+    const auto stepV = [](int k) {
+        const double t = k * static_cast<double>(kDt);
+        if (t < 2.4) return t / 2.4 * 4.0;
+        if (t < 3.4) return 4.0;
+        if (t < 5.8) return (5.8 - t) / 2.4 * 4.0;
+        if (t < 6.3) return 0.0;
+        if (t < 6.8) return -(t - 6.3) / 0.5 * 0.8;
+        if (t < 8.3) return -0.8;
+        if (t < 8.8) return -(8.8 - t) / 0.5 * 0.8;
+        return 0.0;
+    };
+    constexpr int kSteps = 600; // 10 s of fixed steps
+    std::array<double, kSteps + 1> at{};
+    for (std::size_t k = 0; k < static_cast<std::size_t>(kSteps); ++k)
+        at[k + 1] = at[k] + stepV(static_cast<int>(k)) * static_cast<double>(kDt);
+    // The body drawn at time t: the lerp between the fixed steps around it.
+    const auto drawn = [&at](double t) {
+        const double s = t / static_cast<double>(kDt);
+        const int k = std::clamp(static_cast<int>(std::floor(s)), 0, kSteps - 1);
+        const double a = std::clamp(s - k, 0.0, 1.0);
+        const std::size_t i = static_cast<std::size_t>(k);
+        return at[i] + (at[i + 1] - at[i]) * a;
+    };
+    for (const double frame : {1.0 / 30.0, 1.0 / 45.0, 1.0 / 60.0, 1.0 / 144.0}) {
+        CAPTURE(frame);
+        GaitDrawnState drawnState;
+        GaitMixState mix;
+        SlipRow row;
+        double t = 0.0, was = drawn(0.0);
+        (void)gaitDrawnSpeed(drawnState, was, 0.0, 1.0, 0.0, frame, 0.0, 2.0 * top);
+        (void)gaitMixStep(mix, gs, true, 0.0, frame, blend);
+        while (t + frame < kSteps * static_cast<double>(kDt)) {
+            t += frame;
+            const double x = drawn(t);
+            const double seen = (x - was) / frame; // what the eye sees the body cover this frame
+            was = x;
+            const int k = std::clamp(static_cast<int>(t / static_cast<double>(kDt)), 0, kSteps - 1);
+            const double v = gaitDrawnSpeed(drawnState, x, 0.0, 1.0, 0.0, frame, stepV(k), 2.0 * top);
+            const GaitMixFrame f = gaitMixStep(mix, gs, true, v, frame, blend);
+            REQUIRE(f.show);
+            row.add(seen - f.foot, seen, 0.0, f);
+        }
+        MESSAGE("frame " << frame << " | frames " << row.n << " | slip " << row.slip << " | max " << row.maxErr
+                         << " | |rate| " << row.minRate << ".." << row.maxRate);
+        CHECK(row.n > 0);
+        CHECK(row.slip == 0);
+        CHECK(row.minRate >= kGaitMixLow - 1e-9);
+        CHECK(row.maxRate <= kGaitMixHigh + 1e-9);
+    }
+}
+
+TEST_CASE("gait drawn speed: a non-finite facing or clip time, no top speed, and a teleport's step speed held") {
+    using namespace ftcore;
+    GaitDrawnState s;
+    (void)gaitDrawnSpeed(s, 0.0, 0.0, 1.0, 0.0, 0.1, 0.0, 10.0);
+    CHECK(gaitDrawnSpeed(s, 0.1, 0.0, std::nan(""), 0.0, 0.1, 0.4, 10.0) == 0.4);  // facing not finite
+    CHECK(gaitDrawnSpeed(s, 0.2, 0.0, 1.0, std::nan(""), 0.1, 0.4, 10.0) == 0.4);  // facing not finite
+    CHECK(gaitDrawnSpeed(s, 0.3, 0.0, 1.0, 0.0, std::nan(""), 0.4, 10.0) == 0.4);  // clip time not finite
+    CHECK(gaitDrawnSpeed(s, 0.4, 0.0, 1.0, 0.0, 0.1, 0.4, 10.0) == doctest::Approx(1.0)); // and on from there
+    // No top speed (0, below 0, not finite): no jump test and no hold; the travel is measured.
+    for (const double top : {0.0, -1.0, std::nan("")}) {
+        CAPTURE(top);
+        GaitDrawnState u;
+        (void)gaitDrawnSpeed(u, 0.0, 0.0, 1.0, 0.0, 0.1, 0.0, top);
+        CHECK(gaitDrawnSpeed(u, 5.0, 0.0, 1.0, 0.0, 0.1, 0.0, top) == doctest::Approx(50.0));
+        CHECK(gaitDrawnSpeed(u, 5.0, 0.0, 1.0, 0.0, 0.0, 1e6, top) == 1e6);
+    }
+    // A teleport within one fixed step: the step's huge speed comes back held to the top speed, either sign.
+    GaitDrawnState j;
+    (void)gaitDrawnSpeed(j, 0.0, 0.0, 1.0, 0.0, 1.0 / 60.0, 0.0, 10.84);
+    CHECK(gaitDrawnSpeed(j, 30.0, 0.0, 1.0, 0.0, 1.0 / 60.0, 1800.0, 10.84) == doctest::Approx(10.84));
+    CHECK(gaitDrawnSpeed(j, 0.0, 0.0, 1.0, 0.0, 1.0 / 60.0, -1800.0, 10.84) == doctest::Approx(-10.84));
+    CHECK(gaitDrawnSpeed(j, 0.0, 0.0, 1.0, 0.0, 0.0, std::nan(""), 10.84) == 0.0);
+    // That held speed into the mix: every rate and clock finite.
+    const BeatClips clips = loadPupClips();
+    GaitMixState mix;
+    for (int i = 0; i < 30; ++i) {
+        const GaitMixFrame f = gaitMixStep(mix, pupGaits(clips), true, 10.84, 1.0 / 60.0, clips.blend);
+        CHECK(std::isfinite(f.foot));
+        for (const GaitMixLayer& l : f.layer) {
+            CHECK(std::isfinite(l.rate));
+            CHECK(std::isfinite(l.time));
+        }
+    }
+}
+
+TEST_CASE("gait mix: a set's count out of range, equal speeds or a length not finite and above 0 plays only the "
+          "sound gaits") {
+    using namespace ftcore;
+    const BeatClips clips = loadPupClips();
+    const GaitSet sound = pupGaits(clips);
+    const auto run = [&clips](const GaitSet& gs, double v) {
+        GaitMixState st;
+        int most = -1;
+        for (int i = 0; i < 90; ++i) {
+            const GaitMixFrame f = gaitMixStep(st, gs, true, v, 1.0 / 60.0, clips.blend);
+            CHECK(std::isfinite(f.foot));
+            for (const GaitMixLayer& l : f.layer) {
+                CHECK(std::isfinite(l.rate));
+                CHECK(std::isfinite(l.time));
+                if (l.weight > 0.0) most = std::max(most, l.gait);
+            }
+        }
+        return most;
+    };
+    GaitSet gs = sound;
+    gs.count = 7; // above kMaxGaits: all three play
+    CHECK(run(gs, 5.0) == 2);
+    gs.count = -1; // below 0: none, only the idle
+    CHECK(run(gs, 2.0) < 0);
+    gs = sound;
+    gs.speed[1] = gs.speed[0]; // equal speeds: cut there, the walk only
+    CHECK(run(gs, 3.0) == 0);
+    for (const double len : {std::numeric_limits<double>::infinity(), std::nan(""), 0.0, -1.0}) {
+        CAPTURE(len);
+        gs = sound;
+        gs.length[1] = len; // the trot's length unsound: the walk only
+        CHECK(run(gs, 3.0) == 0);
+    }
+    gs = sound;
+    gs.idleLength = std::numeric_limits<double>::infinity(); // the idle's clock holds at 0
+    CHECK(run(gs, 0.2) == 0);
+}

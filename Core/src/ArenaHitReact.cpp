@@ -155,13 +155,13 @@ ArenaLegReach arenaLegReach(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain
     r.contact = ArenaPoint3{snout.x + f.x * depth, snout.y + f.y * depth, snout.z};
     r.left = toChain(r.contact, left);
     r.right = toChain(r.contact, right);
-    r.valid = true;
+    r.valid = std::isfinite(r.left) && std::isfinite(r.right); // a non-finite snout or bone: no pick
     return r;
 }
 
 int arenaLegAtTeeth(ArenaPoint3 snout, Vec2 forward, const ArenaLegChain& left, const ArenaLegChain& right, float tie) {
     const ArenaLegReach r = arenaLegReach(snout, forward, left, right);
-    if (!r.valid || std::fabs(r.left - r.right) <= std::max(0.f, tie)) return -1;
+    if (!r.valid || !(std::fabs(r.left - r.right) > std::max(0.f, tie))) return -1;
     return r.left < r.right ? 0 : 1;
 }
 
