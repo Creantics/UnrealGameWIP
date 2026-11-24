@@ -540,6 +540,22 @@ void AFTArenaFighter::PlayClip(const UAnimSequence* Clip, float Time, bool bLoop
 	}
 }
 
+void AFTArenaFighter::PlayMix(const UAnimSequence* A, float TimeA, const UAnimSequence* B, float TimeB, float ShareB, float Weight)
+{
+	UFTBeatFighterAnimInstance* Anim = SkinKind == ESkin::Creature ? Cast<UFTBeatFighterAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	if (Anim)
+	{
+		Anim->SetHoldRoot(true);
+		Anim->SetMix(A, TimeA, B, TimeB, ShareB, Weight);
+	}
+}
+
+bool AFTArenaFighter::HasSkinPose() const
+{
+	const UFTBeatFighterAnimInstance* Anim = SkinKind == ESkin::Creature ? Cast<UFTBeatFighterAnimInstance>(Skin->GetAnimInstance()) : nullptr;
+	return Anim && Anim->HasPose();
+}
+
 void AFTArenaFighter::SetTellVisible(bool bVisible)
 {
 	if (bTellShown == bVisible)

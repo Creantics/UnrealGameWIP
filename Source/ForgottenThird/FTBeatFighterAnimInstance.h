@@ -7,6 +7,9 @@
 //   Mesh->SetAnimInstanceClass(UFTBeatFighterAnimInstance::StaticClass());
 //   Anim->SetPose(Seq, Time, bLoop, DeltaSeconds);    // every frame, from ChoreoSample::lead or ::boss
 //
+// A gait mix (ftcore::gaitMixStep) is one crossfade slot of two looping clips at the times and shares the caller gives,
+// faded in at the weight the caller gives (SetMix); changes inside it never start a new crossfade.
+//
 // The clips are retargeted onto the test human's skeleton; the pose is sampled at exactly the time given (a
 // hit-stop is the same time twice, the finisher's slow motion is the choreography's own times). The clip a
 // pose fades out of is held at the last time it was given. Root motion is never extracted (the host places the
@@ -40,7 +43,8 @@ struct FFTBeatFighterProxy : public FAnimInstanceProxy
 	FFTBeatFighterProxy() = default;
 	explicit FFTBeatFighterProxy(UAnimInstance* InInstance) : FAnimInstanceProxy(InInstance) {}
 
-	static constexpr int32 MaxLayers = 3;
+	static constexpr int32 MaxSlots = 3;               // the clip showing and two fading out of it
+	static constexpr int32 MaxLayers = 2 * MaxSlots;   // a slot that is a gait mix samples two clips
 
 	virtual void PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds) override;
 	virtual bool Evaluate(FPoseContext& Output) override;
@@ -80,6 +84,13 @@ public:
 	// The clip to show now, at clip time Time. Call it every frame. A different clip from last frame's fades in over
 	// Blend seconds while the last fades out; a null clip leaves the pose as it was. bAdditiveIn: it fades in additively.
 	void SetPose(const UAnimSequence* Seq, float Time, bool bLoop, float DeltaSeconds, float Blend = BlendSeconds, bool bAdditiveIn = false);
+	// A gait mix to show now: SeqA at TimeA and SeqB at TimeB (both looping), SeqB taking ShareB of the slot, the slot at
+	// Weight over the clips it fades in over (ftcore::GaitMixFrame: the layers and the slot). Call it every frame it shows.
+	// Coming after a clip it starts a crossfade over it (at the weight given, not a blend time); anything inside the
+	// mix changing (a gait, a share, a reverse) stays in the one slot. A null SeqA leaves the pose as it was.
+	void SetMix(const UAnimSequence* SeqA, float TimeA, const UAnimSequence* SeqB, float TimeB, float ShareB, float Weight);
+	// It holds a clip (one has been set since it was made): a first clip shows at full weight, not faded from nothing.
+	bool HasPose() const { return Slots[0].Seq != nullptr; }
 	void SetHoldRoot(bool bHold) { bHoldRoot = bHold; }
 	// With it on, the same clip begun again (its time jumps back) fades in over itself as a new clip does.
 	void SetFadeRestart(bool bFade) { bFadeRestart = bFade; }
@@ -96,7 +107,7 @@ public:
 		ArmDropR = Right;
 		ArmDropL = Left;
 	}
-	// The clip showing now (the heaviest layer), for logs and tests.
+	// The clip showing now (the heavier of a gait mix's two), for logs and tests.
 	const UAnimSequence* GetClip() const { return Slots[0].Seq; }
 
 	virtual FAnimInstanceProxy* CreateAnimInstanceProxy() override;
@@ -114,9 +125,19 @@ private:
 		bool bAdditiveIn = false;
 		// Once faded out of: the share of its own motion still put on top, per unit of its weight.
 		float Additive = 0.f;
+		// A gait mix (SetMix): Seq2 at Time2 takes Share2 of the slot (Seq, at Time, the rest).
+		bool bMix = false;
+		const UAnimSequence* Seq2 = nullptr;
+		float Time2 = 0.f;
+		float Share2 = 0.f;
 	};
 	// Slot 0 is the clip now showing; 1 and 2 are the ones fading out of it.
-	FSlot Slots[FFTBeatFighterProxy::MaxLayers];
+	FSlot Slots[FFTBeatFighterProxy::MaxSlots];
+
+	// The clip showing becomes the first to fade out of; the one that was, the second.
+	void PushSlot();
+	// Slot 0's weight set: the ones fading out share what is left in the proportion they had.
+	void ShareRest();
 	bool bHoldRoot = true;
 	bool bFadeRestart = false;
 	float BuildChest = 1.f;

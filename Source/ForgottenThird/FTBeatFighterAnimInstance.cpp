@@ -16,18 +16,11 @@ void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, b
 	}
 	// The same clip begun again fades in over itself where the owner asks (SetFadeRestart), as a new clip does.
 	const bool bRestart = bFadeRestart && Slots[0].Seq == Seq && !bLoop && Time < Slots[0].Time - 0.05f;
-	if (Slots[0].Seq != Seq || bRestart)
+	if (Slots[0].Seq != Seq || Slots[0].bMix || bRestart)
 	{
-		// The clip showing becomes the first to fade out; the one that was fading out first, the second.
-		if (Slots[0].Seq)
-		{
-			// An additive clip cut off mid-fade keeps the share of its motion it was showing (1 - its weight), from now on
-			// in proportion to its weight, so the share goes as the clip fades out.
-			Slots[0].Additive = Slots[0].bAdditiveIn && Slots[0].Weight > 0.001f ? (1.f - Slots[0].Weight) / Slots[0].Weight : 0.f;
-			Slots[2] = Slots[1];
-			Slots[1] = Slots[0];
-		}
-		Slots[0] = FSlot{Seq, Time, Slots[0].Seq ? 0.f : 1.f, bLoop, bAdditiveIn};
+		const bool bFirst = Slots[0].Seq == nullptr;
+		PushSlot();
+		Slots[0] = FSlot{Seq, Time, bFirst ? 1.f : 0.f, bLoop, bAdditiveIn};
 	}
 	else
 	{
@@ -38,9 +31,49 @@ void UFTBeatFighterAnimInstance::SetPose(const UAnimSequence* Seq, float Time, b
 	// The new clip's weight rises; the others share what is left in the proportion they had.
 	const float Step = Blend > 0.f ? DeltaSeconds / Blend : 1.f;
 	Slots[0].Weight = FMath::Min(1.f, Slots[0].Weight + Step);
+	ShareRest();
+}
+
+void UFTBeatFighterAnimInstance::SetMix(const UAnimSequence* SeqA, float TimeA, const UAnimSequence* SeqB, float TimeB, float ShareB, float Weight)
+{
+	if (!SeqA)
+	{
+		return;
+	}
+	if (!Slots[0].bMix)
+	{
+		PushSlot();
+		Slots[0] = FSlot{};
+		Slots[0].bMix = true;
+	}
+	FSlot& Mix = Slots[0];
+	Mix.Seq = SeqA;
+	Mix.Time = TimeA;
+	Mix.bLoop = true;
+	Mix.Share2 = SeqB ? FMath::Clamp(ShareB, 0.f, 1.f) : 0.f;
+	Mix.Seq2 = Mix.Share2 > 0.f ? SeqB : nullptr;
+	Mix.Time2 = TimeB;
+	Mix.Weight = FMath::Clamp(Weight, 0.f, 1.f);
+	ShareRest();
+}
+
+void UFTBeatFighterAnimInstance::PushSlot()
+{
+	if (Slots[0].Seq)
+	{
+		// An additive clip cut off mid-fade keeps the share of its motion it was showing (1 - its weight), from now on
+		// in proportion to its weight, so the share goes as the clip fades out.
+		Slots[0].Additive = Slots[0].bAdditiveIn && Slots[0].Weight > 0.001f ? (1.f - Slots[0].Weight) / Slots[0].Weight : 0.f;
+		Slots[2] = Slots[1];
+		Slots[1] = Slots[0];
+	}
+}
+
+void UFTBeatFighterAnimInstance::ShareRest()
+{
 	const float Rest = 1.f - Slots[0].Weight;
 	const float Old = Slots[1].Weight + Slots[2].Weight;
-	for (int32 I = 1; I < FFTBeatFighterProxy::MaxLayers; ++I)
+	for (int32 I = 1; I < FFTBeatFighterProxy::MaxSlots; ++I)
 	{
 		Slots[I].Weight = Old > 0.f ? Slots[I].Weight / Old * Rest : 0.f;
 		if (Slots[I].Weight <= 0.001f)
@@ -71,14 +104,23 @@ void FFTBeatFighterProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSe
 	const UFTBeatFighterAnimInstance* Instance = static_cast<UFTBeatFighterAnimInstance*>(InAnimInstance);
 	NumLayers = 0;
 	float Sum = 0.f;
-	for (int32 I = 0; I < MaxLayers; ++I)
+	for (int32 I = 0; I < MaxSlots; ++I)
 	{
 		const UFTBeatFighterAnimInstance::FSlot& Slot = Instance->Slots[I];
 		if (Slot.Seq && Slot.Weight > 0.f && NumLayers < MaxLayers)
 		{
 			// The clip fading in puts on what is left of its fade; one faded out of, its kept share by its weight.
 			const float Additive = I == 0 ? (Slot.bAdditiveIn ? 1.f - Slot.Weight : 0.f) : Slot.Additive * Slot.Weight;
-			Layers[NumLayers++] = FLayer{Slot.Seq, Slot.Time, Slot.Weight, Slot.bLoop, FMath::Clamp(Additive, 0.f, 1.f)};
+			// A gait mix samples both its clips, each at its share of the slot.
+			const float Second = Slot.Seq2 ? Slot.Share2 : 0.f;
+			if (1.f - Second > 0.f)
+			{
+				Layers[NumLayers++] = FLayer{Slot.Seq, Slot.Time, Slot.Weight * (1.f - Second), Slot.bLoop, FMath::Clamp(Additive, 0.f, 1.f)};
+			}
+			if (Second > 0.f && NumLayers < MaxLayers)
+			{
+				Layers[NumLayers++] = FLayer{Slot.Seq2, Slot.Time2, Slot.Weight * Second, true, 0.f};
+			}
 			Sum += Slot.Weight;
 		}
 	}

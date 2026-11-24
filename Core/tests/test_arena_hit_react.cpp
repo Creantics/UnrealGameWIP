@@ -953,3 +953,106 @@ TEST_CASE("arena hit react: a fall with the partner up is the player's Knockout,
     }
     REQUIRE(seen);
 }
+
+namespace {
+
+// A lead standing at the origin, turned yawDeg from +x, one leg 0.10 m to side (+1 its right, (-f.y, f.x): the host's
+// y is right), the knee 3 cm ahead: hip 0.90, knee 0.45, ankle 0.08 m up.
+ArenaLegChain legOf(float yawDeg, float side) {
+    const float a = yawDeg * 3.14159265f / 180.f;
+    const Vec2 f{std::cos(a), std::sin(a)};
+    const Vec2 r{-f.y, f.x};
+    const float o = 0.10f * side;
+    const ArenaPoint3 knee{r.x * o + f.x * 0.03f, r.y * o + f.y * 0.03f, 0.45f};
+    return ArenaLegChain{ArenaPoint3{r.x * o, r.y * o, 0.90f}, knee, ArenaPoint3{r.x * o, r.y * o, 0.08f}};
+}
+
+} // namespace
+
+TEST_CASE("arena hit react: a bite on the legs reacts on the leg the teeth are at, by world distance, never the yaw's "
+          "sign") {
+    const ArenaHitSetup s = loadSetup();
+    REQUIRE(s.thighL >= 0);
+    REQUIRE(s.thighR >= 0);
+    // The pup 0.75 m dead ahead of a lead turned by up to +-2 deg, its snout aimed at one knee (canine height 0.45 m).
+    for (const float yaw : {-2.f, -1.f, -0.8f, 0.f, 0.8f, 1.f, 2.f}) {
+        for (const float side : {-1.f, 1.f}) {
+            CAPTURE(yaw);
+            CAPTURE(side);
+            const ArenaLegChain left = legOf(yaw, -1.f), right = legOf(yaw, 1.f);
+            const ArenaLegChain& at = side < 0.f ? left : right;
+            const ArenaPoint3 snout{0.75f, at[1].y, 0.45f}; // the snout in line with that knee, the pup facing -x
+            const int want = side < 0.f ? 0 : 1;
+            CHECK(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, 0.002f) == want);
+            // Core's own pick goes by the pup's place against the lead's facing; with the pup a hair to the other side
+            // it names the wrong thigh, and the teeth move it back.
+            ArenaLeadHit h;
+            h.tier = ArenaHitTier::Light;
+            h.part = ArenaHitPart::Thigh;
+            h.fromKnown = true;
+            h.from = Vec2{0.75f, -side * 0.01f};
+            h.fromFacing = Vec2{-1.f, 0.f};
+            h.facing = Vec2{1.f, 0.f};
+            h.weight = 0.5f;
+            const int core = arenaHitReaction(h, s).part;
+            CHECK(core == (side < 0.f ? s.thighR : s.thighL));
+            CHECK(arenaLegPartOnSide(core, arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, 0.002f), s)
+                  == (side < 0.f ? s.thighL : s.thighR));
+        }
+    }
+}
+
+TEST_CASE("arena hit react: the leg by the teeth keeps the caller's pick on a tie, no forward, or a part not a leg") {
+    const ArenaHitSetup s = loadSetup();
+    const ArenaLegChain left = legOf(0.f, -1.f), right = legOf(0.f, 1.f);
+    CHECK(arenaLegAtTeeth(ArenaPoint3{0.75f, 0.f, 0.45f}, Vec2{-1.f, 0.f}, left, right, 0.002f) == -1); // centred
+    CHECK(arenaLegAtTeeth(ArenaPoint3{0.75f, -0.05f, 0.45f}, Vec2{}, left, right, 0.002f) == -1);       // no forward
+    const ArenaLegReach r = arenaLegReach(ArenaPoint3{0.75f, -0.10f, 0.45f}, Vec2{-1.f, 0.f}, left, right);
+    REQUIRE(r.valid);
+    CHECK(r.contact.x == doctest::Approx(0.01f));
+    CHECK(r.left < r.right);
+    CHECK(arenaLegPartOnSide(s.shinR, 0, s) == s.shinL);
+    CHECK(arenaLegPartOnSide(s.thighL, 1, s) == s.thighR);
+    CHECK(arenaLegPartOnSide(s.thighL, -1, s) == s.thighL);
+    CHECK(arenaLegPartOnSide(s.chest, 1, s) == s.chest);
+    ArenaHitSetup m = s;
+    m.thighR = -1;
+    CHECK(arenaLegPartOnSide(s.thighL, 1, m) == s.thighL);
+}
+
+TEST_CASE("arena hit react: the snout a little off the midline picks the leg on its side, at any yaw within 2 deg and "
+          "any snout height") {
+    // The lead turned up to +-2 deg off dead ahead; the pup facing -x with its snout 5-30 mm either side of the lead's
+    // midline (not in line with a knee), at canine heights from 0.30 to 0.85 m.
+    for (const float yaw : {-2.f, -1.5f, -1.f, -0.5f, 0.f, 0.5f, 1.f, 1.5f, 2.f}) {
+        const ArenaLegChain left = legOf(yaw, -1.f), right = legOf(yaw, 1.f);
+        for (const float off : {-0.03f, -0.02f, -0.01f, -0.005f, 0.005f, 0.01f, 0.02f, 0.03f}) {
+            for (const float z : {0.30f, 0.45f, 0.60f, 0.85f}) {
+                CAPTURE(yaw);
+                CAPTURE(off);
+                CAPTURE(z);
+                const ArenaPoint3 snout{0.75f, off, z};
+                const ArenaLegReach r = arenaLegReach(snout, Vec2{-1.f, 0.f}, left, right);
+                REQUIRE(r.valid);
+                const int want = off < 0.f ? 0 : 1; // the left leg stands at -y here
+                CHECK((want == 0 ? r.left < r.right : r.right < r.left));
+                CHECK(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, 0.002f) == want);
+            }
+        }
+    }
+}
+
+TEST_CASE("arena hit react: a non-finite snout or leg bone keeps the caller's pick") {
+    const float nan = std::nanf("");
+    const ArenaLegChain left = legOf(0.f, -1.f), right = legOf(0.f, 1.f);
+    const ArenaPoint3 snout{0.75f, -0.05f, 0.45f};
+    REQUIRE(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, 0.002f) == 0);
+    CHECK(arenaLegAtTeeth(ArenaPoint3{nan, -0.05f, 0.45f}, Vec2{-1.f, 0.f}, left, right, 0.002f) == -1);
+    CHECK(arenaLegAtTeeth(ArenaPoint3{0.75f, nan, 0.45f}, Vec2{-1.f, 0.f}, left, right, 0.002f) == -1);
+    CHECK(arenaLegAtTeeth(snout, Vec2{nan, 0.f}, left, right, 0.002f) == -1);
+    ArenaLegChain bad = right;
+    bad[1].y = nan;
+    CHECK(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, bad, 0.002f) == -1);
+    CHECK_FALSE(arenaLegReach(snout, Vec2{-1.f, 0.f}, left, bad).valid);
+    CHECK(arenaLegAtTeeth(snout, Vec2{-1.f, 0.f}, left, right, nan) == 0); // a non-finite tie is no tie
+}

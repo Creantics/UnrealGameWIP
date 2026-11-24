@@ -16,6 +16,7 @@
 #include "FTActionButtons.h"
 #include "FTArenaDevTiming.h"
 #include "FTArenaFighter.h"
+#include "FTBeatFighterAnimInstance.h"
 #include "FTAudioSubsystem.h"
 #include "FTArenaJoltModifier.h"
 #include "FTBeatBossMetronome.h"
@@ -1253,6 +1254,21 @@ void UFTArenaRunner::LoadSkin(int32 I)
 			}
 		}
 		Skin.Gaits = ftcore::planGaitBand(Speeds, Count, kArenaWalkStart);
+		Skin.bGaitMix = Skin.Clips->gaitMix && Skin.Gaits.count > 0 && Skin.Idle >= 0;
+		UE_CLOG(Skin.Clips->gaitMix && !Skin.bGaitMix, LogForgottenThird, Warning,
+			TEXT("Arena: enemy %d's table asks for gait_mix but has no idle or no gait in order; its gaits play by speed pick: %s."), I, *TablePath);
+		if (Skin.bGaitMix)
+		{
+			Skin.MixGaits = ftcore::GaitSet{};
+			Skin.MixGaits.count = Skin.Gaits.count;
+			for (int32 G = 0; G < Skin.Gaits.count; ++G)
+			{
+				Skin.MixGaits.speed[static_cast<size_t>(G)] = Skin.Gaits.speed[static_cast<size_t>(G)];
+				Skin.MixGaits.length[static_cast<size_t>(G)] = static_cast<double>(Skin.Sequences[Skin.GaitClip[G]]->GetPlayLength());
+			}
+			Skin.MixGaits.idleLength = static_cast<double>(Skin.Sequences[Skin.Idle]->GetPlayLength());
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: enemy %d's gaits are mixed by speed (gait_mix)."), I);
+		}
 		if (Count > 1)
 		{
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: enemy %d gaits: %d, rates %.2f-%.2f%s."), I, Skin.Gaits.count,
@@ -1318,6 +1334,35 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		// StoneBearerWalk starts and stops it; it plays at rate 1.0 from its start phase.
 		WalkPhase[I] = kStoneWalkStartPhase + (Now - StoneWalkSince);
+	}
+	else if (Skin.bGaitMix && !bStone)
+	{
+		// A gait-mixed skin: every frame its feet travel at the body's own speed along its facing (signed, so backing off
+		// plays the gaits in reverse), the locomotion fading in over the last blend of a timed state (ftcore::gaitMixStep).
+		// The speed: the drawn body's travel along its facing since the last frame, over this frame's clip time, so the
+		// feet cover what the figure is seen to cover whatever the steps per frame (the last step alone when no clip
+		// time passed, or on the first frame).
+		const ftcore::Vec2 From = PrevBodies.enemies[static_cast<size_t>(I)];
+		const ftcore::Vec2 To = Bodies.enemies[static_cast<size_t>(I)];
+		const ftcore::Vec2 Drawn = ArenaLerp(From, To, FMath::Clamp(Alpha, 0.f, 1.f));
+		const double StepV = (static_cast<double>(To.x - From.x) * Out.facing.x + static_cast<double>(To.y - From.y) * Out.facing.y) / StepSeconds;
+		// The fastest gait's cover top: a drawn jump past it (a restart, a teleport) is no travel the feet could show, and
+		// the last step's speed (a pause, the first frame) is held to it, so no gait plays outside its rate band.
+		const double MaxV = ftcore::kGaitMixHigh * Skin.MixGaits.speed[static_cast<size_t>(FMath::Max(0, Skin.MixGaits.count - 1))];
+		const double V = ftcore::gaitDrawnSpeed(MixDrawn[I], Drawn.x, Drawn.y, Out.facing.x, Out.facing.y, ClipDelta, StepV, MaxV);
+		const double MixBlend = Skin.Clips->blend > 0.0 ? Skin.Clips->blend : static_cast<double>(UFTBeatFighterAnimInstance::BlendSeconds);
+		const bool bShow = ftcore::arenaGaitShows(Out, Fight.enemyAttackLength(static_cast<size_t>(I)), MixBlend);
+		if (!GaitMix[I].begun && Figure->HasSkinPose())
+		{
+			GaitMix[I].begun = true; // a restart: the figure still shows the last fight's clip, so the slot fades in over it
+		}
+		MixNow[I] = ftcore::gaitMixStep(GaitMix[I], Skin.MixGaits, bShow, ftcore::arenaGaitSpeed(Out, V), ClipDelta, MixBlend);
+		const int32 Lead = MixNow[I].layer[0].gait;
+		WalkSpeed[I] = static_cast<float>(FMath::Abs(V));
+		MixSpeed[I] = static_cast<float>(ftcore::arenaGaitSpeed(Out, V));
+		bWalking[I] = MixNow[I].show && Lead >= 0;
+		GaitNow[I] = bWalking[I] ? Lead : 0;
+		bRunning[I] = bWalking[I] && Skin.Run >= 0 && Skin.GaitClip[Lead] == Skin.Run;
 	}
 	else if (Skin.Walk >= 0 && !bStone)
 	{
@@ -1648,6 +1693,38 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	{
 		UpOwedUntil[I] = -1e9; // anything else (a move, a stagger, a death) takes it from the get-up for good
 	}
+	const int32 HitClip = bHitHeavy[I] ? Skin.HitHeavy : Skin.HitLight;
+	const bool bClipHolds = bOwedUp || bStone || bBossLoop || (bTimed && Clip >= 0 && (Clip == Skin.FaceDownOut || Clip == HitClip));
+	if (Skin.bGaitMix && MixNow[I].show && bClipHolds)
+	{
+		// A hit reaction, a get-up (owed or ending a down) or a stone or boss-loop clip plays out whole: the mix waits, and
+		// its slot fades in over that clip's end once it is done.
+		GaitMix[I].showing = false;
+		bWalking[I] = false;
+		bRunning[I] = false;
+	}
+	else if (Skin.bGaitMix && MixNow[I].show)
+	{
+		// The gait mix shows: its two layers in one crossfade slot, at the slot weight Core keeps. The heavier layer is the
+		// clip the logs and GetEnemyClipNow name, with its signed rate. Over the last blend of an attack or a timed state
+		// the clip ending stays frozen under the slot as it fades in (a crossfade's way), on purpose.
+		const ftcore::GaitMixFrame& Mix = MixNow[I];
+		const auto ClipOf = [&Skin](int Gait) { return Gait >= 0 ? Skin.GaitClip[Gait] : Skin.Idle; };
+		const int32 A = ClipOf(Mix.layer[0].gait);
+		const int32 B = ClipOf(Mix.layer[1].gait);
+		if (A != SkinClip[I])
+		{
+			SkinClip[I] = A;
+			SkinSince[I] = Now;
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: enemy %d plays %s at %.3f s (%.2f s)."), I, *Skin.Sequences[A]->GetName(),
+				Fight.time(), Skin.Sequences[A]->GetPlayLength());
+		}
+		SkinAt[I] = static_cast<float>(Mix.layer[0].time);
+		SkinRate[I] = static_cast<float>(Mix.layer[0].rate);
+		Figure->PlayMix(Skin.Sequences[A], static_cast<float>(Mix.layer[0].time), Skin.Sequences[B], static_cast<float>(Mix.layer[1].time),
+			static_cast<float>(Mix.layer[1].weight), static_cast<float>(Mix.slot));
+		return;
+	}
 	if (Clip != SkinClip[I])
 	{
 		SkinClip[I] = Clip;
@@ -1705,6 +1782,20 @@ UFTArenaRunner::FEnemyClipNow UFTArenaRunner::GetEnemyClipNow(int32 I) const
 	Now_.Ground = WalkSpeed[I];
 	Now_.bWalk = bWalking[I];
 	Now_.bRun = bRunning[I];
+	const ftcore::GaitMixFrame& Mix = MixNow[I];
+	if (Skin.IsLoaded() && Skin.bGaitMix && Mix.show && GaitMix[I].showing && SkinClip[I] >= 0) // played, not held off
+	{
+		const auto ClipOf = [&Skin](int Gait) { return Gait >= 0 ? Skin.GaitClip[Gait] : Skin.Idle; };
+		const int32 B = ClipOf(Mix.layer[1].gait);
+		Now_.bMix = true;
+		Now_.Weight = static_cast<float>(Mix.layer[0].weight);
+		Now_.Second = Mix.layer[1].weight > 0.0 && Skin.Sequences.IsValidIndex(B) ? Skin.Sequences[B].Get() : nullptr;
+		Now_.SecondAt = static_cast<float>(Mix.layer[1].time);
+		Now_.SecondRate = static_cast<float>(Mix.layer[1].rate);
+		Now_.SecondWeight = static_cast<float>(Mix.layer[1].weight);
+		Now_.Slot = static_cast<float>(Mix.slot);
+		Now_.Speed = MixSpeed[I];
+	}
 	return Now_;
 }
 
@@ -1777,6 +1868,10 @@ void UFTArenaRunner::PutBodiesAtStart()
 		bRunning[I] = false;
 		GaitNow[I] = 0;
 		WalkPhase[I] = 0.0;
+		GaitMix[I] = ftcore::GaitMixState{};
+		MixNow[I] = ftcore::GaitMixFrame{};
+		MixDrawn[I] = ftcore::GaitDrawnState{};
+		MixSpeed[I] = 0.f;
 		bKneeling[I] = false;
 		KneelSince[I] = 0.0;
 		UpAt[I] = 0.0;

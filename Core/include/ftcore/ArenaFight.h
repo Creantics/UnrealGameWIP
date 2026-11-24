@@ -1029,6 +1029,28 @@ struct ArenaEnemyOut {
                                       // ArenaFight::setPartner); 0 when not attacking. The HUD's "whom this windup aims at"
 };
 
+// Whether a gait-mixed figure (BeatClips::gaitMix, gaitMixStep) shows its locomotion: always while it approaches or
+// strafes, and over the last `blend` seconds of a timed state (an attack, whose whole length is attackLength,
+// ArenaFight::enemyAttackLength; a flinch, step-back, stagger, opening or down, by stateLength), so the slot has faded
+// in by the time the body moves off. Never once dead.
+inline bool arenaGaitShows(const ArenaEnemyOut& e, float attackLength, double blend) {
+    switch (e.brain) {
+    case ArenaBrain::Approach:
+    case ArenaBrain::Strafe: return true;
+    case ArenaBrain::Dead: return false;
+    case ArenaBrain::Attack: return static_cast<double>(attackLength - e.stateTime) <= blend;
+    default: return e.stateLength > 0.f && static_cast<double>(e.stateLength - e.stateTime) <= blend;
+    }
+}
+
+// The speed a gait-mixed figure's feet are given (gaitMixStep's v): the body's own along its facing while it approaches
+// or strafes; 0 in any other state, so the slot's fade-in over the end of an attack or a shove (a flinch's push, a
+// step-back, a lunge's tail) shows the idle under the clip ending, never a gait snapped in by the speed floor. The body
+// travelling in those states is the clip's own (or a knock-back's), reported, not drawn by the gaits.
+inline double arenaGaitSpeed(const ArenaEnemyOut& e, double alongFacing) {
+    return e.brain == ArenaBrain::Approach || e.brain == ArenaBrain::Strafe ? alongFacing : 0.0;
+}
+
 enum class ArenaEventType : std::uint8_t { // append only
     AttackStarted, // source began attack `move`
     Hit,           // source's attack hit target for `amount` hp (after any guard); source kArenaPlayer, or the
@@ -1548,6 +1570,9 @@ public:
     FTCORE_API bool enemyBreakTell(std::size_t i) const;
     FTCORE_API bool enemyBreakGuard(std::size_t i) const;
     FTCORE_API bool enemyBreakMoveOn(std::size_t i) const;
+    // The whole length (startup + active + recovery, s) of the move enemy i is in, as it plays now (an unseen windup
+    // or a boss's break move counted); 0 when it is not attacking.
+    FTCORE_API float enemyAttackLength(std::size_t i) const;
     // Turns enemy i to `facing` (made unit) now; the next tick works from it and reports it. Nothing for a zero
     // vector or an enemy out of range.
     FTCORE_API void setEnemyFacing(std::size_t i, Vec2 facing);
