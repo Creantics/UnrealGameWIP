@@ -52,6 +52,7 @@ private:
 
 	FString RecPrefix;
 	bool bRecClose = true;
+	bool bRecQ3 = false; // -ArenaRecView=q3: the close view from the front three-quarter (ahead of the enemy, off the line)
 	double RecFrom = 0.0;
 	double RecTo = 1e9;
 	int32 RecFrames = 0;
@@ -59,6 +60,8 @@ private:
 	bool bMuzzleTried = false;
 	int32 MuzzleBone = INDEX_NONE;
 	FVector MuzzleLocal = FVector::ZeroVector; // the tip in MuzzleBone's space
+	int32 JawBone = INDEX_NONE; // the enemy's "jaw" bone, for jaw_deg
+	FQuat JawRest = FQuat::Identity; // its rest rotation in its parent's space
 	TArray<FMatrix44f> RefToLocals; // reused by ClosestSkinVertex
 
 	FArchive* Log = nullptr;
