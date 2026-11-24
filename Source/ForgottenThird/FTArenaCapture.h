@@ -56,6 +56,10 @@ private:
 	// vertex, negative when the point is behind that vertex's skinned normal (inside the surface). -1e9 with no mesh.
 	void SignedSkinDistances(const AActor& Lead, const FVector* Points, int32 Num, double* OutCm);
 	bool LegFronts(const AActor& Lead, const FVector& Origin, const FVector& Fwd, double Z, double Out[4]);
+	// One pass over every visible skinned vertex on Lead (as ClosestSkinVertex): the least distance (cm) from any of Num
+	// points to a vertex whose heaviest bone is a leg bone (name holds thigh, calf, foot or ball), left then right; -1 when
+	// a side has none. The tooth tips to the leg surface, the points the reacting-leg pick uses (11-24 14:4x).
+	void LegSurfaceDistances(const AActor& Lead, const FVector* Points, int32 Num, double OutCm[2]);
 
 	bool bOn = false;
 	FString ShotPrefix;
@@ -79,6 +83,10 @@ private:
 	FQuat JawRest = FQuat::Identity; // its rest rotation in its parent's space
 	// The enemy's four paws: per quadrant (front left, front right, hind left, hind right) the lowest bone at rest.
 	int32 PawBone[4] = {INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE};
+	// Each paw's pad or toe tip: the lowest rest vertex skinned (heaviest) to PawBone or a bone under it, held in that
+	// vertex's heaviest bone's space, so the stance is read where the paw meets the ground, not at the bone.
+	int32 PadBone[4] = {INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE};
+	FVector PadLocal[4];
 	TArray<FMatrix44f> RefToLocals; // reused by ClosestSkinVertex
 
 	FArchive* Log = nullptr;
