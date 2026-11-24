@@ -1926,6 +1926,8 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 	int32 Far = 0, NoGround = 0, OffWindow = 0, OverPoint = 0, Cars = 0, Walls = 0, OverNamed = 0, OverDropped = 0;
 	CarsDropped = 0;
 	CarsKept = 0;
+	// The load's parts (the "Crowd: load:" keep-outs figure): Core's street points, the host's ground traces, the sim.
+	double PointSeconds = 0.0, GroundSeconds = 0.0;
 	auto Consider = [&](const FMassBox& M, ftcore::crowdv2::CrowdKeepKind Kind)
 	{
 		ftcore::crowdv2::CrowdKeepOut K;
@@ -1940,7 +1942,9 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 		// crowdKeepVerdict: street, ground, then the feet's window). The host only traces the ground there.
 		double GroundZ = 0.0;
 		ftcore::Vec2 At{0.f, 0.f};
+		const double P0 = FPlatformTime::Seconds();
 		const bool bStreet = ftcore::crowdv2::crowdKeepStreetPoint(Graph, K, CrowdV2Local::kKeepReach, At);
+		PointSeconds += FPlatformTime::Seconds() - P0;
 		bool bGround = false, bOver = false;
 		if (bStreet)
 		{
@@ -1948,7 +1952,9 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 			// there, so the window may drop it. -CrowdKeepWhy names them.
 			bOver = ftcore::crowdv2::crowdKeepDistance(K, At) < 0.f;
 			OverPoint += bOver ? 1 : 0;
+			const double G0 = FPlatformTime::Seconds();
 			bGround = FirstGround(INDEX_NONE, At.x * 100.0, At.y * 100.0, M.ZMax, GroundZ);
+			GroundSeconds += FPlatformTime::Seconds() - G0;
 		}
 		const ftcore::crowdv2::CrowdKeepVerdict V = ftcore::crowdv2::crowdKeepVerdict(bStreet, bGround, GroundZ, M.ZMin, M.ZMax);
 		OverDropped += bOver && V != ftcore::crowdv2::CrowdKeepVerdict::Kept ? 1 : 0;
@@ -2022,7 +2028,10 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 	{
 		Consider(M, ftcore::crowdv2::CrowdKeepKind::Wall);
 	}
+	const double S0 = FPlatformTime::Seconds();
 	const uint32 Kept = Sim.setKeepOuts(Keeps);
+	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-outs cost: street points %.1f ms, ground traces %.1f ms, sim %.1f ms."),
+		PointSeconds * 1000.0, GroundSeconds * 1000.0, (FPlatformTime::Seconds() - S0) * 1000.0);
 	if (bKeepLogAll)
 	{
 		for (const ftcore::crowdv2::CrowdClosedStreet& S : Sim.closedStreetTrace())

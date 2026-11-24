@@ -121,6 +121,20 @@ public:
     // The nearest spot on any street's centre line within `within` m, or false. Long streets with their nodes far
     // apart are found anywhere along them. No allocation.
     FTCORE_API bool nearestStreet(Vec2 p, float within, CrowdStreetPoint& out) const;
+    // Appends to `out` the streets (n, k: node n's k-th edge; along and dist 0) listed in the street-grid cells the
+    // square lo..hi touches, clamped to the grid: every street with a point inside the square, and others near it; a
+    // street over several of those cells comes once a cell. Allocates only as `out` grows (load time).
+    FTCORE_API void streetsIn(Vec2 lo, Vec2 hi, std::vector<CrowdStreetPoint>& out) const;
+    // For many nearestStreet looks from points within `spread` of `c`, none further than `within`: fills `out` with
+    // the street-grid listings those looks would visit, in their order, less the streets more than within + spread
+    // (+1 cm) from c, which none of them could take. Each listing's cell goes in along (x) and dist (y), for
+    // nearestStreetAmong. Allocates only as `out` grows (load time).
+    FTCORE_API void streetsNear(Vec2 c, float spread, float within, std::vector<CrowdStreetPoint>& out) const;
+    // nearestStreet(p, within, out), the same answer (ties included), over `nearby` from streetsNear(c, spread,
+    // withinMax, nearby). The contract (not checked): p within `spread` of c and `within` at most withinMax; a look
+    // outside it can miss a street nearestStreet would find. No allocation.
+    FTCORE_API bool nearestStreetAmong(const std::vector<CrowdStreetPoint>& nearby, Vec2 p, float within,
+                                       CrowdStreetPoint& out) const;
     Vec2 boundsMin() const { return min_; }
     Vec2 boundsMax() const { return max_; }
 
@@ -495,7 +509,7 @@ FTCORE_API float crowdKeepSweep(const CrowdKeepOut& k, Vec2 p, Vec2 q);
 // its centre. Points round the box's sides (1 m apart, at most 64 a side) ask for their nearest street; the nearest
 // answer wins (a long box whose end stands by a cross street is judged there; a street meeting a long side between
 // corners is found), within half a spacing of the true nearest. False when no street point is within `reach` m of the
-// box. No allocation.
+// box. Load time only: it allocates (a list of the streets near the box).
 FTCORE_API bool crowdKeepStreetPoint(const CrowdGraph& g, const CrowdKeepOut& k, float reach, Vec2& at);
 // What the host makes of a box (SetKeepOuts): Kept (a keep-out) when a street is near it (`streetNear`), the host found
 // a ground at that street point (`groundFound`, `groundZ` cm) and that ground is in the box's height window
@@ -636,6 +650,9 @@ public:
     // else it waits a minGap short of its mouth, to the side away from the slot. A way that has waited
     // kCrowdNarrowHold s gets the next turn. A narrow within minGap of a street's end is not gated (it is counted).
     std::uint32_t narrowCount() const { return static_cast<std::uint32_t>(narrows_.size()); }
+    // Tests: a hash (FNV-1a) of what setKeepOuts built: each node's box list, in order, and every narrow's street,
+    // stretch and slot, to pin a load rebuilt for speed to the old one bit for bit.
+    FTCORE_API std::uint64_t keepDigest() const;
     // The least plan distance from member i to a keep-out of `kind` near its streets (1e3: none, free, or behind its
     // door). Members walking to or from a door count. No allocation.
     FTCORE_API float keepClearance(std::uint32_t i, CrowdKeepKind kind) const;
@@ -809,6 +826,16 @@ private:
     // their count (0: none, or more boxes there than kCrowdKeepSpanMax holds).
     std::uint32_t keepOpen(std::uint32_t from, std::uint32_t to, float along, float lo, float hi, float extra,
                            CrowdKeepSpan* open) const;
+    // keepOpen over the boxes list[0..count) (keeps_ indices, in from's list order) instead of from's whole list.
+    // With `reach` (keepsAlong's), box q is passed over where `along` is outside reach[2q]..reach[2q+1]: no span there.
+    std::uint32_t keepOpenIn(const std::uint32_t* list, const float* reach, std::uint32_t count, std::uint32_t from,
+                             std::uint32_t to, float along, float lo, float hi, float extra, CrowdKeepSpan* open) const;
+    // Load time: the boxes of from's list that can meet the street from -> to within `across` m of its centre line
+    // anywhere along it (each grown by its gap + extra), in list order, and in `reach` (two a box) the stretch of
+    // along outside which the line across the street misses it. keepOpenIn over them gives what keepOpen gives for
+    // any band inside +-across: a box left out adds no span there.
+    void keepsAlong(std::uint32_t from, std::uint32_t to, float across, float extra, std::vector<std::uint32_t>& out,
+                    std::vector<float>& reach) const;
     std::uint8_t openSides(std::uint32_t from, std::uint32_t to) const; // bit 0: + side open, bit 1: - side
     float keepMargin(Vec2 p, std::uint32_t from, std::uint32_t to) const; // least box distance less its gap
     // The least box distance less its gap over the segment p..q, the boxes listed at the up to four nodes given.
