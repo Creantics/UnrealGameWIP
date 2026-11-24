@@ -422,6 +422,14 @@ TEST_CASE("cylinder: taking a hit during the reload does not stop it") {
     r.def.enemies[0] = arena.enemies[pup];
     r.def.enemies[0].hp = 100000;
     r.def.enemies[0].poise = 100000.f;
+    // The test's nip keeps a quick beat (0.4 s windup, 0.5 s recovery), so one lands inside a reload within 30 s;
+    // the shipped nip's clip-timed windup (1.2 s) is the pup's look, not what this test is about.
+    for (std::size_t m = 0; m < r.def.enemies[0].moveCount; ++m) {
+        if (r.def.enemies[0].moves[m].clip() == "nip") {
+            r.def.enemies[0].moves[m].attack.startup = 0.4f;
+            r.def.enemies[0].moves[m].attack.recovery = 0.5f;
+        }
+    }
     r.fight.begin(r.def, ArenaRing{Vec2{0.f, 0.f}, 30.f}, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, 1);
     r.bodies.enemies[0] = Vec2{0.75f, 0.f}; // at its jaws (the bodies stand still here: only the nip reaches)
     bool hitWhileReloading = false;
