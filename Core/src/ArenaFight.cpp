@@ -12,13 +12,24 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <span>
 #include <string>
 #include <utility>
+
+namespace ftcore {
+namespace {
+// PROTOTYPE switches (11-24 Pounce round 2): off unless a measure sets them with arenaProtoSet.
+int gProtoCap = 0;
+int gProtoYield = 0;
+} // namespace
+void arenaProtoSet(int handoffCap, int plantedYield) {
+    gProtoCap = handoffCap;
+    gProtoYield = plantedYield;
+}
+} // namespace ftcore
 
 namespace ftcore {
 
@@ -3626,6 +3637,33 @@ struct ArenaFightImpl {
         return ev;
     }
 
+    // Enemy i's step on its kind's lunge window (ArenaLungeCurve) over the move's clock a0..a1 (state time).
+    Vec2 enemyLunge(std::size_t i, const ArenaAttack& a, float a0, float a1) const {
+        const Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        const float held = foe.unseen ? kArenaUnseenWindup : 0.f;
+        const float c0 = std::max(0.f, a0 - held);
+        const float c1 = std::max(0.f, a1 - held);
+        const float launch = std::max(0.f, a.startup - held);
+        const float before = arenaLungeDistance(k.lungeCurve, c0);
+        const float planted = arenaLungeDistance(k.lungeCurve, std::min(c1, std::max(c0, launch))) - before;
+        const float step = arenaLungeDistance(k.lungeCurve, c1) - before;
+        if (!(step > 0.f)) return Vec2{};
+        float carried = step;
+        if (k.lungeToContact && c1 > launch) {
+            // From the launch on, its closing on the lead stops at first tooth contact; the startup's share runs whole.
+            const Vec2 to = arenaSub(pl.pos, foe.pos);
+            const float apart = std::sqrt(arenaDot(to, to));
+            const float toward = apart > kArenaEps ? std::max(0.f, arenaDot(foe.facing, to) / apart) : 0.f;
+            const float contact = std::max(0.f, fi.bodyRadius - k.contactInset) + arenaBodyReach(k);
+            const float room = std::max(0.f, apart - contact);
+            const float free = step - planted;
+            if (toward > kArenaEps && (step * toward) > room)
+                carried = planted + std::clamp(room / toward - planted, 0.f, free);
+        }
+        return arenaScaled(foe.facing, carried / dt);
+    }
+
     Vec2 enemyAttack(std::size_t i, Vec2 dir) {
         Enemy& foe = foes[i];
         const ArenaAttack& a = fight.enemyAttackNow(i);
@@ -3646,7 +3684,11 @@ struct ArenaFightImpl {
         }
         Vec2 vel{};
         const float span = a.startup + a.active;
-        if (span > kArenaEps && a.lunge != 0.f) {
+        const ArenaEnemyKind& kind = def.enemies[i];
+        if (kind.lungeMove >= 0 && foe.move == static_cast<std::uint8_t>(kind.lungeMove) && kind.lungeCurve.count > 0 &&
+            !foe.breakTimed) {
+            vel = enemyLunge(i, a, a0, a1);
+        } else if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
             vel = arenaScaled(foe.facing, a.lunge / span * moving / dt);
             const ArenaEnemyKind& k = def.enemies[i];
@@ -3690,7 +3732,17 @@ struct ArenaFightImpl {
         float tier = k.runSpeed;
         if (distance <= k.runRange) tier = k.walkSpeed;
         else if (k.trotSpeed > 0.f && distance <= k.trotRange) tier = k.trotSpeed;
-        const float speed = std::min(tier, std::fabs(error) / dt);
+        float speed = std::min(tier, std::fabs(error) / dt);
+        // PROTOTYPE hand-off cap: when the walk from here to the goal crosses or ends in the lunge move's band (the
+        // lunge can start on the way, whichever move the goal is for), its speed either way is at most the curve's
+        // first speed plus its distance outside that band over 0.3 s (v0 inside the band).
+        if (gProtoCap && k.lungeMove >= 0 && k.lungeMove < k.moveCount && k.lungeCurve.count > 0) {
+            const ArenaEnemyMove& lm = k.moves[static_cast<std::size_t>(k.lungeMove)];
+            if (std::min(distance, goal) <= lm.maxRange && std::max(distance, goal) >= lm.minRange) {
+                const float outside = std::max(0.f, std::max(distance - lm.maxRange, lm.minRange - distance));
+                speed = std::min(speed, k.lungeCurve.v[0] * k.lungeCurve.scale + outside / 0.3f);
+            }
+        }
         return arenaScaled(dir, error > 0.f ? speed : -speed);
     }
 
@@ -4999,6 +5051,35 @@ FightClip arenaPlayerStrike(const ArenaFighter& kit, std::uint8_t move) {
     return static_cast<std::size_t>(move) < n ? p[move] : FightClip::Stance;
 }
 
+namespace {
+double arenaLungeRaw(const ArenaLungeCurve& c, float t) {
+    const std::size_t n = std::min<std::size_t>(c.count, kMaxArenaLungeKnots);
+    if (n == 0 || !(t > c.t[0])) return 0.0;
+    double s = 0.0;
+    for (std::size_t m = 0; m + 1 < n; ++m) {
+        const double k0 = c.t[m];
+        const double k1 = c.t[m + 1];
+        if (t <= k0) break;
+        const double w = k1 - k0;
+        if (!(w > 0.0)) continue; // a step
+        const double e = std::min(static_cast<double>(t), k1);
+        const double ve = c.v[m] + (static_cast<double>(c.v[m + 1]) - c.v[m]) * (e - k0) / w;
+        s += 0.5 * (c.v[m] + ve) * (e - k0);
+    }
+    return s;
+}
+} // namespace
+
+float arenaLungeDistance(const ArenaLungeCurve& c, float t) {
+    return static_cast<float>(arenaLungeRaw(c, t) * c.scale);
+}
+
+float arenaLungeScale(const ArenaLungeCurve& c, float lunge) {
+    const std::size_t n = std::min<std::size_t>(c.count, kMaxArenaLungeKnots);
+    const double whole = n > 0 ? arenaLungeRaw(c, c.t[n - 1]) : 0.0;
+    return whole > 1e-9 ? static_cast<float>(lunge / whole) : 1.f;
+}
+
 float arenaBoltFlight(float startup) {
     const float s = std::isfinite(startup) ? std::max(startup, 0.f) : 0.f;
     return std::max(s, kArenaBoltFlightMin);
@@ -5241,11 +5322,26 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     }
     // Overlapping bodies are pushed apart, half each; dead enemies don't block. No push apart with the player on the
     // frame the performer is placed.
-    for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaPushApart(fight, bodies, !placed);
+    ArenaHeld held;
+    bool planted = false;
+    if (gProtoYield) {
+        // PROTOTYPE: a lunge-curve kind with a paw planted (its curve's move, clock <= startup or > startup + active)
+        // is held; the push moves the other body only.
+        for (std::size_t i = 0; i < n; ++i) {
+            const ArenaEnemyOut& eo = out.enemies[i];
+            const ArenaEnemyKind& k = fight.def().enemies[i];
+            if (eo.brain != ArenaBrain::Attack || k.lungeMove < 0 || eo.move != static_cast<std::uint8_t>(k.lungeMove))
+                continue;
+            const ArenaAttack& a = k.moves[eo.move].attack;
+            const float clock = eo.stateTime - (eo.unseen ? kArenaUnseenWindup : 0.f);
+            if (clock <= a.startup || clock > a.startup + a.active) held.enemies[i] = planted = true;
+        }
+    }
+    if (!planted)
+        for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaPushApart(fight, bodies, !placed);
     // Everything stays inside the ring; a body the ring moved can't take its share of a push, so the settle gives it
     // to the other one, and the ring holds them again, until no contact is deeper than 0.1 mm (arenaSettleBodies).
     const ArenaRing& ring = fight.ring();
-    ArenaHeld held;
     arenaHoldBodies(fight, bodies, held, arenaRingHold, &ring);
     if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring).settled) ++bodies.settleCaps;
 }
@@ -5782,6 +5878,47 @@ bool arenaIdText(std::string_view id) {
 }
 
 // An enemy's `look`: absent keeps the shapes.
+// A move's "lungeSpeed" (ArenaLungeCurve) onto kind k, move `move`, whose attack's lunge is `lunge`.
+static void arenaParseLungeSpeed(JsonValue j, const std::string& path, ArenaEnemyKind& k, std::uint32_t move,
+                                 float lunge, ArenaStrings& errors) {
+    if (j.isAbsent()) return;
+    if (!j.isArray() || j.size() < 2 || j.size() > kMaxArenaLungeKnots) {
+        errors.push_back(path + ": expected an array of 2.." + std::to_string(kMaxArenaLungeKnots) +
+                         " [t s, speed m/s] pairs");
+        return;
+    }
+    ArenaLungeCurve c;
+    for (std::uint32_t n = 0; n < j.size(); ++n) {
+        const JsonValue p = j[n];
+        const std::string np = path + "[" + std::to_string(n) + "]";
+        const double t = p.isArray() && p.size() == 2 && p[0].isNumber() ? p[0].number(0.0) : -1.0;
+        const double v = p.isArray() && p.size() == 2 && p[1].isNumber() ? p[1].number(0.0) : -1.0;
+        if (!std::isfinite(t) || !std::isfinite(v) || t < 0.0 || t > 10.0 || v < 0.0 || v > 20.0) {
+            errors.push_back(np + ": expected [t 0..10 s, speed 0..20 m/s]");
+            return;
+        }
+        if (n > 0 && static_cast<float>(t) < c.t[n - 1]) {
+            errors.push_back(np + ": expected t at least the knot before's");
+            return;
+        }
+        c.t[n] = static_cast<float>(t);
+        c.v[n] = static_cast<float>(v);
+    }
+    c.count = static_cast<std::uint8_t>(j.size());
+    if (!(arenaLungeRaw(c, c.t[c.count - 1]) > 1e-6)) {
+        errors.push_back(path + ": expected some speed (its integral is the lunge's shape)");
+        return;
+    }
+    if (k.lungeMove >= 0) {
+        errors.push_back(path + ": expected one move with a lungeSpeed per kind (moves[" + std::to_string(k.lungeMove) +
+                         "] has one)");
+        return;
+    }
+    c.scale = arenaLungeScale(c, lunge);
+    k.lungeCurve = c;
+    k.lungeMove = static_cast<std::int8_t>(move);
+}
+
 void arenaParseLook(JsonValue j, const std::string& path, ArenaEnemyLook& look, ArenaStrings& errors, ArenaStrings* warnings) {
     if (j.isAbsent()) return;
     if (!j.isObject()) {
@@ -5909,9 +6046,10 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         ArenaEnemyMove& mv = k.moves[m];
         arenaUnknownKeys(mj, mp,
                          {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell", "clip",
-                          "hitsAir", "hitPart"},
+                          "hitsAir", "hitPart", "lungeSpeed"},
                          true, warnings);
         arenaParseAttack(mj, mp, mv.attack, errors);
+        arenaParseLungeSpeed(mj["lungeSpeed"], mp + ".lungeSpeed", k, m, mv.attack.lunge, errors);
         arenaNum(mj, "minRange", mv.minRange, 0, 100, false, mp, errors);
         arenaNum(mj, "maxRange", mv.maxRange, 0, 100, true, mp, errors);
         arenaNum(mj, "cooldown", mv.cooldown, 0, 60, false, mp, errors);

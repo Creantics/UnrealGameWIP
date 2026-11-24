@@ -635,6 +635,33 @@ enum class ArenaHitPart : std::uint8_t { Auto, Head, Chest, Spine, Pelvis, Thigh
 inline constexpr std::size_t kArenaHitPartCount = 7;
 FTCORE_API const char* arenaHitPartName(ArenaHitPart p); // "auto", "head", ... Literals.
 
+// A move's lunge window (arena.json move "lungeSpeed": [[t, v], ...], at most one move per kind): the body's forward
+// speed against the move's own clock (seconds since the move began, less an unseen start's kArenaUnseenWindup, which
+// the clip holds on its first frame), linear between knots (each segment constant acceleration, its distance the
+// exact trapezoid), 0 before the first knot and after the last. A knot may repeat the one before's time (a step).
+// The whole curve is scaled by lunge / its integral, so the move's `lunge` stays its one distance knob, and the window
+// may run past startup + active (a landing skid in the recovery). With no knots a move keeps the linear spread (lunge
+// over startup + active), as does a boss's break move (its clock is not the clip's).
+//   - lungeToContact kind: only the lead stops it, and only from the startup's end on (the active part, where no paw is
+//     planted, and the recovery's skid); the startup's frames always carry their travel.
+inline constexpr std::size_t kMaxArenaLungeKnots = 8;
+struct ArenaLungeCurve {
+    std::array<float, kMaxArenaLungeKnots> t{}; // s on the move's clock, not decreasing
+    std::array<float, kMaxArenaLungeKnots> v{}; // m/s, at least 0 (before the scale)
+    float scale = 1.f;                         // lunge / the knots' integral (arenaLungeScale; the loader sets it)
+    std::uint8_t count = 0;                    // knots; 0: none
+};
+// The curve's metres from the move's start to `t` on its clock, scaled; 0 at or before the first knot, with no knots,
+// or for NaN; the whole (scaled) integral from the last knot on.
+FTCORE_API float arenaLungeDistance(const ArenaLungeCurve& c, float t);
+// lunge / the unscaled integral (1 when that is 0).
+FTCORE_API float arenaLungeScale(const ArenaLungeCurve& c, float lunge);
+// PROTOTYPE measure switches (Pounce round 2), both 0 (off) by default; a test or measure sets them and puts them
+// back. handoffCap: a walk that crosses or ends in the lunge move's band goes at most the curve's first speed plus
+// its distance outside that band over 0.3 s. plantedYield: the pup holds while a paw is planted (the startup and
+// the recovery) and skips the push-apart.
+FTCORE_API void arenaProtoSet(int handoffCap, int plantedYield);
+
 // One of an enemy's moves: an attack plus when the enemy picks it.
 struct ArenaEnemyMove {
     ArenaAttack attack;
@@ -711,6 +738,8 @@ struct ArenaEnemyKind {
                                  // lunge * startup / (startup + active)); farther off it springs at once and falls
                                  // short. Only the lead stops it: a lunge at the ally runs its length. Off (the
                                  // default): the lunge runs its length and the push splits any overlap
+    std::int8_t lungeMove = -1;  // the move its lungeCurve drives (-1: none)
+    ArenaLungeCurve lungeCurve;  // ArenaLungeCurve: the move's lunge window
     std::array<ArenaEnemyMove, kMaxArenaMoves> moves{};
     std::uint8_t moveCount = 1;
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.

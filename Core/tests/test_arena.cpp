@@ -6871,7 +6871,7 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 
 // The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
 // 24496 bytes, 80 under its cap since the attack's aimSide, ArenaFight 33944 with the special's block).
-static_assert(sizeof(ArenaDef) <= 24 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
+static_assert(sizeof(ArenaDef) <= 25 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
 static_assert(sizeof(ArenaFight) <= 36 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
 TEST_CASE("arena hooks: a Release's spent Load is in the poise the hook sees and scales; no hold after a Defeat") {
@@ -11808,3 +11808,48 @@ TEST_CASE("gait mix: a set's count out of range, equal speeds or a length not fi
     gs.idleLength = std::numeric_limits<double>::infinity(); // the idle's clock holds at 0
     CHECK(run(gs, 0.2) == 0);
 }
+
+// Prototype hand-off cap (11-24). With the token the pup walks for the Nip band and starts the Pounce on the way
+// through its band; uncapped that hand-off came at the full 0.84 m/s walk. Capped, every Pounce starts at the
+// curve's creep.
+TEST_CASE("arena: prototype hand-off cap holds a Pounce reached on the way to the Nip band to the creep") {
+    const ArenaTable t = loadShipped();
+    ArenaEnemyKind pup = shippedKind(t, "maw_pup");
+    ArenaAttack& a = pup.moves[1].attack;
+    a.active = 0.4f;
+    a.lunge = 2.2f;
+    pup.moves[1].minRange = 1.05f;
+    pup.lungeMove = 1;
+    const float knots[7][2] = {{0.f, 0.15f}, {0.6f, 0.15f}, {0.63f, 0.f}, {0.7f, 0.f}, {0.8f, 4.f}, {1.2f, 4.f},
+                               {1.35f, 0.f}};
+    for (const auto& kn : knots) {
+        pup.lungeCurve.t[pup.lungeCurve.count] = kn[0];
+        pup.lungeCurve.v[pup.lungeCurve.count] = kn[1];
+        ++pup.lungeCurve.count;
+    }
+    pup.lungeCurve.scale = arenaLungeScale(pup.lungeCurve, a.lunge);
+    const float creep = pup.lungeCurve.v[0] * pup.lungeCurve.scale;
+    for (int cap = 0; cap < 2; ++cap) {
+        arenaProtoSet(cap, 0);
+        Rig rig(t.fighter("devin"), {pup});
+        rig.put(0, 12.f, 0.f);
+        int pounces = 0;
+        float worst = 0.f, lastV = 0.f;
+        for (int i = 0; i < static_cast<int>(std::lround(15.f / kDt)); ++i) {
+            const Vec2 was = rig.bodies.enemies[0];
+            const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+            for (const ArenaEvent& e : o.events)
+                if (e.type == ArenaEventType::AttackStarted && e.source == 0 && e.move == 1) {
+                    ++pounces;
+                    worst = std::max(worst, lastV);
+                }
+            arenaStep(rig.fight, rig.bodies, kDt);
+            lastV = static_cast<float>(std::fabs(alongFacing(was, rig.bodies.enemies[0], rig.out().enemies[0].facing)));
+        }
+        CHECK(pounces >= 3);
+        if (cap == 0) CHECK(worst > 0.8f); // the a7 path: walked into the Pounce at the walk speed
+        else CHECK(worst <= creep + 0.01f);
+    }
+    arenaProtoSet(0, 0);
+}
+
