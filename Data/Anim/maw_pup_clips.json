@@ -39,6 +39,7 @@
    "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Nip",
    "length_s": 2.8,
    "impact_s": 1.3,
+   "blend_s": 0.3,
    "loop": false
   },
   {
