@@ -33,6 +33,10 @@ constexpr double kCloseHeight = 45.0;
 constexpr double kCloseLead = 50.0;
 // The q3 view: this far from the same point, 45 degrees between across the line and ahead along it (cm), this much higher (cm).
 constexpr double kQ3Off = 170.0;
+// The track view: this far off the enemy's flank, looking at this height over its feet, from this much higher (cm).
+constexpr double kTrackOff = 300.0;
+constexpr double kTrackLook = 35.0;
+constexpr double kTrackLift = 25.0;
 constexpr double kQ3Lift = 25.0;
 // The canines sit this far under the muzzle tip (cm; Blender's g1124b measure, 11-24: about 95 mm).
 constexpr double kCanineDrop = 9.5;
@@ -107,6 +111,7 @@ bool FFTArenaCapture::Begin()
 		const bool bView = FParse::Value(Cmd, TEXT("ArenaRecView="), View);
 		bRecClose = !(bView && View.Equals(TEXT("far"), ESearchCase::IgnoreCase));
 		bRecQ3 = bView && View.Equals(TEXT("q3"), ESearchCase::IgnoreCase);
+		bRecTrack = bView && View.Equals(TEXT("track"), ESearchCase::IgnoreCase);
 		FParse::Value(Cmd, TEXT("ArenaRecFrom="), RecFrom);
 		FParse::Value(Cmd, TEXT("ArenaRecTo="), RecTo);
 	}
@@ -120,7 +125,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz,pup_x,pup_y,pup_wyaw,paw_fl_x,paw_fl_y,paw_fl_z,paw_fr_x,paw_fr_y,paw_fr_z,paw_hl_x,paw_hl_y,paw_hl_z,paw_hr_x,paw_hr_y,paw_hr_z\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -176,7 +181,15 @@ bool FFTArenaCapture::AimSide(UWorld& World, APlayerController& PC, const UFTAre
 	const double Feet = E.Z - Enemy->GetSimpleCollisionHalfHeight();
 	FVector Look;
 	FVector Want;
-	if (bClose)
+	if (bRecTrack && bClose)
+	{
+		// Side-on to the enemy's own facing (its right flank with Side +1), level with its belly, ground in frame.
+		const FVector Fwd = Enemy->GetActorForwardVector().GetSafeNormal2D();
+		const FVector Flank = FVector(-Fwd.Y, Fwd.X, 0.0) * Side;
+		Look = FVector(E.X, E.Y, Feet + kTrackLook);
+		Want = Look + Flank * kTrackOff + FVector(0.0, 0.0, kTrackLift);
+	}
+	else if (bClose)
 	{
 		// Half the gap ahead of the enemy toward the lead, at most kCloseLead, so the muzzle and the lead's body share the frame at a bite.
 		const FVector Ahead = E + Line * FMath::Min(0.5 * FVector::Dist2D(E, P), kCloseLead);
@@ -278,6 +291,25 @@ void FFTArenaCapture::FindMuzzle(const USkeletalMeshComponent& Skin)
 	const FVector Tip = SnoutAt.GetLocation() + Forward * (Front - FVector::DotProduct(SnoutAt.GetLocation(), Forward));
 	MuzzleBone = Snout;
 	MuzzleLocal = SnoutAt.InverseTransformPosition(Tip);
+	{
+		// Paws: in each quadrant off the pelvis (front/hind along Forward, left/right along Left), the lowest bone at rest.
+		const FVector Left(-Forward.Y, Forward.X, 0.0); // the mesh's left (bind: forward -Y, left +X)
+		const FVector Hip = AtRest(Pelvis).GetLocation();
+		double Low[4] = {1e9, 1e9, 1e9, 1e9};
+		for (int32 B = 0; B < Ref.GetNum(); ++B)
+		{
+			const FVector At = AtRest(B).GetLocation();
+			const int32 Q = (FVector::DotProduct(At - Hip, Forward) >= 0.0 ? 0 : 2) + (FVector::DotProduct(At - Hip, Left) >= 0.0 ? 0 : 1);
+			if (FMath::Abs(FVector::DotProduct(At - Hip, Left)) > 2.0 && At.Z < Low[Q])
+			{
+				Low[Q] = At.Z;
+				PawBone[Q] = B;
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture: paws FL %s, FR %s, HL %s, HR %s."),
+			PawBone[0] != INDEX_NONE ? *Ref.GetBoneName(PawBone[0]).ToString() : TEXT("-"), PawBone[1] != INDEX_NONE ? *Ref.GetBoneName(PawBone[1]).ToString() : TEXT("-"),
+			PawBone[2] != INDEX_NONE ? *Ref.GetBoneName(PawBone[2]).ToString() : TEXT("-"), PawBone[3] != INDEX_NONE ? *Ref.GetBoneName(PawBone[3]).ToString() : TEXT("-"));
+	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture: muzzle tip on %s, %.1f cm ahead of it at rest (mesh forward %s)."),
 		*Ref.GetBoneName(Snout).ToString(), Front - FVector::DotProduct(SnoutAt.GetLocation(), Forward), *Forward.ToString());
 }
@@ -572,10 +604,29 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 	double KneeZ[2] = {-1.0, -1.0};
 	double MidThighZ[2] = {-1.0, -1.0};
 	double PupActorDz = 0.0, PupRootDz = 0.0, PupMeshDz = 0.0;
+	// Every frame: the enemy actor's world place (m) and world yaw (deg), and its four paws' world places (m; 0 without bones).
+	double PupX = 0.0, PupY = 0.0, PupWYaw = 0.0;
+	double Paw[12] = {};
 	const USkeletalMeshComponent* PupSkin = EnemyFigure ? EnemyFigure->GetSkin() : nullptr;
 	if (PupSkin && !bMuzzleTried)
 	{
 		FindMuzzle(*PupSkin);
+	}
+	if (EnemyFigure)
+	{
+		PupX = EnemyFigure->GetActorLocation().X / 100.0;
+		PupY = EnemyFigure->GetActorLocation().Y / 100.0;
+		PupWYaw = EnemyFigure->GetActorRotation().Yaw;
+	}
+	for (int32 K = 0; PupSkin && K < 4; ++K)
+	{
+		if (PawBone[K] != INDEX_NONE && PawBone[K] < PupSkin->GetNumBones())
+		{
+			const FVector At = PupSkin->GetBoneTransform(PawBone[K]).GetLocation() / 100.0;
+			Paw[K * 3] = At.X;
+			Paw[K * 3 + 1] = At.Y;
+			Paw[K * 3 + 2] = At.Z;
+		}
 	}
 	if (PupSkin && Lead && MuzzleBone != INDEX_NONE && MuzzleBone < PupSkin->GetNumBones())
 	{
@@ -697,8 +748,8 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 			HeadAt = LeadSkin->GetBoneIndex(HeadName) != INDEX_NONE ? LeadSkin->GetBoneLocation(HeadName) / 100.0 : HeadAt;
 		}
 	}
-	char Row[1024];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", Frame,
+	char Row[1600];
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", Frame,
 		static_cast<double>(Fight.time()) + Runner.GetResultAge(), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
 		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp,
@@ -706,7 +757,8 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		MeshGapM, MGapFwd, MGapSide, MGapUp, MeshBone, MeshPart, LeadYaw, PupYaw, TipSidePup, JawDeg,
 		CanineZ, LegFront[0], LegFront[1], LegFront[2], LegFront[3],
 		ToothCm[0] / 100.0, ToothCm[1] / 100.0, ToothCm[2] / 100.0, ToothCm[3] / 100.0, ToothCm[4] / 100.0, ToothCm[5] / 100.0,
-		KneeZ[0], KneeZ[1], MidThighZ[0], MidThighZ[1], PupActorDz, PupRootDz, PupMeshDz);
+		KneeZ[0], KneeZ[1], MidThighZ[0], MidThighZ[1], PupActorDz, PupRootDz, PupMeshDz, PupX, PupY, PupWYaw,
+		Paw[0], Paw[1], Paw[2], Paw[3], Paw[4], Paw[5], Paw[6], Paw[7], Paw[8], Paw[9], Paw[10], Paw[11]);
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));
