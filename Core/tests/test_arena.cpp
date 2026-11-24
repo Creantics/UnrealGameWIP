@@ -289,8 +289,20 @@ TEST_CASE("arena data: every enemy attack telegraphs for at least 0.35 s, and a 
     kinds.push_back(defaultArenaDef().enemies[0]); // the built-in fight's enemy follows the same rule
     for (std::size_t e = 0; e < kinds.size(); ++e) {
         const ArenaEnemyKind& k = kinds[e];
-        // The skinned boss's timings are authored move by move (to its animations), not by that ladder.
-        const bool authored = e < table.enemyIds.size() && table.enemyIds[e] == "kite_boss";
+        // The skinned boss's timings are authored move by move (to its animations), not by that ladder; so are the
+        // maw_pup's, each startup its clip's bite time at a rate near 1 (pinned by its own clip-rate test), which puts
+        // the light nip's long windup (1.2 s) past the pounce's (0.8 s). That order is deliberate and pinned here.
+        if (e < table.enemyIds.size() && table.enemyIds[e] == "maw_pup") {
+            float nip = 0.f, pounce = 0.f;
+            for (std::size_t a = 0; a < k.moveCount; ++a) {
+                if (k.moves[a].clip() == "nip") nip = k.moves[a].attack.startup;
+                if (k.moves[a].clip() == "pounce") pounce = k.moves[a].attack.startup;
+            }
+            CHECK(pounce > 0.f);
+            CHECK(pounce < nip);
+        }
+        const bool authored =
+            e < table.enemyIds.size() && (table.enemyIds[e] == "kite_boss" || table.enemyIds[e] == "maw_pup");
         for (std::size_t a = 0; a < k.moveCount; ++a) {
             CHECK(k.moves[a].attack.startup >= 0.35f);
             for (std::size_t b = 0; b < k.moveCount && !authored; ++b)
@@ -6858,7 +6870,7 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 }
 
 // The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
-// 23728 bytes, ArenaFight 33128 with the special's block).
+// 24496 bytes, 80 under its cap since the attack's aimSide, ArenaFight 33944 with the special's block).
 static_assert(sizeof(ArenaDef) <= 24 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
 static_assert(sizeof(ArenaFight) <= 36 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
@@ -10725,7 +10737,7 @@ TEST_CASE("arena maw_pup: it walks in to its nip's band without shoving the lead
     const ArenaTable t = loadShipped();
     ArenaEnemyKind pup = shippedKind(t, "maw_pup");
     REQUIRE(pup.moves[0].clip() == "nip");
-    pup.moveCount = 1; // the nip alone: the pounce leaps from further off (its own reach is a follow-up)
+    pup.moveCount = 1; // the nip alone: the pounce leaps from further off (its own tests follow)
     const ArenaFighter& devin = t.fighter("devin");
     Rig rig(devin, {pup});
     rig.put(0, 4.f, 0.f);
@@ -10752,14 +10764,59 @@ TEST_CASE("arena maw_pup: it walks in to its nip's band without shoving the lead
     CHECK(hit->event.target == kArenaPlayer);
 }
 
+TEST_CASE("arena maw_pup: a lead who does nothing, standing or keeping at the pup's jaws: each move's bites in 30 s "
+          "(report)") {
+    // The 11-24 balance read on the Nip's windup, the pup's own pressure with no player attack in the way: per move,
+    // the bites begun and landed and the hp taken, the pup starting 3 m out. Standing: the lead never moves. Keeping:
+    // after every step the lead is put back at the pup's contact distance (on the same line) if it stands further
+    // off, as a lead who keeps at the jaws.
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    for (int keep = 0; keep < 2; ++keep) {
+        for (const char* lead : {"devin", "duy", "third"}) {
+            CAPTURE(lead);
+            CAPTURE(keep);
+            const float contact =
+                arenaBodyReach(pup) + std::max(0.f, t.fighter(lead).bodyRadius - pup.contactInset);
+            Rig rig(t.fighter(lead), {pup});
+            rig.put(0, 3.f, 0.f);
+            const int ticks = static_cast<int>(std::lround(30.f / kDt));
+            for (int i = 0; i < ticks && rig.fight.phase() == ArenaPhase::Fighting; ++i) {
+                rig.tick();
+                arenaStep(rig.fight, rig.bodies, kDt);
+                const Vec2 pupAt = rig.bodies.enemies[0];
+                const Vec2 off{rig.bodies.player.x - pupAt.x, rig.bodies.player.y - pupAt.y};
+                const float len = std::hypot(off.x, off.y);
+                if (keep == 1 && len > contact) {
+                    rig.bodies.player = Vec2{pupAt.x + off.x / len * contact, pupAt.y + off.y / len * contact};
+                }
+            }
+            int begun[2] = {0, 0}, landed[2] = {0, 0}, taken[2] = {0, 0};
+            for (const Logged& l : rig.log) {
+                if (l.event.source != 0 || l.event.move > 1) continue;
+                if (l.event.type == ArenaEventType::AttackStarted) ++begun[l.event.move];
+                if (l.event.type == ArenaEventType::Hit && l.event.target == kArenaPlayer) {
+                    ++landed[l.event.move];
+                    taken[l.event.move] += l.event.amount;
+                }
+            }
+            CHECK(begun[0] + begun[1] > 0);
+            MESSAGE("maw_pup vs " << std::string(lead) << std::string(keep == 1 ? " keeping, " : " standing, ")
+                                  << static_cast<float>(rig.ticks) * kDt << " s: nip begun " << begun[0] << " landed "
+                                  << landed[0] << " (" << taken[0] << " hp), pounce begun " << begun[1] << " landed "
+                                  << landed[1] << " (" << taken[1] << " hp)");
+        }
+    }
+}
+
 TEST_CASE("arena maw_pup: no bite through air: a lead a step out of the jaws during the windup is not hit") {
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
     const ArenaFighter& devin = t.fighter("devin");
     const ArenaAttack& nip = pup.moves[0].attack;
-    // The reach (centre to centre, range + the lead's radius): 0.78 m bites; 10 cm further, or the capture's 1.067 m,
+    // The reach (centre to centre, range + the lead's radius): 0.77 m bites; 10 cm further, or the capture's 1.067 m,
     // does not.
-    CHECK(nip.range + devin.bodyRadius >= 0.78f);
+    CHECK(nip.range + devin.bodyRadius >= 0.77f - 1e-5f);
     CHECK(nip.range + devin.bodyRadius < 0.88f);
     // In a fight: the nip begins, the lead steps 10 cm back before it lands, and it lands on nothing.
     ArenaEnemyKind nipOnly = pup;
@@ -10839,4 +10896,451 @@ TEST_CASE("arena contactInset: only the lead's push gives way, by that much and 
                    "contactInset"));
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "contactInset": -0.1 } ])")),
                    "contactInset"));
+}
+
+// ---- the Maw-Pup's gaits and pounce (step 3 ruling 2: clip stride speeds, a held trot, a pounce that needs its reach) ----
+
+namespace {
+
+BeatClips loadPupClips() {
+    std::string text, err;
+    std::vector<std::string> warnings;
+    if (!ftcore_test::readProjectData("Anim/maw_pup_clips.json", text)) FAIL("Data/Anim/maw_pup_clips.json not found");
+    BeatClips clips;
+    REQUIRE_MESSAGE(importBeatClips(text, clips, &err, &warnings), err);
+    return clips;
+}
+
+double pupClipSpeed(const BeatClips& clips, std::string_view id) {
+    const int c = clips.find(id);
+    REQUIRE(c >= 0);
+    return clips[static_cast<std::size_t>(c)].speed;
+}
+
+// The host's walk start (FTArenaRunner.cpp's kArenaWalkStart, which Core can't include): the floor of the gait band.
+// Keep the two equal.
+constexpr double kPupWalkStart = 0.35;
+
+// One chase from `start` m (the lead idle at the origin) until the first attack begins: the seconds each gait plays at a
+// rate within 10% of 1 (its own speed), the longest unbroken such run of the trot, and the move that began.
+struct PupChase {
+    std::array<double, kMaxGaits> steady{};
+    double trotHeld = 0.0;
+    int firstMove = -1;
+};
+
+PupChase runPupChase(const ArenaFighter& lead, const ArenaEnemyKind& pup, const BeatClips& clips, float start) {
+    const double speeds[3] = {pupClipSpeed(clips, "walk"), pupClipSpeed(clips, "trot"), pupClipSpeed(clips, "run")};
+    const GaitBand band = planGaitBand(speeds, 3, kPupWalkStart);
+    REQUIRE(band.count == 3);
+    REQUIRE(band.covers);
+    Rig rig(lead, {pup});
+    rig.put(0, start, 0.f);
+    PupChase c;
+    int gait = 0;
+    double trotRun = 0.0;
+    for (int i = 0; i < 2400; ++i) {
+        const Vec2 was = rig.bodies.enemies[0];
+        rig.tick();
+        if (rig.count(ArenaEventType::AttackStarted) > 0) {
+            c.firstMove = rig.find(ArenaEventType::AttackStarted)->event.move;
+            break;
+        }
+        arenaStep(rig.fight, rig.bodies, kDt);
+        const double speed = distanceOf(rig.bodies.enemies[0], was) / kDt;
+        if (speed < kPupWalkStart) {
+            trotRun = 0.0;
+            continue;
+        }
+        gait = pickGait(band, gait, speed);
+        const bool steady = std::fabs(gaitRate(band, gait, speed) - 1.0) <= 0.1;
+        if (steady) c.steady[static_cast<std::size_t>(gait)] += kDt;
+        trotRun = gait == 1 && steady ? trotRun + kDt : 0.0;
+        c.trotHeld = std::max(c.trotHeld, trotRun);
+    }
+    return c;
+}
+
+} // namespace
+
+TEST_CASE("arena data: the maw_pup's speeds are its clips' stride speeds, so each gait plays at rate 1") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const BeatClips clips = loadPupClips();
+    // The clip speeds are the treadmill (stride) speeds; the fight moves the pup at them, so no foot slides.
+    CHECK(pup.walkSpeed == doctest::Approx(pupClipSpeed(clips, "walk")).epsilon(1e-4));
+    CHECK(pup.strafeSpeed == doctest::Approx(pupClipSpeed(clips, "walk")).epsilon(1e-4));
+    CHECK(pup.trotSpeed == doctest::Approx(pupClipSpeed(clips, "trot")).epsilon(1e-4));
+    CHECK(pup.runSpeed == doctest::Approx(pupClipSpeed(clips, "run")).epsilon(1e-4));
+    CHECK(pup.trotRange > pup.runRange);
+    // Room between the circle and the walk/run edge, so a pup circling at preferredRange never flips back to Approach.
+    CHECK(pup.runRange >= pup.preferredRange + 0.25f);
+}
+
+TEST_CASE("arena aim shift: along the lead's right, square to the line, none side-on, weighted and clamped") {
+    // The lead at the origin facing +x, the enemy 0.75 m in front of it: the lead's right is +y (the ground plane has y
+    // to the right), square to the line.
+    const Vec2 lead{0.f, 0.f}, enemy{0.75f, 0.f}, facing{1.f, 0.f};
+    Vec2 s = arenaAimShift(enemy, lead, facing, 0.04f, 1.f);
+    CHECK(s.x == doctest::Approx(0.f).epsilon(1e-6));
+    CHECK(s.y == doctest::Approx(0.04f));
+    s = arenaAimShift(enemy, lead, facing, -0.04f, 0.5f); // to the left, half in
+    CHECK(s.y == doctest::Approx(-0.02f));
+    CHECK(arenaAimShift(enemy, lead, facing, 0.04f, 3.f).y == doctest::Approx(0.04f)); // the weight clamps at 1
+    CHECK(arenaAimShift(enemy, lead, facing, 0.04f, -1.f).y == 0.f);
+    // Side-on (the lead's right along the line): no shift. Half turned: the square part only, and never along the line.
+    s = arenaAimShift(enemy, lead, Vec2{0.f, -1.f}, 0.04f, 1.f);
+    CHECK(std::hypot(s.x, s.y) == doctest::Approx(0.f).epsilon(1e-6));
+    s = arenaAimShift(enemy, lead, Vec2{std::sqrt(0.5f), -std::sqrt(0.5f)}, 0.04f, 1.f);
+    CHECK(s.x == doctest::Approx(0.f).epsilon(1e-6));
+    CHECK(s.y == doctest::Approx(0.04f * std::sqrt(0.5f)));
+    // The reach is kept to first order: the shift is square to the line.
+    s = arenaAimShift(Vec2{0.5f, 0.5f}, lead, Vec2{0.f, 1.f}, 0.04f, 1.f);
+    CHECK(s.x * -0.5f + s.y * -0.5f == doctest::Approx(0.f).epsilon(1e-6));
+    // Bodies met, or no facing: none.
+    CHECK(arenaAimShift(lead, lead, facing, 0.04f, 1.f).y == 0.f);
+    CHECK(arenaAimShift(enemy, lead, Vec2{}, 0.04f, 1.f).y == 0.f);
+}
+
+TEST_CASE("arena aim weight: held through an unseen hold, in over the startup, shut to mid-recovery, out by its end") {
+    ArenaAttack a;
+    a.startup = 1.2f;
+    a.active = 0.12f;
+    a.recovery = 1.265f;
+    CHECK(arenaAimWeight(a, 0.f, 0.f) == 0.f);
+    CHECK(arenaAimWeight(a, 0.6f, 0.f) == doctest::Approx(0.5f));
+    CHECK(arenaAimWeight(a, 0.3f, 0.3f) == 0.f); // the unseen hold: the clip has not begun
+    CHECK(arenaAimWeight(a, 0.9f, 0.3f) == doctest::Approx(0.5f));
+    CHECK(arenaAimWeight(a, 1.2f, 0.f) == 1.f);
+    CHECK(arenaAimWeight(a, 1.25f, 0.f) == 1.f);
+    const float shut = a.startup + a.active + 0.5f * a.recovery;
+    CHECK(arenaAimWeight(a, shut, 0.f) == 1.f);
+    CHECK(arenaAimWeight(a, shut + 0.25f * a.recovery, 0.f) == doctest::Approx(0.5f));
+    CHECK(arenaAimWeight(a, a.total(), 0.f) == doctest::Approx(0.f));
+    CHECK(arenaAimWeight(a, a.total() + 1.f, 0.f) == 0.f);
+    // Rising through the startup, falling through the recovery's second half.
+    float last = -1.f;
+    for (int i = 0; i <= 120; ++i) {
+        const float w = arenaAimWeight(a, a.startup * static_cast<float>(i) / 120.f, 0.f);
+        CHECK(w >= last);
+        last = w;
+    }
+    for (int i = 0; i <= 120; ++i) {
+        const float w = arenaAimWeight(a, shut + 0.5f * a.recovery * static_cast<float>(i) / 120.f, 0.f);
+        CHECK(w <= last);
+        last = w;
+    }
+}
+
+TEST_CASE("arena data: aimSide loads in -0.3..0.3 m, 0 when left out, refused past it") {
+    ArenaTable t;
+    const char* inBand = R"([ { "id": "dummy" }, { "id": "pup", "moves": [ { "aimSide": -0.04 } ] } ])";
+    const char* past = R"([ { "id": "dummy" }, { "id": "pup", "moves": [ { "aimSide": 0.31 } ] } ])";
+    CHECK(loadError(tableJson(kFightersOk, inBand), &t).empty());
+    CHECK(t.enemies[1].moves[0].attack.aimSide == doctest::Approx(-0.04f));
+    CHECK(loadError(tableJson(kFightersOk, R"([ { "id": "dummy" }, { "id": "pup" } ])"), &t).empty());
+    CHECK(t.enemies[1].moves[0].attack.aimSide == 0.f);
+    CHECK_FALSE(loadError(tableJson(kFightersOk, past)).empty());
+}
+
+TEST_CASE("arena data: every maw_pup move plays its clip near rate 1 and the move lasts the clip") {
+    // The host plays a move's clip at impact / startup (FTArenaRunner, clamped to 0.25..4), so the impact lands at the
+    // startup's end; an unseen start's extra windup holds the first frame there, at the same rate. The 11-24 ruling: no
+    // Maw-Pup clip plays outside the gait band, and the recovery runs to the clip's end (the jaw's shut hold and its
+    // release are seen whole). Every other clip of the pup's (no impact) plays at rate 1.
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const BeatClips clips = loadPupClips();
+    REQUIRE(pup.moveCount > 0);
+    for (std::uint32_t m = 0; m < pup.moveCount; ++m) {
+        const ArenaEnemyMove& mv = pup.moves[m];
+        CAPTURE(mv.clip());
+        const int c = clips.find(mv.clip());
+        REQUIRE(c >= 0);
+        const BeatClip& clip = clips[static_cast<std::size_t>(c)];
+        CHECK_FALSE(clip.loop);
+        REQUIRE(clip.impact > 0.0);
+        const double rate = clip.impact / mv.attack.startup;
+        CHECK(rate >= 0.85);
+        CHECK(rate <= 1.15);
+        CHECK(mv.attack.total() * rate == doctest::Approx(clip.length).epsilon(1.0 / 30.0 / clip.length));
+    }
+}
+
+TEST_CASE("arena maw_pup: an 11 m chase gallops, holds the trot 1.5 s and walks in, each at its own speed") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const BeatClips clips = loadPupClips();
+    REQUIRE(shipped.moves[0].clip() == "nip");
+    REQUIRE(shipped.moves[1].clip() == "pounce");
+    for (const char* lead : {"devin", "duy", "third"}) {
+        CAPTURE(std::string(lead));
+        {
+            // The nip alone (the capture's run): it walks in to the bite.
+            ArenaEnemyKind nipOnly = shipped;
+            nipOnly.moveCount = 1;
+            const PupChase c = runPupChase(t.fighter(lead), nipOnly, clips, 11.f);
+            MESSAGE("nip only: gallop " << c.steady[2] << " s, trot " << c.steady[1] << " s (held " << c.trotHeld
+                                      << " s), walk " << c.steady[0] << " s");
+            CHECK(c.firstMove == 0);
+            CHECK(c.steady[2] >= 0.3);
+            CHECK(c.trotHeld >= 1.5);
+            CHECK(c.steady[0] >= 0.3);
+        }
+        {
+            // With the pounce ready: it gallops and trots in, settles at its preferred range and pounces from there.
+            const PupChase c = runPupChase(t.fighter(lead), shipped, clips, 11.f);
+            MESSAGE("with the pounce: gallop " << c.steady[2] << " s, trot " << c.steady[1] << " s (held " << c.trotHeld
+                                            << " s), walk " << c.steady[0] << " s");
+            CHECK(c.firstMove == 1);
+            CHECK(c.steady[2] >= 0.3);
+            CHECK(c.trotHeld >= 1.5);
+        }
+    }
+}
+
+TEST_CASE("arena data: the maw_pup's pounce lunges to its jaws' reach and starts where the lunge lands it") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const ArenaEnemyMove& nip = pup.moves[0];
+    const ArenaEnemyMove& pounce = pup.moves[1];
+    REQUIRE(pounce.clip() == "pounce");
+    CHECK(pup.lungeToContact);
+    // Its band starts where the nip's ends: no gap between them for the pup to walk back across.
+    CHECK(pounce.minRange == doctest::Approx(nip.maxRange));
+    const ArenaAttack& a = pounce.attack;
+    for (const char* lead : {"devin", "duy", "third"}) {
+        CAPTURE(std::string(lead));
+        const float leadRadius = t.fighter(lead).bodyRadius;
+        const float contact = arenaBodyReach(pup) + std::max(0.f, leadRadius - pup.contactInset);
+        // The blow needs the jaws: as the nip, at most 2 cm past tooth contact, and no angle of its arc bites air.
+        CHECK(a.range + leadRadius >= contact);
+        CHECK(a.range + leadRadius <= contact + 0.02f + 1e-4f);
+        const float reach = a.range + leadRadius;
+        const float sine = std::sqrt(std::max(0.f, 1.f - a.arcCos * a.arcCos));
+        CHECK(std::hypot(reach * a.arcCos - arenaBodyReach(pup), reach * sine) <= leadRadius + 0.01f);
+        // From the far end of its band the jaws are on the lead by the first active frame: the leap at the lunge
+        // rate (lunge / (startup + active)) covers at most lunge * startup / (startup + active) by then.
+        const float byActive = a.lunge * a.startup / (a.startup + a.active);
+        CHECK(pounce.maxRange - byActive <= reach);
+    }
+}
+
+TEST_CASE("arena maw_pup: the pounce lands at tooth contact, never past it, and the idle lead is not shoved") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaAttack& a = shipped.moves[1].attack;
+    for (const char* lead : {"devin", "duy", "third"}) {
+        const ArenaFighter& fighter = t.fighter(lead);
+        const float contact = arenaBodyReach(shipped) + std::max(0.f, fighter.bodyRadius - shipped.contactInset);
+        // It pounces from where it circles (the shipped preferredRange) and from anywhere else in the pounce's band:
+        // from its near end, the middle and its far end the jaws still reach the lead as the bite lands.
+        const ArenaEnemyMove& pounce = shipped.moves[1];
+        for (const float circle : {pounce.minRange + 0.05f, 1.f, 1.3f, 1.6f, shipped.preferredRange, pounce.maxRange}) {
+            CAPTURE(std::string(lead));
+            CAPTURE(circle);
+            ArenaEnemyKind pup = shipped;
+            pup.preferredRange = circle;
+            pup.runRange = std::max(pup.runRange, circle + 0.25f);
+            pup.trotRange = std::max(pup.trotRange, pup.runRange);
+            Rig rig(fighter, {pup});
+            rig.put(0, 11.f, 0.f);
+            float leastApart = 100.f, leadMoved = 0.f, atHit = -1.f, atStart = -1.f, arrive = -1.f, moveTime = 0.f;
+            int move = -1, left = -1;
+            for (int i = 0; i < 2400 && left != 0; ++i) {
+                rig.tick();
+                if (move < 0 && rig.count(ArenaEventType::AttackStarted) == 1) {
+                    move = rig.find(ArenaEventType::AttackStarted)->event.move;
+                    atStart = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
+                    left = static_cast<int>(a.total() / kDt) + 2; // watch the whole move, lunge and all
+                }
+                if (atHit < 0.f && rig.count(ArenaEventType::Hit) == 1)
+                    atHit = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
+                arenaStep(rig.fight, rig.bodies, kDt);
+                if (move >= 0) {
+                    moveTime += kDt;
+                    if (arrive < 0.f && distanceOf(rig.bodies.enemies[0], rig.bodies.player) <= contact + 0.01f)
+                        arrive = moveTime;
+                    left = left > 0 ? left - 1 : left;
+                    leastApart = std::min(leastApart, distanceOf(rig.bodies.enemies[0], rig.bodies.player));
+                }
+                leadMoved = std::max(leadMoved, distanceOf(rig.bodies.player, Vec2{0.f, 0.f}));
+            }
+            CHECK(move == 1);
+            CHECK(left == 0);
+            CHECK(atStart == doctest::Approx(circle).epsilon(0.02)); // it leapt from its circle
+            REQUIRE(atHit > 0.f);
+            CHECK(atHit <= contact + 0.02f);      // the jaws are on the lead as it lands
+            CHECK(leastApart >= contact - 1e-3f); // never past first tooth contact, over the whole move
+            CHECK(leadMoved <= 1e-3f);            // the lunge stops on the lead, it does not shove it
+            // The jaws reach the lead as the clip bites (its impact, startup's end), not early in the crouch.
+            CHECK(std::fabs(arrive - a.startup) <= 0.05f);
+        }
+    }
+    // Without the flag the same leap runs its length and the push shoves the lead: the flag is what stops it.
+    ArenaEnemyKind loose = shipped;
+    loose.lungeToContact = false;
+    Rig rig(t.fighter("devin"), {loose});
+    rig.put(0, 11.f, 0.f);
+    float leadMoved = 0.f;
+    for (int i = 0; i < 2400 && rig.count(ArenaEventType::Hit) == 0; ++i) {
+        rig.tick();
+        arenaStep(rig.fight, rig.bodies, kDt);
+    }
+    for (int i = 0; i < static_cast<int>(a.total() / kDt) + 2; ++i) {
+        rig.tick();
+        arenaStep(rig.fight, rig.bodies, kDt);
+        leadMoved = std::max(leadMoved, distanceOf(rig.bodies.player, Vec2{0.f, 0.f}));
+    }
+    CHECK(leadMoved > 0.01f);
+}
+
+TEST_CASE("arena maw_pup: a lead that moves in the crouch: the pup never passes tooth contact and never backs off") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaAttack& a = pup.moves[1].attack;
+    const float contact = arenaBodyReach(pup) + std::max(0.f, devin.bodyRadius - pup.contactInset);
+    // Mid-crouch the lead steps 0.4 m toward the pup, or 0.3 m away from it.
+    for (const float shift : {-0.4f, 0.3f}) {
+        CAPTURE(shift);
+        Rig rig(devin, {pup});
+        rig.put(0, 6.f, 0.f);
+        int ticks = -1;
+        float leastApart = 100.f;
+        bool backed = false;
+        Vec2 from{};
+        Vec2 last{};
+        for (int i = 0; i < 2400 && ticks < static_cast<int>(a.startup / kDt); ++i) {
+            rig.tick();
+            if (ticks < 0 && rig.count(ArenaEventType::AttackStarted) == 1) {
+                REQUIRE(rig.find(ArenaEventType::AttackStarted)->event.move == 1);
+                ticks = 0;
+                from = rig.bodies.enemies[0];
+                last = from;
+            }
+            arenaStep(rig.fight, rig.bodies, kDt);
+            if (ticks < 0) continue;
+            ++ticks;
+            if (ticks == static_cast<int>(0.3f / kDt)) { // in the crouch: the lead moves along the line to the pup
+                const Vec2 off{rig.bodies.player.x - rig.bodies.enemies[0].x, rig.bodies.player.y - rig.bodies.enemies[0].y};
+                const float len = std::hypot(off.x, off.y);
+                REQUIRE(len > 0.f);
+                rig.bodies.player = Vec2{rig.bodies.player.x + off.x / len * shift, rig.bodies.player.y + off.y / len * shift};
+            }
+            leastApart = std::min(leastApart, distanceOf(rig.bodies.enemies[0], rig.bodies.player));
+            // Never back toward where it leapt from.
+            backed = backed || distanceOf(rig.bodies.enemies[0], from) + 1e-4f < distanceOf(last, from);
+            last = rig.bodies.enemies[0];
+        }
+        CHECK(ticks == static_cast<int>(a.startup / kDt));
+        CHECK(leastApart >= contact - 1e-3f);
+        CHECK_FALSE(backed);
+        // A lead that stepped in is still reached as the bite lands (by startup's end, within a tick); one that stepped
+        // out is left short at startup's end (the through-air test below covers the active part).
+        const float endApart = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
+        if (shift < 0.f) CHECK(endApart <= contact + 0.03f);
+        else CHECK(endApart > contact + 0.03f);
+    }
+}
+
+TEST_CASE("arena maw_pup: no pounce through air: a lead out of the lunge's reach when it leaps is not hit") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaAttack& a = pup.moves[1].attack;
+    const float contact = arenaBodyReach(pup) + std::max(0.f, devin.bodyRadius - pup.contactInset);
+    // The lead steps back as the pup leaps: past the lunge's reach by 10 cm it is not bitten, 5 cm inside it is.
+    for (const float beyond : {0.1f, -0.05f}) {
+        CAPTURE(beyond);
+        Rig rig(devin, {pup});
+        rig.put(0, 6.f, 0.f);
+        bool stepped = false;
+        const int after = static_cast<int>((a.startup + a.active + 0.05f) / kDt) + 1;
+        int left = -1;
+        for (int i = 0; i < 2400 && left != 0; ++i) {
+            rig.tick();
+            arenaStep(rig.fight, rig.bodies, kDt);
+            left = left > 0 ? left - 1 : left;
+            if (!stepped && rig.count(ArenaEventType::AttackStarted) == 1) {
+                REQUIRE(rig.find(ArenaEventType::AttackStarted)->event.move == 1);
+                left = after;
+                const Vec2 off{rig.bodies.player.x - rig.bodies.enemies[0].x, rig.bodies.player.y - rig.bodies.enemies[0].y};
+                const float len = std::hypot(off.x, off.y);
+                REQUIRE(len > 0.f);
+                // The jaws' reach at the bite is the whole lunge plus the hit range; the room to tooth contact is
+                // len - contact. Step back so the lead stands `beyond` past what the lunge closes.
+                const float back = a.lunge - (len - contact) + beyond;
+                REQUIRE(back > 0.f);
+                rig.bodies.player = Vec2{rig.bodies.player.x + off.x / len * back, rig.bodies.player.y + off.y / len * back};
+                stepped = true;
+            }
+        }
+        CHECK(stepped);
+        CHECK(left == 0);
+        CHECK(rig.count(ArenaEventType::Hit) == (beyond > 0.f ? 0 : 1));
+    }
+}
+
+TEST_CASE("arena trot tier: walk inside runRange, trot out to trotRange, run past it; read and checked") {
+    ArenaTable t;
+    CHECK(loadError(tableJson(kFightersOk, R"([ { "id": "dummy" }, { "id": "pup", "runRange": 8, "trotSpeed": 2.5,
+                                                  "trotRange": 9, "lungeToContact": true } ])"), &t).empty());
+    CHECK(t.enemies[1].trotSpeed == doctest::Approx(2.5f));
+    CHECK(t.enemies[1].trotRange == doctest::Approx(9.f));
+    CHECK(t.enemies[1].lungeToContact);
+    CHECK(t.enemies[0].trotSpeed == 0.f);
+    CHECK_FALSE(t.enemies[0].lungeToContact);
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "runRange": 8, "trotSpeed": 2, "trotRange": 5 } ])")),
+                   "trotRange"));
+    // Out of range, or a trot outside walk..run, or a flag that is not a bool: refused.
+    for (const char* bad : {R"("trotSpeed": -1)", R"("trotSpeed": 51)", R"("trotSpeed": 2, "trotRange": 101)",
+                            R"("trotSpeed": 9, "trotRange": 9)", R"("trotSpeed": 0.5, "trotRange": 9)",
+                            R"("lungeToContact": 1)"}) {
+        CAPTURE(bad);
+        CHECK_FALSE(loadError(tableJson(kFightersOk, std::string(R"([ { "id": "dummy", "runRange": 8, "walkSpeed": 1,
+                                                       "runSpeed": 6, )") + bad + " } ]")).empty());
+    }
+    // Without a trotSpeed the trotRange is not read (the two old tiers).
+    CHECK(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "runRange": 8, "trotRange": 5 } ])")).empty());
+    // The tiers in a fight: an approacher's speed at each distance, with no ramp.
+    const ArenaTable shipped = loadShipped();
+    ArenaEnemyKind k = shippedKind(shipped, "maw_pup");
+    k.accel = 0.f;
+    k.moveCount = 1;
+    k.preferredRange = 0.5f; // so the walk case is still Approach, not the circle (whose strafeSpeed is walkSpeed)
+    const ArenaFighter& devin = shipped.fighter("devin");
+    const std::pair<float, float> tiers[] = {
+        {10.f, k.runSpeed}, {k.trotRange - 0.5f, k.trotSpeed}, {k.runRange - 0.2f, k.walkSpeed}};
+    for (const std::pair<float, float>& tier : tiers) {
+        CAPTURE(tier.first);
+        Rig rig(devin, {k});
+        rig.put(0, tier.first, 0.f);
+        CHECK(rig.tick().enemies[0].brain == ArenaBrain::Approach);
+        const Vec2 was = rig.bodies.enemies[0];
+        arenaStep(rig.fight, rig.bodies, kDt);
+        CHECK(distanceOf(rig.bodies.enemies[0], was) / kDt == doctest::Approx(tier.second).epsilon(0.01));
+    }
+}
+
+TEST_CASE("arena maw_pup: a pup without the token circles at its preferred range without flapping back to Approach") {
+    const ArenaTable t = loadShipped();
+    ArenaEnemyKind pup = shippedKind(t, "maw_pup");
+    pup.attackDelay = 1000.f; // it never asks for the token: it only circles
+    for (const char* lead : {"devin", "duy", "third"}) {
+        CAPTURE(std::string(lead));
+        Rig rig(t.fighter(lead), {pup});
+        rig.put(0, 11.f, 0.f);
+        int strafeTicks = 0, changes = 0;
+        ArenaBrain was = ArenaBrain::Approach;
+        for (int i = 0; i < 600; ++i) {
+            const ArenaBrain now = rig.tick().enemies[0].brain;
+            if (now != was && strafeTicks > 0) ++changes;
+            if (now == ArenaBrain::Strafe) ++strafeTicks;
+            was = now;
+            arenaStep(rig.fight, rig.bodies, kDt);
+        }
+        CHECK(strafeTicks > 300);
+        CHECK(changes == 0);
+    }
 }

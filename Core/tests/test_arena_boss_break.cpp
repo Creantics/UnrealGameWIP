@@ -152,15 +152,21 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     // Re-measured for the maw_pup's in-place nip (capture step 3: speeds to its clips', range 0.39 with no lunge, the
     // lead's push inset 0.17, the nip's arc 0.9, runRange 2.5): again only the fights that field maw_pup can move.
     // Before it: 13458522366178030225 (10031432815278946192 with pairCooldown 0).
-    CHECK(golden == 2348299205740915552ull);
+    // Re-measured for the maw_pup's stride speeds (0.84 / 2.56 / 5.42), its trot tier (trotRange 8, runRange 2.2) and
+    // its pounce at the jaws' reach with lungeToContact, held in the crouch so it lands on the bite: again only the
+    // fights that field maw_pup can move. Before it: 2348299205740915552 (18076351296533114097 with pairCooldown 0).
+    // Re-measured for the maw_pup's nip timed to its clip (startup 1.2, recovery 1.265) and its push inset 0.17 -> 0.19
+    // (contact 0.75; nip range 0.37, pounce band 0.76-1.80, preferredRange 1.78): again only the fights that field
+    // maw_pup can move. Before it: 14269102645039719742 (1540401073455458863 with pairCooldown 0).
+    CHECK(golden == 11394361545849396747ull);
 }
 
 TEST_CASE("arena boss break: the golden trace moved for the paired counter's cooldown alone, not for the free BLOCK") {
     int fights = 0;
-    // No cooldown: the trace from before the rules.
-    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 18076351296533114097ull);
+    // No cooldown: the shipped trace with only the paired counter's cooldown taken out.
+    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 1751563556067716138ull);
     // The called BLOCK's guard damage put back: the trace as shipped.
-    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 2348299205740915552ull);
+    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 11394361545849396747ull);
 }
 
 // ---- the boss break value ----

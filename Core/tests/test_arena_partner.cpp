@@ -5359,6 +5359,13 @@ struct ClassicPinRow {
 // lunge from 0.78 m and an arc of 0.9, the lead's push inset 0.17, runRange 2.5): only the four maw_pup rows moved, all
 // still victories. Devin's both 4 -> 6 hits (28 -> 42), Duy's with the camera 32 -> 42 damage, Duy's without it the
 // hash only.
+// Re-pinned for the maw_pup's stride speeds (walk 0.84, trot 2.56, run 5.42 m/s), its trot tier (trotRange 8, runRange
+// 2.2) and its pounce that lunges to tooth contact, held in the crouch so it lands on the bite: only the four maw_pup
+// rows moved, all still victories. Devin's with the camera 6 -> 3 partner hits (42 -> 21): Devin kills the pup before
+// the partner's second blow in each seed. The other three, hashes only.
+// Re-pinned for the maw_pup's nip timed to its clip (startup 1.2, recovery 1.265, range 0.37) and its push inset 0.19
+// (tooth contact 0.75 m): only the four maw_pup rows moved, all still victories, hits and damage unchanged; hashes
+// only.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5384,8 +5391,8 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "stone_bearer", true, 66, 489, 11331705351014989236ull},
     {"devin", "white_glove", false, 58, 413, 13953194659030329670ull},
     {"devin", "white_glove", true, 55, 400, 5000600046039610435ull},
-    {"devin", "maw_pup", false, 6, 42, 7508357560149523908ull},
-    {"devin", "maw_pup", true, 6, 42, 8421939504470631251ull},
+    {"devin", "maw_pup", false, 6, 42, 14256179597642347800ull},
+    {"devin", "maw_pup", true, 3, 21, 6649435071086530976ull},
     {"devin", "spitter", false, 6, 42, 6079499873305667569ull},
     {"devin", "spitter", true, 3, 21, 4150562399047041604ull},
     {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
@@ -5412,8 +5419,8 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "stone_bearer", true, 82, 613, 7313118388245454201ull},
     {"duy", "white_glove", false, 66, 483, 1839276756863646281ull},
     {"duy", "white_glove", true, 66, 472, 10316052538403549276ull},
-    {"duy", "maw_pup", false, 6, 42, 1815226848060683555ull},
-    {"duy", "maw_pup", true, 6, 42, 11287048018200528418ull},
+    {"duy", "maw_pup", false, 6, 42, 6163384910381864181ull},
+    {"duy", "maw_pup", true, 6, 42, 14428655029584113663ull},
     {"duy", "spitter", false, 6, 42, 373096491565446441ull},
     {"duy", "spitter", true, 6, 42, 13513007789646449681ull},
 };
@@ -6035,5 +6042,50 @@ TEST_CASE("arena partner: pushed back mid-string, the drawn heading stays within
         MESSAGE("string: shoved " << shoved << " ticks, worst heading off facing " << worst << " deg");
         CHECK(shoved >= 10);
         CHECK(worst <= 5.f);
+    }
+}
+
+TEST_CASE("arena maw_pup: one pup against each lead alone, the shipped autopilot: bites begun and landed, its "
+          "lifetime (report)") {
+    // The 11-24 balance read on the Nip's windup: the bites (nip and pounce) it begins and lands on the lead, the
+    // lead's hp it takes and how long the pup stands, eight seeds a lead, no partner. Every fight must still be won.
+    const ArenaTable t = shippedTable();
+    for (const char* lead : {"devin", "duy", "third"}) {
+        int begun = 0, landed = 0, taken = 0, wins = 0;
+        float life = 0.f, longest = 0.f;
+        for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+            CAPTURE(lead);
+            CAPTURE(seed);
+            PRig r(t.fighter(lead));
+            r.def = t.fallback;
+            r.def.fighter = t.fighter(lead);
+            r.def.enemyCount = 0;
+            for (std::size_t e = 0; e < t.enemyIds.size(); ++e) {
+                if (t.enemyIds[e] == "maw_pup") {
+                    r.def.enemyKind[0] = static_cast<std::uint8_t>(e);
+                    r.def.enemies[0] = t.enemies[e];
+                    r.def.enemyCount = 1;
+                }
+            }
+            REQUIRE(r.def.enemyCount == 1);
+            r.def.attackers = 1;
+            r.goShipped(false, seed);
+            r.run(60.f);
+            CHECK(r.fight.phase() == ArenaPhase::Victory);
+            wins += r.fight.phase() == ArenaPhase::Victory ? 1 : 0;
+            for (const Logged& l : r.log) {
+                if (l.e.source != 0) continue;
+                if (l.e.type == ArenaEventType::AttackStarted) ++begun;
+                if (l.e.type == ArenaEventType::Hit && l.e.target == kArenaPlayer) {
+                    ++landed;
+                    taken += l.e.amount;
+                }
+            }
+            life += r.fight.time();
+            longest = std::max(longest, r.fight.time());
+        }
+        MESSAGE("maw_pup vs " << std::string(lead) << " alone, 8 seeds: bites begun " << begun << ", landed " << landed
+                              << " (" << taken << " hp), wins " << wins << ", lifetime mean " << life / 8.f
+                              << " s, longest " << longest << " s");
     }
 }
