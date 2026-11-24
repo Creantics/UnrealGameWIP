@@ -31,6 +31,12 @@ public:
 	// The fight is over: closes the log and gives the view back.
 	void End(APlayerController* PC);
 	bool IsOn() const { return bOn; }
+	// How long the host should hold a finished fight so a recording whose -ArenaRecTo runs past the result (fight time
+	// ResultT, then the seconds since the result) gets its settle frames: 0 when not recording or with no -ArenaRecTo.
+	double RecTail(double ResultT) const
+	{
+		return bOn && !RecPrefix.IsEmpty() && RecTo < 1e8 ? FMath::Clamp(RecTo - ResultT, 0.0, 30.0) + 0.2 : 0.0;
+	}
 
 private:
 	bool AimSide(UWorld& World, APlayerController& PC, const UFTArenaRunner& Runner, bool bClose);

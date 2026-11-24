@@ -699,7 +699,7 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 	}
 	char Row[1024];
 	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", Frame,
-		static_cast<double>(Fight.time()), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
+		static_cast<double>(Fight.time()) + Runner.GetResultAge(), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
 		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp,
 		LeadAt.X, LeadAt.Y, LeadAt.Z, PelvisAt.X, PelvisAt.Y, PelvisAt.Z, HeadAt.Z, GapFwd, GapSide, GapUp, GapBone, TipZ,
@@ -724,7 +724,8 @@ void FFTArenaCapture::Tick(UWorld& World, APlayerController& PC, const UFTArenaR
 	{
 		return;
 	}
-	const double T = static_cast<double>(Runner.GetFight().time());
+	// Fight time, then the seconds since the result: the fight clock stops at the result, a recording past it does not.
+	const double T = static_cast<double>(Runner.GetFight().time()) + Runner.GetResultAge();
 	const bool bRecDone = RecPrefix.IsEmpty() || T > RecTo;
 	const bool bShotsDone = NextShot >= ShotAt.Num();
 	if (bQuitAfter && bRecDone && bShotsDone && T > 0.5)
