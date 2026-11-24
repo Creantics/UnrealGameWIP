@@ -102,7 +102,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -267,6 +267,7 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 	const AFTArenaFighter* EnemyFigure = Runner.GetEnemyFigure(0);
 	const AFTArenaFighter* Lead = Runner.GetPlayerFigure();
 	const double Dist = EnemyFigure && Lead ? FVector::Dist2D(EnemyFigure->GetActorLocation(), Lead->GetActorLocation()) / 100.0 : -1.0;
+	// Hits: the last fight step of the frame only (two 60 Hz steps a 30 fps frame); lead_hp shows every blow.
 	int32 Hits = 0;
 	for (const ftcore::ArenaEvent& Event : Out.events)
 	{
@@ -331,10 +332,10 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		}
 	}
 	char Row[384];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%.3f,%c,%.3f,%.3f\n", Frame,
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f\n", Frame,
 		static_cast<double>(Fight.time()), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
-		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp);
+		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp);
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));

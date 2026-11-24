@@ -188,6 +188,13 @@ bool AFTArenaHost::BuildFight(const AFTExploreCharacter& Body, int32 District, c
 		Spec.spawn = SpawnFlag;
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaSpawn: the enemies start %.2f m from the lead (before the fit)."), SpawnFlag);
 	}
+	// -ArenaRing=<m>: the zone size asked for (6..80 m), so a long spawn is not cut to the ring the enemies' size gives.
+	float RingFlag = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaRing="), RingFlag) && RingFlag > 0.f)
+	{
+		Spec.ring = FMath::Clamp(RingFlag, 6.f, 80.f);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaRing: the zone asks for a %.1f m ring."), static_cast<double>(Spec.ring));
+	}
 #endif
 
 	// The lead's own kit (its attacks and its blocks), as the arena demo picks it.
