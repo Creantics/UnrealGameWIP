@@ -52,6 +52,15 @@ const ArenaEnemyKind& kindOf(const ArenaTable& t, const char* id) {
     return t.enemies[0];
 }
 
+// The rigs here never move bodies, so the pup's nip must reach from where a test stands it: these tests pin the
+// reach the shipped nip had when they were written (the shipped kind's own reach follows its clip and may be shorter).
+void pinNipReach(ArenaEnemyKind& pup) {
+    pup.moves[0].range = 1.6f;
+    pup.moves[0].arcCos = 0.4f;
+    pup.moves[0].lunge = 0.8f;
+    pup.moves[0].maxRange = 1.9f;
+}
+
 // A fight with the shipped kinds pinned where the test puts them; the player at the origin facing +x.
 struct HRig {
     ArenaDef def;
@@ -129,6 +138,7 @@ TEST_CASE("arena hit react: the maw pup's nip is a Light on its hitPart thigh, t
     const ArenaHitSetup s = loadSetup();
     ArenaEnemyKind pup = kindOf(t, "maw_pup");
     for (std::size_t m = 1; m < pup.moveCount; ++m) pup.moves[m].weight = 0.f; // the nip only
+    pinNipReach(pup);
     HRig r(t.fighter("default"), {pup});
     const ArenaOutput* out = r.untilRecord(6.f);
     REQUIRE(out != nullptr);
@@ -478,6 +488,7 @@ TEST_CASE("arena hit react: the nip's thigh is on the side the pup stands") {
     const ArenaHitSetup s = loadSetup();
     ArenaEnemyKind pup = kindOf(t, "maw_pup");
     for (std::size_t m = 1; m < pup.moveCount; ++m) pup.moves[m].weight = 0.f; // the nip only
+    pinNipReach(pup);
     // The player faces +x, so +y is its right (the host's y right).
     for (const auto& [side, thigh] : {std::pair{0.6f, s.thighR}, std::pair{-0.6f, s.thighL}}) {
         CAPTURE(side);
@@ -887,6 +898,7 @@ TEST_CASE("arena hit react: an enemy's blow on the partner's body is stamped on 
     const ArenaHitSetup s = loadSetup();
     ArenaEnemyKind pup = kindOf(t, "maw_pup");
     for (std::size_t m = 1; m < pup.moveCount; ++m) pup.moves[m].weight = 0.f;
+    pinNipReach(pup);
     // The rig never moves bodies: the pup swings at the player from where it stands (a long maxRange, no strafing
     // walk-in), and the nip's 1.6 m reaches the ally in between, never the player 3.5 m off.
     pup.attackDelay = 0.f;
@@ -917,6 +929,7 @@ TEST_CASE("arena hit react: a fall with the partner up is the player's Knockout,
     const ArenaHitSetup s = loadSetup();
     ArenaEnemyKind pup = kindOf(t, "maw_pup");
     for (std::size_t m = 1; m < pup.moveCount; ++m) pup.moves[m].weight = 0.f;
+    pinNipReach(pup);
     ArenaFighter frail = t.fighter("default");
     frail.hp = 3; // one nip
     PartRig r(frail, pup, Vec2{0.f, 0.f}, Vec2{1.f, 0.f}, Vec2{0.f, 3.5f}, 80, Vec2{-1.f, 0.f});
