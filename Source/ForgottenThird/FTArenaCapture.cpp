@@ -125,7 +125,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz,pup_x,pup_y,pup_wyaw,paw_fl_x,paw_fl_y,paw_fl_z,paw_fr_x,paw_fr_y,paw_fr_z,paw_hl_x,paw_hl_y,paw_hl_z,paw_hr_x,paw_hr_y,paw_hr_z,legdist_l,legdist_r,leg_near,pad_fl_x,pad_fl_y,pad_fl_z,pad_fr_x,pad_fr_y,pad_fr_z,pad_hl_x,pad_hl_y,pad_hl_z,pad_hr_x,pad_hr_y,pad_hr_z,tleg_l,tleg_r,tleg_near\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part,lead_yaw,pup_yaw,tip_side_pup,jaw_deg,canine_z,legl_fwd,legl_side,legr_fwd,legr_side,tooth_ui_l,tooth_ui_r,tooth_uo_l,tooth_uo_r,tooth_lo_l,tooth_lo_r,knee_l,knee_r,midthigh_l,midthigh_r,pup_actor_dz,pup_root_dz,pup_mesh_dz,pup_x,pup_y,pup_wyaw,paw_fl_x,paw_fl_y,paw_fl_z,paw_fr_x,paw_fr_y,paw_fr_z,paw_hl_x,paw_hl_y,paw_hl_z,paw_hr_x,paw_hr_y,paw_hr_z,legdist_l,legdist_r,leg_near,pad_fl_x,pad_fl_y,pad_fl_z,pad_fr_x,pad_fr_y,pad_fr_z,pad_hl_x,pad_hl_y,pad_hl_z,pad_hr_x,pad_hr_y,pad_hr_z,tleg_l,tleg_r,tleg_near,sole_fl_x,sole_fl_y,sole_fl_z,sole_fr_x,sole_fr_y,sole_fr_z,sole_hl_x,sole_hl_y,sole_hl_z,sole_hr_x,sole_hr_y,sole_hr_z\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -318,10 +318,15 @@ void FFTArenaCapture::FindMuzzle(const USkeletalMeshComponent& Skin)
 		{
 			double PadLow[4] = {1e9, 1e9, 1e9, 1e9};
 			FVector PadRest[4];
-			for (const FSkelMeshSection& Section : Model->LODModels[0].Sections)
+			int32 PadSec[4] = {-1, -1, -1, -1}, PadIdx[4] = {-1, -1, -1, -1};
+			double PadW[4] = {};
+			const TArray<FSkelMeshSection>& Sections = Model->LODModels[0].Sections;
+			for (int32 Sec = 0; Sec < Sections.Num(); ++Sec)
 			{
-				for (const FSoftSkinVertex& V : Section.SoftVertices)
+				const FSkelMeshSection& Section = Sections[Sec];
+				for (int32 Idx = 0; Idx < Section.SoftVertices.Num(); ++Idx)
 				{
+					const FSoftSkinVertex& V = Section.SoftVertices[Idx];
 					int32 Heavy = INDEX_NONE;
 					uint16 HeavyW = 0;
 					for (int32 I = 0; I < MAX_TOTAL_INFLUENCES; ++I)
@@ -339,11 +344,18 @@ void FFTArenaCapture::FindMuzzle(const USkeletalMeshComponent& Skin)
 						{
 							bUnder = B == PawBone[Q];
 						}
+						if (bUnder)
+						{
+							SoleVerts[Q].Add(Sec << 20 | Idx);
+						}
 						if (bUnder && V.Position.Z < PadLow[Q])
 						{
 							PadLow[Q] = V.Position.Z;
 							PadBone[Q] = Heavy;
 							PadRest[Q] = FVector(V.Position);
+							PadSec[Q] = Sec;
+							PadIdx[Q] = Idx;
+							PadW[Q] = HeavyW / 65535.0;
 						}
 					}
 				}
@@ -355,10 +367,15 @@ void FFTArenaCapture::FindMuzzle(const USkeletalMeshComponent& Skin)
 					PadLocal[Q] = AtRest(PadBone[Q]).InverseTransformPosition(PadRest[Q]);
 				}
 			}
-			UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture: pads on %s, %s, %s, %s; rest z %.1f, %.1f, %.1f, %.1f cm."),
-				PadBone[0] != INDEX_NONE ? *Ref.GetBoneName(PadBone[0]).ToString() : TEXT("-"), PadBone[1] != INDEX_NONE ? *Ref.GetBoneName(PadBone[1]).ToString() : TEXT("-"),
-				PadBone[2] != INDEX_NONE ? *Ref.GetBoneName(PadBone[2]).ToString() : TEXT("-"), PadBone[3] != INDEX_NONE ? *Ref.GetBoneName(PadBone[3]).ToString() : TEXT("-"),
-				PadLow[0], PadLow[1], PadLow[2], PadLow[3]);
+			static const TCHAR* const PawTag[4] = {TEXT("FL"), TEXT("FR"), TEXT("HL"), TEXT("HR")};
+			for (int32 Q = 0; Q < 4; ++Q)
+			{
+				// The pad is the lowest rest vertex under the paw, so its rest height over the paw's lowest point is 0 by the pick.
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture: pad %s: section %d vertex %d, main bone %s at weight %.3f, rest z %.2f cm (0.00 over the paw's lowest), paw bone %s rest z %.2f cm; sole set %d vertices."),
+					PawTag[Q], PadSec[Q], PadIdx[Q], PadBone[Q] != INDEX_NONE ? *Ref.GetBoneName(PadBone[Q]).ToString() : TEXT("-"), PadW[Q], PadLow[Q],
+					PawBone[Q] != INDEX_NONE ? *Ref.GetBoneName(PawBone[Q]).ToString() : TEXT("-"), PawBone[Q] != INDEX_NONE ? AtRest(PawBone[Q]).GetLocation().Z : -1.0,
+					SoleVerts[Q].Num());
+			}
 		}
 #endif
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture: paws FL %s, FR %s, HL %s, HR %s."),
@@ -758,6 +775,9 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 	// Every frame: each paw's pad or toe tip (m, world; 0 without one). Recorded frames: the least distance (m) from the six
 	// tooth tips to the lead's left and right leg surface, and the nearer side (l or r, - when not measured).
 	double Pad[12] = {};
+	// Every frame: each paw's sole, the lowest of its vertices as skinned this frame (m, world; 0 without one), Blender's
+	// per-sample measure, so a fixed pad vertex rolling off the ground is told apart from a slip.
+	double Sole[12] = {};
 	double TLeg[2] = {-1.0, -1.0};
 	char TLegNear = '-';
 	const USkeletalMeshComponent* PupSkin = EnemyFigure ? EnemyFigure->GetSkin() : nullptr;
@@ -788,6 +808,53 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 			Pad[K * 3 + 2] = At.Z;
 		}
 	}
+#if WITH_EDITORONLY_DATA
+	if (PupSkin && PupSkin->GetSkeletalMeshAsset() && PupSkin->GetSkeletalMeshAsset()->GetImportedModel()
+		&& PupSkin->GetSkeletalMeshAsset()->GetImportedModel()->LODModels.Num() > 0)
+	{
+		const TArray<FSkelMeshSection>& Sections = PupSkin->GetSkeletalMeshAsset()->GetImportedModel()->LODModels[0].Sections;
+		PupSkin->GetCurrentRefToLocalMatrices(RefToLocals, 0);
+		const FTransform ToWorld = PupSkin->GetComponentTransform();
+		for (int32 K = 0; K < 4; ++K)
+		{
+			double LowZ = 1e12;
+			for (const int32 Packed : SoleVerts[K])
+			{
+				const int32 Sec = Packed >> 20, Idx = Packed & 0xFFFFF;
+				if (!Sections.IsValidIndex(Sec) || !Sections[Sec].SoftVertices.IsValidIndex(Idx))
+				{
+					continue;
+				}
+				const FSkelMeshSection& Section = Sections[Sec];
+				const FSoftSkinVertex& V = Section.SoftVertices[Idx];
+				FVector3f P = FVector3f::ZeroVector;
+				float Sum = 0.f;
+				for (int32 I = 0; I < MAX_TOTAL_INFLUENCES; ++I)
+				{
+					const uint16 W = V.InfluenceWeights[I];
+					if (W == 0 || V.InfluenceBones[I] >= Section.BoneMap.Num() || !RefToLocals.IsValidIndex(Section.BoneMap[V.InfluenceBones[I]]))
+					{
+						continue;
+					}
+					P += RefToLocals[Section.BoneMap[V.InfluenceBones[I]]].TransformPosition(V.Position) * static_cast<float>(W);
+					Sum += static_cast<float>(W);
+				}
+				if (Sum <= 0.f)
+				{
+					continue;
+				}
+				const FVector At = ToWorld.TransformPosition(FVector(P / Sum));
+				if (At.Z < LowZ)
+				{
+					LowZ = At.Z;
+					Sole[K * 3] = At.X / 100.0;
+					Sole[K * 3 + 1] = At.Y / 100.0;
+					Sole[K * 3 + 2] = At.Z / 100.0;
+				}
+			}
+		}
+	}
+#endif
 	if (PupSkin && Lead && MuzzleBone != INDEX_NONE && MuzzleBone < PupSkin->GetNumBones())
 	{
 		const FVector Tip = PupSkin->GetBoneTransform(MuzzleBone).TransformPosition(MuzzleLocal);
@@ -935,8 +1002,8 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 			HeadAt = LeadSkin->GetBoneIndex(HeadName) != INDEX_NONE ? LeadSkin->GetBoneLocation(HeadName) / 100.0 : HeadAt;
 		}
 	}
-	char Row[2000];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%c,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%c\n", Frame,
+	char Row[2400];
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%.2f,%.2f,%.3f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,%.4f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%c,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%c,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", Frame,
 		static_cast<double>(Fight.time()) + Runner.GetResultAge(), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
 		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp,
@@ -946,7 +1013,8 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		ToothCm[0] / 100.0, ToothCm[1] / 100.0, ToothCm[2] / 100.0, ToothCm[3] / 100.0, ToothCm[4] / 100.0, ToothCm[5] / 100.0,
 		KneeZ[0], KneeZ[1], MidThighZ[0], MidThighZ[1], PupActorDz, PupRootDz, PupMeshDz, PupX, PupY, PupWYaw,
 		Paw[0], Paw[1], Paw[2], Paw[3], Paw[4], Paw[5], Paw[6], Paw[7], Paw[8], Paw[9], Paw[10], Paw[11], LegDist[0], LegDist[1], LegNear,
-		Pad[0], Pad[1], Pad[2], Pad[3], Pad[4], Pad[5], Pad[6], Pad[7], Pad[8], Pad[9], Pad[10], Pad[11], TLeg[0], TLeg[1], TLegNear);
+		Pad[0], Pad[1], Pad[2], Pad[3], Pad[4], Pad[5], Pad[6], Pad[7], Pad[8], Pad[9], Pad[10], Pad[11], TLeg[0], TLeg[1], TLegNear,
+		Sole[0], Sole[1], Sole[2], Sole[3], Sole[4], Sole[5], Sole[6], Sole[7], Sole[8], Sole[9], Sole[10], Sole[11]);
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));

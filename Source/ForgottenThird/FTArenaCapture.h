@@ -87,6 +87,8 @@ private:
 	// vertex's heaviest bone's space, so the stance is read where the paw meets the ground, not at the bone.
 	int32 PadBone[4] = {INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE};
 	FVector PadLocal[4];
+	// Every rest vertex under each paw (section << 20 | vertex), for the sole: the lowest of them as skinned this frame.
+	TArray<int32> SoleVerts[4];
 	TArray<FMatrix44f> RefToLocals; // reused by ClosestSkinVertex
 
 	FArchive* Log = nullptr;
