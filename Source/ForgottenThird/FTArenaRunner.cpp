@@ -395,6 +395,14 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		CloseBase.rig.arm = CameraLens.rig.arm = CloseArmSwitch;
 	}
 	{
+		// -ArenaQuitAfter=<s>: the run's end held this long after the result (0.5 to 30 s); see the header.
+		QuitAfterFinish = 0.f;
+		float QuitAfter = 0.f;
+		if (FParse::Value(FCommandLine::Get(), TEXT("ArenaQuitAfter="), QuitAfter) && FMath::IsFinite(QuitAfter) && QuitAfter > 0.f)
+		{
+			QuitAfterFinish = FMath::Clamp(QuitAfter, 0.5f, 30.f);
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaQuitAfter: the run ends %.2f s after the result."), QuitAfterFinish);
+		}
 		// -ArenaStandOff=<m>: the autopilot circles its target at this range, guarding, no attacks or dodges (stand-off
 		// stills at a set range). 0 or missing: off.
 		StandOffAt = 0.f;
@@ -828,6 +836,12 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 		if (!bResultLogged)
 		{
 			Finish();
+		}
+		else if (bQuitOnFinish && !bShots && QuitAfterFinish > 0.f && GetResultAge() >= QuitAfterFinish)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaQuitAfter: the run ends %.2f s after the result."), GetResultAge());
+			bQuitOnFinish = false; // once: the exit lands a frame or more later
+			FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(QuitStatus), TEXT("Arena"));
 		}
 		else if (bFightAgain && !bShots && !bQuitOnFinish)
 		{
@@ -6534,9 +6548,10 @@ void UFTArenaRunner::Finish()
 	{
 		CheckPartnerRetry(); // a loss: the retry from the fight's start, checked before the run ends
 	}
-	if (bQuitOnFinish && !bShots)
+	QuitStatus = bWon ? 0 : 1;
+	if (bQuitOnFinish && !bShots && QuitAfterFinish <= 0.f)
 	{
-		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(bWon ? 0 : 1), TEXT("Arena"));
+		FPlatformMisc::RequestExitWithStatus(false, static_cast<uint8>(QuitStatus), TEXT("Arena"));
 	}
 	// The autopilot's wait before it fights again: long enough for the bosses' defeat clips (all dead on a victory) to play out.
 	float LongestDefeat = 0.f;
