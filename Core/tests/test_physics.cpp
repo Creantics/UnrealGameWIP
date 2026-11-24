@@ -210,6 +210,13 @@ TEST_CASE("physics: ragdoll profile hit-stop frames per tier") {
     CHECK(profileError("{\"hitStopKoFrames\": -1}") == "ragdoll profile: value out of range");
     CHECK(profileError("{\"hitStopLightFrames\": -1}") == "ragdoll profile: value out of range");
     CHECK(profileError("{\"hitStopFps\": 0}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopFps\": 1001}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopKoFrames\": 256}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopStaggerFrames\": 256}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopLightFrames\": 256}") == "ragdoll profile: value out of range");
+    RagdollProfile edge;
+    REQUIRE(importRagdollProfile("{\"hitStopKoFrames\": 255, \"hitStopFps\": 1000}", edge, &error));
+    CHECK(edge.hitStopKoFrames == RagdollProfile::kMaxHitStopFrames);
     CHECK(profileError("{\"hitStopStaggerFrames\": 2.5}") == "hitStopStaggerFrames: expected integer");
 }
 

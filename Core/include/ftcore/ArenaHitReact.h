@@ -53,9 +53,14 @@ struct ArenaHitReaction {
     float strength = 0.f;                // N*s, raw
     int part = -1;                       // struck RagdollMap part
     int hitStopFrames = 0;               // display only (the host's HitStop): the move's own hitStop x fps when it
-                                         // is set, else the tier's frames from the profile. Never fed back to Core.
+                                         // is set (at least 1), else the tier's frames from the profile. Never fed
+                                         // back to Core. A set hitStop is also the tick's own pause (ArenaAttack::
+                                         // hitStop) when the blow lands on the player, so the two agree there;
+                                         // other blows and the tier frames pause the host's display alone.
     std::uint8_t blows = 0;              // blows merged into this one
-    bool tookOver = false;               // the player's KO in a TookOver tick: apply it to the fallen body after its swap
+    bool tookOver = false;               // a TookOver tick: target names the body before the swap. The host applies
+                                         // the player's reaction to the fallen body (in the ally's place after the
+                                         // swap) and the ally's to the body that now plays.
 };
 
 // One blow's reaction.

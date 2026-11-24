@@ -138,7 +138,8 @@ struct RagdollProfile {
     float hitImpulseScale = 1.f;
     float hitHold = 0.1f, hitBlendOut = 0.3f; // seconds
     // Hit-stop frames the host shows per hit tier when the move sets no hitStop of its own (display only: the arena
-    // tick never reads them), counted at hitStopFps.
+    // tick never reads them), counted at hitStopFps. Each 0..kMaxHitStopFrames; hitStopFps above 0, at most 1000.
+    static constexpr int kMaxHitStopFrames = 255;
     int hitStopLightFrames = 0, hitStopStaggerFrames = 4, hitStopKoFrames = 8;
     float hitStopFps = 60.f;
     RagdollMotor motor;

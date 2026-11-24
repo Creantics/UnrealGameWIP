@@ -361,14 +361,16 @@ struct ArenaFightImpl {
         arenaPushLeadHit(out.events, h);
     }
 
-    // A table share's kill: Knockout on the Downed / AllyDowned it emitted, from the striking enemy when known.
-    void stampShareKill(std::uint8_t ev, std::uint8_t source, std::uint8_t move, std::uint8_t target, int lost) {
+    // A table share's kill: Knockout on the Downed / AllyDowned it emitted, from the striking enemy. `share` is the
+    // body's part before the hp clamp. Only enemies strike the leads today; the source guard keeps a record from
+    // reading past the enemy table if a non-enemy source ever shares a blow.
+    void stampShareKill(std::uint8_t ev, std::uint8_t source, std::uint8_t move, std::uint8_t target, int share) {
         const bool enemy = source < n;
         const ArenaEnemyMove* mv =
             enemy && move < def.enemies[source].moveCount ? &def.enemies[source].moves[move] : nullptr;
         const bool player = target == kArenaPlayer;
         const ArenaFighter& kit = player ? fi : (partnerOn() ? pk : fi);
-        stampLead(ArenaHitTier::Knockout, ev, enemy ? source : kArenaNobody, target, move, mv, lost, 0.f,
+        stampLead(ArenaHitTier::Knockout, ev, enemy ? source : kArenaNobody, target, move, mv, share, 0.f,
                   mv ? fight.enemyAttackOf(source, move).hitStop : 0.f, enemy ? foes[source].pos : Vec2{},
                   enemy ? foes[source].facing : Vec2{}, player ? pl.pos : fight.allyPos_,
                   player ? pl.facing : fight.ally_.facing, player ? fi.hp : fight.allyMaxHp_, kit.poise);
@@ -3570,13 +3572,13 @@ struct ArenaFightImpl {
             pl.hp -= lost;
             stats.damageTaken += lost;
             emit(ArenaEventType::TableShare, source, kArenaPlayer, move, lost, pl.pos);
-            if (pl.hp <= 0) stampShareKill(downPlayer(source, move), source, move, kArenaPlayer, lost);
+            if (pl.hp <= 0) stampShareKill(downPlayer(source, move), source, move, kArenaPlayer, split.each);
         }
         if (ally && struck != kArenaAlly) {
             const int lost = std::min(split.each, fight.allyHp_);
             fight.allyHp_ -= lost;
             emit(ArenaEventType::TableShare, source, kArenaAlly, move, lost, fight.allyPos_);
-            if (fight.allyHp_ <= 0) stampShareKill(downAlly(source, move), source, move, kArenaAlly, lost);
+            if (fight.allyHp_ <= 0) stampShareKill(downAlly(source, move), source, move, kArenaAlly, split.each);
         }
         for (std::size_t i = 0; i < n; ++i) {
             if (!((s.enemies >> i) & 1u) || !alive(i) || unhurt(foes[i])) continue;
@@ -4997,11 +4999,16 @@ void arenaPushLeadHit(ArenaEvents& e, const ArenaLeadHit& hit) {
         return;
     }
     ++e.hitsDropped;
+    // The lowest tier below the new one, on any body; among equals the same body first, then the earliest.
     std::size_t slot = kMaxArenaLeadHits;
     for (std::size_t k = 0; k < kMaxArenaLeadHits; ++k) {
         const ArenaLeadHit& o = e.hits[k];
-        if (o.target != hit.target || o.tier >= hit.tier) continue;
-        if (slot == kMaxArenaLeadHits || o.tier < e.hits[slot].tier) slot = k;
+        if (o.tier >= hit.tier) continue;
+        if (slot == kMaxArenaLeadHits || o.tier < e.hits[slot].tier) {
+            slot = k;
+            continue;
+        }
+        if (o.tier == e.hits[slot].tier && o.target == hit.target && e.hits[slot].target != hit.target) slot = k;
     }
     if (slot < kMaxArenaLeadHits) e.hits[slot] = hit;
 }
@@ -5443,7 +5450,10 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             tell one of arenaTellName's words, no two named alike in one enemy (default "strike": moves left
 //             at it read alike, so a lone enemy whose moves name no tell is dealt no Read cards);
 //             clip an id of 1..31 letters, digits, _ and -, optional, only in an enemy with a look: the clip the
-//             host plays for the move (the host's business; no two moves of one enemy share one)
+//             host plays for the move (the host's business; no two moves of one enemy share one);
+//             hitsAir boolean (default false for a sweep or slam tell, else true: false passes under a jump's
+//             clear window and takes the legs); hitPart one of arenaHitPartName's words (default "auto": the
+//             reaction picks the part by height and tell), the part a landed blow strikes (display only)
 //   fight     enemies 1..6 known enemy ids; ring (0, 1000]; spawn (0, 1000]; attackers 1..6;
 //             scene a non-empty id; beat 0..1000000; step 0..1000
 

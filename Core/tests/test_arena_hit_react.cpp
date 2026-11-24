@@ -209,6 +209,7 @@ TEST_CASE("arena hit react: a guard break is a Stagger; the block and its chip a
     REQUIRE_FALSE(brute.moves[2].unblockable);
     ArenaFighter weak = t.fighter("default");
     weak.stamina = 5.f;
+    REQUIRE(weak.guardAbsorb == 1.f); // the shipped guard takes the whole blow: no chip, so no Hit at all
     HRig r(weak, {brute});
     r.bodies.enemies[0] = Vec2{2.f, 0.f};
     r.in.guard = true;
@@ -221,10 +222,85 @@ TEST_CASE("arena hit react: a guard break is a Stagger; the block and its chip a
     REQUIRE(broken >= 0);
     CHECK(arenaHitTierOf(ev, static_cast<std::size_t>(blocked)) == ArenaHitTier::None);
     CHECK(arenaHitTierOf(ev, static_cast<std::size_t>(broken)) == ArenaHitTier::Stagger);
-    const int chip = indexOf(ev, ArenaEventType::Hit, kArenaPlayer);
-    if (chip >= 0) CHECK(arenaHitTierOf(ev, static_cast<std::size_t>(chip)) == ArenaHitTier::None);
+    CHECK(indexOf(ev, ArenaEventType::Hit, kArenaPlayer) < 0);
     REQUIRE(ev.hitCount == 1);
-    CHECK(ev.hits[0].poise > 0.f);
+    const ArenaLeadHit& h = ev.hits[0];
+    CHECK(h.event == broken);
+    CHECK(h.damage == 0);
+    CHECK(h.poise == doctest::Approx(brute.moves[2].attack.poiseDamage));
+    CHECK(h.weight == doctest::Approx(brute.moves[2].attack.poiseDamage / weak.poise)); // no damage: poise alone
+}
+
+TEST_CASE("arena hit react: a chip that downs the guarding lead is a Knockout on its Hit; a chip alone has none") {
+    const ArenaTable t = loadTable();
+    ArenaEnemyKind brute = kindOf(t, "brute");
+    brute.moves[0].weight = 0.f;
+    brute.moves[1].weight = 0.f;
+    for (const int hp : {1, 140}) {
+        CAPTURE(hp);
+        ArenaFighter f = t.fighter("default");
+        f.guardAbsorb = 0.5f; // a guard that lets half through
+        f.stamina = 1000.f;   // never breaks
+        f.hp = hp;
+        HRig r(f, {brute});
+        r.bodies.enemies[0] = Vec2{2.f, 0.f};
+        r.in.guard = true;
+        bool blocked = false;
+        for (int k = 0; k < 60 * 10 && !blocked; ++k) {
+            const ArenaOutput& out = r.tick();
+            const ArenaEvents& ev = out.events;
+            if (indexOf(ev, ArenaEventType::Blocked, kArenaPlayer) < 0) continue;
+            blocked = true;
+            const int hit = indexOf(ev, ArenaEventType::Hit, kArenaPlayer);
+            REQUIRE(hit >= 0); // the chip
+            CHECK(ev.items[static_cast<std::size_t>(hit)].amount > 0);
+            CHECK(indexOf(ev, ArenaEventType::GuardBroken, kArenaPlayer) < 0);
+            if (hp == 1) {
+                REQUIRE(ev.hitCount == 1);
+                CHECK(ev.hits[0].tier == ArenaHitTier::Knockout);
+                CHECK(ev.hits[0].event == hit);
+                CHECK(ev.hits[0].damage == static_cast<int>(std::lround(brute.moves[2].attack.damage * 0.5f)));
+                CHECK(has(ev, ArenaEventType::Downed));
+            } else {
+                CHECK(ev.hitCount == 0);
+                CHECK(arenaHitTierOf(ev, static_cast<std::size_t>(hit)) == ArenaHitTier::None);
+            }
+        }
+        REQUIRE(blocked);
+    }
+}
+
+TEST_CASE("arena hit react: a blow that lands in the air is a Stagger whatever the poise") {
+    const ArenaTable t = loadTable();
+    ArenaEnemyKind brute = kindOf(t, "brute");
+    brute.moves[1].weight = 0.f;
+    REQUIRE(brute.moves[0].hitsAir);
+    REQUIRE(brute.moves[2].hitsAir);
+    ArenaFighter f = t.fighter("default");
+    f.poise = 1.0e6f; // on the ground nothing breaks it: a Stagger can only be the air's
+    HRig r(f, {brute});
+    r.fight.setNoDefeatForTest(true);
+    r.bodies.enemies[0] = Vec2{2.f, 0.f};
+    int air = 0;
+    for (int k = 0; k < 60 * 40 && air == 0; ++k) {
+        const ArenaPlayerOut before = r.fight.output().player;
+        const bool up = before.jumpTime >= 0.f;
+        if (!up && before.action != ArenaAction::Hitstun) r.in.jump = true;
+        const ArenaOutput& out = r.tick();
+        CHECK_FALSE(has(out.events, ArenaEventType::Staggered));
+        for (std::size_t j = 0; j < out.events.hitCount; ++j) {
+            const ArenaLeadHit& h = out.events.hits[j];
+            if (h.tier == ArenaHitTier::Stagger) {
+                CHECK(up);                        // in the air when it landed
+                CHECK(out.player.jumpTime < 0.f); // knocked out of the jump
+                CHECK(out.player.action == ArenaAction::Hitstun);
+                ++air;
+            } else {
+                CHECK(h.tier == ArenaHitTier::Light);
+            }
+        }
+    }
+    REQUIRE(air > 0);
 }
 
 TEST_CASE("arena hit react: a blow during hitstun is Light, never a second Stagger") {
@@ -286,9 +362,17 @@ TEST_CASE("arena hit react: evades, parries, blocks and staggers carry no record
                                   (e.type == ArenaEventType::AllyDowned && e.source != kArenaNobody);
                 if (!fall) continue;
                 ++downs;
+                // The record of this fall: its body, its attacker, and stamped on the fall itself (a table share) or
+                // on that attacker's blow earlier in the tick.
                 bool ko = false;
-                for (std::size_t j = 0; j < ev.hitCount; ++j)
-                    if (ev.hits[j].target == e.target && ev.hits[j].tier == ArenaHitTier::Knockout) ko = true;
+                for (std::size_t j = 0; j < ev.hitCount; ++j) {
+                    const ArenaLeadHit& h = ev.hits[j];
+                    if (h.target != e.target || h.tier != ArenaHitTier::Knockout || h.source != e.source) continue;
+                    const std::size_t at = h.event;
+                    if (at == i || (at < i && ev.items[at].source == e.source &&
+                                    ev.items[at].target == e.target))
+                        ko = true;
+                }
                 CHECK(ko);
             }
             for (std::size_t j = 0; j < ev.hitCount; ++j) {
@@ -498,7 +582,7 @@ TEST_CASE("arena hit react: a move's hitPart wins over height and tell; missing 
     }
 }
 
-TEST_CASE("arena hit react: a full record list loses the lowest tier on that body, never a Knockout") {
+TEST_CASE("arena hit react: a full record list loses its lowest tier, on any body; a Knockout only to Knockouts") {
     ArenaEvents ev;
     for (std::size_t k = 0; k < kMaxArenaLeadHits; ++k) {
         ArenaLeadHit h = blow(k == 3 ? ArenaHitTier::Light : ArenaHitTier::Stagger, Vec2{2.f, 0.f}, Vec2{}, 0.1f);
@@ -518,10 +602,30 @@ TEST_CASE("arena hit react: a full record list loses the lowest tier on that bod
     arenaPushLeadHit(ev, blow(ArenaHitTier::Light, Vec2{2.f, 0.f}, Vec2{}, 0.1f));
     CHECK(ev.hitsDropped == 2);
     for (std::size_t k = 0; k < kMaxArenaLeadHits; ++k) CHECK(ev.hits[k].tier != ArenaHitTier::Light);
-    // A body with no records in the list: its blow is lost, the others' stand.
-    arenaPushLeadHit(ev, blow(ArenaHitTier::Knockout, Vec2{2.f, 0.f}, Vec2{}, 0.9f, kArenaAlly));
+    // Another body's Knockout takes the earliest of the lowest tier (the player's Stagger in slot 0).
+    ArenaLeadHit allyKo = blow(ArenaHitTier::Knockout, Vec2{2.f, 0.f}, Vec2{}, 0.9f, kArenaAlly);
+    allyKo.move = 77;
+    arenaPushLeadHit(ev, allyKo);
     CHECK(ev.hitsDropped == 3);
-    for (std::size_t k = 0; k < kMaxArenaLeadHits; ++k) CHECK(ev.hits[k].target == kArenaPlayer);
+    CHECK(ev.hits[0].target == kArenaAlly);
+    CHECK(ev.hits[0].move == 77);
+    // Among equal lowest tiers the same body's goes first: an ally Stagger, then the ally's Knockout takes its place.
+    ArenaLeadHit allySt = blow(ArenaHitTier::Stagger, Vec2{2.f, 0.f}, Vec2{}, 0.1f, kArenaAlly);
+    allySt.move = 55;
+    ev.hits[5] = allySt;
+    ArenaLeadHit allyKo2 = blow(ArenaHitTier::Knockout, Vec2{2.f, 0.f}, Vec2{}, 0.9f, kArenaAlly);
+    allyKo2.move = 78;
+    arenaPushLeadHit(ev, allyKo2);
+    CHECK(ev.hits[5].move == 78);
+    CHECK(ev.hits[1].tier == ArenaHitTier::Stagger); // the player's earlier Stagger stands
+    // Every record a Knockout: the new Knockout is the one lost.
+    for (std::size_t k = 0; k < kMaxArenaLeadHits; ++k) ev.hits[k].tier = ArenaHitTier::Knockout;
+    ArenaLeadHit last = blow(ArenaHitTier::Knockout, Vec2{2.f, 0.f}, Vec2{}, 0.9f);
+    last.move = 200;
+    const std::uint32_t before = ev.hitsDropped;
+    arenaPushLeadHit(ev, last);
+    CHECK(ev.hitsDropped == before + 1);
+    for (std::size_t k = 0; k < kMaxArenaLeadHits; ++k) CHECK(ev.hits[k].move != 200);
 }
 
 TEST_CASE("arena hit react: hit-stop is the tier default from the profile; a move's own hitStop wins") {
@@ -545,6 +649,10 @@ TEST_CASE("arena hit react: hit-stop is the tier default from the profile; a mov
     h.tier = ArenaHitTier::Knockout;
     h.hitStop = 0.05f;
     CHECK(arenaHitReaction(h, s).hitStopFrames == 3);
+    // A set hitStop under half a frame still shows one: never rounded to nothing (nor back to the tier's 8).
+    h.hitStop = 0.004f;
+    CHECK(arenaHitReaction(h, s).hitStopFrames == 1);
+    h.hitStop = 0.05f;
     // The defaults come from the data: another profile's frames and rate are used as given.
     ArenaHitSetup other = s;
     other.tierFrames = {0, 1, 5, 9};
@@ -571,9 +679,11 @@ TEST_CASE("arena hit react: a move with hitStop set gives its own frames in a sc
     CHECK(arenaHitReaction(h, s).hitStopFrames == 12);
 }
 
-TEST_CASE("arena hit react: hit-stop frames are display only; a scripted fight's outcomes are unchanged") {
+TEST_CASE("arena hit react: building reactions feeds nothing back; the fight runs the same with any frames") {
     // Three identical fights in lockstep: one whose host never builds reactions, one with the shipped frames, one with
-    // very long frames at another rate. The frames never reach the tick, so every output matches tick by tick.
+    // very long frames at another rate. The reaction API takes the events by const and the setup is the host's, so
+    // this pins that nothing it builds reaches the tick. That the stamp itself changes no outcome is pinned by every
+    // older arena test, unchanged and green with the records written.
     const ArenaTable t = loadTable();
     const ArenaHitSetup shipped = loadSetup();
     ArenaHitSetup longer = shipped;
@@ -667,7 +777,7 @@ TEST_CASE("arena hit react: an ally's blow takes the same path; player first, al
     CHECK(r[1].strength == doctest::Approx(arenaHitCap(ArenaHitTier::Light, r[1].part, s) * s.minShare));
 }
 
-TEST_CASE("arena hit react: a TookOver tick flags the player's Knockout") {
+TEST_CASE("arena hit react: a TookOver tick flags every reaction; targets name the bodies before the swap") {
     const ArenaHitSetup s = loadSetup();
     ArenaEvents ev;
     ev.items[0].type = ArenaEventType::Hit;
@@ -685,6 +795,24 @@ TEST_CASE("arena hit react: a TookOver tick flags the player's Knockout") {
     CHECK(r[0].tookOver);
     CHECK(arenaHitTierOf(ev, 3) == ArenaHitTier::None);
     CHECK(arenaHitTierOf(ev, 9) == ArenaHitTier::None); // past count
+    // A blow on the ally body earlier in the same tick: its reaction is flagged too (the host swaps it with the
+    // player's).
+    ArenaLeadHit allyBlow = blow(ArenaHitTier::Light, Vec2{2.f, 0.f}, Vec2{}, 0.2f, kArenaAlly);
+    allyBlow.event = 0;
+    push(ev, allyBlow);
+    arenaHitReactions(ev, s, r);
+    REQUIRE(r.size() == 2);
+    CHECK(r[0].target == kArenaPlayer);
+    CHECK(r[0].tookOver);
+    CHECK(r[1].target == kArenaAlly);
+    CHECK(r[1].tier == ArenaHitTier::Light);
+    CHECK(r[1].tookOver);
+    // No TookOver in the tick: nothing is flagged.
+    ev.items[2].type = ArenaEventType::Hit;
+    arenaHitReactions(ev, s, r);
+    REQUIRE(r.size() == 2);
+    CHECK_FALSE(r[0].tookOver);
+    CHECK_FALSE(r[1].tookOver);
 }
 
 TEST_CASE("arena hit react: no records, no reactions; None records are skipped") {

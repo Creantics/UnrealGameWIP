@@ -1129,3 +1129,128 @@ TEST_CASE("lone carry: a gift pressed on a Release's tick is held; the Release p
     CHECK(hold.press(false));
     CHECK_FALSE(hold.take());
 }
+
+// ---- The hit reaction's records (ArenaEvents::hits, ArenaHitReact.h) on the take half, ally and table paths ----
+
+namespace {
+
+// Runs the placed bite on the ally (take half pressed on `pressTick`, 0: never); `out` gets the land tick's events.
+bool allyLandEvents(Rig& rig, int pressTick, ArenaEvents& out) {
+    for (int k = 1; k <= 180; ++k) {
+        if (k == pressTick) rig.in.takeHalf = true;
+        rig.tick();
+        const ArenaEvents& ev = rig.fight.output().events;
+        for (std::size_t i = 0; i < ev.count; ++i) {
+            if (ev.items[i].type != ArenaEventType::AllyHit && ev.items[i].type != ArenaEventType::TookHalf) continue;
+            out = ev;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasEvent(const ArenaEvents& ev, ArenaEventType type, std::uint8_t target) {
+    for (std::size_t i = 0; i < ev.count; ++i)
+        if (ev.items[i].type == type && ev.items[i].target == target) return true;
+    return false;
+}
+
+} // namespace
+
+TEST_CASE("arena hit react: take half is the player's Light on TookHalf, a Knockout when it downs; the ally's follows") {
+    AllySetup s;
+    const int land = landTick(s);
+    REQUIRE(land > 6);
+    const int lead = (s.damage + 1) / 2;
+    for (const int hp : {100, 5}) {
+        CAPTURE(hp);
+        ArenaFighter f = ruleFighter();
+        f.hp = hp;
+        ArenaEnemyKind k = biterKind(s.damage, 10.f);
+        k.moves[0].attack.poiseDamage = 20.f; // under the kit's 30: the ally's own record stays Light
+        Rig rig({k}, f);
+        placeAlly(rig, s);
+        ArenaEvents ev;
+        REQUIRE(allyLandEvents(rig, land - 5, ev));
+        REQUIRE(ev.hitCount == 2);
+        const ArenaLeadHit& h = ev.hits[0];
+        CHECK(h.target == kArenaPlayer);
+        REQUIRE(h.event != kArenaNoEvent);
+        CHECK(ev.items[h.event].type == ArenaEventType::TookHalf);
+        CHECK(h.tier == (hp == 5 ? ArenaHitTier::Knockout : ArenaHitTier::Light));
+        CHECK(hasEvent(ev, ArenaEventType::Downed, kArenaPlayer) == (hp == 5));
+        CHECK(h.source == 0);
+        CHECK(h.damage == lead);                     // before the hp clamp
+        CHECK(h.poise == doctest::Approx(10.f));     // half the blow's poise
+        const ArenaLeadHit& a = ev.hits[1];
+        CHECK(a.target == kArenaAlly);
+        REQUIRE(a.event != kArenaNoEvent);
+        CHECK(ev.items[a.event].type == ArenaEventType::AllyHit);
+        CHECK(a.tier == ArenaHitTier::Light);
+        CHECK(a.damage == s.damage - lead);
+        CHECK(a.poise == doctest::Approx(20.f));
+    }
+}
+
+TEST_CASE("arena hit react: a blow on the ally is Light, a Stagger at the kit's full poise, a Knockout when it downs") {
+    struct Case {
+        float poise;
+        int allyHp;
+        ArenaHitTier tier;
+    };
+    const Case cases[] = {{29.f, 100, ArenaHitTier::Light},
+                          {30.f, 100, ArenaHitTier::Stagger}, // ruleFighter's poise 30: the ally's kit with no partner
+                          {30.f, 5, ArenaHitTier::Knockout}};
+    for (const Case& c : cases) {
+        CAPTURE(c.poise);
+        CAPTURE(c.allyHp);
+        AllySetup s;
+        s.allyHp = c.allyHp;
+        ArenaEnemyKind k = biterKind(s.damage, 10.f);
+        k.moves[0].attack.poiseDamage = c.poise;
+        Rig rig({k});
+        placeAlly(rig, s);
+        ArenaEvents ev;
+        REQUIRE(allyLandEvents(rig, 0, ev));
+        REQUIRE(ev.hitCount == 1);
+        const ArenaLeadHit& a = ev.hits[0];
+        CHECK(a.target == kArenaAlly);
+        CHECK(a.tier == c.tier);
+        REQUIRE(a.event != kArenaNoEvent);
+        CHECK(ev.items[a.event].type == ArenaEventType::AllyHit);
+        CHECK(a.source == 0);
+        CHECK(a.damage == s.damage);
+        CHECK(a.poise == doctest::Approx(c.poise));
+        CHECK(hasEvent(ev, ArenaEventType::AllyDowned, kArenaAlly) == (c.allyHp == 5));
+    }
+}
+
+TEST_CASE("arena hit react: a table share that downs the seated player is its Knockout on Downed, from the striker") {
+    AllySetup s; // the bite lands on the ally; the player's seat takes an even share
+    ArenaFighter f = ruleFighter();
+    f.hp = 5;
+    Rig rig({biterKind(s.damage, 10.f)}, f);
+    placeAlly(rig, s);
+    ArenaTableSeats seats;
+    seats.player = true;
+    seats.ally = true;
+    rig.fight.setTableSeats(seats);
+    ArenaEvents ev;
+    REQUIRE(allyLandEvents(rig, 0, ev));
+    REQUIRE(hasEvent(ev, ArenaEventType::TableShare, kArenaPlayer));
+    REQUIRE(ev.hitCount == 2);
+    const ArenaLeadHit& p = ev.hits[0]; // the share is paid before the ally's own part is stamped
+    CHECK(p.target == kArenaPlayer);
+    CHECK(p.tier == ArenaHitTier::Knockout);
+    REQUIRE(p.event != kArenaNoEvent);
+    CHECK(ev.items[p.event].type == ArenaEventType::Downed);
+    CHECK(p.source == 0);
+    CHECK(p.move == 0);
+    CHECK(p.fromKnown);
+    CHECK(p.damage == s.damage / 2); // the even split's part, before the hp clamp
+    const ArenaLeadHit& a = ev.hits[1];
+    CHECK(a.target == kArenaAlly);
+    CHECK(a.tier == ArenaHitTier::Light);
+    CHECK(ev.items[a.event].type == ArenaEventType::AllyHit);
+    CHECK(a.damage == s.damage - s.damage / 2);
+}

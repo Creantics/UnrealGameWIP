@@ -82,10 +82,12 @@ float partMass(int part, const ArenaHitSetup& s) {
 
 int tierRank(ArenaHitTier t) { return static_cast<int>(t); }
 
-// Display only. A move's own hitStop (s), when set, wins; otherwise the tier's frames from the ragdoll profile.
+// Display only. A move's own hitStop (s), when set, wins, and is never under one frame (a set pause is never shorter
+// than the tier's default by rounding to nothing); otherwise the tier's frames from the ragdoll profile.
 int hitStopFrames(ArenaHitTier tier, float hitStop, const ArenaHitSetup& s) {
     if (tier == ArenaHitTier::None) return 0;
-    if (hitStop > 0.f && s.hitStopFps > 0.f) return static_cast<int>(std::lround(hitStop * s.hitStopFps));
+    if (hitStop > 0.f && s.hitStopFps > 0.f)
+        return std::max(1, static_cast<int>(std::lround(std::min(hitStop * s.hitStopFps, 1.0e6f))));
     return std::max(0, s.tierFrames[static_cast<std::size_t>(tier)]);
 }
 
@@ -193,7 +195,7 @@ void arenaHitReactions(const ArenaEvents& events, const ArenaHitSetup& s, ArenaH
         r.strength = arenaHitCap(top, r.part, s) * share;
         r.hitStopFrames = frames;
         r.blows = blows;
-        r.tookOver = body == kArenaPlayer && top == ArenaHitTier::Knockout && tookOver;
+        r.tookOver = tookOver;
         out.items[out.count++] = r;
     }
 }

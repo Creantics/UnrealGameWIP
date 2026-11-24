@@ -1064,7 +1064,8 @@ enum class ArenaEventType : std::uint8_t { // append only
 // How hard a blow on a lead lands, for the body's reaction (ArenaHitReact.h). Stamped by Core as it rules the blow;
 // nothing in the fight reads it back.
 enum class ArenaHitTier : std::uint8_t {
-    None,     // no reaction: evaded, parried, blocked, a table share or a host's blow
+    None,     // no reaction: evaded, parried, blocked (a chip that leaves the lead up included), a table share that
+              // leaves the body up, or a host's blow
     Light,    // a flinch: poise held, or already in hitstun or guard break
     Stagger,  // poise broke, knocked out of the air, the guard broke; for the ally: a blow of its kit's poise or more
     Knockout, // the blow downed it
@@ -1073,8 +1074,10 @@ enum class ArenaHitTier : std::uint8_t {
 // One blow on a lead this tick (the player or the ally), with what the reaction needs that no event carries.
 struct ArenaLeadHit {
     ArenaHitTier tier = ArenaHitTier::None;
-    std::uint8_t event = kArenaNoEvent; // index in ArenaEvents::items it belongs to (Hit, GuardBroken, TookHalf,
-                                        // AllyHit, Downed, AllyDowned), or kArenaNoEvent when that was dropped
+    std::uint8_t event = kArenaNoEvent; // index in ArenaEvents::items it belongs to, or kArenaNoEvent when that was
+                                        // dropped: the blow's Hit (a landed or chip Knockout too: the Downed follows
+                                        // it), GuardBroken, TookHalf (its Knockout too) or AllyHit (its Knockout
+                                        // too); a table share's kill is on the Downed or AllyDowned it caused
     std::uint8_t source = kArenaNobody; // the attacker, an enemy's id
     std::uint8_t target = kArenaNobody; // kArenaPlayer or kArenaAlly
     std::uint8_t move = 0;
@@ -1115,9 +1118,10 @@ struct ArenaEvents {
     const ArenaEvent& operator[](std::size_t i) const { return items[i]; }
 };
 
-// Adds a blow record to the tick's list. Full (kMaxArenaLeadHits): hitsDropped counts one lost record, and a higher
-// tier takes the place of the lowest-tier record on the same body (the earliest of equals), so a Knockout is never
-// the one lost; otherwise the new record is the one dropped. Used by the fight; public so the rule has a doctest.
+// Adds a blow record to the tick's list. Full (kMaxArenaLeadHits): hitsDropped counts one lost record, and the new
+// record takes the place of the lowest-tier record below its own tier, on any body (among equals the same body's
+// first, then the earliest); with none lower the new record is the one dropped. So a Knockout is lost only when all
+// kMaxArenaLeadHits records are already Knockouts. Used by the fight; public so the rule has a doctest.
 FTCORE_API void arenaPushLeadHit(ArenaEvents& events, const ArenaLeadHit& hit);
 
 // The partner's ally body this tick (ArenaFight::setPartner). With no partner on, goal is the ally's place and the

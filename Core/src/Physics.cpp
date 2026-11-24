@@ -307,7 +307,10 @@ bool importRagdollProfile(std::string_view json, RagdollProfile& out, std::strin
         return fail(error, err);
     if (p.maxLinearVelocity <= 0.f || p.maxAngularVelocity <= 0.f || p.positionSteps < 0 || p.positionSteps > 255 ||
         p.velocitySteps < 0 || p.velocitySteps > 255 || p.hitHold < 0.f || p.hitBlendOut < 0.f ||
-        p.hitStopLightFrames < 0 || p.hitStopStaggerFrames < 0 || p.hitStopKoFrames < 0 || !(p.hitStopFps > 0.f))
+        p.hitStopLightFrames < 0 || p.hitStopStaggerFrames < 0 || p.hitStopKoFrames < 0 ||
+        p.hitStopLightFrames > RagdollProfile::kMaxHitStopFrames ||
+        p.hitStopStaggerFrames > RagdollProfile::kMaxHitStopFrames ||
+        p.hitStopKoFrames > RagdollProfile::kMaxHitStopFrames || !(p.hitStopFps > 0.f) || p.hitStopFps > 1000.f)
         return fail(error, "ragdoll profile: value out of range");
     if (p.linearDamping < 0.f || p.angularDamping < 0.f || p.jointFriction < 0.f || p.friction < 0.f ||
         p.restitution < 0.f || p.restitution > 1.f || p.inertiaScale <= 0.f || p.koLocalShare < 0.f ||
