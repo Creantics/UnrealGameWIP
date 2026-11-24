@@ -318,7 +318,8 @@ TEST_CASE("arena hit react: a blow during hitstun is Light, never a second Stagg
     ArenaEnemyKind brute = kindOf(t, "brute");
     brute.moves[0].weight = 0.f;
     brute.moves[1].weight = 0.f;
-    const ArenaEnemyKind pup = kindOf(t, "maw_pup");
+    ArenaEnemyKind pup = kindOf(t, "maw_pup");
+    pinNipReach(pup);
     ArenaFighter f = t.fighter("default");
     f.hitstun = 2.f; // a long stun so the pups' nips land inside it
     HRig r(f, {brute, pup, pup}, 3);
@@ -349,7 +350,9 @@ TEST_CASE("arena hit react: evades, parries, blocks and staggers carry no record
     for (std::uint32_t seed = 1; seed <= 12; ++seed) {
         ArenaFighter f = t.fighter("default");
         f.hp = 60; // some seeds end in a fall: the Knockout invariant below sees them
-        HRig r(f, {kindOf(t, "brute"), kindOf(t, "maw_pup")}, 2, seed);
+        ArenaEnemyKind pup = kindOf(t, "maw_pup");
+        pinNipReach(pup);
+        HRig r(f, {kindOf(t, "brute"), pup}, 2, seed);
         r.bodies.enemies[1] = Vec2{0.f, 1.4f};
         for (int k = 0; k < 60 * 20 && !r.fight.over(); ++k) {
             r.in = r.fight.autopilot();
