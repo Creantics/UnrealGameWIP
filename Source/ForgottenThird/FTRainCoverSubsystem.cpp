@@ -11,6 +11,8 @@
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/Parse.h"
+#include "Components/StaticMeshComponent.h"
+#include "UObject/UObjectIterator.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "TextureResource.h"
 #if !UE_BUILD_SHIPPING
@@ -51,8 +53,11 @@ void SetCoverShowFlags(FEngineShowFlags& F, bool bTrim)
 	}
 	// Grooms ride characters, like the skeletal meshes.
 	F.SetHair(false);
-	// Lighting, GI, reflections, AO and shadows. Lighting, VolumetricLightmap and IndirectLightingCache stay on: with any of them
-	// off the view is a rich view (IsRichView), static meshes leave the cached draw path, and the depth map changes (11-23 diff).
+	// Lighting, GI, reflections, AO and shadows. VolumetricLightmap and IndirectLightingCache stay on: with either off the depth
+	// map changed in the 11-23 diff (75,258 and 75,272 texels over nine squares, up to 16.5 m). Lighting off moved no texel in that
+	// diff (cell dl) and is re-gated on the build that ships it (TRIM_PATH1_1123); with it on the capture cost 0.3-0.6 ms more
+	// render thread at its spike in one same-session pair (tt against tl, 11-23).
+	F.SetLighting(false);
 	F.SetDeferredLighting(false);
 	F.SetGlobalIllumination(false);
 	F.SetLumenGlobalIllumination(false);
@@ -157,6 +162,33 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 #endif
 	SetCoverCapture(*C, Target, Spec, bTrim);
 #if !UE_BUILD_SHIPPING
+	// Path-1 draw cuts (dev, 11-23), on this capture only (never the diff reference), one lever each:
+	// -RainCoverMaxDist=<m> shortens the far plane below Spec.depthM; -RainCoverLOD=<f> sets LODDistanceFactor;
+	// -RainCoverHideSmall=<cm> hides every static mesh component whose bounds' largest extent is below that, listed once here.
+	float CutM = 0.f, CutLod = 0.f, CutCm = 0.f;
+	if (FParse::Value(Switches, TEXT("RainCoverMaxDist="), CutM) && CutM > 0.f)
+	{
+		C->MaxViewDistanceOverride = CutM * 100.f;
+	}
+	if (FParse::Value(Switches, TEXT("RainCoverLOD="), CutLod) && CutLod > 0.f)
+	{
+		C->LODDistanceFactor = CutLod;
+	}
+	int32 Hidden = 0;
+	if (FParse::Value(Switches, TEXT("RainCoverHideSmall="), CutCm) && CutCm > 0.f)
+	{
+		for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+		{
+			UStaticMeshComponent* M = *It;
+			if (M->GetWorld() == &InWorld && M->IsRegistered() && M->Bounds.BoxExtent.GetMax() * 2.0 < CutCm)
+			{
+				C->HideComponent(M);
+				++Hidden;
+			}
+		}
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("RainCover cuts: far %.0f m, LOD factor %.2f, hide below %.0f cm (%d components)."),
+		C->MaxViewDistanceOverride * 0.01f, C->LODDistanceFactor, CutCm, Hidden);
 	// -RainCoverShowFlags="Name=0,Name=1": a dev lever over single show flags on top of the set above, to find what moves the map.
 	FString Flags;
 	if (FParse::Value(Switches, TEXT("RainCoverShowFlags="), Flags, false))
@@ -318,7 +350,7 @@ void UFTRainCoverSubsystem::DiffStart(UWorld& World)
 	SetCoverCapture(*RefCapture->GetCaptureComponent2D(), RefTarget, Spec, false);
 	DiffOrigin = Frame;
 	DiffSquare = DiffStep = DiffWait = 0;
-	UE_LOG(LogForgottenThird, Display, TEXT("RainCover diff: from (%.1f, %.1f), top %.2f m, 9 squares %.0f m apart."), DiffOrigin.cx,
+	UE_LOG(LogForgottenThird, Display, TEXT("RainCover diff: from (%.1f, %.1f), top %.2f m, 9 squares %.0f m apart, plus one on the pent eaves at (400, 0)."), DiffOrigin.cx,
 		DiffOrigin.cy, DiffOrigin.topZ, Spec.sizeM);
 }
 
@@ -347,6 +379,12 @@ void UFTRainCoverSubsystem::DiffTick()
 		DiffAt = DiffOrigin;
 		DiffAt.cx += float(DiffSquare % 3 - 1) * Spec.sizeM;
 		DiffAt.cy += float(DiffSquare / 3 - 1) * Spec.sizeM;
+		if (DiffSquare == 9)
+		{
+			// the tenth square: centred on the pent eaves (EAVE_PENT, tops 7.4-8.1 m) of the strip's sq1/sq4, plan (900, 528)
+			DiffAt.cx = 400.f;
+			DiffAt.cy = 0.f;
+		}
 		Place();
 		ShootBoth();
 		DiffWait = 2;
@@ -395,7 +433,7 @@ void UFTRainCoverSubsystem::DiffTick()
 			DiffCompare(*FString::Printf(TEXT("square %d +%.0f m first"), DiffSquare, Spec.recaptureM), DiffRef, DiffVar, FString());
 		}
 		DiffStep = 0;
-		if (++DiffSquare >= 9)
+		if (++DiffSquare >= 10)
 		{
 			UE_LOG(LogForgottenThird, Display, TEXT("RainCover diff: done."));
 			RefCapture->Destroy();

@@ -26,6 +26,8 @@
 // with the set before the trim, at nine squares round the first capture and 5 m on from each, first after the move and
 // settled, with the reference against itself as the noise floor; it logs differing texels by kind (on a character, on
 // water, other) and saves each settled pair as raw R32F under Saved/RainCoverDiff.
+// A tenth square sits on the strip's pent eaves. Lighting is off in the trim; -RainCoverShowFlags=Lighting=1 puts it back.
+// Path-1 draw cuts on the shipped capture only: -RainCoverMaxDist=<m>, -RainCoverLOD=<f>, -RainCoverHideSmall=<cm>.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
