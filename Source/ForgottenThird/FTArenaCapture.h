@@ -38,6 +38,10 @@ private:
 	void Shoot(UWorld& World, const FString& File) const;
 	// Once per run: the tip of the snout, fixed to the upper jaw (jaw_upper, else head) at the front of the mesh's rest bounds.
 	void FindMuzzle(const USkeletalMeshComponent& Skin);
+	// The closest skinned vertex to At over every visible skeletal mesh on Lead (LOD 0 from the editor's imported model:
+	// bone skinning only, no morphs or cloth), its heaviest bone and its mesh; false with no mesh to measure.
+	bool ClosestSkinVertex(const AActor& Lead, const FVector& At, FVector& OutPoint, FName& OutBone, FName& OutPart);
+	static void CopyName(const FName& Name, char* Out, int32 Size);
 
 	bool bOn = false;
 	FString ShotPrefix;
@@ -55,6 +59,7 @@ private:
 	bool bMuzzleTried = false;
 	int32 MuzzleBone = INDEX_NONE;
 	FVector MuzzleLocal = FVector::ZeroVector; // the tip in MuzzleBone's space
+	TArray<FMatrix44f> RefToLocals; // reused by ClosestSkinVertex
 
 	FArchive* Log = nullptr;
 	int32 Rows = 0;

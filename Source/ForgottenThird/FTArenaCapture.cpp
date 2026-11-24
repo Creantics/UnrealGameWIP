@@ -4,6 +4,10 @@
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#if WITH_EDITORONLY_DATA
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "Rendering/SkeletalMeshModel.h"
+#endif
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
@@ -103,7 +107,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,lead_hp,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up,lead_x,lead_y,lead_z,pelvis_x,pelvis_y,pelvis_z,head_z,gap_fwd,gap_side,gap_up,gap_bone,tip_z,mesh_gap,mgap_fwd,mgap_side,mgap_up,mesh_bone,mesh_part\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -256,6 +260,89 @@ void FFTArenaCapture::FindMuzzle(const USkeletalMeshComponent& Skin)
 		*Ref.GetBoneName(Snout).ToString(), Front - FVector::DotProduct(SnoutAt.GetLocation(), Forward), *Forward.ToString());
 }
 
+void FFTArenaCapture::CopyName(const FName& Name, char* Out, int32 Size)
+{
+	const FString Text = Name.ToString();
+	int32 N = 0;
+	for (; N < Text.Len() && N < Size - 1; ++N)
+	{
+		const TCHAR C = Text[N];
+		Out[N] = (C == ',' || C > 126) ? '_' : static_cast<char>(C);
+	}
+	Out[N] = 0;
+}
+
+bool FFTArenaCapture::ClosestSkinVertex(const AActor& Lead, const FVector& At, FVector& OutPoint, FName& OutBone, FName& OutPart)
+{
+#if WITH_EDITORONLY_DATA
+	TInlineComponentArray<USkeletalMeshComponent*> Skins(&Lead);
+	double Best = TNumericLimits<double>::Max();
+	for (USkeletalMeshComponent* Skin : Skins)
+	{
+		USkeletalMesh* Mesh = Skin ? Skin->GetSkeletalMeshAsset() : nullptr;
+		const FSkeletalMeshModel* Model = Mesh ? Mesh->GetImportedModel() : nullptr;
+		if (!Model || Model->LODModels.Num() == 0 || !Skin->IsVisible())
+		{
+			continue;
+		}
+		Skin->GetCurrentRefToLocalMatrices(RefToLocals, 0);
+		const FTransform ToWorld = Skin->GetComponentTransform();
+		const FVector Local = ToWorld.InverseTransformPosition(At);
+		const FVector3f Local3f(Local);
+		for (const FSkelMeshSection& Section : Model->LODModels[0].Sections)
+		{
+			if (Section.bDisabled)
+			{
+				continue;
+			}
+			for (const FSoftSkinVertex& V : Section.SoftVertices)
+			{
+				FVector3f P = FVector3f::ZeroVector;
+				float Sum = 0.f;
+				int32 Heavy = INDEX_NONE;
+				uint16 HeavyW = 0;
+				for (int32 I = 0; I < MAX_TOTAL_INFLUENCES; ++I)
+				{
+					const uint16 W = V.InfluenceWeights[I];
+					if (W == 0 || V.InfluenceBones[I] >= Section.BoneMap.Num())
+					{
+						continue;
+					}
+					const int32 B = Section.BoneMap[V.InfluenceBones[I]];
+					if (!RefToLocals.IsValidIndex(B))
+					{
+						continue;
+					}
+					P += RefToLocals[B].TransformPosition(V.Position) * static_cast<float>(W);
+					Sum += static_cast<float>(W);
+					if (W > HeavyW)
+					{
+						HeavyW = W;
+						Heavy = B;
+					}
+				}
+				if (Sum <= 0.f)
+				{
+					continue;
+				}
+				P /= Sum;
+				const double D2 = FVector3f::DistSquared(P, Local3f);
+				if (D2 < Best)
+				{
+					Best = D2;
+					OutPoint = ToWorld.TransformPosition(FVector(P));
+					OutBone = Heavy != INDEX_NONE ? Mesh->GetRefSkeleton().GetBoneName(Heavy) : NAME_None;
+					OutPart = Mesh->GetFName();
+				}
+			}
+		}
+	}
+	return Best < TNumericLimits<double>::Max();
+#else
+	return false;
+#endif
+}
+
 void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 {
 	if (!Log)
@@ -307,6 +394,11 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 	// distance, in sideways or up is aim. tip_z: the tip's height over the lead's ground (actor) point.
 	double GapFwd = 0.0, GapSide = 0.0, GapUp = 0.0, TipZ = 0.0;
 	char GapBone[24] = "-";
+	// The gap to the lead's visible skin (recorded frames only): the closest skinned vertex over every visible skeletal
+	// mesh on the lead (body and garments, LOD 0, no morphs or cloth), split the same way; its heaviest bone and its mesh.
+	double MeshGapM = -1.0, MGapFwd = 0.0, MGapSide = 0.0, MGapUp = 0.0;
+	char MeshBone[24] = "-";
+	char MeshPart[40] = "-";
 	const USkeletalMeshComponent* PupSkin = EnemyFigure ? EnemyFigure->GetSkin() : nullptr;
 	if (PupSkin && !bMuzzleTried)
 	{
@@ -320,6 +412,22 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		MuzzleFwd = FVector::DotProduct(Tip - Root, Line) / 100.0;
 		MuzzleUp = (Tip.Z - Root.Z) / 100.0;
 		TipZ = (Tip.Z - Lead->GetActorLocation().Z) / 100.0;
+		if (Frame >= 0)
+		{
+			FVector Point;
+			FName Bone, Part;
+			if (ClosestSkinVertex(*Lead, Tip, Point, Bone, Part))
+			{
+				const FVector D = Point - Tip;
+				const FVector Left(-Line.Y, Line.X, 0.0);
+				MeshGapM = D.Size() / 100.0;
+				MGapFwd = FVector::DotProduct(D, Line) / 100.0;
+				MGapSide = FVector::DotProduct(D, Left) / 100.0;
+				MGapUp = D.Z / 100.0;
+				CopyName(Bone, MeshBone, sizeof(MeshBone));
+				CopyName(Part, MeshPart, sizeof(MeshPart));
+			}
+		}
 		if (const USkeletalMeshComponent* LeadSkin = Lead->GetLeadSkin())
 		{
 			FClosestPointOnPhysicsAsset Closest;
@@ -328,17 +436,11 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 				MuzzleGap = Closest.Distance / 100.0;
 				GapTo = 'p';
 				const FVector D = Closest.ClosestWorldPosition - Tip;
-				const FVector Side(-Line.Y, Line.X, 0.0);
+				const FVector Left(-Line.Y, Line.X, 0.0);
 				GapFwd = FVector::DotProduct(D, Line) / 100.0;
-				GapSide = FVector::DotProduct(D, Side) / 100.0;
+				GapSide = FVector::DotProduct(D, Left) / 100.0;
 				GapUp = D.Z / 100.0;
-				const FString BoneText = Closest.BoneName.ToString();
-				int32 BN = 0;
-				for (; BN < BoneText.Len() && BN < 23; ++BN)
-				{
-					GapBone[BN] = static_cast<char>(BoneText[BN]);
-				}
-				GapBone[BN] = 0;
+				CopyName(Closest.BoneName, GapBone, sizeof(GapBone));
 			}
 			else
 			{
@@ -366,12 +468,13 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 			HeadAt = LeadSkin->GetBoneIndex(HeadName) != INDEX_NONE ? LeadSkin->GetBoneLocation(HeadName) / 100.0 : HeadAt;
 		}
 	}
-	char Row[512];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f\n", Frame,
+	char Row[640];
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%d,%.3f,%c,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s\n", Frame,
 		static_cast<double>(Fight.time()), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
 		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Fight.hp(), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp,
-		LeadAt.X, LeadAt.Y, LeadAt.Z, PelvisAt.X, PelvisAt.Y, PelvisAt.Z, HeadAt.Z, GapFwd, GapSide, GapUp, GapBone, TipZ);
+		LeadAt.X, LeadAt.Y, LeadAt.Z, PelvisAt.X, PelvisAt.Y, PelvisAt.Z, HeadAt.Z, GapFwd, GapSide, GapUp, GapBone, TipZ,
+		MeshGapM, MGapFwd, MGapSide, MGapUp, MeshBone, MeshPart);
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));
