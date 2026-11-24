@@ -538,6 +538,29 @@ inline constexpr float kCrowdQueueLook = 3.5f;
 static_assert(kCrowdQueueLook * kCrowdQueueLook >= kCrowdQueueAhead * kCrowdQueueAhead + kCrowdQueueAcross * kCrowdQueueAcross,
               "the queue's search radius covers its whole box");
 
+// Trace: why a street was shut. NoBand: its band is empty or narrower than kCrowdKeepMinWidth (no box on it); OneBox: the named box alone covers the
+// band's whole width at the failing sample; Boxes: several together; Overflow: more boxes than kCrowdKeepSpanMax.
+enum class CrowdCloseWhy : std::uint8_t { NoBand, OneBox, Boxes, Overflow };
+struct CrowdClosedStreet {
+    std::uint32_t from = 0, to = 0;
+    std::uint32_t box = UINT32_MAX;
+    float along = 0.f;
+    CrowdCloseWhy why = CrowdCloseWhy::NoBand;
+};
+// Trace: which stuck rule counted a member. Narrow: waiting in a single-file narrow 2 s; the others: the 2 s (Flee
+// 1 s) stand-still rule in that state.
+enum class CrowdStuckWhy : std::uint8_t { Narrow, Walk, BackAway, Cower, Flee, Count };
+struct CrowdStuckEvent {
+    std::uint32_t id = 0;   // CrowdAgentView::id
+    Vec2 pos;
+    double time = 0.0;
+    std::uint32_t from = 0, to = 0;
+    CrowdStuckWhy why = CrowdStuckWhy::Walk;
+};
+inline constexpr std::uint32_t kCrowdStuckTraceMax = 40;
+FTCORE_API const char* crowdStuckWhyName(CrowdStuckWhy w);
+FTCORE_API const char* crowdCloseWhyName(CrowdCloseWhy w);
+
 inline constexpr std::size_t kCrowdMaxEvents = 64;
 inline constexpr std::size_t kCrowdPathMax = 24;
 
@@ -597,6 +620,18 @@ public:
     std::uint32_t closedSides() const { return closedSides_; }
     std::uint32_t closedStreets() const { return closedStreets_; }
     std::uint32_t doorsUnderKeep() const { return doorsUnderKeep_; }
+    // Trace (verify runs; behaviour unchanged, nothing recorded while off). Call before setKeepOuts for its closed-street
+    // list; init keeps the flag and clears what was recorded.
+    void setTrace(bool on) { trace_ = on; }
+    bool trace() const { return trace_; }
+    // One entry per street setKeepOuts shut (no side open), in node order: the first shut side's first failing sample
+    // `along` (m from `from`) and the box (index into setKeepOuts' input; UINT32_MAX: none) whose grown span covers the
+    // most of that side's band there. Filled only with the trace on. Allocates (load time).
+    const std::vector<CrowdClosedStreet>& closedStreetTrace() const { return closedTrace_; }
+    // Stuck events (each ++counts().stuck) by reason, and the first kCrowdStuckTraceMax in detail. Fixed size; trace on only.
+    std::uint64_t stuckBy(CrowdStuckWhy w) const { return stuckBy_[static_cast<std::size_t>(w)]; }
+    std::uint32_t stuckTraceCount() const { return stuckTraceN_; }
+    const CrowdStuckEvent& stuckTrace(std::uint32_t k) const { return stuckTrace_[k]; }
     // Single-file narrows setKeepOuts found: a member walks into one only when nobody coming the other way is in it,
     // else it waits a minGap short of its mouth, to the side away from the slot. A way that has waited
     // kCrowdNarrowHold s gets the next turn. A narrow within minGap of a street's end is not gated (it is counted).
@@ -835,6 +870,15 @@ private:
     std::vector<Narrow> narrows_;                    // grouped by street
     std::vector<std::uint32_t> narrowAt_, narrowN_; // by directed edge slot: its street's first narrow and how many
     std::uint32_t closedSides_ = 0, closedStreets_ = 0, doorsUnderKeep_ = 0;
+    // Trace (setTrace): read by nothing that steers the sim.
+    bool trace_ = false;
+    std::vector<std::uint32_t> keepSrc_;          // keeps_[b]'s index in setKeepOuts' input (trace on only)
+    std::vector<CrowdClosedStreet> closedTrace_;
+    std::array<std::uint64_t, static_cast<std::size_t>(CrowdStuckWhy::Count)> stuckBy_{};
+    std::array<CrowdStuckEvent, kCrowdStuckTraceMax> stuckTrace_{};
+    std::uint32_t stuckTraceN_ = 0;
+    void traceStuck(std::uint32_t i, CrowdStuckWhy w);
+    CrowdClosedStreet traceClose(std::uint32_t from, std::uint32_t to, float along, float lo, float hi) const;
     float density_ = 1.f;
     std::uint32_t indoors_ = 0;
     // measureReach: the last measure and where the player stood for it

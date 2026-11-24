@@ -205,6 +205,10 @@ bool CrowdSim::init(const CrowdGraph& graph, const CrowdTuning& tuning, std::uin
     narrowAt_.clear();
     narrowN_.clear();
     closedSides_ = closedStreets_ = doorsUnderKeep_ = 0;
+    keepSrc_.clear();
+    closedTrace_.clear();
+    stuckBy_.fill(0);
+    stuckTraceN_ = 0;
     indoors_ = 0;
     density_ = 1.f;
     reachLength_ = reachArea_ = 0.f;
@@ -1524,6 +1528,7 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             // run check still counts it stuck after two seconds).
             if (a.stuckTime >= 2.f) {
                 ++counts_.stuck;
+                if (trace_) traceStuck(i, CrowdStuckWhy::Narrow);
                 a.stuckTime = 0.f;
             }
         } else if (a.state != CrowdState::Flee && a.stuckTime >= 1.f && !a.stuckTurned) {
@@ -1545,6 +1550,11 @@ void CrowdSim::move(std::uint32_t i, Vec2 player, Vec2 playerVel) {
             }
         } else if (a.stuckTime >= (a.state == CrowdState::Flee ? 1.f : 2.f)) {
             ++counts_.stuck;
+            if (trace_)
+                traceStuck(i, a.state == CrowdState::Flee       ? CrowdStuckWhy::Flee
+                              : a.state == CrowdState::BackAway ? CrowdStuckWhy::BackAway
+                              : a.state == CrowdState::Cower    ? CrowdStuckWhy::Cower
+                                                                : CrowdStuckWhy::Walk);
             a.stuckTime = 0.f;
         }
     } else {
@@ -2090,6 +2100,8 @@ std::uint32_t CrowdSim::setKeepOuts(const std::vector<CrowdKeepOut>& keeps) {
         a.waitStop = -1.f;
     }
     closedSides_ = closedStreets_ = doorsUnderKeep_ = 0;
+    keepSrc_.clear();
+    closedTrace_.clear();
     if (!graph_) return 0;
     const std::uint32_t nodes = graph_->nodeCount();
     // Near a street: within its half width + the box's half diagonal + its gap + 1 m of its centre line.
@@ -2106,7 +2118,8 @@ std::uint32_t CrowdSim::setKeepOuts(const std::vector<CrowdKeepOut>& keeps) {
     float widest = 0.f;
     for (std::uint32_t n = 0; n < nodes; ++n)
         for (std::uint32_t q = 0; q < graph_->degree(n); ++q) widest = std::max(widest, graph_->edge(n, q).half);
-    for (const CrowdKeepOut& k : keeps) {
+    for (std::size_t src = 0; src < keeps.size(); ++src) {
+        const CrowdKeepOut& k = keeps[src];
         const float al = std::hypot(k.ax, k.ay);
         if (!(al > 1e-6f) || !(k.hx >= 0.f) || !(k.hy >= 0.f) || !(k.gap >= 0.f) || !std::isfinite(k.c.x) ||
             !std::isfinite(k.c.y) || !std::isfinite(k.hx + k.hy + k.gap))
@@ -2118,7 +2131,10 @@ std::uint32_t CrowdSim::setKeepOuts(const std::vector<CrowdKeepOut>& keeps) {
         u.ay = k.ay / al;
         bool near = false;
         for (std::uint32_t n = 0; n < nodes && !near; ++n) near = nearNode(n, u);
-        if (near) keeps_.push_back(u);
+        if (near) {
+            keeps_.push_back(u);
+            if (trace_) keepSrc_.push_back(static_cast<std::uint32_t>(src));
+        }
     }
     if (keeps_.empty()) return 0;
     // Each node's boxes: those near a street at it (a box near a street is listed under both its nodes).
@@ -2144,13 +2160,32 @@ std::uint32_t CrowdSim::setKeepOuts(const std::vector<CrowdKeepOut>& keeps) {
             if (e.to <= n) continue;
             const float wall = std::max(0.f, e.half - tuning_.graph.wallInset - kCrowdWallSlack);
             const float bLo = e.lane > 0.f ? e.lane - e.laneHalf : -e.laneHalf, bHi = std::min(e.lane + e.laneHalf, wall);
+            // Trace: the first shut side's band and failing sample (read by nothing that steers the sim).
+            bool failSeen = false;
+            float failLo = 0.f, failHi = 0.f, failAt = 0.f;
             auto bandOpen = [&](float lo, float hi) {
-                if (lo > hi) return false;
+                if (lo > hi) {
+                    if (!failSeen) {
+                        failSeen = true;
+                        failLo = lo;
+                        failHi = hi;
+                        failAt = 0.f;
+                    }
+                    return false;
+                }
                 for (float s = 0.f;; s = std::min(s + kCrowdKeepSample, e.length)) {
                     const std::uint32_t no = keepOpen(n, e.to, s, lo, hi, kCrowdWallSlack, open);
                     float roomy = 0.f;
                     for (std::uint32_t k = 0; k < no; ++k) roomy = std::max(roomy, open[k].hi - open[k].lo);
-                    if (roomy < kCrowdKeepMinWidth) return false;
+                    if (roomy < kCrowdKeepMinWidth) {
+                        if (!failSeen) {
+                            failSeen = true;
+                            failLo = lo;
+                            failHi = hi;
+                            failAt = s;
+                        }
+                        return false;
+                    }
                     if (s >= e.length) return true;
                 }
             };
@@ -2170,6 +2205,8 @@ std::uint32_t CrowdSim::setKeepOuts(const std::vector<CrowdKeepOut>& keeps) {
             }
             closedSides_ += shut;
             closedStreets_ += bits == 0 && sides > 0 ? 1u : 0u;
+            if (trace_ && bits == 0 && sides > 0 && failSeen)
+                closedTrace_.push_back(traceClose(n, e.to, failAt, failLo, failHi));
             sideOpen_[edgeBase_[n] + q] = bits;
             // The way back: its left is this way's right.
             const auto back = static_cast<std::uint8_t>(((bits & 1u) << 1) | ((bits >> 1) & 1u));
@@ -2225,6 +2262,76 @@ std::uint32_t CrowdSim::keepOpen(std::uint32_t from, std::uint32_t to, float alo
     if (at < hi) open[no++] = {at, hi};
     else if (ns == 0) open[no++] = {lo, hi}; // lo == hi, nothing over it
     return no;
+}
+
+CrowdClosedStreet CrowdSim::traceClose(std::uint32_t from, std::uint32_t to, float along, float lo, float hi) const {
+    CrowdClosedStreet c;
+    c.from = from;
+    c.to = to;
+    c.along = along;
+    if (lo > hi) return c; // NoBand
+    const Vec2 f = graph_->node(from), t = graph_->node(to);
+    const float len = std::max(dist(f, t), 1e-3f);
+    const Vec2 dir{(t.x - f.x) / len, (t.y - f.y) / len};
+    const Vec2 o{f.x + dir.x * along, f.y + dir.y * along}, nrm{-dir.y, dir.x};
+    // The same boxes keepOpen meets on this line; the one covering the most of [lo, hi] is named.
+    std::uint32_t hits = 0;
+    float best = -1.f;
+    std::uint32_t bestB = UINT32_MAX;
+    bool whole = false;
+    for (std::uint32_t q = keepFirst_[from]; q < keepFirst_[from + 1]; ++q) {
+        float t0 = 0.f, t1 = 0.f;
+        const std::uint32_t b = keepList_[q];
+        if (!keepSpan(keeps_[b], kCrowdWallSlack, o, nrm, t0, t1) || t1 <= lo || t0 >= hi) continue;
+        ++hits;
+        const float cover = std::min(t1, hi) - std::max(t0, lo);
+        if (cover > best) {
+            best = cover;
+            bestB = b;
+            whole = hi - std::min(t1, hi) < kCrowdKeepMinWidth && std::max(t0, lo) - lo < kCrowdKeepMinWidth;
+        }
+    }
+    if (bestB == UINT32_MAX) return c; // no box on the band: shut by its width alone (NoBand)
+    c.box = bestB < keepSrc_.size() ? keepSrc_[bestB] : UINT32_MAX;
+    c.why = hits >= kCrowdKeepSpanMax ? CrowdCloseWhy::Overflow
+            : whole                       ? CrowdCloseWhy::OneBox
+                                          : CrowdCloseWhy::Boxes;
+    return c;
+}
+
+void CrowdSim::traceStuck(std::uint32_t i, CrowdStuckWhy w) {
+    ++stuckBy_[static_cast<std::size_t>(w)];
+    if (stuckTraceN_ >= kCrowdStuckTraceMax) return;
+    const Agent& a = agents_[i];
+    CrowdStuckEvent& ev = stuckTrace_[stuckTraceN_++];
+    ev.id = i | (static_cast<std::uint32_t>(a.gen) << 16);
+    ev.pos = a.pos;
+    ev.time = time_;
+    ev.from = a.from;
+    ev.to = a.to;
+    ev.why = w;
+}
+
+const char* crowdStuckWhyName(CrowdStuckWhy w) {
+    switch (w) {
+    case CrowdStuckWhy::Narrow: return "narrow";
+    case CrowdStuckWhy::Walk: return "walk";
+    case CrowdStuckWhy::BackAway: return "backaway";
+    case CrowdStuckWhy::Cower: return "cower";
+    case CrowdStuckWhy::Flee: return "flee";
+    case CrowdStuckWhy::Count: break;
+    }
+    return "?";
+}
+
+const char* crowdCloseWhyName(CrowdCloseWhy w) {
+    switch (w) {
+    case CrowdCloseWhy::NoBand: return "noband";
+    case CrowdCloseWhy::OneBox: return "onebox";
+    case CrowdCloseWhy::Boxes: return "boxes";
+    case CrowdCloseWhy::Overflow: return "overflow";
+    }
+    return "?";
 }
 
 std::uint8_t CrowdSim::openSides(std::uint32_t from, std::uint32_t to) const {

@@ -241,6 +241,8 @@ private:
 	TBitArray<> FootSeen;    // per sim slot
 	TArray<int32> FootFramesBy; // per sim slot (log only)
 	int32 FootLogged = 0;
+	bool bKeepLogAll = false; // -CrowdKeepLogAll: every box not kept, and the box that shut each street
+	bool bStuckWhy = false;   // -CrowdStuckWhy: each stuck count's rule
 	int32 FootLogCap = 32;   // detail lines (one per member); -CrowdFootLogAll: every member
 	// Drawn members the footprint check cannot see: hidden with no ground found at the drawn point, or drawn by the sim
 	// with no actor free. Each fails the ground line (else a member standing on nothing would pass unmeasured).

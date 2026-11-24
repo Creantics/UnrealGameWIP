@@ -304,6 +304,11 @@ void UFTCrowdSubsystemV2::OnWorldBeginPlay(UWorld& InWorld)
 	{
 		FootLogCap = MAX_int32;
 	}
+	// Traces (verify runs; the sim runs the same either way): -CrowdKeepLogAll names every box not kept and the box that
+	// shut each street, -CrowdStuckWhy each stuck count's rule (by rule, and the first 40 in detail).
+	bKeepLogAll = FParse::Param(Cmd, TEXT("CrowdKeepLogAll"));
+	bStuckWhy = FParse::Param(Cmd, TEXT("CrowdStuckWhy"));
+	Sim.setTrace(bKeepLogAll || bStuckWhy);
 	FString ZoneText;
 	if (FParse::Value(Cmd, TEXT("CrowdZoneZ="), ZoneText, false))
 	{
@@ -1099,6 +1104,19 @@ void UFTCrowdSubsystemV2::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: members stuck (no progress for 2 s walking or backing off, 1 s running) %llu (%s); drawn members inside a massing box or on a roof %llu member-frames, %d members (%s); least distance from a drawn member to a massing box %.6f m unrounded (%s, passes at %.1f m or more; %d boxes)."),
 			C.stuck, bUnstuck ? TEXT("ok") : TEXT("FAILED"), FootFrames, FootMembers, bOutside ? TEXT("ok") : TEXT("FAILED"),
 			MinMassClear >= 1e8 ? -1.0 : MinMassClear / 100.0, bClearOfMass ? TEXT("ok") : TEXT("FAILED"), CrowdV2Local::kGapWall, MassBoxes.Num());
+		if (bStuckWhy)
+		{
+			using ftcore::crowdv2::CrowdStuckWhy;
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: stuck why: %llu in all; narrow %llu, walk %llu, backaway %llu, cower %llu, flee %llu; first %u below."),
+				C.stuck, Sim.stuckBy(CrowdStuckWhy::Narrow), Sim.stuckBy(CrowdStuckWhy::Walk), Sim.stuckBy(CrowdStuckWhy::BackAway),
+				Sim.stuckBy(CrowdStuckWhy::Cower), Sim.stuckBy(CrowdStuckWhy::Flee), Sim.stuckTraceCount());
+			for (uint32 K = 0; K < Sim.stuckTraceCount(); ++K)
+			{
+				const ftcore::crowdv2::CrowdStuckEvent& E = Sim.stuckTrace(K);
+				UE_LOG(LogForgottenThird, Display, TEXT("Crowd: stuck event %u: member %u (slot %u), sim (%.2f, %.2f) m, t %.2f s, street %u -> %u, %s."),
+					K, E.id, E.id & 0xffffu, E.pos.x, E.pos.y, E.time, E.from, E.to, ANSI_TO_TCHAR(ftcore::crowdv2::crowdStuckWhyName(E.why)));
+			}
+		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Crowd: checks: by render bounds (the box the check used before; reference, not gated): %llu member-frames, %d members inside one, least distance %.6f m; of those members, re-tested against the mesh's own collision shape: %d overlapped by a 25 cm body, %d within the 0.8 m gate, of %d re-tested."),
 			FootFramesRender, FootMembersRender, MinMassClearRender >= 1e8 ? -1.0 : MinMassClearRender / 100.0, RetestInBody, RetestInGate, RetestLogged);
 		if (MinMassBox != INDEX_NONE)
@@ -1904,6 +1922,7 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 		Why.ParseIntoArray(WhyNames, TEXT(","));
 	}
 	std::vector<ftcore::crowdv2::CrowdKeepOut> Keeps;
+	TArray<FString> KeptNames; // -CrowdKeepLogAll: Keeps[i]'s box name, for the shut-street lines
 	int32 Far = 0, NoGround = 0, OffWindow = 0, OverPoint = 0, Cars = 0, Walls = 0, OverNamed = 0, OverDropped = 0;
 	CarsDropped = 0;
 	CarsKept = 0;
@@ -1962,7 +1981,18 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 		case ftcore::crowdv2::CrowdKeepVerdict::Kept:
 			Keeps.push_back(K);
 			(bCar ? Cars : Walls) += 1;
+			if (bKeepLogAll)
+			{
+				KeptNames.Add(BoxName(M));
+			}
 			break;
+		}
+		if (bKeepLogAll && V != ftcore::crowdv2::CrowdKeepVerdict::Kept)
+		{
+			// Every box not kept, one line each, whatever its verdict.
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-out unkept: %s (%s): %s%s; centre (%.2f, %.2f) m, half (%.2f, %.2f) m, z %.0f to %.0f cm; street point (%.2f, %.2f) m, ground z %.1f cm."),
+				*BoxName(M), bCar ? TEXT("car") : TEXT("wall"), Verdict, bOver ? TEXT(", over its own street point") : TEXT(""), K.c.x, K.c.y, K.hx, K.hy, M.ZMin, M.ZMax,
+				At.x, At.y, GroundZ);
 		}
 		if (bCar && bStreet && V != ftcore::crowdv2::CrowdKeepVerdict::Kept)
 		{
@@ -1993,6 +2023,16 @@ void UFTCrowdSubsystemV2::SetKeepOuts()
 		Consider(M, ftcore::crowdv2::CrowdKeepKind::Wall);
 	}
 	const uint32 Kept = Sim.setKeepOuts(Keeps);
+	if (bKeepLogAll)
+	{
+		for (const ftcore::crowdv2::CrowdClosedStreet& S : Sim.closedStreetTrace())
+		{
+			const ftcore::Vec2 F = Graph.node(S.from), T = Graph.node(S.to);
+			UE_LOG(LogForgottenThird, Display, TEXT("Crowd: street shut: %u -> %u, sim (%.2f, %.2f) to (%.2f, %.2f) m, %.2f m along: %s, box %s."),
+				S.from, S.to, F.x, F.y, T.x, T.y, S.along, ANSI_TO_TCHAR(ftcore::crowdv2::crowdCloseWhyName(S.why)),
+				KeptNames.IsValidIndex(static_cast<int32>(S.box)) ? *KeptNames[static_cast<int32>(S.box)] : TEXT("none"));
+		}
+	}
 	CarsKept = Cars;
 	UE_LOG(LogForgottenThird, Display, TEXT("Crowd: keep-outs: %d car boxes, %d massing boxes; %d cars and %d walls at the feet's height by a street; %d boxes over their own street point (any verdict; %d of them not kept, a member there is still caught by the footprint line), %d with no street near, %d with no ground at it, %d not at the feet's height; %u kept by the sim; %u sides closed, %u streets shut, %u narrows, %u doors under a keep-out."),
 		CarBoxes.Num(), MassBoxes.Num(), Cars, Walls, OverPoint, OverDropped, Far, NoGround, OffWindow, Kept, Sim.closedSides(), Sim.closedStreets(), Sim.narrowCount(), Sim.doorsUnderKeep());

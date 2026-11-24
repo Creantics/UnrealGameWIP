@@ -2140,3 +2140,196 @@ TEST_CASE("crowd keep-outs: the verdict keeps a ground box and a trunk, never a 
     CHECK(crowdKeepVerdict(false, true, street, 398.0, 728.0) == CrowdKeepVerdict::NoStreet);
     CHECK(crowdKeepVerdict(true, false, street, 398.0, 728.0) == CrowdKeepVerdict::NoGround);
 }
+
+
+namespace {
+// RD-01-like street (see the keep-out test above) for the trace tests: a front on the + pavement, cars past its ends,
+// trunks on the - pavement. `extra` boxes go first in the input (so input indices differ from the sim's kept list).
+std::vector<CrowdKeepOut> traceKeeps(const std::vector<CrowdKeepOut>& extra) {
+    auto keepBox = [](Vec2 c, float hx, float hy, float gap, CrowdKeepKind kind) {
+        CrowdKeepOut k;
+        k.c = c;
+        k.hx = hx;
+        k.hy = hy;
+        k.gap = gap;
+        k.kind = kind;
+        return k;
+    };
+    std::vector<CrowdKeepOut> keeps = extra;
+    keeps.push_back(keepBox({0.f, 5.65f}, 60.f, 1.35f, 0.8f, CrowdKeepKind::Wall));
+    for (const float x : {-80.f, -70.f, 70.f, 80.f}) keeps.push_back(keepBox({x, 5.f}, 1.72f, 0.74f, 0.3f, CrowdKeepKind::Car));
+    for (const float x : {-30.f, 0.f, 30.f}) keeps.push_back(keepBox({x, -4.5f}, 0.3f, 0.3f, 0.8f, CrowdKeepKind::Wall));
+    return keeps;
+}
+CrowdGraph traceStreet() {
+    CrowdGraph g;
+    CrowdStreet st = line({-150.f, 0.f}, {150.f, 0.f}, 14.f);
+    st.pavement = 2.5f;
+    st.points.clear();
+    for (int i = 0; i <= 30; ++i) st.points.push_back(Vec2{-150.f + 10.f * static_cast<float>(i), 0.f});
+    REQUIRE(g.build({st}, loose()));
+    return g;
+}
+} // namespace
+
+TEST_CASE("crowd trace: a shut street names the box that shut it (its index in setKeepOuts' input) and why") {
+    const CrowdGraph g = traceStreet();
+    CrowdKeepOut far;  // input 0: no street near, dropped
+    far.c = {0.f, 500.f};
+    far.hx = far.hy = 1.f;
+    CrowdKeepOut wall; // input 1: across the whole street on the edge x -130..-120 (grown by its gap, still inside it)
+    wall.c = {-125.f, 0.f};
+    wall.hx = 2.f;
+    wall.hy = 10.f;
+    const std::vector<CrowdKeepOut> keeps = traceKeeps({far, wall});
+    CrowdTuning t;
+    CrowdSim on, off;
+    on.setTrace(true);
+    REQUIRE(on.init(g, t, 43));
+    REQUIRE(off.init(g, t, 43));
+    REQUIRE(on.setKeepOuts(keeps) == keeps.size() - 1);
+    REQUIRE(off.setKeepOuts(keeps) == keeps.size() - 1);
+    const std::uint32_t a = g.nearest({-130.f, 0.f}, 1.f), b = g.nearest({-120.f, 0.f}, 1.f);
+    REQUIRE(a != UINT32_MAX);
+    REQUIRE(b != UINT32_MAX);
+    CHECK(on.closedStreets() == 1u);
+    CHECK(off.closedStreets() == 1u);
+    CHECK(off.closedStreetTrace().empty()); // trace off: nothing recorded
+    REQUIRE(on.closedStreetTrace().size() == 1u);
+    const CrowdClosedStreet& c = on.closedStreetTrace()[0];
+    CHECK(c.box == 1u);
+    CHECK(c.why == CrowdCloseWhy::OneBox);
+    CHECK(std::min(c.from, c.to) == std::min(a, b));
+    CHECK(std::max(c.from, c.to) == std::max(a, b));
+    CHECK(c.along >= 0.f);
+    CHECK(c.along <= 10.f);
+    CHECK(std::string(crowdCloseWhyName(c.why)) == "onebox");
+    // The front (input 2) shuts only one side of its edges: no street entry for them.
+    for (const CrowdClosedStreet& e : on.closedStreetTrace()) CHECK(e.box != 2u);
+}
+
+TEST_CASE("crowd trace: each stuck count carries its rule; the first 40 in detail") {
+    const CrowdGraph g = traceStreet();
+    CrowdTuning t;
+    CrowdSim sim;
+    sim.setTrace(true);
+    REQUIRE(sim.init(g, t, 43));
+    REQUIRE(sim.setKeepOuts(traceKeeps({})) > 0u);
+    REQUIRE(sim.narrowCount() > 0u);
+    for (int i = 0; i < 15 * 180; ++i) sim.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+    const std::uint64_t stuck = sim.counts().stuck;
+    REQUIRE(stuck > static_cast<std::uint64_t>(kCrowdStuckTraceMax));
+    std::uint64_t sum = 0;
+    for (std::size_t w = 0; w < static_cast<std::size_t>(CrowdStuckWhy::Count); ++w) sum += sim.stuckBy(static_cast<CrowdStuckWhy>(w));
+    CHECK(sum == stuck);
+    // Here every count comes from the single-file narrow wait (the trunks' narrows; nothing makes them run or back off).
+    // (Only the narrow rule fires here: the walk and flee rules are taken first by the turn-back and hold branches; the
+    // others need a member held and released while still blocked. Their mapping is the state at the count.)
+    CHECK(sim.stuckBy(CrowdStuckWhy::Narrow) == stuck);
+    REQUIRE(sim.stuckTraceCount() == kCrowdStuckTraceMax);
+    double last = 0.0;
+    for (std::uint32_t k = 0; k < sim.stuckTraceCount(); ++k) {
+        const CrowdStuckEvent& e = sim.stuckTrace(k);
+        CHECK(e.why == CrowdStuckWhy::Narrow);
+        CHECK(e.time >= last);
+        CHECK(e.time >= 2.0); // the narrow rule counts after 2 s standing
+        CHECK((e.id & 0xffffu) < sim.capacity());
+        CHECK(std::fabs(e.pos.y) <= 7.f);
+        CHECK(e.from != e.to);
+        last = e.time;
+    }
+    CHECK(std::string(crowdStuckWhyName(CrowdStuckWhy::Narrow)) == "narrow");
+}
+
+TEST_CASE("crowd trace: the same seed with the trace on and off runs the same, step for step") {
+    const CrowdGraph g = traceStreet();
+    CrowdKeepOut wall;
+    wall.c = {-125.f, 0.f};
+    wall.hx = 2.f;
+    wall.hy = 10.f;
+    const std::vector<CrowdKeepOut> keeps = traceKeeps({wall});
+    CrowdTuning t;
+    CrowdSim on, off;
+    on.setTrace(true);
+    REQUIRE(on.init(g, t, 7));
+    REQUIRE(off.init(g, t, 7));
+    REQUIRE(on.setKeepOuts(keeps) == off.setKeepOuts(keeps));
+    CHECK(on.closedSides() == off.closedSides());
+    CHECK(on.closedStreets() == off.closedStreets());
+    CHECK(on.narrowCount() == off.narrowCount());
+    CHECK(on.doorsUnderKeep() == off.doorsUnderKeep());
+    std::uint32_t differ = 0;
+    for (int i = 0; i < 15 * 120; ++i) {
+        on.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+        off.tick(1.f / 15.f, {0.f, 0.f}, {0.f, 0.f});
+        differ += on.digest() != off.digest() ? 1u : 0u;
+    }
+    CHECK(differ == 0u);
+    CHECK(on.counts().stuck == off.counts().stuck);
+    CHECK(on.counts().stuck > 0u);
+    CHECK(on.liveCount() == off.liveCount());
+    CHECK(on.time() == off.time());
+    CHECK(on.steps() == off.steps());
+    CHECK(on.counts().keepStuck == off.counts().keepStuck);
+    CHECK(on.counts().missKeep == off.counts().missKeep);
+    CHECK(on.counts().keepHeld == off.counts().keepHeld);
+    CHECK(on.counts().keepPushRefused == off.counts().keepPushRefused);
+    CHECK(on.counts().keepMoved == off.counts().keepMoved);
+    for (std::uint32_t i = 0; i < on.capacity(); ++i) {
+        const CrowdAgentView &x = on.agent(i), &y = off.agent(i);
+        CHECK(x.live == y.live);
+        CHECK(x.pos.x == y.pos.x);
+        CHECK(x.pos.y == y.pos.y);
+        CHECK(x.speed == y.speed);
+        CHECK(x.id == y.id);
+    }
+    // Trace off records nothing.
+    CHECK(off.stuckTraceCount() == 0u);
+    CHECK(off.stuckBy(CrowdStuckWhy::Narrow) == 0u);
+    CHECK(off.closedStreetTrace().empty());
+}
+
+TEST_CASE("crowd trace: a street shut by several boxes together, or by more than a line holds, says so") {
+    const CrowdGraph g = traceStreet();
+    // Thin boxes (no gap) across the whole street: on the edge x -110..-100 one every 0.5 m (each 0.62 m wide grown,
+    // so several cover one band between them, none alone), on the edge x -100..-90 one every 0.05 m (over
+    // kCrowdKeepSpanMax on one line).
+    std::vector<CrowdKeepOut> extra;
+    auto thin = [&](float x, float y, float hy) {
+        CrowdKeepOut k;
+        k.c = {x, y};
+        k.hx = 2.f;
+        k.hy = hy;
+        k.gap = 0.f;
+        extra.push_back(k);
+    };
+    for (int i = 0; i <= 28; ++i) thin(-105.f, -7.f + 0.5f * static_cast<float>(i), 0.3f);
+    const std::size_t dense0 = extra.size();
+    for (int i = 0; i <= 280; ++i) thin(-95.f, -7.f + 0.05f * static_cast<float>(i), 0.03f);
+    const std::size_t dense1 = extra.size();
+    const std::vector<CrowdKeepOut> keeps = traceKeeps(extra);
+    CrowdTuning t;
+    CrowdSim sim;
+    sim.setTrace(true);
+    REQUIRE(sim.init(g, t, 43));
+    REQUIRE(sim.setKeepOuts(keeps) == keeps.size());
+    REQUIRE(sim.closedStreetTrace().size() == sim.closedStreets());
+    const std::uint32_t a = g.nearest({-110.f, 0.f}, 1.f), b = g.nearest({-100.f, 0.f}, 1.f), c = g.nearest({-90.f, 0.f}, 1.f);
+    REQUIRE(a != UINT32_MAX);
+    REQUIRE(b != UINT32_MAX);
+    REQUIRE(c != UINT32_MAX);
+    auto find = [&](std::uint32_t u, std::uint32_t v) -> const CrowdClosedStreet* {
+        for (const CrowdClosedStreet& e : sim.closedStreetTrace())
+            if (std::min(e.from, e.to) == std::min(u, v) && std::max(e.from, e.to) == std::max(u, v)) return &e;
+        return nullptr;
+    };
+    const CrowdClosedStreet* several = find(a, b);
+    const CrowdClosedStreet* dense = find(b, c);
+    REQUIRE(several != nullptr);
+    REQUIRE(dense != nullptr);
+    CHECK(several->why == CrowdCloseWhy::Boxes);
+    CHECK(several->box < dense0);
+    CHECK(dense->why == CrowdCloseWhy::Overflow);
+    CHECK(dense->box >= dense0);
+    CHECK(dense->box < dense1);
+}
