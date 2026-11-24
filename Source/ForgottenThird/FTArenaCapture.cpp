@@ -306,6 +306,12 @@ void FFTArenaCapture::FindMuzzle(const USkeletalMeshComponent& Skin)
 				PawBone[Q] = B;
 			}
 		}
+		// The rig's own side names win over the axis guess: a front-left pick named *_r means the guess is mirrored.
+		if (PawBone[0] != INDEX_NONE && Ref.GetBoneName(PawBone[0]).ToString().EndsWith(TEXT("_r")))
+		{
+			Swap(PawBone[0], PawBone[1]);
+			Swap(PawBone[2], PawBone[3]);
+		}
 		UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture: paws FL %s, FR %s, HL %s, HR %s."),
 			PawBone[0] != INDEX_NONE ? *Ref.GetBoneName(PawBone[0]).ToString() : TEXT("-"), PawBone[1] != INDEX_NONE ? *Ref.GetBoneName(PawBone[1]).ToString() : TEXT("-"),
 			PawBone[2] != INDEX_NONE ? *Ref.GetBoneName(PawBone[2]).ToString() : TEXT("-"), PawBone[3] != INDEX_NONE ? *Ref.GetBoneName(PawBone[3]).ToString() : TEXT("-"));
