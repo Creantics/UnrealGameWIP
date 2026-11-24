@@ -24,6 +24,7 @@
 #include "ftcore/PartnerBrain.h"
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
+#include "ftcore/ArenaHitReact.h"
 #include "ftcore/ArenaCamera.h"
 #include "ftcore/ArenaCloseFrame.h"
 #include "ftcore/ArenaGun.h"
@@ -513,6 +514,11 @@ private:
 	void HoldPausedEnemies();
 	void StepFight();
 	void HandleEvents(const ftcore::ArenaEvents& Events);
+	// The leads' hit reaction (FTArenaRunnerHitReact.cpp): the tick's blows on the leads played on their ragdolls, and
+	// a knocked-out body brought back (the partner rises, a restart).
+	void ReactLeadBodies(const ftcore::ArenaEvents& Events);
+	void RecoverLeadBodies(bool bInstant);
+	ftcore::ArenaHitReactions HitReactions;
 	// The shared combat inputs beside the fight (docs/SHARED_COMBAT_INPUTS.md section 7): presses before the step,
 	// then the session ticked by the held clock's advance and the player's landed blows judged on the count.
 	void PressSession(const ftcore::ArenaInput& In);

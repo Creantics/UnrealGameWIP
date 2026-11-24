@@ -300,10 +300,17 @@ bool importRagdollProfile(std::string_view json, RagdollProfile& out, std::strin
         !getNum(j, "settleAngularSpeed", p.settleAngularSpeed, err) || !getNum(j, "settleTime", p.settleTime, err) ||
         !getNum(j, "koHeavyAfter", p.koHeavyAfter, err) || !getNum(j, "koHeavyRate", p.koHeavyRate, err) ||
         !getNum(j, "koHeavyBelow", p.koHeavyBelow, err) || !getNum(j, "hitImpulseScale", p.hitImpulseScale, err) ||
-        !getNum(j, "hitHold", p.hitHold, err) || !getNum(j, "hitBlendOut", p.hitBlendOut, err))
+        !getNum(j, "hitHold", p.hitHold, err) || !getNum(j, "hitBlendOut", p.hitBlendOut, err) ||
+        !getInt(j, "hitStopLightFrames", p.hitStopLightFrames, err) ||
+        !getInt(j, "hitStopStaggerFrames", p.hitStopStaggerFrames, err) ||
+        !getInt(j, "hitStopKoFrames", p.hitStopKoFrames, err) || !getNum(j, "hitStopFps", p.hitStopFps, err))
         return fail(error, err);
     if (p.maxLinearVelocity <= 0.f || p.maxAngularVelocity <= 0.f || p.positionSteps < 0 || p.positionSteps > 255 ||
-        p.velocitySteps < 0 || p.velocitySteps > 255 || p.hitHold < 0.f || p.hitBlendOut < 0.f)
+        p.velocitySteps < 0 || p.velocitySteps > 255 || p.hitHold < 0.f || p.hitBlendOut < 0.f ||
+        p.hitStopLightFrames < 0 || p.hitStopStaggerFrames < 0 || p.hitStopKoFrames < 0 ||
+        p.hitStopLightFrames > RagdollProfile::kMaxHitStopFrames ||
+        p.hitStopStaggerFrames > RagdollProfile::kMaxHitStopFrames ||
+        p.hitStopKoFrames > RagdollProfile::kMaxHitStopFrames || !(p.hitStopFps > 0.f) || p.hitStopFps > 1000.f)
         return fail(error, "ragdoll profile: value out of range");
     if (p.linearDamping < 0.f || p.angularDamping < 0.f || p.jointFriction < 0.f || p.friction < 0.f ||
         p.restitution < 0.f || p.restitution > 1.f || p.inertiaScale <= 0.f || p.koLocalShare < 0.f ||
@@ -478,6 +485,16 @@ float hitReactionWeight(const RagdollProfile& profile, float t) {
     if (profile.hitBlendOut <= 0.f) return 0.f;
     const float x = std::clamp((t - profile.hitHold) / profile.hitBlendOut, 0.f, 1.f);
     return 1.f - x * x * (3.f - 2.f * x);
+}
+
+RagdollDriveStrengths ragdollDriveStrengths(const RagdollMotor& motor) {
+    RagdollDriveStrengths out;
+    if (!(motor.frequency > 0.f) || !std::isfinite(motor.frequency)) return out;
+    const float omega = 2.f * 3.14159265358979f * motor.frequency;
+    out.orientation = omega * omega;
+    out.angularVelocity = 2.f * std::max(motor.damping, 0.f) * omega;
+    out.maxTorque = std::max(motor.maxTorque, 0.f);
+    return out;
 }
 
 float heavyDampingFactor(float rate, float dt) { return rate > 0.f && dt > 0.f ? std::exp(-rate * dt) : 1.f; }

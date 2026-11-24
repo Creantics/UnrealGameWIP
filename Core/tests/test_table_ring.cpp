@@ -749,3 +749,29 @@ TEST_CASE("table: a shared blow sums to the blow exactly, the remainder to the o
         }
     }
 }
+
+TEST_CASE("arena hit react: a table share that downs the seated ally is its Knockout on AllyDowned, from the striker") {
+    Rig rig({biterKind(22)});
+    rig.fight.setAlly(5, 0.4f);
+    REQUIRE(rig.sit() == 3);
+    rig.untilBite();
+    const ArenaEvents& ev = rig.fight.output().events;
+    const ArenaLeadHit* ko = nullptr;
+    const ArenaLeadHit* hit = nullptr;
+    for (std::size_t j = 0; j < ev.hitCount; ++j) {
+        if (ev.hits[j].target == kArenaAlly) ko = &ev.hits[j];
+        if (ev.hits[j].target == kArenaPlayer) hit = &ev.hits[j];
+    }
+    REQUIRE(ko != nullptr);
+    CHECK(ko->tier == ArenaHitTier::Knockout);
+    REQUIRE(ko->event != kArenaNoEvent);
+    CHECK(ev.items[ko->event].type == ArenaEventType::AllyDowned);
+    CHECK(ko->source == 0);
+    CHECK(ko->move == 0);
+    CHECK(ko->fromKnown);
+    CHECK(ko->damage >= 5); // the share before the clamp: at least the 5 hp it took
+    REQUIRE(hit != nullptr); // the struck player's own blow
+    REQUIRE(hit->event != kArenaNoEvent);
+    CHECK(ev.items[hit->event].type == ArenaEventType::Hit);
+    CHECK(hit->tier != ArenaHitTier::None);
+}

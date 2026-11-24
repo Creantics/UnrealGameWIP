@@ -137,6 +137,11 @@ struct RagdollProfile {
     float koHeavyAfter = 1.2f, koHeavyRate = 8.f, koHeavyBelow = 1.f;
     float hitImpulseScale = 1.f;
     float hitHold = 0.1f, hitBlendOut = 0.3f; // seconds
+    // Hit-stop frames the host shows per hit tier when the move sets no hitStop of its own (display only: the arena
+    // tick never reads them), counted at hitStopFps. Each 0..kMaxHitStopFrames; hitStopFps above 0, at most 1000.
+    static constexpr int kMaxHitStopFrames = 255;
+    int hitStopLightFrames = 0, hitStopStaggerFrames = 4, hitStopKoFrames = 8;
+    float hitStopFps = 60.f;
     RagdollMotor motor;
     RagdollJointLimits defaultLimits;
     std::vector<std::pair<std::string, RagdollJointLimits>> limits; // per part name
@@ -220,6 +225,16 @@ FTCORE_API KoImpulseSplit splitKoImpulse(const RagdollProfile& profile, const fl
 // F9. Physics blend weight `t` seconds into a hit reaction: 1 for hitHold, then a smoothstep down to 0 over
 // hitBlendOut.
 FTCORE_API float hitReactionWeight(const RagdollProfile& profile, float t);
+
+// The motor as an acceleration drive toward the animated pose (a mass-free spring, as Unreal's physical animation
+// drives): orientation = (2 pi frequency)^2 in 1/s^2, angularVelocity = 2 damping (2 pi frequency) in 1/s, maxTorque
+// carried over (N*m). A frequency at or below 0, or not finite, gives no drive (all 0).
+struct RagdollDriveStrengths {
+    float orientation = 0.f;
+    float angularVelocity = 0.f;
+    float maxTorque = 0.f;
+};
+FTCORE_API RagdollDriveStrengths ragdollDriveStrengths(const RagdollMotor& motor);
 
 // "Going heavy": the velocity multiplier for one step of dt at `rate` (exp(-rate dt)); 1 when rate <= 0.
 FTCORE_API float heavyDampingFactor(float rate, float dt);

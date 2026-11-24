@@ -315,18 +315,65 @@ struct ArenaFightImpl {
         return true;
     }
 
-    void emit(ArenaEventType type, std::uint8_t source, std::uint8_t target, std::uint8_t move, int amount, Vec2 at) {
+    // Returns the event's slot in out.events, or kArenaNoEvent when the list was full.
+    std::uint8_t emit(ArenaEventType type, std::uint8_t source, std::uint8_t target, std::uint8_t move, int amount,
+                      Vec2 at) {
         if (out.events.count >= kMaxArenaEvents) {
             ++fight.dropped_;
-            return;
+            return kArenaNoEvent;
         }
-        ArenaEvent& ev = out.events.items[out.events.count++];
+        const std::size_t slot = out.events.count++;
+        ArenaEvent& ev = out.events.items[slot];
         ev.type = type;
         ev.source = source;
         ev.target = target;
         ev.move = move;
         ev.amount = amount;
         ev.at = at;
+        return static_cast<std::uint8_t>(slot);
+    }
+
+    // A lead's blow record (ArenaLeadHit), for the host's hit reaction. Writes nothing else: no event, rng, stat or
+    // fight state, so no outcome depends on it.
+    void stampLead(ArenaHitTier tier, std::uint8_t event, std::uint8_t source, std::uint8_t target, std::uint8_t move,
+                   const ArenaEnemyMove* mv, int damage, float poise, float hitStop, Vec2 from, Vec2 fromFacing, Vec2 at,
+                   Vec2 facing, int maxHp, float maxPoise) {
+        ArenaLeadHit h;
+        h.tier = tier;
+        h.event = event;
+        h.source = source;
+        h.target = target;
+        h.move = move;
+        h.tell = mv ? mv->tell : ArenaTell::Strike;
+        h.part = mv ? mv->hitPart : ArenaHitPart::Auto;
+        h.low = mv ? !mv->hitsAir : false;
+        h.fromKnown = source < n;
+        h.damage = std::max(0, damage);
+        h.poise = std::max(0.f, poise);
+        const float hpShare = maxHp > 0 ? static_cast<float>(h.damage) / static_cast<float>(maxHp) : 0.f;
+        const float poiseShare = maxPoise > 0.f ? h.poise / maxPoise : 0.f;
+        h.weight = hpShare + poiseShare;
+        h.hitStop = std::max(0.f, hitStop);
+        h.from = from;
+        h.fromFacing = fromFacing;
+        h.at = at;
+        h.facing = facing;
+        arenaPushLeadHit(out.events, h);
+    }
+
+    // A table share's kill: Knockout on the Downed / AllyDowned it emitted, from the striking enemy. `share` is the
+    // body's part before the hp clamp. Only enemies strike the leads today; the source guard keeps a record from
+    // reading past the enemy table if a non-enemy source ever shares a blow.
+    void stampShareKill(std::uint8_t ev, std::uint8_t source, std::uint8_t move, std::uint8_t target, int share) {
+        const bool enemy = source < n;
+        const ArenaEnemyMove* mv =
+            enemy && move < def.enemies[source].moveCount ? &def.enemies[source].moves[move] : nullptr;
+        const bool player = target == kArenaPlayer;
+        const ArenaFighter& kit = player ? fi : (partnerOn() ? pk : fi);
+        stampLead(ArenaHitTier::Knockout, ev, enemy ? source : kArenaNobody, target, move, mv, share, 0.f,
+                  mv ? fight.enemyAttackOf(source, move).hitStop : 0.f, enemy ? foes[source].pos : Vec2{},
+                  enemy ? foes[source].facing : Vec2{}, player ? pl.pos : fight.allyPos_,
+                  player ? pl.facing : fight.ally_.facing, player ? fi.hp : fight.allyMaxHp_, kit.poise);
     }
 
     // The attack the player's current action performs, or nullptr.
@@ -547,6 +594,8 @@ struct ArenaFightImpl {
         }
         if (step > 0.f) fight.special_.view.endedThisTick = false; // the cut back was the last tick
         out.events.count = 0;
+        out.events.hitCount = 0;
+        out.events.hitsDropped = 0;
         pl.pairSpent = 0.f;
         if (fight.phase_ == ArenaPhase::NotStarted) return;
         if (fight.phase_ != ArenaPhase::Fighting) { // over: nothing moves and nothing happens
@@ -2581,6 +2630,11 @@ struct ArenaFightImpl {
         const float poiseDamage = scaledPoise(a.poiseDamage, r.poise);
         const Vec2 toFoe = arenaUnit(arenaSub(foe.pos, pl.pos), pl.facing);
         const bool guarding = pl.action == ArenaAction::Guard && arenaDot(pl.facing, toFoe) >= fi.guardArcCos;
+        // The reaction's record of this blow (display only: written after the fight's own writes).
+        const auto stamp = [&](ArenaHitTier tier, std::uint8_t ev, int dealt) {
+            stampLead(tier, ev, source, kArenaPlayer, foe.move, &mv, dealt, poiseDamage, a.hitStop, foe.pos, foe.facing,
+                      pl.pos, pl.facing, fi.hp, fi.poise);
+        };
         if (guarding && pl.parryLeft > 0.f && mv.parryable) {
             // No damage, no stamina cost: the enemy is open. The parry is the perfect guard: it stores the blow as Load.
             ++stats.parries;
@@ -2610,23 +2664,32 @@ struct ArenaFightImpl {
             // Carrying, a block stores a share of the blocked damage (a guard break too).
             if (fight.carry_) storeCapped(source, foe.move, static_cast<float>(damage) * fi.blockLoadShare, stats.blockLoad);
             const int chip = std::max(0, static_cast<int>(std::lround(hpTaken(damage) * (1.f - fi.guardAbsorb))));
-            if (chip > 0) damagePlayer(source, chip, foe.move);
+            int chipDealt = 0;
+            if (chip > 0) {
+                const std::uint8_t chipEv = damagePlayer(source, chip, foe.move, &chipDealt);
+                if (pl.hp <= 0) stamp(ArenaHitTier::Knockout, chipEv, chipDealt); // a chip alone: no record
+            }
             if (pl.hp > 0 && pl.stamina <= 0.f) { // the block emptied the stamina: the guard breaks
                 ++stats.guardBreaks;
-                emit(ArenaEventType::GuardBroken, source, kArenaPlayer, foe.move, 0, pl.pos);
+                const std::uint8_t brokeEv = emit(ArenaEventType::GuardBroken, source, kArenaPlayer, foe.move, 0, pl.pos);
                 pl.action = ArenaAction::GuardBreak;
                 pl.actionTime = 0.f;
                 pl.velocity = Vec2{};
                 pl.parryLeft = 0.f;
+                stamp(ArenaHitTier::Stagger, brokeEv, chipDealt);
             }
             return;
         }
         ++stats.hitsTaken;
-        damagePlayer(source, hpTaken(damage), foe.move);
+        int dealt = 0;
+        const std::uint8_t hitEv = damagePlayer(source, hpTaken(damage), foe.move, &dealt);
         pause(pl.stopUntil, t1, a.hitStop); // both have moved this tick
         // Its own blow's table share may have killed it: then nothing more touches it this tick.
         if (alive(i)) pause(foe.stopUntil, t1, a.hitStop * std::clamp(a.hitStopSelf, 0.f, 1.f));
-        if (pl.hp <= 0) return;
+        if (pl.hp <= 0) {
+            stamp(ArenaHitTier::Knockout, hitEv, dealt);
+            return;
+        }
         if (airborne()) {
             // A blow that lands in the air ends the jump: knocked out of it, whatever the poise (or the height).
             pl.chainLive = false;
@@ -2635,11 +2698,15 @@ struct ArenaFightImpl {
             pl.velocity = Vec2{};
             pl.jumpTime = -1.f;
             pl.airClear = false;
+            stamp(ArenaHitTier::Stagger, hitEv, dealt);
             return;
         }
         // Poise: a player in hitstun or guard break is already down; `armor` ignores a share of it during the player's
         // own attack's startup and active parts.
-        if (pl.action == ArenaAction::Hitstun || pl.action == ArenaAction::GuardBreak || poiseDamage <= 0.f) return;
+        if (pl.action == ArenaAction::Hitstun || pl.action == ArenaAction::GuardBreak || poiseDamage <= 0.f) {
+            stamp(ArenaHitTier::Light, hitEv, dealt);
+            return;
+        }
         float share = 0.f;
         if (const ArenaAttack* own = attackOf(pl, fi)) {
             if (pl.actionTime < own->startup + own->active) share = std::clamp(own->armor, 0.f, 1.f);
@@ -2653,6 +2720,9 @@ struct ArenaFightImpl {
             pl.actionTime = 0.f;
             pl.velocity = Vec2{};
             emit(ArenaEventType::Staggered, source, kArenaPlayer, foe.move, 0, pl.pos);
+            stamp(ArenaHitTier::Stagger, hitEv, dealt);
+        } else {
+            stamp(ArenaHitTier::Light, hitEv, dealt);
         }
     }
 
@@ -2877,10 +2947,10 @@ struct ArenaFightImpl {
     }
 
     // The ally reached 0 hp.
-    void downAlly(std::uint8_t source, std::uint8_t move) {
+    std::uint8_t downAlly(std::uint8_t source, std::uint8_t move) {
         fight.allyHp_ = 0;
         clearAlly();
-        emit(ArenaEventType::AllyDowned, source, kArenaAlly, move, 0, fight.allyPos_);
+        return emit(ArenaEventType::AllyDowned, source, kArenaAlly, move, 0, fight.allyPos_);
     }
 
     // The brain's view of this step, its intent, and the ally body's blow. After the player's step, before the
@@ -3407,6 +3477,9 @@ struct ArenaFightImpl {
         }
         const int damage = scaledDamage(a.damage, r.damage);
         if (damage <= 0) return;
+        const ArenaEnemyMove& mv = def.enemies[i].moves[foe.move];
+        const float poiseDamage = scaledPoise(a.poiseDamage, r.poise); // the record's only (the ally has no poise meter)
+        const ArenaFighter& allyKit = partnerOn() ? pk : fi; // whose body the ally is
         if (partnerOn()) { // it lands: the partner is held in its own kit's hitstun, which cuts its running blow
             ArenaFight::AllyState& al = fight.ally_;
             al.hurtLeft = std::max(al.hurtLeft, pk.hitstun);
@@ -3440,7 +3513,7 @@ struct ArenaFightImpl {
             pl.hp -= taken;
             stats.damageTaken += taken;
             ++stats.takeHalves;
-            emit(ArenaEventType::TookHalf, source, kArenaPlayer, foe.move, taken, pl.pos);
+            const std::uint8_t halfEv = emit(ArenaEventType::TookHalf, source, kArenaPlayer, foe.move, taken, pl.pos);
             if (pl.hp <= 0) {
                 pl.hp = 0;
                 pl.action = ArenaAction::Downed;
@@ -3452,11 +3525,24 @@ struct ArenaFightImpl {
             } else {
                 storeCapped(source, foe.move, static_cast<float>(lead) * fi.takeHalfLoadShare, stats.takeHalfLoad);
             }
+            // The player carries half the blow: half its poise counts toward the weight (take half spends no poise).
+            stampLead(pl.hp <= 0 ? ArenaHitTier::Knockout : ArenaHitTier::Light, halfEv, source, kArenaPlayer, foe.move,
+                      &mv, scaledTaken(lead), poiseDamage * 0.5f, a.hitStop, foe.pos, foe.facing, pl.pos, pl.facing,
+                      fi.hp, fi.poise);
         }
         allyPart = tableShare(source, foe.move, kArenaAlly, allyPart); // after take half: what is left is shared
         const int lost = std::min(allyPart, fight.allyHp_);
         fight.allyHp_ -= lost;
-        if (lost > 0) emit(ArenaEventType::AllyHit, source, kArenaAlly, foe.move, lost, fight.allyPos_);
+        if (lost > 0) {
+            const std::uint8_t ev = emit(ArenaEventType::AllyHit, source, kArenaAlly, foe.move, lost, fight.allyPos_);
+            // Stagger for a blow of the ally kit's full poise or more: presentation only, Core keeps no ally poise.
+            const bool heavy = allyKit.poise > 0.f && poiseDamage >= allyKit.poise;
+            const ArenaHitTier tier = fight.allyHp_ <= 0 ? ArenaHitTier::Knockout
+                                      : heavy           ? ArenaHitTier::Stagger
+                                                        : ArenaHitTier::Light;
+            stampLead(tier, ev, source, kArenaAlly, foe.move, &mv, allyPart, poiseDamage, a.hitStop, foe.pos, foe.facing,
+                      fight.allyPos_, fight.ally_.facing, fight.allyMaxHp_, allyKit.poise);
+        }
         if (fight.allyHp_ <= 0) {
             downAlly(source, foe.move);
             return;
@@ -3486,13 +3572,13 @@ struct ArenaFightImpl {
             pl.hp -= lost;
             stats.damageTaken += lost;
             emit(ArenaEventType::TableShare, source, kArenaPlayer, move, lost, pl.pos);
-            if (pl.hp <= 0) downPlayer(source, move);
+            if (pl.hp <= 0) stampShareKill(downPlayer(source, move), source, move, kArenaPlayer, split.each);
         }
         if (ally && struck != kArenaAlly) {
             const int lost = std::min(split.each, fight.allyHp_);
             fight.allyHp_ -= lost;
             emit(ArenaEventType::TableShare, source, kArenaAlly, move, lost, fight.allyPos_);
-            if (fight.allyHp_ <= 0) downAlly(source, move);
+            if (fight.allyHp_ <= 0) stampShareKill(downAlly(source, move), source, move, kArenaAlly, split.each);
         }
         for (std::size_t i = 0; i < n; ++i) {
             if (!((s.enemies >> i) & 1u) || !alive(i) || unhurt(foes[i])) continue;
@@ -3507,25 +3593,27 @@ struct ArenaFightImpl {
         return split.struck;
     }
 
-    void downPlayer(std::uint8_t source, std::uint8_t move) {
+    std::uint8_t downPlayer(std::uint8_t source, std::uint8_t move) {
         pl.hp = 0;
         pl.action = ArenaAction::Downed;
         pl.actionTime = 0.f;
         pl.velocity = Vec2{};
         pl.buffered = Press::None;
         pl.parryLeft = 0.f;
-        emit(ArenaEventType::Downed, source, kArenaPlayer, move, 0, pl.pos);
+        return emit(ArenaEventType::Downed, source, kArenaPlayer, move, 0, pl.pos);
     }
 
     // The least hp a blow leaves the player: 1 under setNoDefeatForTest, else 0.
     int hpFloor() const { return fight.noDefeat_ ? 1 : 0; }
 
-    void damagePlayer(std::uint8_t source, int damage, std::uint8_t move) {
+    // Returns the Hit's slot (kArenaNoEvent when dropped); `dealt` gets this body's part before the hp clamp.
+    std::uint8_t damagePlayer(std::uint8_t source, int damage, std::uint8_t move, int* dealt = nullptr) {
         damage = tableShare(source, move, kArenaPlayer, damage);
+        if (dealt) *dealt = damage;
         const int amount = std::min(damage, std::max(0, pl.hp - hpFloor()));
         pl.hp -= amount;
         stats.damageTaken += amount;
-        emit(ArenaEventType::Hit, source, kArenaPlayer, move, amount, pl.pos);
+        const std::uint8_t ev = emit(ArenaEventType::Hit, source, kArenaPlayer, move, amount, pl.pos);
         if (pl.hp <= 0) {
             pl.hp = 0;
             pl.action = ArenaAction::Downed;
@@ -3535,6 +3623,7 @@ struct ArenaFightImpl {
             pl.parryLeft = 0.f;
             emit(ArenaEventType::Downed, source, kArenaPlayer, move, 0, pl.pos);
         }
+        return ev;
     }
 
     Vec2 enemyAttack(std::size_t i, Vec2 dir) {
@@ -4166,6 +4255,8 @@ struct ArenaFightImpl {
     // cooldown stand still); its cues fire, its results are ruled at impact and land at the end.
     void specialTick(float step, const ArenaInput& in) {
         out.events.count = 0;
+        out.events.hitCount = 0;
+        out.events.hitsDropped = 0;
         ArenaFight::SpecialState& sp = fight.special_;
         ArenaSpecialView& v = sp.view;
         v.cueCount = 0;
@@ -4902,6 +4993,39 @@ const char* arenaLeadClipId(FightClip clip) {
     }
 }
 
+void arenaPushLeadHit(ArenaEvents& e, const ArenaLeadHit& hit) {
+    if (e.hitCount < kMaxArenaLeadHits) {
+        e.hits[e.hitCount++] = hit;
+        return;
+    }
+    ++e.hitsDropped;
+    // The lowest tier below the new one, on any body; among equals the same body first, then the earliest.
+    std::size_t slot = kMaxArenaLeadHits;
+    for (std::size_t k = 0; k < kMaxArenaLeadHits; ++k) {
+        const ArenaLeadHit& o = e.hits[k];
+        if (o.tier >= hit.tier) continue;
+        if (slot == kMaxArenaLeadHits || o.tier < e.hits[slot].tier) {
+            slot = k;
+            continue;
+        }
+        if (o.tier == e.hits[slot].tier && o.target == hit.target && e.hits[slot].target != hit.target) slot = k;
+    }
+    if (slot < kMaxArenaLeadHits) e.hits[slot] = hit;
+}
+
+const char* arenaHitPartName(ArenaHitPart p) {
+    switch (p) {
+    case ArenaHitPart::Auto: return "auto";
+    case ArenaHitPart::Head: return "head";
+    case ArenaHitPart::Chest: return "chest";
+    case ArenaHitPart::Spine: return "spine";
+    case ArenaHitPart::Pelvis: return "pelvis";
+    case ArenaHitPart::Thigh: return "thigh";
+    case ArenaHitPart::Shin: return "shin";
+    }
+    return "";
+}
+
 const char* arenaTellName(ArenaTell t) {
     switch (t) {
     case ArenaTell::Strike: return "strike";
@@ -5326,7 +5450,10 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             tell one of arenaTellName's words, no two named alike in one enemy (default "strike": moves left
 //             at it read alike, so a lone enemy whose moves name no tell is dealt no Read cards);
 //             clip an id of 1..31 letters, digits, _ and -, optional, only in an enemy with a look: the clip the
-//             host plays for the move (the host's business; no two moves of one enemy share one)
+//             host plays for the move (the host's business; no two moves of one enemy share one);
+//             hitsAir boolean (default false for a sweep or slam tell, else true: false passes under a jump's
+//             clear window and takes the legs); hitPart one of arenaHitPartName's words (default "auto": the
+//             reaction picks the part by height and tell), the part a landed blow strikes (display only)
 //   fight     enemies 1..6 known enemy ids; ring (0, 1000]; spawn (0, 1000]; attackers 1..6;
 //             scene a non-empty id; beat 0..1000000; step 0..1000
 
@@ -5714,7 +5841,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         ArenaEnemyMove& mv = k.moves[m];
         arenaUnknownKeys(mj, mp,
                          {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell", "clip",
-                          "hitsAir"},
+                          "hitsAir", "hitPart"},
                          true, warnings);
         arenaParseAttack(mj, mp, mv.attack, errors);
         arenaNum(mj, "minRange", mv.minRange, 0, 100, false, mp, errors);
@@ -5739,6 +5866,15 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         // A sweep or a slam runs along the floor: a jump clears it unless the file says otherwise.
         mv.hitsAir = mv.tell != ArenaTell::Sweep && mv.tell != ArenaTell::Slam;
         arenaBool(mj, "hitsAir", mv.hitsAir, mp, errors);
+        if (const JsonValue hj = mj["hitPart"]; !hj.isAbsent()) {
+            bool known = false;
+            for (std::size_t p = 0; p < kArenaHitPartCount && hj.isString(); ++p) {
+                if (hj.string() != arenaHitPartName(static_cast<ArenaHitPart>(p))) continue;
+                mv.hitPart = static_cast<ArenaHitPart>(p);
+                known = true;
+            }
+            if (!known) errors.push_back(mp + ".hitPart: expected one of auto, head, chest, spine, pelvis, thigh, shin");
+        }
         if (const JsonValue cj = mj["clip"]; !cj.isAbsent()) {
             const std::string_view id = cj.string();
             if (!cj.isString() || id.empty() || id.size() > kMaxArenaClipId || !arenaIdText(id))

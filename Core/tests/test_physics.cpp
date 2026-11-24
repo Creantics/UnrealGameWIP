@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -178,6 +179,46 @@ TEST_CASE("physics: ragdoll profile errors give reasons") {
     CHECK(profileError("{\"defaultLimits\": {\"normalHalfCone\": -1}}") ==
           "defaultLimits.normalHalfCone/planeHalfCone: expected 0..pi");
     CHECK(profileError("{\"name\": \"x\"") != ""); // bad JSON reports the parser's position
+}
+
+TEST_CASE("physics: ragdoll profile hit-stop frames per tier") {
+    // Shipped data: Light 0, Stagger 4, Knockout 8 frames at 60 fps, the same in every profile.
+    for (const char* name : {"default", "gentle", "minor"}) {
+        const RagdollProfile p = loadProfile(name);
+        CHECK(p.hitStopFps == doctest::Approx(60.f));
+        CHECK(p.hitStopLightFrames == 0);
+        CHECK(p.hitStopStaggerFrames == 4);
+        CHECK(p.hitStopKoFrames == 8);
+    }
+    // Absent keys keep the struct defaults (which match the data).
+    RagdollProfile bare;
+    std::string error;
+    REQUIRE(importRagdollProfile("{}", bare, &error));
+    CHECK(bare.hitStopFps == doctest::Approx(60.f));
+    CHECK(bare.hitStopLightFrames == 0);
+    CHECK(bare.hitStopStaggerFrames == 4);
+    CHECK(bare.hitStopKoFrames == 8);
+    // Set values are read.
+    RagdollProfile set;
+    REQUIRE(importRagdollProfile("{\"hitStopFps\": 30, \"hitStopLightFrames\": 1, \"hitStopStaggerFrames\": 2, "
+                                "\"hitStopKoFrames\": 3}",
+                                set, &error));
+    CHECK(set.hitStopFps == doctest::Approx(30.f));
+    CHECK(set.hitStopLightFrames == 1);
+    CHECK(set.hitStopStaggerFrames == 2);
+    CHECK(set.hitStopKoFrames == 3);
+    // Out of range or wrong type fails with a reason.
+    CHECK(profileError("{\"hitStopKoFrames\": -1}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopLightFrames\": -1}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopFps\": 0}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopFps\": 1001}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopKoFrames\": 256}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopStaggerFrames\": 256}") == "ragdoll profile: value out of range");
+    CHECK(profileError("{\"hitStopLightFrames\": 256}") == "ragdoll profile: value out of range");
+    RagdollProfile edge;
+    REQUIRE(importRagdollProfile("{\"hitStopKoFrames\": 255, \"hitStopFps\": 1000}", edge, &error));
+    CHECK(edge.hitStopKoFrames == RagdollProfile::kMaxHitStopFrames);
+    CHECK(profileError("{\"hitStopStaggerFrames\": 2.5}") == "hitStopStaggerFrames: expected integer");
 }
 
 TEST_CASE("physics: the humanoid map loads") {
@@ -422,4 +463,37 @@ TEST_CASE("physics: the feel maths does not allocate") {
     }
     CHECK(ftcore_test::allocStats().count == before);
     CHECK(sink != 0.f);
+}
+
+TEST_CASE("physics: the motor as drive strengths toward the clip") {
+    const RagdollProfile gentle = loadProfile("gentle");
+    const RagdollDriveStrengths d = ragdollDriveStrengths(gentle.motor);
+    const float omega = 2.f * 3.14159265f * gentle.motor.frequency;
+    CHECK(gentle.motor.frequency == doctest::Approx(6.f));
+    CHECK(d.orientation == doctest::Approx(omega * omega));
+    CHECK(d.angularVelocity == doctest::Approx(2.f * gentle.motor.damping * omega));
+    CHECK(d.maxTorque == doctest::Approx(gentle.motor.maxTorque));
+    // A stiffer motor springs harder; critical damping (1) gives 2 omega.
+    RagdollMotor m;
+    m.frequency = 8.f;
+    m.damping = 1.f;
+    m.maxTorque = 400.f;
+    const RagdollDriveStrengths s = ragdollDriveStrengths(m);
+    CHECK(s.orientation > d.orientation);
+    CHECK(s.angularVelocity == doctest::Approx(2.f * 2.f * 3.14159265f * 8.f));
+    // No frequency, or one not finite: no drive. A negative damping or torque counts as 0.
+    for (const float f : {0.f, -1.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        m.frequency = f;
+        const RagdollDriveStrengths z = ragdollDriveStrengths(m);
+        CHECK(z.orientation == 0.f);
+        CHECK(z.angularVelocity == 0.f);
+        CHECK(z.maxTorque == 0.f);
+    }
+    m.frequency = 8.f;
+    m.damping = -1.f;
+    m.maxTorque = -5.f;
+    const RagdollDriveStrengths n = ragdollDriveStrengths(m);
+    CHECK(n.orientation > 0.f);
+    CHECK(n.angularVelocity == 0.f);
+    CHECK(n.maxTorque == 0.f);
 }
