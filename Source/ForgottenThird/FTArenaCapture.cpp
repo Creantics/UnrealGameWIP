@@ -23,9 +23,10 @@
 
 namespace
 {
-// The close view: this far off the enemy's centre, across the enemy-lead line (cm), at this height over its feet (cm).
+// The close view: this far off a point up to kCloseLead ahead of the enemy, across the enemy-lead line (cm), at this height over its feet (cm).
 constexpr double kCloseOff = 135.0;
 constexpr double kCloseHeight = 45.0;
+constexpr double kCloseLead = 50.0;
 // The far view: off the midpoint of the enemy and the lead, at least this far (cm), and this high (cm).
 constexpr double kFarOff = 520.0;
 constexpr double kFarHeight = 120.0;
@@ -160,7 +161,9 @@ bool FFTArenaCapture::AimSide(UWorld& World, APlayerController& PC, const UFTAre
 	FVector Want;
 	if (bClose)
 	{
-		Look = FVector(E.X, E.Y, Feet + kCloseHeight);
+		// Half the gap ahead of the enemy toward the lead, at most kCloseLead, so the muzzle and the lead's body share the frame at a bite.
+		const FVector Ahead = E + Line * FMath::Min(0.5 * FVector::Dist2D(E, P), kCloseLead);
+		Look = FVector(Ahead.X, Ahead.Y, Feet + kCloseHeight);
 		Want = Look + Across * kCloseOff;
 	}
 	else
