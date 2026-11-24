@@ -415,8 +415,8 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		if (Frame >= 0)
 		{
 			FVector Point;
-			FName Bone, Part;
-			if (ClosestSkinVertex(*Lead, Tip, Point, Bone, Part))
+			FName SkinBone, SkinMesh;
+			if (ClosestSkinVertex(*Lead, Tip, Point, SkinBone, SkinMesh))
 			{
 				const FVector D = Point - Tip;
 				const FVector Left(-Line.Y, Line.X, 0.0);
@@ -424,8 +424,8 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 				MGapFwd = FVector::DotProduct(D, Line) / 100.0;
 				MGapSide = FVector::DotProduct(D, Left) / 100.0;
 				MGapUp = D.Z / 100.0;
-				CopyName(Bone, MeshBone, sizeof(MeshBone));
-				CopyName(Part, MeshPart, sizeof(MeshPart));
+				CopyName(SkinBone, MeshBone, sizeof(MeshBone));
+				CopyName(SkinMesh, MeshPart, sizeof(MeshPart));
 			}
 		}
 		if (const USkeletalMeshComponent* LeadSkin = Lead->GetLeadSkin())
