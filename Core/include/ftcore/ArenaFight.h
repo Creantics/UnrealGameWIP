@@ -30,8 +30,9 @@
 // * Attacks. Every attack has three parts back to back: startup (for an enemy, its telegraph),
 //   active (the only part that can connect) and recovery. During startup the attacker may still turn
 //   toward its target at `tracking` rad/s and moves forward `lunge` metres spread over startup and
-//   active. A hit test runs on every tick whose interval [t, t + dt) overlaps the active part (so a
-//   long frame can't skip a short active part), on the bodies as reported for that tick: the target
+//   active (a lungeToContact enemy holds back in startup: see there). A hit test runs on every tick
+//   whose interval [t, t + dt) overlaps the active part (so a long frame can't skip a short active
+//   part), on the bodies as reported for that tick: the target
 //   is hit when its centre is within range + its body radius of the attacker's centre and inside the
 //   arc (dot(attacker facing, direction to target) >= arcCos). An attack connects at most once per
 //   target. The player's attacks test every living enemy; an enemy's attacks test only the player.
@@ -136,9 +137,10 @@
 //     its tracking or faster, so it faces the enemy as the blow lands (at once with no startup). On a soft target the attack also closes in by
 //     up to homingReach on top of its lunge, never past touching.
 // * Enemies. Each enemy's brain is Approach (run when farther than runRange, else walk, toward its
-//   preferred range), Strafe (circle the player at preferredRange, changing direction now and then
-//   from the seeded RNG), Attack (one move's startup, active and recovery; then its `chain` move at
-//   once, if any), Staggered (poise broken: staggerTime, attack interrupted), Open (parried:
+//   preferred range; with a trotSpeed, trot between runRange and trotRange and run only past
+//   trotRange), Strafe (circle the player at preferredRange, changing direction now and then from the
+//   seeded RNG), Attack (one move's startup, active and recovery; then its `chain` move at once, if
+//   any), Staggered (poise broken: staggerTime, attack interrupted), Open (parried:
 //   openTime), Down (after a riposte: downTime) and Dead. Only `attackers` enemies hold an attack
 //   token at once: a strafing enemy whose attackDelay has passed asks for one, the longest waiting
 //   (then the nearest) gets it, and it keeps it through its whole string, giving it back when the
@@ -684,6 +686,18 @@ struct ArenaEnemyKind {
                               // own blows, the walls, the ally and the other enemies still see the whole circle;
                               // a special's travel clears its body by the same rule. An
                               // in-place bite sets it so the jaws close on the lead's legs at the clip's impact
+    float trotSpeed = 0.f;    // m/s: a middle gait for Approach between runRange and trotRange (run only past
+                              // trotRange), so a skin's trot clip is held, not crossed in a blink; between walkSpeed and
+                              // runSpeed; 0 (the default): none,
+                              // Approach runs past runRange and walks inside it
+    float trotRange = 0.f;    // m: where the trot gives way to the run (at least runRange); read only with a trotSpeed
+    bool lungeToContact = false; // its attacks' lunge ends at body contact with the lead (the lead's circle less
+                                 // contactInset, plus arenaBodyReach): a leap closes onto the lead and stops at first
+                                 // tooth contact instead of shoving it. In the startup it holds back, so it reaches
+                                 // the lead at startup's end from any distance its leap can cover by then (room up to
+                                 // lunge * startup / (startup + active)); farther off it springs at once and falls
+                                 // short. Only the lead stops it: a lunge at the ally runs its length. Off (the
+                                 // default): the lunge runs its length and the push splits any overlap
     std::array<ArenaEnemyMove, kMaxArenaMoves> moves{};
     std::uint8_t moveCount = 1;
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.

@@ -3560,6 +3560,25 @@ struct ArenaFightImpl {
         if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
             vel = arenaScaled(foe.facing, a.lunge / span * moving / dt);
+            const ArenaEnemyKind& k = def.enemies[i];
+            if (k.lungeToContact) {
+                // Its closing on the lead this step stops where the push would hold it (first tooth contact).
+                const Vec2 to = arenaSub(pl.pos, foe.pos);
+                const float apart = std::sqrt(arenaDot(to, to));
+                const float contact = std::max(0.f, fi.bodyRadius - k.contactInset) + arenaBodyReach(k);
+                const float closing = apart > kArenaEps ? arenaDot(vel, to) / apart * dt : 0.f;
+                const float room = std::max(0.f, apart - contact);
+                // In the startup it holds back what the leap at full rate still closes by startup's end (its facing's
+                // share toward the lead), so the jaws reach the lead as the bite lands: it crouches, then springs.
+                // That holds from any distance the leap can still cover by then (room <= lunge * startup / span);
+                // farther off it springs from the first tick and falls short.
+                float allowed = room;
+                if (a1 < a.startup) {
+                    const float toward = apart > kArenaEps ? std::max(0.f, arenaDot(foe.facing, to) / apart) : 1.f;
+                    allowed = std::max(0.f, room - a.lunge / span * (a.startup - a1) * toward);
+                }
+                if (closing > allowed) vel = arenaScaled(vel, allowed / closing);
+            }
         }
         foe.stateTime = a1;
         if (foe.readRight && a1 >= span) { // the read move is spent: the partner's counter
@@ -3578,7 +3597,11 @@ struct ArenaFightImpl {
         const float goal = foe.token ? pick.goal : k.preferredRange;
         const float error = distance - goal;
         if (std::fabs(error) <= kArenaEps) return Vec2{};
-        const float speed = std::min(distance > k.runRange ? k.runSpeed : k.walkSpeed, std::fabs(error) / dt);
+        // Walk inside runRange; with a trot, trot out to trotRange; run beyond.
+        float tier = k.runSpeed;
+        if (distance <= k.runRange) tier = k.walkSpeed;
+        else if (k.trotSpeed > 0.f && distance <= k.trotRange) tier = k.trotSpeed;
+        const float speed = std::min(tier, std::fabs(error) / dt);
         return arenaScaled(dir, error > 0.f ? speed : -speed);
     }
 
@@ -5316,8 +5339,9 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             jolt 0..kArenaMaxJolt degrees (ArenaImpact.h)
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
-//             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; contactInset 0..1, optional;
-//             height (0, 30] metres, optional
+//             runRange 0..100 and at least preferredRange; trotSpeed 0..50 (between walkSpeed and runSpeed when
+//             set) and trotRange 0..100 (at least runRange when trotSpeed is set), optional; lungeToContact,
+//             optional; bodyRadius (0, 5]; contactInset 0..1, optional; height (0, 30] metres, optional
 //             (see arenaEnemyHeight); moves 1..kMaxArenaMoves; accel 0..1000; bpm (0, 300], optional (see above);
 //             look, optional, the host's skinned figure for it: { "clips": a path in Data/ of 1..95 characters,
 //             "hover" 0..30 m, "scale" (0, 100], "yawOffset" -360..360 degrees } (clips required)
@@ -5622,7 +5646,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaUnknownKeys(j, path,
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "bodyLength",
-                      "contactInset", "moves",
+                      "contactInset", "trotSpeed", "trotRange", "lungeToContact", "moves",
                       "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
                       "breakDecay", "breakMove", "carry", "seatable", "boss", "breakValueAt", "breakPhaseEnds"},
                      false, warnings);
@@ -5639,6 +5663,9 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaNum(j, "turnRate", k.turnRate, 0, 100, true, path, errors);
     arenaNum(j, "preferredRange", k.preferredRange, 0, 100, true, path, errors);
     arenaNum(j, "runRange", k.runRange, 0, 100, false, path, errors);
+    arenaNum(j, "trotSpeed", k.trotSpeed, 0, 50, false, path, errors);
+    arenaNum(j, "trotRange", k.trotRange, 0, 100, false, path, errors);
+    arenaBool(j, "lungeToContact", k.lungeToContact, path, errors);
     arenaNum(j, "attackDelay", k.attackDelay, 0, 10, false, path, errors);
     arenaNum(j, "accel", k.accel, 0, 1000, false, path, errors);
     arenaNum(j, "bodyRadius", k.bodyRadius, 0, 5, true, path, errors);
@@ -5699,6 +5726,9 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaBool(j, "seatable", k.seatable, path, errors);
     arenaParseLook(j["look"], path + ".look", k.look, errors, warnings);
     if (k.runRange < k.preferredRange) errors.push_back(path + ".runRange: expected at least preferredRange");
+    if (k.trotSpeed > 0.f && k.trotRange < k.runRange) errors.push_back(path + ".trotRange: expected at least runRange");
+    if (k.trotSpeed > 0.f && (k.trotSpeed < k.walkSpeed || k.trotSpeed > k.runSpeed))
+        errors.push_back(path + ".trotSpeed: expected between walkSpeed and runSpeed");
 
     const JsonValue moves = j["moves"];
     if (moves.isAbsent()) return; // the one default move stays

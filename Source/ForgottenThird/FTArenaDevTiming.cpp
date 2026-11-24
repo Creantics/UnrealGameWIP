@@ -84,6 +84,8 @@ bool KindField(ftcore::ArenaEnemyKind& Kind, std::string_view Name, const ftcore
 		{"runRange", &ftcore::ArenaEnemyKind::runRange},
 		{"attackDelay", &ftcore::ArenaEnemyKind::attackDelay},
 		{"contactInset", &ftcore::ArenaEnemyKind::contactInset},
+		{"trotSpeed", &ftcore::ArenaEnemyKind::trotSpeed},
+		{"trotRange", &ftcore::ArenaEnemyKind::trotRange},
 	};
 	for (const FField& F : Fields)
 	{

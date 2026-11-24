@@ -4,7 +4,8 @@
 // changed. The file:
 //   { "kinds": { "<kind id>": { "<kind field>": n, ..., "moves": { "<move clip id>": { "<move field>": n, ... } } } },
 //     "clips": { "<clip table path, as the kind's look names it>": { "<clip id>": { "<clip field>": n | "asset" } } } }
-// Kind fields: walkSpeed, runSpeed, strafeSpeed, accel, turnRate, preferredRange, runRange, attackDelay. Move fields:
+// Kind fields: walkSpeed, runSpeed, strafeSpeed, accel, turnRate, preferredRange, runRange, attackDelay, contactInset,
+// trotSpeed, trotRange. Move fields:
 // startup, active, recovery, range, lunge, damage, poiseDamage, weight, cooldown, minRange, maxRange. Clip fields: length_s,
 // impact_s, speed_mps, blend_s, asset. Unknown names are logged as warnings and skipped.
 #pragma once
