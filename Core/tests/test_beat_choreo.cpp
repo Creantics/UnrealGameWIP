@@ -1229,3 +1229,94 @@ TEST_CASE("pickRunGait: walk to run above the midpoint, back below it, with a ba
     CHECK_FALSE(ftcore::pickRunGait(9.0, 3.0, 2.0, true));
     CHECK_FALSE(ftcore::pickRunGait(std::nan(""), 2.6, 5.5, true));
 }
+
+TEST_CASE("gait band: the Maw-Pup's walk, trot and gallop cover every speed unclamped, trot carrying 2.34 m/s") {
+    const double speeds[3] = {0.78, 2.6, 4.83};
+    const ftcore::GaitBand band = ftcore::planGaitBand(speeds, 3, 0.35);
+    REQUIRE(band.count == 3);
+    CHECK(band.covers);
+    // The band widened for walk to trot (x3.33 plus the margin both ways) and reaches down to the walk's start.
+    CHECK(band.maxRate / (0.35 / 0.78) >= (2.6 / 0.78) * 1.05 * 1.05);
+    CHECK(band.minRate == doctest::Approx(0.35 / 0.78));
+    for (int g = 0; g < 2; ++g) {
+        CAPTURE(g);
+        // Both rates at each switch are inside the band.
+        CHECK(band.up[g] <= speeds[g] * band.maxRate + 1e-9);
+        CHECK(band.down[g] >= speeds[g + 1] * band.minRate - 1e-9);
+        CHECK(band.down[g] < band.up[g]);
+    }
+    // Sweep up from the walk's start to the gallop's top and back down: every rate is the speed over the clip's own.
+    int g = 0;
+    const double top = speeds[2] * band.maxRate;
+    int ups = 0, downs = 0;
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = 0; i <= 2000; ++i) {
+            const double s = pass == 0 ? 0.35 + (top - 0.35) * i / 2000.0 : top - (top - 0.35) * i / 2000.0;
+            const int was = g;
+            g = ftcore::pickGait(band, g, s);
+            ups += g > was;
+            downs += g < was;
+            CAPTURE(s);
+            CHECK(ftcore::gaitRate(band, g, s) * speeds[g] == doctest::Approx(s).epsilon(1e-9));
+        }
+    CHECK(ups == 2);
+    CHECK(downs == 2);
+    // 2.34 m/s, slowing from the gallop or speeding up from the walk: the trot, at 0.9.
+    CHECK(ftcore::pickGait(band, 2, 2.34) == 1);
+    CHECK(ftcore::pickGait(band, 0, 2.34) == 1);
+    CHECK(ftcore::gaitRate(band, 1, 2.34) == doctest::Approx(0.9));
+    // The capture's own speeds: the walk at 0.78 plays at 1, the gallop at 4.83 at 1.
+    CHECK(ftcore::pickGait(band, 0, 0.78) == 0);
+    CHECK(ftcore::pickGait(band, 2, 4.83) == 2);
+}
+
+TEST_CASE("gait band: a span that fits the cap window is shifted into it, not refused") {
+    // 1 and 13 m/s need a span of 13 x 1.05^2 (about 14.3): widened evenly round [0.5, 1.6] its low end falls under
+    // kGaitRateFloor, but the span fits [0.25, 4], so the band moves up into it and still covers.
+    const double speeds[2] = {1.0, 13.0};
+    const ftcore::GaitBand b = ftcore::planGaitBand(speeds, 2, 0.0);
+    CHECK(b.covers);
+    CHECK(b.minRate >= ftcore::kGaitRateFloor - 1e-9);
+    CHECK(b.maxRate <= ftcore::kGaitRateCap + 1e-9);
+    CHECK(b.maxRate / b.minRate == doctest::Approx(13.0 * 1.05 * 1.05));
+    // Both rates at each switch point are unclamped.
+    for (const double s : {b.up[0], b.down[0]}) {
+        CHECK(s / speeds[0] <= b.maxRate + 1e-9);
+        CHECK(s / speeds[1] >= b.minRate - 1e-9);
+    }
+    // A span past the window is still refused.
+    const double far[2] = {1.0, 20.0};
+    CHECK_FALSE(ftcore::planGaitBand(far, 2, 0.0).covers);
+}
+
+TEST_CASE("gait band: hysteresis, two gaits, and bad input") {
+    // Walk 2.6 and run 5.5 fit the plain band: no widening, no floor.
+    const double two[2] = {2.6, 5.5};
+    const ftcore::GaitBand b2 = ftcore::planGaitBand(two, 2, 0.0);
+    CHECK(b2.count == 2);
+    CHECK(b2.minRate == doctest::Approx(ftcore::kGaitMinRate));
+    CHECK(b2.maxRate == doctest::Approx(ftcore::kGaitMaxRate));
+    const double mid = 0.5 * (b2.up[0] + b2.down[0]);
+    CHECK(ftcore::pickGait(b2, 0, mid) == 0); // between the switches each keeps what it was
+    CHECK(ftcore::pickGait(b2, 1, mid) == 1);
+    CHECK(ftcore::pickGait(b2, 0, b2.up[0] * 1.001) == 1);
+    CHECK(ftcore::pickGait(b2, 1, b2.down[0] * 0.999) == 0);
+    CHECK(ftcore::pickGait(b2, 1, std::nan("")) == 1);
+    CHECK(ftcore::pickGait(b2, 7, 1.0) == 0); // a stale pick is clamped first
+    // Nothing usable: no gaits; a speed of 0 or one not rising ends the list there.
+    const double bad[3] = {1.0, 0.9, 3.0};
+    CHECK(ftcore::planGaitBand(bad, 3, 0.0).count == 1);
+    const double zero[2] = {0.0, 2.0};
+    const ftcore::GaitBand none = ftcore::planGaitBand(zero, 2, 0.35);
+    CHECK(none.count == 0);
+    CHECK(ftcore::pickGait(none, 0, 2.0) == 0);
+    CHECK(ftcore::gaitRate(none, 0, 2.0) == 1.0);
+    CHECK(ftcore::planGaitBand(nullptr, 3, 0.0).count == 0);
+    // Gaits too far apart for the capped band: not covered, the rates held to the caps.
+    const double far[2] = {0.5, 20.0};
+    const ftcore::GaitBand wide = ftcore::planGaitBand(far, 2, 0.0);
+    CHECK_FALSE(wide.covers);
+    CHECK(wide.maxRate == doctest::Approx(ftcore::kGaitRateCap));
+    CHECK(wide.minRate == doctest::Approx(ftcore::kGaitRateFloor));
+    CHECK(ftcore::gaitRate(wide, 0, 100.0) == doctest::Approx(ftcore::kGaitRateCap));
+}

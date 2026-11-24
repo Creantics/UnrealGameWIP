@@ -1939,6 +1939,45 @@ TEST_CASE("arena special: balance (how often the gauge fills, its share of a fig
     CHECK(perFill <= 4.f);
 }
 
+TEST_CASE("arena special: the end stops short of a kind with a contactInset by the push's rule, the lead's circle less it") {
+    const ArenaSpecialTable specials = shippedSpecials();
+    const ArenaSpecialRules& m = specials.moves[0];
+    const auto run = [&](float inset, Vec2& hulk) {
+        ArenaDef def = fightOf({"hulk"});
+        def.enemies[0].contactInset = inset;
+        Rig r;
+        r.begin(def, 5);
+        REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+        r.tick();
+        r.bodies.player = Vec2{0.f, 0.f};
+        r.bodies.enemies[0] = Vec2{1.9f, 0.f};
+        r.tick();
+        hulk = r.bodies.enemies[0];
+        ArenaInput in;
+        in.special = kArenaPlayer;
+        in.specialTravel = m.endTravel;
+        r.tick(in);
+        REQUIRE(r.fight.frozen());
+        return r.fight.special();
+    };
+    const ArenaDef def = fightOf({"hulk"});
+    const float lead = def.fighter.bodyRadius;
+    const float body = def.enemies[0].bodyRadius;
+    const float inset = 0.2f;
+    REQUIRE(lead > inset);
+    const auto gap = [](Vec2 a, Vec2 b) { return std::hypot(a.x - b.x, a.y - b.y); };
+    Vec2 hulkPlain{}, hulkInset{};
+    const ArenaSpecialView plain = run(0.f, hulkPlain);
+    const ArenaSpecialView inside = run(inset, hulkInset);
+    REQUIRE(plain.travel < m.endTravel); // the test is a real one: the whole circle stops it short
+    // No inset: the whole circle, as before.
+    CHECK(gap(plain.end, hulkPlain) >= lead + body - 1e-4f);
+    // The inset: the lead may end that much nearer, as the push lets it stand, and no nearer.
+    CHECK(inside.travel > plain.travel + 0.1f);
+    CHECK(gap(inside.end, hulkInset) >= lead - inset + body - 1e-4f);
+    CHECK(gap(inside.end, hulkInset) < lead + body); // inside the whole circle: the inset was read
+}
+
 TEST_CASE("arena special: Core stops the end short of an enemy's body on the way, by the host's rule") {
     const ArenaSpecialTable specials = shippedSpecials();
     const ArenaSpecialRules& m = specials.moves[0];

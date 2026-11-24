@@ -677,6 +677,13 @@ struct ArenaEnemyKind {
                               // default): a circle of bodyRadius. Longer: a stadium, that circle swept along its facing
                               // (arenaBodySpan). Only the push apart and the walls read it: a blow's reach is still
                               // centre to centre against range + bodyRadius
+    float contactInset = 0.f; // m (0..1): how far its body may come inside the lead's circle (ArenaFighter::bodyRadius)
+                              // before the push holds them apart: a low body (a hound's head) meets the lead's legs,
+                              // well inside the circle the lead's arms and blows need. Only the push of this kind
+                              // against the player reads it (the lead's radius less it, never under 0); the lead's
+                              // own blows, the walls, the ally and the other enemies still see the whole circle;
+                              // a special's travel clears its body by the same rule. An
+                              // in-place bite sets it so the jaws close on the lead's legs at the clip's impact
     std::array<ArenaEnemyMove, kMaxArenaMoves> moves{};
     std::uint8_t moveCount = 1;
     float accel = 0.f;        // m/s^2: how fast its velocity moves toward the one it wants, both ways; 0: instant.
@@ -1955,14 +1962,16 @@ private:
 };
 
 // Moves `bodies` the way a host with no walls would: each body at its output velocity for dt, then
-// overlapping bodies pushed apart (the player's circle, each enemy's circle or stadium, arenaBodySpan; dead
-// enemies don't block), then everything kept inside the ring, then the settle (arenaSettleBodies). Tests, the balance
+// overlapping bodies pushed apart (the player's circle, less each kind's contactInset against that kind; each enemy's
+// circle or stadium, arenaBodySpan; dead enemies don't block), then everything kept inside the ring, then the settle
+// (arenaSettleBodies). Tests, the balance
 // check and headless runs use it in place of an engine. Deterministic; no allocation.
 FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt);
 
 // The push apart both arenaStep variants share: one pass of the player against each living enemy (unless
 // `withPlayer` is false: the frame a special's performer is placed) and each living pair of enemies, every
-// overlap split half each. Deterministic; no allocation.
+// overlap split half each. The player's circle against a kind is its radius less that kind's contactInset (never under
+// 0). Deterministic; no allocation.
 FTCORE_API void arenaPushApart(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer);
 
 // Which bodies a wall moved this step (ArenaBodies' order: the player, then the enemies): the settle's input.

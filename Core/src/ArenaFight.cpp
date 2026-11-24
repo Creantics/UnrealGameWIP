@@ -3996,7 +3996,9 @@ struct ArenaFightImpl {
                     for (std::size_t i = 0; i < n; ++i) {
                         if (!alive(i)) continue;
                         const Vec2 d = arenaSub(p, foes[i].pos);
-                        const float need = radius + def.enemies[i].bodyRadius;
+                        // The lead's circle less the kind's contactInset, as the push holds them.
+                        const float own = player ? std::max(0.f, radius - def.enemies[i].contactInset) : radius;
+                        const float need = own + def.enemies[i].bodyRadius;
                         if (arenaDot(d, d) < need * need) {
                             share = std::max(0.f, static_cast<float>(k - 1) / static_cast<float>(steps) - kSpecialEndShort);
                             break;
@@ -5231,7 +5233,8 @@ bool arenaPushWalk(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer
     bool pushed = false;
     for (std::size_t i = 0; i < n && withPlayer; ++i)
         if (fight.enemyAlive(i))
-            pushed |= arenaPushPair(bodies.player, playerRadius, ArenaSpine{bodies.player, Vec2{1.f, 0.f}, 0.f}, bodies.enemies[i],
+            pushed |= arenaPushPair(bodies.player, std::max(0.f, playerRadius - def.enemies[i].contactInset),
+                          ArenaSpine{bodies.player, Vec2{1.f, 0.f}, 0.f}, bodies.enemies[i],
                           def.enemies[i].bodyRadius, spine(i),
                           share(held && held->player, held && held->enemies[i]), floor);
     for (std::size_t i = 0; i < n; ++i) {
@@ -5313,7 +5316,8 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             jolt 0..kArenaMaxJolt degrees (ArenaImpact.h)
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
-//             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; height (0, 30] metres, optional
+//             runRange 0..100 and at least preferredRange; bodyRadius (0, 5]; contactInset 0..1, optional;
+//             height (0, 30] metres, optional
 //             (see arenaEnemyHeight); moves 1..kMaxArenaMoves; accel 0..1000; bpm (0, 300], optional (see above);
 //             look, optional, the host's skinned figure for it: { "clips": a path in Data/ of 1..95 characters,
 //             "hover" 0..30 m, "scale" (0, 100], "yawOffset" -360..360 degrees } (clips required)
@@ -5618,7 +5622,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaUnknownKeys(j, path,
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "bodyLength",
-                      "moves",
+                      "contactInset", "moves",
                       "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
                       "breakDecay", "breakMove", "carry", "seatable", "boss", "breakValueAt", "breakPhaseEnds"},
                      false, warnings);
@@ -5645,6 +5649,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         k.bodyLength < 2.f * k.bodyRadius)
         errors.push_back(path + ".bodyLength: expected 0 (a circle) or at least 2 x bodyRadius (" +
                          arenaFormat(2.0 * k.bodyRadius) + ")");
+    arenaNum(j, "contactInset", k.contactInset, 0, 1, false, path, errors);
     arenaNum(j, "bpm", k.bpm, 0, 300, true, path, errors);
     arenaNum(j, "flinchTime", k.flinchTime, 0, 10, false, path, errors);
     arenaNum(j, "flinchPoise", k.flinchPoise, 0, 100000, false, path, errors);
