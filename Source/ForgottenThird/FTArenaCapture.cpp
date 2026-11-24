@@ -2,6 +2,8 @@
 
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
@@ -100,7 +102,7 @@ bool FFTArenaCapture::Begin()
 	Log = IFileManager::Get().CreateFileWriter(*LogFile);
 	if (Log)
 	{
-		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,hits\n";
+		const char Head[] = "frame,t,brain,part,move,clip,clip_at,rate,ground,vx,vy,dist,lead,hits,muzzle_gap,gap_to,muzzle_fwd,muzzle_up\n";
 		Log->Serialize(const_cast<char*>(Head), sizeof(Head) - 1);
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture on: views %d (%s), recording %s (%s view, %.2f to %.2f s), log %s."), ShotAt.Num(),
@@ -207,6 +209,50 @@ void FFTArenaCapture::Shoot(UWorld& World, const FString& File) const
 	}
 }
 
+void FFTArenaCapture::FindMuzzle(const USkeletalMeshComponent& Skin)
+{
+	bMuzzleTried = true;
+	const USkeletalMesh* Mesh = Skin.GetSkeletalMeshAsset();
+	if (!Mesh)
+	{
+		return;
+	}
+	const FReferenceSkeleton& Ref = Mesh->GetRefSkeleton();
+	int32 Snout = Ref.FindBoneIndex(TEXT("jaw_upper"));
+	if (Snout == INDEX_NONE)
+	{
+		Snout = Ref.FindBoneIndex(TEXT("head"));
+	}
+	const int32 Pelvis = Ref.FindBoneIndex(TEXT("pelvis"));
+	if (Snout == INDEX_NONE || Pelvis == INDEX_NONE)
+	{
+		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: host capture: no jaw_upper/head or pelvis bone, so no muzzle columns."));
+		return;
+	}
+	const TArray<FTransform>& Pose = Ref.GetRefBonePose();
+	auto AtRest = [&Ref, &Pose](int32 Bone)
+	{
+		FTransform T = FTransform::Identity;
+		for (; Bone != INDEX_NONE; Bone = Ref.GetParentIndex(Bone))
+		{
+			T = T * Pose[Bone];
+		}
+		return T;
+	};
+	const FTransform SnoutAt = AtRest(Snout);
+	// Forward is the mesh axis the snout lies along from the pelvis; the tip sits at the front face of the rest bounds.
+	const FVector Ahead = SnoutAt.GetLocation() - AtRest(Pelvis).GetLocation();
+	const FVector Forward = FMath::Abs(Ahead.X) >= FMath::Abs(Ahead.Y) ? FVector(Ahead.X >= 0.0 ? 1.0 : -1.0, 0.0, 0.0)
+																	   : FVector(0.0, Ahead.Y >= 0.0 ? 1.0 : -1.0, 0.0);
+	const FBoxSphereBounds Bounds = Mesh->GetImportedBounds();
+	const double Front = FVector::DotProduct(Bounds.Origin, Forward) + FMath::Abs(FVector::DotProduct(Bounds.BoxExtent, Forward));
+	const FVector Tip = SnoutAt.GetLocation() + Forward * (Front - FVector::DotProduct(SnoutAt.GetLocation(), Forward));
+	MuzzleBone = Snout;
+	MuzzleLocal = SnoutAt.InverseTransformPosition(Tip);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: host capture: muzzle tip on %s, %.1f cm ahead of it at rest (mesh forward %s)."),
+		*Ref.GetBoneName(Snout).ToString(), Front - FVector::DotProduct(SnoutAt.GetLocation(), Forward), *Forward.ToString());
+}
+
 void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 {
 	if (!Log)
@@ -246,11 +292,49 @@ void FFTArenaCapture::WriteRow(const UFTArenaRunner& Runner, int32 Frame)
 		PartText[PN] = static_cast<char>(Part[PN]);
 	}
 	PartText[PN] = '\0';
-	char Row[320];
-	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d\n", Frame,
+	// The muzzle: the tip's gap to the lead's body (its physics shapes, else its nearest bone), how far ahead of the enemy's
+	// root it is along the line to the lead, and its height over the root. -1 gap when there is no skin to measure.
+	double MuzzleGap = -1.0;
+	double MuzzleFwd = 0.0;
+	double MuzzleUp = 0.0;
+	char GapTo = '-';
+	const USkeletalMeshComponent* PupSkin = EnemyFigure ? EnemyFigure->GetSkin() : nullptr;
+	if (PupSkin && !bMuzzleTried)
+	{
+		FindMuzzle(*PupSkin);
+	}
+	if (PupSkin && Lead && MuzzleBone != INDEX_NONE && MuzzleBone < PupSkin->GetNumBones())
+	{
+		const FVector Tip = PupSkin->GetBoneTransform(MuzzleBone).TransformPosition(MuzzleLocal);
+		const FVector Root = EnemyFigure->GetActorLocation();
+		const FVector Line = (Lead->GetActorLocation() - Root).GetSafeNormal2D();
+		MuzzleFwd = FVector::DotProduct(Tip - Root, Line) / 100.0;
+		MuzzleUp = (Tip.Z - Root.Z) / 100.0;
+		if (const USkeletalMeshComponent* LeadSkin = Lead->GetLeadSkin())
+		{
+			FClosestPointOnPhysicsAsset Closest;
+			if (LeadSkin->GetClosestPointOnPhysicsAsset(Tip, Closest, false))
+			{
+				MuzzleGap = Closest.Distance / 100.0;
+				GapTo = 'p';
+			}
+			else
+			{
+				double Best = 1e12;
+				for (int32 B = 0; B < LeadSkin->GetNumBones(); ++B)
+				{
+					Best = FMath::Min(Best, FVector::DistSquared(Tip, LeadSkin->GetBoneTransform(B).GetLocation()));
+				}
+				MuzzleGap = Best < 1e12 ? FMath::Sqrt(Best) / 100.0 : -1.0;
+				GapTo = 'b';
+			}
+		}
+	}
+	char Row[384];
+	const int Len = std::snprintf(Row, sizeof(Row), "%d,%.4f,%s,%s,%u,%s,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%d,%.3f,%c,%.3f,%.3f\n", Frame,
 		static_cast<double>(Fight.time()), ftcore::arenaBrainName(Enemy.brain), PartText, static_cast<unsigned>(Enemy.move), ClipName,
 		static_cast<double>(Clip.At), static_cast<double>(Clip.Rate), static_cast<double>(Clip.Ground), static_cast<double>(Enemy.velocity.x),
-		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Hits);
+		static_cast<double>(Enemy.velocity.y), Dist, ftcore::arenaActionName(Out.player.action), Hits, MuzzleGap, GapTo, MuzzleFwd, MuzzleUp);
 	if (Len > 0)
 	{
 		Log->Serialize(Row, FMath::Min(Len, static_cast<int>(sizeof(Row)) - 1));

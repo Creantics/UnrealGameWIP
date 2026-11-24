@@ -6,8 +6,9 @@
 //     close sets it about 1 m off the enemy's flank at its body height, far frames the enemy and the lead together from
 //     arena distance. Run it with -benchmark -fps=<n> for a fixed step, so the frames play back at native speed.
 // Both write <prefix>_frames.csv: one row a frame (fight time, enemy 0's brain, part, move, clip, clip time, rate, ground
-// speed, velocity, distance to the lead, the lead's action, and the tick's hit events), which drives the captions. The row is
-// formatted into a fixed buffer: no allocation per frame.
+// speed, velocity, distance to the lead, the lead's action, and the tick's hit events), which drives the captions, then the
+// muzzle: its tip's gap to the lead's body, how far ahead of the enemy's root it is along the line to the lead, and its height.
+// The row is formatted into a fixed buffer: no allocation per frame.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -17,6 +18,7 @@ class UFTArenaRunner;
 class ACameraActor;
 class APlayerController;
 class FArchive;
+class USkeletalMeshComponent;
 
 class FFTArenaCapture
 {
@@ -34,6 +36,8 @@ private:
 	bool AimSide(UWorld& World, APlayerController& PC, const UFTArenaRunner& Runner, bool bClose);
 	void WriteRow(const UFTArenaRunner& Runner, int32 Frame);
 	void Shoot(UWorld& World, const FString& File) const;
+	// Once per run: the tip of the snout, fixed to the upper jaw (jaw_upper, else head) at the front of the mesh's rest bounds.
+	void FindMuzzle(const USkeletalMeshComponent& Skin);
 
 	bool bOn = false;
 	FString ShotPrefix;
@@ -47,6 +51,10 @@ private:
 	double RecFrom = 0.0;
 	double RecTo = 1e9;
 	int32 RecFrames = 0;
+
+	bool bMuzzleTried = false;
+	int32 MuzzleBone = INDEX_NONE;
+	FVector MuzzleLocal = FVector::ZeroVector; // the tip in MuzzleBone's space
 
 	FArchive* Log = nullptr;
 	int32 Rows = 0;
