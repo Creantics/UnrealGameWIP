@@ -12,6 +12,7 @@
 #include "Misc/Paths.h"
 
 #include "ForgottenThird.h"
+#include "FTArenaDevTiming.h"
 #include "FTArenaFighter.h"
 #include "FTArenaHUD.h"
 #include "FTArenaRunner.h"
@@ -69,6 +70,7 @@ const UFTArenaRunner* AFTArenaHost::GetRunner() const
 
 void AFTArenaHost::EndPlay(const EEndPlayReason::Type Reason)
 {
+	Capture.End(nullptr);
 	if (bRegistered)
 	{
 		if (UFTStepHostSubsystem* Hosts = GetWorld() ? GetWorld()->GetSubsystem<UFTStepHostSubsystem>() : nullptr)
@@ -114,6 +116,7 @@ bool AFTArenaHost::LoadTables()
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(W));
 	}
 	bTablesLoaded = true;
+	FTArenaDevTiming::ApplyKinds(Table, TEXT("host")); // -ArenaMoveTiming, a capture switch; nothing without it
 	const UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();
 	Bytes.Reset();
 	Error.clear();
@@ -164,6 +167,29 @@ bool AFTArenaHost::BuildFight(const AFTExploreCharacter& Body, int32 District, c
 		}
 	}
 
+#if !UE_BUILD_SHIPPING
+	// Capture switches, as on Demo_Arena: -ArenaLineup=<kind,...> in place of the zone's line-up, and -ArenaSpawn=<m> for how
+	// far in front of the lead the enemies start. Never in a shipping build.
+	FString LineupFlag;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaLineup="), LineupFlag, false) && !LineupFlag.TrimStartAndEnd().IsEmpty())
+	{
+		TArray<FString> Ids;
+		LineupFlag.ParseIntoArray(Ids, TEXT(","), true);
+		Spec.bosses.clear();
+		for (const FString& Id : Ids)
+		{
+			Spec.bosses.push_back(FT::ToUtf8(Id.TrimStartAndEnd()));
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaLineup: the host fields %s."), *LineupFlag);
+	}
+	float SpawnFlag = 0.f;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaSpawn="), SpawnFlag) && SpawnFlag > 0.f)
+	{
+		Spec.spawn = SpawnFlag;
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaSpawn: the enemies start %.2f m from the lead (before the fit)."), SpawnFlag);
+	}
+#endif
+
 	// The lead's own kit (its attacks and its blocks), as the arena demo picks it.
 	Def = bTablesLoaded ? Table.fallback : ftcore::defaultArenaDef();
 	const TArray<FFTLeadLook>& Party = Body.PartyLooks;
@@ -210,6 +236,26 @@ bool AFTArenaHost::BuildFight(const AFTExploreCharacter& Body, int32 District, c
 			Def.attackers = static_cast<uint8>(FMath::Clamp(Spec.attackers > 0 ? Spec.attackers : 1, 1, Count));
 		}
 	}
+#if !UE_BUILD_SHIPPING
+	// -ArenaOnlyMove=<slot>:<move>, as on Demo_Arena: the slot's enemy keeps only that move of its kind.
+	FString OnlyMove;
+	FString SlotText, MoveText;
+	if (FParse::Value(FCommandLine::Get(), TEXT("ArenaOnlyMove="), OnlyMove, false) && OnlyMove.Split(TEXT(":"), &SlotText, &MoveText))
+	{
+		const int32 Slot = FCString::Atoi(*SlotText);
+		const int32 Move = FCString::Atoi(*MoveText);
+		if (Slot >= 0 && Slot < static_cast<int32>(Def.enemyCount))
+		{
+			ftcore::ArenaEnemyKind& Kind = Def.enemies[static_cast<size_t>(Slot)];
+			if (Move >= 0 && Move < static_cast<int32>(Kind.moveCount))
+			{
+				Kind.moves[0] = Kind.moves[static_cast<size_t>(Move)];
+				Kind.moveCount = 1;
+				UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaOnlyMove: enemy %d keeps only its move %d."), Slot, Move);
+			}
+		}
+	}
+#endif
 	if (Def.enemyCount == 0)
 	{
 		return false;
@@ -337,6 +383,7 @@ void AFTArenaHost::StartStepHere()
 	Runner->RegisterComponent();
 	bFighting = true;
 	Runner->Begin(Setup);
+	Capture.Begin();
 }
 
 void AFTArenaHost::StepOut(AFTExploreCharacter& Body)
@@ -384,6 +431,13 @@ void AFTArenaHost::Tick(float DeltaSeconds)
 		return;
 	}
 	Runner->TickFight(DeltaSeconds, false);
+	if (Capture.IsOn())
+	{
+		if (APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+		{
+			Capture.Tick(*GetWorld(), *PC, *Runner);
+		}
+	}
 	const double Hold = Runner->IsAutoPlay() ? kArenaHostAutoHold : kArenaHostHold;
 	if (Runner->IsFinished() && Runner->GetResultAge() >= Hold && !bFinished)
 	{
@@ -440,6 +494,7 @@ void AFTArenaHost::EndInPlace()
 void AFTArenaHost::Finish()
 {
 	bFinished = true;
+	Capture.End(GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr);
 	const bool bWon = Runner && Runner->GetFight().phase() == ftcore::ArenaPhase::Victory;
 	EndInPlace();
 	UFTGameInstance* GI = GetGameInstance<UFTGameInstance>();

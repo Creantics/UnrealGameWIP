@@ -14,6 +14,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Engine/World.h"
 #include "FTActionButtons.h"
+#include "FTArenaDevTiming.h"
 #include "FTArenaFighter.h"
 #include "FTAudioSubsystem.h"
 #include "FTArenaJoltModifier.h"
@@ -1159,6 +1160,7 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s: %s"), *TablePath, *FT::ToFString(W));
 	}
+	FTArenaDevTiming::ApplyClips(*Skin.Clips, TablePath, I); // -ArenaMoveTiming, a capture switch; nothing without it
 	const auto LoadAsset = [](const FString& Package) -> UObject*
 	{
 		return Package.IsEmpty() ? nullptr : StaticLoadObject(UObject::StaticClass(), nullptr, *(Package + TEXT(".") + FPackageName::GetShortName(Package)), nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -1258,6 +1260,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	double Time = 0.0;
 	bool bHoldRoot = true;
 	float MoveRate = 0.f; // a move's clip's playing rate, else 0
+	float GaitRate = 0.f; // the walk's or run's playing rate while it walks, else 0
 	const bool bStone = I == StoneBearerSlot;
 	if (bStone && Skin.Walk >= 0 && bWalking[I])
 	{
@@ -1284,6 +1287,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			const int32 Gait = bRunning[I] ? Skin.Run : Skin.Walk;
 			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Gait)].speed);
 			const float Rate = FMath::Clamp(WalkSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate);
+			GaitRate = Rate;
 			if (bWas && bRan != bRunning[I])
 			{
 				// The gait changes: carry the stride's phase across, as a share of each cycle, so the feet don't jump.
@@ -1626,7 +1630,26 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	const bool bLoop = (Row.loop || bBossLoop) && !bTimed;
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
 	const double Blend = Row.blend > 0.0 ? Row.blend : Skin.Clips->blend;
+	SkinAt[I] = At;
+	SkinRate[I] = MoveRate > 0.f ? MoveRate : ((Clip == Skin.Walk || Clip == Skin.Run) && GaitRate > 0.f ? GaitRate : 1.f);
 	Figure->PlayClip(Sequence, At, bLoop, ClipDelta, bHoldRoot, static_cast<float>(Blend), Row.additiveIn);
+}
+
+UFTArenaRunner::FEnemyClipNow UFTArenaRunner::GetEnemyClipNow(int32 I) const
+{
+	FEnemyClipNow Now_;
+	if (I < 0 || I >= MaxEnemies)
+	{
+		return Now_;
+	}
+	const FFTArenaSkin& Skin = Skins[I];
+	Now_.Sequence = Skin.IsLoaded() && Skin.Sequences.IsValidIndex(SkinClip[I]) ? Skin.Sequences[SkinClip[I]].Get() : nullptr;
+	Now_.At = SkinAt[I];
+	Now_.Rate = SkinRate[I];
+	Now_.Ground = WalkSpeed[I];
+	Now_.bWalk = bWalking[I];
+	Now_.bRun = bRunning[I];
+	return Now_;
 }
 
 void UFTArenaRunner::PutBodiesAtStart()

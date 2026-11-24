@@ -257,6 +257,18 @@ public:
 	AFTArenaFighter* GetEnemyFigure(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? EnemyFigures[Index].Get() : nullptr; }
 	// The move enemy Index is in (its attack's numbers), or null when it isn't attacking.
 	const ftcore::ArenaEnemyMove* GetEnemyMove(int32 Index) const;
+	// For a capture's per-frame log (FFTArenaCapture): the clip enemy I plays this frame, where in it (s), at what rate, its
+	// smoothed ground speed (m/s), and whether it walks or runs.
+	struct FEnemyClipNow
+	{
+		const UAnimSequence* Sequence = nullptr;
+		float At = 0.f;
+		float Rate = 0.f;
+		float Ground = 0.f;
+		bool bWalk = false;
+		bool bRun = false;
+	};
+	FEnemyClipNow GetEnemyClipNow(int32 I) const;
 	// When enemy Index's current attack went active (far in the past when it hasn't this attack).
 	double GetEnemyActiveSince(int32 Index) const { return (Index >= 0 && Index < MaxEnemies) ? ActiveSince[Index] : -1e9; }
 	// Off-frame tells (ftcore::arenaOffFrameTells, from the camera's place, facing and field of view): whether enemy Index
@@ -859,6 +871,9 @@ private:
 	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
 	bool bWalking[ftcore::kMaxArenaEnemies] = {};
 	bool bRunning[ftcore::kMaxArenaEnemies] = {}; // walking on the run clip
+	// Where in its clip each skin was last posed (s), and at what rate (a move's clip rate, a gait's, else 1): GetEnemyClipNow.
+	float SkinAt[ftcore::kMaxArenaEnemies] = {};
+	float SkinRate[ftcore::kMaxArenaEnemies] = {};
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
 	// A step back's ground speed (m/s), from its SteppedBack event: the walk clip plays backward at it.
 	float StepBackSpeed[ftcore::kMaxArenaEnemies] = {};

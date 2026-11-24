@@ -18,6 +18,7 @@
 #include "Engine/GameViewportClient.h"
 #include "UnrealClient.h"
 #include "Engine/World.h"
+#include "FTArenaDevTiming.h"
 #include "FTArenaFighter.h"
 #include "FTArenaHUD.h"
 #include "FTArenaRunner.h"
@@ -387,6 +388,7 @@ bool AFTArenaGameMode::LoadTable()
 	{
 		UE_LOG(LogForgottenThird, Warning, TEXT("Arena: %s"), *FT::ToFString(W));
 	}
+	FTArenaDevTiming::ApplyKinds(Table, TEXT("Demo_Arena")); // -ArenaMoveTiming, a capture switch; nothing without it
 	return true;
 }
 

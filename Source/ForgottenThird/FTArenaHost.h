@@ -19,6 +19,8 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
+#include "FTArenaCapture.h"
+
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaZone.h"
 
@@ -80,4 +82,6 @@ private:
 	bool bFighting = false;
 	bool bFinished = false;
 	bool bHasStep = false;
+	// -ArenaShot / -ArenaRec review captures of the fight (never in a shipping build).
+	FFTArenaCapture Capture;
 };
