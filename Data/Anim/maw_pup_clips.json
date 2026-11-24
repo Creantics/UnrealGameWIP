@@ -19,6 +19,14 @@
    "loop": true
   },
   {
+   "id": "trot",
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Trot",
+   "length_s": 0.333,
+   "impact_s": 0,
+   "speed_mps": 2.6,
+   "loop": true
+  },
+  {
    "id": "run",
    "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Gallop",
    "length_s": 0.4,

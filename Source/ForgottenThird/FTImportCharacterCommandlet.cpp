@@ -7,6 +7,7 @@
 #include "AssetImportTask.h"
 #include "AssetToolsModule.h"
 #include "Animation/MorphTarget.h"
+#include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "FTText.h"
 #include "IAssetTools.h"
@@ -36,6 +37,35 @@ bool CheckRig(const USkeletalMesh& Mesh, bool bCheckFace)
 		}
 	}
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: %s has %d morph targets."), *Mesh.GetPathName(), Morphs.Num());
+	// Each morph at weight 1: how many LOD 0 vertices it moves, the largest move and the mean move (cm), so a morph that
+	// imports empty or flat shows here. The skeleton's curve of that name must be flagged as a morph curve to drive it.
+	const USkeleton* Skel = Mesh.GetSkeleton();
+	for (const UMorphTarget* Morph : Mesh.GetMorphTargets())
+	{
+		if (!Morph)
+		{
+			continue;
+		}
+		const TConstArrayView<FMorphTargetDelta> Deltas = Morph->GetMorphTargetDeltas(0);
+		double Largest = 0.0;
+		FVector Mean = FVector::ZeroVector;
+		int32 Moved = 0;
+		for (const FMorphTargetDelta& Delta : Deltas)
+		{
+			const FVector Move(Delta.PositionDelta);
+			if (Move.SizeSquared() > 1e-6)
+			{
+				++Moved;
+				Mean += Move;
+				Largest = FMath::Max(Largest, Move.Size());
+			}
+		}
+		Mean = Moved > 0 ? Mean / Moved : Mean;
+		const FCurveMetaData* Meta = Skel ? Skel->GetCurveMetaData(Morph->GetFName()) : nullptr;
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: morph %s moves %d vertices at weight 1, largest %.1f cm, mean move %s cm; skeleton curve %s."),
+			*Morph->GetName(), Moved, Largest, *Mean.ToString(),
+			Meta ? (Meta->Type.bMorphtarget ? TEXT("flagged as a morph curve") : TEXT("present, not flagged as a morph curve")) : TEXT("absent"));
+	}
 
 	const FReferenceSkeleton& Skeleton = Mesh.GetRefSkeleton();
 	int32 BonesFound = 0;
