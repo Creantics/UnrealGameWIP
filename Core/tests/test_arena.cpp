@@ -11002,6 +11002,28 @@ TEST_CASE("arena aim shift: along the lead's right, square to the line, none sid
     CHECK(arenaAimShift(enemy, lead, Vec2{}, 0.04f, 1.f).y == 0.f);
 }
 
+TEST_CASE("arena side convention: a lead's right is its facing turned a quarter, x toward y, at every heading") {
+    // The pinned sign for every lateral aim: the ground plane has y to the right of x (the host draws ground (x, y) as
+    // Unreal's (X, Y), Y to the right of X looking down -Z), so a lead facing f has its right at {-f.y, f.x} and its
+    // left thigh on the -right side. A positive aimSide moves the drawn enemy toward the lead's right, which, with
+    // the enemy facing the lead, is the enemy's own left.
+    struct Heading { Vec2 facing, right; };
+    const Heading headings[] = {{{1.f, 0.f}, {0.f, 1.f}}, {{0.f, 1.f}, {-1.f, 0.f}}, {{-1.f, 0.f}, {0.f, -1.f}},
+                                {{0.f, -1.f}, {1.f, 0.f}}};
+    for (const Heading& h : headings) {
+        CAPTURE(h.facing.x);
+        CAPTURE(h.facing.y);
+        const Vec2 lead{0.f, 0.f};
+        const Vec2 enemy{h.facing.x * 0.75f, h.facing.y * 0.75f}; // straight in front of the lead
+        const Vec2 s = arenaAimShift(enemy, lead, h.facing, 0.04f, 1.f);
+        CHECK(s.x == doctest::Approx(h.right.x * 0.04f).epsilon(1e-6));
+        CHECK(s.y == doctest::Approx(h.right.y * 0.04f).epsilon(1e-6));
+        // The enemy faces the lead (-f): its right is {-(-f).y, (-f).x} = {f.y, -f.x}, so the shift is along its left.
+        const Vec2 enemyRight{h.facing.y, -h.facing.x};
+        CHECK(s.x * enemyRight.x + s.y * enemyRight.y == doctest::Approx(-0.04f));
+    }
+}
+
 TEST_CASE("arena aim weight: held through an unseen hold, in over the startup, shut to mid-recovery, out by its end") {
     ArenaAttack a;
     a.startup = 1.2f;
