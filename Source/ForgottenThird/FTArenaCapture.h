@@ -45,6 +45,9 @@ private:
 	// The front of each of the lead's legs at height Z (world cm, a 4 cm band): over every visible skinned vertex (as
 	// ClosestSkinVertex) in the band, the one least far ahead of Origin along Fwd on each side of Fwd (left: +Left).
 	// Out: forward then side (cm, from Origin, side + = left), for the left then the right; false when a side has none.
+	// One pass over every visible skinned vertex on Lead: for each of Num points, the signed distance (cm) to the closest
+	// vertex, negative when the point is behind that vertex's skinned normal (inside the surface). -1e9 with no mesh.
+	void SignedSkinDistances(const AActor& Lead, const FVector* Points, int32 Num, double* OutCm);
 	bool LegFronts(const AActor& Lead, const FVector& Origin, const FVector& Fwd, double Z, double Out[4]);
 
 	bool bOn = false;
