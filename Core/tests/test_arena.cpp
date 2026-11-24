@@ -289,8 +289,20 @@ TEST_CASE("arena data: every enemy attack telegraphs for at least 0.35 s, and a 
     kinds.push_back(defaultArenaDef().enemies[0]); // the built-in fight's enemy follows the same rule
     for (std::size_t e = 0; e < kinds.size(); ++e) {
         const ArenaEnemyKind& k = kinds[e];
-        // The skinned boss's timings are authored move by move (to its animations), not by that ladder.
-        const bool authored = e < table.enemyIds.size() && table.enemyIds[e] == "kite_boss";
+        // The skinned boss's timings are authored move by move (to its animations), not by that ladder; so are the
+        // maw_pup's, each startup its clip's bite time at a rate near 1 (pinned by its own clip-rate test), which puts
+        // the light nip's long windup (1.2 s) past the pounce's (0.8 s). That order is deliberate and pinned here.
+        if (e < table.enemyIds.size() && table.enemyIds[e] == "maw_pup") {
+            float nip = 0.f, pounce = 0.f;
+            for (std::size_t a = 0; a < k.moveCount; ++a) {
+                if (k.moves[a].clip() == "nip") nip = k.moves[a].attack.startup;
+                if (k.moves[a].clip() == "pounce") pounce = k.moves[a].attack.startup;
+            }
+            CHECK(pounce > 0.f);
+            CHECK(pounce < nip);
+        }
+        const bool authored =
+            e < table.enemyIds.size() && (table.enemyIds[e] == "kite_boss" || table.enemyIds[e] == "maw_pup");
         for (std::size_t a = 0; a < k.moveCount; ++a) {
             CHECK(k.moves[a].attack.startup >= 0.35f);
             for (std::size_t b = 0; b < k.moveCount && !authored; ++b)
@@ -6858,7 +6870,7 @@ TEST_CASE("arena hooks: a hold the hook asks while holds apply waits a tick, and
 }
 
 // The bigger move cap is fixed storage: these ceilings make the next bump a deliberate one (MSVC x64 now: ArenaDef
-// 23728 bytes, ArenaFight 33128 with the special's block).
+// 24496 bytes, 80 under its cap since the attack's aimSide, ArenaFight 33944 with the special's block).
 static_assert(sizeof(ArenaDef) <= 24 * 1024, "ArenaDef grew: check kMaxArenaMoves and the enemy kinds");
 static_assert(sizeof(ArenaFight) <= 36 * 1024, "ArenaFight grew: check kMaxArenaMoves and the Read pool");
 
@@ -10752,14 +10764,59 @@ TEST_CASE("arena maw_pup: it walks in to its nip's band without shoving the lead
     CHECK(hit->event.target == kArenaPlayer);
 }
 
+TEST_CASE("arena maw_pup: a lead who does nothing, standing or keeping at the pup's jaws: each move's bites in 30 s "
+          "(report)") {
+    // The 11-24 balance read on the Nip's windup, the pup's own pressure with no player attack in the way: per move,
+    // the bites begun and landed and the hp taken, the pup starting 3 m out. Standing: the lead never moves. Keeping:
+    // after every step the lead is put back at the pup's contact distance (on the same line) if it stands further
+    // off, as a lead who keeps at the jaws.
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    for (int keep = 0; keep < 2; ++keep) {
+        for (const char* lead : {"devin", "duy", "third"}) {
+            CAPTURE(lead);
+            CAPTURE(keep);
+            const float contact =
+                arenaBodyReach(pup) + std::max(0.f, t.fighter(lead).bodyRadius - pup.contactInset);
+            Rig rig(t.fighter(lead), {pup});
+            rig.put(0, 3.f, 0.f);
+            const int ticks = static_cast<int>(std::lround(30.f / kDt));
+            for (int i = 0; i < ticks && rig.fight.phase() == ArenaPhase::Fighting; ++i) {
+                rig.tick();
+                arenaStep(rig.fight, rig.bodies, kDt);
+                const Vec2 pupAt = rig.bodies.enemies[0];
+                const Vec2 off{rig.bodies.player.x - pupAt.x, rig.bodies.player.y - pupAt.y};
+                const float len = std::hypot(off.x, off.y);
+                if (keep == 1 && len > contact) {
+                    rig.bodies.player = Vec2{pupAt.x + off.x / len * contact, pupAt.y + off.y / len * contact};
+                }
+            }
+            int begun[2] = {0, 0}, landed[2] = {0, 0}, taken[2] = {0, 0};
+            for (const Logged& l : rig.log) {
+                if (l.event.source != 0 || l.event.move > 1) continue;
+                if (l.event.type == ArenaEventType::AttackStarted) ++begun[l.event.move];
+                if (l.event.type == ArenaEventType::Hit && l.event.target == kArenaPlayer) {
+                    ++landed[l.event.move];
+                    taken[l.event.move] += l.event.amount;
+                }
+            }
+            CHECK(begun[0] + begun[1] > 0);
+            MESSAGE("maw_pup vs " << std::string(lead) << std::string(keep == 1 ? " keeping, " : " standing, ")
+                                  << static_cast<float>(rig.ticks) * kDt << " s: nip begun " << begun[0] << " landed "
+                                  << landed[0] << " (" << taken[0] << " hp), pounce begun " << begun[1] << " landed "
+                                  << landed[1] << " (" << taken[1] << " hp)");
+        }
+    }
+}
+
 TEST_CASE("arena maw_pup: no bite through air: a lead a step out of the jaws during the windup is not hit") {
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
     const ArenaFighter& devin = t.fighter("devin");
     const ArenaAttack& nip = pup.moves[0].attack;
-    // The reach (centre to centre, range + the lead's radius): 0.78 m bites; 10 cm further, or the capture's 1.067 m,
+    // The reach (centre to centre, range + the lead's radius): 0.77 m bites; 10 cm further, or the capture's 1.067 m,
     // does not.
-    CHECK(nip.range + devin.bodyRadius >= 0.78f);
+    CHECK(nip.range + devin.bodyRadius >= 0.77f - 1e-5f);
     CHECK(nip.range + devin.bodyRadius < 0.88f);
     // In a fight: the nip begins, the lead steps 10 cm back before it lands, and it lands on nothing.
     ArenaEnemyKind nipOnly = pup;
@@ -10918,6 +10975,96 @@ TEST_CASE("arena data: the maw_pup's speeds are its clips' stride speeds, so eac
     CHECK(pup.trotRange > pup.runRange);
     // Room between the circle and the walk/run edge, so a pup circling at preferredRange never flips back to Approach.
     CHECK(pup.runRange >= pup.preferredRange + 0.25f);
+}
+
+TEST_CASE("arena aim shift: along the lead's right, square to the line, none side-on, weighted and clamped") {
+    // The lead at the origin facing +x, the enemy 0.75 m in front of it: the lead's right is +y (the ground plane has y
+    // to the right), square to the line.
+    const Vec2 lead{0.f, 0.f}, enemy{0.75f, 0.f}, facing{1.f, 0.f};
+    Vec2 s = arenaAimShift(enemy, lead, facing, 0.04f, 1.f);
+    CHECK(s.x == doctest::Approx(0.f).epsilon(1e-6));
+    CHECK(s.y == doctest::Approx(0.04f));
+    s = arenaAimShift(enemy, lead, facing, -0.04f, 0.5f); // to the left, half in
+    CHECK(s.y == doctest::Approx(-0.02f));
+    CHECK(arenaAimShift(enemy, lead, facing, 0.04f, 3.f).y == doctest::Approx(0.04f)); // the weight clamps at 1
+    CHECK(arenaAimShift(enemy, lead, facing, 0.04f, -1.f).y == 0.f);
+    // Side-on (the lead's right along the line): no shift. Half turned: the square part only, and never along the line.
+    s = arenaAimShift(enemy, lead, Vec2{0.f, -1.f}, 0.04f, 1.f);
+    CHECK(std::hypot(s.x, s.y) == doctest::Approx(0.f).epsilon(1e-6));
+    s = arenaAimShift(enemy, lead, Vec2{std::sqrt(0.5f), -std::sqrt(0.5f)}, 0.04f, 1.f);
+    CHECK(s.x == doctest::Approx(0.f).epsilon(1e-6));
+    CHECK(s.y == doctest::Approx(0.04f * std::sqrt(0.5f)));
+    // The reach is kept to first order: the shift is square to the line.
+    s = arenaAimShift(Vec2{0.5f, 0.5f}, lead, Vec2{0.f, 1.f}, 0.04f, 1.f);
+    CHECK(s.x * -0.5f + s.y * -0.5f == doctest::Approx(0.f).epsilon(1e-6));
+    // Bodies met, or no facing: none.
+    CHECK(arenaAimShift(lead, lead, facing, 0.04f, 1.f).y == 0.f);
+    CHECK(arenaAimShift(enemy, lead, Vec2{}, 0.04f, 1.f).y == 0.f);
+}
+
+TEST_CASE("arena aim weight: held through an unseen hold, in over the startup, shut to mid-recovery, out by its end") {
+    ArenaAttack a;
+    a.startup = 1.2f;
+    a.active = 0.12f;
+    a.recovery = 1.265f;
+    CHECK(arenaAimWeight(a, 0.f, 0.f) == 0.f);
+    CHECK(arenaAimWeight(a, 0.6f, 0.f) == doctest::Approx(0.5f));
+    CHECK(arenaAimWeight(a, 0.3f, 0.3f) == 0.f); // the unseen hold: the clip has not begun
+    CHECK(arenaAimWeight(a, 0.9f, 0.3f) == doctest::Approx(0.5f));
+    CHECK(arenaAimWeight(a, 1.2f, 0.f) == 1.f);
+    CHECK(arenaAimWeight(a, 1.25f, 0.f) == 1.f);
+    const float shut = a.startup + a.active + 0.5f * a.recovery;
+    CHECK(arenaAimWeight(a, shut, 0.f) == 1.f);
+    CHECK(arenaAimWeight(a, shut + 0.25f * a.recovery, 0.f) == doctest::Approx(0.5f));
+    CHECK(arenaAimWeight(a, a.total(), 0.f) == doctest::Approx(0.f));
+    CHECK(arenaAimWeight(a, a.total() + 1.f, 0.f) == 0.f);
+    // Rising through the startup, falling through the recovery's second half.
+    float last = -1.f;
+    for (int i = 0; i <= 120; ++i) {
+        const float w = arenaAimWeight(a, a.startup * static_cast<float>(i) / 120.f, 0.f);
+        CHECK(w >= last);
+        last = w;
+    }
+    for (int i = 0; i <= 120; ++i) {
+        const float w = arenaAimWeight(a, shut + 0.5f * a.recovery * static_cast<float>(i) / 120.f, 0.f);
+        CHECK(w <= last);
+        last = w;
+    }
+}
+
+TEST_CASE("arena data: aimSide loads in -0.3..0.3 m, 0 when left out, refused past it") {
+    ArenaTable t;
+    const char* inBand = R"([ { "id": "dummy" }, { "id": "pup", "moves": [ { "aimSide": -0.04 } ] } ])";
+    const char* past = R"([ { "id": "dummy" }, { "id": "pup", "moves": [ { "aimSide": 0.31 } ] } ])";
+    CHECK(loadError(tableJson(kFightersOk, inBand), &t).empty());
+    CHECK(t.enemies[1].moves[0].attack.aimSide == doctest::Approx(-0.04f));
+    CHECK(loadError(tableJson(kFightersOk, R"([ { "id": "dummy" }, { "id": "pup" } ])"), &t).empty());
+    CHECK(t.enemies[1].moves[0].attack.aimSide == 0.f);
+    CHECK_FALSE(loadError(tableJson(kFightersOk, past)).empty());
+}
+
+TEST_CASE("arena data: every maw_pup move plays its clip near rate 1 and the move lasts the clip") {
+    // The host plays a move's clip at impact / startup (FTArenaRunner, clamped to 0.25..4), so the impact lands at the
+    // startup's end; an unseen start's extra windup holds the first frame there, at the same rate. The 11-24 ruling: no
+    // Maw-Pup clip plays outside the gait band, and the recovery runs to the clip's end (the jaw's shut hold and its
+    // release are seen whole). Every other clip of the pup's (no impact) plays at rate 1.
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const BeatClips clips = loadPupClips();
+    REQUIRE(pup.moveCount > 0);
+    for (std::uint32_t m = 0; m < pup.moveCount; ++m) {
+        const ArenaEnemyMove& mv = pup.moves[m];
+        CAPTURE(mv.clip());
+        const int c = clips.find(mv.clip());
+        REQUIRE(c >= 0);
+        const BeatClip& clip = clips[static_cast<std::size_t>(c)];
+        CHECK_FALSE(clip.loop);
+        REQUIRE(clip.impact > 0.0);
+        const double rate = clip.impact / mv.attack.startup;
+        CHECK(rate >= 0.85);
+        CHECK(rate <= 1.15);
+        CHECK(mv.attack.total() * rate == doctest::Approx(clip.length).epsilon(1.0 / 30.0 / clip.length));
+    }
 }
 
 TEST_CASE("arena maw_pup: an 11 m chase gallops, holds the trot 1.5 s and walks in, each at its own speed") {

@@ -191,11 +191,11 @@
       "hp": 70, "poise": 40, "poiseDelay": 2, "staggerTime": 0.7, "openTime": 1.2, "downTime": 0.9,
       "walkSpeed": 0.84, "runSpeed": 5.42, "strafeSpeed": 0.84, "accel": 16, "turnRate": 10,
       "trotSpeed": 2.56, "trotRange": 8, "lungeToContact": true,
-      "preferredRange": 1.8, "runRange": 2.2, "attackDelay": 0.8, "bodyRadius": 0.35, "bodyLength": 1.08, "contactInset": 0.17, "height": 0.9, "flinchTime": 0.4, "flinchPoise": 20, "flinchPush": 0.7, "carry": 1,
+      "preferredRange": 1.78, "runRange": 2.2, "attackDelay": 0.8, "bodyRadius": 0.35, "bodyLength": 1.08, "contactInset": 0.19, "height": 0.9, "flinchTime": 0.4, "flinchPoise": 20, "flinchPush": 0.7, "carry": 1,
       "look": { "clips": "Data/Anim/maw_pup_clips.json", "scale": 1, "yawOffset": 0 },
       "moves": [
-        { "clip": "nip", "tell": "thrust", "armor": 0.6, "startup": 0.4, "active": 0.12, "recovery": 0.5, "range": 0.39, "arcCos": 0.9, "damage": 5, "poiseDamage": 5, "guardDamage": 6, "lunge": 0, "tracking": 5, "minRange": 0, "maxRange": 0.78, "weight": 1 },
-        { "clip": "pounce", "tell": "charge", "armor": 0.6, "startup": 0.8, "active": 0.2, "recovery": 0.8, "range": 0.39, "arcCos": 0.9, "damage": 9, "poiseDamage": 10, "guardDamage": 10, "lunge": 1.3, "tracking": 3, "minRange": 0.78, "maxRange": 1.82, "cooldown": 3, "weight": 0.5 }
+        { "clip": "nip", "tell": "thrust", "armor": 0.6, "startup": 1.2, "active": 0.12, "recovery": 1.265, "aimSide": 0.038, "range": 0.37, "arcCos": 0.9, "damage": 5, "poiseDamage": 5, "guardDamage": 6, "lunge": 0, "tracking": 5, "minRange": 0, "maxRange": 0.76, "weight": 1 },
+        { "clip": "pounce", "tell": "charge", "armor": 0.6, "startup": 0.8, "active": 0.2, "recovery": 0.8, "range": 0.37, "arcCos": 0.9, "damage": 9, "poiseDamage": 10, "guardDamage": 10, "lunge": 1.3, "tracking": 3, "minRange": 0.76, "maxRange": 1.80, "cooldown": 3, "weight": 0.5 }
       ]
     },
     {

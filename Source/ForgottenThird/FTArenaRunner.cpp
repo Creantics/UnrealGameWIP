@@ -1530,11 +1530,13 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			// The clip's impact lands at the end of the move's startup: Core's own clock for the move, at that rate.
 			const ftcore::BeatClip& Row = (*Skin.Clips)[static_cast<size_t>(MoveClip)];
-			// An unseen start (ArenaEnemyOut::unseen) has the longer windup: the impact still lands at its end.
-			const float Startup = Kind.moves[Out.move].attack.startup + (Out.unseen ? ftcore::kArenaUnseenWindup : 0.f);
+			// An unseen start (ArenaEnemyOut::unseen) has the longer windup: the clip holds its first frame for the extra
+			// (it is not slowed), then plays at the move's own rate, so the impact still lands at the windup's end.
+			const float Startup = Kind.moves[Out.move].attack.startup;
+			const double Held = Out.unseen ? static_cast<double>(ftcore::kArenaUnseenWindup) : 0.0;
 			const float Rate = (Row.impact > 0.0 && Startup > 0.f) ? FMath::Clamp(static_cast<float>(Row.impact) / Startup, kArenaMinClipRate, kArenaMaxClipRate) : 1.f;
 			Clip = MoveClip;
-			Time = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
+			Time = FMath::Max(0.0, static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds - Held) * Rate;
 			bTimed = true;
 			MoveRate = Rate;
 		}
@@ -4743,6 +4745,18 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				ftcore::ArenaAttack Timed = Move.attack;
 				Timed.startup += E.unseen ? ftcore::kArenaUnseenWindup : 0.f; // an unseen start's longer windup
 				Pose.PartFraction = ArenaPartFraction(Timed, E.part, E.stateTime);
+				if (Move.attack.aimSide != 0.f)
+				{
+					// The drawn aim off the lead's centreline (aimSide: the maw_pup's nip onto a thigh, not the gap between them):
+					// the feet shift square to the line, in over the windup and out after the jaws' hold. The rules never move.
+					// A nip cut short (flinch, stagger, parry) drops it at once: at most aimSide (3.8 cm) under the hit's own pose change.
+					const ftcore::Vec2 Self = ArenaLerp(PrevBodies.enemies[static_cast<size_t>(I)], Bodies.enemies[static_cast<size_t>(I)], Alpha);
+					const ftcore::Vec2 Lead = ArenaLerp(PrevBodies.player, Bodies.player, Alpha);
+					const float Weight = ftcore::arenaAimWeight(Move.attack, E.stateTime + Alpha * static_cast<float>(StepSeconds),
+						E.unseen ? ftcore::kArenaUnseenWindup : 0.f);
+					const ftcore::Vec2 Shift = ftcore::arenaAimShift(Self, Lead, Out.player.drawFacing, Move.attack.aimSide, Weight);
+					Pose.Feet += FVector(Shift.x * 100.0, Shift.y * 100.0, 0.0);
+				}
 				Pose.Swing = (!Move.parryable || Move.unblockable) ? EFTArenaSwing::Overhead
 					: ((E.move % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 				const float Flash = ArenaModePulse(Now, ActiveSince[I], kArenaTellFlash);

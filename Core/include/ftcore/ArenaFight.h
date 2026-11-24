@@ -435,6 +435,8 @@ struct ArenaAttack {
     float jolt = 0.f;         // degrees the host's camera kicks when it lands (ArenaImpact.h); 0: none
     std::uint8_t maxTargets = 0; // 0: connects with every target in range and arc; N: with at most N distinct
                                  // targets over its whole active part, the nearest first (the player's matter)
+    float aimSide = 0.f;      // m: the drawn body aims this far to the lead's right (+) or left (-) of its centreline
+                              // (arenaAimShift); the host's drawing only, the rules never read it
 
     float total() const { return startup + active + recovery; }
 };
@@ -738,6 +740,17 @@ inline float arenaBodySpan(const ArenaEnemyKind& kind) {
 }
 // The radius a wall holds an enemy's centre off by: its circle's, or a stadium's end (any way it faces).
 inline float arenaBodyReach(const ArenaEnemyKind& kind) { return kind.bodyRadius + arenaBodySpan(kind); }
+
+// The drawn body's shift for a move with an aimSide: `side` metres along the lead's right ({-facing.y, facing.x}:
+// the ground plane has y to the right), less that offset's part along the enemy-to-lead line, so the reach is kept
+// and a lead standing side-on to the enemy takes none; times `weight` (0..1, clamped). The host's drawing only:
+// the fight's bodies never move for it.
+// Zero when the bodies meet or a facing has no length.
+FTCORE_API Vec2 arenaAimShift(Vec2 enemy, Vec2 lead, Vec2 leadFacing, float side, float weight);
+// The weight of that shift through the move, `stateTime` seconds in, `held` of it an unseen start's extra windup (the
+// clip holds its first frame for it): 0 through the hold, up to 1 over the startup (smoothstep), 1 through the active
+// part and the first half of the recovery (the jaws held shut), back to 0 over its second half.
+FTCORE_API float arenaAimWeight(const ArenaAttack& a, float stateTime, float held);
 
 // kArenaNoKind in every slot (the default of ArenaDef::enemyKind).
 constexpr std::array<std::uint8_t, kMaxArenaEnemies> arenaNoKinds() {

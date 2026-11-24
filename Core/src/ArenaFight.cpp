@@ -5310,6 +5310,34 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
     return e ? e->def : fallback;
 }
 
+// ---- the drawn aim ----
+
+Vec2 arenaAimShift(Vec2 enemy, Vec2 lead, Vec2 leadFacing, float side, float weight) {
+    const float dx = lead.x - enemy.x, dy = lead.y - enemy.y;
+    const float len = std::hypot(dx, dy);
+    const float fLen = std::hypot(leadFacing.x, leadFacing.y);
+    const float w = std::clamp(weight, 0.f, 1.f);
+    if (!(len > 1e-4f) || !(fLen > 1e-4f) || !(w > 0.f) || !std::isfinite(side)) return Vec2{};
+    const Vec2 line{dx / len, dy / len};
+    const Vec2 right{-leadFacing.y / fLen, leadFacing.x / fLen};
+    const float along = right.x * line.x + right.y * line.y;
+    return Vec2{(right.x - along * line.x) * side * w, (right.y - along * line.y) * side * w};
+}
+
+float arenaAimWeight(const ArenaAttack& a, float stateTime, float held) {
+    const auto smooth = [](float x) {
+        const float c = std::clamp(x, 0.f, 1.f);
+        return c * c * (3.f - 2.f * c);
+    };
+    const float t = stateTime - std::max(0.f, held);
+    if (!(t > 0.f)) return 0.f;
+    if (t < a.startup) return smooth(t / a.startup);
+    const float shut = a.startup + a.active + 0.5f * a.recovery;
+    if (t <= shut) return 1.f;
+    const float rest = 0.5f * a.recovery;
+    return rest > 0.f ? 1.f - smooth((t - shut) / rest) : 0.f;
+}
+
 // ---- data ----
 //
 // Number ranges the loader checks (an integer where the struct field is one; the ends are included unless a "(" says
@@ -5336,7 +5364,7 @@ const ArenaDef& ArenaTable::find(std::string_view scene, std::uint32_t beat, std
 //             guardDamage, stamina 0..100000; lunge, tracking 0..100; armor, cancel 0..1; maxTargets 0..6; width 0..20;
 //             cancelGuard, cancelRoll, cancelLight -1..1 (below 0: `cancel`; the player's, an enemy's move ignores
 //             them, as it does stamina and cancel; none before the active part); hitStop 0..0.3, hitStopSelf 0..1;
-//             jolt 0..kArenaMaxJolt degrees (ArenaImpact.h)
+//             jolt 0..kArenaMaxJolt degrees (ArenaImpact.h); aimSide -0.3..0.3 m, optional (the drawn aim only)
 //   enemy     hp 1..100000; poise (0, 100000]; poiseDelay, staggerTime, openTime, downTime, attackDelay 0..10;
 //             walkSpeed, runSpeed, strafeSpeed 0..50; turnRate (0, 100]; preferredRange (0, 100];
 //             runRange 0..100 and at least preferredRange; trotSpeed 0..50 (between walkSpeed and runSpeed when
@@ -5366,7 +5394,7 @@ constexpr std::string_view kArenaAttackKeys[] = {"startup", "active",      "reco
                                                  "damage",  "poiseDamage", "guardDamage", "lunge",  "tracking",
                                                  "armor",   "stamina",     "cancel",      "maxTargets", "width",
                                                  "cancelGuard", "cancelRoll", "cancelLight", "hitStop", "hitStopSelf",
-                                                 "jolt"};
+                                                 "jolt",    "aimSide"};
 
 std::string arenaFormat(double v) {
     char buffer[32];
@@ -5447,6 +5475,7 @@ void arenaParseAttack(JsonValue j, const std::string& path, ArenaAttack& a, Aren
     arenaNum(j, "stamina", a.stamina, 0, 100000, false, path, errors);
     arenaNum(j, "cancel", a.cancel, 0, 1, false, path, errors);
     arenaByte(j, "maxTargets", a.maxTargets, 0, static_cast<int>(kMaxArenaEnemies), path, errors);
+    arenaNum(j, "aimSide", a.aimSide, -0.3, 0.3, false, path, errors);
     arenaNum(j, "cancelGuard", a.cancelGuard, -1, 1, false, path, errors);
     arenaNum(j, "cancelRoll", a.cancelRoll, -1, 1, false, path, errors);
     arenaNum(j, "cancelLight", a.cancelLight, -1, 1, false, path, errors);
