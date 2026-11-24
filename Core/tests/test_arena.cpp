@@ -11002,7 +11002,7 @@ TEST_CASE("arena aim shift: along the lead's right, square to the line, none sid
     CHECK(arenaAimShift(enemy, lead, Vec2{}, 0.04f, 1.f).y == 0.f);
 }
 
-TEST_CASE("arena side convention: a lead's right is its facing turned a quarter toward +y, at every heading") {
+TEST_CASE("arena side convention: a lead's right is its facing turned a quarter, x toward y, at every heading") {
     // The pinned sign for every lateral aim: the ground plane has y to the right of x (the host draws ground (x, y) as
     // Unreal's (X, Y), Y to the right of X looking down -Z), so a lead facing f has its right at {-f.y, f.x} and its
     // left thigh on the -right side. A positive aimSide moves the drawn enemy toward the lead's right, which, with

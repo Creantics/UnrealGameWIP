@@ -4747,9 +4747,9 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				Pose.PartFraction = ArenaPartFraction(Timed, E.part, E.stateTime);
 				if (Move.attack.aimSide != 0.f)
 				{
-					// The drawn aim off the lead's centreline (aimSide: the maw_pup's nip onto a thigh, not the gap between them):
+					// The drawn aim off the lead's centreline (aimSide; no shipped move sets it until the pup's canine offset is measured):
 					// the feet shift square to the line, in over the windup and out after the jaws' hold. The rules never move.
-					// A nip cut short (flinch, stagger, parry) drops it at once: at most aimSide (3.8 cm) under the hit's own pose change.
+					// A nip cut short (flinch, stagger, parry) drops it at once: at most aimSide (a few cm) under the hit's own pose change.
 					const ftcore::Vec2 Self = ArenaLerp(PrevBodies.enemies[static_cast<size_t>(I)], Bodies.enemies[static_cast<size_t>(I)], Alpha);
 					const ftcore::Vec2 Lead = ArenaLerp(PrevBodies.player, Bodies.player, Alpha);
 					const float Weight = ftcore::arenaAimWeight(Move.attack, E.stateTime + Alpha * static_cast<float>(StepSeconds),
