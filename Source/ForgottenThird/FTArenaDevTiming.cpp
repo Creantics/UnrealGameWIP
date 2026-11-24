@@ -83,12 +83,23 @@ bool KindField(ftcore::ArenaEnemyKind& Kind, std::string_view Name, const ftcore
 		{"preferredRange", &ftcore::ArenaEnemyKind::preferredRange},
 		{"runRange", &ftcore::ArenaEnemyKind::runRange},
 		{"attackDelay", &ftcore::ArenaEnemyKind::attackDelay},
+		{"contactInset", &ftcore::ArenaEnemyKind::contactInset},
 	};
 	for (const FField& F : Fields)
 	{
 		if (Name == F.Name)
 		{
 			SetFloat(Kind.*F.Member, Value, What);
+			if (F.Member == &ftcore::ArenaEnemyKind::contactInset)
+			{
+				// The loader's range for the inset (0..1 m): under 0 would grow the lead's circle.
+				const float Asked = Kind.contactInset;
+				Kind.contactInset = FMath::Clamp(Asked, 0.f, 1.f);
+				if (Kind.contactInset != Asked)
+				{
+					UE_LOG(LogForgottenThird, Warning, TEXT("Arena: -ArenaMoveTiming: %s clamped to %.3f (0..1)."), *What, Kind.contactInset);
+				}
+			}
 			return true;
 		}
 	}

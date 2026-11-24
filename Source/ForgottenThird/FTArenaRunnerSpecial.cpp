@@ -376,7 +376,9 @@ void UFTArenaRunner::ClampSpecialTravel(const ftcore::Vec2& From, const ftcore::
 				continue;
 			}
 			const ftcore::Vec2 E = Bodies.enemies[static_cast<size_t>(I)];
-			const float Need = Radius + Fight.def().enemies[static_cast<size_t>(I)].bodyRadius;
+			// The lead's circle less the kind's contactInset, as the push holds them (ftcore::arenaPushApart).
+			const ftcore::ArenaEnemyKind& Kind = Fight.def().enemies[static_cast<size_t>(I)];
+			const float Need = FMath::Max(0.f, Radius - Kind.contactInset) + Kind.bodyRadius;
 			if ((P.x - E.x) * (P.x - E.x) + (P.y - E.y) * (P.y - E.y) < Need * Need)
 			{
 				Why = TEXT("an enemy's body");

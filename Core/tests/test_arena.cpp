@@ -3513,7 +3513,7 @@ Contact contactOf(const ArenaFight& fight, const ArenaBodies& b) {
         const float ri = def.enemies[i].bodyRadius;
         c.outside = std::max(c.outside, distanceOf(b.enemies[i], ring.centre) - (ring.radius - ri));
         if (!fight.enemyAlive(i)) continue;
-        c.worst = std::min(c.worst, distanceOf(b.player, b.enemies[i]) - rp - ri);
+        c.worst = std::min(c.worst, distanceOf(b.player, b.enemies[i]) - std::max(0.f, rp - def.enemies[i].contactInset) - ri);
         for (std::size_t j = i + 1; j < fight.enemyCount(); ++j)
             if (fight.enemyAlive(j))
                 c.worst = std::min(c.worst, distanceOf(b.enemies[i], b.enemies[j]) - ri - def.enemies[j].bodyRadius);
@@ -10571,7 +10571,8 @@ struct OverlapRun {
     int ticks = 0;
 };
 // The host mirror's body loop in sand_ring on the autopilot: after every zone step, how far apart the living bodies
-// stand, measured shape to shape (a long kind's stadium along its facing, as the step reads it).
+// stand, measured shape to shape (a long kind's stadium along its facing, as the step reads it; the lead's circle less
+// the kind's contactInset, as the push reads it).
 OverlapRun overlapRun(const std::vector<std::string>& lineup, const char* kit, std::uint32_t seed, int maxTicks) {
     const ArenaTable table = loadShipped();
     std::string text, err;
@@ -10625,7 +10626,7 @@ OverlapRun overlapRun(const std::vector<std::string>& lineup, const char* kit, s
             const ArenaEnemyKind& ka = def.enemies[a];
             const Vec2 fa = unitFacing(out.enemies[a].facing);
             run.worst = std::min(run.worst, spineGap(bodies.player, Vec2{1.f, 0.f}, 0.f, bodies.enemies[a], fa,
-                                                     arenaBodySpan(ka)) - rp - ka.bodyRadius);
+                                                     arenaBodySpan(ka)) - std::max(0.f, rp - ka.contactInset) - ka.bodyRadius);
             for (std::size_t b = a + 1; b < fight.enemyCount(); ++b) {
                 if (!fight.enemyAlive(b)) continue;
                 const ArenaEnemyKind& kb = def.enemies[b];
@@ -10691,4 +10692,151 @@ TEST_CASE("arena host mirror: seeds 1-20, pups, pups and the lead, circles mixed
             CHECK(worst >= -kArenaSettleFloor - 1e-5f);
             CHECK(wall <= 1e-5f);
         }
+}
+
+// ---- the Maw-Pup's in-place bite (capture step 3: the jaws must reach the lead at the impact, with no hit through air) ----
+
+TEST_CASE("arena data: the maw_pup's nip is in place, begins inside its contact and reaches only as far as its jaws") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const ArenaEnemyMove& nip = pup.moves[0];
+    REQUIRE(nip.clip() == "nip");
+    CHECK(nip.attack.lunge == 0.f); // the clip bites in place: the approach closes the gap, not the move
+    for (const char* lead : {"devin", "duy", "third"}) {
+        CAPTURE(lead);
+        const float leadRadius = t.fighter(lead).bodyRadius;
+        // Where the push holds the pup's nose against the lead: its stadium's reach plus the lead's circle, less the inset.
+        const float contact = arenaBodyReach(pup) + std::max(0.f, leadRadius - pup.contactInset);
+        CHECK(contact < nip.maxRange);         // the approach reaches the nip's band before the push stops it
+        CHECK(contact > nip.maxRange - 0.02f); // ... and the band starts within 2 cm of tooth contact
+        // The blow needs the jaws: it reaches at most 2 cm past where the nip may begin.
+        CHECK(nip.attack.range + leadRadius >= nip.maxRange);
+        CHECK(nip.attack.range + leadRadius <= nip.maxRange + 0.02f);
+        // Nor off to the side: a lead at the arc's edge at full reach is still within 1 cm of the muzzle (the stadium's
+        // nose, arenaBodyReach ahead of the centre), so no angle bites air.
+        const float reach = nip.attack.range + leadRadius;
+        const float sine = std::sqrt(std::max(0.f, 1.f - nip.attack.arcCos * nip.attack.arcCos));
+        const float ahead = reach * nip.attack.arcCos - arenaBodyReach(pup);
+        CHECK(std::hypot(ahead, reach * sine) <= leadRadius + 0.01f);
+    }
+}
+
+TEST_CASE("arena maw_pup: it walks in to its nip's band without shoving the lead, and the bite lands where it began") {
+    const ArenaTable t = loadShipped();
+    ArenaEnemyKind pup = shippedKind(t, "maw_pup");
+    REQUIRE(pup.moves[0].clip() == "nip");
+    pup.moveCount = 1; // the nip alone: the pounce leaps from further off (its own reach is a follow-up)
+    const ArenaFighter& devin = t.fighter("devin");
+    Rig rig(devin, {pup});
+    rig.put(0, 4.f, 0.f);
+    float atStart = -1.f, atHit = -1.f, leastApart = 100.f, leadMoved = 0.f;
+    for (int i = 0; i < 1200 && rig.count(ArenaEventType::Hit) == 0; ++i) {
+        rig.tick();
+        arenaStep(rig.fight, rig.bodies, kDt);
+        const float apart = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
+        leastApart = std::min(leastApart, apart);
+        leadMoved = std::max(leadMoved, distanceOf(rig.bodies.player, Vec2{0.f, 0.f}));
+        if (atStart < 0.f && rig.count(ArenaEventType::AttackStarted) == 1) atStart = apart;
+        if (atHit < 0.f && rig.count(ArenaEventType::Hit) == 1) atHit = apart;
+    }
+    REQUIRE(atStart > 0.f);
+    REQUIRE(atHit > 0.f);
+    const float contact = arenaBodyReach(pup) + devin.bodyRadius - pup.contactInset;
+    CHECK(atStart <= pup.moves[0].maxRange + 1e-3f);
+    CHECK(atStart >= contact - 1e-3f);
+    CHECK(atHit == doctest::Approx(atStart).epsilon(0.002)); // in place: no lunge between the start and the bite
+    CHECK(leastApart >= contact - 1e-3f);                     // never past tooth contact
+    CHECK(leadMoved <= 1e-3f);                                // the idle lead was not shoved
+    const Logged* hit = rig.find(ArenaEventType::Hit);
+    REQUIRE(hit != nullptr);
+    CHECK(hit->event.target == kArenaPlayer);
+}
+
+TEST_CASE("arena maw_pup: no bite through air: a lead a step out of the jaws during the windup is not hit") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const ArenaFighter& devin = t.fighter("devin");
+    const ArenaAttack& nip = pup.moves[0].attack;
+    // The reach (centre to centre, range + the lead's radius): 0.78 m bites; 10 cm further, or the capture's 1.067 m,
+    // does not.
+    CHECK(nip.range + devin.bodyRadius >= 0.78f);
+    CHECK(nip.range + devin.bodyRadius < 0.88f);
+    // In a fight: the nip begins, the lead steps 10 cm back before it lands, and it lands on nothing.
+    ArenaEnemyKind nipOnly = pup;
+    nipOnly.moveCount = 1;
+    Rig rig(devin, {nipOnly});
+    rig.put(0, 3.f, 0.f);
+    bool stepped = false;
+    // Until the nip's active part is over (its startup and active time after it began, and a little more).
+    const int after = static_cast<int>((nip.startup + nip.active + 0.05f) / kDt) + 1;
+    int left = -1;
+    for (int i = 0; i < 1200 && left != 0; ++i) {
+        rig.tick();
+        arenaStep(rig.fight, rig.bodies, kDt);
+        left = left > 0 ? left - 1 : left;
+        if (!stepped && rig.count(ArenaEventType::AttackStarted) == 1) {
+            left = after;
+            const Vec2 off{rig.bodies.player.x - rig.bodies.enemies[0].x, rig.bodies.player.y - rig.bodies.enemies[0].y};
+            const float len = std::hypot(off.x, off.y);
+            REQUIRE(len > 0.f);
+            rig.bodies.player = Vec2{rig.bodies.player.x + off.x / len * 0.1f, rig.bodies.player.y + off.y / len * 0.1f};
+            stepped = true;
+        }
+    }
+    CHECK(stepped);
+    CHECK(left == 0);
+    CHECK(rig.count(ArenaEventType::AttackStarted) == 1);
+    CHECK(rig.count(ArenaEventType::Hit) == 0);
+}
+
+TEST_CASE("arena contactInset: only the lead's push gives way, by that much and never under 0, and it is read and checked") {
+    ArenaEnemyKind hound = dummyKind();
+    hound.bodyRadius = 0.35f;
+    hound.bodyLength = 1.08f;
+    hound.contactInset = 0.17f;
+    ArenaEnemyKind plain = hound;
+    plain.contactInset = 0.f;
+    ArenaFighter f = ruleFighter();
+    f.bodyRadius = 0.4f;
+    {
+        Rig rig(f, {hound});
+        rig.put(0, 0.6f, 0.f); // facing the lead (begin faces each enemy at it), nose 0.06 m inside the lead
+        rig.tick();
+        arenaPushApart(rig.fight, rig.bodies, true);
+        CHECK(distanceOf(rig.bodies.enemies[0], rig.bodies.player) == doctest::Approx(0.54f + 0.4f - 0.17f).epsilon(1e-3));
+    }
+    {
+        Rig rig(f, {plain});
+        rig.put(0, 0.6f, 0.f);
+        rig.tick();
+        arenaPushApart(rig.fight, rig.bodies, true);
+        CHECK(distanceOf(rig.bodies.enemies[0], rig.bodies.player) == doctest::Approx(0.54f + 0.4f).epsilon(1e-3));
+    }
+    {
+        // Two hounds side by side keep their whole bodies apart: the inset is the lead's alone.
+        Rig rig(f, {hound, hound}, 1, ArenaRing{Vec2{0.f, 0.f}, 30.f});
+        rig.put(0, 5.f, 0.2f);
+        rig.put(1, 5.f, -0.2f);
+        rig.tick();
+        arenaPushApart(rig.fight, rig.bodies, false);
+        CHECK(distanceOf(rig.bodies.enemies[0], rig.bodies.enemies[1]) >= 0.7f - 1e-3f);
+    }
+    {
+        // An inset over the lead's radius leaves no circle at all, never a negative one.
+        ArenaEnemyKind deep = hound;
+        deep.contactInset = 0.9f;
+        Rig rig(f, {deep});
+        rig.put(0, 0.3f, 0.f);
+        rig.tick();
+        arenaPushApart(rig.fight, rig.bodies, true);
+        CHECK(distanceOf(rig.bodies.enemies[0], rig.bodies.player) == doctest::Approx(0.54f).epsilon(1e-3));
+    }
+    ArenaTable t;
+    CHECK(loadError(tableJson(kFightersOk, R"([ { "id": "dummy" }, { "id": "pup", "contactInset": 0.17 } ])"), &t).empty());
+    CHECK(t.enemies[1].contactInset == doctest::Approx(0.17f));
+    CHECK(t.enemies[0].contactInset == 0.f);
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "contactInset": 1.5 } ])")),
+                   "contactInset"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "contactInset": -0.1 } ])")),
+                   "contactInset"));
 }

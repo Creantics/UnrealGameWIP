@@ -12,10 +12,10 @@
   },
   {
    "id": "walk",
-   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Trot",
-   "length_s": 0.333,
+   "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Walk",
+   "length_s": 0.8,
    "impact_s": 0,
-   "speed_mps": 2.6,
+   "speed_mps": 0.78,
    "loop": true
   },
   {
@@ -31,7 +31,7 @@
    "asset": "/Game/Characters/MawPupE01/maw_pup_e01/SkeletalMeshes/maw_pup_e01A_MawPup_Gallop",
    "length_s": 0.4,
    "impact_s": 0,
-   "speed_mps": 5.5,
+   "speed_mps": 4.83,
    "loop": true
   },
   {

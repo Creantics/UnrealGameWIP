@@ -270,6 +270,40 @@ FTCORE_API double choreoStanceRate(const BeatClip& stance, double beatSeconds);
 // midpoint less a tenth. wasRun is the last pick. Speeds in m/s; with no gap (runSpeed <= walkSpeed) it never runs.
 FTCORE_API bool pickRunGait(double speed, double walkSpeed, double runSpeed, bool wasRun);
 
+// A mover with up to kMaxGaits looping gait clips (a walk, a trot, a gallop), each authored at its own ground speed and
+// played at the body's speed over that one: the clip is picked by speed so its rate stays inside one band and no foot
+// slides. The band starts at [kGaitMinRate, kGaitMaxRate] and widens (both ends, evenly in log space) until every two
+// neighbouring gaits overlap by the switch margin both ways; its low end also reaches down to floorSpeed over the
+// slowest gait (the speed the mover starts walking at). Neighbours g, g + 1 switch round the centre (log space) of the
+// speeds both play inside the band: up above centre x (1 + kGaitSwitchMargin), down below centre / (1 + margin), so a
+// speed near the switch doesn't flicker and both rates there are inside the band. Inside the band means the rate is
+// the speed over the clip's own, unclamped: what the feet need. A widened band past [kGaitRateFloor, kGaitRateCap] is
+// first shifted inside it (its span kept); a set of gaits too far apart even for that is not `covers` (its rates clamp
+// near the switch, and the feet slide there).
+inline constexpr int kMaxGaits = 3;
+inline constexpr double kGaitMinRate = 0.5;
+inline constexpr double kGaitMaxRate = 1.6;
+inline constexpr double kGaitSwitchMargin = 0.05;
+inline constexpr double kGaitRateFloor = 0.25;
+inline constexpr double kGaitRateCap = 4.0;
+
+struct GaitBand {
+    int count = 0;                              // the gaits that count: the leading run of speeds > 0, strictly rising
+    std::array<double, kMaxGaits> speed{};      // m/s, each gait's authored speed
+    std::array<double, kMaxGaits - 1> up{};     // m/s: gait g gives way to g + 1 above it
+    std::array<double, kMaxGaits - 1> down{};   // m/s: gait g + 1 gives way to g below it
+    double minRate = kGaitMinRate;
+    double maxRate = kGaitMaxRate;
+    bool covers = true; // every speed from floorSpeed to the top gait's speed x maxRate plays at its own speed
+};
+
+// The band for `count` gaits authored at speeds[0..count) (slowest first). floorSpeed <= 0: no floor. No allocation.
+FTCORE_API GaitBand planGaitBand(const double* speeds, int count, double floorSpeed);
+// The gait for `speed` (m/s) after `was` (the last pick; clamped into range); 0 with no gaits. NaN keeps `was`.
+FTCORE_API int pickGait(const GaitBand& band, int was, double speed);
+// The rate gait g plays at for `speed`: speed over its authored one, held to [minRate, maxRate]; 1 for a bad gait.
+FTCORE_API double gaitRate(const GaitBand& band, int gait, double speed);
+
 // ---- the sample ----
 
 struct ChoreoPose {

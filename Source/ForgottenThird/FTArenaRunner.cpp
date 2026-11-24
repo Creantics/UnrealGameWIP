@@ -1221,6 +1221,44 @@ void UFTArenaRunner::LoadSkin(int32 I)
 	Skin.Walk = Skin.Walk >= 0 && (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed > 0.0 ? Skin.Walk : -1;
 	Skin.Run = Skin.Walk >= 0 ? Find("run") : -1;
 	Skin.Run = Skin.Run >= 0 && (*Skin.Clips)[static_cast<size_t>(Skin.Run)].speed > (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed ? Skin.Run : -1;
+	Skin.Trot = Skin.Walk >= 0 ? Find("trot") : -1;
+	if (Skin.Trot >= 0)
+	{
+		const double TrotSpeed = (*Skin.Clips)[static_cast<size_t>(Skin.Trot)].speed;
+		const bool bBetween = TrotSpeed > (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed &&
+			(Skin.Run < 0 || TrotSpeed < (*Skin.Clips)[static_cast<size_t>(Skin.Run)].speed);
+		Skin.Trot = bBetween ? Skin.Trot : -1;
+	}
+	// A gait the table names but the skin can't play (no walk, its asset missing, or its speed out of order) says so.
+	const std::pair<const char*, int32> Bound[] = {{"walk", Skin.Walk}, {"trot", Skin.Trot}, {"run", Skin.Run}};
+	for (const std::pair<const char*, int32>& B : Bound)
+	{
+		if (B.second < 0 && Skin.Clips->find(B.first) >= 0)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("Arena: enemy %d's %hs clip is not played (no walk, no asset, or its speed_mps out of order): %s."),
+				I, B.first, *TablePath);
+		}
+	}
+	{
+		// The gaits, slowest first, and the band they play in (from the speed the walk starts at; between that and the
+		// stop speed, a walk settling to a halt, the walk holds the band's lowest rate).
+		double Speeds[ftcore::kMaxGaits] = {};
+		int32 Count = 0;
+		for (const int32 Gait : {Skin.Walk, Skin.Trot, Skin.Run})
+		{
+			if (Gait >= 0)
+			{
+				Skin.GaitClip[Count] = Gait;
+				Speeds[Count++] = (*Skin.Clips)[static_cast<size_t>(Gait)].speed;
+			}
+		}
+		Skin.Gaits = ftcore::planGaitBand(Speeds, Count, kArenaWalkStart);
+		if (Count > 1)
+		{
+			UE_LOG(LogForgottenThird, Log, TEXT("Arena: enemy %d gaits: %d, rates %.2f-%.2f%s."), I, Skin.Gaits.count,
+				Skin.Gaits.minRate, Skin.Gaits.maxRate, Skin.Gaits.covers ? TEXT("") : TEXT(" (too far apart: the feet slide near a switch)"));
+		}
+	}
 	for (size_t M = 0; M < ftcore::kMaxArenaMoves; ++M)
 	{
 		Skin.MoveClip[M] = M < Kind.moveCount ? Find(Kind.moves[M].clip()) : -1;
@@ -1292,23 +1330,24 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		const bool bWas = bWalking[I];
 		const bool bBetween = Out.brain == ftcore::ArenaBrain::Approach || Out.brain == ftcore::ArenaBrain::Strafe;
 		bWalking[I] = bBetween && WalkSpeed[I] > (bWas ? kArenaWalkStop : kArenaWalkStart);
-		const bool bRan = bRunning[I];
-		bRunning[I] = bWalking[I] && Skin.Run >= 0 &&
-			ftcore::pickRunGait(WalkSpeed[I], (*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed,
-				(*Skin.Clips)[static_cast<size_t>(Skin.Run)].speed, bWas && bRan);
-		if (bWalking[I])
+		// The gait by speed (walk, trot, run: those bound), each inside the skin's rate band, so the feet don't slide.
+		const int32 Was = GaitNow[I];
+		GaitNow[I] = bWalking[I] ? ftcore::pickGait(Skin.Gaits, bWas ? Was : 0, WalkSpeed[I]) : 0;
+		const int32 Gait = Skin.GaitClip[FMath::Clamp(GaitNow[I], 0, ftcore::kMaxGaits - 1)];
+		bRunning[I] = bWalking[I] && Skin.Run >= 0 && Gait == Skin.Run;
+		if (bWalking[I] && Gait >= 0)
 		{
-			const int32 Gait = bRunning[I] ? Skin.Run : Skin.Walk;
-			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Gait)].speed);
-			const float Rate = FMath::Clamp(WalkSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate);
+			const float Rate = static_cast<float>(ftcore::gaitRate(Skin.Gaits, GaitNow[I], WalkSpeed[I]));
 			GaitRate = Rate;
-			if (bWas && bRan != bRunning[I])
+			if (bWas && Was != GaitNow[I])
 			{
 				// The gait changes: carry the stride's phase across, as a share of each cycle, so the feet don't jump.
-				const double FromLen = static_cast<double>(Skin.Sequences[bRan ? Skin.Run : Skin.Walk]->GetPlayLength());
+				const int32 FromClip = Skin.GaitClip[FMath::Clamp(Was, 0, ftcore::kMaxGaits - 1)];
+				const double FromLen = FromClip >= 0 ? static_cast<double>(Skin.Sequences[FromClip]->GetPlayLength()) : 0.0;
 				const double ToLen = static_cast<double>(Skin.Sequences[Gait]->GetPlayLength());
 				WalkPhase[I] = FromLen > 0.0 ? FMath::Fmod(WalkPhase[I], FromLen) / FromLen * ToLen : 0.0;
-				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d %s at %.2f m/s."), Now, I, bRunning[I] ? TEXT("runs") : TEXT("walks again"), WalkSpeed[I]);
+				const TCHAR* Word = Gait == Skin.Run ? TEXT("runs") : (Gait == Skin.Trot ? TEXT("trots") : TEXT("walks again"));
+				UE_LOG(LogForgottenThird, Log, TEXT("Arena: %.2f: enemy %d %s at %.2f m/s (rate %.2f)."), Now, I, Word, WalkSpeed[I], Rate);
 			}
 			WalkPhase[I] = bWas ? WalkPhase[I] + static_cast<double>(ClipDelta * Rate) : 0.0;
 			if (!bWas)
@@ -1568,7 +1607,8 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		else if (bWalking[I])
 		{
-			Clip = bRunning[I] && Skin.Run >= 0 ? Skin.Run : Skin.Walk;
+			const int32 Gait = Skin.GaitClip[FMath::Clamp(GaitNow[I], 0, ftcore::kMaxGaits - 1)];
+			Clip = Gait >= 0 ? Gait : Skin.Walk;
 			Time = WalkPhase[I];
 			bPhased = true;
 		}
@@ -1645,7 +1685,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 	const float At = bLoop && Length > 0.f ? FMath::Fmod(static_cast<float>(Time), Length) : FMath::Clamp(static_cast<float>(Time), 0.f, Length);
 	const double Blend = Row.blend > 0.0 ? Row.blend : Skin.Clips->blend;
 	SkinAt[I] = At;
-	SkinRate[I] = MoveRate > 0.f ? MoveRate : ((Clip == Skin.Walk || Clip == Skin.Run) && GaitRate > 0.f ? GaitRate : 1.f);
+	SkinRate[I] = MoveRate > 0.f ? MoveRate : ((Clip == Skin.Walk || Clip == Skin.Trot || Clip == Skin.Run) && GaitRate > 0.f ? GaitRate : 1.f);
 	Figure->PlayClip(Sequence, At, bLoop, ClipDelta, bHoldRoot, static_cast<float>(Blend), Row.additiveIn);
 }
 
@@ -1718,6 +1758,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 		WalkSpeed[I] = 0.f;
 		bWalking[I] = false;
 		bRunning[I] = false;
+		GaitNow[I] = 0;
 		WalkPhase[I] = 0.0;
 		bKneeling[I] = false;
 		KneelSince[I] = 0.0;

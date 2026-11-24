@@ -21,6 +21,7 @@
 #include "ftcore/AimStance.h"
 #include "ftcore/AttackMove.h"
 #include "ftcore/ArenaFight.h"
+#include "ftcore/BeatChoreo.h"
 #include "ftcore/PartnerBrain.h"
 #include "ftcore/HallucinationArena.h"
 #include "ftcore/ArenaImpact.h"
@@ -96,9 +97,16 @@ struct FFTArenaSkin
 	int32 HitLight = -1;
 	int32 HitHeavy = -1;
 	int32 Walk = -1; // optional: played at the body's ground speed over its authored speed_mps, else the idle
-	// Optional, with walk: a faster gait (its speed_mps over the walk's), played in its place once the body is fast enough
-	// (ftcore::pickRunGait), at the body's speed over its own.
+	// Optional, with walk: a faster gait (its speed_mps over the walk's), played in its place once the body is fast enough,
+	// at the body's speed over its own.
 	int32 Run = -1;
+	// Optional, with walk: a middle gait, faster than the walk and slower than the run. The bound gaits (walk, trot, run)
+	// are picked by the body's speed inside one rate band (ftcore::planGaitBand: Gaits), so no foot slides between them;
+	// GaitClip[g] is gait g's clip (slowest first, Gaits.count of them).
+	int32 Trot = -1;
+	ftcore::GaitBand Gaits;
+	static_assert(ftcore::kMaxGaits == 3, "GaitClip's initialiser names every gait slot");
+	int32 GaitClip[ftcore::kMaxGaits] = {-1, -1, -1};
 	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
@@ -881,6 +889,7 @@ private:
 	float WalkSpeed[ftcore::kMaxArenaEnemies] = {};
 	bool bWalking[ftcore::kMaxArenaEnemies] = {};
 	bool bRunning[ftcore::kMaxArenaEnemies] = {}; // walking on the run clip
+	int32 GaitNow[ftcore::kMaxArenaEnemies] = {}; // walking: its gait (FFTArenaSkin::GaitClip's index)
 	// Where in its clip each skin was last posed (s), and at what rate (a move's clip rate, a gait's, else 1): GetEnemyClipNow.
 	float SkinAt[ftcore::kMaxArenaEnemies] = {};
 	float SkinRate[ftcore::kMaxArenaEnemies] = {};

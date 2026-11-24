@@ -115,6 +115,69 @@ bool pickRunGait(double speed, double walkSpeed, double runSpeed, bool wasRun) {
     return wasRun ? speed > mid - 0.1 * gap : speed > mid + 0.1 * gap;
 }
 
+GaitBand planGaitBand(const double* speeds, int count, double floorSpeed) {
+    GaitBand band;
+    const int most = speeds == nullptr ? 0 : std::clamp(count, 0, kMaxGaits);
+    for (int g = 0; g < most; ++g) {
+        const double s = speeds[g];
+        if (!(s > 0.0) || !std::isfinite(s) || (g > 0 && !(s > band.speed[static_cast<std::size_t>(g - 1)]))) break;
+        band.speed[static_cast<std::size_t>(g)] = s;
+        band.count = g + 1;
+    }
+    // Widen for the widest neighbour ratio: the band's span must hold it plus the margin both ways.
+    const double margin = 1.0 + kGaitSwitchMargin;
+    double widest = 1.0;
+    for (int g = 0; g + 1 < band.count; ++g)
+        widest = std::max(widest, band.speed[static_cast<std::size_t>(g + 1)] / band.speed[static_cast<std::size_t>(g)]);
+    const double need = widest * margin * margin;
+    if (band.maxRate / band.minRate < need) {
+        const double k = std::sqrt(need / (band.maxRate / band.minRate));
+        band.maxRate *= k;
+        band.minRate /= k;
+    }
+    // Into the cap window with its span kept, before the floor lowers it: a span that fits is never refused for where
+    // the even widening put it.
+    if (band.minRate < kGaitRateFloor) {
+        const double s = kGaitRateFloor / band.minRate;
+        band.minRate *= s;
+        band.maxRate *= s;
+    } else if (band.maxRate > kGaitRateCap) {
+        const double s = kGaitRateCap / band.maxRate;
+        band.minRate *= s;
+        band.maxRate *= s;
+    }
+    if (band.count > 0 && floorSpeed > 0.0 && std::isfinite(floorSpeed))
+        band.minRate = std::min(band.minRate, floorSpeed / band.speed[0]);
+    if (band.maxRate > kGaitRateCap || band.minRate < kGaitRateFloor) {
+        band.covers = band.maxRate <= kGaitRateCap * (1.0 + kEps) && band.minRate >= kGaitRateFloor * (1.0 - kEps);
+        band.maxRate = std::min(band.maxRate, kGaitRateCap);
+        band.minRate = std::max(band.minRate, kGaitRateFloor);
+    }
+    for (int g = 0; g + 1 < band.count; ++g) {
+        const std::size_t i = static_cast<std::size_t>(g);
+        const double lo = band.speed[i + 1] * band.minRate; // the faster gait's slowest unclamped speed
+        const double hi = band.speed[i] * band.maxRate;     // the slower gait's fastest
+        const double centre = lo <= hi ? std::sqrt(lo * hi) : std::sqrt(band.speed[i] * band.speed[i + 1]);
+        band.up[i] = centre * margin;
+        band.down[i] = centre / margin;
+    }
+    return band;
+}
+
+int pickGait(const GaitBand& band, int was, double speed) {
+    if (band.count <= 0) return 0;
+    int g = std::clamp(was, 0, band.count - 1);
+    if (!(speed == speed)) return g;
+    while (g + 1 < band.count && speed > band.up[static_cast<std::size_t>(g)]) ++g;
+    while (g > 0 && speed < band.down[static_cast<std::size_t>(g - 1)]) --g;
+    return g;
+}
+
+double gaitRate(const GaitBand& band, int gait, double speed) {
+    if (gait < 0 || gait >= band.count || !(speed == speed)) return 1.0;
+    return std::clamp(speed / band.speed[static_cast<std::size_t>(gait)], band.minRate, band.maxRate);
+}
+
 double choreoStanceRate(const BeatClip& stance, double beatSeconds) {
     if (!(beatSeconds > 0.0) || !(stance.length > 0.0)) return 1.0;
     // The whole number of beats whose rate is inside the clamp and nearest to 1.
