@@ -20,7 +20,9 @@
 // same tile there: the determinism check), -RainCoverAtlasCheck=<n> (the atlas read back after the fill and every n
 // crossings, against the tile files through the Core mapping), -RainCoverHomes (the cache's raw and Oodle sizes),
 // -RainCoverWitness[=<file>] (the 60 m draw at the plant tiles and listed tiles against the baked tiles; with
-// -RainCoverTileLod0 -RainCoverTileNoCull the switched witness).
+// -RainCoverTileLod0 -RainCoverTileNoCull the switched witness), -RainCoverKeyDump=<x,y>[;<x,y>...] (each component's key
+// inputs for the named tiles logged at key time; nothing else changes), -RainCoverKeyCaptures=<n> (n - 1 idle captures more at
+// the bake capture: the origin tiles' key with one capture and with several).
 
 #include "FTRainCoverSubsystem.h"
 
@@ -187,6 +189,7 @@ struct FFTRainRing
 	ftcore::RainCoverFrame Trigger;
 	bool bTriggered = false;
 	int32 AtlasCheckEvery = 0, AtlasCheckAt = -1;
+	TSet<FIntPoint> KeyDump; // tiles whose key inputs are logged (empty: none)
 	bool bWitness = false, bWitnessLod0 = false, bWitnessNoCull = false;
 	TArray<int32> WitnessList, WitnessTiles;
 	int32 WitnessStep = 0, WitnessAt = 0, WitnessWait = -1, WNoDraw = 0;
@@ -302,6 +305,20 @@ bool UFTRainCoverSubsystem::RingBegin(UWorld& World)
 	R->Force = R->Force >= 9 ? 9 : (R->Force > 0 ? 5 : 0);
 	FParse::Value(Sw, TEXT("RainCoverCompareDir="), R->CompareDir);
 	FParse::Value(Sw, TEXT("RainCoverAtlasCheck="), R->AtlasCheckEvery);
+	FString DumpList;
+	if (FParse::Value(Sw, TEXT("RainCoverKeyDump="), DumpList, false))
+	{
+		TArray<FString> Pairs;
+		DumpList.ParseIntoArray(Pairs, TEXT(";"));
+		for (const FString& P : Pairs)
+		{
+			FString Xs, Ys;
+			if (P.Split(TEXT(","), &Xs, &Ys))
+			{
+				R->KeyDump.Add(FIntPoint(FCString::Atoi(*Xs), FCString::Atoi(*Ys)));
+			}
+		}
+	}
 	FString WitnessFile;
 	R->bWitness = FParse::Param(Sw, TEXT("RainCoverWitness")) || FParse::Value(Sw, TEXT("RainCoverWitness="), WitnessFile);
 	if (!WitnessFile.IsEmpty())
@@ -352,6 +369,20 @@ bool UFTRainCoverSubsystem::RingBegin(UWorld& World)
 		return false;
 	}
 	FTRainCoverCaptureSettings(*C, RingTarget, Spec);
+#if !UE_BUILD_SHIPPING
+	// Dev only, -RainCoverKeyCaptures=<n>: n - 1 more idle captures where the bake capture is (no target, never capturing), so
+	// the key of the tiles round the origin can be checked with one capture and with several.
+	int32 KeyCaptures = 1;
+	FParse::Value(FTLookSwitches(), TEXT("RainCoverKeyCaptures="), KeyCaptures);
+	for (int32 K = 1; K < FMath::Min(KeyCaptures, 8); ++K)
+	{
+		if (ASceneCapture2D* Extra = World.SpawnActor<ASceneCapture2D>(FVector::ZeroVector, FRotator(-90.f, 0.f, 0.f), Params))
+		{
+			Extra->GetCaptureComponent2D()->bCaptureEveryFrame = false;
+			Extra->GetCaptureComponent2D()->bCaptureOnMovement = false;
+		}
+	}
+#endif
 
 	// The RAM pool: 25 tiles' codes, sector-aligned; and a flat, full tile's.
 	for (FFTRainRing::FEntry& E : R->Pool)
@@ -416,11 +447,45 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		const double V[10] = {L.X, L.Y, L.Z, S.X, S.Y, S.Z, Q.X, Q.Y, Q.Z, Q.W};
 		return CityHash64WithSeed(reinterpret_cast<const char*>(V), uint32(sizeof(V)), Seed);
 	};
+	// Dev only (-RainCoverKeyDump): the named tile a box touches, if any. Read only; the key is the same with or without it.
+	const auto DumpHit = [&](const FBox& Bx, FIntPoint& Hit)
+	{
+		if (R.KeyDump.Num() == 0)
+		{
+			return false;
+		}
+		const ftcore::RainCoverTile A = ftcore::rainCoverTileAt(Spec, float(Bx.Min.X) * 0.01f, float(Bx.Min.Y) * 0.01f);
+		const ftcore::RainCoverTile Z = ftcore::rainCoverTileAt(Spec, float(Bx.Max.X) * 0.01f, float(Bx.Max.Y) * 0.01f);
+		for (const FIntPoint& T : R.KeyDump)
+		{
+			if (T.X >= A.x && T.X <= Z.x && T.X - A.x < 64 && T.Y >= A.y && T.Y <= Z.y && T.Y - A.y < 64)
+			{
+				Hit = T;
+				return true;
+			}
+		}
+		return false;
+	};
+	const auto DumpT = [](const FTransform& X)
+	{
+		const FVector L = X.GetLocation(), S = X.GetScale3D();
+		const FQuat Q = X.GetRotation();
+		return FString::Printf(TEXT("loc %.6f %.6f %.6f scale %.6f %.6f %.6f quat %.9f %.9f %.9f %.9f"), L.X, L.Y, L.Z, S.X, S.Y, S.Z, Q.X, Q.Y, Q.Z, Q.W);
+	};
 	for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
 	{
 		UStaticMeshComponent* C = *It;
 		const UStaticMesh* M = C->GetStaticMesh();
 		if (C->GetWorld() != &World || !C->IsRegistered() || !M)
+		{
+			continue;
+		}
+		// Only what the bake's capture can draw: the find and the depth draw are the same capture component, so one test covers
+		// both. FPrimitiveSceneProxy::IsShown drops a primitive whose proxy desc is not visible (USceneComponent::IsVisible is
+		// false when bHiddenInGame is set or the visible flag is off), one hidden in scene captures, and one only its owner sees
+		// (the capture's view actor owns no world mesh). That is how the editor-only capture and camera proxy meshes leave the
+		// key: both are bHiddenInGame (SceneCaptureComponent.cpp:276, CameraComponent.cpp:168).
+		if (!C->IsVisible() || C->bHiddenInSceneCapture || C->bOnlyOwnerSee)
 		{
 			continue;
 		}
@@ -433,7 +498,9 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		const FString PN = Pkg->GetName();
 		uint64 H = CityHash64(reinterpret_cast<const char*>(*PN), uint32(PN.Len() * sizeof(TCHAR)));
 #endif
+		const uint64 HMesh = H;
 		bool bWpo = false;
+		FString DumpMats;
 		for (int32 S = 0; S < C->GetNumMaterials(); ++S)
 		{
 			const UMaterialInterface* Mi = C->GetMaterial(S);
@@ -442,12 +509,19 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 			bWpo = bWpo || bW;
 			H = CityHash64WithSeed(reinterpret_cast<const char*>(*MN), uint32(MN.Len() * sizeof(TCHAR)), H);
 			H = H * 1099511628211ull + (bW ? 1u : 2u);
+			if (R.KeyDump.Num() > 0)
+			{
+				DumpMats += FString::Printf(TEXT("%s[%d] %s wpo %d"), S ? TEXT("; ") : TEXT(""), S, *MN, bW ? 1 : 0);
+			}
 		}
 		const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C);
 		const int32 Ints[6] = {C->ForcedLodModel, C->MinLOD, I ? I->InstanceStartCullDistance : -1, I ? I->InstanceEndCullDistance : -1,
 			int32(C->LDMaxDrawDistance), int32(C->MinDrawDistance)};
 		H = CityHash64WithSeed(reinterpret_cast<const char*>(Ints), uint32(sizeof(Ints)), H);
 		H = HashT(C->GetComponentTransform(), H);
+		FIntPoint Hit(0, 0);
+		int32 DumpN = 0;
+		uint64 DumpSum = 0;
 		if (I)
 		{
 			const FBox MB = M->GetBoundingBox();
@@ -457,13 +531,34 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 				if (I->GetInstanceTransform(K, X, true))
 				{
 					++R.Insts;
-					Bucket(MB.TransformBy(X), HashT(X, H), bWpo);
+					const FBox IB = MB.TransformBy(X);
+					const uint64 IH = HashT(X, H);
+					Bucket(IB, IH, bWpo);
+					if (DumpHit(IB, Hit))
+					{
+						++DumpN;
+						DumpSum += IH;
+					}
 				}
 			}
 		}
 		else
 		{
 			Bucket(C->Bounds.GetBox(), H, bWpo);
+			if (DumpHit(C->Bounds.GetBox(), Hit))
+			{
+				DumpN = 1;
+				DumpSum = H;
+			}
+		}
+		if (DumpN > 0)
+		{
+			const AActor* Own = C->GetOwner();
+			UE_LOG(LogForgottenThird, Display,
+				TEXT("RainCover keydump (%d,%d) %s | owner %s %s | saved %d | mobility %d sim %d | mesh %s hash %016llx | mats %s | ints %d %d %d %d %d %d | %s | inst %d | comp %016llx | sum %016llx"),
+				Hit.X, Hit.Y, *C->GetPathName(), Own ? *Own->GetClass()->GetName() : TEXT("-"), Own ? *Own->GetName() : TEXT("-"),
+				C->HasAnyFlags(RF_WasLoaded) ? 1 : 0, int32(C->Mobility), C->IsSimulatingPhysics() ? 1 : 0, *M->GetPathName(), HMesh, *DumpMats, Ints[0], Ints[1], Ints[2],
+				Ints[3], Ints[4], Ints[5], *DumpT(C->GetComponentTransform()), I ? DumpN : -1, H, DumpSum);
 		}
 	}
 	// The bake's own settings: file version, the spec, the find and margin, LOD0, no cull and the wind frozen.
@@ -477,6 +572,11 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		R.Keyed += S ? 1 : 0;
 		const uint64 V = S ? *S : 0ull;
 		R.Key[Ti] = CityHash64WithSeed(reinterpret_cast<const char*>(&V), uint32(sizeof(V)), Seal);
+		if (R.KeyDump.Contains(FIntPoint(R.Tiles[Ti].x, R.Tiles[Ti].y)))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("RainCover keydump (%d,%d) tile sum %016llx key %016llx"), R.Tiles[Ti].x, R.Tiles[Ti].y, V,
+				R.Key[Ti]);
+		}
 	}
 }
 
