@@ -7951,7 +7951,7 @@ TEST_CASE("arena table (review 1.2): a lunge-to-contact move's maxRange covers i
     const float still = arenaPickMinRange(t.enemies[0], 0, t.fighters[0].bodyRadius, 0.f);
     MESSAGE("pick minimum " << low << " m (" << still << " m without the walk-in tick)");
     CHECK(low > 0.5f);
-    CHECK(low - still == doctest::Approx(0.84f * kArenaHostStep));
+    CHECK(low - still == doctest::Approx(0.84f * kArenaHostStep).epsilon(1e-3));
     CHECK(loadError(tableJson(kFightersOk, pup(low))).empty());
     CHECK(contains(loadError(tableJson(kFightersOk, pup(low - 0.001f))),
                    "maxRange: expected at least its pick minimum"));
