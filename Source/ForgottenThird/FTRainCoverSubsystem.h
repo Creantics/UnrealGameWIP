@@ -37,8 +37,26 @@
 // near 0, far = the capture's MaxViewDistanceOverride), so every texel lands where the whole capture puts it. Half a
 // square doubles the projection's larger scale term, which the LOD code reads, so LODDistanceFactor is doubled to keep
 // the same LODs. RainCover/Capture is 1, 2 and 3 on those ticks. Without -RainCoverSplit the whole square is drawn in one
-// tick (Capture 1); -RainCoverMainRenderer always is, since that capture lands later than the copy. Under
-// -RainCoverDiff the drawn map runs both halves and the copy in one tick (the image does not depend on the ticks).
+// tick (Capture 1); with -RainCoverMainRenderer each half is a depth pass of that
+// tick's main render, so the copy on tick 3 still follows both (render commands keep their order); under -RainCoverDiff
+// the main renderer stays whole. Under -RainCoverDiff the drawn map runs both halves and the copy in one tick (the image
+// does not depend on the ticks).
+//
+// Path 3b probe (11-25, dev only; nothing in play reads tiles yet, no material, MPC or indirection change):
+// -RainCoverTileProbe=<file> captures fixed tiles (ftcore rainCoverTileAt, 64 m on a grid from the origin) once the
+// shipped capture has run and 600 ticks have passed, with the shipped recapture paused. The file lists "t <tx> <ty>"
+// tiles and "s <x> <y>" seam points (m; '#' comments). In one tick, from wherever the camera is (far from most tiles):
+// per tile a find capture from 400 m with a 500 m far plane gives its highest occluder; the tile is then drawn from
+// that plus 1 m with the shipped far plane (depthM), read back, packed to R16 over its own range (ftcore
+// rainCoverR16Pack), written under Saved/RainCoverTiles and read back from there, each step timed. Two ticks on, the
+// first five are drawn again (a stale readback would differ). Then, one at a time, a camera stands 2 m over the lowest
+// surface at each tile's centre and each seam point (the view target, 20 ticks to settle): the tile is drawn again at
+// its own top (far camera against camera on the tile, R32F both), and a square is drawn as the shipped capture would
+// from that camera, which the stored R16 tiles are compared against texel for texel (heights within 2 mm, occluder
+// present or absent, the band over the reference's top counted apart, texels below either far plane apart, tile edges
+// counted). It logs a line per tile and per reference, then a summary, and asks the game to quit.
+// -RainCoverUploadProbe: no scene capture at all; on the shipped 5 m trigger it uploads three 512 x 512 R32F tiles
+// (3 MiB, the edge crossing of a 3 x 3 ring) from RAM into transient textures nothing reads, CSV stat RainCover/Upload 1.
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
@@ -50,6 +68,7 @@
 
 class ASceneCapture2D;
 class USceneCaptureComponent2D;
+class UTexture2D;
 class UTextureRenderTarget2D;
 
 UCLASS()
@@ -86,6 +105,14 @@ private:
 	void DiffTick();
 	bool DiffRead(UTextureRenderTarget2D* From, TArray<FLinearColor>& Out) const;
 	void DiffCompare(const TCHAR* Label, const TArray<FLinearColor>& Ref, const TArray<FLinearColor>& Var, const FString& SaveAs) const;
+	// Path 3b probe: set up, the far loop, the steps after it; the camera; one draw; a reference against the tiles; uploads.
+	bool TileSetup(UWorld& World);
+	void TileFarLoop();
+	void TileTick(UWorld& World);
+	bool TilePlaceCamera(UWorld& World, float X, float Y);
+	bool TileDraw(const ftcore::RainCoverFrame& At, float FarM, TArray<float>& DepthM, double& EnqueueMs, double& ReadMs);
+	void TileCompareRef(const TCHAR* Label, int32 Own, float X, float Y);
+	void UploadTick(const FVector& Eye);
 #endif
 
 	UPROPERTY(Transient)
@@ -103,6 +130,17 @@ private:
 	TObjectPtr<UTextureRenderTarget2D> HalfPlus;
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> HalfMinus;
+
+	// Dev only (path 3b probe, -RainCoverTileProbe / -RainCoverUploadProbe; null otherwise): the tile capture, its target
+	// and the camera it stands on the tiles; the upload cell's transient tiles.
+	UPROPERTY(Transient)
+	TObjectPtr<ASceneCapture2D> TileCapture;
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> TileTarget;
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> TileCamera;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTexture2D>> UploadTex;
 
 	ftcore::RainCoverSpec Spec;
 	ftcore::RainCoverFrame Frame;
@@ -129,5 +167,33 @@ private:
 	TArray<FLinearColor> DiffRef;
 	TArray<FLinearColor> DiffVar;
 	TArray<FLinearColor> DiffRefAgain;
+
+	// -RainCoverTileProbe (3b): the tiles, their tops, far captures (depth m), R16 codes and ranges; the seam points.
+	bool bTiles = false;
+	int32 TileState = 0;
+	int32 TileTicks = 0;
+	int32 TileAt = 0;
+	int32 TileWait = 0;
+	FString TileDir;
+	TArray<ftcore::RainCoverTile> TileList;
+	TArray<FVector2f> SeamList;
+	TMap<FIntPoint, int32> TileIndex;
+	TArray<float> TileTop;
+	TArray<float> TileFloor; // the lowest Z a tile's capture reaches (its top minus its far plane)
+	TArray<float> TileOn;    // the last on-tile draw (camera on the tile), depth m
+	TArray<TArray<float>> TileFar;
+	TArray<TArray<uint16>> TileCode;
+	TArray<ftcore::RainCoverR16Range> TileRange;
+	TArray<float> TileScratch;
+	TArray<FLinearColor> TilePixels;
+	FVector TileCam = FVector::ZeroVector;
+	int32 TileRefs = 0, TileRefFails = 0, TileHeld = 0;
+
+	// -RainCoverUploadProbe: the source in RAM (made once) and the trigger's own square.
+	bool bUpload = false;
+	bool bUploadAny = false;
+	int32 Uploads = 0;
+	ftcore::RainCoverFrame UploadFrame;
+	TArray<float> UploadSrc;
 #endif
 };

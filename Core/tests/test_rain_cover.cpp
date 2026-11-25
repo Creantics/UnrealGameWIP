@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <limits>
 #include <string>
 
@@ -120,4 +121,141 @@ TEST_CASE("rainCover: the HLSL") {
     CHECK(surf.find("static") == std::string::npos);
     CHECK(surf.find("return C.Wet(") != std::string::npos);
     CHECK(sprite.find("return C.Open(") != std::string::npos);
+}
+
+TEST_CASE("rainCover tiles (3b): index by floor, frame and the shared texel lattice") {
+    const RainCoverSpec spec;
+    CHECK(rainCoverTileAt(spec, 0.f, 0.f) == RainCoverTile{0, 0});
+    CHECK(rainCoverTileAt(spec, 63.999f, 63.999f) == RainCoverTile{0, 0});
+    CHECK(rainCoverTileAt(spec, 64.f, -0.01f) == RainCoverTile{1, -1});
+    CHECK(rainCoverTileAt(spec, -64.f, -64.01f) == RainCoverTile{-1, -2});
+    CHECK(rainCoverTileAt(spec, -800.f, 1920.f) == RainCoverTile{-13, 30});  // the streets' far ends
+    CHECK(rainCoverTileAt(spec, std::numeric_limits<float>::quiet_NaN(), 5.f) == RainCoverTile{0, 0});
+    CHECK(rainCoverTileAt(spec, 2.0e6f, 5.f) == RainCoverTile{0, 0});
+    const RainCoverFrame f = rainCoverTileFrame(spec, RainCoverTile{-2, 3}, 250.f);
+    CHECK(f.cx == doctest::Approx(-96.f));
+    CHECK(f.cy == doctest::Approx(224.f));
+    CHECK(f.sizeM == 64.f);
+    CHECK(f.topZ == 250.f);
+
+    // A tile texel agrees with rainCoverUV on the tile's frame, at every corner texel and one inside, either side of 0.
+    const float t = rainCoverTexel(spec);
+    for (const RainCoverTile tile : {RainCoverTile{0, 0}, RainCoverTile{-13, 30}, RainCoverTile{-1, -1}}) {
+        const RainCoverFrame tf = rainCoverTileFrame(spec, tile, 0.f);
+        for (const int i : {0, 1, 255, 511}) {
+            for (const int j : {0, 300, 511}) {
+                // texel centre i along +X, j along +Y from the tile's low corner
+                const float x = static_cast<float>(tile.x) * 64.f + (static_cast<float>(i) + 0.5f) * t;
+                const float y = static_cast<float>(tile.y) * 64.f + (static_cast<float>(j) + 0.5f) * t;
+                RainCoverTile got;
+                int px = -1, py = -1;
+                REQUIRE(rainCoverTileTexel(spec, x, y, got, px, py));
+                CHECK(got == tile);
+                float u = 0.f, v = 0.f;
+                REQUIRE(rainCoverUV(tf, x, y, u, v));
+                CHECK(px == static_cast<int>(u * 512.f));
+                CHECK(py == static_cast<int>(v * 512.f));
+            }
+        }
+    }
+    // A snapped square's texel centre (any centre on the 12.5 cm lattice) lands on one tile texel: the four squares that
+    // straddle a tile corner map onto four tiles with no gap and no overlap.
+    RainCoverTile a, b;
+    int ax = 0, ay = 0, bx = 0, by = 0;
+    REQUIRE(rainCoverTileTexel(spec, 64.f - 0.5f * t, 128.f - 0.5f * t, a, ax, ay));
+    REQUIRE(rainCoverTileTexel(spec, 64.f + 0.5f * t, 128.f + 0.5f * t, b, bx, by));
+    CHECK(a == RainCoverTile{0, 1});
+    CHECK(b == RainCoverTile{1, 2});
+    CHECK(ax == 511);  // +Y edge of tile (0, 1)
+    CHECK(ay == 0);    // +X edge: the image's top row
+    CHECK(bx == 0);
+    CHECK(by == 511);
+    RainCoverTile none;
+    int nx = 7, ny = 7;
+    CHECK_FALSE(rainCoverTileTexel(spec, std::numeric_limits<float>::infinity(), 0.f, none, nx, ny));
+    RainCoverSpec empty;
+    empty.resolution = 0;
+    CHECK_FALSE(rainCoverTileTexel(empty, 1.f, 1.f, none, nx, ny));
+}
+
+TEST_CASE("rainCover ring (3b): toroidal slots, and the tiles a move uploads") {
+    // The nine tiles round any centre take nine different slots.
+    for (const RainCoverTile c : {RainCoverTile{0, 0}, RainCoverTile{-13, 30}, RainCoverTile{-1, -2}}) {
+        bool used[9] = {};
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int s = rainCoverRingSlot(RainCoverTile{c.x + dx, c.y + dy});
+                REQUIRE(s >= 0);
+                REQUIRE(s < 9);
+                CHECK_FALSE(used[s]);
+                used[s] = true;
+            }
+    }
+    CHECK(rainCoverRingSlot(RainCoverTile{-1, -1}) == 8);
+    CHECK(rainCoverRingSlot(RainCoverTile{3, -3}) == 0);
+
+    RainCoverTile in[9];
+    CHECK(rainCoverRingEntered(RainCoverTile{4, 4}, RainCoverTile{4, 4}, in) == 0);
+    // Across an edge: 3 tiles enter, each into the slot the tile leaving its column frees.
+    REQUIRE(rainCoverRingEntered(RainCoverTile{0, 0}, RainCoverTile{1, 0}, in) == 3);
+    for (int k = 0; k < 3; ++k) {
+        CHECK(in[k].x == 2);
+        CHECK(rainCoverRingSlot(in[k]) == rainCoverRingSlot(RainCoverTile{-1, in[k].y}));
+    }
+    CHECK(rainCoverRingEntered(RainCoverTile{-1, 0}, RainCoverTile{-1, -1}, in) == 3);
+    CHECK(rainCoverRingEntered(RainCoverTile{0, 0}, RainCoverTile{1, 1}, in) == 5);  // across a corner
+    CHECK(rainCoverRingEntered(RainCoverTile{0, 0}, RainCoverTile{2, 0}, in) == 6);
+    CHECK(rainCoverRingEntered(RainCoverTile{0, 0}, RainCoverTile{3, 0}, in) == 9);  // a jump: the whole ring
+}
+
+TEST_CASE("rainCover R16 (3b): none is its own code, heights within half a step") {
+    CHECK(rainCoverR16Error(0.f) == 0.f);
+    CHECK(rainCoverR16Error(200.f) == doctest::Approx(200.f / 131068.f));
+    CHECK(rainCoverR16Error(200.f) < 0.002f);   // a 200 m range is inside 2 mm
+    CHECK(rainCoverR16Error(263.f) > 0.002f);   // ... 263 m is not
+    CHECK(rainCoverR16Error(std::numeric_limits<float>::quiet_NaN()) == 0.f);
+
+    // depths below a top at 250 m; far 200 m: 200 and more, or not finite, is no occluder
+    const float far = 200.f;
+    const float depth[8] = {0.f, 12.345f, 199.99f, 200.f, 250.f, std::numeric_limits<float>::infinity(), 77.7f,
+                            std::numeric_limits<float>::quiet_NaN()};
+    unsigned short code[8] = {};
+    RainCoverR16Range r;
+    CHECK(rainCoverR16Pack(depth, 8, 250.f, far, code, r, 0.002f));
+    CHECK(r.hits == 4);
+    CHECK(r.minZ == doctest::Approx(50.01f));
+    CHECK(r.maxZ == 250.f);
+    CHECK(code[0] == kRainCoverR16Top);
+    CHECK(code[2] == 1u);
+    for (const int i : {3, 4, 5, 7}) {
+        CHECK(code[i] == kRainCoverR16None);
+        float z = 1.f;
+        CHECK_FALSE(rainCoverR16Unpack(code[i], r, z));
+    }
+    for (const int i : {0, 1, 2, 6}) {
+        CHECK(code[i] != kRainCoverR16None);
+        float z = 0.f;
+        REQUIRE(rainCoverR16Unpack(code[i], r, z));
+        CHECK(std::fabs(z - (250.f - depth[i])) <= rainCoverR16Error(r.maxZ - r.minZ) + 1e-4f);
+    }
+    // One height only (a flat street tile): range 0, every occluder code 1, back exactly.
+    const float flat[3] = {40.f, 40.f, 300.f};
+    CHECK(rainCoverR16Pack(flat, 3, 10.f, far, code, r, 0.002f));
+    CHECK(r.hits == 2);
+    CHECK(code[0] == 1u);
+    CHECK(code[2] == kRainCoverR16None);
+    float z = 0.f;
+    REQUIRE(rainCoverR16Unpack(code[1], r, z));
+    CHECK(z == -30.f);
+    // A range past the tolerance packs but says so; an empty tile has no hits and packs all none.
+    const float wide[2] = {0.f, 199.f};
+    CHECK_FALSE(rainCoverR16Pack(wide, 2, 300.f, 400.f, code, r, 0.0005f));
+    const float empty[2] = {200.f, 500.f};
+    CHECK(rainCoverR16Pack(empty, 2, 0.f, far, code, r, 0.002f));
+    CHECK(r.hits == 0);
+    CHECK(code[0] == kRainCoverR16None);
+    CHECK(code[1] == kRainCoverR16None);
+    CHECK_FALSE(rainCoverR16Pack(depth, 8, std::numeric_limits<float>::quiet_NaN(), far, code, r, 0.002f));
+    CHECK(code[0] == kRainCoverR16None);
+    CHECK_FALSE(rainCoverR16Pack(nullptr, 8, 0.f, far, code, r, 0.002f));
 }

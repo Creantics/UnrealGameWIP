@@ -84,6 +84,47 @@ FTCORE_API float rainCoverWet(float openHere, const float (&ring)[12], float fri
 // horizontal share (a floor not at all, a wall fully).
 FTCORE_API void rainCoverReadPoint(const RainCoverSpec& spec, float x, float y, float nx, float ny, float nz, float& rx, float& ry);
 
+// Fixed cover tiles (path 3b, 11-25; the load-time probe only, nothing in play reads them yet). The strip is cut into
+// squares of spec.sizeM on a grid from the origin: tile (tx, ty) runs tx * size .. (tx + 1) * size in x, and the same in
+// y. Tile edges are whole texels, so a tile's texels lie on the same lattice as a snapped square's.
+struct RainCoverTile {
+    int x = 0, y = 0;
+    bool operator==(const RainCoverTile&) const = default;
+};
+// The tile holding plan point (x, y): floor, so -0.01 m is tile -1. A non-finite point, one 1000 km out or more, or a spec
+// with no size is (0, 0).
+FTCORE_API RainCoverTile rainCoverTileAt(const RainCoverSpec& spec, float x, float y);
+// A tile's frame: its centre, size, and the given top.
+FTCORE_API RainCoverFrame rainCoverTileFrame(const RainCoverSpec& spec, RainCoverTile tile, float topZ);
+// Where plan point (x, y) lands: its tile and texel (px along +Y, py along -X, as rainCoverUV, 0 .. resolution - 1).
+// Exact on the texel lattice (it works in whole texels), so a snapped square's texel centre maps to one tile texel and
+// a tile mosaic can be compared texel for texel. False for a non-finite point or a spec with no texel.
+FTCORE_API bool rainCoverTileTexel(const RainCoverSpec& spec, float x, float y, RainCoverTile& tile, int& px, int& py);
+// The resident 3 x 3 ring round the lead's tile: slot posmod(x, 3) + 3 * posmod(y, 3), 0..8. A tile keeps its slot for as
+// long as it stays in the ring, so a move uploads only the tiles that enter it.
+FTCORE_API int rainCoverRingSlot(RainCoverTile tile);
+// The tiles of the ring round `to` that the ring round `from` lacks, in out[0 .. n-1]; returns n: 0 staying, 3 across an
+// edge, 5 across a corner, 9 for a jump of two tiles or more.
+FTCORE_API int rainCoverRingEntered(RainCoverTile from, RainCoverTile to, RainCoverTile (&out)[9]);
+
+// A tile stored as 16-bit codes over its own height range. Code 0 is no occluder (the capture's far plane); codes
+// 1..65535 run evenly from minZ to maxZ, rounded to the nearest, so a height is off by at most range / (2 * 65534):
+// 2 mm up to a range of about 262 m. A range of 0 keeps every occluder at code 1.
+inline constexpr unsigned kRainCoverR16None = 0u;
+inline constexpr unsigned kRainCoverR16Top = 65535u;
+struct RainCoverR16Range {
+    float minZ = 0.f, maxZ = 0.f;
+    int hits = 0;  // texels with an occluder
+};
+// The worst height error (m) of a range of rangeM; 0 for none or a non-finite range.
+FTCORE_API float rainCoverR16Error(float rangeM);
+// Packs `count` captured depths (m below topZ; at or past farM, or not finite, is no occluder) into out (count codes,
+// the caller's buffer) and sets range. Returns whether the worst error is within toleranceM (2 mm in the probe).
+FTCORE_API bool rainCoverR16Pack(const float* depthM, int count, float topZ, float farM, unsigned short* out,
+                                 RainCoverR16Range& range, float toleranceM);
+// A code back to an occluder Z (m); false for no occluder.
+FTCORE_API bool rainCoverR16Unpack(unsigned code, const RainCoverR16Range& range, float& z);
+
 // The HLSL: struct FTRainCover with Open(...) for sprites and Wet(...) for surfaces, as one custom node's code. Inputs
 // the node declares: CoverTex (Texture2D), CoverTexSampler, CoverFrame (float4, cm), CoverOn (float), WorldPos (cm),
 // Normal (world, unit). Kind "sprite" returns the openness, "surface" the wet share.

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace ftcore {
 
@@ -87,6 +88,116 @@ void rainCoverReadPoint(const RainCoverSpec& spec, float x, float y, float nx, f
     const float out = spec.wallOffsetM * std::min(h, 1.f);
     rx = x + nx / h * out;
     ry = y + ny / h * out;
+}
+
+namespace {
+
+// Plan points this far from the origin (m) or further are not tiled (keeps every index well inside int).
+constexpr float kTileReachM = 1.0e6f;
+
+bool tileable(float x, float y) { return finite(x) && finite(y) && std::fabs(x) < kTileReachM && std::fabs(y) < kTileReachM; }
+
+int floorDiv(int a, int b) {
+    const int q = a / b;
+    return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+int posMod3(int a) {
+    const int m = a % 3;
+    return m < 0 ? m + 3 : m;
+}
+
+bool inRing(RainCoverTile centre, RainCoverTile t) { return std::abs(t.x - centre.x) <= 1 && std::abs(t.y - centre.y) <= 1; }
+
+}  // namespace
+
+RainCoverTile rainCoverTileAt(const RainCoverSpec& spec, float x, float y) {
+    RainCoverTile t;
+    if (!(spec.sizeM > 0.f) || !tileable(x, y)) return t;
+    t.x = static_cast<int>(std::floor(static_cast<double>(x) / spec.sizeM));
+    t.y = static_cast<int>(std::floor(static_cast<double>(y) / spec.sizeM));
+    return t;
+}
+
+RainCoverFrame rainCoverTileFrame(const RainCoverSpec& spec, RainCoverTile tile, float topZ) {
+    RainCoverFrame f;
+    f.sizeM = std::max(spec.sizeM, 0.f);
+    f.cx = (static_cast<float>(tile.x) + 0.5f) * f.sizeM;
+    f.cy = (static_cast<float>(tile.y) + 0.5f) * f.sizeM;
+    f.topZ = finite(topZ) ? topZ : 0.f;
+    return f;
+}
+
+bool rainCoverTileTexel(const RainCoverSpec& spec, float x, float y, RainCoverTile& tile, int& px, int& py) {
+    tile = RainCoverTile{};
+    px = py = 0;
+    const float t = rainCoverTexel(spec);
+    if (!(t > 0.f) || !tileable(x, y)) return false;
+    const int res = spec.resolution;
+    const int gi = static_cast<int>(std::floor(static_cast<double>(x) / t));  // whole texels along +X
+    const int gj = static_cast<int>(std::floor(static_cast<double>(y) / t));  // ... along +Y
+    tile.x = floorDiv(gi, res);
+    tile.y = floorDiv(gj, res);
+    py = res - 1 - (gi - tile.x * res);  // the image's down runs along -X
+    px = gj - tile.y * res;              // its right along +Y
+    return true;
+}
+
+int rainCoverRingSlot(RainCoverTile tile) { return posMod3(tile.x) + 3 * posMod3(tile.y); }
+
+int rainCoverRingEntered(RainCoverTile from, RainCoverTile to, RainCoverTile (&out)[9]) {
+    int n = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const RainCoverTile t{to.x + dx, to.y + dy};
+            if (!inRing(from, t)) out[n++] = t;
+        }
+    }
+    return n;
+}
+
+float rainCoverR16Error(float rangeM) {
+    if (!finite(rangeM) || !(rangeM > 0.f)) return 0.f;
+    return rangeM / (2.f * static_cast<float>(kRainCoverR16Top - 1u));
+}
+
+bool rainCoverR16Pack(const float* depthM, int count, float topZ, float farM, unsigned short* out, RainCoverR16Range& range,
+                      float toleranceM) {
+    range = RainCoverR16Range{};
+    if (!depthM || !out || count <= 0) return false;
+    const bool okTop = finite(topZ) && finite(farM);
+    const auto hit = [&](float d) { return okTop && finite(d) && d < farM; };
+    float lo = 0.f, hi = 0.f;
+    for (int i = 0; i < count; ++i) {
+        if (!hit(depthM[i])) continue;
+        const float z = topZ - depthM[i];
+        if (range.hits == 0 || z < lo) lo = z;
+        if (range.hits == 0 || z > hi) hi = z;
+        ++range.hits;
+    }
+    range.minZ = lo;
+    range.maxZ = hi;
+    const double span = static_cast<double>(hi) - static_cast<double>(lo);
+    const double steps = static_cast<double>(kRainCoverR16Top - 1u);
+    for (int i = 0; i < count; ++i) {
+        if (!hit(depthM[i])) {
+            out[i] = static_cast<unsigned short>(kRainCoverR16None);
+            continue;
+        }
+        double q = 0.0;
+        if (span > 0.0) q = std::round((static_cast<double>(topZ - depthM[i]) - lo) / span * steps);
+        q = std::clamp(q, 0.0, steps);
+        out[i] = static_cast<unsigned short>(1u + static_cast<unsigned>(q));
+    }
+    return okTop && rainCoverR16Error(hi - lo) <= toleranceM;
+}
+
+bool rainCoverR16Unpack(unsigned code, const RainCoverR16Range& range, float& z) {
+    z = 0.f;
+    if (code == kRainCoverR16None || code > kRainCoverR16Top) return false;
+    const double span = static_cast<double>(range.maxZ) - static_cast<double>(range.minZ);
+    z = static_cast<float>(range.minZ + span * static_cast<double>(code - 1u) / static_cast<double>(kRainCoverR16Top - 1u));
+    return true;
 }
 
 std::string rainCoverHlsl(const RainCoverSpec& spec, bool sprite) {
