@@ -12329,3 +12329,453 @@ TEST_CASE("pounce guard: the autopilot's guard meets the curve's contact for eve
             CHECK_FALSE(other);
         }
 }
+
+// ---- the Pounce clock on the 60 Hz grid (ruling 5846 item 8, 11-24) ----
+namespace {
+// How far a Pounce's clip clock (stateTime less an unseen windup) sits off the 1/60 s grid, in ticks, over the push
+// (f21-24: 0.7-0.8 s) and the landing (f36-40.5: 1.2-1.35 s); the pauses it carried and took; how it left the move.
+struct PounceGrid {
+    bool started = false, ramp = false, landing = false;
+    int startTick = -1, leadHits = 0, pausedInWindows = 0;
+    float worstRamp = 0.f, worstLanding = 0.f, worstAll = 0.f, startStop = 0.f, maxStop = 0.f;
+    ArenaBrain left = ArenaBrain::Attack;
+};
+
+float gridOff(float clip) {
+    const double x = static_cast<double>(clip) * 60.0;
+    return static_cast<float>(std::fabs(x - std::round(x)));
+}
+
+// `drive(tick, eo, rig)` sets the coming tick's input (cleared each tick).
+template <typename Drive>
+PounceGrid pounceGrid(const char* kit, float room, Drive drive) {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter(kit);
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    Rig rig(fi, {pounceKind(shipped, contact + room)});
+    rig.put(0, contact + room, 0.f);
+    PounceGrid g;
+    bool unseen = false;
+    for (int i = 0; i < 2400; ++i) {
+        rig.in = ArenaInput{};
+        drive(i, rig.out().enemies[0], rig);
+        const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+        for (const ArenaEvent& e : o.events) {
+            if (e.type == ArenaEventType::AttackStarted && e.source == 0 && e.move == 1 && !g.started) {
+                g.started = true;
+                g.startTick = i;
+                unseen = o.enemies[0].unseen;
+                g.startStop = o.enemies[0].stopLeft;
+            }
+            if (e.type == ArenaEventType::Hit && e.source == kArenaPlayer && e.target == 0) ++g.leadHits;
+        }
+        arenaStep(rig.fight, rig.bodies, kDt);
+        if (!g.started) continue;
+        const ArenaEnemyOut& eo = rig.out().enemies[0];
+        if (eo.brain != ArenaBrain::Attack || eo.move != 1) {
+            g.left = eo.brain;
+            break;
+        }
+        g.maxStop = std::max(g.maxStop, eo.stopLeft);
+        const float clip = eo.stateTime - (unseen ? kArenaUnseenWindup : 0.f);
+        const float off = gridOff(clip);
+        g.worstAll = std::max(g.worstAll, off);
+        const bool inRamp = clip >= 0.7f - 1e-4f && clip <= 0.8f + 1e-4f;
+        const bool inLanding = clip >= 1.2f - 1e-4f && clip <= 1.35f + 1e-4f;
+        if (inRamp) g.ramp = true, g.worstRamp = std::max(g.worstRamp, off);
+        if (inLanding) g.landing = true, g.worstLanding = std::max(g.worstLanding, off);
+        if ((inRamp || inLanding) && eo.stopLeft > 0.f) ++g.pausedInWindows;
+        if (clip > 1.4f) break;
+    }
+    return g;
+}
+
+void gridReport(const std::string& path, const PounceGrid& g) {
+    MESSAGE(path << ": started " << g.started << " at tick " << g.startTick << ", lead hits " << g.leadHits
+                 << ", ramp " << g.ramp << " (" << g.worstRamp << "), landing " << g.landing << " ("
+                 << g.worstLanding << "), worst " << g.worstAll << " tick, paused in windows " << g.pausedInWindows
+                 << ", stop at start " << g.startStop << " s, max stop " << g.maxStop << " s, left for "
+                 << std::string(arenaBrainName(g.left)));
+}
+constexpr float kOnGrid = 1e-3f; // ticks
+} // namespace
+
+TEST_CASE("pounce clock: on the 60 Hz grid through the push and the landing (whiff, hit, parried)") {
+    const PounceGrid whiff = pounceGrid("devin", 3.f, [](int, const ArenaEnemyOut&, Rig&) {});
+    gridReport("whiff", whiff);
+    CHECK(whiff.started);
+    CHECK(whiff.ramp);
+    CHECK(whiff.landing);
+    CHECK(whiff.pausedInWindows == 0);
+    CHECK(whiff.worstAll < kOnGrid);
+    const PounceGrid hit = pounceGrid("devin", 0.1f, [](int, const ArenaEnemyOut&, Rig&) {});
+    gridReport("hit", hit);
+    CHECK(hit.started);
+    CHECK(hit.ramp);
+    CHECK(hit.pausedInWindows == 0);
+    CHECK(hit.worstAll < kOnGrid);
+    for (const char* kit : {"devin", "duy", "third"}) {
+        const PounceGrid parried = pounceGrid(kit, 0.575f, [](int, const ArenaEnemyOut&, Rig& rig) {
+            rig.in.guard = rig.fight.autopilot().guard;
+        });
+        gridReport(std::string("parried ") + kit, parried);
+        CHECK(parried.started);
+        CHECK(parried.ramp);
+        CHECK(parried.worstRamp < kOnGrid); // the parry stop ends the move: no paused tick is read as the Pounce
+    }
+}
+
+TEST_CASE("pounce clock: a lead's blow in the startup or just before it shifts the clock by its hit stop's part tick") {
+    // The pup struck in its startup (the light pressed at clock 0.2 s), then a light landing 4-30 ticks before the
+    // Pounce's start (a pause carried in). The pup keeps the Pounce (poise). Its clock sits off the grid by the light's
+    // hitStop part tick: whole-tick stops (devin, third: 0.05 s) stay on it, duy's 0.06 s (3.6 ticks) leaves 0.4.
+    const ArenaTable t = loadShipped();
+    const PounceGrid base = pounceGrid("devin", 3.f, [](int, const ArenaEnemyOut&, Rig&) {});
+    REQUIRE(base.started);
+    for (const char* kit : {"devin", "duy", "third"}) {
+        const float off = gridOff(t.fighter(kit).light[0].hitStop);
+        bool pressed = false;
+        const PounceGrid struck = pounceGrid(kit, 0.5f, [&pressed](int, const ArenaEnemyOut& eo, Rig& rig) {
+            if (!pressed && eo.brain == ArenaBrain::Attack && eo.move == 1 && eo.stateTime >= 0.2f) {
+                rig.in.light = true;
+                pressed = true;
+            }
+        });
+        gridReport(std::string("struck in startup ") + kit, struck);
+        CHECK(struck.leadHits == 1);
+        CHECK(struck.ramp);
+        CHECK(struck.landing);
+        CHECK(struck.pausedInWindows == 0);
+        CHECK(std::fabs(struck.worstAll - off) < kOnGrid);
+        for (int early = 4; early <= 30; early += 2) {
+            const int at = base.startTick - early;
+            const PounceGrid carried = pounceGrid(kit, 0.5f, [at](int i, const ArenaEnemyOut&, Rig& rig) {
+                if (i == at) rig.in.light = true;
+            });
+            CAPTURE(early);
+            gridReport(std::string("carried ") + kit + " press " + std::to_string(early) + " ticks early", carried);
+            CHECK(carried.started);
+            CHECK(carried.pausedInWindows == 0);
+            // the stop still running when the Pounce began, or ending in its start tick, carries the part tick in
+            CHECK((std::fabs(carried.worstAll - off) < kOnGrid || carried.worstAll < kOnGrid));
+        }
+    }
+}
+
+// ---- the maw_pup's brain switches: the body's travel in the switch tick (ruling 5846 item 2, 11-24) ----
+namespace {
+struct SwitchSeen {
+    ArenaBrain from = ArenaBrain::Approach, to = ArenaBrain::Approach;
+    std::uint8_t fromMove = 0, toMove = 0;
+    float before = 0.f, during = 0.f, after = 0.f; // m the body travelled in the tick before, of and after the switch
+    float clock = 0.f;                              // the new state's clock at the switch tick's end
+};
+
+// Runs `ticks` ticks; `drive(tick, rig)` sets the input. Every brain or move change of enemy 0 is kept.
+template <typename Drive>
+std::vector<SwitchSeen> pupSwitches(const ArenaEnemyKind& pup, const char* kit, float x, int ticks, Drive drive) {
+    const ArenaTable t = loadShipped();
+    Rig rig(t.fighter(kit), {pup});
+    rig.put(0, x, 0.f);
+    std::vector<SwitchSeen> seen;
+    ArenaBrain brain = rig.out().enemies[0].brain;
+    std::uint8_t move = rig.out().enemies[0].move;
+    float last = 0.f;
+    int open = -1; // the switch still waiting for its after tick
+    for (int i = 0; i < ticks; ++i) {
+        rig.in = ArenaInput{};
+        drive(i, rig);
+        const Vec2 was = rig.bodies.enemies[0];
+        rig.fight.tick(kDt, rig.in, rig.bodies);
+        arenaStep(rig.fight, rig.bodies, kDt);
+        const float moved = distanceOf(was, rig.bodies.enemies[0]);
+        if (open >= 0) seen[static_cast<std::size_t>(open)].after = moved, open = -1;
+        const ArenaEnemyOut& eo = rig.out().enemies[0];
+        const bool attack = eo.brain == ArenaBrain::Attack;
+        if (eo.brain != brain || (attack && eo.move != move)) {
+            SwitchSeen s;
+            s.from = brain, s.to = eo.brain, s.fromMove = move, s.toMove = eo.move;
+            s.before = last, s.during = moved, s.clock = eo.stateTime;
+            seen.push_back(s);
+            open = static_cast<int>(seen.size()) - 1;
+        }
+        brain = eo.brain, move = eo.move, last = moved;
+    }
+    return seen;
+}
+
+void switchReport(const std::string& path, const std::vector<SwitchSeen>& seen) {
+    for (const SwitchSeen& s : seen)
+        MESSAGE(path << ": " << std::string(arenaBrainName(s.from)) << "/" << int(s.fromMove) << " -> "
+                     << std::string(arenaBrainName(s.to)) << "/" << int(s.toMove) << " clock " << s.clock
+                     << " s; travel before " << s.before * 1000.f << " mm, switch tick " << s.during * 1000.f
+                     << " mm, after " << s.after * 1000.f << " mm");
+}
+} // namespace
+
+TEST_CASE("pup switches: the body's travel in each brain switch tick is at most the old gait's step") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter("devin");
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    const ArenaEnemyKind a = pounceKind(shipped, contact + 0.5f);
+    const auto none = [](int, Rig&) {};
+    std::vector<SwitchSeen> all;
+    for (float x : {1.2f, 1.6f, 2.5f, 4.f, 8.f, 14.f}) {
+        const auto seen = pupSwitches(a, "devin", x, 360, none);
+        switchReport("A from " + std::to_string(x) + " m", seen);
+        all.insert(all.end(), seen.begin(), seen.end());
+        const auto s7 = pupSwitches(shipped, "devin", x, 360, none);
+        switchReport("a7 from " + std::to_string(x) + " m", s7);
+        all.insert(all.end(), s7.begin(), s7.end());
+    }
+    // Struck while it comes in: lights pressed every 20 ticks.
+    const auto struck = pupSwitches(shipped, "devin", 2.5f, 360, [](int i, Rig& rig) { rig.in.light = i % 20 == 0; });
+    switchReport("a7 struck", struck);
+    all.insert(all.end(), struck.begin(), struck.end());
+    const auto heavy = pupSwitches(shipped, "devin", 2.5f, 360, [](int i, Rig& rig) { rig.in.heavy = i % 40 == 0; });
+    switchReport("a7 heavy", heavy);
+    all.insert(all.end(), heavy.begin(), heavy.end());
+    for (const SwitchSeen& s : all) CHECK(s.during <= shipped.runSpeed * kDt + 1e-3f);
+}
+
+TEST_CASE("pounce contact clock: ArenaEnemyOut::lungeContactAt is the clock the autopilot's guard aims at") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    for (const char* kit : {"devin", "duy", "third"})
+        for (const float room : {0.1f, 0.575f, 1.05f}) {
+            CAPTURE(std::string(kit));
+            CAPTURE(room);
+            const ArenaFighter& fi = t.fighter(kit);
+            const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+            const ArenaEnemyKind pup = pounceKind(shipped, contact + room);
+            // The lead stands: the clock holds still through the startup while the pup creeps in.
+            Rig rig(fi, {pup});
+            rig.put(0, contact + room, 0.f);
+            float first = 0.f, latchClock = -1.f, prevLeft = 1e9f, pressLeft = 0.f, pressPrev = 0.f;
+            int pressTick = -1, ticksSet = 0, parryTick = -1;
+            bool pressRight = false, zeroAfter = true, latched = false;
+            for (int i = 0; i < 2400; ++i) {
+                const ArenaEnemyOut before = rig.out().enemies[0];
+                rig.in = ArenaInput{};
+                rig.in.guard = rig.fight.autopilot().guard;
+                if (rig.in.guard && pressTick < 0 && before.lungeContactAt > 0.f) {
+                    pressTick = i;
+                    const float left = before.lungeContactAt - before.stateTime;
+                    pressLeft = left, pressPrev = prevLeft;
+                    // The press comes on the first tick whose contact clock is half a window away or less.
+                    pressRight = left <= 0.5f * fi.parryWindow + 1e-4f && prevLeft > 0.5f * fi.parryWindow - 1e-4f;
+                }
+                if (before.lungeContactAt > 0.f) prevLeft = before.lungeContactAt - before.stateTime;
+                const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+                for (const ArenaEvent& e : o.events)
+                    if (e.type == ArenaEventType::Parried && e.source == 0 && parryTick < 0) parryTick = i;
+                arenaStep(rig.fight, rig.bodies, kDt);
+                const ArenaEnemyOut& eo = rig.out().enemies[0];
+                if (eo.brain != ArenaBrain::Attack || eo.move != 1) {
+                    if (ticksSet > 0) break;
+                    continue;
+                }
+                if (eo.lungeContactAt > 0.f) {
+                    if (ticksSet++ == 0) first = eo.lungeContactAt;
+                    // The room is read from the bodies before this tick's step against the clock after it: the
+                    // contact clock wanders by up to a tick over the startup.
+                    CHECK(std::fabs(eo.lungeContactAt - first) <= kDt + 1e-4f);
+                }
+                if (latched || eo.lungeEnding != 0) zeroAfter = zeroAfter && eo.lungeContactAt == 0.f;
+                if (eo.lungeLatched && !latched) latched = true, latchClock = eo.stateTime;
+            }
+            REQUIRE(ticksSet > 0);
+            CHECK(zeroAfter);
+            CHECK(pressTick >= 0);
+            CHECK(pressRight);
+            CHECK(parryTick > pressTick);
+            // Parried, so no latch: the contact clock is checked against the lead who doesn't guard below.
+            (void)latchClock;
+            // Lead idle, no guard: it latches on the tick its clock first reaches the predicted contact.
+            Rig bare(fi, {pup});
+            bare.put(0, contact + room, 0.f);
+            float predicted = 0.f, latchAt = -1.f;
+            for (int i = 0; i < 2400 && latchAt < 0.f; ++i) {
+                bare.in = ArenaInput{};
+                bare.fight.tick(kDt, bare.in, bare.bodies);
+                arenaStep(bare.fight, bare.bodies, kDt);
+                const ArenaEnemyOut& eo = bare.out().enemies[0];
+                if (eo.lungeContactAt > 0.f) predicted = eo.lungeContactAt;
+                if (eo.lungeLatched) latchAt = eo.stateTime;
+            }
+            REQUIRE(latchAt > 0.f);
+            CHECK(latchAt >= predicted - kDt - 1e-4f); // the last prediction may sit up to a tick after the latch
+            CHECK(latchAt < predicted + kDt + 1e-4f);
+            MESSAGE(kit << " room " << room << ": contact clock " << predicted << " s, latched at " << latchAt
+                        << " s; guard pressed " << pressLeft * 60.f << " ticks before it (a tick earlier: "
+                        << pressPrev * 60.f << "), half window " << fi.parryWindow * 30.f
+                        << " ticks; press tick to parry tick " << parryTick - pressTick);
+        }
+}
+
+TEST_CASE("pounce clock: blows landing inside the push and the landing windows, and an unseen start") {
+    // Lights pressed at each tick from clock 0.45 s to 1.3 s; the pup 0.5 m outside contact. Reported per press: the
+    // pauses that fell inside a window and the clock's offset there (a hit stop's part tick).
+    for (const char* kit : {"devin", "duy", "third"}) {
+        int inside = 0;
+        float worst = 0.f;
+        for (int p = 27; p <= 78; ++p) {
+            const float pressAt = p * kDt;
+            bool pressed = false;
+            const PounceGrid g = pounceGrid(kit, 0.5f, [&pressed, pressAt](int, const ArenaEnemyOut& eo, Rig& rig) {
+                if (!pressed && eo.brain == ArenaBrain::Attack && eo.move == 1 && eo.stateTime >= pressAt - 1e-4f) {
+                    rig.in.light = true;
+                    pressed = true;
+                }
+            });
+            if (g.pausedInWindows > 0) {
+                ++inside;
+                worst = std::max(worst, std::max(g.worstRamp, g.worstLanding));
+                if (inside <= 3 || g.worstAll > kOnGrid)
+                    gridReport(std::string(kit) + " light at " + std::to_string(pressAt), g);
+            }
+        }
+        MESSAGE(std::string(kit) << ": " << inside << " presses paused it inside a window; worst offset there " << worst
+                                 << " tick");
+    }
+    // The unseen start: the pup behind the lead (outside the windup arc), so the windup runs kArenaUnseenWindup longer.
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter("devin");
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    Rig rig(fi, {pounceKind(shipped, contact + 0.5f)});
+    rig.put(0, -(contact + 0.5f), 0.f);
+    bool started = false, unseen = false;
+    float worst = 0.f;
+    int ticks = 0;
+    for (int i = 0; i < 2400; ++i) {
+        rig.in = ArenaInput{};
+        if (!started) { // the lead keeps its back to the pup, so the pup never comes into the windup arc
+            const float ax = rig.bodies.player.x - rig.bodies.enemies[0].x;
+            const float ay = rig.bodies.player.y - rig.bodies.enemies[0].y;
+            const float len = std::max(1e-4f, std::hypot(ax, ay));
+            rig.in.move = Vec2{0.3f * ax / len, 0.3f * ay / len};
+        }
+        const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+        for (const ArenaEvent& e : o.events)
+            if (e.type == ArenaEventType::AttackStarted && e.source == 0 && e.move == 1 && !started)
+                started = true, unseen = o.enemies[0].unseen;
+        arenaStep(rig.fight, rig.bodies, kDt);
+        if (!started) continue;
+        const ArenaEnemyOut& eo = rig.out().enemies[0];
+        if (eo.brain != ArenaBrain::Attack || eo.move != 1) break;
+        worst = std::max(worst, gridOff(eo.stateTime - (unseen ? kArenaUnseenWindup : 0.f)));
+        ++ticks;
+    }
+    MESSAGE("unseen start: started " << started << ", unseen " << unseen << ", " << ticks << " ticks, worst offset "
+                                     << worst << " tick");
+    CHECK(started);
+    CHECK(worst < kOnGrid);
+}
+
+TEST_CASE("pup switches: Nip, flinch and gait entries") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    // Nip: the pup picks it only when it holds the token inside 0.76 m while its Pounce cools (3 s); idle, the
+    // cooldown ends while it walks in, so it pounces again. The lead walks in while the pup approaches.
+    const auto walkIn = pupSwitches(shipped, "devin", 1.6f, 900, [](int i, Rig& rig) {
+        if (i > 0 && rig.out().enemies[0].brain == ArenaBrain::Approach) rig.in.move = Vec2{1.f, 0.f};
+    });
+    CHECK(std::any_of(walkIn.begin(), walkIn.end(),
+                      [](const SwitchSeen& s) { return s.to == ArenaBrain::Attack && s.toMove == 0; }));
+    switchReport("a7 lead walks in", walkIn);
+    // A flinch: Devin's jump light (poise 20 = the pup's flinchPoise, under its poise 40).
+    const auto jumpHit = pupSwitches(shipped, "devin", 1.2f, 600, [](int i, Rig& rig) {
+        rig.in.jump = i % 90 == 10;
+        rig.in.light = i % 90 == 16;
+    });
+    switchReport("a7 jump lights", jumpHit);
+    // Gait entries: the lead backs off fast and stops, so the pup comes in at its trot and gallop.
+    for (int stopAt : {40, 80, 140}) {
+        const auto chase = pupSwitches(shipped, "devin", 1.6f, 500, [stopAt](int i, Rig& rig) {
+            if (i < stopAt) rig.in.move = Vec2{-1.f, 0.f};
+        });
+        switchReport("a7 lead flees " + std::to_string(stopAt) + " ticks", chase);
+    }
+}
+
+namespace {
+const char* pushSide(Vec2 local) {
+    if (std::fabs(local.x) >= std::fabs(local.y)) return local.x >= 0.f ? "front" : "back";
+    return local.y >= 0.f ? "left" : "right";
+}
+} // namespace
+
+TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's push; none walking") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    for (const char* kit : {"devin", "duy", "third"}) {
+        const ArenaFighter& fi = t.fighter(kit);
+        const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+        for (const float room : {0.1f, 0.575f, 1.05f}) {
+            for (const bool walking : {false, true}) {
+                Rig rig(fi, {pounceKind(shipped, contact + room)});
+                rig.put(0, contact + room, 0.f);
+                int began = 0, ended = 0, offPlanted = 0;
+                Vec2 net{};
+                float worstStep = 0.f, worstNet = 0.f;
+                for (int i = 0; i < 400; ++i) {
+                    rig.in = ArenaInput{};
+                    // walking: the lead walks across the pup's front, through the whole move
+                    if (walking) rig.in.move = Vec2{0.f, i < 200 ? 1.f : -1.f};
+                    const Vec2 was = rig.bodies.player;
+                    const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+                    const Vec2 own = Vec2{was.x + o.player.velocity.x * kDt, was.y + o.player.velocity.y * kDt};
+                    arenaStep(rig.fight, rig.bodies, kDt);
+                    const ArenaPush& p = rig.bodies.push;
+                    const Vec2 step = rig.bodies.pushStep;
+                    ArenaHeld held;
+                    const bool planted = arenaPlanted(rig.fight, held);
+                    if (!planted && (step.x != 0.f || step.y != 0.f)) ++offPlanted;
+                    if (step.x != 0.f || step.y != 0.f) { // the lead's move off its own step, less a taken-back step
+                        Vec2 d{rig.bodies.player.x - own.x, rig.bodies.player.y - own.y};
+                        const float sx = o.player.velocity.x * kDt, sy = o.player.velocity.y * kDt;
+                        const float sl = std::hypot(sx, sy);
+                        if (sl > 0.f) {
+                            const float back = std::clamp(-(d.x * sx + d.y * sy) / sl, 0.f, sl);
+                            d = Vec2{d.x + sx / sl * back, d.y + sy / sl * back};
+                        }
+                        worstStep = std::max(worstStep, distanceOf(step, d));
+                    }
+                    if (p.began) ++began, net = Vec2{};
+                    if (p.active) net = Vec2{net.x + step.x, net.y + step.y};
+                    if (p.ended) {
+                        ++ended;
+                        worstNet = std::max(worstNet, distanceOf(net, p.net));
+                        MESSAGE(std::string(kit) << " room " << room << std::string(walking ? " walking" : " idle")
+                                                 << ": shove " << p.count << " " << std::string(pushSide(p.local))
+                                                 << " "
+                                                 << p.distance * 1000.f
+                                                 << " mm, peak " << p.peakSpeed << " m/s, " << p.duration << " s");
+                    }
+                }
+                CHECK(offPlanted == 0);
+                CHECK(worstStep < 1e-6f);
+                CHECK(worstNet < 1e-6f);
+                CHECK(began == static_cast<int>(rig.bodies.push.count));
+                CHECK(ended == began - (rig.bodies.push.active ? 1 : 0));
+            }
+        }
+    }
+    // a7 data: no lunge curve, so no pup is ever planted and no shove is raised, the lead walking into it or not.
+    for (const bool walking : {false, true}) {
+        Rig rig(t.fighter("devin"), {shipped});
+        rig.put(0, 1.6f, 0.f);
+        for (int i = 0; i < 900; ++i) {
+            rig.in = ArenaInput{};
+            if (walking) rig.in.move = Vec2{1.f, 0.f};
+            rig.tick();
+            arenaStep(rig.fight, rig.bodies, kDt);
+            CHECK(rig.bodies.pushStep.x == 0.f);
+            CHECK(rig.bodies.pushStep.y == 0.f);
+        }
+        CHECK(rig.bodies.push.count == 0u);
+    }
+}

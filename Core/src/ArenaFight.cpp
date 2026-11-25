@@ -279,6 +279,20 @@ float arenaLungeContactAt(const ArenaLungeCurve& c, float now, float launch, flo
     return hi;
 }
 
+// Kind k's lunge-curve move `a`, `stateTime` into it (`unseen`: its windup kArenaUnseenWindup longer), the lead (radius
+// `leadRadius`) `gap` m from it: its first tooth contact on the curve's clock (less the windup), -1 when the curve
+// does not close the room by the active's end. `now` gets the curve's clock now. The autopilot's guard and
+// ArenaEnemyOut::lungeContactAt both read it.
+float lungeContactClock(const ArenaEnemyKind& k, const ArenaAttack& a, bool unseen, float stateTime, float leadRadius,
+                        float gap, float& now) {
+    const float held = unseen ? kArenaUnseenWindup : 0.f;
+    const float contact = std::max(0.f, leadRadius - k.contactInset) + arenaBodyReach(k);
+    const float room = std::max(0.f, gap - contact);
+    now = std::max(0.f, stateTime - held);
+    return arenaLungeContactAt(k.lungeCurve, now, std::max(0.f, a.startup - held),
+                               std::max(0.f, a.startup + a.active - held), room);
+}
+
 } // namespace
 
 // The fight's rules. ArenaFight's state is private; this is its friend, so the rules read and write it directly.
@@ -580,6 +594,15 @@ struct ArenaFightImpl {
                                  def.enemies[i].lungeCurve.count > 0;
             eo.lungeLatched = lunging && foe.lungeLatched;
             eo.lungeEnding = lunging ? foe.lungeEnding : 0;
+            eo.lungeContactAt = 0.f;
+            if (lunging && def.enemies[i].lungeToContact && !foe.breakTimed && !foe.lungeLatched &&
+                foe.lungeEnding == 0) {
+                const ArenaAttack& a = fight.enemyAttackNow(i);
+                float now = 0.f;
+                const float at = lungeContactClock(def.enemies[i], a, foe.unseen, foe.stateTime, fi.bodyRadius,
+                                                   arenaDistance(pl.pos, foe.pos), now);
+                if (at >= 0.f) eo.lungeContactAt = at + (foe.unseen ? kArenaUnseenWindup : 0.f);
+            }
         }
         ArenaAllyOut& ao = out.ally;
         ao = ArenaAllyOut{};
@@ -4456,12 +4479,9 @@ struct ArenaFightImpl {
                 k.lungeCurve.count > 0 && !foe.breakTimed && !foe.lungeLatched) {
                 // A lunge-curve move bites at first tooth contact (the latch), not at its active's start: the time
                 // until its curve closes the room left now (none closed by the active's end: its start, as any move).
-                const float held = foe.unseen ? kArenaUnseenWindup : 0.f;
-                const float contact = std::max(0.f, f.bodyRadius - k.contactInset) + arenaBodyReach(k);
-                const float room = std::max(0.f, arenaDistance(p.pos, foe.pos) - contact);
-                const float now = std::max(0.f, foe.stateTime - held);
-                const float at = arenaLungeContactAt(k.lungeCurve, now, std::max(0.f, a.startup - held),
-                                                     std::max(0.f, a.startup + a.active - held), room);
+                float now = 0.f;
+                const float at = lungeContactClock(k, a, foe.unseen, foe.stateTime, f.bodyRadius,
+                                                   arenaDistance(p.pos, foe.pos), now);
                 if (at >= 0.f) untilActive = at - now;
             }
             if (threat < 0 || untilActive < soonest) {
@@ -5361,6 +5381,8 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
         bodies.player = arenaMadd(bodies.player, out.player.velocity, dt);
         for (std::size_t i = 0; i < n; ++i) bodies.enemies[i] = arenaMadd(bodies.enemies[i], out.enemies[i].velocity, dt);
     }
+    const Vec2 ownPlayer = bodies.player;
+    const Vec2 ownStep = dt > 0.f ? arenaScaled(out.player.velocity, dt) : Vec2{};
     // Overlapping bodies are pushed apart, half each; dead enemies don't block. No push apart with the player on the
     // frame the performer is placed.
     // A lunge-curve pup with a paw planted (arenaPlanted) is held: the push moves the other body only.
@@ -5372,6 +5394,45 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     const ArenaRing& ring = fight.ring();
     arenaHoldBodies(fight, bodies, held, arenaRingHold, &ring);
     if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring).settled) ++bodies.settleCaps;
+    arenaTrackPush(fight, bodies, ownPlayer, ownStep, placed ? 0.f : dt);
+}
+
+void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer, Vec2 ownStep, float dt) {
+    if (!(dt > 0.f)) return;
+    ArenaHeld held;
+    // The settle's move of the lead, less the part that only takes back its own step (walking into the planted body
+    // is a block, not a shove): along the step, up to its length.
+    Vec2 d = arenaSub(bodies.player, ownPlayer);
+    const float stepLen = arenaLength(ownStep);
+    if (stepLen > 0.f) {
+        const Vec2 s = arenaScaled(ownStep, 1.f / stepLen);
+        const float back = std::clamp(-(d.x * s.x + d.y * s.y), 0.f, stepLen);
+        d = arenaMadd(d, s, back);
+    }
+    const float len = arenaLength(d);
+    ArenaPush& p = bodies.push;
+    p.began = p.ended = false;
+    if (!arenaPlanted(fight, held) || len <= kArenaPushFloor) {
+        bodies.pushStep = Vec2{};
+        if (p.active) p.active = false, p.ended = true;
+        return;
+    }
+    bodies.pushStep = d;
+    if (!p.active) {
+        const std::uint32_t count = p.count + 1u;
+        p = ArenaPush{};
+        p.active = p.began = true;
+        p.count = count;
+    }
+    p.net = arenaMadd(p.net, d, 1.f);
+    p.distance = arenaLength(p.net);
+    p.peakSpeed = std::max(p.peakSpeed, len / dt);
+    p.duration += dt;
+    if (p.began) { // the lead's frame at the start: x along its facing, y to its left
+        const Vec2 f = arenaUnit(fight.output().player.facing, Vec2{1.f, 0.f});
+        const Vec2 u = arenaUnit(d, f);
+        p.local = Vec2{u.x * f.x + u.y * f.y, f.x * u.y - f.y * u.x};
+    }
 }
 
 bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held) {

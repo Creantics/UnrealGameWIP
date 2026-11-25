@@ -315,6 +315,11 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
     const float playerRadius = def.fighter.bodyRadius;
     const ArenaBodies before = bodies;
     arenaStep(fight, bodies, dt);
+    // The shove is tracked once, after the walls below: the inner step's record is set back first.
+    const bool frozen = fight.frozen();
+    const Vec2 ownStep = frozen ? Vec2{} : scaled(fight.output().player.velocity, dt);
+    const Vec2 ownPlayer = frozen ? bodies.player : plus(before.player, ownStep);
+    if (!frozen) bodies.pushStep = before.pushStep, bodies.push = before.push;
     if (zone.softWall) {
         // Nearing a wall, a body slows (to 60% at the wall), so it meets it without a stop.
         const auto brake = [&](Vec2& now, Vec2 was, float r) {
@@ -338,6 +343,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         arenaHoldBodies(fight, bodies, held, zoneHold, &zone);
     }
     if (!arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone).settled) ++bodies.settleCaps;
+    if (!frozen) arenaTrackPush(fight, bodies, ownPlayer, ownStep, dt);
 }
 
 // ---- the size ----
