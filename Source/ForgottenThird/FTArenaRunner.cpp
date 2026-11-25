@@ -1269,6 +1269,17 @@ void UFTArenaRunner::LoadSkin(int32 I)
 			Skin.MixGaits.idleLength = static_cast<double>(Skin.Sequences[Skin.Idle]->GetPlayLength());
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: enemy %d's gaits are mixed by speed (gait_mix)."), I);
 		}
+		// The walk off after an attack (ruling 6681r item 4): only with the mix, the walk and the clip's hand_phase. Until
+		// the clip lands the table has none, and the mix plays the walk off as before.
+		Skin.WalkStart = -1;
+		const int32 Start = Skin.bGaitMix && Skin.Walk >= 0 ? Find("walk_start") : -1;
+		if (Start >= 0 && (*Skin.Clips)[static_cast<size_t>(Start)].handPhase >= 0.0)
+		{
+			Skin.WalkStart = Start;
+			Skin.WalkStartPhase = (*Skin.Clips)[static_cast<size_t>(Start)].handPhase;
+		}
+		UE_CLOG(Start >= 0 && Skin.WalkStart < 0, LogForgottenThird, Warning,
+			TEXT("Arena: enemy %d's walk_start has no hand_phase; the mix plays the walk off: %s."), I, *TablePath);
 		if (Count > 1)
 		{
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: enemy %d gaits: %d, rates %.2f-%.2f%s."), I, Skin.Gaits.count,
@@ -1356,7 +1367,30 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			GaitMix[I].begun = true; // a restart: the figure still shows the last fight's clip, so the slot fades in over it
 		}
-		MixNow[I] = ftcore::gaitMixStep(GaitMix[I], Skin.MixGaits, bShow, ftcore::arenaGaitSpeed(Out, V), ClipDelta, MixBlend);
+		// The walk off after an attack (ruling 6681r item 4): walk_start plays on Core's clock (ArenaEnemyOut::gaitStart)
+		// instead of the mix; when it ends the mix is seeded with the walk at the clip's hand_phase, its slot full.
+		const bool bStart = Skin.WalkStart >= 0 && Out.gaitStart >= 0.f;
+		const bool bOnFoot = Out.brain == ftcore::ArenaBrain::Approach || Out.brain == ftcore::ArenaBrain::Strafe;
+		// The seeding frame moves the walk on by the drawn time past the start's end (Alpha of this step), not by the
+		// frame's: the frame before drew the start clip at its pose time.
+		const bool bSeed = !bStart && bInWalkStart[I] && bOnFoot; // a move or a hit cutting it short seeds nothing
+		if (bSeed)
+		{
+			int32 WalkGait = 0;
+			for (int32 G = 0; G < Skin.MixGaits.count; ++G)
+			{
+				WalkGait = Skin.GaitClip[G] == Skin.Walk ? G : WalkGait;
+			}
+			ftcore::gaitMixSeed(GaitMix[I], Skin.MixGaits, WalkGait, Skin.WalkStartPhase);
+		}
+		bInWalkStart[I] = bStart;
+		MixNow[I] = bStart ? ftcore::GaitMixFrame{}
+			: ftcore::gaitMixStep(GaitMix[I], Skin.MixGaits, bShow, ftcore::arenaGaitSpeed(Out, V),
+				bSeed ? FMath::Clamp(Alpha, 0.f, 1.f) * StepSeconds : ClipDelta, MixBlend);
+		if (bStart)
+		{
+			GaitMix[I].showing = false;
+		}
 		const int32 Lead = MixNow[I].layer[0].gait;
 		WalkSpeed[I] = static_cast<float>(FMath::Abs(V));
 		MixSpeed[I] = static_cast<float>(ftcore::arenaGaitSpeed(Out, V));
@@ -1652,6 +1686,13 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			Time = static_cast<double>(Fight.time()) + static_cast<double>(Alpha) * StepSeconds - StoneTurnStart;
 			bPhased = true;
 		}
+		else if (bInWalkStart[I])
+		{
+			// The walk off's start clip, on Core's clock for it at the drawn moment (ruling 6681r item 4).
+			Clip = Skin.WalkStart;
+			Time = static_cast<double>(ftcore::arenaPoseTime(Out.gaitStart, Alpha, StepSeconds, false));
+			bTimed = true;
+		}
 		else if (bWalking[I])
 		{
 			const int32 Gait = Skin.GaitClip[FMath::Clamp(GaitNow[I], 0, ftcore::kMaxGaits - 1)];
@@ -1857,6 +1898,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 		GaitMix[I] = ftcore::GaitMixState{};
 		MixNow[I] = ftcore::GaitMixFrame{};
 		MixDrawn[I] = ftcore::GaitDrawnState{};
+		bInWalkStart[I] = false;
 		MixSpeed[I] = 0.f;
 		bKneeling[I] = false;
 		KneelSince[I] = 0.0;

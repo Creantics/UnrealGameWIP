@@ -232,6 +232,18 @@ double gaitWrap(double t, double length) {
 
 } // namespace
 
+void gaitMixSeed(GaitMixState& state, const GaitSet& gaits, int gait, double phase) {
+    state = GaitMixState{};
+    state.begun = true;
+    if (gait < 0 || gait >= std::clamp(gaits.count, 0, kMaxGaits)) return;
+    const std::size_t g = static_cast<std::size_t>(gait);
+    const double length = gaits.length[g];
+    state.time[g] = gaitWrap((std::isfinite(phase) ? phase : 0.0) * length, length);
+    state.live[g] = true;
+    state.slot = 1.0;
+    state.showing = true;
+}
+
 GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show, double v, double dt, double blend) {
     GaitMixFrame f;
     if (!std::isfinite(v)) v = 0.0;
@@ -1389,7 +1401,8 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
     for (std::uint32_t i = 0; i < list.size(); ++i) {
         const std::string where = "clips[" + std::to_string(i) + "]";
         const JsonValue c = list[i];
-        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "blend_s", "loop", "additive_in"});
+        ld.unknownKeys(c, where, {"id", "asset", "length_s", "impact_s", "speed_mps", "blend_s", "loop", "additive_in",
+                                        "hand_phase"});
         BeatClip clip;
         const std::string_view id = c["id"].string();
         if (!choreoIdText(id)) {
@@ -1431,6 +1444,13 @@ bool importBeatClips(std::string_view json, BeatClips& out, std::string* error, 
                 errors.push_back(where + ".blend_s: expected seconds over 0 and at most " + choreoNumberText(kMaxClipBlend));
             else
                 clip.blend = blend;
+        }
+        if (const JsonValue hv = c["hand_phase"]; !hv.isAbsent()) {
+            const double phase = hv.number(-1.0);
+            if (!hv.isNumber() || !std::isfinite(phase) || phase < 0.0 || phase >= 1.0)
+                errors.push_back(where + ".hand_phase: expected a phase of the walk's cycle, 0 up to 1");
+            else
+                clip.handPhase = phase;
         }
         if (const JsonValue lv = c["loop"]; !lv.isAbsent()) {
             if (!lv.isBool()) errors.push_back(where + ".loop: expected true or false");

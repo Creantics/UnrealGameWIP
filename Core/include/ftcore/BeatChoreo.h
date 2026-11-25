@@ -137,6 +137,9 @@ struct BeatClip {
     // The host adds the clip's own motion (from its first frame) on top of the pose it cuts in from while it fades in,
     // so a short reaction lands at its full size at once instead of easing in over the crossfade.
     bool additiveIn = false;
+    // Optional "hand_phase" (0..1; -1: none): a clip that hands over to the walk (a gait-mixed skin's walk_start,
+    // ruling 6681r item 4) ends at this phase of the walk's cycle, where the host seeds the mix (gaitMixSeed).
+    double handPhase = -1.0;
 
     std::string_view id() const { return std::string_view(idText.data()); }
     std::string_view asset() const { return std::string_view(assetText.data()); }
@@ -361,6 +364,11 @@ struct GaitMixState {
 // shows the idle alone.
 FTCORE_API GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaits, bool show, double v, double dt,
                                     double blend);
+
+// Hands the mix a clip that played instead of it (a walk-off start, ArenaEnemyOut::gaitStart; ruling 6681r item 4):
+// gait `gait` live alone, its clock at `phase` (0..1, wrapped) of its length, the slot at full weight and showing, so
+// the next gaitMixStep at that gait's speed draws it at share 1 from that phase. A gait out of the set clears the mix.
+FTCORE_API void gaitMixSeed(GaitMixState& state, const GaitSet& gaits, int gait, double phase);
 
 // Where a figure was drawn on the last frame its speed was taken. Value-initialise it per figure (and on a restart).
 struct GaitDrawnState {

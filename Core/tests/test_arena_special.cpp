@@ -1098,6 +1098,45 @@ TEST_CASE("arena special: the knock-back carries a staggered enemy away from the
     CHECK(r.bodies.enemies[0].x - before >= 0.85f * specials.moves[0].knockBack);
 }
 
+TEST_CASE("arena special: on its knockSpeed curve the knock-back covers knockBack, at rest at both ends (6681r 5)") {
+    // The ruled curve loads, scaled to the move's knockBack; one past knockTime is refused.
+    const ArenaSpecialTable curved = specialsFrom(R"({ "version": 1, "moves": [ { "id": "devin_special_01",
+        "lead": "devin", "knockBack": 2, "knockTime": 0.35,
+        "knockSpeed": [[0, 0], [0.08, 7.41], [0.27, 7.41], [0.35, 0]] } ] })");
+    const ArenaLungeCurve& c = curved.moves[0].knockCurve;
+    REQUIRE(c.count == 4);
+    CHECK(arenaLungeDistance(c, 0.35f) == doctest::Approx(2.f).epsilon(1e-6));
+    CHECK(validArenaSpecialRules(curved.moves[0]));
+    ArenaSpecialTable late = curved;
+    late.moves[0].knockTime = 0.3f; // its last knot past the knock-back's time
+    CHECK_FALSE(validArenaSpecialRules(late.moves[0]));
+    ArenaSpecialTable refused;
+    std::string err;
+    CHECK_FALSE(importArenaSpecials(R"({ "version": 1, "moves": [ { "id": "devin_special_01", "lead": "devin",
+        "knockBack": 2, "knockTime": 0.3, "knockSpeed": [[0, 0], [0.08, 7.41], [0.35, 0]] } ] })",
+                                    refused, &err));
+    CHECK(err.find("knockSpeed[2]") != std::string::npos);
+
+    // In a fight: the shipped move on that curve carries the staggered enemy its knockBack, from rest to rest.
+    ArenaSpecialTable specials = shippedSpecials();
+    specials.moves[0].knockCurve = c;
+    specials.moves[0].knockCurve.scale = arenaLungeScale(c, specials.moves[0].knockBack);
+    Rig r;
+    r.begin(fightOf({"hulk"}));
+    REQUIRE(r.fight.setSpecials(&specials, "devin", "", storeWith("devin", 1000.f)));
+    r.bodies.enemies[0] = Vec2{4.f, 0.f};
+    r.press();
+    r.runOut();
+    CHECK(r.fight.output().enemies[0].brain == ArenaBrain::Staggered);
+    const float before = r.bodies.enemies[0].x;
+    float most = 0.f;
+    for (int i = 0; i < 40; ++i) most = std::max(most, std::fabs(r.tick().enemies[0].velocity.x));
+    const float moved = r.bodies.enemies[0].x - before;
+    MESSAGE("knock-back on its curve: moved " << moved << " m, top speed " << most << " m/s");
+    CHECK(moved == doctest::Approx(specials.moves[0].knockBack).epsilon(1e-3));
+    CHECK(most <= 7.41f * specials.moves[0].knockCurve.scale + 1e-3f);
+}
+
 TEST_CASE("arena special: skippable only once seen; a skip lands the same results at once") {
     const ArenaSpecialTable specials = shippedSpecials();
     const auto firstAndSkip = [&](bool seen, int& ticks) {

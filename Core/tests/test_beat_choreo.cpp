@@ -233,6 +233,21 @@ TEST_CASE("beat choreo: the loader takes any number of clips up to the cap, and 
         refused(swapText(clipsJson(1), R"("clips")", R"("blend_s": 1.5, "clips")"), "blend_s");
         refused(swapText(clipsJson(1), R"("clips")", R"("blend_s": true, "clips")"), "blend_s");
     }
+    SUBCASE("the optional hand_phase of a walk start (ruling 6681r item 4)") {
+        REQUIRE_MESSAGE(importBeatClips(clipsJson(1), c, &error), error);
+        CHECK(c[0].handPhase == -1.0);
+        std::vector<std::string> warnings;
+        const std::string start = clipsJson(0, R"({"id": "walk_start", "length_s": 0.2667, "hand_phase": 0.75})");
+        REQUIRE_MESSAGE(importBeatClips(start, c, &error, &warnings), error);
+        CHECK(warnings.empty());
+        CHECK(c[0].handPhase == doctest::Approx(0.75));
+        for (const char* bad : {"1", "-0.1", "\"half\""}) {
+            const std::string json =
+                clipsJson(0, std::string(R"({"id": "a", "length_s": 1, "hand_phase": )") + bad + "}");
+            CHECK_FALSE(importBeatClips(json, c, &error));
+            CHECK_MESSAGE(error.find("clips[0].hand_phase") != std::string::npos, error);
+        }
+    }
     SUBCASE("the optional additive fade-in") {
         REQUIRE_MESSAGE(importBeatClips(clipsJson(1), c, &error), error);
         CHECK_FALSE(c[0].additiveIn);

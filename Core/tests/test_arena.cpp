@@ -7550,6 +7550,214 @@ TEST_CASE("arena flinch: a landed blow flinches a kind with flinchTime, pushes i
     }
 }
 
+const ArenaEnemyKind& shippedKind(const ArenaTable& t, const char* id); // below
+
+// A speed curve from [t, v] knots, scaled to `distance` (as the loader does).
+ArenaLungeCurve speedCurve(std::initializer_list<std::array<float, 2>> knots, float distance) {
+    ArenaLungeCurve c;
+    for (const std::array<float, 2>& k : knots) {
+        c.t[c.count] = k[0];
+        c.v[c.count] = k[1];
+        ++c.count;
+    }
+    c.scale = arenaLungeScale(c, distance);
+    return c;
+}
+
+TEST_CASE("arena curves (ruling 6681r item 5): one evaluator: the flinch and knock-back curves' areas, speeds, ends") {
+    struct Case {
+        ArenaLungeCurve c;
+        float distance, plateau, from, to;
+    };
+    const Case cases[] = {
+        {speedCurve({{0.f, 0.f}, {0.1f, 2.333f}, {0.3f, 2.333f}, {0.4f, 0.f}}, 0.7f), 0.7f, 2.333f, 0.1f, 0.3f},
+        {speedCurve({{0.f, 0.f}, {0.08f, 7.41f}, {0.27f, 7.41f}, {0.35f, 0.f}}, 2.f), 2.f, 7.41f, 0.08f, 0.27f},
+    };
+    for (const Case& k : cases) {
+        const float end = k.c.t[k.c.count - 1];
+        CHECK(k.c.scale == doctest::Approx(1.f).epsilon(1e-3)); // the knots already hold the ruled area
+        CHECK(arenaLungeDistance(k.c, end) == doctest::Approx(k.distance).epsilon(1e-6));
+        CHECK(arenaLungeDistance(k.c, end + 1.f) == doctest::Approx(k.distance).epsilon(1e-6));
+        CHECK(arenaLungeSpeed(k.c, 0.f) == 0.f); // starts at rest
+        CHECK(arenaLungeSpeed(k.c, end) == 0.f); // and ends at rest
+        CHECK(arenaLungeSpeed(k.c, -0.01f) == 0.f);
+        CHECK(arenaLungeSpeed(k.c, end + 0.01f) == 0.f);
+        CHECK(arenaLungeSpeed(k.c, std::numeric_limits<float>::quiet_NaN()) == 0.f);
+        CHECK(arenaLungeSpeed(k.c, 0.5f * (k.from + k.to)) == doctest::Approx(k.plateau * k.c.scale));
+        // The speed is the distance's slope everywhere inside.
+        const float h = 1e-3f;
+        for (float t = 0.01f; t < end - 0.01f; t += 0.01f) {
+            const float slope = (arenaLungeDistance(k.c, t + h) - arenaLungeDistance(k.c, t - h)) / (2.f * h);
+            CHECK(std::fabs(slope - arenaLungeSpeed(k.c, t)) < 0.02f * k.plateau);
+        }
+    }
+    // The shipped lunge shares it: the pounce's speed on its leap's plateau is its knot's times its scale.
+    const ArenaTable shipped = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(shipped, "maw_pup");
+    REQUIRE(pup.lungeCurve.count > 0);
+    CHECK(arenaLungeSpeed(pup.lungeCurve, 1.f) == doctest::Approx(4.f * pup.lungeCurve.scale));
+}
+
+TEST_CASE("arena flinch: on its flinchSpeed curve the push covers flinchPush, starting and ending at rest (6681r 5)") {
+    ArenaEnemyKind k = dummyKind();
+    k.flinchTime = 0.4f;
+    k.flinchPush = 0.7f;
+    k.flinchCurve = speedCurve({{0.f, 0.f}, {0.1f, 2.333f}, {0.3f, 2.333f}, {0.4f, 0.f}}, k.flinchPush);
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    rig.in.light = true;
+    // Its push runs from the tick it flinches through the tick it leaves the flinch.
+    float first = 0.f;
+    for (int i = 0; i < 30 && rig.count(ArenaEventType::Flinched) == 0; ++i) first = rig.tick().enemies[0].velocity.x;
+    REQUIRE(rig.count(ArenaEventType::Flinched) == 1);
+    float travel = first * kDt, last = first;
+    int ticks = 1;
+    for (int i = 0; i < 60; ++i) {
+        const ArenaOutput& o = rig.tick();
+        last = o.enemies[0].velocity.x;
+        travel += last * kDt;
+        ++ticks;
+        if (o.enemies[0].brain != ArenaBrain::Flinch) break;
+    }
+    CHECK(ticks == 24); // 0.4 s
+    CHECK(travel == doctest::Approx(0.7f).epsilon(1e-3));
+    // Its first and last ticks carry the curve's mean over them, near rest (the flat push ran 1.75 m/s throughout).
+    const float edge = arenaLungeDistance(k.flinchCurve, kDt) / kDt;
+    CHECK(first == doctest::Approx(edge).epsilon(1e-3));
+    CHECK(last == doctest::Approx(edge).epsilon(1e-3));
+    CHECK(first < 0.25f);
+}
+
+TEST_CASE("arena table: flinchSpeed and gaitStart load and are checked (ruling 6681r items 4, 5)") {
+    ArenaTable t;
+    const std::string ok = loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": 0.4, "flinchPush": 0.7,
+        "flinchSpeed": [[0, 0], [0.1, 2.333], [0.3, 2.333], [0.4, 0]], "gaitStart": 0.2667 } ])"),
+                                     &t);
+    CHECK(ok.empty());
+    REQUIRE(t.enemies.size() == 1);
+    CHECK(t.enemies[0].flinchCurve.count == 4);
+    CHECK(arenaLungeDistance(t.enemies[0].flinchCurve, 0.4f) == doctest::Approx(0.7f).epsilon(1e-6));
+    CHECK(t.enemies[0].gaitStart == doctest::Approx(0.2667f));
+    CHECK(ArenaEnemyKind{}.flinchCurve.count == 0); // absent: the flat push, as before
+    CHECK(ArenaEnemyKind{}.gaitStart == 0.f);       // absent: the accel ramp, as before
+    // A knot past flinchTime, a curve with no speed, a gait start out of 0..2: refused.
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": 0.3, "flinchPush": 0.7,
+        "flinchSpeed": [[0, 0], [0.1, 2], [0.4, 0]] } ])")),
+                   "flinchSpeed[2]"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "flinchTime": 0.4,
+        "flinchSpeed": [[0, 0], [0.4, 0]] } ])")),
+                   "flinchSpeed"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "gaitStart": 3 } ])")), "gaitStart"));
+}
+
+TEST_CASE("arena gait start (ruling 6681r item 4): the walk off after an attack follows the smoothstep within 1e-4") {
+    ArenaEnemyKind k = hitterKind(swing(0.2f, 0.1f, 0.2f, 3.f, 5));
+    k.walkSpeed = 0.84f;
+    k.runSpeed = 3.f;
+    k.accel = 16.f;
+    k.gaitStart = 16.f / 60.f;
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    int ended = -1;
+    for (int i = 0; i < 300 && ended < 0; ++i)
+        if (rig.tick().enemies[0].gaitStart == 0.f) ended = i;
+    REQUIRE(ended >= 0);
+    CHECK(rig.out().enemies[0].brain == ArenaBrain::Approach);
+    rig.put(0, 10.f, 0.f); // far: it wants more than the walk, so the curve alone sets its speed
+    float travel = 0.f, speed = 0.f;
+    for (int j = 0; j < 16; ++j) {
+        const ArenaOutput& o = rig.tick();
+        const float t0 = static_cast<float>(j) * kDt, t1 = static_cast<float>(j + 1) * kDt;
+        const float mean = (arenaGaitStartDistance(k.walkSpeed, k.gaitStart, t1) -
+                            arenaGaitStartDistance(k.walkSpeed, k.gaitStart, t0)) / kDt;
+        speed = std::hypot(o.enemies[0].velocity.x, o.enemies[0].velocity.y);
+        CHECK(std::fabs(speed - mean) <= 1e-4f);
+        CHECK(o.enemies[0].gaitStart == doctest::Approx(t1)); // through the tick that completes it
+        travel += speed * kDt;
+    }
+    CHECK(travel == doctest::Approx(0.112f).epsilon(1e-3)); // 0.84 x 0.2667 / 2
+    CHECK(speed == doctest::Approx(0.84f).epsilon(1e-2));
+    const ArenaOutput& after = rig.tick(); // the accel ramp takes it on from the walk's speed
+    CHECK(after.enemies[0].gaitStart == -1.f); // the host seeds the mix on this tick
+    CHECK(std::hypot(after.enemies[0].velocity.x, after.enemies[0].velocity.y) >= speed - 1e-4f);
+    CHECK(arenaGaitStartSpeed(0.84f, 0.2667f, 0.f) == 0.f);
+    CHECK(arenaGaitStartSpeed(0.84f, 0.2667f, 0.2667f) == doctest::Approx(0.84f));
+    CHECK(arenaGaitStartSpeed(0.84f, 0.2667f, 0.13335f) == doctest::Approx(0.42f));
+    CHECK(arenaGaitStartDistance(0.84f, 0.2667f, 0.2667f) == doctest::Approx(0.112f).epsilon(1e-3));
+    {   // without gaitStart there is no walk off: the ramp as before, and the output says none
+        ArenaEnemyKind plain = k;
+        plain.gaitStart = 0.f;
+        Rig r2(ruleFighter(), {plain});
+        r2.put(0, 1.5f, 0.f);
+        for (int i = 0; i < 300; ++i) CHECK(r2.tick().enemies[0].gaitStart == -1.f);
+    }
+}
+
+TEST_CASE("arena gait start (6681r item 4): the host's start clip and the seeded walk read one clock at every alpha") {
+    // The host's rule (FTArenaRunner): while gaitStart >= 0 the start clip plays at arenaPoseTime(gaitStart, alpha);
+    // on the tick it is -1 again the mix is seeded at the clip's end and moved on by alpha x dt. Read that way, the
+    // time along the walk off equals the drawn moment's at every alpha, across the hand-over (no tick ahead).
+    ArenaEnemyKind k = hitterKind(swing(0.2f, 0.1f, 0.2f, 3.f, 5));
+    k.walkSpeed = 0.84f;
+    k.runSpeed = 3.f;
+    k.accel = 16.f;
+    k.gaitStart = 16.f / 60.f;
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    int ended = -1;
+    for (int i = 0; i < 300 && ended < 0; ++i)
+        if (rig.tick().enemies[0].gaitStart == 0.f) ended = i;
+    REQUIRE(ended >= 0);
+    rig.put(0, 10.f, 0.f);
+    float last = -1.f, worst = 0.f;
+    int seeded = 0;
+    for (int j = 1; j <= 20; ++j) {
+        const float now = rig.tick().enemies[0].gaitStart;
+        for (int s = 0; s <= 8; ++s) {
+            const float alpha = 0.125f * static_cast<float>(s);
+            const float drawn = (static_cast<float>(j - 1) + alpha) * kDt; // the drawn moment since the attack's end
+            float read = -1.f;
+            if (now >= 0.f) read = arenaPoseTime(now, alpha, kDt, false);
+            else if (last >= 0.f) read = last + alpha * kDt, ++seeded;
+            if (read >= 0.f) worst = std::max(worst, std::fabs(read - drawn));
+        }
+        last = now;
+    }
+    CHECK(seeded == 9); // one seeding tick, every alpha
+    CHECK(worst < 1e-5f);
+}
+
+TEST_CASE("gaitMixSeed (ruling 6681r item 4): the mix takes the start clip's phase, Walk alone, the slot full") {
+    GaitSet gs;
+    gs.count = 2;
+    gs.speed = {0.84, 2.0};
+    gs.length = {1.2, 0.6};
+    gs.idleLength = 2.0;
+    GaitMixState st;
+    gaitMixStep(st, gs, false, 0.0, kDt, 0.2); // the start clip played instead of the mix
+    gaitMixSeed(st, gs, 0, 0.25);
+    CHECK(st.slot == 1.0);
+    CHECK(st.showing);
+    CHECK(st.live[0]);
+    CHECK_FALSE(st.live[1]);
+    CHECK(st.time[0] == doctest::Approx(0.3));
+    const GaitMixFrame f = gaitMixStep(st, gs, true, -0.84, kDt, 0.2); // walking backward at the walk's speed
+    CHECK(f.slot == 1.0);
+    CHECK(f.layer[0].gait == 0);
+    CHECK(f.layer[0].weight == doctest::Approx(1.0));
+    CHECK(f.layer[1].weight == doctest::Approx(0.0));
+    CHECK(f.layer[0].rate < 0.0);
+    CHECK(f.layer[0].time == doctest::Approx(0.3 + f.layer[0].rate * kDt));
+    GaitMixState wrapped;
+    gaitMixSeed(wrapped, gs, 0, 1.25);
+    CHECK(wrapped.time[0] == doctest::Approx(0.3));
+    GaitMixState none;
+    gaitMixSeed(none, gs, 2, 0.5); // out of the set: a cleared mix
+    CHECK_FALSE(none.showing);
+    CHECK(none.begun);
+    CHECK_FALSE(none.live[0]);
+}
+
 TEST_CASE("arena flinch: it cuts a move's startup short and frees the token; armour in startup holds it") {
     for (const float armor : {0.f, 0.5f}) {
         ArenaAttack slow = swing(0.8f, 0.1f, 0.3f, 3.f, 5);
@@ -11213,17 +11421,24 @@ TEST_CASE("arena data: the maw_pup's pounce lunges to its jaws' reach and starts
     }
 }
 
-TEST_CASE("arena maw_pup: the pounce lands at tooth contact; an idle lead moves only by the startup overrun") {
+TEST_CASE("arena maw_pup: the pounce lands at tooth contact and never shoves an idle lead") {
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     const ArenaAttack& a = shipped.moves[1].attack;
     for (const char* lead : {"devin", "duy", "third"}) {
         const ArenaFighter& fighter = t.fighter(lead);
         const float contact = arenaBodyReach(shipped) + std::max(0.f, fighter.bodyRadius - shipped.contactInset);
-        // It pounces from where it circles (the shipped preferredRange) and from anywhere else in the pounce's band:
-        // from its near end, the middle and its far end the jaws still reach the lead as the bite lands.
+        // Ruling 6681r item 2: the Pounce's pick minimum is contact + its curve's startup travel + one walk tick,
+        // computed from the curve (about 1.05 m), so the startup never carries the pup into the lead.
+        const float low = arenaPickMinRange(shipped, 1, fighter.bodyRadius, kDt);
+        CHECK(low == doctest::Approx(contact + arenaLungeDistance(shipped.lungeCurve, a.startup) +
+                                     shipped.walkSpeed * kDt));
+        CHECK(low > shipped.moves[1].minRange);
+        MESSAGE(std::string(lead) << ": the Pounce's pick minimum " << low << " m (contact " << contact << " m)");
+        // It circles anywhere from 0.9 m to the band's far end (its preferredRange among them): an idle lead never
+        // moves. From a circle under the minimum no Pounce starts there; at or past it the Pounce leaps from it.
         const ArenaEnemyMove& pounce = shipped.moves[1];
-        for (const float circle : {pounce.minRange + 0.05f, 1.f, 1.3f, 1.6f, shipped.preferredRange, pounce.maxRange}) {
+        for (const float circle : {0.9f, 1.f, low, 1.1f, 1.3f, 1.6f, shipped.preferredRange, pounce.maxRange}) {
             CAPTURE(std::string(lead));
             CAPTURE(circle);
             ArenaEnemyKind pup = shipped;
@@ -11234,7 +11449,6 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact; an idle lead moves 
             rig.put(0, 11.f, 0.f);
             float leastApart = 100.f, leadMoved = 0.f, atHit = -1.f, atStart = -1.f, arrive = -1.f, moveTime = 0.f;
             float aimed = -1.f; // the clock the curve first brings the teeth to the lead, read on the move's first tick
-            float shoveAt = -1.f;
             int move = -1, left = -1;
             for (int i = 0; i < 2400 && left != 0; ++i) {
                 rig.tick();
@@ -11243,23 +11457,13 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact; an idle lead moves 
                     move = rig.find(ArenaEventType::AttackStarted)->event.move;
                     atStart = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
                     aimed = rig.fight.output().enemies[0].lungeContactAt;
-                    left = static_cast<int>(a.total() / kDt) + 2; // watch the whole move, lunge and all
+                    // watch the whole move, lunge and all
+                    left = static_cast<int>(shipped.moves[static_cast<std::size_t>(move)].attack.total() / kDt) + 2;
                 }
                 arenaStep(rig.fight, rig.bodies, kDt);
                 // The latch tick strikes and its leap lands in the same step: read the gap after it.
                 if (atHit < 0.f && rig.count(ArenaEventType::Hit) == 1)
                     atHit = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
-                // Report (6681 item 2): each shove of the idle lead, its size and speed, the Pounce's clock as it
-                // began (its startup's crouch, creep, stop and take-off; the leap from 0.8 s) and whether it bit.
-                const ArenaPush& push = rig.bodies.push;
-                const ArenaEnemyOut& eo = rig.out().enemies[0];
-                if (push.began) shoveAt = eo.brain == ArenaBrain::Attack ? eo.stateTime : -1.f;
-                if (push.ended)
-                    MESSAGE(std::string(lead) << " circle " << circle << ": shove " << push.count << " "
-                                              << push.distance * 1000.f << " mm, peak " << push.peakSpeed << " m/s, "
-                                              << push.duration << " s, began at Pounce clock " << shoveAt
-                                              << " s (startup " << a.startup << "), hit "
-                                              << std::string(rig.count(ArenaEventType::Hit) > 0 ? "yes" : "no"));
                 if (move >= 0) {
                     moveTime += kDt;
                     if (arrive < 0.f && distanceOf(rig.bodies.enemies[0], rig.bodies.player) <= contact + 0.01f)
@@ -11269,33 +11473,25 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact; an idle lead moves 
                 }
                 leadMoved = std::max(leadMoved, distanceOf(rig.bodies.player, Vec2{0.f, 0.f}));
             }
-            CHECK(move == 1);
             CHECK(left == 0);
-            CHECK(atStart == doctest::Approx(circle).epsilon(0.02)); // it leapt from its circle
+            CHECK(leadMoved <= 1e-3f); // the idle lead is never shoved, whatever the circle
+            CHECK(rig.bodies.push.count == 0);
+            MESSAGE(std::string(lead) << " circle " << circle << ": move " << move << " from " << atStart
+                                      << " m, lead moved " << leadMoved * 1000.f << " mm, hit at " << atHit
+                                      << " m apart");
+            if (move != 1) {
+                CHECK(circle < low); // no Pounce: only from a circle under the minimum
+                continue;
+            }
+            CHECK(atStart >= low - 1e-3f); // never picked under the minimum
+            if (circle >= low) CHECK(atStart == doctest::Approx(circle).epsilon(0.02)); // it leapt from its circle
             REQUIRE(atHit > 0.f);
             CHECK(atHit <= contact + 0.02f);      // the jaws are on the lead as it lands
             CHECK(leastApart >= contact - 1e-3f); // never past first tooth contact, over the whole move
-            // Ruling 6365 P's curve leaps from 0.7 s, before the startup's end (0.8 s), and the startup's share runs
-            // whole: from a circle nearer than contact + that share the crouch-and-take-off carries the pup into the
-            // lead and the push shoves an idle lead by the overrun (flagged in the report). From farther out the
-            // lunge stops on the lead and does not shove it.
-            const float preLaunch = arenaLungeDistance(shipped.lungeCurve, a.startup);
-            const float overrun = std::max(0.f, preLaunch - (circle - contact));
-            if (overrun > 0.f)
-                CHECK(leadMoved == doctest::Approx(overrun).epsilon(0.02));
-            else
-                CHECK(leadMoved <= 1e-3f);
-            MESSAGE(std::string(lead) << " circle " << circle << ": shoves " << rig.bodies.push.count << ", lead moved "
-                                      << leadMoved * 1000.f << " mm, overrun " << overrun * 1000.f << " mm, hit at "
-                                      << atHit << " m apart");
             // The jaws reach the lead on the clock the curve aims at (lungeContactAt, read as the move starts), within
             // a tick: not before the curve brings them there, not after.
-            // A pup that overruns reaches the lead inside the startup's share, before the clock its curve aims at.
             REQUIRE(aimed > 0.f);
-            if (overrun > 0.f)
-                CHECK(arrive <= a.startup + 1e-4f);
-            else
-                CHECK(std::fabs(arrive - aimed) <= kDt + 1e-4f);
+            CHECK(std::fabs(arrive - aimed) <= kDt + 1e-4f);
         }
     }
     // Without the flag the same leap runs its length and the push shoves the lead: the flag is what stops it.
@@ -12065,6 +12261,40 @@ std::vector<PounceTick> pounceRun(float room, LeadFn lead, ArenaRing ring = Aren
 
 void leadIdle(float, Rig&) {}
 
+// Ruling 6681r item 2: no Pounce is picked inside its pick minimum (arenaPickMinRange: contact, the startup's travel
+// and one tick), so a standing lead is never met in the creep ("arena maw_pup: the pounce lands at tooth contact and
+// never shoves an idle lead"). The nearest room a Pounce is picked from with `kit` standing, a hair outside it.
+float pounceLegalRoom(const char* kit = "devin") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter(kit);
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    return arenaPickMinRange(pounceKind(shipped, 1.f), 1, fi.bodyRadius, kDt) - contact + 0.005f;
+}
+
+// A gap closed after the pick: on the Pounce's first tick the pup is put `room` m outside contact on its line to the
+// lead (the gap a lead stepping in after the pick leaves, the lead kept where it stands, as at a wall); `lead` then
+// runs as before. `at` gets where the pup was put.
+template <typename LeadFn>
+auto closedTo(float room, LeadFn lead, Vec2* at = nullptr) {
+    return [room, lead, at, done = false](float clock, Rig& rig) mutable {
+        if (clock >= 0.f && !done) {
+            done = true;
+            const ArenaEnemyKind& k = rig.fight.def().enemies[0];
+            const float contact =
+                arenaBodyReach(k) + std::max(0.f, rig.fight.def().fighter.bodyRadius - k.contactInset);
+            const Vec2 p = rig.bodies.player, e = rig.bodies.enemies[0];
+            const float len = std::hypot(e.x - p.x, e.y - p.y);
+            if (len > 1e-4f) {
+                const float to = contact + room;
+                rig.bodies.enemies[0] = Vec2{p.x + (e.x - p.x) / len * to, p.y + (e.y - p.y) / len * to};
+            }
+            if (at) *at = rig.bodies.enemies[0];
+        }
+        lead(clock, rig);
+    };
+}
+
 // Moves the lead `speed` m/s away from the pup (< 0: toward it) for the coming tick.
 void leadPush(Rig& rig, float speed) {
     const Vec2 p = rig.bodies.player, from = rig.bodies.enemies[0];
@@ -12185,7 +12415,9 @@ TEST_CASE("pounce yield: contact in the creep gives no hit, the lead yields, and
 
 TEST_CASE("pounce yield: the lead touching at the launch is the Hit ending with near-zero air travel") {
     float contact = 0.f;
-    const auto run = pounceRun(0.02f, leadIdle, ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
+    // Picked at the nearest legal room, the gap closed to 0.02 m after the pick (6681r item 2).
+    const auto run =
+        pounceRun(pounceLegalRoom(), closedTo(0.02f, leadIdle), ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
     REQUIRE(!run.empty());
     Vec2 atLaunch{};
     float leadMoved = 0.f;
@@ -12194,7 +12426,7 @@ TEST_CASE("pounce yield: the lead touching at the launch is the Hit ending with 
         leadMoved = std::max(leadMoved, std::hypot(p.lead.x, p.lead.y));
         if (p.clock <= kLaunch + 1e-4f) CHECK_FALSE(p.hit);
     }
-    CHECK(leadMoved > 0.2f); // the creep pushed the idle lead back
+    CHECK(leadMoved > 0.2f); // the creep pushed back the lead that closed in after the pick
     const int at = firstLatched(run);
     REQUIRE(at >= 0);
     CHECK(run[static_cast<std::size_t>(at)].clock <= kLaunch + kDt + 1e-4f);
@@ -12232,16 +12464,18 @@ TEST_CASE("pounce yield: with the lead pinned at the wall the pup gives, and not
     const float r = t.fighter("devin").bodyRadius;
     // Where the pup starts its Pounce in the open; the ring's edge then goes at the lead's back, square to that line
     // (the lead at the origin), so the creep presses it straight into the wall.
-    const auto open = pounceRun(0.1f, leadIdle);
+    // Picked at the nearest legal room, the gap closed to 0.1 m after the pick (6681r item 2).
+    const float legal = pounceLegalRoom();
+    const auto open = pounceRun(legal, closedTo(0.1f, leadIdle));
     REQUIRE(!open.empty());
     const Vec2 from = open.front().pup;
     const float len = std::hypot(from.x, from.y);
     REQUIRE(len > 0.1f);
     const ArenaRing ring{Vec2{from.x / len * (6.f - r), from.y / len * (6.f - r)}, 6.f};
-    const auto run = pounceRun(0.1f, leadIdle, ring, &contact);
+    Vec2 start{};
+    const auto run = pounceRun(legal, closedTo(0.1f, leadIdle, &start), ring, &contact);
     REQUIRE(!run.empty());
-    const Vec2 start = run.front().pup;
-    CHECK(distanceOf(start, from) < 1e-3f); // the same approach
+    CHECK(distanceOf(run.front().pup, from) < 1e-3f); // the same approach
     Vec2 atLaunch{};
     for (const PounceTick& p : run) {
         CHECK(ring.contains(p.lead, r - 1e-3f));
@@ -12397,14 +12631,17 @@ TEST_CASE("pose time: a Pounce clip read at the pose time stays on the drawn bod
 
 TEST_CASE("pounce latch is the bite: over the grid a hit lands on the latch tick and never without one") {
     int both = 0, hitOnly = 0, latchOnly = 0, neither = 0;
+    const float legal = pounceLegalRoom();
     for (int ri = 0; ri <= 46; ++ri) {
         const float room = 0.05f * static_cast<float>(ri);
         for (const float speed : {0.f, 1.5f, 3.f, -1.5f}) {
             CAPTURE(room);
             CAPTURE(speed);
-            const auto run = pounceRun(room, [speed](float clock, Rig& rig) {
+            // Under the pick minimum the gap is closed after a legal pick (6681r item 2).
+            const auto push = [speed](float clock, Rig& rig) {
                 if (clock >= 0.f && speed != 0.f) leadPush(rig, speed);
-            });
+            };
+            const auto run = room < legal ? pounceRun(legal, closedTo(room, push)) : pounceRun(room, push);
             int hitAt = -1, latchAt = -1;
             for (std::size_t i = 0; i < run.size(); ++i) {
                 if (run[i].hit && hitAt < 0) hitAt = static_cast<int>(i);
@@ -12430,7 +12667,7 @@ TEST_CASE("pounce guard: the autopilot's guard meets the curve's contact for eve
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     for (const char* kit : {"devin", "duy", "third"})
-        for (const float room : {0.1f, 0.575f, 1.05f}) {
+        for (const float room : {pounceLegalRoom(kit), 0.575f, 1.05f}) { // near: the nearest legal room (6681r 2)
             CAPTURE(std::string(kit));
             CAPTURE(room);
             const ArenaFighter& fi = t.fighter(kit);
@@ -12534,7 +12771,8 @@ TEST_CASE("pounce clock: on the 60 Hz grid through the push and the landing (whi
     CHECK(whiff.landing);
     CHECK(whiff.pausedInWindows == 0);
     CHECK(whiff.worstAll < kOnGrid);
-    const PounceGrid hit = pounceGrid("devin", 0.1f, [](int, const ArenaEnemyOut&, Rig&) {});
+    // The nearest legal room (6681r item 2), the lead standing.
+    const PounceGrid hit = pounceGrid("devin", pounceLegalRoom(), [](int, const ArenaEnemyOut&, Rig&) {});
     gridReport("hit", hit);
     CHECK(hit.started);
     CHECK(hit.ramp);
@@ -12811,7 +13049,7 @@ TEST_CASE("pounce contact clock: ArenaEnemyOut::lungeContactAt is the clock the 
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     for (const char* kit : {"devin", "duy", "third"})
-        for (const float room : {0.1f, 0.575f, 1.05f}) {
+        for (const float room : {pounceLegalRoom(kit), 0.575f, 1.05f}) { // near: the nearest legal room (6681r 2)
             CAPTURE(std::string(kit));
             CAPTURE(room);
             const ArenaFighter& fi = t.fighter(kit);
@@ -13680,7 +13918,7 @@ TEST_CASE("pup back-off: across the Nip's fade into the gait slot the body moves
 // Ruling 6681 item 3 (report): a still lead with the shipped pup put 0.80 m off (centre to centre, the pick's
 // distance: between the Nip's band, to 0.76 m, and the Pounce's, from 0.85 m). The longest wait before a Nip or a
 // Pounce begins: from the fight's start, and from the end of one attack to the next one's start, over 20 s.
-TEST_CASE("pup at 0.80 m from a still lead: the longest wait before a Nip or a Pounce (report)") {
+TEST_CASE("pup at 0.80 m from a still lead: no wait before a Nip or a Pounce is longer than 1.0 s") {
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     float longestFirst = 0.f, longestGap = 0.f;
@@ -13719,4 +13957,7 @@ TEST_CASE("pup at 0.80 m from a still lead: the longest wait before a Nip or a P
         }
     }
     MESSAGE("longest first wait " << longestFirst << " s, longest wait from an attack's end " << longestGap << " s");
+    // Ruling 6681r item 3: the cooldown ends on its tick (no float-drift overrun), so no wait passes 1.0 s.
+    CHECK(longestFirst <= 1.f + 1e-4f);
+    CHECK(longestGap <= 1.f + 1e-4f);
 }

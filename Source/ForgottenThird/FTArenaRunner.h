@@ -111,6 +111,11 @@ struct FFTArenaSkin
 	// speed along its facing (MixGaits: their speeds and clip lengths), not by Gaits' pick.
 	bool bGaitMix = false;
 	ftcore::GaitSet MixGaits;
+	// Optional, with the gait mix: the walk off after an attack (walk_start, with its hand_phase), played on Core's clock
+	// while ArenaEnemyOut::gaitStart runs, then the mix seeded with the walk at that phase (ruling 6681r item 4). Without
+	// it the mix plays the walk off as before.
+	int32 WalkStart = -1;
+	double WalkStartPhase = 0.0;
 	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
@@ -917,6 +922,8 @@ private:
 	double WalkPhase[ftcore::kMaxArenaEnemies] = {};
 	// A gait-mixed skin (FFTArenaSkin::bGaitMix): its mix's state and this frame's layers.
 	ftcore::GaitMixState GaitMix[ftcore::kMaxArenaEnemies] = {};
+	// Its walk_start plays (FFTArenaSkin::WalkStart): the mix is seeded when it ends.
+	bool bInWalkStart[ftcore::kMaxArenaEnemies] = {};
 	ftcore::GaitMixFrame MixNow[ftcore::kMaxArenaEnemies] = {};
 	// Where the body was drawn on the last frame a gait mix ran (its speed is the drawn travel over the frame's clip time).
 	ftcore::GaitDrawnState MixDrawn[ftcore::kMaxArenaEnemies] = {};

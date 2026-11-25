@@ -294,6 +294,7 @@
 // capacity, results by value or by reference to the fight's own storage).
 
 #include "ftcore/Api.h"
+#include "ftcore/ArenaCurve.h"
 #include "ftcore/Chairs.h"
 #include "ftcore/Explore.h" // Vec2
 #include "ftcore/FightAnimator.h" // FightClip
@@ -636,27 +637,13 @@ enum class ArenaHitPart : std::uint8_t { Auto, Head, Chest, Spine, Pelvis, Thigh
 inline constexpr std::size_t kArenaHitPartCount = 7;
 FTCORE_API const char* arenaHitPartName(ArenaHitPart p); // "auto", "head", ... Literals.
 
-// A move's lunge window (arena.json move "lungeSpeed": [[t, v], ...], at most one move per kind): the body's forward
-// speed against the move's own clock (seconds since the move began, less an unseen start's kArenaUnseenWindup, which
-// the clip holds on its first frame), linear between knots (each segment constant acceleration, its distance the
-// exact trapezoid), 0 before the first knot and after the last. A knot may repeat the one before's time (a step).
-// The whole curve is scaled by lunge / its integral, so the move's `lunge` stays its one distance knob, and the window
-// may run past startup + active (a landing skid in the recovery). With no knots a move keeps the linear spread (lunge
-// over startup + active), as does a boss's break move (its clock is not the clip's).
-//   - lungeToContact kind: only the lead stops it, and only in the air (the startup's end until the ending is
-//     decided, ArenaEnemyOut::lungeEnding); the startup's frames and the landing always carry their travel.
-inline constexpr std::size_t kMaxArenaLungeKnots = 8;
-struct ArenaLungeCurve {
-    std::array<float, kMaxArenaLungeKnots> t{}; // s on the move's clock, not decreasing
-    std::array<float, kMaxArenaLungeKnots> v{}; // m/s, at least 0 (before the scale)
-    float scale = 1.f;                         // lunge / the knots' integral (arenaLungeScale; the loader sets it)
-    std::uint8_t count = 0;                    // knots; 0: none
-};
-// The curve's metres from the move's start to `t` on its clock, scaled; 0 at or before the first knot, with no knots,
-// or for NaN; the whole (scaled) integral from the last knot on.
-FTCORE_API float arenaLungeDistance(const ArenaLungeCurve& c, float t);
-// lunge / the unscaled integral (1 when that is 0).
-FTCORE_API float arenaLungeScale(const ArenaLungeCurve& c, float lunge);
+// A move's lunge window: ArenaLungeCurve (ftcore/ArenaCurve.h).
+
+// A kind's gait start (ArenaEnemyKind::gaitStart, ruling 6681r item 4): its speed `t` s in, a smoothstep from 0 to
+// `top` m/s over `length` s, v = top (3u^2 - 2u^3) with u = t / length; top from `length` on, 0 at or before 0 or NaN.
+FTCORE_API float arenaGaitStartSpeed(float top, float length, float t);
+// Its travel by then: top length (u^3 - u^4 / 2) inside it (top length / 2 at its end), then top a second on.
+FTCORE_API float arenaGaitStartDistance(float top, float length, float t);
 
 // One of an enemy's moves: an attack plus when the enemy picks it.
 struct ArenaEnemyMove {
@@ -751,6 +738,10 @@ struct ArenaEnemyKind {
     float flinchTime = 0.f;   // > 0: a landed blow flinches it this long (see Flinch); 0: it never flinches
     float flinchPoise = 0.f;  // the least poise damage a blow needs to flinch it
     float flinchPush = 0.f;   // metres a flinch pushes it back
+    ArenaLungeCurve flinchCurve; // "flinchSpeed": that push's speed over flinchTime, scaled to flinchPush (ruling
+                                 // 6681r item 5); no knots: the constant flinchPush / flinchTime
+    float gaitStart = 0.f;    // > 0: s its walk off after an attack takes, a smoothstep 0 -> walkSpeed (ruling 6681r
+                              // item 4; ArenaEnemyOut::gaitStart); 0: the accel ramp alone
     std::uint8_t breakAt = 0; // > 0: the weight of blows in a row that makes it break out (see Break-out); 0: never
     float breakDecay = 1.5f;  // s without a blow after which the count goes back to 0
     int breakMove = -1;       // the move it breaks out with (a boss: its break move, required); -1: none
@@ -780,6 +771,12 @@ inline float arenaBodySpan(const ArenaEnemyKind& kind) {
 }
 // The radius a wall holds an enemy's centre off by: its circle's, or a stadium's end (any way it faces).
 inline float arenaBodyReach(const ArenaEnemyKind& kind) { return kind.bodyRadius + arenaBodySpan(kind); }
+// The least centre distance enemy kind `kind` picks move `move` from, the lead's radius `leadRadius`. A lungeToContact
+// kind's lunge-curve move (lungeMove; ruling 6681r item 2): first tooth contact, plus its curve's travel through the
+// startup (which runs whole, whatever the lead does), plus one step `dt` of its walk in (the most it closes on the
+// tick it picks), so the startup never carries it into an idle lead; never below the move's minRange. Any other
+// move: its minRange. 0 for a move past moveCount.
+FTCORE_API float arenaPickMinRange(const ArenaEnemyKind& kind, std::size_t move, float leadRadius, float dt);
 
 // The drawn body's shift for a move with an aimSide: `side` metres along the lead's right ({-facing.y, facing.x}:
 // the ground plane has y to the right), less that offset's part along the enemy-to-lead line, so the reach is kept
@@ -1097,6 +1094,11 @@ struct ArenaEnemyOut {
                                       // active's end at the latest), from the bodies this tick read: the clock the
                                       // autopilot's guard aims at on the next tick. Updated each tick; 0 when latched,
                                       // ended, a whiff from here, or any other state
+    // Its walk off after an attack (ArenaEnemyKind::gaitStart, ruling 6681r item 4): s into it as this tick ends,
+    // from 0 on the tick the attack ends to gaitStart on the tick that completes it; -1 when none runs (from the tick
+    // after). The host plays its start clip while it is 0 or more, at the pose time (arenaPoseTime), and seeds the gait
+    // mix (gaitMixSeed) on the tick it goes back to -1, advanced by the drawn time past the start's end.
+    float gaitStart = -1.f;
 };
 
 // Whether a gait-mixed figure (BeatClips::gaitMix, gaitMixStep) shows its locomotion: always while it approaches or
@@ -2021,6 +2023,9 @@ private:
         std::uint8_t aim = 0;               // the string's aim (ArenaEnemyOut::aim), set at its first move
         Vec2 shoveVel{};                    // a special's knock-back: this velocity added ...
         float shoveLeft = 0.f;              // ... for these seconds of its own time
+        ArenaLungeCurve shoveCurve;         // its speed curve (the special's knockCurve); no knots: shoveVel
+        float shoveClock = 0.f;             // s into that curve
+        float startClock = -1.f;            // s into its gait start (ArenaEnemyKind::gaitStart); < 0: none
     };
 
     // The partner's ally body (setPartner).

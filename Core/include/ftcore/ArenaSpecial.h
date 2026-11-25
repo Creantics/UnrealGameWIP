@@ -51,6 +51,7 @@
 // Nothing here allocates except importArenaSpecials (load time). Implemented in ArenaFight.cpp.
 
 #include "ftcore/Api.h"
+#include "ftcore/ArenaCurve.h"
 #include "ftcore/Explore.h" // Vec2
 
 #include <array>
@@ -117,6 +118,8 @@ struct ArenaSpecialRules {
     float bossPhaseShare = 0.2f; // of a boss's current break phase's hp span (x otherShare when not the target)
     float knockBack = 2.f;      // m, away from the performer, at the cut back (not a boss)
     float knockTime = 0.35f;    // s
+    ArenaLungeCurve knockCurve; // "knockSpeed": the knock-back's speed over knockTime, scaled to knockBack (ruling
+                                // 6681r item 5); no knots: the constant knockBack / knockTime
     float endTravel = 0.f;      // m along the strike's way where the performance ends (the clip's travel), 0..20
     float endSide = 0.f;        // m to the right of that way where it ends (scaled with the travel allowed), -5..5
     bool skippable = true;      // once seen

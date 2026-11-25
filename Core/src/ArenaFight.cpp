@@ -279,6 +279,22 @@ float arenaLungeContactAt(const ArenaLungeCurve& c, float now, float launch, flo
     return hi;
 }
 
+} // namespace
+
+float arenaPickMinRange(const ArenaEnemyKind& k, std::size_t move, float leadRadius, float dt) {
+    if (move >= k.moveCount) return 0.f;
+    const ArenaEnemyMove& mv = k.moves[move];
+    if (!k.lungeToContact || k.lungeMove < 0 || static_cast<std::size_t>(k.lungeMove) != move ||
+        k.lungeCurve.count == 0)
+        return mv.minRange;
+    const float contact = std::max(0.f, leadRadius - k.contactInset) + arenaBodyReach(k);
+    const float least =
+        contact + arenaLungeDistance(k.lungeCurve, mv.attack.startup) + k.walkSpeed * std::max(0.f, dt);
+    return std::max(mv.minRange, least);
+}
+
+namespace {
+
 // Kind k's lunge-curve move `a`, `stateTime` into it (`unseen`: its windup kArenaUnseenWindup longer), the lead (radius
 // `leadRadius`) `gap` m from it: its first tooth contact on the curve's clock (less the windup), -1 when the curve
 // does not close the room by the active's end. `now` gets the curve's clock now. The autopilot's guard and
@@ -605,6 +621,9 @@ struct ArenaFightImpl {
             const bool lunging = i < n && foe.brain == ArenaBrain::Attack && def.enemies[i].lungeMove >= 0 &&
                                  foe.move == static_cast<std::uint8_t>(def.enemies[i].lungeMove) &&
                                  def.enemies[i].lungeCurve.count > 0;
+            eo.gaitStart = i < n && (foe.brain == ArenaBrain::Approach || foe.brain == ArenaBrain::Strafe)
+                               ? foe.startClock
+                               : -1.f;
             eo.lungeLatched = lunging && foe.lungeLatched;
             eo.lungeEnding = lunging ? foe.lungeEnding : 0;
             eo.lungeContactAt = 0.f;
@@ -2467,7 +2486,9 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         if (foe.brain == ArenaBrain::Dead) return;
         const ArenaEnemyKind& k = def.enemies[i];
-        for (float& c : foe.cooldown) c = std::max(0.f, c - dt);
+        // A residual under kArenaEps is float drift (3 s less 180 steps of 1/60 leaves 2e-6): the cooldown is over,
+        // so a move ends on the tick its length says (ruling 6681r item 3).
+        for (float& c : foe.cooldown) c = c - dt > kArenaEps ? c - dt : 0.f;
         if (t1 - foe.lastPoiseHit >= k.poiseDelay) foe.poise = k.poise;
     }
 
@@ -2552,8 +2573,12 @@ struct ArenaFightImpl {
     Pick pickMove(std::size_t i, float distance) {
         const Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
-        const auto gapOf = [&](const ArenaEnemyMove& mv) {
-            return distance > mv.maxRange ? distance - mv.maxRange : (distance < mv.minRange ? mv.minRange - distance : 0.f);
+        // The band's near end: a lunge-curve move's from its curve (arenaPickMinRange, ruling 6681r item 2).
+        const auto lowOf = [&](std::size_t m) { return arenaPickMinRange(k, m, fi.bodyRadius, dt); };
+        const auto gapOf = [&](std::size_t m) {
+            const float low = lowOf(m);
+            const float high = k.moves[m].maxRange;
+            return distance > high ? distance - high : (distance < low ? low - distance : 0.f);
         };
         const auto ready = [&](std::size_t m) {
             return k.moves[m].weight > 0.f && foe.cooldown[m] <= 0.f && ((foe.moveMask >> m) & 1u) != 0u;
@@ -2564,7 +2589,7 @@ struct ArenaFightImpl {
         float nearestGap = 0.f;
         for (std::size_t m = 0; m < k.moveCount; ++m) {
             if (!ready(m)) continue;
-            const float gap = gapOf(k.moves[m]);
+            const float gap = gapOf(m);
             if (gap <= kArenaEps) total += k.moves[m].weight;
             if (nearest < 0 || gap < nearestGap) {
                 nearest = static_cast<int>(m);
@@ -2574,7 +2599,7 @@ struct ArenaFightImpl {
         if (total > 0.f) {
             float roll = arenaRandom(fight.rng_) * total;
             for (std::size_t m = 0; m < k.moveCount; ++m) {
-                if (!ready(m) || gapOf(k.moves[m]) > kArenaEps) continue;
+                if (!ready(m) || gapOf(m) > kArenaEps) continue;
                 pick.move = static_cast<int>(m);
                 if (roll < k.moves[m].weight) break;
                 roll -= k.moves[m].weight;
@@ -2586,7 +2611,7 @@ struct ArenaFightImpl {
             return pick;
         }
         const ArenaEnemyMove& mv = k.moves[static_cast<std::size_t>(nearest)];
-        pick.goal = distance > mv.maxRange ? mv.maxRange : mv.minRange;
+        pick.goal = distance > mv.maxRange ? mv.maxRange : lowOf(static_cast<std::size_t>(nearest));
         return pick;
     }
 
@@ -2616,6 +2641,7 @@ struct ArenaFightImpl {
         foe.brain = ArenaBrain::Attack;
         foe.move = move;
         foe.stateTime = 0.f;
+        foe.startClock = -1.f;
         foe.hitPlayer = false;
         foe.hitAlly = false;
         foe.evaded = false;
@@ -2655,6 +2681,7 @@ struct ArenaFightImpl {
         foe.stringEnd = t1;
         foe.brain = ArenaBrain::Approach;
         foe.stateTime = 0.f;
+        foe.startClock = k.gaitStart > 0.f ? 0.f : -1.f; // its walk off (gaitStart) runs from the next tick
     }
 
     // One of the enemy's attacks reaches the player.
@@ -3828,6 +3855,25 @@ struct ArenaFightImpl {
         return vel;
     }
 
+    // Approach and Strafe's velocity: the kind's accel ramp toward `want`; in a walk off after an attack (gaitStart,
+    // ruling 6681r item 4) its speed is instead the smoothstep's mean over this tick, along want, never above want's.
+    Vec2 moveOff(std::size_t i, Vec2 want) {
+        Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        // The clock stays at its end through the tick that completes it (the host draws that tick's start clip), and
+        // is cleared on the next.
+        if (foe.startClock >= k.gaitStart - kArenaEps) foe.startClock = -1.f;
+        if (foe.startClock < 0.f || !(k.gaitStart > 0.f)) return arenaRamp(foe.velocity, want, k.accel, dt);
+        const float c0 = foe.startClock;
+        const float c1 = std::min(c0 + dt, k.gaitStart);
+        const float mean = (arenaGaitStartDistance(k.walkSpeed, k.gaitStart, c1) -
+                            arenaGaitStartDistance(k.walkSpeed, k.gaitStart, c0)) /
+                           dt;
+        foe.startClock = c1;
+        const float wanted = arenaLength(want);
+        return wanted > mean ? arenaScaled(want, mean / wanted) : want;
+    }
+
     Vec2 approach(std::size_t i, Vec2 dir, float distance, const Pick& pick) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
@@ -3845,9 +3891,11 @@ struct ArenaFightImpl {
         // start on the way, whichever move the goal is for), its speed either way is at most the curve's first speed
         // plus its distance outside that band over 0.3 s (v0 inside the band), so the creep takes over at its speed.
         if (k.lungeMove >= 0 && k.lungeMove < k.moveCount && k.lungeCurve.count > 0) {
-            const ArenaEnemyMove& lm = k.moves[static_cast<std::size_t>(k.lungeMove)];
-            if (std::min(distance, goal) <= lm.maxRange && std::max(distance, goal) >= lm.minRange) {
-                const float outside = std::max(0.f, std::max(distance - lm.maxRange, lm.minRange - distance));
+            const std::size_t lmi = static_cast<std::size_t>(k.lungeMove);
+            const ArenaEnemyMove& lm = k.moves[lmi];
+            const float low = arenaPickMinRange(k, lmi, fi.bodyRadius, dt); // the band pickMove reads
+            if (std::min(distance, goal) <= lm.maxRange && std::max(distance, goal) >= low) {
+                const float outside = std::max(0.f, std::max(distance - lm.maxRange, low - distance));
                 speed = std::min(speed, k.lungeCurve.v[0] * k.lungeCurve.scale + outside / 0.3f);
             }
         }
@@ -3959,25 +4007,30 @@ struct ArenaFightImpl {
         Vec2 vel{};
         switch (foe.brain) {
         case ArenaBrain::Attack: vel = enemyAttack(i, dir); break;
-        case ArenaBrain::Approach:
-            vel = arenaRamp(foe.velocity, approach(i, dir, distance, pick), def.enemies[i].accel, dt);
-            break;
-        case ArenaBrain::Strafe:
-            vel = arenaRamp(foe.velocity, circling ? reposition(i, dir) : strafe(i, dir), def.enemies[i].accel, dt);
-            break;
+        case ArenaBrain::Approach: vel = moveOff(i, approach(i, dir, distance, pick)); break;
+        case ArenaBrain::Strafe: vel = moveOff(i, circling ? reposition(i, dir) : strafe(i, dir)); break;
         case ArenaBrain::Staggered:
         case ArenaBrain::Open:
-        case ArenaBrain::Down: recover(i); break;
+        case ArenaBrain::Down:
+            foe.startClock = -1.f;
+            recover(i);
+            break;
         case ArenaBrain::Flinch: {
-            // Pushed straight away from the player over the flinch.
+            // Pushed straight away from the player over the flinch: on its curve (flinchSpeed) when it has one.
+            foe.startClock = -1.f;
             const ArenaEnemyKind& k = def.enemies[i];
             const float length = std::max(k.flinchTime, kArenaEps);
             const float moving = std::max(0.f, std::min(foe.stateTime + dt, length) - foe.stateTime);
-            vel = arenaScaled(Vec2{-dir.x, -dir.y}, k.flinchPush / length * moving / dt);
+            const float speed = k.flinchCurve.count > 0 ? (arenaLungeDistance(k.flinchCurve, foe.stateTime + dt) -
+                                                           arenaLungeDistance(k.flinchCurve, foe.stateTime)) /
+                                                              dt
+                                                        : k.flinchPush / length * moving / dt;
+            vel = arenaScaled(Vec2{-dir.x, -dir.y}, speed);
             recover(i);
             break;
         }
         case ArenaBrain::StepBack: {
+            foe.startClock = -1.f;
             // Back from the player (or to the side it picked) over the step, unhurt, still facing it.
             if (!foe.turnHeld) foe.facing = arenaTurn(foe.facing, dir, def.enemies[i].turnRate * dt);
             const float moving = std::max(0.f, std::min(foe.stateTime + dt, kArenaStepBackTime) - foe.stateTime);
@@ -3989,7 +4042,15 @@ struct ArenaFightImpl {
         }
         if (foe.shoveLeft > 0.f && foe.brain != ArenaBrain::Dead) { // a special's knock-back over its own time
             const float moving = std::min(foe.shoveLeft, dt);
-            vel = arenaMadd(vel, foe.shoveVel, moving / dt);
+            if (foe.shoveCurve.count > 0) { // on its curve (knockSpeed): shoveVel is then its way, a unit
+                const float speed = (arenaLungeDistance(foe.shoveCurve, foe.shoveClock + dt) -
+                                     arenaLungeDistance(foe.shoveCurve, foe.shoveClock)) /
+                                    dt;
+                vel = arenaMadd(vel, foe.shoveVel, speed);
+                foe.shoveClock += dt;
+            } else {
+                vel = arenaMadd(vel, foe.shoveVel, moving / dt);
+            }
             foe.shoveLeft -= moving;
         }
         foe.velocity = vel;
@@ -4399,7 +4460,10 @@ struct ArenaFightImpl {
             } else if (!res.boss) {
                 staggerEnemy(i, by);
                 if (m->knockBack > 0.f && m->knockTime > 0.f) {
-                    foe.shoveVel = arenaScaled(arenaUnit(arenaSub(foe.pos, v.end), v.dir), m->knockBack / m->knockTime);
+                    const Vec2 way = arenaUnit(arenaSub(foe.pos, v.end), v.dir);
+                    foe.shoveCurve = m->knockCurve;
+                    foe.shoveClock = 0.f;
+                    foe.shoveVel = m->knockCurve.count > 0 ? way : arenaScaled(way, m->knockBack / m->knockTime);
                     foe.shoveLeft = m->knockTime;
                 }
             }
@@ -5190,6 +5254,37 @@ double arenaLungeRaw(const ArenaLungeCurve& c, float t) {
 
 float arenaLungeDistance(const ArenaLungeCurve& c, float t) {
     return static_cast<float>(arenaLungeRaw(c, t) * c.scale);
+}
+
+float arenaLungeSpeed(const ArenaLungeCurve& c, float t) {
+    const std::size_t n = std::min<std::size_t>(c.count, kMaxArenaLungeKnots);
+    if (n == 0 || !(t >= c.t[0]) || t > c.t[n - 1]) return 0.f;
+    for (std::size_t m = 0; m + 1 < n; ++m) {
+        const float k0 = c.t[m];
+        const float k1 = c.t[m + 1];
+        if (t >= k1) {
+            if (m + 2 < n) continue; // past this segment (at a step, the later knot rules)
+            return c.v[m + 1] * c.scale;
+        }
+        const float w = k1 - k0;
+        return (w > 0.f ? c.v[m] + (c.v[m + 1] - c.v[m]) * (t - k0) / w : c.v[m + 1]) * c.scale;
+    }
+    return c.v[n - 1] * c.scale;
+}
+
+float arenaGaitStartSpeed(float top, float length, float t) {
+    if (!(t > 0.f)) return 0.f;
+    if (!(length > 0.f) || t >= length) return top;
+    const float u = t / length;
+    return top * u * u * (3.f - 2.f * u);
+}
+
+float arenaGaitStartDistance(float top, float length, float t) {
+    if (!(t > 0.f)) return 0.f;
+    if (!(length > 0.f)) return top * t;
+    if (t >= length) return 0.5f * top * length + top * (t - length);
+    const float u = t / length;
+    return top * length * u * u * u * (1.f - 0.5f * u);
 }
 
 float arenaLungeScale(const ArenaLungeCurve& c, float lunge) {
@@ -6139,14 +6234,15 @@ bool arenaIdText(std::string_view id) {
 }
 
 // An enemy's `look`: absent keeps the shapes.
-// A move's "lungeSpeed" (ArenaLungeCurve) onto kind k, move `move`, whose attack's lunge is `lunge`.
-static void arenaParseLungeSpeed(JsonValue j, const std::string& path, ArenaEnemyKind& k, std::uint32_t move,
-                                 float lunge, ArenaStrings& errors) {
-    if (j.isAbsent()) return;
+// A speed curve (ArenaLungeCurve) at `path`, its last knot at most `until` s, scaled to `distance` m: false (and an
+// error) when it is malformed; true, with `out` unchanged, when absent.
+static bool arenaReadSpeedCurve(JsonValue j, const std::string& path, float distance, float until,
+                                ArenaLungeCurve& out, ArenaStrings& errors) {
+    if (j.isAbsent()) return true;
     if (!j.isArray() || j.size() < 2 || j.size() > kMaxArenaLungeKnots) {
         errors.push_back(path + ": expected an array of 2.." + std::to_string(kMaxArenaLungeKnots) +
                          " [t s, speed m/s] pairs");
-        return;
+        return false;
     }
     ArenaLungeCurve c;
     for (std::uint32_t n = 0; n < j.size(); ++n) {
@@ -6154,28 +6250,39 @@ static void arenaParseLungeSpeed(JsonValue j, const std::string& path, ArenaEnem
         const std::string np = path + "[" + std::to_string(n) + "]";
         const double t = p.isArray() && p.size() == 2 && p[0].isNumber() ? p[0].number(0.0) : -1.0;
         const double v = p.isArray() && p.size() == 2 && p[1].isNumber() ? p[1].number(0.0) : -1.0;
-        if (!std::isfinite(t) || !std::isfinite(v) || t < 0.0 || t > 10.0 || v < 0.0 || v > 20.0) {
-            errors.push_back(np + ": expected [t 0..10 s, speed 0..20 m/s]");
-            return;
+        if (!std::isfinite(t) || !std::isfinite(v) || t < 0.0 || static_cast<float>(t) > until || v < 0.0 ||
+            v > 20.0) {
+            errors.push_back(np + ": expected [t 0.." + arenaFormat(until) + " s, speed 0..20 m/s]");
+            return false;
         }
         if (n > 0 && static_cast<float>(t) < c.t[n - 1]) {
             errors.push_back(np + ": expected t at least the knot before's");
-            return;
+            return false;
         }
         c.t[n] = static_cast<float>(t);
         c.v[n] = static_cast<float>(v);
     }
     c.count = static_cast<std::uint8_t>(j.size());
     if (!(arenaLungeRaw(c, c.t[c.count - 1]) > 1e-6)) {
-        errors.push_back(path + ": expected some speed (its integral is the lunge's shape)");
-        return;
+        errors.push_back(path + ": expected some speed (its integral is the travel's shape)");
+        return false;
     }
+    c.scale = arenaLungeScale(c, distance);
+    out = c;
+    return true;
+}
+
+// A move's "lungeSpeed" (ArenaLungeCurve) onto kind k, move `move`, whose attack's lunge is `lunge`.
+static void arenaParseLungeSpeed(JsonValue j, const std::string& path, ArenaEnemyKind& k, std::uint32_t move,
+                                 float lunge, ArenaStrings& errors) {
+    if (j.isAbsent()) return;
+    ArenaLungeCurve c;
+    if (!arenaReadSpeedCurve(j, path, lunge, 10.f, c, errors)) return;
     if (k.lungeMove >= 0) {
         errors.push_back(path + ": expected one move with a lungeSpeed per kind (moves[" + std::to_string(k.lungeMove) +
                          "] has one)");
         return;
     }
-    c.scale = arenaLungeScale(c, lunge);
     k.lungeCurve = c;
     k.lungeMove = static_cast<std::int8_t>(move);
 }
@@ -6205,7 +6312,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
                      {"id", "hp", "poise", "poiseDelay", "staggerTime", "openTime", "downTime", "walkSpeed", "runSpeed",
                       "strafeSpeed", "turnRate", "preferredRange", "runRange", "attackDelay", "bodyRadius", "height", "bodyLength",
                       "contactInset", "trotSpeed", "trotRange", "lungeToContact", "moves",
-                      "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "breakAt",
+                      "accel", "bpm", "look", "passive", "flinchTime", "flinchPoise", "flinchPush", "flinchSpeed",
+                      "gaitStart", "breakAt",
                       "breakDecay", "breakMove", "carry", "seatable", "boss", "breakValueAt", "breakPhaseEnds"},
                      false, warnings);
     arenaInt(j, "hp", k.hp, 1, 100000, path, errors);
@@ -6239,6 +6347,8 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
     arenaNum(j, "flinchTime", k.flinchTime, 0, 10, false, path, errors);
     arenaNum(j, "flinchPoise", k.flinchPoise, 0, 100000, false, path, errors);
     arenaNum(j, "flinchPush", k.flinchPush, 0, 20, false, path, errors);
+    arenaReadSpeedCurve(j["flinchSpeed"], path + ".flinchSpeed", k.flinchPush, k.flinchTime, k.flinchCurve, errors);
+    arenaNum(j, "gaitStart", k.gaitStart, 0, 2, false, path, errors);
     arenaByte(j, "breakAt", k.breakAt, 0, 255, path, errors);
     arenaNum(j, "breakDecay", k.breakDecay, 0, 60, false, path, errors);
     arenaInt(j, "breakMove", k.breakMove, -1, static_cast<int>(kMaxArenaMoves) - 1, path, errors);
@@ -6758,7 +6868,8 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
     }
     spUnknownKeys(j, path,
                   {"id", "lead", "duration", "strikeAt", "waveSpeed", "maxTravel", "range", "laneLength", "laneWidth", "damage", "otherShare",
-                   "bossPhaseShare", "knockBack", "knockTime", "endTravel", "endSide", "skippable", "cues", "fx"},
+                   "bossPhaseShare", "knockBack", "knockTime", "knockSpeed", "endTravel", "endSide", "skippable",
+                   "cues", "fx"},
                   warnings);
     for (const char* key : {"id", "lead"}) {
         const JsonValue v = j[key];
@@ -6786,6 +6897,7 @@ void spMove(JsonValue j, const std::string& path, ArenaSpecialRules& r, std::vec
     spNumber(j, "bossPhaseShare", path, 0.f, 1.f, r.bossPhaseShare, errors);
     spNumber(j, "knockBack", path, 0.f, 20.f, r.knockBack, errors);
     spNumber(j, "knockTime", path, 0.05f, 5.f, r.knockTime, errors);
+    arenaReadSpeedCurve(j["knockSpeed"], path + ".knockSpeed", r.knockBack, r.knockTime, r.knockCurve, errors);
     spNumber(j, "endTravel", path, 0.f, 20.f, r.endTravel, errors);
     spNumber(j, "endSide", path, -5.f, 5.f, r.endSide, errors);
     if (const JsonValue v = j["skippable"]; !v.isAbsent()) {
@@ -6921,6 +7033,9 @@ bool validArenaSpecialRules(const ArenaSpecialRules& r) {
     if (r.damage < 1 || r.damage > 100000) return false;
     if (!spInRange(r.otherShare, 0.f, 1.f) || !spInRange(r.bossPhaseShare, 0.f, 1.f)) return false;
     if (!spInRange(r.knockBack, 0.f, 20.f) || !spInRange(r.knockTime, 0.05f, 5.f)) return false;
+    if (r.knockCurve.count > kMaxArenaLungeKnots ||
+        (r.knockCurve.count > 0 && !(r.knockCurve.t[r.knockCurve.count - 1] <= r.knockTime)))
+        return false;
     if (!spInRange(r.endTravel, 0.f, 20.f) || !spInRange(r.endSide, -5.f, 5.f)) return false;
     if (r.cueCount > kMaxArenaSpecialCues) return false;
     float last = 0.f;
