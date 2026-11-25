@@ -5371,6 +5371,7 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     const ArenaSpecialView& sv = fight.special();
     if (fight.frozen()) { // a special runs: the host poses the performer (from its start), nobody else moves
         (sv.performer == kArenaPlayer ? bodies.player : bodies.ally) = sv.origin;
+        arenaTrackPush(fight, bodies, bodies.player, Vec2{}, 0.f); // no shove: one running ends, the edges clear
         return;
     }
     const bool placed = sv.endedThisTick && sv.performer == kArenaPlayer; // the cut back: put where the clip ended
@@ -5398,7 +5399,13 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
 }
 
 void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer, Vec2 ownStep, float dt) {
-    if (!(dt > 0.f)) return;
+    ArenaPush& p = bodies.push;
+    p.began = p.ended = false;
+    if (!(dt > 0.f)) { // a frozen or cut-back step: no shove, and one running ends here
+        bodies.pushStep = Vec2{};
+        if (p.active) p.active = false, p.ended = true;
+        return;
+    }
     ArenaHeld held;
     // The settle's move of the lead, less the part that only takes back its own step (walking into the planted body
     // is a block, not a shove): along the step, up to its length.
@@ -5410,8 +5417,6 @@ void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer
         d = arenaMadd(d, s, back);
     }
     const float len = arenaLength(d);
-    ArenaPush& p = bodies.push;
-    p.began = p.ended = false;
     if (!arenaPlanted(fight, held) || len <= kArenaPushFloor) {
         bodies.pushStep = Vec2{};
         if (p.active) p.active = false, p.ended = true;

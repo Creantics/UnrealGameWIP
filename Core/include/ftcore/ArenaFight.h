@@ -2168,7 +2168,8 @@ FTCORE_API bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held);
 // After a step's settle: bodies.pushStep = the lead's position less `ownPlayer` (where its own step `ownStep` took
 // it), less the part along ownStep that only takes the step back (up to its length: walking into the planted body is
 // a block, not a shove), when a body is planted (arenaPlanted) and that is over kArenaPushFloor, else 0; bodies.push
-// runs on from it (ArenaPush). No change when dt <= 0 (a frozen step). Deterministic; no allocation.
+// runs on from it (ArenaPush). dt <= 0 (a frozen or cut-back step): pushStep 0, a running shove ends, no shove
+// begins. began and ended last one step. Deterministic; no allocation.
 FTCORE_API void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer, Vec2 ownStep, float dt);
 
 // After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more

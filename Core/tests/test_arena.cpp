@@ -12719,8 +12719,11 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
         const ArenaFighter& fi = t.fighter(kit);
         const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
         for (const float room : {0.1f, 0.575f, 1.05f}) {
-            for (int run = 0; run < 4; ++run) {
-                const bool walking = run % 2 == 1, zoned = run >= 2;
+            for (int run = 0; run < 8; ++run) {
+                // idle; walking across the pup's front; straight in at it; straight away from it
+                const int mode = run % 4;
+                const bool walking = mode != 0, zoned = run >= 4;
+                const char* modeName[] = {" idle", " across", " in", " away"};
                 Rig rig(fi, {pounceKind(shipped, contact + room)});
                 rig.put(0, contact + room, 0.f);
                 int began = 0, ended = 0, offPlanted = 0, idleShoves = 0, idleAway = 0;
@@ -12729,7 +12732,9 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                 for (int i = 0; i < 400; ++i) {
                     rig.in = ArenaInput{};
                     // walking: the lead walks across the pup's front, through the whole move
-                    if (walking) rig.in.move = Vec2{0.f, i < 200 ? 1.f : -1.f};
+                    if (mode == 1) rig.in.move = Vec2{0.f, i < 200 ? 1.f : -1.f};
+                    if (mode == 2) rig.in.move = Vec2{1.f, 0.f};
+                    if (mode == 3) rig.in.move = Vec2{-1.f, 0.f};
                     const Vec2 was = rig.bodies.player;
                     const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
                     const Vec2 own = Vec2{was.x + o.player.velocity.x * kDt, was.y + o.player.velocity.y * kDt};
@@ -12761,7 +12766,7 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                         const float lens = std::hypot(p.net.x, p.net.y) * std::hypot(toPup.x, toPup.y);
                         const float away = -(p.net.x * toPup.x + p.net.y * toPup.y) / std::max(1e-6f, lens);
                         if (!walking && p.distance > 0.05f) ++idleShoves, idleAway += away > 0.9f;
-                        MESSAGE(std::string(kit) << " room " << room << std::string(walking ? " walking" : " idle")
+                        MESSAGE(std::string(kit) << " room " << room << std::string(modeName[mode])
                                                  << std::string(zoned ? " zone" : " ring")
                                                  << ": shove " << p.count << " " << std::string(pushSide(p.local))
                                                  << " "
@@ -12775,6 +12780,10 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                 CHECK(began == static_cast<int>(rig.bodies.push.count));
                 CHECK(ended == began - (rig.bodies.push.active ? 1 : 0));
                 CHECK(idleAway == idleShoves);
+                if (mode >= 2) CHECK(rig.bodies.push.count == 0u); // straight in (a block) or away: no shove
+                MESSAGE(std::string(kit) << " room " << room << std::string(modeName[mode])
+                                         << std::string(zoned ? " zone" : " ring") << ": shoves "
+                                         << rig.bodies.push.count);
             }
         }
     }
@@ -12792,4 +12801,17 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
         }
         CHECK(rig.bodies.push.count == 0u);
     }
+    // A frozen or cut-back step (dt 0) ends a running shove and clears its edges; the next one leaves ended clear.
+    Rig rig(t.fighter("devin"), {shipped});
+    rig.bodies.push.active = rig.bodies.push.began = true;
+    rig.bodies.push.count = 1;
+    rig.bodies.pushStep = Vec2{0.01f, 0.f};
+    arenaTrackPush(rig.fight, rig.bodies, rig.bodies.player, Vec2{}, 0.f);
+    CHECK_FALSE(rig.bodies.push.active);
+    CHECK_FALSE(rig.bodies.push.began);
+    CHECK(rig.bodies.push.ended);
+    CHECK(rig.bodies.pushStep.x == 0.f);
+    arenaTrackPush(rig.fight, rig.bodies, rig.bodies.player, Vec2{}, 0.f);
+    CHECK_FALSE(rig.bodies.push.ended);
+    CHECK(rig.bodies.push.count == 1u);
 }

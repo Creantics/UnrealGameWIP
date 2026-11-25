@@ -316,7 +316,8 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
     const ArenaBodies before = bodies;
     arenaStep(fight, bodies, dt);
     // The shove is tracked once, after the walls below: the inner step's record is set back first.
-    // A frozen step (a special runs) and the performer's cut-back are no shove (the ring step's rule too).
+    // A frozen step (a special runs) and the performer's cut-back are no shove: the inner step's record stands (it
+    // ended any shove and cleared the edges).
     const bool frozen = fight.frozen() || (fight.special().endedThisTick && fight.special().performer == kArenaPlayer);
     const Vec2 ownStep = frozen ? Vec2{} : scaled(fight.output().player.velocity, dt);
     const Vec2 ownPlayer = frozen ? bodies.player : plus(before.player, ownStep);
