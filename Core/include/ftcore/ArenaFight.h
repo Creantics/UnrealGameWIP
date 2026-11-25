@@ -2057,6 +2057,7 @@ private:
     ArenaPhase phase_ = ArenaPhase::NotStarted;
     float time_ = 0.f;
     float heldTime_ = 0.f;                  // time_ less the player's hit pauses
+    float stepDt_ = 0.f;                    // the last tick's step, the host's body step after it (0: a refresh)
     std::size_t enemyCount_ = 0;
     Vec2 playerStart_;
     Vec2 playerStartFacing_{1.f, 0.f};
