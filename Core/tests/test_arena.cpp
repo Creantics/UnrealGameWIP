@@ -12429,7 +12429,8 @@ TEST_CASE("pounce clock: on the 60 Hz grid through the push and the landing (whi
 TEST_CASE("pounce clock: a lead's blow in the startup or just before it shifts the clock by its hit stop's part tick") {
     // The pup struck in its startup (the light pressed at clock 0.2 s), then a light landing 4-30 ticks before the
     // Pounce's start (a pause carried in). The pup keeps the Pounce (poise). Its clock sits off the grid by the light's
-    // hitStop part tick: whole-tick stops (devin, third: 0.05 s) stay on it, duy's 0.06 s (3.6 ticks) leaves 0.4.
+    // hitStop part tick: whole-tick stops (the first light, devin and third: 0.05 s) stay on it, duy's 0.06 s
+    // (3.6 ticks) leaves 0.4.
     const ArenaTable t = loadShipped();
     const PounceGrid base = pounceGrid("devin", 3.f, [](int, const ArenaEnemyOut&, Rig&) {});
     REQUIRE(base.started);
@@ -12704,21 +12705,25 @@ TEST_CASE("pup switches: Nip, flinch and gait entries") {
 namespace {
 const char* pushSide(Vec2 local) {
     if (std::fabs(local.x) >= std::fabs(local.y)) return local.x >= 0.f ? "front" : "back";
-    return local.y >= 0.f ? "left" : "right";
+    return local.y >= 0.f ? "left" : "right"; // a 45° shove takes the larger part
 }
 } // namespace
 
-TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's push; none walking") {
+TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's push; a7 raises none") {
+    ArenaZone zone; // the host's step: the zone overload, walls braking, far from both bodies
+    zone.radius = 40.f;
+    zone.softWall = true;
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     for (const char* kit : {"devin", "duy", "third"}) {
         const ArenaFighter& fi = t.fighter(kit);
         const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
         for (const float room : {0.1f, 0.575f, 1.05f}) {
-            for (const bool walking : {false, true}) {
+            for (int run = 0; run < 4; ++run) {
+                const bool walking = run % 2 == 1, zoned = run >= 2;
                 Rig rig(fi, {pounceKind(shipped, contact + room)});
                 rig.put(0, contact + room, 0.f);
-                int began = 0, ended = 0, offPlanted = 0;
+                int began = 0, ended = 0, offPlanted = 0, idleShoves = 0, idleAway = 0;
                 Vec2 net{};
                 float worstStep = 0.f, worstNet = 0.f;
                 for (int i = 0; i < 400; ++i) {
@@ -12728,7 +12733,8 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                     const Vec2 was = rig.bodies.player;
                     const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
                     const Vec2 own = Vec2{was.x + o.player.velocity.x * kDt, was.y + o.player.velocity.y * kDt};
-                    arenaStep(rig.fight, rig.bodies, kDt);
+                    if (zoned) arenaStep(rig.fight, rig.bodies, kDt, zone);
+                    else arenaStep(rig.fight, rig.bodies, kDt);
                     const ArenaPush& p = rig.bodies.push;
                     const Vec2 step = rig.bodies.pushStep;
                     ArenaHeld held;
@@ -12749,7 +12755,14 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                     if (p.ended) {
                         ++ended;
                         worstNet = std::max(worstNet, distanceOf(net, p.net));
+                        // an idle lead's shove over 5 cm points away from the pup (its net against the bodies' line)
+                        const Vec2 toPup{rig.bodies.enemies[0].x - rig.bodies.player.x,
+                                         rig.bodies.enemies[0].y - rig.bodies.player.y};
+                        const float lens = std::hypot(p.net.x, p.net.y) * std::hypot(toPup.x, toPup.y);
+                        const float away = -(p.net.x * toPup.x + p.net.y * toPup.y) / std::max(1e-6f, lens);
+                        if (!walking && p.distance > 0.05f) ++idleShoves, idleAway += away > 0.9f;
                         MESSAGE(std::string(kit) << " room " << room << std::string(walking ? " walking" : " idle")
+                                                 << std::string(zoned ? " zone" : " ring")
                                                  << ": shove " << p.count << " " << std::string(pushSide(p.local))
                                                  << " "
                                                  << p.distance * 1000.f
@@ -12761,6 +12774,7 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                 CHECK(worstNet < 1e-6f);
                 CHECK(began == static_cast<int>(rig.bodies.push.count));
                 CHECK(ended == began - (rig.bodies.push.active ? 1 : 0));
+                CHECK(idleAway == idleShoves);
             }
         }
     }
