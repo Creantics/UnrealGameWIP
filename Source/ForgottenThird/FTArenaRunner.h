@@ -536,7 +536,7 @@ private:
 	ftcore::ArenaInput TakeInput();
 	void HoldPausedEnemies();
 	// The state clocks before a step (SnapPoseClocks), and each figure's clock at the time its body is drawn
-	// (ftcore::arenaPoseTime): a step behind at Alpha 0, as is when the clock stood still over the last step.
+	// (ftcore::arenaPoseTime): its last step's run behind at Alpha 0 (none in a hit pause).
 	void SnapPoseClocks();
 	float EnemyPoseTime(int32 I, float Alpha) const;
 	float LeadPoseTime(float Alpha) const;
@@ -1650,8 +1650,8 @@ private:
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;
-	// Each figure's state clock and state before the last step: the same clock in the same state after it stood still
-	// (a hit pause), so its pose reads the clock as is.
+	// Each figure's state clock and state before the last step: in the same state, how far the clock ran over it (less
+	// than a step, or none, in a hit pause) is how far behind its pose reads it.
 	float PrevEnemyClock[ftcore::kMaxArenaEnemies] = {};
 	ftcore::ArenaBrain PrevEnemyBrain[ftcore::kMaxArenaEnemies] = {};
 	float PrevLeadClock = -1.f;

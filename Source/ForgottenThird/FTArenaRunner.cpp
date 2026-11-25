@@ -1649,7 +1649,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			// Its cycles on the turn's own clock, the one StoneTurnFacing yaws the figure by (looping, so no restart fade).
 			Clip = StoneTurnSign > 0 ? Skin.TurnR : Skin.TurnL;
-			Time = static_cast<double>(Fight.time()) - (1.0 - static_cast<double>(Alpha)) * StepSeconds - StoneTurnStart;
+			Time = static_cast<double>(Fight.time()) + static_cast<double>(Alpha) * StepSeconds - StoneTurnStart;
 			bPhased = true;
 		}
 		else if (bWalking[I])
@@ -2298,8 +2298,20 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	return In;
 }
 
-// Before a step (and on a reset): each figure's state clock and state, so the poses after it can tell a clock that
-// stood still (a hit pause: the struck figure from the blow's tick, a striker from the tick after) from one that ran.
+// Before a step (and on a reset): each figure's state clock and state. In the same state after the step, the clock moved
+// by its own time over the step (less than the step, or none, in a hit pause), and the body moved with it, so the pose
+// reads the clock that far behind; in a new state, a whole step behind.
+namespace
+{
+// The seconds a state clock ran over the last step: its own measured move in the same state (a hit pause leaves less,
+// or none), else a whole step.
+double ArenaOwnStep(bool bSame, float Clock, float Prev, double Step)
+{
+	const double Ran = static_cast<double>(Clock) - static_cast<double>(Prev);
+	return bSame && Ran >= 0.0 ? FMath::Min(Ran, Step) : Step; // a clock that went back began again: a new state
+}
+}
+
 void UFTArenaRunner::SnapPoseClocks()
 {
 	const ftcore::ArenaOutput& O = Fight.output();
@@ -2317,22 +2329,25 @@ void UFTArenaRunner::SnapPoseClocks()
 float UFTArenaRunner::EnemyPoseTime(int32 I, float Alpha) const
 {
 	const ftcore::ArenaEnemyOut& E = Fight.output().enemies[static_cast<size_t>(I)];
-	const bool bHeld = E.stateTime == PrevEnemyClock[I] && E.brain == PrevEnemyBrain[I];
-	return ftcore::arenaPoseTime(E.stateTime, Alpha, StepSeconds, bHeld);
+	const bool bSame = E.brain == PrevEnemyBrain[I];
+	return ftcore::arenaPoseTime(E.stateTime, Alpha,
+		ArenaOwnStep(bSame, E.stateTime, PrevEnemyClock[I], StepSeconds), false);
 }
 
 float UFTArenaRunner::LeadPoseTime(float Alpha) const
 {
 	const ftcore::ArenaPlayerOut& P = Fight.output().player;
-	const bool bHeld = P.actionTime == PrevLeadClock && P.action == PrevLeadAction;
-	return ftcore::arenaPoseTime(P.actionTime, Alpha, StepSeconds, bHeld);
+	const bool bSame = P.action == PrevLeadAction;
+	return ftcore::arenaPoseTime(P.actionTime, Alpha,
+		ArenaOwnStep(bSame, P.actionTime, PrevLeadClock, StepSeconds), false);
 }
 
 float UFTArenaRunner::AllyPoseTime(float Alpha) const
 {
 	const ftcore::ArenaAllyOut& A = Fight.output().ally;
-	const bool bHeld = A.attacking && A.stateTime == PrevAllyClock && A.blow == PrevAllyBlow;
-	return ftcore::arenaPoseTime(A.stateTime, Alpha, StepSeconds, bHeld);
+	const bool bSame = A.attacking && PrevAllyClock >= 0.f && A.blow == PrevAllyBlow;
+	return ftcore::arenaPoseTime(A.stateTime, Alpha,
+		ArenaOwnStep(bSame, A.stateTime, PrevAllyClock, StepSeconds), false);
 }
 
 // Before a step: an enemy in a hit pause stands still for the part of the step the pause covers (Core's stopLeft after
@@ -4879,8 +4894,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		if (I == StoneBearerSlot && StoneTurnSign != 0)
 		{
 			// Mid-turn, the turn's own yaw at the frame's time, in step with its clip (Core's facing is the last step's).
-			const double Drawn = static_cast<double>(Fight.time()) - (1.0 - static_cast<double>(Alpha)) * StepSeconds;
-			Pose.Yaw = ArenaYaw(StoneTurnFacing(Drawn - StoneTurnStart));
+			Pose.Yaw = ArenaYaw(StoneTurnFacing(static_cast<double>(Fight.time()) + static_cast<double>(Alpha) * StepSeconds - StoneTurnStart));
 		}
 		Pose.Speed = ArenaLength(E.velocity);
 		Pose.Tint = Figure->GetBaseColor();
