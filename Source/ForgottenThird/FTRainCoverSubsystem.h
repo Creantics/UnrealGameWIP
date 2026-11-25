@@ -29,14 +29,15 @@
 // A tenth square sits on the strip's pent eaves. Lighting is off in the trim; -RainCoverShowFlags=Lighting=1 puts it back.
 // Path-1 draw cuts on the shipped capture only: -RainCoverMaxDist=<m>, -RainCoverLOD=<f>, -RainCoverHideSmall=<cm>.
 //
-// Split (path 2, 11-25): a recapture is spread over three ticks so no frame pays for the whole square. Tick 1 draws the
+// Split (path 2, 11-25; dropped, dev switch -RainCoverSplit only): it did not lower the peak, since the capture's cost is
+// fixed per scene render, so each half cost about what the whole did. A recapture is spread over three ticks. Tick 1 draws the
 // square's +X half (image rows 0 to res/2), tick 2 its -X half, each into its own res x res/2 target; tick 3 copies both
 // halves into RT_RainCover and only then moves CoverFrame, so the map and its frame change together. The capture actor
 // stays at the square's centre; each half uses an off-centre orthographic matrix built like the engine's own (same width,
 // near 0, far = the capture's MaxViewDistanceOverride), so every texel lands where the whole capture puts it. Half a
 // square doubles the projection's larger scale term, which the LOD code reads, so LODDistanceFactor is doubled to keep
-// the same LODs. RainCover/Capture is 1, 2 and 3 on those ticks. -RainCoverWhole (dev) draws the whole square in one tick
-// as before (Capture 1); -RainCoverMainRenderer also does, since that capture lands later than the copy. Under
+// the same LODs. RainCover/Capture is 1, 2 and 3 on those ticks. Without -RainCoverSplit the whole square is drawn in one
+// tick (Capture 1); -RainCoverMainRenderer always is, since that capture lands later than the copy. Under
 // -RainCoverDiff the drawn map runs both halves and the copy in one tick (the image does not depend on the ticks).
 
 #include "CoreMinimal.h"

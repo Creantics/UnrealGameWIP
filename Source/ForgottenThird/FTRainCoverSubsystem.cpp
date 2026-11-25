@@ -205,12 +205,13 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	}
 #endif
 
-	// Path 2 (11-25): each recapture split over three ticks (FTRainCoverSubsystem.h), after the dev cuts so the halves take them.
-	bool bWhole = false;
+	// Path 2 (11-25, dropped): a recapture split over three ticks (FTRainCoverSubsystem.h) is a dev switch only,
+	// -RainCoverSplit; the whole capture is the default. After the dev cuts so the halves take them.
+	bool bWantSplit = false;
 #if !UE_BUILD_SHIPPING
-	bWhole = FParse::Param(Switches, TEXT("RainCoverWhole")) || C->bRenderInMainRenderer;
+	bWantSplit = FParse::Param(Switches, TEXT("RainCoverSplit")) && !C->bRenderInMainRenderer;
 #endif
-	bSplit = !bWhole && SplitSetup(*C);
+	bSplit = bWantSplit && SplitSetup(*C);
 
 	bProbe = FParse::Param(FTLookSwitches(), TEXT("RainCoverProbe"));
 	bActive = true;
