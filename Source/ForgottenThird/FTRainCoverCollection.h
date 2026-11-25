@@ -1,15 +1,21 @@
 #pragma once
 
 // Rain under cover, the material side (ftcore/RainCover.h is its reference). The resident ring (UFTRainCoverSubsystem,
-// FTRainCoverRing.cpp) keeps RT_RainCover as a 3 x 3 atlas of G16 tiles round the lead's tile and writes MPC_RainCover's
+// FTRainCoverRing.cpp) keeps RT_RainCover as a 3 x 3 atlas of G16 tiles round the lead's tile and writes the cover's
 // CoverSlot0..8 (the tile each slot holds and its height range: tx, ty, min Z, max Z cm) and CoverOn (1 once the ring is
-// filled). Materials read it through Term (ftcore::rainCoverRingHlsl): a sprite's openness (0 under cover: no streak or
+// filled). They live in the look's collection (MPC_Look), not one of their own: a material may reference two collections
+// at most, and the window walls, the kit buildings and the world surface already read MPC_Look and MPC_Windows (with a
+// third, those masters fail to compile and draw the default material). Every master the term goes in already reads
+// MPC_Look for its wetness, so the term adds no collection. FTBuildLookMaterials builds the parameters in; a build adds
+// any that are missing in place (saved, never deleted), as FTJoint, FTSeason and FTWorldWave do. Materials read it through Term (ftcore::rainCoverRingHlsl): a sprite's openness (0 under cover: no streak or
 // splash) or a surface's wet share (0 deep under cover, a fringe at the open sides). CoverOn 0 (the default) skips the
 // whole term ([branch]) and every point reads open, so a material built with the term looks as it did before.
 // CoverFrame stays in the collection for the dev-only moving capture; no material reads it.
 // Off by default (ftcore::rainCoverEnabled): only with -RainCover do the builds put the term in (Term and Sheltered;
-// off, Term is null and Sheltered passes the wetness through) and make the assets, and the game run the capture.
-// The builds make both assets when missing (LoadOrBuild, LoadOrBuildTarget); they are saved in place, never deleted.
+// off, Term is null and Sheltered passes the wetness through) and make the render target, and the game run the capture.
+// The parameters sit in MPC_Look either way (unused when off), so a look rebuild without -RainCover never leaves a
+// cover-built material reading a parameter that is gone. The render target is made when missing (LoadOrBuildTarget),
+// saved in place, never deleted. The old /Game/Rendering/Rain/MPC_RainCover is no longer read.
 
 #include "CoreMinimal.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -38,7 +44,7 @@
 
 namespace FTRainCover
 {
-inline constexpr const TCHAR* Collection = TEXT("/Game/Rendering/Rain/MPC_RainCover");
+inline constexpr const TCHAR* Collection = TEXT("/Game/Look/MPC_Look"); // FTScene::LookCollection
 
 // -RainCover given and -NoRainCover not (FTLookSwitches: the command line in a commandlet, the boot row too in a game).
 inline bool Enabled()
@@ -116,56 +122,51 @@ T* Node(UMaterial* Material, int32 X, int32 Y)
 }
 } // namespace Detail
 
-// The collection, built and saved when missing (or a parameter is). Null if it could not be saved.
-inline UMaterialParameterCollection* LoadOrBuild()
+// The cover's parameters, added to Asset where missing (ids from their names, so a rebuild changes no id). Returns how
+// many were added.
+inline int32 AddParametersTo(UMaterialParameterCollection& Asset)
 {
-	UMaterialParameterCollection* Asset = Load();
-	const auto Complete = [](const UMaterialParameterCollection* A)
+	int32 Added = 0;
+	auto Vector = [&Asset, &Added](const FName& Name, const FLinearColor& Default)
 	{
-		bool bAll = A->GetParameterId(Frame()).IsValid() && A->GetParameterId(On()).IsValid();
-		for (int32 S = 0; S < ftcore::kRainCoverRingSlots; ++S)
+		if (Asset.GetParameterId(Name).IsValid())
 		{
-			bAll = bAll && A->GetParameterId(Slot(S)).IsValid();
+			return;
 		}
-		return bAll;
+		FCollectionVectorParameter& P = Asset.VectorParameters.AddDefaulted_GetRef();
+		P.ParameterName = Name;
+		P.DefaultValue = Default;
+		P.Id = Detail::IdFor(Name);
+		++Added;
 	};
-	if (Asset && Complete(Asset))
+	Vector(Frame(), FLinearColor(0.f, 0.f, 0.f, 0.f));
+	if (!Asset.GetParameterId(On()).IsValid())
 	{
-		return Asset;
-	}
-	UPackage* Package = Asset ? Asset->GetPackage() : CreatePackage(Collection);
-	if (!Asset)
-	{
-		Asset = NewObject<UMaterialParameterCollection>(Package, *FPackageName::GetShortName(Collection), RF_Public | RF_Standalone | RF_Transactional);
-		FAssetRegistryModule::AssetCreated(Asset);
-	}
-	if (!Asset->GetParameterId(Frame()).IsValid())
-	{
-		FCollectionVectorParameter& P = Asset->VectorParameters.AddDefaulted_GetRef();
-		P.ParameterName = Frame();
-		P.DefaultValue = FLinearColor(0.f, 0.f, 0.f, 0.f);
-		P.Id = Detail::IdFor(Frame());
-	}
-	if (!Asset->GetParameterId(On()).IsValid())
-	{
-		FCollectionScalarParameter& P = Asset->ScalarParameters.AddDefaulted_GetRef();
+		FCollectionScalarParameter& P = Asset.ScalarParameters.AddDefaulted_GetRef();
 		P.ParameterName = On();
 		P.DefaultValue = 0.f; // no capture: every point open
 		P.Id = Detail::IdFor(On());
+		++Added;
 	}
+	const ftcore::RainCoverSlot None;
 	for (int32 S = 0; S < ftcore::kRainCoverRingSlots; ++S)
 	{
-		if (!Asset->GetParameterId(Slot(S)).IsValid())
-		{
-			FCollectionVectorParameter& P = Asset->VectorParameters.AddDefaulted_GetRef();
-			P.ParameterName = Slot(S);
-			const ftcore::RainCoverSlot None;
-			P.DefaultValue = FLinearColor(None.tx, None.ty, None.minZcm, None.maxZcm); // holds no tile: reads open
-			P.Id = Detail::IdFor(Slot(S));
-		}
+		Vector(Slot(S), FLinearColor(None.tx, None.ty, None.minZcm, None.maxZcm)); // holds no tile: reads open
+	}
+	return Added;
+}
+
+// The look's collection with the cover's parameters, any missing added and saved in place. Null if the collection is
+// missing (build it first with FTBuildLookMaterials) or could not be saved.
+inline UMaterialParameterCollection* LoadOrBuild()
+{
+	UMaterialParameterCollection* Asset = Load();
+	if (!Asset || AddParametersTo(*Asset) == 0)
+	{
+		return Asset;
 	}
 	Asset->PostEditChange();
-	return Detail::Save(Package, Asset) ? Asset : nullptr;
+	return Detail::Save(Asset->GetPackage(), Asset) ? Asset : nullptr;
 }
 
 // The render target, built and saved when missing: resolution² R32F (depth, cm), clamped, cleared far (open).

@@ -12,7 +12,7 @@
 // aboveM over the camera: orthographic, sizeM square, SceneDepth into RT_RainCover. Only what can shelter is drawn:
 // opaque static and instanced meshes (no characters, particles, translucency, decals, fog or landscape: the ground is
 // open anyway). It captures on the first frame and again whenever the camera has moved recaptureM in plan from the
-// capture's snapped centre, then writes MPC_RainCover (CoverFrame, CoverOn 1). With no capture CoverOn stays 0 (all
+// capture's snapped centre, then writes MPC_Look's CoverFrame and CoverOn (1). With no capture CoverOn stays 0 (all
 // open: rain everywhere, as before).
 //
 // Switches (FTLookSwitches): off unless -RainCover is given (FTRainCover::Enabled; the material and rain builds need it

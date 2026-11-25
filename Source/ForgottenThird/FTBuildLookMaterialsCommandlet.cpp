@@ -901,6 +901,8 @@ UMaterialParameterCollection* BuildCollection()
 	FTSeason::AddScalarTo(*Collection);
 	// And the world wave's (FTWorldWave.h).
 	FTWorldWave::AddParametersTo(*Collection);
+	// And the rain cover's (FTRainCoverCollection.h): a material may reference two collections at most.
+	FTRainCover::AddParametersTo(*Collection);
 	Collection->PostEditChange();
 	return Collection;
 }

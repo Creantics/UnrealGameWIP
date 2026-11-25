@@ -28,8 +28,8 @@
 
 namespace ftcore {
 
-// Material parameter collection names (Data/Look: the cover's own collection, MPC_RainCover).
-inline constexpr const char* kRainCoverMpc = "MPC_RainCover";
+// Material parameter names, in the look's collection (MPC_Look: a material may reference two collections at most).
+inline constexpr const char* kRainCoverMpc = "MPC_Look";
 inline constexpr const char* kRainCoverParamFrame = "CoverFrame";  // vector: centre x, y (cm), size (cm), top Z (cm)
 inline constexpr const char* kRainCoverParamOn = "CoverOn";        // scalar: 1 with a capture, 0 none (all open)
 // The capture's render target asset, sampled by every material that reads the cover.
