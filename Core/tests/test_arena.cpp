@@ -11809,10 +11809,10 @@ TEST_CASE("gait mix: a set's count out of range, equal speeds or a length not fi
     CHECK(run(gs, 0.2) == 0);
 }
 
-// Prototype hand-off cap (11-24). With the token the pup walks for the Nip band and starts the Pounce on the way
-// through its band; uncapped that hand-off came at the full 0.84 m/s walk. Capped, every Pounce starts at the
-// curve's creep.
-TEST_CASE("arena: prototype hand-off cap holds a Pounce reached on the way to the Nip band to the creep") {
+// Hand-off cap (11-24). With the token the pup walks for the Nip band and starts the Pounce on the way through its
+// band; with no lunge curve (the a7 path) that hand-off comes at the full 0.84 m/s walk. With the curve, every Pounce
+// starts at the curve's creep.
+TEST_CASE("arena: the hand-off cap holds a Pounce reached on the way to the Nip band to the creep") {
     const ArenaTable t = loadShipped();
     ArenaEnemyKind pup = shippedKind(t, "maw_pup");
     ArenaAttack& a = pup.moves[1].attack;
@@ -11830,8 +11830,9 @@ TEST_CASE("arena: prototype hand-off cap holds a Pounce reached on the way to th
     pup.lungeCurve.scale = arenaLungeScale(pup.lungeCurve, a.lunge);
     const float creep = pup.lungeCurve.v[0] * pup.lungeCurve.scale;
     for (int cap = 0; cap < 2; ++cap) {
-        arenaProtoSet(cap, 0);
-        Rig rig(t.fighter("devin"), {pup});
+        ArenaEnemyKind kind = pup;
+        if (cap == 0) kind.lungeCurve.count = 0; // no curve: no cap
+        Rig rig(t.fighter("devin"), {kind});
         rig.put(0, 12.f, 0.f);
         int pounces = 0;
         float worst = 0.f, lastV = 0.f;
@@ -11850,6 +11851,358 @@ TEST_CASE("arena: prototype hand-off cap holds a Pounce reached on the way to th
         if (cap == 0) CHECK(worst > 0.8f); // the a7 path: walked into the Pounce at the walk speed
         else CHECK(worst <= creep + 0.01f);
     }
-    arenaProtoSet(0, 0);
 }
 
+
+// ---- the Pounce's contact latch, its f36 ending and the planted yield (ruling 5124, 11-24) ----
+namespace {
+// Variant A: the Pounce (move 1) with the lunge curve, its band moved to hold `range` (the lead idle at the origin).
+ArenaEnemyKind pounceKind(const ArenaEnemyKind& shipped, float range) {
+    ArenaEnemyKind pup = shipped;
+    ArenaAttack& a = pup.moves[1].attack;
+    a.active = 0.4f;
+    a.lunge = 2.2f;
+    pup.lungeMove = 1;
+    const float knots[7][2] = {{0.f, 0.15f}, {0.6f, 0.15f}, {0.63f, 0.f}, {0.7f, 0.f}, {0.8f, 4.f}, {1.2f, 4.f},
+                               {1.35f, 0.f}};
+    for (const auto& kn : knots) {
+        pup.lungeCurve.t[pup.lungeCurve.count] = kn[0];
+        pup.lungeCurve.v[pup.lungeCurve.count] = kn[1];
+        ++pup.lungeCurve.count;
+    }
+    pup.lungeCurve.scale = arenaLungeScale(pup.lungeCurve, a.lunge);
+    pup.preferredRange = range;
+    pup.runRange = std::max(pup.runRange, range + 0.25f);
+    pup.trotRange = std::max(pup.trotRange, pup.runRange);
+    pup.moves[1].maxRange = std::max(pup.moves[1].maxRange, range + 0.1f);
+    pup.moves[1].minRange = std::min(1.05f, range - 0.05f);
+    pup.moves[0].maxRange = std::min(pup.moves[0].maxRange, pup.moves[1].minRange);
+    pup.moves[0].minRange = std::min(pup.moves[0].minRange, pup.moves[0].maxRange);
+    return pup;
+}
+
+// One tick of a Pounce run: the clock (s from the move's start, less an unseen windup), the outputs, the bodies.
+struct PounceTick {
+    float clock = 0.f;
+    bool attacking = false, latched = false, hit = false;
+    std::uint8_t ending = 0;
+    Vec2 pup{}, lead{};
+};
+
+// Runs from the pup `room` m outside first tooth contact until its Pounce is over; `lead(clock, rig)` moves the lead
+// before each tick (the Rig's bodies). Ticks before the Pounce began are not kept.
+template <typename LeadFn>
+std::vector<PounceTick> pounceRun(float room, LeadFn lead, ArenaRing ring = ArenaRing{Vec2{0.f, 0.f}, 30.f},
+                                  float* contactOut = nullptr) {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter("devin");
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    if (contactOut) *contactOut = contact;
+    const ArenaEnemyKind pup = pounceKind(shipped, contact + room);
+    const ArenaAttack& a = pup.moves[1].attack;
+    Rig rig(fi, {pup}, 1, ring);
+    rig.put(0, contact + room, 0.f);
+    std::vector<PounceTick> run;
+    bool started = false, unseen = false;
+    for (int i = 0; i < 2400; ++i) {
+        const float before = started ? run.back().clock : -1.f;
+        lead(before, rig);
+        const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+        bool hit = false;
+        for (const ArenaEvent& e : o.events) {
+            if (e.type == ArenaEventType::AttackStarted && e.source == 0 && e.move == 1 && !started) {
+                started = true;
+                unseen = o.enemies[0].unseen;
+            }
+            if (e.type == ArenaEventType::Hit && e.source == 0) hit = true;
+        }
+        arenaStep(rig.fight, rig.bodies, kDt);
+        if (!started) continue;
+        const ArenaEnemyOut& eo = rig.out().enemies[0];
+        PounceTick pt;
+        pt.attacking = eo.brain == ArenaBrain::Attack && eo.move == 1;
+        pt.clock = pt.attacking ? eo.stateTime - (unseen ? kArenaUnseenWindup : 0.f) : run.back().clock + kDt;
+        pt.latched = eo.lungeLatched;
+        pt.ending = eo.lungeEnding;
+        pt.hit = hit;
+        pt.pup = rig.bodies.enemies[0];
+        pt.lead = rig.bodies.player;
+        run.push_back(pt);
+        if (pt.clock > a.total() + 0.1f) break;
+    }
+    return run;
+}
+
+void leadIdle(float, Rig&) {}
+
+// Moves the lead `speed` m/s away from the pup (< 0: toward it) for the coming tick.
+void leadPush(Rig& rig, float speed) {
+    const Vec2 p = rig.bodies.player, from = rig.bodies.enemies[0];
+    const Vec2 off{p.x - from.x, p.y - from.y};
+    const float len = std::hypot(off.x, off.y);
+    if (len > 1e-4f) rig.bodies.player = Vec2{p.x + off.x / len * speed * kDt, p.y + off.y / len * speed * kDt};
+}
+
+// The pup where its Pounce ended (its last tick in the move).
+Vec2 pounceEnd(const std::vector<PounceTick>& run) {
+    Vec2 at{};
+    for (const PounceTick& p : run)
+        if (p.attacking) at = p.pup;
+    return at;
+}
+
+int firstLatched(const std::vector<PounceTick>& run) {
+    for (std::size_t i = 0; i < run.size(); ++i)
+        if (run[i].latched) return static_cast<int>(i);
+    return -1;
+}
+constexpr float kLaunch = 0.8f, kActiveEnd = 1.2f;
+} // namespace
+
+TEST_CASE("pounce latch: the first tooth contact in the air latches, and the body travel stays frozen after it") {
+    float contact = 0.f;
+    const auto run = pounceRun(0.6f, leadIdle, ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
+    REQUIRE(!run.empty());
+    const int at = firstLatched(run);
+    REQUIRE(at > 0);
+    const PounceTick& l = run[static_cast<std::size_t>(at)];
+    CHECK(l.clock > kLaunch);
+    CHECK(l.clock <= kActiveEnd + 1e-4f);
+    CHECK(std::fabs(distanceOf(l.pup, l.lead) - contact) < 1e-3f); // at first contact
+    for (int i = 0; i < at; ++i) CHECK(distanceOf(run[static_cast<std::size_t>(i)].pup,
+                                                  run[static_cast<std::size_t>(i)].lead) > contact - 1e-4f);
+    for (std::size_t i = static_cast<std::size_t>(at); i < run.size() && run[i].attacking; ++i) {
+        CHECK(run[i].latched);
+        CHECK(distanceOf(run[i].pup, l.pup) < 1e-5f); // frozen: no travel, no push
+    }
+    bool hit = false;
+    for (const PounceTick& p : run) hit |= p.hit;
+    CHECK(hit);
+}
+
+TEST_CASE("pounce latch: the clamp does not reopen when the lead backs off after the latch") {
+    const auto run = pounceRun(0.6f, [](float clock, Rig& rig) {
+        if (clock > kLaunch && rig.out().enemies[0].lungeLatched && clock < kActiveEnd) leadPush(rig, 3.f);
+    });
+    const int at = firstLatched(run);
+    REQUIRE(at > 0);
+    const Vec2 frozen = run[static_cast<std::size_t>(at)].pup;
+    float leadOff = 0.f;
+    for (std::size_t i = static_cast<std::size_t>(at); i < run.size() && run[i].attacking; ++i) {
+        CHECK(distanceOf(run[i].pup, frozen) < 1e-5f);
+        leadOff = std::max(leadOff, distanceOf(run[i].lead, run[static_cast<std::size_t>(at)].lead));
+    }
+    CHECK(leadOff > 0.5f); // the lead did go: 3 m/s for most of the active
+    CHECK(run.back().ending == 0); // the move is over: the output is clear
+    bool sawHitEnding = false;
+    for (const PounceTick& p : run) sawHitEnding |= p.attacking && p.ending == 2;
+    CHECK(sawHitEnding);
+}
+
+TEST_CASE("pounce ending: undecided before the active's end, final there, and a whiff lands the curve's whole travel") {
+    // Far out: the air travel can't reach; the lead walks in 3 m/s from f36 and meets it in the landing.
+    float contact = 0.f;
+    const auto run = pounceRun(3.f, [](float clock, Rig& rig) {
+        if (clock >= kActiveEnd) leadPush(rig, -3.f);
+    }, ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
+    REQUIRE(!run.empty());
+    Vec2 at36{};
+    bool met = false;
+    for (std::size_t i = 0; i < run.size() && run[i].attacking; ++i) {
+        const PounceTick& p = run[i];
+        if (p.clock < kActiveEnd - 1e-4f) CHECK(p.ending == 0);
+        else CHECK(p.ending == 1); // final: the whiff, though the lead touches it later
+        if (p.clock <= kActiveEnd + 1e-4f) at36 = p.pup;
+        if (p.clock > kActiveEnd) {
+            CHECK_FALSE(p.hit); // no hit after f36
+            met |= distanceOf(p.pup, p.lead) <= contact + 1e-3f;
+        }
+        CHECK_FALSE(p.latched);
+    }
+    CHECK(met); // the lead did touch it in the landing or the recovery
+    // The landing (f36 to the end) carries the curve's 0.30 m whole: the planted pup is not shoved back, and the lead
+    // walking into it yields.
+    CHECK(distanceOf(pounceEnd(run), at36) == doctest::Approx(0.30).epsilon(0.02));
+}
+
+TEST_CASE("pounce yield: contact in the creep gives no hit, the lead yields, and the launch latches at once") {
+    float contact = 0.f;
+    // The lead walks in 1.5 m/s over the startup: the creep meets it.
+    const auto run = pounceRun(0.4f, [](float clock, Rig& rig) {
+        if (clock >= 0.f && clock < kLaunch) leadPush(rig, -1.5f);
+    }, ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
+    REQUIRE(!run.empty());
+    const Vec2 start = run.front().pup;
+    bool touched = false;
+    Vec2 atLaunch{};
+    for (const PounceTick& p : run) {
+        if (p.clock <= kLaunch + 1e-4f) {
+            CHECK_FALSE(p.hit);
+            CHECK_FALSE(p.latched);
+            touched |= distanceOf(p.pup, p.lead) <= contact + 1e-3f;
+            CHECK(distanceOf(p.pup, p.lead) > contact - 1e-4f); // the lead gave way
+            atLaunch = p.pup;
+        }
+    }
+    CHECK(touched);
+    // The pup crept its whole curve to the launch (0.293 m less the first tick's): the lead's walk did not push it.
+    CHECK(distanceOf(start, atLaunch) == doctest::Approx(0.29).epsilon(0.02));
+    const int at = firstLatched(run);
+    REQUIRE(at >= 0);
+    CHECK(run[static_cast<std::size_t>(at)].clock <= kLaunch + 2.f * kDt + 1e-4f); // at once
+    CHECK(distanceOf(atLaunch, pounceEnd(run)) < 0.01f);                            // near-zero air travel
+}
+
+TEST_CASE("pounce yield: the lead touching at the launch is the Hit ending with near-zero air travel") {
+    float contact = 0.f;
+    const auto run = pounceRun(0.02f, leadIdle, ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
+    REQUIRE(!run.empty());
+    Vec2 atLaunch{};
+    float leadMoved = 0.f;
+    for (const PounceTick& p : run) {
+        if (p.clock <= kLaunch + 1e-4f) atLaunch = p.pup;
+        leadMoved = std::max(leadMoved, std::hypot(p.lead.x, p.lead.y));
+        if (p.clock <= kLaunch + 1e-4f) CHECK_FALSE(p.hit);
+    }
+    CHECK(leadMoved > 0.2f); // the creep pushed the idle lead back
+    const int at = firstLatched(run);
+    REQUIRE(at >= 0);
+    CHECK(run[static_cast<std::size_t>(at)].clock <= kLaunch + kDt + 1e-4f);
+    CHECK(distanceOf(atLaunch, pounceEnd(run)) < 0.01f);
+    bool hitEnding = false, hit = false;
+    for (const PounceTick& p : run) {
+        hitEnding |= p.attacking && p.ending == 2;
+        hit |= p.hit;
+    }
+    CHECK(hitEnding);
+    CHECK(hit);
+}
+
+TEST_CASE("pounce latch: a lead walking into the latched pup is held off, and the pup does not move") {
+    float contact = 0.f;
+    const auto run = pounceRun(0.6f, [](float clock, Rig& rig) {
+        if (clock >= 1.f) leadPush(rig, -3.f);
+    }, ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
+    const int at = firstLatched(run);
+    REQUIRE(at > 0);
+    REQUIRE(run[static_cast<std::size_t>(at)].clock < 1.f);
+    const Vec2 frozen = run[static_cast<std::size_t>(at)].pup;
+    for (std::size_t i = static_cast<std::size_t>(at); i < run.size() && run[i].attacking; ++i) {
+        CHECK(distanceOf(run[i].pup, frozen) < 1e-5f);
+        CHECK(distanceOf(run[i].pup, run[i].lead) > contact - 1e-4f);
+    }
+}
+
+// Who gives when the lead can't move: the lead's back at the ring's wall, the creep pressing it there. The wall
+// holds the lead and the planted pup holds too: both held, the settle splits each overlap half each until it is gone,
+// so the pup gives what the lead can't (its creep stops at contact) and nothing overlaps or leaves the ring.
+TEST_CASE("pounce yield: with the lead pinned at the wall the pup gives, and nothing overlaps") {
+    float contact = 0.f;
+    const ArenaTable t = loadShipped();
+    const float r = t.fighter("devin").bodyRadius;
+    // Where the pup starts its Pounce in the open; the ring's edge then goes at the lead's back, square to that line
+    // (the lead at the origin), so the creep presses it straight into the wall.
+    const auto open = pounceRun(0.1f, leadIdle);
+    REQUIRE(!open.empty());
+    const Vec2 from = open.front().pup;
+    const float len = std::hypot(from.x, from.y);
+    REQUIRE(len > 0.1f);
+    const ArenaRing ring{Vec2{from.x / len * (6.f - r), from.y / len * (6.f - r)}, 6.f};
+    const auto run = pounceRun(0.1f, leadIdle, ring, &contact);
+    REQUIRE(!run.empty());
+    const Vec2 start = run.front().pup;
+    CHECK(distanceOf(start, from) < 1e-3f); // the same approach
+    Vec2 atLaunch{};
+    for (const PounceTick& p : run) {
+        CHECK(ring.contains(p.lead, r - 1e-3f));
+        CHECK(distanceOf(p.pup, p.lead) > contact - 1e-3f);
+        if (p.clock <= kLaunch + 1e-4f) {
+            CHECK_FALSE(p.hit);
+            atLaunch = p.pup;
+        }
+    }
+    CHECK(distanceOf(start, atLaunch) < 0.29f - 0.1f); // it gave: its creep stopped short of the curve's 0.29 m
+    CHECK(std::hypot(run.back().lead.x, run.back().lead.y) < 0.01f); // the lead stayed at the wall
+}
+
+TEST_CASE("pounce ending: a lead stepping into reach the tick after the ending is set is neither hit nor latched") {
+    float contact = 0.f;
+    bool placed = false;
+    const auto run = pounceRun(3.f, [&placed](float, Rig& rig) {
+        const ArenaEnemyOut& eo = rig.out().enemies[0];
+        if (placed || eo.brain != ArenaBrain::Attack || eo.lungeEnding == 0) return;
+        // Square in front of the jaws, just inside first contact.
+        const Vec2 p = rig.bodies.enemies[0];
+        const float at = arenaBodyReach(rig.def.enemies[0]) + 0.3f;
+        rig.bodies.player = Vec2{p.x + eo.facing.x * at, p.y + eo.facing.y * at};
+        placed = true;
+    }, ArenaRing{Vec2{0.f, 0.f}, 30.f}, &contact);
+    REQUIRE(placed);
+    std::size_t decided = run.size();
+    for (std::size_t i = 0; i < run.size(); ++i)
+        if (run[i].ending != 0) {
+            decided = i;
+            break;
+        }
+    REQUIRE(decided < run.size());
+    MESSAGE("ending decided at clock " << run[decided].clock << " s (the active ends at 1.2 s)");
+    CHECK(run[decided].clock >= kActiveEnd - 1e-4f);
+    for (std::size_t i = decided; i < run.size(); ++i) {
+        CHECK_FALSE(run[i].hit);
+        CHECK_FALSE(run[i].latched);
+        if (run[i].attacking) CHECK(run[i].ending == 1);
+    }
+}
+
+TEST_CASE("pounce yield: the zone step holds a planted pup too, and with none planted pushes half each as before") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter("devin");
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    ArenaZone zone;
+    zone.shape = ZoneShape::Circle;
+    zone.centre = Vec2{0.f, 0.f};
+    zone.radius = 30.f;
+    for (int curve = 0; curve < 2; ++curve) {
+        ArenaEnemyKind pup = pounceKind(shipped, contact + 0.4f);
+        if (curve == 0) pup.lungeCurve.count = 0;
+        Rig rig(fi, {pup});
+        rig.put(0, contact + 0.4f, 0.f);
+        bool started = false;
+        float pupMoved = 0.f, leadMoved = 0.f;
+        for (int i = 0; i < 600; ++i) {
+            const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+            for (const ArenaEvent& e : o.events)
+                if (e.type == ArenaEventType::AttackStarted && e.source == 0 && e.move == 1) started = true;
+            const ArenaEnemyOut& eo = rig.out().enemies[0];
+            const bool creeping = started && eo.brain == ArenaBrain::Attack && eo.move == 1 && eo.stateTime < 0.6f;
+            if (creeping) {
+                // The lead walks into the creeping pup at 1.5 m/s.
+                const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y -
+                                                                                   rig.bodies.player.y};
+                const float len = std::hypot(to.x, to.y);
+                rig.bodies.player = Vec2{rig.bodies.player.x + to.x / len * 1.5f * kDt,
+                                         rig.bodies.player.y + to.y / len * 1.5f * kDt};
+            }
+            const ArenaBodies wanted = [&] {
+                ArenaBodies b = rig.bodies;
+                b.player = Vec2{b.player.x + o.player.velocity.x * kDt, b.player.y + o.player.velocity.y * kDt};
+                const Vec2 v = o.enemies[0].velocity;
+                b.enemies[0] = Vec2{b.enemies[0].x + v.x * kDt, b.enemies[0].y + v.y * kDt};
+                return b;
+            }();
+            arenaStep(rig.fight, rig.bodies, kDt, zone);
+            if (creeping) {
+                pupMoved = std::max(pupMoved, distanceOf(wanted.enemies[0], rig.bodies.enemies[0]));
+                leadMoved = std::max(leadMoved, distanceOf(wanted.player, rig.bodies.player));
+            }
+            if (started && eo.brain != ArenaBrain::Attack) break;
+        }
+        REQUIRE(started);
+        CAPTURE(curve);
+        CHECK(leadMoved > 1e-3f); // they met
+        if (curve == 1) CHECK(pupMoved < 1e-5f); // planted: the push moves only the lead
+        else CHECK(pupMoved > 1e-3f);            // no curve: half each, as before
+    }
+}

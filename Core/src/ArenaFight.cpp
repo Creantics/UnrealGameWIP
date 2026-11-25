@@ -20,18 +20,6 @@
 #include <utility>
 
 namespace ftcore {
-namespace {
-// PROTOTYPE switches (11-24 Pounce round 2): off unless a measure sets them with arenaProtoSet.
-int gProtoCap = 0;
-int gProtoYield = 0;
-} // namespace
-void arenaProtoSet(int handoffCap, int plantedYield) {
-    gProtoCap = handoffCap;
-    gProtoYield = plantedYield;
-}
-} // namespace ftcore
-
-namespace ftcore {
 
 namespace {
 
@@ -571,6 +559,11 @@ struct ArenaFightImpl {
                 eo.move = foe.move;
             }
             eo.aim = i < n && foe.brain == ArenaBrain::Attack ? foe.aim : 0;
+            const bool lunging = i < n && foe.brain == ArenaBrain::Attack && def.enemies[i].lungeMove >= 0 &&
+                                 foe.move == static_cast<std::uint8_t>(def.enemies[i].lungeMove) &&
+                                 def.enemies[i].lungeCurve.count > 0;
+            eo.lungeLatched = lunging && foe.lungeLatched;
+            eo.lungeEnding = lunging ? foe.lungeEnding : 0;
         }
         ArenaAllyOut& ao = out.ally;
         ao = ArenaAllyOut{};
@@ -2574,6 +2567,8 @@ struct ArenaFightImpl {
         foe.callFrom = t0;
         foe.cooldown[move] = def.enemies[i].moves[move].cooldown;
         foe.readRight = false;
+        foe.lungeLatched = false;
+        foe.lungeEnding = 0;
         foe.breakTimed = timed;
         if (timed) {
             foe.breakAttack = def.enemies[i].moves[move].attack;
@@ -3638,8 +3633,8 @@ struct ArenaFightImpl {
     }
 
     // Enemy i's step on its kind's lunge window (ArenaLungeCurve) over the move's clock a0..a1 (state time).
-    Vec2 enemyLunge(std::size_t i, const ArenaAttack& a, float a0, float a1) const {
-        const Enemy& foe = foes[i];
+    Vec2 enemyLunge(std::size_t i, const ArenaAttack& a, float a0, float a1) {
+        Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
         const float held = foe.unseen ? kArenaUnseenWindup : 0.f;
         const float c0 = std::max(0.f, a0 - held);
@@ -3648,18 +3643,23 @@ struct ArenaFightImpl {
         const float before = arenaLungeDistance(k.lungeCurve, c0);
         const float planted = arenaLungeDistance(k.lungeCurve, std::min(c1, std::max(c0, launch))) - before;
         const float step = arenaLungeDistance(k.lungeCurve, c1) - before;
-        if (!(step > 0.f)) return Vec2{};
+        // Latched (first tooth contact in the air): its body travel stays frozen to the move's end, whatever the
+        // lead does; the ending is the Hit's (ArenaEnemyOut::lungeEnding).
+        if (foe.lungeLatched || !(step > 0.f)) return Vec2{};
         float carried = step;
-        if (k.lungeToContact && c1 > launch) {
-            // From the launch on, its closing on the lead stops at first tooth contact; the startup's share runs whole.
+        if (k.lungeToContact && c1 > launch && foe.lungeEnding == 0) {
+            // In the air (the launch until the ending is decided) its closing on the lead stops at first tooth
+            // contact; the startup's share runs whole, and so does the landing (the whiff's: the lead yields).
             const Vec2 to = arenaSub(pl.pos, foe.pos);
             const float apart = std::sqrt(arenaDot(to, to));
             const float toward = apart > kArenaEps ? std::max(0.f, arenaDot(foe.facing, to) / apart) : 0.f;
             const float contact = std::max(0.f, fi.bodyRadius - k.contactInset) + arenaBodyReach(k);
             const float room = std::max(0.f, apart - contact);
             const float free = step - planted;
-            if (toward > kArenaEps && (step * toward) > room)
+            if (toward > kArenaEps && (step * toward) > room) {
                 carried = planted + std::clamp(room / toward - planted, 0.f, free);
+                foe.lungeLatched = true; // contact in the air latches it
+            }
         }
         return arenaScaled(foe.facing, carried / dt);
     }
@@ -3671,13 +3671,14 @@ struct ArenaFightImpl {
         const float a1 = a0 + dt;
         if (a0 < a.startup && !foe.facingHeld)
             foe.facing = arenaTurn(foe.facing, dir, a.tracking * (std::min(a1, a.startup) - a0));
-        if (!foe.hitPlayer && pl.hp > 0 && a1 > a.startup && a0 < a.startup + a.active &&
+        // A lunge-curve move's ending, once decided (lungeEnding), closes its active: no hit after it.
+        if (!foe.hitPlayer && pl.hp > 0 && a1 > a.startup && a0 < a.startup + a.active && foe.lungeEnding == 0 &&
             arenaReaches(foe.pos, foe.facing, a, pl.pos, fi.bodyRadius)) {
             enemyStrike(i);
             if (foe.brain != ArenaBrain::Attack) return Vec2{}; // parried: the attack is over
         }
         // The ally, tested as the player is (it never guards or rolls).
-        if (!foe.hitAlly && allyUp() && a1 > a.startup && a0 < a.startup + a.active &&
+        if (!foe.hitAlly && allyUp() && a1 > a.startup && a0 < a.startup + a.active && foe.lungeEnding == 0 &&
             arenaReaches(foe.pos, foe.facing, a, fight.allyPos_, fight.allyRadius_)) {
             enemyStrikeAlly(i);
             if (!alive(i)) return Vec2{}; // its own blow's table share killed it
@@ -3712,6 +3713,9 @@ struct ArenaFightImpl {
             }
         }
         foe.stateTime = a1;
+        if (kind.lungeMove >= 0 && foe.move == static_cast<std::uint8_t>(kind.lungeMove) && kind.lungeCurve.count > 0 &&
+            foe.lungeEnding == 0 && a1 >= span - kArenaEps)
+            foe.lungeEnding = foe.lungeLatched ? 2 : 1; // final at the active's end (f36)
         if (foe.readRight && a1 >= span) { // the read move is spent: the partner's counter
             readCounter(i);
             if (foe.brain != ArenaBrain::Attack) return Vec2{}; // it staggered or died
@@ -3733,10 +3737,10 @@ struct ArenaFightImpl {
         if (distance <= k.runRange) tier = k.walkSpeed;
         else if (k.trotSpeed > 0.f && distance <= k.trotRange) tier = k.trotSpeed;
         float speed = std::min(tier, std::fabs(error) / dt);
-        // PROTOTYPE hand-off cap: when the walk from here to the goal crosses or ends in the lunge move's band (the
-        // lunge can start on the way, whichever move the goal is for), its speed either way is at most the curve's
-        // first speed plus its distance outside that band over 0.3 s (v0 inside the band).
-        if (gProtoCap && k.lungeMove >= 0 && k.lungeMove < k.moveCount && k.lungeCurve.count > 0) {
+        // Hand-off cap: when the walk from here to the goal crosses or ends in the lunge move's band (the lunge can
+        // start on the way, whichever move the goal is for), its speed either way is at most the curve's first speed
+        // plus its distance outside that band over 0.3 s (v0 inside the band), so the creep takes over at its speed.
+        if (k.lungeMove >= 0 && k.lungeMove < k.moveCount && k.lungeCurve.count > 0) {
             const ArenaEnemyMove& lm = k.moves[static_cast<std::size_t>(k.lungeMove)];
             if (std::min(distance, goal) <= lm.maxRange && std::max(distance, goal) >= lm.minRange) {
                 const float outside = std::max(0.f, std::max(distance - lm.maxRange, lm.minRange - distance));
@@ -5322,28 +5326,31 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     }
     // Overlapping bodies are pushed apart, half each; dead enemies don't block. No push apart with the player on the
     // frame the performer is placed.
+    // A lunge-curve pup with a paw planted (arenaPlanted) is held: the push moves the other body only.
     ArenaHeld held;
-    bool planted = false;
-    if (gProtoYield) {
-        // PROTOTYPE: a lunge-curve kind with a paw planted (its curve's move, clock <= startup or > startup + active)
-        // is held; the push moves the other body only.
-        for (std::size_t i = 0; i < n; ++i) {
-            const ArenaEnemyOut& eo = out.enemies[i];
-            const ArenaEnemyKind& k = fight.def().enemies[i];
-            if (eo.brain != ArenaBrain::Attack || k.lungeMove < 0 || eo.move != static_cast<std::uint8_t>(k.lungeMove))
-                continue;
-            const ArenaAttack& a = k.moves[eo.move].attack;
-            const float clock = eo.stateTime - (eo.unseen ? kArenaUnseenWindup : 0.f);
-            if (clock <= a.startup || clock > a.startup + a.active) held.enemies[i] = planted = true;
-        }
-    }
-    if (!planted)
-        for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaPushApart(fight, bodies, !placed);
+    arenaPlanted(fight, held);
+    for (int pass = 0; pass < kArenaPushPasses; ++pass) arenaSettle(fight, bodies, !placed, held, 0.f);
     // Everything stays inside the ring; a body the ring moved can't take its share of a push, so the settle gives it
     // to the other one, and the ring holds them again, until no contact is deeper than 0.1 mm (arenaSettleBodies).
     const ArenaRing& ring = fight.ring();
     arenaHoldBodies(fight, bodies, held, arenaRingHold, &ring);
     if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring).settled) ++bodies.settleCaps;
+}
+
+bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held) {
+    const ArenaOutput& out = fight.output();
+    bool any = false;
+    for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+        const ArenaEnemyOut& eo = out.enemies[i];
+        const ArenaEnemyKind& k = fight.def().enemies[i];
+        if (eo.brain != ArenaBrain::Attack || k.lungeMove < 0 || k.lungeCurve.count == 0 ||
+            eo.move != static_cast<std::uint8_t>(k.lungeMove))
+            continue;
+        const ArenaAttack& a = k.moves[eo.move].attack;
+        const float clock = eo.stateTime - (eo.unseen ? kArenaUnseenWindup : 0.f);
+        if (eo.lungeLatched || eo.lungeEnding != 0 || clock <= a.startup) held.enemies[i] = any = true;
+    }
+    return any;
 }
 
 bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& held, ArenaHoldFn hold, const void* wall) {

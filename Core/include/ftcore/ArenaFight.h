@@ -642,8 +642,8 @@ FTCORE_API const char* arenaHitPartName(ArenaHitPart p); // "auto", "head", ... 
 // The whole curve is scaled by lunge / its integral, so the move's `lunge` stays its one distance knob, and the window
 // may run past startup + active (a landing skid in the recovery). With no knots a move keeps the linear spread (lunge
 // over startup + active), as does a boss's break move (its clock is not the clip's).
-//   - lungeToContact kind: only the lead stops it, and only from the startup's end on (the active part, where no paw is
-//     planted, and the recovery's skid); the startup's frames always carry their travel.
+//   - lungeToContact kind: only the lead stops it, and only in the air (the startup's end until the ending is
+//     decided, ArenaEnemyOut::lungeEnding); the startup's frames and the landing always carry their travel.
 inline constexpr std::size_t kMaxArenaLungeKnots = 8;
 struct ArenaLungeCurve {
     std::array<float, kMaxArenaLungeKnots> t{}; // s on the move's clock, not decreasing
@@ -656,11 +656,6 @@ struct ArenaLungeCurve {
 FTCORE_API float arenaLungeDistance(const ArenaLungeCurve& c, float t);
 // lunge / the unscaled integral (1 when that is 0).
 FTCORE_API float arenaLungeScale(const ArenaLungeCurve& c, float lunge);
-// PROTOTYPE measure switches (Pounce round 2), both 0 (off) by default; a test or measure sets them and puts them
-// back. handoffCap: a walk that crosses or ends in the lunge move's band goes at most the curve's first speed plus
-// its distance outside that band over 0.3 s. plantedYield: the pup holds while a paw is planted (the startup and
-// the recovery) and skips the push-apart.
-FTCORE_API void arenaProtoSet(int handoffCap, int plantedYield);
 
 // One of an enemy's moves: an attack plus when the enemy picks it.
 struct ArenaEnemyMove {
@@ -1056,6 +1051,12 @@ struct ArenaEnemyOut {
                                       // windup kArenaUnseenWindup longer); the HUD marks it
     std::uint8_t aim = 0;             // Attack: whom its string aims at: 1 the lead, 2 the partner (a boss only,
                                       // ArenaFight::setPartner); 0 when not attacking. The HUD's "whom this windup aims at"
+    // Attack in a lunge-curve move (ArenaEnemyKind::lungeCurve) only, else false / 0:
+    bool lungeLatched = false;        // its first tooth contact in the air (launch to the active's end) has come: its
+                                      // body travel stays frozen to the move's end, and it holds in the push
+    std::uint8_t lungeEnding = 0;     // 0 undecided; final at the active's end: 2 the Hit ending (latched: the fores
+                                      // land planted), 1 the whiff (the curve's whole landing travel). Once set, the
+                                      // move neither hits nor latches
 };
 
 // Whether a gait-mixed figure (BeatClips::gaitMix, gaitMixStep) shows its locomotion: always while it approaches or
@@ -1971,6 +1972,8 @@ private:
         bool breakFresh = false;            // a blow added since the last break step: its quiet starts there
         bool breakTell = false;
         bool breakTimed = false;            // this move is the break: breakAttack's windup and recovery
+        bool lungeLatched = false;          // lunge-curve move: first tooth contact in the air came (ArenaEnemyOut)
+        std::uint8_t lungeEnding = 0;       // lunge-curve move: 0 undecided, 1 whiff, 2 Hit (ArenaEnemyOut)
         ArenaAttack breakAttack;            // the break move's attack with them
         Vec2 stepWay{-1.f, 0.f};            // StepBack: the unit way it moves, fixed as it begins (back or to a side)
         float handedAt = -1.0e9f;           // fight time it was last handed a token by a holder out of sight
@@ -2118,6 +2121,14 @@ struct ArenaHeld {
         return player;
     }
 };
+
+// Marks in `held` each enemy in a lunge-curve move (ArenaEnemyKind::lungeCurve) with a paw planted: its clock at or
+// before the startup's end, latched, or its ending decided (ArenaEnemyOut::lungeLatched, lungeEnding). The push
+// gives such a pup's share to the other body (the lead yields); where a wall holds the lead too, both are held and
+// the settle splits each overlap half each until it is gone, so the pup gives only what the lead can't. Marks
+// already set stay.
+// True when it marked one. Deterministic; no allocation.
+FTCORE_API bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held);
 
 // After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more
 // pass gives the whole of each overlap deeper than `floor` to the body the wall does not hold (both held, or

@@ -329,9 +329,12 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
     // The walls hold every body; where that moved one, a wall can press two bodies together: push them apart once
     // more, then hold them again. A body the walls hold can't take its share of a push: the settle gives it to the
     // other one, then the walls hold them again, until no contact is deeper than 0.1 mm (arenaSettleBodies).
-    ArenaHeld held;
+    // A planted pup holds in that push (the lead yields, arenaPlanted); with none planted it is half each.
+    ArenaHeld planted;
+    arenaPlanted(fight, planted);
+    ArenaHeld held = planted;
     if (arenaHoldBodies(fight, bodies, held, zoneHold, &zone)) {
-        arenaPushApart(fight, bodies, true);
+        arenaSettle(fight, bodies, true, planted, 0.f);
         arenaHoldBodies(fight, bodies, held, zoneHold, &zone);
     }
     if (!arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone).settled) ++bodies.settleCaps;
