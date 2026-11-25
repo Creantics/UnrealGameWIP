@@ -3719,13 +3719,54 @@ struct ArenaFightImpl {
         return arenaScaled(foe.facing, carried / dt);
     }
 
+    // Whether an attacking enemy stands planted or pinned at move clock `at` (arenaPlanted's rule: a holdsGround
+    // move whole; a lunge-curve move in its startup, latched, or once its ending is decided).
+    bool plantedNow(std::size_t i, float at) const {
+        const Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        if (foe.brain != ArenaBrain::Attack || foe.move >= k.moveCount) return false;
+        if (k.moves[foe.move].holdsGround) return true;
+        if (k.lungeMove < 0 || k.lungeCurve.count == 0 || foe.move != static_cast<std::uint8_t>(k.lungeMove))
+            return false;
+        const float clock = at - (foe.unseen ? kArenaUnseenWindup : 0.f);
+        return foe.lungeLatched || foe.lungeEnding != 0 || clock <= k.moves[foe.move].attack.startup;
+    }
+
+    // A planted enemy's turn to `want`, stopped where its body (a stadium, arenaBodySpan) would first come closer to
+    // the lead than contact (the push's least distance, ruling 6681 item 1): it stands its ground, so it may not
+    // sweep its surface into a lead that stands or presses at contact. A body already inside contact may not close
+    // further. The angle by bisection, 24 halvings (well under 1e-6 rad).
+    Vec2 turnShortOfLead(std::size_t i, Vec2 want) const {
+        const Enemy& foe = foes[i];
+        const ArenaEnemyKind& k = def.enemies[i];
+        const float span = arenaBodySpan(k);
+        const float least = std::max(0.f, fi.bodyRadius - k.contactInset) + k.bodyRadius;
+        auto gap = [&](Vec2 facing) {
+            Vec2 onLead{}, onBody{};
+            arenaClosestPoints(pl.pos, Vec2{1.f, 0.f}, 0.f, foe.pos, facing, span, onLead, onBody);
+            return arenaLength(arenaSub(pl.pos, onBody));
+        };
+        const float keep = std::min(least, gap(foe.facing));
+        if (gap(want) >= keep) return want;
+        const float angle = std::atan2(arenaCross(foe.facing, want), arenaDot(foe.facing, want));
+        float lo = 0.f, hi = 1.f;
+        for (int halving = 0; halving < 24; ++halving) {
+            const float mid = 0.5f * (lo + hi);
+            if (gap(arenaUnit(arenaRotate(foe.facing, angle * mid), foe.facing)) >= keep) lo = mid;
+            else hi = mid;
+        }
+        return arenaUnit(arenaRotate(foe.facing, angle * lo), foe.facing);
+    }
+
     Vec2 enemyAttack(std::size_t i, Vec2 dir) {
         Enemy& foe = foes[i];
         const ArenaAttack& a = fight.enemyAttackNow(i);
         const float a0 = foe.stateTime;
         const float a1 = a0 + dt;
-        if (a0 < a.startup && !foe.facingHeld)
-            foe.facing = arenaTurn(foe.facing, dir, a.tracking * (std::min(a1, a.startup) - a0));
+        if (a0 < a.startup && !foe.facingHeld) {
+            const Vec2 want = arenaTurn(foe.facing, dir, a.tracking * (std::min(a1, a.startup) - a0));
+            foe.facing = plantedNow(i, a0) ? turnShortOfLead(i, want) : want;
+        }
         // A lunge-curve move's ending, once decided (lungeEnding), closes its active: no hit after it.
         if (!foe.hitPlayer && pl.hp > 0 && a1 > a.startup && a0 < a.startup + a.active && foe.lungeEnding == 0 &&
             arenaReaches(foe.pos, foe.facing, a, pl.pos, fi.bodyRadius)) {

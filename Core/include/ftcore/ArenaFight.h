@@ -425,7 +425,8 @@ struct ArenaAttack {
     float poiseDamage = 10.f;
     float guardDamage = 15.f; // stamina a guard that blocks it loses
     float lunge = 0.f;        // metres the attacker moves forward over startup + active
-    float tracking = 3.f;     // rad/s the attacker may still turn during startup
+    float tracking = 3.f;     // rad/s the attacker may still turn during startup; an enemy planted then (arenaPlanted)
+                              // stops turning where its body would first come inside contact with the lead (6681)
     float armor = 0.f;        // 0..1: share of incoming poise damage ignored during startup + active
     float stamina = 0.f;      // the player's cost; enemies have no stamina
     float cancel = 0.6f;      // the player's: share of recovery after which another action may start
@@ -672,6 +673,7 @@ struct ArenaEnemyMove {
     bool hitsAir = true;
     // The enemy holds its ground through this move (arena.json "holdsGround"; default false): a body pressing into it
     // is stopped at contact and slides along it, and it is not pushed (arenaPlanted's pinned mark; ruling 6365 H).
+    // Its startup turn (tracking) stops short of sweeping its body into a lead at contact (ruling 6681 item 1).
     bool holdsGround = false;
     ArenaTell tell = ArenaTell::Strike; // its Read card's word; arena.json names a different one per move
     // Where it lands on a lead's body (arena.json "hitPart"; Auto when left out). Presentation only.

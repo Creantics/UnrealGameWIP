@@ -11213,7 +11213,7 @@ TEST_CASE("arena data: the maw_pup's pounce lunges to its jaws' reach and starts
     }
 }
 
-TEST_CASE("arena maw_pup: the pounce lands at tooth contact, never past it, and the idle lead is not shoved") {
+TEST_CASE("arena maw_pup: the pounce lands at tooth contact; an idle lead moves only by the startup overrun") {
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     const ArenaAttack& a = shipped.moves[1].attack;
@@ -11234,6 +11234,7 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact, never past it, and 
             rig.put(0, 11.f, 0.f);
             float leastApart = 100.f, leadMoved = 0.f, atHit = -1.f, atStart = -1.f, arrive = -1.f, moveTime = 0.f;
             float aimed = -1.f; // the clock the curve first brings the teeth to the lead, read on the move's first tick
+            float shoveAt = -1.f;
             int move = -1, left = -1;
             for (int i = 0; i < 2400 && left != 0; ++i) {
                 rig.tick();
@@ -11248,6 +11249,17 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact, never past it, and 
                 // The latch tick strikes and its leap lands in the same step: read the gap after it.
                 if (atHit < 0.f && rig.count(ArenaEventType::Hit) == 1)
                     atHit = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
+                // Report (6681 item 2): each shove of the idle lead, its size and speed, the Pounce's clock as it
+                // began (its startup's crouch, creep, stop and take-off; the leap from 0.8 s) and whether it bit.
+                const ArenaPush& push = rig.bodies.push;
+                const ArenaEnemyOut& eo = rig.out().enemies[0];
+                if (push.began) shoveAt = eo.brain == ArenaBrain::Attack ? eo.stateTime : -1.f;
+                if (push.ended)
+                    MESSAGE(std::string(lead) << " circle " << circle << ": shove " << push.count << " "
+                                              << push.distance * 1000.f << " mm, peak " << push.peakSpeed << " m/s, "
+                                              << push.duration << " s, began at Pounce clock " << shoveAt
+                                              << " s (startup " << a.startup << "), hit "
+                                              << std::string(rig.count(ArenaEventType::Hit) > 0 ? "yes" : "no"));
                 if (move >= 0) {
                     moveTime += kDt;
                     if (arrive < 0.f && distanceOf(rig.bodies.enemies[0], rig.bodies.player) <= contact + 0.01f)
@@ -11273,6 +11285,9 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact, never past it, and 
                 CHECK(leadMoved == doctest::Approx(overrun).epsilon(0.02));
             else
                 CHECK(leadMoved <= 1e-3f);
+            MESSAGE(std::string(lead) << " circle " << circle << ": shoves " << rig.bodies.push.count << ", lead moved "
+                                      << leadMoved * 1000.f << " mm, overrun " << overrun * 1000.f << " mm, hit at "
+                                      << atHit << " m apart");
             // The jaws reach the lead on the clock the curve aims at (lungeContactAt, read as the move starts), within
             // a tick: not before the curve brings them there, not after.
             // A pup that overruns reaches the lead inside the startup's share, before the clock its curve aims at.
@@ -13222,6 +13237,9 @@ struct NipPress {
     float leadPeak = 0.f;     // the lead's fastest step over the Nip ticks, m/s (its walk, or faster where shoved)
     int bothHeld = 0;         // Nip ticks with another pup held too (a planted Pounce)
     float pupOverlap = 0.f;   // deepest two pups got into each other on any tick
+    int peakRunTicks = 0;     // the run of Nip ticks round the lead's peak step at over half its speed (6681 item 3)
+    float peakRunMm = 0.f;    // the lead's travel over that run, mm
+    float peakStepMm = 0.f;   // the lead's travel on the peak tick, mm
 };
 
 // Runs `rig` `ticks` ticks on arenaStep, the lead pressing at pup 0 from the first tick (its stick on the line to the
@@ -13230,6 +13248,7 @@ struct NipPress {
 NipPress nipPress(Rig& rig, float slant, int ticks, const ArenaZone* zone = nullptr) {
     NipPress r;
     const ArenaDef& def = rig.def;
+    std::vector<float> steps; // the lead's step on each Nip tick, m
     for (int i = 0; i < ticks; ++i) {
         rig.in = ArenaInput{};
         const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y - rig.bodies.player.y};
@@ -13274,6 +13293,17 @@ NipPress nipPress(Rig& rig, float slant, int ticks, const ArenaZone* zone = null
         r.bothHeld += heldCount >= 2;
         r.leadSlid += distanceOf(before.player, rig.bodies.player);
         r.leadPeak = std::max(r.leadPeak, distanceOf(before.player, rig.bodies.player) / kDt);
+        steps.push_back(distanceOf(before.player, rig.bodies.player));
+    }
+    if (!steps.empty()) {
+        const std::size_t top = static_cast<std::size_t>(std::max_element(steps.begin(), steps.end()) - steps.begin());
+        const float half = 0.5f * steps[top];
+        std::size_t a = top, b = top;
+        while (a > 0 && steps[a - 1] > half) --a;
+        while (b + 1 < steps.size() && steps[b + 1] > half) ++b;
+        r.peakRunTicks = static_cast<int>(b - a + 1);
+        for (std::size_t k = a; k <= b; ++k) r.peakRunMm += steps[k] * 1000.f;
+        r.peakStepMm = steps[top] * 1000.f;
     }
     return r;
 }
@@ -13282,7 +13312,9 @@ void nipReport(const std::string& name, const NipPress& r) {
     MESSAGE(name << ": " << r.nipTicks << " Nip ticks, pup travel " << r.travel * 1000.f << " mm (carried "
                  << r.carried * 1000.f << " mm), worst overlap " << r.worstOverlap * 1000.f << " mm, lead slid "
                  << r.leadSlid * 1000.f << " mm (peak " << r.leadPeak << " m/s), " << r.pounces << " pounces, "
-                 << r.bothHeld << " ticks two held, pup-pup overlap " << r.pupOverlap * 1000.f << " mm");
+                 << r.bothHeld << " ticks two held, pup-pup overlap " << r.pupOverlap * 1000.f << " mm; peak step "
+                 << r.peakStepMm << " mm, its run over half speed " << r.peakRunTicks << " frames, " << r.peakRunMm
+                 << " mm");
 }
 } // namespace
 
@@ -13377,7 +13409,9 @@ TEST_CASE("pup Nip under press-in: the pup holds, the lead stops at contact (rul
 
 // The lead walks in until the pup Nips; through the Nip it keeps pressing or stands. A Nip that does not turn
 // (tracking 0) leaves its pinned pup still, so nothing it does may shove the lead: no record on any Nip tick.
-TEST_CASE("pup Nip: a still pinned pup that does not turn raises no shove, the lead pressing in or idle") {
+// It covers the pin alone, with the Nip's turn taken out: not the shipped Nip (tracking 5), whose turn the
+// 6681 doctest below ("pup Nip, shipped tracking") covers.
+TEST_CASE("pup Nip, tracking 0 (not the shipped Nip): a pinned pup that does not turn raises no shove") {
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     for (const char* kit : {"devin", "duy", "third"}) {
@@ -13411,6 +13445,90 @@ TEST_CASE("pup Nip: a still pinned pup that does not turn raises no shove, the l
                                          << nips << " Nip ticks, shoves in the Nip " << shovesInNip);
                 REQUIRE(nips > 0);
                 CHECK(shovesInNip == 0u);
+            }
+        }
+    }
+}
+
+// Ruling 6681 item 1: the shipped Nip (tracking 5) turns its pinned pup in startup, but the turn stops where the
+// pup's surface would come inside contact with the lead. The lead walks in until the Nip begins; on that tick the pup
+// is turned 0 or 45 degrees either side about its nose's end (the lead's gap to it kept), so the Nip's turn sweeps
+// back at a lead at contact; the lead then stands or keeps pressing in. No shove on any tick (the Nip only: no
+// Pounce). Reported per case: how far the aim is off the lead at the Nip's active frame, and whether the bite lands.
+TEST_CASE("pup Nip, shipped tracking: the pinned pup's turn stops at contact, no shove at 0 and 45 degrees (6681)") {
+    constexpr float kQuarter = 0.7853982f; // 45 degrees
+    constexpr float kDegrees = 57.29578f;
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    REQUIRE(shipped.moves[0].holdsGround);
+    REQUIRE(shipped.moves[0].attack.tracking == doctest::Approx(5.f));
+    const float span = arenaBodySpan(shipped);
+    const float startup = shipped.moves[0].attack.startup;
+    for (const char* kit : {"devin", "duy", "third"}) {
+        const ArenaFighter& fi = t.fighter(kit);
+        const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+        for (const float bearing : {0.f, kQuarter, -kQuarter}) {
+            for (const float room : {0.1f, 1.05f}) {
+                for (const bool pressing : {false, true}) {
+                    CAPTURE(std::string(kit));
+                    CAPTURE(bearing);
+                    CAPTURE(room);
+                    CAPTURE(pressing);
+                    Rig rig(fi, {shipped});
+                    rig.put(0, contact + room, 0.f);
+                    rig.fight.setEnemyMoveMask(0, 1u); // the Nip only
+                    int nipTicks = 0, hits = 0, firstHits = 0;
+                    bool turned = false, firstOver = false;
+                    float offAtActive = -1.f;
+                    for (int i = 0; i < 400; ++i) {
+                        const ArenaEnemyOut& was = rig.out().enemies[0];
+                        const bool nipped = was.brain == ArenaBrain::Attack && was.move == 0;
+                        const float wasTime = was.stateTime;
+                        rig.in = ArenaInput{};
+                        if (pressing || !nipped) {
+                            const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x,
+                                          rig.bodies.enemies[0].y - rig.bodies.player.y};
+                            const float len = std::max(1e-6f, std::hypot(to.x, to.y));
+                            rig.in.move = Vec2{to.x / len, to.y / len};
+                        }
+                        const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+                        for (const ArenaEvent& ev : o.events)
+                            hits += ev.type == ArenaEventType::Hit && ev.source == 0 && ev.target == kArenaPlayer;
+                        const ArenaEnemyOut& eo = o.enemies[0];
+                        const bool nipping = eo.brain == ArenaBrain::Attack && eo.move == 0;
+                        firstOver = firstOver || (turned && !nipping);
+                        if (!firstOver) firstHits = hits; // the turned Nip's own bites
+                        if (nipping && offAtActive < 0.f && eo.stateTime > startup && wasTime <= startup) {
+                            const Vec2 to{rig.bodies.player.x - rig.bodies.enemies[0].x,
+                                          rig.bodies.player.y - rig.bodies.enemies[0].y};
+                            const float len = std::max(1e-6f, std::hypot(to.x, to.y));
+                            const float c = std::clamp((to.x * eo.facing.x + to.y * eo.facing.y) / len, -1.f, 1.f);
+                            offAtActive = std::acos(c) * kDegrees;
+                        }
+                        arenaStep(rig.fight, rig.bodies, kDt);
+                        nipTicks += nipping;
+                        if (nipping && !turned) {
+                            // the first Nip tick: turn the pup `bearing` about its nose's end
+                            turned = true;
+                            const Vec2 f = eo.facing;
+                            const Vec2 g{f.x * std::cos(bearing) - f.y * std::sin(bearing),
+                                         f.x * std::sin(bearing) + f.y * std::cos(bearing)};
+                            const Vec2 c = rig.bodies.enemies[0];
+                            rig.put(0, c.x + (f.x - g.x) * span, c.y + (f.y - g.y) * span);
+                            rig.fight.setEnemyFacing(0, g);
+                        }
+                    }
+                    MESSAGE(std::string(kit) << " bearing " << bearing * kDegrees << " room " << room
+                                             << std::string(pressing ? " pressing" : " standing") << ": " << nipTicks
+                                             << " Nip ticks, shoves " << rig.bodies.push.count << ", aim off the lead"
+                                             << " at the active frame " << offAtActive << " deg (arc "
+                                             << std::acos(shipped.moves[0].attack.arcCos) * kDegrees
+                                             << "), this Nip's hits "
+                                             << firstHits << " (all Nips " << hits << ")");
+                    REQUIRE(nipTicks > 0);
+                    CHECK(offAtActive >= 0.f);
+                    CHECK(rig.bodies.push.count == 0u);
+                }
             }
         }
     }
@@ -13557,4 +13675,48 @@ TEST_CASE("pup back-off: across the Nip's fade into the gait slot the body moves
     }
     MESSAGE("Nip fades " << nips << ", most body travel in one " << worst * 1000.f << " mm");
     REQUIRE(nips > 0);
+}
+
+// Ruling 6681 item 3 (report): a still lead with the shipped pup put 0.80 m off (centre to centre, the pick's
+// distance: between the Nip's band, to 0.76 m, and the Pounce's, from 0.85 m). The longest wait before a Nip or a
+// Pounce begins: from the fight's start, and from the end of one attack to the next one's start, over 20 s.
+TEST_CASE("pup at 0.80 m from a still lead: the longest wait before a Nip or a Pounce (report)") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    float longestFirst = 0.f, longestGap = 0.f;
+    for (const char* kit : {"devin", "duy", "third"}) {
+        for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+            CAPTURE(std::string(kit));
+            CAPTURE(seed);
+            Rig rig(t.fighter(kit), {shipped}, 1, ArenaRing{Vec2{0.f, 0.f}, 30.f}, seed);
+            rig.put(0, 0.80f, 0.f);
+            float clock = 0.f, first = -1.f, freeSince = 0.f, gap = 0.f;
+            int starts = 0, nips = 0, pounces = 0, gapMove = -1;
+            bool attacking = false;
+            for (int i = 0; i < 1200; ++i) {
+                rig.in = ArenaInput{};
+                const ArenaOutput& o = rig.tick();
+                arenaStep(rig.fight, rig.bodies, kDt);
+                clock += kDt;
+                for (const ArenaEvent& ev : o.events) {
+                    if (ev.type != ArenaEventType::AttackStarted || ev.source != 0) continue;
+                    ++starts;
+                    nips += ev.move == 0;
+                    pounces += ev.move == 1;
+                    if (first < 0.f) first = clock;
+                    if (clock - freeSince > gap) gap = clock - freeSince, gapMove = ev.move;
+                }
+                const bool now = o.enemies[0].brain == ArenaBrain::Attack;
+                if (attacking && !now) freeSince = clock;
+                attacking = now;
+            }
+            MESSAGE(std::string(kit) << " seed " << seed << ": first attack at " << first << " s, longest wait "
+                                     << gap << " s (before move " << gapMove << "), " << nips << " Nips, " << pounces
+                                     << " Pounces in 20 s");
+            REQUIRE(starts > 0);
+            longestFirst = std::max(longestFirst, first);
+            longestGap = std::max(longestGap, gap);
+        }
+    }
+    MESSAGE("longest first wait " << longestFirst << " s, longest wait from an attack's end " << longestGap << " s");
 }
