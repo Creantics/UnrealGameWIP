@@ -1,6 +1,7 @@
 #include "ftcore/ArenaCloseFrame.h"
 #include "ftcore/ArenaFight.h"
 #include "ftcore/ArenaLook.h" // the lock pick under each camera preset's view
+#include "ftcore/ArenaSpecial.h" // the zone guard: a special in the zone step
 #include "ftcore/CameraPreset.h"
 #include "ftcore/ArenaZone.h" // the host mirror fits the demo's zone
 #include "ftcore/AttackMove.h" // the host mirror walks and turns through attacks
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iomanip>
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
@@ -230,6 +232,45 @@ ArenaTable loadShipped() {
     ArenaTable t;
     std::string err;
     REQUIRE_MESSAGE(importArenaTable(text, t, &err), err);
+    return t;
+}
+
+// Variant A as data (ruling 6023, 11-25): the shipped table with the Pounce's lunge curve (mkA.py) and every hit
+// stop and parry stop moved to the nearest whole 60 Hz tick, through the real importer. 0.05 s and 0.1 s are whole
+// ticks already (3 and 6).
+std::size_t replaceAll(std::string& s, const std::string& from, const std::string& to) {
+    std::size_t n = 0;
+    for (std::size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()), ++n)
+        s.replace(at, from.size(), to);
+    return n;
+}
+
+ArenaTable loadA(std::string* textOut = nullptr) {
+    std::string text;
+    if (!ftcore_test::readProjectData("Battle/arena.json", text)) FAIL("Data/Battle/arena.json not found");
+    struct Swap {
+        const char* from;
+        const char* to;
+        std::size_t count;
+    };
+    const Swap swaps[] = {
+        {"\"hitStop\": 0.06,", "\"hitStop\": 0.06666666667,", 10},     // 3.6 ticks -> 4
+        {"\"hitStop\": 0.04,", "\"hitStop\": 0.03333333333,", 1},      // 2.4 -> 2
+        {"\"hitStop\": 0.12,", "\"hitStop\": 0.1166666667,", 1},       // 7.2 -> 7
+        {"\"parryStop\": 0.12,", "\"parryStop\": 0.1166666667,", 2},   // 7.2 -> 7
+        {"\"parryStop\": 0.16,", "\"parryStop\": 0.1666666667,", 1},   // 9.6 -> 10
+        {"\"active\": 0.2, \"recovery\": 0.8, \"range\": 0.37, \"arcCos\": 0.9, \"damage\": 9, \"poiseDamage\": 10, "
+         "\"guardDamage\": 10, \"lunge\": 1.3, \"tracking\": 3, \"minRange\": 0.76,",
+         "\"active\": 0.4, \"recovery\": 0.8, \"range\": 0.37, \"arcCos\": 0.9, \"damage\": 9, \"poiseDamage\": 10, "
+         "\"guardDamage\": 10, \"lunge\": 2.2, \"lungeSpeed\": [[0, 0.15], [0.6, 0.15], [0.63, 0], [0.7, 0], [0.8, 4], "
+         "[1.2, 4], [1.35, 0]], \"tracking\": 3, \"minRange\": 0.85,",
+         1}, // the Pounce (mkA.py)
+    };
+    for (const Swap& sw : swaps) REQUIRE_MESSAGE(replaceAll(text, sw.from, sw.to) == sw.count, std::string(sw.from));
+    ArenaTable t;
+    std::string err;
+    REQUIRE_MESSAGE(importArenaTable(text, t, &err), err);
+    if (textOut) *textOut = text;
     return t;
 }
 
@@ -12349,7 +12390,7 @@ float gridOff(float clip) {
 // `drive(tick, eo, rig)` sets the coming tick's input (cleared each tick).
 template <typename Drive>
 PounceGrid pounceGrid(const char* kit, float room, Drive drive) {
-    const ArenaTable t = loadShipped();
+    const ArenaTable t = loadA(); // variant A: its curve and its whole-tick stops
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
     const ArenaFighter& fi = t.fighter(kit);
     const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
@@ -12429,13 +12470,14 @@ TEST_CASE("pounce clock: on the 60 Hz grid through the push and the landing (whi
 TEST_CASE("pounce clock: a lead's blow in the startup or just before it shifts the clock by its hit stop's part tick") {
     // The pup struck in its startup (the light pressed at clock 0.2 s), then a light landing 4-30 ticks before the
     // Pounce's start (a pause carried in). The pup keeps the Pounce (poise). Its clock sits off the grid by the light's
-    // hitStop part tick: whole-tick stops (the first light, devin and third: 0.05 s) stay on it, duy's 0.06 s
-    // (3.6 ticks) leaves 0.4.
-    const ArenaTable t = loadShipped();
+    // hitStop part tick. On variant A every stop is whole ticks (duy's first light 0.06 s -> 4/60, ruling 6023), so
+    // the part tick is 0 for each lead; the shipped 0.06 s (3.6 ticks) left 0.4.
+    const ArenaTable t = loadA();
     const PounceGrid base = pounceGrid("devin", 3.f, [](int, const ArenaEnemyOut&, Rig&) {});
     REQUIRE(base.started);
     for (const char* kit : {"devin", "duy", "third"}) {
         const float off = gridOff(t.fighter(kit).light[0].hitStop);
+        CHECK(off < 4e-5f);
         bool pressed = false;
         const PounceGrid struck = pounceGrid(kit, 0.5f, [&pressed](int, const ArenaEnemyOut& eo, Rig& rig) {
             if (!pressed && eo.brain == ArenaBrain::Attack && eo.move == 1 && eo.stateTime >= 0.2f) {
@@ -12460,6 +12502,146 @@ TEST_CASE("pounce clock: a lead's blow in the startup or just before it shifts t
             CHECK(carried.pausedInWindows == 0);
             // the stop still running when the Pounce began, or ending in its start tick, carries the part tick in
             CHECK((std::fabs(carried.worstAll - off) < kOnGrid || carried.worstAll < kOnGrid));
+        }
+    }
+}
+
+// ---- variant A's hit stops on whole ticks (ruling 6023 item 2, 11-25) ----
+TEST_CASE("A: every hit stop and parry stop is whole 60 Hz ticks; the shipped table's are as they were") {
+    const ArenaTable a = loadA();
+    const ArenaTable s = loadShipped();
+    REQUIRE(a.fighterIds == s.fighterIds);
+    REQUIRE(a.enemyIds == s.enemyIds);
+    int rows = 0, moved = 0;
+    const auto row = [&rows, &moved](const std::string& name, float va, float vs) {
+        ++rows;
+        const double ticks = static_cast<double>(va) * 60.0;
+        const double off = std::fabs(ticks - std::round(ticks));
+        CHECK_MESSAGE(off < 4e-5, name << ": " << va << " s is " << ticks << " ticks");
+        if (va != vs) {
+            ++moved;
+            MESSAGE(name << ": " << std::setprecision(10) << vs << " s -> " << va << " s = " << std::round(ticks)
+                         << "/60, " << off << " tick off");
+        }
+    };
+    for (std::size_t k = 0; k < a.fighters.size(); ++k) {
+        const ArenaFighter& fa = a.fighters[k];
+        const ArenaFighter& fs = s.fighters[k];
+        const std::string id = a.fighterIds[k];
+        REQUIRE(fa.lightCount == fs.lightCount);
+        for (std::size_t i = 0; i < fa.lightCount; ++i)
+            row(id + " light " + std::to_string(i + 1), fa.light[i].hitStop, fs.light[i].hitStop);
+        row(id + " heavy", fa.heavy.hitStop, fs.heavy.hitStop);
+        row(id + " riposte", fa.riposte.hitStop, fs.riposte.hitStop);
+        row(id + " shot", fa.shot.hitStop, fs.shot.hitStop);
+        row(id + " jump light", fa.jumpLight.hitStop, fs.jumpLight.hitStop);
+        row(id + " parry stop", fa.parryStop, fs.parryStop);
+        CHECK(fa.shot.hitStopSelf == fs.shot.hitStopSelf);
+    }
+    for (std::size_t k = 0; k < a.enemies.size(); ++k)
+        for (std::size_t m = 0; m < a.enemies[k].moveCount; ++m)
+            row(a.enemyIds[k] + " move " + std::to_string(m), a.enemies[k].moves[m].attack.hitStop,
+                s.enemies[k].moves[m].attack.hitStop);
+    MESSAGE(rows << " stops, " << moved << " moved to whole ticks");
+    CHECK(moved > 0);
+}
+
+// ---- the offset table, measured: each lead blow, the chains and the parries, early and past 40 s ----
+namespace {
+struct StopGrid {
+    int hits = 0, parries = 0, foeStops = 0, leadStops = 0;
+    float worstFoe = 0.f, worstLead = 0.f, from = 0.f;
+};
+
+// The maw_pup (variant A's Pounce) 0.3 m outside contact; the pup held Down for `preroll` s first (the fight's clock
+// runs on, nothing else does). Then `drive(i, rig)` sets 360 ticks of input; each tick, the pup's clock (its state
+// time, less an unseen windup) and the lead's action time are read against the 60 Hz grid.
+template <typename Drive>
+StopGrid stopGrid(const ArenaTable& t, const char* kit, float preroll, Drive drive) {
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter(kit);
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    Rig rig(fi, {pounceKind(shipped, contact + 0.3f)});
+    rig.put(0, contact + 0.3f, 0.f);
+    if (preroll > 0.f) {
+        REQUIRE(rig.fight.holdEnemy(0, ArenaBrain::Down, preroll));
+        while (rig.fight.time() < preroll + 0.25f) {
+            rig.in = ArenaInput{};
+            rig.fight.tick(kDt, rig.in, rig.bodies);
+            arenaStep(rig.fight, rig.bodies, kDt);
+        }
+    }
+    StopGrid g;
+    g.from = rig.fight.time();
+    for (int i = 0; i < 360; ++i) {
+        rig.in = ArenaInput{};
+        drive(i, rig);
+        const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+        for (const ArenaEvent& e : o.events) {
+            if (e.type == ArenaEventType::Hit && e.source == kArenaPlayer && e.target == 0) ++g.hits;
+            if (e.type == ArenaEventType::Parried) ++g.parries;
+        }
+        arenaStep(rig.fight, rig.bodies, kDt);
+        const ArenaEnemyOut& eo = rig.out().enemies[0];
+        const bool unseen = eo.brain == ArenaBrain::Attack && eo.unseen;
+        g.worstFoe = std::max(g.worstFoe, gridOff(eo.stateTime - (unseen ? kArenaUnseenWindup : 0.f)));
+        g.worstLead = std::max(g.worstLead, gridOff(rig.out().player.actionTime));
+        if (eo.stopLeft > 0.f) ++g.foeStops;
+        if (rig.out().player.stopLeft > 0.f) ++g.leadStops;
+    }
+    return g;
+}
+// The lead guards on the autopilot's call; once the pup is Open (parried), the light: the riposte.
+void parryThenRiposte(Rig& rig) {
+    if (rig.out().enemies[0].brain == ArenaBrain::Open) rig.in.light = true;
+    else rig.in.guard = rig.fight.autopilot().guard;
+}
+} // namespace
+
+TEST_CASE("A: the pup's clock and the lead's stay on the 60 Hz grid through every blow, chain and parry") {
+    const ArenaTable a = loadA();
+    const ArenaTable s = loadShipped();
+    using DriveFn = void (*)(int, Rig&);
+    struct Path {
+        const char* name;
+        const char* kit;
+        DriveFn drive;
+    };
+    const Path paths[] = {
+        {"devin light 1", "devin", [](int i, Rig& r) { r.in.light = i == 0; }},
+        {"duy light 1", "duy", [](int i, Rig& r) { r.in.light = i == 0; }},
+        {"third light 1", "third", [](int i, Rig& r) { r.in.light = i == 0; }},
+        {"devin chain", "devin", [](int i, Rig& r) { r.in.light = i < 150 && i % 6 == 0; }},
+        {"duy chain", "duy", [](int i, Rig& r) { r.in.light = i < 150 && i % 6 == 0; }},
+        {"third chain", "third", [](int i, Rig& r) { r.in.light = i < 150 && i % 6 == 0; }},
+        {"devin heavy", "devin", [](int i, Rig& r) { r.in.heavy = i == 0; }},
+        {"duy heavy", "duy", [](int i, Rig& r) { r.in.heavy = i == 0; }},
+        {"third heavy", "third", [](int i, Rig& r) { r.in.heavy = i == 0; }},
+        {"devin jump light", "devin", [](int i, Rig& r) { r.in.jump = i == 0, r.in.light = i == 8; }},
+        {"duy jump light", "duy", [](int i, Rig& r) { r.in.jump = i == 0, r.in.light = i == 8; }},
+        {"third jump light", "third", [](int i, Rig& r) { r.in.jump = i == 0, r.in.light = i == 8; }},
+        {"duy shot", "duy", [](int i, Rig& r) { r.in.aim = true, r.in.light = i == 6; }},
+        {"devin parry, riposte", "devin", [](int, Rig& r) { parryThenRiposte(r); }},
+        {"duy parry, riposte", "duy", [](int, Rig& r) { parryThenRiposte(r); }},
+        {"third parry, riposte", "third", [](int, Rig& r) { parryThenRiposte(r); }},
+    };
+    for (const Path& p : paths) {
+        for (const float preroll : {0.f, 45.f}) {
+            const StopGrid ga = stopGrid(a, p.kit, preroll, p.drive);
+            const StopGrid gs = stopGrid(s, p.kit, preroll, p.drive);
+            MESSAGE(std::string(p.name) << " from " << ga.from << " s: A pup " << ga.worstFoe << " lead "
+                           << ga.worstLead << " tick (hits " << ga.hits << ", parries " << ga.parries
+                           << ", paused ticks "
+                           << ga.foeStops << "/" << ga.leadStops << "); shipped pup " << gs.worstFoe << " lead "
+                           << gs.worstLead << " (hits " << gs.hits << ", parries " << gs.parries << ")");
+            const std::string path = p.name;
+            CAPTURE(path);
+            CAPTURE(preroll);
+            CHECK(ga.hits + ga.parries > 0);
+            // The stop values are within 4e-5 tick (above); a clock read here carries its own float sum as well
+            // (some 1e-4 tick over a few seconds, one float step 2.3e-4 tick past 32 s): the grid test's bound.
+            CHECK(ga.worstFoe < kOnGrid);
+            CHECK(ga.worstLead < kOnGrid);
         }
     }
 }
@@ -12554,7 +12736,7 @@ TEST_CASE("pounce contact clock: ArenaEnemyOut::lungeContactAt is the clock the 
             // The lead stands: the clock holds still through the startup while the pup creeps in.
             Rig rig(fi, {pup});
             rig.put(0, contact + room, 0.f);
-            float first = 0.f, latchClock = -1.f, prevLeft = 1e9f, pressLeft = 0.f, pressPrev = 0.f;
+            float first = 0.f, latchClock = -1.f, prevLeft = 1e9f, pressLeft = 0.f, pressPrev = 0.f, wander = 0.f;
             int pressTick = -1, ticksSet = 0, parryTick = -1;
             bool pressRight = false, zeroAfter = true, latched = false;
             for (int i = 0; i < 2400; ++i) {
@@ -12565,8 +12747,9 @@ TEST_CASE("pounce contact clock: ArenaEnemyOut::lungeContactAt is the clock the 
                     pressTick = i;
                     const float left = before.lungeContactAt - before.stateTime;
                     pressLeft = left, pressPrev = prevLeft;
-                    // The press comes on the first tick whose contact clock is half a window away or less.
-                    pressRight = left <= 0.5f * fi.parryWindow + 1e-4f && prevLeft > 0.5f * fi.parryWindow - 1e-4f;
+                    // The press comes on the first tick whose contact clock is half a window away or less: a
+                    // contact exactly half a window away is pressed on (devin at room 0.1: 6 ticks, 0.8f - 0.7f).
+                    pressRight = left <= 0.5f * fi.parryWindow + 1e-5f && prevLeft > 0.5f * fi.parryWindow + 1e-5f;
                 }
                 if (before.lungeContactAt > 0.f) prevLeft = before.lungeContactAt - before.stateTime;
                 const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
@@ -12580,14 +12763,15 @@ TEST_CASE("pounce contact clock: ArenaEnemyOut::lungeContactAt is the clock the 
                 }
                 if (eo.lungeContactAt > 0.f) {
                     if (ticksSet++ == 0) first = eo.lungeContactAt;
-                    // The room is read from the bodies before this tick's step against the clock after it: the
-                    // contact clock wanders by up to a tick over the startup.
-                    CHECK(std::fabs(eo.lungeContactAt - first) <= kDt + 1e-4f);
+                    // The room is read from the bodies as the host will have stepped them (velocity x dt): the
+                    // contact clock holds still over the startup.
+                    wander = std::max(wander, std::fabs(eo.lungeContactAt - first));
                 }
                 if (latched || eo.lungeEnding != 0) zeroAfter = zeroAfter && eo.lungeContactAt == 0.f;
                 if (eo.lungeLatched && !latched) latched = true, latchClock = eo.stateTime;
             }
             REQUIRE(ticksSet > 0);
+            CHECK(wander < 1e-4f);
             CHECK(zeroAfter);
             CHECK(pressTick >= 0);
             CHECK(pressRight);
@@ -12607,9 +12791,12 @@ TEST_CASE("pounce contact clock: ArenaEnemyOut::lungeContactAt is the clock the 
                 if (eo.lungeLatched) latchAt = eo.stateTime;
             }
             REQUIRE(latchAt > 0.f);
-            CHECK(latchAt >= predicted - kDt - 1e-4f); // the last prediction may sit up to a tick after the latch
-            CHECK(latchAt < predicted + kDt + 1e-4f);
-            MESSAGE(kit << " room " << room << ": contact clock " << predicted << " s, latched at " << latchAt
+            // On the predicted tick: the latching tick is the first to end at or past the contact clock (a contact
+            // at the launch itself latches in the tick after it: the latch is in the air).
+            CHECK(latchAt - predicted > -1e-5f);
+            CHECK(latchAt - predicted <= kDt + 1e-5f);
+            MESSAGE(std::string(kit) << " room " << room << ": contact clock " << predicted << " s (wander "
+                        << wander * 60.f << " tick), latched at " << latchAt
                         << " s; guard pressed " << pressLeft * 60.f << " ticks before it (a tick earlier: "
                         << pressPrev * 60.f << "), half window " << fi.parryWindow * 30.f
                         << " ticks; press tick to parry tick " << parryTick - pressTick);
@@ -12728,7 +12915,9 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                 rig.put(0, contact + room, 0.f);
                 int began = 0, ended = 0, offPlanted = 0, idleShoves = 0, idleAway = 0;
                 Vec2 net{};
-                float worstStep = 0.f, worstNet = 0.f;
+                float worstStep = 0.f, worstNet = 0.f, worstSlideT = 0.f;
+                int slidSteps = 0, drivenSteps = 0;
+                float drivenSum = 0.f, drivenPeak = 0.f;
                 for (int i = 0; i < 400; ++i) {
                     rig.in = ArenaInput{};
                     // walking: the lead walks across the pup's front, through the whole move
@@ -12745,15 +12934,37 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                     ArenaHeld held;
                     const bool planted = arenaPlanted(rig.fight, held);
                     if (!planted && (step.x != 0.f || step.y != 0.f)) ++offPlanted;
-                    if (step.x != 0.f || step.y != 0.f) { // the lead's move off its own step, less a taken-back step
-                        Vec2 d{rig.bodies.player.x - own.x, rig.bodies.player.y - own.y};
+                    {
+                        // the lead's move off its own step, less a taken-back step. A lead that travelled no more than
+                        // its own step was slid round the planted pup: of the move straight out from it only what is
+                        // more than the lead's own step in stays (the pup driving in), none of it along its edge (5b).
+                        const Vec2 moved{rig.bodies.player.x - own.x, rig.bodies.player.y - own.y};
+                        Vec2 d = moved;
                         const float sx = o.player.velocity.x * kDt, sy = o.player.velocity.y * kDt;
                         const float sl = std::hypot(sx, sy);
                         if (sl > 0.f) {
                             const float back = std::clamp(-(d.x * sx + d.y * sy) / sl, 0.f, sl);
                             d = Vec2{d.x + sx / sl * back, d.y + sy / sl * back};
                         }
-                        worstStep = std::max(worstStep, distanceOf(step, d));
+                        const bool slid = planted && sl > 0.f && std::hypot(moved.x + sx, moved.y + sy) <= sl;
+                        float driven = 0.f;
+                        if (slid) {
+                            const Vec2 r{rig.bodies.player.x - rig.bodies.enemies[0].x,
+                                         rig.bodies.player.y - rig.bodies.enemies[0].y};
+                            const float rl = std::hypot(r.x, r.y);
+                            const Vec2 nr{r.x / rl, r.y / rl};
+                            worstSlideT = std::max(worstSlideT, std::fabs(d.y * nr.x - d.x * nr.y));
+                            const float inward = std::max(0.f, -(sx * nr.x + sy * nr.y));
+                            driven = moved.x * nr.x + moved.y * nr.y - inward;
+                            const float out = std::max(0.f, driven);
+                            d = Vec2{nr.x * out, nr.y * out};
+                        }
+                        if (std::hypot(d.x, d.y) <= kArenaPushFloor) d = Vec2{};
+                        if (planted) worstStep = std::max(worstStep, distanceOf(step, d));
+                        const bool stepped = step.x != 0.f || step.y != 0.f;
+                        if (slid && stepped && driven <= kArenaPushFloor) ++slidSteps; // a slide still raising a shove
+                        if (slid && stepped)
+                            ++drivenSteps, drivenSum += driven, drivenPeak = std::max(drivenPeak, driven);
                     }
                     if (p.began) ++began, net = Vec2{};
                     if (p.active) net = Vec2{net.x + step.x, net.y + step.y};
@@ -12783,7 +12994,11 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                 if (mode >= 2) CHECK(rig.bodies.push.count == 0u); // straight in (a block) or away: no shove
                 MESSAGE(std::string(kit) << " room " << room << std::string(modeName[mode])
                                          << std::string(zoned ? " zone" : " ring") << ": shoves "
-                                         << rig.bodies.push.count);
+                                         << rig.bodies.push.count << "; slid steps: slide taken out up to "
+                                         << worstSlideT * 1000.f << " mm, " << drivenSteps
+                                         << " steps the pup drove in, " << drivenSum * 1000.f << " mm in all, peak "
+                                         << drivenPeak * 1000.f << " mm");
+                CHECK(slidSteps == 0);
             }
         }
     }
@@ -12814,4 +13029,101 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
     arenaTrackPush(rig.fight, rig.bodies, rig.bodies.player, Vec2{}, 0.f);
     CHECK_FALSE(rig.bodies.push.ended);
     CHECK(rig.bodies.push.count == 1u);
+}
+
+TEST_CASE("pushed: a heading sweep past a planted pup raises no shove over 0.30 m (ruling 6023 item 6)") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    constexpr int kHeadings = 16;
+    float worst = 0.f;
+    std::string worstAt;
+    int shoves = 0;
+    for (const char* kit : {"devin", "duy", "third"}) {
+        const ArenaFighter& fi = t.fighter(kit);
+        const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+        for (const float room : {0.1f, 0.575f, 1.05f}) {
+            for (int h = 0; h < kHeadings; ++h) {
+                for (const bool turns : {false, true}) { // held on the heading, or turned back half way
+                    const float a = 6.2831853f * static_cast<float>(h) / kHeadings;
+                    const Vec2 dir{std::cos(a), std::sin(a)};
+                    Rig rig(fi, {pounceKind(shipped, contact + room)});
+                    rig.put(0, contact + room, 0.f);
+                    for (int i = 0; i < 400; ++i) {
+                        rig.in = ArenaInput{};
+                        const float sign = turns && i >= 200 ? -1.f : 1.f;
+                        rig.in.move = Vec2{dir.x * sign, dir.y * sign};
+                        rig.tick();
+                        arenaStep(rig.fight, rig.bodies, kDt);
+                        const ArenaPush& p = rig.bodies.push;
+                        if (!p.ended) continue;
+                        ++shoves;
+                        if (p.distance > worst) {
+                            worst = p.distance;
+                            worstAt = std::string(kit) + " room " + std::to_string(room) + " heading " +
+                                      std::to_string(h * 360 / kHeadings) + (turns ? " turned" : " held") +
+                                      ", peak " + std::to_string(p.peakSpeed) + " m/s, " +
+                                      std::to_string(p.duration) + " s";
+                        }
+                    }
+                }
+            }
+        }
+    }
+    MESSAGE("heading sweep: " << shoves << " shoves, longest " << worst * 1000.f << " mm (" << worstAt << ")");
+    CHECK(worst <= 0.30f);
+}
+
+TEST_CASE("pushed: a special started by the lead beside a planted pup, in the zone step, raises no shove") {
+    // The zone step's guard (ArenaZone.cpp arenaStep): a frozen step, and the performer's cut-back, track no shove.
+    // The special poses the lead at its start, moved back 0.5 m: without the guard that jump is a shove.
+    std::string text;
+    REQUIRE(ftcore_test::readProjectData("Battle/arena_special.json", text));
+    ArenaSpecialTable specials;
+    std::string err;
+    REQUIRE_MESSAGE(importArenaSpecials(text, specials, &err, nullptr), err);
+    LeadSpecialGauges store;
+    LeadSpecialGauges::Lead* lead = store.entry("devin");
+    REQUIRE(lead != nullptr);
+    lead->value = 1000.f;
+    ArenaZone zone;
+    zone.radius = 40.f;
+    zone.softWall = true;
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter("devin");
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    for (const float room : {0.1f, 0.575f}) {
+        Rig rig(fi, {pounceKind(shipped, contact + room)});
+        REQUIRE(rig.fight.setSpecials(&specials, "devin", "", store));
+        rig.put(0, contact + room, 0.f);
+        int plantedAt = -1, frozenTicks = 0, plantedFrozen = 0, shovesInSpecial = 0, stepsInSpecial = 0;
+        bool ended = false;
+        for (int i = 0; i < 600 && !ended; ++i) {
+            ArenaHeld held;
+            const bool planted = arenaPlanted(rig.fight, held);
+            if (planted && plantedAt < 0) plantedAt = i;
+            const bool press = plantedAt >= 0 && i == plantedAt + 2;
+            rig.in.special = press ? kArenaPlayer : kArenaNobody;
+            rig.in.specialBack = press ? 0.5f : 0.f;
+            rig.tick();
+            const std::uint32_t was = rig.bodies.push.count;
+            arenaStep(rig.fight, rig.bodies, kDt, zone);
+            const bool inSpecial = rig.fight.frozen() || rig.fight.special().endedThisTick;
+            if (rig.fight.frozen()) ++frozenTicks, plantedFrozen += arenaPlanted(rig.fight, held);
+            if (inSpecial) {
+                shovesInSpecial += static_cast<int>(rig.bodies.push.count - was);
+                stepsInSpecial += rig.bodies.pushStep.x != 0.f || rig.bodies.pushStep.y != 0.f;
+            }
+            ended = rig.fight.special().endedThisTick;
+        }
+        MESSAGE("zone guard, room " << room << ": planted at tick " << plantedAt << ", " << frozenTicks
+                                    << " frozen ticks (" << plantedFrozen << " planted), shoves in the special "
+                                    << shovesInSpecial << ", shove steps " << stepsInSpecial);
+        REQUIRE(plantedAt >= 0);
+        CHECK(frozenTicks > 0);
+        CHECK(plantedFrozen > 0); // the guard is what keeps these from tracking
+        CHECK(ended);
+        CHECK(shovesInSpecial == 0);
+        CHECK(stepsInSpecial == 0);
+    }
 }

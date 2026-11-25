@@ -293,6 +293,18 @@ float lungeContactClock(const ArenaEnemyKind& k, const ArenaAttack& a, bool unse
                                std::max(0.f, a.startup + a.active - held), room);
 }
 
+// The gap lungeContactClock reads, the one the next tick's latch will meet: the lead and the enemy each moved on by
+// its velocity over `dt`, the step the host moves the bodies by before that tick (ruling 6023 item 4). The output and
+// the autopilot both read it.
+float lungeGapAhead(Vec2 lead, Vec2 leadVelocity, Vec2 foe, Vec2 foeVelocity, float dt) {
+    return arenaDistance(Vec2{lead.x + leadVelocity.x * dt, lead.y + leadVelocity.y * dt},
+                         Vec2{foe.x + foeVelocity.x * dt, foe.y + foeVelocity.y * dt});
+}
+
+// The autopilot's time to a lunge-curve move's contact gives this much (s) to the float sum of its clocks: a contact
+// half a window away (0.8f - 0.7f > 0.1f) counts as half a window away. Only the lunge-curve branch takes it.
+constexpr float kLungeClockSlack = 1e-6f;
+
 } // namespace
 
 // The fight's rules. ArenaFight's state is private; this is its friend, so the rules read and write it directly.
@@ -480,6 +492,7 @@ struct ArenaFightImpl {
         fight.phase_ = ArenaPhase::Fighting;
         fight.time_ = 0.f;
         fight.heldTime_ = 0.f;
+        fight.stepDt_ = 0.f;
         pl = Player{};
         pl.pos = fight.playerStart_;
         pl.facing = fight.playerStartFacing_;
@@ -599,8 +612,9 @@ struct ArenaFightImpl {
                 foe.lungeEnding == 0) {
                 const ArenaAttack& a = fight.enemyAttackNow(i);
                 float now = 0.f;
-                const float at = lungeContactClock(def.enemies[i], a, foe.unseen, foe.stateTime, fi.bodyRadius,
-                                                   arenaDistance(pl.pos, foe.pos), now);
+                const float gap = lungeGapAhead(pl.pos, pl.velocity, foe.pos, foe.velocity, fight.stepDt_);
+                const float at = lungeContactClock(def.enemies[i], a, foe.unseen, foe.stateTime, fi.bodyRadius, gap,
+                                                   now);
                 if (at >= 0.f) eo.lungeContactAt = at + (foe.unseen ? kArenaUnseenWindup : 0.f);
             }
         }
@@ -631,6 +645,7 @@ struct ArenaFightImpl {
 
     void tick(float step, const ArenaInput& in, const ArenaBodies& bodies) {
         if (step > 0.f && step < 1.0e6f) fight.special_.clock += step; // the host's clock runs on every tick given
+        fight.stepDt_ = 0.f; // a frozen, refresh or over tick: the host moves no body after it
         if (fight.special_.view.running) { // frozen: only the special's own block moves
             specialTick(step, in);
             return;
@@ -710,6 +725,7 @@ struct ArenaFightImpl {
             return;
         }
         dt = step;
+        fight.stepDt_ = step;
         t0 = fight.time_;
         t1 = t0 + dt;
         camera = in.cameraFacing;
@@ -4480,9 +4496,9 @@ struct ArenaFightImpl {
                 // A lunge-curve move bites at first tooth contact (the latch), not at its active's start: the time
                 // until its curve closes the room left now (none closed by the active's end: its start, as any move).
                 float now = 0.f;
-                const float at = lungeContactClock(k, a, foe.unseen, foe.stateTime, f.bodyRadius,
-                                                   arenaDistance(p.pos, foe.pos), now);
-                if (at >= 0.f) untilActive = at - now;
+                const float gap = lungeGapAhead(p.pos, p.velocity, foe.pos, foe.velocity, self.stepDt_);
+                const float at = lungeContactClock(k, a, foe.unseen, foe.stateTime, f.bodyRadius, gap, now);
+                if (at >= 0.f) untilActive = at - now - kLungeClockSlack;
             }
             if (threat < 0 || untilActive < soonest) {
                 threat = static_cast<int>(i);
@@ -5409,15 +5425,35 @@ void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer
     ArenaHeld held;
     // The settle's move of the lead, less the part that only takes back its own step (walking into the planted body
     // is a block, not a shove): along the step, up to its length.
-    Vec2 d = arenaSub(bodies.player, ownPlayer);
+    const Vec2 moved = arenaSub(bodies.player, ownPlayer);
+    Vec2 d = moved;
     const float stepLen = arenaLength(ownStep);
     if (stepLen > 0.f) {
         const Vec2 s = arenaScaled(ownStep, 1.f / stepLen);
         const float back = std::clamp(-(d.x * s.x + d.y * s.y), 0.f, stepLen);
         d = arenaMadd(d, s, back);
     }
+    const bool planted = arenaPlanted(fight, held);
+    // A lead whose whole travel this tick is no more than its own step was slid round the planted body, not shoved
+    // (ruling 6023 item 5b): the part of the settle's move along that body's edge goes, and of the part straight out
+    // from it only what is more than the lead's own step into the body stays (the pup driving in). Taking the step
+    // back along the step alone leaves k(1 - (n.s)^2) of a pure slide. PlayerStepSpeed keeps the slide.
+    if (planted && stepLen > 0.f && arenaLength(arenaMadd(moved, ownStep, 1.f)) <= stepLen) {
+        float best = -1.f;
+        Vec2 n{};
+        for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
+            if (!held.enemies[i]) continue;
+            const Vec2 r = arenaSub(bodies.player, bodies.enemies[i]);
+            const float rl = arenaLength(r);
+            if (best < 0.f || rl < best) best = rl, n = arenaUnit(r, Vec2{1.f, 0.f});
+        }
+        if (best >= 0.f) {
+            const float inward = std::max(0.f, -(ownStep.x * n.x + ownStep.y * n.y));
+            d = arenaScaled(n, std::max(0.f, moved.x * n.x + moved.y * n.y - inward));
+        }
+    }
     const float len = arenaLength(d);
-    if (!arenaPlanted(fight, held) || len <= kArenaPushFloor) {
+    if (!planted || len <= kArenaPushFloor) {
         bodies.pushStep = Vec2{};
         if (p.active) p.active = false, p.ended = true;
         return;
