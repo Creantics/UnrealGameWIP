@@ -11,11 +11,21 @@
 #include "Engine/SkeletalMesh.h"
 #include "FTText.h"
 #include "IAssetTools.h"
+#include "InterchangeManager.h"
+#include "InterchangePipelineBase.h"
+#include "InterchangeProjectSettings.h"
+#include "InterchangeSourceData.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/UnrealType.h"
 #include "ftcore/Face.h"
 #include "ftcore/FaceImport.h"
+#include "ftcore/Glb.h"
+
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace
 {
@@ -121,7 +131,123 @@ bool CheckRig(const USkeletalMesh& Mesh, bool bCheckFace)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: %d/%d face shapes bound."), Bound, static_cast<int32>(Shapes.shapes.size()));
 	return bOk;
 }
+
+// -AnimSampleRate: false (and logs each clip) when a clip's length is not a whole number of frames at Rate.
+bool ClipsOnFrames(const FString& Source, int32 Rate)
+{
+	TArray<uint8> Bytes;
+	if (!FFileHelper::LoadFileToArray(Bytes, *Source))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: couldn't read %s."), *Source);
+		return false;
+	}
+	ftcore::GlbInfo Info;
+	std::string Error;
+	if (!ftcore::readGlb(std::string_view(reinterpret_cast<const char*>(Bytes.GetData()), Bytes.Num()), Info, &Error))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: %s: %s"), *Source, *FT::ToFString(Error));
+		return false;
+	}
+	const std::vector<ftcore::AssetIssue> Issues = ftcore::checkClipFrames(Info, Rate);
+	for (const ftcore::AssetIssue& Issue : Issues)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: -AnimSampleRate=%d: %s; nothing imported."), Rate,
+			*FT::ToFString(Issue.message));
+	}
+	if (Issues.empty())
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: %d clips, each a whole number of frames at %d Hz."),
+			static_cast<int32>(Info.animations.size()), Rate);
+	}
+	return Issues.empty();
+}
+
+// The pipeline holding the animation settings: the pipeline itself, or its AnimationPipeline subobject
+// (the generic assets pipeline). Read by name so the module needs no Interchange plugin dependency.
+UObject* AnimationPipelineOf(UObject& Pipeline)
+{
+	if (FindFProperty<FIntProperty>(Pipeline.GetClass(), TEXT("CustomBoneAnimationSampleRate")))
+	{
+		return &Pipeline;
+	}
+	const FObjectPropertyBase* Property =
+		FindFProperty<FObjectPropertyBase>(Pipeline.GetClass(), TEXT("AnimationPipeline"));
+	return Property ? Property->GetObjectPropertyValue_InContainer(&Pipeline) : nullptr;
+}
+
+// The default stack for Source, duplicated, with the one animation pipeline's rate set to Rate, as a task
+// override; null (logged) when the stack can't take the rate as its only change. Rooted collects every
+// object added to the root set, for the caller to release after the import.
+UInterchangePipelineStackOverride* RateOverride(const FString& Source, int32 Rate, TArray<UObject*>& Rooted)
+{
+	const UInterchangeSourceData* SourceData = UInterchangeManager::CreateSourceData(Source);
+	const TArray<UInterchangePipelineBase*> Stack =
+		UInterchangeProjectSettingsScript::GetPipelineStackFromSourceData(/*bIsSceneImport*/ false, SourceData);
+	if (Stack.IsEmpty())
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: no default pipeline stack for %s."), *Source);
+		return nullptr;
+	}
+	int32 RatesSet = 0;
+	for (UInterchangePipelineBase* Pipeline : Stack)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: stack pipeline %s (%s)"),
+			*Pipeline->OriginalPipelinePath.ToString(), *Pipeline->GetClass()->GetName());
+		UObject* Animation = AnimationPipelineOf(*Pipeline);
+		if (!Animation)
+		{
+			continue;
+		}
+		UClass* Class = Animation->GetClass();
+		const FIntProperty* RateField = FindFProperty<FIntProperty>(Class, TEXT("CustomBoneAnimationSampleRate"));
+		const FBoolProperty* Fixed30 = FindFProperty<FBoolProperty>(Class, TEXT("bUse30HzToBakeBoneAnimation"));
+		const FEnumProperty* Alignment = FindFProperty<FEnumProperty>(Class, TEXT("FrameAlignment"));
+		if (!RateField || !Fixed30 || !Alignment)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: %s lacks a rate, 30 Hz or alignment field."),
+				*Class->GetName());
+			return nullptr;
+		}
+		if (Fixed30->GetPropertyValue_InContainer(Animation))
+		{
+			UE_LOG(LogForgottenThird, Error,
+				TEXT("FTImportCharacter: the default stack bakes at a fixed 30 Hz; the rate can't apply."));
+			return nullptr;
+		}
+		const int64 Align = Alignment->GetUnderlyingProperty()->GetSignedIntPropertyValue(
+			Alignment->ContainerPtrToValuePtr<void>(Animation));
+		if (Align != 0)
+		{
+			UE_LOG(LogForgottenThird, Error,
+				TEXT("FTImportCharacter: the default stack snaps clips to frames (alignment %lld)."), Align);
+			return nullptr;
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: %s CustomBoneAnimationSampleRate %d -> %d."),
+			*Animation->GetPathName(), RateField->GetPropertyValue_InContainer(Animation), Rate);
+		RateField->SetPropertyValue_InContainer(Animation, Rate);
+		++RatesSet;
+	}
+	if (RatesSet != 1)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: the default stack has %d animation pipelines, not 1."),
+			RatesSet);
+		return nullptr;
+	}
+	UInterchangePipelineStackOverride* Override = NewObject<UInterchangePipelineStackOverride>();
+	for (UInterchangePipelineBase* Pipeline : Stack)
+	{
+		Override->AddPipeline(Pipeline); // a path to the in-memory pipeline, which the manager duplicates
+		Pipeline->AddToRoot();
+		Rooted.Add(Pipeline);
+	}
+	Override->AddToRoot();
+	Rooted.Add(Override);
+	UE_LOG(LogForgottenThird, Display, TEXT("FTImportCharacter: importing on the default stack (%d pipelines) at %d Hz."),
+		Stack.Num(), Rate);
+	return Override;
+}
 } // namespace
+
 #endif
 
 UFTImportCharacterCommandlet::UFTImportCharacterCommandlet()
@@ -147,6 +273,13 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 	FString Pack, Role;
 	FParse::Value(*Params, TEXT("Pack="), Pack);
 	FParse::Value(*Params, TEXT("Role="), Role);
+	int32 AnimSampleRate = 0;
+	FParse::Value(*Params, TEXT("AnimSampleRate="), AnimSampleRate);
+	if (AnimSampleRate < 0 || AnimSampleRate > 48000)
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTImportCharacter: -AnimSampleRate=%d is outside 0-48000."), AnimSampleRate);
+		return 1;
+	}
 	const ftcore::AssetRules Rules = ftcore::characterRules(
 		ftcore::assetPackFromName(TCHAR_TO_UTF8(*Pack)), ftcore::assetRoleFromName(TCHAR_TO_UTF8(*Role)));
 	if (FPaths::IsRelative(Source))
@@ -164,6 +297,30 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 			*Source);
 		return 1;
 	}
+	TArray<UObject*> Rooted;
+	UInterchangePipelineStackOverride* RateStack = nullptr;
+	if (AnimSampleRate > 0)
+	{
+		if (!FPaths::GetExtension(Source).Equals(TEXT("glb"), ESearchCase::IgnoreCase))
+		{
+			UE_LOG(LogForgottenThird, Error,
+				TEXT("FTImportCharacter: -AnimSampleRate needs a .glb (its clip lengths are checked)."));
+			return 1;
+		}
+		if (!ClipsOnFrames(Source, AnimSampleRate))
+		{
+			return 1;
+		}
+		RateStack = RateOverride(Source, AnimSampleRate, Rooted);
+		if (!RateStack)
+		{
+			for (UObject* Object : Rooted)
+			{
+				Object->RemoveFromRoot();
+			}
+			return 1;
+		}
+	}
 
 	UAssetImportTask* Task = NewObject<UAssetImportTask>();
 	Task->Filename = Source;
@@ -173,9 +330,17 @@ int32 UFTImportCharacterCommandlet::Main(const FString& Params)
 	Task->bReplaceExistingSettings = true;
 	Task->bSave = true;
 	Task->bAsync = false;
+	if (RateStack)
+	{
+		Task->Options = RateStack;
+	}
 
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 	AssetTools.ImportAssetTasks({ Task });
+	for (UObject* Object : Rooted)
+	{
+		Object->RemoveFromRoot();
+	}
 
 	const USkeletalMesh* Mesh = nullptr;
 	for (const UObject* Object : Task->GetObjects())

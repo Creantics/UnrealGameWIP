@@ -3,7 +3,9 @@
 #include "ftcore/Json.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdio>
 
 namespace ftcore {
 
@@ -216,6 +218,23 @@ bool readGlb(std::string_view bytes, GlbInfo& out, std::string* error) {
         }
     }
     out.skins = root["skins"].size();
+
+    const JsonValue animations = root["animations"];
+    for (std::uint32_t i = 0; i < animations.size(); ++i) {
+        const JsonValue a = animations[i];
+        GlbAnimation anim;
+        anim.name = std::string(a["name"].string());
+        const JsonValue samplers = a["samplers"];
+        double length = 0.0;
+        bool known = samplers.size() > 0;
+        for (std::uint32_t s = 0; s < samplers.size(); ++s) {
+            const JsonValue max = root["accessors"][static_cast<int>(samplers[s]["input"].integer(-1))]["max"][0];
+            if (!max.isNumber()) known = false;
+            else length = std::max(length, max.number(0.0));
+        }
+        anim.length = known ? length : -1.0;
+        out.animations.push_back(std::move(anim));
+    }
     return true;
 }
 
@@ -317,6 +336,28 @@ std::uint32_t countErrors(const std::vector<AssetIssue>& issues) {
     for (const AssetIssue& i : issues)
         if (i.severity == AssetSeverity::Error) ++n;
     return n;
+}
+
+std::vector<AssetIssue> checkClipFrames(const GlbInfo& info, int rate, double tolerance) {
+    std::vector<AssetIssue> out;
+    if (rate <= 0) return out;
+    for (std::size_t i = 0; i < info.animations.size(); ++i) {
+        const GlbAnimation& a = info.animations[i];
+        const std::string who = "animation " + std::to_string(i) + " '" + a.name + "'";
+        if (a.length < 0.0) {
+            out.push_back({AssetSeverity::Error, "clip-length-unknown", who + " has an input accessor with no max"});
+            continue;
+        }
+        const double frames = a.length * rate;
+        const double off = std::fabs(a.length - std::round(frames) / rate);
+        if (off > tolerance) {
+            char buf[160];
+            std::snprintf(buf, sizeof buf, " is %.6f s: %.4f frames at %d Hz, %.6f s off the nearest frame", a.length,
+                          frames, rate, off);
+            out.push_back({AssetSeverity::Error, "clip-off-frame", who + buf});
+        }
+    }
+    return out;
 }
 
 } // namespace ftcore

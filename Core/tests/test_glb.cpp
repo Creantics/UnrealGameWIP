@@ -250,3 +250,56 @@ TEST_CASE("the Lattice emissive split") {
     info.materials[0].emissiveStrength = 2.4f;
     CHECK(checkGlb(info, lattice).empty());
 }
+
+// Three clips: one sampler at 71/60 s; two samplers whose later input stops at 0.5 s; one input with no max.
+constexpr const char* kClips = R"J({
+  "asset": {"version": "2.0"},
+  "accessors": [
+    {"count": 72, "type": "SCALAR", "componentType": 5126, "min": [0], "max": [1.18333328]},
+    {"count": 16, "type": "SCALAR", "componentType": 5126, "min": [0], "max": [0.25]},
+    {"count": 31, "type": "SCALAR", "componentType": 5126, "min": [0], "max": [0.5]},
+    {"count": 2, "type": "SCALAR", "componentType": 5126}
+  ],
+  "animations": [
+    {"name": "Pounce", "samplers": [{"input": 0, "output": 9}], "channels": []},
+    {"name": "Nip", "samplers": [{"input": 1, "output": 9}, {"input": 2, "output": 9}], "channels": []},
+    {"samplers": [{"input": 3, "output": 9}], "channels": []}
+  ]
+})J";
+
+TEST_CASE("glb clip lengths, and the whole-frame check at a bake rate") {
+    GlbInfo info;
+    REQUIRE(readGlb(glb(kClips), info));
+    REQUIRE(info.animations.size() == 3);
+    CHECK(info.animations[0].name == "Pounce");
+    CHECK(info.animations[0].length == doctest::Approx(71.0 / 60.0).epsilon(1e-6));
+    CHECK(info.animations[1].length == doctest::Approx(0.5)); // the latest input of either sampler
+    CHECK(info.animations[2].length < 0.0);                   // no max: unknown
+
+    info.animations.pop_back();
+    CHECK(checkClipFrames(info, 60).empty()); // 71 and 30 frames
+    CHECK(checkClipFrames(info, 240).empty());
+    CHECK(checkClipFrames(info, 0).empty()); // unset: no check
+
+    // 35.5 frames at 30 Hz: the Pounce fails, named; the Nip (15 frames) passes.
+    auto issues = checkClipFrames(info, 30);
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].severity == AssetSeverity::Error);
+    CHECK(issues[0].code == "clip-off-frame");
+    CHECK(issues[0].message.find("animation 0 'Pounce'") != std::string::npos);
+    CHECK(issues[0].message.find("30 Hz") != std::string::npos);
+
+    // The tolerance is 1e-4 s either side of a frame.
+    info.animations[1].length = 0.5 + 0.9e-4;
+    CHECK(checkClipFrames(info, 60).empty());
+    info.animations[1].length = 0.5 - 1.1e-4;
+    issues = checkClipFrames(info, 60);
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].message.find("'Nip'") != std::string::npos);
+
+    // An unknown length fails rather than passing unchecked.
+    info.animations[1].length = -1.0;
+    issues = checkClipFrames(info, 60);
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].code == "clip-length-unknown");
+}

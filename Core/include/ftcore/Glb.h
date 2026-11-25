@@ -56,9 +56,17 @@ struct GlbImage {
     std::uint32_t width = 0, height = 0; // 0 when the header could not be read
 };
 
+// One animation's length as the importer reads it: the clip starts at 0 s and stops at the latest
+// sampler input time (each input accessor's `max`, which glTF requires on animation inputs).
+struct GlbAnimation {
+    std::string name;
+    double length = -1.0; // s; -1 when an input accessor carries no max
+};
+
 struct GlbInfo {
     std::vector<GlbMaterial> materials;
     std::vector<GlbImage> images;
+    std::vector<GlbAnimation> animations;
     std::uint32_t meshes = 0, primitives = 0, skins = 0;
     std::uint32_t uvSets = 0;        // the most TEXCOORD_n sets on any primitive
     bool vertexColor = false;        // any primitive has COLOR_0
@@ -106,5 +114,10 @@ struct AssetIssue {
 
 FTCORE_API std::vector<AssetIssue> checkGlb(const GlbInfo& info, const AssetRules& rules);
 FTCORE_API std::uint32_t countErrors(const std::vector<AssetIssue>& issues);
+
+// For an import baked at `rate` Hz (> 0): one error per animation whose length is not a whole number of
+// frames at that rate, within `tolerance` s, or whose length is unknown. Nothing is snapped; the import
+// stops and the clip is named ("clip-off-frame", "clip-length-unknown").
+FTCORE_API std::vector<AssetIssue> checkClipFrames(const GlbInfo& info, int rate, double tolerance = 1e-4);
 
 } // namespace ftcore
