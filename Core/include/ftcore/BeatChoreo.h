@@ -315,10 +315,10 @@ FTCORE_API double gaitRate(const GaitBand& band, int gait, double speed);
 //   - in a gap between g and g + 1: g at kGaitMixHigh and g + 1 at kGaitMixLow, shared so the feet keep the speed;
 //   - where two covers overlap: both at their own rates, shared by where the speed is across the overlap;
 //   - over the top gait's cover: the top gait alone, faster.
-// The slot fades in over the clip before it: its weight W rises by dt / blend from when it starts to show, and is never
-// under |v| over the slowest gait's speed (a body already moving shows its gait at once rather than slide). The layers
-// play at v / W, so the slot's share of the feet's travel is the body's. Each layer keeps its own clock; a gait coming
-// in starts at the share of its cycle the other layer's gait is at. No allocation.
+// The slot fades in over the clip before it: its weight W rises by dt / blend from when it starts to show, and by no
+// more, whatever the body's speed (after a hold too: ruling 6365 F). The layers play at v / W, so the slot's share of
+// the feet's travel is the body's; in the first ticks of a fade-in under way that is over the rate band. Each layer
+// keeps its own clock; a gait coming in starts at the share of its cycle the other layer's gait is at. No allocation.
 inline constexpr double kGaitMixLow = 0.85;
 inline constexpr double kGaitMixHigh = 1.15;
 inline constexpr int kGaitIdle = -1; // a layer that is the idle (its feet stay put)

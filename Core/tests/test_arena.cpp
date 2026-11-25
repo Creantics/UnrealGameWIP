@@ -235,9 +235,9 @@ ArenaTable loadShipped() {
     return t;
 }
 
-// Variant A as data (ruling 6023, 11-25): the shipped table with the Pounce's lunge curve (mkA.py) and every hit
-// stop and parry stop moved to the nearest whole 60 Hz tick, through the real importer. 0.05 s and 0.1 s are whole
-// ticks already (3 and 6).
+// Variant A as data (ruling 6023, 11-25): the shipped table with every hit stop and parry stop moved to the nearest
+// whole 60 Hz tick, through the real importer. 0.05 s and 0.1 s are whole ticks already (3 and 6). A's Pounce lunge
+// curve (mkA.py) ships in arena.json since ruling 6365 P; the whole-tick stops stay test-only.
 std::size_t replaceAll(std::string& s, const std::string& from, const std::string& to) {
     std::size_t n = 0;
     for (std::size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()), ++n)
@@ -259,12 +259,6 @@ ArenaTable loadA(std::string* textOut = nullptr) {
         {"\"hitStop\": 0.12,", "\"hitStop\": 0.1166666667,", 1},       // 7.2 -> 7
         {"\"parryStop\": 0.12,", "\"parryStop\": 0.1166666667,", 2},   // 7.2 -> 7
         {"\"parryStop\": 0.16,", "\"parryStop\": 0.1666666667,", 1},   // 9.6 -> 10
-        {"\"active\": 0.2, \"recovery\": 0.8, \"range\": 0.37, \"arcCos\": 0.9, \"damage\": 9, \"poiseDamage\": 10, "
-         "\"guardDamage\": 10, \"lunge\": 1.3, \"tracking\": 3, \"minRange\": 0.76,",
-         "\"active\": 0.4, \"recovery\": 0.8, \"range\": 0.37, \"arcCos\": 0.9, \"damage\": 9, \"poiseDamage\": 10, "
-         "\"guardDamage\": 10, \"lunge\": 2.2, \"lungeSpeed\": [[0, 0.15], [0.6, 0.15], [0.63, 0], [0.7, 0], [0.8, 4], "
-         "[1.2, 4], [1.35, 0]], \"tracking\": 3, \"minRange\": 0.85,",
-         1}, // the Pounce (mkA.py)
     };
     for (const Swap& sw : swaps) REQUIRE_MESSAGE(replaceAll(text, sw.from, sw.to) == sw.count, std::string(sw.from));
     ArenaTable t;
@@ -11149,7 +11143,10 @@ TEST_CASE("arena data: every maw_pup move plays its clip near rate 1 and the mov
         const double rate = clip.impact / mv.attack.startup;
         CHECK(rate >= 0.85);
         CHECK(rate <= 1.15);
-        CHECK(mv.attack.total() * rate == doctest::Approx(clip.length).epsilon(1.0 / 30.0 / clip.length));
+        // Ruling 6365 P ships the Pounce's active at 0.4 s: the move outlasts its 1.8 s clip by 0.2 s (its recovery
+        // holds the clip's last frame). Pinned and flagged in the report; every other move lasts its clip.
+        const double want = mv.clip() == "pounce" ? clip.length + 0.2 : clip.length;
+        CHECK(mv.attack.total() * rate == doctest::Approx(want).epsilon(1.0 / 30.0 / clip.length));
     }
 }
 
@@ -11192,8 +11189,10 @@ TEST_CASE("arena data: the maw_pup's pounce lunges to its jaws' reach and starts
     const ArenaEnemyMove& pounce = pup.moves[1];
     REQUIRE(pounce.clip() == "pounce");
     CHECK(pup.lungeToContact);
-    // Its band starts where the nip's ends: no gap between them for the pup to walk back across.
-    CHECK(pounce.minRange == doctest::Approx(nip.maxRange));
+    // Ruling 6365 P ships the Pounce's band from 0.85 m, the Nip's ends at 0.76 m: a 9 cm gap between them where the
+    // pup picks neither (pinned and flagged in the report; before P the bands met at 0.76 m).
+    CHECK(pounce.minRange == doctest::Approx(0.85f));
+    CHECK(nip.maxRange == doctest::Approx(0.76f));
     const ArenaAttack& a = pounce.attack;
     for (const char* lead : {"devin", "duy", "third"}) {
         CAPTURE(std::string(lead));
@@ -11205,10 +11204,12 @@ TEST_CASE("arena data: the maw_pup's pounce lunges to its jaws' reach and starts
         const float reach = a.range + leadRadius;
         const float sine = std::sqrt(std::max(0.f, 1.f - a.arcCos * a.arcCos));
         CHECK(std::hypot(reach * a.arcCos - arenaBodyReach(pup), reach * sine) <= leadRadius + 0.01f);
-        // From the far end of its band the jaws are on the lead by the first active frame: the leap at the lunge
-        // rate (lunge / (startup + active)) covers at most lunge * startup / (startup + active) by then.
-        const float byActive = a.lunge * a.startup / (a.startup + a.active);
-        CHECK(pounce.maxRange - byActive <= reach);
+        // From the far end of its band the jaws are on the lead by the last active frame: its curve's travel by then
+        // (ruling 6365 P: the leap at 4 m/s runs through the active window, so by the first active frame the curve
+        // has covered only its creep and take-off).
+        REQUIRE(pup.lungeCurve.count > 0);
+        const float byActiveEnd = arenaLungeDistance(pup.lungeCurve, a.startup + a.active);
+        CHECK(pounce.maxRange - byActiveEnd <= reach);
     }
 }
 
@@ -11232,17 +11233,21 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact, never past it, and 
             Rig rig(fighter, {pup});
             rig.put(0, 11.f, 0.f);
             float leastApart = 100.f, leadMoved = 0.f, atHit = -1.f, atStart = -1.f, arrive = -1.f, moveTime = 0.f;
+            float aimed = -1.f; // the clock the curve first brings the teeth to the lead, read on the move's first tick
             int move = -1, left = -1;
             for (int i = 0; i < 2400 && left != 0; ++i) {
                 rig.tick();
-                if (move < 0 && rig.count(ArenaEventType::AttackStarted) == 1) {
+                const bool started = move < 0 && rig.count(ArenaEventType::AttackStarted) == 1;
+                if (started) {
                     move = rig.find(ArenaEventType::AttackStarted)->event.move;
                     atStart = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
+                    aimed = rig.fight.output().enemies[0].lungeContactAt;
                     left = static_cast<int>(a.total() / kDt) + 2; // watch the whole move, lunge and all
                 }
+                arenaStep(rig.fight, rig.bodies, kDt);
+                // The latch tick strikes and its leap lands in the same step: read the gap after it.
                 if (atHit < 0.f && rig.count(ArenaEventType::Hit) == 1)
                     atHit = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
-                arenaStep(rig.fight, rig.bodies, kDt);
                 if (move >= 0) {
                     moveTime += kDt;
                     if (arrive < 0.f && distanceOf(rig.bodies.enemies[0], rig.bodies.player) <= contact + 0.01f)
@@ -11258,9 +11263,24 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact, never past it, and 
             REQUIRE(atHit > 0.f);
             CHECK(atHit <= contact + 0.02f);      // the jaws are on the lead as it lands
             CHECK(leastApart >= contact - 1e-3f); // never past first tooth contact, over the whole move
-            CHECK(leadMoved <= 1e-3f);            // the lunge stops on the lead, it does not shove it
-            // The jaws reach the lead as the clip bites (its impact, startup's end), not early in the crouch.
-            CHECK(std::fabs(arrive - a.startup) <= 0.05f);
+            // Ruling 6365 P's curve leaps from 0.7 s, before the startup's end (0.8 s), and the startup's share runs
+            // whole: from a circle nearer than contact + that share the crouch-and-take-off carries the pup into the
+            // lead and the push shoves an idle lead by the overrun (flagged in the report). From farther out the
+            // lunge stops on the lead and does not shove it.
+            const float preLaunch = arenaLungeDistance(shipped.lungeCurve, a.startup);
+            const float overrun = std::max(0.f, preLaunch - (circle - contact));
+            if (overrun > 0.f)
+                CHECK(leadMoved == doctest::Approx(overrun).epsilon(0.02));
+            else
+                CHECK(leadMoved <= 1e-3f);
+            // The jaws reach the lead on the clock the curve aims at (lungeContactAt, read as the move starts), within
+            // a tick: not before the curve brings them there, not after.
+            // A pup that overruns reaches the lead inside the startup's share, before the clock its curve aims at.
+            REQUIRE(aimed > 0.f);
+            if (overrun > 0.f)
+                CHECK(arrive <= a.startup + 1e-4f);
+            else
+                CHECK(std::fabs(arrive - aimed) <= kDt + 1e-4f);
         }
     }
     // Without the flag the same leap runs its length and the push shoves the lead: the flag is what stops it.
@@ -11297,7 +11317,8 @@ TEST_CASE("arena maw_pup: a lead that moves in the crouch: the pup never passes 
         bool backed = false;
         Vec2 from{};
         Vec2 last{};
-        for (int i = 0; i < 2400 && ticks < static_cast<int>(a.startup / kDt); ++i) {
+        const int window = static_cast<int>((a.startup + a.active) / kDt); // to the active's end: the leap lands in it
+        for (int i = 0; i < 2400 && ticks < window; ++i) {
             rig.tick();
             if (ticks < 0 && rig.count(ArenaEventType::AttackStarted) == 1) {
                 REQUIRE(rig.find(ArenaEventType::AttackStarted)->event.move == 1);
@@ -11319,14 +11340,14 @@ TEST_CASE("arena maw_pup: a lead that moves in the crouch: the pup never passes 
             backed = backed || distanceOf(rig.bodies.enemies[0], from) + 1e-4f < distanceOf(last, from);
             last = rig.bodies.enemies[0];
         }
-        CHECK(ticks == static_cast<int>(a.startup / kDt));
+        CHECK(ticks == window);
         CHECK(leastApart >= contact - 1e-3f);
         CHECK_FALSE(backed);
-        // A lead that stepped in is still reached as the bite lands (by startup's end, within a tick); one that stepped
-        // out is left short at startup's end (the through-air test below covers the active part).
+        // Under ruling 6365 P the leap runs at 4 m/s through the active window: a lead that stepped in and one that
+        // stepped 0.3 m out are both reached by the active's end (before P the stepped-out lead was left short at the
+        // startup's end; the through-air test below covers a lead beyond the curve's reach).
         const float endApart = distanceOf(rig.bodies.enemies[0], rig.bodies.player);
-        if (shift < 0.f) CHECK(endApart <= contact + 0.03f);
-        else CHECK(endApart > contact + 0.03f);
+        CHECK(endApart <= contact + 0.03f);
     }
 }
 
@@ -11481,7 +11502,7 @@ TEST_CASE("gait mix: the feet carry every speed, both ways, inside the rate band
     CHECK(still.foot == 0.0);
 }
 
-TEST_CASE("gait mix: the slot fades in over the blend, never under the body's speed over the walk's") {
+TEST_CASE("gait mix: the slot fades in over the blend, by dt / blend a tick and no more, after a hold too") {
     const BeatClips clips = loadPupClips();
     const GaitSet gs = pupGaits(clips);
     GaitMixState st;
@@ -11489,17 +11510,50 @@ TEST_CASE("gait mix: the slot fades in over the blend, never under the body's sp
     CHECK_FALSE(gaitMixStep(st, gs, false, 0.0, kDt, 0.2).show);
     GaitMixFrame f = gaitMixStep(st, gs, true, 0.0, kDt, 0.2);
     CHECK(f.slot == doctest::Approx(kDt / 0.2));
-    f = gaitMixStep(st, gs, true, -0.84 * 0.5, kDt, 0.2); // a body already backing off at half the walk
-    CHECK(f.slot == doctest::Approx(0.5));
-    CHECK(f.speed == doctest::Approx(-0.84));
-    CHECK(f.layer[0].gait == 0);
-    CHECK(f.layer[0].rate == doctest::Approx(-1.0));
+    // A body already backing off at half the walk: the slot still rises by dt / blend alone (ruling 6365 F: the speed
+    // floor that set it to 0.5 here popped the walk in over one tick), and the layers play at v / slot.
+    f = gaitMixStep(st, gs, true, -0.84 * 0.5, kDt, 0.2);
+    CHECK(f.slot == doctest::Approx(2.0 * kDt / 0.2));
+    CHECK(f.speed == doctest::Approx(-0.42 / f.slot));
+    CHECK(f.layer[0].rate < 0.0); // backward plays backward
     CHECK(f.foot == doctest::Approx(-0.42));
     // A hit pause (dt 0) moves nothing.
-    const double at = f.layer[0].time;
+    const double at = f.layer[0].time, slotWas = f.slot;
     f = gaitMixStep(st, gs, true, -0.84 * 0.5, 0.0, 0.2);
-    CHECK(f.slot == doctest::Approx(0.5));
+    CHECK(f.slot == doctest::Approx(slotWas));
     CHECK(f.layer[0].time == at);
+}
+
+TEST_CASE("gait mix: after a hold the slot rises at dt / blend, at every speed (ruling 6365 F)") {
+    // A hold (a flinch, a Nip: show false) while the body still moves, then the gait slot shows again: its largest
+    // per-tick rise is dt / blend, whatever the speed, so the walk never pops in. The first fade-in ticks play the
+    // layers at v / slot, over the rate band: reported.
+    const BeatClips clips = loadPupClips();
+    const GaitSet gs = pupGaits(clips);
+    const double blend = clips.blend;
+    for (const double v : {0.42, 0.84, 1.7, 2.56, 5.42, -0.42, -0.84}) {
+        CAPTURE(v);
+        GaitMixState st;
+        for (int i = 0; i < 60; ++i) gaitMixStep(st, gs, true, v, kDt, blend); // walking, whole
+        for (int i = 0; i < 24; ++i) CHECK_FALSE(gaitMixStep(st, gs, false, v, kDt, blend).show); // the hold
+        double last = 0.0, worstRise = 0.0, peakRate = 0.0;
+        int overBand = 0;
+        for (int i = 0; i < 40; ++i) {
+            const GaitMixFrame f = gaitMixStep(st, gs, true, v, kDt, blend);
+            REQUIRE(f.show);
+            worstRise = std::max(worstRise, f.slot - last);
+            last = f.slot;
+            double tickPeak = 0.0;
+            for (const GaitMixLayer& l : f.layer)
+                if (l.gait >= 0 && l.weight > 0.0) tickPeak = std::max(tickPeak, std::fabs(l.rate));
+            peakRate = std::max(peakRate, tickPeak);
+            overBand += tickPeak > kGaitMixHigh + 1e-9;
+        }
+        CHECK(worstRise <= kDt / blend + 1e-9);
+        CHECK(last == doctest::Approx(1.0));
+        MESSAGE("hold release at " << v << " m/s: largest slot rise " << worstRise << " (dt/blend " << kDt / blend
+                                   << "), entry ticks over the rate band " << overBand << ", peak rate " << peakRate);
+    }
 }
 
 TEST_CASE("beat clips: gait_mix loads true or false, off when left out, refused otherwise") {
@@ -11864,6 +11918,7 @@ TEST_CASE("arena: the hand-off cap holds a Pounce reached on the way to the Nip 
     a.lunge = 2.2f;
     pup.moves[1].minRange = 1.05f;
     pup.lungeMove = 1;
+    pup.lungeCurve = ArenaLungeCurve{}; // the shipped Pounce has this curve since ruling 6365 P: laid afresh here
     const float knots[7][2] = {{0.f, 0.15f}, {0.6f, 0.15f}, {0.63f, 0.f}, {0.7f, 0.f}, {0.8f, 4.f}, {1.2f, 4.f},
                                {1.35f, 0.f}};
     for (const auto& kn : knots) {
@@ -11923,6 +11978,20 @@ ArenaEnemyKind pounceKind(const ArenaEnemyKind& shipped, float range) {
     pup.moves[1].minRange = std::min(0.85f, range - 0.05f);
     pup.moves[0].maxRange = std::min(pup.moves[0].maxRange, pup.moves[1].minRange);
     pup.moves[0].minRange = std::min(pup.moves[0].minRange, pup.moves[0].maxRange);
+    return pup;
+}
+
+// The a7 pup, the data shipped before ruling 6365 P and H: a Pounce of active 0.2 and lunge 1.3 with no curve from
+// 0.76 m, and a Nip that does not hold its ground. No a7 pup is ever planted.
+ArenaEnemyKind a7Kind(const ArenaEnemyKind& shipped) {
+    ArenaEnemyKind pup = shipped;
+    pup.lungeCurve = ArenaLungeCurve{};
+    pup.lungeMove = -1;
+    pup.moves[0].holdsGround = false;
+    ArenaEnemyMove& pounce = pup.moves[1];
+    pounce.attack.active = 0.2f;
+    pounce.attack.lunge = 1.3f;
+    pounce.minRange = 0.76f;
     return pup;
 }
 
@@ -12709,16 +12778,16 @@ TEST_CASE("pup switches: the body's travel in each brain switch tick is at most 
         const auto seen = pupSwitches(a, "devin", x, 360, none);
         switchReport("A from " + std::to_string(x) + " m", seen);
         all.insert(all.end(), seen.begin(), seen.end());
-        const auto s7 = pupSwitches(shipped, "devin", x, 360, none);
+        const auto s7 = pupSwitches(a7Kind(shipped), "devin", x, 360, none);
         switchReport("a7 from " + std::to_string(x) + " m", s7);
         all.insert(all.end(), s7.begin(), s7.end());
     }
     // Struck while it comes in: lights pressed every 20 ticks.
     const auto struck = pupSwitches(shipped, "devin", 2.5f, 360, [](int i, Rig& rig) { rig.in.light = i % 20 == 0; });
-    switchReport("a7 struck", struck);
+    switchReport("shipped struck", struck);
     all.insert(all.end(), struck.begin(), struck.end());
     const auto heavy = pupSwitches(shipped, "devin", 2.5f, 360, [](int i, Rig& rig) { rig.in.heavy = i % 40 == 0; });
-    switchReport("a7 heavy", heavy);
+    switchReport("shipped heavy", heavy);
     all.insert(all.end(), heavy.begin(), heavy.end());
     for (const SwitchSeen& s : all) CHECK(s.during <= shipped.runSpeed * kDt + 1e-3f);
 }
@@ -12866,33 +12935,40 @@ TEST_CASE("pounce clock: blows landing inside the push and the landing windows, 
 TEST_CASE("pup switches: Nip, flinch and gait entries") {
     const ArenaTable t = loadShipped();
     const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
-    // Nip: the pup picks it only when it holds the token inside 0.76 m while its Pounce cools (3 s); idle, the
-    // cooldown ends while it walks in, so it pounces again. The lead walks in while the pup approaches.
+    // Nip: the pup picks it only when it holds the token inside 0.76 m while its Pounce cools (3 s). The lead walks
+    // in while the pup approaches: under ruling 6365 P the Pounce lasts 2.0 s, so its cooldown ends while the pup
+    // walks back in and it pounces again, with no Nip (reported, flagged in the report).
     const auto walkIn = pupSwitches(shipped, "devin", 1.6f, 900, [](int i, Rig& rig) {
         if (i > 0 && rig.out().enemies[0].brain == ArenaBrain::Approach) rig.in.move = Vec2{1.f, 0.f};
     });
-    CHECK(std::any_of(walkIn.begin(), walkIn.end(),
+    switchReport("shipped lead walks in", walkIn);
+    // The lead also walks in while the pup circles: it closes inside 0.76 m with the Pounce still cooling, and nips.
+    const auto pressIn = pupSwitches(shipped, "devin", 1.6f, 900, [](int i, Rig& rig) {
+        const ArenaBrain br = rig.out().enemies[0].brain;
+        if (i > 0 && (br == ArenaBrain::Approach || br == ArenaBrain::Strafe)) rig.in.move = Vec2{1.f, 0.f};
+    });
+    CHECK(std::any_of(pressIn.begin(), pressIn.end(),
                       [](const SwitchSeen& s) { return s.to == ArenaBrain::Attack && s.toMove == 0; }));
-    switchReport("a7 lead walks in", walkIn);
+    switchReport("shipped lead walks in, circling too", pressIn);
     // A flinch: Devin's jump light (poise 20 = the pup's flinchPoise, under its poise 40).
     const auto jumpHit = pupSwitches(shipped, "devin", 1.2f, 600, [](int i, Rig& rig) {
         rig.in.jump = i % 90 == 10;
         rig.in.light = i % 90 == 16;
     });
-    switchReport("a7 jump lights", jumpHit);
+    switchReport("shipped jump lights", jumpHit);
     // Gait entries: the lead backs off fast and stops, so the pup comes in at its trot and gallop.
     for (int stopAt : {40, 80, 140}) {
         const auto chase = pupSwitches(shipped, "devin", 1.6f, 500, [stopAt](int i, Rig& rig) {
             if (i < stopAt) rig.in.move = Vec2{-1.f, 0.f};
         });
-        switchReport("a7 lead flees " + std::to_string(stopAt) + " ticks", chase);
+        switchReport("shipped lead flees " + std::to_string(stopAt) + " ticks", chase);
     }
 }
 
 namespace {
 const char* pushSide(Vec2 local) {
     if (std::fabs(local.x) >= std::fabs(local.y)) return local.x >= 0.f ? "front" : "back";
-    return local.y >= 0.f ? "left" : "right"; // a 45° shove takes the larger part
+    return local.y >= 0.f ? "left" : "right"; // a 45?? shove takes the larger part
 }
 } // namespace
 
@@ -12935,9 +13011,10 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                     const bool planted = arenaPlanted(rig.fight, held);
                     if (!planted && (step.x != 0.f || step.y != 0.f)) ++offPlanted;
                     {
-                        // the lead's move off its own step, less a taken-back step. A lead that travelled no more than
-                        // its own step was slid round the planted pup: of the move straight out from it only what is
-                        // more than the lead's own step in stays (the pup driving in), none of it along its edge (5b).
+                        // the lead's move off its own step, less a taken-back step. A lead at contact with the planted
+                        // pup after the step was slid round it: of the move straight out from it only what the pup's
+                        // surface now reaches past where the lead stood before its step stays (the pup driving in),
+                        // none of it along its edge (5b, ruling 6365 H).
                         const Vec2 moved{rig.bodies.player.x - own.x, rig.bodies.player.y - own.y};
                         Vec2 d = moved;
                         const float sx = o.player.velocity.x * kDt, sy = o.player.velocity.y * kDt;
@@ -12946,18 +13023,23 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
                             const float back = std::clamp(-(d.x * sx + d.y * sy) / sl, 0.f, sl);
                             d = Vec2{d.x + sx / sl * back, d.y + sy / sl * back};
                         }
-                        const bool slid = planted && sl > 0.f && std::hypot(moved.x + sx, moved.y + sy) <= sl;
+                        const float least = std::max(0.f, fi.bodyRadius - shipped.contactInset) + shipped.bodyRadius;
+                        Vec2 onLead{}, onPup{};
+                        arenaClosestPoints(rig.bodies.player, Vec2{1.f, 0.f}, 0.f, rig.bodies.enemies[0],
+                                           o.enemies[0].facing, arenaBodySpan(shipped), onLead, onPup);
+                        const Vec2 r{rig.bodies.player.x - onPup.x, rig.bodies.player.y - onPup.y};
+                        const float rl = std::hypot(r.x, r.y);
+                        const bool slid = planted && rl <= least + 1e-3f;
                         float driven = 0.f;
                         if (slid) {
-                            const Vec2 r{rig.bodies.player.x - rig.bodies.enemies[0].x,
-                                         rig.bodies.player.y - rig.bodies.enemies[0].y};
-                            const float rl = std::hypot(r.x, r.y);
                             const Vec2 nr{r.x / rl, r.y / rl};
                             worstSlideT = std::max(worstSlideT, std::fabs(d.y * nr.x - d.x * nr.y));
-                            const float inward = std::max(0.f, -(sx * nr.x + sy * nr.y));
-                            driven = moved.x * nr.x + moved.y * nr.y - inward;
-                            const float out = std::max(0.f, driven);
-                            d = Vec2{nr.x * out, nr.y * out};
+                            const Vec2 stood{was.x, was.y};
+                            arenaClosestPoints(stood, Vec2{1.f, 0.f}, 0.f, rig.bodies.enemies[0], o.enemies[0].facing,
+                                               arenaBodySpan(shipped), onLead, onPup);
+                            const float depth = std::max(0.f, least - distanceOf(stood, onPup));
+                            driven = std::min(std::max(0.f, moved.x * nr.x + moved.y * nr.y), depth);
+                            d = Vec2{nr.x * driven, nr.y * driven};
                         }
                         if (std::hypot(d.x, d.y) <= kArenaPushFloor) d = Vec2{};
                         if (planted) worstStep = std::max(worstStep, distanceOf(step, d));
@@ -13004,7 +13086,7 @@ TEST_CASE("pushed: one record per shove by a planted pup, its steps the lead's p
     }
     // a7 data: no lunge curve, so no pup is ever planted and no shove is raised, the lead walking into it or not.
     for (const bool walking : {false, true}) {
-        Rig rig(t.fighter("devin"), {shipped});
+        Rig rig(t.fighter("devin"), {a7Kind(shipped)});
         rig.put(0, 1.6f, 0.f);
         for (int i = 0; i < 900; ++i) {
             rig.in = ArenaInput{};
@@ -13126,4 +13208,353 @@ TEST_CASE("pushed: a special started by the lead beside a planted pup, in the zo
         CHECK(shovesInSpecial == 0);
         CHECK(stepsInSpecial == 0);
     }
+}
+
+// ---- ruling 6365 H: a Nip with the lead pressing in: the pup holds, the lead stops at contact and slides along ----
+namespace {
+struct NipPress {
+    int nipTicks = 0;         // ticks some pup spent in its Nip
+    float travel = 0.f;       // the Nipping pups' body travel over those ticks, summed
+    float carried = 0.f;      // the Nip clip's carried travel over them: its lunge, 0 for the shipped Nip
+    float worstOverlap = 0.f; // deepest the lead got inside contact with any pup, on any tick
+    float leadSlid = 0.f;     // how far the lead moved over the Nip ticks (it slides; it is not frozen)
+    int pounces = 0;          // Pounces any pup started over the run
+    float leadPeak = 0.f;     // the lead's fastest step over the Nip ticks, m/s (its walk, or faster where shoved)
+    int bothHeld = 0;         // Nip ticks with another pup held too (a planted Pounce)
+    float pupOverlap = 0.f;   // deepest two pups got into each other on any tick
+};
+
+// Runs `rig` `ticks` ticks on arenaStep, the lead pressing at pup 0 from the first tick (its stick on the line to the
+// pup turned by `slant` radians: 0 straight in, else slantwise, sliding along it), and sums each pup's body travel
+// over the ticks it Nips (move 0, holdsGround). With a `zone`, the zone's step (a world's walls) moves the bodies.
+NipPress nipPress(Rig& rig, float slant, int ticks, const ArenaZone* zone = nullptr) {
+    NipPress r;
+    const ArenaDef& def = rig.def;
+    for (int i = 0; i < ticks; ++i) {
+        rig.in = ArenaInput{};
+        const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x, rig.bodies.enemies[0].y - rig.bodies.player.y};
+        const float len = std::max(1e-6f, std::hypot(to.x, to.y));
+        const float c = std::cos(slant), sn = std::sin(slant);
+        rig.in.move = Vec2{(to.x * c - to.y * sn) / len, (to.x * sn + to.y * c) / len};
+        const ArenaBodies before = rig.bodies;
+        const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+        for (const ArenaEvent& ev : o.events) r.pounces += ev.type == ArenaEventType::AttackStarted && ev.move == 1;
+        if (zone != nullptr)
+            arenaStep(rig.fight, rig.bodies, kDt, *zone);
+        else
+            arenaStep(rig.fight, rig.bodies, kDt);
+        bool any = false;
+        for (std::size_t e = 0; e < def.enemyCount; ++e) {
+            const ArenaEnemyOut& eo = o.enemies[e];
+            const ArenaEnemyKind& k = def.enemies[e];
+            const float least = std::max(0.f, def.fighter.bodyRadius - k.contactInset) + k.bodyRadius;
+            Vec2 onLead{}, onBody{};
+            arenaClosestPoints(rig.bodies.player, Vec2{1.f, 0.f}, 0.f, rig.bodies.enemies[e],
+                               eo.facing, arenaBodySpan(k), onLead, onBody);
+            r.worstOverlap = std::max(r.worstOverlap, least - distanceOf(rig.bodies.player, onBody));
+            if (eo.brain != ArenaBrain::Attack || eo.move != 0 || !k.moves[0].holdsGround) continue;
+            any = true;
+            r.travel += distanceOf(before.enemies[e], rig.bodies.enemies[e]);
+            r.carried += k.moves[0].attack.lunge * kDt / k.moves[0].attack.total();
+        }
+        for (std::size_t a = 0; a < def.enemyCount; ++a)
+            for (std::size_t b = a + 1; b < def.enemyCount; ++b) {
+                Vec2 pa{}, pb{};
+                arenaClosestPoints(rig.bodies.enemies[a], o.enemies[a].facing, arenaBodySpan(def.enemies[a]),
+                                   rig.bodies.enemies[b], o.enemies[b].facing, arenaBodySpan(def.enemies[b]), pa, pb);
+                r.pupOverlap = std::max(r.pupOverlap, def.enemies[a].bodyRadius + def.enemies[b].bodyRadius -
+                                                          distanceOf(pa, pb));
+            }
+        if (!any) continue;
+        ++r.nipTicks;
+        ArenaHeld held;
+        arenaPlanted(rig.fight, held);
+        int heldCount = 0;
+        for (std::size_t e = 0; e < def.enemyCount; ++e) heldCount += held.enemies[e];
+        r.bothHeld += heldCount >= 2;
+        r.leadSlid += distanceOf(before.player, rig.bodies.player);
+        r.leadPeak = std::max(r.leadPeak, distanceOf(before.player, rig.bodies.player) / kDt);
+    }
+    return r;
+}
+
+void nipReport(const std::string& name, const NipPress& r) {
+    MESSAGE(name << ": " << r.nipTicks << " Nip ticks, pup travel " << r.travel * 1000.f << " mm (carried "
+                 << r.carried * 1000.f << " mm), worst overlap " << r.worstOverlap * 1000.f << " mm, lead slid "
+                 << r.leadSlid * 1000.f << " mm (peak " << r.leadPeak << " m/s), " << r.pounces << " pounces, "
+                 << r.bothHeld << " ticks two held, pup-pup overlap " << r.pupOverlap * 1000.f << " mm");
+}
+} // namespace
+
+TEST_CASE("pup Nip under press-in: the pup holds, the lead stops at contact (ruling 6365 H)") {
+    constexpr float kQuarter = 0.7853982f; // 45 degrees
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    REQUIRE(shipped.moves[0].holdsGround);
+    CHECK_FALSE(shipped.moves[1].holdsGround);
+    for (const char* kit : {"devin", "duy", "third"}) {
+        CAPTURE(std::string(kit));
+        const ArenaFighter& fi = t.fighter(kit);
+        const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+        auto check = [&](const std::string& name, const NipPress& r) {
+            CAPTURE(name);
+            nipReport(std::string(kit) + " " + name, r);
+            CHECK(r.nipTicks > 0);
+            CHECK(r.travel <= r.carried + 1e-6f); // the pup holds its ground across the Nip
+            CHECK(r.worstOverlap <= 1e-4f);        // the lead stops at contact: no overlap past 0.1 mm
+            CHECK(r.pupOverlap <= 1e-4f);          // nor do two pups overlap
+        };
+        // Open ground: straight in at the pup, and 45 degrees either side of it (the lead slides along it).
+        for (const float slant : {0.f, kQuarter, -kQuarter}) {
+            Rig rig(fi, {shipped});
+            rig.put(0, contact - 0.05f, 0.f);
+            const NipPress r = nipPress(rig, slant, 600);
+            check("open ground, slant " + std::to_string(slant), r);
+            if (slant != 0.f) CHECK(r.leadSlid > 0.05f); // slantwise it slides along, it is not frozen
+        }
+        // The lead against the ring's edge (0.45 m behind it, on +y), pressing into the pup and the wall at once.
+        {
+            Rig rig(fi, {shipped}, 1, ArenaRing{Vec2{0.f, -3.55f}, 4.f});
+            rig.put(0, contact - 0.05f, 0.f);
+            check("lead against the ring edge", nipPress(rig, kQuarter, 600));
+        }
+        // The same in a world's zone (its own step, soft wall): a circle's edge, and a square's flat wall.
+        {
+            ArenaZone zone;
+            zone.centre = Vec2{0.f, -3.55f};
+            zone.radius = 4.f;
+            zone.softWall = true;
+            Rig rig(fi, {shipped}, 1, ArenaRing{zone.centre, zone.radius});
+            rig.put(0, contact - 0.05f, 0.f);
+            check("lead against a zone's circle edge", nipPress(rig, kQuarter, 600, &zone));
+        }
+        {
+            ArenaZone zone;
+            zone.shape = ZoneShape::Polygon;
+            zone.centre = Vec2{0.f, -3.55f};
+            zone.radius = 4.f * 1.4142136f;
+            const Vec2 corners[4] = {{-4.f, -7.55f}, {4.f, -7.55f}, {4.f, 0.45f}, {-4.f, 0.45f}};
+            for (const Vec2& v : corners) zone.verts[zone.vertCount++] = v;
+            zone.softWall = true;
+            Rig rig(fi, {shipped}, 1, ArenaRing{zone.centre, 4.f});
+            rig.put(0, contact - 0.05f, 0.f);
+            check("lead against a zone's flat wall", nipPress(rig, kQuarter, 600, &zone));
+        }
+        // The pup cornered: its back to the ring's edge, the lead pressing it into the wall.
+        {
+            Rig rig(fi, {shipped}, 1, ArenaRing{Vec2{contact - 3.2f, 0.f}, 4.f});
+            rig.put(0, contact - 0.05f, 0.f);
+            check("pup cornered against the ring edge", nipPress(rig, 0.f, 600));
+        }
+        // The lead against another body: a second pup at its side, the lead pressing slantwise between the two.
+        {
+            Rig rig(fi, {shipped, shipped});
+            rig.put(0, contact - 0.05f, 0.f);
+            rig.put(1, 0.f, contact + 0.05f);
+            check("lead against another body", nipPress(rig, kQuarter, 600));
+        }
+        // A Nip-pinned pup and a Pounce-planted one: the second leaps at the lead from the flank as the first nips
+        // (two spots: the nearer one's landing shoves the pinned lead sideways along the nipping pup).
+        for (const Vec2 at : {Vec2{1.f, 1.3f}, Vec2{1.5f, 0.9f}}) {
+            Rig rig(fi, {shipped, pounceKind(shipped, 1.3f)}, 2);
+            rig.put(0, contact - 0.05f, 0.f);
+            rig.put(1, at.x, at.y);
+            const NipPress r = nipPress(rig, 0.f, 600);
+            check("Nip-pinned pup and a Pounce-planted one from " + std::to_string(at.x) + "," +
+                      std::to_string(at.y), r);
+            CHECK(r.pounces > 0);
+            CHECK(r.bothHeld > 0); // the Nip's pin and the Pounce's planted paw on the same ticks
+        }
+        // The room-1.05 geometry of the shove runs: the lead walks straight in from 1.05 m past contact, its line by
+        // the pup's nose as the Nip's tracking turns it.
+        {
+            Rig rig(fi, {pounceKind(shipped, contact + 1.05f)});
+            rig.put(0, contact + 1.05f, 0.f);
+            check("straight in from 1.05 m past contact", nipPress(rig, 0.f, 400));
+        }
+    }
+}
+
+// The lead walks in until the pup Nips; through the Nip it keeps pressing or stands. A Nip that does not turn
+// (tracking 0) leaves its pinned pup still, so nothing it does may shove the lead: no record on any Nip tick.
+TEST_CASE("pup Nip: a still pinned pup that does not turn raises no shove, the lead pressing in or idle") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    for (const char* kit : {"devin", "duy", "third"}) {
+        const ArenaFighter& fi = t.fighter(kit);
+        const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+        for (const float room : {-0.05f, 0.1f, 0.575f, 1.05f}) {
+            for (const bool pressing : {false, true}) {
+                CAPTURE(std::string(kit));
+                CAPTURE(room);
+                CAPTURE(pressing);
+                ArenaEnemyKind still = shipped;
+                still.moves[0].attack.tracking = 0.f;
+                Rig rig(fi, {still});
+                rig.put(0, contact + room, 0.f);
+                int nips = 0;
+                std::uint32_t shovesInNip = 0;
+                for (int i = 0; i < 400; ++i) {
+                    const ArenaEnemyOut& was = rig.out().enemies[0];
+                    const bool nipping = was.brain == ArenaBrain::Attack && was.move == 0;
+                    rig.in = ArenaInput{};
+                    if (pressing || !nipping) rig.in.move = Vec2{1.f, 0.f};
+                    const std::uint32_t before = rig.bodies.push.count;
+                    const ArenaOutput& o = rig.fight.tick(kDt, rig.in, rig.bodies);
+                    const bool inNip = o.enemies[0].brain == ArenaBrain::Attack && o.enemies[0].move == 0;
+                    arenaStep(rig.fight, rig.bodies, kDt);
+                    if (!inNip) continue;
+                    ++nips;
+                    shovesInNip += rig.bodies.push.count - before;
+                }
+                MESSAGE(std::string(kit) << " room " << room << std::string(pressing ? " pressing" : " idle") << ": "
+                                         << nips << " Nip ticks, shoves in the Nip " << shovesInNip);
+                REQUIRE(nips > 0);
+                CHECK(shovesInNip == 0u);
+            }
+        }
+    }
+}
+
+// Ruling 6365 H by construction: the lead on the ring's wall (the wall holds it), a pinned pup pressed into it from
+// slantwise inside. The settle slides the lead along the wall until it clears the pup; the pup does not move.
+// Straight in (no part of the push along the wall) the slide has nothing to work with: the cap drops the pin and the
+// pup gives, as a held body does.
+TEST_CASE("arena settle: a lead pinched between the wall and a pinned pup slides along the wall, the pup stays") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaRing ring{Vec2{0.f, 0.f}, 4.f};
+    for (const char* kit : {"devin", "duy", "third"}) {
+        const ArenaFighter& fi = t.fighter(kit);
+        const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+        for (const float slant : {-1.0472f, -0.5236f, -0.1f, 0.1f, 0.5236f, 1.0472f, 0.f}) {
+            CAPTURE(std::string(kit));
+            CAPTURE(slant);
+            Rig rig(fi, {shipped}, 1, ring);
+            rig.tick();
+            // The lead on the wall at +x; the pup inward of it, `slant` off the wall's normal, 50 mm inside contact
+            // along its own spine (the pup faces -x, the way it turned to the lead on its tick).
+            const Vec2 axis = rig.out().enemies[0].facing;
+            const float least = shipped.bodyRadius + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+            const Vec2 lead{ring.radius - fi.bodyRadius, 0.f};
+            const Vec2 dir{-std::cos(slant), std::sin(slant)};
+            float lo = 0.f, hi = contact + 0.5f;
+            for (int i = 0; i < 60; ++i) { // the centre distance whose spine gap is least - 0.05
+                const float mid = 0.5f * (lo + hi);
+                Vec2 pa{}, pb{};
+                arenaClosestPoints(lead, Vec2{1.f, 0.f}, 0.f, Vec2{lead.x + dir.x * mid, lead.y + dir.y * mid}, axis,
+                                   arenaBodySpan(shipped), pa, pb);
+                (distanceOf(pa, pb) < least - 0.05f ? lo : hi) = mid;
+            }
+            const Vec2 pup{lead.x + dir.x * lo, lead.y + dir.y * lo};
+            rig.bodies.player = lead;
+            rig.bodies.enemies[0] = pup;
+            ArenaHeld held;
+            held.player = true;
+            held.playerWall = Vec2{1.f, 0.f};
+            held.enemies[0] = held.pinned[0] = true;
+            const ArenaSettleRun run = arenaSettleBodies(rig.fight, rig.bodies, true, held, kRingHoldFn, &ring);
+            const Contact c = contactOf(rig.fight, rig.bodies);
+            Vec2 onLead{}, onPup{};
+            arenaClosestPoints(rig.bodies.player, Vec2{1.f, 0.f}, 0.f, rig.bodies.enemies[0], axis,
+                               arenaBodySpan(shipped), onLead, onPup);
+            const float gap = distanceOf(onLead, onPup) - least; // the lead's clearance off the pup after the settle
+            const float pupMoved = distanceOf(rig.bodies.enemies[0], pup);
+            const float slid = distanceOf(rig.bodies.player, lead);
+            const float offWall = std::fabs(std::hypot(rig.bodies.player.x, rig.bodies.player.y) -
+                                             (ring.radius - fi.bodyRadius));
+            MESSAGE(std::string(kit) << " slant " << slant << ": " << run.passes << " passes, settled " << run.settled
+                                     << ", lead slid " << slid * 1000.f << " mm (off the wall " << offWall * 1000.f
+                                     << " mm), pup moved " << pupMoved * 1000.f << " mm, clear of the pup by "
+                                     << gap * 1000.f << " mm");
+            CHECK(c.worst >= -kArenaSettleFloor - 1e-5f);
+            CHECK(c.outside <= 1e-5f);
+            if (slant == 0.f) {
+                CHECK(pupMoved > 0.f); // nothing to slide along: the pin gives at the cap
+                continue;
+            }
+            CHECK(run.settled);
+            CHECK(pupMoved == 0.f);
+            CHECK(slid > 0.f);
+            CHECK(gap >= -kArenaSettleFloor - 1e-5f);
+            CHECK(gap <= 1e-3f);     // slid to contact, no farther
+            CHECK(offWall <= 1e-4f); // along the wall, not off it
+            CHECK(rig.bodies.player.y * std::sin(slant) < 0.f); // away from the pup's side
+        }
+    }
+}
+
+// The tests' pounceKind is the shipped pup (ruling 6365 P) bar its range band: every field it writes but the band
+// equals the shipped data's, so a run on it is a run on the shipped Pounce from another distance.
+TEST_CASE("arena maw_pup: pounceKind is the shipped pup on every field but the range band (ruling 6365 P)") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    for (const float range : {0.9f, 1.3f, 2.f}) {
+        CAPTURE(range);
+        const ArenaEnemyKind p = pounceKind(shipped, range);
+        CHECK(p.moves[1].attack.active == shipped.moves[1].attack.active);
+        CHECK(p.moves[1].attack.lunge == shipped.moves[1].attack.lunge);
+        CHECK(p.lungeMove == shipped.lungeMove);
+        REQUIRE(p.lungeCurve.count == shipped.lungeCurve.count);
+        CHECK(p.lungeCurve.scale == doctest::Approx(shipped.lungeCurve.scale).epsilon(1e-6));
+        for (std::size_t k = 0; k < p.lungeCurve.count; ++k) {
+            CAPTURE(k);
+            CHECK(p.lungeCurve.t[k] == shipped.lungeCurve.t[k]);
+            CHECK(p.lungeCurve.v[k] == shipped.lungeCurve.v[k]);
+        }
+        // The band: the only other fields it writes (the attack's startup, recovery, damage and the rest are copied).
+        CHECK(p.preferredRange == range);
+        CHECK(p.moves[1].minRange == doctest::Approx(shipped.moves[1].minRange).epsilon(1e-6)); // 0.85 shipped
+        CHECK(p.moves[1].attack.startup == shipped.moves[1].attack.startup);
+        CHECK(p.moves[1].attack.recovery == shipped.moves[1].attack.recovery);
+        CHECK(p.moves[0].holdsGround == shipped.moves[0].holdsGround);
+    }
+}
+
+TEST_CASE("pup back-off: across the Nip's fade into the gait slot the body moves at most 20 mm (ruling 6466 B)") {
+    // The after-run's case (acd96eaa, back-offs at f185-216 and f314-345): a Nip ends and the pup backs off. While
+    // the slot fades in over the Nip's last blend its paws stand planted; the body's travel there is Core's share of
+    // that window's 20 mm bar (the rest is the pose crossfade, the clips' stance gap, not Core's).
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const BeatClips clips = loadPupClips();
+    const double blend = clips.blend;
+    int nips = 0;
+    float worst = 0.f;
+    for (const char* lead : {"devin", "duy", "third"}) {
+        for (int press = 0; press < 2; ++press) {
+            CAPTURE(std::string(lead));
+            CAPTURE(press);
+            Rig rig(t.fighter(lead), {pup});
+            rig.put(0, 4.f, 0.f);
+            bool inFade = false;
+            float travel = 0.f;
+            const int ticks = static_cast<int>(std::lround(20.f / kDt));
+            for (int i = 0; i < ticks && rig.fight.phase() == ArenaPhase::Fighting; ++i) {
+                // press 1: the lead keeps walking at the pup, as in the run; press 0: it stands
+                rig.in.move = Vec2{};
+                if (press == 1) {
+                    const Vec2 to{rig.bodies.enemies[0].x - rig.bodies.player.x,
+                                  rig.bodies.enemies[0].y - rig.bodies.player.y};
+                    const float l = std::hypot(to.x, to.y);
+                    if (l > 1e-4f) rig.in.move = Vec2{to.x / l, to.y / l};
+                }
+                const Vec2 from = rig.bodies.enemies[0];
+                rig.tick();
+                arenaStep(rig.fight, rig.bodies, kDt);
+                const ArenaEnemyOut& e = rig.out().enemies[0];
+                const bool nip = e.brain == ArenaBrain::Attack && e.move == 0;
+                const bool fade = nip && arenaGaitShows(e, rig.fight.enemyAttackLength(0), blend);
+                if (fade) {
+                    if (!inFade) ++nips, travel = 0.f;
+                    travel += distanceOf(from, rig.bodies.enemies[0]);
+                    worst = std::max(worst, travel);
+                    CHECK(travel <= 0.020f);
+                }
+                inFade = fade;
+            }
+        }
+    }
+    MESSAGE("Nip fades " << nips << ", most body travel in one " << worst * 1000.f << " mm");
+    REQUIRE(nips > 0);
 }

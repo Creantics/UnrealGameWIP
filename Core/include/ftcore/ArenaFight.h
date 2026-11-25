@@ -670,6 +670,9 @@ struct ArenaEnemyMove {
     // Whether it reaches a jumping player (ArenaFighter::jumpClearStart..End). arena.json "hitsAir"; when the file
     // leaves it out, false for a sweep or a slam (low, along the floor) and true for every other tell.
     bool hitsAir = true;
+    // The enemy holds its ground through this move (arena.json "holdsGround"; default false): a body pressing into it
+    // is stopped at contact and slides along it, and it is not pushed (arenaPlanted's pinned mark; ruling 6365 H).
+    bool holdsGround = false;
     ArenaTell tell = ArenaTell::Strike; // its Read card's word; arena.json names a different one per move
     // Where it lands on a lead's body (arena.json "hitPart"; Auto when left out). Presentation only.
     ArenaHitPart hitPart = ArenaHitPart::Auto;
@@ -2148,34 +2151,51 @@ FTCORE_API void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt
 FTCORE_API void arenaPushApart(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer);
 
 // Which bodies a wall moved this step (ArenaBodies' order: the player, then the enemies): the settle's input.
+// `pinned` outranks `held`: of a pair, a pinned body gives its share to an unpinned one even where a wall holds that
+// one; two pinned, or two of the same rank, split half each.
 struct ArenaHeld {
     bool player = false;
     std::array<bool, kMaxArenaEnemies> enemies{};
+    std::array<bool, kMaxArenaEnemies> pinned{}; // enemies holding their ground (ArenaEnemyMove::holdsGround)
+    Vec2 playerWall{}; // the outward normal of the wall that last held the player (arenaHoldBodies); 0 when none has
     bool any() const {
         for (const bool e : enemies)
             if (e) return true;
         return player;
+    }
+    bool anyPinned() const {
+        for (const bool e : pinned)
+            if (e) return true;
+        return false;
     }
 };
 
 // Marks in `held` each enemy in a lunge-curve move (ArenaEnemyKind::lungeCurve) with a paw planted: its clock at or
 // before the startup's end, latched, or its ending decided (ArenaEnemyOut::lungeLatched, lungeEnding). The push
 // gives such a pup's share to the other body (the lead yields); where a wall holds the lead too, both are held and
-// the settle splits each overlap half each until it is gone, so the pup gives only what the lead can't. Marks
-// already set stay.
+// the settle splits each overlap half each until it is gone, so the pup gives only what the lead can't. Also marks,
+// held and pinned, each enemy attacking with a holdsGround move (the whole attack): it gives its share even to a
+// body a wall holds, so a lead pressing in is stopped at contact and slides along the wall and the enemy. A lead
+// pinched between a wall and a pinned enemy is slid along the wall (ArenaHeld::playerWall) until it clears the enemy
+// (arenaSettle); only where the settle still can't part them (its cap) does a pinned enemy give, as a held one does.
+// Marks already set stay.
 // True when it marked one. Deterministic; no allocation.
 FTCORE_API bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held);
 
 // After a step's settle: bodies.pushStep = the lead's position less `ownPlayer` (where its own step `ownStep` took
 // it), less the part along ownStep that only takes the step back (up to its length: walking into the planted body is
-// a block, not a shove), when a body is planted (arenaPlanted) and that is over kArenaPushFloor, else 0; bodies.push
-// runs on from it (ArenaPush). dt <= 0 (a frozen or cut-back step): pushStep 0, a running shove ends, no shove
-// begins. began and ended last one step. Deterministic; no allocation.
+// a block, not a shove), when a body is planted (arenaPlanted) and that is over kArenaPushFloor, else 0. A lead that
+// ends within 1 mm of contact with a held body was slid round it: of that move only the part straight out from the
+// body stays, up to how far the body as it is now reaches past where the lead stood before its step (what the body
+// drove in), none along its edge. bodies.push runs on from it (ArenaPush). dt <= 0 (a frozen or cut-back step):
+// pushStep 0, a running shove ends, no shove begins. began and ended last one step. Deterministic; no allocation.
 FTCORE_API void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer, Vec2 ownStep, float dt);
 
 // After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more
 // pass gives the whole of each overlap deeper than `floor` to the body the wall does not hold (both held, or
-// neither: half each). Contacts no deeper than `floor` are left as they are. True when it moved a body: the caller
+// neither: half each). A held lead against a pinned enemy is instead slid along the wall that held it (its tangent,
+// ArenaHeld::playerWall) far enough to part them, where the push out of the enemy has some part along that wall;
+// the enemy stays. Contacts no deeper than `floor` are left as they are. True when it moved a body: the caller
 // then holds the bodies inside its walls again, and may settle again (arenaSettleBodies). Deterministic; no allocation.
 constexpr float kArenaSettleFloor = 1.0e-4f; // the settle leaves contacts no deeper than 0.1 mm
 constexpr int kArenaSettlePasses = 32;         // arenaSettleBodies' hard cap: five dummies pressed on the ring settle in 21
@@ -2195,7 +2215,9 @@ FTCORE_API bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, Ar
 // (arenaSettle at kArenaSettleFloor) and then the bodies held again (arenaHoldBodies), until a settle pass moves
 // nothing. `settled` then says the last thing done left both rules met: every living pair within 0.1 mm and every
 // body inside the wall. At the cap it is false: the wall's rule holds (the hold ran last) and a pair may keep a
-// residue, which the tests measure (the host mirror's sweep and the ring-edge crowd). Deterministic; no allocation.
+// residue, which the tests measure (the host mirror's sweep and the ring-edge crowd). With a pinned enemy and the
+// cap reached, its pin is dropped to a plain hold and the settle runs once more to its cap (`passes` counts both).
+// Deterministic; no allocation.
 struct ArenaSettleRun {
     int passes = 0;       // settle passes run (the last one moved nothing when settled)
     bool settled = false;

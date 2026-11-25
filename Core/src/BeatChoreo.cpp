@@ -256,12 +256,11 @@ GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show,
         state.live = {};
         return f;
     }
-    // The slot's weight: from 0 when it starts to show after another clip, rising over the blend, never under what the
-    // body's speed needs at the slowest gait.
+    // The slot's weight: from 0 when it starts to show after another clip (a hold among them), rising by dt / blend
+    // and by no more (ruling 6365 F: a speed floor here popped the walk in over one tick after a flinch).
     if (!state.showing) state.slot = first ? 1.0 : 0.0;
     state.showing = true;
     state.slot = std::min(1.0, state.slot + (blend > 0.0 ? dt / blend : 1.0));
-    if (gaits.count > 0) state.slot = std::max(state.slot, std::min(1.0, std::fabs(v) / gaits.speed[0]));
     const double u = state.slot > 0.0 ? v / state.slot : 0.0;
     gaitMixLayers(gaits, std::fabs(u), f.layer);
     const double sign = u < 0.0 ? -1.0 : 1.0;

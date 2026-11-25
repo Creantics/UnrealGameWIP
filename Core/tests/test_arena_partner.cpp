@@ -5366,6 +5366,10 @@ struct ClassicPinRow {
 // Re-pinned for the maw_pup's nip timed to its clip (startup 1.2, recovery 1.265, range 0.37) and its push inset 0.19
 // (tooth contact 0.75 m): only the four maw_pup rows moved, all still victories, hits and damage unchanged; hashes
 // only.
+// Re-pinned for the maw_pup's pounce of ruling 6365 P (active 0.4, lunge 2.2 on its lungeSpeed curve, minRange 0.85):
+// the data alone moved them (the Nip's holdsGround, the wall slide and the gait slot left every row byte-equal), and
+// only the four maw_pup rows. Devin's with the camera 3 -> 6 partner hits (21 -> 42), as before the lunge to contact;
+// the other three, hashes only.
 const ClassicPinRow kClassicPins[] = {
     {"devin", "shipped default fight", false, 13, 94, 31290753253845615ull},
     {"devin", "shipped default fight", true, 13, 94, 16239672271515793875ull},
@@ -5391,8 +5395,8 @@ const ClassicPinRow kClassicPins[] = {
     {"devin", "stone_bearer", true, 66, 489, 11331705351014989236ull},
     {"devin", "white_glove", false, 58, 413, 13953194659030329670ull},
     {"devin", "white_glove", true, 55, 400, 5000600046039610435ull},
-    {"devin", "maw_pup", false, 6, 42, 14256179597642347800ull},
-    {"devin", "maw_pup", true, 3, 21, 6649435071086530976ull},
+    {"devin", "maw_pup", false, 6, 42, 6447182564764779930ull},
+    {"devin", "maw_pup", true, 6, 42, 983279454513242851ull},
     {"devin", "spitter", false, 6, 42, 6079499873305667569ull},
     {"devin", "spitter", true, 3, 21, 4150562399047041604ull},
     {"duy", "shipped default fight", false, 16, 118, 17274731110568096544ull},
@@ -5419,8 +5423,8 @@ const ClassicPinRow kClassicPins[] = {
     {"duy", "stone_bearer", true, 82, 613, 7313118388245454201ull},
     {"duy", "white_glove", false, 66, 483, 1839276756863646281ull},
     {"duy", "white_glove", true, 66, 472, 10316052538403549276ull},
-    {"duy", "maw_pup", false, 6, 42, 6163384910381864181ull},
-    {"duy", "maw_pup", true, 6, 42, 14428655029584113663ull},
+    {"duy", "maw_pup", false, 6, 42, 983660237462071315ull},
+    {"duy", "maw_pup", true, 6, 42, 14013236267529906092ull},
     {"duy", "spitter", false, 6, 42, 373096491565446441ull},
     {"duy", "spitter", true, 6, 42, 13513007789646449681ull},
 };

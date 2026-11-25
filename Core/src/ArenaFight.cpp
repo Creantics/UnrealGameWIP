@@ -5434,23 +5434,34 @@ void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer
         d = arenaMadd(d, s, back);
     }
     const bool planted = arenaPlanted(fight, held);
-    // A lead whose whole travel this tick is no more than its own step was slid round the planted body, not shoved
-    // (ruling 6023 item 5b): the part of the settle's move along that body's edge goes, and of the part straight out
-    // from it only what is more than the lead's own step into the body stays (the pup driving in). Taking the step
-    // back along the step alone leaves k(1 - (n.s)^2) of a pure slide. PlayerStepSpeed keeps the slide.
-    if (planted && stepLen > 0.f && arenaLength(arenaMadd(moved, ownStep, 1.f)) <= stepLen) {
-        float best = -1.f;
+    // A lead that ends at contact with a held body was slid round it, not shoved, but for what that body drove in
+    // (ruling 6023 item 5b): of the settle's move only the part straight out from the body stays, and of that no more
+    // than the body's surface now reaches past where the lead stood before its own step (its depth there against the
+    // body as it is now). A body that held still drives in nothing: a lead running past a curved flank or cap slides
+    // (ruling 6365 H). The normal is from the closest point of the body's spine (a stadium), a circle's from its
+    // centre. Taking the step back along the step alone leaves k(1 - (n.s)^2) of a pure slide.
+    if (planted) {
+        const ArenaDef& def = fight.def();
+        const float leadRadius = def.fighter.bodyRadius;
+        constexpr float kAtContact = 1.0e-3f; // within 1 mm of touching after the settle
+        float best = -1.f, depth = 0.f;
         Vec2 n{};
+        const Vec2 stood = arenaSub(ownPlayer, ownStep);
         for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
             if (!held.enemies[i]) continue;
-            const Vec2 r = arenaSub(bodies.player, bodies.enemies[i]);
+            const Vec2 axis = arenaUnit(fight.output().enemies[i].facing, Vec2{1.f, 0.f});
+            const float span = arenaBodySpan(def.enemies[i]);
+            const float least = std::max(0.f, leadRadius - def.enemies[i].contactInset) + def.enemies[i].bodyRadius;
+            Vec2 onLead{}, onBody{};
+            arenaClosestPoints(bodies.player, Vec2{1.f, 0.f}, 0.f, bodies.enemies[i], axis, span, onLead, onBody);
+            const Vec2 r = arenaSub(bodies.player, onBody);
             const float rl = arenaLength(r);
-            if (best < 0.f || rl < best) best = rl, n = arenaUnit(r, Vec2{1.f, 0.f});
+            if (rl > least + kAtContact || (best >= 0.f && rl >= best)) continue;
+            best = rl, n = arenaUnit(r, Vec2{1.f, 0.f});
+            arenaClosestPoints(stood, Vec2{1.f, 0.f}, 0.f, bodies.enemies[i], axis, span, onLead, onBody);
+            depth = std::max(0.f, least - arenaLength(arenaSub(stood, onBody)));
         }
-        if (best >= 0.f) {
-            const float inward = std::max(0.f, -(ownStep.x * n.x + ownStep.y * n.y));
-            d = arenaScaled(n, std::max(0.f, moved.x * n.x + moved.y * n.y - inward));
-        }
+        if (best >= 0.f) d = arenaScaled(n, std::min(std::max(0.f, moved.x * n.x + moved.y * n.y), depth));
     }
     const float len = arenaLength(d);
     if (!planted || len <= kArenaPushFloor) {
@@ -5482,6 +5493,10 @@ bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held) {
     for (std::size_t i = 0; i < fight.enemyCount(); ++i) {
         const ArenaEnemyOut& eo = out.enemies[i];
         const ArenaEnemyKind& k = fight.def().enemies[i];
+        if (eo.brain == ArenaBrain::Attack && eo.move < k.moveCount && k.moves[eo.move].holdsGround) {
+            held.enemies[i] = held.pinned[i] = any = true; // ruling 6365 H: the whole attack
+            continue;
+        }
         if (eo.brain != ArenaBrain::Attack || k.lungeMove < 0 || k.lungeCurve.count == 0 ||
             eo.move != static_cast<std::uint8_t>(k.lungeMove))
             continue;
@@ -5495,7 +5510,12 @@ bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held) {
 bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& held, ArenaHoldFn hold, const void* wall) {
     const ArenaDef& def = fight.def();
     bool moved = false;
-    if (hold(wall, bodies.player, def.fighter.bodyRadius)) moved = held.player = true;
+    const Vec2 was = bodies.player;
+    if (hold(wall, bodies.player, def.fighter.bodyRadius)) {
+        moved = held.player = true;
+        const Vec2 out = arenaSub(was, bodies.player);
+        if (arenaLength(out) > kArenaEps) held.playerWall = arenaUnit(out, Vec2{});
+    }
     for (std::size_t i = 0; i < fight.enemyCount(); ++i)
         if (hold(wall, bodies.enemies[i], arenaBodyReach(def.enemies[i]))) moved = held.enemies[i] = true;
     return moved;
@@ -5505,13 +5525,18 @@ ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, b
                                  ArenaHoldFn hold, const void* wall, int maxPasses) {
     ArenaSettleRun run;
     const int cap = std::max(1, maxPasses);
-    while (run.passes < cap) {
-        ++run.passes;
-        if (!arenaSettle(fight, bodies, withPlayer, held)) {
-            run.settled = true;
-            break;
+    for (int round = 0; round < 2; ++round) {
+        for (int pass = 0; pass < cap; ++pass) {
+            ++run.passes;
+            if (!arenaSettle(fight, bodies, withPlayer, held)) {
+                run.settled = true;
+                return run;
+            }
+            arenaHoldBodies(fight, bodies, held, hold, wall);
         }
-        arenaHoldBodies(fight, bodies, held, hold, wall);
+        // Cornered: a pinned enemy gives what the others can't, as a held one does (both held: half each).
+        if (!held.anyPinned()) break;
+        held.pinned = {};
     }
     return run;
 }
@@ -5609,6 +5634,39 @@ bool arenaPushPair(Vec2& a, float ra, const ArenaSpine& sa, Vec2& b, float rb, c
     return true;
 }
 
+// A lead the wall holds (outward normal `wall`) against a pinned body (ruling 6365 H): neither gives, so the lead
+// clears the overlap deeper than `floor` by sliding along the wall, not straight into it (which the wall would put
+// back, a pass at a time: a lead wedged between the wall and the body's flank took hundreds). Along the wall's
+// tangent, away from the body, just as far as puts the lead at contact with the body's closest point (the passes
+// after it finish a slide round a spine whose closest point moves), and no farther in a pass than the two bodies'
+// reach (rl + rb). Only when the push runs into the wall and its tangent keeps at least kArenaSlideLeast of the push;
+// else it returns false and the plain push runs. True when it moved the lead.
+constexpr float kArenaSlideLeast = 1.0e-3f;
+bool arenaSlidePair(Vec2& lead, float rl, Vec2 wall, const Vec2& body, float rb, const ArenaSpine& sb, float floor,
+                    bool& pushed) {
+    Vec2 pa = lead, pb = body;
+    arenaClosest(ArenaSpine{lead, Vec2{1.f, 0.f}, 0.f}, sb, pa, pb);
+    const Vec2 d = arenaSub(pa, pb); // from the body to the lead
+    const float distance = arenaLength(d);
+    const float overlap = rl + rb - distance;
+    if (overlap <= floor || distance <= kArenaEps) return overlap <= floor;
+    const Vec2 dir = arenaScaled(d, 1.f / distance);
+    const float into = arenaDot(dir, wall);
+    if (into <= 0.f) return false; // the push runs off the wall: the plain push
+    const Vec2 along = arenaMadd(dir, wall, -into);
+    const float keep = arenaLength(along);
+    if (keep < kArenaSlideLeast) return false;
+    // The lead's offset from the body's point, `distance * into` across the wall and `distance * keep` along it: a
+    // slide s along the tangent leaves it at contact when (distance * keep + s)^2 + (distance * into)^2 = (rl + rb)^2.
+    const float reach = rl + rb;
+    const float across = distance * into;
+    const float slide = std::min(std::sqrt(std::max(0.f, reach * reach - across * across)) - distance * keep, reach);
+    if (slide <= 0.f) return false;
+    lead = arenaMadd(lead, along, slide / keep);
+    pushed = true;
+    return true;
+}
+
 // The push passes' shared walk: the player against each living enemy (withPlayer), then each living pair. True
 // when it pushed a pair.
 bool arenaPushWalk(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld* held, float floor) {
@@ -5616,27 +5674,36 @@ bool arenaPushWalk(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer
     const ArenaDef& def = fight.def();
     const ArenaOutput& out = fight.output();
     const float playerRadius = def.fighter.bodyRadius;
-    const auto share = [held](bool heldA, bool heldB) {
-        if (held == nullptr || heldA == heldB) return 0.5f;
-        return heldA ? 0.f : 1.f;
+    // A body's rank in a push: 2 pinned (holding its ground), 1 held (a wall, a planted paw), 0 free. The higher gives
+    // its share to the lower; equal ranks split half each.
+    const auto share = [held](int rankA, int rankB) {
+        if (held == nullptr || rankA == rankB) return 0.5f;
+        return rankA > rankB ? 0.f : 1.f;
     };
+    const auto rank = [held](std::size_t i) {
+        return held == nullptr ? 0 : held->pinned[i] ? 2 : held->enemies[i] ? 1 : 0;
+    };
+    const int playerRank = held != nullptr && held->player ? 1 : 0;
     const auto spine = [&](std::size_t i) {
         return ArenaSpine{bodies.enemies[i], arenaUnit(out.enemies[i].facing, Vec2{1.f, 0.f}), arenaBodySpan(def.enemies[i])};
     };
     bool pushed = false;
+    const bool walled = held != nullptr && held->player && arenaLength(held->playerWall) > 0.f;
     for (std::size_t i = 0; i < n && withPlayer; ++i)
-        if (fight.enemyAlive(i))
+        if (fight.enemyAlive(i) &&
+            !(walled && held->pinned[i] &&
+              arenaSlidePair(bodies.player, std::max(0.f, playerRadius - def.enemies[i].contactInset),
+                             held->playerWall, bodies.enemies[i], def.enemies[i].bodyRadius, spine(i), floor, pushed)))
             pushed |= arenaPushPair(bodies.player, std::max(0.f, playerRadius - def.enemies[i].contactInset),
                           ArenaSpine{bodies.player, Vec2{1.f, 0.f}, 0.f}, bodies.enemies[i],
                           def.enemies[i].bodyRadius, spine(i),
-                          share(held && held->player, held && held->enemies[i]), floor);
+                          share(playerRank, rank(i)), floor);
     for (std::size_t i = 0; i < n; ++i) {
         if (!fight.enemyAlive(i)) continue;
         for (std::size_t j = i + 1; j < n; ++j)
             if (fight.enemyAlive(j))
                 pushed |= arenaPushPair(bodies.enemies[i], def.enemies[i].bodyRadius, spine(i), bodies.enemies[j],
-                              def.enemies[j].bodyRadius, spine(j), share(held && held->enemies[i], held && held->enemies[j]),
-                              floor);
+                              def.enemies[j].bodyRadius, spine(j), share(rank(i), rank(j)), floor);
     }
     return pushed;
 }
@@ -5761,7 +5828,8 @@ float arenaAimWeight(const ArenaAttack& a, float stateTime, float held) {
 //             host plays for the move (the host's business; no two moves of one enemy share one);
 //             hitsAir boolean (default false for a sweep or slam tell, else true: false passes under a jump's
 //             clear window and takes the legs); hitPart one of arenaHitPartName's words (default "auto": the
-//             reaction picks the part by height and tell), the part a landed blow strikes (display only)
+//             reaction picks the part by height and tell), the part a landed blow strikes (display only);
+//             holdsGround boolean (default false): the enemy holds its ground through the attack (arenaPlanted)
 //   fight     enemies 1..6 known enemy ids; ring (0, 1000]; spawn (0, 1000]; attackers 1..6;
 //             scene a non-empty id; beat 0..1000000; step 0..1000
 
@@ -6198,7 +6266,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         ArenaEnemyMove& mv = k.moves[m];
         arenaUnknownKeys(mj, mp,
                          {"minRange", "maxRange", "cooldown", "weight", "chain", "unblockable", "parryable", "tell", "clip",
-                          "hitsAir", "hitPart", "lungeSpeed"},
+                          "hitsAir", "hitPart", "lungeSpeed", "holdsGround"},
                          true, warnings);
         arenaParseAttack(mj, mp, mv.attack, errors);
         arenaParseLungeSpeed(mj["lungeSpeed"], mp + ".lungeSpeed", k, m, mv.attack.lunge, errors);
@@ -6208,6 +6276,7 @@ void arenaParseEnemy(JsonValue j, const std::string& path, ArenaEnemyKind& k, Ar
         arenaNum(mj, "weight", mv.weight, 0, 1000, false, mp, errors);
         arenaBool(mj, "unblockable", mv.unblockable, mp, errors);
         arenaBool(mj, "parryable", mv.parryable, mp, errors);
+        arenaBool(mj, "holdsGround", mv.holdsGround, mp, errors);
         const JsonValue tj = mj["tell"];
         if (!tj.isAbsent()) {
             bool known = false;

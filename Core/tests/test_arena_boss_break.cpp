@@ -158,15 +158,19 @@ TEST_CASE("arena boss break: the break value leaves regular enemies' fights unto
     // Re-measured for the maw_pup's nip timed to its clip (startup 1.2, recovery 1.265) and its push inset 0.17 -> 0.19
     // (contact 0.75; nip range 0.37, pounce band 0.76-1.80, preferredRange 1.78): again only the fights that field
     // maw_pup can move. Before it: 14269102645039719742 (1540401073455458863 with pairCooldown 0).
-    CHECK(golden == 11394361545849396747ull);
+    // Re-measured for the maw_pup's pounce of ruling 6365 P (active 0.4, lunge 2.2 on its lungeSpeed curve, minRange
+    // 0.85): the data alone moved it (the Nip's holdsGround, the wall slide and the gait slot left it byte-equal), and
+    // only the fights that field maw_pup can move. Before it: 11394361545849396747 (1751563556067716138 with
+    // pairCooldown 0).
+    CHECK(golden == 4813087796793995499ull);
 }
 
 TEST_CASE("arena boss break: the golden trace moved for the paired counter's cooldown alone, not for the free BLOCK") {
     int fights = 0;
     // No cooldown: the shipped trace with only the paired counter's cooldown taken out.
-    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 1751563556067716138ull);
+    CHECK(regularGolden([](ArenaFighter& f) { f.pairCooldown = 0.f; }, fights) == 12715726897534528778ull);
     // The called BLOCK's guard damage put back: the trace as shipped.
-    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 11394361545849396747ull);
+    CHECK(regularGolden([](ArenaFighter& f) { f.blockCallGuard = 1.f; }, fights) == 4813087796793995499ull);
 }
 
 // ---- the boss break value ----
