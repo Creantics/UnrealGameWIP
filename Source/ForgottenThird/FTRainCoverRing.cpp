@@ -49,6 +49,7 @@
 #include "Hash/CityHash.h"
 #include "IO/IoHash.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstance.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
@@ -538,19 +539,32 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		const uint64 HMesh = H;
 		// Materials by path. The world-position offset flag feeds the plant tiles only, not the key: the bake turns the offset
 		// off on every component (the Switch state), so a material's offset can't change a payload, and its path is hashed.
+		// A material made at run time (a dynamic instance: the far signs' MID_M_Look_Sign_<n>) is keyed by its first saved
+		// parent's path: its numbered name comes from the order objects were made, which a cooked build need not repeat. Its
+		// own parameters are not keyed (the parent sets the blend mode the depth draw reads).
 		bool bWpo = false, bRunMat = false;
 		FString DumpMats;
 		for (int32 S = 0; S < C->GetNumMaterials(); ++S)
 		{
 			const UMaterialInterface* Mi = C->GetMaterial(S);
-			const FString MN = Mi ? Mi->GetPathName() : FString();
 			const bool bW = Mi && Mi->IsUsingWorldPositionOffset_Concurrent(GMaxRHIFeatureLevel);
 			bWpo = bWpo || bW;
-			bRunMat = bRunMat || (Mi && (Mi->HasAnyFlags(RF_Transient) || !Mi->HasAnyFlags(RF_WasLoaded | RF_Public)));
+			const auto RunTime = [](const UMaterialInterface* X)
+			{
+				return X->HasAnyFlags(RF_Transient) || !X->HasAnyFlags(RF_WasLoaded | RF_Public);
+			};
+			bRunMat = bRunMat || (Mi && RunTime(Mi));
+			const UMaterialInterface* Keyed = Mi;
+			while (Keyed && RunTime(Keyed))
+			{
+				const UMaterialInstance* Inst = Cast<UMaterialInstance>(Keyed);
+				Keyed = Inst ? Inst->Parent.Get() : nullptr;
+			}
+			const FString MN = Keyed ? Keyed->GetPathName() : Mi ? FString(TEXT("run-time ")) + Mi->GetClass()->GetName() : FString();
 			H = CityHash64WithSeed(reinterpret_cast<const char*>(*MN), uint32(MN.Len() * sizeof(TCHAR)), H);
 			if (R.KeyDump.Num() > 0)
 			{
-				DumpMats += FString::Printf(TEXT("%s[%d] %s wpo %d"), S ? TEXT("; ") : TEXT(""), S, *MN, bW ? 1 : 0);
+				DumpMats += FString::Printf(TEXT("%s[%d] %s%s wpo %d"), S ? TEXT("; ") : TEXT(""), S, *MN, Keyed != Mi && Mi ? *(FString(TEXT(" (for ")) + Mi->GetName() + TEXT(")")) : TEXT(""), bW ? 1 : 0);
 			}
 		}
 		RunMat += bRunMat ? 1 : 0;
