@@ -4863,6 +4863,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		// The strike clips at the fight time drawn (the bodies are drawn a step behind, Alpha of the way to the last), and
 		// the gun's reload overlay by the fight's own progress.
 		LeadWeapons.SetReload(Fight.reloading(), Fight.reloadProgress());
+		LeadWeapons.PaintArmAim(LeadPoseTime(Alpha));
 		LeadWeapons.Paint(DrawnTime);
 	}
 	PlaceAlly(Alpha);

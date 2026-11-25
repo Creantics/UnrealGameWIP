@@ -182,6 +182,9 @@ struct FFTLeadWeapons
 	// The player's state after the step: the effects that start as an attack goes active, the guard's ward, the clips'
 	// fade when the attack ends.
 	void Track(const ftcore::ArenaPlayerOut& P, double T);
+	// Each frame after the figure is posed: the last tracked state's arm aim again at the drawn body's own action time
+	// (UFTArenaRunner::LeadPoseTime), not the step's clock a step ahead.
+	void PaintArmAim(float PoseTime) { PushArmAim(LastTracked, PoseTime); }
 	// After the figure is posed: the clips' layers onto its anim instance at T (the fight's time drawn).
 	void Paint(double T);
 	// The fight begun again (its clock back to 0): the clips stop, the effects stop, the pistol back in the hand.
@@ -269,8 +272,8 @@ private:
 	bool StrikesLeft() const;
 	// The body's chest (the arena figure's own, else the spine's top bone, else above the actor).
 	FVector Chest() const;
-	// The arm aim onto the anim instance for this state (weight 0 when nothing is aimed).
-	void PushArmAim(const ftcore::ArenaPlayerOut& P);
+	// The arm aim onto the anim instance for this state at its action clock Time (weight 0 when nothing is aimed).
+	void PushArmAim(const ftcore::ArenaPlayerOut& P, float Time);
 	// The run check: the aimed direction's angle to the hit point (and the fist's distance to it), summed once per
 	// attack for LogAimSummary and logged per attack when bLogEachAim.
 	void LogAim();
@@ -339,6 +342,7 @@ private:
 	float ActionUpper = 0.f;
 	int32 ActionLeg = -1;
 	int32 AimSide = -1;
+	ftcore::ArenaPlayerOut LastTracked; // the state Track last pushed the arm aim for
 	double ImpactDue = -1.0;
 	// The gun's slots (after the fight clips'), its clips' lengths (0: none), the reload's state and the last dry press.
 	static constexpr int32 kReloadSlot = static_cast<int32>(ftcore::FightClip::Count);

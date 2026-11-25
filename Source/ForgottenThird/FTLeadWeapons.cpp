@@ -1111,7 +1111,8 @@ void FFTLeadWeapons::Track(const ftcore::ArenaPlayerOut& P, double T)
 				FVector::Dist(Vfx->GetComponentLocation(), AimPoint));
 		}
 	}
-	PushArmAim(P);
+	LastTracked = P;
+	PushArmAim(P, P.actionTime);
 	if (AimCheckDue >= 0.0 && T + 1e-6 >= AimCheckDue)
 	{
 		AimCheckDue = -1.0;
@@ -1165,7 +1166,7 @@ double FFTLeadWeapons::GetViewTime(bool bImpact) const
 	}
 }
 
-void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
+void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P, float Time)
 {
 	UFTLocomotionAnimInstance* Instance = Anim.Get();
 	const USkeletalMeshComponent* Body = Skin.Get();
@@ -1194,7 +1195,6 @@ void FFTLeadWeapons::PushArmAim(const ftcore::ArenaPlayerOut& P)
 		const float S = Attack->startup;
 		const float A = Attack->active;
 		const float R = Attack->recovery;
-		const float Time = P.actionTime;
 		if (Time < S)
 		{
 			const float In = FMath::Max(S * kAimInShare, 1e-3f);
@@ -1540,6 +1540,7 @@ void FFTLeadWeapons::Reset()
 	AimCheckDue = -1.0;
 	LastImpactTime = -1e9;
 	AimSide = -1;
+	LastTracked = ftcore::ArenaPlayerOut{};
 	bAimed = false;
 	AimHold = 0.f;
 }
