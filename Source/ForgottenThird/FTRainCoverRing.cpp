@@ -475,6 +475,8 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		return FString::Printf(TEXT("loc %.6f %.6f %.6f scale %.6f %.6f %.6f quat %.9f %.9f %.9f %.9f"), L.X, L.Y, L.Z, S.X, S.Y, S.Z, Q.X, Q.Y, Q.Z, Q.W);
 	};
 	int32 SkipBy[5] = {0, 0, 0, 0, 0}, NoProxy = 0, RunMat = 0;
+	int32 Census[2][2] = {{0, 0}, {0, 0}}; // [kept, left out][saved, run-time]
+	TMap<FString, int32> RunTimeBy;         // run-time components by owner class ("left out " first when the capture can't draw it)
 	for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
 	{
 		UStaticMeshComponent* C = *It;
@@ -491,6 +493,14 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		// the key as they leave both draws: both are bHiddenInGame (SceneCaptureComponent.cpp:276, CameraComponent.cpp:168).
 		const AActor* Owner = C->GetOwner();
 		const int32 Skip = !C->IsVisible() ? 1 : (Owner && Owner->IsHidden()) ? 2 : C->bHiddenInSceneCapture ? 3 : C->bOnlyOwnerSee ? 4 : 0;
+		// The census (once a bake, not per frame): every component saved in the map or made at run time, kept or left out.
+		const bool bSavedComp = C->HasAnyFlags(RF_WasLoaded);
+		++Census[Skip ? 1 : 0][bSavedComp ? 0 : 1];
+		if (!bSavedComp)
+		{
+			RunTimeBy.FindOrAdd(FString::Printf(TEXT("%s%s"), Skip ? TEXT("left out ") : TEXT(""),
+				Owner ? *Owner->GetClass()->GetName() : TEXT("no owner"))) += 1;
+		}
 		if (Skip)
 		{
 			++SkipBy[Skip];
@@ -594,6 +604,18 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("RainCover key filter: %d components the capture can't draw left out (%d not visible, %d owner hidden, %d hidden in captures, %d owner only); of the %d kept, %d with no scene proxy, %d with a run-time material."),
 		SkipBy[1] + SkipBy[2] + SkipBy[3] + SkipBy[4], SkipBy[1], SkipBy[2], SkipBy[3], SkipBy[4], R.Comps, NoProxy, RunMat);
+	{
+		RunTimeBy.ValueSort([](int32 A, int32 B) { return A > B; });
+		FString By;
+		for (const TPair<FString, int32>& P : RunTimeBy)
+		{
+			By += FString::Printf(TEXT("%s%s %d"), By.IsEmpty() ? TEXT("") : TEXT(", "), *P.Key, P.Value);
+		}
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover key census: %d components (%d saved in the map, %d made at run time); kept %d saved + %d run-time, left out %d saved + %d run-time; run-time by owner class: %s."),
+			Census[0][0] + Census[0][1] + Census[1][0] + Census[1][1], Census[0][0] + Census[1][0], Census[0][1] + Census[1][1], Census[0][0],
+			Census[0][1], Census[1][0], Census[1][1], By.IsEmpty() ? TEXT("none") : *By);
+	}
 	// The bake's own settings: file version, the spec, the find and margin, LOD0, no cull and the wind frozen.
 	const float Settings[11] = {float(ftcore::kRainCoverFileVersion), Spec.sizeM, float(Spec.resolution), Spec.depthM, kRingFindTopM, kRingFindFarM,
 		kRingMarginM, kRingTolM, 1.f /*LOD0*/, 1.f /*no cull*/, 1.f /*WPO off*/};
