@@ -36,6 +36,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/SceneCapture2D.h"
 #include "Engine/StaticMesh.h"
+#include "Rendering/NaniteResources.h"
+#include "StaticMeshResources.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
@@ -472,6 +474,7 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		const FQuat Q = X.GetRotation();
 		return FString::Printf(TEXT("loc %.6f %.6f %.6f scale %.6f %.6f %.6f quat %.9f %.9f %.9f %.9f"), L.X, L.Y, L.Z, S.X, S.Y, S.Z, Q.X, Q.Y, Q.Z, Q.W);
 	};
+	int32 SkipBy[5] = {0, 0, 0, 0, 0}, NoProxy = 0, RunMat = 0;
 	for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
 	{
 		UStaticMeshComponent* C = *It;
@@ -480,26 +483,52 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		{
 			continue;
 		}
-		// Only what the bake's capture can draw: the find and the depth draw are the same capture component, so one test covers
-		// both. FPrimitiveSceneProxy::IsShown drops a primitive whose proxy desc is not visible (USceneComponent::IsVisible is
-		// false when bHiddenInGame is set or the visible flag is off), one hidden in scene captures, and one only its owner sees
-		// (the capture's view actor owns no world mesh). That is how the editor-only capture and camera proxy meshes leave the
-		// key: both are bHiddenInGame (SceneCaptureComponent.cpp:276, CameraComponent.cpp:168).
-		if (!C->IsVisible() || C->bHiddenInSceneCapture || C->bOnlyOwnerSee)
+		// Only what the bake's capture can draw: the find and the depth draw are the same capture component (RingDraw), so one
+		// test covers both. FPrimitiveSceneProxy::IsShown (PrimitiveSceneProxy.cpp:1515) draws in a game view only with DrawInGame,
+		// which is the proxy desc's IsVisible (:318; USceneComponent::IsVisible is false when bHiddenInGame is set or the visible
+		// flag is off) and not the owner actor hidden (:508); it drops one hidden in scene captures (:1596) and one only its
+		// owner sees (the capture's view actor owns no world mesh). So the editor-only capture and camera proxy meshes leave
+		// the key as they leave both draws: both are bHiddenInGame (SceneCaptureComponent.cpp:276, CameraComponent.cpp:168).
+		const AActor* Owner = C->GetOwner();
+		const int32 Skip = !C->IsVisible() ? 1 : (Owner && Owner->IsHidden()) ? 2 : C->bHiddenInSceneCapture ? 3 : C->bOnlyOwnerSee ? 4 : 0;
+		if (Skip)
 		{
+			++SkipBy[Skip];
+			FIntPoint SkipHit(0, 0);
+			if (DumpHit(C->Bounds.GetBox(), SkipHit))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("RainCover keydump (%d,%d) SKIPPED %s %s | owner %s %s | saved %d | mesh %s | %s"), SkipHit.X,
+					SkipHit.Y, Skip == 1 ? TEXT("not visible") : Skip == 2 ? TEXT("owner hidden") : Skip == 3 ? TEXT("hidden in captures") : TEXT("owner only"),
+					*C->GetPathName(), Owner ? *Owner->GetClass()->GetName() : TEXT("-"), Owner ? *Owner->GetName() : TEXT("-"),
+					C->HasAnyFlags(RF_WasLoaded) ? 1 : 0, *M->GetPathName(), *DumpT(C->GetComponentTransform()));
+			}
 			continue;
 		}
 		++R.Comps;
-		const UPackage* Pkg = M->GetPackage();
-#if WITH_EDITORONLY_DATA
-		const FIoHash PH = Pkg->GetSavedHash();
-		uint64 H = CityHash64(reinterpret_cast<const char*>(&PH), uint32(sizeof(PH)));
-#else
-		const FString PN = Pkg->GetName();
+		NoProxy += C->SceneProxy ? 0 : 1;
+		// The mesh by what an editor -game run and a cooked build both hold (a package's saved hash is editor-only data): its
+		// package name, LOD0's vertex and triangle counts and the render bounds, and for a Nanite mesh its input counts and
+		// bounds. An edit that moves vertices inside the bounds and keeps every count is not seen: rebake by hand after one.
+		const FString PN = M->GetPackage()->GetName();
 		uint64 H = CityHash64(reinterpret_cast<const char*>(*PN), uint32(PN.Len() * sizeof(TCHAR)));
-#endif
+		{
+			const FBoxSphereBounds B = M->GetBounds();
+			const double Geo[8] = {double(M->GetNumVertices(0)), double(M->GetNumTriangles(0)), B.Origin.X, B.Origin.Y, B.Origin.Z, B.BoxExtent.X,
+				B.BoxExtent.Y, B.BoxExtent.Z};
+			H = CityHash64WithSeed(reinterpret_cast<const char*>(Geo), uint32(sizeof(Geo)), H);
+			const FStaticMeshRenderData* RD = M->GetRenderData();
+			if (M->HasValidNaniteData() && RD && RD->NaniteResourcesPtr.IsValid())
+			{
+				const Nanite::FResources& NR = *RD->NaniteResourcesPtr;
+				const double Nan[8] = {double(NR.NumInputTriangles), double(NR.NumInputVertices), NR.MeshBounds.Origin.X, NR.MeshBounds.Origin.Y,
+					NR.MeshBounds.Origin.Z, NR.MeshBounds.BoxExtent.X, NR.MeshBounds.BoxExtent.Y, NR.MeshBounds.BoxExtent.Z};
+				H = CityHash64WithSeed(reinterpret_cast<const char*>(Nan), uint32(sizeof(Nan)), H);
+			}
+		}
 		const uint64 HMesh = H;
-		bool bWpo = false;
+		// Materials by path. The world-position offset flag feeds the plant tiles only, not the key: the bake turns the offset
+		// off on every component (the Switch state), so a material's offset can't change a payload, and its path is hashed.
+		bool bWpo = false, bRunMat = false;
 		FString DumpMats;
 		for (int32 S = 0; S < C->GetNumMaterials(); ++S)
 		{
@@ -507,13 +536,14 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 			const FString MN = Mi ? Mi->GetPathName() : FString();
 			const bool bW = Mi && Mi->IsUsingWorldPositionOffset_Concurrent(GMaxRHIFeatureLevel);
 			bWpo = bWpo || bW;
+			bRunMat = bRunMat || (Mi && (Mi->HasAnyFlags(RF_Transient) || !Mi->HasAnyFlags(RF_WasLoaded | RF_Public)));
 			H = CityHash64WithSeed(reinterpret_cast<const char*>(*MN), uint32(MN.Len() * sizeof(TCHAR)), H);
-			H = H * 1099511628211ull + (bW ? 1u : 2u);
 			if (R.KeyDump.Num() > 0)
 			{
 				DumpMats += FString::Printf(TEXT("%s[%d] %s wpo %d"), S ? TEXT("; ") : TEXT(""), S, *MN, bW ? 1 : 0);
 			}
 		}
+		RunMat += bRunMat ? 1 : 0;
 		const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C);
 		const int32 Ints[6] = {C->ForcedLodModel, C->MinLOD, I ? I->InstanceStartCullDistance : -1, I ? I->InstanceEndCullDistance : -1,
 			int32(C->LDMaxDrawDistance), int32(C->MinDrawDistance)};
@@ -553,7 +583,7 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 		}
 		if (DumpN > 0)
 		{
-			const AActor* Own = C->GetOwner();
+			const AActor* Own = Owner;
 			UE_LOG(LogForgottenThird, Display,
 				TEXT("RainCover keydump (%d,%d) %s | owner %s %s | saved %d | mobility %d sim %d | mesh %s hash %016llx | mats %s | ints %d %d %d %d %d %d | %s | inst %d | comp %016llx | sum %016llx"),
 				Hit.X, Hit.Y, *C->GetPathName(), Own ? *Own->GetClass()->GetName() : TEXT("-"), Own ? *Own->GetName() : TEXT("-"),
@@ -561,6 +591,9 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 				Ints[3], Ints[4], Ints[5], *DumpT(C->GetComponentTransform()), I ? DumpN : -1, H, DumpSum);
 		}
 	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("RainCover key filter: %d components the capture can't draw left out (%d not visible, %d owner hidden, %d hidden in captures, %d owner only); of the %d kept, %d with no scene proxy, %d with a run-time material."),
+		SkipBy[1] + SkipBy[2] + SkipBy[3] + SkipBy[4], SkipBy[1], SkipBy[2], SkipBy[3], SkipBy[4], R.Comps, NoProxy, RunMat);
 	// The bake's own settings: file version, the spec, the find and margin, LOD0, no cull and the wind frozen.
 	const float Settings[11] = {float(ftcore::kRainCoverFileVersion), Spec.sizeM, float(Spec.resolution), Spec.depthM, kRingFindTopM, kRingFindFarM,
 		kRingMarginM, kRingTolM, 1.f /*LOD0*/, 1.f /*no cull*/, 1.f /*WPO off*/};
