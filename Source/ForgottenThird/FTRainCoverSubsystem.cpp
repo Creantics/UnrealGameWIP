@@ -30,6 +30,17 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Async/Async.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "HAL/IConsoleManager.h"
+#include "HAL/PlatformFileManager.h"
+#include "Hash/CityHash.h"
+#include "IO/IoHash.h"
+#include "Materials/MaterialInterface.h"
+#include "RenderCommandFence.h"
+#include "UObject/Package.h"
+#include <atomic>
 #endif
 
 #include "ftcore/LookTable.h"
@@ -38,6 +49,65 @@
 #include <string_view>
 
 CSV_DEFINE_CATEGORY(RainCover, true);
+
+#if !UE_BUILD_SHIPPING
+// 11-25 truth probe (ruling 7047 item 5, dev): the truth passes' and the strip's state; the streamed upload's.
+struct FFTRainTruth
+{
+	struct FCand
+	{
+		FBox Box;
+		TWeakObjectPtr<UStaticMeshComponent> Comp;
+		int32 Inst = -1;
+	};
+	struct FSaved
+	{
+		TWeakObjectPtr<UStaticMeshComponent> Comp;
+		float LD = 0.f, Cached = 0.f, MinDraw = 0.f;
+		int32 Forced = 0, IStart = 0, IEnd = 0;
+		bool bIsm = false;
+	};
+	// Per reference (tiles' own, then seams'), as drawn in state 3: depth m and the square.
+	TArray<TArray<float>> RefD;
+	TArray<ftcore::RainCoverFrame> RefF;
+	TArray<FString> RefLabel;
+	// Per tile: drawn with all three switches at the tile's own top.
+	TArray<TArray<float>> TruthD;
+	TArray<FCand> Cands;
+	TMap<FIntPoint, TArray<int32>> CandByTile;
+	TArray<FSaved> Saved;
+	TArray<TWeakObjectPtr<AActor>> Hlod;
+	int32 OldForceLod = -1, OldFoliageLod = -1, OldGpuLod = 1;
+	int32 Pass = 0, Wait = 0;
+	bool bSetUp = false, bStarted = false;
+	// From the command line: switches held on every tile and reference draw (1 LOD0, 2 no cull, 4 no HLOD), the truth passes
+	// to run (bit per pass; all and plain always run) and the settle ticks after a switch change.
+	int32 Base = 0, Mask = 0x3F, Settle = 60;
+	FString Csv;
+	int32 CsvRows = 0;
+	// Strip mode (5b, 5c).
+	int32 StripAt = 0, FlatFull = 0, FlatPart = 0, Textured = 0, NoHit = 0;
+	double BuildMs = 0.0, StripT0 = 0.0;
+	int64 Bytes = 0;
+	TArray<FVector> FlatAt; // the first flat-full tiles: centre and Z
+};
+
+struct FFTRainStream
+{
+	int32 K = 5;
+	TArray<FString> Files;
+	int32 Next = 0;
+	TArray<uint16> Buf[2];
+	FRenderCommandFence Fence[2];
+	TFuture<int32> Read[2];
+	bool bReading[2] = {false, false};
+	int32 Ready = -1; // the buffer read and waiting for the next trigger
+	int32 Last = 1;   // the buffer last uploaded
+	int32 Late = 0, Busy = 0, Reads = 0, Short = 0;
+	double ReadMsSum = 0.0, ReadMsMax = 0.0;
+	std::atomic<int64> LastReadUs{0};
+};
+#endif
 
 namespace
 {
@@ -245,11 +315,64 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 			}
 		}
 		bTiles = TileList.Num() > 0;
-		UE_LOG(LogForgottenThird, Display, TEXT("RainCover tiles: probe %s, %d tiles and %d seam points from %s."),
-			bTiles ? TEXT("on") : TEXT("off"), TileList.Num(), SeamList.Num(), *TileFile);
+		bTileStrip = bTiles && FParse::Param(Switches, TEXT("RainCoverTileStrip"));
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover tiles: probe %s, %d tiles and %d seam points from %s; %s."),
+			bTiles ? TEXT("on") : TEXT("off"), TileList.Num(), SeamList.Num(), *TileFile,
+			bTileStrip ? TEXT("strip mode (flat prune, key cost)") : TEXT("tile probe, then the truth passes"));
 	}
 	bUpload = FParse::Param(Switches, TEXT("RainCoverUploadProbe"));
-	if (bUpload)
+	int32 StreamK = 0;
+	if (bUpload && FParse::Value(Switches, TEXT("RainCoverUploadTiles="), StreamK) && StreamK > 0)
+	{
+		// 5d: K R16 tiles per crossing, streamed from the strip's cache off the game thread ahead of it (textured tiles only).
+		const int32 Res = Spec.resolution, N = Res * Res;
+		Stream = MakeShared<FFTRainStream>();
+		Stream->K = StreamK;
+		const FString Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("RainCoverTiles"));
+		TArray<FString> Names;
+		IFileManager::Get().FindFiles(Names, *(Dir / TEXT("tile_*.r16")), true, false);
+		Names.Sort();
+		for (const FString& Nm : Names)
+		{
+			const FString Path = Dir / Nm;
+			TUniquePtr<FArchive> Ar(IFileManager::Get().CreateFileReader(*Path));
+			if (!Ar || Ar->TotalSize() != 32 + int64(N) * 2)
+			{
+				continue;
+			}
+			uint8 Head[32];
+			Ar->Serialize(Head, 32);
+			float Z[3];
+			FMemory::Memcpy(Z, Head + 12, 12);
+			if (Z[2] - Z[1] > 0.002f)
+			{
+				Stream->Files.Add(Path);
+			}
+		}
+		for (int32 B = 0; B < 2; ++B)
+		{
+			Stream->Buf[B].SetNumZeroed(StreamK * N);
+		}
+		for (int32 K = 0; K < StreamK; ++K)
+		{
+			UTexture2D* T = UTexture2D::CreateTransient(Res, Res, PF_G16);
+			if (T)
+			{
+				T->SRGB = false;
+				T->UpdateResource();
+				UploadTex.Add(T);
+			}
+		}
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover stream probe: on, no scene capture; %d textured tiles in %s; %d R16 tiles (%.1f MiB) per %.1f m move, read off the game thread ahead of it."),
+			Stream->Files.Num(), *Dir, UploadTex.Num(), float(StreamK * N * 2) / (1024.f * 1024.f), Spec.recaptureM);
+		if (Stream->Files.Num() == 0)
+		{
+			Stream.Reset();
+			bUpload = false;
+		}
+	}
+	else if (bUpload)
 	{
 		const int32 Res = Spec.resolution, N = Res * Res;
 		UploadSrc.SetNumUninitialized(3 * N);
@@ -377,6 +500,19 @@ void UFTRainCoverSubsystem::Deinitialize()
 		UE_LOG(LogForgottenThird, Display, TEXT("RainCover: %d captures."), Captures);
 	}
 #if !UE_BUILD_SHIPPING
+	if (Stream)
+	{
+		for (int32 B = 0; B < 2; ++B)
+		{
+			if (Stream->bReading[B])
+			{
+				Stream->Read[B].Wait();
+			}
+		}
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover stream probe: %d tiles per crossing: %d reads (mean %.2f ms, max %.2f ms off the game thread, %d short), %d crossings late (read not back, skipped), %d ticks a read waited on a fence."),
+			Stream->K, Stream->Reads, Stream->Reads ? Stream->ReadMsSum / Stream->Reads : 0.0, Stream->ReadMsMax, Stream->Short, Stream->Late, Stream->Busy);
+	}
 	if (bUpload)
 	{
 		FlushRenderingCommands(); // the uploads read UploadSrc
@@ -408,7 +544,14 @@ void UFTRainCoverSubsystem::Tick(float DeltaTime)
 #if !UE_BUILD_SHIPPING
 	if (bUpload) // the upload cell: no scene capture
 	{
-		UploadTick(Eye);
+		if (Stream)
+		{
+			StreamTick(Eye);
+		}
+		else
+		{
+			UploadTick(Eye);
+		}
 		return;
 	}
 	if (bTiles && bHaveCapture) // the tile probe: the shipped recapture waits
@@ -809,6 +952,20 @@ bool UFTRainCoverSubsystem::TileSetup(UWorld& World)
 	TileRange.SetNum(N);
 	TileDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("RainCoverTiles"));
 	IFileManager::Get().MakeDirectory(*TileDir, true);
+	Truth = MakeShared<FFTRainTruth>();
+	{
+		const TCHAR* Sw = FTLookSwitches();
+		Truth->Base = (FParse::Param(Sw, TEXT("RainCoverTileLod0")) ? 1 : 0) | (FParse::Param(Sw, TEXT("RainCoverTileNoCull")) ? 2 : 0) |
+			(FParse::Param(Sw, TEXT("RainCoverTileNoHlod")) ? 4 : 0);
+		FParse::Value(Sw, TEXT("RainCoverTruthPasses="), Truth->Mask);
+		Truth->Mask |= 1 | (1 << 5);
+		FParse::Value(Sw, TEXT("RainCoverTruthSettle="), Truth->Settle);
+		Truth->Settle = FMath::Max(Truth->Settle, 2);
+	}
+	const int32 Items = N + SeamList.Num();
+	Truth->RefD.SetNum(Items);
+	Truth->RefF.SetNum(Items);
+	Truth->RefLabel.SetNum(Items);
 	const APlayerController* PC = World.GetFirstPlayerController();
 	const FVector Eye = PC && PC->PlayerCameraManager ? PC->PlayerCameraManager->GetCameraLocation() : FVector::ZeroVector;
 	UE_LOG(LogForgottenThird, Display, TEXT("RainCover tiles: set up at tick %d, camera at (%.1f, %.1f, %.1f) m, cache %s."), TileTicks,
@@ -990,7 +1147,7 @@ bool UFTRainCoverSubsystem::TilePlaceCamera(UWorld& World, float X, float Y)
 	return PC != nullptr;
 }
 
-void UFTRainCoverSubsystem::TileCompareRef(const TCHAR* Label, int32 Own, float X, float Y)
+void UFTRainCoverSubsystem::TileCompareRef(const TCHAR* Label, int32 Own, int32 Item, float X, float Y)
 {
 	const int32 Res = Spec.resolution;
 	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
@@ -1003,6 +1160,12 @@ void UFTRainCoverSubsystem::TileCompareRef(const TCHAR* Label, int32 Own, float 
 	if (!TileDraw(R, Spec.depthM, Ref, E, Rd))
 	{
 		return;
+	}
+	if (Truth && Truth->RefD.IsValidIndex(Item)) // kept for the truth passes
+	{
+		Truth->RefD[Item] = Ref;
+		Truth->RefF[Item] = R;
+		Truth->RefLabel[Item] = Label;
 	}
 	// Texels within 1 m in plan of a pawn count as on a character (as the diff does).
 	TArray<bool> OnPawn;
@@ -1184,9 +1347,25 @@ void UFTRainCoverSubsystem::TileTick(UWorld& World)
 			bTiles = false;
 			return;
 		}
+		if (Truth->Base != 0) // the draw switches held from the command line, on every draw below
+		{
+			TruthSetUp(World);
+			TruthSwitches(World, false, false, false);
+			TileWait = Truth->Settle;
+		}
 		TileState = 1;
 		return;
 	case 1: // the load-time loop, in one tick, from the camera's own place
+		if (TileWait > 0)
+		{
+			--TileWait;
+			return;
+		}
+		if (bTileStrip) // 5b and 5c: the whole strip, 32 tiles a tick, nothing kept
+		{
+			TileState = 10;
+			return;
+		}
 		TileFarLoop();
 		TileState = 2;
 		TileWait = 2;
@@ -1259,13 +1438,13 @@ void UFTRainCoverSubsystem::TileTick(UWorld& World)
 					UE_LOG(LogForgottenThird, Display, TEXT("RainCover tile on: %d (%d, %d) empty from afar; camera on the tile: %d hits."), I, T.x, T.y, Hits);
 				}
 			}
-			TileCompareRef(*FString::Printf(TEXT("tile %d (%d, %d)"), I, T.x, T.y), I, F.cx, F.cy);
+			TileCompareRef(*FString::Printf(TEXT("tile %d (%d, %d)"), I, T.x, T.y), I, TileAt, F.cx, F.cy);
 		}
 		else
 		{
 			const FVector2f S = SeamList[TileAt - TileList.Num()];
 			TileOn.Reset();
-			TileCompareRef(*FString::Printf(TEXT("seam %d"), TileAt - TileList.Num()), -1, S.X, S.Y);
+			TileCompareRef(*FString::Printf(TEXT("seam %d"), TileAt - TileList.Num()), -1, TileAt, S.X, S.Y);
 		}
 		++TileAt;
 		if (TileAt < Items)
@@ -1288,8 +1467,14 @@ void UFTRainCoverSubsystem::TileTick(UWorld& World)
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("RainCover tiles: done: %d tiles (%d held occluders), %d references, %d with fails."), TileList.Num(),
 			TileHeld, TileRefs, TileRefFails);
-		TileState = 4;
-		FPlatformMisc::RequestExit(false, TEXT("RainCoverTileProbe"));
+		TileState = 5; // 5a: the truth passes
+		return;
+	case 5:
+		TruthTick(World);
+		return;
+	case 10:
+	case 11:
+		StripTick(World);
 		return;
 	default:
 		return;
@@ -1324,6 +1509,898 @@ void UFTRainCoverSubsystem::UploadTick(const FVector& Eye)
 				RHICmdList.UpdateTexture2D(Tex, 0, FUpdateTextureRegion2D(0, 0, 0, 0, uint32(Res), uint32(Res)), uint32(Res) * sizeof(float), Src);
 			}
 		});
+	}
+	++Uploads;
+}
+// ---- 11-25 truth probe (ruling 7047 item 5, dev): three draw switches, a truth at each tile's own top, the strip, the stream. ----
+namespace
+{
+constexpr float kTruthSlackM = 0.15f;   // a candidate's box against a failing texel
+constexpr int32 kTruthCsvMax = 400000;  // rows
+constexpr int32 kRcStripPerTick = 32;
+constexpr int32 kRcStripNameMax = 8;
+
+struct FTruthPass
+{
+	const TCHAR* Name;
+	bool bLod0, bNoCull, bNoHlod;
+};
+constexpr FTruthPass kTruthPasses[] = {
+	{TEXT("all"), true, true, true}, {TEXT("lod0"), true, false, false}, {TEXT("nocull"), false, true, false},
+	{TEXT("nohlod"), false, false, true}, {TEXT("again"), true, true, true}, {TEXT("plain"), false, false, false}};
+constexpr int32 kPassAgain = 4; // all three switches again, after the others: truth must repeat texel for texel
+constexpr int32 kPassPlain = 5; // the command-line switches only: the stored draws must repeat
+
+// One draw against truth, texel for texel. Signed delta = draw Z - truth Z.
+struct FTruthCount
+{
+	int32 Agree = 0, Band = 0, BelowDraw = 0, BelowTruth = 0, Up = 0, Down = 0, Gained = 0, Lost = 0, Edge = 0, NoTile = 0;
+	float MinCm = 0.f, MaxCm = 0.f;
+	int32 Fails() const { return Up + Down + Gained + Lost; }
+	void Add(const FTruthCount& O)
+	{
+		Agree += O.Agree; Band += O.Band; BelowDraw += O.BelowDraw; BelowTruth += O.BelowTruth; Up += O.Up; Down += O.Down;
+		Gained += O.Gained; Lost += O.Lost; Edge += O.Edge; NoTile += O.NoTile;
+		MinCm = FMath::Min(MinCm, O.MinCm);
+		MaxCm = FMath::Max(MaxCm, O.MaxCm);
+	}
+	FString Text() const
+	{
+		return FString::Printf(TEXT("agree %d, band %d, below draw far %d, below truth far %d, no tile %d; FAILS %d (up %d, down %d, signed %.2f..%.2f cm; gained %d, lost %d; on an edge %d)"),
+			Agree, Band, BelowDraw, BelowTruth, NoTile, Fails(), Up, Down, MinCm, MaxCm, Gained, Lost, Edge);
+	}
+};
+
+int32 RcCVarInt(const TCHAR* Name, int32 Fallback)
+{
+	IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(Name);
+	return V ? V->GetInt() : Fallback;
+}
+
+void RcCVarSet(const TCHAR* Name, int32 Value)
+{
+	if (IConsoleVariable* V = IConsoleManager::Get().FindConsoleVariable(Name))
+	{
+		V->Set(Value, ECVF_SetByCode);
+	}
+}
+} // namespace
+
+void UFTRainCoverSubsystem::TruthSwitches(UWorld& World, bool bLod0, bool bNoCull, bool bNoHlod)
+{
+	FFTRainTruth& T = *Truth;
+	bLod0 = bLod0 || (T.Base & 1) != 0;
+	bNoCull = bNoCull || (T.Base & 2) != 0;
+	bNoHlod = bNoHlod || (T.Base & 4) != 0;
+	UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth switches: LOD0 %d, no cull %d, no HLOD %d (%d components, %d HLOD actors; command line %d)."),
+		bLod0 ? 1 : 0, bNoCull ? 1 : 0, bNoHlod ? 1 : 0, T.Saved.Num(), T.Hlod.Num(), T.Base);
+	RcCVarSet(TEXT("r.ForceLOD"), bLod0 ? 0 : T.OldForceLod);
+	RcCVarSet(TEXT("foliage.ForceLOD"), bLod0 ? 0 : T.OldFoliageLod);
+	RcCVarSet(TEXT("r.InstancedStaticMeshes.GpuLod"), bLod0 ? 0 : T.OldGpuLod);
+	for (const FFTRainTruth::FSaved& S : T.Saved)
+	{
+		UStaticMeshComponent* C = S.Comp.Get();
+		if (!C)
+		{
+			continue;
+		}
+		C->SetForcedLodModel(bLod0 ? 1 : S.Forced);
+		C->SetCullDistance(bNoCull ? 0.f : S.LD);
+		C->SetCachedMaxDrawDistance(bNoCull ? 0.f : S.Cached);
+		C->MinDrawDistance = bNoCull ? 0.f : S.MinDraw;
+		if (S.bIsm)
+		{
+			UInstancedStaticMeshComponent* I = static_cast<UInstancedStaticMeshComponent*>(C);
+			I->SetCullDistances(bNoCull ? 0 : S.IStart, bNoCull ? 0 : S.IEnd);
+		}
+		C->MarkRenderStateDirty(); // the ISM proxy reads GpuLod when it is made
+	}
+	USceneCaptureComponent2D* Cap = TileCapture->GetCaptureComponent2D();
+	Cap->HiddenActors.Reset();
+	if (bNoHlod)
+	{
+		for (const TWeakObjectPtr<AActor>& A : T.Hlod)
+		{
+			if (A.IsValid())
+			{
+				Cap->HiddenActors.Add(A.Get());
+				if (T.Base & 4) // held from the command line: the shipped capture drops them too
+				{
+					Capture->GetCaptureComponent2D()->HiddenActors.AddUnique(A.Get());
+				}
+			}
+		}
+	}
+	World.SendAllEndOfFrameUpdates();
+	FlushRenderingCommands();
+}
+
+void UFTRainCoverSubsystem::TruthSetUp(UWorld& World)
+{
+	FFTRainTruth& T = *Truth;
+	if (T.bSetUp)
+	{
+		return;
+	}
+	T.bSetUp = true;
+	const int32 NT = TileList.Num();
+	// Set up: candidates over the tiles, the saved draw settings, the HLOD actors, the two captures' settings.
+	const double S0 = FPlatformTime::Seconds();
+	int32 Comps = 0, Isms = 0, Insts = 0, MinDrawSet = 0;
+	const auto AddCand = [&](const FBox& B, UStaticMeshComponent* C, int32 Inst)
+	{
+		const ftcore::RainCoverTile A = ftcore::rainCoverTileAt(Spec, float(B.Min.X) * 0.01f, float(B.Min.Y) * 0.01f);
+		const ftcore::RainCoverTile Z = ftcore::rainCoverTileAt(Spec, float(B.Max.X) * 0.01f, float(B.Max.Y) * 0.01f);
+		int32 Ci = -1;
+		for (int32 X = A.x; X <= Z.x && X - A.x < 64; ++X)
+		{
+			for (int32 Y = A.y; Y <= Z.y && Y - A.y < 64; ++Y)
+			{
+				if (!TileIndex.Contains(FIntPoint(X, Y)))
+				{
+					continue;
+				}
+				if (Ci < 0)
+				{
+					Ci = T.Cands.Add(FFTRainTruth::FCand{B, C, Inst});
+				}
+				T.CandByTile.FindOrAdd(FIntPoint(X, Y)).Add(Ci);
+			}
+		}
+	};
+	for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+	{
+		UStaticMeshComponent* C = *It;
+		if (C->GetWorld() != &World || !C->IsRegistered() || !C->GetStaticMesh())
+		{
+			continue;
+		}
+		++Comps;
+		UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C);
+		FFTRainTruth::FSaved S;
+		S.Comp = C;
+		S.LD = C->LDMaxDrawDistance;
+		S.Cached = C->CachedMaxDrawDistance;
+		S.MinDraw = C->MinDrawDistance;
+		S.Forced = C->ForcedLodModel;
+		S.bIsm = I != nullptr;
+		MinDrawSet += C->MinDrawDistance > 0.f ? 1 : 0;
+		if (I)
+		{
+			++Isms;
+			S.IStart = I->InstanceStartCullDistance;
+			S.IEnd = I->InstanceEndCullDistance;
+			const FBox MB = C->GetStaticMesh()->GetBoundingBox();
+			for (int32 K = 0; K < I->GetInstanceCount(); ++K)
+			{
+				FTransform X;
+				if (I->GetInstanceTransform(K, X, true))
+				{
+					++Insts;
+					AddCand(MB.TransformBy(X), C, K);
+				}
+			}
+		}
+		else if (C->IsVisible())
+		{
+			AddCand(C->Bounds.GetBox(), C, -1);
+		}
+		T.Saved.Add(S);
+	}
+	for (TActorIterator<AActor> It(&World); It; ++It)
+	{
+		const FString Cls = It->GetClass()->GetName();
+		if (Cls.Contains(TEXT("HLOD")) || Cls.Contains(TEXT("LODActor")))
+		{
+			T.Hlod.Add(*It);
+		}
+	}
+	T.OldForceLod = RcCVarInt(TEXT("r.ForceLOD"), -1);
+	T.OldFoliageLod = RcCVarInt(TEXT("foliage.ForceLOD"), -1);
+	T.OldGpuLod = RcCVarInt(TEXT("r.InstancedStaticMeshes.GpuLod"), 1);
+	T.TruthD.SetNum(NT);
+	T.Csv = TEXT("kind,item,tile,tx,ty,wx,wy,ztruth,zdraw,dcm_draw_minus_truth,cand_at_ztruth,cand_at_zdraw\n");
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("RainCover truth: set up in %.0f ms: %d static mesh components (%d instanced, %d instances, %d with a min draw distance), %d candidate boxes over %d tiles; %d HLOD actors%s; cvars r.ForceLOD %d, foliage.ForceLOD %d, r.InstancedStaticMeshes.GpuLod %d."),
+		(FPlatformTime::Seconds() - S0) * 1000.0, Comps, Isms, Insts, MinDrawSet, T.Cands.Num(), T.CandByTile.Num(), T.Hlod.Num(),
+		T.Hlod.Num() == 0 ? TEXT(" (the no-HLOD switch is a no-op)") : TEXT(""), T.OldForceLod, T.OldFoliageLod, T.OldGpuLod);
+	const USceneCaptureComponent2D* A = Capture->GetCaptureComponent2D();
+	const USceneCaptureComponent2D* B = TileCapture->GetCaptureComponent2D();
+	const FString FA = A->ShowFlags.ToString(), FB = B->ShowFlags.ToString();
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("RainCover truth: shipped capture against the tile capture: LOD factor %.3f / %.3f, ortho width %.0f / %.0f, source %d / %d, render mode %d / %d, main renderer %d / %d, hidden actors %d / %d, hidden components %d / %d, show only %d / %d, show flags %s."),
+		A->LODDistanceFactor, B->LODDistanceFactor, A->OrthoWidth, B->OrthoWidth, int32(A->CaptureSource), int32(B->CaptureSource),
+		int32(A->PrimitiveRenderMode), int32(B->PrimitiveRenderMode), A->bRenderInMainRenderer ? 1 : 0, B->bRenderInMainRenderer ? 1 : 0,
+		A->HiddenActors.Num(), B->HiddenActors.Num(), A->HiddenComponents.Num(), B->HiddenComponents.Num(), A->ShowOnlyComponents.Num(),
+		B->ShowOnlyComponents.Num(), FA == FB ? TEXT("equal") : *FString::Printf(TEXT("DIFFER (%s | %s)"), *FA, *FB));
+}
+
+void UFTRainCoverSubsystem::TruthTick(UWorld& World)
+{
+	FFTRainTruth& T = *Truth;
+	const int32 Res = Spec.resolution, N = Res * Res;
+	const int32 NT = TileList.Num();
+	const auto CandText = [&](int32 Ci, const FVector& TileO, const FVector& RefO) -> FString
+	{
+		const FFTRainTruth::FCand& Cd = T.Cands[Ci];
+		const UStaticMeshComponent* C = Cd.Comp.Get();
+		if (!C)
+		{
+			return TEXT("(gone)");
+		}
+		const UStaticMesh* M = C->GetStaticMesh();
+		const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C);
+		const AActor* O = C->GetOwner();
+		return FString::Printf(
+			TEXT("%s %s/%s inst %d mesh %s (LODs %d, nanite %d) forced %d minLOD %d gpuLod %d cull %d..%d LD %.0f cached %.0f minDraw %.0f hlodRelevant %d box z %.2f..%.2f, %.1f m from the tile's capture, %.1f m from the ref's"),
+			*C->GetClass()->GetName(), O ? *O->GetName() : TEXT("-"), *C->GetName(), Cd.Inst, M ? *M->GetName() : TEXT("-"),
+			M ? M->GetNumLODs() : 0, M && M->IsNaniteEnabled() ? 1 : 0, C->ForcedLodModel, C->MinLOD, I ? int32(I->bUseGpuLodSelection) : -1,
+			I ? I->InstanceStartCullDistance : -1, I ? I->InstanceEndCullDistance : -1, C->LDMaxDrawDistance, C->CachedMaxDrawDistance,
+			C->MinDrawDistance, O && O->IsHLODRelevant() ? 1 : 0, Cd.Box.Min.Z * 0.01, Cd.Box.Max.Z * 0.01,
+			TileO.Z > -1e6 ? FMath::Sqrt(Cd.Box.ComputeSquaredDistanceToPoint(TileO)) * 0.01 : -1.0, RefO.Z > -1e6 ? FMath::Sqrt(Cd.Box.ComputeSquaredDistanceToPoint(RefO)) * 0.01 : -1.0);
+	};
+	// The candidate under a texel at height Z (m): XY within slack, Z within its box, nearest top first.
+	const auto Name = [&](int32 Ti, float Wx, float Wy, float Z) -> int32
+	{
+		const TArray<int32>* L = T.CandByTile.Find(FIntPoint(TileList[Ti].x, TileList[Ti].y));
+		if (!L)
+		{
+			return -1;
+		}
+		const double S = kTruthSlackM * 100.0, X = Wx * 100.0, Y = Wy * 100.0, Zc = Z * 100.0;
+		int32 Best = -1;
+		double BestD = 1e30;
+		for (const int32 Ci : *L)
+		{
+			const FBox& B = T.Cands[Ci].Box;
+			if (X < B.Min.X - S || X > B.Max.X + S || Y < B.Min.Y - S || Y > B.Max.Y + S || Zc < B.Min.Z - S || Zc > B.Max.Z + S)
+			{
+				continue;
+			}
+			const double D = FMath::Abs(B.Max.Z - Zc);
+			if (D < BestD)
+			{
+				BestD = D;
+				Best = Ci;
+			}
+		}
+		return Best;
+	};
+	const auto CandId = [&](int32 Ci) -> FString
+	{
+		const UStaticMeshComponent* Cc = Ci >= 0 ? T.Cands[Ci].Comp.Get() : nullptr;
+		const AActor* Oc = Cc ? Cc->GetOwner() : nullptr;
+		return FString::Printf(TEXT("%s/%s#%d"), Oc ? *Oc->GetName() : TEXT("-"), Cc ? *Cc->GetName() : TEXT("-"), Ci >= 0 ? T.Cands[Ci].Inst : -1);
+	};
+	// A draw (depth m over frame F, far depthM) against truth. Own >= 0: F is that tile's own frame (texel for texel).
+	// Kind non-null: failing texels go to the CSV and the per-candidate tally.
+	const auto Compare = [&](const TArray<float>& D, const ftcore::RainCoverFrame& F, int32 Own, const TCHAR* Kind, int32 Item,
+		TMap<int32, int32>* Tally) -> FTruthCount
+	{
+		FTruthCount Cn;
+		if (D.Num() != N)
+		{
+			Cn.NoTile = N;
+			return Cn;
+		}
+		for (int32 Py = 0; Py < Res; ++Py)
+		{
+			for (int32 Px = 0; Px < Res; ++Px)
+			{
+				const int32 I = Py * Res + Px;
+				const float Wx = F.cx - ((float(Py) + 0.5f) / float(Res) - 0.5f) * F.sizeM;
+				const float Wy = F.cy + ((float(Px) + 0.5f) / float(Res) - 0.5f) * F.sizeM;
+				int32 Ti = Own, Tx = Px, Ty = Py;
+				if (Own < 0)
+				{
+					ftcore::RainCoverTile Tl;
+					const int32* Found = ftcore::rainCoverTileTexel(Spec, Wx, Wy, Tl, Tx, Ty) ? TileIndex.Find(FIntPoint(Tl.x, Tl.y)) : nullptr;
+					Ti = Found ? *Found : -1;
+				}
+				if (Ti < 0 || T.TruthD[Ti].Num() != N)
+				{
+					++Cn.NoTile;
+					continue;
+				}
+				const int32 K = Ty * Res + Tx;
+				const bool bT = T.TruthD[Ti][K] < Spec.depthM, bD = D[I] < Spec.depthM;
+				const float Zt = TileTop[Ti] - T.TruthD[Ti][K], Zd = F.topZ - D[I];
+				bool bFail = false;
+				if (!bT && !bD)
+				{
+					++Cn.Agree;
+				}
+				else if (bT && bD)
+				{
+					const float Dz = Zd - Zt;
+					if (std::fabs(Dz) <= kTileTolM)
+					{
+						++Cn.Agree;
+					}
+					else if (Zt > F.topZ)
+					{
+						++Cn.Band;
+					}
+					else
+					{
+						bFail = true;
+						(Dz > 0.f ? Cn.Up : Cn.Down) += 1;
+						Cn.MinCm = FMath::Min(Cn.MinCm, Dz * 100.f);
+						Cn.MaxCm = FMath::Max(Cn.MaxCm, Dz * 100.f);
+					}
+				}
+				else if (bT)
+				{
+					if (Zt > F.topZ)
+					{
+						++Cn.Band;
+					}
+					else if (Zt < F.topZ - Spec.depthM)
+					{
+						++Cn.BelowDraw;
+					}
+					else
+					{
+						bFail = true;
+						++Cn.Lost;
+					}
+				}
+				else if (Zd < TileFloor[Ti])
+				{
+					++Cn.BelowTruth;
+				}
+				else
+				{
+					bFail = true;
+					++Cn.Gained;
+				}
+				if (!bFail)
+				{
+					continue;
+				}
+				Cn.Edge += (Tx == 0 || Tx == Res - 1 || Ty == 0 || Ty == Res - 1) ? 1 : 0;
+				if (!Kind)
+				{
+					continue;
+				}
+				const float Zhi = bT && bD ? FMath::Max(Zt, Zd) : (bT ? Zt : Zd);
+				const int32 Ci = Name(Ti, Wx, Wy, Zhi);
+				if (Tally)
+				{
+					Tally->FindOrAdd(Ci) += 1;
+				}
+				if (T.CsvRows < kTruthCsvMax)
+				{
+					++T.CsvRows;
+					T.Csv += FString::Printf(TEXT("%s,%d,%d,%d,%d,%.3f,%.3f,%s,%s,%s,%s,%s\n"), Kind, Item, Ti, Tx, Ty, Wx, Wy,
+						bT ? *FString::Printf(TEXT("%.4f"), Zt) : TEXT(""), bD ? *FString::Printf(TEXT("%.4f"), Zd) : TEXT(""),
+						bT && bD ? *FString::Printf(TEXT("%.2f"), (Zd - Zt) * 100.f) : (bT ? TEXT("lost") : TEXT("gained")),
+						bT ? *CandId(Name(Ti, Wx, Wy, Zt)) : TEXT(""), bD ? *CandId(Name(Ti, Wx, Wy, Zd)) : TEXT(""));
+				}
+			}
+		}
+		return Cn;
+	};
+	const auto LogTally = [&](const TCHAR* What, const TMap<int32, int32>& Tally, const FVector& TileO, const FVector& RefO)
+	{
+		TArray<TPair<int32, int32>> L;
+		for (const TPair<int32, int32>& P : Tally)
+		{
+			L.Add(P);
+		}
+		L.Sort([](const TPair<int32, int32>& A, const TPair<int32, int32>& B) { return A.Value > B.Value; });
+		for (int32 J = 0; J < FMath::Min(3, L.Num()); ++J)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth name: %s #%d: %d texels: %s."), What, J + 1, L[J].Value,
+				L[J].Key >= 0 ? *CandText(L[J].Key, TileO, RefO) : TEXT("no candidate box under it"));
+		}
+	};
+
+	if (!T.bStarted)
+	{
+		T.bStarted = true;
+		TruthSetUp(World);
+		const FTruthPass& P0s = kTruthPasses[0];
+		TruthSwitches(World, P0s.bLod0, P0s.bNoCull, P0s.bNoHlod);
+		T.Wait = T.Settle;
+		return;
+	}
+	if (--T.Wait > 0)
+	{
+		return;
+	}
+	const FTruthPass& P = kTruthPasses[T.Pass];
+	const double P0 = FPlatformTime::Seconds();
+	FTruthCount TileSum, RefSum, FarSum, StoredSum;
+	int32 TilesFail = 0, RefsFail = 0, TruthIsTile = 0, TruthDiffers = 0, PlainTileDiff = 0, PlainRefDiff = 0, AgainDiff = 0, AgainTiles = 0;
+	TArray<float> Draw;
+	double E = 0.0, Rd = 0.0;
+	for (int32 I = 0; I < NT; ++I)
+	{
+		if (TileFar[I].Num() != N)
+		{
+			continue;
+		}
+		const ftcore::RainCoverFrame F = ftcore::rainCoverTileFrame(Spec, TileList[I], TileTop[I]);
+		if (!TileDraw(F, Spec.depthM, Draw, E, Rd))
+		{
+			continue;
+		}
+		if (T.Pass == 0)
+		{
+			T.TruthD[I] = Draw;
+			int32 Diff = 0;
+			for (int32 K = 0; K < N; ++K)
+			{
+				Diff += (Draw[K] != TileFar[I][K]) ? 1 : 0;
+			}
+			TruthDiffers += Diff;
+			TruthIsTile += Diff == 0 ? 1 : 0;
+			// The tile draw as stored (switches off) against truth: signed, named.
+			TMap<int32, int32> Tally;
+			const FTruthCount C = Compare(TileFar[I], F, I, TEXT("tilefar"), I, &Tally);
+			FarSum.Add(C);
+			TilesFail += C.Fails() > 0 ? 1 : 0;
+			UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth tile: %d (%d, %d) top %.2f m: truth differs from the tile draw on %d texels; tile draw against truth: %s."),
+				I, TileList[I].x, TileList[I].y, TileTop[I], Diff, *C.Text());
+			if (C.Fails() > 0)
+			{
+				LogTally(*FString::Printf(TEXT("tile %d"), I), Tally, FVector(F.cx, F.cy, F.topZ) * 100.0, FVector(0, 0, -1e9));
+			}
+		}
+		else if (T.Pass == kPassPlain)
+		{
+			int32 Diff = 0;
+			for (int32 K = 0; K < N; ++K)
+			{
+				Diff += (Draw[K] != TileFar[I][K]) ? 1 : 0;
+			}
+			PlainTileDiff += Diff;
+		}
+		else if (T.Pass == kPassAgain)
+		{
+			int32 Diff = 0;
+			for (int32 K = 0; K < N; ++K)
+			{
+				Diff += (Draw[K] != T.TruthD[I][K]) ? 1 : 0;
+			}
+			AgainDiff += Diff;
+			AgainTiles += Diff > 0 ? 1 : 0;
+		}
+		else
+		{
+			const FTruthCount C = Compare(Draw, F, I, nullptr, I, nullptr);
+			TileSum.Add(C);
+			TilesFail += C.Fails() > 0 ? 1 : 0;
+			if (C.Fails() > 0)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth %s tile: %d (%d, %d): %s."), P.Name, I, TileList[I].x, TileList[I].y, *C.Text());
+			}
+		}
+	}
+	for (int32 R = 0; R < T.RefD.Num(); ++R)
+	{
+		if (T.Pass == kPassAgain || T.RefD[R].Num() != N || !TileDraw(T.RefF[R], Spec.depthM, Draw, E, Rd))
+		{
+			continue;
+		}
+		const ftcore::RainCoverFrame& F = T.RefF[R];
+		if (T.Pass == kPassPlain)
+		{
+			int32 Diff = 0;
+			for (int32 K = 0; K < N; ++K)
+			{
+				Diff += (Draw[K] != T.RefD[R][K]) ? 1 : 0;
+			}
+			PlainRefDiff += Diff;
+			continue;
+		}
+		if (T.Pass == 0)
+		{
+			// The shipped 60 m draw as stored (4b) against truth: signed, named.
+			TMap<int32, int32> Tally;
+			const FTruthCount C = Compare(T.RefD[R], F, -1, TEXT("ref60"), R, &Tally);
+			StoredSum.Add(C);
+			RefsFail += C.Fails() > 0 ? 1 : 0;
+			UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth ref: %s, top %.2f m: shipped draw against truth: %s."), *T.RefLabel[R], F.topZ, *C.Text());
+			if (C.Fails() > 0)
+			{
+				LogTally(*T.RefLabel[R], Tally, FVector(0, 0, -1e9), FVector(F.cx, F.cy, F.topZ) * 100.0);
+			}
+		}
+		const FTruthCount C = Compare(Draw, F, -1, nullptr, R, nullptr);
+		RefSum.Add(C);
+		if (T.Pass != 0)
+		{
+			RefsFail += C.Fails() > 0 ? 1 : 0;
+		}
+		if (C.Fails() > 0)
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth %s ref: %s: %s."), P.Name, *T.RefLabel[R], *C.Text());
+		}
+	}
+	const double Ms = (FPlatformTime::Seconds() - P0) * 1000.0;
+	if (T.Pass == 0)
+	{
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover truth pass all (LOD0, no cull, no HLOD) in %.0f ms: truth equals the tile draw on %d of %d tiles (%d texels differ)%s. Tile draws against truth: %d tiles fail; %s. Shipped 60 m draws against truth: %d of %d fail; %s. The 60 m draw with all three switches against truth: %s."),
+			Ms, TruthIsTile, NT, TruthDiffers, TruthDiffers == 0 ? TEXT(": NOT A CHECK, truth is the tile draw again") : TEXT(""), TilesFail,
+			*FarSum.Text(), RefsFail, T.RefD.Num(), *StoredSum.Text(), *RefSum.Text());
+		const FString Path = TileDir / TEXT("truth_fails.csv");
+		const bool bSaved = FFileHelper::SaveStringToFile(T.Csv, *Path);
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth: %d failing texels %s to %s%s."), T.CsvRows, bSaved ? TEXT("saved") : TEXT("NOT saved"), *Path,
+			T.CsvRows >= kTruthCsvMax ? TEXT(" (capped)") : TEXT(""));
+		T.Csv.Empty();
+	}
+	else if (T.Pass == kPassAgain)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth pass again (all three switches, after the others) in %.0f ms: truth differs from the first on %d texels over %d tiles (0: truth is stable)."),
+			Ms, AgainDiff, AgainTiles);
+	}
+	else if (T.Pass == kPassPlain)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth pass plain (switches restored) in %.0f ms: tile draws differ from the stored on %d texels, 60 m draws on %d (0 and 0: restored and repeatable)."),
+			Ms, PlainTileDiff, PlainRefDiff);
+	}
+	else
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth pass %s in %.0f ms: tile draws against truth: %d tiles fail; %s. 60 m draws against truth: %d fail; %s."),
+			P.Name, Ms, TilesFail, *TileSum.Text(), RefsFail, *RefSum.Text());
+	}
+	do
+	{
+		++T.Pass;
+	} while (T.Pass < int32(UE_ARRAY_COUNT(kTruthPasses)) && (T.Mask & (1 << T.Pass)) == 0);
+	if (T.Pass < int32(UE_ARRAY_COUNT(kTruthPasses)))
+	{
+		const FTruthPass& Q = kTruthPasses[T.Pass];
+		TruthSwitches(World, Q.bLod0, Q.bNoCull, Q.bNoHlod);
+		T.Wait = T.Settle;
+		return;
+	}
+	UE_LOG(LogForgottenThird, Display, TEXT("RainCover truth: done."));
+	TileState = 4;
+	FPlatformMisc::RequestExit(false, TEXT("RainCoverTruth"));
+}
+
+void UFTRainCoverSubsystem::StripTick(UWorld& World)
+{
+	FFTRainTruth& T = *Truth;
+	const int32 Res = Spec.resolution, N = Res * Res;
+	if (TileState == 10)
+	{
+		if (T.StripAt == 0)
+		{
+			T.StripT0 = FPlatformTime::Seconds();
+		}
+		TArray<uint16> Codes;
+		Codes.SetNumUninitialized(N);
+		for (int32 Done = 0; Done < kRcStripPerTick && T.StripAt < TileList.Num(); ++Done, ++T.StripAt)
+		{
+			const ftcore::RainCoverTile Tl = TileList[T.StripAt];
+			const double B0 = FPlatformTime::Seconds();
+			ftcore::RainCoverFrame F = ftcore::rainCoverTileFrame(Spec, Tl, kTileFindTopM);
+			double E = 0.0, Rd = 0.0;
+			if (!TileDraw(F, kTileFindFarM, TileScratch, E, Rd))
+			{
+				continue;
+			}
+			bool bAny = false;
+			float MaxZ = 0.f;
+			for (const float D : TileScratch)
+			{
+				if (D < kTileFindFarM)
+				{
+					MaxZ = bAny ? FMath::Max(MaxZ, kTileFindTopM - D) : kTileFindTopM - D;
+					bAny = true;
+				}
+			}
+			if (!bAny)
+			{
+				++T.NoHit;
+				T.BuildMs += (FPlatformTime::Seconds() - B0) * 1000.0;
+				continue;
+			}
+			F.topZ = MaxZ + kTileMarginM;
+			if (!TileDraw(F, Spec.depthM, TileScratch, E, Rd))
+			{
+				continue;
+			}
+			ftcore::RainCoverR16Range Range;
+			ftcore::rainCoverR16Pack(TileScratch.GetData(), N, F.topZ, Spec.depthM, Codes.GetData(), Range, kTileTolM);
+			const bool bFlat = Range.hits > 0 && Range.maxZ - Range.minZ <= kTileTolM;
+			const bool bFull = Range.hits == N;
+			const int32 Kind = bFlat && bFull ? 0 : (bFlat ? 1 : 2);
+			(Kind == 0 ? T.FlatFull : (Kind == 1 ? T.FlatPart : T.Textured)) += 1;
+			// Flat and full: the 32-byte header only (one height). Else the header and the codes.
+			TArray<uint8> Bytes;
+			Bytes.SetNumUninitialized(32 + (Kind == 0 ? 0 : N * 2));
+			uint8* B = Bytes.GetData();
+			const int32 Head[2] = {Tl.x, Tl.y};
+			const float HeadZ[3] = {F.topZ, Range.minZ, Range.maxZ};
+			const int32 HeadN[2] = {Range.hits, Kind == 0 ? 0 : Res};
+			FMemory::Memcpy(B, "FTRC", 4);
+			FMemory::Memcpy(B + 4, Head, 8);
+			FMemory::Memcpy(B + 12, HeadZ, 12);
+			FMemory::Memcpy(B + 24, HeadN, 8);
+			if (Kind != 0)
+			{
+				FMemory::Memcpy(B + 32, Codes.GetData(), N * 2);
+			}
+			FFileHelper::SaveArrayToFile(Bytes, *(TileDir / FString::Printf(TEXT("tile_%d_%d.r16"), Tl.x, Tl.y)));
+			T.Bytes += Bytes.Num();
+			T.BuildMs += (FPlatformTime::Seconds() - B0) * 1000.0;
+			if (Kind == 0 && T.FlatAt.Num() < kRcStripNameMax)
+			{
+				T.FlatAt.Add(FVector(F.cx, F.cy, Range.minZ));
+			}
+		}
+		if (T.StripAt < TileList.Num())
+		{
+			return;
+		}
+		const double Wall = (FPlatformTime::Seconds() - T.StripT0) * 1000.0;
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover strip: %d tiles: flat and full (one height, no texture) %d, flat with open texels %d, textured %d, nothing found %d; build %.0f ms summed (%.0f ms wall over %d ticks); written %.1f MiB (textured and flat-open tiles %.1f MiB)."),
+			TileList.Num(), T.FlatFull, T.FlatPart, T.Textured, T.NoHit, T.BuildMs, Wall, (TileList.Num() + kRcStripPerTick - 1) / kRcStripPerTick,
+			double(T.Bytes) / (1024.0 * 1024.0), double(T.FlatPart + T.Textured) * double(32 + N * 2) / (1024.0 * 1024.0));
+		// The flat sheet's maker: what stands at each named tile's centre within 0.15 m of the sheet's height, and the water.
+		const UFTWaterSubsystem* Water = World.GetSubsystem<UFTWaterSubsystem>();
+		const float Now = World.GetTimeSeconds();
+		for (const FVector& At : T.FlatAt)
+		{
+			FString Who;
+			int32 Count = 0;
+			const FVector P = At * 100.0;
+			for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+			{
+				UStaticMeshComponent* C = *It;
+				if (C->GetWorld() != &World || !C->IsRegistered() || !C->GetStaticMesh())
+				{
+					continue;
+				}
+				const auto Test = [&](const FBox& Bx, int32 Inst)
+				{
+					const double S = kTruthSlackM * 100.0;
+					if (P.X < Bx.Min.X - S || P.X > Bx.Max.X + S || P.Y < Bx.Min.Y - S || P.Y > Bx.Max.Y + S || FMath::Abs(Bx.Max.Z - P.Z) > S)
+					{
+						return;
+					}
+					if (++Count <= 4)
+					{
+						const AActor* O = C->GetOwner();
+						Who += FString::Printf(TEXT("%s%s %s/%s inst %d mesh %s (box %.1f x %.1f m)"), Who.IsEmpty() ? TEXT("") : TEXT("; "),
+							*C->GetClass()->GetName(), O ? *O->GetName() : TEXT("-"), *C->GetName(), Inst, *C->GetStaticMesh()->GetName(),
+							(Bx.Max.X - Bx.Min.X) * 0.01, (Bx.Max.Y - Bx.Min.Y) * 0.01);
+					}
+				};
+				if (UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C))
+				{
+					const FBox MB = C->GetStaticMesh()->GetBoundingBox();
+					for (int32 K = 0; K < I->GetInstanceCount(); ++K)
+					{
+						FTransform X;
+						if (I->GetInstanceTransform(K, X, true))
+						{
+							Test(MB.TransformBy(X), K);
+						}
+					}
+				}
+				else
+				{
+					Test(C->Bounds.GetBox(), -1);
+				}
+			}
+			float Surface = 0.f;
+			const bool bWater = Water && Water->HasBodies() && Water->Bodies().surfaceHeight(ftcore::Vec2{float(At.X), float(At.Y)}, Now, Surface);
+			UE_LOG(LogForgottenThird, Display, TEXT("RainCover strip sheet: at (%.1f, %.1f) z %.3f m: %d meshes: %s; water surface %s."), At.X, At.Y,
+				At.Z, Count, Count ? *Who : TEXT("none"), bWater ? *FString::Printf(TEXT("%.3f m"), Surface) : TEXT("none here"));
+		}
+		TileState = 11;
+		return;
+	}
+	// 5c: the cache key over every tile, three times. Per component: the mesh package's saved hash (editor builds; else its
+	// name), the materials and their WPO flag, the cull and LOD settings, the transform; per instance its transform. Summed
+	// order-free into the tiles its box touches.
+	double Ms[3] = {0.0, 0.0, 0.0};
+	int32 Prims = 0, Insts = 0, Buckets = 0;
+	uint64 Check = 0;
+	for (int32 Run = 0; Run < 3; ++Run)
+	{
+		const double K0 = FPlatformTime::Seconds();
+		TMap<FIntPoint, uint64> Key;
+		Prims = Insts = 0;
+		const auto Bucket = [&](const FBox& Bx, uint64 H)
+		{
+			const ftcore::RainCoverTile A = ftcore::rainCoverTileAt(Spec, float(Bx.Min.X) * 0.01f, float(Bx.Min.Y) * 0.01f);
+			const ftcore::RainCoverTile Z = ftcore::rainCoverTileAt(Spec, float(Bx.Max.X) * 0.01f, float(Bx.Max.Y) * 0.01f);
+			for (int32 X = A.x; X <= Z.x && X - A.x < 64; ++X)
+			{
+				for (int32 Y = A.y; Y <= Z.y && Y - A.y < 64; ++Y)
+				{
+					Key.FindOrAdd(FIntPoint(X, Y)) += H;
+				}
+			}
+		};
+		const auto HashT = [](const FTransform& X, uint64 Seed)
+		{
+			const FVector L = X.GetLocation(), S = X.GetScale3D();
+			const FQuat Q = X.GetRotation();
+			const double V[10] = {L.X, L.Y, L.Z, S.X, S.Y, S.Z, Q.X, Q.Y, Q.Z, Q.W};
+			return CityHash64WithSeed(reinterpret_cast<const char*>(V), uint32(sizeof(V)), Seed);
+		};
+		for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+		{
+			UStaticMeshComponent* C = *It;
+			const UStaticMesh* M = C->GetStaticMesh();
+			if (C->GetWorld() != &World || !C->IsRegistered() || !M)
+			{
+				continue;
+			}
+			++Prims;
+			const UPackage* Pkg = M->GetPackage();
+#if WITH_EDITORONLY_DATA
+			const FIoHash PH = Pkg->GetSavedHash();
+			uint64 H = CityHash64(reinterpret_cast<const char*>(&PH), uint32(sizeof(PH)));
+#else
+			const FString PN = Pkg->GetName();
+			uint64 H = CityHash64(reinterpret_cast<const char*>(*PN), uint32(PN.Len() * sizeof(TCHAR)));
+#endif
+			for (int32 S = 0; S < C->GetNumMaterials(); ++S)
+			{
+				const UMaterialInterface* Mi = C->GetMaterial(S);
+				const FString MN = Mi ? Mi->GetPathName() : FString();
+				H = CityHash64WithSeed(reinterpret_cast<const char*>(*MN), uint32(MN.Len() * sizeof(TCHAR)), H);
+				H = H * 1099511628211ull + (Mi && Mi->IsUsingWorldPositionOffset_Concurrent(GMaxRHIFeatureLevel) ? 1u : 2u);
+			}
+			const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C);
+			const int32 Ints[6] = {C->ForcedLodModel, C->MinLOD, I ? I->InstanceStartCullDistance : -1, I ? I->InstanceEndCullDistance : -1,
+				int32(C->LDMaxDrawDistance), int32(C->MinDrawDistance)};
+			H = CityHash64WithSeed(reinterpret_cast<const char*>(Ints), uint32(sizeof(Ints)), H);
+			H = HashT(C->GetComponentTransform(), H);
+			if (I)
+			{
+				const FBox MB = M->GetBoundingBox();
+				for (int32 K = 0; K < I->GetInstanceCount(); ++K)
+				{
+					FTransform X;
+					if (I->GetInstanceTransform(K, X, true))
+					{
+						++Insts;
+						Bucket(MB.TransformBy(X), HashT(X, H));
+					}
+				}
+			}
+			else
+			{
+				Bucket(C->Bounds.GetBox(), H);
+			}
+		}
+		Ms[Run] = (FPlatformTime::Seconds() - K0) * 1000.0;
+		Buckets = Key.Num();
+		uint64 Sum = 0;
+		for (const TPair<FIntPoint, uint64>& P : Key)
+		{
+			Sum += P.Value ^ (uint64(uint32(P.Key.X)) << 32 | uint64(uint32(P.Key.Y)));
+		}
+		if (Run == 0)
+		{
+			Check = Sum;
+		}
+		else if (Sum != Check)
+		{
+			Check = 0; // not repeatable
+		}
+	}
+#if WITH_EDITORONLY_DATA
+	const TCHAR* HashKind = TEXT("the editor's saved hash (a cooked build needs the cooker to bake one)");
+#else
+	const TCHAR* HashKind = TEXT("the package name only");
+#endif
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("RainCover strip key: %d components, %d instances, %d tiles keyed; %.1f / %.1f / %.1f ms over three runs; repeatable %s; package hash %s."),
+		Prims, Insts, Buckets, Ms[0], Ms[1], Ms[2], Check != 0 ? TEXT("yes") : TEXT("NO"), HashKind);
+	TileState = 4;
+	FPlatformMisc::RequestExit(false, TEXT("RainCoverTileStrip"));
+}
+
+void UFTRainCoverSubsystem::StreamTick(const FVector& Eye)
+{
+	FFTRainStream& S = *Stream;
+	const int32 Res = Spec.resolution, N = Res * Res;
+	// Start a read into buffer B: the next K textured tiles from disk, off the game thread.
+	const auto StartRead = [&](int32 B)
+	{
+		TArray<FString> Names;
+		for (int32 J = 0; J < S.K; ++J)
+		{
+			Names.Add(S.Files[(S.Next + J) % S.Files.Num()]);
+		}
+		S.Next = (S.Next + S.K) % S.Files.Num();
+		uint16* Into = S.Buf[B].GetData();
+		std::atomic<int64>* Last = &S.LastReadUs;
+		S.Read[B] = Async(EAsyncExecution::ThreadPool, [Names = MoveTemp(Names), Into, N, Last]() -> int32
+		{
+			const double R0 = FPlatformTime::Seconds();
+			int32 Good = 0;
+			IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+			for (int32 J = 0; J < Names.Num(); ++J)
+			{
+				TUniquePtr<IFileHandle> H(PF.OpenRead(*Names[J]));
+				if (H && H->Seek(32) && H->Read(reinterpret_cast<uint8*>(Into + J * N), int64(N) * 2))
+				{
+					++Good;
+				}
+			}
+			Last->store(int64((FPlatformTime::Seconds() - R0) * 1e6));
+			return Good;
+		});
+		S.bReading[B] = true;
+	};
+	// A finished read becomes the ready buffer.
+	for (int32 B = 0; B < 2; ++B)
+	{
+		if (S.bReading[B] && S.Read[B].IsReady())
+		{
+			S.bReading[B] = false;
+			const int32 Good = S.Read[B].Get();
+			S.Short += Good == S.K ? 0 : 1;
+			++S.Reads;
+			const double Ms = double(S.LastReadUs.load()) / 1000.0;
+			S.ReadMsSum += Ms;
+			S.ReadMsMax = FMath::Max(S.ReadMsMax, Ms);
+			S.Ready = B;
+		}
+	}
+	// Nothing ready or reading: the next crossing's tiles into a buffer the render thread has let go, ahead of the crossing.
+	if (S.Ready < 0 && !S.bReading[0] && !S.bReading[1])
+	{
+		const int32 B = S.Fence[S.Last ^ 1].IsFenceComplete() ? (S.Last ^ 1) : (S.Fence[S.Last].IsFenceComplete() ? S.Last : -1);
+		if (B >= 0)
+		{
+			StartRead(B);
+		}
+		else
+		{
+			++S.Busy;
+		}
+	}
+	const float Ex = float(Eye.X) * 0.01f, Ey = float(Eye.Y) * 0.01f;
+	if (!ftcore::rainCoverRecapture(Spec, bUploadAny, UploadFrame.cx, UploadFrame.cy, Ex, Ey))
+	{
+		return;
+	}
+	UploadFrame = ftcore::rainCoverFrameAt(Spec, Ex, Ey, float(Eye.Z) * 0.01f);
+	bUploadAny = true;
+	if (S.Ready < 0)
+	{
+		++S.Late; // the read isn't back: skipped, never waited on
+		return;
+	}
+	const int32 B = S.Ready;
+	S.Ready = -1;
+	S.Last = B;
+	CSV_CUSTOM_STAT(RainCover, Upload, 1, ECsvCustomStatOp::Set);
+	{
+		CSV_SCOPED_TIMING_STAT(RainCover, UploadEnqueue);
+		for (int32 J = 0; J < UploadTex.Num() && J < S.K; ++J)
+		{
+			FTextureResource* Into = UploadTex[J] ? UploadTex[J]->GetResource() : nullptr;
+			if (!Into)
+			{
+				continue;
+			}
+			const uint8* Src = reinterpret_cast<const uint8*>(S.Buf[B].GetData() + J * N);
+			ENQUEUE_RENDER_COMMAND(FTRainCoverStream)([Into, Src, Res](FRHICommandListImmediate& RHICmdList)
+			{
+				FRHITexture* Tex = Into->GetTexture2DRHI();
+				if (Tex)
+				{
+					RHICmdList.UpdateTexture2D(Tex, 0, FUpdateTextureRegion2D(0, 0, 0, 0, uint32(Res), uint32(Res)), uint32(Res) * sizeof(uint16), Src);
+				}
+			});
+		}
+		S.Fence[B].BeginFence();
 	}
 	++Uploads;
 }

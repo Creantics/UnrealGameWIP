@@ -70,6 +70,9 @@ class ASceneCapture2D;
 class USceneCaptureComponent2D;
 class UTexture2D;
 class UTextureRenderTarget2D;
+// Dev only (11-25 truth probe): the truth passes' and the streamed upload's state, in the .cpp.
+struct FFTRainTruth;
+struct FFTRainStream;
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTRainCoverSubsystem : public UTickableWorldSubsystem
@@ -111,8 +114,15 @@ private:
 	void TileTick(UWorld& World);
 	bool TilePlaceCamera(UWorld& World, float X, float Y);
 	bool TileDraw(const ftcore::RainCoverFrame& At, float FarM, TArray<float>& DepthM, double& EnqueueMs, double& ReadMs);
-	void TileCompareRef(const TCHAR* Label, int32 Own, float X, float Y);
+	void TileCompareRef(const TCHAR* Label, int32 Own, int32 Item, float X, float Y);
 	void UploadTick(const FVector& Eye);
+	// 11-25 truth probe (ruling 7047 item 5): the switch passes against a full-detail truth, the whole strip's loop and key,
+	// the streamed upload.
+	void TruthSetUp(UWorld& World);
+	void TruthTick(UWorld& World);
+	void TruthSwitches(UWorld& World, bool bLod0, bool bNoCull, bool bNoHlod);
+	void StripTick(UWorld& World);
+	void StreamTick(const FVector& Eye);
 #endif
 
 	UPROPERTY(Transient)
@@ -195,5 +205,11 @@ private:
 	int32 Uploads = 0;
 	ftcore::RainCoverFrame UploadFrame;
 	TArray<float> UploadSrc;
+
+	// -RainCoverTileStrip: the whole strip's far loop only (5b, 5c), no per-tile arrays kept. The truth passes (5a) and the
+	// streamed upload (5d, -RainCoverUploadTiles=<n>) keep their state in the .cpp.
+	bool bTileStrip = false;
+	TSharedPtr<FFTRainTruth> Truth;
+	TSharedPtr<FFTRainStream> Stream;
 #endif
 };
