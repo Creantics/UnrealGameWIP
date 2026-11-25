@@ -127,7 +127,67 @@ FTCORE_API bool rainCoverR16Unpack(unsigned code, const RainCoverR16Range& range
 
 // The HLSL: struct FTRainCover with Open(...) for sprites and Wet(...) for surfaces, as one custom node's code. Inputs
 // the node declares: CoverTex (Texture2D), CoverTexSampler, CoverFrame (float4, cm), CoverOn (float), WorldPos (cm),
-// Normal (world, unit). Kind "sprite" returns the openness, "surface" the wet share.
+// Normal (world, unit). Kind "sprite" returns the openness, "surface" the wet share. The moving 60 m capture's term
+// (dev only since the ring, 11-25; no shipped material carries it).
 FTCORE_API std::string rainCoverHlsl(const RainCoverSpec& spec, bool sprite);
+
+// The resident ring (path 3b, 11-25). The 3 x 3 tiles round the lead's tile live in one atlas of 3 * resolution texels a
+// side, 16-bit codes (0 none, 1..65535 over the tile's own range). Ring slot (mx, my) = (posmod(tx, 3), posmod(ty, 3))
+// holds its tile at atlas texels mx * res + px, my * res + py (px, py as rainCoverTileTexel). Nine slot vectors in the
+// cover's collection (CoverSlot0..8) say which tile each slot holds and its range: (tx, ty, minZ cm, maxZ cm). A point
+// whose slot holds another tile (not yet uploaded, or no tile: kRainCoverSlotNone) reads open.
+inline constexpr float kRainCoverSlotNone = 1.0e6f;  // tile id no tile has
+inline constexpr int kRainCoverRingSlots = 9;
+// The slot vector names: CoverSlot0 .. CoverSlot8.
+FTCORE_API const char* rainCoverSlotParam(int slot);
+struct RainCoverSlot {
+    float tx = kRainCoverSlotNone, ty = kRainCoverSlotNone;
+    float minZcm = 0.f, maxZcm = 0.f;
+};
+// The slot vector for a tile and its range (m): ids as floats, the range in cm.
+FTCORE_API RainCoverSlot rainCoverSlotFor(RainCoverTile tile, const RainCoverR16Range& range);
+// The atlas side in texels (3 * resolution; 0 for a spec with no resolution).
+FTCORE_API int rainCoverAtlasSide(const RainCoverSpec& spec);
+// Where plan point (x, y) reads in the atlas: its tile, ring slot and atlas texel. False as rainCoverTileTexel.
+FTCORE_API bool rainCoverRingTexel(const RainCoverSpec& spec, float x, float y, RainCoverTile& tile, int& slot, int& ax, int& ay);
+// The atlas origin of a slot's block (texels).
+FTCORE_API void rainCoverRingOrigin(const RainCoverSpec& spec, int slot, int& ax, int& ay);
+// The CPU mirror of the ring term's OpenAt: the openness at plan point (x, y) for a point at z (m) over the atlas
+// (rainCoverAtlasSide² codes, row by row) and the nine slots. 1 when the slot holds another tile, the code is none, or the
+// occluder stands no more than bias over z.
+FTCORE_API float rainCoverRingOpen(const RainCoverSpec& spec, const unsigned short* atlas, const RainCoverSlot (&slots)[9],
+                                   float x, float y, float z, float bias);
+// The ring term (HLSL), as rainCoverHlsl's kinds. Inputs: CoverTex (Texture2D, the G16 atlas), CoverOn, CoverSlot0..8
+// (float4), WorldPos (cm), Normal (surface only). Off (CoverOn < 0.5) the whole body is skipped ([branch]) and every point
+// reads open.
+FTCORE_API std::string rainCoverRingHlsl(const RainCoverSpec& spec, bool sprite);
+
+// A baked tile on disk (v2): a 4096-byte header (so the payload starts sector-aligned for unbuffered reads), then
+// resolution² codes (u16, little-endian, row by row in image order) when the tile carries a payload. A tile with no
+// occluder (hits 0), or flat and full (every texel hit, minZ == maxZ: every code 1), is the header alone (res 0).
+inline constexpr int kRainCoverFileHeader = 4096;
+inline constexpr unsigned kRainCoverFileVersion = 2u;
+struct RainCoverTileHeader {
+    RainCoverTile tile;
+    int res = 0;      // payload side (0: header only)
+    int hits = 0;     // texels with an occluder
+    float topZ = 0.f, minZ = 0.f, maxZ = 0.f;  // m
+    unsigned long long key = 0;  // the content key the tile was baked from
+    RainCoverR16Range range() const { return RainCoverR16Range{minZ, maxZ, hits}; }
+};
+// Whether a packed tile of `count` texels needs no payload (no hits, or every texel hit at one height).
+FTCORE_API bool rainCoverTileHeaderOnly(const RainCoverR16Range& range, int count);
+// Writes the header into out (kRainCoverFileHeader bytes, zeros past the fields).
+FTCORE_API void rainCoverHeaderWrite(const RainCoverTileHeader& h, unsigned char* out);
+// Reads a header; false for a short buffer, another magic or version, or a res outside 0..4096.
+FTCORE_API bool rainCoverHeaderRead(const unsigned char* in, int size, RainCoverTileHeader& h);
+// The payload's bytes (res² * 2; 0 header only).
+FTCORE_API int rainCoverPayloadBytes(const RainCoverTileHeader& h);
+// A header-only tile's codes for a res² block: code 1 everywhere with hits, else none.
+FTCORE_API void rainCoverTileFill(const RainCoverTileHeader& h, int res, unsigned short* out);
+
+// The strip's tile list (Data/Look/rain_cover_tiles.txt): "t tx ty" lines, '#' comments. Parses one line; false for any
+// other line.
+FTCORE_API bool rainCoverTileLine(const char* line, RainCoverTile& tile);
 
 }  // namespace ftcore

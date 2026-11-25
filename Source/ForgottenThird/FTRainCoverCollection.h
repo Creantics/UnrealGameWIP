@@ -1,10 +1,12 @@
 #pragma once
 
-// Rain under cover, the material side (ftcore/RainCover.h is its reference). A top-down depth capture around the camera
-// (UFTRainCoverSubsystem) fills RT_RainCover and writes MPC_RainCover's CoverFrame (centre x, y, size, top Z, cm) and
-// CoverOn (1 with a capture). Materials read it through Term: a sprite's openness (0 under cover: no streak or splash)
-// or a surface's wet share (0 deep under cover, a fringe at the open sides). With no capture CoverOn is 0 and every
-// point reads open, so a material built with the term looks as it did before.
+// Rain under cover, the material side (ftcore/RainCover.h is its reference). The resident ring (UFTRainCoverSubsystem,
+// FTRainCoverRing.cpp) keeps RT_RainCover as a 3 x 3 atlas of G16 tiles round the lead's tile and writes MPC_RainCover's
+// CoverSlot0..8 (the tile each slot holds and its height range: tx, ty, min Z, max Z cm) and CoverOn (1 once the ring is
+// filled). Materials read it through Term (ftcore::rainCoverRingHlsl): a sprite's openness (0 under cover: no streak or
+// splash) or a surface's wet share (0 deep under cover, a fringe at the open sides). CoverOn 0 (the default) skips the
+// whole term ([branch]) and every point reads open, so a material built with the term looks as it did before.
+// CoverFrame stays in the collection for the dev-only moving capture; no material reads it.
 // Off by default (ftcore::rainCoverEnabled): only with -RainCover do the builds put the term in (Term and Sheltered;
 // off, Term is null and Sheltered passes the wetness through) and make the assets, and the game run the capture.
 // The builds make both assets when missing (LoadOrBuild, LoadOrBuildTarget); they are saved in place, never deleted.
@@ -48,6 +50,7 @@ inline bool Enabled()
 
 inline FName Frame() { return FName(UTF8_TO_TCHAR(ftcore::kRainCoverParamFrame)); }
 inline FName On() { return FName(UTF8_TO_TCHAR(ftcore::kRainCoverParamOn)); }
+inline FName Slot(int32 S) { return FName(UTF8_TO_TCHAR(ftcore::rainCoverSlotParam(S))); }
 inline FString TargetPackage() { return UTF8_TO_TCHAR(ftcore::kRainCoverTarget); }
 
 template <typename T>
@@ -117,7 +120,16 @@ T* Node(UMaterial* Material, int32 X, int32 Y)
 inline UMaterialParameterCollection* LoadOrBuild()
 {
 	UMaterialParameterCollection* Asset = Load();
-	if (Asset && Asset->GetParameterId(Frame()).IsValid() && Asset->GetParameterId(On()).IsValid())
+	const auto Complete = [](const UMaterialParameterCollection* A)
+	{
+		bool bAll = A->GetParameterId(Frame()).IsValid() && A->GetParameterId(On()).IsValid();
+		for (int32 S = 0; S < ftcore::kRainCoverRingSlots; ++S)
+		{
+			bAll = bAll && A->GetParameterId(Slot(S)).IsValid();
+		}
+		return bAll;
+	};
+	if (Asset && Complete(Asset))
 	{
 		return Asset;
 	}
@@ -140,6 +152,17 @@ inline UMaterialParameterCollection* LoadOrBuild()
 		P.ParameterName = On();
 		P.DefaultValue = 0.f; // no capture: every point open
 		P.Id = Detail::IdFor(On());
+	}
+	for (int32 S = 0; S < ftcore::kRainCoverRingSlots; ++S)
+	{
+		if (!Asset->GetParameterId(Slot(S)).IsValid())
+		{
+			FCollectionVectorParameter& P = Asset->VectorParameters.AddDefaulted_GetRef();
+			P.ParameterName = Slot(S);
+			const ftcore::RainCoverSlot None;
+			P.DefaultValue = FLinearColor(None.tx, None.ty, None.minZcm, None.maxZcm); // holds no tile: reads open
+			P.Id = Detail::IdFor(Slot(S));
+		}
 	}
 	Asset->PostEditChange();
 	return Detail::Save(Package, Asset) ? Asset : nullptr;
@@ -169,7 +192,7 @@ inline UTextureRenderTarget2D* LoadOrBuildTarget()
 	return Detail::Save(Package, Target) ? Target : nullptr;
 }
 
-// The cover term as a custom node (ftcore::rainCoverHlsl): bSprite gives the openness at the pixel (0 under cover),
+// The cover term as a custom node (ftcore::rainCoverRingHlsl): bSprite gives the openness at the pixel (0 under cover),
 // else the wet share with the fringe, read out from a wall's face along Normal (the vertex normal when null: never the
 // normal-mapped one, which would feed back into the normal). Null when either asset is missing, and without -RainCover
 // (Enabled: then nothing is built or saved).
@@ -199,7 +222,7 @@ inline UMaterialExpression* Term(UMaterial* Material, bool bSprite, int32 X, int
 	UMaterialExpressionCustom* C = Detail::Node<UMaterialExpressionCustom>(Material, X, Y);
 	C->Description = bSprite ? TEXT("RainCoverOpen") : TEXT("RainCoverWet");
 	C->OutputType = CMOT_Float1;
-	C->Code = UTF8_TO_TCHAR(ftcore::rainCoverHlsl(ftcore::RainCoverSpec{}, bSprite).c_str());
+	C->Code = UTF8_TO_TCHAR(ftcore::rainCoverRingHlsl(ftcore::RainCoverSpec{}, bSprite).c_str());
 	C->Inputs.Reset();
 	auto In = [C](const TCHAR* Name, UMaterialExpression* From)
 	{
@@ -208,12 +231,15 @@ inline UMaterialExpression* Term(UMaterial* Material, bool bSprite, int32 X, int
 		Slot.Input.Connect(0, From);
 	};
 	In(TEXT("CoverTex"), Tex);
-	In(TEXT("CoverFrame"), Read(Frame(), -60));
-	In(TEXT("CoverOn"), Read(On(), 0));
-	In(TEXT("WorldPos"), Detail::Node<UMaterialExpressionWorldPosition>(Material, X - 300, Y + 60));
+	In(TEXT("CoverOn"), Read(On(), -60));
+	for (int32 S = 0; S < ftcore::kRainCoverRingSlots; ++S)
+	{
+		In(*Slot(S).ToString(), Read(Slot(S), S * 40));
+	}
+	In(TEXT("WorldPos"), Detail::Node<UMaterialExpressionWorldPosition>(Material, X - 300, Y + 380));
 	if (!bSprite)
 	{
-		In(TEXT("Normal"), Normal ? Normal : Detail::Node<UMaterialExpressionVertexNormalWS>(Material, X - 300, Y + 120));
+		In(TEXT("Normal"), Normal ? Normal : Detail::Node<UMaterialExpressionVertexNormalWS>(Material, X - 300, Y + 440));
 	}
 	return C;
 }

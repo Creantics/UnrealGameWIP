@@ -4,6 +4,7 @@
 #include "FTClockTower.h"
 #include "FTExploreCharacter.h"
 #include "FTLookSubsystem.h"
+#include "FTRainCoverSubsystem.h"
 #include "FTSceneLook.h"
 #include "FTWorldWave.h"
 #include "ForgottenThird.h"
@@ -1680,6 +1681,15 @@ int32 UFTWorldWaveSubsystem::Dress(const FVector& Origin, double Radius)
 	if (!World || Radius <= 0.0)
 	{
 		return Tracked.Num();
+	}
+	// Dress swaps meshes after the cover ring's bake keyed them: the baked tiles no longer match what stands there.
+	static bool bCoverWarned = false;
+	const UFTRainCoverSubsystem* RainCover = World->GetSubsystem<UFTRainCoverSubsystem>();
+	if (!bCoverWarned && RainCover && RainCover->IsActive())
+	{
+		bCoverWarned = true;
+		UE_LOG(LogForgottenThird, Warning,
+			TEXT("WorldWave: Dress with the rain cover on: the cover's baked tiles show the world as it was before the dress (stale under the dressed meshes until the next bake)."));
 	}
 	const double RadiusSq = Radius * Radius;
 	const FName LensTag(FTScene::NightLampHeadTag);

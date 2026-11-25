@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace ftcore {
 
@@ -249,6 +250,219 @@ std::string rainCoverHlsl(const RainCoverSpec& spec, bool sprite) {
     s += sprite ? "FTRainCover C;\nreturn C.Open(CoverTex, CoverTexSampler, CoverFrame, CoverOn, WorldPos);\n"
                 : "FTRainCover C;\nreturn C.Wet(CoverTex, CoverTexSampler, CoverFrame, CoverOn, WorldPos, Normal);\n";
     return s;
+}
+
+const char* rainCoverSlotParam(int slot) {
+    static const char* const kNames[kRainCoverRingSlots] = {"CoverSlot0", "CoverSlot1", "CoverSlot2", "CoverSlot3", "CoverSlot4",
+                                                            "CoverSlot5", "CoverSlot6", "CoverSlot7", "CoverSlot8"};
+    return (slot >= 0 && slot < kRainCoverRingSlots) ? kNames[slot] : "";
+}
+
+RainCoverSlot rainCoverSlotFor(RainCoverTile tile, const RainCoverR16Range& range) {
+    RainCoverSlot s;
+    s.tx = static_cast<float>(tile.x);
+    s.ty = static_cast<float>(tile.y);
+    s.minZcm = range.minZ * 100.f;
+    s.maxZcm = range.maxZ * 100.f;
+    return s;
+}
+
+int rainCoverAtlasSide(const RainCoverSpec& spec) { return spec.resolution > 0 ? 3 * spec.resolution : 0; }
+
+void rainCoverRingOrigin(const RainCoverSpec& spec, int slot, int& ax, int& ay) {
+    const int res = std::max(spec.resolution, 0);
+    const int s = (slot >= 0 && slot < kRainCoverRingSlots) ? slot : 0;
+    ax = (s % 3) * res;
+    ay = (s / 3) * res;
+}
+
+bool rainCoverRingTexel(const RainCoverSpec& spec, float x, float y, RainCoverTile& tile, int& slot, int& ax, int& ay) {
+    int px = 0, py = 0;
+    slot = ax = ay = 0;
+    if (!rainCoverTileTexel(spec, x, y, tile, px, py)) return false;
+    slot = rainCoverRingSlot(tile);
+    rainCoverRingOrigin(spec, slot, ax, ay);
+    ax += px;
+    ay += py;
+    return true;
+}
+
+float rainCoverRingOpen(const RainCoverSpec& spec, const unsigned short* atlas, const RainCoverSlot (&slots)[9], float x, float y,
+                        float z, float bias) {
+    RainCoverTile tile;
+    int slot = 0, ax = 0, ay = 0;
+    if (!atlas || !rainCoverRingTexel(spec, x, y, tile, slot, ax, ay)) return 1.f;
+    const RainCoverSlot& v = slots[slot];
+    if (std::fabs(v.tx - static_cast<float>(tile.x)) >= 0.5f || std::fabs(v.ty - static_cast<float>(tile.y)) >= 0.5f) return 1.f;
+    const unsigned code = atlas[static_cast<std::size_t>(ay) * static_cast<std::size_t>(rainCoverAtlasSide(spec)) + static_cast<std::size_t>(ax)];
+    float oz = 0.f;
+    if (!rainCoverR16Unpack(code, RainCoverR16Range{v.minZcm * 0.01f, v.maxZcm * 0.01f, 1}, oz)) return 1.f;
+    return rainCoverOpen(oz, z, bias);
+}
+
+std::string rainCoverRingHlsl(const RainCoverSpec& spec, bool sprite) {
+    const auto lit = [](double v) {
+        char b[40];
+        std::snprintf(b, sizeof b, "%.6g", v);
+        return std::string(b);
+    };
+    const double texelCm = static_cast<double>(rainCoverTexel(spec)) * 100.0;
+    const int res = std::max(spec.resolution, 1);
+    std::string s =
+        "struct FTRainCoverRing {\n"
+        "  float4 Sl[9];\n"
+        // Floor division and a non-negative mod (HLSL's int / and % truncate toward zero).
+        "  int FloorDiv(int a, int b) { return a >= 0 ? a / b : (a - b + 1) / b; }\n"
+        "  int PosMod3(int a) { int m = a % 3; return m < 0 ? m + 3 : m; }\n"
+        // Openness at a plan point (cm) for a point at Z (cm): 1 when the slot holds another tile or no occluder.
+        "  float OpenAt(Texture2D T, float2 P, float Z, float B) {\n"
+        "    int2 g = int2(floor(P / $Texel));\n"
+        "    int2 t = int2(FloorDiv(g.x, $Res), FloorDiv(g.y, $Res));\n"
+        "    int2 l = g - t * $Res;\n"
+        "    int2 m = int2(PosMod3(t.x), PosMod3(t.y));\n"
+        "    float4 V = Sl[m.x + 3 * m.y];\n"
+        "    float o = 1.0;\n"
+        "    if (abs(V.x - float(t.x)) < 0.5 && abs(V.y - float(t.y)) < 0.5) {\n"
+        "      uint code = (uint)round(T.Load(int3(m.x * $Res + l.y, m.y * $Res + ($Res - 1) - l.x, 0)).r * 65535.0);\n"
+        "      if (code > 0u) {\n"
+        "        float z = V.z + (V.w - V.z) * float(code - 1u) / 65534.0;\n"
+        "        o = z > Z + B ? 0.0 : 1.0;\n"
+        "      }\n"
+        "    }\n"
+        "    return o;\n"
+        "  }\n"
+        "  float Weight(float r) { return saturate(1.25 - r / max($Fringe, 0.01)); }\n"
+        "  float Wet(Texture2D T, float On, float3 W, float3 N) {\n"
+        "    float r = 1.0;\n"
+        "    [branch] if (On >= 0.5) {\n"
+        "      float h = length(N.xy);\n"
+        "      float2 P = W.xy + (h > 0.0001 ? N.xy / h * $Wall * min(h, 1.0) : float2(0.0, 0.0));\n"
+        "      float here = OpenAt(T, P, W.z, $Bias);\n"
+        "      if (here < 1.0) {\n"
+        "        float best = 0.0;\n"
+        "        const float2 dirs[4] = { float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1) };\n"
+        "        [unroll] for (int k = 0; k < 12; ++k) {\n"
+        "          float d = $Fringe * float(k / 4 + 1) / 3.0;\n"
+        "          best = max(best, OpenAt(T, P + dirs[k % 4] * d, W.z, $Bias) * Weight(d));\n"
+        "        }\n"
+        "        r = best;\n"
+        "      }\n"
+        "    }\n"
+        "    return r;\n"
+        "  }\n"
+        "  float Open(Texture2D T, float On, float3 W) {\n"
+        "    float r = 1.0;\n"
+        "    [branch] if (On >= 0.5) {\n"
+        "      r = OpenAt(T, W.xy, W.z, $Bias);\n"
+        "    }\n"
+        "    return r;\n"
+        "  }\n"
+        "};\n";
+    const auto put = [&s](const char* name, const std::string& value) {
+        const std::string key = name;
+        for (std::size_t at = s.find(key); at != std::string::npos; at = s.find(key, at + value.size())) s.replace(at, key.size(), value);
+    };
+    put("$Texel", lit(texelCm));
+    put("$Res", std::to_string(res));
+    put("$Bias", lit(static_cast<double>(sprite ? spec.streakBiasM : spec.biasM) * 100.0));
+    put("$Wall", lit(static_cast<double>(spec.wallOffsetM) * 100.0));
+    put("$Fringe", lit(static_cast<double>(spec.fringeM) * 100.0));
+    s += "FTRainCoverRing C;\n";
+    for (int i = 0; i < kRainCoverRingSlots; ++i) s += std::string("C.Sl[") + std::to_string(i) + "] = " + rainCoverSlotParam(i) + ";\n";
+    s += sprite ? "return C.Open(CoverTex, CoverOn, WorldPos);\n" : "return C.Wet(CoverTex, CoverOn, WorldPos, Normal);\n";
+    return s;
+}
+
+namespace {
+
+constexpr unsigned char kMagic[4] = {'F', 'T', 'R', '2'};
+
+void putU32(unsigned char* p, unsigned v) {
+    for (int i = 0; i < 4; ++i) p[i] = static_cast<unsigned char>((v >> (8 * i)) & 0xffu);
+}
+unsigned getU32(const unsigned char* p) {
+    unsigned v = 0;
+    for (int i = 0; i < 4; ++i) v |= static_cast<unsigned>(p[i]) << (8 * i);
+    return v;
+}
+void putF32(unsigned char* p, float f) {
+    unsigned v = 0;
+    std::memcpy(&v, &f, 4);
+    putU32(p, v);
+}
+float getF32(const unsigned char* p) {
+    const unsigned v = getU32(p);
+    float f = 0.f;
+    std::memcpy(&f, &v, 4);
+    return f;
+}
+
+}  // namespace
+
+bool rainCoverTileHeaderOnly(const RainCoverR16Range& range, int count) {
+    return range.hits <= 0 || (range.hits == count && range.minZ == range.maxZ);
+}
+
+void rainCoverHeaderWrite(const RainCoverTileHeader& h, unsigned char* out) {
+    if (!out) return;
+    std::memset(out, 0, kRainCoverFileHeader);
+    std::memcpy(out, kMagic, 4);
+    putU32(out + 4, kRainCoverFileVersion);
+    putU32(out + 8, static_cast<unsigned>(h.tile.x));
+    putU32(out + 12, static_cast<unsigned>(h.tile.y));
+    putU32(out + 16, static_cast<unsigned>(h.res));
+    putU32(out + 20, static_cast<unsigned>(h.hits));
+    putF32(out + 24, h.topZ);
+    putF32(out + 28, h.minZ);
+    putF32(out + 32, h.maxZ);
+    putU32(out + 40, static_cast<unsigned>(h.key & 0xffffffffull));
+    putU32(out + 44, static_cast<unsigned>(h.key >> 32));
+}
+
+bool rainCoverHeaderRead(const unsigned char* in, int size, RainCoverTileHeader& h) {
+    h = RainCoverTileHeader{};
+    if (!in || size < kRainCoverFileHeader || std::memcmp(in, kMagic, 4) != 0 || getU32(in + 4) != kRainCoverFileVersion) return false;
+    const int res = static_cast<int>(getU32(in + 16));
+    if (res < 0 || res > 4096) return false;
+    h.tile.x = static_cast<int>(getU32(in + 8));
+    h.tile.y = static_cast<int>(getU32(in + 12));
+    h.res = res;
+    h.hits = static_cast<int>(getU32(in + 20));
+    h.topZ = getF32(in + 24);
+    h.minZ = getF32(in + 28);
+    h.maxZ = getF32(in + 32);
+    h.key = static_cast<unsigned long long>(getU32(in + 40)) | (static_cast<unsigned long long>(getU32(in + 44)) << 32);
+    return true;
+}
+
+int rainCoverPayloadBytes(const RainCoverTileHeader& h) { return h.res > 0 ? h.res * h.res * 2 : 0; }
+
+void rainCoverTileFill(const RainCoverTileHeader& h, int res, unsigned short* out) {
+    if (!out || res <= 0) return;
+    const unsigned short code = static_cast<unsigned short>(h.hits > 0 ? 1u : kRainCoverR16None);
+    for (int i = 0; i < res * res; ++i) out[i] = code;
+}
+
+bool rainCoverTileLine(const char* line, RainCoverTile& tile) {
+    tile = RainCoverTile{};
+    if (!line) return false;
+    const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    const char* p = line;
+    while (space(*p)) ++p;
+    if (*p != 't' || !space(p[1])) return false;
+    ++p;
+    long v[2] = {0, 0};
+    for (long& out : v) {
+        char* end = nullptr;
+        out = std::strtol(p, &end, 10);
+        if (end == p || out < -1000000L || out > 1000000L) return false;
+        p = end;
+    }
+    while (space(*p)) ++p;
+    if (*p != '\0') return false;
+    tile.x = static_cast<int>(v[0]);
+    tile.y = static_cast<int>(v[1]);
+    return true;
 }
 
 }  // namespace ftcore

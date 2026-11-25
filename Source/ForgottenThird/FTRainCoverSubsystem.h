@@ -1,8 +1,14 @@
 #pragma once
 
-// Rain under cover: the top-down depth capture that FTRainCoverCollection.h's material term reads (ftcore/RainCover.h).
+// Rain under cover: the cover map that FTRainCoverCollection.h's material term reads (ftcore/RainCover.h).
 //
-// On Solhaven's maps (game and PIE worlds) a transient ASceneCapture2D looks straight down from ftcore::RainCoverSpec
+// Shipped (11-25, path 3b): the resident ring, FTRainCoverRing.cpp. The strip's 64 m tiles are baked once per content key
+// into a cache of v2 tile files; in play RT_RainCover is a 3 x 3 atlas of G16 tiles round the lead's tile, fed from a
+// 25-tile RAM pool read off the game thread, and CoverSlot0..8 say which tile each slot holds. Its switches are listed
+// at the top of that file. With -RainCover the ring is what runs; nothing below draws in play.
+//
+// The moving capture below (dev only since the ring: -RainCoverLegacy, or any of the probes and cells that need it, on
+// the old term the material builds no longer put in): a transient ASceneCapture2D looks straight down from ftcore::RainCoverSpec
 // aboveM over the camera: orthographic, sizeM square, SceneDepth into RT_RainCover. Only what can shelter is drawn:
 // opaque static and instanced meshes (no characters, particles, translucency, decals, fog or landscape: the ground is
 // open anyway). It captures on the first frame and again whenever the camera has moved recaptureM in plan from the
@@ -73,6 +79,11 @@ class UTextureRenderTarget2D;
 // Dev only (11-25 truth probe): the truth passes' and the streamed upload's state, in the .cpp.
 struct FFTRainTruth;
 struct FFTRainStream;
+// The resident ring (FTRainCoverRing.cpp): its tiles, keys, cache, RAM pool and reads.
+struct FFTRainRing;
+
+// The capture settings the subsystem's captures share (straight down, orthographic, depth, the trimmed show flags).
+void FTRainCoverCaptureSettings(USceneCaptureComponent2D& C, UTextureRenderTarget2D* Into, const ftcore::RainCoverSpec& S);
 
 UCLASS()
 class FORGOTTENTHIRD_API UFTRainCoverSubsystem : public UTickableWorldSubsystem
@@ -103,6 +114,10 @@ private:
 	void ShootNow();
 	// Frame is the map's square from here on: CoverFrame and CoverOn written, the capture counted.
 	void Publish(UWorld& World);
+	// The ring (FTRainCoverRing.cpp): set up at begin play (false: the ring is off, logged); its tick; shut down.
+	bool RingBegin(UWorld& World);
+	void RingTick(UWorld& World, const FVector& Eye);
+	void RingEnd();
 #if !UE_BUILD_SHIPPING
 	void DiffStart(UWorld& World);
 	void DiffTick();
@@ -123,6 +138,8 @@ private:
 	void TruthSwitches(UWorld& World, bool bLod0, bool bNoCull, bool bNoHlod);
 	void StripTick(UWorld& World);
 	void StreamTick(const FVector& Eye);
+	// The ring's fidelity witness (FTRainCoverRing.cpp, -RainCoverWitness): one square a tick after its camera settles.
+	void RingWitnessTick(UWorld& World);
 #endif
 
 	UPROPERTY(Transient)
@@ -151,6 +168,16 @@ private:
 	TObjectPtr<AActor> TileCamera;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTexture2D>> UploadTex;
+
+	// The ring's bake capture and its target (R32F, one tile; the witness's 60 m draw uses them too: the same size).
+	UPROPERTY(Transient)
+	TObjectPtr<ASceneCapture2D> RingCapture;
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> RingTarget;
+	// Route B (dev): the staging texture each entering tile is written into before its copy into the atlas.
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> RingStaging;
+	TSharedPtr<FFTRainRing> Ring;
 
 	ftcore::RainCoverSpec Spec;
 	ftcore::RainCoverFrame Frame;

@@ -247,6 +247,16 @@ else()
     target_compile_options(ftcore_place PRIVATE -fno-exceptions -fno-rtti)
 endif()
 
+# ftcore_rainhlsl: prints the rain cover's ring term (the material builds' custom node code) for a compile check.
+add_executable(ftcore_rainhlsl tools/ftcore_rainhlsl.cpp)
+target_link_libraries(ftcore_rainhlsl PRIVATE ftcore ftcore_warnings)
+if(MSVC)
+    target_compile_options(ftcore_rainhlsl PRIVATE /EHs-c- /GR-)
+    target_compile_definitions(ftcore_rainhlsl PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(ftcore_rainhlsl PRIVATE -fno-exceptions -fno-rtti)
+endif()
+
 # ftcore_layout: the lane layout's command-line tool for the private box tables (an offline build step, not the game).
 add_executable(ftcore_layout tools/ftcore_layout.cpp)
 target_link_libraries(ftcore_layout PRIVATE ftcore ftcore_warnings)

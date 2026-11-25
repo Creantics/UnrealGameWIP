@@ -191,6 +191,11 @@ void SetCoverCapture(USceneCaptureComponent2D& C, UTextureRenderTarget2D* Into, 
 }
 } // namespace
 
+void FTRainCoverCaptureSettings(USceneCaptureComponent2D& C, UTextureRenderTarget2D* Into, const ftcore::RainCoverSpec& S)
+{
+	SetCoverCapture(C, Into, S, true);
+}
+
 bool UFTRainCoverSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
 	const UWorld* World = Cast<UWorld>(Outer);
@@ -216,6 +221,26 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		UE_LOG(LogForgottenThird, Warning,
 			TEXT("RainCover: off, %s is missing (build it with -run=FTBuildVfx -Only=rain, or FTBuildSurfaces)."),
 			Target ? FTRainCover::Collection : *FTRainCover::TargetPackage());
+		return;
+	}
+
+	// The resident ring ships (FTRainCoverRing.cpp). The moving capture below is dev only: -RainCoverLegacy, or a probe or
+	// cell built on it. A shipping build never spawns it.
+	bool bLegacy = false;
+#if !UE_BUILD_SHIPPING
+	{
+		const TCHAR* Sw = FTLookSwitches();
+		FString Unused;
+		bLegacy = FParse::Param(Sw, TEXT("RainCoverLegacy")) || FParse::Value(Sw, TEXT("RainCoverTileProbe="), Unused) ||
+			FParse::Param(Sw, TEXT("RainCoverUploadProbe")) || FParse::Param(Sw, TEXT("RainCoverDiff")) || FParse::Param(Sw, TEXT("RainCoverSplit")) ||
+			FParse::Param(Sw, TEXT("RainCoverProbe"));
+	}
+#endif
+	if (!bLegacy)
+	{
+		bActive = RingBegin(InWorld);
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover: %s (the resident ring, %.0f m tiles at %d)."), bActive ? TEXT("on") : TEXT("off"), Spec.sizeM,
+			Spec.resolution);
 		return;
 	}
 
@@ -495,10 +520,11 @@ void UFTRainCoverSubsystem::Publish(UWorld& World)
 
 void UFTRainCoverSubsystem::Deinitialize()
 {
-	if (bActive)
+	if (bActive && !Ring)
 	{
 		UE_LOG(LogForgottenThird, Display, TEXT("RainCover: %d captures."), Captures);
 	}
+	RingEnd();
 #if !UE_BUILD_SHIPPING
 	if (Stream)
 	{
@@ -527,7 +553,7 @@ void UFTRainCoverSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	UWorld* World = GetWorld();
-	if (!World || !Capture)
+	if (!World || (!Capture && !Ring))
 	{
 		return;
 	}
@@ -537,6 +563,11 @@ void UFTRainCoverSubsystem::Tick(float DeltaTime)
 		return;
 	}
 	const FVector Eye = PC->PlayerCameraManager->GetCameraLocation();
+	if (Ring)
+	{
+		RingTick(*World, Eye);
+		return;
+	}
 	if (bProbe && Captures == 1)
 	{
 		Probe(Eye); // the frame after the first capture: it has rendered

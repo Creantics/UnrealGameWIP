@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 using namespace ftcore;
 
@@ -258,4 +259,183 @@ TEST_CASE("rainCover R16 (3b): none is its own code, heights within half a step"
     CHECK_FALSE(rainCoverR16Pack(depth, 8, std::numeric_limits<float>::quiet_NaN(), far, code, r, 0.002f));
     CHECK(code[0] == kRainCoverR16None);
     CHECK_FALSE(rainCoverR16Pack(nullptr, 8, 0.f, far, code, r, 0.002f));
+}
+
+namespace {
+
+// The ring HLSL's texel arithmetic, line for line (cm in, ints as HLSL's truncating / and %), to hold it to the C++.
+void hlslRingTexel(float pxCm, float pyCm, int res, float texelCm, int& tx, int& ty, int& slot, int& ax, int& ay) {
+    const auto floorDiv = [](int a, int b) { return a >= 0 ? a / b : (a - b + 1) / b; };
+    const auto posMod3 = [](int a) {
+        const int m = a % 3;
+        return m < 0 ? m + 3 : m;
+    };
+    const int gx = static_cast<int>(std::floor(pxCm / texelCm)), gy = static_cast<int>(std::floor(pyCm / texelCm));
+    tx = floorDiv(gx, res);
+    ty = floorDiv(gy, res);
+    const int lx = gx - tx * res, ly = gy - ty * res;
+    const int mx = posMod3(tx), my = posMod3(ty);
+    slot = mx + 3 * my;
+    ax = mx * res + ly;
+    ay = my * res + (res - 1) - lx;
+}
+
+}  // namespace
+
+TEST_CASE("rainCover ring: slot names, slot vectors and atlas texels") {
+    const RainCoverSpec spec;
+    CHECK(std::string(rainCoverSlotParam(0)) == "CoverSlot0");
+    CHECK(std::string(rainCoverSlotParam(8)) == "CoverSlot8");
+    CHECK(std::string(rainCoverSlotParam(9)).empty());
+    CHECK(std::string(rainCoverSlotParam(-1)).empty());
+    CHECK(rainCoverAtlasSide(spec) == 1536);
+    const RainCoverSlot none;
+    CHECK(none.tx == kRainCoverSlotNone);  // (0, 0) is a real tile: an unset slot must not read as it
+    const RainCoverSlot s = rainCoverSlotFor(RainCoverTile{-1, 4}, RainCoverR16Range{2.5f, 10.f, 7});
+    CHECK(s.tx == -1.f);
+    CHECK(s.ty == 4.f);
+    CHECK(s.minZcm == doctest::Approx(250.f));
+    CHECK(s.maxZcm == doctest::Approx(1000.f));
+
+    RainCoverTile t;
+    int slot = -1, ax = -1, ay = -1;
+    REQUIRE(rainCoverRingTexel(spec, 0.06f, 0.06f, t, slot, ax, ay));
+    CHECK(t == RainCoverTile{0, 0});
+    CHECK(slot == 0);
+    CHECK(ax == 0);
+    CHECK(ay == 511);
+    // Tile (-1, 4): slot posmod(-1, 3) + 3 * posmod(4, 3) = 2 + 3 = 5, block at (1024, 512).
+    REQUIRE(rainCoverRingTexel(spec, -0.01f, 4 * 64.f + 0.01f, t, slot, ax, ay));
+    CHECK(t == RainCoverTile{-1, 4});
+    CHECK(slot == 5);
+    CHECK(ax == 1024 + 0);
+    CHECK(ay == 512 + 0);  // x just under 0: the last texel along +X, the image's top row
+    int ox = 0, oy = 0;
+    rainCoverRingOrigin(spec, 5, ox, oy);
+    CHECK(ox == 1024);
+    CHECK(oy == 512);
+    CHECK_FALSE(rainCoverRingTexel(spec, std::numeric_limits<float>::infinity(), 0.f, t, slot, ax, ay));
+
+    // The HLSL's integer arithmetic lands on the same texel as the C++ across the strip (off texel edges).
+    int bad = 0;
+    for (int i = 0; i < 4000; ++i) {
+        const float x = -832.f + 2816.f * static_cast<float>((i * 7919) % 4000) / 4000.f + 0.031f;
+        const float y = -300.f + 900.f * static_cast<float>((i * 104729) % 4000) / 4000.f + 0.047f;
+        REQUIRE(rainCoverRingTexel(spec, x, y, t, slot, ax, ay));
+        int hx = 0, hy = 0, hs = 0, hax = 0, hay = 0;
+        hlslRingTexel(x * 100.f, y * 100.f, spec.resolution, rainCoverTexel(spec) * 100.f, hx, hy, hs, hax, hay);
+        if (hx != t.x || hy != t.y || hs != slot || hax != ax || hay != ay) ++bad;
+    }
+    CHECK(bad == 0);
+}
+
+TEST_CASE("rainCover ring: the CPU OpenAt over an atlas") {
+    const RainCoverSpec spec;
+    const int side = rainCoverAtlasSide(spec);
+    std::vector<unsigned short> atlas(static_cast<std::size_t>(side) * static_cast<std::size_t>(side), 0);
+    RainCoverSlot slots[9];
+    // Tile (2, -1) (slot 2 + 3 * 2 = 8) holds a roof at 6 m over one texel, range 0..12 m.
+    const RainCoverTile tile{2, -1};
+    const RainCoverR16Range range{0.f, 12.f, 1};
+    const float x = 2 * 64.f + 10.03f, y = -64.f + 20.03f;
+    RainCoverTile at;
+    int slot = 0, ax = 0, ay = 0;
+    REQUIRE(rainCoverRingTexel(spec, x, y, at, slot, ax, ay));
+    REQUIRE(at == tile);
+    REQUIRE(slot == 8);
+    atlas[static_cast<std::size_t>(ay) * static_cast<std::size_t>(side) + static_cast<std::size_t>(ax)] =
+        static_cast<unsigned short>(1u + 32767u);  // 12 * 32767 / 65534 = 6 m
+    // Unset slot: open even with the code in place.
+    CHECK(rainCoverRingOpen(spec, atlas.data(), slots, x, y, 0.f, spec.biasM) == 1.f);
+    slots[8] = rainCoverSlotFor(tile, range);
+    CHECK(rainCoverRingOpen(spec, atlas.data(), slots, x, y, 0.f, spec.biasM) == 0.f);   // under the roof
+    CHECK(rainCoverRingOpen(spec, atlas.data(), slots, x, y, 5.8f, spec.biasM) == 1.f);  // within bias of it
+    CHECK(rainCoverRingOpen(spec, atlas.data(), slots, x, y, 5.6f, spec.biasM) == 0.f);
+    CHECK(rainCoverRingOpen(spec, atlas.data(), slots, x + 0.2f, y, 0.f, spec.biasM) == 1.f);  // next texel: none
+    // The slot holding another tile three tiles over (same slot): open there, as the HLSL.
+    slots[8] = rainCoverSlotFor(RainCoverTile{5, -1}, range);
+    CHECK(rainCoverRingOpen(spec, atlas.data(), slots, x, y, 0.f, spec.biasM) == 1.f);
+    CHECK(rainCoverRingOpen(spec, nullptr, slots, x, y, 0.f, spec.biasM) == 1.f);
+}
+
+TEST_CASE("rainCover ring: the HLSL is gated by a branch and returns once") {
+    const RainCoverSpec spec;
+    for (const bool sprite : {true, false}) {
+        const std::string h = rainCoverRingHlsl(spec, sprite);
+        CHECK(h.find("[branch] if (On >= 0.5) {") != std::string::npos);
+        CHECK(h.find("return 1.0;") == std::string::npos);  // no early outs: one return per method
+        CHECK(h.find("floor(P / 12.5)") != std::string::npos);
+        CHECK(h.find("FloorDiv(g.x, 512)") != std::string::npos);
+        CHECK(h.find("(512 - 1)") != std::string::npos);
+        CHECK(h.find("C.Sl[0] = CoverSlot0;") != std::string::npos);
+        CHECK(h.find("C.Sl[8] = CoverSlot8;") != std::string::npos);
+        CHECK(h.find('$') == std::string::npos);
+        CHECK(h.find("CoverFrame") == std::string::npos);
+        CHECK(h.find(sprite ? "return C.Open(CoverTex, CoverOn, WorldPos);" : "return C.Wet(CoverTex, CoverOn, WorldPos, Normal);") !=
+              std::string::npos);
+    }
+}
+
+TEST_CASE("rainCover tile file v2: a 4096-byte header, payload sector-aligned") {
+    RainCoverTileHeader h;
+    h.tile = RainCoverTile{-13, 7};
+    h.res = 512;
+    h.hits = 1234;
+    h.topZ = 412.5f;
+    h.minZ = -3.25f;
+    h.maxZ = 88.f;
+    h.key = 0x0123456789abcdefull;
+    std::vector<unsigned char> buf(kRainCoverFileHeader, 0xcd);
+    rainCoverHeaderWrite(h, buf.data());
+    CHECK(buf[0] == 'F');
+    CHECK(buf[3] == '2');
+    CHECK(buf[kRainCoverFileHeader - 1] == 0);  // padded with zeros
+    RainCoverTileHeader r;
+    REQUIRE(rainCoverHeaderRead(buf.data(), kRainCoverFileHeader, r));
+    CHECK(r.tile == h.tile);
+    CHECK(r.res == 512);
+    CHECK(r.hits == 1234);
+    CHECK(r.topZ == 412.5f);
+    CHECK(r.minZ == -3.25f);
+    CHECK(r.maxZ == 88.f);
+    CHECK(r.key == h.key);
+    CHECK(rainCoverPayloadBytes(r) == 524288);
+    CHECK(kRainCoverFileHeader % 4096 == 0);
+    CHECK_FALSE(rainCoverHeaderRead(buf.data(), kRainCoverFileHeader - 1, r));
+    buf[3] = '1';
+    CHECK_FALSE(rainCoverHeaderRead(buf.data(), kRainCoverFileHeader, r));
+    buf[3] = '2';
+    buf[4] = 1;  // version 1
+    CHECK_FALSE(rainCoverHeaderRead(buf.data(), kRainCoverFileHeader, r));
+    CHECK_FALSE(rainCoverHeaderRead(nullptr, kRainCoverFileHeader, r));
+
+    // Header only: no hits, or full and flat; a partial flat tile or a ranged one carries its payload.
+    CHECK(rainCoverTileHeaderOnly(RainCoverR16Range{0.f, 0.f, 0}, 16));
+    CHECK(rainCoverTileHeaderOnly(RainCoverR16Range{3.f, 3.f, 16}, 16));
+    CHECK_FALSE(rainCoverTileHeaderOnly(RainCoverR16Range{3.f, 3.f, 15}, 16));
+    CHECK_FALSE(rainCoverTileHeaderOnly(RainCoverR16Range{3.f, 4.f, 16}, 16));
+    RainCoverTileHeader flat;
+    flat.hits = 16;
+    CHECK(rainCoverPayloadBytes(flat) == 0);
+    unsigned short codes[16] = {};
+    rainCoverTileFill(flat, 4, codes);
+    CHECK(codes[0] == 1u);
+    CHECK(codes[15] == 1u);
+    flat.hits = 0;
+    rainCoverTileFill(flat, 4, codes);
+    CHECK(codes[7] == kRainCoverR16None);
+}
+
+TEST_CASE("rainCover tile list lines") {
+    RainCoverTile t;
+    CHECK(rainCoverTileLine("t -13 7", t));
+    CHECK(t == RainCoverTile{-13, 7});
+    CHECK(rainCoverTileLine("t 0 0\n", t));
+    CHECK(rainCoverTileLine("  t 30 -2  \r\n", t));
+    CHECK(t == RainCoverTile{30, -2});
+    CHECK_FALSE(rainCoverTileLine("# 11-25 strip", t));
+    CHECK_FALSE(rainCoverTileLine("t 1", t));
+    CHECK_FALSE(rainCoverTileLine("t 1 2 3", t));
+    CHECK_FALSE(rainCoverTileLine("", t));
+    CHECK_FALSE(rainCoverTileLine(nullptr, t));
 }
