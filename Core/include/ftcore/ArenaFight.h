@@ -771,6 +771,9 @@ inline float arenaBodySpan(const ArenaEnemyKind& kind) {
 }
 // The radius a wall holds an enemy's centre off by: its circle's, or a stadium's end (any way it faces).
 inline float arenaBodyReach(const ArenaEnemyKind& kind) { return kind.bodyRadius + arenaBodySpan(kind); }
+// The host's fixed step (UFTArenaRunner::StepSeconds is this constant): the load check's pick minimum adds its walk-in
+// tick at it (review 1.2, ruling 7277).
+inline constexpr float kArenaHostStep = 1.f / 60.f;
 // The least centre distance enemy kind `kind` picks move `move` from, the lead's radius `leadRadius`. A lungeToContact
 // kind's lunge-curve move (lungeMove; ruling 6681r item 2): first tooth contact, plus its curve's travel through the
 // startup (which runs whole, whatever the lead does), plus one step `dt` of its walk in (the most it closes on the

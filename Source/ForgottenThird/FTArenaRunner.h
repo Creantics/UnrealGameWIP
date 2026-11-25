@@ -180,7 +180,7 @@ class FORGOTTENTHIRD_API UFTArenaRunner : public UActorComponent
 public:
 	static constexpr int32 MaxEnemies = static_cast<int32>(ftcore::kMaxArenaEnemies);
 	static constexpr int32 MaxPopups = 16;
-	static constexpr float StepSeconds = 1.f / 60.f;
+	static constexpr float StepSeconds = ftcore::kArenaHostStep; // Core's load check picks at this step too
 	static constexpr int32 MaxStepsPerFrame = 8;
 	static constexpr float WatchdogSeconds = 180.f;
 	static constexpr float StandOffRunSeconds = 18.f; // -ArenaStandOff: the run ends after this much fight time

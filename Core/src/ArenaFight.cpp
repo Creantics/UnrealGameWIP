@@ -6294,11 +6294,9 @@ static bool arenaReadSpeedCurve(JsonValue j, const std::string& path, float dist
         errors.push_back(path + ": expected some speed (its integral is the travel's shape)");
         return false;
     }
+    // The knot checks above are validArenaCurve's rule (review 4.2); the scale of a finite distance >= 0 over a raw
+    // integral > 1e-6 is finite and >= 0, so the shared rule holds here without a second call (review nit 5).
     c.scale = arenaLungeScale(c, distance);
-    if (!validArenaCurve(c, until)) { // the shared rule (review 4.2), the same check validArenaSpecialRules makes
-        errors.push_back(path + ": expected a curve its distance (" + arenaFormat(distance) + " m) can scale");
-        return false;
-    }
     out = c;
     return true;
 }
@@ -6708,18 +6706,20 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
         }
     }
 
-    // A lunge-curve move's pick minimum (arenaPickMinRange, without the walk-in tick) within its maxRange for every
-    // fighter (review 1.2): above it the band is empty and the move would never be picked against that lead.
+    // A lunge-curve move's pick minimum (arenaPickMinRange with its walk-in tick at the host's step, kArenaHostStep:
+    // the dt the pick runs at) within its maxRange for every fighter (review 1.2, ruling 7277): above it the band is
+    // empty and the move would never be picked against that lead.
     for (std::size_t i = 0; i < table.enemies.size(); ++i) {
         const ArenaEnemyKind& k = table.enemies[i];
         if (k.lungeMove < 0 || static_cast<std::size_t>(k.lungeMove) >= k.moveCount) continue;
         const std::size_t m = static_cast<std::size_t>(k.lungeMove);
         for (std::size_t f = 0; f < table.fighters.size(); ++f) {
-            const float low = arenaPickMinRange(k, m, table.fighters[f].bodyRadius, 0.f);
+            const float low = arenaPickMinRange(k, m, table.fighters[f].bodyRadius, kArenaHostStep);
             if (low <= k.moves[m].maxRange) continue;
             errors.push_back("enemies[" + std::to_string(i) + "].moves[" + std::to_string(m) +
                              "].maxRange: expected at least its pick minimum " + arenaFormat(low) +
-                             " m against fighter " + table.fighterIds[f] + " (contact plus the startup's travel)");
+                             " m against fighter " + table.fighterIds[f] +
+                             " (contact, the startup's travel and one walk-in step)");
             break;
         }
     }

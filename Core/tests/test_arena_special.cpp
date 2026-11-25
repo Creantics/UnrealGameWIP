@@ -1119,7 +1119,8 @@ TEST_CASE("arena special: on its knockSpeed curve the knock-back covers knockBac
                                     refused, &err));
     CHECK(err.find("knockSpeed[2]") != std::string::npos);
     // A negative knot, one out of order: refused at its knot (review 3). 1e999 (not finite) is refused too, by the
-    // JSON reader before the knot check; validArenaCurve's NaN case below covers a non-finite knot past the reader.
+    // JSON reader before the knot check (its "number out of range"); validArenaCurve's NaN cases below cover a
+    // non-finite knot past the reader.
     const auto knockErr = [](const char* knots) {
         ArenaSpecialTable t;
         std::string e;
@@ -1131,7 +1132,9 @@ TEST_CASE("arena special: on its knockSpeed curve the knock-back covers knockBac
     CHECK(knockErr("[[0, 0], [0.08, -1], [0.35, 0]]").find("knockSpeed[1]") != std::string::npos);
     CHECK(knockErr("[[0, 0], [-0.1, 7.41], [0.35, 0]]").find("knockSpeed[1]") != std::string::npos);
     CHECK(knockErr("[[0, 0], [0.2, 7.41], [0.1, 7.41], [0.35, 0]]").find("knockSpeed[2]") != std::string::npos);
-    CHECK_FALSE(knockErr("[[0, 0], [0.08, 1e999], [0.35, 0]]").empty());
+    const std::string huge = knockErr("[[0, 0], [0.08, 1e999], [0.35, 0]]");
+    CHECK(huge.find("arena special: ") == 0);
+    CHECK(huge.find("number out of range") != std::string::npos);
     // validArenaCurve (review 4.2) holds a hand-built curve to the loader's rules: order, finiteness, speed.
     ArenaSpecialTable built = curved;
     ArenaLungeCurve& k = built.moves[0].knockCurve;
@@ -1139,6 +1142,9 @@ TEST_CASE("arena special: on its knockSpeed curve the knock-back covers knockBac
     CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
     k = c;
     k.v[1] = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
+    k = c;
+    k.t[1] = std::numeric_limits<float>::quiet_NaN(); // a NaN t knot (review nit 4)
     CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
     k = c;
     k.v[1] = -1.f;

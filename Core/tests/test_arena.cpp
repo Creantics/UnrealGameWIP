@@ -25,6 +25,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -7844,6 +7845,49 @@ TEST_CASE("arena gait start (review 3.3): a flinch or a stagger mid walk off end
     }
 }
 
+ArenaFighter breakFighter(); // with the break-out tests below
+
+TEST_CASE("arena gait start (review nit 2): a step back mid walk off ends it, and none follows") {
+    // breakAt 1: the first light landing in the walk off breaks it out; behind the lead (out of the windup arc) it
+    // steps back at once, from Approach or Strafe, so StepBack starts inside the walk off (af StepBack's reset).
+    ArenaEnemyKind k = hitterKind(swing(0.2f, 0.1f, 0.2f, 3.f, 5));
+    k.moves[0].cooldown = 5.f;
+    k.walkSpeed = 0.84f;
+    k.runSpeed = 3.f;
+    k.accel = 16.f;
+    k.gaitStart = 1.f;
+    k.poise = 1000.f; // the light never staggers it
+    k.breakAt = 1;
+    k.breakDecay = 5.f;
+    k.breakMove = 0;
+    Rig rig(breakFighter(), {k});
+    rig.put(0, -1.5f, 0.f); // behind the lead, who faces +x; the lights sweep all round
+    int ended = -1;
+    for (int i = 0; i < 300 && ended < 0; ++i)
+        if (rig.tick().enemies[0].gaitStart == 0.f) ended = i;
+    REQUIRE(ended >= 0);
+    float before = -1.f;
+    rig.in.light = true;
+    for (int i = 0; i < 60 && rig.count(ArenaEventType::SteppedBack) == 0; ++i) {
+        before = rig.out().enemies[0].gaitStart;
+        rig.tick();
+    }
+    rig.in.light = false;
+    REQUIRE(rig.count(ArenaEventType::SteppedBack) == 1);
+    CHECK(rig.out().enemies[0].brain == ArenaBrain::StepBack);
+    CHECK(before > 0.f); // it was mid walk off
+    CHECK(before < k.gaitStart);
+    bool walked = false;
+    for (int i = 0; i < 120; ++i) {
+        const ArenaOutput& o = rig.tick();
+        CAPTURE(i);
+        CHECK(o.enemies[0].gaitStart == -1.f);
+        walked = walked || o.enemies[0].brain == ArenaBrain::Approach || o.enemies[0].brain == ArenaBrain::Strafe;
+    }
+    CHECK(walked); // it walked again after the step, on the ramp
+    CHECK(rig.count(ArenaEventType::SteppedBack) == 1);
+}
+
 TEST_CASE("arenaPickMinRange (review 3.2): its edge cases") {
     ArenaEnemyKind k = hitterKind(swing(0.8f, 0.4f, 0.8f, 0.37f, 9), 1.8f);
     k.bodyRadius = 0.35f;
@@ -7886,22 +7930,32 @@ TEST_CASE("arenaPickMinRange (review 3.2): its edge cases") {
 }
 
 TEST_CASE("arena table (review 1.2): a lunge-to-contact move's maxRange covers its pick minimum for every fighter") {
-    const auto pup = [](float maxRange) {
+    const auto exact = [](float v) { // 9 digits: the float reads back as itself
+        std::ostringstream s;
+        s << std::setprecision(9) << v;
+        return s.str();
+    };
+    const auto pup = [&exact](float maxRange) {
         return std::string(R"([ { "id": "dummy", "lungeToContact": true, "walkSpeed": 0.84, "runSpeed": 5,
             "bodyRadius": 0.35, "bodyLength": 1.08, "contactInset": 0.19, "moves": [ { "startup": 0.8, "active": 0.4,
             "recovery": 0.8, "range": 0.37, "lunge": 2.2, "lungeSpeed": [[0, 0.15], [0.6, 0.15], [0.63, 0], [0.7, 0],
             [0.8, 4], [1.2, 4], [1.35, 0]], "minRange": 0.5, "maxRange": )") +
-               std::to_string(maxRange) + " } ] } ]";
+               exact(maxRange) + " } ] } ]";
     };
     ArenaTable t;
     const std::string loaded = loadError(tableJson(kFightersOk, pup(3.f)), &t);
     REQUIRE_MESSAGE(loaded.empty(), loaded);
-    const float low = arenaPickMinRange(t.enemies[0], 0, t.fighters[0].bodyRadius, 0.f);
-    MESSAGE("pick minimum " << low << " m");
+    // At the host's step (the dt every tick and so every pick runs at; ruling 7277): no 14 mm window left.
+    CHECK(kArenaHostStep == kDt);
+    const float low = arenaPickMinRange(t.enemies[0], 0, t.fighters[0].bodyRadius, kArenaHostStep);
+    const float still = arenaPickMinRange(t.enemies[0], 0, t.fighters[0].bodyRadius, 0.f);
+    MESSAGE("pick minimum " << low << " m (" << still << " m without the walk-in tick)");
     CHECK(low > 0.5f);
-    CHECK(loadError(tableJson(kFightersOk, pup(low + 0.01f))).empty());
-    CHECK(contains(loadError(tableJson(kFightersOk, pup(low - 0.01f))),
+    CHECK(low - still == doctest::Approx(0.84f * kArenaHostStep));
+    CHECK(loadError(tableJson(kFightersOk, pup(low))).empty());
+    CHECK(contains(loadError(tableJson(kFightersOk, pup(low - 0.001f))),
                    "maxRange: expected at least its pick minimum"));
+    CHECK(contains(loadError(tableJson(kFightersOk, pup(still))), "maxRange: expected at least its pick minimum"));
 }
 
 TEST_CASE("arenaCooldownStep (review 3.5): a cooldown ends on the tick its length says") {
