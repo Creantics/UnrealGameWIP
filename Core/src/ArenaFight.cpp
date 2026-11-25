@@ -263,6 +263,22 @@ float arenaBreakAtOf(const ArenaEnemyKind& k, int hp) {
 // Enemy kind k's body radius as drawn (a skinned look's scale), the one a blow's reach and the riposte's take.
 float arenaDrawnRadius(const ArenaEnemyKind& k) { return arenaBodyCylinder(k, Vec2{}, 0.f).radius; }
 
+// A lunge-curve move's first tooth contact on its clock (less any unseen windup): with `room` m left to contact at
+// clock `now`, the first clock by which its curve has closed it, the launch at the earliest (only the air latches)
+// and the active's end (`span`) at the latest; -1 when the curve never closes it by then (a whiff).
+float arenaLungeContactAt(const ArenaLungeCurve& c, float now, float launch, float span, float room) {
+    const float from = arenaLungeDistance(c, now);
+    const float first = std::max(now, launch);
+    if (arenaLungeDistance(c, first) - from >= room) return first;
+    if (!(span > first) || arenaLungeDistance(c, span) - from < room) return -1.f;
+    float lo = first, hi = span;
+    for (int it = 0; it < 24; ++it) {
+        const float mid = 0.5f * (lo + hi);
+        (arenaLungeDistance(c, mid) - from >= room ? hi : lo) = mid;
+    }
+    return hi;
+}
+
 } // namespace
 
 // The fight's rules. ArenaFight's state is private; this is its friend, so the rules read and write it directly.
@@ -3688,7 +3704,15 @@ struct ArenaFightImpl {
         const ArenaEnemyKind& kind = def.enemies[i];
         if (kind.lungeMove >= 0 && foe.move == static_cast<std::uint8_t>(kind.lungeMove) && kind.lungeCurve.count > 0 &&
             !foe.breakTimed) {
+            const bool wasLatched = foe.lungeLatched;
             vel = enemyLunge(i, a, a0, a1);
+            // The latch is the bite: first tooth contact in the air strikes on that tick, in the same window and
+            // under the same ending rule as the reach test above (which tests the bodies before this tick's travel).
+            if (!wasLatched && foe.lungeLatched && !foe.hitPlayer && pl.hp > 0 && a1 > a.startup &&
+                a0 < a.startup + a.active && foe.lungeEnding == 0) {
+                enemyStrike(i);
+                if (foe.brain != ArenaBrain::Attack) return Vec2{}; // parried: the attack is over
+            }
         } else if (span > kArenaEps && a.lunge != 0.f) {
             const float moving = std::max(0.f, std::min(a1, span) - a0);
             vel = arenaScaled(foe.facing, a.lunge / span * moving / dt);
@@ -4426,7 +4450,20 @@ struct ArenaFightImpl {
             if (foe.stateTime >= a.startup + a.active) continue; // already recovering
             windingUp = true;
             if (arenaDistance(p.pos, foe.pos) > a.range + a.lunge + f.bodyRadius) continue; // can't reach
-            const float untilActive = a.startup - foe.stateTime;
+            float untilActive = a.startup - foe.stateTime;
+            const ArenaEnemyKind& k = self.def_.enemies[i];
+            if (k.lungeToContact && k.lungeMove >= 0 && foe.move == static_cast<std::uint8_t>(k.lungeMove) &&
+                k.lungeCurve.count > 0 && !foe.breakTimed && !foe.lungeLatched) {
+                // A lunge-curve move bites at first tooth contact (the latch), not at its active's start: the time
+                // until its curve closes the room left now (none closed by the active's end: its start, as any move).
+                const float held = foe.unseen ? kArenaUnseenWindup : 0.f;
+                const float contact = std::max(0.f, f.bodyRadius - k.contactInset) + arenaBodyReach(k);
+                const float room = std::max(0.f, arenaDistance(p.pos, foe.pos) - contact);
+                const float now = std::max(0.f, foe.stateTime - held);
+                const float at = arenaLungeContactAt(k.lungeCurve, now, std::max(0.f, a.startup - held),
+                                                     std::max(0.f, a.startup + a.active - held), room);
+                if (at >= 0.f) untilActive = at - now;
+            }
             if (threat < 0 || untilActive < soonest) {
                 threat = static_cast<int>(i);
                 soonest = untilActive;
@@ -4441,9 +4478,9 @@ struct ArenaFightImpl {
             const bool inArc = arenaDot(p.facing, toFoe) >= f.guardArcCos;
             const bool rearmed = p.guardHeld || self.time_ - p.lastGuardPress >= f.parryRearm;
             if (mv.parryable && f.parryWindow >= kArenaAutoParryWindow && inArc && rearmed) {
-                // Guard goes up when the active part is half a window away, and stays up till it is spent. It cuts
-                // an attack where the tick lets guard cut it (its cancelGuard share), not only once the plain cancel
-                // opens.
+                // Guard goes up when the bite (the active part; a lunge-curve move's contact) is half a window away,
+                // and stays up till it is spent. It cuts an attack where the tick lets guard cut it (its cancelGuard
+                // share), not only once the plain cancel opens.
                 if (soonest <= f.parryWindow * 0.5f && canStart(p, f, Cut::Guard)) in.guard = true;
             } else if (p.action != ArenaAction::Dodge && (f.dodgeStamina <= 0.f || p.stamina > 0.f)) {
                 if (soonest <= 0.5f * (f.dodgeInvulnStart + f.dodgeInvulnEnd)) {
@@ -5553,6 +5590,12 @@ Vec2 arenaAimShift(Vec2 enemy, Vec2 lead, Vec2 leadFacing, float side, float wei
     const Vec2 right{-leadFacing.y / fLen, leadFacing.x / fLen};
     const float along = right.x * line.x + right.y * line.y;
     return Vec2{(right.x - along * line.x) * side * w, (right.y - along * line.y) * side * w};
+}
+
+float arenaPoseTime(float clock, float alpha, double dt, bool held) {
+    const float a = std::clamp(alpha, 0.f, 1.f);
+    const float behind = held ? 0.f : static_cast<float>(static_cast<double>(1.f - a) * dt);
+    return std::max(0.f, clock - behind);
 }
 
 float arenaAimWeight(const ArenaAttack& a, float stateTime, float held) {

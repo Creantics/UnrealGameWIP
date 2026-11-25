@@ -786,6 +786,12 @@ FTCORE_API Vec2 arenaAimShift(Vec2 enemy, Vec2 lead, Vec2 leadFacing, float side
 // clip holds its first frame for it): 0 through the hold, up to 1 over the startup (smoothstep), 1 through the active
 // part and the first half of the recovery (the jaws held shut), back to 0 over its second half.
 FTCORE_API float arenaAimWeight(const ArenaAttack& a, float stateTime, float held);
+// The time a state clock shows for a figure as it is drawn. The host draws each body between the last two ticks,
+// lerp(previous, last, alpha), so the drawn body stands (1 - alpha) of a tick `dt` behind the clock Core last stepped;
+// a pose that reads its clock (a clip's time, a part fraction, an aim weight) reads it that far back, so the clip and
+// the body are at one instant. `held`: a hit pause stands the clock and the body still, so nothing is taken. Never
+// below 0; `alpha` is clamped to 0..1. The lead's jump has always done this (its air clock).
+FTCORE_API float arenaPoseTime(float clock, float alpha, double dt, bool held);
 
 // kArenaNoKind in every slot (the default of ArenaDef::enemyKind).
 constexpr std::array<std::uint8_t, kMaxArenaEnemies> arenaNoKinds() {
