@@ -986,7 +986,9 @@ constexpr float kArenaPushFloor = 1.0e-4f; // a step's push under 0.1 mm is no s
 struct ArenaPush {
     Vec2 net;              // m: the shove's displacement so far (the sum of its steps' pushes)
     float distance = 0.f;  // m: |net|
-    Vec2 local;            // unit: net's direction in the lead's frame at the shove's start (x ahead, y to its left)
+    Vec2 local;            // unit: net's direction so far in the lead's frame at the shove's start (x ahead, y to its
+                           // left): on `began` the first step's, on `ended` the whole shove's
+    Vec2 startFacing{1.f, 0.f}; // unit: the lead's facing at the shove's start (the frame of `local`)
     float peakSpeed = 0.f; // m/s: the largest step push over its step
     float duration = 0.f;  // s: the steps it has run
     bool active = false;   // under way (this step pushed the lead)

@@ -5428,11 +5428,11 @@ void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer
     p.distance = arenaLength(p.net);
     p.peakSpeed = std::max(p.peakSpeed, len / dt);
     p.duration += dt;
-    if (p.began) { // the lead's frame at the start: x along its facing, y to its left
-        const Vec2 f = arenaUnit(fight.output().player.facing, Vec2{1.f, 0.f});
-        const Vec2 u = arenaUnit(d, f);
-        p.local = Vec2{u.x * f.x + u.y * f.y, f.x * u.y - f.y * u.x};
-    }
+    if (p.began) p.startFacing = arenaUnit(fight.output().player.facing, Vec2{1.f, 0.f});
+    // net in the lead's frame at the start: x along its facing then, y to its left
+    const Vec2 f = p.startFacing;
+    const Vec2 u = arenaUnit(p.net, f);
+    p.local = Vec2{u.x * f.x + u.y * f.y, f.x * u.y - f.y * u.x};
 }
 
 bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held) {
