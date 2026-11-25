@@ -58,6 +58,7 @@
 #include "RenderCommandFence.h"
 #include "RenderingThread.h"
 #include "RHICommandList.h"
+#include "ShaderCompiler.h"
 #include "TextureResource.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
@@ -78,6 +79,7 @@ constexpr float kRingMarginM = 1.f;    // a tile's top over its highest occluder
 constexpr float kRingTolM = 0.002f;    // the ruled height tolerance
 constexpr int32 kRingBakePerTick = 32;
 constexpr int32 kRingSwitchSettle = 60; // ticks after the bake switches go on
+constexpr double kRingShaderWaitS = 1200.0; // the most the bake waits for shader compiles
 constexpr int32 kRingPool = 25;         // 5 x 5 round the lead's tile
 constexpr int32 kRingAlign = 4096;      // unbuffered reads: offset, size and buffer sector-aligned
 
@@ -164,7 +166,7 @@ struct FFTRainRing
 	TArray<uint16> Codes;
 	TArray<uint8> File;
 	int32 Baked = 0, Empty = 0, HeaderOnly = 0, KeySame = 0, KeyChanged = 0, KeyNew = 0, Same = 0, Differ = 0, NoCompare = 0;
-	double BakeMs = 0.0, BakeT0 = 0.0;
+	double BakeMs = 0.0, BakeT0 = 0.0, ShaderWaitT0 = 0.0;
 	int64 BakeBytes = 0;
 
 	// The ring: the lead's tile, what each slot holds (tile index, -1 none), slots waiting for a late read.
@@ -943,6 +945,25 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 		{
 			return;
 		}
+		// A material still compiling draws as the engine's default (a first launch after a master rebuild): the bake waits
+		// until every shader is in, at most kRingShaderWaitS, and logs the wait so a bake taken over the cap is named.
+		if (GShaderCompilingManager && GShaderCompilingManager->GetNumRemainingJobs() > 0)
+		{
+			if (R.ShaderWaitT0 == 0.0)
+			{
+				R.ShaderWaitT0 = FPlatformTime::Seconds();
+				UE_LOG(LogForgottenThird, Display, TEXT("RainCover bake: waiting for %d shader jobs before the bake."),
+					GShaderCompilingManager->GetNumRemainingJobs());
+			}
+			if (FPlatformTime::Seconds() - R.ShaderWaitT0 < kRingShaderWaitS)
+			{
+				return;
+			}
+			UE_LOG(LogForgottenThird, Warning, TEXT("RainCover bake: %d shader jobs still compiling after %.0f s; baking anyway."),
+				GShaderCompilingManager->GetNumRemainingJobs(), kRingShaderWaitS);
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover bake: shader wait %.1f s."),
+			R.ShaderWaitT0 == 0.0 ? 0.0 : FPlatformTime::Seconds() - R.ShaderWaitT0);
 		R.State = FFTRainRing::Bake;
 		R.BakeT0 = FPlatformTime::Seconds();
 		return;
