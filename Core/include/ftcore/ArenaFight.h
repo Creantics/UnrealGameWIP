@@ -978,6 +978,23 @@ struct ArenaInput {
 };
 
 // Where the bodies stand, as the host moved them (enemies beyond enemyCount() are ignored).
+// The Pushed record: the lead shoved by a planted body (arenaPlanted: a lunge-curve pup holding its ground through the
+// landing, the creep and ramp, or a wall split of the same overlap). A shove is the run of steps in which the settle
+// moved the lead off its own step by more than kArenaPushFloor while a body was planted; it begins on the first such
+// step and ends on the first step without one. Report only: no step reads it (arenaTrackPush fills it).
+constexpr float kArenaPushFloor = 1.0e-4f; // a step's push under 0.1 mm is no shove
+struct ArenaPush {
+    Vec2 net;              // m: the shove's displacement so far (the sum of its steps' pushes)
+    float distance = 0.f;  // m: |net|
+    Vec2 local;            // unit: net's direction in the lead's frame at the shove's start (x ahead, y to its left)
+    float peakSpeed = 0.f; // m/s: the largest step push over its step
+    float duration = 0.f;  // s: the steps it has run
+    bool active = false;   // under way (this step pushed the lead)
+    bool began = false;    // this step is its first: play the reaction from `local`
+    bool ended = false;    // this step is the first after its last: the record above is the whole shove
+    std::uint32_t count = 0; // shoves begun since the bodies were made
+};
+
 struct ArenaBodies {
     Vec2 player;
     std::array<Vec2, kMaxArenaEnemies> enemies{};
@@ -985,6 +1002,11 @@ struct ArenaBodies {
     // Report only (never read by a step): the steps whose settle hit kArenaSettlePasses (arenaSettleBodies' cap), the
     // walls' rule kept and a pair perhaps left past 0.1 mm. The host shows it; a capture with it non-zero says so.
     std::uint32_t settleCaps = 0;
+    // Report only (never read by a step): the lead shoved by a planted body. pushStep is this step's push
+    // displacement (0 when none): the host leaves it out of the lead's measured step speed (the legs' gait), and
+    // plays the shove's reaction from `push` instead.
+    Vec2 pushStep;
+    ArenaPush push;
 };
 
 // The player's action (append only: the Unreal side maps it to animations).
@@ -1063,6 +1085,11 @@ struct ArenaEnemyOut {
     std::uint8_t lungeEnding = 0;     // 0 undecided; final at the active's end: 2 the Hit ending (latched: the fores
                                       // land planted), 1 the whiff (the curve's whole landing travel). Once set, the
                                       // move neither hits nor latches
+    float lungeContactAt = 0.f;       // a lungeToContact move not yet latched nor ended: the stateTime at which its
+                                      // curve first brings its teeth to the lead (the launch at the earliest, the
+                                      // active's end at the latest), from the bodies this tick read: the clock the
+                                      // autopilot's guard aims at on the next tick. Updated each tick; 0 when latched,
+                                      // ended, a whiff from here, or any other state
 };
 
 // Whether a gait-mixed figure (BeatClips::gaitMix, gaitMixStep) shows its locomotion: always while it approaches or
@@ -2135,6 +2162,12 @@ struct ArenaHeld {
 // already set stay.
 // True when it marked one. Deterministic; no allocation.
 FTCORE_API bool arenaPlanted(const ArenaFight& fight, ArenaHeld& held);
+
+// After a step's settle: bodies.pushStep = the lead's position less `ownPlayer` (where its own step `ownStep` took
+// it), less the part along ownStep that only takes the step back (up to its length: walking into the planted body is
+// a block, not a shove), when a body is planted (arenaPlanted) and that is over kArenaPushFloor, else 0; bodies.push
+// runs on from it (ArenaPush). No change when dt <= 0 (a frozen step). Deterministic; no allocation.
+FTCORE_API void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec2 ownPlayer, Vec2 ownStep, float dt);
 
 // After the walls: a body a wall holds can't take its half of a push (the wall puts it straight back), so one more
 // pass gives the whole of each overlap deeper than `floor` to the body the wall does not hold (both held, or
