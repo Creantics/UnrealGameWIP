@@ -535,6 +535,12 @@ private:
 	void PollInput(float DeltaSeconds);
 	ftcore::ArenaInput TakeInput();
 	void HoldPausedEnemies();
+	// The state clocks before a step (SnapPoseClocks), and each figure's clock at the time its body is drawn
+	// (ftcore::arenaPoseTime): a step behind at Alpha 0, as is when the clock stood still over the last step.
+	void SnapPoseClocks();
+	float EnemyPoseTime(int32 I, float Alpha) const;
+	float LeadPoseTime(float Alpha) const;
+	float AllyPoseTime(float Alpha) const;
 	void StepFight();
 	void HandleEvents(const ftcore::ArenaEvents& Events);
 	// The leads' hit reaction (FTArenaRunnerHitReact.cpp): the tick's blows on the leads played on their ragdolls, and
@@ -1644,6 +1650,14 @@ private:
 	// The held fight clock (Fight.heldTime()) before the last step, and how far it moved over the last TickFight.
 	double PrevHeldTime = 0.0;
 	float HeldDelta = 0.f;
+	// Each figure's state clock and state before the last step: the same clock in the same state after it stood still
+	// (a hit pause), so its pose reads the clock as is.
+	float PrevEnemyClock[ftcore::kMaxArenaEnemies] = {};
+	ftcore::ArenaBrain PrevEnemyBrain[ftcore::kMaxArenaEnemies] = {};
+	float PrevLeadClock = -1.f;
+	ftcore::ArenaAction PrevLeadAction = ftcore::ArenaAction::Idle;
+	float PrevAllyClock = -1.f;
+	uint8 PrevAllyBlow = 0;
 	// Seconds of each enemy's hit pause the steps of this frame covered (its clips leave them out).
 	float PausedThisFrame[ftcore::kMaxArenaEnemies] = {};
 	// -ArenaBossLoop: the clip's name, the boss's slot and the clip's table index (-1: off, or not found), whether it was

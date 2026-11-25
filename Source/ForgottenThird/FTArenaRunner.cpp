@@ -1595,7 +1595,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			const double Held = Out.unseen ? static_cast<double>(ftcore::kArenaUnseenWindup) : 0.0;
 			const float Rate = (Row.impact > 0.0 && Startup > 0.f) ? FMath::Clamp(static_cast<float>(Row.impact) / Startup, kArenaMinClipRate, kArenaMaxClipRate) : 1.f;
 			Clip = MoveClip;
-			Time = FMath::Max(0.0, static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds - Held) * Rate;
+			Time = FMath::Max(0.0, static_cast<double>(EnemyPoseTime(I, Alpha)) - Held) * Rate;
 			bTimed = true;
 			MoveRate = Rate;
 		}
@@ -1608,7 +1608,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		if (StepBackWay[I] != 0 && Skin.TurnL >= 0 && Skin.TurnR >= 0 && !bStone)
 		{
 			Clip = StepBackWay[I] == 1 ? Skin.TurnL : Skin.TurnR;
-			Time = static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds;
+			Time = static_cast<double>(EnemyPoseTime(I, Alpha));
 			bPhased = true;
 		}
 		else if (Skin.Walk >= 0 && !bStone)
@@ -1616,7 +1616,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 			const float Authored = static_cast<float>((*Skin.Clips)[static_cast<size_t>(Skin.Walk)].speed);
 			const float Rate = Authored > 0.f ? FMath::Clamp(StepBackSpeed[I] / Authored, kArenaMinWalkRate, kArenaMaxWalkRate) : 1.f;
 			const double Length = static_cast<double>(Skin.Sequences[Skin.Walk]->GetPlayLength());
-			const double Phase = (static_cast<double>(Out.stateTime) + static_cast<double>(Alpha) * StepSeconds) * Rate;
+			const double Phase = static_cast<double>(EnemyPoseTime(I, Alpha)) * Rate;
 			Clip = Skin.Walk;
 			Time = Length > 0.0 ? Length - FMath::Fmod(Phase, Length) : 0.0;
 			bPhased = true;
@@ -1649,7 +1649,7 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		{
 			// Its cycles on the turn's own clock, the one StoneTurnFacing yaws the figure by (looping, so no restart fade).
 			Clip = StoneTurnSign > 0 ? Skin.TurnR : Skin.TurnL;
-			Time = static_cast<double>(Fight.time()) + static_cast<double>(Alpha) * StepSeconds - StoneTurnStart;
+			Time = static_cast<double>(Fight.time()) - (1.0 - static_cast<double>(Alpha)) * StepSeconds - StoneTurnStart;
 			bPhased = true;
 		}
 		else if (bWalking[I])
@@ -1836,6 +1836,7 @@ void UFTArenaRunner::PutBodiesAtStart()
 	}
 	Fight.tick(0.f, ftcore::ArenaInput(), Bodies);
 	PrevHeldTime = static_cast<double>(Fight.heldTime());
+	SnapPoseClocks();
 	HeldDelta = 0.f;
 	for (int32 I = 0; I < MaxEnemies; ++I)
 	{
@@ -2295,6 +2296,43 @@ ftcore::ArenaInput UFTArenaRunner::TakeInput()
 	PressSwitch = 0;
 	PressRead = -1;
 	return In;
+}
+
+// Before a step (and on a reset): each figure's state clock and state, so the poses after it can tell a clock that
+// stood still (a hit pause: the struck figure from the blow's tick, a striker from the tick after) from one that ran.
+void UFTArenaRunner::SnapPoseClocks()
+{
+	const ftcore::ArenaOutput& O = Fight.output();
+	for (size_t I = 0; I < ftcore::kMaxArenaEnemies; ++I)
+	{
+		PrevEnemyClock[I] = O.enemies[I].stateTime;
+		PrevEnemyBrain[I] = O.enemies[I].brain;
+	}
+	PrevLeadClock = O.player.actionTime;
+	PrevLeadAction = O.player.action;
+	PrevAllyClock = O.ally.attacking ? O.ally.stateTime : -1.f;
+	PrevAllyBlow = O.ally.blow;
+}
+
+float UFTArenaRunner::EnemyPoseTime(int32 I, float Alpha) const
+{
+	const ftcore::ArenaEnemyOut& E = Fight.output().enemies[static_cast<size_t>(I)];
+	const bool bHeld = E.stateTime == PrevEnemyClock[I] && E.brain == PrevEnemyBrain[I];
+	return ftcore::arenaPoseTime(E.stateTime, Alpha, StepSeconds, bHeld);
+}
+
+float UFTArenaRunner::LeadPoseTime(float Alpha) const
+{
+	const ftcore::ArenaPlayerOut& P = Fight.output().player;
+	const bool bHeld = P.actionTime == PrevLeadClock && P.action == PrevLeadAction;
+	return ftcore::arenaPoseTime(P.actionTime, Alpha, StepSeconds, bHeld);
+}
+
+float UFTArenaRunner::AllyPoseTime(float Alpha) const
+{
+	const ftcore::ArenaAllyOut& A = Fight.output().ally;
+	const bool bHeld = A.attacking && A.stateTime == PrevAllyClock && A.blow == PrevAllyBlow;
+	return ftcore::arenaPoseTime(A.stateTime, Alpha, StepSeconds, bHeld);
 }
 
 // Before a step: an enemy in a hit pause stands still for the part of the step the pause covers (Core's stopLeft after
@@ -3630,6 +3668,7 @@ void UFTArenaRunner::StepFight()
 	}
 	PrevBodies = Bodies;
 	PrevHeldTime = static_cast<double>(Fight.heldTime());
+	SnapPoseClocks();
 	HoldPausedEnemies();
 	if (bAllyOn)
 	{
@@ -4730,7 +4769,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			const ftcore::Vec2 F = PlayerDrawFacing(P); // the way the body is drawn facing
 			const ftcore::Vec2& Dir = P.dodgeDir;
 			Pose.DodgeLocal = FVector2D(Dir.x * F.x + Dir.y * F.y, Dir.y * F.x - Dir.x * F.y);
-			Pose.DodgeFraction = D.fighter.dodgeTime > 0.f ? P.actionTime / D.fighter.dodgeTime : 1.f;
+			Pose.DodgeFraction = D.fighter.dodgeTime > 0.f ? LeadPoseTime(Alpha) / D.fighter.dodgeTime : 1.f;
 			Pose.DodgeTime = D.fighter.dodgeTime;
 			Pose.bDodgeBack = P.dodgeBack;
 			Pose.DodgeSide = P.dodgeSide;
@@ -4761,13 +4800,13 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		{
 			Pose.bAttacking = true;
 			Pose.Part = static_cast<uint8>(P.part);
-			Pose.PartFraction = ArenaPartFraction(*Attack, P.part, P.actionTime);
+			Pose.PartFraction = ArenaPartFraction(*Attack, P.part, LeadPoseTime(Alpha));
 			// The lead turns to its aim target while it attacks (the first half of the startup), holds it
 			// through the active part and turns back to Core's facing over the recovery.
 			if (bLeadAimDir)
 			{
 				const float S = FMath::Max(Attack->startup, 1e-3f);
-				const float T = P.actionTime;
+				const float T = LeadPoseTime(Alpha);
 				float W = FMath::SmoothStep(0.f, 1.f, T / (0.5f * S));
 				if (T > S + Attack->active)
 				{
@@ -4840,7 +4879,8 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 		if (I == StoneBearerSlot && StoneTurnSign != 0)
 		{
 			// Mid-turn, the turn's own yaw at the frame's time, in step with its clip (Core's facing is the last step's).
-			Pose.Yaw = ArenaYaw(StoneTurnFacing(static_cast<double>(Fight.time()) + static_cast<double>(Alpha) * StepSeconds - StoneTurnStart));
+			const double Drawn = static_cast<double>(Fight.time()) - (1.0 - static_cast<double>(Alpha)) * StepSeconds;
+			Pose.Yaw = ArenaYaw(StoneTurnFacing(Drawn - StoneTurnStart));
 		}
 		Pose.Speed = ArenaLength(E.velocity);
 		Pose.Tint = Figure->GetBaseColor();
@@ -4854,7 +4894,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 				Pose.Part = static_cast<uint8>(E.part);
 				ftcore::ArenaAttack Timed = Move.attack;
 				Timed.startup += E.unseen ? ftcore::kArenaUnseenWindup : 0.f; // an unseen start's longer windup
-				Pose.PartFraction = ArenaPartFraction(Timed, E.part, E.stateTime);
+				Pose.PartFraction = ArenaPartFraction(Timed, E.part, EnemyPoseTime(I, Alpha));
 				if (Move.attack.aimSide != 0.f)
 				{
 					// The drawn aim off the lead's centreline (aimSide; no shipped move sets it until the pup's canine offset is measured):
@@ -4862,7 +4902,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 					// A nip cut short (flinch, stagger, parry) drops it at once: at most aimSide (a few cm) under the hit's own pose change.
 					const ftcore::Vec2 Self = ArenaLerp(PrevBodies.enemies[static_cast<size_t>(I)], Bodies.enemies[static_cast<size_t>(I)], Alpha);
 					const ftcore::Vec2 Lead = ArenaLerp(PrevBodies.player, Bodies.player, Alpha);
-					const float Weight = ftcore::arenaAimWeight(Move.attack, E.stateTime + Alpha * static_cast<float>(StepSeconds),
+					const float Weight = ftcore::arenaAimWeight(Move.attack, EnemyPoseTime(I, Alpha),
 						E.unseen ? ftcore::kArenaUnseenWindup : 0.f);
 					const ftcore::Vec2 Shift = ftcore::arenaAimShift(Self, Lead, Out.player.drawFacing, Move.attack.aimSide, Weight);
 					Pose.Feet += FVector(Shift.x * 100.0, Shift.y * 100.0, 0.0);
@@ -4883,7 +4923,7 @@ void UFTArenaRunner::PlaceFigures(float Alpha)
 			break;
 		case ftcore::ArenaBrain::Flinch:
 			// A placeholder until flinch clips exist: a small lean back, easing out over the flinch (it is pushed, not walking).
-			Pose.LeanBack = 7.f * FMath::Clamp(1.f - E.stateTime / FMath::Max(Kind.flinchTime, 1e-3f), 0.f, 1.f);
+			Pose.LeanBack = 7.f * FMath::Clamp(1.f - EnemyPoseTime(I, Alpha) / FMath::Max(Kind.flinchTime, 1e-3f), 0.f, 1.f);
 			break;
 		case ftcore::ArenaBrain::Staggered:
 			Pose.LeanBack = 12.f;
@@ -8592,7 +8632,7 @@ void UFTArenaRunner::PlaceAlly(float Alpha)
 			const int32 Blow = static_cast<int32>(A.blow) % Lights;
 			Pose.bAttacking = true;
 			Pose.Part = static_cast<uint8>(A.part);
-			Pose.PartFraction = ArenaPartFraction(F.light[static_cast<size_t>(Blow)], A.part, A.stateTime);
+			Pose.PartFraction = ArenaPartFraction(F.light[static_cast<size_t>(Blow)], A.part, AllyPoseTime(Alpha));
 			Pose.Swing = Blow + 1 >= Lights ? EFTArenaSwing::Overhead : ((Blow % 2) == 0 ? EFTArenaSwing::Across : EFTArenaSwing::Backhand);
 		}
 	}
