@@ -10,7 +10,11 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
+#include "Math/OrthoMatrix.h"
 #include "Misc/Parse.h"
+#include "RenderGraphBuilder.h"
+#include "RenderGraphUtils.h"
+#include "RenderingThread.h"
 #include "Components/StaticMeshComponent.h"
 #include "UObject/UObjectIterator.h"
 #include "ProfilingDebugging/CsvProfiler.h"
@@ -201,10 +205,109 @@ void UFTRainCoverSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	}
 #endif
 
+	// Path 2 (11-25): each recapture split over three ticks (FTRainCoverSubsystem.h), after the dev cuts so the halves take them.
+	bool bWhole = false;
+#if !UE_BUILD_SHIPPING
+	bWhole = FParse::Param(Switches, TEXT("RainCoverWhole")) || C->bRenderInMainRenderer;
+#endif
+	bSplit = !bWhole && SplitSetup(*C);
+
 	bProbe = FParse::Param(FTLookSwitches(), TEXT("RainCoverProbe"));
 	bActive = true;
-	UE_LOG(LogForgottenThird, Display, TEXT("RainCover: on, %.0f m at %d, recapture every %.1f m."), Spec.sizeM, Spec.resolution,
-		Spec.recaptureM);
+	UE_LOG(LogForgottenThird, Display, TEXT("RainCover: on, %.0f m at %d, recapture every %.1f m, %s (LOD factor %.2f)."), Spec.sizeM,
+		Spec.resolution, Spec.recaptureM, bSplit ? TEXT("split over three ticks") : TEXT("whole in one tick"), C->LODDistanceFactor);
+}
+
+bool UFTRainCoverSubsystem::SplitSetup(USceneCaptureComponent2D& C)
+{
+	const int32 Res = Spec.resolution;
+	if (Res < 2 || Res % 2 != 0)
+	{
+		return false;
+	}
+	const auto Make = [this, Res]
+	{
+		UTextureRenderTarget2D* T = NewObject<UTextureRenderTarget2D>(this);
+		T->ClearColor = Target->ClearColor;
+		T->InitCustomFormat(Res, Res / 2, Target->GetFormat(), true);
+		T->UpdateResourceImmediate(true);
+		return T;
+	};
+	HalfPlus = Make();
+	HalfMinus = Make();
+	// As the engine builds this capture's own matrix (SceneCaptureRendering BuildOrthoMatrix: near 0, far the capture's
+	// MaxViewDistanceOverride, the same float steps), with half the height: view y 0..HalfW (the image's top, +X) or
+	// -HalfW..0 (-X) fills the half target, so its texels sit where the whole capture's rows 0..res/2-1 or res/2..res-1 do.
+	const float HalfW = C.OrthoWidth / 2.0f;
+	const float Far = C.MaxViewDistanceOverride > 0.0f ? C.MaxViewDistanceOverride : UE_FLOAT_HUGE_DISTANCE / 4.0f;
+	const float ZScale = 1.0f / FMath::Max(Far - 0.0f, KINDA_SMALL_NUMBER);
+	for (int32 H = 0; H < 2; ++H)
+	{
+		FMatrix M = FReversedZOrthoMatrix(HalfW, HalfW * 0.5f, ZScale, 0.0f);
+		M.M[3][1] = H == 0 ? -1.0 : 1.0; // clip y = view y / (HalfW / 2) + M[3][1]
+		HalfProjection[H] = M;
+	}
+	// The LOD code reads max(M[0][0], M[1][1]); half the height doubles it, so the factor doubles to pick the same LODs.
+	C.LODDistanceFactor *= 2.0f;
+	return true;
+}
+
+void UFTRainCoverSubsystem::ShootHalf(int32 Half)
+{
+	USceneCaptureComponent2D* C = Capture->GetCaptureComponent2D();
+	C->TextureTarget = Half == 0 ? HalfPlus : HalfMinus;
+	C->CustomProjectionMatrix = HalfProjection[Half];
+	C->bUseCustomProjectionMatrix = true;
+	CSV_CUSTOM_STAT(RainCover, Capture, Half + 1, ECsvCustomStatOp::Set);
+	CSV_SCOPED_TIMING_STAT(RainCover, CaptureScene);
+	C->CaptureScene();
+}
+
+void UFTRainCoverSubsystem::Join()
+{
+	CSV_CUSTOM_STAT(RainCover, Capture, 3, ECsvCustomStatOp::Set);
+	FTextureRenderTargetResource* Plus = HalfPlus->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* Minus = HalfMinus->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* Into = Target->GameThread_GetRenderTargetResource();
+	if (!Plus || !Minus || !Into)
+	{
+		return;
+	}
+	const FIntPoint Size(Spec.resolution, Spec.resolution / 2);
+	ENQUEUE_RENDER_COMMAND(FTRainCoverJoin)([Plus, Minus, Into, Size](FRHICommandListImmediate& RHICmdList)
+	{
+		FRDGBuilder GraphBuilder(RHICmdList);
+		const FRDGTextureRef To = RegisterExternalTexture(GraphBuilder, Into->GetRenderTargetTexture(), TEXT("RainCover"));
+		AddCopyTexturePass(GraphBuilder, RegisterExternalTexture(GraphBuilder, Plus->GetRenderTargetTexture(), TEXT("RainCoverPlusX")), To,
+			FIntPoint::ZeroValue, FIntPoint::ZeroValue, Size);
+		AddCopyTexturePass(GraphBuilder, RegisterExternalTexture(GraphBuilder, Minus->GetRenderTargetTexture(), TEXT("RainCoverMinusX")), To,
+			FIntPoint::ZeroValue, FIntPoint(0, Size.Y), Size);
+		GraphBuilder.Execute();
+	});
+}
+
+void UFTRainCoverSubsystem::ShootNow()
+{
+	if (!bSplit)
+	{
+		Shoot(*Capture);
+		return;
+	}
+	ShootHalf(0);
+	ShootHalf(1);
+	Join();
+}
+
+void UFTRainCoverSubsystem::Publish(UWorld& World)
+{
+	bHaveCapture = true;
+	++Captures;
+	if (UMaterialParameterCollectionInstance* P = FTRainCover::Params(World))
+	{
+		P->SetVectorParameterValue(FTRainCover::Frame(),
+			FLinearColor(Frame.cx * 100.f, Frame.cy * 100.f, Frame.sizeM * 100.f, Frame.topZ * 100.f));
+		P->SetScalarParameterValue(FTRainCover::On(), 1.f);
+	}
 }
 
 void UFTRainCoverSubsystem::Deinitialize()
@@ -235,6 +338,20 @@ void UFTRainCoverSubsystem::Tick(float DeltaTime)
 	{
 		Probe(Eye); // the frame after the first capture: it has rendered
 	}
+	if (SplitStep > 0) // a split recapture goes on: the -X half, then the copy and the new frame together
+	{
+		if (SplitStep == 1)
+		{
+			ShootHalf(1);
+			SplitStep = 2;
+			return;
+		}
+		Join();
+		SplitStep = 0;
+		Frame = Pending;
+		Publish(*World);
+		return;
+	}
 #if !UE_BUILD_SHIPPING
 	if (bDiff && bHaveCapture)
 	{
@@ -253,17 +370,18 @@ void UFTRainCoverSubsystem::Tick(float DeltaTime)
 	{
 		return;
 	}
-	Frame = ftcore::rainCoverFrameAt(Spec, float(Eye.X) * 0.01f, float(Eye.Y) * 0.01f, float(Eye.Z) * 0.01f);
-	Capture->SetActorLocation(FVector(Frame.cx, Frame.cy, Frame.topZ) * 100.0);
-	Shoot(*Capture);
-	bHaveCapture = true;
-	++Captures;
-	if (UMaterialParameterCollectionInstance* P = FTRainCover::Params(*World))
+	const ftcore::RainCoverFrame Next = ftcore::rainCoverFrameAt(Spec, float(Eye.X) * 0.01f, float(Eye.Y) * 0.01f, float(Eye.Z) * 0.01f);
+	Capture->SetActorLocation(FVector(Next.cx, Next.cy, Next.topZ) * 100.0);
+	if (bSplit)
 	{
-		P->SetVectorParameterValue(FTRainCover::Frame(),
-			FLinearColor(Frame.cx * 100.f, Frame.cy * 100.f, Frame.sizeM * 100.f, Frame.topZ * 100.f));
-		P->SetScalarParameterValue(FTRainCover::On(), 1.f);
+		Pending = Next; // the map keeps the old square until the copy tick
+		ShootHalf(0);
+		SplitStep = 1;
+		return;
 	}
+	Frame = Next;
+	Shoot(*Capture);
+	Publish(*World);
 }
 
 void UFTRainCoverSubsystem::Probe(const FVector& Eye)
@@ -370,7 +488,7 @@ void UFTRainCoverSubsystem::DiffTick()
 	const auto ShootBoth = [this]
 	{
 		Shoot(*RefCapture);
-		Shoot(*Capture);
+		ShootNow(); // as shipped: both halves and the copy when split
 	};
 	const FString Dir = FPaths::ProjectSavedDir() / TEXT("RainCoverDiff");
 	switch (DiffStep)
