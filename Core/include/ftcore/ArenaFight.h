@@ -777,6 +777,10 @@ inline float arenaBodyReach(const ArenaEnemyKind& kind) { return kind.bodyRadius
 // tick it picks), so the startup never carries it into an idle lead; never below the move's minRange. Any other
 // move: its minRange. 0 for a move past moveCount.
 FTCORE_API float arenaPickMinRange(const ArenaEnemyKind& kind, std::size_t move, float leadRadius, float dt);
+// One step `dt` off an enemy move's cooldown, `left` s (ruling 6681r item 3; review 3.5): 0 once no more than 1e-6 s
+// would remain. Kept in double, so a cooldown of n whole steps ends on step n (3 s at 1/60: step 180, 60 s: step 3600;
+// a float drifts up to 7e-4 s by 60 s) and one longer by any measurable time (3.00005 s) ends a step later.
+FTCORE_API double arenaCooldownStep(double left, float dt);
 
 // The drawn body's shift for a move with an aimSide: `side` metres along the lead's right ({-facing.y, facing.x}:
 // the ground plane has y to the right), less that offset's part along the enemy-to-lead line, so the reach is kept
@@ -794,6 +798,13 @@ FTCORE_API float arenaAimWeight(const ArenaAttack& a, float stateTime, float hel
 // the body are at one instant. `held`: a hit pause stands the clock and the body still, so nothing is taken. Never
 // below 0; `alpha` is clamped to 0..1. The lead's jump has always done this (its air clock).
 FTCORE_API float arenaPoseTime(float clock, float alpha, double dt, bool held);
+// The host's one rule for a walk off's drawn time, s since the attack's end (ArenaEnemyOut::gaitStart, ruling 6681r
+// item 4; review 3.4): `now` and `before` are gaitStart after this step and the one before, `length` the kind's
+// gaitStart, `ownStep` the s the enemy's clock ran over this step (less in a hit pause). While the start runs (now >=
+// 0): its clip's pose time, arenaPoseTime(now, alpha, ownStep). On the step after it completed (now < 0, before at
+// length): before + alpha x ownStep, past the clip's end, so the seeded walk moves on by (that - length). Else -1:
+// none runs, or a start cut short or not seen to its end (nothing to seed).
+FTCORE_API float arenaGaitStartPoseTime(float now, float before, float length, float alpha, double ownStep);
 
 // kArenaNoKind in every slot (the default of ArenaDef::enemyKind).
 constexpr std::array<std::uint8_t, kMaxArenaEnemies> arenaNoKinds() {
@@ -1979,7 +1990,7 @@ private:
         float asked = 0.f;                  // seconds spent asking for a token
         std::int8_t strafeDir = 1;
         float strafeLeft = 0.f;             // seconds until the strafe may change direction
-        std::array<float, kMaxArenaMoves> cooldown{};
+        std::array<double, kMaxArenaMoves> cooldown{}; // s left; double: no drift (arenaCooldownStep)
         bool readRight = false;             // this move was read right: the partner's counter is due
         float holdFor = -1.f;               // a host's hold: seconds Open or Down lasts (not the kind's); < 0: none
         HoldAsk holdAsk = HoldAsk::None;    // the host's request waiting for the next tick ...

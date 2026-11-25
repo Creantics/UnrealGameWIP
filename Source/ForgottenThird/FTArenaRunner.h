@@ -116,6 +116,7 @@ struct FFTArenaSkin
 	// it the mix plays the walk off as before.
 	int32 WalkStart = -1;
 	double WalkStartPhase = 0.0;
+	int32 WalkStartGait = -1; // the walk's place among MixGaits, the gait the start seeds (review 5.2)
 	// Optional, with face_down: the go-down into it and the get-up out of it, else face_down throughout.
 	int32 FaceDownIn = -1;
 	int32 FaceDownOut = -1;
@@ -544,6 +545,9 @@ private:
 	// (ftcore::arenaPoseTime): its last step's run behind at Alpha 0 (none in a hit pause).
 	void SnapPoseClocks();
 	float EnemyPoseTime(int32 I, float Alpha) const;
+	// The walk off's start clip time at Alpha (ftcore::arenaGaitStartPoseTime on its own clock's run over the last
+	// step, held in a hit pause); past a start that ran its length, the walk's seed moment; else -1 (review 5.1, 5.3).
+	float EnemyGaitStartTime(int32 I, float Alpha) const;
 	float LeadPoseTime(float Alpha) const;
 	float AllyPoseTime(float Alpha) const;
 	void StepFight();
@@ -1661,6 +1665,7 @@ private:
 	// than a step, or none, in a hit pause) is how far behind its pose reads it.
 	float PrevEnemyClock[ftcore::kMaxArenaEnemies] = {};
 	ftcore::ArenaBrain PrevEnemyBrain[ftcore::kMaxArenaEnemies] = {};
+	float PrevGaitStart[ftcore::kMaxArenaEnemies] = {}; // ArenaEnemyOut::gaitStart before the last step
 	float PrevLeadClock = -1.f;
 	ftcore::ArenaAction PrevLeadAction = ftcore::ArenaAction::Idle;
 	float PrevAllyClock = -1.f;

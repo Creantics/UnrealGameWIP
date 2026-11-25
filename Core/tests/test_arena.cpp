@@ -7648,6 +7648,7 @@ TEST_CASE("arena table: flinchSpeed and gaitStart load and are checked (ruling 6
         "flinchSpeed": [[0, 0], [0.4, 0]] } ])")),
                    "flinchSpeed"));
     CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "gaitStart": 3 } ])")), "gaitStart"));
+    CHECK(contains(loadError(tableJson(kFightersOk, R"([ { "id": "dummy", "gaitStart": -0.1 } ])")), "gaitStart"));
 }
 
 TEST_CASE("arena gait start (ruling 6681r item 4): the walk off after an attack follows the smoothstep within 1e-4") {
@@ -7694,9 +7695,10 @@ TEST_CASE("arena gait start (ruling 6681r item 4): the walk off after an attack 
 }
 
 TEST_CASE("arena gait start (6681r item 4): the host's start clip and the seeded walk read one clock at every alpha") {
-    // The host's rule (FTArenaRunner): while gaitStart >= 0 the start clip plays at arenaPoseTime(gaitStart, alpha);
-    // on the tick it is -1 again the mix is seeded at the clip's end and moved on by alpha x dt. Read that way, the
-    // time along the walk off equals the drawn moment's at every alpha, across the hand-over (no tick ahead).
+    // The host's rule (FTArenaRunner, through arenaGaitStartPoseTime, review 3.4): while gaitStart >= 0 the start clip
+    // plays at arenaPoseTime(gaitStart, alpha); on the tick it is -1 again after a start that ran its length the mix
+    // is seeded at the clip's end and moved on by alpha x dt. Read that way, the time along the walk off equals the
+    // drawn moment's at every alpha, across the hand-over (no tick ahead).
     ArenaEnemyKind k = hitterKind(swing(0.2f, 0.1f, 0.2f, 3.f, 5));
     k.walkSpeed = 0.84f;
     k.runSpeed = 3.f;
@@ -7716,15 +7718,205 @@ TEST_CASE("arena gait start (6681r item 4): the host's start clip and the seeded
         for (int s = 0; s <= 8; ++s) {
             const float alpha = 0.125f * static_cast<float>(s);
             const float drawn = (static_cast<float>(j - 1) + alpha) * kDt; // the drawn moment since the attack's end
-            float read = -1.f;
-            if (now >= 0.f) read = arenaPoseTime(now, alpha, kDt, false);
-            else if (last >= 0.f) read = last + alpha * kDt, ++seeded;
+            const float read = arenaGaitStartPoseTime(now, last, k.gaitStart, alpha, kDt);
+            if (now < 0.f && read >= 0.f) ++seeded;
             if (read >= 0.f) worst = std::max(worst, std::fabs(read - drawn));
         }
         last = now;
     }
     CHECK(seeded == 9); // one seeding tick, every alpha
     CHECK(worst < 1e-5f);
+    // A start cut short (an interrupt before its length) or none at all seeds nothing (review 5.3).
+    CHECK(arenaGaitStartPoseTime(-1.f, 0.1f, k.gaitStart, 0.5f, kDt) == -1.f);
+    CHECK(arenaGaitStartPoseTime(-1.f, -1.f, k.gaitStart, 0.5f, kDt) == -1.f);
+    CHECK(arenaGaitStartPoseTime(-1.f, k.gaitStart, 0.f, 0.5f, kDt) == -1.f);
+    CHECK(arenaGaitStartPoseTime(-1.f, k.gaitStart, k.gaitStart, 0.5f, kDt) ==
+          doctest::Approx(k.gaitStart + 0.5f * kDt));
+    // A paused tick (own step 0) holds the clip where it is.
+    CHECK(arenaGaitStartPoseTime(-1.f, k.gaitStart, k.gaitStart, 0.5f, 0.0) == doctest::Approx(k.gaitStart));
+}
+
+TEST_CASE("arena gait start (review 1.1): a start not a whole number of ticks loses nothing on its closing tick") {
+    ArenaEnemyKind k = hitterKind(swing(0.2f, 0.1f, 0.2f, 3.f, 5));
+    k.walkSpeed = 0.84f;
+    k.runSpeed = 3.f;
+    k.accel = 16.f;
+    k.gaitStart = 0.27f; // 16.2 ticks
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    int ended = -1;
+    for (int i = 0; i < 300 && ended < 0; ++i)
+        if (rig.tick().enemies[0].gaitStart == 0.f) ended = i;
+    REQUIRE(ended >= 0);
+    rig.put(0, 10.f, 0.f);
+    float travel = 0.f;
+    for (int j = 0; j < 17; ++j) {
+        const ArenaOutput& o = rig.tick();
+        travel += std::hypot(o.enemies[0].velocity.x, o.enemies[0].velocity.y) * kDt;
+        CHECK(o.enemies[0].gaitStart == doctest::Approx(j < 16 ? static_cast<float>(j + 1) * kDt : 0.27f));
+    }
+    // The 17 ticks cover the curve's travel to 17 dt: the start's half plus the walk past it, none lost.
+    CHECK(travel == doctest::Approx(arenaGaitStartDistance(0.84f, 0.27f, 17.f * kDt)).epsilon(1e-4));
+    CHECK(rig.tick().enemies[0].gaitStart == -1.f);
+}
+
+TEST_CASE("arena gait start (review 1.3, 3.3): a strafe slower than the start's mean keeps the accel ramp") {
+    ArenaEnemyKind k = hitterKind(swing(0.2f, 0.1f, 0.2f, 3.f, 5));
+    k.moves[0].cooldown = 5.f; // cooling after the blow: it holds and circles
+    k.walkSpeed = 0.84f;
+    k.runSpeed = 3.f;
+    k.strafeSpeed = 0.2f;
+    k.accel = 0.3f;
+    k.gaitStart = 16.f / 60.f;
+    Rig rig(ruleFighter(), {k});
+    rig.put(0, 1.5f, 0.f);
+    int ended = -1;
+    for (int i = 0; i < 300 && ended < 0; ++i)
+        if (rig.tick().enemies[0].gaitStart == 0.f) ended = i;
+    REQUIRE(ended >= 0);
+    float prev = 0.f;
+    int ramped = 0, capped = 0;
+    for (int j = 0; j < 16; ++j) {
+        const ArenaOutput& o = rig.tick();
+        CAPTURE(j);
+        REQUIRE(o.enemies[0].brain == ArenaBrain::Strafe);
+        const float t0 = static_cast<float>(j) * kDt, t1 = t0 + kDt;
+        const float mean = (arenaGaitStartDistance(k.walkSpeed, k.gaitStart, t1) -
+                            arenaGaitStartDistance(k.walkSpeed, k.gaitStart, t0)) / kDt;
+        const float speed = std::hypot(o.enemies[0].velocity.x, o.enemies[0].velocity.y);
+        CHECK(speed <= mean + 1e-4f); // never past the start's mean
+        if (mean > k.strafeSpeed) {
+            // The want is under the mean: the ramp from the speed it had, never a jump to the want.
+            CHECK(speed <= prev + k.accel * kDt + 1e-4f);
+            if (speed < k.strafeSpeed - 0.002f) ++ramped;
+        } else {
+            CHECK(std::fabs(speed - mean) <= 1e-4f);
+            ++capped;
+        }
+        prev = speed;
+    }
+    CHECK(capped > 0);
+    CHECK(ramped > 0);
+}
+
+TEST_CASE("arena gait start (review 3.3): a flinch or a stagger mid walk off ends it, and none follows") {
+    ArenaEnemyKind k = hitterKind(swing(0.2f, 0.1f, 0.2f, 3.f, 5));
+    k.moves[0].cooldown = 5.f;
+    k.walkSpeed = 0.84f;
+    k.runSpeed = 3.f;
+    k.accel = 16.f;
+    k.flinchTime = 0.3f;
+    k.flinchPush = 0.6f;
+    k.gaitStart = 1.f; // long enough for the lead's blow to land inside it
+    for (const bool flinch : {true, false}) {
+        CAPTURE(flinch);
+        Rig rig(ruleFighter(), {k});
+        rig.put(0, 1.5f, 0.f);
+        int ended = -1;
+        for (int i = 0; i < 300 && ended < 0; ++i)
+            if (rig.tick().enemies[0].gaitStart == 0.f) ended = i;
+        REQUIRE(ended >= 0);
+        float before = -1.f;
+        if (flinch) {
+            rig.in.light = true;
+            for (int i = 0; i < 60 && rig.count(ArenaEventType::Flinched) == 0; ++i) {
+                before = rig.out().enemies[0].gaitStart;
+                rig.tick();
+            }
+            rig.in.light = false;
+            REQUIRE(rig.count(ArenaEventType::Flinched) == 1);
+        } else {
+            rig.run(10);
+            before = rig.out().enemies[0].gaitStart;
+            REQUIRE(rig.fight.holdEnemy(0, ArenaBrain::Staggered, 0.3f));
+            rig.tick();
+            CHECK(rig.out().enemies[0].brain == ArenaBrain::Staggered);
+        }
+        CHECK(before > 0.f); // it was mid walk off
+        CHECK(before < k.gaitStart);
+        bool walked = false;
+        for (int i = 0; i < 120; ++i) {
+            const ArenaOutput& o = rig.tick();
+            CHECK(o.enemies[0].gaitStart == -1.f);
+            walked = walked || o.enemies[0].brain == ArenaBrain::Approach || o.enemies[0].brain == ArenaBrain::Strafe;
+        }
+        CHECK(walked); // it walked again, on the ramp
+    }
+}
+
+TEST_CASE("arenaPickMinRange (review 3.2): its edge cases") {
+    ArenaEnemyKind k = hitterKind(swing(0.8f, 0.4f, 0.8f, 0.37f, 9), 1.8f);
+    k.bodyRadius = 0.35f;
+    k.bodyLength = 1.08f;
+    k.contactInset = 0.19f;
+    k.walkSpeed = 0.84f;
+    k.moves[0].minRange = 0.5f;
+    k.lungeToContact = true;
+    k.lungeMove = 0;
+    CHECK(arenaPickMinRange(k, 0, 0.3f, kDt) == 0.5f); // no curve: the typed minimum
+    ArenaLungeCurve& c = k.lungeCurve;
+    c.count = 3;
+    c.t[0] = 0.f;
+    c.t[1] = 0.5f;
+    c.t[2] = 1.f;
+    c.v[0] = 1.f;
+    c.v[1] = 1.f;
+    c.v[2] = 0.f;
+    c.scale = arenaLungeScale(c, 1.f);
+    const float contact = arenaBodyReach(k) + (0.3f - k.contactInset);
+    const float startup = arenaLungeDistance(c, 0.8f);
+    CHECK(arenaPickMinRange(k, 0, 0.3f, kDt) == doctest::Approx(contact + startup + 0.84f * kDt));
+    {
+        ArenaEnemyKind loose = k; // not lungeToContact: the typed minimum
+        loose.lungeToContact = false;
+        CHECK(arenaPickMinRange(loose, 0, 0.3f, kDt) == 0.5f);
+        loose = k; // another move than the lunge's
+        loose.lungeMove = -1;
+        CHECK(arenaPickMinRange(loose, 0, 0.3f, kDt) == 0.5f);
+        loose = k; // the typed minimum is a floor
+        loose.moves[0].minRange = 5.f;
+        CHECK(arenaPickMinRange(loose, 0, 0.3f, kDt) == 5.f);
+    }
+    CHECK(arenaPickMinRange(k, 1, 0.3f, kDt) == 0.f); // past moveCount
+    CHECK(arenaPickMinRange(k, 0, 0.3f, 0.f) == doctest::Approx(contact + startup)); // no dt, no walk-in tick
+    CHECK(arenaPickMinRange(k, 0, 0.3f, -1.f) == doctest::Approx(contact + startup));
+    // A lead slimmer than the inset: contact at the pup's own reach.
+    CHECK(arenaPickMinRange(k, 0, 0.1f, 0.f) == doctest::Approx(arenaBodyReach(k) + startup));
+    CHECK(arenaPickMinRange(k, 0, 0.1f, 0.f) == arenaPickMinRange(k, 0, k.contactInset, 0.f));
+}
+
+TEST_CASE("arena table (review 1.2): a lunge-to-contact move's maxRange covers its pick minimum for every fighter") {
+    const auto pup = [](float maxRange) {
+        return std::string(R"([ { "id": "dummy", "lungeToContact": true, "walkSpeed": 0.84, "runSpeed": 5,
+            "bodyRadius": 0.35, "bodyLength": 1.08, "contactInset": 0.19, "moves": [ { "startup": 0.8, "active": 0.4,
+            "recovery": 0.8, "range": 0.37, "lunge": 2.2, "lungeSpeed": [[0, 0.15], [0.6, 0.15], [0.63, 0], [0.7, 0],
+            [0.8, 4], [1.2, 4], [1.35, 0]], "minRange": 0.5, "maxRange": )") +
+               std::to_string(maxRange) + " } ] } ]";
+    };
+    ArenaTable t;
+    const std::string loaded = loadError(tableJson(kFightersOk, pup(3.f)), &t);
+    REQUIRE_MESSAGE(loaded.empty(), loaded);
+    const float low = arenaPickMinRange(t.enemies[0], 0, t.fighters[0].bodyRadius, 0.f);
+    MESSAGE("pick minimum " << low << " m");
+    CHECK(low > 0.5f);
+    CHECK(loadError(tableJson(kFightersOk, pup(low + 0.01f))).empty());
+    CHECK(contains(loadError(tableJson(kFightersOk, pup(low - 0.01f))),
+                   "maxRange: expected at least its pick minimum"));
+}
+
+TEST_CASE("arenaCooldownStep (review 3.5): a cooldown ends on the tick its length says") {
+    const auto ticks = [](double length) {
+        int n = 0;
+        for (double c = length; c > 0.0 && n < 100000; ++n) c = arenaCooldownStep(c, kDt);
+        return n;
+    };
+    CHECK(ticks(3.0) == 180);
+    CHECK(ticks(3.00005) == 181); // its 50 us past a whole tick still honoured
+    CHECK(ticks(static_cast<double>(3.00005f)) == 181);
+    CHECK(ticks(0.8) == 48);
+    CHECK(ticks(60.0) == 3600); // no drift over a long one (the float count drifted 7.5e-4 s by here)
+    CHECK(arenaCooldownStep(0.0, kDt) == 0.0);
+    CHECK(arenaCooldownStep(1.0, 0.f) == 1.0);
 }
 
 TEST_CASE("gaitMixSeed (ruling 6681r item 4): the mix takes the start clip's phase, Walk alone, the slot full") {
@@ -7756,6 +7948,16 @@ TEST_CASE("gaitMixSeed (ruling 6681r item 4): the mix takes the start clip's pha
     CHECK_FALSE(none.showing);
     CHECK(none.begun);
     CHECK_FALSE(none.live[0]);
+    // A gait past gaitMixStep's soundness cut (here gait 1 no faster than gait 0) is cut for the seed too (review 1.4).
+    GaitSet cut = gs;
+    cut.speed[1] = 0.5;
+    GaitMixState past;
+    gaitMixSeed(past, cut, 1, 0.5);
+    CHECK_FALSE(past.showing);
+    CHECK_FALSE(past.live[1]);
+    gaitMixSeed(past, cut, 0, 0.5);
+    CHECK(past.showing);
+    CHECK(past.live[0]);
 }
 
 TEST_CASE("arena flinch: it cuts a move's startup short and frees the token; armour in startup holds it") {
@@ -11437,8 +11639,11 @@ TEST_CASE("arena maw_pup: the pounce lands at tooth contact and never shoves an 
         MESSAGE(std::string(lead) << ": the Pounce's pick minimum " << low << " m (contact " << contact << " m)");
         // It circles anywhere from 0.9 m to the band's far end (its preferredRange among them): an idle lead never
         // moves. From a circle under the minimum no Pounce starts there; at or past it the Pounce leaps from it.
+        // Every 2 cm from 0.9 to 1.8 m (review 3.6), with the minimum, preferredRange and the band's end.
         const ArenaEnemyMove& pounce = shipped.moves[1];
-        for (const float circle : {0.9f, 1.f, low, 1.1f, 1.3f, 1.6f, shipped.preferredRange, pounce.maxRange}) {
+        std::vector<float> circles{low, shipped.preferredRange, pounce.maxRange};
+        for (int c = 0; c <= 45; ++c) circles.push_back(0.9f + 0.02f * static_cast<float>(c));
+        for (const float circle : circles) {
             CAPTURE(std::string(lead));
             CAPTURE(circle);
             ArenaEnemyKind pup = shipped;

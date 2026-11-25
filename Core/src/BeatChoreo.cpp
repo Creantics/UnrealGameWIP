@@ -224,6 +224,19 @@ void gaitMixLayers(const GaitSet& gs, double a, std::array<GaitMixLayer, 2>& out
     }
 }
 
+// How many of the set's gaits are sound, as gaitMixStep plays them: at most kMaxGaits, cut at the first gait whose
+// speed is not finite and rising (the slowest above 0) or whose length is not finite and above 0.
+int gaitSoundCount(const GaitSet& gaits) {
+    const int asked = std::clamp(gaits.count, 0, kMaxGaits);
+    for (int g = 0; g < asked; ++g) {
+        const double sp = gaits.speed[static_cast<std::size_t>(g)];
+        if (!std::isfinite(sp) || !(sp > (g > 0 ? gaits.speed[static_cast<std::size_t>(g - 1)] : 0.0))) return g;
+        const double len = gaits.length[static_cast<std::size_t>(g)];
+        if (!std::isfinite(len) || !(len > 0.0)) return g;
+    }
+    return asked;
+}
+
 double gaitWrap(double t, double length) {
     if (!std::isfinite(t) || !std::isfinite(length) || !(length > 0.0)) return 0.0;
     const double w = std::fmod(t, length);
@@ -235,7 +248,7 @@ double gaitWrap(double t, double length) {
 void gaitMixSeed(GaitMixState& state, const GaitSet& gaits, int gait, double phase) {
     state = GaitMixState{};
     state.begun = true;
-    if (gait < 0 || gait >= std::clamp(gaits.count, 0, kMaxGaits)) return;
+    if (gait < 0 || gait >= gaitSoundCount(gaits)) return; // gaitMixStep's cut (review 1.4)
     const std::size_t g = static_cast<std::size_t>(gait);
     const double length = gaits.length[g];
     state.time[g] = gaitWrap((std::isfinite(phase) ? phase : 0.0) * length, length);
@@ -249,18 +262,9 @@ GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaitsIn, bool show,
     if (!std::isfinite(v)) v = 0.0;
     if (!std::isfinite(dt) || !(dt > 0.0)) dt = 0.0;
     if (!std::isfinite(blend)) blend = 0.0;
-    // A set out of range plays as far as it is sound: at most kMaxGaits, cut at the first gait whose speed is not
-    // finite and rising (the slowest above 0) or whose length is not finite and above 0.
+    // A set out of range plays as far as it is sound (gaitSoundCount).
     GaitSet gaits = gaitsIn;
-    const int asked = std::clamp(gaits.count, 0, kMaxGaits);
-    gaits.count = 0;
-    for (int g = 0; g < asked; ++g) {
-        const double sp = gaits.speed[static_cast<std::size_t>(g)];
-        if (!std::isfinite(sp) || !(sp > (g > 0 ? gaits.speed[static_cast<std::size_t>(g - 1)] : 0.0))) break;
-        const double len = gaits.length[static_cast<std::size_t>(g)];
-        if (!std::isfinite(len) || !(len > 0.0)) break;
-        gaits.count = g + 1;
-    }
+    gaits.count = gaitSoundCount(gaitsIn);
     const bool first = !state.begun;
     state.begun = true;
     if (!show) {

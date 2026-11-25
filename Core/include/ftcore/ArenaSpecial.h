@@ -157,7 +157,9 @@ struct ArenaSpecialTable {
 // Whether the move's numbers are in range (the loader's rules): duration 0.5..30, strikeAt in (0, duration], waveSpeed
 // 1..1000, maxTravel 0..5, strikeAt + maxTravel + knockTime <= duration (the latest impact's shove inside the move), range
 // 1..200, lane 0.5..100 by 0.5..50, damage 1..100000, otherShare and bossPhaseShare 0..1, knockBack 0..20, knockTime
-// 0.05..5, endTravel 0..20, endSide -5..5, cues in rising time inside [0, duration] with names of 1..31 letters, digits, _ and -.
+// 0.05..5, knockSpeed (knockCurve) none or validArenaCurve's rules with t in 0..knockTime (arena.json "knockSpeed":
+// [[t s, speed m/s], ...] of 2..8 knots, t not decreasing, speed 0..20, some speed; scaled to knockBack), endTravel
+// 0..20, endSide -5..5, cues in rising time inside [0, duration] with names of 1..31 letters, digits, _ and -.
 FTCORE_API bool validArenaSpecialRules(const ArenaSpecialRules& r);
 FTCORE_API bool validArenaSpecialGauge(const ArenaSpecialGaugeRules& g);
 

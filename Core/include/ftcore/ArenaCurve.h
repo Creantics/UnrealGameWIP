@@ -39,5 +39,9 @@ FTCORE_API float arenaLungeScale(const ArenaLungeCurve& c, float lunge);
 // A body it moves takes its travel between two clocks over each step (arenaLungeDistance's difference), so it covers
 // the curve's distance exactly.
 FTCORE_API float arenaLungeSpeed(const ArenaLungeCurve& c, float t);
+// Whether the curve keeps the loader's rules (review 4.2; every curve's one check): no knots, or 2..kMaxArenaLungeKnots
+// knots with t finite in 0..`until` s and not decreasing, speeds finite in 0..20 m/s, some speed, and a finite scale
+// at least 0.
+FTCORE_API bool validArenaCurve(const ArenaLungeCurve& c, float until);
 
 } // namespace ftcore

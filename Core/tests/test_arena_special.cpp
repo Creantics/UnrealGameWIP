@@ -9,10 +9,12 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -1116,6 +1118,41 @@ TEST_CASE("arena special: on its knockSpeed curve the knock-back covers knockBac
         "knockBack": 2, "knockTime": 0.3, "knockSpeed": [[0, 0], [0.08, 7.41], [0.35, 0]] } ] })",
                                     refused, &err));
     CHECK(err.find("knockSpeed[2]") != std::string::npos);
+    // A negative knot, one out of order: refused at its knot (review 3). 1e999 (not finite) is refused too, by the
+    // JSON reader before the knot check; validArenaCurve's NaN case below covers a non-finite knot past the reader.
+    const auto knockErr = [](const char* knots) {
+        ArenaSpecialTable t;
+        std::string e;
+        const std::string json = std::string(R"({ "version": 1, "moves": [ { "id": "devin_special_01", "lead": "devin",
+        "knockBack": 2, "knockTime": 0.35, "knockSpeed": )") + knots + " } ] }";
+        CHECK_FALSE(importArenaSpecials(json, t, &e));
+        return e;
+    };
+    CHECK(knockErr("[[0, 0], [0.08, -1], [0.35, 0]]").find("knockSpeed[1]") != std::string::npos);
+    CHECK(knockErr("[[0, 0], [-0.1, 7.41], [0.35, 0]]").find("knockSpeed[1]") != std::string::npos);
+    CHECK(knockErr("[[0, 0], [0.2, 7.41], [0.1, 7.41], [0.35, 0]]").find("knockSpeed[2]") != std::string::npos);
+    CHECK_FALSE(knockErr("[[0, 0], [0.08, 1e999], [0.35, 0]]").empty());
+    // validArenaCurve (review 4.2) holds a hand-built curve to the loader's rules: order, finiteness, speed.
+    ArenaSpecialTable built = curved;
+    ArenaLungeCurve& k = built.moves[0].knockCurve;
+    k.t[2] = 0.05f; // before the knot ahead of it
+    CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
+    k = c;
+    k.v[1] = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
+    k = c;
+    k.v[1] = -1.f;
+    CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
+    k = c;
+    k.count = 1;
+    CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
+    k = c;
+    k.scale = std::numeric_limits<float>::infinity();
+    CHECK_FALSE(validArenaSpecialRules(built.moves[0]));
+    k = ArenaLungeCurve{}; // none: the flat push
+    CHECK(validArenaSpecialRules(built.moves[0]));
+    CHECK(validArenaCurve(c, 0.35f));
+    CHECK_FALSE(validArenaCurve(c, 0.3f));
 
     // In a fight: the shipped move on that curve carries the staggered enemy its knockBack, from rest to rest.
     ArenaSpecialTable specials = shippedSpecials();
@@ -1130,11 +1167,31 @@ TEST_CASE("arena special: on its knockSpeed curve the knock-back covers knockBac
     CHECK(r.fight.output().enemies[0].brain == ArenaBrain::Staggered);
     const float before = r.bodies.enemies[0].x;
     float most = 0.f;
-    for (int i = 0; i < 40; ++i) most = std::max(most, std::fabs(r.tick().enemies[0].velocity.x));
+    std::array<float, 40> speed{};
+    int first = -1, last = -1;
+    for (int i = 0; i < 40; ++i) {
+        speed[static_cast<std::size_t>(i)] = std::fabs(r.tick().enemies[0].velocity.x);
+        most = std::max(most, speed[static_cast<std::size_t>(i)]);
+        if (speed[static_cast<std::size_t>(i)] > 1e-4f) {
+            if (first < 0) first = i;
+            last = i;
+        }
+    }
     const float moved = r.bodies.enemies[0].x - before;
-    MESSAGE("knock-back on its curve: moved " << moved << " m, top speed " << most << " m/s");
+    const float top = 7.41f * specials.moves[0].knockCurve.scale;
+    REQUIRE(first >= 0);
+    const float mid = speed[static_cast<std::size_t>((first + last) / 2)];
+    MESSAGE("knock-back on its curve: moved " << moved << " m, top speed " << most << " m/s, first tick "
+                                              << speed[static_cast<std::size_t>(first)] << ", last tick "
+                                              << speed[static_cast<std::size_t>(last)] << ", plateau " << mid
+                                              << " over ticks " << first << "-" << last);
     CHECK(moved == doctest::Approx(specials.moves[0].knockBack).epsilon(1e-3));
-    CHECK(most <= 7.41f * specials.moves[0].knockCurve.scale + 1e-3f);
+    CHECK(most <= top + 1e-3f);
+    // The curve's shape, which the flat push (5.71 m/s from the first tick to the last) cannot meet (review 3.1).
+    CHECK(most >= 7.3f);
+    CHECK(speed[static_cast<std::size_t>(first)] < 1.5f); // from rest
+    CHECK(speed[static_cast<std::size_t>(last)] < 1.5f);  // to rest
+    CHECK(mid == doctest::Approx(top).epsilon(1e-3));     // on the plateau
 }
 
 TEST_CASE("arena special: skippable only once seen; a skip lands the same results at once") {

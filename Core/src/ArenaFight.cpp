@@ -281,6 +281,11 @@ float arenaLungeContactAt(const ArenaLungeCurve& c, float now, float launch, flo
 
 } // namespace
 
+double arenaCooldownStep(double left, float dt) {
+    const double after = left - static_cast<double>(dt);
+    return after > 1.0e-6 ? after : 0.0;
+}
+
 float arenaPickMinRange(const ArenaEnemyKind& k, std::size_t move, float leadRadius, float dt) {
     if (move >= k.moveCount) return 0.f;
     const ArenaEnemyMove& mv = k.moves[move];
@@ -2486,9 +2491,8 @@ struct ArenaFightImpl {
         Enemy& foe = foes[i];
         if (foe.brain == ArenaBrain::Dead) return;
         const ArenaEnemyKind& k = def.enemies[i];
-        // A residual under kArenaEps is float drift (3 s less 180 steps of 1/60 leaves 2e-6): the cooldown is over,
-        // so a move ends on the tick its length says (ruling 6681r item 3).
-        for (float& c : foe.cooldown) c = c - dt > kArenaEps ? c - dt : 0.f;
+        // Each cooldown ends on the tick its length says (ruling 6681r item 3; arenaCooldownStep).
+        for (double& c : foe.cooldown) c = arenaCooldownStep(c, dt);
         if (t1 - foe.lastPoiseHit >= k.poiseDelay) foe.poise = k.poise;
     }
 
@@ -3856,7 +3860,8 @@ struct ArenaFightImpl {
     }
 
     // Approach and Strafe's velocity: the kind's accel ramp toward `want`; in a walk off after an attack (gaitStart,
-    // ruling 6681r item 4) its speed is instead the smoothstep's mean over this tick, along want, never above want's.
+    // ruling 6681r item 4) its speed is instead the smoothstep's mean over this tick, along want. A want slower than
+    // that mean takes the accel ramp toward it, as outside the start (review 1.3).
     Vec2 moveOff(std::size_t i, Vec2 want) {
         Enemy& foe = foes[i];
         const ArenaEnemyKind& k = def.enemies[i];
@@ -3865,13 +3870,14 @@ struct ArenaFightImpl {
         if (foe.startClock >= k.gaitStart - kArenaEps) foe.startClock = -1.f;
         if (foe.startClock < 0.f || !(k.gaitStart > 0.f)) return arenaRamp(foe.velocity, want, k.accel, dt);
         const float c0 = foe.startClock;
-        const float c1 = std::min(c0 + dt, k.gaitStart);
-        const float mean = (arenaGaitStartDistance(k.walkSpeed, k.gaitStart, c1) -
+        // The whole tick's travel: past the start's end the curve runs on at the top speed, so a start that is not a
+        // whole number of ticks loses nothing on its closing tick (review 1.1).
+        const float mean = (arenaGaitStartDistance(k.walkSpeed, k.gaitStart, c0 + dt) -
                             arenaGaitStartDistance(k.walkSpeed, k.gaitStart, c0)) /
                            dt;
-        foe.startClock = c1;
+        foe.startClock = std::min(c0 + dt, k.gaitStart);
         const float wanted = arenaLength(want);
-        return wanted > mean ? arenaScaled(want, mean / wanted) : want;
+        return wanted > mean ? arenaScaled(want, mean / wanted) : arenaRamp(foe.velocity, want, k.accel, dt);
     }
 
     Vec2 approach(std::size_t i, Vec2 dir, float distance, const Pick& pick) {
@@ -5293,6 +5299,16 @@ float arenaLungeScale(const ArenaLungeCurve& c, float lunge) {
     return whole > 1e-9 ? static_cast<float>(lunge / whole) : 1.f;
 }
 
+bool validArenaCurve(const ArenaLungeCurve& c, float until) {
+    if (c.count == 0) return true;
+    if (c.count < 2 || c.count > kMaxArenaLungeKnots || !(std::isfinite(c.scale) && c.scale >= 0.f)) return false;
+    for (std::size_t n = 0; n < c.count; ++n) {
+        if (!(c.t[n] >= 0.f && c.t[n] <= until) || !(c.v[n] >= 0.f && c.v[n] <= 20.f)) return false; // NaN fails
+        if (n > 0 && c.t[n] < c.t[n - 1]) return false;
+    }
+    return arenaLungeRaw(c, c.t[c.count - 1]) > 1e-6;
+}
+
 float arenaBoltFlight(float startup) {
     const float s = std::isfinite(startup) ? std::max(startup, 0.f) : 0.f;
     return std::max(s, kArenaBoltFlightMin);
@@ -5903,6 +5919,12 @@ float arenaPoseTime(float clock, float alpha, double dt, bool held) {
     return std::max(0.f, clock - behind);
 }
 
+float arenaGaitStartPoseTime(float now, float before, float length, float alpha, double ownStep) {
+    if (now >= 0.f) return arenaPoseTime(now, alpha, ownStep, false);
+    if (!(length > 0.f) || !(before >= length - kArenaEps)) return -1.f;
+    return before + static_cast<float>(static_cast<double>(std::clamp(alpha, 0.f, 1.f)) * ownStep);
+}
+
 float arenaAimWeight(const ArenaAttack& a, float stateTime, float held) {
     const auto smooth = [](float x) {
         const float c = std::clamp(x, 0.f, 1.f);
@@ -5953,7 +5975,10 @@ float arenaAimWeight(const ArenaAttack& a, float stateTime, float held) {
 //             look, optional, the host's skinned figure for it: { "clips": a path in Data/ of 1..95 characters,
 //             "hover" 0..30 m, "scale" (0, 100], "yawOffset" -360..360 degrees } (clips required)
 //             flinchTime 0..10; flinchPoise 0..100000; flinchPush 0..20; breakAt 0..255; breakDecay 0..60;
-//             breakMove -1 or one of its moves
+//             breakMove -1 or one of its moves;
+//             flinchSpeed, optional: the flinch push's speed curve, [[t s, speed m/s], ...] of 2..8 knots, t not
+//             decreasing in 0..flinchTime, speed 0..20, some speed; scaled to flinchPush (validArenaCurve);
+//             gaitStart 0..2 s, optional (0: none): its walk off after an attack, a smoothstep 0 -> walkSpeed
 //             at most 254 kinds in the file (ArenaDef::enemyKind holds an index, kArenaNoKind is 255)
 //   move      the attack's keys; minRange 0..100; maxRange (0, 100] and at least minRange; cooldown 0..60;
 //             weight 0..1000 (0: only ever reached by a chain; at least one move needs more);
@@ -5965,7 +5990,9 @@ float arenaAimWeight(const ArenaAttack& a, float stateTime, float held) {
 //             hitsAir boolean (default false for a sweep or slam tell, else true: false passes under a jump's
 //             clear window and takes the legs); hitPart one of arenaHitPartName's words (default "auto": the
 //             reaction picks the part by height and tell), the part a landed blow strikes (display only);
-//             holdsGround boolean (default false): the enemy holds its ground through the attack (arenaPlanted)
+//             holdsGround boolean (default false): the enemy holds its ground through the attack (arenaPlanted);
+//             lungeSpeed, optional, one move per kind: the lunge's speed curve, as flinchSpeed with t in 0..10,
+//             scaled to the attack's lunge
 //   fight     enemies 1..6 known enemy ids; ring (0, 1000]; spawn (0, 1000]; attackers 1..6;
 //             scene a non-empty id; beat 0..1000000; step 0..1000
 
@@ -6268,6 +6295,10 @@ static bool arenaReadSpeedCurve(JsonValue j, const std::string& path, float dist
         return false;
     }
     c.scale = arenaLungeScale(c, distance);
+    if (!validArenaCurve(c, until)) { // the shared rule (review 4.2), the same check validArenaSpecialRules makes
+        errors.push_back(path + ": expected a curve its distance (" + arenaFormat(distance) + " m) can scale");
+        return false;
+    }
     out = c;
     return true;
 }
@@ -6677,6 +6708,22 @@ bool importArenaTable(std::string_view json, ArenaTable& out, std::string* error
         }
     }
 
+    // A lunge-curve move's pick minimum (arenaPickMinRange, without the walk-in tick) within its maxRange for every
+    // fighter (review 1.2): above it the band is empty and the move would never be picked against that lead.
+    for (std::size_t i = 0; i < table.enemies.size(); ++i) {
+        const ArenaEnemyKind& k = table.enemies[i];
+        if (k.lungeMove < 0 || static_cast<std::size_t>(k.lungeMove) >= k.moveCount) continue;
+        const std::size_t m = static_cast<std::size_t>(k.lungeMove);
+        for (std::size_t f = 0; f < table.fighters.size(); ++f) {
+            const float low = arenaPickMinRange(k, m, table.fighters[f].bodyRadius, 0.f);
+            if (low <= k.moves[m].maxRange) continue;
+            errors.push_back("enemies[" + std::to_string(i) + "].moves[" + std::to_string(m) +
+                             "].maxRange: expected at least its pick minimum " + arenaFormat(low) +
+                             " m against fighter " + table.fighterIds[f] + " (contact plus the startup's travel)");
+            break;
+        }
+    }
+
     // The default fight, and the fights keyed by scene, beat and step.
     const JsonValue def = root["default"];
     if (!def.isObject()) {
@@ -7033,9 +7080,7 @@ bool validArenaSpecialRules(const ArenaSpecialRules& r) {
     if (r.damage < 1 || r.damage > 100000) return false;
     if (!spInRange(r.otherShare, 0.f, 1.f) || !spInRange(r.bossPhaseShare, 0.f, 1.f)) return false;
     if (!spInRange(r.knockBack, 0.f, 20.f) || !spInRange(r.knockTime, 0.05f, 5.f)) return false;
-    if (r.knockCurve.count > kMaxArenaLungeKnots ||
-        (r.knockCurve.count > 0 && !(r.knockCurve.t[r.knockCurve.count - 1] <= r.knockTime)))
-        return false;
+    if (!validArenaCurve(r.knockCurve, r.knockTime)) return false;
     if (!spInRange(r.endTravel, 0.f, 20.f) || !spInRange(r.endSide, -5.f, 5.f)) return false;
     if (r.cueCount > kMaxArenaSpecialCues) return false;
     float last = 0.f;

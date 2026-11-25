@@ -367,7 +367,8 @@ FTCORE_API GaitMixFrame gaitMixStep(GaitMixState& state, const GaitSet& gaits, b
 
 // Hands the mix a clip that played instead of it (a walk-off start, ArenaEnemyOut::gaitStart; ruling 6681r item 4):
 // gait `gait` live alone, its clock at `phase` (0..1, wrapped) of its length, the slot at full weight and showing, so
-// the next gaitMixStep at that gait's speed draws it at share 1 from that phase. A gait out of the set clears the mix.
+// the next gaitMixStep at that gait's speed draws it at share 1 from that phase. A gait out of the set, or past
+// gaitMixStep's soundness cut, clears the mix.
 FTCORE_API void gaitMixSeed(GaitMixState& state, const GaitSet& gaits, int gait, double phase);
 
 // Where a figure was drawn on the last frame its speed was taken. Value-initialise it per figure (and on a restart).

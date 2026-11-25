@@ -1280,6 +1280,15 @@ void UFTArenaRunner::LoadSkin(int32 I)
 		}
 		UE_CLOG(Start >= 0 && Skin.WalkStart < 0, LogForgottenThird, Warning,
 			TEXT("Arena: enemy %d's walk_start has no hand_phase; the mix plays the walk off: %s."), I, *TablePath);
+		// The seed takes the walk's place among the mix's gaits; a walk that is not one would seed gait 0 (review 5.2).
+		Skin.WalkStartGait = -1;
+		for (int32 G = 0; G < Skin.MixGaits.count; ++G)
+		{
+			Skin.WalkStartGait = Skin.WalkStartGait < 0 && Skin.GaitClip[G] == Skin.Walk ? G : Skin.WalkStartGait;
+		}
+		UE_CLOG(Skin.WalkStart >= 0 && Skin.WalkStartGait < 0, LogForgottenThird, Warning,
+			TEXT("Arena: enemy %d's walk is not one of its mixed gaits; walk_start is not played: %s."), I, *TablePath);
+		Skin.WalkStart = Skin.WalkStartGait >= 0 ? Skin.WalkStart : -1;
 		if (Count > 1)
 		{
 			UE_LOG(LogForgottenThird, Log, TEXT("Arena: enemy %d gaits: %d, rates %.2f-%.2f%s."), I, Skin.Gaits.count,
@@ -1372,21 +1381,20 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		const bool bStart = Skin.WalkStart >= 0 && Out.gaitStart >= 0.f;
 		const bool bOnFoot = Out.brain == ftcore::ArenaBrain::Approach || Out.brain == ftcore::ArenaBrain::Strafe;
 		// The seeding frame moves the walk on by the drawn time past the start's end (Alpha of this step), not by the
-		// frame's: the frame before drew the start clip at its pose time.
-		const bool bSeed = !bStart && bInWalkStart[I] && bOnFoot; // a move or a hit cutting it short seeds nothing
+		// frame's: the frame before drew the start clip at its pose time. Only a start drawn on the frame before and run
+		// to its length on the step before seeds (a move, a hit or a frame over several steps seeds nothing: review
+		// 5.3); in a hit pause the walk moves on by the frame's unpaused time (review 5.1).
+		const float SeedTime = Skin.WalkStart >= 0 ? EnemyGaitStartTime(I, Alpha) : -1.f;
+		const bool bSeed = !bStart && bInWalkStart[I] && bOnFoot && SeedTime >= 0.f;
 		if (bSeed)
 		{
-			int32 WalkGait = 0;
-			for (int32 G = 0; G < Skin.MixGaits.count; ++G)
-			{
-				WalkGait = Skin.GaitClip[G] == Skin.Walk ? G : WalkGait;
-			}
-			ftcore::gaitMixSeed(GaitMix[I], Skin.MixGaits, WalkGait, Skin.WalkStartPhase);
+			ftcore::gaitMixSeed(GaitMix[I], Skin.MixGaits, Skin.WalkStartGait, Skin.WalkStartPhase);
 		}
 		bInWalkStart[I] = bStart;
+		const float SeedDelta = PausedThisFrame[I] > 0.f ? ClipDelta : FMath::Max(0.f, SeedTime - PrevGaitStart[I]);
 		MixNow[I] = bStart ? ftcore::GaitMixFrame{}
 			: ftcore::gaitMixStep(GaitMix[I], Skin.MixGaits, bShow, ftcore::arenaGaitSpeed(Out, V),
-				bSeed ? FMath::Clamp(Alpha, 0.f, 1.f) * StepSeconds : ClipDelta, MixBlend);
+				bSeed ? SeedDelta : ClipDelta, MixBlend);
 		if (bStart)
 		{
 			GaitMix[I].showing = false;
@@ -1688,9 +1696,10 @@ void UFTArenaRunner::DriveSkin(int32 I, const ftcore::ArenaEnemyOut& Out, const 
 		}
 		else if (bInWalkStart[I])
 		{
-			// The walk off's start clip, on Core's clock for it at the drawn moment (ruling 6681r item 4).
+			// The walk off's start clip, on Core's clock for it at the drawn moment (ruling 6681r item 4), held in a
+			// hit pause like every other enemy pose (review 5.1).
 			Clip = Skin.WalkStart;
-			Time = static_cast<double>(ftcore::arenaPoseTime(Out.gaitStart, Alpha, StepSeconds, false));
+			Time = static_cast<double>(FMath::Max(0.f, EnemyGaitStartTime(I, Alpha)));
 			bTimed = true;
 		}
 		else if (bWalking[I])
@@ -2361,6 +2370,7 @@ void UFTArenaRunner::SnapPoseClocks()
 	{
 		PrevEnemyClock[I] = O.enemies[I].stateTime;
 		PrevEnemyBrain[I] = O.enemies[I].brain;
+		PrevGaitStart[I] = O.enemies[I].gaitStart;
 	}
 	PrevLeadClock = O.player.actionTime;
 	PrevLeadAction = O.player.action;
@@ -2374,6 +2384,16 @@ float UFTArenaRunner::EnemyPoseTime(int32 I, float Alpha) const
 	const bool bSame = E.brain == PrevEnemyBrain[I];
 	return ftcore::arenaPoseTime(E.stateTime, Alpha,
 		ArenaOwnStep(bSame, E.stateTime, PrevEnemyClock[I], StepSeconds), false);
+}
+
+float UFTArenaRunner::EnemyGaitStartTime(int32 I, float Alpha) const
+{
+	const size_t S = static_cast<size_t>(I);
+	const float Clock = Fight.output().enemies[S].gaitStart;
+	const float Before = PrevGaitStart[I];
+	// Its own clock's run over the last step: none in a hit pause; a start that began on it, or ended, a whole step.
+	const double Own = ArenaOwnStep(Clock >= 0.f && Before >= 0.f, Clock, Before, StepSeconds);
+	return ftcore::arenaGaitStartPoseTime(Clock, Before, Fight.def().enemies[S].gaitStart, Alpha, Own);
 }
 
 float UFTArenaRunner::LeadPoseTime(float Alpha) const
