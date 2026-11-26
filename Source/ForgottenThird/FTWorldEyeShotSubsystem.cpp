@@ -41,6 +41,8 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
+#include "LandscapeProxy.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
@@ -586,6 +588,57 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		if (const APawn* LeadPawn = Player->GetPawn())
 		{
 			Wave->LogBodyBoundary(*LeadPawn);
+		}
+	}
+	// What the aim ray meets, and what stands under the aim point, at the still's own frame: component, mesh, the
+	// material at the hit face and its base material (so a still's floor can be checked for what its material reads).
+	if (Eye && World)
+	{
+		const auto Describe = [](const FHitResult& H) -> FString
+		{
+			const UPrimitiveComponent* C = H.GetComponent();
+			const AActor* O = H.GetActor();
+			const UStaticMeshComponent* S = Cast<UStaticMeshComponent>(C);
+			const UStaticMesh* M = S ? S->GetStaticMesh() : nullptr;
+			int32 Section = 0;
+			UMaterialInterface* Mat = C ? C->GetMaterialFromCollisionFaceIndex(H.FaceIndex, Section) : nullptr;
+			if (!Mat && C)
+			{
+				Mat = C->GetMaterial(0);
+			}
+			if (!Mat)
+			{
+				if (const ALandscapeProxy* L = Cast<ALandscapeProxy>(O))
+				{
+					Mat = L->GetLandscapeMaterial();
+				}
+			}
+			const UMaterial* Base = Mat ? Mat->GetMaterial() : nullptr;
+			return FString::Printf(TEXT("at (%.2f, %.2f, %.2f) m: %s %s on %s (%s), mesh %s, material %s, base %s"), H.ImpactPoint.X * 0.01,
+				H.ImpactPoint.Y * 0.01, H.ImpactPoint.Z * 0.01, C ? *C->GetClass()->GetName() : TEXT("-"), C ? *C->GetName() : TEXT("-"),
+				O ? *O->GetName() : TEXT("-"), O ? *O->GetClass()->GetName() : TEXT("-"), M ? *M->GetName() : TEXT("-"),
+				Mat ? *Mat->GetPathName() : TEXT("-"), Base ? *Base->GetPathName() : TEXT("-"));
+		};
+		FCollisionQueryParams Q(SCENE_QUERY_STAT(WorldEyeAim), true);
+		Q.bReturnFaceIndex = true;
+		if (const APawn* LeadPawn = Player ? Player->GetPawn() : nullptr)
+		{
+			Q.AddIgnoredActor(LeadPawn);
+		}
+		const FVector From = Eye->GetActorLocation(), Dir = Eye->GetActorForwardVector();
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, From, From + Dir * 50000.0, ECC_Visibility, Q))
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot aim: the ray from the eye meets %s."), *Describe(Hit));
+			FHitResult Down;
+			if (World->LineTraceSingleByChannel(Down, Hit.ImpactPoint + FVector(0.0, 0.0, 50.0), Hit.ImpactPoint - FVector(0.0, 0.0, 2000.0), ECC_Visibility, Q))
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot aim: under the aim point, from 50 cm over it, %s."), *Describe(Down));
+			}
+		}
+		else
+		{
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot aim: the ray from the eye meets nothing in 500 m."));
 		}
 	}
 	// -WorldEyeExecAtShot="cmd;cmd": console commands run on the settled frame of every still (a one-frame diagnostic

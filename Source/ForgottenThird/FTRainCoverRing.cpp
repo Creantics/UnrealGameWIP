@@ -15,8 +15,9 @@
 //
 // Switches: -RainCoverRebake bakes every tile; -RainCoverBakeOnly bakes (or checks) and exits, never setting CoverOn;
 // -RainCoverBakeSettle=<ticks> (600) before the key; -RainCoverRoute=B uploads through a staging texture and a copy
-// (A, the default, writes the atlas directly). Dev only: -RainCoverRingForce=5|9 (every 5 m trigger reads that many baked
-// tiles off disk and uploads them: the corner and jump cells), -RainCoverCompareDir=<dir> (each baked tile against the
+// (A, the default, writes the atlas directly). Dev only: -RainCoverRingForce=5|9 (on top of the normal ring, every 5 m
+// trigger re-uploads that many of the ring's own slot tiles, read off disk unbuffered: the corner and jump cells),
+// -RainCoverTour=<cm a frame> (the lead set down along a fixed loop that crosses tile sides and corners), -RainCoverCompareDir=<dir> (each baked tile against the
 // same tile there: the determinism check), -RainCoverAtlasCheck=<n> (the atlas read back after the fill and every n
 // crossings, against the tile files through the Core mapping), -RainCoverHomes (the cache's raw and Oodle sizes),
 // -RainCoverWitness[=<file>] (the 60 m draw at the plant tiles and listed tiles against the baked tiles; with
@@ -41,6 +42,7 @@
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/FileManager.h"
@@ -184,8 +186,15 @@ struct FFTRainRing
 
 	// Dev cells.
 	int32 Force = 0;
-	TArray<int32> Textured;
-	int32 ForceNext = 0, ForceReady = -1, ForceLast = 1, ForceLate = 0, ForceBusy = 0, ForceHits = 0;
+	int32 ForceSlot[2][9] = {}, ForceTi[2][9] = {}, ForceK[2] = {0, 0};
+	int32 ForceRot = 0, ForceReady = -1, ForceLast = 1, ForceLate = 0, ForceBusy = 0, ForceHits = 0, ForceUp = 0, ForceStale = 0;
+	int32 ForceFull = 0, ForcePad = 0, PadNext = 0;
+	TArray<int32> Textured; // every tile with a payload: what an open slot's read takes (its slot vector hides it)
+	// -RainCoverTour=<cm a frame>: the lead set down along a fixed loop (tile edges and corners crossed), one step a frame.
+	float Tour = 0.f;
+	TArray<FVector2D> TourPts; // cm
+	int32 TourLeg = 0;
+	double TourAlong = 0.0, TourDist = 0.0;
 	uint16* ForceBuf[2] = {nullptr, nullptr};
 	TFuture<int32> ForceRead[2];
 	bool bForceReading[2] = {false, false};
@@ -200,8 +209,24 @@ struct FFTRainRing
 	int32 WitnessStep = 0, WitnessAt = 0, WitnessWait = -1, WNoDraw = 0;
 	int64 WFails = 0, WAgree = 0, WBand = 0, WBelow = 0, WHeight = 0, WGained = 0, WLost = 0, WTexels = 0, WNoTile = 0;
 	float WMaxCm = 0.f;
-	TArray<FVector> WFailAt; // the first failing texels (m): plan point and the occluder Z
-	TMap<int32, int64> WFailTile;
+	// Every failing texel: plan point (m), the higher of the two heights (m), its side and its square.
+	struct FWFail
+	{
+		float X = 0.f, Y = 0.f, Z = 0.f, Dz = 0.f;
+		uint8 Side = 0; // 0 height, the tile higher; 1 height, the draw higher; 2 gained (tile only); 3 lost (draw only)
+		int32 Sq = 0;   // index into WitnessTiles
+	};
+	TArray<FWFail> WFailAt;
+	struct FWSquare
+	{
+		float CamZ = 0.f, TopZ = 0.f;
+		int64 Side[4] = {0, 0, 0, 0};
+		double DzSum[2] = {0.0, 0.0};
+		float DzMax[2] = {0.f, 0.f};
+	};
+	TMap<int32, FWSquare> WFailTile; // by WitnessTiles index
+	FVector WWorstAt = FVector::ZeroVector;
+	int32 WWorstSide = -1, WWorstSq = -1;
 
 	~FFTRainRing()
 	{
@@ -244,10 +269,17 @@ void UFTRainCoverSubsystem::RingEnd()
 		TEXT("RainCover ring: %d crossings, %d tiles uploaded, %d late (filled when the read landed: %d), %d reads (mean %.2f ms, max %.2f ms off the game thread, %d failed), %d evictions, %d with no free entry; route %s."),
 		R.Crossings, R.Uploaded, R.Late, R.LateFilled, R.Reads, R.Reads ? R.ReadMsSum / R.Reads : 0.0, R.ReadMsMax, R.ReadFails, R.Evicts,
 		R.NoRoom, R.bRouteB ? TEXT("B (staging and copy)") : TEXT("A (direct)"));
+	UE_LOG(LogForgottenThird, Display, TEXT("RainCover ring reads: every payload read unbuffered (OpenReadNoBuffering, the OS file cache bypassed)."));
 	if (R.Force > 0)
 	{
-		UE_LOG(LogForgottenThird, Display, TEXT("RainCover ring force: %d tiles a hit: %d hits, %d late (read not back, skipped), %d ticks a buffer waited on its fence."),
-			R.Force, R.ForceHits, R.ForceLate, R.ForceBusy);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover ring force: %d slots a hit, each with one unbuffered tile read, re-uploaded on top of the normal ring: %d hits, %d FULL (all %d slots up), %d slot uploads (%d into open or flat slots), %d skipped (the slot's tile changed since its read), %d late (read not back, skipped), %d ticks a buffer waited on its fence."),
+			R.Force, R.ForceHits, R.ForceFull, R.Force, R.ForceUp, R.ForcePad, R.ForceStale, R.ForceLate, R.ForceBusy);
+	}
+	if (R.Tour > 0.f)
+	{
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover tour: %.1f cm a frame, %.0f m walked, leg %d of %d."), R.Tour, R.TourDist * 0.01, R.TourLeg,
+			R.TourPts.Num());
 	}
 	Ring.Reset();
 }
@@ -324,8 +356,12 @@ bool UFTRainCoverSubsystem::RingBegin(UWorld& World)
 			}
 		}
 	}
+	FParse::Value(Sw, TEXT("RainCoverTour="), R->Tour);
+	R->Tour = FMath::Clamp(R->Tour, 0.f, 200.f);
+	// The file is read first: with the bare switch first, || never reached the value and a listed file was dropped.
 	FString WitnessFile;
-	R->bWitness = FParse::Param(Sw, TEXT("RainCoverWitness")) || FParse::Value(Sw, TEXT("RainCoverWitness="), WitnessFile);
+	const bool bWitnessFile = FParse::Value(Sw, TEXT("RainCoverWitness="), WitnessFile);
+	R->bWitness = bWitnessFile || FParse::Param(Sw, TEXT("RainCoverWitness"));
 	if (!WitnessFile.IsEmpty())
 	{
 		TArray<FString> WLines;
@@ -747,6 +783,74 @@ void RingSwitches(UWorld& World, FFTRainRing& R, bool bOn, bool bLod0 = true, bo
 		R.Saved.Reset();
 	}
 }
+
+#if !UE_BUILD_SHIPPING
+// -RainCoverTour: the lead set down a fixed step a frame along a loop from its own tile's centre: 128 m out, 128 m across,
+// back, and the two diagonals through the tile corners (so crossings enter 3 tiles on the sides and 5 at the corners),
+// 874 m round; the quadrant with the most baked tiles. Its feet go on what a trace down from 3 m over them finds.
+void RingTourStep(UWorld& World, FFTRainRing& R, const ftcore::RainCoverSpec& Spec)
+{
+	APlayerController* PC = World.GetFirstPlayerController();
+	APawn* Lead = PC ? PC->GetPawn() : nullptr;
+	if (!Lead)
+	{
+		return;
+	}
+	if (R.TourPts.Num() == 0)
+	{
+		const ftcore::RainCoverFrame C = ftcore::rainCoverTileFrame(Spec, R.Lead, 0.f);
+		int32 Best = -1, Sx = 1, Sy = 1;
+		for (int32 Q = 0; Q < 4; ++Q)
+		{
+			const int32 Qx = (Q & 1) ? -1 : 1, Qy = (Q & 2) ? -1 : 1;
+			int32 Baked = 0;
+			for (int32 I = 0; I <= 2; ++I)
+			{
+				for (int32 J = 0; J <= 2; ++J)
+				{
+					Baked += R.HasPayload(R.Find(ftcore::RainCoverTile{R.Lead.x + Qx * I, R.Lead.y + Qy * J})) ? 1 : 0;
+				}
+			}
+			if (Baked > Best)
+			{
+				Best = Baked;
+				Sx = Qx;
+				Sy = Qy;
+			}
+		}
+		const double L = 12800.0, X0 = double(C.cx) * 100.0, Y0 = double(C.cy) * 100.0;
+		const FVector2D A(X0, Y0), B(X0 + Sx * L, Y0), Cc(X0 + Sx * L, Y0 + Sy * L), D(X0, Y0 + Sy * L);
+		R.TourPts = {A, B, Cc, D, A, Cc};
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover tour: from tile (%d, %d), quadrant (%d, %d) with %d of 9 tiles baked, %.1f cm a frame."),
+			R.Lead.x, R.Lead.y, Sx, Sy, Best, R.Tour);
+	}
+	const int32 Np = R.TourPts.Num();
+	R.TourAlong += R.Tour;
+	R.TourDist += R.Tour;
+	for (int32 Guard = 0; Guard < Np; ++Guard)
+	{
+		const double Len = FVector2D::Distance(R.TourPts[R.TourLeg % Np], R.TourPts[(R.TourLeg + 1) % Np]);
+		if (R.TourAlong <= Len)
+		{
+			break;
+		}
+		R.TourAlong -= Len;
+		++R.TourLeg;
+	}
+	const FVector2D P0 = R.TourPts[R.TourLeg % Np], P1 = R.TourPts[(R.TourLeg + 1) % Np];
+	const double Len = FMath::Max(FVector2D::Distance(P0, P1), 1.0);
+	const FVector2D P = P0 + (P1 - P0) * (R.TourAlong / Len);
+	FVector At(P.X, P.Y, Lead->GetActorLocation().Z);
+	const float Half = Lead->GetSimpleCollisionHalfHeight();
+	FCollisionQueryParams Q(SCENE_QUERY_STAT(RainCoverTour), false, Lead);
+	FHitResult Hit;
+	if (World.LineTraceSingleByChannel(Hit, FVector(P.X, P.Y, At.Z - Half + 300.0), FVector(P.X, P.Y, At.Z - 20000.0), ECC_Visibility, Q))
+	{
+		At.Z = Hit.ImpactPoint.Z + Half + 2.0;
+	}
+	Lead->SetActorLocation(At, false, nullptr, ETeleportType::TeleportPhysics);
+}
+#endif
 } // namespace
 
 void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
@@ -1166,6 +1270,12 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 	{
 		return;
 	}
+#if !UE_BUILD_SHIPPING
+	if (R.Tour > 0.f)
+	{
+		RingTourStep(World, R, Spec);
+	}
+#endif
 
 	// Reads that landed; a late slot is filled the tick its read lands.
 	for (FFTRainRing::FEntry& E : R.Pool)
@@ -1199,24 +1309,11 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 	}
 
 #if !UE_BUILD_SHIPPING
-	if (R.Force > 0)
+	// The corner (5) and jump (9) cells, on top of the normal ring (crossings, late tiles and the prefetch all run as
+	// shipped): on every 5 m trigger, that many of the ring's own slot tiles, read off disk (unbuffered) since the last
+	// hit, go up again into their own slots. A slot whose tile changed since its read is skipped, so the atlas stays true.
+	const auto ForceTick = [&]()
 	{
-		// The corner (5) and jump (9) cells: on every 5 m trigger, that many baked tiles read off disk ahead of it come in.
-		if (R.Textured.Num() == 0)
-		{
-			for (int32 Ti = 0; Ti < NT; ++Ti)
-			{
-				if (R.HasPayload(Ti))
-				{
-					R.Textured.Add(Ti);
-				}
-			}
-			if (R.Textured.Num() == 0)
-			{
-				R.Force = 0;
-				return;
-			}
-		}
 		for (int32 B = 0; B < 2; ++B)
 		{
 			if (R.bForceReading[B] && R.ForceRead[B].IsReady())
@@ -1224,7 +1321,7 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 				R.bForceReading[B] = false;
 				const int32 Good = R.ForceRead[B].Get();
 				++R.Reads;
-				R.ReadFails += Good == R.Force ? 0 : 1;
+				R.ReadFails += Good == R.ForceK[B] ? 0 : 1;
 				const double Ms = double(R.ForceUs.load()) / 1000.0;
 				R.ReadMsSum += Ms;
 				R.ReadMsMax = FMath::Max(R.ReadMsMax, Ms);
@@ -1240,13 +1337,33 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 			}
 			else
 			{
-				const TCHAR* Files[9] = {};
-				for (int32 J = 0; J < R.Force; ++J)
+				// The next Force slots round the ring (from where the last read stopped), each with one file read: a slot
+				// whose tile has a payload reads its own tile; an open or flat slot reads the next baked tile in turn (its
+				// upload goes into an open slot, which its slot vector hides, or is the flat tile's own codes).
+				if (R.Textured.Num() == 0)
 				{
-					Files[J] = *R.Path[R.Textured[(R.ForceNext + J) % R.Textured.Num()]];
+					for (int32 Ti = 0; Ti < NT; ++Ti)
+					{
+						if (R.HasPayload(Ti))
+						{
+							R.Textured.Add(Ti);
+						}
+					}
 				}
+				const TCHAR* Files[9] = {};
+				int32 K = 0;
+				for (int32 Step = 0; Step < 9 && K < R.Force && R.Textured.Num() > 0; ++Step)
+				{
+					const int32 S = (R.ForceRot + Step) % 9;
+					const int32 Ti = R.SlotTi[S];
+					R.ForceSlot[B][K] = S;
+					R.ForceTi[B][K] = Ti;
+					Files[K++] = *R.Path[R.HasPayload(Ti) ? Ti : R.Textured[R.PadNext++ % R.Textured.Num()]];
+				}
+				R.ForceRot = (R.ForceRot + R.Force) % 9;
+				R.ForceK[B] = K;
 				uint16* Into = R.ForceBuf[B];
-				const int32 K = R.Force, Bytes = R.PayloadBytes, Words = N;
+				const int32 Bytes = R.PayloadBytes, Words = N;
 				std::atomic<int64>* Us = &R.ForceUs;
 				R.ForceRead[B] = Async(EAsyncExecution::ThreadPool, [Files, Into, K, Bytes, Words, Us]() -> int32
 				{
@@ -1278,20 +1395,35 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 		const int32 B = R.ForceReady;
 		R.ForceReady = -1;
 		R.ForceLast = B;
-		CSV_CUSTOM_STAT(RainCover, Upload, R.Force, ECsvCustomStatOp::Set);
+		int32 Up = 0;
 		{
 			CSV_SCOPED_TIMING_STAT(RainCover, UploadEnqueue);
-			for (int32 J = 0; J < R.Force; ++J)
+			for (int32 J = 0; J < R.ForceK[B]; ++J)
 			{
-				const int32 Ti = R.Textured[(R.ForceNext + J) % R.Textured.Num()];
-				Upload(J, R.ForceBuf[B] + SIZE_T(J) * N);
-				SetSlot(J, Ti);
+				// A slot whose tile changed since its read is skipped. A late slot (open until its read lands, then
+				// placed anew) and an empty one take the read tile behind their open slot vector.
+				const int32 S = R.ForceSlot[B][J], Ti = R.ForceTi[B][J];
+				if (R.SlotTi[S] != Ti)
+				{
+					++R.ForceStale;
+					continue;
+				}
+				const bool bFlat = Ti >= 0 && R.Head[Ti].hits > 0 && !R.HasPayload(Ti);
+				Upload(S, bFlat ? R.Full : R.ForceBuf[B] + SIZE_T(J) * N);
+				R.ForcePad += R.HasPayload(Ti) ? 0 : 1;
+				++Up;
 			}
 			R.ForceFence[B].BeginFence();
 		}
-		R.ForceNext = (R.ForceNext + R.Force) % R.Textured.Num();
+		CSV_CUSTOM_STAT(RainCover, Upload, Up, ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(RainCover, ForceHit, Up, ECsvCustomStatOp::Set); // the hit marker: Force on a full hit
+		R.ForceUp += Up;
+		R.ForceFull += Up == R.Force ? 1 : 0;
 		++R.ForceHits;
-		return;
+	};
+	if (R.Force > 0)
+	{
+		ForceTick();
 	}
 #endif
 
@@ -1318,7 +1450,7 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 				}
 			}
 		}
-		CSV_CUSTOM_STAT(RainCover, Upload, R.Uploaded - Before, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(RainCover, Upload, R.Uploaded - Before, ECsvCustomStatOp::Accumulate); // the force cells add theirs the same tick
 		Prefetch();
 		if (R.AtlasCheckEvery > 0 && R.Crossings % R.AtlasCheckEvery == 0)
 		{
@@ -1408,7 +1540,6 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 	FFTRainRing& R = *Ring;
 	const int32 Res = Spec.resolution, N = Res * Res;
 	constexpr int32 kWitnessSettle = 20;
-	constexpr int32 kWitnessNamed = 256;
 	if (R.WitnessStep == 2)
 	{
 		return;
@@ -1492,6 +1623,9 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 			return &C;
 		};
 		int64 Fails = 0;
+		FFTRainRing::FWSquare Square;
+		Square.CamZ = float(TileCam.Z) * 0.01f;
+		Square.TopZ = F.topZ;
 		for (int32 Py = 0; Py < Res; ++Py)
 		{
 			for (int32 Px = 0; Px < Res; ++Px)
@@ -1519,6 +1653,8 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 					bT = C && ftcore::rainCoverR16Unpack((*C)[Ty * Res + Tx], H.range(), Tz);
 				}
 				bool bFail = false;
+				uint8 Side = 0;
+				float FailDz = 0.f;
 				if (!bT && !bR)
 				{
 					++R.WAgree;
@@ -1537,7 +1673,15 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 					else
 					{
 						++R.WHeight;
-						R.WMaxCm = FMath::Max(R.WMaxCm, Dz * 100.f);
+						Side = Tz > Rz ? 0 : 1;
+						FailDz = Dz;
+						if (Dz * 100.f > R.WMaxCm)
+						{
+							R.WMaxCm = Dz * 100.f;
+							R.WWorstAt = FVector(X, Y, FMath::Max(Tz, Rz));
+							R.WWorstSide = Side;
+							R.WWorstSq = R.WitnessAt - 1;
+						}
 						bFail = true;
 					}
 				}
@@ -1554,6 +1698,7 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 					else
 					{
 						++R.WGained;
+						Side = 2;
 						bFail = true;
 					}
 				}
@@ -1564,14 +1709,25 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 				else
 				{
 					++R.WLost;
+					Side = 3;
 					bFail = true;
 				}
 				if (bFail)
 				{
 					++Fails;
-					if (R.WFailAt.Num() < kWitnessNamed)
+					FFTRainRing::FWFail& W = R.WFailAt.AddDefaulted_GetRef();
+					W.X = X;
+					W.Y = Y;
+					W.Z = bR && bT ? FMath::Max(Rz, Tz) : (bR ? Rz : Tz);
+					W.Dz = FailDz;
+					W.Side = Side;
+					W.Sq = R.WitnessAt - 1;
+					FFTRainRing::FWSquare& Sq = Square;
+					++Sq.Side[Side];
+					if (Side < 2)
 					{
-						R.WFailAt.Add(FVector(X, Y, bR ? Rz : Tz));
+						Sq.DzSum[Side] += FailDz;
+						Sq.DzMax[Side] = FMath::Max(Sq.DzMax[Side], FailDz);
 					}
 				}
 			}
@@ -1579,25 +1735,68 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 		R.WFails += Fails;
 		if (Fails > 0)
 		{
-			R.WFailTile.Add(Wt, Fails);
+			R.WFailTile.Add(R.WitnessAt - 1, Square);
 		}
 		return;
 	}
 
-	// Done: name what stands at the first failing texels, put the switches back, report, exit.
-	TMap<FString, int32> Names;
+	// Done: every failing texel against the bounds of every registered static mesh (instances one by one, 15 cm slack),
+	// tallied per mesh and per side; a texel counts once per component. Then the switches back, the report, exit.
+	struct FMeshTally
+	{
+		int64 Side[4] = {0, 0, 0, 0};
+		int32 Comps = 0;
+		int64 BestFails = -1;
+		TWeakObjectPtr<UStaticMeshComponent> First; // the component with the most failing texels in its bounds
+	};
+	TMap<FString, FMeshTally> Meshes;
+	TBitArray<> Named(false, R.WFailAt.Num());
 	if (R.WFailAt.Num() > 0)
 	{
 		constexpr double kSlackCm = 15.0;
-		const auto Test = [&](const FBox& Bx, const UStaticMesh* M)
+		TMap<FIntPoint, TArray<int32>> Grid; // 1 m cells
+		for (int32 I = 0; I < R.WFailAt.Num(); ++I)
 		{
-			for (const FVector& P : R.WFailAt)
+			Grid.FindOrAdd(FIntPoint(FMath::FloorToInt(R.WFailAt[I].X), FMath::FloorToInt(R.WFailAt[I].Y))).Add(I);
+		}
+		TArray<int32> Stamp;
+		Stamp.Init(-1, R.WFailAt.Num());
+		int32 CompId = 0;
+		const auto Test = [&](const FBox& Bx, FMeshTally& T, int32 Id)
+		{
+			const double X0 = (Bx.Min.X - kSlackCm) * 0.01, X1 = (Bx.Max.X + kSlackCm) * 0.01;
+			const double Y0 = (Bx.Min.Y - kSlackCm) * 0.01, Y1 = (Bx.Max.Y + kSlackCm) * 0.01;
+			const double Z0 = (Bx.Min.Z - kSlackCm) * 0.01, Z1 = (Bx.Max.Z + kSlackCm) * 0.01;
+			const auto Cell = [&](const TArray<int32>& In)
 			{
-				const FVector Q = P * 100.0;
-				if (Q.X >= Bx.Min.X - kSlackCm && Q.X <= Bx.Max.X + kSlackCm && Q.Y >= Bx.Min.Y - kSlackCm && Q.Y <= Bx.Max.Y + kSlackCm &&
-					Q.Z >= Bx.Min.Z - kSlackCm && Q.Z <= Bx.Max.Z + kSlackCm)
+				for (const int32 I : In)
 				{
-					Names.FindOrAdd(M->GetName()) += 1;
+					const FFTRainRing::FWFail& W = R.WFailAt[I];
+					if (Stamp[I] != Id && W.X >= X0 && W.X <= X1 && W.Y >= Y0 && W.Y <= Y1 && W.Z >= Z0 && W.Z <= Z1)
+					{
+						Stamp[I] = Id;
+						++T.Side[W.Side];
+						Named[I] = true;
+					}
+				}
+			};
+			const int64 Cells = int64(FMath::FloorToInt(X1) - FMath::FloorToInt(X0) + 1) * int64(FMath::FloorToInt(Y1) - FMath::FloorToInt(Y0) + 1);
+			if (Cells > Grid.Num())
+			{
+				for (const TPair<FIntPoint, TArray<int32>>& G : Grid)
+				{
+					Cell(G.Value);
+				}
+				return;
+			}
+			for (int32 Gx = FMath::FloorToInt(X0); Gx <= FMath::FloorToInt(X1); ++Gx)
+			{
+				for (int32 Gy = FMath::FloorToInt(Y0); Gy <= FMath::FloorToInt(Y1); ++Gy)
+				{
+					if (const TArray<int32>* In = Grid.Find(FIntPoint(Gx, Gy)))
+					{
+						Cell(*In);
+					}
 				}
 			}
 		};
@@ -1609,6 +1808,10 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 			{
 				continue;
 			}
+			FMeshTally& T = Meshes.FindOrAdd(M->GetName());
+			++T.Comps;
+			const int64 Before = T.Side[0] + T.Side[1] + T.Side[2] + T.Side[3];
+			const int32 Id = CompId++;
 			if (const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C))
 			{
 				const FBox MB = M->GetBoundingBox();
@@ -1617,40 +1820,81 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 					FTransform X;
 					if (I->GetInstanceTransform(K, X, true))
 					{
-						Test(MB.TransformBy(X), M);
+						Test(MB.TransformBy(X), T, Id);
 					}
 				}
 			}
 			else
 			{
-				Test(C->Bounds.GetBox(), M);
+				Test(C->Bounds.GetBox(), T, Id);
+			}
+			const int64 Mine = T.Side[0] + T.Side[1] + T.Side[2] + T.Side[3] - Before;
+			if (Mine > T.BestFails)
+			{
+				T.BestFails = Mine;
+				T.First = C;
 			}
 		}
 	}
 	RingSwitches(World, R, false);
-	Names.ValueSort([](int32 A, int32 B) { return A > B; });
-	FString Named, Tiles;
-	int32 K = 0;
-	for (const TPair<FString, int32>& P : Names)
-	{
-		if (K++ >= 16)
-		{
-			break;
-		}
-		Named += FString::Printf(TEXT("%s%s %d"), Named.IsEmpty() ? TEXT("") : TEXT("; "), *P.Key, P.Value);
-	}
-	for (const TPair<int32, int64>& P : R.WFailTile)
-	{
-		Tiles += FString::Printf(TEXT("%s(%d, %d) %lld%s"), Tiles.IsEmpty() ? TEXT("") : TEXT("; "), R.Tiles[P.Key].x, R.Tiles[P.Key].y, P.Value,
-			R.Plant.Contains(P.Key) ? TEXT(" plant") : TEXT(""));
-	}
+	const auto Total = [](const FMeshTally& T) { return T.Side[0] + T.Side[1] + T.Side[2] + T.Side[3]; };
+	Meshes.ValueSort([&](const FMeshTally& A, const FMeshTally& B) { return Total(A) > Total(B); });
 	UE_LOG(LogForgottenThird, Display,
 		TEXT("RainCover witness (%s): %d squares (%d plant tiles), %d not drawn; %lld texels: agree %lld, band over the square's top %lld, below a far plane %lld, on no baked tile %lld; FAILS %lld (height %lld, worst %.1f cm; gained %lld; lost %lld)."),
 		R.bWitnessLod0 || R.bWitnessNoCull ? TEXT("switched") : TEXT("shipped settings"), R.WitnessAt, R.Plant.Num(), R.WNoDraw, R.WTexels, R.WAgree,
 		R.WBand, R.WBelow, R.WNoTile, R.WFails, R.WHeight, R.WMaxCm, R.WGained, R.WLost);
-	UE_LOG(LogForgottenThird, Display, TEXT("RainCover witness fails by square: %s."), Tiles.IsEmpty() ? TEXT("none") : *Tiles);
-	UE_LOG(LogForgottenThird, Display, TEXT("RainCover witness: meshes at the first %d failing texels: %s."), R.WFailAt.Num(),
-		Named.IsEmpty() ? TEXT("none") : *Named);
+	if (R.WWorstSq >= 0)
+	{
+		const ftcore::RainCoverTile Wt = R.Tiles[R.WitnessTiles[R.WWorstSq]];
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover witness worst: %.1f cm, %s, square (%d, %d), at engine (%.2f, %.2f) m, the higher height %.2f m."), R.WMaxCm,
+			R.WWorstSide == 0 ? TEXT("the tile higher") : TEXT("the draw higher"), Wt.x, Wt.y, R.WWorstAt.X, R.WWorstAt.Y, R.WWorstAt.Z);
+	}
+	// Per square: the camera's Z and the frame's top, the bake's top and range, and the fails by side
+	// (tile higher / draw higher with mean and max dz; gained; lost).
+	for (const TPair<int32, FFTRainRing::FWSquare>& P : R.WFailTile)
+	{
+		const int32 Ti = R.WitnessTiles[P.Key];
+		const FFTRainRing::FWSquare& S = P.Value;
+		const ftcore::RainCoverTileHeader& H = R.Head[Ti];
+		const auto Mean = [&](int32 Sd) { return S.Side[Sd] > 0 ? S.DzSum[Sd] / double(S.Side[Sd]) : 0.0; };
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover witness square (%d, %d)%s: camera Z %.2f, frame top %.2f; bake top %.2f, min %.2f, max %.2f, %d hits; tile higher %lld (mean %.2f, max %.2f m), draw higher %lld (mean %.2f, max %.2f m), gained %lld, lost %lld."),
+			R.Tiles[Ti].x, R.Tiles[Ti].y, R.Plant.Contains(Ti) ? TEXT(" plant") : TEXT(""), S.CamZ, S.TopZ, H.topZ, H.minZ, H.maxZ, H.hits,
+			S.Side[0], Mean(0), S.DzMax[0], S.Side[1], Mean(1), S.DzMax[1], S.Side[2], S.Side[3]);
+	}
+	int64 Unnamed[4] = {0, 0, 0, 0};
+	for (int32 I = 0; I < R.WFailAt.Num(); ++I)
+	{
+		Unnamed[R.WFailAt[I].Side] += Named[I] ? 0 : 1;
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("RainCover witness: all %d failing texels against %d meshes' bounds; in no mesh's bounds: tile higher %lld, draw higher %lld, gained %lld, lost %lld."),
+		R.WFailAt.Num(), Meshes.Num(), Unnamed[0], Unnamed[1], Unnamed[2], Unnamed[3]);
+	// The top meshes, with what decides whether a game frame draws them (the flags of the component with the most failing
+	// texels in its bounds). Counts are by bounds, so one texel can count for several meshes: not a partition. "On screen"
+	// is the player's own view, not the witness square's.
+	const double Now = World.GetTimeSeconds();
+	int32 K = 0;
+	for (const TPair<FString, FMeshTally>& P : Meshes)
+	{
+		// The top 24 with a fail, and every KeiCar mesh whatever its count.
+		if (!((K++ < 24 && Total(P.Value) > 0) || P.Key.Contains(TEXT("KeiCar"))))
+		{
+			continue;
+		}
+		const FMeshTally& T = P.Value;
+		const UStaticMeshComponent* C = T.First.Get();
+		const AActor* O = C ? C->GetOwner() : nullptr;
+		const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C);
+		UE_LOG(LogForgottenThird, Display,
+			TEXT("RainCover witness mesh %s: tile higher %lld, draw higher %lld, gained %lld, lost %lld; %d components; most %lld in %s on %s (%s): visible %d, hidden in game %d, owner hidden %d, hidden in captures %d, main pass %d, captures only %d, owner only %d, forced LOD %d, min LOD %d, max draw %.0f cm, cull %d-%d, on the player's screen %.1f s ago."),
+			*P.Key, T.Side[0], T.Side[1], T.Side[2], T.Side[3], T.Comps, T.BestFails, C ? *C->GetName() : TEXT("-"), O ? *O->GetName() : TEXT("-"),
+			O ? *O->GetClass()->GetName() : TEXT("-"), C && C->IsVisible() ? 1 : 0, C && C->bHiddenInGame ? 1 : 0, O && O->IsHidden() ? 1 : 0,
+			C && C->bHiddenInSceneCapture ? 1 : 0, C && C->bRenderInMainPass ? 1 : 0, C && C->bVisibleInSceneCaptureOnly ? 1 : 0,
+			C && C->bOnlyOwnerSee ? 1 : 0, C ? C->ForcedLodModel : -1, C ? C->MinLOD : -1, C ? C->LDMaxDrawDistance : 0.f,
+			I ? I->InstanceStartCullDistance : -1, I ? I->InstanceEndCullDistance : -1, C ? Now - C->GetLastRenderTimeOnScreen() : -1.0);
+	}
 	R.WitnessStep = 2;
 	FPlatformMisc::RequestExit(false, TEXT("RainCoverWitness"));
 }
