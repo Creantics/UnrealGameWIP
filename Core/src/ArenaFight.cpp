@@ -5562,7 +5562,9 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt) {
     // to the other one, and the ring holds them again, until no contact is deeper than 0.1 mm (arenaSettleBodies).
     const ArenaRing& ring = fight.ring();
     arenaHoldBodies(fight, bodies, held, arenaRingHold, &ring);
-    if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring).settled) ++bodies.settleCaps;
+    if (!arenaSettleBodies(fight, bodies, !placed, held, arenaRingHold, &ring, kArenaSettlePasses, kArenaSqueezePasses)
+             .settled)
+        ++bodies.settleCaps;
     arenaTrackPush(fight, bodies, ownPlayer, ownStep, placed ? 0.f : dt);
 }
 
@@ -5674,7 +5676,7 @@ bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, ArenaHeld& he
 }
 
 ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, ArenaHeld& held,
-                                 ArenaHoldFn hold, const void* wall, int maxPasses) {
+                                 ArenaHoldFn hold, const void* wall, int maxPasses, int squeezePasses) {
     ArenaSettleRun run;
     const int cap = std::max(1, maxPasses);
     for (int round = 0; round < 2; ++round) {
@@ -5689,6 +5691,17 @@ ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, b
         // Cornered: a pinned enemy gives what the others can't, as a held one does (both held: half each).
         if (!held.anyPinned()) break;
         held.pinned = {};
+    }
+    // Squeezed: a free body pressed between two held ones (a planted pup, a wall, a pinned enemy) gets no help from
+    // either, so it leaves sideways, a little each pass; it gets more passes to do it. The held ones stay. Only a
+    // contact still deeper than the floor moves anything, so a step that ended within it is as it was.
+    for (int pass = 0; pass < squeezePasses; ++pass) {
+        ++run.passes;
+        if (!arenaSettle(fight, bodies, withPlayer, held)) {
+            run.settled = true;
+            return run;
+        }
+        arenaHoldBodies(fight, bodies, held, hold, wall);
     }
     return run;
 }

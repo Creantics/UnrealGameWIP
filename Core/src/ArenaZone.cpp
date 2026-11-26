@@ -344,7 +344,8 @@ void arenaStep(const ArenaFight& fight, ArenaBodies& bodies, float dt, const Are
         arenaSettle(fight, bodies, true, planted, 0.f);
         arenaHoldBodies(fight, bodies, held, zoneHold, &zone);
     }
-    if (!arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone).settled) ++bodies.settleCaps;
+    if (!arenaSettleBodies(fight, bodies, true, held, zoneHold, &zone, kArenaSettlePasses, kArenaSqueezePasses).settled)
+        ++bodies.settleCaps;
     if (!frozen) arenaTrackPush(fight, bodies, ownPlayer, ownStep, dt);
 }
 

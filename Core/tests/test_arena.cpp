@@ -3667,6 +3667,55 @@ TEST_CASE("arena settle: at its cap the settle stops unsettled, the wall's hold 
     CHECK(arenaSettleBodies(rig.fight, rig.bodies, true, held, kRingHoldFn, &ring, 0).passes == 1);
 }
 
+const ArenaEnemyKind& shippedKind(const ArenaTable& t, const char* id); // below
+
+// Ruling 8258: the host mirror's seed-18 contact by hand. A planted lunging pup (held, as arenaPlanted marks one)
+// drives a walking pup into a third pup that the ring holds; the walker, free between two held bodies, must still
+// part from both to within the settle floor. It sits a little off the line, so it has a way out sideways.
+TEST_CASE("arena settle: a free pup between a planted pup and a wall-held pup parts within the floor") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& pup = shippedKind(t, "maw_pup");
+    const ArenaRing ring{Vec2{0.f, 0.f}, 4.f};
+    const float reach = arenaBodyReach(pup);
+    const float wallX = ring.radius - reach;
+    const struct {
+        float offset, drive;
+    } cases[] = {{0.02f, 0.010f}, {0.02f, 0.020f}, {0.05f, 0.010f}, {0.05f, 0.020f}};
+    for (const auto& c : cases) {
+        CAPTURE(c.offset);
+        CAPTURE(c.drive);
+        Rig rig(t.fighter("duy"), {pup, pup, pup}, 1, ring);
+        rig.put(2, wallX + 0.001f, 0.f);                     // behind, pressed on the wall
+        rig.put(1, wallX - 2.f * reach, c.offset);           // the walker, touching it
+        rig.put(0, wallX - 4.f * reach + c.drive, 0.f);      // planted, driven into the walker
+        const ArenaOutput& o = rig.tick();
+        const auto worstGap = [&] {
+            float w = 9.f;
+            for (std::size_t a = 0; a < 3; ++a)
+                for (std::size_t b = a + 1; b < 3; ++b) {
+                    Vec2 pa{}, pb{};
+                    arenaClosestPoints(rig.bodies.enemies[a], o.enemies[a].facing, arenaBodySpan(pup),
+                                       rig.bodies.enemies[b], o.enemies[b].facing, arenaBodySpan(pup), pa, pb);
+                    w = std::min(w, distanceOf(pa, pb) - 2.f * pup.bodyRadius);
+                }
+            return w;
+        };
+        const float before = worstGap();
+        ArenaHeld held;
+        held.enemies[0] = true; // the planted paw
+        arenaHoldBodies(rig.fight, rig.bodies, held, kRingHoldFn, &ring);
+        const ArenaSettleRun run = arenaSettleBodies(rig.fight, rig.bodies, true, held, kRingHoldFn, &ring,
+                                                     kArenaSettlePasses, kArenaSqueezePasses);
+        MESSAGE("SETTLE3 offset " << c.offset << " drive " << c.drive * 1000.f << " mm: before " << before * 1000.f
+                                  << " mm, after " << worstGap() * 1000.f << " mm, passes " << run.passes
+                                  << ", settled " << run.settled << ", wall holds the third " << held.enemies[2]);
+        CHECK(held.enemies[2]);
+        CHECK(before < -0.005f);
+        CHECK(worstGap() >= -kArenaSettleFloor - 1e-6f);
+        CHECK(rig.bodies.enemies[0].x == doctest::Approx(wallX - 4.f * reach + c.drive)); // the planted pup stays
+    }
+}
+
 // The host's counter (ArenaBodies::settleCaps) stays 0 while every step settles inside the cap. No crowd found needs the
 // cap: a six-dummy sweep (spacing 0.06-0.15 rad, lead 0.2-0.55 m) settled in 7 to 31 passes, so the count is a capture's
 // alarm, not a path a fight takes.
@@ -13902,6 +13951,26 @@ TEST_CASE("pup Nip under press-in: the pup holds, the lead stops at contact (rul
             check("straight in from 1.05 m past contact", nipPress(rig, 0.f, 400));
         }
     }
+}
+
+// Ruling 8258: the squeeze grid's deepest start. Duy presses at the Nip-pinned pup 0 as pup 1's Pounce lands on him
+// from 1.4,1.5; the lead, free between the pinned pup and the planted one, has to leave sideways. The step's settle
+// gets him out within the floor on the landing tick, without running out of passes.
+TEST_CASE("pup Nip under press-in: a Pounce landing on Duy from 1.4,1.5 leaves him within the floor (ruling 8258)") {
+    const ArenaTable t = loadShipped();
+    const ArenaEnemyKind& shipped = shippedKind(t, "maw_pup");
+    const ArenaFighter& fi = t.fighter("duy");
+    const float contact = arenaBodyReach(shipped) + std::max(0.f, fi.bodyRadius - shipped.contactInset);
+    Rig rig(fi, {shipped, pounceKind(shipped, 1.3f)}, 2);
+    rig.put(0, contact - 0.05f, 0.f);
+    rig.put(1, 1.4f, 1.5f);
+    const NipPress r = nipPress(rig, 0.f, 600);
+    nipReport("duy 1.4,1.5", r);
+    CHECK(r.pounces > 0);
+    CHECK(r.bothHeld > 0);
+    CHECK(r.worstOverlap <= kArenaSettleFloor);
+    CHECK(r.pupOverlap <= kArenaSettleFloor);
+    CHECK(rig.bodies.settleCaps == 0u);
 }
 
 // The lead walks in until the pup Nips; through the Nip it keeps pressing or stands. A Nip that does not turn

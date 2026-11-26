@@ -1017,7 +1017,7 @@ struct ArenaBodies {
     Vec2 player;
     std::array<Vec2, kMaxArenaEnemies> enemies{};
     Vec2 ally; // the ally body (ArenaFight::setAlly), moved by the host as it moves the player
-    // Report only (never read by a step): the steps whose settle hit kArenaSettlePasses (arenaSettleBodies' cap), the
+    // Report only (never read by a step): the steps whose settle ran out of passes (arenaSettleBodies' caps), the
     // walls' rule kept and a pair perhaps left past 0.1 mm. The host shows it; a capture with it non-zero says so.
     std::uint32_t settleCaps = 0;
     // Report only (never read by a step): the lead shoved by a planted body. pushStep is this step's push
@@ -2220,6 +2220,7 @@ FTCORE_API void arenaTrackPush(const ArenaFight& fight, ArenaBodies& bodies, Vec
 // then holds the bodies inside its walls again, and may settle again (arenaSettleBodies). Deterministic; no allocation.
 constexpr float kArenaSettleFloor = 1.0e-4f; // the settle leaves contacts no deeper than 0.1 mm
 constexpr int kArenaSettlePasses = 32;         // arenaSettleBodies' hard cap: five dummies pressed on the ring settle in 21
+constexpr int kArenaSqueezePasses = 128;       // its last round, for a body squeezed between held ones (8258)
 FTCORE_API bool arenaSettle(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer, const ArenaHeld& held,
                             float floor = kArenaSettleFloor);
 
@@ -2238,16 +2239,20 @@ FTCORE_API bool arenaHoldBodies(const ArenaFight& fight, ArenaBodies& bodies, Ar
 // body inside the wall. At the cap it is false: the wall's rule holds (the hold ran last) and a pair may keep a
 // residue, which the tests measure (the host mirror's sweep and the ring-edge crowd). With a pinned enemy and the
 // cap reached, its pin is dropped to a plain hold and the settle runs once more to its cap (`passes` counts both).
+// Still short, it runs on up to `squeezePasses` more (counted too), for a free body squeezed between two held ones (a
+// planted pup, a wall, a pinned enemy): neither gives, so it leaves sideways, a little each pass, and the held ones
+// stay. Each pass moves only contacts deeper than the floor, so a step already within it is unchanged. The steps pass
+// kArenaSqueezePasses; a test that leaves it 0 gets the two rounds alone.
 // Deterministic; no allocation.
 struct ArenaSettleRun {
     int passes = 0;       // settle passes run (the last one moved nothing when settled)
     bool settled = false;
 };
-// `maxPasses` (at least 1) is the cap; the steps use kArenaSettlePasses, a test a lower one to reach it. A step whose
-// settle ends at the cap counts in ArenaBodies::settleCaps.
+// `maxPasses` (at least 1) is the cap of the first two rounds; the steps use kArenaSettlePasses, a test a lower one to
+// reach it. A step whose settle ends unsettled after all of them counts in ArenaBodies::settleCaps.
 FTCORE_API ArenaSettleRun arenaSettleBodies(const ArenaFight& fight, ArenaBodies& bodies, bool withPlayer,
                                             ArenaHeld& held, ArenaHoldFn hold, const void* wall,
-                                            int maxPasses = kArenaSettlePasses);
+                                            int maxPasses = kArenaSettlePasses, int squeezePasses = 0);
 
 // The closest points `pa` on spine a and `pb` on spine b: each spine its centre +- span along its unit axis (span 0: a
 // point). The push reads it for any pair with a stadium (arenaBodySpan). Deterministic; no allocation.
