@@ -46,6 +46,7 @@
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
+#include "MaterialShared.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -240,6 +241,8 @@ void UFTWorldEyeShotSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 		bGoJump = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadGoJump"));
 	}
 #if !UE_BUILD_SHIPPING
+	// -WorldEyeLeadHold (off by default; ruling 8836 item 1): hold the placed lead on his spot until the shutter.
+	bLeadHoldOn = FParse::Param(FCommandLine::Get(), TEXT("WorldEyeLeadHold"));
 	// -WorldEyeExtra=<skeletal mesh>@x,y,z,yaw;...: a skeletal mesh actor stood there (plan frame, metres; the feet at z),
 	// in its reference pose with its own materials. A stand-in character for a still: the wave's audit takes it like any
 	// other skeletal actor (an enemy behind the front, say). Not in a shipped build.
@@ -452,12 +455,30 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 			FParse::Value(FCommandLine::Get(), TEXT("WorldEyeSide="), LeadSide);
 			const ftcore::MassingVec At = ftcore::massingEnginePoint(LeadSide, LeadX, LeadY, LeadZ);
 			PlaceLead(FVector(At.x, At.y, At.z) * 100.0 + FVector(0.0, 0.0, 110.0));
+			LeadHeld = FVector(At.x, At.y, At.z) * 100.0 + FVector(0.0, 0.0, 110.0);
+			bLeadHeld = true;
+			LeadResets = 0;
 		}
 		bLookApplied = true;
 		Waited = 0.f;
 		return;
 	}
 	Waited += DeltaTime;
+#if !UE_BUILD_SHIPPING
+	// With -WorldEyeLeadHold: the world's director sets the lead on its district's spawn on its own first tick, which may
+	// come after the lead was placed for the still. While he stands still for it, a lead more than 50 cm (in plan) off his
+	// spot goes back, three times at most.
+	if (bLeadHoldOn && bLeadHeld && !bLeadGo && LeadResets < 3 && Player)
+	{
+		if (const APawn* Held = Player->GetPawn(); Held && FVector::Dist2D(Held->GetActorLocation(), LeadHeld) > 50.0)
+		{
+			++LeadResets;
+			UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: the lead was moved to engine %s after he was placed; set back (%d)."),
+				*Held->GetActorLocation().ToString(), LeadResets);
+			PlaceLead(LeadHeld);
+		}
+	}
+#endif
 	// The lead's walk for a still from the eye: begun a little before the wait ends.
 	if (bLeadGo && !bLeadCam && !bGoStarted && Player && Waited >= Delay - GoEarly)
 	{
@@ -581,6 +602,54 @@ void UFTWorldEyeShotSubsystem::Tick(float DeltaTime)
 		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: path-traced still after %d frames."), PathFrames);
 		bShot = true;
 		return;
+	}
+	// Where the lead stands at the shutter, and whether a frame draws him.
+	if (const APawn* LeadPawn = Player ? Player->GetPawn() : nullptr)
+	{
+		const USkeletalMeshComponent* Body = LeadPawn->FindComponentByClass<USkeletalMeshComponent>();
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot: at the shutter the lead %s stands at engine %s; hidden %d, body %s visible %d hidden in game %d, %.1f s since drawn."),
+			*LeadPawn->GetName(), *LeadPawn->GetActorLocation().ToString(), LeadPawn->IsHidden() ? 1 : 0, Body ? *Body->GetName() : TEXT("-"),
+			Body && Body->IsVisible() ? 1 : 0, Body && Body->bHiddenInGame ? 1 : 0, Body ? World->GetTimeSeconds() - Body->GetLastRenderTimeOnScreen() : -1.0);
+#if !UE_BUILD_SHIPPING
+		// Ruling 8836 item 6: every primitive on the lead (and on actors attached to him), its hide flags, and each of its
+		// materials with a load line: the material, its base, whether its shader map for this feature level is in, and
+		// whether it falls back to the default material.
+		TArray<AActor*> Parts;
+		Parts.Add(const_cast<APawn*>(LeadPawn));
+		LeadPawn->GetAttachedActors(Parts, false, true);
+		int32 NMat = 0, NMissing = 0, NDefault = 0;
+		for (const AActor* Part : Parts)
+		{
+			TInlineComponentArray<UPrimitiveComponent*> Prims(Part);
+			for (const UPrimitiveComponent* Prim : Prims)
+			{
+				UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot lead part: %s.%s (%s): registered %d visible %d hidden in game %d owner hidden %d owner no see %d, %.1f s since drawn, %d materials."),
+					*Part->GetName(), *Prim->GetName(), *Prim->GetClass()->GetName(), Prim->IsRegistered() ? 1 : 0, Prim->IsVisible() ? 1 : 0,
+					Prim->bHiddenInGame ? 1 : 0, Part->IsHidden() ? 1 : 0, Prim->bOwnerNoSee ? 1 : 0,
+					World->GetTimeSeconds() - Prim->GetLastRenderTimeOnScreen(), Prim->GetNumMaterials());
+				for (int32 M = 0; M < Prim->GetNumMaterials(); ++M)
+				{
+					const UMaterialInterface* Mat = Prim->GetMaterial(M);
+					const UMaterial* Base = Mat ? Mat->GetMaterial_Concurrent() : nullptr;
+					// The slot's own resource (an instance with a static permutation has its own; else its parent's), and whether
+					// its game-thread shader map is in and complete. An incomplete map draws with the default material at render
+					// time, which IsDefaultMaterial does not see.
+					const FMaterialResource* Res = Mat ? Mat->GetMaterialResource(GMaxRHIShaderPlatform) : nullptr;
+					const bool bMap = Res && Res->GetGameThreadShaderMap() != nullptr;
+					const bool bComplete = bMap && Res->IsGameThreadShaderMapComplete();
+					const bool bDefault = !Mat || (Base && Base->IsDefaultMaterial());
+					++NMat;
+					NMissing += bComplete ? 0 : 1;
+					NDefault += bDefault ? 1 : 0;
+					UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot lead material: %s.%s slot %d: %s (base %s), shader map %s, default %d."),
+						*Part->GetName(), *Prim->GetName(), M, Mat ? *Mat->GetPathName() : TEXT("none"), Base ? *Base->GetName() : TEXT("none"),
+						bComplete ? TEXT("complete") : (bMap ? TEXT("INCOMPLETE") : TEXT("MISSING")), bDefault ? 1 : 0);
+				}
+			}
+		}
+		UE_LOG(LogForgottenThird, Display, TEXT("WorldEyeShot lead materials: %d slots on %d actors; shader map missing or incomplete %d, default %d; shaders still compiling %d."),
+			NMat, Parts.Num(), NMissing, NDefault, GShaderCompilingManager ? GShaderCompilingManager->GetNumRemainingJobs() : -1);
+#endif
 	}
 	// Where the wave's front meets the lead's body against the ground under its feet, at the still's own frame.
 	if (const UFTWorldWaveSubsystem* Wave = World ? World->GetSubsystem<UFTWorldWaveSubsystem>() : nullptr)
@@ -729,9 +798,12 @@ bool UFTWorldEyeShotSubsystem::StartNextEye()
 			Camera->SetFieldOfView(static_cast<float>(FMath::RadiansToDegrees(2.0 * FMath::Atan(18.0 / Next.Lens))));
 		}
 	}
+	bLeadHeld = Next.bLead;
+	LeadResets = 0;
 	if (Next.bLead)
 	{
-		PlaceLead(Next.Lead + FVector(0.0, 0.0, 110.0));
+		LeadHeld = Next.Lead + FVector(0.0, 0.0, 110.0);
+		PlaceLead(LeadHeld);
 	}
 	else if (bLeadHome)
 	{

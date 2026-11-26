@@ -136,4 +136,9 @@ private:
 	bool bGoJump = false;
 	bool bLeadHome = false;
 	FVector LeadHome = FVector::ZeroVector;
+	// Where -WorldEyeLead (or a next eye) set the lead; held until the shot, since the world's own spawn may move him after.
+	bool bLeadHoldOn = false; // -WorldEyeLeadHold, never in Shipping
+	bool bLeadHeld = false;
+	FVector LeadHeld = FVector::ZeroVector;
+	int32 LeadResets = 0;
 };
