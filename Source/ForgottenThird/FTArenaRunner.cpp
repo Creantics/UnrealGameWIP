@@ -395,6 +395,13 @@ void UFTArenaRunner::Begin(const FFTArenaRunSetup& Setup)
 		Fit.camera.arm = CloseArmSwitch;
 		CloseBase.rig.arm = CameraLens.rig.arm = CloseArmSwitch;
 	}
+	if (OwnStepPath.IsEmpty() && FParse::Value(FCommandLine::Get(), TEXT("ArenaOwnStepRows="), OwnStepPath) && !OwnStepPath.IsEmpty())
+	{
+		// -ArenaOwnStepRows=<csv> (ruling 8753 item 6): raw per-step rows of the lead's own step; kept across fights
+		// in one process and written whole at each result. 20 min at 60 Hz reserved, so a run never grows it.
+		OwnStepRows.Reserve(72000);
+		UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaOwnStepRows: one row a step to %s."), *OwnStepPath);
+	}
 	{
 		// -ArenaQuitAfter=<s>: the run's end held this long after the result (0.5 to 30 s); see the header.
 		QuitAfterFinish = 0.f;
@@ -880,6 +887,9 @@ void UFTArenaRunner::TickFight(float DeltaSeconds, bool bHold)
 	if (bQuitOnFinish && (Fight.time() > WatchdogSeconds || Now - BeginNow > WatchdogSeconds * 2.0))
 	{
 		LogResult(); // a TIMEOUT line, as a warning
+#if !UE_BUILD_SHIPPING
+		WriteOwnStepRows();
+#endif
 		bQuitOnFinish = false;
 		FPlatformMisc::RequestExitWithStatus(false, 2, TEXT("Arena"));
 	}
@@ -968,6 +978,9 @@ double UFTArenaRunner::SampleGround(const UWorld* World, const ftcore::Vec2& P)
 
 void UFTArenaRunner::PutPlayerAt(const ftcore::Vec2& P)
 {
+#if !UE_BUILD_SHIPPING
+	OwnStepPuts += OwnStepTick > 0 ? 1 : 0; // a put after the rows began: the own-step run is void
+#endif
 	Bodies.player = P;
 	PrevBodies.player = P;
 	PlayerStepSpeed = 0.f;
@@ -3814,6 +3827,11 @@ void UFTArenaRunner::StepFight()
 	}
 	const bool bAllyWasUp = Fight.allyHp() > 0; // the brain stations only a body up before and after the step
 	PressSpecial(In);
+#if !UE_BUILD_SHIPPING
+	const ftcore::Vec2 OwnStepWas = Bodies.player;
+	const double OwnStepT0 = Fight.time();
+	const uint32 OwnStepCaps0 = Bodies.settleCaps;
+#endif
 	const ftcore::ArenaOutput& Out = Fight.tick(StepSeconds, In, Bodies);
 	// The press tick or the cut back: the performer put where Core says, and no step (no separation push) this tick.
 	const bool bSpecialPut = AfterSpecialTick(Out);
@@ -3964,6 +3982,57 @@ void UFTArenaRunner::StepFight()
 				   Bodies.settleCaps);
 		}
 	}
+#if !UE_BUILD_SHIPPING
+	if (!OwnStepPath.IsEmpty() && StepSeconds > 0.f)
+	{
+		// Raw only: asked is the lead's output velocity (after the ring cut), moved is where the step left him over
+		// dt. The flags say what else moved him; the test and its thresholds are applied offline.
+		FFTOwnStepRow Row;
+		Row.Tick = ++OwnStepTick;
+		Row.Puts = OwnStepPuts;
+		const FString& Kit = GetLeadName();
+		int32 KitAt = OwnStepKits.IndexOfByKey(Kit);
+		if (KitAt == INDEX_NONE)
+		{
+			KitAt = OwnStepKits.Add(Kit); // once a kit
+		}
+		Row.Kit = static_cast<uint8>(FMath::Min(KitAt, 255));
+		Row.Action = static_cast<uint8>(Out.player.action);
+		Row.T = Fight.time();
+		Row.FightDt = static_cast<float>(Fight.time() - OwnStepT0);
+		Row.InX = In.move.x;
+		Row.InY = In.move.y;
+		Row.AskX = Out.player.velocity.x;
+		Row.AskY = Out.player.velocity.y;
+		Row.MovX = (Bodies.player.x - OwnStepWas.x) / StepSeconds;
+		Row.MovY = (Bodies.player.y - OwnStepWas.y) / StepSeconds;
+		Row.PushX = Bodies.pushStep.x;
+		Row.PushY = Bodies.pushStep.y;
+		Row.WallM = Fit.zone.wallDistance(Bodies.player);
+		Row.ObstM = Fit.zone.obstacleDistance(Bodies.player);
+		float Foe = TNumericLimits<float>::Max();
+		for (std::size_t I = 0; I < Fight.enemyCount(); ++I)
+		{
+			if (Fight.enemyAlive(I))
+			{
+				const float Dx = Bodies.player.x - Bodies.enemies[I].x, Dy = Bodies.player.y - Bodies.enemies[I].y;
+				const float D = FMath::Sqrt(Dx * Dx + Dy * Dy);
+				if (D < Foe)
+				{
+					Foe = D;
+					Row.AwayX = D > 0.f ? Dx / D : 0.f;
+					Row.AwayY = D > 0.f ? Dy / D : 0.f;
+				}
+			}
+		}
+		Row.FoeM = Foe;
+		Row.MaxAbsM = FMath::Max(FMath::Abs(Bodies.player.x), FMath::Abs(Bodies.player.y));
+		Row.Flags = static_cast<uint16>((bSpecialPut ? 1 : 0) | (Bodies.pushStep.x != 0.f || Bodies.pushStep.y != 0.f ? 2 : 0)
+			| (bPartner ? 4 : 0) | (Row.FightDt < 0.5f * StepSeconds ? 8 : 0) | (Bodies.settleCaps != OwnStepCaps0 ? 16 : 0)
+			| (Out.player.action != ftcore::ArenaAction::Idle && Out.player.action != ftcore::ArenaAction::Move ? 32 : 0));
+		OwnStepRows.Add(Row); // reserved: no allocation inside the reserve
+	}
+#endif
 	if (bPartner)
 	{
 		WalkPartner(Out);
@@ -6770,9 +6839,47 @@ void UFTArenaRunner::SteerCamera(float DeltaSeconds)
 	}
 }
 
+#if !UE_BUILD_SHIPPING
+void UFTArenaRunner::WriteOwnStepRows() const
+{
+	if (OwnStepPath.IsEmpty())
+	{
+		return;
+	}
+	// The cause is the first flag set: 1 special put, 2 push, 4 partner, 8 hit pause, 16 settle cap, 32 action not
+	// Idle or Move. "free" here is only that no flag is set; wall, obstacle and foe ranges are judged offline.
+	static const TCHAR* const Causes[] = {TEXT("special"), TEXT("push"), TEXT("partner"), TEXT("pause"), TEXT("settlecap"), TEXT("action")};
+	FString Csv;
+	Csv.Reserve(160 * (OwnStepRows.Num() + 1));
+	Csv += TEXT("tick,kit,t,fight_dt,action,flags,cause,in_x,in_y,ask_x,ask_y,mov_x,mov_y,push_x,push_y,wall_m,obst_m,foe_m,max_abs_m,away_x,away_y,puts\n");
+	for (const FFTOwnStepRow& R : OwnStepRows)
+	{
+		const TCHAR* Cause = TEXT("free");
+		for (int32 B = 0; B < 6; ++B)
+		{
+			if (R.Flags & (1 << B))
+			{
+				Cause = Causes[B];
+				break;
+			}
+		}
+		Csv += FString::Printf(TEXT("%d,%s,%.4f,%.6f,%s,%u,%s,%.6g,%.6g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%d\n"), R.Tick,
+			OwnStepKits.IsValidIndex(R.Kit) ? *OwnStepKits[R.Kit] : TEXT("?"), R.T, R.FightDt,
+			UTF8_TO_TCHAR(ftcore::arenaActionName(static_cast<ftcore::ArenaAction>(R.Action))), R.Flags, Cause, R.InX, R.InY, R.AskX,
+			R.AskY, R.MovX, R.MovY, R.PushX, R.PushY, R.WallM, R.ObstM, R.FoeM, R.MaxAbsM, R.AwayX, R.AwayY, R.Puts);
+	}
+	const bool bOk = FFileHelper::SaveStringToFile(Csv, *OwnStepPath);
+	UE_LOG(LogForgottenThird, Display, TEXT("Arena: -ArenaOwnStepRows: %d rows, %d puts after the start, written %s to %s."),
+		OwnStepRows.Num(), OwnStepPuts, bOk ? TEXT("ok") : TEXT("FAILED"), *OwnStepPath);
+}
+#endif
+
 void UFTArenaRunner::Finish()
 {
 	bResultLogged = true;
+#if !UE_BUILD_SHIPPING
+	WriteOwnStepRows();
+#endif
 	ResultTime = Now;
 	if (PlayerFigure)
 	{

@@ -172,6 +172,22 @@ struct FFTArenaRunSetup
 	bool bReplacePawn = true;
 };
 
+#if !UE_BUILD_SHIPPING
+// -ArenaOwnStepRows=<csv> (ruling 8753 item 6): one raw row per fight step, the lead's own-step test applied offline.
+struct FFTOwnStepRow
+{
+	int32 Tick = 0;
+	int32 Puts = 0;   // PutPlayerAt calls since the rows began (a put mid-run voids the run)
+	uint8 Kit = 0;    // index into OwnStepKits
+	uint8 Action = 0; // ftcore::ArenaAction
+	uint16 Flags = 0; // see kOwnStep* in the .cpp
+	float T = 0.f, FightDt = 0.f;
+	float InX = 0.f, InY = 0.f, AskX = 0.f, AskY = 0.f, MovX = 0.f, MovY = 0.f, PushX = 0.f, PushY = 0.f;
+	float WallM = 0.f, ObstM = 0.f, FoeM = 0.f, MaxAbsM = 0.f;
+	float AwayX = 0.f, AwayY = 0.f; // unit: from the nearest live foe to the lead (0, 0 with none); askedAway = ask . away
+};
+#endif
+
 UCLASS()
 class FORGOTTENTHIRD_API UFTArenaRunner : public UActorComponent
 {
@@ -1016,6 +1032,14 @@ private:
 	uint8 AllySeat = 0;
 	FString LeadName;
 	FString AllyName;
+#if !UE_BUILD_SHIPPING
+	FString OwnStepPath;              // -ArenaOwnStepRows=<csv>; empty: off
+	TArray<FFTOwnStepRow> OwnStepRows; // reserved when the flag is read, written whole at each result
+	TArray<FString> OwnStepKits;
+	int32 OwnStepTick = 0;
+	int32 OwnStepPuts = 0;
+	void WriteOwnStepRows() const;
+#endif
 	ftcore::ArenaBlowHook SessionInnerHook = nullptr; // the sub-hosts' hook the session's ruling chains after
 	void* SessionInnerUser = nullptr;
 	bool bSessionPartnerDue = false; // -ArenaSharedCount: a lead's blow is held, the scripted partner joins after the step
