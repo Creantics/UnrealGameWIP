@@ -139,12 +139,116 @@ struct Quay {
     std::vector<MassingProp> lamps;
     MassingQuayCounts counts;
 };
-Quay quay(const std::vector<MassingBox>& boxes, const std::vector<MassingFoot>* taken = nullptr) {
+Quay quayOn(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
+            const std::vector<bool>& dress, const std::vector<MassingFoot>* taken = nullptr) {
     Quay q;
-    const Ground g = shore();
-    const std::vector<bool> include(boxes.size(), true);
-    massingQuay(g.view(), boxes, include, 0.5, lampRule(), 7, taken, q.boxes, q.lamps, q.counts);
+    massingQuay(ground, boxes, include, dress, 0.5, lampRule(), 7, taken, q.boxes, q.lamps, q.counts);
     return q;
+}
+// Every box included and dressed.
+Quay quay(const std::vector<MassingBox>& boxes, const std::vector<MassingFoot>* taken = nullptr) {
+    const Ground g = shore();
+    const std::vector<bool> all(boxes.size(), true);
+    return quayOn(g.view(), boxes, all, all, taken);
+}
+
+// The same boxes, field for field, in the same order.
+bool sameBoxes(const std::vector<MassingBox>& a, const std::vector<MassingBox>& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].id != b[i].id || a[i].row != b[i].row || a[i].kind != b[i].kind || a[i].cx != b[i].cx ||
+            a[i].cy != b[i].cy || a[i].sx != b[i].sx || a[i].sy != b[i].sy || a[i].rot != b[i].rot ||
+            a[i].z0 != b[i].z0 || a[i].z1 != b[i].z1)
+            return false;
+    return true;
+}
+bool sameLamps(const std::vector<MassingProp>& a, const std::vector<MassingProp>& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (a[i].rule != b[i].rule || a[i].street != b[i].street || a[i].x != b[i].x || a[i].y != b[i].y ||
+            a[i].z != b[i].z || a[i].face != b[i].face || a[i].wall != b[i].wall)
+            return false;
+    return true;
+}
+// The boxes whose row is (or, with `keep` false, isn't) one of `rows`.
+std::vector<MassingBox> rowsOf(const std::vector<MassingBox>& boxes, const std::set<std::string>& rows,
+                               bool keep = true) {
+    std::vector<MassingBox> out;
+    for (const MassingBox& b : boxes)
+        if ((rows.count(b.row) != 0) == keep) out.push_back(b);
+    return out;
+}
+
+// Reads quay_main_dump's file (main's quay output): "B,id,row,kind,cx,cy,sx,sy,rot,z0,z1" and
+// "L,rule,street,x,y,z,face,wall", every double a hex float so the bits come back exact. False on a malformed line.
+bool readQuayDump(const std::string& text, Quay& q) {
+    const auto num = [](const std::string& s, double& out) {
+        char* end = nullptr;
+        out = std::strtod(s.c_str(), &end);
+        return !s.empty() && end == s.c_str() + s.size();
+    };
+    const auto whole = [](const std::string& s, std::size_t& out) {
+        char* end = nullptr;
+        out = static_cast<std::size_t>(std::strtoull(s.c_str(), &end, 10));
+        return !s.empty() && end == s.c_str() + s.size();
+    };
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        std::vector<std::string> f;
+        for (std::size_t at = 0;;) {
+            const std::size_t comma = line.find(',', at);
+            f.push_back(line.substr(at, comma == std::string::npos ? std::string::npos : comma - at));
+            if (comma == std::string::npos) break;
+            at = comma + 1;
+        }
+        if (f[0] == "B" && f.size() == 11) {
+            MassingBox b;
+            b.id = f[1];
+            b.row = f[2];
+            b.kind = f[3];
+            if (!num(f[4], b.cx) || !num(f[5], b.cy) || !num(f[6], b.sx) || !num(f[7], b.sy) || !num(f[8], b.rot) ||
+                !num(f[9], b.z0) || !num(f[10], b.z1))
+                return false;
+            q.boxes.push_back(b);
+        } else if (f[0] == "L" && f.size() == 8) {
+            MassingProp l;
+            if (!whole(f[1], l.rule) || !whole(f[2], l.street) || !num(f[3], l.x) || !num(f[4], l.y) ||
+                !num(f[5], l.z) || !num(f[6], l.face) || (f[7] != "0" && f[7] != "1"))
+                return false;
+            l.wall = f[7] == "1";
+            q.lamps.push_back(l);
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+// "path,nx,ny,ox,oy": raw 16-bit little-endian samples, 1 m apart. False for an empty spec.
+bool readGround(const std::string& spec, Ground& g) {
+    if (spec.empty()) return false;
+    char path[512] = {};
+    double ox = 0.0, oy = 0.0;
+    unsigned long nx = 0, ny = 0;
+#ifdef _MSC_VER
+    REQUIRE(sscanf_s(spec.c_str(), "%511[^,],%lu,%lu,%lf,%lf", path, 512u, &nx, &ny, &ox, &oy) == 5);
+#else
+    REQUIRE(std::sscanf(spec.c_str(), "%511[^,],%lu,%lu,%lf,%lf", path, &nx, &ny, &ox, &oy) == 5);
+#endif
+    const std::string raw = readFile(path);
+    REQUIRE(raw.size() == 2u * nx * ny);
+    g.nx = nx;
+    g.ny = ny;
+    g.ox = ox;
+    g.oy = oy;
+    g.samples.resize(nx * ny);
+    for (std::size_t i = 0; i < g.samples.size(); ++i)
+        g.samples[i] = static_cast<std::uint16_t>(static_cast<unsigned char>(raw[2 * i]) |
+                                                  (static_cast<unsigned char>(raw[2 * i + 1]) << 8));
+    return true;
 }
 
 // The quay used below: 10 m deep along x 10..20, 20 m long along y 10..30, its top at 4; its east edge is on the sea.
@@ -493,6 +597,117 @@ TEST_CASE("massing quay: a pier at sea is railed all round, one post at each cor
         if (b.id.compare(0, 6, "Q-1-QR") != 0) continue;
         CHECK(std::fabs(b.cy - 20.0) - 0.5 * b.sx >= 2.0 - 1e-9);
     }
+}
+
+TEST_CASE("massing quay: a deck left undressed gets nothing and still stands beside a dressed one") {
+    // Q-2 lies over the sea east of the quay, sharing its edge at x = 20.
+    const std::vector<MassingBox> decks = {quayDeck(), flatBox("Q-2", 25, 20, 10, 20, -3, 4, "quay")};
+    const Ground g = shore();
+    const std::vector<bool> all(2, true), notQ2 = {true, false}, notQ1 = {false, true};
+    const Quay both = quayOn(g.view(), decks, all, all);
+    REQUIRE(countPrefix(both.boxes, "Q-2-QR") >= 1);
+
+    // Q-2 undressed: nothing on it, and Q-1's shared edge stays unrailed; Q-1 is dressed as with both.
+    const Quay undressed = quayOn(g.view(), decks, all, notQ2);
+    CHECK(rowsOf(undressed.boxes, {"Q-2"}).empty());
+    for (const MassingProp& l : undressed.lamps) CHECK(l.street != 1);
+    CHECK(sameBoxes(rowsOf(undressed.boxes, {"Q-1"}), rowsOf(both.boxes, {"Q-1"})));
+    // Leaving Q-2 out of `include` instead would read that edge as sea and rail it.
+    const Quay dropped = quayOn(g.view(), decks, notQ2, notQ2);
+    CHECK(countPrefix(dropped.boxes, "Q-1-QR") > countPrefix(undressed.boxes, "Q-1-QR"));
+
+    // Q-1 undressed: Q-2's rail, posts and bollards are as with both.
+    const Quay other = quayOn(g.view(), decks, all, notQ1);
+    CHECK(rowsOf(other.boxes, {"Q-1"}).empty());
+    CHECK(sameBoxes(rowsOf(other.boxes, {"Q-2"}), rowsOf(both.boxes, {"Q-2"})));
+
+    // Nothing dressed, or a mask of the wrong size: empty.
+    const Quay none = quayOn(g.view(), decks, all, {false, false});
+    CHECK(none.boxes.empty());
+    CHECK(none.lamps.empty());
+    CHECK(none.counts.decks == 0);
+    const Quay wrong = quayOn(g.view(), decks, all, {true});
+    CHECK(wrong.boxes.empty());
+    CHECK(wrong.counts.decks == 0);
+}
+
+TEST_CASE("massing quay: the real boxes (opt-in): the decks dress as main's code does; a replaced deck gets nothing") {
+    // FT_QUAY_BOXES (boxes.csv), FT_QUAY_KIT (the -Kit table: its first column is the box a kit piece replaces), and,
+    // for the output leg, FT_QUAY_GROUND "path,nx,ny,ox,oy" as FT_FRONT_GROUND and FT_QUAY_MAIN (main's output on the same
+    // inputs, from quay_main_dump built on origin/main's Core). Skipped unless FT_QUAY_BOXES is set. The builder's
+    // QuayDress is Visible && !Replaced; -Kit rows are the only source of Replaced that can hold a quay-kind box (lots
+    // and hero bays replace kind kit only).
+    const std::string boxesPath = envText("FT_QUAY_BOXES");
+    if (boxesPath.empty()) return;
+    std::string err;
+    std::vector<MassingBox> boxes;
+    REQUIRE_MESSAGE(importMassingBoxes(readFile(boxesPath), boxes, &err), err);
+    std::set<std::string> kitted;
+    {
+        const std::string kit = readFile(envText("FT_QUAY_KIT"));
+        std::size_t at = 0;
+        bool header = false;
+        while (at < kit.size()) {
+            const std::size_t end = std::min(kit.find('\n', at), kit.size());
+            std::string line = kit.substr(at, end - at);
+            at = end + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            if (!header) {
+                header = true;
+                continue;
+            }
+            kitted.insert(line.substr(0, line.find(',')));
+        }
+        REQUIRE(header);
+    }
+    const std::size_t n = boxes.size();
+    std::vector<bool> visible(n), dress(n);
+    std::size_t quayKind = 0, dressedAsToday = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        visible[i] = massingVisible(massingRole(boxes[i]));
+        dress[i] = visible[i] && kitted.count(boxes[i].id) == 0;
+        const std::string& k = boxes[i].kind;
+        if (k == "quay" || k == "pier" || k == "seawall" || k == "deck") {
+            ++quayKind;
+            dressedAsToday += dress[i] == visible[i] ? 1 : 0;
+        }
+    }
+    CHECK(quayKind == 64);
+    CHECK(dressedAsToday == quayKind);
+
+    // BLD-058's -Kit row, once r10's solid rail rows pass, replaces its two seawall boxes.
+    const std::set<std::string> bld058 = {"BLD-058_1", "BLD-058_2"};
+    std::vector<bool> after = dress;
+    std::size_t found = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (bld058.count(boxes[i].id) != 0) {
+            CHECK(boxes[i].kind == "seawall");
+            after[i] = false;
+            ++found;
+        }
+    REQUIRE(found == 2);
+
+    // The output leg's baseline is main's output (its own code, include = visible, dryAbove 0.5, lampRule() at 7, no
+    // taken feet), not this function with dress = include, which would compare the same code with itself.
+    Ground g;
+    const std::string mainPath = envText("FT_QUAY_MAIN");
+    if (!readGround(envText("FT_QUAY_GROUND"), g) || mainPath.empty()) {
+        MESSAGE("quay opt-in: mask leg ran (" << quayKind << " quay-kind boxes); output leg not run (needs FT_QUAY_GROUND and FT_QUAY_MAIN)");
+        return;
+    }
+    Quay onMain;
+    REQUIRE(readQuayDump(readFile(mainPath), onMain));
+    const Quay now = quayOn(g.view(), boxes, visible, dress);
+    CHECK(sameBoxes(onMain.boxes, now.boxes));
+    CHECK(sameLamps(onMain.lamps, now.lamps));
+    REQUIRE(!rowsOf(onMain.boxes, bld058).empty()); // main dresses BLD-058, so its absence below is the mask's doing
+    const Quay replaced = quayOn(g.view(), boxes, visible, after);
+    CHECK(rowsOf(replaced.boxes, bld058).empty());
+    CHECK(sameBoxes(rowsOf(replaced.boxes, bld058, false), rowsOf(onMain.boxes, bld058, false)));
+    for (const MassingProp& l : replaced.lamps) CHECK(bld058.count(boxes[l.street].id) == 0);
+    MESSAGE("quay opt-in: mask and output legs ran: main " << onMain.boxes.size() << " rows, " << onMain.lamps.size()
+            << " lamps; BLD-058 replaced " << replaced.boxes.size() << " rows, " << replaced.lamps.size() << " lamps");
 }
 
 TEST_CASE("massing frontage: the table is read with its defaults and its errors") {
@@ -935,26 +1150,7 @@ TEST_CASE("massing frontage: the real tables (opt-in): no collider over a door o
     }
     Ground g;
     const std::string groundSpec = envText("FT_FRONT_GROUND");
-    if (!groundSpec.empty()) {
-        char path[512] = {};
-        double ox = 0.0, oy = 0.0;
-        unsigned long nx = 0, ny = 0;
-#ifdef _MSC_VER
-        REQUIRE(sscanf_s(groundSpec.c_str(), "%511[^,],%lu,%lu,%lf,%lf", path, 512u, &nx, &ny, &ox, &oy) == 5);
-#else
-        REQUIRE(std::sscanf(groundSpec.c_str(), "%511[^,],%lu,%lu,%lf,%lf", path, &nx, &ny, &ox, &oy) == 5);
-#endif
-        const std::string raw = readFile(path);
-        REQUIRE(raw.size() == 2u * nx * ny);
-        g.nx = nx;
-        g.ny = ny;
-        g.ox = ox;
-        g.oy = oy;
-        g.samples.resize(nx * ny);
-        for (std::size_t i = 0; i < g.samples.size(); ++i)
-            g.samples[i] = static_cast<std::uint16_t>(static_cast<unsigned char>(raw[2 * i]) |
-                                                      (static_cast<unsigned char>(raw[2 * i + 1]) << 8));
-    }
+    readGround(groundSpec, g);
     const MassingGround ground = groundSpec.empty() ? MassingGround{} : g.view();
     std::vector<bool> visible(boxes.size()), hosts(boxes.size());
     std::vector<MassingFoot> walls;

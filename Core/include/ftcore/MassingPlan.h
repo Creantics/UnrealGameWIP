@@ -35,6 +35,7 @@
 #include "ftcore/Api.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -104,6 +105,38 @@ inline MassingVec massingEnginePoint(double side, double x, double y, double z) 
 }
 // A plan rotation (counter-clockwise from east) as an engine yaw.
 inline double massingEngineYaw(double rotDeg) { return -rotDeg; }
+
+// A rotation as a quaternion (w, x, y, z), applied to coordinates as v' = q v q* (Unreal's FQuat(x, y, z, w) does the
+// same: FRotator(0, yaw, 0) is (cos yaw/2, 0, 0, sin yaw/2)). q and -q are the same rotation.
+struct MassingQuat {
+    double w = 1.0, x = 0.0, y = 0.0, z = 0.0;
+};
+// An engine yaw (degrees about Z, as FRotator's yaw) as an engine-frame quaternion.
+inline MassingQuat massingYawQuat(double yawDeg) {
+    const double h = yawDeg * (3.14159265358979323846 / 360.0);
+    return {std::cos(h), 0.0, 0.0, std::sin(h)};
+}
+// A plan-frame rotation (x east, y north, z up) as the same physical rotation in the engine frame (X east, Y south,
+// Z up; massingEnginePoint), normalised. The frames differ by a mirror in y, which keeps the angle and maps the axis
+// (x, y, z) to (-x, y, -z): a plan yaw r is an engine yaw -r, as massingEngineYaw (the boxes' yaw path, and -Pieces'
+// turn, which is an engine yaw already). The result rotates the mesh as the engine holds it, and only for a mesh
+// exported to glb +Y up (Blender's glTF default) with no node transform and imported by Interchange: that import flips
+// the mesh's own y (Blender (x, y, z) to engine (x, -y, z)), the same mirror, so a vertex v placed by the plan rotation
+// lands where massingEnginePoint takes it. Another export frame needs its own conversion. False, `out` untouched, for
+// a quaternion of norm under 1e-6 or not finite.
+inline bool massingEngineQuat(const MassingQuat& plan, MassingQuat& out) {
+    const double n = std::sqrt(plan.w * plan.w + plan.x * plan.x + plan.y * plan.y + plan.z * plan.z);
+    if (!(n >= 1e-6) || !std::isfinite(n)) return false;
+    out = {plan.w / n, -plan.x / n, plan.y / n, -plan.z / n};
+    return true;
+}
+// v rotated by the unit quaternion q.
+inline MassingVec massingRotate(const MassingQuat& q, const MassingVec& v) {
+    // t = 2 (q.xyz x v); v' = v + w t + q.xyz x t
+    const double tx = 2.0 * (q.y * v.z - q.z * v.y), ty = 2.0 * (q.z * v.x - q.x * v.z), tz = 2.0 * (q.x * v.y - q.y * v.x);
+    return {v.x + q.w * tx + (q.y * tz - q.z * ty), v.y + q.w * ty + (q.z * tx - q.x * tz),
+            v.z + q.w * tz + (q.x * ty - q.y * tx)};
+}
 
 // How the engine's centred cube (1 m a side at scale 1) stands in for a flat box `height` m tall, its centre at the
 // box's centre z0 + height / 2 + lift: Unreal's rotator (pitch, yaw, roll, degrees) and the cube's scale. A level box

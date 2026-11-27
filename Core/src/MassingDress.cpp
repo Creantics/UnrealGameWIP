@@ -556,12 +556,13 @@ bool massingQuayDeck(const MassingBox& box) {
 }
 
 void massingQuay(const MassingGround& ground, const std::vector<MassingBox>& boxes, const std::vector<bool>& include,
-                 double dryAbove, const MassingPropRule& lamp, std::size_t lampRule,
+                 const std::vector<bool>& dress, double dryAbove, const MassingPropRule& lamp, std::size_t lampRule,
                  const std::vector<MassingFoot>* taken, std::vector<MassingBox>& outBoxes,
                  std::vector<MassingProp>& outLamps, MassingQuayCounts& counts) {
     outBoxes.clear();
     outLamps.clear();
     counts = MassingQuayCounts{};
+    if (dress.size() != boxes.size()) return;
     Scene scene(ground, boxes, include, nullptr);
     Aabb extent = scene.extent;
     if (taken)
@@ -593,7 +594,7 @@ void massingQuay(const MassingGround& ground, const std::vector<MassingBox>& box
     std::vector<MassingVec> posts;
     const std::size_t n = std::min(boxes.size(), include.size());
     for (std::size_t d = 0; d < n; ++d) {
-        if (!include[d] || !massingQuayDeck(boxes[d]) || !scene.solids[d].valid) continue;
+        if (!include[d] || !dress[d] || !massingQuayDeck(boxes[d]) || !scene.solids[d].valid) continue;
         const MassingBox& deck = boxes[d];
         const double top = scene.solids[d].highTop;
         std::size_t rails = 0, postCount = 0, bollards = 0;

@@ -377,6 +377,108 @@ TEST_CASE("massing: the engine frame reads true from above") {
     CHECK(near((p1.y + p2.y) / 2, 10.0 * std::sin(yaw), 1e-9));
 }
 
+TEST_CASE("massing: a plan quaternion turns a piece in the engine as it turns in the plan") {
+    const double toRad = 3.14159265358979323846 / 180.0;
+    const auto axisAngle = [&](double ax, double ay, double az, double deg) {
+        const double l = std::sqrt(ax * ax + ay * ay + az * az), h = deg * toRad / 2.0;
+        return MassingQuat{std::cos(h), ax / l * std::sin(h), ay / l * std::sin(h), az / l * std::sin(h)};
+    };
+    const auto vec = [](double side, const MassingVec& p) { return massingEnginePoint(side, p.x, p.y, p.z); };
+    const auto same = [](const MassingVec& a, const MassingVec& b) {
+        return near(a.x, b.x, 1e-9) && near(a.y, b.y, 1e-9) && near(a.z, b.z, 1e-9);
+    };
+    const MassingVec probes[] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {0.3, -1.7, 2.2}};
+    // engine(rotate(q, p)) == rotate(engineQuat(q), engine(p)) for any plan q and vector p (side 0: (x, -y, z)).
+    const MassingQuat cases[] = {axisAngle(0, 0, 1, 30),  axisAngle(0, 0, 1, 90),  axisAngle(0, 0, 1, -135),
+                                 axisAngle(1, 0, 0, 20),  axisAngle(0, 1, 0, -35), axisAngle(0.4, -0.7, 0.6, 77),
+                                 MassingQuat{1, 0, 0, 0}};
+    for (const MassingQuat& q : cases) {
+        MassingQuat e;
+        REQUIRE(massingEngineQuat(q, e));
+        for (const MassingVec& p : probes) CHECK(same(vec(0, massingRotate(q, p)), massingRotate(e, vec(0, p))));
+    }
+    // A plan yaw r is an engine yaw -r (massingEngineYaw); a roll about x keeps its axis and flips its sign in the
+    // engine; a pitch about y keeps its sign.
+    MassingQuat e;
+    REQUIRE(massingEngineQuat(axisAngle(0, 0, 1, 30), e));
+    const MassingQuat yaw = massingYawQuat(massingEngineYaw(30));
+    for (const MassingVec& p : probes) CHECK(same(massingRotate(e, p), massingRotate(yaw, p)));
+    REQUIRE(massingEngineQuat(axisAngle(1, 0, 0, 20), e));
+    for (const MassingVec& p : probes) CHECK(same(massingRotate(e, p), massingRotate(axisAngle(1, 0, 0, -20), p)));
+    REQUIRE(massingEngineQuat(axisAngle(0, 1, 0, 20), e));
+    for (const MassingVec& p : probes) CHECK(same(massingRotate(e, p), massingRotate(axisAngle(0, 1, 0, 20), p)));
+    // Normalised: (2, 0, 0, 0) is the identity. A zero or non-finite quaternion is refused and leaves `out` alone.
+    REQUIRE(massingEngineQuat(MassingQuat{2, 0, 0, 0}, e));
+    CHECK((e.w == 1.0 && e.x == 0.0 && e.y == 0.0 && e.z == 0.0));
+    MassingQuat keep{0.5, 0.5, 0.5, 0.5};
+    CHECK_FALSE(massingEngineQuat(MassingQuat{0, 0, 0, 0}, keep));
+    CHECK_FALSE(massingEngineQuat(MassingQuat{1e-7, 0, 0, 0}, keep));
+    CHECK_FALSE(massingEngineQuat(MassingQuat{std::nan(""), 0, 0, 0}, keep));
+    CHECK((keep.w == 0.5 && keep.x == 0.5 && keep.y == 0.5 && keep.z == 0.5));
+    // massingYawQuat matches Unreal's FRotator(0, yaw, 0): yaw 90 takes engine X to engine Y.
+    CHECK(same(massingRotate(massingYawQuat(90), {1, 0, 0}), {0, 1, 0}));
+}
+
+TEST_CASE("massing: a plan yaw as a -Pieces quaternion row places as the yaw path's row for the same physical turn") {
+    // The yaw path's sign: a box's plan rot r goes in as FRotator(0, massingEngineYaw(r), 0) = engine yaw -r
+    // (FTBuildMassingWorldCommandlet.cpp, boxes); a turn-only -Pieces row's turn is already an engine yaw,
+    // FRotator(0, turn, 0) = massingYawQuat(turn). So a pure plan yaw theta as a quaternion row must place as the
+    // turn row -theta, the same corners at the same point.
+    const double toRad = 3.14159265358979323846 / 180.0;
+    const MassingVec at = massingEnginePoint(1000.0, 612.5, 431.0, 3.2);
+    const MassingVec corners[] = {{2.0, 0.5, 0.0}, {-2.0, 0.5, 0.0}, {2.0, -0.5, 1.5}, {-2.0, -0.5, 1.5}};
+    for (const double theta : {0.0, 30.0, 90.0, -135.0, 180.0, 271.5}) {
+        const double h = theta * toRad / 2.0;
+        MassingQuat fromQuat;
+        REQUIRE(massingEngineQuat(MassingQuat{std::cos(h), 0.0, 0.0, std::sin(h)}, fromQuat));
+        const MassingQuat fromTurn = massingYawQuat(massingEngineYaw(theta));
+        for (const MassingVec& c : corners) {
+            const MassingVec a = massingRotate(fromTurn, c), b = massingRotate(fromQuat, c);
+            CHECK(near(at.x + a.x, at.x + b.x, 1e-9));
+            CHECK(near(at.y + a.y, at.y + b.y, 1e-9));
+            CHECK(near(at.z + a.z, at.z + b.z, 1e-9));
+        }
+    }
+}
+
+TEST_CASE("massing: a quaternion row puts six vertices of an imported unit where Blender's own scene has them") {
+    // One armour unit's row (r9's south row 0: plan metres, plan-frame quaternion) and six of its mesh's vertices in
+    // Blender's local frame, none on y = 0. The other side is Blender's own number for each, not this formula: the
+    // vertex's matrix_world @ co in the saved scene (sea zero), mapped to plan by (955 + w.y, 300 - w.x, w.z), as the
+    // Blender lane read it. Three are from a build-frame read printed to 4 decimals, three from the saved scene's
+    // matrix_world printed to 6. The loader route: massingEnginePoint(row) + rotate(massingEngineQuat(q), v as
+    // imported), where a +Y-up glb comes in through Interchange as (x, -y, z). It must meet Blender's points to 1e-4 m
+    // (the worst is 7.8e-5 m, a 4-decimal point). The plan route, row + rotate(q, v), must agree with it to 1e-9.
+    const double side = 1000.0, X = 971.5558, Y = 210.1553, Z = 0.4145;
+    const MassingQuat q{0.788148, 0.268101, 0.012273, -0.553890};
+    struct Named {
+        MassingVec local, blenderPlan;
+    };
+    const Named named[] = {{{-1.08523, -2.94183, -0.85927}, {968.7875, 210.7566, -1.1809}},
+                           {{-1.22422, 2.93336, -0.68344}, {973.8533, 212.2260, 1.4166}},
+                           {{-1.01190, 2.81483, -1.27407}, {973.9949, 212.2709, 0.7954}},
+                           {{0.0, 0.574839, 3.2}, {971.172987, 208.898949, 3.388624}},
+                           {{-1.61049, 2.349488, -1.567375}, {973.435938, 212.804626, 0.543340}},
+                           {{3.025096, -0.604992, -0.803736}, {972.414783, 207.737801, -1.477873}}};
+    MassingQuat e;
+    REQUIRE(massingEngineQuat(q, e));
+    const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+    const MassingQuat unit{q.w / n, q.x / n, q.y / n, q.z / n};
+    const MassingVec at = massingEnginePoint(side, X, Y, Z);
+    for (const Named& v : named) {
+        const MassingVec ev = massingRotate(e, MassingVec{v.local.x, -v.local.y, v.local.z});
+        const MassingVec blender = massingEnginePoint(side, v.blenderPlan.x, v.blenderPlan.y, v.blenderPlan.z);
+        CHECK(near(at.x + ev.x, blender.x, 1e-4));
+        CHECK(near(at.y + ev.y, blender.y, 1e-4));
+        CHECK(near(at.z + ev.z, blender.z, 1e-4));
+        const MassingVec pv = massingRotate(unit, v.local);
+        const MassingVec planRoute = massingEnginePoint(side, X + pv.x, Y + pv.y, Z + pv.z);
+        CHECK(near(at.x + ev.x, planRoute.x, 1e-9));
+        CHECK(near(at.y + ev.y, planRoute.y, 1e-9));
+        CHECK(near(at.z + ev.z, planRoute.z, 1e-9));
+    }
+}
+
 TEST_CASE("massing: a tilted box's cube lays its top on the box's plane, its yaw on the box's rotation") {
     // Unreal's rotator as its matrix (FRotationTranslationMatrix): the rows are the images of local X, Y and Z.
     const double toRad = 3.14159265358979323846 / 180.0;

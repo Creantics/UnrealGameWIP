@@ -118,7 +118,7 @@ struct MassingQuayCounts {
     std::size_t lampsCrowded = 0;  // its foot within kMassingPropGap of one taken
 };
 
-// Furniture along the seaward edges of each deck `include` marks (massingQuayDeck), its top z1 (flat; the builder
+// Furniture along the seaward edges of each deck `include` and `dress` both mark (massingQuayDeck), its top z1 (flat; the builder
 // passes its boxes with their nudges and raises taken). Each of the four edges of its footprint is read at points at
 // most kMassingQuayStep apart; a point is seaward when the ground kMassingQuayProbe out from it lies at or under dryAbove
 // and no other box `include` marks holds that probe with its top over dryAbove (a pier or a seawall standing on); it is
@@ -139,10 +139,13 @@ struct MassingQuayCounts {
 // plus the lamp rule's dz. A lamp is dropped when a box stands where it would (as blocked above) or its foot
 // (massingPropFoot with `lamp`) comes within kMassingPropGap of a foot in `taken` (when given), of a bollard's or of a
 // lamp's already set. GalvSteel dresses the rail, posts and bollards (massingLookSurface). The rail stands kMassingRailTop
-// high, so a walker never passes it. `outBoxes`, `outLamps` and `counts` are cleared first. Allocates: build time only.
+// high, so a walker never passes it. `dress` only picks the decks dressed: a deck it leaves out still stands in the
+// scene as `include` has it, so a dressed neighbour never reads their shared edge as sea (the builder passes `include`
+// for the boxes it shows and `dress` for those no kit, hero bay or lot build replaces). `outBoxes`, `outLamps` and
+// `counts` are cleared first; all three stay empty when `dress` isn't the size of `boxes`. Allocates: build time only.
 FTCORE_API void massingQuay(const MassingGround& ground, const std::vector<MassingBox>& boxes,
-                            const std::vector<bool>& include, double dryAbove, const MassingPropRule& lamp,
-                            std::size_t lampRule, const std::vector<MassingFoot>* taken,
+                            const std::vector<bool>& include, const std::vector<bool>& dress, double dryAbove,
+                            const MassingPropRule& lamp, std::size_t lampRule, const std::vector<MassingFoot>* taken,
                             std::vector<MassingBox>& outBoxes, std::vector<MassingProp>& outLamps,
                             MassingQuayCounts& counts);
 

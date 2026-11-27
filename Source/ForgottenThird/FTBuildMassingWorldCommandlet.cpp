@@ -2057,7 +2057,15 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 	// rows), turned -ClockTowerTurn degrees (engine yaw; 0: its door faces the engine's +Y), wearing -ClockMeshes=<tower
 	// path>;<hour hand path>;<minute hand path>, its dials -ClockDial=<height m>,<out m> from its centre.
 	// -Pieces=<csv>: finished meshes placed as they are (asset, x, y, z (empty: the ground), turn (engine yaw), kind
-	// solid|walk|none).
+	// solid|walk|none), columns found by their header names; x, y, z are the boxes' plan frame (massingEnginePoint).
+	// A file whose header has qw, qx, qy, qz (all four, or it fails) places every row by that quaternion alone, in the
+	// PLAN frame (x east, y north, z up), normalised on load and taken to the engine by ftcore::massingEngineQuat. Its
+	// turn, pitch and roll are never read, and a row whose four values aren't all numbers of norm 1e-6 or more fails the
+	// load (no fallback to turn). A file without them places by turn, an ENGINE yaw, as FRotator(0, turn, 0) (degrees
+	// about Z, Y south; empty is 0), so a plan yaw r there is turn -r (massingEngineYaw). Other columns are never read.
+	// The quaternion holds only for a mesh exported to glb +Y up (Blender's glTF default) with no node transform and
+	// imported by Interchange, which flips the mesh's own Y (Blender y to engine -Y) as the plan-to-engine mirror does to
+	// positions. Any other export frame needs its own conversion.
 	FString ClockBox, ClockMeshes, ClockDialText, PiecesFile;
 	double ClockTurn = 0.0;
 	FParse::Value(*Params, TEXT("ClockTower="), ClockBox);
@@ -3656,6 +3664,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Text.ParseIntoArrayLines(Lines);
 		int32 Placed = 0;
 		TArray<int32> Col;
+		bool bPiecesQuat = false; // the header has qw, qx, qy, qz
 		for (const FString& Raw : Lines)
 		{
 			const FString Line = Raw.TrimStartAndEnd();
@@ -3681,6 +3690,19 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 					World->DestroyWorld(false);
 					return 1;
 				}
+				int32 QuatColumns = 0;
+				for (const TCHAR* Name : {TEXT("qw"), TEXT("qx"), TEXT("qy"), TEXT("qz")})
+				{
+					Col.Add(F.IndexOfByKey(Name));
+					QuatColumns += Col.Last() != INDEX_NONE ? 1 : 0;
+				}
+				if (QuatColumns != 0 && QuatColumns != 4)
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s has some of the columns qw, qx, qy, qz but not all four."), *PiecesFile);
+					World->DestroyWorld(false);
+					return 1;
+				}
+				bPiecesQuat = QuatColumns == 4;
 				continue;
 			}
 			const auto Get = [&](int32 C) { return F.IsValidIndex(Col[C]) ? F[Col[C]] : FString(); };
@@ -3688,13 +3710,31 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			const FString ZText = Get(3), Kind = Get(5);
 			UStaticMesh* const Mesh = LoadMesh(Get(0));
 			const bool bNumbers = LexTryParseString(X, *Get(1)) && LexTryParseString(Y, *Get(2)) && (ZText.IsEmpty() || LexTryParseString(Z, *ZText)) &&
-				(Get(4).IsEmpty() || LexTryParseString(Turn, *Get(4)));
+				(bPiecesQuat || Get(4).IsEmpty() || LexTryParseString(Turn, *Get(4)));
 			if (!Mesh || !bNumbers || !(Kind == TEXT("solid") || Kind == TEXT("walk") || Kind == TEXT("none")))
 			{
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a piece needs a mesh that loads, numbers and kind solid, walk or none: '%s'."),
 					*PiecesFile, *Line);
 				World->DestroyWorld(false);
 				return 1;
+			}
+			// The rotation: in a file with qw..qz, the plan-frame quaternion alone (turn unread); else turn, an engine yaw.
+			ftcore::MassingQuat Rotation;
+			if (bPiecesQuat)
+			{
+				double QuatPart[4] = {0.0, 0.0, 0.0, 0.0};
+				bool bQuat = true;
+				for (int32 Q = 0; bQuat && Q < 4; ++Q)
+				{
+					bQuat = LexTryParseString(QuatPart[Q], *Get(6 + Q)); // an empty cell fails too
+				}
+				if (!bQuat || !ftcore::massingEngineQuat(ftcore::MassingQuat{QuatPart[0], QuatPart[1], QuatPart[2], QuatPart[3]}, Rotation))
+				{
+					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a piece needs qw, qx, qy, qz as four numbers of norm 1e-6 or more: '%s'."),
+						*PiecesFile, *Line);
+					World->DestroyWorld(false);
+					return 1;
+				}
 			}
 			if (ZText.IsEmpty())
 			{
@@ -3709,7 +3749,10 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			FFTCellOptions PieceOpts;
 			PieceOpts.Cull = EFTCellCull::Prop;
 			PieceOpts.Label = FString::Printf(TEXT("PIECE-%d"), Placed + 1);
-			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, Turn, 0.0), Cm(ftcore::massingEnginePoint(Side, X, Y, Z))), {},
+			const FTransform PiecePose = bPiecesQuat
+				? FTransform(FQuat(Rotation.x, Rotation.y, Rotation.z, Rotation.w), Cm(ftcore::massingEnginePoint(Side, X, Y, Z)))
+				: FTransform(FRotator(0.0, Turn, 0.0), Cm(ftcore::massingEnginePoint(Side, X, Y, Z)));
+			Cells.Add(Mesh, Mats, PiecePose, {},
 				Kind == TEXT("solid") ? EFTCellKind::Solid : Kind == TEXT("walk") ? EFTCellKind::Walk : EFTCellKind::NoCollide, PieceOpts);
 			++Placed;
 		}
@@ -4317,7 +4360,14 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		const ftcore::MassingPropRule NoLamp{};
 		std::vector<ftcore::MassingBox> Furniture;
 		ftcore::MassingQuayCounts QuayCounts;
-		ftcore::massingQuay(Ground, Built, Visible, kPropDryAbove, bLamps ? PropRules[QuayLampAt] : NoLamp, QuayLampAt, &Taken, Furniture, QuayLamps,
+		// A deck a kit piece, a hero bay or a lot build replaces carries its own rail: Core dresses only the rest, and the
+		// replaced deck still stands in the scene, so its neighbour's shared edge isn't sea.
+		std::vector<bool> QuayDress(Boxes.size(), false);
+		for (size_t I = 0; I < Boxes.size(); ++I)
+		{
+			QuayDress[I] = Visible[I] && !Replaced[I];
+		}
+		ftcore::massingQuay(Ground, Built, Visible, QuayDress, kPropDryAbove, bLamps ? PropRules[QuayLampAt] : NoLamp, QuayLampAt, &Taken, Furniture, QuayLamps,
 			QuayCounts);
 		if (!bLamps)
 		{
