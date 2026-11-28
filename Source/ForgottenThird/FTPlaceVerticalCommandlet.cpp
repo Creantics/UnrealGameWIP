@@ -15,6 +15,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FTExploreDirector.h"
+#include "FTNavIslands.h"
 #include "HAL/FileManager.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/FileHelper.h"
@@ -205,9 +206,10 @@ const FVector kVerticalProbeNavExtent(50.0, 50.0, 100.0);
 
 // The surface a probe meets: a line down the pawn channel (what the lead stands on) from sz metres over the point (4 m
 // when sz is 0) to 12 m under it, and whether the navmesh lies on that surface. One log line each; with Rows, a csv row
-// too.
+// too. With Islands (-Islands), each navmesh point's island too: its number (largest first) and plan area, so two
+// surfaces a walk should join show whether the navmesh joins them.
 int32 RunProbes(UWorld& World, double Side, const TArray<FPiece>& Pieces, const TCHAR* When, TArray<FString>* Rows, const UNavigationSystemV1* Nav,
-	const ANavigationData* NavData, int32& OnNav)
+	const ANavigationData* NavData, int32& OnNav, const FFTNavIslands* Islands = nullptr)
 {
 	int32 Met = 0;
 	OnNav = 0;
@@ -232,11 +234,28 @@ int32 RunProbes(UWorld& World, double Side, const TArray<FPiece>& Pieces, const 
 			const bool bNav = Nav && NavData && Nav->ProjectPointToNavigation(Hit.ImpactPoint, OnMesh, kVerticalProbeNavExtent, NavData);
 			OnNav += bNav ? 1 : 0;
 			const FString NavZ = bNav ? FString::Printf(TEXT("%.3f"), OnMesh.Location.Z / 100.0) : FString();
-			UE_LOG(LogForgottenThird, Display, TEXT("FTPlaceVertical probe %s %s: expected %.2f, surface %.2f, gap %+.2f m, on %s, navmesh %s%s"), When,
-				*P.Id, P.Cz, HitZ, HitZ - P.Cz, *Label, bNav ? TEXT("yes at ") : TEXT("no"), *NavZ);
+			FString Island, IslandCsv = TEXT(",");
+			if (bNav && Islands)
+			{
+				const uint32* Index = Islands->IndexOf.Find(OnMesh.NodeRef);
+				if (Index && *Index < Islands->Set.islandOf.size() && Islands->Set.islandOf[*Index] < Islands->Set.islands.size())
+				{
+					const uint32 N = Islands->Set.islandOf[*Index];
+					const ftcore::NavIsland& Of = Islands->Set.islands[N];
+					Island = FString::Printf(TEXT(", island %u (%.0f m2, centre %.1f, %.1f, z %.1f to %.1f)"), N, Of.area, Of.cx, Of.cy, Of.zMin, Of.zMax);
+					IslandCsv = FString::Printf(TEXT("%u,%.1f"), N, Of.area);
+				}
+				else
+				{
+					Island = TEXT(", island none (poly not gathered)");
+				}
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("FTPlaceVertical probe %s %s: expected %.2f, surface %.2f, gap %+.2f m, on %s, navmesh %s%s%s"), When,
+				*P.Id, P.Cz, HitZ, HitZ - P.Cz, *Label, bNav ? TEXT("yes at ") : TEXT("no"), *NavZ, *Island);
 			if (Rows)
 			{
-				Rows->Add(FString::Printf(TEXT("%s,%s,%.3f,%.3f,%.3f,%.3f,%s,%d,%s"), When, *P.Id, P.Cx, P.Cy, P.Cz, HitZ, *Label, bNav ? 1 : 0, *NavZ));
+				Rows->Add(FString::Printf(TEXT("%s,%s,%.3f,%.3f,%.3f,%.3f,%s,%d,%s,%s"), When, *P.Id, P.Cx, P.Cy, P.Cz, HitZ, *Label, bNav ? 1 : 0, *NavZ,
+					*IslandCsv));
 			}
 		}
 		else
@@ -244,7 +263,7 @@ int32 RunProbes(UWorld& World, double Side, const TArray<FPiece>& Pieces, const 
 			UE_LOG(LogForgottenThird, Warning, TEXT("FTPlaceVertical probe %s %s: expected %.2f, no surface from %+.0f to -12 m"), When, *P.Id, P.Cz, Over);
 			if (Rows)
 			{
-				Rows->Add(FString::Printf(TEXT("%s,%s,%.3f,%.3f,%.3f,,,0,"), When, *P.Id, P.Cx, P.Cy, P.Cz));
+				Rows->Add(FString::Printf(TEXT("%s,%s,%.3f,%.3f,%.3f,,,0,,,"), When, *P.Id, P.Cx, P.Cy, P.Cz));
 			}
 		}
 	}
@@ -359,6 +378,7 @@ int32 UFTPlaceVerticalCommandlet::Main(const FString& Params)
 	const bool bNoNav = FParse::Param(*Params, TEXT("NoNav"));
 	const bool bRebuildNav = FParse::Param(*Params, TEXT("RebuildNav"));
 	const bool bDryRun = FParse::Param(*Params, TEXT("DryRun"));
+	const bool bIslands = FParse::Param(*Params, TEXT("Islands"));
 	if (bNoNav && bRebuildNav)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTPlaceVertical: -NoNav and -RebuildNav ask for opposite things."));
@@ -470,8 +490,26 @@ int32 UFTPlaceVerticalCommandlet::Main(const FString& Params)
 	{
 		Probes += P.IsProbe() ? 1 : 0;
 	}
+	// -Islands: the navmesh's islands (in the plan frame, nothing left out under a sea), gathered once per navmesh probed.
+	TUniquePtr<FFTNavIslands> Islands;
+	auto GatherIslands = [&Islands, bIslands, Side](const ANavigationData* Data, const TCHAR* When)
+	{
+		Islands.Reset();
+		const ARecastNavMesh* Recast = Cast<const ARecastNavMesh>(Data);
+		if (!bIslands || !Recast)
+		{
+			return;
+		}
+		const double Began = FPlatformTime::Seconds();
+		Islands = MakeUnique<FFTNavIslands>();
+		FTGatherNavIslands(*Recast, [Side](const FVector& V) { return ftcore::MassingVec{V.X / 100.0 + Side * 0.5, Side * 0.5 - V.Y / 100.0, V.Z / 100.0}; },
+			ftcore::kNoSea, *Islands);
+		UE_LOG(LogForgottenThird, Display, TEXT("FTPlaceVertical: the %s navmesh's islands: %d polys in %d tiles, %d islands, gathered in %.1f s."), When,
+			Islands->Gathered, Islands->Tiles, static_cast<int32>(Islands->Set.islands.size()), FPlatformTime::Seconds() - Began);
+	};
+	GatherIslands(NavData, TEXT("saved"));
 	int32 NavBefore = 0;
-	const int32 MetBefore = RunProbes(*World, Side, Pieces, TEXT("before"), Rows, Nav, NavData, NavBefore);
+	const int32 MetBefore = RunProbes(*World, Side, Pieces, TEXT("before"), Rows, Nav, NavData, NavBefore, Islands.Get());
 
 	for (AActor* Actor : Old)
 	{
@@ -582,14 +620,15 @@ int32 UFTPlaceVerticalCommandlet::Main(const FString& Params)
 		{
 			NavData = *It;
 		}
+		GatherIslands(NavData, TEXT("rebuilt"));
 		int32 NavRebuilt = 0;
-		const int32 MetRebuilt = RunProbes(*World, Side, Pieces, TEXT("rebuilt"), Rows, Nav, NavData, NavRebuilt);
+		const int32 MetRebuilt = RunProbes(*World, Side, Pieces, TEXT("rebuilt"), Rows, Nav, NavData, NavRebuilt, Islands.Get());
 		UE_LOG(LogForgottenThird, Display, TEXT("FTPlaceVertical: probes on the rebuilt navmesh: %d of %d met a surface, %d of them on the navmesh."), MetRebuilt,
 			Probes, NavRebuilt);
 	}
 	if (Rows)
 	{
-		ProbeRows.Insert(TEXT("when,id,x,y,expected_z,surface_z,actor,nav,nav_z"), 0);
+		ProbeRows.Insert(TEXT("when,id,x,y,expected_z,surface_z,actor,nav,nav_z,island,island_m2"), 0);
 		if (!FFileHelper::SaveStringToFile(FString::Join(ProbeRows, TEXT("\n")) + TEXT("\n"), *ProbeOut, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
 			UE_LOG(LogForgottenThird, Error, TEXT("FTPlaceVertical: couldn't write %s."), *ProbeOut);
