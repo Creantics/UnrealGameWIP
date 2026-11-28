@@ -2314,6 +2314,19 @@ void AFTExploreDirector::TickTourStop(AFTExploreCharacter& Player, ftcore::Vec2 
 			++TourStopsReached;
 			UE_LOG(LogForgottenThird, Display, TEXT("World %s: reached stop %s (leg %d/%d) at %.1f s game time, %.1f s on the leg, feet at z %.0f cm (the stop's %.0f cm)."),
 				*WorldId, *TourStopIds[Stop], TourLegNumber(), TourLegTotal, Game, Game - TourLegStartAt, Feet, TargetCm.Z);
+			// Each follower as the lead reaches the stop: how far from the lead and how far over or under its feet, so a
+			// tour can judge the party at every stop as well as the lead.
+			for (int32 I = 0; I < Followers.Num(); ++I)
+			{
+				if (const AFTPartyFollower* Follower = Followers[I])
+				{
+					const FVector At = Follower->GetActorLocation();
+					const FVector Lead = Player.GetActorLocation();
+					UE_LOG(LogForgottenThird, Display, TEXT("World %s: stop %s: follower %d (%s) at (%.0f, %.0f) cm, %.1f m from the lead, feet at z %.0f cm (%+.0f from the lead's)%s."),
+						*WorldId, *TourStopIds[Stop], I, *Follower->GetName(), At.X, At.Y, FVector2D::Distance(FVector2D(At), FVector2D(Lead)) / 100.0, At.Z,
+						At.Z - Feet, Follower->IsHidden() ? TEXT(", hidden") : TEXT(""));
+				}
+			}
 			EndStopLeg(Stop, Game);
 			return;
 		}

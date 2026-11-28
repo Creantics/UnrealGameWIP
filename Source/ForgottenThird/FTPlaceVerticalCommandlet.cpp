@@ -5,6 +5,8 @@
 #if WITH_EDITOR
 #include "AI/NavigationSystemBase.h"
 #include "AssetCompilingManager.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Components/SkinnedMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EditorWorldUtils.h"
 #include "Engine/CollisionProfile.h"
@@ -20,6 +22,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "Misc/Parse.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
 #include "NavMesh/RecastNavMesh.h"
@@ -347,6 +350,117 @@ void VerticalLogStreaming(const UWorld& World)
 	}
 }
 
+// Whether a mesh is drawn opaque: visible, shown in game, a static mesh with at least one material that is not
+// translucent (the test the lead's rain cover audit uses, so the two counts can be set side by side).
+bool VerticalDrawnOpaque(const UPrimitiveComponent& Prim)
+{
+	if (!Prim.IsVisible() || Prim.bHiddenInGame || !Prim.IsA<UStaticMeshComponent>())
+	{
+		return false;
+	}
+	for (int32 M = 0; M < Prim.GetNumMaterials(); ++M)
+	{
+		const UMaterialInterface* Mat = Prim.GetMaterial(M);
+		if (Mat && !IsTranslucentBlendMode(Mat->GetBlendMode()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// -DrawnOut=<csv>: every drawn mesh's world bounds in the plan frame (metres), whatever its collision, one row per
+// component and one per instance of an instanced mesh, so a link's corridor can be checked against what is drawn as
+// well as against what a trace can hit. -DrawnBox=x0,y0,x1,y1 (plan metres) keeps only bounds that reach into that
+// box. This run's own pieces (tag FTVertical) are left out. Totals over the whole map go to the log.
+bool VerticalDrawnOut(const UWorld& World, double Side, const FString& Path, const FString& BoxText)
+{
+	double B0x = -1e9, B0y = -1e9, B1x = 1e9, B1y = 1e9;
+	if (!BoxText.IsEmpty())
+	{
+		TArray<FString> Parts;
+		BoxText.ParseIntoArray(Parts, TEXT(","), true);
+		if (Parts.Num() != 4)
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("FTPlaceVertical: -DrawnBox=%s is not x0,y0,x1,y1."), *BoxText);
+			return false;
+		}
+		B0x = FCString::Atod(*Parts[0]);
+		B0y = FCString::Atod(*Parts[1]);
+		B1x = FCString::Atod(*Parts[2]);
+		B1y = FCString::Atod(*Parts[3]);
+	}
+	TArray<FString> Rows;
+	Rows.Add(TEXT("owner,component,instance,kind,opaque,query,x0,x1,y0,y1,z0,z1"));
+	int32 Components = 0, Opaque = 0, QueryOff = 0, Other = 0, Instances = 0, Written = 0;
+	auto Write = [&](const AActor& Owner, const UPrimitiveComponent& Comp, int32 Instance, const TCHAR* Kind, bool bOpaque, const FBox& B)
+	{
+		const double X0 = B.Min.X / 100.0 + Side * 0.5, X1 = B.Max.X / 100.0 + Side * 0.5;
+		const double Y0 = Side * 0.5 - B.Max.Y / 100.0, Y1 = Side * 0.5 - B.Min.Y / 100.0;
+		if (X1 < B0x || X0 > B1x || Y1 < B0y || Y0 > B1y)
+		{
+			return;
+		}
+		++Written;
+		Rows.Add(FString::Printf(TEXT("%s,%s,%d,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f"), *Owner.GetActorLabel().Replace(TEXT(","), TEXT(";")),
+			*Comp.GetName().Replace(TEXT(","), TEXT(";")), Instance, Kind, bOpaque ? 1 : 0, Comp.IsQueryCollisionEnabled() ? 1 : 0, X0, X1, Y0, Y1,
+			B.Min.Z / 100.0, B.Max.Z / 100.0));
+	};
+	for (TActorIterator<AActor> It(const_cast<UWorld*>(&World)); It; ++It)
+	{
+		const AActor& Owner = **It;
+		if (Owner.Tags.Contains(VerticalTag()))
+		{
+			continue;
+		}
+		TInlineComponentArray<UMeshComponent*> Meshes(&Owner);
+		for (const UMeshComponent* Comp : Meshes)
+		{
+			if (!Comp || Comp->IsA<USkinnedMeshComponent>() || !Comp->IsVisible() || Comp->bHiddenInGame)
+			{
+				continue;
+			}
+			++Components;
+			const UStaticMeshComponent* Static = Cast<UStaticMeshComponent>(Comp);
+			if (!Static)
+			{
+				++Other;
+				Write(Owner, *Comp, -1, TEXT("other"), false, Comp->Bounds.GetBox());
+				continue;
+			}
+			const bool bOpaque = VerticalDrawnOpaque(*Comp);
+			Opaque += bOpaque ? 1 : 0;
+			QueryOff += bOpaque && !Comp->IsQueryCollisionEnabled() ? 1 : 0;
+			const UInstancedStaticMeshComponent* Inst = Cast<UInstancedStaticMeshComponent>(Comp);
+			const UStaticMesh* Mesh = Static->GetStaticMesh();
+			if (Inst && Mesh)
+			{
+				const FBox Local = Mesh->GetBounds().GetBox();
+				for (int32 I = 0; I < Inst->GetInstanceCount(); ++I)
+				{
+					FTransform T;
+					if (Inst->GetInstanceTransform(I, T, true))
+					{
+						++Instances;
+						Write(Owner, *Comp, I, TEXT("instance"), bOpaque, Local.TransformBy(T));
+					}
+				}
+				continue;
+			}
+			Write(Owner, *Comp, -1, TEXT("static"), bOpaque, Comp->Bounds.GetBox());
+		}
+	}
+	UE_LOG(LogForgottenThird, Display,
+		TEXT("FTPlaceVertical: drawn meshes: %d components shown in game (skinned left out), %d drawn opaque static meshes, %d of them with query collision off, %d other drawn meshes, %d instances; %d rows written to %s."),
+		Components, Opaque, QueryOff, Other, Instances, Written, *Path);
+	if (!FFileHelper::SaveStringToFile(FString::Join(Rows, TEXT("\n")) + TEXT("\n"), *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		UE_LOG(LogForgottenThird, Error, TEXT("FTPlaceVertical: couldn't write %s."), *Path);
+		return false;
+	}
+	return true;
+}
+
 int32 NavTiles(const UWorld& World)
 {
 	int32 Tiles = 0;
@@ -379,6 +493,11 @@ int32 UFTPlaceVerticalCommandlet::Main(const FString& Params)
 	const bool bRebuildNav = FParse::Param(*Params, TEXT("RebuildNav"));
 	const bool bDryRun = FParse::Param(*Params, TEXT("DryRun"));
 	const bool bIslands = FParse::Param(*Params, TEXT("Islands"));
+	FString DrawnOut, DrawnBox, PolysOut, PolysBox;
+	FParse::Value(*Params, TEXT("PolysOut="), PolysOut);
+	FParse::Value(*Params, TEXT("PolysBox="), PolysBox);
+	FParse::Value(*Params, TEXT("DrawnOut="), DrawnOut);
+	FParse::Value(*Params, TEXT("DrawnBox="), DrawnBox);
 	if (bNoNav && bRebuildNav)
 	{
 		UE_LOG(LogForgottenThird, Error, TEXT("FTPlaceVertical: -NoNav and -RebuildNav ask for opposite things."));
@@ -459,6 +578,10 @@ int32 UFTPlaceVerticalCommandlet::Main(const FString& Params)
 	UE_LOG(LogForgottenThird, Display, TEXT("FTPlaceVertical: loaded %s: %d actors in its persistent level, %d placed by an earlier run; navmesh %d tiles."),
 		*MapPath, ActorsBefore, Old.Num(), TilesBefore);
 	VerticalLogStreaming(*World);
+	if (!DrawnOut.IsEmpty() && !VerticalDrawnOut(*World, Side, DrawnOut, DrawnBox))
+	{
+		return 1;
+	}
 	AFTExploreDirector* Director = nullptr;
 	if (!TourFile.IsEmpty())
 	{
@@ -492,7 +615,7 @@ int32 UFTPlaceVerticalCommandlet::Main(const FString& Params)
 	}
 	// -Islands: the navmesh's islands (in the plan frame, nothing left out under a sea), gathered once per navmesh probed.
 	TUniquePtr<FFTNavIslands> Islands;
-	auto GatherIslands = [&Islands, bIslands, Side](const ANavigationData* Data, const TCHAR* When)
+	auto GatherIslands = [&Islands, bIslands, Side, &PolysOut, &PolysBox](const ANavigationData* Data, const TCHAR* When)
 	{
 		Islands.Reset();
 		const ARecastNavMesh* Recast = Cast<const ARecastNavMesh>(Data);
@@ -506,6 +629,47 @@ int32 UFTPlaceVerticalCommandlet::Main(const FString& Params)
 			ftcore::kNoSea, *Islands);
 		UE_LOG(LogForgottenThird, Display, TEXT("FTPlaceVertical: the %s navmesh's islands: %d polys in %d tiles, %d islands, gathered in %.1f s."), When,
 			Islands->Gathered, Islands->Tiles, static_cast<int32>(Islands->Set.islands.size()), FPlatformTime::Seconds() - Began);
+		// -PolysOut=<csv> -PolysBox=x0,y0,x1,y1 (plan metres): every kept poly that reaches into the box, with its island and
+		// corners, so a seam two surfaces should share shows where the navmesh stops on each side. One file per navmesh read.
+		if (PolysOut.IsEmpty())
+		{
+			return;
+		}
+		TArray<FString> Box;
+		PolysBox.ParseIntoArray(Box, TEXT(","), true);
+		if (Box.Num() != 4)
+		{
+			UE_LOG(LogForgottenThird, Warning, TEXT("FTPlaceVertical: -PolysBox=%s is not x0,y0,x1,y1; no polys written."), *PolysBox);
+			return;
+		}
+		const double X0 = FCString::Atod(*Box[0]), Y0 = FCString::Atod(*Box[1]), X1 = FCString::Atod(*Box[2]), Y1 = FCString::Atod(*Box[3]);
+		TArray<FString> PolyRows;
+		PolyRows.Add(TEXT("poly,island,island_m2,corners"));
+		for (size_t I = 0; I < Islands->Polys.size(); ++I)
+		{
+			const ftcore::NavPolyRef& Poly = Islands->Polys[I];
+			double MinX = 1e9, MinY = 1e9, MaxX = -1e9, MaxY = -1e9;
+			FString Corners;
+			for (uint32 C = 0; C < Poly.count; ++C)
+			{
+				const ftcore::MassingVec& V = Islands->Corners[Poly.first + C];
+				MinX = FMath::Min(MinX, V.x);
+				MaxX = FMath::Max(MaxX, V.x);
+				MinY = FMath::Min(MinY, V.y);
+				MaxY = FMath::Max(MaxY, V.y);
+				Corners += FString::Printf(TEXT("%s%.3f %.3f %.3f"), C ? TEXT(";") : TEXT(""), V.x, V.y, V.z);
+			}
+			if (MaxX < X0 || MinX > X1 || MaxY < Y0 || MinY > Y1)
+			{
+				continue;
+			}
+			const uint32 N = I < Islands->Set.islandOf.size() ? Islands->Set.islandOf[I] : 0u;
+			const double Area = N < Islands->Set.islands.size() ? Islands->Set.islands[N].area : 0.0;
+			PolyRows.Add(FString::Printf(TEXT("%u,%u,%.1f,%s"), static_cast<uint32>(I), N, Area, *Corners));
+		}
+		const FString Path = FPaths::GetBaseFilename(PolysOut, false) + TEXT("_") + When + TEXT(".csv");
+		UE_LOG(LogForgottenThird, Display, TEXT("FTPlaceVertical: %d polys of the %s navmesh in the box written to %s."), PolyRows.Num() - 1, When, *Path);
+		FFileHelper::SaveStringToFile(FString::Join(PolyRows, TEXT("\n")) + TEXT("\n"), *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 	};
 	GatherIslands(NavData, TEXT("saved"));
 	int32 NavBefore = 0;
